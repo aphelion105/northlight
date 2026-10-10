@@ -40,13 +40,14 @@ checks['paired with the near map: reuse/defer continues before it, Render invali
     reuse<begin<invalid<draw<valid<union and loop.index('continue;',reuse)<begin and 'actorMatrices' not in loop[reuse:begin]
     and 'reuse.commit(interval,shadowPasses,matrices[cascade])' in loop and valid<loop.index('reuse.commit(interval,shadowPasses,matrices[cascade])'))
 actor=loop[draw:loop.index('} /* actorShadows */')]
-checks['actor draw: own target, shared 1024 depth, cleared white/1, cascade replay machinery, actor matrix everywhere']=(
+checks['actor draw: own target, shared 1024 depth, cleared white/1, cascade replay machinery, actor matrix, exactly the near-skipped replays']=(
     'actorShadowSurface[source]' in actor and 'd->SetDepthStencilSurface(shadowDepth);' in actor and '0xffffffff,1,0' in actor
-    and 'replayProjection(context.inverseView,am,actorRows)' in actor and 'submitReplay(p.get(),actorBindings,actorPoses,actorRows,' in actor and 'clipReject(' in actor and ',am))continue;' in actor
-    and 'staticProofMask&(1u<<slot)' in actor and 'actorFrameMatrix[source]' in actor and 'const float* am=actorFrameMatrix[source];' in actor)
+    and 'replayProjection(context.inverseView,am,actorRows)' in actor and 'submitReplay(p.get(),actorBindings,actorPoses,actorRows,' in actor
+    and 'if(nearSkip)for(const uint32_t index:actorReplays){const auto& p=replays[index];' in actor and 'for(size_t index=0;index<replays.size();++index)' not in actor and 'staticProofMask' not in actor and 'actorFrameMatrix[source]' in actor and 'const float* am=actorFrameMatrix[source];' in actor)
 # The near skip: cascade 0 only, valid bounds only (insideInset rejects invalid bounds), actor matrix.
 checks['near skip: cascade 0 only, never the far map, by the inset test on valid bounds']=(
-    'const bool nearSkip=cascade==0&&actorMapOn;' in loop and 'if(nearSkip&&NorthlightActorShadowMap::insideInset(p->pointBounds.valid,p->pointBounds.low,p->pointBounds.high,actorFrameMatrix[source])){++nearSkipped;continue;}' in loop
+    'bool nearSkip=cascade==0&&actorMapOn;' in loop and 'if(nearSkip){actorReplays.clear();try{actorReplays.reserve(replays.size());}catch(...){nearSkip=false;}}' in loop
+    and 'if(nearSkip&&NorthlightActorShadowMap::insideInset(p->pointBounds.valid,p->pointBounds.low,p->pointBounds.high,actorFrameMatrix[source])){actorReplays.push_back(uint32_t(index));++nearSkipped;continue;}' in loop
     and loop.count('insideInset(')==1 and 'if(!valid||!low||!high||!m)return false;' in h)
 # ActorShadowDetail=0 / ActorShadows=0: the pass is never drawn; the visibility is still cleared white every frame.
 light=render[render.index('actor visibility (half res, r sun, g moon)'):render.index('if(profile)profile->mark("WorldLighting");')]

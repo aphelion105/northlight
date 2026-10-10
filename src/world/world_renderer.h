@@ -304,7 +304,7 @@ private:
     // 0.3.208 (task 29): per-source actor shadow map (R32F 1024, moving casters only, shadows/actor_shadow_map.h) and the half-res visibility it feeds (A8R8G8B8: r sun, g moon; white = lit).
     // actorMatrices/actorValid are stored with the near map's reuse state: the near map and the actor map of a source always come from the same frame.
     IDirect3DTexture9 *actorShadow[2]={},*actorVisibility=nullptr;IDirect3DSurface9 *actorShadowSurface[2]={},*actorVisibilitySurface=nullptr;
-    float actorMatrices[2][16]={};bool actorValid[2]={};V actorCenter[2];bool actorCenterValid[2]={}; /* leashed centre per source (actor_shadow_map.h leash) */unsigned long actorNearSkipped=0,actorDrawn=0,actorProved=0;DWORD actorShadowLogAt=0;
+    float actorMatrices[2][16]={};bool actorValid[2]={};V actorCenter[2];bool actorCenterValid[2]={}; /* leashed centre per source (actor_shadow_map.h leash) */unsigned long actorNearSkipped=0,actorDrawn=0;std::vector<uint32_t> actorReplays; /* the near loop's skipped replays: exactly what the actor map draws */DWORD actorShadowLogAt=0;
     IDirect3DPixelShader9* unionPS=nullptr;
     std::shared_ptr<const NorthlightLocalShadowSignature::Records> uploadedLocalShadowRecords;
     struct ShadowCacheKey {
@@ -3283,7 +3283,10 @@ public:
             // records them for the probe and is timed as a whole. Every other frame (always with
             // RenderProfile=0) runs the Off instantiation, whose hooks are empty: the 0.3.148 loop.
             const bool profiled=profileSampled(),probeRecord=replayProbeActive()&&slot==0&&captureMode==CaptureFresh&&!diagnosticCapture;
-            const bool nearSkip=cascade==0&&actorMapOn; /* 0.3.208 (task 29): the near cascade leaves the replays wholly inside the actor map's inset to the actor map */
+            // 0.3.208 (task 29): the near cascade leaves the replays wholly inside the actor map's inset to the actor map, which draws
+            // exactly those (actorReplays): no replay is drawn into both. The list is reserved first, so recording a skip never throws.
+            bool nearSkip=cascade==0&&actorMapOn;
+            if(nearSkip){actorReplays.clear();try{actorReplays.reserve(replays.size());}catch(...){nearSkip=false;}}
             unsigned nearSkipped=0;
             auto replayLoop=[&](auto& split)->bool{
               using NorthlightRenderThreadProbe::Own;
@@ -3298,7 +3301,7 @@ public:
                     if(key.staticContent.valid&&!key.staticContent.contains(p->staticProofModel,p->staticProofRevision))++staticDedupUncommitted;
                     ++staticDedupSkipped;continue;
                 }
-                if(nearSkip&&NorthlightActorShadowMap::insideInset(p->pointBounds.valid,p->pointBounds.low,p->pointBounds.high,actorFrameMatrix[source])){++nearSkipped;continue;}
+                if(nearSkip&&NorthlightActorShadowMap::insideInset(p->pointBounds.valid,p->pointBounds.low,p->pointBounds.high,actorFrameMatrix[source])){actorReplays.push_back(uint32_t(index));++nearSkipped;continue;}
                 ++replaySlotTested[slot];replaySlotBounded[slot]+=p->pointBounds.valid;
                 if(p->pointBounds.valid&&(cull?(cull[index]&2)!=0:NorthlightShadowBounds::clipReject(V(p->pointBounds.low[0],p->pointBounds.low[1],p->pointBounds.low[2]),V(p->pointBounds.high[0],p->pointBounds.high[1],p->pointBounds.high[2]),matrices[cascade]))){++culledReplayDraws;++replaySlotCulled[slot];continue;}
                 split.mark(Own);
@@ -3343,12 +3346,11 @@ public:
                 float actorRows[16];NorthlightWorldMath::replayProjection(context.inverseView,am,actorRows);
                 d->SetVertexShaderConstantF(0,am,4);d->SetPixelShader(replayPS);
                 NorthlightReplayPoses::Pass<BOOL> actorPoses;NorthlightReplayDrawState::Cache actorBindings(d);
-                NorthlightRenderThreadProbe::Off actorSplit;unsigned drawnHere=0,provedHere=0;
-                for(size_t index=0;index<replays.size();++index){const auto& p=replays[index];
-                    // Same static proof as the near loop: those live in the static cache; the rest, not clip-rejected here, are drawn.
-                    if(key.valid&&(p->staticProofMask&(1u<<slot))&&staticCasters.stats().readyModels&&
-                       (cull?(cull[index]&1)!=0:StaticShadow::containsBounds(cachedMatrix,p->staticProofLow,p->staticProofHigh))){++provedHere;continue;}
-                    if(p->pointBounds.valid&&NorthlightShadowBounds::clipReject(V(p->pointBounds.low[0],p->pointBounds.low[1],p->pointBounds.low[2]),V(p->pointBounds.high[0],p->pointBounds.high[1],p->pointBounds.high[2]),am))continue;
+                NorthlightRenderThreadProbe::Off actorSplit;unsigned drawnHere=0;
+                // Only the replays the near loop above skipped (static proof already excluded there, all inside the inset): a replay
+                // partly outside it, or without bounds, stays in the near map alone (it was drawn into both before, twice the cost
+                // in crowds and with a low sun, whose long footprint brings many far replays into the map).
+                if(nearSkip)for(const uint32_t index:actorReplays){const auto& p=replays[index];
                     if(!submitReplay(p.get(),actorBindings,actorPoses,actorRows,actorSplit,replayConstantBytes,replayConstantCalls,[&](HRESULT h,const char* s){return check(h,s);}))return false;
                     ++drawnHere;
                 }
@@ -3356,10 +3358,10 @@ public:
                 if(diagnosticCapture){char name[80];std::snprintf(name,sizeof name,"s%d-actor",source);NorthlightWorldDiagnostics::dump(d,actorShadowSurface[source],gpuDiagnosticDirectory,name,diagnosticCapture);}
                 memcpy(actorMatrices[source],am,64);actorValid[source]=true;
                 if(profile)profile->mark(source==0?"SunActor":"MoonActor");bucket(NorthlightEffectsBuckets::Bucket(NorthlightEffectsBuckets::SunActor+source));
-                actorNearSkipped+=nearSkipped;actorDrawn+=drawnHere;actorProved+=provedHere;
+                actorNearSkipped+=nearSkipped;actorDrawn+=drawnHere;
                 const DWORD actorTick=GetTickCount();
                 if(NorthlightDiagnostics::enabled()&&(!actorShadowLogAt||actorTick-actorShadowLogAt>=1000)){actorShadowLogAt=actorTick;
-                    logf("WORLD actor shadow map source=%d drawn=%u staticProved=%u nearSkipped=%u of %zu replays; totals drawn=%lu nearSkipped=%lu",source,drawnHere,provedHere,nearSkipped,replays.size(),actorDrawn,actorNearSkipped);}
+                    logf("WORLD actor shadow map source=%d drawn=%u nearSkipped=%u of %zu replays; totals drawn=%lu nearSkipped=%lu",source,drawnHere,nearSkipped,replays.size(),actorDrawn,actorNearSkipped);}
             }
             } /* actorShadows */
             // Union: min(dynamic scratch, cached static at its integer texel offset + exact depth delta).
