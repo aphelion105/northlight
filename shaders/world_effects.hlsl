@@ -498,9 +498,8 @@ float4 LocalDirect(float2 uv:TEXCOORD0):COLOR0 {
 // angle gate, so at 45 both are half-way (face halo 4.8/255 at 25 u, 8.5 untested; crease +4.3/255
 // over untested); 55 and the vertical faces are rejected. Source-aware variants (reject only taps
 // facing away from the source) changed nothing: the away-facing dune facet is that very case. A
-// silhouette centre (confidence 0) is tested like any other: its one-sided normal follows the side that looks like it in the scene
-// copy (WorldNormals), so it no longer takes the neighbouring surface's direction at a wall foot, where skipping the test let the
-// zero removal of the wall taps dilute the contact texel. Own half-res pass (RemovalSmooth): the extra
+// silhouette centre (confidence 0: its one-sided normal may be the neighbour's) skips the test (the old weights); silhouette taps of
+// a confident centre are tested with their own normal. Own half-res pass (RemovalSmooth): the extra
 // read does not fit TemporalLight's 512 slots; TemporalLight reads its result as SmoothedLighting (s9)
 // and clamps against the raw s8.
 // The composite applies correction*min(transported/baseline,T); as a fraction of the
@@ -531,7 +530,7 @@ float3 smoothRemoval(float4 current,float2 q,float2 base,float2 size,float z){
             float4 light=tex2Dlod(LightingBuffer,float4(tq,0,0));
             float4 tapNormal=tex2Dlod(NormalBuffer,float4(tq,0,0));
             float agree=saturate((dot(centreNormal.xyz,tapNormal.xyz)-.6428)*5.67);
-            float w=exp2(abs(viewDistance(normalizedDepth(depthUV(tq)))-z)*depthScale)*saturate(1-abs(light.a-current.a)*visibilityScale)*agree;
+            float w=exp2(abs(viewDistance(normalizedDepth(depthUV(tq)))-z)*depthScale)*saturate(1-abs(light.a-current.a)*visibilityScale)*(centreNormal.w>.5?agree:1);
             sum+=max(light.rgb*legacyT/removalScale(tex2Dlod(BaselineLighting,float4(tq,0,0)).rgb,tex2Dlod(Scene,float4(tq,0,0)).rgb*tex2Dlod(AmbientOcclusion,float4(tq,0,0)).a,fog,legacyT),-.45)*w;total+=w;
             dir=float2(dir.x*-.7373688-dir.y*.6754903,dir.x*.6754903-dir.y*.7373688);t+=1;
         }

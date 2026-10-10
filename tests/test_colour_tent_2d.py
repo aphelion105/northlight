@@ -12,9 +12,9 @@ luminance at the tap's own sample pixel (depthUV of the texel), and the nearest-
 Emulation (pinhole 1920x1080, texel i = pixel 2i+1, WorldNormals port, night correction from the normal, smoothRemoval, the exact composite tent
 with the .02 fallback, baseline mixing, albedoT clamp, -45% floor; MSAA 4x = mean of the D3D pattern samples, depth = sample 0; albedo noise +-15%).
 Error = composite - ideal (every sample relit by its own surface), /255. Also: flat textured ground with a penumbra / a hard shadow edge / lit
-(K=16 against K=0 deviation). Two lighting-side changes ship with the tent: colour-guided one-sided normals in WorldNormals (the 'ncol' option) and an
-always-on normal agreement weight in smoothRemoval ('agree0'). Together with the tent they clear the staircase without MSAA and cut it by about
-85% with MSAA. No game, Wine or GPU."""
+(K=16 against K=0 deviation). One lighting-side change ships with the tent: colour-guided one-sided normals in WorldNormals (the 'ncol' option). smoothRemoval
+is the original one (a confidence-0 centre skips the normal test; an always-on test, the 'agree0' option, was measured and dropped: it
+regressed some wall spots in game). The tent and the colour normals together clear most of the staircase. No game, Wine or GPU."""
 import sys; from pathlib import Path; sys.path.insert(0,str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp; fp.use_source_modules()
 import json,math
@@ -288,15 +288,15 @@ checks['WorldComposite: lighting/baseline/AO taps weighted by the colour term, f
     and 'contactPull' not in hlsl and 'if(total<.02){bounce=fallbackLight.rgb;' in comp)
 import json as _j
 man=_j.loads(fp.src('world-shader-build.json').read_text())['shaders'] if hasattr(fp,'src') else {}
-checks[f"slots: WorldNormals {man['WorldNormals']['static_instruction_slots']} / {man['WorldNormals']['temporary_registers']} of 32 temporaries (was 434 / 29), WorldComposite {man['WorldComposite']['static_instruction_slots']} (was 507), RemovalSmooth {man['RemovalSmooth']['static_instruction_slots']} (was 263), all <= 512"]=(
+checks[f"slots: WorldNormals {man['WorldNormals']['static_instruction_slots']} / {man['WorldNormals']['temporary_registers']} of 32 temporaries (was 434 / 29), WorldComposite {man['WorldComposite']['static_instruction_slots']} (was 507), RemovalSmooth {man['RemovalSmooth']['static_instruction_slots']} (unchanged), all <= 512"]=(
     man['WorldNormals']['static_instruction_slots']==483 and man['WorldNormals']['temporary_registers']<=32 and man['WorldComposite']['static_instruction_slots']==509
-    and man['RemovalSmooth']['static_instruction_slots']==260)
+    and man['RemovalSmooth']['static_instruction_slots']==263)
 nrm=hlsl[hlsl.index('float3 tangentAxis('):hlsl.index('struct LightingOutput')]
 checks['WorldNormals: a confidence-0 pixel picks its one-sided side by scene colour (relative luminance, one fetch site), the depth rule below .05']=(
     'confidence=0;' in nrm and '[loop]for(int k=0;k<3;++k)lumas+=dot(tex2Dlod(Scene,' in nrm and 'abs(lumas.x-lumas.yz)/(lumas.x+lumas.yz+.02)' in nrm
     and '(abs(gap)>.05?gap<0:abs(b1.z-p.z)<abs(a1.z-p.z))?db:da' in nrm)
 smooth=hlsl[hlsl.index('float3 smoothRemoval('):hlsl.index('// Half-res pass before TemporalLight')]
-checks['smoothRemoval: the normal agreement weight applies to every centre, also confidence 0']=('*agree;' in smooth and 'centreNormal.w' not in smooth)
+checks['smoothRemoval is the original: a confidence-0 centre skips the normal test']=('*(centreNormal.w>.5?agree:1);' in smooth)
 SC=((100.,82.,3.),(100.,85.,12.),(25.,78.,3.),(300.,82.,12.))
 print('scene (S0 yaw pitch+)  MSAA: px>8/255, max, min  (K=0 -> K=16)        no MSAA')
 tot={True:[0,0],False:[0,0]};worst_min={True:[0,0],False:[0,0]}
@@ -314,8 +314,8 @@ dev_pen=flat(16,pen(6));dev_hard=flat(16,pen(.01));dev_lit=flat(16,lit)
 print(f'flat textured ground, K=16 vs K=0 max deviation /255: 6-texel penumbra {dev_pen}, hard shadow edge {dev_hard}, lit {dev_lit}')
 report['flat']={'penumbra':dev_pen,'hard_edge':dev_hard,'lit':dev_lit}
 checks[f'flat textured ground: penumbra deviation {dev_pen}/255 (<= 2), hard shadow edge {dev_hard}/255 (<= 5), lit scene {dev_lit}/255 (0)']=dev_pen<=2 and dev_hard<=5 and dev_lit==0
-FULL=('ncol','agree0')   # shipped: colour-picked one-sided normals (WorldNormals) + the normal test for a confidence-0 centre (smoothRemoval)
-print('scene              before(K=0, 0.3.207 lighting)        tent only (K=16)          shipped (K=16 + normals + smoothing)   [px>8/255, max, min]  MSAA | no MSAA')
+FULL=('ncol',)   # shipped: colour-picked one-sided normals (WorldNormals) with the original smoothRemoval
+print('scene              before(K=0, 0.3.207 lighting)        tent only (K=16)          shipped (K=16 + colour normals)   [px>8/255, max, min]  MSAA | no MSAA')
 sweep=(((100.,82.,3.),(100.,85.,12.),(25.,78.,3.),(300.,82.,12.),(100.,78.,3.),(25.,85.,12.),(300.,85.,3.),(300.,78.,12.)))
 res={True:[],False:[]}
 for S0,yaw,off in sweep:
@@ -327,15 +327,17 @@ sum_n=lambda m,i:sum(r[i][0] for r in res[m])
 mx=lambda m,i:max(r[i][1] for r in res[m]);mn=lambda m,i:min(r[i][2] for r in res[m])
 clean=[edge(S0,yaw,False,16,off,opt=FULL,noise=0.) for S0,yaw,off in sweep]
 report['msaa_off_untextured']=clean
-checks[f"MSAA off, shipped: no pixel over 8/255 on the sweep without texture noise ({sum(c[0] for c in clean)} px, max {max(c[1] for c in clean)}); with the +-15% albedo noise {sum_n(False,2)} px, max {mx(False,2)} (before {sum_n(False,0)} px max {mx(False,0)}, tent only {sum_n(False,1)} px)"]=(
-    sum(c[0] for c in clean)==0 and sum_n(False,2)<=8 and mx(False,2)<=10)
+print(f"MSAA off, shipped, without texture noise: {sum(c[0] for c in clean)} px over 8/255, max {max(c[1] for c in clean)}/255")
+checks[f"MSAA off, shipped: {sum_n(False,2)} px over 8/255 (before {sum_n(False,0)}, tent only {sum_n(False,1)}), max {mx(False,2)}/255 (before {mx(False,0)}): at most 30% of before, not more than tent only"]=(
+    sum_n(False,2)<=.3*sum_n(False,0) and sum_n(False,2)<=sum_n(False,1) and mx(False,2)<mx(False,0))
 print(f"MSAA on, shipped: {sum_n(True,2)} px over 8/255, max {mx(True,2)}/255 (before {sum_n(True,0)} px, max {mx(True,0)}; tent only {sum_n(True,1)} px, max {mx(True,1)}); darkest {mn(True,2)} (before {mn(True,0)})")
-checks[f"MSAA on, shipped: at most 25% of the before count ({sum_n(True,2)} of {sum_n(True,0)}) and a lower maximum ({mx(True,2)} < {mx(True,0)})"]=sum_n(True,2)<=.25*sum_n(True,0) and mx(True,2)<mx(True,0)
+checks[f"MSAA on, shipped: {sum_n(True,2)} px over 8/255 (before {sum_n(True,0)}, tent only {sum_n(True,1)}): at most 60% of before, not more than tent only, max {mx(True,2)} (before {mx(True,0)}) and below tent only's {mx(True,1)}"]=(
+    sum_n(True,2)<=.6*sum_n(True,0) and sum_n(True,2)<=sum_n(True,1) and mx(True,2)<mx(True,0) and mx(True,2)<mx(True,1))
 checks[f"dark pixels at the wall bottom do not get worse with the shipped changes (worst {mn(True,0)} -> {mn(True,2)} MSAA, {mn(False,0)} -> {mn(False,2)} off)"]=mn(True,2)>=mn(True,0) and mn(False,2)>=mn(False,0)
 dev_pen2=flat(16,pen(6),opt=FULL);dev_hard2=flat(16,pen(.01),opt=FULL);dev_lit2=flat(16,lit,opt=FULL)
 print(f'flat textured ground, shipped K=16 vs K=0 plain tent: penumbra {dev_pen2}, hard edge {dev_hard2}, lit {dev_lit2}')
 report['flat_shipped']={'penumbra':dev_pen2,'hard_edge':dev_hard2,'lit':dev_lit2}
-checks[f'flat textured ground with the shipped changes: penumbra {dev_pen2}/255 (<= 2), hard shadow edge {dev_hard2}/255 (<= 5), lit {dev_lit2}/255 (0)']=dev_pen2<=2 and dev_hard2<=5 and dev_lit2==0
+checks[f'flat textured ground, shipped: penumbra {dev_pen2}/255 (<= 2), hard shadow edge {dev_hard2}/255 (<= 5), lit {dev_lit2}/255 (0)']=dev_pen2<=2 and dev_hard2<=5 and dev_lit2==0
 for name,ok in checks.items():print(('PASS ' if ok else 'FAIL ')+name)
 (fp.output_dir()/'colour-tent-2d.json').write_text(json.dumps({'checks':checks,**report,'game_or_gpu_launched':False},indent=2))
 assert all(checks.values())

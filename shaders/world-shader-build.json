@@ -1,5 +1,5 @@
 {
-  "source_sha256": "b05cf8d63802507d3b3b0226090376b8b458ac559f1076b55c1696ccd03478ff",
+  "source_sha256": "b698932a3e8c1b9546d461a5eb9bc67d3026dbfcb27f131bc743dfc92df4ff93",
   "compiler": "Wine d3dcompiler_47 D3DCompile",
   "game_launched": false,
   "shaders": {
@@ -272,9 +272,9 @@
     },
     "RemovalSmooth": {
       "target": "ps_3_0",
-      "bytes": 4400,
-      "sha256": "202d41fa77f3227c2553e87278e6bc96d5def1f451a06e07e827a8c3bb66ff05",
-      "static_instruction_slots": 260,
+      "bytes": 4456,
+      "sha256": "485461e2b8a2bf2928a5819a8cd13527e1ee21203934aeae22187fb54b5e22c1",
+      "static_instruction_slots": 263,
       "temporary_registers": 24,
       "samplers": [
         0,
@@ -287,13 +287,13 @@
       "instructions": {
         "mul": 49,
         "frc": 4,
-        "add": 37,
+        "add": 38,
         "rcp": 23,
         "mov": 67,
         "texldl": 12,
         "max": 15,
         "min": 7,
-        "cmp": 4,
+        "cmp": 6,
         "if": 3,
         "mad": 2,
         "log": 1,

@@ -22,7 +22,7 @@ Every effect below is on by default and is drawn on top of the game's own frame.
   928 yards (up to 4096 in the zones listed in `shadow-range-profiles.ini`). Characters, creatures, mounts,
   doors, ships and other moving objects cast shadows too. The game's baked terrain shadows are
   replaced, its round blob shadows under characters are kept, fainter (`BlobShadowStrength`), and where the sun is blocked the
-  game's painted sunlight is removed smoothly, without facet steps, and the thin light line it left on the ground along wall feet and under characters in shadow is gone (0.3.208).
+  game's painted sunlight is removed smoothly, without facet steps, and the thin light line it left on the ground along wall feet and under characters in shadow is mostly gone: the lighting upsample now follows the scene colour there (0.3.208).
 - **Global illumination.** Sky light and bounced light from probes ray traced against the world
   geometry on a background thread, about 76 yards around the camera (52 in the Balanced and Performance
   presets); characters add their own bounce and occlusion (Quality preset).
