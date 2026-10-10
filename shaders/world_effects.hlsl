@@ -526,6 +526,53 @@ float3 smoothRemoval(float4 current,float2 q,float2 base,float2 size,float z){
     }
     return result;
 }
+// 0.3.208 contact pull: the composite upsamples this buffer with a 4-tap tent weighted only by depth
+// (exp(-delta/max(.15,z*.01))), so at a wall foot or under an actor the ground pixels take in the
+// wall/leg texels (about the ground's view depth, a camera-facing face away from the source: removal ~0)
+// and under-remove the game's painted light there: a thin light line in shadow on bright ground. Every
+// non-sky texel therefore pulls toward MORE removal from its 3x3 neighbours, by normal gate (0 up to
+// 50 degrees, 1 from 70: dune creases of 35-45 degrees and smooth ground stay untouched) x depth
+// agreement x concavity x shadow state:
+// - The pull is on the correction itself, not on correction/baseline: a ground pixel that takes in only wall
+//   texels computes min(transported/oldLight,T)*bounce with the wall's small ambient-only oldLight, which
+//   clamps to T, so only the absolute correction carries the ground's removal across. Only the removal share
+//   (min(c,0)) moves: a positive correction (lamp light, GI) is never pulled away, and a net-positive
+//   neighbour carries no removal to give.
+// - Depth agreement is the composite's own exp(-|dz|/tol) after allowing the neighbour surface's own
+//   texel-to-texel depth step (|z(o)-z(2o)|, at most .35 z): a grazing ground steps by several tolerances per
+//   texel, yet the full-res pixels between the ground texel and the wall texel cross that gap and take the
+//   wall texel. A silhouette (actor against far ground) has no such step and stays unpulled.
+// - Concavity: the neighbour must lie in front of the centre's tangent plane (dot(pN-p0,n0)>0, ramped over
+//   a quarter texel footprint): a wall foot passes from both sides, a roof edge, wall top, outside corner or
+//   convex rock crease (depth-continuous, 60-90 degrees) does not, which would darken them.
+// - Shadow: the centre must be shadowed (the amount of smoothRemoval) or face away from the drawn source
+//   (N.L<=0 ramped to .1; a face turned away can have visibility 1) and the neighbour must be shadowed: a
+//   daytime lit ground / shadowed wall seam stays as it was.
+// A confidence-0 centre normal is used as it is. With no pulling tap the rgb is returned bit-identical.
+float3 contactPull(float4 current,float2 base,float2 size,float2 q,float z){
+    float3 removal=min(current.rgb,0),delta=0;
+    float3 n0=tex2Dlod(NormalBuffer,float4(q,0,0)).xyz;
+    float3 nv=float3(dot(n0,InverseView[0].xyz),dot(n0,InverseView[1].xyz),dot(n0,InverseView[2].xyz));
+    float3 p0=viewPositionDistance(depthUV(q),z);
+    float gate0=max(saturate((1-current.a*RemovalInfo.z)/GridInfo.z),saturate(1-10*dot(n0,lerp(LegacyDirection.xyz,SunDirection.xyz,SunDirection.w))));
+    float depthScale=-1/max(.15,z*.01);
+    float halfTexel=2/max(abs(Projection.x)*ScreenSize.x,1e-4)*z*2; // a half-res texel footprint at z
+    [loop]for(int i=0;i<8;++i){
+        float a=i+(i>=4?1:0);
+        float2 offset=float2(fmod(a,3)-1,floor(a/3)-1);
+        float2 tq=(clamp(base+offset,0,size-1)+.5)/size;
+        float dn=normalizedDepth(depthUV(tq));
+        float zn=viewDistance(dn);
+        float d2=normalizedDepth(depthUV((clamp(base+offset*2,0,size-1)+.5)/size));
+        float slack=d2<.99999?min(abs(zn-viewDistance(d2)),.35*z):0;
+        float4 light=tex2Dlod(LightingBuffer,float4(tq,0,0));
+        float concave=saturate(dot(viewPositionDistance(depthUV(tq),zn)-p0,nv)*(4/halfTexel)+1);
+        float shadowed=saturate((1-light.a*RemovalInfo.z)/GridInfo.z);
+        float pull=saturate((.6428-dot(n0,tex2Dlod(NormalBuffer,float4(tq,0,0)).xyz))*3.3223)*exp(max(abs(zn-z)-slack,0)*depthScale)*concave*gate0*shadowed*(dn<.99999?1:0);
+        delta=min(delta,pull*(min(light.rgb,0)-removal));
+    }
+    return current.rgb+delta;
+}
 // Half-res pass before TemporalLight: the lighting buffer with the removal smoothing applied (own
 // pass for the slot budget). Lit, sky and no-source pixels are a bit-identical copy.
 float4 RemovalSmooth(float2 uv:TEXCOORD0):COLOR0 {
@@ -533,7 +580,11 @@ float4 RemovalSmooth(float2 uv:TEXCOORD0):COLOR0 {
     float2 base=floor(uv*half);float2 q=(base+.5)/half;
     float4 current=tex2Dlod(LightingBuffer,float4(q,0,0));
     float d=normalizedDepth(depthUV(q));
-    [branch]if(RemovalInfo.y>0&&d<.99999)current.rgb=smoothRemoval(current,q,base,half,viewDistance(d));
+    [branch]if(RemovalInfo.y>0&&d<.99999){
+        float z=viewDistance(d);
+        current.rgb=smoothRemoval(current,q,base,half,z);
+        current.rgb=contactPull(current,base,half,q,z);
+    }
     return current;
 }
 // Temporal stabilization of the half-resolution lighting buffer (shadow

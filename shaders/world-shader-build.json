@@ -1,5 +1,5 @@
 {
-  "source_sha256": "0f48a5808f93fb7daec3e61a552ab151c946de0c747c33d43ff4ee7662313d0f",
+  "source_sha256": "876a250972bb4a06c25d88fa9ff7983a9309e525df81bd3e9a1e3c52020ee8c7",
   "compiler": "Wine d3dcompiler_47 D3DCompile",
   "game_launched": false,
   "shaders": {
@@ -271,10 +271,10 @@
     },
     "RemovalSmooth": {
       "target": "ps_3_0",
-      "bytes": 4456,
-      "sha256": "485461e2b8a2bf2928a5819a8cd13527e1ee21203934aeae22187fb54b5e22c1",
-      "static_instruction_slots": 263,
-      "temporary_registers": 24,
+      "bytes": 7648,
+      "sha256": "91ffa9b75bf0f3778ddd79dc03a6ae6580c8cd60588dee242ddbceb161eacd67",
+      "static_instruction_slots": 475,
+      "temporary_registers": 27,
       "samplers": [
         0,
         1,
@@ -284,27 +284,27 @@
         14
       ],
       "instructions": {
-        "mul": 49,
-        "frc": 4,
-        "add": 38,
-        "rcp": 23,
-        "mov": 67,
-        "texldl": 12,
-        "max": 15,
-        "min": 7,
-        "cmp": 6,
-        "if": 3,
+        "mul": 94,
+        "frc": 8,
+        "add": 79,
+        "rcp": 38,
+        "mov": 115,
+        "texldl": 17,
+        "max": 25,
+        "min": 15,
+        "cmp": 15,
+        "if": 4,
         "mad": 2,
         "log": 1,
-        "exp": 2,
-        "rep": 1,
-        "break": 1,
-        "else": 3,
-        "endif": 3,
+        "exp": 3,
+        "rep": 2,
+        "break": 2,
+        "else": 4,
+        "endif": 4,
         "rsq": 1,
-        "dp3": 1,
-        "abs": 2,
-        "endrep": 1
+        "dp3": 7,
+        "abs": 6,
+        "endrep": 2
       }
     },
     "TemporalLight": {
