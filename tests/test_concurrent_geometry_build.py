@@ -65,6 +65,7 @@ fixture=r'''
 #include <map>
 #include <mutex>
 #include <new>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -103,6 +104,9 @@ ORPHANED
  std::shared_ptr<Snapshot> published;std::shared_ptr<const PaletteRegion> publishedPaletteRegion;
  // Fixture build controls and observations (guarded by mutex unless atomic).
  std::atomic<unsigned> fixtureBuildMs{60},fixtureDefers{0};std::atomic<bool> fixtureThrow{false},fixtureFail{false};
+ // Issue #40: maps without world-cache tiles; cacheChecks counts the builder's per-entry probes.
+ std::set<std::string> fixtureUncachedMaps;std::atomic<unsigned> cacheChecks{0};
+ bool worldCacheHasTiles(const std::string& m){++cacheChecks;std::lock_guard<std::mutex> l(mutex);return !fixtureUncachedMaps.count(m);}
  bool building=false;unsigned buildsStarted=0,buildsDone=0;std::map<const NorthlightGI::BVH*,V> centers;std::vector<V> history;std::weak_ptr<NorthlightGI::BVH> lastBuilt;
  static NorthlightGeometryMemory::Sample geometryAdmissionFor(NorthlightMemoryAdmission::Probe&,NorthlightGeometryMemory::Budget,bool* exact=nullptr){
   if(exact)*exact=true;NorthlightGeometryMemory::Sample s;s.available=s.largest=uint64_t(3)<<30;s.valid=true;return s;}
@@ -305,6 +309,28 @@ int main(){
   h.issue({33,5,4},nullptr,"Azeroth",60); /* eye 50 from the region: GI solves on it */
   assert(h.settled());{std::lock_guard<std::mutex> lock(h.f.mutex);assert(h.f.buildsStarted==2&&h.f.buildsDone==2);}
   verifySettled(h,{3,5,4});std::puts("lead: region built ahead, worker idles (no spin, no extra build) until the eye is within 64, then settles exactly");}
+ {// (h) Issue #40: an uncached map (dungeon, raid, battleground) is probed once per entry, its error is
+  // published once and camera moves start no build; returning to a continent builds normally, and the
+  // next entry probes and publishes again. Without the gate the fixture would 'build' the instance.
+  logLines.clear();Harness h(1,80,0);h.issue({3,5,4});assert(h.settled());
+  {std::lock_guard<std::mutex> lock(h.f.mutex);h.f.fixtureUncachedMaps.insert("SunkenTemple");}
+  auto quiet=[&]{assert(h.waitFor([&]{return !h.f.pending&&!h.f.workerBusy&&!h.f.building;},30000));std::this_thread::sleep_for(std::chrono::milliseconds(300));};
+  auto entry=[&](unsigned expectedChecks){
+   h.issue({3,5,4},nullptr,"SunkenTemple");
+   assert(h.waitFor([&]{return h.f.published&&h.f.published->map=="SunkenTemple"&&h.f.published->message=="No cached geometry for SunkenTemple"&&!h.f.published->bvh;},30000));
+   std::shared_ptr<Fixture::Snapshot> error;unsigned started;{std::lock_guard<std::mutex> lock(h.f.mutex);error=h.f.published;started=h.f.buildsStarted;}
+   assert(h.f.cacheChecks==expectedChecks);
+   for(unsigned i=0;i<30;++i){h.issue({3.f+i,5,4},nullptr,"SunkenTemple");if(i%3)continue;std::this_thread::sleep_for(std::chrono::milliseconds(5));}
+   quiet();
+   {std::lock_guard<std::mutex> lock(h.f.mutex);assert(h.f.published==error&&h.f.buildsStarted==started&&!h.f.building);}
+   assert(h.f.cacheChecks==expectedChecks);return error;};
+  const unsigned before=h.f.cacheChecks;assert(before==1); /* Azeroth, first entry */
+  auto first=entry(before+1);
+  h.issue({3,5,4});assert(h.settled());{std::lock_guard<std::mutex> lock(h.f.mutex);assert(h.f.published->map=="Azeroth"&&h.f.published->bvh&&h.f.buildsDone==2);}
+  auto second=entry(before+3);assert(second!=first);
+  h.issue({3,5,4});assert(h.settled());
+  unsigned entries=0,ends=0;{std::lock_guard<std::mutex> lock(logMutex);for(const auto& l:logLines){if(l=="WORLD cache absent map=SunkenTemple; geometry builds skipped until the map changes")++entries;if(l.rfind("WORLD cache absent end map=SunkenTemple",0)==0)++ends;}}
+  assert(entries==2&&ends==2); /* the end line is logged when the map changes back */std::puts("uncached map: one probe and one error snapshot per entry, camera moves start no build, continent builds again");}
  std::puts("PASS concurrent geometry build: moves solved on the previous generation during builds; settled atlas bit-identical to a sequential final-generation solve; still-camera deferral; stop mid-build; builder and worker faults join; map change, build failure and stale adoption during builds; orphaned staged upload released (0.3.156); same-map teleports recover with a still camera; 0.3.169 120/150 hold adopts without a stall; lead region idles without spinning");
 }
 '''.replace('SNAPSHOT',snapshot).replace('REQUEST',request).replace('PALETTE',palette).replace('ORPHANED',orphaned).replace('WORK',work)
