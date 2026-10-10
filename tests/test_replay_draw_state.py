@@ -34,11 +34,11 @@ assert 'if(LocalMaterial.w>=0)clip(tex2D(LocalAlpha,uv).a-LocalMaterial.w);' in 
 # Captured cutoffs are -1 (opaque) or >=0 (alpha test); the skip condition is cutoff<=-1.
 assert "p->cutoff=alpha?(float(ref)+(alphaFunc==D3DCMP_GREATER?.5f:0.f))/255.f:-1.f;" in world
 assert 'if(skip_&&material_&&p.cutoff<=-1.f)' in read('replay_draw_state.h')
-# Exactly three users, each with a fixed pixel shader and no other stage-0/PS change inside the loop:
+# Exactly four users (0.3.208: the actor shadow map is a fourth), each with a fixed pixel shader and no other stage-0/PS change inside the loop:
 # the directional cascades, the point cube and (0.3.149, diagnostic) DiagReplayProbe, which re-issues
 # the sun near pass with the cascade's replayPS still bound.
 users = [m.start() for f in (world, point, probe) for m in re.finditer(r'NorthlightReplayDrawState::Cache ', f)]
-assert len(users) == 3, users
+assert len(users) == 4, users  # 0.3.208 (task 29): the actor shadow map is the fourth (replayPS bound, a fresh Cache per map)
 issue = probe[probe.index('NorthlightReplayDrawState::Cache probeBindings(d);'):probe.index('        if(draws==replayProbeList.size())return true;')]
 assert 'submitReplay(p,probeBindings,probePoses,rows,mode,' in issue
 for forbidden in ('SetTexture(', 'SetSamplerState(', 'SetPixelShader(', 'SetPixelShaderConstantF(', 'SetRenderState('):

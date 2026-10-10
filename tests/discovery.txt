@@ -1,5 +1,6 @@
 test_actor_deformation.py
 test_actor_scene_job.py
+test_actor_shadow_map.py
 test_actor_shadow_radius_wiring.py
 test_actor_shadow_selection.py
 test_actor_shadows_wiring.py

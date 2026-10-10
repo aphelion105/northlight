@@ -64,7 +64,8 @@ between=w[w.index('temporalIndex=prev;temporalValid=true;'):w.index('d->SetPixel
 # LocalDirect also reads the baseline alpha (sun visibility), so s12 is bound once more,
 # only inside the LocalDirect block (frames with lamps), before the temporal pass rebinds it.
 local=w[w.index('d->SetPixelShader(localDirectPS);'):w.index('if(profile)profile->mark("GI");')]
-checks['BaselineLighting (s12) bound at the temporal pass (and for LocalDirect), still bound for the composite']=(w.count('SetTexture(12,')==2
+checks['BaselineLighting (s12) bound at the temporal pass (and for LocalDirect), still bound for the composite']=(w.count('SetTexture(12,')==5 # 0.3.208 (task 29): + the actor map, the actor visibility (WorldLighting loop only) and its null restore
+    and w.count('d->SetTexture(12,actorShadow[source]);')==1 and w.count('d->SetTexture(12,actorVisibility);')==1 and w.count('d->SetTexture(12,textures[12]);')==1
     and 'd->SetTexture(12,baselineLight);' in tb and 'SetTexture(12' not in between and local.count('d->SetTexture(12,baselineLight);')==1)
 # 0.3.185 host: the pass is created, drawn right before the temporal pass with the samplers smoothRemoval reads, released and dumped.
 smoothdraw='if(removalDrawn){d->SetPixelShader(removalPS);if(!check(quad(w/2,h/2),"removal smoothing pass"))return false;}'

@@ -26,6 +26,10 @@ struct NorthlightWaterContext {
     float sourceShadowMatrices[2][2][16]={};
     float sourceShadowDirection[2][3]={};
     float shadowTexel=1.f/1024;
+    // 0.3.208 (task 29): the per-source actor shadow maps (moving casters near the player; shadows/actor_shadow_map.h), null/invalid = not sampled.
+    IDirect3DTexture9* actorShadows[2]={};
+    float actorShadowMatrices[2][16]={};
+    bool actorShadowValid[2]={};
 };
 class NorthlightWaterRenderer {
     IDirect3DDevice9* d;
@@ -208,15 +212,17 @@ public:
         const struct{D3DRENDERSTATETYPE s;DWORD v;} states[]={{D3DRS_ZENABLE,FALSE},{D3DRS_ZWRITEENABLE,FALSE},{D3DRS_ALPHATESTENABLE,FALSE},{D3DRS_ALPHABLENDENABLE,FALSE},{D3DRS_SEPARATEALPHABLENDENABLE,FALSE},{D3DRS_CULLMODE,D3DCULL_NONE},{D3DRS_COLORWRITEENABLE,15},{D3DRS_FOGENABLE,FALSE},{D3DRS_STENCILENABLE,FALSE},{D3DRS_SCISSORTESTENABLE,FALSE},{D3DRS_CLIPPLANEENABLE,0},{D3DRS_SRGBWRITEENABLE,FALSE},{D3DRS_FILLMODE,D3DFILL_SOLID},{D3DRS_MULTISAMPLEMASK,0xffffffff},{D3DRS_WRAP0,0}};
         for(auto& state:states)d->SetRenderState(state.s,state.v);
         d->SetTextureStageState(0,D3DTSS_TEXCOORDINDEX,0);d->SetTextureStageState(0,D3DTSS_TEXTURETRANSFORMFLAGS,D3DTTFF_DISABLE);
-        float c[29][4]={};c[0][0]=1.f/w;c[0][1]=1.f/h;c[0][2]=context.nearZ;c[0][3]=context.farZ;
+        float c[38][4]={};c[0][0]=1.f/w;c[0][1]=1.f/h;c[0][2]=context.nearZ;c[0][3]=context.farZ;
         memcpy(c[1],context.projection,12);c[1][3]=context.minZ;c[2][0]=1/(context.maxZ-context.minZ);c[2][1]=context.seconds;c[2][2]=.85f;c[2][3]=.45f;
         memcpy(c[3],context.inverseView,64);memcpy(c[7],context.sunDirection,12);memcpy(c[8],context.sunColor,12);memcpy(c[9],context.moonDirection,12);memcpy(c[10],context.moonColor,12);memcpy(c[11],context.skyColor,12);
         for(unsigned source=0;source<2;++source){float dot=0;const float* wanted=source?context.moonDirection:context.sunDirection;for(unsigned k=0;k<3;++k)dot+=wanted[k]*context.sourceShadowDirection[source][k];c[28][source]=context.sourceShadows[source][0]&&context.sourceShadows[source][1]&&dot>.98f?1.f:0.f;for(unsigned cascade=0;cascade<2;++cascade)memcpy(c[12+source*8+cascade*4],context.sourceShadowMatrices[source][cascade],64);}
         c[28][2]=context.shadowTexel;
-        if(!check(d->SetPixelShaderConstantF(0,c[0],29),"water constants"))return false;
+        for(unsigned source=0;source<2;++source){const bool actor=context.actorShadows[source]&&context.actorShadowValid[source]&&c[28][source]>0.f; /* the cascades' direction check (dot>.98) */c[37][source]=actor?1.f:0.f;if(actor)memcpy(c[29+source*4],context.actorShadowMatrices[source],64);} /* 0.3.208 (task 29): ActorMatrix c29..c32, MoonActorMatrix c33..c36, ActorShadowInfo c37 (x sun, y moon valid, z texel) */
+        c[37][2]=1.f/1024;
+        if(!check(d->SetPixelShaderConstantF(0,c[0],38),"water constants"))return false;
         maskMayBeBound=true;
-        IDirect3DTexture9* textures[]={color,opaqueDepth,mask,nullptr,context.sourceShadows[0][0],context.sourceShadows[0][1],context.sourceShadows[1][0],context.sourceShadows[1][1]};
-        for(unsigned i=0;i<8;++i){d->SetTexture(i,textures[i]);d->SetSamplerState(i,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(i,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);d->SetSamplerState(i,D3DSAMP_MINFILTER,i==0?D3DTEXF_LINEAR:D3DTEXF_POINT);d->SetSamplerState(i,D3DSAMP_MAGFILTER,i==0?D3DTEXF_LINEAR:D3DTEXF_POINT);d->SetSamplerState(i,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(i,D3DSAMP_SRGBTEXTURE,FALSE);}
+        IDirect3DTexture9* textures[]={color,opaqueDepth,mask,nullptr,context.sourceShadows[0][0],context.sourceShadows[0][1],context.sourceShadows[1][0],context.sourceShadows[1][1],context.actorShadows[0],context.actorShadows[1]};
+        for(unsigned i=0;i<10;++i){d->SetTexture(i,textures[i]);d->SetSamplerState(i,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(i,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);d->SetSamplerState(i,D3DSAMP_MINFILTER,i==0?D3DTEXF_LINEAR:D3DTEXF_POINT);d->SetSamplerState(i,D3DSAMP_MAGFILTER,i==0?D3DTEXF_LINEAR:D3DTEXF_POINT);d->SetSamplerState(i,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(i,D3DSAMP_SRGBTEXTURE,FALSE);}
         if(!check(d->SetRenderTarget(0,reflectionSurface),"reflection target")||!check(d->SetPixelShader(reflectionPS),"reflection bind")||!check(quad(),"reflection draw"))return false;
         if(!check(d->SetRenderTarget(0,targetSurface),"composite target")||!check(d->SetTexture(3,reflection),"reflection input")||!check(d->SetPixelShader(compositePS),"composite bind")||!check(quad(),"composite draw"))return false;
         if(++frames==1||(frames%600==0&&NorthlightDiagnostics::enabled()))logf("WATER frame=%u draws=%u method=screen-space-reflection skyFallback=1 exactLiquidMask=1 sunShadow=%d moonShadow=%d",frames,captures,int(c[28][0]),int(c[28][1]));
