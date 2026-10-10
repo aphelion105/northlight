@@ -25,8 +25,8 @@ pull_src=hlsl[hlsl.index('float3 contactPull('):hlsl.index('// Half-res pass bef
 rs=hlsl[hlsl.index('float4 RemovalSmooth('):hlsl.index('// Temporal stabilization of the half-resolution')]
 checks['contactPull: 8-tap [loop], 50/70 degree normal gate, composite depth weight with the neighbour surface step, only toward more removal on the correction']=(
     '[loop]for(int i=0;i<8;++i)' in pull_src and 'float depthScale=-1/max(.15,z*.01);' in pull_src
-    and '(.6428-dot(n0,' in pull_src and '*3.3223)' in pull_src and 'exp(max(abs(zn-z)-slack,0)*depthScale)' in pull_src
-    and 'min(abs(zn-viewDistance(d2)),.35*z)' in pull_src and '(dn<.99999?1:0)' in pull_src
+    and '(.6428-dot(n0,' in pull_src and '*3.3223)' in pull_src and 'n0w.w>.5?saturate(' in pull_src and 'exp(max(abs(zn-z)-slack,0)*depthScale)' in pull_src
+    and 'min(1.5*abs(zn-viewDistance(d2)),.35*z)' in pull_src and '(dn<.99999?1:0)' in pull_src
     and 'delta=min(delta,pull*(min(light.rgb,0)-removal));' in pull_src and 'return current.rgb+delta;' in pull_src
     and 'BaselineLighting' not in pull_src)
 checks['contactPull gates: concavity (neighbour in front of the centre tangent plane) and shadow state (centre shadowed or facing away from the drawn source, neighbour shadowed)']=(
@@ -98,7 +98,7 @@ def pull_texel(sc,i,pull_on,mode='abs',slack_on=True,gates=True):
         j=min(max(i+dy,0),HALF-1);kn_,zn,nn=sc.half(j)
         if kn_=='s':continue
         jj=min(max(i+2*dy,0),HALF-1);kk,zz,_=sc.half(jj)
-        slack=min(abs(zn-zz),.35*z) if (slack_on and kk!='s') else 0.
+        slack=min(1.5*abs(zn-zz),.35*z) if (slack_on and kk!='s') else 0.
         c1,b1=sc.raw(j)
         p=normal_gate(n0,nn)*math.exp(-max(abs(zn-z)-slack,0)/tol)
         if gates:

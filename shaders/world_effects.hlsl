@@ -548,10 +548,13 @@ float3 smoothRemoval(float4 current,float2 q,float2 base,float2 size,float z){
 // - Shadow: the centre must be shadowed (the amount of smoothRemoval) or face away from the drawn source
 //   (N.L<=0 ramped to .1; a face turned away can have visibility 1) and the neighbour must be shadowed: a
 //   daytime lit ground / shadowed wall seam stays as it was.
-// A confidence-0 centre normal is used as it is. With no pulling tap the rgb is returned bit-identical.
+// A confidence-0 centre (the contact texel itself: its one-sided normal blends ground and wall,
+// about 55 degrees from the ground, which left the gate at .24 and a raw correction near 0) skips the normal gate
+// (concavity, shadow and depth still apply), and the depth step allowance is 1.5 x the neighbour's step (the step
+// toward the camera shrinks, the wall texel sits up to ~1.4 steps off). With no pulling tap the rgb is returned bit-identical.
 float3 contactPull(float4 current,float2 base,float2 size,float2 q,float z){
     float3 removal=min(current.rgb,0),delta=0;
-    float3 n0=tex2Dlod(NormalBuffer,float4(q,0,0)).xyz;
+    float4 n0w=tex2Dlod(NormalBuffer,float4(q,0,0));float3 n0=n0w.xyz;
     float3 nv=float3(dot(n0,InverseView[0].xyz),dot(n0,InverseView[1].xyz),dot(n0,InverseView[2].xyz));
     float3 p0=viewPositionDistance(depthUV(q),z);
     float gate0=max(saturate((1-current.a*RemovalInfo.z)/GridInfo.z),saturate(1-10*dot(n0,lerp(LegacyDirection.xyz,SunDirection.xyz,SunDirection.w))));
@@ -564,11 +567,11 @@ float3 contactPull(float4 current,float2 base,float2 size,float2 q,float z){
         float dn=normalizedDepth(depthUV(tq));
         float zn=viewDistance(dn);
         float d2=normalizedDepth(depthUV((clamp(base+offset*2,0,size-1)+.5)/size));
-        float slack=d2<.99999?min(abs(zn-viewDistance(d2)),.35*z):0;
+        float slack=d2<.99999?min(1.5*abs(zn-viewDistance(d2)),.35*z):0;
         float4 light=tex2Dlod(LightingBuffer,float4(tq,0,0));
         float concave=saturate(dot(viewPositionDistance(depthUV(tq),zn)-p0,nv)*(4/halfTexel)+1);
         float shadowed=saturate((1-light.a*RemovalInfo.z)/GridInfo.z);
-        float pull=saturate((.6428-dot(n0,tex2Dlod(NormalBuffer,float4(tq,0,0)).xyz))*3.3223)*exp(max(abs(zn-z)-slack,0)*depthScale)*concave*gate0*shadowed*(dn<.99999?1:0);
+        float pull=(n0w.w>.5?saturate((.6428-dot(n0,tex2Dlod(NormalBuffer,float4(tq,0,0)).xyz))*3.3223):1)*exp(max(abs(zn-z)-slack,0)*depthScale)*concave*gate0*shadowed*(dn<.99999?1:0);
         delta=min(delta,pull*(min(light.rgb,0)-removal));
     }
     return current.rgb+delta;

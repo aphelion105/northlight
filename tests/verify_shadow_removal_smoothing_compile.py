@@ -45,7 +45,7 @@ t=shaders['TemporalLight']
 r=shaders['RemovalSmooth']
 checks[f"TemporalLight {t['static_instruction_slots']} slots == 293 (<= 512), {t['temporary_registers']}/32 temporaries (0.3.158: 217, 11)"]=t['static_instruction_slots']==293<=512 and t['temporary_registers']<=32 and t['target']=='ps_3_0'
 checks[f"TemporalLight samplers {t['samplers']} = 0.3.158 [1,8,14,15] + SmoothedLighting s9 (no Scene s0, AO s10, BaselineLighting s12 any more)"]=t['samplers']==[1,8,9,14,15]
-checks[f"RemovalSmooth {r['static_instruction_slots']} slots == 475 (<= 512; 263 before the 0.3.208 contact pull), {r['temporary_registers']}/32 temporaries"]=r['static_instruction_slots']==475<=512 and r['temporary_registers']<=32 and r['target']=='ps_3_0'
+checks[f"RemovalSmooth {r['static_instruction_slots']} slots == 479 (<= 512; 263 before the 0.3.208 contact pull), {r['temporary_registers']}/32 temporaries"]=r['static_instruction_slots']==479<=512 and r['temporary_registers']<=32 and r['target']=='ps_3_0'
 checks[f"RemovalSmooth samplers {r['samplers']} = Scene s0, Depth s1, LightingBuffer s8, AO/bloom s10, BaselineLighting s12, NormalBuffer s14"]=r['samplers']==[0,1,8,10,12,14]
 checks['every .bin matches its manifest hash']=all(hashlib.sha256(fp.src(f'{k}.bin').read_bytes()).hexdigest()==v['sha256'] for k,v in shaders.items())
 for name,ok in checks.items():print(('PASS ' if ok else 'FAIL ')+name)

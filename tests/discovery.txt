@@ -32,6 +32,7 @@ test_concurrent_geometry_build.py
 test_contact_lighting.py
 test_contact_normal_endpoints.py
 test_contact_pull.py
+test_contact_pull_2d.py
 test_device_mirror.py
 test_diagnostics_switch.py
 test_dll_memcmp.py
