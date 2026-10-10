@@ -297,9 +297,9 @@ float4 probeIrradiance(float3 p,float3 n) {
 // The wide sample must also continue the one-pixel surface direction: on a
 // hill the direction bends by half the facet angle at most (accepted), while
 // a sample on another object leaves the local plane (rejected, 1-px fallback).
-float3 wideNeighbour(float2 uv,float2 dir,float pixels,float2 lo,float2 hi,float3 center,float centerZ,float3 nearPos) {
-    float2 q=depthUV(clamp(uv+dir*pixels,lo,hi));
-    float d=normalizedDepth(q);float z=viewDistance(d);
+float3 wideNeighbour(float2 uv,float2 dir,float pixels,float3 center,float centerZ,float3 nearPos) { // the valid texel centre range (.5 px, 1-.5 px) is written out: fewer live registers
+    float2 q=depthUV(clamp(uv+dir*pixels,.5*ImageClip.xy,1-.5*ImageClip.xy));
+    float z=viewDistance(normalizedDepth(q));
     float3 wide=viewPositionDistance(q,z);
     float3 a=nearPos-center,b=wide-center;
     float planar=dot(a,b)*rsqrt(max(dot(a,a)*dot(b,b),1e-12));
@@ -307,9 +307,9 @@ float3 wideNeighbour(float2 uv,float2 dir,float pixels,float2 lo,float2 hi,float
     // direction. Compare the local tangent at that endpoint as well: crossing
     // the corner must not bend a ground normal toward the wall. This retains
     // smoothing across gentle terrain facets without an offset bright ring.
-    float2 inner=clamp(q-dir,lo,hi);
-    float3 end=wide-viewPosition(inner,normalizedDepth(inner));
-    float continuation=dot(a,end)*rsqrt(max(dot(a,a)*dot(end,end),1e-12));
+    float2 inner=clamp(q-dir,.5*ImageClip.xy,1-.5*ImageClip.xy);
+    b=wide-viewPosition(inner,normalizedDepth(inner)); // b now the tangent at the wide end (reused: the pass is at its 32-register limit)
+    float continuation=dot(a,b)*rsqrt(max(dot(a,a)*dot(b,b),1e-12));
     // r76: .95 (about 18 degrees; was .85, 31): a base up to about .9 u high at the 1.5 u
     // baseline passed .85 and tilted the ground normal about 15 degrees, a bright fin of
     // under-removed native light along the screen axis from every rock, cart and post base.
@@ -321,45 +321,57 @@ float3 wideNeighbour(float2 uv,float2 dir,float pixels,float2 lo,float2 hi,float
 // ground, and averaging them tilted the ground normal into the wall's,
 // painting a bright GI/shadow-bias strip along every cliff base. Fall back
 // from the wide pair to the one-pixel pair, then to the one-sided difference
-// on the side closer in depth (the receiver's own surface).
+// on the side that looks like the centre in the scene copy, the closer side in depth when the colours do not tell (the receiver's own surface).
 // A silhouette pixel (no consistent pair even at one pixel) reports
 // confidence 0 in the normal buffer's w: its one-sided normal may belong to
 // the neighbouring surface. Suppress uncertain positive bounce and normal
 // bias there, but retain ambient occlusion: skipping negative GI exposed
 // a bright native-ambient seam where the ground touches a wall.
-float3 tangentAxis(float3 p,float3 a,float3 b,float3 a1,float3 b1,inout float confidence) {
+// c, step: the centre texel and the one-pixel step of this axis; the colour difference of the b1 side minus that of the a1 side (negative: b1 looks more like the centre) picks the one-sided
+// tangent then follows the side that looks like the centre (sand next to a dark face turned away at a wall foot), because the closer
+// side in depth is the wall there for a ground pixel and the ground for a wall pixel alike. The depth rule decides when the two
+// differ by less than .05.
+float3 tangentAxis(float3 p,float3 a,float3 b,float3 a1,float3 b1,float2 c,float2 step,inout float confidence) {
     float3 da=p-a,db=b-p;
     if(dot(da,db)*rsqrt(max(dot(da,da)*dot(db,db),1e-12))>=.85)return b-a;
     da=p-a1;db=b1-p;
     if(dot(da,db)*rsqrt(max(dot(da,da)*dot(db,db),1e-12))>=.85)return b1-a1;
     confidence=0;
-    return abs(b1.z-p.z)<abs(a1.z-p.z)?db:da;
+    // Scene luminance of the centre, b1 and a1 pixels through one fetch site (each tex2Dlod call site costs registers, this pass has 32).
+    float3 lumas=0;
+    [loop]for(int k=0;k<3;++k)lumas+=dot(tex2Dlod(Scene,float4(k==0?c:(k==1?min(c+step,1-.5*ImageClip.xy):max(c-step,.5*ImageClip.xy)),0,0)).rgb,float3(.299,.587,.114))*float3(k==0,k==1,k==2);
+    float2 colourGap=abs(lumas.x-lumas.yz)/(lumas.x+lumas.yz+.02); // the composite tent's relative luminance difference, per side
+    float gap=colourGap.x-colourGap.y;
+    return (abs(gap)>.05?gap<0:abs(b1.z-p.z)<abs(a1.z-p.z))?db:da;
 }
 float4 WorldNormals(float2 uv:TEXCOORD0):COLOR0 {
     float2 c=depthUV(uv);float d=normalizedDepth(c);float z=viewDistance(d);
     if(d>=.99999)return float4(0,0,1,z);
     float3 p=viewPositionDistance(c,z);
-    float2 lo=.5*ImageClip.xy,hi=1-lo;
+    // lo/hi (the valid depth texel centre range) are recomputed where used: the pass is at its 32-register limit.
     // Baseline: 1.5 world units projected to pixels at this distance, 2..40 px.
     float pixels=clamp(1.5*Projection.x*ScreenSize.x*.5/z,2,40);
     float confidence=1;
-    float3 tx=0,ty=0;
+    float3 tx=0; // the x tangent, then cross(x tangent, y tangent): one register triple less (32-register limit)
     // Share the two-axis body to stay within the SM3 static instruction budget.
     [loop]for(int axis=0;axis<2;++axis){
         float2 step=axis==0?float2(ImageClip.x,0):float2(0,ImageClip.y);
-        float2 left=max(c-step,lo),right=min(c+step,hi);
+        float2 left=max(c-step,.5*ImageClip.xy),right=min(c+step,1-.5*ImageClip.xy);
         float3 a1=viewPosition(left,normalizedDepth(left));
         float3 b1=viewPosition(right,normalizedDepth(right));
-        float3 a=wideNeighbour(c,-step,pixels,lo,hi,p,z,a1);
-        float3 b=wideNeighbour(c, step,pixels,lo,hi,p,z,b1);
+        float3 a=a1,b=b1;
+        [loop]for(int side=0;side<2;++side){ // one inlined copy of wideNeighbour for both sides (the pass is at its 32-register limit)
+            float3 wide=wideNeighbour(c,side==0?-step:step,pixels,p,z,side==0?a1:b1);
+            if(side==0)a=wide;else b=wide;
+        }
         // r77: the wide pair only when BOTH wide samples pass. One wide sample on a low object's
         // top against the other side's 1-px neighbour spans the whole secant (a tilt of up to
         // 18 degrees) beside the object; the 1-px pair keeps flat ground flat.
         if(all(a==a1)||all(b==b1)){a=a1;b=b1;}
-        float3 t=tangentAxis(p,a,b,a1,b1,confidence);
-        if(axis==0)tx=t;else ty=t;
+        a=tangentAxis(p,a,b,a1,b1,c,step,confidence); // a reused for the tangent
+        tx=axis==0?a:cross(tx,a);
     }
-    float3 n=cross(tx,ty);n*=rsqrt(max(dot(n,n),1e-12));
+    float3 n=tx*rsqrt(max(dot(tx,tx),1e-12));
     n=dot(n,-p)<0?-n:n;
     float3 world=n.x*InverseView[0].xyz+n.y*InverseView[1].xyz+n.z*InverseView[2].xyz;
     return float4(world,confidence);
@@ -486,8 +498,9 @@ float4 LocalDirect(float2 uv:TEXCOORD0):COLOR0 {
 // angle gate, so at 45 both are half-way (face halo 4.8/255 at 25 u, 8.5 untested; crease +4.3/255
 // over untested); 55 and the vertical faces are rejected. Source-aware variants (reject only taps
 // facing away from the source) changed nothing: the away-facing dune facet is that very case. A
-// silhouette centre (confidence 0: its one-sided normal may be the neighbour's) skips the test (the old weights); silhouette taps of
-// a confident centre are tested with their own normal. Own half-res pass (RemovalSmooth): the extra
+// silhouette centre (confidence 0) is tested like any other: its one-sided normal follows the side that looks like it in the scene
+// copy (WorldNormals), so it no longer takes the neighbouring surface's direction at a wall foot, where skipping the test let the
+// zero removal of the wall taps dilute the contact texel. Own half-res pass (RemovalSmooth): the extra
 // read does not fit TemporalLight's 512 slots; TemporalLight reads its result as SmoothedLighting (s9)
 // and clamps against the raw s8.
 // The composite applies correction*min(transported/baseline,T); as a fraction of the
@@ -518,63 +531,13 @@ float3 smoothRemoval(float4 current,float2 q,float2 base,float2 size,float z){
             float4 light=tex2Dlod(LightingBuffer,float4(tq,0,0));
             float4 tapNormal=tex2Dlod(NormalBuffer,float4(tq,0,0));
             float agree=saturate((dot(centreNormal.xyz,tapNormal.xyz)-.6428)*5.67);
-            float w=exp2(abs(viewDistance(normalizedDepth(depthUV(tq)))-z)*depthScale)*saturate(1-abs(light.a-current.a)*visibilityScale)*(centreNormal.w>.5?agree:1);
+            float w=exp2(abs(viewDistance(normalizedDepth(depthUV(tq)))-z)*depthScale)*saturate(1-abs(light.a-current.a)*visibilityScale)*agree;
             sum+=max(light.rgb*legacyT/removalScale(tex2Dlod(BaselineLighting,float4(tq,0,0)).rgb,tex2Dlod(Scene,float4(tq,0,0)).rgb*tex2Dlod(AmbientOcclusion,float4(tq,0,0)).a,fog,legacyT),-.45)*w;total+=w;
             dir=float2(dir.x*-.7373688-dir.y*.6754903,dir.x*.6754903-dir.y*.7373688);t+=1;
         }
         result=lerp(ratio,sum/total,amount)*scale/legacyT;
     }
     return result;
-}
-// 0.3.208 contact pull: the composite upsamples this buffer with a 4-tap tent weighted only by depth
-// (exp(-delta/max(.15,z*.01))), so at a wall foot or under an actor the ground pixels take in the
-// wall/leg texels (about the ground's view depth, a camera-facing face away from the source: removal ~0)
-// and under-remove the game's painted light there: a thin light line in shadow on bright ground. Every
-// non-sky texel therefore pulls toward MORE removal from its 3x3 neighbours, by normal gate (0 up to
-// 50 degrees, 1 from 70: dune creases of 35-45 degrees and smooth ground stay untouched) x depth
-// agreement x concavity x shadow state:
-// - The pull is on the correction itself, not on correction/baseline: a ground pixel that takes in only wall
-//   texels computes min(transported/oldLight,T)*bounce with the wall's small ambient-only oldLight, which
-//   clamps to T, so only the absolute correction carries the ground's removal across. Only the removal share
-//   (min(c,0)) moves: a positive correction (lamp light, GI) is never pulled away, and a net-positive
-//   neighbour carries no removal to give.
-// - Depth agreement is the composite's own exp(-|dz|/tol) after allowing the neighbour surface's own
-//   texel-to-texel depth step (|z(o)-z(2o)|, at most .35 z): a grazing ground steps by several tolerances per
-//   texel, yet the full-res pixels between the ground texel and the wall texel cross that gap and take the
-//   wall texel. A silhouette (actor against far ground) has no such step and stays unpulled.
-// - Concavity: the neighbour must lie in front of the centre's tangent plane (dot(pN-p0,n0)>0, ramped over
-//   a quarter texel footprint): a wall foot passes from both sides, a roof edge, wall top, outside corner or
-//   convex rock crease (depth-continuous, 60-90 degrees) does not, which would darken them.
-// - Shadow: the centre must be shadowed (the amount of smoothRemoval) or face away from the drawn source
-//   (N.L<=0 ramped to .1; a face turned away can have visibility 1) and the neighbour must be shadowed: a
-//   daytime lit ground / shadowed wall seam stays as it was.
-// A confidence-0 centre (the contact texel itself: its one-sided normal blends ground and wall,
-// about 55 degrees from the ground, which left the gate at .24 and a raw correction near 0) skips the normal gate
-// (concavity, shadow and depth still apply), and the depth step allowance is 1.5 x the neighbour's step (the step
-// toward the camera shrinks, the wall texel sits up to ~1.4 steps off). With no pulling tap the rgb is returned bit-identical.
-float3 contactPull(float4 current,float2 base,float2 size,float2 q,float z){
-    float3 removal=min(current.rgb,0),delta=0;
-    float4 n0w=tex2Dlod(NormalBuffer,float4(q,0,0));float3 n0=n0w.xyz;
-    float3 nv=float3(dot(n0,InverseView[0].xyz),dot(n0,InverseView[1].xyz),dot(n0,InverseView[2].xyz));
-    float3 p0=viewPositionDistance(depthUV(q),z);
-    float gate0=max(saturate((1-current.a*RemovalInfo.z)/GridInfo.z),saturate(1-10*dot(n0,lerp(LegacyDirection.xyz,SunDirection.xyz,SunDirection.w))));
-    float depthScale=-1/max(.15,z*.01);
-    float halfTexel=2/max(abs(Projection.x)*ScreenSize.x,1e-4)*z*2; // a half-res texel footprint at z
-    [loop]for(int i=0;i<8;++i){
-        float a=i+(i>=4?1:0);
-        float2 offset=float2(fmod(a,3)-1,floor(a/3)-1);
-        float2 tq=(clamp(base+offset,0,size-1)+.5)/size;
-        float dn=normalizedDepth(depthUV(tq));
-        float zn=viewDistance(dn);
-        float d2=normalizedDepth(depthUV((clamp(base+offset*2,0,size-1)+.5)/size));
-        float slack=d2<.99999?min(1.5*abs(zn-viewDistance(d2)),.35*z):0;
-        float4 light=tex2Dlod(LightingBuffer,float4(tq,0,0));
-        float concave=saturate(dot(viewPositionDistance(depthUV(tq),zn)-p0,nv)*(4/halfTexel)+1);
-        float shadowed=saturate((1-light.a*RemovalInfo.z)/GridInfo.z);
-        float pull=(n0w.w>.5?saturate((.6428-dot(n0,tex2Dlod(NormalBuffer,float4(tq,0,0)).xyz))*3.3223):1)*exp(max(abs(zn-z)-slack,0)*depthScale)*concave*gate0*shadowed*(dn<.99999?1:0);
-        delta=min(delta,pull*(min(light.rgb,0)-removal));
-    }
-    return current.rgb+delta;
 }
 // Half-res pass before TemporalLight: the lighting buffer with the removal smoothing applied (own
 // pass for the slot budget). Lit, sky and no-source pixels are a bit-identical copy.
@@ -583,11 +546,7 @@ float4 RemovalSmooth(float2 uv:TEXCOORD0):COLOR0 {
     float2 base=floor(uv*half);float2 q=(base+.5)/half;
     float4 current=tex2Dlod(LightingBuffer,float4(q,0,0));
     float d=normalizedDepth(depthUV(q));
-    [branch]if(RemovalInfo.y>0&&d<.99999){
-        float z=viewDistance(d);
-        current.rgb=smoothRemoval(current,q,base,half,z);
-        current.rgb=contactPull(current,base,half,q,z);
-    }
+    [branch]if(RemovalInfo.y>0&&d<.99999)current.rgb=smoothRemoval(current,q,base,half,viewDistance(d));
     return current;
 }
 // Temporal stabilization of the half-resolution lighting buffer (shadow
@@ -1017,9 +976,10 @@ float3 horizonHaze(float3 color,float2 uv,float viewZ,bool sky) {
 }
 // 507 of the 512 ps_3_0 slots (shaders/world-shader-build.json): free slots before adding to this pass.
 float4 WorldComposite(float2 uv:TEXCOORD0):COLOR0 {
-    float4 original=tex2Dlod(Scene,float4(uv,0,0));
+    // Fetches before any flow control use texld (1 slot; tex2Dlod costs 3-4): the textures have one level, 1:1 with the screen, so it reads what tex2Dlod(.,0) does.
+    float4 original=tex2D(Scene,uv);
     float2 centerUV=depthUV(uv);
-    float d=normalizedDepth(centerUV);
+    float d=saturate((tex2D(Depth,centerUV).r-Projection.w)*DepthParams.x);
     float liquid=waterDistance(centerUV,d);float viewZ=liquid>0?liquid:viewDistance(d);
     // Original Terrain VS uses SIGNED view Z, including right-handed cameras.
     // Unknown fog uploads the safe identity (0,1,1,0), giving T=1 exactly.
@@ -1040,25 +1000,28 @@ float4 WorldComposite(float2 uv:TEXCOORD0):COLOR0 {
         float2 dimensions=ScreenSize.zw;
         float2 grid=uv*dimensions-.5,base=floor(grid),fraction=grid-base;
         float center=viewDistance(d);
+        float centreLuma=dot(original.rgb,float3(.299,.587,.114)),depthBits=1.4427/max(.15,center*.01);
         [loop]for(int i=0;i<4;++i){
             float row=floor(i*.5);
             float2 bit=float2(i-row*2,row);
-            float2 q=(clamp(base+bit,0,dimensions-1)+.5)/dimensions;
-            float sampleDepth=normalizedDepth(depthUV(q));
+            float2 q=(clamp(base+bit,0,dimensions-1)+.5)/dimensions,tapUV=depthUV(q);
+            float sampleDepth=normalizedDepth(tapUV);
             float2 blend=lerp(1-fraction,fraction,bit);
             if(relight){
             float delta=abs(viewDistance(sampleDepth)-center);
-            float weight=blend.x*blend.y*exp(-delta/max(.15,center*.01));
+            float tapLuma=dot(tex2Dlod(Scene,float4(tapUV,0,0)).rgb,float3(.299,.587,.114));
+            float guide=16*abs(centreLuma-tapLuma)/(centreLuma+tapLuma+.02),bits=delta*depthBits;
+            float weight=blend.x*blend.y*exp2(-bits-guide);
             float4 light=tex2Dlod(LightingBuffer,float4(q,0,0));
             float3 lit=tex2Dlod(BaselineLighting,float4(q,0,0)).rgb;
             float occlusion=tex2Dlod(AmbientOcclusion,float4(q,0,0)).a;
-            bounce+=light.rgb*weight;shadow+=light.a*weight;baseline+=lit*weight;ao+=occlusion*weight;total+=weight;
-            if(delta<closest){closest=delta;fallbackLight=light;fallbackBase=lit;fallbackAO=occlusion;}
+            bounce=mad(light.rgb,weight,bounce);shadow=mad(light.a,weight,shadow);baseline=mad(lit,weight,baseline);ao=mad(occlusion,weight,ao);total+=weight;
+            if(mad(bits,.25,guide)<closest){closest=mad(bits,.25,guide);fallbackLight=light;fallbackBase=lit;fallbackAO=occlusion;}
             }
-            float fogDelta=abs(receiverDistance(depthUV(q),sampleDepth)-viewZ);
+            float fogDelta=abs(receiverDistance(tapUV,sampleDepth)-viewZ);
             float4 fogSample=tex2Dlod(FogBuffer,float4(q,0,0));
             float fogWeight=blend.x*blend.y*exp(-fogDelta/max(.2,viewZ*.02));
-            fogSum+=fogSample*fogWeight;fogTotal+=fogWeight;
+            fogSum=mad(fogSample,fogWeight,fogSum);fogTotal+=fogWeight;
             if(fogDelta<fogClosest){fogClosest=fogDelta;fogFallback=fogSample;}
         }
     float4 fog=fogTotal>.00001?fogSum*(1/fogTotal):fogFallback;
@@ -1067,7 +1030,7 @@ float4 WorldComposite(float2 uv:TEXCOORD0):COLOR0 {
     // saturated. AO follows this pass's depth-weighted tent (1 on sky and water); bloom is the
     // hardware-bilinear half-res value, like the old pass's unfiltered glow.
     ao=relight?(total<.02?fallbackAO:ao/total):1;
-    float3 bloom=tex2Dlod(AmbientOcclusion,float4(uv,0,0)).rgb;
+    float3 bloom=tex2D(AmbientOcclusion,uv).rgb;
     original.rgb=saturate(mad(bloom,1-saturate(original.rgb*ao),original.rgb*ao));
     float3 color=original.rgb;
     // Terrain fog is only an estimate on interior/blended materials. It cannot

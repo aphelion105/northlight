@@ -42,14 +42,13 @@ old_lines=['    TemporalOutput o;float2 half=ScreenSize.zw;','    float2 base=fl
     '    o.light=current;o.depth=float4(z,0,0,1);','    if(TemporalInfo.x<=0||d>=.99999)return o;','    o.light=lerp(current,float4(clamp(history.rgb,lo.rgb-reach,hi.rgb+reach),loose),TemporalInfo.x);'] # 0.3.170 final line (test_shadow_shimmer)
 # 0.3.185: the guarded call moved to its own half-res pass (RemovalSmooth); TemporalLight reads the result (s9) for current and
 # keeps the 3x3 cross neighbourhood clamp on the RAW LightingBuffer (s8), exactly as before.
-# 0.3.208: the guarded block also runs contactPull (test_contact_pull) after smoothRemoval.
-guard='    [branch]if(RemovalInfo.y>0&&d<.99999){\n        float z=viewDistance(d);\n        current.rgb=smoothRemoval(current,q,base,half,z);\n        current.rgb=contactPull(current,base,half,q,z);\n    }\n'
+guard='    [branch]if(RemovalInfo.y>0&&d<.99999)current.rgb=smoothRemoval(current,q,base,half,viewDistance(d));\n'
 removal=hlsl[hlsl.index('float4 RemovalSmooth('):hlsl.index('// Temporal stabilization of the half-resolution')]
 raw_clamp='        float4 s=tex2Dlod(LightingBuffer,float4((clamp(base+offset,0,half-1)+.5)/half,0,0));\n'
 checks['TemporalLight: 0.3.158 lines intact, current from SmoothedLighting (s9), no smoothRemoval call, raw s8 neighbourhood']=(all(temporal.count(l+'\n')==1 for l in old_lines)
     and 'smoothRemoval' not in temporal and temporal.count('tex2Dlod(SmoothedLighting,')==1 and temporal.count(raw_clamp)==1 and temporal.count('tex2Dlod(LightingBuffer,')==1
     and 'sampler2D SmoothedLighting : register(s9);' in hlsl and hlsl.count('SmoothedLighting')==3)
-checks['RemovalSmooth: half-res copy of LightingBuffer, one guarded smoothRemoval call (then contactPull), alpha untouched']=(removal.count(guard)==1 and hlsl.count('smoothRemoval(')==2
+checks['RemovalSmooth: half-res copy of LightingBuffer, one guarded smoothRemoval call, alpha untouched']=(removal.count(guard)==1 and hlsl.count('smoothRemoval(')==2
     and removal.count('tex2Dlod(LightingBuffer,float4(q,0,0))')==1 and removal.rstrip().endswith('return current;\n}'))
 checks['RemovalInfo aliases c30 (WaterInfo.x stays the water flag)']=('float4 WaterInfo : register(c30);' in hlsl and 'float4 RemovalInfo : register(c30);' in hlsl
     and hlsl.count('RemovalInfo.x')==0)
@@ -89,15 +88,14 @@ for needle in ('clamp(RemovalInfo.w/z,3,16)','-1.442695/max(.25,z*.03)','2*Remov
                # 0.3.185 normal weight (cos 50 = .6428, 1/(cos 30 - cos 50) = 4.48) and the centre/tap normal reads
                'float4 centreNormal=tex2Dlod(NormalBuffer,float4(q,0,0));','float4 tapNormal=tex2Dlod(NormalBuffer,float4(tq,0,0));',
                'float agree=saturate((dot(centreNormal.xyz,tapNormal.xyz)-.6428)*5.67);',
-               '*saturate(1-abs(light.a-current.a)*visibilityScale)*(centreNormal.w>.5?agree:1);',
+               '*saturate(1-abs(light.a-current.a)*visibilityScale)*agree;',
                'dir=float2(dir.x*-.7373688-dir.y*.6754903,dir.x*.6754903-dir.y*.7373688);t+=1;',
                'result=lerp(ratio,sum/total,amount)*scale/legacyT;',
                # the composite terms mirrored above
                'float legacyT=mad(LegacyFog.w,saturate(pow(max(mad(viewZ*Projection.z,LegacyFog.x,LegacyFog.y),0),LegacyFog.z))-1,1);',
                'float3 fogPart=min((1-legacyT)*LegacyFogColor.rgb,original.rgb);','float3 albedoT=min(transported/oldLight,legacyT);',
                'color=max(color,mad(-.45,transported,original.rgb));'):
-    # 0.3.208: contactPull's gate0 reuses the amount expression (twice in all, once in smoothRemoval)
-    assert hlsl.count(needle)==(2 if needle.startswith('saturate((1-current.a') else 1),needle
+    assert hlsl.count(needle)==1,needle
 
 # ---- emulation of smoothRemoval (float64; the shader runs fp32 on fp16 buffers) ----
 def legacy_t(z,fog):
@@ -113,10 +111,9 @@ for _ in range(20000):
 GATE=(.6428,5.67) # cos 50 and 1/(cos 35 - cos 50): the shader's saturate((dot-.6428)*5.67)
 def agreement(c,t):
     """RemovalSmooth's per-tap normal weight; c,t = (nx,ny,nz,confidence): saturate((dot-cos50)*5.67), 1 up to 35 degrees, 0 from 50.
-    A silhouette centre (confidence 0) skips the test (the old weights; capture: its one-sided normals are arbitrary, and ignoring confidence
-    altogether gives 16 pairs, 9/255). Silhouette taps of a confident centre are tested with their own normal: rejecting them outright
-    steepens a grazing 10 degree crease (its crease texel is confidence 0: 7.6 -> 10/255 at z 300), skipping the test leaks the rim of an actor."""
-    if c[3]<=.5:return 1.
+    Every centre is tested, silhouettes (confidence 0) too: since 0.3.208 their one-sided normal follows the side whose scene colour looks like theirs
+    (WorldNormals), so it no longer takes the neighbour's direction at a wall foot, and the removal of the wall taps no longer dilutes the contact texel.
+    (Before, a silhouette centre skipped the test: its one-sided normal could be the neighbour's.)"""
     return min(max((c[0]*t[0]+c[1]*t[1]+c[2]*t[2]-GATE[0])*GATE[1],0),1)
 def smooth(light,base,dist,scene,x,y,size,on,inv,pixel,fog=((0,1,1,0),1),fogcolor=(0,0,0),strength=.85,ao=lambda x,y:1.,normal=None):
     """light/base/scene(x,y) -> rgba correction / rgb baseline / rgb scene at a half-res texel; dist -> view distance;

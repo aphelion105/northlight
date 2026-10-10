@@ -37,7 +37,7 @@ PRE_LIFT_COMPOSITE_SLOTS = 467
 # same instruction, so 467 (by inspection of WorldComposite.bin.asm). SourceVisibilityPS: +8 ring taps,
 # estimated 440-460 but not knowable without the compiler.
 # 0.3.174: WorldComposite folds the AO/bloom composite (s10 AO in the tent loop, bloom, original'): 498.
-LIFT_COMPOSITE_SLOTS = 507  # NightBrightness ambient: was 505 (0.3.202 rain mask: was 498)
+LIFT_COMPOSITE_SLOTS = 509  # NightBrightness ambient: was 505 (0.3.202 rain mask: was 498)
 SOURCE_VISIBILITY_SLOTS = 492  # compiled at integration (was 281 before the wrap ring)
 BEFORE = {
     'WorldNormals': '1e8d22d66a1022bad26c930dd719398eba02c22179084a275f4fe52bf54c1db5',
@@ -396,7 +396,7 @@ def main():
                 assert info['sha256'] == BEFORE[name], name
                 unchanged.append(name)
         assert sorted(unchanged) == sorted(k for k in BEFORE if k not in ('TemporalLight', 'SourceVisibilityPS', 'WorldLighting', 'LocalDirect', 'WorldNormals', 'WorldGI', 'WorldFog', 'LocalFog'))
-        assert manifest['shaders']['WorldNormals']['static_instruction_slots'] == 434  # r77: both wide samples or neither
+        assert manifest['shaders']['WorldNormals']['static_instruction_slots'] == 483  # r77: both wide samples or neither; 0.3.208: colour-picked one-sided side (was 434)
         assert manifest['shaders']['WorldFog']['static_instruction_slots'] == 512  # 0.3.198 (rain): the same 512 slots (the literal .0017 became c59.w)
         assert SOURCE_VISIBILITY_SLOTS is not None, 'TODO(lead): pin SOURCE_VISIBILITY_SLOTS to the compiled count (%d)' % manifest['shaders']['SourceVisibilityPS']['static_instruction_slots']
         assert manifest['shaders']['SourceVisibilityPS']['static_instruction_slots'] == SOURCE_VISIBILITY_SLOTS <= 512

@@ -165,9 +165,9 @@ checks['diagnostic capture: the folded scene dump is labelled pre-AO'] = 'foldSc
 composite = world[world.index('float4 WorldComposite('):]
 checks['WorldComposite: AO in the tent (same weight, nearest fallback), bloom bilinear, original\' before fogPart'] = (
     'sampler2D AmbientOcclusion : register(s10);' in world
-    and 'ao+=occlusion*weight;' in composite and 'fallbackAO=occlusion;' in composite
+    and 'ao=mad(occlusion,weight,ao);' in composite and 'fallbackAO=occlusion;' in composite
     and 'ao=relight?(total<.02?fallbackAO:ao/total):1;' in composite
-    and 'float3 bloom=tex2Dlod(AmbientOcclusion,float4(uv,0,0)).rgb;' in composite
+    and 'float3 bloom=tex2D(AmbientOcclusion,uv).rgb;' in composite
     and composite.index("original.rgb=saturate(mad(bloom,1-saturate(original.rgb*ao),original.rgb*ao));")
     < composite.index('float3 color=original.rgb;') < composite.index('float3 fogPart=min((1-legacyT)*LegacyFogColor.rgb,original.rgb);')
     < composite.index('if(relight){\n        // Thin receivers'))
