@@ -21,6 +21,11 @@ row_major float4x4 FarMatrix:register(c16);
 row_major float4x4 MoonNearMatrix:register(c20);
 row_major float4x4 MoonFarMatrix:register(c24);
 float4 ShadowInfo:register(c28); // sun valid,moon valid,texel,unused
+// 0.3.208 (task 29): the per-source actor shadow maps (moving casters near the player, same depth span as the cascades).
+sampler2D ActorShadow:register(s8);
+sampler2D MoonActorShadow:register(s9);
+// Their constants are WaterComposite's uniform parameters (ActorMatrix c29..c32, MoonActorMatrix c33..c36, ActorShadowInfo c37:
+// sun actor map valid,moon valid,texel,unused): as globals they would move WaterReflection's literal constants (def c29..).
 float2 centerUV(float2 uv){float2 dimensions=floor(1/ImageClip.xy+.5);return (clamp(floor(uv*dimensions),0,dimensions-1)+.5)*ImageClip.xy;}
 float sceneZ(float2 uv){float d=saturate((tex2Dlod(Depth,float4(uv,0,0)).r-Projection.w)*WaterInfo.x);return ImageClip.z*ImageClip.w/max(ImageClip.w-d*(ImageClip.w-ImageClip.z),.00001);}
 float3 viewPosition(float2 uv,float z){float2 xy=((uv-.5*ImageClip.xy)*float2(2,-2)+float2(-1,1))/Projection.xy;return float3(xy,Projection.z)*z;}
@@ -41,15 +46,41 @@ float3 waveNormal(float3 p,float footprintSquared){
     return normalize(float3(-slope,1));
 }
 float3 affine(float3 p,row_major float4x4 m){return p.x*m[0].xyz+p.y*m[1].xyz+p.z*m[2].xyz+m[3].xyz;}
-float shadow(float3 p,bool moon){
-    if((moon?ShadowInfo.y:ShadowInfo.x)<.5)return 1;
-    float3 n=moon?affine(p,MoonNearMatrix):affine(p,NearMatrix);float3 f=moon?affine(p,MoonFarMatrix):affine(p,FarMatrix);
-    bool close=max(abs(n.x),abs(n.y))<.95;float3 l=close?n:f;
-    float2 uv=float2(l.x*.5+.5,.5-l.y*.5)+.5*ShadowInfo.z;
-    if(any(uv<.001)||any(uv>.999)||l.z<0||l.z>1)return 1;
-    float visibility=0;
-    [loop]for(int i=0;i<4;++i){float2 o=float2(frac(i*.5)*2-.5,floor(i*.5)-.5)*ShadowInfo.z;float d=moon?(close?tex2Dlod(MoonShadowNear,float4(uv+o,0,0)).r:tex2Dlod(MoonShadowFar,float4(uv+o,0,0)).r):(close?tex2Dlod(ShadowNear,float4(uv+o,0,0)).r:tex2Dlod(ShadowFar,float4(uv+o,0,0)).r);visibility+=(d>=l.z-.00012)? .25:0;}
-    return visibility;
+float shadowDepth(float4 t,bool actor,bool moon,bool far){
+    // One fetch per tap from the map the flags name (SM3 slot budget).
+    float d;
+    if(actor){if(moon)d=tex2Dlod(MoonActorShadow,t).r;else d=tex2Dlod(ActorShadow,t).r;}
+    else if(moon){if(far)d=tex2Dlod(MoonShadowFar,t).r;else d=tex2Dlod(MoonShadowNear,t).r;}
+    else{if(far)d=tex2Dlod(ShadowFar,t).r;else d=tex2Dlod(ShadowNear,t).r;}
+    return d;
+}
+float3 selectAffine(float3 p,bool moon,row_major float4x4 sun,row_major float4x4 moonMatrix){
+    return p.x*(moon?moonMatrix[0].xyz:sun[0].xyz)+p.y*(moon?moonMatrix[1].xyz:sun[1].xyz)+p.z*(moon?moonMatrix[2].xyz:sun[2].xyz)+(moon?moonMatrix[3].xyz:sun[3].xyz);
+}
+float2 shadow(float3 p,row_major float4x4 ActorMatrix,row_major float4x4 MoonActorMatrix,float4 ActorShadowInfo){
+    // Sun (x) and moon (y) visibility. 0.3.208 (task 29): per source the cascades, then the actor map (the near cascade skips
+    // the casters it holds); the darker wins. One loop over the four lookups keeps a single copy of the code (SM3 slot budget);
+    // float counters and selects instead of integer compares for the same reason.
+    float2 result=1;
+    [loop]for(float k=0;k<4;++k){
+        bool moon=k>=2,actor=frac(k*.5)>0;
+        float valid=actor?(moon?ActorShadowInfo.y:ActorShadowInfo.x):(moon?ShadowInfo.y:ShadowInfo.x);
+        if(valid>.5){
+            float3 l;bool far=false;
+            if(actor)l=selectAffine(p,moon,ActorMatrix,MoonActorMatrix);
+            else{l=selectAffine(p,moon,NearMatrix,MoonNearMatrix);
+                if(max(abs(l.x),abs(l.y))>=.95){l=selectAffine(p,moon,FarMatrix,MoonFarMatrix);far=true;}}
+            float texel=actor?ActorShadowInfo.z:ShadowInfo.z;
+            // The taps sit at uv+(0..1 texel): the texel centres around uv+.5 texel (raster alignment), which must lie in [.001,.999]; 0<=z<=1.
+            float2 uv=l.xy*float2(.5,-.5)+.5;
+            if(max(max(abs(l.x+texel),abs(l.y-texel)),abs(l.z*2-1)*.998)<=.998){
+                float threshold=l.z-.00012,visibility=0;
+                [loop]for(float i=0;i<4;++i){float h=i*.5,f=frac(h);visibility+=step(threshold,shadowDepth(float4(uv+float2(f*2,h-f)*texel,0,0),actor,moon,far));}
+                float other=moon?1:0;result=min(result,saturate(visibility*.25+float2(other,1-other))); // the other source's channel saturates to 1
+            }
+        }
+    }
+    return result;
 }
 float4 WaterReflection(float2 inputUV:TEXCOORD0):COLOR0{
     float2 uv=centerUV(inputUV);float4 mask=tex2Dlod(Mask,float4(uv,0,0));float floorZ=sceneZ(uv);
@@ -89,7 +120,7 @@ float4 WaterReflection(float2 inputUV:TEXCOORD0):COLOR0{
     }
     return float4(result,confidence);
 }
-float4 WaterComposite(float2 inputUV:TEXCOORD0):COLOR0{
+float4 WaterComposite(float2 inputUV:TEXCOORD0,uniform row_major float4x4 ActorMatrix:register(c29),uniform row_major float4x4 MoonActorMatrix:register(c33),uniform float4 ActorShadowInfo:register(c37)):COLOR0{
     float2 uv=centerUV(inputUV);float4 original=tex2Dlod(Scene,float4(uv,0,0));float4 mask=tex2Dlod(Mask,float4(uv,0,0));float floorZ=sceneZ(uv);
     float3 p=toWorld(viewPosition(uv,max(mask.r,ImageClip.z)));
     float3 dx=ddx(p),dy=ddy(p);float footprintSquared=max(dot(dx,dx),dot(dy,dy));
@@ -99,8 +130,9 @@ float4 WaterComposite(float2 inputUV:TEXCOORD0):COLOR0{
     float coverage=saturate(mask.g*4);
     float3 normal=waveNormal(p,footprintSquared);float3 incident=normalize(p-InverseView[3].xyz);if(dot(normal,-incident)<0)normal=-normal;
     float3 reflected=reflect(incident,normal);float fresnel=.02037+.97963*pow(1-saturate(dot(-incident,normal)),5);
-    float3 celestial=SunColor.rgb*pow(saturate(dot(reflected,SunDirection.xyz)),384)*6*shadow(p,false);
-    celestial+=MoonColor.rgb*pow(saturate(dot(reflected,MoonDirection.xyz)),512)*4*shadow(p,true);
+    float2 visibility=shadow(p,ActorMatrix,MoonActorMatrix,ActorShadowInfo);
+    float3 celestial=SunColor.rgb*pow(saturate(dot(reflected,SunDirection.xyz)),384)*6*visibility.x;
+    celestial+=MoonColor.rgb*pow(saturate(dot(reflected,MoonDirection.xyz)),512)*4*visibility.y;
     float3 color=lerp(original.rgb,reflection.rgb+celestial*(1-reflection.a),saturate(fresnel*WaterInfo.z)*coverage);
     // The opaque receiver must actually be below the liquid plane. Vertical gap
     // uses reconstructed world coordinates, not view distance (wrong at grazing views).

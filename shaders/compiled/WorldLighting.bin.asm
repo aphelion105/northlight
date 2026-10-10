@@ -12,6 +12,7 @@ def c76 = 9.96999979e-01, 9.96999979e-01, 1.07519999e+01, 5.00000000e+00
 def c77 = 4.00000000e+00, -5.00000000e-01, -5.00000000e-01, -2.50000000e+01
 def c78 = 8.33333397e+00, 9.99999975e-05, 0.00000000e+00, 0.00000000e+00
 defi i0 = 255, 0, 0, 0
+dcl_2d s12
 dcl_2d s1
 dcl_2d s14
 dcl_2d s3
@@ -195,9 +196,9 @@ if_ne r1.w, -r1.w
                 add r13.w, r13.w, c69.z
                 mul r15.z, r14.z, c69.z
                 add r15.z, -r15.z, c69.z
-                mov r10.x, r13.w
-                mov r10.y, r15.z
-                mov r15.zw, r10.xxxy
+                mov r12.y, r13.w
+                mov r12.z, r15.z
+                mov r15.zw, r12.xxyz
                 mul r13.w, c2.w, c69.z
                 add r15.zw, r15.xxzw, r13.w
                 add r16.xy, r15.zwzz, c75.yzyy
@@ -214,9 +215,9 @@ if_ne r1.w, -r1.w
                 cmp r16.x, r16.x, c68.x, c70.w
                 add r16.x, -r16.x, c70.w
                 max r13.w, r13.w, r16.x
-                mov r16.x, r10.z
+                mov r16.x, r13.y
                 cmp r16.x, -r13.w, r16.x, c70.w
-                mov r10.z, r16.x
+                mov r13.y, r16.x
                 add r13.w, -r13.w, c70.w
                 if_ne r13.w, -r13.w
                     cmp r13.w, -r13.z, c72.z, c70.w
@@ -224,15 +225,15 @@ if_ne r1.w, -r1.w
                     add r13.w, r14.w, -r13.w
                     cmp r16.x, -r13.z, c76.z, c75.w
                     mul r16.x, r16.x, c35.x
-                    rcp r10.w, c2.w
-                    mul r16.x, r16.x, r10.w
+                    rcp r12.x, c2.w
+                    mul r16.x, r16.x, r12.x
                     max r15.xy, r15.xyxx, -r16.x
                     min r15.xy, r15.xyxx, r16.x
                     cmp r16.x, -r13.z, c77.x, c76.w
                     mul r16.y, r16.x, c69.z
-                    rcp r11.x, c2.w
-                    rcp r11.y, c2.w
-                    mul r16.zw, r15.xxzw, r11.xxxy
+                    rcp r11.z, c2.w
+                    rcp r11.w, c2.w
+                    mul r16.zw, r15.xxzw, r11.xxzw
                     add r16.zw, r16.xxzw, c77.xxyz
                     cmp r17.x, -r13.z, c68.x, c69.z
                     add r17.xy, r16.zwzz, r17.x
@@ -240,11 +241,11 @@ if_ne r1.w, -r1.w
                     add r17.xy, r17.xyxx, -r18.xyzw
                     add r16.zw, r16.xxzw, -r17.xxxy
                     cmp r17.z, -r13.z, c69.x, c72.w
-                    mov r11.z, c68.x
-                    mov r11.w, c68.x
-                    mov r12.x, c68.x
+                    mov r11.y, c68.x
+                    mov r11.x, c68.x
+                    mov r13.x, c68.x
                     rep i0.xyzw
-                        mov r17.w, r12.x
+                        mov r17.w, r13.x
                         add r17.w, r17.w, c77.w
                         cmp r17.w, r17.w, c68.x, c70.w
                         add r17.w, -r17.w, c70.w
@@ -252,7 +253,7 @@ if_ne r1.w, -r1.w
                             break
                         else
                         endif
-                        mov r17.w, r12.x
+                        mov r17.w, r13.x
                         mul r18.x, r16.x, r16.x
                         add r17.w, r17.w, -r18.x
                         cmp r17.w, r17.w, c68.x, c70.w
@@ -261,18 +262,18 @@ if_ne r1.w, -r1.w
                             break
                         else
                         endif
-                        mov r17.w, r12.x
+                        mov r17.w, r13.x
                         add r17.w, r17.w, c69.z
-                        rcp r12.y, r16.x
-                        mul r17.w, r17.w, r12.y
+                        rcp r8.w, r16.x
+                        mul r17.w, r17.w, r8.w
                         frc r18.xyzw, r17.w
                         add r17.w, r17.w, -r18.x
-                        mov r18.x, r12.x
+                        mov r18.x, r13.x
                         mul r18.y, r17.w, r16.x
                         add r18.x, r18.x, -r18.y
-                        mov r12.z, r18.x
-                        mov r12.w, r17.w
-                        mov r18.xy, r12.zwzz
+                        mov r8.x, r18.x
+                        mov r8.y, r17.w
+                        mov r18.xy, r8.xyxx
                         add r18.xy, r18.xyxx, r17.z
                         add r18.zw, r17.xxxy, r18.xxxy
                         add r18.zw, r18.xxzw, c69.xxzw
@@ -285,60 +286,60 @@ if_ne r1.w, -r1.w
                         add r18.xy, r18.zwzz, -r15.zwzz
                         dp2add r18.x, r15.xyxx, r18.xyxx, c68.x
                         add r18.x, r13.w, r18.x
-                        mov r13.x, c68.x
+                        mov r7.w, c68.x
                         if_ne r13.z, -r13.z
                             mov r9.xyzw, c68.xyzw
                             mov r9.xy, r18.zwzz
                             mov r19.xyzw, r9.xyzw
                             texldl r19.xyzw, r19.xyzw, s2
-                            mov r7.w, r19.x
-                            mov r13.x, c70.w
-                        else
-                        endif
-                        mov r18.y, r13.x
-                        add r18.y, -r18.y, c70.w
-                        if_ne r18.y, -r18.y
-                            mov r8.xyzw, c68.xyzw
-                            mov r8.xy, r18.zwzz
-                            mov r19.xyzw, r8.xyzw
-                            texldl r19.xyzw, r19.xyzw, s3
-                            mov r7.w, r19.x
-                            mov r13.x, c70.w
+                            mov r8.z, r19.x
+                            mov r7.w, c70.w
                         else
                         endif
                         mov r18.y, r7.w
+                        add r18.y, -r18.y, c70.w
+                        if_ne r18.y, -r18.y
+                            mov r10.xyzw, c68.xyzw
+                            mov r10.xy, r18.zwzz
+                            mov r19.xyzw, r10.xyzw
+                            texldl r19.xyzw, r19.xyzw, s3
+                            mov r8.z, r19.x
+                            mov r7.w, c70.w
+                        else
+                        endif
+                        mov r18.y, r8.z
                         add r18.x, r18.y, -r18.x
                         cmp r18.x, r18.x, c68.x, c70.w
                         add r18.x, -r18.x, c70.w
                         cmp r18.x, -r18.x, c68.x, c70.w
                         mul r18.x, r18.x, r17.w
-                        mov r18.y, r11.z
+                        mov r18.y, r11.y
                         add r18.x, r18.y, r18.x
-                        mov r11.z, r18.x
-                        mov r18.x, r11.w
+                        mov r11.y, r18.x
+                        mov r18.x, r11.x
                         add r17.w, r18.x, r17.w
-                        mov r11.w, r17.w
-                        mov r17.w, r12.x
+                        mov r11.x, r17.w
+                        mov r17.w, r13.x
                         add r17.w, r17.w, c70.w
-                        mov r12.x, r17.w
+                        mov r13.x, r17.w
                     endrep
                     abs r13.zw, r14.xxyz
                     max r13.z, r13.z, r13.w
                     add r13.z, -r13.z, c70.w
                     mul r13.z, r13.z, c78.x
                     mov_sat r13.z, r13.z
-                    mov r13.w, r11.z
-                    mov r14.y, r11.w
+                    mov r13.w, r11.y
+                    mov r14.y, r11.x
                     max r14.y, r14.y, c78.y
-                    rcp r13.y, r14.y
-                    mul r13.w, r13.w, r13.y
+                    rcp r12.w, r14.y
+                    mul r13.w, r13.w, r12.w
                     add r13.w, r13.w, c69.x
                     mul r13.z, r13.z, r13.w
                     add r13.z, r13.z, c70.w
-                    mov r10.z, r13.z
+                    mov r13.y, r13.z
                 else
                 endif
-                mov r13.z, r10.z
+                mov r13.z, r13.y
                 mul r13.z, r13.z, r14.x
                 mov r13.w, r2.w
                 add r13.z, r13.w, r13.z
@@ -350,6 +351,14 @@ if_ne r1.w, -r1.w
             mov r4.z, r13.z
         endrep
         mov r2.x, r2.w
+        mov r1.w, r2.x
+        mov r4.xyzw, c68.xyzw
+        mov r4.xy, v0.xyxx
+        texldl r4.xyzw, r4.xyzw, s12
+        add r2.y, -c16.w, c69.z
+        cmp r2.y, r2.y, c68.x, c70.w
+        cmp r2.y, -r2.y, r4.x, r4.y
+        min r2.x, r2.x, r2.y
         mov r1.w, r2.x
     else
     endif
