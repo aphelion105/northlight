@@ -20,7 +20,9 @@ Every effect below is on by default and is drawn on top of the game's own frame.
 - **Shadows.** Sun and moon shadows in two cascades (about 48 and 192 yards around the player), with
   a cached static layer for terrain, buildings, trees and props, and distant terrain shadows out to
   928 yards (up to 4096 in the zones listed in `shadow-range-profiles.ini`). Characters, creatures, mounts,
-  doors, ships and other moving objects cast shadows too. The game's baked terrain shadows are
+  doors, ships and other moving objects cast shadows too; near the player they get their own finer shadow
+  map and a soft filter that is sharp at the feet and softer further from the caster, so character and mount
+  shadows are crisp and their edges no longer shimmer while the model animates (`ActorShadowDetail`, 0.3.209). The game's baked terrain shadows are
   replaced, its round blob shadows under characters are kept, fainter (`BlobShadowStrength`), and where the sun is blocked the
   game's painted sunlight is removed smoothly, without facet steps, and the thin light line it left on the ground along wall feet and under characters in shadow is mostly gone: the lighting upsample now follows the scene colour there (0.3.208).
 - **Global illumination.** Sky light and bounced light from probes ray traced against the world
