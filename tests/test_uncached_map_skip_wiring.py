@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # northlight-test:
-"""0.3.208 (issue #40): maps without world-cache tiles (dungeons, raids, battlegrounds) skip geometry
+"""0.3.210 (issue #40): maps without world-cache tiles (dungeons, raids, battlegrounds) skip geometry
 builds. The cache covers only the continents; the builder used to run a full region build attempt
 (memory sampling, admission, nine fopen probes) and publish a fresh error snapshot for every GI request.
 Now the map is probed once per entry (FindFirstFileA on world-cache/<map>/*.fg3), the error is published
