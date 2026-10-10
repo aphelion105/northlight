@@ -39,7 +39,7 @@ checks={
  'upload() uses the helper before staging':upload.count('releaseOrphanedPending("upload");')==1 and upload.index('releaseOrphanedPending("upload");')<upload.index('if(uploaded.lock()!=active->bvh&&!pendingMesh'),
  'render(): release before the ready() gate':render.count('releaseOrphanedPending("render");')==1 and render.count(gate)==1 and render.index('releaseOrphanedPending("render");')<render.index(gate),
  'updateWorldContext(): release right after the out-of-range active.reset()':
-  context.count(reset)==1 and context.count('releaseOrphanedPending("range");')==1 and context.index(reset)<context.index('releaseOrphanedPending("range");')<context.index('DWORD now=GetTickCount();'),
+  context.count(reset)==1 and context.count('releaseOrphanedPending("range");')==1 and context.index(reset)<context.index('releaseOrphanedPending("range");')<context.index('logf("WORLD camera tick='), # 0.3.200 added an earlier GetTickCount() local; anchor on the camera line
  '0.3.169 retire on the hard limit or a map change, then the release rule (A2, A5)':
   context.count(retire)==1 and context.index(retire)<context.index(reset)<context.index('releaseOrphanedPending("range");')
   and 'if(retired){retirementBacklog.retireOrFree(reaper,active,snapshotRetireBytes(*active));active.reset();}' in context
