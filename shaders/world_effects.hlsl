@@ -455,16 +455,18 @@ float4 ActorShadow(float2 uv:TEXCOORD0,uniform row_major float4x4 ActorMatrix:re
     float limit=57.3*ActorInfo.z*ShadowRange.x;gradient=clamp(gradient,-limit,limit);
     float texelWorld=2*ActorInfo.y*ActorInfo.z;
     float2 pixel=mapUV/ActorInfo.y-.5;
-    // Blocker search, 25 taps: the 3x3 texels around the receiver (every texel the narrowest penumbra reads, so a contact edge
-    // is never missed) and a 4x4 grid out to the widest penumbra (~3 texels apart, so thin wing tips are found too). No
-    // blocker: lit (most pixels stop here).
+    // Blocker search, 41 taps: the 5x5 texels around the receiver and a 4x4 grid out to the widest penumbra (~3 texels apart,
+    // so thin wing tips are found too). No blocker: lit (most pixels stop here). The 5x5 reaches 2.5 texels from the receiver
+    // (|nearest-pixel|<=.5, plus 2), past the narrowest penumbra's tent (ActorPenumbraMin, ~2.13 texels): every texel the
+    // narrowest filter weighs is searched, so the early out never cuts a contact edge (a 3x3 reached only 1.5 texels and left
+    // a hard lit step 1.5..2.13 texels out that moved with the animation).
     float stride=ActorPenumbraMax/texelWorld*(2/3.);
     float2 nearest=floor(pixel+.5);
     float blockers=0,count=0;
-    [loop]for(int i=0;i<25;++i){
+    [loop]for(int i=0;i<41;++i){
         float2 tap;
-        if(i<9){float row=floor((i+.5)/3);tap=nearest+float2(i-row*3,row)-1;}
-        else{float j=i-9,row=floor((j+.5)/4);tap=floor(pixel+(float2(j-row*4,row)-1.5)*stride+.5);}
+        if(i<25){float row=floor((i+.5)/5);tap=nearest+float2(i-row*5,row)-2;}
+        else{float j=i-25,row=floor((j+.5)/4);tap=floor(pixel+(float2(j-row*4,row)-1.5)*stride+.5);}
         float2 tapUV=(tap+.5)*ActorInfo.y;
         float z=tex2Dlod(ActorMap,float4(tapUV,0,0)).r;
         if(z<receiver+dot(gradient,tapUV-mapUV)){blockers+=z;++count;}

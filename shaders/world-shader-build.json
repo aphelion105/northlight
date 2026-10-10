@@ -1,5 +1,5 @@
 {
-  "source_sha256": "76fc95bced6baf53b9840bd14210e5a9f582eee9f69154bf99237d82e19a25c0",
+  "source_sha256": "a1f10cb955c1d97dc7ec68797a51a1ea7bf011b79097fe5b4406adaf1659f013",
   "compiler": "Wine d3dcompiler_47 D3DCompile",
   "game_launched": false,
   "shaders": {
@@ -71,8 +71,8 @@
     },
     "ActorShadow": {
       "target": "ps_3_0",
-      "bytes": 6256,
-      "sha256": "39216f0645344af070fc39d5ce345438564b51f4cf2ffafc8da7375729972fac",
+      "bytes": 6280,
+      "sha256": "37247043d74cbbc40551b5223fd46dab473e2f61bd9f0fc52bfa4e9225aa4938",
       "static_instruction_slots": 387,
       "temporary_registers": 10,
       "samplers": [

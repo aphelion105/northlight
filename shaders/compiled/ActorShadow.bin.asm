@@ -7,10 +7,11 @@ def c76 = 1.20000001e-02, 6.99999975e-04, 3.00000003e-03, 3.99999991e-02
 def c77 = 1.00000000e+00, 1.00000000e+00, 1.00000000e+00, 1.00000000e+00
 def c78 = 2.00000000e+00, 2.00000000e+00, -2.00000000e+00, 1.50000006e-01
 def c79 = -1.00000000e+00, 1.00000000e+00, 5.72999992e+01, 1.00000001e-01
-def c80 = -5.00000000e-01, -5.00000000e-01, 6.66666687e-01, -2.50000000e+01
-def c81 = -9.00000000e+00, 3.33333343e-01, 3.00000000e+00, 2.50000000e-01
-def c82 = 4.00000000e+00, -1.50000000e+00, -1.50000000e+00, 5.00000007e-02
-def c83 = -8.10000000e+01, 9.99999975e-05, 8.33333397e+00, 0.00000000e+00
+def c80 = -5.00000000e-01, -5.00000000e-01, 6.66666687e-01, -4.10000000e+01
+def c81 = -2.50000000e+01, 2.00000003e-01, 5.00000000e+00, 2.50000000e-01
+def c82 = -2.00000000e+00, -2.00000000e+00, 4.00000000e+00, 5.00000007e-02
+def c83 = -1.50000000e+00, -1.50000000e+00, -8.10000000e+01, 9.99999975e-05
+def c84 = 8.33333397e+00, 0.00000000e+00, 0.00000000e+00, 0.00000000e+00
 defi i0 = 255, 0, 0, 0
 dcl_2d s12
 dcl_2d s1
@@ -214,7 +215,7 @@ if_ne r4.x, -r4.x
                 mov r6.y, r7.z
                 mov r7.zw, r6.xxxy
                 add r7.zw, r5.xxxy, r7.xxzw
-                add r7.zw, r7.xxzw, c74.xxxy
+                add r7.zw, r7.xxzw, c82.xxxy
                 mov r7.xy, r7.zwzz
             else
                 mov r7.z, r5.w
@@ -223,12 +224,12 @@ if_ne r4.x, -r4.x
                 mul r7.w, r7.w, c81.w
                 frc r9.xyzw, r7.w
                 add r7.w, r7.w, -r9.x
-                mul r9.x, r7.w, c82.x
+                mul r9.x, r7.w, c82.z
                 add r7.z, r7.z, -r9.x
                 mov r6.z, r7.z
                 mov r6.w, r7.w
                 mov r7.zw, r6.xxzw
-                add r7.zw, r7.xxzw, c82.xxyz
+                add r7.zw, r7.xxzw, c83.xxxy
                 mul r7.zw, r7.xxzw, r0.w
                 add r7.zw, r1.xxyz, r7.xxzw
                 add r7.zw, r7.xxzw, c74.xxzw
@@ -295,7 +296,7 @@ if_ne r4.x, -r4.x
             mov r2.w, c73.x
             rep i0.xyzw
                 mov r6.z, r2.w
-                add r6.z, r6.z, c83.x
+                add r6.z, r6.z, c83.z
                 cmp r6.z, r6.z, c73.x, c75.y
                 add r6.z, -r6.z, c75.y
                 if_ne r6.z, -r6.z
@@ -355,11 +356,11 @@ if_ne r4.x, -r4.x
             endrep
             mov r0.x, r1.w
             mov r0.y, r2.z
-            max r0.y, r0.y, c83.y
+            max r0.y, r0.y, c83.w
             rcp r0.y, r0.y
             mul r0.x, r0.x, r0.y
             add r0.y, -r4.y, c75.y
-            mul r0.y, r0.y, c83.z
+            mul r0.y, r0.y, c84.x
             mov_sat r0.y, r0.y
             add r0.x, r0.x, c74.x
             mul r0.x, r0.y, r0.x
