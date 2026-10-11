@@ -152,13 +152,12 @@ struct Draw {
     std::uint64_t key=0;bool keep=true;
     float extra[2][3]={};unsigned char extras=0; /* extra world samples, only for stationary candidates */
     float root[3]={};bool hasRoot=false; /* palette bone 0 origin in world space (per-instance anchor) */
-    /* 0.3.210 (task 31): passive capture identity for the capture admission (capture_admission.h): never read by the selection's decisions */
+    /* 0.3.210 (task 31): the draw's capture identity for the capture admission (capture_admission.h): never read by the selection's decisions */
     std::uintptr_t shader=0;unsigned count=0;float captureRoot[3]={};bool captureRootValid=false;
 };
 struct RigidEntry {std::uint64_t key=0,bodyKey=0;float at[3]={},anchor[3]={},bodyAt[3]={};unsigned free=0,age=0,still=0;bool attachment=false,settled=false,kept=false,used=false,selfBody=false;};
 struct RadiusPair {float d=0;std::uint32_t actor=0,entry=0;};
-struct RadiusEntry {std::uint64_t key=0;float at[3]={};unsigned age=0,streak=0,since=~0u;bool inside=false,companion=false,self=false,used=false,filtered=false;
-    std::uintptr_t shader=0;unsigned count=0;float rootAt[3]={};bool rootValid=false;}; /* 0.3.210 (task 31): the key draw's shader, primitive count and capture root; passive (capture_admission.h), not part of matching or sorting */
+struct RadiusEntry {std::uint64_t key=0;float at[3]={};unsigned age=0,streak=0,since=~0u;bool inside=false,companion=false,self=false,used=false,filtered=false;};
 struct Actor {
     std::size_t first=0,count=0,bytes=0,body=SIZE_MAX;float distanceSquared=0,rank=0,at[3]={},anchor[3]={},bodyAt[3]={};
     std::uint64_t key=0,bodyKey=0;unsigned pending=0,free=0,still=0;
@@ -167,7 +166,6 @@ struct Actor {
     RigidEntry* entry=nullptr;
     float samples[Samples][3]={};unsigned mask=0,stillFrames=0,stillExtras=0,moving=0;bool exempt=false,exemptCandidate=false,wasExempt=false,frozen=false;
     unsigned sinceChange=~0u;bool locked=false,rooted=false;float vertexAt[3]={};
-    std::uintptr_t keyShader=0;unsigned keyCount=0;float keyRoot[3]={};bool keyRootValid=false; /* 0.3.210 (task 31): the key draw's capture identity (passive) */
     bool outside=false,self=false,companion=false,rebound=false,selfBody=false,nearSelf=false,candidate=false,follows=false,unfiltered=false;unsigned streak=0,radiusSince=~0u;std::size_t head=SIZE_MAX;float radiusAt[3]={};RadiusEntry* radiusEntry=nullptr; /* ActorShadowRadius; head: the character (see radiusStage) */
 };
 struct Point {std::uint64_t cell=0;float x=0,y=0,z=0;std::size_t actor=0;};
@@ -305,7 +303,7 @@ public:
             nextRadius_.clear();bool self=false;for(const auto& a:actors)self=self||a.self;
             // Keyed by the smallest key seen: a partial capture only raises an actor's key.
             for(const auto& a:actors){if(a.rigid||a.body!=SIZE_MAX||a.orphan||!a.located)continue;RadiusEntry r;r.key=a.radiusEntry?std::min(a.key,a.radiusEntry->key):a.key;std::memcpy(r.at,a.at,sizeof r.at);
-                r.inside=!a.outside&&!a.unfiltered;r.filtered=!a.unfiltered;r.since=a.radiusSince;const auto& h=a.head!=SIZE_MAX?actors[a.head]:a;r.companion=h.companion;r.streak=h.streak;r.self=a.self;r.shader=a.keyShader;r.count=a.keyCount;std::memcpy(r.rootAt,a.keyRoot,sizeof r.rootAt);r.rootValid=a.keyRootValid;nextRadius_.push_back(r);} /* sections carry the character's companion flag and streak; the self is its head */
+                r.inside=!a.outside&&!a.unfiltered;r.filtered=!a.unfiltered;r.since=a.radiusSince;const auto& h=a.head!=SIZE_MAX?actors[a.head]:a;r.companion=h.companion;r.streak=h.streak;r.self=a.self;nextRadius_.push_back(r);} /* sections carry the character's companion flag and streak; the self is its head */
             for(const auto& r:radius_)if(!r.used&&r.age<tuning.reserveAge){nextRadius_.push_back(r);auto& e=nextRadius_.back();++e.age;e.since+=e.since<~0u;e.streak=0;e.self=e.self&&!self&&selfHold_>0;} /* one self: an absent one keeps the flag only while none is present */
             std::sort(nextRadius_.begin(),nextRadius_.end(),detail::before<RadiusEntry>);radius_.swap(nextRadius_);}
         if(!ranked){keptAll();return;}
@@ -460,8 +458,6 @@ inline Result choose(std::vector<Draw>& draws,Scratch& scratch,std::size_t budge
     Result result;actors.clear();order.clear();points.clear();links.clear();
     for(std::size_t i=0;i<draws.size();){
         Actor a;a.first=i;a.key=draws[i].key;a.rigid=true;const float bone=draws[i].bone;
-        auto takeKey=[&a](const Draw& d){a.keyShader=d.shader;a.keyCount=d.count;std::memcpy(a.keyRoot,d.captureRoot,sizeof a.keyRoot);a.keyRootValid=d.captureRootValid;};
-        takeKey(draws[i]);
         std::size_t j=i;
         for(;j<draws.size()&&draws[j].group==draws[i].group;++j){const auto& d=draws[j];a.bytes+=d.bytes;
             a.rigid=a.rigid&&d.rigid&&d.bone==bone;
@@ -469,7 +465,7 @@ inline Result choose(std::vector<Draw>& draws,Scratch& scratch,std::size_t budge
             float q=d.distanceSquared;if(known&&origin){q=0;for(unsigned k=0;k<3;++k){const float t=d.at[k]-origin[k];q+=t*t;}}
             if(known&&(!a.known||q<a.distanceSquared))a.distanceSquared=q;
             if(known&&!a.located){a.located=true;std::memcpy(a.at,d.at,sizeof a.at);}
-            if(tuning.stableIdentity&&(d.key<a.key||j==i)){a.key=d.key;takeKey(d);if(known){a.located=true;std::memcpy(a.at,d.at,sizeof a.at);}}
+            if(tuning.stableIdentity&&(d.key<a.key||j==i)){a.key=d.key;if(known){a.located=true;std::memcpy(a.at,d.at,sizeof a.at);}}
             a.known=a.known||known;}
         // Stable identity: the smallest draw key; its position when it has one.
         if(tuning.stableIdentity&&a.located)for(std::size_t k=i;k<j;++k){const auto& d=draws[k];

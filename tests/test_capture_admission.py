@@ -34,14 +34,11 @@ checks['skinned draws with ActorShadows only; the gate never sets captureShortfa
 checks['near hits come from the same root (no second palette read)']='admission.decide(reinterpret_cast<std::uintptr_t>(current),count,vertexTotal,rooted?root:nullptr,nearDraw(rooted?root:nullptr))' in gate
 checks['real bytes on a read, an estimate on real exhaustion (both budget branches)']=(capture.count('admission.budgetRefused(admit,root,vertexTotal,count)')==2
     and 'if(captured&&admit.rooted)admission.admitted(admit,reinterpret_cast<std::uintptr_t>(current),count,root,replaySnapshots.bytesRead()-readBefore);' in capture)
-checks['the root travels: Replay::captureRoot set at capture, cleared on injected copies, carried by prepareRecord into the selection draw']=(
+checks['the root travels: Replay::captureRoot set at capture, cleared on injected copies, carried by prepareRecord into the selection draw; RadiusEntry untouched']=(
     'float captureRoot[3]={};bool captureRootValid=false;' in w and 'p->captureRootValid=rooted;if(rooted)std::memcpy(p->captureRoot,root,sizeof p->captureRoot);' in capture
-    and 'p->captureRootValid=false;' in m and 'item.captureRootValid=p.captureRootValid;' in fp.src('prepare_worker.h').read_text())
-checks['RadiusEntry carries shader, count and root passively: written once at publish, never read by the selection']=(
-    sel.count('r.shader=a.keyShader;r.count=a.keyCount;std::memcpy(r.rootAt,a.keyRoot,sizeof r.rootAt);r.rootValid=a.keyRootValid;')==1
-    and sum('rootAt' in l for l in sel.splitlines())==2 and sum('rootValid' in l for l in sel.splitlines())==2)
-checks['far list from radiusEntries() right after the selection (outside the try); admission forgotten on a lost selection, a map change and releaseGPU']=(
-    x.index('}catch(...){')<x.index('if(radius)admission.importFar(actorShadowHistory.radiusEntries());')<x.index('if(captureSampled){const double ms=')
+    and 'p->captureRootValid=false;' in m and 'item.captureRootValid=p.captureRootValid;' in fp.src('prepare_worker.h').read_text() and 'rootAt' not in sel)
+checks['every draw of the outside sections (importOutside) right after the selection (outside the try); admission forgotten on a lost selection, a map change and releaseGPU']=(
+    x.index('}catch(...){')<x.index('if(radius&&stableRan)admission.importOutside(actorShadowScratch.actors,actorShadowDraws);')<x.index('if(captureSampled){const double ms=')
     and 'actorShadowHistory.clear();admission.reset();' in x and 'rigidMemory.resetStats();admission.reset();' in m and 'rigidMemoryClear();admission.reset();admissionOn=false;' in w)
 checks['gated bodies are rigid-memory bodies (a prop held by a far NPC is not a ghost)']=('rigidBodies.insert(rigidBodies.end(),gatedBodies.begin(),gatedBodies.end());' in m)
 checks['end of frame: the cut after the sampled log, before the counters of the next frame']=(
@@ -52,9 +49,9 @@ checks['centre once per capture frame at the first skinned ask (the near anchor)
     'if(nearAnchor.self){centre.centre=nearAnchor.selfAt;centre.self=true;}' in w and 'pivot[k]=nearAnchor.eye[k]+nearAnchor.forward[k]*pivotDistance' in w and 'nearAnchorReady=false;' in w
     and 'bool actorCaptureWouldRun()const{' in w and w.count('if(nearAnchor.self){centre.centre=')==1)
 checks['fate: RadiusGate and DistanceCut']=('RadiusGate,DistanceCut,FateCount' in fate and '"radiusGate","distanceCut"' in fate)
-checks['constants: gate = yards + 2*band + ClusterExtent + 4; cut target 0.92, MinCut 12, grow after 10 frames, shrink after 2']=(
-    'return yards+2*NorthlightActorShadowSelection::band(yards)+NorthlightActorShadowSelection::ClusterExtent+GateExtra;' in adm and 'GateExtra=4.f' in adm and 'Margin=.92f' in adm and 'MinCut=12.f' in adm
-    and 'GrowFrames=10,ShrinkFrames=2' in adm)
+checks['constants: gate = yards + 2*band + ClusterExtent + 4; cut target 0.85, MinCut 12, grow after 10 frames, shrink after 1']=(
+    'return yards+2*NorthlightActorShadowSelection::band(yards)+NorthlightActorShadowSelection::ClusterExtent+GateExtra;' in adm and 'GateExtra=4.f' in adm and 'Margin=.85f' in adm and 'MinCut=12.f' in adm
+    and 'GrowFrames=10,ShrinkFrames=1' in adm)
 for name,ok in checks.items():print(('PASS ' if ok else 'FAIL ')+name)
 assert all(checks.values())
 print('PASS capture admission: model and wiring')

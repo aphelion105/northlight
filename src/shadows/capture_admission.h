@@ -13,8 +13,7 @@
 //    radius-gated leaves a record {distance from the centre, bytes} (admitted: the real charged bytes;
 //    refused: an estimate from the shape's earlier captures). At the end of the frame the records are
 //    sorted by distance and the cut D is where the cumulative bytes reach
-//    (limit - non-priority bytes) * 0.92. D shrinks only after real exhaustion on 2 capture frames in a
-//    row (at most band(D) per frame), grows only after GrowFrames frames with room (at most band(D) per
+//    (limit - non-priority bytes) * 0.85. D shrinks only after real exhaustion on a capture frame (at most band(D) per frame), grows only after GrowFrames frames with room (at most band(D) per
 //    step), is infinite when everything fits and never goes below MinCut. A root in (D, D+band(D)]
 //    admitted last frame stays admitted (per-actor deadband).
 // Near-reserve hits always pass both. A draw without a root is never gated or cut. Portable: no D3D calls.
@@ -27,8 +26,8 @@
 #include <unordered_set>
 #include <vector>
 namespace NorthlightCaptureAdmission {
-constexpr float CellYards=4.f,MinCut=12.f,Margin=.92f,MatchYards=1.5f,MatchCap=CellYards,GateExtra=4.f,GIYards=100.f,Teleport=100.f,CountCell=2.f;
-constexpr unsigned GrowFrames=10,ShrinkFrames=2;
+constexpr float CellYards=4.f,MinCut=12.f,Margin=.85f,MatchYards=1.5f,MatchCap=CellYards,GateExtra=4.f,GIYards=100.f,Teleport=100.f,CountCell=2.f;
+constexpr unsigned GrowFrames=10,ShrinkFrames=1;
 constexpr std::size_t ShapeCap=8192;
 inline float gateYards(float yards){return yards+2*NorthlightActorShadowSelection::band(yards)+NorthlightActorShadowSelection::ClusterExtent+GateExtra;}
 struct Item {std::uintptr_t shader=0;unsigned count=0;float at[3]={};};
@@ -102,12 +101,16 @@ public:
     // Forget everything (map change, device reset, a lost selection).
     void reset(){armed_=false;cut_=INFINITY;exhaustStreak_=room_=0;exhausted_=false;lastValid_=false;records_.clear();admittedBytes_=0;counters_={};insideCells_.clear();
         gateGrid_.clear();lastAdmitted_.clear();admittedNext_.clear();gatedLast_.clear();gatedNext_.clear();far_.clear();shapes_.clear();}
-    // The previous selection's bodies outside the radius, after selectShadowReplays: {shader, count, root}
-    // of the bodies it classified as outside (not inside, not companion, not self, filtered, root known).
-    void importFar(const std::vector<NorthlightActorShadowSelection::RadiusEntry>& entries){
+    // The gate list of the next capture frames: identities {shader, count, root}. Replaces the previous list.
+    void importFar(const std::vector<Item>& items){far_.clear();for(const auto& i:items)if(i.shader&&finite(i.at))far_.push_back(i);}
+    // After the stable selection: EVERY draw of every body section the selection put outside the radius (not the
+    // self, not a companion, not unfiltered), identified by its own shader and count and the section's capture root.
+    // A multi-batch character thus has all its batches gated, not only the key draw. Exact identity only.
+    void importOutside(const std::vector<NorthlightActorShadowSelection::Actor>& actors,const std::vector<NorthlightActorShadowSelection::Draw>& draws){
         far_.clear();
-        for(const auto& e:entries){if(e.inside||e.companion||e.self||!e.filtered||!e.rootValid||!e.shader||!finite(e.rootAt))continue;
-            Item i;i.shader=e.shader;i.count=e.count;for(unsigned k=0;k<3;++k)i.at[k]=e.rootAt[k];far_.push_back(i);}
+        for(const auto& a:actors){if(a.rigid||a.body!=SIZE_MAX||a.orphan||!a.outside||a.self||a.companion||a.unfiltered||a.first+a.count>draws.size())continue;
+            for(std::size_t k=a.first;k<a.first+a.count;++k){const auto& d=draws[k];if(!d.captureRootValid||!d.shader||!finite(d.captureRoot))continue;
+                Item i;i.shader=d.shader;i.count=d.count;for(unsigned c=0;c<3;++c)i.at[c]=d.captureRoot[c];far_.push_back(i);}}
     }
     // The first ask of a capture frame: the centre is fixed and the gate list built.
     void arm(const Context& c){

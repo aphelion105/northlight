@@ -63,7 +63,7 @@
             for(auto& p:replays)p->shadowSelected=true;actorShadowHistory.clear();admission.reset();
             logf("SHADOW experiment selection allocation failed; current captured shadows retained");return;
         }
-        if(radius)admission.importFar(actorShadowHistory.radiusEntries()); /* 0.3.210 (task 31): the bodies this selection classified as outside, for the next capture frame's radius gate */
+        if(radius&&stableRan)admission.importOutside(actorShadowScratch.actors,actorShadowDraws); /* 0.3.210 (task 31): every draw of the body sections this selection put outside the radius, for the next capture frame's radius gate */
         if(captureSampled){const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
             // 0.3.177 (r83): the prepare worker's fields, RenderProfile only.
             char prepareFields[400]="";
