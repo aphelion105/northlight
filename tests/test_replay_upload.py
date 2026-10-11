@@ -95,7 +95,7 @@ class WorldRenderer {public:
  struct Replay {
   std::shared_ptr<const NorthlightDrawSnapshot::Mesh> shared;
   NorthlightDrawSnapshot::Mesh snapshot;
-  bool gpuCached=false,indexed=true;
+  bool gpuCached=false,indexed=true,bulkSingle=false;
   IDirect3DVertexBuffer9* stream[4]={};IDirect3DIndexBuffer9* index=nullptr;
   UINT offset[4]={},stride[4]={},start=0;INT base=0;
   const NorthlightDrawSnapshot::Mesh& mesh()const{return shared?*shared:snapshot;}

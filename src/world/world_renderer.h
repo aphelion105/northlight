@@ -647,6 +647,7 @@ private:
         std::shared_ptr<const NorthlightDrawSnapshot::Mesh> shared; // immutable snapshot: tracked generations or legacy static cache
         const NorthlightDrawSnapshot::Mesh& mesh()const{return shared?*shared:snapshot;}
         bool gpuCached=false,shadowSkinned=false,shadowSelected=true,shadowSmall=false;int fateSlot=-1;unsigned char fateClass=0;float fateDistance=0; /* shadow fate diagnostics */
+        bool bulkSingle=false; /* 0.3.211: uploadReplay's layout verdict (single-stream bulk placement) for the absolute pass */
         bool boneKnown=false;float bone=NAN; /* 0.3.176 (S2): this frame's selection tested its rigid bone (reset at capture) */
         float captureRoot[3]={};bool captureRootValid=false; /* 0.3.211 (task 31): the palette root computed once at capture (capture admission); passive for the selection */
         // 0.3.177 (r83): filled at capture for selected skinned draws, read by prepareRecord (the stable
@@ -2418,8 +2419,8 @@ public:
         if(captureSampled)++replayUploadCalls;
         if(!allowCache){replayGpuCache.clear();for(auto& p:replays)if(p->gpuCached){for(auto& stream:p->stream)drop(stream);drop(p->index);}}
         {auto expire=streamingPhases.measure(NorthlightStreaming::PhaseProfile::ReplayExpire);replayGpuCache.beginFrame();}bool memoryChecked=false,memoryAllowed=false;
-        auto admission=[&](size_t){if(!memoryChecked){memoryChecked=true;memoryAllowed=admitsGrowth("replay-cache",64*NorthlightGeometryMemory::MiB);}return memoryAllowed;};
-        auto bindReplay=[&](Replay& p){NorthlightReplayGPU::bindResident(replayGpuCache,d,p,allowCache,admission);};
+        auto growthAdmission=[&](size_t){if(!memoryChecked){memoryChecked=true;memoryAllowed=admitsGrowth("replay-cache",64*NorthlightGeometryMemory::MiB);}return memoryAllowed;};
+        auto bindReplay=[&](Replay& p){NorthlightReplayGPU::bindResident(replayGpuCache,d,p,allowCache,growthAdmission);};
         replayTimeDeferredIndices.clear();
         {auto bind=streamingPhases.measure(NorthlightStreaming::PhaseProfile::ReplayBind);
         for(size_t i=0;i<replays.size();++i){bindReplay(*replays[i]);
@@ -2431,9 +2432,9 @@ public:
            and selects its vertices by BaseVertexIndex/start: same-stride replays share one SetStreamSource. Layout and the
            address-space prefix fit both go through bulkPlace, so they stay byte-identical. Multi-stream: 16-padded, as before. */
         auto singleStream=[](const auto& p){const auto& m=p.mesh();return !m.streams[0].bytes.empty()&&m.streams[0].stride&&m.streams[1].bytes.empty()&&m.streams[2].bytes.empty()&&m.streams[3].bytes.empty();};
-        auto bulkPlace=[&](const auto& p,unsigned s,std::uint64_t total,std::uint64_t& at){
+        auto bulkPlace=[&](const auto& p,bool single,unsigned s,std::uint64_t total,std::uint64_t& at){ /* single: singleStream(p), computed once per replay */
             const auto& source=p.mesh().streams[s];
-            if(s==0&&singleStream(p)){at=(total+source.stride-1)/source.stride*source.stride;return at+source.bytes.size();}
+            if(s==0&&single){at=(total+source.stride-1)/source.stride*source.stride;return at+source.bytes.size();}
             at=(total+15)&~std::uint64_t(15);return at+((source.bytes.size()+15)&~std::size_t(15));};
         auto layout=[&](size_t count){
             for(auto& t:totals)t=0;totalIndices=0;sharedBulkDraws=sharedBulkBytes=multiStreamDraws=0;replayBulkLayout.begin();
@@ -2441,12 +2442,13 @@ public:
                 const size_t owner=replayBulkLayout.add(p->shared.get(),i);
                 if(owner!=i){const auto& first=*replays[owner];
                     for(unsigned s=0;s<4;++s){p->stride[s]=first.stride[s];p->offset[s]=first.offset[s];}
-                    p->start=first.start;p->base=first.base;++sharedBulkDraws;sharedBulkBytes+=p->mesh().byteSize();continue;
+                    p->start=first.start;p->base=first.base;p->bulkSingle=first.bulkSingle;++sharedBulkDraws;sharedBulkBytes+=p->mesh().byteSize();continue;
                 }
+                const bool single=p->bulkSingle=singleStream(*p);
                 for(unsigned s=0;s<4;++s){auto& source=p->mesh().streams[s];p->stride[s]=source.stride;
-                    std::uint64_t at=0;const std::uint64_t next=bulkPlace(*p,s,totals[s],at);if(next>64u*1024u*1024u)return false;p->offset[s]=UINT(at);totals[s]=UINT(next);}
+                    std::uint64_t at=0;const std::uint64_t next=bulkPlace(*p,single,s,totals[s],at);if(next>64u*1024u*1024u)return false;p->offset[s]=UINT(at);totals[s]=UINT(next);}
                 p->start=p->indexed?UINT(totalIndices):0;p->base=0;totalIndices+=p->mesh().indices.size();
-                if(singleStream(*p)){const UINT first=p->offset[0]/p->stride[0];if(p->indexed)p->base=INT(first);else p->start=first;} // offset[0] is still relative here
+                if(single){const UINT first=p->offset[0]/p->stride[0];if(p->indexed)p->base=INT(first);else p->start=first;} // offset[0] is still relative here
                 else multiStreamDraws+=!p->mesh().streams[1].bytes.empty()||!p->mesh().streams[2].bytes.empty()||!p->mesh().streams[3].bytes.empty();}
             return totalIndices<=16u*1024u*1024u;
         };
@@ -2477,8 +2479,8 @@ public:
              // Under address-space pressure draw the prefix of casters that fits
              // the existing buffers this frame; nothing is allocated.
              size_t fit=0;UINT running[4]={};std::uint64_t runningIndices=0;
-             for(;fit<replays.size();++fit){auto& p=replays[fit];if(p->gpuCached||!replayBulkLayout.unique(fit))continue;bool ok=true;std::uint64_t nexts[4]={};
-                 for(unsigned s=0;s<4&&ok;++s){std::uint64_t at=0;nexts[s]=bulkPlace(*p,s,running[s],at);ok=nexts[s]<=replayVertexBytes[s];}
+             for(;fit<replays.size();++fit){auto& p=replays[fit];if(p->gpuCached||!replayBulkLayout.unique(fit))continue;bool ok=true;std::uint64_t nexts[4]={};const bool single=singleStream(*p);
+                 for(unsigned s=0;s<4&&ok;++s){std::uint64_t at=0;nexts[s]=bulkPlace(*p,single,s,running[s],at);ok=nexts[s]<=replayVertexBytes[s];}
                  if(!ok||(runningIndices+p->mesh().indices.size())*4>replayIndexBytes)break;
                  for(unsigned s=0;s<4;++s)running[s]=UINT(nexts[s]);runningIndices+=p->mesh().indices.size();}
              if(prepareUnsettled())for(size_t i=fit;i<replays.size();++i)recycleReplay(replays[i].release()); /* 0.3.177: quarantined */
@@ -2523,7 +2525,7 @@ public:
         }
         // The copies are done: from here on offset/start are absolute in the ring buffers (shared duplicates included;
         // gpuCached replays carry their own batch offsets and are never touched).
-        for(auto& p:replays){if(p->gpuCached)continue;const bool single=singleStream(*p); /* single-stream: the bind offset is the slot start, rel went into base/start */
+        for(auto& p:replays){if(p->gpuCached)continue;const bool single=p->bulkSingle; /* single-stream (laid out above): the bind offset is the slot start, rel went into base/start */
             for(unsigned s=0;s<4;++s)if(!p->mesh().streams[s].bytes.empty())p->offset[s]=single?vertexBase[s]:p->offset[s]+vertexBase[s];if(p->indexed)p->start+=indexBase;}
         // 0.3.176 (U3'): a binding already held keeps its reference (no Release/AddRef pair).
         for(auto& p:replays){if(p->gpuCached)continue;for(unsigned s=0;s<4;++s){IDirect3DVertexBuffer9* const stream=p->mesh().streams[s].bytes.empty()?nullptr:replayVerticesGPU[s];
@@ -2673,8 +2675,8 @@ public:
     }
     // Palette root (bone 0 origin, world) of the draw about to be issued: paletteRows() through
     // the capture's inverse view. False: not a palette program, or the rows cannot be read.
-    bool drawRoot(IDirect3DVertexShader9* shader,float* root){
-        float rows[12];const auto* program=paletteRows(shader,rows);if(!program)return false;
+    bool drawRoot(IDirect3DVertexShader9* shader,float* root,const NorthlightActorDeformation::Program** used=nullptr){
+        float rows[12];const auto* program=paletteRows(shader,rows);if(!program)return false;if(used)*used=program;
         float bank[4*256];std::memcpy(bank+4*program->paletteBase,rows,sizeof rows);
         return NorthlightActorDeformation::rootWorld(*program,bank,context.inverseView,root);
     }
@@ -2692,9 +2694,8 @@ public:
         if(!constantEpochSource.attached()||!constantEpochSource.valid()){++rootReads;return drawRoot(shader,root);}
         const auto& live=constantEpochSource.live();
         if(rootMemo.hit(shader,live.reset,live.floatBlock)){++rootMemoHits;if(rootMemo.valid)std::memcpy(root,rootMemo.root,sizeof rootMemo.root);return rootMemo.valid;}
-        ++rootReads;const bool ok=drawRoot(shader,root);
-        auto program=actorPrograms.find(shader);
-        if(program!=actorPrograms.end()&&program->second->paletteBase>=0&&program->second->paletteBase+2<256)rootMemo.store(shader,unsigned(program->second->paletteBase),live.reset,live.floatBlock,root,ok);
+        ++rootReads;const NorthlightActorDeformation::Program* program=nullptr;const bool ok=drawRoot(shader,root,&program);
+        if(program)rootMemo.store(shader,unsigned(program->paletteBase),live.reset,live.floatBlock,root,ok); /* paletteRows() proved 0 <= paletteBase, paletteBase+2 < 256 */
         return ok;
     }
     NorthlightCaptureAdmission::Admission admission;bool admissionOn=false;std::vector<float> gatedBodies; /* roots of radius-gated bodies, for rigid memory */
