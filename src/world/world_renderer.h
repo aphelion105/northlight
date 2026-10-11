@@ -3065,6 +3065,8 @@ public:
         auto atmosphereJob=[&]{atmosphereWork(atmosphere,nearZ,w,h,debug);};
         JobJoin atmosphereJoin{replayJobs_,atmosphereDone};
         if(jobs)replayJobs_.kick(atmosphereDone,atmosphereJob);
+        // 0.3.210 (task 31): the colour gate is the lighting weight gate: a source colour is direct*weight, so a zero-weight moon
+        // draws no cascade, actor map or water moon map (tests/test_moon_cascade_weight.py).
         bool sourceActive[2]={NorthlightGI::dot(sourceColors[0],sourceColors[0])>1e-10f,NorthlightGI::dot(sourceColors[1],sourceColors[1])>1e-10f};
         // Terrain shadow candidates (the cached terrain chunks the game did not draw live): read by the directional passes' terrain draws.
         NorthlightTerrainCandidates::Selection<> terrainCandidates(directionalTerrainScratch);double terrainPrepareMs=0;
