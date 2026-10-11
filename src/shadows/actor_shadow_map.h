@@ -11,21 +11,26 @@ namespace NorthlightActorShadowMap {
 inline constexpr float Radius=12.f;
 inline constexpr float Inset=.80f;
 inline constexpr unsigned Size=1024;
+inline constexpr unsigned TileTexels=16;   // actor texels per ActorTiles pixel side (world_effects.hlsl ActorTileTexels): a 64x64 tile minimum
 inline constexpr float Leash=1.5f;         // yards (light-space XY) the map centre may lag the pivot
-inline constexpr float JumpDistance=40.f;  // a pivot this far (3D) from the centre re-centres at once (teleport, map change)
+inline constexpr float JumpDistance=40.f;  // a pivot this far (light-space XY) from the centre re-centres at once (teleport, map change)
 // Leashed centre. The pivot is camera-derived (eye + forward*distance), so it drifts while the camera orbits an idle player: within
 // Leash the centre stays put (the map does not slide under the character); beyond it the centre is dragged so that the light-space XY
 // distance is exactly Leash (it moves with a walking or riding player). Within Leash the stored centre is returned bit for bit (a
 // recomputed one would random-walk by float roundoff at world coordinates); the depth origin comes from the pivot (matrix()).
+// Only light-space XY places the map, so the jump test is XY too (a 3D one re-centred, a pop of up to Leash, every JumpDistance of
+// flight under a high sun or of a run toward a low one); the centre's depth follows the pivot on every drag and whenever it lags by
+// more than Leash, so a stale depth offset cannot rotate into XY as the light direction steps.
 inline NorthlightGI::Vec3 leash(NorthlightGI::Vec3 center,bool valid,NorthlightGI::Vec3 pivot,NorthlightGI::Vec3 sun){
     using namespace NorthlightGI;
     const Vec3 delta=pivot-center;
-    if(!valid||!std::isfinite(dot(delta,delta))||dot(delta,delta)>JumpDistance*JumpDistance)return pivot;
+    if(!valid||!std::isfinite(dot(delta,delta)))return pivot;
     const NorthlightWorldMath::ShadowFrame f=NorthlightWorldMath::shadowFrame(pivot,sun,Radius);
-    const float dx=dot(delta,f.x),dy=dot(delta,f.y),distance=std::sqrt(dx*dx+dy*dy);
-    if(!(distance>Leash))return center;
+    const float dx=dot(delta,f.x),dy=dot(delta,f.y),dz=dot(delta,f.z),distance=std::sqrt(dx*dx+dy*dy);
+    if(!(distance<=JumpDistance))return pivot;
+    if(!(distance>Leash))return std::fabs(dz)>Leash?center+f.z*dz:center;
     const float pull=1.f-Leash/distance;
-    return center+f.x*(dx*pull)+f.y*(dy*pull);
+    return center+f.x*(dx*pull)+f.y*(dy*pull)+f.z*dz;
 }
 // XY origin from the (leashed) centre, unsnapped; depth origin from the pivot, as the cascades' (cz is never snapped).
 inline NorthlightWorldMath::ShadowFrame frame(NorthlightGI::Vec3 center,NorthlightGI::Vec3 pivot,NorthlightGI::Vec3 sun){
@@ -38,10 +43,16 @@ inline void matrix(NorthlightGI::Vec3 center,NorthlightGI::Vec3 pivot,Northlight
     NorthlightWorldMath::shadowMatrixFrom(frame(center,pivot,sun),Radius,m);
 }
 inline void matrix(NorthlightGI::Vec3 pivot,NorthlightGI::Vec3 sun,float* m){matrix(pivot,pivot,sun,m);}
-// True when the box is valid and all 8 corners project into |x|,|y|<=Inset and 0<z<1 of the actor map (row-vector matrix).
+// A usable actor map matrix: every element finite. Checked once per frame where the matrix is built (not per replay in insideInset).
+inline bool finiteMatrix(const float* m){
+    if(!m)return false;
+    for(unsigned i=0;i<16;++i)if(!std::isfinite(m[i]))return false;
+    return true;
+}
+// True when the box is valid and all 8 corners project into |x|,|y|<=Inset and 0<z<1 of the actor map (row-vector matrix, which the
+// caller has checked with finiteMatrix).
 inline bool insideInset(bool valid,const float* low,const float* high,const float* m){
     if(!valid||!low||!high||!m)return false;
-    for(unsigned i=0;i<16;++i)if(!std::isfinite(m[i]))return false;
     for(unsigned axis=0;axis<3;++axis)if(!std::isfinite(low[axis])||!std::isfinite(high[axis])||low[axis]>high[axis])return false;
     for(unsigned corner=0;corner<8;++corner){
         const float p[3]={corner&1?high[0]:low[0],corner&2?high[1]:low[1],corner&4?high[2]:low[2]};

@@ -1,5 +1,5 @@
 {
-  "source_sha256": "a1f10cb955c1d97dc7ec68797a51a1ea7bf011b79097fe5b4406adaf1659f013",
+  "source_sha256": "9fb32ce87f0cb0bc45da52fccea0990a85575f5c578b7e01b5085d3a12bd3685",
   "compiler": "Wine d3dcompiler_47 D3DCompile",
   "game_launched": false,
   "shaders": {
@@ -71,35 +71,62 @@
     },
     "ActorShadow": {
       "target": "ps_3_0",
-      "bytes": 6280,
-      "sha256": "37247043d74cbbc40551b5223fd46dab473e2f61bd9f0fc52bfa4e9225aa4938",
-      "static_instruction_slots": 387,
+      "bytes": 7336,
+      "sha256": "4b3f18af5be58edb27b56ed0df42b3e631a88aaae99ec3be6299309d451f0e41",
+      "static_instruction_slots": 463,
       "temporary_registers": 10,
       "samplers": [
         1,
+        10,
         11,
         12,
         14
       ],
       "instructions": {
-        "mov": 87,
-        "texldl": 5,
-        "mul": 61,
-        "frc": 8,
-        "add": 95,
-        "max": 15,
-        "min": 5,
-        "cmp": 29,
-        "if": 8,
+        "mul": 70,
+        "frc": 10,
+        "add": 112,
+        "max": 16,
+        "min": 8,
+        "mov": 105,
+        "texldl": 9,
+        "cmp": 35,
+        "if": 10,
         "rcp": 13,
-        "else": 8,
-        "endif": 8,
+        "abs": 6,
+        "else": 10,
+        "endif": 10,
         "dp3": 3,
-        "abs": 4,
         "rep": 2,
         "break": 3,
         "dp2add": 2,
         "endrep": 2
+      }
+    },
+    "ActorTiles": {
+      "target": "ps_3_0",
+      "bytes": 3544,
+      "sha256": "2f897413d9733587d7a16ad00c890dafce6142466fcac696a7d7b9c4a3cde93d",
+      "static_instruction_slots": 262,
+      "temporary_registers": 5,
+      "samplers": [
+        12
+      ],
+      "instructions": {
+        "mul": 20,
+        "rcp": 2,
+        "frc": 1,
+        "add": 21,
+        "mov": 158,
+        "rep": 1,
+        "cmp": 1,
+        "if": 1,
+        "break": 1,
+        "else": 1,
+        "endif": 1,
+        "texldl": 16,
+        "min": 16,
+        "endrep": 1
       }
     },
     "WorldGI": {

@@ -23,6 +23,8 @@ float4 RegionalFogInfo : register(c31); // world node0 XY, inverse field span, n
 float4 WaterInfo : register(c30);
 float4 RemovalInfo : register(c30); // RemovalSmooth, TemporalLight: y 1 when a lit source is drawn, z 1/(summed source weight), w disc radius in half-res pixels at view distance 1
 sampler2D ProbeMetadata : register(s10); // exact integer world-cell xyz, first-valid time w (-1 invalid)
+// 0.3.208 (task 29): ActorShadow only: the 64x64 tile minimum of the actor map (ActorTiles writes it; R32F, POINT, CLAMP)
+sampler2D ActorTileMap : register(s10);
 sampler2D AmbientOcclusion : register(s10); // 0.3.174 TemporalLight/WorldComposite: half-res contact AO (a), pre-weighted bloom (rgb), LINEAR; neutral (0,0,0,1) unless the world composites
 
 float4 ImageClip : register(c0); // invWidth, invHeight, near, far
@@ -429,19 +431,38 @@ LightingOutput WorldLighting(float2 uv:TEXCOORD0) {
 static const float ActorPenumbraScale=.04; // half width per world unit between the average blocker and the receiver
 static const float ActorPenumbraMin=.05;   // ~2 texels: contact shadows stay crisp without crawling at the half-res POINT read
 static const float ActorPenumbraMax=.10;   // ~4.3 texels (at most 9x9 taps at a one-texel step); also the blocker search radius
+static const float ActorTileTexels=16;   // actor texels per ActorTiles pixel side (1024/16 = 64x64 tiles)
+// ActorTiles, drawn at 64x64 before each ActorShadow pass: the nearest (minimum) depth of a 16x16 texel tile of the actor map, so
+// ActorShadow proves most receivers lit from four tile taps instead of its 41-tap blocker search. The map is cleared to 1, so an
+// empty tile reads 1.
+float4 ActorTiles(float2 uv:TEXCOORD0,uniform float4 ActorInfo:register(c72)):COLOR0 {
+    float2 base=floor(uv/(ActorTileTexels*ActorInfo.y))*ActorTileTexels+.5;
+    float z=1;
+    [loop]for(int y=0;y<16;++y){
+        float v=(base.y+y)*ActorInfo.y;
+        [unroll]for(int x=0;x<16;++x)z=min(z,tex2Dlod(ActorMap,float4((base.x+x)*ActorInfo.y,v,0,0)).r);
+    }
+    return float4(z,z,z,1);
+}
 // ActorMatrix (c68..c71): this source's actor map matrix (layout as NearMatrix). ActorInfo (c72): x 1 = actor map valid for this
 // source, y actor texel in uv (1/1024), z actor map radius (world units), w 0. Entry uniforms, not globals: a global would move
 // every other entry's literal constants (def c68..).
 float4 ActorShadow(float2 uv:TEXCOORD0,uniform row_major float4x4 ActorMatrix:register(c68),uniform float4 ActorInfo:register(c72)):COLOR0 {
-    float4 smoothNormal=tex2Dlod(NormalBuffer,float4(uv,0,0));
+    float2 screen=uv;
     uv=depthUV(uv);float d=normalizedDepth(uv);
-    if(ActorInfo.x<.5||d>=.99999||waterDistance(uv,d)>0)return 1;
+    if(ActorInfo.x<.5||d>=.99999)return 1;
+    float3 position=worldPosition(uv,d);
+    // Coarse border test first, so the pixels outside the map skip the water and normal fetches: the normal offset below moves the
+    // point at most .04+2*texel*radius (~.064 u, .0053 of the 12 u half width), well inside the .01 margin.
+    float3 coarse=affinePoint(position,ActorMatrix);
+    if(max(abs(coarse.x),abs(coarse.y))>=1.01||waterDistance(uv,d)>0)return 1;
+    float4 smoothNormal=tex2Dlod(NormalBuffer,float4(screen,0,0));
     float3 n=smoothNormal.xyz;float confidence=smoothNormal.w;
     float facing=dot(n,SunDirection.xyz);
     // directionalShadow's normal offset scaled to this map: half its .08 u lift (the texel is a quarter) plus one actor texel
     // times (1-|n.l|); a silhouette pixel's unreliable normal gets neither.
     float lift=.04+(1-saturate(abs(facing)))*2*ActorInfo.y*ActorInfo.z;
-    float3 q=affinePoint(worldPosition(uv,d)+n*(lift*confidence),ActorMatrix);
+    float3 q=affinePoint(position+n*(lift*confidence),ActorMatrix);
     float border=max(abs(q.x),abs(q.y));
     if(border>=1||q.z<=0||q.z>=1)return 1;
     // Raster NDC maps to integer D3D9 pixel centers; sampling needs +.5 texel (as shadowMap).
@@ -461,6 +482,15 @@ float4 ActorShadow(float2 uv:TEXCOORD0,uniform row_major float4x4 ActorMatrix:re
     // narrowest filter weighs is searched, so the early out never cuts a contact edge (a 3x3 reached only 1.5 texels and left
     // a hard lit step 1.5..2.13 texels out that moved with the animation).
     float stride=ActorPenumbraMax/texelWorld*(2/3.);
+    // Tile early out (exact: the same result as a search that finds no blocker). Every tap below lies within searchReach texels
+    // of pixel per axis (the core 2.5, the grid 1.5 strides plus the rounding .5; ~4.8 < 8), so the at most 2x2 tiles covering
+    // pixel+-searchReach hold all of them, and no tap can pass the blocker test when their minimum is at or beyond the
+    // receiver plus the largest plane offset over that reach. Lit is the common case: four taps instead of 41.
+    float searchReach=max(2.5,1.5*stride+.5);
+    float2 tileLow=(floor((pixel-searchReach)/ActorTileTexels)+.5)*(ActorTileTexels*ActorInfo.y),tileHigh=(floor((pixel+searchReach)/ActorTileTexels)+.5)*(ActorTileTexels*ActorInfo.y);
+    float tileNearest=min(min(tex2Dlod(ActorTileMap,float4(tileLow,0,0)).r,tex2Dlod(ActorTileMap,float4(tileHigh.x,tileLow.y,0,0)).r),
+                          min(tex2Dlod(ActorTileMap,float4(tileLow.x,tileHigh.y,0,0)).r,tex2Dlod(ActorTileMap,float4(tileHigh,0,0)).r));
+    if(tileNearest>=receiver+(abs(gradient.x)+abs(gradient.y))*searchReach*ActorInfo.y+1e-5)return 1;
     float2 nearest=floor(pixel+.5);
     float blockers=0,count=0;
     [loop]for(int i=0;i<41;++i){

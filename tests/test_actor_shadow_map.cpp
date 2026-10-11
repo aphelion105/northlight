@@ -41,6 +41,11 @@ int main(){
     assert(!M::insideInset(true,dl,dh,m));                        // behind the depth planes (z outside 0..1)
     const float inverted[3]={hi[0]+.1f,lo[1],lo[2]};assert(!M::insideInset(true,inverted,hi,m)); // low > high
     const float nanLow[3]={NAN,lo[1],lo[2]};assert(!M::insideInset(true,nanLow,hi,m));
+    // The matrix is checked once per frame (finiteMatrix), not per box.
+    assert(M::finiteMatrix(m)&&!M::finiteMatrix(nullptr));
+    {float bad[16];for(int i=0;i<16;++i)bad[i]=m[i];bad[13]=INFINITY;assert(!M::finiteMatrix(bad));bad[13]=NAN;assert(!M::finiteMatrix(bad));}
+    // Tiles: 64x64 of 16x16 texels; the shader's tile early out needs its 2x2 tile window (searchReach < TileTexels/2, ~4.8 texels).
+    static_assert(M::Size%M::TileTexels==0&&M::Size/M::TileTexels==64,"ActorTiles is 64x64");
     // Leash: inside it the centre is returned bit for bit; outside the light-space XY distance becomes exactly Leash in the same direction; a depth-only move
     // keeps the centre and the matrix takes its depth origin from the pivot; a jump re-centres.
     {const Vec3 centre=pivot;
@@ -52,11 +57,22 @@ int main(){
      r=M::leash(centre,true,out,sun);const Vec3 d=out-r;
      assert(std::fabs(std::sqrt(dot(d,f.x)*dot(d,f.x)+dot(d,f.y)*dot(d,f.y))-M::Leash)<2e-3f);
      assert(dot(d,f.x)*8.f>0&&std::fabs(dot(d,f.x)/dot(d,f.y)-.75f)<1e-3f); // direction preserved
-     const Vec3 deeper=centre+f.z*3.f;r=M::leash(centre,true,deeper,sun);assert(exact(r,centre));
-     {float md[16],mc[16];M::matrix(r,deeper,sun,md);M::matrix(centre,sun,mc); // same XY origin, depth origin 3 yd deeper
-      assert(md[12]==mc[12]&&md[13]==mc[13]&&std::fabs((md[14]-mc[14])-3.f*NorthlightWorldMath::InverseShadowDepth)<1e-5f);}
+     const Vec3 deeper=centre+f.z*(M::Leash*.9f);r=M::leash(centre,true,deeper,sun);assert(exact(r,centre)); // a depth lag within Leash: bit for bit
+     {float md[16],mc[16];M::matrix(r,deeper,sun,md);M::matrix(centre,sun,mc); // same XY origin, depth origin .9 Leash deeper
+      assert(md[12]==mc[12]&&md[13]==mc[13]&&std::fabs((md[14]-mc[14])-M::Leash*.9f*NorthlightWorldMath::InverseShadowDepth)<1e-5f);}
+     // Depth beyond Leash: the centre's depth follows the pivot, its light-space XY stays (no pop).
+     const Vec3 deep3=centre+f.z*3.f;r=M::leash(centre,true,deep3,sun);
+     assert(std::fabs(dot(r-centre,f.x))<1e-3f&&std::fabs(dot(r-centre,f.y))<1e-3f&&std::fabs(dot(deep3-r,f.z))<1e-3f);
+     // A long move along the light direction (flying under a high sun, running toward a low one) never re-centres: 60 yd along the
+     // light in 1 yd steps leaves the centre's light-space XY where it was (only the depth follows).
+     {Vec3 c=centre;for(int step=1;step<=60;++step){c=M::leash(c,true,centre+f.z*float(step),sun);
+        assert(std::fabs(dot(c-centre,f.x))<2e-3f&&std::fabs(dot(c-centre,f.y))<2e-3f);}
+      // The depth offset never builds up (at most Leash), so a stepped light direction cannot rotate a large one into XY.
+      assert(std::fabs(dot(centre+f.z*60.f-c,f.z))<=M::Leash+1e-3f);
+      r=M::leash(centre,true,centre+f.z*60.f,sun);assert(std::fabs(dot(r-centre,f.x))<2e-3f&&std::fabs(dot(r-centre,f.y))<2e-3f);} // one 60 yd step too
      assert(M::leash(centre,false,out,sun).x==out.x);                       // no stored centre: the pivot
      const Vec3 far=centre+f.x*(M::JumpDistance+1.f);r=M::leash(centre,true,far,sun);assert(r.x==far.x&&r.y==far.y&&r.z==far.z); // teleport
+     const Vec3 nanPivot(NAN,centre.y,centre.z);r=M::leash(centre,true,nanPivot,sun);assert(std::isnan(r.x));          // non-finite: the pivot (the caller's finiteMatrix turns the map off)
     }
     std::puts("PASS actor shadow map");
     return 0;

@@ -52,7 +52,7 @@ checks['ActorShadows=1 reduces both to freshReplays; 0: consumers off, schedules
 # Consumers (replayShadows) and schedules/commits (replaysComplete, actorShadows).
 consumers=['if(replayShadows)selectShadowReplays();','if(effects.shadows&&replayShadows)replayBoundsKick();','(replayShadows&&!timedReplay())',
            'if(effects.shadows&&replayShadows){auto proofs','if(effects.shadows&&replayShadows)pointCalculateReplayBounds();']
-schedules=['!reason&&key.valid&&!pull,diagnosticCapture!=0,replaysComplete);','if(cascade==0)nearRendered=captureMode==CaptureFresh&&interval>1&&actorShadows;',
+schedules=['!reason&&key.valid&&!pull&&!actorLost,diagnosticCapture!=0,replaysComplete);','if(cascade==0)nearRendered=captureMode==CaptureFresh&&interval>1&&actorShadows;',
            'if(captureMode==CaptureFresh||!actorShadows)reuse.commit(interval,shadowPasses,matrices[cascade]);else captureDemand=true;',
            'renderPointShadow(replaysComplete,actorShadows);else pointReady=false;']
 for needle in consumers+schedules:once(body,needle,'render()')
