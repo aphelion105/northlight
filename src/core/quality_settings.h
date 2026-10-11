@@ -94,7 +94,10 @@ struct Settings {
     unsigned contactAO=1;
     // NightBrightness (0..100): how much of the art layer's darker night ambient is given back, as added light; 0 = Northlight's night, 100 = the original game's night ambient (shadows stay); default 50. Ramped by the sun below the horizon.
     unsigned nightBrightness=50;
-    char origin[45]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
+    // 0.3.209 (task 29) ActorShadowDetail: 1 = a dedicated 4x finer shadow map around the player holds the moving casters (characters, mounts) and a
+    // contact-hardening soft filter pass reads it (sharp at the feet, softer further from the caster); 0 = the 0.3.207 shadows (near cascade, 5x5 tent). ActorShadows=0 disables it too.
+    unsigned actorShadowDetail=1;
+    char origin[46]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
 };
 struct Key { const char* name; unsigned Settings::*field; unsigned low,high; unsigned preset[3]; };
 // preset[] = Quality, Balanced, Performance. Quality must equal Settings{}.
@@ -144,6 +147,7 @@ inline const Key Keys[]={
     {"StreamFrameSkip",&Settings::streamFrameSkip,0,1,{1,1,1}}, /* 0.3.200 (frame skip) */
     {"ContactAO",&Settings::contactAO,0,1,{1,1,1}}, /* 0.3.201 (task 18) */
     {"NightBrightness",&Settings::nightBrightness,0,100,{50,50,50}}, /* task 23 (night brightness) */
+    {"ActorShadowDetail",&Settings::actorShadowDetail,0,1,{1,1,0}}, /* 0.3.209 (task 29) */
 };
 inline bool operator==(const Settings& a,const Settings& b){for(const auto& k:Keys)if(a.*k.field!=b.*k.field)return false;return true;}
 inline bool operator!=(const Settings& a,const Settings& b){return !(a==b);}
@@ -183,6 +187,8 @@ inline std::string forcedOff(const Settings& requested){
     return out.empty()?"none":out;}
 // Replay shadow work actually requested: shadows on (F9) and ActorShadows=1.
 inline bool actorShadowWork(const Settings& s,bool shadows){return shadows&&s.actorShadows;}
+// 0.3.209 (task 29): the dedicated actor shadow map is drawn and read.
+inline bool actorShadowMap(const Settings& s,bool shadows){return actorShadowWork(s,shadows)&&s.actorShadowDetail;}
 inline const char* name(Preset p){return p==Preset::Balanced?"Balanced":p==Preset::Performance?"Performance":"Quality";}
 static_assert(sizeof(Keys)/sizeof(Keys[0])==sizeof(Settings::origin),"one origin per key");
 inline Settings preset(Preset p){Settings s;s.preset=p;unsigned i=0;

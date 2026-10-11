@@ -44,6 +44,7 @@
 #include "patch_terrain_shadow.h"
 #include "celestial_time_warp.h"
 #include "cascade_anchor.h"
+#include "actor_shadow_map.h" // 0.3.209 (task 29)
 #include "shadow_pivot.h"
 #include "world_dynamic_probes.h"
 #include "shadow_bounds.h"
@@ -239,6 +240,7 @@ private:
     bool gpuDiagnosticArmed=true;unsigned gpuDiagnosticCaptures=0;
     std::string gpuDiagnosticDirectory;
     IDirect3DTexture9* regionalFogTexture=nullptr;
+    IDirect3DTexture9* neutralWhite=nullptr; // 0.3.209 (task 29): 1x1 white on s12 (ActorVisibility) for WorldLighting on frames without an ActorShadow pass
     IDirect3DTexture9* neutralZero=nullptr; // 0.3.202 (rain): 1x1 (0,0,0,0) on s13 (RainMask) when no mask was drawn this frame
     IDirect3DTexture9* rainMask=nullptr; // 0.3.202 (rain): the proxy's rain streak alpha mask (non-owning, set per frame, cleared after the composite)
     IDirect3DTexture9* neutralAO=nullptr; // 0.3.174: 1x1 (0,0,0,1) on s10 when the proxy does not fold its AO/bloom
@@ -300,6 +302,10 @@ private:
     static constexpr UINT ShadowCacheMargin=128,ShadowCacheSize=1024+2*ShadowCacheMargin;
     IDirect3DTexture9 *shadowCache[4]={},*shadowScratch=nullptr;
     IDirect3DSurface9 *shadowCacheSurface[4]={},*shadowCacheDepth=nullptr,*shadowScratchSurface=nullptr;
+    // 0.3.209 (task 29): per-source actor shadow map (R32F 1024, moving casters only, shadows/actor_shadow_map.h) and the half-res visibility it feeds (A8R8G8B8: r sun, g moon; white = lit).
+    // actorMatrices/actorValid are stored with the near map's reuse state: the near map and the actor map of a source always come from the same frame.
+    IDirect3DTexture9 *actorShadow[2]={},*actorVisibility=nullptr,*actorTiles[2]={},*actorTilesMid=nullptr;IDirect3DSurface9 *actorShadowSurface[2]={},*actorVisibilitySurface=nullptr,*actorTilesSurface[2]={},*actorTilesMidSurface=nullptr;
+    float actorMatrices[2][16]={};bool actorValid[2]={};bool nearActorSkip[2]={}; /* the near map was drawn without the replays its actor map holds: reusable only together with that actor map */V actorCenter[2];bool actorCenterValid[2]={}; /* leashed centre per source (actor_shadow_map.h leash) */unsigned long actorNearSkipped=0,actorDrawn=0;std::vector<uint32_t> actorReplays; /* the near loop's skipped replays: exactly what the actor map draws */DWORD actorShadowLogAt=0;
     IDirect3DPixelShader9* unionPS=nullptr;
     std::shared_ptr<const NorthlightLocalShadowSignature::Records> uploadedLocalShadowRecords;
     struct ShadowCacheKey {
@@ -427,10 +433,11 @@ private:
         ++shadowCacheVerified;if(differing){++shadowCacheVerifyMismatches;logf("WORLD shadow cache VERIFY MISMATCH slot=%d texels=%llu",slot,differing);}
         return true;
     }
-    void invalidateShadowCache(){staticCasters.settle();dropStaticDirtyJobs();for(auto& k:shadowCacheKey){k.valid=false;k.staticContent.valid=false;}for(auto& c:staticSlices)c.reset();pointCacheValid=false;for(int s=0;s<2;++s){farShadow[s].invalidate();nearShadow[s].invalidate();}}
+    void invalidateShadowCache(){staticCasters.settle();dropStaticDirtyJobs();for(auto& k:shadowCacheKey){k.valid=false;k.staticContent.valid=false;}for(auto& c:staticSlices)c.reset();pointCacheValid=false;for(int s=0;s<2;++s){farShadow[s].invalidate();nearShadow[s].invalidate();actorValid[s]=false;nearActorSkip[s]=false;actorCenterValid[s]=false;}}
     uint64_t liveChunkHash()const{uint64_t h=1469598103934665603ull;for(const auto& c:liveTerrainChunks){h^=uint64_t(uint32_t(c.first))*0x9E3779B97F4A7C15ull+uint64_t(uint32_t(c.second));h*=1099511628211ull;}return h;}
     IDirect3DPixelShader9 *cachedFastPS=nullptr,*cachedOpaqueFastPS=nullptr,*cachedOpaquePS=nullptr;
     IDirect3DPixelShader9 *lightingPS=nullptr,*giPS=nullptr,*fogPS=nullptr,*fogBlurPS=nullptr,*localDirectPS=nullptr,*removalPS=nullptr,*temporalPS=nullptr,*localFogPS=nullptr,*normalsPS=nullptr,*sourceVisPS=nullptr,*finalPS=nullptr,*shadowPS=nullptr,*cachedShadowPS=nullptr,*replayPS=nullptr;
+    IDirect3DPixelShader9 *actorShadowPS=nullptr,*actorTilesPS=nullptr; /* 0.3.209 (task 29): optional (with their targets); without them the actor shadow map stays off */
     // 0.3.199 (fog clouds): the moving fog banks' own half-resolution pass (FogClouds), its noise volume and the wind clock. The volume's bytes are
     // generated once per process on a worker thread (first active frame, never DllMain) and shared by every device; the holder is leaked on
     // purpose and the worker detached, so neither DLL unload nor process exit waits on a thread under the loader lock.
@@ -1497,6 +1504,7 @@ private:
         if(width==w&&height==h&&color)return true;
         releaseGPU();width=w;height=h;
         if(!check(d->CreatePixelShader(kWorldGIShader,&giPS),"world GI shader")||!check(d->CreatePixelShader(kWorldLightingShader,&lightingPS),"world lighting shader")||!check(d->CreatePixelShader(kWorldFogShader,&fogPS),"volume shader")||!check(d->CreatePixelShader(kFogBlurShader,&fogBlurPS),"volume blur shader")||!check(d->CreatePixelShader(kLocalDirectShader,&localDirectPS),"local direct light shader")||!check(d->CreatePixelShader(kRemovalSmoothShader,&removalPS),"removal smoothing shader")||!check(d->CreatePixelShader(kTemporalLightShader,&temporalPS),"temporal light shader")||!check(d->CreatePixelShader(kLocalFogShader,&localFogPS),"local fog glow shader")||!check(d->CreatePixelShader(kLocalFogCombineShader,&localFogCombinePS),"local fog combine shader")||!check(d->CreatePixelShader(kWorldNormalsShader,&normalsPS),"world normals shader")||!check(d->CreatePixelShader(kSourceVisibilityPSShader,&sourceVisPS),"source visibility shader")||!check(d->CreatePixelShader(kWorldCompositeShader,&finalPS),"world composite shader")||!check(d->CreatePixelShader(kShadowPSShader,&shadowPS),"shadow shader")||!check(d->CreatePixelShader(kShadowReplayPSShader,&replayPS),"replay shader")||!check(d->CreateVertexShader(kShadowVSShader,&shadowVS),"shadow vertex shader")||!check(d->CreateVertexShader(kShadowCacheVSShader,&cachedShadowVS),"cached shadow vertex shader")||!check(d->CreatePixelShader(kStaticCasterPSShader,&cachedShadowPS),"cached shadow depth shader"))return false;
+        if(quality.actorShadows&&quality.actorShadowDetail&&(FAILED(d->CreatePixelShader(kActorShadowShader,&actorShadowPS))||FAILED(d->CreatePixelShader(kActorTilesShader,&actorTilesPS)))){drop(actorShadowPS);drop(actorTilesPS);logf("WORLD actor shadow map disabled: shader creation failed");} /* 0.3.209 (task 29) */
         if(FAILED(d->CreatePixelShader(kFogCloudsShader,&fogCloudsPS))){fogCloudsPS=nullptr;logf("WORLD fog clouds disabled: shader creation failed");} /* 0.3.199 (fog clouds): optional, the rest of the world never depends on it */
         if(FAILED(d->CreatePixelShader(kFogTemporalShader,&fogTemporalPS))){fogTemporalPS=nullptr;logf("WORLD fog temporal disabled: shader creation failed");} /* 0.3.199 (fog temporal): optional as well, the raw fog is the fallback */
         // Optional equivalent variants; unsupported creation retains .95 depth semantics.
@@ -1508,12 +1516,25 @@ private:
         for(int i=0;i<4;++i)if(!target(ShadowCacheSize,ShadowCacheSize,D3DFMT_R32F,&shadowCache[i],&shadowCacheSurface[i]))return false;
         if(!check(d->CreateDepthStencilSurface(ShadowCacheSize,ShadowCacheSize,D3DFMT_D24S8,D3DMULTISAMPLE_NONE,0,TRUE,&shadowCacheDepth,nullptr),"shadow cache depth"))return false;
         if(!target(1024,1024,D3DFMT_R32F,&shadowScratch,&shadowScratchSurface))return false;
+        // 0.3.209 (task 29): the actor maps, their 64x64 tile minimum and the half-res visibility only with the shaders (ActorShadowDetail=1), and optional:
+        // a failure turns the actor shadow map off (0.3.207 shadows) instead of the world renderer. WorldLighting then reads neutralWhite.
+        if(actorShadowPS){
+            auto optional=[&](UINT tw,UINT th,D3DFORMAT fmt,IDirect3DTexture9** t,IDirect3DSurface9** s){
+                if(SUCCEEDED(d->CreateTexture(tw,th,1,D3DUSAGE_RENDERTARGET,fmt,D3DPOOL_DEFAULT,t,nullptr))&&SUCCEEDED((*t)->GetSurfaceLevel(0,s)))return true;
+                drop(*t);return false;};
+            const UINT tiles=NorthlightActorShadowMap::Size/NorthlightActorShadowMap::TileTexels;
+            if(!optional(NorthlightActorShadowMap::Size,NorthlightActorShadowMap::Size,D3DFMT_R32F,&actorShadow[0],&actorShadowSurface[0])||!optional(NorthlightActorShadowMap::Size,NorthlightActorShadowMap::Size,D3DFMT_R32F,&actorShadow[1],&actorShadowSurface[1])
+               ||!optional(NorthlightActorShadowMap::Size/NorthlightActorShadowMap::TileStep,NorthlightActorShadowMap::Size/NorthlightActorShadowMap::TileStep,D3DFMT_R32F,&actorTilesMid,&actorTilesMidSurface)||!optional(tiles,tiles,D3DFMT_R32F,&actorTiles[0],&actorTilesSurface[0])||!optional(tiles,tiles,D3DFMT_R32F,&actorTiles[1],&actorTilesSurface[1])||!optional(w/2,h/2,D3DFMT_A8R8G8B8,&actorVisibility,&actorVisibilitySurface)){
+                releaseActorTargets();logf("WORLD actor shadow map disabled: render targets unavailable");}
+        }
         if(!check(d->CreatePixelShader(kShadowUnionShader,&unionPS),"shadow union shader"))return false;
         invalidateShadowCache();
         {const UINT n=NorthlightGI::probeLayout().atlas;for(int i=0;i<5;++i)if(!check(d->CreateTexture(n*n,i==3?n*6:n,1,0,D3DFMT_A32B32G32R32F,D3DPOOL_MANAGED,&probe[i],nullptr),"GI probe texture"))return false;if(!probePrev&&FAILED(d->CreateTexture(n*n*3,n,1,0,D3DFMT_A32B32G32R32F,D3DPOOL_MANAGED,&probePrev,nullptr))){probePrev=nullptr;static bool logged=false;if(!logged){logged=true;logf("GI probe blend texture unavailable; same-key probe re-publication switches instantly");}}}
         // AO 1, bloom 0 for TemporalLight/WorldComposite on frames the proxy composites itself.
         if(!check(d->CreateTexture(1,1,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&neutralAO,nullptr),"neutral AO texture"))return false;
         {D3DLOCKED_RECT lock={};if(!check(neutralAO->LockRect(0,&lock,nullptr,0),"neutral AO lock"))return false;*static_cast<DWORD*>(lock.pBits)=0xff000000u;neutralAO->UnlockRect(0);}
+        if(!check(d->CreateTexture(1,1,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&neutralWhite,nullptr),"neutral white texture"))return false;
+        {D3DLOCKED_RECT lock={};if(!check(neutralWhite->LockRect(0,&lock,nullptr,0),"neutral white lock"))return false;*static_cast<DWORD*>(lock.pBits)=0xffffffffu;neutralWhite->UnlockRect(0);}
         if(!neutralZero){if(SUCCEEDED(d->CreateTexture(1,1,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&neutralZero,nullptr))){ /* 0.3.202 (rain): optional; without it the composite gets no rain mask */
             D3DLOCKED_RECT lock={};if(SUCCEEDED(neutralZero->LockRect(0,&lock,nullptr,0))){*static_cast<DWORD*>(lock.pBits)=0u;neutralZero->UnlockRect(0);}else drop(neutralZero);}}
         if(!target(w/2,h/2,D3DFMT_A16B16G16R16F,&baselineLight,&baselineSurface)||!target(w/2,h/2,D3DFMT_A16B16G16R16F,&light,&lightSurface)||!target(w/2,h/2,D3DFMT_A16B16G16R16F,&smoothLight,&smoothSurface)||!target(w/2,h/2,D3DFMT_A16B16G16R16F,&fog,&fogSurface)||!target(w/2,h/2,D3DFMT_A16B16G16R16F,&fogBlurred,&fogBlurredSurface)||!target(w/2,h/2,D3DFMT_A16B16G16R16F,&fogHistory,&fogHistorySurface)||!target(w/2,h/2,D3DFMT_A16B16G16R16F,&normalBuffer,&normalSurface)||!target(1,1,D3DFMT_A16B16G16R16F,&sourceVis[0][0],&sourceVisSurface[0][0])||!target(1,1,D3DFMT_A16B16G16R16F,&sourceVis[0][1],&sourceVisSurface[0][1])||!target(1,1,D3DFMT_A16B16G16R16F,&sourceVis[1][0],&sourceVisSurface[1][0])||!target(1,1,D3DFMT_A16B16G16R16F,&sourceVis[1][1],&sourceVisSurface[1][1])||!target(w/2,h/2,D3DFMT_A16B16G16R16F,&temporalLight[0],&temporalLightSurface[0])||!target(w/2,h/2,D3DFMT_A16B16G16R16F,&temporalLight[1],&temporalLightSurface[1])||!target(w/2,h/2,D3DFMT_R32F,&temporalDepth[0],&temporalDepthSurface[0])||!target(w/2,h/2,D3DFMT_R32F,&temporalDepth[1],&temporalDepthSurface[1])||!target(w,h,fmt,&color,&colorSurface))return false;
@@ -1844,6 +1865,7 @@ private:
         // 0.3.158: ActorShadows=0 forces the replay-derived keys off before anything reads them.
         const std::string forced=NorthlightQuality::forcedOff(quality);quality=NorthlightQuality::effective(quality);
         logf("QUALITY ActorShadows=%u: %s; forced off: %s",quality.actorShadows,quality.actorShadows?"actor and static shadows":"static shadows only",forced.c_str());
+        logf("QUALITY ActorShadowDetail=%u: %s",quality.actorShadowDetail,NorthlightQuality::actorShadowMap(quality,true)?"actor shadow map and soft filter":"actor shadows in the near cascade"); /* 0.3.209 (task 29) */
         NorthlightDiagnostics::configure(quality.diagnostics!=0);
         NorthlightRenderThreadProbe::configure(NorthlightQuality::renderProfile(quality),NorthlightQuality::replayProbe(quality));
         NorthlightWorldContext::SelfReadStats::timed.store(NorthlightQuality::renderProfile(quality),std::memory_order_relaxed); /* 0.3.160 */
@@ -1881,7 +1903,8 @@ public:
     ~WorldRenderer(){prepareWorker.join(); /* 0.3.179: first: an abandoned worker may still be inside a record */
         logSnapshotAb(); /* 0.3.181: the SNAPSHOT ab window at device destroy */
         {std::lock_guard<std::mutex> lock(mutex);stopping=true;}wake.notify_one();if(worker.joinable())worker.join();releaseGPU();for(auto& p:captureShaders)drop(p.second.replacement);for(auto& p:terrainShadowShaders)drop(p.second);}
-    void releaseGPU(){replayBoundsAbandon();releaseReplayProbe();staticCasters.settle();rigidMemoryClear();prepareQuiesce();neutralShadowMaps=false;prepareCaches->sampled.clear();prepareCaches->bones.clear();prepareCachesStale=false;if(replays.empty()&&heldShadowReplays.empty())prepareFrameRelease(); /* 0.3.179: no replay left to point at them */actorShadowHistory.clear();actorShadowOriginValid=false;replayBoundsMetadata.clear();replayBoundsCache.clear();declarationCache.clear();uploadedStaticOwners.reset();staticOwnerGeneration=UINT64_MAX;staticCasters.reset();staticMatcher.clear();staticScene.reset();staticRetryTick=0;stateBlocks.clear();uploadedTerrain.clear();liveTerrainIndexCount=liveDirectionalIndexCount=0;fixedTerrain.reset();fixedTerrainBits.reset();liveTerrainGeneration=0;drop(regionalFogTexture);drop(neutralAO);drop(neutralZero);rainMask=nullptr;uploadedFogField.reset();releasePointGPU();probeActivation.reset();probeBlend.reset();drop(baselineSurface);drop(baselineLight);releaseReplayGPU();liveTerrainGPU.clear();{auto& queries=fence();NorthlightDynamicRing::reset(liveIndexRing,0,queries);queries.drop();}drop(liveIndicesGPU);liveIndexBytes=0;liveIndexBase=0;pendingMesh.reset();clearMesh();retiredMaterials.clear();releaseMeshPool();uploadedMap.clear();for(auto& t:shadow)drop(t);for(auto& s:shadowSurface)drop(s);for(auto& t:shadowCache)drop(t);for(auto& s:shadowCacheSurface)drop(s);drop(shadowCacheDepth);drop(shadowVerifySurface);drop(shadowVerify);for(auto& r:shadowVerifyRead)drop(r);drop(shadowScratch);drop(shadowScratchSurface);drop(unionPS);invalidateShadowCache();for(auto& t:probe)drop(t);drop(probePrev);drop(shadowDepth);drop(lightSurface);drop(smoothSurface);drop(fogSurface);drop(fogBlurredSurface);drop(fogHistorySurface);drop(fogHistory);drop(fogTemporalPS);fogHistoryValid=false;drop(colorSurface);drop(light);drop(smoothLight);drop(fog);drop(fogBlurred);drop(color);drop(lightingPS);drop(giPS);drop(fogPS);drop(fogBlurPS);drop(fogCloudsPS);drop(cloudNoise);drop(localDirectPS);drop(removalPS);drop(temporalPS);drop(localFogPS);drop(localFogCombinePS);drop(localFogAccumSurface);drop(localFogAccum);drop(normalsPS);drop(normalBuffer);drop(normalSurface);drop(sourceVisPS);for(int a=0;a<2;++a)for(int b=0;b<2;++b){drop(sourceVis[a][b]);drop(sourceVisSurface[a][b]);}sourceVisValid=false;for(int i=0;i<2;++i){drop(temporalLight[i]);drop(temporalLightSurface[i]);drop(temporalDepth[i]);drop(temporalDepthSurface[i]);}temporalValid=false;drop(finalPS);drop(shadowPS);drop(replayPS);drop(shadowVS);drop(cachedShadowVS);drop(cachedShadowPS);drop(cachedFastPS);drop(cachedOpaqueFastPS);drop(cachedOpaquePS);drop(shadowDecl);width=height=0;uploadedSerial=0;}
+    void releaseActorTargets(){for(auto& t:actorShadow)drop(t);for(auto& t:actorShadowSurface)drop(t);for(auto& t:actorTiles)drop(t);for(auto& t:actorTilesSurface)drop(t);drop(actorTilesMid);drop(actorTilesMidSurface);drop(actorVisibility);drop(actorVisibilitySurface);drop(actorShadowPS);drop(actorTilesPS);}
+    void releaseGPU(){replayBoundsAbandon();releaseReplayProbe();staticCasters.settle();rigidMemoryClear();prepareQuiesce();neutralShadowMaps=false;prepareCaches->sampled.clear();prepareCaches->bones.clear();prepareCachesStale=false;if(replays.empty()&&heldShadowReplays.empty())prepareFrameRelease(); /* 0.3.179: no replay left to point at them */actorShadowHistory.clear();actorShadowOriginValid=false;replayBoundsMetadata.clear();replayBoundsCache.clear();declarationCache.clear();uploadedStaticOwners.reset();staticOwnerGeneration=UINT64_MAX;staticCasters.reset();staticMatcher.clear();staticScene.reset();staticRetryTick=0;stateBlocks.clear();uploadedTerrain.clear();liveTerrainIndexCount=liveDirectionalIndexCount=0;fixedTerrain.reset();fixedTerrainBits.reset();liveTerrainGeneration=0;drop(regionalFogTexture);drop(neutralAO);drop(neutralZero);rainMask=nullptr;uploadedFogField.reset();releasePointGPU();probeActivation.reset();probeBlend.reset();drop(baselineSurface);drop(baselineLight);releaseReplayGPU();liveTerrainGPU.clear();{auto& queries=fence();NorthlightDynamicRing::reset(liveIndexRing,0,queries);queries.drop();}drop(liveIndicesGPU);liveIndexBytes=0;liveIndexBase=0;pendingMesh.reset();clearMesh();retiredMaterials.clear();releaseMeshPool();uploadedMap.clear();for(auto& t:shadow)drop(t);for(auto& s:shadowSurface)drop(s);for(auto& t:shadowCache)drop(t);for(auto& s:shadowCacheSurface)drop(s);drop(shadowCacheDepth);drop(shadowVerifySurface);drop(shadowVerify);for(auto& r:shadowVerifyRead)drop(r);drop(shadowScratch);drop(shadowScratchSurface);releaseActorTargets();drop(neutralWhite);actorValid[0]=actorValid[1]=false;actorCenterValid[0]=actorCenterValid[1]=false;drop(unionPS);invalidateShadowCache();for(auto& t:probe)drop(t);drop(probePrev);drop(shadowDepth);drop(lightSurface);drop(smoothSurface);drop(fogSurface);drop(fogBlurredSurface);drop(fogHistorySurface);drop(fogHistory);drop(fogTemporalPS);fogHistoryValid=false;drop(colorSurface);drop(light);drop(smoothLight);drop(fog);drop(fogBlurred);drop(color);drop(lightingPS);drop(giPS);drop(fogPS);drop(fogBlurPS);drop(fogCloudsPS);drop(cloudNoise);drop(localDirectPS);drop(removalPS);drop(temporalPS);drop(localFogPS);drop(localFogCombinePS);drop(localFogAccumSurface);drop(localFogAccum);drop(normalsPS);drop(normalBuffer);drop(normalSurface);drop(sourceVisPS);for(int a=0;a<2;++a)for(int b=0;b<2;++b){drop(sourceVis[a][b]);drop(sourceVisSurface[a][b]);}sourceVisValid=false;for(int i=0;i<2;++i){drop(temporalLight[i]);drop(temporalLightSurface[i]);drop(temporalDepth[i]);drop(temporalDepthSurface[i]);}temporalValid=false;drop(finalPS);drop(shadowPS);drop(replayPS);drop(shadowVS);drop(cachedShadowVS);drop(cachedShadowPS);drop(cachedFastPS);drop(cachedOpaqueFastPS);drop(cachedOpaquePS);drop(shadowDecl);width=height=0;uploadedSerial=0;}
     // Explicit enable/retry only, called after the wrapper's clearFrame(). This
     // never calls endFrame(), so packet capture and cleanup run exactly once.
     void recover(){meshRetry.clear();if(!failed)return;releaseGPU();failed=false;valid=false;streamingReports=0;logf("WORLD explicit recovery requested");}
@@ -2080,6 +2103,7 @@ public:
             if(NorthlightGI::dot(sourceColors[source],sourceColors[source])<1e-10f)continue;
             copy(out.sourceShadowDirection[source],sourceDirections[source]);
             for(int cascade=0;cascade<2;++cascade){out.sourceShadows[source][cascade]=shadow[source*2+cascade];memcpy(out.sourceShadowMatrices[source][cascade],sourceMatrices[source][cascade],64);}
+            if(actorValid[source]&&actorShadow[source]){out.actorShadows[source]=actorShadow[source];memcpy(out.actorShadowMatrices[source],actorMatrices[source],64);out.actorShadowValid[source]=true;} /* 0.3.209 (task 29) */
         }
         return true;
     }
@@ -3023,6 +3047,17 @@ public:
         // Raw pivot above (ActorShadowRadius) and for the static caster request; the cascade frames,
         // their cache placement and the static prebuild use the jump-stable anchor.
         const bool anchorNewMap=cascadeAnchorMap!=lastRequest.map;if(anchorNewMap)cascadeAnchorMap=lastRequest.map; /* the requested map: the snapshot can lag */
+        // 0.3.209 (task 29): the actor shadow map is centred on a leashed anchor of the raw pivot (not texel-snapped, not the snapped cascade pivot): the pivot is
+        // camera-derived and drifts while the camera orbits an idle player, so the centre holds still within Leash and is dragged along beyond it. Per source; reset on a new map.
+        const bool actorMapOn=NorthlightQuality::actorShadowMap(quality,effects.shadows)&&actorShadowPS&&actorTilesPS&&actorShadow[0]&&actorShadow[1]&&actorTiles[0]&&actorTiles[1]&&actorTilesMid&&actorVisibility;
+        float actorFrameMatrix[2][16];bool actorFrameOn[2]={}; /* actorMapOn with a finite matrix: checked here once, not per replay in the near loop */
+        for(int source=0;source<2;++source){
+            if(anchorNewMap)actorCenterValid[source]=false;
+            if(!actorMapOn){actorCenterValid[source]=false;memset(actorFrameMatrix[source],0,64);continue;}
+            actorCenter[source]=NorthlightActorShadowMap::leash(actorCenter[source],actorCenterValid[source],pivot,sourceDirections[source]);actorCenterValid[source]=true;
+            NorthlightActorShadowMap::matrix(actorCenter[source],pivot,sourceDirections[source],actorFrameMatrix[source]);
+            actorFrameOn[source]=NorthlightActorShadowMap::finiteMatrix(actorFrameMatrix[source]);if(!actorFrameOn[source])actorCenterValid[source]=false;
+        }
         const V cascadePivot=cascadeAnchor.update(pivot,vec(context.camera),uint32_t(GetTickCount()),anchorNewMap);
         int firstSource=sourceActive[0]||!sourceActive[1]?0:1;
         NorthlightWorldMath::ShadowFrame cascadeFrames[2][2];
@@ -3079,6 +3114,7 @@ public:
         bool anyShadowCacheRender=false;
         ++shadowPasses;
         if(NorthlightStaticPrebuild::Scheduler::Enabled)for(int source=0;source<2;++source)staticPrebuild.observe(source,effects.shadows&&sourceActive[source],rawSourceDirections[source],GetTickCount());
+        for(int source=0;source<2;++source)if(!actorMapOn||!sourceActive[source])actorValid[source]=false; /* 0.3.209 (task 29): a source that draws no near map keeps no actor map */
         for(int source=0;source<2;++source){
           if(!effects.shadows||!sourceActive[source])continue;
           auto& matrices=sourceMatrices[source];bool nearRendered=false; /* this source's near map redrawn with fresh replays */
@@ -3187,13 +3223,17 @@ public:
             // and its prebuilt plan wait) and makes the next frame capture.
             auto& reuse=cascade?farShadow[source]:nearShadow[source];const unsigned interval=cascade?quality.farShadowInterval:quality.nearShadowInterval;
             const bool pull=cascade==1&&NorthlightQuality::pullFar(quality.nearShadowInterval,interval,shadowPasses,reuse,nearRendered);
-            const auto action=NorthlightQuality::cascadeAction(reuse,interval,shadowPasses,!reason&&key.valid&&!pull,diagnosticCapture!=0,replaysComplete);
+            // 0.3.209 (task 29): a near map drawn with the actor-map skip has no shadow of those casters of its own; once its actor map is gone (the source went
+            // inactive, ActorShadowDetail off, a non-finite frame) it is redrawn instead of reused.
+            const bool actorLost=cascade==0&&nearActorSkip[source]&&!actorValid[source];
+            const auto action=NorthlightQuality::cascadeAction(reuse,interval,shadowPasses,!reason&&key.valid&&!pull&&!actorLost,diagnosticCapture!=0,replaysComplete);
             cascadeActions[slot]=action==NorthlightQuality::CascadeAction::Render?'R':action==NorthlightQuality::CascadeAction::Defer?'D':'U';
             if(action!=NorthlightQuality::CascadeAction::Render){
                 if(action==NorthlightQuality::CascadeAction::Defer){captureDemand=true;++captureDeferrals;}else ++(cascade?farReuses:nearReuses);
                 memcpy(matrices[cascade],reuse.matrix,64);
                 if(profile)profile->mark(source==0?(cascade==0?"SunNear":"SunFar"):(cascade==0?"MoonNear":"MoonFar"));bucket(NorthlightEffectsBuckets::Bucket(NorthlightEffectsBuckets::SunNear+source*2+cascade));continue;}
             reuse.begin(interval); /* nothing written yet; a failure below stays unusable */
+            if(cascade==0)actorValid[source]=nearActorSkip[source]=false; /* 0.3.209 (task 29): redrawn with this near map below; a reused near map (above) keeps the actor map and matrix it was made with */
             if(cascade==0)nearRendered=captureMode==CaptureFresh&&interval>1&&actorShadows;
             if(NorthlightStaticPrebuild::Scheduler::Enabled&&reason)staticPrebuild.rerender(source,cascade,cachedMatrix,!std::strcmp(reason,"direction"),staticCasters.planReady(cachedMatrix),[&](const float* m){staticCasters.discardPlan(m);});
             if(reason){
@@ -3260,6 +3300,12 @@ public:
             // records them for the probe and is timed as a whole. Every other frame (always with
             // RenderProfile=0) runs the Off instantiation, whose hooks are empty: the 0.3.148 loop.
             const bool profiled=profileSampled(),probeRecord=replayProbeActive()&&slot==0&&captureMode==CaptureFresh&&!diagnosticCapture;
+            // 0.3.209 (task 29): the near cascade leaves the replays wholly inside the actor map's inset to the actor map, which draws
+            // exactly those (actorReplays): no replay is drawn into both. The list is reserved first, so recording a skip never throws.
+            bool nearSkip=cascade==0&&actorFrameOn[source];
+            if(nearSkip){actorReplays.clear();try{actorReplays.reserve(replays.size());}catch(...){nearSkip=false;}}
+            if(cascade==0)nearActorSkip[source]=nearSkip;
+            unsigned nearSkipped=0;
             auto replayLoop=[&](auto& split)->bool{
               using NorthlightRenderThreadProbe::Own;
               split.start();
@@ -3273,6 +3319,7 @@ public:
                     if(key.staticContent.valid&&!key.staticContent.contains(p->staticProofModel,p->staticProofRevision))++staticDedupUncommitted;
                     ++staticDedupSkipped;continue;
                 }
+                if(nearSkip&&NorthlightActorShadowMap::insideInset(p->pointBounds.valid,p->pointBounds.low,p->pointBounds.high,actorFrameMatrix[source])){actorReplays.push_back(uint32_t(index));++nearSkipped;continue;}
                 ++replaySlotTested[slot];replaySlotBounded[slot]+=p->pointBounds.valid;
                 if(p->pointBounds.valid&&(cull?(cull[index]&2)!=0:NorthlightShadowBounds::clipReject(V(p->pointBounds.low[0],p->pointBounds.low[1],p->pointBounds.low[2]),V(p->pointBounds.high[0],p->pointBounds.high[1],p->pointBounds.high[2]),matrices[cascade]))){++culledReplayDraws;++replaySlotCulled[slot];continue;}
                 split.mark(Own);
@@ -3308,6 +3355,32 @@ public:
             // diagnostic capture frame (probeRecord), so it may precede the live dump below.
             if(probeRecord&&!split.recordFailed){const bool marks=profile&&replayProbeMode!=NorthlightRenderThreadProbe::ProbeOff;
                 if(marks)profile->mark("SunNearLoop");replayProbe(rows,realLoopMs);if(marks)profile->mark("ReplayProbe");}
+            if(cascade==0&&actorFrameOn[source]){ // 0.3.209 (task 29): this source's actor map, in the same iteration as its near map (same replays, same frame)
+                if(profile)profile->mark(source==0?"SunNearReplays":"MoonNearReplays");bucket(NorthlightEffectsBuckets::Bucket(NorthlightEffectsBuckets::SunNear+source*2)); /* the near terrain and replays so far (own mark name: SunNear/MoonNear follow the union); the actor map is billed on its own below */
+                const float* am=actorFrameMatrix[source];
+                d->SetDepthStencilSurface(nullptr);if(!check(d->SetRenderTarget(0,actorShadowSurface[source]),"actor shadow target"))return false;
+                d->SetDepthStencilSurface(shadowDepth);d->SetViewport(&vp);
+                if(!check(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0xffffffff,1,0),"clear actor shadow"))return false;
+                float actorRows[16];NorthlightWorldMath::replayProjection(context.inverseView,am,actorRows);
+                d->SetVertexShaderConstantF(0,am,4);d->SetPixelShader(replayPS);
+                NorthlightReplayPoses::Pass<BOOL> actorPoses;NorthlightReplayDrawState::Cache actorBindings(d);
+                NorthlightRenderThreadProbe::Off actorSplit;unsigned drawnHere=0;
+                // Only the replays the near loop above skipped (static proof already excluded there, all inside the inset): a replay
+                // partly outside it, or without bounds, stays in the near map alone (it was drawn into both before, twice the cost
+                // in crowds and with a low sun, whose long footprint brings many far replays into the map).
+                if(nearSkip)for(const uint32_t index:actorReplays){const auto& p=replays[index];
+                    if(!submitReplay(p.get(),actorBindings,actorPoses,actorRows,actorSplit,replayConstantBytes,replayConstantCalls,[&](HRESULT h,const char* s){return check(h,s);}))return false;
+                    ++drawnHere;
+                }
+                replayPosePrepared+=actorPoses.prepared;replayPoseReused+=actorPoses.reused;
+                if(diagnosticCapture){char name[80];std::snprintf(name,sizeof name,"s%d-actor",source);NorthlightWorldDiagnostics::dump(d,actorShadowSurface[source],gpuDiagnosticDirectory,name,diagnosticCapture);}
+                memcpy(actorMatrices[source],am,64);actorValid[source]=true;
+                if(profile)profile->mark(source==0?"SunActor":"MoonActor");bucket(NorthlightEffectsBuckets::Bucket(NorthlightEffectsBuckets::SunActor+source));
+                actorNearSkipped+=nearSkipped;actorDrawn+=drawnHere;
+                const DWORD actorTick=GetTickCount();
+                if(NorthlightDiagnostics::enabled()&&(!actorShadowLogAt||actorTick-actorShadowLogAt>=1000)){actorShadowLogAt=actorTick;
+                    logf("WORLD actor shadow map source=%d drawn=%u nearSkipped=%u of %zu replays; totals drawn=%lu nearSkipped=%lu",source,drawnHere,nearSkipped,replays.size(),actorDrawn,actorNearSkipped);}
+            }
             } /* actorShadows */
             // Union: min(dynamic scratch, cached static at its integer texel offset + exact depth delta).
             if(diagnosticCapture){
@@ -3481,6 +3554,48 @@ public:
         d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE);d->SetRenderState(D3DRS_COLORWRITEENABLE,15);
         d->SetRenderTarget(0,normalSurface);d->SetPixelShader(normalsPS);if(!check(quad(w/2,h/2),"world normals pass"))return false;
         d->SetTexture(14,normalBuffer);d->SetSamplerState(14,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(14,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);d->SetSamplerState(14,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(14,D3DSAMP_MAGFILTER,D3DTEXF_POINT);d->SetSamplerState(14,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(14,D3DSAMP_SRGBTEXTURE,FALSE);
+        // 0.3.209 (task 29): actor visibility (half res, r sun, g moon). Per drawn source with an actor map, first its 64x64 tile minimum (ActorTiles in
+        // two 4x4 steps, 1024 -> 256 (shared target) -> 64 (own target per source); one 256-tap step was latency bound, ~.15 ms), then the visibility target is cleared white and gets one ActorShadow pass per source masked to its channel (s12 the actor
+        // map, s10 its tiles; s10 is rebound to the probe metadata after). All tile passes come first, so the visibility target is cleared and drawn in one
+        // run without switching away from it (a switch made a tiled GPU store and reload the half-res target, ~.07 ms). A frame without any pass
+        // (ActorShadowDetail=0, shadows off, no valid map) skips the target and its clear: WorldLighting reads neutralWhite on s12 instead.
+        // At dusk both sources draw a pass, each refetching depth and normals: the tile early out keeps the lit majority at four taps in both.
+        if(profile)profile->mark("WorldNormals");bucket(NorthlightEffectsBuckets::Lighting); /* 0.3.209 (task 29): the normals pass, so ActorShadow below is billed alone */
+        bool actorPass[2]={},anyActorPass=false;
+        for(int source=0;source<2;++source){
+            actorPass[source]=!((sourceWeights[source]<=0&&source!=firstSource)||!effects.shadows||!sourceActive[source]||!actorValid[source]||!actorShadow[source]||!actorShadowPS||!actorTilesPS||!actorTiles[source]||!actorTilesMid||!actorVisibility);
+            anyActorPass=anyActorPass||actorPass[source];
+        }
+        const float actorInfo[4]={1.f,1.f/float(NorthlightActorShadowMap::Size),NorthlightActorShadowMap::Radius,0.f};
+        if(anyActorPass){
+            d->SetPixelShader(actorTilesPS);
+            const UINT mid=NorthlightActorShadowMap::Size/NorthlightActorShadowMap::TileStep,tiles=NorthlightActorShadowMap::Size/NorthlightActorShadowMap::TileTexels;
+            const float midInfo[4]={1.f,1.f/float(mid),NorthlightActorShadowMap::Radius,0.f};
+            for(int source=0;source<2;++source){
+                if(!actorPass[source])continue;
+                if(!check(d->SetRenderTarget(0,actorTilesMidSurface),"actor tile target"))return false;
+                d->SetTexture(12,actorShadow[source]);d->SetPixelShaderConstantF(72,actorInfo,1);
+                if(!check(quad(mid,mid),"actor shadow tile pass"))return false;
+                if(!check(d->SetRenderTarget(0,actorTilesSurface[source]),"actor tile target"))return false;
+                d->SetTexture(12,actorTilesMid);d->SetPixelShaderConstantF(72,midInfo,1);
+                if(!check(quad(tiles,tiles),"actor shadow tile pass"))return false;
+            }
+            if(profile)profile->mark("ActorTiles");
+            if(!check(d->SetRenderTarget(0,actorVisibilitySurface),"actor visibility target")||!check(d->Clear(0,nullptr,D3DCLEAR_TARGET,0xffffffff,1,0),"clear actor visibility"))return false;
+        }
+        for(int source=0;source<2;++source){
+            if(!actorPass[source])continue;
+            setSource(source,false); /* c16 direction, c17 colour, c7/c11 maps: the bank ActorShadow reads (the lighting loop sets them again) */
+            d->SetPixelShaderConstantF(68,actorMatrices[source],4);d->SetPixelShaderConstantF(72,actorInfo,1);
+            d->SetTexture(12,actorShadow[source]);d->SetTexture(10,actorTiles[source]);
+            d->SetRenderState(D3DRS_COLORWRITEENABLE,source?D3DCOLORWRITEENABLE_GREEN:D3DCOLORWRITEENABLE_RED);
+            d->SetPixelShader(actorShadowPS);
+            if(!check(quad(w/2,h/2),"actor shadow visibility pass"))return false;
+        }
+        d->SetRenderState(D3DRS_COLORWRITEENABLE,15);
+        if(anyActorPass)d->SetTexture(10,textures[10]); /* the frame-start binding (probe metadata) again */
+        if(profile)profile->mark("ActorShadow");bucket(NorthlightEffectsBuckets::ActorShadow);
+        d->SetTexture(12,anyActorPass?actorVisibility:neutralWhite);
         d->SetRenderTarget(0,lightSurface);d->SetPixelShader(lightingPS);
         bool first=true;
         // A strength-zero source still subtracts its authored surface share.
@@ -3492,6 +3607,7 @@ public:
         }
         d->SetRenderTarget(1,nullptr);
         d->SetRenderState(D3DRS_COLORWRITEENABLE,15);
+        d->SetTexture(12,textures[12]); /* 0.3.209 (task 29): the frame-start binding (null) again; the visibility was WorldLighting's only */
         if(profile)profile->mark("WorldLighting");
         bucket(NorthlightEffectsBuckets::Lighting);
         d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE);d->SetRenderState(D3DRS_COLORWRITEENABLE,7);d->SetPixelShader(giPS);

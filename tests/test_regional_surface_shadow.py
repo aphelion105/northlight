@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parent
 shader = fp.src('world_effects.hlsl').read_text()
 assert 'float3 sun=DirectLight.rgb*saturate(dot(n,LegacyDirection.xyz))*sunVisibility;' in shader and 'float visibility=lerp(1,shadow,GridInfo.z);' in shader # 0.3.198 (rain): sunVisibility = visibility unless c59.z softens it
 assert 'lerp(sun,moon,SunDirection.w)' in shader
-assert 'if(dot(DirectLight.rgb,1)>0)shadow=directionalShadow' in shader
+assert 'if(dot(DirectLight.rgb,1)>0){shadow=directionalShadow' in shader and 'shadow=min(shadow,SunDirection.w>.5?actor.g:actor.r);}' in shader # 0.3.209 (task 29): the actor map's visibility joins in the same branch
 # 0.3.170: near cascade 5x5 tent (radius 2.5), far cascade unchanged 4x4 (radius 2).
 assert '[loop]for(int i=0;i<25;++i)' in shader and 'if(i>=size*size)break;' in shader
 assert 'float size=useNear?5:4,reach=size*.5;' in shader and 'float start=useNear?-2:-1;' in shader

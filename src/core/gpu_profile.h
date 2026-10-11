@@ -12,7 +12,8 @@
 class NorthlightGpuProfile {
     // 0.3.149: 20 marks (was 16): room for DiagReplayProbe's SunNearLoop/ReplayProbe with both sources active.
     // 0.3.201 (task 18): 24 marks: the AOBlur pass adds one, and a folded frame the world did not composite adds AOComposite.
-    static constexpr unsigned RingSize=6,MaxMarks=24,StampCount=MaxMarks+2;
+    // 0.3.209 (task 29): 32 marks: SunActor/MoonActor, ActorTiles, ActorShadow, WorldNormals and SunNearReplays/MoonNearReplays.
+    static constexpr unsigned RingSize=6,MaxMarks=32,StampCount=MaxMarks+2;
     static constexpr uint64_t SamplePeriod=120;
     struct Slot {
         IDirect3DQuery9* stamps[StampCount]={};
