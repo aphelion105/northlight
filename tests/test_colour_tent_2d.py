@@ -7,14 +7,14 @@ apart: at a grazing view the ground depth changes by several tolerances per texe
 nearest-depth fallback picks one) and keeps the wall's near-zero removal: a light pixel run on the staircase. WorldComposite's lighting, baseline and
 AO tent taps (not the fog tent) are now also weighted by 2^(-16 |Lc-Lt|/(Lc+Lt+.02)), Lc the centre pixel's scene luminance, Lt the scene
 luminance at the tap's own sample pixel (depthUV of the texel), and the nearest-depth fallback picks the tap with the least
-(depth bits / 4 + colour bits). A sand pixel then rejects a dark face turned away and vice versa; an MSAA edge pixel of mixed colour takes both.
+(depth bits / 4 + colour bits): the full depth bits would pick a wall texel again for a top-row ground pixel (measured here). A sand pixel then rejects a dark face turned away and vice versa; an MSAA edge pixel of mixed colour takes both.
 
 Emulation (pinhole 1920x1080, texel i = pixel 2i+1, WorldNormals port, night correction from the normal, smoothRemoval, the exact composite tent
 with the .02 fallback, baseline mixing, albedoT clamp, -45% floor; MSAA 4x = mean of the D3D pattern samples, depth = sample 0; albedo noise +-15%).
 Error = composite - ideal (every sample relit by its own surface), /255. Also: flat textured ground with a penumbra / a hard shadow edge / lit
 (K=16 against K=0 deviation). One lighting-side change ships with the tent: colour-guided one-sided normals in WorldNormals (the 'ncol' option). smoothRemoval
-is the original one (a confidence-0 centre skips the normal test; an always-on test, the 'agree0' option, was measured and dropped: it
-regressed some wall spots in game). The tent and the colour normals together clear most of the staircase. No game, Wine or GPU."""
+is the original one (a confidence-0 centre skips the normal test; an always-on test was measured and dropped: it regressed some wall
+spots in game). The tent and the colour normals together clear most of the staircase. No game, Wine or GPU."""
 import sys; from pathlib import Path; sys.path.insert(0,str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp; fp.use_source_modules()
 import json,math
@@ -25,10 +25,10 @@ def norm(v):
     m=math.sqrt(sum(a*a for a in v));return tuple(a/m for a in v)
 LG=norm((.2,.5,.85))  # toward the source, world (X right, Y up, S forward)
 class Scene:
-    def __init__(s,S0,pitch_deg,yaw_deg,Hw=60.,pitch_extra=0.,ao=False,pull=True,gates=True):
+    def __init__(s,S0,pitch_deg,yaw_deg,Hw=60.):
         s.cp=math.cos(math.radians(pitch_deg));s.sp=math.sin(math.radians(pitch_deg))
         s.wx=math.sin(math.radians(yaw_deg));s.ws=math.cos(math.radians(yaw_deg));s.d=S0*s.ws;s.Hw=Hw
-        s.zc={};s.nc={};s.lc={};s.rc={};s.pull=pull
+        s.zc={}
     def cast(s,px,py):
         key=(px,py)
         if key in s.zc:return s.zc[key]
@@ -68,9 +68,8 @@ def cast_s(sc,px,py,si):
     return 's',1e4,(rx,ry)
 def s_div(a,b):return a/b if b>1e-9 else None
 class Emu:
-    def __init__(s,sc,msaa=True,pull=True,gates=True,opt=(),K=0.,fb='depth',noise=0.,eps=.02,lightfn=None,Sd=1.):
-        s.Sd=Sd
-        s.K=K;s.fb=fb;s.noise=noise;s.eps=eps;s.lightfn=lightfn;s.opt=opt;s.sc=sc;s.msaa=msaa;s.pull_on=pull;s.d0={};s.nrm={};s.light={};s.out={};s.col={};s.gates=gates
+    def __init__(s,sc,msaa=True,opt=(),K=0.,fb='depth',noise=0.,eps=.02,lightfn=None):
+        s.K=K;s.fb=fb;s.noise=noise;s.eps=eps;s.lightfn=lightfn;s.opt=opt;s.sc=sc;s.msaa=msaa;s.d0={};s.nrm={};s.light={};s.out={};s.col={}
     # depth read by every effect: sample 0 (or the centre without MSAA)
     def depth(s,px,py):
         px=min(max(px,0),W-1);py=min(max(py,0),H-1)
@@ -154,7 +153,7 @@ class Emu:
             tx=min(max(math.floor(i+.5+dx*r),0),HW-1);ty=min(max(math.floor(j+.5+dy*r),0),HH-1)
             l=s.rawL(tx,ty);nt=s.normal(tx,ty)
             agree=min(max((sum(a*b for a,b in zip(n0[:3],nt[:3]))-.6428)*5.67,0),1)
-            w=2**(abs(s.z(tx,ty)-z)*ds)*min(max(1-abs(l[2]-cur[2])*vs,0),1)*(agree if (n0[3]>.5 or 'agree0' in s.opt) else 1)
+            w=2**(abs(s.z(tx,ty)-z)*ds)*min(max(1-abs(l[2]-cur[2])*vs,0),1)*(agree if n0[3]>.5 else 1)
             sm+=max(l[0]/s.scale(tx,ty),-.45)*w;tot+=w
             dx,dy=dx*-.7373688-dy*.6754903,dx*.6754903-dy*.7373688;t+=1
         return (ratio+(sm/tot-ratio)*amount)*s.scale(i,j)
@@ -164,61 +163,9 @@ class Emu:
             if s.depth(2*i+1,2*j+1)[0]=='s':s.out[(i,j)]=s.rawL(i,j)[0]
             else:s.out[(i,j)]=s.smooth_removal(i,j)
         return s.out[(i,j)]
-    SM_CACHE=None
-    def pulled(s,i,j):
-        """RemovalSmooth output: smoothRemoval, then (pull=True, an option kept only for comparison with the dropped contact pull) a pull toward neighbours; they read the RAW buffer like the shader."""
-        k=('p',i,j)
-        if k in s.out:return s.out[k]
-        c=s.smoothed(i,j);kind,z,pc=s.depth(2*i+1,2*j+1)
-        if kind=='s' or not s.pull_on:s.out[k]=c;return c
-        a0=s.rawL(i,j)[2];n0=s.normal(i,j)
-        L=LG   # moon: SunDirection.w=1 -> source direction; the test uses the same vector
-        gate0=max(min(max((1-a0)/.85,0),1),min(max(1-10*sum(a*b for a,b in zip(n0[:3],L)),0),1))
-        removal=min(c,0);delta=0.;tol=max(.15,z*.01);texel=4*z/(F*2)   # half-res texel footprint at z: 2 px, pixel=z/F
-        texel=2*z/F
-        for a in (0,1,2,3,5,6,7,8):
-            ox,oy=a%3-1,a//3-1
-            ti,tj=min(max(i+ox,0),HW-1),min(max(j+oy,0),HH-1)
-            dkind,zn,pn=s.depth(2*ti+1,2*tj+1)
-            if dkind=='s':continue
-            ui,uj=min(max(i+2*ox,0),HW-1),min(max(j+2*oy,0),HH-1)
-            d2k,z2,_=s.depth(2*ui+1,2*uj+1)
-            slack=min(abs(zn-z2)*(1.5 if 'slack' in s.opt else 1.),.35*z) if d2k!='s' else 0.
-            ln=s.rawL(ti,tj);nn=s.normal(ti,tj)
-            ng=min(max((.6428-sum(x*y for x,y in zip(n0[:3],nn[:3])))*3.3223,0),1)
-            dp=[pn[t]-pc[t] for t in range(3)]
-            # n0 world -> view
-            sc=s.sc;fwd=(0,-sc.sp,sc.cp);up=(0,sc.cp,sc.sp)
-            nv=(n0[0],sum(x*y for x,y in zip(n0[:3],up)),sum(x*y for x,y in zip(n0[:3],fwd)))
-            conc=min(max(sum(x*y for x,y in zip(dp,nv))*(4/texel)+1,0),1)
-            sh=min(max((1-ln[2])/.85,0),1)
-            if 'conf0' in s.opt and n0[3]<.5:ng=1.
-            p=ng*math.exp(-max(abs(zn-z)-slack,0)/tol)*(conc*gate0*sh if s.gates else 1.)
-            if 'boost' in s.opt:p=min(p*1.5,1.)
-            delta=min(delta,p*(min(ln[0],0)-removal))
-        s.out[k]=c+delta;return s.out[k]
     # ---- WorldComposite, one full-res pixel ----
-    def zeff(s,px,py):
-        """effects-depth pre-pass: at a 3x3 depth discontinuity pick the candidate depth whose nearest tent texel has the most removal (k)."""
-        kind,z,_=s.depth(px,py)
-        if kind=='s':return z
-        tol=max(.15,z*.01);cands=[z]
-        for oy in (-1,0,1):
-            for ox in (-1,0,1):
-                k2,z2,_=s.depth(px+ox,py+oy)
-                if k2!='s' and abs(z2-z)>tol:cands.append(z2)
-        if len(cands)==1:return z
-        grid=((px+.5)/2-.5,(py+.5)/2-.5);bx,by=math.floor(grid[0]),math.floor(grid[1])
-        tex=[(min(max(bx+(t&1),0),HW-1),min(max(by+(t>>1),0),HH-1)) for t in range(4)]
-        best=None
-        for c in cands:
-            ti,tj=min(tex,key=lambda a:abs(s.depth(2*a[0]+1,2*a[1]+1)[1]-c))
-            k=s.pulled(ti,tj)/max(s.rawL(ti,tj)[1],.15)
-            if best is None or k<best[0]-1e-12:best=(k,c)
-        return best[1]
     def composite(s,px,py):
         kind,z,_=s.depth(px,py)
-        if 'zeff' in s.opt:z=s.zeff(px,py)
         O=s.colour(px,py)
         if kind=='s':return O
         grid=((px+.5)/2-.5,(py+.5)/2-.5);bx,by=math.floor(grid[0]),math.floor(grid[1]);fx,fy=grid[0]-bx,grid[1]-by
@@ -229,9 +176,9 @@ class Emu:
             zn=s.depth(2*ti+1,2*tj+1)[1];delta=abs(zn-z)
             lt=s.colour(2*ti+1,2*tj+1);cd=abs(O-lt)/(O+lt+s.eps)*s.K
             w=bl*math.exp(-delta/max(.15,z*.01))*2**(-cd)
-            c=s.pulled(ti,tj);b=s.rawL(ti,tj)[1]
+            c=s.smoothed(ti,tj);b=s.rawL(ti,tj)[1]
             bounce+=c*w;baseline+=b*w;total+=w
-            metric=delta if s.fb=='depth' else delta/max(.15,z*.01)*1.4427/s.Sd+cd
+            metric=delta if s.fb=='depth' else delta/max(.15,z*.01)*1.4427/4+cd
             if metric<closest:closest=metric;fb=(c,b)
         if total<.02:bounce,baseline,total=fb[0],fb[1],1.
         inv=1/max(total,1e-4);bounce*=inv;old=max(baseline*inv,.15)
@@ -252,7 +199,7 @@ class Emu:
 
 def edge(S0,yaw,msaa,K,off,opt=(),noise=.15,x0=960,x1=1040):
     pitch=math.degrees(math.atan(CH/S0))+off
-    sc=Scene(S0,pitch,yaw);em=Emu(sc,msaa=msaa,pull=False,opt=opt,K=K,fb='color' if K else 'depth',noise=noise,Sd=4.)
+    sc=Scene(S0,pitch,yaw);em=Emu(sc,msaa=msaa,opt=opt,K=K,fb='color' if K else 'depth',noise=noise)
     n8=0;mx=-99;mn=99
     for x in range(x0,x1):
         top=None
@@ -267,7 +214,7 @@ def edge(S0,yaw,msaa,K,off,opt=(),noise=.15,x0=960,x1=1040):
 def flat(K,fn,S0=100.,noise=.15,opt=()):
     pitch=math.degrees(math.atan(CH/S0))+3.;res=[]
     for k in (0,K):
-        sc=Scene(S0,pitch,82.);em=Emu(sc,msaa=True,pull=False,K=k,fb='color' if k else 'depth',noise=noise,Sd=4.,lightfn=fn,opt=opt if k else ())
+        sc=Scene(S0,pitch,82.);em=Emu(sc,msaa=True,K=k,fb='color' if k else 'depth',noise=noise,lightfn=fn,opt=opt if k else ())
         res.append([em.composite(x,700) for x in range(900,1100)])
     return round(max(abs(a-b) for a,b in zip(*res))*255,2)
 def pen(width):
@@ -283,11 +230,10 @@ comp=hlsl[hlsl.index('float4 WorldComposite('):hlsl.index('// Separate geometry 
 checks['WorldComposite: lighting/baseline/AO taps weighted by the colour term, fog tent untouched, no contactPull left']=(
     'float tapLuma=dot(tex2Dlod(Scene,float4(tapUV,0,0)).rgb,float3(.299,.587,.114));' in comp
     and 'float guide=16*abs(centreLuma-tapLuma)/(centreLuma+tapLuma+.02),bits=delta*depthBits;' in comp
-    and 'float weight=blend.x*blend.y*exp2(-bits-guide);' in comp and 'if(mad(bits,.25,guide)<closest)' in comp
+    and 'float weight=blend.x*blend.y*exp2(-bits-guide);' in comp and 'float score=mad(bits,.25,guide);' in comp and 'if(score<closest){closest=score;' in comp
     and 'depthBits=1.4427/max(.15,center*.01)' in comp and 'blend.x*blend.y*exp(-fogDelta/max(.2,viewZ*.02))' in comp
     and 'contactPull' not in hlsl and 'if(total<.02){bounce=fallbackLight.rgb;' in comp)
-import json as _j
-man=_j.loads(fp.src('world-shader-build.json').read_text())['shaders'] if hasattr(fp,'src') else {}
+man=json.loads(fp.src('world-shader-build.json').read_text())['shaders']
 checks[f"slots: WorldNormals {man['WorldNormals']['static_instruction_slots']} / {man['WorldNormals']['temporary_registers']} of 32 temporaries (was 434 / 29), WorldComposite {man['WorldComposite']['static_instruction_slots']} (was 507), RemovalSmooth {man['RemovalSmooth']['static_instruction_slots']} (unchanged), all <= 512"]=(
     man['WorldNormals']['static_instruction_slots']==483 and man['WorldNormals']['temporary_registers']<=32 and man['WorldComposite']['static_instruction_slots']==509
     and man['RemovalSmooth']['static_instruction_slots']==263)

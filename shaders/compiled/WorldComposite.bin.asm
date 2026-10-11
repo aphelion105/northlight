@@ -205,6 +205,7 @@ rep i0.xyzw
         add r25.w, -r25.x, -r25.y
         exp r17.z, r25.w
         mul r25.z, r25.z, r17.z
+        mad r25.x, r25.x, c76.x, r25.y
         mov r22.xyzw, c70.xyzw
         mov r22.xy, r23.yzyy
         mov r26.xyzw, r22.xyzw
@@ -220,19 +221,18 @@ rep i0.xyzw
         mov r29.xyz, r6.xyzx
         mad r29.xyz, r26.xyzx, r25.z, r29.xyzx
         mov r6.xyz, r29.xyzx
-        mov r25.w, r4.w
-        mad r25.w, r26.w, r25.z, r25.w
-        mov r4.w, r25.w
+        mov r25.y, r4.w
+        mad r25.y, r26.w, r25.z, r25.y
+        mov r4.w, r25.y
         mov r29.xyz, r5.xyzx
         mad r29.xyz, r27.xyzx, r25.z, r29.xyzx
         mov r5.xyz, r29.xyzx
-        mov r25.w, r8.w
-        mad r25.w, r28.w, r25.z, r25.w
-        mov r8.w, r25.w
-        mov r25.w, r5.w
-        add r25.z, r25.w, r25.z
-        mov r5.w, r25.z
-        mad r25.x, r25.x, c76.x, r25.y
+        mov r25.y, r8.w
+        mad r25.y, r28.w, r25.z, r25.y
+        mov r8.w, r25.y
+        mov r25.y, r5.w
+        add r25.y, r25.y, r25.z
+        mov r5.w, r25.y
         mov r25.y, r6.w
         add r25.y, r25.x, -r25.y
         cmp r25.y, r25.y, c68.z, c69.w

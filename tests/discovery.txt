@@ -26,13 +26,12 @@ test_client_archive_order.py
 test_client_archives.py
 test_client_config.py
 test_client_identity.py
+test_colour_tent_2d.py
 test_command_stream.py
 test_command_stream_wiring.py
 test_concurrent_geometry_build.py
 test_contact_lighting.py
 test_contact_normal_endpoints.py
-
-test_colour_tent_2d.py
 test_device_mirror.py
 test_diagnostics_switch.py
 test_dll_memcmp.py

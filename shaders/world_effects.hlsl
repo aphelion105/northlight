@@ -91,6 +91,10 @@ float normalizedDepth(float2 uv) {
     // Callers pass an explicit depth texel center, never a half-res boundary.
     return saturate((tex2Dlod(Depth,float4(uv,0,0)).r-Projection.w)*DepthParams.x);
 }
+// normalizedDepth through texld (1 slot; tex2Dlod costs 3-4), only before any flow control: Depth has one level.
+float normalizedDepthFlat(float2 uv) {
+    return saturate((tex2D(Depth,uv).r-Projection.w)*DepthParams.x);
+}
 float viewDistance(float d) {
     return ImageClip.z*ImageClip.w/max(ImageClip.w-d*(ImageClip.w-ImageClip.z),.00001);
 }
@@ -327,10 +331,10 @@ float3 wideNeighbour(float2 uv,float2 dir,float pixels,float3 center,float cente
 // the neighbouring surface. Suppress uncertain positive bounce and normal
 // bias there, but retain ambient occlusion: skipping negative GI exposed
 // a bright native-ambient seam where the ground touches a wall.
-// c, step: the centre texel and the one-pixel step of this axis; the colour difference of the b1 side minus that of the a1 side (negative: b1 looks more like the centre) picks the one-sided
-// tangent then follows the side that looks like the centre (sand next to a dark face turned away at a wall foot), because the closer
-// side in depth is the wall there for a ground pixel and the ground for a wall pixel alike. The depth rule decides when the two
-// differ by less than .05.
+// c, step: the centre texel and the one-pixel step of this axis. The one-sided tangent follows the side whose colour looks
+// more like the centre (sand next to a dark face turned away at a wall foot), not the closer side in depth: at a wall foot
+// the closer side is the wall for a ground pixel and the ground for a wall pixel alike. When the two sides' relative
+// colour differences (the composite tent's metric) differ by less than .05, the closer side in depth decides.
 float3 tangentAxis(float3 p,float3 a,float3 b,float3 a1,float3 b1,float2 c,float2 step,inout float confidence) {
     float3 da=p-a,db=b-p;
     if(dot(da,db)*rsqrt(max(dot(da,da)*dot(db,db),1e-12))>=.85)return b-a;
@@ -338,6 +342,7 @@ float3 tangentAxis(float3 p,float3 a,float3 b,float3 a1,float3 b1,float2 c,float
     if(dot(da,db)*rsqrt(max(dot(da,da)*dot(db,db),1e-12))>=.85)return b1-a1;
     confidence=0;
     // Scene luminance of the centre, b1 and a1 pixels through one fetch site (each tex2Dlod call site costs registers, this pass has 32).
+    // Unrolled: lumas=(L(c),L(c+step),L(c-step)); the lane mask float3(k==0,k==1,k==2) adds each into its own component.
     float3 lumas=0;
     [loop]for(int k=0;k<3;++k)lumas+=dot(tex2Dlod(Scene,float4(k==0?c:(k==1?min(c+step,1-.5*ImageClip.xy):max(c-step,.5*ImageClip.xy)),0,0)).rgb,float3(.299,.587,.114))*float3(k==0,k==1,k==2);
     float2 colourGap=abs(lumas.x-lumas.yz)/(lumas.x+lumas.yz+.02); // the composite tent's relative luminance difference, per side
@@ -973,12 +978,12 @@ float3 horizonHaze(float3 color,float2 uv,float viewZ,bool sky) {
     float3 haze=HorizonHaze.rgb*mad(lift,ShadowRange.yzw,1);
     return lerp(color,haze,amount);
 }
-// 507 of the 512 ps_3_0 slots (shaders/world-shader-build.json): free slots before adding to this pass.
+// 509 of the 512 ps_3_0 slots (shaders/world-shader-build.json): free slots before adding to this pass.
 float4 WorldComposite(float2 uv:TEXCOORD0):COLOR0 {
-    // Fetches before any flow control use texld (1 slot; tex2Dlod costs 3-4): the textures have one level, 1:1 with the screen, so it reads what tex2Dlod(.,0) does.
+    // Fetches before any flow control use texld (1 slot; tex2Dlod costs 3-4): Scene and Depth have one level and no mip filter, so texld reads what tex2Dlod(.,0) does.
     float4 original=tex2D(Scene,uv);
     float2 centerUV=depthUV(uv);
-    float d=saturate((tex2D(Depth,centerUV).r-Projection.w)*DepthParams.x);
+    float d=normalizedDepthFlat(centerUV);
     float liquid=waterDistance(centerUV,d);float viewZ=liquid>0?liquid:viewDistance(d);
     // Original Terrain VS uses SIGNED view Z, including right-handed cameras.
     // Unknown fog uploads the safe identity (0,1,1,0), giving T=1 exactly.
@@ -1011,11 +1016,14 @@ float4 WorldComposite(float2 uv:TEXCOORD0):COLOR0 {
             float tapLuma=dot(tex2Dlod(Scene,float4(tapUV,0,0)).rgb,float3(.299,.587,.114));
             float guide=16*abs(centreLuma-tapLuma)/(centreLuma+tapLuma+.02),bits=delta*depthBits;
             float weight=blend.x*blend.y*exp2(-bits-guide);
+            // The fallback ranks depth at a quarter: at a wall foot a top-row ground pixel is several depth tolerances from the
+            // ground texels, and the full depth weight would pick a wall texel again (the light line; measured in test_colour_tent_2d).
+            float score=mad(bits,.25,guide);
             float4 light=tex2Dlod(LightingBuffer,float4(q,0,0));
             float3 lit=tex2Dlod(BaselineLighting,float4(q,0,0)).rgb;
             float occlusion=tex2Dlod(AmbientOcclusion,float4(q,0,0)).a;
             bounce=mad(light.rgb,weight,bounce);shadow=mad(light.a,weight,shadow);baseline=mad(lit,weight,baseline);ao=mad(occlusion,weight,ao);total+=weight;
-            if(mad(bits,.25,guide)<closest){closest=mad(bits,.25,guide);fallbackLight=light;fallbackBase=lit;fallbackAO=occlusion;}
+            if(score<closest){closest=score;fallbackLight=light;fallbackBase=lit;fallbackAO=occlusion;}
             }
             float fogDelta=abs(receiverDistance(tapUV,sampleDepth)-viewZ);
             float4 fogSample=tex2Dlod(FogBuffer,float4(q,0,0));
