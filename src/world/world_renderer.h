@@ -2517,7 +2517,7 @@ public:
                     return check(d->CreateIndexBuffer(capacity,D3DUSAGE_DYNAMIC|D3DUSAGE_WRITEONLY,D3DFMT_INDEX32,D3DPOOL_DEFAULT,&replayIndicesGPU,nullptr),"model snapshot index buffer");},slot))return false;
             auto copy=streamingPhases.measure(NorthlightStreaming::PhaseProfile::ReplayCopy);
             void* memory=nullptr;if(!check(replayIndicesGPU->Lock(slot.offset,indexBytes,&memory,slot.flags),"model snapshot index lock"))return false;
-            for(size_t i=0;i<replays.size();++i){auto& p=replays[i];if(!p->gpuCached&&replayBulkLayout.unique(i)&&!p->mesh().indices.empty())std::memcpy(static_cast<std::uint32_t*>(memory)+p->start,p->mesh().indices.data(),p->mesh().indices.size()*4);}
+            for(size_t i=0;i<replays.size();++i){auto& p=replays[i];if(!p->gpuCached&&p->indexed&&replayBulkLayout.unique(i)&&!p->mesh().indices.empty()) /* 0.3.210 (task 31): a non-indexed start is now its first vertex */ std::memcpy(static_cast<std::uint32_t*>(memory)+p->start,p->mesh().indices.data(),p->mesh().indices.size()*4);}
             if(!check(replayIndicesGPU->Unlock(),"model snapshot index unlock"))return false;
             indexBase=slot.offset/4;
         }
