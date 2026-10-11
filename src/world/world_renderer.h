@@ -908,6 +908,15 @@ private:
         if(exact)*exact=result.fullScan;
         return result.memory;
     }
+    // Issue #40: true when world-cache/<map>/ holds at least one .fg3 tile. The cache
+    // covers only the continents; instance maps have no folder at all. Only a missing folder or
+    // tile means "no cache": any other failure (access, lock, I/O) answers true, so the normal
+    // build runs and reports it instead of the map's geometry being off until the map changes.
+    bool worldCacheHasTiles(const std::string& map)const{
+        if(map.empty())return false;
+        WIN32_FIND_DATAA data;const HANDLE h=FindFirstFileA((root+"world-cache/"+map+"/*.fg3").c_str(),&data);
+        if(h==INVALID_HANDLE_VALUE){const DWORD error=GetLastError();return error!=ERROR_FILE_NOT_FOUND&&error!=ERROR_PATH_NOT_FOUND;}
+        FindClose(h);return true;}
     NorthlightGeometryMemory::Sample geometryAdmission(NorthlightGeometryMemory::Budget budget,bool* exact=nullptr){
         return geometryAdmissionFor(admissionProbe,budget,exact);
     }
@@ -1048,6 +1057,7 @@ private:
           // Last delivered region. Any build that does not deliver forces the next
           // request to build again, as the 0.3.151 worker did without a BVH.
           std::string builtMap;V builtCenter;bool builtValid=false,wanted=false,retry=false;uint64_t seen=0;unsigned superseded=0;
+          std::string cacheCheckedMap;bool cacheMapHasTiles=true,uncachedPublished=false;unsigned uncachedSkips=0;uint64_t uncachedSkippedId=0;
           for(;;){
             Request r;
             {std::unique_lock<std::mutex> lock(mutex);buildWake.wait(lock,[&]{return stopping||builderExit||retry||geometryWanted||request.id!=seen;});
@@ -1094,6 +1104,18 @@ private:
                  abandoned=stopping||builderExit||!NorthlightWorldStreaming::applicable(r.map,r.geometryCenter,request.map,request.camera);}
                 if(abandoned)stallEnd("superseded");
             };
+            // Issue #40: a map without world-cache tiles (dungeons, raids, battlegrounds) is checked
+            // once per entry; its error is published once and no build runs until the map changes.
+            if(r.map!=cacheCheckedMap){
+                if(!cacheMapHasTiles&&NorthlightDiagnostics::enabled())logf("WORLD cache absent end map=%s skippedBuilds=%u",cacheCheckedMap.c_str(),uncachedSkips);
+                cacheCheckedMap=r.map;cacheMapHasTiles=worldCacheHasTiles(r.map);uncachedPublished=false;uncachedSkips=0;
+                if(!cacheMapHasTiles)logf("WORLD cache absent map=%s; geometry builds skipped until the map changes",r.map.c_str());
+            }
+            if(!cacheMapHasTiles){
+                if(!uncachedPublished){result->message="No cached geometry for "+r.map;uncachedPublished=publishError();}
+                else if(r.id!=uncachedSkippedId){uncachedSkippedId=r.id;++uncachedSkips;} /* one count per GI request, not per builder wake */
+                continue;
+            }
             auto built=std::make_unique<Built>();
             // BEGIN REGION BUILD: tests substitute a synthetic region for this block.
             {
@@ -1279,7 +1301,7 @@ private:
         NorthlightGI::MovingSolveStats movingStats;
         // 0.3.153 per geometry swap: passes completed on the previous generation
         // while the builder ran, and time with no usable region (logged at publication).
-        unsigned concurrentSolves=0;DWORD stallMs=0,stallStart=0;bool stalled=false;
+        unsigned concurrentSolves=0;DWORD stallMs=0,stallStart=0;bool stalled=false;std::string stallMap;
         for(;;){
             Request r;std::unique_ptr<Built> adopted;
             {std::unique_lock<std::mutex> lock(mutex);wake.wait(lock,[&]{return stopping||pending||builtGeometry;});if(stopping)return;r=request;pending=false;workerBusy=true;adopted=std::move(builtGeometry);}
@@ -1291,7 +1313,7 @@ private:
             if(adopted){
                 bvh=std::move(adopted->bvh);scenePlan=std::move(adopted->plan);scenePrepared=std::move(adopted->prepared);sceneFog=std::move(adopted->fog);
                 sceneLights=std::move(adopted->lights);rawSceneLights=std::move(adopted->rawLights);sceneMap=std::move(adopted->map);sceneCenter=adopted->center;
-                sceneBuild=adopted->id;superseded+=adopted->superseded;if(stalled){stallMs+=GetTickCount()-stallStart;stalled=false;}
+                sceneBuild=adopted->id;superseded+=adopted->superseded;if(stalled){if(stallMap==sceneMap)stallMs+=GetTickCount()-stallStart;stalled=false;} /* an episode begun on another map is not this region's stall */
             }else if(!bvh||NorthlightWorldStreaming::needsGeometry(sceneMap,sceneCenter,r.map,r.geometryCenter)){
                 // The builder is replacing this region. Borrow the published
                 // previous generation and keep its probe cache while the original
@@ -1310,10 +1332,14 @@ private:
                     // Release worker ownership, but leave the last published
                     // complete region available to the renderer until a
                     // replacement arrives or its unchanged coverage ends.
-                    probeCache.clear();probeCacheGeometry.reset();
-                    dynamicProbes.reset(actors?&actors->scene():nullptr);
-                    scenePlan.reset();scenePrepared.reset();sceneFog.reset();bvh.reset();
-                    if(!stalled){stalled=true;stallStart=started;}
+                    // Only the first drop has a region to release; adoption resets the probe state again.
+                    if(bvh){
+                        probeCache.clear();probeCacheGeometry.reset();
+                        dynamicProbes.reset(actors?&actors->scene():nullptr);
+                        scenePlan.reset();scenePrepared.reset();sceneFog.reset();bvh.reset();
+                    }
+                    if(stalled&&stallMap!=r.map)stalled=false; /* the episode began on another map */
+                    if(!stalled){stalled=true;stallStart=started;stallMap=r.map;}
                     buildWake.notify_one();continue;
                 }
                 concurrent=true;
@@ -2263,14 +2289,14 @@ public:
          // 0.3.169: hold the snapshot past its 96-unit coverage until a replacement applies (above)
          // or the hard limit or a map change retires it.
          const char* retired=active&&!NorthlightWorldStreaming::retained(active->map,active->center,r.map,r.camera)?(active->map!=r.map?"map":"retired"):nullptr;
-         const V held=active?active->center:V();
+         const V held=active?active->center:V();const bool heldDrawable=active&&active->bvh; /* issue #40: an uncached map's one error snapshot stays at the entry point */
          if(retired){retirementBacklog.retireOrFree(reaper,active,snapshotRetireBytes(*active));active.reset();}
          releaseOrphanedPending("range");
          const float distance=active&&active->map==r.map?std::sqrt(NorthlightGI::dot(r.camera-active->center,r.camera-active->center)):0.f;
          if(distance>coverMax)coverMax=distance;
-         const bool holding=active&&!NorthlightWorldStreaming::applicable(active->map,active->center,r.map,r.camera);
+         const bool holding=active&&active->bvh&&!NorthlightWorldStreaming::applicable(active->map,active->center,r.map,r.camera); /* only drawable geometry is held */
          const bool logHold=holdEpisodes<=32||NorthlightDiagnostics::enabled();
-         if(retired||(coverageHold&&(adopted||!holding))){
+         if((retired&&(heldDrawable||coverageHold))||(coverageHold&&(adopted||!holding))){
              if(!coverageHold){++holdEpisodes;holdStart=GetTickCount();holdMax=0;} /* retired in one step: a teleport or a map change */
              if(retired)holdMax=std::max(holdMax,std::sqrt(NorthlightGI::dot(r.camera-held,r.camera-held)));
              if(logHold)logf("WORLD coverage hold end ms=%lu maxDist=%.1f reason=%s",(unsigned long)(GetTickCount()-holdStart),holdMax,retired?retired:adopted?"adopted":"returned");
