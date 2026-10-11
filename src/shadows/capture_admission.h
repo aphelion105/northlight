@@ -128,12 +128,12 @@ public:
             for(const auto& i:extra)gateGrid_.add(i);
             gateGrid_.build();}
     }
-    // A skinned draw about to be captured. root: its palette root (null: none). near: a near-reserve hit.
-    Decision decide(std::uintptr_t shader,unsigned count,unsigned vertexTotal,const float* root,bool near){
+    // A skinned draw about to be captured. root: its palette root (null: none). nearHit: a near-reserve hit (not "near": a Windows macro).
+    Decision decide(std::uintptr_t shader,unsigned count,unsigned vertexTotal,const float* root,bool nearHit){
         Decision d;
         if(!finite(root)){++counters_.noRoot;return d;}
         d.rooted=true;d.shape=shapeKey(shader,count,vertexTotal);d.distance=length(root,centre_);
-        if(near)return d;
+        if(nearHit)return d;
         if(radiusOn_&&self_&&d.distance>gate_&&gateGrid_.find(shader,count,root,tolerance_)){
             // GI packets need skinned draws up to 100 yd from the camera: admitted unless the budget cut is on.
             if(!(gi_&&length(root,camera_)<=GIYards&&!cutActive())){
