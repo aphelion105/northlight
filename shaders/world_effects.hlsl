@@ -431,17 +431,15 @@ LightingOutput WorldLighting(float2 uv:TEXCOORD0) {
 static const float ActorPenumbraScale=.04; // half width per world unit between the average blocker and the receiver
 static const float ActorPenumbraMin=.05;   // ~2 texels: contact shadows stay crisp without crawling at the half-res POINT read
 static const float ActorPenumbraMax=.10;   // ~4.3 texels (at most 9x9 taps at a one-texel step); also the blocker search radius
-static const float ActorTileTexels=16;   // actor texels per ActorTiles pixel side (1024/16 = 64x64 tiles)
-// ActorTiles, drawn at 64x64 before each ActorShadow pass: the nearest (minimum) depth of a 16x16 texel tile of the actor map, so
-// ActorShadow proves most receivers lit from four tile taps instead of its 41-tap blocker search. The map is cleared to 1, so an
-// empty tile reads 1.
+static const float ActorTileTexels=16;   // actor texels per tile side (1024/16 = 64x64 tiles)
+// ActorTiles: one 4x4 minimum step, drawn twice before each ActorShadow pass (the actor map 1024 -> 256 -> 64; ActorInfo.y is the
+// source's texel in uv: 1/1024, then 1/256). The result is the nearest (minimum) depth of each 16x16 texel tile, so ActorShadow
+// proves most receivers lit from four tile taps instead of its 41-tap blocker search. Two short steps instead of one 256-tap pass:
+// 4096 pixels reading 256 texels each left the GPU waiting on serial fetches (~.15 ms). The map is cleared to 1: an empty tile reads 1.
 float4 ActorTiles(float2 uv:TEXCOORD0,uniform float4 ActorInfo:register(c72)):COLOR0 {
-    float2 base=floor(uv/(ActorTileTexels*ActorInfo.y))*ActorTileTexels+.5;
+    float2 base=floor(uv/(4*ActorInfo.y))*4+.5;
     float z=1;
-    [loop]for(int y=0;y<16;++y){
-        float v=(base.y+y)*ActorInfo.y;
-        [unroll]for(int x=0;x<16;++x)z=min(z,tex2Dlod(ActorMap,float4((base.x+x)*ActorInfo.y,v,0,0)).r);
-    }
+    [unroll]for(int y=0;y<4;++y)[unroll]for(int x=0;x<4;++x)z=min(z,tex2Dlod(ActorMap,float4((base+float2(x,y))*ActorInfo.y,0,0)).r);
     return float4(z,z,z,1);
 }
 // ActorMatrix (c68..c71): this source's actor map matrix (layout as NearMatrix). ActorInfo (c72): x 1 = actor map valid for this

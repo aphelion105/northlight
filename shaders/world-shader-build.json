@@ -1,5 +1,5 @@
 {
-  "source_sha256": "9fb32ce87f0cb0bc45da52fccea0990a85575f5c578b7e01b5085d3a12bd3685",
+  "source_sha256": "347b1205a619da0eacc0c549506bf50b3df96b0f340e6ff46cada544928ad33c",
   "compiler": "Wine d3dcompiler_47 D3DCompile",
   "game_launched": false,
   "shaders": {
@@ -105,28 +105,21 @@
     },
     "ActorTiles": {
       "target": "ps_3_0",
-      "bytes": 3544,
-      "sha256": "2f897413d9733587d7a16ad00c890dafce6142466fcac696a7d7b9c4a3cde93d",
-      "static_instruction_slots": 262,
-      "temporary_registers": 5,
+      "bytes": 2136,
+      "sha256": "a782ae4159330de5fb5abdc4a6157becb05dd83dc365228049f5e175368561e4",
+      "static_instruction_slots": 137,
+      "temporary_registers": 4,
       "samplers": [
         12
       ],
       "instructions": {
-        "mul": 20,
+        "mul": 19,
         "rcp": 2,
         "frc": 1,
-        "add": 21,
-        "mov": 158,
-        "rep": 1,
-        "cmp": 1,
-        "if": 1,
-        "break": 1,
-        "else": 1,
-        "endif": 1,
+        "add": 17,
+        "mov": 50,
         "texldl": 16,
-        "min": 16,
-        "endrep": 1
+        "min": 16
       }
     },
     "WorldGI": {

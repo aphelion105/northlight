@@ -11,7 +11,9 @@ namespace NorthlightActorShadowMap {
 inline constexpr float Radius=12.f;
 inline constexpr float Inset=.80f;
 inline constexpr unsigned Size=1024;
-inline constexpr unsigned TileTexels=16;   // actor texels per ActorTiles pixel side (world_effects.hlsl ActorTileTexels): a 64x64 tile minimum
+inline constexpr unsigned TileTexels=16;   // actor texels per tile side (world_effects.hlsl ActorTileTexels): a 64x64 tile minimum
+inline constexpr unsigned TileStep=4;      // ActorTiles reduces 4x4 per step: Size -> Size/4 (256) -> Size/16 (64)
+static_assert(TileStep*TileStep==TileTexels,"two ActorTiles steps make one tile");
 inline constexpr float Leash=1.5f;         // yards (light-space XY) the map centre may lag the pivot
 inline constexpr float JumpDistance=40.f;  // a pivot this far (light-space XY) from the centre re-centres at once (teleport, map change)
 // Leashed centre. The pivot is camera-derived (eye + forward*distance), so it drifts while the camera orbits an idle player: within

@@ -22,7 +22,7 @@ checks['quality: ActorShadowDetail last key 0..1, presets 1/1/0, actorShadowMap 
 # Frame matrices from the raw pivot, before the cascade anchor (the anchor test keeps every later `pivot` out).
 raw=render.index('NorthlightActorShadowMap::leash(actorCenter[source],actorCenterValid[source],pivot,sourceDirections[source])')
 checks['matrix from the raw pivot, before the anchored cascade pivot; off = nothing computed']=(raw<render.index('cascadeAnchor.update(')
-    and 'const bool actorMapOn=NorthlightQuality::actorShadowMap(quality,effects.shadows)&&actorShadowPS&&actorTilesPS&&actorShadow[0]&&actorShadow[1]&&actorTiles[0]&&actorTiles[1]&&actorVisibility;' in render
+    and 'const bool actorMapOn=NorthlightQuality::actorShadowMap(quality,effects.shadows)&&actorShadowPS&&actorTilesPS&&actorShadow[0]&&actorShadow[1]&&actorTiles[0]&&actorTiles[1]&&actorTilesMid&&actorVisibility;' in render
     and 'actorFrameOn[source]=NorthlightActorShadowMap::finiteMatrix(actorFrameMatrix[source]);if(!actorFrameOn[source])actorCenterValid[source]=false;' in render
     and 'NorthlightActorShadowMap::matrix(actorCenter[source],pivot,sourceDirections[source],actorFrameMatrix[source]);' in render
     and 'if(anchorNewMap)actorCenterValid[source]=false;' in render and render.index('if(anchorNewMap)actorCenterValid[source]=false;')<raw
@@ -65,12 +65,14 @@ checks['profile marks: the near replays before the actor map have their own name
 light=render[render.index('actor visibility (half res, r sun, g moon)'):render.index('if(profile)profile->mark("WorldLighting");')]
 checks['visibility target and clear only on a frame with an ActorShadow pass (a valid actor map of a drawn, active source); otherwise neutralWhite']=(
     light.index('actorPass[source]=!(')<light.index('if(anyActorPass){')<light.index('if(!check(d->SetRenderTarget(0,actorVisibilitySurface),"actor visibility target")||!check(d->Clear(0,nullptr,D3DCLEAR_TARGET,0xffffffff,1,0),"clear actor visibility"))return false;\n        }')
-    and '||!effects.shadows||!sourceActive[source]||!actorValid[source]||!actorShadow[source]||!actorShadowPS||!actorTilesPS||!actorTiles[source]||!actorVisibility);' in light
+    and '||!effects.shadows||!sourceActive[source]||!actorValid[source]||!actorShadow[source]||!actorShadowPS||!actorTilesPS||!actorTiles[source]||!actorTilesMid||!actorVisibility);' in light
     and 'if(!actorPass[source])continue;' in light and light.count('0xffffffff')==1)
 checks['every ActorTiles pass (own 64x64 target per source, own mark) before the visibility clear, so the visibility target is cleared and drawn without a switch; tiles on s10 (restored after)']=(
     light.index('d->SetPixelShader(actorTilesPS);')<light.index('if(!check(quad(tiles,tiles),"actor shadow tile pass"))return false;')<light.index('if(profile)profile->mark("ActorTiles");')
     <light.index('"clear actor visibility"')<light.index('d->SetTexture(12,actorShadow[source]);d->SetTexture(10,actorTiles[source]);')<light.index('d->SetPixelShader(actorShadowPS);')
-    and 'd->SetRenderTarget(0,actorTilesSurface[source])' in light and light.count('SetRenderTarget(0,actorVisibilitySurface)')==1
+    and light.index('d->SetRenderTarget(0,actorTilesMidSurface)')<light.index('if(!check(quad(mid,mid),"actor shadow tile pass"))return false;')<light.index('d->SetRenderTarget(0,actorTilesSurface[source])')
+    <light.index('d->SetTexture(12,actorTilesMid);d->SetPixelShaderConstantF(72,midInfo,1);')<light.index('if(!check(quad(tiles,tiles),"actor shadow tile pass"))return false;') # two 4x4 steps: 1024 -> 256 -> 64
+    and light.count('SetRenderTarget(0,actorVisibilitySurface)')==1
     and '!optional(tiles,tiles,D3DFMT_R32F,&actorTiles[0],&actorTilesSurface[0])||!optional(tiles,tiles,D3DFMT_R32F,&actorTiles[1],&actorTilesSurface[1])' in w
     and 'if(anyActorPass)d->SetTexture(10,textures[10]);' in light and light.index('d->SetPixelShader(actorShadowPS);')<light.index('if(anyActorPass)d->SetTexture(10,textures[10]);'))
 checks['ActorShadow pass: c68..c71 matrix, c72 info, actor map on s12, RED sun / GREEN moon, mask restored']=(
@@ -85,7 +87,7 @@ checks['resources: maps, tiles and visibility only with the shaders (ActorShadow
     "releaseActorTargets();logf(\"WORLD actor shadow map disabled: render targets unavailable\");" in w and 'actorVisibility,&actorVisibilitySurface))return false;' not in w
     and '||!optional(w/2,h/2,D3DFMT_A8R8G8B8,&actorVisibility,&actorVisibilitySurface)' in w
     and 'if(quality.actorShadows&&quality.actorShadowDetail&&(FAILED(d->CreatePixelShader(kActorShadowShader,&actorShadowPS))||FAILED(d->CreatePixelShader(kActorTilesShader,&actorTilesPS))))' in w
-    and 'void releaseActorTargets(){for(auto& t:actorShadow)drop(t);for(auto& t:actorShadowSurface)drop(t);for(auto& t:actorTiles)drop(t);for(auto& t:actorTilesSurface)drop(t);drop(actorVisibility);drop(actorVisibilitySurface);drop(actorShadowPS);drop(actorTilesPS);}' in w
+    and 'void releaseActorTargets(){for(auto& t:actorShadow)drop(t);for(auto& t:actorShadowSurface)drop(t);for(auto& t:actorTiles)drop(t);for(auto& t:actorTilesSurface)drop(t);drop(actorTilesMid);drop(actorTilesMidSurface);drop(actorVisibility);drop(actorVisibilitySurface);drop(actorShadowPS);drop(actorTilesPS);}' in w
     and 'releaseActorTargets();drop(neutralWhite);' in w and '*static_cast<DWORD*>(lock.pBits)=0xffffffffu;neutralWhite->UnlockRect(0);' in w
     and 'nearShadow[s].invalidate();actorValid[s]=false;' in w)
 checks['water: maps on s8/s9, ActorMatrix c29..c36, ActorShadowInfo c37, filled from the stored matrices']=(
