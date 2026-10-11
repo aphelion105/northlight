@@ -82,7 +82,7 @@ struct Mesh {std::vector<std::array<Vertex,3>> triangles;};
 struct Replay {
     IDirect3DVertexDeclaration9* decl=nullptr;IDirect3DVertexShader9* shader=nullptr;IDirect3DIndexBuffer9* index=nullptr;
     IDirect3DVertexBuffer9* stream[4]={};UINT offset[4]={},stride[4]={};IDirect3DBaseTexture9* texture=nullptr;DWORD addressU=WRAP,addressV=WRAP;float cutoff=-1;
-    UINT start=0;float dx=0,dy=0,dz=0;
+    UINT start=0;int base=0;float dx=0,dy=0,dz=0; /* base: BaseVertexIndex (0.3.210, task 31); the vertices start at offset+base*stride */
 };
 // Geometry is found only through the bound stream/index state, never through the replay.
 using GeometryKey=std::tuple<const void*,UINT,UINT,const void*,UINT,const void*>;
@@ -105,7 +105,7 @@ enum class Shader {Directional,Local};
 struct Draw {const void* decl;const void* vs;std::array<const void*,4> vb;std::array<UINT,4> offsets,strides;const void* ib;const IDirect3DBaseTexture9* texture;DWORD u,v;float cutoff;};
 static bool orderedLess(float a,float b){return a<b;} /* FOrdLessThan: NaN never kills */
 static void rasterize(const IDirect3DDevice9& d,const Scene& scene,const Replay& p,Shader shader,Image& image){
-    auto found=scene.geometry.find({d.vb[0],d.offsets[0],d.strides[0],d.ib,p.start,d.decl});assert(found!=scene.geometry.end());
+    auto found=scene.geometry.find({d.vb[0],d.offsets[0]+UINT(p.base)*d.strides[0],d.strides[0],d.ib,p.start,d.decl});assert(found!=scene.geometry.end());
     for(auto tri:found->second->triangles){
         for(auto& q:tri){q.x+=p.dx;q.y+=p.dy;q.z+=p.dz*q.w;}
         auto edge=[](const Vertex& a,const Vertex& b,float x,float y){return (b.x-a.x)*(y-a.y)-(b.y-a.y)*(x-a.x);};
@@ -242,6 +242,18 @@ int main(){
      const auto x=replay<New>(forward,Shader::Directional),y=replay<New>(sorted,Shader::Directional);
      assert(x.image.depth==y.image.depth&&!(x.image==y.image));
      std::puts("PASS order dependence: equal D24 depth, different R32F colour when two draws swap (so replay draws are not sorted)");}
+    // 0.3.210 (task 31): same-stride single-stream bulk replays share one stream binding (slot start; BaseVertexIndex selects the
+    // vertices) and rasterize exactly like the old per-replay offsets with base 0.
+    /* streams: the first draw binds all four (4); the old offsets rebind stream 0 for each of the two later draws (6). */
+    {Mesh m[3];for(int k=0;k<3;++k)m[k].triangles.push_back({{{0,0,.3f+.1f*k,1,0,0},{64,0,.3f+.1f*k,1,0,0},{0,64,.3f+.1f*k,1,0,0}}});
+     IDirect3DVertexBuffer9 vb;IDirect3DIndexBuffer9 ib;IDirect3DVertexDeclaration9 decl;IDirect3DVertexShader9 vs;Scene oldLayout,newLayout;
+     for(int k=0;k<3;++k){Replay p;p.decl=&decl;p.shader=&vs;p.stream[0]=&vb;p.stride[0]=32;p.index=&ib;p.start=UINT(3*k);p.dx=.5f*k;
+         const GeometryKey key{&vb,UINT(96*k),32,&ib,p.start,&decl};oldLayout.geometry[key]=&m[k];newLayout.geometry[key]=&m[k]; /* 3 vertices * 32 bytes each */
+         p.offset[0]=UINT(96*k);oldLayout.replays.push_back(p);
+         p.offset[0]=0;p.base=3*k;newLayout.replays.push_back(p);}
+     const auto a=replay<New>(oldLayout,Shader::Directional),b=replay<New>(newLayout,Shader::Directional);
+     assert(a.image==b.image&&a.counts.streams==6&&b.counts.streams==4&&b.calls.total()<a.calls.total());
+     std::puts("PASS base layout: three same-stride bulk replays bind stream 0 once and rasterize identically to per-replay offsets");}
     // Microbenchmark: binding work per 579-draw pass on a virtual (COM-like) device.
     {Scene scene=makeScene(world,rng,579,.75,false,false);IDirect3DDevice9 d;const int iterations=4000;
      auto time=[&](auto tag){using C=decltype(tag);auto start=std::chrono::steady_clock::now();unsigned calls=0;

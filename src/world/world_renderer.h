@@ -2426,18 +2426,28 @@ public:
             if(!replays[i]->gpuCached&&replayGpuCache.timeDeferredLast())replayTimeDeferredIndices.push_back(i);}
         NorthlightReplayGPU::commitAdmissions(replayGpuCache,replays,bindReplay);}
         phase.next(1); // Layout, bulk-buffer growth/copy and output bindings.
-        UINT totals[4]={};std::uint64_t totalIndices=0;size_t sharedBulkDraws=0,sharedBulkBytes=0;
+        UINT totals[4]={};std::uint64_t totalIndices=0;size_t sharedBulkDraws=0,sharedBulkBytes=0,multiStreamDraws=0;
+        /* 0.3.210 (task 31): a single-stream bulk replay sits at a stride multiple (rel) so every one binds the ring slot start
+           and selects its vertices by BaseVertexIndex/start: same-stride replays share one SetStreamSource. Layout and the
+           address-space prefix fit both go through bulkPlace, so they stay byte-identical. Multi-stream: 16-padded, as before. */
+        auto singleStream=[](const auto& p){const auto& m=p.mesh();return !m.streams[0].bytes.empty()&&m.streams[0].stride&&m.streams[1].bytes.empty()&&m.streams[2].bytes.empty()&&m.streams[3].bytes.empty();};
+        auto bulkPlace=[&](const auto& p,unsigned s,std::uint64_t total,std::uint64_t& at){
+            const auto& source=p.mesh().streams[s];
+            if(s==0&&singleStream(p)){at=(total+source.stride-1)/source.stride*source.stride;return at+source.bytes.size();}
+            at=(total+15)&~std::uint64_t(15);return at+((source.bytes.size()+15)&~std::size_t(15));};
         auto layout=[&](size_t count){
-            for(auto& t:totals)t=0;totalIndices=0;sharedBulkDraws=sharedBulkBytes=0;replayBulkLayout.begin();
+            for(auto& t:totals)t=0;totalIndices=0;sharedBulkDraws=sharedBulkBytes=multiStreamDraws=0;replayBulkLayout.begin();
             for(size_t i=0;i<count;++i){auto& p=replays[i];if(p->gpuCached)continue;
                 const size_t owner=replayBulkLayout.add(p->shared.get(),i);
                 if(owner!=i){const auto& first=*replays[owner];
                     for(unsigned s=0;s<4;++s){p->stride[s]=first.stride[s];p->offset[s]=first.offset[s];}
-                    p->start=first.start;++sharedBulkDraws;sharedBulkBytes+=p->mesh().byteSize();continue;
+                    p->start=first.start;p->base=first.base;++sharedBulkDraws;sharedBulkBytes+=p->mesh().byteSize();continue;
                 }
-                for(unsigned s=0;s<4;++s){auto& source=p->mesh().streams[s];p->stride[s]=source.stride;p->offset[s]=totals[s];
-                    std::uint64_t next=std::uint64_t(totals[s])+((source.bytes.size()+15)&~std::size_t(15));if(next>64u*1024u*1024u)return false;totals[s]=UINT(next);}
-                p->start=p->indexed?UINT(totalIndices):0;totalIndices+=p->mesh().indices.size();}
+                for(unsigned s=0;s<4;++s){auto& source=p->mesh().streams[s];p->stride[s]=source.stride;
+                    std::uint64_t at=0;const std::uint64_t next=bulkPlace(*p,s,totals[s],at);if(next>64u*1024u*1024u)return false;p->offset[s]=UINT(at);totals[s]=UINT(next);}
+                p->start=p->indexed?UINT(totalIndices):0;p->base=0;totalIndices+=p->mesh().indices.size();
+                if(singleStream(*p)){const UINT first=p->offset[0]/p->stride[0];if(p->indexed)p->base=INT(first);else p->start=first;} // offset[0] is still relative here
+                else multiStreamDraws+=!p->mesh().streams[1].bytes.empty()||!p->mesh().streams[2].bytes.empty()||!p->mesh().streams[3].bytes.empty();}
             return totalIndices<=16u*1024u*1024u;
         };
         // A creation-time deferral must never force bulk growth (or exceed the
@@ -2467,10 +2477,10 @@ public:
              // Under address-space pressure draw the prefix of casters that fits
              // the existing buffers this frame; nothing is allocated.
              size_t fit=0;UINT running[4]={};std::uint64_t runningIndices=0;
-             for(;fit<replays.size();++fit){auto& p=replays[fit];if(p->gpuCached||!replayBulkLayout.unique(fit))continue;bool ok=true;
-                 for(unsigned s=0;s<4&&ok;++s){std::uint64_t next=std::uint64_t(running[s])+((p->mesh().streams[s].bytes.size()+15)&~std::size_t(15));ok=next<=replayVertexBytes[s];}
+             for(;fit<replays.size();++fit){auto& p=replays[fit];if(p->gpuCached||!replayBulkLayout.unique(fit))continue;bool ok=true;std::uint64_t nexts[4]={};
+                 for(unsigned s=0;s<4&&ok;++s){std::uint64_t at=0;nexts[s]=bulkPlace(*p,s,running[s],at);ok=nexts[s]<=replayVertexBytes[s];}
                  if(!ok||(runningIndices+p->mesh().indices.size())*4>replayIndexBytes)break;
-                 for(unsigned s=0;s<4;++s)running[s]=UINT(running[s]+((p->mesh().streams[s].bytes.size()+15)&~std::size_t(15)));runningIndices+=p->mesh().indices.size();}
+                 for(unsigned s=0;s<4;++s)running[s]=UINT(nexts[s]);runningIndices+=p->mesh().indices.size();}
              if(prepareUnsettled())for(size_t i=fit;i<replays.size();++i)recycleReplay(replays[i].release()); /* 0.3.177: quarantined */
              replays.resize(fit);if(!layout(fit))return false;
          }}
@@ -2513,7 +2523,8 @@ public:
         }
         // The copies are done: from here on offset/start are absolute in the ring buffers (shared duplicates included;
         // gpuCached replays carry their own batch offsets and are never touched).
-        for(auto& p:replays){if(p->gpuCached)continue;for(unsigned s=0;s<4;++s)if(!p->mesh().streams[s].bytes.empty())p->offset[s]+=vertexBase[s];if(p->indexed)p->start+=indexBase;}
+        for(auto& p:replays){if(p->gpuCached)continue;const bool single=singleStream(*p); /* single-stream: the bind offset is the slot start, rel went into base/start */
+            for(unsigned s=0;s<4;++s)if(!p->mesh().streams[s].bytes.empty())p->offset[s]=single?vertexBase[s]:p->offset[s]+vertexBase[s];if(p->indexed)p->start+=indexBase;}
         // 0.3.176 (U3'): a binding already held keeps its reference (no Release/AddRef pair).
         for(auto& p:replays){if(p->gpuCached)continue;for(unsigned s=0;s<4;++s){IDirect3DVertexBuffer9* const stream=p->mesh().streams[s].bytes.empty()?nullptr:replayVerticesGPU[s];
                 if(p->stream[s]!=stream){drop(p->stream[s]);if(stream){p->stream[s]=stream;stream->AddRef();}}}
@@ -2523,7 +2534,7 @@ public:
             const auto residency=NorthlightReplayGPU::batchStats(replayGpuCache);
             deferLogf("MODEL GPU cache hits=%u reusedBytes=%zu newBytes=%zu residentBytes=%zu bulkUploadBytes=%zu batches=%zu batchBytes=%zu liveBytes=%zu separateBytes=%zu batchedUploads=%u separateUploads=%u compactions=%u compactedBytes=%zu batchFailures=%u",replayGpuCache.hits(),replayGpuCache.reused(),replayGpuCache.uploaded(),replayGpuCache.bytes(),bulk,
                 residency.batches,residency.batchBytes,residency.liveBytes,residency.separateBytes,residency.batchedUploads,residency.separateUploads,residency.compactions,residency.compactedBytes,residency.batchFailures);
-            deferLogf("MODEL bulk sharing duplicateDraws=%zu avoidedBytes=%zu actualBytes=%zu",sharedBulkDraws,sharedBulkBytes,bulk);
+            deferLogf("MODEL bulk sharing duplicateDraws=%zu avoidedBytes=%zu actualBytes=%zu multiStreamDraws=%zu",sharedBulkDraws,sharedBulkBytes,bulk,multiStreamDraws);
             const auto population=replayGpuCache.population();const auto& policy=replayGpuCache.stats();
             deferLogf("MODEL GPU policy entries=%zu resident=%zu probation=%zu countPressure=%u bytePressure=%u roomRejected=%u promotionCountOnly=%u promotionCountRejected=%u evictions=%u warmup=%u uploadDeferred=%u admissionRejected=%u entryLimit=%zu scanPasses=%u scanVisits=%u scanMemoHits=%u attemptDeferred=%u uploadByteDeferred=%u expiredEntries=%u expiredBytes=%zu evictionChecks=%u lruMoves=%u",population.entries,population.resident,population.probation,policy.countPressure,policy.bytePressure,policy.roomRejected,policy.promotionCountOnly,policy.promotionCountRejected,policy.evictions,policy.warmup,policy.uploadDeferred,policy.admissionRejected,replayGpuCache.entryLimit(),policy.scanPasses,policy.scanVisits,policy.scanMemoHits,policy.attemptDeferred,policy.uploadByteDeferred,policy.expiredEntries,policy.expiredBytes,policy.evictionChecks,policy.lruMoves);
             const auto& cleared=replayGpuCache.clearStats();

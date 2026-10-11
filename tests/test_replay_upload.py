@@ -50,6 +50,7 @@ struct Device:IDirect3DDevice9{
  HRESULT CreateIndexBuffer(UINT n,DWORD usage,D3DFORMAT,unsigned,IDirect3DIndexBuffer9** out,void*)override{if(++calls==failAt)return E_POINTER;auto p=new Buffer<IDirect3DIndexBuffer9,D3DINDEXBUFFER_DESC>(n);p->fail=lockFail;p->dynamic=usage&D3DUSAGE_DYNAMIC;*out=p;return D3D_OK;}
  HRESULT GetVertexShaderConstantF(UINT,float*,UINT)override{return E_POINTER;}HRESULT GetVertexDeclaration(IDirect3DVertexDeclaration9**)override{return E_POINTER;}HRESULT GetStreamSourceFreq(UINT,UINT*)override{return E_POINTER;}HRESULT GetStreamSource(UINT,IDirect3DVertexBuffer9**,UINT*,UINT*)override{return E_POINTER;}HRESULT GetIndices(IDirect3DIndexBuffer9**)override{return E_POINTER;}
 };
+std::shared_ptr<const NorthlightDrawSnapshot::Mesh> meshS(unsigned bytes,unsigned stride,bool multi){auto m=std::make_shared<NorthlightDrawSnapshot::Mesh>();m->streams[0].stride=stride;m->streams[0].bytes.resize(bytes);if(multi){m->streams[1].stride=8;m->streams[1].bytes.resize(80);}m->indices={0,1,2};for(unsigned i=0;i<bytes;++i)m->streams[0].bytes[i]=(i*7+stride)%251;return m;} /* 0.3.210 (task 31): any stride, single- or multi-stream regardless of SINGLE_STREAM */
 std::shared_ptr<const NorthlightDrawSnapshot::Mesh> mesh(unsigned bytes=240){auto m=std::make_shared<NorthlightDrawSnapshot::Mesh>();m->streams[0].stride=24;m->streams[0].bytes.resize(bytes);if(!SINGLE_STREAM){m->streams[1].stride=8;m->streams[1].bytes.resize(80);}m->indices={0,1,2};for(unsigned i=0;i<bytes;++i)m->streams[0].bytes[i]=i%251;return m;}
 int main(){
  NorthlightReplayGPU::Cache cache;Device d;IDirect3DVertexBuffer9* vb[4]={};IDirect3DIndexBuffer9* ib=nullptr;
@@ -128,12 +129,13 @@ class WorldRenderer {public:
   for(auto& p:replays){for(auto* s:p->stream)if(s)++held[s];if(p->index)++held[p->index];}
   for(auto& b:registry){auto h=held.find(b.first);assert(*b.second==1+(h==held.end()?0:h->second));}
   for(auto& h:held)assert(registry.count(h.first));}
+ static UINT addr(const Replay& p){return p.offset[0]+UINT(p.indexed?p.base:INT(p.start))*p.stride[0];} /* 0.3.210 (task 31): effective byte position of vertex 0 of stream 0 */
  void verify(){for(auto& p:replays){const auto& m=p->mesh();for(unsigned s=0;s<4;++s){if(m.streams[s].bytes.empty()){assert(!p->stream[s]);continue;}
   auto* actual=static_cast<Buffer<IDirect3DVertexBuffer9,D3DVERTEXBUFFER_DESC>*>(p->stream[s]);
   /* BaseVertexIndex (indexed) or StartVertex (non-indexed) of batched residency */
   assert(!memcmp(actual->data.data()+p->offset[s]+size_t(p->indexed?p->base:INT(p->start))*p->stride[s],m.streams[s].bytes.data(),m.streams[s].bytes.size()));assert(p->stride[s]==m.streams[s].stride);}
   if(p->indexed){auto* indices=static_cast<Buffer<IDirect3DIndexBuffer9,D3DINDEXBUFFER_DESC>*>(p->index);
-  assert(!memcmp(indices->data.data()+4*p->start,m.indices.data(),m.indices.size()*4));}else assert(!p->index&&(p->gpuCached||p->start==0));}}
+  assert(!memcmp(indices->data.data()+4*p->start,m.indices.data(),m.indices.size()*4));}else assert(!p->index);}}
 """
 main=r"""
 };
@@ -164,8 +166,8 @@ int main(){Device d;auto a=mesh(),b=mesh(480),c=mesh(96);
  // Equal bytes with different immutable owners must NOT alias; UP/owned
  // snapshots remain distinct. Reordering and a new frame cannot reuse offsets.
  {WorldRenderer world(&d);auto equal=mesh();world.add(a,true);world.add(equal,true);world.add(a,true);world.add(a,false);
-  assert(world.upload());world.verify();assert(world.replays[0]->offset[0]==world.replays[2]->offset[0]);
-  assert(world.replays[1]->offset[0]!=world.replays[0]->offset[0]&&world.replays[3]->offset[0]!=world.replays[0]->offset[0]);
+  assert(world.upload());world.verify();assert(WorldRenderer::addr(*world.replays[0])==WorldRenderer::addr(*world.replays[2])&&world.replays[0]->base==world.replays[2]->base);
+  assert(WorldRenderer::addr(*world.replays[1])!=WorldRenderer::addr(*world.replays[0])&&WorldRenderer::addr(*world.replays[3])!=WorldRenderer::addr(*world.replays[0]));
   world.replays.clear();auto fresh=mesh(672);world.add(fresh,true);world.add(fresh,true);world.add(a,true);
   assert(world.upload());world.verify();assert(world.replays[0]->offset[0]==world.replayVertexRing[0].spans.back().begin&&world.replays[1]->offset[0]==world.replays[0]->offset[0]); /* 0.3.192: absolute = the ring base of this call + the layout offset 0 */
  }
@@ -260,7 +262,7 @@ int main(){Device d;auto a=mesh(),b=mesh(480),c=mesh(96);
   unsigned advances=0,wraps=0;UINT previous=0;
   for(unsigned f=0;f<50;++f){frameNow=f;const size_t from=dynLog.size();assert(world.upload());world.verify();world.balance();
    const auto r=roles(world,from);assert(r.seen[0]&&r.seen[4]&&!r.discards[0]&&!r.discards[1]&&!r.discards[4]);
-   const UINT base=world.replays[0]->offset[0];assert(base==r.first[0]&&world.replays[1]->offset[0]==base+614400&&base+614640<=world.replayVertexBytes[0]);
+   const UINT base=world.replays[0]->offset[0];assert(base==r.first[0]&&WorldRenderer::addr(*world.replays[1])==base+614400&&base+614640<=world.replayVertexBytes[0]);
    advances+=base>previous;wraps+=f&&!base;previous=base;}
   assert(advances>=30&&wraps>=8&&world.replayGrowths==1+(SINGLE_STREAM?0u:1u)+1); /* streams 0 (and 1) and the index buffer, created once */
  }
@@ -279,7 +281,10 @@ int main(){Device d;auto a=mesh(),b=mesh(480),c=mesh(96);
   assert(world.upload());world.verify();world.balance();
   const UINT base=world.replayVertexRing[0].spans.back().begin,ibBase=world.replayIndexRing.spans.back().begin;assert(base==100*1024&&ibBase==12);
   assert(!world.replays[0]->gpuCached&&!world.replays[2]->gpuCached);
-  assert(world.replays[0]->offset[0]==base&&world.replays[1]->offset[0]==base&&world.replays[3]->offset[0]==base&&world.replays[2]->offset[0]==base+64*1024&&world.replays[4]->offset[0]==base+128*1024);
+  if(SINGLE_STREAM){ /* 0.3.210 (task 31): every replay binds the slot start; vertices are selected by base at stride multiples (65536 -> 65544 -> 131088) */
+   for(auto& p:world.replays)assert(p->offset[0]==base);
+   assert(world.replays[0]->base==0&&world.replays[1]->base==0&&world.replays[3]->base==0&&world.replays[2]->base==65544/24&&world.replays[4]->base==131088/24);}
+  else assert(world.replays[0]->offset[0]==base&&world.replays[1]->offset[0]==base&&world.replays[3]->offset[0]==base&&world.replays[2]->offset[0]==base+64*1024&&world.replays[4]->offset[0]==base+128*1024);
   assert(world.replays[0]->start==3&&world.replays[1]->start==3&&world.replays[3]->start==3&&world.replays[2]->start==6&&world.replays[4]->start==9);
   for(const auto& l:dynLog)assert(l.flags==D3DLOCK_NOOVERWRITE);}
  // Pressure-fit prefix (growth refused) with a non-zero base, then a wrap that reuses the start after the fence.
@@ -309,6 +314,32 @@ int main(){Device d;auto a=mesh(),b=mesh(480),c=mesh(96);
    assert(!world.replays[2]->gpuCached);bulkMoves+=world.replays[2]->offset[0]!=bulkOffset;bulkOffset=world.replays[2]->offset[0];}
   assert(kept.size()==2&&bulkMoves>=2);}
  raceCheck=false;autoFrame=true;queryLatency=0;frameNow=0;
+
+ // 0.3.210 (task 31): single-stream bulk replays bind the slot start and select vertices by BaseVertexIndex/start.
+ {WorldRenderer world(&d);dynLog.clear();queryLatency=0;frameNow=0;
+  world.add(meshS(250,24,false),false);world.add(meshS(96,24,false),false);world.add(meshS(36*5+7,36,false),false);world.add(meshS(44*3,44,false),false);world.add(meshS(240,24,true),false);world.add(meshS(48,24,false),false);
+  assert(world.upload());world.verify();world.balance();auto& r=world.replays;
+  assert(r[0]->offset[0]==r[1]->offset[0]&&r[1]->offset[0]==r[2]->offset[0]&&r[2]->offset[0]==r[3]->offset[0]&&r[0]->offset[0]==r[5]->offset[0]); /* one SetStreamSource for all single-stream replays */
+  assert(r[0]->base==0&&r[1]->base==264/24&&r[0]->base!=r[1]->base);                          /* 250 -> next 24 multiple 264 */
+  assert(r[2]->base==10&&r[3]->base==13); /* 360 is a 36 multiple; 360+187=547 -> 44 multiple 572 */
+  for(size_t i:{size_t(0),size_t(1),size_t(2),size_t(3),size_t(5)})assert((WorldRenderer::addr(*r[i])-r[i]->offset[0])%r[i]->stride[0]==0&&r[i]->offset[0]%16==0);
+  /* the multi-stream replay keeps the old path: base 0, the 16-aligned stream offsets, one binding per stream */
+  assert(r[4]->base==0&&r[4]->offset[0]%16==0&&r[4]->offset[1]%16==0&&r[4]->offset[0]!=r[0]->offset[0]&&r[4]->stream[1]);
+  for(const auto& l:dynLog)assert(l.first%16==0);}
+ // Non-indexed single-stream: the stream position goes into start (no index buffer), shared duplicates copy it.
+ {WorldRenderer world(&d);auto s=meshS(24*10+5,24,false),o=meshS(36*4,36,false);
+  world.replays.clear();world.add(o,false);world.add(s,true);world.add(s,true);world.add(o,false);for(auto& p:world.replays)p->indexed=false;
+  assert(world.upload());world.verify();auto& r=world.replays;
+  assert(!r[1]->gpuCached&&r[1]->start==r[2]->start&&r[1]->base==0&&r[2]->base==0&&r[1]->start==6&&r[0]->start==0&&r[3]->start==11); /* 144 -> 144 (stride 24), 144+245=389 -> 396 (stride 36) */
+  assert(r[1]->offset[0]==r[2]->offset[0]&&r[0]->offset[0]==r[1]->offset[0]&&!r[1]->index);}
+ // Shared duplicates of an indexed single-stream owner copy base as well (see the ring-base case above); a pressure-fit prefix
+ // of mixed strides must come from the same placement as the layout, so nothing is allocated.
+ {WorldRenderer world(&d);dynLog.clear();queryLatency=0;frameNow=0;world.add(meshS(1536*1024,24,true),false);assert(world.upload());world.verify();
+  const UINT capacity=world.replayVertexBytes[0];const auto growths=world.replayGrowths;frameNow=1;world.replays.clear();
+  for(unsigned i=0;i<220;++i)world.add(meshS(i%3==0?36*1000+7:i%3==1?44*900+3:24*1500+11,i%3==0?36:i%3==1?44:24,i%7==6),false);
+  world.denyAllGrowth=true;assert(world.upload());world.verify();world.balance();
+  assert(world.replays.size()>10&&world.replays.size()<220&&world.replayVertexBytes[0]==capacity&&world.replayGrowths==growths);
+  for(unsigned s=1;s<4;++s)assert(world.replayVertexBytes[s]<=NorthlightDynamicRing::ringCapacity(1<<20));}
  assert(alive==0&&freshLocks>0&&!plainLocks&&!overlaps);puts("PASS production uploadReplay: mixed cache/bulk offsets, reordered draws, all-cached zero upload, modified geometry, allocation-failure fallback and COM cleanup; creation time bound keeps bulk bytes identical and never forces bulk growth");
 }
 """
