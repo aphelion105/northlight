@@ -22,14 +22,27 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 namespace NorthlightCaptureAdmission {
 constexpr float CellYards=4.f,MinCut=12.f,Margin=.85f,MatchYards=1.5f,MatchCap=CellYards,GateExtra=4.f,GIYards=100.f,Teleport=100.f,CountCell=2.f;
 constexpr unsigned GrowFrames=10,ShrinkFrames=1;
-constexpr std::size_t ShapeCap=8192;
+constexpr std::size_t ShapeSlots=4096; /* direct-mapped estimate cache: a collision only loses an estimate */
 inline float gateYards(float yards){return yards+2*NorthlightActorShadowSelection::band(yards)+NorthlightActorShadowSelection::ClusterExtent+GateExtra;}
+// The palette root of the last skinned draw, reused while nothing wrote its palette rows. The proof is the device
+// mirror's write serials (captured_constant_epoch.h): the same reset serial and the same serial of the blocks of
+// 16 registers that cover c[base..base+2] mean no write touched the rows, so the root (a function of the program, the
+// rows and the frame's fixed inverse view) is unchanged. One entry; clear() at every frame (a new inverse view).
+struct RootMemo {
+    const void* shader=nullptr;unsigned first=0,last=0;std::uint64_t reset=0,serial[2]={};float root[3]={};bool have=false,valid=false;
+    void clear(){have=false;shader=nullptr;}
+    // floatBlock: the mirror's per-16-register float serials (FloatBlocks entries).
+    bool hit(const void* program,std::uint64_t resetSerial,const std::uint64_t* floatBlock)const{
+        return have&&program==shader&&resetSerial==reset&&floatBlock[first]==serial[0]&&floatBlock[last]==serial[1];}
+    void store(const void* program,unsigned base,std::uint64_t resetSerial,const std::uint64_t* floatBlock,const float* value,bool ok){
+        shader=program;first=base/16;last=(base+2)/16;reset=resetSerial;serial[0]=floatBlock[first];serial[1]=floatBlock[last];valid=ok;
+        for(unsigned k=0;k<3;++k)root[k]=ok?value[k]:0.f;have=true;}
+};
 struct Item {std::uintptr_t shader=0;unsigned count=0;float at[3]={};};
 // Items of one identity found by cell: 4 yd cells (x, y), nine probed per query (tolerance <= CellYards).
 class Grid {
@@ -76,14 +89,14 @@ class Admission {
     float cut_=INFINITY;unsigned exhaustStreak_=0,room_=0;
     float lastCentre_[3]={},lastCamera_[3]={};bool lastValid_=false;
     Grid gateGrid_,lastAdmitted_,admittedNext_;std::vector<Item> gatedLast_,gatedNext_,far_;
-    std::unordered_map<std::uint64_t,std::size_t> shapes_;
+    struct Shape {std::uint64_t key=0;std::size_t bytes=0;};std::vector<Shape> shapes_=std::vector<Shape>(ShapeSlots);std::size_t shapeCount_=0;
     static bool finite(const float* v){return v&&std::isfinite(v[0])&&std::isfinite(v[1])&&std::isfinite(v[2]);}
     static float length(const float* a,const float* b){float q=0;for(unsigned k=0;k<3;++k){const float t=a[k]-b[k];q+=t*t;}return std::sqrt(q);}
     static std::uint64_t shapeKey(std::uintptr_t shader,unsigned count,unsigned vertexTotal){
         std::uint64_t h=14695981039346656037ull;auto mix=[&](std::uint64_t n){h=(h^n)*1099511628211ull;};mix(shader);mix(count);mix(vertexTotal);return h;}
     // Bytes of a refused draw: the shape's last real capture; a cold shape errs high so the error tightens the cut.
     std::size_t estimate(std::uint64_t shape,unsigned vertexTotal,unsigned count)const{
-        const auto it=shapes_.find(shape);return it!=shapes_.end()?it->second:std::size_t(vertexTotal)*32+std::size_t(count)*12;}
+        const Shape& e=shapes_[shape%ShapeSlots];return e.key==shape?e.bytes:std::size_t(vertexTotal)*32+std::size_t(count)*12;}
     void refuse(const Decision& d,const float* root,std::size_t bytes){
         records_.push_back({d.distance,bytes});
         if(radiusOn_&&d.distance<=yards_){++counters_.insideRefusedDraws;
@@ -97,10 +110,10 @@ public:
     const Counters& counters()const{return counters_;}
     bool centreSelf()const{return armed_&&self_;}
     std::size_t gateSize()const{return gateGrid_.size();}
-    std::size_t shapeCount()const{return shapes_.size();}
+    std::size_t shapeCount()const{return shapeCount_;}
     // Forget everything (map change, device reset, a lost selection).
     void reset(){armed_=false;cut_=INFINITY;exhaustStreak_=room_=0;exhausted_=false;lastValid_=false;records_.clear();admittedBytes_=0;counters_={};insideCells_.clear();
-        gateGrid_.clear();lastAdmitted_.clear();admittedNext_.clear();gatedLast_.clear();gatedNext_.clear();far_.clear();shapes_.clear();}
+        gateGrid_.clear();lastAdmitted_.clear();admittedNext_.clear();gatedLast_.clear();gatedNext_.clear();far_.clear();shapes_.assign(ShapeSlots,Shape{});shapeCount_=0;}
     // The gate list of the next capture frames: identities {shader, count, root}. Replaces the previous list.
     void importFar(const std::vector<Item>& items){far_.clear();for(const auto& i:items)if(i.shader&&finite(i.at))far_.push_back(i);}
     // After the stable selection: EVERY draw of every body section the selection put outside the radius (not the
@@ -151,8 +164,7 @@ public:
     void admitted(const Decision& d,std::uintptr_t shader,unsigned count,const float* root,std::size_t bytes){
         if(!d.rooted)return;
         records_.push_back({d.distance,bytes});admittedBytes_+=bytes;
-        if(shapes_.size()>=ShapeCap&&!shapes_.count(d.shape))shapes_.clear();
-        shapes_[d.shape]=bytes;
+        Shape& e=shapes_[d.shape%ShapeSlots];shapeCount_+=e.key==0;e.key=d.shape;e.bytes=bytes;
         Item i;i.shader=shader;i.count=count;for(unsigned k=0;k<3;++k)i.at[k]=root[k];admittedNext_.add(i);
     }
     // The budget turned an admitted draw away (real exhaustion).

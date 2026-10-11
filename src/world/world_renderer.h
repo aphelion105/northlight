@@ -2007,9 +2007,9 @@ public:
                 m.snapshotEvictions,m.snapshotEvictedBytes,m.snapshotMs,m.indexEvictions,m.indexEvictedBytes,m.indexMs,
                 m.missEvicted,m.missRevision,m.missUnknown,m.missCollision,replaySnapshots.snapshotRevalidationMismatches());}
         if(captureSampled)logf("MODEL capture metadata batches=%u knownBuffers=%u fallbackBuffers=%u fastSnapshotHits=%u",replaySnapshots.metadataBatches(),replaySnapshots.metadataHits(),replaySnapshots.metadataFallbacks(),replaySnapshots.fastCacheHits());
-        if(captureSampled)logf("MODEL frame capture skinnedCandidates=%u accepted=%u blendRejected=%u projectionRejected=%u budgetRejected=%u snapshotRejected=%u acceptedSkinnedBytes=%zu acceptedOtherBytes=%zu rejectedReadBytes=%zu totalReadBytes=%zu compactedDraws=%u spanVertices=%zu uniqueVertices=%zu savedVertexBytes=%zu nearAdmitted=%u nearBytes=%zu nearRefused=%u nearSelf=%d nearReserve=%zu radiusGated=%u radiusGatedBytes=%zu cutRejected=%u cutYards=%.1f insideRefused=%u insideRefusedActors=%u noRoot=%u admissionCentre=%s",skinnedCandidates,skinnedAccepted,skinnedBlendRejected,skinnedProjectionRejected,skinnedBudgetRejected,skinnedSnapshotRejected,acceptedSkinnedBytes,acceptedOtherBytes,captureRejectedBytes,replaySnapshots.bytesRead(),replaySnapshots.compactedDraws(),replaySnapshots.sourceSpanVertices(),replaySnapshots.uniqueVertices(),replaySnapshots.savedVertexBytes(),nearAdmitted,nearBytes,nearRefused,int(nearAnchorReady&&nearAnchor.self),replaySnapshots.nearReserve(),
+        if(captureSampled)logf("MODEL frame capture skinnedCandidates=%u accepted=%u blendRejected=%u projectionRejected=%u budgetRejected=%u snapshotRejected=%u acceptedSkinnedBytes=%zu acceptedOtherBytes=%zu rejectedReadBytes=%zu totalReadBytes=%zu compactedDraws=%u spanVertices=%zu uniqueVertices=%zu savedVertexBytes=%zu nearAdmitted=%u nearBytes=%zu nearRefused=%u nearSelf=%d nearReserve=%zu radiusGated=%u radiusGatedBytes=%zu cutRejected=%u cutYards=%.1f insideRefused=%u insideRefusedActors=%u noRoot=%u admissionCentre=%s rootReads=%u rootMemoHits=%u",skinnedCandidates,skinnedAccepted,skinnedBlendRejected,skinnedProjectionRejected,skinnedBudgetRejected,skinnedSnapshotRejected,acceptedSkinnedBytes,acceptedOtherBytes,captureRejectedBytes,replaySnapshots.bytesRead(),replaySnapshots.compactedDraws(),replaySnapshots.sourceSpanVertices(),replaySnapshots.uniqueVertices(),replaySnapshots.savedVertexBytes(),nearAdmitted,nearBytes,nearRefused,int(nearAnchorReady&&nearAnchor.self),replaySnapshots.nearReserve(),
             admission.counters().radiusGated,admission.counters().radiusGatedBytes,admission.counters().cutRejected,admission.cutActive()?double(admission.cut()):0.0,admission.counters().insideRefusedDraws,admission.counters().insideRefusedActors,admission.counters().noRoot,
-            admissionOn?(admission.centreSelf()?"self":"pivot"):"off");
+            admissionOn?(admission.centreSelf()?"self":"pivot"):"off",rootReads,rootMemoHits);
         if(captureSampled)logf("MODEL frame capture other blendRejected=%u projectionRejected=%u budgetRejected=%u",otherBlendRejected,otherProjectionRejected,otherBudgetRejected);
         if(captureSampled&&captureFrequency.QuadPart>0){
             const double ms=1000.0/double(captureFrequency.QuadPart);
@@ -2042,7 +2042,7 @@ public:
         lastCapturePhaseReads=capturePhases.clockReads+actorPhases.clockReads;clearCaptureDiagnostics();if(captureSampled)++capturePhaseSerial;
         skinnedCandidates=skinnedBlendRejected=skinnedProjectionRejected=skinnedBudgetRejected=skinnedSnapshotRejected=skinnedAccepted=0;otherBlendRejected=otherBudgetRejected=otherProjectionRejected=0;
         captureRejectedBytes=acceptedSkinnedBytes=acceptedOtherBytes=0;nearAdmitted=nearRefused=0;nearBytes=0;nearAnchorReady=false;
-        admission.endFrame(size_t(captureBudgetMiB)*1048576,replaySnapshots.bytesRead());admissionOn=false;gatedBodies.clear(); /* 0.3.210 (task 31): the next frame's cut, after the log read this frame's counters; no-op when no skinned draw armed it */
+        admission.endFrame(size_t(captureBudgetMiB)*1048576,replaySnapshots.bytesRead());admissionOn=false;rootMemo.clear();rootReads=rootMemoHits=0;gatedBodies.clear(); /* 0.3.210 (task 31): the next frame's cut, after the log read this frame's counters; no-op when no skinned draw armed it */
         previousCacheHits=terrainBoundsCache.persistentHits();capturedConstantBytes=capturedConstantCalls=0;capturedSM1Draws=capturedRelativeDraws=0;
         terrainCaptureTicks=replayCaptureTicks=0;terrainCaptureCalls=terrainUPCalls=replayCaptureCalls=unknownCaptureCalls=0;captureSampled=false;
         valid=false;traceContext=0;traceFog=0;legacyFogKnown=false;shadowFrameReady=false;legacyFog=NorthlightLegacyFog::Constants{};
@@ -2685,6 +2685,18 @@ public:
     unsigned nearAdmitted=0,nearRefused=0;size_t nearBytes=0;
     /* 0.3.210 (task 31): capture admission (capture_admission.h). The centre is the near anchor's: taken once per capture frame at the first
        skinned draw (the previous selection's self, else the pivot eye+forward*pivotDistance). admissionOn: ActorShadows and a usable centre. */
+    /* The root of consecutive skinned draws is read once: the mirror's write serials prove the palette rows unchanged (RootMemo). Inside the
+       game draw's guard like captureBlocks(); a source that cannot certify falls back to the read. Cleared every frame (new inverse view). */
+    NorthlightCaptureAdmission::RootMemo rootMemo;unsigned rootReads=0,rootMemoHits=0;
+    bool drawRootMemo(IDirect3DVertexShader9* shader,float* root){
+        if(!constantEpochSource.attached()||!constantEpochSource.valid()){++rootReads;return drawRoot(shader,root);}
+        const auto& live=constantEpochSource.live();
+        if(rootMemo.hit(shader,live.reset,live.floatBlock)){++rootMemoHits;if(rootMemo.valid)std::memcpy(root,rootMemo.root,sizeof rootMemo.root);return rootMemo.valid;}
+        ++rootReads;const bool ok=drawRoot(shader,root);
+        auto program=actorPrograms.find(shader);
+        if(program!=actorPrograms.end()&&program->second->paletteBase>=0&&program->second->paletteBase+2<256)rootMemo.store(shader,unsigned(program->second->paletteBase),live.reset,live.floatBlock,root,ok);
+        return ok;
+    }
     NorthlightCaptureAdmission::Admission admission;bool admissionOn=false;std::vector<float> gatedBodies; /* roots of radius-gated bodies, for rigid memory */
     bool actorCaptureWouldRun()const{return NorthlightQuality::giActorCapture(quality)&&(actorCaptureDecided?actorCaptureDue:(!lastActorCapture||GetTickCount()-lastActorCapture>=200));}
     void nearAnchorTake(){
@@ -2736,7 +2748,7 @@ public:
         // 0.3.210 (task 31): the palette root once per skinned draw, then the capture admission (radius gate, distance cut)
         // before any budget is spent; near-reserve hits always pass. A draw without a root is never gated or cut.
         float root[3];bool rooted=false;NorthlightCaptureAdmission::Decision admit;
-        if(priority&&quality.actorShadows){nearAnchorTake();rooted=drawRoot(current,root);
+        if(priority&&quality.actorShadows){nearAnchorTake();rooted=drawRootMemo(current,root);
             if(admissionOn){admit=admission.decide(reinterpret_cast<std::uintptr_t>(current),count,vertexTotal,rooted?root:nullptr,nearDraw(rooted?root:nullptr));
                 if(admit.verdict!=NorthlightCaptureAdmission::Verdict::Admit){
                     if(admit.verdict==NorthlightCaptureAdmission::Verdict::RadiusGate){fate.reason=NorthlightShadowFate::RadiusGate;gatedBodies.insert(gatedBodies.end(),root,root+3);}

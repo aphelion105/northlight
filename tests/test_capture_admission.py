@@ -24,11 +24,11 @@ sel=fp.src('actor_shadow_selection.h').read_text();adm=fp.src('capture_admission
 capture=w[w.index('    void captureModel(D3DPRIMITIVETYPE type,'):w.index('    // One directional replay draw in the 0.3.142 order')]
 gate=capture[capture.index('NorthlightCaptureAdmission::Decision admit;'):capture.index('fate.reason=NorthlightShadowFate::CaptureBudget;\n        // Only reject')]
 checks={}
-checks['the root once per skinned draw: after the small-shadow return, before captureExhausted; the palette read stays in paletteRows']=(capture.count('rooted=drawRoot(current,root)')==1
+checks['the root once per skinned draw: after the small-shadow return, before captureExhausted; the palette read stays in paletteRows']=(capture.count('rooted=drawRootMemo(current,root)')==1
     and capture.index('if(smallShadow&&!actorCaptureEnabled())')<capture.index('NorthlightCaptureAdmission::Decision admit;')<capture.index('if(replaySnapshots.captureExhausted(priority))')
     and capture.index('const auto& metadata=*found;')<capture.index('if(replays.size()>=4096)')<capture.index('NorthlightCaptureAdmission::Decision admit;')
     and w.count('GetVertexShaderConstantF(UINT(program->second->paletteBase),rows,3)')==1)
-checks['skinned draws with ActorShadows only; the gate never sets captureShortfall, the cut does']=('if(priority&&quality.actorShadows){nearAnchorTake();rooted=drawRoot(current,root);' in gate
+checks['skinned draws with ActorShadows only; the gate never sets captureShortfall, the cut does']=('if(priority&&quality.actorShadows){nearAnchorTake();rooted=drawRootMemo(current,root);' in gate
     and 'fate.reason=NorthlightShadowFate::RadiusGate;gatedBodies.insert(gatedBodies.end(),root,root+3);}' in gate and 'fate.reason=NorthlightShadowFate::DistanceCut;captureShortfall=true;}' in gate
     and gate.count('captureShortfall')==1)
 checks['near hits come from the same root (no second palette read)']='admission.decide(reinterpret_cast<std::uintptr_t>(current),count,vertexTotal,rooted?root:nullptr,nearDraw(rooted?root:nullptr))' in gate
@@ -43,7 +43,7 @@ checks['every draw of the outside sections (importOutside) right after the selec
 checks['gated bodies are rigid-memory bodies (a prop held by a far NPC is not a ghost)']=('rigidBodies.insert(rigidBodies.end(),gatedBodies.begin(),gatedBodies.end());' in m)
 checks['end of frame: the cut after the sampled log, before the counters of the next frame']=(
     w.index('admissionCentre=%s')<w.index('admission.endFrame(size_t(captureBudgetMiB)*1048576,replaySnapshots.bytesRead());'))
-checks['logged on the MODEL frame capture line']=('radiusGated=%u radiusGatedBytes=%zu cutRejected=%u cutYards=%.1f insideRefused=%u insideRefusedActors=%u noRoot=%u admissionCentre=%s' in w
+checks['logged on the MODEL frame capture line']=('radiusGated=%u radiusGatedBytes=%zu cutRejected=%u cutYards=%.1f insideRefused=%u insideRefusedActors=%u noRoot=%u admissionCentre=%s rootReads=%u rootMemoHits=%u' in w
     and w.count('admissionCentre=%s')==1)
 checks['centre once per capture frame at the first skinned ask (the near anchor), self else pivot; GI cadence read without deciding it']=(
     'if(nearAnchor.self){centre.centre=nearAnchor.selfAt;centre.self=true;}' in w and 'pivot[k]=nearAnchor.eye[k]+nearAnchor.forward[k]*pivotDistance' in w and 'nearAnchorReady=false;' in w
@@ -52,6 +52,10 @@ checks['fate: RadiusGate and DistanceCut']=('RadiusGate,DistanceCut,FateCount' i
 checks['constants: gate = yards + 2*band + ClusterExtent + 4; cut target 0.85, MinCut 12, grow after 10 frames, shrink after 1']=(
     'return yards+2*NorthlightActorShadowSelection::band(yards)+NorthlightActorShadowSelection::ClusterExtent+GateExtra;' in adm and 'GateExtra=4.f' in adm and 'Margin=.85f' in adm and 'MinCut=12.f' in adm
     and 'GrowFrames=10,ShrinkFrames=1' in adm)
+checks['root memo: the mirror serials certify, the read stays in drawRoot, one palette read site, cleared per frame, counted in the log']=(
+    'bool drawRootMemo(IDirect3DVertexShader9* shader,float* root){' in w and 'if(!constantEpochSource.attached()||!constantEpochSource.valid()){++rootReads;return drawRoot(shader,root);}' in w
+    and 'rootMemo.hit(shader,live.reset,live.floatBlock)' in w and w.count('GetVertexShaderConstantF(UINT(program->second->paletteBase),rows,3)')==1
+    and 'rootMemo.clear();rootReads=rootMemoHits=0;' in w and 'rootReads,rootMemoHits);' in w)
 for name,ok in checks.items():print(('PASS ' if ok else 'FAIL ')+name)
 assert all(checks.values())
 print('PASS capture admission: model and wiring')

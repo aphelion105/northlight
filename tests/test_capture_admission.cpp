@@ -203,4 +203,16 @@ int main(){
  {Sim s;s.limit=24*MiB;s.ctx=self(0);const auto people=crowd(60);for(unsigned f=0;f<4;++f)s.frame(farFirst(people));assert(s.a.cutActive()&&s.a.shapeCount()>0);
   s.a.reset();assert(!s.a.cutActive()&&!s.a.shapeCount()&&!s.a.armed());
   std::puts("PASS 9: reset");}
+ // 10. RootMemo: a hit only when the program, the reset serial and the serials of both covering blocks match; cleared per frame.
+ {RootMemo m;std::uint64_t blocks[16]={};const float root[3]={1,2,3};int program;const void* a=&program;
+  assert(!m.hit(a,1,blocks));m.store(a,31,1,blocks,root,true); /* c31..c33: blocks 1 and 2 */
+  assert(m.hit(a,1,blocks)&&m.root[2]==3&&m.valid);
+  blocks[0]=9;blocks[3]=9;assert(m.hit(a,1,blocks)); /* a write elsewhere */
+  blocks[1]=5;assert(!m.hit(a,1,blocks));blocks[1]=0;assert(m.hit(a,1,blocks));
+  blocks[2]=5;assert(!m.hit(a,1,blocks));blocks[2]=0;
+  assert(!m.hit(a,2,blocks)); /* a reset (state-block restore) */
+  int other=0;assert(!m.hit(&other,1,blocks));
+  m.store(a,32,1,blocks,root,false);assert(m.hit(a,1,blocks)&&!m.valid); /* c32..c34: one block; an unreadable root is remembered too */
+  m.clear();assert(!m.hit(a,1,blocks));
+  std::puts("PASS 10: root memo key");}
 }
