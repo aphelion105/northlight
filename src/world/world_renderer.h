@@ -109,6 +109,7 @@
 #include "diagnostics_switch.h"
 #include "gi_solve_pool.h"
 #include "near_reserve.h"
+#include "capture_admission.h"
 #include "effects_buckets.h"
 #include <cstdarg>
 #include "rigid_memory.h"
@@ -647,6 +648,7 @@ private:
         const NorthlightDrawSnapshot::Mesh& mesh()const{return shared?*shared:snapshot;}
         bool gpuCached=false,shadowSkinned=false,shadowSelected=true,shadowSmall=false;int fateSlot=-1;unsigned char fateClass=0;float fateDistance=0; /* shadow fate diagnostics */
         bool boneKnown=false;float bone=NAN; /* 0.3.176 (S2): this frame's selection tested its rigid bone (reset at capture) */
+        float captureRoot[3]={};bool captureRootValid=false; /* 0.3.210 (task 31): the palette root computed once at capture (capture admission); passive for the selection */
         // 0.3.177 (r83): filled at capture for selected skinned draws, read by prepareRecord (the stable
         // selection's prepare, possibly on the prepare worker): the program (null: none) and a copy of
         // the declaration (the declaration cache may reuse its slot within the frame). 0.3.179 (T1): the
@@ -1930,7 +1932,7 @@ public:
         logSnapshotAb(); /* 0.3.181: the SNAPSHOT ab window at device destroy */
         {std::lock_guard<std::mutex> lock(mutex);stopping=true;}wake.notify_one();if(worker.joinable())worker.join();releaseGPU();for(auto& p:captureShaders)drop(p.second.replacement);for(auto& p:terrainShadowShaders)drop(p.second);}
     void releaseActorTargets(){for(auto& t:actorShadow)drop(t);for(auto& t:actorShadowSurface)drop(t);for(auto& t:actorTiles)drop(t);for(auto& t:actorTilesSurface)drop(t);drop(actorTilesMid);drop(actorTilesMidSurface);drop(actorVisibility);drop(actorVisibilitySurface);drop(actorShadowPS);drop(actorTilesPS);}
-    void releaseGPU(){replayBoundsAbandon();releaseReplayProbe();staticCasters.settle();rigidMemoryClear();prepareQuiesce();neutralShadowMaps=false;prepareCaches->sampled.clear();prepareCaches->bones.clear();prepareCachesStale=false;if(replays.empty()&&heldShadowReplays.empty())prepareFrameRelease(); /* 0.3.179: no replay left to point at them */actorShadowHistory.clear();actorShadowOriginValid=false;replayBoundsMetadata.clear();replayBoundsCache.clear();declarationCache.clear();uploadedStaticOwners.reset();staticOwnerGeneration=UINT64_MAX;staticCasters.reset();staticMatcher.clear();staticScene.reset();staticRetryTick=0;stateBlocks.clear();uploadedTerrain.clear();liveTerrainIndexCount=liveDirectionalIndexCount=0;fixedTerrain.reset();fixedTerrainBits.reset();liveTerrainGeneration=0;drop(regionalFogTexture);drop(neutralAO);drop(neutralZero);rainMask=nullptr;uploadedFogField.reset();releasePointGPU();probeActivation.reset();probeBlend.reset();drop(baselineSurface);drop(baselineLight);releaseReplayGPU();liveTerrainGPU.clear();{auto& queries=fence();NorthlightDynamicRing::reset(liveIndexRing,0,queries);queries.drop();}drop(liveIndicesGPU);liveIndexBytes=0;liveIndexBase=0;pendingMesh.reset();clearMesh();retiredMaterials.clear();releaseMeshPool();uploadedMap.clear();for(auto& t:shadow)drop(t);for(auto& s:shadowSurface)drop(s);for(auto& t:shadowCache)drop(t);for(auto& s:shadowCacheSurface)drop(s);drop(shadowCacheDepth);drop(shadowVerifySurface);drop(shadowVerify);for(auto& r:shadowVerifyRead)drop(r);drop(shadowScratch);drop(shadowScratchSurface);releaseActorTargets();drop(neutralWhite);actorValid[0]=actorValid[1]=false;actorCenterValid[0]=actorCenterValid[1]=false;drop(unionPS);invalidateShadowCache();for(auto& t:probe)drop(t);drop(probePrev);drop(shadowDepth);drop(lightSurface);drop(smoothSurface);drop(fogSurface);drop(fogBlurredSurface);drop(fogHistorySurface);drop(fogHistory);drop(fogTemporalPS);fogHistoryValid=false;drop(colorSurface);drop(light);drop(smoothLight);drop(fog);drop(fogBlurred);drop(color);drop(lightingPS);drop(giPS);drop(fogPS);drop(fogBlurPS);drop(fogCloudsPS);drop(cloudNoise);drop(localDirectPS);drop(removalPS);drop(temporalPS);drop(localFogPS);drop(localFogCombinePS);drop(localFogAccumSurface);drop(localFogAccum);drop(normalsPS);drop(normalBuffer);drop(normalSurface);drop(sourceVisPS);for(int a=0;a<2;++a)for(int b=0;b<2;++b){drop(sourceVis[a][b]);drop(sourceVisSurface[a][b]);}sourceVisValid=false;for(int i=0;i<2;++i){drop(temporalLight[i]);drop(temporalLightSurface[i]);drop(temporalDepth[i]);drop(temporalDepthSurface[i]);}temporalValid=false;drop(finalPS);drop(shadowPS);drop(replayPS);drop(shadowVS);drop(cachedShadowVS);drop(cachedShadowPS);drop(cachedFastPS);drop(cachedOpaqueFastPS);drop(cachedOpaquePS);drop(shadowDecl);width=height=0;uploadedSerial=0;}
+    void releaseGPU(){replayBoundsAbandon();releaseReplayProbe();staticCasters.settle();rigidMemoryClear();admission.reset();admissionOn=false;gatedBodies.clear();prepareQuiesce();neutralShadowMaps=false;prepareCaches->sampled.clear();prepareCaches->bones.clear();prepareCachesStale=false;if(replays.empty()&&heldShadowReplays.empty())prepareFrameRelease(); /* 0.3.179: no replay left to point at them */actorShadowHistory.clear();actorShadowOriginValid=false;replayBoundsMetadata.clear();replayBoundsCache.clear();declarationCache.clear();uploadedStaticOwners.reset();staticOwnerGeneration=UINT64_MAX;staticCasters.reset();staticMatcher.clear();staticScene.reset();staticRetryTick=0;stateBlocks.clear();uploadedTerrain.clear();liveTerrainIndexCount=liveDirectionalIndexCount=0;fixedTerrain.reset();fixedTerrainBits.reset();liveTerrainGeneration=0;drop(regionalFogTexture);drop(neutralAO);drop(neutralZero);rainMask=nullptr;uploadedFogField.reset();releasePointGPU();probeActivation.reset();probeBlend.reset();drop(baselineSurface);drop(baselineLight);releaseReplayGPU();liveTerrainGPU.clear();{auto& queries=fence();NorthlightDynamicRing::reset(liveIndexRing,0,queries);queries.drop();}drop(liveIndicesGPU);liveIndexBytes=0;liveIndexBase=0;pendingMesh.reset();clearMesh();retiredMaterials.clear();releaseMeshPool();uploadedMap.clear();for(auto& t:shadow)drop(t);for(auto& s:shadowSurface)drop(s);for(auto& t:shadowCache)drop(t);for(auto& s:shadowCacheSurface)drop(s);drop(shadowCacheDepth);drop(shadowVerifySurface);drop(shadowVerify);for(auto& r:shadowVerifyRead)drop(r);drop(shadowScratch);drop(shadowScratchSurface);releaseActorTargets();drop(neutralWhite);actorValid[0]=actorValid[1]=false;actorCenterValid[0]=actorCenterValid[1]=false;drop(unionPS);invalidateShadowCache();for(auto& t:probe)drop(t);drop(probePrev);drop(shadowDepth);drop(lightSurface);drop(smoothSurface);drop(fogSurface);drop(fogBlurredSurface);drop(fogHistorySurface);drop(fogHistory);drop(fogTemporalPS);fogHistoryValid=false;drop(colorSurface);drop(light);drop(smoothLight);drop(fog);drop(fogBlurred);drop(color);drop(lightingPS);drop(giPS);drop(fogPS);drop(fogBlurPS);drop(fogCloudsPS);drop(cloudNoise);drop(localDirectPS);drop(removalPS);drop(temporalPS);drop(localFogPS);drop(localFogCombinePS);drop(localFogAccumSurface);drop(localFogAccum);drop(normalsPS);drop(normalBuffer);drop(normalSurface);drop(sourceVisPS);for(int a=0;a<2;++a)for(int b=0;b<2;++b){drop(sourceVis[a][b]);drop(sourceVisSurface[a][b]);}sourceVisValid=false;for(int i=0;i<2;++i){drop(temporalLight[i]);drop(temporalLightSurface[i]);drop(temporalDepth[i]);drop(temporalDepthSurface[i]);}temporalValid=false;drop(finalPS);drop(shadowPS);drop(replayPS);drop(shadowVS);drop(cachedShadowVS);drop(cachedShadowPS);drop(cachedFastPS);drop(cachedOpaqueFastPS);drop(cachedOpaquePS);drop(shadowDecl);width=height=0;uploadedSerial=0;}
     // Explicit enable/retry only, called after the wrapper's clearFrame(). This
     // never calls endFrame(), so packet capture and cleanup run exactly once.
     void recover(){meshRetry.clear();if(!failed)return;releaseGPU();failed=false;valid=false;streamingReports=0;logf("WORLD explicit recovery requested");}
@@ -2005,7 +2007,9 @@ public:
                 m.snapshotEvictions,m.snapshotEvictedBytes,m.snapshotMs,m.indexEvictions,m.indexEvictedBytes,m.indexMs,
                 m.missEvicted,m.missRevision,m.missUnknown,m.missCollision,replaySnapshots.snapshotRevalidationMismatches());}
         if(captureSampled)logf("MODEL capture metadata batches=%u knownBuffers=%u fallbackBuffers=%u fastSnapshotHits=%u",replaySnapshots.metadataBatches(),replaySnapshots.metadataHits(),replaySnapshots.metadataFallbacks(),replaySnapshots.fastCacheHits());
-        if(captureSampled)logf("MODEL frame capture skinnedCandidates=%u accepted=%u blendRejected=%u projectionRejected=%u budgetRejected=%u snapshotRejected=%u acceptedSkinnedBytes=%zu acceptedOtherBytes=%zu rejectedReadBytes=%zu totalReadBytes=%zu compactedDraws=%u spanVertices=%zu uniqueVertices=%zu savedVertexBytes=%zu nearAdmitted=%u nearBytes=%zu nearRefused=%u nearSelf=%d nearReserve=%zu",skinnedCandidates,skinnedAccepted,skinnedBlendRejected,skinnedProjectionRejected,skinnedBudgetRejected,skinnedSnapshotRejected,acceptedSkinnedBytes,acceptedOtherBytes,captureRejectedBytes,replaySnapshots.bytesRead(),replaySnapshots.compactedDraws(),replaySnapshots.sourceSpanVertices(),replaySnapshots.uniqueVertices(),replaySnapshots.savedVertexBytes(),nearAdmitted,nearBytes,nearRefused,int(nearAnchorReady&&nearAnchor.self),replaySnapshots.nearReserve());
+        if(captureSampled)logf("MODEL frame capture skinnedCandidates=%u accepted=%u blendRejected=%u projectionRejected=%u budgetRejected=%u snapshotRejected=%u acceptedSkinnedBytes=%zu acceptedOtherBytes=%zu rejectedReadBytes=%zu totalReadBytes=%zu compactedDraws=%u spanVertices=%zu uniqueVertices=%zu savedVertexBytes=%zu nearAdmitted=%u nearBytes=%zu nearRefused=%u nearSelf=%d nearReserve=%zu radiusGated=%u radiusGatedBytes=%zu cutRejected=%u cutYards=%.1f insideRefused=%u insideRefusedActors=%u noRoot=%u admissionCentre=%s",skinnedCandidates,skinnedAccepted,skinnedBlendRejected,skinnedProjectionRejected,skinnedBudgetRejected,skinnedSnapshotRejected,acceptedSkinnedBytes,acceptedOtherBytes,captureRejectedBytes,replaySnapshots.bytesRead(),replaySnapshots.compactedDraws(),replaySnapshots.sourceSpanVertices(),replaySnapshots.uniqueVertices(),replaySnapshots.savedVertexBytes(),nearAdmitted,nearBytes,nearRefused,int(nearAnchorReady&&nearAnchor.self),replaySnapshots.nearReserve(),
+            admission.counters().radiusGated,admission.counters().radiusGatedBytes,admission.counters().cutRejected,admission.cutActive()?double(admission.cut()):0.0,admission.counters().insideRefusedDraws,admission.counters().insideRefusedActors,admission.counters().noRoot,
+            admissionOn?(admission.centreSelf()?"self":"pivot"):"off");
         if(captureSampled)logf("MODEL frame capture other blendRejected=%u projectionRejected=%u budgetRejected=%u",otherBlendRejected,otherProjectionRejected,otherBudgetRejected);
         if(captureSampled&&captureFrequency.QuadPart>0){
             const double ms=1000.0/double(captureFrequency.QuadPart);
@@ -2038,6 +2042,7 @@ public:
         lastCapturePhaseReads=capturePhases.clockReads+actorPhases.clockReads;clearCaptureDiagnostics();if(captureSampled)++capturePhaseSerial;
         skinnedCandidates=skinnedBlendRejected=skinnedProjectionRejected=skinnedBudgetRejected=skinnedSnapshotRejected=skinnedAccepted=0;otherBlendRejected=otherBudgetRejected=otherProjectionRejected=0;
         captureRejectedBytes=acceptedSkinnedBytes=acceptedOtherBytes=0;nearAdmitted=nearRefused=0;nearBytes=0;nearAnchorReady=false;
+        admission.endFrame(size_t(captureBudgetMiB)*1048576,replaySnapshots.bytesRead());admissionOn=false;gatedBodies.clear(); /* 0.3.210 (task 31): the next frame's cut, after the log read this frame's counters; no-op when no skinned draw armed it */
         previousCacheHits=terrainBoundsCache.persistentHits();capturedConstantBytes=capturedConstantCalls=0;capturedSM1Draws=capturedRelativeDraws=0;
         terrainCaptureTicks=replayCaptureTicks=0;terrainCaptureCalls=terrainUPCalls=replayCaptureCalls=unknownCaptureCalls=0;captureSampled=false;
         valid=false;traceContext=0;traceFog=0;legacyFogKnown=false;shadowFrameReady=false;legacyFog=NorthlightLegacyFog::Constants{};
@@ -2667,13 +2672,21 @@ public:
     // (the previous selection's self and this frame's camera; shadowPivot() is not called).
     NorthlightNearReserve::Anchor nearAnchor;bool nearAnchorReady=false;
     unsigned nearAdmitted=0,nearRefused=0;size_t nearBytes=0;
-    bool nearDraw(IDirect3DVertexShader9* shader){
+    /* 0.3.210 (task 31): capture admission (capture_admission.h). The centre is the near anchor's: taken once per capture frame at the first
+       skinned draw (the previous selection's self, else the pivot eye+forward*pivotDistance). admissionOn: ActorShadows and a usable centre. */
+    NorthlightCaptureAdmission::Admission admission;bool admissionOn=false;std::vector<float> gatedBodies; /* roots of radius-gated bodies, for rigid memory */
+    bool actorCaptureWouldRun()const{return NorthlightQuality::giActorCapture(quality)&&(actorCaptureDecided?actorCaptureDue:(!lastActorCapture||GetTickCount()-lastActorCapture>=200));}
+    void nearAnchorTake(){
         if(!nearAnchorReady){nearAnchorReady=true;const float forward[3]={context.inverseView[8]*projection[2],context.inverseView[9]*projection[2],context.inverseView[10]*projection[2]};
-            nearAnchor=NorthlightNearReserve::anchor(actorShadowHistory.selfHold()>0?actorShadowHistory.selfAt():nullptr,context.camera,forward,pivotDistance);}
-        float root[3];return drawRoot(shader,root)&&NorthlightNearReserve::test(nearAnchor,root)!=NorthlightNearReserve::None;
+            nearAnchor=NorthlightNearReserve::anchor(actorShadowHistory.selfHold()>0?actorShadowHistory.selfAt():nullptr,context.camera,forward,pivotDistance);
+            NorthlightCaptureAdmission::Context centre;float pivot[3];centre.camera=context.camera;centre.yards=float(quality.actorShadowRadius);centre.gi=actorCaptureWouldRun();
+            if(nearAnchor.self){centre.centre=nearAnchor.selfAt;centre.self=true;}
+            else if(nearAnchor.ray){for(unsigned k=0;k<3;++k)pivot[k]=nearAnchor.eye[k]+nearAnchor.forward[k]*pivotDistance;centre.centre=pivot;}
+            admissionOn=quality.actorShadows&&centre.centre;if(admissionOn)admission.arm(centre);}
     }
-    bool nearCandidate(bool priority,IDirect3DVertexShader9* shader){
-        return priority&&replaySnapshots.nearReserve()&&!replaySnapshots.countExhausted(priority)&&nearDraw(shader);}
+    bool nearDraw(const float* root){return root&&NorthlightNearReserve::test(nearAnchor,root)!=NorthlightNearReserve::None;}
+    bool nearCandidate(bool priority,const float* root){
+        return priority&&replaySnapshots.nearReserve()&&!replaySnapshots.countExhausted(priority)&&nearDraw(root);}
     void captureModel(D3DPRIMITIVETYPE type,INT base,UINT minimum,UINT vertexTotal,UINT start,UINT count,bool indexed,IDirect3DVertexShader9* current,bool sample,const void* userIndices,D3DFORMAT userFormat,const void* userVertices,UINT userStride){
         if(modelCaptureSkipped())return; /* previous replays/actor packets are not needed this frame */
         const CaptureShader* found=lookupShader(current).capture;if(!found){if(sample)++unknownCaptureCalls;return;}
@@ -2709,14 +2722,23 @@ public:
         // The game's original draw and the shared draw-domain gate are untouched.
         fate.reason=NorthlightShadowFate::Small;
         if(smallShadow&&!actorCaptureEnabled()){if(sample)++smallShadowEarly;return;}
+        // 0.3.210 (task 31): the palette root once per skinned draw, then the capture admission (radius gate, distance cut)
+        // before any budget is spent; near-reserve hits always pass. A draw without a root is never gated or cut.
+        float root[3];bool rooted=false;NorthlightCaptureAdmission::Decision admit;
+        if(priority&&quality.actorShadows){nearAnchorTake();rooted=drawRoot(current,root);
+            if(admissionOn){admit=admission.decide(reinterpret_cast<std::uintptr_t>(current),count,vertexTotal,rooted?root:nullptr,nearDraw(rooted?root:nullptr));
+                if(admit.verdict!=NorthlightCaptureAdmission::Verdict::Admit){
+                    if(admit.verdict==NorthlightCaptureAdmission::Verdict::RadiusGate){fate.reason=NorthlightShadowFate::RadiusGate;gatedBodies.insert(gatedBodies.end(),root,root+3);}
+                    else{fate.reason=NorthlightShadowFate::DistanceCut;captureShortfall=true;}
+                    return;}}}
         fate.reason=NorthlightShadowFate::CaptureBudget;
         // Only reject when no legal snapshot can fit, including cache hits
         // and UP draws. A previous oversized failure is not an exhaustion proof.
         // A near skinned draw may read from the near reserve once the main budget is spent.
         bool nearby=false;
-        if(replaySnapshots.captureExhausted(priority)){const bool candidate=nearCandidate(priority,current);
+        if(replaySnapshots.captureExhausted(priority)){const bool candidate=nearCandidate(priority,rooted?root:nullptr);
             if(candidate&&!replaySnapshots.captureExhausted(priority,true))nearby=true;
-            else{nearRefused+=candidate;captureShortfall=true;
+            else{nearRefused+=candidate;captureShortfall=true;if(admit.rooted)admission.budgetRefused(admit,root,vertexTotal,count);
                 if(sample&&priority){++skinnedSnapshotRejected;++skinnedBudgetRejected;}
                 if(sample&&!priority)++otherBudgetRejected;
                 return;}
@@ -2740,7 +2762,7 @@ public:
         phase.next(CaptureSnapshot);fate.reason=NorthlightShadowFate::Snapshot;
         if(!snapshotFrameBegun)snapshotBeginFrame(sample);
         NorthlightDrawSnapshot::SnapshotSpan<decltype(snapshotMeter)> snapshotSpan(snapshotMeter); /* 0.3.181 (S3): to the constants phase or a return */
-        std::unique_ptr<Replay,ReplayRecycle> p(acquireReplay().release(),ReplayRecycle{this});p->shadowSkinned=priority;p->shadowSelected=!smallShadow;p->shadowSmall=smallShadow;p->boneKnown=false;p->fateSlot=-1;p->fateClass=smallShadow?NorthlightShadowFate::Small:NorthlightShadowFate::NotRanked;p->fateDistance=0;p->projectionKind=kind;p->shader=metadata.replacement;p->shader->AddRef();p->originalShader=current;p->originalShader->AddRef();p->pointBounds={};
+        std::unique_ptr<Replay,ReplayRecycle> p(acquireReplay().release(),ReplayRecycle{this});p->shadowSkinned=priority;p->shadowSelected=!smallShadow;p->shadowSmall=smallShadow;p->boneKnown=false;p->captureRootValid=rooted;if(rooted)std::memcpy(p->captureRoot,root,sizeof p->captureRoot);p->fateSlot=-1;p->fateClass=smallShadow?NorthlightShadowFate::Small:NorthlightShadowFate::NotRanked;p->fateDistance=0;p->projectionKind=kind;p->shader=metadata.replacement;p->shader->AddRef();p->originalShader=current;p->originalShader->AddRef();p->pointBounds={};
         if(replaySnapshots.lookup()==NorthlightDrawSnapshot::Frame::Lookup::Prefetch&&!freeReplays.empty())prefetchReplay(*freeReplays.back()); /* 0.3.181 (S2) */
         if(FAILED(d->GetVertexDeclaration(&p->decl))||!p->decl)return;
         NorthlightDrawSnapshot::Draw draw{type,base,minimum,vertexTotal,start,count,indexed};NorthlightDrawSnapshot::Diagnostics why;
@@ -2749,10 +2771,11 @@ public:
         auto read=[&]{return userVertices?replaySnapshots.readUP(p->decl,draw,userIndices,userFormat,userVertices,userStride,p->snapshot,&why,priority,nearby):replaySnapshots.read(d,p->decl,draw,p->snapshot,&why,priority,&p->shared,nearby);};
         bool captured=read();size_t nearFrom=readBefore;
         // Turned away for bytes: a near draw is read once more, from the near reserve.
-        if(!captured&&why.error==NorthlightDrawSnapshot::Error::Budget&&!nearby&&nearCandidate(priority,current)){
+        if(!captured&&why.error==NorthlightDrawSnapshot::Error::Budget&&!nearby&&nearCandidate(priority,rooted?root:nullptr)){
             nearby=true;nearFrom=replaySnapshots.bytesRead();captured=read();if(!captured)nearRefused+=why.error==NorthlightDrawSnapshot::Error::Budget;}
         if(captured&&nearby){++nearAdmitted;nearBytes+=replaySnapshots.bytesRead()-nearFrom;}
-        if(!captured){if(why.error==NorthlightDrawSnapshot::Error::Budget){fate.reason=NorthlightShadowFate::CaptureBudget;captureShortfall=true;}
+        if(captured&&admit.rooted)admission.admitted(admit,reinterpret_cast<std::uintptr_t>(current),count,root,replaySnapshots.bytesRead()-readBefore);
+        if(!captured){if(why.error==NorthlightDrawSnapshot::Error::Budget){fate.reason=NorthlightShadowFate::CaptureBudget;captureShortfall=true;if(admit.rooted)admission.budgetRefused(admit,root,vertexTotal,count);}
             if(sample){captureRejectedBytes+=replaySnapshots.bytesRead()-readBefore;if(priority){++skinnedSnapshotRejected;skinnedBudgetRejected+=why.error==NorthlightDrawSnapshot::Error::Budget;}else otherBudgetRejected+=why.error==NorthlightDrawSnapshot::Error::Budget;}if(snapshotRejects++<12)logf("MODEL snapshot rejected: %s hr=%08lx stream=%u",NorthlightDrawSnapshot::errorName(why.error),(unsigned long)why.hr,why.stream);return;}
         snapshotSpan.end();phase.next(CaptureConstants);fate.reason=NorthlightShadowFate::Constants;
         const auto& usage=metadata.usage;

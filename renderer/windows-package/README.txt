@@ -133,7 +133,7 @@ Individual settings (Quality / Balanced / Performance):
   PointShadowFacesPerFrame 6 / 6 / 6   lamp shadow directions updated per frame (1..6; 6 = all at once; lower = smaller spikes, a brief seam at the edge)
   ShadowDirectionSteps  2048/2048/2048 sun direction quantization (fewer jumps)
   StaticCacheSlices     1 / 1 / 1      a partial redraw of the cached shadow is spread over N frames (1..4; 1 = in one frame; a new shadow can appear N-1 frames late)
-  CaptureBudgetMiB      32 / 32 / 32   capture limit for animated geometry (your own character and mount may use an extra 4 MiB once it is reached)
+  CaptureBudgetMiB      32 / 32 / 32   capture limit for animated geometry, spent on the characters nearest to you first (your own character and mount may use an extra 4 MiB once it is reached)
   GI                    1 / 1 / 1      indirect light (0 = off, the background computation too)
   GIRays                64 / 48 / 32   rays per light probe
   GIBounces             3 / 3 / 2      light bounces

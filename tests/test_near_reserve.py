@@ -12,16 +12,16 @@ HERE=Path(__file__).resolve().parent
 w=fp.src('world_renderer.h').read_text();g=fp.src('world_memory_guard.inl').read_text();r=fp.src('near_reserve.h').read_text()
 capture=w[w.index('    void captureModel(D3DPRIMITIVETYPE type,'):w.index('    // One directional replay draw in the 0.3.142 order')]
 checks={}
-checks['near test only on the two budget branches']=(capture.count('nearCandidate(')==2 and w.count('nearCandidate(')==3 and w.count('nearDraw(')==2
-    and 'if(replaySnapshots.captureExhausted(priority)){const bool candidate=nearCandidate(priority,current);' in capture
-    and 'if(!captured&&why.error==NorthlightDrawSnapshot::Error::Budget&&!nearby&&nearCandidate(priority,current)){' in capture)
-checks['skinned draws only, never past the draw-count cap, only with a reserve']='return priority&&replaySnapshots.nearReserve()&&!replaySnapshots.countExhausted(priority)&&nearDraw(shader);}' in w
+checks['near reserve is asked only on the two budget branches (0.3.210: the admission also passes near hits, nearDraw)']=(capture.count('nearCandidate(')==2 and w.count('nearCandidate(')==3 and w.count('nearDraw(')==3
+    and 'if(replaySnapshots.captureExhausted(priority)){const bool candidate=nearCandidate(priority,rooted?root:nullptr);' in capture
+    and 'if(!captured&&why.error==NorthlightDrawSnapshot::Error::Budget&&!nearby&&nearCandidate(priority,rooted?root:nullptr)){' in capture)
+checks['skinned draws only, never past the draw-count cap, only with a reserve']='return priority&&replaySnapshots.nearReserve()&&!replaySnapshots.countExhausted(priority)&&nearDraw(root);}' in w
 checks['the read is retried once (two calls, no loop)']=(len(re.findall(r'\bread\(\)',capture))==2 and capture.count('bool captured=read();')==1
     and re.search(r'\b(for|while)\s*\([^\n]*\bread\(\)',capture) is None)
 checks['the retry is flagged nearby, the first read is not (unless the exhausted branch admitted it)']=('nearby=true;nearFrom=replaySnapshots.bytesRead();captured=read();' in capture
     and 'if(candidate&&!replaySnapshots.captureExhausted(priority,true))nearby=true;' in capture and 'bool nearby=false;' in capture)
 checks['anchor once per capture frame, no shadowPivot()']=('if(!nearAnchorReady){nearAnchorReady=true;' in w and 'nearAnchorReady=false;' in w
-    and 'shadowPivot' not in w[w.index('    bool nearDraw('):w.index('    bool nearCandidate(')]
+    and 'shadowPivot' not in w[w.index('    void nearAnchorTake('):w.index('    bool nearCandidate(')]
     and 'actorShadowHistory.selfHold()>0?actorShadowHistory.selfAt():nullptr' in w)
 checks['reserve 4 MiB, 0 under memory pressure or ActorShadows=0']=('constexpr std::size_t ReserveBytes=4u<<20;' in r
     and 'void setNearReserve(){replaySnapshots.setNearReserve(memoryPressure||!quality.actorShadows?0:NorthlightNearReserve::ReserveBytes);}' in g
