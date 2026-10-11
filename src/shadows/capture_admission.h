@@ -22,11 +22,10 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <unordered_set>
 #include <vector>
 namespace NorthlightCaptureAdmission {
-constexpr float CellYards=4.f,MinCut=12.f,Margin=.85f,MatchYards=1.5f,MatchCap=CellYards,GateExtra=4.f,GIYards=100.f,Teleport=100.f,CountCell=2.f;
-constexpr unsigned GrowFrames=10,ShrinkFrames=1;
+constexpr float CellYards=4.f,MinCut=12.f,Margin=.85f,MatchYards=1.5f,GateExtra=4.f,GIYards=100.f,Teleport=100.f,CountCell=2.f;
+constexpr unsigned GrowFrames=10;
 constexpr std::size_t ShapeSlots=4096; /* direct-mapped estimate cache: a collision only loses an estimate */
 inline float gateYards(float yards){return yards+2*NorthlightActorShadowSelection::band(yards)+NorthlightActorShadowSelection::ClusterExtent+GateExtra;}
 // The palette root of the last skinned draw, reused while nothing wrote its palette rows. The proof is the device
@@ -53,8 +52,6 @@ class Grid {
         h^=h>>29;return std::size_t(h);}
 public:
     void clear(){items_.clear();head_.clear();next_.clear();mask_=0;}
-    std::size_t size()const{return items_.size();}
-    const std::vector<Item>& items()const{return items_;}
     void add(const Item& i){if(std::isfinite(i.at[0])&&std::isfinite(i.at[1])&&std::isfinite(i.at[2]))items_.push_back(i);}
     void build(){
         std::size_t n=16;while(n<items_.size()*2)n<<=1;
@@ -83,13 +80,13 @@ class Admission {
     // Frame
     bool armed_=false,radiusOn_=false,self_=false,gi_=false,exhausted_=false;
     float centre_[3]={},camera_[3]={},yards_=0,gate_=0,tolerance_=MatchYards;
-    std::vector<Record> records_;std::size_t admittedBytes_=0;Counters counters_;
-    std::unordered_set<std::uint64_t> insideCells_;
+    std::vector<Record> records_;std::size_t admittedBytes_=0;mutable Counters counters_;
+    mutable std::vector<std::uint64_t> insideCells_;mutable bool cellsDirty_=false; /* cell keys of refused draws inside the radius; distinct count taken lazily */
     // Persistent
-    float cut_=INFINITY;unsigned exhaustStreak_=0,room_=0;
+    float cut_=INFINITY;unsigned room_=0;
     float lastCentre_[3]={},lastCamera_[3]={};bool lastValid_=false;
     Grid gateGrid_,lastAdmitted_,admittedNext_;std::vector<Item> gatedLast_,gatedNext_,far_;
-    struct Shape {std::uint64_t key=0;std::size_t bytes=0;};std::vector<Shape> shapes_=std::vector<Shape>(ShapeSlots);std::size_t shapeCount_=0;
+    struct Shape {std::uint64_t key=0;std::size_t bytes=0;};std::vector<Shape> shapes_=std::vector<Shape>(ShapeSlots);
     static bool finite(const float* v){return v&&std::isfinite(v[0])&&std::isfinite(v[1])&&std::isfinite(v[2]);}
     static float length(const float* a,const float* b){float q=0;for(unsigned k=0;k<3;++k){const float t=a[k]-b[k];q+=t*t;}return std::sqrt(q);}
     static std::uint64_t shapeKey(std::uintptr_t shader,unsigned count,unsigned vertexTotal){
@@ -101,21 +98,21 @@ class Admission {
         records_.push_back({d.distance,bytes});
         if(radiusOn_&&d.distance<=yards_){++counters_.insideRefusedDraws;
             const std::uint64_t x=std::uint32_t(std::int32_t(std::floor(root[0]/CountCell))),y=std::uint32_t(std::int32_t(std::floor(root[1]/CountCell)));
-            if(insideCells_.insert(x<<32|y).second)++counters_.insideRefusedActors;}
+            insideCells_.push_back(x<<32|y);cellsDirty_=true;}
     }
 public:
     bool armed()const{return armed_;}
     float cut()const{return cut_;}
     bool cutActive()const{return std::isfinite(cut_);}
-    const Counters& counters()const{return counters_;}
+    // insideRefusedActors is the number of distinct cells of the refused draws inside the radius, counted when asked.
+    const Counters& counters()const{
+        if(cellsDirty_){std::sort(insideCells_.begin(),insideCells_.end());insideCells_.erase(std::unique(insideCells_.begin(),insideCells_.end()),insideCells_.end());
+            counters_.insideRefusedActors=unsigned(insideCells_.size());cellsDirty_=false;}
+        return counters_;}
     bool centreSelf()const{return armed_&&self_;}
-    std::size_t gateSize()const{return gateGrid_.size();}
-    std::size_t shapeCount()const{return shapeCount_;}
     // Forget everything (map change, device reset, a lost selection).
-    void reset(){armed_=false;cut_=INFINITY;exhaustStreak_=room_=0;exhausted_=false;lastValid_=false;records_.clear();admittedBytes_=0;counters_={};insideCells_.clear();
-        gateGrid_.clear();lastAdmitted_.clear();admittedNext_.clear();gatedLast_.clear();gatedNext_.clear();far_.clear();shapes_.assign(ShapeSlots,Shape{});shapeCount_=0;}
-    // The gate list of the next capture frames: identities {shader, count, root}. Replaces the previous list.
-    void importFar(const std::vector<Item>& items){far_.clear();for(const auto& i:items)if(i.shader&&finite(i.at))far_.push_back(i);}
+    void reset(){armed_=false;cut_=INFINITY;room_=0;exhausted_=false;lastValid_=false;records_.clear();admittedBytes_=0;counters_={};insideCells_.clear();cellsDirty_=false;
+        gateGrid_.clear();lastAdmitted_.clear();admittedNext_.clear();gatedLast_.clear();gatedNext_.clear();far_.clear();shapes_.assign(ShapeSlots,Shape{});}
     // After the stable selection: EVERY draw of every body section the selection put outside the radius (not the
     // self, not a companion, not unfiltered), identified by its own shader and count and the section's capture root.
     // A multi-batch character thus has all its batches gated, not only the key draw. Exact identity only.
@@ -127,21 +124,19 @@ public:
     }
     // The first ask of a capture frame: the centre is fixed and the gate list built.
     void arm(const Context& c){
-        armed_=true;exhausted_=false;records_.clear();admittedBytes_=0;counters_={};insideCells_.clear();gatedNext_.clear();admittedNext_.clear();
+        armed_=true;exhausted_=false;records_.clear();admittedBytes_=0;counters_={};insideCells_.clear();cellsDirty_=false;gatedNext_.clear();admittedNext_.clear();
         const bool ok=finite(c.centre);
         for(unsigned k=0;k<3;++k){centre_[k]=ok?c.centre[k]:0.f;camera_[k]=finite(c.camera)?c.camera[k]:centre_[k];}
         self_=c.self&&ok;gi_=c.gi&&finite(c.camera);yards_=c.yards;radiusOn_=NorthlightActorShadowSelection::Enabled&&c.yards>0;gate_=gateYards(c.yards);
         float move=0;
         if(lastValid_){const float centreMove=length(centre_,lastCentre_),cameraMove=length(camera_,lastCamera_);move=std::max(centreMove,cameraMove);
-            if(move>Teleport){gatedLast_.clear();far_.clear();lastAdmitted_.clear();cut_=INFINITY;exhaustStreak_=room_=0;move=0;}}
-        tolerance_=std::min(MatchYards+move,MatchCap);
+            if(move>Teleport){gatedLast_.clear();far_.clear();lastAdmitted_.clear();cut_=INFINITY;room_=0;move=0;}}
+        tolerance_=std::min(MatchYards+move,CellYards);
         for(unsigned k=0;k<3;++k){lastCentre_[k]=centre_[k];lastCamera_[k]=camera_[k];}lastValid_=true;
         gateGrid_.clear();
         if(radiusOn_&&self_){
             for(const auto& i:gatedLast_)gateGrid_.add(i);
-            gateGrid_.build();
-            std::vector<Item> extra;for(const auto& i:far_)if(!gateGrid_.find(i.shader,i.count,i.at,.5f))extra.push_back(i);
-            for(const auto& i:extra)gateGrid_.add(i);
+            for(const auto& i:far_)gateGrid_.add(i); /* a duplicate of a gated item is harmless: find returns the nearest */
             gateGrid_.build();}
     }
     // A skinned draw about to be captured. root: its palette root (null: none). nearHit: a near-reserve hit (not "near": a Windows macro).
@@ -164,7 +159,7 @@ public:
     void admitted(const Decision& d,std::uintptr_t shader,unsigned count,const float* root,std::size_t bytes){
         if(!d.rooted)return;
         records_.push_back({d.distance,bytes});admittedBytes_+=bytes;
-        Shape& e=shapes_[d.shape%ShapeSlots];shapeCount_+=e.key==0;e.key=d.shape;e.bytes=bytes;
+        Shape& e=shapes_[d.shape%ShapeSlots];e.key=d.shape;e.bytes=bytes;
         Item i;i.shader=shader;i.count=count;for(unsigned k=0;k<3;++k)i.at[k]=root[k];admittedNext_.add(i);
     }
     // The budget turned an admitted draw away (real exhaustion).
@@ -183,10 +178,9 @@ public:
             std::sort(records_.begin(),records_.end(),[](const Record& a,const Record& b){return a.distance<b.distance;});
             double sum=0;std::size_t k=0;for(;k<records_.size();++k){sum+=double(records_[k].bytes);if(sum>target)break;}
             calc=k==0?MinCut:.5f*(records_[k-1].distance+records_[k].distance);calc=std::max(calc,MinCut);}
-        exhaustStreak_=exhausted_?exhaustStreak_+1:0;
         const float previousCut=cut_;
         const auto band=[](float d){return NorthlightActorShadowSelection::band(d);};
-        if(exhaustStreak_>=ShrinkFrames){
+        if(exhausted_){
             if(!cutActive())cut_=std::isfinite(calc)?calc:std::max(MinCut,farthest-band(farthest));
             else{const float step=cut_-band(cut_);cut_=calc>=step&&calc<cut_?calc:step;}
             cut_=std::max(cut_,MinCut);room_=0;}
@@ -195,10 +189,10 @@ public:
                 cut_=std::isfinite(calc)?std::min(calc,step):step>=farthest?float(INFINITY):step;room_=0;}}
         else room_=0;
         /* the deadband bridges jitter at a settled cut; a cut that moved starts without one (what was admitted before it is not a reason) */
-        if(cut_==previousCut||(!std::isfinite(cut_)&&!std::isfinite(previousCut))){lastAdmitted_=std::move(admittedNext_);lastAdmitted_.build();}else lastAdmitted_.clear();
-        admittedNext_=Grid{};
-        gatedLast_=std::move(gatedNext_);gatedNext_.clear();
-        armed_=false;exhausted_=false;records_.clear();admittedBytes_=0;counters_={};insideCells_.clear();
+        if(cut_==previousCut||(!std::isfinite(cut_)&&!std::isfinite(previousCut))){std::swap(lastAdmitted_,admittedNext_);lastAdmitted_.build();}else lastAdmitted_.clear();
+        admittedNext_.clear();
+        gatedLast_.swap(gatedNext_);gatedNext_.clear();
+        armed_=false;exhausted_=false;records_.clear();admittedBytes_=0;counters_={};insideCells_.clear();cellsDirty_=false;
     }
 };
 }

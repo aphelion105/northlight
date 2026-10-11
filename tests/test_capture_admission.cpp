@@ -50,6 +50,11 @@ struct Sim {
   a.endFrame(limit,r.used);return r;
  }
 };
+// The gate list through the selection's own interface: one outside body section per item.
+static void seed(Admission& a,const std::vector<Item>& items){
+ using namespace NorthlightActorShadowSelection;std::vector<Actor> actors;std::vector<Draw> draws;
+ for(const auto& i:items){Actor s;s.first=draws.size();s.count=1;s.outside=true;actors.push_back(s);Draw d;d.shader=i.shader;d.count=i.count;d.captureRootValid=true;for(unsigned k=0;k<3;++k)d.captureRoot[k]=i.at[k];draws.push_back(d);}
+ a.importOutside(actors,draws);}
 static Char at(float x,float y,float z=0){Char c;c.root[0]=x;c.root[1]=y;c.root[2]=z;return c;}
 static float dist(const Char& c){return std::sqrt(c.root[0]*c.root[0]+c.root[1]*c.root[1]+c.root[2]*c.root[2]);}
 // A crowd of n identical characters, nearest first by index: distance 10+0.9*i, spread round the centre.
@@ -119,7 +124,7 @@ int main(){
   auto verdictOf=[&](Sim& s,const Char& c){return s.a.decide(c.shader,c.count,c.vertexTotal,c.root,false).verdict;};
   // The listed body beyond the gate is rejected; the same position with another count or shader is admitted; a same-model
   // newcomer 3 yd away is admitted.
-  {Sim s;s.limit=1000*MiB;s.ctx=self(40);s.a.importFar({entry});s.a.arm(s.ctx);
+  {Sim s;s.limit=1000*MiB;s.ctx=self(40);seed(s.a,{entry});s.a.arm(s.ctx);
    assert(verdictOf(s,body(70))==Verdict::RadiusGate);
    Char prop=body(70);prop.count=901;assert(verdictOf(s,prop)==Verdict::Admit);
    Char other=body(70);other.shader=P;assert(verdictOf(s,other)==Verdict::Admit);
@@ -130,19 +135,19 @@ int main(){
    assert(s.a.decide(S,900,8192,body(70).root,true).verdict==Verdict::Admit);}
   // Self-sustaining: the list is imported once and then empty (the selection forgot it); 100 frames later the body is still
   // gated, the prop beside it never is (no spreading).
-  {Sim s;s.limit=1000*MiB;s.ctx=self(40);s.a.importFar({entry});Char prop=body(70.5f);prop.count=901;unsigned gated=0;
+  {Sim s;s.limit=1000*MiB;s.ctx=self(40);seed(s.a,{entry});Char prop=body(70.5f);prop.count=901;unsigned gated=0;
    for(unsigned f=0;f<100;++f){const auto r=s.frame({body(70),prop});gated+=r.verdict[0]==Verdict::RadiusGate;assert(r.verdict[1]==Verdict::Admit&&r.read[1]);
-    s.a.importFar({});}
+    seed(s.a,{});}
    assert(gated==100);}
   // A walking actor 70 -> 30 yd (0.5 yd per capture frame): gated exactly while beyond the gate, admitted from there on.
-  {Sim s;s.limit=1000*MiB;s.ctx=self(40);s.a.importFar({entry});bool admitted=false;float firstAdmitted=0;
-   for(float x=70;x>=30;x-=.5f){const auto r=s.frame({body(x)});s.a.importFar({});
+  {Sim s;s.limit=1000*MiB;s.ctx=self(40);seed(s.a,{entry});bool admitted=false;float firstAdmitted=0;
+   for(float x=70;x>=30;x-=.5f){const auto r=s.frame({body(x)});seed(s.a,{});
     if(x>gate+1e-3f)assert(r.verdict[0]==Verdict::RadiusGate&&!admitted);
     else{if(!admitted)firstAdmitted=x;admitted=true;assert(r.verdict[0]==Verdict::Admit);}}
    assert(admitted&&firstAdmitted<=gate&&firstAdmitted>gate-.5f-1e-3f);}
   // No self (pivot centre): no gate. ActorShadowRadius 0: no gate.
-  {Sim s;s.limit=1000*MiB;s.ctx=self(40);s.ctx.self=false;s.a.importFar({entry});s.a.arm(s.ctx);assert(verdictOf(s,body(70))==Verdict::Admit);}
-  {Sim s;s.limit=1000*MiB;s.ctx=self(0);s.a.importFar({entry});s.a.arm(s.ctx);assert(verdictOf(s,body(70))==Verdict::Admit);}
+  {Sim s;s.limit=1000*MiB;s.ctx=self(40);s.ctx.self=false;seed(s.a,{entry});s.a.arm(s.ctx);assert(verdictOf(s,body(70))==Verdict::Admit);}
+  {Sim s;s.limit=1000*MiB;s.ctx=self(0);seed(s.a,{entry});s.a.arm(s.ctx);assert(verdictOf(s,body(70))==Verdict::Admit);}
   // importOutside: every draw of every outside body section, none of the inside, companion, self, unfiltered, rigid or rootless ones.
   {using namespace NorthlightActorShadowSelection;
    auto section=[&](std::vector<Actor>& actors,std::vector<Draw>& draws,unsigned batches,float x,std::uintptr_t shader){Actor a;a.first=draws.size();a.count=batches;a.outside=true;
@@ -158,11 +163,11 @@ int main(){
   // A far body with 5 draws (different shader and count, one root): all five gated from the frame after the selection put it outside, for
   // 100 frames with no further import; a free rigid prop 1 yd away with its own identity is never gated.
   {Sim s;s.limit=1000*MiB;s.ctx=self(40);std::vector<Item> body5;for(unsigned b=0;b<5;++b){Item i;i.shader=0x100+b;i.count=300+7*b;i.at[0]=70;body5.push_back(i);}
-   s.a.importFar(body5);unsigned gated=0;
+   seed(s.a,body5);unsigned gated=0;
    for(unsigned f=0;f<100;++f){std::vector<Char> draws;for(const auto& i:body5){Char c=at(70,0);c.shader=i.shader;c.count=i.count;draws.push_back(c);}
     Char prop=at(71,0);prop.shader=0x900;prop.count=64;draws.push_back(prop);
     const auto r=s.frame(draws);for(unsigned b=0;b<5;++b)gated+=r.verdict[b]==Verdict::RadiusGate;assert(r.verdict[5]==Verdict::Admit&&r.read[5]);
-    if(f)s.a.importFar({});}
+    if(f)seed(s.a,{});}
    assert(gated==500);}
   // A draw without a root is never gated or cut.
   {Sim s;s.limit=1000*MiB;s.ctx=self(40);s.a.arm(s.ctx);assert(s.a.decide(S,900,8192,nullptr,false).verdict==Verdict::Admit&&s.a.counters().noRoot==1);}
@@ -170,14 +175,14 @@ int main(){
  // 5. GI exception: on a GI frame a gated draw within 100 yd of the camera is admitted while the cut is inactive.
  {const std::uintptr_t S=0x1000;Item entry;entry.shader=S;entry.count=900;entry.at[0]=70;
   Char b=at(70,0);b.shader=S;b.count=900;
-  {Sim s;s.limit=1000*MiB;s.ctx=self(40,true);s.a.importFar({entry});s.a.arm(s.ctx);assert(s.a.decide(S,900,8192,b.root,false).verdict==Verdict::Admit);}
-  {Sim s;s.limit=1000*MiB;s.ctx=self(40,false);s.a.importFar({entry});s.a.arm(s.ctx);assert(s.a.decide(S,900,8192,b.root,false).verdict==Verdict::RadiusGate);}
+  {Sim s;s.limit=1000*MiB;s.ctx=self(40,true);seed(s.a,{entry});s.a.arm(s.ctx);assert(s.a.decide(S,900,8192,b.root,false).verdict==Verdict::Admit);}
+  {Sim s;s.limit=1000*MiB;s.ctx=self(40,false);seed(s.a,{entry});s.a.arm(s.ctx);assert(s.a.decide(S,900,8192,b.root,false).verdict==Verdict::RadiusGate);}
   // Beyond 100 yd of the camera the GI frame gates it as well.
-  {Sim s;s.limit=1000*MiB;s.ctx=self(40,true);const float camera[3]={-40,0,0};s.ctx.camera=camera;s.a.importFar({entry});s.a.arm(s.ctx);
+  {Sim s;s.limit=1000*MiB;s.ctx=self(40,true);const float camera[3]={-40,0,0};s.ctx.camera=camera;seed(s.a,{entry});s.a.arm(s.ctx);
    assert(s.a.decide(S,900,8192,b.root,false).verdict==Verdict::RadiusGate);}
   // The cut active: the GI exception is off (no draw-order exhaustion at 5 Hz).
   {Sim s;s.limit=24*MiB;s.ctx=self(40,true);const auto people=crowd(60);for(unsigned f=0;f<4;++f)s.frame(farFirst(people));assert(s.a.cutActive());
-   s.a.importFar({entry});s.a.arm(s.ctx);assert(s.a.decide(S,900,8192,b.root,false).verdict==Verdict::RadiusGate);}
+   seed(s.a,{entry});s.a.arm(s.ctx);assert(s.a.decide(S,900,8192,b.root,false).verdict==Verdict::RadiusGate);}
   std::puts("PASS 5: GI exception: admitted within 100 yd of the camera only while the cut is inactive");}
  // 6. Counters: gated draws are not demand; refused draws inside the radius are counted by cell.
  {Sim s;s.limit=24*MiB;s.ctx=self(60);const auto people=crowd(60);for(unsigned f=0;f<3;++f)s.frame(farFirst(people));
@@ -200,8 +205,8 @@ int main(){
   const auto r=s.frame(farFirst(people));unsigned admitted=0;for(bool b:r.read)admitted+=b;assert(admitted<=11);
   std::puts("PASS 8: persistent exhaustion shrinks the cut in steps of at most band(D) down to what fits");}
  // 9. reset() forgets everything; the estimate of a cold shape errs high.
- {Sim s;s.limit=24*MiB;s.ctx=self(0);const auto people=crowd(60);for(unsigned f=0;f<4;++f)s.frame(farFirst(people));assert(s.a.cutActive()&&s.a.shapeCount()>0);
-  s.a.reset();assert(!s.a.cutActive()&&!s.a.shapeCount()&&!s.a.armed());
+ {Sim s;s.limit=24*MiB;s.ctx=self(0);const auto people=crowd(60);for(unsigned f=0;f<4;++f)s.frame(farFirst(people));assert(s.a.cutActive());
+  s.a.reset();assert(!s.a.cutActive()&&!s.a.armed());
   std::puts("PASS 9: reset");}
  // 10. RootMemo: a hit only when the program, the reset serial and the serials of both covering blocks match; cleared per frame.
  {RootMemo m;std::uint64_t blocks[16]={};const float root[3]={1,2,3};int program;const void* a=&program;

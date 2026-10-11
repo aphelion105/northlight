@@ -51,7 +51,7 @@ checks['centre once per capture frame at the first skinned ask (the near anchor)
 checks['fate: RadiusGate and DistanceCut']=('RadiusGate,DistanceCut,FateCount' in fate and '"radiusGate","distanceCut"' in fate)
 checks['constants: gate = yards + 2*band + ClusterExtent + 4; cut target 0.85, MinCut 12, grow after 10 frames, shrink after 1']=(
     'return yards+2*NorthlightActorShadowSelection::band(yards)+NorthlightActorShadowSelection::ClusterExtent+GateExtra;' in adm and 'GateExtra=4.f' in adm and 'Margin=.85f' in adm and 'MinCut=12.f' in adm
-    and 'GrowFrames=10,ShrinkFrames=1' in adm)
+    and 'GrowFrames=10;' in adm)
 checks['root memo: the mirror serials certify, the read stays in drawRoot, one palette read site, cleared per frame, counted in the log']=(
     'bool drawRootMemo(IDirect3DVertexShader9* shader,float* root){' in w and 'if(!constantEpochSource.attached()||!constantEpochSource.valid()){++rootReads;return drawRoot(shader,root);}' in w
     and 'rootMemo.hit(shader,live.reset,live.floatBlock)' in w and w.count('GetVertexShaderConstantF(UINT(program->second->paletteBase),rows,3)')==1
