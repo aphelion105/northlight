@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # northlight-test: requires=cxx
-"""0.3.210 (task 31) capture admission: native model test of capture_admission.h (clang++, plain and
+"""0.3.211 (task 31) capture admission: native model test of capture_admission.h (clang++, plain and
 ASan/UBSan) against the real NorthlightDrawSnapshot::Frame (32/16 MiB, 4 MiB near reserve), nearest-first
 ordering, hysteresis, near hits, the radius gate, the GI exception and the stepwise cut; and a wiring audit
 of world_renderer.h / world_shadow_experiment.inl: the root is computed once per skinned draw after the

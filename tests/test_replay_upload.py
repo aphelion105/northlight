@@ -50,7 +50,7 @@ struct Device:IDirect3DDevice9{
  HRESULT CreateIndexBuffer(UINT n,DWORD usage,D3DFORMAT,unsigned,IDirect3DIndexBuffer9** out,void*)override{if(++calls==failAt)return E_POINTER;auto p=new Buffer<IDirect3DIndexBuffer9,D3DINDEXBUFFER_DESC>(n);p->fail=lockFail;p->dynamic=usage&D3DUSAGE_DYNAMIC;*out=p;return D3D_OK;}
  HRESULT GetVertexShaderConstantF(UINT,float*,UINT)override{return E_POINTER;}HRESULT GetVertexDeclaration(IDirect3DVertexDeclaration9**)override{return E_POINTER;}HRESULT GetStreamSourceFreq(UINT,UINT*)override{return E_POINTER;}HRESULT GetStreamSource(UINT,IDirect3DVertexBuffer9**,UINT*,UINT*)override{return E_POINTER;}HRESULT GetIndices(IDirect3DIndexBuffer9**)override{return E_POINTER;}
 };
-std::shared_ptr<const NorthlightDrawSnapshot::Mesh> meshS(unsigned bytes,unsigned stride,bool multi){auto m=std::make_shared<NorthlightDrawSnapshot::Mesh>();m->streams[0].stride=stride;m->streams[0].bytes.resize(bytes);if(multi){m->streams[1].stride=8;m->streams[1].bytes.resize(80);}m->indices={0,1,2};for(unsigned i=0;i<bytes;++i)m->streams[0].bytes[i]=(i*7+stride)%251;return m;} /* 0.3.210 (task 31): any stride, single- or multi-stream regardless of SINGLE_STREAM */
+std::shared_ptr<const NorthlightDrawSnapshot::Mesh> meshS(unsigned bytes,unsigned stride,bool multi){auto m=std::make_shared<NorthlightDrawSnapshot::Mesh>();m->streams[0].stride=stride;m->streams[0].bytes.resize(bytes);if(multi){m->streams[1].stride=8;m->streams[1].bytes.resize(80);}m->indices={0,1,2};for(unsigned i=0;i<bytes;++i)m->streams[0].bytes[i]=(i*7+stride)%251;return m;} /* 0.3.211 (task 31): any stride, single- or multi-stream regardless of SINGLE_STREAM */
 std::shared_ptr<const NorthlightDrawSnapshot::Mesh> mesh(unsigned bytes=240){auto m=std::make_shared<NorthlightDrawSnapshot::Mesh>();m->streams[0].stride=24;m->streams[0].bytes.resize(bytes);if(!SINGLE_STREAM){m->streams[1].stride=8;m->streams[1].bytes.resize(80);}m->indices={0,1,2};for(unsigned i=0;i<bytes;++i)m->streams[0].bytes[i]=i%251;return m;}
 int main(){
  NorthlightReplayGPU::Cache cache;Device d;IDirect3DVertexBuffer9* vb[4]={};IDirect3DIndexBuffer9* ib=nullptr;
@@ -129,7 +129,7 @@ class WorldRenderer {public:
   for(auto& p:replays){for(auto* s:p->stream)if(s)++held[s];if(p->index)++held[p->index];}
   for(auto& b:registry){auto h=held.find(b.first);assert(*b.second==1+(h==held.end()?0:h->second));}
   for(auto& h:held)assert(registry.count(h.first));}
- static UINT addr(const Replay& p){return p.offset[0]+UINT(p.indexed?p.base:INT(p.start))*p.stride[0];} /* 0.3.210 (task 31): effective byte position of vertex 0 of stream 0 */
+ static UINT addr(const Replay& p){return p.offset[0]+UINT(p.indexed?p.base:INT(p.start))*p.stride[0];} /* 0.3.211 (task 31): effective byte position of vertex 0 of stream 0 */
  void verify(){for(auto& p:replays){const auto& m=p->mesh();for(unsigned s=0;s<4;++s){if(m.streams[s].bytes.empty()){assert(!p->stream[s]);continue;}
   auto* actual=static_cast<Buffer<IDirect3DVertexBuffer9,D3DVERTEXBUFFER_DESC>*>(p->stream[s]);
   /* BaseVertexIndex (indexed) or StartVertex (non-indexed) of batched residency */
@@ -281,7 +281,7 @@ int main(){Device d;auto a=mesh(),b=mesh(480),c=mesh(96);
   assert(world.upload());world.verify();world.balance();
   const UINT base=world.replayVertexRing[0].spans.back().begin,ibBase=world.replayIndexRing.spans.back().begin;assert(base==100*1024&&ibBase==12);
   assert(!world.replays[0]->gpuCached&&!world.replays[2]->gpuCached);
-  if(SINGLE_STREAM){ /* 0.3.210 (task 31): every replay binds the slot start; vertices are selected by base at stride multiples (65536 -> 65544 -> 131088) */
+  if(SINGLE_STREAM){ /* 0.3.211 (task 31): every replay binds the slot start; vertices are selected by base at stride multiples (65536 -> 65544 -> 131088) */
    for(auto& p:world.replays)assert(p->offset[0]==base);
    assert(world.replays[0]->base==0&&world.replays[1]->base==0&&world.replays[3]->base==0&&world.replays[2]->base==65544/24&&world.replays[4]->base==131088/24);}
   else assert(world.replays[0]->offset[0]==base&&world.replays[1]->offset[0]==base&&world.replays[3]->offset[0]==base&&world.replays[2]->offset[0]==base+64*1024&&world.replays[4]->offset[0]==base+128*1024);
@@ -315,7 +315,7 @@ int main(){Device d;auto a=mesh(),b=mesh(480),c=mesh(96);
   assert(kept.size()==2&&bulkMoves>=2);}
  raceCheck=false;autoFrame=true;queryLatency=0;frameNow=0;
 
- // 0.3.210 (task 31): single-stream bulk replays bind the slot start and select vertices by BaseVertexIndex/start.
+ // 0.3.211 (task 31): single-stream bulk replays bind the slot start and select vertices by BaseVertexIndex/start.
  {WorldRenderer world(&d);dynLog.clear();queryLatency=0;frameNow=0;
   world.add(meshS(250,24,false),false);world.add(meshS(96,24,false),false);world.add(meshS(36*5+7,36,false),false);world.add(meshS(44*3,44,false),false);world.add(meshS(240,24,true),false);world.add(meshS(48,24,false),false);
   assert(world.upload());world.verify();world.balance();auto& r=world.replays;

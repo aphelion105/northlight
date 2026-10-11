@@ -648,7 +648,7 @@ private:
         const NorthlightDrawSnapshot::Mesh& mesh()const{return shared?*shared:snapshot;}
         bool gpuCached=false,shadowSkinned=false,shadowSelected=true,shadowSmall=false;int fateSlot=-1;unsigned char fateClass=0;float fateDistance=0; /* shadow fate diagnostics */
         bool boneKnown=false;float bone=NAN; /* 0.3.176 (S2): this frame's selection tested its rigid bone (reset at capture) */
-        float captureRoot[3]={};bool captureRootValid=false; /* 0.3.210 (task 31): the palette root computed once at capture (capture admission); passive for the selection */
+        float captureRoot[3]={};bool captureRootValid=false; /* 0.3.211 (task 31): the palette root computed once at capture (capture admission); passive for the selection */
         // 0.3.177 (r83): filled at capture for selected skinned draws, read by prepareRecord (the stable
         // selection's prepare, possibly on the prepare worker): the program (null: none) and a copy of
         // the declaration (the declaration cache may reuse its slot within the frame). 0.3.179 (T1): the
@@ -2042,7 +2042,7 @@ public:
         lastCapturePhaseReads=capturePhases.clockReads+actorPhases.clockReads;clearCaptureDiagnostics();if(captureSampled)++capturePhaseSerial;
         skinnedCandidates=skinnedBlendRejected=skinnedProjectionRejected=skinnedBudgetRejected=skinnedSnapshotRejected=skinnedAccepted=0;otherBlendRejected=otherBudgetRejected=otherProjectionRejected=0;
         captureRejectedBytes=acceptedSkinnedBytes=acceptedOtherBytes=0;nearAdmitted=nearRefused=0;nearBytes=0;nearAnchorReady=false;
-        admission.endFrame(size_t(captureBudgetMiB)*1048576,replaySnapshots.bytesRead());admissionOn=false;rootMemo.clear();rootReads=rootMemoHits=0;gatedBodies.clear(); /* 0.3.210 (task 31): the next frame's cut, after the log read this frame's counters; no-op when no skinned draw armed it */
+        admission.endFrame(size_t(captureBudgetMiB)*1048576,replaySnapshots.bytesRead());admissionOn=false;rootMemo.clear();rootReads=rootMemoHits=0;gatedBodies.clear(); /* 0.3.211 (task 31): the next frame's cut, after the log read this frame's counters; no-op when no skinned draw armed it */
         previousCacheHits=terrainBoundsCache.persistentHits();capturedConstantBytes=capturedConstantCalls=0;capturedSM1Draws=capturedRelativeDraws=0;
         terrainCaptureTicks=replayCaptureTicks=0;terrainCaptureCalls=terrainUPCalls=replayCaptureCalls=unknownCaptureCalls=0;captureSampled=false;
         valid=false;traceContext=0;traceFog=0;legacyFogKnown=false;shadowFrameReady=false;legacyFog=NorthlightLegacyFog::Constants{};
@@ -2427,7 +2427,7 @@ public:
         NorthlightReplayGPU::commitAdmissions(replayGpuCache,replays,bindReplay);}
         phase.next(1); // Layout, bulk-buffer growth/copy and output bindings.
         UINT totals[4]={};std::uint64_t totalIndices=0;size_t sharedBulkDraws=0,sharedBulkBytes=0,multiStreamDraws=0;
-        /* 0.3.210 (task 31): a single-stream bulk replay sits at a stride multiple (rel) so every one binds the ring slot start
+        /* 0.3.211 (task 31): a single-stream bulk replay sits at a stride multiple (rel) so every one binds the ring slot start
            and selects its vertices by BaseVertexIndex/start: same-stride replays share one SetStreamSource. Layout and the
            address-space prefix fit both go through bulkPlace, so they stay byte-identical. Multi-stream: 16-padded, as before. */
         auto singleStream=[](const auto& p){const auto& m=p.mesh();return !m.streams[0].bytes.empty()&&m.streams[0].stride&&m.streams[1].bytes.empty()&&m.streams[2].bytes.empty()&&m.streams[3].bytes.empty();};
@@ -2517,7 +2517,7 @@ public:
                     return check(d->CreateIndexBuffer(capacity,D3DUSAGE_DYNAMIC|D3DUSAGE_WRITEONLY,D3DFMT_INDEX32,D3DPOOL_DEFAULT,&replayIndicesGPU,nullptr),"model snapshot index buffer");},slot))return false;
             auto copy=streamingPhases.measure(NorthlightStreaming::PhaseProfile::ReplayCopy);
             void* memory=nullptr;if(!check(replayIndicesGPU->Lock(slot.offset,indexBytes,&memory,slot.flags),"model snapshot index lock"))return false;
-            for(size_t i=0;i<replays.size();++i){auto& p=replays[i];if(!p->gpuCached&&p->indexed&&replayBulkLayout.unique(i)&&!p->mesh().indices.empty()) /* 0.3.210 (task 31): a non-indexed start is now its first vertex */ std::memcpy(static_cast<std::uint32_t*>(memory)+p->start,p->mesh().indices.data(),p->mesh().indices.size()*4);}
+            for(size_t i=0;i<replays.size();++i){auto& p=replays[i];if(!p->gpuCached&&p->indexed&&replayBulkLayout.unique(i)&&!p->mesh().indices.empty()) /* 0.3.211 (task 31): a non-indexed start is now its first vertex */ std::memcpy(static_cast<std::uint32_t*>(memory)+p->start,p->mesh().indices.data(),p->mesh().indices.size()*4);}
             if(!check(replayIndicesGPU->Unlock(),"model snapshot index unlock"))return false;
             indexBase=slot.offset/4;
         }
@@ -2683,7 +2683,7 @@ public:
     // (the previous selection's self and this frame's camera; shadowPivot() is not called).
     NorthlightNearReserve::Anchor nearAnchor;bool nearAnchorReady=false;
     unsigned nearAdmitted=0,nearRefused=0;size_t nearBytes=0;
-    /* 0.3.210 (task 31): capture admission (capture_admission.h). The centre is the near anchor's: taken once per capture frame at the first
+    /* 0.3.211 (task 31): capture admission (capture_admission.h). The centre is the near anchor's: taken once per capture frame at the first
        skinned draw (the previous selection's self, else the pivot eye+forward*pivotDistance). admissionOn: ActorShadows and a usable centre. */
     /* The root of consecutive skinned draws is read once: the mirror's write serials prove the palette rows unchanged (RootMemo). Inside the
        game draw's guard like captureBlocks(); a source that cannot certify falls back to the read. Cleared every frame (new inverse view). */
@@ -2745,7 +2745,7 @@ public:
         // The game's original draw and the shared draw-domain gate are untouched.
         fate.reason=NorthlightShadowFate::Small;
         if(smallShadow&&!actorCaptureEnabled()){if(sample)++smallShadowEarly;return;}
-        // 0.3.210 (task 31): the palette root once per skinned draw, then the capture admission (radius gate, distance cut)
+        // 0.3.211 (task 31): the palette root once per skinned draw, then the capture admission (radius gate, distance cut)
         // before any budget is spent; near-reserve hits always pass. A draw without a root is never gated or cut.
         float root[3];bool rooted=false;NorthlightCaptureAdmission::Decision admit;
         if(priority&&quality.actorShadows){nearAnchorTake();rooted=drawRootMemo(current,root);
@@ -3077,7 +3077,7 @@ public:
         auto atmosphereJob=[&]{atmosphereWork(atmosphere,nearZ,w,h,debug);};
         JobJoin atmosphereJoin{replayJobs_,atmosphereDone};
         if(jobs)replayJobs_.kick(atmosphereDone,atmosphereJob);
-        // 0.3.210 (task 31): the colour gate is the lighting weight gate: a source colour is direct*weight, so a zero-weight moon
+        // 0.3.211 (task 31): the colour gate is the lighting weight gate: a source colour is direct*weight, so a zero-weight moon
         // draws no cascade, actor map or water moon map (tests/test_moon_cascade_weight.py).
         bool sourceActive[2]={NorthlightGI::dot(sourceColors[0],sourceColors[0])>1e-10f,NorthlightGI::dot(sourceColors[1],sourceColors[1])>1e-10f};
         // Terrain shadow candidates (the cached terrain chunks the game did not draw live): read by the directional passes' terrain draws.

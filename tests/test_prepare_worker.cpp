@@ -42,7 +42,7 @@ static Program compiled(const std::uint32_t* words,std::size_t n){Program p;bool
 // A captured record as the renderer's Replay holds it (the fields prepareRecord reads).
 struct Rec {
     unsigned constantGroup=0;IDirect3DVertexShader9* originalShader=nullptr;IDirect3DVertexDeclaration9* decl=nullptr;
-    unsigned count=0;float captureRoot[3]={};bool captureRootValid=false; /* 0.3.210 (task 31): the capture admission's passive identity */
+    unsigned count=0;float captureRoot[3]={};bool captureRootValid=false; /* 0.3.211 (task 31): the capture admission's passive identity */
     std::shared_ptr<const Mesh> shared;Mesh snapshot;const float* constants=nullptr;std::vector<float> storage;
     const Program* program=nullptr; /* 0.3.179 (T1): the capture metadata's program */
     std::uint64_t prepareStamp=0; /* 0.3.183: the prepare epoch at capture */
@@ -56,7 +56,7 @@ struct Rec {
 // The 0.3.178 record layout: a program handle and a per-record declaration copy.
 struct RecR83 {
     unsigned constantGroup=0;IDirect3DVertexShader9* originalShader=nullptr;IDirect3DVertexDeclaration9* decl=nullptr;
-    unsigned count=0;float captureRoot[3]={};bool captureRootValid=false; /* 0.3.210 (task 31): the capture admission's passive identity */
+    unsigned count=0;float captureRoot[3]={};bool captureRootValid=false; /* 0.3.211 (task 31): the capture admission's passive identity */
     std::shared_ptr<const Mesh> shared;Mesh snapshot;const float* constants=nullptr;
     std::shared_ptr<const Program> program;std::array<D3DVERTEXELEMENT9,MAXD3DDECLLENGTH+1> elements{};UINT elementCount=0;bool declared=false;
     const Mesh& mesh()const{return shared?*shared:snapshot;}
@@ -146,7 +146,7 @@ struct Reference {
         const auto tuning=selectionTuning();
         for(size_t index=0;index<replays.size();++index){const auto& p=*replays[index];
             if(!p.shadowSelected||!p.shadowSkinned)continue;
-            NorthlightActorShadowSelection::Draw item;item.index=index;item.bytes=p.mesh().byteSize();item.group=p.constantGroup;item.shader=reinterpret_cast<std::uintptr_t>(p.originalShader);item.count=p.count;item.captureRootValid=p.captureRootValid;if(p.captureRootValid)std::memcpy(item.captureRoot,p.captureRoot,sizeof item.captureRoot); /* 0.3.210 (task 31) */
+            NorthlightActorShadowSelection::Draw item;item.index=index;item.bytes=p.mesh().byteSize();item.group=p.constantGroup;item.shader=reinterpret_cast<std::uintptr_t>(p.originalShader);item.count=p.count;item.captureRootValid=p.captureRootValid;if(p.captureRootValid)std::memcpy(item.captureRoot,p.captureRoot,sizeof item.captureRoot); /* 0.3.211 (task 31) */
             // Program and declaration lookups only for draws that test a distance
             // or a palette (reused-distance draws of multi-bone groups need none).
             auto program=actorPrograms.end();const D3DVERTEXELEMENT9* elements=nullptr;UINT count=0;int declaredState=-1;

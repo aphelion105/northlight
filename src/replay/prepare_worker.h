@@ -94,7 +94,7 @@ template<class Record> void prepareRecord(State& s,const Record& p,std::size_t i
     mix(reinterpret_cast<std::uintptr_t>(shader));mix(reinterpret_cast<std::uintptr_t>(decl));
     if(p.shared)mix(reinterpret_cast<std::uintptr_t>(p.shared.get()));else{mix(p.mesh().vertexCount);mix(p.mesh().primitiveCount);mix(item.bytes);}
     item.key=key;
-    item.shader=reinterpret_cast<std::uintptr_t>(shader);item.count=p.count;item.captureRootValid=p.captureRootValid;if(p.captureRootValid)std::memcpy(item.captureRoot,p.captureRoot,sizeof item.captureRoot); /* 0.3.210 (task 31): passive, for the capture admission */
+    item.shader=reinterpret_cast<std::uintptr_t>(shader);item.count=p.count;item.captureRootValid=p.captureRootValid;if(p.captureRootValid)std::memcpy(item.captureRoot,p.captureRoot,sizeof item.captureRoot); /* 0.3.211 (task 31): passive, for the capture admission */
     // One palette root per constant group: only the audited palette template (c31.. row-major 3x4
     // bones, translation in w: the skin-envelope specialization) has a provable root.
     if(first)item.hasRoot=program&&NorthlightReplayBounds::SkinEnvelope::supports(*program)&&program->paletteBase==31&&

@@ -1,5 +1,5 @@
 #pragma once
-// 0.3.210 (task 31): capture admission. The capture budget (CaptureBudgetMiB) was spent in the game's
+// 0.3.211 (task 31): capture admission. The capture budget (CaptureBudgetMiB) was spent in the game's
 // draw order, so characters far beyond ActorShadowRadius used it up (and the selection then threw them
 // away) while nearby ones got nothing. Two decisions per skinned draw, taken from its palette root
 // (Replay::captureRoot) BEFORE the snapshot read:

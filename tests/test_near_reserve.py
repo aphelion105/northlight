@@ -12,7 +12,7 @@ HERE=Path(__file__).resolve().parent
 w=fp.src('world_renderer.h').read_text();g=fp.src('world_memory_guard.inl').read_text();r=fp.src('near_reserve.h').read_text()
 capture=w[w.index('    void captureModel(D3DPRIMITIVETYPE type,'):w.index('    // One directional replay draw in the 0.3.142 order')]
 checks={}
-checks['near reserve is asked only on the two budget branches (0.3.210: the admission also passes near hits, nearDraw)']=(capture.count('nearCandidate(')==2 and w.count('nearCandidate(')==3 and w.count('nearDraw(')==3
+checks['near reserve is asked only on the two budget branches (0.3.211: the admission also passes near hits, nearDraw)']=(capture.count('nearCandidate(')==2 and w.count('nearCandidate(')==3 and w.count('nearDraw(')==3
     and 'if(replaySnapshots.captureExhausted(priority)){const bool candidate=nearCandidate(priority,rooted?root:nullptr);' in capture
     and 'if(!captured&&why.error==NorthlightDrawSnapshot::Error::Budget&&!nearby&&nearCandidate(priority,rooted?root:nullptr)){' in capture)
 checks['skinned draws only, never past the draw-count cap, only with a reserve']='return priority&&replaySnapshots.nearReserve()&&!replaySnapshots.countExhausted(priority)&&nearDraw(root);}' in w

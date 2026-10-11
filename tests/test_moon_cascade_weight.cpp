@@ -1,4 +1,4 @@
-// 0.3.210 (task 31): the moon's cascades are gated by its colour (world_renderer.h sourceActive), lighting by
+// 0.3.211 (task 31): the moon's cascades are gated by its colour (world_renderer.h sourceActive), lighting by
 // its weight. The two agree because the renderer colour is direct*weight: a zero weight is an exactly zero
 // colour, so no moon cascade, actor map or water moon map is drawn on a frame whose moon weight is zero.
 #include "celestial_profiles.h"

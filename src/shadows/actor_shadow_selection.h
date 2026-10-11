@@ -152,7 +152,7 @@ struct Draw {
     std::uint64_t key=0;bool keep=true;
     float extra[2][3]={};unsigned char extras=0; /* extra world samples, only for stationary candidates */
     float root[3]={};bool hasRoot=false; /* palette bone 0 origin in world space (per-instance anchor) */
-    /* 0.3.210 (task 31): the draw's capture identity for the capture admission (capture_admission.h): never read by the selection's decisions */
+    /* 0.3.211 (task 31): the draw's capture identity for the capture admission (capture_admission.h): never read by the selection's decisions */
     std::uintptr_t shader=0;unsigned count=0;float captureRoot[3]={};bool captureRootValid=false;
 };
 struct RigidEntry {std::uint64_t key=0,bodyKey=0;float at[3]={},anchor[3]={},bodyAt[3]={};unsigned free=0,age=0,still=0;bool attachment=false,settled=false,kept=false,used=false,selfBody=false;};

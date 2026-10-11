@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # northlight-test: requires=cxx
-"""0.3.210 (task 31): a zero moon weight is an exactly zero moon colour (native clang++, plain and ASan/UBSan),
+"""0.3.211 (task 31): a zero moon weight is an exactly zero moon colour (native clang++, plain and ASan/UBSan),
 and the shadow cascades, the actor maps, water's shadow maps and the capture skip all gate a source on that
 colour. So no moon cascade is drawn on a frame whose moon lighting weight is zero. No game or GPU."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root

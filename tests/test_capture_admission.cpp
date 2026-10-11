@@ -1,4 +1,4 @@
-// 0.3.210 (task 31) capture admission (capture_admission.h): the distance cut against the real
+// 0.3.211 (task 31) capture admission (capture_admission.h): the distance cut against the real
 // NorthlightDrawSnapshot::Frame budget, nearest-first ordering, hysteresis, near-reserve hits, the
 // radius gate (identity, self-sustaining list, walking actor, no self, radius 0) and the GI exception.
 #include "capture_admission.h"

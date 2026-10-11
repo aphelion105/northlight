@@ -82,7 +82,7 @@ struct Mesh {std::vector<std::array<Vertex,3>> triangles;};
 struct Replay {
     IDirect3DVertexDeclaration9* decl=nullptr;IDirect3DVertexShader9* shader=nullptr;IDirect3DIndexBuffer9* index=nullptr;
     IDirect3DVertexBuffer9* stream[4]={};UINT offset[4]={},stride[4]={};IDirect3DBaseTexture9* texture=nullptr;DWORD addressU=WRAP,addressV=WRAP;float cutoff=-1;
-    UINT start=0;int base=0;float dx=0,dy=0,dz=0; /* base: BaseVertexIndex (0.3.210, task 31); the vertices start at offset+base*stride */
+    UINT start=0;int base=0;float dx=0,dy=0,dz=0; /* base: BaseVertexIndex (0.3.211, task 31); the vertices start at offset+base*stride */
 };
 // Geometry is found only through the bound stream/index state, never through the replay.
 using GeometryKey=std::tuple<const void*,UINT,UINT,const void*,UINT,const void*>;
@@ -242,7 +242,7 @@ int main(){
      const auto x=replay<New>(forward,Shader::Directional),y=replay<New>(sorted,Shader::Directional);
      assert(x.image.depth==y.image.depth&&!(x.image==y.image));
      std::puts("PASS order dependence: equal D24 depth, different R32F colour when two draws swap (so replay draws are not sorted)");}
-    // 0.3.210 (task 31): same-stride single-stream bulk replays share one stream binding (slot start; BaseVertexIndex selects the
+    // 0.3.211 (task 31): same-stride single-stream bulk replays share one stream binding (slot start; BaseVertexIndex selects the
     // vertices) and rasterize exactly like the old per-replay offsets with base 0.
     /* streams: the first draw binds all four (4); the old offsets rebind stream 0 for each of the two later draws (6). */
     {Mesh m[3];for(int k=0;k<3;++k)m[k].triangles.push_back({{{0,0,.3f+.1f*k,1,0,0},{64,0,.3f+.1f*k,1,0,0},{0,64,.3f+.1f*k,1,0,0}}});

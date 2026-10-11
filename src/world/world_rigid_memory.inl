@@ -142,7 +142,7 @@
         for(size_t i=0;i<replays.size();){const unsigned group=replays[i]->constantGroup;size_t j=i;
             while(j<replays.size()&&replays[j]->constantGroup==group)++j;
             rigidObserveGroup(i,j);i=j;}
-        rigidBodies.insert(rigidBodies.end(),gatedBodies.begin(),gatedBodies.end()); /* 0.3.210 (task 31): bodies the radius gate did not capture still hold their props */
+        rigidBodies.insert(rigidBodies.end(),gatedBodies.begin(),gatedBodies.end()); /* 0.3.211 (task 31): bodies the radius gate did not capture still hold their props */
         const float* pivot=actorShadowOriginValid?actorShadowOrigin:context.camera;
         rigidMemory.frame(rigidObservations,rigidBodies.data(),rigidBodies.size()/3,now,pivot,context.inverseView,projection,!captureShortfall,
             [&](size_t n){return rigidStaticCovered(rigidObservations[n],now);},[&](const float* root){return rigidStaticBody(root);});

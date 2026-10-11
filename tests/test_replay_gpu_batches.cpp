@@ -100,7 +100,7 @@ template<class C> struct World {
         for(const auto& r:order){replays.push_back(std::make_unique<Replay>(r));bind(*replays.back());}
         NorthlightReplayGPU::commitAdmissions(cache,replays,bind); /* as uploadReplay after its bind loop */
         uploads+=cache.uploaded();
-        // Misses: the per-frame bulk layout of uploadReplay (0.3.210: single-stream replays at a stride multiple, bound at the slot start
+        // Misses: the per-frame bulk layout of uploadReplay (0.3.211: single-stream replays at a stride multiple, bound at the slot start
         // and selected by BaseVertexIndex/start; multi-stream replays 16-byte padded with base 0), INDEX32 start.
         UINT totals[4]={},indices=0;
         auto single=[](const Replay& p){const auto& m=p.mesh();return !m.streams[0].bytes.empty()&&m.streams[0].stride&&m.streams[1].bytes.empty()&&m.streams[2].bytes.empty()&&m.streams[3].bytes.empty();};
