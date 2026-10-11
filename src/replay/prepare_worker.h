@@ -94,6 +94,7 @@ template<class Record> void prepareRecord(State& s,const Record& p,std::size_t i
     mix(reinterpret_cast<std::uintptr_t>(shader));mix(reinterpret_cast<std::uintptr_t>(decl));
     if(p.shared)mix(reinterpret_cast<std::uintptr_t>(p.shared.get()));else{mix(p.mesh().vertexCount);mix(p.mesh().primitiveCount);mix(item.bytes);}
     item.key=key;
+    item.shader=reinterpret_cast<std::uintptr_t>(shader);item.count=p.count;item.captureRootValid=p.captureRootValid;if(p.captureRootValid)std::memcpy(item.captureRoot,p.captureRoot,sizeof item.captureRoot); /* 0.3.211 (task 31): passive, for the capture admission */
     // One palette root per constant group: only the audited palette template (c31.. row-major 3x4
     // bones, translation in w: the skin-envelope specialization) has a provable root.
     if(first)item.hasRoot=program&&NorthlightReplayBounds::SkinEnvelope::supports(*program)&&program->paletteBase==31&&
@@ -111,7 +112,7 @@ inline bool same(const Output& x,const Output& y){
     const Draw& a=x.item;const Draw& b=y.item;
     return x.tested==y.tested&&same(x.after,y.after)&&a.index==b.index&&a.bytes==b.bytes&&a.group==b.group&&sameBits(&a.distanceSquared,&b.distanceSquared,4)&&
         sameBits(a.at,b.at,12)&&a.known==b.known&&a.rigid==b.rigid&&sameBits(&a.bone,&b.bone,4)&&a.key==b.key&&a.keep==b.keep&&
-        sameBits(a.extra,b.extra,sizeof a.extra)&&a.extras==b.extras&&sameBits(a.root,b.root,12)&&a.hasRoot==b.hasRoot;}
+        sameBits(a.extra,b.extra,sizeof a.extra)&&a.extras==b.extras&&sameBits(a.root,b.root,12)&&a.hasRoot==b.hasRoot&&a.shader==b.shader&&a.count==b.count&&sameBits(a.captureRoot,b.captureRoot,12)&&a.captureRootValid==b.captureRootValid;}
 // The frame's inputs frozen at its first publish.
 struct Frame {float inverseView[16]={},camera[3]={};bool timed=false;};
 // The worker's per-record call: prepareRecord (tests substitute one that throws or waits).

@@ -136,12 +136,13 @@
         rigidInjected=0;rigidObserveMs=0;rigidIndexItems=0;rigidIndexMs=-1;
         if(!effects.shadows){rigidMemoryClear();return;}
         const auto started=std::chrono::steady_clock::now();const DWORD now=GetTickCount();
-        if(lastRequest.map!=rigidMap){rigidMemoryClear();rigidMemory.resetStats();rigidMap=lastRequest.map;rigidMapMs=now;}
+        if(lastRequest.map!=rigidMap){rigidMemoryClear();rigidMemory.resetStats();admission.reset();rigidMap=lastRequest.map;rigidMapMs=now;}
         rigidMemory.events(NorthlightDiagnostics::enabled());
         rigidObservations.clear();rigidBodies.clear();rigidGroupDraws.clear();rigidGroups.clear();
         for(size_t i=0;i<replays.size();){const unsigned group=replays[i]->constantGroup;size_t j=i;
             while(j<replays.size()&&replays[j]->constantGroup==group)++j;
             rigidObserveGroup(i,j);i=j;}
+        rigidBodies.insert(rigidBodies.end(),gatedBodies.begin(),gatedBodies.end()); /* 0.3.211 (task 31): bodies the radius gate did not capture still hold their props */
         const float* pivot=actorShadowOriginValid?actorShadowOrigin:context.camera;
         rigidMemory.frame(rigidObservations,rigidBodies.data(),rigidBodies.size()/3,now,pivot,context.inverseView,projection,!captureShortfall,
             [&](size_t n){return rigidStaticCovered(rigidObservations[n],now);},[&](const float* root){return rigidStaticBody(root);});
@@ -172,7 +173,7 @@
                     std::memcpy(p->constantStorage+4*(31+3*e.payload.bone),rows,sizeof rows);
                     p->constantUsage=c.usage;p->projectionKind=c.projectionKind;p->cutoff=c.cutoff;p->addressU=c.addressU;p->addressV=c.addressV;
                     p->type=c.type;p->base=0;p->min=0;p->vertices=p->mesh().vertexCount;p->start=0;p->count=c.count;p->indexed=c.indexed;
-                    p->pointBounds={};p->gpuCached=false;p->shadowSkinned=p->shadowSelected=true;p->shadowSmall=false;p->fateSlot=-1;p->fateClass=NorthlightShadowFate::NotRanked;p->fateDistance=0;
+                    p->captureRootValid=false;p->pointBounds={};p->gpuCached=false;p->shadowSkinned=p->shadowSelected=true;p->shadowSmall=false;p->fateSlot=-1;p->fateClass=NorthlightShadowFate::NotRanked;p->fateDistance=0;
                     p->staticProofMask=0;p->constantGroup=++group;
                     replays.emplace_back(p.release());++rigidInjected;}});
         }

@@ -60,9 +60,10 @@
             NorthlightReplayShadowPolicy::retainSelected(replays,heldShadowReplays);
             rigidMemoryInject(); /* remembered groups the game did not draw: after selection, before bounds and upload */
         }catch(...){
-            for(auto& p:replays)p->shadowSelected=true;actorShadowHistory.clear();
+            for(auto& p:replays)p->shadowSelected=true;actorShadowHistory.clear();admission.reset();
             logf("SHADOW experiment selection allocation failed; current captured shadows retained");return;
         }
+        if(radius&&stableRan)admission.importOutside(actorShadowScratch.actors,actorShadowDraws); /* 0.3.211 (task 31): every draw of the body sections this selection put outside the radius, for the next capture frame's radius gate */
         if(captureSampled){const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
             // 0.3.177 (r83): the prepare worker's fields, RenderProfile only.
             char prepareFields[400]="";

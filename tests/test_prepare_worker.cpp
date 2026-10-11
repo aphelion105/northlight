@@ -42,6 +42,7 @@ static Program compiled(const std::uint32_t* words,std::size_t n){Program p;bool
 // A captured record as the renderer's Replay holds it (the fields prepareRecord reads).
 struct Rec {
     unsigned constantGroup=0;IDirect3DVertexShader9* originalShader=nullptr;IDirect3DVertexDeclaration9* decl=nullptr;
+    unsigned count=0;float captureRoot[3]={};bool captureRootValid=false; /* 0.3.211 (task 31): the capture admission's passive identity */
     std::shared_ptr<const Mesh> shared;Mesh snapshot;const float* constants=nullptr;std::vector<float> storage;
     const Program* program=nullptr; /* 0.3.179 (T1): the capture metadata's program */
     std::uint64_t prepareStamp=0; /* 0.3.183: the prepare epoch at capture */
@@ -55,6 +56,7 @@ struct Rec {
 // The 0.3.178 record layout: a program handle and a per-record declaration copy.
 struct RecR83 {
     unsigned constantGroup=0;IDirect3DVertexShader9* originalShader=nullptr;IDirect3DVertexDeclaration9* decl=nullptr;
+    unsigned count=0;float captureRoot[3]={};bool captureRootValid=false; /* 0.3.211 (task 31): the capture admission's passive identity */
     std::shared_ptr<const Mesh> shared;Mesh snapshot;const float* constants=nullptr;
     std::shared_ptr<const Program> program;std::array<D3DVERTEXELEMENT9,MAXD3DDECLLENGTH+1> elements{};UINT elementCount=0;bool declared=false;
     const Mesh& mesh()const{return shared?*shared:snapshot;}
@@ -105,7 +107,7 @@ struct World {
         if(r.declared){std::copy(e,e+n,r.elements.begin());r.elementCount=n;}
     }
     // The same record in the 0.3.178 layout (fill: a handle and a copy through the live cache).
-    RecR83 r83(const Rec& r){RecR83 o;o.constantGroup=r.constantGroup;o.originalShader=r.originalShader;o.decl=r.decl;o.shared=r.shared;o.snapshot=r.snapshot;o.constants=r.constants;
+    RecR83 r83(const Rec& r){RecR83 o;o.count=r.count;std::memcpy(o.captureRoot,r.captureRoot,sizeof o.captureRoot);o.captureRootValid=r.captureRootValid;o.constantGroup=r.constantGroup;o.originalShader=r.originalShader;o.decl=r.decl;o.shared=r.shared;o.snapshot=r.snapshot;o.constants=r.constants;
         o.program=handle(r);const D3DVERTEXELEMENT9* e=nullptr;UINT n=0;o.declared=o.program&&declarationCache.get(o.decl,e,n)&&n<=o.elements.size();
         o.elementCount=o.declared?n:0;if(o.declared)std::copy(e,e+n,o.elements.begin());return o;}
     // A capture frame: constant groups of 1-8 draws in replays order; some neither selected nor skinned.
@@ -113,7 +115,7 @@ struct World {
         std::vector<std::unique_ptr<Rec>> out;arena.reset(); /* per frame, as the renderer */
         for(unsigned g=0;g<groups;++g){const unsigned draws=1+rng()%8;const unsigned groupShader=rng()%10<6?rng()%2:rng()%6;
             std::vector<float>* bank=nullptr;
-            for(unsigned k=0;k<draws;++k){auto r=std::make_unique<Rec>();r->constantGroup=g+1;
+            for(unsigned k=0;k<draws;++k){auto r=std::make_unique<Rec>();r->count=10+k%7;r->captureRootValid=(g+k)%3!=0;r->captureRoot[0]=float(g);r->captureRoot[1]=float(k);r->captureRoot[2]=1.5f;r->constantGroup=g+1;
                 r->originalShader=shader(rng()%5?groupShader:rng()%6);r->decl=manyDecls&&rng()%2?static_cast<IDirect3DVertexDeclaration9*>(&many[rng()%many.size()]):&decls[rng()%10?0:1];
                 if(rng()%4){r->shared=pool[rng()%pool.size()];}else r->snapshot=*mesh(rng,3+rng()%24,rng()%6,rng()%3==0);
                 if(!bank||rng()%6==0){r->storage.resize(1024);for(auto& v:r->storage)v=float(int(rng()%2001)-1000)*.001f;
@@ -144,7 +146,7 @@ struct Reference {
         const auto tuning=selectionTuning();
         for(size_t index=0;index<replays.size();++index){const auto& p=*replays[index];
             if(!p.shadowSelected||!p.shadowSkinned)continue;
-            NorthlightActorShadowSelection::Draw item;item.index=index;item.bytes=p.mesh().byteSize();item.group=p.constantGroup;
+            NorthlightActorShadowSelection::Draw item;item.index=index;item.bytes=p.mesh().byteSize();item.group=p.constantGroup;item.shader=reinterpret_cast<std::uintptr_t>(p.originalShader);item.count=p.count;item.captureRootValid=p.captureRootValid;if(p.captureRootValid)std::memcpy(item.captureRoot,p.captureRoot,sizeof item.captureRoot); /* 0.3.211 (task 31) */
             // Program and declaration lookups only for draws that test a distance
             // or a palette (reused-distance draws of multi-bone groups need none).
             auto program=actorPrograms.end();const D3DVERTEXELEMENT9* elements=nullptr;UINT count=0;int declaredState=-1;
@@ -240,7 +242,7 @@ static void evictedDeclaration(World& world){
         std::vector<const D3DVERTEXELEMENT9*> live(n);std::vector<UINT> counts(n);
         for(std::size_t k=0;k<n;++k)if(p.records[k]->declared){bool ok=cache.get(p.records[k]->decl,live[k],counts[k]);assert(ok);(void)ok;}
         for(auto& d:others){const D3DVERTEXELEMENT9* e=nullptr;UINT m=0;cache.get(&d,e,m);} /* 200 > 128 slots: every slot turned over */
-        std::vector<Rec> stale(n);for(std::size_t k=0;k<n;++k){stale[k].constantGroup=p.records[k]->constantGroup;stale[k].originalShader=p.records[k]->originalShader;
+        std::vector<Rec> stale(n);for(std::size_t k=0;k<n;++k){stale[k].count=p.records[k]->count;std::memcpy(stale[k].captureRoot,p.records[k]->captureRoot,sizeof stale[k].captureRoot);stale[k].captureRootValid=p.records[k]->captureRootValid;stale[k].constantGroup=p.records[k]->constantGroup;stale[k].originalShader=p.records[k]->originalShader;
             stale[k].decl=p.records[k]->decl;stale[k].shared=p.records[k]->shared;stale[k].snapshot=p.records[k]->snapshot;stale[k].constants=p.records[k]->constants;
             stale[k].program=p.records[k]->program;stale[k].declared=p.records[k]->declared;stale[k].elementCount=counts[k];
             if(live[k])std::copy(live[k],live[k]+counts[k],stale[k].elements.begin());}
@@ -297,7 +299,7 @@ static void staleDeclaration(World& world){
             reused.layout=step?std::vector<D3DVERTEXELEMENT9>{{0,0,2,0,0,0},{0xff,0,17,0,0,0}}:gameLayout;perFrame.reset();
             auto replays=world.frame(rng,6);const Camera c=camera(rng);std::vector<Rec> arena,cross,fresh;
             for(const auto& rec:replays)if(rec->shadowSelected&&rec->shadowSkinned){
-                Rec base;base.constantGroup=rec->constantGroup;base.originalShader=rec->originalShader;base.decl=&reused;base.shared=rec->shared;base.snapshot=rec->snapshot;base.constants=rec->constants;base.program=world.handle(*rec).get();
+                Rec base;base.count=rec->count;std::memcpy(base.captureRoot,rec->captureRoot,sizeof base.captureRoot);base.captureRootValid=rec->captureRootValid;base.constantGroup=rec->constantGroup;base.originalShader=rec->originalShader;base.decl=&reused;base.shared=rec->shared;base.snapshot=rec->snapshot;base.constants=rec->constants;base.program=world.handle(*rec).get();
                 Rec x=base,y=base,z=base;
                 if(base.program){const auto* e=perFrame.find(base.decl,get);x.declCopy=e;x.declared=e->declared;const auto* g=crossFrame.find(base.decl,get);y.declCopy=g;y.declared=g->declared;
                     const D3DVERTEXELEMENT9* el=nullptr;UINT n=0;z.declared=get(base.decl,el,n);z.elementCount=n;std::copy(el,el+n,z.elements.begin());}

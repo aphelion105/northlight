@@ -100,10 +100,18 @@ template<class C> struct World {
         for(const auto& r:order){replays.push_back(std::make_unique<Replay>(r));bind(*replays.back());}
         NorthlightReplayGPU::commitAdmissions(cache,replays,bind); /* as uploadReplay after its bind loop */
         uploads+=cache.uploaded();
-        // Misses: the per-frame bulk layout of uploadReplay (16-byte stream offsets, INDEX32 start, BaseVertexIndex 0).
-        UINT totals[4]={},indices=0;for(auto& p:replays)if(!p->gpuCached){for(unsigned s=0;s<4;++s){p->stride[s]=p->mesh().streams[s].stride;p->offset[s]=totals[s];totals[s]+=UINT((p->mesh().streams[s].bytes.size()+15)&~size_t(15));}
-            p->start=p->indexed?indices:0;indices+=UINT(p->mesh().indices.size());assert(p->base==0);}
+        // Misses: the per-frame bulk layout of uploadReplay (0.3.211: single-stream replays at a stride multiple, bound at the slot start
+        // and selected by BaseVertexIndex/start; multi-stream replays 16-byte padded with base 0), INDEX32 start.
+        UINT totals[4]={},indices=0;
+        auto single=[](const Replay& p){const auto& m=p.mesh();return !m.streams[0].bytes.empty()&&m.streams[0].stride&&m.streams[1].bytes.empty()&&m.streams[2].bytes.empty()&&m.streams[3].bytes.empty();};
+        for(auto& p:replays)if(!p->gpuCached){const bool one=single(*p);
+            for(unsigned s=0;s<4;++s){const auto& m=p->mesh().streams[s];p->stride[s]=m.stride;
+                if(s==0&&one){const UINT at=(totals[0]+m.stride-1)/m.stride*m.stride;p->offset[0]=at;totals[0]=at+UINT(m.bytes.size());}
+                else{p->offset[s]=totals[s];totals[s]+=UINT((m.bytes.size()+15)&~size_t(15));}}
+            p->start=p->indexed?indices:0;p->base=0;indices+=UINT(p->mesh().indices.size());
+            if(one){const UINT first=p->offset[0]/p->stride[0];if(p->indexed)p->base=INT(first);else p->start=first;}}
         for(unsigned s=0;s<4;++s)if(totals[s]){auto* b=new VB(totals[s]);bulk[s]=b;for(auto& p:replays)if(!p->gpuCached&&!p->mesh().streams[s].bytes.empty()){std::memcpy(b->data.data()+p->offset[s],p->mesh().streams[s].bytes.data(),p->mesh().streams[s].bytes.size());p->stream[s]=b;b->AddRef();}}
+        for(auto& p:replays)if(!p->gpuCached&&single(*p))p->offset[0]=0; /* ring slot start; the copy above used rel */
         if(indices){auto* b=new IB(size_t(indices)*4);bulkIndices=b;for(auto& p:replays)if(!p->gpuCached&&p->indexed){std::memcpy(b->data.data()+4*p->start,p->mesh().indices.data(),p->mesh().indices.size()*4);p->index=b;b->AddRef();}}
         // The replay loop: the production binding cache, then the draw from device state only.
         last={};for(auto& p:replays)last.bulk+=!p->gpuCached;

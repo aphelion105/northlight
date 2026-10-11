@@ -16,6 +16,7 @@ test_band_retime.py
 test_cache_shadow_optimizations.py
 test_cache_variant.py
 test_camera_upstream_capture.py
+test_capture_admission.py
 test_capture_skip_revalidation.py
 test_capture_skip_wiring.py
 test_cascade_anchor.py
@@ -79,6 +80,7 @@ test_mirror_resources.py
 test_model_index_cache.py
 test_model_replay_pool.py
 test_model_snapshot_cache.py
+test_moon_cascade_weight.py
 test_near_reserve.py
 test_night_floor.py
 test_night_floor_wiring.py
