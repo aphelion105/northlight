@@ -21,7 +21,7 @@ row_major float4x4 FarMatrix:register(c16);
 row_major float4x4 MoonNearMatrix:register(c20);
 row_major float4x4 MoonFarMatrix:register(c24);
 float4 ShadowInfo:register(c28); // sun valid,moon valid,texel,unused
-// 0.3.208 (task 29): the per-source actor shadow maps (moving casters near the player, same depth span as the cascades).
+// 0.3.209 (task 29): the per-source actor shadow maps (moving casters near the player, same depth span as the cascades).
 sampler2D ActorShadow:register(s8);
 sampler2D MoonActorShadow:register(s9);
 // Their constants are WaterComposite's uniform parameters (ActorMatrix c29..c32, MoonActorMatrix c33..c36, ActorShadowInfo c37:
@@ -58,7 +58,7 @@ float3 selectAffine(float3 p,bool moon,row_major float4x4 sun,row_major float4x4
     return p.x*(moon?moonMatrix[0].xyz:sun[0].xyz)+p.y*(moon?moonMatrix[1].xyz:sun[1].xyz)+p.z*(moon?moonMatrix[2].xyz:sun[2].xyz)+(moon?moonMatrix[3].xyz:sun[3].xyz);
 }
 float2 shadow(float3 p,row_major float4x4 ActorMatrix,row_major float4x4 MoonActorMatrix,float4 ActorShadowInfo){
-    // Sun (x) and moon (y) visibility. 0.3.208 (task 29): per source the cascades, then the actor map (the near cascade skips
+    // Sun (x) and moon (y) visibility. 0.3.209 (task 29): per source the cascades, then the actor map (the near cascade skips
     // the casters it holds); the darker wins. One loop over the four lookups keeps a single copy of the code (SM3 slot budget);
     // float counters and selects instead of integer compares for the same reason.
     float2 result=1;

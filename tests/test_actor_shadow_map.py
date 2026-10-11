@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # northlight-test: requires=cxx
-"""0.3.208 (task 29) actor shadow map: native model test of actor_shadow_map.h (clang++, plain and ASan/UBSan) and a wiring
+"""0.3.209 (task 29) actor shadow map: native model test of actor_shadow_map.h (clang++, plain and ASan/UBSan) and a wiring
 audit of world_renderer.h / water_renderer.h / quality_settings.h (static source analysis): the actor map is drawn in the near
 map's iteration (cascade 0, Render only) and reused with it, only cascade 0 skips replays inside the inset, ActorShadowDetail=0
 (or ActorShadows=0) draws nothing and WorldLighting reads a neutral white, s12 carries the actor map for the ActorShadow passes and the
@@ -80,7 +80,7 @@ checks['ActorShadow pass: c68..c71 matrix, c72 info, actor map on s12, RED sun /
     and 'd->SetTexture(12,actorShadow[source]);d->SetTexture(10,actorTiles[source]);' in light and 'source?D3DCOLORWRITEENABLE_GREEN:D3DCOLORWRITEENABLE_RED' in light and 'D3DRS_COLORWRITEENABLE,15' in light)
 checks['s12: visibility for the WorldLighting loop only, then the frame-start (null) binding; later readers rebind baselineLight']=(
     light.index('d->SetTexture(12,anyActorPass?actorVisibility:neutralWhite);')<light.index('d->SetPixelShader(lightingPS);')
-    and light.rstrip().endswith('d->SetTexture(12,textures[12]); /* 0.3.208 (task 29): the frame-start binding (null) again; the visibility was WorldLighting\'s only */')
+    and light.rstrip().endswith('d->SetTexture(12,textures[12]); /* 0.3.209 (task 29): the frame-start binding (null) again; the visibility was WorldLighting\'s only */')
     and 'textures[]={foldScene?foldScene:color,depth,shadow[0],shadow[1],probe[0],probe[1],probe[2],probe[3],nullptr,nullptr,probe[4],waterMask,nullptr,' in render
     and render.count('d->SetTexture(12,baselineLight)')==2)
 checks['resources: maps, tiles and visibility only with the shaders (ActorShadowDetail=1) and optional (a failure turns the map off, not the renderer); neutral white mandatory 1x1; released with the rest']=(

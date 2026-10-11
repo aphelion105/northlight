@@ -13,7 +13,7 @@ sampler2D ProbePrevious : register(s8); // 0.3.197: WorldGI only: previous SH R|
 sampler2D FogBuffer : register(s9);
 sampler2D WaterMask : register(s11);
 sampler2D BaselineLighting : register(s12);
-// 0.3.208 (task 29): s12 also carries the actor shadow map (ActorShadow only, R32F, POINT, CLAMP) and the half-res actor
+// 0.3.209 (task 29): s12 also carries the actor shadow map (ActorShadow only, R32F, POINT, CLAMP) and the half-res actor
 // visibility it writes (WorldLighting only: r sun, g moon, POINT, CLAMP). LocalDirect and TemporalLight rebind s12 to BaselineLighting.
 sampler2D ActorMap : register(s12);
 sampler2D ActorVisibility : register(s12);
@@ -23,7 +23,7 @@ float4 RegionalFogInfo : register(c31); // world node0 XY, inverse field span, n
 float4 WaterInfo : register(c30);
 float4 RemovalInfo : register(c30); // RemovalSmooth, TemporalLight: y 1 when a lit source is drawn, z 1/(summed source weight), w disc radius in half-res pixels at view distance 1
 sampler2D ProbeMetadata : register(s10); // exact integer world-cell xyz, first-valid time w (-1 invalid)
-// 0.3.208 (task 29): ActorShadow only: the 64x64 tile minimum of the actor map (ActorTiles writes it; R32F, POINT, CLAMP)
+// 0.3.209 (task 29): ActorShadow only: the 64x64 tile minimum of the actor map (ActorTiles writes it; R32F, POINT, CLAMP)
 sampler2D ActorTileMap : register(s10);
 sampler2D AmbientOcclusion : register(s10); // 0.3.174 TemporalLight/WorldComposite: half-res contact AO (a), pre-weighted bloom (rgb), LINEAR; neutral (0,0,0,1) unless the world composites
 
@@ -395,7 +395,7 @@ LightingOutput WorldLighting(float2 uv:TEXCOORD0) {
     if(d>=.99999||waterDistance(uv,d)>0)return o;
     float3 p=worldPosition(uv,d);float3 n=smoothNormal.xyz;
     float shadow=1;
-    // 0.3.208 (task 29): the moving casters near the player shadow from the actor map (ActorShadow, written per source at this
+    // 0.3.209 (task 29): the moving casters near the player shadow from the actor map (ActorShadow, written per source at this
     // pass's half-res grid; white when off); the near cascade skips those, so take the darker of both.
     if(dot(DirectLight.rgb,1)>0){shadow=directionalShadow(p+n*(.08*smoothNormal.w),n,smoothNormal.w);
         float2 actor=tex2Dlod(ActorVisibility,float4(halfUV,0,0)).rg;shadow=min(shadow,SunDirection.w>.5?actor.g:actor.r);}
@@ -424,7 +424,7 @@ LightingOutput WorldLighting(float2 uv:TEXCOORD0) {
     float known=max(abs(cover.x),abs(cover.y))<=1&&cover.z>=0&&cover.z<=1?1:0;
     o.baseline=float4(max(old+AmbientLight.rgb,.15),lerp(visibility,shadow,SunDirection.w)*known);return o;
 }
-// 0.3.208 (task 29): contact-hardening visibility of the moving casters (replays) in this source's actor map: 1024 texels over
+// 0.3.209 (task 29): contact-hardening visibility of the moving casters (replays) in this source's actor map: 1024 texels over
 // 2*ActorInfo.z units (.0234 u, four times finer than the near cascade), centred on the player. Drawn per source at
 // WorldLighting's half-res grid into actorVisibility (the CPU masks the channel: r sun, g moon). Penumbra half width in world
 // units grows with the blocker-receiver distance (PCSS): crisp at the feet, soft under a wing or a raised body.

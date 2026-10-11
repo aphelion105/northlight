@@ -18,7 +18,7 @@ checks={
     and 'struct BucketsEnd {NorthlightEffectsBuckets::Frame& f;~BucketsEnd(){f.end();}} bucketsEnd{effectsBuckets};' in effects
     and effects.index('CpuScope cpu(sampled()')<effects.index('effectsBuckets.begin(')<effects.index('bucketsEnd{effectsBuckets}')<effects.index('if (applied || !enabled || failed || !projectionValid) return;')),
  'off: begin and mark read no clock':'on_=on&&clock;if(!on_)return;' in h and 'void mark(Bucket ended){if(!on_)return;' in h,
- # 0.3.208: +2 = the two per-source actor sites run once per source. Worst case: begin, the world's single-use sites, 4 cascades (two exclusive sites each pass), every renderEffects site, end
+ # 0.3.209 (task 29): +2 = the two per-source actor sites run once per source. Worst case: begin, the world's single-use sites, 4 cascades (two exclusive sites each pass), every renderEffects site, end
  'at most 30 clock reads a frame (begin, the marks, end)':render.count('bucket(NorthlightEffectsBuckets::Bucket(NorthlightEffectsBuckets::SunNear+source*2+cascade))')==2
     and 1+(world_marks-2)+4+2+outer_marks+1<=30 and 'constexpr unsigned MaxReads=30;' in h,
  'the world marks through bucket() only (the renderer\'s frame pointer)':'void bucket(NorthlightEffectsBuckets::Bucket b){if(effectsBuckets)effectsBuckets->mark(b);}' in w and 'world->setEffectsBuckets(&effectsBuckets);' in r,

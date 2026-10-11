@@ -26,7 +26,7 @@ struct NorthlightWaterContext {
     float sourceShadowMatrices[2][2][16]={};
     float sourceShadowDirection[2][3]={};
     float shadowTexel=1.f/1024;
-    // 0.3.208 (task 29): the per-source actor shadow maps (moving casters near the player; shadows/actor_shadow_map.h), null/invalid = not sampled.
+    // 0.3.209 (task 29): the per-source actor shadow maps (moving casters near the player; shadows/actor_shadow_map.h), null/invalid = not sampled.
     IDirect3DTexture9* actorShadows[2]={};
     float actorShadowMatrices[2][16]={};
     bool actorShadowValid[2]={};
@@ -217,7 +217,7 @@ public:
         memcpy(c[3],context.inverseView,64);memcpy(c[7],context.sunDirection,12);memcpy(c[8],context.sunColor,12);memcpy(c[9],context.moonDirection,12);memcpy(c[10],context.moonColor,12);memcpy(c[11],context.skyColor,12);
         for(unsigned source=0;source<2;++source){float dot=0;const float* wanted=source?context.moonDirection:context.sunDirection;for(unsigned k=0;k<3;++k)dot+=wanted[k]*context.sourceShadowDirection[source][k];c[28][source]=context.sourceShadows[source][0]&&context.sourceShadows[source][1]&&dot>.98f?1.f:0.f;for(unsigned cascade=0;cascade<2;++cascade)memcpy(c[12+source*8+cascade*4],context.sourceShadowMatrices[source][cascade],64);}
         c[28][2]=context.shadowTexel;
-        for(unsigned source=0;source<2;++source){const bool actor=context.actorShadows[source]&&context.actorShadowValid[source]&&c[28][source]>0.f; /* the cascades' direction check (dot>.98) */c[37][source]=actor?1.f:0.f;if(actor)memcpy(c[29+source*4],context.actorShadowMatrices[source],64);} /* 0.3.208 (task 29): ActorMatrix c29..c32, MoonActorMatrix c33..c36, ActorShadowInfo c37 (x sun, y moon valid, z texel) */
+        for(unsigned source=0;source<2;++source){const bool actor=context.actorShadows[source]&&context.actorShadowValid[source]&&c[28][source]>0.f; /* the cascades' direction check (dot>.98) */c[37][source]=actor?1.f:0.f;if(actor)memcpy(c[29+source*4],context.actorShadowMatrices[source],64);} /* 0.3.209 (task 29): ActorMatrix c29..c32, MoonActorMatrix c33..c36, ActorShadowInfo c37 (x sun, y moon valid, z texel) */
         c[37][2]=1.f/1024;
         if(!check(d->SetPixelShaderConstantF(0,c[0],38),"water constants"))return false;
         maskMayBeBound=true;

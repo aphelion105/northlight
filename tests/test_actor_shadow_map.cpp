@@ -1,4 +1,4 @@
-// 0.3.208 (task 29): actor_shadow_map.h. The matrix maps the pivot to (0,0,.5), a point Radius away along the light-space x axis
+// 0.3.209 (task 29): actor_shadow_map.h. The matrix maps the pivot to (0,0,.5), a point Radius away along the light-space x axis
 // to x=1, the mapping is continuous in the pivot (no texel snap), and the inset test accepts a small centred box and rejects
 // a box crossing the border, a box behind the depth planes and invalid bounds.
 #include "actor_shadow_map.h"

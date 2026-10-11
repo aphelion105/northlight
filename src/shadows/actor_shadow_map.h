@@ -2,7 +2,7 @@
 #include "world_math.h"
 #include <cmath>
 
-// 0.3.208 (task 29): the actor shadow map. A 1024 map of Radius yards around the player per light source
+// 0.3.209 (task 29): the actor shadow map. A 1024 map of Radius yards around the player per light source
 // (texel 24/1024 yd, four times finer than the near cascade) that holds only the moving casters (replays); the
 // near cascade skips the replays that lie wholly inside its Inset. Orthographic along the cascades' light
 // direction with the cascades' depth rows, but centred on the raw pivot: no texel snap, so the player's own raster

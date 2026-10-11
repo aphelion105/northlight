@@ -494,7 +494,7 @@ int main(){
      std::vector<std::string> p;auto bad=parse("[Quality]\nNightBrightness=101\n",nullptr,p);assert(bad==d&&bad.nightBrightness==50&&bad.origin[44]=='d'&&p.size()==1);
      assert(effective(parse("[Quality]\nNightBrightness=40\nActorShadows=0\n")).nightBrightness==40);
      assert(describe(d).find(" ContactAO=1(default) NightBrightness=50(default)")!=std::string::npos&&describe(hi).find(" NightBrightness=100(file)")!=std::string::npos);}
-    // 0.3.208 (task 29) ActorShadowDetail 1/1/0 (0..1), the last key and origin slot; ActorShadows=0 disables the actor map too (actorShadowMap), the key alone does not force other keys.
+    // 0.3.209 (task 29) ActorShadowDetail 1/1/0 (0..1), the last key and origin slot; ActorShadows=0 disables the actor map too (actorShadowMap), the key alone does not force other keys.
     assert(d.actorShadowDetail==1&&preset(Preset::Balanced).actorShadowDetail==1&&preset(Preset::Performance).actorShadowDetail==0);
     assert(std::string(Keys[45].name)=="ActorShadowDetail"&&Keys[45].field==&Settings::actorShadowDetail&&Keys[45].low==0&&Keys[45].high==1&&sizeof(Keys)/sizeof(Keys[0])==46&&sizeof(d.origin)==46);
     {auto off=parse("[Quality]\nActorShadowDetail=0\n");assert(off.actorShadowDetail==0&&off.origin[45]=='f'&&off!=d&&parse("[Quality]\nActorShadowDetail=1\n")==d);

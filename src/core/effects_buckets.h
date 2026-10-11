@@ -11,7 +11,7 @@ enum Bucket : unsigned {Setup,Celestial,AO,Selection,Upload,Static,ShadowSetup,T
     Lighting,GI,PointLighting,Fog,Composite,Water,Veil,Tail,Count};
 inline const char* name(unsigned b){static const char* n[Count]={"setup","celestial","ao","selection","upload","static","shadowSetup","terrainSelection",
     "sunNear","sunFar","moonNear","moonFar","sunActor","moonActor","actorShadow","point","lighting","gi","pointLighting","fog","composite","water","veil","tail"};return b<Count?n[b]:"?";}
-constexpr unsigned MaxReads=30; /* begin, one per mark (at most 28 sites), end; 0.3.208: + the actor map and ActorShadow marks */
+constexpr unsigned MaxReads=30; /* begin, one per mark (at most 28 sites), end; 0.3.209 (task 29): + the actor map and ActorShadow marks */
 class Frame {
 public:
     using ClockFn=std::int64_t(*)();
