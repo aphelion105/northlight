@@ -71,6 +71,8 @@ test_local_light_selection.py
 test_log_format_literals.py
 test_log_rotation.py
 test_logger_cost.py
+test_m2_shader_families.py
+test_m2_shader_families_client.py
 test_m2_visibility.py
 test_memmap_diagnostics.py
 test_memory_admission_probe.py
@@ -125,6 +127,7 @@ test_shadow_shimmer.py
 test_snapshot_allocation.py
 test_snapshot_prediction.py
 test_solar_volume.py
+test_spell_layer.py
 test_static_cache_dirty_rect.py
 test_static_plan_job.py
 test_storm_bands.py
