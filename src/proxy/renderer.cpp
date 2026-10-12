@@ -1130,7 +1130,7 @@ private:
     // (beforeDraw / uiFallbackDraw), exactly with the state they had. spellOn is the one bool every hook tests; with SpellLayer=0 nothing here runs.
     // Every layer call runs inside extensionWork (a fault drops the layer: reset()) on the thread that executes the device.
     NorthlightSpellLayer::Layer spell;NorthlightSpellLayer::FadeRun spellFade;NorthlightSpellLayer::DrawArgs spellArgs; /* spellArgs: set by the four draw overrides (SpellLayer=1 only) */
-    bool spellOn=false;unsigned spellClasses=15,spellIdle=0;
+    bool spellOn=false;unsigned spellClasses=15,spellIdle=0;unsigned spellSampleFrame=~0u;bool spellSampleOn=false;
     bool spellDomain=false,spellZEnable=false;IDirect3DVertexShader9* spellVs=nullptr; /* prepareDrawImpl's reads of this draw (identities only; SpellLayer=1 only) */
     void* spellTexKey=nullptr;IDirect3DSurface9* spellTexFor=nullptr; /* the layer target's container texture (null: T is not a texture level), computed once per target */
     void* spellQuery[8]={};unsigned spellQueryFrame[8]={},spellQueryN=0,spellQueryUnknownFrame=0;bool spellQueryUnknown=false; /* open D3DQUERYTYPE_OCCLUSION brackets (raw queries), by Issue(BEGIN) frame; spellQueryUnknown: a bracket was lost to a full table (its frame in spellQueryUnknownFrame) */
@@ -1143,6 +1143,7 @@ private:
     unsigned spellEventSeen=0,spellHazardLogs=0,spellWinFrames=0,spellWinDeferring=0,spellWinCooldown=0;bool spellInDraw=false;NorthlightSpellLayer::Counters spellWin;
     static const char* spellKindName(NorthlightSpellLayer::Kind k){static const char* const n[]={"ignore","opaque","translucentZ","defer","inplace","hazard"};return n[unsigned(k)];}
     static const char* spellInPlaceName(NorthlightSpellLayer::InPlaceKind k){static const char* const n[]={"none","water","rain","name","fade"};return n[unsigned(k)];}
+    static unsigned spellTextureGeneration(void*){return NorthlightMirrorResources::generation.load(std::memory_order_relaxed);}
     static void spellMarkGuard(void*,void* raw,bool on){NorthlightTrackedBuffers::markSpellGuard(raw,on);}
     static void spellBufferHook(void* context,void* raw,UINT offset,UINT size,DWORD flags,DWORD usage,unsigned locks){static_cast<Device*>(context)->spellBufferWrite(raw,offset,size,flags,usage,locks);}
     static void spellTextureHook(void* context,void* texture){static_cast<Device*>(context)->spellTextureWrite(texture);}
@@ -1156,6 +1157,7 @@ private:
         cfg.conflictCopy=selectedBackend!=NorthlightBackend::Kind::Native; /* the copy-out read-back needs DXVK's direct-mapped dynamic buffers */
         cfg.readBackLockFlags=NorthlightUpload::readBackLock(); /* fixed before CreateDevice (backend()) */
         cfg.markGuard=&Device::spellMarkGuard;cfg.markCtx=this;cfg.savedPool=&stateBlocks;
+        cfg.generation=&Device::spellTextureGeneration;cfg.genCtx=this; /* the render-target verdict of a texture is cached until a resource proxy is created or destroyed */
         spell.attach(ext);spell.configure(cfg);
         NorthlightTrackedBuffers::spellHook={&Device::spellBufferHook,this};
         NorthlightMirrorWrite::sink={&Device::spellTextureHook,&Device::spellQueryHook,this};NorthlightMirrorWrite::queries.store(1,std::memory_order_relaxed);
@@ -1285,16 +1287,19 @@ private:
     // The per-draw step, after prepareDraw/claims and before the real draw. true: the draw was deferred (the caller skips the real call and returns D3D_OK).
     // Cheap by construction: nothing pending needs only ZWRITEENABLE (a Z-writing draw ends there) and ALPHABLENDENABLE; a pending frame classifies every draw
     // (a hazard, the fade reorder or a Z-writing draw that may sample the target). SpellTrace frames classify and log every world draw.
+    bool spellSampled(){if(spellSampleFrame!=frame){spellSampleFrame=frame;spellSampleOn=sampled();}return spellSampleOn;} /* sampled() once per frame, not per world draw */
     bool spellDrawImpl(bool claimed,bool rain){
         using namespace NorthlightSpellLayer;
-        CpuScope timer(sampled()?&spellDeferTicks:nullptr);
+        CpuScope timer(spellSampled()?&spellDeferTicks:nullptr);
         if(spellTraceWindow&&!spellTraceFrame){spellTraceFrame=true;spellTraceSeen=false;spellDrawIndex=0;logf("SPELLTRACE begin frame=%u left=%u mode=%s",frame,spellTraceLeft,modeName(spell.mode()));}
         const bool trace=spellTraceFrame;
         IDirect3DVertexShader9* const vs=spellVs;
         const VsClass* vc=vs?&classifyVs(vs):nullptr;
         const bool skinned=vc&&vc->skinned,water=vs&&drawWaterVS,uiTag=vc&&(vc->entry&kTagMask)==2;
         const Family family=vc?Family(vc->family):Family::None;
-        auto rd=[&](D3DRENDERSTATETYPE type){DWORD v=0;ext->GetRenderState(type,&v);return v;};
+        auto rd=[&](D3DRENDERSTATETYPE type){ /* the mirror's answer without the guard and the call (the same owner-thread read drawHook makes of texture 0); unknown: the Get that learns it */
+            if(mirrorState.active()&&mirrorState.renderStateKnown[type])return mirrorState.renderStates[type];
+            DWORD v=0;ext->GetRenderState(type,&v);return v;};
         const bool zWrite=rd(D3DRS_ZWRITEENABLE)!=0;
         DWORD cw=15;bool cwKnown=false;
         auto colorWrite=[&]{if(!cwKnown){cw=rd(D3DRS_COLORWRITEENABLE);cwKnown=true;}return cw;};
@@ -1370,7 +1375,7 @@ private:
     void spellReplay(){
         if(!spellOn)return;
         extensionWork("spell replay",[&]{
-            CpuScope timer(sampled()?&spellReplayTicks:nullptr);
+            CpuScope timer(spellSampled()?&spellReplayTicks:nullptr);
             const unsigned n=spell.pending();
             if(spellTraceFrame)logf("SPELLTRACE frame=%u event=boundary draw=%u pending=%u",frame,drawCalls,n);
             if(n){ExtensionDevice::RawScope raw(*ext);spell.replay();}else spell.replay();

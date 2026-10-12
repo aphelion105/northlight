@@ -151,7 +151,8 @@ static void testGuardTable(){
 }
 
 // ---------------- rig: a mini integration over the FakeDevice ----------------
-struct Opts{bool on=true;unsigned maxEntries=512;bool conflictCopy=true;unsigned mask=15;size_t arena=1u<<20,upVb=1u<<16,upIb=1u<<14;};
+static unsigned gTexGeneration=0;static unsigned texGeneration(void*){return gTexGeneration;}
+struct Opts{bool verdictCache=false;bool on=true;unsigned maxEntries=512;bool conflictCopy=true;unsigned mask=15;size_t arena=1u<<20,upVb=1u<<16,upIb=1u<<14;};
 struct Rig{
     Fake::FakeDevice dev;Layer layer;Opts o;
     Fake::Surface *T,*D,*Other;
@@ -199,7 +200,7 @@ struct Rig{
         const float c[4]={1,2,3,4};dev.SetVertexShaderConstantF(5,c,1);dev.SetPixelShaderConstantF(2,c,1);dev.SetSamplerState(0,5,2);dev.SetRenderState(D3DRS_ALPHAREF,128);
         opaqueZ();translucent(kSrcAlpha,kBlendOne);
         Config c2;c2.on=o.on;c2.classMask=o.mask;c2.maxEntries=o.maxEntries;c2.arenaBytes=o.arena;c2.uploadVbBytes=o.upVb;c2.uploadIbBytes=o.upIb;
-        c2.conflictCopy=o.conflictCopy;c2.markGuard=&Rig::markCb;c2.markCtx=this;
+        c2.conflictCopy=o.conflictCopy;if(o.verdictCache){c2.generation=&texGeneration;c2.genCtx=nullptr;}c2.markGuard=&Rig::markCb;c2.markCtx=this;
         layer.attach(&dev);layer.configure(c2);layer.beginFrame(false);
     }
     ~Rig(){
@@ -277,10 +278,12 @@ struct Rig{
         for(size_t t=0;t<20;++t){v.push_back(id(s.tex[t]));if(s.tex[t])for(size_t k=1;k<=13;++k)v.push_back(s.ss[t][k]);}
         v.push_back(id(s.vs));v.push_back(id(s.ps));v.push_back(id(s.decl));v.push_back(s.fvf);
         auto flt=[&](const float* f,size_t n){for(size_t i=0;i<n;++i){uint32_t u;std::memcpy(&u,f+i,4);v.push_back(u);}};
-        flt(&s.vsc[0][0],256*4);flt(&s.psc[0][0],224*4);flt(&s.clip[0][0],24);
+        flt(&s.vsc[0][0],256*4);flt(&s.psc[0][0],224*4);
+        for(unsigned i=0;i<6;++i)if(s.rs[152]>>i&1)flt(s.clip[i],4); // only the enabled clip planes and (below) an enabled scissor test are read by the draw
         for(auto& row:s.vsi)for(int x:row)v.push_back(x);for(auto& row:s.psi)for(int x:row)v.push_back(x);
         for(int x:s.vsb)v.push_back(x);for(int x:s.psb)v.push_back(x);
-        v.insert(v.end(),{s.vp.X,s.vp.Y,s.vp.Width,s.vp.Height,s.scissor.left,s.scissor.top,s.scissor.right,s.scissor.bottom});
+        v.insert(v.end(),{s.vp.X,s.vp.Y,s.vp.Width,s.vp.Height});
+        if(s.rs[174])v.insert(v.end(),{s.scissor.left,s.scissor.top,s.scissor.right,s.scissor.bottom});
         if(d.kind==0||d.kind==1)for(UINT u:usedOf(s)){v.push_back(s.st[u].freq);if(geom){v.push_back(id(s.st[u].vb));v.push_back(s.st[u].off);v.push_back(s.st[u].stride);}}
         if(d.kind==1&&geom)v.push_back(id(s.ib));
         return v;
@@ -864,6 +867,21 @@ static void testRenderTargetTexture(){
         deferQuad(r,3);CHECK(r.layer.pending()==1);
     }
 }
+// The render-target verdict of a texture is asked once per texture identity (a texture's usage never changes); a new generation (a texture was created or
+// destroyed: an address may be reused) asks again, so a render target created at the address of an earlier plain texture is still refused.
+static void testVerdictCache(){
+    Rig r(Opts{true});gTexGeneration=1;
+    r.dev.SetTexture(3,r.texB);
+    for(int i=1;i<=5;++i)deferQuad(r,i);
+    CHECK(r.layer.pending()==5&&r.texA->descCalls==1&&r.texB->descCalls==1);          // five draws, two textures: two Gets of the level desc
+    r.texB->usage=D3DUSAGE_RENDERTARGET;                                               // "the object at that address was replaced by a render target"
+    deferQuad(r,6);CHECK(r.layer.pending()==6&&r.texB->descCalls==1);                  // no new generation: the verdict stands (usage of one object never changes)
+    gTexGeneration=2;deferQuad(r,7);
+    CHECK(r.layer.pending()==0&&r.layer.totalCounters().hazards[unsigned(Reason::Capture)]==1&&r.texB->descCalls==2); // new generation: asked again, refused, flushed
+    Rig q(Opts{});q.dev.SetTexture(3,q.texB);                                            // without a generation source: no cache
+    for(int i=1;i<=3;++i)deferQuad(q,i);CHECK(q.texA->descCalls==3&&q.texB->descCalls==3);
+    gTexGeneration=0;
+}
 // Vertex texture samplers (stages 257..260) are part of what a pending draw samples: a write to such a texture flushes; a render target there is refused.
 static void sVertexSampler(Rig& r){
     r.dev.SetTexture(257,r.texB);
@@ -900,10 +918,10 @@ static void sChangingState(Rig& r){
     {const float k[4]={5,6,7,8};r.dev.SetPixelShaderConstantF(2,k,1);}
     deferQuad(r,2);                                                           // tag 2: sampler state, ALPHAREF, PS c2
     r.dev.SetTexture(5,r.texB);r.dev.SetSamplerState(5,4,0x77);r.dev.SetSamplerState(5,5,3);
-    {const int ki[4]={1,2,3,4};r.dev.SetVertexShaderConstantI(3,ki,1);const BOOL kb[2]={1,1};r.dev.SetPixelShaderConstantB(7,kb,2);const float pl[4]={0,1,0,2};r.dev.SetClipPlane(1,pl);}
+    {const int ki[4]={1,2,3,4};r.dev.SetVertexShaderConstantI(3,ki,1);const BOOL kb[2]={1,1};r.dev.SetPixelShaderConstantB(7,kb,2);const float pl[4]={0,1,0,2};r.dev.SetClipPlane(1,pl);r.rs(152,2);}
     deferQuad(r,3);                                                           // tag 3: stage 5 bound, int/bool constants, clip plane
     r.dev.SetTexture(5,nullptr);                                              // stage 5 unbound again, its sampler states stay as they were
-    {D3DVIEWPORT9 vp;vp.X=10;vp.Y=20;vp.Width=700;vp.Height=500;r.dev.SetViewport(&vp);const RECT sc{3,4,300,200};r.dev.SetScissorRect(&sc);}
+    {D3DVIEWPORT9 vp;vp.X=10;vp.Y=20;vp.Width=700;vp.Height=500;r.dev.SetViewport(&vp);const RECT sc{3,4,300,200};r.dev.SetScissorRect(&sc);r.rs(174,1);}
     {const int z[4]={0,0,0,0};r.dev.SetVertexShaderConstantI(3,z,1);}
     deferQuad(r,4);                                                           // tag 4: stage 5 must be unbound again, new viewport/scissor, int c3 back
     r.dev.SetVertexDeclaration(nullptr);r.dev.SetFVF(0x112);
@@ -923,6 +941,30 @@ static void testStateChangedBetweenDraws(){
     CHECK(!by[4]->st.tex[5]&&by[4]->st.vsi[3][2]==0&&by[4]->st.vp.Width==700&&by[4]->st.scissor.right==300);
     CHECK(!by[5]->st.decl&&by[5]->st.fvf==0x112&&by[6]->st.decl==p.lay->declP&&by[6]->st.fvf==0);
     CHECK(by[6]->st.rs[D3DRS_POINTSIZE]==0x7fa05000u&&by[5]->st.rs[D3DRS_POINTSIZE]==0);
+}
+// The scissor rect is recorded only with D3DRS_SCISSORTESTENABLE and a clip plane only when D3DRS_CLIPPLANEENABLE has its bit: a disabled one is neither
+// read at record time nor set at replay (the draw cannot see it), and a plane enabled later is set fresh.
+static void sScissorClip(Rig& r){
+    const RECT sc{3,4,300,200};const float pl[4]={0,1,0,2},pm[4]={1,0,0,5};
+    r.dev.SetScissorRect(&sc);r.dev.SetClipPlane(1,pl);r.dev.SetClipPlane(4,pm);
+    deferQuad(r,1);                                                           // tag 1: neither enabled
+    r.rs(174,1);r.rs(152,2);deferQuad(r,2);                                   // tag 2: scissor on, plane 1
+    r.rs(152,2|16);deferQuad(r,3);                                            // tag 3: planes 1 and 4 (4 is new)
+    {const RECT sc2{9,9,99,99};r.dev.SetScissorRect(&sc2);}r.rs(174,0);r.rs(152,0);deferQuad(r,4); // tag 4: both off again, their values differ now but are not read
+    r.boundary();
+}
+static void testScissorAndClipOnlyWhenEnabled(){
+    Pair p=runBoth(sScissorClip);const Counters& c=p.lay->layer.totalCounters();
+    CHECK(p.lay->deferredTags.size()==4&&c.totalHazards()==0);
+    checkEquivalent(p);
+    std::map<int,const Fake::DrawRec*> by;for(auto& d:p.lay->dev.draws)by[d.tag]=&d;
+    CHECK(by[2]->st.scissor.right==300&&by[2]->st.clip[1][3]==2&&by[3]->st.clip[4][3]==5&&by[3]->st.scissor.right==300);
+    CHECK(p.lay->dev.calls>0);
+    // the replay issued no SetScissorRect/SetClipPlane for the draws that cannot read them: compare Set counts against a run without the enabling states
+    Rig q(Opts{});const RECT sc{3,4,300,200};const float pl[4]={0,1,0,2};q.dev.SetScissorRect(&sc);q.dev.SetClipPlane(1,pl);
+    deferQuad(q,1);q.boundary();const unsigned off=q.layer.totalCounters().replaySets;
+    Rig e(Opts{});e.dev.SetScissorRect(&sc);e.dev.SetClipPlane(1,pl);e.rs(174,1);e.rs(152,2);
+    deferQuad(e,1);e.boundary();CHECK(e.layer.totalCounters().replaySets>=off+2);
 }
 // Replay is a diff: the second of two draws differing in one constant costs one Set call, the first sets everything recorded.
 static void sOneDraw(Rig& r){deferQuad(r,1);r.boundary();}
@@ -1112,8 +1154,8 @@ int main(){
         {"cooldown and pressure",testCooldownAndPressure},{"trim",testTrim},{"pending targets",testPendingTargets},{"layer off",testLayerOff},
         {"reset and teardown",testResetAndTeardown},{"512 entries",testStress512},
         {"32-bit index copy",testIb32},{"both index formats",testIbBothFormats},{"water rain name flush",testOrderKinds},{"nothing pending: in place",testOrderKindsIdle},
-        {"replay scope failure",testReplayScopeFailure},{"state changed between draws",testStateChangedBetweenDraws},{"diff replay",testDiffReplay},{"admission",testAdmission},{"hazard events",testHazardEvents},{"record size and timing",testRecordSizeAndTiming},{"fixed function",testFixedFunction},{"fixed function admission",testFixedAdmission},{"fixed function capacity",testFixedCapacity},{"water ripples",testRipples},
-        {"render target texture",testRenderTargetTexture},{"vertex texture sampler",testVertexTextureSampler},{"buffer write conflict probe",testBufferWriteProbe}};
+        {"replay scope failure",testReplayScopeFailure},{"state changed between draws",testStateChangedBetweenDraws},{"scissor and clip only when enabled",testScissorAndClipOnlyWhenEnabled},{"diff replay",testDiffReplay},{"admission",testAdmission},{"hazard events",testHazardEvents},{"record size and timing",testRecordSizeAndTiming},{"fixed function",testFixedFunction},{"fixed function admission",testFixedAdmission},{"fixed function capacity",testFixedCapacity},{"water ripples",testRipples},
+        {"render target texture",testRenderTargetTexture},{"render target verdict cache",testVerdictCache},{"vertex texture sampler",testVertexTextureSampler},{"buffer write conflict probe",testBufferWriteProbe}};
     for(const T& t:tests){t.fn();CHECK(Fake::live==0);std::printf("ok %s\n",t.name);std::fflush(stdout);}
     std::printf("spell layer: %zu tests passed\n",sizeof tests/sizeof tests[0]);
     return 0;

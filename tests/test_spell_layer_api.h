@@ -94,9 +94,9 @@ template<class B> struct Obj:B{
 };
 struct Surface:Obj<IDirect3DSurface9>{UINT w,h;Surface(UINT w_,UINT h_):w(w_),h(h_){}};
 struct Texture:Obj<IDirect3DTexture9>{
-    DWORD usage=0;HRESULT descResult=D3D_OK;
+    DWORD usage=0;HRESULT descResult=D3D_OK;int descCalls=0;
     D3DRESOURCETYPE GetType()override{return D3DRTYPE_TEXTURE;}
-    HRESULT GetLevelDesc(UINT,D3DSURFACE_DESC* d)override{if(FAILED(descResult))return descResult;*d=D3DSURFACE_DESC{};d->Type=D3DRTYPE_TEXTURE;d->Usage=usage;return D3D_OK;}
+    HRESULT GetLevelDesc(UINT,D3DSURFACE_DESC* d)override{++descCalls;if(FAILED(descResult))return descResult;*d=D3DSURFACE_DESC{};d->Type=D3DRTYPE_TEXTURE;d->Usage=usage;return D3D_OK;}
 };
 struct CubeTexture:Obj<IDirect3DCubeTexture9>{
     DWORD usage=0;

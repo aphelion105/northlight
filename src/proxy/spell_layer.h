@@ -248,6 +248,7 @@ struct Config{
     DWORD readBackLockFlags=D3DLOCK_READONLY;     // NorthlightUpload::readBackLock()
     void (*markGuard)(void* ctx,void* rawBuffer,bool guarded)=nullptr;void* markCtx=nullptr; // sets/clears the per-buffer "call onBufferWrite" flag
     NorthlightStateBlockPool* savedPool=nullptr;  // the renderer's SavedState pool for the replay scope (optional; the only state block the layer still uses)
+    unsigned (*generation)(void* ctx)=nullptr;void* genCtx=nullptr; // changes whenever a texture object may have been created or destroyed (a raw address may name another texture): keys the per-texture render-target verdicts; null = no verdict cache
 };
 
 // The state record of one deferred draw. Admission (defer() refuses everything else): a vertex shader AND a pixel shader of model >= kMinPsMajor are
@@ -303,6 +304,7 @@ NL_SPELL_RS_LIST(NL_SPELL_RS_CHECK)
 // ATOC/A2M codes). Replay sets them only when the device value differs from the record, so a re-set never repeats the action.
 inline constexpr bool vendorHackState(unsigned id){return id==154||id==180||id==181;}
 constexpr unsigned rsIndex(unsigned id){for(unsigned i=0;i<kRenderStates;++i)if(kRenderStateIds[i]==id)return i;return kRenderStates;}
+constexpr unsigned kRsClipPlaneEnable=rsIndex(152),kRsScissorTest=rsIndex(174),kRsVertexBlend=rsIndex(151),kRsIndexedVertexBlend=rsIndex(167); // indices into kRenderStateIds
 inline DWORD samplerStage(unsigned slot){return slot<16?DWORD(slot):DWORD(257+(slot-16));}
 
 class Layer{
@@ -314,6 +316,7 @@ class Layer{
         float vsF[kVsFloat][4];int vsI[kInts][4];BOOL vsB[kBools];
         float psF[kPsFloat][4];int psI[kInts][4];BOOL psB[kBools];
         D3DVIEWPORT9 vp;RECT scissor;float clip[kClipPlanes][4];
+        uint8_t clipMask;bool scissorOn;                // clip planes recorded (D3DRS_CLIPPLANEENABLE bits) and the scissor rect (only when D3DRS_SCISSORTESTENABLE): a disabled plane / scissor is not read by the draw
     };
     struct FfRec{                                     // only for fixed-function entries (Entry::ff), allocated in chunks of kFfChunk
         D3DMATRIX tf[kFfTransforms];DWORD tss[kFfStages][kTssStates];D3DMATERIAL9 mat;
@@ -360,6 +363,8 @@ private:
     std::vector<void*> samples_;
     IDirect3DVertexBuffer9* upVb_=nullptr;IDirect3DIndexBuffer9* upIb_[2]={};uint32_t vbUsed_=0,ibUsed_[2]={}; /* one upload index buffer per index format: a 32-bit range must not be read as 16-bit */
     IDirect3DSurface9* target_=nullptr;IDirect3DSurface9* ds_=nullptr;
+    struct Verdict{void* key=nullptr;bool rt=false;};  // per texture identity: D3DUSAGE_RENDERTARGET never changes for an object; open addressing, cleared when the generation changes or at 3/4 load
+    static constexpr unsigned kVerdicts=1024;std::vector<Verdict> verdicts_;unsigned verdictCount_=0,verdictGen_=0;
     Counters frame_,last_,total_;bool firstHazard_=false,firstTaken_=false;Reason firstReason_=Reason::Count;
 
     template<class F> void count(F&& f){f(frame_);f(total_);}
@@ -402,6 +407,16 @@ private:
     void releaseUploads(){
         if(upVb_){upVb_->Release();upVb_=nullptr;}
         for(auto*& ib:upIb_)if(ib){ib->Release();ib=nullptr;}
+    }
+    void clearVerdicts(){if(verdictCount_){std::fill(verdicts_.begin(),verdicts_.end(),Verdict{});verdictCount_=0;}}
+    bool renderTargetTexture(IDirect3DBaseTexture9* t){
+        if(!cfg_.generation)return isRenderTargetTexture(t);
+        if(verdicts_.empty())verdicts_.resize(kVerdicts);
+        size_t i=(reinterpret_cast<uintptr_t>(t)>>4)*2654435761u&(kVerdicts-1);
+        for(;verdicts_[i].key;i=(i+1)&(kVerdicts-1))if(verdicts_[i].key==static_cast<void*>(t))return verdicts_[i].rt;
+        const bool rt=isRenderTargetTexture(t);
+        if(verdictCount_<kVerdicts*3/4){verdicts_[i]=Verdict{static_cast<void*>(t),rt};++verdictCount_;}
+        return rt;
     }
     void noteHazard(Reason r){
         count([&](Counters& c){++c.hazards[unsigned(r)];});
@@ -471,8 +486,8 @@ private:
         changedRuns<4>(&r.psI[0][0],p?&p->psI[0][0]:nullptr,kInts,[&](unsigned s,unsigned n){dev_->SetPixelShaderConstantI(s,r.psI[s],n);++sets_;});
         changedRuns<1>(r.psB,p?p->psB:nullptr,kBools,[&](unsigned s,unsigned n){dev_->SetPixelShaderConstantB(s,r.psB+s,n);++sets_;});
         if(!p||std::memcmp(&r.vp,&p->vp,sizeof r.vp)){dev_->SetViewport(&r.vp);++sets_;}
-        if(!p||std::memcmp(&r.scissor,&p->scissor,sizeof r.scissor)){dev_->SetScissorRect(&r.scissor);++sets_;}
-        for(unsigned i=0;i<kClipPlanes;++i)if(!p||std::memcmp(r.clip[i],p->clip[i],sizeof r.clip[i])){dev_->SetClipPlane(i,r.clip[i]);++sets_;}
+        if(r.scissorOn&&(!p||!p->scissorOn||std::memcmp(&r.scissor,&p->scissor,sizeof r.scissor))){dev_->SetScissorRect(&r.scissor);++sets_;}
+        for(unsigned i=0;i<kClipPlanes;++i)if((r.clipMask>>i&1)&&(!p||!(p->clipMask>>i&1)||std::memcmp(r.clip[i],p->clip[i],sizeof r.clip[i]))){dev_->SetClipPlane(i,r.clip[i]);++sets_;}
         if(e.ff){applyFf(*e.ff,ffPrev_);ffPrev_=e.ff;} // programmable entries leave the fixed-function state alone, so the diff base is the last fixed-function entry
     }
     // The fixed-function state of f on the device, only what differs from the previous fixed-function record (all of it without one).
@@ -634,7 +649,7 @@ private:
         return SUCCEEDED(dev_->GetVertexShaderConstantF(0,&r.vsF[0][0],kVsFloat))&&SUCCEEDED(dev_->GetVertexShaderConstantI(0,&r.vsI[0][0],kInts))&&
                SUCCEEDED(dev_->GetVertexShaderConstantB(0,r.vsB,kBools))&&SUCCEEDED(dev_->GetPixelShaderConstantF(0,&r.psF[0][0],kPsFloat))&&
                SUCCEEDED(dev_->GetPixelShaderConstantI(0,&r.psI[0][0],kInts))&&SUCCEEDED(dev_->GetPixelShaderConstantB(0,r.psB,kBools))&&
-               SUCCEEDED(dev_->GetViewport(&r.vp))&&SUCCEEDED(dev_->GetScissorRect(&r.scissor))&&clipPlanes(r);
+               SUCCEEDED(dev_->GetViewport(&r.vp))&&scissorAndClip(r);
     }
     bool readFf(Entry& e){
         FfRec& f=*e.ff;
@@ -648,7 +663,13 @@ private:
         }
         return true;
     }
-    bool clipPlanes(Rec& r){for(unsigned i=0;i<kClipPlanes;++i)if(FAILED(dev_->GetClipPlane(i,r.clip[i])))return false;return true;}
+    // The scissor rect only when the scissor test is on, the clip planes only for the enabled ones (D3DRS_CLIPPLANEENABLE): the draw reads nothing else.
+    bool scissorAndClip(Rec& r){
+        r.scissorOn=r.rs[kRsScissorTest]!=0;r.clipMask=uint8_t(r.rs[kRsClipPlaneEnable]&((1u<<kClipPlanes)-1));
+        if(r.scissorOn&&FAILED(dev_->GetScissorRect(&r.scissor)))return false;
+        for(unsigned i=0;i<kClipPlanes;++i)if((r.clipMask>>i&1)&&FAILED(dev_->GetClipPlane(i,r.clip[i])))return false;
+        return true;
+    }
     // The streams a declaration reads (bit per stream), cached for the entry that holds the declaration. False: the declaration cannot be read.
     bool usedStreams(IDirect3DVertexDeclaration9* decl,uint32_t& used){
         if(decl==declFor_){used=declUsed_;return true;}
@@ -714,6 +735,7 @@ public:
         if(count_>=cfg_.maxEntries)return fail(Reason::Capacity);
         if(!rt0||(count_&&(rt0!=target_||ds!=ds_)))return fail(count_?Reason::Order:Reason::Capture);
         if(!ensureRec(count_))return fail(Reason::Capacity);
+        if(cfg_.generation){const unsigned g=cfg_.generation(cfg_.genCtx);if(g!=verdictGen_){clearVerdicts();verdictGen_=g;}}
         const bool up=a.type==DrawType::PrimitiveUP||a.type==DrawType::IndexedUP,idx=a.type==DrawType::Indexed||a.type==DrawType::IndexedUP;
         Entry& e=entries_[count_];e=Entry{};
         e.rec=recAt(count_);Rec& r=*e.rec;
@@ -769,11 +791,11 @@ public:
             IDirect3DBaseTexture9* tx=nullptr;dev_->GetTexture(samplerStage(t),&tx);
             if(!tx)continue;
             e.tex[t]=tx; // held by the entry before the check, released with it on a refusal
-            if(isRenderTargetTexture(tx))return abortEntry(e,Reason::Capture); // the game may render into or clear it later without any call the layer sees
+            if(renderTargetTexture(tx))return abortEntry(e,Reason::Capture); // the game may render into or clear it later without any call the layer sees
         }
         if(!readRecord(e))return abortEntry(e,Reason::Capture);
         if(fixed){
-            if(r.rs[rsIndex(151)]||r.rs[rsIndex(167)])return abortEntry(e,Reason::Admit); // D3DRS_VERTEXBLEND / INDEXEDVERTEXBLENDENABLE: WORLD1..3 would be read
+            if(r.rs[kRsVertexBlend]||r.rs[kRsIndexedVertexBlend])return abortEntry(e,Reason::Admit); // D3DRS_VERTEXBLEND / INDEXEDVERTEXBLENDENABLE: WORLD1..3 would be read
             e.ff=ffAt(ffCount_);
             if(!readFf(e))return abortEntry(e,Reason::Capture);
         }
@@ -850,7 +872,7 @@ public:
     }
     // Device Reset/destroy/extension fault: drops everything WITHOUT drawing, releases records, buffers and surfaces, unmarks guards.
     void reset(){
-        clearFrame();recChunks_.clear();ffChunks_.clear();releaseUploads();fm_.close();
+        clearFrame();recChunks_.clear();ffChunks_.clear();releaseUploads();clearVerdicts();fm_.close();
     }
 };
 }

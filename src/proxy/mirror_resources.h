@@ -3,6 +3,7 @@
 #include "mirror_guard.h"
 #include <cstddef>
 #include <cstdint>
+#include <atomic>
 #include <unordered_map>
 #include <type_traits>
 
@@ -12,6 +13,9 @@ namespace NorthlightMirrorResources {
 static constexpr bool kProxyShapeUnwrap=true;
 // Cross-device arguments still need to reach the backend as raw resources.
 // Lock order: a device gate, then this mutex; never acquire another device gate.
+// Bumped whenever a record is created or destroyed (a raw resource gets or loses its proxy): a raw address seen before may now name another object.
+// The spell layer keys its per-texture render-target verdicts on it.
+inline std::atomic<std::uint32_t> generation{0};
 inline std::mutex allProxiesMutex;
 inline std::unordered_map<void*,IUnknown*> allProxies;
 class Registry;
@@ -115,7 +119,7 @@ public:
             MirrorGuard lock(gate_,MirrorSite::Registry);
             remaining=--record.refs;
             if(!remaining){
-                raw_.erase(record.raw);exposed_.erase(record.exposed);
+                raw_.erase(record.raw);exposed_.erase(record.exposed);++generation;
                 {std::lock_guard<std::mutex> global(allProxiesMutex);allProxies.erase(record.exposed);}
                 owner=owner_;
                 IUnknown* raw=record.raw;
@@ -225,7 +229,7 @@ template<class T> void Registry::wrap(T** out)noexcept{
     Record* record=nullptr;
     try{
         record=Factory<T>::make(raw,*this);
-        raw_.emplace(record->raw,record);
+        raw_.emplace(record->raw,record);++generation;
         exposed_.emplace(record->exposed,record);
         {std::lock_guard<std::mutex> global(allProxiesMutex);allProxies.emplace(record->exposed,record->raw);}
         learnShape(record);
