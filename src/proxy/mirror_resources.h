@@ -13,8 +13,9 @@ namespace NorthlightMirrorResources {
 static constexpr bool kProxyShapeUnwrap=true;
 // Cross-device arguments still need to reach the backend as raw resources.
 // Lock order: a device gate, then this mutex; never acquire another device gate.
-// Bumped whenever a record is created or destroyed (a raw resource gets or loses its proxy): a raw address seen before may now name another object.
-// The spell layer keys its per-texture render-target verdicts on it.
+// Bumped whenever a texture record (2D, cube or volume base texture) is created or destroyed, and on device Reset: a raw texture address seen before may now name
+// another object. Surface, volume and other records do not bump it (GetRenderTarget/GetSurfaceLevel churn would invalidate the cache every draw). The spell layer
+// keys its per-texture render-target verdicts on it.
 inline std::atomic<std::uint32_t> generation{0};
 inline std::mutex allProxiesMutex;
 inline std::unordered_map<void*,IUnknown*> allProxies;
@@ -24,6 +25,7 @@ struct Record {
     IUnknown* raw;
     IUnknown* exposed=nullptr;
     ULONG refs=1;
+    bool texture=false; // a base texture: its creation and destruction bump `generation`
     Record(Registry& r,IUnknown* p):registry(r),raw(p){}
     virtual ~Record()=default;
 };
@@ -119,7 +121,7 @@ public:
             MirrorGuard lock(gate_,MirrorSite::Registry);
             remaining=--record.refs;
             if(!remaining){
-                raw_.erase(record.raw);exposed_.erase(record.exposed);++generation;
+                raw_.erase(record.raw);exposed_.erase(record.exposed);if(record.texture)++generation;
                 {std::lock_guard<std::mutex> global(allProxiesMutex);allProxies.erase(record.exposed);}
                 owner=owner_;
                 IUnknown* raw=record.raw;
@@ -229,7 +231,7 @@ template<class T> void Registry::wrap(T** out)noexcept{
     Record* record=nullptr;
     try{
         record=Factory<T>::make(raw,*this);
-        raw_.emplace(record->raw,record);++generation;
+        record->texture=std::is_base_of<IDirect3DBaseTexture9,T>::value;raw_.emplace(record->raw,record);if(record->texture)++generation;
         exposed_.emplace(record->exposed,record);
         {std::lock_guard<std::mutex> global(allProxiesMutex);allProxies.emplace(record->exposed,record->raw);}
         learnShape(record);

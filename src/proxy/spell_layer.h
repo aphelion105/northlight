@@ -252,6 +252,7 @@ struct DrawArgs{
     INT baseVertex=0;UINT minIndex=0,numVertices=0,first=0,primCount=0;
     const void* vertexData=nullptr;UINT stride=0;const void* indexData=nullptr;D3DFORMAT indexFormat=D3DFMT_INDEX16;
     const NorthlightShaderReads::ReadSet* vsReads=nullptr;const NorthlightShaderReads::ReadSet* psReads=nullptr; // what the bound shaders can read (scanned at creation; null or !exact: everything)
+    const void* vsFor=nullptr;const void* psFor=nullptr; // the shaders vsReads/psReads were looked up for: defer() uses a read set only when the shader it records is the same one
     unsigned psMajor=0;  // shader model major version of the bound pixel shader (from its version token at registration; 0 = unknown): defer() admits only >= kMinPsMajor
     static DrawArgs primitive(D3DPRIMITIVETYPE p,UINT start,UINT count){DrawArgs a;a.type=DrawType::Primitive;a.prim=p;a.first=start;a.primCount=count;return a;}
     static DrawArgs indexed(D3DPRIMITIVETYPE p,INT base,UINT minIdx,UINT num,UINT startIndex,UINT count){
@@ -1084,7 +1085,7 @@ public:
         if(fixed){rd.noConstants();rd.tex=(1u<<kFfStages)-1;}
         else{   // a shader that was scanned exactly reads only its registers and declared samplers; anything else reads everything of its stage
             rd.tex=0;
-            const NorthlightShaderReads::ReadSet* v=a.vsReads,*p=a.psReads;
+            const NorthlightShaderReads::ReadSet* v=(vs&&static_cast<const void*>(vs)==a.vsFor)?a.vsReads:nullptr,*p=(ps&&static_cast<const void*>(ps)==a.psFor)?a.psReads:nullptr; // a read set of another shader than the recorded one: reads everything
             if(v&&v->exact){for(unsigned w=0;w<4;++w)rd.vsF[w]=v->f[w];rd.vsI=v->i;rd.vsB=v->b;rd.tex|=uint32_t(v->samplers&0xF)<<16;}else rd.tex|=0xF0000u;
             if(p&&p->exact){for(unsigned w=0;w<4;++w)rd.psF[w]=p->f[w];rd.psI=p->i;rd.psB=p->b;rd.tex|=p->samplers;}else rd.tex|=0xFFFFu;
         }

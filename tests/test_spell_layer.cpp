@@ -165,6 +165,7 @@ struct Rig{
     Fake::Decl *declP,*declTwo;Fake::VShader *vs,*vsEff;Fake::PShader *ps,*psEff;Fake::Texture *texA,*texB;unsigned psMajor=3; /* what the integration passes as DrawArgs::psMajor */
     NorthlightSpellLayer::MirrorView view;
     bool useReads=false;NorthlightShaderReads::ReadSet vsRs,psRs; // shaders with scanned read sets (restrict()); otherwise they read everything
+    const void* readsVs=nullptr,*readsPs=nullptr; // the shaders the read sets belong to (default: the bound vs/ps); set to another shader to model a read set looked up for a different one
     void restrict(const NorthlightShaderReads::ReadSet& v,const NorthlightShaderReads::ReadSet& p){useReads=true;vsRs=v;psRs=p;}
     std::map<void*,Fake::BufState*> bufs;std::map<void*,long long> ids;std::map<void*,int> marks;
     std::vector<std::pair<void*,bool>> markLog;std::vector<size_t> drawsAtWrite;
@@ -337,7 +338,7 @@ struct Rig{
     }
     // One game draw: classify, defer when told to (layer on), otherwise draw in place after the layer's hazard handling. Returns the tag.
     template<class F> int issueWith(const DrawArgs& a0,Family fam,F&& tweak){
-        DrawArgs a=a0;a.psMajor=psMajor;if(useReads){a.vsReads=&vsRs;a.psReads=&psRs;}
+        DrawArgs a=a0;a.psMajor=psMajor;if(useReads){a.vsReads=&vsRs;a.psReads=&psRs;a.vsFor=readsVs?readsVs:static_cast<const void*>(vs);a.psFor=readsPs?readsPs:static_cast<const void*>(ps);}
         const int tag=nextTag++;const float v[4]={float(tag),0,0,0};dev.SetVertexShaderConstantF(31,v,1);dev.SetRenderState(165,DWORD(tag));
         DrawFacts f=facts(fam);f.pending=o.on&&layer.pending()>0;tweak(f);
         last=classify(f,o.mask);bool deferred=false;
@@ -1061,6 +1062,11 @@ static void sRestricted(Rig& r){
     deferQuad(r,3);
     r.boundary();
 }
+template<int Which> static void sForeignReads(Rig& r){ // the read sets belong to another shader than the bound one (Which: 0 vertex, 1 pixel)
+    NorthlightShaderReads::ReadSet v,p;v.exact=p.exact=true;v.vertex=true;setBit(v.f,31);setBit(p.f,2);r.restrict(v,p);
+    if(Which==0)r.readsVs=r.vsEff;else r.readsPs=r.psEff;
+    deferQuad(r,1);{const float k[4]={7,7,7,7};r.dev.SetVertexShaderConstantF(100,k,1);r.dev.SetPixelShaderConstantF(20,k,1);}deferQuad(r,2);r.boundary();
+}
 static void testReadSets(){
     Pair p=runBoth(sRestricted);const Counters& c=p.lay->layer.totalCounters();
     CHECK(p.lay->deferredTags.size()==3&&c.totalHazards()==0&&c.replayedDraws==3);
@@ -1088,6 +1094,13 @@ static void testReadSets(){
         std::map<int,const Fake::DrawRec*> m;for(auto& d:mixed.lay->dev.draws)m[d.tag]=&d;
         CHECK(m[2]->st.psc[20][0]==7&&m[2]->st.tex[3]==mixed.lay->texB&&m[1]->st.psc[20][0]==0);
         (void)v;(void)pp;
+    }
+    {   // a read set looked up for another shader than the one recorded (vertex and pixel separately): that stage reads everything
+        Pair vm=runBoth(sForeignReads<0>),pm=runBoth(sForeignReads<1>);
+        std::map<int,const Fake::DrawRec*> a,b;for(auto& d:vm.lay->dev.draws)a[d.tag]=&d;for(auto& d:pm.lay->dev.draws)b[d.tag]=&d;
+        CHECK(a[1]->st.vsc[100][0]==0&&a[1]->st.psc[20][0]==7);               // draw 1: a stage that reads everything replays what was recorded (0); a narrowed one leaves the live value (7)
+        CHECK(b[1]->st.psc[20][0]==0&&b[1]->st.vsc[100][0]==7);
+        checkEquivalent(vm);checkEquivalent(pm);
     }
 }
 // Replay is a diff: the second of two draws differing in one constant costs one Set call, the first sets everything recorded.
