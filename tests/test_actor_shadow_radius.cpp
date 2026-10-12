@@ -392,4 +392,29 @@ void cost(){
         std::printf("crowd %zu draws radius=%2.0f: body draws cast %.0f of %zu, choose median %.1f us p95 %.1f us per selection (native build, budget 0)\n",draws,double(yards),double(kept)/double(frames),total,us[us.size()/2],us[us.size()*95/100]);}
 }
 }
-int main(){off();hysteresis();self();toggles();zoomWalk();fences();unknown();quota();crowd();cost();std::puts("PASS actor shadow radius");}
+// Crowd blink diagnostics: a far character's body is gated out of the capture but its weapon is
+// not. The weapon has no body in reach, settles as a free rigid actor after FreeFrames and casts
+// beyond radius+band (freeRigidBeyond); when the body is captured again the weapon, still moving
+// with it, re-attaches (freeToAttach) and follows the body's drop.
+void farWeapon(){
+    std::mt19937 random(77);History h;Scratch sc;
+    std::vector<Thing> things;
+    Thing player;player.parts=8;player.model=1;player.tag=Player;player.z=1;things.push_back(player);
+    Thing npc;npc.parts=3;npc.model=3;npc.tag=Npc;npc.x=60;npc.bytes=60000;things.push_back(npc);
+    Thing weapon;weapon.rigid=true;weapon.parent=1;weapon.ox=.5f;weapon.oy=.3f;weapon.oz=1.1f;weapon.model=40;weapon.bytes=5000;weapon.tag=NpcPart;things.push_back(weapon);
+    const float eye[3]={-12,0,7.9f},pivot[3]={0,0,1.9f};const Radius radius{40,eye,false,false};
+    const unsigned gap=3*FreeFrames,total=gap+3*FreeFrames;
+    std::size_t beyondFrames=0,toFree=0,toAttach=0,beyondAfterReturn=0;float maxYards=0;bool weaponDroppedAfter=false;
+    for(unsigned f=0;f<total;++f){things[1].x+=.2f;ride(things);const bool bodyCaptured=f>=gap;
+        std::vector<Thing> seen;seen.push_back(things[0]);if(bodyCaptured)seen.push_back(things[1]);seen.push_back(things[2]); /* the gated body is absent */
+        auto fr=build(seen,eye,random,.002f);
+        const auto r=choose(fr.draws,sc,0,h,true,pivot,Tuning{},&radius);
+        toFree+=r.attachToFree;toAttach+=r.freeToAttach;
+        const Draw& w=fr.draws.back();
+        if(!bodyCaptured&&f>FreeFrames+1){assert(r.freeRigidBeyond==1&&r.freeRigidBeyondBytes==5000&&r.freeRigidMaxYards>55.f&&w.keep);++beyondFrames;maxYards=r.freeRigidMaxYards;assert(!toAttach);}
+        if(bodyCaptured&&f>gap+FreeFrames){beyondAfterReturn+=r.freeRigidBeyond;weaponDroppedAfter=!w.keep;}}
+    std::printf("far weapon without its gated body: free rigid beyond radius+band on %zu selections (max %.1f yd), then the body returns: attachToFree=%zu freeToAttach=%zu, weapon dropped with its body=%d, still free beyond=%zu\n",beyondFrames,double(maxYards),toFree,toAttach,int(weaponDroppedAfter),beyondAfterReturn);
+    assert(beyondFrames>=gap-FreeFrames-2&&toAttach>=1&&toFree==0&&beyondAfterReturn==0&&weaponDroppedAfter);
+    std::puts("PASS radius diagnostics: a free rigid weapon beyond radius+band is counted after FreeFrames and attaches again when its body reappears");
+}
+int main(){off();hysteresis();self();toggles();zoomWalk();fences();unknown();quota();crowd();cost();farWeapon();std::puts("PASS actor shadow radius");}
