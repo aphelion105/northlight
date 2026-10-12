@@ -717,6 +717,14 @@ private:
         dropTerrainShadowSwap();
         extensionWork("draw capture/effects",[&]{prepareDrawImpl(capture,count);});
     }
+    // task 34: a draw with no vertex shader bound (fixed function: ribbons, beams) returns from prepareDrawImpl early; the spell layer still needs its world domain, the
+    // same test as the programmable path (viewport depth range and Z enable) and nothing else of what that path does.
+    void spellFixedDomain(){
+        if(!world||!projectionValid)return;
+        D3DVIEWPORT9 viewport={};DWORD depthEnabled=FALSE;
+        if(FAILED(ext->GetViewport(&viewport))||FAILED(ext->GetRenderState(D3DRS_ZENABLE,&depthEnabled)))return;
+        spellDomain=NorthlightWorldDrawDomain::accepts(projectionValid,depthEnabled!=FALSE,worldMinDepth,worldMaxDepth,viewport.MinZ,viewport.MaxZ);spellZEnable=depthEnabled!=FALSE;
+    }
     template<class Capture> void prepareDrawImpl(Capture capture,UINT count) {
         ++drawCalls;
         if(spellOn){spellDomain=false;spellVs=nullptr;} /* task 34: this draw's reads for spellDrawImpl, valid only if this function gets that far */
@@ -735,7 +743,7 @@ private:
         // 0.3.196 (task 12): borrowed (no reference). The shader stays bound through this hook (the game's draw is issued after it); capture AddRefs whatever it keeps,
         // after renderEffects applied=true stops further use of vs, and resolveDepth's SavedState restores the binding. Released only when not borrowed.
         const bool borrowedVS=ext->peekVertexShader(vs);
-        if(!borrowedVS&&(FAILED(ext->GetVertexShader(&vs))||!vs)){++missingVS;drop(vs);return;}
+        if(!borrowedVS&&(FAILED(ext->GetVertexShader(&vs))||!vs)){++missingVS;drop(vs);if(spellOn)spellFixedDomain();return;}
         struct ShaderRelease {IDirect3DVertexShader9*& p;bool borrowed;~ShaderRelease(){if(!borrowed)drop(p);}} shaderRelease{vs,borrowedVS};
         if(spellOn)spellVs=vs; /* identity only */
         beforeDraw(vs);planTerrainShadowSwap(vs);
@@ -1295,7 +1303,7 @@ private:
         void* texKey=pend?spellTargetTexture():nullptr;
         if(!trace){
             if(!pend&&(zWrite||!spellDomain))return false;
-            if(!pend&&(family==Family::None||claimed||water||rain||uiTag||(fade&&skinned)||!rd(D3DRS_ALPHABLENDENABLE)))return false;
+            if(!pend&&((family==Family::None&&vs)||family==Family::Ripples||claimed||water||rain||uiTag||(fade&&skinned)||!rd(D3DRS_ALPHABLENDENABLE)))return false; /* no vertex shader: fixed function, a candidate */
             if(pend&&zWrite&&spellDomain&&!texKey)return false; /* Opaque / TranslucentZ: in place, nothing to do */
         }
         DrawFacts f;
@@ -1316,7 +1324,7 @@ private:
         bool deferred=false;
         switch(r.kind){
         case Kind::Defer:
-            if(rt){spellPixelShader(&spellArgs.psMajor,nullptr);deferred=spell.defer(spellArgs,rt,ds,r.sub);}
+            if(rt){spellArgs.psMajor=0;spellPixelShader(&spellArgs.psMajor,nullptr);deferred=spell.defer(spellArgs,rt,ds,r.sub);}
             break;
         case Kind::Hazard:spellInDraw=true;spellFlush(r.reason,true,r.inPlace);spellInDraw=false;break; /* r.inPlace: water, rain or a name drawn after a deferred draw */
         case Kind::InPlace:if(pend)spell.noteInPlace(r.inPlace);break;
@@ -1396,9 +1404,9 @@ private:
                 };
                 char hazards[200],winHazards[200];reasons(c,hazards,sizeof hazards);reasons(spellWin,winHazards,sizeof winHazards);
                 const double us=cpuFrequency.QuadPart>0?1e6/double(cpuFrequency.QuadPart):0.0;
-                logf("SPELLLAYER frame=%u mode=%s deferred=%u/%u/%u/%u replayed=%u fadeInPlace=%u orderBy=%u/%u/%u hazards=%s flushes=%u conflicts=%u conflictBytes=%llu materialized=%u records=%u recordHigh=%u replaySets=%u arenaHigh=%u replaySkipped=%u discarded=%u cooldown=%u cpuDeferUs=%.1f cpuReplayUs=%.1f "
+                logf("SPELLLAYER frame=%u mode=%s deferred=%u/%u/%u/%u fixed=%u replayed=%u fadeInPlace=%u orderBy=%u/%u/%u hazards=%s flushes=%u conflicts=%u conflictBytes=%llu materialized=%u records=%u recordHigh=%u replaySets=%u fixed=%u arenaHigh=%u replaySkipped=%u discarded=%u cooldown=%u cpuDeferUs=%.1f cpuReplayUs=%.1f "
                      "window frames=%u deferring=%u cooldown=%u deferred=%u hazards=%s flushes=%u conflicts=%u",
-                    frame,NorthlightSpellLayer::modeName(mode),c.deferred[0],c.deferred[1],c.deferred[2],c.deferred[3],c.replayedDraws,c.inPlace[3],c.orderBy[0],c.orderBy[1],c.orderBy[2],hazards,c.flushes,c.conflicts,(unsigned long long)c.conflictBytes,c.materialized,c.recorded,c.recordHigh,c.replaySets,c.arenaHigh,c.replaySkipped,c.discarded,spell.cooldownLeft(),
+                    frame,NorthlightSpellLayer::modeName(mode),c.deferred[0],c.deferred[1],c.deferred[2],c.deferred[3],c.fixed,c.replayedDraws,c.inPlace[3],c.orderBy[0],c.orderBy[1],c.orderBy[2],hazards,c.flushes,c.conflicts,(unsigned long long)c.conflictBytes,c.materialized,c.recorded,c.recordHigh,c.replaySets,c.arenaHigh,c.replaySkipped,c.discarded,spell.cooldownLeft(),
                     double(spellDeferTicks)*us,double(spellReplayTicks)*us,
                     spellWinFrames,spellWinDeferring,spellWinCooldown,spellWin.totalDeferred(),winHazards,spellWin.flushes,spellWin.conflicts);
                 spellWin=NorthlightSpellLayer::Counters{};spellWinFrames=spellWinDeferring=spellWinCooldown=0;

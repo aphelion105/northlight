@@ -33,7 +33,7 @@ static_assert(unsigned(D3DLOCK_READONLY)==0x10&&unsigned(D3DLOCK_NOOVERWRITE)==0
 constexpr unsigned kCooldownFrames=30,kMaxStreams=4,kMaxTextures=20,kMaxDecl=65,kMinPsMajor=2; /* kMaxTextures: pixel samplers 0..15 and the vertex texture samplers D3DVERTEXTEXTURESAMPLER0..3 (stages 257..260) */
 
 // ---- a) classification (pure) ----
-enum class Family:uint8_t{None,Particle,ParticleUnlit,Model,Projected}; // M2 vertex shader family, known at shader creation
+enum class Family:uint8_t{None,Particle,ParticleUnlit,Model,Projected,Ripples}; // M2 vertex shader family, known at shader creation; Ripples (WaterRipples, not an M2 shader) are treated like water
 enum Sub:unsigned{SubAdditive=1,SubAlpha=2,SubModulate=4,SubOther=8};
 enum class Kind:uint8_t{Ignore,Opaque,TranslucentZ,Defer,InPlace,Hazard};
 enum class InPlaceKind:uint8_t{None,Water,Rain,Name,Fade};
@@ -64,7 +64,7 @@ inline unsigned subClass(const DrawFacts& f){
     return SubOther;
 }
 // Z-writing draws never defer and stay in place (their depth occludes the replay). Colour-writing no-Z draws into the target are deferred when they
-// are one of the four families with a non-opaque blend. Water, rain and floating names are drawn in place when nothing is pending (InPlace, no
+// are one of the four families or a fixed-function draw (ribbons, beams; DrawFacts::fixedFunction) with a non-opaque blend. Water ripples (Family::Ripples) count as water. Water, rain and floating names are drawn in place when nothing is pending (InPlace, no
 // effect), but a Hazard/Order while draws are pending: drawn in place they would end up UNDER the replayed spells, so the caller flushes first and
 // the original order holds (Result::inPlace names which of them it was; Layer::hazard() then splits the frame instead of falling back). A fade colour pass stays an accepted reorder (its depth pre-pass occludes
 // the replay). Everything else is a Hazard (unknown order dependency while draws are pending: the caller flushes). Claimed draws and draws into other targets are Ignore
@@ -78,12 +78,13 @@ inline Result classify(const DrawFacts& f,unsigned classMask){
     if(!f.worldDomain)return rgb?hazard(Reason::Order):r;
     if(f.zWrite){r.kind=(opaqueBlend(f)||!rgb)?Kind::Opaque:Kind::TranslucentZ;return r;}
     if(!rgb)return r;
-    if(f.water||f.rain||f.uiTag||(f.fadeRun&&f.skinned)){
-        r.inPlace=f.water?InPlaceKind::Water:f.rain?InPlaceKind::Rain:f.uiTag?InPlaceKind::Name:InPlaceKind::Fade;
+    const bool water=f.water||f.family==Family::Ripples; // water ripples are drawn after the spells by the game: they behave like water
+    if(water||f.rain||f.uiTag||(f.fadeRun&&f.skinned)){
+        r.inPlace=water?InPlaceKind::Water:f.rain?InPlaceKind::Rain:f.uiTag?InPlaceKind::Name:InPlaceKind::Fade;
         if(f.pending&&r.inPlace!=InPlaceKind::Fade)return hazard(Reason::Order);
         r.kind=Kind::InPlace;return r;
     }
-    if(f.family==Family::None||f.fixedFunction||opaqueBlend(f)||!f.zEnable||f.stencil||!f.dsIsWorldDepth||f.mrtBound||f.instanced)return hazard(Reason::Order);
+    if((f.family==Family::None&&!f.fixedFunction)||opaqueBlend(f)||!f.zEnable||f.stencil||!f.dsIsWorldDepth||f.mrtBound||f.instanced)return hazard(Reason::Order);
     if(f.occlusionActive)return hazard(Reason::Query);
     const unsigned sub=subClass(f);
     if(!(classMask&sub))return hazard(Reason::Order);
@@ -127,6 +128,7 @@ struct Counters{
     unsigned orderBy[3]={};                       // Order hazards raised by water, rain, name draws while draws were pending
     unsigned hazards[kReasons]={};
     unsigned flushes=0,replays=0,replayedDraws=0,replaySkipped=0,discarded=0;
+    unsigned fixed=0;                             // deferred draws that were fixed-function (also counted in deferred[])
     unsigned conflicts=0,materialized=0,recorded=0,replaySets=0; // recorded: state records taken; replaySets: device Set* calls issued by replays
     uint64_t conflictBytes=0;
     unsigned arenaHigh=0;                         // bytes
@@ -135,7 +137,7 @@ struct Counters{
         for(int i=0;i<4;++i){deferred[i]+=o.deferred[i];inPlace[i]+=o.inPlace[i];}
         for(int i=0;i<3;++i)orderBy[i]+=o.orderBy[i];
         for(unsigned i=0;i<kReasons;++i)hazards[i]+=o.hazards[i];
-        flushes+=o.flushes;replays+=o.replays;replayedDraws+=o.replayedDraws;replaySkipped+=o.replaySkipped;discarded+=o.discarded;
+        fixed+=o.fixed;flushes+=o.flushes;replays+=o.replays;replayedDraws+=o.replayedDraws;replaySkipped+=o.replaySkipped;discarded+=o.discarded;
         conflicts+=o.conflicts;materialized+=o.materialized;recorded+=o.recorded;replaySets+=o.replaySets;conflictBytes+=o.conflictBytes;
         arenaHigh=std::max(arenaHigh,o.arenaHigh);recordHigh=std::max(recordHigh,o.recordHigh);
     }
@@ -249,13 +251,27 @@ struct Config{
 };
 
 // The state record of one deferred draw. Admission (defer() refuses everything else): a vertex shader AND a pixel shader of model >= kMinPsMajor are
-// bound. With both programmable stages bound D3D9 does not read the fixed-function state: texture stage states, the world/view/projection/texture
-// transforms, lights, material and the fixed-function fog table are unused by the draw, so none of them is recorded. Everything else a draw can
+// bound, or neither (a fixed-function draw). With both programmable stages bound D3D9 does not read the fixed-function state: texture stage states,
+// the world/view/projection/texture transforms, lights and material are unused by the draw, so none of them is recorded (Rec). A fixed-function entry
+// additionally has an FfRec (transforms, texture stage states of stages 0..7, material, lights 0..7); it is refused when vertex blending is enabled
+// (WORLD1..3), and a replay diffs it against the previous fixed-function entry only (programmable entries leave that state alone). Everything else a draw can
 // read is recorded here: all render states, the sampler states 1..13 of every stage with a texture bound (pixel samplers 0..15, vertex texture
 // samplers 257..260; a stage without a texture is not sampled), all shader constants (float, int, bool of both stages), viewport, scissor rect, the
 // user clip planes. Shaders, vertex declaration, textures, streams and the index buffer are held by the Entry (references) because a record is
 // replayed after the game released them. Fixed capacity, no pointers: 32-bit layout, about 10 KiB (recordBytes()).
 constexpr unsigned kVsFloat=256,kPsFloat=224,kInts=16,kBools=16,kClipPlanes=6,kSamplerFirst=1,kSamplerStates=13;
+// The fixed-function state a draw with neither vertex nor pixel shader reads, recorded in FfRec (only for such draws): WORLD, VIEW, PROJECTION and
+// TEXTURE0..7 transforms, the 18 valid texture stage states of stages 0..7, the material and lights 0..7. WORLD1..3 are never read: vertex blending is refused.
+constexpr unsigned kFfTransforms=11,kFfStages=8,kTssStates=18,kFfLights=8;
+inline constexpr uint16_t kFfTransformIds[kFfTransforms]={256,2,3,16,17,18,19,20,21,22,23}; // D3DTS_WORLD, VIEW, PROJECTION, TEXTURE0..7
+inline constexpr uint16_t kTssIds[kTssStates]={1,2,3,4,5,6,7,8,9,10,11,22,23,24,26,27,28,32}; // D3DTSS_COLOROP .. D3DTSS_CONSTANT (the types that exist; 12..21, 25, 29..31 do not)
+#ifndef NORTHLIGHT_SPELL_LAYER_TEST_API
+static_assert(unsigned(D3DTS_WORLD)==256&&unsigned(D3DTS_VIEW)==2&&unsigned(D3DTS_PROJECTION)==3&&unsigned(D3DTS_TEXTURE0)==16&&unsigned(D3DTS_TEXTURE7)==23,"transform ids");
+static_assert(unsigned(D3DTSS_COLOROP)==1&&unsigned(D3DTSS_COLORARG1)==2&&unsigned(D3DTSS_COLORARG2)==3&&unsigned(D3DTSS_ALPHAOP)==4&&unsigned(D3DTSS_ALPHAARG1)==5&&unsigned(D3DTSS_ALPHAARG2)==6&&
+    unsigned(D3DTSS_BUMPENVMAT00)==7&&unsigned(D3DTSS_BUMPENVMAT01)==8&&unsigned(D3DTSS_BUMPENVMAT10)==9&&unsigned(D3DTSS_BUMPENVMAT11)==10&&unsigned(D3DTSS_TEXCOORDINDEX)==11&&
+    unsigned(D3DTSS_BUMPENVLSCALE)==22&&unsigned(D3DTSS_BUMPENVLOFFSET)==23&&unsigned(D3DTSS_TEXTURETRANSFORMFLAGS)==24&&unsigned(D3DTSS_COLORARG0)==26&&unsigned(D3DTSS_ALPHAARG0)==27&&
+    unsigned(D3DTSS_RESULTARG)==28&&unsigned(D3DTSS_CONSTANT)==32,"texture stage state ids");
+#endif
 // Every valid D3DRENDERSTATETYPE (103 values; d3d9types.h), id and name. The real build asserts each value against the SDK.
 #define NL_SPELL_RS_LIST(X) \
     X(ZENABLE,7) X(FILLMODE,8) X(SHADEMODE,9) X(ZWRITEENABLE,14) X(ALPHATESTENABLE,15) X(LASTPIXEL,16) X(SRCBLEND,19) X(DESTBLEND,20) X(CULLMODE,22) \
@@ -286,6 +302,7 @@ NL_SPELL_RS_LIST(NL_SPELL_RS_CHECK)
 // States the backend gives side effects beyond a stored value (vendor hacks: POINTSIZE carries the RESZ/alpha-to-coverage codes, ADAPTIVETESS_X/Y the
 // ATOC/A2M codes). Replay sets them only when the device value differs from the record, so a re-set never repeats the action.
 inline constexpr bool vendorHackState(unsigned id){return id==154||id==180||id==181;}
+constexpr unsigned rsIndex(unsigned id){for(unsigned i=0;i<kRenderStates;++i)if(kRenderStateIds[i]==id)return i;return kRenderStates;}
 inline DWORD samplerStage(unsigned slot){return slot<16?DWORD(slot):DWORD(257+(slot-16));}
 
 class Layer{
@@ -298,7 +315,11 @@ class Layer{
         float psF[kPsFloat][4];int psI[kInts][4];BOOL psB[kBools];
         D3DVIEWPORT9 vp;RECT scissor;float clip[kClipPlanes][4];
     };
-    static constexpr unsigned kRecChunk=16;           // records are allocated in chunks as a frame needs them and released by trim()
+    struct FfRec{                                     // only for fixed-function entries (Entry::ff), allocated in chunks of kFfChunk
+        D3DMATRIX tf[kFfTransforms];DWORD tss[kFfStages][kTssStates];D3DMATERIAL9 mat;
+        D3DLIGHT9 light[kFfLights];BOOL lightOn[kFfLights];bool lightSet[kFfLights]; // a light never set fails GetLight: lightSet=false (light zeroed, off)
+    };
+    static constexpr unsigned kRecChunk=16,kFfChunk=8;           // records are allocated in chunks as a frame needs them and released by trim()
     struct Entry{
         DrawType type=DrawType::Primitive;D3DPRIMITIVETYPE prim=D3DPT_TRIANGLELIST;
         INT base=0;UINT minIndex=0,numVertices=0,first=0,primCount=0;
@@ -307,7 +328,7 @@ class Layer{
         IDirect3DIndexBuffer9* ib=nullptr;uint32_t ibLo=0,ibHi=0;int32_t ibBlob=-1;
         uint32_t upVtx=0,upStride=0,upIdx=0;D3DFORMAT upFmt=D3DFMT_INDEX16;
         IDirect3DBaseTexture9* tex[kMaxTextures]={};  // by slot (pixel samplers 0..15, vertex texture samplers 16..19), null = unbound; held
-        Rec* rec=nullptr;
+        Rec* rec=nullptr;FfRec* ff=nullptr;            // ff: set for fixed-function draws (no vertex and no pixel shader), else null
     };
     // What replay itself set on the device (streams and index buffer are rebound for materialized spans, so they are tracked apart from the records).
     struct Shadow{
@@ -323,10 +344,12 @@ public:
     // with every event; pending: entries pending when it happened (0: nothing was flushed, the frame still fell back).
     struct Event{Reason reason=Reason::Count;InPlaceKind by=InPlaceKind::None;unsigned pending=0;};
     static constexpr size_t recordBytes(){return sizeof(Rec);}
+    static constexpr size_t ffRecordBytes(){return sizeof(FfRec);}
 private:
     IDirect3DDevice9* dev_=nullptr;Config cfg_;FrameState fm_;
     std::vector<Entry> entries_;unsigned count_=0;
     std::vector<std::unique_ptr<Rec[]>> recChunks_;
+    std::vector<std::unique_ptr<FfRec[]>> ffChunks_;unsigned ffCount_=0;const FfRec* ffPrev_=nullptr; // ffPrev_: the last fixed-function record the running replay applied
     bool rsSkip_[kRenderStates]={};                   // a state the device refused to Get once: neither recorded nor replayed
     IDirect3DVertexDeclaration9* declFor_=nullptr;uint32_t declUsed_=0; // used-stream mask of the last declaration seen this frame (its entry holds it)
     unsigned sets_=0;                                 // device Set* calls of the running replay
@@ -350,6 +373,14 @@ private:
         }
         return true;
     }
+    FfRec* ffAt(unsigned i){return &ffChunks_[i/kFfChunk][i%kFfChunk];}
+    bool ensureFf(unsigned i){
+        while(i/kFfChunk>=ffChunks_.size()){
+            FfRec* p=new(std::nothrow) FfRec[kFfChunk];if(!p)return false; // uninitialised: readFf() fills every field
+            ffChunks_.emplace_back(p);
+        }
+        return true;
+    }
     void releaseEntry(Entry& e){
         for(unsigned i=0;i<e.nStreams;++i)if(e.streams[i].vb)e.streams[i].vb->Release();
         if(e.ib)e.ib->Release();
@@ -362,7 +393,7 @@ private:
     void clearFrame(){
         guards_.clear([&](void* key){mark(key,false);}); // before the entries drop their references: the marked buffers are still alive
         for(unsigned i=0;i<count_;++i)releaseEntry(entries_[i]);
-        count_=0;samples_.clear();blobs_.clear();hits_.clear();declFor_=nullptr;
+        count_=0;ffCount_=0;samples_.clear();blobs_.clear();hits_.clear();declFor_=nullptr;
         frame_.arenaHigh=std::max(frame_.arenaHigh,arenaUsed_);total_.arenaHigh=std::max(total_.arenaHigh,arenaUsed_);
         arenaUsed_=vbUsed_=ibUsed_[0]=ibUsed_[1]=0;
         if(target_){target_->Release();target_=nullptr;}
@@ -442,6 +473,23 @@ private:
         if(!p||std::memcmp(&r.vp,&p->vp,sizeof r.vp)){dev_->SetViewport(&r.vp);++sets_;}
         if(!p||std::memcmp(&r.scissor,&p->scissor,sizeof r.scissor)){dev_->SetScissorRect(&r.scissor);++sets_;}
         for(unsigned i=0;i<kClipPlanes;++i)if(!p||std::memcmp(r.clip[i],p->clip[i],sizeof r.clip[i])){dev_->SetClipPlane(i,r.clip[i]);++sets_;}
+        if(e.ff){applyFf(*e.ff,ffPrev_);ffPrev_=e.ff;} // programmable entries leave the fixed-function state alone, so the diff base is the last fixed-function entry
+    }
+    // The fixed-function state of f on the device, only what differs from the previous fixed-function record (all of it without one).
+    void applyFf(const FfRec& f,const FfRec* p){
+        for(unsigned i=0;i<kFfTransforms;++i)if(!p||std::memcmp(&f.tf[i],&p->tf[i],sizeof f.tf[i])){dev_->SetTransform(D3DTRANSFORMSTATETYPE(kFfTransformIds[i]),&f.tf[i]);++sets_;}
+        for(unsigned s=0;s<kFfStages;++s)for(unsigned k=0;k<kTssStates;++k)if(!p||f.tss[s][k]!=p->tss[s][k]){dev_->SetTextureStageState(s,D3DTEXTURESTAGESTATETYPE(kTssIds[k]),f.tss[s][k]);++sets_;}
+        if(!p||std::memcmp(&f.mat,&p->mat,sizeof f.mat)){dev_->SetMaterial(&f.mat);++sets_;}
+        for(unsigned i=0;i<kFfLights;++i){
+            if(f.lightSet[i]){
+                const bool same=p&&p->lightSet[i];
+                if(!same||std::memcmp(&f.light[i],&p->light[i],sizeof f.light[i])){dev_->SetLight(i,&f.light[i]);++sets_;}
+                if(!same||f.lightOn[i]!=p->lightOn[i]){dev_->LightEnable(i,f.lightOn[i]);++sets_;}
+            }else if(!p||p->lightSet[i]){ // never set when the draw was made: it must not light this draw now (a Get that fails leaves a light that does not exist alone)
+                BOOL on=FALSE;
+                if(SUCCEEDED(dev_->GetLightEnable(i,&on))&&on){dev_->LightEnable(i,FALSE);++sets_;}
+            }
+        }
     }
     void bindStream(Shadow& sh,UINT s,IDirect3DVertexBuffer9* vb,UINT off,UINT stride){
         Shadow::S& x=sh.st[s];
@@ -516,7 +564,7 @@ private:
         for(DWORD i=1;i<4;++i)dev_->SetRenderTarget(i,nullptr);
         const bool bound=SUCCEEDED(dev_->SetRenderTarget(0,target_));
         dev_->SetDepthStencilSurface(ds_);
-        Shadow sh;sets_=0;const Entry* prev=nullptr;
+        Shadow sh;sets_=0;ffPrev_=nullptr;const Entry* prev=nullptr;
         for(unsigned i=0;i<count_;++i){
             const bool ok=bound&&drawEntry(entries_[i],prev,sh,vbOk,ibOk);
             if(bound)prev=&entries_[i];
@@ -588,6 +636,18 @@ private:
                SUCCEEDED(dev_->GetPixelShaderConstantI(0,&r.psI[0][0],kInts))&&SUCCEEDED(dev_->GetPixelShaderConstantB(0,r.psB,kBools))&&
                SUCCEEDED(dev_->GetViewport(&r.vp))&&SUCCEEDED(dev_->GetScissorRect(&r.scissor))&&clipPlanes(r);
     }
+    bool readFf(Entry& e){
+        FfRec& f=*e.ff;
+        for(unsigned i=0;i<kFfTransforms;++i)if(FAILED(dev_->GetTransform(D3DTRANSFORMSTATETYPE(kFfTransformIds[i]),&f.tf[i])))return false;
+        for(unsigned s=0;s<kFfStages;++s)for(unsigned k=0;k<kTssStates;++k)if(FAILED(dev_->GetTextureStageState(s,D3DTEXTURESTAGESTATETYPE(kTssIds[k]),&f.tss[s][k])))return false;
+        if(FAILED(dev_->GetMaterial(&f.mat)))return false;
+        for(unsigned i=0;i<kFfLights;++i){
+            BOOL on=FALSE;f.lightSet[i]=SUCCEEDED(dev_->GetLight(i,&f.light[i]));
+            if(f.lightSet[i]){if(FAILED(dev_->GetLightEnable(i,&on)))return false;}else std::memset(&f.light[i],0,sizeof f.light[i]);
+            f.lightOn[i]=on!=0;
+        }
+        return true;
+    }
     bool clipPlanes(Rec& r){for(unsigned i=0;i<kClipPlanes;++i)if(FAILED(dev_->GetClipPlane(i,r.clip[i])))return false;return true;}
     // The streams a declaration reads (bit per stream), cached for the entry that holds the declaration. False: the declaration cannot be read.
     bool usedStreams(IDirect3DVertexDeclaration9* decl,uint32_t& used){
@@ -632,6 +692,7 @@ public:
     const Counters& lastFrameCounters()const{return last_;}
     const Counters& totalCounters()const{return total_;}
     size_t recordChunks()const{return recChunks_.size();} // allocated chunks of kRecChunk records
+    size_t ffChunks()const{return ffChunks_.size();}      // allocated chunks of kFfChunk fixed-function records
     uint32_t arenaUsed()const{return arenaUsed_;}
     // Hazard diagnostics: eventSeq() changes on every hazard that flushed and every refused defer (the frame fell back); lastEvent() describes it.
     unsigned eventSeq()const{return eventSeq_;}
@@ -657,8 +718,12 @@ public:
         Entry& e=entries_[count_];e=Entry{};
         e.rec=recAt(count_);Rec& r=*e.rec;
         e.type=a.type;e.prim=a.prim;e.base=a.baseVertex;e.minIndex=a.minIndex;e.numVertices=a.numVertices;e.first=a.first;e.primCount=a.primCount;
-        // admission: programmable vertex and pixel stage, ps_2_0 or newer (the fixed-function state is then unused and not recorded)
-        if(a.psMajor<kMinPsMajor||FAILED(dev_->GetVertexShader(&e.vs))||!e.vs||FAILED(dev_->GetPixelShader(&e.ps))||!e.ps)return abortEntry(e,Reason::Admit);
+        // admission: a programmable vertex and pixel stage, ps_2_0 or newer (the fixed-function state is then unused and not recorded), or neither
+        // stage (fixed function: FfRec). A vertex shader with a fixed-function pixel stage or the reverse is refused.
+        if(FAILED(dev_->GetVertexShader(&e.vs))||FAILED(dev_->GetPixelShader(&e.ps)))return abortEntry(e,Reason::Admit);
+        const bool fixed=!e.vs&&!e.ps;
+        if(!fixed&&(!e.vs||!e.ps||a.psMajor<kMinPsMajor))return abortEntry(e,Reason::Admit);
+        if(fixed&&!ensureFf(ffCount_))return abortEntry(e,Reason::Capacity);
         uint32_t used=1; // FVF: stream 0
         dev_->GetVertexDeclaration(&e.decl);
         r.fvf=0;
@@ -707,6 +772,11 @@ public:
             if(isRenderTargetTexture(tx))return abortEntry(e,Reason::Capture); // the game may render into or clear it later without any call the layer sees
         }
         if(!readRecord(e))return abortEntry(e,Reason::Capture);
+        if(fixed){
+            if(r.rs[rsIndex(151)]||r.rs[rsIndex(167)])return abortEntry(e,Reason::Admit); // D3DRS_VERTEXBLEND / INDEXEDVERTEXBLENDENABLE: WORLD1..3 would be read
+            e.ff=ffAt(ffCount_);
+            if(!readFf(e))return abortEntry(e,Reason::Capture);
+        }
         // Committed from here: nothing below fails.
         if(up){
             std::memcpy(arena_.data()+arenaUsed_,static_cast<const uint8_t*>(a.vertexData)+vOff,upV);e.upVtx=arenaUsed_;arenaUsed_+=align16(upV);
@@ -723,8 +793,9 @@ public:
             if(std::find(samples_.begin(),samples_.end(),k)==samples_.end())samples_.push_back(k);
         }
         if(!count_){target_=rt0;rt0->AddRef();ds_=ds;if(ds)ds->AddRef();}
+        if(fixed)++ffCount_;
         ++count_;fm_.deferred();
-        count([&](Counters& c){unsigned i=0;while(i<3&&!(sub>>i&1))++i;++c.deferred[i];++c.recorded;c.recordHigh=std::max(c.recordHigh,count_);});
+        count([&](Counters& c){unsigned i=0;while(i<3&&!(sub>>i&1))++i;++c.deferred[i];if(fixed)++c.fixed;++c.recorded;c.recordHigh=std::max(c.recordHigh,count_);});
         if(a.type==DrawType::PrimitiveUP||a.type==DrawType::IndexedUP){ // the API side effects of the skipped call
             dev_->SetStreamSource(0,nullptr,0,0);
             if(a.type==DrawType::IndexedUP)dev_->SetIndices(nullptr);
@@ -774,11 +845,12 @@ public:
     void trim(size_t keep=0){
         const size_t chunks=(std::max<size_t>(keep,count_)+kRecChunk-1)/kRecChunk;
         while(recChunks_.size()>chunks)recChunks_.pop_back();
+        const size_t ffChunks=(ffCount_+kFfChunk-1)/kFfChunk;while(ffChunks_.size()>ffChunks)ffChunks_.pop_back();
         if(!count_&&!keep)releaseUploads();
     }
     // Device Reset/destroy/extension fault: drops everything WITHOUT drawing, releases records, buffers and surfaces, unmarks guards.
     void reset(){
-        clearFrame();recChunks_.clear();releaseUploads();fm_.close();
+        clearFrame();recChunks_.clear();ffChunks_.clear();releaseUploads();fm_.close();
     }
 };
 }

@@ -1,7 +1,7 @@
 #pragma once
 // Minimal D3D9 API (only what spell_layer.h and saved_state.h use) and a FakeDevice that models the D3D9 semantics the spell layer depends on:
 // a full draw-relevant state (render states, sampler states, textures, shaders, declaration/FVF, constants of both stages, viewport, scissor, clip
-// planes, streams, indices), state blocks (ALL = everything except RT/DS, used by SavedState), SetRenderTarget resetting viewport/scissor, UP draws
+// planes, streams, indices, and the fixed-function state: transforms, texture stage states, material, lights), state blocks (ALL = everything except RT/DS, used by SavedState), SetRenderTarget resetting viewport/scissor, UP draws
 // clearing stream 0 / indices, buffer locks with DISCARD / NOOVERWRITE / READONLY slices, and a record of every draw with the exact bytes it fetched
 // at execution time. Refcounted objects with a leak check. `sets` counts the Set* calls (not the Gets, not the draws).
 #include <algorithm>
@@ -13,9 +13,11 @@
 #include <vector>
 #define NORTHLIGHT_SPELL_LAYER_TEST_API
 using HRESULT=int32_t;using LONG=int32_t;using ULONG=uint32_t;using DWORD=uint32_t;using UINT=uint32_t;using INT=int32_t;using BOOL=int32_t;using WORD=uint16_t;using BYTE=uint8_t;using HANDLE=void*;
+#define FALSE 0
+#define TRUE 1
 constexpr HRESULT D3D_OK=0,D3DERR_INVALIDCALL=-1,E_FAIL=-6;
 inline bool SUCCEEDED(HRESULT h){return h>=0;}inline bool FAILED(HRESULT h){return h<0;}
-using D3DFORMAT=unsigned;using D3DPOOL=unsigned;using D3DPRIMITIVETYPE=unsigned;using D3DSTATEBLOCKTYPE=unsigned;using D3DRENDERSTATETYPE=unsigned;using D3DSAMPLERSTATETYPE=unsigned;using D3DRESOURCETYPE=unsigned;
+using D3DFORMAT=unsigned;using D3DPOOL=unsigned;using D3DPRIMITIVETYPE=unsigned;using D3DSTATEBLOCKTYPE=unsigned;using D3DRENDERSTATETYPE=unsigned;using D3DSAMPLERSTATETYPE=unsigned;using D3DRESOURCETYPE=unsigned;using D3DTRANSFORMSTATETYPE=unsigned;using D3DTEXTURESTAGESTATETYPE=unsigned;
 constexpr D3DSTATEBLOCKTYPE D3DSBT_ALL=1;
 constexpr D3DPRIMITIVETYPE D3DPT_POINTLIST=1,D3DPT_LINELIST=2,D3DPT_LINESTRIP=3,D3DPT_TRIANGLELIST=4,D3DPT_TRIANGLESTRIP=5,D3DPT_TRIANGLEFAN=6;
 constexpr D3DFORMAT D3DFMT_INDEX16=101,D3DFMT_INDEX32=102,D3DFMT_VERTEXDATA=100;
@@ -25,6 +27,9 @@ constexpr D3DRESOURCETYPE D3DRTYPE_TEXTURE=3,D3DRTYPE_VOLUMETEXTURE=4,D3DRTYPE_C
 constexpr DWORD D3DLOCK_READONLY=0x10,D3DLOCK_NOOVERWRITE=0x1000,D3DLOCK_DISCARD=0x2000;
 constexpr D3DRENDERSTATETYPE D3DRS_ZENABLE=7,D3DRS_ZWRITEENABLE=14,D3DRS_ALPHATESTENABLE=15,D3DRS_SRCBLEND=19,D3DRS_DESTBLEND=20,D3DRS_ALPHAREF=24,D3DRS_ALPHABLENDENABLE=27,D3DRS_STENCILENABLE=52,D3DRS_COLORWRITEENABLE=168,D3DRS_BLENDOP=171,D3DRS_POINTSIZE=154;
 struct D3DVIEWPORT9{DWORD X=0,Y=0,Width=0,Height=0;float MinZ=0,MaxZ=1;};
+struct D3DMATRIX{float m[4][4];};struct D3DCOLORVALUE{float r,g,b,a;};struct D3DVECTOR{float x,y,z;};
+struct D3DMATERIAL9{D3DCOLORVALUE Diffuse,Ambient,Specular,Emissive;float Power;};
+struct D3DLIGHT9{DWORD Type;D3DCOLORVALUE Diffuse,Specular,Ambient;D3DVECTOR Position,Direction;float Range,Falloff,Attenuation0,Attenuation1,Attenuation2,Theta,Phi;};
 struct RECT{int left=0,top=0,right=0,bottom=0;};
 struct D3DVERTEXELEMENT9{WORD Stream;WORD Offset;BYTE Type;BYTE Method;BYTE Usage;BYTE UsageIndex;};
 struct D3DVERTEXBUFFER_DESC{D3DFORMAT Format;D3DRESOURCETYPE Type;DWORD Usage;D3DPOOL Pool;UINT Size;DWORD FVF;};
@@ -65,6 +70,11 @@ struct IDirect3DDevice9{
     virtual HRESULT SetPixelShaderConstantF(UINT,const float*,UINT)=0;virtual HRESULT GetPixelShaderConstantF(UINT,float*,UINT)=0;
     virtual HRESULT SetPixelShaderConstantI(UINT,const int*,UINT)=0;virtual HRESULT GetPixelShaderConstantI(UINT,int*,UINT)=0;
     virtual HRESULT SetPixelShaderConstantB(UINT,const BOOL*,UINT)=0;virtual HRESULT GetPixelShaderConstantB(UINT,BOOL*,UINT)=0;
+    virtual HRESULT SetTransform(D3DTRANSFORMSTATETYPE,const D3DMATRIX*)=0;virtual HRESULT GetTransform(D3DTRANSFORMSTATETYPE,D3DMATRIX*)=0;
+    virtual HRESULT SetTextureStageState(DWORD,D3DTEXTURESTAGESTATETYPE,DWORD)=0;virtual HRESULT GetTextureStageState(DWORD,D3DTEXTURESTAGESTATETYPE,DWORD*)=0;
+    virtual HRESULT SetMaterial(const D3DMATERIAL9*)=0;virtual HRESULT GetMaterial(D3DMATERIAL9*)=0;
+    virtual HRESULT SetLight(DWORD,const D3DLIGHT9*)=0;virtual HRESULT GetLight(DWORD,D3DLIGHT9*)=0;
+    virtual HRESULT LightEnable(DWORD,BOOL)=0;virtual HRESULT GetLightEnable(DWORD,BOOL*)=0;
     virtual HRESULT DrawPrimitive(D3DPRIMITIVETYPE,UINT,UINT)=0;
     virtual HRESULT DrawIndexedPrimitive(D3DPRIMITIVETYPE,INT,UINT,UINT,UINT,UINT)=0;
     virtual HRESULT DrawPrimitiveUP(D3DPRIMITIVETYPE,UINT,const void*,UINT)=0;
@@ -133,6 +143,7 @@ struct State{
     IDirect3DBaseTexture9* tex[20]={}; /* 0..15 pixel samplers, 16..19 vertex texture samplers (stages 257..260) */ IDirect3DVertexShader9* vs=nullptr;IDirect3DPixelShader9* ps=nullptr;IDirect3DVertexDeclaration9* decl=nullptr;DWORD fvf=0;
     struct S{IDirect3DVertexBuffer9* vb=nullptr;UINT off=0,stride=0,freq=1;} st[16];
     IDirect3DIndexBuffer9* ib=nullptr;float vsc[256][4]={};int vsi[16][4]={};BOOL vsb[16]={};float psc[224][4]={};int psi[16][4]={};BOOL psb[16]={};float clip[6][4]={};D3DVIEWPORT9 vp;RECT scissor;
+    D3DMATRIX tf[14]={};DWORD tss[8][33]={};D3DMATERIAL9 mat={};D3DLIGHT9 light[8]={};BOOL lightSet[8]={},lightOn[8]={}; /* tf: WORLD, VIEW, PROJECTION, TEXTURE0..7, WORLD1..3 */
 };
 template<class T> inline void swapRef(T*& dst,T* src){if(src)src->AddRef();if(dst)dst->Release();dst=src;}
 inline void retain(State& s){
@@ -149,6 +160,7 @@ inline void assign(State& dst,const State& src){State n=src;retain(n);drop(dst);
 inline bool equal(const State& a,const State& b,bool ignoreGeometry){
     if(std::memcmp(a.rs,b.rs,sizeof a.rs)||std::memcmp(a.ss,b.ss,sizeof a.ss)||std::memcmp(a.tex,b.tex,sizeof a.tex)||std::memcmp(a.vsc,b.vsc,sizeof a.vsc)||std::memcmp(a.vsi,b.vsi,sizeof a.vsi)||std::memcmp(a.vsb,b.vsb,sizeof a.vsb))return false;
     if(std::memcmp(a.psc,b.psc,sizeof a.psc)||std::memcmp(a.psi,b.psi,sizeof a.psi)||std::memcmp(a.psb,b.psb,sizeof a.psb)||std::memcmp(a.clip,b.clip,sizeof a.clip)||a.fvf!=b.fvf)return false;
+    if(std::memcmp(a.tf,b.tf,sizeof a.tf)||std::memcmp(a.tss,b.tss,sizeof a.tss)||std::memcmp(&a.mat,&b.mat,sizeof a.mat)||std::memcmp(a.light,b.light,sizeof a.light)||std::memcmp(a.lightSet,b.lightSet,sizeof a.lightSet)||std::memcmp(a.lightOn,b.lightOn,sizeof a.lightOn))return false;
     if(a.vs!=b.vs||a.ps!=b.ps||a.decl!=b.decl)return false;
     if(std::memcmp(&a.vp,&b.vp,sizeof a.vp)||a.scissor.left!=b.scissor.left||a.scissor.top!=b.scissor.top||a.scissor.right!=b.scissor.right||a.scissor.bottom!=b.scissor.bottom)return false;
     if(!ignoreGeometry){
@@ -171,7 +183,7 @@ struct StateBlock:Obj<IDirect3DStateBlock9>{
 struct FakeDevice:IDirect3DDevice9{
     State s;IDirect3DSurface9* rt[4]={};IDirect3DSurface9* ds=nullptr;
     std::vector<DrawRec> draws;unsigned calls=0,sets=0;
-    bool failCreateBlock=false,failCapture=false,failCreateVB=false,failCreateIB=false,failGetPsConst=false;int failCaptureAfter=-1;unsigned blocksCreated=0,failNthCreate=0,createCalls=0; // failNthCreate: the nth CreateStateBlock call fails once
+    bool failCreateBlock=false,failCapture=false,failCreateVB=false,failCreateIB=false,failGetPsConst=false,failGetTss=false,failGetLightEnable=false;int failCaptureAfter=-1;unsigned blocksCreated=0,failNthCreate=0,createCalls=0; // failNthCreate: the nth CreateStateBlock call fails once
     FakeDevice(){
         s.vp=D3DVIEWPORT9();s.scissor=RECT();
         for(auto& x:s.st)x.freq=1;
@@ -244,6 +256,19 @@ struct FakeDevice:IDirect3DDevice9{
     HRESULT GetPixelShaderConstantI(UINT r,int* v,UINT n)override{++calls;if(r+n>16)return D3DERR_INVALIDCALL;std::memcpy(v,s.psi[r],n*16);return D3D_OK;}
     HRESULT SetPixelShaderConstantB(UINT r,const BOOL* v,UINT n)override{++calls;++sets;if(r+n>16)return D3DERR_INVALIDCALL;std::memcpy(s.psb+r,v,n*4);return D3D_OK;}
     HRESULT GetPixelShaderConstantB(UINT r,BOOL* v,UINT n)override{++calls;if(r+n>16)return D3DERR_INVALIDCALL;std::memcpy(v,s.psb+r,n*4);return D3D_OK;}
+    // ---- fixed-function state (the valid texture stage state types only; transforms WORLD, VIEW, PROJECTION, TEXTURE0..7, WORLD1..3) ----
+    static int tfSlot(DWORD t){if(t==256)return 0;if(t==2||t==3)return int(t)-1;if(t>=16&&t<=23)return int(t)-13;if(t>=257&&t<=259)return int(t)-246;return -1;}
+    static bool tssValid(DWORD t){return (t>=1&&t<=11)||t==22||t==23||t==24||t==26||t==27||t==28||t==32;}
+    HRESULT SetTransform(D3DTRANSFORMSTATETYPE t,const D3DMATRIX* m)override{++calls;++sets;const int i=tfSlot(t);if(i<0||!m)return D3DERR_INVALIDCALL;s.tf[i]=*m;return D3D_OK;}
+    HRESULT GetTransform(D3DTRANSFORMSTATETYPE t,D3DMATRIX* m)override{++calls;const int i=tfSlot(t);if(i<0||!m)return D3DERR_INVALIDCALL;*m=s.tf[i];return D3D_OK;}
+    HRESULT SetTextureStageState(DWORD st,D3DTEXTURESTAGESTATETYPE t,DWORD v)override{++calls;++sets;if(st>=8||!tssValid(t))return D3DERR_INVALIDCALL;s.tss[st][t]=v;return D3D_OK;}
+    HRESULT GetTextureStageState(DWORD st,D3DTEXTURESTAGESTATETYPE t,DWORD* v)override{++calls;if(st>=8||!tssValid(t)||failGetTss)return D3DERR_INVALIDCALL;*v=s.tss[st][t];return D3D_OK;}
+    HRESULT SetMaterial(const D3DMATERIAL9* m)override{++calls;++sets;s.mat=*m;return D3D_OK;}
+    HRESULT GetMaterial(D3DMATERIAL9* m)override{++calls;*m=s.mat;return D3D_OK;}
+    HRESULT SetLight(DWORD i,const D3DLIGHT9* l)override{++calls;++sets;if(i>=8)return D3DERR_INVALIDCALL;s.light[i]=*l;s.lightSet[i]=TRUE;return D3D_OK;}
+    HRESULT GetLight(DWORD i,D3DLIGHT9* l)override{++calls;if(i>=8||!s.lightSet[i])return D3DERR_INVALIDCALL;*l=s.light[i];return D3D_OK;}
+    HRESULT LightEnable(DWORD i,BOOL on)override{++calls;++sets;if(i>=8)return D3DERR_INVALIDCALL;if(!s.lightSet[i]){s.light[i]=D3DLIGHT9{};s.lightSet[i]=TRUE;}s.lightOn[i]=on?TRUE:FALSE;return D3D_OK;} // like D3D9: enabling a light never set creates a default one
+    HRESULT GetLightEnable(DWORD i,BOOL* on)override{++calls;if(i>=8||!s.lightSet[i]||failGetLightEnable)return D3DERR_INVALIDCALL;*on=s.lightOn[i];return D3D_OK;}
     // ---- draws: record state and the bytes fetched NOW ----
     DrawRec begin(int kind,D3DPRIMITIVETYPE prim){
         DrawRec d;d.kind=kind;d.prim=prim;d.st=s;for(int i=0;i<4;++i)d.rt[i]=rt[i];d.ds=ds;d.tag=tagOf();return d; // st copy: raw pointers, no refs

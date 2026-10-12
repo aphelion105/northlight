@@ -39,7 +39,28 @@ static void testClassify(){
     {DrawFacts f=cand();f.instanced=true;expect(f,Kind::Hazard,0,Reason::Order);}
     {DrawFacts f=cand();f.occlusionActive=true;expect(f,Kind::Hazard,0,Reason::Query);}
     {DrawFacts f=cand();f.family=Family::None;expect(f,Kind::Hazard,0,Reason::Order);}
-    {DrawFacts f=cand();f.fixedFunction=true;expect(f,Kind::Hazard,0,Reason::Order);}
+    // fixed-function draws (ribbons, beams): a candidate like the M2 families, with the same exclusions
+    {DrawFacts f=cand();f.fixedFunction=true;expect(f,Kind::Defer,SubAdditive);}
+    {DrawFacts f=cand();f.fixedFunction=true;f.family=Family::None;expect(f,Kind::Defer,SubAdditive);}
+    {DrawFacts f=cand();f.fixedFunction=true;f.family=Family::None;f.destBlend=kInvSrcAlpha;expect(f,Kind::Defer,SubAlpha);}
+    {DrawFacts f=cand();f.fixedFunction=true;f.family=Family::None;expect(f,Kind::Hazard,0,Reason::Order,InPlaceKind::None,SubAlpha|SubModulate|SubOther);}
+    for(int k=0;k<7;++k){
+        DrawFacts f=cand();f.fixedFunction=true;f.family=Family::None;Reason why=Reason::Order;
+        switch(k){case 0:f.srcBlend=kBlendOne;f.destBlend=kBlendZero;break;case 1:f.blend=false;break;case 2:f.zEnable=false;break;case 3:f.stencil=true;break;
+                  case 4:f.dsIsWorldDepth=false;break;case 5:f.mrtBound=true;break;default:f.occlusionActive=true;why=Reason::Query;}
+        expect(f,Kind::Hazard,0,why);
+    }
+    {DrawFacts f=cand();f.fixedFunction=true;f.family=Family::None;f.instanced=true;expect(f,Kind::Hazard,0,Reason::Order);}
+    {DrawFacts f=cand();f.fixedFunction=true;f.family=Family::None;f.zWrite=true;expect(f,Kind::TranslucentZ);}
+    {DrawFacts f=cand();f.fixedFunction=true;f.family=Family::None;f.worldDomain=false;expect(f,Kind::Hazard,0,Reason::Order);}
+    {DrawFacts f=cand();f.fixedFunction=true;f.family=Family::None;f.samplesRenderTargetTexture=true;expect(f,Kind::Hazard,0,Reason::Sample);}
+    {DrawFacts f=cand();f.fixedFunction=true;f.family=Family::None;f.colorWrite=0;expect(f,Kind::Ignore);}
+    // water ripples (WaterRipples vertex shader) are water: never deferred, a split when draws are pending
+    {DrawFacts f=cand();f.family=Family::Ripples;expect(f,Kind::InPlace,0,Reason::Count,InPlaceKind::Water);}
+    {DrawFacts f=cand();f.family=Family::Ripples;f.pending=true;expect(f,Kind::Hazard,0,Reason::Order,InPlaceKind::Water);}
+    {DrawFacts f=cand();f.family=Family::Ripples;f.zWrite=true;expect(f,Kind::TranslucentZ);}
+    {DrawFacts f=cand();f.family=Family::Ripples;f.colorWrite=0;expect(f,Kind::Ignore);}
+    {DrawFacts f=cand();f.family=Family::Ripples;f.worldDomain=false;expect(f,Kind::Hazard,0,Reason::Order);}
     {DrawFacts f=cand();f.zEnable=false;expect(f,Kind::Hazard,0,Reason::Order);}
     {DrawFacts f=cand();f.dsIsWorldDepth=false;expect(f,Kind::Hazard,0,Reason::Order);}
     {DrawFacts f=cand();f.srcBlend=kBlendOne;f.destBlend=kBlendZero;expect(f,Kind::Hazard,0,Reason::Order);} // opaque blend, no Z write
@@ -187,6 +208,17 @@ struct Rig{
         for(auto* p:std::initializer_list<IUnknown*>{T,D,Other,ring,ring2,stat,extra,ringIb,ringIb32,stIb,declP,declTwo,vs,vsEff,ps,psEff,texA,texB})p->Release();
     }
     // ---- game-side helpers ----
+    static D3DMATRIX mat(float seed){D3DMATRIX m;for(int i=0;i<4;++i)for(int j=0;j<4;++j)m.m[i][j]=seed+float(i*4+j)*0.25f;return m;}
+    static constexpr unsigned tsIds[11]={256,2,3,16,17,18,19,20,21,22,23};
+    static constexpr unsigned tssIds[18]={1,2,3,4,5,6,7,8,9,10,11,22,23,24,26,27,28,32};
+    void ffState(int seed){ // a distinct, complete fixed-function state: lights 0 (on) and 2 (off) set, the others never set
+        for(unsigned i=0;i<11;++i){const D3DMATRIX m=mat(float(seed*100+int(i)));dev.SetTransform(tsIds[i],&m);}
+        for(unsigned st=0;st<8;++st)for(unsigned t:tssIds)dev.SetTextureStageState(st,t,DWORD(seed*10000+int(st)*100+int(t)));
+        D3DMATERIAL9 mt{};mt.Diffuse.r=float(seed);mt.Power=float(seed)+0.5f;dev.SetMaterial(&mt);
+        D3DLIGHT9 l{};l.Type=1;l.Diffuse.g=float(seed);l.Range=100;dev.SetLight(0,&l);dev.LightEnable(0,TRUE);l.Type=2;l.Position.x=float(seed);dev.SetLight(2,&l);dev.LightEnable(2,FALSE);
+    }
+    void fixedFunction(){dev.SetVertexShader(nullptr);dev.SetPixelShader(nullptr);}
+    void programmable(){dev.SetVertexShader(vs);dev.SetPixelShader(ps);}
     void rs(D3DRENDERSTATETYPE t,DWORD v){dev.SetRenderState(t,v);}
     void translucent(unsigned src,unsigned dst){rs(D3DRS_ZENABLE,1);rs(D3DRS_ZWRITEENABLE,0);rs(D3DRS_ALPHABLENDENABLE,1);rs(D3DRS_SRCBLEND,src);rs(D3DRS_DESTBLEND,dst);rs(D3DRS_BLENDOP,1);rs(D3DRS_COLORWRITEENABLE,15);rs(D3DRS_STENCILENABLE,0);}
     void opaqueZ(){rs(D3DRS_ZENABLE,1);rs(D3DRS_ZWRITEENABLE,1);rs(D3DRS_ALPHABLENDENABLE,0);rs(D3DRS_SRCBLEND,kBlendOne);rs(D3DRS_DESTBLEND,kBlendZero);rs(D3DRS_BLENDOP,1);rs(D3DRS_COLORWRITEENABLE,15);rs(D3DRS_STENCILENABLE,0);}
@@ -203,8 +235,19 @@ struct Rig{
     static DrawArgs dp(UINT start,UINT count=2){return DrawArgs::primitive(D3DPT_TRIANGLESTRIP,start,count);}
     static DrawArgs dip(INT base,UINT minIdx,UINT num,UINT startIndex,UINT count=2){return DrawArgs::indexed(D3DPT_TRIANGLELIST,base,minIdx,num,startIndex,count);}
     // The game-visible device state, all of it (what must be identical before and after a replay, and between the reference and the layer run).
+    // The fixed-function state: a draw with neither shader reads all of it (full=false: only what a draw sees, a light that is off is nothing); the whole device state: full.
+    static void ffNorm(const Fake::State& s,std::vector<long long>& v,bool full){
+        auto raw=[&](const void* p,size_t n){const uint8_t* b=static_cast<const uint8_t*>(p);for(size_t i=0;i+3<n;i+=4){uint32_t u;std::memcpy(&u,b+i,4);v.push_back(u);}};
+        for(int i=0;i<14;++i)if(full||i<11)raw(&s.tf[i],sizeof s.tf[i]);
+        for(auto& row:s.tss)for(DWORD x:row)v.push_back(x);
+        raw(&s.mat,sizeof s.mat);
+        for(int i=0;i<8;++i){
+            if(full){v.push_back(s.lightSet[i]);v.push_back(s.lightOn[i]);raw(&s.light[i],sizeof s.light[i]);}
+            else{v.push_back(s.lightSet[i]&&s.lightOn[i]);if(s.lightSet[i]&&s.lightOn[i])raw(&s.light[i],sizeof s.light[i]);}
+        }
+    }
     std::vector<long long> norm(const Fake::State& s){
-        std::vector<long long> v;
+        std::vector<long long> v;ffNorm(s,v,true);
         for(DWORD x:s.rs)v.push_back(x);
         for(auto& row:s.ss)for(DWORD x:row)v.push_back(x);
         for(auto* t:s.tex)v.push_back(id(t));
@@ -229,6 +272,7 @@ struct Rig{
     // sampler states and the stream/index bindings of UP draws are not part of what the draw sees.
     std::vector<long long> normDraw(const Fake::DrawRec& d,bool geom){
         const Fake::State& s=d.st;std::vector<long long> v;
+        if(!s.vs&&!s.ps)ffNorm(s,v,false); // fixed function: the draw reads the fixed-function state; with shaders it does not
         for(DWORD x:s.rs)v.push_back(x);
         for(size_t t=0;t<20;++t){v.push_back(id(s.tex[t]));if(s.tex[t])for(size_t k=1;k<=13;++k)v.push_back(s.ss[t][k]);}
         v.push_back(id(s.vs));v.push_back(id(s.ps));v.push_back(id(s.decl));v.push_back(s.fvf);
@@ -277,12 +321,15 @@ struct Rig{
         record();return tag;
     }
     int issue(const DrawArgs& a,Family fam=Family::Particle){return issueWith(a,fam,[](DrawFacts&){});}
+    int issueFf(const DrawArgs& a){return issueWith(a,Family::None,[](DrawFacts& f){f.fixedFunction=true;});}
     // B: the effects (other target, own state, a marker draw), then the replay; the device state must be identical across the replay.
     void boundary(){
         dev.SetDepthStencilSurface(nullptr);dev.SetRenderTarget(0,Other);
         D3DVIEWPORT9 vp;vp.Width=100;vp.Height=50;dev.SetViewport(&vp);const RECT sc{1,2,3,4};dev.SetScissorRect(&sc);
         dev.SetVertexShader(vsEff);dev.SetPixelShader(psEff);dev.SetSamplerState(0,1,9);dev.SetSamplerState(5,3,4);dev.SetRenderState(D3DRS_ALPHAREF,77);dev.SetRenderState(D3DRS_POINTSIZE,5);
         {const float k[4]={9,9,9,9};dev.SetPixelShaderConstantF(2,k,1);dev.SetPixelShaderConstantF(30,k,1);const int ki[4]={7,7,7,7};dev.SetVertexShaderConstantI(1,ki,1);const BOOL kb=1;dev.SetPixelShaderConstantB(3,&kb,1);const float pl[4]={1,0,0,1};dev.SetClipPlane(2,pl);}
+        {D3DMATRIX m{};m.m[0][0]=99;dev.SetTransform(256,&m);dev.SetTransform(3,&m);dev.SetTransform(16,&m);dev.SetTextureStageState(0,1,4);dev.SetTextureStageState(7,32,0x1234);
+         D3DMATERIAL9 mt{};mt.Power=7;dev.SetMaterial(&mt);D3DLIGHT9 l{};l.Type=3;l.Range=5;dev.SetLight(0,&l);dev.LightEnable(0,FALSE);dev.SetLight(4,&l);dev.LightEnable(4,TRUE);} // the effects' own fixed-function state (light 4 is on while the game never set it)
         dev.SetVertexDeclaration(declP);dev.SetTexture(0,texB);dev.SetTexture(2,texA);dev.SetStreamSource(0,extra,8,8);dev.SetStreamSource(1,nullptr,0,0);dev.SetIndices(nullptr);dev.SetRenderTarget(1,Other);
         rs(D3DRS_ZENABLE,0);rs(D3DRS_ALPHABLENDENABLE,0);rs(D3DRS_ZWRITEENABLE,0);
         const float v[4]={float(kMarker),0,0,0};dev.SetVertexShaderConstantF(31,v,1);
@@ -898,6 +945,92 @@ static void testDiffReplay(){
     CHECK(s4==s1+4);                                                          // vertex shader, texture, sampler state, c31
     vs2->Release();
 }
+
+// ---------------- fixed-function draws (ribbons, beams) ----------------
+static int deferFf(Rig& r,int seed,UINT* off=nullptr){r.dev.SetStreamSource(0,r.ring,0,16);const UINT a=r.ringQuad(seed);if(off)*off=a;return r.issueFf(Rig::dp(a/16));}
+// Fixed-function entries diffed against the previous fixed-function entry; a programmable entry between them leaves the fixed-function state alone; FVF and
+// declaration draws; lights never set (1, 3, 4...) are not created and a light the effects left on must not light the draw.
+static void sFixed(Rig& r){
+    r.ffState(1);r.fixedFunction();
+    deferFf(r,1);deferFf(r,2);                                                // 1, 2: identical fixed-function state
+    {const D3DMATRIX m=Rig::mat(500);r.dev.SetTransform(256,&m);}
+    deferFf(r,3);                                                             // 3: the world transform only
+    r.dev.SetTextureStageState(3,1,9);r.dev.SetTextureStageState(0,24,7);
+    {D3DMATERIAL9 mt{};mt.Power=3;r.dev.SetMaterial(&mt);}
+    r.dev.LightEnable(2,TRUE);
+    deferFf(r,4);                                                             // 4: two stage states, the material, a light switched on
+    r.programmable();deferQuad(r,5);                                          // 5: programmable between fixed-function entries
+    r.fixedFunction();r.dev.SetFVF(0x112);
+    deferFf(r,6);                                                             // 6: fixed function through an FVF, the fixed-function state of 4
+    {D3DLIGHT9 l{};l.Type=3;l.Range=8;r.dev.SetLight(2,&l);r.dev.SetLight(5,&l);r.dev.LightEnable(5,TRUE);}
+    r.dev.SetVertexDeclaration(r.declP);
+    deferFf(r,7);                                                             // 7: a light changed, a light newly set and on
+    r.boundary();
+}
+static void sFixedOne(Rig& r){r.ffState(1);r.fixedFunction();deferFf(r,1);r.boundary();}
+static void testFixedFunction(){
+    Pair p=runBoth(sFixed),one=runBoth(sFixedOne);const Counters& c=p.lay->layer.totalCounters();
+    CHECK(p.lay->deferredTags==std::vector<int>({1,2,3,4,5,6,7})&&p.ref->deferredTags.empty());
+    CHECK(c.totalDeferred()==7&&c.fixed==6&&c.totalHazards()==0&&c.flushes==0&&c.replayedDraws==7&&c.replaySkipped==0&&c.recorded==7);
+    checkEquivalent(p);CHECK(p.lay->order()==expectedDeferredOrder(p.ref->order(),p.lay->deferredTags));
+    CHECK(p.lay->layer.ffChunks()==1&&one.lay->layer.totalCounters().fixed==1);
+    // the diff: c31 (the draw tag) every time; 2: nothing else; 3: +world; 4: +2 stage states, material, light 2 on; 5: vs, ps (no fixed-function sets);
+    // 6: vs, ps, FVF (no fixed-function sets: the base is entry 4); 7: declaration, light 2, light 5 set and enabled
+    // (+1: entry 1 has light 5 unset, but the game sets it later and it is on when the replay starts: switched off for entry 1)
+    CHECK(c.replaySets==one.lay->layer.totalCounters().replaySets+1+1+2+5+3+4+5);
+    std::map<int,const Fake::DrawRec*> by;for(auto& d:p.lay->dev.draws)by[d.tag]=&d;
+    CHECK(!by[1]->st.vs&&!by[1]->st.ps&&by[1]->st.tf[0].m[0][0]==Rig::mat(100).m[0][0]&&by[3]->st.tf[0].m[0][0]==Rig::mat(500).m[0][0]&&by[4]->st.tf[0].m[0][0]==Rig::mat(500).m[0][0]);
+    CHECK(by[2]->st.tss[3][1]==10301&&by[3]->st.tss[3][1]==10301&&by[4]->st.tss[3][1]==9&&by[4]->st.tss[0][24]==7&&by[1]->st.tss[0][24]==10024&&by[6]->st.tss[3][1]==9&&by[7]->st.tss[7][32]==10732);
+    CHECK(by[1]->st.mat.Power==1.5f&&by[4]->st.mat.Power==3.f&&by[7]->st.mat.Power==3.f);
+    CHECK(by[1]->st.lightOn[0]&&!by[1]->st.lightOn[2]&&by[4]->st.lightOn[2]&&!by[4]->st.lightOn[5]&&by[7]->st.lightOn[5]&&by[7]->st.light[2].Type==3);
+    CHECK(by[1]->st.lightSet[0]&&!by[1]->st.lightOn[4]);                       // light 4 was never set by the game: the effects' light 4 is off for the draw
+    CHECK(by[5]->st.vs==p.lay->vs&&by[5]->st.ps==p.lay->ps&&by[6]->st.fvf==0x112&&!by[6]->st.decl&&by[7]->st.decl==p.lay->declP);
+    CHECK(p.lay->dev.s.lightOn[4]==1&&by[1]->st.lightOn[5]==0);            // the effects' light 4 is on again after the replay (restored)
+}
+// The fixed-function state is the draw's own: lights never set are admitted (no pixel/vertex shader model is needed).
+static void testFixedAdmission(){
+    Rig r(Opts{});r.fixedFunction();r.psMajor=0;                              // no state set at all: every light unset, zero matrices
+    deferFf(r,1);CHECK(r.layer.pending()==1&&r.layer.totalCounters().totalHazards()==0);
+    // vertex blending reads WORLD1..3 (not recorded): refused, everything pending is flushed first, the frame falls back
+    for(unsigned st:{151u,167u}){
+        Rig b(Opts{});b.ffState(1);b.fixedFunction();deferFf(b,1);deferFf(b,2);b.rs(st,1);deferFf(b,3);b.rs(st,0);deferFf(b,4);
+        const Counters& c=b.layer.totalCounters();
+        CHECK(c.hazards[unsigned(Reason::Admit)]==1&&c.totalHazards()==1&&c.flushes==1&&c.replayedDraws==2&&b.layer.mode()==Mode::Fallback&&b.layer.pending()==0);
+        CHECK(b.dev.draws.size()==4&&b.dev.draws[0].tag==1&&b.dev.draws[1].tag==2&&b.dev.draws[2].tag==3&&b.dev.draws[3].tag==4); // the reference order
+        b.boundary();
+    }
+    // a Get that fails: refused (Capture) after the flush
+    {Rig b(Opts{});b.ffState(1);b.fixedFunction();deferFf(b,1);b.dev.failGetTss=true;deferFf(b,2);
+     CHECK(b.layer.totalCounters().hazards[unsigned(Reason::Capture)]==1&&b.layer.pending()==0&&b.dev.draws.size()==2&&b.dev.draws[0].tag==1);b.dev.failGetTss=false;}
+    {Rig b(Opts{});b.ffState(1);b.fixedFunction();b.dev.failGetLightEnable=true;deferFf(b,1);        // a light that exists but cannot be queried
+     CHECK(b.layer.totalCounters().hazards[unsigned(Reason::Capture)]==1&&b.layer.pending()==0&&b.dev.draws.size()==1);b.dev.failGetLightEnable=false;}
+    // a vertex shader with a fixed-function pixel stage and the reverse stay refused
+    {Rig b(Opts{});b.dev.SetPixelShader(nullptr);deferFf(b,1);CHECK(b.layer.totalCounters().hazards[unsigned(Reason::Admit)]==1);}
+    {Rig b(Opts{});b.dev.SetVertexShader(nullptr);deferFf(b,1);CHECK(b.layer.totalCounters().hazards[unsigned(Reason::Admit)]==1);}
+}
+// 512 fixed-function entries: the fixed-function records are separate, allocated in chunks, bounded, and released by trim().
+static void testFixedCapacity(){
+    std::printf("fixed-function record: %zu bytes (+ the state record), %zu bytes at 512 entries (chunks of 8 allocated on demand)\n",Layer::ffRecordBytes(),Layer::ffRecordBytes()*512);
+    CHECK((Layer::recordBytes()+Layer::ffRecordBytes())*512<6u*1024*1024&&Layer::ffRecordBytes()<4096);
+    Rig r(Opts{});r.fixedFunction();r.ffState(2);
+    for(int i=0;i<512;++i)deferFf(r,i);
+    CHECK(r.layer.pending()==512&&r.layer.ffChunks()==64&&r.layer.totalCounters().fixed==512);
+    deferFf(r,513);CHECK(r.layer.totalCounters().hazards[unsigned(Reason::Capacity)]==1&&r.layer.pending()==0&&r.dev.draws.size()==513);
+    CHECK(r.layer.totalCounters().replayedDraws==512);
+    r.layer.beginFrame(false);r.layer.trim(0);CHECK(r.layer.ffChunks()==0&&r.layer.recordChunks()==0);
+    // programmable-only frames never allocate a fixed-function record
+    Rig q(Opts{});for(int i=0;i<40;++i)deferQuad(q,i);CHECK(q.layer.pending()==40&&q.layer.ffChunks()==0&&q.layer.totalCounters().fixed==0);
+}
+// Water ripples (the WaterRipples vertex shader) are drawn in place like water: a split when draws are pending, nothing when not.
+static void sRipples(Rig& r){deferQuad(r,1);deferQuad(r,2);r.issueWith(Rig::dp(0),Family::Ripples,[](DrawFacts&){});deferQuad(r,3);r.boundary();}
+static void testRipples(){
+    Pair p=runBoth(sRipples);const Counters& c=p.lay->layer.totalCounters();
+    CHECK(c.totalHazards()==0&&c.flushes==1&&c.orderBy[0]==1&&c.orderBy[1]==0&&c.orderBy[2]==0&&c.replayedDraws==3&&p.lay->deferredTags.size()==3);
+    CHECK(p.lay->layer.eventSeq()==0);
+    checkEquivalent(p);CHECK(p.lay->order()==expectedDeferredOrder(p.ref->order(),{p.lay->deferredTags.back()}));
+    Rig r(Opts{});r.issueWith(Rig::dp(0),Family::Ripples,[](DrawFacts&){});
+    CHECK(r.last.kind==Kind::InPlace&&r.last.inPlace==InPlaceKind::Water&&r.layer.totalCounters().orderBy[0]==0&&r.layer.mode()==Mode::Armed&&r.layer.pending()==0);
+}
 // A draw without a vertex or pixel shader, or with ps_1_x, is refused (Admit): everything pending is flushed first, in order, and the frame falls back.
 static void sNoPs(Rig& r){deferQuad(r,1);deferQuad(r,2);r.dev.SetPixelShader(nullptr);deferQuad(r,3);r.dev.SetPixelShader(r.ps);deferQuad(r,4);r.boundary();}
 static void sNoVs(Rig& r){deferQuad(r,1);r.dev.SetVertexShader(nullptr);deferQuad(r,2);r.dev.SetVertexShader(r.vs);r.boundary();}
@@ -979,7 +1112,7 @@ int main(){
         {"cooldown and pressure",testCooldownAndPressure},{"trim",testTrim},{"pending targets",testPendingTargets},{"layer off",testLayerOff},
         {"reset and teardown",testResetAndTeardown},{"512 entries",testStress512},
         {"32-bit index copy",testIb32},{"both index formats",testIbBothFormats},{"water rain name flush",testOrderKinds},{"nothing pending: in place",testOrderKindsIdle},
-        {"replay scope failure",testReplayScopeFailure},{"state changed between draws",testStateChangedBetweenDraws},{"diff replay",testDiffReplay},{"admission",testAdmission},{"hazard events",testHazardEvents},{"record size and timing",testRecordSizeAndTiming},
+        {"replay scope failure",testReplayScopeFailure},{"state changed between draws",testStateChangedBetweenDraws},{"diff replay",testDiffReplay},{"admission",testAdmission},{"hazard events",testHazardEvents},{"record size and timing",testRecordSizeAndTiming},{"fixed function",testFixedFunction},{"fixed function admission",testFixedAdmission},{"fixed function capacity",testFixedCapacity},{"water ripples",testRipples},
         {"render target texture",testRenderTargetTexture},{"vertex texture sampler",testVertexTextureSampler},{"buffer write conflict probe",testBufferWriteProbe}};
     for(const T& t:tests){t.fn();CHECK(Fake::live==0);std::printf("ok %s\n",t.name);std::fflush(stdout);}
     std::printf("spell layer: %zu tests passed\n",sizeof tests/sizeof tests[0]);
