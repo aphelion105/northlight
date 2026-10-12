@@ -1124,7 +1124,7 @@ private:
     bool spellOn=false;unsigned spellClasses=15,spellIdle=0;
     bool spellDomain=false,spellZEnable=false;IDirect3DVertexShader9* spellVs=nullptr; /* prepareDrawImpl's reads of this draw (identities only; SpellLayer=1 only) */
     void* spellTexKey=nullptr;IDirect3DSurface9* spellTexFor=nullptr; /* the layer target's container texture (null: T is not a texture level), computed once per target */
-    void* spellQuery[8]={};unsigned spellQueryFrame[8]={},spellQueryN=0; /* open D3DQUERYTYPE_OCCLUSION brackets (raw queries), by Issue(BEGIN) frame */
+    void* spellQuery[8]={};unsigned spellQueryFrame[8]={},spellQueryN=0,spellQueryUnknownFrame=0;bool spellQueryUnknown=false; /* open D3DQUERYTYPE_OCCLUSION brackets (raw queries), by Issue(BEGIN) frame; spellQueryUnknown: a bracket was lost to a full table (its frame in spellQueryUnknownFrame) */
     // SpellTrace: spellTraceLeft frames of SPELLTRACE lines, from the first world frame at or after frame 300 (Diagnostics only); spellTraceWindow: the next frame is traced.
     unsigned spellTraceLeft=0,spellDrawIndex=0;bool spellTraceWindow=false,spellTraceFrame=false,spellTraceSeen=false;
     LONGLONG spellDeferTicks=0,spellReplayTicks=0;NorthlightSpellLayer::Mode spellFrameMode=NorthlightSpellLayer::Mode::Off;
@@ -1151,7 +1151,7 @@ private:
     }
     void spellTeardown(){ /* before the extension device goes: drop every reference and every hook that points at this Device */
         if(!spellOn)return;
-        spell.reset();spell.attach(nullptr);spellSync();spellQueryN=0;
+        spell.reset();spell.attach(nullptr);spellSync();spellQueryN=0;spellQueryUnknown=false;
         if(NorthlightTrackedBuffers::spellHook.context==this)NorthlightTrackedBuffers::spellHook={};
         if(NorthlightMirrorWrite::sink.context==this){NorthlightMirrorWrite::queries.store(0,std::memory_order_relaxed);NorthlightMirrorWrite::pending.store(0,std::memory_order_relaxed);NorthlightMirrorWrite::sink={};}
         spellOn=false;
@@ -1159,11 +1159,11 @@ private:
     // SpellTrace lines only; every call site tests spellTraceFrame first (one bool when the trace is off).
     void spellEvent(const char* what,unsigned a=0,unsigned b=0,unsigned c=0){logf("SPELLTRACE frame=%u event=%s pending=%u a=%u b=%u c=%u",frame,what,spell.pending(),a,b,c);}
     // An unknown order or resource dependency: the pending draws are replayed now, before the caller's operation.
-    void spellFlush(NorthlightSpellLayer::Reason r,bool cooldown=true){
+    void spellFlush(NorthlightSpellLayer::Reason r,bool cooldown=true,NorthlightSpellLayer::InPlaceKind by=NorthlightSpellLayer::InPlaceKind::None){
         if(!spellOn||!spell.pending())return;
-        extensionWork("spell hazard",[&]{ExtensionDevice::RawScope raw(*ext);spell.hazard(r,cooldown);});
+        extensionWork("spell hazard",[&]{ExtensionDevice::RawScope raw(*ext);spell.hazard(r,cooldown,by);});
         spellSync();
-        if(spellTraceFrame)logf("SPELLTRACE frame=%u event=flush reason=%s",frame,NorthlightSpellLayer::reasonName(r));
+        if(spellTraceFrame)logf("SPELLTRACE frame=%u event=flush reason=%s by=%s",frame,NorthlightSpellLayer::reasonName(r),spellInPlaceName(by));
     }
     void spellTextureWrite(void* texture){ /* a raw base texture was (or is about to be) written */
         if(!spellOn||!spell.pendingSamples(texture))return;
@@ -1173,9 +1173,14 @@ private:
     }
     void spellBufferWrite(void* raw,UINT offset,UINT size,DWORD flags,DWORD usage,unsigned locks){ /* Buffer::Lock, before the lock is forwarded, marked buffers only */
         if(!spellOn||!spell.pending())return;
+        /* A write that conflicts with nothing (the ring append) needs no raw scope: no device call follows. A conflicting one copies the guarded bytes
+           (raw Lock/Unlock of the buffers) or flushes (replay draws and Sets), so it runs in a RawScope like spellFlush and spellTextureWrite. */
+        const bool conflict=spell.bufferWriteConflicts(raw,offset,size,flags);
         const unsigned conflicts=spell.frameCounters().conflicts,flushes=spell.frameCounters().flushes;
-        extensionWork("spell buffer write",[&]{spell.onBufferWrite(raw,offset,size,flags,usage,locks);});
-        spellSync();
+        if(conflict){
+            extensionWork("spell buffer write",[&]{ExtensionDevice::RawScope scope(*ext);spell.onBufferWrite(raw,offset,size,flags,usage,locks);});
+            spellSync();
+        }
         if(spellTraceFrame)logf("SPELLTRACE frame=%u event=bufwrite buffer=%p offset=%u size=%u flags=0x%lx usage=0x%lx locks=%u result=%s",frame,raw,offset,size,(unsigned long)flags,(unsigned long)usage,locks,
             spell.frameCounters().flushes>flushes?"flushed":spell.frameCounters().conflicts>conflicts?"copied":"clear");
     }
@@ -1183,11 +1188,18 @@ private:
         if(!spellOn||!query||query->GetType()!=D3DQUERYTYPE_OCCLUSION)return;
         unsigned at=0;while(at<spellQueryN&&spellQuery[at]!=query)++at;
         if(flags&D3DISSUE_BEGIN){
-            if(at==spellQueryN){if(spellQueryN==8){for(unsigned i=1;i<8;++i){spellQuery[i-1]=spellQuery[i];spellQueryFrame[i-1]=spellQueryFrame[i];}--spellQueryN;at=spellQueryN;}++spellQueryN;spellQuery[at]=query;}
+            if(at==spellQueryN){
+                if(spellQueryN==8){ /* full: the oldest open bracket is forgotten, so an open query of unknown identity remains until the frame-end sweep */
+                    for(unsigned i=1;i<8;++i){spellQuery[i-1]=spellQuery[i];spellQueryFrame[i-1]=spellQueryFrame[i];}--spellQueryN;at=spellQueryN;
+                    spellQueryUnknown=true;spellQueryUnknownFrame=frame;
+                    if(spellTraceFrame)logf("SPELLTRACE frame=%u event=occlusion_overflow oldest open bracket dropped, unknown open query until the sweep",frame);
+                }
+                ++spellQueryN;spellQuery[at]=query;
+            }
             spellQueryFrame[at]=frame;
         }
         if((flags&D3DISSUE_END)&&at<spellQueryN){for(unsigned i=at+1;i<spellQueryN;++i){spellQuery[i-1]=spellQuery[i];spellQueryFrame[i-1]=spellQueryFrame[i];}--spellQueryN;}
-        if(spellTraceFrame)logf("SPELLTRACE frame=%u event=occlusion issue=%lu open=%u pending=%u",frame,(unsigned long)flags,spellQueryN,spell.pending());
+        if(spellTraceFrame)logf("SPELLTRACE frame=%u event=occlusion issue=%lu open=%u unknown=%d pending=%u",frame,(unsigned long)flags,spellQueryN,int(spellQueryUnknown),spell.pending());
     }
     // Clear: only the part that touches the layer's target (colour) or depth is a hazard.
     void spellClear(DWORD flags){
@@ -1224,7 +1236,7 @@ private:
     }
     // The per-draw step, after prepareDraw/claims and before the real draw. true: the draw was deferred (the caller skips the real call and returns D3D_OK).
     // Cheap by construction: nothing pending needs only ZWRITEENABLE (a Z-writing draw ends there) and ALPHABLENDENABLE; a pending frame classifies every draw
-    // (a hazard, an accepted reorder or a Z-writing draw that may sample the target). SpellTrace frames classify and log every world draw.
+    // (a hazard, the fade reorder or a Z-writing draw that may sample the target). SpellTrace frames classify and log every world draw.
     bool spellDrawImpl(bool claimed,bool rain){
         using namespace NorthlightSpellLayer;
         CpuScope timer(sampled()?&spellDeferTicks:nullptr);
@@ -1247,7 +1259,7 @@ private:
             if(pend&&zWrite&&spellDomain&&!texKey)return false; /* Opaque / TranslucentZ: in place, nothing to do */
         }
         DrawFacts f;
-        f.zEnable=spellZEnable;f.zWrite=zWrite;f.worldDomain=spellDomain;f.family=family;f.skinned=skinned;f.water=water;f.uiTag=uiTag;f.rain=rain;f.claimed=claimed;f.fixedFunction=!vs;f.fadeRun=fade;
+        f.zEnable=spellZEnable;f.zWrite=zWrite;f.worldDomain=spellDomain;f.family=family;f.skinned=skinned;f.water=water;f.uiTag=uiTag;f.rain=rain;f.claimed=claimed;f.fixedFunction=!vs;f.fadeRun=fade;f.pending=pend;
         f.blend=rd(D3DRS_ALPHABLENDENABLE)!=0;
         if(f.blend){f.srcBlend=rd(D3DRS_SRCBLEND);f.destBlend=rd(D3DRS_DESTBLEND);f.blendOp=rd(D3DRS_BLENDOP);f.separateAlpha=rd(D3DRS_SEPARATEALPHABLENDENABLE)!=0;}
         f.colorWrite=colorWrite();f.stencil=rd(D3DRS_STENCILENABLE)!=0;
@@ -1258,13 +1270,13 @@ private:
         struct Surfaces {IDirect3DSurface9*& rt;bool rtB;IDirect3DSurface9*& ds;bool dsB;~Surfaces(){if(!rtB)drop(rt);if(!dsB)drop(ds);}} surfaces{rt,rtBorrowed,ds,dsBorrowed};
         if(IDirect3DSurface9* target=spell.target())f.rt0IsTarget=rt==target;
         else if(rt){D3DSURFACE_DESC desc;f.rt0IsTarget=fullViewport(desc,nullptr,true);} /* would become the target: the full-viewport back-buffer-sized world target */
-        f.dsIsWorldDepth=ds&&ds==worldDepth;f.mrtBound=rainMrtBound;f.occlusionActive=spellQueryN!=0;
+        f.dsIsWorldDepth=ds&&ds==worldDepth;f.mrtBound=rainMrtBound;f.occlusionActive=spellQueryN!=0||spellQueryUnknown;
         f.samplesRenderTargetTexture=pend&&texKey&&spellSamples(texKey);
         const Result r=classify(f,spellClasses);
         bool deferred=false;
         switch(r.kind){
         case Kind::Defer:deferred=rt&&spell.defer(spellArgs,rt,ds,r.sub);break;
-        case Kind::Hazard:spellFlush(r.reason);break;
+        case Kind::Hazard:spellFlush(r.reason,true,r.inPlace);break; /* r.inPlace: water, rain or a name drawn after a deferred draw */
         case Kind::InPlace:if(pend)spell.noteInPlace(r.inPlace);break;
         default:break;
         }
@@ -1325,6 +1337,7 @@ private:
             spell.beginFrame(NorthlightStream::memoryPressure.load(std::memory_order_relaxed));spellFrameMode=spell.mode();
             spellSync();spellTexFor=nullptr;spellTexKey=nullptr;
             for(unsigned i=0;i<spellQueryN;){if(frame-spellQueryFrame[i]>2){for(unsigned k=i+1;k<spellQueryN;++k){spellQuery[k-1]=spellQuery[k];spellQueryFrame[k-1]=spellQueryFrame[k];}--spellQueryN;}else ++i;}
+            if(spellQueryUnknown&&frame-spellQueryUnknownFrame>2)spellQueryUnknown=false; /* same 2-frame sweep as the table: a lost bracket cannot hold the layer off forever */
             spellFade.reset();
             const NorthlightSpellLayer::Counters& c=spell.lastFrameCounters();
             NorthlightSpellLayer::Reason first;
@@ -1334,8 +1347,8 @@ private:
                 for(unsigned i=0;i<NorthlightSpellLayer::kReasons;++i)if(c.hazards[i]){const int w=std::snprintf(hazards+at,sizeof hazards-at,"%s%s:%u",at?",":"",NorthlightSpellLayer::reasonName(NorthlightSpellLayer::Reason(i)),c.hazards[i]);if(w>0)at=std::min(sizeof hazards-1,at+size_t(w));}
                 if(!at)std::snprintf(hazards,sizeof hazards,"none");
                 const double us=cpuFrequency.QuadPart>0?1e6/double(cpuFrequency.QuadPart):0.0;
-                logf("SPELLLAYER frame=%u mode=%s deferred=%u/%u/%u/%u replayed=%u inPlace=%u/%u/%u/%u hazards=%s flushes=%u conflicts=%u conflictBytes=%llu materialized=%u blocks=%u pool=%zu arenaHigh=%u replaySkipped=%u discarded=%u cooldown=%u cpuDeferUs=%.1f cpuReplayUs=%.1f",
-                    frame,NorthlightSpellLayer::modeName(mode),c.deferred[0],c.deferred[1],c.deferred[2],c.deferred[3],c.replayedDraws,c.inPlace[0],c.inPlace[1],c.inPlace[2],c.inPlace[3],hazards,c.flushes,c.conflicts,(unsigned long long)c.conflictBytes,c.materialized,c.blocksCaptured,spell.poolSize(),c.arenaHigh,c.replaySkipped,c.discarded,spell.cooldownLeft(),
+                logf("SPELLLAYER frame=%u mode=%s deferred=%u/%u/%u/%u replayed=%u fadeInPlace=%u orderBy=%u/%u/%u hazards=%s flushes=%u conflicts=%u conflictBytes=%llu materialized=%u blocks=%u pool=%zu arenaHigh=%u replaySkipped=%u discarded=%u cooldown=%u cpuDeferUs=%.1f cpuReplayUs=%.1f",
+                    frame,NorthlightSpellLayer::modeName(mode),c.deferred[0],c.deferred[1],c.deferred[2],c.deferred[3],c.replayedDraws,c.inPlace[3],c.orderBy[0],c.orderBy[1],c.orderBy[2],hazards,c.flushes,c.conflicts,(unsigned long long)c.conflictBytes,c.materialized,c.blocksCaptured,spell.poolSize(),c.arenaHigh,c.replaySkipped,c.discarded,spell.cooldownLeft(),
                     double(spellDeferTicks)*us,double(spellReplayTicks)*us);
             }
             spellDeferTicks=spellReplayTicks=0;
@@ -1573,7 +1586,7 @@ public:
     HRESULT STDMETHODCALLTYPE GetDirect3D(IDirect3D9** out) override { Guard mirrorLock(mirrorState.gate);if(!out)return D3DERR_INVALIDCALL;*out=parent;parent->AddRef();return D3D_OK;}
     HRESULT STDMETHODCALLTYPE Reset(D3DPRESENT_PARAMETERS* pp) override { Guard mirrorLock(mirrorState.gate);
         rainMrtUnbind(); /* 0.3.202 (rain mask MRT) */
-        if(spellOn){spell.reset();spellSync();spellQueryN=0;spellTexFor=nullptr;spellTexKey=nullptr;spellFade.reset();} /* task 34: no state block, upload buffer or surface may outlive the device state */
+        if(spellOn){spell.reset();spellSync();spellQueryN=0;spellQueryUnknown=false;spellTexFor=nullptr;spellTexKey=nullptr;spellFade.reset();} /* task 34: no state block, upload buffer or surface may outlive the device state */
         frameIntervals.reset();frameCost.reset();backDescKnown=false;backSurface=nullptr;
         NorthlightTrackedBuffers::invalidateAll();gpuProfile->reset();gpuTimer->reset();gpuBudgetQpc=0;drop(latencyQuery);latencyPending=false;latencyFailed=false; releaseResources(); if(world)world->reset();if(water)water->reset();if(celestialDiscs)celestialDiscs->reset();if(shadowBlobs)shadowBlobs->reset(); weatherDetect.reset();weatherSample={}; /* 0.3.198 (rain) */failed=false;latchDrawGates();
         HRESULT hr=ext->Reset(pp); logf("Reset HRESULT=0x%08lx",(unsigned long)hr); return hr;
