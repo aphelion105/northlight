@@ -19,6 +19,7 @@
 #include <d3d9.h>
 #endif
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -133,13 +134,14 @@ struct Counters{
     uint64_t conflictBytes=0;
     unsigned arenaHigh=0;                         // bytes
     unsigned recordHigh=0;                        // most records pending at once
+    uint64_t deltaWords=0;                        // words of state delta recorded
     void add(const Counters& o){
         for(int i=0;i<4;++i){deferred[i]+=o.deferred[i];inPlace[i]+=o.inPlace[i];}
         for(int i=0;i<3;++i)orderBy[i]+=o.orderBy[i];
         for(unsigned i=0;i<kReasons;++i)hazards[i]+=o.hazards[i];
         fixed+=o.fixed;flushes+=o.flushes;replays+=o.replays;replayedDraws+=o.replayedDraws;replaySkipped+=o.replaySkipped;discarded+=o.discarded;
         conflicts+=o.conflicts;materialized+=o.materialized;recorded+=o.recorded;replaySets+=o.replaySets;conflictBytes+=o.conflictBytes;
-        arenaHigh=std::max(arenaHigh,o.arenaHigh);recordHigh=std::max(recordHigh,o.recordHigh);
+        deltaWords+=o.deltaWords;arenaHigh=std::max(arenaHigh,o.arenaHigh);recordHigh=std::max(recordHigh,o.recordHigh);
     }
     unsigned totalDeferred()const{return deferred[0]+deferred[1]+deferred[2]+deferred[3];}
     unsigned totalHazards()const{unsigned n=0;for(unsigned h:hazards)n+=h;return n;}
@@ -241,13 +243,34 @@ struct DrawArgs{
         DrawArgs a;a.type=DrawType::IndexedUP;a.prim=p;a.minIndex=minIdx;a.numVertices=num;a.primCount=count;a.indexData=idx;a.indexFormat=fmt;a.vertexData=data;a.stride=stride;return a;
     }
 };
+// The device state cache (DeviceMirror, device_mirror.h) as the layer reads it in bulk: pointers to its arrays and known flags (same layout and names),
+// valid only between enter() and leave(). enter() takes the cache's guard and returns false when the cache cannot be used right now (disabled,
+// recording a state block, raw scope): the layer then reads with Get calls. A slot whose known flag is false is read with the Get call that also teaches it.
+// A known slot holds exactly what the Get call would return (the cache's own contract), so reading it here is the same read.
+struct MirrorView{
+    const DWORD* rs=nullptr;const bool* rsKnown=nullptr;                              // [256] by D3DRS id
+    const DWORD (*smp)[16]=nullptr;const bool (*smpKnown)[16]=nullptr;                // [16 stages][16 sampler state types]
+    IDirect3DBaseTexture9* const* tex=nullptr;const bool* texKnown=nullptr;           // [16]
+    const float (*vsF)[4]=nullptr;const bool* vsFKnown=nullptr;                       // [256]
+    const float (*psF)[4]=nullptr;const bool* psFKnown=nullptr;                       // [224]
+    const int (*vsI)[4]=nullptr;const bool* vsIKnown=nullptr;                         // [16]
+    const BOOL* vsB=nullptr;const bool* vsBKnown=nullptr;                             // [16]
+    IDirect3DVertexShader9* const* vs=nullptr;const bool* vsKnown=nullptr;
+    IDirect3DPixelShader9* const* ps=nullptr;const bool* psKnown=nullptr;
+    IDirect3DVertexDeclaration9* const* decl=nullptr;const bool* declKnown=nullptr;
+    const DWORD* fvf=nullptr;const bool* fvfKnown=nullptr;
+    const D3DVIEWPORT9* vp=nullptr;const bool* vpKnown=nullptr;
+    bool (*enter)(void* ctx)=nullptr;void (*leave)(void* ctx)=nullptr;void* ctx=nullptr;
+};
 struct Config{
     bool on=false;unsigned classMask=SubAdditive|SubAlpha|SubModulate|SubOther;
-    unsigned maxEntries=512;size_t arenaBytes=4u<<20,uploadVbBytes=1u<<20,uploadIbBytes=256u<<10;
+    unsigned maxEntries=512;size_t arenaBytes=4u<<20,uploadVbBytes=1u<<20,uploadIbBytes=256u<<10,deltaBytes=1536u<<10; // deltaBytes: cap of the state delta storage, allocated on demand in chunks of deltaChunkWords words (an entry's delta never spans two)
     bool conflictCopy=true;                       // false on a non-DXVK backend: a conflicting write flushes instead of copying
     DWORD readBackLockFlags=D3DLOCK_READONLY;     // NorthlightUpload::readBackLock()
     void (*markGuard)(void* ctx,void* rawBuffer,bool guarded)=nullptr;void* markCtx=nullptr; // sets/clears the per-buffer "call onBufferWrite" flag
     NorthlightStateBlockPool* savedPool=nullptr;  // the renderer's SavedState pool for the replay scope (optional; the only state block the layer still uses)
+    unsigned deltaChunkWords=16384;               // 64 KiB chunks (at most 65535: entries address a delta with 16-bit offsets)
+    const struct MirrorView* source=nullptr;      // the device state cache for bulk reads (optional; null: every state is read with Get calls)
     unsigned (*generation)(void* ctx)=nullptr;void* genCtx=nullptr; // changes whenever a texture object may have been created or destroyed (a raw address may name another texture): keys the per-texture render-target verdicts; null = no verdict cache
 };
 
@@ -307,31 +330,118 @@ constexpr unsigned rsIndex(unsigned id){for(unsigned i=0;i<kRenderStates;++i)if(
 constexpr unsigned kRsClipPlaneEnable=rsIndex(152),kRsScissorTest=rsIndex(174),kRsVertexBlend=rsIndex(151),kRsIndexedVertexBlend=rsIndex(167); // indices into kRenderStateIds
 inline DWORD samplerStage(unsigned slot){return slot<16?DWORD(slot):DWORD(257+(slot-16));}
 
+// What a draw can read of the programmable state: bit i of vsF/psF is constant register i, vsI/vsB/psI/psB the int and bool registers, tex the texture slots
+// (0..15 pixel samplers, 16..19 the vertex texture samplers 257..260: the binding and the sampler states). Everything else is not recorded and not replayed.
+// The default is "everything" (a shader read set narrows it).
+struct Reads{
+    uint64_t vsF[4]={~0ull,~0ull,~0ull,~0ull},psF[4]={~0ull,~0ull,~0ull,(1ull<<(kPsFloat-192))-1};
+    uint16_t vsI=0xFFFF,vsB=0xFFFF,psI=0xFFFF,psB=0xFFFF;uint32_t tex=(1u<<kMaxTextures)-1;
+    void noConstants(){for(auto& w:vsF)w=0;for(auto& w:psF)w=0;vsI=vsB=psI=psB=0;}
+};
+// The per-entry state delta: a word stream, the changes the replay must make before this draw, relative to what the entries before it in the same replay
+// sequence already made (see Model). Word: op<<26 | a<<16 | b, then the payload. Rs: a = index in kRenderStateIds, 1 value; RsCheck: the same, but the replay
+// reads the device first and sets only when it differs (vendor-hack states on a sequence's first entry); Ss: a = slot*13+k, 1 value; Tex: a = slot, a pointer;
+// VsF/PsF/VsI/PsI: a = first register, b = count, count*4 words; VsB/PsB: count words; Viewport: 6 words; Scissor: 4; Clip: a = plane, 4 words; Vs/Ps/Decl: a pointer; Fvf: 1 value.
+namespace Op{enum:uint32_t{None,Rs,RsCheck,Ss,Tex,VsF,PsF,VsI,PsI,VsB,PsB,Viewport,Scissor,Clip,Vs,Ps,Decl,Fvf};}
+constexpr unsigned kPtrWords=sizeof(void*)/4;
+static_assert(sizeof(void*)%4==0&&sizeof(D3DVIEWPORT9)==24&&sizeof(RECT)==16,"delta payload sizes");
+inline constexpr uint32_t opWord(uint32_t op,uint32_t a,uint32_t b){return op<<26|a<<16|b;}
+// One decoder for both consumers (the model at record time and the device at replay), so they cannot disagree about what a delta means.
+template<class S> inline void decodeOps(const uint32_t* w,const uint32_t* end,S& s){
+    auto ptr=[&](){void* p;std::memcpy(&p,w,sizeof p);w+=kPtrWords;return p;};
+    while(w<end){
+        const uint32_t h=*w++,a=(h>>16)&1023,b=h&0xFFFF;
+        switch(h>>26){
+        case Op::Rs:s.rs(a,*w++,false);break;
+        case Op::RsCheck:s.rs(a,*w++,true);break;
+        case Op::Ss:s.ss(a,*w++);break;
+        case Op::Tex:s.tex(a,ptr());break;
+        case Op::VsF:s.vsF(a,b,w);w+=b*4;break;
+        case Op::PsF:s.psF(a,b,w);w+=b*4;break;
+        case Op::VsI:s.vsI(a,b,w);w+=b*4;break;
+        case Op::PsI:s.psI(a,b,w);w+=b*4;break;
+        case Op::VsB:s.vsB(a,b,w);w+=b;break;
+        case Op::PsB:s.psB(a,b,w);w+=b;break;
+        case Op::Viewport:s.viewport(w);w+=sizeof(D3DVIEWPORT9)/4;break;
+        case Op::Scissor:s.scissor(w);w+=4;break;
+        case Op::Clip:s.clip(a,w);w+=4;break;
+        case Op::Vs:s.vs(ptr());break;
+        case Op::Ps:s.ps(ptr());break;
+        case Op::Decl:s.decl(ptr());break;
+        case Op::Fvf:s.fvf(*w++);break;
+        default:return;
+        }
+    }
+}
+// Byte i of word w is 1 when render state id w*8+i is one of the listed ones (the cache's known flags are 0/1 bytes: eight are tested with one and).
+constexpr std::array<uint64_t,32> rsKnownMaskTable(){
+    std::array<uint64_t,32> t{};
+    for(unsigned i=0;i<kRenderStates;++i)t[kRenderStateIds[i]/8]|=1ull<<((kRenderStateIds[i]%8)*8);
+    return t;
+}
+constexpr std::array<uint64_t,32> kRsKnownMask=rsKnownMaskTable();
+// known[0..n) all set: the flags are 0/1 bytes, eight are tested per load.
+inline bool runKnown(const bool* known,unsigned n){
+    unsigned i=0;
+    for(;i+8<=n;i+=8){uint64_t w;std::memcpy(&w,known+i,8);if(w!=0x0101010101010101ull)return false;}
+    for(;i<n;++i)if(!known[i])return false;
+    return true;
+}
+inline void setBits(uint64_t* v,unsigned start,unsigned n){for(unsigned i=start;i<start+n;++i)v[i>>6]|=1ull<<(i&63);}
+// The replay model: for each slot, the value the running replay has set by the time the next entry is replayed (valid only for slots set by an earlier
+// entry of the same replay sequence; at the start of a sequence everything is unknown, the replay begins from whatever the effects left on the device).
+// A record emits only the slots whose value differs from the model or is unknown in it, so the replay needs no compare.
+struct Model{
+    DWORD rs[256];bool rsValid;                                   // by D3DRS id, valid as a whole: the first entry sets every state
+    DWORD ss[kMaxTextures][kSamplerStates];uint32_t ssValid;      // bit per slot: all its sampler states are set
+    void* tex[kMaxTextures];uint32_t texValid;
+    float vsF[kVsFloat][4];uint64_t vsFV[4];float psF[kPsFloat][4];uint64_t psFV[4];
+    int vsI[kInts][4];BOOL vsB[kBools];int psI[kInts][4];BOOL psB[kBools];uint64_t vsIV,vsBV,psIV,psBV;
+    D3DVIEWPORT9 vp;bool vpV;RECT scissor;bool scissorV;float clip[kClipPlanes][4];uint8_t clipV;
+    void* vs;void* ps;bool vsV,psV;void* decl;DWORD fvf;uint8_t declMode; // declMode: 0 unknown, 1 declaration, 2 FVF
+    void reset(){
+        std::memset(rs,0,sizeof rs);rsValid=false;ssValid=texValid=0;
+        for(auto& w:vsFV)w=0;for(auto& w:psFV)w=0;vsIV=vsBV=psIV=psBV=0;
+        vpV=scissorV=false;clipV=0;vsV=psV=false;declMode=0;
+    }
+};
+struct ModelSink{
+    Model& m;
+    void rs(unsigned i,DWORD v,bool){m.rs[kRenderStateIds[i]]=v;m.rsValid=true;}
+    void ss(unsigned a,DWORD v){const unsigned t=a/kSamplerStates;m.ss[t][a%kSamplerStates]=v;m.ssValid|=1u<<t;}
+    void tex(unsigned t,void* p){m.tex[t]=p;m.texValid|=1u<<t;}
+    void vsF(unsigned s,unsigned n,const uint32_t* w){std::memcpy(m.vsF[s],w,size_t(n)*16);setBits(m.vsFV,s,n);}
+    void psF(unsigned s,unsigned n,const uint32_t* w){std::memcpy(m.psF[s],w,size_t(n)*16);setBits(m.psFV,s,n);}
+    void vsI(unsigned s,unsigned n,const uint32_t* w){std::memcpy(m.vsI[s],w,size_t(n)*16);setBits(&m.vsIV,s,n);}
+    void psI(unsigned s,unsigned n,const uint32_t* w){std::memcpy(m.psI[s],w,size_t(n)*16);setBits(&m.psIV,s,n);}
+    void vsB(unsigned s,unsigned n,const uint32_t* w){std::memcpy(m.vsB+s,w,size_t(n)*4);setBits(&m.vsBV,s,n);}
+    void psB(unsigned s,unsigned n,const uint32_t* w){std::memcpy(m.psB+s,w,size_t(n)*4);setBits(&m.psBV,s,n);}
+    void viewport(const uint32_t* w){std::memcpy(&m.vp,w,sizeof m.vp);m.vpV=true;}
+    void scissor(const uint32_t* w){std::memcpy(&m.scissor,w,sizeof m.scissor);m.scissorV=true;}
+    void clip(unsigned i,const uint32_t* w){std::memcpy(m.clip[i],w,16);m.clipV|=uint8_t(1u<<i);}
+    void vs(void* p){m.vs=p;m.vsV=true;}
+    void ps(void* p){m.ps=p;m.psV=true;}
+    void decl(void* p){m.decl=p;m.declMode=1;}
+    void fvf(DWORD v){m.fvf=v;m.declMode=2;}
+};
+
 class Layer{
     struct Stream{IDirect3DVertexBuffer9* vb=nullptr;uint32_t off=0,stride=0,lo=0,hi=0,sno=0;int32_t blob=-1;};
-    struct Rec{
-        DWORD fvf;                                    // FVF when no declaration is bound (else 0)
-        DWORD rs[kRenderStates];
-        DWORD ss[kMaxTextures][kSamplerStates];       // valid for stages whose Entry::tex is set
-        float vsF[kVsFloat][4];int vsI[kInts][4];BOOL vsB[kBools];
-        float psF[kPsFloat][4];int psI[kInts][4];BOOL psB[kBools];
-        D3DVIEWPORT9 vp;RECT scissor;float clip[kClipPlanes][4];
-        uint8_t clipMask;bool scissorOn;                // clip planes recorded (D3DRS_CLIPPLANEENABLE bits) and the scissor rect (only when D3DRS_SCISSORTESTENABLE): a disabled plane / scissor is not read by the draw
-    };
     struct FfRec{                                     // only for fixed-function entries (Entry::ff), allocated in chunks of kFfChunk
         D3DMATRIX tf[kFfTransforms];DWORD tss[kFfStages][kTssStates];D3DMATERIAL9 mat;
         D3DLIGHT9 light[kFfLights];BOOL lightOn[kFfLights];bool lightSet[kFfLights]; // a light never set fails GetLight: lightSet=false (light zeroed, off)
     };
-    static constexpr unsigned kRecChunk=16,kFfChunk=8;           // records are allocated in chunks as a frame needs them and released by trim()
+    static constexpr unsigned kFfChunk=8; // fixed-function records and delta words are allocated in chunks as a frame needs them and released by trim()
+    struct Held{IUnknown* p=nullptr;uint16_t aux=0;uint8_t flags=0;};   // a reference the frame holds once per object (see intern())
+    static constexpr uint8_t kNotRt=1,kInSamples=2,kHasAux=4;
     struct Entry{
         DrawType type=DrawType::Primitive;D3DPRIMITIVETYPE prim=D3DPT_TRIANGLELIST;
         INT base=0;UINT minIndex=0,numVertices=0,first=0,primCount=0;
         uint8_t nStreams=0,isz=0;Stream streams[kMaxStreams];
-        IDirect3DVertexShader9* vs=nullptr;IDirect3DPixelShader9* ps=nullptr;IDirect3DVertexDeclaration9* decl=nullptr; // held (references)
-        IDirect3DIndexBuffer9* ib=nullptr;uint32_t ibLo=0,ibHi=0;int32_t ibBlob=-1;
+        IDirect3DIndexBuffer9* ib=nullptr;uint32_t ibLo=0,ibHi=0;int32_t ibBlob=-1; // streams and ib are kept alive by the frame's held references
         uint32_t upVtx=0,upStride=0,upIdx=0;D3DFORMAT upFmt=D3DFMT_INDEX16;
-        IDirect3DBaseTexture9* tex[kMaxTextures]={};  // by slot (pixel samplers 0..15, vertex texture samplers 16..19), null = unbound; held
-        Rec* rec=nullptr;FfRec* ff=nullptr;            // ff: set for fixed-function draws (no vertex and no pixel shader), else null
+        uint16_t dChunk=0,dOff=0,dLen=0;               // the state delta: dLen words at dOff of delta chunk dChunk
+        FfRec* ff=nullptr;                             // ff: set for fixed-function draws (no vertex and no pixel shader), else null
     };
     // What replay itself set on the device (streams and index buffer are rebound for materialized spans, so they are tracked apart from the records).
     struct Shadow{
@@ -346,15 +456,23 @@ public:
     // The last event that made the frame fall back (a hazard that flushed or a refused defer), for the integration's diagnostics. eventSeq() changes
     // with every event; pending: entries pending when it happened (0: nothing was flushed, the frame still fell back).
     struct Event{Reason reason=Reason::Count;InPlaceKind by=InPlaceKind::None;unsigned pending=0;};
-    static constexpr size_t recordBytes(){return sizeof(Rec);}
+    static constexpr size_t modelBytes(){return sizeof(Model);}
+    static constexpr size_t entryBytes(){return sizeof(Entry);}
     static constexpr size_t ffRecordBytes(){return sizeof(FfRec);}
 private:
     IDirect3DDevice9* dev_=nullptr;Config cfg_;FrameState fm_;
     std::vector<Entry> entries_;unsigned count_=0;
-    std::vector<std::unique_ptr<Rec[]>> recChunks_;
+    std::vector<std::unique_ptr<uint32_t[]>> deltaChunks_;unsigned deltaChunk_=0,deltaUsed_=0; // state deltas of the pending entries; deltaChunk_/deltaUsed_: the chunk being filled and its used words
     std::vector<std::unique_ptr<FfRec[]>> ffChunks_;unsigned ffCount_=0;const FfRec* ffPrev_=nullptr; // ffPrev_: the last fixed-function record the running replay applied
     bool rsSkip_[kRenderStates]={};                   // a state the device refused to Get once: neither recorded nor replayed
-    IDirect3DVertexDeclaration9* declFor_=nullptr;uint32_t declUsed_=0; // used-stream mask of the last declaration seen this frame (its entry holds it)
+    bool anySkip_=false;                              // some rsSkip_ is set
+    Model model_;                                     // what the running replay will have set (see Model); reset with every frame/flush
+    const MirrorView* mv_=nullptr;                    // set while a record holds the state cache's guard
+    std::vector<Held> held_;std::vector<uint32_t> heldUsed_; // the references the frame holds: one per distinct object, in an open-addressing table (slots in heldUsed_)
+    std::unique_ptr<uint32_t[]> scratch_;unsigned n_=0; // the delta being built (it becomes an entry's delta only when the record is committed)
+    static constexpr unsigned kScratchWords=8192;     // bound of one delta: 206 render state + 520 sampler + 60 texture words, 1110+971 constant words with run headers, ints, bools, viewport, scissor, clip planes, bindings < 4000
+    DWORD rsStage_[256];float vsStage_[kVsFloat][4],psStage_[kPsFloat][4]; // reads that could not come from the cache (indexed like the cache)
+    const DWORD* rsCur_=nullptr;                      // the render states of the draw being recorded, by id
     unsigned sets_=0;                                 // device Set* calls of the running replay
     Event event_;unsigned eventSeq_=0;
     std::vector<uint8_t> arena_;uint32_t arenaUsed_=0;
@@ -370,13 +488,31 @@ private:
     template<class F> void count(F&& f){f(frame_);f(total_);}
     static uint32_t align16(uint32_t n){return (n+15u)&~15u;}
     void mark(void* key,bool on){if(cfg_.markGuard)cfg_.markGuard(cfg_.markCtx,key,on);}
-    Rec* recAt(unsigned i){return &recChunks_[i/kRecChunk][i%kRecChunk];}
-    bool ensureRec(unsigned i){
-        while(i/kRecChunk>=recChunks_.size()){
-            Rec* p=new(std::nothrow) Rec[kRecChunk];if(!p)return false; // uninitialised: defer() fills every field it uses
-            recChunks_.emplace_back(p); // reserved at configure()
+    // ---- the frame's held references ----
+    // Every object a pending draw needs after the game released it (textures, buffers, shaders, declarations) is referenced ONCE per frame, not once per draw:
+    // intern() returns its table slot (aux/flags: per-object facts that never change, computed once). owned: the caller holds a reference from a Get call,
+    // which is consumed. null: the table is full (the reference is released).
+    static size_t hashPtr(const void* p){return (reinterpret_cast<uintptr_t>(p)>>4)*2654435761u;}
+    Held* intern(IUnknown* p,bool owned){
+        const size_t mask=held_.size()-1;size_t i=hashPtr(p)&mask;
+        for(;held_[i].p;i=(i+1)&mask)if(held_[i].p==p){if(owned)p->Release();return &held_[i];}
+        if(heldUsed_.size()>=held_.size()*3/4){if(owned)p->Release();return nullptr;}
+        if(!owned)p->AddRef();
+        held_[i]=Held{p,0,0};heldUsed_.push_back(uint32_t(i));return &held_[i];
+    }
+    void releaseHeld(){for(uint32_t i:heldUsed_){held_[i].p->Release();held_[i]=Held{};}heldUsed_.clear();}
+    bool reserveDelta(unsigned words,uint16_t& chunk,uint16_t& off){
+        const unsigned cw=cfg_.deltaChunkWords,maxChunks=unsigned(std::max<size_t>(1,cfg_.deltaBytes/(size_t(cw)*4)));
+        if(words>cw)return false;
+        if(!deltaChunks_.empty()&&deltaUsed_+words>cw){
+            if(deltaChunk_+1>=maxChunks)return false;
+            ++deltaChunk_;deltaUsed_=0;
         }
-        return true;
+        while(deltaChunk_>=deltaChunks_.size()){
+            uint32_t* c=new(std::nothrow) uint32_t[cw];if(!c)return false;
+            deltaChunks_.emplace_back(c);
+        }
+        chunk=uint16_t(deltaChunk_);off=uint16_t(deltaUsed_);deltaUsed_+=words;return true;
     }
     FfRec* ffAt(unsigned i){return &ffChunks_[i/kFfChunk][i%kFfChunk];}
     bool ensureFf(unsigned i){
@@ -386,19 +522,10 @@ private:
         }
         return true;
     }
-    void releaseEntry(Entry& e){
-        for(unsigned i=0;i<e.nStreams;++i)if(e.streams[i].vb)e.streams[i].vb->Release();
-        if(e.ib)e.ib->Release();
-        if(e.vs)e.vs->Release();
-        if(e.ps)e.ps->Release();
-        if(e.decl){e.decl->Release();declFor_=nullptr;}
-        for(auto* t:e.tex)if(t)t->Release();
-        e=Entry{};
-    }
     void clearFrame(){
         guards_.clear([&](void* key){mark(key,false);}); // before the entries drop their references: the marked buffers are still alive
-        for(unsigned i=0;i<count_;++i)releaseEntry(entries_[i]);
-        count_=0;ffCount_=0;samples_.clear();blobs_.clear();hits_.clear();declFor_=nullptr;
+        releaseHeld();
+        count_=0;ffCount_=0;deltaChunk_=0;deltaUsed_=0;model_.reset();samples_.clear();blobs_.clear();hits_.clear();
         frame_.arenaHigh=std::max(frame_.arenaHigh,arenaUsed_);total_.arenaHigh=std::max(total_.arenaHigh,arenaUsed_);
         arenaUsed_=vbUsed_=ibUsed_[0]=ibUsed_[1]=0;
         if(target_){target_->Release();target_=nullptr;}
@@ -427,10 +554,10 @@ private:
     bool fail(Reason r){
         noteHazard(r);noteEvent(r,InPlaceKind::None);
         if(count_){count([](Counters& c){++c.flushes;});drain();}
+        else releaseHeld(); // nothing pending: the references this refused record took are not needed
         fm_.fallback(r!=Reason::Frame);
         return false;
     }
-    bool abortEntry(Entry& e,Reason r){releaseEntry(e);return fail(r);}
     void drain(){runReplay();clearFrame();}
 
     bool upload(bool index,unsigned fmt=0){
@@ -442,52 +569,35 @@ private:
         return true;
     }
 
-    // ---- replay: diff against the previous entry ----
-    // Calls set(start,count) for the register runs of cur that differ from prev (unchanged gaps of up to two registers are bridged: one call is cheaper
-    // than two); without prev one call covers all n registers. W: values per register.
-    template<unsigned W,class T,class F> static void changedRuns(const T* cur,const T* prev,unsigned n,F&& set){
-        if(!prev){set(0u,n);return;}
-        auto differs=[&](unsigned i){return std::memcmp(cur+size_t(i)*W,prev+size_t(i)*W,W*sizeof(T))!=0;};
-        for(unsigned i=0;i<n;){
-            if(!differs(i)){++i;continue;}
-            unsigned end=i+1;
-            for(unsigned k=end;k<n&&k-end<=2;++k)if(differs(k))end=k+1;
-            set(i,end-i);i=end;
+    // ---- replay: apply the entry's delta ----
+    struct DevSink{
+        IDirect3DDevice9* d;unsigned& sets;
+        void rs(unsigned i,DWORD v,bool check){
+            const D3DRENDERSTATETYPE id=D3DRENDERSTATETYPE(kRenderStateIds[i]);
+            if(check){DWORD cur=0;if(SUCCEEDED(d->GetRenderState(id,&cur))&&cur==v)return;} // a vendor-hack state: set only when the device differs, so a re-set never repeats the action
+            d->SetRenderState(id,v);++sets;
         }
-    }
-    // The recorded state of e on the device, only what differs from the previous replayed entry (all of it for the first). Does not touch RT/DS or the
-    // streams and index buffer (drawEntry binds those, materialized or not).
-    void applyState(const Entry& e,const Entry* prev){
-        const Rec& r=*e.rec;const Rec* p=prev?prev->rec:nullptr;
-        if(!prev||e.vs!=prev->vs){dev_->SetVertexShader(e.vs);++sets_;}
-        if(!prev||e.ps!=prev->ps){dev_->SetPixelShader(e.ps);++sets_;}
-        if(!prev||e.decl!=prev->decl||r.fvf!=p->fvf){if(e.decl)dev_->SetVertexDeclaration(e.decl);else dev_->SetFVF(r.fvf);++sets_;}
-        for(unsigned i=0;i<kRenderStates;++i){
-            if(rsSkip_[i])continue;
-            const unsigned id=kRenderStateIds[i];
-            if(vendorHackState(id)){
-                DWORD cur=0;
-                if(!prev){if(SUCCEEDED(dev_->GetRenderState(D3DRENDERSTATETYPE(id),&cur))&&cur==r.rs[i])continue;}
-                else if(r.rs[i]==p->rs[i])continue;
-            }else if(p&&r.rs[i]==p->rs[i])continue;
-            dev_->SetRenderState(D3DRENDERSTATETYPE(id),r.rs[i]);++sets_;
-        }
-        for(unsigned t=0;t<kMaxTextures;++t){
-            const DWORD stage=samplerStage(t);
-            if(!prev||e.tex[t]!=prev->tex[t]){dev_->SetTexture(stage,e.tex[t]);++sets_;}
-            if(!e.tex[t])continue;
-            const bool all=!prev||!prev->tex[t];  // the previous entry did not record this stage: its device value is unknown
-            for(unsigned k=0;k<kSamplerStates;++k)if(all||r.ss[t][k]!=p->ss[t][k]){dev_->SetSamplerState(stage,D3DSAMPLERSTATETYPE(kSamplerFirst+k),r.ss[t][k]);++sets_;}
-        }
-        changedRuns<4>(&r.vsF[0][0],p?&p->vsF[0][0]:nullptr,kVsFloat,[&](unsigned s,unsigned n){dev_->SetVertexShaderConstantF(s,r.vsF[s],n);++sets_;});
-        changedRuns<4>(&r.vsI[0][0],p?&p->vsI[0][0]:nullptr,kInts,[&](unsigned s,unsigned n){dev_->SetVertexShaderConstantI(s,r.vsI[s],n);++sets_;});
-        changedRuns<1>(r.vsB,p?p->vsB:nullptr,kBools,[&](unsigned s,unsigned n){dev_->SetVertexShaderConstantB(s,r.vsB+s,n);++sets_;});
-        changedRuns<4>(&r.psF[0][0],p?&p->psF[0][0]:nullptr,kPsFloat,[&](unsigned s,unsigned n){dev_->SetPixelShaderConstantF(s,r.psF[s],n);++sets_;});
-        changedRuns<4>(&r.psI[0][0],p?&p->psI[0][0]:nullptr,kInts,[&](unsigned s,unsigned n){dev_->SetPixelShaderConstantI(s,r.psI[s],n);++sets_;});
-        changedRuns<1>(r.psB,p?p->psB:nullptr,kBools,[&](unsigned s,unsigned n){dev_->SetPixelShaderConstantB(s,r.psB+s,n);++sets_;});
-        if(!p||std::memcmp(&r.vp,&p->vp,sizeof r.vp)){dev_->SetViewport(&r.vp);++sets_;}
-        if(r.scissorOn&&(!p||!p->scissorOn||std::memcmp(&r.scissor,&p->scissor,sizeof r.scissor))){dev_->SetScissorRect(&r.scissor);++sets_;}
-        for(unsigned i=0;i<kClipPlanes;++i)if((r.clipMask>>i&1)&&(!p||!(p->clipMask>>i&1)||std::memcmp(r.clip[i],p->clip[i],sizeof r.clip[i]))){dev_->SetClipPlane(i,r.clip[i]);++sets_;}
+        void ss(unsigned a,DWORD v){d->SetSamplerState(samplerStage(a/kSamplerStates),D3DSAMPLERSTATETYPE(kSamplerFirst+a%kSamplerStates),v);++sets;}
+        void tex(unsigned t,void* p){d->SetTexture(samplerStage(t),static_cast<IDirect3DBaseTexture9*>(p));++sets;}
+        void vsF(unsigned s,unsigned n,const uint32_t* w){d->SetVertexShaderConstantF(s,reinterpret_cast<const float*>(w),n);++sets;}
+        void psF(unsigned s,unsigned n,const uint32_t* w){d->SetPixelShaderConstantF(s,reinterpret_cast<const float*>(w),n);++sets;}
+        void vsI(unsigned s,unsigned n,const uint32_t* w){d->SetVertexShaderConstantI(s,reinterpret_cast<const int*>(w),n);++sets;}
+        void psI(unsigned s,unsigned n,const uint32_t* w){d->SetPixelShaderConstantI(s,reinterpret_cast<const int*>(w),n);++sets;}
+        void vsB(unsigned s,unsigned n,const uint32_t* w){d->SetVertexShaderConstantB(s,reinterpret_cast<const BOOL*>(w),n);++sets;}
+        void psB(unsigned s,unsigned n,const uint32_t* w){d->SetPixelShaderConstantB(s,reinterpret_cast<const BOOL*>(w),n);++sets;}
+        void viewport(const uint32_t* w){D3DVIEWPORT9 v;std::memcpy(&v,w,sizeof v);d->SetViewport(&v);++sets;}
+        void scissor(const uint32_t* w){RECT r;std::memcpy(&r,w,sizeof r);d->SetScissorRect(&r);++sets;}
+        void clip(unsigned i,const uint32_t* w){d->SetClipPlane(i,reinterpret_cast<const float*>(w));++sets;}
+        void vs(void* p){d->SetVertexShader(static_cast<IDirect3DVertexShader9*>(p));++sets;}
+        void ps(void* p){d->SetPixelShader(static_cast<IDirect3DPixelShader9*>(p));++sets;}
+        void decl(void* p){d->SetVertexDeclaration(static_cast<IDirect3DVertexDeclaration9*>(p));++sets;}
+        void fvf(DWORD v){d->SetFVF(v);++sets;}
+    };
+    // The recorded state of e on the device: its delta, no compares (the record already left out everything the earlier entries of this sequence set to the
+    // same value). Does not touch RT/DS or the streams and index buffer (drawEntry binds those, materialized or not).
+    void applyState(const Entry& e){
+        const uint32_t* w=deltaChunks_[e.dChunk].get()+e.dOff;
+        DevSink sink{dev_,sets_};decodeOps(w,w+e.dLen,sink);
         if(e.ff){applyFf(*e.ff,ffPrev_);ffPrev_=e.ff;} // programmable entries leave the fixed-function state alone, so the diff base is the last fixed-function entry
     }
     // The fixed-function state of f on the device, only what differs from the previous fixed-function record (all of it without one).
@@ -519,13 +629,13 @@ private:
         if(sh.freq>>s&1)return;
         dev_->SetStreamSourceFreq(s,1);++sets_;sh.freq|=1u<<s;
     }
-    // One entry: the record restores the game's state of that draw (it does not carry RT/DS: set before), then the streams and index buffer are bound,
-    // the materialized ones from the upload buffers. The record is applied even when the draw is skipped, so the next entry's diff stays valid.
+    // One entry: the delta restores the game's state of that draw (it does not carry RT/DS: set before), then the streams and index buffer are bound,
+    // the materialized ones from the upload buffers. The delta is applied even when the draw is skipped, so the next entry's delta stays valid.
     // Fetch rule: vertex i of a stream reads offset+(base+i)*stride. Materialized stream bytes [lo,hi) now sit at P in the upload buffer. With f=base+min
     // (Indexed) or StartVertex (Primitive): mode A keeps base and puts offset P-f*stride (needs >=0); mode B uses base=-min (StartVertex 0), offset P,
     // and moves the other streams to offset+f*stride (always >=0). Index values are never rewritten.
-    bool drawEntry(const Entry& e,const Entry* prev,Shadow& sh,bool vbOk,const bool (&ibOk)[2]){
-        applyState(e,prev);
+    bool drawEntry(const Entry& e,Shadow& sh,bool vbOk,const bool (&ibOk)[2]){
+        applyState(e);
         const bool idx=e.type==DrawType::Indexed,up=e.type==DrawType::PrimitiveUP||e.type==DrawType::IndexedUP;
         bool matV=false;
         for(unsigned i=0;i<e.nStreams;++i)if(e.streams[i].blob>=0)matV=true;
@@ -579,10 +689,9 @@ private:
         for(DWORD i=1;i<4;++i)dev_->SetRenderTarget(i,nullptr);
         const bool bound=SUCCEEDED(dev_->SetRenderTarget(0,target_));
         dev_->SetDepthStencilSurface(ds_);
-        Shadow sh;sets_=0;ffPrev_=nullptr;const Entry* prev=nullptr;
+        Shadow sh;sets_=0;ffPrev_=nullptr;
         for(unsigned i=0;i<count_;++i){
-            const bool ok=bound&&drawEntry(entries_[i],prev,sh,vbOk,ibOk);
-            if(bound)prev=&entries_[i];
+            const bool ok=bound&&drawEntry(entries_[i],sh,vbOk,ibOk);
             count([&](Counters& c){if(ok)++c.replayedDraws;else ++c.replaySkipped;});
         }
         count([&](Counters& c){c.replaySets+=sets_;});
@@ -635,21 +744,128 @@ private:
         }
         return true;
     }
-    // Fills e's record from the device (all through dev_: the mirror answers most of these). False: a Get failed.
-    bool readRecord(Entry& e){
-        Rec& r=*e.rec;
+    // ---- record: the delta of one draw against the replay model ----
+    static bool bitSet(const uint64_t* m,unsigned i){return (m[i>>6]>>(i&63))&1;}
+    static bool blockFull(const uint64_t* m,unsigned i){return ((m[i>>6]>>(i&63))&0xFFFF)==0xFFFF;} // 16 aligned registers
+    static bool maskSpan(const uint64_t* mask,unsigned words,unsigned& lo,unsigned& hi){
+        bool any=false;
+        for(unsigned w=0;w<words;++w)if(mask[w]){
+            const unsigned first=w*64+unsigned(__builtin_ctzll(mask[w])),last=w*64+63-unsigned(__builtin_clzll(mask[w]));
+            if(!any)lo=first;hi=last;any=true;
+        }
+        return any;
+    }
+    // Every register in mask is known: runs of set bits are tested word-wise.
+    static bool knownAll(const bool* known,const uint64_t* mask,unsigned words){
+        for(unsigned w=0;w<words;++w){
+            uint64_t m=mask[w];
+            while(m){
+                const unsigned lo=unsigned(__builtin_ctzll(m));const uint64_t shifted=m>>lo;
+                const unsigned len=~shifted?unsigned(__builtin_ctzll(~shifted)):64-lo;
+                if(!runKnown(known+w*64+lo,len))return false;
+                m=len+lo>=64?0:m&~(((1ull<<len)-1)<<lo);
+            }
+        }
+        return true;
+    }
+    void emit(uint32_t op,uint32_t a,uint32_t b=0){scratch_[n_++]=opWord(op,a,b);}
+    void emit1(uint32_t op,uint32_t a,uint32_t v){scratch_[n_++]=opWord(op,a,0);scratch_[n_++]=v;}
+    void emitPtr(uint32_t op,uint32_t a,const void* p){scratch_[n_++]=opWord(op,a,0);std::memcpy(&scratch_[n_],&p,sizeof p);n_+=kPtrWords;}
+    // Emits, for the registers in mask whose value differs from the model (or is unknown in it), runs of rows (bridging gaps of up to two unchanged registers:
+    // one call is cheaper than two). Aligned blocks of 16 registers that are all in the mask and known to the model are compared in one go.
+    void diffRows(uint32_t op,const void* curV,const void* mdlV,unsigned rowWords,const uint64_t* valid,const uint64_t* mask,unsigned n){
+        const uint8_t* cur=static_cast<const uint8_t*>(curV),*mdl=static_cast<const uint8_t*>(mdlV);const size_t rb=size_t(rowWords)*4;
+        auto differs=[&](unsigned i){return !bitSet(valid,i)||std::memcmp(cur+i*rb,mdl+i*rb,rb)!=0;};
+        for(unsigned i=0;i<n;){
+            if(!bitSet(mask,i)){++i;continue;}
+            if(!(i&15)&&i+16<=n&&blockFull(mask,i)&&blockFull(valid,i)&&!std::memcmp(cur+i*rb,mdl+i*rb,16*rb)){i+=16;continue;}
+            if(!differs(i)){++i;continue;}
+            unsigned end=i+1;
+            for(unsigned k=end;k<n&&k-end<=2&&bitSet(mask,k);++k)if(differs(k))end=k+1;
+            emit(op,i,end-i);std::memcpy(&scratch_[n_],cur+i*rb,size_t(end-i)*rb);n_+=(end-i)*rowWords;i=end;
+        }
+    }
+    // The render states of the draw by id: the cache's array when every listed state is known (one pass over its known flags, 8 at a time), else a staging copy
+    // with the unknown ones read by Get (a state the device refuses is dropped for the session: neither recorded nor replayed).
+    const DWORD* renderStates(){
+        if(mv_&&!anySkip_){
+            bool all=true;
+            for(unsigned i=0;i<32&&all;++i){uint64_t f;std::memcpy(&f,mv_->rsKnown+i*8,8);all=(f&kRsKnownMask[i])==kRsKnownMask[i];}
+            if(all)return mv_->rs;
+        }
+        if(model_.rsValid)std::memcpy(rsStage_,model_.rs,sizeof rsStage_);else std::memset(rsStage_,0,sizeof rsStage_);
         for(unsigned i=0;i<kRenderStates;++i){
-            if(rsSkip_[i]){r.rs[i]=0;continue;}
-            if(FAILED(dev_->GetRenderState(D3DRENDERSTATETYPE(kRenderStateIds[i]),&r.rs[i]))){rsSkip_[i]=true;r.rs[i]=0;} // not a state this device has: dropped for the session
+            if(rsSkip_[i])continue;
+            const unsigned id=kRenderStateIds[i];
+            if(mv_&&mv_->rsKnown[id])rsStage_[id]=mv_->rs[id];
+            else if(FAILED(dev_->GetRenderState(D3DRENDERSTATETYPE(id),&rsStage_[id]))){rsSkip_[i]=true;anySkip_=true;rsStage_[id]=model_.rsValid?model_.rs[id]:0;}
         }
+        return rsStage_;
+    }
+    // Builds the delta of the draw into scratch_ (the model is not touched: the record may still be refused). Reason::Count: built.
+    Reason buildDelta(const Reads& rd,bool fixed,IDirect3DVertexShader9* vs,IDirect3DPixelShader9* ps,IDirect3DVertexDeclaration9* decl,DWORD fvf,IDirect3DBaseTexture9* const (&tex)[kMaxTextures]){
+        const Model& m=model_;n_=0;
+        if(!m.vsV||m.vs!=static_cast<void*>(vs))emitPtr(Op::Vs,0,static_cast<void*>(vs));
+        if(!m.psV||m.ps!=static_cast<void*>(ps))emitPtr(Op::Ps,0,static_cast<void*>(ps));
+        if(decl){if(m.declMode!=1||m.decl!=static_cast<void*>(decl))emitPtr(Op::Decl,0,static_cast<void*>(decl));}
+        else if(m.declMode!=2||m.fvf!=fvf)emit1(Op::Fvf,0,fvf);
+        // render states
+        const DWORD* cur=renderStates();rsCur_=cur;
+        if(fixed&&(cur[151]||cur[167]))return Reason::Admit; // D3DRS_VERTEXBLEND / INDEXEDVERTEXBLENDENABLE: WORLD1..3 would be read
+        if(!m.rsValid){for(unsigned i=0;i<kRenderStates;++i)if(!rsSkip_[i])emit1(vendorHackState(kRenderStateIds[i])?Op::RsCheck:Op::Rs,i,cur[kRenderStateIds[i]]);}
+        else if(std::memcmp(cur,m.rs,sizeof m.rs)){for(unsigned i=0;i<kRenderStates;++i)if(!rsSkip_[i]&&cur[kRenderStateIds[i]]!=m.rs[kRenderStateIds[i]])emit1(Op::Rs,i,cur[kRenderStateIds[i]]);}
+        // texture bindings and the sampler states of the bound stages
         for(unsigned t=0;t<kMaxTextures;++t){
-            if(!e.tex[t])continue;
-            for(unsigned k=0;k<kSamplerStates;++k)if(FAILED(dev_->GetSamplerState(samplerStage(t),D3DSAMPLERSTATETYPE(kSamplerFirst+k),&r.ss[t][k])))return false;
+            if(!(rd.tex>>t&1))continue;
+            void* p=static_cast<void*>(tex[t]);
+            if(!(m.texValid>>t&1)||m.tex[t]!=p)emitPtr(Op::Tex,t,p);
+            if(!p)continue; // a stage without a texture is not sampled
+            DWORD v[kSamplerStates];const DWORD* sv=v;
+            if(mv_&&t<16&&runKnown(&mv_->smpKnown[t][kSamplerFirst],kSamplerStates))sv=&mv_->smp[t][kSamplerFirst];
+            else for(unsigned k=0;k<kSamplerStates;++k)if(FAILED(dev_->GetSamplerState(samplerStage(t),D3DSAMPLERSTATETYPE(kSamplerFirst+k),&v[k])))return Reason::Capture;
+            if(!(m.ssValid>>t&1)){for(unsigned k=0;k<kSamplerStates;++k)emit1(Op::Ss,t*kSamplerStates+k,sv[k]);}
+            else for(unsigned k=0;k<kSamplerStates;++k)if(sv[k]!=m.ss[t][k])emit1(Op::Ss,t*kSamplerStates+k,sv[k]);
         }
-        return SUCCEEDED(dev_->GetVertexShaderConstantF(0,&r.vsF[0][0],kVsFloat))&&SUCCEEDED(dev_->GetVertexShaderConstantI(0,&r.vsI[0][0],kInts))&&
-               SUCCEEDED(dev_->GetVertexShaderConstantB(0,r.vsB,kBools))&&SUCCEEDED(dev_->GetPixelShaderConstantF(0,&r.psF[0][0],kPsFloat))&&
-               SUCCEEDED(dev_->GetPixelShaderConstantI(0,&r.psI[0][0],kInts))&&SUCCEEDED(dev_->GetPixelShaderConstantB(0,r.psB,kBools))&&
-               SUCCEEDED(dev_->GetViewport(&r.vp))&&scissorAndClip(r);
+        // shader constants
+        unsigned lo=0,hi=0;
+        if(maskSpan(rd.vsF,4,lo,hi)){
+            const float (*src)[4]=vsStage_;
+            if(mv_&&knownAll(mv_->vsFKnown,rd.vsF,4))src=mv_->vsF;
+            else if(FAILED(dev_->GetVertexShaderConstantF(lo,vsStage_[lo],hi-lo+1)))return Reason::Capture;
+            diffRows(Op::VsF,src,m.vsF,4,m.vsFV,rd.vsF,kVsFloat);
+        }
+        if(maskSpan(rd.psF,4,lo,hi)){
+            const float (*src)[4]=psStage_;
+            if(mv_&&knownAll(mv_->psFKnown,rd.psF,4))src=mv_->psF;
+            else if(FAILED(dev_->GetPixelShaderConstantF(lo,psStage_[lo],hi-lo+1)))return Reason::Capture;
+            diffRows(Op::PsF,src,m.psF,4,m.psFV,rd.psF,kPsFloat);
+        }
+        int is[kInts][4];BOOL bs[kBools];
+        if(rd.vsI){
+            const uint64_t mk=rd.vsI;const int (*src)[4]=is;
+            if(mv_&&knownAll(mv_->vsIKnown,&mk,1))src=mv_->vsI;else if(FAILED(dev_->GetVertexShaderConstantI(0,&is[0][0],kInts)))return Reason::Capture;
+            diffRows(Op::VsI,src,m.vsI,4,&m.vsIV,&mk,kInts);
+        }
+        if(rd.vsB){
+            const uint64_t mk=rd.vsB;const BOOL* src=bs;
+            if(mv_&&knownAll(mv_->vsBKnown,&mk,1))src=mv_->vsB;else if(FAILED(dev_->GetVertexShaderConstantB(0,bs,kBools)))return Reason::Capture;
+            diffRows(Op::VsB,src,m.vsB,1,&m.vsBV,&mk,kBools);
+        }
+        if(rd.psI){const uint64_t mk=rd.psI;if(FAILED(dev_->GetPixelShaderConstantI(0,&is[0][0],kInts)))return Reason::Capture;diffRows(Op::PsI,is,m.psI,4,&m.psIV,&mk,kInts);}
+        if(rd.psB){const uint64_t mk=rd.psB;if(FAILED(dev_->GetPixelShaderConstantB(0,bs,kBools)))return Reason::Capture;diffRows(Op::PsB,bs,m.psB,1,&m.psBV,&mk,kBools);}
+        // viewport; the scissor rect only with the scissor test on; the clip planes only for the enabled ones (the draw reads nothing else)
+        D3DVIEWPORT9 vpl;const D3DVIEWPORT9* vp=&vpl;
+        if(mv_&&*mv_->vpKnown)vp=mv_->vp;else if(FAILED(dev_->GetViewport(&vpl)))return Reason::Capture;
+        if(!m.vpV||std::memcmp(vp,&m.vp,sizeof m.vp)){emit(Op::Viewport,0);std::memcpy(&scratch_[n_],vp,sizeof *vp);n_+=sizeof(D3DVIEWPORT9)/4;}
+        if(cur[174]){
+            RECT sc;if(FAILED(dev_->GetScissorRect(&sc)))return Reason::Capture;
+            if(!m.scissorV||std::memcmp(&sc,&m.scissor,sizeof sc)){emit(Op::Scissor,0);std::memcpy(&scratch_[n_],&sc,sizeof sc);n_+=4;}
+        }
+        for(unsigned i=0;i<kClipPlanes;++i)if(cur[152]>>i&1){
+            float pl[4];if(FAILED(dev_->GetClipPlane(i,pl)))return Reason::Capture;
+            if(!(m.clipV>>i&1)||std::memcmp(pl,m.clip[i],sizeof pl)){emit(Op::Clip,i);std::memcpy(&scratch_[n_],pl,sizeof pl);n_+=4;}
+        }
+        return Reason::Count;
     }
     bool readFf(Entry& e){
         FfRec& f=*e.ff;
@@ -663,21 +879,22 @@ private:
         }
         return true;
     }
-    // The scissor rect only when the scissor test is on, the clip planes only for the enabled ones (D3DRS_CLIPPLANEENABLE): the draw reads nothing else.
-    bool scissorAndClip(Rec& r){
-        r.scissorOn=r.rs[kRsScissorTest]!=0;r.clipMask=uint8_t(r.rs[kRsClipPlaneEnable]&((1u<<kClipPlanes)-1));
-        if(r.scissorOn&&FAILED(dev_->GetScissorRect(&r.scissor)))return false;
-        for(unsigned i=0;i<kClipPlanes;++i)if((r.clipMask>>i&1)&&FAILED(dev_->GetClipPlane(i,r.clip[i])))return false;
-        return true;
-    }
-    // The streams a declaration reads (bit per stream), cached for the entry that holds the declaration. False: the declaration cannot be read.
-    bool usedStreams(IDirect3DVertexDeclaration9* decl,uint32_t& used){
-        if(decl==declFor_){used=declUsed_;return true;}
+    // The streams a declaration reads (bit per stream), cached with the declaration's held reference. False: the declaration cannot be read.
+    bool usedStreams(Held& h,uint32_t& used){
+        if(h.flags&kHasAux){used=h.aux;return true;}
+        auto* decl=static_cast<IDirect3DVertexDeclaration9*>(h.p);
         D3DVERTEXELEMENT9 el[kMaxDecl];UINT n=0;
         if(FAILED(decl->GetDeclaration(nullptr,&n))||n>kMaxDecl||FAILED(decl->GetDeclaration(el,&n)))return false;
         used=0;for(UINT i=0;i<n&&el[i].Stream!=0xFF;++i)if(el[i].Stream<16)used|=1u<<el[i].Stream;
-        declFor_=decl;declUsed_=used;return true;
+        h.aux=uint16_t(used);h.flags|=kHasAux;return true;
     }
+    // Holds the state cache's guard for the reads of one record.
+    struct Hold{
+        Layer& l;bool on=false;
+        explicit Hold(Layer& layer):l(layer){const MirrorView* v=l.cfg_.source;if(v&&v->enter&&v->enter(v->ctx)){l.mv_=v;on=true;}}
+        ~Hold(){if(on){const MirrorView* v=l.mv_;l.mv_=nullptr;v->leave(v->ctx);}}
+        Hold(const Hold&)=delete;Hold& operator=(const Hold&)=delete;
+    };
 public:
     Layer()=default;
     Layer(const Layer&)=delete;Layer& operator=(const Layer&)=delete;
@@ -687,10 +904,12 @@ public:
     void attach(IDirect3DDevice9* dev){reset();dev_=dev;}
     // Only while nothing is pending (else pending entries are dropped). Allocates the entry table and the arena once; state records follow in chunks.
     void configure(const Config& c){
-        reset();cfg_=c;
-        if(cfg_.on){entries_.resize(cfg_.maxEntries);arena_.resize(cfg_.arenaBytes);recChunks_.reserve(cfg_.maxEntries/kRecChunk+1);hits_.reserve(cfg_.maxEntries);order_.reserve(cfg_.maxEntries);
+        reset();cfg_=c;cfg_.deltaChunkWords=std::min(65535u,std::max(1024u,cfg_.deltaChunkWords));
+        if(cfg_.on){entries_.resize(cfg_.maxEntries);arena_.resize(cfg_.arenaBytes);
+            size_t slots=1024;while(slots<size_t(cfg_.maxEntries)*4)slots<<=1;held_.assign(slots,Held{});heldUsed_.reserve(slots*3/4);scratch_.reset(new uint32_t[kScratchWords]);model_.reset();
+            hits_.reserve(cfg_.maxEntries);order_.reserve(cfg_.maxEntries);
             segs_.reserve(cfg_.maxEntries);blobs_.reserve(size_t(cfg_.maxEntries)*(kMaxStreams+1));samples_.reserve(64);}
-        else{entries_=std::vector<Entry>();arena_=std::vector<uint8_t>();}
+        else{entries_=std::vector<Entry>();arena_=std::vector<uint8_t>();held_=std::vector<Held>();heldUsed_=std::vector<uint32_t>();scratch_.reset();}
         fm_.begin(cfg_.on,false);
     }
     const Config& config()const{return cfg_;}
@@ -699,6 +918,7 @@ public:
     // Memory pressure: no deferral this frame and the record storage and upload buffers are released.
     void beginFrame(bool memoryPressure){
         if(count_){count([&](Counters& c){c.discarded+=count_;});clearFrame();fm_.fallback(false);}
+        releaseHeld();
         last_=frame_;frame_=Counters{};
         fm_.begin(cfg_.on,memoryPressure);
         if(!cfg_.on||memoryPressure)trim(0);
@@ -712,7 +932,7 @@ public:
     const Counters& frameCounters()const{return frame_;}
     const Counters& lastFrameCounters()const{return last_;}
     const Counters& totalCounters()const{return total_;}
-    size_t recordChunks()const{return recChunks_.size();} // allocated chunks of kRecChunk records
+    size_t recordChunks()const{return deltaChunks_.size();} // allocated chunks of state delta words (Config::deltaChunkWords each)
     size_t ffChunks()const{return ffChunks_.size();}      // allocated chunks of kFfChunk fixed-function records
     uint32_t arenaUsed()const{return arenaUsed_;}
     // Hazard diagnostics: eventSeq() changes on every hazard that flushed and every refused defer (the frame fell back); lastEvent() describes it.
@@ -734,72 +954,100 @@ public:
         if(!vcount)return false;
         if(count_>=cfg_.maxEntries)return fail(Reason::Capacity);
         if(!rt0||(count_&&(rt0!=target_||ds!=ds_)))return fail(count_?Reason::Order:Reason::Capture);
-        if(!ensureRec(count_))return fail(Reason::Capacity);
         if(cfg_.generation){const unsigned g=cfg_.generation(cfg_.genCtx);if(g!=verdictGen_){clearVerdicts();verdictGen_=g;}}
+        if(held_.empty())return fail(Reason::Capacity);
         const bool up=a.type==DrawType::PrimitiveUP||a.type==DrawType::IndexedUP,idx=a.type==DrawType::Indexed||a.type==DrawType::IndexedUP;
+        Hold hold(*this); // the state cache's guard for all the reads below (Get calls nest in it)
         Entry& e=entries_[count_];e=Entry{};
-        e.rec=recAt(count_);Rec& r=*e.rec;
         e.type=a.type;e.prim=a.prim;e.base=a.baseVertex;e.minIndex=a.minIndex;e.numVertices=a.numVertices;e.first=a.first;e.primCount=a.primCount;
         // admission: a programmable vertex and pixel stage, ps_2_0 or newer (the fixed-function state is then unused and not recorded), or neither
         // stage (fixed function: FfRec). A vertex shader with a fixed-function pixel stage or the reverse is refused.
-        if(FAILED(dev_->GetVertexShader(&e.vs))||FAILED(dev_->GetPixelShader(&e.ps)))return abortEntry(e,Reason::Admit);
-        const bool fixed=!e.vs&&!e.ps;
-        if(!fixed&&(!e.vs||!e.ps||a.psMajor<kMinPsMajor))return abortEntry(e,Reason::Admit);
-        if(fixed&&!ensureFf(ffCount_))return abortEntry(e,Reason::Capacity);
+        IDirect3DVertexShader9* vs=nullptr;IDirect3DPixelShader9* ps=nullptr;bool owned=false; // owned: a Get call's reference (the cache's pointers are borrowed)
+        if(mv_&&*mv_->vsKnown)vs=*mv_->vs;else if(SUCCEEDED(dev_->GetVertexShader(&vs)))owned=vs!=nullptr;else return fail(Reason::Admit);
+        if(vs&&!intern(vs,owned))return fail(Reason::Capacity);
+        owned=false;
+        if(mv_&&*mv_->psKnown)ps=*mv_->ps;else if(SUCCEEDED(dev_->GetPixelShader(&ps)))owned=ps!=nullptr;else return fail(Reason::Admit);
+        if(ps&&!intern(ps,owned))return fail(Reason::Capacity);
+        const bool fixed=!vs&&!ps;
+        if(!fixed&&(!vs||!ps||a.psMajor<kMinPsMajor))return fail(Reason::Admit);
+        if(fixed&&!ensureFf(ffCount_))return fail(Reason::Capacity);
         uint32_t used=1; // FVF: stream 0
-        dev_->GetVertexDeclaration(&e.decl);
-        r.fvf=0;
-        if(e.decl){if(!up&&!usedStreams(e.decl,used))return abortEntry(e,Reason::Capture);}
-        else if(FAILED(dev_->GetFVF(&r.fvf)))return abortEntry(e,Reason::Capture);
+        IDirect3DVertexDeclaration9* decl=nullptr;DWORD fvf=0;
+        owned=false;
+        if(mv_&&*mv_->declKnown)decl=*mv_->decl;else{dev_->GetVertexDeclaration(&decl);owned=decl!=nullptr;}
+        if(decl){
+            Held* dh=intern(decl,owned);if(!dh)return fail(Reason::Capacity);
+            if(!up&&!usedStreams(*dh,used))return fail(Reason::Capture);
+        }else if(mv_&&*mv_->fvfKnown)fvf=*mv_->fvf;
+        else if(FAILED(dev_->GetFVF(&fvf)))return fail(Reason::Capture);
         if(!up){
             const int64_t first=idx?int64_t(a.baseVertex)+a.minIndex:int64_t(a.first);
             const uint32_t verts=idx?a.numVertices:vcount;
             for(uint32_t s=0;s<16;++s){
                 if(!(used>>s&1))continue;
-                if(e.nStreams==kMaxStreams)return abortEntry(e,Reason::Capture);
+                if(e.nStreams==kMaxStreams)return fail(Reason::Capture);
                 IDirect3DVertexBuffer9* vb=nullptr;UINT off=0,stride=0,freq=1;
                 const bool got=SUCCEEDED(dev_->GetStreamSource(s,&vb,&off,&stride))&&vb;
-                if(!got){if(vb)vb->Release();return abortEntry(e,Reason::Capture);}
+                if(!got){if(vb)vb->Release();return fail(Reason::Capture);}
+                if(!intern(vb,true))return fail(Reason::Capacity);
                 Stream& st=e.streams[e.nStreams++];st.vb=vb;st.off=off;st.stride=stride;st.sno=s;
-                if(FAILED(dev_->GetStreamSourceFreq(s,&freq))||freq!=1)return abortEntry(e,Reason::Capture);
+                if(FAILED(dev_->GetStreamSourceFreq(s,&freq))||freq!=1)return fail(Reason::Capture);
                 const int64_t lo=int64_t(off)+first*stride,hi=lo+int64_t(verts)*stride;
-                if(lo<0||hi>int64_t(0xFFFFFFFFu))return abortEntry(e,Reason::Capture);
+                if(lo<0||hi>int64_t(0xFFFFFFFFu))return fail(Reason::Capture);
                 st.lo=uint32_t(lo);st.hi=uint32_t(hi);
             }
             if(a.type==DrawType::Indexed){
-                D3DINDEXBUFFER_DESC d{};
-                if(FAILED(dev_->GetIndices(&e.ib))||!e.ib)return abortEntry(e,Reason::Capture);
-                if(FAILED(e.ib->GetDesc(&d))||(d.Format!=D3DFMT_INDEX16&&d.Format!=D3DFMT_INDEX32))return abortEntry(e,Reason::Capture);
-                e.isz=d.Format==D3DFMT_INDEX16?2:4;
+                if(FAILED(dev_->GetIndices(&e.ib))||!e.ib)return fail(Reason::Capture);
+                Held* ibh=intern(e.ib,true);if(!ibh)return fail(Reason::Capacity);
+                if(!(ibh->flags&kHasAux)){ // the format of an index buffer never changes
+                    D3DINDEXBUFFER_DESC d{};
+                    if(FAILED(e.ib->GetDesc(&d))||(d.Format!=D3DFMT_INDEX16&&d.Format!=D3DFMT_INDEX32))return fail(Reason::Capture);
+                    ibh->aux=d.Format==D3DFMT_INDEX16?2:4;ibh->flags|=kHasAux;
+                }
+                e.isz=uint8_t(ibh->aux);
                 const uint64_t lo=uint64_t(a.first)*e.isz,hi=lo+uint64_t(vcount)*e.isz;
-                if(hi>0xFFFFFFFFu)return abortEntry(e,Reason::Capture);
+                if(hi>0xFFFFFFFFu)return fail(Reason::Capture);
                 e.ibLo=uint32_t(lo);e.ibHi=uint32_t(hi);
             }
         }
         uint32_t upV=0,upI=0,vOff=0;
         if(up){
-            if(!a.vertexData||!a.stride||(idx&&!a.indexData))return abortEntry(e,Reason::Capture);
+            if(!a.vertexData||!a.stride||(idx&&!a.indexData))return fail(Reason::Capture);
             e.upStride=a.stride;
             if(idx){
-                if(a.indexFormat!=D3DFMT_INDEX16&&a.indexFormat!=D3DFMT_INDEX32)return abortEntry(e,Reason::Capture);
+                if(a.indexFormat!=D3DFMT_INDEX16&&a.indexFormat!=D3DFMT_INDEX32)return fail(Reason::Capture);
                 e.isz=a.indexFormat==D3DFMT_INDEX16?2:4;e.upFmt=a.indexFormat;
                 vOff=0;upV=(a.minIndex+a.numVertices)*a.stride;upI=vcount*e.isz; /* the driver reads [0,(min+num)*stride) of the user pointer (DXVK FillUPVertexBuffer): copy that, replay with the plain arena pointer */
             }else upV=vcount*a.stride;
-            if(uint64_t(arenaUsed_)+align16(upV)+align16(upI)>arena_.size())return abortEntry(e,Reason::Capacity);
+            if(uint64_t(arenaUsed_)+align16(upV)+align16(upI)>arena_.size())return fail(Reason::Capacity);
         }
+        // What the draw can read: a fixed-function draw reads no shader constants and the texture stages 0..7; a programmable one the shaders' read sets.
+        Reads rd;
+        if(fixed){rd.noConstants();rd.tex=(1u<<kFfStages)-1;}
+        IDirect3DBaseTexture9* tex[kMaxTextures]={};Held* texHeld[kMaxTextures]={};
         for(unsigned t=0;t<kMaxTextures;++t){ // pixel samplers 0..15, then the vertex texture samplers (stages 257..260): a write to any of them flushes
-            IDirect3DBaseTexture9* tx=nullptr;dev_->GetTexture(samplerStage(t),&tx);
+            if(!(rd.tex>>t&1))continue;
+            IDirect3DBaseTexture9* tx=nullptr;owned=false;
+            if(mv_&&t<16&&mv_->texKnown[t])tx=mv_->tex[t];
+            else{dev_->GetTexture(samplerStage(t),&tx);owned=tx!=nullptr;}
             if(!tx)continue;
-            e.tex[t]=tx; // held by the entry before the check, released with it on a refusal
-            if(renderTargetTexture(tx))return abortEntry(e,Reason::Capture); // the game may render into or clear it later without any call the layer sees
+            Held* h=intern(tx,owned);if(!h)return fail(Reason::Capacity);
+            if(!(h->flags&kNotRt)){ // once per object and frame (and per object and generation in the verdict cache)
+                if(renderTargetTexture(tx))return fail(Reason::Capture); // the game may render into or clear it later without any call the layer sees
+                h->flags|=kNotRt;
+            }
+            tex[t]=tx;texHeld[t]=h;
         }
-        if(!readRecord(e))return abortEntry(e,Reason::Capture);
+        {   const Reason why=buildDelta(rd,fixed,vs,ps,decl,fvf,tex);if(why!=Reason::Count)return fail(why);}
         if(fixed){
-            if(r.rs[kRsVertexBlend]||r.rs[kRsIndexedVertexBlend])return abortEntry(e,Reason::Admit); // D3DRS_VERTEXBLEND / INDEXEDVERTEXBLENDENABLE: WORLD1..3 would be read
             e.ff=ffAt(ffCount_);
-            if(!readFf(e))return abortEntry(e,Reason::Capture);
+            if(!readFf(e))return fail(Reason::Capture);
         }
+        if(!reserveDelta(n_,e.dChunk,e.dOff))return fail(Reason::Capacity);
+        e.dLen=uint16_t(n_);
         // Committed from here: nothing below fails.
+        {   uint32_t* dst=deltaChunks_[e.dChunk].get()+e.dOff;std::memcpy(dst,scratch_.get(),size_t(n_)*4);
+            ModelSink ms{model_};decodeOps(dst,dst+n_,ms);}
         if(up){
             std::memcpy(arena_.data()+arenaUsed_,static_cast<const uint8_t*>(a.vertexData)+vOff,upV);e.upVtx=arenaUsed_;arenaUsed_+=align16(upV);
             if(idx){std::memcpy(arena_.data()+arenaUsed_,a.indexData,upI);e.upIdx=arenaUsed_;arenaUsed_+=align16(upI);}
@@ -809,15 +1057,14 @@ public:
             if(guards_.add(static_cast<void*>(s.vb),false,s.lo,s.hi,count_,uint8_t(i)))mark(static_cast<void*>(s.vb),true);
         }
         if(e.ib&&guards_.add(static_cast<void*>(e.ib),true,e.ibLo,e.ibHi,count_,0xFF))mark(static_cast<void*>(e.ib),true);
-        for(auto* tx:e.tex){
-            if(!tx)continue;
-            void* k=static_cast<void*>(tx);
-            if(std::find(samples_.begin(),samples_.end(),k)==samples_.end())samples_.push_back(k);
+        for(unsigned t=0;t<kMaxTextures;++t){
+            Held* h=texHeld[t];
+            if(h&&!(h->flags&kInSamples)){h->flags|=kInSamples;samples_.push_back(static_cast<void*>(h->p));}
         }
         if(!count_){target_=rt0;rt0->AddRef();ds_=ds;if(ds)ds->AddRef();}
         if(fixed)++ffCount_;
         ++count_;fm_.deferred();
-        count([&](Counters& c){unsigned i=0;while(i<3&&!(sub>>i&1))++i;++c.deferred[i];if(fixed)++c.fixed;++c.recorded;c.recordHigh=std::max(c.recordHigh,count_);});
+        count([&](Counters& c){unsigned i=0;while(i<3&&!(sub>>i&1))++i;++c.deferred[i];if(fixed)++c.fixed;++c.recorded;c.deltaWords+=n_;c.recordHigh=std::max(c.recordHigh,count_);});
         if(a.type==DrawType::PrimitiveUP||a.type==DrawType::IndexedUP){ // the API side effects of the skipped call
             dev_->SetStreamSource(0,nullptr,0,0);
             if(a.type==DrawType::IndexedUP)dev_->SetIndices(nullptr);
@@ -865,14 +1112,14 @@ public:
     }
     // Releases state record chunks (and the upload buffers) beyond `keep` records; never below what is pending. For idle frames and memory pressure.
     void trim(size_t keep=0){
-        const size_t chunks=(std::max<size_t>(keep,count_)+kRecChunk-1)/kRecChunk;
-        while(recChunks_.size()>chunks)recChunks_.pop_back();
+        const size_t chunks=std::max<size_t>(keep?1:0,count_?deltaChunk_+1:0);
+        while(deltaChunks_.size()>chunks)deltaChunks_.pop_back();
         const size_t ffChunks=(ffCount_+kFfChunk-1)/kFfChunk;while(ffChunks_.size()>ffChunks)ffChunks_.pop_back();
         if(!count_&&!keep)releaseUploads();
     }
     // Device Reset/destroy/extension fault: drops everything WITHOUT drawing, releases records, buffers and surfaces, unmarks guards.
     void reset(){
-        clearFrame();recChunks_.clear();ffChunks_.clear();releaseUploads();clearVerdicts();fm_.close();
+        clearFrame();deltaChunks_.clear();ffChunks_.clear();releaseUploads();clearVerdicts();fm_.close();
     }
 };
 }

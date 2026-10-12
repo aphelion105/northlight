@@ -5,6 +5,7 @@
 // clearing stream 0 / indices, buffer locks with DISCARD / NOOVERWRITE / READONLY slices, and a record of every draw with the exact bytes it fetched
 // at execution time. Refcounted objects with a leak check. `sets` counts the Set* calls (not the Gets, not the draws).
 #include <algorithm>
+#include <cstdlib>
 #include <cstdint>
 #include <cstring>
 #include <functional>
@@ -180,8 +181,18 @@ struct StateBlock:Obj<IDirect3DStateBlock9>{
     ~StateBlock()override{drop(s);}
     HRESULT Capture()override;HRESULT Apply()override;
 };
+// The state cache the layer reads in bulk (MirrorView of spell_layer.h), as the production DeviceMirror lays it out; refreshed from the device state at every
+// enter(). `hide*` make slots unknown (known flag false, junk value) so the layer must fall back to the Get calls for them.
+struct Mirror{
+    DWORD rs[256]={};bool rsK[256]={};DWORD smp[16][16]={};bool smpK[16][16]={};IDirect3DBaseTexture9* tex[16]={};bool texK[16]={};
+    float vsF[256][4]={};bool vsFK[256]={};float psF[224][4]={};bool psFK[224]={};int vsI[16][4]={};bool vsIK[16]={};BOOL vsB[16]={};bool vsBK[16]={};
+    IDirect3DVertexShader9* vs=nullptr;bool vsK=false;IDirect3DPixelShader9* ps=nullptr;bool psK=false;IDirect3DVertexDeclaration9* decl=nullptr;bool declK=false;
+    DWORD fvf=0;bool fvfK=false;D3DVIEWPORT9 vp;bool vpK=false;
+    bool hideRs[256]={},hideSmp[16]={},hideTex[16]={},hideVsF[256]={},hidePsF[224]={},hideVsI=false,hideVsB=false,hideShaders=false,hideDecl=false,hideVp=false,failEnter=false;
+    unsigned enters=0,leaves=0;int depth=0;
+};
 struct FakeDevice:IDirect3DDevice9{
-    State s;IDirect3DSurface9* rt[4]={};IDirect3DSurface9* ds=nullptr;
+    State s;Mirror mir;IDirect3DSurface9* rt[4]={};IDirect3DSurface9* ds=nullptr;
     std::vector<DrawRec> draws;unsigned calls=0,sets=0;
     bool failCreateBlock=false,failCapture=false,failCreateVB=false,failCreateIB=false,failGetPsConst=false,failGetTss=false,failGetLightEnable=false;int failCaptureAfter=-1;unsigned blocksCreated=0,failNthCreate=0,createCalls=0; // failNthCreate: the nth CreateStateBlock call fails once
     FakeDevice(){
@@ -194,7 +205,7 @@ struct FakeDevice:IDirect3DDevice9{
     }
     static size_t texSlot(DWORD stage){return stage>=257?size_t(16+(stage-257)):size_t(stage);}
     // ---- test conveniences (not part of the API; not counted) ----
-    int tagOf()const{return int(s.vsc[31][0]);}
+    int tagOf()const{return int(s.rs[165]);} // the draw tag lives in D3DRS_DEBUGMONITORTOKEN: every draw records render states (a fixed-function draw reads no constants)
     Snapshot snap()const{Snapshot n;n.s=s;for(int i=0;i<4;++i)n.rt[i]=rt[i];n.ds=ds;return n;}
     // ---- IDirect3DDevice9 ----
     HRESULT CreateStateBlock(D3DSTATEBLOCKTYPE t,IDirect3DStateBlock9** out)override{
@@ -325,6 +336,28 @@ struct FakeDevice:IDirect3DDevice9{
         return D3D_OK;
     }
 };
+inline void refreshMirror(FakeDevice& d){
+    Mirror& m=d.mir;const State& s=d.s;
+    for(unsigned i=0;i<256;++i){m.rsK[i]=!m.hideRs[i];m.rs[i]=m.hideRs[i]?0xBADBAD00u+i:s.rs[i];}
+    for(unsigned t=0;t<16;++t){
+        for(unsigned k=0;k<16;++k){m.smpK[t][k]=!m.hideSmp[t];m.smp[t][k]=m.hideSmp[t]?0xBADBAD00u+k:s.ss[t][k];}
+        m.texK[t]=!m.hideTex[t];m.tex[t]=m.hideTex[t]?reinterpret_cast<IDirect3DBaseTexture9*>(uintptr_t(0x1234)):s.tex[t];
+    }
+    for(unsigned i=0;i<256;++i){m.vsFK[i]=!m.hideVsF[i];for(int k=0;k<4;++k)m.vsF[i][k]=m.hideVsF[i]?-7.f:s.vsc[i][k];}
+    for(unsigned i=0;i<224;++i){m.psFK[i]=!m.hidePsF[i];for(int k=0;k<4;++k)m.psF[i][k]=m.hidePsF[i]?-7.f:s.psc[i][k];}
+    for(unsigned i=0;i<16;++i){m.vsIK[i]=!m.hideVsI;m.vsBK[i]=!m.hideVsB;for(int k=0;k<4;++k)m.vsI[i][k]=m.hideVsI?-3:s.vsi[i][k];m.vsB[i]=m.hideVsB?-3:s.vsb[i];}
+    m.vsK=m.psK=!m.hideShaders;m.vs=m.hideShaders?nullptr:s.vs;m.ps=m.hideShaders?nullptr:s.ps;
+    m.declK=m.fvfK=!m.hideDecl;m.decl=m.hideDecl?nullptr:s.decl;m.fvf=m.hideDecl?0xDEAD:s.fvf;
+    m.vpK=!m.hideVp;m.vp=m.hideVp?D3DVIEWPORT9():s.vp;
+}
+inline bool mirrorEnter(void* c){auto* d=static_cast<FakeDevice*>(c);++d->mir.enters;if(d->mir.failEnter)return false;if(d->mir.depth++)std::abort();refreshMirror(*d);return true;}
+inline void mirrorLeave(void* c){auto* d=static_cast<FakeDevice*>(c);++d->mir.leaves;--d->mir.depth;}
+inline NorthlightSpellLayer::MirrorView makeView(FakeDevice& d){
+    Mirror& m=d.mir;NorthlightSpellLayer::MirrorView v;
+    v.rs=m.rs;v.rsKnown=m.rsK;v.smp=m.smp;v.smpKnown=m.smpK;v.tex=m.tex;v.texKnown=m.texK;v.vsF=m.vsF;v.vsFKnown=m.vsFK;v.psF=m.psF;v.psFKnown=m.psFK;
+    v.vsI=m.vsI;v.vsIKnown=m.vsIK;v.vsB=m.vsB;v.vsBKnown=m.vsBK;v.vs=&m.vs;v.vsKnown=&m.vsK;v.ps=&m.ps;v.psKnown=&m.psK;v.decl=&m.decl;v.declKnown=&m.declK;
+    v.fvf=&m.fvf;v.fvfKnown=&m.fvfK;v.vp=&m.vp;v.vpKnown=&m.vpK;v.enter=&mirrorEnter;v.leave=&mirrorLeave;v.ctx=&d;return v;
+}
 inline StateBlock::StateBlock(FakeDevice* d):dev(d){s=State();assign(s,d->s);}
 inline HRESULT StateBlock::Capture(){
     ++dev->calls;if(dev->failCapture)return E_FAIL;

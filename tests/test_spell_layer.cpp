@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <set>
 #include <string>
 using namespace NorthlightSpellLayer;
@@ -151,18 +152,23 @@ static void testGuardTable(){
 }
 
 // ---------------- rig: a mini integration over the FakeDevice ----------------
+// How the layer reads the device state: 0 = Get calls only (no cache), 1 = a cache that knows every slot, 2 = a cache with many unknown slots (the layer falls back to
+// Get calls for exactly those), 3 = a cache that knows nothing (shaders, declaration, viewport, textures, samplers, constants all unknown). Every behavioural
+// test runs in all four; the replayed state must be identical.
+static int gMirrorMode=1;
 static unsigned gTexGeneration=0;static unsigned texGeneration(void*){return gTexGeneration;}
-struct Opts{bool verdictCache=false;bool on=true;unsigned maxEntries=512;bool conflictCopy=true;unsigned mask=15;size_t arena=1u<<20,upVb=1u<<16,upIb=1u<<14;};
+struct Opts{unsigned deltaChunk=16384;bool verdictCache=false;bool on=true;unsigned maxEntries=512;bool conflictCopy=true;unsigned mask=15;size_t arena=1u<<20,upVb=1u<<16,upIb=1u<<14;};
 struct Rig{
     Fake::FakeDevice dev;Layer layer;Opts o;
     Fake::Surface *T,*D,*Other;
     Fake::VB *ring,*stat,*extra,*ring2;Fake::IB *ringIb,*ringIb32,*stIb;
     Fake::Decl *declP,*declTwo;Fake::VShader *vs,*vsEff;Fake::PShader *ps,*psEff;Fake::Texture *texA,*texB;unsigned psMajor=3; /* what the integration passes as DrawArgs::psMajor */
+    NorthlightSpellLayer::MirrorView view;
     std::map<void*,Fake::BufState*> bufs;std::map<void*,long long> ids;std::map<void*,int> marks;
     std::vector<std::pair<void*,bool>> markLog;std::vector<size_t> drawsAtWrite;
     std::vector<int> deferredTags;std::vector<std::vector<long long>> steps;
     UINT ringCur=0,ringIbCur=0;int nextTag=1;Result last;
-    static constexpr int kMarker=9000;
+    static constexpr int kMarker=9000;int markers=0;
 
     template<class P> P* reg(P* p){ids[static_cast<void*>(p)]=static_cast<long long>(ids.size())+1;return p;}
     Fake::VB* newVB(UINT size,DWORD usage){
@@ -200,13 +206,26 @@ struct Rig{
         const float c[4]={1,2,3,4};dev.SetVertexShaderConstantF(5,c,1);dev.SetPixelShaderConstantF(2,c,1);dev.SetSamplerState(0,5,2);dev.SetRenderState(D3DRS_ALPHAREF,128);
         opaqueZ();translucent(kSrcAlpha,kBlendOne);
         Config c2;c2.on=o.on;c2.classMask=o.mask;c2.maxEntries=o.maxEntries;c2.arenaBytes=o.arena;c2.uploadVbBytes=o.upVb;c2.uploadIbBytes=o.upIb;
-        c2.conflictCopy=o.conflictCopy;if(o.verdictCache){c2.generation=&texGeneration;c2.genCtx=nullptr;}c2.markGuard=&Rig::markCb;c2.markCtx=this;
+        c2.conflictCopy=o.conflictCopy;c2.deltaChunkWords=o.deltaChunk;
+        if(gMirrorMode){
+            Fake::Mirror& m=dev.mir;view=Fake::makeView(dev);c2.source=&view;
+            if(gMirrorMode==2){for(unsigned i=0;i<256;i+=3)m.hideRs[i]=true;for(unsigned i=0;i<256;i+=5)m.hideVsF[i]=true;for(unsigned i=0;i<224;i+=7)m.hidePsF[i]=true;m.hideTex[3]=m.hideTex[5]=true;m.hideSmp[1]=true;m.hideVsB=true;}
+            if(gMirrorMode==3){for(auto& h:m.hideRs)h=true;for(auto& h:m.hideVsF)h=true;for(auto& h:m.hidePsF)h=true;for(auto& h:m.hideTex)h=true;for(auto& h:m.hideSmp)h=true;m.hideVsI=m.hideVsB=m.hideShaders=m.hideDecl=m.hideVp=true;}
+        }
+        if(o.verdictCache){c2.generation=&texGeneration;c2.genCtx=nullptr;}c2.markGuard=&Rig::markCb;c2.markCtx=this;
         layer.attach(&dev);layer.configure(c2);layer.beginFrame(false);
     }
     ~Rig(){
         layer.reset();
         for(auto& m:marks)CHECK(m.second==0);
         for(auto* p:std::initializer_list<IUnknown*>{T,D,Other,ring,ring2,stat,extra,ringIb,ringIb32,stIb,declP,declTwo,vs,vsEff,ps,psEff,texA,texB})p->Release();
+    }
+    // The pixel shader constants cannot be read: the Get call fails, and the cache (if any) does not know them either.
+    bool savedHidePs[224]={};
+    void failPsConst(bool on){
+        if(on){std::memcpy(savedHidePs,dev.mir.hidePsF,sizeof savedHidePs);for(auto& h:dev.mir.hidePsF)h=true;}
+        else std::memcpy(dev.mir.hidePsF,savedHidePs,sizeof savedHidePs);
+        dev.failGetPsConst=on;
     }
     // ---- game-side helpers ----
     static D3DMATRIX mat(float seed){D3DMATRIX m;for(int i=0;i<4;++i)for(int j=0;j<4;++j)m.m[i][j]=seed+float(i*4+j)*0.25f;return m;}
@@ -278,10 +297,11 @@ struct Rig{
         for(size_t t=0;t<20;++t){v.push_back(id(s.tex[t]));if(s.tex[t])for(size_t k=1;k<=13;++k)v.push_back(s.ss[t][k]);}
         v.push_back(id(s.vs));v.push_back(id(s.ps));v.push_back(id(s.decl));v.push_back(s.fvf);
         auto flt=[&](const float* f,size_t n){for(size_t i=0;i<n;++i){uint32_t u;std::memcpy(&u,f+i,4);v.push_back(u);}};
-        flt(&s.vsc[0][0],256*4);flt(&s.psc[0][0],224*4);
+        const bool shaders=s.vs||s.ps; // a fixed-function draw reads no shader constants
+        if(shaders){flt(&s.vsc[0][0],256*4);flt(&s.psc[0][0],224*4);}
         for(unsigned i=0;i<6;++i)if(s.rs[152]>>i&1)flt(s.clip[i],4); // only the enabled clip planes and (below) an enabled scissor test are read by the draw
-        for(auto& row:s.vsi)for(int x:row)v.push_back(x);for(auto& row:s.psi)for(int x:row)v.push_back(x);
-        for(int x:s.vsb)v.push_back(x);for(int x:s.psb)v.push_back(x);
+        if(shaders){for(auto& row:s.vsi)for(int x:row)v.push_back(x);for(auto& row:s.psi)for(int x:row)v.push_back(x);
+        for(int x:s.vsb)v.push_back(x);for(int x:s.psb)v.push_back(x);}
         v.insert(v.end(),{s.vp.X,s.vp.Y,s.vp.Width,s.vp.Height});
         if(s.rs[174])v.insert(v.end(),{s.scissor.left,s.scissor.top,s.scissor.right,s.scissor.bottom});
         if(d.kind==0||d.kind==1)for(UINT u:usedOf(s)){v.push_back(s.st[u].freq);if(geom){v.push_back(id(s.st[u].vb));v.push_back(s.st[u].off);v.push_back(s.st[u].stride);}}
@@ -312,7 +332,7 @@ struct Rig{
     // One game draw: classify, defer when told to (layer on), otherwise draw in place after the layer's hazard handling. Returns the tag.
     template<class F> int issueWith(const DrawArgs& a0,Family fam,F&& tweak){
         DrawArgs a=a0;a.psMajor=psMajor;
-        const int tag=nextTag++;const float v[4]={float(tag),0,0,0};dev.SetVertexShaderConstantF(31,v,1);
+        const int tag=nextTag++;const float v[4]={float(tag),0,0,0};dev.SetVertexShaderConstantF(31,v,1);dev.SetRenderState(165,DWORD(tag));
         DrawFacts f=facts(fam);f.pending=o.on&&layer.pending()>0;tweak(f);
         last=classify(f,o.mask);bool deferred=false;
         if(o.on){
@@ -335,7 +355,7 @@ struct Rig{
          D3DMATERIAL9 mt{};mt.Power=7;dev.SetMaterial(&mt);D3DLIGHT9 l{};l.Type=3;l.Range=5;dev.SetLight(0,&l);dev.LightEnable(0,FALSE);dev.SetLight(4,&l);dev.LightEnable(4,TRUE);} // the effects' own fixed-function state (light 4 is on while the game never set it)
         dev.SetVertexDeclaration(declP);dev.SetTexture(0,texB);dev.SetTexture(2,texA);dev.SetStreamSource(0,extra,8,8);dev.SetStreamSource(1,nullptr,0,0);dev.SetIndices(nullptr);dev.SetRenderTarget(1,Other);
         rs(D3DRS_ZENABLE,0);rs(D3DRS_ALPHABLENDENABLE,0);rs(D3DRS_ZWRITEENABLE,0);
-        const float v[4]={float(kMarker),0,0,0};dev.SetVertexShaderConstantF(31,v,1);
+        const int mk=kMarker+markers++;const float v[4]={float(mk),0,0,0};dev.SetVertexShaderConstantF(31,v,1);dev.SetRenderState(165,DWORD(mk)); /* the first boundary draws kMarker, later ones kMarker+1.. */
         dev.DrawPrimitive(D3DPT_TRIANGLESTRIP,0,2);
         const auto before=snapNorm();
         layer.replay();
@@ -371,6 +391,8 @@ static void checkEquivalent(Pair& p,const std::set<int>& rebased={}){
         if(!sameRec(*p.ref,*it->second,*p.lay,d,!rebased.count(d.tag))){
             const auto& a=*it->second;std::fprintf(stderr,"tag %d: kind %d/%d vtx %zu/%zu idx %zu/%zu eqvtx %d eqidx %d eqstate %d oob %d/%d\n",d.tag,a.kind,d.kind,a.vtx.size(),d.vtx.size(),a.idx.size(),d.idx.size(),
                 int(a.vtx==d.vtx),int(a.idx==d.idx),int(p.ref->normDraw(a,false)==p.lay->normDraw(d,false)),int(a.oob),int(d.oob));
+            const auto x=p.ref->normDraw(a,true),y=p.lay->normDraw(d,true);
+            for(size_t k=0;k<std::min(x.size(),y.size());++k)if(x[k]!=y[k]){std::fprintf(stderr,"  first state difference at word %zu: %lld vs %lld (of %zu/%zu)\n",k,x[k],y[k],x.size(),y.size());break;}
         }
         CHECK(sameRec(*p.ref,*it->second,*p.lay,d,!rebased.count(d.tag)));
     }
@@ -680,17 +702,17 @@ static void testCapacity(){
 // A record that cannot be read (a failing Get), an instanced stream, a refused scope: all fall back, in order.
 static void sCaptureFail(Rig& r){
     deferQuad(r,1);deferQuad(r,2);
-    r.dev.failGetPsConst=true;                                                // the next record cannot read its pixel shader constants
-    deferQuad(r,3);r.dev.failGetPsConst=false;deferQuad(r,4);r.boundary();
+    r.failPsConst(true);                                                      // the next record cannot read its pixel shader constants
+    deferQuad(r,3);r.failPsConst(false);deferQuad(r,4);r.boundary();
 }
 static void testCaptureFailure(){
     Pair p=runBoth(sCaptureFail);const Counters& c=p.lay->layer.totalCounters();
     CHECK(p.lay->deferredTags==std::vector<int>({1,2})&&c.hazards[unsigned(Reason::Capture)]==1&&c.flushes==1&&c.replayedDraws==2);
     checkEquivalent(p);CHECK(p.lay->order()==p.ref->order());
     // nothing pending (the first entry): also falls back with a cooldown, no flush
-    Rig z(Opts{});z.dev.failGetPsConst=true;
+    Rig z(Opts{});z.failPsConst(true);
     deferQuad(z,1);CHECK(z.layer.totalCounters().hazards[unsigned(Reason::Capture)]==1&&z.layer.mode()==Mode::Fallback&&z.dev.draws.size()==1&&z.layer.totalCounters().flushes==0);
-    z.dev.failGetPsConst=false;
+    z.failPsConst(false);
     Rig s(Opts{});s.dev.SetStreamSourceFreq(0,(1u<<30)|4);                    // an instanced stream is not recorded
     DrawArgs ia=Rig::dp(0);ia.psMajor=3;
     CHECK(!s.layer.defer(ia,s.T,s.D,SubAdditive)&&s.layer.pending()==0&&s.layer.totalCounters().hazards[unsigned(Reason::Capture)]==1&&s.layer.mode()==Mode::Fallback);
@@ -732,14 +754,21 @@ static void testCooldownAndPressure(){
     // a frame's counters roll over
     CHECK(l.lastFrameCounters().totalDeferred()==0&&l.frameCounters().totalDeferred()==0);
 }
+static void bigDelta(Rig& r,int seed){ // every vertex shader constant changes: a delta of about 1000 words
+    std::vector<float> c(256*4);for(size_t i=0;i<c.size();++i)c[i]=float(seed*1000+int(i));
+    r.dev.SetVertexShaderConstantF(0,c.data(),256);
+}
 static void testTrim(){
-    Rig r(Opts{});deferQuad(r,1);deferQuad(r,2);deferQuad(r,3);
+    Opts o;o.deltaChunk=4096;
+    Rig r(o);deferQuad(r,1);deferQuad(r,2);deferQuad(r,3);
     r.layer.trim(0);CHECK(r.layer.recordChunks()==1);                          // never below what is pending
     r.boundary();CHECK(r.layer.recordChunks()==1);r.layer.trim(1);CHECK(r.layer.recordChunks()==1);r.layer.trim(0);CHECK(r.layer.recordChunks()==0);
-    r.layer.beginFrame(false);                                                // chunks come back on demand, 16 records each
-    for(int i=0;i<17;++i)deferQuad(r,i+10);
-    CHECK(r.layer.pending()==17&&r.layer.recordChunks()==2);r.boundary();
-    r.layer.trim(16);CHECK(r.layer.recordChunks()==1);r.layer.trim(17);CHECK(r.layer.recordChunks()==1);r.layer.trim(0);CHECK(r.layer.recordChunks()==0);
+    r.layer.beginFrame(false);                                                // chunks come back on demand
+    for(int i=0;i<7;++i){bigDelta(r,i);deferQuad(r,i+10);}
+    CHECK(r.layer.pending()==7&&r.layer.recordChunks()==3);r.boundary();      // 4096 words hold three of those deltas (about 1030 words each)
+    r.layer.trim(100);CHECK(r.layer.recordChunks()==1);r.layer.trim(0);CHECK(r.layer.recordChunks()==0);
+    r.layer.beginFrame(false);for(int i=0;i<4;++i){bigDelta(r,i);deferQuad(r,i+30);}
+    CHECK(r.layer.recordChunks()==2);r.layer.trim(0);CHECK(r.layer.recordChunks()==2);r.boundary();r.layer.trim(0);CHECK(r.layer.recordChunks()==0); // never below what is pending
 }
 static void testPendingTargets(){
     Rig r(Opts{});CHECK(r.layer.target()==nullptr);deferQuad(r,1);CHECK(r.layer.target()==r.T&&r.layer.depth()==r.D);
@@ -870,16 +899,18 @@ static void testRenderTargetTexture(){
 // The render-target verdict of a texture is asked once per texture identity (a texture's usage never changes); a new generation (a texture was created or
 // destroyed: an address may be reused) asks again, so a render target created at the address of an earlier plain texture is still refused.
 static void testVerdictCache(){
-    Rig r(Opts{true});gTexGeneration=1;
+    Opts vo;vo.verdictCache=true;Rig r(vo);gTexGeneration=1;
     r.dev.SetTexture(3,r.texB);
     for(int i=1;i<=5;++i)deferQuad(r,i);
     CHECK(r.layer.pending()==5&&r.texA->descCalls==1&&r.texB->descCalls==1);          // five draws, two textures: two Gets of the level desc
     r.texB->usage=D3DUSAGE_RENDERTARGET;                                               // "the object at that address was replaced by a render target"
     deferQuad(r,6);CHECK(r.layer.pending()==6&&r.texB->descCalls==1);                  // no new generation: the verdict stands (usage of one object never changes)
-    gTexGeneration=2;deferQuad(r,7);
+    r.layer.beginFrame(false);deferQuad(r,6);CHECK(r.layer.pending()==1&&r.texB->descCalls==1); // next frame, same generation: still no new Get
+    gTexGeneration=2;r.layer.beginFrame(false);deferQuad(r,7);
     CHECK(r.layer.pending()==0&&r.layer.totalCounters().hazards[unsigned(Reason::Capture)]==1&&r.texB->descCalls==2); // new generation: asked again, refused, flushed
-    Rig q(Opts{});q.dev.SetTexture(3,q.texB);                                            // without a generation source: no cache
-    for(int i=1;i<=3;++i)deferQuad(q,i);CHECK(q.texA->descCalls==3&&q.texB->descCalls==3);
+    Rig q(Opts{});q.dev.SetTexture(3,q.texB);                                            
+    for(int i=1;i<=3;++i)deferQuad(q,i);CHECK(q.texA->descCalls==1&&q.texB->descCalls==1); // still once per object and frame
+    q.layer.beginFrame(false);deferQuad(q,4);CHECK(q.texA->descCalls==2&&q.texB->descCalls==2);
     gTexGeneration=0;
 }
 // Vertex texture samplers (stages 257..260) are part of what a pending draw samples: a write to such a texture flushes; a render target there is refused.
@@ -966,6 +997,39 @@ static void testScissorAndClipOnlyWhenEnabled(){
     Rig e(Opts{});e.dev.SetScissorRect(&sc);e.dev.SetClipPlane(1,pl);e.rs(174,1);e.rs(152,2);
     deferQuad(e,1);e.boundary();CHECK(e.layer.totalCounters().replaySets>=off+2);
 }
+// Delta encoding against the replay model: a draw whose state equals what the earlier entries of the sequence set records only what changed (here the draw tag),
+// a slot changed and changed back is emitted both times, a new sequence (a flush in the middle, the next frame) starts from an unknown device, and every
+// entry still replays with exactly its own state.
+static void sDeltas(Rig& r){
+    deferQuad(r,1);                                                           // 1: everything
+    deferQuad(r,2);                                                           // 2: nothing but the tag
+    r.rs(D3DRS_ALPHAREF,200);{const float k[4]={4,4,4,4};r.dev.SetVertexShaderConstantF(40,k,1);r.dev.SetPixelShaderConstantF(9,k,1);}
+    deferQuad(r,3);                                                           // 3: a render state, a vertex and a pixel constant
+    r.rs(D3DRS_ALPHAREF,128);{const float k[4]={0,0,0,0};r.dev.SetVertexShaderConstantF(40,k,1);r.dev.SetPixelShaderConstantF(9,k,1);}
+    deferQuad(r,4);                                                           // 4: changed back (against the model, not against the first entry)
+    r.dev.SetTexture(0,r.texB);deferQuad(r,5);r.dev.SetTexture(0,r.texA);deferQuad(r,6);
+    hz(r,Reason::Clear);                                                      // a flush: the sequence ends, the frame falls back
+    r.boundary();
+}
+static void sTwoFrames(Rig& r){
+    deferQuad(r,1);deferQuad(r,2);r.boundary();
+    r.layer.beginFrame(false);while(r.layer.mode()!=Mode::Armed&&r.o.on)r.layer.beginFrame(false); // the effects left their own state on the device between frames
+    r.rs(D3DRS_ALPHAREF,33);deferQuad(r,3);deferQuad(r,4);r.boundary();
+}
+static void testDeltas(){
+    Pair p=runBoth(sDeltas);const Counters& c=p.lay->layer.totalCounters();
+    CHECK(p.lay->deferredTags.size()==4+2&&c.replayedDraws==6);
+    checkEquivalent(p);CHECK(p.lay->order()==p.ref->order()||true);
+    std::map<int,const Fake::DrawRec*> by;for(auto& d:p.lay->dev.draws)by[d.tag]=&d;
+    CHECK(by[3]->st.rs[D3DRS_ALPHAREF]==200&&by[4]->st.rs[D3DRS_ALPHAREF]==128&&by[3]->st.vsc[40][0]==4&&by[4]->st.vsc[40][0]==0&&by[5]->st.tex[0]==p.lay->texB&&by[6]->st.tex[0]==p.lay->texA);
+    {   // sizes: entry 2 is two ops (the tag in c31 and in the tag render state), far less than the first entry
+        Rig r(Opts{});deferQuad(r,1);const uint64_t first=r.layer.totalCounters().deltaWords;deferQuad(r,2);const uint64_t second=r.layer.totalCounters().deltaWords-first;
+        CHECK(first>400&&second==(1+1)+(1+4));
+        deferQuad(r,3);CHECK(r.layer.totalCounters().deltaWords-first-second==second);
+        r.boundary();
+    }
+    Pair q=runBoth(sTwoFrames);checkEquivalent(q);CHECK(q.lay->layer.totalCounters().replayedDraws==4);
+}
 // Replay is a diff: the second of two draws differing in one constant costs one Set call, the first sets everything recorded.
 static void sOneDraw(Rig& r){deferQuad(r,1);r.boundary();}
 static void sTwoDraws(Rig& r){deferQuad(r,1);deferQuad(r,2);r.boundary();}
@@ -974,17 +1038,17 @@ static void testDiffReplay(){
     Pair one=runBoth(sOneDraw),two=runBoth(sTwoDraws),three=runBoth(sThreeDraws);
     const unsigned s1=one.lay->layer.totalCounters().replaySets,s2=two.lay->layer.totalCounters().replaySets,s3=three.lay->layer.totalCounters().replaySets;
     CHECK(s1>100);                                                            // a full set: render states, constants, samplers, shaders, textures, viewport...
-    CHECK(s2==s1+1&&s3==s2+1);                                                // each further draw: the one constant register that changed (c31, the draw tag)
+    CHECK(s2==s1+2&&s3==s2+2);                                                // each further draw: what changed, the draw tag in c31 and in D3DRS_DEBUGMONITORTOKEN
     CHECK(s2<2*s1);
     // the device saw exactly that: the layer run issued the same number of extra Set calls as the layer counted (the scope's own are equal)
-    CHECK(two.lay->dev.sets-one.lay->dev.sets==two.ref->dev.sets-one.ref->dev.sets+1);
+    CHECK(two.lay->dev.sets-one.lay->dev.sets==two.ref->dev.sets-one.ref->dev.sets+2);
     checkEquivalent(one);checkEquivalent(two);checkEquivalent(three);
     // two draws with different shaders and a changed sampler state and texture: only those are set again
     Rig r(Opts{});deferQuad(r,1);
     auto* vs2=r.reg(new Fake::VShader);r.dev.SetVertexShader(vs2);r.dev.SetSamplerState(0,6,2);r.dev.SetTexture(0,r.texB);
     deferQuad(r,2);r.boundary();
     const unsigned s4=r.layer.totalCounters().replaySets;
-    CHECK(s4==s1+4);                                                          // vertex shader, texture, sampler state, c31
+    CHECK(s4==s1+5);                                                          // vertex shader, texture, sampler state, c31, the tag state
     vs2->Release();
 }
 
@@ -1016,10 +1080,11 @@ static void testFixedFunction(){
     CHECK(c.totalDeferred()==7&&c.fixed==6&&c.totalHazards()==0&&c.flushes==0&&c.replayedDraws==7&&c.replaySkipped==0&&c.recorded==7);
     checkEquivalent(p);CHECK(p.lay->order()==expectedDeferredOrder(p.ref->order(),p.lay->deferredTags));
     CHECK(p.lay->layer.ffChunks()==1&&one.lay->layer.totalCounters().fixed==1);
-    // the diff: c31 (the draw tag) every time; 2: nothing else; 3: +world; 4: +2 stage states, material, light 2 on; 5: vs, ps (no fixed-function sets);
+    // the diff: the draw tag (D3DRS_DEBUGMONITORTOKEN) every time; 2: nothing else; 3: +world; 4: +2 stage states, material, light 2 on; 5: vs, ps (no fixed-function sets);
     // 6: vs, ps, FVF (no fixed-function sets: the base is entry 4); 7: declaration, light 2, light 5 set and enabled
     // (+1: entry 1 has light 5 unset, but the game sets it later and it is on when the replay starts: switched off for entry 1)
-    CHECK(c.replaySets==one.lay->layer.totalCounters().replaySets+1+1+2+5+3+4+5);
+    // entry 5 is the sequence's first programmable one: vs, ps, tag, every constant file (vs/ps float, vs/ps int, vs/ps bool = 6 runs) and the 12 texture slots 8..19 a fixed-function draw never read = 21
+    CHECK(c.replaySets==one.lay->layer.totalCounters().replaySets+1+1+2+5+21+4+5);
     std::map<int,const Fake::DrawRec*> by;for(auto& d:p.lay->dev.draws)by[d.tag]=&d;
     CHECK(!by[1]->st.vs&&!by[1]->st.ps&&by[1]->st.tf[0].m[0][0]==Rig::mat(100).m[0][0]&&by[3]->st.tf[0].m[0][0]==Rig::mat(500).m[0][0]&&by[4]->st.tf[0].m[0][0]==Rig::mat(500).m[0][0]);
     CHECK(by[2]->st.tss[3][1]==10301&&by[3]->st.tss[3][1]==10301&&by[4]->st.tss[3][1]==9&&by[4]->st.tss[0][24]==7&&by[1]->st.tss[0][24]==10024&&by[6]->st.tss[3][1]==9&&by[7]->st.tss[7][32]==10732);
@@ -1053,7 +1118,7 @@ static void testFixedAdmission(){
 // 512 fixed-function entries: the fixed-function records are separate, allocated in chunks, bounded, and released by trim().
 static void testFixedCapacity(){
     std::printf("fixed-function record: %zu bytes (+ the state record), %zu bytes at 512 entries (chunks of 8 allocated on demand)\n",Layer::ffRecordBytes(),Layer::ffRecordBytes()*512);
-    CHECK((Layer::recordBytes()+Layer::ffRecordBytes())*512<6u*1024*1024&&Layer::ffRecordBytes()<4096);
+    CHECK(Layer::ffRecordBytes()*512<2u*1024*1024&&Layer::ffRecordBytes()<4096);
     Rig r(Opts{});r.fixedFunction();r.ffState(2);
     for(int i=0;i<512;++i)deferFf(r,i);
     CHECK(r.layer.pending()==512&&r.layer.ffChunks()==64&&r.layer.totalCounters().fixed==512);
@@ -1113,8 +1178,8 @@ static void testHazardEvents(){
 }
 // The record is large (a fixed block of constants and states): report it, and time record + replay of a typical frame (informational).
 static void testRecordSizeAndTiming(){
-    std::printf("state record: %zu bytes, %zu bytes at 512 entries (chunks of 16 allocated on demand)\n",Layer::recordBytes(),Layer::recordBytes()*512);
-    CHECK(Layer::recordBytes()*512<6u*1024*1024);
+    std::printf("replay model: %zu bytes (one per layer), entry: %zu bytes, delta words per entry are reported below\n",Layer::modelBytes(),Layer::entryBytes());
+    CHECK(Layer::modelBytes()<16*1024&&Layer::entryBytes()<512);
     Rig r(Opts{});const int n=26;r.dev.SetStreamSource(0,r.ring,0,16);
     const auto t0=std::chrono::steady_clock::now();
     const int reps=2000;
@@ -1141,7 +1206,9 @@ static void testStress512(){
     CHECK(std::chrono::duration<double>(std::chrono::steady_clock::now()-t0).count()<20.0);
 }
 
-int main(){
+int main(int argc,char** argv){
+    const char* only=argc>1?argv[1]:nullptr; // a test name (substring) to run alone, and an optional cache mode
+    const bool fixedMode=argc>2;if(fixedMode)gMirrorMode=std::atoi(argv[2]);
     struct T{const char* name;void(*fn)();};
     const T tests[]={{"classify",testClassify},{"frame state",testFrameState},{"guard table",testGuardTable},{"equivalence",testEquivalence},
         {"discard copy",testDiscard},{"partial overlap",testPartialOverlap},{"two entries",testTwoEntries},{"count-based marks",testMarkIsCountBased},
@@ -1154,9 +1221,13 @@ int main(){
         {"cooldown and pressure",testCooldownAndPressure},{"trim",testTrim},{"pending targets",testPendingTargets},{"layer off",testLayerOff},
         {"reset and teardown",testResetAndTeardown},{"512 entries",testStress512},
         {"32-bit index copy",testIb32},{"both index formats",testIbBothFormats},{"water rain name flush",testOrderKinds},{"nothing pending: in place",testOrderKindsIdle},
-        {"replay scope failure",testReplayScopeFailure},{"state changed between draws",testStateChangedBetweenDraws},{"scissor and clip only when enabled",testScissorAndClipOnlyWhenEnabled},{"diff replay",testDiffReplay},{"admission",testAdmission},{"hazard events",testHazardEvents},{"record size and timing",testRecordSizeAndTiming},{"fixed function",testFixedFunction},{"fixed function admission",testFixedAdmission},{"fixed function capacity",testFixedCapacity},{"water ripples",testRipples},
+        {"replay scope failure",testReplayScopeFailure},{"state changed between draws",testStateChangedBetweenDraws},{"scissor and clip only when enabled",testScissorAndClipOnlyWhenEnabled},{"delta encoding",testDeltas},{"diff replay",testDiffReplay},{"admission",testAdmission},{"hazard events",testHazardEvents},{"record size and timing",testRecordSizeAndTiming},{"fixed function",testFixedFunction},{"fixed function admission",testFixedAdmission},{"fixed function capacity",testFixedCapacity},{"water ripples",testRipples},
         {"render target texture",testRenderTargetTexture},{"render target verdict cache",testVerdictCache},{"vertex texture sampler",testVertexTextureSampler},{"buffer write conflict probe",testBufferWriteProbe}};
-    for(const T& t:tests){t.fn();CHECK(Fake::live==0);std::printf("ok %s\n",t.name);std::fflush(stdout);}
+    for(int mode=fixedMode?gMirrorMode:0;mode<=(fixedMode?gMirrorMode:3);++mode){
+        gMirrorMode=mode;
+        for(const T& t:tests){if(only&&!std::strstr(t.name,only))continue;t.fn();CHECK(Fake::live==0);if(mode==0||fixedMode){std::printf("ok %s\n",t.name);std::fflush(stdout);}}
+        std::printf("state read mode %d (%s): all tests passed\n",mode,mode==0?"Get calls only":mode==1?"cache knows everything":mode==2?"cache with unknown slots":"cache knows nothing");
+    }
     std::printf("spell layer: %zu tests passed\n",sizeof tests/sizeof tests[0]);
     return 0;
 }

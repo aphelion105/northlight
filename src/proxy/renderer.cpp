@@ -1143,6 +1143,21 @@ private:
     unsigned spellEventSeen=0,spellHazardLogs=0,spellWinFrames=0,spellWinDeferring=0,spellWinCooldown=0;bool spellInDraw=false;NorthlightSpellLayer::Counters spellWin;
     static const char* spellKindName(NorthlightSpellLayer::Kind k){static const char* const n[]={"ignore","opaque","translucentZ","defer","inplace","hazard"};return n[unsigned(k)];}
     static const char* spellInPlaceName(NorthlightSpellLayer::InPlaceKind k){static const char* const n[]={"none","water","rain","name","fade"};return n[unsigned(k)];}
+    /* the layer's bulk reads of the device state cache (mirrorState): one guard per record, the arrays read in place, every unknown slot by the Get that teaches it */
+    NorthlightSpellLayer::MirrorView spellView;alignas(MirrorGuard) unsigned char spellGuard[sizeof(MirrorGuard)];
+    static bool spellViewEnter(void* c){
+        Device* d=static_cast<Device*>(c);MirrorGuard* g=new(d->spellGuard) MirrorGuard(d->mirrorState.gate,MirrorSite::Device);
+        if(d->mirrorState.active())return true;
+        g->~MirrorGuard();return false; /* disabled, recording a state block or in a raw scope: Get calls */
+    }
+    static void spellViewLeave(void* c){reinterpret_cast<MirrorGuard*>(static_cast<Device*>(c)->spellGuard)->~MirrorGuard();}
+    void spellViewInit(){
+        DeviceMirror& m=mirrorState;NorthlightSpellLayer::MirrorView& v=spellView;
+        v.rs=m.renderStates;v.rsKnown=m.renderStateKnown;v.smp=m.samplers;v.smpKnown=m.samplerKnown;v.tex=m.textures;v.texKnown=m.textureKnown;
+        v.vsF=m.vsFloat;v.vsFKnown=m.vsFloatKnown;v.psF=m.psFloat;v.psFKnown=m.psFloatKnown;v.vsI=m.vsInt;v.vsIKnown=m.vsIntKnown;v.vsB=m.vsBool;v.vsBKnown=m.vsBoolKnown;
+        v.vs=&m.vertexShader;v.vsKnown=&m.vertexShaderKnown;v.ps=&m.pixelShader;v.psKnown=&m.pixelShaderKnown;v.decl=&m.declaration;v.declKnown=&m.declarationKnown;
+        v.fvf=&m.fvf;v.fvfKnown=&m.fvfKnown;v.vp=&m.viewport;v.vpKnown=&m.viewportKnown;v.enter=&Device::spellViewEnter;v.leave=&Device::spellViewLeave;v.ctx=this;
+    }
     static unsigned spellTextureGeneration(void*){return NorthlightMirrorResources::generation.load(std::memory_order_relaxed);}
     static void spellMarkGuard(void*,void* raw,bool on){NorthlightTrackedBuffers::markSpellGuard(raw,on);}
     static void spellBufferHook(void* context,void* raw,UINT offset,UINT size,DWORD flags,DWORD usage,unsigned locks){static_cast<Device*>(context)->spellBufferWrite(raw,offset,size,flags,usage,locks);}
@@ -1157,6 +1172,7 @@ private:
         cfg.conflictCopy=selectedBackend!=NorthlightBackend::Kind::Native; /* the copy-out read-back needs DXVK's direct-mapped dynamic buffers */
         cfg.readBackLockFlags=NorthlightUpload::readBackLock(); /* fixed before CreateDevice (backend()) */
         cfg.markGuard=&Device::spellMarkGuard;cfg.markCtx=this;cfg.savedPool=&stateBlocks;
+        spellViewInit();cfg.source=&spellView;
         cfg.generation=&Device::spellTextureGeneration;cfg.genCtx=this; /* the render-target verdict of a texture is cached until a resource proxy is created or destroyed */
         spell.attach(ext);spell.configure(cfg);
         NorthlightTrackedBuffers::spellHook={&Device::spellBufferHook,this};
