@@ -821,11 +821,15 @@ private:
     template<size_t N> void maskRestore(const NorthlightNameStencil::Set (&sets)[N],const DWORD (&previous)[N]){for(size_t i=0;i<N;++i)ext->SetRenderState(D3DRENDERSTATETYPE(sets[i].state),previous[i]);}
     // The marking duplicate right after the game's draw (the draw lambda is a pure ext->Draw* call, also in the command-stream replay). The first mark of a frame without a Clear(Z) of the world depth seen yet is preceded by one
     // stencil-only Clear (not with a scissor test on: the Clear would be cut).
+    bool nameMaskFullViewport(const D3DVIEWPORT9& v)const{return worldDepthDescKnown&&v.X==0&&v.Y==0&&v.Width==worldDepthDesc.Width&&v.Height==worldDepthDesc.Height;} /* the world depth surface's size */
     template<class Draw> void nameMarkDraw(Draw draw){
         if(nameMask.needsClear()){
-            DWORD scissor=FALSE;if(FAILED(ext->GetRenderState(D3DRS_SCISSORTESTENABLE,&scissor)))return;
+            DWORD scissor=FALSE;D3DVIEWPORT9 viewport={};if(FAILED(ext->GetRenderState(D3DRS_SCISSORTESTENABLE,&scissor))||FAILED(ext->GetViewport(&viewport)))return;
+            const bool fullViewport=nameMaskFullViewport(viewport);D3DVIEWPORT9 full=viewport;full.X=full.Y=0;full.Width=worldDepthDesc.Width;full.Height=worldDepthDesc.Height;
             if(scissor)ext->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE); /* a scissor test would cut the clear: off for the call, back after */
+            if(!fullViewport)ext->SetViewport(&full); /* Clear is clipped to the viewport: full depth size for the call, back after */
             const HRESULT cleared=ext->Clear(0,nullptr,D3DCLEAR_STENCIL,0,1.f,0);
+            if(!fullViewport)ext->SetViewport(&viewport);
             if(scissor)ext->SetRenderState(D3DRS_SCISSORTESTENABLE,TRUE);
             if(FAILED(cleared)){nameMask.disable("stencil clear failed");logf("NAMEMASK disabled: stencil clear failed");return;}
             nameMask.noteClear(true);
@@ -2245,8 +2249,8 @@ public:
             if((flags&D3DCLEAR_STENCIL)&&(stencil&NorthlightNameStencil::kBit)){nameMask.disable("the game clears stencil with the mask bit");logf("NAMEMASK disabled: the game clears stencil with the mask bit set");}
             else if(nameMask.hasMarks())flags&=~DWORD(D3DCLEAR_STENCIL);
             else{ /* only a full clear (no rects) with the scissor test off clears all of the stencil; any other clear is left alone and the first mark brings its own */
-                DWORD scissor=TRUE;
-                if(n==0&&SUCCEEDED(ext->GetRenderState(D3DRS_SCISSORTESTENABLE,&scissor))&&!scissor){if(!(flags&D3DCLEAR_STENCIL)){flags|=D3DCLEAR_STENCIL;stencil=0;}nameMask.noteClear(false);}
+                DWORD scissor=TRUE;D3DVIEWPORT9 viewport={}; /* Clear is clipped to the viewport: only a full-size viewport makes it the full clear */
+                if(n==0&&SUCCEEDED(ext->GetRenderState(D3DRS_SCISSORTESTENABLE,&scissor))&&!scissor&&SUCCEEDED(ext->GetViewport(&viewport))&&nameMaskFullViewport(viewport)){if(!(flags&D3DCLEAR_STENCIL)){flags|=D3DCLEAR_STENCIL;stencil=0;}nameMask.noteClear(false);}
             }
         }
         if ((flags&D3DCLEAR_ZBUFFER)&&terrain&&(!captured||earlyDepth.earlyCaptured)&&!applied&&enabled&&!failed) {
