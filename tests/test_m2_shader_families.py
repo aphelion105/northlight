@@ -18,15 +18,16 @@ int main(){
     for(std::size_t i=0;i<kM2ShaderFamilyCount;++i){
         const auto& e=kM2ShaderFamilies[i];
         if(i&&!(kM2ShaderFamilies[i-1].hash<e.hash)){std::printf("not strictly sorted at %zu\n",i);++bad;}
-        if(e.family<1||e.family>4){std::printf("bad family at %zu\n",i);++bad;}
+        if(e.family<1||e.family>5){std::printf("bad family at %zu\n",i);++bad;}
         if(m2ShaderFamily(e.hash)!=e.family){std::printf("lookup failed at %zu\n",i);++bad;}
         if(m2ShaderFamily(e.hash+1)!=0&&(i+1>=kM2ShaderFamilyCount||kM2ShaderFamilies[i+1].hash!=e.hash+1)){std::printf("neighbour matched at %zu\n",i);++bad;}
         if(m2ShaderFamily(e.hash-1)!=0&&(i==0||kM2ShaderFamilies[i-1].hash!=e.hash-1)){std::printf("neighbour matched at %zu\n",i);++bad;}
     }
     if(kM2ShaderFamilyCount<100){std::printf("table too small\n");++bad;}
+    if(m2ShaderFamily(UINT64_C(0x2b989ec35d3738f5))!=NorthlightM2Family::kRipples){std::printf("WaterRipples vs_3_0 not family 5\n");++bad;}
     if(m2ShaderFamily(0)!=0||m2ShaderFamily(~0ULL)!=0||m2ShaderFamily(0x0123456789abcdefULL)!=0){std::printf("unknown hash matched\n");++bad;}
-    unsigned counts[5]={};for(std::size_t i=0;i<kM2ShaderFamilyCount;++i)++counts[kM2ShaderFamilies[i].family];
-    for(unsigned f=1;f<=4;++f)if(!counts[f]){std::printf("empty family %u\n",f);++bad;}
+    unsigned counts[6]={};for(std::size_t i=0;i<kM2ShaderFamilyCount;++i)++counts[kM2ShaderFamilies[i].family];
+    for(unsigned f=1;f<=5;++f)if(!counts[f]){std::printf("empty family %u\n",f);++bad;}
     static_assert(m2ShaderFamily(kM2ShaderFamilies[0].hash)==kM2ShaderFamilies[0].family,"constexpr lookup");
     const unsigned words[]={0xfffe0300u,0x0200001fu,0x80000000u,0x900f0000u,0x0000ffffu};
     std::printf("fnv %016llx\n",(unsigned long long)NorthlightShaderTags::fnv1a(words,sizeof words));

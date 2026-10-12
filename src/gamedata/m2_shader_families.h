@@ -7,9 +7,10 @@
 #include <cstdint>
 struct M2ShaderFamilySignature { std::uint64_t hash; unsigned family; };
 // 1 Particle (CDiffuse_T1), 2 ParticleUnlit (Color_T1), 3 Model (Diffuse_T1 ... Diffuse_Env_Env),
-// 4 Projected (Diffuse_Proj_Proj, Color_Proj_Proj). 0 = not an M2 effect shader. The vs_1_1 programs shared
-// byte for byte by CDiffuse_T1 and Color_T1 are listed as 1 (identity cannot tell them apart).
-namespace NorthlightM2Family { constexpr unsigned kNone = 0, kParticle = 1, kParticleUnlit = 2, kModel = 3, kProjected = 4; }
+// 4 Projected (Diffuse_Proj_Proj, Color_Proj_Proj), 5 Ripples (WaterRipples: not an M2 shader, the water ripple draws, which the spell layer
+// treats like water). 0 = none of these. The vs_1_1 programs shared byte for byte by CDiffuse_T1 and Color_T1 are listed as 1
+// (identity cannot tell them apart).
+namespace NorthlightM2Family { constexpr unsigned kNone = 0, kParticle = 1, kParticleUnlit = 2, kModel = 3, kProjected = 4, kRipples = 5; }
 static constexpr M2ShaderFamilySignature kM2ShaderFamilies[] = {
     {UINT64_C(0x00003212e30c6098), 3},
     {UINT64_C(0x0008961cb17eac69), 3},
@@ -806,6 +807,7 @@ static constexpr M2ShaderFamilySignature kM2ShaderFamilies[] = {
     {UINT64_C(0x2b6409123886a346), 3},
     {UINT64_C(0x2b6e505db6b177db), 3},
     {UINT64_C(0x2b8a3940ef23fed7), 3},
+    {UINT64_C(0x2b989ec35d3738f5), 5},
     {UINT64_C(0x2ba0f0521e8a5f3f), 3},
     {UINT64_C(0x2ba869cc552cc445), 3},
     {UINT64_C(0x2baed3d30be92eab), 3},
@@ -1685,6 +1687,7 @@ static constexpr M2ShaderFamilySignature kM2ShaderFamilies[] = {
     {UINT64_C(0x58e0456d8636acf6), 3},
     {UINT64_C(0x58e63b7a6cbed9cd), 3},
     {UINT64_C(0x58f55df8ec5556c8), 3},
+    {UINT64_C(0x58f7445db6e3fbc9), 5},
     {UINT64_C(0x59278824804eda9c), 3},
     {UINT64_C(0x5927bb5a28eef102), 3},
     {UINT64_C(0x592e4e0bca9d8f97), 3},
@@ -4205,6 +4208,7 @@ static constexpr M2ShaderFamilySignature kM2ShaderFamilies[] = {
     {UINT64_C(0xd7296f7f53ca0ec2), 3},
     {UINT64_C(0xd7375157765a089a), 3},
     {UINT64_C(0xd7385d88f9ac7d37), 4},
+    {UINT64_C(0xd74512455b86f11f), 5},
     {UINT64_C(0xd788bfcbd36cb78b), 4},
     {UINT64_C(0xd79d7a7998b61e76), 3},
     {UINT64_C(0xd7a1d2f6e16a0be0), 3},

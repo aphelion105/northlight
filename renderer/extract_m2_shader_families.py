@@ -21,14 +21,17 @@ import client_archives  # noqa: E402
 from mpq import Archive  # noqa: E402
 from extract_signatures import variants, fnv1a64  # noqa: E402
 
-PARTICLE, PARTICLE_UNLIT, MODEL, PROJECTED = 1, 2, 3, 4
+PARTICLE, PARTICLE_UNLIT, MODEL, PROJECTED, RIPPLES = 1, 2, 3, 4, 5
 FAMILIES = {
     'Particle': (PARTICLE, ('CDiffuse_T1',)),
     'ParticleUnlit': (PARTICLE_UNLIT, ('Color_T1',)),
     'Model': (MODEL, ('Diffuse_T1', 'Diffuse_T2', 'Diffuse_T1_T2', 'Diffuse_Env', 'Diffuse_T1_Env',
                       'Diffuse_Env_T2', 'Diffuse_Env_Env')),
     'Projected': (PROJECTED, ('Diffuse_Proj_Proj', 'Color_Proj_Proj')),
+    'Ripples': (RIPPLES, ('WaterRipples',)),
 }
+# Shaders the client does not ship in every D3D model (a missing model is not an error as long as one model has them).
+SOME_MODELS = {'WaterRipples'}
 # Byte-identical programs the game ships under two particle shaders (vs_1_1 CDiffuse_T1 and Color_T1) cannot be told
 # apart by identity: they map to the first family. Any other overlap between families fails.
 SHARED = {frozenset(('Particle', 'ParticleUnlit')): 'Particle'}
@@ -64,7 +67,7 @@ def collect(client):
     paths = client_archives.chain(client, 'all')
     archives = [Archive(p) for p in paths]
     try:
-        records, rows = {}, []
+        records, rows, found = {}, [], set()
         for family, (_, shaders) in FAMILIES.items():
             for shader in shaders:
                 for model in models_of(archives):
@@ -83,8 +86,11 @@ def collect(client):
                             records[value] = (merge(old[0], family, value) if old else family, code)
                     if seen:
                         rows.append((family, shader, model, count))
-                    elif model in D3D_MODELS:
+                        found.add(shader)
+                    elif model in D3D_MODELS and shader not in SOME_MODELS:
                         raise ValueError(f'{name}: no nonempty variant in any archive of the client')
+        for shader in SOME_MODELS - found:
+            raise ValueError(f'{shader}: no nonempty variant in any model or archive of the client')
         return records, rows
     finally:
         for archive in archives:
@@ -99,9 +105,10 @@ def render(records, sources):
               '#pragma once', '#include <cstddef>', '#include <cstdint>',
               'struct M2ShaderFamilySignature { std::uint64_t hash; unsigned family; };',
               '// 1 Particle (CDiffuse_T1), 2 ParticleUnlit (Color_T1), 3 Model (Diffuse_T1 ... Diffuse_Env_Env),',
-              '// 4 Projected (Diffuse_Proj_Proj, Color_Proj_Proj). 0 = not an M2 effect shader. The vs_1_1 programs shared',
-              '// byte for byte by CDiffuse_T1 and Color_T1 are listed as 1 (identity cannot tell them apart).',
-              'namespace NorthlightM2Family { constexpr unsigned kNone = 0, kParticle = 1, kParticleUnlit = 2, kModel = 3, kProjected = 4; }',
+              '// 4 Projected (Diffuse_Proj_Proj, Color_Proj_Proj), 5 Ripples (WaterRipples: not an M2 shader, the water ripple draws, which the spell layer',
+              '// treats like water). 0 = none of these. The vs_1_1 programs shared byte for byte by CDiffuse_T1 and Color_T1 are listed as 1',
+              '// (identity cannot tell them apart).',
+              'namespace NorthlightM2Family { constexpr unsigned kNone = 0, kParticle = 1, kParticleUnlit = 2, kModel = 3, kProjected = 4, kRipples = 5; }',
               'static constexpr M2ShaderFamilySignature kM2ShaderFamilies[] = {']
     for value, (family, _) in sorted(records.items()):
         header.append('    {UINT64_C(0x%016x), %d},' % (value, FAMILIES[family][0]))
