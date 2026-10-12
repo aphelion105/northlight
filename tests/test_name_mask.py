@@ -120,7 +120,7 @@ checks['header: portable, no device calls']=all(x not in h for x in ('d3d9','win
 impl=r[r.index('template<class Capture> void prepareDrawImpl('):r.index('    // Terrain draws run with the game')]
 dom=impl.index('if(worldDomain){');dec=impl.index('nameMaskDecide(');cap=impl.index('capture(vs);')
 checks['prepareDrawImpl: kind reset first; decision in the world domain for terrain frames, armed, no debug view, before capture(vs)']=(
-    '++drawCalls;maskKind=0;' in impl and dom<dec<cap and 'if(terrain&&nameMask.armed()&&worldDebug==0)nameMaskDecide(drawWaterVS,zw,ab,sb,db,cw,viewport,vs);' in impl)
+    '++drawCalls;maskKind=0;' in impl and dom<dec<cap and 'if(terrain&&nameMask.armed()&&worldDebug==0){' in impl and 'nameMaskDecide(drawWaterVS,zw,ab,sb,db,cw,viewport,vs);}' in impl)
 dc=r[r.index('bool nameMaskReady(){'):r.index('// The bound depth buffer is the frame')]
 checks['decision: the game must not use stencil (disable once), the depth format is checked once per surface (logged, disabled without stencil), unmark needs marks, a name needs the full viewport and the world depth']=(
     dc.index('D3DRS_STENCILENABLE')<dc.index('nameMask.disable("the game uses stencil")')<dc.index('worldDepth!=maskFormatFor')<dc.index('NAMEMASK world depth format=')<dc.index('no stencil in the world depth format')
@@ -141,7 +141,7 @@ checks['states are read first, then set (alpha ref from the setting), restore pu
 md=r[r.index('HRESULT nameMaskDraw('):r.index('    // One shader query/reference per original draw')]
 checks['draw: unmark states around the game draw; the duplicate only after a successful, unclaimed, non-rain draw, inside an extension region']=(
     md.index('maskApply(NorthlightNameStencil::kUnmark,previous)')<md.index('rainBlendDraw(rain,claimed,draw)',md.index('maskApply('))<md.index('maskRestore(NorthlightNameStencil::kUnmark,previous)')
-    and 'if(SUCCEEDED(hr)&&!claimed&&!rain&&nameMask.armed())extensionWork("name mask",[&]{nameMarkDraw(draw);});' in md and 'if(!kind)return rainBlendDraw(rain,claimed,draw);' in md)
+    and 'if(SUCCEEDED(hr)&&!claimed&&!rain&&nameMask.armed())extensionWork("name mask",[&]{CpuScope c(sampledDrawTimers()?&cpuNameMark:nullptr);nameMarkDraw(draw);});' in md and 'if(!kind)return rainBlendDraw(rain,claimed,draw);' in md)
 hook=r[r.index('template<class Capture,class Draw> HRESULT drawHook('):][:3800]
 checks['drawHook: both gate paths end in nameMaskDraw (the draw lambda is a pure ext->Draw* call)']=hook.count('nameMaskDraw(rainBlend,claimed||mist,draw)')==2 and 'rainBlendDraw' not in hook
 checks['draw lambdas are pure device draws (safe to issue twice)']=len(re.findall(r'return drawHook\(t,count,\[&\]\(IDirect3DVertexShader9\* vs\)\{[^\n]*?\},draw\);\}',r))==4 and all(x in r for x in ('ext->DrawPrimitive(','ext->DrawIndexedPrimitive('))
@@ -153,12 +153,12 @@ re_=r[r.index('void renderEffects() {'):r.index('/* The guards of every mask dec
 checks['viewport: a world-depth Clear(Z) is the full clear only with a viewport of the depth surface size (Clear is clipped to it); our own stencil Clear sets a full viewport for the call and restores it']=(
     'v.Width==worldDepthDesc.Width&&v.Height==worldDepthDesc.Height' in r and mk.index('GetViewport(&viewport)')<mk.index('if(!fullViewport)ext->SetViewport(&full);')<mk.index('ext->Clear(0,nullptr,D3DCLEAR_STENCIL,0,1.f,0)')<mk.index('if(!fullViewport)ext->SetViewport(&viewport);')<mk.index('nameMask.noteClear(true)'))
 checks['renderEffects: marks only with an armed feature, a stencil depth, the world depth and no debug view; the world gets the surface for its composite, the legacy composite binds it around its quad']=(
-    'const bool maskOn=nameMask.armed()&&nameMask.hasMarks()&&maskStencil&&worldDepth&&worldDebug==0;' in re_ and 'world->setNameMask(maskOn?worldDepth:nullptr);' in re_
+    'const bool maskOn=nameMask.armed()&&nameMask.hasMarks()&&maskStencil&&worldDepth&&worldDebug==0;' in re_ and 'world->setNameMask(maskOn?worldDepth:nullptr,sampled());' in re_
     and re_.index('ext->SetDepthStencilSurface(worldDepth)')<re_.index('NorthlightNameStencil::kComposite')<re_.index('const HRESULT hr=quad(width,height);')<re_.index('ext->SetRenderState(D3DRS_STENCILENABLE,FALSE);ext->SetDepthStencilSurface(nullptr);'))
 comp=w[w.index('IDirect3DSurface9* maskDepth=nameMaskDepth;'):w.index('if(!compositeOk)return false;composited=true;')]
 checks['WorldComposite: the world depth-stencil bound and the stencil test only when the frame has marks; D3DERR_NOTFOUND counts as no depth bound; states and the previous depth-stencil restored; the pointer consumed']=(
     'got==D3DERR_NOTFOUND' in comp and 'nameMaskDepth=nullptr;' in comp and comp.index('GetDepthStencilSurface(&previousDepth)')<comp.index('SetDepthStencilSurface(maskDepth)')<comp.index('NorthlightNameStencil::kComposite')<comp.index('quad(w,h)')
-    <comp.index('SetRenderState(D3DRS_STENCILENABLE,previousStencil)')<comp.index('SetDepthStencilSurface(previousDepth)')<comp.index('drop(previousDepth)') and 'void setNameMask(IDirect3DSurface9* depthStencil){nameMaskDepth=depthStencil;}' in w)
+    <comp.index('SetRenderState(D3DRS_STENCILENABLE,previousStencil)')<comp.index('SetDepthStencilSurface(previousDepth)')<comp.index('drop(previousDepth)') and 'void setNameMask(IDirect3DSurface9* depthStencil,bool timed=false){nameMaskDepth=depthStencil;nameMaskTimed=timed;}' in w)
 checks['debug view: the last effect pass before applied=true when the frame has marks, stencil EQUAL on the bit, ZENABLE off, nothing written']=(
     'if(maskOn&&nameMask.debug)nameMaskDebugView(saved.targets[0]);' in r and r.index('nameMaskDebugView(saved.targets[0]);')<r.index('applied = true; ++appliedFrames;')
     and 'D3DRS_STENCILFUNC,D3DCMP_EQUAL' in r and 'D3DRS_STENCILWRITEMASK,0' in r)
@@ -170,7 +170,7 @@ checks['depth upgrade: the key read from the ini at CreateDevice, D24S8 checked 
 checks['kill switch: NameMask=0 never upgrades the depth (wanted=false), marks nothing, adds no clear flag and leaves the composite alone']=(
     'return NorthlightQuality::load(has?&in:nullptr,nullptr,problems).nameMask!=0;' in r and 'nameMask.setting=world->nameMask();' in r and 'bool armed()const{return setting&&!disabled;}' in h
     and 'if(terrain&&nameMask.armed()&&' in r and '(flags&D3DCLEAR_ZBUFFER)&&nameMask.armed()&&maskDsId' in r and 'nameMask.armed()&&nameMask.hasMarks()&&maskStencil' in r)
-fin=r[r.index('NAMEMASK frame=')-300:r.index('NAMEMASK frame=')+500]
+fin=r[r.index('NAMEMASK frame=')-300:r.index('NAMEMASK frame=')+1800]
 checks['frame end: one sampled NAMEMASK line (marked, unmarked, composite, depthFormat, stencil), state reset after it']=(
     'marked=%u unmarked=%u composite=%d depthFormat=%lu stencil=%d' in fin and fin.index('NAMEMASK frame=')<fin.index('nameMask.endFrame();'))
 checks['one-shot lines: depth upgrade (or why not), stencil in the game, no stencil in the format, failed clear']=all(x in r for x in ('NAMEMASK depth upgraded D24X8->D24S8','NAMEMASK depth upgrade unavailable','NAMEMASK disabled: the game draws with stencil enabled','NAMEMASK disabled: the world depth format has no stencil bits','NAMEMASK disabled: stencil clear failed'))
@@ -183,6 +183,14 @@ checks['quality keys: the last three, 0..1, 1..255 and 0..1, presets 1/1/1, 96/9
 ini=(fp.REPO/'renderer'/'windows-package'/'northlight-quality.ini').read_text();txt=(fp.REPO/'renderer'/'windows-package'/'README.txt').read_text()
 checks['documented: ini (commented, ranges and presets) and README.txt']=(';NameMask=1\n' in ini and ';NameMaskAlphaRef=96\n' in ini and ';NameMaskDebug=0\n' in ini and 'Allowed 0..1. 1 / 1 / 1' in ini and 'Allowed 1..255. 96 / 96 / 96' in ini
     and re.search(r'^  NameMask +1 / 1 / 1 ',txt,re.M) is not None and re.search(r'^  NameMaskAlphaRef +96 / 96 / 96 ',txt,re.M) is not None and re.search(r'^  NameMaskDebug +0 / 0 / 0 ',txt,re.M) is not None)
+fl=r[r.index('NAMEMASK frame='):][:900];gp=fp.src('gpu_pair_timer.h').read_text()
+checks['cost: sample frames only (sampledDrawTimers/sampled); decision timed every 8th call and scaled by calls/timed; mark, unmark and composite summed; one cpuUs total in the NAMEMASK line']=(
+    '(++nameDecideCalls&7)==1' in r and 'CpuScope c(sampledDrawTimers()?&cpuNameMark:nullptr);nameMarkDraw(draw);' in r and r.count('cpuNameUnmark:nullptr')==2 and 'cpuNameComposite+=world->takeNameMaskQpc();' in r
+    and 'double(cpuNameDecide)*double(nameDecideCalls)/double(nameDecideTimed)' in r and 'decideUs=%.1f markUs=%.1f unmarkUs=%.1f compositeUs=%.1f cpuUs=%.1f' in fl
+    and 'nameMaskTimed&&nameMaskDepth' in w and 'nameMaskQpc+=q1.QuadPart-q0.QuadPart' in w and 'cpuNameDecide=cpuNameMark=cpuNameUnmark=cpuNameComposite=0;' in r)
+checks['GPU: timestamp pair around each mark duplicate (clear and draw) on sample frames, one disjoint interval, never waits (flags 0), logged by poll under diagnostics']=(
+    'nameGpu->start(frame)' in r and 'sampledDrawTimers()&&nameGpu' in r and 'if(diagnostics())nameGpu->poll();nameGpu->endFrame();' in r and 'GetData(&a,sizeof a,0)' in gp and 'NAMEMASK GPU frame=%llu pairs=%u gpuUs=%.1f maxUs=%.1f' in gp
+    and 'D3DQUERYTYPE_TIMESTAMPDISJOINT' in gp and 'D3DGETDATA_FLUSH' not in gp)
 checks['banner: 0.3.212 with the name mask']='logf("Northlight renderer 0.3.212;' in r and "floating names keep the game's colour (stencil mask); backend=%s" in r
 for n,ok in checks.items():print(('PASS ' if ok else 'FAIL ')+n)
 assert all(checks.values())

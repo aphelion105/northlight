@@ -13,11 +13,12 @@ from pathlib import Path
 import re,sys
 HERE=Path(__file__).resolve().parent
 FILES=['renderer.cpp','world_renderer.h','world_shadow_experiment.inl','world_point_rendering.inl','celestial_disc_renderer.h',
-       'shadow_blob_filter.h','water_renderer.h','gpu_profile.h','gpu_frame_timer.h','world_diagnostics.h','world_replay_probe.inl','world_rigid_memory.inl']
+       'shadow_blob_filter.h','water_renderer.h','gpu_profile.h','gpu_pair_timer.h','gpu_frame_timer.h','world_diagnostics.h','world_replay_probe.inl','world_rigid_memory.inl']
 # 0.3.149: profiling()/profileSampled() = RenderProfile, which requires Diagnostics=1 (NorthlightQuality::renderProfile).
 GATES=('NorthlightDiagnostics::enabled()','diagnostics()','sampled()','captureSampled','if(diagnostics)','shadowFate.active()','sampledFrame','profiling()','profileSampled()')
 # Ungated lines that stay with Diagnostics=0: format prefix -> label.
 KEEP={
+ 'NAMEMASK depth upgrade':'one-off: the depth format upgrade (or why not), once per session, 0.3.212 task 32','NAMEMASK disabled':'one-off: the name mask switched itself off (game stencil, no stencil in the format, failed clear), once per session','NAMEMASK world depth format':'one-off: the world depth format verdict, once per surface','NAMEMASK GPU frame':'sampled: logged by poll(), which the renderer calls only under diagnostics()','NAMEMASK GPU timer disabled':'error: query failure, once',
  'WORLD fog clouds noise':'one-off: the noise volume generated (worker) and uploaded, 0.3.199','WORLD fog clouds disabled':'error: shader or volume creation failed, once per device, 0.3.199','WORLD actor shadow map disabled':'error: shader creation failed, once per device, 0.3.209','WORLD fog temporal disabled':'error: shader creation failed, once per device, 0.3.199','CSTREAM GPU latency limit unavailable':'error: event query creation failed, once per device, 0.3.200 (pipeline)','FRAMEMARKERS on':'one-off: the frame marker file exists at device creation, 0.3.200 (frame markers)','GPUBUDGET timer disabled':'error: query failure, once per device, 0.3.200 (gpu budget)',
  'JOBS workers':'start-up one-off: the replay job pool started (0.3.200 jobs)','JOBS unavailable':'start-up one-off: no job worker could start (0.3.200 jobs)',
  'LOGGER intervalMs':'indirect: reportLogCost() runs only in the gated MIRROR block',
