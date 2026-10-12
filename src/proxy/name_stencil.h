@@ -17,8 +17,10 @@ enum State : unsigned {ZEnable=7,ZWriteEnable=14,AlphaTestEnable=15,AlphaRef=24,
 constexpr unsigned long kBlendSrcAlpha=5,kBlendSrcColor=3;
 constexpr unsigned long kCmpGreater=5,kCmpNotEqual=6,kCmpAlways=8,kOpKeep=1,kOpReplace=3;
 struct Set {unsigned state;unsigned long value;};
-// The name draw itself: stencil REPLACE with ref 0x80 where the game's alpha and depth tests pass; nothing else of the game's state changes.
-inline constexpr Set kMark[]={{StencilEnable,1},{StencilFunc,kCmpAlways},{StencilPass,kOpReplace},{StencilFail,kOpKeep},{StencilZFail,kOpKeep},{StencilRef,kBit},{StencilWriteMask,kBit},{TwoSidedStencilMode,0}};
+// The name draw itself: stencil REPLACE with ref 0x80 where the game's alpha and depth tests pass; nothing else of the game's state changes. The states below have no effect while STENCILENABLE is off (the guard
+// established that the game never turns it on), so they are set once and left; a name run only toggles STENCILENABLE. kMarkProbe are the two that tell the set is still in place.
+inline constexpr Set kMark[]={{StencilFunc,kCmpAlways},{StencilPass,kOpReplace},{StencilFail,kOpKeep},{StencilZFail,kOpKeep},{StencilRef,kBit},{StencilWriteMask,kBit},{TwoSidedStencilMode,0}};
+inline constexpr Set kMarkProbe[]={{StencilPass,kOpReplace},{StencilRef,kBit}};
 // Around a name draw whose game alpha test is off: GREATER 0 drops only alpha-0 pixels, which SRCALPHA blending leaves invisible.
 inline constexpr Set kAlphaGuard[]={{AlphaTestEnable,1},{AlphaFunc,kCmpGreater},{AlphaRef,0}};
 // Around a depth-final draw: stencil REPLACE with ref 0 where it passes (the draw's own colour, depth and alpha test unchanged).
@@ -34,11 +36,13 @@ template<class B,class S,class D,class C> inline bool nameBlend(B&& blend,S&& sr
     const unsigned long d=dst();
     return src()==kBlendSrcAlpha&&d!=NorthlightTranslucentDepth::kBlendZero&&d!=kBlendSrcColor;
 }
+// Timer calibration: the mean ticks of an empty timing scope, subtracted per scope from the measured sums.
+inline double netTicks(double measured,double scopes,double pairTicks){const double v=measured-scopes*pairTicks;return v>0?v:0;}
 // Per-frame bookkeeping and the session verdict. Frame counters feed NAMEMASK.
 struct Mask {
     bool setting=false,disabled=false,debug=false;const char* reason="";
     // Frame
-    unsigned marks=0,runs=0,unmarkDraws=0,stencilClears=0;bool cleared=false,composited=false;
+    unsigned marks=0,runs=0,unmarkDraws=0,stencilClears=0;bool cleared=false,composited=false,stencilChecked=false /* the game-uses-stencil guard has read STENCILENABLE this frame */;
     // Totals
     unsigned marksTotal=0;
     bool armed()const{return setting&&!disabled;}
@@ -48,6 +52,6 @@ struct Mask {
     void noteClear(bool ours){cleared=true;if(ours)++stencilClears;}
     void noteMark(){++marks;++marksTotal;}
     void disable(const char* why){if(!disabled){disabled=true;reason=why;}}
-    void endFrame(){marks=runs=unmarkDraws=stencilClears=0;cleared=composited=false;}
+    void endFrame(){marks=runs=unmarkDraws=stencilClears=0;cleared=composited=stencilChecked=false;}
 };
 }

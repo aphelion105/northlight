@@ -416,7 +416,9 @@ private:
         NorthlightTranslucentDepth::kBlendZero==D3DBLEND_ZERO&&NorthlightNameStencil::kBit==0x80,"name stencil values");
     /* Cost of the mask on sample frames only (sampledDrawTimers): QPC ticks of the decision (every 8th world-domain call timed, scaled by calls/timed), the mark duplicates (clear, state set, draw, restore), the unmark state wraps and the
        composite bind/state set/restore (the quad itself is WorldComposite); GPU time of the duplicates by timestamp pairs (gpu_pair_timer.h). */
-    LONGLONG cpuNameDecide=0,cpuNameMark=0,cpuNameUnmark=0,cpuNameComposite=0;unsigned nameDecideCalls=0,nameDecideTimed=0;bool nameRun=false;DWORD nameRunPrevious[sizeof NorthlightNameStencil::kMark/sizeof NorthlightNameStencil::kMark[0]]; /* a run of consecutive name draws keeps kMark applied: the values it replaced */
+    LONGLONG cpuNameDecide=0,cpuNameMark=0,cpuNameUnmark=0,cpuNameComposite=0;unsigned nameDecideCalls=0,nameDecideTimed=0;bool nameRun=false; /* a run of consecutive name draws keeps STENCILENABLE on (the other stencil states of kMark stay set) */
+    unsigned nameMarkScopes=0,nameUnmarkScopes=0,nameCompositeScopes=0;double qpcPairTicks=0; /* timing scopes taken on sample frames, and the calibrated overhead of one (measured at device creation with Diagnostics) */
+    struct CountedScope{CpuScope scope;CountedScope(LONGLONG* total,unsigned& count):scope(total){if(total)++count;}};
     NorthlightNameStencil::Mask nameMask;int maskKind=0; /* maskKind: this draw is 1 a name that gets marked, 2 a depth-final draw that unmarks (set by prepareDrawImpl, consumed by nameMaskDraw) */
     IDirect3DSurface9* maskFormatFor=nullptr;bool maskStencil=false;const void* maskDsId=nullptr; /* identities only: the world depth the format verdict is for, and the one whose Clear(Z) also clears stencil */
     void resetTranslucentCensus(){censusDraws=lastOpaqueZAt=clearResolveAt=earlyResolves=earlyResolveAt=earlyResolveUndone=0;}
@@ -749,11 +751,11 @@ private:
             if (error(ext->SetRenderTarget(0,saved.targets[0]),"composition render target")) return false;
             ext->SetTexture(2,ao); ext->SetPixelShader(compositePS);
             bool legacyMasked=false;
-            {CpuScope bind(sampled()&&maskOn?&cpuNameComposite:nullptr);
+            {CountedScope bind(sampled()&&maskOn?&cpuNameComposite:nullptr,nameCompositeScopes);
              if(maskOn&&SUCCEEDED(ext->SetDepthStencilSurface(worldDepth))){legacyMasked=true;for(const auto& set:NorthlightNameStencil::kComposite)ext->SetRenderState(D3DRENDERSTATETYPE(set.state),set.value);}}
             if(legacyMasked){
                 const HRESULT hr=quad(width,height);
-                {CpuScope restore(sampled()?&cpuNameComposite:nullptr);ext->SetRenderState(D3DRS_STENCILENABLE,FALSE);ext->SetDepthStencilSurface(nullptr);} /* effectState's values */
+                {CountedScope restore(sampled()?&cpuNameComposite:nullptr,nameCompositeScopes);ext->SetRenderState(D3DRS_STENCILENABLE,FALSE);ext->SetDepthStencilSurface(nullptr);} /* effectState's values */
                 if(error(hr,"composition pass")) return false;
             }else
             if (error(quad(width,height),"composition pass")) return false;
@@ -773,7 +775,7 @@ private:
                 if(++worldSkipEpisodes<=32||diagnostics())logf("WORLD skip episode reason=%s last=%s frames=%u ms=%lu",worldSkipFirst,worldSkipLast,worldSkipRun,(unsigned long)(GetTickCount()-worldSkipStart));
                 worldSkipRun=0;
             }
-            cpuNameComposite+=world->takeNameMaskQpc(); /* 0.3.212 (task 32): the composite quad's bind/state set/restore, sample frames */
+            {const LONGLONG t=world->takeNameMaskQpc();cpuNameComposite+=t;if(t)nameCompositeScopes+=2;} /* 0.3.212 (task 32): the composite quad's bind/state set/restore, sample frames */
             // A folded frame the world did not composite (skipped or failed; it left the target
             // untouched): re-establish the effect state it changed, then the legacy composite.
             if(fold&&!world->composited){effectState();bindEffects(ao);if(!legacyComposite())return;}
@@ -793,8 +795,11 @@ private:
     }
     /* The guards of every mask decision: the game must not use stencil (a draw seen with STENCILENABLE on disables the feature for the session), the world depth must have stencil bits (format checked once per surface). */
     bool nameMaskReady(){
-        DWORD stencilOn=FALSE;if(!nameRun&&FAILED(ext->GetRenderState(D3DRS_STENCILENABLE,&stencilOn)))return false; /* during a run STENCILENABLE is ours */
-        if(stencilOn){nameMask.disable("the game uses stencil");logf("NAMEMASK disabled: the game draws with stencil enabled");return false;}
+        if(!nameMask.stencilChecked){ /* once per frame: the game's own STENCILENABLE is then known FALSE for the frame's runs */
+            DWORD stencilOn=FALSE;if(FAILED(ext->GetRenderState(D3DRS_STENCILENABLE,&stencilOn)))return false;
+            if(stencilOn){nameMask.disable("the game uses stencil");logf("NAMEMASK disabled: the game draws with stencil enabled");return false;}
+            nameMask.stencilChecked=true;
+        }
         if(worldDepth!=maskFormatFor){
             maskFormatFor=worldDepth;maskStencil=worldDepthDescKnown&&NorthlightNameStencil::hasStencil(worldDepthDesc.Format,MAKEFOURCC('I','N','T','Z'));maskDsId=maskStencil?static_cast<const void*>(worldDepth):nullptr;
             logf("NAMEMASK world depth format=%lu stencil=%d upgradedSurfaces=%u",(unsigned long)worldDepthDesc.Format,int(maskStencil),NorthlightStream::depthUpgrades.load(std::memory_order_relaxed));
@@ -807,8 +812,11 @@ private:
     // (nameBlend), the full viewport and the world depth bound. Screen UI never gets here marked: it fails the c3 test, and after the boundary prepareDrawImpl returns first.
     template<class Z,class B,class S,class D,class C> void nameMaskDecide(bool water,Z&& zw,B&& ab,S&& sb,D&& db,C&& cw,const D3DVIEWPORT9& viewport,IDirect3DVertexShader9* vs){
         if(!nameMaskReady())return;
-        if(nameMask.hasMarks()&&NorthlightTranslucentDepth::isUndo(water,zw,ab,sb,db,cw)){maskKind=2;++nameMask.unmarkDraws;return;}
-        if(water||(classifyVs(vs).entry&kTagMask)!=2||!NorthlightNameStencil::nameBlend(ab,sb,db,cw))return;
+        if(water||(classifyVs(vs).entry&kTagMask)!=2){ /* the cheapest test first (the one-entry shader cache beforeDraw just warmed): all but the names stop at it */
+            if(nameMask.hasMarks()&&NorthlightTranslucentDepth::isUndo(water,zw,ab,sb,db,cw)){maskKind=2;++nameMask.unmarkDraws;}
+            return;
+        }
+        if(!NorthlightNameStencil::nameBlend(ab,sb,db,cw))return;
         float c3[4];if(FAILED(ext->GetVertexShaderConstantF(3,c3,1))||NorthlightUiBoundary::clipWOne(c3))return;
         if(viewport.X==0&&viewport.Y==0&&viewport.Width==width&&viewport.Height==height&&worldDepthBound())maskKind=1;
     }
@@ -843,12 +851,16 @@ private:
     bool nameMaskRunBegin(){
         if(nameRun)return true;
         if(nameMask.needsClear()&&!nameMaskClear())return false;
-        if(!maskApply(NorthlightNameStencil::kMark,nameRunPrevious))return false;
+        DWORD pass=0,ref=0; /* the probe: another state source (a state block the game applied, the composite or the debug view) may have changed the set since the last run */
+        if(FAILED(ext->GetRenderState(D3DRS_STENCILPASS,&pass))||FAILED(ext->GetRenderState(D3DRS_STENCILREF,&ref)))return false;
+        if(pass!=NorthlightNameStencil::kMarkProbe[0].value||ref!=NorthlightNameStencil::kMarkProbe[1].value)
+            for(const auto& set:NorthlightNameStencil::kMark)ext->SetRenderState(D3DRENDERSTATETYPE(set.state),DWORD(set.value));
+        ext->SetRenderState(D3DRS_STENCILENABLE,TRUE);
         nameRun=true;++nameMask.runs;return true;
     }
     void nameMaskRunEnd(){
         if(!nameRun)return;
-        nameRun=false;CpuScope c(sampledDrawTimers()?&cpuNameMark:nullptr);maskRestore(NorthlightNameStencil::kMark,nameRunPrevious);
+        nameRun=false;CountedScope c(sampledDrawTimers()?&cpuNameMark:nullptr,nameMarkScopes);ext->SetRenderState(D3DRS_STENCILENABLE,FALSE); /* its value before the run: the guard saw FALSE this frame */
     }
     // prepareDrawImpl's first step: while a run is open, only a draw with the UI-hash vertex shader (a name, or the boundary which ends the run in renderEffects) may keep it; the extension's own draws for any other draw
     // (depth resolve, captures) must not meet the stencil states.
@@ -863,18 +875,18 @@ private:
         if(!kind)return rainBlendDraw(rain,claimed,draw);
         if(kind==2){
             DWORD previous[sizeof NorthlightNameStencil::kUnmark/sizeof NorthlightNameStencil::kUnmark[0]];bool set=false;
-            extensionWork("name mask",[&]{CpuScope c(sampledDrawTimers()?&cpuNameUnmark:nullptr);set=maskApply(NorthlightNameStencil::kUnmark,previous);});
+            extensionWork("name mask",[&]{CountedScope c(sampledDrawTimers()?&cpuNameUnmark:nullptr,nameUnmarkScopes);set=maskApply(NorthlightNameStencil::kUnmark,previous);});
             const HRESULT hr=rainBlendDraw(rain,claimed,draw);
-            if(set)extensionWork("name mask",[&]{CpuScope c(sampledDrawTimers()?&cpuNameUnmark:nullptr);maskRestore(NorthlightNameStencil::kUnmark,previous);});
+            if(set)extensionWork("name mask",[&]{CountedScope c(sampledDrawTimers()?&cpuNameUnmark:nullptr,nameUnmarkScopes);maskRestore(NorthlightNameStencil::kUnmark,previous);});
             return hr;
         }
         DWORD alphaPrevious[sizeof NorthlightNameStencil::kAlphaGuard/sizeof NorthlightNameStencil::kAlphaGuard[0]];bool guard=false;
         if(claimed||!nameMask.armed())return rainBlendDraw(rain,claimed,draw);
-        extensionWork("name mask",[&]{CpuScope c(sampledDrawTimers()?&cpuNameMark:nullptr);
+        extensionWork("name mask",[&]{CountedScope c(sampledDrawTimers()?&cpuNameMark:nullptr,nameMarkScopes);
             if(!nameMaskRunBegin())return;
             DWORD alphaTest=TRUE;if(SUCCEEDED(ext->GetRenderState(D3DRS_ALPHATESTENABLE,&alphaTest))&&!alphaTest)guard=maskApply(NorthlightNameStencil::kAlphaGuard,alphaPrevious);});
         const HRESULT hr=rainBlendDraw(rain,claimed,draw);
-        if(guard)extensionWork("name mask",[&]{CpuScope c(sampledDrawTimers()?&cpuNameMark:nullptr);maskRestore(NorthlightNameStencil::kAlphaGuard,alphaPrevious);});
+        if(guard)extensionWork("name mask",[&]{CountedScope c(sampledDrawTimers()?&cpuNameMark:nullptr,nameMarkScopes);maskRestore(NorthlightNameStencil::kAlphaGuard,alphaPrevious);});
         if(SUCCEEDED(hr)&&nameRun)nameMask.noteMark();
         return hr;
     }
@@ -1913,7 +1925,8 @@ public:
     Device(IDirect3DDevice9* d,IDirect3D9* p):GuardedMirrorDevice(d,&mirrorState),parent(p),mirrorResources(this,mirrorState.gate,&mirrorEscape,&mirrorState,d),ext(new ExtensionDevice(d,&mirrorState)),stateBlocks(ext) {
         mirrorState.gate.ownerTid=MirrorGuard::threadId(); /* 0.3.180 (D0): the CreateDevice caller */
         mirrorState.gate.reportContext=this;mirrorState.gate.report=&gateForeignReport;
-        parent->AddRef(); QueryPerformanceFrequency(&cpuFrequency); gpuProfile=std::make_unique<NorthlightGpuProfile>(ext);gpuTimer=std::make_unique<NorthlightGpuFrameTimer>(ext); world=std::make_unique<WorldRenderer>(ext);world->setEffectsBuckets(&effectsBuckets);
+        parent->AddRef(); QueryPerformanceFrequency(&cpuFrequency); if(diagnostics()){LONGLONG sum=0;for(int i=0;i<320;++i){LONGLONG t=0;{CpuScope empty(&t);}if(i>=64)sum+=t;}qpcPairTicks=double(sum)/256.0;logf("NAMEMASK timer calibration: an empty timing scope costs %.1f ticks (%.0f ns)",qpcPairTicks,cpuFrequency.QuadPart>0?qpcPairTicks*1e9/double(cpuFrequency.QuadPart):0.0);} /* 0.3.212 (task 32): subtracted from the NAMEMASK sums */
+        gpuProfile=std::make_unique<NorthlightGpuProfile>(ext);gpuTimer=std::make_unique<NorthlightGpuFrameTimer>(ext); world=std::make_unique<WorldRenderer>(ext);world->setEffectsBuckets(&effectsBuckets);
         world->setConstantEpochSource({&mirrorState.constantEpoch,&mirrorState}); /* 0.3.180 (C1): read in place under the draw's gate */
         char skyRoot[MAX_PATH*3];WideCharToMultiByte(CP_UTF8,0,rootPath,-1,skyRoot,sizeof skyRoot,nullptr,nullptr);celestialDiscs=std::make_unique<NorthlightCelestialDiscRenderer>(ext,std::string(skyRoot)+"world-cache/celestial");celestialDiscs->setTerrainSource([this]{return world->celestialTerrainGeneration();},[this](unsigned body,const float* matrix){return world->drawCelestialTerrain(body,matrix);},[this](unsigned body){world->noteCelestialTerrainReuse(body);});celestialDiscs->setIdentityMap([this](std::uintptr_t exposed){return mirrorResources.rawOf(exposed,!mirrorState.enabled);});shadowBlobs=std::make_unique<NorthlightShadowBlobFilter>(ext,world->blobShadowStrength());shadowBlobs->setTexturePeek([](void* e,DWORD stage,IDirect3DBaseTexture9*& out){return static_cast<ExtensionDevice*>(e)->peekTexture(stage,out);},ext); /* 0.3.196 (task 12): borrowed stage-0 identity */water=std::make_unique<NorthlightWaterRenderer>(ext); logf("D3D9 device wrapped. Ctrl+Shift+F7 fog; F8 GI; F9 shadows; F10 all effects; F12 world debug (all with Ctrl+Shift). F11 unassigned. Components start ON; GI cache stays warm.");
         contactAO=world->contactAO(); /* 0.3.201 (task 18) */
@@ -1951,7 +1964,7 @@ public:
     ULONG STDMETHODCALLTYPE Release() override {auto n=InterlockedDecrement(&refs);if(!n)delete this;return n;}
     HRESULT STDMETHODCALLTYPE GetDirect3D(IDirect3D9** out) override { Guard mirrorLock(mirrorState.gate);if(!out)return D3DERR_INVALIDCALL;*out=parent;parent->AddRef();return D3D_OK;}
     HRESULT STDMETHODCALLTYPE Reset(D3DPRESENT_PARAMETERS* pp) override { Guard mirrorLock(mirrorState.gate);
-        nameMaskRunEnd(); /* 0.3.212 (task 32) */
+        nameMaskRunEnd();nameMask.stencilChecked=false; /* 0.3.212 (task 32) */
         rainMrtUnbind(); /* 0.3.202 (rain mask MRT) */
         NorthlightMirrorResources::generation.fetch_add(1,std::memory_order_relaxed); /* task 34: Reset drops the render-target verdicts of every texture */
         if(spellOn){spell.reset();spellSync();spellQueryN=0;spellQueryUnknown=false;spellTexFor=nullptr;spellTexKey=nullptr;spellFade.reset();} /* task 34: no state block, upload buffer or surface may outlive the device state */
@@ -2155,10 +2168,12 @@ public:
         if(sampled())logf("EFFECT trailing world frame=%u worldDraws=%u skinnedDraws=%u",frame,postEffectWorldDraws,postEffectSkinnedDraws);
         if(sampled()&&nameMask.armed()){
             const double us=cpuFrequency.QuadPart>0?1e6/double(cpuFrequency.QuadPart):0.0;
-            const double decide=nameDecideTimed?double(cpuNameDecide)*double(nameDecideCalls)/double(nameDecideTimed)*us:0.0,mark=double(cpuNameMark)*us,unmark=double(cpuNameUnmark)*us,composite=double(cpuNameComposite)*us;
-            logf("NAMEMASK frame=%u marked=%u runs=%u unmarked=%u composite=%d depthFormat=%lu stencil=%d decisions=%u decisionsTimed=%u decideUs=%.1f markUs=%.1f unmarkUs=%.1f compositeUs=%.1f cpuUs=%.1f",frame,nameMask.marks,nameMask.runs,nameMask.unmarkDraws,int(nameMask.composited),(unsigned long)(worldDepthDescKnown?worldDepthDesc.Format:D3DFMT_UNKNOWN),int(maskStencil),nameDecideCalls,nameDecideTimed,decide,mark,unmark,composite,decide+mark+unmark+composite);
+            using NorthlightNameStencil::netTicks; /* the calibrated overhead of an empty timing scope is subtracted per scope */
+            const double decide=nameDecideTimed?netTicks(double(cpuNameDecide),double(nameDecideTimed),qpcPairTicks)*double(nameDecideCalls)/double(nameDecideTimed)*us:0.0,mark=netTicks(double(cpuNameMark),nameMarkScopes,qpcPairTicks)*us,
+                unmark=netTicks(double(cpuNameUnmark),nameUnmarkScopes,qpcPairTicks)*us,composite=netTicks(double(cpuNameComposite),nameCompositeScopes,qpcPairTicks)*us;
+            logf("NAMEMASK frame=%u marked=%u runs=%u unmarked=%u composite=%d depthFormat=%lu stencil=%d qpcPairNs=%.0f decisions=%u decisionsTimed=%u decideUs=%.1f markUs=%.1f unmarkUs=%.1f compositeUs=%.1f cpuUs=%.1f",frame,nameMask.marks,nameMask.runs,nameMask.unmarkDraws,int(nameMask.composited),(unsigned long)(worldDepthDescKnown?worldDepthDesc.Format:D3DFMT_UNKNOWN),int(maskStencil),qpcPairTicks*1e9/double(cpuFrequency.QuadPart>0?cpuFrequency.QuadPart:1),nameDecideCalls,nameDecideTimed,decide,mark,unmark,composite,decide+mark+unmark+composite);
         }
-        cpuNameDecide=cpuNameMark=cpuNameUnmark=cpuNameComposite=0;nameDecideCalls=nameDecideTimed=0;
+        cpuNameDecide=cpuNameMark=cpuNameUnmark=cpuNameComposite=0;nameDecideCalls=nameDecideTimed=nameMarkScopes=nameUnmarkScopes=nameCompositeScopes=0;
         nameMask.endFrame(); /* 0.3.212 (task 32): marks never outlive the frame (the next frame's first Clear(Z) clears the stencil) */
         if(sampled())logf("TRANSLUCENT frame=%u draws=%u lastOpaqueZ=%u clearResolve=%u earlyResolve=%u earlyResolveAt=%u earlyResolveTotal=%u earlyResolveUndone=%u earlyResolveUndoneTotal=%u",frame,censusDraws,lastOpaqueZAt,clearResolveAt,earlyResolves,earlyResolveAt,earlyResolveTotal,earlyResolveUndone,earlyResolveUndoneTotal);
         postEffectWorldDraws=postEffectSkinnedDraws=0;

@@ -65,21 +65,26 @@ int main(){
         assert(upgradedDepthFormat(77)==77&&depthUpgrades.load()==0);
         depthUpgrade.store(true);assert(upgradedDepthFormat(77)==75&&depthUpgrades.load()==1&&upgradedDepthFormat(75)==75&&upgradedDepthFormat(80)==80&&upgradedDepthFormat(0x5a544e49)==0x5a544e49&&depthUpgrades.load()==1);
         depthUpgrade.store(false);assert(upgradedDepthFormat(77)==77); }
-    // marking inside the game's own draw: stencil REPLACE 0x80 where the game's alpha and depth tests pass; colour, Z, blend and the game's alpha test are not touched
+    // marking inside the game's own draw: the stencil states are set once (kMark, no effect while STENCILENABLE is off), a run only toggles STENCILENABLE; REPLACE 0x80 where the game's alpha and depth tests pass
     {   Dev d;d.rs[ZWriteEnable]=1;d.rs[AlphaTestEnable]=1;d.rs[AlphaFunc]=kCmpGreater;d.rs[AlphaRef]=96;d.rs[StencilEnable]=0;
         DWORD prev[sizeof kMark/sizeof kMark[0]];apply(d,kMark,sizeof kMark/sizeof kMark[0],prev,0);
-        assert(d.get(StencilEnable)==1&&d.get(StencilRef)==0x80&&d.get(StencilWriteMask)==0x80&&d.get(StencilFunc)==kCmpAlways&&d.get(StencilPass)==kOpReplace&&d.get(TwoSidedStencilMode)==0);
-        for(const auto& st:kMark)assert(st.state>=StencilEnable&&st.state<=TwoSidedStencilMode); /* stencil states only: the game's colour, Z, blend and alpha test stay */
+        assert(d.get(StencilRef)==0x80&&d.get(StencilWriteMask)==0x80&&d.get(StencilFunc)==kCmpAlways&&d.get(StencilPass)==kOpReplace&&d.get(TwoSidedStencilMode)==0);
+        for(const auto& st:kMark)assert(st.state>StencilEnable&&st.state<=TwoSidedStencilMode); /* stencil states only, never the enable: the game's colour, Z, blend and alpha test stay */
+        assert(kMarkProbe[0].state==StencilPass&&kMarkProbe[0].value==kOpReplace&&kMarkProbe[1].state==StencilRef&&kMarkProbe[1].value==kBit);
+        d.draw(true,true);assert(d.stencil==0);                       /* stencil off: states set, nothing marked */
+        d.set(StencilEnable,1);
         assert(d.get(AlphaTestEnable)==1&&d.get(AlphaRef)==96&&d.get(ZWriteEnable)==1);
         d.draw(true,true);assert(d.stencil==0x80);d.stencil=0;d.draw(false,true);assert(d.stencil==0);d.draw(true,false);assert(d.stencil==0); /* occluded or alpha-rejected pixels are not marked */
-        restore(d,kMark,sizeof kMark/sizeof kMark[0],prev);assert(d.get(StencilEnable)==0); }
+        d.set(StencilEnable,0);d.stencil=0;d.draw(true,true);assert(d.stencil==0); }
     // alpha test off in the game: GREATER 0 around the draw, restored after; it drops only alpha-0 pixels
     {   Dev d;d.rs[AlphaTestEnable]=0;d.rs[AlphaFunc]=kCmpAlways;d.rs[AlphaRef]=5;DWORD prev[sizeof kAlphaGuard/sizeof kAlphaGuard[0]];apply(d,kAlphaGuard,sizeof kAlphaGuard/sizeof kAlphaGuard[0],prev,0);
         assert(d.get(AlphaTestEnable)==1&&d.get(AlphaFunc)==kCmpGreater&&d.get(AlphaRef)==0);restore(d,kAlphaGuard,sizeof kAlphaGuard/sizeof kAlphaGuard[0],prev);assert(d.get(AlphaTestEnable)==0&&d.get(AlphaFunc)==kCmpAlways&&d.get(AlphaRef)==5); }
-    // a run of names: the states are set once and restored once, every name in it marks
-    {   Dev d;d.rs[StencilEnable]=0;DWORD prev[sizeof kMark/sizeof kMark[0]];apply(d,kMark,sizeof kMark/sizeof kMark[0],prev,0);const unsigned setsAfterBegin=d.sets;
-        for(int i=0;i<5;++i){d.stencil=0;d.draw(true,true);assert(d.stencil==0x80);}
-        assert(d.sets==setsAfterBegin);restore(d,kMark,sizeof kMark/sizeof kMark[0],prev);assert(d.sets==2*setsAfterBegin&&d.get(StencilEnable)==0); }
+    // names: the first run of a frame sets the 7 states and enables; every later run only toggles STENCILENABLE (2 calls); the probe tells when another source changed the set
+    {   Dev d;d.rs[StencilEnable]=0;DWORD prev[sizeof kMark/sizeof kMark[0]];apply(d,kMark,sizeof kMark/sizeof kMark[0],prev,0);const unsigned afterSet=d.sets;
+        for(int i=0;i<5;++i){d.set(StencilEnable,1);d.stencil=0;d.draw(true,true);assert(d.stencil==0x80);d.set(StencilEnable,0);}
+        assert(d.sets==afterSet+10);
+        d.compositeKeeps(); /* the composite changes FUNC/PASS/REF: the probe sees it and the next run re-sets the states */
+        assert(d.get(kMarkProbe[0].state)!=kMarkProbe[0].value||d.get(kMarkProbe[1].state)==kBit); }
     // unmark wrap: pixels the depth-final draw covers lose the bit; the rest keep it; restored afterwards
     {   Dev d;d.stencil=0x80;d.rs[StencilEnable]=0;DWORD prev[sizeof kUnmark/sizeof kUnmark[0]];apply(d,kUnmark,sizeof kUnmark/sizeof kUnmark[0],prev,96);
         d.draw(false,true);assert(d.stencil==0x80);d.draw(true,true);assert(d.stencil==0);restore(d,kUnmark,sizeof kUnmark/sizeof kUnmark[0],prev);assert(d.get(StencilEnable)==0); }
@@ -97,7 +102,7 @@ int main(){
     // glue: a frame with the game's Clear, a mark, an unmark and the composite; a frame without a Clear gets ours; a frame without marks costs no unmark draw
     {   Mask m;m.setting=true;Dev d;d.rs[StencilEnable]=0;
         auto gameClear=[&]{if(m.armed()&&!m.hasMarks()){d.clearStencil();m.noteClear(false);}};
-        auto mark=[&](bool depthPass,bool alphaPass){if(m.needsClear()){d.clearStencil();m.noteClear(true);}DWORD p[sizeof kMark/sizeof kMark[0]];apply(d,kMark,sizeof kMark/sizeof kMark[0],p,0);d.draw(depthPass,alphaPass);restore(d,kMark,sizeof kMark/sizeof kMark[0],p);m.noteMark();};
+        auto mark=[&](bool depthPass,bool alphaPass){if(m.needsClear()){d.clearStencil();m.noteClear(true);}DWORD p[sizeof kMark/sizeof kMark[0]];apply(d,kMark,sizeof kMark/sizeof kMark[0],p,0);d.set(StencilEnable,1);d.draw(depthPass,alphaPass);d.set(StencilEnable,0);m.noteMark();};
         auto unmark=[&]{if(!m.hasMarks())return;DWORD p[sizeof kUnmark/sizeof kUnmark[0]];apply(d,kUnmark,sizeof kUnmark/sizeof kUnmark[0],p,0);d.draw(true,true);restore(d,kUnmark,sizeof kUnmark/sizeof kUnmark[0],p);++m.unmarkDraws;};
         d.stencil=0x80;
         gameClear();assert(d.stencil==0&&d.clears==1);
@@ -133,7 +138,8 @@ checks['decision: the game must not use stencil (disable once), the depth format
     dc.index('D3DRS_STENCILENABLE')<dc.index('nameMask.disable("the game uses stencil")')<dc.index('worldDepth!=maskFormatFor')<dc.index('NAMEMASK world depth format=')<dc.index('no stencil in the world depth format')
     <dc.index('nameMask.hasMarks()&&NorthlightTranslucentDepth::isUndo(')<dc.index('maskKind=2')<dc.index('maskKind=1'))
 checks['names: the UI-hash vertex shader (tag 2) whose c3 is not the screen-space (0,0,0,1) of the boundary, never water, alpha-blended, full viewport, world depth bound']=(
-    'if(water||(classifyVs(vs).entry&kTagMask)!=2||!NorthlightNameStencil::nameBlend(ab,sb,db,cw))return;' in dc
+    'if(water||(classifyVs(vs).entry&kTagMask)!=2){' in dc and 'if(!NorthlightNameStencil::nameBlend(ab,sb,db,cw))return;' in dc
+    and dc.index('(classifyVs(vs).entry&kTagMask)!=2')<dc.index('hasMarks()&&NorthlightTranslucentDepth::isUndo(')<dc.index('nameBlend(ab,sb,db,cw)') # the cheapest test first: all but the names stop at the tag
     and 'if(FAILED(ext->GetVertexShaderConstantF(3,c3,1))||NorthlightUiBoundary::clipWOne(c3))return;' in dc
     and dc.index('(classifyVs(vs).entry&kTagMask)!=2')<dc.index('GetVertexShaderConstantF(3,c3,1)')<dc.index('viewport.Width==width&&viewport.Height==height&&worldDepthBound()'))
 checks['the boundary keeps its own test: tag 2, UI pixel shader and clipWOne(c3) call renderEffects (screen UI is never a name)']=(
@@ -147,14 +153,14 @@ ma=r[r.index('bool maskApply('):r.index('// The first name of a frame')] if Fals
 checks['states are read first, then set, restore puts the originals back']=ma.index('GetRenderState')<ma.index('SetRenderState')<ma.index('sets[i].value')
 run=r[r.index('bool nameMaskRunBegin(){'):r.index('// The draw hook\'s last step')]
 checks['run: begin clears if needed then applies kMark once (nameRun), end restores it; the break keeps it only for a UI-hash vertex shader (tag 2)']=(
-    run.index('if(nameRun)return true;')<run.index('nameMask.needsClear()&&!nameMaskClear()')<run.index('maskApply(NorthlightNameStencil::kMark,nameRunPrevious)')<run.index('nameRun=true;++nameMask.runs;')
-    and 'nameRun=false;CpuScope c(sampledDrawTimers()?&cpuNameMark:nullptr);maskRestore(NorthlightNameStencil::kMark,nameRunPrevious);' in run and '(classifyVs(vs).entry&kTagMask)!=2)nameMaskRunEnd();' in run)
+    run.index('if(nameRun)return true;')<run.index('nameMask.needsClear()&&!nameMaskClear()')<run.index('GetRenderState(D3DRS_STENCILPASS,&pass)')<run.index('for(const auto& set:NorthlightNameStencil::kMark)ext->SetRenderState(')<run.index('SetRenderState(D3DRS_STENCILENABLE,TRUE)')<run.index('nameRun=true;++nameMask.runs;')
+    and 'nameRun=false;CountedScope c(sampledDrawTimers()?&cpuNameMark:nullptr,nameMarkScopes);ext->SetRenderState(D3DRS_STENCILENABLE,FALSE);' in run and 'nameRunPrevious' not in r and 'kMarkProbe[0].value' in run and '(classifyVs(vs).entry&kTagMask)!=2)nameMaskRunEnd();' in run)
 checks['run ends before anything that could draw or clear with stencil on: prepareDrawImpl (any non-UI-hash draw), nameMaskDraw (non-name), Clear, EndScene, Reset, renderEffects, finishFrameImpl']=(
     '++drawCalls;maskKind=0;if(nameRun)nameMaskRunBreak();' in impl and 'if(kind!=1)nameMaskRunEnd();' in r
     and 'nameMaskRunEnd(); /* 0.3.212 (task 32): a run of names never spans a Clear */' in r[r.index('HRESULT STDMETHODCALLTYPE Clear('):][:700]
     and 'override { Guard mirrorLock(mirrorState.gate);nameMaskRunEnd();' in r and 'void renderEffects() {\n        nameMaskRunEnd();' in r and 'void finishFrameImpl() {\n        nameMaskRunEnd();' in r
     and 'Reset(D3DPRESENT_PARAMETERS* pp) override { Guard mirrorLock(mirrorState.gate);\n        nameMaskRunEnd();' in r)
-checks['the stencil-in-use guard does not read our own STENCILENABLE during a run']='if(!nameRun&&FAILED(ext->GetRenderState(D3DRS_STENCILENABLE,&stencilOn)))return false;' in r
+checks['the stencil-in-use guard reads the game\'s STENCILENABLE once per frame (reset at the frame end and Reset), so a run knows the value to restore']='if(!nameMask.stencilChecked){' in r and 'nameMask.stencilChecked=true;' in r and 'FAILED(ext->GetRenderState(D3DRS_STENCILENABLE,&stencilOn))' in r
 md=r[r.index('HRESULT nameMaskDraw('):r.index('    // One shader query/reference per original draw')]
 checks['draw: unmark states around the game draw; a name draws with the run set and the alpha guard only when its alpha test is off; counted only after a successful draw']=(
     md.index('maskApply(NorthlightNameStencil::kUnmark,previous)')<md.index('rainBlendDraw(rain,claimed,draw)',md.index('maskApply('))<md.index('maskRestore(NorthlightNameStencil::kUnmark,previous)')
@@ -203,9 +209,9 @@ checks['documented: ini (commented, ranges and presets) and README.txt']=(';Name
     and re.search(r'^  NameMask +1 / 1 / 1 ',txt,re.M) is not None and re.search(r'^  NameMaskDebug +0 / 0 / 0 ',txt,re.M) is not None)
 fl=r[r.index('NAMEMASK frame='):][:900]
 checks['cost: sample frames only (sampledDrawTimers/sampled); decision timed every 8th call and scaled by calls/timed; mark, unmark and composite summed; one cpuUs total in the NAMEMASK line']=(
-    '(++nameDecideCalls&7)==1' in r and 'CpuScope c(sampledDrawTimers()?&cpuNameMark:nullptr);' in md and r.count('cpuNameUnmark:nullptr')==2 and 'cpuNameComposite+=world->takeNameMaskQpc();' in r
-    and 'double(cpuNameDecide)*double(nameDecideCalls)/double(nameDecideTimed)' in r and 'decideUs=%.1f markUs=%.1f unmarkUs=%.1f compositeUs=%.1f cpuUs=%.1f' in fl
-    and 'nameMaskTimed&&nameMaskDepth' in w and 'nameMaskQpc+=q1.QuadPart-q0.QuadPart' in w and 'cpuNameDecide=cpuNameMark=cpuNameUnmark=cpuNameComposite=0;' in r)
+    '(++nameDecideCalls&7)==1' in r and 'CountedScope c(sampledDrawTimers()?&cpuNameMark:nullptr,nameMarkScopes);' in md and r.count('cpuNameUnmark:nullptr,nameUnmarkScopes')==2 and 'cpuNameComposite+=t;' in r
+    and 'netTicks(double(cpuNameDecide),double(nameDecideTimed),qpcPairTicks)*double(nameDecideCalls)/double(nameDecideTimed)' in r and 'NAMEMASK timer calibration' in r and 'CpuScope empty(&t)' in r and 'inline double netTicks(' in h and 'decideUs=%.1f markUs=%.1f unmarkUs=%.1f compositeUs=%.1f cpuUs=%.1f' in fl
+    and 'nameMaskTimed&&nameMaskDepth' in w and 'nameMaskQpc+=q1.QuadPart-q0.QuadPart' in w and 'cpuNameDecide=cpuNameMark=cpuNameUnmark=cpuNameComposite=0;' in r and 'qpcPairNs=%.0f' in fl)
 checks['no duplicate draw, no GPU pair timer: names are marked by the game\'s own draw']=('nameMarkDraw' not in r and 'nameGpu' not in r and 'NorthlightGpuPairTimer' not in r and not (fp.REPO/'src'/'core'/'gpu_pair_timer.h').exists())
 checks['banner: 0.3.212 with the name mask']='logf("Northlight renderer 0.3.212;' in r and "floating names keep the game's colour (stencil mask); backend=%s" in r
 for n,ok in checks.items():print(('PASS ' if ok else 'FAIL ')+n)
