@@ -1,7 +1,9 @@
 #pragma once
 // Minimal D3D9 API (only what spell_layer.h and saved_state.h use) and a FakeDevice that models the D3D9 semantics the spell layer depends on:
-// state blocks (ALL = everything except RT/DS), SetRenderTarget resetting viewport/scissor, UP draws clearing stream 0 / indices, buffer locks with
-// DISCARD / NOOVERWRITE / READONLY slices, and a record of every draw with the exact bytes it fetched at execution time. Refcounted objects with a leak check.
+// a full draw-relevant state (render states, sampler states, textures, shaders, declaration/FVF, constants of both stages, viewport, scissor, clip
+// planes, streams, indices), state blocks (ALL = everything except RT/DS, used by SavedState), SetRenderTarget resetting viewport/scissor, UP draws
+// clearing stream 0 / indices, buffer locks with DISCARD / NOOVERWRITE / READONLY slices, and a record of every draw with the exact bytes it fetched
+// at execution time. Refcounted objects with a leak check. `sets` counts the Set* calls (not the Gets, not the draws).
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
@@ -21,7 +23,7 @@ constexpr D3DPOOL D3DPOOL_DEFAULT=0,D3DPOOL_MANAGED=1;
 constexpr DWORD D3DUSAGE_RENDERTARGET=1,D3DUSAGE_WRITEONLY=8,D3DUSAGE_DYNAMIC=0x200;
 constexpr D3DRESOURCETYPE D3DRTYPE_TEXTURE=3,D3DRTYPE_VOLUMETEXTURE=4,D3DRTYPE_CUBETEXTURE=5;
 constexpr DWORD D3DLOCK_READONLY=0x10,D3DLOCK_NOOVERWRITE=0x1000,D3DLOCK_DISCARD=0x2000;
-constexpr D3DRENDERSTATETYPE D3DRS_ZENABLE=7,D3DRS_ZWRITEENABLE=14,D3DRS_SRCBLEND=19,D3DRS_DESTBLEND=20,D3DRS_ALPHABLENDENABLE=27,D3DRS_STENCILENABLE=52,D3DRS_COLORWRITEENABLE=168,D3DRS_BLENDOP=171;
+constexpr D3DRENDERSTATETYPE D3DRS_ZENABLE=7,D3DRS_ZWRITEENABLE=14,D3DRS_ALPHATESTENABLE=15,D3DRS_SRCBLEND=19,D3DRS_DESTBLEND=20,D3DRS_ALPHAREF=24,D3DRS_ALPHABLENDENABLE=27,D3DRS_STENCILENABLE=52,D3DRS_COLORWRITEENABLE=168,D3DRS_BLENDOP=171,D3DRS_POINTSIZE=154;
 struct D3DVIEWPORT9{DWORD X=0,Y=0,Width=0,Height=0;float MinZ=0,MaxZ=1;};
 struct RECT{int left=0,top=0,right=0,bottom=0;};
 struct D3DVERTEXELEMENT9{WORD Stream;WORD Offset;BYTE Type;BYTE Method;BYTE Usage;BYTE UsageIndex;};
@@ -47,14 +49,22 @@ struct IDirect3DDevice9{
     virtual HRESULT SetViewport(const D3DVIEWPORT9*)=0;virtual HRESULT GetViewport(D3DVIEWPORT9*)=0;
     virtual HRESULT SetScissorRect(const RECT*)=0;virtual HRESULT GetScissorRect(RECT*)=0;
     virtual HRESULT SetRenderState(D3DRENDERSTATETYPE,DWORD)=0;virtual HRESULT GetRenderState(D3DRENDERSTATETYPE,DWORD*)=0;
-    virtual HRESULT SetSamplerState(DWORD,D3DSAMPLERSTATETYPE,DWORD)=0;
+    virtual HRESULT SetSamplerState(DWORD,D3DSAMPLERSTATETYPE,DWORD)=0;virtual HRESULT GetSamplerState(DWORD,D3DSAMPLERSTATETYPE,DWORD*)=0;
     virtual HRESULT SetTexture(DWORD,IDirect3DBaseTexture9*)=0;virtual HRESULT GetTexture(DWORD,IDirect3DBaseTexture9**)=0;
-    virtual HRESULT SetVertexShader(IDirect3DVertexShader9*)=0;virtual HRESULT SetPixelShader(IDirect3DPixelShader9*)=0;
+    virtual HRESULT SetVertexShader(IDirect3DVertexShader9*)=0;virtual HRESULT GetVertexShader(IDirect3DVertexShader9**)=0;
+    virtual HRESULT SetPixelShader(IDirect3DPixelShader9*)=0;virtual HRESULT GetPixelShader(IDirect3DPixelShader9**)=0;
+    virtual HRESULT SetFVF(DWORD)=0;virtual HRESULT GetFVF(DWORD*)=0;
+    virtual HRESULT SetClipPlane(DWORD,const float*)=0;virtual HRESULT GetClipPlane(DWORD,float*)=0;
     virtual HRESULT SetVertexDeclaration(IDirect3DVertexDeclaration9*)=0;virtual HRESULT GetVertexDeclaration(IDirect3DVertexDeclaration9**)=0;
     virtual HRESULT SetStreamSource(UINT,IDirect3DVertexBuffer9*,UINT,UINT)=0;virtual HRESULT GetStreamSource(UINT,IDirect3DVertexBuffer9**,UINT*,UINT*)=0;
     virtual HRESULT SetStreamSourceFreq(UINT,UINT)=0;virtual HRESULT GetStreamSourceFreq(UINT,UINT*)=0;
     virtual HRESULT SetIndices(IDirect3DIndexBuffer9*)=0;virtual HRESULT GetIndices(IDirect3DIndexBuffer9**)=0;
-    virtual HRESULT SetVertexShaderConstantF(UINT,const float*,UINT)=0;
+    virtual HRESULT SetVertexShaderConstantF(UINT,const float*,UINT)=0;virtual HRESULT GetVertexShaderConstantF(UINT,float*,UINT)=0;
+    virtual HRESULT SetVertexShaderConstantI(UINT,const int*,UINT)=0;virtual HRESULT GetVertexShaderConstantI(UINT,int*,UINT)=0;
+    virtual HRESULT SetVertexShaderConstantB(UINT,const BOOL*,UINT)=0;virtual HRESULT GetVertexShaderConstantB(UINT,BOOL*,UINT)=0;
+    virtual HRESULT SetPixelShaderConstantF(UINT,const float*,UINT)=0;virtual HRESULT GetPixelShaderConstantF(UINT,float*,UINT)=0;
+    virtual HRESULT SetPixelShaderConstantI(UINT,const int*,UINT)=0;virtual HRESULT GetPixelShaderConstantI(UINT,int*,UINT)=0;
+    virtual HRESULT SetPixelShaderConstantB(UINT,const BOOL*,UINT)=0;virtual HRESULT GetPixelShaderConstantB(UINT,BOOL*,UINT)=0;
     virtual HRESULT DrawPrimitive(D3DPRIMITIVETYPE,UINT,UINT)=0;
     virtual HRESULT DrawIndexedPrimitive(D3DPRIMITIVETYPE,INT,UINT,UINT,UINT,UINT)=0;
     virtual HRESULT DrawPrimitiveUP(D3DPRIMITIVETYPE,UINT,const void*,UINT)=0;
@@ -119,10 +129,10 @@ struct IB:Obj<IDirect3DIndexBuffer9>{
 };
 // Everything a state block / the game sees, except RT/DS.
 struct State{
-    DWORD rs[256]={};DWORD ss[16][4]={};
-    IDirect3DBaseTexture9* tex[20]={}; /* 0..15 pixel samplers, 16..19 vertex texture samplers (stages 257..260) */ IDirect3DVertexShader9* vs=nullptr;IDirect3DPixelShader9* ps=nullptr;IDirect3DVertexDeclaration9* decl=nullptr;
+    DWORD rs[256]={};DWORD ss[20][16]={}; /* by texture slot, sampler state type 0..15 */
+    IDirect3DBaseTexture9* tex[20]={}; /* 0..15 pixel samplers, 16..19 vertex texture samplers (stages 257..260) */ IDirect3DVertexShader9* vs=nullptr;IDirect3DPixelShader9* ps=nullptr;IDirect3DVertexDeclaration9* decl=nullptr;DWORD fvf=0;
     struct S{IDirect3DVertexBuffer9* vb=nullptr;UINT off=0,stride=0,freq=1;} st[16];
-    IDirect3DIndexBuffer9* ib=nullptr;float vsc[32][4]={};D3DVIEWPORT9 vp;RECT scissor;
+    IDirect3DIndexBuffer9* ib=nullptr;float vsc[256][4]={};int vsi[16][4]={};BOOL vsb[16]={};float psc[224][4]={};int psi[16][4]={};BOOL psb[16]={};float clip[6][4]={};D3DVIEWPORT9 vp;RECT scissor;
 };
 template<class T> inline void swapRef(T*& dst,T* src){if(src)src->AddRef();if(dst)dst->Release();dst=src;}
 inline void retain(State& s){
@@ -137,7 +147,8 @@ inline void drop(State& s){
 }
 inline void assign(State& dst,const State& src){State n=src;retain(n);drop(dst);dst=n;}
 inline bool equal(const State& a,const State& b,bool ignoreGeometry){
-    if(std::memcmp(a.rs,b.rs,sizeof a.rs)||std::memcmp(a.ss,b.ss,sizeof a.ss)||std::memcmp(a.tex,b.tex,sizeof a.tex)||std::memcmp(a.vsc,b.vsc,sizeof a.vsc))return false;
+    if(std::memcmp(a.rs,b.rs,sizeof a.rs)||std::memcmp(a.ss,b.ss,sizeof a.ss)||std::memcmp(a.tex,b.tex,sizeof a.tex)||std::memcmp(a.vsc,b.vsc,sizeof a.vsc)||std::memcmp(a.vsi,b.vsi,sizeof a.vsi)||std::memcmp(a.vsb,b.vsb,sizeof a.vsb))return false;
+    if(std::memcmp(a.psc,b.psc,sizeof a.psc)||std::memcmp(a.psi,b.psi,sizeof a.psi)||std::memcmp(a.psb,b.psb,sizeof a.psb)||std::memcmp(a.clip,b.clip,sizeof a.clip)||a.fvf!=b.fvf)return false;
     if(a.vs!=b.vs||a.ps!=b.ps||a.decl!=b.decl)return false;
     if(std::memcmp(&a.vp,&b.vp,sizeof a.vp)||a.scissor.left!=b.scissor.left||a.scissor.top!=b.scissor.top||a.scissor.right!=b.scissor.right||a.scissor.bottom!=b.scissor.bottom)return false;
     if(!ignoreGeometry){
@@ -159,8 +170,8 @@ struct StateBlock:Obj<IDirect3DStateBlock9>{
 };
 struct FakeDevice:IDirect3DDevice9{
     State s;IDirect3DSurface9* rt[4]={};IDirect3DSurface9* ds=nullptr;
-    std::vector<DrawRec> draws;unsigned calls=0;
-    bool failCreateBlock=false,failCapture=false,failCreateVB=false,failCreateIB=false;int failCaptureAfter=-1;unsigned blocksCreated=0,failNthCreate=0,createCalls=0; // failNthCreate: the nth CreateStateBlock call fails once
+    std::vector<DrawRec> draws;unsigned calls=0,sets=0;
+    bool failCreateBlock=false,failCapture=false,failCreateVB=false,failCreateIB=false,failGetPsConst=false;int failCaptureAfter=-1;unsigned blocksCreated=0,failNthCreate=0,createCalls=0; // failNthCreate: the nth CreateStateBlock call fails once
     FakeDevice(){
         s.vp=D3DVIEWPORT9();s.scissor=RECT();
         for(auto& x:s.st)x.freq=1;
@@ -185,36 +196,54 @@ struct FakeDevice:IDirect3DDevice9{
         ++calls;if(failCreateIB)return E_FAIL;auto* b=new IB;b->b.init(n,u);b->fmt=f;b->b.key=static_cast<IDirect3DIndexBuffer9*>(b);*out=b;return D3D_OK;
     }
     HRESULT SetRenderTarget(DWORD i,IDirect3DSurface9* t)override{
-        ++calls;if(i>3||(i==0&&!t))return D3DERR_INVALIDCALL;
+        ++calls;++sets;if(i>3||(i==0&&!t))return D3DERR_INVALIDCALL;
         swapRef(rt[i],t);
         if(i==0){auto* f=static_cast<Surface*>(t);s.vp=D3DVIEWPORT9();s.vp.Width=f->w;s.vp.Height=f->h;s.vp.MaxZ=1;s.scissor=RECT();s.scissor.right=int(f->w);s.scissor.bottom=int(f->h);}
         return D3D_OK;
     }
     HRESULT GetRenderTarget(DWORD i,IDirect3DSurface9** o)override{++calls;if(i>3||!rt[i]){*o=nullptr;return D3DERR_INVALIDCALL;}rt[i]->AddRef();*o=rt[i];return D3D_OK;}
-    HRESULT SetDepthStencilSurface(IDirect3DSurface9* d)override{++calls;swapRef(ds,d);return D3D_OK;}
+    HRESULT SetDepthStencilSurface(IDirect3DSurface9* d)override{++calls;++sets;swapRef(ds,d);return D3D_OK;}
     HRESULT GetDepthStencilSurface(IDirect3DSurface9** o)override{++calls;if(ds)ds->AddRef();*o=ds;return ds?D3D_OK:D3DERR_INVALIDCALL;}
-    HRESULT SetViewport(const D3DVIEWPORT9* v)override{++calls;s.vp=*v;return D3D_OK;}
+    HRESULT SetViewport(const D3DVIEWPORT9* v)override{++calls;++sets;s.vp=*v;return D3D_OK;}
     HRESULT GetViewport(D3DVIEWPORT9* v)override{++calls;*v=s.vp;return D3D_OK;}
-    HRESULT SetScissorRect(const RECT* r)override{++calls;s.scissor=*r;return D3D_OK;}
+    HRESULT SetScissorRect(const RECT* r)override{++calls;++sets;s.scissor=*r;return D3D_OK;}
     HRESULT GetScissorRect(RECT* r)override{++calls;*r=s.scissor;return D3D_OK;}
-    HRESULT SetRenderState(D3DRENDERSTATETYPE t,DWORD v)override{++calls;s.rs[t]=v;return D3D_OK;}
+    HRESULT SetRenderState(D3DRENDERSTATETYPE t,DWORD v)override{++calls;++sets;s.rs[t]=v;return D3D_OK;}
     HRESULT GetRenderState(D3DRENDERSTATETYPE t,DWORD* v)override{++calls;*v=s.rs[t];return D3D_OK;}
-    HRESULT SetSamplerState(DWORD i,D3DSAMPLERSTATETYPE t,DWORD v)override{++calls;s.ss[i][t]=v;return D3D_OK;}
-    HRESULT SetTexture(DWORD i,IDirect3DBaseTexture9* t)override{++calls;swapRef(s.tex[texSlot(i)],t);return D3D_OK;}
+    HRESULT SetSamplerState(DWORD i,D3DSAMPLERSTATETYPE t,DWORD v)override{++calls;++sets;s.ss[texSlot(i)][t]=v;return D3D_OK;}
+    HRESULT GetSamplerState(DWORD i,D3DSAMPLERSTATETYPE t,DWORD* v)override{++calls;*v=s.ss[texSlot(i)][t];return D3D_OK;}
+    HRESULT SetTexture(DWORD i,IDirect3DBaseTexture9* t)override{++calls;++sets;swapRef(s.tex[texSlot(i)],t);return D3D_OK;}
     HRESULT GetTexture(DWORD i,IDirect3DBaseTexture9** o)override{++calls;auto*& t=s.tex[texSlot(i)];if(t)t->AddRef();*o=t;return D3D_OK;}
-    HRESULT SetVertexShader(IDirect3DVertexShader9* v)override{++calls;swapRef(s.vs,v);return D3D_OK;}
-    HRESULT SetPixelShader(IDirect3DPixelShader9* v)override{++calls;swapRef(s.ps,v);return D3D_OK;}
-    HRESULT SetVertexDeclaration(IDirect3DVertexDeclaration9* d)override{++calls;swapRef(s.decl,d);return D3D_OK;}
+    HRESULT SetVertexShader(IDirect3DVertexShader9* v)override{++calls;++sets;swapRef(s.vs,v);return D3D_OK;}
+    HRESULT GetVertexShader(IDirect3DVertexShader9** o)override{++calls;if(s.vs)s.vs->AddRef();*o=s.vs;return D3D_OK;}
+    HRESULT GetPixelShader(IDirect3DPixelShader9** o)override{++calls;if(s.ps)s.ps->AddRef();*o=s.ps;return D3D_OK;}
+    HRESULT SetFVF(DWORD f)override{++calls;++sets;swapRef(s.decl,static_cast<IDirect3DVertexDeclaration9*>(nullptr));s.fvf=f;return D3D_OK;}
+    HRESULT GetFVF(DWORD* f)override{++calls;*f=s.fvf;return D3D_OK;}
+    HRESULT SetClipPlane(DWORD i,const float* p)override{++calls;++sets;if(i>=6)return D3DERR_INVALIDCALL;std::memcpy(s.clip[i],p,16);return D3D_OK;}
+    HRESULT GetClipPlane(DWORD i,float* p)override{++calls;if(i>=6)return D3DERR_INVALIDCALL;std::memcpy(p,s.clip[i],16);return D3D_OK;}
+    HRESULT SetPixelShader(IDirect3DPixelShader9* v)override{++calls;++sets;swapRef(s.ps,v);return D3D_OK;}
+    HRESULT SetVertexDeclaration(IDirect3DVertexDeclaration9* d)override{++calls;++sets;swapRef(s.decl,d);s.fvf=0;return D3D_OK;}
     HRESULT GetVertexDeclaration(IDirect3DVertexDeclaration9** o)override{++calls;if(s.decl)s.decl->AddRef();*o=s.decl;return D3D_OK;}
-    HRESULT SetStreamSource(UINT i,IDirect3DVertexBuffer9* b,UINT off,UINT stride)override{++calls;if(i>=16)return D3DERR_INVALIDCALL;swapRef(s.st[i].vb,b);s.st[i].off=off;s.st[i].stride=stride;return D3D_OK;}
+    HRESULT SetStreamSource(UINT i,IDirect3DVertexBuffer9* b,UINT off,UINT stride)override{++calls;++sets;if(i>=16)return D3DERR_INVALIDCALL;swapRef(s.st[i].vb,b);s.st[i].off=off;s.st[i].stride=stride;return D3D_OK;}
     HRESULT GetStreamSource(UINT i,IDirect3DVertexBuffer9** b,UINT* off,UINT* stride)override{
         ++calls;if(i>=16)return D3DERR_INVALIDCALL;if(s.st[i].vb)s.st[i].vb->AddRef();*b=s.st[i].vb;*off=s.st[i].off;*stride=s.st[i].stride;return D3D_OK;
     }
-    HRESULT SetStreamSourceFreq(UINT i,UINT f)override{++calls;if(i>=16)return D3DERR_INVALIDCALL;s.st[i].freq=f;return D3D_OK;}
+    HRESULT SetStreamSourceFreq(UINT i,UINT f)override{++calls;++sets;if(i>=16)return D3DERR_INVALIDCALL;s.st[i].freq=f;return D3D_OK;}
     HRESULT GetStreamSourceFreq(UINT i,UINT* f)override{++calls;if(i>=16)return D3DERR_INVALIDCALL;*f=s.st[i].freq;return D3D_OK;}
-    HRESULT SetIndices(IDirect3DIndexBuffer9* b)override{++calls;swapRef(s.ib,b);return D3D_OK;}
+    HRESULT SetIndices(IDirect3DIndexBuffer9* b)override{++calls;++sets;swapRef(s.ib,b);return D3D_OK;}
     HRESULT GetIndices(IDirect3DIndexBuffer9** o)override{++calls;if(s.ib)s.ib->AddRef();*o=s.ib;return D3D_OK;}
-    HRESULT SetVertexShaderConstantF(UINT r,const float* v,UINT n)override{++calls;std::memcpy(s.vsc[r],v,n*16);return D3D_OK;}
+    HRESULT SetVertexShaderConstantF(UINT r,const float* v,UINT n)override{++calls;++sets;if(r+n>256)return D3DERR_INVALIDCALL;std::memcpy(s.vsc[r],v,n*16);return D3D_OK;}
+    HRESULT GetVertexShaderConstantF(UINT r,float* v,UINT n)override{++calls;if(r+n>256)return D3DERR_INVALIDCALL;std::memcpy(v,s.vsc[r],n*16);return D3D_OK;}
+    HRESULT SetVertexShaderConstantI(UINT r,const int* v,UINT n)override{++calls;++sets;if(r+n>16)return D3DERR_INVALIDCALL;std::memcpy(s.vsi[r],v,n*16);return D3D_OK;}
+    HRESULT GetVertexShaderConstantI(UINT r,int* v,UINT n)override{++calls;if(r+n>16)return D3DERR_INVALIDCALL;std::memcpy(v,s.vsi[r],n*16);return D3D_OK;}
+    HRESULT SetVertexShaderConstantB(UINT r,const BOOL* v,UINT n)override{++calls;++sets;if(r+n>16)return D3DERR_INVALIDCALL;std::memcpy(s.vsb+r,v,n*4);return D3D_OK;}
+    HRESULT GetVertexShaderConstantB(UINT r,BOOL* v,UINT n)override{++calls;if(r+n>16)return D3DERR_INVALIDCALL;std::memcpy(v,s.vsb+r,n*4);return D3D_OK;}
+    HRESULT SetPixelShaderConstantF(UINT r,const float* v,UINT n)override{++calls;++sets;if(r+n>224)return D3DERR_INVALIDCALL;std::memcpy(s.psc[r],v,n*16);return D3D_OK;}
+    HRESULT GetPixelShaderConstantF(UINT r,float* v,UINT n)override{++calls;if(failGetPsConst||r+n>224)return D3DERR_INVALIDCALL;std::memcpy(v,s.psc[r],n*16);return D3D_OK;}
+    HRESULT SetPixelShaderConstantI(UINT r,const int* v,UINT n)override{++calls;++sets;if(r+n>16)return D3DERR_INVALIDCALL;std::memcpy(s.psi[r],v,n*16);return D3D_OK;}
+    HRESULT GetPixelShaderConstantI(UINT r,int* v,UINT n)override{++calls;if(r+n>16)return D3DERR_INVALIDCALL;std::memcpy(v,s.psi[r],n*16);return D3D_OK;}
+    HRESULT SetPixelShaderConstantB(UINT r,const BOOL* v,UINT n)override{++calls;++sets;if(r+n>16)return D3DERR_INVALIDCALL;std::memcpy(s.psb+r,v,n*4);return D3D_OK;}
+    HRESULT GetPixelShaderConstantB(UINT r,BOOL* v,UINT n)override{++calls;if(r+n>16)return D3DERR_INVALIDCALL;std::memcpy(v,s.psb+r,n*4);return D3D_OK;}
     // ---- draws: record state and the bytes fetched NOW ----
     DrawRec begin(int kind,D3DPRIMITIVETYPE prim){
         DrawRec d;d.kind=kind;d.prim=prim;d.st=s;for(int i=0;i<4;++i)d.rt[i]=rt[i];d.ds=ds;d.tag=tagOf();return d; // st copy: raw pointers, no refs

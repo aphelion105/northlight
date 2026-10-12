@@ -130,12 +130,12 @@ static void testGuardTable(){
 }
 
 // ---------------- rig: a mini integration over the FakeDevice ----------------
-struct Opts{bool on=true;unsigned maxEntries=512,maxBlocks=512;bool conflictCopy=true;unsigned mask=15;size_t arena=1u<<20,upVb=1u<<16,upIb=1u<<14;};
+struct Opts{bool on=true;unsigned maxEntries=512;bool conflictCopy=true;unsigned mask=15;size_t arena=1u<<20,upVb=1u<<16,upIb=1u<<14;};
 struct Rig{
     Fake::FakeDevice dev;Layer layer;Opts o;
     Fake::Surface *T,*D,*Other;
     Fake::VB *ring,*stat,*extra,*ring2;Fake::IB *ringIb,*ringIb32,*stIb;
-    Fake::Decl *declP,*declTwo;Fake::VShader *vs,*vsEff;Fake::PShader *ps;Fake::Texture *texA,*texB;
+    Fake::Decl *declP,*declTwo;Fake::VShader *vs,*vsEff;Fake::PShader *ps,*psEff;Fake::Texture *texA,*texB;unsigned psMajor=3; /* what the integration passes as DrawArgs::psMajor */
     std::map<void*,Fake::BufState*> bufs;std::map<void*,long long> ids;std::map<void*,int> marks;
     std::vector<std::pair<void*,bool>> markLog;std::vector<size_t> drawsAtWrite;
     std::vector<int> deferredTags;std::vector<std::vector<long long>> steps;
@@ -171,20 +171,20 @@ struct Rig{
         for(UINT q=0;q<64;++q){const uint16_t ix[6]={0,1,2,2,1,3};std::memcpy(stIb->b.cur()+q*12,ix,12);}
         declP=reg(new Fake::Decl({{0,0,2,0,0,0},{0,12,4,0,10,0}}));
         declTwo=reg(new Fake::Decl({{0,0,2,0,0,0},{0,12,4,0,10,0},{1,0,1,0,5,0}}));
-        vs=reg(new Fake::VShader);vsEff=reg(new Fake::VShader);ps=reg(new Fake::PShader);texA=reg(new Fake::Texture);texB=reg(new Fake::Texture);
+        vs=reg(new Fake::VShader);vsEff=reg(new Fake::VShader);ps=reg(new Fake::PShader);psEff=reg(new Fake::PShader);texA=reg(new Fake::Texture);texB=reg(new Fake::Texture);
         dev.SetRenderTarget(0,T);dev.SetDepthStencilSurface(D);
         dev.SetVertexShader(vs);dev.SetPixelShader(ps);dev.SetVertexDeclaration(declP);dev.SetTexture(0,texA);dev.SetSamplerState(0,1,3);
         dev.SetStreamSource(0,stat,0,16);dev.SetStreamSource(3,extra,0,8);dev.SetIndices(stIb);
-        const float c[4]={1,2,3,4};dev.SetVertexShaderConstantF(5,c,1);
+        const float c[4]={1,2,3,4};dev.SetVertexShaderConstantF(5,c,1);dev.SetPixelShaderConstantF(2,c,1);dev.SetSamplerState(0,5,2);dev.SetRenderState(D3DRS_ALPHAREF,128);
         opaqueZ();translucent(kSrcAlpha,kBlendOne);
-        Config c2;c2.on=o.on;c2.classMask=o.mask;c2.maxEntries=o.maxEntries;c2.maxBlocks=o.maxBlocks;c2.arenaBytes=o.arena;c2.uploadVbBytes=o.upVb;c2.uploadIbBytes=o.upIb;
+        Config c2;c2.on=o.on;c2.classMask=o.mask;c2.maxEntries=o.maxEntries;c2.arenaBytes=o.arena;c2.uploadVbBytes=o.upVb;c2.uploadIbBytes=o.upIb;
         c2.conflictCopy=o.conflictCopy;c2.markGuard=&Rig::markCb;c2.markCtx=this;
         layer.attach(&dev);layer.configure(c2);layer.beginFrame(false);
     }
     ~Rig(){
         layer.reset();
         for(auto& m:marks)CHECK(m.second==0);
-        for(auto* p:std::initializer_list<IUnknown*>{T,D,Other,ring,ring2,stat,extra,ringIb,ringIb32,stIb,declP,declTwo,vs,vsEff,ps,texA,texB})p->Release();
+        for(auto* p:std::initializer_list<IUnknown*>{T,D,Other,ring,ring2,stat,extra,ringIb,ringIb32,stIb,declP,declTwo,vs,vsEff,ps,psEff,texA,texB})p->Release();
     }
     // ---- game-side helpers ----
     void rs(D3DRENDERSTATETYPE t,DWORD v){dev.SetRenderState(t,v);}
@@ -202,21 +202,48 @@ struct Rig{
     void discardRing(int seed){const Bytes b=pat(seed,256);write(ring->b,0,0,D3DLOCK_DISCARD,b);ringCur=256;}
     static DrawArgs dp(UINT start,UINT count=2){return DrawArgs::primitive(D3DPT_TRIANGLESTRIP,start,count);}
     static DrawArgs dip(INT base,UINT minIdx,UINT num,UINT startIndex,UINT count=2){return DrawArgs::indexed(D3DPT_TRIANGLELIST,base,minIdx,num,startIndex,count);}
-    std::vector<long long> norm(const Fake::State& s,bool geom){
+    // The game-visible device state, all of it (what must be identical before and after a replay, and between the reference and the layer run).
+    std::vector<long long> norm(const Fake::State& s){
         std::vector<long long> v;
         for(DWORD x:s.rs)v.push_back(x);
         for(auto& row:s.ss)for(DWORD x:row)v.push_back(x);
         for(auto* t:s.tex)v.push_back(id(t));
-        v.push_back(id(s.vs));v.push_back(id(s.ps));v.push_back(id(s.decl));
-        for(auto& row:s.vsc)for(float f:row){uint32_t u;std::memcpy(&u,&f,4);v.push_back(u);}
+        v.push_back(id(s.vs));v.push_back(id(s.ps));v.push_back(id(s.decl));v.push_back(s.fvf);
+        auto flt=[&](const float* f,size_t n){for(size_t i=0;i<n;++i){uint32_t u;std::memcpy(&u,f+i,4);v.push_back(u);}};
+        flt(&s.vsc[0][0],256*4);flt(&s.psc[0][0],224*4);flt(&s.clip[0][0],24);
+        for(auto& row:s.vsi)for(int x:row)v.push_back(x);for(auto& row:s.psi)for(int x:row)v.push_back(x);
+        for(int x:s.vsb)v.push_back(x);for(int x:s.psb)v.push_back(x);
         v.insert(v.end(),{s.vp.X,s.vp.Y,s.vp.Width,s.vp.Height,s.scissor.left,s.scissor.top,s.scissor.right,s.scissor.bottom});
-        for(auto& x:s.st){v.push_back(x.freq);if(geom){v.push_back(id(x.vb));v.push_back(x.off);v.push_back(x.stride);}}
-        if(geom)v.push_back(id(s.ib));
+        for(auto& x:s.st){v.push_back(x.freq);v.push_back(id(x.vb));v.push_back(x.off);v.push_back(x.stride);}
+        v.push_back(id(s.ib));
+        return v;
+    }
+    static std::vector<UINT> usedOf(const Fake::State& s){
+        std::vector<UINT> u;
+        if(auto* d=static_cast<Fake::Decl*>(s.decl)){for(auto& e:d->el)if(e.Stream!=0xFF&&std::find(u.begin(),u.end(),UINT(e.Stream))==u.end())u.push_back(e.Stream);}
+        else u.push_back(0);
+        return u;
+    }
+    // What one draw reads: shaders, declaration/FVF, every render state, texture slots and the sampler states of the BOUND stages, all constants,
+    // viewport, scissor, clip planes, and (kinds 0/1, geom) the used streams and the index buffer of an indexed draw. Unused streams, unbound stages'
+    // sampler states and the stream/index bindings of UP draws are not part of what the draw sees.
+    std::vector<long long> normDraw(const Fake::DrawRec& d,bool geom){
+        const Fake::State& s=d.st;std::vector<long long> v;
+        for(DWORD x:s.rs)v.push_back(x);
+        for(size_t t=0;t<20;++t){v.push_back(id(s.tex[t]));if(s.tex[t])for(size_t k=1;k<=13;++k)v.push_back(s.ss[t][k]);}
+        v.push_back(id(s.vs));v.push_back(id(s.ps));v.push_back(id(s.decl));v.push_back(s.fvf);
+        auto flt=[&](const float* f,size_t n){for(size_t i=0;i<n;++i){uint32_t u;std::memcpy(&u,f+i,4);v.push_back(u);}};
+        flt(&s.vsc[0][0],256*4);flt(&s.psc[0][0],224*4);flt(&s.clip[0][0],24);
+        for(auto& row:s.vsi)for(int x:row)v.push_back(x);for(auto& row:s.psi)for(int x:row)v.push_back(x);
+        for(int x:s.vsb)v.push_back(x);for(int x:s.psb)v.push_back(x);
+        v.insert(v.end(),{s.vp.X,s.vp.Y,s.vp.Width,s.vp.Height,s.scissor.left,s.scissor.top,s.scissor.right,s.scissor.bottom});
+        if(d.kind==0||d.kind==1)for(UINT u:usedOf(s)){v.push_back(s.st[u].freq);if(geom){v.push_back(id(s.st[u].vb));v.push_back(s.st[u].off);v.push_back(s.st[u].stride);}}
+        if(d.kind==1&&geom)v.push_back(id(s.ib));
         return v;
     }
     long long id(const void* p){if(!p)return 0;auto it=ids.find(const_cast<void*>(p));return it==ids.end()?-1:it->second;}
     std::vector<long long> snapNorm(){
-        auto v=norm(dev.s,true);for(auto* r:dev.rt)v.push_back(id(r));v.push_back(id(dev.ds));return v;
+        auto v=norm(dev.s);for(auto* r:dev.rt)v.push_back(id(r));v.push_back(id(dev.ds));return v;
     }
     void record(){steps.push_back(snapNorm());}
     DrawFacts facts(Family fam){
@@ -236,7 +263,8 @@ struct Rig{
         }
     }
     // One game draw: classify, defer when told to (layer on), otherwise draw in place after the layer's hazard handling. Returns the tag.
-    template<class F> int issueWith(const DrawArgs& a,Family fam,F&& tweak){
+    template<class F> int issueWith(const DrawArgs& a0,Family fam,F&& tweak){
+        DrawArgs a=a0;a.psMajor=psMajor;
         const int tag=nextTag++;const float v[4]={float(tag),0,0,0};dev.SetVertexShaderConstantF(31,v,1);
         DrawFacts f=facts(fam);f.pending=o.on&&layer.pending()>0;tweak(f);
         last=classify(f,o.mask);bool deferred=false;
@@ -253,7 +281,9 @@ struct Rig{
     void boundary(){
         dev.SetDepthStencilSurface(nullptr);dev.SetRenderTarget(0,Other);
         D3DVIEWPORT9 vp;vp.Width=100;vp.Height=50;dev.SetViewport(&vp);const RECT sc{1,2,3,4};dev.SetScissorRect(&sc);
-        dev.SetVertexShader(vsEff);dev.SetVertexDeclaration(declP);dev.SetTexture(0,texB);dev.SetTexture(2,texA);dev.SetStreamSource(0,extra,8,8);dev.SetStreamSource(1,nullptr,0,0);dev.SetIndices(nullptr);dev.SetRenderTarget(1,Other);
+        dev.SetVertexShader(vsEff);dev.SetPixelShader(psEff);dev.SetSamplerState(0,1,9);dev.SetSamplerState(5,3,4);dev.SetRenderState(D3DRS_ALPHAREF,77);dev.SetRenderState(D3DRS_POINTSIZE,5);
+        {const float k[4]={9,9,9,9};dev.SetPixelShaderConstantF(2,k,1);dev.SetPixelShaderConstantF(30,k,1);const int ki[4]={7,7,7,7};dev.SetVertexShaderConstantI(1,ki,1);const BOOL kb=1;dev.SetPixelShaderConstantB(3,&kb,1);const float pl[4]={1,0,0,1};dev.SetClipPlane(2,pl);}
+        dev.SetVertexDeclaration(declP);dev.SetTexture(0,texB);dev.SetTexture(2,texA);dev.SetStreamSource(0,extra,8,8);dev.SetStreamSource(1,nullptr,0,0);dev.SetIndices(nullptr);dev.SetRenderTarget(1,Other);
         rs(D3DRS_ZENABLE,0);rs(D3DRS_ALPHABLENDENABLE,0);rs(D3DRS_ZWRITEENABLE,0);
         const float v[4]={float(kMarker),0,0,0};dev.SetVertexShaderConstantF(31,v,1);
         dev.DrawPrimitive(D3DPT_TRIANGLESTRIP,0,2);
@@ -262,7 +292,7 @@ struct Rig{
         CHECK(snapNorm()==before);CHECK(layer.pending()==0);
         // the game goes on in the world pass
         dev.SetRenderTarget(1,nullptr);
-        dev.SetRenderTarget(0,T);dev.SetDepthStencilSurface(D);dev.SetVertexShader(vs);dev.SetTexture(0,texA);dev.SetTexture(2,nullptr);dev.SetStreamSource(0,ring,0,16);
+        dev.SetRenderTarget(0,T);dev.SetDepthStencilSurface(D);dev.SetVertexShader(vs);dev.SetPixelShader(ps);dev.SetTexture(0,texA);dev.SetTexture(2,nullptr);dev.SetStreamSource(0,ring,0,16);
         translucent(kSrcAlpha,kBlendOne);record();
     }
     std::vector<int> order()const{std::vector<int> v;for(auto& d:dev.draws)v.push_back(d.tag);return v;}
@@ -276,7 +306,7 @@ static Pair runBoth(void(*scenario)(Rig&),Opts o={}){
 }
 static bool sameRec(Rig& A,const Fake::DrawRec& a,Rig& B,const Fake::DrawRec& b,bool geom){
     for(int i=0;i<4;++i)if(A.id(a.rt[i])!=B.id(b.rt[i]))return false;
-    return a.kind==b.kind&&a.prim==b.prim&&a.tag==b.tag&&a.vtx==b.vtx&&a.idx==b.idx&&!a.oob&&!b.oob&&A.id(a.ds)==B.id(b.ds)&&A.norm(a.st,geom)==B.norm(b.st,geom);
+    return a.kind==b.kind&&a.prim==b.prim&&a.tag==b.tag&&a.vtx==b.vtx&&a.idx==b.idx&&!a.oob&&!b.oob&&A.id(a.ds)==B.id(b.ds)&&A.normDraw(a,geom)==B.normDraw(b,geom);
 }
 // Every draw of the layer run has the state and fetched bytes of the reference run (geometry bindings of `rebased` tags aside), and the game-visible
 // device state is identical after every step.
@@ -290,7 +320,7 @@ static void checkEquivalent(Pair& p,const std::set<int>& rebased={}){
         auto it=ref.find(d.tag);CHECK(it!=ref.end());
         if(!sameRec(*p.ref,*it->second,*p.lay,d,!rebased.count(d.tag))){
             const auto& a=*it->second;std::fprintf(stderr,"tag %d: kind %d/%d vtx %zu/%zu idx %zu/%zu eqvtx %d eqidx %d eqstate %d oob %d/%d\n",d.tag,a.kind,d.kind,a.vtx.size(),d.vtx.size(),a.idx.size(),d.idx.size(),
-                int(a.vtx==d.vtx),int(a.idx==d.idx),int(p.ref->norm(a.st,false)==p.lay->norm(d.st,false)),int(a.oob),int(d.oob));
+                int(a.vtx==d.vtx),int(a.idx==d.idx),int(p.ref->normDraw(a,false)==p.lay->normDraw(d,false)),int(a.oob),int(d.oob));
         }
         CHECK(sameRec(*p.ref,*it->second,*p.lay,d,!rebased.count(d.tag)));
     }
@@ -338,8 +368,8 @@ static void testEquivalence(){
     const Counters& c=p.lay->layer.totalCounters();
     CHECK(p.lay->deferredTags.size()==7&&p.ref->deferredTags.empty());
     CHECK(c.totalDeferred()==7&&c.deferred[0]==5&&c.deferred[1]==1&&c.deferred[2]==1&&c.inPlace[3]==1&&c.orderBy[0]+c.orderBy[1]+c.orderBy[2]==0);
-    CHECK(c.totalHazards()==0&&c.conflicts==0&&c.materialized==0&&c.flushes==0&&c.replays==1&&c.replayedDraws==7&&c.replaySkipped==0&&c.blocksCaptured==7);
-    CHECK(p.lay->layer.poolSize()==7);
+    CHECK(c.totalHazards()==0&&c.conflicts==0&&c.materialized==0&&c.flushes==0&&c.replays==1&&c.replayedDraws==7&&c.replaySkipped==0&&c.recorded==7&&c.replaySets>0&&c.recordHigh==7);
+    CHECK(p.lay->layer.recordChunks()==1);
     checkEquivalent(p);
     CHECK(p.lay->order()==expectedDeferredOrder(p.ref->order(),p.lay->deferredTags));
     // the reorder is real: the deferred draws come after the marker, before them nothing of theirs ran
@@ -502,10 +532,10 @@ static void testAddressReuse(){
     r.dev.SetStreamSource(0,tmp,0,16);r.append(tmp->b,cur,Rig::quad(1));
     r.issue(Rig::dp(0));CHECK(r.layer.pending()==1&&tmp->b.guarded);
     r.dev.SetStreamSource(0,r.ring,0,16);tmp->Release();                      // the game lets go while the draw is pending
-    CHECK(Fake::live==base+2);                                                // the buffer (kept by the layer) + the state block
+    CHECK(Fake::live==base+1);                                                // the buffer, kept alive by the pending entry
     r.boundary();
-    CHECK(Fake::live==base+2);                                                // replayed; the pooled block still holds its last captured references
-    r.layer.trim(0);CHECK(Fake::live==base);                                  // trimmed: the buffer dies with the block
+    CHECK(Fake::live==base);                                                  // replayed: the entry let go, nothing else (no state block) holds it
+    r.layer.trim(0);CHECK(Fake::live==base);
     CHECK(r.dev.draws.size()==2&&r.dev.draws[1].tag==1&&r.dev.draws[1].vtx==Rig::quad(1));
     // a new buffer (maybe at the freed address) has no guard, even with a frame full of other pending entries
     r.layer.beginFrame(false);deferQuad(r,2);
@@ -590,8 +620,6 @@ static void testCapacity(){
     CHECK(p.lay->deferredTags==std::vector<int>({1,2,3,4}));
     CHECK(c.hazards[unsigned(Reason::Capacity)]==1&&c.totalHazards()==1&&c.flushes==1&&c.replayedDraws==4);
     checkEquivalent(p);CHECK(p.lay->order()==p.ref->order());                 // 1-4 flushed at the 5th, 5 and 6 in place, all before the effects
-    Opts b;b.maxBlocks=3;Pair q=runBoth(sCapacity,b);
-    CHECK(q.lay->deferredTags==std::vector<int>({1,2,3})&&q.lay->layer.totalCounters().hazards[unsigned(Reason::Capacity)]==1);checkEquivalent(q);CHECK(q.lay->order()==q.ref->order());
     Opts a;a.arena=128;                                                       // UP bytes: 64 per quad
     Pair u=runBoth([](Rig& r){for(int i=0;i<3;++i){uint8_t v[64];const Bytes b2=Rig::quad(i+1);std::memcpy(v,b2.data(),64);r.issue(DrawArgs::primitiveUP(D3DPT_TRIANGLESTRIP,2,v,16));}r.boundary();},a);
     CHECK(u.lay->deferredTags.size()==2&&u.lay->layer.totalCounters().hazards[unsigned(Reason::Capacity)]==1);checkEquivalent(u);CHECK(u.lay->order()==u.ref->order());
@@ -599,25 +627,32 @@ static void testCapacity(){
     Pair w=runBoth(sDiscard,v);
     CHECK(w.lay->layer.totalCounters().hazards[unsigned(Reason::Capacity)]==1&&w.lay->layer.totalCounters().conflicts==0&&w.lay->drawsAtWrite.back()==2);checkEquivalent(w);CHECK(w.lay->order()==w.ref->order());
 }
+// A record that cannot be read (a failing Get), an instanced stream, a refused scope: all fall back, in order.
 static void sCaptureFail(Rig& r){
     deferQuad(r,1);deferQuad(r,2);
-    r.dev.failNthCreate=r.dev.createCalls+1;                                   // the next CreateStateBlock call fails once: the third entry's
-    deferQuad(r,3);deferQuad(r,4);r.boundary();
+    r.dev.failGetPsConst=true;                                                // the next record cannot read its pixel shader constants
+    deferQuad(r,3);r.dev.failGetPsConst=false;deferQuad(r,4);r.boundary();
 }
 static void testCaptureFailure(){
     Pair p=runBoth(sCaptureFail);const Counters& c=p.lay->layer.totalCounters();
     CHECK(p.lay->deferredTags==std::vector<int>({1,2})&&c.hazards[unsigned(Reason::Capture)]==1&&c.flushes==1&&c.replayedDraws==2);
     checkEquivalent(p);CHECK(p.lay->order()==p.ref->order());
-    // a pooled block whose Capture fails (second frame), and nothing pending (the first entry): also falls back
-    Rig r(Opts{});deferQuad(r,1);deferQuad(r,2);r.boundary();r.layer.beginFrame(false);
-    r.dev.failCaptureAfter=1;const int t1=deferQuad(r,3),t2=deferQuad(r,4);(void)t1;(void)t2;
-    CHECK(r.layer.totalCounters().hazards[unsigned(Reason::Capture)]==1&&r.layer.pending()==0&&r.layer.mode()==Mode::Fallback&&r.layer.poolSize()==1);
-    r.layer.beginFrame(false);r.dev.failCaptureAfter=-1;CHECK(r.layer.mode()==Mode::Cooldown);
-    Rig z(Opts{});z.dev.failCreateBlock=true;                                 // the very first capture fails: nothing pending, still a fallback with cooldown
-    deferQuad(z,1);CHECK(z.layer.totalCounters().hazards[unsigned(Reason::Capture)]==1&&z.layer.mode()==Mode::Fallback&&z.dev.draws.size()==1);
-    z.dev.failCreateBlock=false;
-    Rig s(Opts{});s.dev.SetStreamSourceFreq(0,(1u<<30)|4);                    // an instanced stream is not captured
-    CHECK(!s.layer.defer(Rig::dp(0),s.T,s.D,SubAdditive)&&s.layer.pending()==0&&s.layer.totalCounters().hazards[unsigned(Reason::Capture)]==1&&s.layer.mode()==Mode::Fallback);
+    // nothing pending (the first entry): also falls back with a cooldown, no flush
+    Rig z(Opts{});z.dev.failGetPsConst=true;
+    deferQuad(z,1);CHECK(z.layer.totalCounters().hazards[unsigned(Reason::Capture)]==1&&z.layer.mode()==Mode::Fallback&&z.dev.draws.size()==1&&z.layer.totalCounters().flushes==0);
+    z.dev.failGetPsConst=false;
+    Rig s(Opts{});s.dev.SetStreamSourceFreq(0,(1u<<30)|4);                    // an instanced stream is not recorded
+    DrawArgs ia=Rig::dp(0);ia.psMajor=3;
+    CHECK(!s.layer.defer(ia,s.T,s.D,SubAdditive)&&s.layer.pending()==0&&s.layer.totalCounters().hazards[unsigned(Reason::Capture)]==1&&s.layer.mode()==Mode::Fallback);
+}
+// The replay scope (SavedState) cannot be made: every pending draw is skipped and counted, the device is untouched.
+static void testReplayScopeFailure(){
+    Rig r(Opts{});deferQuad(r,1);deferQuad(r,2);
+    r.dev.failCreateBlock=true;
+    r.boundary();
+    r.dev.failCreateBlock=false;
+    CHECK(r.layer.totalCounters().replaySkipped==2&&r.layer.totalCounters().replayedDraws==0&&r.layer.pending()==0);
+    CHECK(r.dev.draws.size()==1&&r.dev.draws[0].tag==Rig::kMarker);
 }
 static void sFrameEnd(Rig& r){deferQuad(r,1);deferQuad(r,2);hz(r,Reason::Frame,false);}
 static void testFrameEnd(){
@@ -639,9 +674,9 @@ static void testCooldownAndPressure(){
     l.beginFrame(false);CHECK(l.mode()==Mode::Armed&&l.armed());
     deferQuad(r,5);CHECK(l.pending()==1&&l.mode()==Mode::Deferring);r.boundary();CHECK(l.mode()==Mode::Fallback);
     l.beginFrame(false);CHECK(l.mode()==Mode::Armed);                          // a normal frame leaves no cooldown behind
-    // memory pressure: no new deferral, pool released, counters untouched
-    deferQuad(r,6);r.boundary();CHECK(l.poolSize()>0);
-    l.beginFrame(true);CHECK(l.mode()==Mode::Cooldown&&l.poolSize()==0);
+    // memory pressure: no new deferral, record storage released, counters untouched
+    deferQuad(r,6);r.boundary();CHECK(l.recordChunks()>0);
+    l.beginFrame(true);CHECK(l.mode()==Mode::Cooldown&&l.recordChunks()==0);
     const unsigned total=l.totalCounters().totalDeferred();deferQuad(r,7);CHECK(l.pending()==0&&l.totalCounters().totalDeferred()==total);
     l.beginFrame(false);CHECK(l.mode()==Mode::Armed);
     // a frame's counters roll over
@@ -649,12 +684,16 @@ static void testCooldownAndPressure(){
 }
 static void testTrim(){
     Rig r(Opts{});deferQuad(r,1);deferQuad(r,2);deferQuad(r,3);
-    r.layer.trim(0);CHECK(r.layer.poolSize()==3);                              // never below what is pending
-    r.boundary();CHECK(r.layer.poolSize()==3);r.layer.trim(1);CHECK(r.layer.poolSize()==1);r.layer.trim(0);CHECK(r.layer.poolSize()==0);
+    r.layer.trim(0);CHECK(r.layer.recordChunks()==1);                          // never below what is pending
+    r.boundary();CHECK(r.layer.recordChunks()==1);r.layer.trim(1);CHECK(r.layer.recordChunks()==1);r.layer.trim(0);CHECK(r.layer.recordChunks()==0);
+    r.layer.beginFrame(false);                                                // chunks come back on demand, 16 records each
+    for(int i=0;i<17;++i)deferQuad(r,i+10);
+    CHECK(r.layer.pending()==17&&r.layer.recordChunks()==2);r.boundary();
+    r.layer.trim(16);CHECK(r.layer.recordChunks()==1);r.layer.trim(17);CHECK(r.layer.recordChunks()==1);r.layer.trim(0);CHECK(r.layer.recordChunks()==0);
 }
 static void testPendingTargets(){
     Rig r(Opts{});CHECK(r.layer.target()==nullptr);deferQuad(r,1);CHECK(r.layer.target()==r.T&&r.layer.depth()==r.D);
-    const int live=Fake::live;r.boundary();CHECK(r.layer.target()==nullptr&&Fake::live==live); // T and DS references were held once and let go (the block stays pooled)
+    const int live=Fake::live;r.boundary();CHECK(r.layer.target()==nullptr&&Fake::live==live); // T and DS references were held once and let go
 }
 static void testLayerOff(){
     Opts o;o.on=false;Rig r(o);Layer& l=r.layer;
@@ -675,10 +714,10 @@ static void testResetAndTeardown(){
         uint8_t v[64]={};
         deferQuad(r,1);deferQuad(r,2);r.dev.SetStreamSource(0,r.stat,0,16);r.issue(Rig::dp(0));
         r.issue(DrawArgs::primitiveUP(D3DPT_TRIANGLESTRIP,2,v,16));
-        CHECK(r.layer.pending()==4&&Fake::live>afterRig);
+        CHECK(r.layer.pending()==4&&r.layer.recordChunks()==1);
         const size_t draws=r.dev.draws.size();
         r.layer.reset();
-        CHECK(r.dev.draws.size()==draws&&r.layer.pending()==0&&Fake::live==afterRig&&r.layer.poolSize()==0);   // dropped, not drawn; blocks and refs released
+        CHECK(r.dev.draws.size()==draws&&r.layer.pending()==0&&Fake::live==afterRig&&r.layer.recordChunks()==0);   // dropped, not drawn; records and refs released
         CHECK(!r.ring->b.guarded&&!r.stat->b.guarded&&r.layer.target()==nullptr&&r.layer.mode()==Mode::Fallback);
         for(auto& m:r.marks)CHECK(m.second==0);
         r.layer.replay();CHECK(r.dev.draws.size()==draws);
@@ -799,10 +838,117 @@ static void testBufferWriteProbe(){
     CHECK(!r.layer.bufferWriteConflicts(key,0,0,D3DLOCK_DISCARD|D3DLOCK_READONLY)&&!r.layer.bufferWriteConflicts(r.stat->b.key,0,0,D3DLOCK_DISCARD));
     CHECK(r.layer.pending()==1&&r.layer.totalCounters().conflicts==0);
 }
+// ---------------- state records ----------------
+// A state the game changed between two deferred draws replays with each draw's own value: sampler state, texture binding of a stage, render
+// state, pixel and vertex constants (float, int, bool), clip plane, viewport, scissor, FVF instead of a declaration.
+static void sChangingState(Rig& r){
+    deferQuad(r,1);                                                           // tag 1
+    r.dev.SetSamplerState(0,1,7);r.dev.SetRenderState(D3DRS_ALPHAREF,200);
+    {const float k[4]={5,6,7,8};r.dev.SetPixelShaderConstantF(2,k,1);}
+    deferQuad(r,2);                                                           // tag 2: sampler state, ALPHAREF, PS c2
+    r.dev.SetTexture(5,r.texB);r.dev.SetSamplerState(5,4,0x77);r.dev.SetSamplerState(5,5,3);
+    {const int ki[4]={1,2,3,4};r.dev.SetVertexShaderConstantI(3,ki,1);const BOOL kb[2]={1,1};r.dev.SetPixelShaderConstantB(7,kb,2);const float pl[4]={0,1,0,2};r.dev.SetClipPlane(1,pl);}
+    deferQuad(r,3);                                                           // tag 3: stage 5 bound, int/bool constants, clip plane
+    r.dev.SetTexture(5,nullptr);                                              // stage 5 unbound again, its sampler states stay as they were
+    {D3DVIEWPORT9 vp;vp.X=10;vp.Y=20;vp.Width=700;vp.Height=500;r.dev.SetViewport(&vp);const RECT sc{3,4,300,200};r.dev.SetScissorRect(&sc);}
+    {const int z[4]={0,0,0,0};r.dev.SetVertexShaderConstantI(3,z,1);}
+    deferQuad(r,4);                                                           // tag 4: stage 5 must be unbound again, new viewport/scissor, int c3 back
+    r.dev.SetVertexDeclaration(nullptr);r.dev.SetFVF(0x112);
+    deferQuad(r,5);                                                           // tag 5: FVF (stream 0), no declaration
+    r.dev.SetVertexDeclaration(r.declP);r.rs(D3DRS_ALPHATESTENABLE,1);r.rs(D3DRS_POINTSIZE,0x7fa05000u);
+    deferQuad(r,6);                                                           // tag 6: declaration again, a vendor-hack state changes
+    r.boundary();
+}
+static void testStateChangedBetweenDraws(){
+    Pair p=runBoth(sChangingState);const Counters& c=p.lay->layer.totalCounters();
+    CHECK(p.lay->deferredTags.size()==6&&c.totalHazards()==0&&c.replayedDraws==6&&c.recorded==6);
+    checkEquivalent(p);CHECK(p.lay->order()==expectedDeferredOrder(p.ref->order(),p.lay->deferredTags));
+    std::map<int,const Fake::DrawRec*> by;for(auto& d:p.lay->dev.draws)by[d.tag]=&d;
+    CHECK(by[1]->st.ss[0][1]==3&&by[2]->st.ss[0][1]==7&&by[1]->st.rs[D3DRS_ALPHAREF]==128&&by[2]->st.rs[D3DRS_ALPHAREF]==200);
+    CHECK(by[1]->st.psc[2][0]==1&&by[2]->st.psc[2][0]==5&&by[3]->st.psc[2][0]==5);
+    CHECK(!by[2]->st.tex[5]&&by[3]->st.tex[5]==p.lay->texB&&by[3]->st.ss[5][4]==0x77&&by[3]->st.vsi[3][2]==3&&by[3]->st.psb[8]==1&&by[3]->st.clip[1][3]==2);
+    CHECK(!by[4]->st.tex[5]&&by[4]->st.vsi[3][2]==0&&by[4]->st.vp.Width==700&&by[4]->st.scissor.right==300);
+    CHECK(!by[5]->st.decl&&by[5]->st.fvf==0x112&&by[6]->st.decl==p.lay->declP&&by[6]->st.fvf==0);
+    CHECK(by[6]->st.rs[D3DRS_POINTSIZE]==0x7fa05000u&&by[5]->st.rs[D3DRS_POINTSIZE]==0);
+}
+// Replay is a diff: the second of two draws differing in one constant costs one Set call, the first sets everything recorded.
+static void sOneDraw(Rig& r){deferQuad(r,1);r.boundary();}
+static void sTwoDraws(Rig& r){deferQuad(r,1);deferQuad(r,2);r.boundary();}
+static void sThreeDraws(Rig& r){deferQuad(r,1);deferQuad(r,2);deferQuad(r,3);r.boundary();}
+static void testDiffReplay(){
+    Pair one=runBoth(sOneDraw),two=runBoth(sTwoDraws),three=runBoth(sThreeDraws);
+    const unsigned s1=one.lay->layer.totalCounters().replaySets,s2=two.lay->layer.totalCounters().replaySets,s3=three.lay->layer.totalCounters().replaySets;
+    CHECK(s1>100);                                                            // a full set: render states, constants, samplers, shaders, textures, viewport...
+    CHECK(s2==s1+1&&s3==s2+1);                                                // each further draw: the one constant register that changed (c31, the draw tag)
+    CHECK(s2<2*s1);
+    // the device saw exactly that: the layer run issued the same number of extra Set calls as the layer counted (the scope's own are equal)
+    CHECK(two.lay->dev.sets-one.lay->dev.sets==two.ref->dev.sets-one.ref->dev.sets+1);
+    checkEquivalent(one);checkEquivalent(two);checkEquivalent(three);
+    // two draws with different shaders and a changed sampler state and texture: only those are set again
+    Rig r(Opts{});deferQuad(r,1);
+    auto* vs2=r.reg(new Fake::VShader);r.dev.SetVertexShader(vs2);r.dev.SetSamplerState(0,6,2);r.dev.SetTexture(0,r.texB);
+    deferQuad(r,2);r.boundary();
+    const unsigned s4=r.layer.totalCounters().replaySets;
+    CHECK(s4==s1+4);                                                          // vertex shader, texture, sampler state, c31
+    vs2->Release();
+}
+// A draw without a vertex or pixel shader, or with ps_1_x, is refused (Admit): everything pending is flushed first, in order, and the frame falls back.
+static void sNoPs(Rig& r){deferQuad(r,1);deferQuad(r,2);r.dev.SetPixelShader(nullptr);deferQuad(r,3);r.dev.SetPixelShader(r.ps);deferQuad(r,4);r.boundary();}
+static void sNoVs(Rig& r){deferQuad(r,1);r.dev.SetVertexShader(nullptr);deferQuad(r,2);r.dev.SetVertexShader(r.vs);r.boundary();}
+static void sPs1(Rig& r){deferQuad(r,1);deferQuad(r,2);r.psMajor=1;deferQuad(r,3);r.psMajor=3;deferQuad(r,4);r.boundary();}
+static void testAdmission(){
+    for(auto scenario:{sNoPs,sPs1}){
+        Pair p=runBoth(scenario);const Counters& c=p.lay->layer.totalCounters();
+        CHECK(p.lay->deferredTags==std::vector<int>({1,2})&&c.hazards[unsigned(Reason::Admit)]==1&&c.totalHazards()==1&&c.flushes==1&&c.replayedDraws==2);
+        checkEquivalent(p);CHECK(p.lay->order()==p.ref->order());             // 1 and 2 were drawn before 3 (in place), 4 follows: the reference order
+        CHECK(p.lay->layer.mode()==Mode::Fallback);
+    }
+    Pair q=runBoth(sNoVs);
+    CHECK(q.lay->deferredTags==std::vector<int>({1})&&q.lay->layer.totalCounters().hazards[unsigned(Reason::Admit)]==1);checkEquivalent(q);CHECK(q.lay->order()==q.ref->order());
+    CHECK(std::string(reasonName(Reason::Admit))=="admit");
+    // nothing pending: refused all the same (no flush), the frame falls back with a cooldown
+    Rig r(Opts{});r.psMajor=0;deferQuad(r,1);
+    CHECK(r.layer.pending()==0&&r.layer.totalCounters().hazards[unsigned(Reason::Admit)]==1&&r.layer.totalCounters().flushes==0&&r.layer.mode()==Mode::Fallback&&r.dev.draws.size()==1);
+    r.layer.beginFrame(false);CHECK(r.layer.mode()==Mode::Cooldown);
+    // ps_2_0 and newer are admitted
+    Rig t(Opts{});t.psMajor=2;deferQuad(t,1);CHECK(t.layer.pending()==1);
+}
+// The integration reads why the frame fell back: every hazard that flushed and every refused defer is an event.
+static void testHazardEvents(){
+    Rig r(Opts{});Layer& l=r.layer;
+    CHECK(l.eventSeq()==0);
+    l.hazard(Reason::Clear);CHECK(l.eventSeq()==0);                           // nothing pending: not an event
+    deferQuad(r,1);deferQuad(r,2);CHECK(l.eventSeq()==0);
+    l.hazard(Reason::Order,true,InPlaceKind::Water);
+    CHECK(l.eventSeq()==1&&l.lastEvent().reason==Reason::Order&&l.lastEvent().by==InPlaceKind::Water&&l.lastEvent().pending==2);
+    l.beginFrame(false);while(l.mode()!=Mode::Armed)l.beginFrame(false);
+    deferQuad(r,3);l.onBufferWrite(r.ring->b.key,0,0,D3DLOCK_DISCARD,0,1);   // a write the layer cannot copy (static usage): BufWrite flush
+    CHECK(l.eventSeq()==2&&l.lastEvent().reason==Reason::BufWrite&&l.lastEvent().by==InPlaceKind::None&&l.lastEvent().pending==1);
+    while(l.mode()!=Mode::Armed)l.beginFrame(false);
+    r.psMajor=1;deferQuad(r,4);                                               // a refusal with nothing pending
+    CHECK(l.eventSeq()==3&&l.lastEvent().reason==Reason::Admit&&l.lastEvent().pending==0);
+}
+// The record is large (a fixed block of constants and states): report it, and time record + replay of a typical frame (informational).
+static void testRecordSizeAndTiming(){
+    std::printf("state record: %zu bytes, %zu bytes at 512 entries (chunks of 16 allocated on demand)\n",Layer::recordBytes(),Layer::recordBytes()*512);
+    CHECK(Layer::recordBytes()*512<6u*1024*1024);
+    Rig r(Opts{});const int n=26;r.dev.SetStreamSource(0,r.ring,0,16);
+    const auto t0=std::chrono::steady_clock::now();
+    const int reps=2000;
+    for(int k=0;k<reps;++k){
+        r.layer.beginFrame(false);
+        for(int i=0;i<n;++i){const float v[4]={float(i),0,0,0};r.dev.SetVertexShaderConstantF(31,v,1);DrawArgs a=Rig::dp(UINT(i*4));a.psMajor=3;CHECK(r.layer.defer(a,r.T,r.D,SubAdditive));}
+        r.layer.replay();
+        r.dev.draws.clear();
+    }
+    const double us=std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-t0).count()/reps;
+    std::printf("record + replay of %d draws against the fake: %.1f us per frame (%.2f us per draw; informational)\n",n,us,us/n);
+}
+
 static void testStress512(){
     const auto t0=std::chrono::steady_clock::now();
     Pair p=runBoth(sStress);const Counters& c=p.lay->layer.totalCounters();
-    CHECK(p.lay->deferredTags.size()==512&&c.conflicts==1&&c.materialized==512&&c.conflictBytes==512*64&&c.totalHazards()==0&&c.replayedDraws==512&&c.blocksCaptured==512);
+    CHECK(p.lay->deferredTags.size()==512&&c.conflicts==1&&c.materialized==512&&c.conflictBytes==512*64&&c.totalHazards()==0&&c.replayedDraws==512&&c.recorded==512);
     std::set<int> all(p.lay->deferredTags.begin(),p.lay->deferredTags.end());
     checkEquivalent(p,all);CHECK(p.lay->order()==expectedDeferredOrder(p.ref->order(),p.lay->deferredTags));
     CHECK(c.arenaHigh==512*64);
@@ -825,6 +971,7 @@ int main(){
         {"cooldown and pressure",testCooldownAndPressure},{"trim",testTrim},{"pending targets",testPendingTargets},{"layer off",testLayerOff},
         {"reset and teardown",testResetAndTeardown},{"512 entries",testStress512},
         {"32-bit index copy",testIb32},{"both index formats",testIbBothFormats},{"water rain name flush",testOrderKinds},{"nothing pending: in place",testOrderKindsIdle},
+        {"replay scope failure",testReplayScopeFailure},{"state changed between draws",testStateChangedBetweenDraws},{"diff replay",testDiffReplay},{"admission",testAdmission},{"hazard events",testHazardEvents},{"record size and timing",testRecordSizeAndTiming},
         {"render target texture",testRenderTargetTexture},{"vertex texture sampler",testVertexTextureSampler},{"buffer write conflict probe",testBufferWriteProbe}};
     for(const T& t:tests){t.fn();CHECK(Fake::live==0);std::printf("ok %s\n",t.name);std::fflush(stdout);}
     std::printf("spell layer: %zu tests passed\n",sizeof tests/sizeof tests[0]);
