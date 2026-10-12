@@ -15,7 +15,7 @@ hook=[l for l in r.split('\n') if l.strip().startswith('if(weatherDetect.hot&&mi
 assert len(hook)==1,'the draw hook comparison must exist exactly once'
 mistline=[l for l in r.split('\n') if l.strip().startswith('else if(weatherDetect.mistArmed)')]
 assert len(mistline)==1,'0.3.199 (rain mist): the mist test follows the hot comparison exactly once'
-assert r.count('rainBlendDraw(rainBlend,claimed||mist,draw)')==2,'0.3.199 (rain mist): both gate paths skip a mist draw'
+assert r.count('nameMaskDraw(rainBlend,claimed||mist,draw)')==2,'0.3.199 (rain mist): both gate paths skip a mist draw'
 rl=r.split('\n');j0=next(i for i,l in enumerate(rl) if l.strip().startswith('bool mistDraw(UINT count){'));j1=next(i for i in range(j0,len(rl)) if rl[i]=='    }')
 mistfn='\n'.join(rl[j0:j1+1])
 rl=r.split('\n');i0=next(i for i,l in enumerate(rl) if 'template<class Draw> HRESULT rainBlendDraw(' in l);i1=next(i for i in range(i0,len(rl)) if rl[i]=='    }')
@@ -122,6 +122,7 @@ struct Hook{
 @MISTFN@
 @MASKFN@
 @RAINFN@
+    template<class Draw> HRESULT nameMaskDraw(bool rain,bool claimed,Draw draw){return rainBlendDraw(rain,claimed,draw);} /* 0.3.212 (task 32): the name mask wrapper is test_name_mask's */
     HRESULT draw(UINT count){
         bool claimed=claimedSkip,rainBlend=false,mist=false;
 @HOOK@
@@ -129,7 +130,7 @@ struct Hook{
 @UNBINDLINE@
         auto draw=[&]{++drawn;blendAtDraw[0]=ext->rs[D3DRS_ALPHABLENDENABLE];blendAtDraw[1]=ext->rs[D3DRS_SRCBLEND];blendAtDraw[2]=ext->rs[D3DRS_DESTBLEND];blendAtDraw[3]=ext->rs[D3DRS_BLENDOP];
             ext->draws.push_back({ext->rt,ext->rt1,ext->ps,ext->rs[D3DRS_COLORWRITEENABLE],ext->rs[D3DRS_COLORWRITEENABLE1],ext->rs[D3DRS_ALPHABLENDENABLE],ext->rs[D3DRS_SEPARATEALPHABLENDENABLE],ext->rs[D3DRS_SRCBLENDALPHA],ext->rs[D3DRS_DESTBLENDALPHA],ext->rs[D3DRS_BLENDOPALPHA],ext->rs[D3DRS_SRCBLEND],ext->rs[D3DRS_DESTBLEND],ext->rs[D3DRS_BLENDOP]});return HRESULT(0);};
-        const HRESULT hr=rainBlendDraw(rainBlend,claimed||mist,draw);
+        const HRESULT hr=nameMaskDraw(rainBlend,claimed||mist,draw);
         return hr;
     }
     void bind(unsigned stage,int i,bool known=true){mirrorState.textures[stage]=const_cast<void*>(P(i));mirrorState.textureKnown[stage]=known;}

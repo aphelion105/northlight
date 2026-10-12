@@ -22,7 +22,7 @@ for c in counters:
     assert c in reset,'reset '+c
 for k in ('draws=','lastOpaqueZ=','clearResolve=','earlyResolve=','earlyResolveAt=','earlyResolveTotal=','earlyResolveUndone=','earlyResolveUndoneTotal='):assert k in line,k
 for k in ('zwriteSkinned','noZWrite','depthOnly','firstBlend','firstTranslucentZ','firstDepthOnly','waterZAfter','opaqueZAfter'):assert k not in r,'removed counter '+k
-clr=r[r.index('HRESULT STDMETHODCALLTYPE Clear('):][:900]
+clr=r[r.index('HRESULT STDMETHODCALLTYPE Clear('):][:2200]
 assert 'resolveDepth()' in clr and 'earlyDepth.freeze()' in clr and 'clearResolveAt=censusDraws+1' in clr,'Clear(Z) resolve or freeze position'
 assert 'if(sampled())logf("TRANSLUCENT' in fin
 cf=r[r.index('void clearFrame() {'):r.index('void releaseResources()')]
