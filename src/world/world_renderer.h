@@ -759,7 +759,7 @@ private:
     std::vector<NorthlightActorShadowSelection::Draw> actorShadowDraws;
     NorthlightActorShadowSelection::Scratch actorShadowScratch;size_t actorShadowToggles=0;unsigned actorShadowFrames=0;
     float actorShadowOrigin[3]={};bool actorShadowOriginValid=false,actorShadowOver=false;unsigned actorShadowTransitions=0,actorShadowCapBinds=0;double actorShadowPrepareMs=0,actorShadowChooseMs=0; /* last frame's shadow pivot ranks the actor quota */
-    size_t actorShadowRadiusToggles=0,actorShadowRadiusFlicker=0,actorShadowRadiusRekeyed=0,actorShadowRadiusRekeyFlips=0,actorShadowAttachToFree=0,actorShadowFreeToAttach=0; /* ActorShadowRadius per log window: inside<->outside changes, changes within RadiusDwell of the last one, identities kept across a key change */
+    size_t actorShadowRadiusToggles=0,actorShadowRadiusFlicker=0,actorShadowRadiusRekeyed=0,actorShadowRadiusRekeyFlips=0,actorShadowAttachToFree=0,actorShadowFreeToAttach=0,actorShadowAttachToFreeBeyond=0,actorShadowFreeToAttachBeyond=0; /* ActorShadowRadius per log window: inside<->outside changes, changes within RadiusDwell of the last one, identities kept across a key change */
     NorthlightReplayGPU::SelectedCache replayGpuCache;
     NorthlightReplayBulk::Layout replayBulkLayout;
     IDirect3DVertexBuffer9* replayVerticesGPU[4]={};
