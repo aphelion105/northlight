@@ -307,6 +307,7 @@ class Device final : public GuardedMirrorDevice {
         lastVs.wmo=world&&world->recognizesWmo(vs);lastVs.world=world&&world->isWorldShader(vs);lastVs.skinned=world&&world->isSkinnedShader(vs);lastVs.family=unsigned(lastVs.entry>>kFamilyShift)&7u;return lastVs;
     }
     std::unordered_map<IDirect3DPixelShader9*, uint64_t> psHashes;
+    std::unordered_map<IDirect3DPixelShader9*, unsigned> psMajor; // the shader model major version from the version token (0 unknown); the spell layer admits ps_2_0 and newer only
     unsigned blobSignatureReports=0;
     NorthlightMirrorAuditSchedule mirrorAuditSchedule;bool mirrorFallbackReported=false;
     UINT width = 0, height = 0;
@@ -1128,6 +1129,10 @@ private:
     // SpellTrace: spellTraceLeft frames of SPELLTRACE lines, from the first world frame at or after frame 300 (Diagnostics only); spellTraceWindow: the next frame is traced.
     unsigned spellTraceLeft=0,spellDrawIndex=0;bool spellTraceWindow=false,spellTraceFrame=false,spellTraceSeen=false;
     LONGLONG spellDeferTicks=0,spellReplayTicks=0;NorthlightSpellLayer::Mode spellFrameMode=NorthlightSpellLayer::Mode::Off;
+    // Hazard diagnostics (Diagnostics=1): the layer's latest event is consumed after each layer call that can raise one; the first 64 of the session are
+    // logged as SPELLHAZARD. spellWin* accumulate every frame since the previous SPELLLAYER line (that line itself describes one sampled frame).
+    static constexpr unsigned kSpellHazardLogs=64;
+    unsigned spellEventSeen=0,spellHazardLogs=0,spellWinFrames=0,spellWinDeferring=0,spellWinCooldown=0;bool spellInDraw=false;NorthlightSpellLayer::Counters spellWin;
     static const char* spellKindName(NorthlightSpellLayer::Kind k){static const char* const n[]={"ignore","opaque","translucentZ","defer","inplace","hazard"};return n[unsigned(k)];}
     static const char* spellInPlaceName(NorthlightSpellLayer::InPlaceKind k){static const char* const n[]={"none","water","rain","name","fade"};return n[unsigned(k)];}
     static void spellMarkGuard(void*,void* raw,bool on){NorthlightTrackedBuffers::markSpellGuard(raw,on);}
@@ -1158,18 +1163,52 @@ private:
     }
     // SpellTrace lines only; every call site tests spellTraceFrame first (one bool when the trace is off).
     void spellEvent(const char* what,unsigned a=0,unsigned b=0,unsigned c=0){logf("SPELLTRACE frame=%u event=%s pending=%u a=%u b=%u c=%u",frame,what,spell.pending(),a,b,c);}
+    // The bound pixel shader's model (psMajor) and hash, by identity lookup.
+    void spellPixelShader(unsigned* major,unsigned long long* hash){
+        IDirect3DPixelShader9* ps=nullptr;const bool b=ext->peekPixelShader(ps);if(!b&&FAILED(ext->GetPixelShader(&ps)))ps=nullptr;
+        if(ps){
+            if(major){auto it=psMajor.find(ps);*major=it==psMajor.end()?0u:it->second;}
+            if(hash){auto it=psHashes.find(ps);*hash=it==psHashes.end()?0ull:(unsigned long long)it->second;}
+        }
+        if(!b)drop(ps);
+    }
+    // After a layer call that can raise an event (a hazard that flushed, a refused defer): consume it. Diagnostics only, the first kSpellHazardLogs of the
+    // session; detail(buf,size) formats the event's own fields (called only when it is logged). One unsigned compare otherwise.
+    template<class F> void spellEventDone(const char* what,F&& detail){
+        if(spell.eventSeq()==spellEventSeen)return;
+        spellEventSeen=spell.eventSeq();
+        if(!diagnostics()||spellHazardLogs>=kSpellHazardLogs)return;
+        ++spellHazardLogs;char d[256];d[0]=0;detail(d,sizeof d);
+        const NorthlightSpellLayer::Layer::Event& ev=spell.lastEvent();
+        logf("SPELLHAZARD frame=%u draw=%u reason=%s by=%s pending=%u event=%s %s",frame,drawCalls,NorthlightSpellLayer::reasonName(ev.reason),spellInPlaceName(ev.by),ev.pending,what,d);
+    }
+    // The same for the draw that triggered the event: its facts (the DrawFacts the classifier saw) and shader hashes.
+    void spellDrawEventDone(const NorthlightSpellLayer::DrawFacts& f){
+        if(spell.eventSeq()==spellEventSeen)return;
+        spellEventSeen=spell.eventSeq();
+        if(!diagnostics()||spellHazardLogs>=kSpellHazardLogs)return;
+        ++spellHazardLogs;
+        unsigned long long vsHash=0,psHash=0;
+        {auto it=vsHashes.find(spellVs);if(spellVs&&it!=vsHashes.end())vsHash=it->second;}
+        spellPixelShader(nullptr,&psHash);
+        const NorthlightSpellLayer::Layer::Event& ev=spell.lastEvent();
+        logf("SPELLHAZARD frame=%u draw=%u reason=%s by=%s pending=%u family=%u skinned=%d fixed=%d zw=%d blend=%d src=%u dst=%u cw=%u domain=%d isTarget=%d vs=%016llx ps=%016llx",
+             frame,drawCalls,NorthlightSpellLayer::reasonName(ev.reason),spellInPlaceName(ev.by),ev.pending,unsigned(f.family),int(f.skinned),int(f.fixedFunction),int(f.zWrite),int(f.blend),f.srcBlend,f.destBlend,f.colorWrite,int(f.worldDomain),int(f.rt0IsTarget),vsHash,psHash);
+    }
     // An unknown order or resource dependency: the pending draws are replayed now, before the caller's operation.
-    void spellFlush(NorthlightSpellLayer::Reason r,bool cooldown=true,NorthlightSpellLayer::InPlaceKind by=NorthlightSpellLayer::InPlaceKind::None){
+    void spellFlush(NorthlightSpellLayer::Reason r,bool cooldown=true,NorthlightSpellLayer::InPlaceKind by=NorthlightSpellLayer::InPlaceKind::None,const char* what="flush",unsigned a=0,unsigned b=0){
         if(!spellOn||!spell.pending())return;
         extensionWork("spell hazard",[&]{ExtensionDevice::RawScope raw(*ext);spell.hazard(r,cooldown,by);});
         spellSync();
         if(spellTraceFrame)logf("SPELLTRACE frame=%u event=flush reason=%s by=%s",frame,NorthlightSpellLayer::reasonName(r),spellInPlaceName(by));
+        if(!spellInDraw)spellEventDone(what,[&](char* buf,size_t n){std::snprintf(buf,n,"a=%u b=%u",a,b);}); /* a draw reports itself, with its facts */
     }
     void spellTextureWrite(void* texture){ /* a raw base texture was (or is about to be) written */
         if(!spellOn||!spell.pendingSamples(texture))return;
         if(spellTraceFrame)logf("SPELLTRACE frame=%u event=texwrite texture=%p",frame,texture);
         extensionWork("spell texture write",[&]{ExtensionDevice::RawScope raw(*ext);spell.onTextureWrite(texture);});
         spellSync();
+        spellEventDone("texwrite",[&](char* buf,size_t n){std::snprintf(buf,n,"texture=%p",texture);});
     }
     void spellBufferWrite(void* raw,UINT offset,UINT size,DWORD flags,DWORD usage,unsigned locks){ /* Buffer::Lock, before the lock is forwarded, marked buffers only */
         if(!spellOn||!spell.pending())return;
@@ -1180,6 +1219,7 @@ private:
         if(conflict){
             extensionWork("spell buffer write",[&]{ExtensionDevice::RawScope scope(*ext);spell.onBufferWrite(raw,offset,size,flags,usage,locks);});
             spellSync();
+            spellEventDone("bufwrite",[&](char* buf,size_t n){std::snprintf(buf,n,"buffer=%p offset=%u size=%u flags=0x%lx usage=0x%lx locks=%u",raw,offset,size,(unsigned long)flags,(unsigned long)usage,locks);});
         }
         if(spellTraceFrame)logf("SPELLTRACE frame=%u event=bufwrite buffer=%p offset=%u size=%u flags=0x%lx usage=0x%lx locks=%u result=%s",frame,raw,offset,size,(unsigned long)flags,(unsigned long)usage,locks,
             spell.frameCounters().flushes>flushes?"flushed":spell.frameCounters().conflicts>conflicts?"copied":"clear");
@@ -1208,14 +1248,14 @@ private:
         if((flags&D3DCLEAR_TARGET)&&spell.target()){const bool b=ext->peekRenderTarget(0,s);if(!b&&FAILED(ext->GetRenderTarget(0,&s)))s=nullptr;hit=s==spell.target();if(!b)drop(s);}
         if(!hit&&(flags&(D3DCLEAR_ZBUFFER|D3DCLEAR_STENCIL))&&spell.depth()){s=nullptr;const bool b=ext->peekDepthStencilSurface(s);if(!b&&FAILED(ext->GetDepthStencilSurface(&s)))s=nullptr;hit=s==spell.depth();if(!b)drop(s);}
         if(spellTraceFrame)spellEvent("clear",unsigned(flags),hit);
-        if(hit)spellFlush(NorthlightSpellLayer::Reason::Clear);
+        if(hit)spellFlush(NorthlightSpellLayer::Reason::Clear,true,NorthlightSpellLayer::InPlaceKind::None,"clear",unsigned(flags),0);
     }
     // StretchRect / ColorFill / UpdateSurface / GetRenderTargetData with RAW surfaces. The layer's target or depth on either side: Copy; a surface of a texture a pending draw samples as the destination: TexWrite.
     void spellCopy(IDirect3DSurface9* source,IDirect3DSurface9* destination){
         if(!spellOn||!spell.pending())return;
         auto mine=[&](IDirect3DSurface9* x){return x&&(x==spell.target()||x==spell.depth());};
         if(spellTraceFrame)spellEvent("copy",mine(source),mine(destination));
-        if(mine(source)||mine(destination)){spellFlush(NorthlightSpellLayer::Reason::Copy);return;}
+        if(mine(source)||mine(destination)){spellFlush(NorthlightSpellLayer::Reason::Copy,true,NorthlightSpellLayer::InPlaceKind::None,"copy",mine(source),mine(destination));return;}
         IDirect3DBaseTexture9* container=nullptr;
         if(destination&&SUCCEEDED(destination->GetContainer(__uuidof(IDirect3DBaseTexture9),reinterpret_cast<void**>(&container)))&&container){spellTextureWrite(static_cast<void*>(container));container->Release();}
     }
@@ -1275,12 +1315,15 @@ private:
         const Result r=classify(f,spellClasses);
         bool deferred=false;
         switch(r.kind){
-        case Kind::Defer:deferred=rt&&spell.defer(spellArgs,rt,ds,r.sub);break;
-        case Kind::Hazard:spellFlush(r.reason,true,r.inPlace);break; /* r.inPlace: water, rain or a name drawn after a deferred draw */
+        case Kind::Defer:
+            if(rt){spellPixelShader(&spellArgs.psMajor,nullptr);deferred=spell.defer(spellArgs,rt,ds,r.sub);}
+            break;
+        case Kind::Hazard:spellInDraw=true;spellFlush(r.reason,true,r.inPlace);spellInDraw=false;break; /* r.inPlace: water, rain or a name drawn after a deferred draw */
         case Kind::InPlace:if(pend)spell.noteInPlace(r.inPlace);break;
         default:break;
         }
         spellSync();
+        spellDrawEventDone(f); /* a refused defer or a flushing hazard of this draw: SPELLHAZARD with the draw's facts */
         if(trace)spellTraceDraw(f,r,deferred,pend,rt,ds);
         return deferred;
     }
@@ -1331,7 +1374,7 @@ private:
     void spellFrameEnd(){
         if(!spellOn)return;
         extensionWork("spell frame end",[&]{
-            spellFlush(NorthlightSpellLayer::Reason::Frame,false); /* Present before the boundary: draw them now, no cooldown */
+            spellFlush(NorthlightSpellLayer::Reason::Frame,false,NorthlightSpellLayer::InPlaceKind::None,"frameend"); /* Present before the boundary: draw them now, no cooldown */
             const bool wasSampled=sampled();const NorthlightSpellLayer::Mode mode=spellFrameMode;
             if(spell.frameCounters().totalDeferred())spellIdle=0;else if(++spellIdle==600)spell.trim(0);
             spell.beginFrame(NorthlightStream::memoryPressure.load(std::memory_order_relaxed));spellFrameMode=spell.mode();
@@ -1340,16 +1383,25 @@ private:
             if(spellQueryUnknown&&frame-spellQueryUnknownFrame>2)spellQueryUnknown=false; /* same 2-frame sweep as the table: a lost bracket cannot hold the layer off forever */
             spellFade.reset();
             const NorthlightSpellLayer::Counters& c=spell.lastFrameCounters();
+            if(diagnostics()){ /* window totals: every frame, not only the sampled one */
+                ++spellWinFrames;if(c.totalDeferred())++spellWinDeferring;if(mode==NorthlightSpellLayer::Mode::Cooldown)++spellWinCooldown;spellWin.add(c);
+            }
             NorthlightSpellLayer::Reason first;
             if(spell.takeFirstHazard(first))logf("SPELLLAYER first hazard reason=%s frame=%u",NorthlightSpellLayer::reasonName(first),frame);
             if(wasSampled&&diagnostics()){
-                char hazards[200];size_t at=0;hazards[0]=0;
-                for(unsigned i=0;i<NorthlightSpellLayer::kReasons;++i)if(c.hazards[i]){const int w=std::snprintf(hazards+at,sizeof hazards-at,"%s%s:%u",at?",":"",NorthlightSpellLayer::reasonName(NorthlightSpellLayer::Reason(i)),c.hazards[i]);if(w>0)at=std::min(sizeof hazards-1,at+size_t(w));}
-                if(!at)std::snprintf(hazards,sizeof hazards,"none");
+                auto reasons=[](const NorthlightSpellLayer::Counters& k,char* out,size_t size){
+                    size_t at=0;out[0]=0;
+                    for(unsigned i=0;i<NorthlightSpellLayer::kReasons;++i)if(k.hazards[i]){const int w=std::snprintf(out+at,size-at,"%s%s:%u",at?",":"",NorthlightSpellLayer::reasonName(NorthlightSpellLayer::Reason(i)),k.hazards[i]);if(w>0)at=std::min(size-1,at+size_t(w));}
+                    if(!at)std::snprintf(out,size,"none");
+                };
+                char hazards[200],winHazards[200];reasons(c,hazards,sizeof hazards);reasons(spellWin,winHazards,sizeof winHazards);
                 const double us=cpuFrequency.QuadPart>0?1e6/double(cpuFrequency.QuadPart):0.0;
-                logf("SPELLLAYER frame=%u mode=%s deferred=%u/%u/%u/%u replayed=%u fadeInPlace=%u orderBy=%u/%u/%u hazards=%s flushes=%u conflicts=%u conflictBytes=%llu materialized=%u blocks=%u pool=%zu arenaHigh=%u replaySkipped=%u discarded=%u cooldown=%u cpuDeferUs=%.1f cpuReplayUs=%.1f",
-                    frame,NorthlightSpellLayer::modeName(mode),c.deferred[0],c.deferred[1],c.deferred[2],c.deferred[3],c.replayedDraws,c.inPlace[3],c.orderBy[0],c.orderBy[1],c.orderBy[2],hazards,c.flushes,c.conflicts,(unsigned long long)c.conflictBytes,c.materialized,c.blocksCaptured,spell.poolSize(),c.arenaHigh,c.replaySkipped,c.discarded,spell.cooldownLeft(),
-                    double(spellDeferTicks)*us,double(spellReplayTicks)*us);
+                logf("SPELLLAYER frame=%u mode=%s deferred=%u/%u/%u/%u replayed=%u fadeInPlace=%u orderBy=%u/%u/%u hazards=%s flushes=%u conflicts=%u conflictBytes=%llu materialized=%u records=%u recordHigh=%u replaySets=%u arenaHigh=%u replaySkipped=%u discarded=%u cooldown=%u cpuDeferUs=%.1f cpuReplayUs=%.1f "
+                     "window frames=%u deferring=%u cooldown=%u deferred=%u hazards=%s flushes=%u conflicts=%u",
+                    frame,NorthlightSpellLayer::modeName(mode),c.deferred[0],c.deferred[1],c.deferred[2],c.deferred[3],c.replayedDraws,c.inPlace[3],c.orderBy[0],c.orderBy[1],c.orderBy[2],hazards,c.flushes,c.conflicts,(unsigned long long)c.conflictBytes,c.materialized,c.recorded,c.recordHigh,c.replaySets,c.arenaHigh,c.replaySkipped,c.discarded,spell.cooldownLeft(),
+                    double(spellDeferTicks)*us,double(spellReplayTicks)*us,
+                    spellWinFrames,spellWinDeferring,spellWinCooldown,spellWin.totalDeferred(),winHazards,spellWin.flushes,spellWin.conflicts);
+                spellWin=NorthlightSpellLayer::Counters{};spellWinFrames=spellWinDeferring=spellWinCooldown=0;
             }
             spellDeferTicks=spellReplayTicks=0;
             if(spellTraceFrame){logf("SPELLTRACE end frame=%u left=%u",frame,spellTraceLeft-1);spellTraceFrame=false;if(spellTraceLeft)--spellTraceLeft;}
@@ -1669,7 +1721,7 @@ public:
     void finishFrame() {
         Guard mirrorLock(mirrorState.gate);
         rainMrtUnbind(); /* 0.3.202 (rain mask MRT): Present, both paths (Device and SwapChain) */
-        if(spellOn)spellFlush(NorthlightSpellLayer::Reason::Frame,false); /* task 34: Present before the boundary */
+        if(spellOn)spellFlush(NorthlightSpellLayer::Reason::Frame,false,NorthlightSpellLayer::InPlaceKind::None,"present"); /* task 34: Present before the boundary */
         struct InvalidateOnReturn {DeviceMirror& state;~InvalidateOnReturn(){state.invalidate();}} invalidate{mirrorState};
         if(extensionFault){clearFrame();return;}
         extensionWork("frame finish",[&]{finishFrameImpl();});
@@ -1875,7 +1927,7 @@ public:
             gateSceneEnd={};gateSceneDraws=0;gateSceneReads=0;for(unsigned s=0;s<MirrorGate::Sites;++s)mirrorState.gate.takeAcquired(MirrorSite(s));perfCalls.store(0,std::memory_order_relaxed);}
         latchDrawGates(); /* 0.3.187: the next frame's draw gates, after every input above */
     }
-    HRESULT STDMETHODCALLTYPE EndScene() override { Guard mirrorLock(mirrorState.gate);rainMrtUnbind(); /* 0.3.202 (rain mask MRT) */if(spellOn)spellFlush(NorthlightSpellLayer::Reason::Frame,false);return GuardedMirrorDevice::EndScene(); }
+    HRESULT STDMETHODCALLTYPE EndScene() override { Guard mirrorLock(mirrorState.gate);rainMrtUnbind(); /* 0.3.202 (rain mask MRT) */if(spellOn)spellFlush(NorthlightSpellLayer::Reason::Frame,false,NorthlightSpellLayer::InPlaceKind::None,"endscene");return GuardedMirrorDevice::EndScene(); }
     HRESULT STDMETHODCALLTYPE Present(const RECT* src,const RECT* dst,HWND wnd,const RGNDATA* dirty) override { Guard mirrorLock(mirrorState.gate);mirrorState.gate.noteFirst(mirrorState.gate.presentTid);rainMrtUnbind(); /* 0.3.202 (rain mask MRT) */
         PresentTicks ticks;const unsigned markerFrame=frame;finishFrame();ticks.finish();
         if(frameMarkers)frameMarker(1,markerFrame);
@@ -1941,7 +1993,7 @@ public:
         if(gateFrame)++gateCounts.processVertices; /* 0.3.154: up to two generations */
         NorthlightTrackedBuffers::written(buffer);
         auto* rawBuffer=NorthlightTrackedBuffers::unwrap(buffer);
-        if(spellOn&&spell.pending()){extensionWork("spell buffer write",[&]{spell.onBufferGpuWrite(static_cast<void*>(rawBuffer));});spellSync();} /* task 34: a GPU-side write to a guarded buffer */
+        if(spellOn&&spell.pending()){extensionWork("spell buffer write",[&]{spell.onBufferGpuWrite(static_cast<void*>(rawBuffer));});spellSync();spellEventDone("gpuwrite",[&](char* buf,size_t n){std::snprintf(buf,n,"buffer=%p",static_cast<void*>(rawBuffer));});} /* task 34: a GPU-side write to a guarded buffer */
         HRESULT hr=ext->ProcessVertices(src,dest,count,rawBuffer,mirrorResources.unwrap(decl),flags);
         mirrorState.invalidate();
         NorthlightTrackedBuffers::written(buffer);return hr;
@@ -1953,7 +2005,7 @@ public:
     }
     HRESULT STDMETHODCALLTYPE CreatePixelShader(const DWORD* code,IDirect3DPixelShader9** out) override { Guard mirrorLock(mirrorState.gate);
         HRESULT hr=ext->CreatePixelShader(code,out);
-        if(SUCCEEDED(hr)&&out&&*out)extensionWork("pixel shader registration",[&]{std::vector<DWORD> words;auto h=shaderHash(*out,words);uiFallbackForget(*out);psTags[*out]=contains(kUiPS,h)?2:0;psHashes[*out]=h;if(water)water->registerPixel(*out,h,words.data(),words.size());if(world)world->registerPixelShader(*out);});
+        if(SUCCEEDED(hr)&&out&&*out)extensionWork("pixel shader registration",[&]{std::vector<DWORD> words;auto h=shaderHash(*out,words);uiFallbackForget(*out);psTags[*out]=contains(kUiPS,h)?2:0;psHashes[*out]=h;psMajor[*out]=!words.empty()&&(words[0]>>16)==0xFFFFu?unsigned((words[0]>>8)&0xFFu):0u;if(water)water->registerPixel(*out,h,words.data(),words.size());if(world)world->registerPixelShader(*out);});
         if(SUCCEEDED(hr))mirrorResources.wrap(out);return hr;
     }
     // 0.3.187: the four draw entry points share drawHook(); each passes its capture and its real draw.
