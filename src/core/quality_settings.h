@@ -99,9 +99,9 @@ struct Settings {
     unsigned actorShadowDetail=1;
     // task 34 SpellLayer: 1 = translucent M2 draws without a depth write (particles, ribbons, spell batches, projected ground effects) are deferred and
     // drawn right after the world effects, so fog, haze, shadow and AO act on the world behind them and not on them; 0 = the old path (no classification).
-    // SpellLayerClasses: bit mask of the blends deferred (1 additive, 2 alpha, 4 modulate/mod2x, 8 other). SpellTrace: frames of the SPELLTRACE draw-order log
+    // SpellLayerClasses: bit mask of the blends deferred (1 additive, 2 alpha, 4 modulate/mod2x, 8 other, 16 floating world names). SpellTrace: frames of the SPELLTRACE draw-order log
     // (diagnostic, 0 = off). Creation-time keys (the renderer reads them once with the device).
-    unsigned spellLayer=1,spellLayerClasses=15,spellTrace=0;
+    unsigned spellLayer=1,spellLayerClasses=31,spellTrace=0;
     char origin[49]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
 };
 struct Key { const char* name; unsigned Settings::*field; unsigned low,high; unsigned preset[3]; };
@@ -154,7 +154,7 @@ inline const Key Keys[]={
     {"NightBrightness",&Settings::nightBrightness,0,100,{50,50,50}}, /* task 23 (night brightness) */
     {"ActorShadowDetail",&Settings::actorShadowDetail,0,1,{1,1,0}}, /* 0.3.209 (task 29) */
     {"SpellLayer",&Settings::spellLayer,0,1,{1,1,1}}, /* task 34 */
-    {"SpellLayerClasses",&Settings::spellLayerClasses,1,15,{15,15,15}},
+    {"SpellLayerClasses",&Settings::spellLayerClasses,1,31,{31,31,31}},
     {"SpellTrace",&Settings::spellTrace,0,16,{0,0,0}},
 };
 inline bool operator==(const Settings& a,const Settings& b){for(const auto& k:Keys)if(a.*k.field!=b.*k.field)return false;return true;}

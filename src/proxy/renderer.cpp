@@ -1132,7 +1132,7 @@ private:
     // (beforeDraw / uiFallbackDraw), exactly with the state they had. spellOn is the one bool every hook tests; with SpellLayer=0 nothing here runs.
     // Every layer call runs inside extensionWork (a fault drops the layer: reset()) on the thread that executes the device.
     NorthlightSpellLayer::Layer spell;NorthlightSpellLayer::FadeRun spellFade;NorthlightSpellLayer::DrawArgs spellArgs; /* spellArgs: set by the four draw overrides (SpellLayer=1 only) */
-    bool spellOn=false;unsigned spellClasses=15,spellIdle=0;unsigned spellSampleFrame=~0u;bool spellSampleOn=false;
+    bool spellOn=false;unsigned spellClasses=31,spellIdle=0;unsigned spellSampleFrame=~0u;bool spellSampleOn=false;
     bool spellDomain=false,spellZEnable=false;IDirect3DVertexShader9* spellVs=nullptr; /* prepareDrawImpl's reads of this draw (identities only; SpellLayer=1 only) */
     void* spellTexKey=nullptr;IDirect3DSurface9* spellTexFor=nullptr; /* the layer target's container texture (null: T is not a texture level), computed once per target */
     void* spellQuery[8]={};unsigned spellQueryFrame[8]={},spellQueryN=0,spellQueryUnknownFrame=0;bool spellQueryUnknown=false; /* open D3DQUERYTYPE_OCCLUSION brackets (raw queries), by Issue(BEGIN) frame; spellQueryUnknown: a bracket was lost to a full table (its frame in spellQueryUnknownFrame) */
@@ -1333,10 +1333,11 @@ private:
         }
         const bool pend=spell.pending();
         void* texKey=pend?spellTargetTexture():nullptr;
+        const bool nameCand=uiTag&&(spellClasses&SubName)!=0; /* a floating world name may be deferred, Z-writing or not: it passes the early outs below */
         if(!trace){
-            if(!pend&&(zWrite||!spellDomain))return false;
-            if(!pend&&((family==Family::None&&vs)||family==Family::Ripples||claimed||water||rain||uiTag||(fade&&skinned)||!rd(D3DRS_ALPHABLENDENABLE)))return false; /* no vertex shader: fixed function, a candidate */
-            if(pend&&zWrite&&spellDomain&&!texKey)return false; /* Opaque / TranslucentZ: in place, nothing to do */
+            if(!pend&&((zWrite&&!nameCand)||!spellDomain))return false;
+            if(!pend&&((family==Family::None&&vs)||family==Family::Ripples||claimed||water||rain||(uiTag&&!nameCand)||(fade&&skinned)||!rd(D3DRS_ALPHABLENDENABLE)))return false; /* no vertex shader: fixed function, a candidate */
+            if(pend&&zWrite&&spellDomain&&!texKey&&!nameCand)return false; /* Opaque / TranslucentZ: in place, nothing to do */
         }
         DrawFacts f;
         f.zEnable=spellZEnable;f.zWrite=zWrite;f.worldDomain=spellDomain;f.family=family;f.skinned=skinned;f.water=water;f.uiTag=uiTag;f.rain=rain;f.claimed=claimed;f.fixedFunction=!vs;f.fadeRun=fade;f.pending=pend;
@@ -1442,10 +1443,10 @@ private:
                 double timerUs=0; /* what one timing scope costs here (two clock reads): cpuDeferUs includes it once per world draw and once per record */
                 {LONGLONG sink=0;LARGE_INTEGER a,b;QueryPerformanceCounter(&a);for(int i=0;i<64;++i){CpuScope probe(&sink); /* sampled frame: calibration */}QueryPerformanceCounter(&b);timerUs=double(b.QuadPart-a.QuadPart)*us/64.0;}
                 const NorthlightSpellLayer::Layer::Memory spellMem=spellMemAtFrame; /* taken before the frame's trim/beginFrame released the chunks */
-                logf("SPELLLAYER frame=%u mode=%s deferred=%u/%u/%u/%u fixed=%u replayed=%u fadeInPlace=%u orderBy=%u/%u/%u hazards=%s flushes=%u conflicts=%u conflictBytes=%llu materialized=%u records=%u recordHigh=%u replaySets=%u arenaHigh=%u replaySkipped=%u discarded=%u cooldown=%u cpuDeferUs=%.1f cpuReplayUs=%.1f capBy=%u/%u/%u/%u overflowAt=%u overflowCandidates=%u memKiB=%u uploadKiB=%u deltaWords=%llu cpuRecordUs=%.1f cpuGateUs=%.1f gateDraws=%u recordCalls=%u timerScopeUs=%.3f "
+                logf("SPELLLAYER frame=%u mode=%s deferred=%u/%u/%u/%u fixed=%u replayed=%u fadeInPlace=%u orderBy=%u/%u/%u hazards=%s flushes=%u conflicts=%u conflictBytes=%llu materialized=%u records=%u recordHigh=%u replaySets=%u arenaHigh=%u replaySkipped=%u discarded=%u cooldown=%u cpuDeferUs=%.1f cpuReplayUs=%.1f capBy=%u/%u/%u/%u overflowAt=%u overflowCandidates=%u memKiB=%u uploadKiB=%u deltaWords=%llu cpuRecordUs=%.1f cpuGateUs=%.1f gateDraws=%u recordCalls=%u timerScopeUs=%.3f names=%u "
                      "window frames=%u deferring=%u cooldown=%u deferred=%u hazards=%s flushes=%u conflicts=%u overflowFrames=%u overflowCandidates=%u",
                     frame,NorthlightSpellLayer::modeName(mode),c.deferred[0],c.deferred[1],c.deferred[2],c.deferred[3],c.fixed,c.replayedDraws,c.inPlace[3],c.orderBy[0],c.orderBy[1],c.orderBy[2],hazards,c.flushes,c.conflicts,(unsigned long long)c.conflictBytes,c.materialized,c.recorded,c.recordHigh,c.replaySets,c.arenaHigh,c.replaySkipped,c.discarded,spell.cooldownLeft(),
-                    double(spellDeferTicks)*us,double(spellReplayTicks)*us,c.capBy[0],c.capBy[1],c.capBy[2],c.capBy[3],c.overflowAt,c.overflowCandidates,unsigned(spellMem.total()>>10),unsigned(spellMem.uploads>>10),(unsigned long long)c.deltaWords,double(spellRecordTicks)*us,double(spellDeferTicks-spellRecordTicks)*us,spellGateDraws,spellRecords,timerUs,
+                    double(spellDeferTicks)*us,double(spellReplayTicks)*us,c.capBy[0],c.capBy[1],c.capBy[2],c.capBy[3],c.overflowAt,c.overflowCandidates,unsigned(spellMem.total()>>10),unsigned(spellMem.uploads>>10),(unsigned long long)c.deltaWords,double(spellRecordTicks)*us,double(spellDeferTicks-spellRecordTicks)*us,spellGateDraws,spellRecords,timerUs,c.names,
                     spellWinFrames,spellWinDeferring,spellWinCooldown,spellWin.totalDeferred(),winHazards,spellWin.flushes,spellWin.conflicts,spellWin.overflowFrames,spellWin.overflowCandidates);
                 spellWin=NorthlightSpellLayer::Counters{};spellWinFrames=spellWinDeferring=spellWinCooldown=0;
             }
