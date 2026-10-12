@@ -93,6 +93,34 @@ static void testClassify(){
     {DrawFacts f=cand();f.zWrite=true;f.blend=false;expect(f,Kind::Opaque);}
     {DrawFacts f=cand();f.zWrite=true;f.colorWrite=0;expect(f,Kind::Opaque);}
     {DrawFacts f=cand();f.zWrite=true;f.water=true;expect(f,Kind::TranslucentZ);}
+    // floating world names (SubName, mask bit 16): deferred whatever their Z write, Z test and alpha test, only with a non-opaque blend; with the bit off the old behaviour (in place / split)
+    auto name=[](){DrawFacts f=cand();f.uiTag=true;f.family=Family::None;f.srcBlend=kSrcAlpha;f.destBlend=kInvSrcAlpha;return f;};
+    {DrawFacts f=name();expect(f,Kind::Defer,SubName,Reason::Count,InPlaceKind::None,31);}
+    {DrawFacts f=name();f.zWrite=true;expect(f,Kind::Defer,SubName,Reason::Count,InPlaceKind::None,31);}
+    {DrawFacts f=name();f.zWrite=true;f.pending=true;expect(f,Kind::Defer,SubName,Reason::Count,InPlaceKind::None,31);}
+    {DrawFacts f=name();f.zEnable=false;expect(f,Kind::Defer,SubName,Reason::Count,InPlaceKind::None,31);}
+    {DrawFacts f=name();f.zEnable=false;f.zWrite=true;f.pending=true;expect(f,Kind::Defer,SubName,Reason::Count,InPlaceKind::None,31);}
+    {DrawFacts f=name();f.pending=true;expect(f,Kind::Defer,SubName,Reason::Count,InPlaceKind::None,16);} // only the Name bit set
+    {DrawFacts f=name();expect(f,Kind::InPlace,0,Reason::Count,InPlaceKind::Name,15);}                      // Name bit off: as before
+    {DrawFacts f=name();f.pending=true;expect(f,Kind::Hazard,0,Reason::Order,InPlaceKind::Name,15);}
+    {DrawFacts f=name();f.zWrite=true;expect(f,Kind::TranslucentZ,0,Reason::Count,InPlaceKind::None,15);}
+    {DrawFacts f=name();f.zWrite=true;f.pending=true;expect(f,Kind::TranslucentZ,0,Reason::Count,InPlaceKind::None,15);}
+    {DrawFacts f=name();f.worldDomain=false;expect(f,Kind::Hazard,0,Reason::Order,InPlaceKind::None,31);}  // a non-world uiTag draw is never deferred
+    {DrawFacts f=name();f.worldDomain=false;f.zWrite=true;expect(f,Kind::Hazard,0,Reason::Order,InPlaceKind::None,31);}
+    {DrawFacts f=name();f.worldDomain=false;f.colorWrite=0;expect(f,Kind::Ignore,0,Reason::Count,InPlaceKind::None,31);}
+    {DrawFacts f=name();f.rt0IsTarget=false;expect(f,Kind::Ignore,0,Reason::Count,InPlaceKind::None,31);}
+    {DrawFacts f=name();f.claimed=true;expect(f,Kind::Ignore,0,Reason::Count,InPlaceKind::None,31);}
+    {DrawFacts f=name();f.samplesRenderTargetTexture=true;expect(f,Kind::Hazard,0,Reason::Sample,InPlaceKind::None,31);}
+    {DrawFacts f=name();f.colorWrite=0;expect(f,Kind::Ignore,0,Reason::Count,InPlaceKind::None,31);}
+    // not deferrable names keep the old path: opaque blend, no blend, other depth, stencil, MRT, instancing, an occlusion query
+    for(int k=0;k<6;++k){
+        DrawFacts f=name();f.zWrite=true;
+        switch(k){case 0:f.srcBlend=kBlendOne;f.destBlend=kBlendZero;break;case 1:f.blend=false;break;case 2:f.dsIsWorldDepth=false;break;case 3:f.stencil=true;break;case 4:f.mrtBound=true;break;default:f.instanced=true;}
+        const Result r=classify(f,31);CHECK(r.kind==(k==0||k==1?Kind::Opaque:Kind::TranslucentZ));
+    }
+    {DrawFacts f=name();f.occlusionActive=true;f.zWrite=true;CHECK(classify(f,31).kind==Kind::TranslucentZ);}
+    {DrawFacts f=name();f.occlusionActive=true;CHECK(classify(f,31).kind==Kind::InPlace);}
+    {DrawFacts f=name();f.occlusionActive=true;f.pending=true;CHECK(classify(f,31).kind==Kind::Hazard);}
     // fade run tracker: a skinned Z-writing colour-less draw starts it, a non-skinned draw ends it
     FadeRun run;
     CHECK(!run.update(true,false,15));CHECK(!run.update(true,true,15));CHECK(run.update(true,true,0));
@@ -1211,6 +1239,53 @@ static void testRipples(){
     Rig r(Opts{});r.issueWith(Rig::dp(0),Family::Ripples,[](DrawFacts&){});
     CHECK(r.last.kind==Kind::InPlace&&r.last.inPlace==InPlaceKind::Water&&r.layer.totalCounters().orderBy[0]==0&&r.layer.mode()==Mode::Armed&&r.layer.pending()==0);
 }
+// Floating world names (SubName): a deferred name draw (UI shader, perspective projection, Z write on or off) replays with the spells in the reference order and with its state
+// (ZWRITEENABLE and the rest are part of the compared draw state, so a Z-writing name replays its depth write); nothing is a hazard, split or cooldown.
+static int nameDraw(Rig& r,int seed,bool zWrite,bool zTest=true){
+    r.dev.SetStreamSource(0,r.ring,0,16);const UINT a=r.ringQuad(seed);
+    r.translucent(kSrcAlpha,kInvSrcAlpha);r.rs(D3DRS_ZWRITEENABLE,zWrite);r.rs(D3DRS_ZENABLE,zTest);r.rs(D3DRS_ALPHATESTENABLE,1);
+    const int t=r.issueWith(Rig::dp(a/16),Family::None,[](DrawFacts& f){f.uiTag=true;});
+    r.translucent(kSrcAlpha,kBlendOne);r.rs(D3DRS_ALPHATESTENABLE,0);return t;
+}
+static void sNamesMixed(Rig& r){
+    deferQuad(r,1);nameDraw(r,2,true);deferQuad(r,3);nameDraw(r,4,false);nameDraw(r,5,true,false);deferQuad(r,6);
+    r.opaqueZ();r.issue(Rig::dp(0),Family::None);r.translucent(kSrcAlpha,kBlendOne);                     // an opaque draw stays in place
+    nameDraw(r,7,true);r.boundary();
+}
+static void testNamesMixed(){
+    Opts o;o.mask=31;Pair p=runBoth(sNamesMixed,o);const Counters& c=p.lay->layer.totalCounters();
+    CHECK(p.lay->deferredTags.size()==7&&c.names==4&&c.totalDeferred()==7&&c.deferred[0]==3&&c.totalHazards()==0&&c.flushes==0&&c.replayedDraws==7&&c.orderBy[2]==0);
+    checkEquivalent(p);CHECK(p.lay->order()==expectedDeferredOrder(p.ref->order(),p.lay->deferredTags));
+    size_t marker=0;for(size_t i=0;i<p.lay->dev.draws.size();++i)if(p.lay->dev.draws[i].tag==Rig::kMarker)marker=i;
+    unsigned zw=0,noZ=0;for(size_t i=marker+1;i<p.lay->dev.draws.size();++i){const auto& d=p.lay->dev.draws[i];CHECK(d.rt[0]==p.lay->T&&d.ds==p.lay->D);zw+=d.st.rs[D3DRS_ZWRITEENABLE]!=0;noZ+=d.st.rs[D3DRS_ZENABLE]==0;}
+    CHECK(zw==3&&noZ==1);                                                                                // three Z-writing names replay their depth write; one has Z test off
+    p.lay->layer.beginFrame(false);CHECK(p.lay->layer.mode()==Mode::Armed);
+}
+static void sNamesAlone(Rig& r){nameDraw(r,1,true);nameDraw(r,2,true);r.boundary();}
+static void sNamesWater(Rig& r){
+    deferQuad(r,1);nameDraw(r,2,true);
+    r.issueWith(Rig::dp(0),Family::Model,[](DrawFacts& f){f.water=true;});                               // water after pending spells and a name: the split flushes them in order
+    nameDraw(r,3,true);deferQuad(r,4);r.boundary();
+}
+static void testNamesAlone(){
+    Opts o;o.mask=31;Pair p=runBoth(sNamesAlone,o);const Counters& c=p.lay->layer.totalCounters();
+    CHECK(p.lay->deferredTags.size()==2&&c.names==2&&c.totalDeferred()==2&&c.replayedDraws==2&&c.totalHazards()==0&&c.replays==1);
+    checkEquivalent(p);CHECK(p.lay->order()==expectedDeferredOrder(p.ref->order(),p.lay->deferredTags));
+    Opts off;off.mask=15;Pair q=runBoth(sNamesAlone,off);                                                  // Name bit off: in place, nothing deferred
+    CHECK(q.lay->deferredTags.empty()&&q.lay->layer.totalCounters().names==0&&q.lay->layer.totalCounters().totalHazards()==0);
+    checkEquivalent(q);CHECK(q.lay->order()==q.ref->order());
+}
+static void testNamesWater(){
+    Opts o;o.mask=31;Pair p=runBoth(sNamesWater,o);const Counters& c=p.lay->layer.totalCounters();
+    CHECK(c.totalHazards()==0&&c.flushes==1&&c.orderBy[0]==1&&c.names==2&&c.replayedDraws==4&&p.lay->deferredTags.size()==4);
+    checkEquivalent(p);
+    // tags 1,2 (spell, name) replay before the water draw; 4,5 (name, spell) after the effects
+    const auto ord=p.lay->order();const auto at=[&](int t){return std::find(ord.begin(),ord.end(),t)-ord.begin();};
+    CHECK(at(1)<at(2)&&at(2)<at(3)&&at(3)<at(Rig::kMarker)&&at(Rig::kMarker)<at(4)&&at(4)<at(5));
+    Opts off;off.mask=15;Pair q=runBoth(sNamesWater,off);                                                  // Name bit off: old behaviour
+    CHECK(q.lay->layer.totalCounters().names==0&&q.lay->layer.totalCounters().orderBy[2]==0&&q.lay->layer.totalCounters().orderBy[0]==1); // a Z-writing name never split (TranslucentZ)
+    checkEquivalent(q);
+}
 // A draw without a vertex or pixel shader, or with ps_1_x, is refused (Admit): everything pending is flushed first, in order, and the frame falls back.
 static void sNoPs(Rig& r){deferQuad(r,1);deferQuad(r,2);r.dev.SetPixelShader(nullptr);deferQuad(r,3);r.dev.SetPixelShader(r.ps);deferQuad(r,4);r.boundary();}
 static void sNoVs(Rig& r){deferQuad(r,1);r.dev.SetVertexShader(nullptr);deferQuad(r,2);r.dev.SetVertexShader(r.vs);r.boundary();}
@@ -1368,7 +1443,7 @@ int main(int argc,char** argv){
         {"rt mismatch",testRtMismatch},{"capacity",testCapacity},{"capture failure",testCaptureFailure},{"frame end",testFrameEnd},
         {"cooldown and pressure",testCooldownAndPressure},{"trim",testTrim},{"pending targets",testPendingTargets},{"layer off",testLayerOff},
         {"reset and teardown",testResetAndTeardown},{"512 entries",testStress512},
-        {"32-bit index copy",testIb32},{"both index formats",testIbBothFormats},{"water rain name flush",testOrderKinds},{"nothing pending: in place",testOrderKindsIdle},
+        {"32-bit index copy",testIb32},{"both index formats",testIbBothFormats},{"water rain name flush",testOrderKinds},{"names deferred",testNamesMixed},{"names alone",testNamesAlone},{"names and water",testNamesWater},{"nothing pending: in place",testOrderKindsIdle},
         {"replay scope failure",testReplayScopeFailure},{"state changed between draws",testStateChangedBetweenDraws},{"scissor and clip only when enabled",testScissorAndClipOnlyWhenEnabled},{"delta encoding",testDeltas},{"4096 entries",testFourThousandEntries},{"capacity limits",testCapacityLimits},{"guard table with many buffers",testGuardTableMany},{"sampled textures lookup",testSamplesLookup},{"shader read sets",testReadSets},{"diff replay",testDiffReplay},{"admission",testAdmission},{"hazard events",testHazardEvents},{"record size and timing",testRecordSizeAndTiming},{"fixed function",testFixedFunction},{"fixed function admission",testFixedAdmission},{"fixed function capacity",testFixedCapacity},{"water ripples",testRipples},
         {"render target texture",testRenderTargetTexture},{"render target verdict cache",testVerdictCache},{"vertex texture sampler",testVertexTextureSampler},{"buffer write conflict probe",testBufferWriteProbe}};
     for(int mode=fixedMode?gMirrorMode:0;mode<=(fixedMode?gMirrorMode:3);++mode){

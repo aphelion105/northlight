@@ -36,7 +36,7 @@ constexpr unsigned kCooldownFrames=30,kMaxStreams=4,kMaxTextures=20,kMaxDecl=65,
 
 // ---- a) classification (pure) ----
 enum class Family:uint8_t{None,Particle,ParticleUnlit,Model,Projected,Ripples}; // M2 vertex shader family, known at shader creation; Ripples (WaterRipples, not an M2 shader) are treated like water
-enum Sub:unsigned{SubAdditive=1,SubAlpha=2,SubModulate=4,SubOther=8};
+enum Sub:unsigned{SubAdditive=1,SubAlpha=2,SubModulate=4,SubOther=8,SubName=16}; // SubName: floating world names (UI shader, perspective projection; any Z/alpha-test state, non-opaque blend); counted in Counters::names
 enum class Kind:uint8_t{Ignore,Opaque,TranslucentZ,Defer,InPlace,Hazard};
 enum class InPlaceKind:uint8_t{None,Water,Rain,Name,Fade};
 enum class Reason:uint8_t{Clear,Copy,TexWrite,Sample,BufWrite,GpuWrite,Order,Query,Capacity,Capture,Admit,Frame,Count};
@@ -65,8 +65,8 @@ inline unsigned subClass(const DrawFacts& f){
     if(f.destBlend==kInvSrcAlpha)return SubAlpha;
     return SubOther;
 }
-// Z-writing draws never defer and stay in place (their depth occludes the replay). Colour-writing no-Z draws into the target are deferred when they
-// are one of the four families or a fixed-function draw (ribbons, beams; DrawFacts::fixedFunction) with a non-opaque blend. Water ripples (Family::Ripples) count as water. Water, rain and floating names are drawn in place when nothing is pending (InPlace, no
+// Z-writing draws never defer (except floating names, below) and stay in place (their depth occludes the replay). Colour-writing no-Z draws into the target are deferred when they
+// are one of the four families or a fixed-function draw (ribbons, beams; DrawFacts::fixedFunction) with a non-opaque blend. Water ripples (Family::Ripples) count as water. Water, rain and floating names (when the Name bit is off or the name cannot be deferred) are drawn in place when nothing is pending (InPlace, no
 // effect), but a Hazard/Order while draws are pending: drawn in place they would end up UNDER the replayed spells, so the caller flushes first and
 // the original order holds (Result::inPlace names which of them it was; Layer::hazard() then splits the frame instead of falling back). A fade colour pass stays an accepted reorder (its depth pre-pass occludes
 // the replay). Everything else is a Hazard (unknown order dependency while draws are pending: the caller flushes). Claimed draws and draws into other targets are Ignore
@@ -78,6 +78,9 @@ inline Result classify(const DrawFacts& f,unsigned classMask){
     if(!f.rt0IsTarget||f.claimed)return r;
     const bool rgb=(f.colorWrite&7)!=0;
     if(!f.worldDomain)return rgb?hazard(Reason::Order):r;
+    // A floating world name (uiTag, before the boundary) with a non-opaque blend is deferred whatever its Z state (it writes depth in the game's pass: deferring keeps its pixels out of the effects' depth, and the replay writes the
+    // depth into the final world depth afterwards). Accepted: in-place translucent draws that originally followed a Z-writing name are no longer occluded by its glyph pixels (water/rain only, negligible).
+    if(f.uiTag&&(classMask&SubName)&&rgb&&f.blend&&!opaqueBlend(f)&&!f.water&&!f.rain&&f.dsIsWorldDepth&&!f.stencil&&!f.mrtBound&&!f.instanced&&!f.occlusionActive){r.kind=Kind::Defer;r.sub=SubName;return r;}
     if(f.zWrite){r.kind=(opaqueBlend(f)||!rgb)?Kind::Opaque:Kind::TranslucentZ;return r;}
     if(!rgb)return r;
     const bool water=f.water||f.family==Family::Ripples; // water ripples are drawn after the spells by the game: they behave like water
@@ -130,6 +133,7 @@ struct Counters{
     unsigned orderBy[3]={};                       // Order hazards raised by water, rain, name draws while draws were pending
     unsigned hazards[kReasons]={};
     unsigned flushes=0,replays=0,replayedDraws=0,replaySkipped=0,discarded=0;
+    unsigned names=0;                             // deferred floating-world-name draws (not counted in deferred[])
     unsigned fixed=0;                             // deferred draws that were fixed-function (also counted in deferred[])
     unsigned conflicts=0,materialized=0,recorded=0,replaySets=0; // recorded: draws recorded; replaySets: device Set* calls issued by replays
     uint64_t conflictBytes=0;
@@ -142,12 +146,12 @@ struct Counters{
         for(int i=0;i<4;++i){deferred[i]+=o.deferred[i];inPlace[i]+=o.inPlace[i];}
         for(int i=0;i<3;++i)orderBy[i]+=o.orderBy[i];
         for(unsigned i=0;i<kReasons;++i)hazards[i]+=o.hazards[i];
-        fixed+=o.fixed;flushes+=o.flushes;replays+=o.replays;replayedDraws+=o.replayedDraws;replaySkipped+=o.replaySkipped;discarded+=o.discarded;
+        names+=o.names;fixed+=o.fixed;flushes+=o.flushes;replays+=o.replays;replayedDraws+=o.replayedDraws;replaySkipped+=o.replaySkipped;discarded+=o.discarded;
         conflicts+=o.conflicts;materialized+=o.materialized;recorded+=o.recorded;replaySets+=o.replaySets;conflictBytes+=o.conflictBytes;
         for(int i=0;i<4;++i)capBy[i]+=o.capBy[i];overflowFrames+=o.overflowFrames;overflowAt+=o.overflowAt;overflowCandidates+=o.overflowCandidates;
         deltaWords+=o.deltaWords;arenaHigh=std::max(arenaHigh,o.arenaHigh);recordHigh=std::max(recordHigh,o.recordHigh);
     }
-    unsigned totalDeferred()const{return deferred[0]+deferred[1]+deferred[2]+deferred[3];}
+    unsigned totalDeferred()const{return deferred[0]+deferred[1]+deferred[2]+deferred[3]+names;}
     unsigned totalHazards()const{unsigned n=0;for(unsigned h:hazards)n+=h;return n;}
 };
 
@@ -285,7 +289,7 @@ struct MirrorView{
     bool (*enter)(void* ctx)=nullptr;void (*leave)(void* ctx)=nullptr;void* ctx=nullptr;
 };
 struct Config{
-    bool on=false;unsigned classMask=SubAdditive|SubAlpha|SubModulate|SubOther;
+    bool on=false;unsigned classMask=SubAdditive|SubAlpha|SubModulate|SubOther|SubName;
     unsigned maxEntries=4096,maxFixed=512; // maxFixed: fixed-function entries (each carries a 2.2 KB FfRec, allocated in chunks of 8)
     size_t arenaBytes=3u<<20,arenaStartBytes=512u<<10,uploadVbBytes=3u<<20,uploadIbBytes=768u<<10,deltaBytes=2u<<20; // uploadVbBytes matches arenaBytes: every copied vertex byte is uploaded once (a 1 MiB VB overflowed before the 3 MiB arena with ~1300 entries); the caps (entries, delta bytes, arena bytes, upload bytes) bound the layer's memory; deltaBytes: cap of the state delta storage, allocated on demand in chunks of deltaChunkWords words (an entry's delta never spans two)
     bool conflictCopy=true;                       // false on a non-DXVK backend: a conflicting write flushes instead of copying
@@ -1129,7 +1133,7 @@ public:
         if(!count_){target_=rt0;rt0->AddRef();ds_=ds;if(ds)ds->AddRef();}
         if(fixed)++ffCount_;
         ++count_;fm_.deferred();
-        count([&](Counters& c){unsigned i=0;while(i<3&&!(sub>>i&1))++i;++c.deferred[i];if(fixed)++c.fixed;++c.recorded;c.deltaWords+=n_;c.recordHigh=std::max(c.recordHigh,count_);});
+        count([&](Counters& c){if(sub&SubName)++c.names;else{unsigned i=0;while(i<3&&!(sub>>i&1))++i;++c.deferred[i];}if(fixed)++c.fixed;++c.recorded;c.deltaWords+=n_;c.recordHigh=std::max(c.recordHigh,count_);});
         if(a.type==DrawType::PrimitiveUP||a.type==DrawType::IndexedUP){ // the API side effects of the skipped call
             dev_->SetStreamSource(0,nullptr,0,0);
             if(a.type==DrawType::IndexedUP)dev_->SetIndices(nullptr);
