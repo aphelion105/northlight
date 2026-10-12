@@ -2,6 +2,7 @@
 #pragma once
 #include <d3d9.h>
 #include "mirror_guard.h"
+#include "mirror_write_hook.h"
 namespace NorthlightMirrorResources {
 class ForwardIDirect3DSurface9:public IDirect3DSurface9 {
 public:
@@ -21,8 +22,8 @@ public:
     D3DRESOURCETYPE STDMETHODCALLTYPE GetType() override {MirrorGuard lock(gate,MirrorSite::Resource); return real->GetType();}
     HRESULT STDMETHODCALLTYPE GetContainer(REFIID riid, void** ppContainer) override {MirrorGuard lock(gate,MirrorSite::Resource); return real->GetContainer(riid, ppContainer);}
     HRESULT STDMETHODCALLTYPE GetDesc(D3DSURFACE_DESC* pDesc) override {MirrorGuard lock(gate,MirrorSite::Resource); return real->GetDesc(pDesc);}
-    HRESULT STDMETHODCALLTYPE LockRect(D3DLOCKED_RECT *locked_rect, const RECT *rect, DWORD flags) override {MirrorGuard lock(gate,MirrorSite::Resource); return real->LockRect(locked_rect, rect, flags);}
-    HRESULT STDMETHODCALLTYPE UnlockRect() override {MirrorGuard lock(gate,MirrorSite::Resource); return real->UnlockRect();}
+    HRESULT STDMETHODCALLTYPE LockRect(D3DLOCKED_RECT *locked_rect, const RECT *rect, DWORD flags) override {MirrorGuard lock(gate,MirrorSite::Resource); if(NorthlightMirrorWrite::writes(flags))NorthlightMirrorWrite::level(real); return real->LockRect(locked_rect, rect, flags);}
+    HRESULT STDMETHODCALLTYPE UnlockRect() override {MirrorGuard lock(gate,MirrorSite::Resource); NorthlightMirrorWrite::level(real); return real->UnlockRect();}
     HRESULT STDMETHODCALLTYPE GetDC(HDC* phdc) override {MirrorGuard lock(gate,MirrorSite::Resource); return real->GetDC(phdc);}
     HRESULT STDMETHODCALLTYPE ReleaseDC(HDC hdc) override {MirrorGuard lock(gate,MirrorSite::Resource); return real->ReleaseDC(hdc);}
 };
@@ -47,12 +48,12 @@ public:
     DWORD STDMETHODCALLTYPE GetLevelCount() override {MirrorGuard lock(gate,MirrorSite::Resource); return real->GetLevelCount();}
     HRESULT STDMETHODCALLTYPE SetAutoGenFilterType(D3DTEXTUREFILTERTYPE FilterType) override {MirrorGuard lock(gate,MirrorSite::Resource); return real->SetAutoGenFilterType(FilterType);}
     D3DTEXTUREFILTERTYPE STDMETHODCALLTYPE GetAutoGenFilterType() override {MirrorGuard lock(gate,MirrorSite::Resource); return real->GetAutoGenFilterType();}
-    void STDMETHODCALLTYPE GenerateMipSubLevels() override {MirrorGuard lock(gate,MirrorSite::Resource); return real->GenerateMipSubLevels();}
+    void STDMETHODCALLTYPE GenerateMipSubLevels() override {MirrorGuard lock(gate,MirrorSite::Resource); NorthlightMirrorWrite::texture(real); return real->GenerateMipSubLevels();}
     HRESULT STDMETHODCALLTYPE GetLevelDesc(UINT Level, D3DSURFACE_DESC* pDesc) override {MirrorGuard lock(gate,MirrorSite::Resource); return real->GetLevelDesc(Level, pDesc);}
     HRESULT STDMETHODCALLTYPE GetSurfaceLevel(UINT Level, IDirect3DSurface9** ppSurfaceLevel) override {MirrorGuard lock(gate,MirrorSite::Resource); return real->GetSurfaceLevel(Level, ppSurfaceLevel);}
-    HRESULT STDMETHODCALLTYPE LockRect(UINT level, D3DLOCKED_RECT *locked_rect, const RECT *rect, DWORD flags) override {MirrorGuard lock(gate,MirrorSite::Resource); return real->LockRect(level, locked_rect, rect, flags);}
-    HRESULT STDMETHODCALLTYPE UnlockRect(UINT Level) override {MirrorGuard lock(gate,MirrorSite::Resource); return real->UnlockRect(Level);}
-    HRESULT STDMETHODCALLTYPE AddDirtyRect(const RECT *dirty_rect) override {MirrorGuard lock(gate,MirrorSite::Resource); return real->AddDirtyRect(dirty_rect);}
+    HRESULT STDMETHODCALLTYPE LockRect(UINT level, D3DLOCKED_RECT *locked_rect, const RECT *rect, DWORD flags) override {MirrorGuard lock(gate,MirrorSite::Resource); if(NorthlightMirrorWrite::writes(flags))NorthlightMirrorWrite::texture(real); return real->LockRect(level, locked_rect, rect, flags);}
+    HRESULT STDMETHODCALLTYPE UnlockRect(UINT Level) override {MirrorGuard lock(gate,MirrorSite::Resource); NorthlightMirrorWrite::texture(real); return real->UnlockRect(Level);}
+    HRESULT STDMETHODCALLTYPE AddDirtyRect(const RECT *dirty_rect) override {MirrorGuard lock(gate,MirrorSite::Resource); NorthlightMirrorWrite::texture(real); return real->AddDirtyRect(dirty_rect);}
 };
 class ForwardIDirect3DCubeTexture9:public IDirect3DCubeTexture9 {
 public:
@@ -75,12 +76,12 @@ public:
     DWORD STDMETHODCALLTYPE GetLevelCount() override {MirrorGuard lock(gate,MirrorSite::Resource); return real->GetLevelCount();}
     HRESULT STDMETHODCALLTYPE SetAutoGenFilterType(D3DTEXTUREFILTERTYPE FilterType) override {MirrorGuard lock(gate,MirrorSite::Resource); return real->SetAutoGenFilterType(FilterType);}
     D3DTEXTUREFILTERTYPE STDMETHODCALLTYPE GetAutoGenFilterType() override {MirrorGuard lock(gate,MirrorSite::Resource); return real->GetAutoGenFilterType();}
-    void STDMETHODCALLTYPE GenerateMipSubLevels() override {MirrorGuard lock(gate,MirrorSite::Resource); return real->GenerateMipSubLevels();}
+    void STDMETHODCALLTYPE GenerateMipSubLevels() override {MirrorGuard lock(gate,MirrorSite::Resource); NorthlightMirrorWrite::texture(real); return real->GenerateMipSubLevels();}
     HRESULT STDMETHODCALLTYPE GetLevelDesc(UINT Level, D3DSURFACE_DESC* pDesc) override {MirrorGuard lock(gate,MirrorSite::Resource); return real->GetLevelDesc(Level, pDesc);}
     HRESULT STDMETHODCALLTYPE GetCubeMapSurface(D3DCUBEMAP_FACES FaceType, UINT Level, IDirect3DSurface9** ppCubeMapSurface) override {MirrorGuard lock(gate,MirrorSite::Resource); return real->GetCubeMapSurface(FaceType, Level, ppCubeMapSurface);}
-    HRESULT STDMETHODCALLTYPE LockRect(D3DCUBEMAP_FACES face, UINT level, D3DLOCKED_RECT *locked_rect, const RECT *rect, DWORD flags) override {MirrorGuard lock(gate,MirrorSite::Resource); return real->LockRect(face, level, locked_rect, rect, flags);}
-    HRESULT STDMETHODCALLTYPE UnlockRect(D3DCUBEMAP_FACES FaceType, UINT Level) override {MirrorGuard lock(gate,MirrorSite::Resource); return real->UnlockRect(FaceType, Level);}
-    HRESULT STDMETHODCALLTYPE AddDirtyRect(D3DCUBEMAP_FACES face, const RECT *dirty_rect) override {MirrorGuard lock(gate,MirrorSite::Resource); return real->AddDirtyRect(face, dirty_rect);}
+    HRESULT STDMETHODCALLTYPE LockRect(D3DCUBEMAP_FACES face, UINT level, D3DLOCKED_RECT *locked_rect, const RECT *rect, DWORD flags) override {MirrorGuard lock(gate,MirrorSite::Resource); if(NorthlightMirrorWrite::writes(flags))NorthlightMirrorWrite::texture(real); return real->LockRect(face, level, locked_rect, rect, flags);}
+    HRESULT STDMETHODCALLTYPE UnlockRect(D3DCUBEMAP_FACES FaceType, UINT Level) override {MirrorGuard lock(gate,MirrorSite::Resource); NorthlightMirrorWrite::texture(real); return real->UnlockRect(FaceType, Level);}
+    HRESULT STDMETHODCALLTYPE AddDirtyRect(D3DCUBEMAP_FACES face, const RECT *dirty_rect) override {MirrorGuard lock(gate,MirrorSite::Resource); NorthlightMirrorWrite::texture(real); return real->AddDirtyRect(face, dirty_rect);}
 };
 class ForwardIDirect3DVolumeTexture9:public IDirect3DVolumeTexture9 {
 public:
@@ -103,12 +104,12 @@ public:
     DWORD STDMETHODCALLTYPE GetLevelCount() override {MirrorGuard lock(gate,MirrorSite::Resource); return real->GetLevelCount();}
     HRESULT STDMETHODCALLTYPE SetAutoGenFilterType(D3DTEXTUREFILTERTYPE FilterType) override {MirrorGuard lock(gate,MirrorSite::Resource); return real->SetAutoGenFilterType(FilterType);}
     D3DTEXTUREFILTERTYPE STDMETHODCALLTYPE GetAutoGenFilterType() override {MirrorGuard lock(gate,MirrorSite::Resource); return real->GetAutoGenFilterType();}
-    void STDMETHODCALLTYPE GenerateMipSubLevels() override {MirrorGuard lock(gate,MirrorSite::Resource); return real->GenerateMipSubLevels();}
+    void STDMETHODCALLTYPE GenerateMipSubLevels() override {MirrorGuard lock(gate,MirrorSite::Resource); NorthlightMirrorWrite::texture(real); return real->GenerateMipSubLevels();}
     HRESULT STDMETHODCALLTYPE GetLevelDesc(UINT Level, D3DVOLUME_DESC *pDesc) override {MirrorGuard lock(gate,MirrorSite::Resource); return real->GetLevelDesc(Level, pDesc);}
     HRESULT STDMETHODCALLTYPE GetVolumeLevel(UINT Level, IDirect3DVolume9** ppVolumeLevel) override {MirrorGuard lock(gate,MirrorSite::Resource); return real->GetVolumeLevel(Level, ppVolumeLevel);}
-    HRESULT STDMETHODCALLTYPE LockBox(UINT level, D3DLOCKED_BOX *locked_box, const D3DBOX *box, DWORD flags) override {MirrorGuard lock(gate,MirrorSite::Resource); return real->LockBox(level, locked_box, box, flags);}
-    HRESULT STDMETHODCALLTYPE UnlockBox(UINT Level) override {MirrorGuard lock(gate,MirrorSite::Resource); return real->UnlockBox(Level);}
-    HRESULT STDMETHODCALLTYPE AddDirtyBox(const D3DBOX *dirty_box) override {MirrorGuard lock(gate,MirrorSite::Resource); return real->AddDirtyBox(dirty_box);}
+    HRESULT STDMETHODCALLTYPE LockBox(UINT level, D3DLOCKED_BOX *locked_box, const D3DBOX *box, DWORD flags) override {MirrorGuard lock(gate,MirrorSite::Resource); if(NorthlightMirrorWrite::writes(flags))NorthlightMirrorWrite::texture(real); return real->LockBox(level, locked_box, box, flags);}
+    HRESULT STDMETHODCALLTYPE UnlockBox(UINT Level) override {MirrorGuard lock(gate,MirrorSite::Resource); NorthlightMirrorWrite::texture(real); return real->UnlockBox(Level);}
+    HRESULT STDMETHODCALLTYPE AddDirtyBox(const D3DBOX *dirty_box) override {MirrorGuard lock(gate,MirrorSite::Resource); NorthlightMirrorWrite::texture(real); return real->AddDirtyBox(dirty_box);}
 };
 class ForwardIDirect3DVolume9:public IDirect3DVolume9 {
 public:
@@ -124,8 +125,8 @@ public:
     HRESULT STDMETHODCALLTYPE FreePrivateData(REFGUID refguid) override {MirrorGuard lock(gate,MirrorSite::Resource); return real->FreePrivateData(refguid);}
     HRESULT STDMETHODCALLTYPE GetContainer(REFIID riid, void** ppContainer) override {MirrorGuard lock(gate,MirrorSite::Resource); return real->GetContainer(riid, ppContainer);}
     HRESULT STDMETHODCALLTYPE GetDesc(D3DVOLUME_DESC* pDesc) override {MirrorGuard lock(gate,MirrorSite::Resource); return real->GetDesc(pDesc);}
-    HRESULT STDMETHODCALLTYPE LockBox(D3DLOCKED_BOX *locked_box, const D3DBOX *box, DWORD flags) override {MirrorGuard lock(gate,MirrorSite::Resource); return real->LockBox(locked_box, box, flags);}
-    HRESULT STDMETHODCALLTYPE UnlockBox() override {MirrorGuard lock(gate,MirrorSite::Resource); return real->UnlockBox();}
+    HRESULT STDMETHODCALLTYPE LockBox(D3DLOCKED_BOX *locked_box, const D3DBOX *box, DWORD flags) override {MirrorGuard lock(gate,MirrorSite::Resource); if(NorthlightMirrorWrite::writes(flags))NorthlightMirrorWrite::level(real); return real->LockBox(locked_box, box, flags);}
+    HRESULT STDMETHODCALLTYPE UnlockBox() override {MirrorGuard lock(gate,MirrorSite::Resource); NorthlightMirrorWrite::level(real); return real->UnlockBox();}
 };
 class ForwardIDirect3DVertexShader9:public IDirect3DVertexShader9 {
 public:
@@ -171,7 +172,7 @@ public:
     HRESULT STDMETHODCALLTYPE GetDevice(struct IDirect3DDevice9** ppDevice) override {MirrorGuard lock(gate,MirrorSite::Resource); return real->GetDevice(ppDevice);}
     D3DQUERYTYPE STDMETHODCALLTYPE GetType() override {MirrorGuard lock(gate,MirrorSite::Resource); return real->GetType();}
     DWORD STDMETHODCALLTYPE GetDataSize() override {MirrorGuard lock(gate,MirrorSite::Resource); return real->GetDataSize();}
-    HRESULT STDMETHODCALLTYPE Issue(DWORD dwIssueFlags) override {MirrorGuard lock(gate,MirrorSite::Resource); return real->Issue(dwIssueFlags);}
+    HRESULT STDMETHODCALLTYPE Issue(DWORD dwIssueFlags) override {MirrorGuard lock(gate,MirrorSite::Resource); NorthlightMirrorWrite::query(real,dwIssueFlags); return real->Issue(dwIssueFlags);}
     HRESULT STDMETHODCALLTYPE GetData(void* pData, DWORD dwSize, DWORD dwGetDataFlags) override {MirrorGuard lock(gate,MirrorSite::Resource); return real->GetData(pData, dwSize, dwGetDataFlags);}
 };
 }

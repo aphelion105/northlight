@@ -41,9 +41,14 @@ struct Record {
     std::atomic<unsigned> locks{0};
     bool index=false;
     NorthlightCaptureMetadata::Info metadata;
+    std::atomic<bool> spellGuard{false}; // task 34: the spell layer guards bytes of this buffer; set/cleared through markSpellGuard, tested (relaxed) by Buffer::Lock
     NorthlightReplayCopies::Slot copy; // 0.3.192 (CS): the replay-side CPU copy (replay_copies.h); attached only while the stream is active
 };
 inline std::unordered_map<void*,Record*> records;
+// Task 34: the spell layer's write hook. Installed by the Device (SpellLayer=1) before it marks any buffer and removed in its destructor; called by
+// Buffer::Lock BEFORE the lock is forwarded, only for non-READONLY locks of a marked buffer, with the RAW buffer (the key the layer guards).
+struct SpellHook {void (*write)(void* context,void* rawBuffer,UINT offset,UINT size,DWORD flags,DWORD usage,unsigned outstandingLocks)=nullptr;void* context=nullptr;};
+inline SpellHook spellHook;
 // Lock-free input resolution for our own wrappers. The first Buffer class
 // built for an interface publishes one immutable {final vtable, Record offset}
 // pair. A live input (the caller owns a COM reference, so its registration
@@ -111,6 +116,11 @@ template<class T> void expose(T** out){
 inline void written(void* p){
     std::lock_guard<std::mutex> guard(mutex);auto it=records.find(p);
     if(it!=records.end()){it->second->revision=clock.fetch_add(1);NorthlightReplayCopies::invalidate(it->second->copy,true);} // 0.3.192 (CS): a GPU-side write (ProcessVertices): the CPU copy is stale for good
+}
+// The layer's markGuard callback: raw or exposed pointer of a wrapped buffer; anything else is ignored (the layer holds a reference, the record cannot be recycled).
+inline void markSpellGuard(void* buffer,bool on){
+    std::lock_guard<std::mutex> guard(mutex);auto it=records.find(buffer);
+    if(it!=records.end())it->second->spellGuard.store(on,std::memory_order_relaxed);
 }
 inline void invalidateAll(){
     std::lock_guard<std::mutex> guard(mutex);
@@ -189,6 +199,9 @@ public:
         // Mark before entering the driver. Even failed writes conservatively
         // invalidate the old generation. READONLY never advances a generation.
         if(census)census->noteBuffer();
+        // Task 34: first of all, before the revision or the lock count move: a deferred draw may read the bytes this write replaces (spell_layer.h onBufferWrite).
+        if(record.spellGuard.load(std::memory_order_relaxed)&&!(flags&D3DLOCK_READONLY)&&spellHook.write)
+            spellHook.write(spellHook.context,record.raw,offset,size,flags,record.metadata.usage,record.locks.load(std::memory_order_relaxed));
         // 0.3.196 (task 12): revision is relaxed: Lock/Unlock and the copy hooks run on one thread per mode (the replay thread with the stream on, else the game thread, see replay_copies.h
         // "Threads"); the readers (version/captureMetadata) take the registry mutex and check `locks` (acquire) first, which pairs with the release of locks.fetch_sub below.
         const bool wasUnsafe=record.revision.load(std::memory_order_relaxed)==0;

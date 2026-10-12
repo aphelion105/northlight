@@ -408,6 +408,34 @@ C::setPressure(false);for(auto& b:v)freeVB(b);}
  C::enabled.store(false);assert(owner.refs==1&&records.empty());
  puts("PASS replay copies: exact at the replay position through partial/NOOVERWRITE/DISCARD writes, pending and nested locks, GPU write, eviction, pressure, pins, gate off = plain lock; 20000-step equivalence");
 }
+// Task 34: the spell layer's write hook in Buffer::Lock. Marked buffers only, non-READONLY only, BEFORE the real lock (and before the lock count moves),
+// with the raw buffer, the game's range and flags, the creation usage and the outstanding locks; unmarking (markSpellGuard) or an unset hook = the plain lock.
+static void spellHookTests(){
+ using namespace NorthlightTrackedBuffers;Device owner;
+ struct Call{void* raw;UINT offset,size;DWORD flags,usage;unsigned locks,realLocksAtCall;};
+ struct Ctx{std::vector<Call> calls;Raw<IDirect3DVertexBuffer9>* real=nullptr;} ctx;
+ auto* raw=new Raw<IDirect3DVertexBuffer9>;raw->desc.Usage=D3DUSAGE_DYNAMIC;ctx.real=raw;IDirect3DVertexBuffer9* vb=raw;
+ wrap<IDirect3DVertexBuffer9,ForwardIDirect3DVertexBuffer9>(&vb,&owner,false);
+ spellHook.write=[](void* c,void* r,UINT o,UINT n,DWORD f,DWORD u,unsigned l){auto* x=static_cast<Ctx*>(c);x->calls.push_back({r,o,n,f,u,l,x->real->lockCalls});};spellHook.context=&ctx;
+ void* data=nullptr;
+ assert(vb->Lock(16,32,&data,0)==S_OK&&ctx.calls.empty()&&vb->Unlock()==S_OK);                       // unmarked: the plain lock, no call
+ markSpellGuard(static_cast<void*>(raw),true);                                                          // the layer marks the RAW buffer
+ assert(vb->Lock(0,4,&data,D3DLOCK_READONLY)==S_OK&&ctx.calls.empty()&&vb->Unlock()==S_OK);            // READONLY never reports
+ const unsigned locksBefore=raw->lockCalls;
+ assert(vb->Lock(64,128,&data,D3DLOCK_NOOVERWRITE)==S_OK&&ctx.calls.size()==1);
+ assert(ctx.calls[0].raw==static_cast<void*>(raw)&&ctx.calls[0].offset==64&&ctx.calls[0].size==128&&ctx.calls[0].flags==D3DLOCK_NOOVERWRITE&&ctx.calls[0].usage==D3DUSAGE_DYNAMIC&&ctx.calls[0].locks==0);
+ assert(ctx.calls[0].realLocksAtCall==locksBefore&&raw->lockCalls==locksBefore+1);                      // the hook ran before the real lock
+ assert(vb->Lock(0,0,&data,D3DLOCK_DISCARD)==S_OK&&ctx.calls.size()==2&&ctx.calls[1].locks==1&&ctx.calls[1].size==0&&ctx.calls[1].flags==D3DLOCK_DISCARD); // nested: one lock outstanding
+ assert(vb->Unlock()==S_OK&&vb->Unlock()==S_OK);
+ raw->failLock=true;assert(FAILED(vb->Lock(0,4,&data,0))&&ctx.calls.size()==3);raw->failLock=false;     // reported before the driver can refuse
+ markSpellGuard(static_cast<void*>(raw),false);
+ assert(vb->Lock(0,4,&data,0)==S_OK&&ctx.calls.size()==3&&vb->Unlock()==S_OK);                          // unmarked again
+ markSpellGuard(static_cast<void*>(raw),true);spellHook=SpellHook{};
+ assert(vb->Lock(0,4,&data,0)==S_OK&&ctx.calls.size()==3&&vb->Unlock()==S_OK);                          // no hook installed (device gone): the plain lock
+ int unrelated=0;markSpellGuard(&unrelated,true);                                                        // an unknown pointer is ignored
+ raw->AddRef();vb->Release();assert(raw->refs==1);raw->Release();
+ puts("PASS spell layer write hook: marked buffers only, non-READONLY only, before the real lock, raw key, usage and outstanding locks, unmark and removal");
+}
 int main(){using namespace NorthlightTrackedBuffers;Device owner;
  auto* raw=new Raw<IDirect3DVertexBuffer9>;IDirect3DVertexBuffer9* vb=raw;wrap<IDirect3DVertexBuffer9,ForwardIDirect3DVertexBuffer9>(&vb,&owner,false);
  assert(vb!=raw&&unwrap(vb)==raw&&unwrap(raw)==raw&&owner.refs==2);uint64_t start=version(raw,false);assert(start&&version(raw,true)==0);
@@ -423,5 +451,5 @@ int main(){using namespace NorthlightTrackedBuffers;Device owner;
  raw->AddRef();vb->Release();assert(owner.refs==1&&version(raw,false)==0&&unwrap(raw)==raw);raw->Release();
  auto* ri=new Raw<IDirect3DIndexBuffer9>;IDirect3DIndexBuffer9* ib=ri;wrap<IDirect3DIndexBuffer9,ForwardIDirect3DIndexBuffer9>(&ib,&owner,true);assert(version(ri,true)&&!version(ri,false));ib->Release();assert(owner.refs==1&&records.empty());
  puts("PASS buffer COM ownership, VB/IB identity, normal/DISCARD/NOOVERWRITE writes, READONLY, nested failed lock, failed unlock, ProcessVertices invalidation and reset");
- metadataTests();mirrorExposure();discardMeterTests();copiesTests();
+ metadataTests();mirrorExposure();discardMeterTests();copiesTests();spellHookTests();
 }
