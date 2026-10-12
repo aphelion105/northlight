@@ -1,7 +1,7 @@
 #pragma once
 // Task 34: the spell layer. Translucent M2 draws (particles, ribbons, spell batches, projected ground effects) are drawn before the effects
 // boundary B and so get relight/shadow/AO/fog computed from the background behind them. The layer DEFERS those draws: it records the exact
-// draw-relevant device state of each (a state record, see Rec), guards the vertex/index bytes it reads, skips the real draw, and replays all of
+// draw-relevant device state of each (a state delta against what the earlier entries of the replay already set: Model, Op), guards the vertex/index bytes it reads, skips the real draw, and replays all of
 // them in order right after the effects at B, against the final world depth. Nothing here logs and nothing calls Windows; only IDirect3DDevice9 (the extension device) and the
 // resources reached through it. Single thread: the one that executes the device (replay thread with the stream on, else the game thread); no locks.
 //
@@ -131,7 +131,7 @@ struct Counters{
     unsigned hazards[kReasons]={};
     unsigned flushes=0,replays=0,replayedDraws=0,replaySkipped=0,discarded=0;
     unsigned fixed=0;                             // deferred draws that were fixed-function (also counted in deferred[])
-    unsigned conflicts=0,materialized=0,recorded=0,replaySets=0; // recorded: state records taken; replaySets: device Set* calls issued by replays
+    unsigned conflicts=0,materialized=0,recorded=0,replaySets=0; // recorded: draws recorded; replaySets: device Set* calls issued by replays
     uint64_t conflictBytes=0;
     unsigned arenaHigh=0;                         // bytes
     unsigned recordHigh=0;                        // most records pending at once
@@ -285,7 +285,8 @@ struct MirrorView{
 };
 struct Config{
     bool on=false;unsigned classMask=SubAdditive|SubAlpha|SubModulate|SubOther;
-    unsigned maxEntries=4096;size_t arenaBytes=3u<<20,arenaStartBytes=512u<<10,uploadVbBytes=1u<<20,uploadIbBytes=256u<<10,deltaBytes=2u<<20; // the caps (entries, delta bytes, arena bytes, upload bytes) bound the layer's memory; deltaBytes: cap of the state delta storage, allocated on demand in chunks of deltaChunkWords words (an entry's delta never spans two)
+    unsigned maxEntries=4096,maxFixed=512; // maxFixed: fixed-function entries (each carries a 2.2 KB FfRec, allocated in chunks of 8)
+    size_t arenaBytes=3u<<20,arenaStartBytes=512u<<10,uploadVbBytes=1u<<20,uploadIbBytes=256u<<10,deltaBytes=2u<<20; // the caps (entries, delta bytes, arena bytes, upload bytes) bound the layer's memory; deltaBytes: cap of the state delta storage, allocated on demand in chunks of deltaChunkWords words (an entry's delta never spans two)
     bool conflictCopy=true;                       // false on a non-DXVK backend: a conflicting write flushes instead of copying
     DWORD readBackLockFlags=D3DLOCK_READONLY;     // NorthlightUpload::readBackLock()
     void (*markGuard)(void* ctx,void* rawBuffer,bool guarded)=nullptr;void* markCtx=nullptr; // sets/clears the per-buffer "call onBufferWrite" flag
@@ -295,15 +296,17 @@ struct Config{
     unsigned (*generation)(void* ctx)=nullptr;void* genCtx=nullptr; // changes whenever a texture object may have been created or destroyed (a raw address may name another texture): keys the per-texture render-target verdicts; null = no verdict cache
 };
 
-// The state record of one deferred draw. Admission (defer() refuses everything else): a vertex shader AND a pixel shader of model >= kMinPsMajor are
+// The state of one deferred draw. Admission (defer() refuses everything else): a vertex shader AND a pixel shader of model >= kMinPsMajor are
 // bound, or neither (a fixed-function draw). With both programmable stages bound D3D9 does not read the fixed-function state: texture stage states,
-// the world/view/projection/texture transforms, lights and material are unused by the draw, so none of them is recorded (Rec). A fixed-function entry
+// the world/view/projection/texture transforms, lights and material are unused by the draw, so none of them is recorded. A fixed-function entry
 // additionally has an FfRec (transforms, texture stage states of stages 0..7, material, lights 0..7); it is refused when vertex blending is enabled
-// (WORLD1..3), and a replay diffs it against the previous fixed-function entry only (programmable entries leave that state alone). Everything else a draw can
-// read is recorded here: all render states, the sampler states 1..13 of every stage with a texture bound (pixel samplers 0..15, vertex texture
-// samplers 257..260; a stage without a texture is not sampled), all shader constants (float, int, bool of both stages), viewport, scissor rect, the
-// user clip planes. Shaders, vertex declaration, textures, streams and the index buffer are held by the Entry (references) because a record is
-// replayed after the game released them. Fixed capacity, no pointers: 32-bit layout, about 10 KiB (recordBytes()).
+// (WORLD1..3), and a replay diffs it against the previous fixed-function entry only (programmable entries leave that state alone), and it reads no shader
+// constants and the texture stages 0..7 only. Everything else a draw can read is recorded as a DELTA against the replay model (Model, Op): all render
+// states, the sampler states 1..13 of every stage with a texture bound, the constants of both stages, viewport, scissor rect (only with the scissor test),
+// the user clip planes (only the enabled ones). A shader whose bytecode was scanned (DrawArgs::vsReads/psReads, shader_read_set.h) narrows the constants
+// to the registers it reads and the texture stages to the samplers it declares (the vertex texture samplers 257..260 only when the vertex shader declares
+// samplers); without a read set a stage reads everything. Textures, buffers, shaders and declarations are referenced once per frame by the layer (held
+// table) because a delta is replayed after the game released them. Streams and index buffer are bound by drawEntry, not by the delta.
 constexpr unsigned kVsFloat=256,kPsFloat=224,kInts=16,kBools=16,kClipPlanes=6,kSamplerFirst=1,kSamplerStates=13;
 // The fixed-function state a draw with neither vertex nor pixel shader reads, recorded in FfRec (only for such draws): WORLD, VIEW, PROJECTION and
 // TEXTURE0..7 transforms, the 18 valid texture stage states of stages 0..7, the material and lights 0..7. WORLD1..3 are never read: vertex blending is refused.
@@ -947,7 +950,7 @@ public:
 
     // Not owned; the device must outlive the layer or reset()/attach(nullptr) runs first. Drops everything pending without drawing.
     void attach(IDirect3DDevice9* dev){reset();dev_=dev;}
-    // Only while nothing is pending (else pending entries are dropped). Allocates the entry table and the arena once; state records follow in chunks.
+    // Only while nothing is pending (else pending entries are dropped). Allocates the held-object table once; entries, deltas and the arena follow on demand.
     void configure(const Config& c){
         reset();cfg_=c;cfg_.deltaChunkWords=std::min(65535u,std::max(1024u,cfg_.deltaChunkWords));
         if(cfg_.on){
@@ -1002,7 +1005,7 @@ public:
     // entries existed and the defer failed (Capacity/Capture/Admit/Order) they were all replayed now (SavedState scope, state restored) and the frame is
     // Fallback, so the caller draws this draw in place AFTER them (order kept). When the layer is off, not armed (fallback/cooldown/pressure/after
     // B) or the draw is empty it returns false without any device call. A later Defer draw whose RT0/DS differs from the first entry's is a hazard
-    // (Order); the integration normally keeps those out via DrawFacts::rt0IsTarget. DrawArgs::psMajor must carry the pixel shader model (see Rec).
+    // (Order); the integration normally keeps those out via DrawFacts::rt0IsTarget. DrawArgs::psMajor must carry the pixel shader model (see above).
     bool defer(const DrawArgs& a,IDirect3DSurface9* rt0,IDirect3DSurface9* ds,unsigned sub=SubOther){
         if(!cfg_.on||!dev_||!fm_.canDefer())return false;
         const uint32_t vcount=vertexCount(a.prim,a.primCount);
@@ -1025,7 +1028,7 @@ public:
         if(ps&&!intern(ps,owned))return capFail(3);
         const bool fixed=!vs&&!ps;
         if(!fixed&&(!vs||!ps||a.psMajor<kMinPsMajor))return fail(Reason::Admit);
-        if(fixed&&!ensureFf(ffCount_))return capFail(3);
+        if(fixed&&(ffCount_>=cfg_.maxFixed||!ensureFf(ffCount_)))return capFail(3);
         uint32_t used=1; // FVF: stream 0
         IDirect3DVertexDeclaration9* decl=nullptr;DWORD fvf=0;
         owned=false;
@@ -1176,7 +1179,7 @@ public:
         count([](Counters& c){++c.replays;});
         drain();
     }
-    // Releases state record chunks (and the upload buffers) beyond `keep` records; never below what is pending. For idle frames and memory pressure.
+    // Releases entry, delta and arena storage (and the upload buffers) beyond `keep` records; never below what is pending. For idle frames and memory pressure.
     void trim(size_t keep=0){
         const size_t chunks=std::max<size_t>(keep?1:0,count_?deltaChunk_+1:0);
         while(deltaChunks_.size()>chunks)deltaChunks_.pop_back();

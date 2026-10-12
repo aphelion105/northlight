@@ -1309,6 +1309,9 @@ static void testFourThousandEntries(){
 static void testCapacityLimits(){
     {   Opts o;o.maxEntries=8;Rig r(o);for(int i=0;i<9;++i)deferQuad(r,i);
         const Counters& c=r.layer.totalCounters();CHECK(c.capBy[0]==1&&c.capBy[1]==0&&c.overflowAt==8&&c.overflowCandidates==1&&r.layer.pending()==0&&c.replayedDraws==8);r.boundary(); }
+    {   Opts o;o.maxEntries=1024;Rig r(o);r.fixedFunction();r.ffState(2);                    // fixed-function entries carry a 2.2 KB record: bounded on their own (512)
+        for(int i=0;i<513;++i)deferFf(r,i);
+        const Counters& c=r.layer.totalCounters();CHECK(c.capBy[3]==1&&c.overflowAt==512&&r.layer.pending()==0&&c.fixed==512&&c.replayedDraws==512);r.boundary(); }
     {   Opts o;o.deltaBytes=64u<<10;Rig r(o);int n=0;                                          // one 64 KiB delta chunk: about fifteen deltas of 1030 words
         while(r.layer.totalCounters().capBy[1]==0&&n<100){bigDelta(r,n);deferQuad(r,n+1);++n;}
         const Counters& c=r.layer.totalCounters();CHECK(c.capBy[1]==1&&n>=14&&n<=17&&r.layer.pending()==0&&c.replayedDraws==unsigned(n-1)&&r.dev.draws.size()==unsigned(n));r.boundary(); }
