@@ -46,7 +46,8 @@ def census(code):
         n=(t>>24)&15 if major>=2 else SM1.get(op)
         if n is None: return None
         args=list(w[off+1:off+1+n]); off+=1+n
-        if major>=2 and (t>>28)&1 and args: args=args[:-1]
+        pred=major>=2 and (t>>28)&1
+        if pred and (op in NODST or op in (0,31,47,48,81)): return None
         if op==81: defs.add(rnum(args[0])); continue
         if op in (47,48): continue
         if op==31:
@@ -57,6 +58,7 @@ def census(code):
             a=args[i]; i+=1
             if (a&0x2000) and major>=2: i+=1
             ops.append(a)
+            if pred and len(ops)==1: i+=1   # D3D9: the predicate register token follows the destination operand
         srcs=ops if op in NODST else ops[1:]
         for pos,a in enumerate(srcs):
             ty,nm=rtype(a),rnum(a)

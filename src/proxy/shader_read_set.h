@@ -68,7 +68,10 @@ inline ReadSet scan(const uint32_t* words,std::size_t count){
         if(std::size_t(length)>count-at-1)return bad;
         const uint32_t* args=words+at+1;at+=std::size_t(length)+1;
         int n=length;
-        if(major>=2&&(token&0x10000000u)&&n>0)--n;                      // predicated: the last token is the predicate register p0
+        // predicated (SM2+, bit 28): the predicate register token follows the destination operand (and its address token), not the end. Forms with no
+        // destination (or def/dcl) cannot be placed: reads everything.
+        const bool predicated=major>=2&&(token&0x10000000u);
+        if(predicated&&(noDestination(op)||op==81||op==48||op==47||op==31||op==0))return bad;
         if(op==81){                                                     // def: float literal, not a read
             if(n<1||!(args[0]&0x80000000u)||regType(args[0])!=kTypeConst||regNum(args[0])>=floatRegs)return bad;
             defF[regNum(args[0])>>6]|=1ull<<(regNum(args[0])&63);continue;
@@ -92,6 +95,7 @@ inline ReadSet scan(const uint32_t* words,std::size_t count){
             if(relative&&major>=2){if(idx>=n)return bad;const uint32_t a=args[idx++];if(!(a&0x80000000u))return bad;} // address register token
             const bool isDst=dst&&operand==0;
             ++operand;
+            if(isDst&&predicated){if(idx>=n)return bad;++idx;}              // skip the predicate token after the destination
             if(isDst){if(type==kTypeConst||type==kTypeConstInt||type==kTypeConstBool||type==kTypeSampler||(type>=kTypeConst2&&type<=kTypeConst4))return bad;continue;}
             switch(type){
             case kTypeConst:{

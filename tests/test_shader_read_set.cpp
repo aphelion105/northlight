@@ -73,11 +73,19 @@ static void testIntBoolAndControlFlow(){
 static void testPredicatedAndComments(){
     W b;
     b.push_back(0xfffe|(4u<<16));b.push_back(0x42415443);b.push_back(0x80000000u|CONST);b.push_back(0x0001ffffu);b.push_back(0x00000051u|(5u<<24)); // a comment (CTAB) holding things that look like instructions
-    ins(b,1,{dst(TEMP,0),reg(CONST,9),reg(0,0)},true);                         // mov r0, c9 with a predicate token (p0) last
+    ins(b,1,{dst(TEMP,0),reg(0,0),reg(CONST,9)},true);                         // (p0) mov r0, c9: the predicate token follows the destination
     ins(b,1,{dst(TEMP,0),reg(CONST,10)},false);
     const ReadSet r=scanW(shader(VS2,b));
     CHECK(r.exact&&fcount(r)==2&&f(r,9)&&f(r,10));
     W t;ins(t,2,{dst(TEMP,0),reg(TEMP,1),reg(TEMP,2)});CHECK(scanW(shader(VS2,t)).exact&&fcount(scanW(shader(VS2,t)))==0);
+}
+static void testPredicatedPlacement(){
+    { W b;ins(b,2,{dst(TEMP,0),reg(0,0),reg(TEMP,1),reg(CONST,5)},true);        // vs_3_0 (p0) add r0, r1, c5: c5 is the last source, not the predicate
+      const ReadSet r=scanW(shader(VS3,b));CHECK(r.exact&&fcount(r)==1&&f(r,5)); }
+    { W b;ins(b,2,{dst(TEMP,0),reg(0,0),reg(CONST,7,true),reg(ADDR,0),reg(CONST,5)},true); // (p0) add r0, c[a0.x+7], c5
+      const ReadSet r=scanW(shader(VS3,b));CHECK(r.exact&&f(r,5)&&!f(r,6)&&f(r,7)&&f(r,255)); }
+    { W b;ins(b,40,{reg(BOOLC,0)},true);CHECK(!scanW(shader(VS3,b)).exact); }  // predicated without a destination: cannot be placed
+    { W b;ins(b,2,{dst(TEMP,0)},true);CHECK(!scanW(shader(VS3,b)).exact); } // truncated: no predicate token after the destination
 }
 static void testFallbacks(){
     { W b;ins(b,55,{dst(TEMP,0)});CHECK(!scanW(shader(VS2,b)).exact); }       // unknown opcode
@@ -95,6 +103,6 @@ static void testFallbacks(){
       W w=shader(VS1,b);CHECK(scanW(w).exact);W u=shader(VS1,W{80u,dst(TEMP,0)});CHECK(!scanW(u).exact); }
 }
 int main(){
-    testVertexBasics();testRelative();testPixel();testIntBoolAndControlFlow();testPredicatedAndComments();testFallbacks();
-    std::puts("shader read set: 6 tests passed");return 0;
+    testVertexBasics();testRelative();testPixel();testIntBoolAndControlFlow();testPredicatedAndComments();testPredicatedPlacement();testFallbacks();
+    std::puts("shader read set: 7 tests passed");return 0;
 }
