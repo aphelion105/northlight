@@ -35,6 +35,7 @@ struct World{unsigned wmoCalls=0;std::unordered_map<IDirect3DVertexShader9*,int>
     bool isWorldShader(IDirect3DVertexShader9* s){return wmo.count(s)!=0;}
     bool isSkinnedShader(IDirect3DVertexShader9*){return false;}};
 struct Cls{
+    static constexpr int kFamilyShift=3;
     std::unordered_map<IDirect3DVertexShader9*,int> vsTags;std::unordered_map<IDirect3DVertexShader9*,uint64_t> vsHashes;
     World* world=nullptr;
 @CLS@

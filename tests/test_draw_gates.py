@@ -239,6 +239,7 @@ struct MockBlobs{Env* env=nullptr;MockExt* ext=nullptr;bool faintMode=false;unsi
         IDirect3DBaseTexture9* original=nullptr;if(FAILED(ext->GetTexture(0,&original))||!original)return {};   /* claim() returns None when its GetTexture fails */
         return {C::Faint,original};}
     IDirect3DTexture9* faintTexture(){return env->bit("faint texture",8)?nullptr:&faint;}};
+namespace NorthlightSpellLayer{struct DrawArgs{template<class... A> static DrawArgs primitive(A...){return {};}template<class... A> static DrawArgs indexed(A...){return {};}template<class... A> static DrawArgs primitiveUP(A...){return {};}template<class... A> static DrawArgs indexedUP(A...){return {};}};} /* task 34: the spell layer is off in this model (spellOn=false): the draw hook's one bool test */
 struct Gate{int drawTid=7;void noteFirst(int){}};
 struct MirrorStateMock{Gate gate;bool textureKnown[1]={};void* textures[1]={};};
 struct WeatherDetectMock{const void* hot=nullptr;NorthlightWeather::Kind hotKind=NorthlightWeather::Kind::None;bool mistArmed=false;bool isMist(const void*)const{return false;}void proveMist(const void*){}};struct WeatherSampleMock{unsigned primitives=0,draws=0;}; /* 0.3.198 (rain): drawHook's one comparison; hot stays null here (test_weather_detect drives it) */
@@ -256,7 +257,8 @@ struct Base{
     MockExt* ext=&extObj;MockWorld* world=&worldObj;MockSky* celestialDiscs=nullptr;MockBlobs* shadowBlobs=nullptr;
     MirrorStateMock mirrorState;
     bool extensionFault=false,failed=false,enabled=true,applied=false,terrain=false,gateFrame=false,rainMaskCleared=false,rainMaskDrawn=false,rainMaskFrame=false,rainMaskOk=false,rainMrtBound=false,rainMaskFailed=false,rainMaskMismatchLogged=false;UINT width=0,height=0;IDirect3DTexture9* rainMask=nullptr;IDirect3DSurface9* rainMaskSurface=nullptr;IDirect3DSurface9* rainMaskMS=nullptr;D3DMULTISAMPLE_TYPE rainMaskMsType=D3DMULTISAMPLE_NONE,rainMaskWantType=D3DMULTISAMPLE_NONE;DWORD rainMaskMsQuality=0,rainMaskWantQuality=0;unsigned rainMaskDraws=0;
-    static constexpr int debugMode=0,kTagMask=3;int worldDebug=0;
+    static constexpr int debugMode=0,kTagMask=3,kFamilyShift=3;int worldDebug=0;
+    struct SpellMock{void reset(){}} spell;void spellSync(){}bool spellOn=false;NorthlightSpellLayer::DrawArgs spellArgs;bool spellGate(){return false;}bool spellDraw(bool,bool){return false;}
     std::unordered_map<IDirect3DVertexShader9*,int> vsTags;
     std::unordered_map<IDirect3DVertexShader9*,std::uint64_t> vsHashes;std::unordered_map<IDirect3DPixelShader9*,std::uint64_t> psHashes;
     unsigned blobSignatureReports=0,terrainShadowDraws=0,frame=0,drawCalls=0;
