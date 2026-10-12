@@ -26,6 +26,7 @@
 #include <new>
 #include <vector>
 #include "saved_state.h"
+#include "shader_read_set.h"
 
 namespace NorthlightSpellLayer {
 constexpr unsigned kBlendZero=1,kBlendOne=2,kSrcColor=3,kInvSrcColor=4,kSrcAlpha=5,kInvSrcAlpha=6,kDestAlpha=7,kInvDestAlpha=8,kDestColor=9,kInvDestColor=10,kBlendOpAdd=1; /* D3DBLEND_*, D3DBLENDOP_ADD */
@@ -231,6 +232,7 @@ struct DrawArgs{
     DrawType type=DrawType::Primitive;D3DPRIMITIVETYPE prim=D3DPT_TRIANGLELIST;
     INT baseVertex=0;UINT minIndex=0,numVertices=0,first=0,primCount=0;
     const void* vertexData=nullptr;UINT stride=0;const void* indexData=nullptr;D3DFORMAT indexFormat=D3DFMT_INDEX16;
+    const NorthlightShaderReads::ReadSet* vsReads=nullptr;const NorthlightShaderReads::ReadSet* psReads=nullptr; // what the bound shaders can read (scanned at creation; null or !exact: everything)
     unsigned psMajor=0;  // shader model major version of the bound pixel shader (from its version token at registration; 0 = unknown): defer() admits only >= kMinPsMajor
     static DrawArgs primitive(D3DPRIMITIVETYPE p,UINT start,UINT count){DrawArgs a;a.type=DrawType::Primitive;a.prim=p;a.first=start;a.primCount=count;return a;}
     static DrawArgs indexed(D3DPRIMITIVETYPE p,INT base,UINT minIdx,UINT num,UINT startIndex,UINT count){
@@ -773,8 +775,8 @@ private:
     void emitPtr(uint32_t op,uint32_t a,const void* p){scratch_[n_++]=opWord(op,a,0);std::memcpy(&scratch_[n_],&p,sizeof p);n_+=kPtrWords;}
     // Emits, for the registers in mask whose value differs from the model (or is unknown in it), runs of rows (bridging gaps of up to two unchanged registers:
     // one call is cheaper than two). Aligned blocks of 16 registers that are all in the mask and known to the model are compared in one go.
-    void diffRows(uint32_t op,const void* curV,const void* mdlV,unsigned rowWords,const uint64_t* valid,const uint64_t* mask,unsigned n){
-        const uint8_t* cur=static_cast<const uint8_t*>(curV),*mdl=static_cast<const uint8_t*>(mdlV);const size_t rb=size_t(rowWords)*4;
+    template<unsigned rowWords> void diffRows(uint32_t op,const void* curV,const void* mdlV,const uint64_t* valid,const uint64_t* mask,unsigned n){
+        const uint8_t* cur=static_cast<const uint8_t*>(curV),*mdl=static_cast<const uint8_t*>(mdlV);constexpr size_t rb=size_t(rowWords)*4; // constant row size: the compare inlines
         auto differs=[&](unsigned i){return !bitSet(valid,i)||std::memcmp(cur+i*rb,mdl+i*rb,rb)!=0;};
         for(unsigned i=0;i<n;){
             if(!bitSet(mask,i)){++i;continue;}
@@ -832,27 +834,27 @@ private:
             const float (*src)[4]=vsStage_;
             if(mv_&&knownAll(mv_->vsFKnown,rd.vsF,4))src=mv_->vsF;
             else if(FAILED(dev_->GetVertexShaderConstantF(lo,vsStage_[lo],hi-lo+1)))return Reason::Capture;
-            diffRows(Op::VsF,src,m.vsF,4,m.vsFV,rd.vsF,kVsFloat);
+            diffRows<4>(Op::VsF,src,m.vsF,m.vsFV,rd.vsF,kVsFloat);
         }
         if(maskSpan(rd.psF,4,lo,hi)){
             const float (*src)[4]=psStage_;
             if(mv_&&knownAll(mv_->psFKnown,rd.psF,4))src=mv_->psF;
             else if(FAILED(dev_->GetPixelShaderConstantF(lo,psStage_[lo],hi-lo+1)))return Reason::Capture;
-            diffRows(Op::PsF,src,m.psF,4,m.psFV,rd.psF,kPsFloat);
+            diffRows<4>(Op::PsF,src,m.psF,m.psFV,rd.psF,kPsFloat);
         }
         int is[kInts][4];BOOL bs[kBools];
         if(rd.vsI){
             const uint64_t mk=rd.vsI;const int (*src)[4]=is;
             if(mv_&&knownAll(mv_->vsIKnown,&mk,1))src=mv_->vsI;else if(FAILED(dev_->GetVertexShaderConstantI(0,&is[0][0],kInts)))return Reason::Capture;
-            diffRows(Op::VsI,src,m.vsI,4,&m.vsIV,&mk,kInts);
+            diffRows<4>(Op::VsI,src,m.vsI,&m.vsIV,&mk,kInts);
         }
         if(rd.vsB){
             const uint64_t mk=rd.vsB;const BOOL* src=bs;
             if(mv_&&knownAll(mv_->vsBKnown,&mk,1))src=mv_->vsB;else if(FAILED(dev_->GetVertexShaderConstantB(0,bs,kBools)))return Reason::Capture;
-            diffRows(Op::VsB,src,m.vsB,1,&m.vsBV,&mk,kBools);
+            diffRows<1>(Op::VsB,src,m.vsB,&m.vsBV,&mk,kBools);
         }
-        if(rd.psI){const uint64_t mk=rd.psI;if(FAILED(dev_->GetPixelShaderConstantI(0,&is[0][0],kInts)))return Reason::Capture;diffRows(Op::PsI,is,m.psI,4,&m.psIV,&mk,kInts);}
-        if(rd.psB){const uint64_t mk=rd.psB;if(FAILED(dev_->GetPixelShaderConstantB(0,bs,kBools)))return Reason::Capture;diffRows(Op::PsB,bs,m.psB,1,&m.psBV,&mk,kBools);}
+        if(rd.psI){const uint64_t mk=rd.psI;if(FAILED(dev_->GetPixelShaderConstantI(0,&is[0][0],kInts)))return Reason::Capture;diffRows<4>(Op::PsI,is,m.psI,&m.psIV,&mk,kInts);}
+        if(rd.psB){const uint64_t mk=rd.psB;if(FAILED(dev_->GetPixelShaderConstantB(0,bs,kBools)))return Reason::Capture;diffRows<1>(Op::PsB,bs,m.psB,&m.psBV,&mk,kBools);}
         // viewport; the scissor rect only with the scissor test on; the clip planes only for the enabled ones (the draw reads nothing else)
         D3DVIEWPORT9 vpl;const D3DVIEWPORT9* vp=&vpl;
         if(mv_&&*mv_->vpKnown)vp=mv_->vp;else if(FAILED(dev_->GetViewport(&vpl)))return Reason::Capture;
@@ -1024,6 +1026,12 @@ public:
         // What the draw can read: a fixed-function draw reads no shader constants and the texture stages 0..7; a programmable one the shaders' read sets.
         Reads rd;
         if(fixed){rd.noConstants();rd.tex=(1u<<kFfStages)-1;}
+        else{   // a shader that was scanned exactly reads only its registers and declared samplers; anything else reads everything of its stage
+            rd.tex=0;
+            const NorthlightShaderReads::ReadSet* v=a.vsReads,*p=a.psReads;
+            if(v&&v->exact){for(unsigned w=0;w<4;++w)rd.vsF[w]=v->f[w];rd.vsI=v->i;rd.vsB=v->b;rd.tex|=uint32_t(v->samplers&0xF)<<16;}else rd.tex|=0xF0000u;
+            if(p&&p->exact){for(unsigned w=0;w<4;++w)rd.psF[w]=p->f[w];rd.psI=p->i;rd.psB=p->b;rd.tex|=p->samplers;}else rd.tex|=0xFFFFu;
+        }
         IDirect3DBaseTexture9* tex[kMaxTextures]={};Held* texHeld[kMaxTextures]={};
         for(unsigned t=0;t<kMaxTextures;++t){ // pixel samplers 0..15, then the vertex texture samplers (stages 257..260): a write to any of them flushes
             if(!(rd.tex>>t&1))continue;

@@ -164,6 +164,8 @@ struct Rig{
     Fake::VB *ring,*stat,*extra,*ring2;Fake::IB *ringIb,*ringIb32,*stIb;
     Fake::Decl *declP,*declTwo;Fake::VShader *vs,*vsEff;Fake::PShader *ps,*psEff;Fake::Texture *texA,*texB;unsigned psMajor=3; /* what the integration passes as DrawArgs::psMajor */
     NorthlightSpellLayer::MirrorView view;
+    bool useReads=false;NorthlightShaderReads::ReadSet vsRs,psRs; // shaders with scanned read sets (restrict()); otherwise they read everything
+    void restrict(const NorthlightShaderReads::ReadSet& v,const NorthlightShaderReads::ReadSet& p){useReads=true;vsRs=v;psRs=p;}
     std::map<void*,Fake::BufState*> bufs;std::map<void*,long long> ids;std::map<void*,int> marks;
     std::vector<std::pair<void*,bool>> markLog;std::vector<size_t> drawsAtWrite;
     std::vector<int> deferredTags;std::vector<std::vector<long long>> steps;
@@ -294,14 +296,18 @@ struct Rig{
         const Fake::State& s=d.st;std::vector<long long> v;
         if(!s.vs&&!s.ps)ffNorm(s,v,false); // fixed function: the draw reads the fixed-function state; with shaders it does not
         for(DWORD x:s.rs)v.push_back(x);
-        for(size_t t=0;t<20;++t){v.push_back(id(s.tex[t]));if(s.tex[t])for(size_t k=1;k<=13;++k)v.push_back(s.ss[t][k]);}
+        const bool lim=useReads&&(s.vs||s.ps); // a draw with scanned shaders reads only their registers and declared samplers
+        const uint32_t texMask=uint32_t(psRs.samplers)|uint32_t(vsRs.samplers&0xF)<<16;
+        for(size_t t=0;t<20;++t){if(lim&&!(texMask>>t&1))continue;v.push_back(id(s.tex[t]));if(s.tex[t])for(size_t k=1;k<=13;++k)v.push_back(s.ss[t][k]);}
         v.push_back(id(s.vs));v.push_back(id(s.ps));v.push_back(id(s.decl));v.push_back(s.fvf);
         auto flt=[&](const float* f,size_t n){for(size_t i=0;i<n;++i){uint32_t u;std::memcpy(&u,f+i,4);v.push_back(u);}};
         const bool shaders=s.vs||s.ps; // a fixed-function draw reads no shader constants
-        if(shaders){flt(&s.vsc[0][0],256*4);flt(&s.psc[0][0],224*4);}
+        if(shaders&&!lim){flt(&s.vsc[0][0],256*4);flt(&s.psc[0][0],224*4);}
+        if(lim){for(unsigned i=0;i<256;++i)if(vsRs.f[i>>6]>>(i&63)&1)flt(s.vsc[i],4);for(unsigned i=0;i<224;++i)if(psRs.f[i>>6]>>(i&63)&1)flt(s.psc[i],4);}
         for(unsigned i=0;i<6;++i)if(s.rs[152]>>i&1)flt(s.clip[i],4); // only the enabled clip planes and (below) an enabled scissor test are read by the draw
-        if(shaders){for(auto& row:s.vsi)for(int x:row)v.push_back(x);for(auto& row:s.psi)for(int x:row)v.push_back(x);
+        if(shaders&&!lim){for(auto& row:s.vsi)for(int x:row)v.push_back(x);for(auto& row:s.psi)for(int x:row)v.push_back(x);
         for(int x:s.vsb)v.push_back(x);for(int x:s.psb)v.push_back(x);}
+        if(lim){for(unsigned i=0;i<16;++i){if(vsRs.i>>i&1)for(int x:s.vsi[i])v.push_back(x);if(psRs.i>>i&1)for(int x:s.psi[i])v.push_back(x);if(vsRs.b>>i&1)v.push_back(s.vsb[i]);if(psRs.b>>i&1)v.push_back(s.psb[i]);}}
         v.insert(v.end(),{s.vp.X,s.vp.Y,s.vp.Width,s.vp.Height});
         if(s.rs[174])v.insert(v.end(),{s.scissor.left,s.scissor.top,s.scissor.right,s.scissor.bottom});
         if(d.kind==0||d.kind==1)for(UINT u:usedOf(s)){v.push_back(s.st[u].freq);if(geom){v.push_back(id(s.st[u].vb));v.push_back(s.st[u].off);v.push_back(s.st[u].stride);}}
@@ -331,7 +337,7 @@ struct Rig{
     }
     // One game draw: classify, defer when told to (layer on), otherwise draw in place after the layer's hazard handling. Returns the tag.
     template<class F> int issueWith(const DrawArgs& a0,Family fam,F&& tweak){
-        DrawArgs a=a0;a.psMajor=psMajor;
+        DrawArgs a=a0;a.psMajor=psMajor;if(useReads){a.vsReads=&vsRs;a.psReads=&psRs;}
         const int tag=nextTag++;const float v[4]={float(tag),0,0,0};dev.SetVertexShaderConstantF(31,v,1);dev.SetRenderState(165,DWORD(tag));
         DrawFacts f=facts(fam);f.pending=o.on&&layer.pending()>0;tweak(f);
         last=classify(f,o.mask);bool deferred=false;
@@ -1030,6 +1036,60 @@ static void testDeltas(){
     }
     Pair q=runBoth(sTwoFrames);checkEquivalent(q);CHECK(q.lay->layer.totalCounters().replayedDraws==4);
 }
+// Shaders with scanned read sets: only the registers and samplers they read are recorded and replayed; the unread state of a replayed draw may differ from
+// the original (it cannot be seen), the read state is exact. Fewer sets, less delta.
+static void setBit(uint64_t* m,unsigned i){m[i>>6]|=1ull<<(i&63);}
+static void sRestricted(Rig& r){
+    NorthlightShaderReads::ReadSet v,p;v.exact=p.exact=true;v.vertex=true;
+    for(unsigned i:{5u,8u,9u,10u,11u,31u,40u,41u})setBit(v.f,i);v.i=1u<<2;                // tag c31 and the tag state is a render state; ints: i2
+    for(unsigned i:{2u,3u,9u})setBit(p.f,i);p.b=1u<<4;p.samplers=1u|1u<<4;
+    r.restrict(v,p);
+    r.dev.SetTexture(4,r.texB);                                                         // sampler 4 is declared
+    deferQuad(r,1);
+    { // changes of state no one reads: c100 (vs), c20 (ps), ints/bools nobody names, texture and sampler state of stages 3 and 6
+        const float k[4]={7,7,7,7};r.dev.SetVertexShaderConstantF(100,k,1);r.dev.SetPixelShaderConstantF(20,k,1);
+        const int ki[4]={1,1,1,1};r.dev.SetVertexShaderConstantI(5,ki,1);const BOOL kb=1;r.dev.SetPixelShaderConstantB(2,&kb,1);r.dev.SetVertexShaderConstantB(3,&kb,1);
+        r.dev.SetTexture(3,r.texB);r.dev.SetSamplerState(3,2,99);r.dev.SetTexture(6,r.texA);r.dev.SetSamplerState(6,3,98);
+        const float* nothing=nullptr;(void)nothing;
+    }
+    deferQuad(r,2);                                                                     // 2: only the tag
+    { // changes of state it reads: c9 (vs), c3 (ps), i2, b4, the texture of sampler 4 and its sampler state, the declared sampler 0's state
+        const float k[4]={8,8,8,8};r.dev.SetVertexShaderConstantF(9,k,1);r.dev.SetPixelShaderConstantF(3,k,1);
+        const int ki[4]={5,6,7,8};r.dev.SetVertexShaderConstantI(2,ki,1);const BOOL kb=1;r.dev.SetPixelShaderConstantB(4,&kb,1);
+        r.dev.SetTexture(4,r.texA);r.dev.SetSamplerState(4,4,77);r.dev.SetSamplerState(0,5,66);
+    }
+    deferQuad(r,3);
+    r.boundary();
+}
+static void testReadSets(){
+    Pair p=runBoth(sRestricted);const Counters& c=p.lay->layer.totalCounters();
+    CHECK(p.lay->deferredTags.size()==3&&c.totalHazards()==0&&c.replayedDraws==3);
+    checkEquivalent(p);
+    std::map<int,const Fake::DrawRec*> by;for(auto& d:p.lay->dev.draws)by[d.tag]=&d;
+    CHECK(by[3]->st.vsc[9][0]==8&&by[3]->st.psc[3][0]==8&&by[3]->st.vsi[2][3]==8&&by[3]->st.psb[4]==1&&by[3]->st.tex[4]==p.lay->texA&&by[3]->st.ss[4][4]==77&&by[3]->st.ss[0][5]==66);
+    // the same frame with everything read replays more: the unread changes are not replayed, so the restricted run issues fewer Set calls and records fewer words
+    Pair all=runBoth([](Rig& r){
+        r.dev.SetTexture(4,r.texB);deferQuad(r,1);
+        {const float k[4]={7,7,7,7};r.dev.SetVertexShaderConstantF(100,k,1);r.dev.SetPixelShaderConstantF(20,k,1);r.dev.SetTexture(3,r.texB);r.dev.SetSamplerState(3,2,99);}
+        deferQuad(r,2);r.boundary();});
+    Pair some=runBoth([](Rig& r){
+        NorthlightShaderReads::ReadSet v,p;v.exact=p.exact=true;setBit(v.f,31);setBit(v.f,5);setBit(p.f,2);p.samplers=1u|1u<<4;r.restrict(v,p);
+        r.dev.SetTexture(4,r.texB);deferQuad(r,1);
+        {const float k[4]={7,7,7,7};r.dev.SetVertexShaderConstantF(100,k,1);r.dev.SetPixelShaderConstantF(20,k,1);r.dev.SetTexture(3,r.texB);r.dev.SetSamplerState(3,2,99);}
+        deferQuad(r,2);r.boundary();});
+    const Counters& ca=all.lay->layer.totalCounters();const Counters& cs=some.lay->layer.totalCounters();
+    CHECK(cs.deltaWords<ca.deltaWords/2&&cs.replaySets<ca.replaySets&&cs.replayedDraws==2);
+    checkEquivalent(all);checkEquivalent(some);
+    {   // a shader scanned as "reads everything" (exact=false) keeps the full behaviour, also next to an exact one
+        NorthlightShaderReads::ReadSet v,pp;v.exact=true;v.vertex=true;setBit(v.f,31);                    // vertex shader exact, pixel shader not
+        Pair mixed=runBoth([](Rig& r){
+            NorthlightShaderReads::ReadSet v;v.exact=true;v.vertex=true;setBit(v.f,31);NorthlightShaderReads::ReadSet pp;r.restrict(v,pp);
+            deferQuad(r,1);{const float k[4]={7,7,7,7};r.dev.SetPixelShaderConstantF(20,k,1);r.dev.SetTexture(3,r.texB);}deferQuad(r,2);r.boundary();});
+        std::map<int,const Fake::DrawRec*> m;for(auto& d:mixed.lay->dev.draws)m[d.tag]=&d;
+        CHECK(m[2]->st.psc[20][0]==7&&m[2]->st.tex[3]==mixed.lay->texB&&m[1]->st.psc[20][0]==0);
+        (void)v;(void)pp;
+    }
+}
 // Replay is a diff: the second of two draws differing in one constant costs one Set call, the first sets everything recorded.
 static void sOneDraw(Rig& r){deferQuad(r,1);r.boundary();}
 static void sTwoDraws(Rig& r){deferQuad(r,1);deferQuad(r,2);r.boundary();}
@@ -1221,7 +1281,7 @@ int main(int argc,char** argv){
         {"cooldown and pressure",testCooldownAndPressure},{"trim",testTrim},{"pending targets",testPendingTargets},{"layer off",testLayerOff},
         {"reset and teardown",testResetAndTeardown},{"512 entries",testStress512},
         {"32-bit index copy",testIb32},{"both index formats",testIbBothFormats},{"water rain name flush",testOrderKinds},{"nothing pending: in place",testOrderKindsIdle},
-        {"replay scope failure",testReplayScopeFailure},{"state changed between draws",testStateChangedBetweenDraws},{"scissor and clip only when enabled",testScissorAndClipOnlyWhenEnabled},{"delta encoding",testDeltas},{"diff replay",testDiffReplay},{"admission",testAdmission},{"hazard events",testHazardEvents},{"record size and timing",testRecordSizeAndTiming},{"fixed function",testFixedFunction},{"fixed function admission",testFixedAdmission},{"fixed function capacity",testFixedCapacity},{"water ripples",testRipples},
+        {"replay scope failure",testReplayScopeFailure},{"state changed between draws",testStateChangedBetweenDraws},{"scissor and clip only when enabled",testScissorAndClipOnlyWhenEnabled},{"delta encoding",testDeltas},{"shader read sets",testReadSets},{"diff replay",testDiffReplay},{"admission",testAdmission},{"hazard events",testHazardEvents},{"record size and timing",testRecordSizeAndTiming},{"fixed function",testFixedFunction},{"fixed function admission",testFixedAdmission},{"fixed function capacity",testFixedCapacity},{"water ripples",testRipples},
         {"render target texture",testRenderTargetTexture},{"render target verdict cache",testVerdictCache},{"vertex texture sampler",testVertexTextureSampler},{"buffer write conflict probe",testBufferWriteProbe}};
     for(int mode=fixedMode?gMirrorMode:0;mode<=(fixedMode?gMirrorMode:3);++mode){
         gMirrorMode=mode;

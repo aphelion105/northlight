@@ -205,6 +205,7 @@ template<class T> static uint64_t shaderHash(T* shader, std::vector<DWORD>& word
 #include "celestial_disc_renderer.h"
 #include "shadow_blob_filter.h"
 #include "spell_layer.h"
+#include "shader_read_set.h"
 // The counter index of a raw extension method (the D3D calls line), ~0u if unknown.
 static unsigned rawMethodIndex(const char* name){for(unsigned i=0;i<ExtensionDevice::RawMethods;++i)if(!std::strcmp(ExtensionDevice::rawMethodName(i),name))return i;return ~0u;}
 
@@ -307,6 +308,7 @@ class Device final : public GuardedMirrorDevice {
         lastVs.wmo=world&&world->recognizesWmo(vs);lastVs.world=world&&world->isWorldShader(vs);lastVs.skinned=world&&world->isSkinnedShader(vs);lastVs.family=unsigned(lastVs.entry>>kFamilyShift)&7u;return lastVs;
     }
     std::unordered_map<IDirect3DPixelShader9*, uint64_t> psHashes;
+    std::unordered_map<void*, NorthlightShaderReads::ReadSet> shaderReads; // vertex and pixel shaders by identity: what each can read of the API state (scanned at creation; the spell layer records only that)
     std::unordered_map<IDirect3DPixelShader9*, unsigned> psMajor; // the shader model major version from the version token (0 unknown); the spell layer admits ps_2_0 and newer only
     unsigned blobSignatureReports=0;
     NorthlightMirrorAuditSchedule mirrorAuditSchedule;bool mirrorFallbackReported=false;
@@ -1190,9 +1192,11 @@ private:
     // SpellTrace lines only; every call site tests spellTraceFrame first (one bool when the trace is off).
     void spellEvent(const char* what,unsigned a=0,unsigned b=0,unsigned c=0){logf("SPELLTRACE frame=%u event=%s pending=%u a=%u b=%u c=%u",frame,what,spell.pending(),a,b,c);}
     // The bound pixel shader's model (psMajor) and hash, by identity lookup.
-    void spellPixelShader(unsigned* major,unsigned long long* hash){
+    const NorthlightShaderReads::ReadSet* spellReads(void* shader)const{const auto it=shaderReads.find(shader);return it==shaderReads.end()?nullptr:&it->second;}
+    void spellPixelShader(unsigned* major,unsigned long long* hash,const NorthlightShaderReads::ReadSet** reads=nullptr){
         IDirect3DPixelShader9* ps=nullptr;const bool b=ext->peekPixelShader(ps);if(!b&&FAILED(ext->GetPixelShader(&ps)))ps=nullptr;
         if(ps){
+            if(reads)*reads=spellReads(static_cast<void*>(ps));
             if(major){auto it=psMajor.find(ps);*major=it==psMajor.end()?0u:it->second;}
             if(hash){auto it=psHashes.find(ps);*hash=it==psHashes.end()?0ull:(unsigned long long)it->second;}
         }
@@ -1345,7 +1349,7 @@ private:
         bool deferred=false;
         switch(r.kind){
         case Kind::Defer:
-            if(rt){spellArgs.psMajor=0;spellPixelShader(&spellArgs.psMajor,nullptr);deferred=spell.defer(spellArgs,rt,ds,r.sub);}
+            if(rt){spellArgs.psMajor=0;spellArgs.psReads=nullptr;spellPixelShader(&spellArgs.psMajor,nullptr,&spellArgs.psReads);spellArgs.vsReads=vs?spellReads(static_cast<void*>(vs)):nullptr;deferred=spell.defer(spellArgs,rt,ds,r.sub);}
             break;
         case Kind::Hazard:spellInDraw=true;spellFlush(r.reason,true,r.inPlace);spellInDraw=false;break; /* r.inPlace: water, rain or a name drawn after a deferred draw */
         case Kind::InPlace:if(pend)spell.noteInPlace(r.inPlace);break;
@@ -2029,12 +2033,12 @@ public:
     }
     HRESULT STDMETHODCALLTYPE CreateVertexShader(const DWORD* code,IDirect3DVertexShader9** out) override { Guard mirrorLock(mirrorState.gate);
         HRESULT hr=ext->CreateVertexShader(code,out);
-        if(SUCCEEDED(hr)&&out&&*out)extensionWork("vertex shader registration",[&]{++vsGeneration;std::vector<DWORD> words;auto h=shaderHash(*out,words);int tag=NorthlightShaderTags::deviceTag(h);vsHashes[*out]=h;uiFallbackForget(*out);vsMajor[*out]=!words.empty()&&(words[0]>>16)==0xFFFEu?unsigned((words[0]>>8)&0xFFu):0u;if(world)world->registerShader(*out,h);if(water)water->registerVertex(*out,h,words.data(),words.size());vsTags[*out]=tag|(water&&water->hasVertex(*out)?kWaterTag:0)|int(m2ShaderFamily(h)<<kFamilyShift);if(tag==1)++matchedTerrain;else if(tag==2)++matchedUI;});
+        if(SUCCEEDED(hr)&&out&&*out)extensionWork("vertex shader registration",[&]{++vsGeneration;std::vector<DWORD> words;auto h=shaderHash(*out,words);int tag=NorthlightShaderTags::deviceTag(h);vsHashes[*out]=h;shaderReads[static_cast<void*>(*out)]=NorthlightShaderReads::scan(reinterpret_cast<const uint32_t*>(words.data()),words.size());uiFallbackForget(*out);vsMajor[*out]=!words.empty()&&(words[0]>>16)==0xFFFEu?unsigned((words[0]>>8)&0xFFu):0u;if(world)world->registerShader(*out,h);if(water)water->registerVertex(*out,h,words.data(),words.size());vsTags[*out]=tag|(water&&water->hasVertex(*out)?kWaterTag:0)|int(m2ShaderFamily(h)<<kFamilyShift);if(tag==1)++matchedTerrain;else if(tag==2)++matchedUI;});
         if(SUCCEEDED(hr))mirrorResources.wrap(out);return hr;
     }
     HRESULT STDMETHODCALLTYPE CreatePixelShader(const DWORD* code,IDirect3DPixelShader9** out) override { Guard mirrorLock(mirrorState.gate);
         HRESULT hr=ext->CreatePixelShader(code,out);
-        if(SUCCEEDED(hr)&&out&&*out)extensionWork("pixel shader registration",[&]{std::vector<DWORD> words;auto h=shaderHash(*out,words);uiFallbackForget(*out);psTags[*out]=contains(kUiPS,h)?2:0;psHashes[*out]=h;psMajor[*out]=!words.empty()&&(words[0]>>16)==0xFFFFu?unsigned((words[0]>>8)&0xFFu):0u;if(water)water->registerPixel(*out,h,words.data(),words.size());if(world)world->registerPixelShader(*out);});
+        if(SUCCEEDED(hr)&&out&&*out)extensionWork("pixel shader registration",[&]{std::vector<DWORD> words;auto h=shaderHash(*out,words);uiFallbackForget(*out);psTags[*out]=contains(kUiPS,h)?2:0;psHashes[*out]=h;shaderReads[static_cast<void*>(*out)]=NorthlightShaderReads::scan(reinterpret_cast<const uint32_t*>(words.data()),words.size());psMajor[*out]=!words.empty()&&(words[0]>>16)==0xFFFFu?unsigned((words[0]>>8)&0xFFu):0u;if(water)water->registerPixel(*out,h,words.data(),words.size());if(world)world->registerPixelShader(*out);});
         if(SUCCEEDED(hr))mirrorResources.wrap(out);return hr;
     }
     // 0.3.187: the four draw entry points share drawHook(); each passes its capture and its real draw.
