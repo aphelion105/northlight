@@ -66,7 +66,7 @@ inline unsigned subClass(const DrawFacts& f){
 // Z-writing draws never defer and stay in place (their depth occludes the replay). Colour-writing no-Z draws into the target are deferred when they
 // are one of the four families with a non-opaque blend. Water, rain and floating names are drawn in place when nothing is pending (InPlace, no
 // effect), but a Hazard/Order while draws are pending: drawn in place they would end up UNDER the replayed spells, so the caller flushes first and
-// the original order holds (Result::inPlace names which of them it was). A fade colour pass stays an accepted reorder (its depth pre-pass occludes
+// the original order holds (Result::inPlace names which of them it was; Layer::hazard() then splits the frame instead of falling back). A fade colour pass stays an accepted reorder (its depth pre-pass occludes
 // the replay). Everything else is a Hazard (unknown order dependency while draws are pending: the caller flushes). Claimed draws and draws into other targets are Ignore
 // (unless they sample the target: Hazard/Sample). A non-world draw that writes colour into the target is a Hazard.
 inline Result classify(const DrawFacts& f,unsigned classMask){
@@ -734,10 +734,13 @@ public:
 
     // An unknown order/resource dependency (clear, copy, order, query, frame...). With entries pending: replay them now in order (own SavedState
     // scope), count the reason, and the frame becomes Fallback (a cooldown follows unless `cooldown` is false). Nothing pending: no effect.
-    // `by`: the in-place kind (water, rain, name) whose draw raised an Order hazard, for the counters.
+    // `by`: the in-place kind (water, rain, name) whose draw raised the Order hazard. That is a split, not a fallback: the pending draws are
+    // replayed now, before the caller's in-place draw (the reference order), and the frame keeps deferring, so the later draws, which the game
+    // draws after it, still replay after the effects (order kept again). Counted in orderBy and flushes, not as a hazard; no cooldown and no event.
+    // The game's own sort decides per frame whether water comes before or after nearby effects, so a fallback here toggled with the camera.
     void hazard(Reason r,bool cooldown=true,InPlaceKind by=InPlaceKind::None){
         if(!count_)return;
-        if(by!=InPlaceKind::None&&by!=InPlaceKind::Fade)count([&](Counters& c){++c.orderBy[unsigned(by)-1];});
+        if(by!=InPlaceKind::None&&by!=InPlaceKind::Fade){count([&](Counters& c){++c.orderBy[unsigned(by)-1];++c.flushes;});drain();return;}
         noteHazard(r);noteEvent(r,by);count([](Counters& c){++c.flushes;});
         drain();fm_.fallback(cooldown);
     }

@@ -763,17 +763,23 @@ static void testIbBothFormats(){
     checkEquivalent(p,{1,2});
     for(auto& d:p.lay->dev.draws)if(d.tag==1||d.tag==2)CHECK(d.idx==std::vector<uint32_t>({0,1,2,2,1,3}));
 }
-// Water, rain and floating names drawn while draws are pending end the deferral: the flush keeps the reference order (they used to land under the spells).
+// Water, rain and floating names drawn while draws are pending split the frame: the pending draws are replayed before them (the reference order,
+// they used to land under the spells), and the later draws are deferred again and replayed after the effects. No hazard, no cooldown.
 template<int K> static void sOrderKind(Rig& r){
     deferQuad(r,1);deferQuad(r,2);
     r.issueWith(Rig::dp(0),Family::Model,[](DrawFacts& f){f.water=K==0;f.rain=K==1;f.uiTag=K==2;});
-    deferQuad(r,3);r.boundary();
+    CHECK(r.layer.pending()==0&&r.layer.mode()!=Mode::Fallback);
+    deferQuad(r,3);deferQuad(r,4);
+    r.issueWith(Rig::dp(0),Family::Model,[](DrawFacts& f){f.water=K==0;f.rain=K==1;f.uiTag=K==2;});
+    deferQuad(r,5);r.boundary();
 }
 template<int K> static void checkOrderKind(){
     Pair p=runBoth(sOrderKind<K>);const Counters& c=p.lay->layer.totalCounters();
-    CHECK(c.hazards[unsigned(Reason::Order)]==1&&c.totalHazards()==1&&c.flushes==1&&c.orderBy[K]==1&&c.orderBy[(K+1)%3]==0&&c.orderBy[(K+2)%3]==0);
-    CHECK(p.lay->deferredTags==std::vector<int>({1,2}));                       // the draw after the hazard is not deferred (Fallback)
-    checkEquivalent(p);CHECK(p.lay->order()==p.ref->order());
+    CHECK(c.totalHazards()==0&&c.flushes==2&&c.orderBy[K]==2&&c.orderBy[(K+1)%3]==0&&c.orderBy[(K+2)%3]==0&&c.replayedDraws==5);
+    CHECK(p.lay->deferredTags.size()==5);                                      // the frame keeps deferring after each split
+    CHECK(p.lay->layer.eventSeq()==0);                                         // a split is no hazard event
+    checkEquivalent(p);CHECK(p.lay->order()==expectedDeferredOrder(p.ref->order(),{p.lay->deferredTags.back()}));
+    p.lay->layer.beginFrame(false);CHECK(p.lay->layer.mode()==Mode::Armed);    // no cooldown follows
 }
 static void testOrderKinds(){checkOrderKind<0>();checkOrderKind<1>();checkOrderKind<2>();}
 static void testOrderKindsIdle(){ // nothing pending: plain in-place draws, no hazard, the frame stays armed
@@ -919,8 +925,10 @@ static void testHazardEvents(){
     CHECK(l.eventSeq()==0);
     l.hazard(Reason::Clear);CHECK(l.eventSeq()==0);                           // nothing pending: not an event
     deferQuad(r,1);deferQuad(r,2);CHECK(l.eventSeq()==0);
-    l.hazard(Reason::Order,true,InPlaceKind::Water);
-    CHECK(l.eventSeq()==1&&l.lastEvent().reason==Reason::Order&&l.lastEvent().by==InPlaceKind::Water&&l.lastEvent().pending==2);
+    l.hazard(Reason::Order,true,InPlaceKind::Water);                          // a split (water after pending draws): flushed, not an event
+    CHECK(l.eventSeq()==0&&l.pending()==0&&l.mode()!=Mode::Fallback);
+    deferQuad(r,5);deferQuad(r,6);l.hazard(Reason::Order);
+    CHECK(l.eventSeq()==1&&l.lastEvent().reason==Reason::Order&&l.lastEvent().by==InPlaceKind::None&&l.lastEvent().pending==2);
     l.beginFrame(false);while(l.mode()!=Mode::Armed)l.beginFrame(false);
     deferQuad(r,3);l.onBufferWrite(r.ring->b.key,0,0,D3DLOCK_DISCARD,0,1);   // a write the layer cannot copy (static usage): BufWrite flush
     CHECK(l.eventSeq()==2&&l.lastEvent().reason==Reason::BufWrite&&l.lastEvent().by==InPlaceKind::None&&l.lastEvent().pending==1);
