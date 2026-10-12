@@ -51,11 +51,18 @@ static void testClassify(){
     {DrawFacts f=cand();f.claimed=true;expect(f,Kind::Ignore);}
     {DrawFacts f=cand();f.worldDomain=false;expect(f,Kind::Hazard,0,Reason::Order);}
     {DrawFacts f=cand();f.worldDomain=false;f.colorWrite=0;expect(f,Kind::Ignore);}
-    // accepted reorders
+    // water, rain and names: plain in-place draws with nothing pending, an order hazard (flush first, original order) while draws are pending
     {DrawFacts f=cand();f.water=true;f.family=Family::None;expect(f,Kind::InPlace,0,Reason::Count,InPlaceKind::Water);}
     {DrawFacts f=cand();f.rain=true;expect(f,Kind::InPlace,0,Reason::Count,InPlaceKind::Rain);}
     {DrawFacts f=cand();f.uiTag=true;f.family=Family::None;expect(f,Kind::InPlace,0,Reason::Count,InPlaceKind::Name);}
+    {DrawFacts f=cand();f.pending=true;f.water=true;f.family=Family::None;expect(f,Kind::Hazard,0,Reason::Order,InPlaceKind::Water);}
+    {DrawFacts f=cand();f.pending=true;f.rain=true;expect(f,Kind::Hazard,0,Reason::Order,InPlaceKind::Rain);}
+    {DrawFacts f=cand();f.pending=true;f.uiTag=true;f.family=Family::None;expect(f,Kind::Hazard,0,Reason::Order,InPlaceKind::Name);}
+    {DrawFacts f=cand();f.pending=true;f.water=true;f.zWrite=true;expect(f,Kind::TranslucentZ);} // a Z-writing draw is unaffected
+    {DrawFacts f=cand();f.pending=true;f.water=true;f.colorWrite=0;expect(f,Kind::Ignore);}
+    // the fade colour pass stays an accepted reorder (its depth pre-pass occludes the replay), pending or not
     {DrawFacts f=cand();f.skinned=true;f.fadeRun=true;expect(f,Kind::InPlace,0,Reason::Count,InPlaceKind::Fade);}
+    {DrawFacts f=cand();f.pending=true;f.skinned=true;f.fadeRun=true;expect(f,Kind::InPlace,0,Reason::Count,InPlaceKind::Fade);}
     {DrawFacts f=cand();f.skinned=true;expect(f,Kind::Defer,SubAdditive);} // skinned outside a fade run defers
     {DrawFacts f=cand();f.fadeRun=true;expect(f,Kind::Defer,SubAdditive);} // a run only changes skinned draws
     // Z-writing draws never defer
@@ -127,7 +134,7 @@ struct Opts{bool on=true;unsigned maxEntries=512,maxBlocks=512;bool conflictCopy
 struct Rig{
     Fake::FakeDevice dev;Layer layer;Opts o;
     Fake::Surface *T,*D,*Other;
-    Fake::VB *ring,*stat,*extra,*ring2;Fake::IB *ringIb,*stIb;
+    Fake::VB *ring,*stat,*extra,*ring2;Fake::IB *ringIb,*ringIb32,*stIb;
     Fake::Decl *declP,*declTwo;Fake::VShader *vs,*vsEff;Fake::PShader *ps;Fake::Texture *texA,*texB;
     std::map<void*,Fake::BufState*> bufs;std::map<void*,long long> ids;std::map<void*,int> marks;
     std::vector<std::pair<void*,bool>> markLog;std::vector<size_t> drawsAtWrite;
@@ -159,7 +166,7 @@ struct Rig{
     explicit Rig(Opts opts):o(opts){
         T=reg(new Fake::Surface(800,600));D=reg(new Fake::Surface(800,600));Other=reg(new Fake::Surface(800,600));
         ring=newVB(1u<<17,D3DUSAGE_DYNAMIC|D3DUSAGE_WRITEONLY);ring2=newVB(1u<<16,D3DUSAGE_DYNAMIC);stat=newVB(1u<<12,0);extra=newVB(256,0);
-        ringIb=newIB(1u<<14,D3DUSAGE_DYNAMIC);stIb=newIB(1u<<12,0);
+        ringIb=newIB(1u<<14,D3DUSAGE_DYNAMIC);ringIb32=newIB(1u<<14,D3DUSAGE_DYNAMIC);ringIb32->fmt=D3DFMT_INDEX32;stIb=newIB(1u<<12,0);
         for(UINT i=0;i<stat->b.size;++i)stat->b.cur()[i]=uint8_t(i*13+5);
         for(UINT q=0;q<64;++q){const uint16_t ix[6]={0,1,2,2,1,3};std::memcpy(stIb->b.cur()+q*12,ix,12);}
         declP=reg(new Fake::Decl({{0,0,2,0,0,0},{0,12,4,0,10,0}}));
@@ -177,7 +184,7 @@ struct Rig{
     ~Rig(){
         layer.reset();
         for(auto& m:marks)CHECK(m.second==0);
-        for(auto* p:std::initializer_list<IUnknown*>{T,D,Other,ring,ring2,stat,extra,ringIb,stIb,declP,declTwo,vs,vsEff,ps,texA,texB})p->Release();
+        for(auto* p:std::initializer_list<IUnknown*>{T,D,Other,ring,ring2,stat,extra,ringIb,ringIb32,stIb,declP,declTwo,vs,vsEff,ps,texA,texB})p->Release();
     }
     // ---- game-side helpers ----
     void rs(D3DRENDERSTATETYPE t,DWORD v){dev.SetRenderState(t,v);}
@@ -231,11 +238,11 @@ struct Rig{
     // One game draw: classify, defer when told to (layer on), otherwise draw in place after the layer's hazard handling. Returns the tag.
     template<class F> int issueWith(const DrawArgs& a,Family fam,F&& tweak){
         const int tag=nextTag++;const float v[4]={float(tag),0,0,0};dev.SetVertexShaderConstantF(31,v,1);
-        DrawFacts f=facts(fam);tweak(f);
+        DrawFacts f=facts(fam);f.pending=o.on&&layer.pending()>0;tweak(f);
         last=classify(f,o.mask);bool deferred=false;
         if(o.on){
             if(last.kind==Kind::Defer)deferred=layer.defer(a,dev.rt[0],dev.ds,last.sub);
-            else if(last.kind==Kind::Hazard)layer.hazard(last.reason);
+            else if(last.kind==Kind::Hazard)layer.hazard(last.reason,true,last.inPlace);
             else if(last.kind==Kind::InPlace)layer.noteInPlace(last.inPlace);
         }
         if(deferred)deferredTags.push_back(tag);else drawInPlace(a);
@@ -317,7 +324,7 @@ static void sEquivalence(Rig& r){
     r.translucent(kDestColor,kSrcColor);UINT d=r.ringQuad(6);r.issue(Rig::dip(INT(d/16),0,4,0),Family::Projected);
     r.opaqueZ();r.issue(Rig::dp(0),Family::None);                             // an opaque draw after the translucent ones stays in place
     r.translucent(kSrcAlpha,kBlendOne);UINT e=r.ringQuad(7);
-    r.issueWith(Rig::dp(e/16),Family::Model,[](DrawFacts& f){f.water=true;}); // water: in place, reorder accepted
+    r.issueWith(Rig::dp(e/16),Family::Model,[](DrawFacts& f){f.skinned=true;f.fadeRun=true;}); // a fade colour pass: in place, reorder accepted
     r.dev.SetVertexDeclaration(r.declTwo);r.dev.SetStreamSource(1,r.ring2,0,8);
     UINT f=r.ringQuad(8);r.write(r.ring2->b,f/16*8,32,D3DLOCK_NOOVERWRITE,Rig::pat(9,32));
     r.issue(Rig::dp(f/16),Family::ParticleUnlit);                             // two streams
@@ -330,7 +337,7 @@ static void testEquivalence(){
     Pair p=runBoth(sEquivalence);
     const Counters& c=p.lay->layer.totalCounters();
     CHECK(p.lay->deferredTags.size()==7&&p.ref->deferredTags.empty());
-    CHECK(c.totalDeferred()==7&&c.deferred[0]==5&&c.deferred[1]==1&&c.deferred[2]==1&&c.inPlace[0]==1);
+    CHECK(c.totalDeferred()==7&&c.deferred[0]==5&&c.deferred[1]==1&&c.deferred[2]==1&&c.inPlace[3]==1&&c.orderBy[0]+c.orderBy[1]+c.orderBy[2]==0);
     CHECK(c.totalHazards()==0&&c.conflicts==0&&c.materialized==0&&c.flushes==0&&c.replays==1&&c.replayedDraws==7&&c.replaySkipped==0&&c.blocksCaptured==7);
     CHECK(p.lay->layer.poolSize()==7);
     checkEquivalent(p);
@@ -686,6 +693,112 @@ static void sStress(Rig& r){
     for(int i=0;i<512;++i)deferQuad(r,i);
     r.discardRing(1);r.boundary();
 }
+// ---------------- review fixes ----------------
+// A 32-bit dynamic index buffer overwritten by DISCARD while a draw is deferred: the copy must be replayed as 32-bit (it used to be read as 16-bit).
+static void sIb32(Rig& r){
+    r.dev.SetStreamSource(0,r.stat,0,16);r.dev.SetIndices(r.ringIb32);
+    const uint32_t ix[6]={0,1,2,2,1,3};Bytes b(24);std::memcpy(b.data(),ix,24);
+    r.append(r.ringIb32->b,r.ringIbCur,b);const UINT io=r.append(r.ringIb32->b,r.ringIbCur,b);
+    r.issue(Rig::dip(0,0,4,io/4));
+    r.write(r.ringIb32->b,0,0,D3DLOCK_DISCARD,Rig::pat(33,64));
+    r.boundary();
+}
+static void testIb32(){
+    Pair p=runBoth(sIb32);const Counters& c=p.lay->layer.totalCounters();
+    CHECK(c.conflicts==1&&c.materialized==1&&c.conflictBytes==24&&c.totalHazards()==0&&c.replayedDraws==1);
+    checkEquivalent(p,{1});
+    for(auto& d:p.lay->dev.draws)if(d.tag==1)CHECK(d.idx==std::vector<uint32_t>({0,1,2,2,1,3}));
+}
+// Both formats materialized in one frame: each is bound from the upload buffer of its own format.
+static void sIbBoth(Rig& r){
+    r.dev.SetStreamSource(0,r.stat,0,16);
+    const uint32_t ix32[6]={0,1,2,2,1,3};Bytes b32(24);std::memcpy(b32.data(),ix32,24);
+    r.dev.SetIndices(r.ringIb);r.ringIdx();const UINT i16=r.ringIdx();r.issue(Rig::dip(0,0,4,i16/2));
+    r.dev.SetIndices(r.ringIb32);r.append(r.ringIb32->b,r.ringIbCur,b32);const UINT i32=r.append(r.ringIb32->b,r.ringIbCur,b32);r.issue(Rig::dip(0,0,4,i32/4));
+    r.write(r.ringIb->b,0,0,D3DLOCK_DISCARD,Rig::pat(33,64));r.write(r.ringIb32->b,0,0,D3DLOCK_DISCARD,Rig::pat(34,64));
+    r.boundary();
+}
+static void testIbBothFormats(){
+    Pair p=runBoth(sIbBoth);const Counters& c=p.lay->layer.totalCounters();
+    CHECK(c.conflicts==2&&c.materialized==2&&c.totalHazards()==0&&c.replayedDraws==2&&c.replaySkipped==0);
+    checkEquivalent(p,{1,2});
+    for(auto& d:p.lay->dev.draws)if(d.tag==1||d.tag==2)CHECK(d.idx==std::vector<uint32_t>({0,1,2,2,1,3}));
+}
+// Water, rain and floating names drawn while draws are pending end the deferral: the flush keeps the reference order (they used to land under the spells).
+template<int K> static void sOrderKind(Rig& r){
+    deferQuad(r,1);deferQuad(r,2);
+    r.issueWith(Rig::dp(0),Family::Model,[](DrawFacts& f){f.water=K==0;f.rain=K==1;f.uiTag=K==2;});
+    deferQuad(r,3);r.boundary();
+}
+template<int K> static void checkOrderKind(){
+    Pair p=runBoth(sOrderKind<K>);const Counters& c=p.lay->layer.totalCounters();
+    CHECK(c.hazards[unsigned(Reason::Order)]==1&&c.totalHazards()==1&&c.flushes==1&&c.orderBy[K]==1&&c.orderBy[(K+1)%3]==0&&c.orderBy[(K+2)%3]==0);
+    CHECK(p.lay->deferredTags==std::vector<int>({1,2}));                       // the draw after the hazard is not deferred (Fallback)
+    checkEquivalent(p);CHECK(p.lay->order()==p.ref->order());
+}
+static void testOrderKinds(){checkOrderKind<0>();checkOrderKind<1>();checkOrderKind<2>();}
+static void testOrderKindsIdle(){ // nothing pending: plain in-place draws, no hazard, the frame stays armed
+    Rig r(Opts{});
+    for(int k=0;k<3;++k){
+        r.issueWith(Rig::dp(0),Family::Model,[k](DrawFacts& f){f.water=k==0;f.rain=k==1;f.uiTag=k==2;});
+        CHECK(r.last.kind==Kind::InPlace&&r.layer.totalCounters().totalHazards()==0&&r.layer.mode()==Mode::Armed);
+    }
+    CHECK(r.layer.totalCounters().orderBy[0]+r.layer.totalCounters().orderBy[1]+r.layer.totalCounters().orderBy[2]==0);
+    deferQuad(r,1);CHECK(r.layer.pending()==1);
+}
+// A pending draw sampling a render-target texture is refused (Capture): the game may render into it later without any call the layer sees.
+static void sRtTexture(Rig& r){
+    deferQuad(r,1);
+    r.texB->usage=D3DUSAGE_RENDERTARGET;r.dev.SetTexture(3,r.texB);
+    deferQuad(r,2);
+    r.dev.SetTexture(3,nullptr);r.texB->usage=0;
+    deferQuad(r,3);r.boundary();
+}
+static void testRenderTargetTexture(){
+    Pair p=runBoth(sRtTexture);const Counters& c=p.lay->layer.totalCounters();
+    CHECK(c.hazards[unsigned(Reason::Capture)]==1&&c.totalHazards()==1&&p.lay->deferredTags==std::vector<int>({1}));
+    checkEquivalent(p);CHECK(p.lay->order()==p.ref->order());
+    {   // a cube render target, a level that cannot be described, and non-render-target cube and volume textures
+        Rig r(Opts{});auto* cube=new Fake::CubeTexture;cube->usage=D3DUSAGE_RENDERTARGET;
+        r.dev.SetTexture(5,cube);cube->Release();
+        deferQuad(r,1);CHECK(r.layer.pending()==0&&r.layer.totalCounters().hazards[unsigned(Reason::Capture)]==1);
+        r.dev.SetTexture(5,nullptr);r.texA->descResult=E_FAIL;
+        r.layer.beginFrame(false);while(r.layer.mode()!=Mode::Armed)r.layer.beginFrame(false);
+        deferQuad(r,2);CHECK(r.layer.pending()==0&&r.layer.totalCounters().hazards[unsigned(Reason::Capture)]==2);
+        r.texA->descResult=D3D_OK;
+        while(r.layer.mode()!=Mode::Armed)r.layer.beginFrame(false);
+        auto* cube2=new Fake::CubeTexture;auto* vol=new Fake::VolumeTexture;
+        r.dev.SetTexture(5,cube2);r.dev.SetTexture(6,vol);cube2->Release();vol->Release();
+        deferQuad(r,3);CHECK(r.layer.pending()==1);
+    }
+}
+// Vertex texture samplers (stages 257..260) are part of what a pending draw samples: a write to such a texture flushes; a render target there is refused.
+static void sVertexSampler(Rig& r){
+    r.dev.SetTexture(257,r.texB);
+    deferQuad(r,1);
+    if(r.o.on){
+        CHECK(r.layer.pendingSamples(r.texB));
+        r.layer.onTextureWrite(r.texB);CHECK(r.layer.pending()==0);
+    }
+    r.record();r.dev.SetTexture(257,nullptr);deferQuad(r,2);r.boundary();
+}
+static void testVertexTextureSampler(){
+    Pair p=runBoth(sVertexSampler);
+    CHECK(p.lay->layer.totalCounters().hazards[unsigned(Reason::TexWrite)]==1&&p.lay->deferredTags==std::vector<int>({1}));
+    checkEquivalent(p);CHECK(p.lay->order()==p.ref->order());
+    Rig r(Opts{});r.texB->usage=D3DUSAGE_RENDERTARGET;r.dev.SetTexture(260,r.texB);
+    deferQuad(r,1);CHECK(r.layer.pending()==0&&r.layer.totalCounters().hazards[unsigned(Reason::Capture)]==1);
+}
+// bufferWriteConflicts() mirrors onBufferWrite() without side effects: the ring append is clear, a DISCARD or an overlap conflicts.
+static void testBufferWriteProbe(){
+    Rig r(Opts{});void* key=r.ring->b.key;
+    CHECK(!r.layer.bufferWriteConflicts(key,0,0,D3DLOCK_DISCARD));              // nothing pending
+    deferQuad(r,1);
+    CHECK(!r.layer.bufferWriteConflicts(key,64,64,D3DLOCK_NOOVERWRITE));        // the append beyond the guarded range
+    CHECK(r.layer.bufferWriteConflicts(key,0,0,D3DLOCK_DISCARD)&&r.layer.bufferWriteConflicts(key,0,16,D3DLOCK_NOOVERWRITE));
+    CHECK(!r.layer.bufferWriteConflicts(key,0,0,D3DLOCK_DISCARD|D3DLOCK_READONLY)&&!r.layer.bufferWriteConflicts(r.stat->b.key,0,0,D3DLOCK_DISCARD));
+    CHECK(r.layer.pending()==1&&r.layer.totalCounters().conflicts==0);
+}
 static void testStress512(){
     const auto t0=std::chrono::steady_clock::now();
     Pair p=runBoth(sStress);const Counters& c=p.lay->layer.totalCounters();
@@ -710,7 +823,9 @@ int main(){
         {"gpu write",testGpuWrite},{"query hazard",testQueryHazard},{"order hazard",testOrderHazard},{"sample hazard",testSampleHazardAndOtherTargets},
         {"rt mismatch",testRtMismatch},{"capacity",testCapacity},{"capture failure",testCaptureFailure},{"frame end",testFrameEnd},
         {"cooldown and pressure",testCooldownAndPressure},{"trim",testTrim},{"pending targets",testPendingTargets},{"layer off",testLayerOff},
-        {"reset and teardown",testResetAndTeardown},{"512 entries",testStress512}};
+        {"reset and teardown",testResetAndTeardown},{"512 entries",testStress512},
+        {"32-bit index copy",testIb32},{"both index formats",testIbBothFormats},{"water rain name flush",testOrderKinds},{"nothing pending: in place",testOrderKindsIdle},
+        {"render target texture",testRenderTargetTexture},{"vertex texture sampler",testVertexTextureSampler},{"buffer write conflict probe",testBufferWriteProbe}};
     for(const T& t:tests){t.fn();CHECK(Fake::live==0);std::printf("ok %s\n",t.name);std::fflush(stdout);}
     std::printf("spell layer: %zu tests passed\n",sizeof tests/sizeof tests[0]);
     return 0;

@@ -6,9 +6,9 @@
 // resources reached through it. Single thread: the one that executes the device (replay thread with the stream on, else the game thread); no locks.
 //
 // Wiring (per draw, before B, in this order):
-//   facts=DrawFacts{...}; fade.update(...) feeds facts.fadeRun; r=classify(facts,mask);
+//   facts=DrawFacts{...}; fade.update(...) feeds facts.fadeRun, layer.pending()>0 is facts.pending; r=classify(facts,mask);
 //   Defer     -> if(layer.defer(args,rt0,ds,r.sub)) return D3D_OK (real draw skipped); else draw in place (layer already flushed what was pending)
-//   Hazard    -> layer.hazard(r.reason) then draw in place;  InPlace -> layer.noteInPlace(r.inPlace), draw in place;  others -> draw in place.
+//   Hazard    -> layer.hazard(r.reason,true,r.inPlace) then draw in place;  InPlace -> layer.noteInPlace(r.inPlace), draw in place;  others -> draw in place.
 // Other events: Clear/StretchRect/... -> hazard(Clear|Copy); texture writes -> onTextureWrite(tex); ProcessVertices dest -> onBufferGpuWrite(buf);
 // Buffer::Lock BEFORE forwarding, only when the buffer is marked (markGuard callback) -> onBufferWrite(rawBuffer,offset,size,flags,usage,locks);
 // EndScene/Present before B -> hazard(Frame, false); frame start -> beginFrame(pressure); at B after the effects -> replay();
@@ -28,7 +28,7 @@ namespace NorthlightSpellLayer {
 constexpr unsigned kBlendZero=1,kBlendOne=2,kSrcColor=3,kInvSrcColor=4,kSrcAlpha=5,kInvSrcAlpha=6,kDestAlpha=7,kInvDestAlpha=8,kDestColor=9,kInvDestColor=10,kBlendOpAdd=1; /* D3DBLEND_*, D3DBLENDOP_ADD */
 constexpr unsigned kLockReadOnly=0x10,kLockNoOverwrite=0x1000,kLockDiscard=0x2000,kUsageDynamic=0x200; /* D3DLOCK_*, D3DUSAGE_DYNAMIC */
 static_assert(unsigned(D3DLOCK_READONLY)==0x10&&unsigned(D3DLOCK_NOOVERWRITE)==0x1000&&unsigned(D3DLOCK_DISCARD)==0x2000&&unsigned(D3DUSAGE_DYNAMIC)==0x200,"lock flag values");
-constexpr unsigned kCooldownFrames=30,kMaxStreams=4,kMaxTextures=16,kMaxDecl=65;
+constexpr unsigned kCooldownFrames=30,kMaxStreams=4,kMaxTextures=20,kMaxDecl=65; /* kMaxTextures: pixel samplers 0..15 and the vertex texture samplers D3DVERTEXTEXTURESAMPLER0..3 (stages 257..260) */
 
 // ---- a) classification (pure) ----
 enum class Family:uint8_t{None,Particle,ParticleUnlit,Model,Projected}; // M2 vertex shader family, known at shader creation
@@ -50,6 +50,7 @@ struct DrawFacts{
     bool dsIsWorldDepth=false,mrtBound=false,instanced=false,occlusionActive=false;
     bool samplesRenderTargetTexture=false; // the draw samples the layer target's container texture
     bool fadeRun=false;                    // FadeRun::update() result for this draw
+    bool pending=false;                    // deferred draws are pending (Layer::pending() > 0): water, rain and names must not be drawn under them
 };
 struct Result{Kind kind=Kind::Ignore;unsigned sub=0;InPlaceKind inPlace=InPlaceKind::None;Reason reason=Reason::Count;};
 inline bool opaqueBlend(const DrawFacts& f){return !f.blend||(f.srcBlend==kBlendOne&&f.destBlend==kBlendZero);}
@@ -61,8 +62,10 @@ inline unsigned subClass(const DrawFacts& f){
     return SubOther;
 }
 // Z-writing draws never defer and stay in place (their depth occludes the replay). Colour-writing no-Z draws into the target are deferred when they
-// are one of the four families with a non-opaque blend, kept in place when they are an accepted reorder (water, rain, names, a fade colour pass),
-// otherwise a Hazard (unknown order dependency while draws are pending: the caller flushes). Claimed draws and draws into other targets are Ignore
+// are one of the four families with a non-opaque blend. Water, rain and floating names are drawn in place when nothing is pending (InPlace, no
+// effect), but a Hazard/Order while draws are pending: drawn in place they would end up UNDER the replayed spells, so the caller flushes first and
+// the original order holds (Result::inPlace names which of them it was). A fade colour pass stays an accepted reorder (its depth pre-pass occludes
+// the replay). Everything else is a Hazard (unknown order dependency while draws are pending: the caller flushes). Claimed draws and draws into other targets are Ignore
 // (unless they sample the target: Hazard/Sample). A non-world draw that writes colour into the target is a Hazard.
 inline Result classify(const DrawFacts& f,unsigned classMask){
     Result r;
@@ -74,7 +77,9 @@ inline Result classify(const DrawFacts& f,unsigned classMask){
     if(f.zWrite){r.kind=(opaqueBlend(f)||!rgb)?Kind::Opaque:Kind::TranslucentZ;return r;}
     if(!rgb)return r;
     if(f.water||f.rain||f.uiTag||(f.fadeRun&&f.skinned)){
-        r.kind=Kind::InPlace;r.inPlace=f.water?InPlaceKind::Water:f.rain?InPlaceKind::Rain:f.uiTag?InPlaceKind::Name:InPlaceKind::Fade;return r;
+        r.inPlace=f.water?InPlaceKind::Water:f.rain?InPlaceKind::Rain:f.uiTag?InPlaceKind::Name:InPlaceKind::Fade;
+        if(f.pending&&r.inPlace!=InPlaceKind::Fade)return hazard(Reason::Order);
+        r.kind=Kind::InPlace;return r;
     }
     if(f.family==Family::None||f.fixedFunction||opaqueBlend(f)||!f.zEnable||f.stencil||!f.dsIsWorldDepth||f.mrtBound||f.instanced)return hazard(Reason::Order);
     if(f.occlusionActive)return hazard(Reason::Query);
@@ -116,7 +121,8 @@ public:
     void close(){fallback(false);} // B reached: no deferral for the rest of the frame, no cooldown
 };
 struct Counters{
-    unsigned deferred[4]={},inPlace[4]={};        // by sub-class (additive, alpha, modulate, other); by kind (water, rain, name, fade)
+    unsigned deferred[4]={},inPlace[4]={};        // by sub-class (additive, alpha, modulate, other); accepted in-place draws by kind (only fade is counted)
+    unsigned orderBy[3]={};                       // Order hazards raised by water, rain, name draws while draws were pending
     unsigned hazards[kReasons]={};
     unsigned flushes=0,replays=0,replayedDraws=0,replaySkipped=0,discarded=0;
     unsigned conflicts=0,materialized=0,blocksCaptured=0;
@@ -124,6 +130,7 @@ struct Counters{
     unsigned arenaHigh=0;                         // bytes
     void add(const Counters& o){
         for(int i=0;i<4;++i){deferred[i]+=o.deferred[i];inPlace[i]+=o.inPlace[i];}
+        for(int i=0;i<3;++i)orderBy[i]+=o.orderBy[i];
         for(unsigned i=0;i<kReasons;++i)hazards[i]+=o.hazards[i];
         flushes+=o.flushes;replays+=o.replays;replayedDraws+=o.replayedDraws;replaySkipped+=o.replaySkipped;discarded+=o.discarded;
         conflicts+=o.conflicts;materialized+=o.materialized;blocksCaptured+=o.blocksCaptured;conflictBytes+=o.conflictBytes;
@@ -196,6 +203,17 @@ public:
 };
 
 // ---- d) the layer (execution) ----
+// A texture created with D3DUSAGE_RENDERTARGET (2D or cube; a volume texture cannot be one): its contents change by rendering, which is invisible to the
+// layer (SetRenderTarget is not hooked in stream mode), so a pending draw sampling it is refused. A level the driver cannot describe counts as one.
+inline bool isRenderTargetTexture(IDirect3DBaseTexture9* t){
+    D3DSURFACE_DESC d{};HRESULT hr=D3DERR_INVALIDCALL;
+    switch(t->GetType()){
+    case D3DRTYPE_TEXTURE:hr=static_cast<IDirect3DTexture9*>(t)->GetLevelDesc(0,&d);break;
+    case D3DRTYPE_CUBETEXTURE:hr=static_cast<IDirect3DCubeTexture9*>(t)->GetLevelDesc(0,&d);break;
+    default:return false;
+    }
+    return FAILED(hr)||(d.Usage&D3DUSAGE_RENDERTARGET)!=0;
+}
 enum class DrawType:uint8_t{Primitive,Indexed,PrimitiveUP,IndexedUP};
 inline uint32_t vertexCount(unsigned prim,uint32_t primCount){ // D3DPT_* vertex count of primCount primitives
     switch(prim){case 1:return primCount;case 2:return primCount*2;case 3:return primCount+1;case 4:return primCount*3;case 5:case 6:return primCount+2;default:return 0;}
@@ -237,7 +255,9 @@ class Layer{
         uint32_t upVtx=0,upStride=0,upIdx=0;D3DFORMAT upFmt=D3DFMT_INDEX16;
         IDirect3DBaseTexture9* tex[kMaxTextures]={};
     };
-    struct Blob{uint32_t arenaOff,len,base,uploadOff;bool index;}; // conflict copy of one merged byte span of a buffer; entries share it
+    // Conflict copy of one merged byte span of a buffer; entries share it. fmt (index blobs): 0 = 16-bit, 1 = 32-bit indices; the blob sits in the
+    // upload index buffer of that format.
+    struct Blob{uint32_t arenaOff,len,base,uploadOff;bool index;uint8_t fmt;};
     struct Seg{uint32_t lo,hi;size_t firstHit,lastHit;};
     IDirect3DDevice9* dev_=nullptr;Config cfg_;FrameState fm_;
     std::vector<Entry> entries_;unsigned count_=0;
@@ -246,7 +266,7 @@ class Layer{
     std::vector<Blob> blobs_;
     GuardTable guards_;std::vector<GuardTable::Hit> hits_;std::vector<Seg> segs_;std::vector<uint32_t> order_;
     std::vector<void*> samples_;
-    IDirect3DVertexBuffer9* upVb_=nullptr;IDirect3DIndexBuffer9* upIb_=nullptr;uint32_t vbUsed_=0,ibUsed_=0;
+    IDirect3DVertexBuffer9* upVb_=nullptr;IDirect3DIndexBuffer9* upIb_[2]={};uint32_t vbUsed_=0,ibUsed_[2]={}; /* one upload index buffer per index format: a 32-bit range must not be read as 16-bit */
     IDirect3DSurface9* target_=nullptr;IDirect3DSurface9* ds_=nullptr;
     Counters frame_,last_,total_;bool firstHazard_=false,firstTaken_=false;Reason firstReason_=Reason::Count;
 
@@ -264,13 +284,13 @@ class Layer{
         for(unsigned i=0;i<count_;++i)releaseEntry(entries_[i]);
         count_=0;samples_.clear();blobs_.clear();hits_.clear();
         frame_.arenaHigh=std::max(frame_.arenaHigh,arenaUsed_);total_.arenaHigh=std::max(total_.arenaHigh,arenaUsed_);
-        arenaUsed_=vbUsed_=ibUsed_=0;
+        arenaUsed_=vbUsed_=ibUsed_[0]=ibUsed_[1]=0;
         if(target_){target_->Release();target_=nullptr;}
         if(ds_){ds_->Release();ds_=nullptr;}
     }
     void releaseUploads(){
         if(upVb_){upVb_->Release();upVb_=nullptr;}
-        if(upIb_){upIb_->Release();upIb_=nullptr;}
+        for(auto*& ib:upIb_)if(ib){ib->Release();ib=nullptr;}
     }
     void releasePool(size_t keep){
         while(pool_.size()>keep){if(pool_.back())pool_.back()->Release();pool_.pop_back();}
@@ -289,23 +309,23 @@ class Layer{
     bool abortEntry(Entry& e,Reason r){releaseEntry(e);return fail(r);}
     void drain(){runReplay();clearFrame();}
 
-    bool upload(bool index){
+    bool upload(bool index,unsigned fmt=0){
         void* p=nullptr;
-        if(index){if(!upIb_||FAILED(upIb_->Lock(0,0,&p,D3DLOCK_DISCARD))||!p)return false;}
+        if(index){if(!upIb_[fmt]||FAILED(upIb_[fmt]->Lock(0,0,&p,D3DLOCK_DISCARD))||!p)return false;}
         else if(!upVb_||FAILED(upVb_->Lock(0,0,&p,D3DLOCK_DISCARD))||!p)return false;
-        for(const Blob& b:blobs_)if(b.index==index)std::memcpy(static_cast<uint8_t*>(p)+b.uploadOff,arena_.data()+b.arenaOff,b.len);
-        if(index)upIb_->Unlock();else upVb_->Unlock();
+        for(const Blob& b:blobs_)if(b.index==index&&(!index||b.fmt==fmt))std::memcpy(static_cast<uint8_t*>(p)+b.uploadOff,arena_.data()+b.arenaOff,b.len);
+        if(index)upIb_[fmt]->Unlock();else upVb_->Unlock();
         return true;
     }
     // One entry: the block restores the game's state of that draw (it does not carry RT/DS: set before), then the materialized streams are rebound.
     // Fetch rule: vertex i of a stream reads offset+(base+i)*stride. Materialized stream bytes [lo,hi) now sit at P in the upload buffer. With f=base+min
     // (Indexed) or StartVertex (Primitive): mode A keeps base and puts offset P-f*stride (needs >=0); mode B uses base=-min (StartVertex 0), offset P,
     // and moves the other streams to offset+f*stride (always >=0). Index values are never rewritten.
-    bool drawEntry(Entry& e,bool vbOk,bool ibOk){
+    bool drawEntry(Entry& e,bool vbOk,const bool (&ibOk)[2]){
         const bool idx=e.type==DrawType::Indexed;
         bool matV=false;
         for(unsigned i=0;i<e.nStreams;++i)if(e.streams[i].blob>=0)matV=true;
-        if((matV&&!vbOk)||(e.ibBlob>=0&&!ibOk))return false;
+        if((matV&&!vbOk)||(e.ibBlob>=0&&!ibOk[blobs_[size_t(e.ibBlob)].fmt]))return false;
         if(FAILED(e.block->Apply()))return false;
         INT base=e.base;UINT start=e.first;
         if(matV){
@@ -327,7 +347,7 @@ class Layer{
         }
         if(e.ibBlob>=0){
             const Blob& b=blobs_[size_t(e.ibBlob)];
-            dev_->SetIndices(upIb_);
+            dev_->SetIndices(upIb_[b.fmt]);
             start=UINT((int64_t(b.uploadOff)+(int64_t(e.ibLo)-b.base))/e.isz);
         }
         switch(e.type){
@@ -344,7 +364,7 @@ class Layer{
         if(!count_)return;
         SavedState scope(dev_,cfg_.savedPool);
         if(!scope.ok){count([&](Counters& c){c.replaySkipped+=count_;});return;}
-        const bool vbOk=!vbUsed_||upload(false),ibOk=!ibUsed_||upload(true);
+        const bool vbOk=!vbUsed_||upload(false),ibOk[2]={!ibUsed_[0]||upload(true,0),!ibUsed_[1]||upload(true,1)};
         dev_->SetDepthStencilSurface(nullptr);
         for(DWORD i=1;i<4;++i)dev_->SetRenderTarget(i,nullptr);
         const bool bound=SUCCEEDED(dev_->SetRenderTarget(0,target_));
@@ -367,9 +387,9 @@ class Layer{
         count([](Counters& c){++c.blocksCaptured;});
         return blk;
     }
-    bool ensureUpload(bool index){
+    bool ensureUpload(bool index,unsigned fmt=0){
         if(index){
-            if(!upIb_&&(FAILED(dev_->CreateIndexBuffer(UINT(cfg_.uploadIbBytes),D3DUSAGE_DYNAMIC|D3DUSAGE_WRITEONLY,D3DFMT_INDEX16,D3DPOOL_DEFAULT,&upIb_,nullptr))||!upIb_)){upIb_=nullptr;return false;}
+            if(!upIb_[fmt]&&(FAILED(dev_->CreateIndexBuffer(UINT(cfg_.uploadIbBytes),D3DUSAGE_DYNAMIC|D3DUSAGE_WRITEONLY,fmt?D3DFMT_INDEX32:D3DFMT_INDEX16,D3DPOOL_DEFAULT,&upIb_[fmt],nullptr))||!upIb_[fmt])){upIb_[fmt]=nullptr;return false;}
         }else if(!upVb_&&(FAILED(dev_->CreateVertexBuffer(UINT(cfg_.uploadVbBytes),D3DUSAGE_DYNAMIC|D3DUSAGE_WRITEONLY,0,D3DPOOL_DEFAULT,&upVb_,nullptr))||!upVb_)){upVb_=nullptr;return false;}
         return true;
     }
@@ -377,6 +397,7 @@ class Layer{
     // arena and give every affected entry stream/index the span's blob. False: a hazard was raised (everything pending was flushed first).
     bool copyOut(void* key){
         const GuardTable::Buf& b=guards_.buf(hits_[0].buf);const bool index=b.index;
+        const unsigned fmt=index&&entries_[guards_.range(hits_[0]).entry].isz==4?1u:0u; // every entry on one index buffer has its format
         order_.clear();for(uint32_t i=0;i<hits_.size();++i)order_.push_back(i);
         std::sort(order_.begin(),order_.end(),[&](uint32_t x,uint32_t y){return guards_.range(hits_[x]).lo<guards_.range(hits_[y]).lo;});
         segs_.clear();
@@ -385,10 +406,10 @@ class Layer{
             if(!segs_.empty()&&r.lo<=segs_.back().hi){segs_.back().hi=std::max(segs_.back().hi,r.hi);segs_.back().lastHit=k;}
             else segs_.push_back(Seg{r.lo,r.hi,k,k});
         }
-        uint64_t arena=arenaUsed_,up=index?ibUsed_:vbUsed_;
+        uint64_t arena=arenaUsed_,up=index?ibUsed_[fmt]:vbUsed_;
         for(const Seg& s:segs_){arena+=align16(s.hi-s.lo);up+=align16(s.hi-s.lo);}
         if(arena>arena_.size()||up>(index?cfg_.uploadIbBytes:cfg_.uploadVbBytes)||blobs_.size()+segs_.size()>size_t(cfg_.maxEntries)*(kMaxStreams+1)){hazard(Reason::Capacity);return false;}
-        if(!ensureUpload(index)){hazard(Reason::Capture);return false;}
+        if(!ensureUpload(index,fmt)){hazard(Reason::Capture);return false;}
         count([](Counters& c){++c.conflicts;});
         for(const Seg& s:segs_){
             const uint32_t len=s.hi-s.lo;void* p=nullptr;
@@ -399,8 +420,8 @@ class Layer{
             }
             std::memcpy(arena_.data()+arenaUsed_,p,len);
             if(index)static_cast<IDirect3DIndexBuffer9*>(key)->Unlock();else static_cast<IDirect3DVertexBuffer9*>(key)->Unlock();
-            uint32_t& upUsed=index?ibUsed_:vbUsed_;
-            blobs_.push_back(Blob{arenaUsed_,len,s.lo,upUsed,index});
+            uint32_t& upUsed=index?ibUsed_[fmt]:vbUsed_;
+            blobs_.push_back(Blob{arenaUsed_,len,s.lo,upUsed,index,uint8_t(fmt)});
             const int32_t id=int32_t(blobs_.size()-1);
             arenaUsed_+=align16(len);upUsed+=align16(len);
             count([&](Counters& c){c.conflictBytes+=len;});
@@ -451,7 +472,7 @@ public:
     uint32_t arenaUsed()const{return arenaUsed_;}
     // True once per session, after the first hazard: its reason, for a one-shot log line.
     bool takeFirstHazard(Reason& r){if(!firstHazard_||firstTaken_)return false;firstTaken_=true;r=firstReason_;return true;}
-    void noteInPlace(InPlaceKind k){if(k!=InPlaceKind::None)count([&](Counters& c){++c.inPlace[unsigned(k)-1];});}
+    void noteInPlace(InPlaceKind k){if(k==InPlaceKind::Fade)count([&](Counters& c){++c.inPlace[unsigned(k)-1];});} // only the accepted reorder is counted
 
     // For a draw classify() returned Defer for. true: deferred, the caller skips the real draw and returns D3D_OK (the side effects of a skipped UP
     // call on the device are already emulated). false: nothing was queued and the device is as before except possibly a flush: when pending
@@ -513,9 +534,11 @@ public:
             if(uint64_t(arenaUsed_)+align16(upV)+align16(upI)>arena_.size())return abortEntry(e,Reason::Capacity);
         }
         if(count_>=pool_.size()&&pool_.size()>=cfg_.maxBlocks)return abortEntry(e,Reason::Capacity);
-        for(UINT t=0;t<kMaxTextures;++t){
-            IDirect3DBaseTexture9* tx=nullptr;dev_->GetTexture(t,&tx);
-            if(tx)e.tex[e.nTex++]=tx;
+        for(UINT t=0;t<kMaxTextures;++t){ // pixel samplers 0..15, then the vertex texture samplers (stages 257..260): a write to any of them flushes
+            IDirect3DBaseTexture9* tx=nullptr;dev_->GetTexture(t<16?t:257+(t-16),&tx);
+            if(!tx)continue;
+            e.tex[e.nTex++]=tx; // held by the entry before the check, released with it on a refusal
+            if(isRenderTargetTexture(tx))return abortEntry(e,Reason::Capture); // the game may render into or clear it later without any call the layer sees
         }
         e.block=acquireBlock();
         if(!e.block)return abortEntry(e,Reason::Capture);
@@ -545,8 +568,10 @@ public:
 
     // An unknown order/resource dependency (clear, copy, order, query, frame...). With entries pending: replay them now in order (own SavedState
     // scope), count the reason, and the frame becomes Fallback (a cooldown follows unless `cooldown` is false). Nothing pending: no effect.
-    void hazard(Reason r,bool cooldown=true){
+    // `by`: the in-place kind (water, rain, name) whose draw raised an Order hazard, for the counters.
+    void hazard(Reason r,bool cooldown=true,InPlaceKind by=InPlaceKind::None){
         if(!count_)return;
+        if(by!=InPlaceKind::None&&by!=InPlaceKind::Fade)count([&](Counters& c){++c.orderBy[unsigned(by)-1];});
         noteHazard(r);count([](Counters& c){++c.flushes;});
         drain();fm_.fallback(cooldown);
     }
@@ -561,6 +586,9 @@ public:
         if(!cfg_.conflictCopy||!(usage&D3DUSAGE_DYNAMIC)||outstandingLocks){hazard(Reason::BufWrite);return;}
         copyOut(rawBuffer);
     }
+    // True when onBufferWrite() would copy or flush (a pending draw reads bytes this write replaces). No side effects: the integration enters its raw
+    // scope only for these writes, so the common non-conflicting ring append stays cheap.
+    bool bufferWriteConflicts(void* rawBuffer,uint32_t offset,uint32_t size,DWORD flags)const{return count_&&!(flags&D3DLOCK_READONLY)&&guards_.conflicts(rawBuffer,offset,size,flags);}
     void onBufferGpuWrite(void* rawBuffer){if(count_&&guards_.guarded(rawBuffer))hazard(Reason::GpuWrite);} // ProcessVertices destination
     bool pendingSamples(void* rawTexture)const{return count_&&std::find(samples_.begin(),samples_.end(),rawTexture)!=samples_.end();}
     void onTextureWrite(void* rawTexture){if(pendingSamples(rawTexture))hazard(Reason::TexWrite);}

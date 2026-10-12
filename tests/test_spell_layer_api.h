@@ -18,17 +18,22 @@ constexpr D3DSTATEBLOCKTYPE D3DSBT_ALL=1;
 constexpr D3DPRIMITIVETYPE D3DPT_POINTLIST=1,D3DPT_LINELIST=2,D3DPT_LINESTRIP=3,D3DPT_TRIANGLELIST=4,D3DPT_TRIANGLESTRIP=5,D3DPT_TRIANGLEFAN=6;
 constexpr D3DFORMAT D3DFMT_INDEX16=101,D3DFMT_INDEX32=102,D3DFMT_VERTEXDATA=100;
 constexpr D3DPOOL D3DPOOL_DEFAULT=0,D3DPOOL_MANAGED=1;
-constexpr DWORD D3DUSAGE_WRITEONLY=8,D3DUSAGE_DYNAMIC=0x200;
+constexpr DWORD D3DUSAGE_RENDERTARGET=1,D3DUSAGE_WRITEONLY=8,D3DUSAGE_DYNAMIC=0x200;
+constexpr D3DRESOURCETYPE D3DRTYPE_TEXTURE=3,D3DRTYPE_VOLUMETEXTURE=4,D3DRTYPE_CUBETEXTURE=5;
 constexpr DWORD D3DLOCK_READONLY=0x10,D3DLOCK_NOOVERWRITE=0x1000,D3DLOCK_DISCARD=0x2000;
 constexpr D3DRENDERSTATETYPE D3DRS_ZENABLE=7,D3DRS_ZWRITEENABLE=14,D3DRS_SRCBLEND=19,D3DRS_DESTBLEND=20,D3DRS_ALPHABLENDENABLE=27,D3DRS_STENCILENABLE=52,D3DRS_COLORWRITEENABLE=168,D3DRS_BLENDOP=171;
 struct D3DVIEWPORT9{DWORD X=0,Y=0,Width=0,Height=0;float MinZ=0,MaxZ=1;};
 struct RECT{int left=0,top=0,right=0,bottom=0;};
 struct D3DVERTEXELEMENT9{WORD Stream;WORD Offset;BYTE Type;BYTE Method;BYTE Usage;BYTE UsageIndex;};
 struct D3DVERTEXBUFFER_DESC{D3DFORMAT Format;D3DRESOURCETYPE Type;DWORD Usage;D3DPOOL Pool;UINT Size;DWORD FVF;};
+struct D3DSURFACE_DESC{D3DFORMAT Format;D3DRESOURCETYPE Type;DWORD Usage;D3DPOOL Pool;UINT Width,Height;};
 struct D3DINDEXBUFFER_DESC{D3DFORMAT Format;D3DRESOURCETYPE Type;DWORD Usage;D3DPOOL Pool;UINT Size;};
 
 struct IUnknown{virtual ULONG AddRef()=0;virtual ULONG Release()=0;protected:virtual ~IUnknown()=default;};
-struct IDirect3DVertexShader9:IUnknown{};struct IDirect3DPixelShader9:IUnknown{};struct IDirect3DBaseTexture9:IUnknown{};struct IDirect3DSurface9:IUnknown{};
+struct IDirect3DVertexShader9:IUnknown{};struct IDirect3DPixelShader9:IUnknown{};struct IDirect3DBaseTexture9:IUnknown{virtual D3DRESOURCETYPE GetType()=0;};
+struct IDirect3DTexture9:IDirect3DBaseTexture9{virtual HRESULT GetLevelDesc(UINT,D3DSURFACE_DESC*)=0;};
+struct IDirect3DCubeTexture9:IDirect3DBaseTexture9{virtual HRESULT GetLevelDesc(UINT,D3DSURFACE_DESC*)=0;};
+struct IDirect3DVolumeTexture9:IDirect3DBaseTexture9{};struct IDirect3DSurface9:IUnknown{};
 struct IDirect3DVertexDeclaration9:IUnknown{virtual HRESULT GetDeclaration(D3DVERTEXELEMENT9* e,UINT* n)=0;};
 struct IDirect3DVertexBuffer9:IUnknown{virtual HRESULT Lock(UINT off,UINT size,void** data,DWORD flags)=0;virtual HRESULT Unlock()=0;virtual HRESULT GetDesc(D3DVERTEXBUFFER_DESC*)=0;};
 struct IDirect3DIndexBuffer9:IUnknown{virtual HRESULT Lock(UINT off,UINT size,void** data,DWORD flags)=0;virtual HRESULT Unlock()=0;virtual HRESULT GetDesc(D3DINDEXBUFFER_DESC*)=0;};
@@ -68,7 +73,17 @@ template<class B> struct Obj:B{
     ~Obj()override{--live;}
 };
 struct Surface:Obj<IDirect3DSurface9>{UINT w,h;Surface(UINT w_,UINT h_):w(w_),h(h_){}};
-struct Texture:Obj<IDirect3DBaseTexture9>{};
+struct Texture:Obj<IDirect3DTexture9>{
+    DWORD usage=0;HRESULT descResult=D3D_OK;
+    D3DRESOURCETYPE GetType()override{return D3DRTYPE_TEXTURE;}
+    HRESULT GetLevelDesc(UINT,D3DSURFACE_DESC* d)override{if(FAILED(descResult))return descResult;*d=D3DSURFACE_DESC{};d->Type=D3DRTYPE_TEXTURE;d->Usage=usage;return D3D_OK;}
+};
+struct CubeTexture:Obj<IDirect3DCubeTexture9>{
+    DWORD usage=0;
+    D3DRESOURCETYPE GetType()override{return D3DRTYPE_CUBETEXTURE;}
+    HRESULT GetLevelDesc(UINT,D3DSURFACE_DESC* d)override{*d=D3DSURFACE_DESC{};d->Type=D3DRTYPE_CUBETEXTURE;d->Usage=usage;return D3D_OK;}
+};
+struct VolumeTexture:Obj<IDirect3DVolumeTexture9>{D3DRESOURCETYPE GetType()override{return D3DRTYPE_VOLUMETEXTURE;}};
 struct VShader:Obj<IDirect3DVertexShader9>{};struct PShader:Obj<IDirect3DPixelShader9>{};
 struct Decl:Obj<IDirect3DVertexDeclaration9>{
     std::vector<D3DVERTEXELEMENT9> el;
@@ -105,7 +120,7 @@ struct IB:Obj<IDirect3DIndexBuffer9>{
 // Everything a state block / the game sees, except RT/DS.
 struct State{
     DWORD rs[256]={};DWORD ss[16][4]={};
-    IDirect3DBaseTexture9* tex[16]={};IDirect3DVertexShader9* vs=nullptr;IDirect3DPixelShader9* ps=nullptr;IDirect3DVertexDeclaration9* decl=nullptr;
+    IDirect3DBaseTexture9* tex[20]={}; /* 0..15 pixel samplers, 16..19 vertex texture samplers (stages 257..260) */ IDirect3DVertexShader9* vs=nullptr;IDirect3DPixelShader9* ps=nullptr;IDirect3DVertexDeclaration9* decl=nullptr;
     struct S{IDirect3DVertexBuffer9* vb=nullptr;UINT off=0,stride=0,freq=1;} st[16];
     IDirect3DIndexBuffer9* ib=nullptr;float vsc[32][4]={};D3DVIEWPORT9 vp;RECT scissor;
 };
@@ -154,6 +169,7 @@ struct FakeDevice:IDirect3DDevice9{
         drop(s);for(auto*& r:rt)if(r){r->Release();r=nullptr;}
         if(ds){ds->Release();ds=nullptr;}
     }
+    static size_t texSlot(DWORD stage){return stage>=257?size_t(16+(stage-257)):size_t(stage);}
     // ---- test conveniences (not part of the API; not counted) ----
     int tagOf()const{return int(s.vsc[31][0]);}
     Snapshot snap()const{Snapshot n;n.s=s;for(int i=0;i<4;++i)n.rt[i]=rt[i];n.ds=ds;return n;}
@@ -184,8 +200,8 @@ struct FakeDevice:IDirect3DDevice9{
     HRESULT SetRenderState(D3DRENDERSTATETYPE t,DWORD v)override{++calls;s.rs[t]=v;return D3D_OK;}
     HRESULT GetRenderState(D3DRENDERSTATETYPE t,DWORD* v)override{++calls;*v=s.rs[t];return D3D_OK;}
     HRESULT SetSamplerState(DWORD i,D3DSAMPLERSTATETYPE t,DWORD v)override{++calls;s.ss[i][t]=v;return D3D_OK;}
-    HRESULT SetTexture(DWORD i,IDirect3DBaseTexture9* t)override{++calls;swapRef(s.tex[i],t);return D3D_OK;}
-    HRESULT GetTexture(DWORD i,IDirect3DBaseTexture9** o)override{++calls;if(s.tex[i])s.tex[i]->AddRef();*o=s.tex[i];return D3D_OK;}
+    HRESULT SetTexture(DWORD i,IDirect3DBaseTexture9* t)override{++calls;swapRef(s.tex[texSlot(i)],t);return D3D_OK;}
+    HRESULT GetTexture(DWORD i,IDirect3DBaseTexture9** o)override{++calls;auto*& t=s.tex[texSlot(i)];if(t)t->AddRef();*o=t;return D3D_OK;}
     HRESULT SetVertexShader(IDirect3DVertexShader9* v)override{++calls;swapRef(s.vs,v);return D3D_OK;}
     HRESULT SetPixelShader(IDirect3DPixelShader9* v)override{++calls;swapRef(s.ps,v);return D3D_OK;}
     HRESULT SetVertexDeclaration(IDirect3DVertexDeclaration9* d)override{++calls;swapRef(s.decl,d);return D3D_OK;}
