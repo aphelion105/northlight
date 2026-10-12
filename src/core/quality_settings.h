@@ -104,12 +104,11 @@ struct Settings {
     // logged on the QUALITY line, intentionally NOT in the player docs (README.md, README.txt, northlight-quality.ini).
     unsigned spellLayer=1,spellLayerClasses=15,spellTrace=0,spellFog=1; // SpellFog: 1 = replayed spell draws get Northlight's fog through the game's own fog constants (a creation-time key; 0 = the recorded values unchanged)
     // 0.3.212 (task 32) NameMask: 1 = floating unit names (world text) mark a stencil bit and WorldComposite leaves the marked pixels as the game drew them, so relight, shadows, AO, bloom and fog do not darken
-    // them; 0 = off, exactly the game's path before 0.3.212 (no marks, no stencil clears, no composite stencil test). NameMaskAlphaRef (1..255): the alpha a glyph pixel needs to be marked (its soft edge stays composited).
+    // them; 0 = off, exactly the game's path before 0.3.212 (no marks, no stencil clears, no composite stencil test).
     // NameMaskDebug: 1 = the marked pixels are drawn 50 percent magenta over the finished effects. Creation-time keys.
     unsigned nameMask=1;
-    unsigned nameMaskAlphaRef=96;
     unsigned nameMaskDebug=0;
-    char origin[53]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
+    char origin[52]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
 };
 struct Key { const char* name; unsigned Settings::*field; unsigned low,high; unsigned preset[3]; };
 // preset[] = Quality, Balanced, Performance. Quality must equal Settings{}.
@@ -165,7 +164,6 @@ inline const Key Keys[]={
     {"SpellTrace",&Settings::spellTrace,0,16,{0,0,0}},
     {"SpellFog",&Settings::spellFog,0,1,{1,1,1}},
     {"NameMask",&Settings::nameMask,0,1,{1,1,1}}, /* 0.3.212 (task 32) */
-    {"NameMaskAlphaRef",&Settings::nameMaskAlphaRef,1,255,{96,96,96}}, /* 0.3.212 (task 32) */
     {"NameMaskDebug",&Settings::nameMaskDebug,0,1,{0,0,0}}, /* 0.3.212 (task 32) */
 };
 inline bool operator==(const Settings& a,const Settings& b){for(const auto& k:Keys)if(a.*k.field!=b.*k.field)return false;return true;}
