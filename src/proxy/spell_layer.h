@@ -336,7 +336,7 @@ class Layer{
         case DrawType::PrimitiveUP:dev_->DrawPrimitiveUP(e.prim,e.primCount,arena_.data()+e.upVtx,e.upStride);break;
         case DrawType::IndexedUP:
             dev_->DrawIndexedPrimitiveUP(e.prim,e.minIndex,e.numVertices,e.primCount,arena_.data()+e.upIdx,e.upFmt,
-                reinterpret_cast<const void*>(uintptr_t(arena_.data()+e.upVtx)-uintptr_t(e.minIndex)*e.upStride),e.upStride);break; // only [min,min+num) is read
+                arena_.data()+e.upVtx,e.upStride);break;
         }
         return true;
     }
@@ -508,7 +508,7 @@ public:
             if(idx){
                 if(a.indexFormat!=D3DFMT_INDEX16&&a.indexFormat!=D3DFMT_INDEX32)return abortEntry(e,Reason::Capture);
                 e.isz=a.indexFormat==D3DFMT_INDEX16?2:4;e.upFmt=a.indexFormat;
-                vOff=a.minIndex*a.stride;upV=a.numVertices*a.stride;upI=vcount*e.isz;
+                vOff=0;upV=(a.minIndex+a.numVertices)*a.stride;upI=vcount*e.isz; /* the driver reads [0,(min+num)*stride) of the user pointer (DXVK FillUPVertexBuffer): copy that, replay with the plain arena pointer */
             }else upV=vcount*a.stride;
             if(uint64_t(arenaUsed_)+align16(upV)+align16(upI)>arena_.size())return abortEntry(e,Reason::Capacity);
         }

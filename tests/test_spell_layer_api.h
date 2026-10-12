@@ -244,6 +244,7 @@ struct FakeDevice:IDirect3DDevice9{
     }
     HRESULT DrawIndexedPrimitiveUP(D3DPRIMITIVETYPE p,UINT minIdx,UINT num,UINT count,const void* idx,D3DFORMAT fmt,const void* data,UINT stride)override{
         ++calls;DrawRec d=begin(3,p);const UINT n=NorthlightSpellLayer::vertexCount(p,count);const UINT isz=fmt==D3DFMT_INDEX16?2:4;
+        {volatile uint8_t sink=0;for(size_t k=0;k<size_t(minIdx+num)*stride;++k)sink=sink^static_cast<const uint8_t*>(data)[k];(void)sink;} // like DXVK FillUPVertexBuffer: the driver reads [0,(min+num)*stride) of the user pointer
         for(UINT i=0;i<n;++i){
             uint32_t v=0;std::memcpy(&v,static_cast<const uint8_t*>(idx)+size_t(i)*isz,isz);d.idx.push_back(v);
             if(v<minIdx||v>=minIdx+num){d.oob=true;continue;}
