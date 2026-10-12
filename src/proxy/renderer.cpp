@@ -1324,6 +1324,10 @@ private:
         DWORD cw=15;bool cwKnown=false;
         auto colorWrite=[&]{if(!cwKnown){cw=rd(D3DRS_COLORWRITEENABLE);cwKnown=true;}return cw;};
         const bool fade=spellFade.update(skinned,zWrite,skinned&&zWrite?colorWrite():15u);
+        if(!trace&&!spell.armed()){ /* a Capacity fallback: the frame is drawn the old way, but the deferrable draws are counted (the pre-filter of the early outs below; the real demand of the frame) */
+            if(!zWrite&&spellDomain&&!claimed&&!water&&!rain&&!uiTag&&!(fade&&skinned)&&((family!=Family::None&&family!=Family::Ripples)||!vs)&&rd(D3DRS_ALPHABLENDENABLE))spell.noteCandidate();
+            return false;
+        }
         const bool pend=spell.pending();
         void* texKey=pend?spellTargetTexture():nullptr;
         if(!trace){
@@ -1384,7 +1388,7 @@ private:
              static_cast<void*>(vb),voff,vstride,dynamic,static_cast<void*>(ib));
         drop(vb);drop(ib);
     }
-    bool spellGate()const{return terrain&&projectionValid&&!applied&&enabled&&!failed&&world&&debugMode==0&&worldDebug==0&&(spell.armed()||spellTraceWindow||spellTraceFrame);}
+    bool spellGate()const{return terrain&&projectionValid&&!applied&&enabled&&!failed&&world&&debugMode==0&&worldDebug==0&&(spell.armed()||spell.wantsCandidates()||spellTraceWindow||spellTraceFrame);}
     bool spellDraw(bool claimed,bool rain){
         bool deferred=false;
         extensionWork("spell layer",[&]{deferred=spellDrawImpl(claimed,rain);});
@@ -1409,6 +1413,7 @@ private:
         extensionWork("spell frame end",[&]{
             spellFlush(NorthlightSpellLayer::Reason::Frame,false,NorthlightSpellLayer::InPlaceKind::None,"frameend"); /* Present before the boundary: draw them now, no cooldown */
             const bool wasSampled=sampled();const NorthlightSpellLayer::Mode mode=spellFrameMode;
+            const NorthlightSpellLayer::Layer::Memory spellMemAtFrame=wasSampled&&diagnostics()?spell.memory():NorthlightSpellLayer::Layer::Memory{};
             if(spell.frameCounters().totalDeferred())spellIdle=0;else if(++spellIdle==600)spell.trim(0);
             spell.beginFrame(NorthlightStream::memoryPressure.load(std::memory_order_relaxed));spellFrameMode=spell.mode();
             spellSync();spellTexFor=nullptr;spellTexKey=nullptr;
@@ -1429,11 +1434,12 @@ private:
                 };
                 char hazards[200],winHazards[200];reasons(c,hazards,sizeof hazards);reasons(spellWin,winHazards,sizeof winHazards);
                 const double us=cpuFrequency.QuadPart>0?1e6/double(cpuFrequency.QuadPart):0.0;
-                logf("SPELLLAYER frame=%u mode=%s deferred=%u/%u/%u/%u fixed=%u replayed=%u fadeInPlace=%u orderBy=%u/%u/%u hazards=%s flushes=%u conflicts=%u conflictBytes=%llu materialized=%u records=%u recordHigh=%u replaySets=%u arenaHigh=%u replaySkipped=%u discarded=%u cooldown=%u cpuDeferUs=%.1f cpuReplayUs=%.1f "
-                     "window frames=%u deferring=%u cooldown=%u deferred=%u hazards=%s flushes=%u conflicts=%u",
+                const NorthlightSpellLayer::Layer::Memory spellMem=spellMemAtFrame; /* taken before the frame's trim/beginFrame released the chunks */
+                logf("SPELLLAYER frame=%u mode=%s deferred=%u/%u/%u/%u fixed=%u replayed=%u fadeInPlace=%u orderBy=%u/%u/%u hazards=%s flushes=%u conflicts=%u conflictBytes=%llu materialized=%u records=%u recordHigh=%u replaySets=%u arenaHigh=%u replaySkipped=%u discarded=%u cooldown=%u cpuDeferUs=%.1f cpuReplayUs=%.1f capBy=%u/%u/%u/%u overflowAt=%u overflowCandidates=%u memKiB=%u uploadKiB=%u deltaWords=%llu "
+                     "window frames=%u deferring=%u cooldown=%u deferred=%u hazards=%s flushes=%u conflicts=%u overflowFrames=%u overflowCandidates=%u",
                     frame,NorthlightSpellLayer::modeName(mode),c.deferred[0],c.deferred[1],c.deferred[2],c.deferred[3],c.fixed,c.replayedDraws,c.inPlace[3],c.orderBy[0],c.orderBy[1],c.orderBy[2],hazards,c.flushes,c.conflicts,(unsigned long long)c.conflictBytes,c.materialized,c.recorded,c.recordHigh,c.replaySets,c.arenaHigh,c.replaySkipped,c.discarded,spell.cooldownLeft(),
-                    double(spellDeferTicks)*us,double(spellReplayTicks)*us,
-                    spellWinFrames,spellWinDeferring,spellWinCooldown,spellWin.totalDeferred(),winHazards,spellWin.flushes,spellWin.conflicts);
+                    double(spellDeferTicks)*us,double(spellReplayTicks)*us,c.capBy[0],c.capBy[1],c.capBy[2],c.capBy[3],c.overflowAt,c.overflowCandidates,unsigned(spellMem.total()>>10),unsigned(spellMem.uploads>>10),(unsigned long long)c.deltaWords,
+                    spellWinFrames,spellWinDeferring,spellWinCooldown,spellWin.totalDeferred(),winHazards,spellWin.flushes,spellWin.conflicts,spellWin.overflowFrames,spellWin.overflowCandidates);
                 spellWin=NorthlightSpellLayer::Counters{};spellWinFrames=spellWinDeferring=spellWinCooldown=0;
             }
             spellDeferTicks=spellReplayTicks=0;

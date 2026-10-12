@@ -136,12 +136,15 @@ struct Counters{
     unsigned arenaHigh=0;                         // bytes
     unsigned recordHigh=0;                        // most records pending at once
     uint64_t deltaWords=0;                        // words of state delta recorded
+    unsigned capBy[4]={};                         // Capacity fallbacks by the limit that was hit: entries, delta bytes, arena (UP data and conflict copies) bytes, other (upload buffers, held objects, fixed-function records)
+    unsigned overflowFrames=0,overflowAt=0,overflowCandidates=0; // frames that fell back on Capacity; entries pending when they did; deferrable draws of those frames from the overflow on (the overflowing draw included): the real demand
     void add(const Counters& o){
         for(int i=0;i<4;++i){deferred[i]+=o.deferred[i];inPlace[i]+=o.inPlace[i];}
         for(int i=0;i<3;++i)orderBy[i]+=o.orderBy[i];
         for(unsigned i=0;i<kReasons;++i)hazards[i]+=o.hazards[i];
         fixed+=o.fixed;flushes+=o.flushes;replays+=o.replays;replayedDraws+=o.replayedDraws;replaySkipped+=o.replaySkipped;discarded+=o.discarded;
         conflicts+=o.conflicts;materialized+=o.materialized;recorded+=o.recorded;replaySets+=o.replaySets;conflictBytes+=o.conflictBytes;
+        for(int i=0;i<4;++i)capBy[i]+=o.capBy[i];overflowFrames+=o.overflowFrames;overflowAt+=o.overflowAt;overflowCandidates+=o.overflowCandidates;
         deltaWords+=o.deltaWords;arenaHigh=std::max(arenaHigh,o.arenaHigh);recordHigh=std::max(recordHigh,o.recordHigh);
     }
     unsigned totalDeferred()const{return deferred[0]+deferred[1]+deferred[2]+deferred[3];}
@@ -159,10 +162,23 @@ public:
     struct Buf{void* key=nullptr;bool index=false;unsigned live=0;uint32_t boxLo=0,boxHi=0;std::vector<Range> ranges;};
 private:
     std::vector<Buf> bufs_;size_t used_=0;
+    std::vector<int32_t> table_;                      // open-addressing index of bufs_[0..used_) by key (-1 = empty): adding a draw is O(1), not a scan of every guarded buffer
+    static size_t hashKey(const void* k){return (reinterpret_cast<uintptr_t>(k)>>4)*2654435761u;}
+    void growTable(){
+        size_t n=table_.empty()?64:table_.size();while(n<2*(used_+1))n*=2;
+        if(n==table_.size())return;
+        table_.assign(n,-1);
+        for(size_t b=0;b<used_;++b){size_t i=hashKey(bufs_[b].key)&(n-1);while(table_[i]>=0)i=(i+1)&(n-1);table_[i]=int32_t(b);}
+    }
     static bool overlaps(const Range& r,uint64_t lo,uint64_t hi){return r.live&&r.lo<hi&&lo<r.hi;}
 public:
-    const Buf* find(void* key)const{for(size_t i=0;i<used_;++i)if(bufs_[i].key==key)return &bufs_[i];return nullptr;}
-    int findIndex(void* key)const{for(size_t i=0;i<used_;++i)if(bufs_[i].key==key)return int(i);return -1;}
+    const Buf* find(void* key)const{const int i=findIndex(key);return i<0?nullptr:&bufs_[size_t(i)];}
+    int findIndex(void* key)const{
+        if(table_.empty())return -1;
+        const size_t m=table_.size()-1;
+        for(size_t i=hashKey(key)&m;table_[i]>=0;i=(i+1)&m)if(bufs_[size_t(table_[i])].key==key)return table_[i];
+        return -1;
+    }
     bool guarded(void* key)const{const Buf* b=find(key);return b&&b->live;}
     const Buf& buf(uint32_t i)const{return bufs_[i];}
     size_t buffers()const{return used_;}
@@ -173,6 +189,8 @@ public:
         if(i<0){
             if(used_==bufs_.size())bufs_.emplace_back();
             i=int(used_++);Buf& b=bufs_[size_t(i)];b.key=key;b.index=index;b.live=0;b.boxLo=lo;b.boxHi=hi;b.ranges.clear();
+            growTable();
+            const size_t m=table_.size()-1;size_t t=hashKey(key)&m;while(table_[t]>=0)t=(t+1)&m;table_[t]=i;
         }
         Buf& b=bufs_[size_t(i)];
         const bool first=b.live==0;
@@ -206,6 +224,7 @@ public:
     // Calls unmark(key) for every buffer that still has a live guard, then forgets all ranges (capacity kept).
     template<class F> void clear(F&& unmark){
         for(size_t i=0;i<used_;++i){Buf& b=bufs_[i];if(b.live)unmark(b.key);b.key=nullptr;b.live=0;b.ranges.clear();}
+        if(used_)std::fill(table_.begin(),table_.end(),-1);
         used_=0;
     }
 };
@@ -266,7 +285,7 @@ struct MirrorView{
 };
 struct Config{
     bool on=false;unsigned classMask=SubAdditive|SubAlpha|SubModulate|SubOther;
-    unsigned maxEntries=512;size_t arenaBytes=4u<<20,uploadVbBytes=1u<<20,uploadIbBytes=256u<<10,deltaBytes=1536u<<10; // deltaBytes: cap of the state delta storage, allocated on demand in chunks of deltaChunkWords words (an entry's delta never spans two)
+    unsigned maxEntries=4096;size_t arenaBytes=3u<<20,arenaStartBytes=512u<<10,uploadVbBytes=1u<<20,uploadIbBytes=256u<<10,deltaBytes=2u<<20; // the caps (entries, delta bytes, arena bytes, upload bytes) bound the layer's memory; deltaBytes: cap of the state delta storage, allocated on demand in chunks of deltaChunkWords words (an entry's delta never spans two)
     bool conflictCopy=true;                       // false on a non-DXVK backend: a conflicting write flushes instead of copying
     DWORD readBackLockFlags=D3DLOCK_READONLY;     // NorthlightUpload::readBackLock()
     void (*markGuard)(void* ctx,void* rawBuffer,bool guarded)=nullptr;void* markCtx=nullptr; // sets/clears the per-buffer "call onBufferWrite" flag
@@ -463,10 +482,17 @@ public:
     static constexpr size_t ffRecordBytes(){return sizeof(FfRec);}
 private:
     IDirect3DDevice9* dev_=nullptr;Config cfg_;FrameState fm_;
-    std::vector<Entry> entries_;unsigned count_=0;
+    static constexpr unsigned kEntryChunk=256;           // entries are allocated in chunks as a frame needs them
+    std::vector<std::unique_ptr<Entry[]>> entryChunks_;unsigned count_=0;
+    Entry& entryAt(unsigned i){return entryChunks_[i/kEntryChunk][i%kEntryChunk];}
+    bool ensureEntry(unsigned i){
+        while(i/kEntryChunk>=entryChunks_.size()){Entry* p=new(std::nothrow) Entry[kEntryChunk];if(!p)return false;entryChunks_.emplace_back(p);}
+        return true;
+    }
     std::vector<std::unique_ptr<uint32_t[]>> deltaChunks_;unsigned deltaChunk_=0,deltaUsed_=0; // state deltas of the pending entries; deltaChunk_/deltaUsed_: the chunk being filled and its used words
     std::vector<std::unique_ptr<FfRec[]>> ffChunks_;unsigned ffCount_=0;const FfRec* ffPrev_=nullptr; // ffPrev_: the last fixed-function record the running replay applied
     bool rsSkip_[kRenderStates]={};                   // a state the device refused to Get once: neither recorded nor replayed
+    bool overflow_=false;                             // this frame fell back on Capacity: deferrable draws are still counted (noteCandidate)
     bool anySkip_=false;                              // some rsSkip_ is set
     Model model_;                                     // what the running replay will have set (see Model); reset with every frame/flush
     const MirrorView* mv_=nullptr;                    // set while a record holds the state cache's guard
@@ -477,10 +503,18 @@ private:
     const DWORD* rsCur_=nullptr;                      // the render states of the draw being recorded, by id
     unsigned sets_=0;                                 // device Set* calls of the running replay
     Event event_;unsigned eventSeq_=0;
-    std::vector<uint8_t> arena_;uint32_t arenaUsed_=0;
+    std::unique_ptr<uint8_t[]> arena_;size_t arenaCap_=0;uint32_t arenaUsed_=0; // UP draw data and conflict copies, grown on demand (doubling) up to Config::arenaBytes; not zero-filled
+    bool ensureArena(uint64_t need){
+        if(need<=arenaCap_)return true;
+        if(need>cfg_.arenaBytes)return false;
+        size_t cap=arenaCap_?arenaCap_*2:std::max<size_t>(cfg_.arenaStartBytes,1u<<16);
+        while(cap<need)cap*=2;cap=std::min<size_t>(cap,cfg_.arenaBytes);
+        uint8_t* n=new(std::nothrow) uint8_t[cap];if(!n)return false;
+        if(arenaUsed_)std::memcpy(n,arena_.get(),arenaUsed_);
+        arena_.reset(n);arenaCap_=cap;return true;
+    }
     std::vector<Blob> blobs_;
     GuardTable guards_;std::vector<GuardTable::Hit> hits_;std::vector<Seg> segs_;std::vector<uint32_t> order_;
-    std::vector<void*> samples_;
     IDirect3DVertexBuffer9* upVb_=nullptr;IDirect3DIndexBuffer9* upIb_[2]={};uint32_t vbUsed_=0,ibUsed_[2]={}; /* one upload index buffer per index format: a 32-bit range must not be read as 16-bit */
     IDirect3DSurface9* target_=nullptr;IDirect3DSurface9* ds_=nullptr;
     struct Verdict{void* key=nullptr;bool rt=false;};  // per texture identity: D3DUSAGE_RENDERTARGET never changes for an object; open addressing, cleared when the generation changes or at 3/4 load
@@ -527,7 +561,7 @@ private:
     void clearFrame(){
         guards_.clear([&](void* key){mark(key,false);}); // before the entries drop their references: the marked buffers are still alive
         releaseHeld();
-        count_=0;ffCount_=0;deltaChunk_=0;deltaUsed_=0;model_.reset();samples_.clear();blobs_.clear();hits_.clear();
+        count_=0;ffCount_=0;deltaChunk_=0;deltaUsed_=0;model_.reset();blobs_.clear();hits_.clear();
         frame_.arenaHigh=std::max(frame_.arenaHigh,arenaUsed_);total_.arenaHigh=std::max(total_.arenaHigh,arenaUsed_);
         arenaUsed_=vbUsed_=ibUsed_[0]=ibUsed_[1]=0;
         if(target_){target_->Release();target_=nullptr;}
@@ -553,6 +587,11 @@ private:
     }
     void noteEvent(Reason r,InPlaceKind by){event_=Event{r,by,count_};++eventSeq_;}
     // Every failure of defer() lands here: flush what is pending (in order, before the caller's in-place draw), then the frame falls back.
+    // Capacity: the rest of the frame is drawn the old way (never part before and part after); the overflowing draw is the first of the candidates counted from here on.
+    bool capFail(unsigned kind){
+        count([&](Counters& c){++c.capBy[kind];++c.overflowFrames;c.overflowAt+=count_;++c.overflowCandidates;});
+        overflow_=true;return fail(Reason::Capacity);
+    }
     bool fail(Reason r){
         noteHazard(r);noteEvent(r,InPlaceKind::None);
         if(count_){count([](Counters& c){++c.flushes;});drain();}
@@ -566,7 +605,7 @@ private:
         void* p=nullptr;
         if(index){if(!upIb_[fmt]||FAILED(upIb_[fmt]->Lock(0,0,&p,D3DLOCK_DISCARD))||!p)return false;}
         else if(!upVb_||FAILED(upVb_->Lock(0,0,&p,D3DLOCK_DISCARD))||!p)return false;
-        for(const Blob& b:blobs_)if(b.index==index&&(!index||b.fmt==fmt))std::memcpy(static_cast<uint8_t*>(p)+b.uploadOff,arena_.data()+b.arenaOff,b.len);
+        for(const Blob& b:blobs_)if(b.index==index&&(!index||b.fmt==fmt))std::memcpy(static_cast<uint8_t*>(p)+b.uploadOff,arena_.get()+b.arenaOff,b.len);
         if(index)upIb_[fmt]->Unlock();else upVb_->Unlock();
         return true;
     }
@@ -671,10 +710,10 @@ private:
         switch(e.type){
         case DrawType::Primitive:dev_->DrawPrimitive(e.prim,start,e.primCount);break;
         case DrawType::Indexed:dev_->DrawIndexedPrimitive(e.prim,base,e.minIndex,e.numVertices,start,e.primCount);break;
-        case DrawType::PrimitiveUP:dev_->DrawPrimitiveUP(e.prim,e.primCount,arena_.data()+e.upVtx,e.upStride);break;
+        case DrawType::PrimitiveUP:dev_->DrawPrimitiveUP(e.prim,e.primCount,arena_.get()+e.upVtx,e.upStride);break;
         case DrawType::IndexedUP:
-            dev_->DrawIndexedPrimitiveUP(e.prim,e.minIndex,e.numVertices,e.primCount,arena_.data()+e.upIdx,e.upFmt,
-                arena_.data()+e.upVtx,e.upStride);break;
+            dev_->DrawIndexedPrimitiveUP(e.prim,e.minIndex,e.numVertices,e.primCount,arena_.get()+e.upIdx,e.upFmt,
+                arena_.get()+e.upVtx,e.upStride);break;
         }
         if(up){ // the API side effects of the UP call: stream 0 (and the indices) are unbound afterwards
             sh.st[0].valid=false;
@@ -693,7 +732,7 @@ private:
         dev_->SetDepthStencilSurface(ds_);
         Shadow sh;sets_=0;ffPrev_=nullptr;
         for(unsigned i=0;i<count_;++i){
-            const bool ok=bound&&drawEntry(entries_[i],sh,vbOk,ibOk);
+            const bool ok=bound&&drawEntry(entryAt(i),sh,vbOk,ibOk);
             count([&](Counters& c){if(ok)++c.replayedDraws;else ++c.replaySkipped;});
         }
         count([&](Counters& c){c.replaySets+=sets_;});
@@ -709,7 +748,7 @@ private:
     // arena and give every affected entry stream/index the span's blob. False: a hazard was raised (everything pending was flushed first).
     bool copyOut(void* key){
         const GuardTable::Buf& b=guards_.buf(hits_[0].buf);const bool index=b.index;
-        const unsigned fmt=index&&entries_[guards_.range(hits_[0]).entry].isz==4?1u:0u; // every entry on one index buffer has its format
+        const unsigned fmt=index&&entryAt(guards_.range(hits_[0]).entry).isz==4?1u:0u; // every entry on one index buffer has its format
         order_.clear();for(uint32_t i=0;i<hits_.size();++i)order_.push_back(i);
         std::sort(order_.begin(),order_.end(),[&](uint32_t x,uint32_t y){return guards_.range(hits_[x]).lo<guards_.range(hits_[y]).lo;});
         segs_.clear();
@@ -720,7 +759,11 @@ private:
         }
         uint64_t arena=arenaUsed_,up=index?ibUsed_[fmt]:vbUsed_;
         for(const Seg& s:segs_){arena+=align16(s.hi-s.lo);up+=align16(s.hi-s.lo);}
-        if(arena>arena_.size()||up>(index?cfg_.uploadIbBytes:cfg_.uploadVbBytes)||blobs_.size()+segs_.size()>size_t(cfg_.maxEntries)*(kMaxStreams+1)){hazard(Reason::Capacity);return false;}
+        const bool arenaOk=ensureArena(arena);
+        if(!arenaOk||up>(index?cfg_.uploadIbBytes:cfg_.uploadVbBytes)||blobs_.size()+segs_.size()>size_t(cfg_.maxEntries)*(kMaxStreams+1)){
+            count([&](Counters& c){++c.capBy[arenaOk?3:2];++c.overflowFrames;c.overflowAt+=count_;});overflow_=true;
+            hazard(Reason::Capacity);return false;
+        }
         if(!ensureUpload(index,fmt)){hazard(Reason::Capture);return false;}
         count([](Counters& c){++c.conflicts;});
         for(const Seg& s:segs_){
@@ -730,7 +773,7 @@ private:
                 if(SUCCEEDED(hr)){if(index)static_cast<IDirect3DIndexBuffer9*>(key)->Unlock();else static_cast<IDirect3DVertexBuffer9*>(key)->Unlock();}
                 hazard(Reason::BufWrite);return false;
             }
-            std::memcpy(arena_.data()+arenaUsed_,p,len);
+            std::memcpy(arena_.get()+arenaUsed_,p,len);
             if(index)static_cast<IDirect3DIndexBuffer9*>(key)->Unlock();else static_cast<IDirect3DVertexBuffer9*>(key)->Unlock();
             uint32_t& upUsed=index?ibUsed_[fmt]:vbUsed_;
             blobs_.push_back(Blob{arenaUsed_,len,s.lo,upUsed,index,uint8_t(fmt)});
@@ -738,7 +781,7 @@ private:
             arenaUsed_+=align16(len);upUsed+=align16(len);
             count([&](Counters& c){c.conflictBytes+=len;});
             for(size_t k=s.firstHit;k<=s.lastHit;++k){
-                const GuardTable::Hit h=hits_[order_[k]];const GuardTable::Range r=guards_.range(h);Entry& e=entries_[r.entry];
+                const GuardTable::Hit h=hits_[order_[k]];const GuardTable::Range r=guards_.range(h);Entry& e=entryAt(r.entry);
                 if(r.slot==0xFF)e.ibBlob=id;else e.streams[r.slot].blob=id;
                 count([](Counters& c){++c.materialized;});
                 if(guards_.drop(h.buf,h.range))mark(key,false);
@@ -907,11 +950,10 @@ public:
     // Only while nothing is pending (else pending entries are dropped). Allocates the entry table and the arena once; state records follow in chunks.
     void configure(const Config& c){
         reset();cfg_=c;cfg_.deltaChunkWords=std::min(65535u,std::max(1024u,cfg_.deltaChunkWords));
-        if(cfg_.on){entries_.resize(cfg_.maxEntries);arena_.resize(cfg_.arenaBytes);
+        if(cfg_.on){
             size_t slots=1024;while(slots<size_t(cfg_.maxEntries)*4)slots<<=1;held_.assign(slots,Held{});heldUsed_.reserve(slots*3/4);scratch_.reset(new uint32_t[kScratchWords]);model_.reset();
-            hits_.reserve(cfg_.maxEntries);order_.reserve(cfg_.maxEntries);
-            segs_.reserve(cfg_.maxEntries);blobs_.reserve(size_t(cfg_.maxEntries)*(kMaxStreams+1));samples_.reserve(64);}
-        else{entries_=std::vector<Entry>();arena_=std::vector<uint8_t>();held_=std::vector<Held>();heldUsed_=std::vector<uint32_t>();scratch_.reset();}
+        }
+        else{entryChunks_.clear();arena_.reset();arenaCap_=0;held_=std::vector<Held>();heldUsed_=std::vector<uint32_t>();scratch_.reset();}
         fm_.begin(cfg_.on,false);
     }
     const Config& config()const{return cfg_;}
@@ -921,11 +963,14 @@ public:
     void beginFrame(bool memoryPressure){
         if(count_){count([&](Counters& c){c.discarded+=count_;});clearFrame();fm_.fallback(false);}
         releaseHeld();
-        last_=frame_;frame_=Counters{};
+        last_=frame_;frame_=Counters{};overflow_=false;
         fm_.begin(cfg_.on,memoryPressure);
         if(!cfg_.on||memoryPressure)trim(0);
     }
     bool armed()const{return cfg_.on&&dev_&&fm_.canDefer();}
+    // After a Capacity fallback the integration keeps classifying cheaply and reports each draw that would have been deferred: the frame's real demand.
+    bool wantsCandidates()const{return overflow_&&cfg_.on&&!fm_.canDefer();}
+    void noteCandidate(){count([](Counters& c){++c.overflowCandidates;});}
     Mode mode()const{return fm_.mode();}
     unsigned cooldownLeft()const{return fm_.cooldownLeft();}
     unsigned pending()const{return count_;}
@@ -937,6 +982,14 @@ public:
     size_t recordChunks()const{return deltaChunks_.size();} // allocated chunks of state delta words (Config::deltaChunkWords each)
     size_t ffChunks()const{return ffChunks_.size();}      // allocated chunks of kFfChunk fixed-function records
     uint32_t arenaUsed()const{return arenaUsed_;}
+    // Memory the layer holds right now (bytes; the device-side upload buffers are listed apart): entries, deltas, arena, fixed-function records, held table.
+    struct Memory{size_t entries,deltas,arena,fixedFunction,tables,uploads;size_t total()const{return entries+deltas+arena+fixedFunction+tables;}};
+    Memory memory()const{
+        Memory m{};m.entries=entryChunks_.size()*kEntryChunk*sizeof(Entry);m.deltas=deltaChunks_.size()*size_t(cfg_.deltaChunkWords)*4;m.arena=arenaCap_;
+        m.fixedFunction=ffChunks_.size()*kFfChunk*sizeof(FfRec);m.tables=held_.size()*sizeof(Held)+heldUsed_.capacity()*4+sizeof(Model)+kScratchWords*4+(blobs_.capacity()*sizeof(Blob)+hits_.capacity()*sizeof(GuardTable::Hit)+segs_.capacity()*sizeof(Seg)+order_.capacity()*4);
+        m.uploads=(upVb_?cfg_.uploadVbBytes:0)+(upIb_[0]?cfg_.uploadIbBytes:0)+(upIb_[1]?cfg_.uploadIbBytes:0);return m;
+    }
+    static constexpr unsigned entryChunkSize(){return kEntryChunk;}
     // Hazard diagnostics: eventSeq() changes on every hazard that flushed and every refused defer (the frame fell back); lastEvent() describes it.
     unsigned eventSeq()const{return eventSeq_;}
     const Event& lastEvent()const{return event_;}
@@ -954,31 +1007,31 @@ public:
         if(!cfg_.on||!dev_||!fm_.canDefer())return false;
         const uint32_t vcount=vertexCount(a.prim,a.primCount);
         if(!vcount)return false;
-        if(count_>=cfg_.maxEntries)return fail(Reason::Capacity);
+        if(count_>=cfg_.maxEntries)return capFail(0);
         if(!rt0||(count_&&(rt0!=target_||ds!=ds_)))return fail(count_?Reason::Order:Reason::Capture);
         if(cfg_.generation){const unsigned g=cfg_.generation(cfg_.genCtx);if(g!=verdictGen_){clearVerdicts();verdictGen_=g;}}
-        if(held_.empty())return fail(Reason::Capacity);
+        if(held_.empty()||!ensureEntry(count_))return capFail(0);
         const bool up=a.type==DrawType::PrimitiveUP||a.type==DrawType::IndexedUP,idx=a.type==DrawType::Indexed||a.type==DrawType::IndexedUP;
         Hold hold(*this); // the state cache's guard for all the reads below (Get calls nest in it)
-        Entry& e=entries_[count_];e=Entry{};
+        Entry& e=entryAt(count_);e=Entry{};
         e.type=a.type;e.prim=a.prim;e.base=a.baseVertex;e.minIndex=a.minIndex;e.numVertices=a.numVertices;e.first=a.first;e.primCount=a.primCount;
         // admission: a programmable vertex and pixel stage, ps_2_0 or newer (the fixed-function state is then unused and not recorded), or neither
         // stage (fixed function: FfRec). A vertex shader with a fixed-function pixel stage or the reverse is refused.
         IDirect3DVertexShader9* vs=nullptr;IDirect3DPixelShader9* ps=nullptr;bool owned=false; // owned: a Get call's reference (the cache's pointers are borrowed)
         if(mv_&&*mv_->vsKnown)vs=*mv_->vs;else if(SUCCEEDED(dev_->GetVertexShader(&vs)))owned=vs!=nullptr;else return fail(Reason::Admit);
-        if(vs&&!intern(vs,owned))return fail(Reason::Capacity);
+        if(vs&&!intern(vs,owned))return capFail(3);
         owned=false;
         if(mv_&&*mv_->psKnown)ps=*mv_->ps;else if(SUCCEEDED(dev_->GetPixelShader(&ps)))owned=ps!=nullptr;else return fail(Reason::Admit);
-        if(ps&&!intern(ps,owned))return fail(Reason::Capacity);
+        if(ps&&!intern(ps,owned))return capFail(3);
         const bool fixed=!vs&&!ps;
         if(!fixed&&(!vs||!ps||a.psMajor<kMinPsMajor))return fail(Reason::Admit);
-        if(fixed&&!ensureFf(ffCount_))return fail(Reason::Capacity);
+        if(fixed&&!ensureFf(ffCount_))return capFail(3);
         uint32_t used=1; // FVF: stream 0
         IDirect3DVertexDeclaration9* decl=nullptr;DWORD fvf=0;
         owned=false;
         if(mv_&&*mv_->declKnown)decl=*mv_->decl;else{dev_->GetVertexDeclaration(&decl);owned=decl!=nullptr;}
         if(decl){
-            Held* dh=intern(decl,owned);if(!dh)return fail(Reason::Capacity);
+            Held* dh=intern(decl,owned);if(!dh)return capFail(3);
             if(!up&&!usedStreams(*dh,used))return fail(Reason::Capture);
         }else if(mv_&&*mv_->fvfKnown)fvf=*mv_->fvf;
         else if(FAILED(dev_->GetFVF(&fvf)))return fail(Reason::Capture);
@@ -991,7 +1044,7 @@ public:
                 IDirect3DVertexBuffer9* vb=nullptr;UINT off=0,stride=0,freq=1;
                 const bool got=SUCCEEDED(dev_->GetStreamSource(s,&vb,&off,&stride))&&vb;
                 if(!got){if(vb)vb->Release();return fail(Reason::Capture);}
-                if(!intern(vb,true))return fail(Reason::Capacity);
+                if(!intern(vb,true))return capFail(3);
                 Stream& st=e.streams[e.nStreams++];st.vb=vb;st.off=off;st.stride=stride;st.sno=s;
                 if(FAILED(dev_->GetStreamSourceFreq(s,&freq))||freq!=1)return fail(Reason::Capture);
                 const int64_t lo=int64_t(off)+first*stride,hi=lo+int64_t(verts)*stride;
@@ -1000,7 +1053,7 @@ public:
             }
             if(a.type==DrawType::Indexed){
                 if(FAILED(dev_->GetIndices(&e.ib))||!e.ib)return fail(Reason::Capture);
-                Held* ibh=intern(e.ib,true);if(!ibh)return fail(Reason::Capacity);
+                Held* ibh=intern(e.ib,true);if(!ibh)return capFail(3);
                 if(!(ibh->flags&kHasAux)){ // the format of an index buffer never changes
                     D3DINDEXBUFFER_DESC d{};
                     if(FAILED(e.ib->GetDesc(&d))||(d.Format!=D3DFMT_INDEX16&&d.Format!=D3DFMT_INDEX32))return fail(Reason::Capture);
@@ -1021,7 +1074,7 @@ public:
                 e.isz=a.indexFormat==D3DFMT_INDEX16?2:4;e.upFmt=a.indexFormat;
                 vOff=0;upV=(a.minIndex+a.numVertices)*a.stride;upI=vcount*e.isz; /* the driver reads [0,(min+num)*stride) of the user pointer (DXVK FillUPVertexBuffer): copy that, replay with the plain arena pointer */
             }else upV=vcount*a.stride;
-            if(uint64_t(arenaUsed_)+align16(upV)+align16(upI)>arena_.size())return fail(Reason::Capacity);
+            if(!ensureArena(uint64_t(arenaUsed_)+align16(upV)+align16(upI)))return capFail(2);
         }
         // What the draw can read: a fixed-function draw reads no shader constants and the texture stages 0..7; a programmable one the shaders' read sets.
         Reads rd;
@@ -1039,7 +1092,7 @@ public:
             if(mv_&&t<16&&mv_->texKnown[t])tx=mv_->tex[t];
             else{dev_->GetTexture(samplerStage(t),&tx);owned=tx!=nullptr;}
             if(!tx)continue;
-            Held* h=intern(tx,owned);if(!h)return fail(Reason::Capacity);
+            Held* h=intern(tx,owned);if(!h)return capFail(3);
             if(!(h->flags&kNotRt)){ // once per object and frame (and per object and generation in the verdict cache)
                 if(renderTargetTexture(tx))return fail(Reason::Capture); // the game may render into or clear it later without any call the layer sees
                 h->flags|=kNotRt;
@@ -1051,14 +1104,14 @@ public:
             e.ff=ffAt(ffCount_);
             if(!readFf(e))return fail(Reason::Capture);
         }
-        if(!reserveDelta(n_,e.dChunk,e.dOff))return fail(Reason::Capacity);
+        if(!reserveDelta(n_,e.dChunk,e.dOff))return capFail(1);
         e.dLen=uint16_t(n_);
         // Committed from here: nothing below fails.
         {   uint32_t* dst=deltaChunks_[e.dChunk].get()+e.dOff;std::memcpy(dst,scratch_.get(),size_t(n_)*4);
             ModelSink ms{model_};decodeOps(dst,dst+n_,ms);}
         if(up){
-            std::memcpy(arena_.data()+arenaUsed_,static_cast<const uint8_t*>(a.vertexData)+vOff,upV);e.upVtx=arenaUsed_;arenaUsed_+=align16(upV);
-            if(idx){std::memcpy(arena_.data()+arenaUsed_,a.indexData,upI);e.upIdx=arenaUsed_;arenaUsed_+=align16(upI);}
+            std::memcpy(arena_.get()+arenaUsed_,static_cast<const uint8_t*>(a.vertexData)+vOff,upV);e.upVtx=arenaUsed_;arenaUsed_+=align16(upV);
+            if(idx){std::memcpy(arena_.get()+arenaUsed_,a.indexData,upI);e.upIdx=arenaUsed_;arenaUsed_+=align16(upI);}
         }
         for(unsigned i=0;i<e.nStreams;++i){
             Stream& s=e.streams[i];
@@ -1067,7 +1120,7 @@ public:
         if(e.ib&&guards_.add(static_cast<void*>(e.ib),true,e.ibLo,e.ibHi,count_,0xFF))mark(static_cast<void*>(e.ib),true);
         for(unsigned t=0;t<kMaxTextures;++t){
             Held* h=texHeld[t];
-            if(h&&!(h->flags&kInSamples)){h->flags|=kInSamples;samples_.push_back(static_cast<void*>(h->p));}
+            if(h)h->flags|=kInSamples; // the frame's set of sampled textures: pendingSamples() asks the held table
         }
         if(!count_){target_=rt0;rt0->AddRef();ds_=ds;if(ds)ds->AddRef();}
         if(fixed)++ffCount_;
@@ -1107,7 +1160,12 @@ public:
     // scope only for these writes, so the common non-conflicting ring append stays cheap.
     bool bufferWriteConflicts(void* rawBuffer,uint32_t offset,uint32_t size,DWORD flags)const{return count_&&!(flags&D3DLOCK_READONLY)&&guards_.conflicts(rawBuffer,offset,size,flags);}
     void onBufferGpuWrite(void* rawBuffer){if(count_&&guards_.guarded(rawBuffer))hazard(Reason::GpuWrite);} // ProcessVertices destination
-    bool pendingSamples(void* rawTexture)const{return count_&&std::find(samples_.begin(),samples_.end(),rawTexture)!=samples_.end();}
+    bool pendingSamples(void* rawTexture)const{
+        if(!count_||held_.empty())return false;
+        IUnknown* p=static_cast<IUnknown*>(rawTexture);const size_t m=held_.size()-1;
+        for(size_t i=hashPtr(p)&m;held_[i].p;i=(i+1)&m)if(held_[i].p==p)return (held_[i].flags&kInSamples)!=0;
+        return false;
+    }
     void onTextureWrite(void* rawTexture){if(pendingSamples(rawTexture))hazard(Reason::TexWrite);}
 
     // At B, after the effects: draws all pending entries in their original order into T/DS and restores the device state (SavedState). Idempotent;
@@ -1122,12 +1180,15 @@ public:
     void trim(size_t keep=0){
         const size_t chunks=std::max<size_t>(keep?1:0,count_?deltaChunk_+1:0);
         while(deltaChunks_.size()>chunks)deltaChunks_.pop_back();
+        const size_t entryChunks=(std::max<size_t>(keep,count_)+kEntryChunk-1)/kEntryChunk;
+        while(entryChunks_.size()>entryChunks)entryChunks_.pop_back();
+        if(!count_&&!keep){arena_.reset();arenaCap_=0;}
         const size_t ffChunks=(ffCount_+kFfChunk-1)/kFfChunk;while(ffChunks_.size()>ffChunks)ffChunks_.pop_back();
         if(!count_&&!keep)releaseUploads();
     }
     // Device Reset/destroy/extension fault: drops everything WITHOUT drawing, releases records, buffers and surfaces, unmarks guards.
     void reset(){
-        clearFrame();deltaChunks_.clear();ffChunks_.clear();releaseUploads();clearVerdicts();fm_.close();
+        clearFrame();deltaChunks_.clear();entryChunks_.clear();arena_.reset();arenaCap_=0;ffChunks_.clear();releaseUploads();clearVerdicts();fm_.close();
     }
 };
 }

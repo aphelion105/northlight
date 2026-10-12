@@ -157,7 +157,7 @@ static void testGuardTable(){
 // test runs in all four; the replayed state must be identical.
 static int gMirrorMode=1;
 static unsigned gTexGeneration=0;static unsigned texGeneration(void*){return gTexGeneration;}
-struct Opts{unsigned deltaChunk=16384;bool verdictCache=false;bool on=true;unsigned maxEntries=512;bool conflictCopy=true;unsigned mask=15;size_t arena=1u<<20,upVb=1u<<16,upIb=1u<<14;};
+struct Opts{size_t deltaBytes=2u<<20;unsigned deltaChunk=16384;bool verdictCache=false;bool on=true;unsigned maxEntries=512;bool conflictCopy=true;unsigned mask=15;size_t arena=1u<<20,upVb=1u<<16,upIb=1u<<14;};
 struct Rig{
     Fake::FakeDevice dev;Layer layer;Opts o;
     Fake::Surface *T,*D,*Other;
@@ -208,7 +208,7 @@ struct Rig{
         const float c[4]={1,2,3,4};dev.SetVertexShaderConstantF(5,c,1);dev.SetPixelShaderConstantF(2,c,1);dev.SetSamplerState(0,5,2);dev.SetRenderState(D3DRS_ALPHAREF,128);
         opaqueZ();translucent(kSrcAlpha,kBlendOne);
         Config c2;c2.on=o.on;c2.classMask=o.mask;c2.maxEntries=o.maxEntries;c2.arenaBytes=o.arena;c2.uploadVbBytes=o.upVb;c2.uploadIbBytes=o.upIb;
-        c2.conflictCopy=o.conflictCopy;c2.deltaChunkWords=o.deltaChunk;
+        c2.conflictCopy=o.conflictCopy;c2.deltaChunkWords=o.deltaChunk;c2.deltaBytes=o.deltaBytes;
         if(gMirrorMode){
             Fake::Mirror& m=dev.mir;view=Fake::makeView(dev);c2.source=&view;
             if(gMirrorMode==2){for(unsigned i=0;i<256;i+=3)m.hideRs[i]=true;for(unsigned i=0;i<256;i+=5)m.hideVsF[i]=true;for(unsigned i=0;i<224;i+=7)m.hidePsF[i]=true;m.hideTex[3]=m.hideTex[5]=true;m.hideSmp[1]=true;m.hideVsB=true;}
@@ -1266,6 +1266,78 @@ static void testStress512(){
     CHECK(std::chrono::duration<double>(std::chrono::steady_clock::now()-t0).count()<20.0);
 }
 
+// ---------------- capacity: thousands of entries, bounded memory, the real demand ----------------
+// 4096 pending draws, each on its own vertex buffer (the worst case for per-buffer bookkeeping): every one replays in order with its own state, memory stays
+// inside the budget, the 4097th candidate is a capacity fallback that reports how many draws the frame really had, and the cost per draw does not grow with the count.
+static std::vector<Fake::VB*> manyBuffers(Rig& r,unsigned n){
+    std::vector<Fake::VB*> v;
+    for(unsigned i=0;i<n;++i){auto* b=r.newVB(256,D3DUSAGE_DYNAMIC);for(UINT k=0;k<64;++k)b->b.cur()[k]=uint8_t(i*7+k);v.push_back(b);}
+    return v;
+}
+static double deferMany(Rig& r,const std::vector<Fake::VB*>& bufs,unsigned n){
+    const auto t0=std::chrono::steady_clock::now();
+    for(unsigned i=0;i<n;++i){
+        r.dev.SetStreamSource(0,bufs[i%bufs.size()],0,16);
+        const float c[4]={float(i),0,0,0};r.dev.SetVertexShaderConstantF(31,c,1);r.dev.SetRenderState(165,DWORD(i+1));
+        DrawArgs a=Rig::dp(0);a.psMajor=3;CHECK(r.layer.defer(a,r.dev.rt[0],r.dev.ds,SubAdditive));
+    }
+    return std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-t0).count()/n;
+}
+static void testFourThousandEntries(){
+    Opts o;o.maxEntries=4096;o.arena=3u<<20;
+    Rig r(o);const auto bufs=manyBuffers(r,2048);
+    const double small=deferMany(r,bufs,256);r.layer.hazard(Reason::Frame,false);r.layer.beginFrame(false);
+    const double big=deferMany(r,bufs,4096);
+    CHECK(r.layer.pending()==4096);
+    const Layer::Memory m=r.layer.memory();
+    std::printf("4096 entries pending: entries %zu B, deltas %zu B, arena %zu B, tables %zu B => %zu B total (%.1f B per entry); defer %.2f us/draw at 256 entries, %.2f us/draw at 4096 (fake device)\n",
+        m.entries,m.deltas,m.arena,m.tables,m.total(),double(m.total())/4096,small,big);
+    CHECK(m.total()<6u*1024*1024&&big<small*4+5.0);                                // bounded; not quadratic (generous: timing is informational on a loaded machine)
+    // the 4097th candidate: capacity fallback, everything pending flushed in order, then the draw is made in place (never part before and part after)
+    const unsigned drawsBefore=unsigned(r.dev.draws.size());
+    DrawArgs a=Rig::dp(0);a.psMajor=3;CHECK(!r.layer.defer(a,r.dev.rt[0],r.dev.ds,SubAdditive));
+    const Counters& c=r.layer.totalCounters();
+    CHECK(r.layer.pending()==0&&r.dev.draws.size()==drawsBefore+4096&&c.replayedDraws==256+4096);
+    CHECK(c.capBy[0]==1&&c.overflowFrames==1&&c.overflowAt==4096&&c.overflowCandidates==1&&r.layer.wantsCandidates()&&r.layer.mode()==Mode::Fallback);
+    r.layer.noteCandidate();r.layer.noteCandidate();CHECK(r.layer.frameCounters().overflowCandidates==3);
+    for(size_t i=0;i<4096;++i)CHECK(r.dev.draws[drawsBefore+i].st.rs[165]==DWORD(i+1)&&r.dev.draws[drawsBefore+i].st.vsc[31][0]==float(i)); // each replayed draw has its own state, in order
+    r.layer.beginFrame(false);CHECK(!r.layer.wantsCandidates()&&r.layer.lastFrameCounters().overflowCandidates==3);
+    r.layer.beginFrame(false);while(r.layer.mode()!=Mode::Armed)r.layer.beginFrame(false);
+    r.layer.trim(0);CHECK(r.layer.memory().entries==0&&r.layer.memory().deltas==0&&r.layer.memory().arena==0);
+    for(auto* b:bufs)b->Release();
+}
+static void testCapacityLimits(){
+    {   Opts o;o.maxEntries=8;Rig r(o);for(int i=0;i<9;++i)deferQuad(r,i);
+        const Counters& c=r.layer.totalCounters();CHECK(c.capBy[0]==1&&c.capBy[1]==0&&c.overflowAt==8&&c.overflowCandidates==1&&r.layer.pending()==0&&c.replayedDraws==8);r.boundary(); }
+    {   Opts o;o.deltaBytes=64u<<10;Rig r(o);int n=0;                                          // one 64 KiB delta chunk: about fifteen deltas of 1030 words
+        while(r.layer.totalCounters().capBy[1]==0&&n<100){bigDelta(r,n);deferQuad(r,n+1);++n;}
+        const Counters& c=r.layer.totalCounters();CHECK(c.capBy[1]==1&&n>=14&&n<=17&&r.layer.pending()==0&&c.replayedDraws==unsigned(n-1)&&r.dev.draws.size()==unsigned(n));r.boundary(); }
+    {   Opts o;o.arena=1u<<16;Rig r(o);uint8_t v[64]={};                                      // UP draws copy their data into the arena: each draw copies 8 KiB: 64 KiB hold eight of them
+        unsigned n=0;static uint8_t big[8192];
+        while(r.layer.totalCounters().capBy[2]==0&&n<100){r.issue(DrawArgs::primitiveUP(D3DPT_TRIANGLESTRIP,2,big,2048));++n;}
+        CHECK(r.layer.totalCounters().capBy[2]==1&&n>=8&&n<=10&&r.layer.pending()==0);(void)v;r.boundary(); }
+}
+// The guard table finds buffers in O(1): many buffers, keys reused after a clear, a key that is gone is gone.
+static void testGuardTableMany(){
+    GuardTable g;std::vector<int> keys(5000);
+    for(size_t i=0;i<keys.size();++i)CHECK(g.add(&keys[i],false,0,64,uint32_t(i),0));
+    for(size_t i=0;i<keys.size();++i)CHECK(g.guarded(&keys[i])&&g.findIndex(&keys[i])==int(i));
+    int other=0;CHECK(!g.guarded(&other)&&g.findIndex(&other)<0);
+    unsigned unmarked=0;g.clear([&](void*){++unmarked;});CHECK(unmarked==5000&&g.buffers()==0&&!g.guarded(&keys[7])&&g.findIndex(&keys[0])<0);
+    for(size_t i=0;i<keys.size();i+=2)CHECK(g.add(&keys[i],true,0,16,uint32_t(i),0xFF));
+    CHECK(g.guarded(&keys[8])&&!g.guarded(&keys[9])&&g.buffers()==2500);
+}
+// Which textures are sampled by pending draws is answered from the held table (O(1)), not a scan.
+static void testSamplesLookup(){
+    Opts o;o.maxEntries=64;Rig r(o);
+    std::vector<Fake::Texture*> t;for(int i=0;i<40;++i)t.push_back(r.reg(new Fake::Texture));
+    for(int i=0;i<40;++i){r.dev.SetTexture(0,t[size_t(i)]);deferQuad(r,i);}
+    for(int i=0;i<40;++i)CHECK(r.layer.pendingSamples(t[size_t(i)]));
+    auto* unrelated=new Fake::Texture;CHECK(!r.layer.pendingSamples(unrelated)&&!r.layer.pendingSamples(nullptr));unrelated->Release();
+    r.layer.onTextureWrite(t[17]);CHECK(r.layer.pending()==0&&r.layer.totalCounters().hazards[unsigned(Reason::TexWrite)]==1);
+    CHECK(!r.layer.pendingSamples(t[3]));                                                // nothing pending any more
+    r.dev.SetTexture(0,r.texA);for(auto* x:t)x->Release();
+}
 int main(int argc,char** argv){
     const char* only=argc>1?argv[1]:nullptr; // a test name (substring) to run alone, and an optional cache mode
     const bool fixedMode=argc>2;if(fixedMode)gMirrorMode=std::atoi(argv[2]);
@@ -1281,7 +1353,7 @@ int main(int argc,char** argv){
         {"cooldown and pressure",testCooldownAndPressure},{"trim",testTrim},{"pending targets",testPendingTargets},{"layer off",testLayerOff},
         {"reset and teardown",testResetAndTeardown},{"512 entries",testStress512},
         {"32-bit index copy",testIb32},{"both index formats",testIbBothFormats},{"water rain name flush",testOrderKinds},{"nothing pending: in place",testOrderKindsIdle},
-        {"replay scope failure",testReplayScopeFailure},{"state changed between draws",testStateChangedBetweenDraws},{"scissor and clip only when enabled",testScissorAndClipOnlyWhenEnabled},{"delta encoding",testDeltas},{"shader read sets",testReadSets},{"diff replay",testDiffReplay},{"admission",testAdmission},{"hazard events",testHazardEvents},{"record size and timing",testRecordSizeAndTiming},{"fixed function",testFixedFunction},{"fixed function admission",testFixedAdmission},{"fixed function capacity",testFixedCapacity},{"water ripples",testRipples},
+        {"replay scope failure",testReplayScopeFailure},{"state changed between draws",testStateChangedBetweenDraws},{"scissor and clip only when enabled",testScissorAndClipOnlyWhenEnabled},{"delta encoding",testDeltas},{"4096 entries",testFourThousandEntries},{"capacity limits",testCapacityLimits},{"guard table with many buffers",testGuardTableMany},{"sampled textures lookup",testSamplesLookup},{"shader read sets",testReadSets},{"diff replay",testDiffReplay},{"admission",testAdmission},{"hazard events",testHazardEvents},{"record size and timing",testRecordSizeAndTiming},{"fixed function",testFixedFunction},{"fixed function admission",testFixedAdmission},{"fixed function capacity",testFixedCapacity},{"water ripples",testRipples},
         {"render target texture",testRenderTargetTexture},{"render target verdict cache",testVerdictCache},{"vertex texture sampler",testVertexTextureSampler},{"buffer write conflict probe",testBufferWriteProbe}};
     for(int mode=fixedMode?gMirrorMode:0;mode<=(fixedMode?gMirrorMode:3);++mode){
         gMirrorMode=mode;
