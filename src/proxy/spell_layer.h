@@ -287,7 +287,7 @@ struct MirrorView{
 struct Config{
     bool on=false;unsigned classMask=SubAdditive|SubAlpha|SubModulate|SubOther;
     unsigned maxEntries=4096,maxFixed=512; // maxFixed: fixed-function entries (each carries a 2.2 KB FfRec, allocated in chunks of 8)
-    size_t arenaBytes=3u<<20,arenaStartBytes=512u<<10,uploadVbBytes=1u<<20,uploadIbBytes=256u<<10,deltaBytes=2u<<20; // the caps (entries, delta bytes, arena bytes, upload bytes) bound the layer's memory; deltaBytes: cap of the state delta storage, allocated on demand in chunks of deltaChunkWords words (an entry's delta never spans two)
+    size_t arenaBytes=3u<<20,arenaStartBytes=512u<<10,uploadVbBytes=3u<<20,uploadIbBytes=768u<<10,deltaBytes=2u<<20; // uploadVbBytes matches arenaBytes: every copied vertex byte is uploaded once (a 1 MiB VB overflowed before the 3 MiB arena with ~1300 entries); the caps (entries, delta bytes, arena bytes, upload bytes) bound the layer's memory; deltaBytes: cap of the state delta storage, allocated on demand in chunks of deltaChunkWords words (an entry's delta never spans two)
     bool conflictCopy=true;                       // false on a non-DXVK backend: a conflicting write flushes instead of copying
     DWORD readBackLockFlags=D3DLOCK_READONLY;     // NorthlightUpload::readBackLock()
     void (*markGuard)(void* ctx,void* rawBuffer,bool guarded)=nullptr;void* markCtx=nullptr; // sets/clears the per-buffer "call onBufferWrite" flag
