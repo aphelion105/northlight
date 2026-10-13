@@ -192,6 +192,7 @@ struct Mirror{
     unsigned enters=0,leaves=0;int depth=0;
 };
 struct FakeDevice:IDirect3DDevice9{
+    bool dropRsHook=false; /* tests: SetRenderState forgets to clear its bit (a missing production hook) */
     State s;Mirror mir;SyncedSlots synced; /* the bits the production mirror's setters clear (device_mirror.h): every Set below clears its slot, a state block Apply (invalidate) all */ IDirect3DSurface9* rt[4]={};IDirect3DSurface9* ds=nullptr;
     std::vector<DrawRec> draws;unsigned calls=0,sets=0;
     std::map<DWORD,Decl*> fvfDecls;DWORD declReportsFvf=0; // fvfDecls: one internal declaration per FVF, owned here; declReportsFvf: the FVF GetFVF reports while a user declaration is bound (native d3d9 does this for position-only declarations)
@@ -232,7 +233,7 @@ struct FakeDevice:IDirect3DDevice9{
     HRESULT GetViewport(D3DVIEWPORT9* v)override{++calls;*v=s.vp;return D3D_OK;}
     HRESULT SetScissorRect(const RECT* r)override{++calls;++sets;s.scissor=*r;return D3D_OK;}
     HRESULT GetScissorRect(RECT* r)override{++calls;*r=s.scissor;return D3D_OK;}
-    HRESULT SetRenderState(D3DRENDERSTATETYPE t,DWORD v)override{++calls;++sets;synced.renderState(t);s.rs[t]=v;return D3D_OK;}
+    HRESULT SetRenderState(D3DRENDERSTATETYPE t,DWORD v)override{++calls;++sets;if(!dropRsHook)synced.renderState(t);s.rs[t]=v;return D3D_OK;}
     HRESULT GetRenderState(D3DRENDERSTATETYPE t,DWORD* v)override{++calls;if(failGetRs)return E_FAIL;*v=s.rs[t];return D3D_OK;}
     HRESULT SetSamplerState(DWORD i,D3DSAMPLERSTATETYPE t,DWORD v)override{++calls;++sets;synced.sampler(i,t);s.ss[texSlot(i)][t]=v;return D3D_OK;}
     HRESULT GetSamplerState(DWORD i,D3DSAMPLERSTATETYPE t,DWORD* v)override{++calls;if(failGetSampler)return E_FAIL;*v=s.ss[texSlot(i)][t];return D3D_OK;}

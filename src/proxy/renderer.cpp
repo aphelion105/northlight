@@ -1178,7 +1178,7 @@ private:
         cfg.conflictCopy=selectedBackend!=NorthlightBackend::Kind::Native; /* the copy-out read-back needs DXVK's direct-mapped dynamic buffers */
         cfg.readBackLockFlags=NorthlightUpload::readBackLock(); /* fixed before CreateDevice (backend()) */
         cfg.markGuard=&Device::spellMarkGuard;cfg.markCtx=this;cfg.savedPool=&stateBlocks;
-        spellViewInit();cfg.source=&spellView;cfg.synced=&spellSynced;mirrorState.synced=&spellSynced;
+        spellViewInit();cfg.source=&spellView;cfg.synced=&spellSynced;mirrorState.synced=&spellSynced;cfg.dirtyDisableOnMismatch=true; /* fail safe: the first synced-bit mismatch the sampled-frame cross-check finds ends the dirty record for the session */
         cfg.clock=&Device::spellClock;cfg.timing=&Device::spellTiming;cfg.clockCtx=this;
         cfg.generation=&Device::spellTextureGeneration;cfg.genCtx=this; /* the render-target verdict of a texture is cached until a resource proxy is created or destroyed */
         spell.attach(ext);spell.configure(cfg);
@@ -1527,17 +1527,17 @@ private:
                 /* net sums: the gate was timed on every 8th call (scaled to all calls), both minus the scopes' own cost, never below 0; cpuDeferUs is their sum */
                 const double gateUs=spellGateTimed?std::max(0.0,double(spellGateTicks)*us-double(spellGateTimed)*timerUs)*double(spellGateDraws)/double(spellGateTimed):0.0;
                 const double flushUs=std::max(0.0,double(spellFlushTicks)*us-double(spellFlushes)*timerUs); /* hazard flushes of gate draws, all timed */
-                const double recordUs=std::max(0.0,double(spellRecordTicks)*us-double(spellRecords)*timerUs);
+                const double recordUs=std::max(0.0,double(spellRecordTicks>=LONGLONG(phase.check)?spellRecordTicks-LONGLONG(phase.check):0)*us-double(spellRecords)*timerUs); /* the dirty cross-check's full build (sampled frames) is not part of the record time */
                 const NorthlightSpellLayer::Layer::Memory spellMem=spellMemAtFrame; /* taken before the frame's trim/beginFrame released the chunks */
                 /* cpuGateUs and cpuDeferUs (= gate + record) are ESTIMATES: the gate was timed on every 8th call (gateTimed of gateDraws) and scaled up, with the calibrated scope cost (timerScopeUs, the least of 5 probes) taken
                    off per scope and the record and flush time inside the timed calls taken out; cpuRecordUs is every record. cpuFlushUs is the (unscaled) time of the hazard flushes of gate draws; their save, upload and
                    restore are also in cpuSaveUs/cpuUploadUs/cpuRestoreUs and are not in cpuGateUs. */
-                logf("SPELLLAYER frame=%u mode=%s deferred=%u/%u/%u/%u fixed=%u replayed=%u fadeInPlace=%u orderBy=%u/%u/%u hazards=%s flushes=%u conflicts=%u conflictBytes=%llu materialized=%u records=%u recordHigh=%u replaySets=%u arenaHigh=%u replaySkipped=%u discarded=%u cooldown=%u cpuDeferUs=%.1f cpuReplayUs=%.1f capBy=%u/%u/%u/%u overflowAt=%u overflowCandidates=%u memKiB=%u uploadKiB=%u deltaWords=%llu cpuRecordUs=%.1f cpuGateUs=%.1f gateDraws=%u gateTimed=%u recordCalls=%u cpuFlushUs=%.1f timerScopeUs=%.3f drains=%u cpuSaveUs=%.1f cpuUploadUs=%.1f cpuRestoreUs=%.1f restoreSets=%u restoreFallbacks=%u texSplits=%u copiesAllowed=%u glowPasses=%u recordSlots=%llu "
-                     "window frames=%u deferring=%u cooldown=%u deferred=%u hazards=%s flushes=%u conflicts=%u overflowFrames=%u overflowCandidates=%u texSplits=%u drains=%u",
+                logf("SPELLLAYER frame=%u mode=%s deferred=%u/%u/%u/%u fixed=%u replayed=%u fadeInPlace=%u orderBy=%u/%u/%u hazards=%s flushes=%u conflicts=%u conflictBytes=%llu materialized=%u records=%u recordHigh=%u replaySets=%u arenaHigh=%u replaySkipped=%u discarded=%u cooldown=%u cpuDeferUs=%.1f cpuReplayUs=%.1f capBy=%u/%u/%u/%u overflowAt=%u overflowCandidates=%u memKiB=%u uploadKiB=%u deltaWords=%llu cpuRecordUs=%.1f cpuGateUs=%.1f gateDraws=%u gateTimed=%u recordCalls=%u cpuFlushUs=%.1f timerScopeUs=%.3f drains=%u cpuSaveUs=%.1f cpuUploadUs=%.1f cpuRestoreUs=%.1f restoreSets=%u restoreFallbacks=%u texSplits=%u copiesAllowed=%u glowPasses=%u recordSlots=%llu dirtyMismatches=%u cpuCheckUs=%.1f "
+                     "window frames=%u deferring=%u cooldown=%u deferred=%u hazards=%s flushes=%u conflicts=%u overflowFrames=%u overflowCandidates=%u texSplits=%u drains=%u dirtyMismatches=%u",
                     frame,NorthlightSpellLayer::modeName(mode),c.deferred[0],c.deferred[1],c.deferred[2],c.deferred[3],c.fixed,c.replayedDraws,c.inPlace[3],c.orderBy[0],c.orderBy[1],c.orderBy[2],hazards,c.flushes,c.conflicts,(unsigned long long)c.conflictBytes,c.materialized,c.recorded,c.recordHigh,c.replaySets,c.arenaHigh,c.replaySkipped,c.discarded,spell.cooldownLeft(),
                     gateUs+recordUs,double(spellReplayTicks)*us,c.capBy[0],c.capBy[1],c.capBy[2],c.capBy[3],c.overflowAt,c.overflowCandidates,unsigned(spellMem.total()>>10),unsigned(spellMem.uploads>>10),(unsigned long long)c.deltaWords,recordUs,gateUs,spellGateDraws,spellGateTimed,spellRecords,flushUs,timerUs,
-                    c.drains,double(phase.save)*us,double(phase.upload)*us,double(phase.restore)*us,c.restoreSets,c.restoreFallbacks,c.texSplits,spellCopiesAllowed,spellGlowPasses,(unsigned long long)c.recordSlots,
-                    spellWinFrames,spellWinDeferring,spellWinCooldown,spellWin.totalDeferred(),winHazards,spellWin.flushes,spellWin.conflicts,spellWin.overflowFrames,spellWin.overflowCandidates,spellWin.texSplits,spellWin.drains);
+                    c.drains,double(phase.save)*us,double(phase.upload)*us,double(phase.restore)*us,c.restoreSets,c.restoreFallbacks,c.texSplits,spellCopiesAllowed,spellGlowPasses,(unsigned long long)c.recordSlots,c.dirtyMismatches,double(phase.check)*us,
+                    spellWinFrames,spellWinDeferring,spellWinCooldown,spellWin.totalDeferred(),winHazards,spellWin.flushes,spellWin.conflicts,spellWin.overflowFrames,spellWin.overflowCandidates,spellWin.texSplits,spellWin.drains,spellWin.dirtyMismatches);
                 spellWin=NorthlightSpellLayer::Counters{};spellWinFrames=spellWinDeferring=spellWinCooldown=0;
             }
             if(wasSampled&&diagnostics()){ /* SPELLDELTA / SPELLSPAN: what the recorded deltas are made of, and what the replay thread ran between the first and the last deferred draw */
@@ -1574,8 +1574,10 @@ private:
                         (unsigned long long)c.calls[Lock],(unsigned long long)c.calls[Upload],(unsigned long long)c.calls[Other]);
                 }
             }
+            {NorthlightSpellLayer::DeltaDiff dd;if(spell.takeDirtyMismatch(dd)&&diagnostics()) /* once per session: the synced-bit record disagreed with the full compare (a setter that does not clear its bit?) */
+                logf("SPELLDIRTY frame=%u kind=%s index=%u dirty=0x%llx full=0x%llx dirtyRecord=off",frame,dd.kind,dd.index,(unsigned long long)dd.dirty,(unsigned long long)dd.full);}
             NorthlightSpan::tracker.clearFrame();
-            {const bool next=diagnostics()&&NorthlightRenderThreadProbe::sampleFrame(frame+1);spell.profile(next);NorthlightSpan::tracker.on=next;if(!next)NorthlightSpan::tracker.open=false;} /* the next frame is sampled: measure it (SpellLayer on; stream mode counts commands, direct mode logs no SPELLSPAN) */
+            {const bool next=diagnostics()&&NorthlightRenderThreadProbe::sampleFrame(frame+1);spell.profile(next);spell.dirtyCheck(next);NorthlightSpan::tracker.on=next;if(!next)NorthlightSpan::tracker.open=false;} /* the next frame is sampled: measure it (SpellLayer on; stream mode counts commands, direct mode logs no SPELLSPAN) */
             spellReplayTicks=spellRecordTicks=spellGateTicks=spellFlushTicks=0;spellGateDraws=spellGateTimed=spellRecords=spellFlushes=spellCopiesAllowed=spellGlowPasses=0;spell.clearPhaseTicks();
             if(spellTraceFrame){logf("SPELLTRACE end frame=%u left=%u",frame,spellTraceLeft-1);spellTraceFrame=false;if(spellTraceLeft)--spellTraceLeft;}
             spellTraceWindow=spellTraceLeft&&diagnostics()&&frame+1>=300;

@@ -255,7 +255,7 @@ static bool gDirty=true; // Config::dirtyRecord of every Rig (the whole suite al
 static bool gMinimal=true; // Config::minimalRestore of every Rig (main runs the whole suite with it on and off: the end state must be identical)
 static unsigned gTexGeneration=0;static unsigned texGeneration(void*){return gTexGeneration;}
 static uint64_t gTicks=0;static uint64_t fakeClock(void*){return ++gTicks;}static bool fakeTiming(void*){return true;} // every read advances one tick: a timed phase costs exactly 1
-struct Opts{bool dirty=gDirty;unsigned maxTexSplits=8;bool minimal=gMinimal;bool timed=false;size_t deltaBytes=2u<<20;unsigned deltaChunk=16384;bool verdictCache=false;bool on=true;unsigned maxEntries=512;bool conflictCopy=true;unsigned mask=15;size_t arena=1u<<20,upVb=1u<<16,upIb=1u<<14;};
+struct Opts{bool allowMismatch=false,failSafe=false;bool dirty=gDirty;unsigned maxTexSplits=8;bool minimal=gMinimal;bool timed=false;size_t deltaBytes=2u<<20;unsigned deltaChunk=16384;bool verdictCache=false;bool on=true;unsigned maxEntries=512;bool conflictCopy=true;unsigned mask=15;size_t arena=1u<<20,upVb=1u<<16,upIb=1u<<14;};
 struct Rig{
     Fake::FakeDevice dev;Layer layer;Opts o;
     Fake::Surface *T,*D,*Other;
@@ -308,7 +308,7 @@ struct Rig{
         const float c[4]={1,2,3,4};dev.SetVertexShaderConstantF(5,c,1);dev.SetPixelShaderConstantF(2,c,1);dev.SetSamplerState(0,5,2);dev.SetRenderState(D3DRS_ALPHAREF,128);
         opaqueZ();translucent(kSrcAlpha,kBlendOne);
         Config c2;c2.on=o.on;c2.classMask=o.mask;c2.maxEntries=o.maxEntries;c2.arenaBytes=o.arena;c2.uploadVbBytes=o.upVb;c2.uploadIbBytes=o.upIb;
-        c2.minimalRestore=o.minimal;c2.dirtyRecord=o.dirty;c2.dirtyCheck=true;c2.synced=&dev.synced;c2.maxTexSplits=o.maxTexSplits;c2.conflictCopy=o.conflictCopy;c2.deltaChunkWords=o.deltaChunk;c2.deltaBytes=o.deltaBytes;
+        c2.minimalRestore=o.minimal;c2.dirtyRecord=o.dirty;c2.dirtyCheck=true;c2.dirtyDisableOnMismatch=o.failSafe;c2.synced=&dev.synced;c2.maxTexSplits=o.maxTexSplits;c2.conflictCopy=o.conflictCopy;c2.deltaChunkWords=o.deltaChunk;c2.deltaBytes=o.deltaBytes;
         if(gMirrorMode){
             Fake::Mirror& m=dev.mir;view=Fake::makeView(dev);c2.source=&view;
             if(gMirrorMode==2){for(unsigned i=0;i<256;i+=3)m.hideRs[i]=true;for(unsigned i=0;i<256;i+=5)m.hideVsF[i]=true;for(unsigned i=0;i<224;i+=7)m.hidePsF[i]=true;m.hideTex[3]=m.hideTex[5]=true;m.hideSmp[1]=true;m.hideVsB=true;}
@@ -319,7 +319,7 @@ struct Rig{
         layer.attach(&dev);layer.configure(c2);layer.beginFrame(false);
     }
     ~Rig(){
-        CHECK(layer.totalCounters().dirtyMismatches==0);
+        CHECK(o.allowMismatch||layer.totalCounters().dirtyMismatches==0);
         layer.reset();
         for(auto& m:marks)CHECK(m.second==0);
         for(auto* p:std::initializer_list<IUnknown*>{T,D,Other,ring,ring2,stat,extra,ringIb,ringIb32,stIb,declP,declTwo,vs,vsEff,ps,psEff,texA,texB})p->Release();
@@ -1449,6 +1449,25 @@ static void testDirtyRandom(){
         CHECK(p.lay->layer.totalCounters().dirtyMismatches==0);
     }
 }
+// A missing hook (a setter that forgets to clear its bit) is what the field cross-check is for: the first mismatching record is described (slot kind, index, both values), the full
+// compare's delta is used (the output stays right), and with the fail-safe on dirtyRecord is off from then on.
+static void sMissingHook(Rig& r){
+    deferQuad(r,1);deferQuad(r,2);
+    r.dev.dropRsHook=true;r.dev.SetRenderState(8,5);r.dev.dropRsHook=false;            // changes render state 8 without clearing its bit
+    deferQuad(r,3);deferQuad(r,4);r.boundary();
+}
+static void testDirtyFailSafe(){
+    if(!gMirrorMode||!gDirty)return;                                                     // the bits are used only with the state cache and dirtyRecord
+    for(bool failSafe:{true,false}){
+        Opts o;o.allowMismatch=true;o.failSafe=failSafe;Pair p=runBoth(sMissingHook,o);
+        const Counters& c=p.lay->layer.totalCounters();
+        checkEquivalent(p);                                                              // the output is the reference's either way
+        DeltaDiff d;CHECK(p.lay->layer.takeDirtyMismatch(d)&&d.have&&std::string(d.kind)=="rs"&&d.index==8&&d.dirty==0&&d.full==5);
+        CHECK(!p.lay->layer.takeDirtyMismatch(d));                                       // once per session
+        CHECK(p.lay->layer.config().dirtyRecord==!failSafe);
+        CHECK(failSafe?c.dirtyMismatches==1:c.dirtyMismatches>=1);                       // fail safe: the later records are full compares (no more differences possible to find)
+    }
+}
 // The saving is visible: a run of draws that change nothing but the tag examines a handful of slots per record instead of the whole read set, with the same output.
 static void sQuiet(Rig& r){for(int i=1;i<=20;++i)deferQuad(r,i);r.boundary();}
 static void testRecordSlots(){
@@ -1460,6 +1479,8 @@ static void testRecordSlots(){
     if(gMirrorMode!=0)CHECK(ca.recordSlots*3<cb.recordSlots);                                // with the state cache usable; without it every record is a full compare
     else CHECK(ca.recordSlots==cb.recordSlots);
     CHECK(a.lay->layer.totalCounters().deltaWords==b.lay->layer.totalCounters().deltaWords);   // identical deltas
+    Opts tm;tm.timed=true;tm.dirty=true;Pair c=runBoth(sQuiet,tm);                              // the cross-check's second build is timed apart (one tick per record here), so it can be taken out of the record time
+    CHECK(c.lay->layer.phaseTicks().check==(gMirrorMode?20u:0u));
 }
 // ---------------- the minimal restore ----------------
 // A sequence with every kind of entry: programmable, UP, indexed UP, materialized (the ring overwritten after the record), fixed function (FVF and declaration), a name.
@@ -1713,7 +1734,7 @@ int main(int argc,char** argv){
     const char* only=argc>1?argv[1]:nullptr; // a test name (substring) to run alone, and an optional cache mode
     const bool fixedMode=argc>2;if(fixedMode)gMirrorMode=std::atoi(argv[2]);
     struct T{const char* name;void(*fn)();};
-    const T tests[]={{"classify",testClassify},{"lazy classify",testLazyClassify},{"glow verdict",testGlowVerdict},{"delta profile",testDeltaProfile},{"span tracker",testSpanTracker},{"dirty record random",testDirtyRandom},{"record slots",testRecordSlots},{"frame state",testFrameState},{"guard table",testGuardTable},{"equivalence",testEquivalence},
+    const T tests[]={{"classify",testClassify},{"lazy classify",testLazyClassify},{"glow verdict",testGlowVerdict},{"delta profile",testDeltaProfile},{"span tracker",testSpanTracker},{"dirty record random",testDirtyRandom},{"record slots",testRecordSlots},{"dirty fail safe",testDirtyFailSafe},{"frame state",testFrameState},{"guard table",testGuardTable},{"equivalence",testEquivalence},
         {"discard copy",testDiscard},{"partial overlap",testPartialOverlap},{"two entries",testTwoEntries},{"count-based marks",testMarkIsCountBased},
         {"rebase negative base",testRebaseNegativeBase},{"rebase kept base",testRebasePositiveBase},{"index buffer copy",testIbMaterialized},
         {"mixed streams",testMixedStreams},{"32-bit UP",test32bitUP},{"non-dynamic buffer",testNonDynamic},{"copy disabled",testConflictCopyDisabled},

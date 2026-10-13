@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <memory>
 #include <new>
@@ -328,6 +329,7 @@ struct Config{
     void (*markGuard)(void* ctx,void* rawBuffer,bool guarded)=nullptr;void* markCtx=nullptr; // sets/clears the per-buffer "call onBufferWrite" flag
     NorthlightStateBlockPool* savedPool=nullptr;  // the renderer's SavedState pool for the replay scope (optional; used only when minimalRestore is off or a drain cannot use it)
     bool dirtyRecord=true;                        // a record examines only the slots whose synced bit (SyncedSlots, kept by the device mirror's setters) is clear; false: every slot of the read set, as before
+    bool dirtyDisableOnMismatch=false;            // fail safe: the first record whose synced-bit delta differs from the full compare's switches dirtyRecord off for good (the full compare's delta is used)
     bool dirtyCheck=false;                        // tests: run both and count a difference in dirtyMismatches (the full compare's delta is the one used)
     SyncedSlots* synced=nullptr;                  // the bits; null (or the state cache unusable for a record): the full compare
     bool minimalRestore=true;                     // a drain restores exactly the slots it set (read before the first Set, restored after the last draw) instead of a D3DSBT_ALL state block; false: always the state block
@@ -547,6 +549,49 @@ public:
     void clearStats(){st_=DeltaStats{};}
 };
 
+// The first op in which two deltas differ, for the one-off SPELLDIRTY line: kind name, slot index (render state id, sampler state a = stage*13+type-1, texture stage, first register of a
+// run, ...), and a value of each side (0 when that side has no such op; constant runs: count << 32 | a hash of their words).
+struct DeltaDiff{
+    bool have=false;char kind[12]={};unsigned index=0;uint64_t dirty=0,full=0;
+};
+class DeltaLister{
+public:
+    struct Op{uint8_t kind;unsigned index;uint64_t value;};
+    std::vector<Op> ops;
+    static const char* name(unsigned k){static const char* const n[]={"rs","ss","tex","vsF","psF","vsI","psI","vsB","psB","viewport","scissor","clip","vs","ps","decl","fvf"};return k<16?n[k]:"?";}
+    static uint64_t run(unsigned n,const uint32_t* w,unsigned words){uint32_t h=2166136261u;for(unsigned i=0;i<words;++i)h=(h^w[i])*16777619u;return uint64_t(n)<<32|h;}
+    void rs(unsigned i,DWORD v,bool){ops.push_back({0,kRenderStateIds[i],v});}
+    void ss(unsigned a,DWORD v){ops.push_back({1,a,v});}
+    void tex(unsigned t,void* p){ops.push_back({2,t,uint64_t(reinterpret_cast<uintptr_t>(p))});}
+    void vsF(unsigned s,unsigned n,const uint32_t* w){ops.push_back({3,s,run(n,w,n*4)});}
+    void psF(unsigned s,unsigned n,const uint32_t* w){ops.push_back({4,s,run(n,w,n*4)});}
+    void vsI(unsigned s,unsigned n,const uint32_t* w){ops.push_back({5,s,run(n,w,n*4)});}
+    void psI(unsigned s,unsigned n,const uint32_t* w){ops.push_back({6,s,run(n,w,n*4)});}
+    void vsB(unsigned s,unsigned n,const uint32_t* w){ops.push_back({7,s,run(n,w,n)});}
+    void psB(unsigned s,unsigned n,const uint32_t* w){ops.push_back({8,s,run(n,w,n)});}
+    void viewport(const uint32_t* w){ops.push_back({9,0,run(1,w,sizeof(D3DVIEWPORT9)/4)});}
+    void scissor(const uint32_t* w){ops.push_back({10,0,run(1,w,4)});}
+    void clip(unsigned i,const uint32_t* w){ops.push_back({11,i,run(1,w,4)});}
+    void vs(void* p){ops.push_back({12,0,uint64_t(reinterpret_cast<uintptr_t>(p))});}
+    void ps(void* p){ops.push_back({13,0,uint64_t(reinterpret_cast<uintptr_t>(p))});}
+    void decl(void* p){ops.push_back({14,0,uint64_t(reinterpret_cast<uintptr_t>(p))});}
+    void fvf(DWORD v){ops.push_back({15,0,v});}
+    static DeltaDiff diff(const uint32_t* a,unsigned na,const uint32_t* b,unsigned nb){
+        DeltaLister x,y;decodeOps(a,a+na,x);decodeOps(b,b+nb,y);
+        DeltaDiff d;d.have=true;auto put=[&](const char* k,unsigned i,uint64_t va,uint64_t vb){std::snprintf(d.kind,sizeof d.kind,"%s",k);d.index=i;d.dirty=va;d.full=vb;};
+        const size_t n=std::min(x.ops.size(),y.ops.size());
+        for(size_t i=0;i<n;++i)if(x.ops[i].kind!=y.ops[i].kind||x.ops[i].index!=y.ops[i].index||x.ops[i].value!=y.ops[i].value){
+            if(x.ops[i].kind==y.ops[i].kind&&x.ops[i].index==y.ops[i].index)put(name(x.ops[i].kind),x.ops[i].index,x.ops[i].value,y.ops[i].value);
+            else put(name(y.ops[i].kind),y.ops[i].index,0,y.ops[i].value); // the full compare has an op the dirty path lacks (the usual case: a changed slot it did not examine)
+            return d;
+        }
+        if(x.ops.size()>n)put(name(x.ops[n].kind),x.ops[n].index,x.ops[n].value,0);
+        else if(y.ops.size()>n)put(name(y.ops[n].kind),y.ops[n].index,0,y.ops[n].value);
+        else put("words",0,na,nb);
+        return d;
+    }
+};
+
 class Layer{
     struct Stream{IDirect3DVertexBuffer9* vb=nullptr;uint32_t off=0,stride=0,lo=0,hi=0,sno=0;int32_t blob=-1;};
     struct FfRec{                                     // only for fixed-function entries (Entry::ff), allocated in chunks of kFfChunk
@@ -600,6 +645,7 @@ private:
     }
     std::vector<std::unique_ptr<uint32_t[]>> deltaChunks_;unsigned deltaChunk_=0,deltaUsed_=0; // state deltas of the pending entries; deltaChunk_/deltaUsed_: the chunk being filled and its used words
     struct SyncPend{uint64_t rs[4]={},vsF[4]={},psF[4]={};uint16_t ss[16]={};uint16_t tex=0;bool vp=false;unsigned slots=0;};
+    DeltaDiff dirtyFirst_;bool dirtyTaken_=false;       // the first synced-bit mismatch of the session (takeDirtyMismatch)
     SyncPend pend_;                                   // the slots the delta being built examined: they become synced when the record commits
     std::unique_ptr<DeltaProfile> profStore_;DeltaProfile* prof_=nullptr; // SPELLDELTA diagnostics: non-null only on sampled frames (profile())
     // Stream and index buffer binds of an entry against the previous entry of the sequence (the first entry binds everything: unknown), one word each; a UP draw rebinds stream 0 every time.
@@ -728,7 +774,7 @@ private:
     void drain(){count([](Counters& c){++c.drains;});timing_=cfg_.clock&&cfg_.timing&&cfg_.timing(cfg_.clockCtx);runReplay();clearFrame();}
 
     // Phase timing (sampled frames): ticks of the drains' state save, upload and state restore, read by the integration with phaseTicks().
-    bool timing_=false;uint64_t tSave_=0,tUpload_=0,tRestore_=0;
+    bool timing_=false;uint64_t tSave_=0,tUpload_=0,tRestore_=0,tCheck_=0;
     struct Phase{
         Layer& l;uint64_t* out;uint64_t t0=0;
         Phase(Layer& layer,uint64_t* o):l(layer),out(o){if(out)t0=l.cfg_.clock(l.cfg_.clockCtx);}
@@ -1287,12 +1333,16 @@ public:
     const Counters& lastFrameCounters()const{return last_;}
     const Counters& totalCounters()const{return total_;}
     // SPELLDELTA diagnostics: on for the sampled frames only (the integration switches it at the frame boundary); off costs one branch per record.
+    // The dirty cross-check on sampled frames, and its first mismatch (once per session, for a one-off log line).
+    void dirtyCheck(bool on){cfg_.dirtyCheck=on;}
+    bool takeDirtyMismatch(DeltaDiff& out){if(!dirtyFirst_.have||dirtyTaken_)return false;dirtyTaken_=true;out=dirtyFirst_;return true;}
     void profile(bool on){if(on){if(!profStore_)profStore_.reset(new(std::nothrow) DeltaProfile);prof_=profStore_.get();}else prof_=nullptr;}
     const DeltaStats* deltaStats()const{return prof_?&prof_->stats():nullptr;}
     void clearDeltaStats(){if(prof_)prof_->clearStats();}
-    struct PhaseTicks{uint64_t save,upload,restore;};   // clock() ticks the drains spent in their state save, upload and state restore since the last clearPhaseTicks()
-    PhaseTicks phaseTicks()const{return PhaseTicks{tSave_,tUpload_,tRestore_};}
-    void clearPhaseTicks(){tSave_=tUpload_=tRestore_=0;}
+    struct PhaseTicks{uint64_t save,upload,restore,check;};   // check: the time of the dirty cross-check's second (full) build, inside the record timers
+      // clock() ticks the drains spent in their state save, upload and state restore since the last clearPhaseTicks()
+    PhaseTicks phaseTicks()const{return PhaseTicks{tSave_,tUpload_,tRestore_,tCheck_};}
+    void clearPhaseTicks(){tSave_=tUpload_=tRestore_=tCheck_=0;}
     size_t recordChunks()const{return deltaChunks_.size();} // allocated chunks of state delta words (Config::deltaChunkWords each)
     size_t ffChunks()const{return ffChunks_.size();}      // allocated chunks of kFfChunk fixed-function records
     uint32_t arenaUsed()const{return arenaUsed_;}
@@ -1417,12 +1467,19 @@ public:
             tex[t]=tx;texHeld[t]=h;
         }
         {   Reason why=buildDelta(rd,fixed,vs,ps,decl,fvf,tex,sy,sy!=nullptr);
-            if(sy&&cfg_.dirtyCheck){ // tests: the full compare must give the same delta (its result, and its larger examined set, is the one used); a Get the full compare needs and the dirty path never makes may fail
+            if(sy&&cfg_.dirtyCheck){ const bool tm=cfg_.clock&&cfg_.timing&&cfg_.timing(cfg_.clockCtx);Phase checkTime(*this,tm?&tCheck_:nullptr); // tests and sampled frames: the full compare must give the same delta (its result, and its larger examined set, is the one used); a Get the full compare needs and the dirty path never makes may fail
                 const unsigned n1=n_;const SyncPend p1=pend_;std::vector<uint32_t> d1(scratch_.get(),scratch_.get()+n_);
                 const Reason why2=buildDelta(rd,fixed,vs,ps,decl,fvf,tex,nullptr,true);
                 if(why==Reason::Count&&why2!=Reason::Count){n_=n1;pend_=p1;std::memcpy(scratch_.get(),d1.data(),size_t(n1)*4);}   // keep the dirty result
                 else{
-                    if(why2!=why||n_!=n1||std::memcmp(d1.data(),scratch_.get(),size_t(n1)*4))count([](Counters& c){++c.dirtyMismatches;});
+                    if(why2!=why||n_!=n1||std::memcmp(d1.data(),scratch_.get(),size_t(n1)*4)){
+                        count([](Counters& c){++c.dirtyMismatches;});
+                        if(!dirtyFirst_.have){
+                            if(why2!=why){dirtyFirst_.have=true;std::snprintf(dirtyFirst_.kind,sizeof dirtyFirst_.kind,"reason");dirtyFirst_.index=0;dirtyFirst_.dirty=unsigned(why);dirtyFirst_.full=unsigned(why2);}
+                            else dirtyFirst_=DeltaLister::diff(d1.data(),n1,scratch_.get(),n_);
+                        }
+                        if(cfg_.dirtyDisableOnMismatch)cfg_.dirtyRecord=false;
+                    }
                     pend_.slots=p1.slots;why=why2;
                 }
             }

@@ -27,3 +27,31 @@ checks={
 }
 for k,v in checks.items():print('PASS' if v else 'FAIL',k)
 assert all(checks.values())
+
+# ---- the extension device: its raw methods and the stream's dispatch ----
+raw=fp.src('extension_raw_methods.inl').read_text()
+rawLines={mt.group(1):mt.group(0) for mt in re.finditer(r'HRESULT STDMETHODCALLTYPE (\w+)\([^\n]*',raw)}
+trackedRaw=[k for k in HOOKED]
+def rawOk(line):
+    # every call of the backend vtable sits inside the rawActive() branch (a RawScope brackets it with invalidate()); the other branch is the mirror's own setter
+    i=line.find('if(rawActive()){');j=line.find('real->')
+    return i>=0 and 0<=j and j>i and line.find('return MirrorDevice::')>line.find('}return')>0 and line.count('real->')==1
+checks2={
+ 'every raw Set of a tracked slot is inside the rawActive() branch and falls through to the mirror setter':all(k in rawLines and rawOk(rawLines[k]) for k in trackedRaw),
+ 'RawScope brackets its work with invalidate() (entry and exit)':re.search(r'explicit RawScope\(ExtensionDevice& owner\)[^{]*\{\s*owner\.m->invalidate\(\);\+\+owner\.m->rawDepth',m) is not None and re.search(r'~RawScope\(\)\{[^}]*device->m->invalidate\(\);--device->m->rawDepth',m) is not None,
+ 'the raw methods are only generated from the MirrorDevice overrides (a new tracked setter gets its raw branch automatically)':'selected = set(re.findall(' in (fp.SCRIPTS/'generate_extension_raw_methods.py').read_text(),
+}
+stream=fp.src('command_stream.inl').read_text()
+def caseBlock(name):
+    a=stream.find('    case Cmd::Device_'+name+': {',stream.find('inline bool dispatchGenerated'));b=stream.find('\n    case Cmd::',a+10)
+    return stream[a:b] if a>=0 else ''
+for k in HOOKED:
+    blk=caseBlock(k)
+    calls=re.findall(r'([\w.]+(?:\(\))?)->'+k+r'\(',blk)
+    checks2['stream dispatch of '+k+' goes to the extension device or the Device, never a backend pointer']=bool(blk) and set(calls)<={'_e','tr.device()'} and '_e' in calls and 'tr.device()' in calls
+sd=fp.src('stream_device.h').read_text()
+checks2['the stream replays direct calls on the ExtensionDevice the renderer gives it (same mirror)']='core.ext=opt.extension;' in sd and 'options.extension=target->extensionDevice();' in r and re.search(r'IDirect3DDevice9\* extensionDevice\(\)\s*\{\s*return ext;',r) is not None
+sp=fp.src('stream_proxies.h').read_text()
+checks2['StreamCore::ext is documented as the ExtensionDevice (same real device, same mirror)']='the ExtensionDevice (same real device, same mirror)' in sp
+for k,v in checks2.items():print('PASS' if v else 'FAIL',k)
+assert all(checks2.values())
