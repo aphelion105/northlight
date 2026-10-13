@@ -368,7 +368,7 @@ inline void radiusStage(const std::vector<Draw>& draws,std::vector<Actor>& actor
                 for(;it!=entries.end()&&it->key==a.key&&it->at[0]<=at[0]+reach;++it)visit(std::size_t(it-entries.begin()));}
             else if(!sorted)for(auto i:spare)visit(i);
             else for(auto it=std::lower_bound(spare.begin(),spare.end(),at[0]-reach,[&](std::uint32_t i,float x){return entries[i].at[0]<x;});it!=spare.end()&&entries[*it].at[0]<=at[0]+reach;++it)visit(*it);}
-        auto take=[&](const RadiusPair& p){auto& a=actors[p.actor];auto& e=entries[p.entry];if(a.radiusEntry||e.used)return;a.radiusEntry=&e;e.used=true;result.radiusRekeyed+=pass==2;a.rekeyed=pass==2;};
+        auto take=[&](const RadiusPair& p){auto& a=actors[p.actor];auto& e=entries[p.entry];if(a.radiusEntry||e.used)return;a.radiusEntry=&e;e.used=true;result.radiusRekeyed+=pass==2;a.rekeyed=diagnostics&&pass==2;};
         auto less=[](const RadiusPair& x,const RadiusPair& y){return x.d<y.d||(x.d==y.d&&(x.actor<y.actor||(x.actor==y.actor&&x.entry<y.entry)));};
         // Greedy nearest-first, without sorting the common case: a pair that is the
         // nearest of both its actor and its entry is in the greedy result anyway.
@@ -448,7 +448,7 @@ inline void radiusStage(const std::vector<Draw>& draws,std::vector<Actor>& actor
         if(in)h.outside=false;}
     for(auto& a:actors){if(!body(a)||a.head==SIZE_MAX)continue;const auto& h=actors[a.head];const RadiusEntry* e=a.radiusEntry;
         a.outside=h.outside;if(&a!=&h)a.companion=h.companion||h.self;
-        const bool changed=e&&e->filtered&&e->inside==a.outside;a.radiusSince=changed?0:e?e->since+(e->since<~0u):~0u;result.radiusRekeyFlips+=a.rekeyed&&changed;}
+        const bool changed=e&&e->filtered&&e->inside==a.outside;a.radiusSince=changed?0:e?e->since+(e->since<~0u):~0u;result.radiusRekeyFlips+=a.rekeyed&&changed;} /* a.rekeyed is set on diagnostics frames only */
     // One change per character: its sections were mostly one way last selection and are the other now.
     for(std::size_t n=0;n<actors.size();++n){if(!isHead(n))continue;const auto& c=characters[n];
         const bool changed=actors[n].outside?c.in>c.out:c.out>c.in;result.radiusToggles+=changed;result.radiusFlicker+=changed&&c.since<dwell;++result.radiusCharacters;}
@@ -456,8 +456,8 @@ inline void radiusStage(const std::vector<Draw>& draws,std::vector<Actor>& actor
     // Free rigid actors (still rigid after the classification: probation, settled) are never judged by the radius and always cast:
     // those beyond radius+band of the centre cast a shadow their body (if captured at all) does not.
     if(diagnostics)result.beyondKnown=true;
-    if(diagnostics||result.attachToFree||result.freeToAttach)for(const auto& a:actors){if(!a.located)continue;
-        const bool change=a.toFree||a.toAttach,gauge=diagnostics&&a.rigid&&a.keep;if(!change&&!gauge)continue;
+    if(diagnostics)for(const auto& a:actors){if(!a.located)continue;
+        const bool change=a.toFree||a.toAttach,gauge=a.rigid&&a.keep;if(!change&&!gauge)continue;
         float d=0;for(unsigned k=0;k<3;++k){const float x=a.at[k]-centre[k];d+=x*x;}if(!(d>wide*wide))continue;
         result.attachToFreeBeyond+=a.toFree;result.freeToAttachBeyond+=a.toAttach;if(!gauge)continue;
         if(a.everAttached){++result.freeRigidBeyond;result.freeRigidBeyondBytes+=a.bytes;result.freeRigidMaxYards=std::max(result.freeRigidMaxYards,std::sqrt(d));result.stuckBeyond+=a.settled;}
@@ -568,8 +568,8 @@ inline Result choose(std::vector<Draw>& draws,Scratch& scratch,std::size_t budge
             if(tight!=SIZE_MAX){a.attachment=e&&moved(e->anchor,CoMoveTolerance);follow=a.attachment||a.still<tuning.frames(ProbationStill)||tuning.probationFollow;if(follow)a.previous=e&&e->kept;}
             if(!a.attachment&&a.free>=tuning.frames(FreeFrames))a.settled=true;
             if(a.attachment)a.free=0;}
-        a.everAttached=a.attachment||(e&&(e->everAttached||e->attachment)); /* sticky, diagnostics only: a rigid actor that has ever had a body */
-        if(e){a.toFree=e->attachment&&!a.attachment;a.toAttach=!e->attachment&&a.attachment;result.attachToFree+=a.toFree;result.freeToAttach+=a.toAttach;}
+        a.everAttached=a.attachment||(e&&(e->everAttached||e->attachment)); /* sticky in the history, also off diagnostics: a rigid actor that has ever had a body */
+        if(e&&diagnostics){a.toFree=e->attachment&&!a.attachment;a.toAttach=!e->attachment&&a.attachment;result.attachToFree+=a.toFree;result.freeToAttach+=a.toAttach;} /* diagnostics only */
         if(!follow){links.resize(linked);continue;}
         a.rigid=false;
         if(inReach!=SIZE_MAX){a.body=inReach;a.bodyKey=actors[inReach].key;std::memcpy(a.bodyAt,actors[inReach].at,sizeof a.bodyAt);++result.attached;result.attachedBytes+=a.bytes;}
