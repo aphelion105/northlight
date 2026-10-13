@@ -1,6 +1,7 @@
 // Task 34: behavioural tests of the production spell_layer.h against the FakeDevice of test_spell_layer_api.h.
 #include "test_spell_layer_api.h"
 #include "spell_fog_proof.h"
+#include "spell_fog_march.h"
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -1484,6 +1485,38 @@ static void testSpellFogToggle(){
     CHECK(seen==4&&p.lay->layer.totalCounters().fogEntries==2&&p.lay->layer.totalCounters().dirtyMismatches==0);
 }
 
+// ---- SpellFog: the CPU mirror of WorldFog's extinction (spell_fog_march.h) ----
+static void testSpellFogMarch(){
+    using namespace NorthlightSpellFog;
+    auto uniform=[](float day,float nightExtra,float height){auto f=std::make_unique<NorthlightRegionalFog::Field>();f->originX=f->originY=0;for(auto& t:f->texels)t={0,day,nightExtra,height};return f;};
+    auto none=[](float,float,float,const FieldSample&){return 0.f;};
+    March m;m.night=0;m.volume[0]=.005f;m.volume[1]=.003f;m.volume[2]=64;m.volume[3]=48;m.forestAir=.0035f;m.airFloor=.0017f;
+    const float cx=256,cy=256;
+    // a low horizontal ray in a uniform generic forest (height 1.25): ground .01 + the forest air + the shared air, the near fade integrated independently
+    {auto f=uniform(.01f,0,1.25f);const float a[3]={cx,cy,0},b[3]={cx+60,cy,0};
+     const float tau=opticalDepth(*f,m,a,b,48,none);
+     float want=0;for(int i=0;i<60000;++i){const float t=(float(i)+.5f)*60.f/60000;want+=nearFade(m,t)*.001f;}
+     want*=.01f+m.airFloor+m.forestAir;                                                     // vertical = airVertical = 1 at the ground
+     CHECK(std::fabs(tau-want)<.01f*want);}
+    // the vertical profiles: at 3 units the ground layer (height 1.25) is gone and only the air's profile (48 units) remains
+    {auto f=uniform(.01f,0,1.25f);const float a[3]={cx,cy,3},b[3]={cx+60,cy,3};
+     const float tau=opticalDepth(*f,m,a,b,48,none);float want=0;for(int i=0;i<60000;++i){const float t=(float(i)+.5f)*60.f/60000;want+=nearFade(m,t)*.001f;}
+     const float av=1-3.f/48;want*=(m.airFloor+m.forestAir)*av*av;CHECK(std::fabs(tau-want)<.01f*want);}
+    // night: the extra density counts and the ground layer thickens toward 6 units (height 1.25, profile 0)
+    {auto f=uniform(.001f,.02f,1.25f);March n=m;n.night=1;const float a[3]={cx,cy,3},b[3]={cx+60,cy,3};
+     const float tau=opticalDepth(*f,n,a,b,48,none);float fadeSum=0;for(int i=0;i<60000;++i){const float t=(float(i)+.5f)*60.f/60000;fadeSum+=nearFade(n,t)*.001f;}
+     const float vertical=1-3.f/6,av=1-3.f/48;const float want=fadeSum*((.001f+.02f)*vertical*vertical+(n.airFloor+n.forestAir)*av*av);CHECK(std::fabs(tau-want)<.01f*want);}
+    // a ray that descends to the ground meets the ground fog that an eye-height ray above the layer misses
+    {auto f=uniform(.02f,0,2.5f);const float eye[3]={cx,cy,7},level[3]={cx+60,cy,7},down[3]={cx+60,cy,.5f};
+     CHECK(opticalDepth(*f,m,eye,down,48,none)>1.5f*opticalDepth(*f,m,eye,level,48,none));}
+    // the field: interior coverage 1, faded toward the border, 0 outside; cells without a height do not count; absent field no extinction
+    {auto f=uniform(.01f,0,1.25f);CHECK(fieldAt(*f,256,256).coverage==1.f);CHECK(fieldAt(*f,4,256).coverage<1.f&&fieldAt(*f,4,256).coverage>0);CHECK(fieldAt(*f,-20,256).coverage==0&&fieldAt(*f,2000,256).coverage==0);
+     for(unsigned i=0;i<NorthlightRegionalFog::N*NorthlightRegionalFog::N;++i)if((i%NorthlightRegionalFog::N)>=32)f->texels[i].height=0;   // the right half has no air
+     const FieldSample mid=fieldAt(*f,32*8-4,256);CHECK(mid.coverage>.4f&&mid.coverage<.6f);CHECK(fieldAt(*f,32*8+20,256).coverage==0);}
+    // monotone in distance and zero without a field
+    {auto f=uniform(.01f,0,1.25f);const float a[3]={cx,cy,0};float prev=0;for(float z:{6.f,12.f,24.f,48.f,80.f,128.f}){const float b[3]={cx+z,cy,0};const float t=opticalDepth(*f,m,a,b,24,none);CHECK(t>=prev);prev=t;}
+     auto empty=uniform(0,0,0);const float b[3]={cx+60,cy,0};CHECK(opticalDepth(*empty,m,a,b,24,none)==0);}
+}
 // ---- SpellFog round 1: the vertex shader proof, freshness, the fit cache and cap, straight alpha only ----
 namespace sfp{
 static uint32_t rtok(unsigned type,unsigned n){return 0x80000000u|((type&7)<<28)|((type&24)<<8)|n;}
@@ -2072,7 +2105,7 @@ int main(int argc,char** argv){
     const char* only=argc>1?argv[1]:nullptr; // a test name (substring) to run alone, and an optional cache mode
     const bool fixedMode=argc>2;if(fixedMode)gMirrorMode=std::atoi(argv[2]);
     struct T{const char* name;void(*fn)();};
-    const T tests[]={{"classify",testClassify},{"lazy classify",testLazyClassify},{"glow verdict",testGlowVerdict},{"spell fog fit",testSpellFogFit},{"spell fog record",testSpellFogRecord},{"spell fog toggle",testSpellFogToggle},{"vs fog proof",testVsFogProof},{"spell fog fresh",testSpellFogFresh},{"spell fog cache and blend",testSpellFogCacheAndBlend},{"order split cap",testOrderSplitCap},{"stride 0 stream",testStride0},{"fvf vertex size",testFvfVertexSize},{"allocation failures",testAllocFailures},{"stride 0 fvf",testStride0Fvf},{"upload cursor",testUploadCursor},{"depth stencil texture",testDepthStencilTexture},{"trim and reuse",testTrimReuse},{"dirty record random",testDirtyRandom},{"record slots",testRecordSlots},{"dirty fail safe",testDirtyFailSafe},{"frame state",testFrameState},{"guard table",testGuardTable},{"equivalence",testEquivalence},
+    const T tests[]={{"classify",testClassify},{"lazy classify",testLazyClassify},{"glow verdict",testGlowVerdict},{"spell fog fit",testSpellFogFit},{"spell fog record",testSpellFogRecord},{"spell fog toggle",testSpellFogToggle},{"spell fog march",testSpellFogMarch},{"vs fog proof",testVsFogProof},{"spell fog fresh",testSpellFogFresh},{"spell fog cache and blend",testSpellFogCacheAndBlend},{"order split cap",testOrderSplitCap},{"stride 0 stream",testStride0},{"fvf vertex size",testFvfVertexSize},{"allocation failures",testAllocFailures},{"stride 0 fvf",testStride0Fvf},{"upload cursor",testUploadCursor},{"depth stencil texture",testDepthStencilTexture},{"trim and reuse",testTrimReuse},{"dirty record random",testDirtyRandom},{"record slots",testRecordSlots},{"dirty fail safe",testDirtyFailSafe},{"frame state",testFrameState},{"guard table",testGuardTable},{"equivalence",testEquivalence},
         {"discard copy",testDiscard},{"partial overlap",testPartialOverlap},{"two entries",testTwoEntries},{"count-based marks",testMarkIsCountBased},
         {"rebase negative base",testRebaseNegativeBase},{"rebase kept base",testRebasePositiveBase},{"index buffer copy",testIbMaterialized},
         {"mixed streams",testMixedStreams},{"32-bit UP",test32bitUP},{"non-dynamic buffer",testNonDynamic},{"copy disabled",testConflictCopyDisabled},

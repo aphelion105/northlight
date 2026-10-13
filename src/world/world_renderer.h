@@ -53,6 +53,7 @@
 #include "legacy_fog.h"
 #include "spell_fog.h"
 #include "spell_fog_proof.h"
+#include "spell_fog_march.h"
 #include "horizon_haze.h"
 #include "weather_state.h"
 #include "weather_effects.h"
@@ -2975,16 +2976,34 @@ public:
                     const float sigma=sigmaAt(context.camera[0]+ray.x*t,context.camera[1]+ray.y*t,context.camera[2]+ray.z*t,true,cloudy);
                     depth+=sigma*fade*fade*(3-2*fade)*8;cloudyDepth+=cloudy*fade*fade*(3-2*fade)*8;}
                 a.veil[0]=std::exp(-depth);a.veil[1]=std::exp(-cloudyDepth);
-                // SpellFog: the same march along the view axis (the representative ray of a spell draw), every 2 units, with the shader's near fade; the optical depth is read at the fixed
-                // distances (the shader integrates to 128 units: FogInfo.w). Off-axis pixels are a little farther per unit of view depth: approximate by design.
+                // SpellFog: WorldFog's extinction mirrored term by term (spell_fog_march.h: the bilinear field with its coverage, the night profile, VolumeAir, the forest air, the rain's air extinction,
+                // the near fade, the heights relative to the ground at every step) for the rays a spell draw has: from the eye toward a point at the camera's heading, kDistance away, at the height of
+                // an effect above the ground THERE (a lantern glow, a spell at the player's height), not along the horizontal axis at eye height, which can sit above the ground fog layer that
+                // the world at that distance is seen through. The clouds' bank is added when its pass runs, at the same samples (their coverage as the shader's valid).
                 {V fwd=V(context.inverseView[8],context.inverseView[9],context.inverseView[10])*projection[2];const float fl=std::sqrt(NorthlightGI::dot(fwd,fwd));
-                 if(fl>1e-6f){fwd=fwd*(1.f/fl);float d0=0,d1=0;unsigned k=0;
-                    for(unsigned i=0;i<64&&k<NorthlightSpellFog::kSamples;++i){const float t=(float(i)+.5f)*2;
-                        const float fade=std::clamp((t-3.5f)/12.f,0.f,1.f);float cl=0;
-                        const float sg=sigmaAt(context.camera[0]+fwd.x*t,context.camera[1]+fwd.y*t,context.camera[2]+fwd.z*t,true,cl);
-                        d0+=sg*fade*fade*(3-2*fade)*2;d1+=cl*fade*fade*(3-2*fade)*2;
-                        while(k<NorthlightSpellFog::kSamples&&float(i+1)*2>=NorthlightSpellFog::kDistance[k]-1e-3f){a.spellTau[0][k]=d0;a.spellTau[1][k]=d1;++k;}}
-                    a.spellValid=k==NorthlightSpellFog::kSamples;}}
+                 if(fl>1e-6f){
+                    NorthlightSpellFog::March m;m.night=night;std::memcpy(m.volume,c[32],16);m.forestAir=c[22][3];m.airFloor=airFloor;
+                    float hx=fwd.x,hy=fwd.y;const float hl=std::sqrt(hx*hx+hy*hy);if(hl>.05f){hx/=hl;hy/=hl;}else{hx=1;hy=0;}
+                    constexpr float kEffectHeight=2.5f;
+                    const float eye[3]={context.camera[0],context.camera[1],context.camera[2]};
+                    const auto noClouds=[](float,float,float,const NorthlightSpellFog::FieldSample&){return 0.f;};
+                    const auto clouds=[&](float x,float y,float z,const NorthlightSpellFog::FieldSample& fs){
+                        if(!cloudCandidate)return 0.f;
+                        const float point[3]={x,y,z};return NorthlightFogClouds::sigmaAt(cloudData,cf,context.camera,point,fs.ground,fs.height,fs.coverage);};
+                    for(unsigned k=0;k<NorthlightSpellFog::kSamples;++k){
+                        const float z=NorthlightSpellFog::kDistance[k];
+                        float to[3]={eye[0]+hx*z,eye[1]+hy*z,eye[2]};
+                        const NorthlightSpellFog::FieldSample g=NorthlightSpellFog::fieldAt(field,to[0],to[1]);
+                        if(g.coverage>0){ // the effect's height above the ground at the end point; the horizontal reach shortens so the ray is z long
+                            const float dz=std::clamp(g.ground+kEffectHeight-eye[2],-.9f*z,.9f*z),dh=std::sqrt(std::max(z*z-dz*dz,1.f));
+                            to[0]=eye[0]+hx*dh;to[1]=eye[1]+hy*dh;to[2]=eye[2]+dz;
+                        }
+                        float t0=NorthlightSpellFog::opticalDepth(field,m,eye,to,24,noClouds);
+                        float t1=cloudCandidate?NorthlightSpellFog::opticalDepth(field,m,eye,to,24,clouds):t0;
+                        if(k){t0=std::max(t0,a.spellTau[0][k-1]);t1=std::max(t1,a.spellTau[1][k-1]);}
+                        a.spellTau[0][k]=t0;a.spellTau[1][k]=t1;
+                    }
+                    a.spellValid=true;}}
             }
         }
     }

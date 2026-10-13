@@ -4,7 +4,8 @@
 // lerp(cF, X, fog) (cF a PS constant); so a draw replayed with fog' = fog * T_N(z) (T_N: Northlight's transmittance along the view ray) is fogged by both. The fit F maps the game's
 // (c30.x, c30.y, c30.z) to (a, b, p) with pow(max(z*a + b, 0), p) ~ g(z) * T_N(z) on [0, min(game fog end, 128)] (Northlight's fog reaches 128 units); it is computed once per distinct
 // game constant and frame, not per entry. Pure CPU maths: no D3D, no game data.
-// Approximations, by design: the view axis stands for every pixel of the effect (off-axis pixels are farther per unit of view depth); the optical depth is sampled at six distances
+// Approximations, by design: the camera's heading stands for every pixel of the effect (the optical depth is taken on rays from the eye to a point at the heading, at the height of an effect
+// above the ground there; off-axis pixels are farther per unit of view depth); the optical depth is sampled at six distances
 // and interpolated, Northlight's fog reaches 128 units; the fit is one power law (a game ramp that starts late with a high power is followed less well); the horizon haze that
 // Northlight adds to the picture is not folded; the in-scatter colour is the ambient sky source only (no direct-light term); the estimate follows the camera with a 0.25 s smoothing and
 // is the previous frame's. Fixed-function effects and the ps_2_0 fixed-function fog colour are not touched.
