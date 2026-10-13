@@ -61,6 +61,11 @@ struct Freshness{
     bool next(unsigned stamp){const bool moved=stamp!=seen;seen=stamp;return moved;}
 };
 // bareBase: the vertex shader raises the bare ramp to the power (vs_3_0 Model/Projected variants) instead of max(ramp, 0) or lit; a fit for it must not end before the game's ramp does.
+// Close to the camera Northlight's fog is not folded: none within kClearNear units, fading in with a smoothstep over the next kClearFade units, full beyond. The fit target is
+// g(z) * (1 - (1 - T_N(z)) * smoothstep(kClearNear, kClearNear + kClearFade, z)); the ramp form min(pow(max(a z + b, 0), p), 1) represents the plateau with b > 1 (1 up to z = (b-1)/-a).
+constexpr float kClearNear=15,kClearFade=15;
+inline float clearFade(float z){const float u=std::min(1.f,std::max(0.f,(z-kClearNear)/kClearFade));return u*u*(3-2*u);}
+inline float foldedTransmittance(const Frame& f,float z){return 1-(1-f.transmittance(z))*clearFade(z);}
 // The game's visibility at view distance z for its fog constant (x, y, power).
 inline float gameVisibility(const float g[3],float z){return std::min(1.f,std::pow(std::max(z*g[0]+g[1],0.f),g[2]));}
 // A flat game constant: visibility 1 at every distance (|x| ~ 0 and min(pow(max(y, 0), p), 1) = 1), how the game switches an effect's own fog off. Northlight's fog is then folded alone: the fit
@@ -81,48 +86,54 @@ inline bool emitFog(const Frame& f,const float game[3],float out[3],bool bareBas
     const float end=flat?kFlatBareEnd/.98f:-game[1]/game[0];                // where the game's visibility reaches 0 (a flat constant: where a bare ramp must at least reach it)
     const float hi=std::min(end,kRange);
     if(!(hi>2.f))return false;
-    constexpr unsigned N=12;float z[N],h[N];
-    for(unsigned i=0;i<N;++i){z[i]=hi*(float(i)+.5f)/float(N);h[i]=gameVisibility(game,z[i])*f.transmittance(z[i]);}
+    // sample points: the near plateau and its fade (0..30 every 3 up to 15, then 20, 25, 30) and twelve across the fitted range; the near ones weigh more (the fit stays at 1 there)
+    constexpr unsigned M=24;float z[M],h[M],wt[M];unsigned N=0;
+    for(float q:{0.f,3.f,6.f,9.f,12.f,15.f,20.f,25.f,30.f})if(q<hi*.9f){z[N]=q;wt[N]=q<=kClearNear?16.f:1.f;++N;}
+    for(unsigned i=0;i<12;++i){z[N]=hi*(float(i)+.5f)/12.f;wt[N]=1.f;++N;}
+    for(unsigned i=0;i<N;++i)h[i]=gameVisibility(game,z[i])*foldedTransmittance(f,z[i]);
     static const float scale[]={.6f,.8f,1.f,1.25f,1.6f,2.f,2.6f,3.5f};
     float best=1e30f,bestFit[3]={game[0],game[1],game[2]};bool found=false;
-    auto error=[&](float a,float b,float p){float e=0;for(unsigned i=0;i<N;++i){const float v=std::min(1.f,std::pow(std::max(a*z[i]+b,0.f),p)),d=v-h[i];e+=d*d;}return e;};
-    float powers[16];unsigned np=0;
+    auto error=[&](float a,float b,float p){float e=0;for(unsigned i=0;i<N;++i){const float v=std::min(1.f,std::pow(std::max(a*z[i]+b,0.f),p)),d=v-h[i];e+=wt[i]*d*d;}return e;};
+    float powers[24];unsigned np=0;
     for(float s:scale)powers[np++]=game[2]*s;
-    if(flat)for(float p:{4.f,6.f,8.f,12.f,16.f})powers[np++]=p;   // the game's own exponent says nothing about a flat constant
+    for(float p:{3.f,4.f,6.f,8.f,12.f,16.f})if(flat||p>game[2]*3.5f)powers[np++]=p;   // a flat constant's own exponent says nothing; a ramp gets the steeper powers the plateau asks for
     for(unsigned pi=0;pi<np;++pi){
         const float p=std::min(powers[pi],flat?kFlatMaxPower:1e30f);if(!(p>.05f))continue;
-        // start: the line through h^(1/p), then a few damped Gauss-Newton steps on the error in visibility itself (the clamp at 1 and the plateau of a game ramp that starts late)
-        float sz=0,sy=0,szz=0,szy=0;
-        for(unsigned i=0;i<N;++i){const float y=std::pow(std::max(h[i],0.f),1.f/p);sz+=z[i];sy+=y;szz+=z[i]*z[i];szy+=z[i]*y;}
-        const float den=N*szz-sz*sz;if(!(std::fabs(den)>1e-9f))continue;
-        float a=(N*szy-sz*sy)/den,b=(sy-a*sz)/N;
-        if(!(b>0))b=1;if(!(a<-1e-7f))a=-1.f/hi;
-        float e=error(a,b,p),lambda=1e-3f;
-        for(int it=0;it<8;++it){
-            float jaa=0,jab=0,jbb=0,ga=0,gb=0;
-            for(unsigned i=0;i<N;++i){
-                const float w=a*z[i]+b;if(!(w>0))continue;
-                const float v=std::pow(w,p);if(v>=1)continue;
-                const float d=p*std::pow(w,p-1),r=v-h[i];
-                jaa+=d*z[i]*d*z[i];jab+=d*z[i]*d;jbb+=d*d;ga+=d*z[i]*r;gb+=d*r;
+        // two starts: the line through h^(1/p) over every sample, and over the samples beyond the fade only (it then rises above 1 near the eye: the plateau); then damped Gauss-Newton steps on
+        // the weighted error in visibility itself (the clamp at 1 and the plateau of a game ramp that starts late)
+        for(int start=0;start<2;++start){
+            float sz=0,sy=0,szz=0,szy=0,sn=0;
+            for(unsigned i=0;i<N;++i){if(start&&z[i]<kClearNear+kClearFade)continue;const float y=std::pow(std::max(h[i],0.f),1.f/p);sz+=z[i];sy+=y;szz+=z[i]*z[i];szy+=z[i]*y;sn+=1;}
+            const float den=sn*szz-sz*sz;if(!(sn>=2)||!(std::fabs(den)>1e-9f))continue;
+            float a=(sn*szy-sz*sy)/den,b=(sy-a*sz)/sn;
+            if(!(b>0))b=1;if(!(a<-1e-7f))a=-1.f/hi;
+            float e=error(a,b,p),lambda=1e-3f;
+            for(int it=0;it<12;++it){
+                float jaa=0,jab=0,jbb=0,ga=0,gb=0;
+                for(unsigned i=0;i<N;++i){
+                    const float w=a*z[i]+b;if(!(w>0))continue;
+                    const float v=std::pow(w,p);if(v>=1)continue;
+                    const float d=p*std::pow(w,p-1),r=v-h[i],k=wt[i];
+                    jaa+=k*d*z[i]*d*z[i];jab+=k*d*z[i]*d;jbb+=k*d*d;ga+=k*d*z[i]*r;gb+=k*d*r;
+                }
+                const float m00=jaa*(1+lambda)+1e-12f,m11=jbb*(1+lambda)+1e-12f,det=m00*m11-jab*jab;
+                if(!(std::fabs(det)>1e-18f))break;
+                const float da=-(m11*ga-jab*gb)/det,db=-(m00*gb-jab*ga)/det;
+                const float na=a+da,nb=b+db;
+                if(!(na<-1e-7f)||!(nb>0)){lambda*=10;continue;}
+                const float ne=error(na,nb,p);
+                if(ne<e){a=na;b=nb;e=ne;lambda=std::max(lambda*.3f,1e-6f);}else lambda*=10;
             }
-            const float m00=jaa*(1+lambda)+1e-12f,m11=jbb*(1+lambda)+1e-12f,det=m00*m11-jab*jab;
-            if(!(std::fabs(det)>1e-18f))break;
-            const float da=-(m11*ga-jab*gb)/det,db=-(m00*gb-jab*ga)/det;
-            const float na=a+da,nb=b+db;
-            if(!(na<-1e-7f)||!(nb>0)){lambda*=10;continue;}
-            const float ne=error(na,nb,p);
-            if(ne<e){a=na;b=nb;e=ne;lambda=std::max(lambda*.3f,1e-6f);}else lambda*=10;
+            if(!(a<-1e-7f)||!(b>0))continue;                                    // nonincreasing and visible at the eye
+            if(bareBase&&-b/a<end*.98f)continue;                                // a shader that takes the pow of the bare ramp (no max): the ramp must not reach 0 before the game's own, a negative base is not 0 there and the fog would come back
+            if(e<best){best=e;bestFit[0]=a;bestFit[1]=b;bestFit[2]=p;found=true;}
         }
-        if(!(a<-1e-7f)||!(b>0))continue;                                    // nonincreasing and visible at the eye
-        if(bareBase&&-b/a<end*.98f)continue;                                // a shader that takes the pow of the bare ramp (no max): the ramp must not reach 0 before the game's own, a negative base is not 0 there and the fog would come back
-        if(e<best){best=e;bestFit[0]=a;bestFit[1]=b;bestFit[2]=p;found=true;}
     }
     if(!found&&bareBase){ // no free fit reaches 0 late enough (thick fog and a far game end): pin the end at the game's and fit the slope and the power only
         const float E=end*.98f;
         for(unsigned pi=0;pi<np;++pi){
             const float p=std::min(powers[pi],flat?kFlatMaxPower:1e30f);float num=0,dd=0;if(!(p>.05f))continue;
-            for(unsigned i=0;i<N;++i){const float y=std::pow(std::max(h[i],0.f),1.f/p),w=E-z[i];num+=y*w;dd+=w*w;}
+            for(unsigned i=0;i<N;++i){if(z[i]<kClearNear+kClearFade)continue;const float y=std::pow(std::max(h[i],0.f),1.f/p),w=E-z[i];num+=y*w;dd+=w*w;}   // beyond the fade; the line rises above 1 nearer (the plateau)
             if(!(dd>0))continue;
             const float a=-num/dd,b=-a*E;if(!(a<-1e-7f)||!(b>0))continue;
             const float e=error(a,b,p);if(e<best){best=e;bestFit[0]=a;bestFit[1]=b;bestFit[2]=p;found=true;}
@@ -139,7 +150,7 @@ inline float fitVisibility(const float fit[3],float z){return std::min(1.f,std::
 // denominator too small to matter (near the eye there is no fog to add).
 inline void emitColor(const Frame& f,const float game[3],const float fit[3],const float cF[3],float out[3]){
     const float hi=game[0]<-1e-7f?std::min(-game[1]/game[0],kRange):kRange,zm=hi*.5f;
-    const float g=gameVisibility(game,zm),T=f.transmittance(zm),gp=fitVisibility(fit,zm),den=1-gp;
+    const float g=gameVisibility(game,zm),T=foldedTransmittance(f,zm),gp=fitVisibility(fit,zm),den=1-gp;
     for(unsigned c=0;c<3;++c){
         out[c]=cF[c];
         if(den>.08f){const float v=(cF[c]*(1-g)*T+f.scatter[c]*(1-T))/den;out[c]=std::clamp(v,0.f,std::max(cF[c],4.f));}

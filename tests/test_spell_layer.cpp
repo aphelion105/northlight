@@ -1394,10 +1394,11 @@ static void testSpellFogFit(){
         CHECK(fit[0]<0&&fit[1]>0&&fit[2]>0);
         const float hi=std::min(-g[1]/g[0],kRange);float prev=2,err=0;
         for(int i=0;i<=200;++i){
-            const float z=hi*float(i)/200,v=fitVisibility(fit,z),target=gameVisibility(g,z)*f.transmittance(z);
+            const float z=hi*float(i)/200,v=fitVisibility(fit,z),target=gameVisibility(g,z)*foldedTransmittance(f,z);
             CHECK(v<=prev+1e-6f);prev=v;                                                  // monotone
             err=std::max(err,std::fabs(v-target));
             CHECK(v<=gameVisibility(g,z)+.12f);                                           // never much more visible than the game's own
+            if(z<=kClearNear)CHECK(std::fabs(v-gameVisibility(g,z))<.04f);                // no Northlight fog close to the camera: the game's own visibility there
         }
         if(gg.power<=2&&sigma<=.01f)CHECK(err<.09f);                                      // ordinary fog and an ordinary ramp: the fit is close
         worst=std::max(worst,err);
@@ -1644,7 +1645,8 @@ static void testSpellFogFlat(){
     auto isFlat=[](float a,float b,float c){const float g[3]={a,b,c};return flatConstant(g);};
     CHECK(isFlat(0,1,1)&&isFlat(1e-8f,7,2)&&isFlat(-1e-8f,1,.5f));
     CHECK(!isFlat(0,.5f,1)&&!isFlat(.01f,.5f,1)&&!isFlat(-.01f,1,1)&&!isFlat(0,1,40)&&!isFlat(0,NAN,1));
-    // the fit follows T_N alone
+    CHECK(kClearNear==15&&kClearFade==15&&clearFade(0)==0&&clearFade(15)==0&&clearFade(30)==1&&clearFade(99)==1&&std::fabs(clearFade(22.5f)-.5f)<1e-6f);   // no fog within 15 units, a smoothstep to 30
+    // the fit follows T_N alone beyond the fade, 1 below it
     float worst=0;
     for(float sigma:{.0005f,.002f,.005f,.01f,.02f}){
         Frame f=fogFrame(sigma);
@@ -1652,19 +1654,19 @@ static void testSpellFogFlat(){
         for(auto& g:gs){
             CHECK(emitFog(f,g,fit)&&fit[0]<0&&fit[1]>0&&fit[2]>0);
             float prev=2;
-            for(int i=0;i<=200;++i){const float z=kRange*float(i)/200,v=fitVisibility(fit,z);CHECK(v<=prev+1e-6f);prev=v;worst=std::max(worst,std::fabs(v-f.transmittance(z)));}
+            for(int i=0;i<=200;++i){const float z=kRange*float(i)/200,v=fitVisibility(fit,z);CHECK(v<=prev+1e-6f);prev=v;worst=std::max(worst,std::fabs(v-foldedTransmittance(f,z)));if(z<=kClearNear)CHECK(v>=.99f);}
         }
     }
-    CHECK(worst<.03f);
+    CHECK(worst<.12f);   // flat: the plateau and the steep fade cost accuracy against the old whole-range target (.03)
     // a bare-ramp shader: the ramp does not reach 0 before 512 units (the fog would come back after the zero crossing), powers up to 16, thick fog reachable
     float worstBare=0;
     for(float sigma:{.0005f,.002f,.005f,.01f,.02f,.04f}){
         Frame f=fogFrame(sigma);const float g[3]={0,1,1};
         CHECK(emitFog(f,g,fit,true)&&fit[0]<0&&fit[1]>0&&-fit[1]/fit[0]>=kFlatBareEnd-1e-2f&&fit[2]<=kFlatMaxPower+1e-4f);
-        if(sigma<=.02f)for(int i=0;i<=200;++i){const float z=kRange*float(i)/200;worstBare=std::max(worstBare,std::fabs(fitVisibility(fit,z)-f.transmittance(z)));}   // 0.04: the pinned end costs accuracy (thick fog), only the constraint is held
+        if(sigma<=.02f)for(int i=0;i<=200;++i){const float z=kRange*float(i)/200;worstBare=std::max(worstBare,std::fabs(fitVisibility(fit,z)-foldedTransmittance(f,z)));if(z<=kClearNear)CHECK(fitVisibility(fit,z)>=.99f);}   // 0.04: the pinned end costs accuracy (thick fog), only the constraint is held
         for(float z=0;z<=kFlatBareEnd;z+=4)CHECK(fitVisibility(fit,z)<=1.f);
     }
-    CHECK(worstBare<.03f);
+    CHECK(worstBare<.12f);
     // refused: non-finite, an exponent out of range, a rising ramp that stays below 1, a constant below 1
     {Frame f=fogFrame(.01f);const float bad[][3]={{0,NAN,1},{0,1,40},{0,1,0},{.01f,.5f,1},{0,.5f,1},{NAN,1,1}};for(auto& g:bad){CHECK(!emitFog(f,g,fit));CHECK(!emitFog(f,g,fit,true));}}
     // the colour of a flat record: the fog colour moves toward the in-scatter
