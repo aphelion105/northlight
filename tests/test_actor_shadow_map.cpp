@@ -209,6 +209,9 @@ int main(){
       // the map centre moving with the caster (a walking player) keeps it; a centre that moves away from it does not
       {H::Hold w;w.begin();w.stamp(model,p0,m2,deepE);float m3[16];std::memcpy(m3,m2,sizeof m3);m3[12]=-.01f;const float moved[3]={2.12f,3,0};w.begin();assert(w.carry(model,moved,m3)); // world +.12, centre -.12 yd: no net move... map delta .02
        const float slid[3]={2,3,0};w.begin();m3[12]=-.1f;assert(!w.carry(model,slid,m3));}
+      {H::Hold r;r.begin(true,10);r.stamp(model,p0,m2,deepE);r.begin(true,12);assert(r.carry(model,p0,m2));r.begin(true,13);assert(!r.carry(model,p0,m2)); // marks age in real frames
+       H::Hold g;g.begin(true,10);g.stamp(model,p0,m2,deepE);g.begin(true,20);assert(!g.carry(model,p0,m2));                                           // one run of the pass after a gap of frames: stale
+       g.begin(true,21);g.stamp(model,p0,m2,deepE);g.invalidate();g.begin(true,22);assert(!g.carry(model,p0,m2));}                                      // the pass did not run: void
       {H::Hold e;e.begin();e.stamp(model,p0,m2,shallowE);e.begin();assert(!e.carry(model,p0,m2));}                  // last extent above Deep: never carried
       {H::Hold e;e.begin();e.stamp(model,p0,m2,deepE);e.begin();assert(!e.carry(model+1,p0,m2));}                    // another model
       {H::Hold e;e.begin();e.stamp(model,p0,m2,deepE);e.invalidate();e.begin();assert(!e.carry(model,p0,m2));}      // the pass did not run: everything expires

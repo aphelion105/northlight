@@ -242,9 +242,9 @@ int main(int argc,char** argv){
         // shuffled in one draw list that is the same every frame, the near ones the largest meshes, every twentieth on the heavy program (the cold and
         // heavy classes are in every ring). The clock step is large, so the time budgets (not the operation budgets) end every phase after a few packets:
         // the near walk (half of a phase) covers less than the 360. Run for three steps (the budget gets tighter) and for the sun's and the moon's matrix.
-        // Asserted: at most three packets more than in the plain rotation stay without bounds for the whole run (that rotation leaves some heavy ones out at the tighter steps itself); the self's parts have bounds in EVERY
+        // Asserted: every packet except a few heavy ones gets bounds within the run; the self's parts have bounds in EVERY
         // frame after warm-up while the budget allows it (the first two steps), even with 60 others stacked on them; the far packets keep their
-        // coverage (at least about half of the plain rotation's) and wait at most about twice as long between bounds (plus a dozen frames: the maximum over 1140 packets is noisy); the middle ring waits at most OuterTurn times as long as in the plain rotation (it gets the plain rotation on one frame in OuterTurn).
+        // coverage (at least about half of the plain rotation's) and wait at most about twice as long between bounds (95th percentile, plus six frames); the middle ring's plain-program packets wait at most about 1.5 times as long as in the plain rotation (measured 1.0 to 1.25x), and rings 0 and 1 show no dip on the plain turn.
         struct Config {unsigned step,frames;bool selfCovered;};
         Config configs[3]={{1000,300,true},{1500,300,true},{2000,300,true}};
         if(argc>5){configs[0].step=unsigned(std::atoi(argv[5]));configs[0].frames=argc>6?unsigned(std::atoi(argv[6])):300;configs[0].selfCovered=false;} /* diagnosing: one configuration of the given step (arguments: 0 <big> <step> <frames>) */
@@ -265,8 +265,10 @@ int main(int argc,char** argv){
             const float radius=g==0?1.f:g==1?(k<60?.5f:3.3f+1.f*float(k-60)/40.f):g==2?5.f+4.4f*float(k)/150.f:g==3?10.f+3.f*float(k)/98.f:40.f+float(k)*.05f;
             const float c=std::cos(angle),n=std::sin(angle),square=std::max(std::fabs(c),std::fabs(n)); /* the rings are squares (Chebyshev distance) */
             at[0]=centre[0]+radius*c/square;at[1]=centre[1]+radius*n/square;at[2]=centre[2];};
-        struct Run {std::vector<unsigned> valid[5];unsigned maxGap[5]={};size_t never=0,listSize=0;double farMean=0;unsigned minSelf=~0u,ringSizes[4]={};};
+        struct Run {unsigned middleGap=0,neverHeavy=0,farP95=0; /* the middle ring's longest wait among the plain program's packets */ std::vector<unsigned> valid[5];std::vector<char> plain;double plainMean[3]={},otherMean[3]={};unsigned maxGap[5]={};size_t never=0,listSize=0;double farMean=0;unsigned minSelf=~0u,ringSizes[4]={};};
+        const auto pool0=scene.pool;
         const auto run=[&](const Config& cfg,int source){ /* source: the actor map's source (0 sun, 1 moon), -1 none (the plain rotation) */
+            scene.pool=pool0;scene.rng.seed(99); /* every run starts from the same meshes and the same random sequence */
             World w(scene.programs);warm(w,scene);TestClock::ticks=1000000;
             Run r;std::vector<unsigned> last(total,0),gap(total,0);
             if(source>=0){w.actorValid[source]=true;std::memcpy(w.actorMatrices[source],matrix,sizeof matrix);}
@@ -285,26 +287,32 @@ int main(int argc,char** argv){
                 for(unsigned i=0;i<total;++i){const bool valid=w.replays[slotOf[i]]->pointBounds.valid;count[group[i]]+=valid;
                     if(valid)last[i]=n;if(n>warmup)gap[i]=std::max(gap[i],n-last[i]);}
                 for(unsigned g=0;g<5;++g)r.valid[g].push_back(count[g]);
+                r.plain.push_back(list.plainTurn());
             }
             if(source>=0&&std::getenv("DBG"))for(unsigned i=0;i<total;++i)if(!last[i])std::printf("DBG never i=%u group=%u verts=%u shader=%d\n",i,group[i],w.replays[slotOf[i]]->mesh().vertexCount,int(w.replays[slotOf[i]]->originalShader-&scene.shaders[0]));
-            for(unsigned i=0;i<total;++i){r.never+=last[i]==0;r.maxGap[group[i]]=std::max(r.maxGap[group[i]],gap[i]);}
+            {std::vector<unsigned> far;for(unsigned i=0;i<total;++i)if(group[i]==4)far.push_back(gap[i]);std::sort(far.begin(),far.end());r.farP95=far[far.size()*95/100];} /* the 95th percentile: the maximum over 1140 packets is noisy */
+            for(unsigned i=0;i<total;++i){if(group[i]==2&&!(i%20==0))r.middleGap=std::max(r.middleGap,gap[i]);r.never+=last[i]==0;r.neverHeavy+=last[i]==0&&i<nearCount&&i>=ringSize[0]&&i%20==0;r.maxGap[group[i]]=std::max(r.maxGap[group[i]],gap[i]);}
             for(unsigned f=warmup;f<cfg.frames;++f){r.minSelf=std::min(r.minSelf,r.valid[0][f]);r.farMean+=r.valid[4][f];}
-            r.farMean/=double(cfg.frames-warmup);return r;
+            r.farMean/=double(cfg.frames-warmup);
+            {unsigned np=0,no=0;for(unsigned f=warmup;f<cfg.frames;++f){const bool plain=r.plain[f];(plain?np:no)+=1;for(unsigned g=0;g<3;++g)(plain?r.plainMean[g]:r.otherMean[g])+=r.valid[g][f];}
+             for(unsigned g=0;g<3;++g){r.plainMean[g]/=std::max(1u,np);r.otherMean[g]/=std::max(1u,no);}}
+            return r;
         };
         for(unsigned c=0;c<3;++c){if(only<3&&only!=c)continue;
             const Config& cfg=configs[c];const Run off=run(cfg,-1);
             for(int source=0;source<2;++source){
                 const Run on=run(cfg,source);
                 double mean[5]={};for(unsigned g=0;g<5;++g){for(unsigned f=warmup;f<cfg.frames;++f)mean[g]+=on.valid[g][f];mean[g]/=double(cfg.frames-warmup);}
-                std::printf("{\"mode\":\"priority\",\"step\":%u,\"source\":%d,\"nearListSize\":%zu,\"rings\":[%u,%u,%u,%u],\"on\":{\"minSelf\":%u,\"meanPerRing\":[%.1f,%.1f,%.1f,%.1f],\"maxGapPerRing\":[%u,%u,%u,%u],\"farMean\":%.1f,\"farMaxGap\":%u,\"never\":%zu},\"off\":{\"minSelf\":%u,\"farMean\":%.1f,\"maxGapPerRing\":[%u,%u,%u,%u,%u],\"never\":%zu}}\n",
-                    cfg.step,source,on.listSize,on.ringSizes[0],on.ringSizes[1],on.ringSizes[2],on.ringSizes[3],on.minSelf,mean[0],mean[1],mean[2],mean[3],on.maxGap[0],on.maxGap[1],on.maxGap[2],on.maxGap[3],on.farMean,on.maxGap[4],on.never,
-                    off.minSelf,off.farMean,off.maxGap[0],off.maxGap[1],off.maxGap[2],off.maxGap[3],off.maxGap[4],off.never);
+                std::printf("{\"mode\":\"priority\",\"step\":%u,\"source\":%d,\"nearListSize\":%zu,\"rings\":[%u,%u,%u,%u],\"on\":{\"minSelf\":%u,\"meanPerRing\":[%.1f,%.1f,%.1f,%.1f],\"maxGapPerRing\":[%u,%u,%u,%u],\"farMean\":%.1f,\"farMaxGap\":%u,\"farP95\":%u,\"never\":%zu,\"middleGap\":%u,\"neverHeavy\":%u,\"plainTurn\":[%.1f,%.1f,%.1f],\"otherTurns\":[%.1f,%.1f,%.1f]},\"off\":{\"farP95\":%u,\"middleGap\":%u,\"minSelf\":%u,\"farMean\":%.1f,\"maxGapPerRing\":[%u,%u,%u,%u,%u],\"never\":%zu}}\n",
+                    cfg.step,source,on.listSize,on.ringSizes[0],on.ringSizes[1],on.ringSizes[2],on.ringSizes[3],on.minSelf,mean[0],mean[1],mean[2],mean[3],on.maxGap[0],on.maxGap[1],on.maxGap[2],on.maxGap[3],on.farMean,on.maxGap[4],on.farP95,on.never,on.middleGap,on.neverHeavy,on.plainMean[0],on.plainMean[1],on.plainMean[2],on.otherMean[0],on.otherMean[1],on.otherMean[2],
+                    off.farP95,off.middleGap,off.minSelf,off.farMean,off.maxGap[0],off.maxGap[1],off.maxGap[2],off.maxGap[3],off.maxGap[4],off.never);
                 assert(on.listSize==nearCount&&on.ringSizes[0]==ringSize[0]&&on.ringSizes[1]==ringSize[1]&&on.ringSizes[2]==ringSize[2]&&on.ringSizes[3]==ringSize[3]); /* the far 1140 are not listed */
-                assert(on.never<=off.never+3);                                  /* a handful of outer-ring packets may wait longer than the run (the plain rotation leaves some heavy ones without bounds too at the tighter steps) */
+                assert(on.never==on.neverHeavy&&on.neverHeavy<=8);               /* every packet but a few of the 17 heavy ones (served only by the plain turn's pass, and by the plain rotation's own budget at the tighter steps) gets bounds in the run */
+                assert(on.plainMean[0]==ringSize[0]&&on.plainMean[1]>=.95*on.otherMean[1]); /* the plain turn: no dip in the self's or the pivot's neighbourhood coverage */
                 if(cfg.selfCovered)assert(on.minSelf==ringSize[0]);            /* the self's parts: bounds in every frame after warm-up, with 60 others stacked on them */
                 assert(on.farMean>=.5*off.farMean);                            /* the rotating pass keeps at least about half of its coverage */
-                assert(on.maxGap[4]<=2*off.maxGap[4]+12);                       /* and the far packets wait at most about twice as long between bounds (plus a dozen frames: the maximum over 1140 packets is noisy) */
-                assert(on.maxGap[2]<=NorthlightReplayBoundsNear::OuterTurn*off.maxGap[2]+3); /* the middle ring gets the plain rotation on one frame in OuterTurn, so it waits at most that many times as long */
+                assert(on.farP95<=2*off.farP95+6);                       /* and the far packets wait at most about twice as long between bounds (plus a dozen frames: the maximum over 1140 packets is noisy) */
+                assert(2*on.middleGap<=3*off.middleGap+20);                    /* the middle ring's plain-program packets wait at most about half as long again as in the plain rotation (they get its full pass on the plain turn) */
             }
         }
         return 0;

@@ -3452,7 +3452,7 @@ public:
             if(cascade==0)nearActorSkip[source]=nearSkip;
             unsigned nearSkipped=0;
             const bool sideDiag=nearSkip&&NorthlightDiagnostics::enabled(); /* diagnostics only: the side tracker, the hold counters */
-            if(nearSkip)actorHold[source].begin(sideDiag);else if(cascade==0)actorHold[source].invalidate();
+            if(nearSkip)actorHold[source].begin(sideDiag,unsigned(frames)+1);else if(cascade==0)actorHold[source].invalidate();
             if(sideDiag)actorSide[source].begin();
             auto replayLoop=[&](auto& split)->bool{
               using NorthlightRenderThreadProbe::Own;

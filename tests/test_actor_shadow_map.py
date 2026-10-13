@@ -99,13 +99,13 @@ checks['water: maps on s8/s9, ActorMatrix c29..c36, ActorShadowInfo c37, filled 
 # Hysteresis hold and the near-first bounds order: wired once, gated diagnostics, shown on the actor map log line.
 hold=fp.src('actor_side_hold.h').read_text();job=fp.src('replay_bounds_job.h').read_text();near=fp.src('replay_bounds_near.h').read_text();point=fp.src('world_point_rendering.inl').read_text()
 checks['hold: per-source table, begun with the diagnostics flag (or invalidated when the pass does not run); skinned casters take the root or the valid bounds centre as identity, others today\'s rule']=(
-    'NorthlightActorSideHold::Hold actorHold[2];' in w and 'if(nearSkip)actorHold[source].begin(sideDiag);else if(cascade==0)actorHold[source].invalidate();' in loop
+    'NorthlightActorSideHold::Hold actorHold[2];' in w and 'if(nearSkip)actorHold[source].begin(sideDiag,unsigned(frames)+1);else if(cascade==0)actorHold[source].invalidate();' in loop
     and 'if(!p->shadowSkinned)inActor=extent<=NorthlightActorShadowMap::Inset;' in loop and 'const float* position=p->position();const float* at=position;' in loop and 'if(!p->captureRootValid){model=~model;' in loop and 'if(!at){for(unsigned k=0;k<3;++k)centre[k]=.5f*(p->pointBounds.low[k]+p->pointBounds.high[k]);at=centre;}}' in loop
     and 'inActor=actorHold[source].decide(model,at,extent);' in loop and loop.count('actorHold[source].decide(')==1
     and 'if(inActor&&position)actorHold[source].stamp(model,position,matrix,extent);' in loop and 'else if(p->shadowSkinned&&!p->pointBounds.valid&&p->shared){const float* position=p->position();' in loop
     and 'inActor=actorHold[source].carry(model,position,matrix);' in loop and loop.count('actorHold[source].carry(')==1)
 checks['hold diagnostics: overflow and band counters only when the pass was begun with diagnostics']=(
-    'void begin(bool diagnostics=false){advance(1);diagnostics_=diagnostics;bandHeld=0;carried=0;}' in hold and 'if(diagnostics_)++overflows;' in hold and 'if(diagnostics_&&!inside)++bandHeld;' in hold)
+    'void begin(bool diagnostics=false,unsigned realFrame=0){advance(1);real_=realFrame?realFrame:frame_;diagnostics_=diagnostics;bandHeld=0;carried=0;}' in hold and 'if(diagnostics_)++overflows;' in hold and 'if(diagnostics_&&!inside)++bandHeld;' in hold)
 checks['actor map log line: hold band, overflows, near list size and near walk stops']=(
     ' holdBand=%u holdOverflows=%lu nearListSize=%u nearWalkStops=%lu sideFlipsRootedSinceLog=%u sideFlipsUnrootedSinceLog=%u invalidBoundsNearSinceLog=%u unrootedNoBounds=%u unrootedNoBoundsSinceLog=%u selfUnrooted=%u selfNoBoundsFramesSinceLog=%u holdCarried=%u holdCarriedTotal=%lu"' in loop
     and 'actorHold[source].bandHeld,actorHold[source].overflows,replayNearSize,replayNearStops,' in loop and 'actorSide[source].sideFlipsRooted,actorSide[source].sideFlipsUnrooted,' in loop and 'actorHold[source].carried,actorHold[source].carriedTotal);' in loop

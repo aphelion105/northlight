@@ -20,7 +20,7 @@
 // frame. The whole near walk may use at most half of a phase's operation (and vertex) budget (replay_bounds_job.h), so the rotating pass
 // always has the other half. The pass leaves the packets of rings 1 and 2 to the walks (otherwise it spends its half on the expensive packets the
 // walk could not reach and the far packets wait several times as long), except on one frame in OuterTurn, the plain turn: the walk then covers
-// only the self in the cheap phase and nothing in the heavy and build phases, and the pass takes every packet with the whole allowance, so a
+// only rings 0 and 1 in the cheap phase and nothing in the heavy and build phases, and the pass takes every packet with the whole allowance, so a
 // packet whose cost exceeds the walk's share (it never fits behind the walk) is still served, in every phase. Ring 3 (the edge band) and the
 // packets without a ring stay in the pass on every frame; the heavy and build phases have no bonus turn, which is why the plain turn exists.
 // Which packets: a caster is in the actor map only while its bounds lie within Stay of the map centre in light-space x/y (clip units,
@@ -59,7 +59,7 @@ struct List {
     }
     // The rotating pass leaves the outer-ring packets to the walks except on one frame in OuterTurn (see skipOuter): the pass would otherwise spend
     // its half of the budget on the same expensive packets, which the walk could not reach, and leave the far packets waiting several times as long.
-    bool plainTurn()const{return turn%OuterTurn==0;}   /* one frame in OuterTurn: the cheap phase walks only the self, the heavy and build phases not at all, and the pass takes every packet with the whole allowance (a packet that costs more than the share would otherwise never fit) */
+    bool plainTurn()const{return turn%OuterTurn==0;}   /* one frame in OuterTurn: the cheap phase walks only rings 0 and 1 (the self and the pivot's neighbourhood: no dip in their coverage), the heavy and build phases not at all, and the pass takes every packet with the whole allowance (a packet that costs more than the share would otherwise never fit) */
     bool skipOuter()const{return on&&!plainTurn();}
     // self: the packet belongs to the self (ring 0, whatever its position). at: its position (null: none, listed only as the self).
     // True: an outer ring packet (the pass skips it on most frames).
@@ -77,7 +77,7 @@ struct List {
 template<class CanWork,class Visit> bool nearFirst(List* list,unsigned phase,CanWork canWork,Visit visit){
     if(!list||phase>=3)return false;
     bool stopped=false;
-    for(unsigned r=0,last=list->plainTurn()?(phase==0?1u:0u):Rings;r<last&&!stopped;++r){
+    for(unsigned r=0,last=list->plainTurn()?(phase==0?2u:0u):Rings;r<last&&!stopped;++r){
         const auto& index=list->ring[r];if(index.empty())continue;
         list->cursor[phase][r]=NorthlightReplaySchedule::pass(index.size(),list->cursor[phase][r]%index.size(),
             [&]{const bool can=canWork();stopped=!can;return can;},[&](std::size_t k){return visit(std::size_t(index[k]));});

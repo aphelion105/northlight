@@ -19,7 +19,7 @@
 // 1.2 yd short of Inset and 1.7 yd short of Stay) is kept in the actor map while all of this holds: (a) its last extent was <= Deep, (b) its position
 // (palette root or rigid anchor) has not moved in the map's own frame by more than EpsClip (0.02 clip = 0.24 yd in light-space x/y and depth,
 // which includes the map centre's own motion: the positions are compared as clip coordinates of each frame's matrix), so the estimate
-// extent + EpsClip stays <= Deep + EpsClip = .72, (c) those bounds are at most CarryAge (2) frames old. Same identity as the hold (model hash,
+// extent + EpsClip stays <= Deep + EpsClip = .72, (c) those bounds are at most CarryAge (2) real frames old (begin() takes the renderer's frame count; a pass that did not run on a frame makes the marks older, so a run after a gap never carries on stale bounds). Same identity as the hold (model hash,
 // position), found through a direct mapped table of 1 yd map-space cells, written by every skinned caster that is deep in the map (stamp) and
 // read only for a caster without bounds (carry). The one assumption that bounds the risk: with the position fixed, the caster's pose does not
 // grow by more than ~1.2 yd toward the map edge within 2 frames (a limb would have to move 36 yd/s toward the edge); beyond that part of its
@@ -42,7 +42,7 @@ struct Mark {std::uint32_t check=0,frame=0;float clip[3]={};float extent=0;}; /*
 struct Slot {std::uint64_t model=0;float root[3]={};unsigned seen=0;}; /* seen == 0: free (frame_ is never 0) */
 static_assert((Slots&(Slots-1))==0,"a power of two: the slot index is masked");
 class Hold {
-    Slot slots_[Slots];Mark marks_[Marks];unsigned frame_=1;bool diagnostics_=false;
+    Slot slots_[Slots];Mark marks_[Marks];unsigned frame_=1,real_=1,floor_=0; /* real_: the caller's frame count (marks age in real frames, not in runs of the pass); floor_: marks at or below it are void */bool diagnostics_=false;
     static std::uint32_t cell(float v){return std::uint32_t(std::int32_t(std::floor(v/Cell)));}
     static std::uint32_t slotOf(std::uint64_t model,std::uint32_t cx,std::uint32_t cy){
         std::uint64_t h=model^(std::uint64_t(cx)*0x9E3779B97F4A7C15ull)^(std::uint64_t(cy)*0xC2B2AE3D27D4EB4Full);h^=h>>29;h*=0xBF58476D1CE4E5B9ull;h^=h>>32;return std::uint32_t(h)&(Slots-1);}
@@ -84,10 +84,10 @@ public:
     // caster was not remembered), bandHeld in the last pass (casters kept in the actor map by the hold while beyond Inset).
     unsigned long overflows=0,carriedTotal=0;unsigned bandHeld=0,carried=0;
     // Once per pass, before the casters.
-    void begin(bool diagnostics=false){advance(1);diagnostics_=diagnostics;bandHeld=0;carried=0;}
-    void reset(){for(auto& s:slots_)s=Slot{};for(auto& k:marks_)k=Mark{};frame_=1;}
+    void begin(bool diagnostics=false,unsigned realFrame=0){advance(1);real_=realFrame?realFrame:frame_;diagnostics_=diagnostics;bandHeld=0;carried=0;}
+    void reset(){for(auto& s:slots_)s=Slot{};for(auto& k:marks_)k=Mark{};frame_=real_=1;floor_=0;}
     // The pass did not run (actor map off, a reset): every remembered caster expires at once, O(1).
-    void invalidate(){advance(Gap+1);}
+    void invalidate(){advance(Gap+1);floor_=real_=real_>frame_?real_:frame_;}
     // extent: insetExtent(bounds, Stay) (infinity: invalid, beyond Stay or outside the depth planes). at: the caster's position (see above);
     // null: no identity, today's rule.
     // A caster deeper than Deep is in the actor map without a table access: the state only matters at the edge, and to reach the band from
@@ -110,7 +110,7 @@ public:
         if(!(extent<=Deep))return;
         float c[3];if(!clipOf(m,at,c))return;
         const std::uint64_t h=markHash(model,markCell(c[0]),markCell(c[1]));Mark& k=marks_[std::uint32_t(h)&(Marks-1)];
-        k.check=std::uint32_t(h>>32);k.frame=frame_;k.extent=extent;for(unsigned a=0;a<3;++a)k.clip[a]=c[a];
+        k.check=std::uint32_t(h>>32);k.frame=real_;k.extent=extent;for(unsigned a=0;a<3;++a)k.clip[a]=c[a];
     }
     // A skinned caster without valid bounds: true when it stays in the actor map (see Carry above).
     bool carry(std::uint64_t model,const float* at,const float* m){
@@ -122,7 +122,7 @@ public:
         const float depth=NorthlightWorldMath::ShadowDepthSpan; /* clip depth 1 = this many yards */
         for(int dx=x0;dx<=x1;++dx)for(int dy=y0;dy<=y1;++dy){
             const std::uint64_t h=markHash(model,bx+dx,by+dy);const Mark& k=marks_[std::uint32_t(h)&(Marks-1)];
-            if(!k.frame||k.check!=std::uint32_t(h>>32)||k.frame==frame_||frame_-k.frame>CarryAge||!(k.extent<=Deep))continue;
+            if(!k.frame||k.check!=std::uint32_t(h>>32)||k.frame<=floor_||k.frame==real_||real_-k.frame>CarryAge||!(k.extent<=Deep))continue;
             if(std::fabs(k.clip[0]-c[0])<=EpsClip&&std::fabs(k.clip[1]-c[1])<=EpsClip&&std::fabs(k.clip[2]-c[2])*depth<=EpsClip*NorthlightActorShadowMap::Radius){
                 if(diagnostics_){++carried;++carriedTotal;}return true;}}
         return false;
