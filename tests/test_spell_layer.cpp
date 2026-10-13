@@ -1402,8 +1402,62 @@ static void testStride0(){
     for(auto& d:p.lay->dev.draws)if(d.tag==1||d.tag==2)CHECK(d.vtx.size()==64&&!d.oob);   // 4 vertices x the 16 element bytes
     Rig r(Opts{});auto* bad=r.reg(new Fake::Decl({{0,0,20,0,0,0}}));                     // an element type the layer cannot size
     r.dev.SetVertexDeclaration(bad);r.dev.SetStreamSource(0,r.ring,0,0);r.issue(Rig::dp(0));
-    CHECK(r.layer.pending()==0&&r.layer.totalCounters().hazards[unsigned(Reason::Capture)]==1);
+    CHECK(r.layer.pending()==0&&r.layer.totalCounters().hazards[unsigned(Reason::Capture)]==1&&r.layer.totalCounters().stride0Refused==1);
     bad->Release();
+}
+// The FVF vertex size (stride-0 streams of a draw with no declaration): every position type, the optional parts, and the per-set texture coordinate sizes.
+static void testFvfVertexSize(){
+    auto size=[](DWORD f){uint32_t n=0;CHECK(fvfVertexSize(f,n));return n;};
+    CHECK(size(0x112)==32);                                                   // XYZ | NORMAL | TEX1
+    CHECK(size(0x144)==28);                                                   // XYZRHW | DIFFUSE | TEX1
+    CHECK(size(0x2|0x40|0x80|0x200|(2u<<(16+2)))==12+4+4+8+16);               // XYZ | DIFFUSE | SPECULAR | TEX2 with set 1 four floats
+    CHECK(size(0xA|0x1000)==24&&size(0xE)==32&&size(0x6)==16&&size(0x8)==20&&size(0xC)==28);   // XYZB3 + LASTBETA_UBYTE4, XYZB5, XYZB1, XYZB2, XYZB4
+    CHECK(size(0x4002)==16&&size(0x2|0x20)==16&&size(0x2|0x8000|0x6)==16);    // XYZW, XYZ | PSIZE, XYZB1 | LASTBETA_D3DCOLOR
+    CHECK(size(0x2|0x100|(3u<<16))==16&&size(0x2|0x100|(1u<<16))==24);        // one float / three floats for set 0
+    CHECK(size(0x2|0x800)==12+8*8);                                           // eight sets
+    uint32_t n=0;CHECK(!fvfVertexSize(0,n)&&!fvfVertexSize(0x100,n)&&!fvfVertexSize(0x2|0x900,n)); // no position; nine sets
+}
+static void sStride0Fvf(Rig& r){
+    r.dev.fvfNoDecl=true;r.dev.SetFVF(0x112);                                 // no declaration: the vertex size comes from the FVF (32 bytes)
+    UINT a=r.ringQuad(1);r.dev.SetStreamSource(0,r.ring,a,0);
+    r.issue(Rig::dp(0));
+    r.discardRing(77);
+    r.dev.SetStreamSource(0,r.ring,0,16);
+    r.boundary();
+}
+static void testStride0Fvf(){
+    Pair p=runBoth(sStride0Fvf);const Counters& c=p.lay->layer.totalCounters();
+    CHECK(p.lay->deferredTags==std::vector<int>({1})&&c.conflicts==1&&c.materialized==1&&c.totalHazards()==0&&c.stride0Refused==0);
+    checkEquivalent(p,{1});
+    for(auto& d:p.lay->dev.draws)if(d.tag==1)CHECK(d.vtx.size()==4*32&&!d.oob);
+}
+// Allocation failures on the draw path: the held table (a capacity failure: flush, fallback) and the cross-check scratch (the unverified delta is not trusted: the full compare is used and
+// the dirty record goes off, counted). The cross-check scratch is freed by trim(0) and counted in memory().
+static void sNoScratch(Rig& r){
+    if(r.o.on)testFailAlloc=true;
+    deferQuad(r,1);
+    testFailAlloc=false;
+    deferQuad(r,2);r.boundary();
+}
+static void testAllocFailures(){
+    Opts o;o.allowMismatch=true;Pair p=runBoth(sNoScratch,o);const Counters& c=p.lay->layer.totalCounters();
+    CHECK(p.lay->deferredTags==std::vector<int>({1,2})&&c.totalHazards()==0);
+    checkEquivalent(p);
+    if(gMirrorMode&&gDirty)CHECK(c.checkAllocFails==1&&!p.lay->layer.config().dirtyRecord);
+    else CHECK(c.checkAllocFails==0);
+    {   // the scratch is part of the layer's memory and goes with trim(0)
+        Rig r(Opts{});const size_t m0=r.layer.memory().tables;deferQuad(r,1);r.boundary();
+        const size_t m1=r.layer.memory().tables;
+        if(gMirrorMode&&gDirty)CHECK(m1>=m0+32768);
+        r.layer.beginFrame(false);r.layer.trim(0);CHECK(r.layer.memory().tables+32768<=m1);
+    }
+    {   // no memory for the held table: the capacity failure path
+        Rig r(Opts{});r.layer.beginFrame(false);r.layer.trim(0);
+        testFailAlloc=true;deferQuad(r,1);testFailAlloc=false;
+        CHECK(r.layer.pending()==0&&r.layer.totalCounters().hazards[unsigned(Reason::Capacity)]==1&&r.layer.totalCounters().capBy[3]==1&&r.dev.draws.size()==1);
+        r.layer.beginFrame(false);while(r.layer.mode()!=Mode::Armed)r.layer.beginFrame(false);
+        deferQuad(r,2);CHECK(r.layer.pending()==1);                                // it allocates again
+    }
 }
 // The upload buffer is locked only for the bytes a drain uses: DISCARD [0,end) for the first upload of the frame, NOOVERWRITE appends for the later drains, and a wrap (DISCARD
 // again) when the cursor would overflow; the output stays the reference's.
@@ -1790,7 +1844,7 @@ int main(int argc,char** argv){
     const char* only=argc>1?argv[1]:nullptr; // a test name (substring) to run alone, and an optional cache mode
     const bool fixedMode=argc>2;if(fixedMode)gMirrorMode=std::atoi(argv[2]);
     struct T{const char* name;void(*fn)();};
-    const T tests[]={{"classify",testClassify},{"lazy classify",testLazyClassify},{"glow verdict",testGlowVerdict},{"order split cap",testOrderSplitCap},{"stride 0 stream",testStride0},{"upload cursor",testUploadCursor},{"depth stencil texture",testDepthStencilTexture},{"trim and reuse",testTrimReuse},{"dirty record random",testDirtyRandom},{"record slots",testRecordSlots},{"dirty fail safe",testDirtyFailSafe},{"frame state",testFrameState},{"guard table",testGuardTable},{"equivalence",testEquivalence},
+    const T tests[]={{"classify",testClassify},{"lazy classify",testLazyClassify},{"glow verdict",testGlowVerdict},{"order split cap",testOrderSplitCap},{"stride 0 stream",testStride0},{"fvf vertex size",testFvfVertexSize},{"allocation failures",testAllocFailures},{"stride 0 fvf",testStride0Fvf},{"upload cursor",testUploadCursor},{"depth stencil texture",testDepthStencilTexture},{"trim and reuse",testTrimReuse},{"dirty record random",testDirtyRandom},{"record slots",testRecordSlots},{"dirty fail safe",testDirtyFailSafe},{"frame state",testFrameState},{"guard table",testGuardTable},{"equivalence",testEquivalence},
         {"discard copy",testDiscard},{"partial overlap",testPartialOverlap},{"two entries",testTwoEntries},{"count-based marks",testMarkIsCountBased},
         {"rebase negative base",testRebaseNegativeBase},{"rebase kept base",testRebasePositiveBase},{"index buffer copy",testIbMaterialized},
         {"mixed streams",testMixedStreams},{"32-bit UP",test32bitUP},{"non-dynamic buffer",testNonDynamic},{"copy disabled",testConflictCopyDisabled},

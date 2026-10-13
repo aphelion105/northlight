@@ -198,6 +198,7 @@ struct Mirror{
     unsigned enters=0,leaves=0;int depth=0;
 };
 struct FakeDevice:IDirect3DDevice9{
+    bool fvfNoDecl=false; /* tests: SetFVF binds no declaration object (decl stays null, GetFVF returns the FVF) */
     VB* lastVB=nullptr; /* the vertex buffer created last (weak): after the Rig's own, that is the layer's upload buffer */
     bool dropRsHook=false; /* tests: SetRenderState forgets to clear its bit (a missing production hook) */
     State s;Mirror mir;SyncedSlots synced; /* the bits the production mirror's setters clear (device_mirror.h): every Set below clears its slot, a state block Apply (invalidate) all */ IDirect3DSurface9* rt[4]={};IDirect3DSurface9* ds=nullptr;
@@ -251,7 +252,7 @@ struct FakeDevice:IDirect3DDevice9{
     HRESULT GetPixelShader(IDirect3DPixelShader9** o)override{++calls;if(s.ps)s.ps->AddRef();*o=s.ps;return D3D_OK;}
     HRESULT SetFVF(DWORD f)override{ // like D3D9: the FVF binds the runtime's declaration for it (GetVertexDeclaration returns it, GetFVF returns f)
         ++calls;++sets;
-        if(!f){swapRef(s.decl,static_cast<IDirect3DVertexDeclaration9*>(nullptr));s.fvf=0;return D3D_OK;}
+        if(!f||fvfNoDecl){swapRef(s.decl,static_cast<IDirect3DVertexDeclaration9*>(nullptr));s.fvf=f;return D3D_OK;}
         Decl*& d=fvfDecls[f];if(!d){d=new Decl({{0,0,2,0,0,0}});d->internal=true;d->fvf=f;}
         swapRef(s.decl,static_cast<IDirect3DVertexDeclaration9*>(d));s.fvf=f;return D3D_OK;
     }
@@ -302,10 +303,13 @@ struct FakeDevice:IDirect3DDevice9{
     void fetch(DrawRec& d,UINT stream,int64_t vertex){ // one vertex of one stream
         const auto& st=s.st[stream];UINT size=0;
         if(!st.vb){d.oob=true;return;}
-        UINT bytes=st.stride;if(!bytes){auto* dc=static_cast<Decl*>(s.decl);bytes=dc?dc->streamEnd(stream):0;} // stride 0: every vertex fetches the declaration's element bytes at the offset
+        UINT bytes=st.stride;if(!bytes){auto* dc=static_cast<Decl*>(s.decl);bytes=dc?dc->streamEnd(stream):fvfBytes(s.fvf);} // stride 0: every vertex fetches the declaration's element bytes at the offset
         const uint8_t* base=bufBytes(st.vb,size);const int64_t at=int64_t(st.off)+vertex*st.stride;
         if(at<0||at+bytes>size){d.oob=true;return;}
         d.vtx.insert(d.vtx.end(),base+at,base+at+bytes);
+    }
+    static UINT fvfBytes(DWORD f){ // the subset the tests use: XYZ, NORMAL, DIFFUSE, 2-float texture sets (computed on its own, not with the layer's function)
+        UINT n=0;if((f&0x400E)==0x2)n+=12;if(f&0x10)n+=12;if(f&0x40)n+=4;n+=8*((f>>8)&0xF);return n;
     }
     std::vector<UINT> usedStreams()const{
         std::vector<UINT> u;

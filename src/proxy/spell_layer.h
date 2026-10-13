@@ -164,6 +164,8 @@ struct Counters{
     unsigned restoreFallbacks=0,texSplits=0;      // drains that had to use the state block instead of the minimal restore; texture writes answered with a split (drain, keep deferring)
     unsigned restoreSets=0;                       // device Set* calls of the minimal restore (apart from replaySets)
     uint64_t recordSlots=0;                       // slots a record examined (read and compared): with the synced bits only the ones that may have changed
+    unsigned stride0Refused=0;                    // defers refused (a Capture failure: flush + fallback) because a stride-0 stream's vertex size could not be determined
+    unsigned checkAllocFails=0;                   // dirty cross-checks that could not run (no scratch memory): the record used the full compare and dirtyRecord went off
     unsigned dirtyMismatches=0;                   // Config::dirtyCheck: records whose synced-bit delta differed from the full compare's (must stay 0)
     unsigned drains=0;                            // replay sequences actually run, of every kind: B (replays), hazard flushes, splits, refused defers (replays counts the B ones only)
     unsigned fixed=0;                             // deferred draws that were fixed-function (also counted in deferred[])
@@ -178,7 +180,7 @@ struct Counters{
         for(int i=0;i<4;++i){deferred[i]+=o.deferred[i];inPlace[i]+=o.inPlace[i];}
         for(int i=0;i<3;++i)orderBy[i]+=o.orderBy[i];
         for(unsigned i=0;i<kReasons;++i)hazards[i]+=o.hazards[i];
-        fixed+=o.fixed;flushes+=o.flushes;replays+=o.replays;drains+=o.drains;recordSlots+=o.recordSlots;dirtyMismatches+=o.dirtyMismatches;restoreFallbacks+=o.restoreFallbacks;texSplits+=o.texSplits;restoreSets+=o.restoreSets;replayedDraws+=o.replayedDraws;replaySkipped+=o.replaySkipped;discarded+=o.discarded;
+        fixed+=o.fixed;flushes+=o.flushes;replays+=o.replays;drains+=o.drains;recordSlots+=o.recordSlots;stride0Refused+=o.stride0Refused;checkAllocFails+=o.checkAllocFails;dirtyMismatches+=o.dirtyMismatches;restoreFallbacks+=o.restoreFallbacks;texSplits+=o.texSplits;restoreSets+=o.restoreSets;replayedDraws+=o.replayedDraws;replaySkipped+=o.replaySkipped;discarded+=o.discarded;
         conflicts+=o.conflicts;materialized+=o.materialized;recorded+=o.recorded;replaySets+=o.replaySets;conflictBytes+=o.conflictBytes;
         for(int i=0;i<4;++i)capBy[i]+=o.capBy[i];overflowFrames+=o.overflowFrames;overflowAt+=o.overflowAt;overflowCandidates+=o.overflowCandidates;
         deltaWords+=o.deltaWords;arenaHigh=std::max(arenaHigh,o.arenaHigh);recordHigh=std::max(recordHigh,o.recordHigh);
@@ -500,6 +502,16 @@ struct ModelSink{
     void fvf(DWORD v){m.fvf=v;m.declMode=2;m.declSeen|=2;}
 };
 
+// The bytes of one vertex of an FVF (D3DFVF_*): position (XYZ 12, XYZRHW 16, XYZW 16, XYZB1..5 12 + 4 per weight; the LASTBETA flags change the type of the last weight, not its size), normal 12,
+// point size 4, diffuse 4, specular 4, and per texture set 8 bytes, or the D3DFVF_TEXCOORDSIZE of that set (code 0: 2 floats, 1: 3, 2: 4, 3: 1). False: no position, so no valid vertex.
+inline bool fvfVertexSize(DWORD fvf,uint32_t& size){
+    uint32_t n=0;
+    switch(fvf&0x400E){case 0x2:n=12;break;case 0x4:n=16;break;case 0x4002:n=16;break;case 0x6:n=16;break;case 0x8:n=20;break;case 0xA:n=24;break;case 0xC:n=28;break;case 0xE:n=32;break;default:return false;}
+    if(fvf&0x10)n+=12;if(fvf&0x20)n+=4;if(fvf&0x40)n+=4;if(fvf&0x80)n+=4;
+    const unsigned sets=(fvf>>8)&0xF;if(sets>8)return false;
+    for(unsigned i=0;i<sets;++i){static const uint8_t bytes[4]={8,12,16,4};n+=bytes[(fvf>>(16+2*i))&3];}
+    size=n;return true;
+}
 // The first op in which two deltas differ, for the one-off SPELLDIRTY line: kind name, slot index (render state id, sampler state a = stage*13+type-1, texture stage, first register of a
 // run, ...), and a value of each side (0 when that side has no such op; constant runs: count << 32 | a hash of their words).
 struct DeltaDiff{
@@ -543,6 +555,9 @@ public:
     }
 };
 
+#ifdef NORTHLIGHT_SPELL_LAYER_TEST_API
+inline bool testFailAlloc=false; // tests: the held table and the cross-check scratch report an allocation failure
+#endif
 class Layer{
     struct Stream{IDirect3DVertexBuffer9* vb=nullptr;uint32_t off=0,stride=0,lo=0,hi=0,sno=0;int32_t blob=-1;};
     struct FfRec{                                     // only for fixed-function entries (Entry::ff), allocated in chunks of kFfChunk
@@ -647,7 +662,12 @@ private:
         if(!owned)p->AddRef();
         held_[i]=Held{p,0,0};heldUsed_.push_back(uint32_t(i));return &held_[i];
     }
-    void allocHeld(){size_t slots=1024;while(slots<size_t(cfg_.maxEntries)*4)slots<<=1;held_.assign(slots,Held{});heldUsed_.reserve(slots*3/4);} // the held table, sized by maxEntries (trim() frees it while idle, defer() allocates it again)
+#ifdef NORTHLIGHT_SPELL_LAYER_TEST_API
+    static bool allocFails(){return testFailAlloc;}
+#else
+    static bool allocFails(){return false;}
+#endif
+    bool allocHeld(){if(allocFails())return false;size_t slots=1024;while(slots<size_t(cfg_.maxEntries)*4)slots<<=1;try{held_.assign(slots,Held{});heldUsed_.reserve(slots*3/4);}catch(...){held_=std::vector<Held>();heldUsed_=std::vector<uint32_t>();return false;}return true;} // the held table, sized by maxEntries (trim() frees it while idle, defer() allocates it again)
     void releaseHeld(){for(uint32_t i:heldUsed_){held_[i].p->Release();held_[i]=Held{};}heldUsed_.clear();}
     bool reserveDelta(unsigned words,uint16_t& chunk,uint16_t& off){
         const unsigned cw=cfg_.deltaChunkWords,maxChunks=unsigned(std::max<size_t>(1,cfg_.deltaBytes/(size_t(cw)*4)));
@@ -1274,7 +1294,7 @@ public:
         if(cfg_.on){
             allocHeld();scratch_.reset(new uint32_t[kScratchWords]);model_.reset();
         }
-        else{entryChunks_.clear();arena_.reset();arenaCap_=0;held_=std::vector<Held>();heldUsed_=std::vector<uint32_t>();scratch_.reset();}
+        else{entryChunks_.clear();arena_.reset();arenaCap_=0;held_=std::vector<Held>();heldUsed_=std::vector<uint32_t>();scratch_.reset();checkScratch_.reset();}
         fm_.begin(cfg_.on,false);
     }
     const Config& config()const{return cfg_;}
@@ -1314,7 +1334,7 @@ public:
     struct Memory{size_t entries,deltas,arena,fixedFunction,tables,uploads;size_t total()const{return entries+deltas+arena+fixedFunction+tables;}};
     Memory memory()const{
         Memory m{};m.entries=entryChunks_.size()*kEntryChunk*sizeof(Entry);m.deltas=deltaChunks_.size()*size_t(cfg_.deltaChunkWords)*4;m.arena=arenaCap_;
-        m.fixedFunction=ffChunks_.size()*kFfChunk*sizeof(FfRec);m.tables=held_.size()*sizeof(Held)+heldUsed_.capacity()*4+sizeof(Model)+kScratchWords*4+(blobs_.capacity()*sizeof(Blob)+hits_.capacity()*sizeof(GuardTable::Hit)+segs_.capacity()*sizeof(Seg)+order_.capacity()*4);
+        m.fixedFunction=ffChunks_.size()*kFfChunk*sizeof(FfRec);m.tables=held_.size()*sizeof(Held)+(checkScratch_?kScratchWords*4:0)+heldUsed_.capacity()*4+sizeof(Model)+kScratchWords*4+(blobs_.capacity()*sizeof(Blob)+hits_.capacity()*sizeof(GuardTable::Hit)+segs_.capacity()*sizeof(Seg)+order_.capacity()*4);
         m.uploads=(upVb_?cfg_.uploadVbBytes:0)+(upIb_[0]?cfg_.uploadIbBytes:0)+(upIb_[1]?cfg_.uploadIbBytes:0);return m;
     }
     static constexpr unsigned entryChunkSize(){return kEntryChunk;}
@@ -1338,7 +1358,7 @@ public:
         if(count_>=cfg_.maxEntries)return capFail(0);
         if(!rt0||(count_&&(rt0!=target_||ds!=ds_)))return fail(count_?Reason::Order:Reason::Capture);
         if(cfg_.generation){const unsigned g=cfg_.generation(cfg_.genCtx);if(g!=verdictGen_){clearVerdicts();verdictGen_=g;}}
-        if(held_.empty()){allocHeld();if(held_.empty())return capFail(0);}
+        if(held_.empty()&&!allocHeld())return capFail(3); // no memory for the held table: the capacity failure path (flush, fallback)
         if(!ensureEntry(count_))return capFail(0);
         const bool up=a.type==DrawType::PrimitiveUP||a.type==DrawType::IndexedUP,idx=a.type==DrawType::Indexed||a.type==DrawType::IndexedUP;
         Hold hold(*this); // the state cache's guard for all the reads below (Get calls nest in it)
@@ -1379,8 +1399,8 @@ public:
                 Stream& st=e.streams[e.nStreams++];st.vb=vb;st.off=off;st.stride=stride;st.sno=s;
                 if(FAILED(dev_->GetStreamSourceFreq(s,&freq))||freq!=1)return fail(Reason::Capture);
                 int64_t lo=int64_t(off)+first*stride,hi=lo+int64_t(verts)*stride;
-                if(!stride){ // every vertex reads the same element: guard [offset, offset + the declaration's largest element end of this stream); no declaration (an FVF) or an unknown type: refused
-                    uint32_t end=0;if(!decl||!declStreamEnd(decl,s,end))return fail(Reason::Capture);
+                if(!stride){ // every vertex reads the same element: guard [offset, offset + the declaration's largest element end of this stream, or the FVF's vertex size); a size that cannot be determined (an unknown element type, no valid position) is refused (counted: stride0Refused)
+                    uint32_t end=0;if(!(decl?declStreamEnd(decl,s,end):fvfVertexSize(fvf,end))){count([](Counters& c){++c.stride0Refused;});return fail(Reason::Capture);}
                     lo=off;hi=int64_t(off)+end;
                 }
                 if(lo<0||hi>int64_t(0xFFFFFFFFu))return fail(Reason::Capture);
@@ -1437,8 +1457,10 @@ public:
         }
         {   Reason why=buildDelta(rd,fixed,vs,ps,decl,fvf,tex,sy,sy!=nullptr);
             if(sy&&cfg_.dirtyCheck){ const bool tm=cfg_.clock&&cfg_.timing&&cfg_.timing(cfg_.clockCtx);Phase checkTime(*this,tm?&tCheck_:nullptr); // tests and sampled frames: the full compare must give the same delta (its result, and its larger examined set, is the one used); a Get the full compare needs and the dirty path never makes may fail
-                if(!checkScratch_)checkScratch_.reset(new(std::nothrow) uint32_t[kScratchWords]); // allocated once, only when the check is used
-                if(checkScratch_){
+                if(!checkScratch_&&!allocFails())checkScratch_.reset(new(std::nothrow) uint32_t[kScratchWords]); // allocated once, only when the check is used
+                if(!checkScratch_){ // no memory to verify with: do not trust the unverified delta - the full compare is used and the dirty record is off from now on
+                    count([](Counters& c){++c.checkAllocFails;});cfg_.dirtyRecord=false;why=buildDelta(rd,fixed,vs,ps,decl,fvf,tex,nullptr,false);
+                }else{
                 const unsigned n1=n_;const SyncPend p1=pend_;std::memcpy(checkScratch_.get(),scratch_.get(),size_t(n_)*4);
                 const Reason why2=buildDelta(rd,fixed,vs,ps,decl,fvf,tex,nullptr,true);
                 if(why==Reason::Count&&why2!=Reason::Count){n_=n1;pend_=p1;std::memcpy(scratch_.get(),checkScratch_.get(),size_t(n1)*4);}   // keep the dirty result
@@ -1561,7 +1583,7 @@ public:
             guards_.release();                                   // nothing is guarded while nothing is pending
             std::vector<Blob>().swap(blobs_);std::vector<GuardTable::Hit>().swap(hits_);std::vector<Seg>().swap(segs_);std::vector<uint32_t>().swap(order_);
             if(heldUsed_.empty()){std::vector<Held>().swap(held_);std::vector<uint32_t>().swap(heldUsed_);} // no reference is held: the table goes too
-            undo_.reset();
+            undo_.reset();checkScratch_.reset();
         }
     }
     // Device Reset/destroy/extension fault: drops everything WITHOUT drawing, releases records, buffers and surfaces, unmarks guards.
