@@ -319,6 +319,7 @@
         if(captureSampled){const auto chosen=std::chrono::steady_clock::now();
             actorShadowPrepareMs=std::chrono::duration<double,std::milli>(prepared-started).count();actorShadowChooseMs=std::chrono::duration<double,std::milli>(chosen-prepared).count();}
         for(const auto& item:actorShadowDraws)replays[item.index]->shadowSelected=item.keep;
+        if(NorthlightDiagnostics::enabled())for(const auto& a:actorShadowScratch.actors)if(a.self)for(size_t i=a.first;i<a.first+a.count;++i)replays[actorShadowDraws[i].index]->selfShadow=true; /* diagnostics only: the side tracker's self */
         if(shadowFate.active())for(const auto& a:actorShadowScratch.actors){using namespace NorthlightShadowFate;
             const Fate f=a.rigid?Rigid:(a.body!=SIZE_MAX||a.orphan)?Attached:a.exempt?Exempt:a.waiting?Waiting:a.keep?Kept:Dropped;
             for(size_t i=a.first;i<a.first+a.count;++i){auto& r=*replays[actorShadowDraws[i].index];r.fateClass=f;r.fateDistance=std::sqrt(std::max(0.f,actorShadowDraws[i].distanceSquared));}}
