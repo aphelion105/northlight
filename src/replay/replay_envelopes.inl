@@ -351,6 +351,9 @@ public:
     bool canHeavy()const{return !timeBudget_.reservedClosed&&heavyCalls_<2048&&heavyNanoseconds_<HeavyNanoseconds;}
     bool canBuild()const{return !timeBudget_.reservedClosed&&buildCalls_<2048&&buildNanoseconds_<BuildNanoseconds;}
     bool canWork()const{return canReady()||canBuild();}
+    // Time of a phase (0 cheap, 1 heavy, 2 build) spent so far this frame and its limit: the near walk of the bounds job takes half of what is left.
+    std::uint64_t phaseNanoseconds(unsigned phase)const{return phase==0?readyNanoseconds_:phase==1?heavyNanoseconds_:buildNanoseconds_;}
+    std::uint64_t phaseLimit(unsigned phase)const{return phase==0?timeBudget_.cheapLimit:phase==1?HeavyNanoseconds:BuildNanoseconds;}
     double readyMilliseconds()const{return double(readyNanoseconds_)/1000000.;}
     double heavyMilliseconds()const{return double(heavyNanoseconds_)/1000000.;}
     double classifyMilliseconds()const{return double(classifyNanoseconds_)/1000000.;}

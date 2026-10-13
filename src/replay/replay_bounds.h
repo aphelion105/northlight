@@ -210,6 +210,8 @@ public:
     double borrowedMicroseconds()const{return envelopes_.borrowedMicroseconds();}
     bool canHeavy()const{return envelopes_.canHeavy();}
     bool canBuild()const{return envelopes_.canBuild();}
+    std::uint64_t phaseNanoseconds(unsigned phase)const{return envelopes_.phaseNanoseconds(phase);}
+    std::uint64_t phaseLimit(unsigned phase)const{return envelopes_.phaseLimit(phase);}
     void continuePendingBuild(Budget& budget){envelopes_.continuePendingBuild(budget);}
     bool hasPendingBuild()const{return envelopes_.hasPendingBuild();}
     size_t pendingBuildVertices()const{return envelopes_.pendingBuildVertices();}

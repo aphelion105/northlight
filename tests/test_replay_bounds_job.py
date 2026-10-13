@@ -235,36 +235,41 @@ int main(int argc,char** argv){
     assert(argc>=3);const std::string mode=argv[2];auto skin=load(argv[1]);assert(SkinEnvelope::supports(skin));
 #ifdef NORTHLIGHT_TEST_CLOCK
     if(mode=="priority"){
-        // The near-first order must not starve anything: a fixed draw list whose near packets (rooted next to the shadow pivot) cost more than
-        // a phase budget, run frame after frame through the real Worker (schedule with a priority list): every near and every far packet gets
-        // bounds within a bounded number of frames. The clock step is large, so the time budgets bind after a few packets.
-        const unsigned nearCount=12,farCount=48,frames=argc>3?unsigned(std::atoi(argv[3])):80;
-        const bool ordered=argc>4&&std::string(argv[4])=="on";
-        Scene scene(skin,240,3,2);World w(scene.programs);warm(w,scene);
+        // The near-first order must not starve anything: a fixed draw list whose near packets (rooted next to the shadow pivot) are the largest
+        // meshes, run frame after frame through the real Worker (schedule with a priority list). The clock step is large, so the time budgets
+        // (not the operation budgets) end every phase after a few packets. Per frame: how many near and far packets have valid bounds.
+        // Asserted: every packet gets bounds; after warm-up every near packet is covered in every frame; the far coverage per frame stays
+        // at least about half of what the plain rotation gives (the near walk takes at most half of a phase's time, operations and vertices).
+        const unsigned nearCount=12,farCount=48,frames=argc>3?unsigned(std::atoi(argv[3])):80,warmup=24;
+        Scene scene(skin,240,3,2);
         std::vector<size_t> cheap; /* the plain skinned meshes (shaders[0]): all of them reach bounds */
         for(size_t m=0;m<scene.pool.size();++m)if(scene.kinds[m]==0)cheap.push_back(m);
         std::sort(cheap.begin(),cheap.end(),[&](size_t a,size_t b){return scene.pool[a]->vertexCount>scene.pool[b]->vertexCount;});assert(cheap.size()>=nearCount+farCount);
-        TestClock::step=6000; /* 6 us per clock read: the time budgets bind after a few packets, 60 packets need ~60 frames (the same without the order) */
-        const size_t total=nearCount+farCount;
-        std::vector<unsigned> firstValid(total,0);size_t nearListSize=0;
-        w.actorShadowOriginValid=ordered;const float pivot[3]={100,50,10};std::memcpy(w.actorShadowOrigin,pivot,sizeof pivot);
-        for(unsigned f=1;f<=frames;++f){
-            scene.frame(0,total,false,{&w}); /* the same draw list every frame */
-            for(size_t i=0;i<total;++i){auto& p=*w.replays[i];p.captureRootValid=true;p.captureRoot[0]=pivot[0]+(i<nearCount?float(i):100.f+float(i));p.captureRoot[1]=pivot[1];p.captureRoot[2]=pivot[2];
-                p.shared=scene.pool[cheap[i]];p.originalShader=&scene.shaders[0];} /* the largest meshes are the near packets */
-            w.replayBoundsKick();w.replayBoundsJoin();
-            nearListSize=w.replayBoundsWorker.nearList().index.size();
-            for(size_t i=0;i<total;++i)if(w.replays[i]->pointBounds.valid&&!firstValid[i])firstValid[i]=f;
-        }
-        unsigned lastNear=0,lastFar=0;size_t never=0;
-        for(size_t i=0;i<total;++i){(i<nearCount?lastNear:lastFar)=std::max(i<nearCount?lastNear:lastFar,firstValid[i]);
-            never+=firstValid[i]==0;}
-        std::printf("{\"mode\":\"priority\",\"ordered\":%d,\"nearListSize\":%zu,\"lastNearFirstValidFrame\":%u,\"lastFarFirstValidFrame\":%u,\"neverValid\":%zu}\n",int(ordered),nearListSize,lastNear,lastFar,never);
-        assert(!ordered||nearListSize==nearCount);
-        // Every packet got bounds. With the order: the near ones long before the plain rotation gets to them (it needs ~58 frames), the far ones
-        // no later than without it (~57): the near walk spends at most half of a phase and rotates, so the rotating pass always has work.
-        assert(never==0&&lastFar<=frames);
-        if(ordered)assert(lastNear<=24&&lastFar<=70);
+        struct Run {std::vector<unsigned> nearValid,farValid;unsigned lastNear=0,lastFar=0;size_t never=0,nearListSize=0;double farMean=0;unsigned minNear=~0u;};
+        const auto run=[&](bool ordered){
+            World w(scene.programs);warm(w,scene);TestClock::ticks=1000000;
+            TestClock::step=6000; /* 6 us per clock read */
+            const size_t total=nearCount+farCount;Run r;std::vector<unsigned> firstValid(total,0);
+            w.actorShadowOriginValid=ordered;const float pivot[3]={100,50,10};std::memcpy(w.actorShadowOrigin,pivot,sizeof pivot);
+            for(unsigned f=1;f<=frames;++f){
+                scene.frame(0,total,false,{&w}); /* the same draw list every frame */
+                for(size_t i=0;i<total;++i){auto& p=*w.replays[i];p.captureRootValid=true;p.captureRoot[0]=pivot[0]+(i<nearCount?float(i):100.f+float(i));p.captureRoot[1]=pivot[1];p.captureRoot[2]=pivot[2];
+                    p.shared=scene.pool[cheap[i]];p.originalShader=&scene.shaders[0];} /* the largest meshes are the near packets */
+                w.replayBoundsKick();w.replayBoundsJoin();
+                r.nearListSize=w.replayBoundsWorker.nearList().index.size();unsigned n=0,fa=0;
+                for(size_t i=0;i<total;++i)if(w.replays[i]->pointBounds.valid){(i<nearCount?n:fa)+=1;if(!firstValid[i])firstValid[i]=f;}
+                r.nearValid.push_back(n);r.farValid.push_back(fa);
+            }
+            for(size_t i=0;i<total;++i){(i<nearCount?r.lastNear:r.lastFar)=std::max(i<nearCount?r.lastNear:r.lastFar,firstValid[i]);r.never+=firstValid[i]==0;}
+            for(unsigned f=warmup;f<frames;++f){r.minNear=std::min(r.minNear,r.nearValid[f]);r.farMean+=r.farValid[f];}
+            r.farMean/=double(frames-warmup);return r;
+        };
+        const Run on=run(true),off=run(false);
+        std::printf("{\"mode\":\"priority\",\"nearListSize\":%zu,\"on\":{\"lastNear\":%u,\"lastFar\":%u,\"minNearAfterWarmup\":%u,\"farMean\":%.2f},\"off\":{\"lastNear\":%u,\"lastFar\":%u,\"minNearAfterWarmup\":%u,\"farMean\":%.2f},\"neverValid\":%zu}\n",
+            on.nearListSize,on.lastNear,on.lastFar,on.minNear,on.farMean,off.lastNear,off.lastFar,off.minNear,off.farMean,on.never);
+        assert(on.nearListSize==nearCount&&on.never==0&&off.never==0&&on.lastFar<=frames);
+        assert(on.minNear==nearCount);          /* near casters covered in every frame after warm-up */
+        assert(on.farMean>=.5*off.farMean);     /* the rotating pass keeps at least about half of its coverage */
         return 0;
     }
     if(mode=="equivalence"||mode=="stress"){
@@ -367,9 +372,9 @@ with tempfile.TemporaryDirectory(prefix='northlight-bounds-job-') as tmp:
     (root / 'd3d9.h').write_text(stub)
     source = clock + harness
     shader = str(client_fixtures.four_bone_vs3())
-    runs = [('o2', ['-O2'], [('equivalence', '600'), ('stress', '400'), ('priority', '80', 'on'), ('priority', '80', 'off')]),
-            ('asan', ['-O1', '-g', '-fsanitize=address,undefined', '-fno-omit-frame-pointer'], [('equivalence', '200'), ('stress', '200'), ('priority', '80', 'on')]),
-            ('tsan', ['-O1', '-g', '-fsanitize=thread'], [('equivalence', '150'), ('stress', '200'), ('priority', '80', 'on')])]
+    runs = [('o2', ['-O2'], [('equivalence', '600'), ('stress', '400'), ('priority', '80')]),
+            ('asan', ['-O1', '-g', '-fsanitize=address,undefined', '-fno-omit-frame-pointer'], [('equivalence', '200'), ('stress', '200'), ('priority', '80')]),
+            ('tsan', ['-O1', '-g', '-fsanitize=thread'], [('equivalence', '150'), ('stress', '200'), ('priority', '80')])]
     for name, flags, modes in runs:
         binary = build(root, name, source, flags)
         for mode, frames, *extra in modes:

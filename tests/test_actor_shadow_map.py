@@ -109,7 +109,7 @@ checks['actor map log line: hold band, overflows, near list size and near walk s
     and 'if(NorthlightDiagnostics::enabled()){replayNearSize=unsigned(replayBoundsWorker.nearList().index.size());replayNearStops+=result.totals.nearStops;}' in point)
 checks['bounds near-first: the list is filled by gather with the items, walks rotate per phase and take at most half of a phase budget']=(
     'priority->consider(i,p.captureRootValid,p.captureRoot);' in job and 'schedule(*cache_,items_,inverse_,&cancel_,priority_.on?&priority_:nullptr)' in job
-    and 'budget.operations+budget.maxOperations/2' in job and 'budget.vertices+budget.maxVertices/2' in job and job.count('nearWalk(')==3 and 'NorthlightReplaySchedule::pass(index.size(),list->cursor[phase]%index.size()' in near
+    and 'budget.operations+budget.maxOperations/2' in job and 'budget.vertices+budget.maxVertices/2' in job and 'cache.phaseNanoseconds(phase)<until' in job and job.count('nearWalk(')==3 and 'NorthlightReplaySchedule::pass(index.size(),list->cursor[phase]%index.size()' in near
     and not re.search(r'\bnear[(=]',job+near+hold)) # near is a Windows macro
 for name,ok in checks.items():print(('PASS ' if ok else 'FAIL ')+name)
 assert all(checks.values())

@@ -51,11 +51,12 @@ inline Totals schedule(NorthlightReplayBounds::Cache& cache,std::vector<Item>& i
         if(status==Status::Valid)++t.valid;
         return status==Status::Budget;
     };
-    // The near walk of a phase: at most half of the phase's budget (operations, and vertices for the build phase), counted from where the phase stands.
+    // The near walk of a phase: at most half of what the phase has left, in operations, vertices (build) and time, counted from where the phase stands.
     const auto nearWalk=[&](unsigned phase,NorthlightReplayBounds::Budget& budget,auto&& phaseCan){
         if(!priority)return;
         const size_t operations=budget.operations+budget.maxOperations/2,vertices=budget.vertices+budget.maxVertices/2;
-        if(NorthlightReplayBoundsNear::nearFirst(priority,phase,[&]{return phaseCan()&&budget.operations<operations&&(!budget.maxVertices||budget.vertices<vertices);},[&](size_t index){return visit(index,phase);})&&phaseCan())++t.nearStops;
+        const std::uint64_t spent=cache.phaseNanoseconds(phase),limit=cache.phaseLimit(phase),until=spent+(limit>spent?(limit-spent)/2:0);
+        if(NorthlightReplayBoundsNear::nearFirst(priority,phase,[&]{return phaseCan()&&budget.operations<operations&&(!budget.maxVertices||budget.vertices<vertices)&&cache.phaseNanoseconds(phase)<until;},[&](size_t index){return visit(index,phase);})&&phaseCan())++t.nearStops;
     };
     nearWalk(0,cheapBudget,[&]{return live()&&cache.canCheap()&&cheapBudget.operations<cheapBudget.maxOperations;}); /* casters near the pivot first */
     cache.readyResume(NorthlightReplaySchedule::pass(count,cache.readyStart(count),
