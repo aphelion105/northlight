@@ -1,5 +1,6 @@
 // Task 34: behavioural tests of the production spell_layer.h against the FakeDevice of test_spell_layer_api.h.
 #include "test_spell_layer_api.h"
+#include "spell_fog_proof.h"
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -254,12 +255,12 @@ static bool gDirty=true; // Config::dirtyRecord of every Rig (the whole suite al
 static bool gMinimal=true; // Config::minimalRestore of every Rig (main runs the whole suite with it on and off: the end state must be identical)
 static unsigned gTexGeneration=0;static unsigned texGeneration(void*){return gTexGeneration;}
 static uint64_t gTicks=0;static uint64_t fakeClock(void*){return ++gTicks;}static bool fakeTiming(void*){return true;} // every read advances one tick: a timed phase costs exactly 1
-struct Opts{bool fogOn=false;const NorthlightSpellFog::Frame* fog=nullptr;unsigned maxOrderSplits=8;bool allowMismatch=false,failSafe=false;bool dirty=gDirty;unsigned maxTexSplits=8;bool minimal=gMinimal;bool timed=false;size_t deltaBytes=2u<<20;unsigned deltaChunk=16384;bool verdictCache=false;bool on=true;unsigned maxEntries=512;bool conflictCopy=true;unsigned mask=15;size_t arena=1u<<20,upVb=1u<<16,upIb=1u<<14;};
+struct Opts{bool fogFresh=true;unsigned maxFogFits=16;bool fogOn=false;const NorthlightSpellFog::Frame* fog=nullptr;unsigned maxOrderSplits=8;bool allowMismatch=false,failSafe=false;bool dirty=gDirty;unsigned maxTexSplits=8;bool minimal=gMinimal;bool timed=false;size_t deltaBytes=2u<<20;unsigned deltaChunk=16384;bool verdictCache=false;bool on=true;unsigned maxEntries=512;bool conflictCopy=true;unsigned mask=15;size_t arena=1u<<20,upVb=1u<<16,upIb=1u<<14;};
 struct Rig{
     Fake::FakeDevice dev;Layer layer;Opts o;
     Fake::Surface *T,*D,*Other;
     Fake::VB *ring,*stat,*extra,*ring2;Fake::IB *ringIb,*ringIb32,*stIb;
-    Fake::Decl *declP,*declTwo;Fake::VShader *vs,*vsEff;Fake::PShader *ps,*psEff;Fake::Texture *texA,*texB;unsigned psMajor=3;int psFogReg=-1; /* what the integration passes as DrawArgs::psMajor and psFogReg */
+    Fake::Decl *declP,*declTwo;Fake::VShader *vs,*vsEff;Fake::PShader *ps,*psEff;Fake::Texture *texA,*texB;unsigned psMajor=3;int psFogReg=-1;unsigned vsFog=1; /* what the integration passes as DrawArgs::psMajor and psFogReg */
     NorthlightSpellLayer::MirrorView view;
     bool useReads=false;NorthlightShaderReads::ReadSet vsRs,psRs; // shaders with scanned read sets (restrict()); otherwise they read everything
     const void* readsVs=nullptr,*readsPs=nullptr; // the shaders the read sets belong to (default: the bound vs/ps); set to another shader to model a read set looked up for a different one
@@ -307,7 +308,7 @@ struct Rig{
         const float c[4]={1,2,3,4};dev.SetVertexShaderConstantF(5,c,1);dev.SetPixelShaderConstantF(2,c,1);dev.SetSamplerState(0,5,2);dev.SetRenderState(D3DRS_ALPHAREF,128);
         opaqueZ();translucent(kSrcAlpha,kBlendOne);
         Config c2;c2.on=o.on;c2.classMask=o.mask;c2.maxEntries=o.maxEntries;c2.arenaBytes=o.arena;c2.uploadVbBytes=o.upVb;c2.uploadIbBytes=o.upIb;
-        c2.minimalRestore=o.minimal;c2.maxOrderSplits=o.maxOrderSplits;c2.fogOn=o.fogOn;c2.fog=o.fog;c2.fogLog=true;c2.dirtyRecord=o.dirty;c2.dirtyCheck=true;c2.dirtyDisableOnMismatch=o.failSafe;c2.synced=&dev.synced;c2.maxTexSplits=o.maxTexSplits;c2.conflictCopy=o.conflictCopy;c2.deltaChunkWords=o.deltaChunk;c2.deltaBytes=o.deltaBytes;
+        c2.minimalRestore=o.minimal;c2.maxOrderSplits=o.maxOrderSplits;c2.fogOn=o.fogOn;c2.fog=o.fog;c2.maxFogFits=o.maxFogFits;c2.fogLog=true;c2.dirtyRecord=o.dirty;c2.dirtyCheck=true;c2.dirtyDisableOnMismatch=o.failSafe;c2.synced=&dev.synced;c2.maxTexSplits=o.maxTexSplits;c2.conflictCopy=o.conflictCopy;c2.deltaChunkWords=o.deltaChunk;c2.deltaBytes=o.deltaBytes;
         if(gMirrorMode){
             Fake::Mirror& m=dev.mir;view=Fake::makeView(dev);c2.source=&view;
             if(gMirrorMode==2){for(unsigned i=0;i<256;i+=3)m.hideRs[i]=true;for(unsigned i=0;i<256;i+=5)m.hideVsF[i]=true;for(unsigned i=0;i<224;i+=7)m.hidePsF[i]=true;m.hideTex[3]=m.hideTex[5]=true;m.hideSmp[1]=true;m.hideVsB=true;}
@@ -315,7 +316,7 @@ struct Rig{
         }
         if(o.timed){c2.clock=&fakeClock;c2.timing=&fakeTiming;}
         if(o.verdictCache){c2.generation=&texGeneration;c2.genCtx=nullptr;}c2.markGuard=&Rig::markCb;c2.markCtx=this;
-        layer.attach(&dev);layer.configure(c2);layer.beginFrame(false);
+        layer.attach(&dev);layer.configure(c2);layer.fogFresh(o.fogFresh);layer.beginFrame(false);
     }
     ~Rig(){
         CHECK(o.allowMismatch||layer.totalCounters().dirtyMismatches==0);
@@ -447,7 +448,7 @@ struct Rig{
     }
     // One game draw: classify, defer when told to (layer on), otherwise draw in place after the layer's hazard handling. Returns the tag.
     template<class F> int issueWith(const DrawArgs& a0,Family fam,F&& tweak){
-        DrawArgs a=a0;a.psMajor=psMajor;a.psFogReg=psFogReg;if(useReads){a.vsReads=&vsRs;a.psReads=&psRs;a.vsFor=readsVs?readsVs:static_cast<const void*>(vs);a.psFor=readsPs?readsPs:static_cast<const void*>(ps);}
+        DrawArgs a=a0;a.psMajor=psMajor;a.psFogReg=psFogReg;a.vsFog=uint8_t(vsFog);if(useReads){a.vsReads=&vsRs;a.psReads=&psRs;a.vsFor=readsVs?readsVs:static_cast<const void*>(vs);a.psFor=readsPs?readsPs:static_cast<const void*>(ps);}
         const int tag=nextTag++;tagReads[tag]=TagReads{useReads,vsRs,psRs};const float v[4]={float(tag),0,0,0};dev.SetVertexShaderConstantF(31,v,1);dev.SetRenderState(165,DWORD(tag));
         DrawFacts f=facts(fam);f.pending=o.on&&layer.pending()>0;tweak(f);
         last=classify(f,o.mask);bool deferred=false;
@@ -496,6 +497,10 @@ struct Pair{std::unique_ptr<Rig> ref,lay;};
 static Pair runBoth(void(*scenario)(Rig&),Opts o={}){
     Pair p;Opts r=o;r.on=false;p.ref.reset(new Rig(r));scenario(*p.ref);
     p.lay.reset(new Rig(o));scenario(*p.lay);return p;
+}
+static Pair runBothFog(void(*scenario)(Rig&),Opts o,unsigned vsFog){ // the vertex shader's fog proof as the integration reports it (0 none, 1 exact, 2 bare ramp)
+    Pair p;Opts r=o;r.on=false;p.ref.reset(new Rig(r));p.ref->vsFog=vsFog;scenario(*p.ref);
+    p.lay.reset(new Rig(o));p.lay->vsFog=vsFog;scenario(*p.lay);return p;
 }
 static bool sameRec(Rig& A,const Fake::DrawRec& a,Rig& B,const Fake::DrawRec& b,bool geom){
     for(int i=0;i<4;++i)if(A.id(a.rt[i])!=B.id(b.rt[i]))return false;
@@ -1393,10 +1398,10 @@ static void testSpellFogFit(){
             err=std::max(err,std::fabs(v-target));
             CHECK(v<=gameVisibility(g,z)+.12f);                                           // never much more visible than the game's own
         }
-        if(gg.start<=20&&gg.end>=120)CHECK(err<.065f);                                    // a ramp from the eye: the fit is close
+        if(gg.power<=2&&sigma<=.01f)CHECK(err<.09f);                                      // ordinary fog and an ordinary ramp: the fit is close
         worst=std::max(worst,err);
     }
-    CHECK(worst<.16f);                                                                    // the worst is a late start with a high power (the single pow cannot follow its plateau)
+    CHECK(worst<.31f);                                                                    // the worst: very thick fog (0.02 per unit) over a long game range, or a late start with a high power
     // the fog colour of the alpha sub-class: unchanged where there is no fog, never negative, pulled toward the in-scatter with fog
     {Frame f=fogFrame(.01f);const float g[3]={-1/150.f,1.f,1.f},cF[3]={.4f,.5f,.6f};CHECK(emitFog(f,g,fit));
      float c[3];emitColor(f,g,fit,cF,c);for(float v:c)CHECK(v>=0&&std::isfinite(v));
@@ -1477,6 +1482,116 @@ static void testSpellFogToggle(){
         CHECK(d.st.vsc[30][0]==want[0]&&d.st.vsc[30][1]==want[1]&&d.st.vsc[30][2]==want[2]);
     }
     CHECK(seen==4&&p.lay->layer.totalCounters().fogEntries==2&&p.lay->layer.totalCounters().dirtyMismatches==0);
+}
+
+// ---- SpellFog round 1: the vertex shader proof, freshness, the fit cache and cap, straight alpha only ----
+namespace sfp{
+static uint32_t rtok(unsigned type,unsigned n){return 0x80000000u|((type&7)<<28)|((type&24)<<8)|n;}
+static uint32_t dst(unsigned type,unsigned n,unsigned mask){return rtok(type,n)|mask<<16;}
+static uint32_t src(unsigned type,unsigned n,unsigned swz,bool rel=false){return rtok(type,n)|swz<<16|(rel?0x2000u:0u);}
+static const unsigned X=0x00,Y=0x55,Z=0xAA,XYZW=0xE4;
+struct Asm{
+    std::vector<uint32_t> w;
+    explicit Asm(uint32_t version){w.push_back(version);}
+    Asm& op(unsigned o,std::initializer_list<uint32_t> t){w.push_back(o|(unsigned(t.size())<<24));w.insert(w.end(),t.begin(),t.end());return *this;}
+    Asm& def(unsigned c,float a,float b,float c2,float d){uint32_t x[4];const float f[4]={a,b,c2,d};std::memcpy(x,f,16);return op(81,{dst(2,c,15),x[0],x[1],x[2],x[3]});}
+    Asm& fogDcl(unsigned reg){return op(31,{11u,dst(6,reg,15)});}
+    Asm& end(){w.push_back(0xffff);return *this;}
+    bool proven(bool* bare=nullptr)const{return NorthlightSpellFog::vsFogProven(w.data(),w.size(),bare);}
+};
+// vs_3_0 with max(ramp, 0) / bare ramp in the pow; vs_2_0 with lit; a skinned variant whose view depth is a blend of bone rows.
+static Asm vs3(bool maxed,bool skinned=false){
+    Asm a(0xfffe0300);a.def(0,1,0,0,0).fogDcl(3);
+    if(skinned){a.op(5,{dst(0,1,15),src(2,33,XYZW,true),0xb0e40000u,src(1,1,Y)}).op(4,{dst(0,1,15),src(2,33,XYZW,true),0xb0e40000u,src(1,1,X),src(0,1,XYZW)}).op(9,{dst(0,0,4),src(0,1,XYZW),src(1,0,XYZW)});}
+    else a.op(9,{dst(0,0,4),src(2,33,XYZW),src(1,0,XYZW)});
+    a.op(4,{dst(0,0,1),src(0,0,Z),src(2,30,X),src(2,30,Y)});
+    if(maxed)a.op(11,{dst(0,0,1),src(0,0,X),src(2,0,Y)});
+    a.op(32,{dst(0,1,1),src(0,0,X),src(2,30,Z)}).op(10,{dst(6,3,1),src(0,1,X),src(2,0,X)});
+    return a;
+}
+static Asm vs2lit(){
+    Asm a(0xfffe0200);a.def(0,1,0,0,0).op(9,{dst(0,0,4),src(2,33,XYZW),src(1,0,XYZW)}).op(4,{dst(0,0,3),src(0,0,Z),src(2,30,X),src(2,30,Y)})
+        .op(1,{dst(0,0,12),src(2,30,Z)}).op(16,{dst(0,0,15),src(0,0,XYZW)}).op(10,{dst(4,1,15),src(0,0,Z),src(2,0,X)});
+    return a;
+}
+}
+static void testVsFogProof(){
+    using namespace sfp;bool bare=true;
+    CHECK(vs3(true).end().proven(&bare)&&!bare);                          // max(ramp,0) in the pow
+    CHECK(vs3(false).end().proven(&bare)&&bare);                          // the bare ramp
+    CHECK(vs3(true,true).end().proven(&bare)&&!bare);                     // a skinned model: the view depth from a blend of c33[a0.x] rows
+    CHECK(vs2lit().end().proven(&bare)&&!bare);                           // vs_2_0 with lit
+    // what must be refused
+    {Asm a=vs3(true);a.op(1,{dst(0,2,15),src(2,30,XYZW)});CHECK(!a.end().proven());}                           // c30 is read elsewhere
+    {Asm a=vs3(true);a.op(1,{dst(0,2,15),src(2,30,XYZW,true),0xb0e40000u});CHECK(!a.end().proven());}           // a relative read that covers c30 (base 30)
+    {Asm a=vs3(true);a.op(1,{dst(0,2,15),src(2,20,XYZW,true),0xb0e40000u});CHECK(!a.end().proven());}           // base below
+    {Asm a=vs3(true);a.op(1,{dst(0,2,15),src(2,40,XYZW,true),0xb0e40000u});CHECK(a.end().proven());}            // base above: cannot reach c30
+    {Asm a=vs3(true);a.op(20,{dst(0,2,15),src(0,0,XYZW),src(2,28,XYZW)});CHECK(!a.end().proven());}            // m4x4 from c28 covers c30
+    {Asm a=vs3(true);a.op(20,{dst(0,2,15),src(0,0,XYZW),src(2,34,XYZW)});CHECK(a.end().proven());}
+    {Asm a=vs3(true);a.def(30,0,0,0,0);CHECK(!a.end().proven());}                                              // c30 redefined
+    {Asm a=vs3(true);a.op(1,{dst(6,3,15),src(2,0,XYZW)});CHECK(!a.end().proven());}                            // another write of the fog output
+    {Asm a=vs3(true);a.op(40,{src(2,0,X)});CHECK(!a.end().proven());}                                          // control flow
+    {Asm a(0xfffe0300);a.def(0,2,0,0,0).fogDcl(3).op(9,{dst(0,0,4),src(2,33,XYZW),src(1,0,XYZW)}).op(4,{dst(0,0,1),src(0,0,Z),src(2,30,X),src(2,30,Y)}).op(11,{dst(0,0,1),src(0,0,X),src(2,0,Y)})
+        .op(32,{dst(0,1,1),src(0,0,X),src(2,30,Z)}).op(10,{dst(6,3,1),src(0,1,X),src(2,0,X)});CHECK(!a.end().proven());}   // the "1" is a 2
+    {Asm a(0xfffe0300);a.def(0,1,0,0,0).op(9,{dst(0,0,4),src(2,33,XYZW),src(1,0,XYZW)}).op(4,{dst(0,0,1),src(0,0,Z),src(2,30,X),src(2,30,Y)}).op(32,{dst(0,1,1),src(0,0,X),src(2,30,Z)})
+        .op(10,{dst(6,3,1),src(0,1,X),src(2,0,X)});CHECK(!a.end().proven());}                                  // the output is not declared as fog
+    {Asm a(0xfffe0300);a.def(0,1,0,0,0).fogDcl(3).op(9,{dst(0,0,4),src(2,32,XYZW),src(1,0,XYZW)}).op(4,{dst(0,0,1),src(0,0,Z),src(2,30,X),src(2,30,Y)}).op(32,{dst(0,1,1),src(0,0,X),src(2,30,Z)})
+        .op(10,{dst(6,3,1),src(0,1,X),src(2,0,X)});CHECK(!a.end().proven());}                                  // the depth is not the c33 row
+    {Asm a(0xfffe0300);a.def(0,1,0,0,0).fogDcl(3).op(9,{dst(0,0,4),src(2,33,XYZW),src(1,0,XYZW)}).op(4,{dst(0,0,1),src(0,0,Z),src(2,30,Y),src(2,30,X)}).op(32,{dst(0,1,1),src(0,0,X),src(2,30,Z)})
+        .op(10,{dst(6,3,1),src(0,1,X),src(2,0,X)});CHECK(!a.end().proven());}                                  // x and y swapped
+    {Asm a=vs3(true);a.w[0]=0xfffe0101;CHECK(!a.end().proven());}                                              // vs_1_1 (linear) is not folded
+    {Asm a=vs3(true);CHECK(!a.proven());}                                                                      // no end token
+    CHECK(!NorthlightSpellFog::vsFogProven(nullptr,0)&&!Asm(0xfffe0300).end().proven());
+}
+// Freshness: only a moved publish stamp makes the estimate usable; a frame that did not publish leaves it frozen (identity).
+static void testSpellFogFresh(){
+    using namespace NorthlightSpellFog;
+    Freshness f;CHECK(!f.next(0));CHECK(f.next(1));CHECK(!f.next(1));CHECK(f.next(2));CHECK(f.next(3));CHECK(!f.next(3));
+    Hold h;const Frame raw=fogFrame(.006f);const unsigned s0=h.out.stamp;h.update(raw,true,.016f);CHECK(h.out.stamp==s0+1);
+    // the layer folds nothing while the estimate is stale, and the same scenario with a fresh one folds
+    const Frame frame=fogFrame(.006f);
+    for(int fresh=0;fresh<2;++fresh){
+        Opts o;o.fogOn=true;o.fog=&frame;o.fogFresh=fresh!=0;Pair p=runBoth(sFog,o);
+        if(!fresh){checkEquivalent(p);CHECK(p.lay->layer.totalCounters().fogEntries==0);}
+        else CHECK(p.lay->layer.totalCounters().fogEntries==7);
+    }
+}
+// The fit cache and the per-frame cap on new fits; the colour only for straight alpha; an unproven vertex shader folds nothing.
+static void sFogMany(Rig& r){
+    const float cF[4]={.4f,.5f,.6f,1};r.dev.SetPixelShaderConstantF(16,cF,1);r.psFogReg=16;r.translucent(kSrcAlpha,kBlendOne);
+    for(int i=1;i<=6;++i){const float c30[4]={-1/(100.f+float(i%3)*40),1.f+float(i%3)*.1f,1.f,0};r.dev.SetVertexShaderConstantF(30,c30,1);deferQuad(r,i);}   // three distinct game constants, twice
+    r.boundary();
+}
+static void sFogBlend(Rig& r){
+    const float c30[4]={-1/150.f,1.f,1.f,0},cF[4]={.4f,.5f,.6f,1};r.dev.SetVertexShaderConstantF(30,c30,1);r.dev.SetPixelShaderConstantF(16,cF,1);r.psFogReg=16;
+    r.translucent(kSrcAlpha,kInvSrcAlpha);deferQuad(r,1);                       // straight alpha: the colour is folded too
+    r.translucent(kBlendOne,kInvSrcAlpha);deferQuad(r,2);                       // premultiplied: c30 only
+    r.boundary();
+}
+static void testSpellFogCacheAndBlend(){
+    using namespace NorthlightSpellFog;
+    const Frame frame=fogFrame(.006f);
+    {Opts o;o.fogOn=true;o.fog=&frame;Pair p=runBoth(sFogMany,o);const Counters& c=p.lay->layer.totalCounters();
+     CHECK(c.fogEntries==6&&c.fogCapped==0&&p.lay->deferredTags.size()==6);}                       // 3 fits, 3 cache hits (in the cross-check, fits happen once as well)
+    {Opts o;o.fogOn=true;o.fog=&frame;o.maxFogFits=2;Pair p=runBoth(sFogMany,o);const Counters& c=p.lay->layer.totalCounters();
+     CHECK(c.fogCapped>=1&&c.fogEntries<6&&c.fogEntries>=4);                                      // the third distinct constant is over the cap: the game's value is kept (and counted)
+     }
+    {Opts o;o.fogOn=true;o.fog=&frame;Pair p=runBoth(sFogBlend,o);
+     float game[3]={-1/150.f,1.f,1.f},fit[3],col[3];const float cF[3]={.4f,.5f,.6f};CHECK(emitFog(frame,game,fit));emitColor(frame,game,fit,cF,col);
+     size_t marker=0;for(size_t i=0;i<p.lay->dev.draws.size();++i)if(p.lay->dev.draws[i].tag==Rig::kMarker)marker=i;
+     unsigned seen=0;for(size_t i=marker+1;i<p.lay->dev.draws.size();++i){const auto& d=p.lay->dev.draws[i];++seen;
+        CHECK(d.st.vsc[30][0]==fit[0]);
+        if(d.tag==1)CHECK(d.st.psc[16][0]==col[0]&&d.st.psc[16][1]==col[1]);
+        else CHECK(d.st.psc[16][0]==cF[0]&&d.st.psc[16][1]==cF[1]&&d.st.psc[16][2]==cF[2]);}     // premultiplied alpha keeps the game's colour
+     CHECK(seen==2);}
+    {Opts o;o.fogOn=true;o.fog=&frame;
+     for(unsigned proof:{0u,2u}){
+        Pair p=runBothFog(sFog,o,proof);
+        if(proof==0){checkEquivalent(p);CHECK(p.lay->layer.totalCounters().fogEntries==0);}      // an unproven vertex shader: nothing is replaced
+        else CHECK(p.lay->layer.totalCounters().fogEntries==7);}}                                   // the bare-ramp form is folded as well
+    // the bare-ramp fit never ends before the game's ramp does
+    {const float game[3]={-1/300.f,1.f,1.f};float fit[3];Frame heavy=fogFrame(.02f);CHECK(emitFog(heavy,game,fit,true)&&-fit[1]/fit[0]>=300*.98f-1e-3f);
+     CHECK(emitFog(heavy,game,fit,false));}
 }
 
 // ---------------- review items: caps, stride-0 streams, upload cursors, depth textures, trim ----------------
@@ -1957,7 +2072,7 @@ int main(int argc,char** argv){
     const char* only=argc>1?argv[1]:nullptr; // a test name (substring) to run alone, and an optional cache mode
     const bool fixedMode=argc>2;if(fixedMode)gMirrorMode=std::atoi(argv[2]);
     struct T{const char* name;void(*fn)();};
-    const T tests[]={{"classify",testClassify},{"lazy classify",testLazyClassify},{"glow verdict",testGlowVerdict},{"spell fog fit",testSpellFogFit},{"spell fog record",testSpellFogRecord},{"spell fog toggle",testSpellFogToggle},{"order split cap",testOrderSplitCap},{"stride 0 stream",testStride0},{"fvf vertex size",testFvfVertexSize},{"allocation failures",testAllocFailures},{"stride 0 fvf",testStride0Fvf},{"upload cursor",testUploadCursor},{"depth stencil texture",testDepthStencilTexture},{"trim and reuse",testTrimReuse},{"dirty record random",testDirtyRandom},{"record slots",testRecordSlots},{"dirty fail safe",testDirtyFailSafe},{"frame state",testFrameState},{"guard table",testGuardTable},{"equivalence",testEquivalence},
+    const T tests[]={{"classify",testClassify},{"lazy classify",testLazyClassify},{"glow verdict",testGlowVerdict},{"spell fog fit",testSpellFogFit},{"spell fog record",testSpellFogRecord},{"spell fog toggle",testSpellFogToggle},{"vs fog proof",testVsFogProof},{"spell fog fresh",testSpellFogFresh},{"spell fog cache and blend",testSpellFogCacheAndBlend},{"order split cap",testOrderSplitCap},{"stride 0 stream",testStride0},{"fvf vertex size",testFvfVertexSize},{"allocation failures",testAllocFailures},{"stride 0 fvf",testStride0Fvf},{"upload cursor",testUploadCursor},{"depth stencil texture",testDepthStencilTexture},{"trim and reuse",testTrimReuse},{"dirty record random",testDirtyRandom},{"record slots",testRecordSlots},{"dirty fail safe",testDirtyFailSafe},{"frame state",testFrameState},{"guard table",testGuardTable},{"equivalence",testEquivalence},
         {"discard copy",testDiscard},{"partial overlap",testPartialOverlap},{"two entries",testTwoEntries},{"count-based marks",testMarkIsCountBased},
         {"rebase negative base",testRebaseNegativeBase},{"rebase kept base",testRebasePositiveBase},{"index buffer copy",testIbMaterialized},
         {"mixed streams",testMixedStreams},{"32-bit UP",test32bitUP},{"non-dynamic buffer",testNonDynamic},{"copy disabled",testConflictCopyDisabled},

@@ -52,6 +52,7 @@
 #include "terrain_shadow_candidates.h"
 #include "legacy_fog.h"
 #include "spell_fog.h"
+#include "spell_fog_proof.h"
 #include "horizon_haze.h"
 #include "weather_state.h"
 #include "weather_effects.h"
