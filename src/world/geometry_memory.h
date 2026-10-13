@@ -15,16 +15,27 @@ constexpr uint64_t ProcessReserve=512*MiB;
 // free before one silent exit; every large allocation now needs this margin.
 constexpr uint64_t ContiguousMargin=32*MiB;
 constexpr uint64_t ChunkMargin=16*MiB;
+// Aggregate headroom required at stage entry (buildBudget).
+constexpr uint64_t EntryHeadroom=256*MiB;
+// Aggregate headroom kept for allocations INSIDE a build that already passed buildBudget at stage entry.
+// Entry reserved the build's own headroom (EntryHeadroom); re-requiring it per allocation double-counts the
+// memory the build itself consumes. Interior checks keep the process reserve plus this guard.
+constexpr uint64_t InBuildHeadroom=128*MiB;
 struct Sample { uint64_t available=0,largest=0;bool valid=false; };
 struct Budget { uint64_t available=0,largest=0;bool valid=false; };
 inline bool add(uint64_t a,uint64_t b,uint64_t& out){
     if(b>std::numeric_limits<uint64_t>::max()-a)return false;
     out=a+b;return true;
 }
-inline Budget buildBudget(uint64_t largestAllocation=0){
-    // Aggregate headroom plus a contiguous margin for the stage's largest block.
-    Budget b;if(!add(largestAllocation,ContiguousMargin,b.largest))return {};
-    b.available=ProcessReserve+256*MiB;b.valid=true;return b;
+inline Budget budgetWith(uint64_t headroom,uint64_t largestAllocation){
+    // Aggregate: process reserve plus headroom; contiguous: the stage's largest block plus a margin.
+    Budget b;if(!add(largestAllocation,ContiguousMargin,b.largest)||!add(ProcessReserve,headroom,b.available))return {};
+    b.valid=true;return b;
+}
+inline Budget buildBudget(uint64_t largestAllocation=0){return budgetWith(EntryHeadroom,largestAllocation);}
+// Interior allocation: the process reserve must survive the request itself, so a request above the guard raises the floor.
+inline Budget inBuildBudget(uint64_t largestAllocation=0){
+    return budgetWith(largestAllocation>InBuildHeadroom?largestAllocation:InBuildHeadroom,largestAllocation);
 }
 inline uint64_t roundUp(uint64_t bytes,uint64_t step){
     if(!step)return bytes;uint64_t rounded=0;

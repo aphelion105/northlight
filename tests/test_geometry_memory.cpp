@@ -16,6 +16,28 @@ int main(){
     assert(!admits({768*MiB,64*MiB-1,true},buildBudget(32*MiB)));
     assert(admits({768*MiB,64*MiB,true},buildBudget(32*MiB)));
     assert(!buildBudget(UINT64_MAX).valid);
+    // In-build budget: same contiguous rule, 640 MiB aggregate (process reserve + 128 MiB guard); entry budget unchanged.
+    assert(InBuildHeadroom==128*MiB&&ProcessReserve+InBuildHeadroom==640*MiB);
+    auto inBuild=inBuildBudget();
+    assert(inBuild.valid&&inBuild.available==640*MiB&&inBuild.largest==32*MiB);
+    assert(admits({640*MiB,32*MiB,true},inBuild));
+    assert(!admits({640*MiB-1,32*MiB,true},inBuild));
+    assert(!admits({640*MiB,32*MiB-1,true},inBuild));
+    assert(admits({640*MiB,64*MiB,true},inBuildBudget(32*MiB)));
+    assert(!admits({640*MiB,64*MiB-1,true},inBuildBudget(32*MiB)));
+    assert(inBuildBudget(32*MiB).largest==buildBudget(32*MiB).largest);
+    assert(!inBuildBudget(UINT64_MAX).valid&&!inBuildBudget(UINT64_MAX-ContiguousMargin+1).valid);
+    assert(!inBuildBudget(UINT64_MAX-ProcessReserve+1).valid&&inBuildBudget(UINT64_MAX-ProcessReserve).valid);
+    // A request above the guard keeps the process reserve after the allocation: floor = reserve + request.
+    assert(inBuildBudget(200*MiB).available==712*MiB&&inBuildBudget(200*MiB).largest==232*MiB);
+    assert(admits({712*MiB,232*MiB,true},inBuildBudget(200*MiB)));
+    assert(!admits({712*MiB-1,232*MiB,true},inBuildBudget(200*MiB)));
+    assert(!admits({712*MiB,232*MiB-1,true},inBuildBudget(200*MiB)));
+    assert(inBuildBudget(128*MiB).available==640*MiB&&inBuildBudget(129*MiB).available==641*MiB);
+    // Observed Orgrimmar samples: entry admits at 847-878 MiB, the build's own allocations land at 755-767 MiB mid-build.
+    assert(admits({878*MiB,477*MiB,true},buildBudget(64*MiB))&&!admits({767*MiB,477*MiB,true},buildBudget(1*MiB)));
+    assert(admits({767*MiB,477*MiB,true},inBuildBudget(1*MiB)));
+    assert(buildBudget().available==768*MiB&&buildBudget().largest==32*MiB);
     auto upload=uploadBudget(40*MiB,8*MiB,16*MiB,4*MiB);
     assert(upload.available==704*MiB&&upload.largest==96*MiB);
     assert(admits({704*MiB,96*MiB,true},upload));
