@@ -93,6 +93,35 @@ inline bool admits(Sample sample,Budget budget){
     return sample.valid&&budget.valid&&sample.available>=budget.available&&
            sample.largest>=budget.largest;
 }
+// A build refused for memory AFTER it passed stage entry frees its work and would pass
+// entry again at once: the same BVH was rebuilt every second (162 and 482 attempts in one
+// player log). The refusal raises the entry floor to what that attempt would have needed
+// at entry (its entry sample plus the refused check's shortfall). The raise expires after
+// LiftMs, so an estimate that includes concurrent game allocations never locks builds out.
+constexpr uint32_t LiftMs=30000;
+constexpr uint64_t LiftCap=512*MiB; // above the plain entry budget
+struct EntryLift {
+    uint64_t available=0,largest=0;uint32_t since=0;bool armed=false;
+    // entry: available at the refused attempt's entry; required/observed: the refused check's
+    // aggregate floor and sample; requiredLargest: its contiguous floor (a refusal for want of
+    // one free block has no aggregate shortfall and would otherwise retry at once). True when armed.
+    bool refused(uint64_t entry,uint64_t required,uint64_t observed,uint32_t now,uint64_t requiredLargest=0){
+        uint64_t floor=0;
+        if(!add(entry,required>observed?required-observed:0,floor))floor=std::numeric_limits<uint64_t>::max();
+        const uint64_t cap=buildBudget().available+LiftCap;
+        available=floor<cap?floor:cap;largest=requiredLargest;since=now;armed=true;return true;
+    }
+    bool active(uint32_t now){if(armed&&uint32_t(now-since)>=LiftMs)armed=false;return armed;}
+    // The entry budget with the raised aggregate and contiguous floors while the lift is active.
+    Budget apply(Budget budget,uint32_t now){
+        if(budget.valid&&active(now)){
+            if(available>budget.available)budget.available=available;
+            if(largest>budget.largest)budget.largest=largest;
+        }
+        return budget;
+    }
+    void clear(){armed=false;}
+};
 
 // Worker-owned only. Weak ownership counts real retained generations without
 // prolonging them; aliases sharing a control block count as one generation.

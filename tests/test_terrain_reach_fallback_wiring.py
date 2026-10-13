@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # northlight-test:
 """Static wiring audit: the geometry worker falls back to the base terrain reach on a memory
-refusal, logs the stall episodes; stage entry uses buildBudget (768 MiB), interior allocations inBuildBudget."""
+refusal, logs the stall episodes; stage entry uses buildBudget (768 MiB, raised by entryLift after a refusal that
+followed entry), interior allocations and the after-bvh gate inBuildBudget; stalls publish the guard's demand."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
 import re
@@ -19,18 +20,38 @@ def body(start, end='};'):
 for lam in ('NorthlightGI::AllocationAdmission localAdmission=', 'NorthlightGI::AllocationAdmission terrainAdmission='):
     assert 'NorthlightGeometryMemory::inBuildBudget(' in body(lam), lam
     assert 'NorthlightGeometryMemory::buildBudget(' not in body(lam), lam
-# the after-bvh gate and the two stage-entry checks keep the full entry budget
-assert 'NorthlightGeometryMemory::buildBudget(' in body('logGeometryMemory("after-bvh"', 'continue;')
-assert 'inBuildBudget(' not in body('logGeometryMemory("after-bvh"', 'continue;')
-entry = body('auto memory=workerMemory(NorthlightGeometryMemory::buildBudget(64', 'stallBegin("build-deferred"')
+# The after-bvh gate keeps the in-build floor (the build's own BVH and cache are live there); with the
+# entry floor every attempt that entered within one BVH of 768 MiB was refused and rebuilt each second.
+plan = body('const auto planBudget=', 'continue;')
+assert 'planBudget=NorthlightGeometryMemory::inBuildBudget();' in plan and 'NorthlightGeometryMemory::buildBudget(' not in plan
+assert 'logGeometryMemory("after-bvh"' in plan and 'liftEntry("plan",planBudget.available,memory.available,planBudget.largest)' in plan
+# Stage entry keeps the full entry budget, raised by entryLift after a refusal that followed entry.
+entry = body('auto memory=workerMemory(entryLift.apply(NorthlightGeometryMemory::buildBudget(64', 'stallBegin("build-deferred"')
 assert entry.count('NorthlightGeometryMemory::buildBudget(') >= 2 and 'inBuildBudget(' not in entry
+assert 'const auto entryBudget=entryLift.apply(plainEntry,GetTickCount());' in entry
+assert 'if(!NorthlightGeometryMemory::admits(memory,plainEntry)){localGeometry.reset();' in entry  # a lift alone keeps the cache
+assert 'stallBegin("build-deferred",memory,entryBudget.available)' in w
+# Every refusal after entry that does not fall back to the base reach raises the next entry.
+for stage in ('local-geometry', 'shadow-terrain', 'mesh-page', 'mesh-page-seal'):
+    assert any('liftEntry("%s",' % stage in line and 'deferBuild(' in line and 'Largest)' in line for line in w.splitlines()), stage
+assert w.count('liftEntry(') == 5  # local, plan, shadow-terrain, mesh-page, mesh-page-seal
+assert 'entryLift.clear();' in body('cacheCheckedMap=r.map;', '\n') and 'stallEnd(memoryStall.reduced?"reduced":"published");entryLift.clear();' in w
+# The demand the memory guard reads is set by every stall begin and cleared by every stall end.
+assert 'geometryMemoryDemand.store(std::min(required,NorthlightGeometryMemory::buildBudget().available)' in body('auto stallBegin=', '};')
+assert 'geometryMemoryDemand.store(0,' in body('auto stallEnd=', '};')
+# Extended reach is restored only when an entry sample covers what the refused attempt lacked.
+assert 'NorthlightTerrainReach::choose(reachState,profileReach,GetTickCount(),entryAvailable,entryLargest)' in w
+assert 'memoryRefused(reachState,reach,GetTickCount(),restore,terrainRequiredLargest)' in w
+assert 'entryLift.clear();reachState={};' in w  # a map change forgets both
+# Entry admitted: the build's own allocations are not a demand on the guard.
+assert 'geometryMemoryDemand.store(0,' in body('const uint64_t entryAvailable=', 'auto liftEntry')
 assert 'localSample=sample' in w and 'plan-deferred' in w
 assert 'BaseReach=928.f' in f and 'BackoffMs=30000' in f and '#include <windows.h>' not in f
 st = fp.src('shadow_terrain.h').read_text()
 assert 'constexpr float Radius=928.f;' in st
 assert '#include "terrain_reach_fallback.h"' in w
 for stage in ('shadow-terrain', 'mesh-page"', 'mesh-page-seal'):
-    assert re.search(r'stallBegin\("%s,?[^;]*;\s*if\(reduceReach\(\)\)goto terrainStage;' % re.escape(stage.rstrip('"')), w.replace('\n', ' ')), stage
+    assert re.search(r'stallBegin\("%s,?[^;]*,terrainRequired\);\s*if\(reduceReach\(\)\)goto terrainStage;' % re.escape(stage.rstrip('"')), w.replace('\n', ' ')), stage
 assert w.count('goto terrainStage') == 3 and w.count('terrainStage:') == 1
 assert 'NorthlightTerrainReach::choose(reachState,profileReach' in w
 assert 'reach=reachChoice.reach;' in w and 'const bool extended=reach>NorthlightShadowTerrain::Radius;' in w

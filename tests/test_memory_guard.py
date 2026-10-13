@@ -56,6 +56,36 @@ int main(){
     {Guard g;const std::uint32_t t0=0xFFFFF000u;assert(g.update(1000*MiB,100*MiB,t0).trim);
      assert(!g.update(1000*MiB,100*MiB,t0+10000).trim);assert(g.update(1000*MiB,100*MiB,t0+20000).trim);
      g.update(1000*MiB,300*MiB,t0+21000);assert(g.update(1000*MiB,300*MiB,t0+31000).recovered);}
+    // Builder demand (0.3.212 player log: 520-765 MiB for minutes, builder stalled at 768, guard idle above 400).
+    {Guard g;auto d=g.update(720*MiB,500*MiB,0,0);assert(!d.entered&&!g.pressure());          // no demand: 720 is normal
+     d=g.update(720*MiB,500*MiB,1000,768*MiB);assert(d.entered&&d.trim&&d.demand&&g.pressure()&&g.trims()==1&&d.report);
+     assert(g.demandFloor()==768*MiB&&g.recoverAvailable()==896*MiB);
+     for(std::uint32_t t=2000;t<120000;t+=1000){auto e=g.update(700*MiB,500*MiB,t,768*MiB);assert(!e.trim&&!e.entered&&g.pressure());} // one trim per episode
+     d=g.update(800*MiB,500*MiB,120000,0);assert(!d.recovered); // demand met and cleared: still below 768+128
+     for(std::uint32_t t=121000;t<=200000;t+=1000)assert(!g.update(890*MiB,500*MiB,t,0).recovered&&g.pressure()); // no regrowth cycle at 640
+     g.update(896*MiB,500*MiB,201000,0);d=g.update(896*MiB,500*MiB,211000,0);assert(d.recovered&&!g.pressure()&&g.demandFloor()==0&&g.recoverAvailable()==640*MiB);
+     d=g.update(700*MiB,500*MiB,212000,0);assert(!d.entered);
+     d=g.update(700*MiB,500*MiB,213000,768*MiB);assert(d.entered&&d.trim&&g.trims()==2);}   // a new episode after the cooldown trims again
+    {Guard g;assert(g.update(1000*MiB,100*MiB,0).trim);g.update(1000*MiB,300*MiB,1000);assert(g.update(1000*MiB,300*MiB,11000).recovered);
+     auto d=g.update(700*MiB,500*MiB,12000,768*MiB);assert(d.entered&&d.demand&&!d.trim&&g.trims()==1);} // demand entry inside the cooldown: caps only
+    {Guard g;auto d=g.update(800*MiB,500*MiB,0,768*MiB);assert(!d.entered&&!g.pressure()&&g.demandFloor()==0);} // demand already met: nothing
+    {Guard g;auto d=g.update(300*MiB,500*MiB,0,768*MiB);assert(d.entered&&d.trim&&!d.demand);  // own threshold wins the reason
+     for(std::uint32_t t=1000;t<20000;t+=1000)assert(!g.update(300*MiB,500*MiB,t,768*MiB).trim);
+     assert(g.update(300*MiB,500*MiB,20000,768*MiB).trim);                                       // own-threshold cooldown trims unchanged
+     assert(g.recoverAvailable()==896*MiB);}
+    // A demand-only episode walks at the normal 3 s; an own-threshold low sample switches to 1 s.
+    {Guard g;g.requestDue(0);g.update(700*MiB,500*MiB,0,768*MiB);assert(g.pressure());
+     assert(!g.requestDue(1000)&&g.requestDue(3000));
+     g.update(300*MiB,500*MiB,3000,768*MiB);assert(!g.requestDue(3999)&&g.requestDue(4000));}
+    // The demand floor decays after demandDecayMs without demand: recovery returns to 640.
+    {Guard g;g.update(700*MiB,500*MiB,0,768*MiB);assert(g.recoverAvailable()==896*MiB);
+     g.update(700*MiB,500*MiB,1000,0);assert(g.demandFloor()==768*MiB);
+     g.update(700*MiB,500*MiB,299999,0);assert(g.demandFloor()==768*MiB);
+     g.update(700*MiB,500*MiB,300000,0);assert(g.demandFloor()==0&&g.recoverAvailable()==640*MiB);
+     g.update(700*MiB,500*MiB,301000,0);auto d=g.update(700*MiB,500*MiB,311000,0);assert(d.recovered&&!g.pressure());
+     d=g.update(700*MiB,500*MiB,312000,768*MiB);assert(d.entered&&g.demandFloor()==768*MiB);}
+    {Guard g;g.update(700*MiB,500*MiB,0,768*MiB);g.update(700*MiB,500*MiB,200000,768*MiB);   // demand still active: no decay
+     g.update(700*MiB,500*MiB,400000,0);assert(g.demandFloor()==768*MiB);g.update(700*MiB,500*MiB,500000,0);assert(g.demandFloor()==0);}
     // Walk cadence: first request immediately, 3 s normally, 1 s under pressure; wrap-safe.
     {Guard g;assert(g.requestDue(100));assert(!g.requestDue(2000));assert(g.requestDue(3100));
      g.update(1000*MiB,100*MiB,3200);assert(!g.requestDue(4000));assert(g.requestDue(4100));
@@ -261,7 +291,7 @@ checks={
  'caps follow pressure transitions':'memoryCaps=decision.entered?1:0;' in finish,
  'periodic line gated, events ungated':'if(decision.report&&diagnostics())logf("MEMORY frame=' in finish and 'logf("MEMORY guard %s' in finish and 'if(decision.afterTrim)logf(' in finish,
  'trim: world caches, exact-walk before values, estimates, no address-space ballast':'t=world->trimMemory();' in trim and 'memoryGuard.trimCompleted(now);' in trim and 'logf("MEMORY guard trim frame=%u exactWalk=1 beforeAvailableVirtualMiB=' in trim and all(x not in r for x in ['Ballast','ballast','MEM_RESERVE','VirtualAlloc(']),
- 'guard fed only by the exact full walk':'memoryGuard.update(sample.availableVirtual,sample.largestFree,DWORD(sample.tick))' in finish and 'auto& sample=memorySample;' in finish and 'if(memoryTrim)trimMemory(memorySample);' in finish and 'geometryAdmission' not in finish,
+ 'guard fed only by the exact full walk':'memoryGuard.update(sample.availableVirtual,sample.largestFree,DWORD(sample.tick),demand)' in finish and 'world->geometryMemoryDemand.load(' in finish and 'auto& sample=memorySample;' in finish and 'if(memoryTrim)trimMemory(memorySample);' in finish and 'geometryAdmission' not in finish,
  'world trim: terrain, snapshot+index, pool, GPU cache, worker flag':all(x in inl for x in ['terrainBoundsCache.clearPersistent();','replaySnapshots.clearIndexCache();','freeReplays.clear();','pooledSnapshotBytes=0;','replayGpuCache.clear();','workerMemoryTrim.store(true']),
  'world caps: half under pressure, full on recovery':all(x in inl for x in ['setSnapshotCacheLimit(on?NorthlightDrawSnapshot::Frame::SnapshotCacheLimit/2:NorthlightDrawSnapshot::Frame::SnapshotCacheLimit)','setPersistentByteLimit(on?16u*1024u*1024u:32u*1024u*1024u)','replayGpuCache.setLimit(on?32u*1024u*1024u:64u*1024u*1024u)','memoryPressure?ReplayPoolBytes/2:ReplayPoolBytes']),
  'replay pool cap: no underflow above a lowered cap':'bool keep=capacity<=replayPoolLimit()-std::min(replayPoolLimit(),pooledSnapshotBytes);' in w,
