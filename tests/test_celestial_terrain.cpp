@@ -8,6 +8,8 @@
 #include <cassert>
 #include <cstdio>
 #include <random>
+#include <limits>
+#include <algorithm>
 struct V{float x,y,z;};
 static void project(V p,const float* m,double* out){
     for(unsigned c=0;c<4;++c)out[c]=double(p.x)*m[c]+double(p.y)*m[4+c]+double(p.z)*m[8+c]+m[12+c];
@@ -22,7 +24,9 @@ static bool cornerReject(V lo,V hi,const float* m){
 }
 static void realPages(const std::string& root);
 static void syntheticRuns();
+static void reuseShift();
 int main(int argc,char** argv){
+    reuseShift();
     using namespace NorthlightCelestialTerrain;
     std::mt19937 random(114);std::uniform_real_distribution<float> point(-6000,6000),extent(0,120);
     unsigned cases=0,retained=0;
@@ -159,4 +163,46 @@ static void realPages(const std::string& root){
     assert(frusta>0&&gapDiffers>0); /* a page change almost never meets index contiguity on real pages: the synthetic case covers it */
     std::printf("PASS mask runs (real pages): %u random frusta, merged == per-batch mask bits and triangle multisets, DIP ranges cover every index; merge ratio %.1f accepted batches per DIP (%llu -> %llu); counterfactuals differ (merging across gaps: %u frusta; across pages with contiguous indices: %u)\n",
         frusta,runs?double(accepted)/double(runs):0.,(unsigned long long)accepted,(unsigned long long)runs,gapDiffers,pageDiffers);
+}
+
+// rayShiftTexels: the reuse metric of prepareTerrain. It ignores camera translation by design (prepareTerrain
+// compares the eye bitwise and separately), so only the body direction is varied here.
+static void reuseShift(){
+    using namespace NorthlightCelestialTerrain;
+    const float camera[]={-9000,-3500,40},tint[]={1,1,1};
+    struct Body {float extent;unsigned size;float angular;} bodies[]={{10.f,2048,std::atan(.506736f/24)},{2.5f,1024,std::atan(.46176318f*1.75f/24)}};
+    auto make=[&](float elevation,float azimuth,float angular,NorthlightCelestialDisc::Disc& disc){
+        const float e=elevation*3.14159265f/180,a=azimuth*3.14159265f/180;
+        const float d[]={std::cos(e)*std::cos(a),std::cos(e)*std::sin(a),std::sin(e)};
+        assert(NorthlightCelestialDisc::prepare(d,tint,1,angular,disc));
+    };
+    for(const auto& b:bodies)for(float elevation:{.5f,2.f,60.f}){
+        NorthlightCelestialDisc::Disc base;make(elevation,40,b.angular,base);
+        float m0[16];matrix(base,camera,b.extent,b.size,m0);
+        assert(rayShiftTexels(m0,m0,base,b.extent,b.size)==0); // identical matrices: the old memcmp fast path
+        const double texel=2.*base.tangentRadius*b.extent/b.size; // radians per mask texel at the centre
+        for(float k:{.1f,1.f,4.f})for(int axis=0;axis<3;++axis){ // drift along right, along up, and diagonally
+            // Rotate the whole basis rigidly: prepare()'s own gauge may roll right/up by a few micro-radians between
+            // neighbouring directions, which the corner probes would (correctly) count as extra shift.
+            double axisv[3]={},len=0;for(int i=0;i<3;++i){axisv[i]=(axis==1?0:base.up[i])-(axis==0?0:base.right[i]);len+=axisv[i]*axisv[i];}
+            for(double& v:axisv)v/=std::sqrt(len);
+            const double angle=k*texel*(axis==2?std::sqrt(2.):1.),c=std::cos(angle),sn=std::sin(angle);
+            NorthlightCelestialDisc::Disc moved=base;
+            for(float* vec:{moved.direction,moved.right,moved.up}){
+                const double v[3]={vec[0],vec[1],vec[2]},dot=axisv[0]*v[0]+axisv[1]*v[1]+axisv[2]*v[2];
+                const double cr[3]={axisv[1]*v[2]-axisv[2]*v[1],axisv[2]*v[0]-axisv[0]*v[2],axisv[0]*v[1]-axisv[1]*v[0]};
+                for(int i=0;i<3;++i)vec[i]=float(v[i]*c+cr[i]*sn+axisv[i]*dot*(1-c));
+            }
+            float m1[16];matrix(moved,camera,b.extent,b.size,m1);
+            const float shift=rayShiftTexels(m0,m1,moved,b.extent,b.size);
+            std::printf("shift body=%u elev=%.1f axis=%d k=%.1f -> %.3f texels\n",b.size,elevation,axis,k,shift);
+            if(axis<2)assert(std::fabs(shift-k)<=.1f*k);else assert(shift<=1.1f*k&&shift>=.7f*k); // max(|du|,|dv|) of a diagonal step
+            if(k<=.1f)assert(shift<=ReuseTexels);
+            if(k>=1.f)assert(shift>ReuseTexels);
+        }
+        float bad[16];std::copy(m0,m0+16,bad);bad[5]=std::numeric_limits<float>::quiet_NaN();
+        assert(std::isinf(rayShiftTexels(m0,bad,base,b.extent,b.size)));
+        std::copy(m0,m0+16,bad);for(unsigned k=0;k<3;++k)bad[k*4+3]=-m0[k*4+3]; // w<=0: the body is behind the mask
+        assert(std::isinf(rayShiftTexels(m0,bad,base,b.extent,b.size)));
+    }
 }
