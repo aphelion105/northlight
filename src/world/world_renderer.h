@@ -2099,6 +2099,7 @@ public:
     unsigned spellLayerSetting()const{return quality.spellLayer;} /* task 34: SpellLayer, SpellLayerClasses and SpellTrace are read once at device creation */
     unsigned spellLayerClassesSetting()const{return quality.spellLayerClasses;}
     unsigned spellTraceSetting()const{return quality.spellTrace;}
+    void spellFogHint(const float game[3],bool bare){spellFogHold.addHint(game,bare);} /* SpellFog: a falling-ramp game constant the layer saw; fitted with the next publish (spell_fog.h Hold) */
     unsigned spellFogSetting()const{return quality.spellFog;} /* SpellFog (task 34): read once with the others */
     const NorthlightSpellFog::Frame& spellFogFrame()const{return spellFogHold.out;} /* Northlight's fog toward the view axis (previous frame's estimate while the next frame's records are made): the spell layer folds it into the recorded fog constants */
     bool frameDrawGates()const{return quality.frameDrawGates!=0;} /* 0.3.187: read once at device creation */ /* 0.3.158: ActorShadows=0 leaves actor shadows to the game's blobs */

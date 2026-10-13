@@ -1727,6 +1727,48 @@ static void testSpellFogColour(){
      const Counters& c=p.lay->layer.totalCounters();checkEquivalent(p);CHECK(c.fogEntries==0&&c.fogNoPsReg==2&&c.fogFlat==0);}
 }
 
+
+// ---- SpellFog: the fits are made at the publish (Hold::update), not on the record path ----
+static void sFogLots(Rig& r){ // 300 records of a flat constant (game fog off), a falling ramp every third one
+    const float flat[4]={0,1,1,0},ramp[4]={-1/150.f,1.f,1.f,0},cF[4]={.4f,.5f,.6f,1};
+    r.dev.SetPixelShaderConstantF(16,cF,1);r.psFogReg=16;r.translucent(kSrcAlpha,kBlendOne);
+    for(int i=1;i<=300;++i){r.dev.SetVertexShaderConstantF(30,i%3?flat:ramp,1);deferQuad(r,i%97+1);}
+    r.boundary();
+}
+static void testSpellFogPrecomputed(){
+    using namespace NorthlightSpellFog;
+    Hold h;Frame raw=fogFrame(.006f);
+    for(int i=0;i<40;++i)h.update(raw,true,.1f);
+    CHECK(h.out.active&&h.out.revision>=1);
+    const float flat[3]={0,1,1},flat2[3]={0,5,3},ramp[3]={-1/150.f,1.f,1.f};float fit[3],fit2[3];
+    // the flat fit of the publish is the fit of any flat constant, plain and bare
+    Frame at=h.out;std::memcpy(at.tau,h.fitTau,sizeof at.tau);   // the numbers of the last move (the smoothed ones may have drifted by under 1 % since)
+    for(int bare=0;bare<2;++bare){const Fit& pf=h.out.flat[bare];CHECK(pf.valid&&pf.ok&&pf.bare==(bare!=0));
+        CHECK(emitFog(at,flat,fit,bare!=0)&&emitFog(at,flat2,fit2,bare!=0)&&!std::memcmp(fit,pf.fit,12)&&!std::memcmp(fit2,pf.fit,12));}
+    // the coarse revision: a drift under 1 % keeps it (and the fits), a larger move bumps it
+    const unsigned rev=h.out.revision;Frame drift=raw;for(float& t:drift.tau)t*=1.004f;
+    for(int i=0;i<40;++i)h.update(drift,true,.1f);CHECK(h.out.revision==rev);
+    Frame moved=raw;for(float& t:moved.tau)t*=1.5f;for(int i=0;i<60;++i)h.update(moved,true,.1f);CHECK(h.out.revision>rev);
+    // a ramp the layer reported is fitted by the next publish and found there
+    CHECK(!h.out.ramp[0].valid);h.addHint(ramp,false);h.update(moved,true,.1f);Frame at2=h.out;std::memcpy(at2.tau,h.fitTau,sizeof at2.tau);
+    CHECK(h.out.ramp[0].valid&&h.out.ramp[0].ok&&!std::memcmp(h.out.ramp[0].key,ramp,12)&&((emitFog(at2,ramp,fit,false)&&!std::memcmp(fit,h.out.ramp[0].fit,12))||(emitFog(h.out,ramp,fit2,false)&&!std::memcmp(fit2,h.out.ramp[0].fit,12))));   // fitted at the move's numbers or, for a hint alone, the current ones
+    // records: with the publish's fits nothing is fitted on the record path
+    {Frame f=h.out;Opts o;o.fogOn=true;o.fog=&f;Pair p=runBoth(sFogLots,o);const Counters& c=p.lay->layer.totalCounters();
+     CHECK(c.fogEntries==300&&c.fogFlat==200&&p.lay->layer.fogFitCalls()==0&&c.fogCapped==0&&c.dirtyMismatches==0);}
+    // a ramp the publish does not know: fitted on the record path once (cached per revision), reported for the next publish
+    {Frame f=h.out;f.ramp[0]=Fit{};Opts o;o.fogOn=true;o.fog=&f;Pair p=runBoth(sFogLots,o);
+     CHECK(p.lay->layer.fogFitCalls()>=1&&p.lay->layer.fogFitCalls()<=2);   // the full compare of the cross-check run fits once as well
+     const float (*seen)[4]=nullptr;const unsigned n=p.lay->layer.fogRampsSeen(seen);CHECK(n==1&&!std::memcmp(seen[0],ramp,12)&&seen[0][3]==0.f);}
+    // cost: per fit (informational) and per record with the fits in the frame
+    {auto t0=std::chrono::steady_clock::now();Frame f=h.out;float g[3]={-1/150.f,1.f,1.f};unsigned ok=0;const int N=400;for(int i=0;i<N;++i){f.tau[3]+=1e-6f*float(i);ok+=emitFog(f,g,fit,false);}
+     const double fitUs=std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-t0).count()/N;
+     Frame fr=h.out;const int R=40;double us[2]={};
+     for(int on=0;on<2;++on){Opts o;o.fogOn=on!=0;o.fog=&fr;auto t1=std::chrono::steady_clock::now();for(int i=0;i<R;++i){Rig rig(o);sFogLots(rig);}
+      us[on]=std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-t1).count()/(R*300.0);}
+     const double recUs=us[1]-us[0];
+     printf("spell fog cost: %.1f us per fit (runs at the publish, on the world render's thread, only when the estimate moved > 1 %% or a new ramp was reported), %.2f us more per record than with SpellFog off (mock device, rig and boundary included in both; fits on the record path: 0)\n",fitUs,recUs);CHECK(ok==unsigned(N));}
+}
+
 // ---------------- review items: caps, stride-0 streams, upload cursors, depth textures, trim ----------------
 // Water, rain and name splits are capped per frame like texture splits: the 9th is the Order hazard (flush, fallback, cooldown).
 static void sOrderCap(Rig& r){
@@ -2205,7 +2247,7 @@ int main(int argc,char** argv){
     const char* only=argc>1?argv[1]:nullptr; // a test name (substring) to run alone, and an optional cache mode
     const bool fixedMode=argc>2;if(fixedMode)gMirrorMode=std::atoi(argv[2]);
     struct T{const char* name;void(*fn)();};
-    const T tests[]={{"classify",testClassify},{"lazy classify",testLazyClassify},{"glow verdict",testGlowVerdict},{"spell fog fit",testSpellFogFit},{"spell fog record",testSpellFogRecord},{"spell fog toggle",testSpellFogToggle},{"spell fog march",testSpellFogMarch},{"vs fog proof",testVsFogProof},{"spell fog fresh",testSpellFogFresh},{"spell fog cache and blend",testSpellFogCacheAndBlend},{"spell fog flat",testSpellFogFlat},{"spell fog colour",testSpellFogColour},{"order split cap",testOrderSplitCap},{"stride 0 stream",testStride0},{"fvf vertex size",testFvfVertexSize},{"allocation failures",testAllocFailures},{"stride 0 fvf",testStride0Fvf},{"upload cursor",testUploadCursor},{"depth stencil texture",testDepthStencilTexture},{"trim and reuse",testTrimReuse},{"dirty record random",testDirtyRandom},{"record slots",testRecordSlots},{"dirty fail safe",testDirtyFailSafe},{"frame state",testFrameState},{"guard table",testGuardTable},{"equivalence",testEquivalence},
+    const T tests[]={{"classify",testClassify},{"lazy classify",testLazyClassify},{"glow verdict",testGlowVerdict},{"spell fog fit",testSpellFogFit},{"spell fog record",testSpellFogRecord},{"spell fog toggle",testSpellFogToggle},{"spell fog march",testSpellFogMarch},{"vs fog proof",testVsFogProof},{"spell fog fresh",testSpellFogFresh},{"spell fog cache and blend",testSpellFogCacheAndBlend},{"spell fog flat",testSpellFogFlat},{"spell fog colour",testSpellFogColour},{"spell fog precomputed",testSpellFogPrecomputed},{"order split cap",testOrderSplitCap},{"stride 0 stream",testStride0},{"fvf vertex size",testFvfVertexSize},{"allocation failures",testAllocFailures},{"stride 0 fvf",testStride0Fvf},{"upload cursor",testUploadCursor},{"depth stencil texture",testDepthStencilTexture},{"trim and reuse",testTrimReuse},{"dirty record random",testDirtyRandom},{"record slots",testRecordSlots},{"dirty fail safe",testDirtyFailSafe},{"frame state",testFrameState},{"guard table",testGuardTable},{"equivalence",testEquivalence},
         {"discard copy",testDiscard},{"partial overlap",testPartialOverlap},{"two entries",testTwoEntries},{"count-based marks",testMarkIsCountBased},
         {"rebase negative base",testRebaseNegativeBase},{"rebase kept base",testRebasePositiveBase},{"index buffer copy",testIbMaterialized},
         {"mixed streams",testMixedStreams},{"32-bit UP",test32bitUP},{"non-dynamic buffer",testNonDynamic},{"copy disabled",testConflictCopyDisabled},

@@ -645,6 +645,7 @@ private:
 public:
     struct FogSample{unsigned sub=0,kind=0;uint64_t vsHash=0;float game[4]={},gameColor[4]={},emit[4]={},emitColor[4]={};bool hasColor=false;}; // kind: 0 a falling game ramp folded, 1 a flat constant folded, 2 refused (emit = game)
 private:
+    unsigned long long fogFitCalls_=0;float fogSeen_[NorthlightSpellFog::kRamps][4]={};unsigned fogSeenN_=0,fogSeenNext_=0; // fits made on the record path; the last distinct falling-ramp constants seen (x, y, power, bare)
     FogSample fogSamples_[192];unsigned fogSampleN_=0,fogPerSub_[12]={};uint64_t fogVsHash_=0;bool fogCappedNow_=false;
     SyncPend pend_;                                   // the slots the delta being built examined: they become synced when the record commits
     std::unique_ptr<Undo> undo_;                      // allocated at the first minimal restore
@@ -1184,14 +1185,28 @@ private:
     bool fogFit(const float game[3],float fit[3]){
         fogCappedNow_=false;
         const NorthlightSpellFog::Frame& f=*cfg_.fog;
+        // the publish's fits first (spell_fog.h Hold::update): a flat constant has one per frame revision, a falling ramp seen before has one too; no fitting on this path
+        const bool bareNow=fogProven_==2;
+        if(NorthlightSpellFog::flatConstant(game)){
+            const NorthlightSpellFog::Fit& pf=f.flat[bareNow?1:0];
+            if(pf.valid){if(pf.ok){std::memcpy(fit,pf.fit,12);std::memcpy(fogLastFit_,pf.fit,12);}return pf.ok;}
+        }else{
+            for(const NorthlightSpellFog::Fit& pf:f.ramp)if(pf.valid&&pf.bare==bareNow&&!std::memcmp(pf.key,game,12)){if(pf.ok){std::memcpy(fit,pf.fit,12);std::memcpy(fogLastFit_,pf.fit,12);}return pf.ok;}
+            fogNoteRamp(game,bareNow);
+        }
         for(const FogFitEntry& e:fogCache_)if(e.valid&&e.rev==f.revision&&e.bare==(fogProven_==2)&&!std::memcmp(e.key,game,12)){if(e.ok){std::memcpy(fit,e.fit,12);std::memcpy(fogLastFit_,e.fit,12);}return e.ok;}
         if(fogFits_>=cfg_.maxFogFits){fogCappedNow_=true;count([](Counters& c){++c.fogCapped;});return false;} // a bounded cost per frame: beyond the cap the game's constant is recorded
-        ++fogFits_;
+        ++fogFits_;++fogFitCalls_;
         FogFitEntry& e=fogCache_[fogCacheNext_++&3];std::memcpy(e.key,game,12);e.rev=f.revision;e.valid=true;e.bare=fogProven_==2;
         e.ok=NorthlightSpellFog::emitFog(f,game,e.fit,e.bare);
         if(e.ok){std::memcpy(fit,e.fit,12);std::memcpy(fogLastFit_,e.fit,12);}
         fogColValid_=false;
         return e.ok;
+    }
+    void fogNoteRamp(const float game[3],bool bare){
+        for(unsigned i=0;i<fogSeenN_;++i)if(!std::memcmp(fogSeen_[i],game,12)&&(fogSeen_[i][3]!=0)==bare)return;
+        const unsigned at=fogSeenN_<NorthlightSpellFog::kRamps?fogSeenN_++:(fogSeenNext_++%NorthlightSpellFog::kRamps);
+        std::memcpy(fogSeen_[at],game,12);fogSeen_[at][3]=bare?1.f:0.f;
     }
     void fogColor(const float game[3],const float fit[3],const float cF[3],float out[3]){
         float key[6];std::memcpy(key,game,12);std::memcpy(key+3,cF,12);
@@ -1418,6 +1433,9 @@ public:
     void fogFresh(bool fresh){fogFresh_=fresh;}
     // SpellFog diagnostics: the last fit the layer emitted, and the first samples per sub-class since the last call (their count; the array stays valid until the next defer()).
     const float* fogLastFit()const{return fogLastFit_;}
+    // SpellFog: the falling-ramp constants the record path had to look up beyond the publish's fits (x, y, power, bare), for the world renderer to precompute; and the fits made on the record path.
+    unsigned fogRampsSeen(const float (*&out)[4])const{out=fogSeen_;return fogSeenN_;}
+    unsigned long long fogFitCalls()const{return fogFitCalls_;}
     unsigned takeFogSamples(const FogSample*& out){out=fogSamples_;const unsigned n=fogSampleN_;fogSampleN_=0;return n;}
     // The dirty cross-check on sampled frames, and its first mismatch (once per session, for a one-off log line).
     void dirtyCheck(bool on){cfg_.dirtyCheck=on;}

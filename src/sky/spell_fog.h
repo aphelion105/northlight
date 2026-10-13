@@ -12,15 +12,21 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 namespace NorthlightSpellFog {
 constexpr unsigned kSamples=6;
 constexpr float kDistance[kSamples]={6,12,24,48,80,128};   // view distances (world units) the frame's optical depth is sampled at
 constexpr float kRange=128;                                  // Northlight's fog is integrated to 128 units (FogInfo.w)
+// A precomputed fit of the publish (Hold::update): the record path then looks fits up and never fits. flat[bare]: the fit for every flat game constant (it does not depend on the constant),
+// ramp[i]: the fit for a recently seen falling-ramp constant (the layer reports those, Hold::addHint); valid: computed, ok: the fit succeeded.
+struct Fit{bool valid=false,ok=false,bare=false;float key[3]={},fit[3]={};};
+constexpr unsigned kRamps=4;
 struct Frame{
     bool active=false;
     float tau[kSamples]={};        // optical depth from the eye to kDistance[i] along the view ray (nondecreasing)
     float scatter[3]={};           // radiance of the fog's in-scatter per unit of (1 - T): the neutral sky source
-    unsigned revision=0;           // changes whenever the numbers do (the integration's cache key)
+    unsigned revision=0;           // changes when the numbers moved by more than ~1 % since the last change (Hold::update): the fit caches' key, not a per-frame counter
+    Fit flat[2],ramp[kRamps];      // the fits of this revision (empty: the layer fits itself, cached per revision)
     unsigned stamp=0;              // counts the publishes (Hold::update): a frame that never reached the publish leaves it unchanged (see Freshness)
     // T_N(z): exp(-tau(z)) with tau interpolated linearly through (0,0) and the samples, constant beyond the last
     float transmittance(float z)const{
@@ -34,23 +40,53 @@ struct Frame{
         return std::exp(-tau[kSamples-1]);
     }
 };
+inline bool flatConstant(const float game[3]);
+inline bool emitFog(const Frame& f,const float game[3],float out[3],bool bareBase=false);
 // The frame's numbers move toward the raw estimate with a time constant (no pumping when the camera crosses a fog bank), fade to nothing when the effect is off, and the frame is
-// inactive (identity) below a negligible optical depth.
+// inactive (identity) below a negligible optical depth. `revision` moves only when a sample's optical depth, the scatter colour or `active` changed by more than ~1 % relative to the values at
+// the last move; then the precomputed fits are redone (here, on the thread of the world render: the record path of the layer does no fitting for them).
 struct Hold{
     Frame out;
+    float fitTau[kSamples]={},fitScatter[3]={};bool fitActive=false;
+    float hints[kRamps][4]={};unsigned hintN=0,hintNext=0;bool hintsNew=false; // falling-ramp constants the layer saw (x, y, power, bare) and whether one has no fit yet
+    // The layer reports a falling-ramp constant it had to fit; the next update fits it too (a ramp constant is the same for many frames).
+    void addHint(const float game[3],bool bare){
+        for(unsigned i=0;i<hintN;++i)if(!std::memcmp(hints[i],game,12)&&(hints[i][3]!=0)==bare)return;
+        const unsigned at=hintN<kRamps?hintN++:(hintNext++%kRamps);
+        std::memcpy(hints[at],game,12);hints[at][3]=bare?1.f:0.f;hintsNew=true;
+    }
+    static void fitOne(const Frame& f,const float game[3],bool bare,Fit& slot){
+        slot=Fit{};slot.valid=true;slot.bare=bare;std::memcpy(slot.key,game,12);slot.ok=emitFog(f,game,slot.fit,bare);
+    }
+    void refit(bool all){
+        static const float kFlat[3]={0,1,1};
+        if(all){out.flat[0]=Fit{};out.flat[1]=Fit{};for(auto& r:out.ramp)r=Fit{};}
+        if(!out.active)return;
+        if(all)for(int bare=0;bare<2;++bare)fitOne(out,kFlat,bare!=0,out.flat[bare]);
+        for(unsigned i=0;i<hintN;++i){
+            bool have=false;for(const Fit& r:out.ramp)if(r.valid&&r.bare==(hints[i][3]!=0)&&!std::memcmp(r.key,hints[i],12))have=true;
+            if(have)continue;
+            unsigned slot=0;while(slot<kRamps&&out.ramp[slot].valid)++slot;if(slot==kRamps)slot=i;
+            fitOne(out,hints[i],hints[i][3]!=0,out.ramp[slot]);
+        }
+    }
     void update(const Frame& raw,bool wanted,float dt){
         const float k=1-std::exp(-std::clamp(dt,0.f,.5f)/.25f);
-        bool changed=false;
         for(unsigned i=0;i<kSamples;++i){
-            const float target=wanted&&raw.active?raw.tau[i]:0.f,v=out.tau[i]+(target-out.tau[i])*k;
-            if(std::fabs(v-out.tau[i])>1e-5f)changed=true;
-            out.tau[i]=v;
+            const float target=wanted&&raw.active?raw.tau[i]:0.f;
+            out.tau[i]+=(target-out.tau[i])*k;
         }
-        if(wanted&&raw.active)for(unsigned c=0;c<3;++c){if(out.scatter[c]!=raw.scatter[c])changed=true;out.scatter[c]=raw.scatter[c];}
+        if(wanted&&raw.active)for(unsigned c=0;c<3;++c)out.scatter[c]=raw.scatter[c];
         const bool active=out.tau[kSamples-1]>.004f;
-        if(active!=out.active)changed=true;
+        bool moved=active!=fitActive;
+        for(unsigned i=0;i<kSamples&&!moved;++i)if(std::fabs(out.tau[i]-fitTau[i])>.01f*std::max(fitTau[i],.01f))moved=true;
+        for(unsigned c=0;c<3&&!moved;++c)if(std::fabs(out.scatter[c]-fitScatter[c])>.01f*std::max(fitScatter[c],.01f))moved=true;
         out.active=active;
-        if(changed)++out.revision;
+        if(moved){
+            ++out.revision;fitActive=active;
+            std::memcpy(fitTau,out.tau,sizeof fitTau);std::memcpy(fitScatter,out.scatter,sizeof fitScatter);
+            refit(true);hintsNew=false;
+        }else if(hintsNew){refit(false);hintsNew=false;}
         ++out.stamp;
     }
 };
@@ -78,7 +114,7 @@ inline bool flatConstant(const float game[3]){
 }
 // The fit F: out = (a, b, p). False: identity (leave the game's constant): no fog, a constant the shader would not use as a fog ramp (non-finite, an exponent outside .05..16, a ramp that
 // rises and stays below 1), or a range too short to matter.
-inline bool emitFog(const Frame& f,const float game[3],float out[3],bool bareBase=false){
+inline bool emitFog(const Frame& f,const float game[3],float out[3],bool bareBase){
     if(!f.active||!(f.tau[kSamples-1]>=.004f))return false;                 // no fog (transmittance 1 everywhere): the game's constant
     for(unsigned i=0;i<3;++i)if(!std::isfinite(game[i]))return false;
     const bool flat=flatConstant(game);
@@ -94,40 +130,49 @@ inline bool emitFog(const Frame& f,const float game[3],float out[3],bool bareBas
     static const float scale[]={.6f,.8f,1.f,1.25f,1.6f,2.f,2.6f,3.5f};
     float best=1e30f,bestFit[3]={game[0],game[1],game[2]};bool found=false;
     auto error=[&](float a,float b,float p){float e=0;for(unsigned i=0;i<N;++i){const float v=std::min(1.f,std::pow(std::max(a*z[i]+b,0.f),p)),d=v-h[i];e+=wt[i]*d*d;}return e;};
+    const float gp=flat?1.f:game[2];                                         // a flat constant's own exponent says nothing: the fit does not depend on it (one fit per frame serves them all)
     float powers[32];unsigned np=0;
-    for(float s:scale)powers[np++]=game[2]*s;
-    for(float p:{3.f,4.f,6.f,8.f,12.f,16.f,24.f,32.f})if(flat||p>game[2]*3.5f)powers[np++]=p;   // a flat constant's own exponent says nothing; a ramp gets the steeper powers the plateau asks for
-    for(unsigned pi=0;pi<np;++pi){
+    for(float s:scale)powers[np++]=gp*s;
+    for(float p:{3.f,4.f,6.f,8.f,12.f,16.f,24.f,32.f})if(flat||p>gp*3.5f)powers[np++]=p;   // a ramp gets the steeper powers the plateau asks for
+    // two starts per power: the line through h^(1/p) over every sample, and over the samples beyond the fade only (it then rises above 1 near the eye: the plateau). Only the kRefine best starts
+    // by error are refined (damped Gauss-Newton on the weighted error in visibility itself: the clamp at 1 and the plateau of a game ramp that starts late): a fit costs tens of microseconds.
+    struct Start{float a,b,p,e;};Start starts[64];unsigned ns=0;
+    for(unsigned pi=0;pi<np&&ns<62;++pi){
         const float p=std::min(powers[pi],flat?kFlatMaxPower:1e30f);if(!(p>.05f))continue;
-        // two starts: the line through h^(1/p) over every sample, and over the samples beyond the fade only (it then rises above 1 near the eye: the plateau); then damped Gauss-Newton steps on
-        // the weighted error in visibility itself (the clamp at 1 and the plateau of a game ramp that starts late)
         for(int start=0;start<2;++start){
             float sz=0,sy=0,szz=0,szy=0,sn=0;
             for(unsigned i=0;i<N;++i){if(start&&z[i]<kClearNear+kClearFade)continue;const float y=std::pow(std::max(h[i],0.f),1.f/p);sz+=z[i];sy+=y;szz+=z[i]*z[i];szy+=z[i]*y;sn+=1;}
             const float den=sn*szz-sz*sz;if(!(sn>=2)||!(std::fabs(den)>1e-9f))continue;
             float a=(sn*szy-sz*sy)/den,b=(sy-a*sz)/sn;
             if(!(b>0))b=1;if(!(a<-1e-7f))a=-1.f/hi;
-            float e=error(a,b,p),lambda=1e-3f;
-            for(int it=0;it<12;++it){
-                float jaa=0,jab=0,jbb=0,ga=0,gb=0;
-                for(unsigned i=0;i<N;++i){
-                    const float w=a*z[i]+b;if(!(w>0))continue;
-                    const float v=std::pow(w,p);if(v>=1)continue;
-                    const float d=p*std::pow(w,p-1),r=v-h[i],k=wt[i];
-                    jaa+=k*d*z[i]*d*z[i];jab+=k*d*z[i]*d;jbb+=k*d*d;ga+=k*d*z[i]*r;gb+=k*d*r;
-                }
-                const float m00=jaa*(1+lambda)+1e-12f,m11=jbb*(1+lambda)+1e-12f,det=m00*m11-jab*jab;
-                if(!(std::fabs(det)>1e-18f))break;
-                const float da=-(m11*ga-jab*gb)/det,db=-(m00*gb-jab*ga)/det;
-                const float na=a+da,nb=b+db;
-                if(!(na<-1e-7f)||!(nb>0)){lambda*=10;continue;}
-                const float ne=error(na,nb,p);
-                if(ne<e){a=na;b=nb;e=ne;lambda=std::max(lambda*.3f,1e-6f);}else lambda*=10;
-            }
-            if(!(a<-1e-7f)||!(b>0))continue;                                    // nonincreasing and visible at the eye
-            if(bareBase&&-b/a<end*.98f)continue;                                // a shader that takes the pow of the bare ramp (no max): the ramp must not reach 0 before the game's own, a negative base is not 0 there and the fog would come back
-            if(e<best){best=e;bestFit[0]=a;bestFit[1]=b;bestFit[2]=p;found=true;}
+            starts[ns++]=Start{a,b,p,error(a,b,p)};
         }
+    }
+    constexpr unsigned kRefine=6;
+    for(unsigned r=0;r<kRefine&&r<ns;++r){
+        unsigned m=r;for(unsigned i=r+1;i<ns;++i)if(starts[i].e<starts[m].e)m=i;
+        std::swap(starts[r],starts[m]);
+        float a=starts[r].a,b=starts[r].b;const float p=starts[r].p;
+        float e=starts[r].e,lambda=1e-3f;
+        for(int it=0;it<10;++it){
+            float jaa=0,jab=0,jbb=0,ga=0,gb=0;
+            for(unsigned i=0;i<N;++i){
+                const float w=a*z[i]+b;if(!(w>0))continue;
+                const float v=std::pow(w,p);if(v>=1)continue;
+                const float d=p*v/w,r2=v-h[i],k=wt[i];
+                jaa+=k*d*z[i]*d*z[i];jab+=k*d*z[i]*d;jbb+=k*d*d;ga+=k*d*z[i]*r2;gb+=k*d*r2;
+            }
+            const float m00=jaa*(1+lambda)+1e-12f,m11=jbb*(1+lambda)+1e-12f,det=m00*m11-jab*jab;
+            if(!(std::fabs(det)>1e-18f))break;
+            const float da=-(m11*ga-jab*gb)/det,db=-(m00*gb-jab*ga)/det;
+            const float na=a+da,nb=b+db;
+            if(!(na<-1e-7f)||!(nb>0)){lambda*=10;continue;}
+            const float ne=error(na,nb,p);
+            if(ne<e){a=na;b=nb;e=ne;lambda=std::max(lambda*.3f,1e-6f);}else lambda*=10;
+        }
+        if(!(a<-1e-7f)||!(b>0))continue;                                    // nonincreasing and visible at the eye
+        if(bareBase&&-b/a<end*.98f)continue;                                // a shader that takes the pow of the bare ramp (no max): the ramp must not reach 0 before the game's own, a negative base is not 0 there and the fog would come back
+        if(e<best){best=e;bestFit[0]=a;bestFit[1]=b;bestFit[2]=p;found=true;}
     }
     if(!found&&bareBase){ // no free fit reaches 0 late enough (thick fog and a far game end): pin the end at the game's and fit the slope and the power only
         const float E=end*.98f;

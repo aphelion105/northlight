@@ -1505,6 +1505,7 @@ private:
             const NorthlightSpellLayer::Layer::Memory spellMemAtFrame=wasSampled&&diagnostics()?spell.memory():NorthlightSpellLayer::Layer::Memory{};
             if(spell.frameCounters().totalDeferred())spellIdle=0;else if(++spellIdle==600)spell.trim(0);
             spell.fogFresh(world&&spellFogFreshness.next(world->spellFogFrame().stamp)); /* the next frame's records fold the estimate only if this frame's world render published it */
+            if(world){const float (*ramps)[4]=nullptr;const unsigned n=spell.fogRampsSeen(ramps);for(unsigned i=0;i<n;++i)world->spellFogHint(ramps[i],ramps[i][3]!=0.f);} /* SpellFog: falling-ramp constants for the world render to fit ahead of the records */
             spell.beginFrame(NorthlightStream::memoryPressure.load(std::memory_order_relaxed));spellFrameMode=spell.mode();
             spellSync();spellTexFor=nullptr;spellTexKey=nullptr;
             for(unsigned i=0;i<spellQueryN;){if(frame-spellQueryFrame[i]>2){for(unsigned k=i+1;k<spellQueryN;++k){spellQuery[k-1]=spellQuery[k];spellQueryFrame[k-1]=spellQueryFrame[k];}--spellQueryN;}else ++i;}
