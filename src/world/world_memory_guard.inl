@@ -7,6 +7,7 @@
     struct MemoryTrim {size_t terrain=0,snapshots=0,indices=0,pool=0,gpu=0;size_t total()const{return terrain+snapshots+indices+pool+gpu;}};
     bool memoryPressure=false;
     std::atomic<bool> workerMemoryTrim{false}; /* 0.3.153: the geometry builder thread drops its incremental local-geometry cache on its next request */
+    std::atomic<uint64_t> geometryMemoryDemand{0}; /* the geometry builder's refused aggregate floor while it stalls for memory (0: none); the guard's demand */
     static constexpr size_t ReplayPoolBytes=48u*1024u*1024u;
     size_t replayPoolLimit()const{return memoryPressure?ReplayPoolBytes/2:ReplayPoolBytes;}
     MemoryTrim trimMemory(){

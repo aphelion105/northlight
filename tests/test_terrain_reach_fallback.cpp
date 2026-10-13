@@ -61,5 +61,49 @@ int main(){
     {Episode e;int begins=0,ends=0;uint32_t ms=0;unsigned n=0;
      for(int i=0;i<3;++i){begins+=e.refused(i*10);}ends+=e.end(40,ms,n);ends+=e.end(50,ms,n);
      begins+=e.refused(60);ends+=e.end(70,ms,n);assert(begins==2&&ends==2);}
+    // Memory restore rule (0.3.212 player log: every 30 s restore refused again at ~630 MiB, entry ~800).
+    {State s;const uint64_t entry=800*GM::MiB,need=GM::inBuildBudget(1*GM::MiB).available,seen=630*GM::MiB;
+     assert(memoryRefused(s,Ext,1000,entry+(need-seen)));assert(s.restoreAvailable==810*GM::MiB);
+     assert(choose(s,Ext,1000+BackoffMs,entry).reduced);                 // backoff over, entry unchanged: still base reach
+     assert(choose(s,Ext,1000+5*BackoffMs,809*GM::MiB).reduced&&s.refused);
+     auto c=choose(s,Ext,1000+5*BackoffMs,810*GM::MiB);assert(c.reach==Ext&&c.restored&&!s.refused); // enough at entry: restored once
+     assert(memoryRefused(s,Ext,9000,0));assert(!choose(s,Ext,9000+BackoffMs,0).reduced);}    // 0 = backoff only (old rule)
+    {State s;memoryRefused(s,Ext,1,UINT64_MAX);                                  // overflowed estimate: never restored by memory
+     assert(choose(s,Ext,1+BackoffMs,UINT64_MAX-1).reduced);
+     auto c=choose(s,BaseReach,2+BackoffMs,0);assert(c.reach==BaseReach&&!c.reduced&&!s.refused);} // a base-reach zone still clears it
+    // Entry lift (0.3.212 player log: plan-deferred 20, 162 and 482 attempts, the BVH rebuilt every second).
+    {GM::EntryLift lift;const auto plain=GM::buildBudget(64*GM::MiB);
+     assert(!lift.active(0)&&lift.apply(plain,0).available==768*GM::MiB);
+     // Entry at 770, the in-build check refused at 630 (needs 640): the next entry needs 780.
+     lift.refused(770*GM::MiB,GM::inBuildBudget().available,630*GM::MiB,100);
+     assert(lift.available==780*GM::MiB&&lift.apply(plain,100).available==780*GM::MiB);
+     assert(lift.apply(plain,100).largest==plain.largest);                      // contiguous rule untouched
+     assert(!GM::admits({775*GM::MiB,500*GM::MiB,true},lift.apply(plain,200)));  // no retry at the same level
+     assert(GM::admits({780*GM::MiB,500*GM::MiB,true},lift.apply(plain,200)));
+     assert(lift.apply(plain,100+GM::LiftMs-1).available==780*GM::MiB);
+     assert(lift.apply(plain,100+GM::LiftMs).available==768*GM::MiB&&!lift.active(100+GM::LiftMs)); // expires: no lockout
+     // Never below the plain floor, capped above it, overflow-safe, cleared on publish.
+     lift.refused(700*GM::MiB,640*GM::MiB,700*GM::MiB,0);assert(lift.apply(plain,1).available==768*GM::MiB);
+     lift.refused(3000*GM::MiB,640*GM::MiB,0,0);assert(lift.available==768*GM::MiB+GM::LiftCap);
+     lift.refused(UINT64_MAX,UINT64_MAX,0,0);assert(lift.available==768*GM::MiB+GM::LiftCap);
+     lift.clear();assert(lift.apply(plain,1).available==768*GM::MiB);
+     const uint32_t t=0xFFFFFF00u;lift.refused(800*GM::MiB,640*GM::MiB,600*GM::MiB,t); // tick wrap
+     assert(lift.apply(plain,uint32_t(t+0x200)).available==840*GM::MiB&&!lift.active(uint32_t(t+GM::LiftMs)));
+     assert(!GM::admits({0,0,false},lift.apply(GM::Budget{},0)));}
+    // A refusal for want of one free block (no aggregate shortfall) must not retry at once either.
+    {GM::EntryLift lift;const auto plain=GM::buildBudget(64*GM::MiB);const auto big=GM::inBuildBudget(64*GM::MiB); // 96 MiB contiguous
+     lift.refused(900*GM::MiB,big.available,890*GM::MiB,0,big.largest+32*GM::MiB);
+     assert(lift.apply(plain,1).available==900*GM::MiB&&lift.apply(plain,1).largest==128*GM::MiB);
+     assert(!GM::admits({950*GM::MiB,96*GM::MiB,true},lift.apply(plain,1))&&GM::admits({950*GM::MiB,128*GM::MiB,true},lift.apply(plain,1)));
+     lift.refused(900*GM::MiB,640*GM::MiB,700*GM::MiB,0,32*GM::MiB);assert(lift.apply(plain,1).largest==plain.largest);} // never below the plain block
+    {State s;memoryRefused(s,Ext,0,700*GM::MiB,96*GM::MiB);
+     assert(choose(s,Ext,BackoffMs,800*GM::MiB,95*GM::MiB).reduced);                 // aggregate fine, block too small
+     assert(choose(s,Ext,BackoffMs,800*GM::MiB,96*GM::MiB).restored);}
+    // The memory rule holds at most RestoreHoldMaxMs after the last refusal (no session-long base reach).
+    {State s;memoryRefused(s,Ext,0,UINT64_MAX,UINT64_MAX);
+     assert(choose(s,Ext,RestoreHoldMaxMs-1,0,0).reduced);
+     auto c=choose(s,Ext,RestoreHoldMaxMs,0,0);assert(c.reach==Ext&&c.restored);}
+    // The after-BVH gate keeps the in-build floor: the logged 720 MiB plan refusal now proceeds.
+    assert(GM::admits({720*GM::MiB,502*GM::MiB,true},GM::inBuildBudget())&&!GM::admits({720*GM::MiB,502*GM::MiB,true},GM::buildBudget()));
     std::cout<<"terrain reach fallback PASS\n";
 }

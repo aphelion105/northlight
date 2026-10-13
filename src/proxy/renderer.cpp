@@ -2135,17 +2135,19 @@ public:
                 auto& sample=memorySample;
                 if(memoryDiagnostics->take(sample)){
                     if(sample.valid){
-                        const auto decision=memoryGuard.update(sample.availableVirtual,sample.largestFree,DWORD(sample.tick));
+                        // The geometry builder's unmet floor also enters pressure (memory_guard.h demand).
+                        const std::uint64_t demand=world?world->geometryMemoryDemand.load(std::memory_order_relaxed):0;
+                        const auto decision=memoryGuard.update(sample.availableVirtual,sample.largestFree,DWORD(sample.tick),demand);
                         memoryTrim=decision.trim;
                         if(decision.afterTrim)logf("MEMORY guard after-trim exactWalk=1 availableVirtualMiB=%llu largestFreeMiB=%llu regions=%llu pressure=%u trims=%u sampleTick=%llu",
                             (unsigned long long)(sample.availableVirtual>>20),(unsigned long long)(sample.largestFree>>20),(unsigned long long)sample.regions,unsigned(memoryGuard.pressure()),memoryGuard.trims(),(unsigned long long)sample.tick);
                         if(decision.entered||decision.recovered){
                             memoryCaps=decision.entered?1:0;
-                            logf("MEMORY guard %s exactWalk=1 availableVirtualMiB=%llu largestFreeMiB=%llu enterBelowMiB=%llu/%llu recoverAboveMiB=%llu/%llu caps=%s entries=%u trims=%u",decision.entered?"pressure":"recovered",
+                            logf("MEMORY guard %s exactWalk=1 availableVirtualMiB=%llu largestFreeMiB=%llu enterBelowMiB=%llu/%llu recoverAboveMiB=%llu/%llu caps=%s entries=%u trims=%u reason=%s demandMiB=%llu",decision.entered?"pressure":"recovered",
                                 (unsigned long long)(sample.availableVirtual>>20),(unsigned long long)(sample.largestFree>>20),
                                 (unsigned long long)(memoryGuard.policy().enterLargest>>20),(unsigned long long)(memoryGuard.policy().enterAvailable>>20),
-                                (unsigned long long)(memoryGuard.policy().recoverLargest>>20),(unsigned long long)(memoryGuard.policy().recoverAvailable>>20),
-                                decision.entered?"half":"full",memoryGuard.entries(),memoryGuard.trims());
+                                (unsigned long long)(memoryGuard.policy().recoverLargest>>20),(unsigned long long)(memoryGuard.recoverAvailable()>>20),
+                                decision.entered?"half":"full",memoryGuard.entries(),memoryGuard.trims(),decision.demand?"geometry-demand":"address-space",(unsigned long long)(demand>>20));
                         }
                         if(decision.report&&diagnostics())logf("MEMORY frame=%u availableVirtualMiB=%llu largestFreeMiB=%llu availablePhysicalMiB=%llu device=%ld totalVirtualMiB=%llu virtualQueryFreeMiB=%llu liveDevices=%ld tick=%lu async=1 sampleTick=%llu sampleAgeMs=%lu sampleWallMs=%.3f regions=%llu pressure=%u minAvailableMiB=%llu minLargestMiB=%llu trims=%u exactWalk=1",frame,
                             (unsigned long long)(sample.availableVirtual>>20),(unsigned long long)(sample.largestFree>>20),(unsigned long long)(sample.availablePhysical>>20),diagnosticId,
