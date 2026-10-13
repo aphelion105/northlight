@@ -212,6 +212,9 @@ int main(){
       {H::Hold r;r.begin(true,10);r.stamp(model,p0,m2,deepE);r.begin(true,12);assert(r.carry(model,p0,m2));r.begin(true,13);assert(!r.carry(model,p0,m2)); // marks age in real frames
        H::Hold g;g.begin(true,10);g.stamp(model,p0,m2,deepE);g.begin(true,20);assert(!g.carry(model,p0,m2));                                           // one run of the pass after a gap of frames: stale
        g.begin(true,21);g.stamp(model,p0,m2,deepE);g.invalidate();g.begin(true,22);assert(!g.carry(model,p0,m2));}                                      // the pass did not run: void
+      {H::Hold v;unsigned f=100;v.begin(false,f);v.stamp(model,p0,m2,deepE);for(unsigned i=0;i<20;++i){v.invalidate();if(i%4==3)++f;}  // off for a while: invalidate() runs every frame, the renderer frame advances slowly
+       ++f;v.begin(false,f);v.stamp(model,p0,m2,deepE);++f;v.begin(false,f);assert(v.carry(model,p0,m2));                                // the void is in the renderer's frame domain: carry works again at once
+       v.invalidate();++f;v.begin(false,f);assert(!v.carry(model,p0,m2));v.stamp(model,p0,m2,deepE);++f;v.begin(false,f);assert(v.carry(model,p0,m2));}
       {H::Hold e;e.begin();e.stamp(model,p0,m2,shallowE);e.begin();assert(!e.carry(model,p0,m2));}                  // last extent above Deep: never carried
       {H::Hold e;e.begin();e.stamp(model,p0,m2,deepE);e.begin();assert(!e.carry(model+1,p0,m2));}                    // another model
       {H::Hold e;e.begin();e.stamp(model,p0,m2,deepE);e.invalidate();e.begin();assert(!e.carry(model,p0,m2));}      // the pass did not run: everything expires
