@@ -1138,7 +1138,7 @@ private:
     void* spellQuery[8]={};unsigned spellQueryFrame[8]={},spellQueryN=0,spellQueryUnknownFrame=0;bool spellQueryUnknown=false; /* open D3DQUERYTYPE_OCCLUSION brackets (raw queries), by Issue(BEGIN) frame; spellQueryUnknown: a bracket was lost to a full table (its frame in spellQueryUnknownFrame) */
     // SpellTrace: spellTraceLeft frames of SPELLTRACE lines, from the first world frame at or after frame 300 (Diagnostics only); spellTraceWindow: the next frame is traced.
     unsigned spellTraceLeft=0,spellDrawIndex=0;bool spellTraceWindow=false,spellTraceFrame=false,spellTraceSeen=false;
-    LONGLONG spellReplayTicks=0,spellRecordTicks=0,spellGateTicks=0,spellFlushTicks=0;unsigned spellCopiesAllowed=0,spellGlowPasses=0,spellGlowFrame=0,spellGateDraws=0,spellGateTimed=0,spellGateSeq=0,spellRecords=0,spellFlushes=0; /* spellFlushTicks/spellFlushes: the hazard flushes of gate draws, every one timed and kept out of the gate time */ /* sampled frames: spellGateDraws world-draw gate calls, every 8th timed (spellGateTimed, spellGateTicks = their time minus the record time inside them); spellRecordTicks/spellRecords: every Layer::defer() */NorthlightSpellLayer::Mode spellFrameMode=NorthlightSpellLayer::Mode::Off;
+    LONGLONG spellReplayTicks=0,spellRecordTicks=0,spellGateTicks=0,spellFlushTicks=0;void* spellGlowTex=nullptr;unsigned spellGlowPassN=0,spellGlowLogs=0; /* spellGlowTex: the destination container of this frame's allowed glow copy (identity only; valid when spellGlowFrame==frame+1); spellGlowPassN: passes let through since that copy */ unsigned spellCopiesAllowed=0,spellGlowPasses=0,spellGlowFrame=0,spellGateDraws=0,spellGateTimed=0,spellGateSeq=0,spellRecords=0,spellFlushes=0; /* spellFlushTicks/spellFlushes: the hazard flushes of gate draws, every one timed and kept out of the gate time */ /* sampled frames: spellGateDraws world-draw gate calls, every 8th timed (spellGateTimed, spellGateTicks = their time minus the record time inside them); spellRecordTicks/spellRecords: every Layer::defer() */NorthlightSpellLayer::Mode spellFrameMode=NorthlightSpellLayer::Mode::Off;
     // Hazard diagnostics (Diagnostics=1): the layer's latest event is consumed after each layer call that can raise one; the first 64 of the session are
     // logged as SPELLHAZARD. spellWin* accumulate every frame since the previous SPELLLAYER line (that line itself describes one sampled frame).
     static constexpr unsigned kSpellHazardLogs=64;
@@ -1295,7 +1295,10 @@ private:
         /* The layer's colour target copied into a texture (the game's glow copy, ffxGlow 1): allowed, the pending draws stay deferred. The copy then holds the world
            without them (they replay at B, after the glow passes), so they get no game glow; a depth source, a copy into the target or depth, or into a non-texture
            surface (GetRenderTargetData into system memory) is still the Copy hazard. */
-        if(container&&source&&source==spell.target()&&!mine(destination)){++spellCopiesAllowed;spellGlowFrame=frame+1;spellTextureWrite(static_cast<void*>(container));return;}
+        D3DSURFACE_DESC destDesc={};
+        if(container&&source&&source==spell.target()&&!mine(destination)&&SUCCEEDED(destination->GetDesc(&destDesc))&&destDesc.Pool==D3DPOOL_DEFAULT){ /* a default-pool texture level only: not a managed or system-memory one (GetRenderTargetData) */
+            ++spellCopiesAllowed;spellGlowFrame=frame+1;spellGlowTex=static_cast<void*>(container);spellGlowPassN=0;spellTextureWrite(static_cast<void*>(container));return;
+        }
         if(mine(source)||mine(destination)){spellFlush(NorthlightSpellLayer::Reason::Copy,true,NorthlightSpellLayer::InPlaceKind::None,"copy",mine(source),mine(destination));return;}
         if(container)spellTextureWrite(static_cast<void*>(container));
     }
@@ -1396,29 +1399,43 @@ private:
         }
         const bool pend=spell.pending();
         void* texKey=pend?spellTargetTexture():nullptr;
+        const bool glowActive=pend&&spellGlowFrame==frame+1&&spellGlowTex; /* an allowed glow copy happened this frame while draws were pending */
         if(!trace){
             if(!pend&&(zWrite||!spellDomain))return false;
             if(!pend&&((family==Family::None&&vs)||family==Family::Ripples||claimed||water||rain||uiTag||(fade&&skinned)||!rd(D3DRS_ALPHABLENDENABLE)))return false; /* no vertex shader: fixed function, a candidate */
-            if(pend&&zWrite&&spellDomain&&!texKey)return false; /* Opaque / TranslucentZ: in place, nothing to do */
+            if(pend&&zWrite&&spellDomain&&!texKey&&!glowActive)return false; /* Opaque / TranslucentZ: in place, nothing to do */
         }
         SpellFacts facts(*this,texKey);DrawFacts& f=facts.f;
         f.zEnable=spellZEnable;f.zWrite=zWrite;f.worldDomain=spellDomain;f.family=family;f.skinned=skinned;f.water=water;f.uiTag=uiTag;f.rain=rain;f.claimed=claimed;f.fixedFunction=!vs;f.fadeRun=fade;f.pending=pend;
         f.mrtBound=rainMrtBound;f.occlusionActive=spellQueryN!=0||spellQueryUnknown;
         facts.cw=cw;facts.cwKnown=cwKnown;
         const Result r=classifyWith(facts,spellClasses); /* the facts are read in the order the decision asks, the rest never */
+        /* The glow exemption (glowVerdict in spell_layer.h): a screen-space pass that samples the glow copy is let through; a world draw that samples it is a Sample hazard. */
+        NorthlightSpellLayer::GlowVerdict glow=NorthlightSpellLayer::GlowVerdict::None;
+        const bool orderHazard=r.kind==Kind::Hazard&&r.reason==Reason::Order;
+        if(glowActive&&(facts.worldDomain()||orderHazard)&&spellSamples(spellGlowTex)){
+            D3DSURFACE_DESC glowDesc;
+            glow=NorthlightSpellLayer::glowVerdict(true,orderHazard,facts.worldDomain(),facts.zWrite(),true,!facts.worldDomain()&&fullViewport(glowDesc,nullptr,true),spellGlowPassN);
+        }
         const bool logFacts=trace||(diagnostics()&&spellHazardLogs<kSpellHazardLogs);
-        if(logFacts&&(r.kind==Kind::Defer||r.kind==Kind::Hazard))facts.complete(); /* before a flush or a refused defer drains the layer and clears its target: the facts the lines print are the draw's */
+        const bool flushing=glow==NorthlightSpellLayer::GlowVerdict::SampleHazard||(glow==NorthlightSpellLayer::GlowVerdict::None&&r.kind==Kind::Hazard);
+        if(logFacts&&(r.kind==Kind::Defer||flushing))facts.complete(); /* before a flush or a refused defer drains the layer and clears its target: the facts the lines print are the draw's */
         bool deferred=false;
-        switch(r.kind){
+        if(glow==NorthlightSpellLayer::GlowVerdict::Pass){
+            ++spellGlowPasses;++spellGlowPassN;
+            if(trace)logf("SPELLTRACE frame=%u event=glowpass draw=%u pass=%u glowTex=%p",frame,spellDrawIndex+1,spellGlowPassN,spellGlowTex);
+            if(diagnostics()&&spellGlowLogs<8){
+                ++spellGlowLogs;facts.complete();D3DVIEWPORT9 gvp={};ext->GetViewport(&gvp);
+                logf("SPELLGLOW frame=%u draw=%u fixed=%d blend=%d src=%u dst=%u cw=%u vp=%lux%lu glowTex=%p",frame,drawCalls,int(f.fixedFunction),int(f.blend),f.srcBlend,f.destBlend,f.colorWrite,(unsigned long)gvp.Width,(unsigned long)gvp.Height,spellGlowTex);
+            }
+        }
+        else if(glow==NorthlightSpellLayer::GlowVerdict::SampleHazard){CpuScope flush(timed?&spellFlushTicks:nullptr); /* sampled frames only */if(timed)++spellFlushes;spellInDraw=true;spellFlush(Reason::Sample,true,InPlaceKind::None);spellInDraw=false;}
+        else switch(r.kind){
         case Kind::Defer:{
             facts.loadRt();facts.loadDs();IDirect3DSurface9* const rt=facts.rt;IDirect3DSurface9* const ds=facts.ds;
             if(rt){spellArgs.psMajor=0;spellArgs.psReads=nullptr;spellArgs.psFor=nullptr;spellPixelShader(&spellArgs.psMajor,nullptr,&spellArgs.psReads,&spellArgs.psFor);spellArgs.vsReads=vs?spellReads(static_cast<void*>(vs)):nullptr;spellArgs.vsFor=static_cast<const void*>(vs);CpuScope record(timed?&spellRecordTicks:nullptr); /* sampled frames only */if(timed)++spellRecords;deferred=spell.defer(spellArgs,rt,ds,r.sub);}
             break;}
-        case Kind::Hazard:
-            /* The game's glow passes after its glow copy (spellCopy let it through this frame): screen-space (not world domain), no depth write, into the target; they
-               rebuild the image from the copy, the pending draws then replay over it at B (no game glow on them). Not a hazard. */
-            if(r.reason==Reason::Order&&spellGlowFrame==frame+1&&!facts.worldDomain()&&!facts.zWrite()){++spellGlowPasses;break;}
-            {CpuScope flush(timed?&spellFlushTicks:nullptr); /* sampled frames only */if(timed)++spellFlushes;spellInDraw=true;spellFlush(r.reason,true,r.inPlace);spellInDraw=false;break;} /* r.inPlace: water, rain or a name drawn after a deferred draw */
+        case Kind::Hazard:{CpuScope flush(timed?&spellFlushTicks:nullptr); /* sampled frames only */if(timed)++spellFlushes;spellInDraw=true;spellFlush(r.reason,true,r.inPlace);spellInDraw=false;break;} /* r.inPlace: water, rain or a name drawn after a deferred draw */
         case Kind::InPlace:if(pend)spell.noteInPlace(r.inPlace);break;
         default:break;
         }

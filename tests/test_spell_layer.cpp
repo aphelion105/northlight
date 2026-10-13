@@ -177,6 +177,24 @@ static void testLazyClassify(){
     CHECK(lazySaved>200000);                                                     // and facts were in fact skipped
 }
 
+// The glow pass exemption is all-or-nothing: every single condition missing turns a Pass back into None, a world-domain draw that samples the glow texture is a hazard,
+// and the 5th pass after a copy is not let through.
+static void testGlowVerdict(){
+    auto v=[](bool copy,bool order,bool world,bool z,bool samples,bool full,unsigned n){return glowVerdict(copy,order,world,z,samples,full,n);};
+    CHECK(v(true,true,false,false,true,true,0)==GlowVerdict::Pass&&v(true,true,false,false,true,true,kMaxGlowPasses-1)==GlowVerdict::Pass);
+    CHECK(v(true,true,false,false,true,true,kMaxGlowPasses)==GlowVerdict::None);                      // the fifth pass is a hazard as before
+    CHECK(v(false,true,false,false,true,true,0)==GlowVerdict::None);                                  // no glow copy this frame
+    CHECK(v(true,false,false,false,true,true,0)==GlowVerdict::None);                                  // not an Order hazard
+    CHECK(v(true,true,false,true,true,true,0)==GlowVerdict::None);                                    // writes depth
+    CHECK(v(true,true,false,false,false,true,0)==GlowVerdict::None);                                  // does not sample the glow texture
+    CHECK(v(true,true,false,false,true,false,0)==GlowVerdict::None);                                  // not the full target
+    for(int bits=0;bits<64;++bits){                                                                   // a world-domain draw sampling the glow texture: always the hazard, otherwise never
+        const bool order=bits&1,z=bits>>1&1,full=bits>>2&1;
+        CHECK(v(true,order,true,z,true,full,bits%7)==GlowVerdict::SampleHazard);
+        CHECK(v(true,order,true,z,false,full,0)==GlowVerdict::None&&v(false,order,true,z,true,full,0)==GlowVerdict::None);
+    }
+}
+
 // ---------------- frame state and counters ----------------
 static void testFrameState(){
     FrameState s;CHECK(s.mode()==Mode::Off);
@@ -1595,7 +1613,7 @@ int main(int argc,char** argv){
     const char* only=argc>1?argv[1]:nullptr; // a test name (substring) to run alone, and an optional cache mode
     const bool fixedMode=argc>2;if(fixedMode)gMirrorMode=std::atoi(argv[2]);
     struct T{const char* name;void(*fn)();};
-    const T tests[]={{"classify",testClassify},{"lazy classify",testLazyClassify},{"frame state",testFrameState},{"guard table",testGuardTable},{"equivalence",testEquivalence},
+    const T tests[]={{"classify",testClassify},{"lazy classify",testLazyClassify},{"glow verdict",testGlowVerdict},{"frame state",testFrameState},{"guard table",testGuardTable},{"equivalence",testEquivalence},
         {"discard copy",testDiscard},{"partial overlap",testPartialOverlap},{"two entries",testTwoEntries},{"count-based marks",testMarkIsCountBased},
         {"rebase negative base",testRebaseNegativeBase},{"rebase kept base",testRebasePositiveBase},{"index buffer copy",testIbMaterialized},
         {"mixed streams",testMixedStreams},{"32-bit UP",test32bitUP},{"non-dynamic buffer",testNonDynamic},{"copy disabled",testConflictCopyDisabled},

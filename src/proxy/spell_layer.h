@@ -108,6 +108,19 @@ struct EagerFacts{
     bool opaqueBlend()const{return NorthlightSpellLayer::opaqueBlend(f);}unsigned subClass()const{return NorthlightSpellLayer::subClass(f);}
 };
 inline Result classify(const DrawFacts& f,unsigned classMask){EagerFacts e{f};return classifyWith(e,classMask);}
+// The game's glow (ffxGlow) after an ALLOWED copy of the layer's colour target into a default-pool texture (the integration remembers that texture for the frame): the glow combine
+// passes rebuild the image from the copy and would otherwise be Order hazards (screen-space, colour into the target, no Z write). A pass is let through (Pass: drawn in place, nothing
+// flushed) only when ALL hold: a glow copy happened this frame, the draw is an Order hazard, it is not world domain and writes no depth, it samples the remembered glow texture, its
+// viewport is the full target, and fewer than kMaxGlowPasses passes were let through since that copy. A WORLD-domain draw that samples the glow texture while draws are deferred would
+// read an image without them: SampleHazard (the caller flushes with Reason::Sample, the frame falls back). Everything else: None (the decision stands).
+constexpr unsigned kMaxGlowPasses=4;
+enum class GlowVerdict:uint8_t{None,Pass,SampleHazard};
+inline GlowVerdict glowVerdict(bool copyThisFrame,bool orderHazard,bool worldDomain,bool zWrite,bool samplesGlow,bool fullViewport,unsigned passesSinceCopy){
+    if(!copyThisFrame||!samplesGlow)return GlowVerdict::None;
+    if(worldDomain)return GlowVerdict::SampleHazard;
+    if(orderHazard&&!zWrite&&fullViewport&&passesSinceCopy<kMaxGlowPasses)return GlowVerdict::Pass;
+    return GlowVerdict::None;
+}
 // A skinned Z-writing colour-less draw (the depth pre-pass of a fading actor) starts a run; the next non-skinned draw ends it.
 struct FadeRun{
     bool active=false;
