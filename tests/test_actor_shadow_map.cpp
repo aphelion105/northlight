@@ -98,6 +98,12 @@ int main(){
      t.begin();t.note(5,true);t.note(5,true);t.endFrame();assert(t.sideFlips==4);           // one clone joined the actor map
      t.begin();t.unkeyed();t.unsupportedNear();t.unsupportedNear();t.endFrame();assert(t.unkeyedNow==1&&t.unsupportedNow==2&&t.tracked==0);
      t.resetWindow();assert(t.sideFlips==0&&t.sideMatched==0&&t.frames==0&&t.selfFlips==0);
+     {S::Tracker d; // flips split by rooted/unrooted, missing bounds counted per frame, per window and for the self
+      auto f=[&](bool rootedActor,bool unrootedActor,bool selfActor,bool selfNoBounds){d.begin();d.note(10,rootedActor,false,true,!rootedActor);d.note(11,unrootedActor,false,false,!unrootedActor);d.note(12,selfActor,true,true,selfNoBounds);d.invalidNear();d.endFrame();};
+      f(true,true,true,false);f(false,true,true,false);assert(d.sideFlips==1&&d.sideFlipsRooted==1&&d.sideFlipsUnrooted==0&&d.unrootedNoBounds==0&&d.selfNoBoundsFrames==0);
+      f(false,false,false,true);assert(d.sideFlips==3&&d.sideFlipsRooted==2&&d.sideFlipsUnrooted==1&&d.unrootedNoBounds==1&&d.unrootedNoBoundsSum==1&&d.selfNoBoundsFrames==1&&d.selfUnrooted==0&&d.invalidBoundsNearSum==3);
+      d.begin();d.note(13,true,true,false);d.endFrame();assert(d.selfUnrooted==1&&d.selfSide==S::SelfActor);
+      d.resetWindow();assert(d.sideFlipsRooted==0&&d.sideFlipsUnrooted==0&&d.unrootedNoBoundsSum==0&&d.invalidBoundsNearSum==0&&d.selfNoBoundsFrames==0);}
      S::Tracker mixed;mixed.begin();mixed.note(1,true,true);mixed.note(2,false,true);mixed.endFrame();assert(mixed.selfSide==S::SelfMixed&&std::string(S::name(mixed.selfSide))=="mixed");}
     {namespace H=NorthlightActorSideHold; // inset hysteresis and the near-first visit list
      // A box of half width w (clip units) around the map centre column: an extent of w. Matrix m maps world (x,y) to clip x,y with 12 yd = 1.

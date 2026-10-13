@@ -105,7 +105,8 @@ checks['hold: per-source table, begun with the diagnostics flag (or invalidated 
 checks['hold diagnostics: overflow and band counters only when the pass was begun with diagnostics']=(
     'void begin(bool diagnostics=false){++frame_;diagnostics_=diagnostics;bandHeld=0;}' in hold and 'if(diagnostics_)++overflows;' in hold and 'if(diagnostics_&&!inside)++bandHeld;' in hold)
 checks['actor map log line: hold band, overflows, near list size and near walk stops']=(
-    ' holdBand=%u holdOverflows=%lu nearListSize=%u nearWalkStops=%lu"' in loop and 'actorHold[source].bandHeld,actorHold[source].overflows,replayNearSize,replayNearStops);' in loop
+    ' holdBand=%u holdOverflows=%lu nearListSize=%u nearWalkStops=%lu sideFlipsRootedSinceLog=%u sideFlipsUnrootedSinceLog=%u invalidBoundsNearSinceLog=%u unrootedNoBounds=%u unrootedNoBoundsSinceLog=%u selfUnrooted=%u selfNoBoundsFramesSinceLog=%u"' in loop
+    and 'actorHold[source].bandHeld,actorHold[source].overflows,replayNearSize,replayNearStops,' in loop and 'actorSide[source].sideFlipsRooted,actorSide[source].sideFlipsUnrooted,' in loop
     and 'if(NorthlightDiagnostics::enabled()){replayNearSize=unsigned(replayBoundsWorker.nearList().index.size());replayNearStops+=result.totals.nearStops;}' in point)
 checks['bounds near-first: the list is filled by gather with the items, walks rotate per phase and take at most half of a phase budget']=(
     'priority->consider(i,p.captureRootValid,p.captureRoot);' in job and 'schedule(*cache_,items_,inverse_,&cancel_,priority_.on?&priority_:nullptr)' in job
