@@ -14,8 +14,11 @@ Heuristic (over-selects rather than misses):
     so a test compiling a.h is affected by b.h when a.h includes b.h. A header a test only names
     (read as text) is covered itself but its includes are not followed.
     A shader build manifest (*-shader-build.json) reaches the files it names.
-  * A test that scans all sources (`fp.sources(('.h', ...))`) covers every production source with a
-    matching suffix.
+  * A test that scans a tree covers every file under it with a matching suffix: `fp.sources(...)`
+    (all of src/), and a line that walks a directory (glob, rglob, iterdir, walk) over fp.SRC_DIRS,
+    fp.SRC, fp.REPO / 'src' (/ 'group'), fp.SHADERS, fp.GENERATED, fp.GAMEDATA or
+    fp.src('x.h').parent. Suffixes are the quoted '.ext' and '*.ext' of that line and the next; none
+    means any file. A walk the patterns cannot place is missed: name the directory in the test.
   * A changed tests/test_*.py selects itself.
   * Shared infrastructure (northlight_paths.py, scripts/run_tests.py, scripts/check_layout.py,
     tests/support/**) is not mapped: the note on stderr recommends the full suite.
@@ -33,7 +36,13 @@ import northlight_paths as fp  # noqa: E402
 
 TOKEN = re.compile(r'[\w.\-]+')
 INCLUDE = re.compile(r'^\s*#\s*include\s+"([^"]+)"', re.M)
-SCAN = re.compile(r'fp\.sources\(([^\n]{0,160})')
+WALK = re.compile(r'\.(?:glob|rglob|iterdir)\(|os\.walk|SRC_DIRS')
+SCOPES = [(re.compile(r'SRC_DIRS|fp\.sources\('), 'src/'), (re.compile(r'fp\.SRC\s*/\s*[\'"](\w+)'), 'src/{}/'),
+          (re.compile(r'fp\.SRC\b'), 'src/'), (re.compile(r'[\'"]src[\'"]\s*/\s*[\'"](\w+)[\'"]'), 'src/{}/'),
+          (re.compile(r'[\'"]src[\'"]'), 'src/'), (re.compile(r'fp\.SHADERS|SHADER_DIRS'), 'shaders/'),
+          (re.compile(r'fp\.GENERATED'), 'src/generated/'), (re.compile(r'fp\.GAMEDATA'), 'src/gamedata/'),
+          (re.compile(r'fp\.COMPILED'), 'shaders/compiled/')]
+PARENT = re.compile(r'fp\.src\(\s*[\'"]([\w./-]+)[\'"]\s*\)\.parent')
 SUFFIX = re.compile(r"""['"](\.\w+)['"]""")
 TEXT = {'.h', '.inl', '.inc', '.def', '.cpp', '.hlsl', '.json', '.py'}
 SHARED = ('northlight_paths.py', 'scripts/run_tests.py', 'scripts/check_layout.py', 'tests/support/')
@@ -111,7 +120,24 @@ class Graph:
                 if c not in found:
                     found[c] = n
                     queue.append(c)
-        return found, SCAN.findall(text)
+        return found, self.scans(text)
+
+    def scans(self, text):
+        """[(repo-relative directory prefix, suffixes or None)] for the trees the test walks."""
+        lines, out = text.split('\n'), []
+        for i, line in enumerate(lines):
+            if not (WALK.search(line) or 'fp.sources(' in line):
+                continue
+            window = line + ' ' + (lines[i + 1] if i + 1 < len(lines) else '')
+            suffixes = set(SUFFIX.findall(window)) | set(re.findall(r'\*(\.\w+)', window))
+            for m in PARENT.finditer(line):
+                p = self.index.get(Path(m.group(1)).name)
+                if p is not None:
+                    out.append((p.parent.relative_to(fp.REPO).as_posix() + '/', suffixes or None))
+            for pattern, prefix in SCOPES:
+                for m in pattern.finditer(line):
+                    out.append((prefix.format(*m.groups()), suffixes or None))
+        return out
 
     def covering(self, path):
         """[(test name, reason)] for one changed repo-relative path."""
@@ -119,7 +145,6 @@ class Graph:
         parts = {name, Path(path).stem, *Path(path).parts} if path.startswith('tests/fixtures/') else {name}
         if name.endswith('.py'):
             parts.add(Path(path).stem)
-        production = (fp.REPO / path).parent in fp.SRC_DIRS
         hits = []
         for t in self.tests:
             if path == f'tests/{t.name}':
@@ -133,8 +158,10 @@ class Graph:
                     chain.append(n)
                     n = found[n]
                 hits.append((t.name, ' <- '.join([*chain, t.name])))
-            elif production and any(Path(path).suffix in SUFFIX.findall(s) or not SUFFIX.findall(s) for s in scans):
-                hits.append((t.name, f'scans every {Path(path).suffix} source'))
+            else:
+                scan = next((d for d, suf in scans if path.startswith(d) and (suf is None or Path(path).suffix in suf)), None)
+                if scan:
+                    hits.append((t.name, f'scans {scan}'))
         return hits
 
 

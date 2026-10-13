@@ -27,6 +27,8 @@ checks = {
     'a changed test selects itself': ('test_upload_locks.py', 'is the changed test') in graph.covering('tests/test_upload_locks.py'),
     'a source scanner is selected by any production header': 'test_upload_locks.py' in spell and 'test_upload_locks.py' in covering('world_gi.cpp'),
     'a shader selects the tests that read it': {'test_ao_blur.py', 'test_rain_mask.py'} <= covering('effects.hlsl'),
+    'a test that walks src/stream selects on a header there': {'test_log_format_literals.py', 'test_gpu_budget_wiring.py'} <= covering('replay_thread.h'),
+    'a test that walks the shaders folder selects on a shader': 'test_shadow_shimmer.py' in covering('effects.hlsl'),
     'a shader does not select a header-only test': 'test_spell_layer.py' not in covering('effects.hlsl'),
     'a file no test names selects nothing (outside the source scanners)': graph.covering('docs/unmapped' + '.xyz') == [],
     'the reason chain ends at the test': all(why.endswith(t) for t, why in graph.covering('src/proxy/upload_lock.h') if 'scans' not in why and 'is the changed' not in why),

@@ -24,8 +24,9 @@ Which tests cover which file is derived from the tests themselves, not kept in a
   (`test_<name>.cpp`, `tests/*.h`);
 - the `#include "..."` chain of what the test compiles is followed, so a change to `b.h` selects a
   test that compiles `a.h` when `a.h` includes `b.h`;
-- a test that scans every source (`fp.sources(...)`) is selected by any production source with a
-  matching suffix;
+- a test that scans a tree (`fp.sources(...)`, or a `glob`/`rglob`/`iterdir`/`os.walk` over
+  `fp.SRC_DIRS`, `src/<group>`, `fp.SHADERS`, ...) is selected by any file under it with a matching
+  suffix; a walk written in a way the tool cannot place is missed, so name the directory plainly;
 - a changed test selects itself;
 - `northlight_paths.py`, `scripts/run_tests.py`, `scripts/check_layout.py` and `tests/support/**`
   are shared: the tool tells you to run the full suite;
