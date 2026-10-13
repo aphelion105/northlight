@@ -138,10 +138,13 @@ checks['decision: the game must not use stencil (disable once), the depth format
     'nameMask.disable("no stencil' not in r and dc.index('D3DRS_STENCILENABLE')<dc.index('nameMask.disable("the game uses stencil")')<dc.index('worldDepth!=maskFormatFor||format!=maskFormatValue')<dc.index('NAMEMASK world depth surface=%p format=%lu')<dc.index('no stencil bits: no name mask while this surface is the world depth')
     <dc.index('nameMask.hasMarks()&&NorthlightTranslucentDepth::isUndo(')<dc.index('maskKind=2')<dc.index('maskKind=1'))
 checks['names: the UI-hash vertex shader (tag 2) whose c3 is not the screen-space (0,0,0,1) of the boundary, never water, alpha-blended, full viewport, world depth bound']=(
-    'if(water||!drawUiHashVS){' in dc and 'drawWaterVS=(entry&kWaterTag)!=0;drawUiHashVS=tag==2;' in r and 'if(!NorthlightNameStencil::nameBlend(ab,sb,db,cw))return;' in dc
+    'if(water||!drawUiHashVS){' in dc and 'drawWaterVS=(entry&kWaterTag)!=0;drawUiHashVS=uiTextVs(vs,tag);' in r and 'if(!NorthlightNameStencil::nameBlend(ab,sb,db,cw))return;' in dc
     and dc.index('!drawUiHashVS')<dc.index('hasMarks()&&NorthlightTranslucentDepth::isUndo(')<dc.index('nameBlend(ab,sb,db,cw)') # the cheapest test first: all but the names stop at the tag
     and 'if(FAILED(ext->GetVertexShaderConstantF(3,c3,1))||NorthlightUiBoundary::clipWOne(c3))return;' in dc
     and dc.index('!drawUiHashVS')<dc.index('GetVertexShaderConstantF(3,c3,1)')<dc.index('viewport.Width==width&&viewport.Height==height&&worldDepthBound()'))
+checks['font mods (Lexara, TweakWoW2): a name may also be drawn with the VS the UI boundary fallback learned, only while it is armed; the boundary itself still tests tag 2 only']=(
+    'bool uiTextVs(IDirect3DVertexShader9* vs,int tag)const{return tag==2||(vs&&uiFallback.armed()&&reinterpret_cast<std::uintptr_t>(vs)==uiFallback.learnedVs());}' in r
+    and r.count('uiTextVs(')==3 and '} else if (tag==2) {' in r)
 checks['the boundary keeps its own test: tag 2, UI pixel shader and clipWOne(c3) call renderEffects (screen UI is never a name)']=(
     'if (isUI && SUCCEEDED(ext->GetVertexShaderConstantF(3,w,1)) && NorthlightUiBoundary::clipWOne(w)){' in r)
 checks['draw states: a mirror-known render state is read in place under the gate of the draw hook (no lock, no COM call), the same active() and known test as GetRenderState, else GetRenderState']=(
@@ -157,7 +160,7 @@ checks['states are read first (in place from the mirror when known), then set, r
 run=r[r.index('bool nameMaskRunBegin(){'):r.index('// The draw hook\'s last step')]
 checks['run: begin clears if needed then applies kMark once (nameRun), end restores it; the break keeps it only for a UI-hash vertex shader (tag 2)']=(
     run.index('if(nameRun)return true;')<run.index('nameMask.needsClear()&&!nameMaskClear()')<run.index('readDrawRenderState(D3DRS_STENCILPASS,pass)')<run.index('for(const auto& set:NorthlightNameStencil::kMark)ext->SetRenderState(')<run.index('SetRenderState(D3DRS_STENCILENABLE,TRUE)')<run.index('nameRun=true;++nameMask.runs;')
-    and 'nameRun=false;CpuScope c(sampledDrawTimers()?&cpuNameMark:nullptr);ext->SetRenderState(D3DRS_STENCILENABLE,FALSE);' in run and 'nameRunPrevious' not in r and 'kMarkProbe[0].value' in run and '(classifyVs(vs).entry&kTagMask)!=2)nameMaskRunEnd();' in run)
+    and 'nameRun=false;CpuScope c(sampledDrawTimers()?&cpuNameMark:nullptr);ext->SetRenderState(D3DRS_STENCILENABLE,FALSE);' in run and 'nameRunPrevious' not in r and 'kMarkProbe[0].value' in run and 'if(!ext->peekVertexShader(vs)||!vs||!uiTextVs(vs,classifyVs(vs).entry&kTagMask))nameMaskRunEnd();' in run)
 checks['run ends before anything that could draw or clear with stencil on: prepareDrawImpl (any non-UI-hash draw), nameMaskDraw (non-name), Clear, EndScene, Reset, renderEffects, finishFrameImpl']=(
     '++drawCalls;maskKind=0;if(nameRun)nameMaskRunBreak();' in impl and 'if(kind!=1)nameMaskRunEnd();' in r
     and 'nameMaskRunEnd(); /* 0.3.212 (task 32): a run of names never spans a Clear */' in r[r.index('HRESULT STDMETHODCALLTYPE Clear('):][:700]
