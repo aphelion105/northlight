@@ -132,18 +132,21 @@ checks['header: portable, no device calls']=all(x not in h for x in ('d3d9','win
 impl=r[r.index('template<class Capture> void prepareDrawImpl('):r.index('    // Terrain draws run with the game')]
 dom=impl.index('if(worldDomain){');dec=impl.index('nameMaskDecide(');cap=impl.index('capture(vs);')
 checks['prepareDrawImpl: kind reset first; decision in the world domain for terrain frames, armed, no debug view, before capture(vs)']=(
-    '++drawCalls;maskKind=0;' in impl and dom<dec<cap and 'if(terrain&&nameMask.armed()&&worldDebug==0){' in impl and 'nameMaskDecide(drawWaterVS,zw,ab,sb,db,cw,viewport,vs);}' in impl)
+    '++drawCalls;maskKind=0;' in impl and dom<dec<cap and 'if(terrain&&nameMask.armed()&&worldDebug==0&&(drawUiHashVS||nameMask.hasMarks())){' in impl and 'nameMaskDecide(drawWaterVS,zw,ab,sb,db,cw,viewport);}' in impl)
 dc=r[r.index('bool nameMaskReady(){'):r.index('// The bound depth buffer is the frame')]
 checks['decision: the game must not use stencil (disable once), the depth format is checked once per surface (logged, disabled without stencil), unmark needs marks, a name needs the full viewport and the world depth']=(
     dc.index('D3DRS_STENCILENABLE')<dc.index('nameMask.disable("the game uses stencil")')<dc.index('worldDepth!=maskFormatFor')<dc.index('NAMEMASK world depth format=')<dc.index('no stencil in the world depth format')
     <dc.index('nameMask.hasMarks()&&NorthlightTranslucentDepth::isUndo(')<dc.index('maskKind=2')<dc.index('maskKind=1'))
 checks['names: the UI-hash vertex shader (tag 2) whose c3 is not the screen-space (0,0,0,1) of the boundary, never water, alpha-blended, full viewport, world depth bound']=(
-    'if(water||(classifyVs(vs).entry&kTagMask)!=2){' in dc and 'if(!NorthlightNameStencil::nameBlend(ab,sb,db,cw))return;' in dc
-    and dc.index('(classifyVs(vs).entry&kTagMask)!=2')<dc.index('hasMarks()&&NorthlightTranslucentDepth::isUndo(')<dc.index('nameBlend(ab,sb,db,cw)') # the cheapest test first: all but the names stop at the tag
+    'if(water||!drawUiHashVS){' in dc and 'drawWaterVS=(entry&kWaterTag)!=0;drawUiHashVS=tag==2;' in r and 'if(!NorthlightNameStencil::nameBlend(ab,sb,db,cw))return;' in dc
+    and dc.index('!drawUiHashVS')<dc.index('hasMarks()&&NorthlightTranslucentDepth::isUndo(')<dc.index('nameBlend(ab,sb,db,cw)') # the cheapest test first: all but the names stop at the tag
     and 'if(FAILED(ext->GetVertexShaderConstantF(3,c3,1))||NorthlightUiBoundary::clipWOne(c3))return;' in dc
-    and dc.index('(classifyVs(vs).entry&kTagMask)!=2')<dc.index('GetVertexShaderConstantF(3,c3,1)')<dc.index('viewport.Width==width&&viewport.Height==height&&worldDepthBound()'))
+    and dc.index('!drawUiHashVS')<dc.index('GetVertexShaderConstantF(3,c3,1)')<dc.index('viewport.Width==width&&viewport.Height==height&&worldDepthBound()'))
 checks['the boundary keeps its own test: tag 2, UI pixel shader and clipWOne(c3) call renderEffects (screen UI is never a name)']=(
     'if (isUI && SUCCEEDED(ext->GetVertexShaderConstantF(3,w,1)) && NorthlightUiBoundary::clipWOne(w)){' in r)
+checks['draw states: a mirror-known render state is read in place under the gate of the draw hook (no lock, no COM call), the same active() and known test as GetRenderState, else GetRenderState']=(
+    'v=drawRenderState(t);known=true;' in impl and 'if(unsigned(t)<DeviceMirror::RenderStates&&mirrorState.active()&&mirrorState.renderStateKnown[t])return mirrorState.renderStates[t];' in r
+    and 'DWORD v=0;ext->GetRenderState(t,&v);return v;' in r and 'Guard mirrorLock(mirrorState.gate);\n        auto draw=[&]{return ext->DrawIndexedPrimitive(' in r)
 checks['hash UI boundary draws and everything after applied are never marked (prepareDrawImpl returns once applied; the decision sits after beforeDraw)']=(
     impl.index('if(applied){')<impl.index('beforeDraw(vs);')<impl.index('nameMaskDecide('))
 mc=r[r.index('bool nameMaskClear(){'):r.index('// The run of name draws')]

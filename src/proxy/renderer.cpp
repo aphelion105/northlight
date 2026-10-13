@@ -320,7 +320,7 @@ class Device final : public GuardedMirrorDevice {
     // Task 34: bits 3..5 hold the M2 shader family (m2_shader_families.h, NorthlightSpellLayer::Family) of the vertex shader, set at registration.
     static constexpr int kTagMask=3,kWaterTag=4,kFamilyShift=3;
     std::unordered_map<IDirect3DVertexShader9*, int> vsTags;
-    bool drawWaterVS=false; // beforeDraw() result for the current draw
+    bool drawWaterVS=false,drawUiHashVS=false; // beforeDraw() results for the current draw (drawUiHashVS: tag 2, the UI hash)
     std::unordered_map<IDirect3DPixelShader9*, int> psTags;
     std::unordered_map<IDirect3DVertexShader9*, uint64_t> vsHashes;
     std::unordered_map<IDirect3DVertexShader9*, unsigned> vsMajor; // 0.3.202 (rain mask MRT): the shader model major version from the version token (0 unknown)
@@ -810,15 +810,21 @@ private:
     // 0.3.212 (task 32): the mask decision of a world-domain draw (prepareDrawImpl, before the boundary). After the frame's first mark a depth-final draw (Z-writing opaque, or water Z) unmarks (kind 2). A name (kind 1) is a draw with the
     // UI-hash vertex shader and a perspective projection: the real UI draws with it too but with the screen-space c3=(0,0,0,1) the boundary itself waits for (beforeDraw), so c3 not being that is the whole difference; plus alpha blending
     // (nameBlend), the full viewport and the world depth bound. Screen UI never gets here marked: it fails the c3 test, and after the boundary prepareDrawImpl returns first.
-    template<class Z,class B,class S,class D,class C> void nameMaskDecide(bool water,Z&& zw,B&& ab,S&& sb,D&& db,C&& cw,const D3DVIEWPORT9& viewport,IDirect3DVertexShader9* vs){
+    template<class Z,class B,class S,class D,class C> void nameMaskDecide(bool water,Z&& zw,B&& ab,S&& sb,D&& db,C&& cw,const D3DVIEWPORT9& viewport){
         if(!nameMaskReady())return;
-        if(water||(classifyVs(vs).entry&kTagMask)!=2){ /* the cheapest test first (the one-entry shader cache beforeDraw just warmed): all but the names stop at it */
+        if(water||!drawUiHashVS){ /* the cheapest test first (beforeDraw's tag): all but the names stop at it */
             if(nameMask.hasMarks()&&NorthlightTranslucentDepth::isUndo(water,zw,ab,sb,db,cw)){maskKind=2;++nameMask.unmarkDraws;}
             return;
         }
         if(!NorthlightNameStencil::nameBlend(ab,sb,db,cw))return;
         float c3[4];if(FAILED(ext->GetVertexShaderConstantF(3,c3,1))||NorthlightUiBoundary::clipWOne(c3))return;
         if(viewport.X==0&&viewport.Y==0&&viewport.Width==width&&viewport.Height==height&&worldDepthBound())maskKind=1;
+    }
+    // 0.3.212 (task 32): a render state of the current draw. One the mirror knows is read in place: the draw hooks hold the gate, so no lock and no COM call (like weatherProbe's texture read);
+    // an unknown one (mirror inactive or not yet observed) goes through GetRenderState as before.
+    DWORD drawRenderState(D3DRENDERSTATETYPE t){
+        if(unsigned(t)<DeviceMirror::RenderStates&&mirrorState.active()&&mirrorState.renderStateKnown[t])return mirrorState.renderStates[t];
+        DWORD v=0;ext->GetRenderState(t,&v);return v;
     }
     // The bound depth buffer is the frame's world depth (an offscreen pass with its own depth is never marked).
     bool worldDepthBound(){return boundDepthIs(worldDepth);}
@@ -934,11 +940,11 @@ private:
             if(spellOn){spellDomain=worldDomain;spellZEnable=depthEnabled!=FALSE;} /* task 34 */
             if(worldDomain){if(gateFrame)++gateCounts.capture;
                 /* 0.3.188 (task 3): lazy state reads for the early resolve, its undo and the census, each read at most once per draw */
-                auto rs=[&](D3DRENDERSTATETYPE t){return [this,t,v=DWORD(0),known=false]()mutable{if(!known){ext->GetRenderState(t,&v);known=true;}return v;};};
+                auto rs=[&](D3DRENDERSTATETYPE t){return [this,t,v=DWORD(0),known=false]()mutable{if(!known){v=drawRenderState(t);known=true;}return v;};};
                 auto zw=rs(D3DRS_ZWRITEENABLE);auto ab=rs(D3DRS_ALPHABLENDENABLE);auto sb=rs(D3DRS_SRCBLEND);auto db=rs(D3DRS_DESTBLEND);auto cw=rs(D3DRS_COLORWRITEENABLE);
-                if(terrain&&nameMask.armed()&&worldDebug==0){ /* 0.3.212 (task 32) */
+                if(terrain&&nameMask.armed()&&worldDebug==0&&(drawUiHashVS||nameMask.hasMarks())){ /* 0.3.212 (task 32): only a UI-hash draw can be a name, only a frame with marks can unmark */
                     const bool sampledTimed=sampledDrawTimers()&&(++nameDecideCalls&7)==1;if(sampledTimed)++nameDecideTimed;
-                    CpuScope decision(sampledTimed?&cpuNameDecide:nullptr);nameMaskDecide(drawWaterVS,zw,ab,sb,db,cw,viewport,vs);}
+                    CpuScope decision(sampledTimed?&cpuNameDecide:nullptr);nameMaskDecide(drawWaterVS,zw,ab,sb,db,cw,viewport);}
                 if(captured&&earlyDepth.earlyCaptured&&NorthlightTranslucentDepth::isUndo(drawWaterVS,zw,ab,sb,db,cw)){captured=false;earlyDepth.undo();++earlyResolveUndone;++earlyResolveUndoneTotal;} /* undo: later opaque or water Z draw after the early resolve */
                 if(terrain&&!captured&&earlyDepth.armed()&&NorthlightTranslucentDepth::shouldResolve(drawWaterVS,zw,ab,sb,db,cw,[&]{return classifyVs(vs).skinned;})&&earlyDepth.attempt()){ /* 0.3.188 (2A): early depth for translucent actors, every frame, minimum state reads */
                     ExtensionDevice::RawScope raw(*ext);
@@ -1753,7 +1759,7 @@ private:
     }
     void beforeDraw(IDirect3DVertexShader9* vs) {
         const VsClass& vc=classifyVs(vs); const int entry=vc.entry; int tag=entry&kTagMask;
-        drawWaterVS=(entry&kWaterTag)!=0;
+        drawWaterVS=(entry&kWaterTag)!=0;drawUiHashVS=tag==2;
         bool wmo=tag!=1&&vc.wmo;if(gateFrame&&wmo)++gateCounts.wmo;
         if(wmo&&projectionValid&&world->hasContext())return; // allow recovery after a terrain context rejection
         if (tag==1||wmo) {
