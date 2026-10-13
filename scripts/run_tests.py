@@ -8,7 +8,7 @@
 
 Each test declares what it needs on one line near the top:
     # northlight-test: requires=client,cxx timing slow
-A test whose requirement is not available is reported SKIP with the reason; see README.md.
+A test whose requirement is not available is reported SKIP with the reason; see tests/README.md.
 `known-fail=<reason>` (last on the line) marks a test that fails at HEAD for a known reason, listed
 in tests/KNOWN_FAILURES.md: it still runs, a failure is reported XFAIL and does not fail the run,
 a pass is reported XPASS (remove the tag).

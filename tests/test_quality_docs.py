@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # northlight-test:
 """Player documentation vs the Keys[] table of quality_settings.h: the one place that checks the ini template and the
-windows-package README.txt settings table against the code. Reads only the player-facing files (never the repository
-README.md, which is the human introduction and is edited on GitHub). Source/text audit only."""
+windows-package README.txt settings table against the code. Reads only the player-facing files (never the repository's
+top-level readme, which is the human introduction and is edited on GitHub). Source/text audit only."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
 import re
