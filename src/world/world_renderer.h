@@ -335,7 +335,7 @@ private:
     // 0.3.209 (task 29): per-source actor shadow map (R32F 1024, moving casters only, shadows/actor_shadow_map.h) and the half-res visibility it feeds (A8R8G8B8: r sun, g moon; white = lit).
     // actorMatrices/actorValid are stored with the near map's reuse state: the near map and the actor map of a source always come from the same frame.
     IDirect3DTexture9 *actorShadow[2]={},*actorVisibility=nullptr,*actorTiles[2]={},*actorTilesMid=nullptr;IDirect3DSurface9 *actorShadowSurface[2]={},*actorVisibilitySurface=nullptr,*actorTilesSurface[2]={},*actorTilesMidSurface=nullptr;
-    float actorMatrices[2][16]={};bool actorValid[2]={};bool nearActorSkip[2]={};NorthlightActorSide::Tracker actorSide[2]; /* diagnostics: which map each skinned caster went to, per source */ /* the near map was drawn without the replays its actor map holds: reusable only together with that actor map */V actorCenter[2];bool actorCenterValid[2]={}; /* leashed centre per source (actor_shadow_map.h leash) */unsigned long actorNearSkipped=0,actorDrawn=0;std::vector<uint32_t> actorReplays; /* the near loop's skipped replays: exactly what the actor map draws */DWORD actorShadowLogAt=0;
+    float actorMatrices[2][16]={};bool actorValid[2]={};bool nearActorSkip[2]={};NorthlightActorSide::Tracker actorSide[2]; /* diagnostics: which map each skinned caster went to, per source */ /* the near map was drawn without the replays its actor map holds: reusable only together with that actor map */V actorCenter[2];bool actorCenterValid[2]={}; /* leashed centre per source (actor_shadow_map.h leash) */unsigned long actorNearSkipped=0,actorDrawn=0;std::vector<uint32_t> actorReplays; /* the near loop's skipped replays: exactly what the actor map draws */DWORD actorShadowLogAt[2]={}; /* per source: the moon's line is not starved by the sun's timer */
     IDirect3DPixelShader9* unionPS=nullptr;
     std::shared_ptr<const NorthlightLocalShadowSignature::Records> uploadedLocalShadowRecords;
     struct ShadowCacheKey {
@@ -3463,10 +3463,11 @@ public:
                     ++staticDedupSkipped;continue;
                 }
                 if(nearSkip&&NorthlightActorShadowMap::insideInset(p->pointBounds.valid,p->pointBounds.low,p->pointBounds.high,actorFrameMatrix[source])){actorReplays.push_back(uint32_t(index));++nearSkipped;
-                    if(sideDiag&&p->shadowSkinned)actorSide[source].note(NorthlightActorSide::key(p->stream[0],p->decl,p->offset[0],p->start,p->count,p->base,p->captureRootValid,p->captureRoot),true,p->selfShadow);continue;}
-                if(sideDiag&&p->shadowSkinned){auto& side=actorSide[source];side.note(NorthlightActorSide::key(p->stream[0],p->decl,p->offset[0],p->start,p->count,p->base,p->captureRootValid,p->captureRoot),false,p->selfShadow);
-                    /* no valid bounds, yet the palette root lies inside the inset: it belongs to the actor map and fell to the near cascade for lack of bounds */
-                    if(!p->pointBounds.valid&&p->captureRootValid&&NorthlightActorShadowMap::insideInset(true,p->captureRoot,p->captureRoot,actorFrameMatrix[source]))side.invalidNear();}
+                    if(sideDiag&&p->shadowSkinned)(p->shared?actorSide[source].note(NorthlightActorSide::key(p->shared.get(),p->decl,p->count,p->captureRootValid,p->captureRoot),true,p->selfShadow):actorSide[source].unkeyed());continue;}
+                if(sideDiag&&p->shadowSkinned){auto& side=actorSide[source];if(p->shared)side.note(NorthlightActorSide::key(p->shared.get(),p->decl,p->count,p->captureRootValid,p->captureRoot),false,p->selfShadow);else side.unkeyed();
+                    /* no valid bounds, yet the palette root lies inside the inset: it belongs to the actor map and fell to the near cascade for lack of bounds;
+                       without a shared snapshot (Unsupported) it can never have bounds: unsupportedNear */
+                    if(!p->pointBounds.valid&&p->captureRootValid&&NorthlightActorShadowMap::insideInset(true,p->captureRoot,p->captureRoot,actorFrameMatrix[source])){if(p->shared)side.invalidNear();else side.unsupportedNear();}}
                 ++replaySlotTested[slot];replaySlotBounded[slot]+=p->pointBounds.valid;
                 if(p->pointBounds.valid&&(cull?(cull[index]&2)!=0:NorthlightShadowBounds::clipReject(V(p->pointBounds.low[0],p->pointBounds.low[1],p->pointBounds.low[2]),V(p->pointBounds.high[0],p->pointBounds.high[1],p->pointBounds.high[2]),matrices[cascade]))){++culledReplayDraws;++replaySlotCulled[slot];continue;}
                 split.mark(Own);
@@ -3525,9 +3526,9 @@ public:
                 if(profile)profile->mark(source==0?"SunActor":"MoonActor");bucket(NorthlightEffectsBuckets::Bucket(NorthlightEffectsBuckets::SunActor+source));
                 actorNearSkipped+=nearSkipped;actorDrawn+=drawnHere;if(sideDiag)actorSide[source].endFrame();
                 const DWORD actorTick=GetTickCount();
-                if(NorthlightDiagnostics::enabled()&&(!actorShadowLogAt||actorTick-actorShadowLogAt>=1000)){actorShadowLogAt=actorTick;
-                    logf("WORLD actor shadow map source=%d drawn=%u nearSkipped=%u of %zu replays; totals drawn=%lu nearSkipped=%lu sideFlipsSinceLog=%u sideFlipFramesSinceLog=%u framesSinceLog=%u sideTracked=%u invalidBoundsNear=%u selfSide=%s selfSideFlipsSinceLog=%u",source,drawnHere,nearSkipped,replays.size(),actorDrawn,actorNearSkipped,
-                        actorSide[source].sideFlips,actorSide[source].sideFlipFrames,actorSide[source].frames,actorSide[source].tracked,actorSide[source].invalidBoundsNear,NorthlightActorSide::name(actorSide[source].selfSide),actorSide[source].selfFlips);actorSide[source].resetWindow();}
+                if(NorthlightDiagnostics::enabled()&&(!actorShadowLogAt[source]||actorTick-actorShadowLogAt[source]>=1000)){actorShadowLogAt[source]=actorTick;
+                    logf("WORLD actor shadow map source=%d drawn=%u nearSkipped=%u of %zu replays; totals drawn=%lu nearSkipped=%lu sideFlipsSinceLog=%u sideFlipFramesSinceLog=%u sideMatchedSinceLog=%u framesSinceLog=%u sideTracked=%u sideUnkeyed=%u invalidBoundsNear=%u unsupportedNear=%u selfSide=%s selfSideFlipsSinceLog=%u",source,drawnHere,nearSkipped,replays.size(),actorDrawn,actorNearSkipped,
+                        actorSide[source].sideFlips,actorSide[source].sideFlipFrames,actorSide[source].sideMatched,actorSide[source].frames,actorSide[source].tracked,actorSide[source].unkeyedNow,actorSide[source].invalidBoundsNear,actorSide[source].unsupportedNow,NorthlightActorSide::name(actorSide[source].selfSide),actorSide[source].selfFlips);actorSide[source].resetWindow();}
             }
             } /* actorShadows */
             // Union: min(dynamic scratch, cached static at its integer texel offset + exact depth delta).

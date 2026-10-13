@@ -50,7 +50,7 @@ checks['actor draw: own target, shared 1024 depth, cleared white/1, cascade repl
 checks['near skip: cascade 0 only, never the far map, by the inset test on valid bounds']=(
     'bool nearSkip=cascade==0&&actorFrameOn[source];' in loop and 'if(nearSkip){actorReplays.clear();try{actorReplays.reserve(replays.size());}catch(...){nearSkip=false;}}' in loop
     and 'if(nearSkip&&NorthlightActorShadowMap::insideInset(p->pointBounds.valid,p->pointBounds.low,p->pointBounds.high,actorFrameMatrix[source])){actorReplays.push_back(uint32_t(index));++nearSkipped;' in loop
-    and loop.count('insideInset(')==2 and 'insideInset(true,p->captureRoot,p->captureRoot,actorFrameMatrix[source]))side.invalidNear();' in loop and 'if(!valid||!low||!high||!m)return false;' in h
+    and loop.count('insideInset(')==2 and 'insideInset(true,p->captureRoot,p->captureRoot,actorFrameMatrix[source])){if(p->shared)side.invalidNear();else side.unsupportedNear();}' in loop and 'if(!valid||!low||!high||!m)return false;' in h
     and h.count('std::isfinite(m[i])')==1 and h.index('std::isfinite(m[i])')<h.index('inline bool insideInset(')) # the matrix once per frame (finiteMatrix), not per replay
 # A near map drawn with the skip lacks those casters: reusable only while its actor map is valid (the source went inactive, the detail went off).
 checks['near map with skipped casters is redrawn, not reused, once its actor map is gone']=(

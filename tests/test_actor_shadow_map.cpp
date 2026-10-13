@@ -77,20 +77,23 @@ int main(){
      const Vec3 nanPivot(NAN,centre.y,centre.z);r=M::leash(centre,true,nanPivot,sun);assert(std::isnan(r.x));          // non-finite: the pivot (the caller's finiteMatrix turns the map off)
     }
     {namespace S=NorthlightActorSide; // the side tracker: flips between the actor map and the near cascade
-     const float root[3]={10.2f,-3.7f,1.f};const auto k=S::key(root,root+1,0,0,300,0,true,root);
-     assert(k==S::key(root,root+1,0,0,300,0,true,root));
+     const float root[3]={10.2f,-3.7f,1.f};int snapshot=0,declaration=0,other=0;const auto k=S::key(&snapshot,&declaration,300,true,root);
+     assert(k==S::key(&snapshot,&declaration,300,true,root));
      const float moved[3]={10.9f,-3.1f,1.5f},crossed[3]={11.1f,-3.7f,1.f};
-     assert(k==S::key(root,root+1,0,0,300,0,true,moved)&&k!=S::key(root,root+1,0,0,300,0,true,crossed)); // 1 yd cells: animation noise keeps the key
+     assert(k==S::key(&snapshot,&declaration,300,true,moved)&&k!=S::key(&snapshot,&declaration,300,true,crossed)); // 1 yd cells: animation noise keeps the key
+     assert(k!=S::key(&other,&declaration,300,true,root)&&k!=S::key(&snapshot,&other,300,true,root)&&k!=S::key(&snapshot,&declaration,301,true,root)); // snapshot, declaration, count are identity
+     // The ring slot offset, start and base are not parameters: a bulk replay whose slot moves every frame keeps its key (nothing else to vary).
      S::Tracker t;
      auto frame=[&](bool a,bool b,bool self,bool invalid=false){t.begin();t.note(1,a,self);t.note(2,b);t.note(3,true);if(invalid)t.invalidNear();t.endFrame();};
-     frame(true,true,true);assert(t.sideFlips==0&&t.frames==1&&t.selfSide==S::SelfActor);   // first frame: nothing to compare
-     frame(true,true,true);assert(t.sideFlips==0&&t.selfFlips==0);                          // steady
+     frame(true,true,true);assert(t.sideFlips==0&&t.sideMatched==0&&t.frames==1&&t.selfSide==S::SelfActor);   // first frame: nothing to compare
+     frame(true,true,true);assert(t.sideFlips==0&&t.sideMatched==3&&t.selfFlips==0);                          // steady
      frame(false,true,true,true);assert(t.sideFlips==1&&t.sideFlipFrames==1&&t.selfSide==S::SelfNear&&t.selfFlips==1&&t.invalidBoundsNear==1&&t.tracked==3);
      frame(true,false,false);assert(t.sideFlips==3&&t.sideFlipFrames==2&&t.selfSide==S::SelfNone&&t.selfFlips==1); // two back-and-forth; no self drawn: no self flip
      frame(true,false,true);assert(t.sideFlips==3&&t.selfFlips==2);                         // the self is back on the other side than it was last seen (near -> actor)
      t.begin();t.note(5,true);t.note(5,false);t.endFrame();t.begin();t.note(5,false);t.note(5,true);t.endFrame();assert(t.sideFlips==3); // clones swapping places: no net move
      t.begin();t.note(5,true);t.note(5,true);t.endFrame();assert(t.sideFlips==4);           // one clone joined the actor map
-     t.resetWindow();assert(t.sideFlips==0&&t.frames==0&&t.selfFlips==0);
+     t.begin();t.unkeyed();t.unsupportedNear();t.unsupportedNear();t.endFrame();assert(t.unkeyedNow==1&&t.unsupportedNow==2&&t.tracked==0);
+     t.resetWindow();assert(t.sideFlips==0&&t.sideMatched==0&&t.frames==0&&t.selfFlips==0);
      S::Tracker mixed;mixed.begin();mixed.note(1,true,true);mixed.note(2,false,true);mixed.endFrame();assert(mixed.selfSide==S::SelfMixed&&std::string(S::name(mixed.selfSide))=="mixed");}
     std::puts("PASS actor shadow map");
     return 0;
