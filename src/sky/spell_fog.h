@@ -64,12 +64,22 @@ struct Freshness{
 // bareBase: the vertex shader raises the bare ramp to the power (vs_3_0 Model/Projected variants) instead of max(ramp, 0) or lit; a fit for it must not end before the game's ramp does.
 // The game's visibility at view distance z for its fog constant (x, y, power).
 inline float gameVisibility(const float g[3],float z){return std::min(1.f,std::pow(std::max(z*g[0]+g[1],0.f),g[2]));}
-// The fit F: out = (a, b, p). False: identity (leave the game's constant): no fog, a constant the shader would not use as a fog ramp, or a range too short to matter.
+// A flat game constant: visibility 1 at every distance (|x| ~ 0 and min(pow(max(y, 0), p), 1) = 1), how the game switches an effect's own fog off. Northlight's fog is then folded alone: the fit
+// target is T_N(z) over 0..kRange. A bare-ramp shader (the pow of the ramp without a max) must not reach 0 before kFlatBareEnd then, so the fog does not come back after the zero crossing
+// (D3D pow takes |base|); powers up to kFlatMaxPower are searched for a flat constant, so thick fog within kRange stays reachable.
+constexpr float kFlatBareEnd=512,kFlatMaxPower=16;
+inline bool flatConstant(const float game[3]){
+    for(unsigned i=0;i<3;++i)if(!std::isfinite(game[i]))return false;
+    return std::fabs(game[0])<=1e-7f&&game[2]>.05f&&game[2]<=16.f&&std::min(1.f,std::pow(std::max(game[1],0.f),game[2]))>=1.f;
+}
+// The fit F: out = (a, b, p). False: identity (leave the game's constant): no fog, a constant the shader would not use as a fog ramp (non-finite, an exponent outside .05..16, a ramp that
+// rises and stays below 1), or a range too short to matter.
 inline bool emitFog(const Frame& f,const float game[3],float out[3],bool bareBase=false){
     if(!f.active||!(f.tau[kSamples-1]>=.004f))return false;                 // no fog (transmittance 1 everywhere): the game's constant
     for(unsigned i=0;i<3;++i)if(!std::isfinite(game[i]))return false;
-    if(!(game[0]<-1e-7f)||!(game[2]>.05f&&game[2]<=16.f))return false;   // a ramp that falls with distance, a sane exponent
-    const float end=-game[1]/game[0];                                       // where the game's visibility reaches 0
+    const bool flat=flatConstant(game);
+    if(!flat&&(!(game[0]<-1e-7f)||!(game[2]>.05f&&game[2]<=16.f)))return false;   // a ramp that falls with distance, a sane exponent (or a flat constant)
+    const float end=flat?kFlatBareEnd/.98f:-game[1]/game[0];                // where the game's visibility reaches 0 (a flat constant: where a bare ramp must at least reach it)
     const float hi=std::min(end,kRange);
     if(!(hi>2.f))return false;
     constexpr unsigned N=12;float z[N],h[N];
@@ -77,8 +87,11 @@ inline bool emitFog(const Frame& f,const float game[3],float out[3],bool bareBas
     static const float scale[]={.6f,.8f,1.f,1.25f,1.6f,2.f,2.6f,3.5f};
     float best=1e30f,bestFit[3]={game[0],game[1],game[2]};bool found=false;
     auto error=[&](float a,float b,float p){float e=0;for(unsigned i=0;i<N;++i){const float v=std::min(1.f,std::pow(std::max(a*z[i]+b,0.f),p)),d=v-h[i];e+=d*d;}return e;};
-    for(float s:scale){
-        const float p=game[2]*s;
+    float powers[16];unsigned np=0;
+    for(float s:scale)powers[np++]=game[2]*s;
+    if(flat)for(float p:{4.f,6.f,8.f,12.f,16.f})powers[np++]=p;   // the game's own exponent says nothing about a flat constant
+    for(unsigned pi=0;pi<np;++pi){
+        const float p=std::min(powers[pi],flat?kFlatMaxPower:1e30f);if(!(p>.05f))continue;
         // start: the line through h^(1/p), then a few damped Gauss-Newton steps on the error in visibility itself (the clamp at 1 and the plateau of a game ramp that starts late)
         float sz=0,sy=0,szz=0,szy=0;
         for(unsigned i=0;i<N;++i){const float y=std::pow(std::max(h[i],0.f),1.f/p);sz+=z[i];sy+=y;szz+=z[i]*z[i];szy+=z[i]*y;}
@@ -108,8 +121,8 @@ inline bool emitFog(const Frame& f,const float game[3],float out[3],bool bareBas
     }
     if(!found&&bareBase){ // no free fit reaches 0 late enough (thick fog and a far game end): pin the end at the game's and fit the slope and the power only
         const float E=end*.98f;
-        for(float sc:scale){
-            const float p=game[2]*sc;float num=0,dd=0;
+        for(unsigned pi=0;pi<np;++pi){
+            const float p=std::min(powers[pi],flat?kFlatMaxPower:1e30f);float num=0,dd=0;if(!(p>.05f))continue;
             for(unsigned i=0;i<N;++i){const float y=std::pow(std::max(h[i],0.f),1.f/p),w=E-z[i];num+=y*w;dd+=w*w;}
             if(!(dd>0))continue;
             const float a=-num/dd,b=-a*E;if(!(a<-1e-7f)||!(b>0))continue;
@@ -126,7 +139,7 @@ inline float fitVisibility(const float fit[3],float z){return std::min(1.f,std::
 // result, X g T + cF (1-g) T + S (1-T), with fog' = g T. cF' = (cF (1-g) T + S (1-T)) / (1 - g T) at z = half of the fitted range. Unchanged where the fit leaves the
 // denominator too small to matter (near the eye there is no fog to add).
 inline void emitColor(const Frame& f,const float game[3],const float fit[3],const float cF[3],float out[3]){
-    const float hi=std::min(-game[1]/game[0],kRange),zm=hi*.5f;
+    const float hi=game[0]<-1e-7f?std::min(-game[1]/game[0],kRange):kRange,zm=hi*.5f;
     const float g=gameVisibility(game,zm),T=f.transmittance(zm),gp=fitVisibility(fit,zm),den=1-gp;
     for(unsigned c=0;c<3;++c){
         out[c]=cF[c];
