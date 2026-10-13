@@ -16,6 +16,7 @@ namespace NorthlightSpellFog {
 constexpr unsigned kSamples=6;
 constexpr float kDistance[kSamples]={6,12,24,48,80,128};   // view distances (world units) the frame's optical depth is sampled at
 constexpr float kRange=128;                                  // Northlight's fog is integrated to 128 units (FogInfo.w)
+constexpr float kDepthScale=2;                               // the published optical depth is doubled: the view-axis estimate fogs held-back glows less than the world around them looks fogged
 struct Frame{
     bool active=false;
     float tau[kSamples]={};        // optical depth from the eye to kDistance[i] along the view ray (nondecreasing)
