@@ -1178,10 +1178,11 @@ private:
                     FILE* f=std::fopen(name,"rb");if(f){std::fclose(f);tiles.emplace_back(name);}
                 }
                 bool localDeferred=false;NorthlightGeometryMemory::Sample localSample;
+                // Interior checks use inBuildBudget (stage entry already reserved the build headroom).
                 NorthlightGI::AllocationAdmission localAdmission=[&](uint64_t bytes){
                     if(bytes<NorthlightGeometryMemory::MiB)return true;
-                    auto sample=workerMemory(NorthlightGeometryMemory::buildBudget(bytes));
-                    if(NorthlightGeometryMemory::admits(sample,NorthlightGeometryMemory::buildBudget(bytes)))return true;
+                    auto sample=workerMemory(NorthlightGeometryMemory::inBuildBudget(bytes));
+                    if(NorthlightGeometryMemory::admits(sample,NorthlightGeometryMemory::inBuildBudget(bytes)))return true;
                     localDeferred=true;localSample=sample;logGeometryMemory("local-geometry-allocation-deferred",sample,generations.live(),workerMemoryExact);return false;
                 };
                 auto replacement=std::make_shared<NorthlightGI::BVH>();
@@ -1198,7 +1199,7 @@ private:
                     double(localStats.flatBytes)/1048576,double(localStats.bvhBytes)/1048576,localStats.loadMs,localStats.pieceMs,localStats.assembleMs,localStats.bvhMs,localStats.totalMs);
                 if(!currentGeometry()){++superseded;stallEnd("superseded");continue;}
                 memory=workerMemory();if(NorthlightDiagnostics::enabled())logGeometryMemory("after-bvh",memory,generations.live(),workerMemoryExact);
-                if(!NorthlightGeometryMemory::admits(memory,NorthlightGeometryMemory::buildBudget())){
+                if(!NorthlightGeometryMemory::admits(memory,NorthlightGeometryMemory::inBuildBudget())){
                     replacement.reset();stallBegin("plan",memory);deferBuild("plan-deferred",memory,1000);continue;
                 }
                 // Reduced-reach retry re-enters here with the local BVH (`replacement`, still tracked in
@@ -1216,8 +1217,8 @@ private:
                     // process reserve at stage entry and check every large growth.
                     if(bytes<NorthlightGeometryMemory::MiB)return true;
                     ++terrainChecks;
-                    auto sample=workerMemory(NorthlightGeometryMemory::buildBudget(bytes));
-                    if(NorthlightGeometryMemory::admits(sample,NorthlightGeometryMemory::buildBudget(bytes)))return true;
+                    auto sample=workerMemory(NorthlightGeometryMemory::inBuildBudget(bytes));
+                    if(NorthlightGeometryMemory::admits(sample,NorthlightGeometryMemory::inBuildBudget(bytes)))return true;
                     terrainDeferred=true;terrainSample=sample;logGeometryMemory("shadow-terrain-allocation-deferred",sample,generations.live(),workerMemoryExact);
                     logf("WORLD terrain allocation requestMiB=%.2f requiredContiguousMiB=%.2f",double(bytes)/1048576,double(bytes+NorthlightGeometryMemory::ContiguousMargin)/1048576);
                     return false;

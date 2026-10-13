@@ -15,6 +15,10 @@ constexpr uint64_t ProcessReserve=512*MiB;
 // free before one silent exit; every large allocation now needs this margin.
 constexpr uint64_t ContiguousMargin=32*MiB;
 constexpr uint64_t ChunkMargin=16*MiB;
+// Aggregate headroom kept for allocations INSIDE a build that already passed buildBudget at stage entry.
+// Entry reserved the build's own headroom (256 MiB); re-requiring it per allocation double-counts the
+// memory the build itself consumes. Interior checks keep the process reserve plus this guard.
+constexpr uint64_t InBuildHeadroom=128*MiB;
 struct Sample { uint64_t available=0,largest=0;bool valid=false; };
 struct Budget { uint64_t available=0,largest=0;bool valid=false; };
 inline bool add(uint64_t a,uint64_t b,uint64_t& out){
@@ -25,6 +29,11 @@ inline Budget buildBudget(uint64_t largestAllocation=0){
     // Aggregate headroom plus a contiguous margin for the stage's largest block.
     Budget b;if(!add(largestAllocation,ContiguousMargin,b.largest))return {};
     b.available=ProcessReserve+256*MiB;b.valid=true;return b;
+}
+inline Budget inBuildBudget(uint64_t largestAllocation=0){
+    // Same contiguous rule as buildBudget; only the aggregate headroom is smaller (see InBuildHeadroom).
+    Budget b;if(!add(largestAllocation,ContiguousMargin,b.largest))return {};
+    b.available=ProcessReserve+InBuildHeadroom;b.valid=true;return b;
 }
 inline uint64_t roundUp(uint64_t bytes,uint64_t step){
     if(!step)return bytes;uint64_t rounded=0;
