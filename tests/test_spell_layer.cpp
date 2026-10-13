@@ -187,7 +187,7 @@ static int gMirrorMode=1;
 static bool gMinimal=true; // Config::minimalRestore of every Rig (main runs the whole suite with it on and off: the end state must be identical)
 static unsigned gTexGeneration=0;static unsigned texGeneration(void*){return gTexGeneration;}
 static uint64_t gTicks=0;static uint64_t fakeClock(void*){return ++gTicks;}static bool fakeTiming(void*){return true;} // every read advances one tick: a timed phase costs exactly 1
-struct Opts{bool minimal=gMinimal;bool timed=false;size_t deltaBytes=2u<<20;unsigned deltaChunk=16384;bool verdictCache=false;bool on=true;unsigned maxEntries=512;bool conflictCopy=true;unsigned mask=15;size_t arena=1u<<20,upVb=1u<<16,upIb=1u<<14;};
+struct Opts{unsigned maxTexSplits=8;bool minimal=gMinimal;bool timed=false;size_t deltaBytes=2u<<20;unsigned deltaChunk=16384;bool verdictCache=false;bool on=true;unsigned maxEntries=512;bool conflictCopy=true;unsigned mask=15;size_t arena=1u<<20,upVb=1u<<16,upIb=1u<<14;};
 struct Rig{
     Fake::FakeDevice dev;Layer layer;Opts o;
     Fake::Surface *T,*D,*Other;
@@ -239,7 +239,7 @@ struct Rig{
         const float c[4]={1,2,3,4};dev.SetVertexShaderConstantF(5,c,1);dev.SetPixelShaderConstantF(2,c,1);dev.SetSamplerState(0,5,2);dev.SetRenderState(D3DRS_ALPHAREF,128);
         opaqueZ();translucent(kSrcAlpha,kBlendOne);
         Config c2;c2.on=o.on;c2.classMask=o.mask;c2.maxEntries=o.maxEntries;c2.arenaBytes=o.arena;c2.uploadVbBytes=o.upVb;c2.uploadIbBytes=o.upIb;
-        c2.minimalRestore=o.minimal;c2.conflictCopy=o.conflictCopy;c2.deltaChunkWords=o.deltaChunk;c2.deltaBytes=o.deltaBytes;
+        c2.minimalRestore=o.minimal;c2.maxTexSplits=o.maxTexSplits;c2.conflictCopy=o.conflictCopy;c2.deltaChunkWords=o.deltaChunk;c2.deltaBytes=o.deltaBytes;
         if(gMirrorMode){
             Fake::Mirror& m=dev.mir;view=Fake::makeView(dev);c2.source=&view;
             if(gMirrorMode==2){for(unsigned i=0;i<256;i+=3)m.hideRs[i]=true;for(unsigned i=0;i<256;i+=5)m.hideVsF[i]=true;for(unsigned i=0;i<224;i+=7)m.hidePsF[i]=true;m.hideTex[3]=m.hideTex[5]=true;m.hideSmp[1]=true;m.hideVsB=true;}
@@ -271,6 +271,7 @@ struct Rig{
         D3DMATERIAL9 mt{};mt.Diffuse.r=float(seed);mt.Power=float(seed)+0.5f;dev.SetMaterial(&mt);
         D3DLIGHT9 l{};l.Type=1;l.Diffuse.g=float(seed);l.Range=100;dev.SetLight(0,&l);dev.LightEnable(0,TRUE);l.Type=2;l.Position.x=float(seed);dev.SetLight(2,&l);dev.LightEnable(2,FALSE);
     }
+    void writeTexture(Fake::Texture* t){ if(o.on)layer.onTextureWrite(t); ++t->ver; record(); } // the game writes texels: the hook first, then the write
     void fixedFunction(){dev.SetVertexShader(nullptr);dev.SetPixelShader(nullptr);}
     void programmable(){dev.SetVertexShader(vs);dev.SetPixelShader(ps);}
     void rs(D3DRENDERSTATETYPE t,DWORD v){dev.SetRenderState(t,v);}
@@ -330,7 +331,7 @@ struct Rig{
         for(DWORD x:s.rs)v.push_back(x);
         const bool lim=useReads&&(s.vs||s.ps); // a draw with scanned shaders reads only their registers and declared samplers
         const uint32_t texMask=uint32_t(psRs.samplers)|uint32_t(vsRs.samplers&0xF)<<16;
-        for(size_t t=0;t<20;++t){if(lim&&!(texMask>>t&1))continue;v.push_back(id(s.tex[t]));if(s.tex[t])for(size_t k=1;k<=13;++k)v.push_back(s.ss[t][k]);}
+        for(size_t t=0;t<20;++t){if(lim&&!(texMask>>t&1))continue;v.push_back(id(s.tex[t]));v.push_back(d.texVer[t]);if(s.tex[t])for(size_t k=1;k<=13;++k)v.push_back(s.ss[t][k]);}
         v.push_back(id(s.vs));v.push_back(id(s.ps));v.push_back(id(s.decl));v.push_back(s.fvf);
         auto flt=[&](const float* f,size_t n){for(size_t i=0;i<n;++i){uint32_t u;std::memcpy(&u,f+i,4);v.push_back(u);}};
         const bool shaders=s.vs||s.ps; // a fixed-function draw reads no shader constants
@@ -683,18 +684,41 @@ static void sCopy(Rig& r){deferQuad(r,1);hz(r,Reason::Copy);deferQuad(r,2);r.bou
 static void testCopyHazard(){
     Pair p=runBoth(sCopy);CHECK(p.lay->layer.totalCounters().hazards[unsigned(Reason::Copy)]==1);checkEquivalent(p);CHECK(p.lay->order()==p.ref->order());
 }
+// A texture write is a split: the pending draws that sample it are replayed now (they see the old texels, exactly as in the original order), the frame keeps deferring,
+// the draws after the write are deferred again and sample the new texels at B. No fallback, no cooldown. A write to a texture nothing pending samples does nothing.
 static void sTexWrite(Rig& r){
     deferQuad(r,1);
     if(r.o.on){
         CHECK(r.layer.pendingSamples(r.texA)&&!r.layer.pendingSamples(r.texB));
         r.layer.onTextureWrite(r.texB);CHECK(r.layer.pending()==1);          // not sampled by a pending draw: no effect
-        r.layer.onTextureWrite(r.texA);CHECK(r.layer.pending()==0);
     }
-    r.record();deferQuad(r,2);r.boundary();
+    r.writeTexture(r.texA);
+    if(r.o.on)CHECK(r.layer.pending()==0&&r.layer.mode()==(r.o.maxTexSplits?Mode::Deferring:Mode::Fallback));
+    deferQuad(r,2);r.boundary();
 }
 static void testTexWrite(){
     Pair p=runBoth(sTexWrite);const Counters& c=p.lay->layer.totalCounters();
-    CHECK(c.hazards[unsigned(Reason::TexWrite)]==1&&p.lay->deferredTags.size()==1);checkEquivalent(p);CHECK(p.lay->order()==p.ref->order());
+    CHECK(c.texSplits==1&&c.totalHazards()==0&&c.flushes==1&&c.drains==2&&c.replays==1&&p.lay->deferredTags==std::vector<int>({1,2})&&p.lay->layer.eventSeq()==0);
+    checkEquivalent(p);CHECK(p.lay->order()==expectedDeferredOrder(p.ref->order(),{2}));
+    for(auto& d:p.lay->dev.draws){if(d.tag==1)CHECK(d.texVer[0]==0);if(d.tag==2)CHECK(d.texVer[0]==1);} // 1 sampled the old texels, 2 the new ones
+    p.lay->layer.beginFrame(false);CHECK(p.lay->layer.mode()==Mode::Armed&&p.lay->layer.cooldownLeft()==0); // no cooldown
+    // a write inside a UI-free frame with nothing pending is nothing
+    Rig z(Opts{});z.layer.onTextureWrite(z.texA);CHECK(z.layer.totalCounters().texSplits==0&&z.layer.totalCounters().drains==0);
+}
+// More than maxTexSplits splits in one frame: the next write is the old hazard (flush, fallback, cooldown); the later draws are in place.
+static void sTexCap(Rig& r){
+    for(int i=1;i<=9;++i){deferQuad(r,i);r.writeTexture(r.texA);}
+    deferQuad(r,10);r.boundary();
+}
+static void testTexSplitCap(){
+    Pair p=runBoth(sTexCap);const Counters& c=p.lay->layer.totalCounters();
+    CHECK(c.texSplits==8&&c.hazards[unsigned(Reason::TexWrite)]==1&&c.totalHazards()==1&&c.flushes==9&&c.drains==9&&c.replays==0&&p.lay->deferredTags.size()==9);
+    CHECK(p.lay->layer.mode()==Mode::Fallback);
+    checkEquivalent(p);CHECK(p.lay->order()==p.ref->order());                // every draw was replayed before the write that follows it
+    p.lay->layer.beginFrame(false);CHECK(p.lay->layer.mode()==Mode::Cooldown&&p.lay->layer.cooldownLeft()==kCooldownFrames-1);
+    Opts none;none.maxTexSplits=0;Pair q=runBoth(sTexWrite,none);            // a cap of 0: always the hazard (the old behaviour)
+    CHECK(q.lay->layer.totalCounters().texSplits==0&&q.lay->layer.totalCounters().hazards[unsigned(Reason::TexWrite)]==1&&q.lay->deferredTags==std::vector<int>({1}));
+    checkEquivalent(q);CHECK(q.lay->order()==q.ref->order());
 }
 static void sGpuWrite(Rig& r){
     deferQuad(r,1);
@@ -964,14 +988,14 @@ static void sVertexSampler(Rig& r){
     deferQuad(r,1);
     if(r.o.on){
         CHECK(r.layer.pendingSamples(r.texB));
-        r.layer.onTextureWrite(r.texB);CHECK(r.layer.pending()==0);
+        r.layer.onTextureWrite(r.texB);CHECK(r.layer.pending()==0&&r.layer.mode()==Mode::Deferring);
     }
     r.record();r.dev.SetTexture(257,nullptr);deferQuad(r,2);r.boundary();
 }
 static void testVertexTextureSampler(){
     Pair p=runBoth(sVertexSampler);
-    CHECK(p.lay->layer.totalCounters().hazards[unsigned(Reason::TexWrite)]==1&&p.lay->deferredTags==std::vector<int>({1}));
-    checkEquivalent(p);CHECK(p.lay->order()==p.ref->order());
+    CHECK(p.lay->layer.totalCounters().texSplits==1&&p.lay->layer.totalCounters().totalHazards()==0&&p.lay->deferredTags==std::vector<int>({1,2}));
+    checkEquivalent(p);CHECK(p.lay->order()==expectedDeferredOrder(p.ref->order(),{2}));
     Rig r(Opts{});r.texB->usage=D3DUSAGE_RENDERTARGET;r.dev.SetTexture(260,r.texB);
     deferQuad(r,1);CHECK(r.layer.pending()==0&&r.layer.totalCounters().hazards[unsigned(Reason::Capture)]==1);
 }
@@ -1532,7 +1556,7 @@ static void testSamplesLookup(){
     for(int i=0;i<40;++i){r.dev.SetTexture(0,t[size_t(i)]);deferQuad(r,i);}
     for(int i=0;i<40;++i)CHECK(r.layer.pendingSamples(t[size_t(i)]));
     auto* unrelated=new Fake::Texture;CHECK(!r.layer.pendingSamples(unrelated)&&!r.layer.pendingSamples(nullptr));unrelated->Release();
-    r.layer.onTextureWrite(t[17]);CHECK(r.layer.pending()==0&&r.layer.totalCounters().hazards[unsigned(Reason::TexWrite)]==1);
+    r.layer.onTextureWrite(t[17]);CHECK(r.layer.pending()==0&&r.layer.totalCounters().texSplits==1&&r.layer.totalCounters().hazards[unsigned(Reason::TexWrite)]==0);
     CHECK(!r.layer.pendingSamples(t[3]));                                                // nothing pending any more
     r.dev.SetTexture(0,r.texA);for(auto* x:t)x->Release();
 }
@@ -1545,7 +1569,7 @@ int main(int argc,char** argv){
         {"rebase negative base",testRebaseNegativeBase},{"rebase kept base",testRebasePositiveBase},{"index buffer copy",testIbMaterialized},
         {"mixed streams",testMixedStreams},{"32-bit UP",test32bitUP},{"non-dynamic buffer",testNonDynamic},{"copy disabled",testConflictCopyDisabled},
         {"outstanding lock",testOutstandingLockFlushes},{"read-back fails",testReadBackFails},{"address reuse",testAddressReuse},
-        {"clear hazard",testClearHazard},{"hazard without pending",testHazardWithoutPending},{"copy hazard",testCopyHazard},{"texture write",testTexWrite},
+        {"clear hazard",testClearHazard},{"hazard without pending",testHazardWithoutPending},{"copy hazard",testCopyHazard},{"texture write",testTexWrite},{"texture write cap",testTexSplitCap},
         {"gpu write",testGpuWrite},{"query hazard",testQueryHazard},{"order hazard",testOrderHazard},{"sample hazard",testSampleHazardAndOtherTargets},
         {"rt mismatch",testRtMismatch},{"capacity",testCapacity},{"capture failure",testCaptureFailure},{"frame end",testFrameEnd},
         {"cooldown and pressure",testCooldownAndPressure},{"trim",testTrim},{"pending targets",testPendingTargets},{"layer off",testLayerOff},

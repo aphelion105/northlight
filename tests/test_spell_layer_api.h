@@ -95,7 +95,7 @@ template<class B> struct Obj:B{
 };
 struct Surface:Obj<IDirect3DSurface9>{UINT w,h;Surface(UINT w_,UINT h_):w(w_),h(h_){}};
 struct Texture:Obj<IDirect3DTexture9>{
-    DWORD usage=0;HRESULT descResult=D3D_OK;int descCalls=0;
+    DWORD usage=0;HRESULT descResult=D3D_OK;int descCalls=0;int ver=0; // ver: the texel contents (a game write bumps it); every draw records the version of each bound texture it executes with
     D3DRESOURCETYPE GetType()override{return D3DRTYPE_TEXTURE;}
     HRESULT GetLevelDesc(UINT,D3DSURFACE_DESC* d)override{++descCalls;if(FAILED(descResult))return descResult;*d=D3DSURFACE_DESC{};d->Type=D3DRTYPE_TEXTURE;d->Usage=usage;return D3D_OK;}
 };
@@ -173,7 +173,7 @@ inline bool equal(const State& a,const State& b,bool ignoreGeometry){
 struct Snapshot{State s;IDirect3DSurface9* rt[4]={};IDirect3DSurface9* ds=nullptr;}; // raw pointers, no references
 struct DrawRec{
     int kind=0;D3DPRIMITIVETYPE prim=0;State st;IDirect3DSurface9* rt[4]={};IDirect3DSurface9* ds=nullptr;
-    std::vector<uint8_t> vtx; std::vector<uint32_t> idx;bool oob=false;int tag=0;INT base=0;UINT first=0;
+    std::vector<uint8_t> vtx; std::vector<uint32_t> idx;bool oob=false;int tag=0;INT base=0;UINT first=0;int texVer[20]={};
 };
 struct StateBlock:Obj<IDirect3DStateBlock9>{
     struct FakeDevice* dev;State s;
@@ -282,7 +282,7 @@ struct FakeDevice:IDirect3DDevice9{
     HRESULT GetLightEnable(DWORD i,BOOL* on)override{++calls;if(i>=8||!s.lightSet[i]||failGetLightEnable)return D3DERR_INVALIDCALL;*on=s.lightOn[i];return D3D_OK;}
     // ---- draws: record state and the bytes fetched NOW ----
     DrawRec begin(int kind,D3DPRIMITIVETYPE prim){
-        DrawRec d;d.kind=kind;d.prim=prim;d.st=s;for(int i=0;i<4;++i)d.rt[i]=rt[i];d.ds=ds;d.tag=tagOf();return d; // st copy: raw pointers, no refs
+        DrawRec d;d.kind=kind;d.prim=prim;d.st=s;for(int i=0;i<4;++i)d.rt[i]=rt[i];d.ds=ds;d.tag=tagOf();for(int i=0;i<20;++i){auto* x=dynamic_cast<Texture*>(s.tex[i]);d.texVer[i]=x?x->ver:-1;}return d; // st copy: raw pointers, no refs
     }
     static const uint8_t* bufBytes(IDirect3DVertexBuffer9* b,UINT& size){auto* v=static_cast<VB*>(b);size=v->b.size;return v->b.cur();}
     void fetch(DrawRec& d,UINT stream,int64_t vertex){ // one vertex of one stream

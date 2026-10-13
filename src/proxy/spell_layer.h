@@ -9,7 +9,7 @@
 //   facts=DrawFacts{...}; fade.update(...) feeds facts.fadeRun, layer.pending()>0 is facts.pending; r=classify(facts,mask);
 //   Defer     -> if(layer.defer(args,rt0,ds,r.sub)) return D3D_OK (real draw skipped); else draw in place (layer already flushed what was pending)
 //   Hazard    -> layer.hazard(r.reason,true,r.inPlace) then draw in place;  InPlace -> layer.noteInPlace(r.inPlace), draw in place;  others -> draw in place.
-// Other events: Clear/StretchRect/... -> hazard(Clear|Copy); texture writes -> onTextureWrite(tex); ProcessVertices dest -> onBufferGpuWrite(buf);
+// Other events: Clear/StretchRect/... -> hazard(Clear|Copy); texture writes -> onTextureWrite(tex) BEFORE the write (a split, not a hazard, up to Config::maxTexSplits per frame); ProcessVertices dest -> onBufferGpuWrite(buf);
 // Buffer::Lock BEFORE forwarding, only when the buffer is marked (markGuard callback) -> onBufferWrite(rawBuffer,offset,size,flags,usage,locks);
 // EndScene/Present before B -> hazard(Frame, false); frame start -> beginFrame(pressure); at B after the effects -> replay();
 // device Reset/destroy/extension fault -> reset() (drops everything, no draw). Keys are the interface pointers GetStreamSource/GetIndices/GetTexture
@@ -1340,7 +1340,15 @@ public:
         for(size_t i=hashPtr(p)&m;held_[i].p;i=(i+1)&m)if(held_[i].p==p)return (held_[i].flags&kInSamples)!=0;
         return false;
     }
-    void onTextureWrite(void* rawTexture){if(pendingSamples(rawTexture))hazard(Reason::TexWrite);}
+    // A texture write (the integration calls this BEFORE the write is forwarded: LockRect at lock time, Unlock/AddDirtyRect/GenerateMipSubLevels/UpdateTexture/UpdateSurface/StretchRect/ColorFill
+    // before the call). Pending draws that sample the texture are replayed now, so they read the old texels, as in the game's order; the frame keeps deferring and the draws after the write
+    // sample the new texels (a split like water: counted in texSplits and flushes, no fallback, no cooldown, no event). At most Config::maxTexSplits per frame: a texture that is written between
+    // every two draws would make one replay per draw, so the next write is the old TexWrite hazard (flush, fallback, cooldown).
+    void onTextureWrite(void* rawTexture){
+        if(!pendingSamples(rawTexture))return;
+        if(frame_.texSplits>=cfg_.maxTexSplits){hazard(Reason::TexWrite);return;}
+        count([](Counters& c){++c.texSplits;++c.flushes;});drain();
+    }
 
     // At B, after the effects: draws all pending entries in their original order into T/DS and restores the device state (minimal restore, else SavedState). Idempotent;
     // closes the frame (no more deferral until beginFrame, no cooldown). Entries whose upload could not be made are skipped and counted.
