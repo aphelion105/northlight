@@ -35,6 +35,7 @@ struct World{unsigned wmoCalls=0;std::unordered_map<IDirect3DVertexShader9*,int>
     bool isWorldShader(IDirect3DVertexShader9* s){return wmo.count(s)!=0;}
     bool isSkinnedShader(IDirect3DVertexShader9*){return false;}};
 struct Cls{
+    static constexpr int kFamilyShift=3;
     std::unordered_map<IDirect3DVertexShader9*,int> vsTags;std::unordered_map<IDirect3DVertexShader9*,uint64_t> vsHashes;
     World* world=nullptr;
 @CLS@
@@ -207,7 +208,7 @@ dm=member(r,'template<class Capture> void prepareDrawImpl(Capture capture,UINT c
 checks={
  'prepareDrawImpl: peekVertexShader with the GetVertexShader fallback, released only when not borrowed':
     'const bool borrowedVS=ext->peekVertexShader(vs);' in dm and 'if(!borrowedVS&&(FAILED(ext->GetVertexShader(&vs))||!vs))' in dm
-    and '~ShaderRelease(){if(!borrowed)drop(p);}' in dm and 'if(!borrowedVS)drop(vs);' in dm and 'drop(vs);' not in dm.replace('if(!borrowedVS)drop(vs);','').replace('{++missingVS;drop(vs);return;}','').replace('if(!borrowed)drop(p);',''),
+    and '~ShaderRelease(){if(!borrowed)drop(p);}' in dm and 'if(!borrowedVS)drop(vs);' in dm and 'drop(vs);' not in dm.replace('if(!borrowedVS)drop(vs);','').replace('{++missingVS;drop(vs);if(spellOn)spellFixedDomain();return;}','').replace('if(!borrowed)drop(p);',''),
  'prepareDrawImpl post-effect sampled path: peek with fallback, classifyVs':
     'const bool borrowed=ext->peekVertexShader(late);' in dm and 'classifyVs(late)' in dm and 'if(!borrowed)drop(late);' in dm and 'world->isWorldShader' not in dm and 'world->isSkinnedShader' not in dm,
  'draw path classification through classifyVs (skinned lambda, non-world reject, shadow swap plan, beforeDraw)':

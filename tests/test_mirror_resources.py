@@ -238,7 +238,7 @@ int main(int argc,char** argv){
 }
 '''
 def main():
-    files=['mirror_resources.h','mirror_guard.h','mirror_resource_forwarders.h','generate_mirror_resource_forwarders.py','test_mirror_resources.py']
+    files=['mirror_resources.h','mirror_guard.h','mirror_resource_forwarders.h','mirror_write_hook.h','generate_mirror_resource_forwarders.py','test_mirror_resources.py']
     hashes={f:hashlib.sha256(fp.tracked(f).read_bytes()).hexdigest() for f in files}
     report={'status':'running','source_sha256':hashes,'runs':[],'game_launched':False,'wine_launched':False,'limitations':['Fake COM backend; does not validate full device integration or real driver behavior.','GetPrivateData conservatively disables mirror because arbitrary GUID contents may contain an interface.']}
     with tempfile.TemporaryDirectory(prefix='northlight-resource-mirror-') as tmp:
