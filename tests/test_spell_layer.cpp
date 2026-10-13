@@ -1446,7 +1446,8 @@ static void testSpellFogRecord(){
         const auto& d=p.lay->dev.draws[i];const bool alpha=d.tag==2||d.tag==5||d.tag==7;++seen;
         CHECK(d.st.vsc[30][0]==fit[0]&&d.st.vsc[30][1]==fit[1]&&d.st.vsc[30][2]==fit[2]);                  // c30: the fit of the game's value, for every sub-class
         if(alpha)CHECK(d.st.psc[16][0]==col[0]&&d.st.psc[16][1]==col[1]&&d.st.psc[16][2]==col[2]&&d.st.psc[16][3]==1);   // the alpha sub-class's fog colour
-        else CHECK(d.st.psc[16][0]==cF[0]&&d.st.psc[16][1]==cF[1]&&d.st.psc[16][2]==cF[2]);                // additive and modulate keep the game's colour: no stale emitted colour
+        else if(d.tag==4)CHECK(d.st.psc[16][0]==.5f&&d.st.psc[16][1]==.5f&&d.st.psc[16][2]==.5f&&d.st.psc[16][3]==1);   // mod2x: the neutral grey, not the game's cF
+        else CHECK(d.st.psc[16][0]==0&&d.st.psc[16][1]==0&&d.st.psc[16][2]==0&&d.st.psc[16][3]==1);                      // additive: black; the alpha component stays the game's
     }
     CHECK(seen==7);
     CHECK(p.lay->dev.s.vsc[30][0]==game[0]&&p.lay->dev.s.vsc[30][1]==game[1]&&p.lay->dev.s.vsc[30][2]==game[2]);   // the game's values are back (boundary() also checks the whole state)
@@ -1457,7 +1458,7 @@ static void testSpellFogRecord(){
     CHECK(n>=7&&add&&al&&mod&&p.lay->layer.takeFogSamples(samples)==0);
     // a game constant the fit leaves alone (not flat, no falling ramp): the game's value is recorded as it is
     Opts q;q.fogOn=true;q.fog=&frame;
-    Pair z=runBoth([](Rig& r){const float c30[4]={0,.5f,1,0};r.dev.SetVertexShaderConstantF(30,c30,1);deferQuad(r,1);deferQuad(r,2);r.boundary();},q);
+    Pair z=runBoth([](Rig& r){const float c30[4]={0,.5f,1,0};r.dev.SetVertexShaderConstantF(30,c30,1);r.psFogReg=16;r.translucent(kSrcAlpha,kBlendOne);deferQuad(r,1);deferQuad(r,2);r.boundary();},q);
     checkEquivalent(z);CHECK(z.lay->layer.totalCounters().fogEntries==0&&z.lay->layer.totalCounters().fogRefused==2);
 }
 
@@ -1465,7 +1466,7 @@ static void testSpellFogRecord(){
 // compared with it and records the game's value again.
 static NorthlightSpellFog::Frame gToggleFog;
 static void sFogToggle(Rig& r){
-    const float c30[4]={-1/150.f,1.f,1.f,0};r.dev.SetVertexShaderConstantF(30,c30,1);
+    const float c30[4]={-1/150.f,1.f,1.f,0};r.dev.SetVertexShaderConstantF(30,c30,1);r.psFogReg=16;r.translucent(kSrcAlpha,kBlendOne);
     gToggleFog.active=false;++gToggleFog.revision;deferQuad(r,1);              // fog off: the game's c30 (and the row is marked synced)
     gToggleFog.active=true;++gToggleFog.revision;deferQuad(r,2);               // on: the fit
     gToggleFog.active=false;++gToggleFog.revision;deferQuad(r,3);              // off again: the game's c30 must come back
@@ -1616,7 +1617,7 @@ static void testSpellFogCacheAndBlend(){
      unsigned seen=0;for(size_t i=marker+1;i<p.lay->dev.draws.size();++i){const auto& d=p.lay->dev.draws[i];++seen;
         CHECK(d.st.vsc[30][0]==fit[0]);
         if(d.tag==1)CHECK(d.st.psc[16][0]==col[0]&&d.st.psc[16][1]==col[1]);
-        else CHECK(d.st.psc[16][0]==cF[0]&&d.st.psc[16][1]==cF[1]&&d.st.psc[16][2]==cF[2]);}     // premultiplied alpha keeps the game's colour
+        else CHECK(d.st.psc[16][0]==0&&d.st.psc[16][1]==0&&d.st.psc[16][2]==0);}                  // premultiplied alpha: black, not the game's colour
      CHECK(seen==2);}
     {Opts o;o.fogOn=true;o.fog=&frame;
      for(unsigned proof:{0u,2u}){
@@ -1685,6 +1686,45 @@ static void testSpellFogFlat(){
      NorthlightShaderReads::ReadSet v,ps;v.exact=v.vertex=true;v.f[0]=1;ps.exact=true;ps.f[0]=~0ull;
      p.ref->restrict(v,ps);p.lay->restrict(v,ps);sFogFlat(*p.ref);sFogFlat(*p.lay);const Counters& c=p.lay->layer.totalCounters();
      CHECK(c.fogEntries==0&&c.fogNoRead==4&&c.fogUnproven==0&&c.fogFlat==0);}
+}
+
+
+// ---- SpellFog: a folded record carries the PS fog colour its blend needs, never the game's (stale with the game's fog off) ----
+static void sFogColour(Rig& r){
+    const float flat[4]={0,1,1,0},cF[4]={.4f,.5f,.6f,.7f};
+    r.dev.SetVertexShaderConstantF(30,flat,1);r.dev.SetPixelShaderConstantF(16,cF,1);r.psFogReg=16;
+    r.translucent(kSrcAlpha,kBlendOne);deferQuad(r,1);              // additive: black
+    r.translucent(kDestColor,kBlendZero);deferQuad(r,2);            // modulate: white
+    r.translucent(kDestColor,kSrcColor);deferQuad(r,3);             // mod2x: mid grey
+    r.translucent(kBlendOne,kInvSrcAlpha);deferQuad(r,4);           // premultiplied: black
+    r.translucent(kSrcAlpha,kInvSrcAlpha);deferQuad(r,5);           // straight alpha: the in-scatter colour
+    r.translucent(kSrcAlpha,kInvDestColor);deferQuad(r,6);          // another blend: not folded
+    r.boundary();
+}
+static void testSpellFogColour(){
+    using namespace NorthlightSpellFog;
+    const Frame frame=fogFrame(.006f);
+    {Opts o;o.fogOn=true;o.fog=&frame;Pair p=runBoth(sFogColour,o);const Counters& c=p.lay->layer.totalCounters();
+     CHECK(c.fogEntries==5&&c.fogFlat==5&&c.fogOtherBlend==1&&c.fogNoPsReg==0&&c.dirtyMismatches==0);
+     size_t marker=0;for(size_t i=0;i<p.lay->dev.draws.size();++i)if(p.lay->dev.draws[i].tag==Rig::kMarker)marker=i;
+     const float flat[3]={0,1,1};float fit[3],scatter[3];const float cF[3]={.4f,.5f,.6f};CHECK(emitFog(frame,flat,fit));emitColor(frame,flat,fit,cF,scatter);
+     unsigned seen=0;
+     for(size_t i=marker+1;i<p.lay->dev.draws.size();++i){const auto& d=p.lay->dev.draws[i];++seen;const float* c16=d.st.psc[16];
+        switch(d.tag){
+        case 1:case 4:CHECK(c16[0]==0&&c16[1]==0&&c16[2]==0&&c16[3]==.7f);break;                                  // black; the alpha component is the game's
+        case 2:CHECK(c16[0]==1&&c16[1]==1&&c16[2]==1&&c16[3]==.7f);break;
+        case 3:CHECK(c16[0]==.5f&&c16[1]==.5f&&c16[2]==.5f&&c16[3]==.7f);break;
+        case 5:CHECK(c16[0]==scatter[0]&&c16[1]==scatter[1]&&c16[2]==scatter[2]&&c16[3]==.7f);break;
+        default:CHECK(c16[0]==cF[0]&&c16[1]==cF[1]&&c16[2]==cF[2]);}                                              // not folded: the game's colour and c30
+        if(d.tag==6)CHECK(d.st.vsc[30][0]==0&&d.st.vsc[30][1]==1&&d.st.vsc[30][2]==1);else CHECK(d.st.vsc[30][0]<0);}
+     CHECK(seen==6);
+     CHECK(p.lay->dev.s.psc[16][0]==cF[0]&&p.lay->dev.s.psc[16][1]==cF[1]&&p.lay->dev.s.psc[16][2]==cF[2]&&p.lay->dev.s.psc[16][3]==.7f);   // the game's colour is back after the replay
+     CHECK(p.lay->dev.s.vsc[30][0]==0&&p.lay->dev.s.vsc[30][1]==1&&p.lay->dev.s.vsc[30][2]==1);}
+    // an unproven PS fog register: nothing is folded (c30 stays the game's too), counted
+    {Opts o;o.fogOn=true;o.fog=&frame;Pair p=runBoth([](Rig& r){
+        const float flat[4]={0,1,1,0},cF[4]={.4f,.5f,.6f,.7f};r.dev.SetVertexShaderConstantF(30,flat,1);r.dev.SetPixelShaderConstantF(16,cF,1);r.psFogReg=-1;
+        r.translucent(kSrcAlpha,kBlendOne);deferQuad(r,1);r.translucent(kSrcAlpha,kInvSrcAlpha);deferQuad(r,2);r.boundary();},o);
+     const Counters& c=p.lay->layer.totalCounters();checkEquivalent(p);CHECK(c.fogEntries==0&&c.fogNoPsReg==2&&c.fogFlat==0);}
 }
 
 // ---------------- review items: caps, stride-0 streams, upload cursors, depth textures, trim ----------------
@@ -2165,7 +2205,7 @@ int main(int argc,char** argv){
     const char* only=argc>1?argv[1]:nullptr; // a test name (substring) to run alone, and an optional cache mode
     const bool fixedMode=argc>2;if(fixedMode)gMirrorMode=std::atoi(argv[2]);
     struct T{const char* name;void(*fn)();};
-    const T tests[]={{"classify",testClassify},{"lazy classify",testLazyClassify},{"glow verdict",testGlowVerdict},{"spell fog fit",testSpellFogFit},{"spell fog record",testSpellFogRecord},{"spell fog toggle",testSpellFogToggle},{"spell fog march",testSpellFogMarch},{"vs fog proof",testVsFogProof},{"spell fog fresh",testSpellFogFresh},{"spell fog cache and blend",testSpellFogCacheAndBlend},{"spell fog flat",testSpellFogFlat},{"order split cap",testOrderSplitCap},{"stride 0 stream",testStride0},{"fvf vertex size",testFvfVertexSize},{"allocation failures",testAllocFailures},{"stride 0 fvf",testStride0Fvf},{"upload cursor",testUploadCursor},{"depth stencil texture",testDepthStencilTexture},{"trim and reuse",testTrimReuse},{"dirty record random",testDirtyRandom},{"record slots",testRecordSlots},{"dirty fail safe",testDirtyFailSafe},{"frame state",testFrameState},{"guard table",testGuardTable},{"equivalence",testEquivalence},
+    const T tests[]={{"classify",testClassify},{"lazy classify",testLazyClassify},{"glow verdict",testGlowVerdict},{"spell fog fit",testSpellFogFit},{"spell fog record",testSpellFogRecord},{"spell fog toggle",testSpellFogToggle},{"spell fog march",testSpellFogMarch},{"vs fog proof",testVsFogProof},{"spell fog fresh",testSpellFogFresh},{"spell fog cache and blend",testSpellFogCacheAndBlend},{"spell fog flat",testSpellFogFlat},{"spell fog colour",testSpellFogColour},{"order split cap",testOrderSplitCap},{"stride 0 stream",testStride0},{"fvf vertex size",testFvfVertexSize},{"allocation failures",testAllocFailures},{"stride 0 fvf",testStride0Fvf},{"upload cursor",testUploadCursor},{"depth stencil texture",testDepthStencilTexture},{"trim and reuse",testTrimReuse},{"dirty record random",testDirtyRandom},{"record slots",testRecordSlots},{"dirty fail safe",testDirtyFailSafe},{"frame state",testFrameState},{"guard table",testGuardTable},{"equivalence",testEquivalence},
         {"discard copy",testDiscard},{"partial overlap",testPartialOverlap},{"two entries",testTwoEntries},{"count-based marks",testMarkIsCountBased},
         {"rebase negative base",testRebaseNegativeBase},{"rebase kept base",testRebasePositiveBase},{"index buffer copy",testIbMaterialized},
         {"mixed streams",testMixedStreams},{"32-bit UP",test32bitUP},{"non-dynamic buffer",testNonDynamic},{"copy disabled",testConflictCopyDisabled},

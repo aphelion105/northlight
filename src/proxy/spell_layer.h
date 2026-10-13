@@ -41,6 +41,18 @@ constexpr unsigned kCooldownFrames=30,kMaxStreams=4,kMaxTextures=20,kMaxDecl=65,
 // ---- a) classification (pure) ----
 enum class Family:uint8_t{None,Particle,ParticleUnlit,Model,Projected,Ripples}; // M2 vertex shader family, known at shader creation; Ripples (WaterRipples, not an M2 shader) are treated like water
 enum Sub:unsigned{SubAdditive=1,SubAlpha=2,SubModulate=4,SubOther=8};
+// SpellFog: the PS fog colour a folded record must carry, by blend (the shader mixes lerp(cF, X, fog) and, with the fog folded, fog < 1 even where the game's own fog is off, where the game does not
+// maintain cF): additive (dest ONE) and premultiplied (ONE / INVSRCALPHA) black, modulate (DESTCOLOR / ZERO, ZERO / SRCCOLOR) white, mod2x (DESTCOLOR / SRCCOLOR) mid grey, straight alpha the in-scatter
+// colour; any other blend is not folded.
+enum class FogTarget:uint8_t{None,Black,White,Grey,Scatter};
+inline FogTarget fogTarget(unsigned src,unsigned dst){
+    if(dst==kBlendOne)return FogTarget::Black;
+    if(src==kBlendOne&&dst==kInvSrcAlpha)return FogTarget::Black;
+    if((src==kDestColor&&dst==kBlendZero)||(src==kBlendZero&&dst==kSrcColor))return FogTarget::White;
+    if(src==kDestColor&&dst==kSrcColor)return FogTarget::Grey;
+    if(src==kSrcAlpha&&dst==kInvSrcAlpha)return FogTarget::Scatter;
+    return FogTarget::None;
+}
 enum class Kind:uint8_t{Ignore,Opaque,TranslucentZ,Defer,InPlace,Hazard};
 enum class InPlaceKind:uint8_t{None,Water,Rain,Name,Fade};
 enum class Reason:uint8_t{Clear,Copy,TexWrite,Sample,BufWrite,GpuWrite,Order,Query,Capacity,Capture,Admit,Frame,Count};
@@ -167,6 +179,7 @@ struct Counters{
     uint64_t recordSlots=0;                       // slots a record examined (read and compared): with the synced bits only the ones that may have changed
     unsigned fogCapped=0;                         // fits skipped because the frame's cap on new fits was reached (the game's value was kept)
     unsigned fogEntries=0;                        // records whose fog slots carried Northlight's fog (SpellFog)
+    unsigned fogNoPsReg=0,fogOtherBlend=0;        // proven vertex shaders not folded: no proven, readable PS fog colour register; a blend with no neutral fog colour
     unsigned fogFlat=0,fogRefused=0,fogUnproven=0,fogNoRead=0; // of the records of a frame with an active estimate: folded from a flat game constant (Northlight's fog alone; also in fogEntries); proven vertex shader but the game's constant refused (identity, the cap excluded: fogCapped); the shader reads c30 but has no fog proof; the shader does not read c30
     unsigned stride0Refused=0;                    // defers refused (a Capture failure: flush + fallback) because a stride-0 stream's vertex size could not be determined
     unsigned checkAllocFails=0;                   // dirty cross-checks that could not run (no scratch memory): the record used the full compare and dirtyRecord went off
@@ -184,7 +197,7 @@ struct Counters{
         for(int i=0;i<4;++i){deferred[i]+=o.deferred[i];inPlace[i]+=o.inPlace[i];}
         for(int i=0;i<3;++i)orderBy[i]+=o.orderBy[i];
         for(unsigned i=0;i<kReasons;++i)hazards[i]+=o.hazards[i];
-        fixed+=o.fixed;flushes+=o.flushes;replays+=o.replays;drains+=o.drains;recordSlots+=o.recordSlots;stride0Refused+=o.stride0Refused;fogEntries+=o.fogEntries;fogFlat+=o.fogFlat;fogRefused+=o.fogRefused;fogUnproven+=o.fogUnproven;fogNoRead+=o.fogNoRead;fogCapped+=o.fogCapped;checkAllocFails+=o.checkAllocFails;dirtyMismatches+=o.dirtyMismatches;restoreFallbacks+=o.restoreFallbacks;texSplits+=o.texSplits;restoreSets+=o.restoreSets;replayedDraws+=o.replayedDraws;replaySkipped+=o.replaySkipped;discarded+=o.discarded;
+        fixed+=o.fixed;flushes+=o.flushes;replays+=o.replays;drains+=o.drains;recordSlots+=o.recordSlots;stride0Refused+=o.stride0Refused;fogEntries+=o.fogEntries;fogFlat+=o.fogFlat;fogRefused+=o.fogRefused;fogUnproven+=o.fogUnproven;fogNoRead+=o.fogNoRead;fogNoPsReg+=o.fogNoPsReg;fogOtherBlend+=o.fogOtherBlend;fogCapped+=o.fogCapped;checkAllocFails+=o.checkAllocFails;dirtyMismatches+=o.dirtyMismatches;restoreFallbacks+=o.restoreFallbacks;texSplits+=o.texSplits;restoreSets+=o.restoreSets;replayedDraws+=o.replayedDraws;replaySkipped+=o.replaySkipped;discarded+=o.discarded;
         conflicts+=o.conflicts;materialized+=o.materialized;recorded+=o.recorded;replaySets+=o.replaySets;conflictBytes+=o.conflictBytes;
         for(int i=0;i<4;++i)capBy[i]+=o.capBy[i];overflowFrames+=o.overflowFrames;overflowAt+=o.overflowAt;overflowCandidates+=o.overflowCandidates;
         deltaWords+=o.deltaWords;arenaHigh=std::max(arenaHigh,o.arenaHigh);recordHigh=std::max(recordHigh,o.recordHigh);
@@ -621,7 +634,7 @@ private:
         return true;
     }
     std::vector<std::unique_ptr<uint32_t[]>> deltaChunks_;unsigned deltaChunk_=0,deltaUsed_=0; // state deltas of the pending entries; deltaChunk_/deltaUsed_: the chunk being filled and its used words
-    struct SyncPend{uint64_t rs[4]={},vsF[4]={},psF[4]={};uint16_t ss[16]={};uint16_t tex=0;bool vp=false;unsigned slots=0;bool fogVs=false;int fogPs=-1,fogApplied=0;uint8_t fogFlat=0,fogRefused=0,fogUnproven=0,fogNoRead=0;}; // fogVs/fogPs: the fog rows of this record (they hold Northlight's value, never synced)
+    struct SyncPend{uint64_t rs[4]={},vsF[4]={},psF[4]={};uint16_t ss[16]={};uint16_t tex=0;bool vp=false;unsigned slots=0;bool fogVs=false;int fogPs=-1,fogApplied=0;uint8_t fogFlat=0,fogRefused=0,fogUnproven=0,fogNoRead=0,fogNoPsReg=0,fogOtherBlend=0;}; // fogVs/fogPs: the fog rows of this record (they hold Northlight's value, never synced)
     std::unique_ptr<uint32_t[]> checkScratch_;         // the dirty cross-check's copy of the first delta (kScratchWords)
     DeltaDiff dirtyFirst_;bool dirtyTaken_=false;       // the first synced-bit mismatch of the session (takeDirtyMismatch)
     // SpellFog state: the fit cache (one game constant per frame revision), the alpha colour cache, the sub-class and fog colour register of the draw being recorded, the first samples per sub-class.
@@ -1246,9 +1259,13 @@ private:
         // SpellFog: c30 (the fog ramp) of a programmable draw, and the alpha sub-class's fog colour register, are recorded as Northlight's fog folded into the game's value; those rows are
         // examined on every record and never marked synced (the Model holds the folded value, the device the game's).
         const bool fogUse=!fixed&&cfg_.fogOn&&fogFresh_&&cfg_.fog&&cfg_.fog->active;   // fogFresh_: the estimate was published by the last frame's render (a frozen one is not folded)
-        const bool fogVsRow=fogUse&&fogProven_!=0&&(rd.vsF[0]>>30&1);                      // only a vertex shader whose fog output is proven to be the c30 ramp
-        if(fogUse){if(!(rd.vsF[0]>>30&1))pend_.fogNoRead=1;else if(fogProven_==0)pend_.fogUnproven=1;}
-        const int fogReg=fogVsRow&&fogSub_==SubAlpha&&cur[19]==kSrcAlpha&&cur[20]==kInvSrcAlpha&&fogReg_>=0&&fogReg_<int(kPsFloat)&&(rd.psF[fogReg_>>6]>>(fogReg_&63)&1)?fogReg_:-1;
+        // A record folds only with a proven vertex shader AND a proven, read PS fog colour register AND a blend with a known neutral colour: the register is substituted too (never the game's stale value).
+        const FogTarget target=fogUse?fogTarget(cur[19],cur[20]):FogTarget::None;
+        const bool psRegOk=fogReg_>=0&&fogReg_<int(kPsFloat)&&(rd.psF[fogReg_>>6]>>(fogReg_&63)&1);
+        const bool vsOk=fogUse&&fogProven_!=0&&(rd.vsF[0]>>30&1);                          // a vertex shader whose fog output is proven to be the c30 ramp
+        const bool fogVsRow=vsOk&&psRegOk&&target!=FogTarget::None;
+        if(fogUse){if(!(rd.vsF[0]>>30&1))pend_.fogNoRead=1;else if(fogProven_==0)pend_.fogUnproven=1;else if(!psRegOk)pend_.fogNoPsReg=1;else if(target==FogTarget::None)pend_.fogOtherBlend=1;}
+        const int fogReg=fogVsRow?fogReg_:-1;
         float fitV[3]={},gameV[3]={};bool fitOk=false,flatNow=false;
         for(unsigned w=0;w<4;++w){sync4[w]=sy?sy->vsF[w]&m.vsFV[w]:0ull;dm4[w]=rd.vsF[w]&~sync4[w];}
         if(fogVsRow){sync4[0]&=~(1ull<<30);dm4[0]=rd.vsF[0]&~sync4[0];pend_.fogVs=true;}
@@ -1274,7 +1291,10 @@ private:
             else if(FAILED(dev_->GetPixelShaderConstantF(lo,psStage_[lo],hi-lo+1)))return Reason::Capture;
             unsigned ovr=~0u;float row[4]={};
             if(fogReg>=0&&fitOk){
-                float out[3];fogColor(gameV,fitV,src[fogReg],out);
+                float out[3]={0,0,0};
+                if(target==FogTarget::Scatter)fogColor(gameV,fitV,src[fogReg],out);
+                else if(target==FogTarget::White)out[0]=out[1]=out[2]=1.f;
+                else if(target==FogTarget::Grey)out[0]=out[1]=out[2]=.5f;
                 row[0]=out[0];row[1]=out[1];row[2]=out[2];row[3]=src[fogReg][3];ovr=unsigned(fogReg);++pend_.fogApplied;
                 float emitV[4]={fitV[0],fitV[1],fitV[2],0};fogSample(gameV,src[fogReg],emitV,row,flatNow?1u:0u);
             }
@@ -1568,7 +1588,7 @@ public:
         {   uint32_t* dst=deltaChunks_[e.dChunk].get()+e.dOff;std::memcpy(dst,scratch_.get(),size_t(n_)*4);
             ModelSink ms{model_};decodeOps(dst,dst+n_,ms);}
         if(sy){if(pend_.fogVs)sy->vsF[0]&=~(1ull<<30);if(pend_.fogPs>=0)sy->psF[pend_.fogPs>>6]&=~(1ull<<(pend_.fogPs&63));} // the fog rows hold Northlight's value in the Model, not the device's: never synced
-        if(pend_.fogApplied||pend_.fogRefused||pend_.fogUnproven||pend_.fogNoRead)count([&](Counters& c){c.fogEntries+=pend_.fogApplied?1u:0u;c.fogFlat+=pend_.fogFlat;c.fogRefused+=pend_.fogRefused;c.fogUnproven+=pend_.fogUnproven;c.fogNoRead+=pend_.fogNoRead;});
+        if(pend_.fogApplied||pend_.fogRefused||pend_.fogUnproven||pend_.fogNoRead||pend_.fogNoPsReg||pend_.fogOtherBlend)count([&](Counters& c){c.fogEntries+=pend_.fogApplied?1u:0u;c.fogFlat+=pend_.fogFlat;c.fogRefused+=pend_.fogRefused;c.fogNoPsReg+=pend_.fogNoPsReg;c.fogOtherBlend+=pend_.fogOtherBlend;c.fogUnproven+=pend_.fogUnproven;c.fogNoRead+=pend_.fogNoRead;});
         if(sy&&sy->epoch==epoch0){ // nothing changed the device under this record: what it examined now equals the model
             for(unsigned w=0;w<4;++w){sy->rs[w]|=pend_.rs[w];sy->vsF[w]|=pend_.vsF[w];sy->psF[w]|=pend_.psF[w];}
             for(unsigned t=0;t<16;++t)sy->ss[t]|=pend_.ss[t];
