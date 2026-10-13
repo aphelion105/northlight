@@ -93,40 +93,88 @@ static void testClassify(){
     {DrawFacts f=cand();f.zWrite=true;f.blend=false;expect(f,Kind::Opaque);}
     {DrawFacts f=cand();f.zWrite=true;f.colorWrite=0;expect(f,Kind::Opaque);}
     {DrawFacts f=cand();f.zWrite=true;f.water=true;expect(f,Kind::TranslucentZ);}
-    // floating world names (SubName, mask bit 16): deferred whatever their Z write, Z test and alpha test, only with a non-opaque blend; with the bit off the old behaviour (in place / split)
+    // floating world names are never deferred: a Z-writing one is in place (Opaque / TranslucentZ), a non-Z-writing one is in place (Name) or splits the frame while draws are pending
     auto name=[](){DrawFacts f=cand();f.uiTag=true;f.family=Family::None;f.srcBlend=kSrcAlpha;f.destBlend=kInvSrcAlpha;return f;};
-    {DrawFacts f=name();expect(f,Kind::Defer,SubName,Reason::Count,InPlaceKind::None,31);}
-    {DrawFacts f=name();f.zWrite=true;expect(f,Kind::Defer,SubName,Reason::Count,InPlaceKind::None,31);}
-    {DrawFacts f=name();f.zWrite=true;f.pending=true;expect(f,Kind::Defer,SubName,Reason::Count,InPlaceKind::None,31);}
-    {DrawFacts f=name();f.zEnable=false;expect(f,Kind::Defer,SubName,Reason::Count,InPlaceKind::None,31);}
-    {DrawFacts f=name();f.zEnable=false;f.zWrite=true;f.pending=true;expect(f,Kind::Defer,SubName,Reason::Count,InPlaceKind::None,31);}
-    {DrawFacts f=name();f.pending=true;expect(f,Kind::Defer,SubName,Reason::Count,InPlaceKind::None,16);} // only the Name bit set
-    {DrawFacts f=name();expect(f,Kind::InPlace,0,Reason::Count,InPlaceKind::Name,15);}                      // Name bit off: as before
-    {DrawFacts f=name();f.pending=true;expect(f,Kind::Hazard,0,Reason::Order,InPlaceKind::Name,15);}
-    {DrawFacts f=name();f.zWrite=true;expect(f,Kind::TranslucentZ,0,Reason::Count,InPlaceKind::None,15);}
-    {DrawFacts f=name();f.zWrite=true;f.pending=true;expect(f,Kind::TranslucentZ,0,Reason::Count,InPlaceKind::None,15);}
-    {DrawFacts f=name();f.worldDomain=false;expect(f,Kind::Hazard,0,Reason::Order,InPlaceKind::None,31);}  // a non-world uiTag draw is never deferred
-    {DrawFacts f=name();f.worldDomain=false;f.zWrite=true;expect(f,Kind::Hazard,0,Reason::Order,InPlaceKind::None,31);}
-    {DrawFacts f=name();f.worldDomain=false;f.colorWrite=0;expect(f,Kind::Ignore,0,Reason::Count,InPlaceKind::None,31);}
-    {DrawFacts f=name();f.rt0IsTarget=false;expect(f,Kind::Ignore,0,Reason::Count,InPlaceKind::None,31);}
-    {DrawFacts f=name();f.claimed=true;expect(f,Kind::Ignore,0,Reason::Count,InPlaceKind::None,31);}
-    {DrawFacts f=name();f.samplesRenderTargetTexture=true;expect(f,Kind::Hazard,0,Reason::Sample,InPlaceKind::None,31);}
-    {DrawFacts f=name();f.colorWrite=0;expect(f,Kind::Ignore,0,Reason::Count,InPlaceKind::None,31);}
-    // not deferrable names keep the old path: opaque blend, no blend, other depth, stencil, MRT, instancing, an occlusion query
-    for(int k=0;k<6;++k){
-        DrawFacts f=name();f.zWrite=true;
-        switch(k){case 0:f.srcBlend=kBlendOne;f.destBlend=kBlendZero;break;case 1:f.blend=false;break;case 2:f.dsIsWorldDepth=false;break;case 3:f.stencil=true;break;case 4:f.mrtBound=true;break;default:f.instanced=true;}
-        const Result r=classify(f,31);CHECK(r.kind==(k==0||k==1?Kind::Opaque:Kind::TranslucentZ));
+    for(unsigned mask:{1u,15u}){
+        {DrawFacts f=name();f.zWrite=true;expect(f,Kind::TranslucentZ,0,Reason::Count,InPlaceKind::None,mask);}
+        {DrawFacts f=name();f.zWrite=true;f.pending=true;expect(f,Kind::TranslucentZ,0,Reason::Count,InPlaceKind::None,mask);}
+        {DrawFacts f=name();expect(f,Kind::InPlace,0,Reason::Count,InPlaceKind::Name,mask);}
+        {DrawFacts f=name();f.pending=true;expect(f,Kind::Hazard,0,Reason::Order,InPlaceKind::Name,mask);}
     }
-    {DrawFacts f=name();f.occlusionActive=true;f.zWrite=true;CHECK(classify(f,31).kind==Kind::TranslucentZ);}
-    {DrawFacts f=name();f.occlusionActive=true;CHECK(classify(f,31).kind==Kind::InPlace);}
-    {DrawFacts f=name();f.occlusionActive=true;f.pending=true;CHECK(classify(f,31).kind==Kind::Hazard);}
     // fade run tracker: a skinned Z-writing colour-less draw starts it, a non-skinned draw ends it
     FadeRun run;
     CHECK(!run.update(true,false,15));CHECK(!run.update(true,true,15));CHECK(run.update(true,true,0));
     CHECK(run.update(true,false,15));CHECK(run.update(true,true,15));CHECK(!run.update(false,false,15));CHECK(!run.update(true,false,15));
     CHECK(run.update(true,true,8));run.reset();CHECK(!run.active);
     CHECK(std::string(reasonName(Reason::BufWrite))=="bufwrite"&&std::string(reasonName(Reason::Count))=="none"&&std::string(modeName(Mode::Cooldown))=="cooldown");
+}
+
+// The decision as it was written before it became a template over a facts accessor (copied verbatim): the reference of the lazy-fact test below.
+static Result classifyReference(const DrawFacts& f,unsigned classMask){
+    Result r;
+    auto hazard=[&](Reason why){r.kind=Kind::Hazard;r.reason=why;return r;};
+    if(f.samplesRenderTargetTexture)return hazard(Reason::Sample);
+    if(!f.rt0IsTarget||f.claimed)return r;
+    const bool rgb=(f.colorWrite&7)!=0;
+    if(!f.worldDomain)return rgb?hazard(Reason::Order):r;
+    if(f.zWrite){r.kind=(opaqueBlend(f)||!rgb)?Kind::Opaque:Kind::TranslucentZ;return r;}
+    if(!rgb)return r;
+    const bool water=f.water||f.family==Family::Ripples;
+    if(water||f.rain||f.uiTag||(f.fadeRun&&f.skinned)){
+        r.inPlace=water?InPlaceKind::Water:f.rain?InPlaceKind::Rain:f.uiTag?InPlaceKind::Name:InPlaceKind::Fade;
+        if(f.pending&&r.inPlace!=InPlaceKind::Fade)return hazard(Reason::Order);
+        r.kind=Kind::InPlace;return r;
+    }
+    if((f.family==Family::None&&!f.fixedFunction)||opaqueBlend(f)||!f.zEnable||f.stencil||!f.dsIsWorldDepth||f.mrtBound||f.instanced)return hazard(Reason::Order);
+    if(f.occlusionActive)return hazard(Reason::Query);
+    const unsigned sub=subClass(f);
+    if(!(classMask&sub))return hazard(Reason::Order);
+    r.kind=Kind::Defer;r.sub=sub;return r;
+}
+// A facts accessor that records which facts the decision read.
+struct ReadTrackingFacts{
+    const DrawFacts& t;
+    enum{Samples,Claimed,Rt0,Cw,Domain,ZWrite,Water,Rain,Ui,Fade,Skinned,Family_,Pending,Fixed,ZEnable,Stencil,Ds,Mrt,Instanced,Occ,Blend,Src,Dst,Op,Sep,N};
+    bool read[N]={};
+    bool samples(){read[Samples]=true;return t.samplesRenderTargetTexture;}bool claimed(){read[Claimed]=true;return t.claimed;}bool rt0IsTarget(){read[Rt0]=true;return t.rt0IsTarget;}
+    unsigned colorWrite(){read[Cw]=true;return t.colorWrite;}bool worldDomain(){read[Domain]=true;return t.worldDomain;}bool zWrite(){read[ZWrite]=true;return t.zWrite;}
+    bool water(){read[Water]=true;return t.water;}bool rain(){read[Rain]=true;return t.rain;}bool uiTag(){read[Ui]=true;return t.uiTag;}bool fadeRun(){read[Fade]=true;return t.fadeRun;}
+    bool skinned(){read[Skinned]=true;return t.skinned;}Family family(){read[Family_]=true;return t.family;}bool pending(){read[Pending]=true;return t.pending;}
+    bool fixedFunction(){read[Fixed]=true;return t.fixedFunction;}bool zEnable(){read[ZEnable]=true;return t.zEnable;}bool stencil(){read[Stencil]=true;return t.stencil;}
+    bool dsIsWorldDepth(){read[Ds]=true;return t.dsIsWorldDepth;}bool mrtBound(){read[Mrt]=true;return t.mrtBound;}bool instanced(){read[Instanced]=true;return t.instanced;}bool occlusionActive(){read[Occ]=true;return t.occlusionActive;}
+    bool opaqueBlend(){read[Blend]=true;if(!t.blend)return true;read[Src]=read[Dst]=true;return t.srcBlend==kBlendOne&&t.destBlend==kBlendZero;}
+    unsigned subClass(){read[Sep]=read[Op]=read[Src]=read[Dst]=true;return NorthlightSpellLayer::subClass(t);}
+};
+// classifyWith over a lazy accessor decides exactly as the eager decision: for random facts and every class mask the three agree, and changing any fact the decision did
+// not read (all of them, at once, to random values) cannot change the result.
+static void testLazyClassify(){
+    uint64_t x=0x9E3779B97F4A7C15ull;auto rnd=[&]{x^=x<<13;x^=x>>7;x^=x<<17;return x;};
+    const unsigned blends[]={kBlendZero,kBlendOne,kSrcColor,kInvSrcColor,kSrcAlpha,kInvSrcAlpha,kDestAlpha,kDestColor};const unsigned cws[]={0,1,7,8,15};
+    auto randomize=[&](DrawFacts& f,const bool (&keep)[ReadTrackingFacts::N]){
+        using R=ReadTrackingFacts;
+        auto b=[&]{return (rnd()&1)!=0;};
+        if(!keep[R::Samples])f.samplesRenderTargetTexture=b();if(!keep[R::Claimed])f.claimed=b();if(!keep[R::Rt0])f.rt0IsTarget=b();if(!keep[R::Cw])f.colorWrite=cws[rnd()%5];
+        if(!keep[R::Domain])f.worldDomain=b();if(!keep[R::ZWrite])f.zWrite=b();if(!keep[R::Water])f.water=b();if(!keep[R::Rain])f.rain=b();if(!keep[R::Ui])f.uiTag=b();if(!keep[R::Fade])f.fadeRun=b();
+        if(!keep[R::Skinned])f.skinned=b();if(!keep[R::Family_])f.family=Family(rnd()%6);if(!keep[R::Pending])f.pending=b();if(!keep[R::Fixed])f.fixedFunction=b();if(!keep[R::ZEnable])f.zEnable=b();
+        if(!keep[R::Stencil])f.stencil=b();if(!keep[R::Ds])f.dsIsWorldDepth=b();if(!keep[R::Mrt])f.mrtBound=b();if(!keep[R::Instanced])f.instanced=b();if(!keep[R::Occ])f.occlusionActive=b();
+        if(!keep[R::Blend])f.blend=b();if(!keep[R::Src])f.srcBlend=blends[rnd()%8];if(!keep[R::Dst])f.destBlend=blends[rnd()%8];if(!keep[R::Op])f.blendOp=1+unsigned(rnd()%3);if(!keep[R::Sep])f.separateAlpha=b();
+    };
+    unsigned kinds[6]={},lazySaved=0;
+    for(unsigned n=0;n<200000;++n){
+        DrawFacts f;const bool none[ReadTrackingFacts::N]={};randomize(f,none);
+        const unsigned mask=unsigned(rnd()%32);
+        const Result ref=classifyReference(f,mask),eager=classify(f,mask);
+        ReadTrackingFacts lazy{f};const Result got=classifyWith(lazy,mask);
+        CHECK(ref.kind==eager.kind&&ref.sub==eager.sub&&ref.reason==eager.reason&&ref.inPlace==eager.inPlace);
+        CHECK(ref.kind==got.kind&&ref.sub==got.sub&&ref.reason==got.reason&&ref.inPlace==got.inPlace);
+        ++kinds[unsigned(ref.kind)];
+        DrawFacts g=f;randomize(g,lazy.read);                                    // everything the decision did not read changes
+        const Result alt=classifyReference(g,mask);
+        CHECK(alt.kind==ref.kind&&alt.sub==ref.sub&&alt.reason==ref.reason&&alt.inPlace==ref.inPlace);
+        for(bool r:lazy.read)if(!r)++lazySaved;
+    }
+    for(unsigned k=0;k<6;++k)CHECK(kinds[k]>0);                                  // every kind occurs
+    CHECK(lazySaved>200000);                                                     // and facts were in fact skipped
 }
 
 // ---------------- frame state and counters ----------------
@@ -1280,64 +1328,20 @@ static void testRipples(){
     Rig r(Opts{});r.issueWith(Rig::dp(0),Family::Ripples,[](DrawFacts&){});
     CHECK(r.last.kind==Kind::InPlace&&r.last.inPlace==InPlaceKind::Water&&r.layer.totalCounters().orderBy[0]==0&&r.layer.mode()==Mode::Armed&&r.layer.pending()==0);
 }
-// Floating world names (SubName): a deferred name draw (UI shader, perspective projection, Z write on or off) replays with the spells in the reference order and with its state
-// (ZWRITEENABLE and the rest are part of the compared draw state, so a Z-writing name replays its depth write); nothing is a hazard, split or cooldown.
-static int nameDraw(Rig& r,int seed,bool zWrite,bool zTest=true){
-    r.dev.SetStreamSource(0,r.ring,0,16);const UINT a=r.ringQuad(seed);
-    r.translucent(kSrcAlpha,kInvSrcAlpha);r.rs(D3DRS_ZWRITEENABLE,zWrite);r.rs(D3DRS_ZENABLE,zTest);r.rs(D3DRS_ALPHATESTENABLE,1);
-    const int t=r.issueWith(Rig::dp(a/16),Family::None,[](DrawFacts& f){f.uiTag=true;});
-    r.translucent(kSrcAlpha,kBlendOne);r.rs(D3DRS_ALPHATESTENABLE,0);return t;
-}
-static void sNamesMixed(Rig& r){
-    deferQuad(r,1);nameDraw(r,2,true);deferQuad(r,3);nameDraw(r,4,false);nameDraw(r,5,true,false);deferQuad(r,6);
-    r.opaqueZ();r.issue(Rig::dp(0),Family::None);r.translucent(kSrcAlpha,kBlendOne);                     // an opaque draw stays in place
-    nameDraw(r,7,true);r.boundary();
-}
-static void testNamesMixed(){
-    Opts o;o.mask=31;Pair p=runBoth(sNamesMixed,o);const Counters& c=p.lay->layer.totalCounters();
-    CHECK(p.lay->deferredTags.size()==7&&c.names==4&&c.totalDeferred()==7&&c.deferred[0]==3&&c.totalHazards()==0&&c.flushes==0&&c.replayedDraws==7&&c.orderBy[2]==0);
-    checkEquivalent(p);CHECK(p.lay->order()==expectedDeferredOrder(p.ref->order(),p.lay->deferredTags));
-    size_t marker=0;for(size_t i=0;i<p.lay->dev.draws.size();++i)if(p.lay->dev.draws[i].tag==Rig::kMarker)marker=i;
-    unsigned zw=0,noZ=0;for(size_t i=marker+1;i<p.lay->dev.draws.size();++i){const auto& d=p.lay->dev.draws[i];CHECK(d.rt[0]==p.lay->T&&d.ds==p.lay->D);zw+=d.st.rs[D3DRS_ZWRITEENABLE]!=0;noZ+=d.st.rs[D3DRS_ZENABLE]==0;}
-    CHECK(zw==3&&noZ==1);                                                                                // three Z-writing names replay their depth write; one has Z test off
-    p.lay->layer.beginFrame(false);CHECK(p.lay->layer.mode()==Mode::Armed);
-}
-static void sNamesAlone(Rig& r){nameDraw(r,1,true);nameDraw(r,2,true);r.boundary();}
-static void sNamesWater(Rig& r){
-    deferQuad(r,1);nameDraw(r,2,true);
-    r.issueWith(Rig::dp(0),Family::Model,[](DrawFacts& f){f.water=true;});                               // water after pending spells and a name: the split flushes them in order
-    nameDraw(r,3,true);deferQuad(r,4);r.boundary();
-}
-static void testNamesAlone(){
-    Opts o;o.mask=31;Pair p=runBoth(sNamesAlone,o);const Counters& c=p.lay->layer.totalCounters();
-    CHECK(p.lay->deferredTags.size()==2&&c.names==2&&c.totalDeferred()==2&&c.replayedDraws==2&&c.totalHazards()==0&&c.replays==1);
-    checkEquivalent(p);CHECK(p.lay->order()==expectedDeferredOrder(p.ref->order(),p.lay->deferredTags));
-    Opts off;off.mask=15;Pair q=runBoth(sNamesAlone,off);                                                  // Name bit off: in place, nothing deferred
-    CHECK(q.lay->deferredTags.empty()&&q.lay->layer.totalCounters().names==0&&q.lay->layer.totalCounters().totalHazards()==0);
-    checkEquivalent(q);CHECK(q.lay->order()==q.ref->order());
-}
-static void testNamesWater(){
-    Opts o;o.mask=31;Pair p=runBoth(sNamesWater,o);const Counters& c=p.lay->layer.totalCounters();
-    CHECK(c.totalHazards()==0&&c.flushes==1&&c.orderBy[0]==1&&c.names==2&&c.replayedDraws==4&&p.lay->deferredTags.size()==4);
-    checkEquivalent(p);
-    // tags 1,2 (spell, name) replay before the water draw; 4,5 (name, spell) after the effects
-    const auto ord=p.lay->order();const auto at=[&](int t){return std::find(ord.begin(),ord.end(),t)-ord.begin();};
-    CHECK(at(1)<at(2)&&at(2)<at(3)&&at(3)<at(Rig::kMarker)&&at(Rig::kMarker)<at(4)&&at(4)<at(5));
-    Opts off;off.mask=15;Pair q=runBoth(sNamesWater,off);                                                  // Name bit off: old behaviour
-    CHECK(q.lay->layer.totalCounters().names==0&&q.lay->layer.totalCounters().orderBy[2]==0&&q.lay->layer.totalCounters().orderBy[0]==1); // a Z-writing name never split (TranslucentZ)
-    checkEquivalent(q);
+static void sSplitWater(Rig& r){
+    deferQuad(r,1);deferQuad(r,2);
+    r.issueWith(Rig::dp(0),Family::Model,[](DrawFacts& f){f.water=true;});                               // water after pending spells: the split flushes them in order
+    deferQuad(r,3);r.boundary();
 }
 // Diagnostics: every drain (B and the water split) is counted, the name entries' delta words and replay sets are split off, and the phases of a drain are timed
 // separately (one fake tick per phase and drain), only when the integration says the frame is sampled.
 static void testDiagnostics(){
-    Opts o;o.mask=31;o.timed=true;gTicks=0;Pair p=runBoth(sNamesWater,o);const Counters& c=p.lay->layer.totalCounters();
+    Opts o;o.timed=true;gTicks=0;Pair p=runBoth(sSplitWater,o);const Counters& c=p.lay->layer.totalCounters();
     CHECK(c.drains==2&&c.replays==1&&c.flushes==1);
-    CHECK(c.nameDeltaWords>0&&c.nameDeltaWords<c.deltaWords&&c.nameSets>0&&c.nameSets<c.replaySets);
     const Layer::PhaseTicks t=p.lay->layer.phaseTicks();CHECK(t.save==2&&t.upload==2&&t.restore==2);
     p.lay->layer.clearPhaseTicks();CHECK(p.lay->layer.phaseTicks().save==0);
-    Opts quiet;quiet.mask=31;Pair q=runBoth(sNamesAlone,quiet);                                            // no clock configured: nothing is timed, the entries still count
-    CHECK(q.lay->layer.phaseTicks().save==0&&q.lay->layer.phaseTicks().restore==0&&q.lay->layer.totalCounters().drains==1&&q.lay->layer.totalCounters().nameDeltaWords==q.lay->layer.totalCounters().deltaWords);
-    CHECK(q.lay->layer.totalCounters().nameSets==q.lay->layer.totalCounters().replaySets);
+    Pair q=runBoth(sSplitWater);                                                                           // no clock configured: nothing is timed, the drains still count
+    CHECK(q.lay->layer.phaseTicks().save==0&&q.lay->layer.phaseTicks().restore==0&&q.lay->layer.totalCounters().drains==2);
 }
 // ---------------- the minimal restore ----------------
 // A sequence with every kind of entry: programmable, UP, indexed UP, materialized (the ring overwritten after the record), fixed function (FVF and declaration), a name.
@@ -1353,7 +1357,7 @@ static void recordAllKinds(Rig& r){
     uint8_t upv[128];Bytes v8=Rig::pat(4,128);std::memcpy(upv,v8.data(),128);const uint16_t ix[6]={2,3,4,4,3,5};
     r.issue(DrawArgs::indexedUP(D3DPT_TRIANGLELIST,2,4,2,ix,D3DFMT_INDEX16,upv,16)); // 4: indexed UP (unbinds the indices too)
     r.dev.SetStreamSource(0,r.ring,0,16);r.dev.SetIndices(r.stIb);
-    nameDraw(r,5,true);                                                       // 5: a name
+    deferQuad(r,5);
     r.ffState(1);r.fixedFunction();r.dev.SetFVF(0x112);deferFf(r,6);          // 6: fixed function through an FVF (all lights of the game stay as they were)
     r.dev.SetVertexDeclaration(r.declP);deferFf(r,7);r.programmable();        // 7: fixed function through a declaration
     r.dev.SetStreamSource(0,r.ring,0,16);deferQuad(r,8);
@@ -1368,7 +1372,7 @@ static void checkMinimalCounts(Rig& r,bool minimal){
 static void testMinimalRestore(){
     const bool min=gMinimal;
     for(int how=0;how<3;++how){
-        Opts o;o.mask=31;Rig r(o);
+        Opts o;Rig r(o);
         recordAllKinds(r);CHECK(r.layer.pending()==8&&r.layer.totalCounters().materialized>=1);
         r.effects();
         const auto before=r.snapNorm();const unsigned drains=r.layer.totalCounters().drains;
@@ -1387,7 +1391,7 @@ static void testMinimalRestore(){
 // leave the runtime's own declaration bound. The mock binds an internal declaration for SetFVF and can report an FVF for a user declaration.
 static void testDeclarationRestoredExactly(){
     for(DWORD reported:{0u,2u,0x112u}){
-        Opts o;o.mask=31;Rig r(o);r.dev.declReportsFvf=reported;r.dev.SetVertexDeclaration(r.declP);
+        Opts o;Rig r(o);r.dev.declReportsFvf=reported;r.dev.SetVertexDeclaration(r.declP);
         recordAllKinds(r);r.effects();r.dev.SetVertexDeclaration(r.declTwo); // the sequence ends on declP, the game's declaration at B is another user one
         CHECK(r.dev.s.decl==r.declTwo&&r.dev.s.fvf==reported);
         const auto before=r.snapNorm();r.layer.replay();
@@ -1399,13 +1403,13 @@ static void testDeclarationRestoredExactly(){
         Rig z(o);recordAllKinds(z);z.effects();z.dev.SetVertexDeclaration(nullptr);const auto b3=z.snapNorm();z.layer.replay();
         CHECK(z.snapNorm()==b3&&!z.dev.s.decl&&z.dev.s.fvf==0);
     }
-    Opts a;a.minimal=true;a.mask=31;Opts b=a;b.minimal=false;Rig x(a),y(b);
+    Opts a;a.minimal=true;Opts b=a;b.minimal=false;Rig x(a),y(b);
     for(Rig* r:{&x,&y}){r->dev.declReportsFvf=2;r->dev.SetVertexDeclaration(r->declP);recordAllKinds(*r);r->effects();r->layer.replay();}
     CHECK(x.snapNorm()==y.snapNorm());
 }
 // The same sequence with the minimal restore and with the state block ends in the same device state and issues the same draws.
 static void testMinimalMatchesStateBlock(){
-    Opts a;a.minimal=true;a.mask=31;Opts b=a;b.minimal=false;Rig x(a),y(b);
+    Opts a;a.minimal=true;Opts b=a;b.minimal=false;Rig x(a),y(b);
     for(Rig* r:{&x,&y}){recordAllKinds(*r);r->effects();r->layer.replay();}
     CHECK(x.snapNorm()==y.snapNorm()&&x.dev.draws.size()==y.dev.draws.size());
     for(size_t i=0;i<x.dev.draws.size();++i)CHECK(sameRec(x,x.dev.draws[i],y,y.dev.draws[i],true));
@@ -1413,7 +1417,7 @@ static void testMinimalMatchesStateBlock(){
 }
 // (c) a Get that fails before the first Set sends the drain to the state block (nothing was changed yet); the replay is complete and the state restored all the same.
 static void sGetFails(Rig& r){
-    deferQuad(r,1);r.dev.SetStreamSource(0,r.ring,0,16);nameDraw(r,2,true);
+    deferQuad(r,1);deferQuad(r,2);
     r.beforeReplay=[&r]{r.dev.failGetRs=true;};r.boundary();r.dev.failGetRs=false;r.beforeReplay=nullptr;
 }
 static void sGetSamplerFails(Rig& r){deferQuad(r,1);deferQuad(r,2);r.beforeReplay=[&r]{r.dev.failGetSampler=true;};r.boundary();r.dev.failGetSampler=false;r.beforeReplay=nullptr;}
@@ -1421,7 +1425,7 @@ static void sGetStreamFails(Rig& r){deferQuad(r,1);deferQuad(r,2);r.beforeReplay
 static void sGetLightFails(Rig& r){r.ffState(1);r.fixedFunction();deferFf(r,1);r.beforeReplay=[&r]{r.dev.failGetTss=true;};r.boundary();r.dev.failGetTss=false;r.beforeReplay=nullptr;}
 static void testMinimalFallback(){
     for(auto sc:{sGetFails,sGetSamplerFails,sGetStreamFails,sGetLightFails}){
-        Opts o;o.mask=31;Pair p=runBoth(sc,o);const Counters& c=p.lay->layer.totalCounters();
+        Opts o;Pair p=runBoth(sc,o);const Counters& c=p.lay->layer.totalCounters();
         CHECK(c.restoreFallbacks==(gMinimal?1u:0u)&&c.replayedDraws==c.recorded&&c.recorded>=1&&c.replaySkipped==0&&c.restoreSets==0);
         CHECK(p.lay->dev.blocksCreated>=1&&p.lay->dev.applies==1&&p.lay->dev.captures==0);
         checkEquivalent(p);
@@ -1591,7 +1595,7 @@ int main(int argc,char** argv){
     const char* only=argc>1?argv[1]:nullptr; // a test name (substring) to run alone, and an optional cache mode
     const bool fixedMode=argc>2;if(fixedMode)gMirrorMode=std::atoi(argv[2]);
     struct T{const char* name;void(*fn)();};
-    const T tests[]={{"classify",testClassify},{"frame state",testFrameState},{"guard table",testGuardTable},{"equivalence",testEquivalence},
+    const T tests[]={{"classify",testClassify},{"lazy classify",testLazyClassify},{"frame state",testFrameState},{"guard table",testGuardTable},{"equivalence",testEquivalence},
         {"discard copy",testDiscard},{"partial overlap",testPartialOverlap},{"two entries",testTwoEntries},{"count-based marks",testMarkIsCountBased},
         {"rebase negative base",testRebaseNegativeBase},{"rebase kept base",testRebasePositiveBase},{"index buffer copy",testIbMaterialized},
         {"mixed streams",testMixedStreams},{"32-bit UP",test32bitUP},{"non-dynamic buffer",testNonDynamic},{"copy disabled",testConflictCopyDisabled},
@@ -1601,7 +1605,7 @@ int main(int argc,char** argv){
         {"rt mismatch",testRtMismatch},{"capacity",testCapacity},{"capture failure",testCaptureFailure},{"frame end",testFrameEnd},
         {"cooldown and pressure",testCooldownAndPressure},{"trim",testTrim},{"pending targets",testPendingTargets},{"layer off",testLayerOff},
         {"reset and teardown",testResetAndTeardown},{"512 entries",testStress512},
-        {"32-bit index copy",testIb32},{"both index formats",testIbBothFormats},{"water rain name flush",testOrderKinds},{"names deferred",testNamesMixed},{"names alone",testNamesAlone},{"names and water",testNamesWater},{"diagnostics",testDiagnostics},{"minimal restore",testMinimalRestore},{"minimal matches state block",testMinimalMatchesStateBlock},{"minimal fallback",testMinimalFallback},{"declaration restored exactly",testDeclarationRestoredExactly},{"minimal needs no state block",testMinimalNeedsNoStateBlock},{"minimal leaves other slots alone",testMinimalLeavesOthersAlone},{"nothing pending: in place",testOrderKindsIdle},
+        {"32-bit index copy",testIb32},{"both index formats",testIbBothFormats},{"water rain name flush",testOrderKinds},{"diagnostics",testDiagnostics},{"minimal restore",testMinimalRestore},{"minimal matches state block",testMinimalMatchesStateBlock},{"minimal fallback",testMinimalFallback},{"declaration restored exactly",testDeclarationRestoredExactly},{"minimal needs no state block",testMinimalNeedsNoStateBlock},{"minimal leaves other slots alone",testMinimalLeavesOthersAlone},{"nothing pending: in place",testOrderKindsIdle},
         {"replay scope failure",testReplayScopeFailure},{"state changed between draws",testStateChangedBetweenDraws},{"scissor and clip only when enabled",testScissorAndClipOnlyWhenEnabled},{"delta encoding",testDeltas},{"4096 entries",testFourThousandEntries},{"capacity limits",testCapacityLimits},{"guard table with many buffers",testGuardTableMany},{"sampled textures lookup",testSamplesLookup},{"shader read sets",testReadSets},{"diff replay",testDiffReplay},{"admission",testAdmission},{"hazard events",testHazardEvents},{"record size and timing",testRecordSizeAndTiming},{"fixed function",testFixedFunction},{"fixed function admission",testFixedAdmission},{"fixed function capacity",testFixedCapacity},{"water ripples",testRipples},
         {"render target texture",testRenderTargetTexture},{"render target verdict cache",testVerdictCache},{"vertex texture sampler",testVertexTextureSampler},{"buffer write conflict probe",testBufferWriteProbe}};
     for(int minimal=1;minimal>=0;--minimal){

@@ -501,14 +501,14 @@ int main(){
      std::vector<std::string> p;assert(parse("[Quality]\nActorShadowDetail=2\n",nullptr,p)==d&&p.size()==1);
      assert(actorShadowMap(d,true)&&!actorShadowMap(d,false)&&!actorShadowMap(off,true)&&!actorShadowMap(parse("[Quality]\nActorShadows=0\n"),true));
      assert(effective(off)==off&&describe(d).find(" NightBrightness=50(default) ActorShadowDetail=1(default)")!=std::string::npos);}
-    // task 34: SpellLayer 1/1/1 (0..1), SpellLayerClasses 31/31/31 (1..31), SpellTrace 0/0/0 (0..16): the last three keys and origin slots; creation-time (ActorShadows=0 does not force them).
-    assert(d.spellLayer==1&&d.spellLayerClasses==31&&d.spellTrace==0&&preset(Preset::Balanced).spellLayer==1&&preset(Preset::Performance).spellLayerClasses==31&&preset(Preset::Performance).spellTrace==0);
+    // task 34: SpellLayer 1/1/1 (0..1), SpellLayerClasses 15/15/15 (1..15), SpellTrace 0/0/0 (0..16): the last three keys and origin slots; creation-time (ActorShadows=0 does not force them).
+    assert(d.spellLayer==1&&d.spellLayerClasses==15&&d.spellTrace==0&&preset(Preset::Balanced).spellLayer==1&&preset(Preset::Performance).spellLayerClasses==15&&preset(Preset::Performance).spellTrace==0);
     assert(std::string(Keys[46].name)=="SpellLayer"&&Keys[46].field==&Settings::spellLayer&&Keys[46].low==0&&Keys[46].high==1);
-    assert(std::string(Keys[47].name)=="SpellLayerClasses"&&Keys[47].field==&Settings::spellLayerClasses&&Keys[47].low==1&&Keys[47].high==31);
+    assert(std::string(Keys[47].name)=="SpellLayerClasses"&&Keys[47].field==&Settings::spellLayerClasses&&Keys[47].low==1&&Keys[47].high==15);
     assert(std::string(Keys[48].name)=="SpellTrace"&&Keys[48].field==&Settings::spellTrace&&Keys[48].low==0&&Keys[48].high==16);
     {auto off=parse("[Quality]\nSpellLayer=0\nSpellLayerClasses=3\nSpellTrace=16\n");assert(off.spellLayer==0&&off.spellLayerClasses==3&&off.spellTrace==16&&off.origin[46]=='f'&&off.origin[47]=='f'&&off.origin[48]=='f'&&off.origin[45]=='d'&&off!=d);
      std::vector<std::string> p;assert(parse("[Quality]\nSpellLayer=2\nSpellLayerClasses=0\nSpellTrace=17\n",nullptr,p)==d&&p.size()==3);
-     assert(effective(parse("[Quality]\nActorShadows=0\n")).spellLayer==1&&describe(d).find(" ActorShadowDetail=1(default) SpellLayer=1(default) SpellLayerClasses=31(default) SpellTrace=0(default)")!=std::string::npos);}
+     assert(effective(parse("[Quality]\nActorShadows=0\n")).spellLayer==1&&describe(d).find(" ActorShadowDetail=1(default) SpellLayer=1(default) SpellLayerClasses=15(default) SpellTrace=0(default)")!=std::string::npos);}
     // 0.3.199: FogTemporal and RainBlend were removed (always on, game-tested): unknown keys now, the origin ends at FogCloudDensity.
     {std::vector<std::string> p;assert(parse("[Quality]\nFogTemporal=0\nRainBlend=0\n",nullptr,p)==d);assert(std::string(Keys[38].name)=="FogCloudDensity");}
     // 0.3.200 (gpu budget): GpuBudgetMs 4/3/2 (0..20, 0 = off) appended after FogCloudDensity, its own origin slot.
