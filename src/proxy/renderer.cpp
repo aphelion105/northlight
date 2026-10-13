@@ -1138,7 +1138,7 @@ private:
     void* spellQuery[8]={};unsigned spellQueryFrame[8]={},spellQueryN=0,spellQueryUnknownFrame=0;bool spellQueryUnknown=false; /* open D3DQUERYTYPE_OCCLUSION brackets (raw queries), by Issue(BEGIN) frame; spellQueryUnknown: a bracket was lost to a full table (its frame in spellQueryUnknownFrame) */
     // SpellTrace: spellTraceLeft frames of SPELLTRACE lines, from the first world frame at or after frame 300 (Diagnostics only); spellTraceWindow: the next frame is traced.
     unsigned spellTraceLeft=0,spellDrawIndex=0;bool spellTraceWindow=false,spellTraceFrame=false,spellTraceSeen=false;
-    LONGLONG spellReplayTicks=0,spellRecordTicks=0,spellGateTicks=0,spellFlushTicks=0;unsigned spellGateDraws=0,spellGateTimed=0,spellGateSeq=0,spellRecords=0,spellFlushes=0; /* spellFlushTicks/spellFlushes: the hazard flushes of gate draws, every one timed and kept out of the gate time */ /* sampled frames: spellGateDraws world-draw gate calls, every 8th timed (spellGateTimed, spellGateTicks = their time minus the record time inside them); spellRecordTicks/spellRecords: every Layer::defer() */NorthlightSpellLayer::Mode spellFrameMode=NorthlightSpellLayer::Mode::Off;
+    LONGLONG spellReplayTicks=0,spellRecordTicks=0,spellGateTicks=0,spellFlushTicks=0;unsigned spellCopiesAllowed=0,spellGateDraws=0,spellGateTimed=0,spellGateSeq=0,spellRecords=0,spellFlushes=0; /* spellFlushTicks/spellFlushes: the hazard flushes of gate draws, every one timed and kept out of the gate time */ /* sampled frames: spellGateDraws world-draw gate calls, every 8th timed (spellGateTimed, spellGateTicks = their time minus the record time inside them); spellRecordTicks/spellRecords: every Layer::defer() */NorthlightSpellLayer::Mode spellFrameMode=NorthlightSpellLayer::Mode::Off;
     // Hazard diagnostics (Diagnostics=1): the layer's latest event is consumed after each layer call that can raise one; the first 64 of the session are
     // logged as SPELLHAZARD. spellWin* accumulate every frame since the previous SPELLLAYER line (that line itself describes one sampled frame).
     static constexpr unsigned kSpellHazardLogs=64;
@@ -1289,9 +1289,15 @@ private:
         if(!spellOn||!spell.pending())return;
         auto mine=[&](IDirect3DSurface9* x){return x&&(x==spell.target()||x==spell.depth());};
         if(spellTraceFrame)spellEvent("copy",mine(source),mine(destination));
-        if(mine(source)||mine(destination)){spellFlush(NorthlightSpellLayer::Reason::Copy,true,NorthlightSpellLayer::InPlaceKind::None,"copy",mine(source),mine(destination));return;}
         IDirect3DBaseTexture9* container=nullptr;
-        if(destination&&SUCCEEDED(destination->GetContainer(__uuidof(IDirect3DBaseTexture9),reinterpret_cast<void**>(&container)))&&container){spellTextureWrite(static_cast<void*>(container));container->Release();}
+        if(destination&&FAILED(destination->GetContainer(__uuidof(IDirect3DBaseTexture9),reinterpret_cast<void**>(&container))))container=nullptr;
+        struct Drop{IDirect3DBaseTexture9* p;~Drop(){if(p)p->Release();}} dropContainer{container};
+        /* The layer's colour target copied into a texture (the game's glow copy, ffxGlow 1): allowed, the pending draws stay deferred. The copy then holds the world
+           without them (they replay at B, after the glow passes), so they get no game glow; a depth source, a copy into the target or depth, or into a non-texture
+           surface (GetRenderTargetData into system memory) is still the Copy hazard. */
+        if(container&&source&&source==spell.target()&&!mine(destination)){++spellCopiesAllowed;spellTextureWrite(static_cast<void*>(container));return;}
+        if(mine(source)||mine(destination)){spellFlush(NorthlightSpellLayer::Reason::Copy,true,NorthlightSpellLayer::InPlaceKind::None,"copy",mine(source),mine(destination));return;}
+        if(container)spellTextureWrite(static_cast<void*>(container));
     }
     void* spellTargetTexture(){
         IDirect3DSurface9* t=spell.target();if(!t)return nullptr;
@@ -1501,15 +1507,15 @@ private:
                 /* cpuGateUs and cpuDeferUs (= gate + record) are ESTIMATES: the gate was timed on every 8th call (gateTimed of gateDraws) and scaled up, with the calibrated scope cost (timerScopeUs, the least of 5 probes) taken
                    off per scope and the record and flush time inside the timed calls taken out; cpuRecordUs is every record. cpuFlushUs is the (unscaled) time of the hazard flushes of gate draws; their save, upload and
                    restore are also in cpuSaveUs/cpuUploadUs/cpuRestoreUs and are not in cpuGateUs. */
-                logf("SPELLLAYER frame=%u mode=%s deferred=%u/%u/%u/%u fixed=%u replayed=%u fadeInPlace=%u orderBy=%u/%u/%u hazards=%s flushes=%u conflicts=%u conflictBytes=%llu materialized=%u records=%u recordHigh=%u replaySets=%u arenaHigh=%u replaySkipped=%u discarded=%u cooldown=%u cpuDeferUs=%.1f cpuReplayUs=%.1f capBy=%u/%u/%u/%u overflowAt=%u overflowCandidates=%u memKiB=%u uploadKiB=%u deltaWords=%llu cpuRecordUs=%.1f cpuGateUs=%.1f gateDraws=%u gateTimed=%u recordCalls=%u cpuFlushUs=%.1f timerScopeUs=%.3f drains=%u cpuSaveUs=%.1f cpuUploadUs=%.1f cpuRestoreUs=%.1f restoreSets=%u restoreFallbacks=%u texSplits=%u "
+                logf("SPELLLAYER frame=%u mode=%s deferred=%u/%u/%u/%u fixed=%u replayed=%u fadeInPlace=%u orderBy=%u/%u/%u hazards=%s flushes=%u conflicts=%u conflictBytes=%llu materialized=%u records=%u recordHigh=%u replaySets=%u arenaHigh=%u replaySkipped=%u discarded=%u cooldown=%u cpuDeferUs=%.1f cpuReplayUs=%.1f capBy=%u/%u/%u/%u overflowAt=%u overflowCandidates=%u memKiB=%u uploadKiB=%u deltaWords=%llu cpuRecordUs=%.1f cpuGateUs=%.1f gateDraws=%u gateTimed=%u recordCalls=%u cpuFlushUs=%.1f timerScopeUs=%.3f drains=%u cpuSaveUs=%.1f cpuUploadUs=%.1f cpuRestoreUs=%.1f restoreSets=%u restoreFallbacks=%u texSplits=%u copiesAllowed=%u "
                      "window frames=%u deferring=%u cooldown=%u deferred=%u hazards=%s flushes=%u conflicts=%u overflowFrames=%u overflowCandidates=%u texSplits=%u drains=%u",
                     frame,NorthlightSpellLayer::modeName(mode),c.deferred[0],c.deferred[1],c.deferred[2],c.deferred[3],c.fixed,c.replayedDraws,c.inPlace[3],c.orderBy[0],c.orderBy[1],c.orderBy[2],hazards,c.flushes,c.conflicts,(unsigned long long)c.conflictBytes,c.materialized,c.recorded,c.recordHigh,c.replaySets,c.arenaHigh,c.replaySkipped,c.discarded,spell.cooldownLeft(),
                     gateUs+recordUs,double(spellReplayTicks)*us,c.capBy[0],c.capBy[1],c.capBy[2],c.capBy[3],c.overflowAt,c.overflowCandidates,unsigned(spellMem.total()>>10),unsigned(spellMem.uploads>>10),(unsigned long long)c.deltaWords,recordUs,gateUs,spellGateDraws,spellGateTimed,spellRecords,flushUs,timerUs,
-                    c.drains,double(phase.save)*us,double(phase.upload)*us,double(phase.restore)*us,c.restoreSets,c.restoreFallbacks,c.texSplits,
+                    c.drains,double(phase.save)*us,double(phase.upload)*us,double(phase.restore)*us,c.restoreSets,c.restoreFallbacks,c.texSplits,spellCopiesAllowed,
                     spellWinFrames,spellWinDeferring,spellWinCooldown,spellWin.totalDeferred(),winHazards,spellWin.flushes,spellWin.conflicts,spellWin.overflowFrames,spellWin.overflowCandidates,spellWin.texSplits,spellWin.drains);
                 spellWin=NorthlightSpellLayer::Counters{};spellWinFrames=spellWinDeferring=spellWinCooldown=0;
             }
-            spellReplayTicks=spellRecordTicks=spellGateTicks=spellFlushTicks=0;spellGateDraws=spellGateTimed=spellRecords=spellFlushes=0;spell.clearPhaseTicks();
+            spellReplayTicks=spellRecordTicks=spellGateTicks=spellFlushTicks=0;spellGateDraws=spellGateTimed=spellRecords=spellFlushes=spellCopiesAllowed=0;spell.clearPhaseTicks();
             if(spellTraceFrame){logf("SPELLTRACE end frame=%u left=%u",frame,spellTraceLeft-1);spellTraceFrame=false;if(spellTraceLeft)--spellTraceLeft;}
             spellTraceWindow=spellTraceLeft&&diagnostics()&&frame+1>=300;
         });
