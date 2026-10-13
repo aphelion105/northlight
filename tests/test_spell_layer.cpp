@@ -254,12 +254,12 @@ static bool gDirty=true; // Config::dirtyRecord of every Rig (the whole suite al
 static bool gMinimal=true; // Config::minimalRestore of every Rig (main runs the whole suite with it on and off: the end state must be identical)
 static unsigned gTexGeneration=0;static unsigned texGeneration(void*){return gTexGeneration;}
 static uint64_t gTicks=0;static uint64_t fakeClock(void*){return ++gTicks;}static bool fakeTiming(void*){return true;} // every read advances one tick: a timed phase costs exactly 1
-struct Opts{unsigned maxOrderSplits=8;bool allowMismatch=false,failSafe=false;bool dirty=gDirty;unsigned maxTexSplits=8;bool minimal=gMinimal;bool timed=false;size_t deltaBytes=2u<<20;unsigned deltaChunk=16384;bool verdictCache=false;bool on=true;unsigned maxEntries=512;bool conflictCopy=true;unsigned mask=15;size_t arena=1u<<20,upVb=1u<<16,upIb=1u<<14;};
+struct Opts{bool fogOn=false;const NorthlightSpellFog::Frame* fog=nullptr;unsigned maxOrderSplits=8;bool allowMismatch=false,failSafe=false;bool dirty=gDirty;unsigned maxTexSplits=8;bool minimal=gMinimal;bool timed=false;size_t deltaBytes=2u<<20;unsigned deltaChunk=16384;bool verdictCache=false;bool on=true;unsigned maxEntries=512;bool conflictCopy=true;unsigned mask=15;size_t arena=1u<<20,upVb=1u<<16,upIb=1u<<14;};
 struct Rig{
     Fake::FakeDevice dev;Layer layer;Opts o;
     Fake::Surface *T,*D,*Other;
     Fake::VB *ring,*stat,*extra,*ring2;Fake::IB *ringIb,*ringIb32,*stIb;
-    Fake::Decl *declP,*declTwo;Fake::VShader *vs,*vsEff;Fake::PShader *ps,*psEff;Fake::Texture *texA,*texB;unsigned psMajor=3; /* what the integration passes as DrawArgs::psMajor */
+    Fake::Decl *declP,*declTwo;Fake::VShader *vs,*vsEff;Fake::PShader *ps,*psEff;Fake::Texture *texA,*texB;unsigned psMajor=3;int psFogReg=-1; /* what the integration passes as DrawArgs::psMajor and psFogReg */
     NorthlightSpellLayer::MirrorView view;
     bool useReads=false;NorthlightShaderReads::ReadSet vsRs,psRs; // shaders with scanned read sets (restrict()); otherwise they read everything
     const void* readsVs=nullptr,*readsPs=nullptr; // the shaders the read sets belong to (default: the bound vs/ps); set to another shader to model a read set looked up for a different one
@@ -307,7 +307,7 @@ struct Rig{
         const float c[4]={1,2,3,4};dev.SetVertexShaderConstantF(5,c,1);dev.SetPixelShaderConstantF(2,c,1);dev.SetSamplerState(0,5,2);dev.SetRenderState(D3DRS_ALPHAREF,128);
         opaqueZ();translucent(kSrcAlpha,kBlendOne);
         Config c2;c2.on=o.on;c2.classMask=o.mask;c2.maxEntries=o.maxEntries;c2.arenaBytes=o.arena;c2.uploadVbBytes=o.upVb;c2.uploadIbBytes=o.upIb;
-        c2.minimalRestore=o.minimal;c2.maxOrderSplits=o.maxOrderSplits;c2.dirtyRecord=o.dirty;c2.dirtyCheck=true;c2.dirtyDisableOnMismatch=o.failSafe;c2.synced=&dev.synced;c2.maxTexSplits=o.maxTexSplits;c2.conflictCopy=o.conflictCopy;c2.deltaChunkWords=o.deltaChunk;c2.deltaBytes=o.deltaBytes;
+        c2.minimalRestore=o.minimal;c2.maxOrderSplits=o.maxOrderSplits;c2.fogOn=o.fogOn;c2.fog=o.fog;c2.fogLog=true;c2.dirtyRecord=o.dirty;c2.dirtyCheck=true;c2.dirtyDisableOnMismatch=o.failSafe;c2.synced=&dev.synced;c2.maxTexSplits=o.maxTexSplits;c2.conflictCopy=o.conflictCopy;c2.deltaChunkWords=o.deltaChunk;c2.deltaBytes=o.deltaBytes;
         if(gMirrorMode){
             Fake::Mirror& m=dev.mir;view=Fake::makeView(dev);c2.source=&view;
             if(gMirrorMode==2){for(unsigned i=0;i<256;i+=3)m.hideRs[i]=true;for(unsigned i=0;i<256;i+=5)m.hideVsF[i]=true;for(unsigned i=0;i<224;i+=7)m.hidePsF[i]=true;m.hideTex[3]=m.hideTex[5]=true;m.hideSmp[1]=true;m.hideVsB=true;}
@@ -447,7 +447,7 @@ struct Rig{
     }
     // One game draw: classify, defer when told to (layer on), otherwise draw in place after the layer's hazard handling. Returns the tag.
     template<class F> int issueWith(const DrawArgs& a0,Family fam,F&& tweak){
-        DrawArgs a=a0;a.psMajor=psMajor;if(useReads){a.vsReads=&vsRs;a.psReads=&psRs;a.vsFor=readsVs?readsVs:static_cast<const void*>(vs);a.psFor=readsPs?readsPs:static_cast<const void*>(ps);}
+        DrawArgs a=a0;a.psMajor=psMajor;a.psFogReg=psFogReg;if(useReads){a.vsReads=&vsRs;a.psReads=&psRs;a.vsFor=readsVs?readsVs:static_cast<const void*>(vs);a.psFor=readsPs?readsPs:static_cast<const void*>(ps);}
         const int tag=nextTag++;tagReads[tag]=TagReads{useReads,vsRs,psRs};const float v[4]={float(tag),0,0,0};dev.SetVertexShaderConstantF(31,v,1);dev.SetRenderState(165,DWORD(tag));
         DrawFacts f=facts(fam);f.pending=o.on&&layer.pending()>0;tweak(f);
         last=classify(f,o.mask);bool deferred=false;
@@ -1366,6 +1366,119 @@ static void testDiagnostics(){
     Pair q=runBoth(sSplitWater);                                                                           // no clock configured: nothing is timed, the drains still count
     CHECK(q.lay->layer.phaseTicks().save==0&&q.lay->layer.phaseTicks().restore==0&&q.lay->layer.totalCounters().drains==2);
 }
+// ---------------- SpellFog ----------------
+static NorthlightSpellFog::Frame fogFrame(float sigma){
+    NorthlightSpellFog::Frame f;f.active=true;f.revision=1;
+    for(unsigned i=0;i<NorthlightSpellFog::kSamples;++i)f.tau[i]=sigma*NorthlightSpellFog::kDistance[i];
+    f.scatter[0]=.2f;f.scatter[1]=.3f;f.scatter[2]=.4f;return f;
+}
+// The fit: identity without fog, a nonincreasing visible ramp with, close to the product of the game's visibility and Northlight's transmittance over the range it covers.
+static void testSpellFogFit(){
+    using namespace NorthlightSpellFog;
+    float fit[3];
+    {Frame none;const float g[3]={-1/150.f,1.f,1.f};CHECK(!emitFog(none,g,fit));Frame clear=fogFrame(0);CHECK(!emitFog(clear,g,fit));}   // identity when T_N = 1
+    {Frame f=fogFrame(.004f);f.active=false;const float g[3]={-1/150.f,1.f,1.f};CHECK(!emitFog(f,g,fit));}
+    {Frame f=fogFrame(.004f);const float bad[][3]={{0,1,1},{.01f,1,1},{-.01f,1,0},{-.01f,1,40},{-.01f,NAN,1},{-1.f,1.f,1.f}};for(auto& g:bad)CHECK(!emitFog(f,g,fit));}  // no ramp, a rising ramp, a silly exponent, no range
+    struct G{float start,end,power;} games[]={{0,300,1},{0,120,2},{20,200,1},{10,400,1.5f},{0,150,3},{40,160,1}};
+    float worst=0;
+    for(const G& gg:games)for(float sigma:{.0005f,.002f,.005f,.01f,.02f}){
+        Frame f=fogFrame(sigma);
+        const float g[3]={-1/(gg.end-gg.start),gg.end/(gg.end-gg.start),gg.power};
+        CHECK(emitFog(f,g,fit));
+        CHECK(fit[0]<0&&fit[1]>0&&fit[2]>0);
+        const float hi=std::min(-g[1]/g[0],kRange);float prev=2,err=0;
+        for(int i=0;i<=200;++i){
+            const float z=hi*float(i)/200,v=fitVisibility(fit,z),target=gameVisibility(g,z)*f.transmittance(z);
+            CHECK(v<=prev+1e-6f);prev=v;                                                  // monotone
+            err=std::max(err,std::fabs(v-target));
+            CHECK(v<=gameVisibility(g,z)+.12f);                                           // never much more visible than the game's own
+        }
+        if(gg.start<=20&&gg.end>=120)CHECK(err<.065f);                                    // a ramp from the eye: the fit is close
+        worst=std::max(worst,err);
+    }
+    CHECK(worst<.16f);                                                                    // the worst is a late start with a high power (the single pow cannot follow its plateau)
+    // the fog colour of the alpha sub-class: unchanged where there is no fog, never negative, pulled toward the in-scatter with fog
+    {Frame f=fogFrame(.01f);const float g[3]={-1/150.f,1.f,1.f},cF[3]={.4f,.5f,.6f};CHECK(emitFog(f,g,fit));
+     float c[3];emitColor(f,g,fit,cF,c);for(float v:c)CHECK(v>=0&&std::isfinite(v));
+     Frame c0=fogFrame(0);c0.active=true;float id[3];emitColor(c0,g,g,cF,id);for(int k=0;k<3;++k)CHECK(std::fabs(id[k]-cF[k])<1e-5f);}  // no fog: the colour stays (to rounding)
+    // the hold: smooth toward the estimate, fade to nothing when off
+    {Hold h;Frame raw=fogFrame(.01f);h.update(raw,true,.016f);CHECK(h.out.tau[5]>0&&h.out.tau[5]<raw.tau[5]);
+     for(int i=0;i<400;++i)h.update(raw,true,.016f);CHECK(std::fabs(h.out.tau[5]-raw.tau[5])<1e-3f&&h.out.active);
+     for(int i=0;i<1000;++i)h.update(raw,false,.016f);CHECK(!h.out.active&&h.out.tau[5]<.004f);}
+}
+// What the replay is given: with SpellFog off exactly today's deltas; on, c30 (and the alpha sub-class's fog colour) carry the fit of the game's value, per entry, whatever the entries before
+// were (additive, alpha and modulate interleaved with the same game values), and the device is back to the game's values after the replay.
+static void sFog(Rig& r){
+    const float c30[4]={-1/150.f,1.f,1.f,0},cF[4]={.4f,.5f,.6f,1};
+    r.dev.SetVertexShaderConstantF(30,c30,1);r.dev.SetPixelShaderConstantF(16,cF,1);r.psFogReg=16;
+    r.translucent(kSrcAlpha,kBlendOne);deferQuad(r,1);                         // 1 additive
+    r.translucent(kSrcAlpha,kInvSrcAlpha);deferQuad(r,2);                      // 2 alpha
+    r.translucent(kSrcAlpha,kBlendOne);deferQuad(r,3);                         // 3 additive after an alpha
+    r.translucent(kDestColor,kSrcColor);deferQuad(r,4);                        // 4 modulate
+    r.translucent(kSrcAlpha,kInvSrcAlpha);deferQuad(r,5);                      // 5 alpha
+    r.translucent(kSrcAlpha,kBlendOne);deferQuad(r,6);                         // 6 additive
+    r.translucent(kSrcAlpha,kInvSrcAlpha);deferQuad(r,7);                      // 7 alpha
+    r.boundary();
+}
+static void testSpellFogRecord(){
+    using namespace NorthlightSpellFog;
+    const Frame frame=fogFrame(.006f);
+    const float game[3]={-1/150.f,1.f,1.f},cF[3]={.4f,.5f,.6f};float fit[3],col[3];CHECK(emitFog(frame,game,fit));emitColor(frame,game,fit,cF,col);
+    CHECK(fit[0]!=game[0]||fit[1]!=game[1]||fit[2]!=game[2]);
+    // off (the setting, or no fog this frame): identical to the reference run, no fog entries
+    for(int mode=0;mode<2;++mode){
+        Opts o;o.fogOn=mode==0;Frame inactive=frame;inactive.active=false;o.fog=mode==0?&inactive:&frame;
+        Pair p=runBoth(sFog,o);checkEquivalent(p);CHECK(p.lay->layer.totalCounters().fogEntries==0&&p.lay->deferredTags.size()==7);
+    }
+    // on
+    Opts o;o.fogOn=true;o.fog=&frame;Pair p=runBoth(sFog,o);const Counters& c=p.lay->layer.totalCounters();
+    CHECK(c.fogEntries==7&&p.lay->deferredTags.size()==7&&c.totalHazards()==0&&c.dirtyMismatches==0);
+    size_t marker=0;for(size_t i=0;i<p.lay->dev.draws.size();++i)if(p.lay->dev.draws[i].tag==Rig::kMarker)marker=i;
+    unsigned seen=0;
+    for(size_t i=marker+1;i<p.lay->dev.draws.size();++i){
+        const auto& d=p.lay->dev.draws[i];const bool alpha=d.tag==2||d.tag==5||d.tag==7;++seen;
+        CHECK(d.st.vsc[30][0]==fit[0]&&d.st.vsc[30][1]==fit[1]&&d.st.vsc[30][2]==fit[2]);                  // c30: the fit of the game's value, for every sub-class
+        if(alpha)CHECK(d.st.psc[16][0]==col[0]&&d.st.psc[16][1]==col[1]&&d.st.psc[16][2]==col[2]&&d.st.psc[16][3]==1);   // the alpha sub-class's fog colour
+        else CHECK(d.st.psc[16][0]==cF[0]&&d.st.psc[16][1]==cF[1]&&d.st.psc[16][2]==cF[2]);                // additive and modulate keep the game's colour: no stale emitted colour
+    }
+    CHECK(seen==7);
+    CHECK(p.lay->dev.s.vsc[30][0]==game[0]&&p.lay->dev.s.vsc[30][1]==game[1]&&p.lay->dev.s.vsc[30][2]==game[2]);   // the game's values are back (boundary() also checks the whole state)
+    CHECK(p.lay->dev.s.psc[16][0]==cF[0]&&p.lay->dev.s.psc[16][2]==cF[2]);
+    CHECK(p.lay->layer.fogLastFit()[0]==fit[0]);
+    const Layer::FogSample* samples=nullptr;const unsigned n=p.lay->layer.takeFogSamples(samples);   // the diagnostics samples: all three sub-classes seen, the alpha ones carry the colours
+    bool add=false,al=false,mod=false;for(unsigned i=0;i<n;++i){add|=samples[i].sub==SubAdditive;al|=samples[i].sub==SubAlpha&&samples[i].hasColor;mod|=samples[i].sub==SubModulate;}
+    CHECK(n>=7&&add&&al&&mod&&p.lay->layer.takeFogSamples(samples)==0);
+    // a game constant the fit leaves alone (no falling ramp): the game's value is recorded as it is
+    Opts q;q.fogOn=true;q.fog=&frame;
+    Pair z=runBoth([](Rig& r){const float c30[4]={0,1,1,0};r.dev.SetVertexShaderConstantF(30,c30,1);deferQuad(r,1);deferQuad(r,2);r.boundary();},q);
+    checkEquivalent(z);CHECK(z.lay->layer.totalCounters().fogEntries==0);
+}
+
+// The fog slot is never "synced": an entry recorded while the fog is on leaves the folded value in the Model, so an entry recorded after the fog went off (or before it came on) is
+// compared with it and records the game's value again.
+static NorthlightSpellFog::Frame gToggleFog;
+static void sFogToggle(Rig& r){
+    const float c30[4]={-1/150.f,1.f,1.f,0};r.dev.SetVertexShaderConstantF(30,c30,1);
+    gToggleFog.active=false;++gToggleFog.revision;deferQuad(r,1);              // fog off: the game's c30 (and the row is marked synced)
+    gToggleFog.active=true;++gToggleFog.revision;deferQuad(r,2);               // on: the fit
+    gToggleFog.active=false;++gToggleFog.revision;deferQuad(r,3);              // off again: the game's c30 must come back
+    gToggleFog.active=true;++gToggleFog.revision;deferQuad(r,4);
+    r.boundary();
+}
+static void testSpellFogToggle(){
+    using namespace NorthlightSpellFog;
+    gToggleFog=fogFrame(.006f);const float game[3]={-1/150.f,1.f,1.f};float fit[3];CHECK(emitFog(gToggleFog,game,fit));
+    Opts o;o.fogOn=true;o.fog=&gToggleFog;Pair p=runBoth(sFogToggle,o);
+    size_t marker=0;for(size_t i=0;i<p.lay->dev.draws.size();++i)if(p.lay->dev.draws[i].tag==Rig::kMarker)marker=i;
+    unsigned seen=0;
+    for(size_t i=marker+1;i<p.lay->dev.draws.size();++i){
+        const auto& d=p.lay->dev.draws[i];const bool fogged=d.tag==2||d.tag==4;++seen;
+        const float* want=fogged?fit:game;
+        CHECK(d.st.vsc[30][0]==want[0]&&d.st.vsc[30][1]==want[1]&&d.st.vsc[30][2]==want[2]);
+    }
+    CHECK(seen==4&&p.lay->layer.totalCounters().fogEntries==2&&p.lay->layer.totalCounters().dirtyMismatches==0);
+}
+
 // ---------------- review items: caps, stride-0 streams, upload cursors, depth textures, trim ----------------
 // Water, rain and name splits are capped per frame like texture splits: the 9th is the Order hazard (flush, fallback, cooldown).
 static void sOrderCap(Rig& r){
@@ -1844,7 +1957,7 @@ int main(int argc,char** argv){
     const char* only=argc>1?argv[1]:nullptr; // a test name (substring) to run alone, and an optional cache mode
     const bool fixedMode=argc>2;if(fixedMode)gMirrorMode=std::atoi(argv[2]);
     struct T{const char* name;void(*fn)();};
-    const T tests[]={{"classify",testClassify},{"lazy classify",testLazyClassify},{"glow verdict",testGlowVerdict},{"order split cap",testOrderSplitCap},{"stride 0 stream",testStride0},{"fvf vertex size",testFvfVertexSize},{"allocation failures",testAllocFailures},{"stride 0 fvf",testStride0Fvf},{"upload cursor",testUploadCursor},{"depth stencil texture",testDepthStencilTexture},{"trim and reuse",testTrimReuse},{"dirty record random",testDirtyRandom},{"record slots",testRecordSlots},{"dirty fail safe",testDirtyFailSafe},{"frame state",testFrameState},{"guard table",testGuardTable},{"equivalence",testEquivalence},
+    const T tests[]={{"classify",testClassify},{"lazy classify",testLazyClassify},{"glow verdict",testGlowVerdict},{"spell fog fit",testSpellFogFit},{"spell fog record",testSpellFogRecord},{"spell fog toggle",testSpellFogToggle},{"order split cap",testOrderSplitCap},{"stride 0 stream",testStride0},{"fvf vertex size",testFvfVertexSize},{"allocation failures",testAllocFailures},{"stride 0 fvf",testStride0Fvf},{"upload cursor",testUploadCursor},{"depth stencil texture",testDepthStencilTexture},{"trim and reuse",testTrimReuse},{"dirty record random",testDirtyRandom},{"record slots",testRecordSlots},{"dirty fail safe",testDirtyFailSafe},{"frame state",testFrameState},{"guard table",testGuardTable},{"equivalence",testEquivalence},
         {"discard copy",testDiscard},{"partial overlap",testPartialOverlap},{"two entries",testTwoEntries},{"count-based marks",testMarkIsCountBased},
         {"rebase negative base",testRebaseNegativeBase},{"rebase kept base",testRebasePositiveBase},{"index buffer copy",testIbMaterialized},
         {"mixed streams",testMixedStreams},{"32-bit UP",test32bitUP},{"non-dynamic buffer",testNonDynamic},{"copy disabled",testConflictCopyDisabled},

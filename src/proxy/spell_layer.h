@@ -29,6 +29,7 @@
 #include <vector>
 #include "saved_state.h"
 #include "synced_slots.h"
+#include "spell_fog.h"
 #include "shader_read_set.h"
 
 namespace NorthlightSpellLayer {
@@ -164,6 +165,7 @@ struct Counters{
     unsigned restoreFallbacks=0,texSplits=0;      // drains that had to use the state block instead of the minimal restore; texture writes answered with a split (drain, keep deferring)
     unsigned restoreSets=0;                       // device Set* calls of the minimal restore (apart from replaySets)
     uint64_t recordSlots=0;                       // slots a record examined (read and compared): with the synced bits only the ones that may have changed
+    unsigned fogEntries=0;                        // records whose fog slots carried Northlight's fog (SpellFog)
     unsigned stride0Refused=0;                    // defers refused (a Capture failure: flush + fallback) because a stride-0 stream's vertex size could not be determined
     unsigned checkAllocFails=0;                   // dirty cross-checks that could not run (no scratch memory): the record used the full compare and dirtyRecord went off
     unsigned dirtyMismatches=0;                   // Config::dirtyCheck: records whose synced-bit delta differed from the full compare's (must stay 0)
@@ -180,7 +182,7 @@ struct Counters{
         for(int i=0;i<4;++i){deferred[i]+=o.deferred[i];inPlace[i]+=o.inPlace[i];}
         for(int i=0;i<3;++i)orderBy[i]+=o.orderBy[i];
         for(unsigned i=0;i<kReasons;++i)hazards[i]+=o.hazards[i];
-        fixed+=o.fixed;flushes+=o.flushes;replays+=o.replays;drains+=o.drains;recordSlots+=o.recordSlots;stride0Refused+=o.stride0Refused;checkAllocFails+=o.checkAllocFails;dirtyMismatches+=o.dirtyMismatches;restoreFallbacks+=o.restoreFallbacks;texSplits+=o.texSplits;restoreSets+=o.restoreSets;replayedDraws+=o.replayedDraws;replaySkipped+=o.replaySkipped;discarded+=o.discarded;
+        fixed+=o.fixed;flushes+=o.flushes;replays+=o.replays;drains+=o.drains;recordSlots+=o.recordSlots;stride0Refused+=o.stride0Refused;fogEntries+=o.fogEntries;checkAllocFails+=o.checkAllocFails;dirtyMismatches+=o.dirtyMismatches;restoreFallbacks+=o.restoreFallbacks;texSplits+=o.texSplits;restoreSets+=o.restoreSets;replayedDraws+=o.replayedDraws;replaySkipped+=o.replaySkipped;discarded+=o.discarded;
         conflicts+=o.conflicts;materialized+=o.materialized;recorded+=o.recorded;replaySets+=o.replaySets;conflictBytes+=o.conflictBytes;
         for(int i=0;i<4;++i)capBy[i]+=o.capBy[i];overflowFrames+=o.overflowFrames;overflowAt+=o.overflowAt;overflowCandidates+=o.overflowCandidates;
         deltaWords+=o.deltaWords;arenaHigh=std::max(arenaHigh,o.arenaHigh);recordHigh=std::max(recordHigh,o.recordHigh);
@@ -292,6 +294,7 @@ struct DrawArgs{
     INT baseVertex=0;UINT minIndex=0,numVertices=0,first=0,primCount=0;
     const void* vertexData=nullptr;UINT stride=0;const void* indexData=nullptr;D3DFORMAT indexFormat=D3DFMT_INDEX16;
     const NorthlightShaderReads::ReadSet* vsReads=nullptr;const NorthlightShaderReads::ReadSet* psReads=nullptr; // what the bound shaders can read (scanned at creation; null or !exact: everything)
+    int psFogReg=-1;     // the bound pixel shader's proven fog colour register (legacy_fog.h ps3FogColorRegister; -1: not a proven ps_3_0 combiner): the alpha sub-class folds Northlight's in-scatter into it
     const void* vsFor=nullptr;const void* psFor=nullptr; // the shaders vsReads/psReads were looked up for: defer() uses a read set only when the shader it records is the same one
     unsigned psMajor=0;  // shader model major version of the bound pixel shader (from its version token at registration; 0 = unknown): defer() admits only >= kMinPsMajor
     static DrawArgs primitive(D3DPRIMITIVETYPE p,UINT start,UINT count){DrawArgs a;a.type=DrawType::Primitive;a.prim=p;a.first=start;a.primCount=count;return a;}
@@ -332,6 +335,9 @@ struct Config{
     DWORD readBackLockFlags=D3DLOCK_READONLY;     // NorthlightUpload::readBackLock()
     void (*markGuard)(void* ctx,void* rawBuffer,bool guarded)=nullptr;void* markCtx=nullptr; // sets/clears the per-buffer "call onBufferWrite" flag
     NorthlightStateBlockPool* savedPool=nullptr;  // the renderer's SavedState pool for the replay scope (optional; used only when minimalRestore is off or a drain cannot use it)
+    bool fogOn=false;                             // SpellFog: the fog slots of a record carry the game's value folded with Northlight's fog (spell_fog.h) instead of the game's value
+    const NorthlightSpellFog::Frame* fog=nullptr; // Northlight's fog for the frame (the previous frame's estimate), owned by the integration; null or inactive: the game's values
+    bool fogLog=false;                            // keep the first samples of each sub-class for the SPELLFOG diagnostics line (takeFogSamples)
     bool dirtyRecord=true;                        // a record examines only the slots whose synced bit (SyncedSlots, kept by the device mirror's setters) is clear; false: every slot of the read set, as before
     bool dirtyDisableOnMismatch=false;            // fail safe: the first record whose synced-bit delta differs from the full compare's switches dirtyRecord off for good (the full compare's delta is used)
     bool dirtyCheck=false;                        // tests: run both and count a difference in dirtyMismatches (the full compare's delta is the one used)
@@ -610,9 +616,16 @@ private:
         return true;
     }
     std::vector<std::unique_ptr<uint32_t[]>> deltaChunks_;unsigned deltaChunk_=0,deltaUsed_=0; // state deltas of the pending entries; deltaChunk_/deltaUsed_: the chunk being filled and its used words
-    struct SyncPend{uint64_t rs[4]={},vsF[4]={},psF[4]={};uint16_t ss[16]={};uint16_t tex=0;bool vp=false;unsigned slots=0;};
+    struct SyncPend{uint64_t rs[4]={},vsF[4]={},psF[4]={};uint16_t ss[16]={};uint16_t tex=0;bool vp=false;unsigned slots=0;bool fogVs=false;int fogPs=-1,fogApplied=0;}; // fogVs/fogPs: the fog rows of this record (they hold Northlight's value, never synced)
     std::unique_ptr<uint32_t[]> checkScratch_;         // the dirty cross-check's copy of the first delta (kScratchWords)
     DeltaDiff dirtyFirst_;bool dirtyTaken_=false;       // the first synced-bit mismatch of the session (takeDirtyMismatch)
+    // SpellFog state: the fit cache (one game constant per frame revision), the alpha colour cache, the sub-class and fog colour register of the draw being recorded, the first samples per sub-class.
+    float fogKey_[3]={},fogFit_[3]={},fogColKey_[6]={},fogColOut_[3]={};bool fogKeyValid_=false,fogFitOk_=false,fogColValid_=false;unsigned fogRev_=~0u,fogColRev_=~0u,fogSub_=0;int fogReg_=-1;
+    float fogLastFit_[3]={};
+public:
+    struct FogSample{unsigned sub=0;float game[4]={},gameColor[4]={},emit[4]={},emitColor[4]={};bool hasColor=false;};
+private:
+    FogSample fogSamples_[64];unsigned fogSampleN_=0,fogPerSub_[4]={};
     SyncPend pend_;                                   // the slots the delta being built examined: they become synced when the record commits
     std::unique_ptr<Undo> undo_;                      // allocated at the first minimal restore
     std::vector<std::unique_ptr<FfRec[]>> ffChunks_;unsigned ffCount_=0;const FfRec* ffPrev_=nullptr; // ffPrev_: the last fixed-function record the running replay applied
@@ -1105,10 +1118,11 @@ private:
     // Emits, for the registers in mask whose value differs from the model (or is unknown in it), runs of rows (bridging gaps of up to two unchanged registers:
     // one call is cheaper than two). synced (optional): registers whose model value is known to equal the device (valid in the model, SyncedSlots) are not examined: they cannot
     // differ, and a bridged one is copied from the model, so the emitted delta is the one the full compare makes. Only the registers of mask & ~synced are looked at, word-wise.
-    template<unsigned rowWords> void diffRows(uint32_t op,const void* curV,const void* mdlV,const uint64_t* valid,const uint64_t* mask,const uint64_t* synced,unsigned n){
+    template<unsigned rowWords> void diffRows(uint32_t op,const void* curV,const void* mdlV,const uint64_t* valid,const uint64_t* mask,const uint64_t* synced,unsigned n,unsigned ovrRow=~0u,const float* ovr=nullptr){
         const uint8_t* cur=static_cast<const uint8_t*>(curV),*mdl=static_cast<const uint8_t*>(mdlV);constexpr size_t rb=size_t(rowWords)*4; // constant row size: the compare inlines
         auto isSynced=[&](unsigned i){return synced&&bitSet(synced,i);};
-        auto differs=[&](unsigned i){return !isSynced(i)&&(!bitSet(valid,i)||std::memcmp(cur+i*rb,mdl+i*rb,rb)!=0);};
+        auto rowOf=[&](unsigned i)->const uint8_t*{return i==ovrRow?reinterpret_cast<const uint8_t*>(ovr):cur+i*rb;}; // ovr: the value to record for one row instead of the device's (SpellFog)
+        auto differs=[&](unsigned i){return !isSynced(i)&&(!bitSet(valid,i)||std::memcmp(rowOf(i),mdl+i*rb,rb)!=0);};
         unsigned consumed=0; // rows below it are inside an emitted run
         for(unsigned w=0;w<(n+63)/64;++w){
             uint64_t bits=mask[w]&~(synced?synced[w]:0ull);
@@ -1119,7 +1133,7 @@ private:
                 unsigned end=i+1;
                 for(unsigned k=end;k<n&&k-end<=2&&bitSet(mask,k);++k)if(differs(k))end=k+1;
                 emit(op,i,end-i);
-                for(unsigned r=i;r<end;++r){std::memcpy(&scratch_[n_],(isSynced(r)?mdl:cur)+r*rb,rb);n_+=rowWords;}
+                for(unsigned r=i;r<end;++r){std::memcpy(&scratch_[n_],isSynced(r)?mdl+r*rb:rowOf(r),rb);n_+=rowWords;}
                 consumed=end;
             }
         }
@@ -1144,6 +1158,33 @@ private:
             }
         }
         return rsStage_;
+    }
+    // SpellFog: the fit of the game's fog constant for the frame (cached per game constant and frame revision: the game's constant is the same for most of a frame's effects) and the
+    // alpha sub-class's fog colour. False: the game's constant stays.
+    bool fogFit(const float game[3],float fit[3]){
+        const NorthlightSpellFog::Frame& f=*cfg_.fog;
+        if(!(fogKeyValid_&&fogRev_==f.revision&&!std::memcmp(fogKey_,game,12))){
+            std::memcpy(fogKey_,game,12);fogRev_=f.revision;fogKeyValid_=true;fogColValid_=false;
+            fogFitOk_=NorthlightSpellFog::emitFog(f,game,fogFit_);
+        }
+        if(fogFitOk_){std::memcpy(fit,fogFit_,12);std::memcpy(fogLastFit_,fogFit_,12);}
+        return fogFitOk_;
+    }
+    void fogColor(const float game[3],const float fit[3],const float cF[3],float out[3]){
+        float key[6];std::memcpy(key,game,12);std::memcpy(key+3,cF,12);
+        if(!(fogColValid_&&fogColRev_==cfg_.fog->revision&&!std::memcmp(fogColKey_,key,24))){
+            std::memcpy(fogColKey_,key,24);fogColRev_=cfg_.fog->revision;fogColValid_=true;
+            NorthlightSpellFog::emitColor(*cfg_.fog,game,fit,cF,fogColOut_);
+        }
+        std::memcpy(out,fogColOut_,12);
+    }
+    void fogSample(const float* game,const float* gameColor,const float* emit,const float* emitColor){
+        if(!cfg_.fogLog||fogSampleN_>=64)return;
+        const unsigned k=fogSub_&SubAdditive?0u:fogSub_&SubAlpha?1u:fogSub_&SubModulate?2u:3u;
+        if(fogPerSub_[k]>=16)return; // the first 16 of each sub-class per session
+        ++fogPerSub_[k];FogSample& x=fogSamples_[fogSampleN_++];x=FogSample{};x.sub=fogSub_;
+        std::memcpy(x.game,game,12);std::memcpy(x.emit,emit,12); // three floats each: (x, y, power) and (r, g, b)
+        if(gameColor){x.hasColor=true;std::memcpy(x.gameColor,gameColor,12);std::memcpy(x.emitColor,emitColor,12);}
     }
     // Builds the delta of the draw into scratch_ (the model is not touched: the record may still be refused). Reason::Count: built. sy: the synced bits to use (null: examine every
     // slot of the read set, the full compare); track: fill pend_ with the stage and viewport slots examined (sy or not); pend_ receives the slots this record examined (they become synced at commit) and how many there were.
@@ -1192,21 +1233,42 @@ private:
         // shader constants (float rows: only the ones not synced are read)
         unsigned lo=0,hi=0;
         uint64_t sync4[4],dm4[4];
+        // SpellFog: c30 (the fog ramp) of a programmable draw, and the alpha sub-class's fog colour register, are recorded as Northlight's fog folded into the game's value; those rows are
+        // examined on every record and never marked synced (the Model holds the folded value, the device the game's).
+        const bool fogUse=!fixed&&cfg_.fogOn&&cfg_.fog&&cfg_.fog->active;
+        const bool fogVsRow=fogUse&&(rd.vsF[0]>>30&1);
+        const int fogReg=fogUse&&fogSub_==SubAlpha&&fogReg_>=0&&fogReg_<int(kPsFloat)&&(rd.psF[fogReg_>>6]>>(fogReg_&63)&1)?fogReg_:-1;
+        float fitV[3]={},gameV[3]={};bool fitOk=false;
         for(unsigned w=0;w<4;++w){sync4[w]=sy?sy->vsF[w]&m.vsFV[w]:0ull;dm4[w]=rd.vsF[w]&~sync4[w];}
+        if(fogVsRow){sync4[0]&=~(1ull<<30);dm4[0]=rd.vsF[0]&~sync4[0];pend_.fogVs=true;}
         if(maskSpan(dm4,4,lo,hi)){
             const float (*src)[4]=vsStage_;
             if(mv_&&knownAll(mv_->vsFKnown,dm4,4))src=mv_->vsF;
             else if(FAILED(dev_->GetVertexShaderConstantF(lo,vsStage_[lo],hi-lo+1)))return Reason::Capture;
-            diffRows<4>(Op::VsF,src,m.vsF,m.vsFV,rd.vsF,sync4,kVsFloat);
+            unsigned ovr=~0u;float row[4]={};
+            if(fogVsRow){
+                std::memcpy(gameV,src[30],12);
+                if(fogFit(gameV,fitV)){fitOk=true;row[0]=fitV[0];row[1]=fitV[1];row[2]=fitV[2];row[3]=src[30][3];ovr=30;++pend_.fogApplied;fogSample(src[30],nullptr,row,nullptr);}
+            }
+            diffRows<4>(Op::VsF,src,m.vsF,m.vsFV,rd.vsF,sync4,kVsFloat,ovr,row);
             for(unsigned w=0;w<4;++w){pend_.vsF[w]=dm4[w];slots+=unsigned(__builtin_popcountll(dm4[w]));}
+            if(fogVsRow)pend_.vsF[0]&=~(1ull<<30);
         }
         for(unsigned w=0;w<4;++w){sync4[w]=sy?sy->psF[w]&m.psFV[w]:0ull;dm4[w]=rd.psF[w]&~sync4[w];}
+        if(fogReg>=0){sync4[fogReg>>6]&=~(1ull<<(fogReg&63));dm4[fogReg>>6]=rd.psF[fogReg>>6]&~sync4[fogReg>>6];pend_.fogPs=fogReg;}
         if(maskSpan(dm4,4,lo,hi)){
             const float (*src)[4]=psStage_;
             if(mv_&&knownAll(mv_->psFKnown,dm4,4))src=mv_->psF;
             else if(FAILED(dev_->GetPixelShaderConstantF(lo,psStage_[lo],hi-lo+1)))return Reason::Capture;
-            diffRows<4>(Op::PsF,src,m.psF,m.psFV,rd.psF,sync4,kPsFloat);
+            unsigned ovr=~0u;float row[4]={};
+            if(fogReg>=0&&fitOk){
+                float out[3];fogColor(gameV,fitV,src[fogReg],out);
+                row[0]=out[0];row[1]=out[1];row[2]=out[2];row[3]=src[fogReg][3];ovr=unsigned(fogReg);++pend_.fogApplied;
+                float emitV[4]={fitV[0],fitV[1],fitV[2],0};fogSample(gameV,src[fogReg],emitV,row);
+            }
+            diffRows<4>(Op::PsF,src,m.psF,m.psFV,rd.psF,sync4,kPsFloat,ovr,row);
             for(unsigned w=0;w<4;++w){pend_.psF[w]=dm4[w];slots+=unsigned(__builtin_popcountll(dm4[w]));}
+            if(fogReg>=0)pend_.psF[fogReg>>6]&=~(1ull<<(fogReg&63));
         }
         int is[kInts][4];BOOL bs[kBools];
         if(rd.vsI){
@@ -1320,6 +1382,9 @@ public:
     const Counters& frameCounters()const{return frame_;}
     const Counters& lastFrameCounters()const{return last_;}
     const Counters& totalCounters()const{return total_;}
+    // SpellFog diagnostics: the last fit the layer emitted, and the first samples per sub-class since the last call (their count; the array stays valid until the next defer()).
+    const float* fogLastFit()const{return fogLastFit_;}
+    unsigned takeFogSamples(const FogSample*& out){out=fogSamples_;const unsigned n=fogSampleN_;fogSampleN_=0;return n;}
     // The dirty cross-check on sampled frames, and its first mismatch (once per session, for a one-off log line).
     void dirtyCheck(bool on){cfg_.dirtyCheck=on;}
     bool takeDirtyMismatch(DeltaDiff& out){if(!dirtyFirst_.have||dirtyTaken_)return false;dirtyTaken_=true;out=dirtyFirst_;return true;}
@@ -1455,6 +1520,7 @@ public:
             }
             tex[t]=tx;texHeld[t]=h;
         }
+        fogSub_=sub;fogReg_=a.psFogReg;
         {   Reason why=buildDelta(rd,fixed,vs,ps,decl,fvf,tex,sy,sy!=nullptr);
             if(sy&&cfg_.dirtyCheck){ const bool tm=cfg_.clock&&cfg_.timing&&cfg_.timing(cfg_.clockCtx);Phase checkTime(*this,tm?&tCheck_:nullptr); // tests and sampled frames: the full compare must give the same delta (its result, and its larger examined set, is the one used); a Get the full compare needs and the dirty path never makes may fail
                 if(!checkScratch_&&!allocFails())checkScratch_.reset(new(std::nothrow) uint32_t[kScratchWords]); // allocated once, only when the check is used
@@ -1487,6 +1553,8 @@ public:
         // Committed from here: nothing below fails.
         {   uint32_t* dst=deltaChunks_[e.dChunk].get()+e.dOff;std::memcpy(dst,scratch_.get(),size_t(n_)*4);
             ModelSink ms{model_};decodeOps(dst,dst+n_,ms);}
+        if(sy){if(pend_.fogVs)sy->vsF[0]&=~(1ull<<30);if(pend_.fogPs>=0)sy->psF[pend_.fogPs>>6]&=~(1ull<<(pend_.fogPs&63));} // the fog rows hold Northlight's value in the Model, not the device's: never synced
+        if(pend_.fogApplied)count([&](Counters& c){c.fogEntries+=1;});
         if(sy&&sy->epoch==epoch0){ // nothing changed the device under this record: what it examined now equals the model
             for(unsigned w=0;w<4;++w){sy->rs[w]|=pend_.rs[w];sy->vsF[w]|=pend_.vsF[w];sy->psF[w]|=pend_.psF[w];}
             for(unsigned t=0;t<16;++t)sy->ss[t]|=pend_.ss[t];

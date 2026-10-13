@@ -309,6 +309,7 @@ class Device final : public GuardedMirrorDevice {
     }
     std::unordered_map<IDirect3DPixelShader9*, uint64_t> psHashes;
     std::unordered_map<void*, NorthlightShaderReads::ReadSet> shaderReads; // vertex and pixel shaders by raw pointer: what each can read of the API state (scanned at creation, only with SpellLayer=1 (spellOn is fixed at device creation and only ever drops to false, so no shader is missed); a re-created shader at a freed address overwrites its entry, like vsHashes; the spell layer records only that)
+    std::unordered_map<IDirect3DPixelShader9*, int> psFogReg; // ps_3_0 shaders: the proven fog colour constant of the combiner epilogue (legacy_fog.h ps3FogColorRegister), -1 unknown (SpellLayer=1 only)
     std::unordered_map<IDirect3DPixelShader9*, unsigned> psMajor; // the shader model major version from the version token (0 unknown); the spell layer admits ps_2_0 and newer only
     unsigned blobSignatureReports=0;
     NorthlightMirrorAuditSchedule mirrorAuditSchedule;bool mirrorFallbackReported=false;
@@ -1176,7 +1177,7 @@ private:
         NorthlightSpellLayer::Config cfg;cfg.on=true;cfg.classMask=spellClasses;
         cfg.conflictCopy=selectedBackend!=NorthlightBackend::Kind::Native; /* the copy-out read-back needs DXVK's direct-mapped dynamic buffers */
         cfg.readBackLockFlags=NorthlightUpload::readBackLock(); /* fixed before CreateDevice (backend()) */
-        cfg.markGuard=&Device::spellMarkGuard;cfg.markCtx=this;cfg.savedPool=&stateBlocks;
+        cfg.markGuard=&Device::spellMarkGuard;cfg.markCtx=this;cfg.savedPool=&stateBlocks;cfg.fogOn=world->spellFogSetting()!=0;cfg.fog=&world->spellFogFrame();cfg.fogLog=true; /* SpellFog: Northlight's fog folded into the recorded fog constants; the first samples per sub-class are kept for SPELLFOG (a bounded buffer) */
         spellViewInit();cfg.source=&spellView;cfg.synced=&spellSynced;mirrorState.synced=&spellSynced;cfg.dirtyDisableOnMismatch=true; /* fail safe: the first synced-bit mismatch the sampled-frame cross-check finds ends the dirty record for the session */
         cfg.clock=&Device::spellClock;cfg.timing=&Device::spellTiming;cfg.clockCtx=this;
         cfg.generation=&Device::spellTextureGeneration;cfg.genCtx=this; /* the render-target verdict of a texture is cached until a resource proxy is created or destroyed */
@@ -1198,12 +1199,13 @@ private:
     void spellEvent(const char* what,unsigned a=0,unsigned b=0,unsigned c=0){logf("SPELLTRACE frame=%u event=%s pending=%u a=%u b=%u c=%u",frame,what,spell.pending(),a,b,c);}
     // The bound pixel shader's model (psMajor) and hash, by identity lookup.
     const NorthlightShaderReads::ReadSet* spellReads(void* shader)const{const auto it=shaderReads.find(shader);return it==shaderReads.end()?nullptr:&it->second;}
-    void spellPixelShader(unsigned* major,unsigned long long* hash,const NorthlightShaderReads::ReadSet** reads=nullptr,const void** identity=nullptr){
+    void spellPixelShader(unsigned* major,unsigned long long* hash,const NorthlightShaderReads::ReadSet** reads=nullptr,const void** identity=nullptr,int* fogReg=nullptr){
         IDirect3DPixelShader9* ps=nullptr;const bool b=ext->peekPixelShader(ps);if(!b&&FAILED(ext->GetPixelShader(&ps)))ps=nullptr;
         if(ps){
             if(reads)*reads=spellReads(static_cast<void*>(ps));
             if(identity)*identity=static_cast<const void*>(ps);
             if(major){auto it=psMajor.find(ps);*major=it==psMajor.end()?0u:it->second;}
+            if(fogReg){auto it=psFogReg.find(ps);*fogReg=it==psFogReg.end()?-1:it->second;}
             if(hash){auto it=psHashes.find(ps);*hash=it==psHashes.end()?0ull:(unsigned long long)it->second;}
         }
         if(!b)drop(ps);
@@ -1435,7 +1437,7 @@ private:
         else switch(r.kind){
         case Kind::Defer:{
             facts.loadRt();facts.loadDs();IDirect3DSurface9* const rt=facts.rt;IDirect3DSurface9* const ds=facts.ds;
-            if(rt){spellArgs.psMajor=0;spellArgs.psReads=nullptr;spellArgs.psFor=nullptr;spellPixelShader(&spellArgs.psMajor,nullptr,&spellArgs.psReads,&spellArgs.psFor);spellArgs.vsReads=vs?spellReads(static_cast<void*>(vs)):nullptr;spellArgs.vsFor=static_cast<const void*>(vs);CpuScope record(timed?&spellRecordTicks:nullptr); /* sampled frames only */if(timed)++spellRecords;deferred=spell.defer(spellArgs,rt,ds,r.sub);}
+            if(rt){spellArgs.psMajor=0;spellArgs.psReads=nullptr;spellArgs.psFor=nullptr;spellArgs.psFogReg=-1;spellPixelShader(&spellArgs.psMajor,nullptr,&spellArgs.psReads,&spellArgs.psFor,&spellArgs.psFogReg);spellArgs.vsReads=vs?spellReads(static_cast<void*>(vs)):nullptr;spellArgs.vsFor=static_cast<const void*>(vs);CpuScope record(timed?&spellRecordTicks:nullptr); /* sampled frames only */if(timed)++spellRecords;deferred=spell.defer(spellArgs,rt,ds,r.sub);}
             break;}
         case Kind::Hazard:{CpuScope flush(timed?&spellFlushTicks:nullptr); /* sampled frames only */if(timed)++spellFlushes;spellInDraw=true;spellFlush(r.reason,true,r.inPlace);spellInDraw=false;break;} /* r.inPlace: water, rain or a name drawn after a deferred draw */
         case Kind::InPlace:if(pend)spell.noteInPlace(r.inPlace);break;
@@ -1530,14 +1532,17 @@ private:
                 /* cpuGateUs and cpuDeferUs (= gate + record) are ESTIMATES: the gate was timed on every 8th call (gateTimed of gateDraws) and scaled up, with the calibrated scope cost (timerScopeUs, the least of 5 probes) taken
                    off per scope and the record and flush time inside the timed calls taken out; cpuRecordUs is every record. cpuFlushUs is the (unscaled) time of the hazard flushes of gate draws; their save, upload and
                    restore are also in cpuSaveUs/cpuUploadUs/cpuRestoreUs and are not in cpuGateUs. */
-                logf("SPELLLAYER frame=%u mode=%s deferred=%u/%u/%u/%u fixed=%u replayed=%u fadeInPlace=%u orderBy=%u/%u/%u hazards=%s flushes=%u conflicts=%u conflictBytes=%llu materialized=%u records=%u recordHigh=%u replaySets=%u arenaHigh=%u replaySkipped=%u discarded=%u cooldown=%u cpuDeferUs=%.1f cpuReplayUs=%.1f capBy=%u/%u/%u/%u overflowAt=%u overflowCandidates=%u memKiB=%u uploadKiB=%u deltaWords=%llu cpuRecordUs=%.1f cpuGateUs=%.1f gateDraws=%u gateTimed=%u recordCalls=%u cpuFlushUs=%.1f timerScopeUs=%.3f drains=%u cpuSaveUs=%.1f cpuUploadUs=%.1f cpuRestoreUs=%.1f restoreSets=%u restoreFallbacks=%u texSplits=%u copiesAllowed=%u glowPasses=%u recordSlots=%llu dirtyMismatches=%u cpuCheckUs=%.1f stride0Refused=%u checkAllocFails=%u "
+                logf("SPELLLAYER frame=%u mode=%s deferred=%u/%u/%u/%u fixed=%u replayed=%u fadeInPlace=%u orderBy=%u/%u/%u hazards=%s flushes=%u conflicts=%u conflictBytes=%llu materialized=%u records=%u recordHigh=%u replaySets=%u arenaHigh=%u replaySkipped=%u discarded=%u cooldown=%u cpuDeferUs=%.1f cpuReplayUs=%.1f capBy=%u/%u/%u/%u overflowAt=%u overflowCandidates=%u memKiB=%u uploadKiB=%u deltaWords=%llu cpuRecordUs=%.1f cpuGateUs=%.1f gateDraws=%u gateTimed=%u recordCalls=%u cpuFlushUs=%.1f timerScopeUs=%.3f drains=%u cpuSaveUs=%.1f cpuUploadUs=%.1f cpuRestoreUs=%.1f restoreSets=%u restoreFallbacks=%u texSplits=%u copiesAllowed=%u glowPasses=%u recordSlots=%llu dirtyMismatches=%u cpuCheckUs=%.1f stride0Refused=%u checkAllocFails=%u fogEntries=%u fogFit=%.5f,%.4f,%.3f fogT=%.3f "
                      "window frames=%u deferring=%u cooldown=%u deferred=%u hazards=%s flushes=%u conflicts=%u overflowFrames=%u overflowCandidates=%u texSplits=%u drains=%u dirtyMismatches=%u",
                     frame,NorthlightSpellLayer::modeName(mode),c.deferred[0],c.deferred[1],c.deferred[2],c.deferred[3],c.fixed,c.replayedDraws,c.inPlace[3],c.orderBy[0],c.orderBy[1],c.orderBy[2],hazards,c.flushes,c.conflicts,(unsigned long long)c.conflictBytes,c.materialized,c.recorded,c.recordHigh,c.replaySets,c.arenaHigh,c.replaySkipped,c.discarded,spell.cooldownLeft(),
                     gateUs+recordUs,double(spellReplayTicks)*us,c.capBy[0],c.capBy[1],c.capBy[2],c.capBy[3],c.overflowAt,c.overflowCandidates,unsigned(spellMem.total()>>10),unsigned(spellMem.uploads>>10),(unsigned long long)c.deltaWords,recordUs,gateUs,spellGateDraws,spellGateTimed,spellRecords,flushUs,timerUs,
-                    c.drains,double(phase.save)*us,double(phase.upload)*us,double(phase.restore)*us,c.restoreSets,c.restoreFallbacks,c.texSplits,spellCopiesAllowed,spellGlowPasses,(unsigned long long)c.recordSlots,c.dirtyMismatches,double(phase.check)*us,c.stride0Refused,c.checkAllocFails,
+                    c.drains,double(phase.save)*us,double(phase.upload)*us,double(phase.restore)*us,c.restoreSets,c.restoreFallbacks,c.texSplits,spellCopiesAllowed,spellGlowPasses,(unsigned long long)c.recordSlots,c.dirtyMismatches,double(phase.check)*us,c.stride0Refused,c.checkAllocFails,c.fogEntries,spell.fogLastFit()[0],spell.fogLastFit()[1],spell.fogLastFit()[2],world?world->spellFogFrame().transmittance(NorthlightSpellFog::kRange):1.f,
                     spellWinFrames,spellWinDeferring,spellWinCooldown,spellWin.totalDeferred(),winHazards,spellWin.flushes,spellWin.conflicts,spellWin.overflowFrames,spellWin.overflowCandidates,spellWin.texSplits,spellWin.drains,spellWin.dirtyMismatches);
                 spellWin=NorthlightSpellLayer::Counters{};spellWinFrames=spellWinDeferring=spellWinCooldown=0;
             }
+            {const NorthlightSpellLayer::Layer::FogSample* fs=nullptr;const unsigned fn=spell.takeFogSamples(fs); /* SPELLFOG: the first 16 entries per sub-class and session; the game's fog constant and colour, what the record carries instead */
+             if(diagnostics())for(unsigned i=0;i<fn;++i){const auto& x=fs[i];
+                 logf("SPELLFOG frame=%u sub=%u game=%.5f,%.4f,%.3f gameColor=%.3f,%.3f,%.3f emit=%.5f,%.4f,%.3f emitColor=%.3f,%.3f,%.3f",frame,x.sub,x.game[0],x.game[1],x.game[2],x.hasColor?x.gameColor[0]:0.f,x.hasColor?x.gameColor[1]:0.f,x.hasColor?x.gameColor[2]:0.f,x.emit[0],x.emit[1],x.emit[2],x.hasColor?x.emitColor[0]:0.f,x.hasColor?x.emitColor[1]:0.f,x.hasColor?x.emitColor[2]:0.f);}}
             {NorthlightSpellLayer::DeltaDiff dd;if(spell.takeDirtyMismatch(dd)&&diagnostics()) /* once per session: the synced-bit record disagreed with the full compare (a setter that does not clear its bit?) */
                 logf("SPELLDIRTY frame=%u kind=%s index=%u dirty=0x%llx full=0x%llx dirtyRecord=off",frame,dd.kind,dd.index,(unsigned long long)dd.dirty,(unsigned long long)dd.full);}
             {const bool next=diagnostics()&&NorthlightRenderThreadProbe::sampleFrame(frame+1);spell.dirtyCheck(next);} /* the next frame is sampled: cross-check the dirty record on it */
@@ -2144,7 +2149,7 @@ public:
     }
     HRESULT STDMETHODCALLTYPE CreatePixelShader(const DWORD* code,IDirect3DPixelShader9** out) override { Guard mirrorLock(mirrorState.gate);
         HRESULT hr=ext->CreatePixelShader(code,out);
-        if(SUCCEEDED(hr)&&out&&*out)extensionWork("pixel shader registration",[&]{std::vector<DWORD> words;auto h=shaderHash(*out,words);uiFallbackForget(*out);psTags[*out]=contains(kUiPS,h)?2:0;psHashes[*out]=h;if(spellOn)shaderReads[static_cast<void*>(*out)]=NorthlightShaderReads::scan(reinterpret_cast<const uint32_t*>(words.data()),words.size());psMajor[*out]=!words.empty()&&(words[0]>>16)==0xFFFFu?unsigned((words[0]>>8)&0xFFu):0u;if(water)water->registerPixel(*out,h,words.data(),words.size());if(world)world->registerPixelShader(*out);});
+        if(SUCCEEDED(hr)&&out&&*out)extensionWork("pixel shader registration",[&]{std::vector<DWORD> words;auto h=shaderHash(*out,words);uiFallbackForget(*out);psTags[*out]=contains(kUiPS,h)?2:0;psHashes[*out]=h;if(spellOn)shaderReads[static_cast<void*>(*out)]=NorthlightShaderReads::scan(reinterpret_cast<const uint32_t*>(words.data()),words.size());psMajor[*out]=!words.empty()&&(words[0]>>16)==0xFFFFu?unsigned((words[0]>>8)&0xFFu):0u;if(spellOn)psFogReg[*out]=psMajor[*out]==3?NorthlightLegacyFog::ps3FogColorRegister(reinterpret_cast<const uint32_t*>(words.data()),words.size()):-1;if(water)water->registerPixel(*out,h,words.data(),words.size());if(world)world->registerPixelShader(*out);});
         if(SUCCEEDED(hr))mirrorResources.wrap(out);return hr;
     }
     // 0.3.187: the four draw entry points share drawHook(); each passes its capture and its real draw.

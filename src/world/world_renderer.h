@@ -51,6 +51,7 @@
 #include "static_cache_slices.h"
 #include "terrain_shadow_candidates.h"
 #include "legacy_fog.h"
+#include "spell_fog.h"
 #include "horizon_haze.h"
 #include "weather_state.h"
 #include "weather_effects.h"
@@ -285,6 +286,7 @@ private:
     NorthlightSunHue::GlowHue glowHueFrame;
     NorthlightWmoContext::LightingHold globalLightHold; /* 0.3.207: sky block reads caught between the colour copy and the weather rescale */
     NorthlightHorizonHaze::Constants hazeFrame; /* last composite haze constants, for the celestial veil */
+    NorthlightSpellFog::Hold spellFogHold;DWORD spellFogTick=0; /* SpellFog: the smoothed per-frame estimate (spell_fog.h) */
     float skyTransmittanceFrame=1; /* CPU estimate of the fog transmittance toward the sun, for the veil */
     struct FogShader { unsigned major=0;int colorRegister=-1;bool verified=false; };
     std::unordered_map<IDirect3DPixelShader9*,FogShader> fogShaders;
@@ -2095,6 +2097,8 @@ public:
     unsigned spellLayerSetting()const{return quality.spellLayer;} /* task 34: SpellLayer, SpellLayerClasses and SpellTrace are read once at device creation */
     unsigned spellLayerClassesSetting()const{return quality.spellLayerClasses;}
     unsigned spellTraceSetting()const{return quality.spellTrace;}
+    unsigned spellFogSetting()const{return quality.spellFog;} /* SpellFog (task 34): read once with the others */
+    const NorthlightSpellFog::Frame& spellFogFrame()const{return spellFogHold.out;} /* Northlight's fog toward the view axis (previous frame's estimate while the next frame's records are made): the spell layer folds it into the recorded fog constants */
     bool frameDrawGates()const{return quality.frameDrawGates!=0;} /* 0.3.187: read once at device creation */ /* 0.3.158: ActorShadows=0 leaves actor shadows to the game's blobs */
     const float* legacyFogParameters()const{return legacyFog.parameters;}
     const NorthlightCelestialProfiles::Profile& celestialPalette(const char* map,const float* camera){
@@ -2869,6 +2873,7 @@ public:
     struct AtmosphereFrame {
         NorthlightLocalLightSelection::Selection lights;NorthlightFogClouds::Frame cf;float c[33][4]={};
         float airFloor=.0017f,veil[2]={1,1}; /* veil: the sky transmittance toward the sun without / with the clouds' term */
+        float spellTau[2][NorthlightSpellFog::kSamples]={};bool spellValid=false; /* SpellFog: the optical depth along the view axis at kDistance, without / with the clouds' term (the same sigma as the veil) */
         NorthlightLocalLightScissor::Rect directRects[NorthlightLocalLightSelection::Slots/NorthlightLocalLightSelection::DirectBatchSize],
             fogRects[NorthlightLocalLightSelection::Slots/NorthlightLocalLightSelection::FogBatchSize];
     };
@@ -2933,7 +2938,7 @@ public:
         cf=NorthlightFogClouds::derive(quality.fogClouds,unsigned(std::lround(float(quality.fogCloudDensity)*denseDamp)),wx.fog,c[31][3],cloudWind,context.camera,fogCloudNoise().ready.load(std::memory_order_acquire)?&fogCloudNoise().quantiles:nullptr,cloudLush);
         const bool cloudCandidate=cf.active&&effects.fog&&debug==0&&fogCloudsPS;
         const uint8_t* cloudData=cloudCandidate?fogCloudNoise().data.data():nullptr;
-        a.veil[0]=a.veil[1]=1;
+        a.veil[0]=a.veil[1]=1;a.spellValid=false;
         if(effects.fog&&active&&uploadedFogField){
             const auto& field=*uploadedFogField;const float night=c[31][3];
             // cloudy: the same sigma plus the clouds' term (the old sigma+= on an active pass), else the same sigma.
@@ -2969,6 +2974,16 @@ public:
                     const float sigma=sigmaAt(context.camera[0]+ray.x*t,context.camera[1]+ray.y*t,context.camera[2]+ray.z*t,true,cloudy);
                     depth+=sigma*fade*fade*(3-2*fade)*8;cloudyDepth+=cloudy*fade*fade*(3-2*fade)*8;}
                 a.veil[0]=std::exp(-depth);a.veil[1]=std::exp(-cloudyDepth);
+                // SpellFog: the same march along the view axis (the representative ray of a spell draw), every 2 units, with the shader's near fade; the optical depth is read at the fixed
+                // distances (the shader integrates to 128 units: FogInfo.w). Off-axis pixels are a little farther per unit of view depth: approximate by design.
+                {V fwd=V(context.inverseView[8],context.inverseView[9],context.inverseView[10])*projection[2];const float fl=std::sqrt(NorthlightGI::dot(fwd,fwd));
+                 if(fl>1e-6f){fwd=fwd*(1.f/fl);float d0=0,d1=0;unsigned k=0;
+                    for(unsigned i=0;i<64&&k<NorthlightSpellFog::kSamples;++i){const float t=(float(i)+.5f)*2;
+                        const float fade=std::clamp((t-3.5f)/12.f,0.f,1.f);float cl=0;
+                        const float sg=sigmaAt(context.camera[0]+fwd.x*t,context.camera[1]+fwd.y*t,context.camera[2]+fwd.z*t,true,cl);
+                        d0+=sg*fade*fade*(3-2*fade)*2;d1+=cl*fade*fade*(3-2*fade)*2;
+                        while(k<NorthlightSpellFog::kSamples&&float(i+1)*2>=NorthlightSpellFog::kDistance[k]-1e-3f){a.spellTau[0][k]=d0;a.spellTau[1][k]=d1;++k;}}
+                    a.spellValid=k==NorthlightSpellFog::kSamples;}}
             }
         }
     }
@@ -3557,6 +3572,12 @@ public:
             NorthlightFogClouds::shaderConstants(cf,&c[59]); /* c59.y, c60..c63 (host-folded for the shader's early outs) */
         }
         if(profileSampled())logf("WORLD fog clouds active=%d coverage=%.3f threshold=%.3f height=%.1f speed=%.2f dir=(%.2f %.2f) sigmaMax=%.4f lush=%.2f noiseReady=%d",cf.active?1:0,cf.coverage,cf.threshold,cf.height,cloudWind.speed,cloudWind.dir[0],cloudWind.dir[1],cf.sigmaMax,cloudLush,fogCloudNoise().ready.load(std::memory_order_acquire)?1:0);
+        {   // SpellFog: the smoothed estimate for the next frame's records (identity when SpellFog is off, the fog effect is off or has no field, or a debug view is on)
+            NorthlightSpellFog::Frame raw;const bool wanted=quality.spellFog&&effects.fog&&active&&uploadedFogField&&debug==0&&atmosphere.spellValid;
+            if(wanted){raw.active=true;for(unsigned i=0;i<NorthlightSpellFog::kSamples;++i)raw.tau[i]=atmosphere.spellTau[cf.active?1:0][i];for(unsigned k=0;k<3;++k)raw.scatter[k]=std::max(context.ambient[k],0.f)*.35f;}
+            const DWORD tick=GetTickCount();const float dt=spellFogTick?float(DWORD(tick-spellFogTick))*.001f:0.f;spellFogTick=tick;
+            spellFogHold.update(raw,wanted,dt);
+        }
         skyTransmittanceFrame=cf.active?atmosphere.veil[1]:atmosphere.veil[0]; /* the clouds' term only when the pass is really active (1: no fog field or no fog) */
         c[33][0]=float(w);c[33][1]=float(h);c[33][2]=float(w/2);c[33][3]=float(h/2);
         c[1][0]=projection[0];c[1][1]=projection[1];c[1][2]=projection[2];c[1][3]=minZ;
