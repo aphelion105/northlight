@@ -74,11 +74,12 @@ checks['cpp: states restored after the pass: source state (setSource of the loop
 checks['cpp: the source loop records the state its last iteration left']='lastFogSource=source;lastFogFirst=first;first=false;' in w
 checks['cpp: profile marks FogMarch / FogClouds only with the pass (<= 20 marks per frame stays true: 16 existing names + 2)']=(pas.count('profile->mark("FogMarch")')==1 and pas.count('profile->mark("FogClouds")')==1)
 # sigmaAt mirror
-mirror=[l for l in w.splitlines() if 'NorthlightFogClouds::sigmaAt(' in l]
+mirror=[l for l in w.splitlines() if 'cloudy+=NorthlightFogClouds::sigmaAt(' in l] # the WorldFog sum; SpellFog's own lambda (below) is a second caller
 # 0.3.200 (jobs): the mirror runs in atmosphereWork (a job with ReplayJobs=1) before ensureCloudNoise (the device) is decided: the cloud term is
 # added to a second sum (cloudy) for a candidate pass, and the bank takes that sum only when cf.active is final (same value as the old sigma+=).
 checks['cpp: sigmaAt adds the cloud term only for a candidate pass, to the base value, inside the t.height>0 branch; the bank picks it only when cf.active']=(
-    len(mirror)==1 and mirror[0].strip().startswith('if(clouds&&cloudCandidate){') and 'cloudy+=NorthlightFogClouds::sigmaAt(cloudData,cf,context.camera,point,t.ground,t.height,1.f)' in mirror[0] and
+    len(mirror)==1 and 'if(!cloudCandidate)return 0.f;' in w[w.index('const auto clouds=[&]'):] # SpellFog's march adds clouds only for a candidate pass too
+    and mirror[0].strip().startswith('if(clouds&&cloudCandidate){') and 'cloudy+=NorthlightFogClouds::sigmaAt(cloudData,cf,context.camera,point,t.ground,t.height,1.f)' in mirror[0] and
     w.index('if(t.height>0){')<w.index(mirror[0])<w.index('return sigma;') and 'sigma=altitude>=0?ground+airBase*airVertical*airVertical:0;cloudy=sigma;' in w
     and 'const bool cloudCandidate=cf.active&&effects.fog&&debug==0&&fogCloudsPS;' in w and 'skyTransmittanceFrame=cf.active?atmosphere.veil[1]:atmosphere.veil[0];' in w
     and w.index('cf.active=cf.active&&effects.fog&&debug==0&&fogCloudsPS&&ensureCloudNoise();')<w.index('skyTransmittanceFrame=cf.active?atmosphere.veil[1]'))

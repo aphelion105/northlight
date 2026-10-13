@@ -119,9 +119,9 @@ for name in ('UpdateSurface','UpdateTexture','GetRenderTargetData','StretchRect'
     m=method(name);checks[f'rain mask MRT: Device::{name} unbinds RT1 before the call']=('rainMrtUnbind();' in m and m.index('rainMrtUnbind();')<m.index('return ext->'+name))
 cl=r[r.index('HRESULT STDMETHODCALLTYPE Clear('):r.index('HRESULT STDMETHODCALLTYPE CreateVertexBuffer(')]
 checks['rain mask MRT: Device::Clear unbinds RT1 first (before the Z resolve and the real Clear)']=('rainMrtUnbind();' in cl and cl.index('rainMrtUnbind();')<cl.index('resolveDepth()')<cl.index('return ext->Clear('))
-def dmethod(name,span=240):
-    i=r.index('HRESULT STDMETHODCALLTYPE '+name+'(',r.index('class Device final'));return r[i:i+span]
-rst=dmethod('Reset');pre=dmethod('Present',480);es=dmethod('EndScene')
+def dmethod(name):  # the whole Device method, up to the next one (a fixed span broke whenever a line grew)
+    i=r.index('HRESULT STDMETHODCALLTYPE '+name+'(',r.index('class Device final'));return r[i:r.index('\n    HRESULT STDMETHODCALLTYPE ',i+1)]
+rst=dmethod('Reset');pre=dmethod('Present');es=dmethod('EndScene')
 checks['rain mask MRT: Reset, Present and EndScene unbind first; finishFrame (also SwapChain::Present) unbinds before the extension work']=(
     'rainMrtUnbind();' in rst and 'rainMrtUnbind();' in pre and pre.index('rainMrtUnbind();')<pre.index('finishFrame()') and 'rainMrtUnbind();' in es and es.index('rainMrtUnbind();')<es.index('GuardedMirrorDevice::EndScene()')
     and 'void finishFrame() {\n        Guard mirrorLock(mirrorState.gate);\n        rainMrtUnbind();' in r and 'finishDeviceFrame(owner);' in r)

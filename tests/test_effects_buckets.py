@@ -13,7 +13,7 @@ effects=r[r.index('    void renderEffects() {'):r.index('    // One shader query
 render=w[w.index('    bool render(IDirect3DSurface9* targetSurface'):]
 world_marks=len(re.findall(r'\bbucket\(NorthlightEffectsBuckets::',render));outer_marks=effects.count('effectsBuckets.mark(')
 checks={
- 'only on RenderProfile sample frames, opened right after the cpuEffects scope, closed before it':('    void renderEffects() {\n        CpuScope cpu(sampled()?&cpuEffects:nullptr);\n' in effects
+ 'only on RenderProfile sample frames, opened right after the cpuEffects scope, closed before it':('CpuScope cpu(sampled()?&cpuEffects:nullptr);' in effects # the cpuEffects scope itself (nameMaskRunEnd() may precede it)
     and 'effectsBucketed=sampled()&&NorthlightRenderThreadProbe::profiling();' in effects and 'effectsBuckets.begin(effectsBucketed,&qpcNow,counters,4);}' in effects
     and 'struct BucketsEnd {NorthlightEffectsBuckets::Frame& f;~BucketsEnd(){f.end();}} bucketsEnd{effectsBuckets};' in effects
     and effects.index('CpuScope cpu(sampled()')<effects.index('effectsBuckets.begin(')<effects.index('bucketsEnd{effectsBuckets}')<effects.index('if (applied || !enabled || failed || !projectionValid) return;')),
