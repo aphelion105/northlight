@@ -21,6 +21,7 @@
 #include "snapshot_store.h"
 #include "stream_hooks.h"
 #include "unlock_source.h"
+#include "span_counts.h"
 
 namespace NorthlightStream {
 // ---- implicit proxies: objects the game never created (back buffers, the default depth buffer, objects the mod bound) ----
@@ -497,8 +498,38 @@ private:
         if(current_)snapshots.release(current_);
         current_=s;if(s)playback_.emplace(*s);
     }
+    // Diagnostics only (SPELLSPAN, span_counts.h): the kind of every command executed while the tracker is on (sampled frames of a Diagnostics=1 session). One branch in execute() otherwise.
+    void spanCount(const CommandHeader* h){
+        using namespace NorthlightSpan;Tracker& t=tracker;
+        switch((Cmd)h->id){
+        case Cmd::Device_SetRenderState:t.count(Rs);break;
+        case Cmd::Device_SetSamplerState:t.count(Ss);break;
+        case Cmd::Device_SetTexture:t.count(Tex);break;
+        case Cmd::Device_SetVertexShaderConstantF:t.count(VsF,4ull*reinterpret_cast<const Args_Device_SetVertexShaderConstantF*>(h+1)->count);break;
+        case Cmd::Device_SetPixelShaderConstantF:t.count(PsF,4ull*reinterpret_cast<const Args_Device_SetPixelShaderConstantF*>(h+1)->count);break;
+        case Cmd::Device_SetVertexShaderConstantI:t.count(VsI,4ull*reinterpret_cast<const Args_Device_SetVertexShaderConstantI*>(h+1)->count);break;
+        case Cmd::Device_SetVertexShaderConstantB:t.count(VsI,reinterpret_cast<const Args_Device_SetVertexShaderConstantB*>(h+1)->count);break;
+        case Cmd::Device_SetPixelShaderConstantI:t.count(PsI,4ull*reinterpret_cast<const Args_Device_SetPixelShaderConstantI*>(h+1)->count);break;
+        case Cmd::Device_SetPixelShaderConstantB:t.count(PsI,reinterpret_cast<const Args_Device_SetPixelShaderConstantB*>(h+1)->count);break;
+        case Cmd::Device_SetVertexShader:case Cmd::Device_SetPixelShader:t.count(Shader);break;
+        case Cmd::Device_SetVertexDeclaration:case Cmd::Device_SetFVF:t.count(Decl);break;
+        case Cmd::Device_SetStreamSource:case Cmd::Device_SetStreamSourceFreq:t.count(Stream);break;
+        case Cmd::Device_SetIndices:t.count(Index);break;
+        case Cmd::Device_SetViewport:t.count(Viewport,6);break;
+        case Cmd::Device_SetScissorRect:case Cmd::Device_SetClipPlane:t.count(Viewport,4);break;
+        case Cmd::Device_SetTransform:t.count(Fixed,16);break;
+        case Cmd::Device_SetMaterial:t.count(Fixed,17);break;
+        case Cmd::Device_SetLight:t.count(Fixed,23);break;
+        case Cmd::Device_LightEnable:case Cmd::Device_SetTextureStageState:t.count(Fixed);break;
+        case Cmd::Device_DrawPrimitive:case Cmd::Device_DrawIndexedPrimitive:case Cmd::DrawPrimitiveUP:case Cmd::DrawIndexedPrimitiveUP:t.count(Draw);break;
+        case Cmd::Quiesce:t.count(Lock);break;   // the game thread's tasks: buffer and texture locks and unlocks that need the replay thread (SyncLock/SyncUnlock)
+        case Cmd::UnlockBuffer:case Cmd::UnlockBufferRef:case Cmd::UnlockRect:case Cmd::UnlockBox:t.count(Upload);break;   // the data a lock wrote, applied to the real resource
+        default:t.count(Other);break;
+        }
+    }
     void execute(const CommandHeader* h){
         if(skipping_&&skipCommand(h))return;   // 0.3.200 (frame skip)
+        if(NorthlightSpan::tracker.on)spanCount(h);
         Translator tr{core};
         if(dispatchGenerated(h,tr)){
             if(h->id==(std::uint16_t)Cmd::Device_SetRenderState){const auto* a=reinterpret_cast<const Args_Device_SetRenderState*>(h+1);if(diag_&&unsigned(a->State)<StreamState::kRS){auditRS_[a->State]=a->Value;note(unsigned(a->State));}}

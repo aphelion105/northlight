@@ -485,6 +485,58 @@ struct ModelSink{
     void fvf(DWORD v){m.fvf=v;m.declMode=2;m.declSeen|=2;}
 };
 
+// ---- diagnostics: what the recorded deltas are made of (SPELLDELTA; sampled frames only, the layer records through DeltaProfile only while Layer::profile(true)) ----
+// Words by category, split into words emitted because the model slot was UNKNOWN (the first entry after a drain or at the start) and because its value CHANGED; the vertex and pixel
+// shader float constant rows that changed, per 8-register bucket; and "ping-pong": changed slots (render states, sampler states, textures, float constant rows) whose new value is the
+// value the same slot had before the previous entry changed it (A-B-A: two kinds of effect interleaved).
+struct DeltaStats{
+    enum Cat:unsigned{Rs,Ss,Tex,VsF,PsF,IntBool,Misc,Shaders,Streams,CatCount}; // Misc: viewport, scissor, clip planes; Shaders: shaders, declaration, FVF; Streams: stream and index buffer binds (1 word each)
+    uint64_t words[CatCount][2]={};                // [category][0 unknown, 1 changed]
+    uint32_t entries=0,ffEntries=0;
+    uint64_t pingpong=0,pingChecked=0;             // changed slots that were A-B-A / changed slots tested (the kinds listed above)
+    uint32_t vsHist[kVsFloat/8]={},psHist[kPsFloat/8]={}; // changed float constant rows per 8 registers
+};
+class DeltaProfile{
+    DeltaStats st_;uint32_t seq_=1;                // seq_: the entry being recorded (never 0 or 1 for a recorded entry: 'changed at entry seq-1' needs a value below it)
+    DWORD rsOld_[256]={};uint32_t rsAt_[256]={};
+    DWORD ssOld_[kMaxTextures*kSamplerStates]={};uint32_t ssAt_[kMaxTextures*kSamplerStates]={};
+    void* texOld_[kMaxTextures]={};uint32_t texAt_[kMaxTextures]={};
+    float vsOld_[kVsFloat][4]={};uint32_t vsAt_[kVsFloat]={};float psOld_[kPsFloat][4]={};uint32_t psAt_[kPsFloat]={};
+    static bool bit(const uint64_t* m,unsigned i){return (m[i>>6]>>(i&63))&1;}
+    struct Sink{
+        DeltaProfile& p;const Model& m;
+        void add(DeltaStats::Cat c,bool known,uint64_t w){p.st_.words[c][known?1:0]+=w;}
+        void ping(uint32_t& at,bool same){++p.st_.pingChecked;if(at==p.seq_-1&&same)++p.st_.pingpong;at=p.seq_;} // changed at the previous entry, and this change restores what that one replaced
+        void rs(unsigned i,DWORD v,bool){const unsigned id=kRenderStateIds[i];const bool k=m.rsValid;add(DeltaStats::Rs,k,2);if(k){ping(p.rsAt_[id],p.rsOld_[id]==v);p.rsOld_[id]=m.rs[id];}}
+        void ss(unsigned a,DWORD v){const unsigned t=a/kSamplerStates,k=a%kSamplerStates;const bool kn=m.ssValid>>t&1;add(DeltaStats::Ss,kn,2);if(kn){ping(p.ssAt_[a],p.ssOld_[a]==v);p.ssOld_[a]=m.ss[t][k];}}
+        void tex(unsigned t,void* v){const bool kn=m.texValid>>t&1;add(DeltaStats::Tex,kn,1+kPtrWords);if(kn){ping(p.texAt_[t],p.texOld_[t]==v);p.texOld_[t]=m.tex[t];}}
+        void rows(DeltaStats::Cat c,unsigned s,unsigned n,const uint32_t* w,const uint64_t* valid,const float (*cur)[4],float (*old)[4],uint32_t* at,uint32_t* hist){
+            add(c,bit(valid,s),1);
+            for(unsigned r=s;r<s+n;++r){
+                const bool kn=bit(valid,r);add(c,kn,4);
+                if(!kn)continue;
+                hist[r>>3]++;ping(at[r],!std::memcmp(old[r],w+4*(r-s),16));std::memcpy(old[r],cur[r],16);
+            }
+        }
+        void vsF(unsigned s,unsigned n,const uint32_t* w){rows(DeltaStats::VsF,s,n,w,m.vsFV,m.vsF,p.vsOld_,p.vsAt_,p.st_.vsHist);}
+        void psF(unsigned s,unsigned n,const uint32_t* w){rows(DeltaStats::PsF,s,n,w,m.psFV,m.psF,p.psOld_,p.psAt_,p.st_.psHist);}
+        void ints(const uint64_t* valid,unsigned s,unsigned n,unsigned rowWords){add(DeltaStats::IntBool,bit(valid,s),1);for(unsigned r=s;r<s+n;++r)add(DeltaStats::IntBool,bit(valid,r),rowWords);}
+        void vsI(unsigned s,unsigned n,const uint32_t*){ints(&m.vsIV,s,n,4);}void psI(unsigned s,unsigned n,const uint32_t*){ints(&m.psIV,s,n,4);}
+        void vsB(unsigned s,unsigned n,const uint32_t*){ints(&m.vsBV,s,n,1);}void psB(unsigned s,unsigned n,const uint32_t*){ints(&m.psBV,s,n,1);}
+        void viewport(const uint32_t*){add(DeltaStats::Misc,m.vpV,1+sizeof(D3DVIEWPORT9)/4);}
+        void scissor(const uint32_t*){add(DeltaStats::Misc,m.scissorV,1+4);}
+        void clip(unsigned i,const uint32_t*){add(DeltaStats::Misc,m.clipV>>i&1,1+4);}
+        void vs(void*){add(DeltaStats::Shaders,m.vsV,1+kPtrWords);}void ps(void*){add(DeltaStats::Shaders,m.psV,1+kPtrWords);}
+        void decl(void*){add(DeltaStats::Shaders,m.declMode!=0,1+kPtrWords);}void fvf(DWORD){add(DeltaStats::Shaders,m.declMode!=0,2);}
+    };
+public:
+    // One recorded delta (n words at w), read against the model BEFORE the entry updates it.
+    void record(const Model& m,const uint32_t* w,unsigned n){++seq_;++st_.entries;Sink s{*this,m};decodeOps(w,w+n,s);}
+    void streams(uint64_t unknown,uint64_t changed,bool ff){st_.words[DeltaStats::Streams][0]+=unknown;st_.words[DeltaStats::Streams][1]+=changed;if(ff)++st_.ffEntries;}
+    const DeltaStats& stats()const{return st_;}
+    void clearStats(){st_=DeltaStats{};}
+};
+
 class Layer{
     struct Stream{IDirect3DVertexBuffer9* vb=nullptr;uint32_t off=0,stride=0,lo=0,hi=0,sno=0;int32_t blob=-1;};
     struct FfRec{                                     // only for fixed-function entries (Entry::ff), allocated in chunks of kFfChunk
@@ -537,6 +589,19 @@ private:
         return true;
     }
     std::vector<std::unique_ptr<uint32_t[]>> deltaChunks_;unsigned deltaChunk_=0,deltaUsed_=0; // state deltas of the pending entries; deltaChunk_/deltaUsed_: the chunk being filled and its used words
+    std::unique_ptr<DeltaProfile> profStore_;DeltaProfile* prof_=nullptr; // SPELLDELTA diagnostics: non-null only on sampled frames (profile())
+    // Stream and index buffer binds of an entry against the previous entry of the sequence (the first entry binds everything: unknown), one word each; a UP draw rebinds stream 0 every time.
+    void profileStreams(const Entry& e,const Entry* prev){
+        uint64_t unknown=0,changed=0;auto note=[&](bool differs){if(!prev)++unknown;else if(differs)++changed;};
+        if(e.type==DrawType::PrimitiveUP||e.type==DrawType::IndexedUP)note(true);
+        else for(unsigned i=0;i<e.nStreams;++i){
+            const Stream& s=e.streams[i];bool same=false;
+            if(prev)for(unsigned k=0;k<prev->nStreams;++k){const Stream& q=prev->streams[k];if(q.sno==s.sno&&q.vb==s.vb&&q.off==s.off&&q.stride==s.stride){same=true;break;}}
+            note(!same);
+        }
+        if(e.ib)note(!prev||prev->ib!=e.ib);
+        prof_->streams(unknown,changed,e.ff!=nullptr);
+    }
     std::unique_ptr<Undo> undo_;                      // allocated at the first minimal restore
     std::vector<std::unique_ptr<FfRec[]>> ffChunks_;unsigned ffCount_=0;const FfRec* ffPrev_=nullptr; // ffPrev_: the last fixed-function record the running replay applied
     bool rsSkip_[kRenderStates]={};                   // a state the device refused to Get once: neither recorded nor replayed
@@ -1166,6 +1231,10 @@ public:
     const Counters& frameCounters()const{return frame_;}
     const Counters& lastFrameCounters()const{return last_;}
     const Counters& totalCounters()const{return total_;}
+    // SPELLDELTA diagnostics: on for the sampled frames only (the integration switches it at the frame boundary); off costs one branch per record.
+    void profile(bool on){if(on){if(!profStore_)profStore_.reset(new(std::nothrow) DeltaProfile);prof_=profStore_.get();}else prof_=nullptr;}
+    const DeltaStats* deltaStats()const{return prof_?&prof_->stats():nullptr;}
+    void clearDeltaStats(){if(prof_)prof_->clearStats();}
     struct PhaseTicks{uint64_t save,upload,restore;};   // clock() ticks the drains spent in their state save, upload and state restore since the last clearPhaseTicks()
     PhaseTicks phaseTicks()const{return PhaseTicks{tSave_,tUpload_,tRestore_};}
     void clearPhaseTicks(){tSave_=tUpload_=tRestore_=0;}
@@ -1298,6 +1367,7 @@ public:
         e.dLen=uint16_t(n_);
         // Committed from here: nothing below fails.
         {   uint32_t* dst=deltaChunks_[e.dChunk].get()+e.dOff;std::memcpy(dst,scratch_.get(),size_t(n_)*4);
+            if(prof_)prof_->record(model_,dst,n_); /* diagnostics: before the model takes this delta */
             ModelSink ms{model_};decodeOps(dst,dst+n_,ms);}
         if(up){
             std::memcpy(arena_.get()+arenaUsed_,static_cast<const uint8_t*>(a.vertexData)+vOff,upV);e.upVtx=arenaUsed_;arenaUsed_+=align16(upV);
@@ -1312,6 +1382,7 @@ public:
             Held* h=texHeld[t];
             if(h)h->flags|=kInSamples; // the frame's set of sampled textures: pendingSamples() asks the held table
         }
+        if(prof_)profileStreams(e,count_?&entryAt(count_-1):nullptr);
         if(!count_){target_=rt0;rt0->AddRef();ds_=ds;if(ds)ds->AddRef();}
         if(up){stTouched_|=1;if(idx)ibTouched_=true;}else{for(unsigned i=0;i<e.nStreams;++i)stTouched_|=1u<<e.streams[i].sno;if(a.type==DrawType::Indexed)ibTouched_=true;}
         if(fixed){anyFf_=true;for(unsigned i=0;i<kFfLights;++i)if(e.ff->lightSet[i])ffLights_|=uint8_t(1u<<i);}
