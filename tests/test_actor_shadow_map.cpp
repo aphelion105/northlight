@@ -3,6 +3,9 @@
 // a box crossing the border, a box behind the depth planes and invalid bounds.
 #include "actor_shadow_map.h"
 #include "actor_side_tracker.h"
+#include "actor_side_hold.h"
+#include <chrono>
+#include <vector>
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -95,6 +98,58 @@ int main(){
      t.begin();t.unkeyed();t.unsupportedNear();t.unsupportedNear();t.endFrame();assert(t.unkeyedNow==1&&t.unsupportedNow==2&&t.tracked==0);
      t.resetWindow();assert(t.sideFlips==0&&t.sideMatched==0&&t.frames==0&&t.selfFlips==0);
      S::Tracker mixed;mixed.begin();mixed.note(1,true,true);mixed.note(2,false,true);mixed.endFrame();assert(mixed.selfSide==S::SelfMixed&&std::string(S::name(mixed.selfSide))=="mixed");}
+    {namespace H=NorthlightActorSideHold; // inset hysteresis and the near-first visit list
+     // A box of half width w (clip units) around the map centre column: an extent of w. Matrix m maps world (x,y) to clip x,y with 12 yd = 1.
+     auto extentOf=[&](float x,float y){const float lo[3]={x-.1f,y-.1f,0},hi[3]={x+.1f,y+.1f,1};return M::insetExtent(true,lo,hi,m,M::Stay);};
+     const float r0[3]={0,0,0};
+     // matrix whose clip x = world x/12, clip y = world y/12, depth in range
+     float id[16]={};id[0]=id[5]=1.f/12;id[10]=.5f;id[12]=0;id[13]=0;id[14]=.25f;id[15]=1;
+     auto ext=[&](float yards){const float lo[3]={yards-.1f,0,0},hi[3]={yards,.1f,.1f};return M::insetExtent(true,lo,hi,id,M::Stay);};
+     (void)extentOf;(void)r0;
+     assert(std::fabs(ext(9.f)-9.f/12)<1e-4f&&ext(10.2f)<=M::Stay&&std::isinf(ext(10.5f))&&std::isinf(M::insetExtent(false,nullptr,nullptr,id,1.f)));
+     assert(M::Stay>M::Inset&&M::Stay<.88f); // before the shader's fade to lit (border .88)
+     H::Hold hold;const std::uint64_t model=7;float root[3]={2,3,0};
+     const float inside=9.f/12,band=10.f/12,out=10.6f/12;static_assert(H::Deep<NorthlightActorShadowMap::Inset,"");
+     hold.begin();assert(hold.decide(model,root,.5f)&&!hold.decide(model,root,band)); // deep inside: no table access, so a jump from there into the band is not remembered (the near cascade for that frame)
+     hold.begin();assert(!hold.decide(model,root,band));            // in the band, not remembered: near cascade (enters only inside Inset)
+     hold.begin();assert(hold.decide(model,root,inside));           // enters
+     hold.begin();assert(hold.decide(model,root,band));             // stays in the band
+     hold.begin();assert(hold.decide(model,root,band));
+     hold.begin();assert(!hold.decide(model,root,INFINITY));        // beyond Stay (or no bounds): near cascade
+     hold.begin();assert(hold.decide(model,root,band));             // back within Gap frames: still held (a capture gap keeps the state)
+     hold.begin();hold.begin();hold.begin();assert(!hold.decide(model,root,band)); // away for more than Gap frames: forgotten, must enter again
+     hold.begin();assert(hold.decide(model,root,inside)&&!hold.decide(model,root,out));
+     // Not rooted: today's rule, no memory.
+     hold.begin();assert(hold.decide(model,nullptr,inside));hold.begin();assert(!hold.decide(model,nullptr,band));
+     // Clones of one snapshot at different roots keep their own states.
+     {H::Hold h;const float a[3]={0,0,0},b[3]={8,0,0};h.begin();assert(h.decide(1,a,inside)&&!h.decide(1,b,band));
+      h.begin();assert(h.decide(1,a,band)&&!h.decide(1,b,band));h.begin();assert(h.decide(1,b,inside));h.begin();assert(h.decide(1,a,band)&&h.decide(1,b,band));}
+     // Two clones within Reach of each other: each claims one slot (a slot matches once per pass).
+     {H::Hold h;const float a[3]={0,0,0},b[3]={.5f,0,0};h.begin();assert(h.decide(1,a,inside)&&h.decide(1,b,inside));
+      h.begin();assert(h.decide(1,a,band)&&h.decide(1,b,band));assert(h.remembered()==2);}
+     // A root walking across a cell border (8 yd cells) and on keeps its state, also fast (0.9 yd per pass).
+     {H::Hold h;float w[3]={3.2f,1.5f,0};h.begin();assert(h.decide(1,w,inside));
+      for(int i=0;i<40;++i){w[0]+=.9f;w[1]-=.3f;h.begin();assert(h.decide(1,w,band));}
+      assert(h.remembered()==1);}
+     // The root moves farther than Reach in one pass: a different caster (not held).
+     {H::Hold h;float w[3]={0,0,0};h.begin();assert(h.decide(1,w,inside));w[0]=1.6f;h.begin();assert(!h.decide(1,w,band));}
+     // invalidate(): everything expires at once.
+     {H::Hold h;h.begin();assert(h.decide(1,root,inside));h.invalidate();h.begin();assert(!h.decide(1,root,band));}
+     // Cost: per-replay ns of the old inset test against the hysteresis decision (about 500 replays, 1 in 12 near the player (a crowded scene), half of all skinned).
+     {const unsigned n=512;std::vector<float> lo(n*3),hi(n*3);std::vector<float> roots(n*3);std::vector<unsigned char> skinned(n);
+      for(unsigned i=0;i<n;++i){float x=float((i*37)%60)-30.f,y=float((i*13)%24)-12.f;
+          if(i%12==0){const float u=float((i*2654435761u>>8)%1000)/1000.f,a=float((i*40503u)%628)/100.f,r=12.f*std::sqrt(u)*.86f;x=r*std::cos(a);y=r*std::sin(a);} /* uniform over the disc inside Stay */
+          lo[i*3]=x;lo[i*3+1]=y;lo[i*3+2]=0;hi[i*3]=x+.6f;hi[i*3+1]=y+.6f;hi[i*3+2]=1;roots[i*3]=x;roots[i*3+1]=y;roots[i*3+2]=0;skinned[i]=i%2==0;}
+      H::Hold h;volatile unsigned sink=0;const unsigned rounds=4000;
+      for(unsigned i=0;i<n;++i){const float e=M::insetExtent(true,&lo[i*3],&hi[i*3],id,M::Stay);if(skinned[i]&&e<=M::Stay)h.decide(i,&roots[i*3],e);} // warm
+      auto time=[&](auto body){double best=1e30;for(int rep=0;rep<5;++rep){const auto t0=std::chrono::steady_clock::now();for(unsigned r=0;r<rounds;++r)body();
+          best=std::min(best,std::chrono::duration<double,std::nano>(std::chrono::steady_clock::now()-t0).count()/double(rounds)/double(n));}return best;};
+      const double before=time([&]{unsigned c=0;for(unsigned i=0;i<n;++i)c+=M::insideInset(true,&lo[i*3],&hi[i*3],id);sink=sink+c;});
+      const double extentOnly=time([&]{unsigned c=0;for(unsigned i=0;i<n;++i)c+=M::insetExtent(true,&lo[i*3],&hi[i*3],id,M::Stay)<=M::Inset;sink=sink+c;});
+      const double after=time([&]{h.begin();unsigned c=0;for(unsigned i=0;i<n;++i){bool in=false;const float e=M::insetExtent(true,&lo[i*3],&hi[i*3],id,M::Stay);
+          if(e<=M::Stay)in=skinned[i]?h.decide(i,&roots[i*3],e):e<=M::Inset;c+=in;}sink=sink+c;});
+      std::printf("cost per replay: inset test before %.2f ns, hysteresis decision after %.2f ns (the extent alone %.2f ns)\n",before,after,extentOnly);
+      (void)sink;}}
     std::puts("PASS actor shadow map");
     return 0;
 }

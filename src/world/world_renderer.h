@@ -46,6 +46,7 @@
 #include "celestial_time_warp.h"
 #include "cascade_anchor.h"
 #include "actor_shadow_map.h" // 0.3.209 (task 29)
+#include "actor_side_hold.h" // the inset hysteresis of the actor map
 #include "actor_side_tracker.h" // crowd/self shimmer diagnostics: actor map vs near cascade per caster
 #include "shadow_pivot.h"
 #include "world_dynamic_probes.h"
@@ -335,7 +336,7 @@ private:
     // 0.3.209 (task 29): per-source actor shadow map (R32F 1024, moving casters only, shadows/actor_shadow_map.h) and the half-res visibility it feeds (A8R8G8B8: r sun, g moon; white = lit).
     // actorMatrices/actorValid are stored with the near map's reuse state: the near map and the actor map of a source always come from the same frame.
     IDirect3DTexture9 *actorShadow[2]={},*actorVisibility=nullptr,*actorTiles[2]={},*actorTilesMid=nullptr;IDirect3DSurface9 *actorShadowSurface[2]={},*actorVisibilitySurface=nullptr,*actorTilesSurface[2]={},*actorTilesMidSurface=nullptr;
-    float actorMatrices[2][16]={};bool actorValid[2]={};bool nearActorSkip[2]={};NorthlightActorSide::Tracker actorSide[2]; /* diagnostics: which map each skinned caster went to, per source */ /* the near map was drawn without the replays its actor map holds: reusable only together with that actor map */V actorCenter[2];bool actorCenterValid[2]={}; /* leashed centre per source (actor_shadow_map.h leash) */unsigned long actorNearSkipped=0,actorDrawn=0;std::vector<uint32_t> actorReplays; /* the near loop's skipped replays: exactly what the actor map draws */DWORD actorShadowLogAt[2]={}; /* per source: the moon's line is not starved by the sun's timer */
+    float actorMatrices[2][16]={};bool actorValid[2]={};bool nearActorSkip[2]={};NorthlightActorSide::Tracker actorSide[2];NorthlightActorSideHold::Hold actorHold[2]; /* the casters held in the actor map (hysteresis), per source */ /* diagnostics: which map each skinned caster went to, per source */ /* the near map was drawn without the replays its actor map holds: reusable only together with that actor map */V actorCenter[2];bool actorCenterValid[2]={}; /* leashed centre per source (actor_shadow_map.h leash) */unsigned long actorNearSkipped=0,actorDrawn=0;std::vector<uint32_t> actorReplays; /* the near loop's skipped replays: exactly what the actor map draws */DWORD actorShadowLogAt[2]={}; /* per source: the moon's line is not starved by the sun's timer */
     IDirect3DPixelShader9* unionPS=nullptr;
     std::shared_ptr<const NorthlightLocalShadowSignature::Records> uploadedLocalShadowRecords;
     struct ShadowCacheKey {
@@ -3447,6 +3448,7 @@ public:
             if(nearSkip){actorReplays.clear();try{actorReplays.reserve(replays.size());}catch(...){nearSkip=false;}}
             if(cascade==0)nearActorSkip[source]=nearSkip;
             unsigned nearSkipped=0;
+            if(nearSkip)actorHold[source].begin();else if(cascade==0)actorHold[source].invalidate();
             const bool sideDiag=nearSkip&&NorthlightDiagnostics::enabled(); /* diagnostics only: the side tracker */
             if(sideDiag)actorSide[source].begin();
             auto replayLoop=[&](auto& split)->bool{
@@ -3462,7 +3464,16 @@ public:
                     if(key.staticContent.valid&&!key.staticContent.contains(p->staticProofModel,p->staticProofRevision))++staticDedupUncommitted;
                     ++staticDedupSkipped;continue;
                 }
-                if(nearSkip&&NorthlightActorShadowMap::insideInset(p->pointBounds.valid,p->pointBounds.low,p->pointBounds.high,actorFrameMatrix[source])){actorReplays.push_back(uint32_t(index));++nearSkipped;
+                // The actor map takes a caster whose bounds lie fully inside the inset, and keeps a skinned one while they lie within Stay (hysteresis,
+                // actor_side_hold.h). Its identity there: the palette root, or the centre of its valid bounds (a rigid attachment has no root).
+                bool inActor=false;
+                if(nearSkip){const float extent=NorthlightActorShadowMap::insetExtent(p->pointBounds.valid,p->pointBounds.low,p->pointBounds.high,actorFrameMatrix[source],NorthlightActorShadowMap::Stay);
+                    if(extent<=NorthlightActorShadowMap::Stay){
+                        if(!p->shadowSkinned)inActor=extent<=NorthlightActorShadowMap::Inset;
+                        else{std::uint64_t model=NorthlightActorSide::key(p->shared.get(),p->decl,p->count,false,nullptr);float centre[3];const float* at=p->captureRoot;
+                            if(!p->captureRootValid){for(unsigned k=0;k<3;++k)centre[k]=.5f*(p->pointBounds.low[k]+p->pointBounds.high[k]);at=centre;model=~model;} /* finite extent: valid bounds; ~ keeps the two kinds apart */
+                            inActor=actorHold[source].decide(model,at,extent);}}}
+                if(inActor){actorReplays.push_back(uint32_t(index));++nearSkipped;
                     if(sideDiag&&p->shadowSkinned)(p->shared?actorSide[source].note(NorthlightActorSide::key(p->shared.get(),p->decl,p->count,p->captureRootValid,p->captureRoot),true,p->selfShadow):actorSide[source].unkeyed());continue;}
                 if(sideDiag&&p->shadowSkinned){auto& side=actorSide[source];if(p->shared)side.note(NorthlightActorSide::key(p->shared.get(),p->decl,p->count,p->captureRootValid,p->captureRoot),false,p->selfShadow);else side.unkeyed();
                     /* no valid bounds, yet the palette root lies inside the inset: it belongs to the actor map and fell to the near cascade for lack of bounds;

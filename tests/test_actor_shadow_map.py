@@ -49,8 +49,9 @@ checks['actor draw: own target, shared 1024 depth, cleared white/1, cascade repl
 # The near skip: cascade 0 only, valid bounds only (insideInset rejects invalid bounds), actor matrix.
 checks['near skip: cascade 0 only, never the far map, by the inset test on valid bounds']=(
     'bool nearSkip=cascade==0&&actorFrameOn[source];' in loop and 'if(nearSkip){actorReplays.clear();try{actorReplays.reserve(replays.size());}catch(...){nearSkip=false;}}' in loop
-    and 'if(nearSkip&&NorthlightActorShadowMap::insideInset(p->pointBounds.valid,p->pointBounds.low,p->pointBounds.high,actorFrameMatrix[source])){actorReplays.push_back(uint32_t(index));++nearSkipped;' in loop
-    and loop.count('insideInset(')==2 and 'insideInset(true,p->captureRoot,p->captureRoot,actorFrameMatrix[source])){if(p->shared)side.invalidNear();else side.unsupportedNear();}' in loop and 'if(!valid||!low||!high||!m)return false;' in h
+    and 'NorthlightActorShadowMap::insetExtent(p->pointBounds.valid,p->pointBounds.low,p->pointBounds.high,actorFrameMatrix[source],NorthlightActorShadowMap::Stay);' in loop
+    and 'if(inActor){actorReplays.push_back(uint32_t(index));++nearSkipped;' in loop and 'extent<=NorthlightActorShadowMap::Inset' in loop
+    and loop.count('insideInset(')==1 and 'insideInset(true,p->captureRoot,p->captureRoot,actorFrameMatrix[source])){if(p->shared)side.invalidNear();else side.unsupportedNear();}' in loop and 'if(!valid||!low||!high||!m)return false;' in h
     and h.count('std::isfinite(m[i])')==1 and h.index('std::isfinite(m[i])')<h.index('inline bool insideInset(')) # the matrix once per frame (finiteMatrix), not per replay
 # A near map drawn with the skip lacks those casters: reusable only while its actor map is valid (the source went inactive, the detail went off).
 checks['near map with skipped casters is redrawn, not reused, once its actor map is gone']=(
@@ -95,6 +96,12 @@ checks['water: maps on s8/s9, ActorMatrix c29..c36, ActorShadowInfo c37, filled 
     and 'float c[38][4]={}' in wr and 'memcpy(c[29+source*4],context.actorShadowMatrices[source],64)' in wr and 'c[37][2]=1.f/1024;' in wr and 'SetPixelShaderConstantF(0,c[0],38)' in wr
     and 'context.sourceShadows[1][1],context.actorShadows[0],context.actorShadows[1]};' in wr and 'for(unsigned i=0;i<10;++i){d->SetTexture(i,textures[i]);' in wr
     and 'out.actorShadows[source]=actorShadow[source];memcpy(out.actorShadowMatrices[source],actorMatrices[source],64);out.actorShadowValid[source]=true;' in w)
+# Hysteresis hold: wired once.
+hold=fp.src('actor_side_hold.h').read_text()
+checks['hold: per-source table, begun with the diagnostics flag (or invalidated when the pass does not run); skinned casters take the root or the valid bounds centre as identity, others today\'s rule']=(
+    'NorthlightActorSideHold::Hold actorHold[2];' in w and 'if(nearSkip)actorHold[source].begin();else if(cascade==0)actorHold[source].invalidate();' in loop
+    and 'if(!p->shadowSkinned)inActor=extent<=NorthlightActorShadowMap::Inset;' in loop and 'if(!p->captureRootValid){for(unsigned k=0;k<3;++k)centre[k]=.5f*(p->pointBounds.low[k]+p->pointBounds.high[k]);at=centre;model=~model;}' in loop
+    and 'inActor=actorHold[source].decide(model,at,extent);' in loop and loop.count('actorHold[source].decide(')==1)
 for name,ok in checks.items():print(('PASS ' if ok else 'FAIL ')+name)
 assert all(checks.values())
 with tempfile.TemporaryDirectory(prefix='northlight-actormap-') as tmp:
