@@ -13,7 +13,8 @@ constexpr unsigned N=64;                            /* noise volume edge, L8 vox
 constexpr float LargePeriod=192.f,SmallPeriod=48.f; /* world units per noise tile (0.3.199 game tests tried 384/96..576/144; back to the original by choice) */
 constexpr uint32_t Seed=0x4e4c4643u;
 constexpr float kDry=0.05f,kNight=0.18f,kSigmaMax=0.03f,kBaseHeight=12,kRainHeight=8; /* bank height 12 units dry, 20 in full rain (0.3.199 game test: was 7/14, the banks should reach higher) */
-constexpr float kDrySigma=0.33f; /* peak extinction share without rain: sigmaMax = kSigmaMax x (kDrySigma + (1-kDrySigma) fog) (game tests: dry banks fainter, .65 -> .45 -> .33) */
+constexpr float kDrySigma=0.33f; /* peak extinction share without rain: sigmaMax = kSigmaMax x (kDrySigma + (kRainSigma-kDrySigma) fog) (game tests: dry banks fainter, .65 -> .45 -> .33) */
+constexpr float kRainSigma=0.75f; /* peak extinction share in full rain (0.3.213 game tests: rain banks too opaque, 1 -> .85 -> .75); the banks' size and coverage are unchanged */
 constexpr float kDryNightThin=0.12f; /* dry nights thinner still: sigmaMax x (1 - kDryNightThin night (1-fog)); .33 x .88 keeps the dry night at .29 (game test: .45 x .65 was right) */
 constexpr double kWindDry=1.05,kWindRain=4.2; /* large-scale wind, units/s, dry and full rain (0.3.199 game test: was .6/2.4, read as too slow) */
 constexpr float kMaxCoverage=0.7f,kDense=0.35f,kMinCoverage=0.01f; /* coverage cap (rain keeps gaps), fully dense share of the covered area, below it the pass is skipped.
@@ -132,7 +133,7 @@ inline Frame derive(unsigned fogClouds,unsigned density,float fog,float night,co
     const float cov=std::clamp((float(std::min(density,100000u))/100.f)*((kDry+kNight*ng)*std::max(lz,fg)+(1-kDry)*fg),0.f,kMaxCoverage);
     if(!fogClouds||!table||!(cov>=kMinCoverage))return f;
     f.active=true;f.coverage=cov;f.threshold=quantile(*table,1-cov);
-    f.sharpness=1.f/std::max(quantile(*table,1-kDense*cov)-f.threshold,.02f);f.height=kBaseHeight+kRainHeight*fg;f.sigmaMax=kSigmaMax*(kDrySigma+(1-kDrySigma)*fg)*(1-kDryNightThin*ng*(1-fg));
+    f.sharpness=1.f/std::max(quantile(*table,1-kDense*cov)-f.threshold,.02f);f.height=kBaseHeight+kRainHeight*fg;f.sigmaMax=kSigmaMax*(kDrySigma+(kRainSigma-kDrySigma)*fg)*(1-kDryNightThin*ng*(1-fg));
     f.invLarge=1.f/LargePeriod;f.invSmall=1.f/SmallPeriod;
     for(int i=0;i<3;++i){const double c=detail::finite0(camera[i]);
         f.largeOrigin[i]=detail::origin(c,wind.large[i],1.0/double(LargePeriod));f.smallOrigin[i]=detail::origin(c,wind.small[i],1.0/double(SmallPeriod));}
