@@ -1181,8 +1181,8 @@ private:
                 // Interior checks use inBuildBudget (stage entry already reserved the build headroom).
                 NorthlightGI::AllocationAdmission localAdmission=[&](uint64_t bytes){
                     if(bytes<NorthlightGeometryMemory::MiB)return true;
-                    auto sample=workerMemory(NorthlightGeometryMemory::inBuildBudget(bytes));
-                    if(NorthlightGeometryMemory::admits(sample,NorthlightGeometryMemory::inBuildBudget(bytes)))return true;
+                    const auto budget=NorthlightGeometryMemory::inBuildBudget(bytes);auto sample=workerMemory(budget);
+                    if(NorthlightGeometryMemory::admits(sample,budget))return true;
                     localDeferred=true;localSample=sample;logGeometryMemory("local-geometry-allocation-deferred",sample,generations.live(),workerMemoryExact);return false;
                 };
                 auto replacement=std::make_shared<NorthlightGI::BVH>();
@@ -1199,7 +1199,7 @@ private:
                     double(localStats.flatBytes)/1048576,double(localStats.bvhBytes)/1048576,localStats.loadMs,localStats.pieceMs,localStats.assembleMs,localStats.bvhMs,localStats.totalMs);
                 if(!currentGeometry()){++superseded;stallEnd("superseded");continue;}
                 memory=workerMemory();if(NorthlightDiagnostics::enabled())logGeometryMemory("after-bvh",memory,generations.live(),workerMemoryExact);
-                if(!NorthlightGeometryMemory::admits(memory,NorthlightGeometryMemory::inBuildBudget())){
+                if(!NorthlightGeometryMemory::admits(memory,NorthlightGeometryMemory::buildBudget())){
                     replacement.reset();stallBegin("plan",memory);deferBuild("plan-deferred",memory,1000);continue;
                 }
                 // Reduced-reach retry re-enters here with the local BVH (`replacement`, still tracked in
@@ -1213,12 +1213,12 @@ private:
                 bool terrainDeferred=false;NorthlightGeometryMemory::Sample terrainSample;uint64_t terrainLargest=0;unsigned terrainChecks=0;
                 NorthlightGI::AllocationAdmission terrainAdmission=[&](uint64_t bytes){
                     terrainLargest=std::max(terrainLargest,bytes);
-                    // Small metadata cannot fragment a large block. Keep the
-                    // process reserve at stage entry and check every large growth.
+                    // Small metadata cannot fragment a large block. Stage entry passed buildBudget (768 MiB);
+                    // every large growth inside the stage is checked against inBuildBudget.
                     if(bytes<NorthlightGeometryMemory::MiB)return true;
                     ++terrainChecks;
-                    auto sample=workerMemory(NorthlightGeometryMemory::inBuildBudget(bytes));
-                    if(NorthlightGeometryMemory::admits(sample,NorthlightGeometryMemory::inBuildBudget(bytes)))return true;
+                    const auto budget=NorthlightGeometryMemory::inBuildBudget(bytes);auto sample=workerMemory(budget);
+                    if(NorthlightGeometryMemory::admits(sample,budget))return true;
                     terrainDeferred=true;terrainSample=sample;logGeometryMemory("shadow-terrain-allocation-deferred",sample,generations.live(),workerMemoryExact);
                     logf("WORLD terrain allocation requestMiB=%.2f requiredContiguousMiB=%.2f",double(bytes)/1048576,double(bytes+NorthlightGeometryMemory::ContiguousMargin)/1048576);
                     return false;
@@ -1227,11 +1227,10 @@ private:
                 const auto reachChoice=NorthlightTerrainReach::choose(reachState,profileReach,GetTickCount());
                 reach=reachChoice.reach;
                 if(reachChoice.restored)logf("WORLD shadow terrain reach restored to=%.0f",reach);
-                // Memory refusal of an extended build: rebuild the terrain stages at the base reach now (margins unchanged).
-                // The retry can pass: terrainAdmission re-samples address space on every call, and the refused extended
-                // attempt's own terrain/plan/page allocations are freed (goto destroys them) before the reduced attempt.
-                // The 745-767/63 MiB sample is taken mid-build after the extended terrain load; stage entry and the moment
-                // after a torn-down attempt show ~965-984/754 and ~977 MiB available.
+                // Memory refusal of an extended build: rebuild the terrain stages at the base reach now.
+                // Interior allocations use inBuildBudget (640 MiB floor, more for requests >128 MiB), so the extended
+                // build falls back only when an interior allocation is refused under that floor. terrainAdmission
+                // re-samples on every call and the refused attempt's allocations are freed (goto destroys them) first.
                 auto reduceReach=[&]{
                     if(!NorthlightTerrainReach::memoryRefused(reachState,reach,GetTickCount()))return false;
                     memoryStall.markReduced();
