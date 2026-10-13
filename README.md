@@ -88,7 +88,8 @@ Every effect below is on by default and is drawn on top of the game's own frame.
 - **Font mods.** Lexara, TweakWoW2 (HD Font on) and the AwesomeWotLK MSDF fork replace the game's UI shaders,
   which Northlight uses to find where the world ends and the UI begins. Northlight then learns the mod's UI draws
   instead: effects start about 2 seconds after entering the world, and the log shows
-  `EFFECT boundary fallback active: UI shaders replaced by another module`.
+  `EFFECT boundary fallback active: UI shaders replaced by another module`. From then on `NameMask` also recognises
+  floating names drawn with the mod's shaders (Lexara, TweakWoW2), so they keep their colour too.
 - **Platforms and install.** macOS with WoWSilicon (preloaded as `mods/d3d9.dll`), Linux with Wine or Proton
   (the Windows payload; see [Install on Linux](#install-on-linux-wine-or-proton)) and Windows (a
   game-folder `d3d9.dll` on the bundled DXVK 3.1.1, with DXVK 2.7.1 as the `dxvk2` alternative backend for AMD RX 5000/6000 and

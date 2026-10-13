@@ -498,7 +498,7 @@ public:
     HRESULT STDMETHODCALLTYPE CreateRenderTarget(UINT w,UINT h,D3DFORMAT fmt,D3DMULTISAMPLE_TYPE ms,DWORD msq,WINBOOL lockable,IDirect3DSurface9** out,HANDLE* shared) override{
         return createSurface(Cmd::CreateRenderTarget,w,h,fmt,unsigned(ms),msq,lockable?1u:0u,D3::kUsageRT,D3::kPoolDefault,out,shared);}
     HRESULT STDMETHODCALLTYPE CreateDepthStencilSurface(UINT w,UINT h,D3DFORMAT fmt,D3DMULTISAMPLE_TYPE ms,DWORD msq,WINBOOL discard,IDirect3DSurface9** out,HANDLE* shared) override{
-        return createSurface(Cmd::CreateDepthStencilSurface,w,h,fmt,unsigned(ms),msq,discard?1u:0u,D3::kUsageDS,D3::kPoolDefault,out,shared);}
+        return createSurface(Cmd::CreateDepthStencilSurface,w,h,D3DFORMAT(NorthlightStream::upgradedDepthFormat(unsigned(fmt))),unsigned(ms),msq,discard?1u:0u,D3::kUsageDS,D3::kPoolDefault,out,shared);}
     HRESULT STDMETHODCALLTYPE CreateOffscreenPlainSurface(UINT w,UINT h,D3DFORMAT fmt,D3DPOOL pool,IDirect3DSurface9** out,HANDLE* shared) override{
         return createSurface(Cmd::CreateOffscreenPlainSurface,w,h,fmt,0,0,0,0,DWORD(pool),out,shared);}
     HRESULT STDMETHODCALLTYPE CreateVertexDeclaration(const D3DVERTEXELEMENT9* elements,IDirect3DVertexDeclaration9** out) override{

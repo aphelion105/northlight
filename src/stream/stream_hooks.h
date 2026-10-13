@@ -30,6 +30,12 @@ inline std::atomic<bool> streamActive{false};
    Written by the renderer (replay thread, or the game thread in direct mode) when the fallback arms; read relaxed by StreamDevice::onDraw
    on the game thread, which then treats that VS as kUi for the snapshot trigger. */
 inline std::atomic<std::uint64_t> learnedUiVsHash{0};
+/* 0.3.212 (task 32): NameMask needs stencil bits in the game's depth buffer. True while the device supports D24S8 for the back buffer format (published by the Factory at CreateDevice and the Device at Reset):
+   D24X8 depth is then created as D24S8 (the auto depth stencil in the present parameters, CreateDepthStencilSurface). The StreamDevice applies it on the game thread before it records, so the game's proxy and the
+   replay thread's real surface agree on the format. depthUpgrades counts the surfaces changed (read by the NAMEMASK line). */
+inline std::atomic<bool> depthUpgrade{false};
+inline std::atomic<unsigned> depthUpgrades{0};
+inline unsigned upgradedDepthFormat(unsigned format){constexpr unsigned kD24X8=77,kD24S8=75;if(format==kD24X8&&depthUpgrade.load(std::memory_order_relaxed)){depthUpgrades.fetch_add(1,std::memory_order_relaxed);return kD24S8;}return format;} /* D3DFMT_D24X8 -> D3DFMT_D24S8 */
 // The memory guard's pressure decision (published by the Device's finishFrameImpl, which runs on the replay thread while
 // streaming); the game side reads it at its next Present and halves the queue budget. Written only on a change.
 inline std::atomic<bool> memoryPressure{false};
@@ -42,20 +48,22 @@ inline unsigned cores(){const unsigned hw=std::thread::hardware_concurrency();re
 // Anything unreadable gives 0 (the direct path): the stream is only ever entered on an explicit, parsed 1.
 // 0.3.200 (pipeline): framesAhead (optional) receives StreamFramesAhead from the same load (1 when nothing could be read).
 // 0.3.200 (frame skip): frameSkip (optional) receives StreamFrameSkip the same way (0 when nothing could be read).
-inline bool commandStreamFromText(const std::string& own,bool hasFile=true,unsigned* framesAhead=nullptr,unsigned* frameSkip=nullptr){
-    if(framesAhead)*framesAhead=1;if(frameSkip)*frameSkip=0;
+// 0.3.212 (task 32): nameMask (optional) receives NameMask != 0 the same way (false when nothing could be read: no depth format upgrade), so CreateDevice reads the ini once.
+inline bool commandStreamFromText(const std::string& own,bool hasFile=true,unsigned* framesAhead=nullptr,unsigned* frameSkip=nullptr,bool* nameMask=nullptr){
+    if(framesAhead)*framesAhead=1;if(frameSkip)*frameSkip=0;if(nameMask)*nameMask=false;
     try{std::istringstream in(NorthlightQuality::narrow(own));std::vector<std::string> problems;
         const NorthlightQuality::Settings s=NorthlightQuality::load(hasFile?&in:nullptr,nullptr,problems);
         if(framesAhead)*framesAhead=s.streamFramesAhead;
         if(frameSkip)*frameSkip=s.streamFrameSkip;
+        if(nameMask)*nameMask=s.nameMask!=0;
         return s.commandStream!=0;}
     catch(...){return false;}
 }
 #ifdef _WIN32
 // Called by Factory::CreateDevice before the real device exists: rootPath + northlight-quality.ini (wide path, as
 // WorldRenderer::readSmallFile). An absent file means the code default (1).
-inline bool commandStreamRequested(const wchar_t* rootPath,unsigned* framesAhead=nullptr,unsigned* frameSkip=nullptr){
-    std::string text;bool has=false;if(framesAhead)*framesAhead=1;if(frameSkip)*frameSkip=0;
+inline bool commandStreamRequested(const wchar_t* rootPath,unsigned* framesAhead=nullptr,unsigned* frameSkip=nullptr,bool* nameMask=nullptr){
+    std::string text;bool has=false;if(framesAhead)*framesAhead=1;if(frameSkip)*frameSkip=0;if(nameMask)*nameMask=false;
     try{
         const std::wstring path=std::wstring(rootPath?rootPath:L"")+L"northlight-quality.ini";
         HANDLE f=CreateFileW(path.c_str(),GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
@@ -63,7 +71,7 @@ inline bool commandStreamRequested(const wchar_t* rootPath,unsigned* framesAhead
             while(ReadFile(f,buffer,sizeof buffer,&got,nullptr)&&got&&text.size()<262144)text.append(buffer,got);
             CloseHandle(f);}
     }catch(...){return false;}
-    return commandStreamFromText(text,has,framesAhead,frameSkip);
+    return commandStreamFromText(text,has,framesAhead,frameSkip,nameMask);
 }
 #endif
 } // namespace NorthlightStream

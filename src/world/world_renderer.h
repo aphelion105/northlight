@@ -1,5 +1,6 @@
 #pragma once
 #include "stream_hooks.h"
+#include "name_stencil.h"
 #include "world_context.h"
 #include "effect_switches.h"
 #include "world_camera.h"
@@ -116,6 +117,28 @@
 #include "effects_buckets.h"
 #include <cstdarg>
 #include "rigid_memory.h"
+
+// 0.3.212 (task 32): the name mask's composite bind, shared by WorldComposite and the renderer's legacy composite. With a depth-stencil holding this frame's name marks the quad draws with it bound and
+// kComposite set (no depth test, stencil NOTEQUAL on the mark bit, nothing written), so marked pixels keep the game's colour; the replaced depth-stencil and the three states that matter after it (STENCILENABLE,
+// ZENABLE, ZWRITEENABLE; the other stencil states have no effect while STENCILENABLE is off) are restored when the scope ends. No marks (null): no calls. No depth bound before is the normal case:
+// GetDepthStencilSurface then returns D3DERR_NOTFOUND and the previous depth is restored as null.
+struct NameMaskCompositeBind {
+    IDirect3DDevice9* device;IDirect3DSurface9* previousDepth=nullptr;DWORD previous[3]={};bool bound=false;
+    static constexpr D3DRENDERSTATETYPE kRestored[3]={D3DRS_STENCILENABLE,D3DRS_ZENABLE,D3DRS_ZWRITEENABLE};
+    NameMaskCompositeBind(IDirect3DDevice9* d,IDirect3DSurface9* maskDepth):device(d){
+        if(!maskDepth)return;
+        const HRESULT got=device->GetDepthStencilSurface(&previousDepth);
+        if((SUCCEEDED(got)||got==D3DERR_NOTFOUND)&&SUCCEEDED(device->SetDepthStencilSurface(maskDepth))){
+            bound=true;for(unsigned i=0;i<3;++i)device->GetRenderState(kRestored[i],&previous[i]);
+            for(const auto& set:NorthlightNameStencil::kComposite)device->SetRenderState(D3DRENDERSTATETYPE(set.state),set.value);
+        }
+    }
+    ~NameMaskCompositeBind(){
+        if(bound){for(unsigned i=0;i<3;++i)device->SetRenderState(kRestored[i],previous[i]);device->SetDepthStencilSurface(previousDepth);}
+        if(previousDepth)previousDepth->Release();
+    }
+    NameMaskCompositeBind(const NameMaskCompositeBind&)=delete;NameMaskCompositeBind& operator=(const NameMaskCompositeBind&)=delete;
+};
 
 // Included after SavedState. Worker never accesses D3D or game memory.
 class WorldRenderer {
@@ -246,6 +269,7 @@ private:
     IDirect3DTexture9* regionalFogTexture=nullptr;
     IDirect3DTexture9* neutralWhite=nullptr; // 0.3.209 (task 29): 1x1 white on s12 (ActorVisibility) for WorldLighting on frames without an ActorShadow pass
     IDirect3DTexture9* neutralZero=nullptr; // 0.3.202 (rain): 1x1 (0,0,0,0) on s13 (RainMask) when no mask was drawn this frame
+    IDirect3DSurface9* nameMaskDepth=nullptr; // 0.3.212 (task 32): non-owning, set per frame before render(), consumed by the composite quad
     IDirect3DTexture9* rainMask=nullptr; // 0.3.202 (rain): the proxy's rain streak alpha mask (non-owning, set per frame, cleared after the composite)
     IDirect3DTexture9* neutralAO=nullptr; // 0.3.174: 1x1 (0,0,0,1) on s10 when the proxy does not fold its AO/bloom
     std::shared_ptr<const NorthlightRegionalFog::Field> uploadedFogField;
@@ -2084,6 +2108,7 @@ public:
     // 0.3.198 (rain): the smoothed weather state, set once per frame at the frame boundary (Device::finishFrameImpl); no effect reads it yet.
     NorthlightWeather::State weatherState{};
     void setWeather(const NorthlightWeather::State& s){weatherState=s;}
+    void setNameMask(IDirect3DSurface9* depthStencil){nameMaskDepth=depthStencil;} /* 0.3.212 (task 32): the world depth-stencil holding this frame's name marks (non-owning, for the next render() only; null: no marks) */
     void setRainMask(IDirect3DTexture9* t){rainMask=t;} /* 0.3.202 (rain): non-owning, for the next render() only */
     const NorthlightWeather::State& weather()const{return weatherState;}
     // 0.3.198 (rain): the settings (Weather 0/1, RainFog 0..2) and the per-frame scalars derived from them and weather():
@@ -2095,6 +2120,7 @@ public:
     void setGpuBudgetLevel(unsigned level){gpuBudgetLevel=quality.gpuBudgetMs?std::min(level,NorthlightGpuBudget::MaxLevel):0u;}
     bool rainBlendSetting()const{return quality.weather!=0;} /* 0.3.199 (rain): the draw hook's alpha-blended rain streaks and rain-only mist skip, with Weather=1 */
     NorthlightWeatherEffects::Frame weatherEffects()const{return NorthlightWeatherEffects::derive(weatherState,quality.weather,quality.rainFog);}
+    bool nameMask()const{return quality.nameMask!=0;} bool nameMaskDebug()const{return quality.nameMaskDebug!=0;} /* 0.3.212 (task 32): read once at device creation */
     bool contactAO()const{return quality.contactAO!=0;} /* 0.3.201 (task 18): read once at device creation */
     unsigned spellLayerSetting()const{return quality.spellLayer;} /* task 34: SpellLayer, SpellLayerClasses and SpellTrace are read once at device creation */
     unsigned spellLayerClassesSetting()const{return quality.spellLayerClasses;}
@@ -3917,7 +3943,11 @@ public:
         d->SetPixelShaderConstantF(34,haze.haze,1);
         /* 0.3.202 (rain): RainMask on s13 for the composite only (the loop above already set POINT/CLAMP/no mip/sRGB off on it); the pointer is frame-local, the regional fog field goes back right after the quad */
         d->SetTexture(13,rainMask?rainMask:neutralZero);rainMask=nullptr; /* never the regional fog field: null when neutralZero could not be created */
-        d->SetRenderTarget(0,targetSurface);d->SetTexture(8,temporalLight[1-temporalIndex]);d->SetTexture(9,fogResolved?fogBlurred:fog);d->SetPixelShader(finalPS);if(!check(quad(w,h),"world composite"))return false;composited=true;d->SetTexture(13,regionalFogTexture);if(profile)profile->mark("WorldComposite");
+        d->SetRenderTarget(0,targetSurface);d->SetTexture(8,temporalLight[1-temporalIndex]);d->SetTexture(9,fogResolved?fogBlurred:fog);d->SetPixelShader(finalPS);
+        /* 0.3.212 (task 32): with this frame's name marks the quad draws with the world depth-stencil bound and a stencil test that rejects marked pixels (they keep the game's colour in the target); no marks: the quad as before. */
+        bool compositeOk=false;
+        {IDirect3DSurface9* maskDepth=nameMaskDepth;nameMaskDepth=nullptr;NameMaskCompositeBind mask(d,maskDepth);compositeOk=check(quad(w,h),"world composite");}
+        if(!compositeOk)return false;composited=true;d->SetTexture(13,regionalFogTexture);if(profile)profile->mark("WorldComposite");
         if(diagnosticCapture){
             gpuDiagnosticArmed=false;unsigned capture=++gpuDiagnosticCaptures;
             const std::string& directory=gpuDiagnosticDirectory;
