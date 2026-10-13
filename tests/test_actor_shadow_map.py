@@ -17,7 +17,8 @@ checks['constants: Radius 12, Inset .80, Size 1024; unsnapped centre (XY from th
     and 'f.cx=dot(center,f.x);f.cy=dot(center,f.y);' in h and 'NorthlightWorldMath::shadowMatrixFrom(frame(center,pivot,sun),Radius,m);' in h
     and 'if(!(distance>Leash))return std::fabs(dz)>Leash?center+f.z*dz:center;' in h and 'if(!(distance<=JumpDistance))return pivot;' in h
     and 'dot(delta,delta)>JumpDistance' not in h) # the jump test is light-space XY (a 3D one re-centred while flying under a high sun)
-checks['quality: ActorShadowDetail last key 0..1, presets 1/1/0, actorShadowMap needs ActorShadows']=('{"ActorShadowDetail",&Settings::actorShadowDetail,0,1,{1,1,0}}' in q and q.rstrip().count('ActorShadowDetail')>=1
+# Own Keys entry only; its position in Keys[] is test_quality_docs.py's business.
+checks['quality: ActorShadowDetail 0..1, presets 1/1/0, actorShadowMap needs ActorShadows']=(re.search(r'\{\s*"ActorShadowDetail"\s*,\s*&Settings::actorShadowDetail\s*,\s*0\s*,\s*1\s*,\s*\{\s*1\s*,\s*1\s*,\s*0\s*\}\s*\}',q) is not None
     and 'inline bool actorShadowMap(const Settings& s,bool shadows){return actorShadowWork(s,shadows)&&s.actorShadowDetail;}' in q and 'unsigned actorShadowDetail=1;' in q)
 # Frame matrices from the raw pivot, before the cascade anchor (the anchor test keeps every later `pivot` out).
 raw=render.index('NorthlightActorShadowMap::leash(actorCenter[source],actorCenterValid[source],pivot,sourceDirections[source])')
