@@ -4,6 +4,7 @@
 #include "actor_shadow_map.h"
 #include "actor_side_tracker.h"
 #include "actor_side_hold.h"
+#include "replay_bounds_near.h"
 #include <chrono>
 #include <vector>
 #include <cassert>
@@ -135,7 +136,25 @@ int main(){
      {H::Hold h;float w[3]={0,0,0};h.begin();assert(h.decide(1,w,inside));w[0]=1.6f;h.begin();assert(!h.decide(1,w,band));}
      // invalidate(): everything expires at once.
      {H::Hold h;h.begin();assert(h.decide(1,root,inside));h.invalidate();h.begin();assert(!h.decide(1,root,band));}
-     // Cost: per-replay ns of the old inset test against the hysteresis decision (about 500 replays, 1 in 12 near the player (a crowded scene), half of all skinned).
+     // Near list: only rooted casters within Yards of the pivot, in index order; off without a pivot.
+     {namespace N=NorthlightReplayBoundsNear;N::List l;const float pivot[3]={100,50,10};const float nearRoot[3]={110,60,10},farRoot[3]={130,50,10};
+      l.begin(pivot,false);l.consider(0,true,nearRoot);assert(l.index.empty());
+      l.begin(pivot,true);l.consider(0,true,farRoot);l.consider(1,true,nearRoot);l.consider(2,false,nearRoot);l.consider(3,true,pivot);
+      assert(l.index.size()==2&&l.index[0]==1&&l.index[1]==3);
+      // The walk rotates like pass(): each phase keeps its own start across frames, honours the budget stop, and the list is rebuilt between frames.
+      for(unsigned i=4;i<10;++i)l.consider(i,true,pivot); // near list 1,3,4..9
+      std::vector<std::size_t> seen;unsigned budget=2;
+      assert(N::nearFirst(&l,0,[&]{return budget>0;},[&](std::size_t i){seen.push_back(i);--budget;return false;})&&seen.size()==2&&seen[0]==1&&seen[1]==3);
+      assert(l.cursor[0]==2&&l.cursor[1]==0&&l.cursor[2]==0);
+      seen.clear();budget=2;N::nearFirst(&l,0,[&]{return budget>0;},[&](std::size_t i){seen.push_back(i);--budget;return false;});assert(seen[0]==4&&seen[1]==5); // continues, not from the start
+      l.begin(pivot,true);l.consider(0,true,nearRoot);assert(l.cursor[0]==4); // begin() keeps the cursors
+      // the first packet spends the whole phase (Budget): the next frame starts past it
+      {N::List one;one.begin(pivot,true);for(unsigned i=0;i<5;++i)one.consider(i,true,pivot);bool spent=false;
+       assert(N::nearFirst(&one,1,[&]{return !spent;},[&](std::size_t){spent=true;return true;})&&one.cursor[1]==1);}
+      // walking the whole list without a stop returns false
+      {unsigned n=0;N::List one;one.begin(pivot,true);one.consider(0,true,pivot);one.consider(1,true,pivot);assert(!N::nearFirst(&one,2,[]{return true;},[&](std::size_t){++n;return false;})&&n==2);}
+      N::nearFirst(nullptr,0,[]{return true;},[](std::size_t){assert(false);return false;});}
+     // Cost: per-replay ns of the old inset test against the hysteresis decision (about 500 replays, 1 in 12 near the player (a crowded scene), half of all skinned), and of the near list inside the pinning loop.
      {const unsigned n=512;std::vector<float> lo(n*3),hi(n*3);std::vector<float> roots(n*3);std::vector<unsigned char> skinned(n);
       for(unsigned i=0;i<n;++i){float x=float((i*37)%60)-30.f,y=float((i*13)%24)-12.f;
           if(i%12==0){const float u=float((i*2654435761u>>8)%1000)/1000.f,a=float((i*40503u)%628)/100.f,r=12.f*std::sqrt(u)*.86f;x=r*std::cos(a);y=r*std::sin(a);} /* uniform over the disc inside Stay */
@@ -148,7 +167,10 @@ int main(){
       const double extentOnly=time([&]{unsigned c=0;for(unsigned i=0;i<n;++i)c+=M::insetExtent(true,&lo[i*3],&hi[i*3],id,M::Stay)<=M::Inset;sink=sink+c;});
       const double after=time([&]{h.begin();unsigned c=0;for(unsigned i=0;i<n;++i){bool in=false;const float e=M::insetExtent(true,&lo[i*3],&hi[i*3],id,M::Stay);
           if(e<=M::Stay)in=skinned[i]?h.decide(i,&roots[i*3],e):e<=M::Inset;c+=in;}sink=sink+c;});
-      std::printf("cost per replay: inset test before %.2f ns, hysteresis decision after %.2f ns (the extent alone %.2f ns)\n",before,after,extentOnly);
+      NorthlightReplayBoundsNear::List l;const float pivot[3]={0,0,0};
+      const double none=time([&]{unsigned c=0;for(unsigned i=0;i<n;++i)c+=roots[i*3]>1e9f;sink=sink+c;});
+      const double listed=time([&]{l.begin(pivot,true);for(unsigned i=0;i<n;++i)l.consider(i,skinned[i],&roots[i*3]);sink=sink+unsigned(l.index.size());});
+      std::printf("cost per replay: inset test before %.2f ns, hysteresis decision after %.2f ns (the extent alone %.2f ns); near list %.2f ns (empty loop %.2f ns)\n",before,after,extentOnly,listed,none);
       (void)sink;}}
     std::puts("PASS actor shadow map");
     return 0;

@@ -143,7 +143,7 @@ static const bool diagnosticsOff=(NorthlightDiagnostics::configure(false),true);
 struct Packet {
     IDirect3DVertexShader9* originalShader=nullptr;IDirect3DVertexDeclaration9* decl=nullptr;
     NorthlightReplayBounds::Bounds pointBounds;WorkInfo boundsWork;std::shared_ptr<const Prepared> boundsPrepared;
-    std::shared_ptr<const Mesh> shared;Mesh snapshot;const float* constants=nullptr;unsigned otherState=0;
+    std::shared_ptr<const Mesh> shared;Mesh snapshot;const float* constants=nullptr;unsigned otherState=0;bool captureRootValid=false;float captureRoot[3]={};
     const Mesh& mesh()const{return shared?*shared:snapshot;}
 };
 struct DeclarationCache {bool get(IDirect3DVertexDeclaration9* d,const D3DVERTEXELEMENT9*& e,UINT& n){if(!d)return false;auto* f=static_cast<FakeDecl*>(d);e=f->elements.data();n=UINT(f->elements.size());return true;}};
@@ -153,7 +153,7 @@ struct World {
     std::vector<std::unique_ptr<Packet>> replays;
     NorthlightReplayBounds::Cache replayBoundsCache;
     NorthlightReplayMetadata::Cache<Prepared,IDirect3DVertexShader9,IDirect3DVertexDeclaration9> replayBoundsMetadata;
-    DeclarationCache declarationCache;Context context;unsigned frames=0,logs=0;
+    DeclarationCache declarationCache;Context context;unsigned frames=0,logs=0;float actorShadowOrigin[3]={};bool actorShadowOriginValid=false; /* the renderer's shadow pivot: no pivot, no near-first order */
     unsigned pointBoundsValid=0;size_t pointBoundVertices=0,pointBoundOperations=0;Totals visits;
     explicit World(std::unordered_map<IDirect3DVertexShader9*,std::shared_ptr<const Program>>& programs):actorPrograms(programs){}
     void pointLogReplayBounds(const Totals& t,double,double,double,double,double,bool){visits=t;++logs;}
@@ -234,6 +234,39 @@ static void spin(double us){const auto end=std::chrono::steady_clock::now()+std:
 int main(int argc,char** argv){
     assert(argc>=3);const std::string mode=argv[2];auto skin=load(argv[1]);assert(SkinEnvelope::supports(skin));
 #ifdef NORTHLIGHT_TEST_CLOCK
+    if(mode=="priority"){
+        // The near-first order must not starve anything: a fixed draw list whose near packets (rooted next to the shadow pivot) cost more than
+        // a phase budget, run frame after frame through the real Worker (schedule with a priority list): every near and every far packet gets
+        // bounds within a bounded number of frames. The clock step is large, so the time budgets bind after a few packets.
+        const unsigned nearCount=12,farCount=48,frames=argc>3?unsigned(std::atoi(argv[3])):80;
+        const bool ordered=argc>4&&std::string(argv[4])=="on";
+        Scene scene(skin,240,3,2);World w(scene.programs);warm(w,scene);
+        std::vector<size_t> cheap; /* the plain skinned meshes (shaders[0]): all of them reach bounds */
+        for(size_t m=0;m<scene.pool.size();++m)if(scene.kinds[m]==0)cheap.push_back(m);
+        std::sort(cheap.begin(),cheap.end(),[&](size_t a,size_t b){return scene.pool[a]->vertexCount>scene.pool[b]->vertexCount;});assert(cheap.size()>=nearCount+farCount);
+        TestClock::step=6000; /* 6 us per clock read: the time budgets bind after a few packets, 60 packets need ~60 frames (the same without the order) */
+        const size_t total=nearCount+farCount;
+        std::vector<unsigned> firstValid(total,0);size_t nearListSize=0;
+        w.actorShadowOriginValid=ordered;const float pivot[3]={100,50,10};std::memcpy(w.actorShadowOrigin,pivot,sizeof pivot);
+        for(unsigned f=1;f<=frames;++f){
+            scene.frame(0,total,false,{&w}); /* the same draw list every frame */
+            for(size_t i=0;i<total;++i){auto& p=*w.replays[i];p.captureRootValid=true;p.captureRoot[0]=pivot[0]+(i<nearCount?float(i):100.f+float(i));p.captureRoot[1]=pivot[1];p.captureRoot[2]=pivot[2];
+                p.shared=scene.pool[cheap[i]];p.originalShader=&scene.shaders[0];} /* the largest meshes are the near packets */
+            w.replayBoundsKick();w.replayBoundsJoin();
+            nearListSize=w.replayBoundsWorker.nearList().index.size();
+            for(size_t i=0;i<total;++i)if(w.replays[i]->pointBounds.valid&&!firstValid[i])firstValid[i]=f;
+        }
+        unsigned lastNear=0,lastFar=0;size_t never=0;
+        for(size_t i=0;i<total;++i){(i<nearCount?lastNear:lastFar)=std::max(i<nearCount?lastNear:lastFar,firstValid[i]);
+            never+=firstValid[i]==0;}
+        std::printf("{\"mode\":\"priority\",\"ordered\":%d,\"nearListSize\":%zu,\"lastNearFirstValidFrame\":%u,\"lastFarFirstValidFrame\":%u,\"neverValid\":%zu}\n",int(ordered),nearListSize,lastNear,lastFar,never);
+        assert(!ordered||nearListSize==nearCount);
+        // Every packet got bounds. With the order: the near ones long before the plain rotation gets to them (it needs ~58 frames), the far ones
+        // no later than without it (~57): the near walk spends at most half of a phase and rotates, so the rotating pass always has work.
+        assert(never==0&&lastFar<=frames);
+        if(ordered)assert(lastNear<=24&&lastFar<=70);
+        return 0;
+    }
     if(mode=="equivalence"||mode=="stress"){
         const bool stress=mode=="stress";const unsigned frames=argc>3?unsigned(std::atoi(argv[3])):600;
         Scene scene(skin,stress?260:220);World legacy(scene.programs),async(scene.programs);warm(legacy,scene);warm(async,scene);
@@ -334,13 +367,13 @@ with tempfile.TemporaryDirectory(prefix='northlight-bounds-job-') as tmp:
     (root / 'd3d9.h').write_text(stub)
     source = clock + harness
     shader = str(client_fixtures.four_bone_vs3())
-    runs = [('o2', ['-O2'], [('equivalence', '600'), ('stress', '400')]),
-            ('asan', ['-O1', '-g', '-fsanitize=address,undefined', '-fno-omit-frame-pointer'], [('equivalence', '200'), ('stress', '200')]),
-            ('tsan', ['-O1', '-g', '-fsanitize=thread'], [('equivalence', '150'), ('stress', '200')])]
+    runs = [('o2', ['-O2'], [('equivalence', '600'), ('stress', '400'), ('priority', '80', 'on'), ('priority', '80', 'off')]),
+            ('asan', ['-O1', '-g', '-fsanitize=address,undefined', '-fno-omit-frame-pointer'], [('equivalence', '200'), ('stress', '200'), ('priority', '80', 'on')]),
+            ('tsan', ['-O1', '-g', '-fsanitize=thread'], [('equivalence', '150'), ('stress', '200'), ('priority', '80', 'on')])]
     for name, flags, modes in runs:
         binary = build(root, name, source, flags)
-        for mode, frames in modes:
-            out = subprocess.run([str(binary), shader, mode, frames], capture_output=True, text=True)
+        for mode, frames, *extra in modes:
+            out = subprocess.run([str(binary), shader, mode, frames, *extra], capture_output=True, text=True)
             if out.returncode or 'WARNING' in out.stderr or 'ERROR' in out.stderr:
                 sys.exit(f'{name} {mode} failed ({out.returncode}):\n{out.stdout}{out.stderr[-6000:]}')
             print(name, out.stdout.strip())

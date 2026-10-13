@@ -158,7 +158,8 @@
         pointBoundsValid=0;replayBoundsCache.beginFrame(diagnostics);replayBoundsMetadata.beginFrame();
         // Program/declaration lookups stay on the render thread.
         replayBoundsFallbacks.clear();replayBoundsCapped=0;
-        NorthlightReplayBoundsJob::gather(items,replays,[&](IDirect3DVertexShader9* shader,IDirect3DVertexDeclaration9* decl){return replayBoundsPrepared(shader,decl);});
+        replayBoundsWorker.nearList().begin(actorShadowOrigin,actorShadowOriginValid); /* the last frame's shadow pivot: casters near it are visited first */
+        NorthlightReplayBoundsJob::gather(items,replays,[&](IDirect3DVertexShader9* shader,IDirect3DVertexDeclaration9* decl){return replayBoundsPrepared(shader,decl);},&replayBoundsWorker.nearList());
         replayBoundsFallbacks.clear(); /* pins now live in the items only */
         replayBoundsWorker.start(replayBoundsCache,context.inverseView);
         replayBoundsDiagnostics=diagnostics;

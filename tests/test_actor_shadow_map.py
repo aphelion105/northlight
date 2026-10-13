@@ -96,12 +96,16 @@ checks['water: maps on s8/s9, ActorMatrix c29..c36, ActorShadowInfo c37, filled 
     and 'float c[38][4]={}' in wr and 'memcpy(c[29+source*4],context.actorShadowMatrices[source],64)' in wr and 'c[37][2]=1.f/1024;' in wr and 'SetPixelShaderConstantF(0,c[0],38)' in wr
     and 'context.sourceShadows[1][1],context.actorShadows[0],context.actorShadows[1]};' in wr and 'for(unsigned i=0;i<10;++i){d->SetTexture(i,textures[i]);' in wr
     and 'out.actorShadows[source]=actorShadow[source];memcpy(out.actorShadowMatrices[source],actorMatrices[source],64);out.actorShadowValid[source]=true;' in w)
-# Hysteresis hold: wired once.
-hold=fp.src('actor_side_hold.h').read_text()
+# Hysteresis hold, and the near-first bounds order: wired once.
+hold=fp.src('actor_side_hold.h').read_text();job=fp.src('replay_bounds_job.h').read_text();near=fp.src('replay_bounds_near.h').read_text()
 checks['hold: per-source table, begun with the diagnostics flag (or invalidated when the pass does not run); skinned casters take the root or the valid bounds centre as identity, others today\'s rule']=(
     'NorthlightActorSideHold::Hold actorHold[2];' in w and 'if(nearSkip)actorHold[source].begin();else if(cascade==0)actorHold[source].invalidate();' in loop
     and 'if(!p->shadowSkinned)inActor=extent<=NorthlightActorShadowMap::Inset;' in loop and 'if(!p->captureRootValid){for(unsigned k=0;k<3;++k)centre[k]=.5f*(p->pointBounds.low[k]+p->pointBounds.high[k]);at=centre;model=~model;}' in loop
     and 'inActor=actorHold[source].decide(model,at,extent);' in loop and loop.count('actorHold[source].decide(')==1)
+checks['bounds near-first: the list is filled by gather with the items, walks rotate per phase and take at most half of a phase budget']=(
+    'priority->consider(i,p.captureRootValid,p.captureRoot);' in job and 'schedule(*cache_,items_,inverse_,&cancel_,priority_.on?&priority_:nullptr)' in job
+    and 'budget.operations+budget.maxOperations/2' in job and 'budget.vertices+budget.maxVertices/2' in job and job.count('nearWalk(')==3 and 'NorthlightReplaySchedule::pass(index.size(),list->cursor[phase]%index.size()' in near
+    and not re.search(r'\bnear[(=]',job+near+hold)) # near is a Windows macro
 for name,ok in checks.items():print(('PASS ' if ok else 'FAIL ')+name)
 assert all(checks.values())
 with tempfile.TemporaryDirectory(prefix='northlight-actormap-') as tmp:
