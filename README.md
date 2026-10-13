@@ -1,5 +1,10 @@
 # Northlight renderer
 
+<img width="50%" height="1058" alt="Näyttökuva 2026-10-10 kello 22 38 31" src="https://github.com/user-attachments/assets/c1996381-8dc2-481c-97c9-e3f1316a08bf" /><img width="50%" height="768" alt="image" src="https://github.com/user-attachments/assets/20cc99fb-216c-4430-901b-35b5b5df30d9" />
+<img width="50%" height="768" alt="image" src="https://github.com/user-attachments/assets/e1181ddd-953d-4fd0-a703-eb97e5969ed2" /><img width="50%" height="1696" alt="image" src="https://github.com/user-attachments/assets/7b2c2595-f32b-42b0-bf67-95f7ee9ad570" />
+
+
+
 A Direct3D 9 extension for the World of Warcraft 3.3.5a client: a proxy `d3d9.dll`
 (built as `frd9.dll`) that adds lighting, shadows, fog, GI and sky effects. The repository also
 holds the offline asset builders (MPQ patches, world cache) and their validation.
