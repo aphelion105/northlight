@@ -184,9 +184,10 @@ static void testGuardTable(){
 // Get calls for exactly those), 3 = a cache that knows nothing (shaders, declaration, viewport, textures, samplers, constants all unknown). Every behavioural
 // test runs in all four; the replayed state must be identical.
 static int gMirrorMode=1;
+static bool gMinimal=true; // Config::minimalRestore of every Rig (main runs the whole suite with it on and off: the end state must be identical)
 static unsigned gTexGeneration=0;static unsigned texGeneration(void*){return gTexGeneration;}
 static uint64_t gTicks=0;static uint64_t fakeClock(void*){return ++gTicks;}static bool fakeTiming(void*){return true;} // every read advances one tick: a timed phase costs exactly 1
-struct Opts{bool timed=false;size_t deltaBytes=2u<<20;unsigned deltaChunk=16384;bool verdictCache=false;bool on=true;unsigned maxEntries=512;bool conflictCopy=true;unsigned mask=15;size_t arena=1u<<20,upVb=1u<<16,upIb=1u<<14;};
+struct Opts{bool minimal=gMinimal;bool timed=false;size_t deltaBytes=2u<<20;unsigned deltaChunk=16384;bool verdictCache=false;bool on=true;unsigned maxEntries=512;bool conflictCopy=true;unsigned mask=15;size_t arena=1u<<20,upVb=1u<<16,upIb=1u<<14;};
 struct Rig{
     Fake::FakeDevice dev;Layer layer;Opts o;
     Fake::Surface *T,*D,*Other;
@@ -238,7 +239,7 @@ struct Rig{
         const float c[4]={1,2,3,4};dev.SetVertexShaderConstantF(5,c,1);dev.SetPixelShaderConstantF(2,c,1);dev.SetSamplerState(0,5,2);dev.SetRenderState(D3DRS_ALPHAREF,128);
         opaqueZ();translucent(kSrcAlpha,kBlendOne);
         Config c2;c2.on=o.on;c2.classMask=o.mask;c2.maxEntries=o.maxEntries;c2.arenaBytes=o.arena;c2.uploadVbBytes=o.upVb;c2.uploadIbBytes=o.upIb;
-        c2.conflictCopy=o.conflictCopy;c2.deltaChunkWords=o.deltaChunk;c2.deltaBytes=o.deltaBytes;
+        c2.minimalRestore=o.minimal;c2.conflictCopy=o.conflictCopy;c2.deltaChunkWords=o.deltaChunk;c2.deltaBytes=o.deltaBytes;
         if(gMirrorMode){
             Fake::Mirror& m=dev.mir;view=Fake::makeView(dev);c2.source=&view;
             if(gMirrorMode==2){for(unsigned i=0;i<256;i+=3)m.hideRs[i]=true;for(unsigned i=0;i<256;i+=5)m.hideVsF[i]=true;for(unsigned i=0;i<224;i+=7)m.hidePsF[i]=true;m.hideTex[3]=m.hideTex[5]=true;m.hideSmp[1]=true;m.hideVsB=true;}
@@ -383,7 +384,7 @@ struct Rig{
     int issue(const DrawArgs& a,Family fam=Family::Particle){return issueWith(a,fam,[](DrawFacts&){});}
     int issueFf(const DrawArgs& a){return issueWith(a,Family::None,[](DrawFacts& f){f.fixedFunction=true;});}
     // B: the effects (other target, own state, a marker draw), then the replay; the device state must be identical across the replay.
-    void boundary(){
+    void effects(){ // everything the world effects leave on the device that differs from the game's state of the deferred draws
         dev.SetDepthStencilSurface(nullptr);dev.SetRenderTarget(0,Other);
         D3DVIEWPORT9 vp;vp.Width=100;vp.Height=50;dev.SetViewport(&vp);const RECT sc{1,2,3,4};dev.SetScissorRect(&sc);
         dev.SetVertexShader(vsEff);dev.SetPixelShader(psEff);dev.SetSamplerState(0,1,9);dev.SetSamplerState(5,3,4);dev.SetRenderState(D3DRS_ALPHAREF,77);dev.SetRenderState(D3DRS_POINTSIZE,5);
@@ -392,16 +393,23 @@ struct Rig{
          D3DMATERIAL9 mt{};mt.Power=7;dev.SetMaterial(&mt);D3DLIGHT9 l{};l.Type=3;l.Range=5;dev.SetLight(0,&l);dev.LightEnable(0,FALSE);dev.SetLight(4,&l);dev.LightEnable(4,TRUE);} // the effects' own fixed-function state (light 4 is on while the game never set it)
         dev.SetVertexDeclaration(declP);dev.SetTexture(0,texB);dev.SetTexture(2,texA);dev.SetStreamSource(0,extra,8,8);dev.SetStreamSource(1,nullptr,0,0);dev.SetIndices(nullptr);dev.SetRenderTarget(1,Other);
         rs(D3DRS_ZENABLE,0);rs(D3DRS_ALPHABLENDENABLE,0);rs(D3DRS_ZWRITEENABLE,0);
+    }
+    void boundary(){
+        effects();
         const int mk=kMarker+markers++;const float v[4]={float(mk),0,0,0};dev.SetVertexShaderConstantF(31,v,1);dev.SetRenderState(165,DWORD(mk)); /* the first boundary draws kMarker, later ones kMarker+1.. */
         dev.DrawPrimitive(D3DPT_TRIANGLESTRIP,0,2);
         const auto before=snapNorm();
+        if(beforeReplay)beforeReplay();
         layer.replay();
         CHECK(snapNorm()==before);CHECK(layer.pending()==0);
-        // the game goes on in the world pass
+        resume();record();
+    }
+    void resume(){ // the game goes on in the world pass
         dev.SetRenderTarget(1,nullptr);
         dev.SetRenderTarget(0,T);dev.SetDepthStencilSurface(D);dev.SetVertexShader(vs);dev.SetPixelShader(ps);dev.SetTexture(0,texA);dev.SetTexture(2,nullptr);dev.SetStreamSource(0,ring,0,16);
-        translucent(kSrcAlpha,kBlendOne);record();
+        translucent(kSrcAlpha,kBlendOne);
     }
+    std::function<void()> beforeReplay;                     // run right before the boundary's replay (device state is the game's at B)
     std::vector<int> order()const{std::vector<int> v;for(auto& d:dev.draws)v.push_back(d.tag);return v;}
 };
 
@@ -756,7 +764,7 @@ static void testCaptureFailure(){
 }
 // The replay scope (SavedState) cannot be made: every pending draw is skipped and counted, the device is untouched.
 static void testReplayScopeFailure(){
-    Rig r(Opts{});deferQuad(r,1);deferQuad(r,2);
+    Opts so;so.minimal=false;Rig r(so);deferQuad(r,1);deferQuad(r,2);
     r.dev.failCreateBlock=true;
     r.boundary();
     r.dev.failCreateBlock=false;
@@ -1300,6 +1308,91 @@ static void testDiagnostics(){
     CHECK(q.lay->layer.phaseTicks().save==0&&q.lay->layer.phaseTicks().restore==0&&q.lay->layer.totalCounters().drains==1&&q.lay->layer.totalCounters().nameDeltaWords==q.lay->layer.totalCounters().deltaWords);
     CHECK(q.lay->layer.totalCounters().nameSets==q.lay->layer.totalCounters().replaySets);
 }
+// ---------------- the minimal restore ----------------
+// A sequence with every kind of entry: programmable, UP, indexed UP, materialized (the ring overwritten after the record), fixed function (FVF and declaration), a name.
+static void recordAllKinds(Rig& r){
+    r.dev.SetVertexDeclaration(r.declTwo);r.dev.SetStreamSource(0,r.ring,0,16);r.dev.SetStreamSource(1,r.stat,256,8);r.dev.SetIndices(r.ringIb);
+    const UINT q=r.ringQuad(1),io=r.ringIdx();
+    r.issue(Rig::dip(INT(q/16),0,4,io/2),Family::Model);                      // 1: indexed, two streams (materialized below)
+    r.dev.SetVertexDeclaration(r.declP);r.dev.SetStreamSource(1,nullptr,0,0);r.dev.SetStreamSource(0,r.ring,0,16);
+    deferQuad(r,2);
+    uint8_t up[64];Bytes qd=Rig::quad(3);std::memcpy(up,qd.data(),64);
+    r.issue(DrawArgs::primitiveUP(D3DPT_TRIANGLESTRIP,2,up,16));              // 3: UP (unbinds stream 0)
+    r.dev.SetStreamSource(0,r.ring,0,16);
+    uint8_t upv[128];Bytes v8=Rig::pat(4,128);std::memcpy(upv,v8.data(),128);const uint16_t ix[6]={2,3,4,4,3,5};
+    r.issue(DrawArgs::indexedUP(D3DPT_TRIANGLELIST,2,4,2,ix,D3DFMT_INDEX16,upv,16)); // 4: indexed UP (unbinds the indices too)
+    r.dev.SetStreamSource(0,r.ring,0,16);r.dev.SetIndices(r.stIb);
+    nameDraw(r,5,true);                                                       // 5: a name
+    r.ffState(1);r.fixedFunction();r.dev.SetFVF(0x112);deferFf(r,6);          // 6: fixed function through an FVF (all lights of the game stay as they were)
+    r.dev.SetVertexDeclaration(r.declP);deferFf(r,7);r.programmable();        // 7: fixed function through a declaration
+    r.dev.SetStreamSource(0,r.ring,0,16);deferQuad(r,8);
+    r.discardRing(9);r.write(r.ringIb->b,0,0,D3DLOCK_DISCARD,Rig::pat(33,64)); // materializes entry 1
+}
+static void checkMinimalCounts(Rig& r,bool minimal){
+    if(minimal)CHECK(r.dev.captures==0&&r.dev.applies==0&&r.dev.blocksCreated==0&&r.layer.totalCounters().restoreFallbacks==0&&r.layer.totalCounters().restoreSets>0);
+    else CHECK(r.dev.blocksCreated>0&&r.dev.applies>0&&r.layer.totalCounters().restoreSets==0);
+}
+// (a) the whole device state after a drain equals the state right before it, for a drain at B, a hazard flush, and a split (water) mid-frame, with every kind of entry;
+// (b) no state block is created, captured or applied on the minimal path; (d) the replay's output equals the state-block path's, draw for draw.
+static void testMinimalRestore(){
+    const bool min=gMinimal;
+    for(int how=0;how<3;++how){
+        Opts o;o.mask=31;Rig r(o);
+        recordAllKinds(r);CHECK(r.layer.pending()==8&&r.layer.totalCounters().materialized>=1);
+        r.effects();
+        const auto before=r.snapNorm();const unsigned drains=r.layer.totalCounters().drains;
+        if(how==0)r.layer.hazard(Reason::Clear);                               // a hazard flush (fallback + cooldown)
+        else if(how==1)r.layer.hazard(Reason::Order,true,InPlaceKind::Water);  // a split: keeps deferring
+        else r.layer.replay();                                                 // B
+        CHECK(r.layer.pending()==0&&r.layer.totalCounters().drains==drains+1&&r.snapNorm()==before);
+        CHECK(r.layer.mode()==(how==1?Mode::Deferring:Mode::Fallback));
+        CHECK(r.dev.draws.size()==8);
+        checkMinimalCounts(r,min);
+        if(how==1){r.resume();deferQuad(r,10);const auto b2=r.snapNorm();r.layer.replay();CHECK(r.snapNorm()==b2&&r.layer.totalCounters().drains==2);} // the frame goes on after a split
+    }
+    Pair p=runBoth(sMixedStreams),q=runBoth(sFixed);checkEquivalent(p,{1});checkEquivalent(q);checkMinimalCounts(*p.lay,min);checkMinimalCounts(*q.lay,min);
+}
+// The same sequence with the minimal restore and with the state block ends in the same device state and issues the same draws.
+static void testMinimalMatchesStateBlock(){
+    Opts a;a.minimal=true;a.mask=31;Opts b=a;b.minimal=false;Rig x(a),y(b);
+    for(Rig* r:{&x,&y}){recordAllKinds(*r);r->effects();r->layer.replay();}
+    CHECK(x.snapNorm()==y.snapNorm()&&x.dev.draws.size()==y.dev.draws.size());
+    for(size_t i=0;i<x.dev.draws.size();++i)CHECK(sameRec(x,x.dev.draws[i],y,y.dev.draws[i],true));
+    CHECK(x.dev.blocksCreated==0&&y.dev.blocksCreated>0&&x.layer.totalCounters().replaySets==y.layer.totalCounters().replaySets);
+}
+// (c) a Get that fails before the first Set sends the drain to the state block (nothing was changed yet); the replay is complete and the state restored all the same.
+static void sGetFails(Rig& r){
+    deferQuad(r,1);r.dev.SetStreamSource(0,r.ring,0,16);nameDraw(r,2,true);
+    r.beforeReplay=[&r]{r.dev.failGetRs=true;};r.boundary();r.dev.failGetRs=false;r.beforeReplay=nullptr;
+}
+static void sGetSamplerFails(Rig& r){deferQuad(r,1);deferQuad(r,2);r.beforeReplay=[&r]{r.dev.failGetSampler=true;};r.boundary();r.dev.failGetSampler=false;r.beforeReplay=nullptr;}
+static void sGetStreamFails(Rig& r){deferQuad(r,1);deferQuad(r,2);r.beforeReplay=[&r]{r.dev.failGetStream=true;};r.boundary();r.dev.failGetStream=false;r.beforeReplay=nullptr;}
+static void sGetLightFails(Rig& r){r.ffState(1);r.fixedFunction();deferFf(r,1);r.beforeReplay=[&r]{r.dev.failGetTss=true;};r.boundary();r.dev.failGetTss=false;r.beforeReplay=nullptr;}
+static void testMinimalFallback(){
+    for(auto sc:{sGetFails,sGetSamplerFails,sGetStreamFails,sGetLightFails}){
+        Opts o;o.mask=31;Pair p=runBoth(sc,o);const Counters& c=p.lay->layer.totalCounters();
+        CHECK(c.restoreFallbacks==(gMinimal?1u:0u)&&c.replayedDraws==c.recorded&&c.recorded>=1&&c.replaySkipped==0&&c.restoreSets==0);
+        CHECK(p.lay->dev.blocksCreated>=1&&p.lay->dev.applies==1&&p.lay->dev.captures==0);
+        checkEquivalent(p);
+    }
+    // with no failing Get the same scenario never touches a state block
+    Rig r(Opts{});deferQuad(r,1);deferQuad(r,2);r.boundary();checkMinimalCounts(r,gMinimal);
+}
+// The minimal path needs no state block at all: a device that cannot make one still replays (the old path skipped the whole replay).
+static void testMinimalNeedsNoStateBlock(){
+    Opts o;o.minimal=true;Rig r(o);deferQuad(r,1);deferQuad(r,2);
+    r.dev.failCreateBlock=true;r.boundary();r.dev.failCreateBlock=false;
+    CHECK(r.layer.totalCounters().replaySkipped==0&&r.layer.totalCounters().replayedDraws==2&&r.dev.draws.size()==3&&r.layer.totalCounters().restoreFallbacks==0);
+}
+// Slots no entry sets are never touched, not even rewritten with their own value: a replay of one draw whose read set is narrow only issues what it records and restores.
+static void testMinimalLeavesOthersAlone(){
+    Rig r(Opts{});deferQuad(r,1);r.effects();
+    r.dev.sets=0;r.layer.replay();
+    if(gMinimal)CHECK(r.layer.totalCounters().restoreSets>0&&r.dev.sets==r.layer.totalCounters().replaySets+r.layer.totalCounters().restoreSets+6); // +6: the replay's own RT/DS binds
+    // sampler states of unbound stages 3 and 4 are not part of the delta: poison them; they are still poisoned after
+    Rig z(Opts{});z.dev.s.ss[4][2]=0x1234;z.dev.s.tex[7]=nullptr;deferQuad(z,1);z.effects();z.dev.s.ss[4][2]=0x5678;const auto before=z.snapNorm();z.layer.replay();
+    CHECK(z.snapNorm()==before&&z.dev.s.ss[4][2]==0x5678);
+}
 // A draw without a vertex or pixel shader, or with ps_1_x, is refused (Admit): everything pending is flushed first, in order, and the frame falls back.
 static void sNoPs(Rig& r){deferQuad(r,1);deferQuad(r,2);r.dev.SetPixelShader(nullptr);deferQuad(r,3);r.dev.SetPixelShader(r.ps);deferQuad(r,4);r.boundary();}
 static void sNoVs(Rig& r){deferQuad(r,1);r.dev.SetVertexShader(nullptr);deferQuad(r,2);r.dev.SetVertexShader(r.vs);r.boundary();}
@@ -1457,13 +1550,16 @@ int main(int argc,char** argv){
         {"rt mismatch",testRtMismatch},{"capacity",testCapacity},{"capture failure",testCaptureFailure},{"frame end",testFrameEnd},
         {"cooldown and pressure",testCooldownAndPressure},{"trim",testTrim},{"pending targets",testPendingTargets},{"layer off",testLayerOff},
         {"reset and teardown",testResetAndTeardown},{"512 entries",testStress512},
-        {"32-bit index copy",testIb32},{"both index formats",testIbBothFormats},{"water rain name flush",testOrderKinds},{"names deferred",testNamesMixed},{"names alone",testNamesAlone},{"names and water",testNamesWater},{"diagnostics",testDiagnostics},{"nothing pending: in place",testOrderKindsIdle},
+        {"32-bit index copy",testIb32},{"both index formats",testIbBothFormats},{"water rain name flush",testOrderKinds},{"names deferred",testNamesMixed},{"names alone",testNamesAlone},{"names and water",testNamesWater},{"diagnostics",testDiagnostics},{"minimal restore",testMinimalRestore},{"minimal matches state block",testMinimalMatchesStateBlock},{"minimal fallback",testMinimalFallback},{"minimal needs no state block",testMinimalNeedsNoStateBlock},{"minimal leaves other slots alone",testMinimalLeavesOthersAlone},{"nothing pending: in place",testOrderKindsIdle},
         {"replay scope failure",testReplayScopeFailure},{"state changed between draws",testStateChangedBetweenDraws},{"scissor and clip only when enabled",testScissorAndClipOnlyWhenEnabled},{"delta encoding",testDeltas},{"4096 entries",testFourThousandEntries},{"capacity limits",testCapacityLimits},{"guard table with many buffers",testGuardTableMany},{"sampled textures lookup",testSamplesLookup},{"shader read sets",testReadSets},{"diff replay",testDiffReplay},{"admission",testAdmission},{"hazard events",testHazardEvents},{"record size and timing",testRecordSizeAndTiming},{"fixed function",testFixedFunction},{"fixed function admission",testFixedAdmission},{"fixed function capacity",testFixedCapacity},{"water ripples",testRipples},
         {"render target texture",testRenderTargetTexture},{"render target verdict cache",testVerdictCache},{"vertex texture sampler",testVertexTextureSampler},{"buffer write conflict probe",testBufferWriteProbe}};
-    for(int mode=fixedMode?gMirrorMode:0;mode<=(fixedMode?gMirrorMode:3);++mode){
-        gMirrorMode=mode;
-        for(const T& t:tests){if(only&&!std::strstr(t.name,only))continue;t.fn();CHECK(Fake::live==0);if(mode==0||fixedMode){std::printf("ok %s\n",t.name);std::fflush(stdout);}}
-        std::printf("state read mode %d (%s): all tests passed\n",mode,mode==0?"Get calls only":mode==1?"cache knows everything":mode==2?"cache with unknown slots":"cache knows nothing");
+    for(int minimal=1;minimal>=0;--minimal){
+        gMinimal=minimal!=0;
+        for(int mode=fixedMode?gMirrorMode:0;mode<=(fixedMode?gMirrorMode:3);++mode){
+            gMirrorMode=mode;
+            for(const T& t:tests){if(only&&!std::strstr(t.name,only))continue;t.fn();CHECK(Fake::live==0);if((mode==0&&minimal)||fixedMode){std::printf("ok %s\n",t.name);std::fflush(stdout);}}
+            std::printf("%s restore, state read mode %d (%s): all tests passed\n",minimal?"minimal":"state block",mode,mode==0?"Get calls only":mode==1?"cache knows everything":mode==2?"cache with unknown slots":"cache knows nothing");
+        }
     }
     std::printf("spell layer: %zu tests passed\n",sizeof tests/sizeof tests[0]);
     return 0;

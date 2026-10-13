@@ -194,7 +194,7 @@ struct Mirror{
 struct FakeDevice:IDirect3DDevice9{
     State s;Mirror mir;IDirect3DSurface9* rt[4]={};IDirect3DSurface9* ds=nullptr;
     std::vector<DrawRec> draws;unsigned calls=0,sets=0;
-    bool failCreateBlock=false,failCapture=false,failCreateVB=false,failCreateIB=false,failGetPsConst=false,failGetTss=false,failGetLightEnable=false;int failCaptureAfter=-1;unsigned blocksCreated=0,failNthCreate=0,createCalls=0; // failNthCreate: the nth CreateStateBlock call fails once
+    bool failCreateBlock=false,failCapture=false,failCreateVB=false,failCreateIB=false,failGetPsConst=false,failGetTss=false,failGetLightEnable=false;int failCaptureAfter=-1;unsigned blocksCreated=0,failNthCreate=0,createCalls=0,captures=0,applies=0;bool failGetRs=false,failGetSampler=false,failGetStream=false; // captures/applies: StateBlock::Capture/Apply calls; failGet*: those Get calls fail // failNthCreate: the nth CreateStateBlock call fails once
     FakeDevice(){
         s.vp=D3DVIEWPORT9();s.scissor=RECT();
         for(auto& x:s.st)x.freq=1;
@@ -232,9 +232,9 @@ struct FakeDevice:IDirect3DDevice9{
     HRESULT SetScissorRect(const RECT* r)override{++calls;++sets;s.scissor=*r;return D3D_OK;}
     HRESULT GetScissorRect(RECT* r)override{++calls;*r=s.scissor;return D3D_OK;}
     HRESULT SetRenderState(D3DRENDERSTATETYPE t,DWORD v)override{++calls;++sets;s.rs[t]=v;return D3D_OK;}
-    HRESULT GetRenderState(D3DRENDERSTATETYPE t,DWORD* v)override{++calls;*v=s.rs[t];return D3D_OK;}
+    HRESULT GetRenderState(D3DRENDERSTATETYPE t,DWORD* v)override{++calls;if(failGetRs)return E_FAIL;*v=s.rs[t];return D3D_OK;}
     HRESULT SetSamplerState(DWORD i,D3DSAMPLERSTATETYPE t,DWORD v)override{++calls;++sets;s.ss[texSlot(i)][t]=v;return D3D_OK;}
-    HRESULT GetSamplerState(DWORD i,D3DSAMPLERSTATETYPE t,DWORD* v)override{++calls;*v=s.ss[texSlot(i)][t];return D3D_OK;}
+    HRESULT GetSamplerState(DWORD i,D3DSAMPLERSTATETYPE t,DWORD* v)override{++calls;if(failGetSampler)return E_FAIL;*v=s.ss[texSlot(i)][t];return D3D_OK;}
     HRESULT SetTexture(DWORD i,IDirect3DBaseTexture9* t)override{++calls;++sets;swapRef(s.tex[texSlot(i)],t);return D3D_OK;}
     HRESULT GetTexture(DWORD i,IDirect3DBaseTexture9** o)override{++calls;auto*& t=s.tex[texSlot(i)];if(t)t->AddRef();*o=t;return D3D_OK;}
     HRESULT SetVertexShader(IDirect3DVertexShader9* v)override{++calls;++sets;swapRef(s.vs,v);return D3D_OK;}
@@ -249,7 +249,7 @@ struct FakeDevice:IDirect3DDevice9{
     HRESULT GetVertexDeclaration(IDirect3DVertexDeclaration9** o)override{++calls;if(s.decl)s.decl->AddRef();*o=s.decl;return D3D_OK;}
     HRESULT SetStreamSource(UINT i,IDirect3DVertexBuffer9* b,UINT off,UINT stride)override{++calls;++sets;if(i>=16)return D3DERR_INVALIDCALL;swapRef(s.st[i].vb,b);s.st[i].off=off;s.st[i].stride=stride;return D3D_OK;}
     HRESULT GetStreamSource(UINT i,IDirect3DVertexBuffer9** b,UINT* off,UINT* stride)override{
-        ++calls;if(i>=16)return D3DERR_INVALIDCALL;if(s.st[i].vb)s.st[i].vb->AddRef();*b=s.st[i].vb;*off=s.st[i].off;*stride=s.st[i].stride;return D3D_OK;
+        ++calls;if(i>=16||failGetStream)return D3DERR_INVALIDCALL;if(s.st[i].vb)s.st[i].vb->AddRef();*b=s.st[i].vb;*off=s.st[i].off;*stride=s.st[i].stride;return D3D_OK;
     }
     HRESULT SetStreamSourceFreq(UINT i,UINT f)override{++calls;++sets;if(i>=16)return D3DERR_INVALIDCALL;s.st[i].freq=f;return D3D_OK;}
     HRESULT GetStreamSourceFreq(UINT i,UINT* f)override{++calls;if(i>=16)return D3DERR_INVALIDCALL;*f=s.st[i].freq;return D3D_OK;}
@@ -360,11 +360,11 @@ inline NorthlightSpellLayer::MirrorView makeView(FakeDevice& d){
 }
 inline StateBlock::StateBlock(FakeDevice* d):dev(d){s=State();assign(s,d->s);}
 inline HRESULT StateBlock::Capture(){
-    ++dev->calls;if(dev->failCapture)return E_FAIL;
+    ++dev->calls;++dev->captures;if(dev->failCapture)return E_FAIL;
     if(dev->failCaptureAfter==0)return E_FAIL;if(dev->failCaptureAfter>0)--dev->failCaptureAfter;
     assign(s,dev->s);return D3D_OK;
 }
 inline HRESULT StateBlock::Apply(){ // everything except RT/DS, scissor and viewport included
-    ++dev->calls;State n=s;retain(n);drop(dev->s);dev->s=n;return D3D_OK;
+    ++dev->calls;++dev->applies;State n=s;retain(n);drop(dev->s);dev->s=n;return D3D_OK;
 }
 }

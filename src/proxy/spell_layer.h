@@ -134,6 +134,8 @@ struct Counters{
     unsigned orderBy[3]={};                       // Order hazards raised by water, rain, name draws while draws were pending
     unsigned hazards[kReasons]={};
     unsigned flushes=0,replays=0,replayedDraws=0,replaySkipped=0,discarded=0;
+    unsigned restoreFallbacks=0,texSplits=0;      // drains that had to use the state block instead of the minimal restore; texture writes answered with a split (drain, keep deferring)
+    unsigned restoreSets=0;                       // device Set* calls of the minimal restore (apart from replaySets)
     unsigned drains=0;                            // replay sequences actually run, of every kind: B (replays), hazard flushes, splits, refused defers (replays counts the B ones only)
     unsigned names=0;                             // deferred floating-world-name draws (not counted in deferred[])
     unsigned fixed=0;                             // deferred draws that were fixed-function (also counted in deferred[])
@@ -150,7 +152,7 @@ struct Counters{
         for(int i=0;i<4;++i){deferred[i]+=o.deferred[i];inPlace[i]+=o.inPlace[i];}
         for(int i=0;i<3;++i)orderBy[i]+=o.orderBy[i];
         for(unsigned i=0;i<kReasons;++i)hazards[i]+=o.hazards[i];
-        names+=o.names;fixed+=o.fixed;flushes+=o.flushes;replays+=o.replays;drains+=o.drains;nameSets+=o.nameSets;nameDeltaWords+=o.nameDeltaWords;replayedDraws+=o.replayedDraws;replaySkipped+=o.replaySkipped;discarded+=o.discarded;
+        names+=o.names;fixed+=o.fixed;flushes+=o.flushes;replays+=o.replays;drains+=o.drains;restoreFallbacks+=o.restoreFallbacks;texSplits+=o.texSplits;restoreSets+=o.restoreSets;nameSets+=o.nameSets;nameDeltaWords+=o.nameDeltaWords;replayedDraws+=o.replayedDraws;replaySkipped+=o.replaySkipped;discarded+=o.discarded;
         conflicts+=o.conflicts;materialized+=o.materialized;recorded+=o.recorded;replaySets+=o.replaySets;conflictBytes+=o.conflictBytes;
         for(int i=0;i<4;++i)capBy[i]+=o.capBy[i];overflowFrames+=o.overflowFrames;overflowAt+=o.overflowAt;overflowCandidates+=o.overflowCandidates;
         deltaWords+=o.deltaWords;arenaHigh=std::max(arenaHigh,o.arenaHigh);recordHigh=std::max(recordHigh,o.recordHigh);
@@ -299,7 +301,9 @@ struct Config{
     bool conflictCopy=true;                       // false on a non-DXVK backend: a conflicting write flushes instead of copying
     DWORD readBackLockFlags=D3DLOCK_READONLY;     // NorthlightUpload::readBackLock()
     void (*markGuard)(void* ctx,void* rawBuffer,bool guarded)=nullptr;void* markCtx=nullptr; // sets/clears the per-buffer "call onBufferWrite" flag
-    NorthlightStateBlockPool* savedPool=nullptr;  // the renderer's SavedState pool for the replay scope (optional; the only state block the layer still uses)
+    NorthlightStateBlockPool* savedPool=nullptr;  // the renderer's SavedState pool for the replay scope (optional; used only when minimalRestore is off or a drain cannot use it)
+    bool minimalRestore=true;                     // a drain restores exactly the slots it set (read before the first Set, restored after the last draw) instead of a D3DSBT_ALL state block; false: always the state block
+    unsigned maxTexSplits=8;                      // texture writes to a texture a pending draw samples are answered with a split (drain, keep deferring) up to this many per frame; the next one is a TexWrite hazard
     unsigned deltaChunkWords=16384;               // 64 KiB chunks (at most 65535: entries address a delta with 16-bit offsets)
     const struct MirrorView* source=nullptr;      // the device state cache for bulk reads (optional; null: every state is read with Get calls)
     uint64_t (*clock)(void* ctx)=nullptr;bool (*timing)(void* ctx)=nullptr;void* clockCtx=nullptr; // phase timing of the drains (diagnostics): timing() is asked once per drain, only when it says yes does the layer read clock() around save, upload and restore; null = never
@@ -432,11 +436,11 @@ struct Model{
     float vsF[kVsFloat][4];uint64_t vsFV[4];float psF[kPsFloat][4];uint64_t psFV[4];
     int vsI[kInts][4];BOOL vsB[kBools];int psI[kInts][4];BOOL psB[kBools];uint64_t vsIV,vsBV,psIV,psBV;
     D3DVIEWPORT9 vp;bool vpV;RECT scissor;bool scissorV;float clip[kClipPlanes][4];uint8_t clipV;
-    void* vs;void* ps;bool vsV,psV;void* decl;DWORD fvf;uint8_t declMode; // declMode: 0 unknown, 1 declaration, 2 FVF
+    void* vs;void* ps;bool vsV,psV;void* decl;DWORD fvf;uint8_t declMode,declSeen; // declMode: 0 unknown, 1 declaration, 2 FVF; declSeen: bit 0 a declaration, bit 1 an FVF was set by some entry of the sequence
     void reset(){
         std::memset(rs,0,sizeof rs);rsValid=false;ssValid=texValid=0;
         for(auto& w:vsFV)w=0;for(auto& w:psFV)w=0;vsIV=vsBV=psIV=psBV=0;
-        vpV=scissorV=false;clipV=0;vsV=psV=false;declMode=0;
+        vpV=scissorV=false;clipV=0;vsV=psV=false;declMode=declSeen=0;
     }
 };
 struct ModelSink{
@@ -455,8 +459,8 @@ struct ModelSink{
     void clip(unsigned i,const uint32_t* w){std::memcpy(m.clip[i],w,16);m.clipV|=uint8_t(1u<<i);}
     void vs(void* p){m.vs=p;m.vsV=true;}
     void ps(void* p){m.ps=p;m.psV=true;}
-    void decl(void* p){m.decl=p;m.declMode=1;}
-    void fvf(DWORD v){m.fvf=v;m.declMode=2;}
+    void decl(void* p){m.decl=p;m.declMode=1;m.declSeen|=1;}
+    void fvf(DWORD v){m.fvf=v;m.declMode=2;m.declSeen|=2;}
 };
 
 class Layer{
@@ -483,6 +487,14 @@ class Layer{
         struct S{IDirect3DVertexBuffer9* vb=nullptr;UINT off=0,stride=0;bool valid=false;} st[16];
         uint32_t freq=0;IDirect3DIndexBuffer9* ib=nullptr;bool ibValid=false;
     };
+    // The minimal restore's undo log: the device state as it was before the first Set of each slot the sequence touches (b: values, constants and sampler states; the
+    // typed members: references the log holds until the restore, taken by Get calls). Only the slots model_ marks valid, the touched streams/index buffer and the
+    // fixed-function state are filled; the rest of the struct is stale and never read.
+    struct Undo{
+        Model b;IDirect3DBaseTexture9* tex[kMaxTextures];IDirect3DVertexShader9* vs;IDirect3DPixelShader9* ps;IDirect3DVertexDeclaration9* decl;DWORD fvf;
+        struct S{IDirect3DVertexBuffer9* vb;UINT off,stride,freq;} st[16];IDirect3DIndexBuffer9* ib;
+        IDirect3DSurface9* rt[4];IDirect3DSurface9* ds;D3DVIEWPORT9 vp;RECT sc;FfRec ff;
+    };
     // Conflict copy of one merged byte span of a buffer; entries share it. fmt (index blobs): 0 = 16-bit, 1 = 32-bit indices; the blob sits in the
     // upload index buffer of that format.
     struct Blob{uint32_t arenaOff,len,base,uploadOff;bool index;uint8_t fmt;};
@@ -504,6 +516,7 @@ private:
         return true;
     }
     std::vector<std::unique_ptr<uint32_t[]>> deltaChunks_;unsigned deltaChunk_=0,deltaUsed_=0; // state deltas of the pending entries; deltaChunk_/deltaUsed_: the chunk being filled and its used words
+    std::unique_ptr<Undo> undo_;                      // allocated at the first minimal restore
     std::vector<std::unique_ptr<FfRec[]>> ffChunks_;unsigned ffCount_=0;const FfRec* ffPrev_=nullptr; // ffPrev_: the last fixed-function record the running replay applied
     bool rsSkip_[kRenderStates]={};                   // a state the device refused to Get once: neither recorded nor replayed
     bool overflow_=false;                             // this frame fell back on Capacity: deferrable draws are still counted (noteCandidate)
@@ -516,6 +529,7 @@ private:
     DWORD rsStage_[256];float vsStage_[kVsFloat][4],psStage_[kPsFloat][4]; // reads that could not come from the cache (indexed like the cache)
     const DWORD* rsCur_=nullptr;                      // the render states of the draw being recorded, by id
     unsigned sets_=0;                                 // device Set* calls of the running replay
+    uint32_t stTouched_=0;bool ibTouched_=false,anyFf_=false;uint8_t ffLights_=0; // what the pending entries bind beyond the model: streams (bit per number), the index buffer, any fixed-function record, lights set by a record; reset with the frame
     Event event_;unsigned eventSeq_=0;
     std::unique_ptr<uint8_t[]> arena_;size_t arenaCap_=0;uint32_t arenaUsed_=0; // UP draw data and conflict copies, grown on demand (doubling) up to Config::arenaBytes; not zero-filled
     bool ensureArena(uint64_t need){
@@ -575,7 +589,7 @@ private:
     void clearFrame(){
         guards_.clear([&](void* key){mark(key,false);}); // before the entries drop their references: the marked buffers are still alive
         releaseHeld();
-        count_=0;ffCount_=0;deltaChunk_=0;deltaUsed_=0;model_.reset();blobs_.clear();hits_.clear();
+        count_=0;ffCount_=0;deltaChunk_=0;deltaUsed_=0;model_.reset();stTouched_=0;ibTouched_=anyFf_=false;ffLights_=0;blobs_.clear();hits_.clear();
         frame_.arenaHigh=std::max(frame_.arenaHigh,arenaUsed_);total_.arenaHigh=std::max(total_.arenaHigh,arenaUsed_);
         arenaUsed_=vbUsed_=ibUsed_[0]=ibUsed_[1]=0;
         if(target_){target_->Release();target_=nullptr;}
@@ -743,11 +757,139 @@ private:
         }
         return true;
     }
+    // ---- the minimal restore ----
+    // Why the mirror is no source of the "before" values: every drain that comes from the integration runs in an ExtensionDevice::RawScope, whose constructor invalidates the
+    // state cache (every known flag false) and whose rawDepth makes the cache inactive (MirrorView::enter() fails), so the replay's own Set* calls bypass it (nothing is
+    // written through) and it holds neither the game's values before the drain nor the replay's after it; it is invalidated again when the scope ends. The one drain outside a
+    // RawScope (a refused defer(), which runs inside the record's cache guard) goes through the cache like any game call and keeps it coherent by itself. So the values the
+    // restore needs are read from the device, by Get calls, BEFORE the first Set of the sequence: the union of the slots the entries set is exactly what model_ marks valid after
+    // the last record (plus stTouched_, ibTouched_, anyFf_ for the bindings and fixed-function state the model does not hold), so one pass over its valid bits reads everything and
+    // a Get that fails is known before the device has been changed at all: the drain then uses the state block (SavedState) as before. After the last draw every slot whose
+    // before value differs from the value the sequence left (the model's final value; the replay is the only writer inside the drain) is Set back; slots the sequence never set are
+    // not touched, bindings and RT/DS/viewport/scissor are always restored (SetRenderTarget(0) resets viewport and scissor, a UP draw unbinds stream 0 and the indices).
+    // Not restorable, as with the state block: a light the replay would have to create (captureBefore refuses a sequence whose records set a light the device does not have).
+    template<class F> static void forRuns(const uint64_t* valid,unsigned n,F&& f){for(unsigned i=0;i<n;){if(!bitSet(valid,i)){++i;continue;}unsigned e=i+1;while(e<n&&bitSet(valid,e))++e;f(i,e-i);i=e;}}
+    void releaseUndo(){
+        if(!undo_)return;Undo& u=*undo_;
+        for(auto*& t:u.tex)if(t){t->Release();t=nullptr;}
+        if(u.vs){u.vs->Release();u.vs=nullptr;}if(u.ps){u.ps->Release();u.ps=nullptr;}if(u.decl){u.decl->Release();u.decl=nullptr;}
+        for(auto& x:u.st)if(x.vb){x.vb->Release();x.vb=nullptr;}
+        if(u.ib){u.ib->Release();u.ib=nullptr;}
+        for(auto*& r:u.rt)if(r){r->Release();r=nullptr;}
+        if(u.ds){u.ds->Release();u.ds=nullptr;}
+    }
+    // Reads the before values. False: a read failed or the sequence cannot be restored slot by slot; nothing on the device has been changed, the references taken are released.
+    bool captureBefore(){
+        if(!undo_){undo_.reset(new(std::nothrow) Undo);if(!undo_)return false;std::memset(undo_.get(),0,sizeof(Undo));}
+        Undo& u=*undo_;const Model& m=model_;IDirect3DDevice9* d=dev_;
+        const bool ok=[&]{
+            if(m.rsValid)for(unsigned i=0;i<kRenderStates;++i){const unsigned id=kRenderStateIds[i];if(FAILED(d->GetRenderState(D3DRENDERSTATETYPE(id),&u.b.rs[id])))return false;}
+            for(unsigned t=0;t<kMaxTextures;++t){
+                if(m.ssValid>>t&1)for(unsigned k=0;k<kSamplerStates;++k)if(FAILED(d->GetSamplerState(samplerStage(t),D3DSAMPLERSTATETYPE(kSamplerFirst+k),&u.b.ss[t][k])))return false;
+                if(m.texValid>>t&1){IDirect3DBaseTexture9* x=nullptr;if(FAILED(d->GetTexture(samplerStage(t),&x))){if(x)x->Release();return false;}u.tex[t]=x;}
+            }
+            bool good=true;
+            forRuns(m.vsFV,kVsFloat,[&](unsigned s,unsigned n){good=good&&SUCCEEDED(d->GetVertexShaderConstantF(s,u.b.vsF[s],n));});
+            forRuns(m.psFV,kPsFloat,[&](unsigned s,unsigned n){good=good&&SUCCEEDED(d->GetPixelShaderConstantF(s,u.b.psF[s],n));});
+            forRuns(&m.vsIV,kInts,[&](unsigned s,unsigned n){good=good&&SUCCEEDED(d->GetVertexShaderConstantI(s,&u.b.vsI[s][0],n));});
+            forRuns(&m.psIV,kInts,[&](unsigned s,unsigned n){good=good&&SUCCEEDED(d->GetPixelShaderConstantI(s,&u.b.psI[s][0],n));});
+            forRuns(&m.vsBV,kBools,[&](unsigned s,unsigned n){good=good&&SUCCEEDED(d->GetVertexShaderConstantB(s,u.b.vsB+s,n));});
+            forRuns(&m.psBV,kBools,[&](unsigned s,unsigned n){good=good&&SUCCEEDED(d->GetPixelShaderConstantB(s,u.b.psB+s,n));});
+            if(!good)return false;
+            if(FAILED(d->GetViewport(&u.vp))||FAILED(d->GetScissorRect(&u.sc)))return false;
+            for(unsigned i=0;i<kClipPlanes;++i)if(m.clipV>>i&1&&FAILED(d->GetClipPlane(i,u.b.clip[i])))return false;
+            if(m.vsV){IDirect3DVertexShader9* x=nullptr;if(FAILED(d->GetVertexShader(&x))){if(x)x->Release();return false;}u.vs=x;}
+            if(m.psV){IDirect3DPixelShader9* x=nullptr;if(FAILED(d->GetPixelShader(&x))){if(x)x->Release();return false;}u.ps=x;}
+            if(m.declSeen){
+                IDirect3DVertexDeclaration9* x=nullptr;if(FAILED(d->GetVertexDeclaration(&x))){if(x)x->Release();return false;}u.decl=x;
+                if(FAILED(d->GetFVF(&u.fvf)))return false;
+            }
+            for(unsigned s=0;s<16;++s)if(stTouched_>>s&1){
+                IDirect3DVertexBuffer9* x=nullptr;UINT off=0,stride=0,freq=1;
+                if(FAILED(d->GetStreamSource(s,&x,&off,&stride))){if(x)x->Release();return false;}
+                u.st[s]=Undo::S{x,off,stride,1};
+                if(FAILED(d->GetStreamSourceFreq(s,&freq)))return false;
+                u.st[s].freq=freq;
+            }
+            if(ibTouched_){IDirect3DIndexBuffer9* x=nullptr;if(FAILED(d->GetIndices(&x))){if(x)x->Release();return false;}u.ib=x;}
+            if(anyFf_){
+                if(!readFf(u.ff))return false;
+                for(unsigned i=0;i<kFfLights;++i)if(!u.ff.lightSet[i]&&(ffLights_>>i&1))return false;
+            }
+            for(unsigned i=0;i<4;++i){
+                IDirect3DSurface9* x=nullptr;
+                if(SUCCEEDED(d->GetRenderTarget(i,&x)))u.rt[i]=x;else if(x)x->Release();
+            }
+            if(!u.rt[0])return false;
+            IDirect3DSurface9* z=nullptr;if(SUCCEEDED(d->GetDepthStencilSurface(&z)))u.ds=z;else if(z)z->Release();
+            return true;
+        }();
+        if(!ok)releaseUndo();
+        return ok;
+    }
+    // After the last draw: every touched slot whose before value differs from what the sequence left on the device goes back (see the comment above).
+    void restoreBefore(){
+        Undo& u=*undo_;const Model& m=model_;IDirect3DDevice9* d=dev_;unsigned n=0;
+        d->SetDepthStencilSurface(nullptr);for(DWORD i=1;i<4;++i)d->SetRenderTarget(i,nullptr);
+        d->SetRenderTarget(0,u.rt[0]);for(DWORD i=1;i<4;++i)d->SetRenderTarget(i,u.rt[i]);d->SetDepthStencilSurface(u.ds);n+=9;
+        if(m.rsValid)for(unsigned i=0;i<kRenderStates;++i){
+            const unsigned id=kRenderStateIds[i];const DWORD b=u.b.rs[id];if(b==m.rs[id])continue;
+            if(vendorHackState(id)){DWORD cur=0;if(SUCCEEDED(d->GetRenderState(D3DRENDERSTATETYPE(id),&cur))&&cur==b)continue;} // a re-set of a vendor-hack state repeats its action
+            d->SetRenderState(D3DRENDERSTATETYPE(id),b);++n;
+        }
+        for(unsigned t=0;t<kMaxTextures;++t){
+            if(m.ssValid>>t&1)for(unsigned k=0;k<kSamplerStates;++k)if(u.b.ss[t][k]!=m.ss[t][k]){d->SetSamplerState(samplerStage(t),D3DSAMPLERSTATETYPE(kSamplerFirst+k),u.b.ss[t][k]);++n;}
+            if((m.texValid>>t&1)&&static_cast<void*>(u.tex[t])!=m.tex[t]){d->SetTexture(samplerStage(t),u.tex[t]);++n;}
+        }
+        auto rows=[&](const uint64_t* valid,unsigned cnt,const void* bef,const void* fin,size_t rb,auto&& set){ // runs of valid rows whose before value differs
+            const uint8_t* b=static_cast<const uint8_t*>(bef),*f=static_cast<const uint8_t*>(fin);
+            for(unsigned i=0;i<cnt;){
+                if(!bitSet(valid,i)||!std::memcmp(b+i*rb,f+i*rb,rb)){++i;continue;}
+                unsigned e=i+1;while(e<cnt&&bitSet(valid,e)&&std::memcmp(b+e*rb,f+e*rb,rb))++e;
+                set(i,e-i);++n;i=e;
+            }
+        };
+        rows(m.vsFV,kVsFloat,u.b.vsF,m.vsF,16,[&](unsigned s,unsigned c){d->SetVertexShaderConstantF(s,u.b.vsF[s],c);});
+        rows(m.psFV,kPsFloat,u.b.psF,m.psF,16,[&](unsigned s,unsigned c){d->SetPixelShaderConstantF(s,u.b.psF[s],c);});
+        rows(&m.vsIV,kInts,u.b.vsI,m.vsI,16,[&](unsigned s,unsigned c){d->SetVertexShaderConstantI(s,&u.b.vsI[s][0],c);});
+        rows(&m.psIV,kInts,u.b.psI,m.psI,16,[&](unsigned s,unsigned c){d->SetPixelShaderConstantI(s,&u.b.psI[s][0],c);});
+        rows(&m.vsBV,kBools,u.b.vsB,m.vsB,4,[&](unsigned s,unsigned c){d->SetVertexShaderConstantB(s,u.b.vsB+s,c);});
+        rows(&m.psBV,kBools,u.b.psB,m.psB,4,[&](unsigned s,unsigned c){d->SetPixelShaderConstantB(s,u.b.psB+s,c);});
+        for(unsigned i=0;i<kClipPlanes;++i)if((m.clipV>>i&1)&&std::memcmp(u.b.clip[i],m.clip[i],16)){d->SetClipPlane(i,u.b.clip[i]);++n;}
+        if(m.vsV&&u.vs!=static_cast<IDirect3DVertexShader9*>(m.vs)){d->SetVertexShader(u.vs);++n;}
+        if(m.psV&&u.ps!=static_cast<IDirect3DPixelShader9*>(m.ps)){d->SetPixelShader(u.ps);++n;}
+        if(m.declSeen&&!(m.declMode==1&&!u.fvf&&static_cast<void*>(u.decl)==m.decl)&&!(m.declMode==2&&u.fvf&&u.fvf==m.fvf)){ // the last binding the sequence made is not the before one: an FVF before restores through SetFVF
+            if(u.fvf)d->SetFVF(u.fvf);else d->SetVertexDeclaration(u.decl);++n;
+        }
+        for(unsigned s=0;s<16;++s)if(stTouched_>>s&1){d->SetStreamSource(s,u.st[s].vb,u.st[s].off,u.st[s].stride);d->SetStreamSourceFreq(s,u.st[s].freq);n+=2;}
+        if(ibTouched_){d->SetIndices(u.ib);++n;}
+        if(anyFf_&&ffPrev_){ // the device holds the last applied record's transforms, stage states and material; lights are compared with the device itself
+            const FfRec& f=*ffPrev_;
+            for(unsigned i=0;i<kFfTransforms;++i)if(std::memcmp(&u.ff.tf[i],&f.tf[i],sizeof f.tf[i])){d->SetTransform(D3DTRANSFORMSTATETYPE(kFfTransformIds[i]),&u.ff.tf[i]);++n;}
+            for(unsigned st=0;st<kFfStages;++st)for(unsigned k=0;k<kTssStates;++k)if(u.ff.tss[st][k]!=f.tss[st][k]){d->SetTextureStageState(st,D3DTEXTURESTAGESTATETYPE(kTssIds[k]),u.ff.tss[st][k]);++n;}
+            if(std::memcmp(&u.ff.mat,&f.mat,sizeof f.mat)){d->SetMaterial(&u.ff.mat);++n;}
+            for(unsigned i=0;i<kFfLights;++i){
+                if(!u.ff.lightSet[i])continue; // a light the device never had: no record set it (captureBefore), it stays as it is
+                D3DLIGHT9 cur;BOOL on=FALSE;
+                if(FAILED(d->GetLight(i,&cur))||std::memcmp(&cur,&u.ff.light[i],sizeof cur)){d->SetLight(i,&u.ff.light[i]);++n;}
+                if(FAILED(d->GetLightEnable(i,&on))||(on!=0)!=u.ff.lightOn[i]){d->LightEnable(i,u.ff.lightOn[i]);++n;}
+            }
+        }
+        d->SetViewport(&u.vp);d->SetScissorRect(&u.sc);n+=2; // last: SetRenderTarget(0) reset both
+        count([&](Counters& c){c.restoreSets+=n;});
+    }
     void runReplay(){
         if(!count_)return;
+        bool minimal=false;
+        if(cfg_.minimalRestore){
+            {Phase t(*this,timing_?&tSave_:nullptr);minimal=captureBefore();}
+            if(!minimal)count([](Counters& c){++c.restoreFallbacks;});
+        }
         std::optional<SavedState> scope;
-        {Phase t(*this,timing_?&tSave_:nullptr);scope.emplace(dev_,cfg_.savedPool);}
-        if(!scope->ok){count([&](Counters& c){c.replaySkipped+=count_;});return;}
+        if(!minimal){
+            {Phase t(*this,timing_?&tSave_:nullptr);scope.emplace(dev_,cfg_.savedPool);}
+            if(!scope->ok){count([&](Counters& c){c.replaySkipped+=count_;});return;}
+        }
         bool vbOk,ibOk[2];
         {Phase t(*this,timing_?&tUpload_:nullptr);vbOk=!vbUsed_||upload(false);ibOk[0]=!ibUsed_[0]||upload(true,0);ibOk[1]=!ibUsed_[1]||upload(true,1);}
         dev_->SetDepthStencilSurface(nullptr);
@@ -762,7 +904,7 @@ private:
             count([&](Counters& c){if(ok)++c.replayedDraws;else ++c.replaySkipped;});
         }
         count([&](Counters& c){c.replaySets+=sets_;c.nameSets+=nameSets;});
-        {Phase t(*this,timing_?&tRestore_:nullptr);scope.reset();}
+        {Phase t(*this,timing_?&tRestore_:nullptr);if(minimal){restoreBefore();releaseUndo();}else scope.reset();}
     }
 
     bool ensureUpload(bool index,unsigned fmt=0){
@@ -939,8 +1081,7 @@ private:
         }
         return Reason::Count;
     }
-    bool readFf(Entry& e){
-        FfRec& f=*e.ff;
+    bool readFf(FfRec& f){
         for(unsigned i=0;i<kFfTransforms;++i)if(FAILED(dev_->GetTransform(D3DTRANSFORMSTATETYPE(kFfTransformIds[i]),&f.tf[i])))return false;
         for(unsigned s=0;s<kFfStages;++s)for(unsigned k=0;k<kTssStates;++k)if(FAILED(dev_->GetTextureStageState(s,D3DTEXTURESTAGESTATETYPE(kTssIds[k]),&f.tss[s][k])))return false;
         if(FAILED(dev_->GetMaterial(&f.mat)))return false;
@@ -1029,7 +1170,7 @@ public:
 
     // For a draw classify() returned Defer for. true: deferred, the caller skips the real draw and returns D3D_OK (the side effects of a skipped UP
     // call on the device are already emulated). false: nothing was queued and the device is as before except possibly a flush: when pending
-    // entries existed and the defer failed (Capacity/Capture/Admit/Order) they were all replayed now (SavedState scope, state restored) and the frame is
+    // entries existed and the defer failed (Capacity/Capture/Admit/Order) they were all replayed now (the device state restored afterwards: minimal restore or SavedState) and the frame is
     // Fallback, so the caller draws this draw in place AFTER them (order kept). When the layer is off, not armed (fallback/cooldown/pressure/after
     // B) or the draw is empty it returns false without any device call. A later Defer draw whose RT0/DS differs from the first entry's is a hazard
     // (Order); the integration normally keeps those out via DrawFacts::rt0IsTarget. DrawArgs::psMajor must carry the pixel shader model (see above).
@@ -1132,7 +1273,7 @@ public:
         {   const Reason why=buildDelta(rd,fixed,vs,ps,decl,fvf,tex);if(why!=Reason::Count)return fail(why);}
         if(fixed){
             e.ff=ffAt(ffCount_);
-            if(!readFf(e))return fail(Reason::Capture);
+            if(!readFf(*e.ff))return fail(Reason::Capture);
         }
         if(!reserveDelta(n_,e.dChunk,e.dOff))return capFail(1);
         e.dLen=uint16_t(n_);
@@ -1154,6 +1295,8 @@ public:
         }
         if(!count_){target_=rt0;rt0->AddRef();ds_=ds;if(ds)ds->AddRef();}
         e.name=(sub&SubName)!=0;
+        if(up){stTouched_|=1;if(idx)ibTouched_=true;}else{for(unsigned i=0;i<e.nStreams;++i)stTouched_|=1u<<e.streams[i].sno;if(a.type==DrawType::Indexed)ibTouched_=true;}
+        if(fixed){anyFf_=true;for(unsigned i=0;i<kFfLights;++i)if(e.ff->lightSet[i])ffLights_|=uint8_t(1u<<i);}
         if(fixed)++ffCount_;
         ++count_;fm_.deferred();
         count([&](Counters& c){if(sub&SubName)++c.names;else{unsigned i=0;while(i<3&&!(sub>>i&1))++i;++c.deferred[i];}if(fixed)++c.fixed;++c.recorded;c.deltaWords+=n_;if(sub&SubName)c.nameDeltaWords+=n_;c.recordHigh=std::max(c.recordHigh,count_);});
@@ -1164,8 +1307,8 @@ public:
         return true;
     }
 
-    // An unknown order/resource dependency (clear, copy, order, query, frame...). With entries pending: replay them now in order (own SavedState
-    // scope), count the reason, and the frame becomes Fallback (a cooldown follows unless `cooldown` is false). Nothing pending: no effect.
+    // An unknown order/resource dependency (clear, copy, order, query, frame...). With entries pending: replay them now in order (state restored afterwards, see the
+    // minimal restore), count the reason, and the frame becomes Fallback (a cooldown follows unless `cooldown` is false). Nothing pending: no effect.
     // `by`: the in-place kind (water, rain, name) whose draw raised the Order hazard. That is a split, not a fallback: the pending draws are
     // replayed now, before the caller's in-place draw (the reference order), and the frame keeps deferring, so the later draws, which the game
     // draws after it, still replay after the effects (order kept again). Counted in orderBy and flushes, not as a hazard; no cooldown and no event.
@@ -1199,7 +1342,7 @@ public:
     }
     void onTextureWrite(void* rawTexture){if(pendingSamples(rawTexture))hazard(Reason::TexWrite);}
 
-    // At B, after the effects: draws all pending entries in their original order into T/DS and restores the device state (SavedState). Idempotent;
+    // At B, after the effects: draws all pending entries in their original order into T/DS and restores the device state (minimal restore, else SavedState). Idempotent;
     // closes the frame (no more deferral until beginFrame, no cooldown). Entries whose upload could not be made are skipped and counted.
     void replay(){
         fm_.close();
