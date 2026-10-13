@@ -1,24 +1,17 @@
 #!/usr/bin/env python3
 # northlight-test: requires=cxx
-"""0.3.192 (CS) command stream, integration slice: the CommandStream key (last in Keys, 0..1, presets 1/1/1,
-documented), the version banner, and that every hook outside src/stream/ is inert while the stream is inactive
+"""0.3.192 (CS) command stream, integration slice: the CommandStream key (0..1, presets 1/1/1; its documentation is
+checked in test_quality_docs), the version banner, and that every hook outside src/stream/ is inert while the stream is inactive
 (no active snapshot, null innerOf, null upIdentity, no core subtracted) so CommandStream=0 keeps the direct
 path. DllMain still creates no thread. Source-text checks only; the behaviour is tested in test_game_snapshot."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
 import re
-HERE=Path(__file__).resolve().parent
-ROOT=HERE.parent
 q=fp.src('quality_settings.h').read_text();r=fp.src('renderer.cpp').read_text();w=fp.src('world_renderer.h').read_text()
 hooks=fp.src('stream_hooks.h').read_text();ctx=fp.src('world_context.h').read_text();disc=fp.src('celestial_disc_native.h').read_text()
-ini=(ROOT/'renderer/windows-package/northlight-quality.ini').read_text();readme=(ROOT/'renderer/windows-package/README.txt').read_text()
 gpu=fp.src('static_shadow_gpu.h').read_text();exp=fp.src('world_shadow_experiment.inl').read_text()
-keys=q[q.index('inline const Key Keys[]={'):q.index('inline bool operator==(const Settings')]
 checks={}
-# 0.3.193: BlobShadowStrength is appended after it (origin[41]); test_quality_settings checks the order.
-checks['quality key: in Keys before BlobShadowStrength, 0..1, presets 1/1/1, default 1, own origin slot']=(keys.rstrip().endswith('    {"CommandStream",&Settings::commandStream,0,1,{1,1,1}},\n    {"BlobShadowStrength",&Settings::blobShadowStrength,0,100,{50,50,50}},\n    {"Weather",&Settings::weather,0,1,{1,1,1}},\n    {"RainFog",&Settings::rainFog,0,2,{1,1,1}},\n    {"FogClouds",&Settings::fogClouds,0,1,{1,1,0}},\n    {"FogCloudDensity",&Settings::fogCloudDensity,0,200,{100,100,100}},\n    {"GpuBudgetMs",&Settings::gpuBudgetMs,0,20,{4,3,2}},\n    {"StreamFramesAhead",&Settings::streamFramesAhead,1,3,{2,2,2}}, /* 0.3.200 (pipeline) */\n    {"ReplayJobs",&Settings::replayJobs,0,1,{1,1,1}},\n    {"StreamFrameSkip",&Settings::streamFrameSkip,0,1,{1,1,1}}, /* 0.3.200 (frame skip) */\n    {"ContactAO",&Settings::contactAO,0,1,{1,1,1}}, /* 0.3.201 (task 18) */\n    {"NightBrightness",&Settings::nightBrightness,0,100,{50,50,50}}, /* task 23 (night brightness) */\n    {"ActorShadowDetail",&Settings::actorShadowDetail,0,1,{1,1,0}}, /* 0.3.209 (task 29) */\n    {"SpellLayer",&Settings::spellLayer,0,1,{1,1,1}}, /* task 34 */\n    {"SpellLayerClasses",&Settings::spellLayerClasses,1,15,{15,15,15}},\n    {"SpellTrace",&Settings::spellTrace,0,16,{0,0,0}},\n    {"SpellFog",&Settings::spellFog,0,1,{1,1,1}},\n    {"NameMask",&Settings::nameMask,0,1,{1,1,1}}, /* 0.3.212 (task 32) */\n    {"NameMaskDebug",&Settings::nameMaskDebug,0,1,{0,0,0}}, /* 0.3.212 (task 32) */\n    {"MemMap",&Settings::memMap,0,1,{0,0,0}}, /* task 42 */\n};')
-    and 'unsigned commandStream=1;' in q and 'char origin[53]=' in q and len(re.findall(r"'d'",q[q.index('char origin[53]='):].split('\n')[0]))==53)
-checks['documented in the ini template (commented, with default) and the README table']=(';CommandStream=1' in ini and re.search(r'^  CommandStream +1 / 1 / 1 ',readme,re.M) is not None)
+checks['quality key: CommandStream 0..1, presets 1/1/1, default 1']=(re.search(r'\{\s*"CommandStream"\s*,\s*&Settings::commandStream\s*,\s*0\s*,\s*1\s*,\s*\{\s*1\s*,\s*1\s*,\s*1\s*\}\s*\}',q) is not None and 'unsigned commandStream=1;' in q)
 checks['WorldRenderer exposes the loaded value; the early reader uses the same loader']=('bool commandStream()const{return quality.commandStream!=0;}' in w
     and 'const NorthlightQuality::Settings s=NorthlightQuality::load(hasFile?&in:nullptr,nullptr,problems);' in hooks and 'return s.commandStream!=0;' in hooks and 'northlight-quality.ini' in hooks)
 checks['early reader is Win32-only and falls back to the direct path on any failure']=('inline bool commandStreamRequested(const wchar_t* rootPath,unsigned* framesAhead=nullptr,unsigned* frameSkip=nullptr,bool* nameMask=nullptr){' in hooks and hooks.count('catch(...){return false;}')==2)
@@ -53,26 +46,24 @@ checks['the Device has no CommandStream branch (the stream sits in front of it)'
 checks['the owner handoff runs on the replay thread through the one Device method']=('options.threadStart=[target]{target->adoptOwnerThread();};' in r and r.count('void adoptOwnerThread(){mirrorState.gate.ownerTid=MirrorGuard::threadId();}')==1)
 checks['memory pressure reaches the stream only through the hook atomic']=('NorthlightStream::memoryPressure.store(memoryCaps==1' in r and 'inline std::atomic<bool> memoryPressure{false};' in hooks)
 checks['the stream\'s buffer read-backs use NorthlightUpload::readBackLock (NOOVERWRITE only on DXVK >= 3) and keep READONLY as the fallback']=('options.readBackLock=&NorthlightUpload::readBackLock;' in r and 'c.readBackLock?c.readBackLock():D3::kLockReadOnly' in ''.join(fp.src('stream_proxies.h').read_text().split()))
-# 0.3.200 (pipeline): StreamFramesAhead, the last key: 1..3, presets 2/2/2, read by the early reader with CommandStream (1 when unreadable) and handed to the
-# stream with the bounded queue budget; documented in the ini template and the README table.
-checks['StreamFramesAhead: last key 1..3 2/2/2, read with CommandStream, passed with budgetForFramesAhead, documented']=(
-    keys.rstrip().endswith('{"StreamFramesAhead",&Settings::streamFramesAhead,1,3,{2,2,2}}, /* 0.3.200 (pipeline) */\n    {"ReplayJobs",&Settings::replayJobs,0,1,{1,1,1}},\n    {"StreamFrameSkip",&Settings::streamFrameSkip,0,1,{1,1,1}}, /* 0.3.200 (frame skip) */\n    {"ContactAO",&Settings::contactAO,0,1,{1,1,1}}, /* 0.3.201 (task 18) */\n    {"NightBrightness",&Settings::nightBrightness,0,100,{50,50,50}}, /* task 23 (night brightness) */\n    {"ActorShadowDetail",&Settings::actorShadowDetail,0,1,{1,1,0}}, /* 0.3.209 (task 29) */\n    {"SpellLayer",&Settings::spellLayer,0,1,{1,1,1}}, /* task 34 */\n    {"SpellLayerClasses",&Settings::spellLayerClasses,1,15,{15,15,15}},\n    {"SpellTrace",&Settings::spellTrace,0,16,{0,0,0}},\n    {"SpellFog",&Settings::spellFog,0,1,{1,1,1}},\n    {"NameMask",&Settings::nameMask,0,1,{1,1,1}}, /* 0.3.212 (task 32) */\n    {"NameMaskDebug",&Settings::nameMaskDebug,0,1,{0,0,0}}, /* 0.3.212 (task 32) */\n    {"MemMap",&Settings::memMap,0,1,{0,0,0}}, /* task 42 */\n};') and 'unsigned streamFramesAhead=2;' in q
+# 0.3.200 (pipeline): StreamFramesAhead: 1..3, presets 2/2/2, read by the early reader with CommandStream (1 when unreadable) and handed to the
+# stream with the bounded queue budget.
+checks['StreamFramesAhead: key 1..3 2/2/2, read with CommandStream, passed with budgetForFramesAhead']=(
+    re.search(r'\{\s*"StreamFramesAhead"\s*,\s*&Settings::streamFramesAhead\s*,\s*1\s*,\s*3\s*,\s*\{\s*2\s*,\s*2\s*,\s*2\s*\}\s*\}',q) is not None and 'unsigned streamFramesAhead=2;' in q
     and 'if(framesAhead)*framesAhead=s.streamFramesAhead;' in hooks and hooks.count('if(framesAhead)*framesAhead=1;')==2
-    and 'options.framesAhead=framesAhead;options.budget=NorthlightStream::budgetForFramesAhead(framesAhead);' in r and 'startStream(*out,pp,framesAhead,frameSkip)' in create
-    and ';StreamFramesAhead=2' in ini and re.search(r'^  StreamFramesAhead +2 / 2 / 2 ',readme,re.M) is not None)
-# 0.3.200 (frame skip): StreamFrameSkip, the last key: 0..1, presets 1/1/1, read by the early reader with CommandStream (0 when unreadable), handed to the
-# stream (Options::frameSkip, whose own default stays 0) and logged on the CSTREAM active line; documented in the ini template and both readmes.
+    and 'options.framesAhead=framesAhead;options.budget=NorthlightStream::budgetForFramesAhead(framesAhead);' in r and 'startStream(*out,pp,framesAhead,frameSkip)' in create)
+# 0.3.200 (frame skip): StreamFrameSkip: 0..1, presets 1/1/1, read by the early reader with CommandStream (0 when unreadable), handed to the
+# stream (Options::frameSkip, whose own default stays 0) and logged on the CSTREAM active line.
 sd=fp.src('stream_device.h').read_text();rt=fp.src('replay_thread.h').read_text()
-checks['StreamFrameSkip: key 0..1 1/1/1, read with CommandStream, passed to the stream, logged, documented']=(
-    ('    '+'{"StreamFrameSkip",&Settings::streamFrameSkip,0,1,{1,1,1}}, /* 0.3.200 (frame skip) */'+'\n    {"ContactAO",') in keys and 'unsigned streamFrameSkip=1;' in q
+checks['StreamFrameSkip: key 0..1 1/1/1, read with CommandStream, passed to the stream, logged']=(
+    re.search(r'\{\s*"StreamFrameSkip"\s*,\s*&Settings::streamFrameSkip\s*,\s*0\s*,\s*1\s*,\s*\{\s*1\s*,\s*1\s*,\s*1\s*\}\s*\}',q) is not None and 'unsigned streamFrameSkip=1;' in q
     and 'if(frameSkip)*frameSkip=s.streamFrameSkip;' in hooks and hooks.count('if(frameSkip)*frameSkip=0;')==2 and 'return commandStreamFromText(text,has,framesAhead,frameSkip,nameMask);' in hooks
     and 'options.frameSkip=frameSkip;' in r and 'framesAhead=%u frameSkip=%u budgetMiB=%u' in r and 'unsigned frameSkip=0;' in sd and 'replayer.frameSkip=opt.frameSkip!=0;' in sd
-    and 'put(buf,n," skipped=%llu",(unsigned long long)get(s.skippedFrames));' in rt and '"CSTREAM frame skip: first skipped frame=%llu' in rt
-    and ';StreamFrameSkip=1' in ini and re.search(r'^  StreamFrameSkip +1 / 1 / 1 ',readme,re.M) is not None and 'StreamFrameSkip' in (fp.REPO/'README.md').read_text())
+    and 'put(buf,n," skipped=%llu",(unsigned long long)get(s.skippedFrames));' in rt and '"CSTREAM frame skip: first skipped frame=%llu' in rt)
 sp=fp.src('stream_proxies.h').read_text()
 checks['image proxies free a still-staged lock Block at destruction (surface, 3 texture kinds)']=(
     'inline void dropSubStage(StreamCore& c,SubRes& s){if(s.stage){c.q.freeBlock(s.stage);s.stage=nullptr;}}' in sp
     and 'dropSubShadow(*core,own);dropSubStage(*core,own);' in sp and sp.count('for(auto& s:subs){dropSubShadow(*core,s);dropSubStage(*core,s);}')==3)
 for name,ok in checks.items():print(('PASS ' if ok else 'FAIL ')+name)
 assert all(checks.values())
-print('PASS command stream wiring: key, docs, banner, GATE fields, inert hooks, no DllMain thread')
+print('PASS command stream wiring: key, banner, GATE fields, inert hooks, no DllMain thread')

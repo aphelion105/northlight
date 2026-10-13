@@ -95,6 +95,7 @@ test_point_shadow_schedule.py
 test_prepare_worker.py
 test_probe_blend.py
 test_progressive_gi_worker.py
+test_quality_docs.py
 test_quality_settings.py
 test_rain_mask.py
 test_raster_reconstruction.py
