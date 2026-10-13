@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 # northlight-test:
-"""renderer/effects_cost_report.py on a synthetic log: segment split, background samples (focus=0, or presumed from the 30 fps plateau without a focus field), means, ON/OFF comparison."""
+"""renderer/effects_cost_report.py on a synthetic log: segment split, background samples (focus=0, or presumed from the 30 fps plateau without a focus field), per-sample state, means, ON/OFF comparison."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp; fp.use_source_modules()
 import contextlib, io, tempfile, unittest
 import effects_cost_report as r
 
-def frame(ms, focus=None): return f'FRAME interval device=1 frame=120 tick=1 enabled=1 samples=120 meanMs={ms} p50Ms=5 p95Ms=6 maxMs=9 fps=1 gi=1 shadows=1 fog=1' + ('' if focus is None else f' focus={focus}')
+def frame(ms, focus=None, enabled=1, gi=1, shadows=1, fog=1):
+    return (f'FRAME interval device=1 frame=120 tick=1 enabled={enabled} samples=120 meanMs={ms} p50Ms=5 p95Ms=6 maxMs=9 fps=1 '
+            f'gi={gi} shadows={shadows} fog={fog}' + ('' if focus is None else f' focus={focus}'))
 LOG = '\n'.join([
     'FRAME interval meanMs=99.0',   # before any segment: ignored
     'Effects ON tick=1', frame(6.0), frame(8.0), frame(33.8),
@@ -19,18 +21,20 @@ LOG = '\n'.join([
     'CELESTIAL orbit gameDay=0.8 sun=1.70->1.73 moon=-9.86->-3.31 schedule=native weights=0.319/0.000',
     'LOCAL direct lights=55 limit=64 available=77 selectUs=1000.0 selectMaxUs=1',
     'LOCAL direct lights=40 limit=64 available=70 selectUs=2000.0 selectMaxUs=1',
-    'Effects OFF tick=2', frame(4.0), frame(34.0), frame(35.0),
-    'Effects components tick=3 master=1 GI=ON shadows=OFF fog=ON giCache=warm', frame(10.0, 1), frame(33.9, 0), frame(40.0, 1), frame(8.0, 0), ''])
+    'Effects OFF tick=2', frame(4.0, enabled=0), frame(34.0, enabled=0), frame(35.0, enabled=0),
+    'Effects components tick=3 master=1 GI=ON shadows=OFF fog=ON giCache=warm', frame(10.0, 1, shadows=0), frame(33.9, 0, shadows=0), frame(40.0, 1, shadows=0), frame(8.0, 0, shadows=0),
+    # F10 back on with GI still off (F10 does not reset the components): a segment labelled ON, a partial state
+    'Effects ON tick=4', frame(9.0, 1, gi=0), frame(12.0, 1), ''])
 
 class Report(unittest.TestCase):
     def setUp(self):
         self.segments = r.parse(LOG.splitlines())
     def test_split(self):
-        self.assertEqual([s.text for s in self.segments], ['ON', 'OFF', 'master=1 GI=ON shadows=OFF fog=ON'])
-        self.assertEqual([s.on for s in self.segments], [True, False, True])
-        self.assertEqual([s.start for s in self.segments], [2, 15, 19])
+        self.assertEqual([s.text for s in self.segments], ['ON', 'OFF', 'master=1 GI=ON shadows=OFF fog=ON', 'ON'])
+        self.assertEqual([s.start for s in self.segments], [2, 15, 19, 24])
+        self.assertEqual(self.segments[3].states, ['gi=0', 'all on'])
     def test_background_excluded(self):
-        on, off, comp = self.segments
+        on, off, comp, _ = self.segments
         self.assertEqual((on.frames, on.background, on.presumed), ([6.0, 8.0], [33.8], 1))
         self.assertEqual((off.frames, off.background, off.presumed), ([4.0], [34.0, 35.0], 2))
         # With a focus field, focus decides: a slow focused sample is real cost, a fast unfocused one is not.
@@ -49,9 +53,11 @@ class Report(unittest.TestCase):
             with contextlib.redirect_stdout(out): self.assertEqual(r.main([str(path)]), 0)
         text = out.getvalue()
         self.assertIn('frames=2 meanMs=7.000 slowFocused=0 background=1 (presumed=1) backgroundMeanMs=33.800', text); self.assertIn('orbit: sun=1.73 moon=-3.31 weights=0.319/0.000', text)
-        self.assertIn('effects ON  : samples=4 meanMs=16.000', text)   # (6+8+10+40)/4
-        self.assertIn('effects OFF : samples=1 meanMs=4.000', text)
-        self.assertIn('ON minus OFF: +12.000 ms', text)
+        self.assertIn('all on  : samples=3 meanMs=8.667', text)   # (6+8+12)/3: no partial state
+        self.assertIn('all off : samples=1 meanMs=4.000', text)
+        self.assertIn('shadows=0: samples=2 meanMs=25.000', text); self.assertIn('gi=0    : samples=1 meanMs=9.000', text)
+        self.assertIn('all on minus all off: +4.667 ms', text)
+        self.assertIn('warning: no focus= field', text)
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

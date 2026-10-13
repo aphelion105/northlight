@@ -3,11 +3,14 @@
 
 The log is split at `Effects OFF`, `Effects ON` and `Effects components ... master= GI= shadows= fog=` lines. Each
 segment reports FRAME interval samples, CPU profile and GPU profile means, the CELESTIAL terrain mask
-redraws/reuses, the latest orbit and LOCAL direct lines. A final line compares effects-on with effects-off frames.
+redraws/reuses, the latest orbit and LOCAL direct lines. The closing summary classifies every FRAME interval sample by
+the state on its own line (enabled, gi, shadows, fog; F10 does not reset the F7-F9 components, so a segment label is
+not enough): all on (enabled=1 gi=1 shadows=1 fog=1) against all off (enabled=0), with each partial state apart.
 Background samples are left out of the means and shown as `background`: with a `focus=` field (newer logs) those are
 the focus=0 samples, which run at the client's background frame cap (maxFPSBk, 30 fps by default); in older logs
-without it, samples at or above CAP_MS (the ~33.8 ms plateau) are only presumed to be that cap (`presumed`). A focused
-sample at or above CAP_MS stays in the means and is counted as `slowFocused`: that one is real cost.
+without it, samples at or above CAP_MS (the ~33.8 ms plateau) are only presumed to be that cap (`presumed`, and the
+summary warns that such a log cannot tell a real slowdown below ~33 fps from it). A focused sample at or above CAP_MS
+stays in the means and is counted as `slowFocused`: that one is real cost.
 Usage: effects_cost_report.py <northlight-renderer.log> [--min-samples N]"""
 import argparse, re, sys
 from collections import defaultdict
@@ -20,16 +23,22 @@ def fields(line):
     return {k: float(v) for k, v in KV.findall(line)}
 
 def label(line):
-    if line.startswith('Effects OFF'): return 'OFF', False
-    if line.startswith('Effects ON'): return 'ON', True
+    if line.startswith('Effects OFF'): return 'OFF'
+    if line.startswith('Effects ON'): return 'ON'
     m = re.search(r'master=(\d)\s+GI=(\w+)\s+shadows=(\w+)\s+fog=(\w+)', line)
-    if m: return f'master={m[1]} GI={m[2]} shadows={m[3]} fog={m[4]}', m[1] == '1'
+    if m: return f'master={m[1]} GI={m[2]} shadows={m[3]} fog={m[4]}'
     return None
 
+def state(f):
+    """'all on', 'all off' or the partial components from a FRAME interval line's own fields."""
+    if not f.get('enabled', 1): return 'all off'
+    off = [k for k in ('gi', 'shadows', 'fog') if not f.get(k, 1)]
+    return 'all on' if not off else ' '.join(k + '=0' for k in off)
+
 class Segment:
-    def __init__(self, start, text, on):
-        self.start, self.text, self.on = start, text, on
-        self.frames, self.background, self.presumed, self.slow_focused = [], [], 0, 0
+    def __init__(self, start, text):
+        self.start, self.text = start, text
+        self.frames, self.states, self.background, self.presumed, self.slow_focused = [], [], [], 0, 0
         self.cpu, self.gpu, self.direct = defaultdict(list), defaultdict(list), defaultdict(list)
         self.redraws, self.reuses, self.triangles = [0, 0], [0, 0], []
         self.orbit = self.local = None
@@ -42,7 +51,7 @@ class Segment:
                 if not f['focus']: self.background.append(ms); return
                 if ms >= CAP_MS: self.slow_focused += 1
             elif ms >= CAP_MS: self.background.append(ms); self.presumed += 1; return
-            self.frames.append(ms)
+            self.frames.append(ms); self.states.append(state(f))
         elif line.startswith('CPU profile'):
             f = fields(line)
             for k in ('drawGate', 'capture', 'effects', 'cleanup', 'total', 'drawHooks'):
@@ -68,7 +77,7 @@ def parse(lines):
         line = line.strip()
         tag = label(line) if line.startswith('Effects ') else None
         if tag:
-            cur = Segment(n, tag[0], tag[1]); segments.append(cur)
+            cur = Segment(n, tag); segments.append(cur)
         elif cur: cur.add(line)
     return segments
 
@@ -96,9 +105,15 @@ def main(argv=None):
     segments = parse(Path(args.log).read_text(errors='replace').splitlines())
     for s in segments:
         if len(s.frames) + len(s.background) >= args.min_samples: print('\n'.join(show(s)))
-    on = [m for s in segments if s.on for m in s.frames]; off = [m for s in segments if not s.on for m in s.frames]
-    print(f'== effects ON  : samples={len(on)} meanMs={mean(on):.3f}\n== effects OFF : samples={len(off)} meanMs={mean(off):.3f}')
-    if on and off: print(f'== ON minus OFF: {mean(on) - mean(off):+.3f} ms (focused samples only)')
+    by = defaultdict(list)
+    for s in segments:
+        for ms, st in zip(s.frames, s.states): by[st].append(ms)
+    for st in ['all on', 'all off'] + sorted(k for k in by if k not in ('all on', 'all off')):
+        print(f'== {st:<8}: samples={len(by[st])} meanMs={mean(by[st]):.3f}')
+    if by['all on'] and by['all off']: print(f'== all on minus all off: {mean(by["all on"]) - mean(by["all off"]):+.3f} ms (focused samples only)')
+    if any(s.presumed for s in segments):
+        print('== warning: no focus= field; samples >= %.0f ms were presumed to be the background cap, so a real slowdown '
+              'below ~33 fps cannot be told apart in this log' % CAP_MS)
     return 0
 
 if __name__ == '__main__':
