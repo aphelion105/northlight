@@ -206,7 +206,7 @@ checks['release forgets the depth identities; the setting is read once at device
 keys=q[q.index('inline const Key Keys[]={'):q.index('};',q.index('inline const Key Keys[]={'))]
 checks['quality keys: the last two, 0..1 and 0..1, presets 1/1/1 and 0/0/0, own origin slots']=(
     keys.rstrip().endswith('    {"NameMask",&Settings::nameMask,0,1,{1,1,1}}, /* 0.3.212 (task 32) */\n    {"NameMaskDebug",&Settings::nameMaskDebug,0,1,{0,0,0}}, /* 0.3.212 (task 32) */')
-    and 'unsigned nameMask=1;' in q and 'nameMaskAlphaRef' not in q and 'unsigned nameMaskDebug=0;' in q and 'char origin[48]=' in q and len(re.findall(r"'d'",q[q.index('char origin[48]='):].split('\n')[0]))==48)
+    and 'unsigned nameMask=1;' in q and 'nameMaskAlphaRef' not in q and 'unsigned nameMaskDebug=0;' in q and 'char origin[52]=' in q and len(re.findall(r"'d'",q[q.index('char origin[52]='):].split('\n')[0]))==52)
 ini=(fp.REPO/'renderer'/'windows-package'/'northlight-quality.ini').read_text();txt=(fp.REPO/'renderer'/'windows-package'/'README.txt').read_text()
 checks['documented: ini (commented, ranges and presets) and README.txt']=(';NameMask=1\n' in ini and 'NameMaskAlphaRef' not in ini and 'NameMaskAlphaRef' not in txt and ';NameMaskDebug=0\n' in ini and 'Allowed 0..1. 1 / 1 / 1' in ini
     and re.search(r'^  NameMask +1 / 1 / 1 ',txt,re.M) is not None and re.search(r'^  NameMaskDebug +0 / 0 / 0 ',txt,re.M) is not None)
