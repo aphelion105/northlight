@@ -254,7 +254,7 @@ static bool gDirty=true; // Config::dirtyRecord of every Rig (the whole suite al
 static bool gMinimal=true; // Config::minimalRestore of every Rig (main runs the whole suite with it on and off: the end state must be identical)
 static unsigned gTexGeneration=0;static unsigned texGeneration(void*){return gTexGeneration;}
 static uint64_t gTicks=0;static uint64_t fakeClock(void*){return ++gTicks;}static bool fakeTiming(void*){return true;} // every read advances one tick: a timed phase costs exactly 1
-struct Opts{bool allowMismatch=false,failSafe=false;bool dirty=gDirty;unsigned maxTexSplits=8;bool minimal=gMinimal;bool timed=false;size_t deltaBytes=2u<<20;unsigned deltaChunk=16384;bool verdictCache=false;bool on=true;unsigned maxEntries=512;bool conflictCopy=true;unsigned mask=15;size_t arena=1u<<20,upVb=1u<<16,upIb=1u<<14;};
+struct Opts{unsigned maxOrderSplits=8;bool allowMismatch=false,failSafe=false;bool dirty=gDirty;unsigned maxTexSplits=8;bool minimal=gMinimal;bool timed=false;size_t deltaBytes=2u<<20;unsigned deltaChunk=16384;bool verdictCache=false;bool on=true;unsigned maxEntries=512;bool conflictCopy=true;unsigned mask=15;size_t arena=1u<<20,upVb=1u<<16,upIb=1u<<14;};
 struct Rig{
     Fake::FakeDevice dev;Layer layer;Opts o;
     Fake::Surface *T,*D,*Other;
@@ -307,7 +307,7 @@ struct Rig{
         const float c[4]={1,2,3,4};dev.SetVertexShaderConstantF(5,c,1);dev.SetPixelShaderConstantF(2,c,1);dev.SetSamplerState(0,5,2);dev.SetRenderState(D3DRS_ALPHAREF,128);
         opaqueZ();translucent(kSrcAlpha,kBlendOne);
         Config c2;c2.on=o.on;c2.classMask=o.mask;c2.maxEntries=o.maxEntries;c2.arenaBytes=o.arena;c2.uploadVbBytes=o.upVb;c2.uploadIbBytes=o.upIb;
-        c2.minimalRestore=o.minimal;c2.dirtyRecord=o.dirty;c2.dirtyCheck=true;c2.dirtyDisableOnMismatch=o.failSafe;c2.synced=&dev.synced;c2.maxTexSplits=o.maxTexSplits;c2.conflictCopy=o.conflictCopy;c2.deltaChunkWords=o.deltaChunk;c2.deltaBytes=o.deltaBytes;
+        c2.minimalRestore=o.minimal;c2.maxOrderSplits=o.maxOrderSplits;c2.dirtyRecord=o.dirty;c2.dirtyCheck=true;c2.dirtyDisableOnMismatch=o.failSafe;c2.synced=&dev.synced;c2.maxTexSplits=o.maxTexSplits;c2.conflictCopy=o.conflictCopy;c2.deltaChunkWords=o.deltaChunk;c2.deltaBytes=o.deltaBytes;
         if(gMirrorMode){
             Fake::Mirror& m=dev.mir;view=Fake::makeView(dev);c2.source=&view;
             if(gMirrorMode==2){for(unsigned i=0;i<256;i+=3)m.hideRs[i]=true;for(unsigned i=0;i<256;i+=5)m.hideVsF[i]=true;for(unsigned i=0;i<224;i+=7)m.hidePsF[i]=true;m.hideTex[3]=m.hideTex[5]=true;m.hideSmp[1]=true;m.hideVsB=true;}
@@ -1366,6 +1366,100 @@ static void testDiagnostics(){
     Pair q=runBoth(sSplitWater);                                                                           // no clock configured: nothing is timed, the drains still count
     CHECK(q.lay->layer.phaseTicks().save==0&&q.lay->layer.phaseTicks().restore==0&&q.lay->layer.totalCounters().drains==2);
 }
+// ---------------- review items: caps, stride-0 streams, upload cursors, depth textures, trim ----------------
+// Water, rain and name splits are capped per frame like texture splits: the 9th is the Order hazard (flush, fallback, cooldown).
+static void sOrderCap(Rig& r){
+    for(int i=1;i<=9;++i){deferQuad(r,i);r.issueWith(Rig::dp(0),Family::Model,[](DrawFacts& f){f.water=true;});}
+    deferQuad(r,10);r.boundary();
+}
+static void testOrderSplitCap(){
+    Pair p=runBoth(sOrderCap);const Counters& c=p.lay->layer.totalCounters();
+    CHECK(c.orderBy[0]==8&&c.hazards[unsigned(Reason::Order)]==1&&c.totalHazards()==1&&c.flushes==9&&c.replays==0&&p.lay->deferredTags.size()==9);
+    CHECK(p.lay->layer.mode()==Mode::Fallback);
+    checkEquivalent(p);CHECK(p.lay->order()==p.ref->order());
+    p.lay->layer.beginFrame(false);CHECK(p.lay->layer.mode()==Mode::Cooldown);
+    Opts few;few.maxOrderSplits=2;Pair q=runBoth(sOrderCap,few);                 // the cap is configurable
+    CHECK(q.lay->layer.totalCounters().orderBy[0]==2&&q.lay->layer.totalCounters().hazards[unsigned(Reason::Order)]==1);
+    checkEquivalent(q);
+}
+// A stride-0 stream reads the declaration's element bytes at its offset for every vertex: that range is guarded (and copied on a conflicting write); with no declaration to size it,
+// or an element type it does not know, the defer is refused.
+static void sStride0(Rig& r){
+    r.dev.SetVertexDeclaration(r.declP);
+    UINT a=r.ringQuad(1);r.dev.SetStreamSource(0,r.ring,a,0);
+    r.issue(Rig::dp(0));                                                      // 1: DISCARD below
+    r.discardRing(77);
+    UINT b=r.ringQuad(2);r.dev.SetStreamSource(0,r.ring,b,0);
+    r.issue(Rig::dp(0));                                                      // 2: an overlapping NOOVERWRITE write below
+    r.write(r.ring->b,b+4,8,D3DLOCK_NOOVERWRITE,Rig::pat(5,8));
+    r.dev.SetStreamSource(0,r.ring,0,16);
+    r.boundary();
+}
+static void testStride0(){
+    Pair p=runBoth(sStride0);const Counters& c=p.lay->layer.totalCounters();
+    CHECK(p.lay->deferredTags==std::vector<int>({1,2})&&c.conflicts==2&&c.materialized==2&&c.totalHazards()==0);
+    checkEquivalent(p,{1,2});
+    for(auto& d:p.lay->dev.draws)if(d.tag==1||d.tag==2)CHECK(d.vtx.size()==64&&!d.oob);   // 4 vertices x the 16 element bytes
+    Rig r(Opts{});auto* bad=r.reg(new Fake::Decl({{0,0,20,0,0,0}}));                     // an element type the layer cannot size
+    r.dev.SetVertexDeclaration(bad);r.dev.SetStreamSource(0,r.ring,0,0);r.issue(Rig::dp(0));
+    CHECK(r.layer.pending()==0&&r.layer.totalCounters().hazards[unsigned(Reason::Capture)]==1);
+    bad->Release();
+}
+// The upload buffer is locked only for the bytes a drain uses: DISCARD [0,end) for the first upload of the frame, NOOVERWRITE appends for the later drains, and a wrap (DISCARD
+// again) when the cursor would overflow; the output stays the reference's.
+static void sUploadDrains(Rig& r){
+    for(int i=1;i<=3;++i)deferQuad(r,i);
+    r.discardRing(50);                                                        // drain 1's draws are copied
+    r.issueWith(Rig::dp(0),Family::Model,[](DrawFacts& f){f.water=true;});    // split: drain 1
+    for(int i=4;i<=6;++i)deferQuad(r,i);
+    r.discardRing(51);                                                        // drain 2's draws are copied (after the split's flush)
+    r.boundary();                                                             // drain 2
+}
+static void testUploadCursor(){
+    Pair p=runBoth(sUploadDrains);const Counters& c=p.lay->layer.totalCounters();
+    CHECK(c.drains==2&&c.conflicts==2&&c.materialized==6&&p.lay->deferredTags.size()==6);
+    checkEquivalent(p,std::set<int>(p.lay->deferredTags.begin(),p.lay->deferredTags.end()));
+    // (the geometry bindings of the copied draws point at the upload buffer, so only their bytes are compared)
+    Fake::VB* up=p.lay->dev.lastVB;CHECK(up&&up->b.lockLog.size()==2);
+    CHECK(up->b.lockLog[0].flags==D3DLOCK_DISCARD&&up->b.lockLog[0].off==0&&up->b.lockLog[1].flags==D3DLOCK_NOOVERWRITE&&up->b.lockLog[1].off>0);
+    CHECK(up->b.lockLog[1].off>=up->b.lockLog[0].size);                       // appended behind the first drain's bytes, not over them
+    // a wrap: the second drain does not fit behind the first in a small buffer
+    Opts small;small.upVb=4096;
+    Pair q=runBoth([](Rig& r){
+        for(int i=1;i<=40;++i)deferQuad(r,i);r.discardRing(50);
+        r.issueWith(Rig::dp(0),Family::Model,[](DrawFacts& f){f.water=true;});
+        for(int i=41;i<=80;++i)deferQuad(r,i);r.discardRing(51);r.boundary();
+    },small);
+    CHECK(q.lay->layer.totalCounters().drains==2&&q.lay->layer.totalCounters().totalHazards()==0&&q.lay->deferredTags.size()==80);
+    checkEquivalent(q,std::set<int>(q.lay->deferredTags.begin(),q.lay->deferredTags.end()));
+    Fake::VB* qu=q.lay->dev.lastVB;CHECK(qu&&qu->b.lockLog.size()==2&&qu->b.lockLog[0].flags==D3DLOCK_DISCARD&&qu->b.lockLog[1].flags==D3DLOCK_DISCARD&&qu->b.lockLog[1].off==0);
+}
+// A texture created as a depth-stencil surface (sampled depth) is written by rendering: refused like a render-target texture.
+static void testDepthStencilTexture(){
+    Rig r(Opts{});r.texB->usage=D3DUSAGE_DEPTHSTENCIL;r.dev.SetTexture(3,r.texB);
+    deferQuad(r,1);CHECK(r.layer.pending()==0&&r.layer.totalCounters().hazards[unsigned(Reason::Capture)]==1);
+    r.dev.SetTexture(3,nullptr);
+}
+// trim(0) while idle frees the guard table, the blob/hit/segment/order vectors, the held table and the undo log; the layer then grows again as needed.
+static void sTrimTwice(Rig& r){
+    auto work=[&]{for(int i=1;i<=4;++i)deferQuad(r,i);r.discardRing(60);r.boundary();};
+    work();
+    if(r.o.on){
+        r.layer.beginFrame(false);
+        const size_t before=r.layer.memory().tables;r.layer.trim(0);
+        CHECK(r.layer.memory().tables+32768<before&&!r.layer.pendingSamples(r.texA)); // the held table alone is ~48 KiB
+    }
+    work();
+}
+static void testTrimReuse(){
+    Pair p=runBoth(sTrimTwice);const Counters& c=p.lay->layer.totalCounters();
+    CHECK(c.replays==2&&c.conflicts==2&&c.replaySkipped==0&&c.totalHazards()==0&&p.lay->deferredTags.size()==8);
+    checkEquivalent(p,std::set<int>(p.lay->deferredTags.begin(),p.lay->deferredTags.end()));
+    // pending entries are never trimmed away
+    Rig r(Opts{});deferQuad(r,1);deferQuad(r,2);r.layer.trim(0);CHECK(r.layer.pending()==2&&r.layer.pendingSamples(r.texA));r.boundary();
+    CHECK(r.layer.totalCounters().replayedDraws==2);
+}
+
 // ---------------- the dirty record (synced bits) ----------------
 // Random interleavings of game Sets, deferred draws with different read sets (slots entering a read set for the first time included), raw sets (bypassing the setters, bracketed by
 // a clear-all like a RawScope), invalidations, mirror knowledge changes, splits, fixed-function entries and the boundary. The layer run is compared with the layer-off reference draw
@@ -1696,7 +1790,7 @@ int main(int argc,char** argv){
     const char* only=argc>1?argv[1]:nullptr; // a test name (substring) to run alone, and an optional cache mode
     const bool fixedMode=argc>2;if(fixedMode)gMirrorMode=std::atoi(argv[2]);
     struct T{const char* name;void(*fn)();};
-    const T tests[]={{"classify",testClassify},{"lazy classify",testLazyClassify},{"glow verdict",testGlowVerdict},{"dirty record random",testDirtyRandom},{"record slots",testRecordSlots},{"dirty fail safe",testDirtyFailSafe},{"frame state",testFrameState},{"guard table",testGuardTable},{"equivalence",testEquivalence},
+    const T tests[]={{"classify",testClassify},{"lazy classify",testLazyClassify},{"glow verdict",testGlowVerdict},{"order split cap",testOrderSplitCap},{"stride 0 stream",testStride0},{"upload cursor",testUploadCursor},{"depth stencil texture",testDepthStencilTexture},{"trim and reuse",testTrimReuse},{"dirty record random",testDirtyRandom},{"record slots",testRecordSlots},{"dirty fail safe",testDirtyFailSafe},{"frame state",testFrameState},{"guard table",testGuardTable},{"equivalence",testEquivalence},
         {"discard copy",testDiscard},{"partial overlap",testPartialOverlap},{"two entries",testTwoEntries},{"count-based marks",testMarkIsCountBased},
         {"rebase negative base",testRebaseNegativeBase},{"rebase kept base",testRebasePositiveBase},{"index buffer copy",testIbMaterialized},
         {"mixed streams",testMixedStreams},{"32-bit UP",test32bitUP},{"non-dynamic buffer",testNonDynamic},{"copy disabled",testConflictCopyDisabled},

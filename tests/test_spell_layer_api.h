@@ -23,7 +23,7 @@ constexpr D3DSTATEBLOCKTYPE D3DSBT_ALL=1;
 constexpr D3DPRIMITIVETYPE D3DPT_POINTLIST=1,D3DPT_LINELIST=2,D3DPT_LINESTRIP=3,D3DPT_TRIANGLELIST=4,D3DPT_TRIANGLESTRIP=5,D3DPT_TRIANGLEFAN=6;
 constexpr D3DFORMAT D3DFMT_INDEX16=101,D3DFMT_INDEX32=102,D3DFMT_VERTEXDATA=100;
 constexpr D3DPOOL D3DPOOL_DEFAULT=0,D3DPOOL_MANAGED=1;
-constexpr DWORD D3DUSAGE_RENDERTARGET=1,D3DUSAGE_WRITEONLY=8,D3DUSAGE_DYNAMIC=0x200;
+constexpr DWORD D3DUSAGE_RENDERTARGET=1,D3DUSAGE_DEPTHSTENCIL=2,D3DUSAGE_WRITEONLY=8,D3DUSAGE_DYNAMIC=0x200;
 constexpr D3DRESOURCETYPE D3DRTYPE_TEXTURE=3,D3DRTYPE_VOLUMETEXTURE=4,D3DRTYPE_CUBETEXTURE=5;
 constexpr DWORD D3DLOCK_READONLY=0x10,D3DLOCK_NOOVERWRITE=0x1000,D3DLOCK_DISCARD=0x2000;
 constexpr D3DRENDERSTATETYPE D3DRS_ZENABLE=7,D3DRS_ZWRITEENABLE=14,D3DRS_ALPHATESTENABLE=15,D3DRS_SRCBLEND=19,D3DRS_DESTBLEND=20,D3DRS_ALPHAREF=24,D3DRS_ALPHABLENDENABLE=27,D3DRS_STENCILENABLE=52,D3DRS_COLORWRITEENABLE=168,D3DRS_BLENDOP=171,D3DRS_POINTSIZE=154;
@@ -109,6 +109,11 @@ struct VShader:Obj<IDirect3DVertexShader9>{};struct PShader:Obj<IDirect3DPixelSh
 struct Decl:Obj<IDirect3DVertexDeclaration9>{
     std::vector<D3DVERTEXELEMENT9> el;bool internal=false;DWORD fvf=0; // internal: the runtime's own declaration for an FVF (SetFVF binds it)
     explicit Decl(std::vector<D3DVERTEXELEMENT9> e):el(std::move(e)){el.push_back(D3DVERTEXELEMENT9{0xFF,0,17,0,0,0});}
+    UINT streamEnd(UINT stream)const{ // bytes one vertex of the stream reads (what the hardware fetches for a stride-0 stream)
+        static const unsigned size[17]={4,8,12,16,4,4,4,8,4,4,8,4,8,4,4,4,8};UINT end=0;
+        for(auto& e:el)if(e.Stream==stream&&e.Type<17)end=std::max<UINT>(end,e.Offset+size[e.Type]);
+        return end;
+    }
     HRESULT GetDeclaration(D3DVERTEXELEMENT9* out,UINT* n)override{if(out)std::memcpy(out,el.data(),el.size()*sizeof(D3DVERTEXELEMENT9));*n=UINT(el.size());return D3D_OK;}
 };
 // Buffer storage with D3D9 lock semantics. DISCARD hands out a fresh slice (poisoned 0xDD, the old bytes are unreachable for later draws),
@@ -116,6 +121,7 @@ struct Decl:Obj<IDirect3DVertexDeclaration9>{
 struct BufState{
     std::vector<std::vector<uint8_t>> slices;DWORD usage=0;UINT size=0;int locks=0;bool guarded=false;void* key=nullptr;
     std::function<void(BufState&,UINT,UINT,DWORD)> hook;int failReadOnly=0;
+    struct LockRec{UINT off,size;DWORD flags;};std::vector<LockRec> lockLog; // every successful lock that is not READONLY (the upload buffers' DISCARD / NOOVERWRITE pattern)
     void init(UINT n,DWORD u){size=n;usage=u;slices.assign(1,std::vector<uint8_t>(n,0));}
     uint8_t* cur(){return slices.back().data();}
     HRESULT lock(UINT off,UINT sz,void** data,DWORD flags){
@@ -123,7 +129,7 @@ struct BufState{
         if(guarded&&!(flags&D3DLOCK_READONLY)&&hook)hook(*this,off,sz,flags);
         if(flags&D3DLOCK_DISCARD){if(!(usage&D3DUSAGE_DYNAMIC))return D3DERR_INVALIDCALL;slices.emplace_back(size,uint8_t(0xDD));}
         if(off>size||(sz&&off+sz>size))return D3DERR_INVALIDCALL;
-        ++locks;*data=cur()+off;return D3D_OK;
+        ++locks;if(!(flags&D3DLOCK_READONLY))lockLog.push_back({off,sz,flags});*data=cur()+off;return D3D_OK;
     }
 };
 struct VB:Obj<IDirect3DVertexBuffer9>{
@@ -192,6 +198,7 @@ struct Mirror{
     unsigned enters=0,leaves=0;int depth=0;
 };
 struct FakeDevice:IDirect3DDevice9{
+    VB* lastVB=nullptr; /* the vertex buffer created last (weak): after the Rig's own, that is the layer's upload buffer */
     bool dropRsHook=false; /* tests: SetRenderState forgets to clear its bit (a missing production hook) */
     State s;Mirror mir;SyncedSlots synced; /* the bits the production mirror's setters clear (device_mirror.h): every Set below clears its slot, a state block Apply (invalidate) all */ IDirect3DSurface9* rt[4]={};IDirect3DSurface9* ds=nullptr;
     std::vector<DrawRec> draws;unsigned calls=0,sets=0;
@@ -215,7 +222,7 @@ struct FakeDevice:IDirect3DDevice9{
         ++blocksCreated;*out=new StateBlock(this);return D3D_OK;
     }
     HRESULT CreateVertexBuffer(UINT n,DWORD u,DWORD,D3DPOOL,IDirect3DVertexBuffer9** out,HANDLE*)override{
-        ++calls;if(failCreateVB)return E_FAIL;auto* b=new VB;b->b.init(n,u);b->b.key=static_cast<IDirect3DVertexBuffer9*>(b);*out=b;return D3D_OK;
+        ++calls;if(failCreateVB)return E_FAIL;auto* b=new VB;b->b.init(n,u);b->b.key=static_cast<IDirect3DVertexBuffer9*>(b);*out=b;lastVB=b;return D3D_OK;
     }
     HRESULT CreateIndexBuffer(UINT n,DWORD u,D3DFORMAT f,D3DPOOL,IDirect3DIndexBuffer9** out,HANDLE*)override{
         ++calls;if(failCreateIB)return E_FAIL;auto* b=new IB;b->b.init(n,u);b->fmt=f;b->b.key=static_cast<IDirect3DIndexBuffer9*>(b);*out=b;return D3D_OK;
@@ -295,9 +302,10 @@ struct FakeDevice:IDirect3DDevice9{
     void fetch(DrawRec& d,UINT stream,int64_t vertex){ // one vertex of one stream
         const auto& st=s.st[stream];UINT size=0;
         if(!st.vb){d.oob=true;return;}
+        UINT bytes=st.stride;if(!bytes){auto* dc=static_cast<Decl*>(s.decl);bytes=dc?dc->streamEnd(stream):0;} // stride 0: every vertex fetches the declaration's element bytes at the offset
         const uint8_t* base=bufBytes(st.vb,size);const int64_t at=int64_t(st.off)+vertex*st.stride;
-        if(at<0||at+st.stride>size){d.oob=true;return;}
-        d.vtx.insert(d.vtx.end(),base+at,base+at+st.stride);
+        if(at<0||at+bytes>size){d.oob=true;return;}
+        d.vtx.insert(d.vtx.end(),base+at,base+at+bytes);
     }
     std::vector<UINT> usedStreams()const{
         std::vector<UINT> u;
