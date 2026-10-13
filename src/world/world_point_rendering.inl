@@ -158,7 +158,7 @@
         pointBoundsValid=0;replayBoundsCache.beginFrame(diagnostics);replayBoundsMetadata.beginFrame();
         // Program/declaration lookups stay on the render thread.
         replayBoundsFallbacks.clear();replayBoundsCapped=0;
-        replayBoundsWorker.nearList().begin(actorShadowOrigin,actorShadowOriginValid); /* the last frame's shadow pivot: casters near it are visited first */
+        replayBoundsWorker.nearList().begin(actorMatrices[0],actorValid[0],actorMatrices[1],actorValid[1],actorShadowHistory.selfHold()>0?actorShadowHistory.selfAt():nullptr); /* the actor maps as last drawn: casters that can be wholly inside one are visited first, the self before all */
         NorthlightReplayBoundsJob::gather(items,replays,[&](IDirect3DVertexShader9* shader,IDirect3DVertexDeclaration9* decl){return replayBoundsPrepared(shader,decl);},&replayBoundsWorker.nearList());
         replayBoundsFallbacks.clear(); /* pins now live in the items only */
         replayBoundsWorker.start(replayBoundsCache,context.inverseView);
@@ -173,7 +173,7 @@
         const double waitMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
         NorthlightReplayBoundsJob::apply(replayBoundsWorker.items(),replays,!result.failed);
         pointBoundsValid=result.failed?0:result.totals.valid;pointBoundVertices=result.totals.boundVertices;pointBoundOperations=result.totals.boundOperations;
-        if(NorthlightDiagnostics::enabled()){replayNearSize=unsigned(replayBoundsWorker.nearList().index.size());replayNearStops+=result.totals.nearStops;}
+        if(NorthlightDiagnostics::enabled()){replayNearSize=unsigned(replayBoundsWorker.nearList().size());replayNearStops+=result.totals.nearStops;}
         if(replayBoundsDiagnostics){
             const double mainMs=replayBoundsKickMs+std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
             pointLogReplayBounds(result.totals,result.workerMs,mainMs,result.workerMs,waitMs,result.startLagMs,true);

@@ -10,6 +10,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <string>
 using namespace NorthlightGI;
 namespace M=NorthlightActorShadowMap;
@@ -142,31 +143,59 @@ int main(){
      {H::Hold h;float w[3]={0,0,0};h.begin();assert(h.decide(1,w,inside));w[0]=1.6f;h.begin();assert(!h.decide(1,w,band));}
      // invalidate(): everything expires at once.
      {H::Hold h;h.begin();assert(h.decide(1,root,inside));h.invalidate();h.begin();assert(!h.decide(1,root,band));}
-     // Overflow: more casters in one cell than the 4-slot chain holds are counted (diagnostics on), the surplus is not remembered.
+     // Overflow: more clones of a model in one cell than the 8-slot chain holds are counted (diagnostics on), the surplus is not remembered.
      {H::Hold h;h.begin(true);unsigned entered=0;for(unsigned i=0;i<12;++i){const float at[3]={1,1,0};std::uint64_t m=5;entered+=h.decide(m,at,inside);}
-      assert(entered==12&&h.overflows==8&&h.remembered()==4); // 12 clones within Reach of each other, one chain of 4 slots; the others enter without memory
-      h.begin(true);unsigned held=0;for(unsigned i=0;i<12;++i){const float at[3]={1,1,0};held+=h.decide(5,at,band);}assert(held==4&&h.bandHeld==4);
+      assert(entered==12&&h.overflows==4&&h.remembered()==8); // 12 clones within Reach of each other, one chain of 8 slots; the others enter without memory
+      h.begin(true);unsigned held=0;for(unsigned i=0;i<12;++i){const float at[3]={1,1,0};held+=h.decide(5,at,band);}assert(held==8&&h.bandHeld==8);
       H::Hold off;off.begin();for(unsigned i=0;i<12;++i){const float at[3]={1,1,0};off.decide(5,at,inside);}assert(off.overflows==0&&off.bandHeld==0);} // zero without diagnostics
-     // Near list: only rooted casters within Yards of the pivot, in index order; off without a pivot.
-     {namespace N=NorthlightReplayBoundsNear;N::List l;const float pivot[3]={100,50,10};const float nearRoot[3]={110,60,10},farRoot[3]={130,50,10};
-      l.begin(pivot,false);l.consider(0,true,nearRoot);assert(l.index.empty());
-      l.begin(pivot,true);l.consider(0,true,farRoot);l.consider(1,true,nearRoot);l.consider(2,false,nearRoot);l.consider(3,true,pivot);
-      assert(l.index.size()==2&&l.index[0]==1&&l.index[1]==3);
-      // The walk rotates like pass(): each phase keeps its own start across frames, honours the budget stop, and the list is rebuilt between frames.
-      for(unsigned i=4;i<10;++i)l.consider(i,true,pivot); // near list 1,3,4..9
-      std::vector<std::size_t> seen;unsigned budget=2;
-      assert(N::nearFirst(&l,0,[&]{return budget>0;},[&](std::size_t i){seen.push_back(i);--budget;return false;})&&seen.size()==2&&seen[0]==1&&seen[1]==3);
-      assert(l.cursor[0]==2&&l.cursor[1]==0&&l.cursor[2]==0);
-      seen.clear();budget=2;N::nearFirst(&l,0,[&]{return budget>0;},[&](std::size_t i){seen.push_back(i);--budget;return false;});assert(seen[0]==4&&seen[1]==5); // continues, not from the start
-      l.begin(pivot,true);l.consider(0,true,nearRoot);assert(l.cursor[0]==4); // begin() keeps the cursors
+     // A crowd: 200 casters of 12 models spread over a 24 x 24 yd map (each at its own position), all in the strip, entering and then all held in the band:
+     // all but a few are remembered (the diagnostics count the others); a table of 256 slots in chains of 4 lost a third of 300.
+     {H::Hold h;h.begin(true);const unsigned crowd=200;std::vector<float> at(crowd*3);
+      {std::uint32_t r=12345u;auto u=[&]{r=r*1664525u+1013904223u;return float(r>>8)/float(1u<<24);};for(unsigned i=0;i<crowd;++i){at[i*3]=u()*24.f-12.f;at[i*3+1]=u()*24.f-12.f;at[i*3+2]=0;}}
+      for(unsigned i=0;i<crowd;++i)assert(h.decide(i%12,&at[i*3],inside));
+      const unsigned long lost=h.overflows;assert(lost<=2&&h.remembered()==crowd-lost);
+      h.begin(true);unsigned held=0;for(unsigned i=0;i<crowd;++i)held+=h.decide(i%12,&at[i*3],band);assert(held==crowd-lost&&h.overflows==lost);}
+     // The free marker is seen == 0: a frame counter that wraps past 0 never makes a live slot look free (or the free ones live).
+     {H::Hold h;h.begin();assert(h.decide(1,root,inside));for(unsigned i=0;i<6;++i)h.invalidate();h.begin();assert(!h.decide(1,root,band));}
+     // Near list: the actor map's reach (light-space x/y of the last matrix, Stay plus leash plus a caster), four rings, nothing sorted.
+     {namespace N=NorthlightReplayBoundsNear;N::List l;const float centre[3]={100,50,10},self[3]={101,50,10};
+      float mat[16]={};mat[0]=mat[5]=1.f/12;mat[10]=.5f;mat[12]=-centre[0]/12;mat[13]=-centre[1]/12;mat[14]=.25f;mat[15]=1; /* clip x,y = (world - centre)/12 */
+      const float yardsLimit=N::Limit*12.f;assert(yardsLimit>14.5f&&yardsLimit<15.f); /* 10.32 + 1.5 + 3 */
+      const auto at=[&](float dx,float dy,float dz=0){static float v[3];v[0]=centre[0]+dx;v[1]=centre[1]+dy;v[2]=centre[2]+dz;return static_cast<const float*>(v);};
+      l.begin(mat,false,nullptr,false,nullptr);l.consider(0,centre);assert(!l.on&&l.size()==0);  // no actor map: no list
+      l.begin(mat,true,nullptr,false,nullptr);assert(l.on);
+      l.consider(0,nullptr);                                      // no position (a draw without root or anchor)
+      l.consider(1,at(14.f,0));l.consider(2,at(0,-14.f,300.f));   // inside the reach (any depth)
+      l.consider(3,at(15.5f,0));l.consider(4,at(0,-16.f));        // beyond Stay + leash + caster: cannot reach the map
+      l.consider(5,at(2.f,2.f));l.consider(6,at(7.f,-6.f));l.consider(7,at(10.f,3.f));
+      assert(l.ring[1].size()==1&&l.ring[1][0]==5&&l.ring[2].size()==1&&l.ring[2][0]==6&&l.ring[3].size()==3&&l.ring[0].empty()&&l.size()==5);
+      {float nan[3]={NAN,0,0};l.consider(8,nan);assert(l.size()==5);}
+      // Two sources: a position inside either map's reach is listed, in the nearer ring.
+      {N::List two;float mat2[16];std::memcpy(mat2,mat,sizeof mat2);mat2[12]=-(centre[0]+14.f)/12;
+       two.begin(mat,true,mat2,true,nullptr);two.consider(0,at(14.f,0));assert(two.ring[1].size()==1);two.consider(1,at(-14.f,0));assert(two.ring[3].size()==1);two.consider(2,at(30.f,0));assert(two.size()==2);}
+      // The self: everything within a caster size of the selection's self position is ring 0, whatever its distance from the map centre.
+      {N::List s;s.begin(mat,true,nullptr,false,self);s.consider(0,at(1.f,0));s.consider(1,at(2.5f,0));s.consider(2,at(5.f,0));s.consider(3,at(13.f,0));
+       const float farSelf[3]={centre[0]+13.f,centre[1],centre[2]};N::List t;t.begin(mat,true,nullptr,false,farSelf);t.consider(0,at(13.5f,0));t.consider(1,at(0,0));
+       assert(s.ring[0].size()==2&&s.ring[2].size()==1&&s.ring[3].size()==1&&t.ring[0].size()==1&&t.ring[1].size()==1);}
+      // The walk goes ring by ring (innermost first), rotates like pass() per phase and ring, honours the budget stop; the list is rebuilt between frames.
+      l.begin(mat,true,nullptr,false,self);l.consider(0,at(1.f,0));l.consider(1,at(1.5f,1.f));l.consider(2,at(12.f,0));l.consider(3,at(4.2f,0));l.consider(4,at(8.f,0));l.consider(5,at(-3.f,0));l.consider(6,at(9.f,2.f));
+      // ring 0: 0,1 ; ring 1: 3,5 ; ring 2: 4,6 ; ring 3: 2
+      assert(l.ring[0].size()==2&&l.ring[1].size()==2&&l.ring[2].size()==2&&l.ring[3].size()==1);
+      std::vector<std::size_t> seen;unsigned budget=5;
+      assert(N::nearFirst(&l,0,[&]{return budget>0;},[&](std::size_t i){seen.push_back(i);--budget;return false;})&&seen.size()==5);
+      assert(seen[0]==0&&seen[1]==1&&seen[2]==3&&seen[3]==5&&seen[4]==4);                               // the self ring, then the next ring out
+      assert(l.cursor[0][0]==1&&l.cursor[0][1]==1&&l.cursor[0][2]==1&&l.cursor[0][3]==0&&l.cursor[1][0]==0&&l.cursor[2][0]==0);  // each phase and ring its own start
+      seen.clear();budget=3;N::nearFirst(&l,0,[&]{return budget>0;},[&](std::size_t i){seen.push_back(i);--budget;return false;});
+      assert(seen[0]==1&&seen[1]==0&&seen[2]==5);                                                     // ring starts rotated: ring 0 from its second, ring 1 from its second
+            {const std::size_t c=l.cursor[0][1];l.begin(mat,true,nullptr,false,self);assert(l.cursor[0][1]==c&&l.size()==0);}
       // the first packet spends the whole phase (Budget): the next frame starts past it
-      {N::List one;one.begin(pivot,true);for(unsigned i=0;i<5;++i)one.consider(i,true,pivot);bool spent=false;
-       assert(N::nearFirst(&one,1,[&]{return !spent;},[&](std::size_t){spent=true;return true;})&&one.cursor[1]==1);}
+      {N::List one;one.begin(mat,true,nullptr,false,nullptr);for(unsigned i=0;i<5;++i)one.consider(i,at(4.2f,0));bool spent=false;
+       assert(N::nearFirst(&one,1,[&]{return !spent;},[&](std::size_t){spent=true;return true;})&&one.cursor[1][1]==1);}
       // walking the whole list without a stop returns false
-      {unsigned n=0;N::List one;one.begin(pivot,true);one.consider(0,true,pivot);one.consider(1,true,pivot);assert(!N::nearFirst(&one,2,[]{return true;},[&](std::size_t){++n;return false;})&&n==2);}
+      {unsigned n=0;N::List one;one.begin(mat,true,nullptr,false,nullptr);one.consider(0,at(1.f,0));one.consider(1,at(9.f,0));assert(!N::nearFirst(&one,2,[]{return true;},[&](std::size_t){++n;return false;})&&n==2);}
       N::nearFirst(nullptr,0,[]{return true;},[](std::size_t){assert(false);return false;});}
      // Cost: per-replay ns of the old inset test against the hysteresis decision (about 500 replays, 1 in 12 near the player (a crowded scene), half of all skinned), and of the near list inside the pinning loop.
-     {const unsigned n=512;std::vector<float> lo(n*3),hi(n*3);std::vector<float> roots(n*3);std::vector<unsigned char> skinned(n);
+     for(const unsigned n:{512u,1500u}){std::vector<float> lo(n*3),hi(n*3);std::vector<float> roots(n*3);std::vector<unsigned char> skinned(n);
       for(unsigned i=0;i<n;++i){float x=float((i*37)%60)-30.f,y=float((i*13)%24)-12.f;
           if(i%12==0){const float u=float((i*2654435761u>>8)%1000)/1000.f,a=float((i*40503u)%628)/100.f,r=12.f*std::sqrt(u)*.86f;x=r*std::cos(a);y=r*std::sin(a);} /* uniform over the disc inside Stay */
           lo[i*3]=x;lo[i*3+1]=y;lo[i*3+2]=0;hi[i*3]=x+.6f;hi[i*3+1]=y+.6f;hi[i*3+2]=1;roots[i*3]=x;roots[i*3+1]=y;roots[i*3+2]=0;skinned[i]=i%2==0;}
@@ -178,10 +207,10 @@ int main(){
       const double extentOnly=time([&]{unsigned c=0;for(unsigned i=0;i<n;++i)c+=M::insetExtent(true,&lo[i*3],&hi[i*3],id,M::Stay)<=M::Inset;sink=sink+c;});
       const double after=time([&]{h.begin();unsigned c=0;for(unsigned i=0;i<n;++i){bool in=false;const float e=M::insetExtent(true,&lo[i*3],&hi[i*3],id,M::Stay);
           if(e<=M::Stay)in=skinned[i]?h.decide(i,&roots[i*3],e):e<=M::Inset;c+=in;}sink=sink+c;});
-      NorthlightReplayBoundsNear::List l;const float pivot[3]={0,0,0};
+      NorthlightReplayBoundsNear::List l;const float selfAt[3]={0,0,0};
       const double none=time([&]{unsigned c=0;for(unsigned i=0;i<n;++i)c+=roots[i*3]>1e9f;sink=sink+c;});
-      const double listed=time([&]{l.begin(pivot,true);for(unsigned i=0;i<n;++i)l.consider(i,skinned[i],&roots[i*3]);sink=sink+unsigned(l.index.size());});
-      std::printf("cost per replay: inset test before %.2f ns, hysteresis decision after %.2f ns (the extent alone %.2f ns); near list %.2f ns (empty loop %.2f ns)\n",before,after,extentOnly,listed,none);
+      const double listed=time([&]{l.begin(id,true,nullptr,false,selfAt);for(unsigned i=0;i<n;++i)l.consider(i,skinned[i]?&roots[i*3]:nullptr);sink=sink+unsigned(l.size());});
+      std::printf("cost per replay (%u replays): inset test before %.2f ns, hysteresis decision after %.2f ns (the extent alone %.2f ns); near list %.2f ns (empty loop %.2f ns)\n",n,before,after,extentOnly,listed,none);
       (void)sink;}}
     std::puts("PASS actor shadow map");
     return 0;

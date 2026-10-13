@@ -100,18 +100,27 @@ checks['water: maps on s8/s9, ActorMatrix c29..c36, ActorShadowInfo c37, filled 
 hold=fp.src('actor_side_hold.h').read_text();job=fp.src('replay_bounds_job.h').read_text();near=fp.src('replay_bounds_near.h').read_text();point=fp.src('world_point_rendering.inl').read_text()
 checks['hold: per-source table, begun with the diagnostics flag (or invalidated when the pass does not run); skinned casters take the root or the valid bounds centre as identity, others today\'s rule']=(
     'NorthlightActorSideHold::Hold actorHold[2];' in w and 'if(nearSkip)actorHold[source].begin(sideDiag);else if(cascade==0)actorHold[source].invalidate();' in loop
-    and 'if(!p->shadowSkinned)inActor=extent<=NorthlightActorShadowMap::Inset;' in loop and 'if(!p->captureRootValid){for(unsigned k=0;k<3;++k)centre[k]=.5f*(p->pointBounds.low[k]+p->pointBounds.high[k]);at=centre;model=~model;}' in loop
+    and 'if(!p->shadowSkinned)inActor=extent<=NorthlightActorShadowMap::Inset;' in loop and 'const float* at=p->position();' in loop and 'if(!p->captureRootValid){model=~model;' in loop and 'if(!at){for(unsigned k=0;k<3;++k)centre[k]=.5f*(p->pointBounds.low[k]+p->pointBounds.high[k]);at=centre;}}' in loop
     and 'inActor=actorHold[source].decide(model,at,extent);' in loop and loop.count('actorHold[source].decide(')==1)
 checks['hold diagnostics: overflow and band counters only when the pass was begun with diagnostics']=(
-    'void begin(bool diagnostics=false){++frame_;diagnostics_=diagnostics;bandHeld=0;}' in hold and 'if(diagnostics_)++overflows;' in hold and 'if(diagnostics_&&!inside)++bandHeld;' in hold)
+    'void begin(bool diagnostics=false){advance(1);diagnostics_=diagnostics;bandHeld=0;}' in hold and 'if(diagnostics_)++overflows;' in hold and 'if(diagnostics_&&!inside)++bandHeld;' in hold)
 checks['actor map log line: hold band, overflows, near list size and near walk stops']=(
     ' holdBand=%u holdOverflows=%lu nearListSize=%u nearWalkStops=%lu sideFlipsRootedSinceLog=%u sideFlipsUnrootedSinceLog=%u invalidBoundsNearSinceLog=%u unrootedNoBounds=%u unrootedNoBoundsSinceLog=%u selfUnrooted=%u selfNoBoundsFramesSinceLog=%u"' in loop
     and 'actorHold[source].bandHeld,actorHold[source].overflows,replayNearSize,replayNearStops,' in loop and 'actorSide[source].sideFlipsRooted,actorSide[source].sideFlipsUnrooted,' in loop
-    and 'if(NorthlightDiagnostics::enabled()){replayNearSize=unsigned(replayBoundsWorker.nearList().index.size());replayNearStops+=result.totals.nearStops;}' in point)
+    and 'if(NorthlightDiagnostics::enabled()){replayNearSize=unsigned(replayBoundsWorker.nearList().size());replayNearStops+=result.totals.nearStops;}' in point)
 checks['bounds near-first: the list is filled by gather with the items, walks rotate per phase and take at most half of a phase budget']=(
-    'priority->consider(i,p.captureRootValid,p.captureRoot);' in job and 'schedule(*cache_,items_,inverse_,&cancel_,priority_.on?&priority_:nullptr)' in job
-    and 'budget.operations+budget.maxOperations/2' in job and 'budget.vertices+budget.maxVertices/2' in job and 'cache.phaseNanoseconds(phase)<until' in job and job.count('nearWalk(')==3 and 'NorthlightReplaySchedule::pass(index.size(),list->cursor[phase]%index.size()' in near
+    'priority->consider(i,p.position());' in job and 'schedule(*cache_,items_,inverse_,&cancel_,priority_.on?&priority_:nullptr)' in job
+    and 'budget.operations+budget.maxOperations/2' in job and 'budget.vertices+budget.maxVertices/2' in job and 'cache.phaseNanoseconds(phase)<until' in job and job.count('nearWalk(')==3 and 'NorthlightReplaySchedule::pass(index.size(),list->cursor[phase][r]%index.size()' in near
     and not re.search(r'\bnear[(=]',job+near+hold)) # near is a Windows macro
+rigidm=fp.src('world_rigid_memory.inl').read_text()
+checks['position without bounds: the palette root, or the origin of an injected rigid prop (not a palette root, never mixed into captureRoot)']=(
+    'float anchor[3]={};bool anchorValid=false;' in w and 'const float* position()const{return captureRootValid?captureRoot:anchorValid?anchor:nullptr;}' in w
+    and 'p->captureRootValid=rooted;if(rooted)std::memcpy(p->captureRoot,root,sizeof p->captureRoot);p->anchorValid=false;' in w
+    and 'p->captureRootValid=false;std::memcpy(p->anchor,e.world+9,sizeof p->anchor);p->anchorValid=true;' in rigidm)
+checks['near list: built from the actor maps as last drawn and the selection\'s self; rotating pass leaves listed packets to the walks once their share is spent, a packet over the share is delisted']=(
+    'nearList().begin(actorMatrices[0],actorValid[0],actorMatrices[1],actorValid[1],actorShadowHistory.selfHold()>0?actorShadowHistory.selfAt():nullptr)' in point
+    and 'item.listed=priority&&priority->consider(i,p.position());' in job and 'nearSpent[phase]&&items[index].listed?false:visit(index,phase)' in job
+    and 'if(over)items[index].listed=false;' in job and job.count('rotate(index,')==3 and 'inline constexpr float Limit=NorthlightActorShadowMap::Stay+(NorthlightActorShadowMap::Leash+CasterYards)/NorthlightActorShadowMap::Radius;' in near)
 for name,ok in checks.items():print(('PASS ' if ok else 'FAIL ')+name)
 assert all(checks.values())
 with tempfile.TemporaryDirectory(prefix='northlight-actormap-') as tmp:

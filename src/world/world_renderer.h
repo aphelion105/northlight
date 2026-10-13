@@ -680,6 +680,9 @@ private:
         bool bulkSingle=false; /* 0.3.211: uploadReplay's layout verdict (single-stream bulk placement) for the absolute pass */
         bool selfShadow=false; /* diagnostics: a draw of the selection's self body (reset at capture) */bool boneKnown=false;float bone=NAN; /* 0.3.176 (S2): this frame's selection tested its rigid bone (reset at capture) */
         float captureRoot[3]={};bool captureRootValid=false; /* 0.3.211 (task 31): the palette root computed once at capture (capture admission); passive for the selection */
+        float anchor[3]={};bool anchorValid=false; /* an injected rigid prop (rigidMemoryInject): the origin of its remembered bone, in world space; it has no palette root */
+        // The per-instance position known without bounds: the palette root, or the rigid prop's anchor. Null: neither.
+        const float* position()const{return captureRootValid?captureRoot:anchorValid?anchor:nullptr;}
         // 0.3.177 (r83): filled at capture for selected skinned draws, read by prepareRecord (the stable
         // selection's prepare, possibly on the prepare worker): the program (null: none) and a copy of
         // the declaration (the declaration cache may reuse its slot within the frame). 0.3.179 (T1): the
@@ -2824,7 +2827,7 @@ public:
         phase.next(CaptureSnapshot);fate.reason=NorthlightShadowFate::Snapshot;
         if(!snapshotFrameBegun)snapshotBeginFrame(sample);
         NorthlightDrawSnapshot::SnapshotSpan<decltype(snapshotMeter)> snapshotSpan(snapshotMeter); /* 0.3.181 (S3): to the constants phase or a return */
-        std::unique_ptr<Replay,ReplayRecycle> p(acquireReplay().release(),ReplayRecycle{this});p->shadowSkinned=priority;p->shadowSelected=!smallShadow;p->shadowSmall=smallShadow;p->boneKnown=false;p->selfShadow=false;p->captureRootValid=rooted;if(rooted)std::memcpy(p->captureRoot,root,sizeof p->captureRoot);p->fateSlot=-1;p->fateClass=smallShadow?NorthlightShadowFate::Small:NorthlightShadowFate::NotRanked;p->fateDistance=0;p->projectionKind=kind;p->shader=metadata.replacement;p->shader->AddRef();p->originalShader=current;p->originalShader->AddRef();p->pointBounds={};
+        std::unique_ptr<Replay,ReplayRecycle> p(acquireReplay().release(),ReplayRecycle{this});p->shadowSkinned=priority;p->shadowSelected=!smallShadow;p->shadowSmall=smallShadow;p->boneKnown=false;p->selfShadow=false;p->captureRootValid=rooted;if(rooted)std::memcpy(p->captureRoot,root,sizeof p->captureRoot);p->anchorValid=false;p->fateSlot=-1;p->fateClass=smallShadow?NorthlightShadowFate::Small:NorthlightShadowFate::NotRanked;p->fateDistance=0;p->projectionKind=kind;p->shader=metadata.replacement;p->shader->AddRef();p->originalShader=current;p->originalShader->AddRef();p->pointBounds={};
         if(replaySnapshots.lookup()==NorthlightDrawSnapshot::Frame::Lookup::Prefetch&&!freeReplays.empty())prefetchReplay(*freeReplays.back()); /* 0.3.181 (S2) */
         if(FAILED(d->GetVertexDeclaration(&p->decl))||!p->decl)return;
         NorthlightDrawSnapshot::Draw draw{type,base,minimum,vertexTotal,start,count,indexed};NorthlightDrawSnapshot::Diagnostics why;
@@ -3470,12 +3473,13 @@ public:
                 if(nearSkip){const float extent=NorthlightActorShadowMap::insetExtent(p->pointBounds.valid,p->pointBounds.low,p->pointBounds.high,actorFrameMatrix[source],NorthlightActorShadowMap::Stay);
                     if(extent<=NorthlightActorShadowMap::Stay){
                         if(!p->shadowSkinned)inActor=extent<=NorthlightActorShadowMap::Inset;
-                        else{std::uint64_t model=NorthlightActorSide::key(p->shared.get(),p->decl,p->count,false,nullptr);float centre[3];const float* at=p->captureRoot;
-                            if(!p->captureRootValid){for(unsigned k=0;k<3;++k)centre[k]=.5f*(p->pointBounds.low[k]+p->pointBounds.high[k]);at=centre;model=~model;} /* finite extent: valid bounds; ~ keeps the two kinds apart */
+                        else{std::uint64_t model=NorthlightActorSide::key(p->shared.get(),p->decl,p->count,false,nullptr);float centre[3];const float* at=p->position();
+                            if(!p->captureRootValid){model=~model; /* ~ keeps the two kinds apart */
+                                if(!at){for(unsigned k=0;k<3;++k)centre[k]=.5f*(p->pointBounds.low[k]+p->pointBounds.high[k]);at=centre;}} /* no position at all: the centre of the valid bounds (finite extent) */
                             inActor=actorHold[source].decide(model,at,extent);}}}
                 if(inActor){actorReplays.push_back(uint32_t(index));++nearSkipped;
-                    if(sideDiag&&p->shadowSkinned)(p->shared?actorSide[source].note(NorthlightActorSide::key(p->shared.get(),p->decl,p->count,p->captureRootValid,p->captureRoot),true,p->selfShadow,p->captureRootValid):actorSide[source].unkeyed());continue;}
-                if(sideDiag&&p->shadowSkinned){auto& side=actorSide[source];if(p->shared)side.note(NorthlightActorSide::key(p->shared.get(),p->decl,p->count,p->captureRootValid,p->captureRoot),false,p->selfShadow,p->captureRootValid,!p->pointBounds.valid);else side.unkeyed();
+                    if(sideDiag&&p->shadowSkinned)(p->shared?actorSide[source].note(NorthlightActorSide::key(p->shared.get(),p->decl,p->count,p->position()!=nullptr,p->position()),true,p->selfShadow,p->captureRootValid):actorSide[source].unkeyed());continue;}
+                if(sideDiag&&p->shadowSkinned){auto& side=actorSide[source];if(p->shared)side.note(NorthlightActorSide::key(p->shared.get(),p->decl,p->count,p->position()!=nullptr,p->position()),false,p->selfShadow,p->captureRootValid,!p->pointBounds.valid);else side.unkeyed();
                     /* no valid bounds, yet the palette root lies inside the inset: it belongs to the actor map and fell to the near cascade for lack of bounds;
                        without a shared snapshot (Unsupported) it can never have bounds: unsupportedNear */
                     if(!p->pointBounds.valid&&p->captureRootValid&&NorthlightActorShadowMap::insideInset(true,p->captureRoot,p->captureRoot,actorFrameMatrix[source])){if(p->shared)side.invalidNear();else side.unsupportedNear();}}

@@ -143,7 +143,8 @@ static const bool diagnosticsOff=(NorthlightDiagnostics::configure(false),true);
 struct Packet {
     IDirect3DVertexShader9* originalShader=nullptr;IDirect3DVertexDeclaration9* decl=nullptr;
     NorthlightReplayBounds::Bounds pointBounds;WorkInfo boundsWork;std::shared_ptr<const Prepared> boundsPrepared;
-    std::shared_ptr<const Mesh> shared;Mesh snapshot;const float* constants=nullptr;unsigned otherState=0;bool captureRootValid=false;float captureRoot[3]={};
+    std::shared_ptr<const Mesh> shared;Mesh snapshot;const float* constants=nullptr;unsigned otherState=0;bool captureRootValid=false;float captureRoot[3]={};bool anchorValid=false;float anchor[3]={};
+    const float* position()const{return captureRootValid?captureRoot:anchorValid?anchor:nullptr;}
     const Mesh& mesh()const{return shared?*shared:snapshot;}
 };
 struct DeclarationCache {bool get(IDirect3DVertexDeclaration9* d,const D3DVERTEXELEMENT9*& e,UINT& n){if(!d)return false;auto* f=static_cast<FakeDecl*>(d);e=f->elements.data();n=UINT(f->elements.size());return true;}};
@@ -153,7 +154,8 @@ struct World {
     std::vector<std::unique_ptr<Packet>> replays;
     NorthlightReplayBounds::Cache replayBoundsCache;
     NorthlightReplayMetadata::Cache<Prepared,IDirect3DVertexShader9,IDirect3DVertexDeclaration9> replayBoundsMetadata;
-    DeclarationCache declarationCache;Context context;unsigned frames=0,logs=0;float actorShadowOrigin[3]={};bool actorShadowOriginValid=false;unsigned replayNearSize=0;unsigned long replayNearStops=0; /* the renderer's shadow pivot: no pivot, no near-first order */
+    DeclarationCache declarationCache;Context context;unsigned frames=0,logs=0;float actorMatrices[2][16]={};bool actorValid[2]={};unsigned replayNearSize=0;unsigned long replayNearStops=0; /* the actor maps as last drawn: none, no near-first order */
+    struct History {unsigned hold=0;float at[3]={};unsigned selfHold()const{return hold;}const float* selfAt()const{return at;}} actorShadowHistory;
     unsigned pointBoundsValid=0;size_t pointBoundVertices=0,pointBoundOperations=0;Totals visits;
     explicit World(std::unordered_map<IDirect3DVertexShader9*,std::shared_ptr<const Program>>& programs):actorPrograms(programs){}
     void pointLogReplayBounds(const Totals& t,double,double,double,double,double,bool){visits=t;++logs;}
@@ -235,40 +237,58 @@ int main(int argc,char** argv){
     assert(argc>=3);const std::string mode=argv[2];auto skin=load(argv[1]);assert(SkinEnvelope::supports(skin));
 #ifdef NORTHLIGHT_TEST_CLOCK
     if(mode=="priority"){
-        // The near-first order must not starve anything: a fixed draw list whose near packets (rooted next to the shadow pivot) are the largest
-        // meshes, run frame after frame through the real Worker (schedule with a priority list). The clock step is large, so the time budgets
-        // (not the operation budgets) end every phase after a few packets. Per frame: how many near and far packets have valid bounds.
-        // Asserted: every packet gets bounds; after warm-up every near packet is covered in every frame; the far coverage per frame stays
-        // at least about half of what the plain rotation gives (the near walk takes at most half of a phase's time, operations and vertices).
-        const unsigned nearCount=12,farCount=48,frames=argc>3?unsigned(std::atoi(argv[3])):80,warmup=24;
-        Scene scene(skin,240,3,2);
+        // A dense crowd through the real Worker (schedule with a priority list): 1500 packets, 300 of them where a caster can be in the actor map
+        // (the self's 12 parts, 40 in the pivot's neighbourhood, 150 in the middle, 98 in the edge band), 1200 far away, all shuffled in one draw list
+        // that is the same every frame, the near ones the largest meshes. The clock step is large, so the time budgets (not the operation budgets)
+        // end every phase after a few packets: the near walk (half of a phase) covers less than the 300 (the outer ring most of the time not at all). Per frame, how many packets of each ring and
+        // of the far group have valid bounds. Asserted: after warm-up the self's parts and the pivot's neighbourhood are covered in EVERY frame,
+        // every packet gets bounds (also the outer ring, which the rotating pass keeps), the middle ring is covered most of the time, the far coverage per frame stays at
+        // least about half of what the plain rotation gives, and a position beyond the actor map's reach is never listed.
+        const unsigned ringSize[4]={12,40,150,98},nearCount=300,farCount=1200,total=nearCount+farCount,frames=argc>3?unsigned(std::atoi(argv[3])):80,warmup=24;
+        Scene scene(skin,600,3,2);
         std::vector<size_t> cheap; /* the plain skinned meshes (shaders[0]): all of them reach bounds */
         for(size_t m=0;m<scene.pool.size();++m)if(scene.kinds[m]==0)cheap.push_back(m);
-        std::sort(cheap.begin(),cheap.end(),[&](size_t a,size_t b){return scene.pool[a]->vertexCount>scene.pool[b]->vertexCount;});assert(cheap.size()>=nearCount+farCount);
-        struct Run {std::vector<unsigned> nearValid,farValid;unsigned lastNear=0,lastFar=0;size_t never=0,nearListSize=0;double farMean=0;unsigned minNear=~0u;};
+        std::sort(cheap.begin(),cheap.end(),[&](size_t a,size_t b){return scene.pool[a]->vertexCount>scene.pool[b]->vertexCount;});assert(cheap.size()>=nearCount+20);
+        // logical packet -> slot in the draw list (shuffled), group: 0..3 the rings, 4 far
+        std::vector<unsigned> slotOf(total),group(total);{unsigned g=0,k=0;for(unsigned i=0;i<total;++i){group[i]=i<nearCount?g:4;if(i<nearCount&&++k==ringSize[g]){++g;k=0;}}}
+        {std::vector<unsigned> order(total);for(unsigned i=0;i<total;++i)order[i]=i;std::mt19937 shuffle(7);std::shuffle(order.begin(),order.end(),shuffle);for(unsigned i=0;i<total;++i)slotOf[i]=order[i];}
+        const float centre[3]={100,50,10};
+        float matrix[16]={};matrix[0]=matrix[5]=1.f/12;matrix[10]=.5f;matrix[12]=-centre[0]/12;matrix[13]=-centre[1]/12;matrix[14]=.25f;matrix[15]=1; /* clip x,y = (world - centre)/12 */
+        const auto position=[&](unsigned i,float* at){ /* ring 0: within 1 yd of the self, ring 1: 3.3..4.3 yd, ring 2: 5..9.4 yd, ring 3: 10..13 yd, far: 40+ yd */
+            const unsigned g=group[i];unsigned first=0;for(unsigned r=0;r<g&&r<4;++r)first+=ringSize[r];const unsigned k=i-(g<4?first:nearCount);
+            const float angle=float(k)*2.399963f;const float radius=g==0?1.f:g==1?3.3f+1.f*float(k)/40.f:g==2?5.f+4.4f*float(k)/150.f:g==3?10.f+3.f*float(k)/98.f:40.f+float(k)*.05f;
+            const float c=std::cos(angle),n=std::sin(angle),square=std::max(std::fabs(c),std::fabs(n)); /* the rings are squares (Chebyshev distance) */
+            at[0]=centre[0]+radius*c/square;at[1]=centre[1]+radius*n/square;at[2]=centre[2];};
+        struct Run {std::vector<unsigned> valid[5];unsigned maxGap[5]={};size_t never=0,listSize=0,firstSelf=0;double farMean=0;unsigned minSelf=~0u,minInner=~0u;unsigned ringSizes[4]={};};
         const auto run=[&](bool ordered){
             World w(scene.programs);warm(w,scene);TestClock::ticks=1000000;
-            TestClock::step=6000; /* 6 us per clock read */
-            const size_t total=nearCount+farCount;Run r;std::vector<unsigned> firstValid(total,0);
-            w.actorShadowOriginValid=ordered;const float pivot[3]={100,50,10};std::memcpy(w.actorShadowOrigin,pivot,sizeof pivot);
-            for(unsigned f=1;f<=frames;++f){
+                        Run r;std::vector<unsigned> last(total,0),gap(total,0);
+            if(ordered){w.actorValid[0]=true;std::memcpy(w.actorMatrices[0],matrix,sizeof matrix);w.actorShadowHistory.hold=1;std::memcpy(w.actorShadowHistory.at,centre,sizeof centre);}
+            for(unsigned f=1;f<=frames+8;++f){
+                const bool settle=f<=8;TestClock::step=settle?1:(argc>4?std::atoi(argv[4]):1000); /* 8 frames with room for everything build the meshes' envelopes; the crowd is then in its steady state */
                 scene.frame(0,total,false,{&w}); /* the same draw list every frame */
-                for(size_t i=0;i<total;++i){auto& p=*w.replays[i];p.captureRootValid=true;p.captureRoot[0]=pivot[0]+(i<nearCount?float(i):100.f+float(i));p.captureRoot[1]=pivot[1];p.captureRoot[2]=pivot[2];
-                    p.shared=scene.pool[cheap[i]];p.originalShader=&scene.shaders[0];} /* the largest meshes are the near packets */
-                w.replayBoundsKick();w.replayBoundsJoin();
-                r.nearListSize=w.replayBoundsWorker.nearList().index.size();unsigned n=0,fa=0;
-                for(size_t i=0;i<total;++i)if(w.replays[i]->pointBounds.valid){(i<nearCount?n:fa)+=1;if(!firstValid[i])firstValid[i]=f;}
-                r.nearValid.push_back(n);r.farValid.push_back(fa);
+                for(unsigned i=0;i<total;++i){auto& p=*w.replays[slotOf[i]];position(i,p.captureRoot);p.captureRootValid=true;
+                    p.shared=scene.pool[i<nearCount?cheap[i]:cheap[nearCount+i%(cheap.size()-nearCount)]];p.originalShader=&scene.shaders[0];} /* the largest meshes are the near packets */
+                w.replayBoundsKick();w.replayBoundsJoin();if(settle)continue;
+                const auto& list=w.replayBoundsWorker.nearList();r.listSize=list.size();for(unsigned g=0;g<4;++g)r.ringSizes[g]=unsigned(list.ring[g].size());
+                unsigned count[5]={};
+                for(unsigned i=0;i<total;++i){const bool valid=w.replays[slotOf[i]]->pointBounds.valid;count[group[i]]+=valid;
+                    if(valid)last[i]=f-8;if(f-8>warmup)gap[i]=std::max(gap[i],f-8-last[i]);}
+                for(unsigned g=0;g<5;++g)r.valid[g].push_back(count[g]);
             }
-            for(size_t i=0;i<total;++i){(i<nearCount?r.lastNear:r.lastFar)=std::max(i<nearCount?r.lastNear:r.lastFar,firstValid[i]);r.never+=firstValid[i]==0;}
-            for(unsigned f=warmup;f<frames;++f){r.minNear=std::min(r.minNear,r.nearValid[f]);r.farMean+=r.farValid[f];}
+            for(unsigned i=0;i<total;++i){r.never+=last[i]==0;r.maxGap[group[i]]=std::max(r.maxGap[group[i]],gap[i]);}
+            for(unsigned f=warmup;f<frames;++f){r.minSelf=std::min(r.minSelf,r.valid[0][f]);r.minInner=std::min(r.minInner,r.valid[1][f]);r.farMean+=r.valid[4][f];}
             r.farMean/=double(frames-warmup);return r;
         };
         const Run on=run(true),off=run(false);
-        std::printf("{\"mode\":\"priority\",\"nearListSize\":%zu,\"on\":{\"lastNear\":%u,\"lastFar\":%u,\"minNearAfterWarmup\":%u,\"farMean\":%.2f},\"off\":{\"lastNear\":%u,\"lastFar\":%u,\"minNearAfterWarmup\":%u,\"farMean\":%.2f},\"neverValid\":%zu}\n",
-            on.nearListSize,on.lastNear,on.lastFar,on.minNear,on.farMean,off.lastNear,off.lastFar,off.minNear,off.farMean,on.never);
-        assert(on.nearListSize==nearCount&&on.never==0&&off.never==0&&on.lastFar<=frames);
-        assert(on.minNear==nearCount);          /* near casters covered in every frame after warm-up */
+        double mean[5]={};for(unsigned g=0;g<5;++g){for(unsigned f=warmup;f<frames;++f)mean[g]+=on.valid[g][f];mean[g]/=double(frames-warmup);}
+        std::printf("{\"mode\":\"priority\",\"nearListSize\":%zu,\"rings\":[%u,%u,%u,%u],\"on\":{\"minSelf\":%u,\"minInner\":%u,\"meanPerRing\":[%.1f,%.1f,%.1f,%.1f],\"maxGapPerRing\":[%u,%u,%u,%u],\"farMean\":%.1f,\"farMaxGap\":%u},\"off\":{\"minSelf\":%u,\"farMean\":%.1f,\"maxGapPerRing\":[%u,%u,%u,%u,%u]},\"neverValid\":%zu}\n",
+            on.listSize,on.ringSizes[0],on.ringSizes[1],on.ringSizes[2],on.ringSizes[3],on.minSelf,on.minInner,mean[0],mean[1],mean[2],mean[3],on.maxGap[0],on.maxGap[1],on.maxGap[2],on.maxGap[3],on.farMean,on.maxGap[4],off.minSelf,off.farMean,off.maxGap[0],off.maxGap[1],off.maxGap[2],off.maxGap[3],off.maxGap[4],on.never);
+        assert(on.listSize==nearCount&&on.ringSizes[0]==ringSize[0]&&on.ringSizes[1]==ringSize[1]&&on.ringSizes[2]==ringSize[2]&&on.ringSizes[3]==ringSize[3]); /* the far 1200 are not listed */
+        assert(on.never==0&&off.never==0);
+        assert(on.minSelf==ringSize[0]&&on.minInner==ringSize[1]); /* the self and the pivot's neighbourhood: bounds in every frame after warm-up */
+        assert(mean[0]+mean[1]+mean[2]+mean[3]<double(nearCount)); /* the budget share did not cover the list: the rings really compete */
+        assert(mean[2]>=.5*ringSize[2]&&on.maxGap[2]<=off.maxGap[2]); /* the middle ring is covered most of the time and no packet waits longer than in the plain rotation */
         assert(on.farMean>=.5*off.farMean);     /* the rotating pass keeps at least about half of its coverage */
         return 0;
     }
