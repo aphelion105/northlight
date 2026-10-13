@@ -143,7 +143,8 @@ static const bool diagnosticsOff=(NorthlightDiagnostics::configure(false),true);
 struct Packet {
     IDirect3DVertexShader9* originalShader=nullptr;IDirect3DVertexDeclaration9* decl=nullptr;
     NorthlightReplayBounds::Bounds pointBounds;WorkInfo boundsWork;std::shared_ptr<const Prepared> boundsPrepared;
-    std::shared_ptr<const Mesh> shared;Mesh snapshot;const float* constants=nullptr;unsigned otherState=0;
+    std::shared_ptr<const Mesh> shared;Mesh snapshot;const float* constants=nullptr;unsigned otherState=0;bool captureRootValid=false;float captureRoot[3]={};bool anchorValid=false;float anchor[3]={};bool selfShadow=false;
+    const float* position()const{return captureRootValid?captureRoot:anchorValid?anchor:nullptr;}
     const Mesh& mesh()const{return shared?*shared:snapshot;}
 };
 struct DeclarationCache {bool get(IDirect3DVertexDeclaration9* d,const D3DVERTEXELEMENT9*& e,UINT& n){if(!d)return false;auto* f=static_cast<FakeDecl*>(d);e=f->elements.data();n=UINT(f->elements.size());return true;}};
@@ -153,7 +154,8 @@ struct World {
     std::vector<std::unique_ptr<Packet>> replays;
     NorthlightReplayBounds::Cache replayBoundsCache;
     NorthlightReplayMetadata::Cache<Prepared,IDirect3DVertexShader9,IDirect3DVertexDeclaration9> replayBoundsMetadata;
-    DeclarationCache declarationCache;Context context;unsigned frames=0,logs=0;
+    DeclarationCache declarationCache;Context context;unsigned frames=0,logs=0;float actorMatrices[2][16]={};bool actorValid[2]={};unsigned replayNearSize=0;unsigned long replayNearStops=0; /* the actor maps as last drawn: none, no near-first order */
+    struct History {unsigned hold=0;float at[3]={};unsigned selfHold()const{return hold;}const float* selfAt()const{return at;}} actorShadowHistory;
     unsigned pointBoundsValid=0;size_t pointBoundVertices=0,pointBoundOperations=0;Totals visits;
     explicit World(std::unordered_map<IDirect3DVertexShader9*,std::shared_ptr<const Program>>& programs):actorPrograms(programs){}
     void pointLogReplayBounds(const Totals& t,double,double,double,double,double,bool){visits=t;++logs;}
@@ -234,6 +236,87 @@ static void spin(double us){const auto end=std::chrono::steady_clock::now()+std:
 int main(int argc,char** argv){
     assert(argc>=3);const std::string mode=argv[2];auto skin=load(argv[1]);assert(SkinEnvelope::supports(skin));
 #ifdef NORTHLIGHT_TEST_CLOCK
+    if(mode=="priority"){
+        // A dense crowd through the real Worker (schedule with a priority list): 1500 packets, 360 of them where a caster can be in the actor map
+        // (the self's 12 parts, 100 around the pivot of which 60 are stacked on the self, 150 in the middle, 98 in the edge band), 1140 far away, all
+        // shuffled in one draw list that is the same every frame, the near ones the largest meshes, every twentieth on the heavy program (the cold and
+        // heavy classes are in every ring). The clock step is large, so the time budgets (not the operation budgets) end every phase after a few packets:
+        // the near walk (half of a phase) covers less than the 360. Run for three steps (the budget gets tighter) and for the sun's and the moon's matrix.
+        // Asserted: every packet except a few heavy ones gets bounds within the run; the self's parts have bounds in EVERY
+        // frame after warm-up while the budget allows it (the first two steps), even with 60 others stacked on them; the far packets keep their
+        // coverage (at least about half of the plain rotation's) and wait at most about twice as long between bounds (95th percentile, plus six frames); the middle ring's plain-program packets wait at most about 1.5 times as long as in the plain rotation (measured 1.0 to 1.25x), and rings 0 and 1 show no dip on the plain turn.
+        struct Config {unsigned step,frames;bool selfCovered;};
+        Config configs[3]={{1000,300,true},{1500,300,true},{2000,300,true}};
+        if(argc>5){configs[0].step=unsigned(std::atoi(argv[5]));configs[0].frames=argc>6?unsigned(std::atoi(argv[6])):300;configs[0].selfCovered=false;} /* diagnosing: one configuration of the given step (arguments: 0 <big> <step> <frames>) */
+        const unsigned ringSize[4]={12,100,150,98},nearCount=360,total=1500,warmup=24,bigNear=argc>4?unsigned(std::atoi(argv[4])):30; /* the near meshes: big ones, but not the very biggest */
+        const unsigned only=argc>3?unsigned(std::atoi(argv[3])):3; /* 3: all configurations, else one (diagnosing) */
+        Scene scene(skin,700,3,2);
+        std::vector<size_t> cheap,heavy; /* the plain skinned meshes (shaders[0]) and the heavy program's (shaders[1]) */
+        for(size_t m=0;m<scene.pool.size();++m){if(scene.kinds[m]==0)cheap.push_back(m);else if(scene.kinds[m]==1)heavy.push_back(m);}
+        std::sort(cheap.begin(),cheap.end(),[&](size_t a,size_t b){return scene.pool[a]->vertexCount>scene.pool[b]->vertexCount;});std::sort(heavy.begin(),heavy.end(),[&](size_t a,size_t b){return scene.pool[a]->vertexCount<scene.pool[b]->vertexCount;});heavy.resize(std::min<size_t>(heavy.size(),8)); /* the small heavy meshes: a big one may never fit the heavy allowance, in the plain rotation as well */
+        assert(cheap.size()>=bigNear+nearCount+20&&heavy.size()>=8);
+        std::vector<unsigned> slotOf(total),group(total);{unsigned g=0,k=0;for(unsigned i=0;i<total;++i){group[i]=i<nearCount?g:4;if(i<nearCount&&++k==ringSize[g]){++g;k=0;}}}
+        {std::vector<unsigned> order(total);for(unsigned i=0;i<total;++i)order[i]=i;std::mt19937 shuffle(7);std::shuffle(order.begin(),order.end(),shuffle);for(unsigned i=0;i<total;++i)slotOf[i]=order[i];}
+        const float centre[3]={100,50,10};
+        float matrix[16]={};matrix[0]=matrix[5]=1.f/12;matrix[10]=.5f;matrix[12]=-centre[0]/12;matrix[13]=-centre[1]/12;matrix[14]=.25f;matrix[15]=1; /* clip x,y = (world - centre)/12 */
+        const auto position=[&](unsigned i,float* at){ /* ring 0: the self, ring 1: 60 stacked on it, 40 at 3.3..4.3 yd, ring 2: 5..9.4 yd, ring 3: 10..13 yd, far: 40+ yd (squares: Chebyshev) */
+            const unsigned g=group[i];unsigned first=0;for(unsigned r=0;r<g&&r<4;++r)first+=ringSize[r];const unsigned k=i-(g<4?first:nearCount);
+            const float angle=float(k)*2.399963f;
+            const float radius=g==0?1.f:g==1?(k<60?.5f:3.3f+1.f*float(k-60)/40.f):g==2?5.f+4.4f*float(k)/150.f:g==3?10.f+3.f*float(k)/98.f:40.f+float(k)*.05f;
+            const float c=std::cos(angle),n=std::sin(angle),square=std::max(std::fabs(c),std::fabs(n)); /* the rings are squares (Chebyshev distance) */
+            at[0]=centre[0]+radius*c/square;at[1]=centre[1]+radius*n/square;at[2]=centre[2];};
+        struct Run {unsigned middleGap=0,neverHeavy=0,farP95=0; /* the middle ring's longest wait among the plain program's packets */ std::vector<unsigned> valid[5];std::vector<char> plain;double plainMean[3]={},otherMean[3]={};unsigned maxGap[5]={};size_t never=0,listSize=0;double farMean=0;unsigned minSelf=~0u,ringSizes[4]={};};
+        const auto pool0=scene.pool;
+        const auto run=[&](const Config& cfg,int source){ /* source: the actor map's source (0 sun, 1 moon), -1 none (the plain rotation) */
+            scene.pool=pool0;scene.rng.seed(99); /* every run starts from the same meshes and the same random sequence */
+            World w(scene.programs);warm(w,scene);TestClock::ticks=1000000;
+            Run r;std::vector<unsigned> last(total,0),gap(total,0);
+            if(source>=0){w.actorValid[source]=true;std::memcpy(w.actorMatrices[source],matrix,sizeof matrix);}
+            for(unsigned f=1;f<=cfg.frames+8;++f){
+                const bool settle=f<=8;TestClock::step=settle?1:cfg.step; /* 8 frames with room for everything build the meshes' envelopes; the crowd is then in its steady state */
+                if(!settle)for(unsigned k=0;k<3;++k){const size_t m=scene.rng()%cheap.size();if(m>=bigNear&&m<bigNear+ringSize[0])continue; /* a few meshes (not the self's) are replaced every frame: their envelopes are cold and need the build phase */
+                    scene.pool[cheap[m]]=std::make_shared<const Mesh>(randomMesh(scene.rng,30+scene.rng()%700,1+scene.rng()%40));}
+                scene.frame(0,total,false,{&w}); /* the same draw list every frame */
+                for(unsigned i=0;i<total;++i){auto& p=*w.replays[slotOf[i]];position(i,p.captureRoot);p.captureRootValid=true;p.selfShadow=group[i]==0;
+                    const bool heavyOne=i<nearCount&&i>=ringSize[0]&&i%20==0; /* not the self: on the plain turn its heavy parts wait for the pass */
+                    p.shared=scene.pool[heavyOne?heavy[(i/20)%heavy.size()]:i<nearCount?cheap[bigNear+i]:cheap[bigNear+nearCount+i%(cheap.size()-bigNear-nearCount)]];p.originalShader=&scene.shaders[heavyOne?1:0];}
+                w.replayBoundsKick();w.replayBoundsJoin();if(settle)continue;
+                const unsigned n=f-8;
+                const auto& list=w.replayBoundsWorker.nearList();r.listSize=list.size();for(unsigned g=0;g<4;++g)r.ringSizes[g]=unsigned(list.ring[g].size());
+                unsigned count[5]={};
+                for(unsigned i=0;i<total;++i){const bool valid=w.replays[slotOf[i]]->pointBounds.valid;count[group[i]]+=valid;
+                    if(valid)last[i]=n;if(n>warmup)gap[i]=std::max(gap[i],n-last[i]);}
+                for(unsigned g=0;g<5;++g)r.valid[g].push_back(count[g]);
+                r.plain.push_back(list.plainTurn());
+            }
+            if(source>=0&&std::getenv("DBG"))for(unsigned i=0;i<total;++i)if(!last[i])std::printf("DBG never i=%u group=%u verts=%u shader=%d\n",i,group[i],w.replays[slotOf[i]]->mesh().vertexCount,int(w.replays[slotOf[i]]->originalShader-&scene.shaders[0]));
+            {std::vector<unsigned> far;for(unsigned i=0;i<total;++i)if(group[i]==4)far.push_back(gap[i]);std::sort(far.begin(),far.end());r.farP95=far[far.size()*95/100];} /* the 95th percentile: the maximum over 1140 packets is noisy */
+            for(unsigned i=0;i<total;++i){if(group[i]==2&&!(i%20==0))r.middleGap=std::max(r.middleGap,gap[i]);r.never+=last[i]==0;r.neverHeavy+=last[i]==0&&i<nearCount&&i>=ringSize[0]&&i%20==0;r.maxGap[group[i]]=std::max(r.maxGap[group[i]],gap[i]);}
+            for(unsigned f=warmup;f<cfg.frames;++f){r.minSelf=std::min(r.minSelf,r.valid[0][f]);r.farMean+=r.valid[4][f];}
+            r.farMean/=double(cfg.frames-warmup);
+            {unsigned np=0,no=0;for(unsigned f=warmup;f<cfg.frames;++f){const bool plain=r.plain[f];(plain?np:no)+=1;for(unsigned g=0;g<3;++g)(plain?r.plainMean[g]:r.otherMean[g])+=r.valid[g][f];}
+             for(unsigned g=0;g<3;++g){r.plainMean[g]/=std::max(1u,np);r.otherMean[g]/=std::max(1u,no);}}
+            return r;
+        };
+        for(unsigned c=0;c<3;++c){if(only<3&&only!=c)continue;
+            const Config& cfg=configs[c];const Run off=run(cfg,-1);
+            for(int source=0;source<2;++source){
+                const Run on=run(cfg,source);
+                double mean[5]={};for(unsigned g=0;g<5;++g){for(unsigned f=warmup;f<cfg.frames;++f)mean[g]+=on.valid[g][f];mean[g]/=double(cfg.frames-warmup);}
+                std::printf("{\"mode\":\"priority\",\"step\":%u,\"source\":%d,\"nearListSize\":%zu,\"rings\":[%u,%u,%u,%u],\"on\":{\"minSelf\":%u,\"meanPerRing\":[%.1f,%.1f,%.1f,%.1f],\"maxGapPerRing\":[%u,%u,%u,%u],\"farMean\":%.1f,\"farMaxGap\":%u,\"farP95\":%u,\"never\":%zu,\"middleGap\":%u,\"neverHeavy\":%u,\"plainTurn\":[%.1f,%.1f,%.1f],\"otherTurns\":[%.1f,%.1f,%.1f]},\"off\":{\"farP95\":%u,\"middleGap\":%u,\"minSelf\":%u,\"farMean\":%.1f,\"maxGapPerRing\":[%u,%u,%u,%u,%u],\"never\":%zu}}\n",
+                    cfg.step,source,on.listSize,on.ringSizes[0],on.ringSizes[1],on.ringSizes[2],on.ringSizes[3],on.minSelf,mean[0],mean[1],mean[2],mean[3],on.maxGap[0],on.maxGap[1],on.maxGap[2],on.maxGap[3],on.farMean,on.maxGap[4],on.farP95,on.never,on.middleGap,on.neverHeavy,on.plainMean[0],on.plainMean[1],on.plainMean[2],on.otherMean[0],on.otherMean[1],on.otherMean[2],
+                    off.farP95,off.middleGap,off.minSelf,off.farMean,off.maxGap[0],off.maxGap[1],off.maxGap[2],off.maxGap[3],off.maxGap[4],off.never);
+                assert(on.listSize==nearCount&&on.ringSizes[0]==ringSize[0]&&on.ringSizes[1]==ringSize[1]&&on.ringSizes[2]==ringSize[2]&&on.ringSizes[3]==ringSize[3]); /* the far 1140 are not listed */
+                assert(on.never==on.neverHeavy&&on.neverHeavy<=8);               /* every packet but a few of the 17 heavy ones (served only by the plain turn's pass, and by the plain rotation's own budget at the tighter steps) gets bounds in the run */
+                assert(on.plainMean[0]==ringSize[0]&&on.plainMean[1]>=.95*on.otherMean[1]); /* the plain turn: no dip in the self's or the pivot's neighbourhood coverage */
+                if(cfg.selfCovered)assert(on.minSelf==ringSize[0]);            /* the self's parts: bounds in every frame after warm-up, with 60 others stacked on them */
+                assert(on.farMean>=.5*off.farMean);                            /* the rotating pass keeps at least about half of its coverage */
+                assert(on.farP95<=2*off.farP95+6);                       /* and the far packets wait at most about twice as long between bounds (plus a dozen frames: the maximum over 1140 packets is noisy) */
+                assert(2*on.middleGap<=3*off.middleGap+20);                    /* the middle ring's plain-program packets wait at most about half as long again as in the plain rotation (they get its full pass on the plain turn) */
+            }
+        }
+        return 0;
+    }
     if(mode=="equivalence"||mode=="stress"){
         const bool stress=mode=="stress";const unsigned frames=argc>3?unsigned(std::atoi(argv[3])):600;
         Scene scene(skin,stress?260:220);World legacy(scene.programs),async(scene.programs);warm(legacy,scene);warm(async,scene);
@@ -334,13 +417,13 @@ with tempfile.TemporaryDirectory(prefix='northlight-bounds-job-') as tmp:
     (root / 'd3d9.h').write_text(stub)
     source = clock + harness
     shader = str(client_fixtures.four_bone_vs3())
-    runs = [('o2', ['-O2'], [('equivalence', '600'), ('stress', '400')]),
-            ('asan', ['-O1', '-g', '-fsanitize=address,undefined', '-fno-omit-frame-pointer'], [('equivalence', '200'), ('stress', '200')]),
-            ('tsan', ['-O1', '-g', '-fsanitize=thread'], [('equivalence', '150'), ('stress', '200')])]
+    runs = [('o2', ['-O2'], [('equivalence', '600'), ('stress', '400'), ('priority', '3')]),
+            ('asan', ['-O1', '-g', '-fsanitize=address,undefined', '-fno-omit-frame-pointer'], [('equivalence', '200'), ('stress', '200'), ('priority', '0')]),
+            ('tsan', ['-O1', '-g', '-fsanitize=thread'], [('equivalence', '150'), ('stress', '200'), ('priority', '0')])]
     for name, flags, modes in runs:
         binary = build(root, name, source, flags)
-        for mode, frames in modes:
-            out = subprocess.run([str(binary), shader, mode, frames], capture_output=True, text=True)
+        for mode, frames, *extra in modes:
+            out = subprocess.run([str(binary), shader, mode, frames, *extra], capture_output=True, text=True)
             if out.returncode or 'WARNING' in out.stderr or 'ERROR' in out.stderr:
                 sys.exit(f'{name} {mode} failed ({out.returncode}):\n{out.stdout}{out.stderr[-6000:]}')
             print(name, out.stdout.strip())

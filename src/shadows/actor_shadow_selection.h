@@ -155,7 +155,7 @@ struct Draw {
     /* 0.3.211 (task 31): the draw's capture identity for the capture admission (capture_admission.h): never read by the selection's decisions */
     std::uintptr_t shader=0;unsigned count=0;float captureRoot[3]={};bool captureRootValid=false;
 };
-struct RigidEntry {std::uint64_t key=0,bodyKey=0;float at[3]={},anchor[3]={},bodyAt[3]={};unsigned free=0,age=0,still=0;bool attachment=false,settled=false,kept=false,used=false,selfBody=false;};
+struct RigidEntry {std::uint64_t key=0,bodyKey=0;float at[3]={},anchor[3]={},bodyAt[3]={};unsigned free=0,age=0,still=0;bool attachment=false,settled=false,kept=false,used=false,selfBody=false,everAttached=false;};
 struct RadiusPair {float d=0;std::uint32_t actor=0,entry=0;};
 struct RadiusEntry {std::uint64_t key=0;float at[3]={};unsigned age=0,streak=0,since=~0u;bool inside=false,companion=false,self=false,used=false,filtered=false;};
 struct Actor {
@@ -166,7 +166,7 @@ struct Actor {
     RigidEntry* entry=nullptr;
     float samples[Samples][3]={};unsigned mask=0,stillFrames=0,stillExtras=0,moving=0;bool exempt=false,exemptCandidate=false,wasExempt=false,frozen=false;
     unsigned sinceChange=~0u;bool locked=false,rooted=false;float vertexAt[3]={};
-    bool outside=false,self=false,companion=false,rebound=false,selfBody=false,nearSelf=false,candidate=false,follows=false,unfiltered=false;unsigned streak=0,radiusSince=~0u;std::size_t head=SIZE_MAX;float radiusAt[3]={};RadiusEntry* radiusEntry=nullptr; /* ActorShadowRadius; head: the character (see radiusStage) */
+    bool everAttached=false,toFree=false,toAttach=false,rekeyed=false,outside=false,self=false,companion=false,rebound=false,selfBody=false,nearSelf=false,candidate=false,follows=false,unfiltered=false;unsigned streak=0,radiusSince=~0u;std::size_t head=SIZE_MAX;float radiusAt[3]={};RadiusEntry* radiusEntry=nullptr; /* ActorShadowRadius; head: the character (see radiusStage) */
 };
 struct Point {std::uint64_t cell=0;float x=0,y=0,z=0;std::size_t actor=0;};
 struct Scratch {std::vector<Actor> actors;std::vector<std::size_t> order,candidates;std::vector<Point> points;std::vector<std::pair<std::size_t,std::size_t>> links;};
@@ -176,6 +176,13 @@ struct Result {
     std::size_t attached=0,attachedBytes=0,orphans=0,rigidStuck=0,rigidNew=0;
     std::size_t exemptActors=0,exemptDraws=0,exemptBytes=0,cappedExempt=0,stillRankedSmall=0,exemptCapBinds=0,locked=0,exemptNpcLike=0,rooted=0,rootFallback=0,rootRejected=0;
     std::size_t radiusDropped=0,radiusDroppedDraws=0,radiusDroppedBytes=0,radiusToggles=0,radiusFlicker=0,radiusRekeyed=0,radiusCharacters=0,radiusSelf=0,radiusCompanions=0,radiusUnreferenced=0,radiusInsideBytes=0,radiusSelfMissing=0;
+    // Diagnostics (crowd shadow blink): rigid actors changing between attached and free this selection (any state of the class
+    // chain: probation, settled), radius rekeys whose adopted state is contradicted by the decision, and (diagnostics frames
+    // only) kept free rigid actors beyond radius+band of the centre, with their bytes and the farthest one in yards.
+    // Beyond = farther than radius+band from the centre. freeRigid*: former attachments (ever had a body) that are free now; propRigid*:
+    // rigid actors that never had one (lanterns, signs); stuckBeyond: former attachments beyond that are settled and not re-attaching.
+    // beyondKnown=false (no centre this selection, or not a diagnostics frame): the beyond gauges were not measured.
+    std::size_t attachToFree=0,freeToAttach=0,attachToFreeBeyond=0,freeToAttachBeyond=0,radiusRekeyFlips=0,freeRigidBeyond=0,freeRigidBeyondBytes=0,propRigidBeyond=0,propRigidBeyondBytes=0,stuckBeyond=0;float freeRigidMaxYards=0;bool beyondKnown=false;
     bool ranked=true; /* the quota ranked this frame (Radius decide) */
 };
 namespace detail {
@@ -278,7 +285,7 @@ public:
         float grown=steadyCut_;for(unsigned n=0;n<tuning.cadence||!n;++n)grown=grown*1.05f*1.05f; /* 5% per rendered frame */
         steadyCut_=!(cut<steadyCut_)&&std::isfinite(steadyCut_)?std::min(cut,grown):cut;
         for(const auto& a:actors){
-            if(a.rigidTracked){Rigid r;r.key=a.key;std::memcpy(r.at,a.at,sizeof r.at);std::memcpy(r.anchor,a.anchor,sizeof r.anchor);r.free=a.free;r.still=a.still;r.attachment=a.attachment;r.settled=a.settled;r.kept=a.keep;r.bodyKey=a.bodyKey;std::memcpy(r.bodyAt,a.bodyAt,sizeof r.bodyAt);r.selfBody=a.selfBody;
+            if(a.rigidTracked){Rigid r;r.key=a.key;std::memcpy(r.at,a.at,sizeof r.at);std::memcpy(r.anchor,a.anchor,sizeof r.anchor);r.free=a.free;r.still=a.still;r.attachment=a.attachment;r.settled=a.settled;r.kept=a.keep;r.bodyKey=a.bodyKey;std::memcpy(r.bodyAt,a.bodyAt,sizeof r.bodyAt);r.selfBody=a.selfBody;r.everAttached=a.everAttached;
                 if(a.entry){r.used=true;*a.entry=r;}else nextRigid_.push_back(r);}
             else if(ranked&&!a.rigid&&a.located){Entry e;e.key=a.key;e.bytes=a.bytes;std::memcpy(e.at,a.at,sizeof e.at);e.kept=a.keep;e.pending=a.pending;
                 std::memcpy(e.samples,a.samples,sizeof e.samples);e.mask=a.mask;e.stillFrames=a.stillFrames;e.stillExtras=a.stillExtras;e.moving=a.moving;e.exempt=a.exempt;
@@ -328,7 +335,7 @@ namespace detail {
 // character casts if any section does, and every section records that, so a
 // character never casts in part, a split or merge can only keep it casting, and
 // it counts one change.
-inline void radiusStage(const std::vector<Draw>& draws,std::vector<Actor>& actors,History& history,const Radius& radius,const float* origin,const float* move,float moved,const Tuning& tuning,Result& result){
+inline void radiusStage(const std::vector<Draw>& draws,std::vector<Actor>& actors,History& history,const Radius& radius,const float* origin,const float* move,float moved,const Tuning& tuning,Result& result,bool diagnostics=false){
     auto body=[](const Actor& a){return !a.rigid&&a.body==SIZE_MAX&&!a.orphan;};
     auto usable=[](const Draw& d){return d.known&&std::isfinite(d.distanceSquared)&&d.distanceSquared>=0;};
     auto& boxes=history.radiusBoxes();boxes.assign(actors.size(),Box{});
@@ -361,7 +368,7 @@ inline void radiusStage(const std::vector<Draw>& draws,std::vector<Actor>& actor
                 for(;it!=entries.end()&&it->key==a.key&&it->at[0]<=at[0]+reach;++it)visit(std::size_t(it-entries.begin()));}
             else if(!sorted)for(auto i:spare)visit(i);
             else for(auto it=std::lower_bound(spare.begin(),spare.end(),at[0]-reach,[&](std::uint32_t i,float x){return entries[i].at[0]<x;});it!=spare.end()&&entries[*it].at[0]<=at[0]+reach;++it)visit(*it);}
-        auto take=[&](const RadiusPair& p){auto& a=actors[p.actor];auto& e=entries[p.entry];if(a.radiusEntry||e.used)return;a.radiusEntry=&e;e.used=true;result.radiusRekeyed+=pass==2;};
+        auto take=[&](const RadiusPair& p){auto& a=actors[p.actor];auto& e=entries[p.entry];if(a.radiusEntry||e.used)return;a.radiusEntry=&e;e.used=true;result.radiusRekeyed+=pass==2;a.rekeyed=diagnostics&&pass==2;};
         auto less=[](const RadiusPair& x,const RadiusPair& y){return x.d<y.d||(x.d==y.d&&(x.actor<y.actor||(x.actor==y.actor&&x.entry<y.entry)));};
         // Greedy nearest-first, without sorting the common case: a pair that is the
         // nearest of both its actor and its entry is in the greedy result anyway.
@@ -441,11 +448,20 @@ inline void radiusStage(const std::vector<Draw>& draws,std::vector<Actor>& actor
         if(in)h.outside=false;}
     for(auto& a:actors){if(!body(a)||a.head==SIZE_MAX)continue;const auto& h=actors[a.head];const RadiusEntry* e=a.radiusEntry;
         a.outside=h.outside;if(&a!=&h)a.companion=h.companion||h.self;
-        const bool changed=e&&e->filtered&&e->inside==a.outside;a.radiusSince=changed?0:e?e->since+(e->since<~0u):~0u;}
+        const bool changed=e&&e->filtered&&e->inside==a.outside;a.radiusSince=changed?0:e?e->since+(e->since<~0u):~0u;result.radiusRekeyFlips+=a.rekeyed&&changed;} /* a.rekeyed is set on diagnostics frames only */
     // One change per character: its sections were mostly one way last selection and are the other now.
     for(std::size_t n=0;n<actors.size();++n){if(!isHead(n))continue;const auto& c=characters[n];
         const bool changed=actors[n].outside?c.in>c.out:c.out>c.in;result.radiusToggles+=changed;result.radiusFlicker+=changed&&c.since<dwell;++result.radiusCharacters;}
     for(auto& a:actors)if(body(a)&&a.outside){++result.radiusDropped;result.radiusDroppedDraws+=a.count;result.radiusDroppedBytes+=a.bytes;}
+    // Free rigid actors (still rigid after the classification: probation, settled) are never judged by the radius and always cast:
+    // those beyond radius+band of the centre cast a shadow their body (if captured at all) does not.
+    if(diagnostics)result.beyondKnown=true;
+    if(diagnostics)for(const auto& a:actors){if(!a.located)continue;
+        const bool change=a.toFree||a.toAttach,gauge=a.rigid&&a.keep;if(!change&&!gauge)continue;
+        float d=0;for(unsigned k=0;k<3;++k){const float x=a.at[k]-centre[k];d+=x*x;}if(!(d>wide*wide))continue;
+        result.attachToFreeBeyond+=a.toFree;result.freeToAttachBeyond+=a.toAttach;if(!gauge)continue;
+        if(a.everAttached){++result.freeRigidBeyond;result.freeRigidBeyondBytes+=a.bytes;result.freeRigidMaxYards=std::max(result.freeRigidMaxYards,std::sqrt(d));result.stuckBeyond+=a.settled;}
+        else{++result.propRigidBeyond;result.propRigidBeyondBytes+=a.bytes;}}
 }
 }
 // draws: capture order. Writes draws[i].keep.
@@ -552,13 +568,15 @@ inline Result choose(std::vector<Draw>& draws,Scratch& scratch,std::size_t budge
             if(tight!=SIZE_MAX){a.attachment=e&&moved(e->anchor,CoMoveTolerance);follow=a.attachment||a.still<tuning.frames(ProbationStill)||tuning.probationFollow;if(follow)a.previous=e&&e->kept;}
             if(!a.attachment&&a.free>=tuning.frames(FreeFrames))a.settled=true;
             if(a.attachment)a.free=0;}
+        a.everAttached=a.attachment||(e&&(e->everAttached||e->attachment)); /* sticky in the history, also off diagnostics: a rigid actor that has ever had a body */
+        if(e&&diagnostics){a.toFree=e->attachment&&!a.attachment;a.toAttach=!e->attachment&&a.attachment;result.attachToFree+=a.toFree;result.freeToAttach+=a.toAttach;} /* diagnostics only */
         if(!follow){links.resize(linked);continue;}
         a.rigid=false;
         if(inReach!=SIZE_MAX){a.body=inReach;a.bodyKey=actors[inReach].key;std::memcpy(a.bodyAt,actors[inReach].at,sizeof a.bodyAt);++result.attached;result.attachedBytes+=a.bytes;}
         else{a.orphan=true;++result.orphans;}}
     // ActorShadowRadius: before the quota, so a body outside is never ranked.
     bool ranked=!radiusOn||radius->ranked;
-    if(radiusOn){detail::radiusStage(draws,actors,history,*radius,origin,move,moved,tuning,result);
+    if(radiusOn){detail::radiusStage(draws,actors,history,*radius,origin,move,moved,tuning,result,diagnostics);
         std::size_t total=0;for(const auto& d:draws)total+=d.bytes;result.radiusInsideBytes=total-result.radiusDroppedBytes;
         if(radius->decide)ranked=budget&&history.shouldRank(result.radiusInsideBytes,budget,tuning);}
     result.ranked=ranked;

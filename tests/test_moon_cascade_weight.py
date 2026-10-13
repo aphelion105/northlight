@@ -11,7 +11,7 @@ w=fp.src('world_renderer.h').read_text()
 gate='NorthlightGI::dot(sourceColors[0],sourceColors[0])>1e-10f'
 checks={
     'cascades gate on the colour':'bool sourceActive[2]={'+gate in w,
-    'actor maps follow the cascades':'if(!actorMapOn||!sourceActive[source])actorValid[source]=false;' in w,
+    'actor maps follow the cascades':'if(!actorMapOn||!sourceActive[source]){actorValid[source]=false;actorHold[source].invalidate();}' in w,
     'water skips a colourless source':'if(NorthlightGI::dot(sourceColors[source],sourceColors[source])<1e-10f)continue;' in w,
     'capture skip uses the same test':'in.sourceActive[source]=NorthlightGI::dot(sourceColors[source],sourceColors[source])>1e-10f;' in w,
     'colours are the celestial direct*weight':'resolvedSources.sources[1].color=vec(celestialLight.moonColor);' in w,

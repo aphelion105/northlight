@@ -46,6 +46,8 @@
 #include "celestial_time_warp.h"
 #include "cascade_anchor.h"
 #include "actor_shadow_map.h" // 0.3.209 (task 29)
+#include "actor_side_hold.h" // the inset hysteresis of the actor map
+#include "actor_side_tracker.h" // crowd/self shimmer diagnostics: actor map vs near cascade per caster
 #include "shadow_pivot.h"
 #include "world_dynamic_probes.h"
 #include "shadow_bounds.h"
@@ -334,7 +336,13 @@ private:
     // 0.3.209 (task 29): per-source actor shadow map (R32F 1024, moving casters only, shadows/actor_shadow_map.h) and the half-res visibility it feeds (A8R8G8B8: r sun, g moon; white = lit).
     // actorMatrices/actorValid are stored with the near map's reuse state: the near map and the actor map of a source always come from the same frame.
     IDirect3DTexture9 *actorShadow[2]={},*actorVisibility=nullptr,*actorTiles[2]={},*actorTilesMid=nullptr;IDirect3DSurface9 *actorShadowSurface[2]={},*actorVisibilitySurface=nullptr,*actorTilesSurface[2]={},*actorTilesMidSurface=nullptr;
-    float actorMatrices[2][16]={};bool actorValid[2]={};bool nearActorSkip[2]={}; /* the near map was drawn without the replays its actor map holds: reusable only together with that actor map */V actorCenter[2];bool actorCenterValid[2]={}; /* leashed centre per source (actor_shadow_map.h leash) */unsigned long actorNearSkipped=0,actorDrawn=0;std::vector<uint32_t> actorReplays; /* the near loop's skipped replays: exactly what the actor map draws */DWORD actorShadowLogAt=0;
+    float actorMatrices[2][16]={};bool actorValid[2]={};
+    bool nearActorSkip[2]={}; /* the near map was drawn without the replays its actor map holds: reusable only together with that actor map */
+    NorthlightActorSide::Tracker actorSide[2]; /* diagnostics: which map each skinned caster went to, per source */
+    NorthlightActorSideHold::Hold actorHold[2]; /* the casters held in the actor map (hysteresis), per source; about 48 KB each */
+    unsigned replayNearSize=0; /* diagnostics: the bounds job's near list of the last frame */
+    unsigned long replayNearStops=0; /* diagnostics: near walks that ended on their budget share */
+    V actorCenter[2];bool actorCenterValid[2]={}; /* leashed centre per source (actor_shadow_map.h leash) */unsigned long actorNearSkipped=0,actorDrawn=0;std::vector<uint32_t> actorReplays; /* the near loop's skipped replays: exactly what the actor map draws */DWORD actorShadowLogAt[2]={}; /* per source: the moon's line is not starved by the sun's timer */
     IDirect3DPixelShader9* unionPS=nullptr;
     std::shared_ptr<const NorthlightLocalShadowSignature::Records> uploadedLocalShadowRecords;
     struct ShadowCacheKey {
@@ -676,8 +684,11 @@ private:
         const NorthlightDrawSnapshot::Mesh& mesh()const{return shared?*shared:snapshot;}
         bool gpuCached=false,shadowSkinned=false,shadowSelected=true,shadowSmall=false;int fateSlot=-1;unsigned char fateClass=0;float fateDistance=0; /* shadow fate diagnostics */
         bool bulkSingle=false; /* 0.3.211: uploadReplay's layout verdict (single-stream bulk placement) for the absolute pass */
-        bool boneKnown=false;float bone=NAN; /* 0.3.176 (S2): this frame's selection tested its rigid bone (reset at capture) */
+        bool selfShadow=false; /* a draw of the selection's self body (set by the selection, reset at capture): the side tracker's self, ring 0 of the bounds job's near list */bool boneKnown=false;float bone=NAN; /* 0.3.176 (S2): this frame's selection tested its rigid bone (reset at capture) */
         float captureRoot[3]={};bool captureRootValid=false; /* 0.3.211 (task 31): the palette root computed once at capture (capture admission); passive for the selection */
+        float anchor[3]={};bool anchorValid=false; /* an injected rigid prop (rigidMemoryInject): the origin of its remembered bone, in world space; it has no palette root */
+        // The per-instance position known without bounds: the palette root, or the rigid prop's anchor. Null: neither.
+        const float* position()const{return captureRootValid?captureRoot:anchorValid?anchor:nullptr;}
         // 0.3.177 (r83): filled at capture for selected skinned draws, read by prepareRecord (the stable
         // selection's prepare, possibly on the prepare worker): the program (null: none) and a copy of
         // the declaration (the declaration cache may reuse its slot within the frame). 0.3.179 (T1): the
@@ -759,7 +770,7 @@ private:
     std::vector<NorthlightActorShadowSelection::Draw> actorShadowDraws;
     NorthlightActorShadowSelection::Scratch actorShadowScratch;size_t actorShadowToggles=0;unsigned actorShadowFrames=0;
     float actorShadowOrigin[3]={};bool actorShadowOriginValid=false,actorShadowOver=false;unsigned actorShadowTransitions=0,actorShadowCapBinds=0;double actorShadowPrepareMs=0,actorShadowChooseMs=0; /* last frame's shadow pivot ranks the actor quota */
-    size_t actorShadowRadiusToggles=0,actorShadowRadiusFlicker=0,actorShadowRadiusRekeyed=0; /* ActorShadowRadius per log window: inside<->outside changes, changes within RadiusDwell of the last one, identities kept across a key change */
+    size_t actorShadowRadiusToggles=0,actorShadowRadiusFlicker=0,actorShadowRadiusRekeyed=0,actorShadowRadiusRekeyFlips=0,actorShadowAttachToFree=0,actorShadowFreeToAttach=0,actorShadowAttachToFreeBeyond=0,actorShadowFreeToAttachBeyond=0; /* ActorShadowRadius per log window: inside<->outside changes, changes within RadiusDwell of the last one, identities kept across a key change */
     NorthlightReplayGPU::SelectedCache replayGpuCache;
     NorthlightReplayBulk::Layout replayBulkLayout;
     IDirect3DVertexBuffer9* replayVerticesGPU[4]={};
@@ -2822,7 +2833,7 @@ public:
         phase.next(CaptureSnapshot);fate.reason=NorthlightShadowFate::Snapshot;
         if(!snapshotFrameBegun)snapshotBeginFrame(sample);
         NorthlightDrawSnapshot::SnapshotSpan<decltype(snapshotMeter)> snapshotSpan(snapshotMeter); /* 0.3.181 (S3): to the constants phase or a return */
-        std::unique_ptr<Replay,ReplayRecycle> p(acquireReplay().release(),ReplayRecycle{this});p->shadowSkinned=priority;p->shadowSelected=!smallShadow;p->shadowSmall=smallShadow;p->boneKnown=false;p->captureRootValid=rooted;if(rooted)std::memcpy(p->captureRoot,root,sizeof p->captureRoot);p->fateSlot=-1;p->fateClass=smallShadow?NorthlightShadowFate::Small:NorthlightShadowFate::NotRanked;p->fateDistance=0;p->projectionKind=kind;p->shader=metadata.replacement;p->shader->AddRef();p->originalShader=current;p->originalShader->AddRef();p->pointBounds={};
+        std::unique_ptr<Replay,ReplayRecycle> p(acquireReplay().release(),ReplayRecycle{this});p->shadowSkinned=priority;p->shadowSelected=!smallShadow;p->shadowSmall=smallShadow;p->boneKnown=false;p->selfShadow=false;p->captureRootValid=rooted;if(rooted)std::memcpy(p->captureRoot,root,sizeof p->captureRoot);p->anchorValid=false;p->fateSlot=-1;p->fateClass=smallShadow?NorthlightShadowFate::Small:NorthlightShadowFate::NotRanked;p->fateDistance=0;p->projectionKind=kind;p->shader=metadata.replacement;p->shader->AddRef();p->originalShader=current;p->originalShader->AddRef();p->pointBounds={};
         if(replaySnapshots.lookup()==NorthlightDrawSnapshot::Frame::Lookup::Prefetch&&!freeReplays.empty())prefetchReplay(*freeReplays.back()); /* 0.3.181 (S2) */
         if(FAILED(d->GetVertexDeclaration(&p->decl))||!p->decl)return;
         NorthlightDrawSnapshot::Draw draw{type,base,minimum,vertexTotal,start,count,indexed};NorthlightDrawSnapshot::Diagnostics why;
@@ -3254,7 +3265,7 @@ public:
         bool anyShadowCacheRender=false;
         ++shadowPasses;
         if(NorthlightStaticPrebuild::Scheduler::Enabled)for(int source=0;source<2;++source)staticPrebuild.observe(source,effects.shadows&&sourceActive[source],rawSourceDirections[source],GetTickCount());
-        for(int source=0;source<2;++source)if(!actorMapOn||!sourceActive[source])actorValid[source]=false; /* 0.3.209 (task 29): a source that draws no near map keeps no actor map */
+        for(int source=0;source<2;++source)if(!actorMapOn||!sourceActive[source]){actorValid[source]=false;actorHold[source].invalidate();} /* 0.3.209 (task 29): a source that draws no near map keeps no actor map */
         for(int source=0;source<2;++source){
           if(!effects.shadows||!sourceActive[source])continue;
           auto& matrices=sourceMatrices[source];bool nearRendered=false; /* this source's near map redrawn with fresh replays */
@@ -3446,6 +3457,9 @@ public:
             if(nearSkip){actorReplays.clear();try{actorReplays.reserve(replays.size());}catch(...){nearSkip=false;}}
             if(cascade==0)nearActorSkip[source]=nearSkip;
             unsigned nearSkipped=0;
+            const bool sideDiag=nearSkip&&NorthlightDiagnostics::enabled(); /* diagnostics only: the side tracker, the hold counters */
+            if(nearSkip)actorHold[source].begin(sideDiag,unsigned(frames)+1);else if(cascade==0)actorHold[source].invalidate();
+            if(sideDiag)actorSide[source].begin();
             auto replayLoop=[&](auto& split)->bool{
               using NorthlightRenderThreadProbe::Own;
               split.start();
@@ -3459,7 +3473,26 @@ public:
                     if(key.staticContent.valid&&!key.staticContent.contains(p->staticProofModel,p->staticProofRevision))++staticDedupUncommitted;
                     ++staticDedupSkipped;continue;
                 }
-                if(nearSkip&&NorthlightActorShadowMap::insideInset(p->pointBounds.valid,p->pointBounds.low,p->pointBounds.high,actorFrameMatrix[source])){actorReplays.push_back(uint32_t(index));++nearSkipped;continue;}
+                // The actor map takes a caster whose bounds lie fully inside the inset, and keeps a skinned one while they lie within Stay (hysteresis,
+                // actor_side_hold.h). Its identity there: the palette root, or the centre of its valid bounds (a rigid attachment has no root).
+                bool inActor=false;
+                const float* position=p->shadowSkinned?p->position():nullptr; /* once per replay: the hold and the diagnostics share it */
+                if(nearSkip){const float* matrix=actorFrameMatrix[source];const float extent=NorthlightActorShadowMap::insetExtent(p->pointBounds.valid,p->pointBounds.low,p->pointBounds.high,matrix,NorthlightActorShadowMap::Stay);
+                    if(extent<=NorthlightActorShadowMap::Stay){
+                        if(!p->shadowSkinned)inActor=extent<=NorthlightActorShadowMap::Inset;
+                        else{const std::uint64_t model=NorthlightActorSideHold::holdModel(*p);float centre[3];const float* at=position; /* a rigid attachment's model differs from a rooted caster's */
+                            if(!p->captureRootValid){
+                                if(!at){for(unsigned k=0;k<3;++k)centre[k]=.5f*(p->pointBounds.low[k]+p->pointBounds.high[k]);at=centre;}} /* no position at all: the centre of the valid bounds (finite extent) */
+                            inActor=actorHold[source].decide(model,at,extent);
+                            if(inActor&&position)actorHold[source].stamp(model,position,matrix,extent);}}
+                    else if(p->shadowSkinned&&!p->pointBounds.valid&&p->shared){ /* no bounds this frame: stays in the actor map only by the hold's carry rule */
+                        if(position)inActor=actorHold[source].carry(NorthlightActorSideHold::holdModel(*p),position,matrix);}}
+                if(inActor){actorReplays.push_back(uint32_t(index));++nearSkipped;
+                    if(sideDiag&&p->shadowSkinned)(p->shared?actorSide[source].note(NorthlightActorSide::key(p->shared.get(),p->decl,p->count,position!=nullptr,position),true,p->selfShadow,p->captureRootValid):actorSide[source].unkeyed());continue;}
+                if(sideDiag&&p->shadowSkinned){auto& side=actorSide[source];if(p->shared)side.note(NorthlightActorSide::key(p->shared.get(),p->decl,p->count,position!=nullptr,position),false,p->selfShadow,p->captureRootValid,!p->pointBounds.valid);else side.unkeyed();
+                    /* no valid bounds, yet the palette root lies inside the inset: it belongs to the actor map and fell to the near cascade for lack of bounds;
+                       without a shared snapshot (Unsupported) it can never have bounds: unsupportedNear */
+                    if(!p->pointBounds.valid&&p->captureRootValid&&NorthlightActorShadowMap::insideInset(true,p->captureRoot,p->captureRoot,actorFrameMatrix[source])){if(p->shared)side.invalidNear();else side.unsupportedNear();}}
                 ++replaySlotTested[slot];replaySlotBounded[slot]+=p->pointBounds.valid;
                 if(p->pointBounds.valid&&(cull?(cull[index]&2)!=0:NorthlightShadowBounds::clipReject(V(p->pointBounds.low[0],p->pointBounds.low[1],p->pointBounds.low[2]),V(p->pointBounds.high[0],p->pointBounds.high[1],p->pointBounds.high[2]),matrices[cascade]))){++culledReplayDraws;++replaySlotCulled[slot];continue;}
                 split.mark(Own);
@@ -3516,10 +3549,13 @@ public:
                 if(diagnosticCapture){char name[80];std::snprintf(name,sizeof name,"s%d-actor",source);NorthlightWorldDiagnostics::dump(d,actorShadowSurface[source],gpuDiagnosticDirectory,name,diagnosticCapture);}
                 memcpy(actorMatrices[source],am,64);actorValid[source]=true;
                 if(profile)profile->mark(source==0?"SunActor":"MoonActor");bucket(NorthlightEffectsBuckets::Bucket(NorthlightEffectsBuckets::SunActor+source));
-                actorNearSkipped+=nearSkipped;actorDrawn+=drawnHere;
+                actorNearSkipped+=nearSkipped;actorDrawn+=drawnHere;if(sideDiag)actorSide[source].endFrame();
                 const DWORD actorTick=GetTickCount();
-                if(NorthlightDiagnostics::enabled()&&(!actorShadowLogAt||actorTick-actorShadowLogAt>=1000)){actorShadowLogAt=actorTick;
-                    logf("WORLD actor shadow map source=%d drawn=%u nearSkipped=%u of %zu replays; totals drawn=%lu nearSkipped=%lu",source,drawnHere,nearSkipped,replays.size(),actorDrawn,actorNearSkipped);}
+                if(NorthlightDiagnostics::enabled()&&(!actorShadowLogAt[source]||actorTick-actorShadowLogAt[source]>=1000)){actorShadowLogAt[source]=actorTick;
+                    logf("WORLD actor shadow map source=%d drawn=%u nearSkipped=%u of %zu replays; totals drawn=%lu nearSkipped=%lu sideFlipsSinceLog=%u sideFlipFramesSinceLog=%u sideMatchedSinceLog=%u framesSinceLog=%u sideTracked=%u sideUnkeyed=%u invalidBoundsNear=%u unsupportedNear=%u selfSide=%s selfSideFlipsSinceLog=%u holdBand=%u holdOverflows=%lu nearListSize=%u nearWalkStops=%lu sideFlipsRootedSinceLog=%u sideFlipsUnrootedSinceLog=%u invalidBoundsNearSinceLog=%u unrootedNoBounds=%u unrootedNoBoundsSinceLog=%u selfUnrooted=%u selfNoBoundsFramesSinceLog=%u holdCarried=%u holdCarriedTotal=%lu",source,drawnHere,nearSkipped,replays.size(),actorDrawn,actorNearSkipped,
+                        actorSide[source].sideFlips,actorSide[source].sideFlipFrames,actorSide[source].sideMatched,actorSide[source].frames,actorSide[source].tracked,actorSide[source].unkeyedNow,actorSide[source].invalidBoundsNear,actorSide[source].unsupportedNow,NorthlightActorSide::name(actorSide[source].selfSide),actorSide[source].selfFlips,
+                        actorHold[source].bandHeld,actorHold[source].overflows,replayNearSize,replayNearStops,
+                        actorSide[source].sideFlipsRooted,actorSide[source].sideFlipsUnrooted,actorSide[source].invalidBoundsNearSum,actorSide[source].unrootedNoBounds,actorSide[source].unrootedNoBoundsSum,actorSide[source].selfUnrooted,actorSide[source].selfNoBoundsFrames,actorHold[source].carried,actorHold[source].carriedTotal);actorSide[source].resetWindow();}
             }
             } /* actorShadows */
             // Union: min(dynamic scratch, cached static at its integer texel offset + exact depth delta).

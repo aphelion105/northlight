@@ -1,5 +1,6 @@
 #pragma once
 #include "replay_bounds.h"
+#include "replay_bounds_near.h"
 #include "replay_bounds_schedule.h"
 #include <atomic>
 #include <chrono>
@@ -23,13 +24,14 @@ struct Item {
     std::shared_ptr<const NorthlightDrawSnapshot::Mesh> owner; // null: owned/transient packet, never bounded
     std::shared_ptr<const NorthlightReplayBounds::Prepared> prepared; // null: no program/declaration, Unsupported
     const float* constants=nullptr; // the packet's frozen capture bank
+    bool outer=false; // in an outer ring of the near list (replay_bounds_near.h): the rotating pass leaves it to the walks on most frames
     NorthlightReplayBounds::Bounds bounds;NorthlightReplayBounds::WorkInfo work; // results
 };
-struct Totals {size_t cheapVisited=0,heavyVisited=0,buildVisited=0,reservedCheapVisited=0,boundVertices=0,boundOperations=0;unsigned valid=0;};
+struct Totals {size_t cheapVisited=0,heavyVisited=0,buildVisited=0,reservedCheapVisited=0,boundVertices=0,boundOperations=0;unsigned valid=0,nearStops=0;}; /* nearStops: phases whose near walk ended on its half of the budget */
 // pointCalculateReplayBounds' schedule over pre-resolved items. Metadata was
 // resolved before the job, so no preparation is charged to the cheap turn.
 // Cancellation (only when results will be discarded) stops between packets.
-inline Totals schedule(NorthlightReplayBounds::Cache& cache,std::vector<Item>& items,const float* inverseView,const std::atomic<bool>* cancel=nullptr){
+inline Totals schedule(NorthlightReplayBounds::Cache& cache,std::vector<Item>& items,const float* inverseView,const std::atomic<bool>* cancel=nullptr,NorthlightReplayBoundsNear::List* priority=nullptr){
     using WorkKind=NorthlightReplayBounds::WorkKind;using Status=NorthlightReplayBounds::Status;
     NorthlightReplayBounds::Budget cheapBudget,heavyBudget,buildBudget;
     cheapBudget.maxVertices=0;cheapBudget.maxOperations=163840;
@@ -50,13 +52,29 @@ inline Totals schedule(NorthlightReplayBounds::Cache& cache,std::vector<Item>& i
         if(status==Status::Valid)++t.valid;
         return status==Status::Budget;
     };
+    // The near walk of a phase: at most half of what the phase has left, in operations, vertices (build) and time, counted from where the phase stands
+    // (one rule for all three caps: a pending build that already used most of the budget leaves the rotating pass half of the rest).
+    const auto halfLeft=[](size_t used,size_t max){return used+(max>used?(max-used)/2:0);};
+    const auto nearWalk=[&](unsigned phase,NorthlightReplayBounds::Budget& budget,auto&& phaseCan){
+        if(!priority)return;
+        const size_t operations=halfLeft(budget.operations,budget.maxOperations),vertices=halfLeft(budget.vertices,budget.maxVertices);
+        const std::uint64_t spent=cache.phaseNanoseconds(phase),limit=cache.phaseLimit(phase),until=spent+(limit>spent?(limit-spent)/2:0);
+        if(NorthlightReplayBoundsNear::nearFirst(priority,phase,[&]{return phaseCan()&&budget.operations<operations&&(!budget.maxVertices||budget.vertices<vertices)&&cache.phaseNanoseconds(phase)<until;},[&](size_t index){return visit(index,phase);})&&phaseCan())++t.nearStops;
+    };
+    // The rotating pass over every packet: without the outer-ring packets on most frames (their walks reach them as the budget allows; one frame in
+    // OuterTurn the pass takes them as well, so nothing the walks cannot reach waits for ever, also in the heavy and build phases, which have no bonus turn).
+    const bool skipOuter=priority&&priority->skipOuter();
+    const auto rotate=[&](size_t index,unsigned phase){return skipOuter&&items[index].outer?false:visit(index,phase);};
+    nearWalk(0,cheapBudget,[&]{return live()&&cache.canCheap()&&cheapBudget.operations<cheapBudget.maxOperations;}); /* casters near the pivot first */
     cache.readyResume(NorthlightReplaySchedule::pass(count,cache.readyStart(count),
-        [&](){return live()&&cache.canCheap()&&cheapBudget.operations<cheapBudget.maxOperations;},[&](size_t index){return visit(index,0);}));
+        [&](){return live()&&cache.canCheap()&&cheapBudget.operations<cheapBudget.maxOperations;},[&](size_t index){return rotate(index,0);}));
+    nearWalk(1,heavyBudget,[&]{return live()&&cache.canHeavy()&&heavyBudget.operations<heavyBudget.maxOperations;});
     cache.heavyResume(NorthlightReplaySchedule::pass(count,cache.heavyStart(count),
-        [&](){return live()&&cache.canHeavy()&&heavyBudget.operations<heavyBudget.maxOperations;},[&](size_t index){return visit(index,1);}));
+        [&](){return live()&&cache.canHeavy()&&heavyBudget.operations<heavyBudget.maxOperations;},[&](size_t index){return rotate(index,1);}));
     if(live())cache.continuePendingBuild(buildBudget);
+    nearWalk(2,buildBudget,[&]{return live()&&cache.canBuild()&&buildBudget.vertices<buildBudget.maxVertices&&buildBudget.operations<buildBudget.maxOperations;});
     cache.buildResume(NorthlightReplaySchedule::pass(count,cache.buildStart(count),
-        [&](){return live()&&cache.canBuild()&&buildBudget.vertices<buildBudget.maxVertices&&buildBudget.operations<buildBudget.maxOperations;},[&](size_t index){return visit(index,2);}));
+        [&](){return live()&&cache.canBuild()&&buildBudget.vertices<buildBudget.maxVertices&&buildBudget.operations<buildBudget.maxOperations;},[&](size_t index){return rotate(index,2);}));
     t.reservedCheapVisited=t.cheapVisited;
     cache.finishReservedTurnsAndLend();
     cheapBudget.maxOperations=262144-heavyBudget.operations-buildBudget.operations;
@@ -69,12 +87,12 @@ inline Totals schedule(NorthlightReplayBounds::Cache& cache,std::vector<Item>& i
 }
 // Render thread, before start(): clears each packet's per-frame results and
 // pins its inputs. resolve(shader,declaration) runs once per run of equal pairs.
-template<class Packets,class Resolve> bool gather(std::vector<Item>& items,Packets& packets,Resolve resolve){
+template<class Packets,class Resolve> bool gather(std::vector<Item>& items,Packets& packets,Resolve resolve,NorthlightReplayBoundsNear::List* priority=nullptr){
     try{items.resize(packets.size());}catch(...){items.clear();return false;}
     const void* shader=nullptr;const void* decl=nullptr;std::shared_ptr<const NorthlightReplayBounds::Prepared> prepared;bool resolved=false;
     for(size_t i=0;i<packets.size();++i){auto& p=*packets[i];auto& item=items[i];
         p.pointBounds={};p.boundsWork={};p.boundsPrepared.reset();
-        item.owner=p.shared;item.constants=p.constants;item.bounds={};item.work={};item.prepared.reset();
+        item.owner=p.shared;item.constants=p.constants;item.bounds={};item.work={};item.prepared.reset();item.outer=priority&&priority->consider(i,p.position(),p.selfShadow);
         if(!p.shared)continue;
         if(!resolved||p.originalShader!=shader||p.decl!=decl){shader=p.originalShader;decl=p.decl;prepared=resolve(p.originalShader,p.decl);resolved=true;}
         item.prepared=prepared;
@@ -99,7 +117,7 @@ class Worker {
     std::mutex mutex_;std::condition_variable wake_,done_;std::thread thread_;
     enum class State {Idle,Queued,Running,Done} state_=State::Idle;bool stop_=false,inFlight_=false;
     std::atomic<bool> cancel_{false};
-    NorthlightReplayBounds::Cache* cache_=nullptr;std::vector<Item> items_;float inverse_[16]={};
+    NorthlightReplayBounds::Cache* cache_=nullptr;std::vector<Item> items_;NorthlightReplayBoundsNear::List priority_;float inverse_[16]={};
     Clock::time_point queued_;
 public:
     struct Result {Totals totals;double workerMs=0,startLagMs=0;bool failed=false,cancelled=false;};
@@ -110,7 +128,7 @@ private:
             {std::unique_lock<std::mutex> lock(mutex_);wake_.wait(lock,[&]{return stop_||state_==State::Queued;});
              if(state_!=State::Queued)return;state_=State::Running;}
             const auto start=Clock::now();Result r;
-            try{r.totals=schedule(*cache_,items_,inverse_,&cancel_);}catch(...){r.failed=true;}
+            try{r.totals=schedule(*cache_,items_,inverse_,&cancel_,priority_.on?&priority_:nullptr);}catch(...){r.failed=true;}
             const auto end=Clock::now();r.cancelled=cancel_.load(std::memory_order_relaxed);
             r.workerMs=std::chrono::duration<double,std::milli>(end-start).count();r.startLagMs=std::chrono::duration<double,std::milli>(start-queued_).count();
             {std::lock_guard<std::mutex> lock(mutex_);result_=r;state_=State::Done;}
@@ -123,6 +141,7 @@ public:
     bool pending()const{return inFlight_;}
     // Filled by the render thread before start(); read back after finish().
     std::vector<Item>& items(){return items_;}
+    NorthlightReplayBoundsNear::List& nearList(){return priority_;} /* filled by gather() with the items, before start() */
     // false: no thread (creation failed); the caller runs the synchronous pass.
     bool ready(){
         if(!thread_.joinable()){try{thread_=std::thread([this]{loop();});}catch(...){return false;}}

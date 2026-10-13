@@ -29,7 +29,7 @@ checks['matrix from the raw pivot, before the anchored cascade pivot; off = noth
     and 'actorCenterValid[s]=false;' in w and 'actorCenterValid[0]=actorCenterValid[1]=false;' in w and w.count('actorCenterValid[0]=actorCenterValid[1]=false;')==1) # releaseGPU (reset() calls it)
 checks['leash: 1.5 yd, 40 yd jump re-centre; diagnostic dump s%d-actor; water actor flag under the cascades\' direction check']=('inline constexpr float Leash=1.5f;' in h and 'inline constexpr float JumpDistance=40.f;' in h
     and 'std::snprintf(name,sizeof name,"s%d-actor",source);NorthlightWorldDiagnostics::dump(d,actorShadowSurface[source]' in w and '&&c[28][source]>0.f;' in wr)
-checks['a source without a near map keeps no actor map']='if(!actorMapOn||!sourceActive[source])actorValid[source]=false;' in render
+checks['a source without a near map keeps no actor map']='if(!actorMapOn||!sourceActive[source]){actorValid[source]=false;actorHold[source].invalidate();}' in render
 # Pairing: invalid when the near map is redrawn, valid only after the actor draw; a reused/deferred near map continues before any of it.
 loop=render[render.index('        for(int source=0;source<2;++source){\n          if(!effects.shadows||!sourceActive[source])continue;'):]
 reuse=loop.index('if(action!=NorthlightQuality::CascadeAction::Render){')
@@ -49,8 +49,9 @@ checks['actor draw: own target, shared 1024 depth, cleared white/1, cascade repl
 # The near skip: cascade 0 only, valid bounds only (insideInset rejects invalid bounds), actor matrix.
 checks['near skip: cascade 0 only, never the far map, by the inset test on valid bounds']=(
     'bool nearSkip=cascade==0&&actorFrameOn[source];' in loop and 'if(nearSkip){actorReplays.clear();try{actorReplays.reserve(replays.size());}catch(...){nearSkip=false;}}' in loop
-    and 'if(nearSkip&&NorthlightActorShadowMap::insideInset(p->pointBounds.valid,p->pointBounds.low,p->pointBounds.high,actorFrameMatrix[source])){actorReplays.push_back(uint32_t(index));++nearSkipped;continue;}' in loop
-    and loop.count('insideInset(')==1 and 'if(!valid||!low||!high||!m)return false;' in h
+    and 'NorthlightActorShadowMap::insetExtent(p->pointBounds.valid,p->pointBounds.low,p->pointBounds.high,matrix,NorthlightActorShadowMap::Stay);' in loop
+    and 'if(inActor){actorReplays.push_back(uint32_t(index));++nearSkipped;' in loop and 'extent<=NorthlightActorShadowMap::Inset' in loop
+    and loop.count('insideInset(')==1 and 'insideInset(true,p->captureRoot,p->captureRoot,actorFrameMatrix[source])){if(p->shared)side.invalidNear();else side.unsupportedNear();}' in loop and 'if(!valid||!low||!high||!m)return false;' in h
     and h.count('std::isfinite(m[i])')==1 and h.index('std::isfinite(m[i])')<h.index('inline bool insideInset(')) # the matrix once per frame (finiteMatrix), not per replay
 # A near map drawn with the skip lacks those casters: reusable only while its actor map is valid (the source went inactive, the detail went off).
 checks['near map with skipped casters is redrawn, not reused, once its actor map is gone']=(
@@ -95,6 +96,37 @@ checks['water: maps on s8/s9, ActorMatrix c29..c36, ActorShadowInfo c37, filled 
     and 'float c[38][4]={}' in wr and 'memcpy(c[29+source*4],context.actorShadowMatrices[source],64)' in wr and 'c[37][2]=1.f/1024;' in wr and 'SetPixelShaderConstantF(0,c[0],38)' in wr
     and 'context.sourceShadows[1][1],context.actorShadows[0],context.actorShadows[1]};' in wr and 'for(unsigned i=0;i<10;++i){d->SetTexture(i,textures[i]);' in wr
     and 'out.actorShadows[source]=actorShadow[source];memcpy(out.actorShadowMatrices[source],actorMatrices[source],64);out.actorShadowValid[source]=true;' in w)
+# Hysteresis hold and the near-first bounds order: wired once, gated diagnostics, shown on the actor map log line.
+hold=fp.src('actor_side_hold.h').read_text();job=fp.src('replay_bounds_job.h').read_text();near=fp.src('replay_bounds_near.h').read_text();point=fp.src('world_point_rendering.inl').read_text()
+checks['hold: per-source table, begun with the diagnostics flag (or invalidated when the pass does not run); skinned casters take the root or the valid bounds centre as identity, others today\'s rule']=(
+    'NorthlightActorSideHold::Hold actorHold[2];' in w and 'if(!actorMapOn||!sourceActive[source]){actorValid[source]=false;actorHold[source].invalidate();}' in w and 'if(nearSkip)actorHold[source].begin(sideDiag,unsigned(frames)+1);else if(cascade==0)actorHold[source].invalidate();' in loop
+    and 'if(!p->shadowSkinned)inActor=extent<=NorthlightActorShadowMap::Inset;' in loop and 'const float* position=p->shadowSkinned?p->position():nullptr;' in loop and 'const std::uint64_t model=NorthlightActorSideHold::holdModel(*p);float centre[3];const float* at=position;' in loop and 'return p.captureRootValid?h:~h;' in hold and loop.count('holdModel(*p)')==2 and 'if(!p->captureRootValid){' in loop and 'if(!at){for(unsigned k=0;k<3;++k)centre[k]=.5f*(p->pointBounds.low[k]+p->pointBounds.high[k]);at=centre;}}' in loop
+    and 'inActor=actorHold[source].decide(model,at,extent);' in loop and loop.count('actorHold[source].decide(')==1
+    and 'if(inActor&&position)actorHold[source].stamp(model,position,matrix,extent);' in loop and 'else if(p->shadowSkinned&&!p->pointBounds.valid&&p->shared){' in loop
+    and 'inActor=actorHold[source].carry(NorthlightActorSideHold::holdModel(*p),position,matrix);' in loop and loop.count('actorHold[source].carry(')==1)
+checks['hold diagnostics: overflow and band counters only when the pass was begun with diagnostics']=(
+    'void begin(bool diagnostics=false,unsigned realFrame=0){advance(1);real_=realFrame?realFrame:frame_;diagnostics_=diagnostics;bandHeld=0;carried=0;}' in hold and 'if(diagnostics_)++overflows;' in hold and 'if(diagnostics_&&!inside)++bandHeld;' in hold)
+checks['actor map log line: hold band, overflows, near list size and near walk stops']=(
+    ' holdBand=%u holdOverflows=%lu nearListSize=%u nearWalkStops=%lu sideFlipsRootedSinceLog=%u sideFlipsUnrootedSinceLog=%u invalidBoundsNearSinceLog=%u unrootedNoBounds=%u unrootedNoBoundsSinceLog=%u selfUnrooted=%u selfNoBoundsFramesSinceLog=%u holdCarried=%u holdCarriedTotal=%lu"' in loop
+    and 'actorHold[source].bandHeld,actorHold[source].overflows,replayNearSize,replayNearStops,' in loop and 'actorSide[source].sideFlipsRooted,actorSide[source].sideFlipsUnrooted,' in loop and 'actorHold[source].carried,actorHold[source].carriedTotal);' in loop
+    and 'if(NorthlightDiagnostics::enabled()){replayNearSize=unsigned(replayBoundsWorker.nearList().size());replayNearStops+=result.totals.nearStops;}' in point)
+checks['bounds near-first: the list is filled by gather with the items, walks rotate per phase and take at most half of a phase budget']=(
+    'priority->consider(i,p.position(),p.selfShadow)' in job and 'schedule(*cache_,items_,inverse_,&cancel_,priority_.on?&priority_:nullptr)' in job
+    and 'halfLeft(budget.operations,budget.maxOperations)' in job and 'halfLeft(budget.vertices,budget.maxVertices)' in job and 'used+(max>used?(max-used)/2:0)' in job and 'cache.phaseNanoseconds(phase)<until' in job and job.count('nearWalk(')==3 and 'NorthlightReplaySchedule::pass(index.size(),list->cursor[phase][r]%index.size()' in near
+    and not re.search(r'\bnear[(=]',job+near+hold)) # near is a Windows macro
+rigidm=fp.src('world_rigid_memory.inl').read_text()
+checks['position without bounds: the palette root, or the origin of an injected rigid prop (not a palette root, never mixed into captureRoot)']=(
+    'float anchor[3]={};bool anchorValid=false;' in w and 'const float* position()const{return captureRootValid?captureRoot:anchorValid?anchor:nullptr;}' in w
+    and 'p->captureRootValid=rooted;if(rooted)std::memcpy(p->captureRoot,root,sizeof p->captureRoot);p->anchorValid=false;' in w
+    and 'p->captureRootValid=false;p->selfShadow=false;std::memcpy(p->anchor,e.world+9,sizeof p->anchor);p->anchorValid=true;' in rigidm)
+checks['near list: built from the actor maps as last drawn and the selection\'s self; rotating pass leaves listed packets to the walks once their share is spent, a packet over the share is delisted']=(
+    'nearList().begin(actorMatrices[0],actorValid[0],actorMatrices[1],actorValid[1])' in point
+    and 'item.outer=priority&&priority->consider(i,p.position(),p.selfShadow);' in job and 'skipOuter&&items[index].outer?false:visit(index,phase)' in job
+    and 'const bool skipOuter=priority&&priority->skipOuter();' in job and job.count('rotate(index,')==3 and 'inline constexpr float Limit=NorthlightActorShadowMap::Stay+(NorthlightActorShadowMap::Leash+CasterYards)/NorthlightActorShadowMap::Radius;' in near)
+sel=fp.src('world_shadow_experiment.inl').read_text()
+checks['ring 0 is the self: the selection marks the self\'s draws every frame (not only with diagnostics), injected props never inherit the mark']=(
+    'for(const auto& a:actorShadowScratch.actors)if(a.self)for(size_t i=a.first;i<a.first+a.count;++i)replays[actorShadowDraws[i].index]->selfShadow=true;' in sel
+    and 'if(NorthlightDiagnostics::enabled())for(const auto& a:actorShadowScratch.actors)if(a.self)' not in sel and 'p->selfShadow=false;std::memcpy(p->anchor' in rigidm)
 for name,ok in checks.items():print(('PASS ' if ok else 'FAIL ')+name)
 assert all(checks.values())
 with tempfile.TemporaryDirectory(prefix='northlight-actormap-') as tmp:
