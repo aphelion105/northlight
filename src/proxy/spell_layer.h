@@ -27,6 +27,7 @@
 #include <optional>
 #include <vector>
 #include "saved_state.h"
+#include "synced_slots.h"
 #include "shader_read_set.h"
 
 namespace NorthlightSpellLayer {
@@ -161,6 +162,8 @@ struct Counters{
     unsigned flushes=0,replays=0,replayedDraws=0,replaySkipped=0,discarded=0;
     unsigned restoreFallbacks=0,texSplits=0;      // drains that had to use the state block instead of the minimal restore; texture writes answered with a split (drain, keep deferring)
     unsigned restoreSets=0;                       // device Set* calls of the minimal restore (apart from replaySets)
+    uint64_t recordSlots=0;                       // slots a record examined (read and compared): with the synced bits only the ones that may have changed
+    unsigned dirtyMismatches=0;                   // Config::dirtyCheck: records whose synced-bit delta differed from the full compare's (must stay 0)
     unsigned drains=0;                            // replay sequences actually run, of every kind: B (replays), hazard flushes, splits, refused defers (replays counts the B ones only)
     unsigned fixed=0;                             // deferred draws that were fixed-function (also counted in deferred[])
     unsigned conflicts=0,materialized=0,recorded=0,replaySets=0; // recorded: draws recorded; replaySets: device Set* calls issued by replays
@@ -174,7 +177,7 @@ struct Counters{
         for(int i=0;i<4;++i){deferred[i]+=o.deferred[i];inPlace[i]+=o.inPlace[i];}
         for(int i=0;i<3;++i)orderBy[i]+=o.orderBy[i];
         for(unsigned i=0;i<kReasons;++i)hazards[i]+=o.hazards[i];
-        fixed+=o.fixed;flushes+=o.flushes;replays+=o.replays;drains+=o.drains;restoreFallbacks+=o.restoreFallbacks;texSplits+=o.texSplits;restoreSets+=o.restoreSets;replayedDraws+=o.replayedDraws;replaySkipped+=o.replaySkipped;discarded+=o.discarded;
+        fixed+=o.fixed;flushes+=o.flushes;replays+=o.replays;drains+=o.drains;recordSlots+=o.recordSlots;dirtyMismatches+=o.dirtyMismatches;restoreFallbacks+=o.restoreFallbacks;texSplits+=o.texSplits;restoreSets+=o.restoreSets;replayedDraws+=o.replayedDraws;replaySkipped+=o.replaySkipped;discarded+=o.discarded;
         conflicts+=o.conflicts;materialized+=o.materialized;recorded+=o.recorded;replaySets+=o.replaySets;conflictBytes+=o.conflictBytes;
         for(int i=0;i<4;++i)capBy[i]+=o.capBy[i];overflowFrames+=o.overflowFrames;overflowAt+=o.overflowAt;overflowCandidates+=o.overflowCandidates;
         deltaWords+=o.deltaWords;arenaHigh=std::max(arenaHigh,o.arenaHigh);recordHigh=std::max(recordHigh,o.recordHigh);
@@ -324,6 +327,9 @@ struct Config{
     DWORD readBackLockFlags=D3DLOCK_READONLY;     // NorthlightUpload::readBackLock()
     void (*markGuard)(void* ctx,void* rawBuffer,bool guarded)=nullptr;void* markCtx=nullptr; // sets/clears the per-buffer "call onBufferWrite" flag
     NorthlightStateBlockPool* savedPool=nullptr;  // the renderer's SavedState pool for the replay scope (optional; used only when minimalRestore is off or a drain cannot use it)
+    bool dirtyRecord=true;                        // a record examines only the slots whose synced bit (SyncedSlots, kept by the device mirror's setters) is clear; false: every slot of the read set, as before
+    bool dirtyCheck=false;                        // tests: run both and count a difference in dirtyMismatches (the full compare's delta is the one used)
+    SyncedSlots* synced=nullptr;                  // the bits; null (or the state cache unusable for a record): the full compare
     bool minimalRestore=true;                     // a drain restores exactly the slots it set (read before the first Set, restored after the last draw) instead of a D3DSBT_ALL state block; false: always the state block
     unsigned maxTexSplits=8;                      // texture writes to a texture a pending draw samples are answered with a split (drain, keep deferring) up to this many per frame; the next one is a TexWrite hazard
     unsigned deltaChunkWords=16384;               // 64 KiB chunks (at most 65535: entries address a delta with 16-bit offsets)
@@ -440,6 +446,10 @@ constexpr std::array<uint64_t,32> rsKnownMaskTable(){
     return t;
 }
 constexpr std::array<uint64_t,32> kRsKnownMask=rsKnownMaskTable();
+constexpr std::array<uint64_t,4> rsIdMaskTable(){std::array<uint64_t,4> t{};for(unsigned i=0;i<kRenderStates;++i)t[kRenderStateIds[i]/64]|=1ull<<(kRenderStateIds[i]%64);return t;}
+constexpr std::array<uint64_t,4> kRsIdMask=rsIdMaskTable();                // bit per valid D3DRS id
+constexpr std::array<uint8_t,256> rsIndexTable(){std::array<uint8_t,256> t{};for(auto& x:t)x=255;for(unsigned i=0;i<kRenderStates;++i)t[kRenderStateIds[i]]=uint8_t(i);return t;}
+constexpr std::array<uint8_t,256> kRsIndexOfId=rsIndexTable();             // id -> index in kRenderStateIds (255: not a state)
 // known[0..n) all set: the flags are 0/1 bytes, eight are tested per load.
 inline bool runKnown(const bool* known,unsigned n){
     unsigned i=0;
@@ -589,6 +599,8 @@ private:
         return true;
     }
     std::vector<std::unique_ptr<uint32_t[]>> deltaChunks_;unsigned deltaChunk_=0,deltaUsed_=0; // state deltas of the pending entries; deltaChunk_/deltaUsed_: the chunk being filled and its used words
+    struct SyncPend{uint64_t rs[4]={},vsF[4]={},psF[4]={};uint16_t ss[16]={};uint16_t tex=0;bool vp=false;unsigned slots=0;};
+    SyncPend pend_;                                   // the slots the delta being built examined: they become synced when the record commits
     std::unique_ptr<DeltaProfile> profStore_;DeltaProfile* prof_=nullptr; // SPELLDELTA diagnostics: non-null only on sampled frames (profile())
     // Stream and index buffer binds of an entry against the previous entry of the sequence (the first entry binds everything: unknown), one word each; a UP draw rebinds stream 0 every time.
     void profileStreams(const Entry& e,const Entry* prev){
@@ -675,7 +687,7 @@ private:
     void clearFrame(){
         guards_.clear([&](void* key){mark(key,false);}); // before the entries drop their references: the marked buffers are still alive
         releaseHeld();
-        count_=0;ffCount_=0;deltaChunk_=0;deltaUsed_=0;model_.reset();stTouched_=0;ibTouched_=anyFf_=false;ffLights_=0;blobs_.clear();hits_.clear();
+        count_=0;ffCount_=0;deltaChunk_=0;deltaUsed_=0;model_.reset();if(cfg_.synced)cfg_.synced->clearAll();stTouched_=0;ibTouched_=anyFf_=false;ffLights_=0;blobs_.clear();hits_.clear();
         frame_.arenaHigh=std::max(frame_.arenaHigh,arenaUsed_);total_.arenaHigh=std::max(total_.arenaHigh,arenaUsed_);
         arenaUsed_=vbUsed_=ibUsed_[0]=ibUsed_[1]=0;
         if(target_){target_->Release();target_=nullptr;}
@@ -1070,99 +1082,142 @@ private:
     void emit1(uint32_t op,uint32_t a,uint32_t v){scratch_[n_++]=opWord(op,a,0);scratch_[n_++]=v;}
     void emitPtr(uint32_t op,uint32_t a,const void* p){scratch_[n_++]=opWord(op,a,0);std::memcpy(&scratch_[n_],&p,sizeof p);n_+=kPtrWords;}
     // Emits, for the registers in mask whose value differs from the model (or is unknown in it), runs of rows (bridging gaps of up to two unchanged registers:
-    // one call is cheaper than two). Aligned blocks of 16 registers that are all in the mask and known to the model are compared in one go.
-    template<unsigned rowWords> void diffRows(uint32_t op,const void* curV,const void* mdlV,const uint64_t* valid,const uint64_t* mask,unsigned n){
+    // one call is cheaper than two). synced (optional): registers whose model value is known to equal the device (valid in the model, SyncedSlots) are not examined: they cannot
+    // differ, and a bridged one is copied from the model, so the emitted delta is the one the full compare makes. Only the registers of mask & ~synced are looked at, word-wise.
+    template<unsigned rowWords> void diffRows(uint32_t op,const void* curV,const void* mdlV,const uint64_t* valid,const uint64_t* mask,const uint64_t* synced,unsigned n){
         const uint8_t* cur=static_cast<const uint8_t*>(curV),*mdl=static_cast<const uint8_t*>(mdlV);constexpr size_t rb=size_t(rowWords)*4; // constant row size: the compare inlines
-        auto differs=[&](unsigned i){return !bitSet(valid,i)||std::memcmp(cur+i*rb,mdl+i*rb,rb)!=0;};
-        for(unsigned i=0;i<n;){
-            if(!bitSet(mask,i)){++i;continue;}
-            if(!(i&15)&&i+16<=n&&blockFull(mask,i)&&blockFull(valid,i)&&!std::memcmp(cur+i*rb,mdl+i*rb,16*rb)){i+=16;continue;}
-            if(!differs(i)){++i;continue;}
-            unsigned end=i+1;
-            for(unsigned k=end;k<n&&k-end<=2&&bitSet(mask,k);++k)if(differs(k))end=k+1;
-            emit(op,i,end-i);std::memcpy(&scratch_[n_],cur+i*rb,size_t(end-i)*rb);n_+=(end-i)*rowWords;i=end;
+        auto isSynced=[&](unsigned i){return synced&&bitSet(synced,i);};
+        auto differs=[&](unsigned i){return !isSynced(i)&&(!bitSet(valid,i)||std::memcmp(cur+i*rb,mdl+i*rb,rb)!=0);};
+        unsigned consumed=0; // rows below it are inside an emitted run
+        for(unsigned w=0;w<(n+63)/64;++w){
+            uint64_t bits=mask[w]&~(synced?synced[w]:0ull);
+            while(bits){
+                const unsigned i=w*64+unsigned(__builtin_ctzll(bits));bits&=bits-1;
+                if(i>=n)break;
+                if(i<consumed||!differs(i))continue;
+                unsigned end=i+1;
+                for(unsigned k=end;k<n&&k-end<=2&&bitSet(mask,k);++k)if(differs(k))end=k+1;
+                emit(op,i,end-i);
+                for(unsigned r=i;r<end;++r){std::memcpy(&scratch_[n_],(isSynced(r)?mdl:cur)+r*rb,rb);n_+=rowWords;}
+                consumed=end;
+            }
         }
     }
-    // The render states of the draw by id: the cache's array when every listed state is known (one pass over its known flags, 8 at a time), else a staging copy
-    // with the unknown ones read by Get (a state the device refuses is dropped for the session: neither recorded nor replayed).
-    const DWORD* renderStates(){
+    // The render states of the draw by id: the cache's array when every state is known (one pass over its known flags, 8 at a time), else a staging copy: the model's values (they
+    // equal the device for the synced slots) with the dirty ids read by the cache or by Get (a state the device refuses is dropped for the session: neither recorded nor replayed).
+    const DWORD* renderStates(const uint64_t* dirty){
         if(mv_&&!anySkip_){
             bool all=true;
             for(unsigned i=0;i<32&&all;++i){uint64_t f;std::memcpy(&f,mv_->rsKnown+i*8,8);all=(f&kRsKnownMask[i])==kRsKnownMask[i];}
             if(all)return mv_->rs;
         }
         if(model_.rsValid)std::memcpy(rsStage_,model_.rs,sizeof rsStage_);else std::memset(rsStage_,0,sizeof rsStage_);
-        for(unsigned i=0;i<kRenderStates;++i){
-            if(rsSkip_[i])continue;
-            const unsigned id=kRenderStateIds[i];
-            if(mv_&&mv_->rsKnown[id])rsStage_[id]=mv_->rs[id];
-            else if(FAILED(dev_->GetRenderState(D3DRENDERSTATETYPE(id),&rsStage_[id]))){rsSkip_[i]=true;anySkip_=true;rsStage_[id]=model_.rsValid?model_.rs[id]:0;}
+        for(unsigned w=0;w<4;++w){
+            uint64_t bits=dirty[w];
+            while(bits){
+                const unsigned id=w*64+unsigned(__builtin_ctzll(bits));bits&=bits-1;
+                const unsigned i=kRsIndexOfId[id];
+                if(i>=kRenderStates||rsSkip_[i])continue;
+                if(mv_&&mv_->rsKnown[id])rsStage_[id]=mv_->rs[id];
+                else if(FAILED(dev_->GetRenderState(D3DRENDERSTATETYPE(id),&rsStage_[id]))){rsSkip_[i]=true;anySkip_=true;rsStage_[id]=model_.rsValid?model_.rs[id]:0;}
+            }
         }
         return rsStage_;
     }
-    // Builds the delta of the draw into scratch_ (the model is not touched: the record may still be refused). Reason::Count: built.
-    Reason buildDelta(const Reads& rd,bool fixed,IDirect3DVertexShader9* vs,IDirect3DPixelShader9* ps,IDirect3DVertexDeclaration9* decl,DWORD fvf,IDirect3DBaseTexture9* const (&tex)[kMaxTextures]){
-        const Model& m=model_;n_=0;
+    // Builds the delta of the draw into scratch_ (the model is not touched: the record may still be refused). Reason::Count: built. sy: the synced bits to use (null: examine every
+    // slot of the read set, the full compare); track: fill pend_ with the stage and viewport slots examined (sy or not); pend_ receives the slots this record examined (they become synced at commit) and how many there were.
+    Reason buildDelta(const Reads& rd,bool fixed,IDirect3DVertexShader9* vs,IDirect3DPixelShader9* ps,IDirect3DVertexDeclaration9* decl,DWORD fvf,IDirect3DBaseTexture9* const (&tex)[kMaxTextures],const SyncedSlots* sy,bool track){
+        const Model& m=model_;n_=0;pend_=SyncPend{};unsigned slots=0;
         if(!m.vsV||m.vs!=static_cast<void*>(vs))emitPtr(Op::Vs,0,static_cast<void*>(vs));
         if(!m.psV||m.ps!=static_cast<void*>(ps))emitPtr(Op::Ps,0,static_cast<void*>(ps));
         if(decl){if(m.declMode!=1||m.decl!=static_cast<void*>(decl))emitPtr(Op::Decl,0,static_cast<void*>(decl));}
         else if(m.declMode!=2||m.fvf!=fvf)emit1(Op::Fvf,0,fvf);
-        // render states
-        const DWORD* cur=renderStates();rsCur_=cur;
+        // render states (a synced bit counts only for a slot the model holds)
+        uint64_t rsDirty[4];for(unsigned w=0;w<4;++w)rsDirty[w]=kRsIdMask[w]&~(sy&&m.rsValid?sy->rs[w]:0ull);
+        const DWORD* cur=renderStates(rsDirty);rsCur_=cur;
         if(fixed&&(cur[151]||cur[167]))return Reason::Admit; // D3DRS_VERTEXBLEND / INDEXEDVERTEXBLENDENABLE: WORLD1..3 would be read
-        if(!m.rsValid){for(unsigned i=0;i<kRenderStates;++i)if(!rsSkip_[i])emit1(vendorHackState(kRenderStateIds[i])?Op::RsCheck:Op::Rs,i,cur[kRenderStateIds[i]]);}
-        else if(std::memcmp(cur,m.rs,sizeof m.rs)){for(unsigned i=0;i<kRenderStates;++i)if(!rsSkip_[i]&&cur[kRenderStateIds[i]]!=m.rs[kRenderStateIds[i]])emit1(Op::Rs,i,cur[kRenderStateIds[i]]);}
+        for(unsigned w=0;w<4;++w){
+            uint64_t bits=rsDirty[w];
+            while(bits){
+                const unsigned id=w*64+unsigned(__builtin_ctzll(bits));bits&=bits-1;
+                const unsigned i=kRsIndexOfId[id];
+                if(i>=kRenderStates||rsSkip_[i])continue;
+                ++slots;pend_.rs[w]|=1ull<<(id&63);
+                if(!m.rsValid)emit1(vendorHackState(id)?Op::RsCheck:Op::Rs,i,cur[id]);
+                else if(cur[id]!=m.rs[id])emit1(Op::Rs,i,cur[id]);
+            }
+        }
         // texture bindings and the sampler states of the bound stages
         for(unsigned t=0;t<kMaxTextures;++t){
             if(!(rd.tex>>t&1))continue;
             void* p=static_cast<void*>(tex[t]);
+            const bool tracked=track&&t<16;
             if(!(m.texValid>>t&1)||m.tex[t]!=p)emitPtr(Op::Tex,t,p);
+            if(!(tracked&&sy&&(sy->tex>>t&1)&&(m.texValid>>t&1))){++slots;if(tracked)pend_.tex=uint16_t(pend_.tex|(1u<<t));}
             if(!p)continue; // a stage without a texture is not sampled
+            // sampler states 1..13 (bit k = type 1+k) still to examine: all of them unless this stage's are synced
+            const unsigned all=(1u<<kSamplerStates)-1,ssSynced=tracked&&sy&&(m.ssValid>>t&1)?(sy->ss[t]>>kSamplerFirst)&all:0u,dm=all&~ssSynced;
+            if(!dm)continue;
             DWORD v[kSamplerStates];const DWORD* sv=v;
-            if(mv_&&t<16&&runKnown(&mv_->smpKnown[t][kSamplerFirst],kSamplerStates))sv=&mv_->smp[t][kSamplerFirst];
-            else for(unsigned k=0;k<kSamplerStates;++k)if(FAILED(dev_->GetSamplerState(samplerStage(t),D3DSAMPLERSTATETYPE(kSamplerFirst+k),&v[k])))return Reason::Capture;
+            bool fromMirror=mv_&&t<16;
+            if(fromMirror)for(unsigned k=0;k<kSamplerStates;++k)if((dm>>k&1)&&!mv_->smpKnown[t][kSamplerFirst+k]){fromMirror=false;break;}
+            if(fromMirror)sv=&mv_->smp[t][kSamplerFirst];
+            else for(unsigned k=0;k<kSamplerStates;++k)if((dm>>k&1)&&FAILED(dev_->GetSamplerState(samplerStage(t),D3DSAMPLERSTATETYPE(kSamplerFirst+k),&v[k])))return Reason::Capture;
             if(!(m.ssValid>>t&1)){for(unsigned k=0;k<kSamplerStates;++k)emit1(Op::Ss,t*kSamplerStates+k,sv[k]);}
-            else for(unsigned k=0;k<kSamplerStates;++k)if(sv[k]!=m.ss[t][k])emit1(Op::Ss,t*kSamplerStates+k,sv[k]);
+            else for(unsigned k=0;k<kSamplerStates;++k)if((dm>>k&1)&&sv[k]!=m.ss[t][k])emit1(Op::Ss,t*kSamplerStates+k,sv[k]);
+            slots+=unsigned(__builtin_popcount(dm));
+            if(tracked)pend_.ss[t]=uint16_t(pend_.ss[t]|(dm<<kSamplerFirst));
         }
-        // shader constants
+        // shader constants (float rows: only the ones not synced are read)
         unsigned lo=0,hi=0;
-        if(maskSpan(rd.vsF,4,lo,hi)){
+        uint64_t sync4[4],dm4[4];
+        for(unsigned w=0;w<4;++w){sync4[w]=sy?sy->vsF[w]&m.vsFV[w]:0ull;dm4[w]=rd.vsF[w]&~sync4[w];}
+        if(maskSpan(dm4,4,lo,hi)){
             const float (*src)[4]=vsStage_;
-            if(mv_&&knownAll(mv_->vsFKnown,rd.vsF,4))src=mv_->vsF;
+            if(mv_&&knownAll(mv_->vsFKnown,dm4,4))src=mv_->vsF;
             else if(FAILED(dev_->GetVertexShaderConstantF(lo,vsStage_[lo],hi-lo+1)))return Reason::Capture;
-            diffRows<4>(Op::VsF,src,m.vsF,m.vsFV,rd.vsF,kVsFloat);
+            diffRows<4>(Op::VsF,src,m.vsF,m.vsFV,rd.vsF,sync4,kVsFloat);
+            for(unsigned w=0;w<4;++w){pend_.vsF[w]=dm4[w];slots+=unsigned(__builtin_popcountll(dm4[w]));}
         }
-        if(maskSpan(rd.psF,4,lo,hi)){
+        for(unsigned w=0;w<4;++w){sync4[w]=sy?sy->psF[w]&m.psFV[w]:0ull;dm4[w]=rd.psF[w]&~sync4[w];}
+        if(maskSpan(dm4,4,lo,hi)){
             const float (*src)[4]=psStage_;
-            if(mv_&&knownAll(mv_->psFKnown,rd.psF,4))src=mv_->psF;
+            if(mv_&&knownAll(mv_->psFKnown,dm4,4))src=mv_->psF;
             else if(FAILED(dev_->GetPixelShaderConstantF(lo,psStage_[lo],hi-lo+1)))return Reason::Capture;
-            diffRows<4>(Op::PsF,src,m.psF,m.psFV,rd.psF,kPsFloat);
+            diffRows<4>(Op::PsF,src,m.psF,m.psFV,rd.psF,sync4,kPsFloat);
+            for(unsigned w=0;w<4;++w){pend_.psF[w]=dm4[w];slots+=unsigned(__builtin_popcountll(dm4[w]));}
         }
         int is[kInts][4];BOOL bs[kBools];
         if(rd.vsI){
             const uint64_t mk=rd.vsI;const int (*src)[4]=is;
             if(mv_&&knownAll(mv_->vsIKnown,&mk,1))src=mv_->vsI;else if(FAILED(dev_->GetVertexShaderConstantI(0,&is[0][0],kInts)))return Reason::Capture;
-            diffRows<4>(Op::VsI,src,m.vsI,&m.vsIV,&mk,kInts);
+            diffRows<4>(Op::VsI,src,m.vsI,&m.vsIV,&mk,nullptr,kInts);slots+=unsigned(__builtin_popcountll(mk));
         }
         if(rd.vsB){
             const uint64_t mk=rd.vsB;const BOOL* src=bs;
             if(mv_&&knownAll(mv_->vsBKnown,&mk,1))src=mv_->vsB;else if(FAILED(dev_->GetVertexShaderConstantB(0,bs,kBools)))return Reason::Capture;
-            diffRows<1>(Op::VsB,src,m.vsB,&m.vsBV,&mk,kBools);
+            diffRows<1>(Op::VsB,src,m.vsB,&m.vsBV,&mk,nullptr,kBools);slots+=unsigned(__builtin_popcountll(mk));
         }
-        if(rd.psI){const uint64_t mk=rd.psI;if(FAILED(dev_->GetPixelShaderConstantI(0,&is[0][0],kInts)))return Reason::Capture;diffRows<4>(Op::PsI,is,m.psI,&m.psIV,&mk,kInts);}
-        if(rd.psB){const uint64_t mk=rd.psB;if(FAILED(dev_->GetPixelShaderConstantB(0,bs,kBools)))return Reason::Capture;diffRows<1>(Op::PsB,bs,m.psB,&m.psBV,&mk,kBools);}
-        // viewport; the scissor rect only with the scissor test on; the clip planes only for the enabled ones (the draw reads nothing else)
-        D3DVIEWPORT9 vpl;const D3DVIEWPORT9* vp=&vpl;
-        if(mv_&&*mv_->vpKnown)vp=mv_->vp;else if(FAILED(dev_->GetViewport(&vpl)))return Reason::Capture;
-        if(!m.vpV||std::memcmp(vp,&m.vp,sizeof m.vp)){emit(Op::Viewport,0);std::memcpy(&scratch_[n_],vp,sizeof *vp);n_+=sizeof(D3DVIEWPORT9)/4;}
+        if(rd.psI){const uint64_t mk=rd.psI;if(FAILED(dev_->GetPixelShaderConstantI(0,&is[0][0],kInts)))return Reason::Capture;diffRows<4>(Op::PsI,is,m.psI,&m.psIV,&mk,nullptr,kInts);slots+=unsigned(__builtin_popcountll(mk));}
+        if(rd.psB){const uint64_t mk=rd.psB;if(FAILED(dev_->GetPixelShaderConstantB(0,bs,kBools)))return Reason::Capture;diffRows<1>(Op::PsB,bs,m.psB,&m.psBV,&mk,nullptr,kBools);slots+=unsigned(__builtin_popcountll(mk));}
+        // viewport; the scissor rect only with the scissor test on; the clip planes only for the enabled ones (the draw reads nothing else; neither has a synced bit)
+        if(!(sy&&sy->vp&&m.vpV)){
+            D3DVIEWPORT9 vpl;const D3DVIEWPORT9* vp=&vpl;
+            if(mv_&&*mv_->vpKnown)vp=mv_->vp;else if(FAILED(dev_->GetViewport(&vpl)))return Reason::Capture;
+            if(!m.vpV||std::memcmp(vp,&m.vp,sizeof m.vp)){emit(Op::Viewport,0);std::memcpy(&scratch_[n_],vp,sizeof *vp);n_+=sizeof(D3DVIEWPORT9)/4;}
+            ++slots;pend_.vp=track;
+        }
         if(cur[174]){
             RECT sc;if(FAILED(dev_->GetScissorRect(&sc)))return Reason::Capture;
             if(!m.scissorV||std::memcmp(&sc,&m.scissor,sizeof sc)){emit(Op::Scissor,0);std::memcpy(&scratch_[n_],&sc,sizeof sc);n_+=4;}
+            ++slots;
         }
         for(unsigned i=0;i<kClipPlanes;++i)if(cur[152]>>i&1){
             float pl[4];if(FAILED(dev_->GetClipPlane(i,pl)))return Reason::Capture;
             if(!(m.clipV>>i&1)||std::memcmp(pl,m.clip[i],sizeof pl)){emit(Op::Clip,i);std::memcpy(&scratch_[n_],pl,sizeof pl);n_+=4;}
+            ++slots;
         }
+        pend_.slots=slots;
         return Reason::Count;
     }
     bool readFf(FfRec& f){
@@ -1201,7 +1256,7 @@ public:
     void attach(IDirect3DDevice9* dev){reset();dev_=dev;}
     // Only while nothing is pending (else pending entries are dropped). Allocates the held-object table once; entries, deltas and the arena follow on demand.
     void configure(const Config& c){
-        reset();cfg_=c;cfg_.deltaChunkWords=std::min(65535u,std::max(1024u,cfg_.deltaChunkWords));
+        reset();cfg_=c;if(cfg_.synced)cfg_.synced->clearAll();cfg_.deltaChunkWords=std::min(65535u,std::max(1024u,cfg_.deltaChunkWords));
         if(cfg_.on){
             size_t slots=1024;while(slots<size_t(cfg_.maxEntries)*4)slots<<=1;held_.assign(slots,Held{});heldUsed_.reserve(slots*3/4);scratch_.reset(new uint32_t[kScratchWords]);model_.reset();
         }
@@ -1272,6 +1327,8 @@ public:
         if(held_.empty()||!ensureEntry(count_))return capFail(0);
         const bool up=a.type==DrawType::PrimitiveUP||a.type==DrawType::IndexedUP,idx=a.type==DrawType::Indexed||a.type==DrawType::IndexedUP;
         Hold hold(*this); // the state cache's guard for all the reads below (Get calls nest in it)
+        SyncedSlots* const sy=(cfg_.dirtyRecord&&cfg_.synced&&mv_)?cfg_.synced:nullptr; // only with the state cache usable: its setters keep the bits (an unusable cache means no bits are trusted)
+        const uint32_t epoch0=sy?sy->epoch:0;
         Entry& e=entryAt(count_);e=Entry{};
         e.type=a.type;e.prim=a.prim;e.base=a.baseVertex;e.minIndex=a.minIndex;e.numVertices=a.numVertices;e.first=a.first;e.primCount=a.primCount;
         // admission: a programmable vertex and pixel stage, ps_2_0 or newer (the fixed-function state is then unused and not recorded), or neither
@@ -1347,6 +1404,7 @@ public:
         IDirect3DBaseTexture9* tex[kMaxTextures]={};Held* texHeld[kMaxTextures]={};
         for(unsigned t=0;t<kMaxTextures;++t){ // pixel samplers 0..15, then the vertex texture samplers (stages 257..260): a write to any of them flushes
             if(!(rd.tex>>t&1))continue;
+            if(sy&&t<16&&(sy->tex>>t&1)&&(model_.texValid>>t&1)){tex[t]=static_cast<IDirect3DBaseTexture9*>(model_.tex[t]);continue;} // synced: still what the model holds (held, verdict known and flagged when it was bound)
             IDirect3DBaseTexture9* tx=nullptr;owned=false;
             if(mv_&&t<16&&mv_->texKnown[t])tx=mv_->tex[t];
             else{dev_->GetTexture(samplerStage(t),&tx);owned=tx!=nullptr;}
@@ -1358,7 +1416,17 @@ public:
             }
             tex[t]=tx;texHeld[t]=h;
         }
-        {   const Reason why=buildDelta(rd,fixed,vs,ps,decl,fvf,tex);if(why!=Reason::Count)return fail(why);}
+        {   Reason why=buildDelta(rd,fixed,vs,ps,decl,fvf,tex,sy,sy!=nullptr);
+            if(sy&&cfg_.dirtyCheck){ // tests: the full compare must give the same delta (its result, and its larger examined set, is the one used); a Get the full compare needs and the dirty path never makes may fail
+                const unsigned n1=n_;const SyncPend p1=pend_;std::vector<uint32_t> d1(scratch_.get(),scratch_.get()+n_);
+                const Reason why2=buildDelta(rd,fixed,vs,ps,decl,fvf,tex,nullptr,true);
+                if(why==Reason::Count&&why2!=Reason::Count){n_=n1;pend_=p1;std::memcpy(scratch_.get(),d1.data(),size_t(n1)*4);}   // keep the dirty result
+                else{
+                    if(why2!=why||n_!=n1||std::memcmp(d1.data(),scratch_.get(),size_t(n1)*4))count([](Counters& c){++c.dirtyMismatches;});
+                    pend_.slots=p1.slots;why=why2;
+                }
+            }
+            if(why!=Reason::Count)return fail(why);}
         if(fixed){
             e.ff=ffAt(ffCount_);
             if(!readFf(*e.ff))return fail(Reason::Capture);
@@ -1369,6 +1437,12 @@ public:
         {   uint32_t* dst=deltaChunks_[e.dChunk].get()+e.dOff;std::memcpy(dst,scratch_.get(),size_t(n_)*4);
             if(prof_)prof_->record(model_,dst,n_); /* diagnostics: before the model takes this delta */
             ModelSink ms{model_};decodeOps(dst,dst+n_,ms);}
+        if(sy&&sy->epoch==epoch0){ // nothing changed the device under this record: what it examined now equals the model
+            for(unsigned w=0;w<4;++w){sy->rs[w]|=pend_.rs[w];sy->vsF[w]|=pend_.vsF[w];sy->psF[w]|=pend_.psF[w];}
+            for(unsigned t=0;t<16;++t)sy->ss[t]|=pend_.ss[t];
+            sy->tex|=pend_.tex;if(pend_.vp)sy->vp=true;
+        }
+        count([&](Counters& c){c.recordSlots+=pend_.slots;});
         if(up){
             std::memcpy(arena_.get()+arenaUsed_,static_cast<const uint8_t*>(a.vertexData)+vOff,upV);e.upVtx=arenaUsed_;arenaUsed_+=align16(upV);
             if(idx){std::memcpy(arena_.get()+arenaUsed_,a.indexData,upI);e.upIdx=arenaUsed_;arenaUsed_+=align16(upI);}

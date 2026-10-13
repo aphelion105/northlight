@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <new>
 #include "captured_constant_epoch.h"
+#include "synced_slots.h"
 #include "mirror_guard.h"
 
 static constexpr bool kMirrorWriteThrough=true,kMirrorBorrowedPeek=true;
@@ -34,6 +35,7 @@ struct DeviceMirror {
     MirrorGate gate; /* 0.3.180 (D0): the recursive mutex plus the owner thread and the census */
     NorthlightConstantEpoch::Clock constantEpoch;
     bool enabled=true,recording=false;
+    SyncedSlots* synced=nullptr; // the spell layer's 'Model equals the device' bits (synced_slots.h): every setter below clears the slot it writes, invalidate() clears all
     std::size_t rawDepth=0; // Gate-protected; suspends caching across private extension work.
     const char* disableReason=nullptr;
     IDirect3DVertexShader9* vertexShader=nullptr;bool vertexShaderKnown=false;
@@ -114,7 +116,7 @@ struct DeviceMirror {
     }
     // Callers hold gate, including ALL block Apply, Reset, and disable paths.
     void invalidate(){
-        constantEpoch.invalidate();
+        constantEpoch.invalidate();if(synced)synced->clearAll();
         vertexShaderKnown=pixelShaderKnown=declarationKnown=fvfKnown=indicesKnown=viewportKnown=depthKnown=false;
         for(auto& s:streams)s.known=false;
         std::memset(frequencyKnown,0,sizeof frequencyKnown);std::memset(textureKnown,0,sizeof textureKnown);
@@ -234,7 +236,7 @@ public:
         ++m->forwarded;HRESULT hr=real->GetStreamSourceFreq(n,out);if(valid&&SUCCEEDED(hr)&&m->active()){m->frequency[n]=*out;m->frequencyKnown[n]=true;}return hr;
     }
     HRESULT STDMETHODCALLTYPE SetTexture(DWORD stage,IDirect3DBaseTexture9* t) override{
-        Guard lock(m->gate);const std::uint64_t serial=m->mutations+1;HRESULT hr=real->SetTexture(stage,t);const bool slot=stage<DeviceMirror::Textures;if(slot)m->textureKnown[stage]=false;
+        Guard lock(m->gate);if(m->synced)m->synced->texture(stage);const std::uint64_t serial=m->mutations+1;HRESULT hr=real->SetTexture(stage,t);const bool slot=stage<DeviceMirror::Textures;if(slot)m->textureKnown[stage]=false;
         if(accepted(hr)&&slot){m->textures[stage]=t;m->textureKnown[stage]=m->written(DeviceMirror::TextureSlot+stage,serial);}else if(slot)m->forget(DeviceMirror::TextureSlot+stage);return hr;
     }
     HRESULT STDMETHODCALLTYPE GetTexture(DWORD stage,IDirect3DBaseTexture9** out) override{
@@ -244,7 +246,7 @@ public:
         if(valid&&m->active()){m->observed(DeviceMirror::TextureSlot+stage,SUCCEEDED(hr)&&*out==m->textures[stage]);if(SUCCEEDED(hr)){m->textures[stage]=*out;m->textureKnown[stage]=true;}}return hr;
     }
     HRESULT STDMETHODCALLTYPE SetSamplerState(DWORD n,D3DSAMPLERSTATETYPE type,DWORD value) override{
-        Guard lock(m->gate);const std::uint64_t serial=m->mutations+1;HRESULT hr=real->SetSamplerState(n,type,value);const bool slot=n<DeviceMirror::Textures&&unsigned(type)<DeviceMirror::SamplerTypes;
+        Guard lock(m->gate);if(m->synced)m->synced->sampler(n,unsigned(type));const std::uint64_t serial=m->mutations+1;HRESULT hr=real->SetSamplerState(n,type,value);const bool slot=n<DeviceMirror::Textures&&unsigned(type)<DeviceMirror::SamplerTypes;
         if(slot)m->samplerKnown[n][type]=false;const unsigned id=slot?DeviceMirror::SamplerSlot+n*DeviceMirror::SamplerTypes+unsigned(type):0;
         if(accepted(hr)&&slot){m->samplers[n][type]=value;m->samplerKnown[n][type]=m->written(id,serial,m->isProven(DeviceMirror::pair(id,value)));}else if(slot)m->forget(id);return hr;
     }
@@ -257,7 +259,7 @@ public:
             if(SUCCEEDED(hr)){m->samplers[n][type]=*out;m->samplerKnown[n][type]=true;}}return hr;
     }
     HRESULT STDMETHODCALLTYPE SetRenderState(D3DRENDERSTATETYPE type,DWORD value) override{
-        Guard lock(m->gate);const std::uint64_t serial=m->mutations+1;HRESULT hr=real->SetRenderState(type,value);const bool slot=unsigned(type)<DeviceMirror::RenderStates;
+        Guard lock(m->gate);if(m->synced)m->synced->renderState(unsigned(type));const std::uint64_t serial=m->mutations+1;HRESULT hr=real->SetRenderState(type,value);const bool slot=unsigned(type)<DeviceMirror::RenderStates;
         if(slot)m->renderStateKnown[type]=false;
         // Vendor command states (RESZ/ATOC etc.) may have implicit side effects.
         const bool vendor=type==D3DRS_POINTSIZE||type==D3DRS_ADAPTIVETESS_Y;if(vendor)m->invalidate();
@@ -273,7 +275,7 @@ public:
             if(SUCCEEDED(hr)){m->renderStates[type]=*out;m->renderStateKnown[type]=true;}}return hr;
     }
     HRESULT STDMETHODCALLTYPE SetViewport(const D3DVIEWPORT9* value) override{
-        Guard lock(m->gate);const std::uint64_t serial=m->mutations+1;HRESULT hr=real->SetViewport(value);m->viewportKnown=false;
+        Guard lock(m->gate);if(m->synced)m->synced->viewport();const std::uint64_t serial=m->mutations+1;HRESULT hr=real->SetViewport(value);m->viewportKnown=false;
         if(accepted(hr)&&value){m->viewport=*value;m->viewportKnown=m->written(DeviceMirror::ViewportSlot,serial,m->isProven(*value));}else m->forget(DeviceMirror::ViewportSlot);return hr;
     }
     HRESULT STDMETHODCALLTYPE GetViewport(D3DVIEWPORT9* out) override{
@@ -284,7 +286,7 @@ public:
     }
     // Target 0 implicitly resets viewport (and scissor): never computed here.
     HRESULT STDMETHODCALLTYPE SetRenderTarget(DWORD n,IDirect3DSurface9* value) override{
-        Guard lock(m->gate);const std::uint64_t serial=m->mutations+1;HRESULT hr=real->SetRenderTarget(n,value);const bool slot=n<DeviceMirror::Targets;if(slot)m->targetKnown[n]=false;
+        Guard lock(m->gate);if(n==0&&m->synced)m->synced->viewport(); /* target 0 resets the viewport */const std::uint64_t serial=m->mutations+1;HRESULT hr=real->SetRenderTarget(n,value);const bool slot=n<DeviceMirror::Targets;if(slot)m->targetKnown[n]=false;
         if(n==0){m->viewportKnown=false;m->forget(DeviceMirror::ViewportSlot);}
         if(accepted(hr)&&slot&&value){m->targets[n]=value;m->targetKnown[n]=m->written(DeviceMirror::TargetSlot+n,serial);}else if(slot)m->forget(DeviceMirror::TargetSlot+n);return hr;
     }
@@ -330,7 +332,7 @@ public:
     // Writes refresh previously observed registers. They never establish Get*
     // support: pure-device/unsupported getter errors must still reach backend.
     HRESULT STDMETHODCALLTYPE SetVertexShaderConstantF(UINT start,const float* data,UINT count) override{
-        Guard lock(m->gate);HRESULT hr=real->SetVertexShaderConstantF(start,data,count);
+        Guard lock(m->gate);if(m->synced)m->synced->vsFloat(start,count);HRESULT hr=real->SetVertexShaderConstantF(start,data,count);
         if(SUCCEEDED(hr)&&m->active())m->constantEpoch.writeFloat(start,count);
         if(accepted(hr)&&data&&start<DeviceMirror::VsFloat){const UINT copied=count<DeviceMirror::VsFloat-start?count:DeviceMirror::VsFloat-start;std::memcpy(m->vsFloat[start],data,size_t(copied)*4*sizeof(float));}return hr;
     }
@@ -366,7 +368,7 @@ public:
         if(valid&&SUCCEEDED(hr)&&m->active()){std::memcpy(m->vsBool+start,out,size_t(count)*1*sizeof(WINBOOL));for(UINT i=0;i<count;++i)m->vsBoolKnown[start+i]=true;}return hr;
     }
     HRESULT STDMETHODCALLTYPE SetPixelShaderConstantF(UINT start,const float* data,UINT count) override{
-        Guard lock(m->gate);HRESULT hr=real->SetPixelShaderConstantF(start,data,count);
+        Guard lock(m->gate);if(m->synced)m->synced->psFloat(start,count);HRESULT hr=real->SetPixelShaderConstantF(start,data,count);
         if(accepted(hr)&&data&&start<DeviceMirror::PsFloat){const UINT copied=count<DeviceMirror::PsFloat-start?count:DeviceMirror::PsFloat-start;std::memcpy(m->psFloat[start],data,size_t(copied)*4*sizeof(float));}return hr;
     }
     HRESULT STDMETHODCALLTYPE GetPixelShaderConstantF(UINT start,float* out,UINT count) override{

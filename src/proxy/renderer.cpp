@@ -1147,6 +1147,7 @@ private:
     static const char* spellKindName(NorthlightSpellLayer::Kind k){static const char* const n[]={"ignore","opaque","translucentZ","defer","inplace","hazard"};return n[unsigned(k)];}
     static const char* spellInPlaceName(NorthlightSpellLayer::InPlaceKind k){static const char* const n[]={"none","water","rain","name","fade"};return n[unsigned(k)];}
     /* the layer's bulk reads of the device state cache (mirrorState): one guard per record, the arrays read in place, every unknown slot by the Get that teaches it */
+    SyncedSlots spellSynced; /* the layer's 'Model equals the device' bits: the mirror's setters clear them (device_mirror.h), the layer sets them */
     NorthlightSpellLayer::MirrorView spellView;alignas(MirrorGuard) unsigned char spellGuard[sizeof(MirrorGuard)];
     static bool spellViewEnter(void* c){
         Device* d=static_cast<Device*>(c);MirrorGuard* g=new(d->spellGuard) MirrorGuard(d->mirrorState.gate,MirrorSite::Device);
@@ -1177,7 +1178,7 @@ private:
         cfg.conflictCopy=selectedBackend!=NorthlightBackend::Kind::Native; /* the copy-out read-back needs DXVK's direct-mapped dynamic buffers */
         cfg.readBackLockFlags=NorthlightUpload::readBackLock(); /* fixed before CreateDevice (backend()) */
         cfg.markGuard=&Device::spellMarkGuard;cfg.markCtx=this;cfg.savedPool=&stateBlocks;
-        spellViewInit();cfg.source=&spellView;
+        spellViewInit();cfg.source=&spellView;cfg.synced=&spellSynced;mirrorState.synced=&spellSynced;
         cfg.clock=&Device::spellClock;cfg.timing=&Device::spellTiming;cfg.clockCtx=this;
         cfg.generation=&Device::spellTextureGeneration;cfg.genCtx=this; /* the render-target verdict of a texture is cached until a resource proxy is created or destroyed */
         spell.attach(ext);spell.configure(cfg);
@@ -1189,6 +1190,7 @@ private:
     void spellTeardown(){ /* before the extension device goes: drop every reference and every hook that points at this Device */
         if(!spellOn)return;
         spell.reset();spell.attach(nullptr);spellSync();spellQueryN=0;spellQueryUnknown=false;
+        mirrorState.synced=nullptr; /* the mirror's setters stop clearing bits that are about to go away */
         if(NorthlightTrackedBuffers::spellHook.context==this)NorthlightTrackedBuffers::spellHook={};
         if(NorthlightMirrorWrite::sink.context==this){NorthlightMirrorWrite::queries.store(0,std::memory_order_relaxed);NorthlightMirrorWrite::pending.store(0,std::memory_order_relaxed);NorthlightMirrorWrite::sink={};}
         spellOn=false;
@@ -1530,11 +1532,11 @@ private:
                 /* cpuGateUs and cpuDeferUs (= gate + record) are ESTIMATES: the gate was timed on every 8th call (gateTimed of gateDraws) and scaled up, with the calibrated scope cost (timerScopeUs, the least of 5 probes) taken
                    off per scope and the record and flush time inside the timed calls taken out; cpuRecordUs is every record. cpuFlushUs is the (unscaled) time of the hazard flushes of gate draws; their save, upload and
                    restore are also in cpuSaveUs/cpuUploadUs/cpuRestoreUs and are not in cpuGateUs. */
-                logf("SPELLLAYER frame=%u mode=%s deferred=%u/%u/%u/%u fixed=%u replayed=%u fadeInPlace=%u orderBy=%u/%u/%u hazards=%s flushes=%u conflicts=%u conflictBytes=%llu materialized=%u records=%u recordHigh=%u replaySets=%u arenaHigh=%u replaySkipped=%u discarded=%u cooldown=%u cpuDeferUs=%.1f cpuReplayUs=%.1f capBy=%u/%u/%u/%u overflowAt=%u overflowCandidates=%u memKiB=%u uploadKiB=%u deltaWords=%llu cpuRecordUs=%.1f cpuGateUs=%.1f gateDraws=%u gateTimed=%u recordCalls=%u cpuFlushUs=%.1f timerScopeUs=%.3f drains=%u cpuSaveUs=%.1f cpuUploadUs=%.1f cpuRestoreUs=%.1f restoreSets=%u restoreFallbacks=%u texSplits=%u copiesAllowed=%u glowPasses=%u "
+                logf("SPELLLAYER frame=%u mode=%s deferred=%u/%u/%u/%u fixed=%u replayed=%u fadeInPlace=%u orderBy=%u/%u/%u hazards=%s flushes=%u conflicts=%u conflictBytes=%llu materialized=%u records=%u recordHigh=%u replaySets=%u arenaHigh=%u replaySkipped=%u discarded=%u cooldown=%u cpuDeferUs=%.1f cpuReplayUs=%.1f capBy=%u/%u/%u/%u overflowAt=%u overflowCandidates=%u memKiB=%u uploadKiB=%u deltaWords=%llu cpuRecordUs=%.1f cpuGateUs=%.1f gateDraws=%u gateTimed=%u recordCalls=%u cpuFlushUs=%.1f timerScopeUs=%.3f drains=%u cpuSaveUs=%.1f cpuUploadUs=%.1f cpuRestoreUs=%.1f restoreSets=%u restoreFallbacks=%u texSplits=%u copiesAllowed=%u glowPasses=%u recordSlots=%llu "
                      "window frames=%u deferring=%u cooldown=%u deferred=%u hazards=%s flushes=%u conflicts=%u overflowFrames=%u overflowCandidates=%u texSplits=%u drains=%u",
                     frame,NorthlightSpellLayer::modeName(mode),c.deferred[0],c.deferred[1],c.deferred[2],c.deferred[3],c.fixed,c.replayedDraws,c.inPlace[3],c.orderBy[0],c.orderBy[1],c.orderBy[2],hazards,c.flushes,c.conflicts,(unsigned long long)c.conflictBytes,c.materialized,c.recorded,c.recordHigh,c.replaySets,c.arenaHigh,c.replaySkipped,c.discarded,spell.cooldownLeft(),
                     gateUs+recordUs,double(spellReplayTicks)*us,c.capBy[0],c.capBy[1],c.capBy[2],c.capBy[3],c.overflowAt,c.overflowCandidates,unsigned(spellMem.total()>>10),unsigned(spellMem.uploads>>10),(unsigned long long)c.deltaWords,recordUs,gateUs,spellGateDraws,spellGateTimed,spellRecords,flushUs,timerUs,
-                    c.drains,double(phase.save)*us,double(phase.upload)*us,double(phase.restore)*us,c.restoreSets,c.restoreFallbacks,c.texSplits,spellCopiesAllowed,spellGlowPasses,
+                    c.drains,double(phase.save)*us,double(phase.upload)*us,double(phase.restore)*us,c.restoreSets,c.restoreFallbacks,c.texSplits,spellCopiesAllowed,spellGlowPasses,(unsigned long long)c.recordSlots,
                     spellWinFrames,spellWinDeferring,spellWinCooldown,spellWin.totalDeferred(),winHazards,spellWin.flushes,spellWin.conflicts,spellWin.overflowFrames,spellWin.overflowCandidates,spellWin.texSplits,spellWin.drains);
                 spellWin=NorthlightSpellLayer::Counters{};spellWinFrames=spellWinDeferring=spellWinCooldown=0;
             }

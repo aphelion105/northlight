@@ -192,7 +192,7 @@ struct Mirror{
     unsigned enters=0,leaves=0;int depth=0;
 };
 struct FakeDevice:IDirect3DDevice9{
-    State s;Mirror mir;IDirect3DSurface9* rt[4]={};IDirect3DSurface9* ds=nullptr;
+    State s;Mirror mir;SyncedSlots synced; /* the bits the production mirror's setters clear (device_mirror.h): every Set below clears its slot, a state block Apply (invalidate) all */ IDirect3DSurface9* rt[4]={};IDirect3DSurface9* ds=nullptr;
     std::vector<DrawRec> draws;unsigned calls=0,sets=0;
     std::map<DWORD,Decl*> fvfDecls;DWORD declReportsFvf=0; // fvfDecls: one internal declaration per FVF, owned here; declReportsFvf: the FVF GetFVF reports while a user declaration is bound (native d3d9 does this for position-only declarations)
     bool failCreateBlock=false,failCapture=false,failCreateVB=false,failCreateIB=false,failGetPsConst=false,failGetTss=false,failGetLightEnable=false;int failCaptureAfter=-1;unsigned blocksCreated=0,failNthCreate=0,createCalls=0,captures=0,applies=0;bool failGetRs=false,failGetSampler=false,failGetStream=false; // captures/applies: StateBlock::Capture/Apply calls; failGet*: those Get calls fail // failNthCreate: the nth CreateStateBlock call fails once
@@ -220,7 +220,7 @@ struct FakeDevice:IDirect3DDevice9{
         ++calls;if(failCreateIB)return E_FAIL;auto* b=new IB;b->b.init(n,u);b->fmt=f;b->b.key=static_cast<IDirect3DIndexBuffer9*>(b);*out=b;return D3D_OK;
     }
     HRESULT SetRenderTarget(DWORD i,IDirect3DSurface9* t)override{
-        ++calls;++sets;if(i>3||(i==0&&!t))return D3DERR_INVALIDCALL;
+        ++calls;++sets;if(i==0)synced.viewport();if(i>3||(i==0&&!t))return D3DERR_INVALIDCALL;
         swapRef(rt[i],t);
         if(i==0){auto* f=static_cast<Surface*>(t);s.vp=D3DVIEWPORT9();s.vp.Width=f->w;s.vp.Height=f->h;s.vp.MaxZ=1;s.scissor=RECT();s.scissor.right=int(f->w);s.scissor.bottom=int(f->h);}
         return D3D_OK;
@@ -228,15 +228,15 @@ struct FakeDevice:IDirect3DDevice9{
     HRESULT GetRenderTarget(DWORD i,IDirect3DSurface9** o)override{++calls;if(i>3||!rt[i]){*o=nullptr;return D3DERR_INVALIDCALL;}rt[i]->AddRef();*o=rt[i];return D3D_OK;}
     HRESULT SetDepthStencilSurface(IDirect3DSurface9* d)override{++calls;++sets;swapRef(ds,d);return D3D_OK;}
     HRESULT GetDepthStencilSurface(IDirect3DSurface9** o)override{++calls;if(ds)ds->AddRef();*o=ds;return ds?D3D_OK:D3DERR_INVALIDCALL;}
-    HRESULT SetViewport(const D3DVIEWPORT9* v)override{++calls;++sets;s.vp=*v;return D3D_OK;}
+    HRESULT SetViewport(const D3DVIEWPORT9* v)override{++calls;++sets;synced.viewport();s.vp=*v;return D3D_OK;}
     HRESULT GetViewport(D3DVIEWPORT9* v)override{++calls;*v=s.vp;return D3D_OK;}
     HRESULT SetScissorRect(const RECT* r)override{++calls;++sets;s.scissor=*r;return D3D_OK;}
     HRESULT GetScissorRect(RECT* r)override{++calls;*r=s.scissor;return D3D_OK;}
-    HRESULT SetRenderState(D3DRENDERSTATETYPE t,DWORD v)override{++calls;++sets;s.rs[t]=v;return D3D_OK;}
+    HRESULT SetRenderState(D3DRENDERSTATETYPE t,DWORD v)override{++calls;++sets;synced.renderState(t);s.rs[t]=v;return D3D_OK;}
     HRESULT GetRenderState(D3DRENDERSTATETYPE t,DWORD* v)override{++calls;if(failGetRs)return E_FAIL;*v=s.rs[t];return D3D_OK;}
-    HRESULT SetSamplerState(DWORD i,D3DSAMPLERSTATETYPE t,DWORD v)override{++calls;++sets;s.ss[texSlot(i)][t]=v;return D3D_OK;}
+    HRESULT SetSamplerState(DWORD i,D3DSAMPLERSTATETYPE t,DWORD v)override{++calls;++sets;synced.sampler(i,t);s.ss[texSlot(i)][t]=v;return D3D_OK;}
     HRESULT GetSamplerState(DWORD i,D3DSAMPLERSTATETYPE t,DWORD* v)override{++calls;if(failGetSampler)return E_FAIL;*v=s.ss[texSlot(i)][t];return D3D_OK;}
-    HRESULT SetTexture(DWORD i,IDirect3DBaseTexture9* t)override{++calls;++sets;swapRef(s.tex[texSlot(i)],t);return D3D_OK;}
+    HRESULT SetTexture(DWORD i,IDirect3DBaseTexture9* t)override{++calls;++sets;synced.texture(i);swapRef(s.tex[texSlot(i)],t);return D3D_OK;}
     HRESULT GetTexture(DWORD i,IDirect3DBaseTexture9** o)override{++calls;auto*& t=s.tex[texSlot(i)];if(t)t->AddRef();*o=t;return D3D_OK;}
     HRESULT SetVertexShader(IDirect3DVertexShader9* v)override{++calls;++sets;swapRef(s.vs,v);return D3D_OK;}
     HRESULT GetVertexShader(IDirect3DVertexShader9** o)override{++calls;if(s.vs)s.vs->AddRef();*o=s.vs;return D3D_OK;}
@@ -261,13 +261,13 @@ struct FakeDevice:IDirect3DDevice9{
     HRESULT GetStreamSourceFreq(UINT i,UINT* f)override{++calls;if(i>=16)return D3DERR_INVALIDCALL;*f=s.st[i].freq;return D3D_OK;}
     HRESULT SetIndices(IDirect3DIndexBuffer9* b)override{++calls;++sets;swapRef(s.ib,b);return D3D_OK;}
     HRESULT GetIndices(IDirect3DIndexBuffer9** o)override{++calls;if(s.ib)s.ib->AddRef();*o=s.ib;return D3D_OK;}
-    HRESULT SetVertexShaderConstantF(UINT r,const float* v,UINT n)override{++calls;++sets;if(r+n>256)return D3DERR_INVALIDCALL;std::memcpy(s.vsc[r],v,n*16);return D3D_OK;}
+    HRESULT SetVertexShaderConstantF(UINT r,const float* v,UINT n)override{++calls;++sets;synced.vsFloat(r,n);if(r+n>256)return D3DERR_INVALIDCALL;std::memcpy(s.vsc[r],v,n*16);return D3D_OK;}
     HRESULT GetVertexShaderConstantF(UINT r,float* v,UINT n)override{++calls;if(r+n>256)return D3DERR_INVALIDCALL;std::memcpy(v,s.vsc[r],n*16);return D3D_OK;}
     HRESULT SetVertexShaderConstantI(UINT r,const int* v,UINT n)override{++calls;++sets;if(r+n>16)return D3DERR_INVALIDCALL;std::memcpy(s.vsi[r],v,n*16);return D3D_OK;}
     HRESULT GetVertexShaderConstantI(UINT r,int* v,UINT n)override{++calls;if(r+n>16)return D3DERR_INVALIDCALL;std::memcpy(v,s.vsi[r],n*16);return D3D_OK;}
     HRESULT SetVertexShaderConstantB(UINT r,const BOOL* v,UINT n)override{++calls;++sets;if(r+n>16)return D3DERR_INVALIDCALL;std::memcpy(s.vsb+r,v,n*4);return D3D_OK;}
     HRESULT GetVertexShaderConstantB(UINT r,BOOL* v,UINT n)override{++calls;if(r+n>16)return D3DERR_INVALIDCALL;std::memcpy(v,s.vsb+r,n*4);return D3D_OK;}
-    HRESULT SetPixelShaderConstantF(UINT r,const float* v,UINT n)override{++calls;++sets;if(r+n>224)return D3DERR_INVALIDCALL;std::memcpy(s.psc[r],v,n*16);return D3D_OK;}
+    HRESULT SetPixelShaderConstantF(UINT r,const float* v,UINT n)override{++calls;++sets;synced.psFloat(r,n);if(r+n>224)return D3DERR_INVALIDCALL;std::memcpy(s.psc[r],v,n*16);return D3D_OK;}
     HRESULT GetPixelShaderConstantF(UINT r,float* v,UINT n)override{++calls;if(failGetPsConst||r+n>224)return D3DERR_INVALIDCALL;std::memcpy(v,s.psc[r],n*16);return D3D_OK;}
     HRESULT SetPixelShaderConstantI(UINT r,const int* v,UINT n)override{++calls;++sets;if(r+n>16)return D3DERR_INVALIDCALL;std::memcpy(s.psi[r],v,n*16);return D3D_OK;}
     HRESULT GetPixelShaderConstantI(UINT r,int* v,UINT n)override{++calls;if(r+n>16)return D3DERR_INVALIDCALL;std::memcpy(v,s.psi[r],n*16);return D3D_OK;}
@@ -371,6 +371,6 @@ inline HRESULT StateBlock::Capture(){
     assign(s,dev->s);return D3D_OK;
 }
 inline HRESULT StateBlock::Apply(){ // everything except RT/DS, scissor and viewport included
-    ++dev->calls;++dev->applies;State n=s;retain(n);drop(dev->s);dev->s=n;return D3D_OK;
+    ++dev->calls;++dev->applies;dev->synced.clearAll();State n=s;retain(n);drop(dev->s);dev->s=n;return D3D_OK;
 }
 }

@@ -251,10 +251,11 @@ static void testGuardTable(){
 // Get calls for exactly those), 3 = a cache that knows nothing (shaders, declaration, viewport, textures, samplers, constants all unknown). Every behavioural
 // test runs in all four; the replayed state must be identical.
 static int gMirrorMode=1;
+static bool gDirty=true; // Config::dirtyRecord of every Rig (the whole suite also runs with it off); every Rig cross-checks the dirty delta against the full compare
 static bool gMinimal=true; // Config::minimalRestore of every Rig (main runs the whole suite with it on and off: the end state must be identical)
 static unsigned gTexGeneration=0;static unsigned texGeneration(void*){return gTexGeneration;}
 static uint64_t gTicks=0;static uint64_t fakeClock(void*){return ++gTicks;}static bool fakeTiming(void*){return true;} // every read advances one tick: a timed phase costs exactly 1
-struct Opts{unsigned maxTexSplits=8;bool minimal=gMinimal;bool timed=false;size_t deltaBytes=2u<<20;unsigned deltaChunk=16384;bool verdictCache=false;bool on=true;unsigned maxEntries=512;bool conflictCopy=true;unsigned mask=15;size_t arena=1u<<20,upVb=1u<<16,upIb=1u<<14;};
+struct Opts{bool dirty=gDirty;unsigned maxTexSplits=8;bool minimal=gMinimal;bool timed=false;size_t deltaBytes=2u<<20;unsigned deltaChunk=16384;bool verdictCache=false;bool on=true;unsigned maxEntries=512;bool conflictCopy=true;unsigned mask=15;size_t arena=1u<<20,upVb=1u<<16,upIb=1u<<14;};
 struct Rig{
     Fake::FakeDevice dev;Layer layer;Opts o;
     Fake::Surface *T,*D,*Other;
@@ -264,6 +265,7 @@ struct Rig{
     bool useReads=false;NorthlightShaderReads::ReadSet vsRs,psRs; // shaders with scanned read sets (restrict()); otherwise they read everything
     const void* readsVs=nullptr,*readsPs=nullptr; // the shaders the read sets belong to (default: the bound vs/ps); set to another shader to model a read set looked up for a different one
     void restrict(const NorthlightShaderReads::ReadSet& v,const NorthlightShaderReads::ReadSet& p){useReads=true;vsRs=v;psRs=p;}
+    struct TagReads{bool use=false;NorthlightShaderReads::ReadSet v,p;};std::map<int,TagReads> tagReads; // the read sets in force when each draw was issued (they may change mid-scenario)
     std::map<void*,Fake::BufState*> bufs;std::map<void*,long long> ids;std::map<void*,int> marks;
     std::vector<std::pair<void*,bool>> markLog;std::vector<size_t> drawsAtWrite;
     std::vector<int> deferredTags;std::vector<std::vector<long long>> steps;
@@ -306,7 +308,7 @@ struct Rig{
         const float c[4]={1,2,3,4};dev.SetVertexShaderConstantF(5,c,1);dev.SetPixelShaderConstantF(2,c,1);dev.SetSamplerState(0,5,2);dev.SetRenderState(D3DRS_ALPHAREF,128);
         opaqueZ();translucent(kSrcAlpha,kBlendOne);
         Config c2;c2.on=o.on;c2.classMask=o.mask;c2.maxEntries=o.maxEntries;c2.arenaBytes=o.arena;c2.uploadVbBytes=o.upVb;c2.uploadIbBytes=o.upIb;
-        c2.minimalRestore=o.minimal;c2.maxTexSplits=o.maxTexSplits;c2.conflictCopy=o.conflictCopy;c2.deltaChunkWords=o.deltaChunk;c2.deltaBytes=o.deltaBytes;
+        c2.minimalRestore=o.minimal;c2.dirtyRecord=o.dirty;c2.dirtyCheck=true;c2.synced=&dev.synced;c2.maxTexSplits=o.maxTexSplits;c2.conflictCopy=o.conflictCopy;c2.deltaChunkWords=o.deltaChunk;c2.deltaBytes=o.deltaBytes;
         if(gMirrorMode){
             Fake::Mirror& m=dev.mir;view=Fake::makeView(dev);c2.source=&view;
             if(gMirrorMode==2){for(unsigned i=0;i<256;i+=3)m.hideRs[i]=true;for(unsigned i=0;i<256;i+=5)m.hideVsF[i]=true;for(unsigned i=0;i<224;i+=7)m.hidePsF[i]=true;m.hideTex[3]=m.hideTex[5]=true;m.hideSmp[1]=true;m.hideVsB=true;}
@@ -317,6 +319,7 @@ struct Rig{
         layer.attach(&dev);layer.configure(c2);layer.beginFrame(false);
     }
     ~Rig(){
+        CHECK(layer.totalCounters().dirtyMismatches==0);
         layer.reset();
         for(auto& m:marks)CHECK(m.second==0);
         for(auto* p:std::initializer_list<IUnknown*>{T,D,Other,ring,ring2,stat,extra,ringIb,ringIb32,stIb,declP,declTwo,vs,vsEff,ps,psEff,texA,texB})p->Release();
@@ -393,12 +396,13 @@ struct Rig{
     // viewport, scissor, clip planes, and (kinds 0/1, geom) the used streams and the index buffer of an indexed draw. Unused streams, unbound stages'
     // sampler states and the stream/index bindings of UP draws are not part of what the draw sees.
     std::vector<long long> normDraw(const Fake::DrawRec& d,bool geom){
+        const auto tr=tagReads.find(d.tag);const bool useReads=tr!=tagReads.end()&&tr->second.use;const NorthlightShaderReads::ReadSet& vsRs=tr!=tagReads.end()?tr->second.v:this->vsRs,&psRs=tr!=tagReads.end()?tr->second.p:this->psRs;
         const Fake::State& s=d.st;std::vector<long long> v;
         if(!s.vs&&!s.ps)ffNorm(s,v,false); // fixed function: the draw reads the fixed-function state; with shaders it does not
         for(DWORD x:s.rs)v.push_back(x);
         const bool lim=useReads&&(s.vs||s.ps); // a draw with scanned shaders reads only their registers and declared samplers
         const uint32_t texMask=uint32_t(psRs.samplers)|uint32_t(vsRs.samplers&0xF)<<16;
-        for(size_t t=0;t<20;++t){if(lim&&!(texMask>>t&1))continue;v.push_back(id(s.tex[t]));v.push_back(d.texVer[t]);if(s.tex[t])for(size_t k=1;k<=13;++k)v.push_back(s.ss[t][k]);}
+        for(size_t t=0;t<20;++t){if(lim&&!(texMask>>t&1))continue;if(!s.vs&&!s.ps&&t>=8)continue; /* a fixed-function draw reads the texture stages 0..7 only */v.push_back(id(s.tex[t]));v.push_back(d.texVer[t]);if(s.tex[t])for(size_t k=1;k<=13;++k)v.push_back(s.ss[t][k]);}
         v.push_back(id(s.vs));v.push_back(id(s.ps));v.push_back(id(s.decl));v.push_back(s.fvf);
         auto flt=[&](const float* f,size_t n){for(size_t i=0;i<n;++i){uint32_t u;std::memcpy(&u,f+i,4);v.push_back(u);}};
         const bool shaders=s.vs||s.ps; // a fixed-function draw reads no shader constants
@@ -445,7 +449,7 @@ struct Rig{
     // One game draw: classify, defer when told to (layer on), otherwise draw in place after the layer's hazard handling. Returns the tag.
     template<class F> int issueWith(const DrawArgs& a0,Family fam,F&& tweak){
         DrawArgs a=a0;a.psMajor=psMajor;if(useReads){a.vsReads=&vsRs;a.psReads=&psRs;a.vsFor=readsVs?readsVs:static_cast<const void*>(vs);a.psFor=readsPs?readsPs:static_cast<const void*>(ps);}
-        const int tag=nextTag++;const float v[4]={float(tag),0,0,0};dev.SetVertexShaderConstantF(31,v,1);dev.SetRenderState(165,DWORD(tag));
+        const int tag=nextTag++;tagReads[tag]=TagReads{useReads,vsRs,psRs};const float v[4]={float(tag),0,0,0};dev.SetVertexShaderConstantF(31,v,1);dev.SetRenderState(165,DWORD(tag));
         DrawFacts f=facts(fam);f.pending=o.on&&layer.pending()>0;tweak(f);
         last=classify(f,o.mask);bool deferred=false;
         if(o.on){
@@ -849,7 +853,8 @@ static void sCaptureFail(Rig& r){
     deferQuad(r,3);r.failPsConst(false);deferQuad(r,4);r.boundary();
 }
 static void testCaptureFailure(){
-    Pair p=runBoth(sCaptureFail);const Counters& c=p.lay->layer.totalCounters();
+    Opts nd;nd.dirty=false;                                                   // the dirty path never re-reads the synced pixel constants, so a device that cannot read them back is only noticed by the full compare
+    Pair p=runBoth(sCaptureFail,nd);const Counters& c=p.lay->layer.totalCounters();
     CHECK(p.lay->deferredTags==std::vector<int>({1,2})&&c.hazards[unsigned(Reason::Capture)]==1&&c.flushes==1&&c.replayedDraws==2);
     checkEquivalent(p);CHECK(p.lay->order()==p.ref->order());
     // nothing pending (the first entry): also falls back with a cooldown, no flush
@@ -1399,6 +1404,63 @@ static void testSpanTracker(){
     t.clearFrame();CHECK(t.frame.segments==0&&t.otherDraws()==0);
     t.close();CHECK(t.frame.segments==0);                        // nothing open
 }
+// ---------------- the dirty record (synced bits) ----------------
+// Random interleavings of game Sets, deferred draws with different read sets (slots entering a read set for the first time included), raw sets (bypassing the setters, bracketed by
+// a clear-all like a RawScope), invalidations, mirror knowledge changes, splits, fixed-function entries and the boundary. The layer run is compared with the layer-off reference draw
+// for draw (checkEquivalent) and, in every Rig, every record's synced-bit delta with the full compare's (dirtyMismatches stays 0, checked when the Rig goes away).
+static uint64_t gSeed=1;
+static void sRandomOps(Rig& r){
+    uint64_t x=gSeed*0x9E3779B97F4A7C15ull+0x1234567;auto rnd=[&](unsigned n){x^=x<<13;x^=x>>7;x^=x<<17;return unsigned((x>>11)%n);};
+    static const unsigned harmless[]={8,9,15,16,24,25,28,29,34,35,36,37,48,53,54,55,56,57,58,59,60,128,129,136,137,139,140,141,142,143,145,146,147,148};
+    static const DWORD stages[]={0,1,2,4,257};
+    float vals[16];auto fill=[&](unsigned n){for(unsigned i=0;i<n;++i)vals[i]=float(rnd(3));};
+    const int steps=30+int(rnd(50));
+    for(int i=0;i<steps;++i){
+        switch(rnd(19)){
+        case 0:case 1:r.dev.SetRenderState(harmless[rnd(sizeof harmless/sizeof harmless[0])],rnd(3));break;
+        case 2:{r.dev.SetRenderState(174,rnd(2));const RECT sc{int(rnd(3)),0,int(10+rnd(3)),10};r.dev.SetScissorRect(&sc);break;}
+        case 3:{r.dev.SetRenderState(152,rnd(4));fill(4);r.dev.SetClipPlane(rnd(2),vals);break;}
+        case 4:r.dev.SetSamplerState(stages[rnd(5)],1+rnd(13),rnd(3));break;
+        case 5:{Fake::Texture* t[]={r.texA,r.texB,nullptr};r.dev.SetTexture(stages[rnd(5)],t[rnd(3)]);break;}
+        case 6:{const unsigned n=1+rnd(4);fill(n*4);r.dev.SetVertexShaderConstantF(rnd(250),vals,n);break;}
+        case 7:{const unsigned n=1+rnd(3);fill(n*4);r.dev.SetPixelShaderConstantF(rnd(220),vals,n);break;}
+        case 8:{if(rnd(3)==0){r.dev.SetRenderTarget(0,r.Other);r.dev.SetRenderTarget(0,r.T);break;} /* target 0 resets the viewport and scissor */D3DVIEWPORT9 vp;vp.Width=100+rnd(3);vp.Height=50;r.dev.SetViewport(&vp);break;}
+        case 9:{const int ki[8]={int(rnd(2)),0,0,0,int(rnd(2)),0,0,0};r.dev.SetVertexShaderConstantI(rnd(14),ki,2);const BOOL kb=BOOL(rnd(2));r.dev.SetPixelShaderConstantB(rnd(16),&kb,1);break;}
+        case 10:case 11:case 12:case 13:deferQuad(r,i+1);break;
+        case 14:{ // a raw set (no setter): the next record must still see it
+            r.dev.s.rs[harmless[rnd(sizeof harmless/sizeof harmless[0])]]=rnd(3);r.dev.s.vsc[rnd(256)][0]=float(rnd(3));r.dev.s.ss[rnd(4)][1+rnd(13)]=rnd(3);r.dev.synced.clearAll();break;}
+        case 15:if(rnd(2))r.dev.synced.clearAll();else{for(unsigned k=0;k<8;++k){r.dev.mir.hideRs[rnd(256)]^=true;r.dev.mir.hideVsF[rnd(256)]^=true;r.dev.mir.hideTex[rnd(16)]^=true;r.dev.mir.hideSmp[rnd(16)]^=true;}}break;
+        case 16:{ // another read set (or none): slots enter and leave it
+            if(!rnd(3)){r.useReads=false;break;}
+            NorthlightShaderReads::ReadSet v,p;v.exact=p.exact=true;v.vertex=true;
+            setBit(v.f,31);for(unsigned k=0,n=rnd(12);k<n;++k)setBit(v.f,rnd(256));for(unsigned k=0,n=rnd(8);k<n;++k)setBit(p.f,rnd(224));
+            v.i=uint16_t(rnd(4));p.b=uint16_t(rnd(8));p.samplers=uint16_t(rnd(32));v.samplers=uint16_t(rnd(2));
+            r.restrict(v,p);break;}
+        case 17:if(r.o.on&&r.layer.pending())r.layer.hazard(Reason::Order,true,InPlaceKind::Water);r.record();break; // a split: the next entry starts a new sequence
+        default:if(rnd(2)){r.ffState(1+int(rnd(3)));r.fixedFunction();deferFf(r,i+1);r.programmable();r.dev.SetStreamSource(0,r.ring,0,16);}else r.writeTexture(rnd(2)?r.texA:r.texB);break;
+        }
+    }
+    r.boundary();
+}
+static void testDirtyRandom(){
+    for(uint64_t seed=1;seed<=120;++seed){
+        gSeed=seed;Pair p=runBoth(sRandomOps);
+        checkEquivalent(p);
+        CHECK(p.lay->layer.totalCounters().dirtyMismatches==0);
+    }
+}
+// The saving is visible: a run of draws that change nothing but the tag examines a handful of slots per record instead of the whole read set, with the same output.
+static void sQuiet(Rig& r){for(int i=1;i<=20;++i)deferQuad(r,i);r.boundary();}
+static void testRecordSlots(){
+    Opts on,off;on.dirty=true;off.dirty=false;
+    Pair a=runBoth(sQuiet,on),b=runBoth(sQuiet,off);
+    const Counters& ca=a.lay->layer.totalCounters(),&cb=b.lay->layer.totalCounters();
+    CHECK(ca.recorded==20&&cb.recorded==20&&cb.recordSlots>0&&ca.dirtyMismatches==0);
+    checkEquivalent(a);checkEquivalent(b);
+    if(gMirrorMode!=0)CHECK(ca.recordSlots*3<cb.recordSlots);                                // with the state cache usable; without it every record is a full compare
+    else CHECK(ca.recordSlots==cb.recordSlots);
+    CHECK(a.lay->layer.totalCounters().deltaWords==b.lay->layer.totalCounters().deltaWords);   // identical deltas
+}
 // ---------------- the minimal restore ----------------
 // A sequence with every kind of entry: programmable, UP, indexed UP, materialized (the ring overwritten after the record), fixed function (FVF and declaration), a name.
 static void recordAllKinds(Rig& r){
@@ -1651,7 +1713,7 @@ int main(int argc,char** argv){
     const char* only=argc>1?argv[1]:nullptr; // a test name (substring) to run alone, and an optional cache mode
     const bool fixedMode=argc>2;if(fixedMode)gMirrorMode=std::atoi(argv[2]);
     struct T{const char* name;void(*fn)();};
-    const T tests[]={{"classify",testClassify},{"lazy classify",testLazyClassify},{"glow verdict",testGlowVerdict},{"delta profile",testDeltaProfile},{"span tracker",testSpanTracker},{"frame state",testFrameState},{"guard table",testGuardTable},{"equivalence",testEquivalence},
+    const T tests[]={{"classify",testClassify},{"lazy classify",testLazyClassify},{"glow verdict",testGlowVerdict},{"delta profile",testDeltaProfile},{"span tracker",testSpanTracker},{"dirty record random",testDirtyRandom},{"record slots",testRecordSlots},{"frame state",testFrameState},{"guard table",testGuardTable},{"equivalence",testEquivalence},
         {"discard copy",testDiscard},{"partial overlap",testPartialOverlap},{"two entries",testTwoEntries},{"count-based marks",testMarkIsCountBased},
         {"rebase negative base",testRebaseNegativeBase},{"rebase kept base",testRebasePositiveBase},{"index buffer copy",testIbMaterialized},
         {"mixed streams",testMixedStreams},{"32-bit UP",test32bitUP},{"non-dynamic buffer",testNonDynamic},{"copy disabled",testConflictCopyDisabled},
@@ -1664,12 +1726,13 @@ int main(int argc,char** argv){
         {"32-bit index copy",testIb32},{"both index formats",testIbBothFormats},{"water rain name flush",testOrderKinds},{"diagnostics",testDiagnostics},{"minimal restore",testMinimalRestore},{"minimal matches state block",testMinimalMatchesStateBlock},{"minimal fallback",testMinimalFallback},{"declaration restored exactly",testDeclarationRestoredExactly},{"minimal needs no state block",testMinimalNeedsNoStateBlock},{"minimal leaves other slots alone",testMinimalLeavesOthersAlone},{"nothing pending: in place",testOrderKindsIdle},
         {"replay scope failure",testReplayScopeFailure},{"state changed between draws",testStateChangedBetweenDraws},{"scissor and clip only when enabled",testScissorAndClipOnlyWhenEnabled},{"delta encoding",testDeltas},{"4096 entries",testFourThousandEntries},{"capacity limits",testCapacityLimits},{"guard table with many buffers",testGuardTableMany},{"sampled textures lookup",testSamplesLookup},{"shader read sets",testReadSets},{"diff replay",testDiffReplay},{"admission",testAdmission},{"hazard events",testHazardEvents},{"record size and timing",testRecordSizeAndTiming},{"fixed function",testFixedFunction},{"fixed function admission",testFixedAdmission},{"fixed function capacity",testFixedCapacity},{"water ripples",testRipples},
         {"render target texture",testRenderTargetTexture},{"render target verdict cache",testVerdictCache},{"vertex texture sampler",testVertexTextureSampler},{"buffer write conflict probe",testBufferWriteProbe}};
-    for(int minimal=1;minimal>=0;--minimal){
-        gMinimal=minimal!=0;
+    const struct {bool minimal,dirty;} passes[]={{true,true},{true,false},{false,true}};
+    for(const auto& pass:passes){
+        gMinimal=pass.minimal;gDirty=pass.dirty;
         for(int mode=fixedMode?gMirrorMode:0;mode<=(fixedMode?gMirrorMode:3);++mode){
             gMirrorMode=mode;
-            for(const T& t:tests){if(only&&!std::strstr(t.name,only))continue;t.fn();CHECK(Fake::live==0);if((mode==0&&minimal)||fixedMode){std::printf("ok %s\n",t.name);std::fflush(stdout);}}
-            std::printf("%s restore, state read mode %d (%s): all tests passed\n",minimal?"minimal":"state block",mode,mode==0?"Get calls only":mode==1?"cache knows everything":mode==2?"cache with unknown slots":"cache knows nothing");
+            for(const T& t:tests){if(only&&!std::strstr(t.name,only))continue;t.fn();CHECK(Fake::live==0);if((mode==0&&pass.minimal&&pass.dirty)||fixedMode){std::printf("ok %s\n",t.name);std::fflush(stdout);}}
+            std::printf("%s restore, %s record, state read mode %d (%s): all tests passed\n",pass.minimal?"minimal":"state block",pass.dirty?"dirty":"full",mode,mode==0?"Get calls only":mode==1?"cache knows everything":mode==2?"cache with unknown slots":"cache knows nothing");
         }
     }
     std::printf("spell layer: %zu tests passed\n",sizeof tests/sizeof tests[0]);
