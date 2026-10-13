@@ -158,7 +158,7 @@
         pointBoundsValid=0;replayBoundsCache.beginFrame(diagnostics);replayBoundsMetadata.beginFrame();
         // Program/declaration lookups stay on the render thread.
         replayBoundsFallbacks.clear();replayBoundsCapped=0;
-        replayBoundsWorker.nearList().begin(actorMatrices[0],actorValid[0],actorMatrices[1],actorValid[1],actorShadowHistory.selfHold()>0?actorShadowHistory.selfAt():nullptr); /* the actor maps as last drawn: casters that can be wholly inside one are visited first, the self before all */
+        replayBoundsWorker.nearList().begin(actorMatrices[0],actorValid[0],actorMatrices[1],actorValid[1]); /* the actor maps as last drawn: casters that can be wholly inside one are visited first, the self's own packets before all */
         NorthlightReplayBoundsJob::gather(items,replays,[&](IDirect3DVertexShader9* shader,IDirect3DVertexDeclaration9* decl){return replayBoundsPrepared(shader,decl);},&replayBoundsWorker.nearList());
         replayBoundsFallbacks.clear(); /* pins now live in the items only */
         replayBoundsWorker.start(replayBoundsCache,context.inverseView);

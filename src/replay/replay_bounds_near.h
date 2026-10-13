@@ -18,50 +18,57 @@
 // The walk of a ring is a NorthlightReplaySchedule::pass over it, with one rotating start per phase and ring kept in the List across
 // frames: a packet that spends a whole phase moves the next frame's start past it, so a tail of expensive packets cannot miss every
 // frame. The whole near walk may use at most half of a phase's operation (and vertex) budget (replay_bounds_job.h), so the rotating pass
-// over all packets always has the other half: the far packets are not starved.
+// always has the other half. The pass leaves the packets of rings 1 and 2 to the walks (otherwise it spends its half on the expensive packets the
+// walk could not reach and the far packets wait several times as long), except on one frame in OuterTurn, the plain turn: the walk then covers
+// only the self in the cheap phase and nothing in the heavy and build phases, and the pass takes every packet with the whole allowance, so a
+// packet whose cost exceeds the walk's share (it never fits behind the walk) is still served, in every phase. Ring 3 (the edge band) and the
+// packets without a ring stay in the pass on every frame; the heavy and build phases have no bonus turn, which is why the plain turn exists.
 // Which packets: a caster is in the actor map only while its bounds lie within Stay of the map centre in light-space x/y (clip units,
 // the map's own matrix: the last drawn one). Its position may lie outside that square by what the caster extends beyond it (CasterYards:
 // the palette root is inside the model, a model that reaches farther is simply ordered by the rotating pass) and the map centre may
 // move by Leash before the packets are drawn. The depth planes are not tested (a position beyond them is rare and costs only an order).
 // Rings are Chebyshev distance from the map centre in clip units, boundaries taken from the map's constants; an O(n) bucket, no sort.
-// The self (the selection's last self position, within CasterYards of it) is ring 0, ahead of everything: its parts are all visited first.
+// Ring 0 is the self's own packets (the selection marked them this frame: Replay::selfShadow), ahead of everything; other casters, however close to
+// the self, are in the distance rings, so a stacked crowd cannot push the self out of its place.
 namespace NorthlightReplayBoundsNear {
 inline constexpr float CasterYards=3.f;
 inline constexpr float Limit=NorthlightActorShadowMap::Stay+(NorthlightActorShadowMap::Leash+CasterYards)/NorthlightActorShadowMap::Radius; /* clip units: about 1.2 map half widths */
 inline constexpr float Inner=(NorthlightActorShadowMap::Leash+CasterYards)/NorthlightActorShadowMap::Radius;  /* ring 1: the pivot's neighbourhood (leash lag plus a caster) */
 inline constexpr float Middle=NorthlightActorShadowMap::Inset;                                              /* ring 2: wholly inside the inset is possible; ring 3: the edge band and beyond */
-inline constexpr unsigned Rings=4,Priority=3;
+inline constexpr unsigned Rings=4,Outer=1,OuterTurn=8; /* rings Outer..Rings-2 (not the edge band) are left to the walks by the rotating pass, except on one frame in OuterTurn */
 static_assert(Inner<Middle&&Middle<Limit,"rings are nested");
 struct List {
-    float matrix[2][16]={};float self[3]={};unsigned sources=0;bool haveSelf=false,on=false;
+    float matrix[2][16]={};unsigned sources=0,turn=0;bool on=false; /* turn: counts the frames (begin) */
     std::vector<std::uint32_t> ring[Rings];std::size_t cursor[3][Rings]={}; /* per phase and ring, kept across frames (begin() leaves them) */
-    // matrixN/validN: the actor map matrix of source N as last drawn (null or not valid: the source has no actor map). selfAt: the selection's self or null.
-    void begin(const float* matrix0,bool valid0,const float* matrix1,bool valid1,const float* selfAt){
-        for(auto& r:ring)r.clear();sources=0;
+    // matrixN/validN: the actor map matrix of source N as last drawn (null or not valid: the source has no actor map).
+    void begin(const float* matrix0,bool valid0,const float* matrix1,bool valid1){
+        for(auto& r:ring)r.clear();sources=0;++turn;
         if(valid0&&matrix0){std::memcpy(matrix[0],matrix0,sizeof matrix[0]);sources|=1u;}
         if(valid1&&matrix1){std::memcpy(matrix[1],matrix1,sizeof matrix[1]);sources|=2u;}
-        haveSelf=selfAt!=nullptr;if(selfAt)std::memcpy(self,selfAt,sizeof self);
         on=sources!=0;
     }
     std::size_t size()const{return ring[0].size()+ring[1].size()+ring[2].size()+ring[3].size();}
-    // Ring of a position: Rings when it cannot be wholly inside the actor map.
+    // Distance ring (1..3) of a position, Rings when it cannot be wholly inside the actor map.
     unsigned ringOf(const float* at)const{
         float best=INFINITY;
         for(unsigned s=0;s<2;++s)if(sources&(1u<<s)){const float* m=matrix[s];
             const float x=std::fabs(at[0]*m[0]+at[1]*m[4]+at[2]*m[8]+m[12]),y=std::fabs(at[0]*m[1]+at[1]*m[5]+at[2]*m[9]+m[13]);
             const float e=x>y?x:y;
             if(e<best)best=e;} /* a non-finite position never compares: it stays out */
-        if(haveSelf){const float x=at[0]-self[0],y=at[1]-self[1],z=at[2]-self[2];if(x*x+y*y+z*z<=CasterYards*CasterYards)return 0;}
         return best<=Inner?1:best<=Middle?2:best<=Limit?3:Rings;
     }
-    // True: the packet is in a priority ring (0..Priority-1), which the rotating pass leaves to the walks once their share is spent. The outer ring
-    // (the edge band, where a caster is hardly ever wholly inside the map) is walked only with what the inner rings leave and stays in the rotating pass.
-    bool consider(std::size_t i,const float* at){
-        if(!on||!at)return false;
-        const unsigned r=ringOf(at);
+    // The rotating pass leaves the outer-ring packets to the walks except on one frame in OuterTurn (see skipOuter): the pass would otherwise spend
+    // its half of the budget on the same expensive packets, which the walk could not reach, and leave the far packets waiting several times as long.
+    bool plainTurn()const{return turn%OuterTurn==0;}   /* one frame in OuterTurn: the cheap phase walks only the self, the heavy and build phases not at all, and the pass takes every packet with the whole allowance (a packet that costs more than the share would otherwise never fit) */
+    bool skipOuter()const{return on&&!plainTurn();}
+    // self: the packet belongs to the self (ring 0, whatever its position). at: its position (null: none, listed only as the self).
+    // True: an outer ring packet (the pass skips it on most frames).
+    bool consider(std::size_t i,const float* at,bool self=false){
+        if(!on)return false;
+        const unsigned r=self?0u:at?ringOf(at):Rings;
         if(r>=Rings)return false;
         try{ring[r].push_back(std::uint32_t(i));}catch(...){on=false;return false;}
-        return r<Priority;
+        return r>=Outer&&r<Rings-1;
     }
 };
 // Visit the listed packets of a phase, ring by ring from its rotating starts, while canWork() (the phase can work and the near share is
@@ -70,7 +77,7 @@ struct List {
 template<class CanWork,class Visit> bool nearFirst(List* list,unsigned phase,CanWork canWork,Visit visit){
     if(!list||phase>=3)return false;
     bool stopped=false;
-    for(unsigned r=0;r<Rings&&!stopped;++r){
+    for(unsigned r=0,last=list->plainTurn()?(phase==0?1u:0u):Rings;r<last&&!stopped;++r){
         const auto& index=list->ring[r];if(index.empty())continue;
         list->cursor[phase][r]=NorthlightReplaySchedule::pass(index.size(),list->cursor[phase][r]%index.size(),
             [&]{const bool can=canWork();stopped=!can;return can;},[&](std::size_t k){return visit(std::size_t(index[k]));});

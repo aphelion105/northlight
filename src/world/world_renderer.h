@@ -678,7 +678,7 @@ private:
         const NorthlightDrawSnapshot::Mesh& mesh()const{return shared?*shared:snapshot;}
         bool gpuCached=false,shadowSkinned=false,shadowSelected=true,shadowSmall=false;int fateSlot=-1;unsigned char fateClass=0;float fateDistance=0; /* shadow fate diagnostics */
         bool bulkSingle=false; /* 0.3.211: uploadReplay's layout verdict (single-stream bulk placement) for the absolute pass */
-        bool selfShadow=false; /* diagnostics: a draw of the selection's self body (reset at capture) */bool boneKnown=false;float bone=NAN; /* 0.3.176 (S2): this frame's selection tested its rigid bone (reset at capture) */
+        bool selfShadow=false; /* a draw of the selection's self body (set by the selection, reset at capture): the side tracker's self, ring 0 of the bounds job's near list */bool boneKnown=false;float bone=NAN; /* 0.3.176 (S2): this frame's selection tested its rigid bone (reset at capture) */
         float captureRoot[3]={};bool captureRootValid=false; /* 0.3.211 (task 31): the palette root computed once at capture (capture admission); passive for the selection */
         float anchor[3]={};bool anchorValid=false; /* an injected rigid prop (rigidMemoryInject): the origin of its remembered bone, in world space; it has no palette root */
         // The per-instance position known without bounds: the palette root, or the rigid prop's anchor. Null: neither.
@@ -3470,13 +3470,17 @@ public:
                 // The actor map takes a caster whose bounds lie fully inside the inset, and keeps a skinned one while they lie within Stay (hysteresis,
                 // actor_side_hold.h). Its identity there: the palette root, or the centre of its valid bounds (a rigid attachment has no root).
                 bool inActor=false;
-                if(nearSkip){const float extent=NorthlightActorShadowMap::insetExtent(p->pointBounds.valid,p->pointBounds.low,p->pointBounds.high,actorFrameMatrix[source],NorthlightActorShadowMap::Stay);
+                if(nearSkip){const float* matrix=actorFrameMatrix[source];const float extent=NorthlightActorShadowMap::insetExtent(p->pointBounds.valid,p->pointBounds.low,p->pointBounds.high,matrix,NorthlightActorShadowMap::Stay);
                     if(extent<=NorthlightActorShadowMap::Stay){
                         if(!p->shadowSkinned)inActor=extent<=NorthlightActorShadowMap::Inset;
-                        else{std::uint64_t model=NorthlightActorSide::key(p->shared.get(),p->decl,p->count,false,nullptr);float centre[3];const float* at=p->position();
+                        else{std::uint64_t model=NorthlightActorSide::key(p->shared.get(),p->decl,p->count,false,nullptr);float centre[3];const float* position=p->position();const float* at=position;
                             if(!p->captureRootValid){model=~model; /* ~ keeps the two kinds apart */
                                 if(!at){for(unsigned k=0;k<3;++k)centre[k]=.5f*(p->pointBounds.low[k]+p->pointBounds.high[k]);at=centre;}} /* no position at all: the centre of the valid bounds (finite extent) */
-                            inActor=actorHold[source].decide(model,at,extent);}}}
+                            inActor=actorHold[source].decide(model,at,extent);
+                            if(inActor&&position)actorHold[source].stamp(model,position,matrix,extent);}}
+                    else if(p->shadowSkinned&&!p->pointBounds.valid&&p->shared){const float* position=p->position(); /* no bounds this frame: stays in the actor map only by the hold's carry rule */
+                        if(position){std::uint64_t model=NorthlightActorSide::key(p->shared.get(),p->decl,p->count,false,nullptr);if(!p->captureRootValid)model=~model;
+                            inActor=actorHold[source].carry(model,position,matrix);}}}
                 if(inActor){actorReplays.push_back(uint32_t(index));++nearSkipped;
                     if(sideDiag&&p->shadowSkinned)(p->shared?actorSide[source].note(NorthlightActorSide::key(p->shared.get(),p->decl,p->count,p->position()!=nullptr,p->position()),true,p->selfShadow,p->captureRootValid):actorSide[source].unkeyed());continue;}
                 if(sideDiag&&p->shadowSkinned){auto& side=actorSide[source];if(p->shared)side.note(NorthlightActorSide::key(p->shared.get(),p->decl,p->count,p->position()!=nullptr,p->position()),false,p->selfShadow,p->captureRootValid,!p->pointBounds.valid);else side.unkeyed();
@@ -3542,10 +3546,10 @@ public:
                 actorNearSkipped+=nearSkipped;actorDrawn+=drawnHere;if(sideDiag)actorSide[source].endFrame();
                 const DWORD actorTick=GetTickCount();
                 if(NorthlightDiagnostics::enabled()&&(!actorShadowLogAt[source]||actorTick-actorShadowLogAt[source]>=1000)){actorShadowLogAt[source]=actorTick;
-                    logf("WORLD actor shadow map source=%d drawn=%u nearSkipped=%u of %zu replays; totals drawn=%lu nearSkipped=%lu sideFlipsSinceLog=%u sideFlipFramesSinceLog=%u sideMatchedSinceLog=%u framesSinceLog=%u sideTracked=%u sideUnkeyed=%u invalidBoundsNear=%u unsupportedNear=%u selfSide=%s selfSideFlipsSinceLog=%u holdBand=%u holdOverflows=%lu nearListSize=%u nearWalkStops=%lu sideFlipsRootedSinceLog=%u sideFlipsUnrootedSinceLog=%u invalidBoundsNearSinceLog=%u unrootedNoBounds=%u unrootedNoBoundsSinceLog=%u selfUnrooted=%u selfNoBoundsFramesSinceLog=%u",source,drawnHere,nearSkipped,replays.size(),actorDrawn,actorNearSkipped,
+                    logf("WORLD actor shadow map source=%d drawn=%u nearSkipped=%u of %zu replays; totals drawn=%lu nearSkipped=%lu sideFlipsSinceLog=%u sideFlipFramesSinceLog=%u sideMatchedSinceLog=%u framesSinceLog=%u sideTracked=%u sideUnkeyed=%u invalidBoundsNear=%u unsupportedNear=%u selfSide=%s selfSideFlipsSinceLog=%u holdBand=%u holdOverflows=%lu nearListSize=%u nearWalkStops=%lu sideFlipsRootedSinceLog=%u sideFlipsUnrootedSinceLog=%u invalidBoundsNearSinceLog=%u unrootedNoBounds=%u unrootedNoBoundsSinceLog=%u selfUnrooted=%u selfNoBoundsFramesSinceLog=%u holdCarried=%u holdCarriedTotal=%lu",source,drawnHere,nearSkipped,replays.size(),actorDrawn,actorNearSkipped,
                         actorSide[source].sideFlips,actorSide[source].sideFlipFrames,actorSide[source].sideMatched,actorSide[source].frames,actorSide[source].tracked,actorSide[source].unkeyedNow,actorSide[source].invalidBoundsNear,actorSide[source].unsupportedNow,NorthlightActorSide::name(actorSide[source].selfSide),actorSide[source].selfFlips,
                         actorHold[source].bandHeld,actorHold[source].overflows,replayNearSize,replayNearStops,
-                        actorSide[source].sideFlipsRooted,actorSide[source].sideFlipsUnrooted,actorSide[source].invalidBoundsNearSum,actorSide[source].unrootedNoBounds,actorSide[source].unrootedNoBoundsSum,actorSide[source].selfUnrooted,actorSide[source].selfNoBoundsFrames);actorSide[source].resetWindow();}
+                        actorSide[source].sideFlipsRooted,actorSide[source].sideFlipsUnrooted,actorSide[source].invalidBoundsNearSum,actorSide[source].unrootedNoBounds,actorSide[source].unrootedNoBoundsSum,actorSide[source].selfUnrooted,actorSide[source].selfNoBoundsFrames,actorHold[source].carried,actorHold[source].carriedTotal);actorSide[source].resetWindow();}
             }
             } /* actorShadows */
             // Union: min(dynamic scratch, cached static at its integer texel offset + exact depth delta).
