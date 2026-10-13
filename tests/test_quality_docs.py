@@ -66,9 +66,11 @@ for name, (member, low, high, preset) in keys.items():
         # an "Allowed lo..hi" line in the key's comment block matches the Keys range
         a = re.findall(r'Allowed (\d+)\.\.(\d+)', block)
         if a and (int(a[-1][0]), int(a[-1][1])) != (low, high): fail(INI_NAME, name, f'Allowed {a[-1][0]}..{a[-1][1]} but Keys range is {low}..{high}')
-        # a "q / b / p" presets line in the comment block matches the Keys presets
-        p = re.findall(r'(\d+) / (\d+) / (\d+)', block)
-        if p and tuple(int(x) for x in p[-1]) != preset: fail(INI_NAME, name, f'presets {" / ".join(p[-1])} but Keys has {" / ".join(map(str, preset))}')
+        if not a and (low, high) != (0, 1): fail(INI_NAME, name, f'no "Allowed {low}..{high}" line in its comment block (only 0..1 keys may omit it)')
+        # a "q / b / p" presets line is required in the comment block and matches the Keys presets
+        p = re.findall(r'(\d+) ?/ ?(\d+) ?/ ?(\d+)', block)
+        if not p: fail(INI_NAME, name, 'no "a / b / c" presets line in its comment block')
+        elif tuple(int(x) for x in p[-1]) != preset: fail(INI_NAME, name, f'presets {" / ".join(p[-1])} but Keys has {" / ".join(map(str, preset))}')
     # README.txt has the key's row with the Keys presets
     if name not in rows: fail(README_NAME, name, 'no settings table row')
     elif rows[name] != preset: fail(README_NAME, name, f'row {rows[name]} but Keys presets {preset}')
