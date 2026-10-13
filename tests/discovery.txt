@@ -83,6 +83,7 @@ test_model_index_cache.py
 test_model_replay_pool.py
 test_model_snapshot_cache.py
 test_moon_cascade_weight.py
+test_name_mask.py
 test_near_reserve.py
 test_night_floor.py
 test_night_floor_wiring.py
@@ -117,6 +118,8 @@ test_replay_priority_safety.py
 test_replay_skin_safety.py
 test_replay_upload.py
 test_rigid_memory.py
+test_shader_read_set.py
+test_shader_read_set_client.py
 test_shadow_blob_client.py
 test_shadow_blob_model.py
 test_shadow_experiment.py
@@ -127,6 +130,7 @@ test_shadow_shimmer.py
 test_snapshot_allocation.py
 test_snapshot_prediction.py
 test_solar_volume.py
+test_spell_fog_proof_client.py
 test_spell_layer.py
 test_static_cache_dirty_rect.py
 test_static_plan_job.py
@@ -134,6 +138,7 @@ test_storm_bands.py
 test_stormlib_build.py
 test_sun_hue.py
 test_sun_rim.py
+test_synced_slots_wiring.py
 test_temporal_history.py
 test_terrain_cache_capacity.py
 test_terrain_capture_bounds.py
