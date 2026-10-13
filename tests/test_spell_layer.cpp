@@ -1663,6 +1663,7 @@ static void testSpellFogFlat(){
     float worstBare=0;
     for(float sigma:{.0005f,.002f,.005f,.01f,.02f,.04f}){
         Frame f=fogFrame(sigma);const float g[3]={0,1,1};
+        if(sigma>=.04f){bool skip=false;CHECK(!emitFog(f,g,fit,true,&skip)&&skip);CHECK(emitFog(f,g,fit,false));continue;}   // thick fog: no bare-ramp fit is good enough, nothing is folded (not a bad fit)
         CHECK(emitFog(f,g,fit,true)&&fit[0]<0&&fit[1]>0&&-fit[1]/fit[0]>=kFlatBareEnd-1e-2f&&fit[2]<=kFlatMaxPower+1e-4f);
         if(sigma<=.02f)for(int i=0;i<=200;++i){const float z=kRange*float(i)/200;worstBare=std::max(worstBare,std::fabs(fitVisibility(fit,z)-foldedTransmittance(f,z)));if(z<=kClearNear)CHECK(fitVisibility(fit,z)>=.99f);}   // 0.04: the pinned end costs accuracy (thick fog), only the constraint is held
         for(float z=0;z<=kFlatBareEnd;z+=4)CHECK(fitVisibility(fit,z)<=1.f);
@@ -1767,6 +1768,54 @@ static void testSpellFogPrecomputed(){
       us[on]=std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-t1).count()/(R*300.0);}
      const double recUs=us[1]-us[0];
      printf("spell fog cost: %.1f us per fit (runs at the publish, on the world render's thread, only when the estimate moved > 1 %% or a new ramp was reported), %.2f us more per record than with SpellFog off (mock device, rig and boundary included in both; fits on the record path: 0)\n",fitUs,recUs);CHECK(ok==unsigned(N));}
+}
+
+
+// ---- SpellFog review round: thin-fog colour, bare thick fog, blend ops, hash lookups, NaN ----
+static void sFogOp(Rig& r){
+    const float flat[4]={0,1,1,0},cF[4]={.4f,.5f,.6f,1};r.dev.SetVertexShaderConstantF(30,flat,1);r.dev.SetPixelShaderConstantF(16,cF,1);r.psFogReg=16;
+    const DWORD ops[]={1,2,3,4,5};   // ADD folds; SUBTRACT, REVSUBTRACT, MIN, MAX do not
+    for(int i=0;i<5;++i){r.translucent(kSrcAlpha,kBlendOne);r.rs(D3DRS_BLENDOP,ops[i]);deferQuad(r,i+1);}
+    r.boundary();
+}
+static void testSpellFogReview(){
+    using namespace NorthlightSpellFog;
+    float fit[3],col[3];
+    // 1. the colour of a flat record is the in-scatter colour whatever the game's (stale) cF is, also in thin fog, and continuous in the fog thickness
+    {const float flat[3]={0,1,1};const float stale[2][3]={{.9f,.1f,.7f},{0.f,0.f,0.f}};float prev[3]={};bool have=false;float jump=0;
+     for(float sigma:{.00004f,.0001f,.0003f,.001f,.003f,.006f,.02f}){Frame f=fogFrame(sigma);if(!emitFog(f,flat,fit))continue;
+        float a[3],b[3];emitColor(f,flat,fit,stale[0],a);emitColor(f,flat,fit,stale[1],b);
+        for(int c=0;c<3;++c){CHECK(a[c]==b[c]);CHECK(std::isfinite(a[c])&&a[c]>=0);}   // the stale cF does not matter at all
+        if(have)for(int c=0;c<3;++c)jump=std::max(jump,std::fabs(a[c]-prev[c]));for(int c=0;c<3;++c)prev[c]=a[c];have=true;}
+     CHECK(jump<.2f);
+     // thin fog: the denominator small -> the in-scatter colour (to the smoothstep's tail)
+     Frame thin=fogFrame(.00005f);thin.active=true;const float fitThin[3]={-1e-5f,1.f,1.f};emitColor(thin,flat,fitThin,stale[0],col);
+     for(int c=0;c<3;++c)CHECK(std::fabs(col[c]-thin.scatter[c])<2e-3f);
+     // a ramp game constant keeps the game's colour where there is no fog to add
+     const float ramp[3]={-1/150.f,1.f,1.f};emitColor(thin,ramp,fitThin,stale[0],col);for(int c=0;c<3;++c)CHECK(std::fabs(col[c]-stale[0][c])<2e-3f);}
+    // 2. bare-ramp shaders: thick fog that no fit represents folds nothing (counted), everything that folds keeps the near plateau and stays under the target far out
+    {bool skip=false;Frame thick=fogFrame(.07f);const float flat[3]={0,1,1},ramp[3]={-1/150.f,1.f,1.f};
+     CHECK(!emitFog(thick,flat,fit,true,&skip)&&skip);skip=false;CHECK(emitFog(thick,flat,fit,false,&skip)&&!skip);
+     for(float sigma:{.001f,.004f,.01f,.02f,.04f}){Frame f=fogFrame(sigma);for(const float* g:{flat,ramp}){skip=false;
+        if(!emitFog(f,g,fit,true,&skip)){CHECK(skip);continue;}
+        for(float z=0;z<=kClearNear;z+=2)CHECK(fitVisibility(fit,z)>=gameVisibility(g,z)-.06f);
+        for(float z=64;z<=(g==flat?1024.f:150.f);z+=16){const float bare=std::min(1.f,std::pow(std::fabs(z*fit[0]+fit[1]),fit[2]));
+            CHECK(bare<=std::min(1.f,std::pow(std::fabs(z*g[0]+g[1]),g==flat?1.f:g[2]))*f.transmittance(z)+.15f+1e-4f);}}}
+     // the layer counts the skip, folds nothing and leaves c30 and the colour to the game
+     const Frame frame=fogFrame(.07f);Opts o;o.fogOn=true;o.fog=&frame;
+     Pair p=runBothFog(sFogFlat,o,2);const Counters& c=p.lay->layer.totalCounters();
+     CHECK(c.fogBareSkip==2&&c.fogFlat==0&&c.fogRefused==1);}   // the two flat records skip, the refused one stays refused
+    // 3. a blend op other than ADD is not folded and counted as another blend
+    {const Frame frame=fogFrame(.006f);Opts o;o.fogOn=true;o.fog=&frame;Pair p=runBoth(sFogOp,o);const Counters& c=p.lay->layer.totalCounters();
+     CHECK(c.fogEntries==1&&c.fogOtherBlend==4&&c.dirtyMismatches==0);   // ADD folds; the other four ops keep the game's c30 and colour
+     Opts off;off.fogOn=false;off.fog=&frame;Pair q=runBoth(sFogOp,off);CHECK(!q.lay->layer.fogSampleRoom());   // SpellFog off: no hash lookups
+     CHECK(p.lay->layer.fogSampleRoom());}
+    // 5. a NaN estimate resets the hold and SpellFog goes on
+    {Hold h;Frame raw=fogFrame(.006f);for(int i=0;i<30;++i)h.update(raw,true,.1f);CHECK(h.out.active&&h.resets==0);
+     Frame bad=raw;bad.tau[2]=NAN;h.update(bad,true,.1f);CHECK(h.resets==1&&!h.out.active);
+     for(float t:h.out.tau)CHECK(std::isfinite(t));
+     for(int i=0;i<30;++i)h.update(raw,true,.1f);CHECK(h.out.active&&h.resets==1&&h.out.flat[0].valid);   // recovered
+     h.update(raw,true,NAN);CHECK(h.resets==2);for(float t:h.out.tau)CHECK(std::isfinite(t));}
 }
 
 // ---------------- review items: caps, stride-0 streams, upload cursors, depth textures, trim ----------------
@@ -2247,7 +2296,7 @@ int main(int argc,char** argv){
     const char* only=argc>1?argv[1]:nullptr; // a test name (substring) to run alone, and an optional cache mode
     const bool fixedMode=argc>2;if(fixedMode)gMirrorMode=std::atoi(argv[2]);
     struct T{const char* name;void(*fn)();};
-    const T tests[]={{"classify",testClassify},{"lazy classify",testLazyClassify},{"glow verdict",testGlowVerdict},{"spell fog fit",testSpellFogFit},{"spell fog record",testSpellFogRecord},{"spell fog toggle",testSpellFogToggle},{"spell fog march",testSpellFogMarch},{"vs fog proof",testVsFogProof},{"spell fog fresh",testSpellFogFresh},{"spell fog cache and blend",testSpellFogCacheAndBlend},{"spell fog flat",testSpellFogFlat},{"spell fog colour",testSpellFogColour},{"spell fog precomputed",testSpellFogPrecomputed},{"order split cap",testOrderSplitCap},{"stride 0 stream",testStride0},{"fvf vertex size",testFvfVertexSize},{"allocation failures",testAllocFailures},{"stride 0 fvf",testStride0Fvf},{"upload cursor",testUploadCursor},{"depth stencil texture",testDepthStencilTexture},{"trim and reuse",testTrimReuse},{"dirty record random",testDirtyRandom},{"record slots",testRecordSlots},{"dirty fail safe",testDirtyFailSafe},{"frame state",testFrameState},{"guard table",testGuardTable},{"equivalence",testEquivalence},
+    const T tests[]={{"classify",testClassify},{"lazy classify",testLazyClassify},{"glow verdict",testGlowVerdict},{"spell fog fit",testSpellFogFit},{"spell fog record",testSpellFogRecord},{"spell fog toggle",testSpellFogToggle},{"spell fog march",testSpellFogMarch},{"vs fog proof",testVsFogProof},{"spell fog fresh",testSpellFogFresh},{"spell fog cache and blend",testSpellFogCacheAndBlend},{"spell fog flat",testSpellFogFlat},{"spell fog colour",testSpellFogColour},{"spell fog precomputed",testSpellFogPrecomputed},{"spell fog review",testSpellFogReview},{"order split cap",testOrderSplitCap},{"stride 0 stream",testStride0},{"fvf vertex size",testFvfVertexSize},{"allocation failures",testAllocFailures},{"stride 0 fvf",testStride0Fvf},{"upload cursor",testUploadCursor},{"depth stencil texture",testDepthStencilTexture},{"trim and reuse",testTrimReuse},{"dirty record random",testDirtyRandom},{"record slots",testRecordSlots},{"dirty fail safe",testDirtyFailSafe},{"frame state",testFrameState},{"guard table",testGuardTable},{"equivalence",testEquivalence},
         {"discard copy",testDiscard},{"partial overlap",testPartialOverlap},{"two entries",testTwoEntries},{"count-based marks",testMarkIsCountBased},
         {"rebase negative base",testRebaseNegativeBase},{"rebase kept base",testRebasePositiveBase},{"index buffer copy",testIbMaterialized},
         {"mixed streams",testMixedStreams},{"32-bit UP",test32bitUP},{"non-dynamic buffer",testNonDynamic},{"copy disabled",testConflictCopyDisabled},

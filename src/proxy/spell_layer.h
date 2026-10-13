@@ -45,7 +45,8 @@ enum Sub:unsigned{SubAdditive=1,SubAlpha=2,SubModulate=4,SubOther=8};
 // maintain cF): additive (dest ONE) and premultiplied (ONE / INVSRCALPHA) black, modulate (DESTCOLOR / ZERO, ZERO / SRCCOLOR) white, mod2x (DESTCOLOR / SRCCOLOR) mid grey, straight alpha the in-scatter
 // colour; any other blend is not folded.
 enum class FogTarget:uint8_t{None,Black,White,Grey,Scatter};
-inline FogTarget fogTarget(unsigned src,unsigned dst){
+inline FogTarget fogTarget(unsigned src,unsigned dst,unsigned op=kBlendOpAdd){
+    if(op!=kBlendOpAdd)return FogTarget::None;                 // MIN / MAX / SUBTRACT / REVSUBTRACT: the factors do not mean what the table assumes (the separate alpha blend only touches alpha, not this choice)
     if(dst==kBlendOne)return FogTarget::Black;
     if(src==kBlendOne&&dst==kInvSrcAlpha)return FogTarget::Black;
     if((src==kDestColor&&dst==kBlendZero)||(src==kBlendZero&&dst==kSrcColor))return FogTarget::White;
@@ -179,6 +180,7 @@ struct Counters{
     uint64_t recordSlots=0;                       // slots a record examined (read and compared): with the synced bits only the ones that may have changed
     unsigned fogCapped=0;                         // fits skipped because the frame's cap on new fits was reached (the game's value was kept)
     unsigned fogEntries=0;                        // records whose fog slots carried Northlight's fog (SpellFog)
+    unsigned fogBareSkip=0;                        // bare-ramp shaders whose thick-fog fit was not good enough: nothing folded
     unsigned fogNoPsReg=0,fogOtherBlend=0;        // proven vertex shaders not folded: no proven, readable PS fog colour register; a blend with no neutral fog colour
     unsigned fogFlat=0,fogRefused=0,fogUnproven=0,fogNoRead=0; // of the records of a frame with an active estimate: folded from a flat game constant (Northlight's fog alone; also in fogEntries); proven vertex shader but the game's constant refused (identity, the cap excluded: fogCapped); the shader reads c30 but has no fog proof; the shader does not read c30
     unsigned stride0Refused=0;                    // defers refused (a Capture failure: flush + fallback) because a stride-0 stream's vertex size could not be determined
@@ -197,7 +199,7 @@ struct Counters{
         for(int i=0;i<4;++i){deferred[i]+=o.deferred[i];inPlace[i]+=o.inPlace[i];}
         for(int i=0;i<3;++i)orderBy[i]+=o.orderBy[i];
         for(unsigned i=0;i<kReasons;++i)hazards[i]+=o.hazards[i];
-        fixed+=o.fixed;flushes+=o.flushes;replays+=o.replays;drains+=o.drains;recordSlots+=o.recordSlots;stride0Refused+=o.stride0Refused;fogEntries+=o.fogEntries;fogFlat+=o.fogFlat;fogRefused+=o.fogRefused;fogUnproven+=o.fogUnproven;fogNoRead+=o.fogNoRead;fogNoPsReg+=o.fogNoPsReg;fogOtherBlend+=o.fogOtherBlend;fogCapped+=o.fogCapped;checkAllocFails+=o.checkAllocFails;dirtyMismatches+=o.dirtyMismatches;restoreFallbacks+=o.restoreFallbacks;texSplits+=o.texSplits;restoreSets+=o.restoreSets;replayedDraws+=o.replayedDraws;replaySkipped+=o.replaySkipped;discarded+=o.discarded;
+        fixed+=o.fixed;flushes+=o.flushes;replays+=o.replays;drains+=o.drains;recordSlots+=o.recordSlots;stride0Refused+=o.stride0Refused;fogEntries+=o.fogEntries;fogFlat+=o.fogFlat;fogRefused+=o.fogRefused;fogUnproven+=o.fogUnproven;fogNoRead+=o.fogNoRead;fogBareSkip+=o.fogBareSkip;fogNoPsReg+=o.fogNoPsReg;fogOtherBlend+=o.fogOtherBlend;fogCapped+=o.fogCapped;checkAllocFails+=o.checkAllocFails;dirtyMismatches+=o.dirtyMismatches;restoreFallbacks+=o.restoreFallbacks;texSplits+=o.texSplits;restoreSets+=o.restoreSets;replayedDraws+=o.replayedDraws;replaySkipped+=o.replaySkipped;discarded+=o.discarded;
         conflicts+=o.conflicts;materialized+=o.materialized;recorded+=o.recorded;replaySets+=o.replaySets;conflictBytes+=o.conflictBytes;
         for(int i=0;i<4;++i)capBy[i]+=o.capBy[i];overflowFrames+=o.overflowFrames;overflowAt+=o.overflowAt;overflowCandidates+=o.overflowCandidates;
         deltaWords+=o.deltaWords;arenaHigh=std::max(arenaHigh,o.arenaHigh);recordHigh=std::max(recordHigh,o.recordHigh);
@@ -634,11 +636,11 @@ private:
         return true;
     }
     std::vector<std::unique_ptr<uint32_t[]>> deltaChunks_;unsigned deltaChunk_=0,deltaUsed_=0; // state deltas of the pending entries; deltaChunk_/deltaUsed_: the chunk being filled and its used words
-    struct SyncPend{uint64_t rs[4]={},vsF[4]={},psF[4]={};uint16_t ss[16]={};uint16_t tex=0;bool vp=false;unsigned slots=0;bool fogVs=false;int fogPs=-1,fogApplied=0;uint8_t fogFlat=0,fogRefused=0,fogUnproven=0,fogNoRead=0,fogNoPsReg=0,fogOtherBlend=0;}; // fogVs/fogPs: the fog rows of this record (they hold Northlight's value, never synced)
+    struct SyncPend{uint64_t rs[4]={},vsF[4]={},psF[4]={};uint16_t ss[16]={};uint16_t tex=0;bool vp=false;unsigned slots=0;bool fogVs=false;int fogPs=-1,fogApplied=0;uint8_t fogFlat=0,fogRefused=0,fogUnproven=0,fogNoRead=0,fogNoPsReg=0,fogOtherBlend=0,fogBareSkip=0;}; // fogVs/fogPs: the fog rows of this record (they hold Northlight's value, never synced)
     std::unique_ptr<uint32_t[]> checkScratch_;         // the dirty cross-check's copy of the first delta (kScratchWords)
     DeltaDiff dirtyFirst_;bool dirtyTaken_=false;       // the first synced-bit mismatch of the session (takeDirtyMismatch)
     // SpellFog state: the fit cache (one game constant per frame revision), the alpha colour cache, the sub-class and fog colour register of the draw being recorded, the first samples per sub-class.
-    struct FogFitEntry{float key[3]={};float fit[3]={};bool ok=false,valid=false,bare=false;unsigned rev=0;};
+    struct FogFitEntry{float key[3]={};float fit[3]={};bool ok=false,valid=false,bare=false,skip=false;unsigned rev=0;};
     FogFitEntry fogCache_[4];unsigned fogCacheNext_=0,fogFits_=0;bool fogFresh_=false;unsigned fogProven_=0; // 4 entries (game constant x frame revision), the fits made this frame, the integration's 'the estimate was published' flag, the vertex shader proof of the draw
     float fogColKey_[6]={},fogColOut_[3]={};bool fogColValid_=false;unsigned fogColRev_=~0u,fogSub_=0;int fogReg_=-1;
     float fogLastFit_[3]={};
@@ -646,7 +648,7 @@ public:
     struct FogSample{unsigned sub=0,kind=0;uint64_t vsHash=0;float game[4]={},gameColor[4]={},emit[4]={},emitColor[4]={};bool hasColor=false;}; // kind: 0 a falling game ramp folded, 1 a flat constant folded, 2 refused (emit = game)
 private:
     unsigned long long fogFitCalls_=0;float fogSeen_[NorthlightSpellFog::kRamps][4]={};unsigned fogSeenN_=0,fogSeenNext_=0; // fits made on the record path; the last distinct falling-ramp constants seen (x, y, power, bare)
-    FogSample fogSamples_[192];unsigned fogSampleN_=0,fogPerSub_[12]={};uint64_t fogVsHash_=0;bool fogCappedNow_=false;
+    FogSample fogSamples_[192];unsigned fogSampleN_=0,fogPerSub_[12]={};uint64_t fogVsHash_=0;bool fogCappedNow_=false,fogSkipNow_=false;
     SyncPend pend_;                                   // the slots the delta being built examined: they become synced when the record commits
     std::unique_ptr<Undo> undo_;                      // allocated at the first minimal restore
     std::vector<std::unique_ptr<FfRec[]>> ffChunks_;unsigned ffCount_=0;const FfRec* ffPrev_=nullptr; // ffPrev_: the last fixed-function record the running replay applied
@@ -1183,22 +1185,22 @@ private:
     // SpellFog: the fit of the game's fog constant for the frame (cached per game constant and frame revision: the game's constant is the same for most of a frame's effects) and the
     // alpha sub-class's fog colour. False: the game's constant stays.
     bool fogFit(const float game[3],float fit[3]){
-        fogCappedNow_=false;
+        fogCappedNow_=false;fogSkipNow_=false;
         const NorthlightSpellFog::Frame& f=*cfg_.fog;
         // the publish's fits first (spell_fog.h Hold::update): a flat constant has one per frame revision, a falling ramp seen before has one too; no fitting on this path
         const bool bareNow=fogProven_==2;
         if(NorthlightSpellFog::flatConstant(game)){
             const NorthlightSpellFog::Fit& pf=f.flat[bareNow?1:0];
-            if(pf.valid){if(pf.ok){std::memcpy(fit,pf.fit,12);std::memcpy(fogLastFit_,pf.fit,12);}return pf.ok;}
+            if(pf.valid){fogSkipNow_=pf.bareSkip;if(pf.ok){std::memcpy(fit,pf.fit,12);std::memcpy(fogLastFit_,pf.fit,12);}return pf.ok;}
         }else{
-            for(const NorthlightSpellFog::Fit& pf:f.ramp)if(pf.valid&&pf.bare==bareNow&&!std::memcmp(pf.key,game,12)){if(pf.ok){std::memcpy(fit,pf.fit,12);std::memcpy(fogLastFit_,pf.fit,12);}return pf.ok;}
+            for(const NorthlightSpellFog::Fit& pf:f.ramp)if(pf.valid&&pf.bare==bareNow&&!std::memcmp(pf.key,game,12)){fogSkipNow_=pf.bareSkip;if(pf.ok){std::memcpy(fit,pf.fit,12);std::memcpy(fogLastFit_,pf.fit,12);}return pf.ok;}
             fogNoteRamp(game,bareNow);
         }
-        for(const FogFitEntry& e:fogCache_)if(e.valid&&e.rev==f.revision&&e.bare==(fogProven_==2)&&!std::memcmp(e.key,game,12)){if(e.ok){std::memcpy(fit,e.fit,12);std::memcpy(fogLastFit_,e.fit,12);}return e.ok;}
+        for(const FogFitEntry& e:fogCache_)if(e.valid&&e.rev==f.revision&&e.bare==(fogProven_==2)&&!std::memcmp(e.key,game,12)){fogSkipNow_=e.skip;if(e.ok){std::memcpy(fit,e.fit,12);std::memcpy(fogLastFit_,e.fit,12);}return e.ok;}
         if(fogFits_>=cfg_.maxFogFits){fogCappedNow_=true;count([](Counters& c){++c.fogCapped;});return false;} // a bounded cost per frame: beyond the cap the game's constant is recorded
         ++fogFits_;++fogFitCalls_;
         FogFitEntry& e=fogCache_[fogCacheNext_++&3];std::memcpy(e.key,game,12);e.rev=f.revision;e.valid=true;e.bare=fogProven_==2;
-        e.ok=NorthlightSpellFog::emitFog(f,game,e.fit,e.bare);
+        e.ok=NorthlightSpellFog::emitFog(f,game,e.fit,e.bare,&e.skip);fogSkipNow_=e.skip;
         if(e.ok){std::memcpy(fit,e.fit,12);std::memcpy(fogLastFit_,e.fit,12);}
         fogColValid_=false;
         return e.ok;
@@ -1275,7 +1277,7 @@ private:
         // examined on every record and never marked synced (the Model holds the folded value, the device the game's).
         const bool fogUse=!fixed&&cfg_.fogOn&&fogFresh_&&cfg_.fog&&cfg_.fog->active;   // fogFresh_: the estimate was published by the last frame's render (a frozen one is not folded)
         // A record folds only with a proven vertex shader AND a proven, read PS fog colour register AND a blend with a known neutral colour: the register is substituted too (never the game's stale value).
-        const FogTarget target=fogUse?fogTarget(cur[19],cur[20]):FogTarget::None;
+        const FogTarget target=fogUse?fogTarget(cur[19],cur[20],cur[171]):FogTarget::None;   // 171: D3DRS_BLENDOP
         const bool psRegOk=fogReg_>=0&&fogReg_<int(kPsFloat)&&(rd.psF[fogReg_>>6]>>(fogReg_&63)&1);
         const bool vsOk=fogUse&&fogProven_!=0&&(rd.vsF[0]>>30&1);                          // a vertex shader whose fog output is proven to be the c30 ramp
         const bool fogVsRow=vsOk&&psRegOk&&target!=FogTarget::None;
@@ -1292,7 +1294,7 @@ private:
             if(fogVsRow){
                 std::memcpy(gameV,src[30],12);
                 if(fogFit(gameV,fitV)){fitOk=true;flatNow=NorthlightSpellFog::flatConstant(gameV);if(flatNow)pend_.fogFlat=1;row[0]=fitV[0];row[1]=fitV[1];row[2]=fitV[2];row[3]=src[30][3];ovr=30;++pend_.fogApplied;fogSample(src[30],nullptr,row,nullptr,flatNow?1u:0u);}
-                else if(!fogCappedNow_){pend_.fogRefused=1;fogSample(src[30],nullptr,src[30],nullptr,2);}
+                else if(!fogCappedNow_){if(fogSkipNow_)pend_.fogBareSkip=1;else pend_.fogRefused=1;fogSample(src[30],nullptr,src[30],nullptr,2);}
             }
             diffRows<4>(Op::VsF,src,m.vsF,m.vsFV,rd.vsF,sync4,kVsFloat,ovr,row);
             for(unsigned w=0;w<4;++w){pend_.vsF[w]=dm4[w];slots+=unsigned(__builtin_popcountll(dm4[w]));}
@@ -1436,6 +1438,7 @@ public:
     // SpellFog: the falling-ramp constants the record path had to look up beyond the publish's fits (x, y, power, bare), for the world renderer to precompute; and the fits made on the record path.
     unsigned fogRampsSeen(const float (*&out)[4])const{out=fogSeen_;return fogSeenN_;}
     unsigned long long fogFitCalls()const{return fogFitCalls_;}
+    bool fogSampleRoom()const{if(!cfg_.fogOn||!cfg_.fogLog||fogSampleN_>=192)return false;for(unsigned k:fogPerSub_)if(k<16)return true;return false;} // a SPELLFOG sample could still be taken (the integration then looks up the vertex shader hash)
     unsigned takeFogSamples(const FogSample*& out){out=fogSamples_;const unsigned n=fogSampleN_;fogSampleN_=0;return n;}
     // The dirty cross-check on sampled frames, and its first mismatch (once per session, for a one-off log line).
     void dirtyCheck(bool on){cfg_.dirtyCheck=on;}
@@ -1606,7 +1609,7 @@ public:
         {   uint32_t* dst=deltaChunks_[e.dChunk].get()+e.dOff;std::memcpy(dst,scratch_.get(),size_t(n_)*4);
             ModelSink ms{model_};decodeOps(dst,dst+n_,ms);}
         if(sy){if(pend_.fogVs)sy->vsF[0]&=~(1ull<<30);if(pend_.fogPs>=0)sy->psF[pend_.fogPs>>6]&=~(1ull<<(pend_.fogPs&63));} // the fog rows hold Northlight's value in the Model, not the device's: never synced
-        if(pend_.fogApplied||pend_.fogRefused||pend_.fogUnproven||pend_.fogNoRead||pend_.fogNoPsReg||pend_.fogOtherBlend)count([&](Counters& c){c.fogEntries+=pend_.fogApplied?1u:0u;c.fogFlat+=pend_.fogFlat;c.fogRefused+=pend_.fogRefused;c.fogNoPsReg+=pend_.fogNoPsReg;c.fogOtherBlend+=pend_.fogOtherBlend;c.fogUnproven+=pend_.fogUnproven;c.fogNoRead+=pend_.fogNoRead;});
+        if(pend_.fogApplied||pend_.fogRefused||pend_.fogBareSkip||pend_.fogUnproven||pend_.fogNoRead||pend_.fogNoPsReg||pend_.fogOtherBlend)count([&](Counters& c){c.fogEntries+=pend_.fogApplied?1u:0u;c.fogFlat+=pend_.fogFlat;c.fogRefused+=pend_.fogRefused;c.fogBareSkip+=pend_.fogBareSkip;c.fogNoPsReg+=pend_.fogNoPsReg;c.fogOtherBlend+=pend_.fogOtherBlend;c.fogUnproven+=pend_.fogUnproven;c.fogNoRead+=pend_.fogNoRead;});
         if(sy&&sy->epoch==epoch0){ // nothing changed the device under this record: what it examined now equals the model
             for(unsigned w=0;w<4;++w){sy->rs[w]|=pend_.rs[w];sy->vsF[w]|=pend_.vsF[w];sy->psF[w]|=pend_.psF[w];}
             for(unsigned t=0;t<16;++t)sy->ss[t]|=pend_.ss[t];

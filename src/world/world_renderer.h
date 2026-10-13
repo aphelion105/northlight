@@ -288,7 +288,7 @@ private:
     NorthlightSunHue::GlowHue glowHueFrame;
     NorthlightWmoContext::LightingHold globalLightHold; /* 0.3.207: sky block reads caught between the colour copy and the weather rescale */
     NorthlightHorizonHaze::Constants hazeFrame; /* last composite haze constants, for the celestial veil */
-    NorthlightSpellFog::Hold spellFogHold;DWORD spellFogTick=0; /* SpellFog: the smoothed per-frame estimate (spell_fog.h) */
+    NorthlightSpellFog::Hold spellFogHold;DWORD spellFogTick=0;bool spellFogResetLogged=false; /* SpellFog: the smoothed per-frame estimate (spell_fog.h) */
     float skyTransmittanceFrame=1; /* CPU estimate of the fog transmittance toward the sun, for the veil */
     struct FogShader { unsigned major=0;int colorRegister=-1;bool verified=false; };
     std::unordered_map<IDirect3DPixelShader9*,FogShader> fogShaders;
@@ -3597,7 +3597,7 @@ public:
             NorthlightSpellFog::Frame raw;const bool wanted=quality.spellFog&&effects.fog&&active&&uploadedFogField&&debug==0&&atmosphere.spellValid;
             if(wanted){raw.active=true;for(unsigned i=0;i<NorthlightSpellFog::kSamples;++i)raw.tau[i]=atmosphere.spellTau[cf.active?1:0][i];for(unsigned k=0;k<3;++k)raw.scatter[k]=std::max(context.ambient[k],0.f)*.35f;}
             const DWORD tick=GetTickCount();const float dt=spellFogTick?float(DWORD(tick-spellFogTick))*.001f:0.f;spellFogTick=tick;
-            spellFogHold.update(raw,wanted,dt);
+            spellFogHold.update(raw,wanted,dt);if(spellFogHold.resets&&!spellFogResetLogged){spellFogResetLogged=true;logf("SPELLFOG estimate was not finite: the hold was reset and SpellFog goes on (resets=%u)",spellFogHold.resets);}
         }
         skyTransmittanceFrame=cf.active?atmosphere.veil[1]:atmosphere.veil[0]; /* the clouds' term only when the pass is really active (1: no fog field or no fog) */
         c[33][0]=float(w);c[33][1]=float(h);c[33][2]=float(w/2);c[33][3]=float(h/2);

@@ -19,7 +19,7 @@ constexpr float kDistance[kSamples]={6,12,24,48,80,128};   // view distances (wo
 constexpr float kRange=128;                                  // Northlight's fog is integrated to 128 units (FogInfo.w)
 // A precomputed fit of the publish (Hold::update): the record path then looks fits up and never fits. flat[bare]: the fit for every flat game constant (it does not depend on the constant),
 // ramp[i]: the fit for a recently seen falling-ramp constant (the layer reports those, Hold::addHint); valid: computed, ok: the fit succeeded.
-struct Fit{bool valid=false,ok=false,bare=false;float key[3]={},fit[3]={};};
+struct Fit{bool valid=false,ok=false,bare=false,bareSkip=false;float key[3]={},fit[3]={};}; // bareSkip: not ok because no bare-ramp fit was good enough (the record folds nothing, counted apart)
 constexpr unsigned kRamps=4;
 struct Frame{
     bool active=false;
@@ -41,7 +41,7 @@ struct Frame{
     }
 };
 inline bool flatConstant(const float game[3]);
-inline bool emitFog(const Frame& f,const float game[3],float out[3],bool bareBase=false);
+inline bool emitFog(const Frame& f,const float game[3],float out[3],bool bareBase=false,bool* bareSkip=nullptr);
 // The frame's numbers move toward the raw estimate with a time constant (no pumping when the camera crosses a fog bank), fade to nothing when the effect is off, and the frame is
 // inactive (identity) below a negligible optical depth. `revision` moves only when a sample's optical depth, the scatter colour or `active` changed by more than ~1 % relative to the values at
 // the last move; then the precomputed fits are redone (here, on the thread of the world render: the record path of the layer does no fitting for them).
@@ -56,7 +56,7 @@ struct Hold{
         std::memcpy(hints[at],game,12);hints[at][3]=bare?1.f:0.f;hintsNew=true;
     }
     static void fitOne(const Frame& f,const float game[3],bool bare,Fit& slot){
-        slot=Fit{};slot.valid=true;slot.bare=bare;std::memcpy(slot.key,game,12);slot.ok=emitFog(f,game,slot.fit,bare);
+        slot=Fit{};slot.valid=true;slot.bare=bare;std::memcpy(slot.key,game,12);slot.ok=emitFog(f,game,slot.fit,bare,&slot.bareSkip);
     }
     void refit(bool all){
         static const float kFlat[3]={0,1,1};
@@ -70,7 +70,14 @@ struct Hold{
             fitOne(out,hints[i],hints[i][3]!=0,out.ramp[slot]);
         }
     }
+    unsigned resets=0;                            // non-finite input or state: the hold was reset and went on (the world renderer logs the first)
     void update(const Frame& raw,bool wanted,float dt){
+        bool bad=!std::isfinite(dt);
+        if(wanted&&raw.active){for(unsigned i=0;i<kSamples;++i)bad|=!std::isfinite(raw.tau[i]);for(unsigned c=0;c<3;++c)bad|=!std::isfinite(raw.scatter[c]);}
+        for(unsigned i=0;i<kSamples;++i)bad|=!std::isfinite(out.tau[i]);for(unsigned c=0;c<3;++c)bad|=!std::isfinite(out.scatter[c]);
+        if(bad){ // a NaN would stay in the smoothed numbers for good: start over from nothing (identity) and carry on with the next frame's estimate
+            ++resets;for(float& t:out.tau)t=0;for(float& v:out.scatter)v=0;wanted=false;dt=0;
+        }
         const float k=1-std::exp(-std::clamp(dt,0.f,.5f)/.25f);
         for(unsigned i=0;i<kSamples;++i){
             const float target=wanted&&raw.active?raw.tau[i]:0.f;
@@ -114,7 +121,8 @@ inline bool flatConstant(const float game[3]){
 }
 // The fit F: out = (a, b, p). False: identity (leave the game's constant): no fog, a constant the shader would not use as a fog ramp (non-finite, an exponent outside .05..16, a ramp that
 // rises and stays below 1), or a range too short to matter.
-inline bool emitFog(const Frame& f,const float game[3],float out[3],bool bareBase){
+inline bool emitFog(const Frame& f,const float game[3],float out[3],bool bareBase,bool* bareSkip){
+    if(bareSkip)*bareSkip=false;
     if(!f.active||!(f.tau[kSamples-1]>=.004f))return false;                 // no fog (transmittance 1 everywhere): the game's constant
     for(unsigned i=0;i<3;++i)if(!std::isfinite(game[i]))return false;
     const bool flat=flatConstant(game);
@@ -130,6 +138,15 @@ inline bool emitFog(const Frame& f,const float game[3],float out[3],bool bareBas
     static const float scale[]={.6f,.8f,1.f,1.25f,1.6f,2.f,2.6f,3.5f};
     float best=1e30f,bestFit[3]={game[0],game[1],game[2]};bool found=false;
     auto error=[&](float a,float b,float p){float e=0;for(unsigned i=0;i<N;++i){const float v=std::min(1.f,std::pow(std::max(a*z[i]+b,0.f),p)),d=v-h[i];e+=wt[i]*d*d;}return e;};
+    // A bare-ramp shader (D3D pow takes |base|) must be usable as a whole: visible near the eye (below kClearNear within .02 of the game's own where that is 1, else within .06) and, past its zero crossing, not coming back
+    // above the game's own bare ramp times the transmittance (+0.15) out to the game's end (1024 for a flat constant). Thick fog cannot satisfy both with one power law of at most 32: then the record folds nothing (bareSkip), not a bad fit.
+    auto bareGood=[&](float a,float b,float p){
+        for(unsigned i=0;i<N&&z[i]<=kClearNear;++i){const float g0=gameVisibility(game,z[i]);if(std::min(1.f,std::pow(std::max(a*z[i]+b,0.f),p))<g0-(g0>=.99f?.02f:.06f))return false;}
+        for(float zf:{64.f,128.f,256.f,512.f,768.f,1024.f,end})   // the view distances that exist: up to the game's own end (a flat constant: 1024)
+            if(zf<=(flat?1024.f:end))
+            if(std::min(1.f,std::pow(std::fabs(a*zf+b),p))>std::min(1.f,std::pow(std::fabs(game[0]*zf+game[1]),flat?1.f:game[2]))*f.transmittance(zf)+.15f)return false;   // against the game's own bare ramp (it too comes back after its end)
+        return true;
+    };
     const float gp=flat?1.f:game[2];                                         // a flat constant's own exponent says nothing: the fit does not depend on it (one fit per frame serves them all)
     float powers[32];unsigned np=0;
     for(float s:scale)powers[np++]=gp*s;
@@ -171,7 +188,7 @@ inline bool emitFog(const Frame& f,const float game[3],float out[3],bool bareBas
             if(ne<e){a=na;b=nb;e=ne;lambda=std::max(lambda*.3f,1e-6f);}else lambda*=10;
         }
         if(!(a<-1e-7f)||!(b>0))continue;                                    // nonincreasing and visible at the eye
-        if(bareBase&&-b/a<end*.98f)continue;                                // a shader that takes the pow of the bare ramp (no max): the ramp must not reach 0 before the game's own, a negative base is not 0 there and the fog would come back
+        if(bareBase&&(-b/a<end*.98f||!bareGood(a,b,p)))continue;           // a shader that takes the pow of the bare ramp (no max): the ramp must not reach 0 before the game's own, a negative base is not 0 there and the fog would come back
         if(e<best){best=e;bestFit[0]=a;bestFit[1]=b;bestFit[2]=p;found=true;}
     }
     if(!found&&bareBase){ // no free fit reaches 0 late enough (thick fog and a far game end): pin the end at the game's and fit the slope and the power only
@@ -181,24 +198,29 @@ inline bool emitFog(const Frame& f,const float game[3],float out[3],bool bareBas
             for(unsigned i=0;i<N;++i){if(z[i]<kClearNear+kClearFade)continue;const float y=std::pow(std::max(h[i],0.f),1.f/p),w=E-z[i];num+=y*w;dd+=w*w;}   // beyond the fade; the line rises above 1 nearer (the plateau)
             if(!(dd>0))continue;
             const float a=-num/dd,b=-a*E;if(!(a<-1e-7f)||!(b>0))continue;
+            if(!bareGood(a,b,p))continue;
             const float e=error(a,b,p);if(e<best){best=e;bestFit[0]=a;bestFit[1]=b;bestFit[2]=p;found=true;}
         }
     }
-    if(!found)return false;
+    if(!found){if(bareSkip)*bareSkip=bareBase;return false;}
     for(unsigned i=0;i<3;++i)out[i]=bestFit[i];
     return true;
 }
 // The fit's visibility at z (what the replayed shader will compute).
 inline float fitVisibility(const float fit[3],float z){return std::min(1.f,std::pow(std::max(z*fit[0]+fit[1],0.f),fit[2]));}
 // The alpha sub-class mixes lerp(cF, X, fog'): the fog colour that makes the mix at a representative distance equal what Northlight's fog does to the game's
-// result, X g T + cF (1-g) T + S (1-T), with fog' = g T. cF' = (cF (1-g) T + S (1-T)) / (1 - g T) at z = half of the fitted range. Unchanged where the fit leaves the
-// denominator too small to matter (near the eye there is no fog to add).
+// result, X g T + cF (1-g) T + S (1-T), with fog' = g T. cF' = (cF (1-g) T + S (1-T)) / (1 - g T) at z = half of the fitted range. Where the fit leaves the denominator small there is little
+// fog to add: the colour moves continuously (smoothstep over den 0..0.08) to the game's cF, or to the in-scatter colour S for a flat game constant, whose cF is stale (the game does not
+// maintain it with its fog off).
 inline void emitColor(const Frame& f,const float game[3],const float fit[3],const float cF[3],float out[3]){
+    const bool flat=flatConstant(game);
     const float hi=game[0]<-1e-7f?std::min(-game[1]/game[0],kRange):kRange,zm=hi*.5f;
     const float g=gameVisibility(game,zm),T=foldedTransmittance(f,zm),gp=fitVisibility(fit,zm),den=1-gp;
+    const float u=std::clamp(den/.08f,0.f,1.f),w=u*u*(3-2*u);
     for(unsigned c=0;c<3;++c){
-        out[c]=cF[c];
-        if(den>.08f){const float v=(cF[c]*(1-g)*T+f.scatter[c]*(1-T))/den;out[c]=std::clamp(v,0.f,std::max(cF[c],4.f));}
+        const float rest=flat?f.scatter[c]:cF[c];                          // what the colour tends to where there is no fog to add
+        const float v=den>1e-4f?std::clamp((cF[c]*(1-g)*T+f.scatter[c]*(1-T))/den,0.f,std::max(cF[c],4.f)):rest;
+        out[c]=rest+(v-rest)*w;
     }
 }
 }

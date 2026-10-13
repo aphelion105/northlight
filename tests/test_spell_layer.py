@@ -15,3 +15,9 @@ with tempfile.TemporaryDirectory(prefix='northlight-spell-layer-') as tmp:
         run=subprocess.run([str(exe)],capture_output=True,text=True,timeout=300)
         print(label,run.stdout,run.stderr,end='',flush=True);run.check_returncode()
         assert 'tests passed' in run.stdout
+# SpellFog review: the vertex shader hash lookup of a defer happens only when a SPELLFOG sample can still be logged (diagnostics on, sample room, SpellFog on)
+r=fp.src('renderer.cpp').read_text()
+i=r.index('spellArgs.vsHash=0;')
+seg=r[i:i+400]
+assert seg.index('diagnostics()&&spell.fogSampleRoom()')<seg.index('vsHashes.find(vs)'), seg
+print('renderer: vsHashes.find only for a logged SPELLFOG sample')
