@@ -290,7 +290,7 @@ static void upgradeAutoDepth(IDirect3D9* d3d,UINT adapter,D3DDEVTYPE type,D3DPRE
 class Device final : public GuardedMirrorDevice {
     LONG refs = 1;
     LONG diagnosticId=0;
-    NorthlightFrameIntervals::Window frameIntervals;
+    NorthlightFrameIntervals::Window frameIntervals;bool intervalFocus=true; /* every frame since the last FRAME interval line had focus */
     bool extensionFault=false;
     IDirect3D9* parent;
     DeviceMirror mirrorState;
@@ -2161,12 +2161,13 @@ public:
     void finishFrameImpl() {
         nameMaskRunEnd(); /* 0.3.212 (task 32) */
         const auto frameEffects=effectKeys.settings;const bool frameEnabled=enabled;
-        // Focus also goes on the FRAME interval line: a background window runs at the client's own frame cap (maxFPSBk).
+        // Focus also goes on the FRAME interval line (0 if any frame since the last line lacked it): a background
+        // window runs at the client's own frame cap (maxFPSBk), which is not renderer cost.
         D3DDEVICE_CREATION_PARAMETERS cp={}; ext->GetCreationParameters(&cp);
-        const bool focus=GetForegroundWindow()==cp.hFocusWindow;
+        const bool focus=GetForegroundWindow()==cp.hFocusWindow;intervalFocus&=focus;
         LARGE_INTEGER intervalTick={};NorthlightFrameIntervals::Report intervalReport;
-        if(diagnostics()&&QueryPerformanceCounter(&intervalTick)&&frameIntervals.sample(intervalTick.QuadPart,cpuFrequency.QuadPart,intervalReport))
-            logf("FRAME interval device=%ld frame=%u tick=%lu enabled=%d samples=%u meanMs=%.3f p50Ms=%.3f p95Ms=%.3f maxMs=%.3f fps=%.2f gi=%u shadows=%u fog=%u focus=%d",diagnosticId,frame,(unsigned long)GetTickCount(),enabled,intervalReport.count,intervalReport.meanMs,intervalReport.p50Ms,intervalReport.p95Ms,intervalReport.maxMs,1000.0/intervalReport.meanMs,unsigned(frameEffects.gi),unsigned(frameEffects.shadows),unsigned(frameEffects.fog),int(focus));
+        if(diagnostics()&&QueryPerformanceCounter(&intervalTick)&&frameIntervals.sample(intervalTick.QuadPart,cpuFrequency.QuadPart,intervalReport)){
+            logf("FRAME interval device=%ld frame=%u tick=%lu enabled=%d samples=%u meanMs=%.3f p50Ms=%.3f p95Ms=%.3f maxMs=%.3f fps=%.2f gi=%u shadows=%u fog=%u focus=%d",diagnosticId,frame,(unsigned long)GetTickCount(),enabled,intervalReport.count,intervalReport.meanMs,intervalReport.p50Ms,intervalReport.p95Ms,intervalReport.maxMs,1000.0/intervalReport.meanMs,unsigned(frameEffects.gi),unsigned(frameEffects.shadows),unsigned(frameEffects.fog),int(intervalFocus));intervalFocus=true;}
         if(diagnostics())gpuProfile->poll();
         gpuBudgetFrame();
         // Poll only while this game owns foreground focus.
