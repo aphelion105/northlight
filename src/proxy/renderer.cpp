@@ -2161,14 +2161,15 @@ public:
     void finishFrameImpl() {
         nameMaskRunEnd(); /* 0.3.212 (task 32) */
         const auto frameEffects=effectKeys.settings;const bool frameEnabled=enabled;
+        // Focus also goes on the FRAME interval line: a background window runs at the client's own frame cap (maxFPSBk).
+        D3DDEVICE_CREATION_PARAMETERS cp={}; ext->GetCreationParameters(&cp);
+        const bool focus=GetForegroundWindow()==cp.hFocusWindow;
         LARGE_INTEGER intervalTick={};NorthlightFrameIntervals::Report intervalReport;
         if(diagnostics()&&QueryPerformanceCounter(&intervalTick)&&frameIntervals.sample(intervalTick.QuadPart,cpuFrequency.QuadPart,intervalReport))
-            logf("FRAME interval device=%ld frame=%u tick=%lu enabled=%d samples=%u meanMs=%.3f p50Ms=%.3f p95Ms=%.3f maxMs=%.3f fps=%.2f gi=%u shadows=%u fog=%u",diagnosticId,frame,(unsigned long)GetTickCount(),enabled,intervalReport.count,intervalReport.meanMs,intervalReport.p50Ms,intervalReport.p95Ms,intervalReport.maxMs,1000.0/intervalReport.meanMs,unsigned(frameEffects.gi),unsigned(frameEffects.shadows),unsigned(frameEffects.fog));
+            logf("FRAME interval device=%ld frame=%u tick=%lu enabled=%d samples=%u meanMs=%.3f p50Ms=%.3f p95Ms=%.3f maxMs=%.3f fps=%.2f gi=%u shadows=%u fog=%u focus=%d",diagnosticId,frame,(unsigned long)GetTickCount(),enabled,intervalReport.count,intervalReport.meanMs,intervalReport.p50Ms,intervalReport.p95Ms,intervalReport.maxMs,1000.0/intervalReport.meanMs,unsigned(frameEffects.gi),unsigned(frameEffects.shadows),unsigned(frameEffects.fog),int(focus));
         if(diagnostics())gpuProfile->poll();
         gpuBudgetFrame();
         // Poll only while this game owns foreground focus.
-        D3DDEVICE_CREATION_PARAMETERS cp={}; ext->GetCreationParameters(&cp);
-        bool focus=GetForegroundWindow()==cp.hFocusWindow;
         bool modifiers=(GetAsyncKeyState(VK_CONTROL)&0x8000)&&(GetAsyncKeyState(VK_SHIFT)&0x8000);
         bool k10=focus&&modifiers&&(GetAsyncKeyState(VK_F10)&0x8000);
         const unsigned componentKeys=((GetAsyncKeyState(VK_F7)&0x8000)?NorthlightEffectSwitches::Fog:0u)|
