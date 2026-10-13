@@ -48,20 +48,22 @@ inline unsigned cores(){const unsigned hw=std::thread::hardware_concurrency();re
 // Anything unreadable gives 0 (the direct path): the stream is only ever entered on an explicit, parsed 1.
 // 0.3.200 (pipeline): framesAhead (optional) receives StreamFramesAhead from the same load (1 when nothing could be read).
 // 0.3.200 (frame skip): frameSkip (optional) receives StreamFrameSkip the same way (0 when nothing could be read).
-inline bool commandStreamFromText(const std::string& own,bool hasFile=true,unsigned* framesAhead=nullptr,unsigned* frameSkip=nullptr){
-    if(framesAhead)*framesAhead=1;if(frameSkip)*frameSkip=0;
+// 0.3.212 (task 32): nameMask (optional) receives NameMask != 0 the same way (false when nothing could be read: no depth format upgrade), so CreateDevice reads the ini once.
+inline bool commandStreamFromText(const std::string& own,bool hasFile=true,unsigned* framesAhead=nullptr,unsigned* frameSkip=nullptr,bool* nameMask=nullptr){
+    if(framesAhead)*framesAhead=1;if(frameSkip)*frameSkip=0;if(nameMask)*nameMask=false;
     try{std::istringstream in(NorthlightQuality::narrow(own));std::vector<std::string> problems;
         const NorthlightQuality::Settings s=NorthlightQuality::load(hasFile?&in:nullptr,nullptr,problems);
         if(framesAhead)*framesAhead=s.streamFramesAhead;
         if(frameSkip)*frameSkip=s.streamFrameSkip;
+        if(nameMask)*nameMask=s.nameMask!=0;
         return s.commandStream!=0;}
     catch(...){return false;}
 }
 #ifdef _WIN32
 // Called by Factory::CreateDevice before the real device exists: rootPath + northlight-quality.ini (wide path, as
 // WorldRenderer::readSmallFile). An absent file means the code default (1).
-inline bool commandStreamRequested(const wchar_t* rootPath,unsigned* framesAhead=nullptr,unsigned* frameSkip=nullptr){
-    std::string text;bool has=false;if(framesAhead)*framesAhead=1;if(frameSkip)*frameSkip=0;
+inline bool commandStreamRequested(const wchar_t* rootPath,unsigned* framesAhead=nullptr,unsigned* frameSkip=nullptr,bool* nameMask=nullptr){
+    std::string text;bool has=false;if(framesAhead)*framesAhead=1;if(frameSkip)*frameSkip=0;if(nameMask)*nameMask=false;
     try{
         const std::wstring path=std::wstring(rootPath?rootPath:L"")+L"northlight-quality.ini";
         HANDLE f=CreateFileW(path.c_str(),GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
@@ -69,7 +71,7 @@ inline bool commandStreamRequested(const wchar_t* rootPath,unsigned* framesAhead
             while(ReadFile(f,buffer,sizeof buffer,&got,nullptr)&&got&&text.size()<262144)text.append(buffer,got);
             CloseHandle(f);}
     }catch(...){return false;}
-    return commandStreamFromText(text,has,framesAhead,frameSkip);
+    return commandStreamFromText(text,has,framesAhead,frameSkip,nameMask);
 }
 #endif
 } // namespace NorthlightStream

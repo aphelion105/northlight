@@ -205,6 +205,9 @@ static void testPoolAndHooks() {
     assert(commandStreamFromText("",false)&&commandStreamFromText("[Quality]\nPreset=Quality\n")&&commandStreamFromText("[Quality]\nCommandStream=1\n"));
     assert(!commandStreamFromText("[Quality]\nCommandStream=0\n")&&!commandStreamFromText("\xEF\xBB\xBF[Quality]\r\nCommandStream = 0\r\n")&&!commandStreamFromText("[Quality]\nPreset=Performance\nCommandStream=0\n"));
     assert(commandStreamFromText("[Quality]\nCommandStream=2\n")); // out of range: the default, with a warning in the real loader
+    // 0.3.212 (task 32): NameMask from the same read (the default 1 when absent, the file value, false with the stream off by the ini too)
+    {bool nameMask=false;commandStreamFromText("",false,nullptr,nullptr,&nameMask);assert(nameMask);commandStreamFromText("[Quality]\nNameMask=0\n",true,nullptr,nullptr,&nameMask);assert(!nameMask);
+     assert(!commandStreamFromText("[Quality]\nCommandStream=0\nNameMask=1\n",true,nullptr,nullptr,&nameMask)&&nameMask);}
 }
 int main(){
     testFifo();testOverflow();testPlayback();testCodeRangeAndInactive();testPeParse();testTriggers();testLearnedUi();testShaderTags();testPoolAndHooks();

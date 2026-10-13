@@ -21,7 +21,7 @@ checks['quality key: in Keys before BlobShadowStrength, 0..1, presets 1/1/1, def
 checks['documented in the ini template (commented, with default) and the README table']=(';CommandStream=1' in ini and re.search(r'^  CommandStream +1 / 1 / 1 ',readme,re.M) is not None)
 checks['WorldRenderer exposes the loaded value; the early reader uses the same loader']=('bool commandStream()const{return quality.commandStream!=0;}' in w
     and 'const NorthlightQuality::Settings s=NorthlightQuality::load(hasFile?&in:nullptr,nullptr,problems);' in hooks and 'return s.commandStream!=0;' in hooks and 'northlight-quality.ini' in hooks)
-checks['early reader is Win32-only and falls back to the direct path on any failure']=('inline bool commandStreamRequested(const wchar_t* rootPath,unsigned* framesAhead=nullptr,unsigned* frameSkip=nullptr){' in hooks and hooks.count('catch(...){return false;}')==2)
+checks['early reader is Win32-only and falls back to the direct path on any failure']=('inline bool commandStreamRequested(const wchar_t* rootPath,unsigned* framesAhead=nullptr,unsigned* frameSkip=nullptr,bool* nameMask=nullptr){' in hooks and hooks.count('catch(...){return false;}')==2)
 # 0.3.193: the faint blob shadows bump the version; 0.3.196: the removed DXVK 3 start-marker fallback bumps it;
 # 0.3.196 (task 12): the stream is followed by the task's lookup caches and stream bookkeeping.
 # 0.3.197 (task 13): the soft local-light cap and blended GI re-publication follow them.
@@ -44,7 +44,7 @@ checks['stream_hooks.h starts no thread']=not any(x in hooks for x in ('CreateTh
 create=r[r.index('HRESULT STDMETHODCALLTYPE CreateDevice(UINT adapter'):];create=create[:create.index('\n};')]
 device=r[r.index('class Device final'):r.index('class Factory final')]
 checks['CreateDevice: stream flag read before the real create, streamActive before the Device, MULTITHREADED added only when streaming']=(
-    'unsigned framesAhead=1,frameSkip=0;const bool stream=NorthlightStream::commandStreamRequested(rootPath,&framesAhead,&frameSkip);' in create
+    'unsigned framesAhead=1,frameSkip=0;bool nameMaskWanted=false;const bool stream=NorthlightStream::commandStreamRequested(rootPath,&framesAhead,&frameSkip,&nameMaskWanted);' in create
     and create.index('streamActive.store(true')<create.index('real->CreateDevice(adapter,type,window,flags,pp,out)')<create.index('new Device(*out,this)')
     and 'if(stream)flags|=D3DCREATE_MULTITHREADED;' in create)
 checks['CreateDevice: any stream failure logs CSTREAM disabled and returns the Device unchanged']=(
@@ -65,7 +65,7 @@ checks['StreamFramesAhead: last key 1..3 2/2/2, read with CommandStream, passed 
 sd=fp.src('stream_device.h').read_text();rt=fp.src('replay_thread.h').read_text()
 checks['StreamFrameSkip: key 0..1 1/1/1, read with CommandStream, passed to the stream, logged, documented']=(
     ('    '+'{"StreamFrameSkip",&Settings::streamFrameSkip,0,1,{1,1,1}}, /* 0.3.200 (frame skip) */'+'\n    {"ContactAO",') in keys and 'unsigned streamFrameSkip=1;' in q
-    and 'if(frameSkip)*frameSkip=s.streamFrameSkip;' in hooks and hooks.count('if(frameSkip)*frameSkip=0;')==2 and 'return commandStreamFromText(text,has,framesAhead,frameSkip);' in hooks
+    and 'if(frameSkip)*frameSkip=s.streamFrameSkip;' in hooks and hooks.count('if(frameSkip)*frameSkip=0;')==2 and 'return commandStreamFromText(text,has,framesAhead,frameSkip,nameMask);' in hooks
     and 'options.frameSkip=frameSkip;' in r and 'framesAhead=%u frameSkip=%u budgetMiB=%u' in r and 'unsigned frameSkip=0;' in sd and 'replayer.frameSkip=opt.frameSkip!=0;' in sd
     and 'put(buf,n," skipped=%llu",(unsigned long long)get(s.skippedFrames));' in rt and '"CSTREAM frame skip: first skipped frame=%llu' in rt
     and ';StreamFrameSkip=1' in ini and re.search(r'^  StreamFrameSkip +1 / 1 / 1 ',readme,re.M) is not None and 'StreamFrameSkip' in (fp.REPO/'README.md').read_text())
