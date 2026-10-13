@@ -14,6 +14,8 @@ The repository holds no game files: every tool that needs game data reads it fro
 
 The changelog, release notes and validation records are not part of the public source.
 
+Download latest release: https://github.com/lepola/northlight/releases
+
 ## What Northlight adds
 
 Every effect below is on by default and is drawn on top of the game's own frame.
