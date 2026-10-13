@@ -19,7 +19,7 @@ inline constexpr unsigned Slots=256,Probes=4,Gap=2; /* 8 KB: the table stays in 
 struct Slot {std::uint64_t model=0;float root[3]={};unsigned seen=0;bool live=false;};
 static_assert((Slots&(Slots-1))==0,"a power of two: the slot index is masked");
 class Hold {
-    Slot slots_[Slots];unsigned frame_=1;
+    Slot slots_[Slots];unsigned frame_=1;bool diagnostics_=false;
     static std::uint32_t cell(float v){return std::uint32_t(std::int32_t(std::floor(v/Cell)));}
     static std::uint32_t slotOf(std::uint64_t model,std::uint32_t cx,std::uint32_t cy){
         std::uint64_t h=model^(std::uint64_t(cx)*0x9E3779B97F4A7C15ull)^(std::uint64_t(cy)*0xC2B2AE3D27D4EB4Full);h^=h>>29;h*=0xBF58476D1CE4E5B9ull;h^=h>>32;return std::uint32_t(h)&(Slots-1);}
@@ -38,6 +38,7 @@ class Hold {
                 if(d<=bestD){bestD=d;best=&s;}}}
         return best;
     }
+    // A full chain means this caster is not remembered (it stays in the actor map this frame, and enters again later): counted in diagnostics.
     void remember(Slot* found,std::uint64_t model,const float* root){
         if(found){ /* same slot unless the root moved to another cell: its chain is looked up by the cell */
             if(cell(found->root[0])==cell(root[0])&&cell(found->root[1])==cell(root[1])){for(unsigned k=0;k<3;++k)found->root[k]=root[k];found->seen=frame_;return;}
@@ -46,10 +47,14 @@ class Hold {
         for(unsigned k=0;k<Probes;++k){Slot& s=slots_[(at+k)&(Slots-1)];
             if(usable(s))continue;
             s.model=model;for(unsigned c=0;c<3;++c)s.root[c]=root[c];s.seen=frame_;s.live=true;return;}
+        if(diagnostics_)++overflows;
     }
 public:
+    // Diagnostics only (counted when begin(true) opened the pass; no cost otherwise): overflows since the start (a full 4-slot chain: the
+    // caster was not remembered), bandHeld in the last pass (casters kept in the actor map by the hold while beyond Inset).
+    unsigned long overflows=0;unsigned bandHeld=0;
     // Once per pass, before the casters.
-    void begin(){++frame_;}
+    void begin(bool diagnostics=false){++frame_;diagnostics_=diagnostics;bandHeld=0;}
     void reset(){for(auto& s:slots_)s=Slot{};frame_=1;}
     // The pass did not run (actor map off, a reset): every remembered caster expires at once, O(1).
     void invalidate(){frame_+=Gap+1;}
@@ -66,6 +71,7 @@ public:
         Slot* found=find(model,root);
         const bool inside=extent<=NorthlightActorShadowMap::Inset;
         if(!inside&&!found)return false;
+        if(diagnostics_&&!inside)++bandHeld;
         remember(found,model,root);
         return true;
     }

@@ -153,7 +153,7 @@ struct World {
     std::vector<std::unique_ptr<Packet>> replays;
     NorthlightReplayBounds::Cache replayBoundsCache;
     NorthlightReplayMetadata::Cache<Prepared,IDirect3DVertexShader9,IDirect3DVertexDeclaration9> replayBoundsMetadata;
-    DeclarationCache declarationCache;Context context;unsigned frames=0,logs=0;float actorShadowOrigin[3]={};bool actorShadowOriginValid=false; /* the renderer's shadow pivot: no pivot, no near-first order */
+    DeclarationCache declarationCache;Context context;unsigned frames=0,logs=0;float actorShadowOrigin[3]={};bool actorShadowOriginValid=false;unsigned replayNearSize=0;unsigned long replayNearStops=0; /* the renderer's shadow pivot: no pivot, no near-first order */
     unsigned pointBoundsValid=0;size_t pointBoundVertices=0,pointBoundOperations=0;Totals visits;
     explicit World(std::unordered_map<IDirect3DVertexShader9*,std::shared_ptr<const Program>>& programs):actorPrograms(programs){}
     void pointLogReplayBounds(const Totals& t,double,double,double,double,double,bool){visits=t;++logs;}

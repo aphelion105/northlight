@@ -136,6 +136,11 @@ int main(){
      {H::Hold h;float w[3]={0,0,0};h.begin();assert(h.decide(1,w,inside));w[0]=1.6f;h.begin();assert(!h.decide(1,w,band));}
      // invalidate(): everything expires at once.
      {H::Hold h;h.begin();assert(h.decide(1,root,inside));h.invalidate();h.begin();assert(!h.decide(1,root,band));}
+     // Overflow: more casters in one cell than the 4-slot chain holds are counted (diagnostics on), the surplus is not remembered.
+     {H::Hold h;h.begin(true);unsigned entered=0;for(unsigned i=0;i<12;++i){const float at[3]={1,1,0};std::uint64_t m=5;entered+=h.decide(m,at,inside);}
+      assert(entered==12&&h.overflows==8&&h.remembered()==4); // 12 clones within Reach of each other, one chain of 4 slots; the others enter without memory
+      h.begin(true);unsigned held=0;for(unsigned i=0;i<12;++i){const float at[3]={1,1,0};held+=h.decide(5,at,band);}assert(held==4&&h.bandHeld==4);
+      H::Hold off;off.begin();for(unsigned i=0;i<12;++i){const float at[3]={1,1,0};off.decide(5,at,inside);}assert(off.overflows==0&&off.bandHeld==0);} // zero without diagnostics
      // Near list: only rooted casters within Yards of the pivot, in index order; off without a pivot.
      {namespace N=NorthlightReplayBoundsNear;N::List l;const float pivot[3]={100,50,10};const float nearRoot[3]={110,60,10},farRoot[3]={130,50,10};
       l.begin(pivot,false);l.consider(0,true,nearRoot);assert(l.index.empty());

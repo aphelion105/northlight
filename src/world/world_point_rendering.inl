@@ -173,6 +173,7 @@
         const double waitMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
         NorthlightReplayBoundsJob::apply(replayBoundsWorker.items(),replays,!result.failed);
         pointBoundsValid=result.failed?0:result.totals.valid;pointBoundVertices=result.totals.boundVertices;pointBoundOperations=result.totals.boundOperations;
+        if(NorthlightDiagnostics::enabled()){replayNearSize=unsigned(replayBoundsWorker.nearList().index.size());replayNearStops+=result.totals.nearStops;}
         if(replayBoundsDiagnostics){
             const double mainMs=replayBoundsKickMs+std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
             pointLogReplayBounds(result.totals,result.workerMs,mainMs,result.workerMs,waitMs,result.startLagMs,true);
