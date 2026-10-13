@@ -63,7 +63,7 @@ struct Freshness{
 // bareBase: the vertex shader raises the bare ramp to the power (vs_3_0 Model/Projected variants) instead of max(ramp, 0) or lit; a fit for it must not end before the game's ramp does.
 // Close to the camera Northlight's fog is not folded: none within kClearNear units, fading in with a smoothstep over the next kClearFade units, full beyond. The fit target is
 // g(z) * (1 - (1 - T_N(z)) * smoothstep(kClearNear, kClearNear + kClearFade, z)); the ramp form min(pow(max(a z + b, 0), p), 1) represents the plateau with b > 1 (1 up to z = (b-1)/-a).
-constexpr float kClearNear=15,kClearFade=15;
+constexpr float kClearNear=20,kClearFade=15;
 inline float clearFade(float z){const float u=std::min(1.f,std::max(0.f,(z-kClearNear)/kClearFade));return u*u*(3-2*u);}
 inline float foldedTransmittance(const Frame& f,float z){return 1-(1-f.transmittance(z))*clearFade(z);}
 // The game's visibility at view distance z for its fog constant (x, y, power).
@@ -71,7 +71,7 @@ inline float gameVisibility(const float g[3],float z){return std::min(1.f,std::p
 // A flat game constant: visibility 1 at every distance (|x| ~ 0 and min(pow(max(y, 0), p), 1) = 1), how the game switches an effect's own fog off. Northlight's fog is then folded alone: the fit
 // target is T_N(z) over 0..kRange. A bare-ramp shader (the pow of the ramp without a max) must not reach 0 before kFlatBareEnd then, so the fog does not come back after the zero crossing
 // (D3D pow takes |base|); powers up to kFlatMaxPower are searched for a flat constant, so thick fog within kRange stays reachable.
-constexpr float kFlatBareEnd=512,kFlatMaxPower=16;
+constexpr float kFlatBareEnd=512,kFlatMaxPower=32;
 inline bool flatConstant(const float game[3]){
     for(unsigned i=0;i<3;++i)if(!std::isfinite(game[i]))return false;
     return std::fabs(game[0])<=1e-7f&&game[2]>.05f&&game[2]<=16.f&&std::min(1.f,std::pow(std::max(game[1],0.f),game[2]))>=1.f;
@@ -86,17 +86,17 @@ inline bool emitFog(const Frame& f,const float game[3],float out[3],bool bareBas
     const float end=flat?kFlatBareEnd/.98f:-game[1]/game[0];                // where the game's visibility reaches 0 (a flat constant: where a bare ramp must at least reach it)
     const float hi=std::min(end,kRange);
     if(!(hi>2.f))return false;
-    // sample points: the near plateau and its fade (0..30 every 3 up to 15, then 20, 25, 30) and twelve across the fitted range; the near ones weigh more (the fit stays at 1 there)
+    // sample points: the near plateau and its fade (0..20 every 4, then 25, 30, 35) and twelve across the fitted range; the near ones weigh more (the fit stays at 1 there)
     constexpr unsigned M=24;float z[M],h[M],wt[M];unsigned N=0;
-    for(float q:{0.f,3.f,6.f,9.f,12.f,15.f,20.f,25.f,30.f})if(q<hi*.9f){z[N]=q;wt[N]=q<=kClearNear?16.f:1.f;++N;}
+    for(float q:{0.f,4.f,8.f,12.f,16.f,20.f,25.f,30.f,35.f})if(q<hi*.9f){z[N]=q;wt[N]=q<=kClearNear?16.f:1.f;++N;}
     for(unsigned i=0;i<12;++i){z[N]=hi*(float(i)+.5f)/12.f;wt[N]=1.f;++N;}
     for(unsigned i=0;i<N;++i)h[i]=gameVisibility(game,z[i])*foldedTransmittance(f,z[i]);
     static const float scale[]={.6f,.8f,1.f,1.25f,1.6f,2.f,2.6f,3.5f};
     float best=1e30f,bestFit[3]={game[0],game[1],game[2]};bool found=false;
     auto error=[&](float a,float b,float p){float e=0;for(unsigned i=0;i<N;++i){const float v=std::min(1.f,std::pow(std::max(a*z[i]+b,0.f),p)),d=v-h[i];e+=wt[i]*d*d;}return e;};
-    float powers[24];unsigned np=0;
+    float powers[32];unsigned np=0;
     for(float s:scale)powers[np++]=game[2]*s;
-    for(float p:{3.f,4.f,6.f,8.f,12.f,16.f})if(flat||p>game[2]*3.5f)powers[np++]=p;   // a flat constant's own exponent says nothing; a ramp gets the steeper powers the plateau asks for
+    for(float p:{3.f,4.f,6.f,8.f,12.f,16.f,24.f,32.f})if(flat||p>game[2]*3.5f)powers[np++]=p;   // a flat constant's own exponent says nothing; a ramp gets the steeper powers the plateau asks for
     for(unsigned pi=0;pi<np;++pi){
         const float p=std::min(powers[pi],flat?kFlatMaxPower:1e30f);if(!(p>.05f))continue;
         // two starts: the line through h^(1/p) over every sample, and over the samples beyond the fade only (it then rises above 1 near the eye: the plateau); then damped Gauss-Newton steps on
