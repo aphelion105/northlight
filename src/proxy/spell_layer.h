@@ -858,8 +858,8 @@ private:
         for(unsigned i=0;i<kClipPlanes;++i)if((m.clipV>>i&1)&&std::memcmp(u.b.clip[i],m.clip[i],16)){d->SetClipPlane(i,u.b.clip[i]);++n;}
         if(m.vsV&&u.vs!=static_cast<IDirect3DVertexShader9*>(m.vs)){d->SetVertexShader(u.vs);++n;}
         if(m.psV&&u.ps!=static_cast<IDirect3DPixelShader9*>(m.ps)){d->SetPixelShader(u.ps);++n;}
-        if(m.declSeen&&!(m.declMode==1&&!u.fvf&&static_cast<void*>(u.decl)==m.decl)&&!(m.declMode==2&&u.fvf&&u.fvf==m.fvf)){ // the last binding the sequence made is not the before one: an FVF before restores through SetFVF
-            if(u.fvf)d->SetFVF(u.fvf);else d->SetVertexDeclaration(u.decl);++n;
+        if(m.declSeen&&!(m.declMode==1&&u.decl&&static_cast<void*>(u.decl)==m.decl)){ // the before declaration OBJECT goes back whenever there is one (GetFVF may be nonzero for a user declaration, and SetFVF would bind the runtime's own declaration instead); SetFVF only when none was bound
+            if(u.decl)d->SetVertexDeclaration(u.decl);else if(u.fvf)d->SetFVF(u.fvf);else d->SetVertexDeclaration(nullptr);++n;
         }
         for(unsigned s=0;s<16;++s)if(stTouched_>>s&1){d->SetStreamSource(s,u.st[s].vb,u.st[s].off,u.st[s].stride);d->SetStreamSourceFreq(s,u.st[s].freq);n+=2;}
         if(ibTouched_){d->SetIndices(u.ib);++n;}

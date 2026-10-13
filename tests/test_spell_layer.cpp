@@ -347,9 +347,16 @@ struct Rig{
         if(d.kind==1&&geom)v.push_back(id(s.ib));
         return v;
     }
-    long long id(const void* p){if(!p)return 0;auto it=ids.find(const_cast<void*>(p));return it==ids.end()?-1:it->second;}
+    // Registered objects by their registration number, the runtime's internal FVF declarations by their FVF, anything else by identity: a swapped object never compares equal.
+    bool strictIds=false; // snapshots of one rig: an unregistered object (not comparable across rigs) compares by identity, so a swapped object shows
+    long long id(const void* p){
+        if(!p)return 0;
+        auto it=ids.find(const_cast<void*>(p));if(it!=ids.end())return it->second;
+        for(auto& kv:dev.fvfDecls)if(static_cast<const void*>(static_cast<IDirect3DVertexDeclaration9*>(kv.second))==p)return 1000000+static_cast<long long>(kv.first);
+        return strictIds?-2-static_cast<long long>(reinterpret_cast<uintptr_t>(p)>>4):-1;
+    }
     std::vector<long long> snapNorm(){
-        auto v=norm(dev.s);for(auto* r:dev.rt)v.push_back(id(r));v.push_back(id(dev.ds));return v;
+        strictIds=true;auto v=norm(dev.s);for(auto* r:dev.rt)v.push_back(id(r));v.push_back(id(dev.ds));strictIds=false;return v;
     }
     void record(){steps.push_back(snapNorm());}
     DrawFacts facts(Family fam){
@@ -1039,7 +1046,7 @@ static void testStateChangedBetweenDraws(){
     CHECK(by[1]->st.psc[2][0]==1&&by[2]->st.psc[2][0]==5&&by[3]->st.psc[2][0]==5);
     CHECK(!by[2]->st.tex[5]&&by[3]->st.tex[5]==p.lay->texB&&by[3]->st.ss[5][4]==0x77&&by[3]->st.vsi[3][2]==3&&by[3]->st.psb[8]==1&&by[3]->st.clip[1][3]==2);
     CHECK(!by[4]->st.tex[5]&&by[4]->st.vsi[3][2]==0&&by[4]->st.vp.Width==700&&by[4]->st.scissor.right==300);
-    CHECK(!by[5]->st.decl&&by[5]->st.fvf==0x112&&by[6]->st.decl==p.lay->declP&&by[6]->st.fvf==0);
+    CHECK(by[5]->st.decl&&by[5]->st.decl!=p.lay->declP&&by[5]->st.fvf==0x112&&by[6]->st.decl==p.lay->declP&&by[6]->st.fvf==0);
     CHECK(by[6]->st.rs[D3DRS_POINTSIZE]==0x7fa05000u&&by[5]->st.rs[D3DRS_POINTSIZE]==0);
 }
 // The scissor rect is recorded only with D3DRS_SCISSORTESTENABLE and a clip plane only when D3DRS_CLIPPLANEENABLE has its bit: a disabled one is neither
@@ -1226,7 +1233,7 @@ static void testFixedFunction(){
     CHECK(by[1]->st.mat.Power==1.5f&&by[4]->st.mat.Power==3.f&&by[7]->st.mat.Power==3.f);
     CHECK(by[1]->st.lightOn[0]&&!by[1]->st.lightOn[2]&&by[4]->st.lightOn[2]&&!by[4]->st.lightOn[5]&&by[7]->st.lightOn[5]&&by[7]->st.light[2].Type==3);
     CHECK(by[1]->st.lightSet[0]&&!by[1]->st.lightOn[4]);                       // light 4 was never set by the game: the effects' light 4 is off for the draw
-    CHECK(by[5]->st.vs==p.lay->vs&&by[5]->st.ps==p.lay->ps&&by[6]->st.fvf==0x112&&!by[6]->st.decl&&by[7]->st.decl==p.lay->declP);
+    CHECK(by[5]->st.vs==p.lay->vs&&by[5]->st.ps==p.lay->ps&&by[6]->st.fvf==0x112&&by[6]->st.decl&&by[6]->st.decl!=p.lay->declP&&by[7]->st.decl==p.lay->declP);
     CHECK(p.lay->dev.s.lightOn[4]==1&&by[1]->st.lightOn[5]==0);            // the effects' light 4 is on again after the replay (restored)
 }
 // The fixed-function state is the draw's own: lights never set are admitted (no pixel/vertex shader model is needed).
@@ -1375,6 +1382,26 @@ static void testMinimalRestore(){
         if(how==1){r.resume();deferQuad(r,10);const auto b2=r.snapNorm();r.layer.replay();CHECK(r.snapNorm()==b2&&r.layer.totalCounters().drains==2);} // the frame goes on after a split
     }
     Pair p=runBoth(sMixedStreams),q=runBoth(sFixed);checkEquivalent(p,{1});checkEquivalent(q);checkMinimalCounts(*p.lay,min);checkMinimalCounts(*q.lay,min);
+}
+// The declaration OBJECT the game had comes back, also when GetFVF reports a nonzero FVF for it (native d3d9 does for position-only declarations): restoring through SetFVF would
+// leave the runtime's own declaration bound. The mock binds an internal declaration for SetFVF and can report an FVF for a user declaration.
+static void testDeclarationRestoredExactly(){
+    for(DWORD reported:{0u,2u,0x112u}){
+        Opts o;o.mask=31;Rig r(o);r.dev.declReportsFvf=reported;r.dev.SetVertexDeclaration(r.declP);
+        recordAllKinds(r);r.effects();r.dev.SetVertexDeclaration(r.declTwo); // the sequence ends on declP, the game's declaration at B is another user one
+        CHECK(r.dev.s.decl==r.declTwo&&r.dev.s.fvf==reported);
+        const auto before=r.snapNorm();r.layer.replay();
+        CHECK(r.snapNorm()==before&&r.dev.s.decl==r.declTwo&&r.dev.s.fvf==reported);
+        // an FVF the game had bound (the internal declaration object) also returns as it was
+        Rig q(o);recordAllKinds(q);q.effects();q.dev.SetFVF(0x112);const auto b2=q.snapNorm();auto* internal=q.dev.s.decl;q.layer.replay();
+        CHECK(q.snapNorm()==b2&&q.dev.s.decl==internal&&q.dev.s.fvf==0x112);
+        // no declaration at all
+        Rig z(o);recordAllKinds(z);z.effects();z.dev.SetVertexDeclaration(nullptr);const auto b3=z.snapNorm();z.layer.replay();
+        CHECK(z.snapNorm()==b3&&!z.dev.s.decl&&z.dev.s.fvf==0);
+    }
+    Opts a;a.minimal=true;a.mask=31;Opts b=a;b.minimal=false;Rig x(a),y(b);
+    for(Rig* r:{&x,&y}){r->dev.declReportsFvf=2;r->dev.SetVertexDeclaration(r->declP);recordAllKinds(*r);r->effects();r->layer.replay();}
+    CHECK(x.snapNorm()==y.snapNorm());
 }
 // The same sequence with the minimal restore and with the state block ends in the same device state and issues the same draws.
 static void testMinimalMatchesStateBlock(){
@@ -1574,7 +1601,7 @@ int main(int argc,char** argv){
         {"rt mismatch",testRtMismatch},{"capacity",testCapacity},{"capture failure",testCaptureFailure},{"frame end",testFrameEnd},
         {"cooldown and pressure",testCooldownAndPressure},{"trim",testTrim},{"pending targets",testPendingTargets},{"layer off",testLayerOff},
         {"reset and teardown",testResetAndTeardown},{"512 entries",testStress512},
-        {"32-bit index copy",testIb32},{"both index formats",testIbBothFormats},{"water rain name flush",testOrderKinds},{"names deferred",testNamesMixed},{"names alone",testNamesAlone},{"names and water",testNamesWater},{"diagnostics",testDiagnostics},{"minimal restore",testMinimalRestore},{"minimal matches state block",testMinimalMatchesStateBlock},{"minimal fallback",testMinimalFallback},{"minimal needs no state block",testMinimalNeedsNoStateBlock},{"minimal leaves other slots alone",testMinimalLeavesOthersAlone},{"nothing pending: in place",testOrderKindsIdle},
+        {"32-bit index copy",testIb32},{"both index formats",testIbBothFormats},{"water rain name flush",testOrderKinds},{"names deferred",testNamesMixed},{"names alone",testNamesAlone},{"names and water",testNamesWater},{"diagnostics",testDiagnostics},{"minimal restore",testMinimalRestore},{"minimal matches state block",testMinimalMatchesStateBlock},{"minimal fallback",testMinimalFallback},{"declaration restored exactly",testDeclarationRestoredExactly},{"minimal needs no state block",testMinimalNeedsNoStateBlock},{"minimal leaves other slots alone",testMinimalLeavesOthersAlone},{"nothing pending: in place",testOrderKindsIdle},
         {"replay scope failure",testReplayScopeFailure},{"state changed between draws",testStateChangedBetweenDraws},{"scissor and clip only when enabled",testScissorAndClipOnlyWhenEnabled},{"delta encoding",testDeltas},{"4096 entries",testFourThousandEntries},{"capacity limits",testCapacityLimits},{"guard table with many buffers",testGuardTableMany},{"sampled textures lookup",testSamplesLookup},{"shader read sets",testReadSets},{"diff replay",testDiffReplay},{"admission",testAdmission},{"hazard events",testHazardEvents},{"record size and timing",testRecordSizeAndTiming},{"fixed function",testFixedFunction},{"fixed function admission",testFixedAdmission},{"fixed function capacity",testFixedCapacity},{"water ripples",testRipples},
         {"render target texture",testRenderTargetTexture},{"render target verdict cache",testVerdictCache},{"vertex texture sampler",testVertexTextureSampler},{"buffer write conflict probe",testBufferWriteProbe}};
     for(int minimal=1;minimal>=0;--minimal){

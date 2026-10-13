@@ -107,7 +107,7 @@ struct CubeTexture:Obj<IDirect3DCubeTexture9>{
 struct VolumeTexture:Obj<IDirect3DVolumeTexture9>{D3DRESOURCETYPE GetType()override{return D3DRTYPE_VOLUMETEXTURE;}};
 struct VShader:Obj<IDirect3DVertexShader9>{};struct PShader:Obj<IDirect3DPixelShader9>{};
 struct Decl:Obj<IDirect3DVertexDeclaration9>{
-    std::vector<D3DVERTEXELEMENT9> el;
+    std::vector<D3DVERTEXELEMENT9> el;bool internal=false;DWORD fvf=0; // internal: the runtime's own declaration for an FVF (SetFVF binds it)
     explicit Decl(std::vector<D3DVERTEXELEMENT9> e):el(std::move(e)){el.push_back(D3DVERTEXELEMENT9{0xFF,0,17,0,0,0});}
     HRESULT GetDeclaration(D3DVERTEXELEMENT9* out,UINT* n)override{if(out)std::memcpy(out,el.data(),el.size()*sizeof(D3DVERTEXELEMENT9));*n=UINT(el.size());return D3D_OK;}
 };
@@ -194,13 +194,14 @@ struct Mirror{
 struct FakeDevice:IDirect3DDevice9{
     State s;Mirror mir;IDirect3DSurface9* rt[4]={};IDirect3DSurface9* ds=nullptr;
     std::vector<DrawRec> draws;unsigned calls=0,sets=0;
+    std::map<DWORD,Decl*> fvfDecls;DWORD declReportsFvf=0; // fvfDecls: one internal declaration per FVF, owned here; declReportsFvf: the FVF GetFVF reports while a user declaration is bound (native d3d9 does this for position-only declarations)
     bool failCreateBlock=false,failCapture=false,failCreateVB=false,failCreateIB=false,failGetPsConst=false,failGetTss=false,failGetLightEnable=false;int failCaptureAfter=-1;unsigned blocksCreated=0,failNthCreate=0,createCalls=0,captures=0,applies=0;bool failGetRs=false,failGetSampler=false,failGetStream=false; // captures/applies: StateBlock::Capture/Apply calls; failGet*: those Get calls fail // failNthCreate: the nth CreateStateBlock call fails once
     FakeDevice(){
         s.vp=D3DVIEWPORT9();s.scissor=RECT();
         for(auto& x:s.st)x.freq=1;
     }
     ~FakeDevice()override{
-        drop(s);for(auto*& r:rt)if(r){r->Release();r=nullptr;}
+        drop(s);for(auto& kv:fvfDecls)kv.second->Release();for(auto*& r:rt)if(r){r->Release();r=nullptr;}
         if(ds){ds->Release();ds=nullptr;}
     }
     static size_t texSlot(DWORD stage){return stage>=257?size_t(16+(stage-257)):size_t(stage);}
@@ -240,12 +241,17 @@ struct FakeDevice:IDirect3DDevice9{
     HRESULT SetVertexShader(IDirect3DVertexShader9* v)override{++calls;++sets;swapRef(s.vs,v);return D3D_OK;}
     HRESULT GetVertexShader(IDirect3DVertexShader9** o)override{++calls;if(s.vs)s.vs->AddRef();*o=s.vs;return D3D_OK;}
     HRESULT GetPixelShader(IDirect3DPixelShader9** o)override{++calls;if(s.ps)s.ps->AddRef();*o=s.ps;return D3D_OK;}
-    HRESULT SetFVF(DWORD f)override{++calls;++sets;swapRef(s.decl,static_cast<IDirect3DVertexDeclaration9*>(nullptr));s.fvf=f;return D3D_OK;}
+    HRESULT SetFVF(DWORD f)override{ // like D3D9: the FVF binds the runtime's declaration for it (GetVertexDeclaration returns it, GetFVF returns f)
+        ++calls;++sets;
+        if(!f){swapRef(s.decl,static_cast<IDirect3DVertexDeclaration9*>(nullptr));s.fvf=0;return D3D_OK;}
+        Decl*& d=fvfDecls[f];if(!d){d=new Decl({{0,0,2,0,0,0}});d->internal=true;d->fvf=f;}
+        swapRef(s.decl,static_cast<IDirect3DVertexDeclaration9*>(d));s.fvf=f;return D3D_OK;
+    }
     HRESULT GetFVF(DWORD* f)override{++calls;*f=s.fvf;return D3D_OK;}
     HRESULT SetClipPlane(DWORD i,const float* p)override{++calls;++sets;if(i>=6)return D3DERR_INVALIDCALL;std::memcpy(s.clip[i],p,16);return D3D_OK;}
     HRESULT GetClipPlane(DWORD i,float* p)override{++calls;if(i>=6)return D3DERR_INVALIDCALL;std::memcpy(p,s.clip[i],16);return D3D_OK;}
     HRESULT SetPixelShader(IDirect3DPixelShader9* v)override{++calls;++sets;swapRef(s.ps,v);return D3D_OK;}
-    HRESULT SetVertexDeclaration(IDirect3DVertexDeclaration9* d)override{++calls;++sets;swapRef(s.decl,d);s.fvf=0;return D3D_OK;}
+    HRESULT SetVertexDeclaration(IDirect3DVertexDeclaration9* d)override{++calls;++sets;swapRef(s.decl,d);auto* x=static_cast<Decl*>(d);s.fvf=!x?0:x->internal?x->fvf:declReportsFvf;return D3D_OK;}
     HRESULT GetVertexDeclaration(IDirect3DVertexDeclaration9** o)override{++calls;if(s.decl)s.decl->AddRef();*o=s.decl;return D3D_OK;}
     HRESULT SetStreamSource(UINT i,IDirect3DVertexBuffer9* b,UINT off,UINT stride)override{++calls;++sets;if(i>=16)return D3DERR_INVALIDCALL;swapRef(s.st[i].vb,b);s.st[i].off=off;s.st[i].stride=stride;return D3D_OK;}
     HRESULT GetStreamSource(UINT i,IDirect3DVertexBuffer9** b,UINT* off,UINT* stride)override{
