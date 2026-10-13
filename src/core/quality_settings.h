@@ -100,7 +100,8 @@ struct Settings {
     // task 34 SpellLayer: 1 = translucent M2 draws without a depth write (particles, ribbons, spell batches, projected ground effects) are deferred and
     // drawn right after the world effects, so fog, haze, shadow and AO act on the world behind them and not on them; 0 = the old path (no classification).
     // SpellLayerClasses: bit mask of the blends deferred (1 additive, 2 alpha, 4 modulate/mod2x, 8 other). SpellTrace: frames of the SPELLTRACE draw-order log
-    // (diagnostic, 0 = off). Creation-time keys (the renderer reads them once with the device).
+    // (diagnostic, 0 = off). Creation-time keys (the renderer reads them once with the device). SpellLayerClasses and SpellTrace are developer/diagnostic keys: still parsed and
+    // logged on the QUALITY line, intentionally NOT in the player docs (README.md, README.txt, northlight-quality.ini).
     unsigned spellLayer=1,spellLayerClasses=15,spellTrace=0,spellFog=1; // SpellFog: 1 = replayed spell draws get Northlight's fog through the game's own fog constants (a creation-time key; 0 = the recorded values unchanged)
     char origin[50]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
 };

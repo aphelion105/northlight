@@ -11,3 +11,12 @@ with tempfile.TemporaryDirectory(prefix='northlight-quality-') as tmp:
         exe=Path(tmp)/('test-'+label)
         subprocess.run(['clang++','-std=c++17','-Wall','-Wextra','-Werror',*flags,*fp.test_include_flags(),str(HERE/'test_quality_settings.cpp'),str(fp.src('world_gi.cpp')),'-o',str(exe)],check=True)
         print(label,subprocess.check_output([str(exe)],cwd=fp.src('windows-package/northlight-quality.ini').parents[1],text=True),end='',flush=True)  # the test reads windows-package/northlight-quality.ini
+# SpellLayerClasses and SpellTrace are developer/diagnostic keys: parsed and logged by the code (test_quality_settings.cpp), absent from every player document; SpellLayer and SpellFog stay documented
+code=fp.src('quality_settings.h').read_text()
+docs={'README.md':(fp.REPO/'README.md').read_text(encoding='utf-8'),'README.txt':fp.src('windows-package/README.txt').read_text(encoding='utf-8'),'northlight-quality.ini':fp.src('windows-package/northlight-quality.ini').read_text(encoding='utf-8')}
+for key in ('SpellLayerClasses','SpellTrace'):
+    assert f'"{key}"' in code, key
+    for name,text in docs.items(): assert key not in text, (key,name)
+for key in ('SpellLayer','SpellFog'):
+    for name,text in docs.items(): assert key in text, (key,name)
+print('player docs: SpellLayerClasses and SpellTrace absent, SpellLayer and SpellFog present')
