@@ -1138,7 +1138,7 @@ private:
     void* spellQuery[8]={};unsigned spellQueryFrame[8]={},spellQueryN=0,spellQueryUnknownFrame=0;bool spellQueryUnknown=false; /* open D3DQUERYTYPE_OCCLUSION brackets (raw queries), by Issue(BEGIN) frame; spellQueryUnknown: a bracket was lost to a full table (its frame in spellQueryUnknownFrame) */
     // SpellTrace: spellTraceLeft frames of SPELLTRACE lines, from the first world frame at or after frame 300 (Diagnostics only); spellTraceWindow: the next frame is traced.
     unsigned spellTraceLeft=0,spellDrawIndex=0;bool spellTraceWindow=false,spellTraceFrame=false,spellTraceSeen=false;
-    LONGLONG spellReplayTicks=0,spellRecordTicks=0,spellGateTicks=0;unsigned spellGateDraws=0,spellGateTimed=0,spellGateSeq=0,spellRecords=0; /* sampled frames: spellGateDraws world-draw gate calls, every 8th timed (spellGateTimed, spellGateTicks = their time minus the record time inside them); spellRecordTicks/spellRecords: every Layer::defer() */NorthlightSpellLayer::Mode spellFrameMode=NorthlightSpellLayer::Mode::Off;
+    LONGLONG spellReplayTicks=0,spellRecordTicks=0,spellGateTicks=0,spellFlushTicks=0;unsigned spellGateDraws=0,spellGateTimed=0,spellGateSeq=0,spellRecords=0,spellFlushes=0; /* spellFlushTicks/spellFlushes: the hazard flushes of gate draws, every one timed and kept out of the gate time */ /* sampled frames: spellGateDraws world-draw gate calls, every 8th timed (spellGateTimed, spellGateTicks = their time minus the record time inside them); spellRecordTicks/spellRecords: every Layer::defer() */NorthlightSpellLayer::Mode spellFrameMode=NorthlightSpellLayer::Mode::Off;
     // Hazard diagnostics (Diagnostics=1): the layer's latest event is consumed after each layer call that can raise one; the first 64 of the session are
     // logged as SPELLHAZARD. spellWin* accumulate every frame since the previous SPELLLAYER line (that line itself describes one sampled frame).
     static constexpr unsigned kSpellHazardLogs=64;
@@ -1369,9 +1369,9 @@ private:
         const bool timed=sampledOnce();
         if(timed)++spellGateDraws;
         struct GateTimer{ /* sampled frames, every 8th call: the call's time minus the record time inside it (the scope's own cost is taken off at the log line) */
-            Device& d;bool on;LARGE_INTEGER t0;LONGLONG rec0;
-            GateTimer(Device& dev,bool o):d(dev),on(o),rec0(dev.spellRecordTicks){t0.QuadPart=0;if(on){QueryPerformanceCounter(&t0);++d.spellGateTimed;}}
-            ~GateTimer(){if(on){LARGE_INTEGER t1;QueryPerformanceCounter(&t1);d.spellGateTicks+=(t1.QuadPart-t0.QuadPart)-(d.spellRecordTicks-rec0);}}
+            Device& d;bool on;LARGE_INTEGER t0;LONGLONG rec0,flush0;
+            GateTimer(Device& dev,bool o):d(dev),on(o),rec0(dev.spellRecordTicks),flush0(dev.spellFlushTicks){t0.QuadPart=0;if(on){QueryPerformanceCounter(&t0);++d.spellGateTimed;}}
+            ~GateTimer(){if(on){LARGE_INTEGER t1;QueryPerformanceCounter(&t1);d.spellGateTicks+=(t1.QuadPart-t0.QuadPart)-(d.spellRecordTicks-rec0)-(d.spellFlushTicks-flush0);}}
         } gateTimer{*this,timed&&((spellGateSeq++&7)==0)};
         if(spellTraceWindow&&!spellTraceFrame){spellTraceFrame=true;spellTraceSeen=false;spellDrawIndex=0;logf("SPELLTRACE begin frame=%u left=%u mode=%s",frame,spellTraceLeft,modeName(spell.mode()));}
         const bool trace=spellTraceFrame;
@@ -1400,18 +1400,20 @@ private:
         f.mrtBound=rainMrtBound;f.occlusionActive=spellQueryN!=0||spellQueryUnknown;
         facts.cw=cw;facts.cwKnown=cwKnown;
         const Result r=classifyWith(facts,spellClasses); /* the facts are read in the order the decision asks, the rest never */
+        const bool logFacts=trace||(diagnostics()&&spellHazardLogs<kSpellHazardLogs);
+        if(logFacts&&(r.kind==Kind::Defer||r.kind==Kind::Hazard))facts.complete(); /* before a flush or a refused defer drains the layer and clears its target: the facts the lines print are the draw's */
         bool deferred=false;
         switch(r.kind){
         case Kind::Defer:{
             facts.loadRt();facts.loadDs();IDirect3DSurface9* const rt=facts.rt;IDirect3DSurface9* const ds=facts.ds;
             if(rt){spellArgs.psMajor=0;spellArgs.psReads=nullptr;spellArgs.psFor=nullptr;spellPixelShader(&spellArgs.psMajor,nullptr,&spellArgs.psReads,&spellArgs.psFor);spellArgs.vsReads=vs?spellReads(static_cast<void*>(vs)):nullptr;spellArgs.vsFor=static_cast<const void*>(vs);CpuScope record(timed?&spellRecordTicks:nullptr); /* sampled frames only */if(timed)++spellRecords;deferred=spell.defer(spellArgs,rt,ds,r.sub);}
             break;}
-        case Kind::Hazard:spellInDraw=true;spellFlush(r.reason,true,r.inPlace);spellInDraw=false;break; /* r.inPlace: water, rain or a name drawn after a deferred draw */
+        case Kind::Hazard:{CpuScope flush(timed?&spellFlushTicks:nullptr); /* sampled frames only */if(timed)++spellFlushes;spellInDraw=true;spellFlush(r.reason,true,r.inPlace);spellInDraw=false;break;} /* r.inPlace: water, rain or a name drawn after a deferred draw */
         case Kind::InPlace:if(pend)spell.noteInPlace(r.inPlace);break;
         default:break;
         }
         spellSync();
-        if(trace||(diagnostics()&&spell.eventSeq()!=spellEventSeen))facts.complete(); /* a log line or the trace prints every fact */
+        if(logFacts)facts.complete(); /* InPlace and Ignore draws print their facts too (no drain in between) */
         spellDrawEventDone(f); /* a refused defer or a flushing hazard of this draw: SPELLHAZARD with the draw's facts */
         if(trace)spellTraceDraw(f,r,deferred,pend,facts.rt,facts.ds);
         return deferred;
@@ -1493,17 +1495,21 @@ private:
                 for(int k=0;k<5;++k){LONGLONG sink=0;LARGE_INTEGER a,b;QueryPerformanceCounter(&a);for(int i=0;i<64;++i){CpuScope probe(&sink); /* sampled frame: calibration */}QueryPerformanceCounter(&b);timerUs=std::min(timerUs,double(b.QuadPart-a.QuadPart)*us/64.0);}
                 /* net sums: the gate was timed on every 8th call (scaled to all calls), both minus the scopes' own cost, never below 0; cpuDeferUs is their sum */
                 const double gateUs=spellGateTimed?std::max(0.0,double(spellGateTicks)*us-double(spellGateTimed)*timerUs)*double(spellGateDraws)/double(spellGateTimed):0.0;
+                const double flushUs=std::max(0.0,double(spellFlushTicks)*us-double(spellFlushes)*timerUs); /* hazard flushes of gate draws, all timed */
                 const double recordUs=std::max(0.0,double(spellRecordTicks)*us-double(spellRecords)*timerUs);
                 const NorthlightSpellLayer::Layer::Memory spellMem=spellMemAtFrame; /* taken before the frame's trim/beginFrame released the chunks */
-                logf("SPELLLAYER frame=%u mode=%s deferred=%u/%u/%u/%u fixed=%u replayed=%u fadeInPlace=%u orderBy=%u/%u/%u hazards=%s flushes=%u conflicts=%u conflictBytes=%llu materialized=%u records=%u recordHigh=%u replaySets=%u arenaHigh=%u replaySkipped=%u discarded=%u cooldown=%u cpuDeferUs=%.1f cpuReplayUs=%.1f capBy=%u/%u/%u/%u overflowAt=%u overflowCandidates=%u memKiB=%u uploadKiB=%u deltaWords=%llu cpuRecordUs=%.1f cpuGateUs=%.1f gateDraws=%u gateTimed=%u recordCalls=%u timerScopeUs=%.3f drains=%u cpuSaveUs=%.1f cpuUploadUs=%.1f cpuRestoreUs=%.1f restoreSets=%u restoreFallbacks=%u texSplits=%u "
+                /* cpuGateUs and cpuDeferUs (= gate + record) are ESTIMATES: the gate was timed on every 8th call (gateTimed of gateDraws) and scaled up, with the calibrated scope cost (timerScopeUs, the least of 5 probes) taken
+                   off per scope and the record and flush time inside the timed calls taken out; cpuRecordUs is every record. cpuFlushUs is the (unscaled) time of the hazard flushes of gate draws; their save, upload and
+                   restore are also in cpuSaveUs/cpuUploadUs/cpuRestoreUs and are not in cpuGateUs. */
+                logf("SPELLLAYER frame=%u mode=%s deferred=%u/%u/%u/%u fixed=%u replayed=%u fadeInPlace=%u orderBy=%u/%u/%u hazards=%s flushes=%u conflicts=%u conflictBytes=%llu materialized=%u records=%u recordHigh=%u replaySets=%u arenaHigh=%u replaySkipped=%u discarded=%u cooldown=%u cpuDeferUs=%.1f cpuReplayUs=%.1f capBy=%u/%u/%u/%u overflowAt=%u overflowCandidates=%u memKiB=%u uploadKiB=%u deltaWords=%llu cpuRecordUs=%.1f cpuGateUs=%.1f gateDraws=%u gateTimed=%u recordCalls=%u cpuFlushUs=%.1f timerScopeUs=%.3f drains=%u cpuSaveUs=%.1f cpuUploadUs=%.1f cpuRestoreUs=%.1f restoreSets=%u restoreFallbacks=%u texSplits=%u "
                      "window frames=%u deferring=%u cooldown=%u deferred=%u hazards=%s flushes=%u conflicts=%u overflowFrames=%u overflowCandidates=%u texSplits=%u drains=%u",
                     frame,NorthlightSpellLayer::modeName(mode),c.deferred[0],c.deferred[1],c.deferred[2],c.deferred[3],c.fixed,c.replayedDraws,c.inPlace[3],c.orderBy[0],c.orderBy[1],c.orderBy[2],hazards,c.flushes,c.conflicts,(unsigned long long)c.conflictBytes,c.materialized,c.recorded,c.recordHigh,c.replaySets,c.arenaHigh,c.replaySkipped,c.discarded,spell.cooldownLeft(),
-                    gateUs+recordUs,double(spellReplayTicks)*us,c.capBy[0],c.capBy[1],c.capBy[2],c.capBy[3],c.overflowAt,c.overflowCandidates,unsigned(spellMem.total()>>10),unsigned(spellMem.uploads>>10),(unsigned long long)c.deltaWords,recordUs,gateUs,spellGateDraws,spellGateTimed,spellRecords,timerUs,
+                    gateUs+recordUs,double(spellReplayTicks)*us,c.capBy[0],c.capBy[1],c.capBy[2],c.capBy[3],c.overflowAt,c.overflowCandidates,unsigned(spellMem.total()>>10),unsigned(spellMem.uploads>>10),(unsigned long long)c.deltaWords,recordUs,gateUs,spellGateDraws,spellGateTimed,spellRecords,flushUs,timerUs,
                     c.drains,double(phase.save)*us,double(phase.upload)*us,double(phase.restore)*us,c.restoreSets,c.restoreFallbacks,c.texSplits,
                     spellWinFrames,spellWinDeferring,spellWinCooldown,spellWin.totalDeferred(),winHazards,spellWin.flushes,spellWin.conflicts,spellWin.overflowFrames,spellWin.overflowCandidates,spellWin.texSplits,spellWin.drains);
                 spellWin=NorthlightSpellLayer::Counters{};spellWinFrames=spellWinDeferring=spellWinCooldown=0;
             }
-            spellReplayTicks=spellRecordTicks=spellGateTicks=0;spellGateDraws=spellGateTimed=spellRecords=0;spell.clearPhaseTicks();
+            spellReplayTicks=spellRecordTicks=spellGateTicks=spellFlushTicks=0;spellGateDraws=spellGateTimed=spellRecords=spellFlushes=0;spell.clearPhaseTicks();
             if(spellTraceFrame){logf("SPELLTRACE end frame=%u left=%u",frame,spellTraceLeft-1);spellTraceFrame=false;if(spellTraceLeft)--spellTraceLeft;}
             spellTraceWindow=spellTraceLeft&&diagnostics()&&frame+1>=300;
         });
