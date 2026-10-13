@@ -23,7 +23,6 @@
 #include "shader_tags.h"
 #include "stream_hooks.h"
 #include "stream_device.h"
-#include "span_counts.h"
 #include "compiled_shaders.h"
 #include "projection.h"
 #include "world_draw_domain.h"
@@ -1442,7 +1441,6 @@ private:
         case Kind::InPlace:if(pend)spell.noteInPlace(r.inPlace);break;
         default:break;
         }
-        if(deferred&&NorthlightSpan::tracker.on)NorthlightSpan::tracker.deferred(spell.frameCounters().drains); /* SPELLSPAN: sampled frames, stream mode */
         spellSync();
         if(logFacts)facts.complete(); /* InPlace and Ignore draws print their facts too (no drain in between) */
         spellDrawEventDone(f); /* a refused defer or a flushing hazard of this draw: SPELLHAZARD with the draw's facts */
@@ -1540,44 +1538,9 @@ private:
                     spellWinFrames,spellWinDeferring,spellWinCooldown,spellWin.totalDeferred(),winHazards,spellWin.flushes,spellWin.conflicts,spellWin.overflowFrames,spellWin.overflowCandidates,spellWin.texSplits,spellWin.drains,spellWin.dirtyMismatches);
                 spellWin=NorthlightSpellLayer::Counters{};spellWinFrames=spellWinDeferring=spellWinCooldown=0;
             }
-            if(wasSampled&&diagnostics()){ /* SPELLDELTA / SPELLSPAN: what the recorded deltas are made of, and what the replay thread ran between the first and the last deferred draw */
-                if(const NorthlightSpellLayer::DeltaStats* d=spell.deltaStats()){
-                    if(d->entries){
-                        using NorthlightSpellLayer::DeltaStats;
-                        auto top=[](const uint32_t* h,unsigned n,char* out,size_t size){ /* the 8 busiest 8-register buckets: "c<first>:<rows>" */
-                            bool used[64]={};size_t at=0;out[0]=0;
-                            for(int k=0;k<8;++k){
-                                unsigned best=n;for(unsigned i=0;i<n;++i)if(!used[i]&&h[i]&&(best==n||h[i]>h[best]))best=i;
-                                if(best==n)break;used[best]=true;
-                                const int w=std::snprintf(out+at,size-at,"%sc%u:%u",at?",":"",best*8,h[best]);if(w>0)at=std::min(size-1,at+size_t(w));
-                            }
-                            if(!at)std::snprintf(out,size,"none");
-                        };
-                        char vsHist[160],psHist[160];top(d->vsHist,NorthlightSpellLayer::kVsFloat/8,vsHist,sizeof vsHist);top(d->psHist,NorthlightSpellLayer::kPsFloat/8,psHist,sizeof psHist);
-                        auto uc=[&](DeltaStats::Cat c){return d->words[c];};
-                        logf("SPELLDELTA frame=%u entries=%u rs=%llu/%llu ss=%llu/%llu tex=%llu/%llu vsF=%llu/%llu psF=%llu/%llu ib=%llu/%llu misc=%llu/%llu shaders=%llu/%llu streams=%llu/%llu ff=%u pingpong=%llu/%llu vsHist=%s psHist=%s",
-                            frame,d->entries,(unsigned long long)uc(DeltaStats::Rs)[0],(unsigned long long)uc(DeltaStats::Rs)[1],(unsigned long long)uc(DeltaStats::Ss)[0],(unsigned long long)uc(DeltaStats::Ss)[1],
-                            (unsigned long long)uc(DeltaStats::Tex)[0],(unsigned long long)uc(DeltaStats::Tex)[1],(unsigned long long)uc(DeltaStats::VsF)[0],(unsigned long long)uc(DeltaStats::VsF)[1],
-                            (unsigned long long)uc(DeltaStats::PsF)[0],(unsigned long long)uc(DeltaStats::PsF)[1],(unsigned long long)uc(DeltaStats::IntBool)[0],(unsigned long long)uc(DeltaStats::IntBool)[1],
-                            (unsigned long long)uc(DeltaStats::Misc)[0],(unsigned long long)uc(DeltaStats::Misc)[1],(unsigned long long)uc(DeltaStats::Shaders)[0],(unsigned long long)uc(DeltaStats::Shaders)[1],
-                            (unsigned long long)uc(DeltaStats::Streams)[0],(unsigned long long)uc(DeltaStats::Streams)[1],d->ffEntries,(unsigned long long)d->pingpong,(unsigned long long)d->pingChecked,vsHist,psHist);
-                    }
-                    spell.clearDeltaStats();
-                }
-                NorthlightSpan::Tracker& sp=NorthlightSpan::tracker;sp.close();
-                if(sp.frame.segments){
-                    using namespace NorthlightSpan;const Counts& c=sp.frame.diff;
-                    logf("SPELLSPAN frame=%u segments=%u deferred=%u otherDraws=%llu sets=%llu setWords=%llu rs=%llu ss=%llu tex=%llu vsF=%llu/%llu psF=%llu/%llu vsI=%llu psI=%llu shaders=%llu decl=%llu streams=%llu indices=%llu viewport=%llu fixed=%llu locks=%llu uploads=%llu otherCalls=%llu",
-                        frame,sp.frame.segments,sp.frame.deferred,(unsigned long long)sp.otherDraws(),(unsigned long long)c.sets(),(unsigned long long)c.setWords(),(unsigned long long)c.calls[Rs],(unsigned long long)c.calls[Ss],(unsigned long long)c.calls[Tex],
-                        (unsigned long long)c.calls[VsF],(unsigned long long)c.words[VsF]/4,(unsigned long long)c.calls[PsF],(unsigned long long)c.words[PsF]/4,(unsigned long long)c.calls[VsI],(unsigned long long)c.calls[PsI],
-                        (unsigned long long)c.calls[Shader],(unsigned long long)c.calls[Decl],(unsigned long long)c.calls[Stream],(unsigned long long)c.calls[Index],(unsigned long long)c.calls[Viewport],(unsigned long long)c.calls[Fixed],
-                        (unsigned long long)c.calls[Lock],(unsigned long long)c.calls[Upload],(unsigned long long)c.calls[Other]);
-                }
-            }
             {NorthlightSpellLayer::DeltaDiff dd;if(spell.takeDirtyMismatch(dd)&&diagnostics()) /* once per session: the synced-bit record disagreed with the full compare (a setter that does not clear its bit?) */
                 logf("SPELLDIRTY frame=%u kind=%s index=%u dirty=0x%llx full=0x%llx dirtyRecord=off",frame,dd.kind,dd.index,(unsigned long long)dd.dirty,(unsigned long long)dd.full);}
-            NorthlightSpan::tracker.clearFrame();
-            {const bool next=diagnostics()&&NorthlightRenderThreadProbe::sampleFrame(frame+1);spell.profile(next);spell.dirtyCheck(next);NorthlightSpan::tracker.on=next;if(!next)NorthlightSpan::tracker.open=false;} /* the next frame is sampled: measure it (SpellLayer on; stream mode counts commands, direct mode logs no SPELLSPAN) */
+            {const bool next=diagnostics()&&NorthlightRenderThreadProbe::sampleFrame(frame+1);spell.dirtyCheck(next);} /* the next frame is sampled: cross-check the dirty record on it */
             spellReplayTicks=spellRecordTicks=spellGateTicks=spellFlushTicks=0;spellGateDraws=spellGateTimed=spellRecords=spellFlushes=spellCopiesAllowed=spellGlowPasses=0;spell.clearPhaseTicks();
             if(spellTraceFrame){logf("SPELLTRACE end frame=%u left=%u",frame,spellTraceLeft-1);spellTraceFrame=false;if(spellTraceLeft)--spellTraceLeft;}
             spellTraceWindow=spellTraceLeft&&diagnostics()&&frame+1>=300;

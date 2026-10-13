@@ -1,6 +1,5 @@
 // Task 34: behavioural tests of the production spell_layer.h against the FakeDevice of test_spell_layer_api.h.
 #include "test_spell_layer_api.h"
-#include "span_counts.h"
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -1367,43 +1366,6 @@ static void testDiagnostics(){
     Pair q=runBoth(sSplitWater);                                                                           // no clock configured: nothing is timed, the drains still count
     CHECK(q.lay->layer.phaseTicks().save==0&&q.lay->layer.phaseTicks().restore==0&&q.lay->layer.totalCounters().drains==2);
 }
-// SPELLDELTA: words by category split into unknown (first entry of a sequence) and changed, the changed constant rows per 8 registers, and A-B-A ping-pong of changed slots.
-static void testDeltaProfile(){
-    Rig r(Opts{});r.layer.profile(true);
-    CHECK(r.layer.deltaStats()&&r.layer.deltaStats()->entries==0);
-    const float a[4]={1,1,1,1},b[4]={2,2,2,2};
-    r.dev.SetVertexShaderConstantF(10,a,1);deferQuad(r,1);                    // entry 1: everything unknown
-    const DeltaStats first=*r.layer.deltaStats();
-    CHECK(first.entries==1&&first.words[DeltaStats::Rs][0]>200&&first.words[DeltaStats::Rs][1]==0&&first.words[DeltaStats::VsF][1]==0&&first.pingChecked==0);
-    CHECK(first.words[DeltaStats::Streams][0]>=1&&first.words[DeltaStats::Shaders][0]>0&&first.words[DeltaStats::Tex][0]>0&&first.words[DeltaStats::Ss][0]>0);
-    r.dev.SetVertexShaderConstantF(10,b,1);r.dev.SetTexture(0,r.texB);deferQuad(r,2);        // entry 2: c10 and texture 0 changed (+ the tag: render state and c31)
-    r.dev.SetVertexShaderConstantF(10,a,1);r.dev.SetTexture(0,r.texA);deferQuad(r,3);        // entry 3: both go back: two ping-pongs
-    const DeltaStats& st=*r.layer.deltaStats();
-    CHECK(st.entries==3&&st.words[DeltaStats::VsF][0]>first.words[DeltaStats::VsF][0]-1&&st.words[DeltaStats::VsF][1]>0&&st.words[DeltaStats::Rs][1]>0);
-    CHECK(st.vsHist[10/8]>=2&&st.vsHist[31/8]>=2);                           // c10 changed twice; c31 (the draw tag) every entry
-    CHECK(st.pingpong==2&&st.pingChecked>=st.pingpong+4);                    // c10 and texture 0; the tag registers and states change to new values each time
-    CHECK(st.words[DeltaStats::Tex][1]==2*(1+kPtrWords));                    // only texture 0, twice
-    r.layer.clearDeltaStats();CHECK(r.layer.deltaStats()->entries==0&&r.layer.deltaStats()->pingpong==0);
-    r.layer.profile(false);CHECK(!r.layer.deltaStats());                      // off: not even a pointer
-    deferQuad(r,4);r.layer.profile(true);CHECK(r.layer.deltaStats()->entries==0);
-}
-// SPELLSPAN: the tracker keeps the counts between the first and the last deferred draw of each segment (a run between two drains); commands outside the spans do not count.
-static void testSpanTracker(){
-    using namespace NorthlightSpan;Tracker t;t.on=true;
-    t.count(Rs);t.count(Draw);                                   // before the first deferred draw: outside
-    t.count(Draw);t.deferred(0);                                 // first deferred draw (start of segment 1, not in the diff)
-    t.count(VsF,8);t.count(Rs);t.count(Draw);                    // another draw (not deferred) and sets inside
-    t.count(Draw);t.deferred(0);                                 // last deferred draw (in the diff)
-    t.count(Tex);                                                // after the last deferred draw: outside
-    t.count(Draw);t.deferred(1);                                 // a drain happened: segment 1 closed, segment 2 starts (single draw)
-    t.count(Upload);t.close();
-    CHECK(t.frame.segments==2&&t.frame.deferred==3);
-    CHECK(t.frame.diff.calls[VsF]==1&&t.frame.diff.words[VsF]==8&&t.frame.diff.calls[Rs]==1&&t.frame.diff.calls[Tex]==0&&t.frame.diff.calls[Upload]==0);
-    CHECK(t.frame.diff.calls[Draw]==2&&t.otherDraws()==1);       // 2 draws in (first,last] of segment 1 (one deferred, one other); the single-draw segment adds none
-    CHECK(t.frame.diff.sets()==2&&t.frame.diff.setWords()==9);
-    t.clearFrame();CHECK(t.frame.segments==0&&t.otherDraws()==0);
-    t.close();CHECK(t.frame.segments==0);                        // nothing open
-}
 // ---------------- the dirty record (synced bits) ----------------
 // Random interleavings of game Sets, deferred draws with different read sets (slots entering a read set for the first time included), raw sets (bypassing the setters, bracketed by
 // a clear-all like a RawScope), invalidations, mirror knowledge changes, splits, fixed-function entries and the boundary. The layer run is compared with the layer-off reference draw
@@ -1734,7 +1696,7 @@ int main(int argc,char** argv){
     const char* only=argc>1?argv[1]:nullptr; // a test name (substring) to run alone, and an optional cache mode
     const bool fixedMode=argc>2;if(fixedMode)gMirrorMode=std::atoi(argv[2]);
     struct T{const char* name;void(*fn)();};
-    const T tests[]={{"classify",testClassify},{"lazy classify",testLazyClassify},{"glow verdict",testGlowVerdict},{"delta profile",testDeltaProfile},{"span tracker",testSpanTracker},{"dirty record random",testDirtyRandom},{"record slots",testRecordSlots},{"dirty fail safe",testDirtyFailSafe},{"frame state",testFrameState},{"guard table",testGuardTable},{"equivalence",testEquivalence},
+    const T tests[]={{"classify",testClassify},{"lazy classify",testLazyClassify},{"glow verdict",testGlowVerdict},{"dirty record random",testDirtyRandom},{"record slots",testRecordSlots},{"dirty fail safe",testDirtyFailSafe},{"frame state",testFrameState},{"guard table",testGuardTable},{"equivalence",testEquivalence},
         {"discard copy",testDiscard},{"partial overlap",testPartialOverlap},{"two entries",testTwoEntries},{"count-based marks",testMarkIsCountBased},
         {"rebase negative base",testRebaseNegativeBase},{"rebase kept base",testRebasePositiveBase},{"index buffer copy",testIbMaterialized},
         {"mixed streams",testMixedStreams},{"32-bit UP",test32bitUP},{"non-dynamic buffer",testNonDynamic},{"copy disabled",testConflictCopyDisabled},
