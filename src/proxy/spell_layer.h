@@ -24,6 +24,7 @@
 #include <cstring>
 #include <memory>
 #include <new>
+#include <optional>
 #include <vector>
 #include "saved_state.h"
 #include "shader_read_set.h"
@@ -133,6 +134,7 @@ struct Counters{
     unsigned orderBy[3]={};                       // Order hazards raised by water, rain, name draws while draws were pending
     unsigned hazards[kReasons]={};
     unsigned flushes=0,replays=0,replayedDraws=0,replaySkipped=0,discarded=0;
+    unsigned drains=0;                            // replay sequences actually run, of every kind: B (replays), hazard flushes, splits, refused defers (replays counts the B ones only)
     unsigned names=0;                             // deferred floating-world-name draws (not counted in deferred[])
     unsigned fixed=0;                             // deferred draws that were fixed-function (also counted in deferred[])
     unsigned conflicts=0,materialized=0,recorded=0,replaySets=0; // recorded: draws recorded; replaySets: device Set* calls issued by replays
@@ -140,13 +142,15 @@ struct Counters{
     unsigned arenaHigh=0;                         // bytes
     unsigned recordHigh=0;                        // most records pending at once
     uint64_t deltaWords=0;                        // words of state delta recorded
+    uint64_t nameDeltaWords=0;                    // the part of deltaWords recorded for floating-name entries
+    unsigned nameSets=0;                          // the part of replaySets issued by floating-name entries
     unsigned capBy[4]={};                         // Capacity fallbacks by the limit that was hit: entries, delta bytes, arena (UP data and conflict copies) bytes, other (upload buffers, held objects, fixed-function records)
     unsigned overflowFrames=0,overflowAt=0,overflowCandidates=0; // frames that fell back on Capacity; entries pending when they did; deferrable draws of those frames from the overflow on (the overflowing draw included): the real demand
     void add(const Counters& o){
         for(int i=0;i<4;++i){deferred[i]+=o.deferred[i];inPlace[i]+=o.inPlace[i];}
         for(int i=0;i<3;++i)orderBy[i]+=o.orderBy[i];
         for(unsigned i=0;i<kReasons;++i)hazards[i]+=o.hazards[i];
-        names+=o.names;fixed+=o.fixed;flushes+=o.flushes;replays+=o.replays;replayedDraws+=o.replayedDraws;replaySkipped+=o.replaySkipped;discarded+=o.discarded;
+        names+=o.names;fixed+=o.fixed;flushes+=o.flushes;replays+=o.replays;drains+=o.drains;nameSets+=o.nameSets;nameDeltaWords+=o.nameDeltaWords;replayedDraws+=o.replayedDraws;replaySkipped+=o.replaySkipped;discarded+=o.discarded;
         conflicts+=o.conflicts;materialized+=o.materialized;recorded+=o.recorded;replaySets+=o.replaySets;conflictBytes+=o.conflictBytes;
         for(int i=0;i<4;++i)capBy[i]+=o.capBy[i];overflowFrames+=o.overflowFrames;overflowAt+=o.overflowAt;overflowCandidates+=o.overflowCandidates;
         deltaWords+=o.deltaWords;arenaHigh=std::max(arenaHigh,o.arenaHigh);recordHigh=std::max(recordHigh,o.recordHigh);
@@ -298,6 +302,7 @@ struct Config{
     NorthlightStateBlockPool* savedPool=nullptr;  // the renderer's SavedState pool for the replay scope (optional; the only state block the layer still uses)
     unsigned deltaChunkWords=16384;               // 64 KiB chunks (at most 65535: entries address a delta with 16-bit offsets)
     const struct MirrorView* source=nullptr;      // the device state cache for bulk reads (optional; null: every state is read with Get calls)
+    uint64_t (*clock)(void* ctx)=nullptr;bool (*timing)(void* ctx)=nullptr;void* clockCtx=nullptr; // phase timing of the drains (diagnostics): timing() is asked once per drain, only when it says yes does the layer read clock() around save, upload and restore; null = never
     unsigned (*generation)(void* ctx)=nullptr;void* genCtx=nullptr; // changes whenever a texture object may have been created or destroyed (a raw address may name another texture): keys the per-texture render-target verdicts; null = no verdict cache
 };
 
@@ -471,6 +476,7 @@ class Layer{
         uint32_t upVtx=0,upStride=0,upIdx=0;D3DFORMAT upFmt=D3DFMT_INDEX16;
         uint16_t dChunk=0,dOff=0,dLen=0;               // the state delta: dLen words at dOff of delta chunk dChunk
         FfRec* ff=nullptr;                             // ff: set for fixed-function draws (no vertex and no pixel shader), else null
+        bool name=false;                               // a floating-name entry (SubName): its replay sets are counted apart
     };
     // What replay itself set on the device (streams and index buffer are rebound for materialized spans, so they are tracked apart from the records).
     struct Shadow{
@@ -607,8 +613,16 @@ private:
         fm_.fallback(r!=Reason::Frame);
         return false;
     }
-    void drain(){runReplay();clearFrame();}
+    void drain(){count([](Counters& c){++c.drains;});timing_=cfg_.clock&&cfg_.timing&&cfg_.timing(cfg_.clockCtx);runReplay();clearFrame();}
 
+    // Phase timing (sampled frames): ticks of the drains' state save, upload and state restore, read by the integration with phaseTicks().
+    bool timing_=false;uint64_t tSave_=0,tUpload_=0,tRestore_=0;
+    struct Phase{
+        Layer& l;uint64_t* out;uint64_t t0=0;
+        Phase(Layer& layer,uint64_t* o):l(layer),out(o){if(out)t0=l.cfg_.clock(l.cfg_.clockCtx);}
+        ~Phase(){if(out)*out+=l.cfg_.clock(l.cfg_.clockCtx)-t0;}
+        Phase(const Phase&)=delete;Phase& operator=(const Phase&)=delete;
+    };
     bool upload(bool index,unsigned fmt=0){
         void* p=nullptr;
         if(index){if(!upIb_[fmt]||FAILED(upIb_[fmt]->Lock(0,0,&p,D3DLOCK_DISCARD))||!p)return false;}
@@ -731,19 +745,24 @@ private:
     }
     void runReplay(){
         if(!count_)return;
-        SavedState scope(dev_,cfg_.savedPool);
-        if(!scope.ok){count([&](Counters& c){c.replaySkipped+=count_;});return;}
-        const bool vbOk=!vbUsed_||upload(false),ibOk[2]={!ibUsed_[0]||upload(true,0),!ibUsed_[1]||upload(true,1)};
+        std::optional<SavedState> scope;
+        {Phase t(*this,timing_?&tSave_:nullptr);scope.emplace(dev_,cfg_.savedPool);}
+        if(!scope->ok){count([&](Counters& c){c.replaySkipped+=count_;});return;}
+        bool vbOk,ibOk[2];
+        {Phase t(*this,timing_?&tUpload_:nullptr);vbOk=!vbUsed_||upload(false);ibOk[0]=!ibUsed_[0]||upload(true,0);ibOk[1]=!ibUsed_[1]||upload(true,1);}
         dev_->SetDepthStencilSurface(nullptr);
         for(DWORD i=1;i<4;++i)dev_->SetRenderTarget(i,nullptr);
         const bool bound=SUCCEEDED(dev_->SetRenderTarget(0,target_));
         dev_->SetDepthStencilSurface(ds_);
-        Shadow sh;sets_=0;ffPrev_=nullptr;
+        Shadow sh;sets_=0;ffPrev_=nullptr;unsigned nameSets=0;
         for(unsigned i=0;i<count_;++i){
-            const bool ok=bound&&drawEntry(entryAt(i),sh,vbOk,ibOk);
+            const Entry& e=entryAt(i);const unsigned before=sets_;
+            const bool ok=bound&&drawEntry(e,sh,vbOk,ibOk);
+            if(e.name)nameSets+=sets_-before;
             count([&](Counters& c){if(ok)++c.replayedDraws;else ++c.replaySkipped;});
         }
-        count([&](Counters& c){c.replaySets+=sets_;});
+        count([&](Counters& c){c.replaySets+=sets_;c.nameSets+=nameSets;});
+        {Phase t(*this,timing_?&tRestore_:nullptr);scope.reset();}
     }
 
     bool ensureUpload(bool index,unsigned fmt=0){
@@ -987,6 +1006,9 @@ public:
     const Counters& frameCounters()const{return frame_;}
     const Counters& lastFrameCounters()const{return last_;}
     const Counters& totalCounters()const{return total_;}
+    struct PhaseTicks{uint64_t save,upload,restore;};   // clock() ticks the drains spent in their state save, upload and state restore since the last clearPhaseTicks()
+    PhaseTicks phaseTicks()const{return PhaseTicks{tSave_,tUpload_,tRestore_};}
+    void clearPhaseTicks(){tSave_=tUpload_=tRestore_=0;}
     size_t recordChunks()const{return deltaChunks_.size();} // allocated chunks of state delta words (Config::deltaChunkWords each)
     size_t ffChunks()const{return ffChunks_.size();}      // allocated chunks of kFfChunk fixed-function records
     uint32_t arenaUsed()const{return arenaUsed_;}
@@ -1131,9 +1153,10 @@ public:
             if(h)h->flags|=kInSamples; // the frame's set of sampled textures: pendingSamples() asks the held table
         }
         if(!count_){target_=rt0;rt0->AddRef();ds_=ds;if(ds)ds->AddRef();}
+        e.name=(sub&SubName)!=0;
         if(fixed)++ffCount_;
         ++count_;fm_.deferred();
-        count([&](Counters& c){if(sub&SubName)++c.names;else{unsigned i=0;while(i<3&&!(sub>>i&1))++i;++c.deferred[i];}if(fixed)++c.fixed;++c.recorded;c.deltaWords+=n_;c.recordHigh=std::max(c.recordHigh,count_);});
+        count([&](Counters& c){if(sub&SubName)++c.names;else{unsigned i=0;while(i<3&&!(sub>>i&1))++i;++c.deferred[i];}if(fixed)++c.fixed;++c.recorded;c.deltaWords+=n_;if(sub&SubName)c.nameDeltaWords+=n_;c.recordHigh=std::max(c.recordHigh,count_);});
         if(a.type==DrawType::PrimitiveUP||a.type==DrawType::IndexedUP){ // the API side effects of the skipped call
             dev_->SetStreamSource(0,nullptr,0,0);
             if(a.type==DrawType::IndexedUP)dev_->SetIndices(nullptr);

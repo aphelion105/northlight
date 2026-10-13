@@ -185,7 +185,8 @@ static void testGuardTable(){
 // test runs in all four; the replayed state must be identical.
 static int gMirrorMode=1;
 static unsigned gTexGeneration=0;static unsigned texGeneration(void*){return gTexGeneration;}
-struct Opts{size_t deltaBytes=2u<<20;unsigned deltaChunk=16384;bool verdictCache=false;bool on=true;unsigned maxEntries=512;bool conflictCopy=true;unsigned mask=15;size_t arena=1u<<20,upVb=1u<<16,upIb=1u<<14;};
+static uint64_t gTicks=0;static uint64_t fakeClock(void*){return ++gTicks;}static bool fakeTiming(void*){return true;} // every read advances one tick: a timed phase costs exactly 1
+struct Opts{bool timed=false;size_t deltaBytes=2u<<20;unsigned deltaChunk=16384;bool verdictCache=false;bool on=true;unsigned maxEntries=512;bool conflictCopy=true;unsigned mask=15;size_t arena=1u<<20,upVb=1u<<16,upIb=1u<<14;};
 struct Rig{
     Fake::FakeDevice dev;Layer layer;Opts o;
     Fake::Surface *T,*D,*Other;
@@ -243,6 +244,7 @@ struct Rig{
             if(gMirrorMode==2){for(unsigned i=0;i<256;i+=3)m.hideRs[i]=true;for(unsigned i=0;i<256;i+=5)m.hideVsF[i]=true;for(unsigned i=0;i<224;i+=7)m.hidePsF[i]=true;m.hideTex[3]=m.hideTex[5]=true;m.hideSmp[1]=true;m.hideVsB=true;}
             if(gMirrorMode==3){for(auto& h:m.hideRs)h=true;for(auto& h:m.hideVsF)h=true;for(auto& h:m.hidePsF)h=true;for(auto& h:m.hideTex)h=true;for(auto& h:m.hideSmp)h=true;m.hideVsI=m.hideVsB=m.hideShaders=m.hideDecl=m.hideVp=true;}
         }
+        if(o.timed){c2.clock=&fakeClock;c2.timing=&fakeTiming;}
         if(o.verdictCache){c2.generation=&texGeneration;c2.genCtx=nullptr;}c2.markGuard=&Rig::markCb;c2.markCtx=this;
         layer.attach(&dev);layer.configure(c2);layer.beginFrame(false);
     }
@@ -1286,6 +1288,18 @@ static void testNamesWater(){
     CHECK(q.lay->layer.totalCounters().names==0&&q.lay->layer.totalCounters().orderBy[2]==0&&q.lay->layer.totalCounters().orderBy[0]==1); // a Z-writing name never split (TranslucentZ)
     checkEquivalent(q);
 }
+// Diagnostics: every drain (B and the water split) is counted, the name entries' delta words and replay sets are split off, and the phases of a drain are timed
+// separately (one fake tick per phase and drain), only when the integration says the frame is sampled.
+static void testDiagnostics(){
+    Opts o;o.mask=31;o.timed=true;gTicks=0;Pair p=runBoth(sNamesWater,o);const Counters& c=p.lay->layer.totalCounters();
+    CHECK(c.drains==2&&c.replays==1&&c.flushes==1);
+    CHECK(c.nameDeltaWords>0&&c.nameDeltaWords<c.deltaWords&&c.nameSets>0&&c.nameSets<c.replaySets);
+    const Layer::PhaseTicks t=p.lay->layer.phaseTicks();CHECK(t.save==2&&t.upload==2&&t.restore==2);
+    p.lay->layer.clearPhaseTicks();CHECK(p.lay->layer.phaseTicks().save==0);
+    Opts quiet;quiet.mask=31;Pair q=runBoth(sNamesAlone,quiet);                                            // no clock configured: nothing is timed, the entries still count
+    CHECK(q.lay->layer.phaseTicks().save==0&&q.lay->layer.phaseTicks().restore==0&&q.lay->layer.totalCounters().drains==1&&q.lay->layer.totalCounters().nameDeltaWords==q.lay->layer.totalCounters().deltaWords);
+    CHECK(q.lay->layer.totalCounters().nameSets==q.lay->layer.totalCounters().replaySets);
+}
 // A draw without a vertex or pixel shader, or with ps_1_x, is refused (Admit): everything pending is flushed first, in order, and the frame falls back.
 static void sNoPs(Rig& r){deferQuad(r,1);deferQuad(r,2);r.dev.SetPixelShader(nullptr);deferQuad(r,3);r.dev.SetPixelShader(r.ps);deferQuad(r,4);r.boundary();}
 static void sNoVs(Rig& r){deferQuad(r,1);r.dev.SetVertexShader(nullptr);deferQuad(r,2);r.dev.SetVertexShader(r.vs);r.boundary();}
@@ -1443,7 +1457,7 @@ int main(int argc,char** argv){
         {"rt mismatch",testRtMismatch},{"capacity",testCapacity},{"capture failure",testCaptureFailure},{"frame end",testFrameEnd},
         {"cooldown and pressure",testCooldownAndPressure},{"trim",testTrim},{"pending targets",testPendingTargets},{"layer off",testLayerOff},
         {"reset and teardown",testResetAndTeardown},{"512 entries",testStress512},
-        {"32-bit index copy",testIb32},{"both index formats",testIbBothFormats},{"water rain name flush",testOrderKinds},{"names deferred",testNamesMixed},{"names alone",testNamesAlone},{"names and water",testNamesWater},{"nothing pending: in place",testOrderKindsIdle},
+        {"32-bit index copy",testIb32},{"both index formats",testIbBothFormats},{"water rain name flush",testOrderKinds},{"names deferred",testNamesMixed},{"names alone",testNamesAlone},{"names and water",testNamesWater},{"diagnostics",testDiagnostics},{"nothing pending: in place",testOrderKindsIdle},
         {"replay scope failure",testReplayScopeFailure},{"state changed between draws",testStateChangedBetweenDraws},{"scissor and clip only when enabled",testScissorAndClipOnlyWhenEnabled},{"delta encoding",testDeltas},{"4096 entries",testFourThousandEntries},{"capacity limits",testCapacityLimits},{"guard table with many buffers",testGuardTableMany},{"sampled textures lookup",testSamplesLookup},{"shader read sets",testReadSets},{"diff replay",testDiffReplay},{"admission",testAdmission},{"hazard events",testHazardEvents},{"record size and timing",testRecordSizeAndTiming},{"fixed function",testFixedFunction},{"fixed function admission",testFixedAdmission},{"fixed function capacity",testFixedCapacity},{"water ripples",testRipples},
         {"render target texture",testRenderTargetTexture},{"render target verdict cache",testVerdictCache},{"vertex texture sampler",testVertexTextureSampler},{"buffer write conflict probe",testBufferWriteProbe}};
     for(int mode=fixedMode?gMirrorMode:0;mode<=(fixedMode?gMirrorMode:3);++mode){

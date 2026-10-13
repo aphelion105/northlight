@@ -1138,7 +1138,7 @@ private:
     void* spellQuery[8]={};unsigned spellQueryFrame[8]={},spellQueryN=0,spellQueryUnknownFrame=0;bool spellQueryUnknown=false; /* open D3DQUERYTYPE_OCCLUSION brackets (raw queries), by Issue(BEGIN) frame; spellQueryUnknown: a bracket was lost to a full table (its frame in spellQueryUnknownFrame) */
     // SpellTrace: spellTraceLeft frames of SPELLTRACE lines, from the first world frame at or after frame 300 (Diagnostics only); spellTraceWindow: the next frame is traced.
     unsigned spellTraceLeft=0,spellDrawIndex=0;bool spellTraceWindow=false,spellTraceFrame=false,spellTraceSeen=false;
-    LONGLONG spellDeferTicks=0,spellReplayTicks=0,spellRecordTicks=0;unsigned spellGateDraws=0,spellRecords=0; /* spellDeferTicks: all of spellDrawImpl on a sampled frame; spellRecordTicks: the part in Layer::defer(); the rest is the per-world-draw gate */NorthlightSpellLayer::Mode spellFrameMode=NorthlightSpellLayer::Mode::Off;
+    LONGLONG spellDeferTicks=0,spellReplayTicks=0,spellRecordTicks=0,spellRecordNameTicks=0;unsigned spellGateDraws=0,spellRecords=0,spellRecordNames=0; /* spellDeferTicks: all of spellDrawImpl on a sampled frame; spellRecordTicks: the part in Layer::defer() for the other classes, spellRecordNameTicks for floating names; the rest is the per-world-draw gate */NorthlightSpellLayer::Mode spellFrameMode=NorthlightSpellLayer::Mode::Off;
     // Hazard diagnostics (Diagnostics=1): the layer's latest event is consumed after each layer call that can raise one; the first 64 of the session are
     // logged as SPELLHAZARD. spellWin* accumulate every frame since the previous SPELLLAYER line (that line itself describes one sampled frame).
     static constexpr unsigned kSpellHazardLogs=64;
@@ -1160,6 +1160,8 @@ private:
         v.vs=&m.vertexShader;v.vsKnown=&m.vertexShaderKnown;v.ps=&m.pixelShader;v.psKnown=&m.pixelShaderKnown;v.decl=&m.declaration;v.declKnown=&m.declarationKnown;
         v.fvf=&m.fvf;v.fvfKnown=&m.fvfKnown;v.vp=&m.viewport;v.vpKnown=&m.viewportKnown;v.enter=&Device::spellViewEnter;v.leave=&Device::spellViewLeave;v.ctx=this;
     }
+    static uint64_t spellClock(void*){LARGE_INTEGER t;QueryPerformanceCounter(&t);return uint64_t(t.QuadPart);}
+    static bool spellTiming(void* c){return static_cast<Device*>(c)->sampledOnce();} /* the layer's drains time their save, upload and restore on sampled frames only */
     static unsigned spellTextureGeneration(void*){return NorthlightMirrorResources::generation.load(std::memory_order_relaxed);}
     static void spellMarkGuard(void*,void* raw,bool on){NorthlightTrackedBuffers::markSpellGuard(raw,on);}
     static void spellBufferHook(void* context,void* raw,UINT offset,UINT size,DWORD flags,DWORD usage,unsigned locks){static_cast<Device*>(context)->spellBufferWrite(raw,offset,size,flags,usage,locks);}
@@ -1175,6 +1177,7 @@ private:
         cfg.readBackLockFlags=NorthlightUpload::readBackLock(); /* fixed before CreateDevice (backend()) */
         cfg.markGuard=&Device::spellMarkGuard;cfg.markCtx=this;cfg.savedPool=&stateBlocks;
         spellViewInit();cfg.source=&spellView;
+        cfg.clock=&Device::spellClock;cfg.timing=&Device::spellTiming;cfg.clockCtx=this;
         cfg.generation=&Device::spellTextureGeneration;cfg.genCtx=this; /* the render-target verdict of a texture is cached until a resource proxy is created or destroyed */
         spell.attach(ext);spell.configure(cfg);
         NorthlightTrackedBuffers::spellHook={&Device::spellBufferHook,this};
@@ -1357,7 +1360,7 @@ private:
         bool deferred=false;
         switch(r.kind){
         case Kind::Defer:
-            if(rt){spellArgs.psMajor=0;spellArgs.psReads=nullptr;spellArgs.psFor=nullptr;spellPixelShader(&spellArgs.psMajor,nullptr,&spellArgs.psReads,&spellArgs.psFor);spellArgs.vsReads=vs?spellReads(static_cast<void*>(vs)):nullptr;spellArgs.vsFor=static_cast<const void*>(vs);CpuScope record(timed?&spellRecordTicks:nullptr); /* sampled frames only */if(timed)++spellRecords;deferred=spell.defer(spellArgs,rt,ds,r.sub);}
+            if(rt){spellArgs.psMajor=0;spellArgs.psReads=nullptr;spellArgs.psFor=nullptr;spellPixelShader(&spellArgs.psMajor,nullptr,&spellArgs.psReads,&spellArgs.psFor);spellArgs.vsReads=vs?spellReads(static_cast<void*>(vs)):nullptr;spellArgs.vsFor=static_cast<const void*>(vs);const bool nameRec=(r.sub&SubName)!=0;CpuScope record(timed?(nameRec?&spellRecordNameTicks:&spellRecordTicks):nullptr); /* sampled frames only */if(timed){if(nameRec)++spellRecordNames;else ++spellRecords;}deferred=spell.defer(spellArgs,rt,ds,r.sub);}
             break;
         case Kind::Hazard:spellInDraw=true;spellFlush(r.reason,true,r.inPlace);spellInDraw=false;break; /* r.inPlace: water, rain or a name drawn after a deferred draw */
         case Kind::InPlace:if(pend)spell.noteInPlace(r.inPlace);break;
@@ -1440,17 +1443,19 @@ private:
                 };
                 char hazards[200],winHazards[200];reasons(c,hazards,sizeof hazards);reasons(spellWin,winHazards,sizeof winHazards);
                 const double us=cpuFrequency.QuadPart>0?1e6/double(cpuFrequency.QuadPart):0.0;
+                const NorthlightSpellLayer::Layer::PhaseTicks phase=spell.phaseTicks(); /* the drains' (B, flushes, splits) state save, upload and restore of this sampled frame */
                 double timerUs=0; /* what one timing scope costs here (two clock reads): cpuDeferUs includes it once per world draw and once per record */
                 {LONGLONG sink=0;LARGE_INTEGER a,b;QueryPerformanceCounter(&a);for(int i=0;i<64;++i){CpuScope probe(&sink); /* sampled frame: calibration */}QueryPerformanceCounter(&b);timerUs=double(b.QuadPart-a.QuadPart)*us/64.0;}
                 const NorthlightSpellLayer::Layer::Memory spellMem=spellMemAtFrame; /* taken before the frame's trim/beginFrame released the chunks */
-                logf("SPELLLAYER frame=%u mode=%s deferred=%u/%u/%u/%u fixed=%u replayed=%u fadeInPlace=%u orderBy=%u/%u/%u hazards=%s flushes=%u conflicts=%u conflictBytes=%llu materialized=%u records=%u recordHigh=%u replaySets=%u arenaHigh=%u replaySkipped=%u discarded=%u cooldown=%u cpuDeferUs=%.1f cpuReplayUs=%.1f capBy=%u/%u/%u/%u overflowAt=%u overflowCandidates=%u memKiB=%u uploadKiB=%u deltaWords=%llu cpuRecordUs=%.1f cpuGateUs=%.1f gateDraws=%u recordCalls=%u timerScopeUs=%.3f names=%u "
+                logf("SPELLLAYER frame=%u mode=%s deferred=%u/%u/%u/%u fixed=%u replayed=%u fadeInPlace=%u orderBy=%u/%u/%u hazards=%s flushes=%u conflicts=%u conflictBytes=%llu materialized=%u records=%u recordHigh=%u replaySets=%u arenaHigh=%u replaySkipped=%u discarded=%u cooldown=%u cpuDeferUs=%.1f cpuReplayUs=%.1f capBy=%u/%u/%u/%u overflowAt=%u overflowCandidates=%u memKiB=%u uploadKiB=%u deltaWords=%llu cpuRecordUs=%.1f cpuGateUs=%.1f gateDraws=%u recordCalls=%u timerScopeUs=%.3f names=%u drains=%u cpuSaveUs=%.1f cpuUploadUs=%.1f cpuRestoreUs=%.1f nameDeltaWords=%llu nameSets=%u cpuRecordNameUs=%.1f recordNameCalls=%u "
                      "window frames=%u deferring=%u cooldown=%u deferred=%u hazards=%s flushes=%u conflicts=%u overflowFrames=%u overflowCandidates=%u",
                     frame,NorthlightSpellLayer::modeName(mode),c.deferred[0],c.deferred[1],c.deferred[2],c.deferred[3],c.fixed,c.replayedDraws,c.inPlace[3],c.orderBy[0],c.orderBy[1],c.orderBy[2],hazards,c.flushes,c.conflicts,(unsigned long long)c.conflictBytes,c.materialized,c.recorded,c.recordHigh,c.replaySets,c.arenaHigh,c.replaySkipped,c.discarded,spell.cooldownLeft(),
-                    double(spellDeferTicks)*us,double(spellReplayTicks)*us,c.capBy[0],c.capBy[1],c.capBy[2],c.capBy[3],c.overflowAt,c.overflowCandidates,unsigned(spellMem.total()>>10),unsigned(spellMem.uploads>>10),(unsigned long long)c.deltaWords,double(spellRecordTicks)*us,double(spellDeferTicks-spellRecordTicks)*us,spellGateDraws,spellRecords,timerUs,c.names,
+                    double(spellDeferTicks)*us,double(spellReplayTicks)*us,c.capBy[0],c.capBy[1],c.capBy[2],c.capBy[3],c.overflowAt,c.overflowCandidates,unsigned(spellMem.total()>>10),unsigned(spellMem.uploads>>10),(unsigned long long)c.deltaWords,double(spellRecordTicks+spellRecordNameTicks)*us,double(spellDeferTicks-spellRecordTicks-spellRecordNameTicks)*us,spellGateDraws,spellRecords+spellRecordNames,timerUs,c.names,
+                    c.drains,double(phase.save)*us,double(phase.upload)*us,double(phase.restore)*us,(unsigned long long)c.nameDeltaWords,c.nameSets,double(spellRecordNameTicks)*us,spellRecordNames,
                     spellWinFrames,spellWinDeferring,spellWinCooldown,spellWin.totalDeferred(),winHazards,spellWin.flushes,spellWin.conflicts,spellWin.overflowFrames,spellWin.overflowCandidates);
                 spellWin=NorthlightSpellLayer::Counters{};spellWinFrames=spellWinDeferring=spellWinCooldown=0;
             }
-            spellDeferTicks=spellReplayTicks=spellRecordTicks=0;spellGateDraws=spellRecords=0;
+            spellDeferTicks=spellReplayTicks=spellRecordTicks=spellRecordNameTicks=0;spellGateDraws=spellRecords=spellRecordNames=0;spell.clearPhaseTicks();
             if(spellTraceFrame){logf("SPELLTRACE end frame=%u left=%u",frame,spellTraceLeft-1);spellTraceFrame=false;if(spellTraceLeft)--spellTraceLeft;}
             spellTraceWindow=spellTraceLeft&&diagnostics()&&frame+1>=300;
         });
