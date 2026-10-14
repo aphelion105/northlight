@@ -99,7 +99,7 @@ PALETTE
 ORPHANED
  NorthlightGeometryMemory::StallWatch generationStall;
  NorthlightQuality::Settings quality;std::string root="fixture/";
- std::mutex mutex;std::condition_variable wake;Request request;bool stopping=false,pending=false;
+ std::mutex mutex;std::condition_variable wake;Request request;bool stopping=false,pending=false,geometryRebuild=false;
  std::atomic<bool> workerBusy{false},workerMemoryTrim{false};std::atomic<unsigned> workerFaultCode{0},geometryBuildEstimateMs{1000};std::atomic<uint64_t> geometryMemoryDemand{0};
  std::shared_ptr<Snapshot> published;std::shared_ptr<const PaletteRegion> publishedPaletteRegion;
  // Fixture build controls and observations (guarded by mutex unless atomic).
