@@ -560,7 +560,7 @@ private:
         auto memory=cachedSample?*cachedSample:geometryAdmission(budget,&exact);
         if(NorthlightGeometryMemory::admits(memory,budget))return true;
         memoryPressureUntil=now+1000;
-        if(!memoryPressureLogAt||now-memoryPressureLogAt>=60000){memoryPressureLogAt=now;logGeometryMemory(stage,memory,0,exact&&!cachedSample);}
+        if(!memoryPressureLogAt||now-memoryPressureLogAt>=60000){memoryPressureLogAt=now;logGeometryMemory(stage,memory,0,exact&&!cachedSample,&budget);}
         return false;
     }
     bool acquireMeshPage(size_t page,bool vertex,UINT bytes,NorthlightGeometryMemory::Sample& memory){
@@ -979,9 +979,13 @@ private:
     NorthlightGeometryMemory::Sample geometryAdmission(NorthlightGeometryMemory::Budget budget,bool* exact=nullptr){
         return geometryAdmissionFor(admissionProbe,budget,exact);
     }
-    static void logGeometryMemory(const char* stage,NorthlightGeometryMemory::Sample sample,size_t generations=0,bool exactLargest=true){
-        logf("GEOMETRY MEMORY stage=%s availableVirtualMiB=%llu largestFreeMiB=%llu generations=%zu valid=%u largestFreeExact=%u",
-            stage,(unsigned long long)(sample.available>>20),(unsigned long long)(sample.largest>>20),generations,unsigned(sample.valid),unsigned(exactLargest));
+    // largestFreeMiB is ">=N" unless exact (a witnessed lower bound is not a measurement); refused= names the
+    // limit of `budget` that failed (available/largest/...) or none, need= its requirement.
+    static void logGeometryMemory(const char* stage,NorthlightGeometryMemory::Sample sample,size_t generations=0,bool exactLargest=true,const NorthlightGeometryMemory::Budget* budget=nullptr){
+        char largest[32];NorthlightGeometryMemory::formatLargestMiB(largest,sizeof largest,sample.largest,exactLargest);
+        const auto why=budget?NorthlightGeometryMemory::refusal(sample,*budget):NorthlightGeometryMemory::Refusal{};
+        logf("GEOMETRY MEMORY stage=%s availableVirtualMiB=%llu largestFreeMiB=%s generations=%zu valid=%u largestFreeExact=%u refused=%s need=%llu",
+            stage,(unsigned long long)(sample.available>>20),largest,generations,unsigned(sample.valid),unsigned(exactLargest),why.limit,(unsigned long long)(why.need>>20));
     }
     bool admitStaticAllocation(size_t managedBytes){
         // Preserve one aggregate transaction per static frame and its existing
@@ -1107,10 +1111,14 @@ private:
           // Episode logs (begin on the first memory refusal, end when the build is delivered or dropped).
           // `required` is the refused check's aggregate floor: published (at most the plain entry floor)
           // as the memory guard's demand, so the mod's own caches shrink while the builder waits.
-          auto stallBegin=[&](const char* stage,NorthlightGeometryMemory::Sample sample,uint64_t required){
+          auto stallBegin=[&](const char* stage,NorthlightGeometryMemory::Sample sample,uint64_t required,uint64_t requiredLargest=0){
               geometryMemoryDemand.store(std::min(required,NorthlightGeometryMemory::buildBudget().available),std::memory_order_relaxed);
-              if(memoryStall.refused(GetTickCount()))logf("WORLD geometry memory stall begin stage=%s availableMiB=%llu largestMiB=%llu generations=%zu",
-                  stage,(unsigned long long)(sample.available>>20),(unsigned long long)(sample.largest>>20),generations.live());
+              if(memoryStall.refused(GetTickCount())){
+                  char largest[32];NorthlightGeometryMemory::formatLargestMiB(largest,sizeof largest,sample.largest,workerMemoryExact);
+                  NorthlightGeometryMemory::Budget checked;checked.available=required;checked.largest=requiredLargest;checked.valid=true;
+                  const auto why=NorthlightGeometryMemory::refusal(sample,checked);
+                  logf("WORLD geometry memory stall begin stage=%s availableMiB=%llu largestMiB=%s generations=%zu refused=%s need=%llu",
+                      stage,(unsigned long long)(sample.available>>20),largest,generations.live(),why.limit,(unsigned long long)(why.need>>20));}
           };
           auto stallEnd=[&](const char* outcome){
               geometryMemoryDemand.store(0,std::memory_order_relaxed);
@@ -1157,8 +1165,8 @@ private:
             // Geometry validity is spatial, independent of the latest GI
             // request ID. A camera retarget must not discard a usable build.
             auto currentGeometry=[&](){std::lock_guard<std::mutex> lock(mutex);return !stopping&&NorthlightWorldStreaming::applicable(r.map,r.geometryCenter,request.map,request.camera);};
-            auto deferBuild=[&](const char* stage,NorthlightGeometryMemory::Sample sample,unsigned delay){
-                DWORD now=GetTickCount();if(!memoryReportAt||now-memoryReportAt>=1000){memoryReportAt=now;logGeometryMemory(stage,sample,generations.live(),workerMemoryExact);}
+            auto deferBuild=[&](const char* stage,NorthlightGeometryMemory::Sample sample,unsigned delay,const NorthlightGeometryMemory::Budget* budget=nullptr){
+                DWORD now=GetTickCount();if(!memoryReportAt||now-memoryReportAt>=1000){memoryReportAt=now;logGeometryMemory(stage,sample,generations.live(),workerMemoryExact,budget);}
                 // The consumed request must survive a stationary camera. Never
                 // replace a newer request with r; next loop reads latest state.
                 bool abandoned=false;
@@ -1204,7 +1212,7 @@ private:
                 const auto plainEntry=NorthlightGeometryMemory::buildBudget(64*NorthlightGeometryMemory::MiB);
                 const auto entryBudget=entryLift.apply(plainEntry,GetTickCount());
                 if(!NorthlightGeometryMemory::admits(memory,plainEntry)){localGeometry.reset();memory=workerMemory(plainEntry);}
-                if(!NorthlightGeometryMemory::admits(memory,entryBudget)){stallBegin("build-deferred",memory,entryBudget.available);deferBuild("build-deferred",memory,1000);continue;}
+                if(!NorthlightGeometryMemory::admits(memory,entryBudget)){stallBegin("build-deferred",memory,entryBudget.available,entryBudget.largest);deferBuild("build-deferred",memory,1000,&entryBudget);continue;}
                 const uint64_t entryAvailable=memory.available,entryLargest=memory.largest;
                 geometryMemoryDemand.store(0,std::memory_order_relaxed); // admitted: the build's own use is not a demand (the episode stays open)
                 // A memory refusal after entry: the next entry waits for what this attempt lacked.
@@ -1214,7 +1222,7 @@ private:
                         stage,(unsigned long long)(entryLift.available>>20),(unsigned long long)(entryLift.largest>>20),(unsigned long long)(entryAvailable>>20),
                         (unsigned long long)(observed>>20),(unsigned long long)(required>>20),unsigned(NorthlightGeometryMemory::LiftMs));
                 };
-                if(NorthlightDiagnostics::enabled())logGeometryMemory("before-load",memory,generations.live(),workerMemoryExact);
+                if(NorthlightDiagnostics::enabled())logGeometryMemory("before-load",memory,generations.live(),workerMemoryExact,&entryBudget);
                 std::string error;
                 const V center=r.geometryCenter;
                 int tx=int(std::floor((17066.6666667-center.y)/533.3333333));
@@ -1230,13 +1238,13 @@ private:
                     if(bytes<NorthlightGeometryMemory::MiB)return true;
                     const auto budget=NorthlightGeometryMemory::inBuildBudget(bytes);auto sample=workerMemory(budget);
                     if(NorthlightGeometryMemory::admits(sample,budget))return true;
-                    localDeferred=true;localSample=sample;localRequired=budget.available;localLargest=budget.largest;logGeometryMemory("local-geometry-allocation-deferred",sample,generations.live(),workerMemoryExact);return false;
+                    localDeferred=true;localSample=sample;localRequired=budget.available;localLargest=budget.largest;logGeometryMemory("local-geometry-allocation-deferred",sample,generations.live(),workerMemoryExact,&budget);return false;
                 };
                 auto replacement=std::make_shared<NorthlightGI::BVH>();
                 if(!generations.track(replacement))throw std::runtime_error("Geometry generation admission invariant");
                 if(tiles.empty()||!localGeometry.build(tiles,root+"world-cache/models",r.map,center-V(288,288,320),center+V(288,288,320),*replacement,error,localAdmission,quality.giFastBVH!=0)||!replacement->triangleCount()){
                     replacement.reset();
-                    if(localDeferred){localGeometry.reset();liftEntry("local-geometry",localRequired,localSample.available,localLargest);stallBegin("local-geometry",localSample,localRequired);deferBuild("local-geometry-retry",workerMemory(),1000);continue;}
+                    if(localDeferred){localGeometry.reset();liftEntry("local-geometry",localRequired,localSample.available,localLargest);stallBegin("local-geometry",localSample,localRequired,localLargest);deferBuild("local-geometry-retry",workerMemory(),1000);continue;}
                     result->message=error.empty()?"No cached geometry for "+r.map:error;publishError();continue;
                 }
                 const auto& localStats=localGeometry.stats();
@@ -1249,9 +1257,9 @@ private:
                 // so this gate keeps the in-build floor. The entry floor here refused every attempt that
                 // entered within one BVH of 768 MiB and rebuilt it each second (0.3.212 player log).
                 const auto planBudget=NorthlightGeometryMemory::inBuildBudget();
-                memory=workerMemory(planBudget);if(NorthlightDiagnostics::enabled())logGeometryMemory("after-bvh",memory,generations.live(),workerMemoryExact);
+                memory=workerMemory(planBudget);if(NorthlightDiagnostics::enabled())logGeometryMemory("after-bvh",memory,generations.live(),workerMemoryExact,&planBudget);
                 if(!NorthlightGeometryMemory::admits(memory,planBudget)){
-                    replacement.reset();liftEntry("plan",planBudget.available,memory.available,planBudget.largest);stallBegin("plan",memory,planBudget.available);deferBuild("plan-deferred",memory,1000);continue;
+                    replacement.reset();liftEntry("plan",planBudget.available,memory.available,planBudget.largest);stallBegin("plan",memory,planBudget.available,planBudget.largest);deferBuild("plan-deferred",memory,1000,&planBudget);continue;
                 }
                 // Reduced-reach retry re-enters here with the local BVH (`replacement`, still tracked in
                 // `generations`) kept: it does not depend on the terrain stages.
@@ -1270,7 +1278,7 @@ private:
                     ++terrainChecks;
                     const auto budget=NorthlightGeometryMemory::inBuildBudget(bytes);auto sample=workerMemory(budget);
                     if(NorthlightGeometryMemory::admits(sample,budget))return true;
-                    terrainDeferred=true;terrainSample=sample;terrainRequired=budget.available;terrainRequiredLargest=budget.largest;logGeometryMemory("shadow-terrain-allocation-deferred",sample,generations.live(),workerMemoryExact);
+                    terrainDeferred=true;terrainSample=sample;terrainRequired=budget.available;terrainRequiredLargest=budget.largest;logGeometryMemory("shadow-terrain-allocation-deferred",sample,generations.live(),workerMemoryExact,&budget);
                     logf("WORLD terrain allocation requestMiB=%.2f requiredContiguousMiB=%.2f",double(bytes)/1048576,double(bytes+NorthlightGeometryMemory::ContiguousMargin)/1048576);
                     return false;
                 };
@@ -1307,7 +1315,7 @@ private:
                 const double terrainLoadMs=phaseElapsed();
                 if(!terrainLoaded||!NorthlightShadowTerrain::build(replacement->scene(),shadowTerrain,center,*plan,error,terrainAdmission,reach)){
                     if(terrainDeferred){
-                        stallBegin("shadow-terrain",terrainSample,terrainRequired);
+                        stallBegin("shadow-terrain",terrainSample,terrainRequired,terrainRequiredLargest);
                         if(reduceReach())goto terrainStage;
                         shadowTerrain=NorthlightGI::WorldScene{};plan.reset();replacement.reset();liftEntry("shadow-terrain",terrainRequired,terrainSample.available,terrainRequiredLargest);deferBuild("shadow-terrain-retry",workerMemory(),1000);continue;}
                     result->message=error;publishError();continue;
@@ -1320,14 +1328,14 @@ private:
                 auto pages=std::make_shared<NorthlightWorldMeshPages::Plan>();
                 if(!NorthlightWorldMeshPages::build(*plan,*pages,error,terrainAdmission)){
                     if(terrainDeferred){
-                        stallBegin("mesh-page",terrainSample,terrainRequired);
+                        stallBegin("mesh-page",terrainSample,terrainRequired,terrainRequiredLargest);
                         if(reduceReach())goto terrainStage;
                         pages.reset();plan.reset();replacement.reset();liftEntry("mesh-page",terrainRequired,terrainSample.available,terrainRequiredLargest);deferBuild("mesh-page-retry",workerMemory(),1000);continue;}
                     result->message=error;publishError();continue;
                 }
                 if(!NorthlightWorldMeshPages::seal(*plan,pages,error,terrainAdmission)){
                     if(terrainDeferred){
-                        stallBegin("mesh-page-seal",terrainSample,terrainRequired);
+                        stallBegin("mesh-page-seal",terrainSample,terrainRequired,terrainRequiredLargest);
                         if(reduceReach())goto terrainStage;
                         pages.reset();plan.reset();replacement.reset();liftEntry("mesh-page-seal",terrainRequired,terrainSample.available,terrainRequiredLargest);deferBuild("mesh-page-seal-retry",workerMemory(),1000);continue;}
                     result->message=error;publishError();continue;
@@ -1748,7 +1756,7 @@ private:
             budget.largest=2*std::max<uint64_t>(NorthlightWorldMeshPages::PageVertexByteLimit,largestTexture)+NorthlightGeometryMemory::ChunkMargin;
             NorthlightGeometryMemory::Sample memory;bool exact=true;
             {auto phase=streamingPhases.measure(NorthlightStreaming::PhaseProfile::Admission);memory=geometryAdmission(budget,&exact);}
-            if(NorthlightDiagnostics::enabled())logGeometryMemory("before-upload",memory,0,exact);
+            if(NorthlightDiagnostics::enabled())logGeometryMemory("before-upload",memory,0,exact,&budget);
             if(!NorthlightGeometryMemory::admits(memory,budget))return streamingFailure(E_OUTOFMEMORY,"upload-admission","address-space reserve or contiguous block");
             pendingMesh=std::make_unique<PendingMesh>();pendingMesh->bvh=active->bvh;
             pendingMesh->plan=active->meshPlan;pendingMesh->prepared=active->prepared;pendingMesh->map=active->map;pendingMesh->payload=payload;

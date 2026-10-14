@@ -2,6 +2,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <limits>
 #include <memory>
 
@@ -92,6 +93,19 @@ inline Budget uploadBudget(uint64_t vertexBytes,uint64_t indexBytes,
 inline bool admits(Sample sample,Budget budget){
     return sample.valid&&budget.valid&&sample.available>=budget.available&&
            sample.largest>=budget.largest;
+}
+// Which limit of `budget` refuses `sample` (aggregate first), for logs only; limit=="none" when admitted.
+struct Refusal { const char* limit="none";uint64_t need=0; };
+inline Refusal refusal(Sample sample,Budget budget){
+    if(!budget.valid)return {"budget",0};
+    if(!sample.valid)return {"sample",0};
+    if(sample.available<budget.available)return {"available",budget.available};
+    if(sample.largest<budget.largest)return {"largest",budget.largest};
+    return {};
+}
+// A non-exact `largest` is only the witnessed lower bound of a block, never a measurement: print ">=N".
+inline void formatLargestMiB(char* out,size_t size,uint64_t bytes,bool exact){
+    std::snprintf(out,size,exact?"%llu":">=%llu",(unsigned long long)(bytes>>20));
 }
 // A build refused for memory AFTER it passed stage entry frees its work and would pass
 // entry again at once: the same BVH was rebuilt every second (162 and 482 attempts in one

@@ -110,7 +110,7 @@ ORPHANED
  bool building=false;unsigned buildsStarted=0,buildsDone=0;std::map<const NorthlightGI::BVH*,V> centers;std::vector<V> history;std::weak_ptr<NorthlightGI::BVH> lastBuilt;
  static NorthlightGeometryMemory::Sample geometryAdmissionFor(NorthlightMemoryAdmission::Probe&,NorthlightGeometryMemory::Budget,bool* exact=nullptr){
   if(exact)*exact=true;NorthlightGeometryMemory::Sample s;s.available=s.largest=uint64_t(3)<<30;s.valid=true;return s;}
- static void logGeometryMemory(const char*,NorthlightGeometryMemory::Sample,size_t=0,bool=true){}
+ static void logGeometryMemory(const char*,NorthlightGeometryMemory::Sample,size_t=0,bool=true,const NorthlightGeometryMemory::Budget* =nullptr){}
 WORK
 };
 struct Harness {
