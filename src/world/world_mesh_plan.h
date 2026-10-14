@@ -78,8 +78,11 @@ struct WorldMeshUploadPlan {
 // texture. Cutout texture colors/alpha are preserved exactly while swizzling.
 // Unknown/cross-chunk terrain stays in an unmaskable batch; it is never hidden
 // merely because one adjacent chunk was submitted by the game.
+// textures (optional): texel source for material i<textures->size() (width/height/rgba); the scene's
+// materials there carry metadata only. Read synchronously, so it need only outlive the call.
 // Failure preserves output. Empty scenes are valid plans; no GPU call is made.
 bool buildUploadPlan(const NorthlightGI::WorldScene& source,
                      WorldMeshUploadPlan& output,std::string& error,
-                     const NorthlightGI::AllocationAdmission& admit = {});
+                     const NorthlightGI::AllocationAdmission& admit = {},
+                     const std::vector<NorthlightGI::WorldMaterial>* textures = nullptr);
 } // namespace NorthlightWorldMesh

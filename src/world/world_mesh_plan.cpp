@@ -25,11 +25,11 @@ int cellCoordinate(float a,float b,float c){
     // overflow cell is conservative: it only causes extra invalidations.
     return value>=INT32_MIN&&value<=INT32_MAX?int(value):0;
 }
-NorthlightLocalShadowSignature::Digest materialIdentity(const NorthlightGI::WorldMaterial& m){
+NorthlightLocalShadowSignature::Digest materialIdentity(const NorthlightGI::WorldMaterial& meta,const NorthlightGI::WorldMaterial& m){
     NorthlightLocalShadowSignature::Hasher hash;
-    hash.scalar(m.alphaCutoff);hash.word(m.addressU);hash.word(m.addressV);
+    hash.scalar(meta.alphaCutoff);hash.word(meta.addressU);hash.word(meta.addressV);
     // This is the upload's actual coverage texture, including implicit white.
-    const bool cutout=m.alphaCutoff>0&&!m.rgba.empty();
+    const bool cutout=meta.alphaCutoff>0&&!m.rgba.empty();
     hash.word(cutout?m.width:1);hash.word(cutout?m.height:1);
     if(cutout)for(size_t i=3;i<m.rgba.size();i+=4)hash.word(m.rgba[i]);else hash.word(255);
     return hash.finish();
@@ -52,7 +52,7 @@ uint64_t key(uint32_t material,int x,int y){
 }
 }
 
-bool buildUploadPlan(const NorthlightGI::WorldScene& scene,WorldMeshUploadPlan& output,std::string& error,const NorthlightGI::AllocationAdmission& admit){
+bool buildUploadPlan(const NorthlightGI::WorldScene& scene,WorldMeshUploadPlan& output,std::string& error,const NorthlightGI::AllocationAdmission& admit,const std::vector<NorthlightGI::WorldMaterial>* textures){
     static_assert(sizeof(NorthlightGI::WorldVertex)==32,"D3D world vertex layout must remain 32 bytes");
     error.clear();WorldMeshUploadPlan next;
     const uint64_t vertexBytes=uint64_t(scene.vertices.size())*sizeof(NorthlightGI::WorldVertex);
@@ -63,9 +63,13 @@ bool buildUploadPlan(const NorthlightGI::WorldScene& scene,WorldMeshUploadPlan& 
     for(const auto& v:scene.vertices)if(!finite(v.position)||!finite(v.normal)||!std::isfinite(v.u)||!std::isfinite(v.v)){
         error="Nonfinite upload vertex";return false;
     }
-    for(const auto& m:scene.materials){
-        if(m.width>4096||m.height>4096||((m.width==0)!=(m.height==0))||
-           uint64_t(m.width)*m.height*4!=m.rgba.size()||!std::isfinite(m.alphaCutoff)||m.alphaCutoff<0||m.alphaCutoff>1){
+    // Texel data of material i (width, height, rgba): textures[i] when supplied, else the scene's own.
+    auto texel=[&](size_t i)->const NorthlightGI::WorldMaterial&{return textures&&i<textures->size()?(*textures)[i]:scene.materials[i];};
+    if(textures&&textures->size()>scene.materials.size()){error="Invalid upload material";return false;}
+    for(size_t i=0;i<scene.materials.size();++i){
+        const auto& m=scene.materials[i];const auto& x=texel(i);
+        if(x.width>4096||x.height>4096||((x.width==0)!=(x.height==0))||
+           uint64_t(x.width)*x.height*4!=x.rgba.size()||!std::isfinite(m.alphaCutoff)||m.alphaCutoff<0||m.alphaCutoff>1){
             error="Invalid upload material";return false;
         }
     }
@@ -78,7 +82,7 @@ bool buildUploadPlan(const NorthlightGI::WorldScene& scene,WorldMeshUploadPlan& 
         std::vector<NorthlightLocalShadowSignature::Digest> materialIdentities;
         if(!allowed(scene.materials.size()*sizeof(NorthlightLocalShadowSignature::Digest)))return false;
         materialIdentities.reserve(scene.materials.size());
-        for(const auto& material:scene.materials)materialIdentities.push_back(materialIdentity(material));
+        for(size_t i=0;i<scene.materials.size();++i)materialIdentities.push_back(materialIdentity(scene.materials[i],texel(i)));
         // Group counts first, then prefix allocation and stable linear scatter.
         // This avoids one temporary vector/allocation chain for every batch and
         // moves all sorting/packing away from the game's render thread.
@@ -153,9 +157,9 @@ bool buildUploadPlan(const NorthlightGI::WorldScene& scene,WorldMeshUploadPlan& 
         next.localShadowRecords=std::move(records);
         next.materials.resize(scene.materials.size());
         for(size_t i=0;i<scene.materials.size();++i){
-            const auto& source=scene.materials[i];auto& dest=next.materials[i];
-            dest.alphaCutoff=source.alphaCutoff;dest.terrain=source.terrain;
-            if(source.alphaCutoff<=0||source.rgba.empty())dest.bgra={255,255,255,255};
+            const auto& meta=scene.materials[i];const auto& source=texel(i);auto& dest=next.materials[i];
+            dest.alphaCutoff=meta.alphaCutoff;dest.terrain=meta.terrain;
+            if(meta.alphaCutoff<=0||source.rgba.empty())dest.bgra={255,255,255,255};
             else{
                 dest.width=source.width;dest.height=source.height;if(!allowed(source.rgba.size()))return false;dest.bgra.resize(source.rgba.size());
                 for(size_t p=0;p<source.rgba.size();p+=4){dest.bgra[p]=source.rgba[p+2];dest.bgra[p+1]=source.rgba[p+1];dest.bgra[p+2]=source.rgba[p];dest.bgra[p+3]=source.rgba[p+3];}
