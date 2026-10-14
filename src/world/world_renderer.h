@@ -37,6 +37,7 @@
 #include "geometry_memory.h"
 #include "address_space_snapshot.h"
 #include "terrain_reach_fallback.h"
+#include "mesh_pool_trim.h"
 #include "memory_admission_probe.h"
 #include <chrono>
 #include "world_probe_cache.h"
@@ -547,7 +548,7 @@ private:
     // Two persistent page pools: the inactive generation stages bounded static
     // resources, and all pages become drawable together after complete upload.
     struct MeshBuffers {IDirect3DVertexBuffer9* vb=nullptr;IDirect3DIndexBuffer9* ib=nullptr;UINT vbCapacity=0,ibCapacity=0;};
-    std::vector<MeshBuffers> meshPool[2];int activeMesh=-1;
+    std::vector<MeshBuffers> meshPool[2];int activeMesh=-1;NorthlightMeshPoolTrim::State meshPoolTrim;
     DWORD memoryPressureLogAt=0,memoryPressureUntil=0;
     int stagingSlot()const{return activeMesh<0?0:1-activeMesh;}
     static UINT roundBuffer(uint64_t bytes,uint64_t stepBytes){return UINT(NorthlightGeometryMemory::roundUp(bytes,stepBytes));}
@@ -581,10 +582,11 @@ private:
         }
         NorthlightGeometryMemory::debitGrowth(memory,capacity);return true;
     }
-    void releaseMeshPool(){for(auto& pool:meshPool){for(auto& slot:pool){drop(slot.vb);drop(slot.ib);}pool.clear();}activeMesh=-1;vertices=nullptr;indices=nullptr;}
+    void releaseMeshPool(){for(auto& pool:meshPool){for(auto& slot:pool){drop(slot.vb);drop(slot.ib);}pool.clear();}activeMesh=-1;vertices=nullptr;indices=nullptr;meshPoolTrim.reset();}
     // Frees the idle staging pool and the active slots beyond the live page count (returns bytes).
     // Never while a staged upload owns the staging slot; vertices/indices alias slot 0 of the active pool, which stays.
-    size_t trimMeshPools(){
+    // stagingKeep: pages of the staging slot to keep (0: the whole idle slot, the memory guard's rule).
+    size_t trimMeshPools(size_t stagingKeep=0){
         if(pendingMesh)return 0;
         size_t freed=0;
         auto release=[&](std::vector<MeshBuffers>& pool,size_t keep){
@@ -592,9 +594,23 @@ private:
             for(size_t i=keep;i<pool.size();++i){freed+=size_t(pool[i].vbCapacity)+pool[i].ibCapacity;drop(pool[i].vb);drop(pool[i].ib);}
             pool.erase(pool.begin()+keep,pool.end());pool.shrink_to_fit();
         };
-        release(meshPool[stagingSlot()],0);
+        release(meshPool[stagingSlot()],stagingKeep);
         if(activeMesh>=0){size_t pages=0;for(const auto& b:batches)pages=std::max<size_t>(pages,size_t(b.page)+1);if(pages)release(meshPool[activeMesh],pages);}
         return freed;
+    }
+    // After a staged commit (pendingMesh already cleared): releases high-water pages the current mesh does not need,
+    // with hysteresis (mesh_pool_trim.h). Runs once per commit, O(pages); the active mesh's pages and the staging
+    // slot's first `pages` entries (the next build's reuse set) stay.
+    void trimMeshPoolAfterCommit(){
+        if(pendingMesh||activeMesh<0)return;
+        size_t pages=0;for(const auto& b:batches)pages=std::max<size_t>(pages,size_t(b.page)+1);
+        if(!pages)return;
+        uint64_t mesh=0,pool=0;
+        for(const auto& p:meshPool)for(const auto& b:p)pool+=uint64_t(b.vbCapacity)+b.ibCapacity;
+        for(size_t i=0;i<pages&&i<meshPool[activeMesh].size();++i)mesh+=uint64_t(meshPool[activeMesh][i].vbCapacity)+meshPool[activeMesh][i].ibCapacity;
+        if(!meshPoolTrim.onCommit(pool,mesh))return;
+        const size_t freed=trimMeshPools(pages);
+        if(freed)logf("WORLD mesh pool trimmed freedMiB=%.1f poolMiB=%.1f meshMiB=%.1f",double(freed)/1048576,double(pool-freed)/1048576,double(mesh)/1048576);
     }
     std::vector<IDirect3DTexture9*> materials;
     NorthlightStreaming::DeferredRelease<IDirect3DTexture9> retiredMaterials;
@@ -1872,6 +1888,7 @@ private:
                 const uint64_t releasedBytes=plan.payload.discard();
                 if(NorthlightDiagnostics::enabled())logf("WORLD staged mesh committed: vertices=%u triangles=%zu materials=%zu textureUploads=%u stagingFrames=%u stagingMs=%lu releasedPayloadMiB=%.2f",vertexCount,size_t(plan.triangleCount),materials.size(),next.textureUploads,next.frames,(unsigned long)(GetTickCount()-next.started),double(releasedBytes)/1048576);
                 retirePendingCpu();pendingMesh.reset();meshRetry.clear();
+                trimMeshPoolAfterCommit();
             }
         }
         if(!vertices||!indices||uploadedMap!=active->map)return false;
