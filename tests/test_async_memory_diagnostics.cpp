@@ -1,5 +1,6 @@
 #include "async_memory_diagnostics.h"
 #include <cassert>
+#include <cstring>
 #include <chrono>
 #include <cstdio>
 #include <future>
@@ -61,5 +62,42 @@ int main(){
     ending.release(2);assert(destroyed.wait_for(5s)==std::future_status::ready);destroyed.get();
     {std::lock_guard<std::mutex> lock(ending.mutex);assert(ending.entered==ending.finished&&ending.entered<=2);}
     {Sampler idle(&Backend::query,&ending);} // no request, no query
+    // task 42 (MEMMAP jobs): runs on the worker thread with a by-value payload; one waiting job, a running job never blocks requestJob/take/request.
+    {
+        struct JobBox {std::mutex m;std::condition_variable cv;unsigned started=0,done=0;bool hold=true;std::thread::id caller=std::this_thread::get_id(),worker;char seen[16]={};std::size_t size=0;};
+        JobBox box;
+        Backend idle;
+        Sampler sampler(&Backend::query,&idle);
+        const char payload[16]="point-one";
+        assert(!sampler.requestJob(payload,sizeof payload)); // no runner yet
+        sampler.setJob([](void* c,const void* data,std::size_t size){
+            auto& b=*static_cast<JobBox*>(c);std::unique_lock<std::mutex> lock(b.m);
+            b.worker=std::this_thread::get_id();std::memcpy(b.seen,data,size<sizeof b.seen?size:sizeof b.seen);b.size=size;++b.started;b.cv.notify_all();
+            b.cv.wait(lock,[&]{return !b.hold;});++b.done;b.cv.notify_all();},&box);
+        assert(!sampler.requestJob(payload,Sampler::JobBytes+1)); // too large
+        assert(sampler.requestJob(payload,sizeof payload));
+        {std::unique_lock<std::mutex> lock(box.m);assert(box.cv.wait_for(lock,5s,[&]{return box.started==1;}));assert(box.worker!=box.caller&&box.size==sizeof payload&&!std::strcmp(box.seen,"point-one"));}
+        // the job is blocked: a second one queues (payload copied now), a third is refused, and request()/take() still return at once
+        char second[16]="point-two";
+        assert(sampler.requestJob(second,sizeof second));std::memset(second,0,sizeof second);
+        assert(!sampler.requestJob(payload,sizeof payload));
+        Sample none;assert(!sampler.take(none));sampler.request();idle.release(1);
+        {std::lock_guard<std::mutex> lock(box.m);box.hold=false;box.cv.notify_all();}
+        {std::unique_lock<std::mutex> lock(box.m);assert(box.cv.wait_for(lock,5s,[&]{return box.done==2;}));assert(!std::strcmp(box.seen,"point-two"));}
+        idle.await(1);auto s=result(sampler);assert(s.valid&&s.tick==1); // the guard query still ran between/after jobs
+    }
+    // task 42 review: with a guard query running and a job queued behind it, the guard's sample is published before the job starts,
+    // and a guard request made during the job is served right after it (the job delays it by at most its own runtime).
+    {
+        struct Order {Sampler* sampler=nullptr;bool sampleBeforeJob=false,done=false;std::mutex m;std::condition_variable cv;};
+        Order order;Backend guard;Sampler sampler(&Backend::query,&guard);order.sampler=&sampler;
+        sampler.setJob([](void* c,const void*,std::size_t){auto& o=*static_cast<Order*>(c);Sample s;o.sampleBeforeJob=o.sampler->take(s)&&s.valid&&s.tick==1;
+            std::lock_guard<std::mutex> lock(o.m);o.done=true;o.cv.notify_all();},&order);
+        sampler.request();guard.await(1);
+        const char p[4]="x";assert(sampler.requestJob(p,sizeof p));guard.release(1);
+        {std::unique_lock<std::mutex> lock(order.m);assert(order.cv.wait_for(lock,5s,[&]{return order.done;}));}
+        assert(order.sampleBeforeJob);
+        sampler.request();guard.await(2);guard.release(2);auto s=result(sampler);assert(s.valid&&s.tick==2);
+    }
     std::puts("PASS async diagnostics: off-caller query; nonblocking poll/10,000 coalesced requests; exact sample publication; failure/recovery; active and idle shutdown; no callbacks after destruction.");
 }

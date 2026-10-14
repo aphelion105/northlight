@@ -35,6 +35,7 @@
 #include "cpu_retirement.h"
 #include "deferred_gpu_release.h"
 #include "geometry_memory.h"
+#include "address_space_snapshot.h"
 #include "terrain_reach_fallback.h"
 #include "memory_admission_probe.h"
 #include <chrono>
@@ -559,7 +560,7 @@ private:
         bool exact=true;
         auto memory=cachedSample?*cachedSample:geometryAdmission(budget,&exact);
         if(NorthlightGeometryMemory::admits(memory,budget))return true;
-        memoryPressureUntil=now+1000;
+        memoryPressureUntil=now+1000;NorthlightMemMap::deferredRequest.store(true,std::memory_order_relaxed); /* task 42: MEMMAP memory-deferred request */
         if(!memoryPressureLogAt||now-memoryPressureLogAt>=60000){memoryPressureLogAt=now;logGeometryMemory(stage,memory,0,exact&&!cachedSample,&budget);}
         return false;
     }
@@ -1112,6 +1113,7 @@ private:
           // `required` is the refused check's aggregate floor: published (at most the plain entry floor)
           // as the memory guard's demand, so the mod's own caches shrink while the builder waits.
           auto stallBegin=[&](const char* stage,NorthlightGeometryMemory::Sample sample,uint64_t required,uint64_t requiredLargest=0){
+              NorthlightMemMap::deferredRequest.store(true,std::memory_order_relaxed); /* task 42: the Device queues a MEMMAP memory-deferred point (throttled there) */
               geometryMemoryDemand.store(std::min(required,NorthlightGeometryMemory::buildBudget().available),std::memory_order_relaxed);
               if(memoryStall.refused(GetTickCount())){
                   char largest[32];NorthlightGeometryMemory::formatLargestMiB(largest,sizeof largest,sample.largest,workerMemoryExact);
@@ -2185,6 +2187,16 @@ public:
         lastCaptureSkipped=captureMode==CaptureSkipped;actorCaptureDecided=false;actorJob.reset();captureMode=CaptureUndecided;actorVerticesEvaluated=actorDraws=actorSkippedAlpha=0;
     }
     bool ready()const{return valid&&active&&active->bvh&&!failed&&!workerFault();}
+    // task 42 (MEMMAP northlight line): the render thread's own view, no lock and no counters beyond plain reads. Render thread only
+    // (`active` and the mesh pools are its own). Not included, as they need the streamer's or the builder's locks or are worker locals:
+    // static shadow cpu/gpu, local scene retained/flat/bvh, replay caches.
+    int memmapTally(char* out,size_t size)const{
+        double pool=0;for(const auto& p:meshPool)for(const auto& b:p)pool+=double(b.vbCapacity)+double(b.ibCapacity);
+        double plan=0,payload=0,bvh=0;
+        if(active){if(active->meshPlan){plan=double(active->meshPlan->cpuBytes());payload=double(active->meshPlan->payload.bytes());}if(active->bvh)bvh=double(active->bvh->retainedBytes());}
+        return std::snprintf(out,size,"meshPoolMiB=%.1f meshPlanCpuMiB=%.1f uploadPayloadLiveMiB=%.1f giBvhMiB=%.1f geometryDemandMiB=%.1f",pool/1048576.0,plan/1048576.0,payload/1048576.0,bvh/1048576.0,
+            double(geometryMemoryDemand.load(std::memory_order_relaxed))/1048576.0);
+    }
     const char* lastSkipReason()const{return skipReason;} /* 0.3.169: valid after render() returned false */
     bool captureSkippedLastFrame()const{return lastCaptureSkipped;} /* for the sampled CPU profile, logged after endFrame */
     unsigned capturePhaseReadsLastFrame()const{return lastCapturePhaseReads;} /* 0.3.150: clock reads of the capture-phase subset (inside the capture timers), likewise */

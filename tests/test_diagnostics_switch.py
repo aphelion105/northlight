@@ -29,7 +29,7 @@ KEEP={
  'WORLD skip episode':'capped: first 32 runs of skipped world frames (tail gated; 0.3.169)','WORLD coverage hold':'capped: first 32 hold/retire episodes (tail gated; 0.3.169)',
  'FIRST EFFECT FRAME':'one-off','EFFECT boundary fallback':'one-off/sticky-state: active, lost (relearning), disarmed (only after it collected) and no candidate (with its top candidates), 0.3.203 task 17','EFFECT boundary frame=%u draw=%u kind=ui-fallback':'sampled: sampled() frames only, like the kind=ui and kind=rain boundary lines','GI probe blend texture unavailable':'one-off warning: the 0.3.197 blend texture failed to allocate (static once flag)','MIRROR mismatch':'error (the audit itself is functional and ungated)',
  'WORLD non-caster draw rejected':'capped: first 4 (periodic tail gated)','Projection rejected':'capped: first',
- 'D3D9 device wrapped':'start-up','MEMORY async sampler':'error','MEMORY guard':'warning: low address space (pressure/trim/after-trim/recovery, cooldown-limited)',
+ 'D3D9 device wrapped':'start-up','MEMORY async sampler':'error','MEMMAP skipped':'rare warning (task 42): an in-world MEMMAP point dropped because the sampler still had one queued (points are minutes apart)','MEMORY guard':'warning: low address space (pressure/trim/after-trim/recovery, cooldown-limited)',
  'LOG previous session':'start-up: previous log rotation result','DEVICE lifetime':'one-off: device create/destroy',
  'Reset HRESULT':'one-off: Reset','Effects components':'user-triggered: Ctrl+Shift+F7..F9','Effects %s':'user-triggered: Ctrl+Shift+F10',
  'World debug':'user-triggered: Ctrl+Shift+F12','MEMORY frame':'gated: diagnostics() in the same condition','MEMORY sample failed':'gated: diagnostics() in the same condition',

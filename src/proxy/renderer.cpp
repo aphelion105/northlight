@@ -177,6 +177,18 @@ static NorthlightMemoryDiagnostics::Sample queryMemoryDiagnostic(void*) {
     return sample;
 }
 template<class T> static void drop(T*& p) { if (p) { p->Release(); p = nullptr; } }
+// task 42 (MEMMAP): the log sink, the sampler thread's job entry (in-world points) and the process-level points that precede any Device.
+static void memmapSink(const char* line){logf("%s",line);}
+static void memmapJob(void*,const void* data,std::size_t size){
+    SetThreadPriority(GetCurrentThread(),THREAD_PRIORITY_BELOW_NORMAL); // idempotent; the first job may precede the first query
+    NorthlightMemMap::runJob(&memmapSink,data,size);
+}
+static void memmapProcess(const char* point,long device){
+    try{
+        char label[128];std::snprintf(label,sizeof label,"device=%ld point=%s frame=0 tick=%lu",device,point,(unsigned long)GetTickCount());
+        NorthlightMemMap::snapshot(&memmapSink,label,"");
+    }catch(...){}
+}
 // Sampler thread entry: the same walk, at below-normal priority (it also feeds the memory guard).
 static NorthlightMemoryDiagnostics::Sample queryAddressSpace(void* context) {
     SetThreadPriority(GetCurrentThread(),THREAD_PRIORITY_BELOW_NORMAL); // one cheap call per walk (seconds apart)
@@ -753,7 +765,7 @@ private:
                     logf("WORLD skipped frame=%u tick=%lu context=%d ready=%d count=%u reason=%s",frame,(unsigned long)GetTickCount(),world->hasContext(),world->ready(),worldSkippedFrames,world->lastSkipReason());
                 worldSkipLast=world->lastSkipReason();if(!worldSkipRun++){worldSkipStart=GetTickCount();worldSkipFirst=worldSkipLast;
                     if(worldSkipEpisodes<32||diagnostics())logf("WORLD skip episode begin reason=%s",worldSkipFirst);}
-            }else if(traceWorld=1,(frameMarkers?frameMarker(0,frame):void()),worldSkipRun){
+            }else if(traceWorld=1,(worldDrawSeen?0:(worldDrawSeen=true,worldDrawFrame=frame,0)),(frameMarkers?frameMarker(0,frame):void()),worldSkipRun){
                 if(++worldSkipEpisodes<=32||diagnostics())logf("WORLD skip episode reason=%s last=%s frames=%u ms=%lu",worldSkipFirst,worldSkipLast,worldSkipRun,(unsigned long)(GetTickCount()-worldSkipStart));
                 worldSkipRun=0;
             }
@@ -1903,20 +1915,59 @@ public:
     HRESULT STDMETHODCALLTYPE GetPixelShader(IDirect3DPixelShader9** ppShader) override{Guard mirrorLock(mirrorState.gate);HRESULT hr=ext->GetPixelShader(ppShader);if(SUCCEEDED(hr)){mirrorResources.wrap(ppShader);}return hr;}
     HRESULT STDMETHODCALLTYPE CreateQuery(D3DQUERYTYPE Type, IDirect3DQuery9** ppQuery) override{Guard mirrorLock(mirrorState.gate);HRESULT hr=ext->CreateQuery(Type, ppQuery);if(SUCCEEDED(hr)){mirrorResources.wrap(ppQuery);}return hr;}
     // 0.3.192 (MEMMAP): address-space snapshot at a device lifecycle point (see address_space_snapshot.h). Always on, never throws.
-    // Not reachable without new plumbing: world/geometry mesh, BVH/plan, GI and static-shadow cpu MiB (WorldRenderer privates), the stream's
-    // queue/bufShadow/texShadow memMB (replayer is owned by StreamDevice), retirement queue bytes, live proxies/tracked buffer counts.
+    // task 42: the in-world points (world-entry, memory-deferred, periodic) are queued to the async memory sampler's thread (memmapAsync):
+    // the render thread only formats the label and the tally and copies them into the sampler's job slot.
+    // Tally: lock-meter gauges, stream flags, mirror registry; in-world also the stream's atomic byte counters and the world renderer's own
+    // plain reads (memmapTally). Not reachable without new synchronization (so skipped, and said so in the line): static shadow cpu/gpu,
+    // local scene retained/flat/bvh, replay caches, retirement queue bytes, live proxies/tracked buffer counts.
+    void memmapTally(char* tally,std::size_t size,bool inWorld){
+        const auto& m=NorthlightLockMeter::state();
+        int w=std::snprintf(tally,size,"mirrorResources=%zu copyResidentMiB=%.1f copyResidentBuffers=%llu copyLargeMiB=%.1f copyCapMiB=%.1f streamActive=%d memoryPressure=%d liveDevices=%ld",
+            mirrorResources.size(),double(m.copyResidentBytes.load(std::memory_order_relaxed))/1048576.0,(unsigned long long)m.copyResidentBuffers.load(std::memory_order_relaxed),
+            double(m.copyLargeBytes.load(std::memory_order_relaxed))/1048576.0,double(m.copyCapBytes.load(std::memory_order_relaxed))/1048576.0,
+            int(NorthlightStream::streamActive.load(std::memory_order_relaxed)),int(NorthlightStream::memoryPressure.load(std::memory_order_relaxed)),(long)liveDevices);
+        if(!inWorld||w<=0||std::size_t(w)>=size)return;
+        if(NorthlightStream::StreamCore* core=NorthlightStream::activeCore.load(std::memory_order_acquire)){
+            const auto& st=core->q.stats;auto mb=[](std::int64_t v){return double(v>0?v:0)/1048576.0;};
+            w+=std::snprintf(tally+w,size-std::size_t(w)," streamQueueMiB=%.1f streamBufShadowMiB=%.1f streamLargeShadowMiB=%.1f streamTexShadowMiB=%.1f streamRingMiB=%.1f streamRetiredMiB=%.1f streamZcPatchMiB=%.1f",
+                double(core->q.reservedBytes())/1048576.0,mb(st.shadowBytes.load(std::memory_order_relaxed)),mb(st.largeShadowBytes.load(std::memory_order_relaxed)),mb(st.texShadowBytes.load(std::memory_order_relaxed)),
+                mb(st.ringBytes.load(std::memory_order_relaxed)),mb(st.retiredBytes.load(std::memory_order_relaxed)),mb(st.zcPatchBytes.load(std::memory_order_relaxed)));
+        }
+        if(w>0&&std::size_t(w)<size&&world){tally[w++]=' ';tally[w]=0;const int n=world->memmapTally(tally+w,size-std::size_t(w));if(n>0)w+=n;}
+        if(w>0&&std::size_t(w)<size)std::snprintf(tally+w,size-std::size_t(w)," tallySkipped=staticShadowCpuGpu,localScene,replayCaches(need locks)");
+    }
     void memmap(const char* point){
         try{
-            char label[128],tally[320];
+            char label[128],tally[768];
             std::snprintf(label,sizeof label,"device=%ld point=%s frame=%u tick=%lu",diagnosticId,point,frame,(unsigned long)GetTickCount());
-            const auto& m=NorthlightLockMeter::state();
-            std::snprintf(tally,sizeof tally,"mirrorResources=%zu copyResidentMiB=%.1f copyResidentBuffers=%llu copyLargeMiB=%.1f copyCapMiB=%.1f streamActive=%d memoryPressure=%d liveDevices=%ld",
-                mirrorResources.size(),double(m.copyResidentBytes.load(std::memory_order_relaxed))/1048576.0,(unsigned long long)m.copyResidentBuffers.load(std::memory_order_relaxed),
-                double(m.copyLargeBytes.load(std::memory_order_relaxed))/1048576.0,double(m.copyCapBytes.load(std::memory_order_relaxed))/1048576.0,
-                int(NorthlightStream::streamActive.load(std::memory_order_relaxed)),int(NorthlightStream::memoryPressure.load(std::memory_order_relaxed)),(long)liveDevices);
-            NorthlightMemMap::snapshot([](const char* line){logf("%s",line);},label,tally);
+            memmapTally(tally,sizeof tally,false);
+            NorthlightMemMap::snapshot(&memmapSink,label,tally);
         }catch(...){}
     }
+    // Queues an in-world point on the sampler thread (no walk here); dropped when the sampler is gone or still has a job waiting.
+    void memmapAsync(const char* point){
+        try{
+            if(!memoryDiagnostics)return;
+            NorthlightMemMap::Job job;
+            std::snprintf(job.label,sizeof job.label,"device=%ld point=%s frame=%u tick=%lu",diagnosticId,point,frame,(unsigned long)GetTickCount());
+            memmapTally(job.tally,sizeof job.tally,true);job.requestTick=GetTickCount(); /* every value the job needs is copied here, on the render thread */
+            if(!memoryDiagnostics->requestJob(&job,sizeof job))logf("MEMMAP skipped %s reason=sampler-busy",job.label);
+        }catch(...){}
+    }
+    // Frame end (finishFrame): one relaxed load per frame and a clock read every 32nd frame. Points only once the world renderer has drawn:
+    // world-entry 600 frames after its first draw, memory-deferred on the first memory refusal/stall of this device and then at most every
+    // 10 minutes, periodic every 10 minutes after world-entry.
+    void memmapSchedule(){
+        if(!worldDrawSeen)return;
+        const bool deferred=NorthlightMemMap::deferredRequest.load(std::memory_order_relaxed)&&NorthlightMemMap::deferredRequest.exchange(false,std::memory_order_relaxed);
+        if(!deferred&&(frame&31))return;
+        const DWORD now=GetTickCount();const char* point=nullptr;
+        if(deferred&&(!memmapDeferredSeen||now-memmapDeferredAt>=600000)){point="memory-deferred";memmapDeferredSeen=true;memmapDeferredAt=now;}
+        else if(!memmapEntryDone){if(frame-worldDrawFrame>=600){point="world-entry";memmapEntryDone=true;memmapPeriodicAt=now+600000;}}
+        else if(int(now-memmapPeriodicAt)>=0){point="periodic";memmapPeriodicAt=now+600000;}
+        if(point)memmapAsync(point);
+    }
+    bool worldDrawSeen=false,memmapEntryDone=false,memmapDeferredSeen=false;unsigned worldDrawFrame=0;DWORD memmapPeriodicAt=0,memmapDeferredAt=0;
     Device(IDirect3DDevice9* d,IDirect3D9* p):GuardedMirrorDevice(d,&mirrorState),parent(p),mirrorResources(this,mirrorState.gate,&mirrorEscape,&mirrorState,d),ext(new ExtensionDevice(d,&mirrorState)),stateBlocks(ext) {
         mirrorState.gate.ownerTid=MirrorGuard::threadId(); /* 0.3.180 (D0): the CreateDevice caller */
         mirrorState.gate.reportContext=this;mirrorState.gate.report=&gateForeignReport;
@@ -1934,6 +1985,8 @@ public:
         // (Diagnostics only). Allocation admission stays synchronous in WorldRenderer.
         try{memoryDiagnostics=std::make_unique<NorthlightMemoryDiagnostics::Sampler>(&queryAddressSpace);}
         catch(...){logf("MEMORY async sampler unavailable; memory guard and periodic diagnostics skipped");}
+        if(memoryDiagnostics)memoryDiagnostics->setJob(&memmapJob);
+        NorthlightMemMap::deferredRequest.store(false,std::memory_order_relaxed); /* a refusal of an earlier device's world is not this device's */
         diagnosticId=InterlockedIncrement(&deviceSerial);
         logf("DEVICE lifetime event=create id=%ld live=%ld tick=%lu",diagnosticId,InterlockedIncrement(&liveDevices),(unsigned long)GetTickCount());
         memmap("create");
@@ -2250,6 +2303,7 @@ public:
         cpuPrep=cpuCapture=cpuWaterCapture=cpuEffects=0;cpuCaptureReads=0;cpuDrawHooks=0;
         ++frame;mirrorState.gate.frame.store(frame,std::memory_order_relaxed); /* 0.3.180: the census' frame */
         if(frame==300)memmap(diagnosticId==1?"baseline-frame300":"frame300"); /* 0.3.192 (MEMMAP): allocations settled; device 1 is the baseline */
+        memmapSchedule(); /* task 42: world-entry / memory-deferred / periodic, queued to the sampler thread */
         // Per-type call counts run only through a RenderProfile sample frame.
         mirrorState.rawCounting=sampled()&&NorthlightRenderThreadProbe::profiling();
         if(mirrorState.rawCounting){std::memset(mirrorState.rawMethodCalls,0,sizeof mirrorState.rawMethodCalls);
@@ -2435,6 +2489,7 @@ public:
         if(stream)NorthlightStream::streamActive.store(true,std::memory_order_relaxed); /* before the Device exists: worker core budgets read it once */
         if(stream)NorthlightReplayCopies::enabled.store(true,std::memory_order_relaxed); /* 0.3.192 (CS): before the first game buffer is wrapped: the replay-side CPU copies of replay_copies.h; never on with CommandStream=0 */
         if(stream)flags|=D3DCREATE_MULTITHREADED; /* DXVK's window-proc hook may touch the swap chain on the game thread while the replay thread presents */
+        memmapProcess("pre-create",InterlockedCompareExchange(&deviceSerial,0,0)+1); /* task 42 (MEMMAP): what the backend's CreateDevice (and our Device) add shows in the create diff */
         HRESULT hr=real->CreateDevice(adapter,type,window,flags,pp,out);
         logf("CreateDevice HRESULT=0x%08lx flags=0x%lx",(unsigned long)hr,(unsigned long)flags);
         if(SUCCEEDED(hr)&&out&&*out)*out=new Device(*out,this);
@@ -2578,6 +2633,7 @@ static HMODULE backend() {
     const auto candidates=NorthlightBackend::candidates(configured,overridden,root,systemDirectory());
     NorthlightBackendLoader::Result<HMODULE> result=NorthlightBackendLoader::load(sys,candidates,system);
     HMODULE module=result.module;
+    memmapProcess("backend-loaded",0); /* task 42 (MEMMAP): right after the backend DLL load, before Direct3DCreate9 and any backend CreateDevice; diffs against pre-create/create */
     const auto& last=result.attempts.empty()?NorthlightBackendLoader::Attempt{}:result.attempts.back();
     // Only DXVK keeps the legacy (unchecked, no RESZ dummy draw) rules; every
     // other runtime, including the system fallback, gets the native rules.
