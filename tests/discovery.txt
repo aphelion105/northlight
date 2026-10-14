@@ -78,6 +78,7 @@ test_m2_visibility.py
 test_memmap_diagnostics.py
 test_memory_admission_probe.py
 test_memory_guard.py
+test_mesh_pool_trim.py
 test_migrate_mac_proxy.py
 test_mirror_resources.py
 test_model_index_cache.py
@@ -160,6 +161,7 @@ test_ui_boundary.py
 test_uncached_map_skip_wiring.py
 test_unlisted_archive.py
 test_upload_locks.py
+test_upload_payload_release.py
 test_vs_class_cache.py
 test_water_antialias.py
 test_water_geometry.py
