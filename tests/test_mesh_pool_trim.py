@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # northlight-test: requires=cxx
-"""Native test of the world-mesh pool trim decision (surplus over twice the live mesh, consecutive-commit hysteresis)."""
+"""Native test of the world-mesh pool trim decision (surplus over twice the windowed largest mesh, consecutive-commit hysteresis, bounded release per commit)."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
 import subprocess
@@ -22,9 +22,10 @@ commit = w[w.index('WORLD staged mesh committed'):]
 commit = commit[:commit.index('if(!vertices||!indices||uploadedMap!=active->map)return false;')]
 assert commit.count('trimMeshPoolAfterCommit();') == 1
 assert commit.index('pendingMesh.reset();') < commit.index('trimMeshPoolAfterCommit();')
-assert 'size_t trimMeshPools(size_t stagingKeep=0){\n        if(pendingMesh)return 0;' in w
+assert 'size_t trimMeshPools(size_t stagingKeep=0,uint64_t maxBytes=UINT64_MAX){\n        if(pendingMesh)return 0;' in w
 assert 'release(meshPool[stagingSlot()],stagingKeep);' in w and 'release(meshPool[activeMesh],pages);' in w
 assert 'drop(pool[i].vb);drop(pool[i].ib);' in w and 'pool.shrink_to_fit();' in w
 assert 't.gpu+=trimMeshPools();' in fp.src('world_memory_guard.inl').read_text()
+assert 'trimMeshPools(pages,request)' in w and 'meshPoolTrim.onCommit(pool,mesh)' in w and 'uint64_t maxBytes=UINT64_MAX' in w
 assert 'WORLD mesh pool trimmed freedMiB=%.1f poolMiB=%.1f meshMiB=%.1f' in w
 print('wiring ok')

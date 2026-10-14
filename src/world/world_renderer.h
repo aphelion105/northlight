@@ -586,13 +586,19 @@ private:
     // Frees the idle staging pool and the active slots beyond the live page count (returns bytes).
     // Never while a staged upload owns the staging slot; vertices/indices alias slot 0 of the active pool, which stays.
     // stagingKeep: pages of the staging slot to keep (0: the whole idle slot, the memory guard's rule).
-    size_t trimMeshPools(size_t stagingKeep=0){
+    // maxBytes: stop once this many bytes were released (highest pages first, always at least one page when
+    // anything is releasable); unbounded for the memory guard.
+    size_t trimMeshPools(size_t stagingKeep=0,uint64_t maxBytes=UINT64_MAX){
         if(pendingMesh)return 0;
         size_t freed=0;
         auto release=[&](std::vector<MeshBuffers>& pool,size_t keep){
-            if(pool.size()<=keep)return;
-            for(size_t i=keep;i<pool.size();++i){freed+=size_t(pool[i].vbCapacity)+pool[i].ibCapacity;drop(pool[i].vb);drop(pool[i].ib);}
-            pool.erase(pool.begin()+keep,pool.end());pool.shrink_to_fit();
+            size_t cut=pool.size();
+            while(cut>keep){
+                const size_t i=cut-1,bytes=size_t(pool[i].vbCapacity)+pool[i].ibCapacity;
+                if(freed&&freed+bytes>maxBytes)break;
+                freed+=bytes;drop(pool[i].vb);drop(pool[i].ib);cut=i;
+            }
+            if(cut<pool.size()){pool.erase(pool.begin()+cut,pool.end());pool.shrink_to_fit();}
         };
         release(meshPool[stagingSlot()],stagingKeep);
         if(activeMesh>=0){size_t pages=0;for(const auto& b:batches)pages=std::max<size_t>(pages,size_t(b.page)+1);if(pages)release(meshPool[activeMesh],pages);}
@@ -608,8 +614,9 @@ private:
         uint64_t mesh=0,pool=0;
         for(const auto& p:meshPool)for(const auto& b:p)pool+=uint64_t(b.vbCapacity)+b.ibCapacity;
         for(size_t i=0;i<pages&&i<meshPool[activeMesh].size();++i)mesh+=uint64_t(meshPool[activeMesh][i].vbCapacity)+meshPool[activeMesh][i].ibCapacity;
-        if(!meshPoolTrim.onCommit(pool,mesh))return;
-        const size_t freed=trimMeshPools(pages);
+        const uint64_t request=meshPoolTrim.onCommit(pool,mesh); // at most MaxReleaseBytes per commit
+        if(!request)return;
+        const size_t freed=trimMeshPools(pages,request);
         if(freed)logf("WORLD mesh pool trimmed freedMiB=%.1f poolMiB=%.1f meshMiB=%.1f",double(freed)/1048576,double(pool-freed)/1048576,double(mesh)/1048576);
     }
     std::vector<IDirect3DTexture9*> materials;
