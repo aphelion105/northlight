@@ -403,6 +403,7 @@ inline void takeTexSpare(StreamCore& c,std::vector<unsigned char>& out,std::size
 }
 inline void trimTexSpares(StreamCore& c){std::lock_guard<std::mutex> l(c.texMutex);for(auto& x:c.texSpare)std::vector<unsigned char>().swap(x);}   // game thread (pressure)
 inline void dropSubShadow(StreamCore& c,SubRes& s){std::lock_guard<std::mutex> l(c.texMutex);dropShadowLocked(c,s);}
+inline void dropSubStage(StreamCore& c,SubRes& s){if(s.stage){c.q.freeBlock(s.stage);s.stage=nullptr;}}   // destroyed while a level is still locked: the staged Block goes back (freeBlock takes the pool mutex)
 // Game thread: makes `bytes` fit the texture-shadow cap by evicting least-recently-locked shadows, never-re-locked ones (fresh keeps) first,
 // never one that is locked now or `keep`. mayEvictRelocked=false leaves the re-locked ones alone (no caller: 0.3.196 (task 12): a fresh keep no longer evicts anything,
 // it is taken only into free room, see lockImage). false = still no room.
@@ -1178,7 +1179,7 @@ struct StreamSurface final:IDirect3DSurface9,ProxyBase {
         own.written=(i.usage&(D3::kUsageRT|D3::kUsageDS))!=0;
         ProxyInit<ProxyBase>::apply(this,static_cast<IDirect3DSurface9*>(this));
     }
-    ~StreamSurface(){dropSubShadow(*core,own);liveProxyObjects.fetch_sub(1);}
+    ~StreamSurface(){dropSubShadow(*core,own);dropSubStage(*core,own);liveProxyObjects.fetch_sub(1);}
     NORTHLIGHT_STREAM_SURFACE_METHODS
     NL_PROXY_COM(IDirect3DSurface9,IDirect3DResource9)
     NL_RES_LOCALS(Surface)
@@ -1231,7 +1232,7 @@ struct StreamTexture final:IDirect3DTexture9,ProxyBase {
         for(UINT i=0;i<info.levels;++i)subs[i].written=(usage&(D3::kUsageRT|D3::kUsageDS))||((usage&D3::kUsageAutoGen)&&i>0);
         if(usage&D3::kUsageAutoGen)for(UINT i=1;i<info.levels;++i)subs[i].shadowDead=true;   // the GPU writes the mips
         ProxyInit<ProxyBase>::apply(this,static_cast<IDirect3DTexture9*>(this));}
-    ~StreamTexture(){for(auto& s:subs)dropSubShadow(*core,s);liveProxyObjects.fetch_sub(1);}
+    ~StreamTexture(){for(auto& s:subs){dropSubShadow(*core,s);dropSubStage(*core,s);}liveProxyObjects.fetch_sub(1);}
     NORTHLIGHT_STREAM_TEXTURE_METHODS
     NL_PROXY_COM(IDirect3DTexture9,IDirect3DBaseTexture9,IDirect3DResource9)
     NL_RES_LOCALS(Texture)
@@ -1262,7 +1263,7 @@ struct StreamCubeTexture final:IDirect3DCubeTexture9,ProxyBase {
         subs.resize(std::size_t(info.levels)*6);kids.assign(subs.size(),nullptr);
         for(std::size_t i=0;i<subs.size();++i)subs[i].written=(usage&(D3::kUsageRT|D3::kUsageDS))||((usage&D3::kUsageAutoGen)&&(i%info.levels)>0);
         ProxyInit<ProxyBase>::apply(this,static_cast<IDirect3DCubeTexture9*>(this));}
-    ~StreamCubeTexture(){for(auto& s:subs)dropSubShadow(*core,s);liveProxyObjects.fetch_sub(1);}
+    ~StreamCubeTexture(){for(auto& s:subs){dropSubShadow(*core,s);dropSubStage(*core,s);}liveProxyObjects.fetch_sub(1);}
     NORTHLIGHT_STREAM_CUBETEXTURE_METHODS
     NL_PROXY_COM(IDirect3DCubeTexture9,IDirect3DBaseTexture9,IDirect3DResource9)
     NL_RES_LOCALS(CubeTexture)
@@ -1294,7 +1295,7 @@ struct StreamVolumeTexture final:IDirect3DVolumeTexture9,ProxyBase {
         info.w=w;info.h=h;info.d=d;info.levels=levels?levels:D3::fullChain(w,h,d);info.usage=usage;info.fmt=fmt;info.pool=pool;info.type=D3::kTypeVolumeTexture;
         subs.resize(info.levels);kids.assign(info.levels,nullptr);
         ProxyInit<ProxyBase>::apply(this,static_cast<IDirect3DVolumeTexture9*>(this));}
-    ~StreamVolumeTexture(){for(auto& s:subs)dropSubShadow(*core,s);liveProxyObjects.fetch_sub(1);}
+    ~StreamVolumeTexture(){for(auto& s:subs){dropSubShadow(*core,s);dropSubStage(*core,s);}liveProxyObjects.fetch_sub(1);}
     NORTHLIGHT_STREAM_VOLUMETEXTURE_METHODS
     NL_PROXY_COM(IDirect3DVolumeTexture9,IDirect3DBaseTexture9,IDirect3DResource9)
     NL_RES_LOCALS(VolumeTexture)

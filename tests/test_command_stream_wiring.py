@@ -69,6 +69,10 @@ checks['StreamFrameSkip: key 0..1 1/1/1, read with CommandStream, passed to the 
     and 'options.frameSkip=frameSkip;' in r and 'framesAhead=%u frameSkip=%u budgetMiB=%u' in r and 'unsigned frameSkip=0;' in sd and 'replayer.frameSkip=opt.frameSkip!=0;' in sd
     and 'put(buf,n," skipped=%llu",(unsigned long long)get(s.skippedFrames));' in rt and '"CSTREAM frame skip: first skipped frame=%llu' in rt
     and ';StreamFrameSkip=1' in ini and re.search(r'^  StreamFrameSkip +1 / 1 / 1 ',readme,re.M) is not None and 'StreamFrameSkip' in (fp.REPO/'README.md').read_text())
+sp=fp.src('stream_proxies.h').read_text()
+checks['image proxies free a still-staged lock Block at destruction (surface, 3 texture kinds)']=(
+    'inline void dropSubStage(StreamCore& c,SubRes& s){if(s.stage){c.q.freeBlock(s.stage);s.stage=nullptr;}}' in sp
+    and 'dropSubShadow(*core,own);dropSubStage(*core,own);' in sp and sp.count('for(auto& s:subs){dropSubShadow(*core,s);dropSubStage(*core,s);}')==3)
 for name,ok in checks.items():print(('PASS ' if ok else 'FAIL ')+name)
 assert all(checks.values())
 print('PASS command stream wiring: key, docs, banner, GATE fields, inert hooks, no DllMain thread')
