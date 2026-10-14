@@ -659,6 +659,9 @@ struct LocalSceneCache::Impl {
     };
     Limits limits;Stats stats;std::string map,directory;
     std::map<std::string,std::shared_ptr<Piece>> pieces;
+    // Size of the last assembled flat scene and its region: consecutive regions overlap heavily, so it
+    // sizes the next vertex/triangle block once instead of a doubling chain (old+new coexisting).
+    bool sized=false;uint64_t sizedVertices=0,sizedTriangles=0;Vec3 sizedLow,sizedHigh;
     explicit Impl(Limits l):limits(l){}
 };
 LocalSceneCache::LocalSceneCache():LocalSceneCache(Limits{}){}
@@ -686,7 +689,19 @@ bool LocalSceneCache::build(const std::vector<std::string>& files,const std::str
         stats.retainedBytes=cacheBytes();trimCache();
         WorldScene next;
         uint64_t textureBytes=0;
-        auto reserve=[&](auto& values,size_t count){if(values.capacity()>=count)return true;using T=typename std::decay_t<decltype(values)>::value_type;size_t capacity=std::max(count,std::max<size_t>(64,values.capacity()*2));if(!allowed(uint64_t(capacity)*sizeof(T)))return false;values.reserve(capacity);return true;};
+        // Previous build's counts (+1/16) as the one up-front block when the regions overlap (IoU >= 1/2);
+        // beyond that, growth is +1/4 rather than x2. A denied hint falls back to normal growth, error unset.
+        bool hinted=false;
+        if(cache.sized){
+            double inter=1,va=1,vb=1;const double e[3][4]={{low.x,high.x,cache.sizedLow.x,cache.sizedHigh.x},{low.y,high.y,cache.sizedLow.y,cache.sizedHigh.y},{low.z,high.z,cache.sizedLow.z,cache.sizedHigh.z}};
+            for(const auto& a:e){inter*=std::max(0.0,std::min(a[1],a[3])-std::max(a[0],a[2]));va*=a[1]-a[0];vb*=a[3]-a[2];}
+            const double uni=va+vb-inter;
+            if(uni>0&&inter*2>=uni){
+                const uint64_t v=std::min<uint64_t>(4000000,cache.sizedVertices+cache.sizedVertices/16),t=std::min<uint64_t>(6000000,cache.sizedTriangles+cache.sizedTriangles/16);
+                if(v&&t&&(!admit||(admit(v*sizeof(WorldVertex))&&admit(t*sizeof(WorldTriangle))))){next.vertices.reserve(v);next.triangles.reserve(t);hinted=true;++stats.hintedBuilds;}
+            }
+        }
+        auto reserve=[&](auto& values,size_t count){if(values.capacity()>=count)return true;using T=typename std::decay_t<decltype(values)>::value_type;size_t capacity=std::max(count,std::max<size_t>(64,hinted?values.capacity()+values.capacity()/4:values.capacity()*2));if(!allowed(uint64_t(capacity)*sizeof(T)))return false;values.reserve(capacity);return true;};
         for(const auto& group:groups){
             WorldScene source;auto stamp=CacheClock::now();std::string path=directory;if(!path.empty()&&path.back()!='/'&&path.back()!='\\')path+='/';path+=group.first+".fgs";
             bool geometryNeeded=false;
@@ -739,6 +754,7 @@ bool LocalSceneCache::build(const std::vector<std::string>& files,const std::str
             // actual process memory independently before every large reserve.
             stats.peakBytes=std::max(stats.peakBytes,stats.retainedBytes+sceneBytes(next)+decodedBytes+largestPiece);
         }
+        cache.sized=true;cache.sizedVertices=next.vertices.size();cache.sizedTriangles=next.triangles.size();cache.sizedLow=low;cache.sizedHigh=high;
         stats.flatBytes=sceneBytes(next);auto stamp=CacheClock::now();
         // Preflight the tree allocations: triangle order, nodes (the median
         // Node reserve can grow once) and SAH build-time centroids.

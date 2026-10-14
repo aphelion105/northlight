@@ -149,7 +149,7 @@ class LocalSceneCache {
 public:
     struct Limits { size_t retainedBytes=32u*1024u*1024u; };
     struct Stats {
-        uint64_t modelReads=0,pieceBuilds=0,pieceReuses=0,reusedTriangles=0,builtTriangles=0;
+        uint64_t modelReads=0,pieceBuilds=0,pieceReuses=0,reusedTriangles=0,builtTriangles=0,hintedBuilds=0;
         // Capacity-based payload estimate; peak excludes prior published
         // generations, allocator overhead and temporary vector growth.
         uint64_t retainedBytes=0,peakBytes=0,flatBytes=0,bvhBytes=0;
