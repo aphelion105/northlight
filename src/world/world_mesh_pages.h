@@ -68,7 +68,11 @@ inline bool build(const NorthlightWorldMesh::WorldMeshUploadPlan& input,Plan& ou
                 if(!allowed(capacity*sizeof(Page)))return false;
                 next.pages.reserve(capacity);
             }
-            next.pages.emplace_back();remap.clear();return true;
+            next.pages.emplace_back();
+            // Vertices fill ~95% of a page on real data, so doubling would end at the limit anyway: reserve it once
+            // (no realloc chain). Indices fill ~40-55% and keep growing on demand; a full reserve costs ~20% CPU.
+            next.pages.back().vertices.reserve(PageVertexLimit);
+            remap.clear();return true;
         };
         for(const auto& original:input.batches) {
             const uint64_t count=uint64_t(original.count)*3;
