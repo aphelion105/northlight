@@ -967,14 +967,15 @@ private:
         MEMORYSTATUSEX info={};info.dwLength=sizeof info;
         NorthlightGeometryMemory::Sample sample;
         if(!GlobalMemoryStatusEx(&info))return sample;
-        sample.available=info.ullAvailVirtual;
+        sample.available=info.ullAvailVirtual;uint64_t walkedFree=0;
         uintptr_t address=0;MEMORY_BASIC_INFORMATION region={};
         while(VirtualQuery(reinterpret_cast<const void*>(address),&region,sizeof region)==sizeof region){
-            if(region.State==MEM_FREE)sample.largest=std::max(sample.largest,uint64_t(region.RegionSize));
+            if(region.State==MEM_FREE){sample.largest=std::max(sample.largest,uint64_t(region.RegionSize));walkedFree+=uint64_t(region.RegionSize);}
             const uint64_t next=uint64_t(reinterpret_cast<uintptr_t>(region.BaseAddress))+uint64_t(region.RegionSize);
             if(next<=address||next>std::numeric_limits<uintptr_t>::max())break;
             address=uintptr_t(next);
         }
+        sample.available=NorthlightGeometryMemory::noteWalk(sample.available,walkedFree);
         sample.valid=sample.largest>0;return sample;
     }
     static NorthlightGeometryMemory::Sample geometryAdmissionFor(NorthlightMemoryAdmission::Probe& probe,NorthlightGeometryMemory::Budget budget,bool* exact=nullptr){
@@ -983,7 +984,7 @@ private:
         // A stale/small witness falls back to the complete address-space walk.
         const auto result=probe.sample(budget,
             [](uint64_t& available){MEMORYSTATUSEX info={};info.dwLength=sizeof info;
-                if(!GlobalMemoryStatusEx(&info))return false;available=info.ullAvailVirtual;return true;},
+                if(!GlobalMemoryStatusEx(&info))return false;available=NorthlightGeometryMemory::corrected(info.ullAvailVirtual);return true;},
             [](uint64_t address,NorthlightMemoryAdmission::Region& output){MEMORY_BASIC_INFORMATION region={};
                 if(VirtualQuery(reinterpret_cast<const void*>(uintptr_t(address)),&region,sizeof region)!=sizeof region)return false;
                 output.base=uint64_t(reinterpret_cast<uintptr_t>(region.BaseAddress));output.size=uint64_t(region.RegionSize);output.free=region.State==MEM_FREE;return true;},
@@ -1817,7 +1818,7 @@ private:
                         // reserve check, not another VirtualQuery walk per page.
                         MEMORYSTATUSEX status={};status.dwLength=sizeof status;
                         pageMemory.valid=GlobalMemoryStatusEx(&status)!=FALSE;
-                        pageMemory.available=status.ullAvailVirtual;sampled=true;
+                        pageMemory.available=NorthlightGeometryMemory::corrected(status.ullAvailVirtual);sampled=true;
                     }
                     auto phase=streamingPhases.measure(NorthlightStreaming::PhaseProfile::Buffers);
                     return acquireMeshPage(pageIndex,vb,UINT(bytes),pageMemory);

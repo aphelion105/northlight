@@ -15,6 +15,7 @@
 #include "device_mirror.h"
 #include "mirror_audit_schedule.h"
 #include "async_memory_diagnostics.h"
+#include "geometry_memory.h"
 #include "mirror_guarded_device.h"
 #include "mirror_resources.h"
 #include "tracked_buffers.h"
@@ -170,6 +171,7 @@ static NorthlightMemoryDiagnostics::Sample queryMemoryDiagnostic(void*) {
             const std::uint64_t next=std::uint64_t(reinterpret_cast<uintptr_t>(region.BaseAddress))+region.RegionSize;
             if(next<=address||next>UINTPTR_MAX)break;address=uintptr_t(next);
         }
+        sample.availableVirtual=NorthlightGeometryMemory::noteWalk(sample.availableVirtual,sample.totalFree); /* task 42: Wine overstates the API value */
         sample.valid=true;
     }
     sample.tick=GetTickCount();

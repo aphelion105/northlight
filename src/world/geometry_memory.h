@@ -1,5 +1,6 @@
 #pragma once
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -23,6 +24,24 @@ constexpr uint64_t EntryHeadroom=256*MiB;
 // memory the build itself consumes. Interior checks keep the process reserve plus this guard.
 constexpr uint64_t InBuildHeadroom=128*MiB;
 struct Sample { uint64_t available=0,largest=0;bool valid=false; };
+// task 42: Wine's GlobalMemoryStatusEx ullAvailVirtual does not subtract reserve-only regions (a
+// 1.9 GiB MEM_RESERVE test read 2656 MiB available with 389 MiB actually free). Every full
+// VirtualQuery walk records how far the API overstates the walked free total; cheap samples that
+// read only the API subtract it. On Windows the two agree within a few MiB (sampling race), so a
+// difference under BiasFloor is ignored and Windows decisions stay unchanged.
+constexpr uint64_t BiasFloor=64*MiB;
+inline std::atomic<uint64_t>& availableBias(){static std::atomic<uint64_t> bias{0};return bias;}
+// After a full walk: returns the trustworthy available value (the walked free total when the API overstates it).
+inline uint64_t noteWalk(uint64_t apiAvailable,uint64_t walkedFree){
+    const uint64_t over=apiAvailable>walkedFree?apiAvailable-walkedFree:0;
+    availableBias().store(over>=BiasFloor?over:0,std::memory_order_relaxed);
+    return over>=BiasFloor?walkedFree:apiAvailable;
+}
+// API-only sample: subtract the last walk's overstatement.
+inline uint64_t corrected(uint64_t apiAvailable){
+    const uint64_t bias=availableBias().load(std::memory_order_relaxed);
+    return apiAvailable>bias?apiAvailable-bias:0;
+}
 struct Budget { uint64_t available=0,largest=0;bool valid=false; };
 inline bool add(uint64_t a,uint64_t b,uint64_t& out){
     if(b>std::numeric_limits<uint64_t>::max()-a)return false;

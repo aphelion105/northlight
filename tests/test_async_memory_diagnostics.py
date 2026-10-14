@@ -16,6 +16,7 @@ end=source.index('template<class T> static void drop',begin)
 walker=source[begin:end]
 fixture=r'''
 #include "async_memory_diagnostics.h"
+#include "geometry_memory.h"
 #include <algorithm>
 #include <chrono>
 #include <cassert>
@@ -27,10 +28,10 @@ using DWORD=std::uint32_t;
 struct MEMORYSTATUSEX {DWORD dwLength;std::uint64_t ullAvailVirtual=0,ullTotalVirtual=0,ullAvailPhys=0;};
 struct MEMORY_BASIC_INFORMATION {void* BaseAddress;std::uint32_t RegionSize;unsigned State;};
 constexpr unsigned MEM_FREE=1,MEM_COMMIT=2;
-static bool fail=false;static unsigned calls=0;
+static bool fail=false;static unsigned calls=0;static std::uint64_t apiAvailable=9000;
 struct Region{std::uint32_t base,size;unsigned state;};
 static std::vector<Region> regions;
-static int GlobalMemoryStatusEx(MEMORYSTATUSEX* memory){if(fail)return 0;memory->ullAvailVirtual=9000;memory->ullTotalVirtual=10000;memory->ullAvailPhys=8000;return 1;}
+static int GlobalMemoryStatusEx(MEMORYSTATUSEX* memory){if(fail)return 0;memory->ullAvailVirtual=apiAvailable;memory->ullTotalVirtual=10000;memory->ullAvailPhys=8000;return 1;}
 static size_t VirtualQuery(const void* address,MEMORY_BASIC_INFORMATION* output,size_t bytes){
  ++calls;const auto at=reinterpret_cast<uintptr_t>(address);
  for(const auto& r:regions)if(r.base==at){output->BaseAddress=reinterpret_cast<void*>(uintptr_t(r.base));output->RegionSize=r.size;output->State=r.state;return bytes;}
@@ -45,6 +46,12 @@ int main(){
  calls=0;regions={{0,0xffffffffu,MEM_FREE},{0xffffffffu,1,MEM_FREE}};
  sample=queryMemoryDiagnostic(nullptr);assert(sample.valid&&sample.regions==2&&sample.totalFree==0x100000000ull&&sample.largestFree==0xffffffffu&&calls==2);
  calls=0;regions={{0,0,MEM_COMMIT}};sample=queryMemoryDiagnostic(nullptr);assert(sample.valid&&sample.regions==1&&sample.totalFree==0&&calls==1);
+ // task 42: Wine's API value ignores reserve-only regions; the walked free total wins once the overstatement passes BiasFloor.
+ calls=0;apiAvailable=2656ull<<20;regions={{0,389u<<20,MEM_FREE},{389u<<20,1900u<<20,MEM_COMMIT}};sample=queryMemoryDiagnostic(nullptr);
+ assert(sample.valid&&sample.availableVirtual==(389ull<<20)&&NorthlightGeometryMemory::corrected(2656ull<<20)==(389ull<<20));
+ apiAvailable=(389ull<<20)+(32ull<<20);sample=queryMemoryDiagnostic(nullptr);
+ assert(sample.availableVirtual==apiAvailable&&NorthlightGeometryMemory::corrected(apiAvailable)==apiAvailable);
+ apiAvailable=9000;
  calls=0;fail=true;sample=queryMemoryDiagnostic(nullptr);assert(!sample.valid&&sample.regions==0&&calls==0);
  std::puts("PASS extracted production memory query: exact mixed-region sum/max; 32-bit address overflow; non-progressing range; query failure; diagnostic timestamps.");
 }
