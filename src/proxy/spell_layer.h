@@ -1706,7 +1706,7 @@ public:
             guards_.release();                                   // nothing is guarded while nothing is pending
             std::vector<Blob>().swap(blobs_);std::vector<GuardTable::Hit>().swap(hits_);std::vector<Seg>().swap(segs_);std::vector<uint32_t>().swap(order_);
             if(heldUsed_.empty()){std::vector<Held>().swap(held_);std::vector<uint32_t>().swap(heldUsed_);} // no reference is held: the table goes too
-            undo_.reset();checkScratch_.reset();
+            releaseUndo();undo_.reset();checkScratch_.reset();
         }
     }
     // Device Reset/destroy/extension fault: drops everything WITHOUT drawing, releases records, buffers and surfaces, unmarks guards.
