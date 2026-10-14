@@ -581,6 +581,20 @@ private:
         NorthlightGeometryMemory::debitGrowth(memory,capacity);return true;
     }
     void releaseMeshPool(){for(auto& pool:meshPool){for(auto& slot:pool){drop(slot.vb);drop(slot.ib);}pool.clear();}activeMesh=-1;vertices=nullptr;indices=nullptr;}
+    // Frees the idle staging pool and the active slots beyond the live page count (returns bytes).
+    // Never while a staged upload owns the staging slot; vertices/indices alias slot 0 of the active pool, which stays.
+    size_t trimMeshPools(){
+        if(pendingMesh)return 0;
+        size_t freed=0;
+        auto release=[&](std::vector<MeshBuffers>& pool,size_t keep){
+            if(pool.size()<=keep)return;
+            for(size_t i=keep;i<pool.size();++i){freed+=size_t(pool[i].vbCapacity)+pool[i].ibCapacity;drop(pool[i].vb);drop(pool[i].ib);}
+            pool.erase(pool.begin()+keep,pool.end());pool.shrink_to_fit();
+        };
+        release(meshPool[stagingSlot()],0);
+        if(activeMesh>=0){size_t pages=0;for(const auto& b:batches)pages=std::max<size_t>(pages,size_t(b.page)+1);if(pages)release(meshPool[activeMesh],pages);}
+        return freed;
+    }
     std::vector<IDirect3DTexture9*> materials;
     NorthlightStreaming::DeferredRelease<IDirect3DTexture9> retiredMaterials;
     size_t uploadedTextureBytes=0;
