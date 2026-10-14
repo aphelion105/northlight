@@ -58,6 +58,7 @@ assert 'reach=reachChoice.reach;' in w and 'const bool extended=reach>Northlight
 for text in ('WORLD geometry memory stall begin stage=%s availableMiB=%llu largestMiB=%s generations=%zu refused=%s need=%llu',
              'WORLD geometry memory stall end ms=%u attempts=%u outcome=%s',
              'WORLD shadow terrain reach reduced from=%.0f to=%.0f reason=memory',
+             'WORLD shadow terrain reach tier from=%.0f to=%.0f reason=headroom availableMiB=%llu largestMiB=%llu',
              'WORLD shadow terrain reach restored to=%.0f'):
     assert text in w, text
 assert 'stallEnd(memoryStall.reduced?"reduced":"published")' in w and w.count('stallEnd("superseded")') == 3
