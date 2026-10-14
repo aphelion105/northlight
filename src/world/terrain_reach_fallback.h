@@ -27,21 +27,26 @@ inline bool extended(float reach){return reach>BaseReach;}
 // triangles (~35 MiB), 1856 ~1.3M (~+15 MiB), 4096 ~1.9-2.1M (~+43 MiB). A mesh lives twice in
 // the double-buffered pool plus a transient plan/payload of similar size during the build, so
 // the extra address space at peak is ~3x the per-mesh delta: ~+45 MiB (1856), ~+130-170 MiB (4096).
-// The plain build entry (geometry_memory.h) is 768 MiB available / 96 MiB contiguous and the
-// in-build floor is 640 MiB, which already pays for a 928 build. A tier therefore needs the
-// entry budget plus its extra peak plus slack for the game's own allocations:
-//   4096 class: 768 + ~170 + ~160 slack -> 1100 MiB available, 192 MiB contiguous (2x entry's 96)
-//   1856 class: 768 + ~45  + ~140 slack ->  950 MiB available, 96 MiB contiguous (the entry rule)
+// Calibration from a Windows player log (601 build entries, largest free block ~419 MiB):
+//   113 successful reach-4096 builds had entry available min 790, avg 950, max 1072 MiB;
+//   5 refused reach-4096 builds (in-build sample fell to ~621-632 MiB under the 640 MiB floor) entered
+//   with 798-879 MiB. The extended build drops the sample by ~250 MiB from its entry, so an entry of
+//   900 MiB leaves ~650 MiB, above the 640 MiB in-build floor; every refusal entered below 880.
+//   The refusals were about `available`, not contiguity (largest was ~419 MiB), so the block rule is only
+//   the entry's 96 MiB plus slack for the 64 MiB terrain allocation: 128 MiB.
+//   4096 class: 900 MiB available, 128 MiB contiguous
+//   1856 class: 820 MiB available ( 96 MiB contiguous, the entry rule); its drop from entry is smaller
+//   (~+15 MiB mesh delta against ~+43 MiB), and 820 is still above the 768 MiB plain entry.
 // Any profile reach above MidReach is treated as the 4096 class (the profile parser caps it at
 // 4096); a profile in (928, 1856] uses the 1856 requirement. 928 has no extra rule.
 constexpr float MidReach=1856.f;
 constexpr std::uint64_t MiB=1024ull*1024ull;
-constexpr std::uint64_t ExtendedAvailable=1100*MiB,ExtendedLargest=192*MiB;
-constexpr std::uint64_t MidAvailable=950*MiB,MidLargest=96*MiB;
+constexpr std::uint64_t ExtendedAvailable=900*MiB,ExtendedLargest=128*MiB;
+constexpr std::uint64_t MidAvailable=820*MiB,MidLargest=96*MiB;
 // Raising a lowered tier needs the requirement plus this margin (and BackoffMs since the last
 // tier change or refusal), so a sample hovering around a threshold does not flip every build.
 // Lowering is immediate: it only needs the plain requirement to fail.
-constexpr std::uint64_t RaiseMargin=128*MiB;
+constexpr std::uint64_t RaiseMargin=64*MiB;
 // Does the entry sample carry `reach`? margin is added to the aggregate requirement only.
 inline bool meets(float reach,std::uint64_t available,std::uint64_t largest,std::uint64_t margin=0){
     if(!extended(reach))return true;
