@@ -1,6 +1,7 @@
 // 0.3.200 (jobs): native test of job_system.h (built by test_job_system.py at -O2, ASan+UBSan and TSan).
 #include "job_system.h"
 #include <cassert>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <new>
@@ -45,7 +46,7 @@ int main(){
         System s;assert(s.start(3)&&s.workers()==1);
         std::atomic<bool> started{false},release{false};std::thread::id ranOn;
         auto block=[&]{started=true;while(!release.load())std::this_thread::yield();};
-        auto other=[&]{ranOn=std::this_thread::get_id();release=true;};
+        auto other=[&]{ranOn=std::this_thread::get_id();std::this_thread::sleep_for(std::chrono::milliseconds(2));release=true;}; /* a measurable duration: a sub-tick job reads 0 ns on a coarse steady_clock */
         Counter a,b;assert(s.kick(a,block));while(!started.load())std::this_thread::yield();
         assert(s.kick(b,other));s.timing(true);assert(s.wait(b));
         assert(ranOn==std::this_thread::get_id());assert(s.wait(a));

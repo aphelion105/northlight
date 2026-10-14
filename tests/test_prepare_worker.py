@@ -36,7 +36,7 @@ def body(text,head):
 capture=body(w,'    void captureModel(D3DPRIMITIVETYPE type,')
 select=body(x,'    void selectShadowReplays(){')
 end=body(w,'    void endFrame(bool retainPool=true){')
-release=w[w.index('    void releaseGPU(){'):];release=release[:release.index('\n')]
+release=w[w.index('    void releaseGPU(bool keepMesh=false){'):];release=release[:release.index('\n')]
 reset=w[w.index('    void reset(){'):];reset=reset[:reset.index('\n')]
 trim=body(g,'    MemoryTrim trimMemory(){')
 register=body(w,'    void registerShader(IDirect3DVertexShader9* shader,uint64_t hash){')
@@ -46,7 +46,7 @@ checks.update({
  'the join is the first statement of selectShadowReplays':select.split('{',1)[1].lstrip().startswith('prepareJoin();'),
  'quiesce before recycling: endFrame, reset (endFrame, releaseGPU), releaseGPU, trimMemory':
     end.index('prepareQuiesce();prepareEndFrame();')<end.index('recycleReplay(')
-    and release.index('prepareQuiesce();')<release.index('prepareCaches->sampled.clear()')<release.index('releaseReplayGPU();') and reset.index('endFrame();')<reset.index('releaseGPU();')
+    and release.index('prepareQuiesce();')<release.index('prepareCaches->sampled.clear()')<release.index('releaseReplayGPU();') and reset.index('endFrame();')<reset.index('releaseGPU(true);')
     and trim.index('prepareQuiesce();')<trim.index('freeReplays.clear()'),
  'registerShader defers the cache clear (the owner clears at its next open)':
     'prepareCachesStale=true;' in register and 'prepareCaches->sampled.clear()' not in register and 'prepareCaches->bones.clear()' not in register,
