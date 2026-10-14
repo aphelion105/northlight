@@ -1,6 +1,7 @@
 #pragma once
 #include "world_gi.h"
 #include "local_shadow_signature.h"
+#include <atomic>
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -31,6 +32,38 @@ struct MaterialUpload {
     float alphaCutoff=0;
     bool terrain=false;
 };
+// 0.3.214 (task 42): the heavy GPU-upload bytes (paged vertex/index copy, cutout textures) live in
+// a separately owned payload. The render thread discards it right after the mesh commit; the plan
+// (shared with the worker, GI snapshots and the retirement queue) keeps only small metadata.
+struct UploadPayload {
+    std::shared_ptr<const NorthlightWorldMeshPages::Plan> pages;
+    std::vector<MaterialUpload> materials;
+    uint64_t bytes=0; // retained capacity, fixed before the payload is shared
+};
+// Cross-thread rule: only the render thread dereferences the payload (share/take); every other
+// thread sees live()/bytes(), a single atomic. The pointer is touched only through std::atomic_*.
+// Copies share the (immutable) payload; set() runs on the worker before publication.
+class UploadPayloadHandle {
+    std::shared_ptr<UploadPayload> p_;
+    std::atomic<uint64_t> bytes_{0};
+public:
+    UploadPayloadHandle()=default;
+    UploadPayloadHandle(const UploadPayloadHandle& o){assign(o.share());}
+    UploadPayloadHandle(UploadPayloadHandle&& o)noexcept{assign(o.take());}
+    UploadPayloadHandle& operator=(const UploadPayloadHandle& o){if(this!=&o)assign(o.share());return *this;}
+    UploadPayloadHandle& operator=(UploadPayloadHandle&& o)noexcept{if(this!=&o)assign(o.take());return *this;}
+    void set(std::shared_ptr<UploadPayload> payload){assign(std::move(payload));}
+    std::shared_ptr<UploadPayload> share()const{return std::atomic_load(&p_);}
+    std::shared_ptr<UploadPayload> take(){auto payload=std::atomic_exchange(&p_,std::shared_ptr<UploadPayload>());bytes_.store(0,std::memory_order_release);return payload;}
+    // Drops the plan's reference; returns the bytes it covered (the caller's own reference may free them).
+    uint64_t discard(){auto payload=take();return payload?payload->bytes:0;}
+    bool live()const{return bytes_.load(std::memory_order_acquire)!=0;}
+    uint64_t bytes()const{return bytes_.load(std::memory_order_acquire);}
+private:
+    void assign(std::shared_ptr<UploadPayload> payload){
+        const uint64_t bytes=payload?(payload->bytes?payload->bytes:1):0;
+        std::atomic_store(&p_,std::move(payload));bytes_.store(bytes,std::memory_order_release);}
+};
 struct WorldMeshUploadPlan {
     // Caller must retain the SAME immutable source scene/BVH until upload and
     // drawing finish. Vertices remain there to avoid a second large CPU copy.
@@ -47,7 +80,8 @@ struct WorldMeshUploadPlan {
     // with the corresponding batches/fixedTerrainChunks, never before upload.
     std::shared_ptr<const NorthlightLocalShadowSignature::Records> localShadowRecords;
     uint64_t vertexBytes=0,indexBytes=0,textureBytes=0;
-    std::shared_ptr<const NorthlightWorldMeshPages::Plan> pages;
+    // Sealed plans: pages + materials moved here by seal(); empty after the mesh commit.
+    UploadPayloadHandle payload;
     uint64_t pagedCpuBytes=0;
     // Once paged geometry owns its bytes, keep only placement proofs from the
     // temporary shadow scene. GI continues owning its independent local BVH.
@@ -55,9 +89,9 @@ struct WorldMeshUploadPlan {
     bool pagesSealed=false;
     uint32_t unmaskableTerrainTriangles=0;
     // Retirement admission only (not a frame-path traversal). Counts retained
-    // capacity; allocator/control-block overhead is conservatively estimated.
+    // capacity; the payload counts only while it exists (one atomic, safe on any thread); allocator/control-block overhead is conservatively estimated.
     uint64_t cpuBytes()const{
-        uint64_t bytes=pagedCpuBytes+sizeof(*this)+indices.capacity()*sizeof(uint32_t)+batches.capacity()*sizeof(Batch)+materials.capacity()*sizeof(MaterialUpload);
+        uint64_t bytes=payload.bytes()+sizeof(*this)+indices.capacity()*sizeof(uint32_t)+batches.capacity()*sizeof(Batch)+materials.capacity()*sizeof(MaterialUpload);
         bytes+=completePlacements.capacity()*sizeof(NorthlightGI::WorldPlacementCoverage);
         for(const auto& owner:completePlacements)bytes+=owner.modelKey.capacity();
         for(const auto& material:materials)bytes+=material.bgra.capacity();
@@ -78,8 +112,11 @@ struct WorldMeshUploadPlan {
 // texture. Cutout texture colors/alpha are preserved exactly while swizzling.
 // Unknown/cross-chunk terrain stays in an unmaskable batch; it is never hidden
 // merely because one adjacent chunk was submitted by the game.
+// textures (optional): texel source for material i<textures->size() (width/height/rgba); the scene's
+// materials there carry metadata only. Read synchronously, so it need only outlive the call.
 // Failure preserves output. Empty scenes are valid plans; no GPU call is made.
 bool buildUploadPlan(const NorthlightGI::WorldScene& source,
                      WorldMeshUploadPlan& output,std::string& error,
-                     const NorthlightGI::AllocationAdmission& admit = {});
+                     const NorthlightGI::AllocationAdmission& admit = {},
+                     const std::vector<NorthlightGI::WorldMaterial>* textures = nullptr);
 } // namespace NorthlightWorldMesh

@@ -124,6 +124,30 @@ static void testFailure(){
     WorldScene empty;assert(buildUploadPlan(empty,plan,error));coherence(empty,plan);assert(plan.batches.empty());
     std::puts("PASS malformed source rejection, unchanged prior plan and empty scene handling");
 }
+static void testTextureSource(){
+    // Metadata-only scene materials + an external texel source must produce the plan the full scene does.
+    WorldScene full;full.materials.resize(3);
+    full.materials[0].alphaCutoff=.5f;full.materials[0].width=2;full.materials[0].height=1;full.materials[0].rgba={1,2,3,4,5,6,7,8};
+    full.materials[1].alphaCutoff=0;full.materials[1].width=1;full.materials[1].height=1;full.materials[1].rgba={9,9,9,9};
+    full.materials[2].terrain=true;
+    for(uint32_t m=0;m<3;++m)triangle(full,{float(m),0,0},{float(m)+1,0,0},{float(m),1,0},m);
+    WorldScene meta=full;std::vector<WorldMaterial> textures=full.materials;
+    for(auto& m:meta.materials){m.rgba.clear();m.width=m.height=0;}
+    textures.resize(2); // material 2 keeps its own (empty) data
+    WorldMeshUploadPlan a,b;std::string error;
+    assert(buildUploadPlan(full,a,error));assert(buildUploadPlan(meta,b,error,{},&textures));
+    assert(a.indices==b.indices&&a.batches.size()==b.batches.size()&&a.materials.size()==b.materials.size());
+    for(size_t i=0;i<a.materials.size();++i)
+        assert(a.materials[i].bgra==b.materials[i].bgra&&a.materials[i].width==b.materials[i].width&&a.materials[i].height==b.materials[i].height&&a.materials[i].alphaCutoff==b.materials[i].alphaCutoff&&a.materials[i].terrain==b.materials[i].terrain);
+    assert(a.localShadowRecords->size()==b.localShadowRecords->size());
+    for(size_t i=0;i<a.localShadowRecords->size();++i)assert((*a.localShadowRecords)[i].content==(*b.localShadowRecords)[i].content);
+    // Without the source the metadata-only scene has a cutout material with no texels: width 0, so it is an opaque 1x1.
+    WorldMeshUploadPlan c;assert(buildUploadPlan(meta,c,error));assert((c.materials[0].bgra==std::vector<uint8_t>{255,255,255,255}));
+    // A source longer than the scene's materials, or with inconsistent dimensions, is rejected.
+    std::vector<WorldMaterial> longer(4);assert(!buildUploadPlan(meta,c,error,{},&longer));
+    textures[0].width=3;assert(!buildUploadPlan(meta,c,error,{},&textures));
+    std::puts("PASS external texture source builds the identical plan without texels in the scene");
+}
 static void testActual(const char* tile,const char* models){
     WorldScene scene;std::string error;
     assert(loadInstancedScenes({tile},models,{-10300,-573,-150},{-9724,3,490},scene,error));
@@ -138,4 +162,4 @@ static void testActual(const char* tile,const char* models){
     std::printf("PASS actual tile plan: %u triangles, %zu batches, %u terrain batches, %zu material slots, %.3f MiB texture source -> %.3f MiB upload; %.3f seconds worker preparation\n",
         plan.triangleCount,plan.batches.size(),chunks,plan.materials.size(),double(sourceTextureBytes)/(1024*1024),double(plan.textureBytes)/(1024*1024),seconds);
 }
-int main(int argc,char**argv){testGrouping();testFailure();testShadowBounds();if(argc>2)testActual(argv[1],argv[2]);std::puts("All world mesh upload plan tests passed");}
+int main(int argc,char**argv){testGrouping();testFailure();testTextureSource();testShadowBounds();if(argc>2)testActual(argv[1],argv[2]);std::puts("All world mesh upload plan tests passed");}

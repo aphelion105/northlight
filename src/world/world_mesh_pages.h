@@ -68,7 +68,11 @@ inline bool build(const NorthlightWorldMesh::WorldMeshUploadPlan& input,Plan& ou
                 if(!allowed(capacity*sizeof(Page)))return false;
                 next.pages.reserve(capacity);
             }
-            next.pages.emplace_back();remap.clear();return true;
+            next.pages.emplace_back();
+            // Vertices fill ~95% of a page on real data, so doubling would end at the limit anyway: reserve it once
+            // (no realloc chain). Indices fill ~40-55% and keep growing on demand; a full reserve costs ~20% CPU.
+            next.pages.back().vertices.reserve(PageVertexLimit);
+            remap.clear();return true;
         };
         for(const auto& original:input.batches) {
             const uint64_t count=uint64_t(original.count)*3;
@@ -149,8 +153,8 @@ inline bool build(const NorthlightWorldMesh::WorldMeshUploadPlan& input,Plan& ou
 // Cheap render-side validation: individual indices/vertex attributes were
 // validated during immutable worker preparation. Never walk millions of them
 // again when publishing a new scene. Pages and batches are in append order.
-inline const char* validatePages(const NorthlightWorldMesh::WorldMeshUploadPlan& input,const Plan& pages) {
-    if(!input.vertexCount||!input.triangleCount||input.materials.empty()||pages.pages.empty()||pages.batches.empty())return "empty paged upload plan";
+inline const char* validatePages(const NorthlightWorldMesh::WorldMeshUploadPlan& input,const Plan& pages,const std::vector<NorthlightWorldMesh::MaterialUpload>& materials) {
+    if(!input.vertexCount||!input.triangleCount||materials.empty()||pages.pages.empty()||pages.batches.empty())return "empty paged upload plan";
     if(input.vertexBytes!=uint64_t(input.vertexCount)*sizeof(NorthlightGI::WorldVertex)||input.vertexBytes>UINT32_MAX||
        input.indexBytes!=uint64_t(input.triangleCount)*3*sizeof(uint32_t)||input.indexBytes>UINT32_MAX)return "paged original buffer sizes mismatch";
     uint64_t vertexBytes=0,indexBytes=0;
@@ -161,7 +165,7 @@ inline const char* validatePages(const NorthlightWorldMesh::WorldMeshUploadPlan&
     if(vertexBytes!=pages.vertexBytes||indexBytes!=pages.indexBytes||indexBytes!=input.indexBytes)return "paged aggregate sizes mismatch";
     size_t pageIndex=0;uint64_t nextIndex=0;
     for(const auto& batch:pages.batches) {
-        if(pageIndex>=pages.pages.size()||batch.page!=pageIndex||batch.start!=nextIndex||!batch.count||batch.material>=input.materials.size())return "invalid paged batch range/material";
+        if(pageIndex>=pages.pages.size()||batch.page!=pageIndex||batch.start!=nextIndex||!batch.count||batch.material>=materials.size())return "invalid paged batch range/material";
         const auto& page=pages.pages[pageIndex];
         if(!batch.vertexCount||uint64_t(batch.minVertex)+batch.vertexCount>page.vertices.size())return "invalid paged batch vertex range";
         nextIndex+=uint64_t(batch.count)*3;
@@ -169,13 +173,17 @@ inline const char* validatePages(const NorthlightWorldMesh::WorldMeshUploadPlan&
         if(nextIndex==page.indices.size()){++pageIndex;nextIndex=0;}
     }
     if(pageIndex!=pages.pages.size()||nextIndex)return "incomplete paged batch coverage";
-    for(const auto& material:input.materials)
+    for(const auto& material:materials)
         if(!material.width||!material.height||material.width>4096||material.height>4096||uint64_t(material.width)*material.height*4!=material.bgra.size())return "invalid paged texture size";
     return nullptr;
 }
+inline const char* validatePages(const NorthlightWorldMesh::WorldMeshUploadPlan& input,const Plan& pages) {return validatePages(input,pages,input.materials);}
+// Render thread only (shares the payload). A released payload is not a sealed plan any more.
 inline const char* validateSealed(const NorthlightWorldMesh::WorldMeshUploadPlan& input) {
-    if(!input.pagesSealed||!input.pages||input.source||input.ownedSource||!input.indices.empty())return "paged ownership not sealed";
-    return validatePages(input,*input.pages);
+    if(!input.pagesSealed||input.source||input.ownedSource||!input.indices.empty())return "paged ownership not sealed";
+    const auto payload=input.payload.share();
+    if(!payload||!payload->pages)return "paged payload released";
+    return validatePages(input,*payload->pages,payload->materials);
 }
 
 // Must run on the worker before publication. Copy the small placement proofs
@@ -195,7 +203,12 @@ inline bool seal(NorthlightWorldMesh::WorldMeshUploadPlan& input,std::shared_ptr
         if(admit&&!admit(ownerBytes))return fail("paged ownership allocation deferred");
         auto owners=input.source->completePlacements;
         const uint64_t cpuBytes=pages->cpuBytes();
-        input.completePlacements=std::move(owners);input.pages=std::move(pages);input.pagedCpuBytes=cpuBytes;
+        // 0.3.214 (task 42): pages and cutout textures move into the separately owned payload.
+        auto payload=std::make_shared<NorthlightWorldMesh::UploadPayload>();
+        payload->bytes=cpuBytes+sizeof(NorthlightWorldMesh::UploadPayload)+input.materials.capacity()*sizeof(NorthlightWorldMesh::MaterialUpload)+64;
+        for(const auto& material:input.materials)payload->bytes+=material.bgra.capacity();
+        payload->pages=std::move(pages);payload->materials.swap(input.materials);
+        input.completePlacements=std::move(owners);input.payload.set(std::move(payload));input.pagedCpuBytes=cpuBytes;
         input.source=nullptr;input.ownedSource.reset();std::vector<uint32_t>().swap(input.indices);
         input.pagesSealed=true;error.clear();return true;
     } catch(const std::bad_alloc&) {return fail("paged ownership allocation failed");}

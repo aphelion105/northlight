@@ -132,7 +132,7 @@ static void testSeal(){
     std::string error;auto pages=std::make_shared<P::Plan>();assert(P::build(input,*pages,error));
     assert(!P::validatePages(input,*pages));
     assert(!P::seal(input,pages,error,[](uint64_t){return false;}));
-    assert(input.source==source.get()&&!input.pagesSealed&&!input.indices.empty()&&!input.pages);
+    assert(input.source==source.get()&&!input.pagesSealed&&!input.indices.empty()&&!input.payload.live());
     auto broken=*pages;broken.batches[0].page=1;assert(P::validatePages(input,broken));
     broken=*pages;broken.batches[0].vertexCount=4;assert(P::validatePages(input,broken));
     broken=*pages;broken.batches[0].count=2;assert(P::validatePages(input,broken));
@@ -140,7 +140,7 @@ static void testSeal(){
     broken=*pages;broken.pages[0].indices.push_back(0);assert(P::validatePages(input,broken));
     assert(!P::seal(input,std::make_shared<P::Plan>(broken),error));assert(input.source==source.get());
     assert(P::seal(input,pages,error));assert(!P::validateSealed(input));
-    assert(input.source==nullptr&&!input.ownedSource&&input.indices.capacity()==0&&input.pages==pages);
+    assert(input.source==nullptr&&!input.ownedSource&&input.indices.capacity()==0&&input.payload.share()->pages==pages&&input.materials.capacity()==0&&input.payload.live());
     assert(input.completePlacements.size()==1&&input.completePlacements[0].uid==owner.uid&&input.completePlacements[0].modelKey==owner.modelKey);
     assert(source->vertices.size()==3&&source->triangles.size()==1&&source->completePlacements[0].modelKey==owner.modelKey);
     assert(input.pagedCpuBytes==pages->cpuBytes());

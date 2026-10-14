@@ -18,6 +18,8 @@ FILES=['renderer.cpp','world_renderer.h','world_shadow_experiment.inl','world_po
 GATES=('NorthlightDiagnostics::enabled()','diagnostics()','sampled()','captureSampled','if(diagnostics)','shadowFate.active()','sampledFrame','profiling()','profileSampled()')
 # Ungated lines that stay with Diagnostics=0: format prefix -> label.
 KEEP={
+ 'WORLD mesh pool trimmed':'rare event: at most once per 3 consecutive staged commits with >16 MiB idle pool surplus (mesh_pool_trim.h), task 42',
+ 'WORLD mesh upload payload':'rare, per lost GPU mesh: the freed upload payload forces a generation rebuild after Reset/resize/recover, once per generation, 0.3.214 task 42',
  'NAMEMASK depth upgrade':'one-off: the depth format upgrade (or why not), once per session, 0.3.212 task 32','NAMEMASK disabled':'one-off: the name mask switched itself off (game stencil, no stencil in the format, failed clear), once per session','NAMEMASK world depth format':'one-off: the world depth format verdict, once per surface',
  'WORLD fog clouds noise':'one-off: the noise volume generated (worker) and uploaded, 0.3.199','WORLD fog clouds disabled':'error: shader or volume creation failed, once per device, 0.3.199','WORLD actor shadow map disabled':'error: shader creation failed, once per device, 0.3.209','WORLD fog temporal disabled':'error: shader creation failed, once per device, 0.3.199','CSTREAM GPU latency limit unavailable':'error: event query creation failed, once per device, 0.3.200 (pipeline)','FRAMEMARKERS on':'one-off: the frame marker file exists at device creation, 0.3.200 (frame markers)','GPUBUDGET timer disabled':'error: query failure, once per device, 0.3.200 (gpu budget)',
  'JOBS workers':'start-up one-off: the replay job pool started (0.3.200 jobs)','JOBS unavailable':'start-up one-off: no job worker could start (0.3.200 jobs)',
@@ -28,7 +30,7 @@ KEEP={
  'WORLD skip episode':'capped: first 32 runs of skipped world frames (tail gated; 0.3.169)','WORLD coverage hold':'capped: first 32 hold/retire episodes (tail gated; 0.3.169)',
  'FIRST EFFECT FRAME':'one-off','EFFECT boundary fallback':'one-off/sticky-state: active, lost (relearning), disarmed (only after it collected) and no candidate (with its top candidates), 0.3.203 task 17','EFFECT boundary frame=%u draw=%u kind=ui-fallback':'sampled: sampled() frames only, like the kind=ui and kind=rain boundary lines','GI probe blend texture unavailable':'one-off warning: the 0.3.197 blend texture failed to allocate (static once flag)','MIRROR mismatch':'error (the audit itself is functional and ungated)',
  'WORLD non-caster draw rejected':'capped: first 4 (periodic tail gated)','Projection rejected':'capped: first',
- 'D3D9 device wrapped':'start-up','MEMORY async sampler':'error','MEMORY guard':'warning: low address space (pressure/trim/after-trim/recovery, cooldown-limited)',
+ 'D3D9 device wrapped':'start-up','MEMORY async sampler':'error','MEMMAP skipped':'rare warning (task 42): an in-world MEMMAP point dropped because the sampler still had one queued (points are minutes apart)','MEMORY guard':'warning: low address space (pressure/trim/after-trim/recovery, cooldown-limited)',
  'LOG previous session':'start-up: previous log rotation result','DEVICE lifetime':'one-off: device create/destroy',
  'Reset HRESULT':'one-off: Reset','Effects components':'user-triggered: Ctrl+Shift+F7..F9','Effects %s':'user-triggered: Ctrl+Shift+F10',
  'World debug':'user-triggered: Ctrl+Shift+F12','MEMORY frame':'gated: diagnostics() in the same condition','MEMORY sample failed':'gated: diagnostics() in the same condition',
@@ -122,7 +124,7 @@ print('PASS Diagnostics=0 audit: every periodic line gated, only start-up/settin
 # turned back into logf the audit must find those lines.
 SPAN_FILES=['world_renderer.h','world_shadow_experiment.inl','world_point_rendering.inl','world_replay_probe.inl','world_rigid_memory.inl','world_diagnostics.h']
 SPAN_ALLOWED={'PREPARE worker':'0.3.177: watchdog (at most 5 a session) / record exception (first 4)','WORLD DISABLED':'error (check())','GEOMETRY MEMORY':'warning: allocation deferral','WORLD pending mesh released':'event (0.3.156)',
- 'SHADOW experiment selection allocation failed':'error','WORLD streaming retry':'capped error','WORLD staged mesh committed':'event: one per commit',
+ 'SHADOW experiment selection allocation failed':'error','WORLD streaming retry':'capped error','WORLD staged mesh committed':'event: one per commit','WORLD mesh pool trimmed':'rare event: after 3 consecutive commits with >16 MiB idle pool surplus',
  'WORLD fog clouds disabled':'one-off error per device (0.3.199): optional shader creation failed','WORLD fog temporal disabled':'one-off error per device (0.3.199): optional shader creation failed','WORLD actor shadow map disabled':'one-off error per device (0.3.209): optional shader creation failed',
  'GI probe blend texture unavailable':'one-off warning (0.3.197: static once flag)'}
 SPAN_DEFERRED=['MODEL GPU cache','MODEL bulk sharing','MODEL GPU policy','MODEL GPU clears','MODEL shadow actors','MODEL shadow selection','RIGID memory','RIGID event','WORLD actor packets']

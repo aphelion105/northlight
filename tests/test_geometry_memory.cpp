@@ -1,3 +1,4 @@
+#include <string>
 #include "geometry_memory.h"
 #include <cassert>
 #include <iostream>
@@ -145,5 +146,16 @@ int main(){
     assert(uploaded.lock()==active&&committedAlpha[0]==.62f);
     replacement.reset();active.reset();
     assert(uploaded.expired()&&scenes.live()==0&&committedAlpha[0]==.62f);
+    {   // Log fields: the refusing limit is named; a non-exact largest prints as a lower bound.
+        using namespace NorthlightGeometryMemory;
+        Budget b;b.available=640*MiB;b.largest=96*MiB;b.valid=true;
+        Sample s;s.available=639*MiB;s.largest=63*MiB;s.valid=true;
+        auto why=refusal(s,b);assert(std::string(why.limit)=="available"&&why.need==640*MiB);
+        s.available=900*MiB;why=refusal(s,b);assert(std::string(why.limit)=="largest"&&why.need==96*MiB);
+        s.largest=96*MiB;why=refusal(s,b);assert(std::string(why.limit)=="none"&&why.need==0&&admits(s,b));
+        Sample bad;assert(std::string(refusal(bad,b).limit)=="sample");
+        char text[32];formatLargestMiB(text,sizeof text,63*MiB,false);assert(std::string(text)==">=63");
+        formatLargestMiB(text,sizeof text,63*MiB,true);assert(std::string(text)=="63");
+    }
     std::cout<<"Geometry generation and memory admission tests passed\n";
 }

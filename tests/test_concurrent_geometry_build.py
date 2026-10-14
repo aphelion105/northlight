@@ -78,6 +78,7 @@ static std::mutex logMutex;static std::vector<std::string> logLines;
 template<class... T> static void logf(const char* format,T... values){char line[2048];std::snprintf(line,sizeof line,format,values...);std::lock_guard<std::mutex> lock(logMutex);logLines.emplace_back(line);}
 namespace NorthlightRegionalFog {struct Field {};struct Region {};constexpr double WorldZero=17066.6666667,TileSize=533.3333333;
  inline Region loadRegion(const std::string&,const std::string&,float,float){return {};}}
+namespace NorthlightMemMap {inline std::atomic<bool> deferredRequest{false};}
 namespace NorthlightLocalLights {struct Light {};struct Cache {explicit Cache(const std::string&){}};}
 namespace NorthlightActorGeometry {struct Result {std::shared_ptr<const NorthlightGI::WorldScene> scene;uint64_t hash=0;unsigned texturesDecoded=0;size_t textureEncodedBytes=0;};
  struct ActorJob {Result resolve()const{throw std::runtime_error("fixture actor failure");}};}
@@ -99,7 +100,7 @@ PALETTE
 ORPHANED
  NorthlightGeometryMemory::StallWatch generationStall;
  NorthlightQuality::Settings quality;std::string root="fixture/";
- std::mutex mutex;std::condition_variable wake;Request request;bool stopping=false,pending=false;
+ std::mutex mutex;std::condition_variable wake;Request request;bool stopping=false,pending=false,geometryRebuild=false;
  std::atomic<bool> workerBusy{false},workerMemoryTrim{false};std::atomic<unsigned> workerFaultCode{0},geometryBuildEstimateMs{1000};std::atomic<uint64_t> geometryMemoryDemand{0};
  std::shared_ptr<Snapshot> published;std::shared_ptr<const PaletteRegion> publishedPaletteRegion;
  // Fixture build controls and observations (guarded by mutex unless atomic).
@@ -110,7 +111,7 @@ ORPHANED
  bool building=false;unsigned buildsStarted=0,buildsDone=0;std::map<const NorthlightGI::BVH*,V> centers;std::vector<V> history;std::weak_ptr<NorthlightGI::BVH> lastBuilt;
  static NorthlightGeometryMemory::Sample geometryAdmissionFor(NorthlightMemoryAdmission::Probe&,NorthlightGeometryMemory::Budget,bool* exact=nullptr){
   if(exact)*exact=true;NorthlightGeometryMemory::Sample s;s.available=s.largest=uint64_t(3)<<30;s.valid=true;return s;}
- static void logGeometryMemory(const char*,NorthlightGeometryMemory::Sample,size_t=0,bool=true){}
+ static void logGeometryMemory(const char*,NorthlightGeometryMemory::Sample,size_t=0,bool=true,const NorthlightGeometryMemory::Budget* =nullptr){}
 WORK
 };
 struct Harness {

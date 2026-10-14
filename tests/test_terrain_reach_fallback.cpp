@@ -62,11 +62,12 @@ int main(){
      for(int i=0;i<3;++i){begins+=e.refused(i*10);}ends+=e.end(40,ms,n);ends+=e.end(50,ms,n);
      begins+=e.refused(60);ends+=e.end(70,ms,n);assert(begins==2&&ends==2);}
     // Memory restore rule (0.3.212 player log: every 30 s restore refused again at ~630 MiB, entry ~800).
-    {State s;const uint64_t entry=800*GM::MiB,need=GM::inBuildBudget(1*GM::MiB).available,seen=630*GM::MiB;
-     assert(memoryRefused(s,Ext,1000,entry+(need-seen)));assert(s.restoreAvailable==810*GM::MiB);
+    // (Samples are large enough that the proactive tier requirement is met as well.)
+    {State s;const uint64_t entry=1400*GM::MiB,need=GM::inBuildBudget(1*GM::MiB).available,seen=630*GM::MiB;
+     assert(memoryRefused(s,Ext,1000,entry+(need-seen)));assert(s.restoreAvailable==1410*GM::MiB);
      assert(choose(s,Ext,1000+BackoffMs,entry).reduced);                 // backoff over, entry unchanged: still base reach
-     assert(choose(s,Ext,1000+5*BackoffMs,809*GM::MiB).reduced&&s.refused);
-     auto c=choose(s,Ext,1000+5*BackoffMs,810*GM::MiB);assert(c.reach==Ext&&c.restored&&!s.refused); // enough at entry: restored once
+     assert(choose(s,Ext,1000+5*BackoffMs,1409*GM::MiB).reduced&&s.refused);
+     auto c=choose(s,Ext,1000+5*BackoffMs,1410*GM::MiB);assert(c.reach==Ext&&c.restored&&!s.refused); // enough at entry: restored once
      assert(memoryRefused(s,Ext,9000,0));assert(!choose(s,Ext,9000+BackoffMs,0).reduced);}    // 0 = backoff only (old rule)
     {State s;memoryRefused(s,Ext,1,UINT64_MAX);                                  // overflowed estimate: never restored by memory
      assert(choose(s,Ext,1+BackoffMs,UINT64_MAX-1).reduced);
@@ -97,12 +98,69 @@ int main(){
      assert(!GM::admits({950*GM::MiB,96*GM::MiB,true},lift.apply(plain,1))&&GM::admits({950*GM::MiB,128*GM::MiB,true},lift.apply(plain,1)));
      lift.refused(900*GM::MiB,640*GM::MiB,700*GM::MiB,0,32*GM::MiB);assert(lift.apply(plain,1).largest==plain.largest);} // never below the plain block
     {State s;memoryRefused(s,Ext,0,700*GM::MiB,96*GM::MiB);
-     assert(choose(s,Ext,BackoffMs,800*GM::MiB,95*GM::MiB).reduced);                 // aggregate fine, block too small
-     assert(choose(s,Ext,BackoffMs,800*GM::MiB,96*GM::MiB).restored);}
+     assert(choose(s,Ext,BackoffMs,1400*GM::MiB,95*GM::MiB).reduced);                // aggregate fine, block too small
+     assert(choose(s,Ext,BackoffMs,1400*GM::MiB,192*GM::MiB).restored);}
     // The memory rule holds at most RestoreHoldMaxMs after the last refusal (no session-long base reach).
     {State s;memoryRefused(s,Ext,0,UINT64_MAX,UINT64_MAX);
      assert(choose(s,Ext,RestoreHoldMaxMs-1,0,0).reduced);
-     auto c=choose(s,Ext,RestoreHoldMaxMs,0,0);assert(c.reach==Ext&&c.restored);}
+     auto c=choose(s,Ext,RestoreHoldMaxMs,3000*GM::MiB,512*GM::MiB);assert(c.reach==Ext&&c.restored);}
+    // Proactive tiers (4096 profile): the highest tier the entry sample carries, never above the profile.
+    {State s;uint32_t t=1000;
+     auto c=choose(s,Ext,t,1200*GM::MiB,256*GM::MiB);assert(c.reach==Ext&&!c.tierChanged&&s.tier==0);       // rich: profile
+     c=choose(s,Ext,t,899*GM::MiB,256*GM::MiB);assert(c.reach==MidReach&&c.tierChanged&&c.tierFrom==Ext&&!c.reduced); // 4096 short of available
+     c=choose(s,Ext,t,1200*GM::MiB,127*GM::MiB);assert(c.reach==MidReach&&!c.tierChanged);                 // lowered tier is kept (hold)
+     c=choose(s,Ext,t,819*GM::MiB,256*GM::MiB);assert(c.reach==BaseReach&&c.tierChanged&&c.tierFrom==MidReach); // drops again at once
+     c=choose(s,Ext,t,767*GM::MiB,256*GM::MiB);assert(c.reach==BaseReach&&!c.tierChanged);                 // already lowest: no log
+     assert(!c.reduced&&!s.refused);}                                                                      // tiers are not refusals
+    {State s;choose(s,Ext,0,819*GM::MiB,256*GM::MiB);assert(s.tier==BaseReach);                          // 819 < 820: base
+     // 1856 needs 820 (+64 to raise) after the hold, in one step; and 4096 needs 900+64 and 128 MiB contiguous.
+     assert(choose(s,Ext,BackoffMs-1,5000*GM::MiB,512*GM::MiB).reach==BaseReach);                          // hold time not over
+     auto c=choose(s,Ext,BackoffMs,883*GM::MiB,512*GM::MiB);assert(c.reach==BaseReach&&!c.tierChanged);    // 1856 margin: 820+64=884
+     c=choose(s,Ext,BackoffMs,884*GM::MiB,512*GM::MiB);assert(c.reach==MidReach&&c.tierChanged&&c.tierFrom==BaseReach);
+     assert(choose(s,Ext,BackoffMs+1,963*GM::MiB,512*GM::MiB).reach==MidReach);                            // 4096 margin: 964
+     assert(choose(s,Ext,2*BackoffMs-1,5000*GM::MiB,512*GM::MiB).reach==MidReach);                         // hold restarts at each change
+     assert(choose(s,Ext,2*BackoffMs,964*GM::MiB,127*GM::MiB).reach==MidReach);                           // contiguous short
+     c=choose(s,Ext,2*BackoffMs,964*GM::MiB,128*GM::MiB);assert(c.reach==Ext&&c.tierChanged&&c.tierFrom==MidReach&&s.tier==0);}
+    {State s;const uint32_t t=0xFFFFFF00u;choose(s,Ext,t,819*GM::MiB);                                     // tick wrap of the hold
+     assert(choose(s,Ext,t+BackoffMs-1,4000*GM::MiB).reach==BaseReach&&choose(s,Ext,t+BackoffMs,4000*GM::MiB).reach==Ext);}
+    // No flip-flop: a sample oscillating around the threshold changes tier at most once per hold.
+    {State s;int changes=0;uint32_t t=0;
+     for(int i=0;i<200;++i,t+=1000){const uint64_t a=(i%2?940:860)*GM::MiB;changes+=choose(s,Ext,t,a,256*GM::MiB).tierChanged;}
+     assert(changes==1&&s.tier==MidReach);}                                                                // dropped once, never raised (needs 964)
+    {State s;int changes=0;uint32_t t=0;                                                                   // same around the 1856 threshold (820 +-40)
+     for(int i=0;i<200;++i,t+=1000){const uint64_t a=(i%2?860:780)*GM::MiB;changes+=choose(s,Ext,t,a,256*GM::MiB).tierChanged;}
+     assert(changes==1&&s.tier==BaseReach);}
+    // Measured profile (build entries 800-900 MiB, largest free block ~419 MiB): 1856 at 820-899, 4096 from 900.
+    {for(uint64_t a=800;a<=1100;++a){State s;const float want=a>=900?Ext:a>=820?MidReach:BaseReach;
+      assert(choose(s,Ext,0,a*GM::MiB,419*GM::MiB).reach==want);}
+     for(uint64_t a:{798,830,879}){State s;assert(choose(s,Ext,0,a*GM::MiB,419*GM::MiB).reach<Ext);} // the logged refusals never enter at 4096
+     assert(meets(Ext,900*GM::MiB,419*GM::MiB)&&!meets(Ext,899*GM::MiB,419*GM::MiB)&&meets(MidReach,820*GM::MiB,96*GM::MiB)&&!meets(MidReach,819*GM::MiB,419*GM::MiB));}
+    // Recovery: after a dip to 1856 the 4096 tier returns once the hold passed and the sample is threshold+64.
+    {State s;assert(choose(s,Ext,0,950*GM::MiB,419*GM::MiB).reach==Ext);
+     assert(choose(s,Ext,1000,850*GM::MiB,419*GM::MiB).reach==MidReach);                                   // dip: drops at once
+     assert(choose(s,Ext,1000+BackoffMs-1,5000*GM::MiB,419*GM::MiB).reach==MidReach);                      // hold not over
+     assert(choose(s,Ext,1000+BackoffMs,963*GM::MiB,419*GM::MiB).reach==MidReach);                         // hold over, margin missing
+     auto c=choose(s,Ext,1000+BackoffMs,964*GM::MiB,419*GM::MiB);assert(c.reach==Ext&&c.tierChanged&&s.tier==0);}
+    // Profile 1856 and 928 zones, and mixed zones sharing the state.
+    {State s;auto c=choose(s,MidReach,0,819*GM::MiB,256*GM::MiB);assert(c.reach==BaseReach&&c.tierChanged&&c.tierFrom==MidReach);
+     c=choose(s,MidReach,1,5000*GM::MiB,0);assert(c.reach==BaseReach);                                       // hold applies
+     c=choose(s,MidReach,BackoffMs,884*GM::MiB,96*GM::MiB);assert(c.reach==MidReach&&s.tier==0);
+     assert(choose(s,MidReach,BackoffMs+1,820*GM::MiB,96*GM::MiB).reach==MidReach);}                      // 1856 never asks for the 4096 rule
+    {State s;auto c=choose(s,BaseReach,0,1*GM::MiB,0);assert(c.reach==BaseReach&&!c.tierChanged&&s.tier==0);}
+    {State s;choose(s,Ext,0,819*GM::MiB,256*GM::MiB);                                                       // tier 928 from a 4096 zone
+     auto c=choose(s,MidReach,1,5000*GM::MiB,512*GM::MiB);assert(c.reach==BaseReach&&!c.tierChanged);       // 1856 zone shares the lowered tier: hold applies
+     assert(choose(s,BaseReach,2,0,0).reach==BaseReach);}
+    // Unknown memory: no memory rule, profile reach, state untouched.
+    {State s;auto c=choose(s,Ext,0);assert(c.reach==Ext&&!c.tierChanged&&s.tier==0);
+     c=choose(s,Ext,1,~0ull,~0ull);assert(c.reach==Ext);
+     choose(s,Ext,2,899*GM::MiB,256*GM::MiB);c=choose(s,Ext,3);assert(c.reach==Ext&&s.tier==MidReach);}
+    // Refusal fallback still wins over the tier and sets the base tier (a raise then needs hold + margin).
+    {State s;assert(choose(s,Ext,0,3000*GM::MiB,512*GM::MiB).reach==Ext);
+     assert(memoryRefused(s,Ext,10,0,0)&&s.tier==BaseReach&&s.tierSince==10);
+     auto c=choose(s,Ext,11,3000*GM::MiB,512*GM::MiB);assert(c.reach==BaseReach&&c.reduced&&!c.tierChanged);
+     c=choose(s,Ext,10+BackoffMs,963*GM::MiB,512*GM::MiB);assert(c.reach==MidReach&&!c.reduced&&c.restored); // refusal cleared; the tier margin caps the raise at 1856
+     c=choose(s,Ext,10+2*BackoffMs,964*GM::MiB,512*GM::MiB);assert(c.reach==Ext&&!c.restored&&s.tier==0);
+     assert(memoryRefused(s,MidReach,20+3*BackoffMs));}                                                     // a refused 1856 build also falls to 928
     // The after-BVH gate keeps the in-build floor: the logged 720 MiB plan refusal now proceeds.
     assert(GM::admits({720*GM::MiB,502*GM::MiB,true},GM::inBuildBudget())&&!GM::admits({720*GM::MiB,502*GM::MiB,true},GM::buildBudget()));
     std::cout<<"terrain reach fallback PASS\n";

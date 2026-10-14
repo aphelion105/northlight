@@ -1,7 +1,9 @@
 #pragma once
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <limits>
 #include <memory>
 
@@ -22,6 +24,24 @@ constexpr uint64_t EntryHeadroom=256*MiB;
 // memory the build itself consumes. Interior checks keep the process reserve plus this guard.
 constexpr uint64_t InBuildHeadroom=128*MiB;
 struct Sample { uint64_t available=0,largest=0;bool valid=false; };
+// task 42: Wine's GlobalMemoryStatusEx ullAvailVirtual does not subtract reserve-only regions (a
+// 1.9 GiB MEM_RESERVE test read 2656 MiB available with 389 MiB actually free). Every full
+// VirtualQuery walk records how far the API overstates the walked free total; cheap samples that
+// read only the API subtract it. On Windows the two agree within a few MiB (sampling race), so a
+// difference under BiasFloor is ignored and Windows decisions stay unchanged.
+constexpr uint64_t BiasFloor=64*MiB;
+inline std::atomic<uint64_t>& availableBias(){static std::atomic<uint64_t> bias{0};return bias;}
+// After a full walk: returns the trustworthy available value (the walked free total when the API overstates it).
+inline uint64_t noteWalk(uint64_t apiAvailable,uint64_t walkedFree){
+    const uint64_t over=apiAvailable>walkedFree?apiAvailable-walkedFree:0;
+    availableBias().store(over>=BiasFloor?over:0,std::memory_order_relaxed);
+    return over>=BiasFloor?walkedFree:apiAvailable;
+}
+// API-only sample: subtract the last walk's overstatement.
+inline uint64_t corrected(uint64_t apiAvailable){
+    const uint64_t bias=availableBias().load(std::memory_order_relaxed);
+    return apiAvailable>bias?apiAvailable-bias:0;
+}
 struct Budget { uint64_t available=0,largest=0;bool valid=false; };
 inline bool add(uint64_t a,uint64_t b,uint64_t& out){
     if(b>std::numeric_limits<uint64_t>::max()-a)return false;
@@ -92,6 +112,19 @@ inline Budget uploadBudget(uint64_t vertexBytes,uint64_t indexBytes,
 inline bool admits(Sample sample,Budget budget){
     return sample.valid&&budget.valid&&sample.available>=budget.available&&
            sample.largest>=budget.largest;
+}
+// Which limit of `budget` refuses `sample` (aggregate first), for logs only; limit=="none" when admitted.
+struct Refusal { const char* limit="none";uint64_t need=0; };
+inline Refusal refusal(Sample sample,Budget budget){
+    if(!budget.valid)return {"budget",0};
+    if(!sample.valid)return {"sample",0};
+    if(sample.available<budget.available)return {"available",budget.available};
+    if(sample.largest<budget.largest)return {"largest",budget.largest};
+    return {};
+}
+// A non-exact `largest` is only the witnessed lower bound of a block, never a measurement: print ">=N".
+inline void formatLargestMiB(char* out,size_t size,uint64_t bytes,bool exact){
+    std::snprintf(out,size,exact?"%llu":">=%llu",(unsigned long long)(bytes>>20));
 }
 // A build refused for memory AFTER it passed stage entry frees its work and would pass
 // entry again at once: the same BVH was rebuilt every second (162 and 482 attempts in one

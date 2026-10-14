@@ -30,7 +30,7 @@ entry = body('auto memory=workerMemory(entryLift.apply(NorthlightGeometryMemory:
 assert entry.count('NorthlightGeometryMemory::buildBudget(') >= 2 and 'inBuildBudget(' not in entry
 assert 'const auto entryBudget=entryLift.apply(plainEntry,GetTickCount());' in entry
 assert 'if(!NorthlightGeometryMemory::admits(memory,plainEntry)){localGeometry.reset();' in entry  # a lift alone keeps the cache
-assert 'stallBegin("build-deferred",memory,entryBudget.available)' in w
+assert 'stallBegin("build-deferred",memory,entryBudget.available,entryBudget.largest)' in w
 # Every refusal after entry that does not fall back to the base reach raises the next entry.
 for stage in ('local-geometry', 'shadow-terrain', 'mesh-page', 'mesh-page-seal'):
     assert any('liftEntry("%s",' % stage in line and 'deferBuild(' in line and 'Largest)' in line for line in w.splitlines()), stage
@@ -51,13 +51,14 @@ st = fp.src('shadow_terrain.h').read_text()
 assert 'constexpr float Radius=928.f;' in st
 assert '#include "terrain_reach_fallback.h"' in w
 for stage in ('shadow-terrain', 'mesh-page"', 'mesh-page-seal'):
-    assert re.search(r'stallBegin\("%s,?[^;]*,terrainRequired\);\s*if\(reduceReach\(\)\)goto terrainStage;' % re.escape(stage.rstrip('"')), w.replace('\n', ' ')), stage
+    assert re.search(r'stallBegin\("%s,?[^;]*,terrainRequired(?:,terrainRequiredLargest)?\);\s*if\(reduceReach\(\)\)goto terrainStage;' % re.escape(stage.rstrip('"')), w.replace('\n', ' ')), stage
 assert w.count('goto terrainStage') == 3 and w.count('terrainStage:') == 1
 assert 'NorthlightTerrainReach::choose(reachState,profileReach' in w
 assert 'reach=reachChoice.reach;' in w and 'const bool extended=reach>NorthlightShadowTerrain::Radius;' in w
-for text in ('WORLD geometry memory stall begin stage=%s availableMiB=%llu largestMiB=%llu generations=%zu',
+for text in ('WORLD geometry memory stall begin stage=%s availableMiB=%llu largestMiB=%s generations=%zu refused=%s need=%llu',
              'WORLD geometry memory stall end ms=%u attempts=%u outcome=%s',
              'WORLD shadow terrain reach reduced from=%.0f to=%.0f reason=memory',
+             'WORLD shadow terrain reach tier from=%.0f to=%.0f reason=headroom availableMiB=%llu largestMiB=%llu',
              'WORLD shadow terrain reach restored to=%.0f'):
     assert text in w, text
 assert 'stallEnd(memoryStall.reduced?"reduced":"published")' in w and w.count('stallEnd("superseded")') == 3
@@ -65,3 +66,8 @@ assert 'WORLD skip episode begin reason=%s' in r and 'WORLD skip episode reason=
 assert '#include "terrain_reach_fallback.h"' in (Path(__file__).parent / 'test_concurrent_geometry_build.py').read_text()
 assert 'stallEnd("error")' in w and 'if(abandoned)stallEnd("superseded")' in w
 print('terrain reach fallback wiring PASS')
+
+# Geometry-memory logs: a non-exact largest is printed as ">=N" and every refusal names its limit.
+assert 'formatLargestMiB(largest,sizeof largest,sample.largest,exactLargest)' in w and 'largestFreeMiB=%s' in w and 'largestFreeMiB=%llu' not in w
+assert 'refused=%s need=%llu' in w and w.count('refused=%s need=%llu') == 2
+assert 'inline Refusal refusal(Sample sample,Budget budget)' in g and '">=%llu"' in g

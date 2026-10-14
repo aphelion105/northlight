@@ -159,8 +159,8 @@ public:
         }
         if(NorthlightReplayCopies::enabled.load(std::memory_order_relaxed))NorthlightReplayCopies::attach(record.copy,record.raw,record.exposed,this,record.metadata.size,&record.locks); // size 0 (descriptor unknown): never copied
         {std::lock_guard<std::mutex> guard(mutex);
-         records.emplace(record.raw,&record);
-         try{records.emplace(record.exposed,&record);}catch(...){records.erase(record.raw);NorthlightReplayCopies::detach(record.copy);throw;}}
+         bool first=false;
+         try{first=records.emplace(record.raw,&record).second;records.emplace(record.exposed,&record);}catch(...){if(first)records.erase(record.raw);NorthlightReplayCopies::detach(record.copy);throw;}}
         owner->AddRef();
         // Identical for every instance of this final class; first class wins.
         static const ShapeInfo shape={*reinterpret_cast<const void* const*>(static_cast<T*>(this)),

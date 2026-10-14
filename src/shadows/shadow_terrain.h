@@ -94,7 +94,12 @@ inline bool build(const NorthlightGI::WorldScene& local,const NorthlightGI::Worl
     merged->triangles.insert(merged->triangles.end(),local.triangles.begin(),local.triangles.end());
     if(!allowed((local.materials.size()+1)*sizeof(NorthlightGI::WorldMaterial)))return false;
     merged->materials.reserve(local.materials.size()+1);
-    for(const auto& m:local.materials){if(!allowed(m.rgba.size()))return false;merged->materials.push_back(m);}
+    // Metadata only: texel data stays in `local` (alive for this call) and is read through buildUploadPlan's
+    // texture source, so the merged scene carries no third copy of up to 256 MiB of rgba.
+    for(const auto& m:local.materials){
+        NorthlightGI::WorldMaterial meta;meta.albedo=m.albedo;meta.alphaCutoff=m.alphaCutoff;meta.addressU=m.addressU;meta.addressV=m.addressV;meta.terrain=m.terrain;meta.wmo=m.wmo;
+        merged->materials.push_back(std::move(meta));
+    }
     if(!allowed(local.completePlacements.size()*sizeof(NorthlightGI::WorldPlacementCoverage)))return false;
     merged->completePlacements=local.completePlacements;
     std::set<std::pair<int,int>> fixed;
@@ -128,7 +133,7 @@ inline bool build(const NorthlightGI::WorldScene& local,const NorthlightGI::Worl
            cl.y>=center.y-radius&&ch.y<=center.y+radius)fixed.insert(key);
     }
     NorthlightWorldMesh::WorldMeshUploadPlan plan;
-    if(!NorthlightWorldMesh::buildUploadPlan(*merged,plan,error,admit))return false;
+    if(!NorthlightWorldMesh::buildUploadPlan(*merged,plan,error,admit,&local.materials))return false;
     plan.ownedSource=merged;plan.fixedTerrainChunks=std::move(fixed);
     output=std::move(plan);return true;
     }catch(...){error="Cannot allocate shadow terrain mesh";return false;}

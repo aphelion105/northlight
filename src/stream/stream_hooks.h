@@ -62,15 +62,21 @@ inline bool commandStreamFromText(const std::string& own,bool hasFile=true,unsig
 #ifdef _WIN32
 // Called by Factory::CreateDevice before the real device exists: rootPath + northlight-quality.ini (wide path, as
 // WorldRenderer::readSmallFile). An absent file means the code default (1).
-inline bool commandStreamRequested(const wchar_t* rootPath,unsigned* framesAhead=nullptr,unsigned* frameSkip=nullptr,bool* nameMask=nullptr){
-    std::string text;bool has=false;if(framesAhead)*framesAhead=1;if(frameSkip)*frameSkip=0;if(nameMask)*nameMask=false;
+// northlight-quality.ini text under rootPath (bounded read); false when absent or unreadable.
+inline bool readQualityText(const wchar_t* rootPath,std::string& text){
+    text.clear();
     try{
         const std::wstring path=std::wstring(rootPath?rootPath:L"")+L"northlight-quality.ini";
         HANDLE f=CreateFileW(path.c_str(),GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
-        if(f!=INVALID_HANDLE_VALUE){char buffer[4096];DWORD got=0;has=true;
-            while(ReadFile(f,buffer,sizeof buffer,&got,nullptr)&&got&&text.size()<262144)text.append(buffer,got);
-            CloseHandle(f);}
+        if(f==INVALID_HANDLE_VALUE)return false;
+        char buffer[4096];DWORD got=0;
+        while(ReadFile(f,buffer,sizeof buffer,&got,nullptr)&&got&&text.size()<262144)text.append(buffer,got);
+        CloseHandle(f);return true;
     }catch(...){return false;}
+}
+inline bool commandStreamRequested(const wchar_t* rootPath,unsigned* framesAhead=nullptr,unsigned* frameSkip=nullptr,bool* nameMask=nullptr){
+    std::string text;if(framesAhead)*framesAhead=1;if(frameSkip)*frameSkip=0;if(nameMask)*nameMask=false;
+    const bool has=readQualityText(rootPath,text);
     return commandStreamFromText(text,has,framesAhead,frameSkip,nameMask);
 }
 #endif

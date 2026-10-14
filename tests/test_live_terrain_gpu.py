@@ -12,7 +12,7 @@ HERE=Path(__file__).resolve().parent
 w=fp.src('world_renderer.h').read_text();pr=fp.src('world_point_rendering.inl').read_text()
 up=w[w.index('    bool uploadLiveTerrain(){'):w.index('    // Win32 wide-path read')]
 reset='liveTerrainIndexCount=liveDirectionalIndexCount=0;liveIndexBase=0;liveTerrainChunks.clear();uploadedTerrain.clear();return true;'
-release=w[w.index('    void releaseGPU(){'):]
+release=w[w.index('    void releaseGPU(bool keepMesh=false){'):]
 release=release[:release.index('\n')]
 checks={
  'no index vectors left: counts only':'liveTerrainIndices' not in w+pr and 'liveDirectionalIndices' not in w+pr
