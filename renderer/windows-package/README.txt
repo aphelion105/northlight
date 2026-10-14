@@ -152,6 +152,7 @@ Individual settings (Quality / Balanced / Performance):
   Diagnostics           0 / 0 / 0      periodic statistics and timings in the log (0 = only startup, settings and errors; the image does not change)
   RenderProfile         0 / 0 / 0      measurement: render thread timings in the log (needs Diagnostics=1; the image does not change)
   DiagReplayProbe       0 / 0 / 0      measurement: the near-shadow character draws a second time, hidden, in 10 s periods, and the timing in the log (needs RenderProfile=1; the image does not change)
+  MemMap                0 / 0 / 0      memory diagnostics: address-space snapshots (MEMMAP lines) in the log (1 = on; the image does not change)
   FrameDrawGates        1 / 1 / 1      per-frame draw checks (0 = check every draw as before 0.3.187, for comparisons; the image does not change)
   ShadowPivotCorrection 1 / 1 / 1      near shadow detail follows camera zoom and collisions (0 = the distance of the sharp shadow area is only estimated while orbiting, as before 0.3.190, for comparisons)
   CommandStream         1 / 1 / 1      the game records its graphics calls and a second thread runs the renderer (0 = everything on the game's thread as before 0.3.192, for comparisons; read at game start)

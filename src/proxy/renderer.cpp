@@ -48,6 +48,7 @@
 #include "log_rotation.h"
 #include "memory_guard.h"
 #include "address_space_snapshot.h"
+#include "memory_switches.h"
 #include "northlight_mem.h"
 #include "m2_shader_families.h"
 
@@ -185,7 +186,13 @@ static void memmapJob(void*,const void* data,std::size_t size){
     SetThreadPriority(GetCurrentThread(),THREAD_PRIORITY_BELOW_NORMAL); // idempotent; the first job may precede the first query
     NorthlightMemMap::runJob(&memmapSink,data,size);
 }
+// task 42: MemMap=0 (default) = no walk. The process-level points precede WorldRenderer::loadQuality, so the first one reads the ini itself.
+static bool memmapEnabled(){
+    if(!NorthlightMemorySwitches::loaded()){std::string text;const bool has=NorthlightStream::readQualityText(rootPath,text);NorthlightMemorySwitches::configureFromText(text,has);}
+    return NorthlightMemorySwitches::memMap();
+}
 static void memmapProcess(const char* point,long device){
+    if(!memmapEnabled())return;
     try{
         char label[128];std::snprintf(label,sizeof label,"device=%ld point=%s frame=0 tick=%lu",device,point,(unsigned long)GetTickCount());
         NorthlightMemMap::snapshot(&memmapSink,label,"");
@@ -1939,6 +1946,7 @@ public:
         if(w>0&&std::size_t(w)<size)std::snprintf(tally+w,size-std::size_t(w)," tallySkipped=staticShadowCpuGpu,localScene,replayCaches(need locks)");
     }
     void memmap(const char* point){
+        if(!NorthlightMemorySwitches::memMap())return; /* task 42: MemMap=0, no walk, no line */
         try{
             char label[128],tally[768];
             std::snprintf(label,sizeof label,"device=%ld point=%s frame=%u tick=%lu",diagnosticId,point,frame,(unsigned long)GetTickCount());
@@ -1948,6 +1956,7 @@ public:
     }
     // Queues an in-world point on the sampler thread (no walk here); dropped when the sampler is gone or still has a job waiting.
     void memmapAsync(const char* point){
+        if(!NorthlightMemorySwitches::memMap())return;
         try{
             if(!memoryDiagnostics)return;
             NorthlightMemMap::Job job;
@@ -1960,7 +1969,7 @@ public:
     // world-entry 600 frames after its first draw, memory-deferred on the first memory refusal/stall of this device and then at most every
     // 10 minutes, periodic every 10 minutes after world-entry.
     void memmapSchedule(){
-        if(!worldDrawSeen)return;
+        if(!NorthlightMemorySwitches::memMap()||!worldDrawSeen)return; /* task 42: MemMap=0 = one relaxed load; deferredRequest stays set and is ignored */
         const bool deferred=NorthlightMemMap::deferredRequest.load(std::memory_order_relaxed)&&NorthlightMemMap::deferredRequest.exchange(false,std::memory_order_relaxed);
         if(!deferred&&(frame&31))return;
         const DWORD now=GetTickCount();const char* point=nullptr;

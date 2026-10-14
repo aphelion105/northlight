@@ -115,6 +115,7 @@
 #include "celestial_terrain.h"
 #include "quality_settings.h"
 #include "diagnostics_switch.h"
+#include "memory_switches.h"
 #include "gi_solve_pool.h"
 #include "near_reserve.h"
 #include "capture_admission.h"
@@ -2035,6 +2036,7 @@ private:
         logf("QUALITY ActorShadows=%u: %s; forced off: %s",quality.actorShadows,quality.actorShadows?"actor and static shadows":"static shadows only",forced.c_str());
         logf("QUALITY ActorShadowDetail=%u: %s",quality.actorShadowDetail,NorthlightQuality::actorShadowMap(quality,true)?"actor shadow map and soft filter":"actor shadows in the near cascade"); /* 0.3.209 (task 29) */
         NorthlightDiagnostics::configure(quality.diagnostics!=0);
+        NorthlightMemorySwitches::configure(quality.memMap!=0); /* task 42: MemMap (also read earlier by the process-level MEMMAP points) */
         NorthlightRenderThreadProbe::configure(NorthlightQuality::renderProfile(quality),NorthlightQuality::replayProbe(quality));
         NorthlightWorldContext::SelfReadStats::timed.store(NorthlightQuality::renderProfile(quality),std::memory_order_relaxed); /* 0.3.160 */
         // 0.3.153 GIDistance: the probe layout is fixed by the first renderer of the process.

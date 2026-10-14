@@ -108,7 +108,11 @@ struct Settings {
     // NameMaskDebug: 1 = the marked pixels are drawn 50 percent magenta over the finished effects. Creation-time keys.
     unsigned nameMask=1;
     unsigned nameMaskDebug=0;
-    char origin[52]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
+    // task 42 MemMap: 1 = the MEMMAP address-space snapshots (backend-loaded, pre-create, create, baseline-frame300, world-entry,
+    // memory-deferred, periodic, destroy-begin/end; address_space_snapshot.h) run; 0 = none: no walks, no log lines, no queued work.
+    // Read before the device exists (memory_switches.h).
+    unsigned memMap=0;
+    char origin[53]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
 };
 struct Key { const char* name; unsigned Settings::*field; unsigned low,high; unsigned preset[3]; };
 // preset[] = Quality, Balanced, Performance. Quality must equal Settings{}.
@@ -165,6 +169,7 @@ inline const Key Keys[]={
     {"SpellFog",&Settings::spellFog,0,1,{1,1,1}},
     {"NameMask",&Settings::nameMask,0,1,{1,1,1}}, /* 0.3.212 (task 32) */
     {"NameMaskDebug",&Settings::nameMaskDebug,0,1,{0,0,0}}, /* 0.3.212 (task 32) */
+    {"MemMap",&Settings::memMap,0,1,{0,0,0}}, /* task 42 */
 };
 inline bool operator==(const Settings& a,const Settings& b){for(const auto& k:Keys)if(a.*k.field!=b.*k.field)return false;return true;}
 inline bool operator!=(const Settings& a,const Settings& b){return !(a==b);}

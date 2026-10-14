@@ -25,7 +25,7 @@ checks={
  'frame 300 of every device, device 1 labelled baseline':'if(frame==300)memmap(diagnosticId==1?"baseline-frame300":"frame300");' in fin,
  'exactly four call sites (+ the definition)':r.count('memmap("')==3 and r.count('memmap(diagnosticId==1')==1 and r.count('void memmap(const char* point)')==1,
  'ungated by Diagnostics':'diagnostics()' not in dtor.split('memmap("destroy-end")')[0].split('memmap("destroy-begin")')[0][-200:] and 'NorthlightMemMap::snapshot(' in r and not re.search(r'diagnostics\(\)[^;{]*memmap\(',r),
- 'never throws out of the device (try/catch around the snapshot, which also catches)':'void memmap(const char* point){\n        try{' in r and '}catch(...){}\n    }' in r and 'catch(...){}\n    busy().clear' in h,
+ 'never throws out of the device (try/catch around the snapshot, which also catches)':'void memmap(const char* point){\n        if(!NorthlightMemorySwitches::memMap())return; /* task 42: MemMap=0, no walk, no line */\n        try{' in r and '}catch(...){}\n    }' in r and 'catch(...){}\n    busy().clear' in h,
  'one snapshot at a time, no re-entry':'test_and_set' in h and 'busy().clear' in h,
  'storage reserved once, no growth past capacity':'allocs_.reserve(MaxAllocs)' in h and 'allocs_.size()>=allocs_.capacity()' in h,
  'only own-process kernel32/toolhelp/ntdll/psapi query APIs; optional ones via GetProcAddress, no hooks, no foreign process, no game-memory reads':all(x in h for x in ('VirtualQuery(','GetProcessHeaps(','CreateToolhelp32Snapshot(','GetModuleFileNameA(','GetSystemInfo(','OpenThread(','ReadProcessMemory(GetCurrentProcess()'))
@@ -40,6 +40,16 @@ for tag in ['summary','top','diff-new','diff-gone','diff-changed','diff','diff-c
 for key in ['commitMiB=','image=','mapped=','private=','freeMiB=','largestFreeMiB=','regions=','allocations=','walkMs=','base=0x','sizeMiB=','commitMiB=','type=%s','prot=0x','module=%s','wasMiB=','threads=%u modules=%u','owner=%s','file=%s','reserveMiB=%.1f','largestMiB=%.1f','skippedByBudget=','count=%llu totalMiB=%.1f commitMiB=%.1f']:
     checks['field '+key]=key in h
 checks['sink prints through logf (one MEMMAP line per call, label = device/point/frame/tick)']='logf("%s",line)' in r and 'device=%ld point=%s frame=%u tick=%lu' in r
+# task 42: MemMap (default 0) gates every point; the process-level ones learn it by reading the ini themselves
+sched=body(r,'    void memmapSchedule(){','    bool worldDrawSeen=false');asyn=body(r,'    void memmapAsync(const char* point){','    // Frame end (finishFrame)')
+qs=fp.src('quality_settings.h').read_text();sw=fp.src('memory_switches.h').read_text();proc=body(r,'static bool memmapEnabled(){','static void memmapProcess(')
+checks['MemMap key: 0..1, presets 0/0/0, default 0']='{"MemMap",&Settings::memMap,0,1,{0,0,0}}' in qs and 'unsigned memMap=0;' in qs
+checks['MemMap: process-level points read the ini before loadQuality (once), unconfigured = off']='readQualityText(rootPath,text)' in proc and 'loaded()' in proc and 'memMapFlag{false}' in sw and 'configure(false)' in sw
+checks['MemMap: memmapProcess/memmap/memmapAsync/memmapSchedule return first when off']=(
+    'if(!memmapEnabled())return;' in body(r,'static void memmapProcess(','// Sampler thread entry')
+    and 'if(!NorthlightMemorySwitches::memMap())return;' in asyn and 'if(!NorthlightMemorySwitches::memMap()||!worldDrawSeen)return;' in sched
+    and r.count('NorthlightMemMap::snapshot(')==2 and 'deferredRequest.exchange' in sched.split('worldDrawSeen)return;')[1])
+checks['MemMap: loadQuality stores the final value']='NorthlightMemorySwitches::configure(quality.memMap!=0)' in fp.src('world_renderer.h').read_text()
 for k,v in checks.items():print(('PASS ' if v else 'FAIL ')+k)
 assert all(checks.values())
 # task 42: new points and their threads
@@ -53,7 +63,7 @@ checks2={
  'pre-create just before the backend CreateDevice':fac.index('memmapProcess("pre-create"')<fac.index('real->CreateDevice(adapter,type,window,flags,pp,out)') and fac.index('real->CreateDevice(adapter,type,window,flags,pp,out)')<fac.index('new Device('),
  'process-level points run on the caller, in-world points through the sampler job':'static void memmapProcess(' in r and 'memoryDiagnostics->requestJob(&job,sizeof job)' in asyn and 'NorthlightMemMap::snapshot(' not in asyn and 'memoryDiagnostics->setJob(&memmapJob)' in ctor2,
  'sampler thread: job entry runs the snapshot at below-normal priority':'static void memmapJob(' in r and 'NorthlightMemMap::runJob(&memmapSink,data,size)' in r and 'THREAD_PRIORITY_BELOW_NORMAL' in body(r,'static void memmapJob(','static void memmapProcess('),
- 'world-entry: 600 frames after the first successful world draw':'worldDrawSeen?0:(worldDrawSeen=true,worldDrawFrame=frame,0)' in r and 'frame-worldDrawFrame>=600' in sched and 'point="world-entry"' in sched and 'if(!worldDrawSeen)return;' in sched,
+ 'world-entry: 600 frames after the first successful world draw':'worldDrawSeen?0:(worldDrawSeen=true,worldDrawFrame=frame,0)' in r and 'frame-worldDrawFrame>=600' in sched and 'point="world-entry"' in sched and '||!worldDrawSeen)return;' in sched,
  'periodic: every 10 minutes after world-entry':'point="periodic"' in sched and 'memmapPeriodicAt=now+600000' in sched and '300000' not in sched,
  'memory-deferred: first refusal, then at most once per 10 minutes':'point="memory-deferred"' in sched and 'now-memmapDeferredAt>=600000' in sched and 'deferredRequest.exchange(false' in sched,
  'no per-frame cost when nothing is due (one relaxed load, clock every 32nd frame)':'(frame&31)' in sched and sched.count('GetTickCount()')==1 and 'memmapSchedule(); /* task 42' in fin,
