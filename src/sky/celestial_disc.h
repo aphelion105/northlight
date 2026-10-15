@@ -104,6 +104,7 @@ struct Placement {
     Disc disc{};float projection[3]={},inverseView[16]={},depth=0,emission=0;
     unsigned width=0,height=0;bool valid=false;
 };
+constexpr float HorizonFade=.02f; // direction z (sine of the elevation) where the disc reaches full opacity
 inline bool prepare(const float* direction,const float* tint,float alpha,float angularRadius,Disc& output) {
     if(!direction||!tint||!std::isfinite(alpha)||alpha<=0||alpha>1||
        !std::isfinite(angularRadius)||angularRadius<.000001f||angularRadius>.5f)return false;
@@ -121,7 +122,9 @@ inline bool prepare(const float* direction,const float* tint,float alpha,float a
     const float a=1/(1+d.direction[2]),b=-d.direction[0]*d.direction[1]*a;
     d.right[0]=1-d.direction[0]*d.direction[0]*a;d.right[1]=b;d.right[2]=-d.direction[0];
     d.up[0]=b;d.up[1]=1-d.direction[1]*d.direction[1]*a;d.up[2]=-d.direction[1];
-    float horizon=std::max(0.f,std::min(1.f,d.direction[2]/.08f));horizon=horizon*horizon*(3-2*horizon);
+    // Fade in over about one sun radius above the horizon (sine .02, ~1.1 deg). It was .08 (4.6 deg): the disc and
+    // its glare were down to ~40% at 2 deg and ~13% at 1 deg, so the setting sun lost almost all its brightness.
+    float horizon=std::max(0.f,std::min(1.f,d.direction[2]/HorizonFade));horizon=horizon*horizon*(3-2*horizon);
     d.opacity=alpha*horizon;d.tangentRadius=std::tan(angularRadius);output=d;return d.opacity>0;
 }
 // Conservative full-resolution scissor [left,top,right,bottom], with two-pixel
