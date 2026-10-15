@@ -1,6 +1,7 @@
 #include "static_m2_dedup.h"
 #include <cassert>
 #include <cstdio>
+#include <algorithm>
 #include <limits>
 using namespace StaticM2Dedup;
 struct P {float x,y,z;};
@@ -29,7 +30,9 @@ int main(){
     assert(covers(m,place,w,list,true,2));
     assert(covers(m,place,w,std::vector<uint32_t>{0,2,1,3,2,0},true,2));          // winding and order do not matter
     assert(covers(m,place,w,std::vector<uint32_t>{0,1,2},true,1));                // a subset of the opaque triangles
-    w[1].x+=.015f;assert(covers(m,place,w,list,true,2));                          // float noise within tolerance
+    w[1].x+=.0019f;assert(covers(m,place,w,list,true,2));                         // float noise (measured max ~0.00195 yd) within tolerance
+    w=quad();w[1].x+=.004f;assert(!covers(m,place,w,list,true,2));                 // beyond the tolerance, still far below a texel: kept
+    w=quad();w[1].x+=.02f;assert(!covers(m,place,w,list,true,2));                  // the old 0.02 yd tolerance no longer proves
     w=quad();w[1].x+=.1f;assert(!covers(m,place,w,list,true,2));                  // a vertex off the model: another model at this origin
     w=quad();assert(!covers(m,place,w,list,true,3));                              // more triangles than the index list holds
     // The same vertex set forming other triangles: (0,1,3) and (1,2,3) are not the model's (0,1,2),(0,2,3).
@@ -43,6 +46,17 @@ int main(){
     auto broken=m;broken.indices[1]=99;assert(!covers(broken,place,quad(),list,true,2));
     assert(!covers(m,place,quad(),list,true,2,VertexTolerance,3));                // model index cap
     assert(!covers(m,place,quad(),std::vector<uint32_t>{0,1,9},true,1));          // index out of the replay's vertices
+    assert(VertexTolerance<=.003f&&WorldTolerance<=.003f&&VertexTolerance>.00195f);  // far below a ~0.094 yd texel, above the measured noise
+    // work cap: a call over the comparison budget keeps the replay; a model over the triangle cap is not verified
+    assert(!covers(m,place,quad(),list,true,2,VertexTolerance,12288,2048,1));
+    assert(covers(m,place,quad(),list,true,2,VertexTolerance,12288,2048,1u<<20));
+    {StaticShadow::Model big;big.key="big";big.materials.resize(1);big.materials[0].alphaCutoff=0;const unsigned tris=4097;
+     for(unsigned i=0;i<tris;++i){float x=float(i)*.001f;big.vertices.push_back({x,0,0,0,0});big.vertices.push_back({x+1,0,0,0,0});big.vertices.push_back({x,1,0,0,0});
+         for(unsigned k=0;k<3;++k)big.indices.push_back(i*3+k);}
+     big.batches={{0,tris*3,0,{0,0,0},{5,1,0}}};auto pl=placement();pl.translation={0,0,0};
+     std::vector<P> one={{0,0,0},{1,0,0},{0,1,0}};
+     assert(!covers(big,pl,one,std::vector<uint32_t>{0,1,2},true,1));               // 4097 triangles: above the default cap
+     assert(covers(big,pl,one,std::vector<uint32_t>{0,1,2},true,1,VertexTolerance,tris*3));}
     // bounds against the placement's box.
     Vec3 low,high;w=quad();assert(boundsOf(w,low,high)&&inside(place,low,high)&&low.x==8&&high.y==11);
     assert(!inside(place,Vec3(2,10,2),Vec3(9,11,2))&&inside(place,Vec3(7.9f,10,2),Vec3(9,11,2)));
@@ -75,10 +89,52 @@ int main(){
      // A later frame evicts the ones not seen then, and the hash index still finds the survivors.
      auto& fresh=full.touch(o2,&shader,&decl,0,2,extra,f+1);assert(fresh.stable==0&&fresh.state==Entry::Unverified);
      assert(&full.touch(o2,&shader,&decl,0,2,extra,f+2)==&fresh&&fresh.stable==1);
-     assert(full.size()==Memory::Capacity);}
+     assert(full.size()<=Memory::Capacity);} // entries unseen for two frames are recycled as they are met
     // Chains: identical models sharing a snapshot at many places are told apart by their matrix.
     {Memory chain;float a1[12]={1,0,0,0,1,0,0,0,1,1,0,0},a2[12]={1,0,0,0,1,0,0,0,1,9,0,0};
      for(unsigned long long frame=1;frame<=4;++frame){chain.touch(owner,&shader,&decl,0,2,a1,frame);chain.touch(owner,&shader,&decl,0,2,a2,frame);}
      assert(chain.size()==2&&chain.touch(owner,&shader,&decl,0,2,a1,5).stable==4);}
+    // Neighbour cells: matrices either side of a quantisation boundary (0.25 yd) within the tolerance are one identity.
+    {Memory cell;float lo[12]={1,0,0,0,1,0,0,0,1,.25f-.001f,10,2},hi[12]={1,0,0,0,1,0,0,0,1,.25f+.001f,10,2},far[12]={1,0,0,0,1,0,0,0,1,.25f+.004f,10,2};
+     cell.touch(owner,&shader,&decl,0,2,lo,1);assert(cell.touch(owner,&shader,&decl,0,2,hi,2).stable==1&&cell.size()==1);
+     assert(cell.touch(owner,&shader,&decl,0,2,lo,3).stable==2&&cell.size()==1);       // both directions find it
+     assert(cell.touch(owner,&shader,&decl,0,2,far,4).stable==0&&cell.size()==2);     // beyond the tolerance: new identity
+     // a corner of three axes
+     float c1[12]={1,0,0,0,1,0,0,0,1,.5f-.001f,.75f-.001f,-.25f-.001f},c2[12]={1,0,0,0,1,0,0,0,1,.5f+.001f,.75f+.001f,-.25f+.001f};
+     cell.touch(owner,&shader,&decl,1,2,c1,1);assert(cell.touch(owner,&shader,&decl,1,2,c2,2).stable==1);
+     assert(cell.touch(owner,&shader,&decl,1,2,c1,3).stable==2);}
+    // Float noise inside the tolerance never resets the stable count (compared with the first-seen matrix).
+    {Memory noisy;float a[12]={1,0,0,0,1,0,0,0,1,100,200,30};
+     for(unsigned long long frame=1;frame<=12;++frame){float b[12];for(unsigned k=0;k<12;++k)b[k]=a[k];if(frame>1){b[9]+=(frame%2?-.0019f:.0019f);b[11]+=(frame%3?.001f:-.001f);} /* noise about the first-seen matrix */
+         assert(noisy.touch(owner,&shader,&decl,0,2,b,frame).stable==frame-1);}
+     assert(noisy.size()==1);
+     float d[12]={1,0,0,0,1,0,0,0,1,100.004f,200,30};assert(noisy.touch(owner,&shader,&decl,0,2,d,13).stable==0&&noisy.size()==2);} // real drift: new identity
+    // Cost stays flat. 1000 instances of one model: probes per touch are bounded, whether spread out or clustered in a few cells.
+    for(double spacing:{3.0,.3,.05}){
+        Memory many;const unsigned n=1000;const unsigned long long frames=20;
+        for(unsigned long long frame=1;frame<=frames;++frame)for(unsigned k=0;k<n;++k){
+            float wm[12]={1,0,0,0,1,0,0,0,1,float(k%40*spacing),float(k/40*spacing),0};auto& e=many.touch(owner,&shader,&decl,0,2,wm,frame);
+            assert(e.stable==frame-1);}
+        const double perTouch=double(many.probes())/double(many.touches());
+        std::printf("bench instances spacing=%.2f: %.2f probes/touch, %zu entries\n",spacing,perTouch,many.size());
+        assert(many.size()==n&&perTouch<=n/40.0+1); // clustered at 0.05 yd spacing: instances 5 cells' worth apart still bounded by the cell population
+        if(spacing>=.3)assert(perTouch<=3.0);}
+    // A moving rigid draw (a weapon): a fresh matrix every frame for many frames next to 1000 resting instances stays bounded in time and memory.
+    {Memory moving;const unsigned n=1000;unsigned long long maxChain=0;
+     for(unsigned long long frame=1;frame<=3000;++frame){
+         for(unsigned k=0;k<n;++k){float wm[12]={1,0,0,0,1,0,0,0,1,float(k%40*3),float(k/40*3),0};moving.touch(owner,&shader,&decl,0,2,wm,frame);}
+         const auto before=moving.probes();
+         float w2[12]={1,0,0,0,1,0,0,0,1,float(frame)*.01f,5,2};
+         moving.touch(owner,&shader,&decl,0,2,w2,frame);
+         maxChain=std::max<unsigned long long>(maxChain,moving.probes()-before);
+         assert(moving.size()<=n+64);} // stale matrices are recycled, never accumulate to the 4096 table limit
+     std::printf("bench moving draw: max %llu probes for one touch, %zu entries after 3000 frames\n",maxChain,moving.size());
+     assert(maxChain<=8);}
+    // Frame rate gap: entries unseen for two frames are dropped and recycled.
+    {Memory aged;for(unsigned long long frame=1;frame<=3;++frame)for(unsigned k=0;k<100;++k){float wm[12]={1,0,0,0,1,0,0,0,1,float(k*3),0,0};aged.touch(owner,&shader,&decl,0,2,wm,frame);}
+     float z[12]={1,0,0,0,1,0,0,0,1,-90,0,0};for(unsigned long long frame=10;frame<10+400;++frame)aged.touch(owner,&shader,&decl,0,2,z,frame);
+     assert(aged.size()<=2);}
+    // A cleared memory is empty and reusable (releaseGPU / map change).
+    {Memory cleared;float wm[12]={1,0,0,0,1,0,0,0,1,1,2,3};cleared.touch(owner,&shader,&decl,0,2,wm,1);cleared.clear();assert(cleared.size()==0&&cleared.touch(owner,&shader,&decl,0,2,wm,2).stable==0);}
     std::puts("PASS static M2 dedup: decision table, opaque triangle coverage, model mismatch, alpha exclusion, stability memory and scale");
 }

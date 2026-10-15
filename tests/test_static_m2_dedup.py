@@ -36,6 +36,11 @@ body=src[src.index('void prepareStaticM2(){'):src.index('uint64_t staticSignatur
 for needle in ('rigidProgram(p.originalShader)','p.cutoff>=0','!p.shared','NorthlightRigidGeometry::staticPlacement(','StaticM2Dedup::covers(','StaticM2Dedup::inside(',
                'staticCasters.coverageAt(','StaticM2Dedup::decide(facts)!=StaticM2Dedup::Verdict::Skip','rigidIndexCurrent()'):
     assert needle in body,needle
+# releaseGPU resets the M2 memory (stale identities and their owners are released with the device)
+rel=src[src.index('void releaseGPU(bool keepMesh=false){'):]
+rel=rel[:rel.index('drop(shadowDecl);')]
+assert 'staticM2Memory.clear();' in rel
+assert 'staticM2Memory.clear();' in src[src.index('staticScene->map!=lastRequest.map){staticCasters.reset()'):][:200]
 assert 'm2Skipped=%u m2Verified=%u m2Rejected=%u' in src and 'staticM2Skipped=%llu,%llu,%llu,%llu' in src
 assert 'bool coverageAt(size_t index,const Placement& placement,uint64_t revision)const' in gpu
 with tempfile.TemporaryDirectory() as t:
