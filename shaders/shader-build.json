@@ -1,5 +1,5 @@
 {
-  "source_sha256": "3c4ebf55f84663efe1aa13c7010171ffa70ae611dac561be800bb8fd77ba64e9",
+  "source_sha256": "9ad989d97f1beea80319b6a96844d45d1cf5d2533861c1f281ae68208555846d",
   "rain_source_sha256": "10948a355dc52e824d9ae61b5251a5146a20955295070dbe9ce749dec0eac172",
   "target": "ps_3_0",
   "shaders": {
@@ -75,23 +75,23 @@
       }
     },
     "AOBlur": {
-      "bytes": 7528,
-      "sha256": "8f993e4c8118c029f4af218ae30620ef7c994e28c28b7ab46e02a7e070e51d2a",
-      "static_instruction_slots": 507,
+      "bytes": 7656,
+      "sha256": "6c390500ac79fe456490cfcbe0dd21e67433eff39a4187028e6f7df6eb4b86a0",
+      "static_instruction_slots": 508,
       "temporary_registers": 20,
       "instructions": {
         "mov": 136,
-        "mul": 94,
+        "mul": 95,
         "texldl": 12,
         "rep": 2,
-        "add": 102,
+        "add": 101,
         "cmp": 33,
         "if": 7,
         "break": 2,
         "else": 7,
         "endif": 7,
         "frc": 4,
-        "min": 9,
+        "min": 10,
         "endrep": 2,
         "rcp": 26,
         "mad": 4,

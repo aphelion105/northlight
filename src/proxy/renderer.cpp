@@ -743,10 +743,11 @@ private:
             gpuProfile->mark("AO");
             // 0.3.201 (task 18): the raw IGN-rotated AO is denoised by a half-resolution bilateral pass into `ao`,
             // which every consumer (legacy composite, world fold) keeps reading. s2 is released afterwards.
+            // Task 43: s0 (LINEAR) carries the raw AO too for the blur's 9-read bilinear early-out (AOBlur never reads Scene); the scene copy is rebound after.
             if (error(ext->SetRenderTarget(0,aoSurface),"AO blur render target")) return;
-            bindEffects(aoRaw);ext->SetPixelShader(aoBlurPS);
+            bindEffects(aoRaw);ext->SetTexture(0,aoRaw);ext->SetPixelShader(aoBlurPS);
             if (error(quad(width/2,height/2),"AO blur pass")) return;
-            ext->SetTexture(2,nullptr);
+            ext->SetTexture(2,nullptr);ext->SetTexture(0,scene);
             gpuProfile->mark("AOBlur");effectsBuckets.mark(Bucket::AO);
         }
         // 0.3.174 FOLD: with a ready world and no effect debug view, WorldComposite applies the
