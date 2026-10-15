@@ -135,7 +135,7 @@ s2 = ids[2]
 checks['row 2: same stock sky as the clear: the final clear\'s skybox'] = u(P(s2), 2) == SKY_SKYSTEP
 checks['row 3: a different stock storm sky is kept'] = u(P(ids[3]), 2) == SKY_STORM
 checks['row 2: relit then stormed (direct light, first night key)'] = u(Int(s2, 0), 18) == bl.storm_color(0, bl.transform_color(0, u(stock['LightIntBand'].index[(2-1)*18+1], 18), 0, 5, bl.sample_color(stock['LightIntBand'].index[(2-1)*18+10], 0)))
-checks['row 2: retimed (night by 21:00 in the colour bands, sunset at 20:15)'] = [u(Int(s2, 0), 2+i) for i in range(u(Int(s2, 0), 1))][-2:] == [bl.SUNSET_KEY, bl.NIGHT_KEY]
+checks['row 2: retimed (night by 21:15 in the colour bands, sunset at 20:35)'] = [u(Int(s2, 0), 2+i) for i in range(u(Int(s2, 0), 1))][-2:] == [bl.SUNSET_KEY, bl.NIGHT_KEY]
 fog = [(u(Flt(s2, 0), 2+i), f(Flt(s2, 0), 18+i)) for i in range(u(Flt(s2, 0), 1))]
 checks['row 2: fog end: the stock storm\'s own 2000..4000 (below 350 yards, no relight fog rule), kept'] = all(2000 <= v <= 4000 for _, v in fog) and {v for _, v in fog} >= {2000., 4000.}
 checks['row 2: fog start ratio kept from the relit source (stock .3 x0.88), not capped'] = all(abs(f(Flt(s2, 1), 18+i)-.3*.88) < 1e-6 for i in range(u(Flt(s2, 1), 1)))

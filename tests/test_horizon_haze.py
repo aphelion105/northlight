@@ -370,7 +370,7 @@ def main():
     assert cpu.index('c[57][1]=haze.shape[0];c[57][2]=haze.shape[1];c[57][3]=haze.shape[2];c[67][2]=haze.sun[0];c[67][3]=haze.sun[1];') < upload
     blur_end = cpu.index('"volume blur vertical"))return false;}')
     assert blur_end < cpu.index('d->SetPixelShaderConstantF(34,haze.haze,1);') < cpu.index('"world composite"')
-    assert 'farZ,hazeZone,effects.fog,celestialValid,hazeSun,sourceWeights[0],hazeLift,wx.hazeTauScale());' in cpu
+    assert 'farZ,hazeZone,effects.fog,celestialValid,hazeSun,hazeSunWeight,hazeLift,wx.hazeTauScale());' in cpu
     assert 'float hazeLift[3];NorthlightSunHue::horizonLift(glowHueFrame,hazeLift);' in cpu
     assert cpu.index('c[35][1]=haze.lift[0];c[35][2]=haze.lift[1];c[35][3]=haze.lift[2];') < upload
     assert 'horizonHazeState.update(active->map,legacyFog.parameters,legacyFog.color,projection[2],' in cpu

@@ -3,7 +3,7 @@
 """build_lighting.retime (0.3.178) on synthetic band rows; no client, game or GPU.
 
 Retime moves the key times of relight's private clear-weather bands onto Northlight's sun and moon:
-the sunset key to 20:15, night by 21:00, dawn from 04:30, 06:00-12:00 untouched. Values move with
+the sunset key to 20:35, night by 21:15, dawn from 04:30, 06:00-12:00 untouched. Values move with
 their keys; the only new keys are copies of the 00:00 night value, and only while the band keeps
 <= 11 keys. Two-key, constant and unrecognised bands stay byte-identical with a recorded reason.
 Writes band-retime-validation.json."""
@@ -42,7 +42,7 @@ bands = {
     'night varies (22 vs 00 within tolerance)': ([(0, N), (3*H, (12, 22, 42)), (6*H, D), (12*H, Y), (21*H, S), (22*H, (13, 23, 44))], False),
     'fog end float 00 03 06 12 21 22': ([(0, 300.), (3*H, 305.), (6*H, 900.), (12*H, 1400.), (21*H, 1000.), (22*H, 310.)], True),
 }
-# A 16-key float band (HD fog) that still needs the 21:00 night insert: the insert is skipped.
+# A 16-key float band (HD fog) that still needs the 21:15 night insert: the insert is skipped.
 sixteen = [(0, 200.), (1*H, 201.), (2*H, 200.), (3*H, 202.)] + [(h*H, 800.+h) for h in range(6, 18)]
 bands['16-key float, no night after sunset'] = (sixteen, True)
 unchanged = {
@@ -73,10 +73,10 @@ for name, (keys, floating) in bands.items():
     ok &= [p for p in result if 720 <= p[0] <= 1440] == [p for p in before if 720 <= p[0] <= 1440]   # 06:00-12:00
     evening_full = reason is None or 'insert' not in reason
     if evening_full:
-        ok &= night_like(result, floating, 21*H) and night_like(result, floating, 21*H+60)
+        ok &= night_like(result, floating, bl.NIGHT_KEY) and night_like(result, floating, bl.NIGHT_KEY+60)
     ok &= night_like(result, floating, 3*H+60) and night_like(result, floating, 4*H+58)
     ok &= bl.band_value(result, floating, 6*H) == bl.band_value(before, floating, 6*H)
-    # The old sunset key (the last key before the night run) is reached at 20:15.
+    # The old sunset key (the last key before the night run) is reached at 20:35.
     old_sunset = [v for t, v in before if t >= 16*H and not night_like(before, floating, t)][-1]
     ok &= (old_sunset if floating else rgb(old_sunset)) == bl.band_value(result, floating, bl.SUNSET_KEY)
     checks[name] = bool(ok)
@@ -86,11 +86,11 @@ for name, (keys, floating, why) in unchanged.items():
     result, reason = bl.retime_plan(r, floating)
     checks[f'{name}: unchanged ({why})'] = result is None and reason == why
     summary[name] = {'unchanged': reason}
-checks['16-key float: the 21:00 insert is skipped at the key limit'] = summary['16-key float, no night after sunset']['note'] == 'inserts skipped (key limit): 2520' and summary['16-key float, no night after sunset']['inserted'] == 0
-checks['stock: 21->20:15, 22->21:00, 03->04:30, no insert'] = summary['stock 00 03 06 12 21 22']['after'] == [0, 540, 720, 1440, 2430, 2520]
-checks['STV: 21->20:15, 22->21:00, night inserted at 04:30'] = summary['STV 00 06 12 21 22']['after'] == [0, 540, 720, 1440, 2430, 2520]
-checks['Tanaris: 21->20:15, night inserted at 21:00, 03->04:30'] = summary['Tanaris 00 03 06 12 21']['after'] == [0, 540, 720, 1440, 2430, 2520]
-checks['HD ground: 19->20:15, 20->21:00, morning unchanged'] = summary['HD ground ambient (night at 20)']['after'][:4] == [0, 480, 600, 720] and summary['HD ground ambient (night at 20)']['after'][-2:] == [2430, 2520]
+checks['16-key float: the 21:15 insert is skipped at the key limit'] = summary['16-key float, no night after sunset']['note'] == 'inserts skipped (key limit): 2550' and summary['16-key float, no night after sunset']['inserted'] == 0
+checks['stock: 21->20:35, 22->21:15, 03->04:30, no insert'] = summary['stock 00 03 06 12 21 22']['after'] == [0, 540, 720, 1440, 2470, 2550]
+checks['STV: 21->20:35, 22->21:15, night inserted at 04:30'] = summary['STV 00 06 12 21 22']['after'] == [0, 540, 720, 1440, 2470, 2550]
+checks['Tanaris: 21->20:35, night inserted at 21:15, 03->04:30'] = summary['Tanaris 00 03 06 12 21']['after'] == [0, 540, 720, 1440, 2470, 2550]
+checks['HD ground: 19->20:35, 20->21:15, morning unchanged'] = summary['HD ground ambient (night at 20)']['after'][:4] == [0, 480, 600, 720] and summary['HD ground ambient (night at 20)']['after'][-2:] == [2470, 2550]
 
 # retime() on tables: only the listed profiles change, in place, with a report.
 def table(rows, floating):

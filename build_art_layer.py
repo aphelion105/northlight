@@ -8,7 +8,7 @@ installed art layer). Steps, each on the previous step's archive, as the HD chai
 
 1. relighting   build_lighting.relight: new outdoor profiles with the tuned colour and fog bands,
    then build_lighting.retime: their bands' key times moved onto Northlight's sun and moon
-   (sunset colour at 20:15, night by 21:00, dawn from 04:30; two-key, constant and unrecognised
+   (sunset colour at 20:35, night by 21:15, dawn from 04:30; two-key, constant and unrecognised
    bands unchanged), reported as its own step `retime`
 2. mulgore      warm prairie bands (any client) + the HD Mulgore sky without its sun (HD sky only)
 3. stormwind    denser day fog (any client) + the HD Stormwind sky without its sun   (HD sky only)

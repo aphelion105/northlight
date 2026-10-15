@@ -8,6 +8,7 @@
 #include "projection.h"
 #include "celestial_context.h"
 #include "celestial_sources.h"
+#include "celestial_glow.h"
 #include "twilight_fill.h"
 #include "night_floor.h"
 #include "regional_fog.h"
@@ -3850,8 +3851,11 @@ public:
         const float hazeSun[3]={sourceDirections[0].x,sourceDirections[0].y,sourceDirections[0].z};
         const float hazeZone=NorthlightCelestialProfiles::horizonHaze(volumePalette,c[31][3]);
         float hazeLift[3];NorthlightSunHue::horizonLift(glowHueFrame,hazeLift);
+        // The warm lobe toward the sun follows the disc's glow (full down to the horizon, out one diameter below),
+        // not the direct light, which fades from 4.6 deg: the setting sun lost its glow while still whole.
+        const float hazeSunWeight=celestialValid?std::max(sourceWeights[0],NorthlightCelestialGlow::horizonGlow(celestialLight.sun.direction[2],std::sin(celestialLight.sun.angularRadius))):sourceWeights[0];
         const auto haze=NorthlightHorizonHaze::constants(horizonHazeState,{quality.horizonHaze,quality.horizonHazeStart,quality.horizonHazeBand,quality.horizonHazeTerrain},
-            farZ,hazeZone,effects.fog,celestialValid,hazeSun,sourceWeights[0],hazeLift,wx.hazeTauScale());
+            farZ,hazeZone,effects.fog,celestialValid,hazeSun,hazeSunWeight,hazeLift,wx.hazeTauScale());
         c[57][1]=haze.shape[0];c[57][2]=haze.shape[1];c[57][3]=haze.shape[2];c[67][2]=haze.sun[0];c[67][3]=haze.sun[1];
         c[35][1]=haze.lift[0];c[35][2]=haze.lift[1];c[35][3]=haze.lift[2]; /* lift colour = the glow hue (WorldComposite reads c35.yzw) */
         hazeFrame=haze;
