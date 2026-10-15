@@ -42,8 +42,8 @@ expected={
  ('world_renderer.h','replayVerticesGPU[s]'):('slot.flags',Dynamic,'D3DUSAGE_DYNAMIC|D3DUSAGE_WRITEONLY,0,D3DPOOL_DEFAULT,&replayVerticesGPU[s]'),
  ('world_renderer.h','replayIndicesGPU'):('slot.flags',Dynamic,'D3DUSAGE_DYNAMIC|D3DUSAGE_WRITEONLY,D3DFMT_INDEX32,D3DPOOL_DEFAULT,&replayIndicesGPU'),
  ('replay_copy_reader.h','b'):('NorthlightUpload::readBackLock()',Read,None), # 0.3.192 (CS): the 8 capture read-backs go through NorthlightReplayCopies::Reader (CPU copy first, this lock otherwise)
- ('spell_layer.h','upVb_'):('D3DLOCK_DISCARD',Dynamic,'D3DUSAGE_DYNAMIC|D3DUSAGE_WRITEONLY,0,D3DPOOL_DEFAULT,&upVb_'), # task 34: the layer's own replay upload buffers, one DISCARD lock per replay
- ('spell_layer.h','upIb_[fmt]'):('D3DLOCK_DISCARD',Dynamic,'D3DUSAGE_DYNAMIC|D3DUSAGE_WRITEONLY,fmt?D3DFMT_INDEX32:D3DFMT_INDEX16,D3DPOOL_DEFAULT,&upIb_[fmt]'), # one per index format
+ ('spell_layer.h','upVb_'):('flags',Dynamic,'D3DUSAGE_DYNAMIC|D3DUSAGE_WRITEONLY,0,D3DPOOL_DEFAULT,&upVb_'), # task 34: the layer's own replay upload buffers, DISCARD on the first upload of a frame / after a wrap, NOOVERWRITE appends after (see the audit below)
+ ('spell_layer.h','upIb_[fmt]'):('flags',Dynamic,'D3DUSAGE_DYNAMIC|D3DUSAGE_WRITEONLY,fmt?D3DFMT_INDEX32:D3DFMT_INDEX16,D3DPOOL_DEFAULT,&upIb_[fmt]'), # one per index format
  ('forwarders.h','real'):('Flags',Forward,None),('tracked_buffers.h','this->real'):('flags',Forward,None),
 }
 seen=set();fresh=calls=0
@@ -57,6 +57,10 @@ for name,text in sources.items():
         fresh+=flags==F;calls+=1
 assert seen==set(expected),f'stale entries: {sorted(set(expected)-seen)}'
 assert fresh==5
+# spell_layer.h upload(): DISCARD only while *Fresh_ (first of the frame, or after a wrap), NOOVERWRITE otherwise; beginFrame and the wrap re-arm Fresh_, so an append never overlaps submitted draws' bytes
+sl=sources['spell_layer.h']
+assert 'const DWORD flags=fresh?D3DLOCK_DISCARD:D3DLOCK_NOOVERWRITE;' in sl and 'cursor-=base;base=0;fresh=true;' in sl
+assert 'vbFresh_=ibFresh_[0]=ibFresh_[1]=true;' in sl and sl.count('resetUploadCursors();')>=2
 print(f'PASS lock audit: {calls} buffer Lock calls in {len(expected)} classified sites, {fresh} fresh DEFAULT locks use {F}')
 # Every DEFAULT buffer without DYNAMIC is one of the fresh write-once sites above.
 creates=[]

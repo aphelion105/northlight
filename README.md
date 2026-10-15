@@ -138,48 +138,17 @@ outside the client folder.
 ## Test
 
 ```sh
-python3 scripts/run_tests.py                     # all tests/test_*.py, 4 at a time, nice 15
-python3 scripts/run_tests.py test_replay_*       # by pattern; validate_*/verify_* only when named
-python3 scripts/run_tests.py --require client    # a missing client FAILs instead of SKIPping
-python3 scripts/run_tests.py --record 0.3.158    # write reports to renderer/records/validation-0.3.158
+python3 scripts/affected_tests.py --run          # only the tests your change affects
+python3 scripts/run_tests.py test_replay_*       # by name pattern
+python3 scripts/run_tests.py                     # the whole suite (about 13 minutes): release and main verification
 ```
 
-Reports go to `out/test-output/<run>/<test>/`. Nothing is written into the tree unless you
-pass `--record` (`renderer/records/` is ignored by git, and no test reads from it). A test
-declares what it needs on one line under the shebang:
-
-```python
-# northlight-test: requires=cxx,client timing
-```
-
-| Tag | Meaning |
-|---|---|
-| `cxx` | host `clang++`/`c++` |
-| `client` | a WoW client (see `NORTHLIGHT_CLIENT`) |
-| `zig`, `wine`, `stormlib` | toolchain pieces (see below) |
-| `stormlib-src` | the pinned StormLib source tree in `tools/StormLib-master` (`scripts/build_stormlib.py`) |
-| `world-cache` | the client's world cache, `<client>/world-cache` (`scripts/install_world_cache.py`) |
-| `dll` | a built `renderer/frd9.dll` (build first) |
-| `backups`, `archive` | old renderer tarballs / the external archive, for differential tests |
-| `base` | `BASE=<pristine older renderer tree>` for a release gate |
-| `timing` | CPU-time budgets: the test runs alone after the others |
-| `slow` | started first |
-| `manual` | needs arguments; runs only when named |
-| `known-fail=<reason>` | last on the line; fails at the current version for a known reason ([tests/KNOWN_FAILURES.md](tests/KNOWN_FAILURES.md)): still runs, reported XFAIL (XPASS if it passes), does not fail the run |
-
-A test whose requirement is missing is reported as SKIP with the reason. `tests/discovery.txt`
-lists the tests the runner must find. After adding a test, run with `--update-discovery`.
-
-With no client, toolchain or archive you can still build the DLL (given zig) and run most
-tests, which are pure Python or native C++. Tests that run on real client data read it from your
-client through `tests/client_fixtures.py`: the four-bone skin and the one-influence shader programs
-from the stock archives (`client,stormlib`), and real doodad placements from the world cache
-(`world-cache`).
-
-About 50 `tests/test_*.cpp` files have no Python runner: no runner executes them, and they are
-built by hand as their docs describe (for example
-[tests/support/gpu_profile/README.md](tests/support/gpu_profile/README.md)). The release tool
-`tests/verify_packages.py` checks the zips `renderer/build_packages.py` wrote (run it by name).
+Reports go to `out/test-output/<run>/<test>/`. Nothing is written into the tree unless you pass
+`--record <version>` (`renderer/records/` is ignored by git, and no test reads from it). The test
+tags (`requires=`, `slow`, `timing`, `manual`, `known-fail=`), the skip rules, `tests/discovery.txt`
+and the rules for writing a test are in [tests/README.md](tests/README.md). With no client,
+toolchain or archive you can still build the DLL (given zig) and run most tests, which are pure
+Python or native C++.
 
 ## Machine configuration
 

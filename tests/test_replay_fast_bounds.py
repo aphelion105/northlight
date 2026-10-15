@@ -19,7 +19,17 @@ def literal(path, name):
 stub = literal(HERE / 'test_terrain_snapshot.py', 'stub')
 fixture = literal(HERE / 'test_replay_skin_safety.py', 'harness').split('int main(')[0]
 fixture = fixture.replace('static Status finish(', '[[maybe_unused]] static Status finish(').replace('static Mesh geometry(', '[[maybe_unused]] static Mesh geometry(').replace('static void palette(', '[[maybe_unused]] static void palette(')
-harness = fixture + r'''
+# Bit-identity and enclosure do not depend on scheduling: a frozen clock keeps the wall-clock Heavy/Build budgets from ever expiring, so the ASan build under CPU load cannot starve phase().
+frozen_clock = r'''
+#include <chrono>
+struct FrozenClock {
+    using duration=std::chrono::nanoseconds;using rep=duration::rep;using period=duration::period;
+    using time_point=std::chrono::time_point<FrozenClock,duration>;static constexpr bool is_steady=true;
+    static time_point now()noexcept{return time_point(duration(1000000));}
+};
+#define NORTHLIGHT_REPLAY_BOUNDS_CLOCK FrozenClock
+'''
+harness = frozen_clock + fixture + r'''
 using Stage=EnvelopeCache::Stage;using Kind=EnvelopeCache::Kind;using Info=EnvelopeCache::WorkInfo;
 /* Verbatim 0.3.136 SkinEnvelope::evaluate, as the bit-identity reference. */
 static bool legacyEvaluate(const SkinEnvelope& skin,const float* constants,const float* inverse,Bounds& output,bool(*shouldStop)(void*)=nullptr,void* stopContext=nullptr){

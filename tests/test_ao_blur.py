@@ -526,12 +526,8 @@ def audit_contact_ao():
     c = build['ContactBloom']
     assert c['static_instruction_slots'] <= 512 and c['temporary_registers'] <= 32 and set(c['instructions']) <= {'mul', 'texld', 'dp3', 'mad', 'mov', 'add'}, c
     assert re.search(r'\("ContactBloom",\s*"kContactBloomShader"(,\s*"ps_3_0")?\)', (fp.SCRIPTS/'shaders'/'compile_shaders.py').read_text())
-    ini = (fp.REPO/'renderer'/'windows-package'/'northlight-quality.ini').read_text()
-    readme = (fp.REPO/'renderer'/'windows-package'/'README.txt').read_text()
-    assert ';ContactAO=1' in ini and 'Allowed 0..1. 1 / 1 / 1' in ini[ini.index(';ContactAO=1')-400:ini.index(';ContactAO=1')]
-    assert re.search(r'^  ContactAO +1 / 1 / 1 ', readme, re.M) and 'ContactAO' in (fp.REPO/'README.md').read_text()
     q = fp.src('quality_settings.h').read_text()
-    assert '{"ContactAO",&Settings::contactAO,0,1,{1,1,1}}, /* 0.3.201 (task 18) */\n    {"NightBrightness",' in q and 'unsigned contactAO=1;' in q
+    assert re.search(r'\{\s*"ContactAO"\s*,\s*&Settings::contactAO\s*,\s*0\s*,\s*1\s*,\s*\{\s*1\s*,\s*1\s*,\s*1\s*\}\s*\}', q) and 'unsigned contactAO=1;' in q
     return {'contact_bloom_slots': c['static_instruction_slots']}
 
 

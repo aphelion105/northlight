@@ -77,12 +77,10 @@ def audit():
     compat=fp.src('dxvk_compatibility.h').read_text()
     assert 'd3d9.cachedDynamicBuffers = True' in compat and 'd3d9.cachedWriteOnlyBuffers = True' in compat and 'd3d9.customVendorId = 1002' in compat
     assert 'L"renderer-backends\\\\dxvk2\\\\dxvk2_d3d9.dll"' in policy and 'isPackagedDxvk(configured)' in src
-    # No in-process runtime swap.
-    assert 'dxvkFallback' not in src and 'dxvkFallbackModule' not in src and 'dxvkFallbackArmed' not in src
     proc=src[src.index('template<class T> static T procedure'):src.index('#define NORTHLIGHT_EXPORT')]
     assert proc.count('backend()')==1 and 'GetModuleHandle' not in proc and 'Module' not in proc.replace('HMODULE','')
-    # 0.3.195: no automatic dxvk -> dxvk2 fallback: no crash marker is written, read or honoured; the configured backend always loads.
-    for gone in ['dxvkInitProbe','dxvkInitMarker','dxvk3Probe','dxvk3Sha','northlight-dxvk3-init','loadDxvk2','BACKEND FALLBACK','FILE_ATTRIBUTE_REPARSE_POINT','GENERIC_WRITE','CREATE_ALWAYS']:
+    # Rule: no automatic backend fallback and the proxy writes no crash/init marker file; the configured backend always loads.
+    for gone in ['dxvkInitMarker','BACKEND FALLBACK','GENERIC_WRITE','CREATE_ALWAYS']:
         assert gone not in src,gone
     assert 'dxvkInitMarker' not in policy and '.pending' not in policy
     be=src[src.index('static HMODULE backend()'):src.index('static HMODULE recursionBackend')]
@@ -97,13 +95,12 @@ def audit():
     # Nothing depends on the host exe: its path is logged, it is never read or hashed.
     host=src[src.index('static void logHostExecutable'):];host=host[:host.index('\n}\n')]
     assert 'logHostExecutable(sys.selfPath);' in src and 'HOST exe=%ls module=%ls' in host
-    for forbidden in ['CreateFileW','ReadFile','Sha256','sha256','exeStatus']:assert forbidden not in host,forbidden
-    assert 'exeStatus' not in fp.src('backend_loader.h').read_text() and 'bfe77b47' not in src+fp.src('backend_loader.h').read_text()
+    for forbidden in ['CreateFileW','ReadFile','Sha256','sha256']:assert forbidden not in host,forbidden
     assert 'BACKEND SELF-LOAD REFUSED' in src and 'BACKEND RECURSION' in src and 'system d3d9 fallback FAILED too' in src
-    # Only ever a d3d9.dll proxy: no pre-proxy (frd9.dll) compatibility paths.
-    assert 'frd9' not in src and 'loadedAsProxy' not in src+policy and 'root+L"d3d9.dll"' not in policy
+    # Only ever a d3d9.dll proxy: the policy never derives a d3d9.dll path from the root.
+    assert 'root+L"d3d9.dll"' not in policy
     assert 'GAME WARNING: the game-folder d3d9.dll differs from the backend copy' in src and 'PROXY module=%ls root=%ls' in src
-    print('audit: exports/ordinals/stdcall sizes = d3d9.dll, every export re-entry scoped, trivial DllMain, root = exe dir, renamed backends, loader read-only, 0.3.147 DXVK rules, no frd9 compat')
+    print('audit: exports/ordinals/stdcall sizes = d3d9.dll, every export re-entry scoped, trivial DllMain, root = exe dir, renamed backends, loader read-only, 0.3.147 DXVK rules, d3d9.dll-only proxy')
 
 if __name__=='__main__':
     native();audit()

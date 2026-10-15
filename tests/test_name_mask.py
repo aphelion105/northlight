@@ -212,10 +212,11 @@ checks['frame end: one sampled NAMEMASK line (marked, unmarked, composite, depth
 checks['one-shot lines: depth upgrade (or why not), stencil in the game, a world depth without stencil (capped), failed clear']=all(x in r for x in ('NAMEMASK depth upgraded D24X8->D24S8','NAMEMASK depth upgrade unavailable','NAMEMASK disabled: the game draws with stencil enabled','(no stencil bits: no name mask while this surface is the world depth)','NAMEMASK disabled: stencil clear failed'))
 checks['release forgets the depth identities; the setting is read once at device creation']=('maskFormatFor=nullptr;maskFormatValue=0;maskStencil=false;maskDsId=nullptr;' in r[r.index('void releaseResources()'):][:400]
     and 'nameMask.debug=world->nameMaskDebug();' in r)
-keys=q[q.index('inline const Key Keys[]={'):q.index('};',q.index('inline const Key Keys[]={'))]
-checks['quality keys: the last two, 0..1 and 0..1, presets 1/1/1 and 0/0/0, own origin slots']=(
-    keys.rstrip().endswith('    {"NameMask",&Settings::nameMask,0,1,{1,1,1}}, /* 0.3.212 (task 32) */\n    {"NameMaskDebug",&Settings::nameMaskDebug,0,1,{0,0,0}}, /* 0.3.212 (task 32) */')
-    and 'unsigned nameMask=1;' in q and 'nameMaskAlphaRef' not in q and 'unsigned nameMaskDebug=0;' in q and 'char origin[52]=' in q and len(re.findall(r"'d'",q[q.index('char origin[52]='):].split('\n')[0]))==52)
+# Each key's own entry (name, member, range, presets) and initialiser; Keys[] order and origin[] length belong to test_quality_docs.py.
+checks['quality keys: NameMask 0..1 presets 1/1/1, NameMaskDebug 0..1 presets 0/0/0']=(
+    re.search(r'\{\s*"NameMask"\s*,\s*&Settings::nameMask\s*,\s*0\s*,\s*1\s*,\s*\{\s*1\s*,\s*1\s*,\s*1\s*\}\s*\}',q) is not None
+    and re.search(r'\{\s*"NameMaskDebug"\s*,\s*&Settings::nameMaskDebug\s*,\s*0\s*,\s*1\s*,\s*\{\s*0\s*,\s*0\s*,\s*0\s*\}\s*\}',q) is not None
+    and 'unsigned nameMask=1;' in q and 'unsigned nameMaskDebug=0;' in q and 'nameMaskAlphaRef' not in q)
 ini=(fp.REPO/'renderer'/'windows-package'/'northlight-quality.ini').read_text();txt=(fp.REPO/'renderer'/'windows-package'/'README.txt').read_text()
 checks['documented: ini (commented, ranges and presets) and README.txt']=(';NameMask=1\n' in ini and 'NameMaskAlphaRef' not in ini and 'NameMaskAlphaRef' not in txt and ';NameMaskDebug=0\n' in ini and 'Allowed 0..1. 1 / 1 / 1' in ini
     and re.search(r'^  NameMask +1 / 1 / 1 ',txt,re.M) is not None and re.search(r'^  NameMaskDebug +0 / 0 / 0 ',txt,re.M) is not None)

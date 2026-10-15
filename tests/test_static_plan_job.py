@@ -3,7 +3,8 @@
 """0.3.152 static shadow plans on a worker (static_plan_job.h, GpuCache::kickPlans) and per-model
 plan storage. Native clang++ only; never runs the game, Wine or the DLL, writes no records.
 Builds and runs the static plan proofs (plan equality, plans, incremental, prebuild) and the
-randomized synchronous-vs-worker proof (test_static_plan_job.cpp) at -O2, ASan+UBSan and TSan,
+randomized synchronous-vs-worker proof (test_static_plan_job.cpp) at -O2 and ASan+UBSan (TSan only
+for the proof that starts the worker thread, test_static_plan_job.cpp),
 then audits the joins: every non-const public GpuCache method settles the worker first."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
@@ -65,6 +66,7 @@ proofs=[('plan_equality','test_static_shadow_plan_equality.cpp','plan equality:'
 with tempfile.TemporaryDirectory(prefix='northlight-0.3.152-') as tmp:
     for label,flags in configs:
         for name,source,marker in proofs:
+            if label=='tsan' and name!='plan_job':continue  # TSan protects the worker thread; only the plan_job proof starts one
             exe=Path(tmp)/f'{name}-{label.replace("+","_")}'
             defines=[] if '#define STATIC_SHADOW_GPU_TEST' in fp.tracked(source).read_text() else ['-DSTATIC_SHADOW_GPU_TEST']
             b=subprocess.run(['clang++','-std=c++17','-Wall','-Wextra','-Werror','-UNDEBUG',*flags,*defines,*fp.test_include_flags(),'-I',str(fp.SUPPORT),str(HERE/source),str(fp.src('static_shadow_scene.cpp')),str(fp.src('world_gi.cpp')),'-o',str(exe)],capture_output=True,text=True)

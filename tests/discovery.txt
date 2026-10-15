@@ -5,6 +5,7 @@ test_actor_shadow_radius_wiring.py
 test_actor_shadow_selection.py
 test_actor_shadows_wiring.py
 test_actor_texture_worker.py
+test_affected_tests.py
 test_ao_blur.py
 test_ao_fold.py
 test_ao_rotation_stripes.py
@@ -77,12 +78,14 @@ test_m2_visibility.py
 test_memmap_diagnostics.py
 test_memory_admission_probe.py
 test_memory_guard.py
+test_mesh_pool_trim.py
 test_migrate_mac_proxy.py
 test_mirror_resources.py
 test_model_index_cache.py
 test_model_replay_pool.py
 test_model_snapshot_cache.py
 test_moon_cascade_weight.py
+test_name_mask.py
 test_near_reserve.py
 test_night_floor.py
 test_night_floor_wiring.py
@@ -94,6 +97,7 @@ test_point_shadow_schedule.py
 test_prepare_worker.py
 test_probe_blend.py
 test_progressive_gi_worker.py
+test_quality_docs.py
 test_quality_settings.py
 test_rain_mask.py
 test_raster_reconstruction.py
@@ -117,6 +121,8 @@ test_replay_priority_safety.py
 test_replay_skin_safety.py
 test_replay_upload.py
 test_rigid_memory.py
+test_shader_read_set.py
+test_shader_read_set_client.py
 test_shadow_blob_client.py
 test_shadow_blob_model.py
 test_shadow_experiment.py
@@ -127,6 +133,7 @@ test_shadow_shimmer.py
 test_snapshot_allocation.py
 test_snapshot_prediction.py
 test_solar_volume.py
+test_spell_fog_proof_client.py
 test_spell_layer.py
 test_static_cache_dirty_rect.py
 test_static_plan_job.py
@@ -134,6 +141,7 @@ test_storm_bands.py
 test_stormlib_build.py
 test_sun_hue.py
 test_sun_rim.py
+test_synced_slots_wiring.py
 test_temporal_history.py
 test_terrain_cache_capacity.py
 test_terrain_capture_bounds.py
@@ -153,6 +161,7 @@ test_ui_boundary.py
 test_uncached_map_skip_wiring.py
 test_unlisted_archive.py
 test_upload_locks.py
+test_upload_payload_release.py
 test_vs_class_cache.py
 test_water_antialias.py
 test_water_geometry.py

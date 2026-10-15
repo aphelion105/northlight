@@ -384,14 +384,7 @@ def main():
     if compiled:
         for name, info in manifest['shaders'].items():
             assert info['static_instruction_slots'] <= 512 and info['temporary_registers'] <= 32, name  # a count (highest rN + 1): ps_3_0 has r0..r31
-            # 0.3.159: TemporalLight changed on purpose (R1 soft removal); its own compile gate is
-            # verify_shadow_removal_smoothing_compile.py, so this haze test no longer pins it.
-            # SourceVisibilityPS gains the wrap ring taps (test_solar_volume pins the source).
-            # WorldLighting (baseline alpha) and LocalDirect (daylight sunlit factor) change on purpose.
-            # 0.3.175: WorldNormals' wide-sample threshold .85 -> .95 (r76) and both-or-neither wide pair (r77).
-            # 0.3.185: RemovalSmooth is new (the removal smoothing's own half-res pass; TemporalLight shrinks).
-            # 0.3.197: WorldGI blends a same-key probe re-publication from the previous SH (task 13).
-            # 0.3.198 (rain): WorldFog (air floor from c59.w) changes on purpose.
+            # Shaders changed on purpose by other features are excluded from the byte-identical check below.
             if name not in ('WorldComposite', 'TemporalLight', 'SourceVisibilityPS', 'WorldLighting', 'LocalDirect', 'WorldNormals', 'RemovalSmooth', 'WorldGI', 'WorldFog', 'FogClouds', 'FogTemporal', 'LocalFog', 'LocalFogCombine', 'ActorShadow', 'ActorTiles'):  # ActorShadow and ActorTiles (0.3.208, task 29) are new; FogClouds (0.3.199) is new, not in BEFORE; LocalFog (0.3.199) gains the near ramp, 0.3.205 (gh#20) returns the raw batch sum on purpose, LocalFogCombine is new
                 assert info['sha256'] == BEFORE[name], name
                 unchanged.append(name)

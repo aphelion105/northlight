@@ -70,11 +70,8 @@ checks['hlsl: the intervals are mad(range,1/N,addend): c60.x clouds (40), c64.z 
 checks['hlsl: FogTemporal still passes s9 through at weight 0 (the clouds\' copy)']='if(FogTemporalInfo.y<=0)return current;' in h
 
 # settings and docs
-checks['settings: GpuBudgetMs the last key (0..20, presets 4/3/2, default 4)']=(
-    '{"GpuBudgetMs",&Settings::gpuBudgetMs,0,20,{4,3,2}},\n    {"StreamFramesAhead",' in q and 'unsigned gpuBudgetMs=4;' in q and 'char origin[52]=' in q)
-ini=(fp.REPO/'renderer'/'windows-package'/'northlight-quality.ini').read_text()
-readme=(fp.REPO/'README.md').read_text();txt=(fp.REPO/'renderer'/'windows-package'/'README.txt').read_text()
-checks['docs: ini template, README.md and README.txt']=(';GpuBudgetMs=4' in ini and 'GpuBudgetMs' in readme and re.search(r'^  GpuBudgetMs +4 / 3 / 2 ',txt,re.M) is not None)
+checks['settings: GpuBudgetMs (0..20, presets 4/3/2, default 4)']=(
+    re.search(r'\{\s*"GpuBudgetMs"\s*,\s*&Settings::gpuBudgetMs\s*,\s*0\s*,\s*20\s*,\s*\{\s*4\s*,\s*3\s*,\s*2\s*\}\s*\}',q) is not None and 'unsigned gpuBudgetMs=4;' in q)
 
 # nothing on the game thread
 stream=[p for p in (fp.REPO/'src'/'stream').glob('*') if p.is_file()]
