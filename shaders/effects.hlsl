@@ -220,10 +220,9 @@ float3 NeighbourNormal(float2 uv, float3 p)
 // reads: per axis a texel corner at -1.5 (texels -2,-1), at +.5 (0,+1) and the centre of +2, so the 9 footprints tile
 // exactly the 25 taps (the taps' own step 2/w; an odd width shifts every footprint by under 2/w texel, each needed texel
 // keeps a weight of about .5 or 1, and 8-bit subtexel filtering rounds that shift away). Each read is the
-// mean of 1, 2 or 4 texels, all <= 1: every read >= .9998 means every texel >= 1 - 4 * .0002 (>= .99902 if the GPU
-// filters in fp16 and rounds the mean up to 1), so the weighted 5x5 mean lies within .001 (a quarter of 1/255) of the
-// returned raw texel. Every 5x5 of exact 1.0 still takes it; a 5x5 holding 1 - 2^-11 texels may now run the full
-// filter (its result is within .0005 of the raw texel the old 25-tap min returned). (2) the silhouette guard is one
+// mean of 1, 2 or 4 texels, all <= 1: every read >= .9995 (the old per-texel threshold, so every 5x5 the old 25-tap min
+// accepted still passes) means every texel >= 1 - 4 * .0005 = .998 (>= .99707 if the GPU filters in fp16 and rounds the
+// mean up to 1 - 2^-11), so the weighted 5x5 mean lies within .003 (under 1/255) of the returned raw texel. (2) the silhouette guard is one
 // extra depth read per tap instead of NeighbourNormal's two:
 // the tap's tangent along the screen axis the centre normal leans towards (x if |n.x| > |n.y|) must lie in the
 // centre's plane, weight *= saturate(1 - 2 * sin^2) with sin = dot(r - q, n) / |r - q|. At a grazing limb the
@@ -246,7 +245,7 @@ float4 AOBlur(float2 uv : TEXCOORD0) : COLOR0
         // footprint k % 3 and k / 3 per axis -> -1.5, .5, 2 AO texels from the centre
         minAO = min(minAO, tex2Dlod(AmbientLinear, float4(uv + min(float2(k - krow * 3.0, krow) * 2.0 - 1.5, 2.0) * tapStep, 0, 0)).a);
     }
-    [branch] if (minAO >= 0.9998) return raw;
+    [branch] if (minAO >= 0.9995) return raw;
     float2 size = 1.0 / ImageAndClip.xy;
     float2 cuv = DepthTexelUV(uv, size);
     float d = ReadDepth(cuv);
