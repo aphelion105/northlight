@@ -24,7 +24,7 @@ int main(){
     assert(sum==f.total()&&f.total()==38&&draws==3797&&f.drawCalls(Celestial)==3700&&f.drawCalls(SunNear)==94);
     assert(calls==7&&f.reads()==7&&f.reads()<=MaxReads&&!f.on());
     // A mark after end() is ignored (no read); begin() resets.
-    f.mark(Water);assert(calls==7);f.begin(true,&fake,counters,4);assert(f.ticks(SunNear)==0&&f.drawCalls(Celestial)==0);f.end();
+    f.mark(Veil);assert(calls==7);f.begin(true,&fake,counters,4);assert(f.ticks(SunNear)==0&&f.drawCalls(Celestial)==0);f.end();
     for(unsigned b=0;b<Count;++b)assert(name(b)[0]!='?');
     std::puts("PASS effects buckets: contiguous spans sum to the whole, unreached marks roll into the next bucket, draw calls billed alike, off reads no clock");
 }

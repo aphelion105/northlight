@@ -139,7 +139,7 @@ legacy_after = 'if(fold&&!world->composited){effectState();bindEffects(ao);if(!l
 checks['proxy: FOLD condition, legacy composite before render only when not folding, after it only if not composited'] = (
     all(effects_cpp.count(s) == 1 for s in (fold_line, legacy_before, render_call, legacy_after))
     and effects_cpp.index('gpuProfile->mark("AO");') < effects_cpp.index(fold_line) < effects_cpp.index(legacy_before)
-    < effects_cpp.index(render_call) < effects_cpp.index(legacy_after) < effects_cpp.index('water->render(')
+    < effects_cpp.index(render_call) < effects_cpp.index(legacy_after) < effects_cpp.index('celestialDiscs->renderVeil(')
     and 'ext->SetPixelShader(constants[7]==0.f?aoContactBloomPS:aoPS);' in effects_cpp)
 checks['proxy: one shared effect-state setup, used before the AO pass and before the late legacy composite'] = (
     renderer.count('    void effectState() {') == 1 and effects_cpp.count('effectState();') == 2

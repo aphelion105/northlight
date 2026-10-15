@@ -2291,22 +2291,6 @@ public:
         if(!hasContext()||!celestialValid)return false;
         out=celestial;memcpy(inverseView,context.inverseView,64);memcpy(projectionOut,projection,12);return true;
     }
-    bool waterContext(NorthlightWaterContext& out,float nearZ,float farZ,float minZ,float maxZ)const{
-        if(!hasContext())return false;
-        memcpy(out.inverseView,context.inverseView,sizeof out.inverseView);memcpy(out.projection,projection,sizeof projection);
-        out.nearZ=nearZ;out.farZ=farZ;out.minZ=minZ;out.maxZ=maxZ;
-        const auto copy=[](float* to,V from){to[0]=from.x;to[1]=from.y;to[2]=from.z;};
-        copy(out.sunDirection,sourceDirections[0]);copy(out.sunColor,sourceColors[0]);
-        copy(out.moonDirection,sourceDirections[1]);copy(out.moonColor,sourceColors[1]);memcpy(out.skyColor,context.ambient,12);
-        out.seconds=float(DWORD(GetTickCount()-animationEpoch))*.001f;
-        if(shadowFrameReady)for(int source=0;source<2;++source){
-            if(NorthlightGI::dot(sourceColors[source],sourceColors[source])<1e-10f)continue;
-            copy(out.sourceShadowDirection[source],sourceDirections[source]);
-            for(int cascade=0;cascade<2;++cascade){out.sourceShadows[source][cascade]=shadow[source*2+cascade];memcpy(out.sourceShadowMatrices[source][cascade],sourceMatrices[source][cascade],64);}
-            if(actorValid[source]&&actorShadow[source]){out.actorShadows[source]=actorShadow[source];memcpy(out.actorShadowMatrices[source],actorMatrices[source],64);out.actorShadowValid[source]=true;} /* 0.3.209 (task 29) */
-        }
-        return true;
-    }
     bool recognizesWmo(IDirect3DVertexShader9* shader)const{return wmoShaders.count(shader)!=0;}
     bool isWorldShader(IDirect3DVertexShader9* shader)const{return terrainShaders.count(shader)||captureShaders.count(shader)||wmoShaders.count(shader);}
     bool isSkinnedShader(IDirect3DVertexShader9* shader)const{auto it=actorPrograms.find(shader);return it!=actorPrograms.end()&&it->second->skinned;}

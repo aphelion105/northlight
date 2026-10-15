@@ -57,9 +57,6 @@
 // input (northlight_mem.h). no_builtin: its body must not turn back into a memcmp call. Not exported.
 extern "C" __attribute__((no_builtin("memcmp"),no_builtin("bcmp"))) int memcmp(const void* a,const void* b,size_t n){return NorthlightMem::compare(a,b,n);}
 
-// Temporarily disable the water appearance passes.
-// Keep the liquid mask: AO/GI need it to avoid treating water as solid terrain.
-static constexpr bool kWaterEffectsEnabled = false;
 static HMODULE selfModule;
 static wchar_t rootPath[MAX_PATH];
 // Game folder = directory of the host exe, resolved on first use (never in
@@ -699,6 +696,7 @@ private:
         effectsBuckets.mark(Bucket::Setup);
         struct ProfileEnd { NorthlightGpuProfile* p; ~ProfileEnd(){if(p)p->endFrame();} } profileEnd{spellOn?nullptr:gpuProfile.get()}; /* the spell layer replays right after this returns: spellReplay() closes the profile frame with its own "Spells" interval */
         IDirect3DTexture9* rainMaskTex=world&&debugMode==0?rainMaskPrepare():nullptr; /* 0.3.202 (rain mask MRT): the mask resolved and cut by the final depth (own SavedState) */
+        if(water&&debugMode==0)water->resolveMask(); /* 0.3.214 (water MRT): decodes the frame's render target 1 data (own SavedState; false: no mask from it, maskTextureForDepth answers null) */
         IDirect3DTexture9* waterMask=water?water->maskTextureForDepth(worldMinDepth,worldMaxDepth):nullptr;
         // discs and glare, then the wrap-ring visibility in the same group of
         // 1x1 passes before the scene copy; the veil follows water (below).
@@ -781,10 +779,6 @@ private:
             // A folded frame the world did not composite (skipped or failed; it left the target
             // untouched): re-establish the effect state it changed, then the legacy composite.
             if(fold&&!world->composited){effectState();bindEffects(ao);if(!legacyComposite())return;}
-        }
-        if(kWaterEffectsEnabled&&world&&water&&debugMode==0&&worldDebug==0){NorthlightWaterContext waterContext;
-            if(world->waterContext(waterContext,nearZ,farZ,worldMinDepth,worldMaxDepth))water->render(saved.targets[0],depthTex,width,height,sceneFormat,waterContext);
-            gpuProfile->mark("Water");effectsBuckets.mark(Bucket::Water);
         }
         if(celestial){
             const auto& haze=world->horizonHazeConstants();
@@ -1000,14 +994,63 @@ private:
     }
     // Liquid mask only (AO/GI/fog consume it). The depth identity, target
     // description and viewport read here are reused by the mask capture.
+    // 0.3.214 (water MRT): a draw the MRT conditions hold for is only planned here (waterPending); waterMrtDraw binds render target 1 and the mask variants of its shaders
+    // right before the game's own draw. Everything else keeps the second-draw pass, made here as before.
     template<class Draw> void captureWater(IDirect3DVertexShader9* vs,unsigned userPointer,Draw draw){
-        if(!water||!drawWaterVS||!water->usable()||!world||!world->hasContext())return; // == recognizesVertex(vs)
+        if(!water||!drawWaterVS)return;
+        /* a water draw that is not planned as MRT (any gate below) must not meet render target 1 left bound by the previous water draw */
+        struct UnbindUnlessPlanned {Device* self;~UnbindUnlessPlanned(){if(!self->waterPending.valid&&self->water->isMrtBound())self->rainMrtUnbind();}} unbindUnlessPlanned{this};
+        if(!water->usable()||!world||!world->hasContext())return; // == recognizesVertex(vs)
         if(!projectionValid||!worldDepth)return;
         CpuScope cost(sampledDrawTimers()?&cpuWaterCapture:nullptr);if(gateFrame)++gateCounts.water;
         IDirect3DSurface9* currentDepth=nullptr;bool mainDepth;if(ext->peekDepthStencilSurface(currentDepth))mainDepth=currentDepth==worldDepth; /* 0.3.196 (task 12): identity compare only, borrowed */
         else{mainDepth=SUCCEEDED(ext->GetDepthStencilSurface(&currentDepth))&&currentDepth==worldDepth;drop(currentDepth);}if(!mainDepth)return;
         D3DSURFACE_DESC desc={};D3DVIEWPORT9 viewport={};if(!fullViewport(desc,&viewport))return;
-        IDirect3DPixelShader9* ps=nullptr;struct PixelRelease {IDirect3DPixelShader9*& p;~PixelRelease(){drop(p);}} releasePS{ps};if(SUCCEEDED(ext->GetPixelShader(&ps))&&ps)water->capture(vs,ps,desc.Width,desc.Height,worldDepth,viewport,userPointer,mirrorState.invalidations,draw);
+        IDirect3DPixelShader9* ps=nullptr;struct PixelRelease {IDirect3DPixelShader9*& p;~PixelRelease(){drop(p);}} releasePS{ps};
+        if(FAILED(ext->GetPixelShader(&ps))||!ps)return;
+        if(!waterCapsChecked)waterMrtCaps();
+        const auto plan=water->plan(vs,ps,desc.Width,desc.Height,viewport);
+        if(plan==NorthlightWaterRenderer::Plan::Skip)return;
+        /* the twin must match the game's depth buffer too (D3D9: every bound target and the depth share multisample type and quality) */
+        const bool sameMs=worldDepthDescKnown&&worldDepthDesc.MultiSampleType==desc.MultiSampleType&&worldDepthDesc.MultiSampleQuality==desc.MultiSampleQuality;
+        if(plan==NorthlightWaterRenderer::Plan::Mrt&&sameMs){waterPending={vs,ps,userPointer,desc.Width,desc.Height,desc.MultiSampleType,desc.MultiSampleQuality,viewport,true};return;}
+        if(plan==NorthlightWaterRenderer::Plan::Mrt&&!waterMsLogged){waterMsLogged=true;logf("WATER mask MRT skipped: render target ms=%u/%lu, depth ms=%u/%lu",unsigned(desc.MultiSampleType),(unsigned long)desc.MultiSampleQuality,worldDepthDescKnown?unsigned(worldDepthDesc.MultiSampleType):0u,worldDepthDescKnown?(unsigned long)worldDepthDesc.MultiSampleQuality:0ul);}
+        if(water->isMrtBound())rainMrtUnbind(); /* the second draw and the game's own draw after it meet no render target 1 */
+        water->capture(vs,ps,desc.Width,desc.Height,worldDepth,viewport,userPointer,mirrorState.invalidations,draw);
+    }
+    // 0.3.214 (water MRT): once per device, the caps the MRT mask needs: two render targets with independent write masks and bit depths (G32R32F next to the game's target),
+    // blending on the extra target (the game's own blend applies to it: the format must be a post-pixel-shader blending render target) and pixel shader 2.0.
+    // Without them every water draw keeps the second-draw pass.
+    void waterMrtCaps(){
+        waterCapsChecked=true;D3DCAPS9 caps={};const bool got=SUCCEEDED(ext->GetDeviceCaps(&caps));
+        static constexpr DWORD kUsageQueryPostPixelShaderBlending=0x00080000; /* D3DUSAGE_QUERY_POSTPIXELSHADERBLENDING (the MinGW header lacks it) */
+        IDirect3D9* d3d=nullptr;D3DDEVICE_CREATION_PARAMETERS creation={};D3DDISPLAYMODE mode={};
+        const HRESULT formatHr=SUCCEEDED(ext->GetDirect3D(&d3d))&&d3d&&SUCCEEDED(ext->GetCreationParameters(&creation))&&SUCCEEDED(ext->GetDisplayMode(0,&mode))?
+            d3d->CheckDeviceFormat(creation.AdapterOrdinal,creation.DeviceType,mode.Format,D3DUSAGE_RENDERTARGET|kUsageQueryPostPixelShaderBlending,D3DRTYPE_SURFACE,D3DFMT_G32R32F):D3DERR_INVALIDCALL;
+        drop(d3d);
+        const bool ok=got&&SUCCEEDED(formatHr)&&caps.NumSimultaneousRTs>=2&&(caps.PrimitiveMiscCaps&D3DPMISCCAPS_INDEPENDENTWRITEMASKS)&&(caps.PrimitiveMiscCaps&D3DPMISCCAPS_MRTINDEPENDENTBITDEPTHS)&&(caps.PrimitiveMiscCaps&D3DPMISCCAPS_MRTPOSTPIXELSHADERBLENDING)&&caps.PixelShaderVersion>=D3DPS_VERSION(2,0);
+        water->setMrtCaps(ok);
+        if(!ok)logf("WATER mask MRT disabled: caps got=%d G32R32F-blending-target=0x%08lx simultaneousRTs=%lu independentWriteMasks=%d independentBitDepths=%d mrtBlending=%d pixelShader=0x%08lx (second draw per water draw)",int(got),(unsigned long)formatHr,(unsigned long)caps.NumSimultaneousRTs,int((caps.PrimitiveMiscCaps&D3DPMISCCAPS_INDEPENDENTWRITEMASKS)!=0),int((caps.PrimitiveMiscCaps&D3DPMISCCAPS_MRTINDEPENDENTBITDEPTHS)!=0),int((caps.PrimitiveMiscCaps&D3DPMISCCAPS_MRTPOSTPIXELSHADERBLENDING)!=0),(unsigned long)caps.PixelShaderVersion);
+    }
+    // The next draw uses a water vertex shader (an identity lookup of the bound shader; false when the binding is not known).
+    bool nextDrawIsWater(){IDirect3DVertexShader9* v=nullptr;return ext->peekVertexShader(v)&&v&&water->hasVertex(v);}
+    struct PendingWater {IDirect3DVertexShader9* vs=nullptr;IDirect3DPixelShader9* ps=nullptr;unsigned userPointer=0;UINT width=0,height=0;D3DMULTISAMPLE_TYPE ms=D3DMULTISAMPLE_NONE;DWORD quality=0;D3DVIEWPORT9 viewport={};bool valid=false;};
+    PendingWater waterPending;bool waterCapsChecked=false,waterMsLogged=false;
+    // The game's draw (raw: its bare Draw call, chain: everything wrapped around it). A planned water draw runs as the one MRT draw; where beginMrt refuses (blend, fog,
+    // resources) it is made the old way: the second draw first, then the game's.
+    template<class Raw,class Chain> HRESULT waterMrtDraw(Raw raw,Chain chain){
+        if(!waterPending.valid)return chain();
+        const PendingWater p=waterPending;waterPending.valid=false;
+        bool masked=false;
+        {CpuScope cost(sampledDrawTimers()?&cpuWaterCapture:nullptr);
+            extensionWork("water mask",[&]{masked=water&&water->beginMrt(p.vs,p.ps,p.width,p.height,p.ms,p.quality,p.viewport);});
+            if(!masked)extensionWork("water mask",[&]{
+                if(water->isMrtBound())rainMrtUnbind();
+                water->capture(p.vs,p.ps,p.width,p.height,worldDepth,p.viewport,p.userPointer,mirrorState.invalidations,raw);});}
+        if(!masked)return chain();
+        const HRESULT hr=chain();
+        extensionWork("water mask",[&]{water->endMrt(SUCCEEDED(hr));});
+        return hr;
     }
     // 0.3.193 BlobShadowStrength (held by the filter, read once at device creation): 100 = the filter is off and the
     // game's blobs are drawn as they are; 0 = they are skipped (0.3.154..0.3.192); 1..99 = drawn with a lighter
@@ -1125,7 +1168,11 @@ private:
     // changes targets), so a frame costs a few pass breaks instead of two per rain draw and one per world draw. Objects drawn over the rain later are cut out by one
     // full-screen pass (rainMaskPrepare): rainDepth, the depth at the frame's first mask draw (rain writes no depth), against the final depth. MSAA scenes draw into a
     // multisampled mask target matching the game's RT/depth (D3D9 wants them to share type and quality), resolved once into the texture before the composite.
-    void rainMrtUnbind(){if(rainMrtBound){ext->SetRenderTarget(1,nullptr);rainMrtBound=false;}}
+    // 0.3.214 (water MRT): render target 1 has two owners, never at once: the rain mask (above) and the water mask (water_renderer.h beginMrt). One unbind serves both.
+    void rainMrtUnbind(){
+        bool done=false;if(water&&water->isMrtBound()){water->unbindMrt();done=true;}
+        if(rainMrtBound){if(!done)ext->SetRenderTarget(1,nullptr);rainMrtBound=false;}
+    }
     bool rainMaskEligible(){
         IDirect3DSurface9* rt=nullptr;IDirect3DSurface9* ds=nullptr;bool ok=false;D3DSURFACE_DESC rd={},dd={};
         if(SUCCEEDED(ext->GetRenderTarget(0,&rt))&&rt){rt->GetDesc(&rd);ok=rd.Width==width&&rd.Height==height;dd.MultiSampleType=rd.MultiSampleType;dd.MultiSampleQuality=rd.MultiSampleQuality; /* no depth bound: the RT's own values */
@@ -1289,13 +1336,15 @@ private:
         if(weatherDetect.hot&&mirrorState.textureKnown[0]&&mirrorState.textures[0]==weatherDetect.hot){weatherSample.primitives+=count;++weatherSample.draws;rainBlend=weatherDetect.hotKind==NorthlightWeather::Kind::Rain&&world&&world->rainBlendSetting();} /* 0.3.199 (rain): counted after applied too (the rest of the rain); 0.3.202: no boundary here, the effects run at the UI again */
         else if(weatherDetect.mistArmed)mist=mistDraw(count); /* 0.3.199 (rain mist): a mist puff in rain is skipped; unarmed, one bool test */
         if(rainMrtBound&&!rainBlend)rainMrtUnbind(); /* 0.3.202 (rain mask MRT): every other draw (and all its capture/effect work) meets the game's targets only; dry frames one bool test */
+        waterPending.valid=false; /* 0.3.214 (water MRT): set by this draw's captureWater only */
+        if(water&&water->isMrtBound()&&(rainBlend||applied||!enabled||failed||!nextDrawIsWater()))rainMrtUnbind(); /* the water mask's target 1 stays bound across consecutive water draws only */
         if(!frameDrawGates){
             dropBlobFaint();prepareDraw(capture,count);
             {CpuScope hooks(sampledHookTimer());
                 extensionWork("native sky claim",[&]{skyClaim(t,count,claimed);});
                 if(!claimed&&blobFilterActive())extensionWork("blob shadow filter",[&]{blobFilter(count,claimed);});}
             if(spellOn&&spellGate()&&spellDraw(claimed||mist||blobOriginal||shadowSwapOriginal,rainBlend||mist))return D3D_OK; /* task 34: deferred past the effects; the real draw does not run */
-            const HRESULT hr=nameMaskDraw(rainBlend,claimed||mist,draw); /* 0.3.199 (rain mist): a mist draw is skipped; 0.3.212 (task 32): the name mask wraps the draw */
+            const HRESULT hr=waterMrtDraw(draw,[&]{return nameMaskDraw(rainBlend,claimed||mist,draw);}); /* 0.3.199 (rain mist): a mist draw is skipped; 0.3.212 (task 32): the name mask wraps the draw; 0.3.214 (water MRT): a water draw writes the mask itself */
             if(!claimed){CpuScope hooks(sampledHookTimer());extensionWork("native sky observation",[&]{skyObserve(hr,t,count);});}
             return hr;
         }
@@ -1310,7 +1359,7 @@ private:
             if(!claimed&&drawGates.blob){stage="blob shadow filter";if(blobFilterActive())blobFilter(count,claimed);}
         });
         if(spellOn&&spellGate()&&spellDraw(claimed||mist||blobOriginal||shadowSwapOriginal,rainBlend||mist))return D3D_OK; /* task 34 */
-        const HRESULT hr=nameMaskDraw(rainBlend,claimed||mist,draw); /* 0.3.199 (rain mist): a mist draw is skipped; 0.3.212 (task 32): the name mask wraps the draw */
+        const HRESULT hr=waterMrtDraw(draw,[&]{return nameMaskDraw(rainBlend,claimed||mist,draw);}); /* 0.3.199 (rain mist): a mist draw is skipped; 0.3.212 (task 32): the name mask wraps the draw; 0.3.214 (water MRT): a water draw writes the mask itself */
         if(sky&&!claimed){CpuScope hooks(sampledHookTimer());extensionWork("native sky observation",[&]{skyObserve(hr,t,count);});}
         return hr;
     }
@@ -1671,7 +1720,7 @@ private:
         extensionWork("spell layer",[&]{deferred=spellDrawImpl(claimed,rain);});
         return deferred;
     }
-    // At the effects boundary, right after renderEffects() returned (also when it bailed out): the deferred draws, after the composite and the water and veil
+    // At the effects boundary, right after renderEffects() returned (also when it bailed out): the deferred draws, after the composite and the veil
     // passes, before the UI draw. Closes the frame for the layer.
     void spellReplay(){
         if(!spellOn)return;
@@ -2227,7 +2276,7 @@ public:
         }
         const unsigned sampleFrame=frame;LONGLONG cleanup=0;
         // Read before clearFrame() resets the water renderer's frame counters.
-        const unsigned waterDraws=water?water->frameCaptures():0,waterScans=water?water->frameMaskScans():0,waterClears=water?water->frameClears():0,waterReadFailures=water?water->frameReadFailures():0;
+        const unsigned waterRedraws=water?water->frameCaptures():0,waterMrt=water?water->frameMrtDraws():0,waterDegraded=water?water->frameMrtDegraded():0,waterDraws=waterRedraws+waterMrt,waterScans=water?water->frameMaskScans():0,waterClears=water?water->frameClears():0,waterReadFailures=water?water->frameReadFailures():0;
         if(sampled())logf("EFFECT trailing world frame=%u worldDraws=%u skinnedDraws=%u",frame,postEffectWorldDraws,postEffectSkinnedDraws);
         if(sampled()&&nameMask.armed()){
             const double us=cpuFrequency.QuadPart>0?1e6/double(cpuFrequency.QuadPart):0.0;
@@ -2268,7 +2317,7 @@ public:
             LARGE_INTEGER a={},b={},t={};QueryPerformanceCounter(&a);for(unsigned i=0;i<32;++i)QueryPerformanceCounter(&t);QueryPerformanceCounter(&b);
             const double qpcNs=double(b.QuadPart-a.QuadPart)*1e9/double(cpuFrequency.QuadPart)/33.0;
             if(!gateUntimed)logf("CPU capture split frame=%u captureWorld=%.3fms captureWater=%.3fms qpcNs=%.1f",sampleFrame,std::max(0.0,double(cpuCapture-cpuWaterCapture)*ms),cpuWaterCapture*ms,qpcNs);
-            logf("WATER mask draws=%u deferred=%u clears=%u scans=%u readFailures=%u",waterDraws,0u,waterClears,waterScans,waterReadFailures);
+            logf("WATER mask draws=%u deferred=%u clears=%u scans=%u readFailures=%u mrt=%u redraw=%u degraded=%u",waterDraws,0u,waterClears,waterScans,waterReadFailures,waterMrt,waterRedraws,waterDegraded); /* 0.3.214 (water MRT): draws = mrt (the game draw wrote the mask itself) + redraw (second draws; degraded = planned as mrt, made as second draws) */
             if(NorthlightRenderThreadProbe::profiling()){
                 // Extension D3D9 calls of this frame by method, inside renderEffects' raw scope (all
                 // cascades, the point cube, full-screen passes, DiagReplayProbe); capture reads are mirror answers.

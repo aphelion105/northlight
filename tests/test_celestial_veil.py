@@ -27,14 +27,12 @@ order=['if (applied || !enabled || failed || !projectionValid) return;',
        'if(celestial){celestialDiscs->renderRing();gpuProfile->mark("CelestialRing");}',
        'ext->StretchRect(saved.targets[0], nullptr, sceneSurface',
        'world->render(saved.targets[0],',
-       'water->render(saved.targets[0],',
-       'gpuProfile->mark("Water");',
        'celestialDiscs->renderVeil(saved.targets[0],NorthlightCelestialGlow::hazeAtSun(haze.haze[3],haze.shape[2],sunElevation),world->skyTransmittance());',
        'gpuProfile->mark("CelestialVeil");',
        'applied = true;']
 at=[effects.index(s) for s in order]
 assert at==sorted(at),list(zip(order,at))
-veil_site=effects[effects.index('gpuProfile->mark("Water");'):effects.index('applied = true;')]
+veil_site=effects[effects.index('        if(celestial){\n            const auto& haze='):effects.index('applied = true;')]
 assert 'if(celestial){' in veil_site and 'SetRenderTarget' not in veil_site
 
 host=fp.src('celestial_disc_renderer.h').read_text()

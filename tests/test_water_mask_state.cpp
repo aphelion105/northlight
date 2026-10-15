@@ -11,6 +11,11 @@
 // getters (not a DXVK case) must leave the device state untouched.
 // The new path must also leave the mirror consistent (audit). No graphics API,
 // driver, Wine or game is involved.
+// 0.3.214 (water MRT): the second-draw pass above stays the fallback, so its equivalence runs with the
+// renderer's MRT variants off (the constructor flag). mrtPath() below drives the MRT path on the same
+// fake backend: no render target 0 / depth switch and no second draw per water draw, render target 1
+// bound lazily and kept across consecutive draws, the shaders and write mask swapped for the draw only,
+// the exact device state after unbind, the once-per-frame clear / resolve / decode, and the fallbacks.
 #define NORTHLIGHT_DEVICE_MIRROR_TEST_API
 #include <d3d9.h>
 #include <cassert>
@@ -70,7 +75,7 @@ struct Backend final:IDirect3DDevice9 {
     LONG refs=1;State s;
     std::vector<std::unique_ptr<Owned>> arena;int nextId=1;std::map<const void*,int> ids;
     std::vector<std::vector<long long>> events;
-    unsigned gets=0,sets=0,applies=0,captures=0,blocks=0,aliases=0;bool failCreate=false;unsigned failDraw=0;
+    unsigned gets=0,sets=0,applies=0,captures=0,blocks=0,aliases=0;bool failCreate=false,refuseColorFill=false,failStretch=false;unsigned failDraw=0;
     unsigned getFail=GetsWork,failStage=0;
     // Mask-pass failure injection: the failAt-th Set/Clear/draw while armed fails
     // without changing state. The mask draw disarms and records how many calls
@@ -162,7 +167,11 @@ struct Backend final:IDirect3DDevice9 {
     HRESULT CreateDepthStencilSurface(UINT w,UINT h,D3DFORMAT f,D3DMULTISAMPLE_TYPE,DWORD,WINBOOL,IDirect3DSurface9** out,HANDLE*)override{if(failCreate){*out=nullptr;return E_OUTOFMEMORY;}*out=surface(w,h,f,D3DUSAGE_DEPTHSTENCIL);return D3D_OK;}
     HRESULT CreateVertexShader(const DWORD*,IDirect3DVertexShader9** out)override{*out=make(new Fake<IDirect3DVertexShader9>);return D3D_OK;}
     HRESULT CreatePixelShader(const DWORD*,IDirect3DPixelShader9** out)override{*out=make(new Fake<IDirect3DPixelShader9>);return D3D_OK;}
-    HRESULT StretchRect(IDirect3DSurface9*,const RECT*,IDirect3DSurface9*,const RECT*,D3DTEXTUREFILTERTYPE)override{return D3D_OK;}
+    HRESULT StretchRect(IDirect3DSurface9* a,const RECT*,IDirect3DSurface9* b,const RECT*,D3DTEXTUREFILTERTYPE)override{if(failStretch)return D3DERR_INVALIDCALL;event(7,{id(a),id(b)});return D3D_OK;}
+    // 0.3.214 (water MRT)
+    HRESULT CreateRenderTarget(UINT w,UINT h,D3DFORMAT f,D3DMULTISAMPLE_TYPE ms,DWORD q,WINBOOL,IDirect3DSurface9** out,HANDLE*)override{
+        if(failCreate){*out=nullptr;return E_OUTOFMEMORY;}auto* t=surface(w,h,f,D3DUSAGE_RENDERTARGET);t->desc.MultiSampleType=ms;t->desc.MultiSampleQuality=q;*out=t;return D3D_OK;}
+    HRESULT ColorFill(IDirect3DSurface9* t,const RECT*,D3DCOLOR c)override{if(refuseColorFill)return D3DERR_INVALIDCALL;if(!mutate("ColorFill"))return D3DERR_INVALIDCALL;event(6,{id(t),c});return D3D_OK;}
 };
 Block::Block(Backend* b):owner(b),saved(b->s){owner->AddRef();}
 HRESULT Block::GetDevice(IDirect3DDevice9** p){return Backend::give(static_cast<IDirect3DDevice9*>(owner),p);}
@@ -277,7 +286,7 @@ struct Totals {unsigned steps=0,captures=0,maskDraws=0,leakRestores=0,oldApplies
 static void compare(const std::vector<Step>& steps,unsigned getFail,unsigned failStage,Totals& total,std::vector<unsigned>* forward=nullptr){
     Run a,bRun;
     for(Run* r:{&a,&bRun}){r->b.getFail=getFail;r->b.failStage=failStage;}
-    {legacy::NorthlightWaterRenderer oldWater(a.ext);NorthlightWaterRenderer newWater(bRun.ext,kTestIdentities,std::size(kTestIdentities));
+    {legacy::NorthlightWaterRenderer oldWater(a.ext);NorthlightWaterRenderer newWater(bRun.ext,kTestIdentities,std::size(kTestIdentities),false);
     oldWater.registerVertex(a.vs[0],kVertexHash);oldWater.registerPixel(a.ps[0],kPixelHash);
     newWater.registerVertex(bRun.vs[0],kVertexHash,kWaterTestOriginalVS,std::size(kWaterTestOriginalVS));newWater.registerPixel(bRun.ps[0],kPixelHash,kWaterTestOriginalPS,std::size(kWaterTestOriginalPS));
     assert(a.b.snapshot()==bRun.b.snapshot());
@@ -318,7 +327,7 @@ static void compare(const std::vector<Step>& steps,unsigned getFail,unsigned fai
 // rebound afterwards; the scan then runs on every draw (flag stays set). With no
 // leak only the first draw after a handout scans. Also the exact call sequence.
 static void directed(){
-    Run run;NorthlightWaterRenderer water(run.ext,kTestIdentities,std::size(kTestIdentities));water.registerVertex(run.vs[0],kVertexHash,kWaterTestOriginalVS,std::size(kWaterTestOriginalVS));water.registerPixel(run.ps[0],kPixelHash,kWaterTestOriginalPS,std::size(kWaterTestOriginalPS));
+    Run run;NorthlightWaterRenderer water(run.ext,kTestIdentities,std::size(kTestIdentities),false);water.registerVertex(run.vs[0],kVertexHash,kWaterTestOriginalVS,std::size(kWaterTestOriginalVS));water.registerPixel(run.ps[0],kPixelHash,kWaterTestOriginalPS,std::size(kWaterTestOriginalPS));
     run.randomizeGame(7);run.game.SetVertexShader(run.vs[0]);run.game.SetPixelShader(run.ps[0]);run.game.SetDepthStencilSurface(run.mainDS);
     D3DVIEWPORT9 vp{0,0,W,H,0,1};run.game.SetViewport(&vp);
     Step step{Op::Capture};step.kind=1;capture<NorthlightWaterRenderer,false>(run,water,step);assert(water.frameCaptures()==1&&water.frameMaskScans()==1&&water.frameClears()==1);
@@ -357,7 +366,7 @@ static void directed(){
 // draw alone (stream 0 and, for indexed UP, the index buffer), also via fallback.
 static void userPointerEndState(){
     for(unsigned getFail:{unsigned(GetsWork),unsigned(ScissorGet)})for(unsigned kind:{2u,3u})for(unsigned seed=1;seed<=50;++seed){
-        Run alone,with;with.b.getFail=getFail;NorthlightWaterRenderer water(with.ext,kTestIdentities,std::size(kTestIdentities));water.registerVertex(with.vs[0],kVertexHash,kWaterTestOriginalVS,std::size(kWaterTestOriginalVS));water.registerPixel(with.ps[0],kPixelHash,kWaterTestOriginalPS,std::size(kWaterTestOriginalPS));
+        Run alone,with;with.b.getFail=getFail;NorthlightWaterRenderer water(with.ext,kTestIdentities,std::size(kTestIdentities),false);water.registerVertex(with.vs[0],kVertexHash,kWaterTestOriginalVS,std::size(kWaterTestOriginalVS));water.registerPixel(with.ps[0],kPixelHash,kWaterTestOriginalPS,std::size(kWaterTestOriginalPS));
         for(Run* r:{&alone,&with}){r->randomizeGame(seed);r->game.SetVertexShader(r->vs[0]);r->game.SetPixelShader(r->ps[0]);r->game.SetDepthStencilSurface(r->mainDS);
             D3DVIEWPORT9 vp{0,0,W,H,0,1};r->game.SetViewport(&vp);r->game.SetStreamSource(0,r->vb[1],16,32);r->game.SetIndices(r->ib[1]);}
         Step step{Op::Capture};step.kind=kind;capture<NorthlightWaterRenderer,false>(with,water,step);assert(water.frameCaptures()==(getFail==GetsWork?1u:0u)); /* failed scissor read: skipped */
@@ -367,12 +376,131 @@ static void userPointerEndState(){
     }
     std::printf("user-pointer draws: capture + real draw == real draw alone (stream 0 / indices), drawn and skipped\n");
 }
+// ---- 0.3.214 (water MRT) ----
+static const DWORD kPs2Original[]={0xffff0200,0x0200001f,0x80000000,0xb00f0000,0x02000001,0x800f0800,0xb0e40000,0x0000ffff}; // ps_2_0: dcl t0; mov oC0, t0
+static const std::uint64_t kPs2Hash=0x1234;
+static std::vector<NorthlightWaterShaderIdentity> mrtIdentities(){
+    std::vector<NorthlightWaterShaderIdentity> out(std::begin(kTestIdentities),std::end(kTestIdentities));
+    std::vector<NorthlightWaterShaderPatch::Word> patched;assert(!NorthlightWaterShaderPatch::patch(kPs2Original,std::size(kPs2Original),patched));
+    out.push_back({kPs2Hash,NorthlightWaterShaderPatch::fnv1a64(patched.data(),patched.size()),unsigned(patched.size()),false});return out;
+}
+struct MrtRun {
+    Run run;std::vector<NorthlightWaterShaderIdentity> table=mrtIdentities();NorthlightWaterRenderer water;D3DVIEWPORT9 vp{0,0,W,H,0,1};
+    Fake<IDirect3DPixelShader9>* ps2=nullptr;
+    MrtRun():water(run.ext,table.data(),table.size(),true){
+        water.registerVertex(run.vs[0],kVertexHash,kWaterTestOriginalVS,std::size(kWaterTestOriginalVS));water.registerPixel(run.ps[0],kPixelHash,kWaterTestOriginalPS,std::size(kWaterTestOriginalPS));
+        ps2=run.b.make(new Fake<IDirect3DPixelShader9>);water.registerPixel(ps2,kPs2Hash,kPs2Original,std::size(kPs2Original));
+        water.setMrtCaps(true);run.gameObjects=run.b.arena.size()-0; // the variants are the renderer's, not the game's: counted below
+    }
+    // The game's state for one water draw (blend, fog, sRGB), main target and depth, no extra targets.
+    void game(DWORD blend=TRUE,DWORD src=D3DBLEND_SRCALPHA,DWORD dst=D3DBLEND_INVSRCALPHA,DWORD fog=FALSE,DWORD srgb=FALSE,bool useVs2=false){
+        run.randomizeGame(5);run.game.SetRenderTarget(0,run.mainRT);for(unsigned i=1;i<4;++i)run.game.SetRenderTarget(i,nullptr);run.game.SetDepthStencilSurface(run.mainDS);run.game.SetViewport(&vp);
+        run.game.SetVertexShader(run.vs[0]);run.game.SetPixelShader(useVs2?ps2:run.ps[0]);
+        run.game.SetRenderState(D3DRS_ALPHABLENDENABLE,blend);run.game.SetRenderState(D3DRS_SRCBLEND,src);run.game.SetRenderState(D3DRS_DESTBLEND,dst);run.game.SetRenderState(D3DRS_BLENDOP,D3DBLENDOP_ADD);
+        run.game.SetRenderState(D3DRS_FOGENABLE,fog);run.game.SetRenderState(D3DRS_SRGBWRITEENABLE,srgb);run.game.SetRenderState(D3DRS_COLORWRITEENABLE1,15);
+    }
+    NorthlightWaterRenderer::Plan plan(){IDirect3DVertexShader9* v=nullptr;IDirect3DPixelShader9* p=nullptr;run.ext->GetVertexShader(&v);run.ext->GetPixelShader(&p);
+        const auto r=water.plan(v,p,W,H,vp);drop(v);drop(p);return r;}
+    bool begin(D3DMULTISAMPLE_TYPE ms=D3DMULTISAMPLE_4_SAMPLES){IDirect3DVertexShader9* v=nullptr;IDirect3DPixelShader9* p=nullptr;run.ext->GetVertexShader(&v);run.ext->GetPixelShader(&p);
+        const bool r=water.beginMrt(v,p,W,H,ms,0,vp);drop(v);drop(p);return r;}
+    size_t events(long long kind)const{size_t n=0;for(auto& e:run.b.events)n+=e[0]==kind;return n;}
+};
+static bool has(const std::vector<std::string>& trace,const std::string& name){for(auto& t:trace)if(t==name)return true;return false;}
+static void mrtPath(){
+    // 1. A frame of consecutive MRT draws on a 4x multisampled game target.
+    {MrtRun m;m.game();assert(m.plan()==NorthlightWaterRenderer::Plan::Mrt&&!m.water.maskTextureForDepth(0,1));
+    const auto before=m.run.b.snapshot();std::vector<std::string> trace;m.run.b.trace=&trace;
+    assert(m.begin());
+    assert((trace==std::vector<std::string>{"ColorFill","SetRenderTarget(1)","SetRenderState(190)","SetVertexShader","SetPixelShader"}));   // clear, bind, write mask, shaders: no target 0 / depth switch
+    auto* twin=dynamic_cast<FakeSurface*>(m.run.b.s.rt[1]);assert(twin&&twin->desc.MultiSampleType==D3DMULTISAMPLE_4_SAMPLES&&twin->desc.Format==D3DFMT_G32R32F);
+    assert(m.run.b.s.rt[0]==m.run.mainRT&&m.run.b.s.ds==m.run.mainDS&&m.run.b.s.rs[190]==15&&m.run.b.s.vs!=m.run.vs[0]&&m.run.b.s.ps!=m.run.ps[0]&&m.run.b.s.vs&&m.run.b.s.ps);
+    const long long variantVs=m.run.b.id(m.run.b.s.vs),variantPs=m.run.b.id(m.run.b.s.ps);
+    const size_t drawsBefore=m.run.b.events.size();assert(SUCCEEDED(drawKind(m.run.ext,1)));
+    const auto& drawEvent=m.run.b.events[drawsBefore];assert(drawEvent[0]==2&&m.run.b.events.size()==drawsBefore+1);   // exactly the game's one draw, seen with the MRT bindings
+    trace.clear();m.water.endMrt(true);
+    assert((trace==std::vector<std::string>{"SetPixelShader","SetVertexShader","SetRenderState(190)"}));
+    assert(m.run.b.s.vs==m.run.vs[0]&&m.run.b.s.ps==m.run.ps[0]&&m.water.isMrtBound()&&m.water.frameMrtDraws()==1);
+    // Second and third consecutive water draws: the binding stays, nothing else is switched.
+    for(unsigned k=0;k<2;++k){trace.clear();assert(m.begin());assert((trace==std::vector<std::string>{"SetRenderState(190)","SetVertexShader","SetPixelShader"}));
+        assert(m.run.b.id(m.run.b.s.vs)==variantVs&&m.run.b.id(m.run.b.s.ps)==variantPs&&m.run.b.s.rt[1]==twin);assert(SUCCEEDED(drawKind(m.run.ext,k)));trace.clear();m.water.endMrt(true);}
+    assert(m.water.frameMrtDraws()==3&&m.water.frameCaptures()==0&&m.events(6)==1&&m.events(5)==0);   // one clear, no second draw, no Clear call
+    m.run.b.trace=nullptr;
+    // Lazily unbound: the device is exactly the game's state again.
+    m.water.unbindMrt();assert(!m.water.isMrtBound()&&m.run.b.snapshot()==before);
+    // Before the resolve nothing is handed out; the resolve: twin -> data texture, mask clear, one decode pass, all state back.
+    assert(!m.water.maskTextureForDepth(0,1));
+    const size_t stretchBefore=m.events(7),fillsBefore=m.events(6),drawsAtResolve=m.run.b.events.size();trace.clear();m.run.b.trace=&trace;
+    assert(m.water.resolveMask());m.run.b.trace=nullptr;
+    assert(m.events(7)==stretchBefore+1&&m.events(6)==fillsBefore+1&&m.run.b.events.back()[0]==3);   // StretchRect(twin->raw), ColorFill(mask), the decode quad (DrawPrimitiveUP)
+    assert(m.run.b.snapshot()==before&&m.run.b.s.rt[1]==nullptr);
+    IDirect3DTexture9* mask=m.water.maskTextureForDepth(0,1);assert(mask&&!m.water.maskTextureForDepth(.25f,.75f));   // the min/max Z contract of the handout
+    assert(m.water.hasCapturedWater());
+    // The next frame starts empty and clears again before the first draw.
+    m.water.endFrame();assert(!m.water.maskTextureForDepth(0,1)&&m.water.frameMrtDraws()==0);
+    const size_t fills=m.events(6);m.game();assert(m.begin());assert(m.events(6)==fills+1);m.water.endMrt(true);m.water.unbindMrt();
+    (void)drawsAtResolve;}
+    // 2. Not multisampled: render target 1 is the data texture itself, no StretchRect.
+    {MrtRun m;m.game();assert(m.begin(D3DMULTISAMPLE_NONE));auto* t=dynamic_cast<FakeSurface*>(m.run.b.s.rt[1]);assert(t&&t->desc.MultiSampleType==D3DMULTISAMPLE_NONE);
+    drawKind(m.run.ext,0);m.water.endMrt(true);m.water.unbindMrt();assert(m.water.resolveMask()&&m.events(7)==0&&m.water.maskTextureForDepth(0,1));}
+    // 3. Draws that must not write render target 1 are refused with the device untouched: additive and other blends, sRGB writes, table fog before ps_3_0.
+    {MrtRun m;
+    struct Case {DWORD blend,src,dst,fog,srgb;bool ps2,expect;};
+    const Case cases[]={{FALSE,D3DBLEND_ONE,D3DBLEND_ONE,FALSE,FALSE,false,true},                    // no blend: whatever the factors
+        {TRUE,D3DBLEND_SRCALPHA,D3DBLEND_INVSRCALPHA,FALSE,FALSE,false,true},{TRUE,D3DBLEND_ONE,D3DBLEND_INVSRCALPHA,FALSE,FALSE,false,true},
+        {TRUE,D3DBLEND_ONE,D3DBLEND_ZERO,FALSE,FALSE,false,true},{TRUE,D3DBLEND_SRCALPHA,D3DBLEND_ZERO,FALSE,FALSE,false,true},
+        {TRUE,D3DBLEND_SRCALPHA,D3DBLEND_ONE,FALSE,FALSE,false,false},{TRUE,D3DBLEND_ONE,D3DBLEND_ONE,FALSE,FALSE,false,false},{TRUE,D3DBLEND_ZERO,D3DBLEND_INVSRCALPHA,FALSE,FALSE,false,false},
+        {TRUE,3,4,FALSE,FALSE,false,false},                                                          // SRCCOLOR / INVSRCCOLOR
+        {FALSE,D3DBLEND_ONE,D3DBLEND_ONE,FALSE,TRUE,false,false},                                    // sRGB write
+        {FALSE,D3DBLEND_ONE,D3DBLEND_ONE,TRUE,FALSE,false,true},                                     // fog with ps_3_0: the shader does its own
+        {FALSE,D3DBLEND_ONE,D3DBLEND_ONE,TRUE,FALSE,true,false},{FALSE,D3DBLEND_ONE,D3DBLEND_ONE,FALSE,FALSE,true,true}};
+    for(const auto& c:cases){
+        m.game(c.blend,c.src,c.dst,c.fog,c.srgb,c.ps2);m.water.unbindMrt();const auto before=m.run.b.snapshot();const size_t events=m.run.b.events.size();
+        const unsigned degraded=m.water.frameMrtDegraded();
+        const bool got=m.begin();assert(got==c.expect);
+        if(got){m.water.endMrt(false);m.water.unbindMrt();}
+        else assert(m.run.b.snapshot()==before&&m.run.b.events.size()==events&&m.water.frameMrtDegraded()==degraded+1);
+        assert(m.run.b.snapshot()==before);}
+    // A separate blend of the alpha channel does not matter (G32R32F has none): not read at all.
+    }
+    // 4. A refused ColorFill falls back to a target swap that restores target 0, viewport and scissor.
+    {MrtRun m;m.game();m.run.b.refuseColorFill=true;const auto before=m.run.b.snapshot();std::vector<std::string> trace;m.run.b.trace=&trace;
+    assert(m.begin());m.run.b.trace=nullptr;assert(has(trace,"SetRenderTarget(0)")&&has(trace,"Clear")&&m.run.b.s.rt[0]==m.run.mainRT&&m.events(5)==1);
+    m.water.endMrt(true);m.water.unbindMrt();assert(m.run.b.snapshot()==before);}
+    // 5. Failures leave the second-draw pass: no resources, then no MRT plan for the session; a failing resolve likewise; state untouched.
+    {MrtRun m;m.game();m.run.b.failCreate=true;const auto before=m.run.b.snapshot();assert(!m.begin()&&m.run.b.snapshot()==before);m.run.b.failCreate=false;
+    assert(m.plan()==NorthlightWaterRenderer::Plan::Redraw&&!m.begin());}
+    {MrtRun m;m.game();assert(m.begin());drawKind(m.run.ext,0);m.water.endMrt(true);m.water.unbindMrt();const auto before=m.run.b.snapshot();m.run.b.failStretch=true;
+    assert(!m.water.resolveMask()&&!m.water.maskTextureForDepth(0,1)&&m.run.b.snapshot()==before&&m.plan()==NorthlightWaterRenderer::Plan::Redraw);}
+    // 6. Caps off, or variants off: every water draw is a second draw; an unrecognised shader or a viewport that is not the target's is skipped as capture() does.
+    {MrtRun m;m.game();m.water.setMrtCaps(false);assert(m.plan()==NorthlightWaterRenderer::Plan::Redraw&&!m.begin());
+    m.water.setMrtCaps(true);assert(m.plan()==NorthlightWaterRenderer::Plan::Mrt);m.vp.X=4;assert(m.plan()==NorthlightWaterRenderer::Plan::Skip);m.vp.X=0;
+    m.run.game.SetPixelShader(m.run.ps[1]);assert(m.plan()==NorthlightWaterRenderer::Plan::Skip);
+    Run plain;std::vector<NorthlightWaterShaderIdentity> t=mrtIdentities();NorthlightWaterRenderer off(plain.ext,t.data(),t.size(),false);
+    off.registerVertex(plain.vs[0],kVertexHash,kWaterTestOriginalVS,std::size(kWaterTestOriginalVS));off.registerPixel(plain.ps[0],kPixelHash,kWaterTestOriginalPS,std::size(kWaterTestOriginalPS));off.setMrtCaps(true);
+    D3DVIEWPORT9 vp{0,0,W,H,0,1};assert(off.plan(plain.vs[0],plain.ps[0],W,H,vp)==NorthlightWaterRenderer::Plan::Redraw);}
+    // 7. Mixed frame: an MRT draw, then a second draw (another water draw the MRT conditions refused), then the resolve: the legacy clear stands, the decode adds to it.
+    {MrtRun m;m.game();assert(m.begin());drawKind(m.run.ext,0);m.water.endMrt(true);m.water.unbindMrt();
+    m.game(TRUE,D3DBLEND_ONE,D3DBLEND_ONE);assert(!m.begin());
+    IDirect3DVertexShader9* v=nullptr;IDirect3DPixelShader9* p=nullptr;m.run.ext->GetVertexShader(&v);m.run.ext->GetPixelShader(&p);
+    m.water.capture(v,p,W,H,m.run.mainDS,m.vp,NorthlightWaterRenderer::NoUserPointer,m.run.m.invalidations,[&]{return drawKind(m.run.ext,0);});drop(v);drop(p);
+    assert(m.water.frameCaptures()==1&&m.water.frameClears()==1&&m.water.frameMrtDraws()==1&&m.water.frameMrtDegraded()==1);
+    const size_t fills=m.events(6);assert(m.water.resolveMask()&&m.events(6)==fills&&m.water.maskTextureForDepth(0,1));   // no second mask clear over the second draw's data
+    // the viewport range of the frame holds for both paths
+    D3DVIEWPORT9 other{0,0,W,H,.25f,.75f};assert(m.water.plan(m.run.vs[0],m.run.ps[0],W,H,other)==NorthlightWaterRenderer::Plan::Skip);}
+    // 8. A change of the game's multisampling drops the twin and re-creates it; a resolution change re-creates everything. Render target 1 is never left bound to a dropped target.
+    {MrtRun m;m.game();assert(m.begin());m.water.endMrt(true);auto* first=m.run.b.s.rt[1];m.water.unbindMrt();m.water.endFrame();
+    assert(m.begin(D3DMULTISAMPLE_NONE)&&m.run.b.s.rt[1]!=first);m.water.endMrt(true);m.water.unbindMrt();m.water.endFrame();
+    assert(m.begin(D3DMULTISAMPLE_4_SAMPLES));dynamic_cast<FakeSurface*>(m.run.b.s.rt[1])->desc.MultiSampleType==D3DMULTISAMPLE_4_SAMPLES?void():abort();m.water.endMrt(true);m.water.unbindMrt();}
+    std::printf("water MRT: draws write render target 1 with no target 0 / depth switch and no second draw, the binding is kept across draws and unbound to the exact game state, "
+                "blend/fog/sRGB refusals leave the device untouched, the clear and resolve happen once per frame, failures fall back to the second-draw pass\n");
+}
+
 int main(){
     assert(kVertexHash&&kPixelHash);
     {std::vector<NorthlightWaterShaderPatch::Word> vsMask,psMask;   // runtime patch == legacy table words
     assert(!NorthlightWaterShaderPatch::patch(kWaterTestOriginalVS,std::size(kWaterTestOriginalVS),vsMask)&&vsMask==std::vector<NorthlightWaterShaderPatch::Word>(std::begin(kWaterTestMaskVS),std::end(kWaterTestMaskVS)));
     assert(!NorthlightWaterShaderPatch::patch(kWaterTestOriginalPS,std::size(kWaterTestOriginalPS),psMask)&&psMask==std::vector<NorthlightWaterShaderPatch::Word>(std::begin(kWaterTestMaskPS),std::end(kWaterTestMaskPS)));
-    Run run;NorthlightWaterRenderer water(run.ext,kTestIdentities,std::size(kTestIdentities));
+    Run run;NorthlightWaterRenderer water(run.ext,kTestIdentities,std::size(kTestIdentities),false);
     water.registerVertex(run.vs[0],kVertexHash,kWaterTestOriginalVS,std::size(kWaterTestOriginalVS));water.registerPixel(run.ps[0],kPixelHash,kWaterTestOriginalPS,std::size(kWaterTestOriginalPS));
     assert(water.hasVertex(run.vs[0])&&water.usable());
     // A hash hit whose bytes do not patch to the recorded variant skips that shader only.
@@ -380,6 +508,7 @@ int main(){
     assert(!water.hasVertex(run.vs[1])&&water.hasVertex(run.vs[0])&&water.usable());}
     directed();
     userPointerEndState();
+    mrtPath();
     Totals total;
     for(unsigned seed=1;seed<=400;++seed)compare(script(seed,400),GetsWork,0,total);
     assert(total.maskDraws>1000&&total.leakRestores>10&&total.newBlocks==0&&total.oldApplies>0&&total.gameApplies>100);
@@ -391,7 +520,7 @@ int main(){
     // the full device state as it found it, and a failed save read draws nothing.
     {unsigned skipped=0,drawn=0;
     for(unsigned mode=PureDevice;mode<GetFailModes;++mode)for(unsigned seed=1;seed<=40;++seed){
-        Run run;run.b.getFail=mode;run.b.failStage=seed%4;NorthlightWaterRenderer water(run.ext,kTestIdentities,std::size(kTestIdentities));water.registerVertex(run.vs[0],kVertexHash,kWaterTestOriginalVS,std::size(kWaterTestOriginalVS));water.registerPixel(run.ps[0],kPixelHash,kWaterTestOriginalPS,std::size(kWaterTestOriginalPS));
+        Run run;run.b.getFail=mode;run.b.failStage=seed%4;NorthlightWaterRenderer water(run.ext,kTestIdentities,std::size(kTestIdentities),false);water.registerVertex(run.vs[0],kVertexHash,kWaterTestOriginalVS,std::size(kWaterTestOriginalVS));water.registerPixel(run.ps[0],kPixelHash,kWaterTestOriginalPS,std::size(kWaterTestOriginalPS));
         for(const auto& step:script(1000+seed,300)){
             if(step.op!=Op::Capture||step.failDraw||step.failCreate){execute<NorthlightWaterRenderer,false>(run,water,step);continue;}
             const auto before=run.b.snapshot();const size_t events=run.b.events.size();const unsigned failures=run.readFailures;
