@@ -150,6 +150,7 @@ checks['CPU profile logs drawHooks and frameDrawGates']='drawHooks=%.3fms frameD
 HARNESS=r'''
 #include "extension_guard.h"
 #include "draw_gates.h"
+#include "world_draw_domain.h"
 #include <cassert>
 #include <cstdarg>
 #include <cstdint>
@@ -267,7 +268,8 @@ struct Base{
     Base(){blobsObj.ext=&extObj;env.trace=&trace;blobsObj.faint.id=6;blobsObj.faint.env=extObj.original.env=&env;extObj.original.id=5;extObj.env=worldObj.env=skyObj.env=blobsObj.env=&env;extObj.ps[0].env=extObj.ps[1].env=extObj.vs.env=worldObj.replacement.env=&env;}
     bool sampledDrawTimers()const{return frame%2==0;}
     void logf(const char* format,...){char b[512];va_list a;va_start(a,format);std::vsnprintf(b,sizeof b,format,a);va_end(a);trace.push_back(std::string("log ")+b);}
-    bool fullViewport(D3DSURFACE_DESC& d){env.call("fullViewport","fault viewport");d.Width=1;return !env.bit("small viewport",4);}
+    float worldMinDepth=0.f,worldMaxDepth=.94f; /* item 8: the claim pre-filter reads the learned world band; the mock viewport is the client sky band */
+    bool fullViewport(D3DSURFACE_DESC& d,D3DVIEWPORT9* vp=nullptr){env.call("fullViewport","fault viewport");d.Width=1;if(vp){vp->MinZ=.9990234375f;vp->MaxZ=1.f;}return !env.bit("small viewport",4);}
     template<class Draw> void captureWater(IDirect3DVertexShader9*,unsigned up,Draw draw){env.call("captureWater "+std::to_string(up),"fault water");if(env.bit("water mask",3))trace.push_back("water mask hr="+std::to_string(draw()));}
 };
 // prepareDrawImpl stand-in: beforeDraw may find terrain, fail or apply the effects (UI), then the swap plan and the capture.
