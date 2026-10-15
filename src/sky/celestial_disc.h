@@ -91,8 +91,6 @@ struct SkyBand {
         return skyDepth(worldMax,1,worldMax,value)?value:-1.f;
     }
 };
-// Sine of the depth (4 deg) under the horizon down to which the disc's top limb stays opaque behind the far edge.
-constexpr float BelowHorizon=.0698f;
 struct Disc {float direction[3],right[3],up[3],tint[3],tangentRadius,opacity;};
 // Late color repair repeats the early disc depth test against resolved depth.
 // Foreground world and nearer sky geometry must remain occluders; a later
@@ -106,7 +104,7 @@ struct Placement {
     Disc disc{};float projection[3]={},inverseView[16]={},depth=0,emission=0;
     unsigned width=0,height=0;bool valid=false;
 };
-inline bool prepare(const float* direction,const float* tint,float alpha,float angularRadius,Disc& output) {
+inline bool prepare(const float* direction,const float* tint,float alpha,float angularRadius,Disc& output,float horizonSine=0) {
     if(!direction||!tint||!std::isfinite(alpha)||alpha<=0||alpha>1||
        !std::isfinite(angularRadius)||angularRadius<.000001f||angularRadius>.5f)return false;
     Disc d={};float length2=0;
@@ -117,9 +115,13 @@ inline bool prepare(const float* direction,const float* tint,float alpha,float a
     if(length2<.99f||length2>1.01f)return false;
     for(int i=0;i<3;++i)d.direction[i]=direction[i]/std::sqrt(length2);
     // The disc sets behind the far edge (terrain, WDL, the sea's fogged far edge), which hides it by depth at full
-    // brightness. That edge lies below the horizon (the sea's dip), so the disc stays opaque until its top limb is
-    // BelowHorizon under the horizon and fades out over one more radius, after the edge has hidden it.
-    const float sinRadius=std::sin(angularRadius),limb=-BelowHorizon-sinRadius;
+    // brightness. That edge lies at the camera's apparent horizon (horizonSine, 0 to 3 deg under: a high camera sees
+    // past the sea's dip), so the disc stays opaque until its top limb reaches it and fades out over one more radius,
+    // after the edge has hidden it. Below it nothing hides the disc (empty depth past the far clip reads as sky), and the
+    // glare, which takes this opacity, goes with it. It was a fixed 4 deg: a low camera saw the disc and its glow under
+    // the sea's edge.
+    if(!std::isfinite(horizonSine))horizonSine=0;
+    const float sinRadius=std::sin(angularRadius),limb=std::min(horizonSine,0.f)-sinRadius;
     if(d.direction[2]<=limb-sinRadius)return false;
     // Continuous tangent basis across the visible upper hemisphere, including
     // zenith. No arbitrary axis-switch jump rotates the moon near the pole.

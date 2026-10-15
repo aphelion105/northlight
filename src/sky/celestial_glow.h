@@ -106,7 +106,14 @@ inline float horizonGlow(float elevationSine,float sinRadius){
     if(!std::isfinite(elevationSine)||!(sinRadius>0))return 0;
     return smoothstep(-2*sinRadius,-.8f*sinRadius,elevationSine);   // full until the disc is 95% below the horizon
 }
-inline float ringWrap(float elevationSine,float sinRadius){return Wrap*horizonGlow(elevationSine,sinRadius);}
+// The ring keeps a sun hidden behind a hill or a roof glowing; near the camera's far edge (horizonSine) it would glow
+// on the sea or the ground over a sun that has set there, so it is full only with the centre 3R over that edge and
+// none at 1R (the disc's bottom on it). Down there the glow follows the disc taps alone: as much glow as disc is seen.
+inline float ringWrap(float elevationSine,float sinRadius,float horizonSine=0){
+    if(!std::isfinite(elevationSine)||!(sinRadius>0))return 0;
+    const float edge=std::isfinite(horizonSine)?std::min(horizonSine,0.f):0.f;
+    return Wrap*smoothstep(edge+sinRadius,edge+3*sinRadius,elevationSine);
+}
 // Equal-area annulus RingInner..RingOuter, golden-angle order like the disc taps.
 inline void ringOffset(unsigned i,float& x,float& y){
     const float a=RingInner*RingInner,b=RingOuter*RingOuter;

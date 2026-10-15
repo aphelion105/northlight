@@ -9,6 +9,7 @@
 #include "celestial_context.h"
 #include "celestial_sources.h"
 #include "celestial_glow.h"
+#include "apparent_horizon.h"
 #include "twilight_fill.h"
 #include "night_floor.h"
 #include "regional_fog.h"
@@ -286,6 +287,7 @@ private:
     NorthlightCelestial::Context celestial,celestialLight;
     unsigned celestialOrbitReports=0;
     NorthlightCelestialOrbit::LightMotion celestialLightMotion;
+    NorthlightApparentHorizon::Smooth apparentHorizon; // the camera's far edge for the discs (celestialContext), one frame behind
     std::string celestialLightMap;V celestialLightCamera;
     bool continuousCelestialShadows=false;
     NorthlightCelestialProfiles::Table celestialProfiles;
@@ -2290,7 +2292,7 @@ public:
     float skyTransmittance()const{return skyTransmittanceFrame;}
     bool celestialContext(NorthlightCelestial::Context& out,float* inverseView,float* projectionOut)const{
         if(!hasContext()||!celestialValid)return false;
-        out=celestial;memcpy(inverseView,context.inverseView,64);memcpy(projectionOut,projection,12);return true;
+        out=celestial;out.horizonSine=apparentHorizon.valid?apparentHorizon.value:0.f;memcpy(inverseView,context.inverseView,64);memcpy(projectionOut,projection,12);return true;
     }
     bool recognizesWmo(IDirect3DVertexShader9* shader)const{return wmoShaders.count(shader)!=0;}
     bool isWorldShader(IDirect3DVertexShader9* shader)const{return terrainShaders.count(shader)||captureShaders.count(shader)||wmoShaders.count(shader);}
@@ -3829,10 +3831,12 @@ public:
         c[2][0]=1.f/(maxZ-minZ);c[2][1]=48;c[2][2]=192;c[2][3]=1.f/1024;
         memcpy(c[3],context.inverseView,64);memcpy(c[7],sourceMatrices[firstSource][0],64);memcpy(c[11],sourceMatrices[firstSource][1],64);
         memcpy(c[15],context.camera,12);memcpy(c[16],context.lightDirection,12);memcpy(c[17],context.direct,12);memcpy(c[18],context.ambient,12);
-        c[18][3]=NorthlightTwilightFill::gain(celestialValid,celestialValid?celestial.dayFraction:-1.,
-            celestialValid?celestialLight.sun.direction[2]:0.f,celestialValid?celestialLight.moon.direction[2]:0.f);
+        /* The ambient policies follow the natural orbit: the displayed one dives under the horizon (celestial_time_warp.h). */
+        const auto naturalSky=NorthlightCelestialOrbit::evaluateNatural(celestialValid?celestial.dayFraction:-1.);
+        c[18][3]=NorthlightTwilightFill::gain(naturalSky.valid,naturalSky.valid?celestial.dayFraction:-1.,
+            naturalSky.valid?naturalSky.sun.direction[2]:0.f,naturalSky.valid?naturalSky.moon.direction[2]:0.f);
         c[18][3]+=wx.ambientLift(); /* 0.3.198 (rain): a little more sky ambient from the GI pass in rain (+0 when dry; the probes themselves are untouched) */
-        NorthlightNightFloor::nightAmbient(quality.nightBrightness,NorthlightNightFloor::weight(celestialValid,celestialValid?celestialLight.sun.direction[2]:0.f),c[18],c[19]);
+        NorthlightNightFloor::nightAmbient(quality.nightBrightness,NorthlightNightFloor::weight(naturalSky.valid,naturalSky.valid?naturalSky.sun.direction[2]:0.f),c[18],c[19]);
         c[19][3]=8; /* c19.rgb: NightBrightness light per unit of albedo, from c18's ambient (WorldComposite only; 0 = off); c19.w: probe spacing */
         c[20][0]=float(NorthlightGI::probeLayout().atlas);c[20][1]=NorthlightQuality::giIntensity(quality);c[20][2]=.85f;c[20][3]=active->serial?1.f:0.f;
         DWORD now=GetTickCount();
@@ -3862,6 +3866,13 @@ public:
         c[57][1]=haze.shape[0];c[57][2]=haze.shape[1];c[57][3]=haze.shape[2];c[67][2]=haze.sun[0];c[67][3]=haze.sun[1];
         c[35][1]=haze.lift[0];c[35][2]=haze.lift[1];c[35][3]=haze.lift[2]; /* lift colour = the glow hue (WorldComposite reads c35.yzw) */
         hazeFrame=haze;
+        {   // The far edge toward the sun for the discs and the glow ring, from the regional field's surface (water over ground).
+            float target=0;
+            if(celestialValid&&uploadedFogField){const auto& field=*uploadedFogField;
+                target=NorthlightApparentHorizon::sine(context.camera,celestial.sun.direction,farZ,[&](float x,float y,float& height){
+                    const auto g=NorthlightSpellFog::fieldAt(field,x,y);height=g.ground;return g.coverage>.5f;});}
+            apparentHorizon.update(target,now);
+        }
         // 0.3.159 shadow removal smoothing (TemporalLight smoothRemoval, c30.yzw), always on. The drawn
         // lighting passes are the sources with a positive weight (plus firstSource at weight 0), so
         // their summed weight is the lighting-buffer alpha of a fully lit pixel. Without a drawn

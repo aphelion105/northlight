@@ -28,6 +28,7 @@ struct Context {
     Body sun, moon, secondaryMoon;
     float sunWeight=0, moonWeight=0;
     float sunColor[3]={}, moonColor[3]={}; // Same units as input terrain direct RGB.
+    float horizonSine=0; // the camera's far edge (apparent_horizon.h), 0..-sin 3 deg; discs and the glow ring only
 };
 inline float smooth(float x) { x=std::max(0.f,std::min(1.f,x));return x*x*(3-2*x); }
 inline bool decodeBody(const BodyRecord& r,const float* camera,Body& out) {

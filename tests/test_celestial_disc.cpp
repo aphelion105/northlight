@@ -95,11 +95,15 @@ int main(int argc,char** argv){
         assert(std::fabs(a)<1e-5&&std::fabs(b)<1e-5&&std::fabs(c)<1e-5&&std::fabs(r-1)<1e-5&&std::fabs(u-1)<1e-5);
         assert(d.opacity>0&&d.opacity<=1);++cases;
     }
-    // Sets behind the far edge: full on the horizon and until the top limb is BelowHorizon under it, gone one radius later.
+    // Sets behind the camera's far edge: full on it and until the top limb reaches it, gone one radius later.
     float horizon[3]={1,0,0};assert(prepare(horizon,white,1,.02,d)&&d.opacity==1);
-    const float sr=std::sin(.02f),z1=-BelowHorizon-.9f*sr,z0=-BelowHorizon-2.01f*sr;
-    float limb[3]={std::sqrt(1-z1*z1),0,z1};assert(prepare(limb,white,1,.02,d)&&d.opacity==1);
-    float below[3]={std::sqrt(1-z0*z0),0,z0};assert(!prepare(below,white,1,.02,d));
+    const float sr=std::sin(.02f);
+    for(float edge:{0.f,-.03f,-.0523f}){const float z1=edge-.99f*sr,zh=edge-1.5f*sr,z0=edge-2.01f*sr;
+        float limb[3]={std::sqrt(1-z1*z1),0,z1};assert(prepare(limb,white,1,.02,d,edge)&&d.opacity==1);
+        float half[3]={std::sqrt(1-zh*zh),0,zh};assert(prepare(half,white,1,.02,d,edge)&&std::fabs(d.opacity-.5f)<.01f);
+        float below[3]={std::sqrt(1-z0*z0),0,z0};assert(!prepare(below,white,1,.02,d,edge));}
+    {const float z=-1.5f*sr;float dir[3]={std::sqrt(1-z*z),0,z};assert(prepare(dir,white,1,.02,d,.1f)&&std::fabs(d.opacity-.5f)<.01f); // an edge over the horizon counts as on it
+     assert(prepare(dir,white,1,.02,d,NAN)&&std::fabs(d.opacity-.5f)<.01f);}
     horizon[2]=NAN;assert(!prepare(horizon,white,1,.02,d));
     float zenith[3]={0,0,1};assert(prepare(zenith,white,1,.02,d));float inverse[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};int bounds[4];
     assert(screenBounds(d,inverse,1,1,1,1920,1080,bounds));assert(bounds[0]<960&&bounds[2]>960&&bounds[1]<540&&bounds[3]>540);
