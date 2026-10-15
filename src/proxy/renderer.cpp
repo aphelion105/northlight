@@ -2507,11 +2507,12 @@ public:
     ULONG STDMETHODCALLTYPE Release() override{auto n=InterlockedDecrement(&refs);if(!n)delete this;return n;}
     // 0.3.192 (CS): wraps the Device in the command stream; on any failure the game keeps the Device directly (the worker core
     // budgets were read with the stream flag set, a harmless one core less).
-    IDirect3DDevice9* startStream(IDirect3DDevice9* device,D3DPRESENT_PARAMETERS* pp,unsigned framesAhead,unsigned frameSkip){
+    IDirect3DDevice9* startStream(IDirect3DDevice9* device,D3DPRESENT_PARAMETERS* pp,unsigned framesAhead,unsigned frameSkip,bool occlusionLocal){
         Device* target=static_cast<Device*>(device);const char* reason="unknown";
         NorthlightStream::StreamDevice::Options options;
         options.framesAhead=framesAhead;options.budget=NorthlightStream::budgetForFramesAhead(framesAhead); /* 0.3.200 (pipeline): StreamFramesAhead, read with CommandStream; the queue budget grows with it (bounded) */
         options.frameSkip=frameSkip; /* 0.3.200 (frame skip): StreamFrameSkip, read with CommandStream */
+        options.occlusionLocal=occlusionLocal; /* StreamOcclusionLocal, read with CommandStream */
         options.capture=&NorthlightStream::capture;
         options.threadStart=[target]{target->adoptOwnerThread();};
         options.log=[](const char* line){logf("%s",line);};
@@ -2525,7 +2526,7 @@ public:
         if(!stream){NorthlightStream::streamActive.store(false,std::memory_order_relaxed);NorthlightReplayCopies::enabled.store(false,std::memory_order_relaxed);target->setExclusiveOwner(false);target->adoptOwnerThread(); /* the gate owner is this thread again (a replay thread that ran has been joined) */
             logf("CSTREAM disabled reason=%s",reason);return device;}
         target->limitGpuLatency=stream->framesAhead()>=2; /* 0.3.200 (pipeline): see Device::limitGpuLatency */
-        logf("CSTREAM active gameTid=%lu replayTid=%lu exclusiveGate=%d framesAhead=%u frameSkip=%u budgetMiB=%u gpuLatencyLimit=%d",NorthlightStream::gameTid.load(),NorthlightStream::replayTid.load(),int(exclusiveOwner),stream->framesAhead(),frameSkip,unsigned(NorthlightStream::budgetForFramesAhead(framesAhead)>>20),int(target->limitGpuLatency));
+        logf("CSTREAM active gameTid=%lu replayTid=%lu exclusiveGate=%d framesAhead=%u frameSkip=%u occlusionLocal=%d budgetMiB=%u gpuLatencyLimit=%d",NorthlightStream::gameTid.load(),NorthlightStream::replayTid.load(),int(exclusiveOwner),stream->framesAhead(),frameSkip,int(occlusionLocal),unsigned(NorthlightStream::budgetForFramesAhead(framesAhead)>>20),int(target->limitGpuLatency));
         return stream;
     }
     HRESULT STDMETHODCALLTYPE CreateDevice(UINT adapter,D3DDEVTYPE type,HWND window,DWORD flags,D3DPRESENT_PARAMETERS* pp,IDirect3DDevice9** out) override {
@@ -2546,7 +2547,7 @@ public:
                 return D3DERR_NOTAVAILABLE;
             }
         }
-        unsigned framesAhead=1,frameSkip=0;bool nameMaskWanted=false;const bool stream=NorthlightStream::commandStreamRequested(rootPath,&framesAhead,&frameSkip,&nameMaskWanted); /* 0.3.192 (CS): CommandStream=0 or an unreadable ini is the old path below; 0.3.200 (pipeline): StreamFramesAhead from the same read; 0.3.212 (task 32): NameMask too */
+        unsigned framesAhead=1,frameSkip=0;bool nameMaskWanted=false,occlusionLocal=false;const bool stream=NorthlightStream::commandStreamRequested(rootPath,&framesAhead,&frameSkip,&nameMaskWanted,&occlusionLocal); /* 0.3.192 (CS): CommandStream=0 or an unreadable ini is the old path below; 0.3.200 (pipeline): StreamFramesAhead from the same read; 0.3.212 (task 32): NameMask too */
         upgradeAutoDepth(real,adapter,type,pp,nameMaskWanted,"CreateDevice"); /* 0.3.212 (task 32) */
         if(stream)NorthlightStream::streamActive.store(true,std::memory_order_relaxed); /* before the Device exists: worker core budgets read it once */
         if(stream)NorthlightReplayCopies::enabled.store(true,std::memory_order_relaxed); /* 0.3.192 (CS): before the first game buffer is wrapped: the replay-side CPU copies of replay_copies.h; never on with CommandStream=0 */
@@ -2555,7 +2556,7 @@ public:
         HRESULT hr=real->CreateDevice(adapter,type,window,flags,pp,out);
         logf("CreateDevice HRESULT=0x%08lx flags=0x%lx",(unsigned long)hr,(unsigned long)flags);
         if(SUCCEEDED(hr)&&out&&*out)*out=new Device(*out,this);
-        if(SUCCEEDED(hr)&&out&&*out&&stream)*out=startStream(*out,pp,framesAhead,frameSkip);
+        if(SUCCEEDED(hr)&&out&&*out&&stream)*out=startStream(*out,pp,framesAhead,frameSkip,occlusionLocal);
         return hr;
     }
 };

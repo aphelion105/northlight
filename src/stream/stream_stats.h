@@ -66,6 +66,7 @@ struct Counters {
     Counter filteredCalls{0};   // redundant Sets the game side did not record
     Counter stateAnswered{0},stateSynced{0},lockAsync{0};
     Counter coopAnswered{0};   // 0.3.204 (task 21): TestCooperativeLevel calls the game thread answered D3D_OK from StreamCore::coopState (not in stateAnswered)
+    Counter queryFlushLocal{0},queryFlushSynced{0};   // GetData(FLUSH) calls: answered on the game thread from the replay thread's latest polled result (occlusion queries only) / run as SyncGetData
     Counter census[kMaxCmdIds]{};   // sync calls per command id (name via cmdName in command_stream.inl)
     // ---- Consumer (replay thread) ----
     alignas(kLine) Counter consumerSleeps{0};
@@ -86,12 +87,13 @@ static_assert(offsetof(Counters,consumerSleeps)%kLine==0&&offsetof(Counters,chun
 
 // One CSTREAM line fragment: the queue-side numbers. The caller prefixes it and appends frame data and the census.
 inline int formatCounters(char* out,std::size_t size,const Counters& c){
-    return std::snprintf(out,size,"cmds=%llu bytes=%llu chunks=%llu/%llu blocks=%llu(%llu B) shadowB=%lld lockB=%llu wholeLockB=%llu hwB=%llu hwDepth=%llu bp=%llu sync=%llu present=%llu nested=%llu oversize=%llu refused=%llu",
+    return std::snprintf(out,size,"cmds=%llu bytes=%llu chunks=%llu/%llu blocks=%llu(%llu B) shadowB=%lld lockB=%llu wholeLockB=%llu hwB=%llu hwDepth=%llu bp=%llu sync=%llu present=%llu nested=%llu oversize=%llu refused=%llu qflush=%llu/%llu",
         (unsigned long long)get(c.commands),(unsigned long long)get(c.bytes),(unsigned long long)get(c.chunksLive),(unsigned long long)get(c.chunkAllocs),
         (unsigned long long)get(c.blocksLive),(unsigned long long)get(c.blockBytes),(long long)c.shadowBytes.load(std::memory_order_relaxed),(unsigned long long)get(c.lockRecordedBytes),(unsigned long long)get(c.wholeLockBytes),
         (unsigned long long)get(c.highWaterBytes),(unsigned long long)get(c.highWaterDepth),
         (unsigned long long)get(c.backpressureWaits),(unsigned long long)get(c.syncCalls),
         (unsigned long long)get(c.presentWaits),(unsigned long long)get(c.nestedSyncs),
-        (unsigned long long)get(c.oversizeDrops),(unsigned long long)get(c.blockRefused));
+        (unsigned long long)get(c.oversizeDrops),(unsigned long long)get(c.blockRefused),
+        (unsigned long long)get(c.queryFlushLocal),(unsigned long long)get(c.queryFlushSynced));
 }
 }

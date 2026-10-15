@@ -253,7 +253,7 @@ private:
             if(q->dead.load()||!q->inner)done=true;
             else{
                 unsigned char buf[64]={};add(core.q.stats.queryPolls);
-                if(static_cast<IDirect3DQuery9*>(q->inner)->GetData(buf,q->dataSize,0)==S_OK){std::memcpy(q->result,buf,sizeof buf);q->resultSize=q->dataSize;q->readyGen.store(q->issueSeen,std::memory_order_release);done=true;}
+                if(static_cast<IDirect3DQuery9*>(q->inner)->GetData(buf,q->dataSize,0)==S_OK){q->writeResult(buf,q->dataSize);q->readyGen.store(q->issueSeen,std::memory_order_release);done=true;}
             }
             if(done){pending_[i]=pending_.back();pending_.pop_back();}else ++i;
         }

@@ -74,6 +74,8 @@ public:
         // 0.3.200 (frame skip): StreamFrameSkip. 1: a replay two complete frames behind replays the older one without its draws and real Present (Replayer::beginFrame);
         // 0 (the default here, so every test keeps its exact trace): every frame is drawn, as before.
         unsigned frameSkip=0;
+        // StreamOcclusionLocal (default on): GetData(FLUSH) on an occlusion query answers the latest polled result without a sync (StreamQuery::GetData); false = every FLUSH is a SyncGetData as before.
+        bool occlusionLocal=true;
     };
     // Builds the stream around `target` (the Device). On success the replay thread owns the target; on failure nothing
     // was handed over (nullptr, reason filled) and the caller keeps using the target directly.
@@ -601,7 +603,7 @@ private:
 
     StreamDevice(IDirect3DDevice9* target,IDirect3D9* par,const D3DPRESENT_PARAMETERS* p,Options opt)
         :coreOwner(new StreamCore(opt.budget)),core(*coreOwner),replayer(core,SnapshotPool::capFor(clampFramesAhead(opt.framesAhead))),parent(par),framesAhead_(clampFramesAhead(opt.framesAhead)),capture(opt.capture){
-        core.target=target;core.game=this;core.framesAhead=framesAhead_;core.logLine=nullptr;core.callerModule=opt.callerModule;callerLog=opt.log;callerDiag=opt.diagnostics;core.readBackLock=opt.readBackLock;st.core=&core;
+        core.target=target;core.game=this;core.framesAhead=framesAhead_;core.logLine=nullptr;core.callerModule=opt.callerModule;core.occlusionLocal=opt.occlusionLocal;callerLog=opt.log;callerDiag=opt.diagnostics;core.readBackLock=opt.readBackLock;st.core=&core;
         if(opt.cursorApi)cursor=*opt.cursorApi;
         restoreOwner=opt.threadStart;replayer.frameSkip=opt.frameSkip!=0;replayer.threadStart=std::move(opt.threadStart);replayer.log=opt.log;replayer.diagnostics=opt.diagnostics;filter=opt.filterRedundant;
         if(kDirectReplay&&opt.directReplay&&opt.extension&&opt.rawOf){core.ext=opt.extension;auto f=opt.rawOf;core.reg.rawOf=[f](IUnknown* e,Kind k){return f(e,unsigned(k));};}
