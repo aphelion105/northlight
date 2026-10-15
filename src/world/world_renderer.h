@@ -111,6 +111,7 @@
 #include "static_shadow_gpu.h"
 #include "static_plan_prebuild.h"
 #include "static_shadow_dedup.h"
+#include "static_m2_dedup.h"
 #include "static_shadow_coverage.h"
 #include "celestial_terrain.h"
 #include "quality_settings.h"
@@ -185,6 +186,8 @@ class WorldRenderer {
     StaticShadow::GpuCache staticCasters;
     std::shared_ptr<const StaticShadow::Snapshot> staticScene;
     StaticShadowDedup::Matcher staticMatcher;
+    StaticM2Dedup::Memory staticM2Memory;unsigned long long staticM2Frame=0; /* rigid M2 doodads the static cache draws: see prepareStaticM2 */
+    unsigned staticM2Skipped=0,staticM2Verified=0,staticM2Rejected=0;
     V staticFramePivot;
     bool staticPivotReady=false,staticAllowLoads=true;
     DWORD staticMemoryTick=0,staticLogTick=0,staticRetryTick=0;
@@ -357,7 +360,7 @@ private:
     };
     ShadowCacheKey shadowCacheKey[4];
     DWORD shadowCacheLogAt=0,shadowPhaseLogAt=0;unsigned shadowCacheRenders=0,shadowCacheReuses=0,culledReplayDraws=0;
-    unsigned long long replaySlotTested[4]={},replaySlotBounded[4]={},replaySlotCulled[4]={}; /* per source*2+cascade, 600-frame window */
+    unsigned long long replaySlotTested[4]={},replaySlotBounded[4]={},replaySlotCulled[4]={},replaySlotM2Skipped[4]={}; /* per source*2+cascade, 600-frame window */
     // Static-model-only content changes redraw just the texels the changed
     // slices can touch (old and new bounds), under an identical scissor, with the
     // complete ordered draw list: per pixel this is the full redraw. false=0.3.135.
@@ -745,7 +748,7 @@ private:
         std::array<D3DVERTEXELEMENT9,MAXD3DDECLLENGTH+1> elements{};UINT elementCount=0;bool declared=false;
         const D3DVERTEXELEMENT9* declarationElements()const{return declCopy?declCopy->elements:elements.data();}
         UINT declarationCount()const{return declCopy?declCopy->count:elementCount;}
-        uint32_t staticProofMask=0;uint64_t staticProofRevision=0;std::string staticProofModel;
+        uint32_t staticProofMask=0,staticM2Mask=0;uint64_t staticProofRevision=0;std::string staticProofModel; /* staticM2Mask: slots whose cache holds this rigid M2 (bounds in staticProofLow/High) */
         V staticProofLow,staticProofHigh;
         D3DPRIMITIVETYPE type;INT base;UINT min,vertices,start,count;bool indexed;
         void releaseResources(bool retainSnapshot=false){NorthlightReplayCaptureConstants::reset(*this);program=nullptr;declCopy=nullptr;prepareStamp=0;declared=false;elementCount=0;drop(shader);drop(originalShader);pointBounds={};boundsWork={};boundsPrepared.reset();drop(decl);drop(index);drop(texture);for(auto& s:stream)drop(s);shared.reset();if(!retainSnapshot)snapshot=NorthlightDrawSnapshot::Mesh{};}
@@ -1053,7 +1056,7 @@ private:
         const DWORD now=GetTickCount();
         auto next=staticStream->snapshot();
         // Never carry another world's casters while its replacement loads.
-        if(staticScene&&staticScene->map!=lastRequest.map){staticCasters.reset();staticMatcher.clear();staticScene.reset();staticOwnerGeneration=UINT64_MAX;}
+        if(staticScene&&staticScene->map!=lastRequest.map){staticCasters.reset();staticMatcher.clear();staticM2Memory.clear();staticScene.reset();staticOwnerGeneration=UINT64_MAX;}
         if(next&&next->map==lastRequest.map)staticScene=std::move(next);
         if(staticOwnerGeneration!=meshGeneration){
             auto phase=streamingPhases.measure(NorthlightStreaming::PhaseProfile::Owners);
@@ -1082,13 +1085,13 @@ private:
             logf("STATIC SHADOW PUBLISH publications=%llu publishMs=%.3f peakMs=%.3f exactDiffs=%llu diffFallbacks=%llu ownerTests=%llu idleReleases=%llu exact=%u grouped=%u idle=%u",
                  (unsigned long long)g.publications,g.publishMs,g.publishPeakMs,(unsigned long long)g.publishDiffs,(unsigned long long)g.publishDiffFallbacks,(unsigned long long)g.ownerTests,(unsigned long long)g.planIdleReleases,
                  unsigned(StaticShadow::GpuCache::ExactPublishDiff),unsigned(StaticShadow::GpuCache::GroupedOwnerInvalidation),unsigned(StaticShadow::GpuCache::IdlePlanRelease));
-            logf("STATIC SHADOW map=%s generation=%llu placements=%u cpuModels=%u readyGPU=%u pendingCPU=%u pendingGPU=%u metadataReads=%llu modelReads=%llu reused=%llu cpuMiB=%.2f cpuPeakMiB=%.2f transientPeakMiB=%.2f gpuMiB=%.2f gpuPeakMiB=%.2f uploadBytes=%llu totalUploadBytes=%llu uploadMs=%.3f readMs=%.3f packMs=%.3f maxJobMs=%.3f latencyMs=%.3f instancing=%u draws=%llu instances=%llu cpuFailures=%llu gpuFailures=%llu dedupSkipped=%u complete=%u dedupAttempts=%u dedupMatches=%u localOwners=%zu metadataMiB=%.2f selectionMs=%.3f",
+            logf("STATIC SHADOW map=%s generation=%llu placements=%u cpuModels=%u readyGPU=%u pendingCPU=%u pendingGPU=%u metadataReads=%llu modelReads=%llu reused=%llu cpuMiB=%.2f cpuPeakMiB=%.2f transientPeakMiB=%.2f gpuMiB=%.2f gpuPeakMiB=%.2f uploadBytes=%llu totalUploadBytes=%llu uploadMs=%.3f readMs=%.3f packMs=%.3f maxJobMs=%.3f latencyMs=%.3f instancing=%u draws=%llu instances=%llu cpuFailures=%llu gpuFailures=%llu dedupSkipped=%u complete=%u dedupAttempts=%u dedupMatches=%u localOwners=%zu metadataMiB=%.2f selectionMs=%.3f m2Skipped=%u m2Verified=%u m2Rejected=%u",
                  staticScene->map.c_str(),(unsigned long long)staticScene->mapGeneration,c.placements,c.models,g.readyModels,c.pendingModels,g.pendingModels,
                  (unsigned long long)c.metadataReads,(unsigned long long)c.modelReads,(unsigned long long)c.modelReuses,
                  double(c.cpuBytes)/1048576,double(c.cpuPeak)/1048576,double(c.transientPeak)/1048576,double(g.residentBytes)/1048576,double(g.peakBytes)/1048576,
                  (unsigned long long)g.frameBytes,(unsigned long long)g.uploadedBytes,g.uploadMs,c.readMs,c.packMs,c.maxJobMs,c.latencyMs,unsigned(g.instancing),
-                 (unsigned long long)g.drawCalls,(unsigned long long)g.instances,(unsigned long long)c.failures,(unsigned long long)g.failures,staticDedupSkipped,unsigned(c.complete),staticDedupAttempts,staticDedupMatches,(uploadedStaticOwners?uploadedStaticOwners->placements:size_t(0)),double(c.metadataBytes)/1048576,c.selectionMs);
-            staticDedupSkipped=staticDedupAttempts=staticDedupMatches=0;
+                 (unsigned long long)g.drawCalls,(unsigned long long)g.instances,(unsigned long long)c.failures,(unsigned long long)g.failures,staticDedupSkipped,unsigned(c.complete),staticDedupAttempts,staticDedupMatches,(uploadedStaticOwners?uploadedStaticOwners->placements:size_t(0)),double(c.metadataBytes)/1048576,c.selectionMs,staticM2Skipped,staticM2Verified,staticM2Rejected);
+            staticDedupSkipped=staticDedupAttempts=staticDedupMatches=staticM2Skipped=staticM2Verified=staticM2Rejected=0;
         }
     }
     void work() {
@@ -2773,7 +2776,7 @@ public:
     uint64_t actorJobSerial()const{return actorJobSerial_;}
     const std::string& completedActorSceneMap()const{return actorSceneMap_;}
     void prepareStaticProofs(){
-        for(auto& p:replays)p->staticProofMask=0;
+        for(auto& p:replays)p->staticProofMask=p->staticM2Mask=0;
         if(!staticScene||staticScene->map!=lastRequest.map||!staticCasters.stats().readyModels||replays.empty())return;
         StaticShadowDedup::Budget budget;
         try {
@@ -2801,6 +2804,49 @@ public:
                 for(const auto& t:triangles)for(auto v:t){p.staticProofLow.x=std::min(p.staticProofLow.x,v.x);p.staticProofLow.y=std::min(p.staticProofLow.y,v.y);p.staticProofLow.z=std::min(p.staticProofLow.z,v.z);p.staticProofHigh.x=std::max(p.staticProofHigh.x,v.x);p.staticProofHigh.y=std::max(p.staticProofHigh.y,v.y);p.staticProofHigh.z=std::max(p.staticProofHigh.z,v.z);}
             }
         }catch(...){for(auto& p:replays)p->staticProofMask=0;}
+        try{prepareStaticM2();}catch(...){for(auto& p:replays)p->staticM2Mask=0;}
+    }
+    // Rigid M2 doodads (static_m2_dedup.h): a captured opaque skinned draw that uses one bone of an audited palette
+    // program, whose bone's world matrix is a static-cache placement (rigidStaticCovered's match) that has not moved
+    // for StableFrames capture frames, and whose world-space vertices coincide with the placement's opaque model
+    // vertices. The decision is remembered per identity (shared snapshot, program, declaration, range, matrix); the
+    // matrix compare runs every capture frame, so a doodad that starts to move (a door, a windmill) gets its replay
+    // back at once. staticM2Mask then names the slots whose cache holds the model; the replay loop also tests the
+    // slot's cached matrix against the bounds. Needs the rigid placement index of this scene (a track builds it).
+    void prepareStaticM2(){
+        if(!StaticM2Dedup::Enabled||!staticScene||staticScene->map!=lastRequest.map||!staticCasters.stats().readyModels||!rigidIndexCurrent())return;
+        const auto started=std::chrono::steady_clock::now();const unsigned long long sceneRevision=rigidSceneRevision(*staticScene);
+        ++staticM2Frame;unsigned verifications=0;std::vector<NorthlightActorDeformation::Position> world;
+        for(auto& up:replays){auto& p=*up;
+            if(!p.shadowSkinned||p.cutoff>=0||!p.shared||p.type!=D3DPT_TRIANGLELIST)continue;
+            const auto* program=rigidProgram(p.originalShader);if(!program)continue;
+            float bone=NAN;
+            if(p.boneKnown)bone=p.bone;
+            else{const D3DVERTEXELEMENT9* elements=nullptr;UINT count=0;if(declarationCache.get(p.decl,elements,count))bone=prepareCaches->bones.bone(*program,p.mesh(),p.shared,p.decl,elements,count);}
+            float matrix[12];
+            if(!(bone>=0&&bone<=74&&std::floor(bone)==bone)||!NorthlightRigidGeometry::worldBone(p.constants+4*(31+3*unsigned(bone)),context.inverseView,matrix))continue;
+            auto& e=staticM2Memory.touch(p.shared,p.originalShader,p.decl,p.start,p.count,matrix,staticM2Frame);
+            if(e.sceneRevision!=sceneRevision){e.sceneRevision=sceneRevision;e.state=StaticM2Dedup::Entry::Unverified;}
+            StaticM2Dedup::Facts facts;facts.rigid=true;facts.stableFrames=e.stable;
+            if(e.state==StaticM2Dedup::Entry::Unverified&&e.stable>=StaticM2Dedup::StableFrames&&verifications<2&&
+               std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count()<.3){
+                ++verifications;e.state=StaticM2Dedup::Entry::Rejected;
+                size_t found=SIZE_MAX;const auto& all=staticScene->placements;
+                rigidIndex.find(matrix+9,.05f,[&](std::uint32_t i){const auto& place=all[i];const float t[3]={place.translation.x,place.translation.y,place.translation.z};
+                    if(!NorthlightRigidGeometry::staticPlacement(matrix+9,matrix,t,place.matrix))return false;found=i;return true;});
+                const D3DVERTEXELEMENT9* elements=nullptr;UINT count=0;auto model=found==SIZE_MAX?staticScene->models.end():staticScene->models.find(all[found].modelKey);
+                if(found!=SIZE_MAX&&model!=staticScene->models.end()&&model->second&&declarationCache.get(p.decl,elements,count)&&p.mesh().vertexCount<=4096&&
+                   NorthlightActorDeformation::worldPositions(*program,p.mesh(),elements,count,p.constants,context.inverseView,world)&&
+                   StaticM2Dedup::boundsOf(world,e.low,e.high)&&StaticM2Dedup::inside(all[found],e.low,e.high)&&
+                   StaticM2Dedup::covers(*model->second,all[found],world,p.count)){
+                    e.state=StaticM2Dedup::Entry::Matched;e.placementIndex=found;e.placement=all[found];e.revision=model->second->contentRevision;++staticM2Verified;}
+                else ++staticM2Rejected;
+            }
+            facts.placed=facts.modelMatches=e.state==StaticM2Dedup::Entry::Matched;
+            if(facts.placed){facts.boundsInside=StaticM2Dedup::inside(e.placement,e.low,e.high);facts.cacheValid=staticCasters.coverageAt(e.placementIndex,e.placement,e.revision);}
+            if(StaticM2Dedup::decide(facts)!=StaticM2Dedup::Verdict::Skip)continue;
+            p.staticM2Mask=15u;p.staticProofModel=e.placement.modelKey;p.staticProofRevision=e.revision;p.staticProofLow=e.low;p.staticProofHigh=e.high;
+        }
     }
     uint64_t staticSignature(const float* matrix){
         try {return staticCasters.signature(matrix);}
@@ -3611,6 +3657,11 @@ public:
                     /* no valid bounds, yet the palette root lies inside the inset: it belongs to the actor map and fell to the near cascade for lack of bounds;
                        without a shared snapshot (Unsupported) it can never have bounds: unsupportedNear */
                     if(!p->pointBounds.valid&&p->captureRootValid&&NorthlightActorShadowMap::insideInset(true,p->captureRoot,p->captureRoot,actorFrameMatrix[source])){if(p->shared)side.invalidNear();else side.unsupportedNear();}}
+                // A rigid M2 doodad at its resting pose is in this slot's static cache with the same geometry (prepareStaticM2): drawn there, not twice.
+                if(p->staticM2Mask&(1u<<slot)&&key.valid&&staticCasters.stats().readyModels&&StaticShadow::containsBounds(cachedMatrix,p->staticProofLow,p->staticProofHigh)){
+                    if(key.staticContent.valid&&!key.staticContent.contains(p->staticProofModel,p->staticProofRevision))++staticDedupUncommitted;
+                    ++staticM2Skipped;++replaySlotM2Skipped[slot];continue;
+                }
                 ++replaySlotTested[slot];replaySlotBounded[slot]+=p->pointBounds.valid;
                 if(p->pointBounds.valid&&(cull?(cull[index]&2)!=0:NorthlightShadowBounds::clipReject(V(p->pointBounds.low[0],p->pointBounds.low[1],p->pointBounds.low[2]),V(p->pointBounds.high[0],p->pointBounds.high[1],p->pointBounds.high[2]),matrices[cascade]))){++culledReplayDraws;++replaySlotCulled[slot];continue;}
                 split.mark(Own);
@@ -4169,10 +4220,10 @@ public:
             terrainChange,liveTerrainGPU.newOwners,liveTerrainGPU.directionalBuilds,liveTerrainGPU.directionalTriangles,terrainTriangleTests,liveTerrainGPU.collectVisited,terrainPartMs[0],terrainPartMs[1],terrainPartMs[2]);
         if(frames==1||(frames%600==0&&NorthlightDiagnostics::enabled()))logf("WORLD replay constants bytes=%zu previousBytes=%zu calls=%zu previousCalls=%zu",replayConstantBytes,replays.size()*2*(1024*4+16*4+64*4+16*4),replayConstantCalls,replays.size()*2*4);
         if(frames==1||frames%600==0){
-            if(frames==1||NorthlightDiagnostics::enabled())logf("WORLD replay cull tested=%llu,%llu,%llu,%llu bounded=%llu,%llu,%llu,%llu culled=%llu,%llu,%llu,%llu (sun near,far moon near,far)",
+            if(frames==1||NorthlightDiagnostics::enabled())logf("WORLD replay cull tested=%llu,%llu,%llu,%llu bounded=%llu,%llu,%llu,%llu culled=%llu,%llu,%llu,%llu staticM2Skipped=%llu,%llu,%llu,%llu (sun near,far moon near,far)",
                 replaySlotTested[0],replaySlotTested[1],replaySlotTested[2],replaySlotTested[3],replaySlotBounded[0],replaySlotBounded[1],replaySlotBounded[2],replaySlotBounded[3],
-                replaySlotCulled[0],replaySlotCulled[1],replaySlotCulled[2],replaySlotCulled[3]);
-            for(unsigned n=0;n<4;++n)replaySlotTested[n]=replaySlotBounded[n]=replaySlotCulled[n]=0;}
+                replaySlotCulled[0],replaySlotCulled[1],replaySlotCulled[2],replaySlotCulled[3],replaySlotM2Skipped[0],replaySlotM2Skipped[1],replaySlotM2Skipped[2],replaySlotM2Skipped[3]);
+            for(unsigned n=0;n<4;++n)replaySlotTested[n]=replaySlotBounded[n]=replaySlotCulled[n]=replaySlotM2Skipped[n]=0;}
         if(frames==1||(frames%600==0&&NorthlightDiagnostics::enabled()))logf("WORLD replay poses draws=%zu groups=%u prepared=%zu reused=%zu scope=directional exact=1",replays.size(),replays.empty()?0:replays.back()->constantGroup+1,replayPosePrepared,replayPoseReused);
         DWORD elapsed=GetTickCount()-submissionStart;
         if(elapsed>40&&slowReports++<12)logf("WORLD slow submission: %lu ms; replay=%zu liveTerrainChunks=%zu",(unsigned long)elapsed,replays.size(),liveTerrainChunks.size());

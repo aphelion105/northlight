@@ -646,6 +646,14 @@ public:
             return std::memcmp(current.matrix,placement.matrix,sizeof(current.matrix))==0&&current.translation.x==placement.translation.x&&current.translation.y==placement.translation.y&&current.translation.z==placement.translation.z;
         return false;
     }
+    // coverage(placement, revision) for a placement known to sit at scene index: no scan of the scene.
+    bool coverageAt(size_t index,const Placement& placement,uint64_t revision)const {
+        if(!scene_||index>=scene_->placements.size())return false;const auto& current=scene_->placements[index];
+        if(current.uid!=placement.uid||current.category!=placement.category||current.modelKey!=placement.modelKey||std::memcmp(current.matrix,placement.matrix,sizeof(current.matrix))!=0||
+           current.translation.x!=placement.translation.x||current.translation.y!=placement.translation.y||current.translation.z!=placement.translation.z)return false;
+        auto* r=readyResource(current.modelKey);if(!r)return false;auto expected=scene_->models.find(current.modelKey);
+        return expected!=scene_->models.end()&&r->model->contentRevision==expected->second->contentRevision&&r->model->contentRevision==revision&&!covered(current);
+    }
     uint64_t signature(const float* matrix)const {return prepare(matrix).signature;}
     // Frees an early prepared plan that was never used (fewer slots to scan on
     // invalidation). Only cache state: a later prepare(matrix) builds as usual.

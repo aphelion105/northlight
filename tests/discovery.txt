@@ -137,6 +137,7 @@ test_solar_volume.py
 test_spell_fog_proof_client.py
 test_spell_layer.py
 test_static_cache_dirty_rect.py
+test_static_m2_dedup.py
 test_static_plan_job.py
 test_storm_bands.py
 test_stormlib_build.py
