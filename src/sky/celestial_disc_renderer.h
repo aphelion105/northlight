@@ -313,9 +313,7 @@ public:
             d->SetSamplerState(k,D3DSAMP_MINFILTER,(k==1||k==4)?D3DTEXF_LINEAR:D3DTEXF_POINT);d->SetSamplerState(k,D3DSAMP_MAGFILTER,(k==1||k==4)?D3DTEXF_LINEAR:D3DTEXF_POINT);
             d->SetSamplerState(k,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(k,D3DSAMP_SRGBTEXTURE,FALSE);}
         d->SetTexture(0,depth);d->SetTexture(2,water);d->SetTexture(4,terrainReady[i]?terrainMask[i]:nullptr);
-        // z, w: the body sinks below the horizon by its diameter; there, geometry beyond SinkFarFraction of the far
-        // clip (and the sky band: WDL) does not hide it (CelestialDiscPS sunkVisible).
-        const float terrainPolicy[]={terrainReady[i]?1.f:0.f,i?MoonMaskRadius:SunMaskRadius,1,NorthlightCelestialDisc::SinkFarFraction*farZ};
+        const float terrainPolicy[]={terrainReady[i]?1.f:0.f,i?MoonMaskRadius:SunMaskRadius,0,0};
         d->SetPixelShaderConstantF(46,terrainPolicy,1);
         std::memcpy(c[46],terrainPolicy,16);c[0][0]=1.f/width;c[0][1]=1.f/height;c[0][2]=minZ;c[0][3]=1/(maxZ-minZ);
         // Glare: c12.x = hot-core rate, c12.z = core weight (moon: strength),
@@ -353,14 +351,8 @@ public:
             d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE);
             d->SetPixelShader(haloPS);
             const V pixel[]={{-.5f,-.5f,0,1,0,0},{.5f,-.5f,0,1,1,0},{-.5f,.5f,0,1,0,1},{.5f,.5f,0,1,1,1}};
-            // A setting body (centre down to one diameter below the horizon) sinks into the haze: the sky band (WDL, the
-            // sky's lower geometry) and the loaded-terrain mask no longer hide it, so the repair test and the mask are off
-            // for its visibility; near geometry and water (the depth and water tests) still hide it.
-            float h[47][4];std::memcpy(h,c,sizeof h);
-            if(NorthlightCelestialDisc::sinking(disc)){h[11][1]=0;h[46][0]=0;}
-            if(!check(d->SetPixelShaderConstantF(0,h[0],47),"halo visibility constants")||
+            if(!check(d->SetPixelShaderConstantF(0,c[0],47),"halo visibility constants")||
                !check(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,pixel,sizeof(V)),"halo visibility draw"))return false;
-            if(!check(d->SetPixelShaderConstantF(46,c[46],1),"terrain policy"))return false; // the disc/glare draw keeps its mask
             haloHistory[i]=history;haloIndex[i]=next;haloWritten[i]=true;
             if(!check(d->SetRenderTarget(0,target),"halo output target"))return false;
             d->SetViewport(&viewport);d->SetScissorRect(&clip);d->SetRenderState(D3DRS_SCISSORTESTENABLE,TRUE);

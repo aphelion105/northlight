@@ -91,11 +91,7 @@ struct SkyBand {
         return skyDepth(worldMax,1,worldMax,value)?value:-1.f;
     }
 };
-// Below the horizon (down to one diameter) only geometry nearer than this fraction of the far clip hides the disc.
-constexpr float SinkFarFraction=.6f;
 struct Disc {float direction[3],right[3],up[3],tint[3],tangentRadius,opacity;};
-// Centre between the horizon and one diameter below it: the body is setting (or rising) through the horizon haze.
-inline bool sinking(const Disc& d){return d.direction[2]<=0&&d.direction[2]>-2*std::sin(std::atan(d.tangentRadius));}
 // Late color repair repeats the early disc depth test against resolved depth.
 // Foreground world and nearer sky geometry must remain occluders; a later
 // sky pass clearing/replacing farther depth must not leave holes in the disc.
