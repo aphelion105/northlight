@@ -1090,7 +1090,7 @@ inline HRESULT lockBuffer(ProxyBase& self,BufferState& s,UINT off,UINT size,void
     if(SUCCEEDED(hr)){s.mode=BufferState::Pass;*pp=got;}
     return hr;
 }
-inline void noteRecorded(ProxyBase& p,const BufferState& s,UINT bytes){add(p.core->q.stats.lockRecordedBytes,bytes);if(s.whole)add(p.core->q.stats.wholeLockBytes,bytes);}
+inline void noteRecorded(ProxyBase& p,const BufferState& s,UINT bytes){auto& st=p.core->q.stats;own(st.lockRecordedBytes,bytes);if(s.whole)own(st.wholeLockBytes,bytes);}   // game thread is the only writer: no locked instruction per buffer unlock
 inline HRESULT unlockBufferImpl(ProxyBase& self,BufferState& s,bool& zcDone,bool& overlapStaged){
     LockScope _ts(*self.core);Queue& q=self.core->q;
     switch(s.mode){
