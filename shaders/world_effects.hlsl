@@ -643,7 +643,8 @@ float3 smoothRemoval(float4 current,float2 q,float2 base,float2 size,float z){
             float4 tapNormal=tex2Dlod(NormalBuffer,float4(tq,0,0));
             float agree=saturate((dot(centreNormal.xyz,tapNormal.xyz)-.6428)*5.67);
             float w=exp2(abs(viewDistance(normalizedDepth(depthUV(tq)))-z)*depthScale)*saturate(1-abs(light.a-current.a)*visibilityScale)*(centreNormal.w>.5?agree:1);
-            sum+=max(light.rgb*legacyT/removalScale(tex2Dlod(BaselineLighting,float4(tq,0,0)).rgb,tex2Dlod(Scene,float4(tq,0,0)).rgb*tex2Dlod(AmbientOcclusion,float4(tq,0,0)).a,fog,legacyT),-.45)*w;total+=w;
+            // Task 43: a zero-weight tap (other shadow state, a face beyond 50 degrees) adds exactly 0: skip its three removalScale reads.
+            [branch]if(w>0)sum+=max(light.rgb*legacyT/removalScale(tex2Dlod(BaselineLighting,float4(tq,0,0)).rgb,tex2Dlod(Scene,float4(tq,0,0)).rgb*tex2Dlod(AmbientOcclusion,float4(tq,0,0)).a,fog,legacyT),-.45)*w;total+=w;
             dir=float2(dir.x*-.7373688-dir.y*.6754903,dir.x*.6754903-dir.y*.7373688);t+=1;
         }
         result=lerp(ratio,sum/total,amount)*scale/legacyT;

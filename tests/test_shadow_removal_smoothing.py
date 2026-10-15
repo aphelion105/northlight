@@ -91,6 +91,8 @@ for needle in ('clamp(RemovalInfo.w/z,3,16)','-1.442695/max(.25,z*.03)','2*Remov
                # 0.3.174: both Scene reads carry the contact AO (s10; a neutral 1 unless the world folds it)
                'tex2Dlod(Scene,float4(q,0,0)).rgb*tex2Dlod(AmbientOcclusion,float4(q,0,0)).a,fog,legacyT);',
                'tex2Dlod(Scene,float4(tq,0,0)).rgb*tex2Dlod(AmbientOcclusion,float4(tq,0,0)).a,fog,legacyT),-.45)*w;total+=w;',
+               # task 43: a zero-weight tap skips its three removalScale reads (it adds exactly 0; total+=w stays outside the branch)
+               '[branch]if(w>0)sum+=max(light.rgb*legacyT/removalScale(tex2Dlod(BaselineLighting,float4(tq,0,0)).rgb,',
                'float legacyT=max(mad(LegacyFog.w,saturate(pow(max(mad(z*Projection.z,LegacyFog.x,LegacyFog.y),0),LegacyFog.z))-1,1),.001);',
                'float3 fog=(1-legacyT)*LegacyFogColor.rgb;','sum+=max(light.rgb*legacyT/removalScale(','fog,legacyT),-.45)*w;total+=w;',
                # 0.3.185 normal weight (cos 50 = .6428, 1/(cos 30 - cos 50) = 4.48) and the centre/tap normal reads

@@ -234,9 +234,9 @@ checks['WorldComposite: lighting/baseline/AO taps weighted by the colour term, f
     and 'depthBits=1.4427/max(.15,center*.01)' in comp and 'blend.x*blend.y*exp(-fogDelta/max(.2,viewZ*.02))' in comp
     and 'contactPull' not in hlsl and 'if(total<.02){bounce=fallbackLight.rgb;' in comp)
 man=json.loads(fp.src('world-shader-build.json').read_text())['shaders']
-checks[f"slots: WorldNormals {man['WorldNormals']['static_instruction_slots']} / {man['WorldNormals']['temporary_registers']} of 32 temporaries (was 434 / 29), WorldComposite {man['WorldComposite']['static_instruction_slots']} (was 507), RemovalSmooth {man['RemovalSmooth']['static_instruction_slots']} (unchanged), all <= 512"]=(
+checks[f"slots: WorldNormals {man['WorldNormals']['static_instruction_slots']} / {man['WorldNormals']['temporary_registers']} of 32 temporaries (was 434 / 29), WorldComposite {man['WorldComposite']['static_instruction_slots']} (was 507), RemovalSmooth {man['RemovalSmooth']['static_instruction_slots']} (269 since task 43's zero-weight branch), all <= 512"]=(
     man['WorldNormals']['static_instruction_slots']==483 and man['WorldNormals']['temporary_registers']<=32 and man['WorldComposite']['static_instruction_slots']==509
-    and man['RemovalSmooth']['static_instruction_slots']==263)
+    and man['RemovalSmooth']['static_instruction_slots']==269)
 nrm=hlsl[hlsl.index('float3 tangentAxis('):hlsl.index('struct LightingOutput')]
 checks['WorldNormals: a confidence-0 pixel picks its one-sided side by scene colour (relative luminance, one fetch site), the depth rule below .05']=(
     'confidence=0;' in nrm and '[loop]for(int k=0;k<3;++k)lumas+=dot(tex2Dlod(Scene,' in nrm and 'abs(lumas.x-lumas.yz)/(lumas.x+lumas.yz+.02)' in nrm
