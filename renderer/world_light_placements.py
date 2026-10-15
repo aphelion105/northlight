@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Authored light placement discovery independent of renderable mesh coverage.
 
-Only ADT MDDF/MODF and the selected WMO MODS/MODD sets establish instances.
+Only ADT MDDF/MODF and the WMO doodads the game instantiates (MODR refs, MODS sets, MODD) establish instances.
 No skin/triangle requirement, no fabricated lamps, no runtime/game clocks.
 Matrices use the same audited world-scene placement functions as FGS3.
 """
 import hashlib,math,re,struct
-from world_scene_builder import chunks,unpack,array,string,placement,quaternion_matrix,matmul,matvec
+from world_scene_builder import chunks,unpack,array,string,placement,quaternion_matrix,matmul,matvec,wmo_group,doodad_indices
 
 INSTANCE=struct.Struct('<32sQI18f')
 def model_path(path):
@@ -27,8 +27,25 @@ def names(root,index_chunk,string_chunk):
     if len(data)%4:raise ValueError('Invalid ADT name-index chunk')
     return [string(root.get(string_chunk,b''),offset) for offset, in array(data,0,len(data)//4,'<I')]
 
-def wmo_doodads(blob):
-    """Parse placement-only WMO chunks once; do not open group render meshes."""
+def group_blobs(read,path,blob):
+    """The group files of a root WMO (read(name) -> bytes) that exist."""
+    count=unpack('<I',dict(chunks(blob)).get('MOHD',b''),4)[0]
+    if count>4096:raise ValueError('WMO group count')
+    for i in range(count):
+        try:yield read(path[:-4]+f'_{i:03d}.wmo')
+        except FileNotFoundError:continue
+
+def group_refs(group_blobs):
+    """MODR doodad refs of the group files the game loads (CMapObj::CreateRefs); a group that is not there has none."""
+    refs=set()
+    for blob in group_blobs:
+        sub=dict(chunks(wmo_group(blob)[0]['MOGP'],68));modr=sub.get('MODR',b'')
+        refs.update(x[0] for x in array(modr,0,len(modr)//2,'<H'))
+    return refs
+
+def wmo_doodads(blob,refs=None):
+    """Parse placement-only WMO chunks once; do not open group render meshes. `refs` are the MODR doodad refs
+    of its groups (group_refs); None does not filter by them."""
     root={tag:data for tag,data in chunks(blob) if tag in ('MODS','MODD','MODN')}
     sets=root.get('MODS',b'');data=root.get('MODD',b'');text=root.get('MODN',b'')
     if len(sets)%32 or len(data)%40:raise ValueError('Invalid WMO doodad placement record size')
@@ -44,7 +61,7 @@ def wmo_doodads(blob):
         first,count=unpack('<II',sets,offset+20)
         if first+count>len(result):raise ValueError('WMO doodad set exceeds MODD')
         selection.append((first,count))
-    return result,selection
+    return result,selection,refs
 
 def discover(blob,read_wmo,source_label=''):
     """Yield (canonical source asset, FGS3-shaped instance) from one ADT.
@@ -72,11 +89,8 @@ def discover(blob,read_wmo,source_label=''):
         seen.add((2,uid));path=wmos[name_id]
         matrix,translation=placement(entry[2:5],entry[5:8],1.)
         yield path,record(path,uid,2,matrix,translation)
-        doodads,sets=read_wmo(path);selected=set()
-        for selected_set in {0,entry[15]}:
-            if selected_set>=len(sets):continue # same default/selected-set contract as client cache
-            first,count=sets[selected_set];selected.update(range(first,first+count))
-        for index in sorted(selected):
+        doodads,sets,refs=read_wmo(path)
+        for index in doodad_indices(sets,len(doodads),refs,entry[15]):   # same selection as the client cache
             name,pos,quat,scale=doodads[index]
             if scale==0:continue
             local=quaternion_matrix(quat,scale);rotation=matmul(matrix,local);offset=matvec(matrix,pos)

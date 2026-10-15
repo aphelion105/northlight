@@ -21,6 +21,17 @@ ZERO=17066.666666666668
 LOCK_RETRIES=(.2,.4,.8,1.6,3.) if os.name=='nt' else ()
 CONTINENTS=['Azeroth','Kalimdor','Expansion01','Northrend']
 UNIT=533.3333333333334/128
+# Alpha cutoff of a cutout (blend 1) material in this occluder set. The set feeds shadows, and the game's
+# own shadow-map pass tests the full-resolution texture against 128/255 (0.502, CM2Model::
+# RenderModelBatchesShadowMap SetAlphaRef(0.50196081)), not against its visible-surface key 224/255 (0.878,
+# CGxDevice::s_alphaRef). NL tests the BLP mip of up to 128 px (decode_blp), whose box-filtered alpha has
+# softer edges. Measured on 25 stock-client foliage BLPs (leaves, ferns, vines, branches; 128..512 px, cutout
+# alpha): the share of texels passing the cutoff on the mip, against the share passing the game's cutoff at
+# full resolution, differs on average by 0.006 at 0.5 against the shadow-map 128 (signed -0.002), and by
+# 0.039 at 0.5 but 0.013 at 0.75 against the visible 224. A raw 0.878 on the mip erases thin foliage (0.064
+# short of the shadow pass, 0.027 of the visible one). 0.5 is kept: it reproduces the shadow casters.
+ALPHA_KEY_CUTOFF=.5
+CASTER_MIN_ALPHA=.55   # GatherModelBatchesShadowMap: opacity below this casts nothing
 
 class DeletedAsset(ValueError):
     pass
@@ -70,6 +81,17 @@ def wmo_group(blob):
         top[tag]=payload;offset+=8+len(payload)
     if overrun and len(top['MOGP'])<68:raise ValueError('Truncated MOGP header')
     return top,overrun
+
+def doodad_indices(sets,count,refs,active):
+    """Indices of the doodads the game instantiates for a WMO placement (CMapObj::CreateRefs, GetDoodadSet): only
+    those some group lists in its MODR (`refs`; None keeps every index), whose set is the FIRST set whose
+    range holds them (an index outside every set never exists) and is set 0 or the placement's `active` set.
+    `sets` is [(first,count)] per MODS record. (The game's three per-placement set overrides are not in ADT data.)"""
+    result=[]
+    for index in sorted(range(count) if refs is None else {i for i in refs if i<count}):
+        owner=next((i for i,(first,n) in enumerate(sets) if n and first<=index<first+n),None)
+        if owner is not None and owner in (0,active):result.append(index)
+    return result
 
 def string(b,offset):
     if offset<0 or offset>=len(b):raise ValueError('Invalid string offset')
@@ -255,7 +277,7 @@ class Builder:
         if flat and rgba:
             count=len(rgba)//4;color=tuple(sum(srgb_to_linear(v/255) for v in rgba[channel::4])/count for channel in range(3));w=h=0;rgba=b''
         result=len(self.materials);self.material_ids[key]=result
-        self.materials.append((color,w,h,.5 if blend==1 else 0.,rgba))
+        self.materials.append((color,w,h,ALPHA_KEY_CUTOFF if blend==1 else 0.,rgba))
         return result
     def add_mesh(self,mesh,matrix,translation,category,instance_id=0):
         if not any(value for row in matrix for value in row):
@@ -285,7 +307,7 @@ class Builder:
         n,off=unpack('<II',b,112);flags=array(b,off,n,'<2H')
         n,off=unpack('<II',b,128);tex_lookup=[x[0] for x in array(b,off,n,'<H')]
         triangles=[];materials=[];selected=set()
-        invisible=hidden_batches(b,batches)
+        invisible=hidden_batches(b,batches);faint=hidden_batches(b,batches,CASTER_MIN_ALPHA)
         for batch_index,batch in enumerate(batches):
             if batch_index in invisible:
                 self.assets.stats['excluded_permanently_invisible_m2_batches']+=1
@@ -293,11 +315,17 @@ class Builder:
             sub=batch[3];rf=batch[6];texcombo=batch[9]
             if sub>=len(subsets) or rf>=len(flags) or texcombo>=len(tex_lookup):raise ValueError('Invalid skin material')
             if sub in selected:continue
-            blend=flags[rf][1]
-            if blend>1:self.assets.stats['excluded_translucent_m2_batches']+=1;continue
+            material_flags,blend=flags[rf]
+            # The game's shadow casters (CM2Model::GatherModelBatchesShadowMap): not shader 0x8000, batch flag
+            # 4, a later material layer or material flag 0x40; blend above 1 only with material flag 0x80; and
+            # colour alpha * texture weight of at least 0.55. Animated tracks count by their largest key (m2_visibility).
+            if batch[2]==0x8000 or batch[0]&4 or batch[7] or material_flags&0x40:
+                self.assets.stats['excluded_non_caster_m2_batches']+=1;continue
+            if blend>1 and not material_flags&0x80:self.assets.stats['excluded_translucent_m2_batches']+=1;continue
+            if batch_index in faint:self.assets.stats['excluded_faint_m2_batches']+=1;continue
             selected.add(sub);texture=textures[tex_lookup[texcombo]]
             path_tex=string(b,texture[3]) if texture[0]==0 and texture[2] else ''
-            mat=len(materials);materials.append((path_tex,blend,False))
+            mat=len(materials);materials.append((path_tex,min(blend,1),False))   # the game's shadow pass alpha-tests every blended batch
             subset=subsets[sub];first=subset[4]+(subset[1]<<16);size=subset[5]
             if first+size>len(indices) or size%3:raise ValueError('Invalid skin triangle range')
             for i in range(first,first+size,3):
@@ -311,7 +339,7 @@ class Builder:
         mt=root.get('MOTX',b'');materials=[]
         for material in array(root['MOMT'],0,len(root['MOMT'])//64,'<16I'):
             materials.append((string(mt,material[3]),material[2],False))
-        vertices=[];triangles=[]
+        vertices=[];triangles=[];refs=set()
         for group in range(groups):
             name=path[:-4]+'_%03d.wmo'%group
             try:g,overrun=wmo_group(self.assets.read(name))
@@ -319,6 +347,7 @@ class Builder:
             if overrun:self.assets.clamped.add(name)
             sub={}
             for tag,payload in chunks(g['MOGP'],68):sub.setdefault(tag,payload)
+            modr=sub.get('MODR',b'');refs.update(x[0] for x in array(modr,0,len(modr)//2,'<H'))   # the group's doodad refs
             pos=array(sub['MOVT'],0,len(sub['MOVT'])//12,'<3f')
             normals=array(sub['MONR'],0,len(sub['MONR'])//12,'<3f')
             uv=array(sub['MOTV'],0,len(sub['MOTV'])//8,'<2f')
@@ -331,7 +360,6 @@ class Builder:
             emitted=set()
             for batch in batches:
                 first,size,material=batch[6],batch[7],batch[11]
-                if batch[10]&2:material=batch[5] # extended material index convention
                 if material>=len(materials):raise ValueError('WMO material range')
                 if materials[material][1]>1:self.assets.stats['excluded_translucent_wmo_batches']+=1;continue
                 if first+size>len(inds) or size%3:raise ValueError('WMO index range')
@@ -340,16 +368,12 @@ class Builder:
                     emitted.add(i);t=inds[i:i+3]
                     if max(t)>=len(pos):raise ValueError('WMO vertex range')
                     triangles.append((base+t[0],base+t[1],base+t[2],material))
-        mesh=(vertices,triangles,materials,root);self.meshes[path]=mesh;self.mesh_names[id(vertices)]=path;return mesh
-    def wmo_doodads(self,root,doodadset,matrix,translation,root_id=0):
+        mesh=(vertices,triangles,materials,root,refs);self.meshes[path]=mesh;self.mesh_names[id(vertices)]=path;return mesh
+    def wmo_doodads(self,root,refs,doodadset,matrix,translation,root_id=0):
         names=root.get('MODN',b'');data=root.get('MODD',b'');sets=root.get('MODS',b'')
         if not data:return
-        selected=set()
-        for index in {0,doodadset}:
-            if (index+1)*32>len(sets):continue
-            first,count=unpack('<II',sets,index*32+20)
-            selected.update(range(first,first+count))
-        for index in sorted(selected):
+        selected=doodad_indices([unpack('<II',sets,i*32+20) for i in range(len(sets)//32)],len(data)//40,refs,doodadset)
+        for index in selected:
             offset=index*40;packed=unpack('<I',data,offset)[0];name=string(names,packed&0xffffff)
             pos=unpack('<3f',data,offset+4);q=unpack('<4f',data,offset+16);scale=unpack('<f',data,offset+32)[0]
             try:
@@ -422,7 +446,7 @@ class Builder:
             seen.add(('wmo',uid));path=wmo_names[name_id]
             try:
                 mesh=self.wmo(path);matrix,translation=placement(entry[2:5],entry[5:8],1.)
-                self.add_mesh(mesh[:3],matrix,translation,'wmo',uid);self.wmo_doodads(mesh[3],entry[15],matrix,translation,uid)
+                self.add_mesh(mesh[:3],matrix,translation,'wmo',uid);self.wmo_doodads(mesh[3],mesh[4],entry[15],matrix,translation,uid)
             except (ValueError,FileNotFoundError,IndexError,KeyError) as exc:self.assets.unsupported.add('wmo:'+path+':'+str(exc))
         if not self.vertices or not self.triangles:raise ValueError('Empty world tile')
         self.write_scene(destination)
@@ -517,7 +541,7 @@ def main():
         report={'format':'FGS3' if args.instanced else 'FGS2','generated':records,'failures':failures,'deleted_source_tiles':deleted,'missing_assets':sorted(assets.missing),
                 'unsupported_assets':sorted(assets.unsupported),'clamped_wmo_groups':sorted(assets.clamped),'archive_warnings':assets.warnings(),'statistics':dict(assets.stats),'elapsed_seconds':time.time()-start,
                 'limitations':['Static M2 bind pose; animated characters absent.','Terrain albedo is first-layer texture mean; terrain geometry is exact including 4x4 holes.',
-                'BLP2 selected mip up to 128px; alpha cutout threshold 0.5.','Additive/translucent batches excluded from opaque lighting geometry.',
+                f'BLP2 selected mip up to 128px; alpha cutout threshold {ALPHA_KEY_CUTOFF} (game shadow pass: 128/255 at full resolution).','Additive/translucent batches excluded from opaque lighting geometry.',
                 'M2 active world geosets use first opaque/cutout material per submesh.','Cross-tile placed object duplicates may exist; runtime should deduplicate triangle geometry.'],
                 'archive_priority':[p.relative_to(assets.client).as_posix() for p in assets.paths],'archive_fingerprint':assets.fingerprint()}
         args.output.mkdir(parents=True,exist_ok=True)

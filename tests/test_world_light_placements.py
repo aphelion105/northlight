@@ -5,6 +5,7 @@ import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).reso
 import northlight_paths as fp; fp.use_source_modules()
 import math,struct,unittest
 import world_light_placements as p
+from world_scene_builder import doodad_indices
 
 def chunk(tag,data):return struct.pack('<4sI',tag[::-1].encode(),len(data))+data
 def adt(direct=b'',buildings=b''):
@@ -35,6 +36,19 @@ class PlacementTests(unittest.TestCase):
         for a,b in zip(actual,expected):self.assertAlmostEqual(a,b,places=2)
         items=list(p.discover(adt(buildings=root(selected=2)),lambda _:metadata))
         self.assertEqual([x[0] for x in items],['room.wmo','default.m2','inactive.m2'])
+    def test_game_doodad_selection(self):
+        # CMapObj::CreateRefs: only MODR-listed doodads; each belongs to the FIRST set holding it; set 0 or the placed set.
+        sets=[(0,1),(1,2),(2,2),(9,0)]   # doodad 2 is in sets 1 and 2 (set 1 wins); 4.. are in no set; set 3 is empty
+        self.assertEqual(doodad_indices(sets,5,None,0),[0])
+        self.assertEqual(doodad_indices(sets,5,None,1),[0,1,2])
+        self.assertEqual(doodad_indices(sets,5,None,2),[0,3])   # 2 is set 1's, not 2's
+        self.assertEqual(doodad_indices(sets,5,{1,3,4,9},1),[1])
+        self.assertEqual(doodad_indices(sets,5,{0,3},2),[0,3])
+        self.assertEqual(doodad_indices(sets,5,set(),1),[])
+        self.assertEqual(doodad_indices([],5,None,0),[])   # no MODS: nothing exists
+        names=b'a.m2\0b.m2\0';blob=chunk('MODN',names)+chunk('MODD',doodad(0)+doodad(5))+chunk('MODS',modset(0,2))
+        items=list(p.discover(adt(buildings=root()),lambda _:p.wmo_doodads(blob,{1})))
+        self.assertEqual([x[0] for x in items],['room.wmo','b.m2'])
     def test_invalid_records_fail(self):
         for blob in [adt(b'x'),adt(buildings=b'x'),adt(struct.pack('<2I6f2H',1,42,*([0.]*6),1024,0))]:
             with self.assertRaises(ValueError):list(p.discover(blob,lambda _:None))
