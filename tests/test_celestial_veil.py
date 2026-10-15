@@ -53,7 +53,7 @@ veil_ps=body(shader,'float4 CelestialVeilPS(')
 # Raw-depth classification: WDL/beyond-far silhouettes (normalised depth 1, raw
 # depth below the sky sprite) are geometry; the complement of the glare.
 assert 'float sky=(depth>=.99999994&&rawDepth>=DiscRepair.x-DiscRepair.z)?1:0;' in veil_ps
-assert 'float geometry=1-sky*terrainVisibility(ray);' in veil_ps
+assert 'float geometry=(1-sky*terrainVisibility(ray))*(1-sea);' in veil_ps  # visible water takes no veil
 assert 'float alpha=geometry*overEdge*glareProfile(radius);' in veil_ps
 # only over the camera's far edge (c46.z): no glow on the sea or ground the sun has set behind
 assert 'float overEdge=saturate((ray.z*rsqrt(dot(ray,ray))-DiscTerrainPolicy.z)*230);' in veil_ps

@@ -49,7 +49,7 @@ cmp r0.w, r0.w, c50.x, c50.w
 add r0.w, -r0.w, c50.w
 min r0.z, r0.z, r0.w
 cmp r0.z, -r0.z, c50.x, c50.w
-mov r0.w, r0.z
+mov r0.w, c50.x
 add r1.x, -c1.w, c49.x
 cmp r1.x, r1.x, c50.x, c50.w
 if_ne r1.x, -r1.x
@@ -65,7 +65,7 @@ if_ne r1.x, -r1.x
     add r0.y, -r1.y, c52.x
     cmp r0.y, r0.y, c50.x, c50.w
     min r0.x, r0.x, r0.y
-    cmp r0.x, -r0.x, r0.z, c50.x
+    cmp r0.x, -r0.x, c50.x, c50.w
     mov r0.w, r0.x
 else
 endif
@@ -77,158 +77,162 @@ rcp r1.x, c1.x
 rcp r1.y, c1.y
 mul r0.xy, r0.xyxx, r1.xyxx
 mul r1.xyz, r0.x, c2.xyzx
-mul r0.xyz, r0.y, c3.xyzx
-add r0.xyz, r1.xyzx, r0.xyzx
-mul r1.xyz, c1.z, c4.xyzx
-add r0.xyz, r0.xyzx, r1.xyzx
-dp3 r1.x, r0.xyzx, c6.xyzx
-add r1.y, r1.x, c52.w
-texkill r1.y
-add r1.y, c46.x, c53.z
-cmp r1.y, r1.y, c50.x, c50.w
-mov r1.z, r1.w
-cmp r1.z, -r1.y, r1.z, c50.w
-mov r1.w, r1.z
-add r2.x, -r1.y, c50.w
-if_ne r2.x, -r2.x
-    cmp r2.x, -r1.x, c50.x, c50.w
-    add r2.x, -r2.x, c50.w
-    cmp r1.z, -r2.x, r1.z, c50.w
-    mov r1.w, r1.z
-    cmp r1.y, -r2.x, r1.y, c50.w
-    add r2.x, -r1.y, c50.w
-    if_ne r2.x, -r2.x
-        dp3 r2.x, r0.xyzx, c7.xyzx
-        dp3 r2.y, r0.xyzx, c8.xyzx
-        mov r2.z, -r2.y
-        mov r2.xy, r2.xzxx
-        mul r2.z, r1.x, c6.w
-        mul r2.z, r2.z, c46.y
-        rcp r3.x, r2.z
-        rcp r3.y, r2.z
-        mul r2.xy, r2.xyxx, r3.xyxx
-        abs r2.zw, r2.xxxy
-        max r2.z, r2.z, r2.w
-        add r2.z, -r2.z, c50.w
-        cmp r2.z, r2.z, c50.x, c50.w
-        cmp r1.z, -r2.z, r1.z, c50.w
-        mov r1.w, r1.z
-        cmp r1.y, -r2.z, r1.y, c50.w
-        add r1.y, -r1.y, c50.w
-        if_ne r1.y, -r1.y
-            mul r1.yz, r2.xxyx, c49.xxyx
-            add r1.yz, r1.xyzx, c49.xxyx
-            mov r2.xyzw, c51.xyzw
-            mov r2.xy, r1.yzyy
-            texldl r2.xyzw, r2.xyzw, s4
-            mov_sat r1.y, r2.x
-            add r1.y, -r1.y, c50.w
-            mov r1.w, r1.y
+mul r2.xyz, r0.y, c3.xyzx
+add r1.xyz, r1.xyzx, r2.xyzx
+mul r2.xyz, c1.z, c4.xyzx
+add r1.xyz, r1.xyzx, r2.xyzx
+dp3 r0.x, r1.xyzx, c6.xyzx
+add r0.y, r0.x, c52.w
+texkill r0.y
+add r0.y, c46.x, c53.z
+cmp r0.y, r0.y, c50.x, c50.w
+mov r1.w, r2.x
+cmp r1.w, -r0.y, r1.w, c50.w
+mov r2.x, r1.w
+add r2.y, -r0.y, c50.w
+if_ne r2.y, -r2.y
+    cmp r2.y, -r0.x, c50.x, c50.w
+    add r2.y, -r2.y, c50.w
+    cmp r1.w, -r2.y, r1.w, c50.w
+    mov r2.x, r1.w
+    cmp r0.y, -r2.y, r0.y, c50.w
+    add r2.y, -r0.y, c50.w
+    if_ne r2.y, -r2.y
+        dp3 r2.y, r1.xyzx, c7.xyzx
+        dp3 r2.z, r1.xyzx, c8.xyzx
+        mov r2.w, -r2.z
+        mov r2.yz, r2.xywx
+        mul r2.w, r0.x, c6.w
+        mul r2.w, r2.w, c46.y
+        rcp r3.x, r2.w
+        rcp r3.y, r2.w
+        mul r2.yz, r2.xyzx, r3.xxyx
+        abs r3.xy, r2.yzyy
+        max r2.w, r3.x, r3.y
+        add r2.w, -r2.w, c50.w
+        cmp r2.w, r2.w, c50.x, c50.w
+        cmp r1.w, -r2.w, r1.w, c50.w
+        mov r2.x, r1.w
+        cmp r0.y, -r2.w, r0.y, c50.w
+        add r0.y, -r0.y, c50.w
+        if_ne r0.y, -r0.y
+            mul r2.yz, r2.xyzx, c49.xxyx
+            add r2.yz, r2.xyzx, c49.xxyx
+            mov r3.xyzw, c51.xyzw
+            mov r3.xy, r2.yzyy
+            texldl r3.xyzw, r3.xyzw, s4
+            mov_sat r0.y, r3.x
+            add r0.y, -r0.y, c50.w
+            mov r2.x, r0.y
         else
         endif
     else
     endif
 else
 endif
-mov r1.y, r1.w
-mul r0.w, r0.w, r1.y
-add r0.w, -r0.w, c50.w
-dp3 r1.y, r0.xyzx, c7.xyzx
-dp3 r1.z, r0.xyzx, c8.xyzx
-mov r1.w, -r1.z
-mov r1.yz, r1.xywx
-mul r1.x, r1.x, c6.w
-rcp r2.x, r1.x
-rcp r2.y, r1.x
-mul r1.xy, r1.yzyy, r2.xyxx
-dp2add r1.x, r1.xyxx, r1.xyxx, c50.x
-rsq r1.x, r1.x
-rcp r1.x, r1.x
-dp3 r1.y, r0.xyzx, r0.xyzx
-rsq r1.y, r1.y
-mul r0.x, r0.z, r1.y
-add r0.x, r0.x, -c46.z
-mul r0.x, r0.x, c53.w
-mov_sat r0.x, r0.x
-mul r0.x, r0.w, r0.x
-mul r0.y, r1.x, r1.x
-mul r0.z, c12.y, c54.x
-add r0.w, r1.x, -r0.z
-add r0.z, c12.y, -r0.z
-rcp r0.z, r0.z
-mul r0.z, r0.w, r0.z
-mov_sat r0.z, r0.z
-mul r0.w, r0.z, r0.z
-mul r0.z, r0.z, c52.y
-add r0.z, -r0.z, c54.y
-mul r0.z, r0.w, r0.z
+mov r0.y, r2.x
+mul r0.y, r0.z, r0.y
+add r0.y, -r0.y, c50.w
+mov r0.z, r0.w
 add r0.z, -r0.z, c50.w
-texldl r2.xyzw, c55.xyzw, s3
-mov_sat r0.w, r2.x
+mul r0.y, r0.y, r0.z
+dp3 r0.z, r1.xyzx, c7.xyzx
+dp3 r0.w, r1.xyzx, c8.xyzx
+mov r2.x, r0.z
+mov r2.y, -r0.w
+mov r0.zw, r2.xxxy
+mul r0.x, r0.x, c6.w
+rcp r2.x, r0.x
+rcp r2.y, r0.x
+mul r0.xz, r0.zxwx, r2.xxyx
+dp2add r0.x, r0.xzxx, r0.xzxx, c50.x
+rsq r0.x, r0.x
+rcp r0.x, r0.x
+dp3 r0.z, r1.xyzx, r1.xyzx
+rsq r0.z, r0.z
+mul r0.z, r1.z, r0.z
+add r0.z, r0.z, -c46.z
+mul r0.z, r0.z, c53.w
+mov_sat r0.z, r0.z
+mul r0.y, r0.y, r0.z
+mul r0.z, r0.x, r0.x
+mul r0.w, c12.y, c54.x
+add r1.x, r0.x, -r0.w
+add r0.w, c12.y, -r0.w
+rcp r0.w, r0.w
+mul r0.w, r1.x, r0.w
+mov_sat r0.w, r0.w
+mul r1.x, r0.w, r0.w
+mul r0.w, r0.w, c52.y
+add r0.w, -r0.w, c54.y
+mul r0.w, r1.x, r0.w
+add r0.w, -r0.w, c50.w
+texldl r1.xyzw, c55.xyzw, s3
+mov_sat r1.x, r1.x
 texldl r2.xyzw, c55.xyzw, s5
 mov_sat r1.y, r2.x
 mul r1.y, c48.w, r1.y
-mul r1.z, r0.y, c54.z
+mul r1.z, r0.z, c54.z
 exp r1.z, r1.z
-mul r1.w, r0.y, c54.w
+mul r1.w, r0.z, c54.w
 exp r1.w, r1.w
-mul r2.x, r0.y, c56.x
+mul r2.x, r0.z, c56.x
 exp r2.x, r2.x
 mov r2.y, r1.z
 mov r2.z, r1.w
 mov r2.w, r2.x
 mov r3.xyz, r2.yzwy
 dp3 r1.z, r3.xyzx, c56.yzwy
-mul r1.z, r0.w, r1.z
+mul r1.z, r1.x, r1.z
 mov r2.xyz, r2.yzwy
 dp3 r1.w, r2.xyzx, c57.xyzx
 mul r1.y, r1.y, r1.w
 max r1.y, r1.z, r1.y
 add r1.z, -c11.w, c49.x
 cmp r1.z, r1.z, c50.x, c50.w
-mul r0.y, -c12.x, r0.y
-exp r0.y, r0.y
-mul r0.y, c12.z, r0.y
-mul r0.y, r0.y, r0.w
+mul r0.z, -c12.x, r0.z
+exp r0.z, r0.z
+mul r0.z, c12.z, r0.z
+mul r0.z, r0.z, r1.x
 mul r1.y, c47.w, r1.y
-add r0.y, r0.y, r1.y
-mul r0.y, r0.y, r0.z
+add r0.z, r0.z, r1.y
+mul r0.z, r0.z, r0.w
 mul r1.y, c12.z, c54.x
-add r1.w, r1.x, c49.z
+add r1.w, r0.x, c49.z
 max r1.w, r1.w, c50.x
 mul r1.w, r1.w, c57.w
 exp r1.w, r1.w
 mul r1.y, r1.y, r1.w
-mul r0.z, r1.y, r0.z
-mul r0.z, r0.z, r0.w
-cmp r0.y, -r1.z, r0.z, r0.y
-mul r0.x, r0.x, r0.y
-add r0.y, r0.x, c58.x
-texkill r0.y
-mul r0.y, -c12.x, r1.x
-mul r0.y, r0.y, r1.x
-exp r0.y, r0.y
-mov_sat r0.y, r0.y
-mul r0.z, r0.y, r0.y
-mul r0.y, r0.y, c52.y
-add r0.y, -r0.y, c54.y
-mul r0.y, r0.z, r0.y
+mul r0.w, r1.y, r0.w
+mul r0.w, r0.w, r1.x
+cmp r0.z, -r1.z, r0.w, r0.z
+mul r0.y, r0.y, r0.z
+add r0.z, r0.y, c58.x
+texkill r0.z
+mul r0.z, -c12.x, r0.x
+mul r0.x, r0.z, r0.x
+exp r0.x, r0.x
+mov_sat r0.x, r0.x
+mul r0.z, r0.x, r0.x
+mul r0.x, r0.x, c52.y
+add r0.x, -r0.x, c54.y
+mul r0.x, r0.z, r0.x
 add r1.xyz, c48.xyzx, -c47.xyzx
-mul r0.yzw, r0.y, r1.xxyz
-add r0.yzw, c47.xxyz, r0.xyzw
-mov_sat r0.yzw, r0.xyzw
-mul r1.x, r0.x, c58.y
-mul r0.yzw, r1.x, r0.xyzw
-exp r1.x, r0.y
+mul r0.xzw, r0.x, r1.xxyz
+add r0.xzw, c47.xxyz, r0.xxzw
+mov_sat r0.xzw, r0.xxzw
+mul r1.x, r0.y, c58.y
+mul r0.xzw, r1.x, r0.xxzw
+exp r1.x, r0.x
 exp r1.y, r0.z
 exp r1.z, r0.w
-mov r0.yzw, -r1.xxyz
-add r0.yzw, r0.xyzw, c59.xxyz
-add r1.xyz, -r0.yzwy, c60.xyzx
+mov r0.xzw, -r1.xxyz
+add r0.xzw, r0.xxzw, c59.xxyz
+add r1.xyz, -r0.xzwx, c60.xyzx
 cmp r1.xyz, r1.xyzx, c51.xyzx, c59.xyzx
 add r1.xyz, -r1.xyzx, c59.xyzx
-mul r2.xyz, r0.yzwy, c61.xyzx
-add r3.xyz, r0.yzwy, c62.xyzx
+mul r2.xyz, r0.xzwx, c61.xyzx
+add r3.xyz, r0.xzwx, c62.xyzx
 mul r3.xyz, r3.xyzx, c63.xyzx
 log r4.x, r3.x
 log r4.y, r3.y
@@ -240,7 +244,7 @@ exp r4.z, r3.z
 cmp r1.xyz, -r1.xyzx, r4.xyzx, r2.xyzx
 add r1.w, -c10.x, c49.x
 cmp r1.w, r1.w, c50.x, c50.w
-cmp r0.yzw, -r1.w, r0.xyzw, r1.xxyz
-mov r1.xyz, r0.yzwy
-mov r1.w, r0.x
+cmp r0.xzw, -r1.w, r0.xxzw, r1.xxyz
+mov r1.xyz, r0.xzwx
+mov r1.w, r0.y
 mov oC0.xyzw, r1.xyzw

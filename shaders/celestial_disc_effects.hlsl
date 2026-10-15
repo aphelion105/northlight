@@ -182,7 +182,7 @@ float4 CelestialDiscPS(float2 uv:TEXCOORD0):COLOR0 {
 // drawn into the target water just used. Geometry is classified by RAW depth
 // against the sky-band sprite depth, so WDL and beyond-far silhouettes, which
 // the glare's repair test removes from the sky, are veiled too; visible water
-// and loaded terrain behind the sky likewise. Blend INVDESTCOLOR/ONE like the glare,
+// and loaded terrain behind the sky likewise; visible water takes none. Blend INVDESTCOLOR/ONE like the glare,
 // so the colour continues across silhouettes. c12.z and c47.w already hold the
 // glare weights x veil strength x (1 - horizon haze at the sun) x fades.
 float4 CelestialVeilPS(float2 uv:TEXCOORD0):COLOR0 {
@@ -191,11 +191,14 @@ float4 CelestialVeilPS(float2 uv:TEXCOORD0):COLOR0 {
     float rawDepth=tex2Dlod(DiscDepth,float4(depthUV,0,0)).r;
     float depth=saturate((rawDepth-DiscImage.z)*DiscImage.w);
     float sky=(depth>=.99999994&&rawDepth>=DiscRepair.x-DiscRepair.z)?1:0;
+    // Visible water takes no veil: the sea in front of a low sun is where it sets, and a glow on it showed a bright
+    // strip under the sea's edge (the water's own sun glint lights it).
+    float sea=0;
     if(DiscProjection.w>.5){float2 water=tex2Dlod(DiscWater,float4(depthUV,0,0)).rg;
-        if(water.x>DiscPolicy.y&&water.x<=DiscPolicy.z&&water.y>.003)sky=0;}
+        if(water.x>DiscPolicy.y&&water.x<=DiscPolicy.z&&water.y>.003)sea=1;}
     float3 ray=discRay(uv);
     float forward=dot(ray,DiscDirection.xyz);clip(forward-.000001);
-    float geometry=1-sky*terrainVisibility(ray);
+    float geometry=(1-sky*terrainVisibility(ray))*(1-sea);
     float2 local=float2(dot(ray,DiscRight.xyz),-dot(ray,DiscUp.xyz))/(forward*DiscDirection.w);
     float radius=length(local);
     // Only over the camera's far edge (c46.z): under it lie the sea and the ground the sun has set behind, and a glow
