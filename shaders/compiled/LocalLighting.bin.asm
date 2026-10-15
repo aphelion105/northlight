@@ -284,6 +284,10 @@ if_ne r1.y, -r1.y
             cmp r1.w, r1.w, c10.x, c13.x
             add r1.w, -r1.w, c13.x
             max r1.z, r1.z, r1.w
+            dp3 r1.w, r0.xyzx, r5.xyzx
+            cmp r1.w, r1.w, c10.x, c13.x
+            add r1.w, -r1.w, c13.x
+            max r1.z, r1.z, r1.w
             mov r1.w, r2.x
             cmp r1.w, -r1.z, r1.w, c13.x
             mov r2.x, r1.w
