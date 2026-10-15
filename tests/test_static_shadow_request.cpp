@@ -10,8 +10,8 @@ int main(){
     auto normal=makeRequest("Azeroth",{1,2,3},directions,daylit,true,day(12,0),true);
     assert(normal.active[0]&&!normal.active[1]);
     assert(std::memcmp(&normal.directions[0],&directions[0],sizeof(Vec3))==0);
-    // Within the 300 s prewarm before moonrise (20:30:32); 20:00 below stays too early.
-    auto beforeMoon=makeRequest("Azeroth",{1,2,3},directions,dark,true,day(20,27),true);
+    // Within the 300 s prewarm before moonrise (20:45); 20:00 below stays too early.
+    auto beforeMoon=makeRequest("Azeroth",{1,2,3},directions,dark,true,day(20,42),true);
     assert(!beforeMoon.active[0]&&beforeMoon.active[1]&&beforeMoon.directions[1].z==0);
     auto tooEarly=makeRequest("Azeroth",{},directions,dark,true,day(20,0),true);
     assert(!tooEarly.active[0]&&!tooEarly.active[1]);

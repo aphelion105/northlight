@@ -109,6 +109,7 @@ int main() {
         }
         const double seconds=minute*60.;
         if(seconds>NorthlightCelestialOrbit::kSunriseSeconds&&seconds<NorthlightCelestialOrbit::kSunsetSeconds)assert(sky.sunWeight>0&&sky.moonWeight==0);
+        else if(seconds>=NorthlightCelestialOrbit::kSunsetSeconds&&seconds<=NorthlightCelestialOrbit::kMoonriseSeconds)assert(sky.moonWeight==0&&sky.sunWeight==0); // dusk: the moon rises at 20:45
         else assert(sky.moonWeight>0&&sky.sunWeight==0);
         assert(std::fabs(std::tan(sky.moon.angularRadius)*24/1.75-.46176318)<1e-6);
         assert(std::fabs(std::tan(sky.sun.angularRadius)*24-.506736)<1e-6);
