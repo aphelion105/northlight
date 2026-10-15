@@ -446,6 +446,7 @@
             // LocalShadowPS reads patched TEXCOORD7 and writes perspective z/w;
             // the directional replay PS assumes orthographic w=1 and is invalid here.
             for(size_t index:pointReplayCandidates[face]){const auto& p=replays[index];
+                p->usedStamp=unusedCapture.frame();
                 if(!pointCheck(replayBindings.geometry(*p),"cube replay geometry state"))return false;
                 if(!poseConstants.prepare(*p,rows))return false;
                 const float* desired=poseConstants.desired();
