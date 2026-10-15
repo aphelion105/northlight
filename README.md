@@ -39,8 +39,10 @@ Every effect below is on by default and is drawn on top of the game's own frame.
 - **Fog and air.** Volumetric sun and moon light with light shafts through the shadows; soft haze on
   the far landscape and the lowest sky in the game's own fog colour; regional ground fog in forests,
   wetlands and basins, denser at night, derived from the map. The sun light comes from the game's sky
-  block; a read that lands between the game's colour copy and its weather rescale keeps the last rescaled
-  colours, so the sun light and its glow in the fog no longer flash brighter for a frame in Duskwood (0.3.207).
+  block; the game darkens that light towards the sun (its sun glare) after copying its colours, and a read that lands
+  between the copy and the darkening keeps the last darkened colours, so the sun light and its glow in the fog no
+  longer flash brighter for a frame in Duskwood (0.3.207). The darkening is predicted from the game's own glare
+  value, and the hold only applies when it cannot be (underwater, spell flash).
   In dungeons, raids and battlegrounds, which have no world cache, the geometry builder checks the cache once
   per entry and skips the repeated build attempts (0.3.210).
 - **Lamps.** Up to 32 nearby lamps, lanterns, braziers and fires light the ground and walls around
@@ -54,8 +56,9 @@ Every effect below is on by default and is drawn on top of the game's own frame.
   that paint their own sun or moon into the clear-weather sky lose it.
 - **Weather.** A heavy-rain look: procedural rain and snow textures in the art layer, darker storm light
   and fog bands, and Northlight's own haze, fog, light shafts, sun and moon, shadows, GI and lamps follow
-  detected rain or snow (F10 turns it off). Detection reads only the
-  textures the art layer ships, no game memory, so it needs the Northlight art layer (`Weather`, `RainFog`). The game's rain streaks are drawn alpha-blended so they stay crisp instead of taking the background's colour, and the game's mist puffs, which darkened night and storm rain into black balls, are left out while it rains; snow and sand storms keep them.
+  detected rain or snow (F10 turns it off). Detection reads the game's own weather state from memory (type
+  including sand, intensity; plain reads, nothing is hooked or patched) and falls back to the textures the art layer
+  ships when that read fails, so the fallback needs the Northlight art layer (`Weather`, `RainFog`). The game's rain streaks are drawn alpha-blended so they stay crisp instead of taking the background's colour, and the game's mist puffs, which darkened night and storm rain into black balls, are left out while it rains; snow and sand storms keep them.
 - **Fog clouds.** Low fog banks that drift with the wind, thicker and faster in rain, few and faint in clear
   weather and only in forest and grass zones then (its own half-resolution pass; `FogClouds`, `FogCloudDensity`). Ctrl+Shift+F7 (fog) and F10 turn
   them off with the rest; the Performance preset has them off. The fog is also smoothed over frames so lamp glows

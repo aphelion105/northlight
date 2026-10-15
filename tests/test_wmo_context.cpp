@@ -106,7 +106,49 @@ int main(){
         {auto copy=kept;l=read(rawDirect,rawAmbient);assert(copy.filter(l,"Azeroth",3016));}
         assert(kept.held==0&&kept.direct.run==0);
     }
-    std::puts("PASS sky block reads between the colour copy and the weather rescale keep the last rescaled colours");
+    { /* the glare darkening is predicted: scale = int((1 - .35 glow) 255), c = (scale c + 255) >> 8 per channel (DayNight::Update 0x7816f0) */
+        assert(predictScale(0)==255&&predictScale(1)==166&&predictScale(.8f)==184&&predictScale(-0.f)==255); /* 1-.35 = .65 -> 165.75 -> 166 */
+        assert(predictScale(std::numeric_limits<float>::quiet_NaN())==255&&predictScale(1e30f)==255); /* unusable input: the identity */
+        assert(predictColour(0xff84bce2,184)==0xff5f88a3&&predictColour(0xff3a6a9a,184)==0xff2a4d6f);
+        assert(predictColour(0xff84bce2,255)==0xff84bce2&&predictColour(0x80ffffff,255)==0x80ffffff&&predictColour(0xffffffff,0)==0xff000000); /* scale 255 is the identity, 0 maps to 0 */
+        for(unsigned c=0;c<256;++c)assert(((255u*c+255)>>8)==c);
+        assert(withinLsb(0xff102030,0xff112031)&&withinLsb(0xff102030,0xff0f1f2f)&&!withinLsb(0xff102030,0xff122030)&&!withinLsb(0xff102030,0xff10202e)&&withinLsb(0x00102030,0xff102030)); /* alpha ignored */
+        /* a fake memory serves the two predictor reads (glow 0xd38f4c, liquid 0xcd8794), each twice */
+        float glow=.8f;std::uint32_t liquid=0;unsigned reads=0;bool tear=false;
+        auto fake=[&](std::uintptr_t a,void* out,size_t n){++reads;if(n!=4)return false;
+            if(a==0xd38f4c){float g=glow;if(tear)glow+=.01f;std::memcpy(out,&g,4);return true;}
+            if(a==0xcd8794){std::memcpy(out,&liquid,4);return true;}return false;};
+        Lighting base;base.slotsConsistent=true;base.slots[1]=0xff84bce2;base.slots[0]=0xff3a6a9a;
+        Lighting p=base;readPredictors(fake,p);assert(p.predictors&&p.glow==.8f&&p.liquidType==0&&reads==4);
+        liquid=7;p=base;readPredictors(fake,p);assert(p.predictors&&p.liquidType==7);
+        tear=true;p=base;readPredictors(fake,p);assert(!p.predictors); /* the glow moved between its two reads */
+        tear=false;p=base;readPredictors([](std::uintptr_t,void*,size_t){return false;},p);assert(!p.predictors);
+        /* predicted(): only for a confirmed layout, no liquid, no flash */
+        liquid=0;glow=.8f;p=base;readPredictors(fake,p);std::uint32_t wd=0,wa=0;
+        assert(predicted(p,wd,wa)&&wd==0xff5f88a3&&wa==0xff2a4d6f);
+        {Lighting q=p;q.liquidType=2;assert(!predicted(q,wd,wa));q=p;q.flash=9;assert(!predicted(q,wd,wa));q=p;q.slotsConsistent=false;assert(!predicted(q,wd,wa));q=p;q.predictors=false;assert(!predicted(q,wd,wa));}
+        auto with=[&](std::uint32_t direct,std::uint32_t ambient){Lighting l=p;l.packedDirect=direct;l.packedAmbient=ambient;rgb(direct,l.direct);rgb(ambient,l.ambient);return l;};
+        const std::uint32_t band1=0xff84bce2,band0=0xff3a6a9a,dark1=0xff5f88a3,dark0=0xff2a4d6f;
+        LightingHold hold;Lighting l=with(dark1,dark0);
+        assert(!hold.filter(l,"Azeroth",1000)&&hold.predictedAccepts==2&&hold.predictedMisses==0); /* matches the prediction: accepted as read */
+        l=with(0xff6089a2,0xff2b4c70);assert(!hold.filter(l,"Azeroth",1016)&&hold.predictedAccepts==4); /* one LSB per channel off: still accepted */
+        l=with(band1,band0);assert(hold.filter(l,"Azeroth",1032)&&hold.predictedMisses==2); /* the unscaled colours of the race: not the prediction, held */
+        {float d[3];rgb(0xff6089a2,d);assert(l.direct[0]==d[0]&&l.direct[2]==d[2]);} /* held: the last accepted colour (the one of 1016) */
+        /* an exact match is accepted even when it equals the band (scale 255: glow 0), and never held over */
+        {Lighting open=p;open.glow=0;open.packedDirect=band1;open.packedAmbient=band0;rgb(band1,open.direct);rgb(band0,open.ambient);
+         LightingHold fresh;Lighting a=with(dark1,dark0);fresh.filter(a,"Azeroth",2000);assert(!fresh.filter(open,"Azeroth",2016)&&fresh.predictedAccepts==4);}
+        /* a prediction that does not apply (flash, liquid, no predictors) leaves the hold behaviour of 0.3.207 untouched */
+        {LightingHold h2;Lighting a=with(dark1,dark0);a.flash=3;h2.filter(a,"Azeroth",3000);Lighting b=with(band1,band0);b.flash=3;assert(h2.filter(b,"Azeroth",3016)&&h2.predictedAccepts==0&&h2.predictedMisses==0);}
+        {LightingHold h3;Lighting a=with(dark1,dark0);a.liquidType=1;h3.filter(a,"Azeroth",3000);Lighting b=with(band1,band0);b.liquidType=1;assert(h3.filter(b,"Azeroth",3016));}
+        /* a partial read: ambient unscaled, direct already scaled in the other order is not possible; direct unscaled with ambient scaled still held per colour */
+        {LightingHold h4;Lighting a=with(dark1,dark0);h4.filter(a,"Azeroth",4000);Lighting b=with(band1,dark0);assert(h4.filter(b,"Azeroth",4016)&&h4.predictedAccepts==3&&h4.predictedMisses==1);
+         float d[3];rgb(dark1,d);assert(b.direct[0]==d[0]&&b.direct[2]==d[2]);}
+        /* the proofs of the prediction: 15 entries, each within the 64 byte proof read (the real bytes are checked against the exe by validate_wmo_context.py) */
+        size_t count=0;const auto* proof=predictionProofs(count);assert(count==15&&proof[0].address==0x7ee756&&proof[13].address==0xa3e860&&proof[14].address==0x9e30c0);
+        for(size_t i=0;i<count;++i)assert(proof[i].size<=64);
+    }
+    std::puts("PASS the glare darkening of light1 is predicted from the glow (integer formula, 1 LSB tolerance); flash, liquid and unproven reads fall back to the hold");
+    std::puts("PASS sky block reads between the colour copy and the glare darkening keep the last rescaled colours");
     std::puts("PASS 361 independent camera rotations, exact WMO ambient/direct/source sign and prelit/unknown rejection");
     std::puts("PASS engine sky RGB/255, fresh camera/day/direction checks, torn snapshot and malformed input rejection");
     std::puts("PASS all1967 exact WMO-only shader identities and sorted lookup");

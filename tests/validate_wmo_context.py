@@ -32,8 +32,13 @@ def main():
     for address,name in re.findall(r'\{(0x[0-9a-f]+),(\w+),sizeof \w+\}',header):
         expected=arrays[name];assert at(int(address,16),len(expected))==expected,(address,name)
         proof.append({'address':address,'name':name,'bytes':expected.hex()})
-    assert len(proof)==12  # 8 lighting proofs + 4 light-slot proofs (lightSlotProofs)
+    assert len(proof)==27  # 8 lighting proofs + 4 light-slot proofs (lightSlotProofs) + 15 prediction proofs (predictionProofs)
     assert abs(struct.unpack('<f',at(0xa45564,4))[0]-1/255)<1e-9
+    weather=fp.src('weather_memory.h').read_text()  # the game's weather state read from memory, 5 more proofs (GetType, s_weather use, intensity store, two constants)
+    weather_arrays={name:bytes(int(x,16) for x in re.findall(r'0x[0-9a-f]+',values)) for name,values in re.findall(r'unsigned char (\w+)\[\]=\{([^}]+)\}',weather)}
+    weather_proofs=re.findall(r'\{(0x[0-9a-f]+),(\w+),sizeof \w+\}',weather)
+    assert len(weather_proofs)==5
+    for address,name in weather_proofs:assert at(int(address,16),len(weather_arrays[name]))==weather_arrays[name],(address,name)
     with Archive(fp.client_root()/'Data/patch.mpq') as archive:
         source=dict((i,b) for i,_,b in variants(archive.read('shaders\\vertex\\vs_3_0\\MapObjDiffuse_T1.bls')))
     assert lit_wmo(source[1]) and not lit_wmo(source[0])

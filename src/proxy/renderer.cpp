@@ -43,6 +43,7 @@
 #include "weather_state.h"
 #include "ui_boundary.h"
 #include "weather_detect.h"
+#include "weather_memory.h"
 #include "translucent_depth.h"
 #include "name_stencil.h"
 #include "log_rotation.h"
@@ -1070,7 +1071,8 @@ private:
     static_assert(NorthlightWeatherDetect::kFmtA8R8G8B8==D3DFMT_A8R8G8B8,"weather signature format");
     NorthlightWeatherDetect::Detector weatherDetect;NorthlightWeather::Tracker weatherTracker;NorthlightWeather::Sample weatherSample;
     unsigned weatherMistSkips=0,weatherMistUnknown=0,weatherMistOtherStage=0,weatherMistReports=0; /* 0.3.199 (rain mist): this frame's skipped mist draws and diagnostics */
-    LONGLONG weatherTick=0;double weatherLogClock=0;NorthlightWeather::Kind weatherLoggedKind=NorthlightWeather::Kind::None;bool weatherLoggedBlendHigh=false,weatherLoggedBlendLow=false,weatherOffReported=false;
+    LONGLONG weatherTick=0;double weatherLogClock=0;NorthlightWeather::Kind weatherLoggedKind=NorthlightWeather::Kind::None;bool weatherLoggedBlendHigh=false,weatherLoggedBlendLow=false,weatherOffReported=false;int weatherMemoryState=-1;
+    NorthlightWeatherMemory::Source weatherMemory;NorthlightWeatherMemory::CrossCheck weatherCross; /* the game's own weather state (memory); the detector above is its fallback and cross-check */
     // RenderProfile sample frames only: the largest draw before the effects (WEATHER probe), to calibrate detection.
     struct WeatherProbe {UINT count=0;const void* texture=nullptr;bool known=false,candidate=false,vs=false,ps=false;} weatherProbe;
     void weatherProbeDraw(UINT count){
@@ -2183,6 +2185,13 @@ public:
         if(cpuFrequency.QuadPart>0&&QueryPerformanceCounter(&now)){if(weatherTick)dt=double(now.QuadPart-weatherTick)/double(cpuFrequency.QuadPart);weatherTick=now.QuadPart;}
         if(!mirrorState.enabled){weatherDetect.setOff(true);if(!weatherOffReported){weatherOffReported=true;logf("WEATHER detect=off (mirror inactive)");}}
         weatherSample.kind=weatherSample.draws?weatherDetect.hotKind:W::Kind::None;
+        { // the game's own weather state is the primary source when its proofs and reads succeed; the detector is the fallback and the cross-check
+            const NorthlightWeatherMemory::Reading memory=weatherMemory.frame(NorthlightWorldContext::readSelf);
+            weatherSample.memory=memory.valid;weatherSample.memoryKind=memory.kind;weatherSample.memoryIntensity=memory.intensity;
+            if(int(memory.valid)!=weatherMemoryState){weatherMemoryState=int(memory.valid);logf("WEATHER memory %s (proofs=%d reads=%u failures=%u kind=%s storm=%.3f intensity=%.3f)",memory.valid?"valid":"invalid, texture detector in use",int(weatherMemory.proofsOk()),weatherMemory.reads,weatherMemory.failures,W::kindName(memory.kind),memory.stormIntensity,memory.intensity);}
+            const auto sort=weatherCross.frame(memory.valid,memory.intensity>0?memory.kind:W::Kind::None,weatherSample.kind);
+            if(sort!=NorthlightWeatherMemory::CrossCheck::Result::Agree)logf("WEATHER memory and texture detector disagree: %s (memory kind=%s storm=%.3f intensity=%.3f, texture kind=%s draws=%u)",NorthlightWeatherMemory::CrossCheck::name(sort),W::kindName(memory.kind),memory.stormIntensity,memory.intensity,W::kindName(weatherSample.kind),weatherSample.draws);
+        }
         weatherTracker.frame(weatherSample,float(dt));const W::State& st=weatherTracker.state();
         const bool counted=weatherSample.draws!=0;const W::Sample frameSample=weatherSample;weatherSample={};
         weatherDetect.endFrame(counted); /* hot drew: it stays; otherwise the next candidate (the tracker's hold bridges the rotation) */
