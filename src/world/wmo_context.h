@@ -104,8 +104,8 @@ inline bool predicted(const Lighting& l,std::uint32_t& direct,std::uint32_t& amb
     if(!l.predictors||!l.slotsConsistent||l.liquidType||l.flash)return false;
     const std::uint8_t scale=predictScale(l.glow);direct=predictColour(l.slots[1],scale);ambient=predictColour(l.slots[0],scale);return true;
 }
-// A coherent read already equal to the prediction is accepted as read; one that is not (the unscaled colours of a read between the copy and
-// the rewrite, a stale glow, a wrapped flash) falls back to the hold: a read whose colour equals its slot keeps the last accepted colour when
+// A coherent read already equal to the prediction skips the hold and is accepted as read; the hold remains for everything else: the unscaled colours of a read between the copy and
+// the rewrite, a stale glow, underwater, a flash, and frames where the client skips the darkening (DayNight::Update's reset path, ~0x781781, leaves the scale unset). Such a read falls back to the hold: a read whose colour equals its slot keeps the last accepted colour when
 // that one was rescaled DARKER than the band (a brighter rescale is never stretched).
 // The race lasts one read: MaxHeld consecutive unscaled reads, or HoldMs since the last accepted one
 // (a loading screen, alt-tab), accept them again (the weather ended). The direction and the slots of

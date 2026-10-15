@@ -2261,6 +2261,7 @@ public:
     unsigned spellLayerClassesSetting()const{return quality.spellLayerClasses;}
     unsigned spellTraceSetting()const{return quality.spellTrace;}
     void spellFogHint(const float game[3],bool bare){spellFogHold.addHint(game,bare);} /* SpellFog: a falling-ramp game constant the layer saw; fitted with the next publish (spell_fog.h Hold) */
+    bool weatherMemorySetting()const{return quality.weatherMemory!=0;} /* WeatherMemory: the game's weather state drives the weather effects (weather_memory.h); 0 = the texture detector only */
     bool depthFuncAware()const{return quality.depthFuncAware!=0;} /* DepthFuncAware: read once at device creation */
     unsigned spellFogSetting()const{return quality.spellFog;} /* SpellFog (task 34): read once with the others */
     const NorthlightSpellFog::Frame& spellFogFrame()const{return spellFogHold.out;} /* Northlight's fog toward the view axis (previous frame's estimate while the next frame's records are made): the spell layer folds it into the recorded fog constants */

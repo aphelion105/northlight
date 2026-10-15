@@ -1071,7 +1071,7 @@ private:
     static_assert(NorthlightWeatherDetect::kFmtA8R8G8B8==D3DFMT_A8R8G8B8,"weather signature format");
     NorthlightWeatherDetect::Detector weatherDetect;NorthlightWeather::Tracker weatherTracker;NorthlightWeather::Sample weatherSample;
     unsigned weatherMistSkips=0,weatherMistUnknown=0,weatherMistOtherStage=0,weatherMistReports=0; /* 0.3.199 (rain mist): this frame's skipped mist draws and diagnostics */
-    LONGLONG weatherTick=0;double weatherLogClock=0;NorthlightWeather::Kind weatherLoggedKind=NorthlightWeather::Kind::None;bool weatherLoggedBlendHigh=false,weatherLoggedBlendLow=false,weatherOffReported=false;int weatherMemoryState=-1;
+    LONGLONG weatherTick=0;double weatherLogClock=0;NorthlightWeather::Kind weatherLoggedKind=NorthlightWeather::Kind::None;bool weatherLoggedBlendHigh=false,weatherLoggedBlendLow=false,weatherOffReported=false;int weatherMemoryState=-1;bool skyBandSeen=false;
     NorthlightWeatherMemory::Source weatherMemory;NorthlightWeatherMemory::CrossCheck weatherCross; /* the game's own weather state (memory); the detector above is its fallback and cross-check */
     // RenderProfile sample frames only: the largest draw before the effects (WEATHER probe), to calibrate detection.
     struct WeatherProbe {UINT count=0;const void* texture=nullptr;bool known=false,candidate=false,vs=false,ps=false;} weatherProbe;
@@ -1344,6 +1344,7 @@ private:
         // 0.3.198 (rain): the whole per-draw cost of weather detection, before any other work and in both gate paths: one pointer comparison.
         if(weatherDetect.hot&&mirrorState.textureKnown[0]&&mirrorState.textures[0]==weatherDetect.hot){weatherSample.primitives+=count;++weatherSample.draws;rainBlend=weatherDetect.hotKind==NorthlightWeather::Kind::Rain&&world&&world->rainBlendSetting();} /* 0.3.199 (rain): counted after applied too (the rest of the rain); 0.3.202: no boundary here, the effects run at the UI again */
         else if(weatherDetect.mistArmed)mist=mistDraw(count); /* 0.3.199 (rain mist): a mist puff in rain is skipped; unarmed, one bool test */
+        if(!skyBandSeen&&mirrorState.viewportKnown&&NorthlightWorldDrawDomain::classify(worldMinDepth,worldMaxDepth,mirrorState.viewport.MinZ,mirrorState.viewport.MaxZ)==NorthlightWorldDrawDomain::Band::Sky)skyBandSeen=true; /* WeatherMemory: the world drew in the sky band this frame (the mirror's viewport, no device read) */
         if(rainMrtBound&&!rainBlend)rainMrtUnbind(); /* 0.3.202 (rain mask MRT): every other draw (and all its capture/effect work) meets the game's targets only; dry frames one bool test */
         waterPending.valid=false; /* 0.3.214 (water MRT): set by this draw's captureWater only */
         if(water&&water->isMrtBound()&&(rainBlend||applied||!enabled||failed||!nextDrawIsWater()))rainMrtUnbind(); /* the water mask's target 1 stays bound across consecutive water draws only */
@@ -2187,9 +2188,10 @@ public:
         weatherSample.kind=weatherSample.draws?weatherDetect.hotKind:W::Kind::None;
         { // the game's own weather state is the primary source when its proofs and reads succeed; the detector is the fallback and the cross-check
             const NorthlightWeatherMemory::Reading memory=weatherMemory.frame(NorthlightWorldContext::readSelf);
-            weatherSample.memory=memory.valid;weatherSample.memoryKind=memory.kind;weatherSample.memoryIntensity=memory.intensity;
+            const bool memoryCounts=NorthlightWeatherMemory::counts(!world||world->weatherMemorySetting(),memory.valid,mirrorState.enabled,skyBandSeen);skyBandSeen=false; /* indoors the client draws no sky and no weather: the frame then goes the draw-based way (hold, fade) */
+            weatherSample.memory=memoryCounts;weatherSample.memoryKind=memory.kind;weatherSample.memoryIntensity=memory.intensity;
             if(int(memory.valid)!=weatherMemoryState){weatherMemoryState=int(memory.valid);logf("WEATHER memory %s (proofs=%d reads=%u failures=%u kind=%s storm=%.3f intensity=%.3f)",memory.valid?"valid":"invalid, texture detector in use",int(weatherMemory.proofsOk()),weatherMemory.reads,weatherMemory.failures,W::kindName(memory.kind),memory.stormIntensity,memory.intensity);}
-            const auto sort=weatherCross.frame(memory.valid,memory.intensity>0?memory.kind:W::Kind::None,weatherSample.kind);
+            const auto sort=weatherCross.frame(memoryCounts,memory.intensity>0?memory.kind:W::Kind::None,weatherSample.kind);
             if(sort!=NorthlightWeatherMemory::CrossCheck::Result::Agree)logf("WEATHER memory and texture detector disagree: %s (memory kind=%s storm=%.3f intensity=%.3f, texture kind=%s draws=%u)",NorthlightWeatherMemory::CrossCheck::name(sort),W::kindName(memory.kind),memory.stormIntensity,memory.intensity,W::kindName(weatherSample.kind),weatherSample.draws);
         }
         weatherTracker.frame(weatherSample,float(dt));const W::State& st=weatherTracker.state();
