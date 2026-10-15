@@ -91,6 +91,8 @@ struct SkyBand {
         return skyDepth(worldMax,1,worldMax,value)?value:-1.f;
     }
 };
+// Sine of the depth (4 deg) under the horizon down to which the disc's top limb stays opaque behind the far edge.
+constexpr float BelowHorizon=.0698f;
 struct Disc {float direction[3],right[3],up[3],tint[3],tangentRadius,opacity;};
 // Late color repair repeats the early disc depth test against resolved depth.
 // Foreground world and nearer sky geometry must remain occluders; a later
@@ -114,11 +116,11 @@ inline bool prepare(const float* direction,const float* tint,float alpha,float a
     }
     if(length2<.99f||length2>1.01f)return false;
     for(int i=0;i<3;++i)d.direction[i]=direction[i]/std::sqrt(length2);
-    // The disc sets below the horizon by its own diameter: the horizon geometry (terrain, WDL, water) hides it
-    // by depth, at full brightness, as it sinks. Opacity is full down to one radius below (the top limb on the
-    // horizon) and fades to 0 at one diameter below, where nothing of it can show any more.
-    const float sinRadius=std::sin(angularRadius);
-    if(d.direction[2]<=-2*sinRadius)return false;
+    // The disc sets behind the far edge (terrain, WDL, the sea's fogged far edge), which hides it by depth at full
+    // brightness. That edge lies below the horizon (the sea's dip), so the disc stays opaque until its top limb is
+    // BelowHorizon under the horizon and fades out over one more radius, after the edge has hidden it.
+    const float sinRadius=std::sin(angularRadius),limb=-BelowHorizon-sinRadius;
+    if(d.direction[2]<=limb-sinRadius)return false;
     // Continuous tangent basis across the visible upper hemisphere, including
     // zenith. No arbitrary axis-switch jump rotates the moon near the pole.
     // Native billboard roll is not inferred by the exact center/size proof.
@@ -126,7 +128,7 @@ inline bool prepare(const float* direction,const float* tint,float alpha,float a
     d.right[0]=1-d.direction[0]*d.direction[0]*a;d.right[1]=b;d.right[2]=-d.direction[0];
     d.up[0]=b;d.up[1]=1-d.direction[1]*d.direction[1]*a;d.up[2]=-d.direction[1];
     // It was a fade over 4.6 deg above the horizon: the setting sun lost almost all its brightness while whole.
-    float horizon=std::max(0.f,std::min(1.f,(d.direction[2]+2*sinRadius)/sinRadius));horizon=horizon*horizon*(3-2*horizon);
+    float horizon=std::max(0.f,std::min(1.f,(d.direction[2]-limb+sinRadius)/sinRadius));horizon=horizon*horizon*(3-2*horizon);
     d.opacity=alpha*horizon;d.tangentRadius=std::tan(angularRadius);output=d;return d.opacity>0;
 }
 // Conservative full-resolution scissor [left,top,right,bottom], with two-pixel
