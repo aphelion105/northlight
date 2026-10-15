@@ -114,7 +114,10 @@ struct Settings {
     unsigned memMap=0;
     // StreamOcclusionLocal: 1 = with CommandStream, GetData(FLUSH) on the game's occlusion query (sun/moon glare) is answered from the latest result without waiting for the renderer thread; 0 = always wait (as before). Creation-time key.
     unsigned streamOcclusionLocal=1;
-    char origin[54]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
+    // DepthFuncAware: 1 = a draw counts as depth tested only with ZENABLE on and ZFUNC not ALWAYS (the client never turns ZENABLE off: its "depth test off" is ZFUNC ALWAYS), so the spell layer holds back (Order hazard) draws that ignore depth
+    // and the UI-boundary fallback requires the UI's ZFUNC ALWAYS; 0 = ZENABLE only, as before. Creation-time key.
+    unsigned depthFuncAware=1;
+    char origin[55]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
 };
 struct Key { const char* name; unsigned Settings::*field; unsigned low,high; unsigned preset[3]; };
 // preset[] = Quality, Balanced, Performance. Quality must equal Settings{}.
@@ -173,6 +176,7 @@ inline const Key Keys[]={
     {"NameMaskDebug",&Settings::nameMaskDebug,0,1,{0,0,0}}, /* 0.3.212 (task 32) */
     {"MemMap",&Settings::memMap,0,1,{0,0,0}}, /* task 42 */
     {"StreamOcclusionLocal",&Settings::streamOcclusionLocal,0,1,{1,1,1}},
+    {"DepthFuncAware",&Settings::depthFuncAware,0,1,{1,1,1}},
 };
 inline bool operator==(const Settings& a,const Settings& b){for(const auto& k:Keys)if(a.*k.field!=b.*k.field)return false;return true;}
 inline bool operator!=(const Settings& a,const Settings& b){return !(a==b);}

@@ -16,7 +16,8 @@ inline bool screenSpaceRows(const float c[16]){
 }
 // The draw-state part of the fallback predicate: Z writes off and screen-space rows in c0..c3. The renderer tests the rest around it: before, a
 // non-world, non-water, non-WMO VS after the world; after, a full back-buffer viewport (fullViewport, the only D3D query, last).
-inline bool accepts(bool zWrite,const float* c){return !zWrite&&c&&screenSpaceRows(c);}
+// zFuncAlways: the client's UI draws all run with ZFUNC ALWAYS (depth test off; ZENABLE stays on); the renderer passes true when it does not test it (DepthFuncAware=0).
+inline bool accepts(bool zWrite,const float* c,bool zFuncAlways=true){return !zWrite&&zFuncAlways&&c&&screenSpaceRows(c);}
 class Arming{
 public:
     static constexpr unsigned kWarmFrames=2,kArmFrames=120,kLostFrames=120,kMinDrawsPerFrame=8,kSlots=32,kMaxPs=4,kMinSharePercent=10;

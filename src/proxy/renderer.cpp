@@ -904,11 +904,18 @@ private:
     }
     // task 34: a draw with no vertex shader bound (fixed function: ribbons, beams) returns from prepareDrawImpl early; the spell layer still needs its world domain, the
     // same test as the programmable path (viewport depth range and Z enable) and nothing else of what that path does.
+    // DepthFuncAware: the spell layer's "depth tested" is ZENABLE on and ZFUNC not ALWAYS (the client's depth-off is ZFUNC ALWAYS); the world domain itself stays ZENABLE only (name and UI-hash draws are decided inside it).
+    bool spellDepthTested(DWORD depthEnabled){
+        if(depthEnabled==FALSE)return false;
+        DWORD func=D3DCMP_LESSEQUAL;
+        if(!zFuncAware||FAILED(ext->GetRenderState(D3DRS_ZFUNC,&func)))return true;
+        return NorthlightWorldDrawDomain::depthTested(depthEnabled,func);
+    }
     void spellFixedDomain(){
         if(!world||!projectionValid)return;
         D3DVIEWPORT9 viewport={};DWORD depthEnabled=FALSE;
         if(FAILED(ext->GetViewport(&viewport))||FAILED(ext->GetRenderState(D3DRS_ZENABLE,&depthEnabled)))return;
-        spellDomain=NorthlightWorldDrawDomain::accepts(projectionValid,depthEnabled!=FALSE,worldMinDepth,worldMaxDepth,viewport.MinZ,viewport.MaxZ);spellZEnable=depthEnabled!=FALSE;
+        spellDomain=NorthlightWorldDrawDomain::accepts(projectionValid,depthEnabled!=FALSE,worldMinDepth,worldMaxDepth,viewport.MinZ,viewport.MaxZ);spellZEnable=spellDepthTested(depthEnabled);
     }
     template<class Capture> void prepareDrawImpl(Capture capture,UINT count) {
         ++drawCalls;maskKind=0;if(nameRun)nameMaskRunBreak();
@@ -937,7 +944,7 @@ private:
             const bool statesRead=SUCCEEDED(ext->GetViewport(&viewport))&&SUCCEEDED(ext->GetRenderState(D3DRS_ZENABLE,&depthEnabled));
             const bool worldDomain=statesRead&&NorthlightWorldDrawDomain::accepts(projectionValid,depthEnabled!=FALSE,
                 worldMinDepth,worldMaxDepth,viewport.MinZ,viewport.MaxZ);
-            if(spellOn){spellDomain=worldDomain;spellZEnable=depthEnabled!=FALSE;} /* task 34 */
+            if(spellOn){spellDomain=worldDomain;spellZEnable=spellDepthTested(depthEnabled);} /* task 34 */
             if(worldDomain){if(gateFrame)++gateCounts.capture;
                 /* 0.3.188 (task 3): lazy state reads for the early resolve, its undo and the census, each read at most once per draw */
                 auto rs=[&](D3DRENDERSTATETYPE t){return [this,t,v=DWORD(0),known=false]()mutable{if(!known){v=drawRenderState(t);known=true;}return v;};};
@@ -1374,6 +1381,7 @@ private:
     // Every layer call runs inside extensionWork (a fault drops the layer: reset()) on the thread that executes the device.
     NorthlightSpellLayer::Layer spell;NorthlightSpellLayer::FadeRun spellFade;NorthlightSpellLayer::DrawArgs spellArgs; /* spellArgs: set by the four draw overrides (SpellLayer=1 only) */
     bool spellOn=false;unsigned spellClasses=15,spellIdle=0;unsigned spellSampleFrame=~0u;bool spellSampleOn=false;
+    bool zFuncAware=true; /* DepthFuncAware (a creation-time key): ZFUNC counts as part of depth-tested, and the UI fallback requires ZFUNC ALWAYS */
     bool spellDomain=false,spellZEnable=false;IDirect3DVertexShader9* spellVs=nullptr; /* prepareDrawImpl's reads of this draw (identities only; SpellLayer=1 only) */
     void* spellTexKey=nullptr;IDirect3DSurface9* spellTexFor=nullptr; /* the layer target's container texture (null: T is not a texture level), computed once per target */
     void* spellQuery[8]={};unsigned spellQueryFrame[8]={},spellQueryN=0,spellQueryUnknownFrame=0;bool spellQueryUnknown=false; /* open D3DQUERYTYPE_OCCLUSION brackets (raw queries), by Issue(BEGIN) frame; spellQueryUnknown: a bracket was lost to a full table (its frame in spellQueryUnknownFrame) */
@@ -1860,7 +1868,7 @@ private:
         uiFallbackDraw(vc,vs);
     }
     // 0.3.203 (task 17): fallback boundary for font mods that replace the UI VS and PS (or only the PS): the first screen-space draw after the world with
-    // ZWRITE off, full-target viewport and ortho rows, by a (VS,PS) pair learned over 120 frames without a hash boundary. WoW draws UI with ZENABLE on, so z is not tested.
+    // ZWRITE off, full-target viewport and ortho rows, by a (VS,PS) pair learned over 120 frames without a hash boundary. WoW draws UI with ZENABLE on and ZFUNC ALWAYS (DepthFuncAware: the func is required).
     // On stock the whole step is one bool test per draw: collecting() needs two world frames in a row without the hash boundary, and the first one disarms it for good.
     void uiFallbackDraw(const VsClass& vc,IDirect3DVertexShader9* vs){
         if(!uiFallback.collecting()||!terrain||applied||hashBoundaryThisFrame||fallbackBoundaryThisFrame||vc.wmo)return;
@@ -1874,8 +1882,9 @@ private:
         const std::uintptr_t vsId=reinterpret_cast<std::uintptr_t>(vs),psId=reinterpret_cast<std::uintptr_t>(ps);
         if(armed&&!uiFallback.isBoundary(vsId,psId))return;
         DWORD zw=0;if(FAILED(ext->GetRenderState(D3DRS_ZWRITEENABLE,&zw)))return;
+        DWORD zf=D3DCMP_ALWAYS;if(zFuncAware&&FAILED(ext->GetRenderState(D3DRS_ZFUNC,&zf)))return; /* the client's UI draws all run with ZFUNC ALWAYS */
         float c[16]={};if(FAILED(ext->GetVertexShaderConstantF(0,c,4)))return;
-        if(!NorthlightUiBoundary::accepts(zw!=0,c)){if(!armed){triageVs=vs;triagePs=ps;triageZw=zw;for(int i=0;i<4;++i)triageC3[i]=c[12+i];++triageDraws;}return;}
+        if(!NorthlightUiBoundary::accepts(zw!=0,c,zf==D3DCMP_ALWAYS)){if(!armed){triageVs=vs;triagePs=ps;triageZw=zw;for(int i=0;i<4;++i)triageC3[i]=c[12+i];++triageDraws;}return;}
         D3DSURFACE_DESC desc={};
         if(!fullViewport(desc,nullptr,true))return; // last, and quiet: minimap and portrait targets are expected here
         if(!armed){uiFallback.noteCandidate(vsId,psId);return;}
@@ -2037,6 +2046,7 @@ public:
         char skyRoot[MAX_PATH*3];WideCharToMultiByte(CP_UTF8,0,rootPath,-1,skyRoot,sizeof skyRoot,nullptr,nullptr);celestialDiscs=std::make_unique<NorthlightCelestialDiscRenderer>(ext,std::string(skyRoot)+"world-cache/celestial");celestialDiscs->setTerrainSource([this]{return world->celestialTerrainGeneration();},[this](unsigned body,const float* matrix){return world->drawCelestialTerrain(body,matrix);},[this](unsigned body){world->noteCelestialTerrainReuse(body);});celestialDiscs->setIdentityMap([this](std::uintptr_t exposed){return mirrorResources.rawOf(exposed,!mirrorState.enabled);});shadowBlobs=std::make_unique<NorthlightShadowBlobFilter>(ext,world->blobShadowStrength());shadowBlobs->setTexturePeek([](void* e,DWORD stage,IDirect3DBaseTexture9*& out){return static_cast<ExtensionDevice*>(e)->peekTexture(stage,out);},ext); /* 0.3.196 (task 12): borrowed stage-0 identity */water=std::make_unique<NorthlightWaterRenderer>(ext); logf("D3D9 device wrapped. Ctrl+Shift+F7 fog; F8 GI; F9 shadows; F10 all effects; F12 world debug (all with Ctrl+Shift). F11 unassigned. Components start ON; GI cache stays warm.");
         contactAO=world->contactAO(); /* 0.3.201 (task 18) */
         spellConfigure(); /* task 34: SpellLayer, SpellLayerClasses, SpellTrace (creation-time keys) */
+        zFuncAware=world->depthFuncAware();
         nameMask.setting=world->nameMask();nameMask.debug=world->nameMaskDebug(); /* 0.3.212 (task 32) */
         frameDrawGates=world->frameDrawGates();latchDrawGates(); /* 0.3.187: after the renderers exist */
         {wchar_t markers[MAX_PATH];if(swprintf(markers,MAX_PATH,L"%lsnorthlight-frame-markers.txt",rootPath)>0&&GetFileAttributesW(markers)!=INVALID_FILE_ATTRIBUTES){frameMarkers=true;logf("FRAMEMARKERS on: E after the world effects, P before Present");}}

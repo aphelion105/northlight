@@ -1,6 +1,7 @@
 // Task 34: behavioural tests of the production spell_layer.h against the FakeDevice of test_spell_layer_api.h.
 #include "test_spell_layer_api.h"
 #include "spell_fog_proof.h"
+#include "world_draw_domain.h"
 #include "spell_fog_march.h"
 #include <chrono>
 #include <cstdio>
@@ -65,6 +66,10 @@ static void testClassify(){
     {DrawFacts f=cand();f.family=Family::Ripples;f.colorWrite=0;expect(f,Kind::Ignore);}
     {DrawFacts f=cand();f.family=Family::Ripples;f.worldDomain=false;expect(f,Kind::Hazard,0,Reason::Order);}
     {DrawFacts f=cand();f.zEnable=false;expect(f,Kind::Hazard,0,Reason::Order);}
+    // DepthFuncAware: the renderer feeds zEnable = depthTested(ZENABLE,ZFUNC); the client's depth-off (ZENABLE TRUE, ZFUNC ALWAYS) is an Order hazard, a real depth func still defers; DepthFuncAware=0 feeds ZENABLE alone (old)
+    {DrawFacts f=cand();f.zEnable=NorthlightWorldDrawDomain::depthTested(1,8);expect(f,Kind::Hazard,0,Reason::Order);}
+    {DrawFacts f=cand();f.zEnable=NorthlightWorldDrawDomain::depthTested(1,4);expect(f,Kind::Defer,SubAdditive);}
+    {DrawFacts f=cand();f.zEnable=1!=0;expect(f,Kind::Defer,SubAdditive);}
     {DrawFacts f=cand();f.dsIsWorldDepth=false;expect(f,Kind::Hazard,0,Reason::Order);}
     {DrawFacts f=cand();f.srcBlend=kBlendOne;f.destBlend=kBlendZero;expect(f,Kind::Hazard,0,Reason::Order);} // opaque blend, no Z write
     {DrawFacts f=cand();f.blend=false;expect(f,Kind::Hazard,0,Reason::Order);}

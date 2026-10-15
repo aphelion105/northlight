@@ -28,6 +28,7 @@ int main(){
     { // accepts: the stock UI state (z=1 zwrite=0, ortho rows) passes; Z writes, no constants or a perspective row do not
         assert(accepts(false,c));
         assert(!accepts(true,c));
+        assert(accepts(false,c,true)&&!accepts(false,c,false)&&!accepts(true,c,true)); // ZENABLE on + ZFUNC not ALWAYS (a depth-tested draw) is no UI draw
         assert(!accepts(false,nullptr));
         ortho(p);p[15]=0;assert(!accepts(false,p));
     }

@@ -28,6 +28,8 @@ int main(){
     for(float bad:{-1.f,2.f,std::numeric_limits<float>::quiet_NaN(),std::numeric_limits<float>::infinity()}){
         assert(!accepts(true,true,0,.94f,bad,1));assert(!accepts(true,true,0,bad,0,.94f));++cases;
     }
+    {using NorthlightWorldDrawDomain::depthTested; // the client's depth-off is ZFUNC ALWAYS (8) with ZENABLE still TRUE
+     for(unsigned long f=1;f<=8;++f){assert(depthTested(1,f)==(f!=8));assert(!depthTested(0,f));++cases;}}
     assert(!accepts(true,true,0,0,0,0));assert(!accepts(true,true,0,.94f,.5f,.4f));
     BVH old,corrected;std::string error;
     assert(old.build(casters(false),error));assert(corrected.build(casters(true),error));

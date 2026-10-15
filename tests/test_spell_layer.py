@@ -21,3 +21,9 @@ i=r.index('spellArgs.vsHash=0;')
 seg=r[i:i+400]
 assert seg.index('diagnostics()&&spell.fogSampleRoom()')<seg.index('vsHashes.find(vs)'), seg
 print('renderer: vsHashes.find only for a logged SPELLFOG sample')
+# DepthFuncAware: the facts' zEnable is "depth tested" (ZENABLE on and ZFUNC not ALWAYS) for both domain reads; the world domain itself stays ZENABLE only (name and UI-hash draws are decided inside it)
+i=r.index('bool spellDepthTested(DWORD depthEnabled){');sd=r[i:r.index('void spellFixedDomain(){')]
+assert 'if(depthEnabled==FALSE)return false;' in sd and 'if(!zFuncAware||FAILED(ext->GetRenderState(D3DRS_ZFUNC,&func)))return true;' in sd and 'NorthlightWorldDrawDomain::depthTested(depthEnabled,func)' in sd
+assert r.count('spellZEnable=spellDepthTested(depthEnabled)')==2 and 'spellZEnable=depthEnabled!=FALSE' not in r
+assert r.count('NorthlightWorldDrawDomain::accepts(projectionValid,depthEnabled!=FALSE,')==2
+print('renderer: spell zEnable is ZENABLE and ZFUNC != ALWAYS under DepthFuncAware')
