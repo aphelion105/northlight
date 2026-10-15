@@ -141,7 +141,7 @@ assert 'halo.tangentRadius*=i?MoonGlareSupport:SunGlareSupport;' in host
 # The terrain-mask gate, mask matrix and c46 extent keep 10R/2.5R.
 assert 'support.tangentRadius*=i?MoonMaskRadius:SunMaskRadius;' in host
 assert 'NorthlightCelestialTerrain::matrix(disc,view+12,body?MoonMaskRadius:SunMaskRadius,size,matrix);' in host
-assert 'const float terrainPolicy[]={terrainReady[i]?1.f:0.f,i?MoonMaskRadius:SunMaskRadius,0,0};' in host
+assert 'const float terrainPolicy[]={terrainReady[i]?1.f:0.f,i?MoonMaskRadius:SunMaskRadius,1,NorthlightCelestialDisc::SinkFarFraction*farZ};' in host
 # Small hot core (x >= 1 only to ~1.6R with the sun up), tinted tail past 10R,
 # zero at the 20R support; a low sun only widens the tail.
 assert glare(1.5,True)>1 and glare(2,True)<1 and glare(4,True)<.7 and glare(10,True)>.2 and glare(15,True)>.03 and glare(19.99,True)<.000001

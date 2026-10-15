@@ -11,7 +11,7 @@ sampler2D DiscWater : register(s2);
 sampler2D DiscHaloVisibility : register(s3); // current halo, previous 1x1 value in visibility pass
 sampler2D DiscTerrain : register(s4); // viewer-ray coverage of already loaded terrain
 sampler2D DiscRingVisibility : register(s5); // 1x1 visibility of the 2-4R ring (sun), else the halo value
-float4 DiscTerrainPolicy : register(c46); // ready, mask extent in body radii
+float4 DiscTerrainPolicy : register(c46); // ready, mask extent in body radii, sink below the horizon (z), far view distance (w)
 float4 DiscImage : register(c0); // inv fullWidth/Height, world depthMin, inverse depthRange
 float4 DiscProjection : register(c1); // signed X,Y,Zsign, waterReady
 row_major float4x4 DiscInverseView : register(c2);
@@ -38,6 +38,21 @@ float terrainVisibility(float3 ray){
     float2 local=float2(dot(ray,DiscRight.xyz),-dot(ray,DiscUp.xyz))/(forward*DiscDirection.w*DiscTerrainPolicy.y);
     if(max(abs(local.x),abs(local.y))>1)return 1;
     return 1-saturate(tex2Dlod(DiscTerrain,float4(local*.5+.5,0,0)).r);
+}
+// The body sets below the horizon by its diameter. Within that band only near geometry hides it: the sky band
+// (WDL, the sky's own lower geometry) and anything farther than c46.w (the fogged far edge, the sea floor seen
+// through the sea) do not, so the body sinks into the horizon haze and is cut lower, not on the far fogged edge.
+bool sunkFar(float2 uv,float depth){
+    float viewZ=DiscPolicy.y*DiscPolicy.z/max(DiscPolicy.z-depth*(DiscPolicy.z-DiscPolicy.y),.00001);
+    if(depth<.99999994&&viewZ<DiscTerrainPolicy.w)return false;
+    if(DiscProjection.w>.5){float2 water=tex2Dlod(DiscWater,float4(uv,0,0)).rg;
+        if(water.x>DiscPolicy.y&&water.x<DiscTerrainPolicy.w&&water.y>.003)return false;}
+    return true;
+}
+bool sunkVisible(float3 ray,float2 uv,float depth){
+    if(DiscTerrainPolicy.z<.5)return false;
+    float elevation=ray.z*rsqrt(dot(ray,ray));
+    return elevation<=0&&elevation>-2*DiscDirection.w&&sunkFar(uv,depth);
 }
 float skyVisibility(float4 source) {
     float2 uv=source.xy;
@@ -126,17 +141,20 @@ float4 CelestialDiscPS(float2 uv:TEXCOORD0):COLOR0 {
     float2 depthUV=(clamp(floor(uv*dimensions),0,dimensions-1)+.5)*DiscImage.xy;
     float rawDepth=tex2Dlod(DiscDepth,float4(depthUV,0,0)).r;
     float depth=saturate((rawDepth-DiscImage.z)*DiscImage.w);
-    clip((1-DiscRepair.y)+DiscRepair.y*(rawDepth-DiscRepair.x+DiscRepair.z));
-    // One normalized 24-bit depth quantization step. Do not draw over nearby
-    // roofs, terrain silhouettes or actors merely because sky color is similar.
-    // Strict depth occlusion, like the native billboard: every surface in the
-    // depth buffer, fogged or not, hides the disc. (A fog-based exception was
-    // tried in 0.3.25 and drew the moon over distant fogged trees.)
-    if(DiscPolicy.w>.5&&depth<.99999994)return 0;
-    if(DiscPolicy.w>.5&&DiscProjection.w>.5){float2 water=tex2Dlod(DiscWater,float4(depthUV,0,0)).rg;
-        if(water.x>DiscPolicy.y&&water.x<=DiscPolicy.z&&water.y>.003)return 0;}
     float3 ray=discRay(uv);
-    float terrainVisible=terrainVisibility(ray);
+    bool sunk=DiscPolicy.w>.5&&sunkVisible(ray,depthUV,depth);
+    if(!sunk){
+        clip((1-DiscRepair.y)+DiscRepair.y*(rawDepth-DiscRepair.x+DiscRepair.z));
+        // One normalized 24-bit depth quantization step. Do not draw over nearby
+        // roofs, terrain silhouettes or actors merely because sky color is similar.
+        // Strict depth occlusion, like the native billboard: every surface in the
+        // depth buffer, fogged or not, hides the disc. (A fog-based exception was
+        // tried in 0.3.25 and drew the moon over distant fogged trees.)
+        if(DiscPolicy.w>.5&&depth<.99999994)return 0;
+        if(DiscPolicy.w>.5&&DiscProjection.w>.5){float2 water=tex2Dlod(DiscWater,float4(depthUV,0,0)).rg;
+            if(water.x>DiscPolicy.y&&water.x<=DiscPolicy.z&&water.y>.003)return 0;}
+    }
+    float terrainVisible=sunk?1:terrainVisibility(ray);
     // Apply to the ORIGINAL sky-phase draw too: a late-only mask cannot erase
     // a disc already painted over a fogged/WDL silhouette without native depth.
     if(DiscPolicy.w<.5)clip(terrainVisible-.99999);
@@ -196,6 +214,7 @@ float4 CelestialVeilPS(float2 uv:TEXCOORD0):COLOR0 {
     float3 ray=discRay(uv);
     float forward=dot(ray,DiscDirection.xyz);clip(forward-.000001);
     float geometry=1-sky*terrainVisibility(ray);
+    if(sunkVisible(ray,depthUV,depth))geometry=0; // the sky glare covers a sinking body's band; no veil twice
     float2 local=float2(dot(ray,DiscRight.xyz),-dot(ray,DiscUp.xyz))/(forward*DiscDirection.w);
     float radius=length(local);
     float alpha=geometry*glareProfile(radius);
