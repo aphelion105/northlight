@@ -60,13 +60,13 @@ int main() {
         // use the displayed orbit, including a source raised by the renderer-owned orbit.
         for(float z:{-.1f,0.f,.02f,.04f,.08f,.8f}){
             c.sun.direction[2]=z;applyRendererPolicy(c,direct);
-            assert(c.sunWeight>=0&&c.moonWeight>=0&&c.sunWeight+c.moonWeight==1);
+            assert(c.sunWeight>=0&&c.moonWeight>=0&&std::fabs(c.sunWeight+c.moonWeight-1)<1e-6f);
             for(unsigned k=0;k<3;++k)assert(std::fabs(c.sunColor[k]+c.moonColor[k]-direct[k])<1e-6f);
             ++appearanceCases;
         }
     }
     s=scene(-.1f,-.1f);assert(decode(s,camera,direct,c));applyRendererPolicy(c,direct);
-    assert(c.sunWeight==0&&c.moonWeight==0);
+    assert(std::fabs(c.sunWeight-.5f)<1e-6f&&std::fabs(c.moonWeight-.5f)<1e-6f); // level under the horizon: the handover's midpoint (the higher body lights)
     const float black[3]={};c.moon.direction[2]=.81f;applyRendererPolicy(c,black);
     for(float v:c.moonColor)assert(v==0); // no invented light when zone budget is zero
     // Sky-only frames use current native snapshots and the SAME clock-based orbit as
@@ -108,15 +108,17 @@ int main() {
             assert(sky.sunColor[k]+sky.moonColor[k]<=direct[k]+1e-6f);
         }
         const double seconds=minute*60.;
-        // 0.3.215: the sun lights fully until its disc is 95% below the horizon and goes out one radius below it; the
-        // moon (rising at 20:50) only takes over once the sun is out. Between them (dusk) neither lights.
-        const float sunZ=sky.sun.direction[2],moonZ=sky.moon.direction[2],sunR=std::sin(sky.sun.angularRadius);
-        if(sunZ>=-.8f*sunR)assert(sky.sunWeight==1&&sky.moonWeight==0);   // full until the disc is 95% hidden
-        else if(sunZ>-sunR+1e-4f)assert(sky.sunWeight>0);
-        else if(sunZ<=-sunR)assert(sky.sunWeight==0);
-        if(moonZ<=0)assert(sky.moonWeight==0);
-        else if(moonZ>.001f&&sky.sunWeight==0)assert(sky.moonWeight>0);
-        if(seconds>NorthlightCelestialOrbit::kSunsetSeconds+10*60&&seconds<NorthlightCelestialOrbit::kMoonriseSeconds)assert(sky.moonWeight==0&&sky.sunWeight==0);
+        // The higher body lights; the light passes from one to the other where they cross 9 deg under the horizon.
+        const float sunZ=sky.sun.direction[2],moonZ=sky.moon.direction[2];
+        assert(std::fabs(sky.sunWeight+sky.moonWeight-1)<1e-6f);
+        if(sunZ>moonZ+HandoverWidth*.5f)assert(sky.sunWeight==1);
+        if(moonZ>sunZ+HandoverWidth*.5f)assert(sky.moonWeight==1);
+        if(sunZ>0)assert(sky.sunWeight==1);
+        if(moonZ>0)assert(sky.moonWeight==1);
+        if(seconds>=NorthlightCelestialOrbit::kSunsetSeconds&&seconds<=20*3600+40*60)assert(sky.sunWeight==1);   // until the crossing at 20:41
+        if(seconds>=20*3600+42*60&&seconds<=NorthlightCelestialOrbit::kMoonriseSeconds)assert(sky.moonWeight==1);
+        if(seconds>=5*3600+45*60&&seconds<=5*3600+59*60)assert(sky.moonWeight==1);                                // and back at 06:00
+        if(seconds>=6*3600+1*60&&seconds<=NorthlightCelestialOrbit::kSunriseSeconds)assert(sky.sunWeight==1);
         assert(std::fabs(std::tan(sky.moon.angularRadius)*24/1.75-.46176318)<1e-6);
         assert(std::fabs(std::tan(sky.sun.angularRadius)*24-.506736)<1e-6);
         const float radius=sky.moon.angularRadius,sunRadius=sky.sun.angularRadius;

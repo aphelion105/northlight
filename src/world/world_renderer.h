@@ -2396,12 +2396,14 @@ public:
         glowHueFrame=NorthlightSunHue::compute(lightSlotsValid?lightSlots:nullptr,celestialPalette(map,camera).disc[1]);
         sourceDirections[0]=vec(context.lightDirection);sourceColors[0]=vec(context.direct);
         sourceDirections[1]=V(0,0,1);sourceColors[1]=V();sourceWeights[0]=1;sourceWeights[1]=0;
-        // The setting sun lights (shadows, rays) from 2 deg at the lowest; the disc and the twilight keep its real elevation.
-        float sunLightDirection[3];std::memcpy(sunLightDirection,celestialLight.sun.direction,sizeof sunLightDirection);
-        NorthlightCelestial::clampLightElevation(sunLightDirection);
+        // The sun and moon light (shadows, rays) from 2 deg at the lowest, also under the horizon up to the handover;
+        // the discs and the twilight keep their real elevation.
+        float sunLightDirection[3],moonLightDirection[3];std::memcpy(sunLightDirection,celestialLight.sun.direction,sizeof sunLightDirection);
+        std::memcpy(moonLightDirection,celestialLight.moon.direction,sizeof moonLightDirection);
+        NorthlightCelestial::clampLightElevation(sunLightDirection);NorthlightCelestial::clampLightElevation(moonLightDirection);
         auto resolvedSources=NorthlightCelestialSources::resolve(vec(context.lightDirection),vec(context.direct),
             celestialValid?vec(sunLightDirection):vec(context.lightDirection),
-            celestialValid?vec(celestialLight.moon.direction):V(0,0,1),
+            celestialValid?vec(moonLightDirection):V(0,0,1),
             celestialValid?celestialLight.sunWeight:0.f,celestialValid?celestialLight.moonWeight:0.f);
         if(celestialValid){resolvedSources.sources[0].color=vec(celestialLight.sunColor);resolvedSources.sources[1].color=vec(celestialLight.moonColor);}
         authoredFill=resolvedSources.authoredFill;
@@ -3858,9 +3860,10 @@ public:
         const float hazeSun[3]={sourceDirections[0].x,sourceDirections[0].y,sourceDirections[0].z};
         const float hazeZone=NorthlightCelestialProfiles::horizonHaze(volumePalette,c[31][3]);
         float hazeLift[3];NorthlightSunHue::horizonLift(glowHueFrame,hazeLift);
-        // The warm lobe toward the sun follows the disc's glow (full down to the horizon, out one diameter below),
-        // not the direct light, which fades from 4.6 deg: the setting sun lost its glow while still whole.
-        const float hazeSunWeight=celestialValid?std::max(sourceWeights[0],NorthlightCelestialGlow::horizonGlow(celestialLight.sun.direction[2],std::sin(celestialLight.sun.angularRadius))):sourceWeights[0];
+        // The warm lobe toward the sun follows the disc over the camera's far edge (full until 95% under it, out one
+        // diameter below), not the light, which now lasts to the handover 9 deg under: a low camera saw the lobe glow
+        // on the water with the sun gone. apparentHorizon is last frame's (updated below).
+        const float hazeSunWeight=celestialValid?NorthlightCelestialGlow::horizonGlow(celestialLight.sun.direction[2]-(apparentHorizon.valid?apparentHorizon.value:0.f),std::sin(celestialLight.sun.angularRadius)):sourceWeights[0];
         const auto haze=NorthlightHorizonHaze::constants(horizonHazeState,{quality.horizonHaze,quality.horizonHazeStart,quality.horizonHazeBand,quality.horizonHazeTerrain},
             farZ,hazeZone,effects.fog,celestialValid,hazeSun,hazeSunWeight,hazeLift,wx.hazeTauScale());
         c[57][1]=haze.shape[0];c[57][2]=haze.shape[1];c[57][3]=haze.shape[2];c[67][2]=haze.sun[0];c[67][3]=haze.sun[1];

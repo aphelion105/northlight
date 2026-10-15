@@ -80,14 +80,16 @@ inline bool decode(const Snapshot& s,const float* camera,const float* direct,Con
     out=candidate;return true;
 }
 
-// Centre depth (in sun radii) under the horizon at which the disc is 95% hidden: the sun keeps full brightness to here.
-inline constexpr float SunFullDepth=.8f;
-// Renderer sun light by elevation (sine): full until the disc is 95% below the horizon, 0 one radius below.
-inline float sunLight(float elevationSine,float angularRadius){
-    const float r=std::sin(angularRadius>0&&std::isfinite(angularRadius)?angularRadius:.0211f);
-    return smooth((elevationSine+r)/((1-SunFullDepth)*r));
+// The light passes from the sun to the moon where they cross under the horizon (about -9 deg at 20:41) and back
+// at dawn (06:00), crossfaded over this much elevation difference (sine, 1.5 deg: some 20 s at the crossing). Both
+// share one azimuth and light from 2 deg at the lowest, so the shadows do not turn at the handover.
+inline constexpr float HandoverWidth=.0262f;
+// A sun 4.6 deg up keeps the day's light whatever the moon does (the orbit never has both up).
+inline float sunShare(float sunZ,float moonZ){
+    if(!std::isfinite(sunZ)||!std::isfinite(moonZ))return 0;
+    return std::max(smooth((sunZ-moonZ)/HandoverWidth+.5f),smooth(sunZ/.08f));
 }
-// Lowest elevation (sine, 2 deg) of the sun's light direction: a grazing light would stretch shadows to infinity.
+// Lowest elevation (sine, 2 deg) of a light direction: a grazing light would stretch shadows to infinity.
 inline constexpr float MinLightElevation=.0349f;
 inline void clampLightElevation(float* direction){
     if(!(direction[2]<MinLightElevation))return;
@@ -104,13 +106,13 @@ inline void applyRendererPolicy(Context& c,const float* direct){
     c.sun.emission=3.5f;c.moon.emission=1.1f;
     const float tint[2][3]={{1,.96f,.88f},{.94f,.97f,1}};
     for(unsigned i=0;i<3;++i){c.sun.tint[i]=tint[0][i];c.moon.tint[i]=tint[1][i];}
-    // The sun gives full light (rays, shadows) until its disc is 95% below the horizon and goes out as the rest
-    // sinks, gone with the top limb on the horizon. It faded over 4.6 deg ABOVE the horizon: the light, shadows and rays
-    // were gone while the setting sun was still almost whole.
-    c.sun.altitudeVisibility=sunLight(c.sun.direction[2],c.sun.angularRadius);
-    c.moon.altitudeVisibility=smooth(c.moon.direction[2]/.08f);
+    // Whichever body is higher lights the world (rays, shadows), handed over where they cross under the horizon. The
+    // sun's light ended one radius under the horizon: seen from high up past the far edge, it went out while still in
+    // view, and the moon lit nothing until 4.6 deg up.
+    c.sun.altitudeVisibility=sunShare(c.sun.direction[2],c.moon.direction[2]);
+    c.moon.altitudeVisibility=1-c.sun.altitudeVisibility;
     c.sunWeight=c.sun.altitudeVisibility;
-    c.moonWeight=(1-c.sunWeight)*c.moon.altitudeVisibility;
+    c.moonWeight=c.moon.altitudeVisibility;
     for(unsigned i=0;i<3;++i){
         c.sunColor[i]=direct[i]*c.sunWeight;
         c.moonColor[i]=direct[i]*c.moonWeight;
