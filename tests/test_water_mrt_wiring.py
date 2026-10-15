@@ -50,7 +50,7 @@ checks['waterMrtDraw: begin, the one chain draw, end - all in extensionWork; a r
     mrtDraw.count('extensionWork("water mask"')==3 and 'water->beginMrt(' in mrtDraw and mrtDraw.count('chain()')==3 and mrtDraw.count('water->endMrt(SUCCEEDED(hr))')==1
     and mrtDraw.index('beginMrt(')<mrtDraw.index('water->capture(')<mrtDraw.index('if(!masked)return chain();')<mrtDraw.index('const HRESULT hr=chain();')<mrtDraw.index('endMrt(')
     and 'if(water->isMrtBound())rainMrtUnbind();' in mrtDraw and mrtDraw.index('rainMrtUnbind()')<mrtDraw.index('water->capture('))
-checks['waterMrtDraw: no pending plan = the plain chain']='if(!waterPending.valid)return chain();' in mrtDraw
+checks['waterMrtDraw: no pending plan = the plain chain (after the unbind, see below)']='if(!waterPending.valid){if(water&&water->isMrtBound())rainMrtUnbind();return chain();}' in mrtDraw
 checks['the only water->capture( calls are the two fallbacks (no draw override and no capture lambda calls it)']=r.count('water->capture(')==2 and 'captureWater(vs,NorthlightWaterRenderer::NoUserPointer,draw)' in r
 caps=between(r,'    void waterMrtCaps(){','    // The next draw uses a water vertex shader')
 checks['caps: two targets, independent write masks and bit depths, MRT blending, a blendable G32R32F target, ps_2_0 - else the second-draw pass with a log line']=all(s in caps for s in ('NumSimultaneousRTs>=2','D3DPMISCCAPS_INDEPENDENTWRITEMASKS','D3DPMISCCAPS_MRTINDEPENDENTBITDEPTHS','D3DPMISCCAPS_MRTPOSTPIXELSHADERBLENDING','D3DPS_VERSION(2,0)','D3DUSAGE_RENDERTARGET|kUsageQueryPostPixelShaderBlending','0x00080000','D3DFMT_G32R32F','WATER mask MRT disabled: caps','water->setMrtCaps(ok)'))
@@ -70,6 +70,11 @@ checks['fog: refused for pixel shaders below 3.0 only (they may get table fog on
 checks['the mask variant check precedes the MRT variant: patchMrt and verifyMrt run after maskShader() matched its recorded hash']=(
     between(w,'    void registerPixel(','logf("WATER registered pixel').index('maskShader(hash,false')<between(w,'    void registerPixel(','logf("WATER registered pixel').index('patchMrt(')<between(w,'    void registerPixel(','logf("WATER registered pixel').index('verifyMrt('))
 
+# 0.3.215: a water draw captureWater never planned does not meet render target 1 left bound by the previous water draw
+planned=between(r,'    template<class Raw,class Chain> HRESULT waterMrtDraw(','    // 0.3.193 BlobShadowStrength')
+checks['waterMrtDraw: without a planned draw render target 1 is unbound (if the water mask holds it) before the game draw']=(
+    'if(!waterPending.valid){if(water&&water->isMrtBound())rainMrtUnbind();return chain();}' in planned and planned.index('rainMrtUnbind();return chain();')<planned.index('const PendingWater p=waterPending;'))
+
 # ---- the frame ----
 fx=between(r,'        rainMrtUnbind(); /* 0.3.202 (rain mask MRT) */\n        ExtensionDevice::RawScope rawEffects','        // discs and glare')
 checks['renderEffects: render target 1 unbound, then the water data decoded, then the mask handed out']=(
@@ -80,7 +85,7 @@ checks['resolveMask: unbinds, resolves the twin once, clears the mask unless a s
     and resolve.count('quad()')==1 and resolve.count('StretchRect(')==1)
 checks['maskTextureForDepth: the min/max Z contract kept; MRT data only after the decode']=('std::fabs(minZ-maskMinZ)<.0001f&&std::fabs(maxZ-maskMaxZ)<.0001f' in w and '(captured||mrtResolved)&&!mrtDirty' in w)
 checks['endFrame / reset: the MRT flags go with the frame and the resources']=('captured=mrtCaptured=mrtResolved=mrtDirty=mrtCleared=false;' in w and 'drop(rawSurface);drop(raw);drop(twin);' in w)
-checks['WATER line: draws = mrt + redraw, with the three counters']=('mrt=%u redraw=%u degraded=%u",waterDraws,0u,waterClears,waterScans,waterReadFailures,waterMrt,waterRedraws,waterDegraded' in r and 'waterDraws=waterRedraws+waterMrt' in r)
+checks['WATER line: draws = mrt + redraw, with the three counters, the binds and the longest run']=('mrt=%u redraw=%u degraded=%u binds=%u longestRun=%u",waterDraws,0u,waterClears,waterScans,waterReadFailures,waterMrt,waterRedraws,waterDegraded,waterBinds,waterLongestRun' in r and 'waterDraws=waterRedraws+waterMrt' in r)
 
 # ---- the other unbind sites (the rain mask's list) still unbind ----
 for site in ('HRESULT STDMETHODCALLTYPE Clear(','HRESULT STDMETHODCALLTYPE StretchRect(','HRESULT STDMETHODCALLTYPE ColorFill(','HRESULT STDMETHODCALLTYPE UpdateSurface(','HRESULT STDMETHODCALLTYPE GetRenderTargetData(','HRESULT STDMETHODCALLTYPE EndScene('):

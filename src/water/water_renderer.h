@@ -33,7 +33,7 @@ class NorthlightWaterRenderer {
     UINT width=0,height=0;D3DMULTISAMPLE_TYPE twinType=D3DMULTISAMPLE_NONE;DWORD twinQuality=0;
     // 0.3.214 (water MRT)
     bool mrtVariants=true,mrtCaps=false,mrtFailed=false,mrtBound=false,mrtActive=false,mrtDirty=false,mrtCaptured=false,mrtResolved=false,mrtCleared=false,mrtLogged=false;
-    unsigned mrtDraws=0,mrtDegraded=0,mrtSkipMask=0;DWORD mrtPrevWrite1=15;IDirect3DVertexShader9* mrtVS=nullptr;IDirect3DPixelShader9* mrtPS=nullptr;
+    unsigned mrtDraws=0,mrtDegraded=0,mrtSkipMask=0,mrtBinds=0,mrtRun=0,mrtLongestRun=0; /* 0.3.215: binds of render target 1 this frame, the MRT draws of the current bind, the longest such run this frame */DWORD mrtPrevWrite1=15;IDirect3DVertexShader9* mrtVS=nullptr;IDirect3DPixelShader9* mrtPS=nullptr;
     unsigned patchedShaders=0,patchRejects=0,mrtShaders=0;double patchMicroseconds=0;
     bool failed=false,captured=false,maskMayBeBound=true;float maskMinZ=0,maskMaxZ=1;unsigned captures=0,maskScans=0,clears=0,readFailures=0;std::uint64_t scanEpoch=~std::uint64_t(0);
     bool check(HRESULT hr,const char* where){if(SUCCEEDED(hr))return true;if(!failed)logf("WATER disabled: %s HRESULT=0x%08lx",where,(unsigned long)hr);failed=true;return false;}
@@ -77,7 +77,7 @@ public:
     void releaseStateCache(){stateBlocks.clear();}
     // The host unbinds render target 1 before it resets or releases the device (unbindMrt); mrtBound is cleared here only to match.
     void reset(){stateBlocks.clear();drop(maskSurface);drop(depth);drop(mask);drop(rawSurface);drop(raw);drop(twin);width=height=0;twinType=D3DMULTISAMPLE_NONE;twinQuality=0;captured=false;captures=0;mrtBound=mrtActive=mrtDirty=mrtCaptured=mrtResolved=mrtCleared=false;}
-    void endFrame(){if((!captured&&!mrtCaptured)||failed)stateBlocks.clear();captured=mrtCaptured=mrtResolved=mrtDirty=mrtCleared=false;captures=maskScans=clears=readFailures=mrtDraws=mrtDegraded=0;}
+    void endFrame(){if((!captured&&!mrtCaptured)||failed)stateBlocks.clear();captured=mrtCaptured=mrtResolved=mrtDirty=mrtCleared=false;captures=maskScans=clears=readFailures=mrtDraws=mrtDegraded=mrtBinds=mrtLongestRun=0;}
     // Explicit retry only after host frame cleanup; no allocation or hot-path work.
     void recover(){if(!failed)return;reset();failed=false;logf("WATER explicit recovery requested");}
     bool hasCapturedWater()const{return (captured||mrtResolved)&&!failed;}
@@ -92,6 +92,8 @@ public:
     unsigned frameCaptures()const{return captures;}
     unsigned frameMrtDraws()const{return mrtDraws;}
     unsigned frameMrtDegraded()const{return mrtDegraded;} // planned as MRT, made as second draws
+    unsigned frameMrtBinds()const{return mrtBinds;}
+    unsigned frameMrtLongestRun()const{return mrtLongestRun;}
     unsigned frameMaskScans()const{return maskScans;}
     unsigned frameClears()const{return clears;}
     unsigned frameReadFailures()const{return readFailures;}
@@ -119,7 +121,7 @@ public:
         bool mrt=false;
         if(mrtVariants){
             std::vector<NorthlightWaterShaderPatch::Word> variant;const char* why=NorthlightWaterShaderPatch::patchMrt(reinterpret_cast<const NorthlightWaterShaderPatch::Word*>(words),count,variant);
-            if(!why&&!NorthlightWaterShaderPatch::verifyMrt(patched,variant))why="verification against the mask variant failed";
+            if(!why&&!NorthlightWaterShaderPatch::verifyMrt(reinterpret_cast<const NorthlightWaterShaderPatch::Word*>(words),count,patched,variant))why="verification against the mask variant failed";
             IDirect3DPixelShader9* made=nullptr;
             if(!why&&FAILED(d->CreatePixelShader(reinterpret_cast<const DWORD*>(variant.data()),&made)))why="CreatePixelShader refused it";
             if(why){if(mrtShaders++<8)logf("WATER MRT pixel variant skipped hash=%016llx: %s (second draw stays)",(unsigned long long)hash,why);}
@@ -258,7 +260,7 @@ public:
         if(!mrtBound){
             const HRESULT hr=d->SetRenderTarget(1,target);
             if(FAILED(hr)){mrtFail("bind render target 1",hr);return degrade(32);}
-            mrtBound=true;
+            mrtBound=true;++mrtBinds;mrtRun=0; /* 0.3.215: a new bind starts a new run */
         }
         if(!(captured||mrtCaptured)){maskMinZ=vp.MinZ;maskMaxZ=vp.MaxZ;}
         mrtCaptured=true;mrtDirty=true;
@@ -271,7 +273,7 @@ public:
         if(!mrtActive)return;
         mrtActive=false;
         d->SetPixelShader(mrtPS);d->SetVertexShader(mrtVS);d->SetRenderState(D3DRS_COLORWRITEENABLE1,mrtPrevWrite1);
-        if(drawn)++mrtDraws;
+        if(drawn){++mrtDraws;if(++mrtRun>mrtLongestRun)mrtLongestRun=mrtRun;}
     }
     // Once per frame, before the effects read the mask and after render target 1 was unbound: the multisampled twin is resolved into the data texture, the mask is cleared
     // (unless a second draw already did) and one full-screen pass decodes the data into it. False: no MRT data this frame (a failure disables the MRT path for the session).

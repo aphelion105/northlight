@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <cstdint>
 #include <cstddef>
 #include <cstring>
@@ -176,6 +177,27 @@ constexpr float kMrtCover=0.003f; // the consumers' coverage threshold: they tes
 // Words patchMrt() adds to patch()'s result for a pixel shader: 6 (def) - 7 (the mask suffix) + 18 (the MRT suffix).
 constexpr std::size_t kMrtExtraWords=17;
 inline Word floatBits(float f){Word b;std::memcpy(&b,&f,4);return b;}
+// 0.3.215 (water MRT): the def and the suffix of the MRT variant, built here only, so patchMrt() and verifyMrt() cannot drift apart.
+// K = (.003, 0, 1, 0). spare.x = .003 - alpha is negative exactly when alpha > .003; cmp keeps its second operand where the first is >= 0 (no cover) and its third where it is negative.
+constexpr std::size_t kMrtDefWords=6,kMrtSuffixWords=18;
+inline void mrtDef(unsigned constant,Word* out) {
+    const Word def[kMrtDefWords]={0x05000051,dst(2,constant),floatBits(kMrtCover),floatBits(0.f),floatBits(1.f),floatBits(0.f)};
+    std::copy(def,def+kMrtDefWords,out);
+}
+inline void mrtSuffix(unsigned spare,unsigned constant,unsigned kind,unsigned tex,Word* out) {
+    const Word suffix[kMrtSuffixWords]={0x02000001,dst(8,0),src(0,spare),                                 // mov oC0, spare
+        0x03000003,dst(0,spare,1),src(2,constant,0x00),src(0,spare,0xff),                                 // sub spare.x, K.xxxx, spare.wwww
+        0x04000058,dst(8,1,1),src(0,spare,0x00),src(2,constant,0x55),src(kind,tex,0xff),                  // cmp oC1.x, spare.xxxx, K.yyyy, varying.wwww
+        0x04000058,dst(8,1,14),src(0,spare,0x00),src(2,constant,0x55),src(2,constant,0xaa),               // cmp oC1.yzw, spare.xxxx, K.yyyy, K.zzzz
+        0x0000ffff};
+    std::copy(suffix,suffix+kMrtSuffixWords,out);
+}
+// The first free constant register of the original (below c64, c32 for ps_2_0), or the limit when none is.
+inline unsigned mrtConstant(const Analysis& a) {
+    unsigned constant=0;const unsigned limit=a.major==3?64:32;
+    while(constant<limit&&a.isUsed(2,constant))++constant;
+    return constant;
+}
 // The pixel variant for the game's own water draw. Same rejections as patch(), plus: pixel shaders only,
 // no relative addressing (a def'd constant could be read through it), a free constant register below
 // c64 (c32 for ps_2_0) and at least one DCL. Python: patch_mrt().
@@ -184,33 +206,27 @@ inline const char* patchMrt(const Word* w,std::size_t count,std::vector<Word>& o
     if(a.vertex)return "vertex shaders keep the mask variant";
     if(a.relative)return "relative addressing";
     if(a.declEnd==1)return "no declarations";
-    unsigned constant=0;const unsigned limit=a.major==3?64:32;
-    while(constant<limit&&a.isUsed(2,constant))++constant;
-    if(constant==limit)return "no free constant";
-    const unsigned spare=a.spare,kind=a.kind,tex=a.tex;
-    // K = (.003, 0, 1, 0). spare.x = .003 - alpha is negative exactly when alpha > .003; cmp keeps its second
-    // operand where the first is >= 0 (no cover) and its third where it is negative.
-    const Word suffix[]={0x02000001,dst(8,0),src(0,spare),                                                // mov oC0, spare
-        0x03000003,dst(0,spare,1),src(2,constant,0x00),src(0,spare,0xff),                                 // sub spare.x, K.xxxx, spare.wwww
-        0x04000058,dst(8,1,1),src(0,spare,0x00),src(2,constant,0x55),src(kind,tex,0xff),                  // cmp oC1.x, spare.xxxx, K.yyyy, varying.wwww
-        0x04000058,dst(8,1,14),src(0,spare,0x00),src(2,constant,0x55),src(2,constant,0xaa),               // cmp oC1.yzw, spare.xxxx, K.yyyy, K.zzzz
-        0x0000ffff};
+    const unsigned constant=mrtConstant(a);
+    if(constant==(a.major==3?64u:32u))return "no free constant";
+    Word suffix[kMrtSuffixWords],def[kMrtDefWords];mrtSuffix(a.spare,constant,a.kind,a.tex,suffix);mrtDef(constant,def);
     std::vector<Word>& out=a.out;
     out.erase(out.begin()+std::ptrdiff_t(a.end));
-    out.insert(out.end(),suffix,suffix+std::size(suffix));
-    const Word decl[]={0x0200001f,a.major==3?0x80070005u:0x80000000u,dst(kind,tex)};
+    out.insert(out.end(),suffix,suffix+kMrtSuffixWords);
+    const Word decl[]={0x0200001f,a.major==3?0x80070005u:0x80000000u,dst(a.kind,a.tex)};
     out.insert(out.begin()+std::ptrdiff_t(a.declEnd),decl,decl+3);
-    const Word def[]={0x05000051,dst(2,constant),floatBits(kMrtCover),floatBits(0.f),floatBits(1.f),floatBits(0.f)};
-    out.insert(out.begin()+std::ptrdiff_t(a.first),def,def+6);
+    out.insert(out.begin()+std::ptrdiff_t(a.first),def,def+kMrtDefWords);
     output.swap(out);return nullptr;
 }
-// The runtime identity check of an MRT variant (see the scheme in water_renderer.h): `mask` is patch() of
-// the same original, already proven against its recorded hash, so the original bytes are the known shader.
-// The MRT variant must be exactly that proven program with (1) one def inserted after the leading comments
-// and defs, and (2) the two-MOV mask suffix replaced by the MRT suffix. Anything else is a transform bug.
-inline bool verifyMrt(const std::vector<Word>& mask,const std::vector<Word>& mrt) {
+// The runtime identity check of an MRT variant (see the scheme in water_renderer.h): `original` is the bytecode the mask variant `mask` (= patch() of it) was proven
+// against by its recorded hash. The MRT variant must be exactly that proven program with (1) one def inserted after the leading comments and defs, and (2) the two-MOV
+// mask suffix replaced by the MRT suffix. 0.3.215: the def and the suffix are rebuilt from the original's analysis (the spare temporary, the varying and the constant
+// register are free in the original, the constant is the first free one) with the builders patchMrt() uses, and compared word for word. Anything else is a transform bug.
+inline bool verifyMrt(const Word* original,std::size_t count,const std::vector<Word>& mask,const std::vector<Word>& mrt) {
     if(mrt.size()!=mask.size()+kMrtExtraWords||mask.size()<8||mrt.size()<8)return false;
     if(mrt.back()!=0x0000ffff||mask.back()!=0x0000ffff||mrt[0]!=mask[0])return false;
+    Analysis a;if(analyse(original,count,a)||a.vertex||a.relative||a.declEnd==1)return false;
+    const unsigned constant=mrtConstant(a);
+    if(constant==(a.major==3?64u:32u)||a.isUsed(2,constant)||a.isUsed(0,a.spare)||a.isUsed(a.kind,a.tex))return false;
     std::size_t first=1; // the def goes where the mask variant's leading comments/defs end
     while(first<mask.size()) {
         const unsigned op=mask[first]&65535;
@@ -218,12 +234,15 @@ inline bool verifyMrt(const std::vector<Word>& mask,const std::vector<Word>& mrt
         else if(op==81||op==48||op==47)first+=1+((mask[first]>>24)&15);
         else break;
     }
-    if(first+6>mrt.size()||mrt[first]!=0x05000051)return false;
     const std::size_t bodyEnd=mask.size()-7; // the mask suffix (two MOVs and END) is 7 words
     // mask[0..first) | def (6) | mask[first..bodyEnd) | MRT suffix (18)
+    if(first+kMrtDefWords>mrt.size()||first>bodyEnd||mrt.size()!=bodyEnd+kMrtDefWords+kMrtSuffixWords)return false;
     for(std::size_t i=0;i<first;++i)if(mrt[i]!=mask[i])return false;
-    for(std::size_t i=first;i<bodyEnd;++i)if(mrt[i+6]!=mask[i])return false;
-    return mrt.size()==bodyEnd+6+18;
+    for(std::size_t i=first;i<bodyEnd;++i)if(mrt[i+kMrtDefWords]!=mask[i])return false;
+    Word def[kMrtDefWords],suffix[kMrtSuffixWords];mrtDef(constant,def);mrtSuffix(a.spare,constant,a.kind,a.tex,suffix);
+    for(std::size_t i=0;i<kMrtDefWords;++i)if(mrt[first+i]!=def[i])return false;
+    for(std::size_t i=0;i<kMrtSuffixWords;++i)if(mrt[bodyEnd+kMrtDefWords+i]!=suffix[i])return false;
+    return true;
 }
 // ps_2_0 that decodes the multisample-resolved render target 1 back into the mask; Python: resolve_shader().
 // s0 = the resolved data (point), r0.x = mean(cover*distance), r0.y = mean cover. Less than half of the samples

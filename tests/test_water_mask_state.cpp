@@ -466,6 +466,13 @@ static void mrtPath(){
     {MrtRun m;m.game();m.run.b.refuseColorFill=true;const auto before=m.run.b.snapshot();std::vector<std::string> trace;m.run.b.trace=&trace;
     assert(m.begin());m.run.b.trace=nullptr;assert(has(trace,"SetRenderTarget(0)")&&has(trace,"Clear")&&m.run.b.s.rt[0]==m.run.mainRT&&m.events(5)==1);
     m.water.endMrt(true);m.water.unbindMrt();assert(m.run.b.snapshot()==before);}
+    // 4b. 0.3.215: the bind and run counters: a run is the MRT draws made under one bind of render target 1, the longest run is kept per frame.
+    {MrtRun m;m.game();assert(m.water.frameMrtBinds()==0&&m.water.frameMrtLongestRun()==0);
+    assert(m.begin());m.water.endMrt(true);assert(m.begin());m.water.endMrt(true);assert(m.begin());m.water.endMrt(true);m.water.unbindMrt();
+    assert(m.water.frameMrtBinds()==1&&m.water.frameMrtLongestRun()==3&&m.water.frameMrtDraws()==3);
+    assert(m.begin());m.water.endMrt(true);m.water.unbindMrt();
+    assert(m.water.frameMrtBinds()==2&&m.water.frameMrtLongestRun()==3&&m.water.frameMrtDraws()==4);
+    m.water.endFrame();assert(m.water.frameMrtBinds()==0&&m.water.frameMrtLongestRun()==0);}
     // 5. Failures leave the second-draw pass: no resources, then no MRT plan for the session; a failing resolve likewise; state untouched.
     {MrtRun m;m.game();m.run.b.failCreate=true;const auto before=m.run.b.snapshot();assert(!m.begin()&&m.run.b.snapshot()==before);m.run.b.failCreate=false;
     assert(m.plan()==NorthlightWaterRenderer::Plan::Redraw&&!m.begin());}
