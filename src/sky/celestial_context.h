@@ -79,10 +79,12 @@ inline bool decode(const Snapshot& s,const float* camera,const float* direct,Con
     out=candidate;return true;
 }
 
-// Renderer sun light by elevation (sine): full with the centre on or above the horizon, 0 one radius below.
+// Centre depth (in sun radii) under the horizon at which the disc is 95% hidden: the sun keeps full brightness to here.
+inline constexpr float SunFullDepth=.8f;
+// Renderer sun light by elevation (sine): full until the disc is 95% below the horizon, 0 one radius below.
 inline float sunLight(float elevationSine,float angularRadius){
     const float r=std::sin(angularRadius>0&&std::isfinite(angularRadius)?angularRadius:.0211f);
-    return smooth((elevationSine+r)/r);
+    return smooth((elevationSine+r)/((1-SunFullDepth)*r));
 }
 // Lowest elevation (sine, 2 deg) of the sun's light direction: a grazing light would stretch shadows to infinity.
 inline constexpr float MinLightElevation=.0349f;
@@ -101,8 +103,8 @@ inline void applyRendererPolicy(Context& c,const float* direct){
     c.sun.emission=3.5f;c.moon.emission=1.1f;
     const float tint[2][3]={{1,.96f,.88f},{.94f,.97f,1}};
     for(unsigned i=0;i<3;++i){c.sun.tint[i]=tint[0][i];c.moon.tint[i]=tint[1][i];}
-    // The sun gives full light (rays, shadows) while its centre is above the horizon and goes out as the disc sinks,
-    // gone with the top limb on the horizon. It faded over 4.6 deg ABOVE the horizon: the light, shadows and rays
+    // The sun gives full light (rays, shadows) until its disc is 95% below the horizon and goes out as the rest
+    // sinks, gone with the top limb on the horizon. It faded over 4.6 deg ABOVE the horizon: the light, shadows and rays
     // were gone while the setting sun was still almost whole.
     c.sun.altitudeVisibility=sunLight(c.sun.direction[2],c.sun.angularRadius);
     c.moon.altitudeVisibility=smooth(c.moon.direction[2]/.08f);

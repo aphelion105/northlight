@@ -108,10 +108,10 @@ int main() {
             assert(sky.sunColor[k]+sky.moonColor[k]<=direct[k]+1e-6f);
         }
         const double seconds=minute*60.;
-        // 0.3.215: the sun lights fully with its centre above the horizon and goes out one radius below it; the
+        // 0.3.215: the sun lights fully until its disc is 95% below the horizon and goes out one radius below it; the
         // moon (rising at 20:50) only takes over once the sun is out. Between them (dusk) neither lights.
         const float sunZ=sky.sun.direction[2],moonZ=sky.moon.direction[2],sunR=std::sin(sky.sun.angularRadius);
-        if(sunZ>=0)assert(sky.sunWeight==1&&sky.moonWeight==0);
+        if(sunZ>=-.8f*sunR)assert(sky.sunWeight==1&&sky.moonWeight==0);   // full until the disc is 95% hidden
         else if(sunZ>-sunR+1e-4f)assert(sky.sunWeight>0);
         else if(sunZ<=-sunR)assert(sky.sunWeight==0);
         if(moonZ<=0)assert(sky.moonWeight==0);

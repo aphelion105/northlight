@@ -98,13 +98,13 @@ inline float sunDiscAlpha(float radius){const float a=std::clamp((1-radius)/.56f
 // The TAIL's visibility beyond ~3R (the core uses the disc only; see sunGlare).
 inline float occlusion(float disc,float ring,float wrap){return std::max(clamp01(disc),clamp01(wrap)*clamp01(ring));}
 
-// Ring wrap toward the horizon: full down to the sun's centre on the horizon, none once the centre is one diameter
+// Ring wrap toward the horizon: full until the disc is 95% below the horizon, none once the centre is one diameter
 // below it. The ring keeps a just-hidden sun's tail glowing; without the fade the 2-4R ring still reached the sky
 // above the far edge and the glow stayed on the horizon line ~5 deg after sunset. (0.3.215 first faded it over the
 // radius above the horizon: the glow went out too early.)
 inline float horizonGlow(float elevationSine,float sinRadius){
     if(!std::isfinite(elevationSine)||!(sinRadius>0))return 0;
-    return smoothstep(-2*sinRadius,0,elevationSine);
+    return smoothstep(-2*sinRadius,-.8f*sinRadius,elevationSine);   // full until the disc is 95% below the horizon
 }
 inline float ringWrap(float elevationSine,float sinRadius){return Wrap*horizonGlow(elevationSine,sinRadius);}
 // Equal-area annulus RingInner..RingOuter, golden-angle order like the disc taps.
