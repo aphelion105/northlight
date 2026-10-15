@@ -31,5 +31,12 @@ int main(){
     { /* a draw that moves to another cell restarts */
         Memory n;for(unsigned i=0;i<MinStreak;++i){n.observe(k,false,true);n.endFrame();}assert(n.predict(k));assert(!n.predict(key(1,100,500,other)));
     }
+    { /* saturation: 40 walkers (a new key per 1 yd step) must not starve a stationary unused NPC added later */
+        Memory n;for(unsigned f=0;f<20000;++f){for(int w=0;w<40;++w){const float r[3]={float(w*50)+f*0.3f,float(w),0};const auto q=key(0x1000+w,100,500,r);n.predict(q);n.observe(q,false,true);}n.endFrame();}
+        assert(n.size()<=MaxEntries);
+        const float st[3]={-500,-500,0};const auto q=key(0x9999,100,500,st);unsigned pred=0;
+        for(unsigned i=0;i<100;++i){pred+=n.predict(q);n.observe(q,false,true);n.endFrame();}
+        assert(pred>=75);
+    }
     std::puts("unused capture ok");return 0;
 }

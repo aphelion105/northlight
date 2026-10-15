@@ -11,6 +11,7 @@ namespace NorthlightUnusedCapture {
 constexpr unsigned Mode=1; /* 0 off, 1 predict and verify only (nothing is skipped), 2 skip the predicted capture */
 constexpr unsigned MinStreak=8,RefreshEvery=8,Stale=4; /* Stale: capture frames an entry may go unseen before it is forgotten */
 constexpr std::size_t MaxEntries=8192;
+constexpr unsigned SweepEvery=8;
 inline std::uint64_t key(std::uintptr_t shader,unsigned count,unsigned vertexTotal,const float* root){
     std::uint64_t h=14695981039346656037ull;auto mix=[&](std::uint64_t n){h=(h^n)*1099511628211ull;};
     mix(shader);mix(count);mix(vertexTotal);
@@ -38,6 +39,8 @@ public:
         if(!info)return;
         if(it==map_.end()){if(map_.size()>=MaxEntries)return;it=map_.emplace(k,Entry{}).first;}
         auto& e=it->second;if(e.streak<1000)++e.streak;e.seen=frame_;}
-    void endFrame(){++frame_;}
+    // A full sweep every SweepEvery frames drops what went unseen for more than Stale frames (walkers leave a key behind per 1 yd step).
+    void endFrame(){++frame_;
+        if(frame_%SweepEvery==0)for(auto it=map_.begin();it!=map_.end();){if(frame_-it->second.seen>Stale)it=map_.erase(it);else ++it;}}
 };
 }
