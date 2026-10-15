@@ -54,9 +54,8 @@ veil_ps=body(shader,'float4 CelestialVeilPS(')
 # depth below the sky sprite) are geometry; the complement of the glare.
 assert 'float sky=(depth>=.99999994&&rawDepth>=DiscRepair.x-DiscRepair.z)?1:0;' in veil_ps
 assert 'float geometry=(1-sky*terrainVisibility(ray))*(1-sea);' in veil_ps  # visible water takes no veil
-assert 'float alpha=geometry*overEdge*glareProfile(radius);' in veil_ps
-# only over the camera's far edge (c46.z): no glow on the sea or ground the sun has set behind
-assert 'float overEdge=saturate((ray.z*rsqrt(dot(ray,ray))-DiscTerrainPolicy.z)*230);' in veil_ps
+assert 'float alpha=geometry*glareProfile(radius);' in veil_ps
+assert 'overEdge' not in veil_ps  # no far-edge cut: it drew a line across near hills
 # the core only by the disc taps' visibility; the ring (x wrap) only for the
 # core-free tail shifted out by 3R, so the profile is monotonic (no dark ring).
 profile=shader[shader.index('float glareProfile(float radius){'):shader.index('float3 glowColor(')]

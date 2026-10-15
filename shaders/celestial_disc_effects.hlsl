@@ -11,7 +11,7 @@ sampler2D DiscWater : register(s2);
 sampler2D DiscHaloVisibility : register(s3); // current halo, previous 1x1 value in visibility pass
 sampler2D DiscTerrain : register(s4); // viewer-ray coverage of already loaded terrain
 sampler2D DiscRingVisibility : register(s5); // 1x1 visibility of the 2-4R ring (sun), else the halo value
-float4 DiscTerrainPolicy : register(c46); // ready, mask extent in body radii, veil: the camera's far edge (sine)
+float4 DiscTerrainPolicy : register(c46); // ready, mask extent in body radii
 float4 DiscImage : register(c0); // inv fullWidth/Height, world depthMin, inverse depthRange
 float4 DiscProjection : register(c1); // signed X,Y,Zsign, waterReady
 row_major float4x4 DiscInverseView : register(c2);
@@ -201,10 +201,8 @@ float4 CelestialVeilPS(float2 uv:TEXCOORD0):COLOR0 {
     float geometry=(1-sky*terrainVisibility(ray))*(1-sea);
     float2 local=float2(dot(ray,DiscRight.xyz),-dot(ray,DiscUp.xyz))/(forward*DiscDirection.w);
     float radius=length(local);
-    // Only over the camera's far edge (c46.z): under it lie the sea and the ground the sun has set behind, and a glow
-    // there showed under the line it set on. Full .25 deg over the edge.
-    float overEdge=saturate((ray.z*rsqrt(dot(ray,ray))-DiscTerrainPolicy.z)*230);
-    float alpha=geometry*overEdge*glareProfile(radius);
+    // No cut at the camera's far edge: it drew a sharp line across a near hill. The sea under the edge takes no veil (above).
+    float alpha=geometry*glareProfile(radius);
     clip(alpha-.001);
     return float4(outputColor(glowShoulder(alpha,glowColor(radius))),alpha);
 }

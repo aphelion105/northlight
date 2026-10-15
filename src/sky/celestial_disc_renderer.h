@@ -477,7 +477,6 @@ public:
         c[12][2]*=veil;c[47][3]*=veil;
         c[10][0]=0; // SRGBWRITE off: encoded output, like the composite before it
         const bool ring=ringWritten&&ringFrame==frames;c[48][3]=ring?NorthlightCelestialGlow::ringWrap(g.disc.direction[2],std::sin(std::atan(g.disc.tangentRadius)),horizonSine):0.f;
-        c[46][2]=horizonSine; // the veil stays over the far edge: no glow on the sea or the ground under it
         if(!(veil>0)||!(c[12][2]+c[47][3]>0)){++veilStats.skipped;return false;}
         if(!veilPS&&!check(d->CreatePixelShader(kCelestialVeilPSShader,&veilPS),"veil shader"))return false;
         IDirect3DTexture9* halo=haloVisibility[0][haloIndex[0]];
