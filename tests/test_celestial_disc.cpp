@@ -95,7 +95,11 @@ int main(int argc,char** argv){
         assert(std::fabs(a)<1e-5&&std::fabs(b)<1e-5&&std::fabs(c)<1e-5&&std::fabs(r-1)<1e-5&&std::fabs(u-1)<1e-5);
         assert(d.opacity>0&&d.opacity<=1);++cases;
     }
-    float horizon[3]={1,0,0};assert(!prepare(horizon,white,1,.02,d));horizon[2]=NAN;assert(!prepare(horizon,white,1,.02,d));
+    // Sets by its diameter: full on the horizon and until the top limb nears it, gone one diameter below.
+    float horizon[3]={1,0,0};assert(prepare(horizon,white,1,.02,d)&&d.opacity==1);
+    const float sr=std::sin(.02f);float limb[3]={std::sqrt(1-.81f*sr*sr),0,-.9f*sr};assert(prepare(limb,white,1,.02,d)&&d.opacity==1);
+    float below[3]={std::sqrt(1-4*sr*sr),0,-2*sr};assert(!prepare(below,white,1,.02,d));
+    horizon[2]=NAN;assert(!prepare(horizon,white,1,.02,d));
     float zenith[3]={0,0,1};assert(prepare(zenith,white,1,.02,d));float inverse[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};int bounds[4];
     assert(screenBounds(d,inverse,1,1,1,1920,1080,bounds));assert(bounds[0]<960&&bounds[2]>960&&bounds[1]<540&&bounds[3]>540);
     assert(bounds[2]-bounds[0]<50&&bounds[3]-bounds[1]<30);assert(!screenBounds(d,inverse,1,1,-1,1920,1080,bounds));
