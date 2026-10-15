@@ -2,7 +2,7 @@
 # northlight-test: requires=cxx,world-cache
 """Celestial terrain mask (celestial_terrain.h): the mask matrix and frustum (rays, far mountains, near
 plane, invalid input), and the 0.3.175 merged mask draws: contiguous same-page runs against per-batch
-submission on real world-cache terrain pages (Stormwind, Elwynn, Stranglethorn) and random mask
+submission on real world-cache terrain pages (Stormwind, Elwynn, Stranglethorn, Tanaris) and random mask
 frusta, with the gap and page-crossing counterfactuals, plus the renderer wiring (the per-generation
 terrain list rebuilt at the mesh commit only, merged DIPs, the counters). Native clang++, plain and
 ASan/UBSan. No game or GPU."""

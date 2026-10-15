@@ -23,6 +23,7 @@ static bool cornerReject(V lo,V hi,const float* m){
     return std::any_of(outside,outside+6,[](bool v){return v;});
 }
 static void realPages(const std::string& root);
+static void lowSun(const std::string& root);
 static void syntheticRuns();
 static void reuseShift();
 int main(int argc,char** argv){
@@ -63,7 +64,7 @@ int main(int argc,char** argv){
     assert(retained>0);
     std::printf("PASS celestial terrain: %u perspective/ray/culling cases, %u retained random boxes; far mountains, behind camera, near-plane crossing and invalid input checked\n",cases,retained);
     syntheticRuns();
-    if(argc>1)realPages(argv[1]);
+    if(argc>1){realPages(argv[1]);lowSun(argv[1]);}
 }
 // ---- 0.3.175 S1: merged mask draws ------------------------------------------------------------
 namespace P=NorthlightWorldMeshPages;
@@ -119,26 +120,54 @@ static void syntheticRuns(){
     assert(e.runs==2&&e.accepted==3&&c.runs==1&&!(exact==page)); /* the page-crossing counterfactual draws other geometry */
     std::puts("PASS mask runs (synthetic): contiguous same-page batches merge, a page boundary ends a run (counterfactual differs)");
 }
+// Loads the near scenes and the far terrain around c the way the renderer's mesh commit does, and plans the pages.
+static bool loadPlan(const std::string& root,NorthlightGI::Vec3 c,const std::vector<std::string>& nearFiles,const std::vector<std::string>& farFiles,P::Plan& plan){
+    using namespace NorthlightGI;std::string error;WorldScene local,far;
+    assert(loadInstancedScenes(nearFiles,root+"/models",c-Vec3(288,288,320),c+Vec3(288,288,320),local,error));
+    const float radius=NorthlightShadowTerrain::Radius;
+    assert(loadInstancedScenes(farFiles,root+"/models",c-Vec3(radius,radius,radius),c+Vec3(radius,radius,radius),far,error,1));
+    NorthlightWorldMesh::WorldMeshUploadPlan input;assert(NorthlightShadowTerrain::build(local,far,c,input,error));
+    assert(P::build(input,plan,error));return true;
+}
+// Low sun over the Tanaris corridor (azimuth pi/4): how many terrain triangles the per-batch (one chunk x material)
+// culling submits against the floor any finer culling could reach (each triangle's own bounds against the same frustum).
+static void lowSun(const std::string& root){
+    using namespace NorthlightGI;const Vec3 c{-7177,-3785,20};
+    int tx=int(std::floor((17066.6666667-c.y)/533.3333333)),ty=int(std::floor((17066.6666667-c.x)/533.3333333));
+    std::vector<std::string> nearFiles,farFiles;
+    for(int y=ty-2;y<=ty+2;++y)for(int x=tx-2;x<=tx+2;++x){auto p=root+"/Kalimdor/"+std::to_string(x)+"_"+std::to_string(y)+".fg3";
+        if(!std::filesystem::exists(p))continue;farFiles.push_back(p);if(std::abs(x-tx)<=1&&std::abs(y-ty)<=1)nearFiles.push_back(p);}
+    if(nearFiles.empty())return;
+    P::Plan plan;if(!loadPlan(root,c,nearFiles,farFiles,plan))return;
+    for(float degrees:{1.f,2.f,3.f,5.f})for(const bool sun:{true,false}){
+        const float e=degrees*3.14159265f/180,a=3.14159265f/4;float direction[3]={std::cos(e)*std::cos(a),std::cos(e)*std::sin(a),std::sin(e)};const float color[]={1,1,1};
+        NorthlightCelestialDisc::Disc disc;assert(NorthlightCelestialDisc::prepare(direction,color,1,sun?.0211f:.0192f,disc));
+        float m[16];NorthlightCelestialTerrain::matrix(disc,&c.x,sun?10.f:2.5f,sun?2048:1024,m);const NorthlightCelestialTerrain::Frustum f(m);
+        std::uint64_t all=0,byBatch=0,byTriangle=0,unchunked=0,unchunkedKept=0,biggest=0;
+        for(const auto& b:plan.batches){if(!b.terrain)continue;all+=b.count;const bool keep=!f.reject(b.boundsLow,b.boundsHigh);if(b.chunkX<0){unchunked+=b.count;unchunkedKept+=keep?b.count:0;}biggest=std::max<std::uint64_t>(biggest,keep?b.count:0);if(keep)byBatch+=b.count;else continue;
+            const auto& page=plan.pages.at(b.page);
+            for(std::uint32_t t=0;t<b.count;++t){V lo{1e30f,1e30f,1e30f},hi{-1e30f,-1e30f,-1e30f};
+                for(unsigned k=0;k<3;++k){const auto& v=page.vertices.at(page.indices.at(std::size_t(b.start)+3*t+k)).position;lo={std::min(lo.x,v.x),std::min(lo.y,v.y),std::min(lo.z,v.z)};hi={std::max(hi.x,v.x),std::max(hi.y,v.y),std::max(hi.z,v.z)};}
+                byTriangle+=!f.reject(lo,hi);}}
+        assert(byTriangle<=byBatch&&byBatch<=all&&biggest<=256&&unchunked==0); /* chunk x material batches are already the finest unit: <=256 triangles, none spans chunks */
+        std::printf("  Tanaris low %s elevation %.0f deg: terrain %llu triangles, per-batch %llu, per-triangle floor %llu; unchunked %llu kept %llu, biggest kept batch %llu\n",sun?"sun":"moon",degrees,(unsigned long long)all,(unsigned long long)byBatch,(unsigned long long)byTriangle,(unsigned long long)unchunked,(unsigned long long)unchunkedKept,(unsigned long long)biggest);
+    }
+}
 // Real world-cache terrain pages (Stormwind, Elwynn, Stranglethorn): per-batch submission against merged
 // runs for random mask frusta around the fixture: identical mask bits and triangle multisets; merging
 // across index gaps differs. Prints the merge ratio (accepted batches per DIP).
 static void realPages(const std::string& root){
     using namespace NorthlightGI;std::string error;
-    struct Fixture{const char* name;Vec3 center;};std::mt19937 random(175);
+    struct Fixture{const char* name;Vec3 center;const char* map="Azeroth";};std::mt19937 random(175);
     std::uint64_t accepted=0,runs=0;unsigned frusta=0,gapDiffers=0,pageDiffers=0;
-    for(const auto& fixture:{Fixture{"Stormwind",{-8833,628,97}},Fixture{"Elwynn",{-9450,-200,65}},Fixture{"Stranglethorn",{-12400,180,30}}}){
+    for(const auto& fixture:{Fixture{"Stormwind",{-8833,628,97}},Fixture{"Elwynn",{-9450,-200,65}},Fixture{"Stranglethorn",{-12400,180,30}},Fixture{"Tanaris",{-7177,-3785,20},"Kalimdor"}}){
         const auto c=fixture.center;
         int tx=int(std::floor((17066.6666667-c.y)/533.3333333)),ty=int(std::floor((17066.6666667-c.x)/533.3333333));
         std::vector<std::string> nearFiles,farFiles;
-        for(int y=ty-2;y<=ty+2;++y)for(int x=tx-2;x<=tx+2;++x){auto p=root+"/Azeroth/"+std::to_string(x)+"_"+std::to_string(y)+".fg3";
+        for(int y=ty-2;y<=ty+2;++y)for(int x=tx-2;x<=tx+2;++x){auto p=root+"/"+fixture.map+"/"+std::to_string(x)+"_"+std::to_string(y)+".fg3";
             if(!std::filesystem::exists(p))continue;farFiles.push_back(p);if(std::abs(x-tx)<=1&&std::abs(y-ty)<=1)nearFiles.push_back(p);}
         if(nearFiles.empty()){std::printf("  %s: no world-cache tiles\n",fixture.name);continue;}
-        WorldScene local,far;
-        assert(loadInstancedScenes(nearFiles,root+"/models",c-Vec3(288,288,320),c+Vec3(288,288,320),local,error));
-        const float radius=NorthlightShadowTerrain::Radius;
-        assert(loadInstancedScenes(farFiles,root+"/models",c-Vec3(radius,radius,radius),c+Vec3(radius,radius,radius),far,error,1));
-        NorthlightWorldMesh::WorldMeshUploadPlan input;assert(NorthlightShadowTerrain::build(local,far,c,input,error));
-        P::Plan plan;assert(P::build(input,plan,error));
+        P::Plan plan;if(!loadPlan(root,c,nearFiles,farFiles,plan))return;
         std::vector<std::uint32_t> list;for(std::uint32_t i=0;i<plan.batches.size();++i)if(plan.batches[i].terrain)list.push_back(i);
         std::vector<std::uint32_t> everything(plan.batches.size());for(std::uint32_t i=0;i<everything.size();++i)everything[i]=i;
         std::uniform_real_distribution<float> azimuth(0,6.2831853f),elevation(.004f,.35f),offset(-40,40),halo(0,1);
