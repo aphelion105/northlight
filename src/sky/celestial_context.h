@@ -82,15 +82,17 @@ inline bool decode(const Snapshot& s,const float* camera,const float* direct,Con
 
 // The light passes from the sun to the moon where they cross under the horizon (about -9 deg at 20:41) and back
 // at dawn (06:00), crossfaded over this much elevation difference (sine, 1.5 deg: some 20 s at the crossing). Both
-// share one azimuth and light from 2 deg at the lowest, so the shadows do not turn at the handover.
+// share one azimuth and light from 6 deg at the lowest, so the shadows do not turn at the handover.
 inline constexpr float HandoverWidth=.0262f;
 // A sun 4.6 deg up keeps the day's light whatever the moon does (the orbit never has both up).
 inline float sunShare(float sunZ,float moonZ){
     if(!std::isfinite(sunZ)||!std::isfinite(moonZ))return 0;
     return std::max(smooth((sunZ-moonZ)/HandoverWidth+.5f),smooth(sunZ/.08f));
 }
-// Lowest elevation (sine, 2 deg) of a light direction: a grazing light would stretch shadows to infinity.
-inline constexpr float MinLightElevation=.0349f;
+// Lowest elevation (sine, 6 deg) of a light direction: a grazing light would stretch shadows to infinity. At 2 deg
+// the near shadow map reached so far toward the light that a moving camera pulled 150-260 model replays into it
+// (4-5 ms GPU on DXVK) instead of about 30; 6 deg shadows are a third as long.
+inline constexpr float MinLightElevation=.1045f;
 inline void clampLightElevation(float* direction){
     if(!(direction[2]<MinLightElevation))return;
     const float h=std::sqrt(direction[0]*direction[0]+direction[1]*direction[1]),k=h>0?std::sqrt(1-MinLightElevation*MinLightElevation)/h:0.f;
