@@ -4008,6 +4008,7 @@ public:
         if(effects.gi)d->SetTexture(8,probePrev); /* 0.3.197: WorldGI reads the previous SH on s8 (LightingBuffer is not read here); null without the texture, moment.w is then None */
         if(effects.gi&&!check(quad(w/2,h/2),"world GI pass"))return false;
         d->SetTexture(8,textures[8]); /* 0.3.197: restore the frame-start binding */
+        if(profile)profile->mark("GI"); /* task 43: the GI pass alone; the lamp batches are LocalLights */
         if(localDirectCount&&debug==0){
             d->SetPixelShader(localDirectPS);d->SetRenderState(D3DRS_SCISSORTESTENABLE,NorthlightLocalLightScissor::Enabled);
             d->SetTexture(12,baselineLight); /* sun visibility (baseline alpha); the temporal pass rebinds it anyway */
@@ -4021,7 +4022,7 @@ public:
             }
             d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);
         }
-        if(profile)profile->mark("GI");bucket(NorthlightEffectsBuckets::GI);d->SetRenderState(D3DRS_COLORWRITEENABLE,15);
+        if(profile)profile->mark("LocalLights");bucket(NorthlightEffectsBuckets::GI);d->SetRenderState(D3DRS_COLORWRITEENABLE,15);
         if(debug==0&&pointReady){
             renderPointLighting(depth,waterMask,w,h,nearZ,farZ,minZ,maxZ);
             // Optional pass temporarily owns PS c0..9 and s0..2. Restore the
@@ -4034,6 +4035,8 @@ public:
             }
             d->SetRenderState(D3DRS_COLORWRITEENABLE,15);
         }
+        // Task 43: the old PointLighting interval in three marks: PointLight (the shadowed point lamp), RemovalSmooth, TemporalLight.
+        if(profile)profile->mark("PointLight");
         {   // Temporal stabilization: light + history -> temporalLight[cur] (MRT with view distance).
             const unsigned cur=temporalIndex,prev=1-temporalIndex;
             d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE);d->SetRenderState(D3DRS_COLORWRITEENABLE,15);
@@ -4048,6 +4051,7 @@ public:
             if(!check(d->SetRenderTarget(0,smoothSurface),"removal smoothing target"))return false;
             const bool removalDrawn=c[30][1]>0; // no drawn source: smoothRemoval would be a pure copy, TemporalLight reads the raw light
             if(removalDrawn){d->SetPixelShader(removalPS);if(!check(quad(w/2,h/2),"removal smoothing pass"))return false;}
+            if(profile)profile->mark("RemovalSmooth");
             if(!check(d->SetRenderTarget(0,temporalLightSurface[cur]),"temporal light target")||!check(d->SetRenderTarget(1,temporalDepthSurface[cur]),"temporal depth target"))return false;
             d->SetRenderState(D3DRS_COLORWRITEENABLE1,15);
             // 0.3.171: LightHistory (s14) is read bilinearly at the unrounded reprojection; the depth history
@@ -4061,7 +4065,7 @@ public:
             d->SetRenderTarget(1,nullptr);d->SetTexture(14,nullptr);d->SetTexture(15,nullptr);d->SetTexture(9,nullptr);d->SetSamplerState(9,D3DSAMP_MINFILTER,D3DTEXF_LINEAR);d->SetSamplerState(9,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);
             temporalIndex=prev;temporalValid=true;memcpy(previousView,context.view,64);previousCamera=vec(context.camera);temporalMap=active->map;
         }
-        if(profile)profile->mark("PointLighting");
+        if(profile)profile->mark("TemporalLight");
         bucket(NorthlightEffectsBuckets::PointLighting);
         // Source visibility (1x1 per source, temporally smoothed): drives the
         // fog aureole when the body is behind geometry; broad scattering uses

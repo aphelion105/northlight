@@ -63,7 +63,7 @@ tb=w[w.index('{   // Temporal stabilization: light + history'):w.index('temporal
 between=w[w.index('temporalIndex=prev;temporalValid=true;'):w.index('d->SetPixelShader(finalPS);\n        /* 0.3.212 (task 32)')]
 # LocalDirect also reads the baseline alpha (sun visibility), so s12 is bound once more,
 # only inside the LocalDirect block (frames with lamps), before the temporal pass rebinds it.
-local=w[w.index('d->SetPixelShader(localDirectPS);'):w.index('if(profile)profile->mark("GI");')]
+local=w[w.index('d->SetPixelShader(localDirectPS);'):w.index('if(profile)profile->mark("LocalLights");')]
 checks['BaselineLighting (s12) bound at the temporal pass (and for LocalDirect), still bound for the composite']=(w.count('SetTexture(12,')==7 # 0.3.209 (task 29): + the actor map (tile and ActorShadow passes), the first tile level, the actor visibility (WorldLighting loop only) and its null restore
     and w.count('d->SetTexture(12,actorShadow[source]);')==2 and w.count('d->SetTexture(12,anyActorPass?actorVisibility:neutralWhite);')==1 and w.count('d->SetTexture(12,textures[12]);')==1
     and 'd->SetTexture(12,baselineLight);' in tb and 'SetTexture(12' not in between and local.count('d->SetTexture(12,baselineLight);')==1)
@@ -75,6 +75,13 @@ checks['RemovalSmooth host: shader, half-res fp16 target, release, F12 dump, dra
     and tb.index('const bool removalDrawn')<tb.index(smoothdraw) and tb.count('d->SetTexture(9,removalDrawn?smoothLight:light);')==1 and tb.count(smoothdraw)==1 and tb.index('SetRenderTarget(0,smoothSurface)')<tb.index(smoothdraw)<tb.index('SetRenderTarget(0,temporalLightSurface[cur])')
     and 'd->SetTexture(14,normalBuffer);' in tb[:tb.index(smoothdraw)] and tb.index('SetTexture(10,')<tb.index(smoothdraw) 
     and 'd->SetTexture(8,light);' in tb[:tb.index(smoothdraw)])
+# task 43: GPU profile marks split the old GI and PointLighting intervals: GI (the GI pass), LocalLights (the lamp batches),
+# PointLight (the shadowed point lamp), RemovalSmooth (its pass, or nothing without a drawn source) and TemporalLight.
+order=[w.index(n) for n in ('quad(w/2,h/2),"world GI pass"','if(profile)profile->mark("GI");','d->SetPixelShader(localDirectPS);','if(profile)profile->mark("LocalLights");',
+    'renderPointLighting(depth,waterMask,w,h,nearZ,farZ,minZ,maxZ);','if(profile)profile->mark("PointLight");',smoothdraw,'if(profile)profile->mark("RemovalSmooth");',
+    'quad(w/2,h/2),"temporal light pass"','if(profile)profile->mark("TemporalLight");','bucket(NorthlightEffectsBuckets::PointLighting);')]
+checks['GPU marks: GI, LocalLights, PointLight, RemovalSmooth, TemporalLight in pass order, each once; PointLighting gone']=(order==sorted(order)
+    and all(w.count('profile->mark("%s")'%m)==1 for m in ('GI','LocalLights','PointLight','RemovalSmooth','TemporalLight')) and 'mark("PointLighting")' not in w)
 checks['no quality key (always on): no ShadowRemovalSmoothing in settings, ini, README or the log']=all(
     'ShadowRemovalSmoothing' not in t and 'removalSmoothing' not in t for t in (q,ini,readme,r,w))
 # The emulation below mirrors these shader constants; fail loudly if the shader moves.
