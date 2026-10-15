@@ -686,7 +686,13 @@ public:
         struct Slice {std::string key;uint64_t signature=0,revision=0;CasterBounds bounds;};
         bool valid=false,instancing=false;uint64_t epoch=0;float matrix[16]{};std::vector<Slice> slices;
         bool contains(const std::string& key,uint64_t revision)const{auto found=std::lower_bound(slices.begin(),slices.end(),key,[](const Slice& s,const std::string& k){return s.key<k;});return found!=slices.end()&&found->key==key&&found->revision==revision;}
+        // contains(), and the slice's drawn bounds (all its instances in this render) enclose [low,high] within pad: the placement is in the content, not only its model.
+        bool containsBox(const std::string& key,uint64_t revision,Vec3 low,Vec3 high,float pad)const{auto found=std::lower_bound(slices.begin(),slices.end(),key,[](const Slice& s,const std::string& k){return s.key<k;});
+            if(found==slices.end()||found->key!=key||found->revision!=revision||!found->bounds.bounded)return false;const auto& b=found->bounds;
+            return low.x>=b.low.x-pad&&low.y>=b.low.y-pad&&low.z>=b.low.z-pad&&high.x<=b.high.x+pad&&high.y<=b.high.y+pad&&high.z<=b.high.z+pad;}
     };
+    // The record describes the texture the cache would hold for this matrix now: same reset epoch, instancing mode and matrix.
+    bool recordCurrent(const ContentRecord& r,const float* matrix)const {return r.valid&&r.epoch==epoch_&&r.instancing==canInstance_&&std::memcmp(r.matrix,matrix,sizeof(r.matrix))==0;}
     void record(const float* matrix,ContentRecord& out)const {
         // Assign in place: unchanged keys reuse their string storage, no allocation.
         out.valid=false;const auto& plan=prepare(matrix);if(plan.fullRebuild){out.slices.clear();return;}

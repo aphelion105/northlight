@@ -11,12 +11,25 @@ HERE=Path(__file__).resolve().parent
 src=fp.src('world_renderer.h').read_text()
 gpu=fp.src('static_shadow_gpu.h').read_text()
 # The M2 skip is its own mask: the WMO proof path (exact triangles) is untouched.
-assert 'for(auto& p:replays)p->staticProofMask=p->staticM2Mask=0;' in src
-assert 'try{prepareStaticM2();}catch(...){for(auto& p:replays)p->staticM2Mask=0;}' in src
+assert 'for(auto& p:replays){p->staticProofMask=p->staticM2Mask=0;p->staticM2Model=nullptr;}' in src
+assert 'try{prepareStaticM2();}catch(...){for(auto& p:replays){p->staticM2Mask=0;p->staticM2Model=nullptr;}}' in src
 loop=src[src.index('A rigid M2 doodad at its resting pose is in this slot'):]
 loop=loop[:loop.index('++replaySlotTested[slot]')]
 # After the actor-map decision (a doodad the actor map takes is not skipped here) and the bounds test against the cached matrix.
-assert 'StaticShadow::containsBounds(cachedMatrix,p->staticProofLow,p->staticProofHigh)' in loop and 'key.valid' in loop and 'readyModels' in loop
+assert 'StaticShadow::containsBounds(cachedMatrix,p->staticProofLow,p->staticProofHigh)' in loop and 'readyModels' in loop
+# R2: a HARD condition. The slot's cache is current for this frame (no band, no pending cycle, record describes the texture) and its content
+# record holds the model, revision and the replay's box; a failed or missing record draws the replay (no counter-only path).
+assert 'const bool cacheCurrent=key.valid&&key.staticContent.valid&&!sliceBand&&!slices.active&&(reason||!staticChanged)&&staticCasters.recordCurrent(key.staticContent,cachedMatrix);' in src
+assert 'cacheCurrent' in loop and 'p->staticM2Model' in loop and 'key.staticContent.containsBox(*p->staticM2Model,p->staticProofRevision,p->staticProofLow,p->staticProofHigh' in loop
+assert 'staticDedupUncommitted' not in loop and 'staticProofModel' not in loop  # no string copy, no counter-only fallthrough
+assert src.index('const bool cacheCurrent=')<src.index('A rigid M2 doodad at its resting pose is in this slot')
+assert 'bool containsBox(const std::string& key,uint64_t revision,Vec3 low,Vec3 high,float pad)const' in gpu and 'bool recordCurrent(const ContentRecord& r,const float* matrix)const' in gpu
+# the triangles are proven from the replay's own index list; a count that differs from the snapshot's fails closed
+assert 'p.count==p.mesh().primitiveCount&&StaticM2Dedup::covers(*model->second,all[found],world,p.mesh().indices,p.mesh().indexed,p.count)' in src
+# an injected (remembered) replay does not inherit the recycled replay's bone or skip fields
+inject=fp.src('world_rigid_memory.inl').read_text()
+inj=inject[inject.index('void rigidMemoryInject(){'):]
+assert 'p->staticProofMask=p->staticM2Mask=0;p->staticM2Model=nullptr;p->boneKnown=false;p->bone=NAN;' in inj
 assert src.index('if(inActor){actorReplays.push_back')<src.index('A rigid M2 doodad at its resting pose is in this slot')
 # Verification gates: audited rigid program, opaque, shared snapshot, placement match, vertex coverage, residency every frame.
 body=src[src.index('void prepareStaticM2(){'):src.index('uint64_t staticSignature(const float* matrix){')]

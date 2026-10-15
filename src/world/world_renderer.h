@@ -748,7 +748,7 @@ private:
         std::array<D3DVERTEXELEMENT9,MAXD3DDECLLENGTH+1> elements{};UINT elementCount=0;bool declared=false;
         const D3DVERTEXELEMENT9* declarationElements()const{return declCopy?declCopy->elements:elements.data();}
         UINT declarationCount()const{return declCopy?declCopy->count:elementCount;}
-        uint32_t staticProofMask=0,staticM2Mask=0;uint64_t staticProofRevision=0;std::string staticProofModel; /* staticM2Mask: slots whose cache holds this rigid M2 (bounds in staticProofLow/High) */
+        uint32_t staticProofMask=0,staticM2Mask=0;uint64_t staticProofRevision=0;std::string staticProofModel;const std::string* staticM2Model=nullptr; /* staticM2Model: the M2 proof's model key, owned by its StaticM2Dedup entry (valid for the frame) */ /* staticM2Mask: slots whose cache holds this rigid M2 (bounds in staticProofLow/High) */
         V staticProofLow,staticProofHigh;
         D3DPRIMITIVETYPE type;INT base;UINT min,vertices,start,count;bool indexed;
         void releaseResources(bool retainSnapshot=false){NorthlightReplayCaptureConstants::reset(*this);program=nullptr;declCopy=nullptr;prepareStamp=0;declared=false;elementCount=0;drop(shader);drop(originalShader);pointBounds={};boundsWork={};boundsPrepared.reset();drop(decl);drop(index);drop(texture);for(auto& s:stream)drop(s);shared.reset();if(!retainSnapshot)snapshot=NorthlightDrawSnapshot::Mesh{};}
@@ -2776,7 +2776,7 @@ public:
     uint64_t actorJobSerial()const{return actorJobSerial_;}
     const std::string& completedActorSceneMap()const{return actorSceneMap_;}
     void prepareStaticProofs(){
-        for(auto& p:replays)p->staticProofMask=p->staticM2Mask=0;
+        for(auto& p:replays){p->staticProofMask=p->staticM2Mask=0;p->staticM2Model=nullptr;}
         if(!staticScene||staticScene->map!=lastRequest.map||!staticCasters.stats().readyModels||replays.empty())return;
         StaticShadowDedup::Budget budget;
         try {
@@ -2804,7 +2804,7 @@ public:
                 for(const auto& t:triangles)for(auto v:t){p.staticProofLow.x=std::min(p.staticProofLow.x,v.x);p.staticProofLow.y=std::min(p.staticProofLow.y,v.y);p.staticProofLow.z=std::min(p.staticProofLow.z,v.z);p.staticProofHigh.x=std::max(p.staticProofHigh.x,v.x);p.staticProofHigh.y=std::max(p.staticProofHigh.y,v.y);p.staticProofHigh.z=std::max(p.staticProofHigh.z,v.z);}
             }
         }catch(...){for(auto& p:replays)p->staticProofMask=0;}
-        try{prepareStaticM2();}catch(...){for(auto& p:replays)p->staticM2Mask=0;}
+        try{prepareStaticM2();}catch(...){for(auto& p:replays){p->staticM2Mask=0;p->staticM2Model=nullptr;}}
     }
     // Rigid M2 doodads (static_m2_dedup.h): a captured opaque skinned draw that uses one bone of an audited palette
     // program, whose bone's world matrix is a static-cache placement (rigidStaticCovered's match) that has not moved
@@ -2838,14 +2838,14 @@ public:
                 if(found!=SIZE_MAX&&model!=staticScene->models.end()&&model->second&&declarationCache.get(p.decl,elements,count)&&p.mesh().vertexCount<=4096&&
                    NorthlightActorDeformation::worldPositions(*program,p.mesh(),elements,count,p.constants,context.inverseView,world)&&
                    StaticM2Dedup::boundsOf(world,e.low,e.high)&&StaticM2Dedup::inside(all[found],e.low,e.high)&&
-                   StaticM2Dedup::covers(*model->second,all[found],world,p.count)){
+                   p.count==p.mesh().primitiveCount&&StaticM2Dedup::covers(*model->second,all[found],world,p.mesh().indices,p.mesh().indexed,p.count)){
                     e.state=StaticM2Dedup::Entry::Matched;e.placementIndex=found;e.placement=all[found];e.revision=model->second->contentRevision;++staticM2Verified;}
                 else ++staticM2Rejected;
             }
             facts.placed=facts.modelMatches=e.state==StaticM2Dedup::Entry::Matched;
             if(facts.placed){facts.boundsInside=StaticM2Dedup::inside(e.placement,e.low,e.high);facts.cacheValid=staticCasters.coverageAt(e.placementIndex,e.placement,e.revision);}
             if(StaticM2Dedup::decide(facts)!=StaticM2Dedup::Verdict::Skip)continue;
-            p.staticM2Mask=15u;p.staticProofModel=e.placement.modelKey;p.staticProofRevision=e.revision;p.staticProofLow=e.low;p.staticProofHigh=e.high;
+            p.staticM2Mask=15u;p.staticM2Model=&e.placement.modelKey;p.staticProofRevision=e.revision;p.staticProofLow=e.low;p.staticProofHigh=e.high;
         }
     }
     uint64_t staticSignature(const float* matrix){
@@ -3572,6 +3572,9 @@ public:
                 NorthlightWorldDiagnostics::dump(d,shadowCacheSurface[slot],gpuDiagnosticDirectory,name,diagnosticCapture);
                 NorthlightWorldDiagnostics::shadowFrame(gpuDiagnosticDirectory,diagnosticCapture,source,cascade,cachedMatrix,matrices[cascade],offX,offY,dz,key.serial,key.staticSignature,reason);
             }
+            // The slot's cache is complete for cachedMatrix now: no intermediate band, no pending cycle, unchanged or just re-rendered, and its content record
+            // describes that texture (staticM2 skip, below). A failed render cleared key.valid / staticContent.valid.
+            const bool cacheCurrent=key.valid&&key.staticContent.valid&&!sliceBand&&!slices.active&&(reason||!staticChanged)&&staticCasters.recordCurrent(key.staticContent,cachedMatrix);
             const double dynamicStart=phaseNow();
             // Dynamic part of this frame: live terrain and replays into the scratch map.
             d->SetDepthStencilSurface(nullptr);if(!check(d->SetRenderTarget(0,shadowScratchSurface),"shadow scratch target"))return false;
@@ -3658,8 +3661,10 @@ public:
                        without a shared snapshot (Unsupported) it can never have bounds: unsupportedNear */
                     if(!p->pointBounds.valid&&p->captureRootValid&&NorthlightActorShadowMap::insideInset(true,p->captureRoot,p->captureRoot,actorFrameMatrix[source])){if(p->shared)side.invalidNear();else side.unsupportedNear();}}
                 // A rigid M2 doodad at its resting pose is in this slot's static cache with the same geometry (prepareStaticM2): drawn there, not twice.
-                if(p->staticM2Mask&(1u<<slot)&&key.valid&&staticCasters.stats().readyModels&&StaticShadow::containsBounds(cachedMatrix,p->staticProofLow,p->staticProofHigh)){
-                    if(key.staticContent.valid&&!key.staticContent.contains(p->staticProofModel,p->staticProofRevision))++staticDedupUncommitted;
+                // Hard condition: this slot's cache is current for this frame (rendered or unchanged, no band or rect redraw pending) and its
+                // recorded content holds the model at this revision with the replay's box inside the drawn bounds. Otherwise the replay is drawn.
+                if(p->staticM2Mask&(1u<<slot)&&p->staticM2Model&&cacheCurrent&&staticCasters.stats().readyModels&&StaticShadow::containsBounds(cachedMatrix,p->staticProofLow,p->staticProofHigh)&&
+                   key.staticContent.containsBox(*p->staticM2Model,p->staticProofRevision,p->staticProofLow,p->staticProofHigh,StaticM2Dedup::BoundsPad)){
                     ++staticM2Skipped;++replaySlotM2Skipped[slot];continue;
                 }
                 ++replaySlotTested[slot];replaySlotBounded[slot]+=p->pointBounds.valid;
