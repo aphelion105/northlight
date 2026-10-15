@@ -2394,8 +2394,11 @@ public:
         glowHueFrame=NorthlightSunHue::compute(lightSlotsValid?lightSlots:nullptr,celestialPalette(map,camera).disc[1]);
         sourceDirections[0]=vec(context.lightDirection);sourceColors[0]=vec(context.direct);
         sourceDirections[1]=V(0,0,1);sourceColors[1]=V();sourceWeights[0]=1;sourceWeights[1]=0;
+        // The setting sun lights (shadows, rays) from 2 deg at the lowest; the disc and the twilight keep its real elevation.
+        float sunLightDirection[3];std::memcpy(sunLightDirection,celestialLight.sun.direction,sizeof sunLightDirection);
+        NorthlightCelestial::clampLightElevation(sunLightDirection);
         auto resolvedSources=NorthlightCelestialSources::resolve(vec(context.lightDirection),vec(context.direct),
-            celestialValid?vec(celestialLight.sun.direction):vec(context.lightDirection),
+            celestialValid?vec(sunLightDirection):vec(context.lightDirection),
             celestialValid?vec(celestialLight.moon.direction):V(0,0,1),
             celestialValid?celestialLight.sunWeight:0.f,celestialValid?celestialLight.moonWeight:0.f);
         if(celestialValid){resolvedSources.sources[0].color=vec(celestialLight.sunColor);resolvedSources.sources[1].color=vec(celestialLight.moonColor);}

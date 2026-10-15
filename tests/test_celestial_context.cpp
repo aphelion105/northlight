@@ -108,10 +108,15 @@ int main() {
             assert(sky.sunColor[k]+sky.moonColor[k]<=direct[k]+1e-6f);
         }
         const double seconds=minute*60.;
-        if(seconds>NorthlightCelestialOrbit::kSunriseSeconds&&seconds<NorthlightCelestialOrbit::kSunsetSeconds)assert(sky.sunWeight>0&&sky.moonWeight==0);
-        else if(seconds>=NorthlightCelestialOrbit::kSunsetSeconds&&seconds<NorthlightCelestialOrbit::kMoonriseSeconds)assert(sky.moonWeight==0&&sky.sunWeight==0); // dusk: the moon rises at 20:50 (that minute itself: float clock, either side)
-        else if(seconds==NorthlightCelestialOrbit::kMoonriseSeconds)assert(sky.sunWeight==0);
-        else assert(sky.moonWeight>0&&sky.sunWeight==0);
+        // 0.3.215: the sun lights fully with its centre above the horizon and goes out one radius below it; the
+        // moon (rising at 20:50) only takes over once the sun is out. Between them (dusk) neither lights.
+        const float sunZ=sky.sun.direction[2],moonZ=sky.moon.direction[2],sunR=std::sin(sky.sun.angularRadius);
+        if(sunZ>=0)assert(sky.sunWeight==1&&sky.moonWeight==0);
+        else if(sunZ>-sunR+1e-4f)assert(sky.sunWeight>0);
+        else if(sunZ<=-sunR)assert(sky.sunWeight==0);
+        if(moonZ<=0)assert(sky.moonWeight==0);
+        else if(moonZ>.001f&&sky.sunWeight==0)assert(sky.moonWeight>0);
+        if(seconds>NorthlightCelestialOrbit::kSunsetSeconds+10*60&&seconds<NorthlightCelestialOrbit::kMoonriseSeconds)assert(sky.moonWeight==0&&sky.sunWeight==0);
         assert(std::fabs(std::tan(sky.moon.angularRadius)*24/1.75-.46176318)<1e-6);
         assert(std::fabs(std::tan(sky.sun.angularRadius)*24-.506736)<1e-6);
         const float radius=sky.moon.angularRadius,sunRadius=sky.sun.angularRadius;

@@ -79,6 +79,18 @@ inline bool decode(const Snapshot& s,const float* camera,const float* direct,Con
     out=candidate;return true;
 }
 
+// Renderer sun light by elevation (sine): full with the centre on or above the horizon, 0 one radius below.
+inline float sunLight(float elevationSine,float angularRadius){
+    const float r=std::sin(angularRadius>0&&std::isfinite(angularRadius)?angularRadius:.0211f);
+    return smooth((elevationSine+r)/r);
+}
+// Lowest elevation (sine, 2 deg) of the sun's light direction: a grazing light would stretch shadows to infinity.
+inline constexpr float MinLightElevation=.0349f;
+inline void clampLightElevation(float* direction){
+    if(!(direction[2]<MinLightElevation))return;
+    const float h=std::sqrt(direction[0]*direction[0]+direction[1]*direction[1]),k=h>0?std::sqrt(1-MinLightElevation*MinLightElevation)/h:0.f;
+    direction[0]*=k;direction[1]*=k;direction[2]=MinLightElevation;
+}
 // Extension appearance/energy policy, applied AFTER clock-based orbit evaluation. Native
 // billboard RGBA is zone sky artwork state, not celestial irradiance: the
 // midnight captures have moon z=.81 but alpha 0, 14/255 or 1 by location.
@@ -89,7 +101,10 @@ inline void applyRendererPolicy(Context& c,const float* direct){
     c.sun.emission=3.5f;c.moon.emission=1.1f;
     const float tint[2][3]={{1,.96f,.88f},{.94f,.97f,1}};
     for(unsigned i=0;i<3;++i){c.sun.tint[i]=tint[0][i];c.moon.tint[i]=tint[1][i];}
-    c.sun.altitudeVisibility=smooth(c.sun.direction[2]/.08f);
+    // The sun gives full light (rays, shadows) while its centre is above the horizon and goes out as the disc sinks,
+    // gone with the top limb on the horizon. It faded over 4.6 deg ABOVE the horizon: the light, shadows and rays
+    // were gone while the setting sun was still almost whole.
+    c.sun.altitudeVisibility=sunLight(c.sun.direction[2],c.sun.angularRadius);
     c.moon.altitudeVisibility=smooth(c.moon.direction[2]/.08f);
     c.sunWeight=c.sun.altitudeVisibility;
     c.moonWeight=(1-c.sunWeight)*c.moon.altitudeVisibility;
