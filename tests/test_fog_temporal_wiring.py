@@ -31,7 +31,7 @@ checks['HLSL: placed after FogBlur and FogClouds']=(h.index('float4 FogBlur(')<h
 checks['HLSL: c64 is the only new constant, only .y read; s14 history, s15 depth history']=(
     'float4 FogTemporalInfo : register(c64);' in h and 'FogTemporalInfo.y' in body and len(re.findall(r'FogTemporalInfo\.[xzw]',body))==0
     and 'sampler2D FogHistory : register(s14);' in h and 'DepthHistory' in body)
-checks['HLSL: no other shader reads c64.y (0.3.200: FogStepInfo, c64.z, only in WorldFog\'s interval)']=(len(re.findall(r'register\(c64\)',h))==2 and 'LocalLightFog[5].' not in h
+checks['HLSL: no other shader reads c64.y (0.3.200: FogStepInfo, c64.z, only in WorldFog\'s interval)']=(len(re.findall(r'register\(c64\)',h))==3 and re.findall(r'HorizonEdge\.\w+',re.sub(r'//[^\n]*','',h))==['HorizonEdge.w'] and 'LocalLightFog[5].' not in h
     and re.findall(r'FogStepInfo\.\w+',re.sub(r'//[^\n]*','',h))==['FogStepInfo.z'] and 'mad(FogInfo.w,1.0/48,FogStepInfo.z)' in h[h.index('float4 WorldFog('):h.index('float4 FogBlur(')])
 checks['HLSL: sky reprojects the direction only, clamp over the neighbourhood, lerp by the weight, passthrough at 0']=(
     'sky' in body and 'PreviousView[0].xyz' in body and 'min(lo,s)' in body and 'clamp(history,lo,hi)' in body and 'lerp(current,' in body

@@ -3871,7 +3871,7 @@ public:
             if(celestialValid&&uploadedFogField){const auto& field=*uploadedFogField;
                 target=NorthlightApparentHorizon::sine(context.camera,celestial.sun.direction,farZ,[&](float x,float y,float& height){
                     const auto g=NorthlightSpellFog::fieldAt(field,x,y);height=g.ground;return g.coverage>.5f;});}
-            apparentHorizon.update(target,now);
+            c[64][3]=apparentHorizon.update(target,now); /* HorizonEdge.w: the composite's haze band starts at the far edge */
         }
         // 0.3.159 shadow removal smoothing (TemporalLight smoothRemoval, c30.yzw), always on. The drawn
         // lighting passes are the sources with a positive weight (plus firstSource at weight 0), so
