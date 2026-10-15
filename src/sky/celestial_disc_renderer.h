@@ -322,7 +322,7 @@ public:
         c[12][2]=i?NorthlightCelestialGlow::MoonGlareStrength:NorthlightCelestialGlow::SunCoreWeight;c[12][3]=glare?1.f:0.f;
         // The glare reads the ring the previous frame's ring pass wrote (sun only).
         const bool ring=glare&&!i&&ringWritten&&ringFrame+1==frames;
-        if(glare)NorthlightCelestialGlow::glareConstants(glow,i,disc.tint,NorthlightCelestialGlow::sunTailWeight(disc.direction[2]),ring?NorthlightCelestialGlow::Wrap:0.f,c[47],c[48]);
+        if(glare)NorthlightCelestialGlow::glareConstants(glow,i,disc.tint,NorthlightCelestialGlow::sunTailWeight(disc.direction[2]),ring?NorthlightCelestialGlow::ringWrap(disc.direction[2],std::sin(std::atan(disc.tangentRadius))):0.f,c[47],c[48]);
         else NorthlightCelestialGlow::constants(glow,i,0.f,c[47],c[48]);
         c[12][2]*=fade;c[47][3]*=fade;
         if(glare){const float gain=weatherGain.load(std::memory_order_relaxed);c[12][2]*=gain;c[47][3]*=gain;} /* 0.3.198 (rain): x1 when dry */
