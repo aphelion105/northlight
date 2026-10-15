@@ -2,7 +2,7 @@
 # northlight-test: requires=cxx,world-cache
 """Celestial terrain mask (celestial_terrain.h): the mask matrix and frustum (rays, far mountains, near
 plane, invalid input), and the 0.3.175 merged mask draws: contiguous same-page runs against per-batch
-submission on real world-cache terrain pages (Stormwind, Elwynn, Stranglethorn) and random mask
+submission on real world-cache terrain pages (Stormwind, Elwynn, Stranglethorn, Tanaris) and random mask
 frusta, with the gap and page-crossing counterfactuals, plus the renderer wiring (the per-generation
 terrain list rebuilt at the mesh commit only, merged DIPs, the counters). Native clang++, plain and
 ASan/UBSan. No game or GPU."""
@@ -22,6 +22,10 @@ checks={
     and 'const int64_t started=NorthlightRenderThreadProbe::profiling()?QpcClock::now():0;' in draw and 'if(NorthlightDiagnostics::enabled()&&(!m.lastLog||now-m.lastLog>=10000))' in draw,
  'per-body redraw and reuse callbacks':'!terrainDraw(body,matrix))return false;' in sky and 'if(terrainReuse)terrainReuse(body);' in sky
     and '[this](unsigned body,const float* matrix){return world->drawCelestialTerrain(body,matrix);},[this](unsigned body){world->noteCelestialTerrainReuse(body);}' in r,
+ 'reuse needs a bitwise identical eye and every probed ray within ReuseTexels of the DRAWN mask':'!std::memcmp(view+12,terrainCamera[body],sizeof terrainCamera[body])' in sky
+    and 'NorthlightCelestialTerrain::rayShiftTexels(terrainMatrix[body],matrix,disc,body?MoonMaskRadius:SunMaskRadius,size)<=NorthlightCelestialTerrain::ReuseTexels' in sky and 'constexpr float ReuseTexels=' in fp.src('celestial_terrain.h').read_text(),
+ 'stored matrix and eye are written only after a successful draw, and reset with the generation':sky.index('terrainDraw(body,matrix))return false;')<sky.index('std::memcpy(terrainMatrix[body],matrix,sizeof matrix);std::memcpy(terrainCamera[body],view+12,sizeof terrainCamera[body]);terrainGeneration[body]=generation;')
+    and sky.count('std::memcpy(terrainCamera[body]')==1 and 'terrainGeneration[i]=0;std::fill(terrainCamera[i]' in sky,
 }
 for name,ok in checks.items():print(('PASS ' if ok else 'FAIL ')+name)
 assert all(checks.values())

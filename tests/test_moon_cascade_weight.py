@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # northlight-test: requires=cxx
 """0.3.211 (task 31): a zero moon weight is an exactly zero moon colour (native clang++, plain and ASan/UBSan),
-and the shadow cascades, the actor maps, water's shadow maps and the capture skip all gate a source on that
+and the shadow cascades, the actor maps and the capture skip all gate a source on that
 colour. So no moon cascade is drawn on a frame whose moon lighting weight is zero. No game or GPU."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
@@ -12,7 +12,6 @@ gate='NorthlightGI::dot(sourceColors[0],sourceColors[0])>1e-10f'
 checks={
     'cascades gate on the colour':'bool sourceActive[2]={'+gate in w,
     'actor maps follow the cascades':'if(!actorMapOn||!sourceActive[source]){actorValid[source]=false;actorHold[source].invalidate();}' in w,
-    'water skips a colourless source':'if(NorthlightGI::dot(sourceColors[source],sourceColors[source])<1e-10f)continue;' in w,
     'capture skip uses the same test':'in.sourceActive[source]=NorthlightGI::dot(sourceColors[source],sourceColors[source])>1e-10f;' in w,
     'colours are the celestial direct*weight':'resolvedSources.sources[1].color=vec(celestialLight.moonColor);' in w,
 }

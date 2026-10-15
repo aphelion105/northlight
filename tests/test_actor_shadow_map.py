@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 # northlight-test: requires=cxx
 """0.3.209 (task 29) actor shadow map: native model test of actor_shadow_map.h (clang++, plain and ASan/UBSan) and a wiring
-audit of world_renderer.h / water_renderer.h / quality_settings.h (static source analysis): the actor map is drawn in the near
+audit of world_renderer.h / quality_settings.h (static source analysis): the actor map is drawn in the near
 map's iteration (cascade 0, Render only) and reused with it, only cascade 0 skips replays inside the inset, ActorShadowDetail=0
 (or ActorShadows=0) draws nothing and WorldLighting reads a neutral white, s12 carries the actor map for the ActorShadow passes and the
-visibility for the WorldLighting loop only, the water gets the maps. No game or GPU."""
+visibility for the WorldLighting loop only (0.3.214: the water appearance pass that also received the maps is gone). No game or GPU."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
 import re,subprocess,tempfile
 HERE=Path(__file__).resolve().parent
-w=fp.src('world_renderer.h').read_text();q=fp.src('quality_settings.h').read_text();wr=fp.src('water_renderer.h').read_text()
+w=fp.src('world_renderer.h').read_text();q=fp.src('quality_settings.h').read_text()
 h=fp.src('actor_shadow_map.h').read_text()
 render=w[w.index('    bool render(IDirect3DSurface9* targetSurface'):]
 checks={}
@@ -28,8 +28,8 @@ checks['matrix from the raw pivot, before the anchored cascade pivot; off = noth
     and 'NorthlightActorShadowMap::matrix(actorCenter[source],pivot,sourceDirections[source],actorFrameMatrix[source]);' in render
     and 'if(anchorNewMap)actorCenterValid[source]=false;' in render and render.index('if(anchorNewMap)actorCenterValid[source]=false;')<raw
     and 'actorCenterValid[s]=false;' in w and 'actorCenterValid[0]=actorCenterValid[1]=false;' in w and w.count('actorCenterValid[0]=actorCenterValid[1]=false;')==1) # releaseGPU (reset() calls it)
-checks['leash: 1.5 yd, 40 yd jump re-centre; diagnostic dump s%d-actor; water actor flag under the cascades\' direction check']=('inline constexpr float Leash=1.5f;' in h and 'inline constexpr float JumpDistance=40.f;' in h
-    and 'std::snprintf(name,sizeof name,"s%d-actor",source);NorthlightWorldDiagnostics::dump(d,actorShadowSurface[source]' in w and '&&c[28][source]>0.f;' in wr)
+checks['leash: 1.5 yd, 40 yd jump re-centre; diagnostic dump s%d-actor']=('inline constexpr float Leash=1.5f;' in h and 'inline constexpr float JumpDistance=40.f;' in h
+    and 'std::snprintf(name,sizeof name,"s%d-actor",source);NorthlightWorldDiagnostics::dump(d,actorShadowSurface[source]' in w)
 checks['a source without a near map keeps no actor map']='if(!actorMapOn||!sourceActive[source]){actorValid[source]=false;actorHold[source].invalidate();}' in render
 # Pairing: invalid when the near map is redrawn, valid only after the actor draw; a reused/deferred near map continues before any of it.
 loop=render[render.index('        for(int source=0;source<2;++source){\n          if(!effects.shadows||!sourceActive[source])continue;'):]
@@ -92,11 +92,6 @@ checks['resources: maps, tiles and visibility only with the shaders (ActorShadow
     and 'void releaseActorTargets(){for(auto& t:actorShadow)drop(t);for(auto& t:actorShadowSurface)drop(t);for(auto& t:actorTiles)drop(t);for(auto& t:actorTilesSurface)drop(t);drop(actorTilesMid);drop(actorTilesMidSurface);drop(actorVisibility);drop(actorVisibilitySurface);drop(actorShadowPS);drop(actorTilesPS);}' in w
     and 'releaseActorTargets();drop(neutralWhite);' in w and '*static_cast<DWORD*>(lock.pBits)=0xffffffffu;neutralWhite->UnlockRect(0);' in w
     and 'nearShadow[s].invalidate();actorValid[s]=false;' in w)
-checks['water: maps on s8/s9, ActorMatrix c29..c36, ActorShadowInfo c37, filled from the stored matrices']=(
-    'IDirect3DTexture9* actorShadows[2]={};' in wr and 'float actorShadowMatrices[2][16]={};' in wr and 'bool actorShadowValid[2]={};' in wr
-    and 'float c[38][4]={}' in wr and 'memcpy(c[29+source*4],context.actorShadowMatrices[source],64)' in wr and 'c[37][2]=1.f/1024;' in wr and 'SetPixelShaderConstantF(0,c[0],38)' in wr
-    and 'context.sourceShadows[1][1],context.actorShadows[0],context.actorShadows[1]};' in wr and 'for(unsigned i=0;i<10;++i){d->SetTexture(i,textures[i]);' in wr
-    and 'out.actorShadows[source]=actorShadow[source];memcpy(out.actorShadowMatrices[source],actorMatrices[source],64);out.actorShadowValid[source]=true;' in w)
 # Hysteresis hold and the near-first bounds order: wired once, gated diagnostics, shown on the actor map log line.
 hold=fp.src('actor_side_hold.h').read_text();job=fp.src('replay_bounds_job.h').read_text();near=fp.src('replay_bounds_near.h').read_text();point=fp.src('world_point_rendering.inl').read_text()
 checks['hold: per-source table, begun with the diagnostics flag (or invalidated when the pass does not run); skinned casters take the root or the valid bounds centre as identity, others today\'s rule']=(

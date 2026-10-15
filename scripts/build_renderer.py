@@ -34,9 +34,6 @@ def main():
     world_manifest = json.loads((SHADERS/'world-shader-build.json').read_text())
     if hashlib.sha256((SHADERS/'world_effects.hlsl').read_bytes()).hexdigest() not in json.dumps(world_manifest):
         raise SystemExit('World shader source differs from offline build.')
-    water_manifest = json.loads((SHADERS/'water-shader-build.json').read_text())
-    if hashlib.sha256((SHADERS/'water_effects.hlsl').read_bytes()).hexdigest() != water_manifest['source_sha256']:
-        raise SystemExit('Water shader source differs from offline build.')
     local_manifest = json.loads((SHADERS/'local-light-shader-build.json').read_text())
     if hashlib.sha256((SHADERS/'local_light_effects.hlsl').read_bytes()).hexdigest() != local_manifest['source_sha256']:
         raise SystemExit('Local light shader source differs from offline build.')

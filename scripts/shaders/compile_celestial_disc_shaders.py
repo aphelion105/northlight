@@ -5,7 +5,7 @@ from pathlib import Path
 sys.path[:0] = [str(Path(__file__).resolve().parents[2]), str(Path(__file__).resolve().parents[1])]  # repo root, scripts/
 import northlight_paths as fp  # noqa: E402
 from build_environment import wine_build_prefix, zig_env, ZIG
-from compile_water_shaders import validate_assembly,HERE,TOOLS,WINE_ROOT
+from compile_world_shaders import validate_assembly,HERE,TOOLS,WINE_ROOT
 def main():
     source=fp.SHADERS/'celestial_disc_effects.hlsl';digest=hashlib.sha256(source.read_bytes()).hexdigest()
     env=zig_env();compiler=HERE/'compile_celestial_disc_tool.exe'

@@ -22,6 +22,28 @@ inline void matrix(const NorthlightCelestialDisc::Disc& disc,const float* camera
         out[12+col]-=camera[row]*out[row*4+col];
     out[14]-=Near*depth;
 }
+// A quarter texel of the 2048 sun mask is ~5e-5 rad, far below a screen pixel; the body drifts about a quarter
+// texel per second, so a still eye redraws about every second or less instead of every frame.
+constexpr float ReuseTexels=.25f;
+// Largest mask displacement in texels between two matrices from matrix() for rays from the SAME eye. The x, y, w
+// clip terms are t*(M3.r) for p=camera+t*r (the translation row cancels them), so uv does not depend on t.
+// Translation is ignored by design: the caller compares the eye separately. Non-finite or w<=0 gives +infinity.
+inline float rayShiftTexels(const float* drawn,const float* current,const NorthlightCelestialDisc::Disc& disc,float extent,unsigned size){
+    const float inf=std::numeric_limits<float>::infinity();const double reach=double(disc.tangentRadius)*extent;double worst=0; // doubles: the matrix terms cancel, floats would lose ~10% of a 0.1 texel
+    for(int sy=-1;sy<=1;++sy)for(int sx=-1;sx<=1;++sx){
+        double r[3];for(unsigned k=0;k<3;++k)r[k]=disc.direction[k]+reach*(sx*disc.right[k]+sy*disc.up[k]);
+        double uv[2][2];
+        for(unsigned which=0;which<2;++which){
+            const float* m=which?current:drawn;double c[3]={};
+            for(unsigned col=0;col<3;++col){const unsigned i=col==2?3:col;for(unsigned k=0;k<3;++k)c[col]+=m[k*4+i]*r[k];}
+            if(!std::isfinite(c[0])||!std::isfinite(c[1])||!std::isfinite(c[2])||!(c[2]>0))return inf;
+            uv[which][0]=c[0]/c[2];uv[which][1]=c[1]/c[2];
+        }
+        const double d=std::max(std::fabs(uv[1][0]-uv[0][0]),std::fabs(uv[1][1]-uv[0][1]))*size*.5;
+        if(!std::isfinite(d))return inf;worst=std::max(worst,d);
+    }
+    return float(worst);
+}
 // Homogeneous perspective planes. Never use the affine shadow-map culler here.
 struct Frustum {
     double planes[6][4]={};bool valid=true;

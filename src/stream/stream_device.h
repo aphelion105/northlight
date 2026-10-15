@@ -130,7 +130,7 @@ public:
     // while Northlight's own work on the replay thread leaves no state changed. Audited (0.3.192):
     //  * every multi-state mod pass runs inside a SavedState scope (D3DSBT_ALL block captured at entry and Applied at exit, plus the render
     //    targets, depth buffer and viewport restored explicitly): resolveDepth (renderer.cpp, RESZ and its dummy draw), renderEffects (AO,
-    //    composite, water, sky discs, glare, veil), the static/terrain shadow pass (world_renderer.h shadow render), celestial_disc_renderer,
+    //    composite, sky discs, glare, veil), the static/terrain shadow pass (world_renderer.h shadow render), celestial_disc_renderer,
     //    water_renderer, world_replay_probe. replay_draw_state.h (model replay), world_point_rendering.inl, static_shadow_draw_state.h and
     //    RestoreFrequency (static_shadow_gpu.h) are only called inside those scopes.
     //  * terrainShadowDraw swaps the pixel shader around one draw and sets the original back at once (renderer.cpp:669).

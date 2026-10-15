@@ -128,7 +128,7 @@ with `pe_normalized_hash.py`, which zeroes only those fields.
 After editing a shader, recompile it (Wine, compiler only; nothing touches the game):
 
 ```sh
-python3 scripts/shaders/compile_world_shaders.py   # or compile_shaders, compile_water_shaders, ...
+python3 scripts/shaders/compile_world_shaders.py   # or compile_shaders, compile_local_light_shaders, ...
 ```
 
 A compiler writes `shaders/compiled/<Entry>.bin` and `.bin.asm`, `src/generated/*_compiled_shaders.h`

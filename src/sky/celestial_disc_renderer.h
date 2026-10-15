@@ -24,19 +24,22 @@ class NorthlightCelestialDiscRenderer {
     IDirect3DTexture9* texture[2]={};IDirect3DPixelShader9* ps=nullptr;
     IDirect3DTexture9* terrainMask[2]={};IDirect3DSurface9* terrainSurface[2]={};
     IDirect3DVertexShader9* terrainVS=nullptr;IDirect3DPixelShader9* terrainPS=nullptr;
-    bool terrainReady[2]={};uint64_t terrainGeneration[2]={};float terrainMatrix[2][16]={};
+    bool terrainReady[2]={};uint64_t terrainGeneration[2]={};float terrainMatrix[2][16]={},terrainCamera[2][3]={};
     std::function<uint64_t()> terrainEpoch;
     std::function<bool(unsigned,const float*)> terrainDraw; /* (body, matrix) */
     std::function<void(unsigned)> terrainReuse; /* body: the mask was reused (diagnostics) */
-    // The mask is centered on the body, not the camera's look direction. Exact
-    // camera/body/mesh keys allow reuse across camera rotation without lag.
+    // The mask is centered on the body, not the camera's look direction. Reuse needs the same mesh generation, a
+    // bitwise identical eye and every probed ray within ReuseTexels of where the mask was DRAWN (the stored
+    // matrix and eye are not advanced on reuse, so the error never accumulates). A still eye redraws about every
+    // second or less as the body drifts; any eye move (walking, a third-person orbit or zoom) still redraws every frame.
     bool prepareTerrain(unsigned body,const NorthlightCelestialDisc::Disc& disc,const float* view){
         terrainReady[body]=false;
         const uint64_t generation=terrainEpoch?terrainEpoch():0;
         if(!generation||!terrainDraw)return true;
         const unsigned size=body?1024:2048;
         float matrix[16];NorthlightCelestialTerrain::matrix(disc,view+12,body?MoonMaskRadius:SunMaskRadius,size,matrix);
-        if(terrainMask[body]&&terrainGeneration[body]==generation&&!std::memcmp(matrix,terrainMatrix[body],sizeof matrix)){
+        if(terrainMask[body]&&terrainGeneration[body]==generation&&!std::memcmp(view+12,terrainCamera[body],sizeof terrainCamera[body])&&
+           NorthlightCelestialTerrain::rayShiftTexels(terrainMatrix[body],matrix,disc,body?MoonMaskRadius:SunMaskRadius,size)<=NorthlightCelestialTerrain::ReuseTexels){
             terrainReady[body]=true;if(terrainReuse)terrainReuse(body);return true;
         }
         SavedState saved(d);if(!saved.ok)return false;
@@ -67,7 +70,7 @@ class NorthlightCelestialDiscRenderer {
         for(unsigned k=0;k<4;++k)d->SetStreamSourceFreq(k,1);
         if(FAILED(d->SetVertexShader(terrainVS))||FAILED(d->SetPixelShader(terrainPS))||
            FAILED(d->SetVertexShaderConstantF(0,matrix,4))||!terrainDraw(body,matrix))return false;
-        std::memcpy(terrainMatrix[body],matrix,sizeof matrix);terrainGeneration[body]=generation;
+        std::memcpy(terrainMatrix[body],matrix,sizeof matrix);std::memcpy(terrainCamera[body],view+12,sizeof terrainCamera[body]);terrainGeneration[body]=generation;
         terrainReady[body]=true;return true;
     }
     IDirect3DTexture9* haloVisibility[2][2]={};IDirect3DSurface9* haloSurface[2][2]={};
@@ -167,7 +170,7 @@ public:
     NorthlightCelestialDiscRenderer(const NorthlightCelestialDiscRenderer&)=delete;
     void reset(){for(auto& s:ringSurface)drop(s);for(auto& t:ringVisibility)drop(t);drop(veilPS);ringIndex=0;ringHistory={};ringWritten=false;sunGlare=Glare{};glow=NorthlightCelestialGlow::Hue{};
         for(unsigned i=0;i<2;++i){edge[i]={};haloWritten[i]=false;haloFrame[i]=0;}
-        for(auto& t:terrainMask)drop(t);for(auto& t:terrainSurface)drop(t);drop(terrainVS);drop(terrainPS);for(unsigned i=0;i<2;++i){terrainReady[i]=false;terrainGeneration[i]=0;}skyBand={};for(auto& h:haloHistory)h={};for(auto& body:haloSurface)for(auto& s:body)drop(s);for(auto& body:haloVisibility)for(auto& t:body)drop(t);drop(haloPS);haloIndex[0]=haloIndex[1]=0;for(auto& p:earlyPlacement)p.valid=false;for(auto& t:texture)drop(t);drop(ps);observer.reset();loaded=false;failed=false;drawn=0;earlyValid=false;drawnEarly=0;earlyWidth=earlyHeight=0;glareRead=false;drawnLate=offscreenOwned=0;suppressed=suppressedPrevious=0;ownFrame=~0u;}
+        for(auto& t:terrainMask)drop(t);for(auto& t:terrainSurface)drop(t);drop(terrainVS);drop(terrainPS);for(unsigned i=0;i<2;++i){terrainReady[i]=false;terrainGeneration[i]=0;std::fill(terrainCamera[i],terrainCamera[i]+3,0.f);}skyBand={};for(auto& h:haloHistory)h={};for(auto& body:haloSurface)for(auto& s:body)drop(s);for(auto& body:haloVisibility)for(auto& t:body)drop(t);drop(haloPS);haloIndex[0]=haloIndex[1]=0;for(auto& p:earlyPlacement)p.valid=false;for(auto& t:texture)drop(t);drop(ps);observer.reset();loaded=false;failed=false;drawn=0;earlyValid=false;drawnEarly=0;earlyWidth=earlyHeight=0;glareRead=false;drawnLate=offscreenOwned=0;suppressed=suppressedPrevious=0;ownFrame=~0u;}
     // Ownership: once the renderer has drawn discs for a validated sky context,
     // the game's own sun/primary-moon billboards are skipped on later frames.
     // Zone skyboxes drawn after the native billboard hid it while the shafts

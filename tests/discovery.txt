@@ -43,6 +43,7 @@ test_draw_snapshot.py
 test_dxvk3_lock_flags.py
 test_effect_switches.py
 test_effects_buckets.py
+test_effects_cost_report.py
 test_emitter_pin_report.py
 test_entrypoints_isolated.py
 test_fast_memcmp.py
@@ -136,6 +137,7 @@ test_solar_volume.py
 test_spell_fog_proof_client.py
 test_spell_layer.py
 test_static_cache_dirty_rect.py
+test_static_m2_dedup.py
 test_static_plan_job.py
 test_storm_bands.py
 test_stormlib_build.py
@@ -163,9 +165,9 @@ test_unlisted_archive.py
 test_upload_locks.py
 test_upload_payload_release.py
 test_vs_class_cache.py
-test_water_antialias.py
 test_water_geometry.py
 test_water_mask_state.py
+test_water_mrt_wiring.py
 test_water_shader_patch.py
 test_water_shaders.py
 test_weather_detect.py
