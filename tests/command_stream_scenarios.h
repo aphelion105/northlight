@@ -306,15 +306,14 @@ static void adaptiveShadowCap(){
         cap=want;
     }
     CHECK(cap==kShadowBudgetMaxBytes&&get(s.shadowCapGrows)==4&&get(s.hotShadowEvicted)>0);
-    // pressure: the cap halves (of the base: the growth is forgotten), and thrash under pressure never grows it
+    // pressure (0.3.216): the cap is not halved and the growth is kept, and thrash under pressure never grows it further
     rig.sync();rig.core().memoryPressure.store(true);frames(d,1);rig.sync();
-    CHECK(q.pressure()&&q.shadowCap()==ShadowBudgetBytes/2&&s.shadowBytes.load()<=std::int64_t(q.shadowCap()));
+    CHECK(q.pressure()&&q.shadowCap()==kShadowBudgetMaxBytes&&s.shadowBytes.load()<=std::int64_t(q.shadowCap()));
     {const auto grows=get(s.shadowCapGrows);for(int it=0;it<3;++it){frames(d,kShadowGrowFrames);touchAll();frames(d,1);for(int k=0;k<4;++k)request();}
-     CHECK(get(s.shadowCapGrows)==grows&&q.shadowCap()==ShadowBudgetBytes/2&&s.shadowBytes.load()<=std::int64_t(q.shadowCap()));}
-    // after the pressure the cap is the base again and grows only by the thrash rule
+     CHECK(get(s.shadowCapGrows)==grows&&q.shadowCap()==kShadowBudgetMaxBytes&&s.shadowBytes.load()<=std::int64_t(q.shadowCap()));}
+    // after the pressure the cap is unchanged
     rig.core().memoryPressure.store(false);frames(d,1);rig.sync();
-    CHECK(!q.pressure()&&q.shadowCap()==ShadowBudgetBytes);
-    {const auto grows=get(s.shadowCapGrows);frames(d,kShadowGrowFrames);touchAll();frames(d,1);for(int k=0;k<8;++k)request();CHECK(get(s.shadowCapGrows)==grows+1&&q.shadowCap()==ShadowBudgetBytes+kShadowGrowStep);}
+    CHECK(!q.pressure()&&q.shadowCap()==kShadowBudgetMaxBytes);
     for(auto* b:v)b->Release();rig.sync();CHECK(s.shadowBytes.load()==0);
     rig.finish();checkClean();
 }
@@ -344,26 +343,25 @@ static void largeBufferAllowance(){
      CHECK(shadowOn(B)&&!shadowOn(A)&&get(s.dynShadowReadbacks)==rb+1&&get(s.largeShadowDrops)==dr+1&&q.largeBytes()==L&&get(s.largeShadowGrants)==2);
      ma.write(A,300,16,0x15);CHECK(!shadowOn(A)&&shadowOn(B));}   // A: B is in use this frame, A passes through (bytes still right)
     rig.sync();CHECK(ma.same(targetBytes(A))&&mb.same(targetBytes(B)));
-    // pressure while B is locked: it stays until its unlock, then goes; no re-grant under pressure
+    // 0.3.216: pressure while B is locked and after its unlock: the large shadow stays (dropping it would make every later lock of B a synchronous readback)
     frames(d,1);
     {void* p=nullptr;CHECK(B->Lock(400,32,&p,0)==D3D_OK);std::memset(p,0x31,32);std::memset(mb.bytes.data()+400,0x31,32);
      rig.sync();rig.core().memoryPressure.store(true);frames(d,1);rig.sync();
-     CHECK(q.pressure()&&shadowOn(B)&&q.largeBytes()==L);   // locked: kept
-     CHECK(B->Unlock()==D3D_OK&&!shadowOn(B)&&q.largeBytes()==0);}   // the unlock under pressure drops it
+     CHECK(q.pressure()&&shadowOn(B)&&q.largeBytes()==L);
+     CHECK(B->Unlock()==D3D_OK&&shadowOn(B)&&q.largeBytes()==L);}
     rig.sync();CHECK(mb.same(targetBytes(B)));
-    {const auto rf=get(s.relockRefused),g=get(s.largeShadowGrants);mb.write(B,500,16,0x32);mb.write(B,600,16,0x33);ma.write(A,700,16,0x16);
-     CHECK(!shadowOn(B)&&!shadowOn(A)&&q.largeBytes()==0&&get(s.largeShadowGrants)==g&&get(s.relockRefused)>=rf+2);}
+    {const auto sy=get(s.syncCalls);mb.write(B,500,16,0x32);mb.write(B,600,16,0x33);CHECK(shadowOn(B)&&get(s.syncCalls)==sy);ma.write(A,700,16,0x16);CHECK(!shadowOn(A)&&shadowOn(B));}
     rig.sync();CHECK(mb.same(targetBytes(B))&&ma.same(targetBytes(A)));
-    // pressure over: the next write re-lock grants it again
+    // pressure over: nothing changes (B kept its shadow throughout)
     rig.core().memoryPressure.store(false);frames(d,1);rig.sync();CHECK(!q.pressure());
-    {const auto g=get(s.largeShadowGrants);mb.write(B,800,16,0x34);CHECK(shadowOn(B)&&q.largeBytes()==L&&get(s.largeShadowGrants)==g+1);}
+    {const auto g=get(s.largeShadowGrants);mb.write(B,800,16,0x34);CHECK(shadowOn(B)&&q.largeBytes()==L&&get(s.largeShadowGrants)==g);}
     rig.sync();CHECK(mb.same(targetBytes(B)));
     A->Release();B->Release();rig.sync();CHECK(q.largeBytes()==0&&s.shadowBytes.load()==0);
     rig.finish();checkClean();
 }
 
 // 0.3.204: the allowance holds two large buffers (a player's client: the game's ~15.8 MB one plus an 18 MB one): both shadowed, no pass-through; a third that
-// does not fit is refused; one above kMaxLargeShadow is never a candidate; pressure drops both (a locked one at its unlock).
+// does not fit is refused; one above kMaxLargeShadow is never a candidate; pressure keeps both (0.3.216).
 static void twoLargeBuffers(){
     gTrace.clear();StreamDevice::Options opt;opt.readBackLock=&dxvk3ReadBack;
     Rig rig(true,opt);auto& q=rig.core().q;auto& s=q.stats;IDirect3DDevice9* d=rig.dev;
@@ -383,43 +381,46 @@ static void twoLargeBuffers(){
     CHECK(!shadowOn(C)&&shadowOn(A)&&shadowOn(B)&&q.largeBytes()==std::size_t(L1)+L2&&get(s.shadowRefused)==1&&get(s.largeShadowDrops)==0);
     // above kMaxLargeShadow: never a large candidate
     CHECK(d->CreateVertexBuffer(Big,D3::kUsageDynamic,0,(D3DPOOL)0,&G,nullptr)==D3D_OK&&!shadowOn(G)&&q.largeBytes()==std::size_t(L1)+L2&&get(s.largeShadowGrants)==2);
-    // pressure while B is locked: A goes at once, B at its unlock; largeBytes returns to 0
+    // 0.3.216: pressure while B is locked: both large shadows stay
     frames(d,1);
     {void* p=nullptr;CHECK(B->Lock(400,32,&p,0)==D3D_OK);std::memset(p,0x31,32);std::memset(mb.bytes.data()+400,0x31,32);
      rig.sync();rig.core().memoryPressure.store(true);frames(d,1);rig.sync();
-     CHECK(q.pressure()&&!shadowOn(A)&&shadowOn(B)&&q.largeBytes()==L2);
-     CHECK(B->Unlock()==D3D_OK&&!shadowOn(B)&&q.largeBytes()==0);}
+     CHECK(q.pressure()&&shadowOn(A)&&shadowOn(B)&&q.largeBytes()==std::size_t(L1)+L2);
+     CHECK(B->Unlock()==D3D_OK&&shadowOn(B)&&shadowOn(A)&&q.largeBytes()==std::size_t(L1)+L2);}
     rig.sync();CHECK(mb.same(targetBytes(B))&&ma.same(targetBytes(A)));
     rig.core().memoryPressure.store(false);frames(d,1);rig.sync();
     A->Release();B->Release();C->Release();G->Release();rig.sync();CHECK(q.largeBytes()==0&&s.shadowBytes.load()==0);
     rig.finish();checkClean();
 }
 
-// 0.3.216 (issue #66 follow-up): a 2.8 MiB dynamic buffer (above the halved quarter, below the full one) keeps its shadow under pressure: no pass-through, no SyncLock, the total stays within the halved cap.
-static void pressureKeepsMidSizeShadow(){
+// 0.3.216 (issue #66 follow-up): memory pressure takes no shadow away: a 2.8 MiB and a ~16 MiB dynamic buffer keep theirs over many locks, with zero sync round trips and no pass-through.
+static void pressureKeepsShadows(){
     gTrace.clear();Rig rig(true);auto& q=rig.core().q;auto& s=q.stats;
-    const UINT len=2800u<<10;IDirect3DVertexBuffer9* b=nullptr;void* p=nullptr;
-    q.setPressure(true);CHECK(len>q.shadowCap()/4&&len<=q.shadowItemLimit());
-    CHECK(rig.dev->CreateVertexBuffer(len,D3::kUsageDynamic,0,(D3DPOOL)0,&b,nullptr)==D3D_OK&&shadowOn(b)&&s.shadowBytes.load()<=std::int64_t(q.shadowCap()));
+    const UINT lens[2]={2800u<<10,15800000u};IDirect3DVertexBuffer9* b[2]={};void* p=nullptr;
+    for(int k=0;k<2;++k)CHECK(rig.dev->CreateVertexBuffer(lens[k],D3::kUsageDynamic,0,(D3DPOOL)0,&b[k],nullptr)==D3D_OK&&shadowOn(b[k]));
+    rig.sync();rig.core().memoryPressure.store(true);frames(rig.dev,2);rig.sync();CHECK(q.pressure());   // the real path: the Present applies the guard's request and releases memory
+    CHECK(q.shadowCap()==ShadowBudgetBytes&&q.texShadowCap()==TextureShadowBudgetBytes&&shadowOn(b[0])&&shadowOn(b[1]));
     const auto sync0=get(s.syncCalls),pass0=get(s.passThrough[unsigned(PassReason::NoShadow)]);
-    for(int i=0;i<50;++i){CHECK(b->Lock(0,64,&p,i?D3::kLockNoOverwrite:D3::kLockDiscard)==D3D_OK&&b->Unlock()==D3D_OK);}
-    CHECK(get(s.syncCalls)==sync0&&get(s.passThrough[unsigned(PassReason::NoShadow)])==pass0&&shadowOn(b));
-    CHECK(q.shadowItemLimit()==ShadowBudgetBytes/4);   // the item limit is not halved
-    b->Release();rig.sync();CHECK(s.shadowBytes.load()==0);
-    q.setPressure(false);rig.finish();checkClean();
+    for(int i=0;i<300;++i)for(int k=0;k<2;++k){CHECK(b[k]->Lock(0,64,&p,i?D3::kLockNoOverwrite:D3::kLockDiscard)==D3D_OK&&b[k]->Unlock()==D3D_OK);if(i%50==49)frames(rig.dev,1);}
+    frames(rig.dev,130);   // idle frames under pressure drop nothing
+    CHECK(get(s.syncCalls)==sync0&&get(s.passThrough[unsigned(PassReason::NoShadow)])==pass0&&shadowOn(b[0])&&shadowOn(b[1]));
+    CHECK(b[0]->Lock(0,64,&p,D3::kLockNoOverwrite)==D3D_OK&&b[0]->Unlock()==D3D_OK&&get(s.syncCalls)==sync0);   // a re-lock after the idle frames: still no readback
+    for(auto* x:b)x->Release();rig.sync();CHECK(s.shadowBytes.load()==0&&q.largeBytes()==0);
+    rig.core().memoryPressure.store(false);frames(rig.dev,1);rig.finish();checkClean();
 }
-// 0.3.216 (issue #66 follow-up): the sync-storm safety net lifts the halved stream caps when the syncs per frame stay high under pressure, logs it, and re-arms when the pressure ends.
-static void syncStormRelief(){
-    gTrace.clear();Rig rig(true);auto* d=rig.dev;auto& q=rig.core().q;auto& s=q.stats;
+// 0.3.216: the sync-storm detector only logs (start and end, once per ~2 s window); it lifts no cap and drops nothing.
+static std::vector<std::string> gStormLines;
+static void syncStormDetector(){
+    gTrace.clear();gStormLines.clear();StreamDevice::Options opt;opt.log=[](const char* l){gStormLines.push_back(l);};
+    Rig rig(true,opt);auto* d=rig.dev;auto& q=rig.core().q;auto& s=q.stats;
     rig.sync();rig.core().memoryPressure.store(true);frames(d,1);rig.sync();CHECK(q.pressure());
-    for(unsigned i=0;i<StreamDevice::kStormWindow+2;++i){add(s.syncCalls,StreamDevice::kStormSyncPerFrame/2);frames(d,1);}   // below the threshold: nothing happens
-    CHECK(q.pressure()&&get(s.stormReliefs)==0);
-    for(unsigned i=0;i<StreamDevice::kStormWindow+1;++i){add(s.syncCalls,StreamDevice::kStormSyncPerFrame+50);frames(d,1);}
-    CHECK(!q.pressure()&&get(s.stormReliefs)==1&&q.shadowCap()==ShadowBudgetBytes);   // relief: full caps again although the guard still asks for pressure
-    frames(d,10);CHECK(!q.pressure());
-    rig.core().memoryPressure.store(false);frames(d,1);CHECK(!q.pressure());
-    rig.core().memoryPressure.store(true);frames(d,1);rig.sync();CHECK(q.pressure()&&get(s.stormReliefs)==1);   // the next episode starts halved again
-    rig.finish();checkClean();
+    auto storm=[&](unsigned per){for(int i=0;i<30;++i){add(s.syncCalls,per);frames(d,1);}std::this_thread::sleep_for(std::chrono::milliseconds(80));};
+    auto count=[&](const char* what){unsigned n=0;for(auto& l:gStormLines)if(l.find(what)!=std::string::npos)++n;return n;};
+    for(int w=0;w<30&&!count("sync-storm begins");++w)storm(StreamDevice::kStormSyncPerFrame+100);   // ~2.4 s per 30 rounds
+    CHECK(count("sync-storm begins")==1&&get(s.syncStorms)==1&&q.pressure()&&q.shadowCap()==ShadowBudgetBytes);
+    for(int w=0;w<30&&!count("sync-storm ends");++w)storm(1);
+    CHECK(count("sync-storm ends")==1&&count("begins")==1&&q.pressure()&&get(s.syncStorms)==1);
+    rig.core().memoryPressure.store(false);frames(d,1);rig.finish();checkClean();
 }
 static void shadowCap(){
     gTrace.clear();Rig rig(true);auto& q=rig.core().q;auto& s=q.stats;
@@ -433,7 +434,7 @@ static void shadowCap(){
     CHECK(v[n]->Lock(0,64,&p,0)==D3D_OK&&v[n]->Unlock()==D3D_OK&&get(s.shadowLate)==0);
     CHECK(v[n]->Lock(0,64,&p,D3::kLockDiscard)==D3D_OK&&v[n]->Unlock()==D3D_OK&&get(s.shadowLate)==1&&s.shadowBytes.load()==std::int64_t(n-1)*(2<<20));
     v[0]=v[1]=nullptr;
-    rig.sync();q.setPressure(true);CHECK(q.shadowCap()==ShadowBudgetBytes/2&&!q.shadowAdmit(1<<20)&&s.shadowBytes.load()==std::int64_t(n-1)*(2<<20));
+    rig.sync();q.setPressure(true);CHECK(q.shadowCap()==ShadowBudgetBytes&&q.shadowAdmit(1<<20)&&s.shadowBytes.load()==std::int64_t(n-1)*(2<<20));   // 0.3.216: not halved
     q.setPressure(false);for(auto* b:v)if(b)b->Release();rig.sync();CHECK(s.shadowBytes.load()==0);   // freed with their proxies
     rig.finish();checkClean();
 }
@@ -907,18 +908,16 @@ static void memoryPressureRelease(){
     rig.sync();const auto before=rig.sd->replayerOf().memory();
     core.memoryPressure.store(true);d->Present(nullptr,nullptr,nullptr,nullptr);rig.sync();
     CHECK(q.pressure()&&s.texShadowBytes.load()<=std::int64_t(q.texShadowCap())&&s.shadowBytes.load()<=std::int64_t(q.shadowCap()));
-    CHECK(!shadowOf(0)&&!shadowOf(1)&&!shadowOf(2));   // idle for 130 frames: dropped
-    CHECK(shadowOf(4));                                  // locked: never touched (the cap allows it)
-    CHECK(rig.sd->replayerOf().memory().total()<before.total());
-    CHECK(get(s.texShadowEvicted)>0);
+    CHECK(shadowOf(0)&&shadowOf(1)&&shadowOf(2)&&shadowOf(3)&&shadowOf(4));   // 0.3.216: no shadow is dropped under pressure (a drop is a synchronous readback at the next lock)
+    CHECK(rig.sd->replayerOf().memory().total()<=before.total()&&get(s.texShadowEvicted)==0);
     // the locked ones keep working and the game reads what the real resource holds
     CHECK(vb[4]->Unlock()==D3D_OK&&tex[0]->UnlockRect(0)==D3D_OK);
     void* p=nullptr;CHECK(vb[4]->Lock(0,16,&p,D3::kLockReadOnly)==D3D_OK&&((unsigned char*)p)[0]==0x77&&((unsigned char*)p)[15]==0x77);CHECK(vb[4]->Unlock()==D3D_OK);
     CHECK(vb[0]->Lock(0,16,&p,D3::kLockReadOnly)==D3D_OK&&((unsigned char*)p)[0]==0x40&&((unsigned char*)p)[15]==0x40);CHECK(vb[0]->Unlock()==D3D_OK);   // dropped: read from the real buffer
     D3DLOCKED_RECT r2{};CHECK(tex[0]->LockRect(0,&r2,nullptr,D3::kLockReadOnly)==D3D_OK&&((unsigned char*)r2.pBits)[3]==0x5C&&((unsigned char*)r2.pBits)[1023]==0x5C);CHECK(tex[0]->UnlockRect(0)==D3D_OK);
-    // pressure over: caps back, and a DISCARD lock brings a dropped buffer's shadow back
+    // pressure over: nothing changes
     core.memoryPressure.store(false);d->Present(nullptr,nullptr,nullptr,nullptr);CHECK(!q.pressure());
-    const auto late=get(s.shadowLate);CHECK(vb[1]->Lock(0,0,&p,D3::kLockDiscard)==D3D_OK&&vb[1]->Unlock()==D3D_OK&&get(s.shadowLate)==late+1&&shadowOf(1));
+    const auto late=get(s.shadowLate);CHECK(vb[1]->Lock(0,0,&p,D3::kLockDiscard)==D3D_OK&&vb[1]->Unlock()==D3D_OK&&get(s.shadowLate)==late&&shadowOf(1));
     for(auto* t:tex)t->Release();for(auto* b:vb)b->Release();
     rig.finish();checkClean();
 }
@@ -1546,21 +1545,17 @@ static void zeroCopyRegularRingBudget(){
 }
 // Slices dropped (pressure, LRU takeover, GPU write, Release) while unlocks that read them are unreplayed: the storage is retired, not freed (the ASan build catches a read of freed memory), and freed once the replay has passed.
 static void zeroCopyRetire(UINT len=15800000){
-    {   // memory pressure at a Present: the idle large shadow (both slices) goes; no spare is allocated under pressure (the DISCARD waits instead)
+    {   // 0.3.216: memory pressure at a Present drops no shadow: the large (or regular) shadow stays with its slices, nothing is retired
         ZcRig z(len);auto& s=*z.s;z.hold();z.frame(0);z.present();z.frame(1);z.present();
         CHECK(z.held()==2u*z.L);
-        if(!z.large)z.core->frameNo+=240;   // regular-cap shadows go under pressure only when idle for 120 frames (240: keeps the frame numbering's residues)
+        if(!z.large)z.core->frameNo+=240;
         z.core->memoryPressure.store(true);z.present();   // (framesAhead 3: the third Present does not wait yet)
-        CHECK(z.q->pressure()&&!shadowOn(z.vb)&&s.retiredBytes.load()==std::int64_t(2u*z.L)&&z.held()==2u*z.L&&s.ringBytes.load()==0);   // pending readers: retired, still counted
+        CHECK(z.q->pressure()&&shadowOn(z.vb)&&s.retiredBytes.load()==0&&z.held()==2u*z.L);
         gKnobs.hold.store(false);z.verify();
-        z.present();z.rig->sync();CHECK(s.retiredBytes.load()==0&&z.held()==0);   // freed at the next Present after the replay passed
-        z.core->memoryPressure.store(false);z.present();z.rig->sync();
-        // no spare under pressure: with the shadow back (DISCARD makes one) a DISCARD against pending readers waits for them instead of allocating
-        z.w(0,8192,0x41,D3::kLockDiscard);CHECK(shadowOn(z.vb));
-        z.hold();z.w(8192,8192,0x42,D3::kLockNoOverwrite);z.core->memoryPressure.store(true);z.q->setPressure(true);
-        {const auto alloc=get(s.renameAllocs),rw=get(s.renameWaits);std::thread rel;z.releaseLater(rel);z.w(0,8192,0x43,D3::kLockDiscard);rel.join();CHECK(get(s.renameAllocs)==alloc&&get(s.renameWaits)==rw+1&&get(s.waitDrain)==1);}
+        z.present();z.rig->sync();
+        {const auto sy=get(s.syncCalls);z.w(0,8192,0x41,D3::kLockDiscard);z.w(8192,8192,0x42,D3::kLockNoOverwrite);CHECK(shadowOn(z.vb)&&get(s.syncCalls)==sy);}   // locks under pressure: no sync round trip
         z.core->memoryPressure.store(false);z.q->setPressure(false);z.verify();
-        z.vb->Release();z.rig->sync();z.present();z.rig->sync();CHECK(z.held()==0&&s.retiredBytes.load()==0);z.rig->finish();checkClean();   // (the pressure drop at the unlock retired the slice: freed at the Present)
+        z.vb->Release();z.rig->sync();z.present();z.rig->sync();CHECK(z.held()==0&&s.retiredBytes.load()==0);z.rig->finish();checkClean();
     }
     if(len>=15000000){   // LRU takeover: another large buffer takes the allowance from an idle holder (idle = frameNo moved on) whose last unlocks are unreplayed
         ZcRig z(20000000);auto& s=*z.s;IDirect3DVertexBuffer9* B=nullptr;BufModel mb(20000000);
@@ -1610,7 +1605,7 @@ static void zeroCopyPumpedLock(int mode,UINT len=15800000){
     z.verify();z.present();z.rig->sync();CHECK(s.retiredBytes.load()==0&&z.held()==0);
     z.vb->Release();z.rig->sync();z.rig->finish();checkClean();
 }
-// Memory pressure in the middle of the stream: unlocks recorded before it still read their slices, so the first DISCARD under pressure drains the current slice (one wait, reason drain); from then on DISCARD/NOOVERWRITE
+// Memory pressure in the middle of the stream: unlocks recorded before it still read their slices; 0.3.216: the first DISCARD under pressure takes a ring slice like without pressure (a wait per DISCARD would be a sync storm); from then on DISCARD/NOOVERWRITE
 // unlocks COPY into the queue (no new readers, no allocation, no wait, however many frames the replay is held); when the pressure ends zero-copy resumes. Every replayed unlock carries the bytes the game wrote.
 static void zeroCopyPressureMidStream(){
     ZcRig z(512u<<10,3);auto& s=*z.s;
@@ -1618,12 +1613,12 @@ static void zeroCopyPressureMidStream(){
     CHECK(get(s.zeroCopyUnlocks)==14&&get(s.renames)==1);
     z.core->memoryPressure.store(true);z.q->setPressure(true);   // (what the Present after the guard's flag does)
     const auto rw0=get(s.renameWaits);std::thread rel;z.releaseLater(rel);
-    z.frame(2,true);rel.join();   // the DISCARD finds the current slice busy and may allocate nothing: waits once for it
-    CHECK(get(s.renameWaits)==rw0+1&&get(s.waitDrain)==1&&get(s.renameAllocs)==1&&get(s.zeroCopyUnlocks)==14&&get(s.copyPressureUnlocks)==7);   // (the small 8th unlock of a frame is a copy anyway: not counted)
+    z.frame(2,true);rel.join();   // the DISCARD finds the current slice busy and takes a spare slice: no wait
+    CHECK(get(s.renameWaits)==rw0&&get(s.waitDrain)==0&&get(s.renameAllocs)==2&&get(s.zeroCopyUnlocks)==14&&get(s.copyPressureUnlocks)==7);   // (the small 8th unlock of a frame is a copy anyway: not counted)
     // the replay held again, several frames of cycles under pressure: all copies, never a wait
     z.hold();const auto rw=get(s.renameWaits),zc=get(s.zeroCopyUnlocks),rec=get(s.lockRecordedBytes);
     for(unsigned f=3;f<8;++f)z.frame(f,true);
-    CHECK(get(s.renameWaits)==rw&&get(s.zeroCopyUnlocks)==zc&&get(s.waitDrain)==1&&get(s.copyPressureUnlocks)==7+5*7&&get(s.lockRecordedBytes)-rec==5u*(7*8192+64)&&get(s.zcSkipPressure)==get(s.copyPressureUnlocks));
+    CHECK(get(s.renameWaits)==rw&&get(s.zeroCopyUnlocks)==zc&&get(s.waitDrain)==0&&get(s.copyPressureUnlocks)==7+5*7&&get(s.lockRecordedBytes)-rec==5u*(7*8192+64)&&get(s.zcSkipPressure)==get(s.copyPressureUnlocks));
     // pressure over: zero-copy again at the next lock
     z.core->memoryPressure.store(false);z.q->setPressure(false);
     z.frame(8,true);CHECK(get(s.zeroCopyUnlocks)==zc+7&&get(s.renameWaits)==rw);
@@ -1819,13 +1814,13 @@ static void zeroCopyOverlap(UINT len){
         gKnobs.hold.store(false);z.rig->sync();CHECK(z.m.same(targetBytes(z.vb))&&zcSliceTruth(z));
         z.vb->Release();z.rig->sync();z.rig->finish();checkClean();
     }
-    {   // (e) memory pressure: the unlock copies (zc off), but the lock still writes into a slice earlier refs read; no staging under pressure: it waits once and the bytes stay exact
+    {   // (e) memory pressure: the unlock copies (zc off), but the lock still writes into a slice earlier refs read; 0.3.216: it is staged as without pressure (no wait: a wait per lock is a sync storm) and the bytes stay exact
         ZcRig z(len,3);auto& s=*z.s;
         z.hold();z.frame(0,true);z.frame(1,true);
         z.core->memoryPressure.store(true);z.q->setPressure(true);
         std::thread rel;z.releaseLater(rel);
         z.w(8192,8192,0x61,D3::kLockNoOverwrite);rel.join();   // over frame 1's pending NOOVERWRITE ref
-        CHECK(get(s.zcOverlapLocks)==1&&get(s.zcOverlapWaits)==1&&get(s.zcOverlapWaitNs)>=30000000u&&get(s.zcSkipOverlap)==0&&get(s.copyPressureUnlocks)>=1);
+        CHECK(get(s.zcOverlapLocks)==1&&get(s.zcOverlapWaits)==0);
         z.core->memoryPressure.store(false);z.q->setPressure(false);
         gKnobs.hold.store(false);z.verify();   // (no slice check: the DISCARD of frame 1 renamed, the new slice holds only what was written since)
         z.vb->Release();z.rig->sync();z.present();z.rig->sync();CHECK(z.held()==0&&s.ringSlices.load()==0);z.rig->finish();checkClean();
@@ -1868,8 +1863,7 @@ static void zeroCopyOverlapPatchCap(){
     z.verify();CHECK(zcSliceTruth(z));
     z.vb->Release();z.rig->sync();z.rig->finish();checkClean();
 }
-// An overlapping lock inside a pumped wait (a message handler DXVK's pump dispatches): staged, no wait needed, the shadow stays. Under memory pressure (no staging) it would have to wait, which a pumped wait cannot:
-// the fallback (a staged Block with the range's current bytes, the shadow retires with its readers). Bytes exact either way.
+// An overlapping lock inside a pumped wait (a message handler DXVK's pump dispatches): staged, no wait needed, the shadow stays. 0.3.216: memory pressure no longer disables the staging, so both variants behave alike. Bytes exact.
 static void zeroCopyOverlapPumped(UINT len,bool pressure){
     ZcRig z(len,1);gZc=&z;gZcCalls=0;gZcHr=12345;auto& s=*z.s;
     z.hold();z.w(8192,8192,0x61,D3::kLockNoOverwrite);   // a real ref over [8192,16384), pending
@@ -1881,7 +1875,7 @@ static void zeroCopyOverlapPumped(UINT len,bool pressure){
     DWORD np=0;CHECK(z.d->ValidateDevice(&np)==5);pumpHook=nullptr;
     if(pressure){z.core->memoryPressure.store(false);z.q->setPressure(false);}
     CHECK(get(s.zcOverlapLocks)==1&&get(s.zcOverlapWaits)==0&&gZcCalls>=1&&gZcHr==D3D_OK);
-    CHECK(pressure?(get(s.nestedSyncs)>=1&&!shadowOn(z.vb)):(shadowOn(z.vb)&&get(s.zcOverlapStaged)==1&&get(s.zcSkipOverlap)==0));
+    CHECK(shadowOn(z.vb)&&get(s.zcOverlapStaged)==1&&get(s.zcSkipOverlap)==0);   // 0.3.216: pressure changes nothing here
     z.rig->sync();CHECK(z.m.same(targetBytes(z.vb)));if(!pressure)CHECK(zcSliceTruth(z));
     z.present();z.rig->sync();CHECK(s.retiredBytes.load()==0);
     z.vb->Release();z.rig->sync();z.rig->finish();checkClean();
@@ -2024,7 +2018,7 @@ static void textureReadbackTable(){
 }
 static void streamTests(bool threadsOnly){
     layoutIsolation();replayTimingAccounting();diagnosticsOffSkipsAudit();idlePollWakes();
-    lifetimeAndIdentity();pressureKeepsMidSizeShadow();syncStormRelief();stateKnownUnknown();locksPreserveBytes();staticBufferShadows();dynamicBufferShadows();largeBufferAllowance();twoLargeBuffers();adaptiveShadowCap();shadowCap();queriesAndSyncCensus();occlusionFlushLocal(true);occlusionFlushLocal(false);resetAndShutdown();directReplayRaw();redundantFiltering();renderTargetResetsViewport();textureShadows();textureExpressReadback();textureReadbackDiagnostics();textureExpressBehind();textureReadbackTable();statsLine();childrenOutliveTheDevice();queryProbeAndDeadQuery();initFailureFallback();cursorHandling();nestedSyncInPump();testCooperativeLevelLocal(1);testCooperativeLevelLocal(3);upDrawsAndBackpressure();snapshotTriggers();snapshotPoolNotExhausted();memoryPressureRelease();impossibleBlockIsRefusedAtOnce();smallStagedLocksUseScratch();
+    lifetimeAndIdentity();pressureKeepsShadows();syncStormDetector();stateKnownUnknown();locksPreserveBytes();staticBufferShadows();dynamicBufferShadows();largeBufferAllowance();twoLargeBuffers();adaptiveShadowCap();shadowCap();queriesAndSyncCensus();occlusionFlushLocal(true);occlusionFlushLocal(false);resetAndShutdown();directReplayRaw();redundantFiltering();renderTargetResetsViewport();textureShadows();textureExpressReadback();textureReadbackDiagnostics();textureExpressBehind();textureReadbackTable();statsLine();childrenOutliveTheDevice();queryProbeAndDeadQuery();initFailureFallback();cursorHandling();nestedSyncInPump();testCooperativeLevelLocal(1);testCooperativeLevelLocal(3);upDrawsAndBackpressure();snapshotTriggers();snapshotPoolNotExhausted();memoryPressureRelease();impossibleBlockIsRefusedAtOnce();smallStagedLocksUseScratch();
     framesAheadPacing();textureShadowSpares();frameSkipping();frameSkipReleasesPresentWait();   // 0.3.200 (frame skip)
     zeroCopyRenames();zeroCopyRingBudget();zeroCopyAdaptiveRing();zeroCopyRetire();zeroCopyPumpedLock(0);zeroCopyPumpedLock(1);
     for(UINT len:{512u<<10,2u<<20}){zeroCopyRenames(len);zeroCopyRetire(len);zeroCopyPumpedLock(0,len);zeroCopyPumpedLock(1,len);}   // 0.3.204 (task 21): the same for DYNAMIC buffers in the regular shadow cap

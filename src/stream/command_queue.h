@@ -386,9 +386,10 @@ public:
     }
     // Registered CPU shadow bytes: their own cap (shadowAdmit), not part of the queue budget.
     void addShadowBytes(std::int64_t delta){stats.shadowBytes.fetch_add(delta,std::memory_order_relaxed);}
-    std::size_t shadowCap()const{const std::size_t c=shadowCapCur_.load(std::memory_order_relaxed);return pressure_.load()?c/2:c;}   // adaptive (see ShadowBudgetBytes), halved under pressure
-    // 0.3.216 (issue #66 follow-up): the largest buffer a shadow may be made for (a quarter of the cap) is judged against the UNHALVED cap. Halved with the total, a 2.8 MiB dynamic buffer locked
-    // hundreds of times a frame lost its shadow in a pressure episode (limit 4 -> 2 MiB) and every lock became a SyncLock round trip (fps 70-140 -> 20-38). The halved total (shadowAdmit) still bounds the memory.
+    std::size_t shadowCap()const{const std::size_t c=shadowCapCur_.load(std::memory_order_relaxed);return c;}   // adaptive (see ShadowBudgetBytes); not halved under pressure (see shadowItemLimit)
+    // 0.3.216 (issue #66 follow-up): memory pressure does NOT shrink any shadow cap (buffer, large allowance, texture). A shadow that goes means the next lock of its buffer
+    // (or level) is a synchronous round trip to the replay thread, and a hundred of those per frame made the game unplayable (fps 70-140 -> 20-38) to save ~10 MiB of a stream that
+    // holds 17-24 MiB in all. Pressure still halves the queue budget and releases pooled memory, rings and spare level allocations: none of that creates a sync path.
     std::size_t shadowItemLimit()const{return shadowCapCur_.load(std::memory_order_relaxed)/4;}
     // Thrash signal (game thread, `frame` = Presents so far): one more step, if no pressure, below the maximum and past the interval. true = grew.
     bool growShadowCap(std::uint64_t frame){
@@ -396,14 +397,13 @@ public:
         if(pressure_.load()||c+kShadowGrowStep>kShadowBudgetMaxBytes||frame<shadowGrowAt_)return false;
         shadowCapCur_.store(c+kShadowGrowStep,std::memory_order_relaxed);shadowGrowAt_=frame+kShadowGrowFrames;add(stats.shadowCapGrows);return true;
     }
-    void resetShadowCap(std::uint64_t frame){shadowCapCur_.store(ShadowBudgetBytes,std::memory_order_relaxed);shadowGrowAt_=frame+kShadowGrowFrames;}   // pressure: the adaptive part goes
     // A new shadow of `bytes` fits the cap now (shadowAdmit; making room by evicting is the game thread's job, see makeRoomForBufferShadow).
     void addTexShadowBytes(std::int64_t delta){stats.texShadowBytes.fetch_add(delta,std::memory_order_relaxed);}
-    std::size_t texShadowCap()const{return pressure_.load()?TextureShadowBudgetBytes/2:TextureShadowBudgetBytes;}
+    std::size_t texShadowCap()const{return TextureShadowBudgetBytes;}   // 0.3.216: not halved under pressure (see shadowItemLimit)
     bool texShadowAdmit(std::size_t bytes)const{const auto s=stats.texShadowBytes.load(std::memory_order_relaxed);return (s>0?std::size_t(s):0)+bytes<=texShadowCap();}
     std::size_t largeBytes()const{const auto s=stats.largeShadowBytes.load(std::memory_order_relaxed);return s>0?std::size_t(s):0;}
     void addLargeBytes(std::int64_t delta){stats.largeShadowBytes.fetch_add(delta,std::memory_order_relaxed);}
-    bool largeAdmit(std::size_t bytes)const{return !pressure_.load()&&bytes<=kMaxLargeShadow&&largeBytes()+bytes<=LargeShadowBudgetBytes;}   // allowance free now (no pressure)
+    bool largeAdmit(std::size_t bytes)const{return bytes<=kMaxLargeShadow&&largeBytes()+bytes<=LargeShadowBudgetBytes;}   // allowance free now
     bool shadowAdmit(std::size_t bytes)const{const auto s=stats.shadowBytes.load(std::memory_order_relaxed);return (s>0?std::size_t(s):0)+bytes<=shadowCap();}
     bool canAdmit(std::size_t bytes)const{return !over(bytes);}
     // Memory pressure (any thread): halves the budget. trim() (producer, at a quiet point) releases pooled idle memory.

@@ -55,7 +55,7 @@ struct Counters {
     // already hold a whole buffer, memory pressure, a READONLY lock over a patch), the NOOVERWRITE unlocks staged for that reason and their bytes (zcOverlapStaged, zcOverlapCopyBytes; zcSkipOverlap: those of 4 KiB or more, the not-zero-copy reason). Game thread.
     Counter zcOverlapLocks{0},zcOverlapWaits{0},zcOverlapWaitNs{0},zcOverlapStaged{0},zcOverlapCopyBytes{0},zcSkipOverlap{0};
     Counter zcSkipPool{0},zcSkipNoShadow{0},zcSkipSmall{0},zcSkipPressure{0},zcSkipOther{0};
-    Counter stormReliefs{0};   // 0.3.216: pressure episodes whose halved stream caps were lifted because the syncs per frame stayed high (StreamDevice::stormGuard)
+    Counter syncStorms{0};   // 0.3.216: sync storms seen (StreamDevice::stormWatch: 100+ synchronous round trips per frame over ~2 s)
     Counter copyPressureUnlocks{0},copyPressureBytes{0};   // unlocks of 4 KiB or more that were copied into the queue instead of zero-copy because of memory pressure, and their bytes   // DISCARD/NOOVERWRITE write unlocks of DYNAMIC buffers that did NOT go zero-copy, by reason (not the default pool / no shadow slice / below 4 KiB / other)
     // The game thread's own time per frame (Present to Present, minus its sync and backpressure waits), in ns, and its frames.
     Counter gameNs{0},gameWaitNs{0},gameFrames{0};
