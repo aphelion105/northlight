@@ -2618,6 +2618,9 @@ public:
         logf("CreateDevice HRESULT=0x%08lx flags=0x%lx",(unsigned long)hr,(unsigned long)flags);
         if(SUCCEEDED(hr)&&out&&*out)*out=new Device(*out,this);
         if(SUCCEEDED(hr)&&out&&*out&&stream)*out=startStream(*out,pp,framesAhead,frameSkip,occlusionLocal);
+        /* task 45: the game's own thread (the CreateDevice caller) at ABOVE_NORMAL, the replay thread's level, so the replay and its effects no longer
+           preempt it for the cores (Wine on macOS maps thread priorities to Mach thread policies). Only the scheduling of this thread changes. */
+        if(SUCCEEDED(hr)){const BOOL raised=SetThreadPriority(GetCurrentThread(),THREAD_PRIORITY_ABOVE_NORMAL);logf("GAME thread priority ABOVE_NORMAL %s (tid=%lu priority=%d)",raised?"set":"failed",(unsigned long)GetCurrentThreadId(),GetThreadPriority(GetCurrentThread()));}
         return hr;
     }
 };
