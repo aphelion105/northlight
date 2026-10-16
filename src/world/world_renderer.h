@@ -2968,6 +2968,10 @@ public:
         // It looks opaque, so reject it here, before the admission, the budget and the near reserve (its weapons and parts too).
         fate.reason=NorthlightShadowFate::Fade;
         {DWORD colorWrite=15;if(SUCCEEDED(d->GetRenderState(D3DRS_COLORWRITEENABLE,&colorWrite))&&(colorWrite&7)==0){if(sample&&priority)++skinnedFadeRejected;if(sample&&!priority)++otherFadeRejected;return;}}
+        // 0.3.215 (task 47): a blended draw is never captured, so reject it before the admission and the budget too; it no longer
+        // counts as a radius-gated, cut or budget-refused draw, feeds the next cut or marks the frame short.
+        fate.reason=NorthlightShadowFate::Blend;
+        {DWORD blend=0;if(FAILED(d->GetRenderState(D3DRS_ALPHABLENDENABLE,&blend))||blend){if(sample&&priority)++skinnedBlendRejected;if(sample&&!priority)++otherBlendRejected;return;}}
         // 0.3.211 (task 31): the palette root once per skinned draw, then the capture admission (radius gate, distance cut)
         // before any budget is spent; near-reserve hits always pass. A draw without a root is never gated or cut.
         float root[3];bool rooted=false;NorthlightCaptureAdmission::Decision admit;
@@ -2990,8 +2994,7 @@ public:
                 if(sample&&!priority)++otherBudgetRejected;
                 return;}
         }
-        fate.reason=NorthlightShadowFate::Blend;
-        DWORD blend=0,alpha=0,ref=0,alphaFunc=D3DCMP_ALWAYS;if(FAILED(d->GetRenderState(D3DRS_ALPHABLENDENABLE,&blend))||blend){if(sample&&priority)++skinnedBlendRejected;if(sample&&!priority)++otherBlendRejected;return;}
+        DWORD alpha=0,ref=0,alphaFunc=D3DCMP_ALWAYS;
         fate.reason=NorthlightShadowFate::AlphaFunc;
         if(FAILED(d->GetRenderState(D3DRS_ALPHATESTENABLE,&alpha)))return;
         if(alpha){if(FAILED(d->GetRenderState(D3DRS_ALPHAREF,&ref))||FAILED(d->GetRenderState(D3DRS_ALPHAFUNC,&alphaFunc)))return;}
