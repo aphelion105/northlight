@@ -23,7 +23,7 @@ checks['hlsl: WeatherInfo at c59, documented (z shadows, w air extinction), Loca
 checks['hlsl: no other register c59..c66 reader']=re.findall(r'register\(c6[0-6]\)',h)==['register(c60)','register(c64)','register(c64)','register(c64)'] and h.count('register(c59)')==2 # 0.3.199 (fog clouds): CloudInfo[4] at c60 (.yzw only), see test_fog_clouds_wiring; (fog temporal): FogTemporalInfo at c64 (.y only), see test_fog_temporal_wiring; 0.3.200 (gpu budget): FogStepInfo at c64 (.z, WorldFog), see test_gpu_budget_wiring; HorizonEdge at c64 (.w, WorldComposite's haze band)
 checks['hlsl: WorldLighting and WorldFog read WeatherInfo (z, w)']=all(
     ('WeatherInfo.'+c) in h for c in 'zw') and len(re.findall(r'WeatherInfo\.x',h))==0
-checks['cpp: c59.zw set in the bank, c59.x and c60..c66 not']=('c[59][2]=wx.shadowSoften();c[59][3]=airFloor;' in w and 'c[59][0]' not in w and 'c[59][1]' not in w and set(re.findall(r'c\[(6[0-6])\]',w))<={'60','61','62','63','64'}) # 0.3.199 (fog clouds): c60..c63 .yzw belong to CloudInfo; 0.3.200 (gpu budget): c60.x and c64.z the march intervals
+checks['cpp: c59.zw set in the bank, c59.x and c60..c66 not']=('c[59][2]=std::max(wx.shadowSoften(),1.f-underwaterFade.scale());' in w and 'c[59][3]=airFloor;' in w and 'c[59][0]' not in w and 'c[59][1]' not in w and set(re.findall(r'c\[(6[0-6])\]',w))<={'60','61','62','63','64'}) # 0.3.199 (fog clouds): c60..c63 .yzw belong to CloudInfo; 0.3.200 (gpu budget): c60.x and c64.z the march intervals
 checks['cpp: c23 untouched']=w.count('memcpy(c[23],context.camera,12);')==1 and 'c[23][' not in w
 checks['cpp: GridInfo.z (c20.z) unchanged']='c[20][2]=.85f;' in w and re.findall(r'c\[20\]\[2\]=[^;]*;',w)==['c[20][2]=.85f;']
 # identity at zero weather
@@ -53,7 +53,7 @@ checks['render: the weather adds no pass of its own (quad count 20, shader creat
 checks['discs: gain atomic, default 1, opacity and glare weights only, veil inherits']=(
     'std::atomic<float> weatherGain{1.f};' in dr and 'c[9][3]=glare?disc.opacity:disc.opacity*weatherGain.load(std::memory_order_relaxed);' in dr
     and 'c[12][2]*=gain;c[47][3]*=gain;' in dr and 'veilStrength(c[9][3],1,hazeAtSun,skyTransmittance)' in dr)
-checks['renderer.cpp: the gain is set once per frame next to the disc render, from the world']='celestialDiscs->setWeatherGain(world->weatherEffects().discGain());' in rc and rc.count('setWeatherGain')==1
+checks['renderer.cpp: the gain is set once per frame next to the disc render, from the world']='celestialDiscs->setWeatherGain(world->weatherEffects().discGain()*world->underwaterScale());' in rc and rc.count('setWeatherGain')==1
 # settings
 checks['WorldRenderer: settings accessors and the derived frame']=all(s in w for s in ('unsigned weatherSetting()const{return quality.weather;}','unsigned rainFogSetting()const{return quality.rainFog;}',
     'derive(weatherState,quality.weather,quality.rainFog)')) and 'rainWetness' not in w

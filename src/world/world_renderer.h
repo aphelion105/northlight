@@ -5,6 +5,7 @@
 #include "effect_switches.h"
 #include "world_camera.h"
 #include "wmo_context.h"
+#include "underwater_fade.h"
 #include "projection.h"
 #include "celestial_context.h"
 #include "celestial_sources.h"
@@ -305,6 +306,8 @@ private:
     bool neutralShadowMaps=false;
     V sourceDirections[2],sourceColors[2];
     float sourceWeights[2]={1,0};
+    NorthlightUnderwater::Fade underwaterFade; // the camera in liquid: the sun and moon fade out (updateWorldContext)
+    DWORD underwaterLogAt=0;bool underwaterLogged=false;
     float sourceMatrices[2][2][16]={};
     // Far/NearShadowInterval>1 only: the map and matrix of the last complete far/near cascade render per source.
     NorthlightQuality::ShadowMapReuse farShadow[2],nearShadow[2];unsigned shadowPasses=0;
@@ -2309,6 +2312,7 @@ public:
     // CPU estimate (0..1) of the 128-unit fog volume's transmittance on a sky pixel toward
     // the sun, i.e. the fog.a the composite applies there. 1 with fog off or where the field has no air.
     float skyTransmittance()const{return skyTransmittanceFrame;}
+    float underwaterScale()const{return underwaterFade.scale();}
     bool celestialContext(NorthlightCelestial::Context& out,float* inverseView,float* projectionOut)const{
         if(!hasContext()||!celestialValid)return false;
         out=celestial;out.horizonSine=apparentHorizon.valid?apparentHorizon.value:0.f;memcpy(inverseView,context.inverseView,64);memcpy(projectionOut,projection,12);return true;
@@ -2381,6 +2385,11 @@ public:
     void updateWorldContext(const char* map,const float* camera,const NorthlightWmoContext::Lighting* global=nullptr){
         if(unsigned fault=workerFault()){if(!failed)logf("WORLD worker stopped: %s; restart required",workerFaultMessage(fault));failed=true;valid=false;return;}
         if(!reportedContext){logf("WORLD context validated: map=%s camera=(%.2f %.2f %.2f) sun=(%.3f %.3f %.3f)",map,camera[0],camera[1],camera[2],context.lightDirection[0],context.lightDirection[1],context.lightDirection[2]);reportedContext=true;}
+        {   // The camera's liquid type from the proven predictor reads (wmo_context.h); unproven frames hold the state for UnderwaterFade::HoldMs.
+            const bool known=global&&global->predictors;const DWORD now=GetTickCount();
+            underwaterFade.update(map,known,known&&global->liquidType!=0,now);
+            if(underwaterFade.underwater!=underwaterLogged&&(DWORD(now-underwaterLogAt)>250||NorthlightDiagnostics::enabled())){underwaterLogAt=now;underwaterLogged=underwaterFade.underwater;logf("WORLD underwater %s liquid=%u",underwaterFade.underwater?"on":"off",known?global->liquidType:0u);} // a flip suppressed by the rate limit is logged later, once the state still differs
+        }
         celestialValid=NorthlightCelestial::read(camera,context.direct,celestial);
         // 0.3.200: a sky block read rejected for one frame (the two copies differ while the game rewrites it, more often with the game frames
         // ahead) dropped the sun weight to 0 for that frame: the sun light, shadows and shafts flashed off. The last good read on the same map
@@ -3840,7 +3849,7 @@ public:
         // Same soft ramp, shifted 0.5 world units closer.
         c[58][0]=3.5f;c[58][1]=1.f/12;c[58][2]=10.f*lampGain*wx.lampFogGain();c[58][3]=.12f*lampGain*wx.lampFogGain(); /* 0.3.198 (rain): lamp fog gain (x1 since 0.3.199); 0.3.199 (fog clouds): 10 / .12 (were 13 / .156): the glow read too strong in the game test */
         const float airFloor=atmosphere.airFloor; /* atmosphereWork: .0017f plus the rain's extra, thinned in dense zones */
-        c[59][2]=wx.shadowSoften();c[59][3]=airFloor; /* 0.3.198 (rain): direct shadow softening (0 when dry), air extinction floor (WorldFog) */
+        c[59][2]=std::max(wx.shadowSoften(),1.f-underwaterFade.scale()); /* underwater: the sun correction goes to 0 and the shadow softens fully (the rain path), alpha and baseline keep the true visibility */ c[59][3]=airFloor; /* 0.3.198 (rain): direct shadow softening (0 when dry), air extinction floor (WorldFog) */
         if(uploadedFogField){c[31][0]=uploadedFogField->originX;c[31][1]=uploadedFogField->originY;}
         c[31][2]=1.f/(NorthlightRegionalFog::N*NorthlightRegionalFog::Spacing);
         c[31][3]=atmosphere.c[31][3]; /* nightFactor, atmosphereWork */
@@ -3896,7 +3905,7 @@ public:
         // The warm lobe toward the sun follows the disc over the camera's far edge (full until 95% under it, out one
         // diameter below), not the light, which now lasts to the handover 9 deg under: a low camera saw the lobe glow
         // on the water with the sun gone. apparentHorizon is last frame's (updated below).
-        const float hazeSunWeight=celestialValid?NorthlightCelestialGlow::horizonGlow(celestialLight.sun.direction[2]-(apparentHorizon.valid?apparentHorizon.value:0.f),std::sin(celestialLight.sun.angularRadius)):sourceWeights[0];
+        const float hazeSunWeight=underwaterFade.scale()*(celestialValid?NorthlightCelestialGlow::horizonGlow(celestialLight.sun.direction[2]-(apparentHorizon.valid?apparentHorizon.value:0.f),std::sin(celestialLight.sun.angularRadius)):sourceWeights[0]);
         const auto haze=NorthlightHorizonHaze::constants(horizonHazeState,{quality.horizonHaze,quality.horizonHazeStart,quality.horizonHazeBand,quality.horizonHazeTerrain},
             farZ,hazeZone,effects.fog,celestialValid,hazeSun,hazeSunWeight,hazeLift,wx.hazeTauScale());
         c[57][1]=haze.shape[0];c[57][2]=haze.shape[1];c[57][3]=haze.shape[2];c[67][2]=haze.sun[0];c[67][3]=haze.sun[1];
@@ -3936,6 +3945,7 @@ public:
             // ambient-only volume pass must never read an unrendered map for
             // a sub-threshold celestial source.
             float rgb[4]={sourceActive[source]?sourceColors[source].x:0.f,sourceActive[source]?sourceColors[source].y:0.f,sourceActive[source]?sourceColors[source].z:0.f,0};
+            if(volume){const float keep=underwaterFade.scale();rgb[0]*=keep;rgb[1]*=keep;rgb[2]*=keep;} /* underwater: the fog/volume pass (shafts) fades with the sun; the lighting and actor passes keep the real colour (their shadow test and alpha read it) */
             // fog passes only: the sun's direct scatter takes the glow hue; the forward soft cap
             // rises so the aureole brightens toward the sun. c17/c18 are restored after the fog loop.
             if(volume&&source==0)NorthlightSunHue::fogDirect(rgb,glowHueFrame,rgb);

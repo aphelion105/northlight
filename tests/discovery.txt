@@ -182,3 +182,4 @@ test_world_cache_diff.py
 test_world_light_placements.py
 test_world_local_lights.py
 test_world_probe_coverage.py
+test_underwater_fade.py

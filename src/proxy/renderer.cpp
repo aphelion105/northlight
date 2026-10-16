@@ -705,7 +705,7 @@ private:
         if(celestial){
             NorthlightCelestial::Context sky;float inverseView[16],projection[3];
             if(world->celestialContext(sky,inverseView,projection)){sunElevation=sky.sun.direction[2]-sky.horizonSine; /* over the camera's far edge, as the composite's haze band */
-                celestialDiscs->setWeatherGain(world->weatherEffects().discGain()); /* 0.3.198 (rain): the discs, glare and veil follow the weather */
+                celestialDiscs->setWeatherGain(world->weatherEffects().discGain()*world->underwaterScale()); /* 0.3.198 (rain): the discs, glare and veil follow the weather */
                 celestialDiscs->render(saved.targets[0],depthTex,waterMask,width,height,world->legacyFogParameters(),worldMinDepth,worldMaxDepth,nearZ,farZ,projection,inverseView,sky,celestialGlowHue());}
         }
         gpuProfile->mark("CelestialDiscs");
