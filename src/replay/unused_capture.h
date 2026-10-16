@@ -8,7 +8,8 @@
 #include <cstdint>
 #include <unordered_map>
 namespace NorthlightUnusedCapture {
-constexpr unsigned Mode=1; /* 0 off, 1 predict and verify only (nothing is skipped), 2 skip the predicted capture */
+constexpr unsigned Mode=0; /* 0 off, 1 predict and verify only (nothing is skipped), 2 skip the predicted capture. Off: a live-realm crowd showed
+                               0 misses but under 1 % of the unused captures predicted, for a hash and a lookup per captured draw (issue #63) */
 constexpr unsigned MinStreak=8,RefreshEvery=8,Stale=4; /* Stale: capture frames an entry may go unseen before it is forgotten */
 constexpr std::size_t MaxEntries=8192;
 constexpr unsigned SweepEvery=8;

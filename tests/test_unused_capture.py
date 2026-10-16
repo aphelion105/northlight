@@ -20,7 +20,7 @@ checks={}
 checks['prediction after admission, before the budget check; skinned rooted draws only']=(capture.index('NorthlightCaptureAdmission::Decision admit;')<capture.index('NorthlightUnusedCapture::key(')<capture.index('if(replaySnapshots.captureExhausted(priority))')
     and 'const bool unusedKeyed=NorthlightUnusedCapture::Mode&&rooted&&priority&&quality.actorShadows;' in capture)
 checks['Mode 2 spares near-reserve hits and GI capture frames']='if(NorthlightUnusedCapture::Mode>=2&&NorthlightNearReserve::test(nearAnchor,root)==NorthlightNearReserve::None&&!actorCaptureEnabled()){++unusedSkipped;' in capture
-checks['shipped as predict-only until the dry-run is validated']='constexpr unsigned Mode=1;' in h
+checks['shipped off (issue #63): no per-draw cost']='constexpr unsigned Mode=0;' in h
 checks['every consumer stamps the replay']=(w.count('p->usedStamp=unusedCapture.frame();')>=3 and 'replay.usedStamp=unusedCapture.frame();' in w and 'p->usedStamp=unusedCapture.frame();' in pt)
 checks['observed once per fresh capture frame, before the profile line and the cascade reset']=(w.count('unusedObserve();')==1 and w.index('        unusedObserve();')<w.index('if(profileSampled())logRenderProfile()')<w.index("cascadeActions[slot]='-';")
     and 'if(!NorthlightUnusedCapture::Mode||captureMode!=CaptureFresh)return;' in w and "cascadeActions[slot]=='R'||cascadeActions[slot]=='-'" in w and 'pointSelected.sourceId==0' in w)

@@ -2188,10 +2188,11 @@ public:
         if(!mirrorState.enabled){weatherDetect.setOff(true);if(!weatherOffReported){weatherOffReported=true;logf("WEATHER detect=off (mirror inactive)");}}
         weatherSample.kind=weatherSample.draws?weatherDetect.hotKind:W::Kind::None;
         { // the game's own weather state is the primary source when its proofs and reads succeed; the detector is the fallback and the cross-check
-            const NorthlightWeatherMemory::Reading memory=weatherMemory.frame(NorthlightWorldContext::readSelf);
-            const bool memoryCounts=NorthlightWeatherMemory::counts(!world||world->weatherMemorySetting(),memory.valid,mirrorState.enabled,skyBandSeen);skyBandSeen=false; /* indoors the client draws no sky and no weather: the frame then goes the draw-based way (hold, fade) */
+            const bool memoryWanted=NorthlightWeatherMemory::enabled()&&(!world||world->weatherMemorySetting()); /* WeatherMemory=0: no proofs and no reads at all */
+            const NorthlightWeatherMemory::Reading memory=memoryWanted?weatherMemory.frame(NorthlightWorldContext::readSelf):NorthlightWeatherMemory::Reading{};
+            const bool memoryCounts=NorthlightWeatherMemory::counts(memoryWanted,memory.valid,mirrorState.enabled,skyBandSeen);skyBandSeen=false; /* indoors the client draws no sky and no weather: the frame then goes the draw-based way (hold, fade) */
             weatherSample.memory=memoryCounts;weatherSample.memoryKind=memory.kind;weatherSample.memoryIntensity=memory.intensity;
-            if(int(memory.valid)!=weatherMemoryState){weatherMemoryState=int(memory.valid);logf("WEATHER memory %s (proofs=%d reads=%u failures=%u kind=%s storm=%.3f intensity=%.3f)",memory.valid?"valid":"invalid, texture detector in use",int(weatherMemory.proofsOk()),weatherMemory.reads,weatherMemory.failures,W::kindName(memory.kind),memory.stormIntensity,memory.intensity);}
+            if(memoryWanted&&int(memory.valid)!=weatherMemoryState){weatherMemoryState=int(memory.valid);logf("WEATHER memory %s (proofs=%d reads=%u failures=%u kind=%s storm=%.3f intensity=%.3f)",memory.valid?"valid":"invalid, texture detector in use",int(weatherMemory.proofsOk()),weatherMemory.reads,weatherMemory.failures,W::kindName(memory.kind),memory.stormIntensity,memory.intensity);}
             const auto sort=weatherCross.frame(memoryCounts,memory.intensity>0?memory.kind:W::Kind::None,weatherSample.kind);
             if(sort!=NorthlightWeatherMemory::CrossCheck::Result::Agree)logf("WEATHER memory and texture detector disagree: %s (memory kind=%s storm=%.3f intensity=%.3f, texture kind=%s draws=%u)",NorthlightWeatherMemory::CrossCheck::name(sort),W::kindName(memory.kind),memory.stormIntensity,memory.intensity,W::kindName(weatherSample.kind),weatherSample.draws);
         }

@@ -8,6 +8,7 @@
 // failed read or implausible field, the reading is invalid and the texture/draw detector stays the source (weather_state.h Tracker).
 // The read function is injected: NorthlightWorldContext::readSelf in production (snapshot-served when one is active), a fake memory in tests.
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -16,6 +17,11 @@
 
 namespace NorthlightWeatherMemory {
 using NorthlightWeather::Kind;
+// WeatherMemory (northlight-quality.ini): off until the quality file says otherwise; off means no proof and no read at all, also not in the
+// command-stream snapshot (game_snapshot.h captureReaders). Relaxed: a frame that sees the old value only reads or skips once more.
+inline std::atomic<bool> memoryEnabled{false};
+inline bool enabled(){return memoryEnabled.load(std::memory_order_relaxed);}
+inline void configure(bool on){memoryEnabled.store(on,std::memory_order_relaxed);}
 constexpr std::uintptr_t kPointer=0xcd7544;
 constexpr std::size_t kIntensityAt=0x08,kFogAt=0x14,kDensityAt=0x28,kRainAt=0x13c,kSnowAt=0x140,kSandAt=0x144,kObjectBytes=0x148;
 constexpr float kIntensityFloor=0.25f,kIntensityGain=1.3333334f; /* the game's (intensity - .25) * 1.3333334 */

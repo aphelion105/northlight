@@ -74,6 +74,7 @@ static void testPlayback() {
     std::vector<Spy> captured,replayed;
     const auto run=[&](std::vector<Spy>& log){return [&log,&s,&live,&range](std::uintptr_t a,void* o,std::size_t n){
         const bool ok=snapshotRead(*s,a,o,n,live,range);log.push_back({a,n,ok,ok?fnv(o,n):0});return ok;};};
+    NorthlightWeatherMemory::configure(true); // WeatherMemory=1 (the default): the weather reads are part of the snapshot
     { ScopedRecording rec(*s);assert(activeSnapshot==s.get()&&s->mode==GameSnapshot::Mode::Recording);captureReaders(run(captured)); }
     assert(activeSnapshot==nullptr&&s->mode==GameSnapshot::Mode::Idle&&s->usable());
     // the readers walked the whole chain, the double reads and the glare/body identities

@@ -1,5 +1,6 @@
 #pragma once
 #include "stream_hooks.h"
+#include "weather_memory.h"
 #include "name_stencil.h"
 #include "world_context.h"
 #include "effect_switches.h"
@@ -2048,6 +2049,7 @@ private:
         logf("QUALITY ActorShadows=%u: %s; forced off: %s",quality.actorShadows,quality.actorShadows?"actor and static shadows":"static shadows only",forced.c_str());
         logf("QUALITY ActorShadowDetail=%u: %s",quality.actorShadowDetail,NorthlightQuality::actorShadowMap(quality,true)?"actor shadow map and soft filter":"actor shadows in the near cascade"); /* 0.3.209 (task 29) */
         NorthlightDiagnostics::configure(quality.diagnostics!=0);
+        NorthlightWeatherMemory::configure(quality.weatherMemory!=0); /* WeatherMemory=0: no weather reads, also not in the stream snapshot */
         NorthlightMemorySwitches::configure(quality.memMap!=0); /* task 42: MemMap (also read earlier by the process-level MEMMAP points) */
         NorthlightRenderThreadProbe::configure(NorthlightQuality::renderProfile(quality),NorthlightQuality::replayProbe(quality));
         NorthlightWorldContext::SelfReadStats::timed.store(NorthlightQuality::renderProfile(quality),std::memory_order_relaxed); /* 0.3.160 */

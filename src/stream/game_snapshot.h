@@ -58,7 +58,7 @@ template<class Read> inline void captureReaders(Read read){
     NorthlightWmoContext::Lighting predictors;
     NorthlightWmoContext::readPredictors(read,predictors);     // wmo_context.h readGlobalLighting, after the block: sun glare glow 0xd38f4c and liquid type 0xcd8794, each twice
     NorthlightWeatherMemory::Reading memoryWeather;
-    NorthlightWeatherMemory::readState(read,memoryWeather);    // World::s_weather 0xcd7544 twice, then the Weather object (0x148 bytes) twice
+    if(NorthlightWeatherMemory::enabled())NorthlightWeatherMemory::readState(read,memoryWeather); // World::s_weather 0xcd7544 twice, then the Weather object (0x148 bytes) twice; none with WeatherMemory=0
     NorthlightCelestialDisc::readIdentities(read);             // sun, moon, moon02 texture identities (each read twice)
     NorthlightCelestialGlare::readIdentities(read);            // sun and moon glare identities
 }
