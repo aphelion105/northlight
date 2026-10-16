@@ -6,7 +6,7 @@
 
 namespace S=NorthlightMeshBufferStore;
 using S::Key;
-constexpr uint32_t K64=64u<<10;
+constexpr uint32_t K64=NorthlightMeshBufferStore::RoundBytes;
 static Key key(uint64_t id,uint32_t vb=300000,uint32_t ib=100000){Key k;k.lo=id*0x9E3779B97F4A7C15ull+1;k.hi=~id;k.vertexBytes=vb;k.indexBytes=ib;return k;}
 static uint32_t round64(uint32_t b){return (b+K64-1)/K64*K64;}
 // What the renderer does for a claimed buffer: create the missing resources (Create* steps of the upload cursor).
@@ -80,9 +80,20 @@ int main(){
      {S::Store st;auto ids=setup(st);
       assert(st.beginStaging({key(10,1000,1000),key(11,1000,1000)}));  // least capacity first: the two smallest idle buffers
       assert(st.staging().uploadBuffer[0]==ids[0]&&st.staging().uploadBuffer[1]==ids[2]);st.cancel();}
-     {S::Store st;setup(st);
-      assert(st.beginStaging({key(10,900000,100)}));               // nothing big enough: a new buffer
-      assert(st.staging().uploadBuffer[0]==st.entries().size()-1&&st.entries().back().empty());st.cancel();verifyInvariants(st);}}
+     {S::Store st;auto ids=setup(st);
+      assert(st.beginStaging({key(10,900000,100)}));               // nothing big enough: the idle buffer that grows least is recreated, no new slot
+      assert(st.staging().uploadBuffer[0]==ids[1]&&st.entries().size()==4);st.cancel();verifyInvariants(st);}
+     {S::Store st;build(st,keys({1}));                            // no idle buffer at all: a new slot
+      assert(st.beginStaging(keys({2}))&&st.staging().uploadBuffer[0]==1&&st.entries().back().empty());st.cancel();}
+     {S::Store st;auto ids=setup(st);                             // a tiny page: the oversized buffers are tier 3, the smallest one wins
+      assert(st.beginStaging({key(10,1000,1000)}));st.cancel();
+      S::Store t;build(t,{key(1,500000,500000),key(2,200000,100000)});auto j=t.table();build(t,{key(9,1000,1000)}); // 1,2 idle valid
+      assert(t.beginStaging({key(10,150000,60000)}));              // 2 fits within 2x: tier 1 beats the bigger buffer
+      assert(t.staging().uploadBuffer[0]==j[1]);t.cancel();
+      // An invalid oversized buffer is only taken after a close valid fit.
+      assert(t.beginStaging({key(11,1000,1000)}));t.markWriting(t.staging().uploadBuffer[0]);const auto taken=t.staging().uploadBuffer[0];t.cancel();
+      assert(taken==j[1]||taken==j[0]);
+      assert(t.beginStaging({key(12,1000,1000)}));assert(t.staging().uploadBuffer[0]==taken);t.cancel();(void)ids;}}   // the invalid one is the cheapest to give up
     // Identical pages inside one build share one buffer and upload once.
     {S::Store st;assert(st.beginStaging(keys({5,5,6,5})));
      assert(st.staging().upload.size()==2&&st.staging().table[0]==st.staging().table[1]&&st.staging().table[1]==st.staging().table[3]&&st.staging().stats.reusedPages==2);

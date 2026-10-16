@@ -69,6 +69,8 @@ int main(){
      assert(trimsInWindow==0&&s.stagedWindowMax()==35*MiB);
      uint64_t freed=0;for(int i=0;i<10;++i)freed+=s.onCommit(70*MiB,35*MiB,2*MiB);
      assert(freed>0&&s.stagedWindowMax()==2*MiB);}
+    // Capped at the old 2 x mesh even if the uploads were larger than the mesh (oversized buffers), and 0 staged is a cold start.
+    assert(target(35*MiB,50*MiB)==70*MiB&&target(35*MiB,0)==35*MiB&&surplus(80*MiB,35*MiB,50*MiB)==10*MiB);
     // The two-argument form is the zero-hit form; reset clears the staged window too.
     {State a,b;for(int i=0;i<6;++i)assert(a.onCommit(159*MiB,35*MiB)==b.onCommit(159*MiB,35*MiB,35*MiB));
      a.reset();assert(a.stagedWindowMax()==0&&a.windowMax()==0);}

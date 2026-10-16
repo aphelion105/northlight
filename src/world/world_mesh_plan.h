@@ -106,6 +106,17 @@ struct WorldMeshUploadPlan {
     }
 };
 
+// 0.3.216 (issue #66): batch order of the upload plan. Spatial-major: batches are ordered by a coarse cell of
+// cellChunks x cellChunks terrain chunks (from the triangle centroid, in the terrain chunk grid), then by material,
+// then by chunk, so a region that did not change between two builds yields the same contiguous triangle run (stable
+// page content). A nonterrain material now has one batch per cell it touches (+~50 % batches at 4: ~3.8 k -> ~5.7 k in
+// Stormwind; terrain batches are unchanged, one per chunk x material). cellChunks 0: the old material-major order.
+// chunkMajor orders (chunk, material) inside a cell instead; it measured no better. chunkX/chunkY keep their meaning
+// (terrain confined to one chunk, else -1); the cell only orders and splits batches. `planOrder` is a test and
+// measurement knob: set it before building, never from the game.
+struct PlanOrder {unsigned cellChunks=4;bool chunkMajor=false;};
+inline PlanOrder planOrder;
+
 // Builds immutable packed indices, exact terrain-chunk batches and upload-ready
 // textures on the worker. Input triangle order is preserved within each batch.
 // Shadow rasterization samples alpha only: opaque materials use a white 1x1

@@ -21,6 +21,10 @@
 namespace NorthlightMeshBufferStore {
 using Key=NorthlightMeshPageKey::Key;
 constexpr uint32_t None=UINT32_MAX;
+// GPU buffer capacity granularity. 16 KiB (was 64 KiB): content-defined pages are ~1.7x more numerous, and 64 KiB rounding
+// alone cost ~8 % of the mesh (two buffers per page, ~32 KiB average waste each). Idle buffers are recreated to size.
+constexpr uint32_t RoundBytes=16u<<10;
+inline uint64_t roundBuffer(uint64_t bytes){return (bytes+RoundBytes-1)/RoundBytes*RoundBytes;}
 enum class Use:uint8_t {Idle,Active,Claimed};
 struct Entry {
     uint32_t vbCapacity=0,ibCapacity=0; // bytes of the D3D resources (0: not created)
@@ -76,8 +80,8 @@ public:
     void reset(){entries_.clear();active_.clear();staging_=Staging();clock_=0;}
 
     // Plans the upload of a new page list: hits reuse a buffer holding exactly that page (active or idle), misses
-    // claim an idle buffer with enough capacity (invalid key first, then least waste, then oldest) or a new/empty/half-created
-    // slot whose missing resources the renderer creates. Returns false if a staging is already open.
+    // claim the cheapest idle buffer (tiers below; missing or too small resources are (re)created by the renderer) or, last,
+    // a new slot. Returns false if a staging is already open.
     bool beginStaging(const std::vector<Key>& keys){
         if(staging_.open)return false;
         Staging s;s.open=true;s.keys=keys;s.table.assign(keys.size(),None);
@@ -102,20 +106,29 @@ public:
             if(s.table[i]!=None){++s.stats.reusedPages;s.stats.reusedBytes+=payload;continue;}
             auto twin=claimed.find(keys[i]);
             if(twin!=claimed.end()){s.table[i]=twin->second;++s.stats.reusedPages;s.stats.reusedBytes+=payload;continue;}
-            uint32_t pick=None;
+            // Choose the idle buffer that costs the pool the least. Tiers (lower is better), each by least growth, then
+            // least waste, then oldest: 0 a fit within 2x of the need whose content is already invalid; 1 the same with
+            // valid content; 2 any invalid buffer (recreated to size: it holds nothing worth keeping); 3 an oversized fit;
+            // 4 a valid buffer to recreate larger (oldest content goes); 5 a new slot. A new slot is the last resort: it
+            // is the only choice that always grows the pool by the whole page.
+            const uint64_t needV=roundBuffer(keys[i].vertexBytes),needI=roundBuffer(keys[i].indexBytes),need=needV+needI;
+            uint32_t pick=None;unsigned bestTier=6;uint64_t bestGrowth=0,bestWaste=0;
             for(uint32_t id=0;id<entries_.size();++id){
                 const Entry& e=entries_[id];
-                if(e.use!=Use::Idle||reserved[id]||!e.usable()||e.vbCapacity<keys[i].vertexBytes||e.ibCapacity<keys[i].indexBytes)continue;
-                if(pick==None){pick=id;continue;}
-                const Entry& b=entries_[pick];
-                const uint64_t waste=e.capacity(),bestWaste=b.capacity();
-                if(e.keyValid!=b.keyValid?!e.keyValid:waste!=bestWaste?waste<bestWaste:e.stamp<b.stamp)pick=id;
+                if(e.use!=Use::Idle||reserved[id])continue;
+                const uint64_t growth=(e.vbCapacity<needV?needV-e.vbCapacity:0)+(e.ibCapacity<needI?needI-e.ibCapacity:0);
+                const uint64_t after=e.capacity()+growth,waste=after-need;
+                const bool fits=!growth&&e.usable(),close=fits&&after<=2*need;
+                const unsigned tier=close?(e.keyValid?1u:0u):!e.keyValid?2u:fits?3u:4u;
+                bool better=pick==None||tier<bestTier;
+                if(!better&&tier==bestTier){
+                    if(growth!=bestGrowth)better=growth<bestGrowth;
+                    else if(waste!=bestWaste)better=waste<bestWaste;
+                    else better=e.stamp<entries_[pick].stamp;
+                }
+                if(better){pick=id;bestTier=tier;bestGrowth=growth;bestWaste=waste;}
             }
-            if(pick==None){
-                for(uint32_t id=0;id<entries_.size()&&pick==None;++id)
-                    if(entries_[id].use==Use::Idle&&!reserved[id]&&!entries_[id].usable())pick=id; // empty or half-created slot
-                if(pick==None){pick=uint32_t(entries_.size());entries_.emplace_back();reserved.push_back(0);}
-            }
+            if(pick==None){pick=uint32_t(entries_.size());entries_.emplace_back();reserved.push_back(0);}
             Entry& e=entries_[pick];
             e.use=Use::Claimed;reserved[pick]=1; // the key stays valid until markWriting() (a staging cancelled before any write loses nothing)
             s.table[i]=pick;claimed.emplace(keys[i],pick);

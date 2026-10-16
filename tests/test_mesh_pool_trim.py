@@ -20,8 +20,8 @@ w = fp.src('world_renderer.h').read_text()
 assert '#include "mesh_pool_trim.h"' in w
 commit = w[w.index('WORLD staged mesh committed'):]
 commit = commit[:commit.index('if(!vertices||!indices||uploadedMap!=active->map)return false;')]
-assert commit.count('trimMeshPoolAfterCommit(stagedPages.uploadedCapacity);') == 1
-assert commit.index('pendingMesh.reset();') < commit.index('trimMeshPoolAfterCommit(stagedPages.uploadedCapacity);')
+assert commit.count('trimMeshPoolAfterCommit(coldStart?0:stagedPages.uploadedCapacity);') == 1
+assert commit.index('pendingMesh.reset();') < commit.index('trimMeshPoolAfterCommit(coldStart?0:stagedPages.uploadedCapacity);')
 assert 'size_t trimMeshPools(uint64_t maxBytes=UINT64_MAX){\n        if(pendingMesh)return 0;' in w
 # 0.3.216: only idle store buffers are released (the store skips active and claimed ones and refuses while a staging is open)
 assert 'meshStore.trimIdle(maxBytes,[&](uint32_t id){if(id<meshBuffers.size()){drop(meshBuffers[id].vb);drop(meshBuffers[id].ib);}})' in w

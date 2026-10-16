@@ -12,11 +12,13 @@
 // Rule, evaluated once per committed mesh (never per frame):
 //   mesh    = capacity of the buffers the active table references (the drawn mesh).
 //   staged  = capacity of the buffers that took this commit's uploads (the zero-hit case: the whole mesh).
-//   need    = windowMax(mesh) + windowMax(staged) over the last WindowCommits commits, including this one. A streamed
+//   need    = min(windowMax(mesh) + windowMax(staged), 2 x windowMax(mesh)) over the last WindowCommits commits, including this one. A streamed
 //             world commits every ~3 s, so 32 commits cover ~90-100 s: block-alternating sizes (4 x 40 MiB then
 //             4 x 70 MiB) keep the large one in the window and never look like surplus. Sizing by the CURRENT mesh
 //             trimmed ~24 times per 400 commits in such a pattern, each trim re-created by the next large mesh.
-//             When every build uploads its whole mesh (no page reuse) staged == mesh and need is the old 2 x mesh.
+//             When every build uploads its whole mesh (no page reuse) staged == mesh and need is the old 2 x mesh;
+//             it is never more than that. The first commit after a reset (nothing was active, so no buffer was held
+//             idle for it) is reported with staged = 0 by the owner, so a cold start does not keep 2 x for the window.
 //   surplus = pool capacity (all buffers, active and idle) - need.
 //   armed   = surplus > SurplusBytes on StreakCommits consecutive commits. Once armed it stays armed
 //             while the surplus stays above the threshold, so a trim spread over several commits does
@@ -33,7 +35,7 @@ constexpr uint64_t SurplusBytes=16ull<<20;
 constexpr uint64_t MaxReleaseBytes=32ull<<20;
 constexpr unsigned StreakCommits=3;
 constexpr unsigned WindowCommits=32;
-inline uint64_t target(uint64_t meshBytes,uint64_t stagedBytes){return meshBytes+stagedBytes;}
+inline uint64_t target(uint64_t meshBytes,uint64_t stagedBytes){return stagedBytes<meshBytes?meshBytes+stagedBytes:2*meshBytes;} // never above the old 2 x mesh
 inline uint64_t target(uint64_t meshBytes){return target(meshBytes,meshBytes);} // nothing reused: the old 2 x mesh
 inline uint64_t surplus(uint64_t poolBytes,uint64_t meshBytes,uint64_t stagedBytes){const uint64_t t=target(meshBytes,stagedBytes);return poolBytes>t?poolBytes-t:0;}
 inline uint64_t surplus(uint64_t poolBytes,uint64_t meshBytes){return surplus(poolBytes,meshBytes,meshBytes);}

@@ -8,6 +8,7 @@
 #include <cstring>
 #include <limits>
 #include <map>
+#include <set>
 #include <utility>
 
 using namespace NorthlightGI;
@@ -162,4 +163,39 @@ static void testActual(const char* tile,const char* models){
     std::printf("PASS actual tile plan: %u triangles, %zu batches, %u terrain batches, %zu material slots, %.3f MiB texture source -> %.3f MiB upload; %.3f seconds worker preparation\n",
         plan.triangleCount,plan.batches.size(),chunks,plan.materials.size(),double(sourceTextureBytes)/(1024*1024),double(plan.textureBytes)/(1024*1024),seconds);
 }
-int main(int argc,char**argv){testGrouping();testFailure();testTextureSource();testShadowBounds();if(argc>2)testActual(argv[1],argv[2]);std::puts("All world mesh upload plan tests passed");}
+// 0.3.216 (issue #66): spatial-major batch order. Same triangles per (material, chunk) as the material-major order, batches
+// grouped by coarse cell, nonterrain stays chunk -1, terrain batch count unchanged, and a region far away does not move.
+static void testSpatialOrder(){
+    constexpr double origin=17066.666666666666,step=100.0/3.0;
+    auto build=[&](const WorldScene& s,PlanOrder order){planOrder=order;WorldMeshUploadPlan p;std::string error;assert(buildUploadPlan(s,p,error));coherence(s,p);planOrder=PlanOrder();return p;};
+    auto scene=[&](bool withExtra){
+        WorldScene s;s.materials.resize(3);s.materials[0].terrain=true;
+        for(int cy=100;cy<112;cy+=3)for(int cx=200;cx<212;cx+=3)for(uint32_t m:{0u,1u,2u}){
+            if(m==0)chunkTriangle(s,cx,cy,0);
+            else{float mx=float(origin-cy*step),my=float(origin-cx*step);triangle(s,{mx-4,my-4,1},{mx-8,my-4,2},{mx-4,my-9,3},m);}
+        }
+        if(withExtra){float mx=float(origin-100*step),my=float(origin-200*step);triangle(s,{mx-4,my-4,1},{mx-8,my-4,2},{mx-4,my-9,5},1);} // one more triangle in the first cell
+        return s;
+    };
+    WorldScene a=scene(false),b=scene(true);
+    auto old=build(a,{0,false}),spatial=build(a,{4,false});
+    size_t oldTerrain=0,spatialTerrain=0;for(auto& x:old.batches)oldTerrain+=x.terrain;for(auto& x:spatial.batches)spatialTerrain+=x.terrain;
+    assert(oldTerrain==spatialTerrain&&spatial.batches.size()>old.batches.size()&&spatial.triangleCount==old.triangleCount);
+    // Batches are cell-major: the cell of each batch's triangles is constant and never decreases along the plan.
+    auto cellOf=[&](const WorldScene& s,const WorldMeshUploadPlan& p,const Batch& x){
+        std::set<uint32_t> cells;for(size_t j=x.start;j<x.start+size_t(x.count)*3;j+=3){
+            double cxw=0,cyw=0;for(unsigned k=0;k<3;++k){auto v=s.vertices[p.indices[j+k]].position;cxw+=v.x/3;cyw+=v.y/3;}
+            const int gx=int(std::floor((origin-cyw)/step)),gy=int(std::floor((origin-cxw)/step));cells.insert(uint32_t(gy/4)<<11|uint32_t(gx/4));}
+        assert(cells.size()==1);return *cells.begin();};
+    uint32_t last=0;for(auto& x:spatial.batches){const uint32_t c=cellOf(a,spatial,x);assert(c>=last);last=c;}
+    // Insertion of a triangle changes only the batch of its own cell: the packed index run of every later cell is the same bytes.
+    auto changed=build(b,{4,false});
+    size_t equalBatches=0;
+    for(auto& x:spatial.batches)for(auto& y:changed.batches)
+        if(x.material==y.material&&x.chunkX==y.chunkX&&x.chunkY==y.chunkY&&x.count==y.count&&cellOf(a,spatial,x)==cellOf(b,changed,y)){
+            bool same=true;for(uint32_t j=0;j<x.count*3&&same;++j){auto p=a.vertices[spatial.indices[x.start+j]].position,q=b.vertices[changed.indices[y.start+j]].position;same=p.x==q.x&&p.y==q.y&&p.z==q.z;}
+            equalBatches+=same;}
+    assert(equalBatches+1>=spatial.batches.size()-1);
+    std::printf("PASS spatial batch order: %zu -> %zu batches (terrain %zu unchanged), cell-major, one extra triangle changes one batch\n",old.batches.size(),spatial.batches.size(),spatialTerrain);
+}
+int main(int argc,char**argv){testGrouping();testFailure();testTextureSource();testShadowBounds();testSpatialOrder();if(argc>2)testActual(argv[1],argv[2]);std::puts("All world mesh upload plan tests passed");}

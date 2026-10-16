@@ -590,7 +590,7 @@ private:
         MeshBuffers& slot=meshBuffers[id];const auto& entry=meshStore.entries()[id];
         if(vertex?slot.vb&&entry.vbCapacity>=bytes:slot.ib&&entry.ibCapacity>=bytes)return true;
         // At most 512 KiB per resource, including rounded unused capacity.
-        const UINT capacity=roundBuffer(bytes,64u<<10);
+        const UINT capacity=UINT(NorthlightMeshBufferStore::roundBuffer(bytes));
         if(!NorthlightGeometryMemory::admitsSmallPageGrowth(memory.valid,memory.available,capacity))return false;
         if(vertex){
             drop(slot.vb);meshStore.setCapacity(id,true,0);
@@ -1913,7 +1913,7 @@ private:
                 // Keep the previous complete geometry drawable until publication fits.
                 if(uploadedTextureBytes<=NorthlightStreaming::DeferredRelease<IDirect3DTexture9>::MaxBytes&&
                    !retiredMaterials.enqueue(materials,uploadedTextureBytes))return vertices&&indices&&uploadedMap==active->map;
-                clearMesh();const auto stagedPages=meshStore.commit(); /* 0.3.216: atomic switch of the active page table; replaced buffers go idle */
+                const bool coldStart=meshStore.table().empty();clearMesh();const auto stagedPages=meshStore.commit(); /* 0.3.216: atomic switch of the active page table; replaced buffers go idle */
                 {const uint32_t first=meshStore.bufferOf(0);vertices=first<meshBuffers.size()?meshBuffers[first].vb:nullptr;indices=first<meshBuffers.size()?meshBuffers[first].ib:nullptr;}
                 materials=std::move(next.textures);uploadedTextureBytes=size_t(plan.textureBytes);vertexCount=plan.vertexCount;
                 uploadedLocalShadowRecords=plan.localShadowRecords;
@@ -1931,7 +1931,7 @@ private:
                 if(NorthlightDiagnostics::enabled())logf("WORLD staged mesh committed: vertices=%u triangles=%zu materials=%zu textureUploads=%u stagingFrames=%u stagingMs=%lu releasedPayloadMiB=%.2f pages=%zu reusedPages=%zu uploadedPages=%zu reusedMiB=%.2f uploadedMiB=%.2f",vertexCount,size_t(plan.triangleCount),materials.size(),next.textureUploads,next.frames,(unsigned long)(GetTickCount()-next.started),double(releasedBytes)/1048576,
                     stagedPages.pages,stagedPages.reusedPages,stagedPages.uploadedPages,double(stagedPages.reusedBytes)/1048576,double(stagedPages.uploadedBytes)/1048576);
                 retirePendingCpu();pendingMesh.reset();meshRetry.clear();
-                trimMeshPoolAfterCommit(stagedPages.uploadedCapacity);
+                trimMeshPoolAfterCommit(coldStart?0:stagedPages.uploadedCapacity); /* a cold start held no buffer idle */
             }
         }
         if(!vertices||!indices||uploadedMap!=active->map)return false;
