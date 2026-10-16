@@ -6,9 +6,66 @@
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
+#include <memory>
+#include <unordered_set>
 
 using namespace NorthlightGI;
 namespace P=NorthlightWorldMeshPages;
+// 0.3.216 (issue #66): how much of the next build's pages an earlier build already holds, for sequential paging
+// (anchorModulus 0) and content-defined paging, with the page counts and 64 KiB-rounded GPU capacity.
+struct Sample {
+    WorldScene local,far;NorthlightWorldMesh::WorldMeshUploadPlan input;
+    P::Plan sequential,anchored;double sequentialMs=0,anchoredMs=0;
+};
+static uint64_t roundedCapacity(const P::Plan& plan) {
+    uint64_t bytes=0;for(const auto& p:plan.pages)for(uint64_t b:{uint64_t(p.vertices.size())*sizeof(WorldVertex),uint64_t(p.indices.size())*4})bytes+=(b+65535)/65536*65536;return bytes;
+}
+static std::unique_ptr<Sample> sample(const std::string& root,Vec3 c,std::string& error) {
+    int tx=int(std::floor((17066.6666667-c.y)/533.3333333)),ty=int(std::floor((17066.6666667-c.x)/533.3333333));
+    std::vector<std::string> nearFiles,farFiles;
+    for(int y=ty-2;y<=ty+2;++y)for(int x=tx-2;x<=tx+2;++x){
+        auto p=root+"/Azeroth/"+std::to_string(x)+"_"+std::to_string(y)+".fg3";
+        if(!std::filesystem::exists(p))continue;
+        farFiles.push_back(p);if(std::abs(x-tx)<=1&&std::abs(y-ty)<=1)nearFiles.push_back(p);
+    }
+    auto s=std::make_unique<Sample>();
+    assert(loadInstancedScenes(nearFiles,root+"/models",c-Vec3(288,288,320),c+Vec3(288,288,320),s->local,error));
+    const float radius=NorthlightShadowTerrain::Radius;
+    assert(loadInstancedScenes(farFiles,root+"/models",c-Vec3(radius,radius,radius),c+Vec3(radius,radius,radius),s->far,error,1));
+    assert(NorthlightShadowTerrain::build(s->local,s->far,c,s->input,error));
+    using Clock=std::chrono::steady_clock;
+    auto ms=[](Clock::time_point a){return std::chrono::duration<double,std::milli>(Clock::now()-a).count();};
+    auto t=Clock::now();assert(P::build(s->input,s->sequential,error,{},P::Options{0,0}));s->sequentialMs=ms(t);
+    t=Clock::now();assert(P::build(s->input,s->anchored,error));s->anchoredMs=ms(t);
+    return s;
+}
+// Fraction of `next` pages (and bytes) whose key equals a page of `prior`.
+static void reuse(const P::Plan& prior,const P::Plan& next,size_t& pages,double& bytes) {
+    std::unordered_set<NorthlightMeshPageKey::Key,NorthlightMeshPageKey::KeyHash> keys;
+    for(const auto& p:prior.pages)keys.insert(p.key);
+    size_t hit=0;double hitBytes=0,all=0;
+    for(const auto& p:next.pages){const double b=double(p.key.vertexBytes)+p.key.indexBytes;all+=b;if(keys.count(p.key)){++hit;hitBytes+=b;}}
+    pages=hit;bytes=all?hitBytes/all:0;
+}
+static void measure(const std::string& root,const char* name,Vec3 c) {
+    std::string error;
+    auto base=sample(root,c,error);
+    std::printf("MEASURE %s: sequential pages %zu capacity %.1f MiB build %.0f ms; anchored pages %zu capacity %.1f MiB build+hash %.0f ms (key hashing only: ",name,
+        base->sequential.pages.size(),double(roundedCapacity(base->sequential))/1048576,base->sequentialMs,base->anchored.pages.size(),double(roundedCapacity(base->anchored))/1048576,base->anchoredMs);
+    {auto t=std::chrono::steady_clock::now();uint64_t sink=0;for(const auto& p:base->anchored.pages)sink+=NorthlightMeshPageKey::keyOf(p.vertices.data(),p.vertices.size()*sizeof(WorldVertex),p.indices.data(),p.indices.size()*4).lo&1;
+     std::printf("%.1f ms for %.1f MiB%s)\n",std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t).count(),double(base->anchored.vertexBytes+base->anchored.indexBytes)/1048576,sink==UINT64_MAX?"!":"");}
+    struct Move {const char* label;Vec3 delta;};
+    for(const auto& move:{Move{"same center",{0,0,0}},Move{"+20 yd",{20,0,0}},Move{"+60 yd",{60,0,0}},Move{"+60 yd diagonal",{42,42,0}}}) {
+        auto next=move.delta.x==0&&move.delta.y==0?sample(root,c,error):sample(root,c+move.delta,error);
+        size_t oldPages,newPages;double oldBytes,newBytes;
+        reuse(base->sequential,next->sequential,oldPages,oldBytes);reuse(base->anchored,next->anchored,newPages,newBytes);
+        std::printf("MEASURE %s %s: old paging reuses %zu/%zu pages (%.1f%% bytes); new paging reuses %zu/%zu pages (%.1f%% bytes)\n",name,move.label,
+            oldPages,next->sequential.pages.size(),oldBytes*100,newPages,next->anchored.pages.size(),newBytes*100);
+        if(move.delta.x==0&&move.delta.y==0)assert(oldPages==next->sequential.pages.size()&&newPages==next->anchored.pages.size());
+        else assert(newBytes>=oldBytes);
+        if(move.delta.x>0&&move.delta.x<30)assert(newBytes>=.2&&newBytes>=oldBytes+.1); // a 20 yd step: clearly more than sequential paging
+    }
+}
 int main(int argc,char** argv) {
     assert(argc==2);const std::string root=argv[1];std::string error;
     struct Fixture{const char* name;Vec3 center;};
@@ -87,6 +144,7 @@ int main(int argc,char** argv) {
         assert(local.vertices.size()==localVertexCount);
         std::printf("OWNERSHIP %s original plan %.3f MiB -> pages + retained metadata %.3f MiB (delta %+.3f MiB)\n",fixture.name,double(originalCpu)/1048576.,double(sealedCpu)/1048576.,(double(sealedCpu)-double(originalCpu))/1048576.);
         const auto& sealedPages=*ownedPages;
+        measure(root,fixture.name,c);
         std::printf("PASS %s full local + far terrain: vertices %u -> %llu; triangles %u exact; batches %zu -> %zu; pages %zu; worker %.3f ms; pages CPU %.3f MiB; conservative rejected subbatches clip=%u directional=%u at 0/2/5/15/38 degrees\n",fixture.name,input.vertexCount,(unsigned long long)(sealedPages.vertexBytes/sizeof(WorldVertex)),input.triangleCount,input.batches.size(),sealedPages.batches.size(),sealedPages.pages.size(),ms,double(sealedPages.cpuBytes())/1048576.,rejected,directionalRejected);
     }
 }

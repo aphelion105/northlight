@@ -62,6 +62,7 @@ static void verify(const WorldMeshUploadPlan& input,const P::Plan& output) {
     assert(total==input.triangleCount&&originalBatch==input.batches.size());
     assert(output.vertexBytes==vb&&output.indexBytes==ib&&output.cpuBytes()>=vb+ib);
 }
+static const P::Options sequential{0,0}; // no content anchors: exact limit-driven layouts
 static void testVertexLimits(){
     WorldScene scene;WorldMeshUploadPlan input;initialize(scene,input,P::PageVertexLimit*4);
     addBatch(input,30000,0,P::PageVertexLimit*4,1);
@@ -83,7 +84,7 @@ static void testKeepBatches(){
     WorldScene scene;WorldMeshUploadPlan input;initialize(scene,input,20000);
     addBatch(input,3000,0,9000,0);addBatch(input,3000,10000,9000,1);
     addBatch(input,1000,10000,3000,2);
-    P::Plan plan;std::string error;assert(P::build(input,plan,error));verify(input,plan);
+    P::Plan plan;std::string error;assert(P::build(input,plan,error,{},sequential));verify(input,plan);
     assert(plan.batches.size()==3&&plan.pages.size()==2);
     assert(plan.batches[0].page==0&&plan.batches[1].page==1&&plan.batches[2].page==1);
     assert(plan.pages[1].vertices.size()==9000); // Shared across batches.
@@ -94,9 +95,76 @@ static void testDegenerateAndExactBoundary(){
     addBatch(input,P::PageVertexLimit/3,0,P::PageVertexLimit,1);
     addBatch(input,1,P::PageVertexLimit-1,1,0); // All three indices are identical.
     addBatch(input,1,0,1,2);
-    P::Plan plan;std::string error;assert(P::build(input,plan,error));verify(input,plan);
+    P::Plan plan;std::string error;assert(P::build(input,plan,error,{},sequential));verify(input,plan);
     assert(plan.pages.size()==1&&plan.pages[0].vertices.size()==P::PageVertexLimit);
     std::puts("PASS exact vertex-capacity boundary and repeated indices within a triangle");
+}
+// 0.3.216 (issue #66): content-defined boundaries. Patches are grids (~0.5 vertices per triangle, like real
+// city plans) whose positions depend only on the patch id; source indices depend on the order, as in real builds.
+static void addPatch(WorldScene& scene,WorldMeshUploadPlan& input,uint32_t id,uint32_t n=40){
+    const uint32_t first=uint32_t(scene.vertices.size());
+    for(uint32_t y=0;y<=n;++y)for(uint32_t x=0;x<=n;++x)
+        scene.vertices.push_back({{float(id)*64.f+float(x),float(y),float((id*7+x*3+y)%5)},{0,0,1},float(x)/n,float(y)/n});
+    NorthlightWorldMesh::Batch b;b.start=uint32_t(input.indices.size());b.count=n*n*2;b.material=id%3;
+    for(uint32_t y=0;y<n;++y)for(uint32_t x=0;x<n;++x){
+        const uint32_t a=first+y*(n+1)+x,c=a+n+1;
+        for(uint32_t i:{a,a+1,c,a+1,c+1,c})input.indices.push_back(i);
+    }
+    input.batches.push_back(b);input.triangleCount+=b.count;input.vertexCount=uint32_t(scene.vertices.size());
+}
+static void makePlan(WorldScene& scene,WorldMeshUploadPlan& input,const std::vector<uint32_t>& ids){
+    input.source=&scene;input.materials.resize(3);for(auto& m:input.materials){m.width=m.height=1;m.bgra={255,255,255,255};}
+    for(uint32_t id:ids)addPatch(scene,input,id);
+    input.vertexBytes=uint64_t(input.vertexCount)*32;input.indexBytes=uint64_t(input.triangleCount)*12;
+}
+static size_t sharedTail(const P::Plan& a,const P::Plan& b){
+    size_t n=0;while(n<a.pages.size()&&n<b.pages.size()&&a.pages[a.pages.size()-1-n].key==b.pages[b.pages.size()-1-n].key)++n;return n;
+}
+static size_t matching(const P::Plan& a,const P::Plan& b){
+    size_t n=0;for(const auto& p:b.pages)for(const auto& q:a.pages)if(p.key==q.key){++n;break;}return n;
+}
+static void testAnchors(){
+    std::vector<uint32_t> base;for(uint32_t i=0;i<300;++i)base.push_back(i);
+    auto edit=base;edit.insert(edit.begin()+4,1000);                  // insertion early in the plan
+    auto removed=base;removed.erase(removed.begin()+3);               // removal early in the plan
+    P::Options off{0,0};
+    struct Variant {const char* name;const std::vector<uint32_t>* ids;} variants[]={{"insert",&edit},{"remove",&removed},{"same",&base}};
+    for(const auto& v:variants){
+        WorldScene sa,sb;WorldMeshUploadPlan a,b;makePlan(sa,a,base);makePlan(sb,b,*v.ids);
+        P::Plan pa,pb,oa,ob;std::string error;
+        assert(P::build(a,pa,error)&&P::build(b,pb,error));if(auto* why=P::validatePages(a,pa)){std::puts(why);assert(false);}assert(!P::validatePages(b,pb));
+        verify(a,pa);verify(b,pb);
+        assert(P::build(a,oa,error,{},off)&&P::build(b,ob,error,{},off));verify(a,oa);verify(b,ob);
+        // Batches that fit an empty page are never split by an anchor.
+        assert(pa.batches.size()==a.batches.size()&&pb.batches.size()==b.batches.size());
+        const size_t tail=sharedTail(pa,pb),reused=matching(pa,pb),sequentialReused=matching(oa,ob);
+        std::printf("anchors %s: pages %zu/%zu sequential %zu/%zu; tail shared %zu; reused %zu of %zu (sequential %zu of %zu)\n",v.name,pa.pages.size(),pb.pages.size(),oa.pages.size(),ob.pages.size(),tail,reused,pb.pages.size(),sequentialReused,ob.pages.size());
+        assert(pa.pages.size()>=16);
+        if(v.ids==&base){assert(tail==pa.pages.size()&&reused==pb.pages.size());continue;}
+        assert(tail+3>=pa.pages.size()-1&&tail>=pa.pages.size()*3/4);         // resynchronised shortly after the edit
+        assert(reused>=pb.pages.size()*3/4&&reused>sequentialReused*2);
+        // Identical key means identical bytes (key sizes and a full compare of the shared tail).
+        for(size_t i=1;i<=tail;++i){const auto& x=pa.pages[pa.pages.size()-i];const auto& y=pb.pages[pb.pages.size()-i];
+            assert(x.vertices.size()==y.vertices.size()&&x.indices==y.indices&&!std::memcmp(x.vertices.data(),y.vertices.data(),x.vertices.size()*sizeof(WorldVertex)));}
+    }
+    // Different content never shares a key; the key covers sizes, vertex bytes and index bytes.
+    WorldScene s;WorldMeshUploadPlan in;makePlan(s,in,{1,2});P::Plan p;std::string error;assert(P::build(in,p,error)&&p.pages.size()>=1);
+    auto page=p.pages[0];auto key=[&](const P::Page& g){return NorthlightMeshPageKey::keyOf(g.vertices.data(),g.vertices.size()*32,g.indices.data(),g.indices.size()*4);};
+    assert(key(page)==page.key);
+    auto changed=page;changed.vertices[3].position.z+=1;assert(key(changed)!=page.key);
+    changed=page;changed.indices[5]^=1;assert(key(changed)!=page.key);
+    changed=page;changed.indices.insert(changed.indices.end(),{0,1,2});assert(key(changed)!=page.key);
+    changed=page;std::swap(changed.indices[0],changed.indices[1]);assert(key(changed)!=page.key);
+    assert(p.cpuBytes()>=sizeof(P::Page)*p.pages.size());
+    auto badKey=p;badKey.pages[0].key.indexBytes+=4;
+    assert(!P::validatePages(in,p)&&P::validatePages(in,badKey));
+    // A batch larger than a page still splits at triangle boundaries and anchors close those pages early.
+    WorldScene big;WorldMeshUploadPlan bi;bi.source=&big;bi.materials.resize(3);
+    for(uint32_t i=0;i<P::PageVertexLimit*3;++i)big.vertices.push_back(vertex(i*5+1));bi.vertexCount=uint32_t(big.vertices.size());
+    addBatch(bi,60000,0,bi.vertexCount,1);
+    P::Plan seq,anch;assert(P::build(bi,seq,error,{},off)&&P::build(bi,anch,error));verify(bi,seq);verify(bi,anch);
+    std::printf("anchors large batch: pages %zu sequential %zu\n",anch.pages.size(),seq.pages.size());
+    std::puts("PASS content anchors: resynchronisation after insertion/removal, identical keys for identical bytes, whole batches, hard limits");
 }
 static void testTransactionalFailure(){
     WorldScene scene;WorldMeshUploadPlan input;initialize(scene,input,3);addBatch(input,1,0,3);
@@ -152,4 +220,4 @@ static void testSeal(){
     assert(P::seal(borrowed,pages,error));assert(!P::validateSealed(borrowed));assert(source->vertices.size()==3);
     std::puts("PASS sealed ownership: source release, exact placement proofs, retained GI, cheap validation and transactional failures");
 }
-int main(){testVertexLimits();testIndexLimits();testKeepBatches();testDegenerateAndExactBoundary();testTransactionalFailure();testSeal();std::puts("All world mesh page tests passed");}
+int main(){testVertexLimits();testIndexLimits();testKeepBatches();testDegenerateAndExactBoundary();testAnchors();testTransactionalFailure();testSeal();std::puts("All world mesh page tests passed");}

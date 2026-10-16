@@ -1,5 +1,6 @@
 #pragma once
 #include "world_mesh_plan.h"
+#include "mesh_page_key.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -17,9 +18,18 @@ constexpr uint32_t PageIndexByteLimit=512u*1024u;
 constexpr uint32_t PageVertexLimit=PageVertexByteLimit/sizeof(NorthlightGI::WorldVertex);
 constexpr uint32_t PageIndexLimit=PageIndexByteLimit/sizeof(uint32_t);
 static_assert(sizeof(NorthlightGI::WorldVertex)==32,"Paging preserves the full world vertex");
+static_assert(sizeof(NorthlightGI::Vec3)==12,"Content anchors hash three packed floats");
+// 0.3.216 (issue #66): content-defined page boundaries. After a triangle whose position hash is 0 mod anchorModulus,
+// and once the page holds minFillVertices, the page closes (at the end of the batch when the batch fits an empty page,
+// so such batches stay whole). An insertion or removal anywhere in the plan then only changes the pages up to the next
+// anchor; every later page is byte-identical to the previous build's. The hard limits stay as forced cuts.
+constexpr uint32_t MinFillVertices=PageVertexLimit/4;
+constexpr uint32_t AnchorModulus=6144;
+struct Options {uint32_t anchorModulus=AnchorModulus,minFillVertices=MinFillVertices;}; // anchorModulus 0: sequential paging (tests, measurements)
 struct Page {
     std::vector<NorthlightGI::WorldVertex> vertices;
     std::vector<uint32_t> indices;
+    NorthlightMeshPageKey::Key key; // 0.3.216: content key of vertices+indices, set by build() on the worker
 };
 struct Batch : NorthlightWorldMesh::Batch {
     uint32_t page=0,minVertex=0,vertexCount=0;
@@ -40,8 +50,10 @@ struct Plan {
 // only at triangle boundaries. One bounded source-index map is reused per page;
 // a second bounded set preflights a batch without retaining a scene-sized map.
 // Failure never modifies output. Materials and scene ownership remain in input.
+// Pages also close at content anchors (see Options) and carry a content key; a batch that fits an empty page
+// is never split by an anchor.
 inline bool build(const NorthlightWorldMesh::WorldMeshUploadPlan& input,Plan& output,std::string& error,
-                  const NorthlightGI::AllocationAdmission& admit = {}) {
+                  const NorthlightGI::AllocationAdmission& admit = {},const Options& options = {}) {
     auto fail=[&](const char* why){error=why;return false;};
     try {
         if(input.indices.size()!=uint64_t(input.triangleCount)*3)
@@ -60,7 +72,9 @@ inline bool build(const NorthlightWorldMesh::WorldMeshUploadPlan& input,Plan& ou
         std::unordered_set<uint32_t> batchUnique;
         remap.reserve(PageVertexLimit);batchUnique.reserve(PageVertexLimit);
         uint64_t expectedStart=0;
+        bool closeAfter=false; // an anchor closed the current page: the next triangle/batch opens a new one
         auto newPage=[&](){
+            closeAfter=false;
             // Covers both bounded buffers plus vector growth transient copies.
             if(!allowed(2u*(PageVertexByteLimit+PageIndexByteLimit)))return false;
             if(next.pages.size()==next.pages.capacity()) {
@@ -94,7 +108,8 @@ inline bool build(const NorthlightWorldMesh::WorldMeshUploadPlan& input,Plan& ou
                     }
                 }
             }
-            if(next.pages.empty()||(fitsEmpty&&(next.pages.back().indices.size()+count>PageIndexLimit||next.pages.back().vertices.size()+missing>PageVertexLimit)))
+            bool anchored=false; // anchor hit inside a batch that must stay whole: the page closes after the batch
+            if(next.pages.empty()||closeAfter||(fitsEmpty&&(next.pages.back().indices.size()+count>PageIndexLimit||next.pages.back().vertices.size()+missing>PageVertexLimit)))
                 if(!newPage())return fail("Paged mesh page allocation deferred");
             size_t currentBatch=std::numeric_limits<size_t>::max();
             for(uint64_t i=original.start;i<expectedStart;i+=3) {
@@ -105,7 +120,7 @@ inline bool build(const NorthlightWorldMesh::WorldMeshUploadPlan& input,Plan& ou
                     bool repeated=false;for(unsigned previous=0;previous<k;++previous)repeated|=ids[k]==ids[previous];
                     if(!repeated&&remap.find(ids[k])==remap.end())++newVertices;
                 }
-                if(next.pages.back().vertices.size()+newVertices>PageVertexLimit||next.pages.back().indices.size()+3>PageIndexLimit) {
+                if(closeAfter||next.pages.back().vertices.size()+newVertices>PageVertexLimit||next.pages.back().indices.size()+3>PageIndexLimit) {
                     if(!newPage())return fail("Paged mesh page allocation deferred");
                     currentBatch=std::numeric_limits<size_t>::max();
                 }
@@ -141,10 +156,19 @@ inline bool build(const NorthlightWorldMesh::WorldMeshUploadPlan& input,Plan& ou
                     batch.boundsHigh.x=std::max(batch.boundsHigh.x,p.x);batch.boundsHigh.y=std::max(batch.boundsHigh.y,p.y);batch.boundsHigh.z=std::max(batch.boundsHigh.z,p.z);
                 }
                 batch.vertexCount=maxVertex-batch.minVertex+1;++batch.count;
+                if(options.anchorModulus&&page.vertices.size()>=options.minFillVertices) {
+                    const auto& sv=input.source->vertices;
+                    const uint64_t anchor=NorthlightMeshPageKey::triangleHash(&sv[ids[0]].position.x,&sv[ids[1]].position.x,&sv[ids[2]].position.x);
+                    if(anchor%options.anchorModulus==0){if(fitsEmpty)anchored=true;else closeAfter=true;}
+                }
             }
+            if(anchored)closeAfter=true;
         }
         if(expectedStart!=input.indices.size())return fail("Paged mesh batches do not cover all indices");
-        for(const auto& p:next.pages){next.vertexBytes+=p.vertices.size()*sizeof(NorthlightGI::WorldVertex);next.indexBytes+=p.indices.size()*sizeof(uint32_t);}
+        for(auto& p:next.pages) {
+            p.key=NorthlightMeshPageKey::keyOf(p.vertices.data(),p.vertices.size()*sizeof(NorthlightGI::WorldVertex),p.indices.data(),p.indices.size()*sizeof(uint32_t));
+            next.vertexBytes+=p.vertices.size()*sizeof(NorthlightGI::WorldVertex);next.indexBytes+=p.indices.size()*sizeof(uint32_t);
+        }
         output=std::move(next);error.clear();return true;
     } catch(const std::bad_alloc&) {return fail("Paged mesh worker allocation failed");}
       catch(const std::length_error&) {return fail("Paged mesh worker allocation size overflow");}
@@ -160,6 +184,7 @@ inline const char* validatePages(const NorthlightWorldMesh::WorldMeshUploadPlan&
     uint64_t vertexBytes=0,indexBytes=0;
     for(const auto& page:pages.pages) {
         if(page.vertices.empty()||page.indices.empty()||page.vertices.size()>PageVertexLimit||page.indices.size()>PageIndexLimit||page.indices.size()%3)return "invalid mesh page size";
+        if(page.key.vertexBytes!=page.vertices.size()*sizeof(NorthlightGI::WorldVertex)||page.key.indexBytes!=page.indices.size()*sizeof(uint32_t))return "mesh page key size mismatch";
         vertexBytes+=page.vertices.size()*sizeof(NorthlightGI::WorldVertex);indexBytes+=page.indices.size()*sizeof(uint32_t);
     }
     if(vertexBytes!=pages.vertexBytes||indexBytes!=pages.indexBytes||indexBytes!=input.indexBytes)return "paged aggregate sizes mismatch";
