@@ -403,7 +403,7 @@ private:
         }
     }
     // Appends to the CSTREAM line, never past the buffer (n stays below kLine).
-    static constexpr int kLine=2000;
+    static constexpr int kLine=3072;   // 0.3.216: was 2000, which cut the pass[...] reasons off the line during pressure episodes
     __attribute__((format(printf,3,4))) static void put(char* buf,int& n,const char* fmt,...){
         if(n<0||n>=kLine-1)return;va_list ap;va_start(ap,fmt);const int w=std::vsnprintf(buf+n,size_t(kLine-n),fmt,ap);va_end(ap);
         if(w>0)n=n+w<kLine-1?n+w:kLine-1;

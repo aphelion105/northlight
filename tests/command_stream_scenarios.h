@@ -395,6 +395,19 @@ static void twoLargeBuffers(){
     rig.finish();checkClean();
 }
 
+// 0.3.216 (issue #66 follow-up): a 2.8 MiB dynamic buffer (above the halved quarter, below the full one) keeps its shadow under pressure: no pass-through, no SyncLock, the total stays within the halved cap.
+static void pressureKeepsMidSizeShadow(){
+    gTrace.clear();Rig rig(true);auto& q=rig.core().q;auto& s=q.stats;
+    const UINT len=2800u<<10;IDirect3DVertexBuffer9* b=nullptr;void* p=nullptr;
+    q.setPressure(true);CHECK(len>q.shadowCap()/4&&len<=q.shadowItemLimit());
+    CHECK(rig.dev->CreateVertexBuffer(len,D3::kUsageDynamic,0,(D3DPOOL)0,&b,nullptr)==D3D_OK&&shadowOn(b)&&s.shadowBytes.load()<=std::int64_t(q.shadowCap()));
+    const auto sync0=get(s.syncCalls),pass0=get(s.passThrough[unsigned(PassReason::NoShadow)]);
+    for(int i=0;i<50;++i){CHECK(b->Lock(0,64,&p,i?D3::kLockNoOverwrite:D3::kLockDiscard)==D3D_OK&&b->Unlock()==D3D_OK);}
+    CHECK(get(s.syncCalls)==sync0&&get(s.passThrough[unsigned(PassReason::NoShadow)])==pass0&&shadowOn(b));
+    CHECK(q.shadowItemLimit()==ShadowBudgetBytes/4);   // the item limit is not halved
+    b->Release();rig.sync();CHECK(s.shadowBytes.load()==0);
+    q.setPressure(false);rig.finish();checkClean();
+}
 static void shadowCap(){
     gTrace.clear();Rig rig(true);auto& q=rig.core().q;auto& s=q.stats;
     const int n=int(ShadowBudgetBytes/(2u<<20));   // how many 2 MiB shadows fit the cap
@@ -1415,7 +1428,7 @@ struct ZcRig {
     explicit ZcRig(UINT len=15800000,unsigned framesAhead=3):L(len),m(len){
         gTrace.clear();gStatLines.clear();opt.readBackLock=&dxvk3ReadBack;opt.framesAhead=framesAhead;
         opt.log=[](const char* l){gStatLines.push_back(l);};opt.diagnostics=[]{return true;};
-        rig.reset(new Rig(true,opt));d=rig->dev;core=&rig->core();q=&core->q;s=&q->stats;large=L>q->shadowCap()/4;
+        rig.reset(new Rig(true,opt));d=rig->dev;core=&rig->core();q=&core->q;s=&q->stats;large=L>q->shadowItemLimit();
         CHECK(d->CreateVertexBuffer(L,D3::kUsageDynamic,0,(D3DPOOL)0,&vb,nullptr)==D3D_OK&&shadowOn(vb)&&held()==L&&buf().large==large);
     }
     BufferState& buf(){return static_cast<StreamVertexBuffer*>(ProxyBase::of(vb))->buf;}
@@ -1998,7 +2011,7 @@ static void textureReadbackTable(){
 }
 static void streamTests(bool threadsOnly){
     layoutIsolation();replayTimingAccounting();diagnosticsOffSkipsAudit();idlePollWakes();
-    lifetimeAndIdentity();stateKnownUnknown();locksPreserveBytes();staticBufferShadows();dynamicBufferShadows();largeBufferAllowance();twoLargeBuffers();adaptiveShadowCap();shadowCap();queriesAndSyncCensus();occlusionFlushLocal(true);occlusionFlushLocal(false);resetAndShutdown();directReplayRaw();redundantFiltering();renderTargetResetsViewport();textureShadows();textureExpressReadback();textureReadbackDiagnostics();textureExpressBehind();textureReadbackTable();statsLine();childrenOutliveTheDevice();queryProbeAndDeadQuery();initFailureFallback();cursorHandling();nestedSyncInPump();testCooperativeLevelLocal(1);testCooperativeLevelLocal(3);upDrawsAndBackpressure();snapshotTriggers();snapshotPoolNotExhausted();memoryPressureRelease();impossibleBlockIsRefusedAtOnce();smallStagedLocksUseScratch();
+    lifetimeAndIdentity();pressureKeepsMidSizeShadow();stateKnownUnknown();locksPreserveBytes();staticBufferShadows();dynamicBufferShadows();largeBufferAllowance();twoLargeBuffers();adaptiveShadowCap();shadowCap();queriesAndSyncCensus();occlusionFlushLocal(true);occlusionFlushLocal(false);resetAndShutdown();directReplayRaw();redundantFiltering();renderTargetResetsViewport();textureShadows();textureExpressReadback();textureReadbackDiagnostics();textureExpressBehind();textureReadbackTable();statsLine();childrenOutliveTheDevice();queryProbeAndDeadQuery();initFailureFallback();cursorHandling();nestedSyncInPump();testCooperativeLevelLocal(1);testCooperativeLevelLocal(3);upDrawsAndBackpressure();snapshotTriggers();snapshotPoolNotExhausted();memoryPressureRelease();impossibleBlockIsRefusedAtOnce();smallStagedLocksUseScratch();
     framesAheadPacing();textureShadowSpares();frameSkipping();frameSkipReleasesPresentWait();   // 0.3.200 (frame skip)
     zeroCopyRenames();zeroCopyRingBudget();zeroCopyAdaptiveRing();zeroCopyRetire();zeroCopyPumpedLock(0);zeroCopyPumpedLock(1);
     for(UINT len:{512u<<10,2u<<20}){zeroCopyRenames(len);zeroCopyRetire(len);zeroCopyPumpedLock(0,len);zeroCopyPumpedLock(1,len);}   // 0.3.204 (task 21): the same for DYNAMIC buffers in the regular shadow cap

@@ -387,6 +387,9 @@ public:
     // Registered CPU shadow bytes: their own cap (shadowAdmit), not part of the queue budget.
     void addShadowBytes(std::int64_t delta){stats.shadowBytes.fetch_add(delta,std::memory_order_relaxed);}
     std::size_t shadowCap()const{const std::size_t c=shadowCapCur_.load(std::memory_order_relaxed);return pressure_.load()?c/2:c;}   // adaptive (see ShadowBudgetBytes), halved under pressure
+    // 0.3.216 (issue #66 follow-up): the largest buffer a shadow may be made for (a quarter of the cap) is judged against the UNHALVED cap. Halved with the total, a 2.8 MiB dynamic buffer locked
+    // hundreds of times a frame lost its shadow in a pressure episode (limit 4 -> 2 MiB) and every lock became a SyncLock round trip (fps 70-140 -> 20-38). The halved total (shadowAdmit) still bounds the memory.
+    std::size_t shadowItemLimit()const{return shadowCapCur_.load(std::memory_order_relaxed)/4;}
     // Thrash signal (game thread, `frame` = Presents so far): one more step, if no pressure, below the maximum and past the interval. true = grew.
     bool growShadowCap(std::uint64_t frame){
         const std::size_t c=shadowCapCur_.load(std::memory_order_relaxed);

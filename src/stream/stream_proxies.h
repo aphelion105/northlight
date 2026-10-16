@@ -833,7 +833,7 @@ inline bool slicesBusy(const StreamCore& c,const BufferState& s){const std::uint
 // must not flush the rest). The large allowance is a list of its own (a large shadow frees nothing of the regular cap). false = still no room.
 inline bool makeRoomForBufferShadow(StreamCore& c,std::size_t bytes,bool relock,const BufferState* keep){
     while(!c.q.shadowAdmit(bytes)){
-        if(bytes>c.q.shadowCap()/4)return false;
+        if(bytes>c.q.shadowItemLimit())return false;
         std::lock_guard<std::mutex> l(c.texMutex);
         BufferState* victim=nullptr;
         for(BufferState* s=c.bufRegular.head;s&&s->lastUse<c.frameNo;s=s->lru.next)if(s!=keep&&s->mode==BufferState::Free&&!slicesBusy(c,*s)){victim=s;break;}   // 0.3.204 (task 21): never a holder whose slices unreplayed unlocks still read
@@ -846,7 +846,7 @@ inline bool makeRoomForBufferShadow(StreamCore& c,std::size_t bytes,bool relock,
 }
 // Large allowance (see kMaxLargeShadow): a DYNAMIC buffer too big for the regular cap. true = the allowance has room for it (no pressure; when taken by another
 // large shadow and mayEvict, that one is dropped if unlocked and idle for kLargeIdleFrames, LRU). Game thread.
-inline bool largeCandidate(const ProxyBase& p){const std::size_t len=p.info.length;return dynamicBuffer(p)&&len>p.core->q.shadowCap()/4&&len<=kMaxLargeShadow;}
+inline bool largeCandidate(const ProxyBase& p){const std::size_t len=p.info.length;return dynamicBuffer(p)&&len>p.core->q.shadowItemLimit()&&len<=kMaxLargeShadow;}
 inline bool makeRoomForLarge(StreamCore& c,std::size_t bytes,bool mayEvict,const BufferState* keep){
     trimRetired(c);   // 0.3.204 (task 21): retired slices the replay thread has passed count against the allowance until freed
     if(c.q.largeAdmit(bytes))return true;
@@ -892,7 +892,7 @@ inline void markBufferGpuWritten(ProxyBase& p,BufferState& s){dropShadow(p,s);s.
 inline int readBackShadow(ProxyBase& self,BufferState& s){
     StreamCore& core=*self.core;Queue& q=core.q;const UINT len=self.info.length;const bool dyn=dynamicBuffer(self);
     const bool large=largeCandidate(self);
-    if(!(large?makeRoomForLarge(core,len,true,&s):(len<=q.shadowCap()/4&&makeRoomForBufferShadow(core,len,true,&s)))){add(q.stats.relockRefused);add(q.stats.relockRefusedBytes,len);return 0;}
+    if(!(large?makeRoomForLarge(core,len,true,&s):(len<=q.shadowItemLimit()&&makeRoomForBufferShadow(core,len,true,&s)))){add(q.stats.relockRefused);add(q.stats.relockRefusedBytes,len);return 0;}
     try{s.shadow.assign(std::size_t(len)+kLockSlack,0);}catch(...){return 0;}
     bool ok=false;
     const bool ran=runTask(core,[&](StreamCore& c){
