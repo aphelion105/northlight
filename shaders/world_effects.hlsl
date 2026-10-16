@@ -19,6 +19,7 @@ sampler2D ActorMap : register(s12);
 sampler2D ActorVisibility : register(s12);
 sampler2D RegionalFog : register(s13); // ground, day extinction, night extra, layer height
 sampler2D RainMask : register(s13); // 0.3.202 (rain mask): WorldComposite only, rain streak coverage (r), 0 without rain
+sampler2D DitherNoise : register(s2); // WorldComposite only: 64x64 signed blue-noise offsets (rgb, +-1/255, POINT, WRAP; sky/dither_noise.h); ShadowNear's slot, idle by then
 float4 RegionalFogInfo : register(c31); // world node0 XY, inverse field span, night fraction
 float4 WaterInfo : register(c30);
 float4 RemovalInfo : register(c30); // RemovalSmooth, TemporalLight: y 1 when a lit source is drawn, z 1/(summed source weight), w disc radius in half-res pixels at view distance 1
@@ -1088,8 +1089,8 @@ float3 horizonHaze(float3 color,float2 uv,float viewZ,bool sky) {
     float3 haze=HorizonHaze.rgb*mad(lift,ShadowRange.yzw,1);
     return lerp(color,haze,amount);
 }
-// 509 of the 512 ps_3_0 slots (shaders/world-shader-build.json): free slots before adding to this pass.
-float4 WorldComposite(float2 uv:TEXCOORD0):COLOR0 {
+// 512 of the 512 ps_3_0 slots (shaders/world-shader-build.json): free slots before adding to this pass.
+float4 WorldComposite(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {
     // Fetches before any flow control use texld (1 slot; tex2Dlod costs 3-4): Scene and Depth have one level and no mip filter, so texld reads what tex2Dlod(.,0) does.
     float4 original=tex2D(Scene,uv);
     float2 centerUV=depthUV(uv);
@@ -1189,7 +1190,9 @@ float4 WorldComposite(float2 uv:TEXCOORD0):COLOR0 {
         color=lerp(mad(horizonHaze(color,centerUV,viewZ,d>=.99999&&liquid<=0),fog.a,fog.rgb),unfogged,rain);
     }
     if(PassInfo.z==3)color=fog.rgb;
-    return float4(max(color,0),original.a);
+    // Dither before the 8-bit target rounds: haze and night air vary only with view elevation and would band into
+    // horizontal lines. VPOS is the integer pixel; +.5 texel hits the POINT texel centre.
+    return float4(max(color+tex2D(DitherNoise,mad(pixel,1.0/64,.5/64)).rgb,0),original.a);
 }
 
 // Separate geometry pass: c0..3 contains the light's world->clip matrix.
