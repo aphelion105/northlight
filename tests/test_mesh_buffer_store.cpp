@@ -13,7 +13,7 @@ static uint32_t round64(uint32_t b){return (b+K64-1)/K64*K64;}
 static void createResources(S::Store& st){
     for(size_t u=0;u<st.staging().upload.size();++u){
         const uint32_t id=st.staging().uploadBuffer[u];const Key& k=st.staging().keys[st.staging().upload[u]];
-        assert(st.writable(id));
+        assert(st.writable(id)&&st.markWriting(id)&&!st.entries()[id].keyValid); // the old content dies before the first write
         if(st.entries()[id].vbCapacity<k.vertexBytes)assert(st.setCapacity(id,true,round64(k.vertexBytes)));
         if(st.entries()[id].ibCapacity<k.indexBytes)assert(st.setCapacity(id,false,round64(k.indexBytes)));
     }
@@ -42,7 +42,7 @@ int main(){
      s=st.commit();assert(s.uploadedPages==0&&s.uploadedCapacity==0&&st.table()==before);verifyInvariants(st);
      // Replaced pages: misses claim NEW buffers (no idle yet), the active ones are never claimed.
      assert(st.beginStaging(keys({1,9,3,8})));
-     for(uint32_t id:st.staging().uploadBuffer){for(uint32_t a:before)assert(a!=id);assert(st.entries()[id].use==S::Use::Claimed&&!st.entries()[id].keyValid);}
+     for(uint32_t id:st.staging().uploadBuffer){for(uint32_t a:before)assert(a!=id);assert(st.entries()[id].use==S::Use::Claimed);}
      assert(st.staging().stats.reusedPages==2&&st.staging().stats.uploadedPages==2&&st.staging().upload==std::vector<uint32_t>({1,3}));
      createResources(st);s=st.commit();verifyInvariants(st);
      assert(st.table()[0]==before[0]&&st.table()[2]==before[2]&&st.table()[1]!=before[1]);
@@ -62,12 +62,14 @@ int main(){
      assert(st.beginStaging(keys({1,2,5,6,7,8})));                // two misses: the two idle buffers are claimed, nothing new is created
      assert(st.entries().size()==entriesBefore&&st.staging().stats.uploadedPages==2);
      for(uint32_t id:st.staging().uploadBuffer)assert(id==ids[2]||id==ids[3]);
-     assert(!st.entries()[ids[2]].keyValid&&!st.entries()[ids[3]].keyValid);   // invalidated at the claim
-     st.cancel();                                                  // partial content: idle, invalid
-     assert(st.entries()[ids[2]].use==S::Use::Idle&&!st.entries()[ids[2]].keyValid);verifyInvariants(st);
-     // A cancelled claim does not resurrect the old key: page 3 misses now, and takes an invalid-key buffer first.
+     assert(st.entries()[ids[2]].keyValid&&st.entries()[ids[3]].keyValid);     // untouched claims still hold their content
+     assert(st.markWriting(ids[2])&&!st.entries()[ids[2]].keyValid&&!st.markWriting(ids[0])&&st.entries()[ids[0]].keyValid); // a written claim is invalid; an active buffer is not writable
+     st.cancel();                                                  // ids[2]: partial content (idle, invalid); ids[3]: never written, still valid
+     assert(st.entries()[ids[2]].use==S::Use::Idle&&!st.entries()[ids[2]].keyValid&&st.entries()[ids[3]].use==S::Use::Idle&&st.entries()[ids[3]].keyValid);verifyInvariants(st);
+     assert(st.beginStaging(keys({1,2,5,6,4}))&&st.staging().upload.empty()&&st.staging().table[4]==ids[3]);st.cancel();   // the untouched buffer is still a hit
+     // The cancelled write does not resurrect the old key: page 3 misses now and takes the invalid-key buffer first.
      assert(st.beginStaging(keys({1,2,5,6,3})));
-     assert(st.staging().stats.uploadedPages==1&&(st.staging().uploadBuffer[0]==ids[2]||st.staging().uploadBuffer[0]==ids[3]));
+     assert(st.staging().stats.uploadedPages==1&&st.staging().uploadBuffer[0]==ids[2]);
      st.cancel();verifyInvariants(st);
      assert(st.table()==std::vector<uint32_t>({ids[0],ids[1],st.table()[2],st.table()[3]}));}
     // Capacity: a too-small idle buffer is skipped (a new one is created), a larger one is used.
@@ -96,7 +98,7 @@ int main(){
     {S::Store st;build(st,keys({1,2,3,4}));auto ids=st.table();
      build(st,keys({1,5,6,7}));                                   // 2,3,4 idle, stamp 2
      build(st,keys({1,5,6,8}));                                   // 7 idle, stamp 3 -> idle: 2,3,4 (older), 7
-     assert(st.beginStaging(keys({1,5,6,8,9,10})));st.cancel();   // claims two idle: they become invalid-key idle
+     assert(st.beginStaging(keys({1,5,6,8,9,10})));for(uint32_t id:st.staging().uploadBuffer)st.markWriting(id);st.cancel();   // claims two idle and writes them: invalid-key idle
      std::vector<uint32_t> order;
      const uint64_t per=round64(300000)+round64(100000);
      std::vector<bool> validAtDrop;

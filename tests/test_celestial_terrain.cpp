@@ -22,7 +22,7 @@ static bool cornerReject(V lo,V hi,const float* m){
     }
     return std::any_of(outside,outside+6,[](bool v){return v;});
 }
-static void realPages(const std::string& root);
+static void realPages(const std::string& root,const NorthlightWorldMeshPages::Options& paging,bool counterfactual);
 static void lowSun(const std::string& root);
 static void syntheticRuns();
 static void reuseShift();
@@ -64,7 +64,7 @@ int main(int argc,char** argv){
     assert(retained>0);
     std::printf("PASS celestial terrain: %u perspective/ray/culling cases, %u retained random boxes; far mountains, behind camera, near-plane crossing and invalid input checked\n",cases,retained);
     syntheticRuns();
-    if(argc>1){realPages(argv[1]);lowSun(argv[1]);}
+    if(argc>1){realPages(argv[1],NorthlightWorldMeshPages::Options{0,0},true);realPages(argv[1],NorthlightWorldMeshPages::Options{},false);lowSun(argv[1]);} /* sequential pages carry the counterfactual (0.3.216: content-defined pages rarely leave index gaps); both layouts must merge exactly */
 }
 // ---- 0.3.175 S1: merged mask draws ------------------------------------------------------------
 namespace P=NorthlightWorldMeshPages;
@@ -121,13 +121,13 @@ static void syntheticRuns(){
     std::puts("PASS mask runs (synthetic): contiguous same-page batches merge, a page boundary ends a run (counterfactual differs)");
 }
 // Loads the near scenes and the far terrain around c the way the renderer's mesh commit does, and plans the pages.
-static bool loadPlan(const std::string& root,NorthlightGI::Vec3 c,const std::vector<std::string>& nearFiles,const std::vector<std::string>& farFiles,P::Plan& plan){
+static bool loadPlan(const std::string& root,NorthlightGI::Vec3 c,const std::vector<std::string>& nearFiles,const std::vector<std::string>& farFiles,P::Plan& plan,const P::Options& paging=P::Options{}){
     using namespace NorthlightGI;std::string error;WorldScene local,far;
     assert(loadInstancedScenes(nearFiles,root+"/models",c-Vec3(288,288,320),c+Vec3(288,288,320),local,error));
     const float radius=NorthlightShadowTerrain::Radius;
     assert(loadInstancedScenes(farFiles,root+"/models",c-Vec3(radius,radius,radius),c+Vec3(radius,radius,radius),far,error,1));
     NorthlightWorldMesh::WorldMeshUploadPlan input;assert(NorthlightShadowTerrain::build(local,far,c,input,error));
-    assert(P::build(input,plan,error));return true;
+    assert(P::build(input,plan,error,{},paging));return true;
 }
 // Low sun over the Tanaris corridor (azimuth pi/4): how many terrain triangles the per-batch (one chunk x material)
 // culling submits against the floor any finer culling could reach (each triangle's own bounds against the same frustum).
@@ -156,7 +156,7 @@ static void lowSun(const std::string& root){
 // Real world-cache terrain pages (Stormwind, Elwynn, Stranglethorn): per-batch submission against merged
 // runs for random mask frusta around the fixture: identical mask bits and triangle multisets; merging
 // across index gaps differs. Prints the merge ratio (accepted batches per DIP).
-static void realPages(const std::string& root){
+static void realPages(const std::string& root,const P::Options& paging,bool counterfactual){
     using namespace NorthlightGI;std::string error;
     struct Fixture{const char* name;Vec3 center;const char* map="Azeroth";};std::mt19937 random(175);
     std::uint64_t accepted=0,runs=0;unsigned frusta=0,gapDiffers=0,pageDiffers=0;
@@ -167,7 +167,7 @@ static void realPages(const std::string& root){
         for(int y=ty-2;y<=ty+2;++y)for(int x=tx-2;x<=tx+2;++x){auto p=root+"/"+fixture.map+"/"+std::to_string(x)+"_"+std::to_string(y)+".fg3";
             if(!std::filesystem::exists(p))continue;farFiles.push_back(p);if(std::abs(x-tx)<=1&&std::abs(y-ty)<=1)nearFiles.push_back(p);}
         if(nearFiles.empty()){std::printf("  %s: no world-cache tiles\n",fixture.name);continue;}
-        P::Plan plan;if(!loadPlan(root,c,nearFiles,farFiles,plan))return;
+        P::Plan plan;if(!loadPlan(root,c,nearFiles,farFiles,plan,paging))return;
         std::vector<std::uint32_t> list;for(std::uint32_t i=0;i<plan.batches.size();++i)if(plan.batches[i].terrain)list.push_back(i);
         std::vector<std::uint32_t> everything(plan.batches.size());for(std::uint32_t i=0;i<everything.size();++i)everything[i]=i;
         std::uniform_real_distribution<float> azimuth(0,6.2831853f),elevation(.004f,.35f),offset(-40,40),halo(0,1);
@@ -183,13 +183,14 @@ static void realPages(const std::string& root){
             const auto r=draw(plan,list,accept,m,Merge::Exact,merged);
             const auto everyBatch=draw(plan,everything,accept,m,Merge::Exact,fromAll); /* the fallback's batch set: the same runs */
             assert(merged==reference&&fromAll==reference&&r.accepted==perBatchAccepted&&r.runs<=r.accepted&&everyBatch.runs==r.runs);
-            Mask gapMerged(512),pageMerged(512);draw(plan,list,accept,m,Merge::IgnoreGap,gapMerged);draw(plan,list,accept,m,Merge::IgnorePage,pageMerged);
-            gapDiffers+=!(gapMerged==reference);pageDiffers+=!(pageMerged==reference);
+            if(counterfactual){ /* deliberately wrong merges (they may read past a page): only on the layout that shows them */
+                Mask gapMerged(512),pageMerged(512);draw(plan,list,accept,m,Merge::IgnoreGap,gapMerged);draw(plan,list,accept,m,Merge::IgnorePage,pageMerged);
+                gapDiffers+=!(gapMerged==reference);pageDiffers+=!(pageMerged==reference);}
             fixtureAccepted+=r.accepted;fixtureRuns+=r.runs;++frusta;}
         accepted+=fixtureAccepted;runs+=fixtureRuns;
         std::printf("  %s: %zu batches (%zu terrain) on %zu pages; 24 frusta: accepted %llu, DIPs %llu (%.1f batches per DIP)\n",fixture.name,plan.batches.size(),list.size(),plan.pages.size(),
             (unsigned long long)fixtureAccepted,(unsigned long long)fixtureRuns,fixtureRuns?double(fixtureAccepted)/double(fixtureRuns):0.);}
-    assert(frusta>0&&gapDiffers>0); /* a page change almost never meets index contiguity on real pages: the synthetic case covers it */
+    assert(frusta>0&&(!counterfactual||gapDiffers>0)); /* a page change almost never meets index contiguity on real pages: the synthetic case covers it */
     std::printf("PASS mask runs (real pages): %u random frusta, merged == per-batch mask bits and triangle multisets, DIP ranges cover every index; merge ratio %.1f accepted batches per DIP (%llu -> %llu); counterfactuals differ (merging across gaps: %u frusta; across pages with contiguous indices: %u)\n",
         frusta,runs?double(accepted)/double(runs):0.,(unsigned long long)accepted,(unsigned long long)runs,gapDiffers,pageDiffers);
 }

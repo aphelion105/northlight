@@ -43,6 +43,7 @@
 #include "address_space_snapshot.h"
 #include "terrain_reach_fallback.h"
 #include "mesh_pool_trim.h"
+#include "mesh_buffer_store.h"
 #include "memory_admission_probe.h"
 #include <chrono>
 #include "world_probe_cache.h"
@@ -215,7 +216,7 @@ public:
     // loads, shadow updates or mesh publication from the native sky draw hook.
     uint64_t celestialTerrainGeneration()const{
         char map[64]={};float camera[3];
-        if(failed||activeMesh<0||batches.empty()||!NorthlightWorldContext::readMapAndCamera(map,camera)||uploadedMap!=map)return 0;
+        if(failed||meshStore.table().empty()||batches.empty()||!NorthlightWorldContext::readMapAndCamera(map,camera)||uploadedMap!=map)return 0;
         return meshGeneration+1;
     }
     // 0.3.175 (S3): the renderer's effects buckets (RenderProfile sample frames; marks are no-ops otherwise).
@@ -559,14 +560,17 @@ private:
     }
     IDirect3DVertexShader9 *shadowVS=nullptr,*cachedShadowVS=nullptr;
     IDirect3DVertexDeclaration9* shadowDecl=nullptr;
-    IDirect3DVertexBuffer9* vertices=nullptr; // non-owning alias of meshPool[activeMesh]
+    IDirect3DVertexBuffer9* vertices=nullptr; // non-owning aliases of page 0 of the active table; also the "mesh present" flags
     IDirect3DIndexBuffer9* indices=nullptr;
-    // Two persistent page pools: the inactive generation stages bounded static
-    // resources, and all pages become drawable together after complete upload.
-    struct MeshBuffers {IDirect3DVertexBuffer9* vb=nullptr;IDirect3DIndexBuffer9* ib=nullptr;UINT vbCapacity=0,ibCapacity=0;};
-    std::vector<MeshBuffers> meshPool[2];int activeMesh=-1;NorthlightMeshPoolTrim::State meshPoolTrim;
+    // 0.3.216 (issue #66): ONE store of page buffers (mesh_buffer_store.h) instead of two full slots. meshStore does all the
+    // bookkeeping (content keys, active table, claims, idle state); meshBuffers[id] holds the D3D resources of store entry
+    // `id` (capacities live in the entry). The active table is drawn; a staging build reuses buffers whose key matches a new
+    // page, uploads only the misses into idle/new buffers and switches the table atomically at commit. An ACTIVE buffer is
+    // never created, written or released (acquireMeshPage/perform check meshStore.writable(id), trims take idle ones only).
+    struct MeshBuffers {IDirect3DVertexBuffer9* vb=nullptr;IDirect3DIndexBuffer9* ib=nullptr;};
+    NorthlightMeshBufferStore::Store meshStore;std::vector<MeshBuffers> meshBuffers;NorthlightMeshPoolTrim::State meshPoolTrim;
+    void syncMeshBuffers(){meshBuffers.resize(meshStore.entries().size());}
     DWORD memoryPressureLogAt=0,memoryPressureUntil=0;
-    int stagingSlot()const{return activeMesh<0?0:1-activeMesh;}
     static UINT roundBuffer(uint64_t bytes,uint64_t stepBytes){return UINT(NorthlightGeometryMemory::roundUp(bytes,stepBytes));}
     // Growth admission for any large GPU buffer. A refused growth is remembered
     // for one second so pressure does not add an address-space walk per frame.
@@ -581,58 +585,44 @@ private:
         if(!memoryPressureLogAt||now-memoryPressureLogAt>=60000){memoryPressureLogAt=now;logGeometryMemory(stage,memory,0,exact&&!cachedSample,&budget);}
         return false;
     }
-    bool acquireMeshPage(size_t page,bool vertex,UINT bytes,NorthlightGeometryMemory::Sample& memory){
-        MeshBuffers& slot=meshPool[stagingSlot()][page];
-        if(vertex?slot.vb&&slot.vbCapacity>=bytes:slot.ib&&slot.ibCapacity>=bytes)return true;
+    bool acquireMeshPage(uint32_t id,bool vertex,UINT bytes,NorthlightGeometryMemory::Sample& memory){
+        if(!meshStore.writable(id)||id>=meshBuffers.size())return false; // only a buffer claimed by this staging, never an active one
+        MeshBuffers& slot=meshBuffers[id];const auto& entry=meshStore.entries()[id];
+        if(vertex?slot.vb&&entry.vbCapacity>=bytes:slot.ib&&entry.ibCapacity>=bytes)return true;
         // At most 512 KiB per resource, including rounded unused capacity.
         const UINT capacity=roundBuffer(bytes,64u<<10);
         if(!NorthlightGeometryMemory::admitsSmallPageGrowth(memory.valid,memory.available,capacity))return false;
         if(vertex){
-            drop(slot.vb);slot.vbCapacity=0;
+            drop(slot.vb);meshStore.setCapacity(id,true,0);
             if(FAILED(d->CreateVertexBuffer(capacity,D3DUSAGE_WRITEONLY,0,D3DPOOL_MANAGED,&slot.vb,nullptr))||!slot.vb){drop(slot.vb);return false;}
-            slot.vbCapacity=capacity;
+            meshStore.setCapacity(id,true,capacity);
         }else{
-            drop(slot.ib);slot.ibCapacity=0;
+            drop(slot.ib);meshStore.setCapacity(id,false,0);
             if(FAILED(d->CreateIndexBuffer(capacity,D3DUSAGE_WRITEONLY,D3DFMT_INDEX32,D3DPOOL_MANAGED,&slot.ib,nullptr))||!slot.ib){drop(slot.ib);return false;}
-            slot.ibCapacity=capacity;
+            meshStore.setCapacity(id,false,capacity);
         }
         NorthlightGeometryMemory::debitGrowth(memory,capacity);return true;
     }
-    void releaseMeshPool(){for(auto& pool:meshPool){for(auto& slot:pool){drop(slot.vb);drop(slot.ib);}pool.clear();}activeMesh=-1;vertices=nullptr;indices=nullptr;meshPoolTrim.reset();}
-    // Frees the idle staging pool and the active slots beyond the live page count (returns bytes).
-    // Never while a staged upload owns the staging slot; vertices/indices alias slot 0 of the active pool, which stays.
-    // stagingKeep: pages of the staging slot to keep (0: the whole idle slot, the memory guard's rule).
-    // maxBytes: stop once this many bytes were released (highest pages first, always at least one page when
-    // anything is releasable); unbounded for the memory guard.
-    size_t trimMeshPools(size_t stagingKeep=0,uint64_t maxBytes=UINT64_MAX){
+    void releaseMeshPool(){for(auto& slot:meshBuffers){drop(slot.vb);drop(slot.ib);}meshBuffers.clear();meshStore.reset();vertices=nullptr;indices=nullptr;meshPoolTrim.reset();}
+    // Frees idle buffers (returns bytes): those not referenced by the active table and not claimed by a staging.
+    // Never while a staged upload is pending; the active table (and vertices/indices, which alias its page 0) stays.
+    // Order (mesh_buffer_store.h trimIdle): invalid-key buffers first (partial content from a cancelled staging), then
+    // the valid ones idle for the longest. maxBytes: stop once this many bytes were released (always at least one
+    // buffer when any is idle); unbounded for the memory guard.
+    size_t trimMeshPools(uint64_t maxBytes=UINT64_MAX){
         if(pendingMesh)return 0;
-        size_t freed=0;
-        auto release=[&](std::vector<MeshBuffers>& pool,size_t keep){
-            size_t cut=pool.size();
-            while(cut>keep){
-                const size_t i=cut-1,bytes=size_t(pool[i].vbCapacity)+pool[i].ibCapacity;
-                if(freed&&freed+bytes>maxBytes)break;
-                freed+=bytes;drop(pool[i].vb);drop(pool[i].ib);cut=i;
-            }
-            if(cut<pool.size()){pool.erase(pool.begin()+cut,pool.end());pool.shrink_to_fit();}
-        };
-        release(meshPool[stagingSlot()],stagingKeep);
-        if(activeMesh>=0){size_t pages=0;for(const auto& b:batches)pages=std::max<size_t>(pages,size_t(b.page)+1);if(pages)release(meshPool[activeMesh],pages);}
-        return freed;
+        const uint64_t freed=meshStore.trimIdle(maxBytes,[&](uint32_t id){if(id<meshBuffers.size()){drop(meshBuffers[id].vb);drop(meshBuffers[id].ib);}});
+        syncMeshBuffers();return size_t(freed);
     }
-    // After a staged commit (pendingMesh already cleared): releases high-water pages the current mesh does not need,
-    // with hysteresis (mesh_pool_trim.h). Runs once per commit, O(pages); the active mesh's pages and the staging
-    // slot's first `pages` entries (the next build's reuse set) stay.
-    void trimMeshPoolAfterCommit(){
-        if(pendingMesh||activeMesh<0)return;
-        size_t pages=0;for(const auto& b:batches)pages=std::max<size_t>(pages,size_t(b.page)+1);
-        if(!pages)return;
-        uint64_t mesh=0,pool=0;
-        for(const auto& p:meshPool)for(const auto& b:p)pool+=uint64_t(b.vbCapacity)+b.ibCapacity;
-        for(size_t i=0;i<pages&&i<meshPool[activeMesh].size();++i)mesh+=uint64_t(meshPool[activeMesh][i].vbCapacity)+meshPool[activeMesh][i].ibCapacity;
-        const uint64_t request=meshPoolTrim.onCommit(pool,mesh); // at most MaxReleaseBytes per commit
+    // After a staged commit (pendingMesh already cleared): releases idle capacity the next build is unlikely to need,
+    // with hysteresis (mesh_pool_trim.h): target = windowMax(mesh) + windowMax(uploaded this commit). Runs once per
+    // commit, O(buffers); the active table's buffers never leave.
+    void trimMeshPoolAfterCommit(uint64_t stagedCapacity){
+        if(pendingMesh||meshStore.table().empty())return;
+        const uint64_t pool=meshStore.poolBytes(),mesh=meshStore.activeBytes();
+        const uint64_t request=meshPoolTrim.onCommit(pool,mesh,stagedCapacity); // at most MaxReleaseBytes per commit
         if(!request)return;
-        const size_t freed=trimMeshPools(pages,request);
+        const size_t freed=trimMeshPools(request);
         if(freed)logf("WORLD mesh pool trimmed freedMiB=%.1f poolMiB=%.1f meshMiB=%.1f",double(freed)/1048576,double(pool-freed)/1048576,double(mesh)/1048576);
     }
     std::vector<IDirect3DTexture9*> materials;
@@ -641,8 +631,9 @@ private:
     using Batch=NorthlightWorldMeshPages::Batch;
     bool bindMeshPage(const Batch& batch,UINT& boundPage){
         if(boundPage==batch.page)return true;
-        if(activeMesh<0||batch.page>=meshPool[activeMesh].size())return false;
-        auto& page=meshPool[activeMesh][batch.page];
+        const uint32_t id=meshStore.bufferOf(batch.page);
+        if(id>=meshBuffers.size())return false; // also NorthlightMeshBufferStore::None
+        auto& page=meshBuffers[id];
         if(!page.vb||!page.ib||FAILED(d->SetStreamSource(0,page.vb,0,sizeof(NorthlightGI::WorldVertex)))||FAILED(d->SetIndices(page.ib)))return false;
         boundPage=batch.page;return true;
     }
@@ -1757,6 +1748,7 @@ private:
         if(!pendingOrphaned(pendingMesh.get(),active.get()))return;
         logf("WORLD pending mesh released orphan=%s site=%s map=%s",!active?"inactive":pendingMesh->map!=active->map?"map":"replaced",site,pendingMesh->map.c_str());
         if(active&&pendingMesh->plan&&pendingMesh->plan!=active->meshPlan)pendingMesh->plan->payload.discard(); /* 0.3.214 (task 42): a superseded plan is never uploaded */
+        meshStore.cancel(); /* 0.3.216: claimed buffers return to idle; the written ones already have an invalid key */
         retirePendingCpu();pendingMesh.reset();meshRetry.clear();
     }
     // 0.3.214 (task 42): the active generation's payload was freed after its commit and the GPU copy is gone
@@ -1775,6 +1767,7 @@ private:
         if(streamingReports++<12)logf("WORLD streaming retry: stage=%s hr=%08lx detail=%s vertexBytes=%llu indexBytes=%llu vertices=%u triangles=%u sourceMatch=%d oldMesh=%d retryMs=1000",stage,(unsigned long)hr,detail,
             (unsigned long long)(plan?plan->vertexBytes:0),(unsigned long long)(plan?plan->indexBytes:0),plan?plan->vertexCount:0,plan?plan->triangleCount:0,
             plan&&plan->pagesSealed,vertices&&indices&&active&&uploadedMap==active->map);
+        meshStore.cancel(); /* 0.3.216: as in releaseOrphanedPending; idempotent without an open staging */
         retirePendingCpu();pendingMesh.reset();meshRetry.fail(GetTickCount());
         return vertices&&indices&&active&&uploadedMap==active->map;
     }
@@ -1804,8 +1797,17 @@ private:
             uint64_t largestTexture=0;for(const auto& material:payload->materials)largestTexture=std::max(largestTexture,uint64_t(material.bgra.size()));
             const char* invalid=NorthlightWorldMeshPages::validateSealed(plan);
             if(invalid||!payload->pages||payload->pages->pages.empty())return streamingFailure(D3DERR_INVALIDCALL,"validate pages",invalid?invalid:"missing pages");
-            auto budget=NorthlightGeometryMemory::uploadBudget(payload->pages->vertexBytes,payload->pages->indexBytes,plan.textureBytes,largestTexture);
-            budget.largest=2*std::max<uint64_t>(NorthlightWorldMeshPages::PageVertexByteLimit,largestTexture)+NorthlightGeometryMemory::ChunkMargin;
+            // 0.3.216 (issue #66): look every new page up by content key among the store's buffers (active and idle); a hit needs no
+            // upload. Admission below covers what this staging can newly allocate: the bytes of the MISSED pages (a hit or a reused
+            // idle buffer adds no address space) plus the textures, not the whole mesh. All misses (no hit) is the old full copy.
+            std::vector<NorthlightMeshPageKey::Key> pageKeys;pageKeys.reserve(payload->pages->pages.size());
+            for(const auto& page:payload->pages->pages)pageKeys.push_back(page.key);
+            if(!meshStore.beginStaging(pageKeys))return streamingFailure(D3DERR_INVALIDCALL,"page staging","staging already open");
+            syncMeshBuffers();
+            const auto& staged=meshStore.staging();
+            uint64_t missVertexBytes=0,missIndexBytes=0;for(uint32_t page:staged.upload){missVertexBytes+=pageKeys[page].vertexBytes;missIndexBytes+=pageKeys[page].indexBytes;}
+            auto budget=NorthlightGeometryMemory::uploadBudget(missVertexBytes,missIndexBytes,plan.textureBytes,largestTexture);
+            budget.largest=2*std::max<uint64_t>(staged.upload.empty()?0:NorthlightWorldMeshPages::PageVertexByteLimit,largestTexture)+NorthlightGeometryMemory::ChunkMargin;
             NorthlightGeometryMemory::Sample memory;bool exact=true;
             {auto phase=streamingPhases.measure(NorthlightStreaming::PhaseProfile::Admission);memory=geometryAdmission(budget,&exact);}
             if(NorthlightDiagnostics::enabled())logGeometryMemory("before-upload",memory,0,exact,&budget);
@@ -1813,9 +1815,9 @@ private:
             pendingMesh=std::make_unique<PendingMesh>();pendingMesh->bvh=active->bvh;
             pendingMesh->plan=active->meshPlan;pendingMesh->prepared=active->prepared;pendingMesh->map=active->map;pendingMesh->payload=payload;
             auto& next=*pendingMesh;next.textures.reserve(payload->materials.size());
-            auto& pool=meshPool[stagingSlot()];if(pool.size()<payload->pages->pages.size())pool.resize(payload->pages->pages.size());
-            std::vector<NorthlightWorldMeshPages::PageBytes> sizes;sizes.reserve(payload->pages->pages.size());
-            for(const auto& page:payload->pages->pages)sizes.push_back({page.vertices.size()*sizeof(NorthlightGI::WorldVertex),page.indices.size()*sizeof(uint32_t)});
+            // The upload cursor runs over the miss list only; its page index maps to a payload page and a claimed buffer in perform().
+            std::vector<NorthlightWorldMeshPages::PageBytes> sizes;sizes.reserve(staged.upload.size());
+            for(uint32_t pageIndex:staged.upload){const auto& page=payload->pages->pages[pageIndex];sizes.push_back({page.vertices.size()*sizeof(NorthlightGI::WorldVertex),page.indices.size()*sizeof(uint32_t)});}
             if(!next.upload.begin(std::move(sizes)))return streamingFailure(D3DERR_INVALIDCALL,"page sizes");
         }
         if(pendingMesh){frameStaging=true; /* 0.3.176 (D3) */
@@ -1829,12 +1831,17 @@ private:
                 void consume(size_t n){parent.consume(n);}
             } pageBudget{streamBudget};
             NorthlightGeometryMemory::Sample pageMemory;bool sampled=false;
-            auto perform=[&](NorthlightWorldMeshPages::Step step,size_t pageIndex,size_t offset,size_t bytes){
+            auto perform=[&](NorthlightWorldMeshPages::Step step,size_t cursor,size_t offset,size_t bytes){
                 using S=NorthlightWorldMeshPages::Step;
-                auto& page=meshPool[stagingSlot()][pageIndex];const auto& cpu=payload.pages->pages[pageIndex];
+                const auto& staging=meshStore.staging();
+                if(!staging.open||cursor>=staging.upload.size())return false;
+                const uint32_t id=staging.uploadBuffer[cursor];
+                if(!meshStore.markWriting(id)||id>=meshBuffers.size())return false; // never an active (drawn) buffer; the old key dies before the first write
+                auto& page=meshBuffers[id];const auto& cpu=payload.pages->pages[staging.upload[cursor]];
+                const auto& entry=meshStore.entries()[id];
                 if(step==S::CreateVertices||step==S::CreateIndices){
                     const bool vb=step==S::CreateVertices;
-                    const bool reuse=vb?page.vb&&page.vbCapacity>=bytes:page.ib&&page.ibCapacity>=bytes;
+                    const bool reuse=vb?page.vb&&entry.vbCapacity>=bytes:page.ib&&entry.ibCapacity>=bytes;
                     if(reuse)return true;
                     if(!sampled){
                         auto phase=streamingPhases.measure(NorthlightStreaming::PhaseProfile::Admission);
@@ -1846,7 +1853,7 @@ private:
                         pageMemory.available=NorthlightGeometryMemory::corrected(status.ullAvailVirtual);sampled=true;
                     }
                     auto phase=streamingPhases.measure(NorthlightStreaming::PhaseProfile::Buffers);
-                    return acquireMeshPage(pageIndex,vb,UINT(bytes),pageMemory);
+                    return acquireMeshPage(id,vb,UINT(bytes),pageMemory);
                 }
                 if(step==S::PreloadVertices||step==S::PreloadIndices){
                     auto phase=streamingPhases.measure(NorthlightStreaming::PhaseProfile::Preload);
@@ -1906,7 +1913,8 @@ private:
                 // Keep the previous complete geometry drawable until publication fits.
                 if(uploadedTextureBytes<=NorthlightStreaming::DeferredRelease<IDirect3DTexture9>::MaxBytes&&
                    !retiredMaterials.enqueue(materials,uploadedTextureBytes))return vertices&&indices&&uploadedMap==active->map;
-                clearMesh();activeMesh=stagingSlot();vertices=meshPool[activeMesh][0].vb;indices=meshPool[activeMesh][0].ib;
+                clearMesh();const auto stagedPages=meshStore.commit(); /* 0.3.216: atomic switch of the active page table; replaced buffers go idle */
+                {const uint32_t first=meshStore.bufferOf(0);vertices=first<meshBuffers.size()?meshBuffers[first].vb:nullptr;indices=first<meshBuffers.size()?meshBuffers[first].ib:nullptr;}
                 materials=std::move(next.textures);uploadedTextureBytes=size_t(plan.textureBytes);vertexCount=plan.vertexCount;
                 uploadedLocalShadowRecords=plan.localShadowRecords;
                 batches=std::move(committedBatches);uploadedAlphaCutoffs=std::move(cutoffs);
@@ -1920,9 +1928,10 @@ private:
                 // 0.3.214 (task 42): the GPU copy is MANAGED and complete; drop the plan's CPU payload (pages, cutout
                 // textures). The pending packet's reference is then the last and is freed on the reaper below.
                 const uint64_t releasedBytes=plan.payload.discard();
-                if(NorthlightDiagnostics::enabled())logf("WORLD staged mesh committed: vertices=%u triangles=%zu materials=%zu textureUploads=%u stagingFrames=%u stagingMs=%lu releasedPayloadMiB=%.2f",vertexCount,size_t(plan.triangleCount),materials.size(),next.textureUploads,next.frames,(unsigned long)(GetTickCount()-next.started),double(releasedBytes)/1048576);
+                if(NorthlightDiagnostics::enabled())logf("WORLD staged mesh committed: vertices=%u triangles=%zu materials=%zu textureUploads=%u stagingFrames=%u stagingMs=%lu releasedPayloadMiB=%.2f pages=%zu reusedPages=%zu uploadedPages=%zu reusedMiB=%.2f uploadedMiB=%.2f",vertexCount,size_t(plan.triangleCount),materials.size(),next.textureUploads,next.frames,(unsigned long)(GetTickCount()-next.started),double(releasedBytes)/1048576,
+                    stagedPages.pages,stagedPages.reusedPages,stagedPages.uploadedPages,double(stagedPages.reusedBytes)/1048576,double(stagedPages.uploadedBytes)/1048576);
                 retirePendingCpu();pendingMesh.reset();meshRetry.clear();
-                trimMeshPoolAfterCommit();
+                trimMeshPoolAfterCommit(stagedPages.uploadedCapacity);
             }
         }
         if(!vertices||!indices||uploadedMap!=active->map)return false;
@@ -2245,11 +2254,11 @@ public:
     // (`active` and the mesh pools are its own). Not included, as they need the streamer's or the builder's locks or are worker locals:
     // static shadow cpu/gpu, local scene retained/flat/bvh, replay caches.
     int memmapTally(char* out,size_t size)const{
-        double pool=0;for(const auto& p:meshPool)for(const auto& b:p)pool+=double(b.vbCapacity)+double(b.ibCapacity);
+        const double pool=double(meshStore.poolBytes()),idle=double(meshStore.idleBytes());
         double plan=0,payload=0,bvh=0;
         if(active){if(active->meshPlan){plan=double(active->meshPlan->cpuBytes());payload=double(active->meshPlan->payload.bytes());}if(active->bvh)bvh=double(active->bvh->retainedBytes());}
-        return std::snprintf(out,size,"meshPoolMiB=%.1f meshPlanCpuMiB=%.1f uploadPayloadLiveMiB=%.1f giBvhMiB=%.1f geometryDemandMiB=%.1f",pool/1048576.0,plan/1048576.0,payload/1048576.0,bvh/1048576.0,
-            double(geometryMemoryDemand.load(std::memory_order_relaxed))/1048576.0);
+        return std::snprintf(out,size,"meshPoolMiB=%.1f meshPlanCpuMiB=%.1f uploadPayloadLiveMiB=%.1f giBvhMiB=%.1f geometryDemandMiB=%.1f meshIdleMiB=%.1f",pool/1048576.0,plan/1048576.0,payload/1048576.0,bvh/1048576.0,
+            double(geometryMemoryDemand.load(std::memory_order_relaxed))/1048576.0,idle/1048576.0);
     }
     const char* lastSkipReason()const{return skipReason;} /* 0.3.169: valid after render() returned false */
     bool captureSkippedLastFrame()const{return lastCaptureSkipped;} /* for the sampled CPU profile, logged after endFrame */

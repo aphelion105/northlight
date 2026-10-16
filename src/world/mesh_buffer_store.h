@@ -12,10 +12,11 @@
 // a staging build looks up every new page by content key among ALL buffers that still hold valid content (active or
 // idle), reuses hits without any upload, and uploads the misses into idle buffers (or new ones). Invariants:
 //   - a buffer referenced by the active table (Use::Active) is never claimed, written or released;
-//   - a claimed buffer's key is invalid from the moment it is claimed (its content is partial or stale);
+//   - a claimed buffer's key becomes invalid before its first write (markWriting; its content is then partial or stale).
+//     Until then a cancelled staging (e.g. refused by memory admission) leaves the buffer's valid content reusable;
 //   - the active table is replaced atomically at commit(); buffers it no longer references become Idle and KEEP
 //     their key (their bytes are still valid and may match a later build);
-//   - cancel() returns claimed buffers to Idle with an invalid key.
+//   - cancel() returns claimed buffers to Idle; the ones already written have an invalid key.
 // The zero-hit case (every page misses) is the old double buffering: all pages upload next to the active mesh.
 namespace NorthlightMeshBufferStore {
 using Key=NorthlightMeshPageKey::Key;
@@ -57,6 +58,8 @@ public:
     uint32_t bufferOf(uint32_t page)const{return page<active_.size()?active_[page]:None;}
     // The renderer may create, resize or write a buffer only when this is true.
     bool writable(uint32_t id)const{return id<entries_.size()&&entries_[id].use==Use::Claimed;}
+    // Called before ANY create/write of a claimed buffer (idempotent): its previous content is gone from here on.
+    bool markWriting(uint32_t id){if(!writable(id))return false;entries_[id].keyValid=false;return true;}
     // Records a created resource's capacity (claimed buffers only).
     bool setCapacity(uint32_t id,bool vertex,uint32_t bytes){
         if(!writable(id))return false;
@@ -114,7 +117,7 @@ public:
                 if(pick==None){pick=uint32_t(entries_.size());entries_.emplace_back();reserved.push_back(0);}
             }
             Entry& e=entries_[pick];
-            e.use=Use::Claimed;e.keyValid=false;reserved[pick]=1; // content is stale from here on
+            e.use=Use::Claimed;reserved[pick]=1; // the key stays valid until markWriting() (a staging cancelled before any write loses nothing)
             s.table[i]=pick;claimed.emplace(keys[i],pick);
             s.upload.push_back(i);s.uploadBuffer.push_back(pick);
             ++s.stats.uploadedPages;s.stats.uploadedBytes+=payload;
@@ -138,10 +141,10 @@ public:
         for(uint32_t id=0;id<next.size();++id)if(next[id])entries_[id].use=Use::Active;
         active_=std::move(staging_.table);staging_=Staging();return stats;
     }
-    // Failure or orphaned staging: claimed buffers hold partial content.
+    // Failure or orphaned staging: written claims hold partial content (key already invalid); untouched ones keep theirs.
     void cancel(){
         if(!staging_.open)return;
-        for(uint32_t id:staging_.uploadBuffer)if(id<entries_.size()&&entries_[id].use==Use::Claimed){entries_[id].use=Use::Idle;entries_[id].keyValid=false;}
+        for(uint32_t id:staging_.uploadBuffer)if(id<entries_.size()&&entries_[id].use==Use::Claimed)entries_[id].use=Use::Idle;
         staging_=Staging();
     }
     // Releases idle buffers (never active or claimed ones; nothing while a staging is open). Order: invalid keys
