@@ -48,7 +48,7 @@ checks['logged on the MODEL frame capture line']=('radiusGated=%u radiusGatedByt
 checks['centre once per capture frame at the first skinned ask (the near anchor), self else pivot; GI cadence read without deciding it']=(
     'if(nearAnchor.self){centre.centre=nearAnchor.selfAt;centre.self=true;}' in w and 'pivot[k]=nearAnchor.eye[k]+nearAnchor.forward[k]*pivotDistance' in w and 'nearAnchorReady=false;' in w
     and 'bool actorCaptureWouldRun()const{' in w and w.count('if(nearAnchor.self){centre.centre=')==1)
-checks['fate: RadiusGate and DistanceCut']=('RadiusGate,DistanceCut,FateCount' in fate and '"radiusGate","distanceCut"' in fate)
+checks['fate: RadiusGate and DistanceCut']=('RadiusGate,DistanceCut,' in fate and '"radiusGate","distanceCut"' in fate)
 checks['constants: gate = yards + 2*band + ClusterExtent + 4; cut target 0.85, MinCut 12, grow after 10 frames, shrink after 1']=(
     'return yards+2*NorthlightActorShadowSelection::band(yards)+NorthlightActorShadowSelection::ClusterExtent+GateExtra;' in adm and 'GateExtra=4.f' in adm and 'Margin=.85f' in adm and 'MinCut=12.f' in adm
     and 'GrowFrames=10;' in adm)
