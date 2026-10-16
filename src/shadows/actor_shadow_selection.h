@@ -252,6 +252,7 @@ public:
     Entry* find(std::uint64_t key,const float* at){return detail::nearest(entries_,key,at,IdentityTolerance);}
     Rigid* findRigid(std::uint64_t key,const float* at,float reach=IdentityTolerance){return detail::nearest(rigid_,key,at,reach);}
     std::size_t radiusSize()const{return radius_.size();}
+    void clearRadius(){radius_.clear();} /* task 45: the radius path was left (ActorShadowCpuMs level back to an unlimited setting) */
     std::vector<RadiusEntry>& radiusEntries(){return radius_;}
     std::vector<RadiusPair>& radiusPairs(){return pairs_;} /* scratch: identity candidates */
     std::vector<std::uint32_t>& radiusSpare(){return spare_;} /* scratch: unclaimed entries by x */

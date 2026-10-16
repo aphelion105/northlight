@@ -425,8 +425,10 @@ private:
         w.bounding.clear();if(w.dirty.size()>1){NorthlightShadowBounds::TexelRect all;for(const auto& r:w.dirty)all=NorthlightShadowBounds::unite(all,r);w.bounding.push_back(all);}
         const std::vector<const std::vector<NorthlightShadowBounds::TexelRect>*> candidates={nullptr,&w.dirty,w.bounding.empty()?&w.dirty:&w.bounding};
         try {plan.drawCalls(matrix,candidates,long(ShadowCacheSize),StaticCacheDirtyMargin,w.costs);}catch(...){return false;}
+        /* 0.3.215 (task 45): the flat bitmap answers the per-batch fixed-chunk test without a red-black tree walk (same membership: it falls back to the set off-grid or when it does not describe this set). */
+        const auto& fixedSet=fixedTerrainChunks();const bool fixedBits=fixedTerrainBits.source()==&fixedSet;
         for(const auto& b:batches){
-            if(b.terrain&&!fixedTerrainChunks().count({b.chunkX,b.chunkY}))continue;
+            if(b.terrain&&!(fixedBits?fixedTerrainBits.contains({b.chunkX,b.chunkY}):fixedSet.count({b.chunkX,b.chunkY})!=0))continue;
             if(NorthlightShadowBounds::directionalClipReject(b.boundsLow,b.boundsHigh,matrix))continue;
             NorthlightShadowBounds::TexelRect footprint;const bool known=NorthlightShadowBounds::texelFootprint(b.boundsLow,b.boundsHigh,matrix,long(ShadowCacheSize),StaticCacheDirtyMargin,footprint);
             ++w.costs[0];for(size_t k=1;k<candidates.size();++k)for(const auto& r:*candidates[k])if(!known||NorthlightShadowBounds::intersects(footprint,r))++w.costs[k];
@@ -510,6 +512,7 @@ private:
     static constexpr float FogTemporalWeight=.85f; /* history weight in c64.y (0 = pass through) */
     // 0.3.200 (gpu budget): the level the proxy's controller chose (0 = full, always with GpuBudgetMs=0).
     unsigned gpuBudgetLevel=0;
+    unsigned cpuBudgetLevel=0; /* task 45: the CPU budget controller's level (ActorShadowCpuMs): 0 = ActorShadowRadius as set */
     NorthlightFogClouds::Wind cloudWind;int64_t cloudQpc=0;float cloudDenseZone=0,cloudLush=1; /* smoothed dense-zone profile at the camera (Duskwood 1), see denseZoneDamp; smoothed lush zone at the camera (forest/grass 1), see derive */
     // The N^3 volume as L8 (A8R8G8B8 with the value in every channel where L8 volumes are missing); one failure disables the clouds for good, nothing else.
     bool ensureCloudNoise(){
@@ -2260,6 +2263,11 @@ public:
     // 0.3.200 (gpu budget): GpuBudgetMs (0 = off) and the controller's level for the next frames; off forces level 0 (the full path, unchanged).
     unsigned gpuBudgetMs()const{return quality.gpuBudgetMs;}
     void setGpuBudgetLevel(unsigned level){gpuBudgetLevel=quality.gpuBudgetMs?std::min(level,NorthlightGpuBudget::MaxLevel):0u;}
+    // task 45: ActorShadowCpuMs (0 = off) and the CPU controller's level; off forces level 0. effectiveActorShadowRadius() is the one place the radius is read
+    // for work: the capture admission and the selection use it (the setting itself stays in the logs that describe the setting).
+    unsigned actorShadowCpuMs()const{return quality.actorShadowCpuMs;}
+    void setCpuBudgetLevel(unsigned level){cpuBudgetLevel=quality.actorShadowCpuMs?std::min(level,NorthlightGpuBudget::MaxLevel):0u;}
+    unsigned effectiveActorShadowRadius()const{return NorthlightGpuBudget::actorShadowRadius(quality.actorShadowRadius,cpuBudgetLevel);}
     bool rainBlendSetting()const{return quality.weather!=0;} /* 0.3.199 (rain): the draw hook's alpha-blended rain streaks and rain-only mist skip, with Weather=1 */
     NorthlightWeatherEffects::Frame weatherEffects()const{return NorthlightWeatherEffects::derive(weatherState,quality.weather,quality.rainFog);}
     bool nameMask()const{return quality.nameMask!=0;} bool nameMaskDebug()const{return quality.nameMaskDebug!=0;} /* 0.3.212 (task 32): read once at device creation */
@@ -2921,7 +2929,7 @@ public:
     void nearAnchorTake(){
         if(!nearAnchorReady){nearAnchorReady=true;const float forward[3]={context.inverseView[8]*projection[2],context.inverseView[9]*projection[2],context.inverseView[10]*projection[2]};
             nearAnchor=NorthlightNearReserve::anchor(actorShadowHistory.selfHold()>0?actorShadowHistory.selfAt():nullptr,context.camera,forward,pivotDistance);
-            NorthlightCaptureAdmission::Context centre;float pivot[3];centre.camera=context.camera;centre.yards=float(quality.actorShadowRadius);centre.gi=actorCaptureWouldRun();
+            NorthlightCaptureAdmission::Context centre;float pivot[3];centre.camera=context.camera;centre.yards=float(effectiveActorShadowRadius());centre.gi=actorCaptureWouldRun();
             if(nearAnchor.self){centre.centre=nearAnchor.selfAt;centre.self=true;}
             else if(nearAnchor.ray){for(unsigned k=0;k<3;++k)pivot[k]=nearAnchor.eye[k]+nearAnchor.forward[k]*pivotDistance;centre.centre=pivot;}
             admissionOn=quality.actorShadows&&centre.centre;if(admissionOn)admission.arm(centre);}
@@ -3514,8 +3522,10 @@ public:
                 d->SetVertexShader(cachedShadowVS);d->SetVertexShaderConstantF(0,cachedMatrix,4);d->SetPixelShader(cachedShadowPS);
                 IDirect3DPixelShader9* boundCachePS=cachedShadowPS;
                 UINT boundPage=UINT_MAX;const NorthlightShadowBounds::TexelRect* staticScissor=nullptr;
+                /* 0.3.215 (task 45): the flat bitmap answers the per-batch fixed-chunk test without a red-black tree walk (same membership: it falls back to the set off-grid or when it does not describe this set). */
+                const auto& fixedSet=fixedTerrainChunks();const bool fixedBits=fixedTerrainBits.source()==&fixedSet;
                 for(auto& b:batches){
-                    if(b.terrain&&!fixedTerrainChunks().count({b.chunkX,b.chunkY}))continue;
+                    if(b.terrain&&!(fixedBits?fixedTerrainBits.contains({b.chunkX,b.chunkY}):fixedSet.count({b.chunkX,b.chunkY})!=0))continue;
                     if(NorthlightShadowBounds::directionalClipReject(b.boundsLow,b.boundsHigh,cachedMatrix)){if(real)++culledBatches[cascade];continue;}
                     size_t passes=1;
                     if(partial){NorthlightShadowBounds::TexelRect footprint;const bool known=NorthlightShadowBounds::texelFootprint(b.boundsLow,b.boundsHigh,cachedMatrix,long(ShadowCacheSize),StaticCacheDirtyMargin,footprint);

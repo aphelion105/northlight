@@ -26,10 +26,10 @@ assert writes<= {'shadowSelected','fateClass','boneKnown','bone'},writes # 0.3.1
 assert 'r.fateClass=f;r.fateDistance=' in ex # fate diagnostics only
 # Radius 0: no Radius reaches choose(), and the stable selection runs only when the quota ranks.
 assert 'radius.active()?&radius:nullptr' in ex
-assert 'const bool radius=NorthlightActorShadowSelection::Enabled&&quality.actorShadowRadius;' in ex and 'if(!radius)transition(budget&&actorBytes>budget);' in ex
+assert 'const bool radius=NorthlightActorShadowSelection::Enabled&&effectiveActorShadowRadius();' in ex and 'if(!radius)transition(budget&&actorBytes>budget);' in ex
 # Radius 0 quota decision: the renderer's own control flow (the selection test only proves the header), so pin shouldRank on the actor bytes.
 assert re.search(r'else\s+if\s*\(\s*\(\s*ranked\s*=[^;{]*actorShadowHistory\.shouldRank\(\s*actorBytes\s*,\s*budget\b',ex),'radius 0: the 0.3.144 quota decision'
-assert 'transition(budget&&stable.radiusInsideBytes>budget);' in ex and 'Radius radius{float(quality.actorShadowRadius),context.camera,true,true};' in ex,'radius: ranks on the bytes inside'
+assert 'transition(budget&&stable.radiusInsideBytes>budget);' in ex and 'Radius radius{float(effectiveActorShadowRadius()),context.camera,true,true};' in ex,'radius: ranks on the bytes inside'
 # Radius 0 reset: keptAll() with a budget, clear() without.
 assert re.search(r'else\s+if\s*\([^)]*Enabled\s*\)\s*\{\s*if\s*\(\s*budget\s*\)\s*actorShadowHistory\.keptAll\(\)\s*;\s*else\s+actorShadowHistory\.clear\(\)',ex),'radius 0 keeps the 0.3.144 reset'
 assert "int(ranked&&stable.actors+stable.rigidActors>0)" in ex,'ranking= keeps its meaning (the quota ranked)'

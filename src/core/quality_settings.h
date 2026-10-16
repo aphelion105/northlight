@@ -77,6 +77,9 @@ struct Settings {
     // 0.3.200 (gpu budget): GpuBudgetMs 0 = off (the full image, no GPU timing); 1..20 = Northlight's own GPU time per frame (measured, read back a few
     // frames late) is kept near this many ms by lighter fog clouds, fog and lamps while it is over (gpu_budget.h); under it the image is the full one.
     unsigned gpuBudgetMs=4;
+    // task 45 (cpu budget): ActorShadowCpuMs 0 = off; 1..20 = Northlight's own CPU ms per frame on the renderer thread (the effects span) is kept near
+    // this by a smaller actor shadow radius (30, 20, 12 yards, capped by ActorShadowRadius) while it is over and the frame is not GPU-bound (gpu_budget.h).
+    unsigned actorShadowCpuMs=3;
     // 0.3.200 (pipeline): StreamFramesAhead 1..3 = how many frames the game thread may record ahead of the replay thread (CommandStream=1): Present
     // waits for the Present that many frames back. 1 = the 0.3.199 behaviour. Read with CommandStream before the device exists (creation-time key).
     unsigned streamFramesAhead=2;
@@ -120,7 +123,7 @@ struct Settings {
     // WeatherMemory: 1 = the game's own weather state (kind incl. sand, intensity), read from memory, drives the weather effects on frames where the world drew a sky-band draw (the client skips weather
     // while the viewer is inside a building); 0 = the texture/draw detector only, as before.
     unsigned weatherMemory=1;
-    char origin[56]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
+    char origin[57]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
 };
 struct Key { const char* name; unsigned Settings::*field; unsigned low,high; unsigned preset[3]; };
 // preset[] = Quality, Balanced, Performance. Quality must equal Settings{}.
@@ -181,6 +184,7 @@ inline const Key Keys[]={
     {"StreamOcclusionLocal",&Settings::streamOcclusionLocal,0,1,{1,1,1}},
     {"DepthFuncAware",&Settings::depthFuncAware,0,1,{1,1,1}},
     {"WeatherMemory",&Settings::weatherMemory,0,1,{1,1,1}},
+    {"ActorShadowCpuMs",&Settings::actorShadowCpuMs,0,20,{3,3,2}}, /* task 45 */
 };
 inline bool operator==(const Settings& a,const Settings& b){for(const auto& k:Keys)if(a.*k.field!=b.*k.field)return false;return true;}
 inline bool operator!=(const Settings& a,const Settings& b){return !(a==b);}
