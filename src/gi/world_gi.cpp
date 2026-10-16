@@ -179,15 +179,22 @@ bool normalMatrix(const float* m,float* n){
     for(unsigned i=0;i<9;++i)n[i]/=determinant;
     return true;
 }
+// True when the two boxes overlap with IoU >= 1/2 (a previous build's counts are a usable size hint).
+bool regionsOverlapHalf(Vec3 al,Vec3 ah,Vec3 bl,Vec3 bh){
+    double inter=1,va=1,vb=1;const double e[3][4]={{al.x,ah.x,bl.x,bh.x},{al.y,ah.y,bl.y,bh.y},{al.z,ah.z,bl.z,bh.z}};
+    for(const auto& a:e){inter*=std::max(0.0,std::min(a[1],a[3])-std::max(a[0],a[2]));va*=a[1]-a[0];vb*=a[3]-a[2];}
+    const double uni=va+vb-inter;return uni>0&&inter*2>=uni;
+}
+// hintVertices/hintTriangles (0 = not hinted): result was pre-reserved to these counts; only the first overflow past that reserve grows +1/4, then x2.
 bool appendInstance(const WorldScene& model,const Instance& instance,Vec3 low,Vec3 high,WorldScene& result,
-                    std::vector<uint32_t>& materialRemap,uint64_t& textureBytes,std::string& error,const AllocationAdmission& admit,const std::function<bool(Vec3,Vec3)>& terrainChunkFilter = {}){
+                    std::vector<uint32_t>& materialRemap,uint64_t& textureBytes,std::string& error,const AllocationAdmission& admit,const std::function<bool(Vec3,Vec3)>& terrainChunkFilter = {},size_t hintVertices = 0,size_t hintTriangles = 0){
     float normal[9];if(!normalMatrix(instance.matrix,normal)){error="FGS3 singular instance transform";return false;}
     if(admit&&!admit(model.vertices.size()*sizeof(uint32_t))){error="Geometry allocation deferred";return false;}
     std::vector<uint32_t> remap(model.vertices.size(),UINT32_MAX);
-    auto reserve=[&](auto& values,size_t count){
+    auto reserve=[&](auto& values,size_t count,size_t hint=0){
         if(!admit||values.capacity()>=count)return true;
         using T=typename std::decay_t<decltype(values)>::value_type;
-        const size_t capacity=std::max(count,std::max<size_t>(64,values.capacity()*2));
+        const size_t capacity=std::max(count,std::max<size_t>(64,hint&&values.capacity()<=hint?values.capacity()+values.capacity()/4:values.capacity()*2));
         if(!admit(uint64_t(capacity)*sizeof(T))){error="Geometry allocation deferred";return false;}
         values.reserve(capacity);return true;
     };
@@ -199,7 +206,7 @@ bool appendInstance(const WorldScene& model,const Instance& instance,Vec3 low,Ve
         if(instance.terrain&&terrainChunkFilter&&!terrainChunkFilter(tl,th))continue;
         if(!finite(positions[0])||!finite(positions[1])||!finite(positions[2])){error="FGS3 transformed position overflow";return false;}
         if(result.vertices.size()>4000000-3||result.triangles.size()>=6000000){error="FGS3 local region geometry limit exceeded";return false;}
-        if(!reserve(result.vertices,result.vertices.size()+3)||!reserve(result.triangles,result.triangles.size()+1))return false;
+        if(!reserve(result.vertices,result.vertices.size()+3,hintVertices)||!reserve(result.triangles,result.triangles.size()+1,hintTriangles))return false;
         WorldTriangle out;uint32_t* target[3]={&out.v0,&out.v1,&out.v2};
         for(unsigned j=0;j<3;++j){
             if(remap[source[j]]==UINT32_MAX){
@@ -258,13 +265,17 @@ bool selectInstances(const std::vector<std::string>& files,Vec3 low,Vec3 high,ui
 }
 
 bool loadInstancedScenes(const std::vector<std::string>& files,const std::string& modelDirectory,
-                         Vec3 low,Vec3 high,WorldScene& output,std::string& error,uint32_t categoryMask,const AllocationAdmission& admit,const std::function<bool(Vec3,Vec3)>& instanceFilter,const std::function<bool(Vec3,Vec3)>& terrainChunkFilter){
-    error.clear();
+                         Vec3 low,Vec3 high,WorldScene& output,std::string& error,uint32_t categoryMask,const AllocationAdmission& admit,const std::function<bool(Vec3,Vec3)>& instanceFilter,const std::function<bool(Vec3,Vec3)>& terrainChunkFilter,SceneSizeHint* sizeHint){
+    error.clear();if(sizeHint)sizeHint->hinted=false;
     if(files.size()>((categoryMask==1&&instanceFilter)?256u:64u)||!finite(low)||!finite(high)||low.x>high.x||low.y>high.y||low.z>high.z){error="Invalid FGS3 region or tile count";return false;}
     std::map<std::string,std::vector<Instance>> groups;
-    WorldScene result;uint64_t textureBytes=0;
+    WorldScene result;uint64_t textureBytes=0;bool hinted=false;size_t hintV=0,hintT=0;
     try{
         if(!selectInstances(files,low,high,categoryMask,groups,error,instanceFilter))return false;
+        if(sizeHint&&sizeHint->sized&&sizeHint->sizedKey==sizeHint->key&&regionsOverlapHalf(low,high,sizeHint->low,sizeHint->high)){
+            const uint64_t v=std::min<uint64_t>(4000000,sizeHint->vertices+sizeHint->vertices/16),t=std::min<uint64_t>(6000000,sizeHint->triangles+sizeHint->triangles/16);
+            if(v&&t&&(!admit||(admit(v*sizeof(WorldVertex))&&admit(t*sizeof(WorldTriangle))))){result.vertices.reserve(v);result.triangles.reserve(t);hinted=true;hintV=size_t(v);hintT=size_t(t);}
+        }
         for(const auto& group:groups){
             std::string path=modelDirectory;
             if(!path.empty()&&path.back()!='/'&&path.back()!='\\')path+='/';
@@ -277,7 +288,7 @@ bool loadInstancedScenes(const std::vector<std::string>& files,const std::string
             for(auto& remap:materialRemap)remap.resize(model.materials.size(),UINT32_MAX);
             for(const auto& instance:group.second){
                 const size_t before=result.triangles.size();
-                if(!appendInstance(model,instance,low,high,result,materialRemap[instance.terrain?1:instance.wmo?2:0],textureBytes,error,admit,terrainChunkFilter))return false;
+                if(!appendInstance(model,instance,low,high,result,materialRemap[instance.terrain?1:instance.wmo?2:0],textureBytes,error,admit,terrainChunkFilter,hintV,hintT))return false;
                 // Count accepted triangles rather than trust descriptor bounds:
                 // partial crops must never suppress the complete shadow model.
                 if(!instance.terrain&&!model.triangles.empty()&&result.triangles.size()-before==model.triangles.size()){
@@ -288,6 +299,7 @@ bool loadInstancedScenes(const std::vector<std::string>& files,const std::string
             }
         }
     }catch(...){error="Cannot allocate FGS3 local world region";return false;}
+    if(sizeHint){sizeHint->hinted=hinted;sizeHint->sized=true;sizeHint->sizedKey=sizeHint->key;sizeHint->vertices=result.vertices.size();sizeHint->triangles=result.triangles.size();sizeHint->low=low;sizeHint->high=high;}
     output=std::move(result);return true;
 }
 
@@ -693,10 +705,7 @@ bool LocalSceneCache::build(const std::vector<std::string>& files,const std::str
         // beyond that, growth is +1/4 rather than x2. A denied hint falls back to normal growth, error unset.
         bool hinted=false;
         if(cache.sized){
-            double inter=1,va=1,vb=1;const double e[3][4]={{low.x,high.x,cache.sizedLow.x,cache.sizedHigh.x},{low.y,high.y,cache.sizedLow.y,cache.sizedHigh.y},{low.z,high.z,cache.sizedLow.z,cache.sizedHigh.z}};
-            for(const auto& a:e){inter*=std::max(0.0,std::min(a[1],a[3])-std::max(a[0],a[2]));va*=a[1]-a[0];vb*=a[3]-a[2];}
-            const double uni=va+vb-inter;
-            if(uni>0&&inter*2>=uni){
+            if(regionsOverlapHalf(low,high,cache.sizedLow,cache.sizedHigh)){
                 const uint64_t v=std::min<uint64_t>(4000000,cache.sizedVertices+cache.sizedVertices/16),t=std::min<uint64_t>(6000000,cache.sizedTriangles+cache.sizedTriangles/16);
                 if(v&&t&&(!admit||(admit(v*sizeof(WorldVertex))&&admit(t*sizeof(WorldTriangle))))){next.vertices.reserve(v);next.triangles.reserve(t);hinted=true;++stats.hintedBuilds;}
             }

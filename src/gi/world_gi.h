@@ -77,13 +77,24 @@ bool cropScene(WorldScene& scene, Vec3 low, Vec3 high, std::string& error);
 // are culled by world bounds and deduplicated across tiles by category and UID.
 // Shared models are loaded once per request, one at a time to bound peak RAM.
 // modelDirectory is the cache's "models" directory, without a required slash.
+// Optional in/out sizing hint for repeated builds of one overlapping region (the world terrain builder). The
+// caller sets `key` (e.g. map + reach) before the call; the hint applies only when it equals `sizedKey` and the
+// requested region overlaps the recorded one (IoU >= 1/2): vertices/triangles are then reserved once at the
+// recorded counts + 1/16 (caps 4,000,000 / 6,000,000, under `admit`) and later growth is +1/4 instead of x2.
+// A denied reserve falls back to normal growth without an error. Success records counts/region/key; `hinted` is
+// an out flag for the last call. Failure leaves everything but `hinted` untouched.
+struct SceneSizeHint {
+    uint64_t key=0,sizedKey=0;bool sized=false,hinted=false;
+    uint64_t vertices=0,triangles=0;Vec3 low,high;
+};
 bool loadInstancedScenes(const std::vector<std::string>& tileFiles,
                          const std::string& modelDirectory,
                          Vec3 low, Vec3 high, WorldScene& output,
                          std::string& error, uint32_t categoryMask = 15,
                          const AllocationAdmission& admit = {},
                          const std::function<bool(Vec3,Vec3)>& instanceFilter = {},
-                         const std::function<bool(Vec3,Vec3)>& terrainChunkFilter = {});
+                         const std::function<bool(Vec3,Vec3)>& terrainChunkFilter = {},
+                         SceneSizeHint* sizeHint = nullptr);
 
 struct RayHit {
     bool hit = false;

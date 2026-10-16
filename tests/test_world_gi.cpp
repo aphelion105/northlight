@@ -304,4 +304,49 @@ static void testLocalAndMoving(){
     light.points.push_back({{0,0,10},{10,0,0},20,10});assert(!solveProbe(staticWorld,{0,0,1},light,64,7).valid);
     std::puts("PASS authored point-light bounce, moving geometry shadow/removal, secondary celestial light, invalid attenuation rejection");
 }
-int main(int argc,char** argv){testLocalAndMoving();testOcclusion();testAlpha();testSamplerModes();testTracerInvariants();testSun();testBounce();testSkyAndMoments();testProbeValidity();testLoader();testCrop();testInstances();if(argc>1)testRealScene(argv[1]);if(argc>3)testRealInstanced(argv[2],argv[3],argv[1]);std::puts("All world GI tests passed");}
+static void testSizeHint(){
+    std::filesystem::path root=scratchPath("northlight-gi-hint-test");std::filesystem::create_directories(root);
+    WorldScene s;s.materials.push_back({});quad(s,{-1,-1,0},{1,-1,0},{1,1,0},{-1,1,0},0);
+    std::string model=(root/(std::string(64,'0')+".fgs")).string();writeScene(model.c_str(),s);
+    std::string tile=(root/"hint.fg3").string();const unsigned count=300;
+    FILE*f=std::fopen(tile.c_str(),"wb");assert(f);std::fwrite("FGS3",1,4,f);u32(f,3);u32(f,count);
+    for(unsigned i=0;i<count;++i){uint8_t hash[32]={};std::fwrite(hash,1,32,f);u32(f,i+1);u32(f,0);u32(f,0);vec(f,{i*10.f-2,19,29});vec(f,{i*10.f+2,21,31});const float m[9]={1,0,0,0,1,0,0,0,1};for(auto a:m)f32(f,a);vec(f,{i*10.f,20,30});}
+    std::fclose(f);
+    const Vec3 low{-10,0,0},high{3010,40,60};std::string error;
+    // Counts admission requests of at least 1 KiB: the geometry growth steps (per-model/material requests are tiny).
+    uint64_t largest=0;unsigned large=0;bool deny=false;
+    AllocationAdmission admit=[&](uint64_t bytes){largest=std::max(largest,bytes);large+=bytes>=1024;return !(deny&&bytes>=1024);};
+    auto same=[](const WorldScene& a,const WorldScene& b){return a.vertices.size()==b.vertices.size()&&a.triangles.size()==b.triangles.size()&&a.materials.size()==b.materials.size()&&!std::memcmp(a.vertices.data(),b.vertices.data(),a.vertices.size()*sizeof(WorldVertex))&&!std::memcmp(a.triangles.data(),b.triangles.data(),a.triangles.size()*sizeof(WorldTriangle));};
+    WorldScene plain;if(!loadInstancedScenes({tile},root.string(),low,high,plain,error,1,admit)){std::fprintf(stderr,"hint: %s\n",error.c_str());assert(false);}
+    assert(plain.triangles.size()==2*count&&plain.vertices.size()==4*count);
+    const unsigned plainSteps=large;assert(plainSteps>2); // x2 chain: 64,128,...
+    SceneSizeHint hint;hint.key=7;WorldScene first;
+    large=0;largest=0;assert(loadInstancedScenes({tile},root.string(),low,high,first,error,1,admit,{},{},&hint));
+    assert(!hint.hinted&&same(first,plain)&&hint.sized&&hint.vertices==4*count&&hint.triangles==2*count&&large==plainSteps);
+    // Same region again: one reserve per array at counts + 1/16 (the 3rd large request is the material list), no growth steps, identical geometry.
+    WorldScene again;large=0;largest=0;assert(loadInstancedScenes({tile},root.string(),low,high,again,error,1,admit,{},{},&hint));
+    assert(hint.hinted&&same(again,plain)&&large==3); // vertex + triangle hint + the one material reserve
+    assert(largest==(4*count+4*count/16)*sizeof(WorldVertex));
+    // A hint far below the real need: first overflow grows +1/4, then x2, so large growth steps stay within one of an unhinted build.
+    {SceneSizeHint small;small.key=1;small.sized=true;small.sizedKey=1;small.vertices=64;small.triangles=32;small.low=low;small.high=high;
+     WorldScene s2;large=0;assert(loadInstancedScenes({tile},root.string(),low,high,s2,error,1,admit,{},{},&small));assert(small.hinted&&same(s2,plain)&&large<=plainSteps+1);}
+    // A different key (other map or reach) never uses the hint.
+    hint.key=8;WorldScene other;assert(loadInstancedScenes({tile},root.string(),low,high,other,error,1,admit,{},{},&hint));assert(!hint.hinted&&same(other,plain));
+    // Non-overlapping (IoU < 1/2) region ignores the hint and records its own counts.
+    hint.key=8;const Vec3 lowB{1500,0,0},highB{4500,40,60};WorldScene b,bPlain;
+    assert(loadInstancedScenes({tile},root.string(),lowB,highB,b,error,1,admit,{},{},&hint));assert(!hint.hinted&&hint.vertices==b.vertices.size());
+    assert(loadInstancedScenes({tile},root.string(),lowB,highB,bPlain,error,1,admit));assert(same(b,bPlain)&&b.triangles.size()<plain.triangles.size());
+    // Denied hint: falls back to normal growth under the same admission, without an error; a fully denying admission still fails.
+    hint.key=9;assert(loadInstancedScenes({tile},root.string(),low,high,again,error,1,admit,{},{},&hint));hint.key=9;
+    deny=true;WorldScene denied;assert(!loadInstancedScenes({tile},root.string(),low,high,denied,error,1,admit,{},{},&hint)&&!hint.hinted);
+    deny=false;const auto before=hint.vertices;
+    // Hint reserve alone is refused (first >=1 KiB request), later growth is allowed.
+    unsigned calls=0;AllocationAdmission denyFirst=[&](uint64_t bytes){if(bytes>=1024&&++calls==1)return false;return true;};
+    WorldScene fallback;assert(loadInstancedScenes({tile},root.string(),low,high,fallback,error,1,denyFirst,{},{},&hint));
+    assert(!hint.hinted&&error.empty()&&same(fallback,plain)&&hint.vertices==before);
+    // Without admission the hint still reserves and results are identical.
+    WorldScene noAdmit;assert(loadInstancedScenes({tile},root.string(),low,high,noAdmit,error,1,{},{},{},&hint));assert(hint.hinted&&same(noAdmit,plain));
+    std::filesystem::remove(tile);std::filesystem::remove(model);std::filesystem::remove(root);
+    std::puts("PASS FGS3 size hint: identical geometry, single reserve on overlap, key/IoU gating, denied hint falls back");
+}
+int main(int argc,char** argv){testLocalAndMoving();testOcclusion();testAlpha();testSamplerModes();testTracerInvariants();testSun();testBounce();testSkyAndMoments();testProbeValidity();testLoader();testCrop();testInstances();testSizeHint();if(argc>1)testRealScene(argv[1]);if(argc>3)testRealInstanced(argv[2],argv[3],argv[1]);std::puts("All world GI tests passed");}
