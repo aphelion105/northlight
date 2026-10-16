@@ -401,7 +401,8 @@ public:
         PresentMark& slot=presentHist[core.frameNo%framesAhead_];const PresentMark prev=slot;slot=PresentMark{q.recordedSeq(),core.frameNo};
         HRESULT result=D3D_OK;
         if(prev.seq){q.waitReplayed(prev.seq,WaitKind::Present);result=presentResult(prev);}   // framesAhead_ frames ahead: that frame's real HRESULT
-        q.setPressure(core.memoryPressure.load(std::memory_order_relaxed)||NorthlightStream::memoryPressure.load(std::memory_order_relaxed));
+        const bool pressureAsked=core.memoryPressure.load(std::memory_order_relaxed)||NorthlightStream::memoryPressure.load(std::memory_order_relaxed);
+        const bool relief=stormGuard(q,pressureAsked);q.setPressure(pressureAsked&&!relief);
         frameEnd=nowNs();
         if(core.timing){const std::uint64_t e=frameEnd-nowAtPresent,w=gameWaitsNs(q.stats)-waits0;own(q.stats.presentBookNs,e>w?e-w:0);}   // 0.3.204 (task 21): Present bookkeeping, waits excluded (no extra clock reads)
         waitsAtFrameEnd=get(q.stats.syncNs)+get(q.stats.backpressureNs);
@@ -417,6 +418,28 @@ public:
             if(replayer.log){char b[128];std::snprintf(b,sizeof b,"CSTREAM memory pressure %s memMB=%.1f",pressureNow?"on":"off",replayer.memory().total()/1048576.0);replayer.log(b);}
         }
         return result;
+    }
+    // 0.3.216 (issue #66 follow-up): the sync-storm safety net. A synchronous round trip per buffer lock is worse than the memory the halved caps save (the game becomes unplayable),
+    // so under pressure the cross-thread syncs are counted over kStormWindow Presents; kStormSyncPerFrame or more per frame lifts the stream's halved caps (shadows, queue budget,
+    // pooled memory: the pre-pressure behaviour) for kStormReliefFrames Presents or until the guard's pressure ends, and logs it. The guard's own relief of the rest of the mod
+    // (world caches, replay pool) stays. Returns true while the relief holds (the caller then keeps the caps full). Game thread, once per Present.
+    static constexpr unsigned kStormWindow=120,kStormSyncPerFrame=150,kStormReliefFrames=3600;
+    bool stormGuard(Queue& q,bool pressureAsked){
+        const std::uint64_t sync=get(q.stats.syncCalls);
+        if(!pressureAsked){stormReliefUntil_=0;stormFrames_=0;stormSyncAt_=sync;return false;}
+        if(stormReliefUntil_){
+            if(core.frameNo<stormReliefUntil_)return true;
+            stormReliefUntil_=0;stormFrames_=0;stormSyncAt_=sync;
+            if(replayer.log)replayer.log("CSTREAM sync-storm relief ended; the halved caps apply again");
+            return false;
+        }
+        if(!stormFrames_)stormSyncAt_=sync;
+        if(++stormFrames_<kStormWindow)return false;
+        const double perFrame=double(sync-stormSyncAt_)/double(stormFrames_);stormFrames_=0;stormSyncAt_=sync;
+        if(perFrame<double(kStormSyncPerFrame))return false;
+        stormReliefUntil_=core.frameNo+kStormReliefFrames;add(q.stats.stormReliefs);
+        if(replayer.log){char b[256];std::snprintf(b,sizeof b,"CSTREAM sync-storm under memory pressure: %.0f syncs/frame over %u frames; stream caps back to full for %u frames (reliefs=%llu) memMB=%.1f",perFrame,kStormWindow,kStormReliefFrames,(unsigned long long)get(q.stats.stormReliefs),replayer.memory().total()/1048576.0);replayer.log(b);}
+        return true;
     }
     // The real result of a recorded Present (its command sequence number and ordinal), recorded by the replay thread.
     struct PresentMark {std::uint64_t seq=0,ordinal=0;};
@@ -588,7 +611,7 @@ private:
     std::unique_ptr<StreamCore> coreOwner;StreamCore& core;Replayer replayer;StreamState st;std::function<void()> restoreOwner;
     IDirect3D9* parent;D3DCAPS9 caps{};D3DDEVICE_CREATION_PARAMETERS creation{};D3DPRESENT_PARAMETERS pp{};
     StreamSwapChain* sc0=nullptr;std::atomic<LONG> refs{1};
-    bool recording=false,pressureApplied=false,filter=true;BOOL cursorVisible=0;void* hCursor=nullptr;std::mutex cursorMutex;CursorApi cursor=CursorApi::native();unsigned getsSincePublish=0;std::uint64_t frameEnd=0,waitsAtFrameEnd=0;std::uint64_t drawOrdinal=0;
+    bool recording=false,pressureApplied=false,filter=true;std::uint64_t stormReliefUntil_=0,stormSyncAt_=0;unsigned stormFrames_=0;BOOL cursorVisible=0;void* hCursor=nullptr;std::mutex cursorMutex;CursorApi cursor=CursorApi::native();unsigned getsSincePublish=0;std::uint64_t frameEnd=0,waitsAtFrameEnd=0;std::uint64_t drawOrdinal=0;
     unsigned framesAhead_=1;PresentMark presentHist[kMaxFramesAhead];   // 0.3.200 (pipeline): see presentCommon
     std::thread::id gameThread=std::this_thread::get_id();
     PoolTuner tuner;TriggerPolicy policy;bool (*capture)(GameSnapshot&,Trigger,std::uint64_t)=nullptr;

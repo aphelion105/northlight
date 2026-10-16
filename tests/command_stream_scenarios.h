@@ -408,6 +408,19 @@ static void pressureKeepsMidSizeShadow(){
     b->Release();rig.sync();CHECK(s.shadowBytes.load()==0);
     q.setPressure(false);rig.finish();checkClean();
 }
+// 0.3.216 (issue #66 follow-up): the sync-storm safety net lifts the halved stream caps when the syncs per frame stay high under pressure, logs it, and re-arms when the pressure ends.
+static void syncStormRelief(){
+    gTrace.clear();Rig rig(true);auto* d=rig.dev;auto& q=rig.core().q;auto& s=q.stats;
+    rig.sync();rig.core().memoryPressure.store(true);frames(d,1);rig.sync();CHECK(q.pressure());
+    for(unsigned i=0;i<StreamDevice::kStormWindow+2;++i){add(s.syncCalls,StreamDevice::kStormSyncPerFrame/2);frames(d,1);}   // below the threshold: nothing happens
+    CHECK(q.pressure()&&get(s.stormReliefs)==0);
+    for(unsigned i=0;i<StreamDevice::kStormWindow+1;++i){add(s.syncCalls,StreamDevice::kStormSyncPerFrame+50);frames(d,1);}
+    CHECK(!q.pressure()&&get(s.stormReliefs)==1&&q.shadowCap()==ShadowBudgetBytes);   // relief: full caps again although the guard still asks for pressure
+    frames(d,10);CHECK(!q.pressure());
+    rig.core().memoryPressure.store(false);frames(d,1);CHECK(!q.pressure());
+    rig.core().memoryPressure.store(true);frames(d,1);rig.sync();CHECK(q.pressure()&&get(s.stormReliefs)==1);   // the next episode starts halved again
+    rig.finish();checkClean();
+}
 static void shadowCap(){
     gTrace.clear();Rig rig(true);auto& q=rig.core().q;auto& s=q.stats;
     const int n=int(ShadowBudgetBytes/(2u<<20));   // how many 2 MiB shadows fit the cap
@@ -2011,7 +2024,7 @@ static void textureReadbackTable(){
 }
 static void streamTests(bool threadsOnly){
     layoutIsolation();replayTimingAccounting();diagnosticsOffSkipsAudit();idlePollWakes();
-    lifetimeAndIdentity();pressureKeepsMidSizeShadow();stateKnownUnknown();locksPreserveBytes();staticBufferShadows();dynamicBufferShadows();largeBufferAllowance();twoLargeBuffers();adaptiveShadowCap();shadowCap();queriesAndSyncCensus();occlusionFlushLocal(true);occlusionFlushLocal(false);resetAndShutdown();directReplayRaw();redundantFiltering();renderTargetResetsViewport();textureShadows();textureExpressReadback();textureReadbackDiagnostics();textureExpressBehind();textureReadbackTable();statsLine();childrenOutliveTheDevice();queryProbeAndDeadQuery();initFailureFallback();cursorHandling();nestedSyncInPump();testCooperativeLevelLocal(1);testCooperativeLevelLocal(3);upDrawsAndBackpressure();snapshotTriggers();snapshotPoolNotExhausted();memoryPressureRelease();impossibleBlockIsRefusedAtOnce();smallStagedLocksUseScratch();
+    lifetimeAndIdentity();pressureKeepsMidSizeShadow();syncStormRelief();stateKnownUnknown();locksPreserveBytes();staticBufferShadows();dynamicBufferShadows();largeBufferAllowance();twoLargeBuffers();adaptiveShadowCap();shadowCap();queriesAndSyncCensus();occlusionFlushLocal(true);occlusionFlushLocal(false);resetAndShutdown();directReplayRaw();redundantFiltering();renderTargetResetsViewport();textureShadows();textureExpressReadback();textureReadbackDiagnostics();textureExpressBehind();textureReadbackTable();statsLine();childrenOutliveTheDevice();queryProbeAndDeadQuery();initFailureFallback();cursorHandling();nestedSyncInPump();testCooperativeLevelLocal(1);testCooperativeLevelLocal(3);upDrawsAndBackpressure();snapshotTriggers();snapshotPoolNotExhausted();memoryPressureRelease();impossibleBlockIsRefusedAtOnce();smallStagedLocksUseScratch();
     framesAheadPacing();textureShadowSpares();frameSkipping();frameSkipReleasesPresentWait();   // 0.3.200 (frame skip)
     zeroCopyRenames();zeroCopyRingBudget();zeroCopyAdaptiveRing();zeroCopyRetire();zeroCopyPumpedLock(0);zeroCopyPumpedLock(1);
     for(UINT len:{512u<<10,2u<<20}){zeroCopyRenames(len);zeroCopyRetire(len);zeroCopyPumpedLock(0,len);zeroCopyPumpedLock(1,len);}   // 0.3.204 (task 21): the same for DYNAMIC buffers in the regular shadow cap
