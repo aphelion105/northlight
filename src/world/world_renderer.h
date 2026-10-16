@@ -817,7 +817,7 @@ private:
     std::vector<std::unique_ptr<NorthlightActorPrepare::DeclArena>> prepareQuarantinedDecls;
     std::vector<std::unique_ptr<Replay>> prepareQuarantine;
     std::vector<std::shared_ptr<const NorthlightActorDeformation::Program>> prepareQuarantinedPrograms; /* 0.3.183: every program pinned at the abandon */
-    NorthlightShadowFate::Tracker shadowFate;unsigned otherBlendRejected=0,otherBudgetRejected=0,otherProjectionRejected=0;
+    NorthlightShadowFate::Tracker shadowFate;unsigned otherBlendRejected=0,otherFadeRejected=0,otherBudgetRejected=0,otherProjectionRejected=0;
     NorthlightActorShadowSelection::History actorShadowHistory;
     std::vector<NorthlightActorShadowSelection::Draw> actorShadowDraws;
     NorthlightActorShadowSelection::Scratch actorShadowScratch;size_t actorShadowToggles=0;unsigned actorShadowFrames=0;
@@ -851,7 +851,7 @@ private:
     NorthlightReplayCaptureConstants::Stats constantEpochStats,constantEpochProfile;
     NorthlightReplayCaptureConstants::SelfCheck constantSelfCheckState{0,&constantEpochStats};
     unsigned capturedSM1Draws=0,capturedRelativeDraws=0;
-    unsigned skinnedCandidates=0,skinnedBlendRejected=0,skinnedProjectionRejected=0,skinnedBudgetRejected=0,skinnedSnapshotRejected=0,skinnedAccepted=0;
+    unsigned skinnedCandidates=0,skinnedBlendRejected=0,skinnedFadeRejected=0,skinnedProjectionRejected=0,skinnedBudgetRejected=0,skinnedSnapshotRejected=0,skinnedAccepted=0;
     size_t captureRejectedBytes=0,acceptedSkinnedBytes=0,acceptedOtherBytes=0;
     bool captureSampled=false;
     bool captureShortfall=false; /* this capture frame lost a draw to the capture limits (bytes or count) */
@@ -2167,10 +2167,10 @@ public:
                 m.snapshotEvictions,m.snapshotEvictedBytes,m.snapshotMs,m.indexEvictions,m.indexEvictedBytes,m.indexMs,
                 m.missEvicted,m.missRevision,m.missUnknown,m.missCollision,replaySnapshots.snapshotRevalidationMismatches());}
         if(captureSampled)logf("MODEL capture metadata batches=%u knownBuffers=%u fallbackBuffers=%u fastSnapshotHits=%u",replaySnapshots.metadataBatches(),replaySnapshots.metadataHits(),replaySnapshots.metadataFallbacks(),replaySnapshots.fastCacheHits());
-        if(captureSampled)logf("MODEL frame capture skinnedCandidates=%u accepted=%u blendRejected=%u projectionRejected=%u budgetRejected=%u snapshotRejected=%u acceptedSkinnedBytes=%zu acceptedOtherBytes=%zu rejectedReadBytes=%zu totalReadBytes=%zu compactedDraws=%u spanVertices=%zu uniqueVertices=%zu savedVertexBytes=%zu nearAdmitted=%u nearBytes=%zu nearRefused=%u nearSelf=%d nearReserve=%zu radiusGated=%u radiusGatedBytes=%zu cutRejected=%u cutYards=%.1f insideRefused=%u insideRefusedActors=%u noRoot=%u admissionCentre=%s rootReads=%u rootMemoHits=%u",skinnedCandidates,skinnedAccepted,skinnedBlendRejected,skinnedProjectionRejected,skinnedBudgetRejected,skinnedSnapshotRejected,acceptedSkinnedBytes,acceptedOtherBytes,captureRejectedBytes,replaySnapshots.bytesRead(),replaySnapshots.compactedDraws(),replaySnapshots.sourceSpanVertices(),replaySnapshots.uniqueVertices(),replaySnapshots.savedVertexBytes(),nearAdmitted,nearBytes,nearRefused,int(nearAnchorReady&&nearAnchor.self),replaySnapshots.nearReserve(),
+        if(captureSampled)logf("MODEL frame capture skinnedCandidates=%u accepted=%u blendRejected=%u fadeRejected=%u projectionRejected=%u budgetRejected=%u snapshotRejected=%u acceptedSkinnedBytes=%zu acceptedOtherBytes=%zu rejectedReadBytes=%zu totalReadBytes=%zu compactedDraws=%u spanVertices=%zu uniqueVertices=%zu savedVertexBytes=%zu nearAdmitted=%u nearBytes=%zu nearRefused=%u nearSelf=%d nearReserve=%zu radiusGated=%u radiusGatedBytes=%zu cutRejected=%u cutYards=%.1f insideRefused=%u insideRefusedActors=%u noRoot=%u admissionCentre=%s rootReads=%u rootMemoHits=%u",skinnedCandidates,skinnedAccepted,skinnedBlendRejected,skinnedFadeRejected,skinnedProjectionRejected,skinnedBudgetRejected,skinnedSnapshotRejected,acceptedSkinnedBytes,acceptedOtherBytes,captureRejectedBytes,replaySnapshots.bytesRead(),replaySnapshots.compactedDraws(),replaySnapshots.sourceSpanVertices(),replaySnapshots.uniqueVertices(),replaySnapshots.savedVertexBytes(),nearAdmitted,nearBytes,nearRefused,int(nearAnchorReady&&nearAnchor.self),replaySnapshots.nearReserve(),
             admission.counters().radiusGated,admission.counters().radiusGatedBytes,admission.counters().cutRejected,admission.cutActive()?double(admission.cut()):0.0,admission.counters().insideRefusedDraws,admission.counters().insideRefusedActors,admission.counters().noRoot,
             admissionOn?(admission.centreSelf()?"self":"pivot"):"off",rootReads,rootMemoHits);
-        if(captureSampled)logf("MODEL frame capture other blendRejected=%u projectionRejected=%u budgetRejected=%u",otherBlendRejected,otherProjectionRejected,otherBudgetRejected);
+        if(captureSampled)logf("MODEL frame capture other blendRejected=%u fadeRejected=%u projectionRejected=%u budgetRejected=%u",otherBlendRejected,otherFadeRejected,otherProjectionRejected,otherBudgetRejected);
         if(captureSampled&&captureFrequency.QuadPart>0){
             const double ms=1000.0/double(captureFrequency.QuadPart);
             // Raw totals of the rotating subset; do not multiply by 16. Rejected
@@ -2200,7 +2200,7 @@ public:
         for(auto& n:replayTriangleBins)n=0;for(auto& n:skinnedTriangleBins)n=0;for(auto& n:acceptedTriangleBins)n=0;for(auto& n:acceptedSkinnedTriangleBins)n=0;
         smallShadowEarly=smallShadowGI=0;shadowSelectionDone=false;captureShortfall=false;
         lastCapturePhaseReads=capturePhases.clockReads+actorPhases.clockReads;clearCaptureDiagnostics();if(captureSampled)++capturePhaseSerial;
-        skinnedCandidates=skinnedBlendRejected=skinnedProjectionRejected=skinnedBudgetRejected=skinnedSnapshotRejected=skinnedAccepted=0;otherBlendRejected=otherBudgetRejected=otherProjectionRejected=0;
+        skinnedCandidates=skinnedBlendRejected=skinnedFadeRejected=skinnedProjectionRejected=skinnedBudgetRejected=skinnedSnapshotRejected=skinnedAccepted=0;otherBlendRejected=otherFadeRejected=otherBudgetRejected=otherProjectionRejected=0;
         captureRejectedBytes=acceptedSkinnedBytes=acceptedOtherBytes=0;nearAdmitted=nearRefused=0;nearBytes=0;nearAnchorReady=false;
         admission.endFrame(size_t(captureBudgetMiB)*1048576,replaySnapshots.bytesRead());admissionOn=false;rootMemo.clear();rootReads=rootMemoHits=0;gatedBodies.clear(); /* 0.3.211 (task 31): the next frame's cut, after the log read this frame's counters; no-op when no skinned draw armed it */
         previousCacheHits=terrainBoundsCache.persistentHits();capturedConstantBytes=capturedConstantCalls=0;capturedSM1Draws=capturedRelativeDraws=0;
@@ -2964,6 +2964,14 @@ public:
         // The game's original draw and the shared draw-domain gate are untouched.
         fate.reason=NorthlightShadowFate::Small;
         if(smallShadow&&!actorCaptureEnabled()){if(sample)++smallShadowEarly;++rejSmall;return;}
+        // 0.3.215 (task 47): a faded actor (stealth, ghosts) draws a depth-only pre-pass (no RGB) before its blended colour pass.
+        // It looks opaque, so reject it here, before the admission, the budget and the near reserve (its weapons and parts too).
+        fate.reason=NorthlightShadowFate::Fade;
+        {DWORD colorWrite=15;if(SUCCEEDED(d->GetRenderState(D3DRS_COLORWRITEENABLE,&colorWrite))&&(colorWrite&7)==0){if(sample&&priority)++skinnedFadeRejected;if(sample&&!priority)++otherFadeRejected;return;}}
+        // 0.3.215 (task 47): a blended draw is never captured, so reject it before the admission and the budget too; it no longer
+        // counts as a radius-gated, cut or budget-refused draw, feeds the next cut or marks the frame short.
+        fate.reason=NorthlightShadowFate::Blend;
+        {DWORD blend=0;if(FAILED(d->GetRenderState(D3DRS_ALPHABLENDENABLE,&blend))||blend){if(sample&&priority)++skinnedBlendRejected;if(sample&&!priority)++otherBlendRejected;return;}}
         // 0.3.211 (task 31): the palette root once per skinned draw, then the capture admission (radius gate, distance cut)
         // before any budget is spent; near-reserve hits always pass. A draw without a root is never gated or cut.
         float root[3];bool rooted=false;NorthlightCaptureAdmission::Decision admit;
@@ -2986,8 +2994,7 @@ public:
                 if(sample&&!priority)++otherBudgetRejected;
                 return;}
         }
-        fate.reason=NorthlightShadowFate::Blend;
-        DWORD blend=0,alpha=0,ref=0,alphaFunc=D3DCMP_ALWAYS;if(FAILED(d->GetRenderState(D3DRS_ALPHABLENDENABLE,&blend))||blend){if(sample&&priority)++skinnedBlendRejected;if(sample&&!priority)++otherBlendRejected;return;}
+        DWORD alpha=0,ref=0,alphaFunc=D3DCMP_ALWAYS;
         fate.reason=NorthlightShadowFate::AlphaFunc;
         if(FAILED(d->GetRenderState(D3DRS_ALPHATESTENABLE,&alpha)))return;
         if(alpha){if(FAILED(d->GetRenderState(D3DRS_ALPHAREF,&ref))||FAILED(d->GetRenderState(D3DRS_ALPHAFUNC,&alphaFunc)))return;}

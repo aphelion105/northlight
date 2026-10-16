@@ -14,10 +14,10 @@
 // enables it only with an actor quota (budget 0 keeps 0.3.138's per-draw work).
 namespace NorthlightShadowFate {
 enum Fate : unsigned char {Absent,Unknown,Cap4096,Small,CaptureBudget,Blend,AlphaFunc,Projection,Snapshot,Constants,Material,
-    NotRanked,Kept,Dropped,Waiting,Rigid,Attached,Exempt,RadiusGate,DistanceCut,FateCount}; /* 0.3.211 (task 31): the capture admission's rejections */
+    NotRanked,Kept,Dropped,Waiting,Rigid,Attached,Exempt,RadiusGate,DistanceCut,Fade,FateCount}; /* 0.3.211 (task 31): the capture admission's rejections; 0.3.215 (task 47): a faded actor's depth-only pre-pass */
 inline const char* name(unsigned f){
     static const char* names[FateCount]={"absent","unknown","cap4096","small","captureBudget","blend","alphaFunc","projection","snapshot","constants","material",
-        "notRanked","kept","dropped","waiting","rigid","attached","exempt","radiusGate","distanceCut"};
+        "notRanked","kept","dropped","waiting","rigid","attached","exempt","radiusGate","distanceCut","fade"};
     return f<FateCount?names[f]:"?";
 }
 // cell: the instance's palette root quantized to 1 yd (identical model instances
