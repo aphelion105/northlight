@@ -57,17 +57,23 @@ static void reuse(const P::Plan& prior,const P::Plan& next,size_t& pages,double&
 static void walk(const std::string& root,const char* name,Vec3 c,Vec3 delta,unsigned steps,bool gateReuse) {
     namespace S=NorthlightMeshBufferStore;
     std::string error;S::Store store;NorthlightMeshPoolTrim::State trim;
-    std::unique_ptr<Sample> prior;double peakPool=0,oldMax=0,newReuse=0,oldReuse=0,activeSum=0,oldMeshSum=0,peakCpu=0,peakCpuElided=0,elidedMiB=0;unsigned counted=0;size_t pagesSum=0,oldPagesSum=0,batchSum=0,oldBatchSum=0;
+    std::unique_ptr<Sample> prior;double peakPool=0,oldMax=0,newReuse=0,oldReuse=0,activeSum=0,oldMeshSum=0,peakCpu=0,peakCpuElided=0,elidedMiB=0,workerPeak=0,workerPeakElided=0;unsigned counted=0;size_t pagesSum=0,oldPagesSum=0,batchSum=0,oldBatchSum=0;
     for(unsigned k=0;k<steps;++k) {
         auto next=sample(root,c+delta*float(k),error);
         std::vector<S::Key> keys;for(const auto& p:next->anchored.pages)keys.push_back(p.key);
         // 0.3.216: the worker frees the data of pages the active buffers already hold (keys published at the last commit).
         const double cpuFull=double(next->anchored.cpuBytes());
         const auto resident=store.activeKeys();
-        const auto elision=P::elide(next->anchored,resident);
+        // The worker builds the plan with the resident keys: pages are freed inside build() as they finish.
+        uint64_t peakPlain=0,peakElided=0;
+        {P::Plan plain;P::Options o;o.peakLiveBytes=&peakPlain;assert(P::build(next->input,plain,error,{},o));}
+        P::Options elidingOptions;elidingOptions.resident=&resident;elidingOptions.peakLiveBytes=&peakElided;
+        assert(P::build(next->input,next->anchored,error,{},elidingOptions));
+        P::ElisionStats elision;for(const auto& p:next->anchored.pages)if(p.elided){++elision.pages;elision.bytes+=p.key.vertexBytes+p.key.indexBytes;}
+        for(uint32_t i=0;i<keys.size();++i)assert(next->anchored.pages[i].key==keys[i]); // elision never changes the paging
         assert(!P::validatePages(next->input,next->anchored)); // an elided plan still validates, with the full aggregate sizes
         std::vector<uint8_t> elidedFlags;for(const auto& p:next->anchored.pages)elidedFlags.push_back(p.elided);
-        if(k){peakCpu=std::max(peakCpu,cpuFull);peakCpuElided=std::max(peakCpuElided,double(next->anchored.cpuBytes()));elidedMiB+=double(elision.bytes);}
+        if(k){peakCpu=std::max(peakCpu,cpuFull);peakCpuElided=std::max(peakCpuElided,double(next->anchored.cpuBytes()));elidedMiB+=double(elision.bytes);workerPeak=std::max(workerPeak,double(peakPlain));workerPeakElided=std::max(workerPeakElided,double(peakElided));}
         assert(store.beginStaging(keys,elidedFlags)&&store.elidedMisses()==0); // every elided page hits: it came from the active table
         const auto& staging=store.staging();
         for(size_t u=0;u<staging.upload.size();++u) { // the Create steps of the upload cursor
@@ -89,8 +95,9 @@ static void walk(const std::string& root,const char* name,Vec3 c,Vec3 delta,unsi
         prior=std::move(next);
     }
     const double MiB=1048576.;
-    std::printf("WALK %s %s: reuse old %.1f%% new %.1f%%; peak pool new %.1f MiB vs old 2x %.1f MiB; active mesh new %.1f old %.1f MiB; pages new %zu old %zu; batches new %zu old %zu (avg over %u commits); peak plan CPU without elision %.1f MiB, with %.1f MiB (elided %.1f MiB per commit)\n",name,gateReuse?"diagonal":"straight",
-        oldReuse/counted*100,newReuse/counted*100,peakPool/MiB,2*oldMax/MiB,activeSum/steps/MiB,oldMeshSum/steps/MiB,pagesSum/steps,oldPagesSum/steps,batchSum/steps,oldBatchSum/steps,steps,peakCpu/MiB,peakCpuElided/MiB,elidedMiB/counted/MiB);
+    std::printf("WALK %s %s: reuse old %.1f%% new %.1f%%; peak pool new %.1f MiB vs old 2x %.1f MiB; active mesh new %.1f old %.1f MiB; pages new %zu old %zu; batches new %zu old %zu (avg over %u commits); peak plan CPU without elision %.1f MiB, with %.1f MiB (elided %.1f MiB per commit); worker peak live page data without elision %.1f MiB, with %.1f MiB\n",name,gateReuse?"diagonal":"straight",
+        oldReuse/counted*100,newReuse/counted*100,peakPool/MiB,2*oldMax/MiB,activeSum/steps/MiB,oldMeshSum/steps/MiB,pagesSum/steps,oldPagesSum/steps,batchSum/steps,oldBatchSum/steps,steps,peakCpu/MiB,peakCpuElided/MiB,elidedMiB/counted/MiB,workerPeak/MiB,workerPeakElided/MiB);
+    assert(workerPeakElided<workerPeak*.85); // the worker itself holds clearly less while building
     assert(peakCpuElided<peakCpu*.85); // the staging plan holds clearly less CPU data once resident pages are elided
     assert(peakPool<2*oldMax);
     assert(newReuse/counted>oldReuse/counted+.15);

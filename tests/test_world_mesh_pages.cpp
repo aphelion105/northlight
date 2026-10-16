@@ -172,6 +172,28 @@ static void testElision(){
     std::vector<uint32_t> ids;for(uint32_t i=0;i<120;++i)ids.push_back(i);
     WorldScene scene;WorldMeshUploadPlan input;makePlan(scene,input,ids);
     P::Plan full,plan;std::string error;assert(P::build(input,full,error));assert(P::build(input,plan,error));assert(full.pages.size()>=8);
+    // Elision inside build(): same pages, keys, batches and boundaries as without it, resident pages freed as they finish,
+    // a lower worker peak, and failure/admission behave as before.
+    {NorthlightMeshPageKey::KeySet some;for(size_t i=1;i<full.pages.size();i+=2)some.insert(full.pages[i].key);
+     uint64_t peakPlain=0,peakElided=0;P::Plan plain,inner;
+     P::Options o;o.peakLiveBytes=&peakPlain;assert(P::build(input,plain,error,{},o));
+     o.resident=&some;o.peakLiveBytes=&peakElided;assert(P::build(input,inner,error,{},o));
+     assert(inner.pages.size()==full.pages.size()&&inner.batches.size()==full.batches.size()&&inner.vertexBytes==full.vertexBytes&&inner.indexBytes==full.indexBytes);
+     for(size_t i=0;i<inner.pages.size();++i){
+         assert(inner.pages[i].key==full.pages[i].key&&inner.pages[i].elided==(i%2==1));
+         if(inner.pages[i].elided)assert(inner.pages[i].vertices.capacity()==0&&inner.pages[i].indices.capacity()==0);
+         else assert(inner.pages[i].indices==full.pages[i].indices&&!std::memcmp(inner.pages[i].vertices.data(),full.pages[i].vertices.data(),full.pages[i].vertices.size()*sizeof(WorldVertex)));
+     }
+     for(size_t i=0;i<inner.batches.size();++i)assert(inner.batches[i].page==full.batches[i].page&&inner.batches[i].start==full.batches[i].start&&inner.batches[i].count==full.batches[i].count&&inner.batches[i].minVertex==full.batches[i].minVertex);
+     assert(!P::validatePages(input,inner)&&inner.cpuBytes()<full.cpuBytes()&&peakElided<peakPlain&&peakPlain>=full.cpuBytes()/2);
+     // Everything resident: only the page being filled is ever live.
+     NorthlightMeshPageKey::KeySet all;for(auto& p:full.pages)all.insert(p.key);
+     uint64_t peakAll=0;P::Plan allElided;o.resident=&all;o.peakLiveBytes=&peakAll;assert(P::build(input,allElided,error,{},o));
+     for(auto& p:allElided.pages)assert(p.elided&&p.vertices.capacity()==0);
+     assert(peakAll<=2*(P::PageVertexByteLimit+P::PageIndexByteLimit)&&!P::validatePages(input,allElided));
+     // A failed build changes nothing, with or without resident keys.
+     unsigned admissions=0;assert(!P::build(input,inner,error,[&](uint64_t){return ++admissions!=3;},o));assert(inner.pages.size()==full.pages.size()&&inner.pages[1].elided);
+    }
     // Nothing resident (no snapshot, another map's snapshot is never passed in): nothing elided, still fully valid.
     NorthlightMeshPageKey::KeySet none;auto stats=P::elide(plan,none);
     assert(stats.pages==0&&stats.bytes==0&&plan.cpuBytes()==full.cpuBytes()&&!P::validatePages(input,plan));

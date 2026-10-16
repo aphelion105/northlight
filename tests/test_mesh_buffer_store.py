@@ -56,8 +56,9 @@ assert 'std::lock_guard<std::mutex> lock(mutex);residentPages=std::move(keys);' 
 assert 'publishResidentPages(std::string());' in w[w.index('void releaseMeshPool()'):w.index('size_t trimMeshPools(')]  # pool released: nothing resident
 assert commit.count('publishResidentPages(uploadedMap);') == 1 and commit.index('meshStore.commit()') < commit.index('publishResidentPages(uploadedMap);')
 worker = w[w.index('std::shared_ptr<const NorthlightMeshPageKey::KeySet> resident;'):w.index('WORLD mesh pages=%zu')]
-assert 'residentPages&&residentMap==r.map' in worker and 'NorthlightWorldMeshPages::elide(*pages,*resident)' in worker  # same map only
-assert worker.index('elide(*pages') < worker.index('NorthlightWorldMeshPages::seal(*plan,pages')  # before seal: the payload accounts the freed memory
+assert 'residentPages&&residentMap==r.map' in worker and 'pagingOptions.resident=resident.get();' in worker  # same map only
+assert 'NorthlightWorldMeshPages::build(*plan,*pages,error,terrainAdmission,pagingOptions)' in worker and 'elide(*pages' not in worker  # elided inside build(): the worker never holds resident pages
+assert worker.index('pagingOptions') < worker.index('NorthlightWorldMeshPages::seal(*plan,pages')  # the payload accounts the freed memory
 assert 'elidedPages=%zu elidedMiB=%.2f' in w and 'elidedPages=%zu"' in commit
 begin = upload[upload.index('std::vector<uint8_t> elidedPages;'):upload.index('syncMeshBuffers();')]
 assert 'meshStore.elidedMisses()' in begin and 'residentPages.reset();residentMap.clear();' in begin and 'active->meshPlan->payload.discard();' in begin

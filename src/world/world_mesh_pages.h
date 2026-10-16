@@ -25,7 +25,11 @@ static_assert(sizeof(NorthlightGI::Vec3)==12,"Content anchors hash three packed 
 // anchor; every later page is byte-identical to the previous build's. The hard limits stay as forced cuts.
 constexpr uint32_t MinFillVertices=PageVertexLimit/4;
 constexpr uint32_t AnchorModulus=6144;
-struct Options {uint32_t anchorModulus=AnchorModulus,minFillVertices=MinFillVertices;}; // anchorModulus 0: sequential paging (tests, measurements)
+// anchorModulus 0: sequential paging (tests, measurements). resident (optional): keys of pages the GPU already holds; a page
+// whose key is in it is freed the moment it is finished (key computed first), so the worker never holds more than the pages
+// that must be uploaded plus the one being filled. Anchors and page boundaries never depend on it. peakLiveBytes (optional)
+// receives the largest live page capacity during the build (kept pages + the page just finished), for measurements.
+struct Options {uint32_t anchorModulus=AnchorModulus,minFillVertices=MinFillVertices;const NorthlightMeshPageKey::KeySet* resident=nullptr;uint64_t* peakLiveBytes=nullptr;};
 struct Page {
     std::vector<NorthlightGI::WorldVertex> vertices;
     std::vector<uint32_t> indices;
@@ -78,8 +82,20 @@ inline bool build(const NorthlightWorldMesh::WorldMeshUploadPlan& input,Plan& ou
         remap.reserve(PageVertexLimit);batchUnique.reserve(PageVertexLimit);
         uint64_t expectedStart=0;
         bool closeAfter=false; // an anchor closed the current page: the next triangle/batch opens a new one
+        uint64_t liveKept=0,peakLive=0;
+        // A finished page gets its content key; a resident one is freed right here (elided), keeping key and sizes.
+        auto finishPage=[&](Page& p){
+            p.key=NorthlightMeshPageKey::keyOf(p.vertices.data(),p.vertices.size()*sizeof(NorthlightGI::WorldVertex),p.indices.data(),p.indices.size()*sizeof(uint32_t));
+            next.vertexBytes+=p.key.vertexBytes;next.indexBytes+=p.key.indexBytes;
+            const uint64_t capacity=p.vertices.capacity()*sizeof(NorthlightGI::WorldVertex)+p.indices.capacity()*sizeof(uint32_t);
+            peakLive=std::max(peakLive,liveKept+capacity);
+            if(options.resident&&options.resident->count(p.key)){
+                std::vector<NorthlightGI::WorldVertex>().swap(p.vertices);std::vector<uint32_t>().swap(p.indices);p.elided=true;
+            }else liveKept+=capacity;
+        };
         auto newPage=[&](){
             closeAfter=false;
+            if(!next.pages.empty())finishPage(next.pages.back());
             // Covers both bounded buffers plus vector growth transient copies.
             if(!allowed(2u*(PageVertexByteLimit+PageIndexByteLimit)))return false;
             if(next.pages.size()==next.pages.capacity()) {
@@ -170,10 +186,8 @@ inline bool build(const NorthlightWorldMesh::WorldMeshUploadPlan& input,Plan& ou
             if(anchored)closeAfter=true;
         }
         if(expectedStart!=input.indices.size())return fail("Paged mesh batches do not cover all indices");
-        for(auto& p:next.pages) {
-            p.key=NorthlightMeshPageKey::keyOf(p.vertices.data(),p.vertices.size()*sizeof(NorthlightGI::WorldVertex),p.indices.data(),p.indices.size()*sizeof(uint32_t));
-            next.vertexBytes+=p.vertices.size()*sizeof(NorthlightGI::WorldVertex);next.indexBytes+=p.indices.size()*sizeof(uint32_t);
-        }
+        if(!next.pages.empty())finishPage(next.pages.back());
+        if(options.peakLiveBytes)*options.peakLiveBytes=peakLive;
         output=std::move(next);error.clear();return true;
     } catch(const std::bad_alloc&) {return fail("Paged mesh worker allocation failed");}
       catch(const std::length_error&) {return fail("Paged mesh worker allocation size overflow");}

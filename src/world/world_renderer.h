@@ -1372,18 +1372,20 @@ private:
                 if(!currentGeometry()){++superseded;stallEnd("superseded");continue;}
                 shadowTerrain=NorthlightGI::WorldScene{}; // merged shadow plan already owns its data
                 auto pages=std::make_shared<NorthlightWorldMeshPages::Plan>();
-                if(!NorthlightWorldMeshPages::build(*plan,*pages,error,terrainAdmission)){
+                // 0.3.216 (issue #66): pages the GPU already holds (same map, keys published at the last commit) are freed inside
+                // build() the moment they are finished, so the worker's peak holds only the pages that must be uploaded.
+                std::shared_ptr<const NorthlightMeshPageKey::KeySet> resident;
+                {std::lock_guard<std::mutex> lock(mutex);if(residentPages&&residentMap==r.map)resident=residentPages;}
+                NorthlightWorldMeshPages::Options pagingOptions;pagingOptions.resident=resident.get();
+                if(!NorthlightWorldMeshPages::build(*plan,*pages,error,terrainAdmission,pagingOptions)){
                     if(terrainDeferred){
                         stallBegin("mesh-page",terrainSample,terrainRequired,terrainRequiredLargest);
                         if(reduceReach())goto terrainStage;
                         pages.reset();plan.reset();replacement.reset();liftEntry("mesh-page",terrainRequired,terrainSample.available,terrainRequiredLargest);deferBuild("mesh-page-retry",workerMemory(),1000);continue;}
                     result->message=error;publishError();continue;
                 }
-                // 0.3.216 (issue #66): free the data of pages the GPU already holds (same map, keys published at the last commit).
                 NorthlightWorldMeshPages::ElisionStats elided;
-                {std::shared_ptr<const NorthlightMeshPageKey::KeySet> resident;
-                 {std::lock_guard<std::mutex> lock(mutex);if(residentPages&&residentMap==r.map)resident=residentPages;}
-                 if(resident)elided=NorthlightWorldMeshPages::elide(*pages,*resident);}
+                for(const auto& page:pages->pages)if(page.elided){++elided.pages;elided.bytes+=uint64_t(page.key.vertexBytes)+page.key.indexBytes;}
                 if(!NorthlightWorldMeshPages::seal(*plan,pages,error,terrainAdmission)){
                     if(terrainDeferred){
                         stallBegin("mesh-page-seal",terrainSample,terrainRequired,terrainRequiredLargest);
