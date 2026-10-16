@@ -80,6 +80,7 @@ checks['task 45 gate: the signal is the previous Present\'s latency wait, kept a
     and 'boundKnown=limitGpuLatency&&!latencyFailed;gpuLimited=!boundKnown||gpuBound.bound();' in gb
     and 'cpuLimited=(!replayKnown||replayWait.bound())&&(!boundKnown||!gpuBound.bound());' in gb
     and 'NorthlightStream::get(streamStats->presentNs)+NorthlightStream::get(streamStats->backpressureNs)' in gb and 'replayKnown=streamStats!=nullptr;' in gb
+    and 'NorthlightStream::get(streamStats->skippedFrames)' in gb and 'replayWait.update(skippedNow?NorthlightGpuBudget::MaxWaitMs:' in gb
     and 'target->streamStats=&stream->streamCore().q.stats;' in r
     and 'gpuBound.update(float(latencyLastMs),' in gb and gb.index('gpuBound.update(')<gb.index('const unsigned budget=world?world->gpuBudgetMs():0;'))
 checks['task 45 gate: BoundWaitMs and the lighten parameter default to the old behaviour']=(

@@ -320,7 +320,7 @@ class Device final : public GuardedMirrorDevice {
     std::unique_ptr<NorthlightGpuFrameTimer> gpuTimer;NorthlightGpuBudget::Controller gpuBudget;std::int64_t gpuBudgetQpc=0;double gpuBudgetLastMs=0;
     // task 45: the GPU-bound signal (smoothed per-frame latency wait) and the CPU budget (ActorShadowCpuMs). cpuEffectsQpc: this frame's effects span in QPC ticks
     // (0 = the effects did not run), always measured: two QueryPerformanceCounter reads per applying frame; unlike cpuEffects it is not reset by the sample logging.
-    NorthlightGpuBudget::WaitSignal gpuBound,replayWait;std::uint64_t replayWaitPrevNs=0;std::int64_t boundQpc=0,cpuBudgetQpc=0,cpuEffectsQpc=0;NorthlightGpuBudget::Controller cpuBudget;double cpuBudgetLastMs=0;bool boundKnown=false,gpuLimited=true,cpuLimited=true,replayKnown=false;
+    NorthlightGpuBudget::WaitSignal gpuBound,replayWait;std::uint64_t replayWaitPrevNs=0,replaySkipPrev=0;std::int64_t boundQpc=0,cpuBudgetQpc=0,cpuEffectsQpc=0;NorthlightGpuBudget::Controller cpuBudget;double cpuBudgetLastMs=0;bool boundKnown=false,gpuLimited=true,cpuLimited=true,replayKnown=false;
     std::unique_ptr<NorthlightMemoryDiagnostics::Sampler> memoryDiagnostics; /* also feeds the functional memory guard */
     NorthlightMemoryGuard::Guard memoryGuard;
     IDirect3DTexture9 *scene = nullptr, *depthTex = nullptr, *ao = nullptr, *aoRaw = nullptr;
@@ -2099,7 +2099,7 @@ public:
         NorthlightMirrorResources::generation.fetch_add(1,std::memory_order_relaxed); /* task 34: Reset drops the render-target verdicts of every texture */
         if(spellOn){spell.reset();spellSync();spellQueryN=0;spellQueryUnknown=false;spellTexFor=nullptr;spellTexKey=nullptr;spellFade.reset();} /* task 34: no state block, upload buffer or surface may outlive the device state */
         frameIntervals.reset();frameCost.reset();backDescKnown=false;backSurface=nullptr;
-        NorthlightTrackedBuffers::invalidateAll();gpuProfile->reset();gpuTimer->reset();gpuBudgetQpc=0;boundQpc=0;cpuBudgetQpc=0;cpuEffectsQpc=0;gpuBound.reset();replayWait.reset();replayWaitPrevNs=0;drop(latencyQuery);latencyPending=false;latencyFailed=false; releaseResources(); if(world)world->reset();if(water)water->reset();if(celestialDiscs)celestialDiscs->reset();if(shadowBlobs)shadowBlobs->reset(); weatherDetect.reset();weatherSample={}; /* 0.3.198 (rain) */failed=false;latchDrawGates();
+        NorthlightTrackedBuffers::invalidateAll();gpuProfile->reset();gpuTimer->reset();gpuBudgetQpc=0;boundQpc=0;cpuBudgetQpc=0;cpuEffectsQpc=0;gpuBound.reset();replayWait.reset();replaySkipPrev=0;replayWaitPrevNs=0;drop(latencyQuery);latencyPending=false;latencyFailed=false; releaseResources(); if(world)world->reset();if(water)water->reset();if(celestialDiscs)celestialDiscs->reset();if(shadowBlobs)shadowBlobs->reset(); weatherDetect.reset();weatherSample={}; /* 0.3.198 (rain) */failed=false;latchDrawGates();
         if(pp&&world&&world->nameMask()){D3DDEVICE_CREATION_PARAMETERS cp={};if(SUCCEEDED(ext->GetCreationParameters(&cp)))upgradeAutoDepth(parent,cp.AdapterOrdinal,cp.DeviceType,pp,true,"Reset");} /* 0.3.212 (task 32) */
         HRESULT hr=ext->Reset(pp); logf("Reset HRESULT=0x%08lx",(unsigned long)hr); return hr;
     }
@@ -2237,7 +2237,9 @@ public:
         // The game thread's wait for this thread (Present + backpressure), from the stream's relaxed atomic counters: when the game never waits, this thread is not what limits the frame.
         replayKnown=streamStats!=nullptr;
         if(replayKnown){const std::uint64_t waitNs=NorthlightStream::get(streamStats->presentNs)+NorthlightStream::get(streamStats->backpressureNs);
-            replayWait.update(replayWaitPrevNs&&waitNs>=replayWaitPrevNs?float(double(waitNs-replayWaitPrevNs)*1e-6):0.f,boundDt);replayWaitPrevNs=waitNs;}
+            // A frame the replay skipped (StreamFrameSkip: it fell two frames behind, so the game did not have to wait) is a replay-bound frame too: it counts as a full capped wait.
+            const std::uint64_t skips=NorthlightStream::get(streamStats->skippedFrames);const bool skippedNow=replaySkipPrev&&skips>replaySkipPrev;replaySkipPrev=skips;
+            replayWait.update(skippedNow?NorthlightGpuBudget::MaxWaitMs:replayWaitPrevNs&&waitNs>=replayWaitPrevNs?float(double(waitNs-replayWaitPrevNs)*1e-6):0.f,boundDt);replayWaitPrevNs=waitNs;}
         else replayWait.reset();
         cpuLimited=(!replayKnown||replayWait.bound())&&(!boundKnown||!gpuBound.bound());
         const unsigned budget=world?world->gpuBudgetMs():0;
