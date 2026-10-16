@@ -170,7 +170,7 @@ def relight(tables):
 # Retime (0.3.178): the native bands of relight's private clear-weather profiles, moved onto
 # Northlight's sun and moon. Times are half-minutes (0-2879). Only times move; the (relit) values
 # stay, so the colour of every key is kept and only when it is reached changes.
-SUNSET_KEY, NIGHT_KEY, DAWN_KEY = 2430, 2520, 540   # 20:15 sunset colour, 21:00 night, 04:30 dawn start
+SUNSET_KEY, NIGHT_KEY, DAWN_KEY = 2470, 2550, 540   # 20:35 sunset colour (sun sets 20:30), 21:15 night, 04:30 dawn start (0.3.215: was 20:15, 21:00)
 INSERT_LIMIT = 11   # Mulgore and Stormwind add up to 5 keys afterwards, under the 16-key limit
 
 def band_pairs(row, floating):

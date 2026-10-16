@@ -1,5 +1,5 @@
 {
-  "source_sha256": "6839bc621fe166117a253b10ccab8c8e788fcd080a1c93377fce437d8be00350",
+  "source_sha256": "509a6345a585440bb3b7eb140efd538469ea825664a892c618e4c77aadc22516",
   "game_launched": false,
   "device_created": false,
   "shader": {
@@ -107,9 +107,9 @@
     },
     "CelestialVeilPS": {
       "target": "ps_3_0",
-      "bytes": 4544,
-      "sha256": "6aeefd1dc0a849bca2f0715d933fd0cdfac327f0f445bd2cc77718fd5910b2cf",
-      "static_instruction_slots": 233,
+      "bytes": 4588,
+      "sha256": "f0c4591d6ab004fde483c835f55ce61a1f12fcaecf437cf65e76e71a61f1ff8f",
+      "static_instruction_slots": 236,
       "temporary_registers": 5,
       "samplers": [
         0,
@@ -120,12 +120,12 @@
       ],
       "instructions": {
         "rcp": 10,
-        "add": 46,
+        "add": 47,
         "frc": 2,
-        "mul": 50,
+        "mul": 51,
         "max": 4,
         "min": 4,
-        "mov": 35,
+        "mov": 36,
         "texldl": 5,
         "cmp": 22,
         "if": 4,

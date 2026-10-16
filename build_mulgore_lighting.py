@@ -9,7 +9,7 @@ Band layout: https://github.com/wowdev/noggit3/blob/default/src/noggit/Sky.h
 Coordinates/radii and sky rings: same repository's Sky.cpp (scale 36).
 No game execution. The renderer, draw distance and night palette are untouched.
 Its warm day ends at 20:00 (strength 0 from then on); the input is already retimed
-(build_lighting.retime), so the zone reaches night by 21:00 like its neighbours.
+(build_lighting.retime), so the zone reaches night by 21:15 like its neighbours.
 """
 import argparse
 import hashlib

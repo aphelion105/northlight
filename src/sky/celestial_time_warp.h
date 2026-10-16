@@ -24,8 +24,8 @@ inline constexpr double kSunsetSeconds=(kNativeSunEndDay-(kNativeSunEndDay-kNati
 inline constexpr double kSunPeakSeconds=12*3600;
 inline constexpr double kSunPeakDegrees=90-kNativeSunHighPolar*180/kPi;
 inline constexpr double kMoonPeakDegrees=43;
-inline constexpr double kMoonriseSeconds=kSunsetSeconds;
-inline constexpr double kMoonsetSeconds=kSunriseSeconds;
+inline constexpr double kMoonriseSeconds=20*3600+50*60; // 20:50, not at sunset (20:30): the moon rose where the sun set and covered it
+inline constexpr double kMoonsetSeconds=5*3600+45*60; // 05:45, not at sunrise: the moon set where the sun rose and crossed it
 inline constexpr double kMoonPeakSeconds=24*3600;
 inline constexpr double kAzimuthRadians=kPi/4;
 struct Body {double elevation=0;float direction[3]={};};
@@ -65,13 +65,60 @@ inline Body body(double elevation){
     b.direction[1]=float(h*std::sin(kAzimuthRadians));
     b.direction[2]=float(std::sin(e));return b;
 }
-inline Result evaluate(double dayFraction){
+// The smooth orbit above, kept for the ambient policies (night floor, twilight fill) so their dusk and dawn timing stays.
+inline Result evaluateNatural(double dayFraction){
     Result r;
     if(!std::isfinite(dayFraction)||dayFraction<0||dayFraction>=1)return r;
     const double seconds=dayFraction*kDaySeconds;
     r.sun=body(solarElevation(dayFraction));
     r.moon=body(lunarElevation(seconds));
     r.valid=true;return r;
+}
+// The displayed orbit (discs, light, shadows). Sun and moon share one azimuth, so they pass each other between sunset
+// (20:30) and moonrise (20:50) and between moonset (05:45) and sunrise (06:10). Each body keeps its own rate until its
+// disc is under the horizon (centre one radius down); then it dives on a C1 cubic to a DiveDepth hold, and rises from
+// it the same way, so the two pass about 9 degrees under the horizon, below where any disc shows. The radii are the
+// renderer's disc sizes (resolveRendererSky).
+inline constexpr double kDiveDepth=10,kEveningDiveSeconds=270,kMorningDiveSeconds=420;
+inline const double kSunRadiusDegrees=std::atan(.506736/24.)*180/kPi,kMoonRadiusDegrees=std::atan(.46176318*1.75/24.)*180/kPi;
+inline double hermite(double u,double p0,double m0,double p1,double m1){
+    const double u2=u*u,u3=u2*u;return (2*u3-3*u2+1)*p0+(u3-2*u2+u)*m0+(3*u2-2*u3)*p1+(u3-u2)*m1;
+}
+struct Dives {double sunSet,sunRise,moonRise,moonSet,sunSetRate,sunRiseRate,moonRiseRate,moonSetRate;};
+inline const Dives& dives(){
+    static const Dives d=[]{
+        auto sun=[](double t){return solarElevation(t/kDaySeconds);};
+        auto moon=[](double t){return lunarElevation(std::fmod(t+kDaySeconds,kDaySeconds));};
+        // Where a monotonic track passes `target` in [a,b].
+        auto at=[](auto f,double a,double b,double target){const bool up=f(b)>f(a);
+            for(int i=0;i<64;++i){const double m=(a+b)*.5;((f(m)<target)==up?a:b)=m;}return (a+b)*.5;};
+        auto rate=[](auto f,double t){return std::fabs(f(t+.5)-f(t-.5));};
+        Dives r;
+        r.sunSet=at(sun,kSunsetSeconds,kSunsetSeconds+3600,-kSunRadiusDegrees);
+        r.sunRise=at(sun,kSunriseSeconds-3600,kSunriseSeconds,-kSunRadiusDegrees);
+        r.moonRise=at(moon,kMoonriseSeconds-3600,kMoonriseSeconds,-kMoonRadiusDegrees);
+        r.moonSet=at(moon,kMoonsetSeconds,kMoonsetSeconds+3600,-kMoonRadiusDegrees);
+        r.sunSetRate=rate(sun,r.sunSet);r.sunRiseRate=rate(sun,r.sunRise);
+        r.moonRiseRate=rate(moon,r.moonRise);r.moonSetRate=rate(moon,r.moonSet);
+        return r;
+    }();
+    return d;
+}
+// set..rise: the body's under-horizon stretch, wrapping midnight. Outside it the natural track stands.
+inline double dived(double t,double natural,double set,double setRate,double setSeconds,double rise,double riseRate,double riseSeconds,double radius){
+    const double sinceSet=std::fmod(t-set+2*kDaySeconds,kDaySeconds),untilRise=std::fmod(rise-t+2*kDaySeconds,kDaySeconds);
+    if(sinceSet+untilRise>std::fmod(rise-set+2*kDaySeconds,kDaySeconds)+1e-6)return natural;
+    if(sinceSet<setSeconds)return hermite(sinceSet/setSeconds,-radius,-setRate*setSeconds,-kDiveDepth,0);
+    if(untilRise<riseSeconds)return hermite(1-untilRise/riseSeconds,-kDiveDepth,0,-radius,riseRate*riseSeconds);
+    return -kDiveDepth;
+}
+inline Result evaluate(double dayFraction){
+    Result r=evaluateNatural(dayFraction);
+    if(!r.valid)return r;
+    const double t=dayFraction*kDaySeconds;const Dives& d=dives();
+    r.sun=body(dived(t,r.sun.elevation,d.sunSet,d.sunSetRate,kEveningDiveSeconds,d.sunRise,d.sunRiseRate,kMorningDiveSeconds,kSunRadiusDegrees));
+    r.moon=body(dived(t,r.moon.elevation,d.moonSet,d.moonSetRate,kMorningDiveSeconds,d.moonRise,d.moonRiseRate,kEveningDiveSeconds,kMoonRadiusDegrees));
+    return r;
 }
 // World-light-only low-pass: discs keep exact clock positions, while light,
 // shadows and volume rays share one gently changing direction and altitude

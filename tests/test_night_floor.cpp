@@ -5,8 +5,8 @@
 #include <limits>
 using namespace NorthlightNightFloor;
 using namespace NorthlightCelestialOrbit;
-static float sunZ(double seconds){return evaluate(seconds/kDaySeconds).sun.direction[2];}
-static float at(double seconds){auto o=evaluate(seconds/kDaySeconds);return weight(o.valid,o.sun.direction[2]);}
+static float sunZ(double seconds){return evaluateNatural(seconds/kDaySeconds).sun.direction[2];}
+static float at(double seconds){auto o=evaluateNatural(seconds/kDaySeconds);return weight(o.valid,o.sun.direction[2]);}
 int main(){
     const float nan=std::numeric_limits<float>::quiet_NaN(),inf=std::numeric_limits<float>::infinity();
     assert(weight(false,-1)==0&&weight(false,0)==0);
@@ -37,7 +37,7 @@ int main(){
     for(double centre:{kSunsetSeconds,kSunriseSeconds})for(unsigned fps:{30u,60u,144u}){
         LightMotion filter;float last=0;bool started=false;
         for(unsigned f=0;f<fps*7200;++f){double day=(centre-3600+double(f)/fps)/kDaySeconds;
-            auto o=filter.update(evaluate(day),day,uint32_t(1000.*f/fps));
+            auto o=filter.update(evaluateNatural(day),day,uint32_t(1000.*f/fps));
             float w=weight(true,o.sun.direction[2]);assert(w>=0&&w<=1);
             if(started)assert(std::fabs(w-last)<.0001f);last=w;started=true;
         }

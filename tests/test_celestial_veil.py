@@ -53,8 +53,9 @@ veil_ps=body(shader,'float4 CelestialVeilPS(')
 # Raw-depth classification: WDL/beyond-far silhouettes (normalised depth 1, raw
 # depth below the sky sprite) are geometry; the complement of the glare.
 assert 'float sky=(depth>=.99999994&&rawDepth>=DiscRepair.x-DiscRepair.z)?1:0;' in veil_ps
-assert 'float geometry=1-sky*terrainVisibility(ray);' in veil_ps
+assert 'float geometry=(1-sky*terrainVisibility(ray))*(1-sea);' in veil_ps  # visible water takes no veil
 assert 'float alpha=geometry*glareProfile(radius);' in veil_ps
+assert 'overEdge' not in veil_ps  # no far-edge cut: it drew a line across near hills
 # the core only by the disc taps' visibility; the ring (x wrap) only for the
 # core-free tail shifted out by 3R, so the profile is monotonic (no dark ring).
 profile=shader[shader.index('float glareProfile(float radius){'):shader.index('float3 glowColor(')]

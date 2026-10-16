@@ -55,7 +55,7 @@ wc=code(w)
 checks['world: the level is 0 whenever GpuBudgetMs is 0, clamped to MaxLevel']='void setGpuBudgetLevel(unsigned level){gpuBudgetLevel=quality.gpuBudgetMs?std::min(level,NorthlightGpuBudget::MaxLevel):0u;}' in wc
 checks['world: the interval constants are written only at a reduced level (bank unchanged at level 0), c60.x only with the clouds active']=(
     'if(gpuBudgetLevel){if(cf.active)c[60][0]=NorthlightGpuBudget::spacingDelta(c[21][3],NorthlightGpuBudget::cloudSteps(gpuBudgetLevel),40);c[64][2]=NorthlightGpuBudget::spacingDelta(c[21][3],NorthlightGpuBudget::fogSteps(gpuBudgetLevel),48);}' in wc
-    and len(re.findall(r'c\[64\]\[\d\]=',wc))==1 and wc.index('c[21][3]=128;')<wc.index('if(gpuBudgetLevel){')<wc.index('d->SetPixelShaderConstantF(0,&c[0][0],68);'))
+    and len(re.findall(r'c\[64\]\[[0-2]\]=',wc))==1 and wc.index('c[21][3]=128;')<wc.index('if(gpuBudgetLevel){')<wc.index('d->SetPixelShaderConstantF(0,&c[0][0],68);'))
 checks['world: the lamp limit passes through lightLimit (the setting at level 0)']='NorthlightGpuBudget::lightLimit(quality.localLightLimit,gpuBudgetLevel)' in wc and wc.count('quality.localLightLimit,float(selectDt)')==0
 cp=wc[wc.index('if(cf.active&&c[21][0]>=.5f){'):wc.index('d->SetPixelShaderConstantF(17,c[17],2);')]
 checks['world: the clouds are one draw into the fog at every level (0.3.200: no amortised reuse, it lagged a frame in motion)']=(

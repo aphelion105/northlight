@@ -21,6 +21,7 @@ struct D3DVIEWPORT9{DWORD X,Y,Width,Height;float MinZ,MaxZ;};
 template<class T>void drop(T*& p){if(p)p->Release();p=nullptr;}
 #include "celestial_glow.h"
 #include "celestial_veil.h"
+#include "apparent_horizon.h"
 using namespace NorthlightCelestialGlow;
 
 struct Surface{int references=1;void Release(){--references;}};
@@ -187,6 +188,25 @@ int main(){
         const int empty[4]={10,10,10,20};
         assert(!NorthlightCelestialVeil::draw(&d,&target,&ps,textures,c,empty,1728,1117,stats));
         assert(d.calls.empty()&&stats.skipped==2&&stats.draws==0);
+    }
+    {   // The ring near the camera's far edge: none with the disc's bottom on it, full with the centre 3R over it.
+        const float r=.0211f;
+        for(float edge:{0.f,-.03f}){assert(ringWrap(edge+r,r,edge)==0&&ringWrap(edge-r,r,edge)==0&&std::fabs(ringWrap(edge+3*r,r,edge)-Wrap)<1e-6f);
+            assert(ringWrap(edge+2*r,r,edge)>0&&ringWrap(edge+2*r,r,edge)<Wrap);}
+        assert(ringWrap(.5f,r,.2f)==Wrap&&ringWrap(r,r,.2f)==0&&ringWrap(NAN,r)==0&&ringWrap(.5f,0)==0&&ringWrap(.5f,r,NAN)==Wrap);
+    }
+    {   // The apparent horizon: the lowest surface under the eye and toward the sun, seen at the far clip; 0..-sin 3 deg.
+        namespace H=NorthlightApparentHorizon;const float eye[3]={0,0,30},sun[3]={1,0,.1f};
+        auto flat=[](float level){return [level](float,float,float& h){h=level;return true;};};
+        const float dz=-30,expect=dz/std::sqrt(dz*dz+1000.f*1000.f);
+        assert(std::fabs(H::sine(eye,sun,1000,flat(0))-expect)<1e-6f);
+        assert(H::sine(eye,sun,1000,flat(200))==0&&H::sine(eye,sun,1000,[](float,float,float&){return false;})==0);
+        assert(H::sine(eye,sun,100,flat(-5000))==-H::Deepest&&H::sine(eye,sun,NAN,flat(0))==0);
+        float seen[3];unsigned n=0;H::sine(eye,sun,1000,[&](float x,float y,float& h){seen[n++]=x;assert(y==0);h=x>200?-50:0;return true;});
+        assert(n==3&&seen[0]==0&&seen[1]==120&&seen[2]==240);
+        assert(std::fabs(H::sine(eye,sun,1000,[](float x,float,float& h){h=x>200?-20:0;return true;})-(-50/std::sqrt(50.f*50+1e6f)))<1e-6f);
+        H::Smooth s;assert(s.update(-.05f,0)==-.05f&&s.update(0,400)>-.05f*.37f-1e-6f&&s.update(0,400)<0);
+        assert(s.update(-1,10000)==-H::Deepest&&s.update(NAN,10001)<0);
     }
     std::puts("PASS veil: gating (strength/haze/opacity/fade), haze-at-sun, wrap occlusion, ring taps in the 10R mask, on-screen normalisation 0..32 taps, hue constants, glare profiles, draw sequence (no RT switch when bound, 1 additive scissored draw, no call when off)");
 }

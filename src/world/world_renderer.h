@@ -8,6 +8,8 @@
 #include "projection.h"
 #include "celestial_context.h"
 #include "celestial_sources.h"
+#include "celestial_glow.h"
+#include "apparent_horizon.h"
 #include "twilight_fill.h"
 #include "night_floor.h"
 #include "regional_fog.h"
@@ -285,6 +287,7 @@ private:
     NorthlightCelestial::Context celestial,celestialLight;
     unsigned celestialOrbitReports=0;
     NorthlightCelestialOrbit::LightMotion celestialLightMotion;
+    NorthlightApparentHorizon::Smooth apparentHorizon; // the camera's far edge for the discs (celestialContext), one frame behind
     std::string celestialLightMap;V celestialLightCamera;
     bool continuousCelestialShadows=false;
     NorthlightCelestialProfiles::Table celestialProfiles;
@@ -2289,7 +2292,7 @@ public:
     float skyTransmittance()const{return skyTransmittanceFrame;}
     bool celestialContext(NorthlightCelestial::Context& out,float* inverseView,float* projectionOut)const{
         if(!hasContext()||!celestialValid)return false;
-        out=celestial;memcpy(inverseView,context.inverseView,64);memcpy(projectionOut,projection,12);return true;
+        out=celestial;out.horizonSine=apparentHorizon.valid?apparentHorizon.value:0.f;memcpy(inverseView,context.inverseView,64);memcpy(projectionOut,projection,12);return true;
     }
     bool recognizesWmo(IDirect3DVertexShader9* shader)const{return wmoShaders.count(shader)!=0;}
     bool isWorldShader(IDirect3DVertexShader9* shader)const{return terrainShaders.count(shader)||captureShaders.count(shader)||wmoShaders.count(shader);}
@@ -2393,9 +2396,14 @@ public:
         glowHueFrame=NorthlightSunHue::compute(lightSlotsValid?lightSlots:nullptr,celestialPalette(map,camera).disc[1]);
         sourceDirections[0]=vec(context.lightDirection);sourceColors[0]=vec(context.direct);
         sourceDirections[1]=V(0,0,1);sourceColors[1]=V();sourceWeights[0]=1;sourceWeights[1]=0;
+        // The sun and moon light (shadows, rays) from 6 deg at the lowest (MinLightElevation), also under the horizon up to the handover;
+        // the discs and the twilight keep their real elevation.
+        float sunLightDirection[3],moonLightDirection[3];std::memcpy(sunLightDirection,celestialLight.sun.direction,sizeof sunLightDirection);
+        std::memcpy(moonLightDirection,celestialLight.moon.direction,sizeof moonLightDirection);
+        NorthlightCelestial::clampLightElevation(sunLightDirection);NorthlightCelestial::clampLightElevation(moonLightDirection);
         auto resolvedSources=NorthlightCelestialSources::resolve(vec(context.lightDirection),vec(context.direct),
-            celestialValid?vec(celestialLight.sun.direction):vec(context.lightDirection),
-            celestialValid?vec(celestialLight.moon.direction):V(0,0,1),
+            celestialValid?vec(sunLightDirection):vec(context.lightDirection),
+            celestialValid?vec(moonLightDirection):V(0,0,1),
             celestialValid?celestialLight.sunWeight:0.f,celestialValid?celestialLight.moonWeight:0.f);
         if(celestialValid){resolvedSources.sources[0].color=vec(celestialLight.sunColor);resolvedSources.sources[1].color=vec(celestialLight.moonColor);}
         authoredFill=resolvedSources.authoredFill;
@@ -3825,10 +3833,12 @@ public:
         c[2][0]=1.f/(maxZ-minZ);c[2][1]=48;c[2][2]=192;c[2][3]=1.f/1024;
         memcpy(c[3],context.inverseView,64);memcpy(c[7],sourceMatrices[firstSource][0],64);memcpy(c[11],sourceMatrices[firstSource][1],64);
         memcpy(c[15],context.camera,12);memcpy(c[16],context.lightDirection,12);memcpy(c[17],context.direct,12);memcpy(c[18],context.ambient,12);
-        c[18][3]=NorthlightTwilightFill::gain(celestialValid,celestialValid?celestial.dayFraction:-1.,
-            celestialValid?celestialLight.sun.direction[2]:0.f,celestialValid?celestialLight.moon.direction[2]:0.f);
+        /* The ambient policies follow the natural orbit: the displayed one dives under the horizon (celestial_time_warp.h). */
+        const auto naturalSky=NorthlightCelestialOrbit::evaluateNatural(celestialValid?celestial.dayFraction:-1.);
+        c[18][3]=NorthlightTwilightFill::gain(naturalSky.valid,naturalSky.valid?celestial.dayFraction:-1.,
+            naturalSky.valid?naturalSky.sun.direction[2]:0.f,naturalSky.valid?naturalSky.moon.direction[2]:0.f);
         c[18][3]+=wx.ambientLift(); /* 0.3.198 (rain): a little more sky ambient from the GI pass in rain (+0 when dry; the probes themselves are untouched) */
-        NorthlightNightFloor::nightAmbient(quality.nightBrightness,NorthlightNightFloor::weight(celestialValid,celestialValid?celestialLight.sun.direction[2]:0.f),c[18],c[19]);
+        NorthlightNightFloor::nightAmbient(quality.nightBrightness,NorthlightNightFloor::weight(naturalSky.valid,naturalSky.valid?naturalSky.sun.direction[2]:0.f),c[18],c[19]);
         c[19][3]=8; /* c19.rgb: NightBrightness light per unit of albedo, from c18's ambient (WorldComposite only; 0 = off); c19.w: probe spacing */
         c[20][0]=float(NorthlightGI::probeLayout().atlas);c[20][1]=NorthlightQuality::giIntensity(quality);c[20][2]=.85f;c[20][3]=active->serial?1.f:0.f;
         DWORD now=GetTickCount();
@@ -3850,11 +3860,22 @@ public:
         const float hazeSun[3]={sourceDirections[0].x,sourceDirections[0].y,sourceDirections[0].z};
         const float hazeZone=NorthlightCelestialProfiles::horizonHaze(volumePalette,c[31][3]);
         float hazeLift[3];NorthlightSunHue::horizonLift(glowHueFrame,hazeLift);
+        // The warm lobe toward the sun follows the disc over the camera's far edge (full until 95% under it, out one
+        // diameter below), not the light, which now lasts to the handover 9 deg under: a low camera saw the lobe glow
+        // on the water with the sun gone. apparentHorizon is last frame's (updated below).
+        const float hazeSunWeight=celestialValid?NorthlightCelestialGlow::horizonGlow(celestialLight.sun.direction[2]-(apparentHorizon.valid?apparentHorizon.value:0.f),std::sin(celestialLight.sun.angularRadius)):sourceWeights[0];
         const auto haze=NorthlightHorizonHaze::constants(horizonHazeState,{quality.horizonHaze,quality.horizonHazeStart,quality.horizonHazeBand,quality.horizonHazeTerrain},
-            farZ,hazeZone,effects.fog,celestialValid,hazeSun,sourceWeights[0],hazeLift,wx.hazeTauScale());
+            farZ,hazeZone,effects.fog,celestialValid,hazeSun,hazeSunWeight,hazeLift,wx.hazeTauScale());
         c[57][1]=haze.shape[0];c[57][2]=haze.shape[1];c[57][3]=haze.shape[2];c[67][2]=haze.sun[0];c[67][3]=haze.sun[1];
         c[35][1]=haze.lift[0];c[35][2]=haze.lift[1];c[35][3]=haze.lift[2]; /* lift colour = the glow hue (WorldComposite reads c35.yzw) */
         hazeFrame=haze;
+        {   // The far edge toward the sun for the discs and the glow ring, from the regional field's surface (water over ground).
+            float target=0;
+            if(celestialValid&&uploadedFogField){const auto& field=*uploadedFogField;
+                target=NorthlightApparentHorizon::sine(context.camera,celestial.sun.direction,farZ,[&](float x,float y,float& height){
+                    const auto g=NorthlightSpellFog::fieldAt(field,x,y);height=g.ground;return g.coverage>.5f;});}
+            c[64][3]=apparentHorizon.update(target,now); /* HorizonEdge.w: the composite's haze band starts at the far edge */
+        }
         // 0.3.159 shadow removal smoothing (TemporalLight smoothRemoval, c30.yzw), always on. The drawn
         // lighting passes are the sources with a positive weight (plus firstSource at weight 0), so
         // their summed weight is the lighting-buffer alpha of a fully lit pixel. Without a drawn

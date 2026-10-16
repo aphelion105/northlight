@@ -185,6 +185,7 @@ public:
     // everything drawn later (skybox mountains, terrain, trees) covers it
     // exactly like the native moon. Uses the current client camera (independent
     // reader), a validated projection, and a fresh orbit/appearance snapshot.
+    float horizonSine=0; // the last render()'s far edge; the sky-phase draw reads a fresh orbit but no world
     float earlyProjection[3]={};float earlyWorldMaxDepth=1;bool earlyValid=false;UINT earlyWidth=0,earlyHeight=0;unsigned drawnEarly=0,earlyFailures=0;
     unsigned claimGate=0,claimNoBody=0,claimCamera=0,claimOffscreen=0,claimDrawn=0,claimSecondary=0;
     // Side-effect-free prefixes of the claim/observe gates, so callers can skip
@@ -226,7 +227,7 @@ public:
         const NorthlightCelestial::Body* bodies[]={&currentSky.sun,&currentSky.moon};
         NorthlightCelestialDisc::Disc disc;int bounds[4];
         ++claimedDraws;
-        if(!NorthlightCelestialDisc::prepare(bodies[body]->direction,bodies[body]->tint,bodies[body]->alpha,bodies[body]->angularRadius,disc)){
+        if(!NorthlightCelestialDisc::prepare(bodies[body]->direction,bodies[body]->tint,bodies[body]->alpha,bodies[body]->angularRadius,disc,horizonSine)){
             if(bodies[body]->direction[2]<=0)offscreenOwned|=1u<<body;
             ++claimOffscreen;return true;
         }
@@ -322,7 +323,7 @@ public:
         c[12][2]=i?NorthlightCelestialGlow::MoonGlareStrength:NorthlightCelestialGlow::SunCoreWeight;c[12][3]=glare?1.f:0.f;
         // The glare reads the ring the previous frame's ring pass wrote (sun only).
         const bool ring=glare&&!i&&ringWritten&&ringFrame+1==frames;
-        if(glare)NorthlightCelestialGlow::glareConstants(glow,i,disc.tint,NorthlightCelestialGlow::sunTailWeight(disc.direction[2]),ring?NorthlightCelestialGlow::Wrap:0.f,c[47],c[48]);
+        if(glare)NorthlightCelestialGlow::glareConstants(glow,i,disc.tint,NorthlightCelestialGlow::sunTailWeight(disc.direction[2]),ring?NorthlightCelestialGlow::ringWrap(disc.direction[2],std::sin(std::atan(disc.tangentRadius)),horizonSine):0.f,c[47],c[48]);
         else NorthlightCelestialGlow::constants(glow,i,0.f,c[47],c[48]);
         c[12][2]*=fade;c[47][3]*=fade;
         if(glare){const float gain=weatherGain.load(std::memory_order_relaxed);c[12][2]*=gain;c[47][3]*=gain;} /* 0.3.198 (rain): x1 when dry */
@@ -389,7 +390,7 @@ public:
         if(failed||!target||!depth||!width||!height||!projection||!inverseView||!std::isfinite(minZ)||!std::isfinite(maxZ)||maxZ<=minZ||
            !std::isfinite(nearZ)||!std::isfinite(farZ)||nearZ<=0||farZ<=nearZ||!load())return false;
         observer.finishObservations();ownFrame=frames;
-        haloDay=context.dayFraction;
+        haloDay=context.dayFraction;horizonSine=context.horizonSine;
         NorthlightCelestialDisc::Disc disc[2];int bounds[2][4];bool visible[2]={};
         const NorthlightCelestial::Body* bodies[]={&context.sun,&context.moon};
         // Renderer policy has already resolved appearance, including intentional
@@ -401,7 +402,7 @@ public:
         for(unsigned i=0;i<2;++i){
             const bool early=(drawnEarly&(1u<<i))!=0;
             if((!early&&!observer.lateDisc(i,suppressed))||
-               !NorthlightCelestialDisc::prepare(bodies[i]->direction,tint[i],bodies[i]->alpha,bodies[i]->angularRadius,disc[i]))continue;
+               !NorthlightCelestialDisc::prepare(bodies[i]->direction,tint[i],bodies[i]->alpha,bodies[i]->angularRadius,disc[i],horizonSine))continue;
             visible[i]=!early&&NorthlightCelestialDisc::screenBounds(disc[i],inverseView,projection[0],projection[1],projection[2],width,height,bounds[i]);
             if(!early){
                 auto support=disc[i];support.tangentRadius*=i?MoonMaskRadius:SunMaskRadius;int supportBounds[4];
@@ -475,7 +476,7 @@ public:
         const float veil=NorthlightCelestialGlow::veilStrength(c[9][3],1,hazeAtSun,skyTransmittance);
         c[12][2]*=veil;c[47][3]*=veil;
         c[10][0]=0; // SRGBWRITE off: encoded output, like the composite before it
-        const bool ring=ringWritten&&ringFrame==frames;c[48][3]=ring?NorthlightCelestialGlow::Wrap:0.f;
+        const bool ring=ringWritten&&ringFrame==frames;c[48][3]=ring?NorthlightCelestialGlow::ringWrap(g.disc.direction[2],std::sin(std::atan(g.disc.tangentRadius)),horizonSine):0.f;
         if(!(veil>0)||!(c[12][2]+c[47][3]>0)){++veilStats.skipped;return false;}
         if(!veilPS&&!check(d->CreatePixelShader(kCelestialVeilPSShader,&veilPS),"veil shader"))return false;
         IDirect3DTexture9* halo=haloVisibility[0][haloIndex[0]];

@@ -28,6 +28,7 @@ struct Context {
     Body sun, moon, secondaryMoon;
     float sunWeight=0, moonWeight=0;
     float sunColor[3]={}, moonColor[3]={}; // Same units as input terrain direct RGB.
+    float horizonSine=0; // the camera's far edge (apparent_horizon.h), 0..-sin 3 deg; discs and the glow ring only
 };
 inline float smooth(float x) { x=std::max(0.f,std::min(1.f,x));return x*x*(3-2*x); }
 inline bool decodeBody(const BodyRecord& r,const float* camera,Body& out) {
@@ -79,6 +80,24 @@ inline bool decode(const Snapshot& s,const float* camera,const float* direct,Con
     out=candidate;return true;
 }
 
+// The light passes from the sun to the moon where they cross under the horizon (about -9 deg at 20:41) and back
+// at dawn (06:00), crossfaded over this much elevation difference (sine, 1.5 deg: some 20 s at the crossing). Both
+// share one azimuth and light from 6 deg at the lowest, so the shadows do not turn at the handover.
+inline constexpr float HandoverWidth=.0262f;
+// A sun 4.6 deg up keeps the day's light whatever the moon does (the orbit never has both up).
+inline float sunShare(float sunZ,float moonZ){
+    if(!std::isfinite(sunZ)||!std::isfinite(moonZ))return 0;
+    return std::max(smooth((sunZ-moonZ)/HandoverWidth+.5f),smooth(sunZ/.08f));
+}
+// Lowest elevation (sine, 6 deg) of a light direction: a grazing light would stretch shadows to infinity. At 2 deg
+// the near shadow map reached so far toward the light that a moving camera pulled 150-260 model replays into it
+// (4-5 ms GPU on DXVK) instead of about 30; 6 deg shadows are a third as long.
+inline constexpr float MinLightElevation=.1045f;
+inline void clampLightElevation(float* direction){
+    if(!(direction[2]<MinLightElevation))return;
+    const float h=std::sqrt(direction[0]*direction[0]+direction[1]*direction[1]),k=h>0?std::sqrt(1-MinLightElevation*MinLightElevation)/h:0.f;
+    direction[0]*=k;direction[1]*=k;direction[2]=MinLightElevation;
+}
 // Extension appearance/energy policy, applied AFTER clock-based orbit evaluation. Native
 // billboard RGBA is zone sky artwork state, not celestial irradiance: the
 // midnight captures have moon z=.81 but alpha 0, 14/255 or 1 by location.
@@ -89,10 +108,13 @@ inline void applyRendererPolicy(Context& c,const float* direct){
     c.sun.emission=3.5f;c.moon.emission=1.1f;
     const float tint[2][3]={{1,.96f,.88f},{.94f,.97f,1}};
     for(unsigned i=0;i<3;++i){c.sun.tint[i]=tint[0][i];c.moon.tint[i]=tint[1][i];}
-    c.sun.altitudeVisibility=smooth(c.sun.direction[2]/.08f);
-    c.moon.altitudeVisibility=smooth(c.moon.direction[2]/.08f);
+    // Whichever body is higher lights the world (rays, shadows), handed over where they cross under the horizon. The
+    // sun's light ended one radius under the horizon: seen from high up past the far edge, it went out while still in
+    // view, and the moon lit nothing until 4.6 deg up.
+    c.sun.altitudeVisibility=sunShare(c.sun.direction[2],c.moon.direction[2]);
+    c.moon.altitudeVisibility=1-c.sun.altitudeVisibility;
     c.sunWeight=c.sun.altitudeVisibility;
-    c.moonWeight=(1-c.sunWeight)*c.moon.altitudeVisibility;
+    c.moonWeight=c.moon.altitudeVisibility;
     for(unsigned i=0;i<3;++i){
         c.sunColor[i]=direct[i]*c.sunWeight;
         c.moonColor[i]=direct[i]*c.moonWeight;

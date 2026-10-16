@@ -85,6 +85,7 @@ float4 CloudInfo[4] : register(c60);
 // 0.3.200 (gpu budget): c60.x (free in the cloud pass) and c64.z (FogTemporal reads only c64.y) lengthen the clouds' and WorldFog's world-fixed
 // intervals at reduced GpuBudgetMs levels (fewer steps over the same 128 units); both 0 at full level, where mad(w,1/N,0) is the old w/N exactly.
 float4 FogStepInfo : register(c64);
+float4 HorizonEdge : register(c64); // w: the camera's far edge, sine of its elevation (WorldComposite only; apparent_horizon.h)
 sampler3D CloudNoise : register(s14); // tileable N^3 L8 volume (LINEAR, WRAP); s14 is NormalBuffer/LightHistory in other passes, never bound together with this one
 
 float2 depthUV(float2 uv) {
@@ -1072,8 +1073,10 @@ float3 horizonHaze(float3 color,float2 uv,float viewZ,bool sky) {
     [branch]if(range<=0||HorizonHaze.w<=0)return color;
     float3 ray=viewPositionDistance(uv,1);
     float3 world=ray.x*InverseView[0].xyz+ray.y*InverseView[1].xyz+ray.z*InverseView[2].xyz;
-    float elevation=world.z*rsqrt(dot(ray,ray));
-    float band=exp2(-max(elevation,0)*HorizonShape.w);
+    // Elevation over the camera's far edge (c64.w, 0 to -sin 3 deg): a camera high over the sea sees past the
+    // mathematical horizon, and the setting sun with it. Over the horizon the band hid the sky below 0 entirely, so
+    // the disc was cut on the same line at any height. The mad costs no extra slot.
+    float band=exp2(-max(mad(world.z,rsqrt(dot(ray,ray)),-HorizonEdge.w),0)*HorizonShape.w);
     float amount=range*range*(3-2*range)*(1-exp2(-HorizonHaze.w*band));
     // Distant forward scattering toward a low sun: Henyey-Greenstein g=.6 in
     // azimuth, amplitude sunWeight*cos(sun elevation) from the host, capped.

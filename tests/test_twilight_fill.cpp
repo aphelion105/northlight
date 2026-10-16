@@ -5,10 +5,11 @@
 #include <limits>
 using namespace NorthlightTwilightFill;
 using namespace NorthlightCelestialOrbit;
-static float at(double seconds){auto o=evaluate(seconds/kDaySeconds);return gain(o.valid,seconds/kDaySeconds,o.sun.direction[2],o.moon.direction[2]);}
+static float at(double seconds){auto o=evaluateNatural(seconds/kDaySeconds);return gain(o.valid,seconds/kDaySeconds,o.sun.direction[2],o.moon.direction[2]);}
 int main(){
     assert(gain(false,.85,0,0)==0);
-    for(double day:{-1.,0.,.25,1.,std::numeric_limits<double>::quiet_NaN()})assert(gain(true,day,0,0)==0);
+    for(double day:{-1.,1.,std::numeric_limits<double>::quiet_NaN()})assert(gain(true,day,0,0)==0);
+    assert(gain(true,.25,0,0)==MaximumGain);
     assert(gain(true,.85,std::numeric_limits<float>::infinity(),0)==0);
     assert(gain(true,.85,0,std::numeric_limits<float>::quiet_NaN())==0);
     assert(gain(true,.85,1.01f,0)==0);
@@ -18,7 +19,7 @@ int main(){
     float previous=at(0),maxStep=0;unsigned nonzero=0;double first=0,last=0;
     for(unsigned second=1;second<86400;++second){
         float g=at(second);assert(g>=0&&g<=MaximumGain);
-        if(second<12*3600)assert(g==0); // no new dawn/night exposure policy
+        if(second>=3*3600&&second<=4*3600)assert(g==0); // the moon high: no night exposure policy
         if(g>0){if(!nonzero)first=second;last=second;++nonzero;}
         maxStep=std::max(maxStep,std::fabs(g-previous));previous=g;
     }
@@ -27,6 +28,7 @@ int main(){
     assert(nonzero>0&&maxStep<.00012f);
     assert(at(0)==0&&at(86399)==0&&at(12*3600)==0);
     assert(std::fabs(at(kSunsetSeconds)-MaximumGain)<1e-6f);
+    assert(std::fabs(at(6*3600)-MaximumGain)<1e-6f); // dawn: the moon set at 05:45, the sun not yet up
     previous=0;
     for(double t=19*3600;t<=kSunsetSeconds;t+=.1){float g=at(t);assert(g+1e-7f>=previous);previous=g;}
     previous=MaximumGain;
@@ -35,7 +37,7 @@ int main(){
     for(unsigned fps:{30u,60u,144u}){
         LightMotion filter;float lastGain=0;bool started=false;
         for(unsigned f=0;f<fps*180;++f){double day=(kSunsetSeconds-60+double(f/fps))/kDaySeconds;
-            auto o=filter.update(evaluate(day),day,uint32_t(1000.*f/fps));
+            auto o=filter.update(evaluateNatural(day),day,uint32_t(1000.*f/fps));
             float g=gain(true,day,o.sun.direction[2],o.moon.direction[2]);
             if(started)assert(std::fabs(g-lastGain)<.0001f);lastGain=g;started=true;
         }
