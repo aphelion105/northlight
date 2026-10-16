@@ -1146,7 +1146,7 @@ private:
               return result;
           };
           DWORD memoryReportAt=0;
-          NorthlightTerrainReach::State reachState;NorthlightTerrainReach::Episode memoryStall;
+          NorthlightTerrainReach::State reachState;NorthlightGI::SceneSizeHint terrainSizeHint; /* terrain scene counts of the last build; keyed by reach, reset per map */NorthlightTerrainReach::Episode memoryStall;
           NorthlightGeometryMemory::EntryLift entryLift;
           // Episode logs (begin on the first memory refusal, end when the build is delivered or dropped).
           // `required` is the refused check's aggregate floor: published (at most the plain entry floor)
@@ -1221,7 +1221,7 @@ private:
             // once per entry; its error is published once and no build runs until the map changes.
             if(r.map!=cacheCheckedMap){
                 if(!cacheMapHasTiles&&NorthlightDiagnostics::enabled())logf("WORLD cache absent end map=%s skippedBuilds=%u",cacheCheckedMap.c_str(),uncachedSkips);
-                cacheCheckedMap=r.map;cacheMapHasTiles=worldCacheHasTiles(r.map);uncachedPublished=false;uncachedSkips=0;entryLift.clear();reachState={};
+                cacheCheckedMap=r.map;cacheMapHasTiles=worldCacheHasTiles(r.map);uncachedPublished=false;uncachedSkips=0;entryLift.clear();reachState={};terrainSizeHint={};
                 if(!cacheMapHasTiles)logf("WORLD cache absent map=%s; geometry builds skipped until the map changes",r.map.c_str());
             }
             if(!cacheMapHasTiles){
@@ -1353,7 +1353,9 @@ private:
                     FILE* f=std::fopen(name,"rb");if(f){std::fclose(f);shadowTiles.emplace_back(name);}
                 }
                 NorthlightGI::WorldScene shadowTerrain;
-                const bool terrainLoaded=NorthlightGI::loadInstancedScenes(shadowTiles,root+"world-cache/models",center-V(reach,reach,reach),center+V(reach,reach,reach),shadowTerrain,error,1,terrainAdmission,terrainFilter,terrainChunkFilter);
+                { uint32_t reachBits;std::memcpy(&reachBits,&reach,sizeof reachBits);terrainSizeHint.key=reachBits; } // same map (reset above) and same reach only
+                const bool terrainLoaded=NorthlightGI::loadInstancedScenes(shadowTiles,root+"world-cache/models",center-V(reach,reach,reach),center+V(reach,reach,reach),shadowTerrain,error,1,terrainAdmission,terrainFilter,terrainChunkFilter,&terrainSizeHint);
+                if(terrainLoaded)terrainDeferred=false; // a refusal inside a successful load can only be the optional size-hint reserve (every other refusal fails the load)
                 const double terrainLoadMs=phaseElapsed();
                 if(!terrainLoaded||!NorthlightShadowTerrain::build(replacement->scene(),shadowTerrain,center,*plan,error,terrainAdmission,reach)){
                     if(terrainDeferred){
@@ -1363,7 +1365,7 @@ private:
                     result->message=error;publishError();continue;
                 }
                 const double shadowPlanMs=phaseElapsed();
-                if(NorthlightDiagnostics::enabled())logf("WORLD terrain allocation largestMiB=%.2f checks=%u",double(terrainLargest)/1048576,terrainChecks);
+                if(NorthlightDiagnostics::enabled())logf("WORLD terrain allocation largestMiB=%.2f checks=%u hinted=%u",double(terrainLargest)/1048576,terrainChecks,terrainSizeHint.hinted?1u:0u);
                 if(NorthlightDiagnostics::enabled())logf("WORLD shadow terrain: localTriangles=%zu shadowTriangles=%u fixedChunks=%zu reach=%.0f tiles=%zu",replacement->triangleCount(),plan->triangleCount,plan->fixedTerrainChunks.size(),reach,shadowTiles.size());
                 if(!currentGeometry()){++superseded;stallEnd("superseded");continue;}
                 shadowTerrain=NorthlightGI::WorldScene{}; // merged shadow plan already owns its data
