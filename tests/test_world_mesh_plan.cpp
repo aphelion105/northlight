@@ -167,7 +167,7 @@ static void testActual(const char* tile,const char* models){
 // grouped by coarse cell, nonterrain stays chunk -1, terrain batch count unchanged, and a region far away does not move.
 static void testSpatialOrder(){
     constexpr double origin=17066.666666666666,step=100.0/3.0;
-    auto build=[&](const WorldScene& s,PlanOrder order){planOrder=order;WorldMeshUploadPlan p;std::string error;assert(buildUploadPlan(s,p,error));coherence(s,p);planOrder=PlanOrder();return p;};
+    auto build=[&](const WorldScene& s,PlanOrder order){WorldMeshUploadPlan p;std::string error;assert(buildUploadPlan(s,p,error,{},nullptr,order));coherence(s,p);return p;};
     auto scene=[&](bool withExtra){
         WorldScene s;s.materials.resize(3);s.materials[0].terrain=true;
         for(int cy=100;cy<112;cy+=3)for(int cx=200;cx<212;cx+=3)for(uint32_t m:{0u,1u,2u}){

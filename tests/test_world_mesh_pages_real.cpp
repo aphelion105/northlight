@@ -37,10 +37,8 @@ static std::unique_ptr<Sample> sample(const std::string& root,Vec3 c,std::string
     using Clock=std::chrono::steady_clock;
     auto ms=[](Clock::time_point a){return std::chrono::duration<double,std::milli>(Clock::now()-a).count();};
     // OLD = material-major plan order + sequential pages; NEW = the production spatial order + content-defined pages.
-    NorthlightWorldMesh::planOrder={0,false};
-    assert(NorthlightShadowTerrain::build(s->local,s->far,c,s->oldInput,error));
+    assert(NorthlightShadowTerrain::build(s->local,s->far,c,s->oldInput,error,{},NorthlightShadowTerrain::Radius,NorthlightWorldMesh::PlanOrder{0,false}));
     auto t=Clock::now();assert(P::build(s->oldInput,s->sequential,error,{},P::Options{0,0}));s->sequentialMs=ms(t);
-    NorthlightWorldMesh::planOrder=NorthlightWorldMesh::PlanOrder();
     assert(NorthlightShadowTerrain::build(s->local,s->far,c,s->input,error));
     t=Clock::now();assert(P::build(s->input,s->anchored,error));s->anchoredMs=ms(t);
     return s;

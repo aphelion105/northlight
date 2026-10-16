@@ -63,7 +63,7 @@ uint32_t spatialCell(Vec3 a,Vec3 b,Vec3 c,unsigned cellChunks){
 }
 }
 
-bool buildUploadPlan(const NorthlightGI::WorldScene& scene,WorldMeshUploadPlan& output,std::string& error,const NorthlightGI::AllocationAdmission& admit,const std::vector<NorthlightGI::WorldMaterial>* textures){
+bool buildUploadPlan(const NorthlightGI::WorldScene& scene,WorldMeshUploadPlan& output,std::string& error,const NorthlightGI::AllocationAdmission& admit,const std::vector<NorthlightGI::WorldMaterial>* textures,const PlanOrder& order){
     static_assert(sizeof(NorthlightGI::WorldVertex)==32,"D3D world vertex layout must remain 32 bytes");
     error.clear();WorldMeshUploadPlan next;
     const uint64_t vertexBytes=uint64_t(scene.vertices.size())*sizeof(NorthlightGI::WorldVertex);
@@ -85,7 +85,6 @@ bool buildUploadPlan(const NorthlightGI::WorldScene& scene,WorldMeshUploadPlan& 
         }
     }
     auto allowed=[&](uint64_t bytes){if(!admit||admit(bytes))return true;error="Geometry allocation deferred";return false;};
-    const PlanOrder order=planOrder;
     if(scene.materials.size()>=(1u<<MaterialBits)){error="Too many upload materials";return false;}
     try{
         auto records=std::make_shared<NorthlightLocalShadowSignature::Records>();

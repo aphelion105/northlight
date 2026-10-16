@@ -112,10 +112,9 @@ struct WorldMeshUploadPlan {
 // page content). A nonterrain material now has one batch per cell it touches (+~50 % batches at 4: ~3.8 k -> ~5.7 k in
 // Stormwind; terrain batches are unchanged, one per chunk x material). cellChunks 0: the old material-major order.
 // chunkMajor orders (chunk, material) inside a cell instead; it measured no better. chunkX/chunkY keep their meaning
-// (terrain confined to one chunk, else -1); the cell only orders and splits batches. `planOrder` is a test and
-// measurement knob: set it before building, never from the game.
+// (terrain confined to one chunk, else -1); the cell only orders and splits batches. The order is a
+// parameter of buildUploadPlan (default: production); only tests and measurements pass another one.
 struct PlanOrder {unsigned cellChunks=4;bool chunkMajor=false;};
-inline PlanOrder planOrder;
 
 // Builds immutable packed indices, exact terrain-chunk batches and upload-ready
 // textures on the worker. Input triangle order is preserved within each batch.
@@ -129,5 +128,6 @@ inline PlanOrder planOrder;
 bool buildUploadPlan(const NorthlightGI::WorldScene& source,
                      WorldMeshUploadPlan& output,std::string& error,
                      const NorthlightGI::AllocationAdmission& admit = {},
-                     const std::vector<NorthlightGI::WorldMaterial>* textures = nullptr);
+                     const std::vector<NorthlightGI::WorldMaterial>* textures = nullptr,
+                     const PlanOrder& order = {});
 } // namespace NorthlightWorldMesh
