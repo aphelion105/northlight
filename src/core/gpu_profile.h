@@ -14,6 +14,7 @@ class NorthlightGpuProfile {
     // 0.3.201 (task 18): 24 marks: the AOBlur pass adds one, and a folded frame the world did not composite adds AOComposite.
     // 0.3.209 (task 29): 32 marks: SunActor/MoonActor, ActorTiles, ActorShadow, WorldNormals and SunNearReplays/MoonNearReplays.
     // Task 43: 40 marks: GI splits into GI/LocalLights and PointLighting into PointLight/RemovalSmooth/TemporalLight.
+    // Task 45: PreCelestial (renderer.cpp) closes the rain/water mask preparation before the celestial passes; the worst case still fits 40.
     static constexpr unsigned RingSize=6,MaxMarks=40,StampCount=MaxMarks+2;
     static constexpr uint64_t SamplePeriod=120;
     struct Slot {
