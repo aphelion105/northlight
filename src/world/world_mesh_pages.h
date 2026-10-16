@@ -30,6 +30,11 @@ struct Page {
     std::vector<NorthlightGI::WorldVertex> vertices;
     std::vector<uint32_t> indices;
     NorthlightMeshPageKey::Key key; // 0.3.216: content key of vertices+indices, set by build() on the worker
+    // 0.3.216: the GPU already holds exactly this page (its key was resident when the plan was built): vertices/indices
+    // were freed on the worker, key and exact byte sizes remain. The render thread must find it in the buffer store.
+    bool elided=false;
+    size_t vertexCount()const{return key.vertexBytes/sizeof(NorthlightGI::WorldVertex);}
+    size_t indexCount()const{return key.indexBytes/sizeof(uint32_t);}
 };
 struct Batch : NorthlightWorldMesh::Batch {
     uint32_t page=0,minVertex=0,vertexCount=0;
@@ -174,6 +179,22 @@ inline bool build(const NorthlightWorldMesh::WorldMeshUploadPlan& input,Plan& ou
       catch(const std::length_error&) {return fail("Paged mesh worker allocation size overflow");}
 }
 
+// Worker, after build() and before seal(): frees the vertex/index data of every page whose content key the GPU already
+// holds (`resident`, published by the render thread from its ACTIVE buffers). The pages keep key, sizes and batches, so
+// the plan stays valid and the aggregate sizes stay the full mesh's; cpuBytes() drops by the freed capacity.
+struct ElisionStats {size_t pages=0;uint64_t bytes=0;};
+inline ElisionStats elide(Plan& plan,const NorthlightMeshPageKey::KeySet& resident) {
+    ElisionStats stats;
+    if(resident.empty())return stats;
+    for(auto& page:plan.pages) {
+        if(page.elided||!resident.count(page.key))continue;
+        stats.bytes+=page.vertices.capacity()*sizeof(NorthlightGI::WorldVertex)+page.indices.capacity()*sizeof(uint32_t);
+        std::vector<NorthlightGI::WorldVertex>().swap(page.vertices);std::vector<uint32_t>().swap(page.indices);
+        page.elided=true;++stats.pages;
+    }
+    return stats;
+}
+
 // Cheap render-side validation: individual indices/vertex attributes were
 // validated during immutable worker preparation. Never walk millions of them
 // again when publishing a new scene. Pages and batches are in append order.
@@ -183,19 +204,20 @@ inline const char* validatePages(const NorthlightWorldMesh::WorldMeshUploadPlan&
        input.indexBytes!=uint64_t(input.triangleCount)*3*sizeof(uint32_t)||input.indexBytes>UINT32_MAX)return "paged original buffer sizes mismatch";
     uint64_t vertexBytes=0,indexBytes=0;
     for(const auto& page:pages.pages) {
-        if(page.vertices.empty()||page.indices.empty()||page.vertices.size()>PageVertexLimit||page.indices.size()>PageIndexLimit||page.indices.size()%3)return "invalid mesh page size";
-        if(page.key.vertexBytes!=page.vertices.size()*sizeof(NorthlightGI::WorldVertex)||page.key.indexBytes!=page.indices.size()*sizeof(uint32_t))return "mesh page key size mismatch";
-        vertexBytes+=page.vertices.size()*sizeof(NorthlightGI::WorldVertex);indexBytes+=page.indices.size()*sizeof(uint32_t);
+        // An elided page has no data; its key carries the exact sizes. Every other page must match its key.
+        if(page.elided?!page.vertices.empty()||!page.indices.empty():page.key.vertexBytes!=page.vertices.size()*sizeof(NorthlightGI::WorldVertex)||page.key.indexBytes!=page.indices.size()*sizeof(uint32_t))return "mesh page key size mismatch";
+        if(!page.vertexCount()||!page.indexCount()||page.key.vertexBytes%sizeof(NorthlightGI::WorldVertex)||page.key.indexBytes%sizeof(uint32_t)||page.vertexCount()>PageVertexLimit||page.indexCount()>PageIndexLimit||page.indexCount()%3)return "invalid mesh page size";
+        vertexBytes+=page.key.vertexBytes;indexBytes+=page.key.indexBytes;
     }
     if(vertexBytes!=pages.vertexBytes||indexBytes!=pages.indexBytes||indexBytes!=input.indexBytes)return "paged aggregate sizes mismatch";
     size_t pageIndex=0;uint64_t nextIndex=0;
     for(const auto& batch:pages.batches) {
         if(pageIndex>=pages.pages.size()||batch.page!=pageIndex||batch.start!=nextIndex||!batch.count||batch.material>=materials.size())return "invalid paged batch range/material";
         const auto& page=pages.pages[pageIndex];
-        if(!batch.vertexCount||uint64_t(batch.minVertex)+batch.vertexCount>page.vertices.size())return "invalid paged batch vertex range";
+        if(!batch.vertexCount||uint64_t(batch.minVertex)+batch.vertexCount>page.vertexCount())return "invalid paged batch vertex range";
         nextIndex+=uint64_t(batch.count)*3;
-        if(nextIndex>page.indices.size())return "paged batch exceeds page indices";
-        if(nextIndex==page.indices.size()){++pageIndex;nextIndex=0;}
+        if(nextIndex>page.indexCount())return "paged batch exceeds page indices";
+        if(nextIndex==page.indexCount()){++pageIndex;nextIndex=0;}
     }
     if(pageIndex!=pages.pages.size()||nextIndex)return "incomplete paged batch coverage";
     for(const auto& material:materials)

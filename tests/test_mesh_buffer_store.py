@@ -31,7 +31,7 @@ upload = w[w.index('bool upload(NorthlightStreaming::Budget& streamBudget){'):w.
 perform = upload[upload.index('auto perform=['):upload.index('while(pageBudget.available()')]
 assert 'if(!meshStore.markWriting(id)||id>=meshBuffers.size())return false;' in perform and perform.index('markWriting') < perform.index('memcpy') < perform.index('Unlock')  # writable + key invalidated before the first write
 assert 'staging.upload[cursor]' in perform and 'staging.uploadBuffer[cursor]' in perform  # the cursor runs over the miss list
-assert upload.count('meshStore.beginStaging(pageKeys)') == 1 and upload.index('meshStore.beginStaging(pageKeys)') < upload.index('NorthlightGeometryMemory::admits(memory,budget)')
+assert upload.count('meshStore.beginStaging(pageKeys,') == 1 and upload.index('meshStore.beginStaging(pageKeys,') < upload.index('NorthlightGeometryMemory::admits(memory,budget)')
 assert 'uploadBudget(missVertexBytes,missIndexBytes,plan.textureBytes,largestTexture)' in upload and 'for(uint32_t pageIndex:staged.upload)' in upload
 commit = upload[upload.index('Keep the previous complete geometry drawable'):]
 assert commit.count('meshStore.commit()') == 1 and commit.index('retiredMaterials.enqueue(materials,uploadedTextureBytes)') < commit.index('meshStore.commit()') < commit.index('plan.payload.discard()')
@@ -49,4 +49,18 @@ release = release[:release.index('\n')]
 assert 'if(!keepMesh){pendingMesh.reset();clearMesh();}' in release and 'if(!keepMesh){releaseMeshPool();uploadedMap.clear();}' in release  # releaseMeshPool resets the store, claims included
 assert 'meshStore.reset();' in w[w.index('void releaseMeshPool()'):w.index('size_t trimMeshPools(')]
 assert 'meshIdleMiB=%.1f' in w and 'meshStore.poolBytes()' in w
+# 0.3.216 page elision: keys published under the worker mutex per map, worker elides before seal, an elided miss falls back.
+assert 'std::shared_ptr<const NorthlightMeshPageKey::KeySet> residentPages;std::string residentMap;' in w
+publish = w[w.index('void publishResidentPages('):w.index('bool acquireMeshPage(')]
+assert 'std::lock_guard<std::mutex> lock(mutex);residentPages=std::move(keys);' in publish and 'meshStore.activeKeys()' in publish and 'residentMap=residentPages?map:std::string()' in publish
+assert 'publishResidentPages(std::string());' in w[w.index('void releaseMeshPool()'):w.index('size_t trimMeshPools(')]  # pool released: nothing resident
+assert commit.count('publishResidentPages(uploadedMap);') == 1 and commit.index('meshStore.commit()') < commit.index('publishResidentPages(uploadedMap);')
+worker = w[w.index('std::shared_ptr<const NorthlightMeshPageKey::KeySet> resident;'):w.index('WORLD mesh pages=%zu')]
+assert 'residentPages&&residentMap==r.map' in worker and 'NorthlightWorldMeshPages::elide(*pages,*resident)' in worker  # same map only
+assert worker.index('elide(*pages') < worker.index('NorthlightWorldMeshPages::seal(*plan,pages')  # before seal: the payload accounts the freed memory
+assert 'elidedPages=%zu elidedMiB=%.2f' in w and 'elidedPages=%zu"' in commit
+begin = upload[upload.index('std::vector<uint8_t> elidedPages;'):upload.index('syncMeshBuffers();')]
+assert 'meshStore.elidedMisses()' in begin and 'residentPages.reset();residentMap.clear();' in begin and 'active->meshPlan->payload.discard();' in begin
+assert begin.index('residentPages.reset()') < begin.index('payload.discard()')
+assert 'if(cpu.elided)return false;' in perform
 print('wiring ok')

@@ -136,6 +136,27 @@ int main(){
     {S::Store st;build(st,keys({1,2,3,4}));auto ids=st.table();build(st,keys({1,2,3}));build(st,keys({1,2}));  // idle: 4 since commit 2, 3 since commit 3
      std::vector<uint32_t> order;st.trimIdle(UINT64_MAX,[&](uint32_t id){order.push_back(id);});
      assert((order==std::vector<uint32_t>{ids[3],ids[2]})&&st.entries().size()==2);}  // oldest first; the empty tail is popped
+    // Elided pages (0.3.216): the published key set is the ACTIVE buffers' keys; an elided page must hit, else nothing changes.
+    {S::Store st;build(st,keys({1,2,3,4}));const auto ids=st.table();
+     build(st,keys({1,2,5,6}));                                   // 3,4 idle (valid), 5,6 active
+     auto active=st.activeKeys();
+     assert(active.size()==4&&active.count(key(1))&&active.count(key(5))&&!active.count(key(3))&&!active.count(key(4)));
+     const auto tableBefore=st.table();const auto poolBefore=st.poolBytes();
+     // Elided pages that are resident hit: no claim, no upload.
+     assert(st.beginStaging(keys({1,2,5,6,7}),{1,1,1,1,0})&&st.elidedMisses()==0&&st.staging().upload.size()==1);st.cancel();
+     // An idle buffer is a hit too (an elided page whose buffer went idle in between).
+     assert(st.beginStaging(keys({3,2,5,6}),{1,1,1,1})&&st.staging().upload.empty()&&st.staging().table[0]==ids[2]);st.cancel();
+     // Its buffer released (trim): the elided page misses, nothing is claimed, the active table and every entry stay as they were.
+     std::vector<S::Entry> before(st.entries());
+     st.trimIdle(UINT64_MAX,[](uint32_t){});
+     assert(!st.beginStaging(keys({3,2,5,6,8}),{1,1,1,1,0})&&st.elidedMisses()==1&&!st.stagingOpen()&&st.table()==tableBefore);
+     for(const auto& e:st.entries())assert(e.use!=S::Use::Claimed);
+     // The same page not elided uploads normally; no flags at all behave as before.
+     assert(st.beginStaging(keys({3,2,5,6,8}),{0,1,1,1,0})&&st.elidedMisses()==0&&st.staging().upload.size()==2);st.cancel();
+     assert(st.beginStaging(keys({3,2,5,6,8}))&&st.staging().upload.size()==2);st.cancel();
+     (void)poolBefore;(void)before;
+     // After a reset nothing is resident.
+     st.reset();assert(st.activeKeys().empty()&&!st.beginStaging(keys({1}),{1}));assert(st.beginStaging(keys({1}),{0}));st.cancel();}
     // Randomised: active buffers are never touched, committed tables are consistent, cancels leave no claims.
     {std::mt19937 rng(7);S::Store st;
      for(int round=0;round<4000;++round){

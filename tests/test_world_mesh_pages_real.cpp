@@ -57,11 +57,18 @@ static void reuse(const P::Plan& prior,const P::Plan& next,size_t& pages,double&
 static void walk(const std::string& root,const char* name,Vec3 c,Vec3 delta,unsigned steps,bool gateReuse) {
     namespace S=NorthlightMeshBufferStore;
     std::string error;S::Store store;NorthlightMeshPoolTrim::State trim;
-    std::unique_ptr<Sample> prior;double peakPool=0,oldMax=0,newReuse=0,oldReuse=0,activeSum=0,oldMeshSum=0;unsigned counted=0;size_t pagesSum=0,oldPagesSum=0,batchSum=0,oldBatchSum=0;
+    std::unique_ptr<Sample> prior;double peakPool=0,oldMax=0,newReuse=0,oldReuse=0,activeSum=0,oldMeshSum=0,peakCpu=0,peakCpuElided=0,elidedMiB=0;unsigned counted=0;size_t pagesSum=0,oldPagesSum=0,batchSum=0,oldBatchSum=0;
     for(unsigned k=0;k<steps;++k) {
         auto next=sample(root,c+delta*float(k),error);
         std::vector<S::Key> keys;for(const auto& p:next->anchored.pages)keys.push_back(p.key);
-        assert(store.beginStaging(keys));
+        // 0.3.216: the worker frees the data of pages the active buffers already hold (keys published at the last commit).
+        const double cpuFull=double(next->anchored.cpuBytes());
+        const auto resident=store.activeKeys();
+        const auto elision=P::elide(next->anchored,resident);
+        assert(!P::validatePages(next->input,next->anchored)); // an elided plan still validates, with the full aggregate sizes
+        std::vector<uint8_t> elidedFlags;for(const auto& p:next->anchored.pages)elidedFlags.push_back(p.elided);
+        if(k){peakCpu=std::max(peakCpu,cpuFull);peakCpuElided=std::max(peakCpuElided,double(next->anchored.cpuBytes()));elidedMiB+=double(elision.bytes);}
+        assert(store.beginStaging(keys,elidedFlags)&&store.elidedMisses()==0); // every elided page hits: it came from the active table
         const auto& staging=store.staging();
         for(size_t u=0;u<staging.upload.size();++u) { // the Create steps of the upload cursor
             const uint32_t id=staging.uploadBuffer[u];const auto& key=keys[staging.upload[u]];assert(store.markWriting(id));
@@ -82,8 +89,9 @@ static void walk(const std::string& root,const char* name,Vec3 c,Vec3 delta,unsi
         prior=std::move(next);
     }
     const double MiB=1048576.;
-    std::printf("WALK %s %s: reuse old %.1f%% new %.1f%%; peak pool new %.1f MiB vs old 2x %.1f MiB; active mesh new %.1f old %.1f MiB; pages new %zu old %zu; batches new %zu old %zu (avg over %u commits)\n",name,gateReuse?"diagonal":"straight",
-        oldReuse/counted*100,newReuse/counted*100,peakPool/MiB,2*oldMax/MiB,activeSum/steps/MiB,oldMeshSum/steps/MiB,pagesSum/steps,oldPagesSum/steps,batchSum/steps,oldBatchSum/steps,steps);
+    std::printf("WALK %s %s: reuse old %.1f%% new %.1f%%; peak pool new %.1f MiB vs old 2x %.1f MiB; active mesh new %.1f old %.1f MiB; pages new %zu old %zu; batches new %zu old %zu (avg over %u commits); peak plan CPU without elision %.1f MiB, with %.1f MiB (elided %.1f MiB per commit)\n",name,gateReuse?"diagonal":"straight",
+        oldReuse/counted*100,newReuse/counted*100,peakPool/MiB,2*oldMax/MiB,activeSum/steps/MiB,oldMeshSum/steps/MiB,pagesSum/steps,oldPagesSum/steps,batchSum/steps,oldBatchSum/steps,steps,peakCpu/MiB,peakCpuElided/MiB,elidedMiB/counted/MiB);
+    assert(peakCpuElided<peakCpu*.85); // the staging plan holds clearly less CPU data once resident pages are elided
     assert(peakPool<2*oldMax);
     assert(newReuse/counted>oldReuse/counted+.15);
 }

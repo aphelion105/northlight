@@ -570,6 +570,15 @@ private:
     struct MeshBuffers {IDirect3DVertexBuffer9* vb=nullptr;IDirect3DIndexBuffer9* ib=nullptr;};
     NorthlightMeshBufferStore::Store meshStore;std::vector<MeshBuffers> meshBuffers;NorthlightMeshPoolTrim::State meshPoolTrim;
     void syncMeshBuffers(){meshBuffers.resize(meshStore.entries().size());}
+    // 0.3.216 (issue #66): keys of the pages the ACTIVE table holds, published for the geometry worker, which frees the CPU data of
+    // every page of a new plan whose key is in it (the GPU has it already). Keys only; guarded by `mutex`. Replaced at each mesh
+    // commit, cleared with the pool and whenever an elided page missed at staging (the next plan then elides nothing).
+    std::shared_ptr<const NorthlightMeshPageKey::KeySet> residentPages;std::string residentMap;unsigned elidedFallbacks=0;
+    void publishResidentPages(const std::string& map){
+        std::shared_ptr<const NorthlightMeshPageKey::KeySet> keys;
+        if(!map.empty()&&!meshStore.table().empty()){try{keys=std::make_shared<const NorthlightMeshPageKey::KeySet>(meshStore.activeKeys());}catch(...){keys.reset();}}
+        std::lock_guard<std::mutex> lock(mutex);residentPages=std::move(keys);residentMap=residentPages?map:std::string();
+    }
     DWORD memoryPressureLogAt=0,memoryPressureUntil=0;
     static UINT roundBuffer(uint64_t bytes,uint64_t stepBytes){return UINT(NorthlightGeometryMemory::roundUp(bytes,stepBytes));}
     // Growth admission for any large GPU buffer. A refused growth is remembered
@@ -603,7 +612,7 @@ private:
         }
         NorthlightGeometryMemory::debitGrowth(memory,capacity);return true;
     }
-    void releaseMeshPool(){for(auto& slot:meshBuffers){drop(slot.vb);drop(slot.ib);}meshBuffers.clear();meshStore.reset();vertices=nullptr;indices=nullptr;meshPoolTrim.reset();}
+    void releaseMeshPool(){for(auto& slot:meshBuffers){drop(slot.vb);drop(slot.ib);}meshBuffers.clear();meshStore.reset();publishResidentPages(std::string());vertices=nullptr;indices=nullptr;meshPoolTrim.reset();}
     // Frees idle buffers (returns bytes): those not referenced by the active table and not claimed by a staging.
     // Never while a staged upload is pending; the active table (and vertices/indices, which alias its page 0) stays.
     // Order (mesh_buffer_store.h trimIdle): invalid-key buffers first (partial content from a cancelled staging), then
@@ -1370,6 +1379,11 @@ private:
                         pages.reset();plan.reset();replacement.reset();liftEntry("mesh-page",terrainRequired,terrainSample.available,terrainRequiredLargest);deferBuild("mesh-page-retry",workerMemory(),1000);continue;}
                     result->message=error;publishError();continue;
                 }
+                // 0.3.216 (issue #66): free the data of pages the GPU already holds (same map, keys published at the last commit).
+                NorthlightWorldMeshPages::ElisionStats elided;
+                {std::shared_ptr<const NorthlightMeshPageKey::KeySet> resident;
+                 {std::lock_guard<std::mutex> lock(mutex);if(residentPages&&residentMap==r.map)resident=residentPages;}
+                 if(resident)elided=NorthlightWorldMeshPages::elide(*pages,*resident);}
                 if(!NorthlightWorldMeshPages::seal(*plan,pages,error,terrainAdmission)){
                     if(terrainDeferred){
                         stallBegin("mesh-page-seal",terrainSample,terrainRequired,terrainRequiredLargest);
@@ -1377,7 +1391,7 @@ private:
                         pages.reset();plan.reset();replacement.reset();liftEntry("mesh-page-seal",terrainRequired,terrainSample.available,terrainRequiredLargest);deferBuild("mesh-page-seal-retry",workerMemory(),1000);continue;}
                     result->message=error;publishError();continue;
                 }
-                if(NorthlightDiagnostics::enabled())logf("WORLD mesh pages=%zu batches=%zu originalBatches=%zu vertexMiB=%.2f indexMiB=%.2f maxResourceKiB=512",pages->pages.size(),pages->batches.size(),plan->batches.size(),double(pages->vertexBytes)/1048576,double(pages->indexBytes)/1048576);
+                if(NorthlightDiagnostics::enabled())logf("WORLD mesh pages=%zu batches=%zu originalBatches=%zu vertexMiB=%.2f indexMiB=%.2f maxResourceKiB=512 elidedPages=%zu elidedMiB=%.2f",pages->pages.size(),pages->batches.size(),plan->batches.size(),double(pages->vertexBytes)/1048576,double(pages->indexBytes)/1048576,elided.pages,double(elided.bytes)/1048576);
                 memory=workerMemory();if(NorthlightDiagnostics::enabled())logGeometryMemory("after-plan",memory,generations.live(),workerMemoryExact);
                 const double pagesMs=phaseElapsed();
                 // Worker-side owner map for the render-thread commit. Failure
@@ -1801,8 +1815,18 @@ private:
             // upload. Admission below covers what this staging can newly allocate: the bytes of the MISSED pages (a hit or a reused
             // idle buffer adds no address space) plus the textures, not the whole mesh. All misses (no hit) is the old full copy.
             std::vector<NorthlightMeshPageKey::Key> pageKeys;pageKeys.reserve(payload->pages->pages.size());
-            for(const auto& page:payload->pages->pages)pageKeys.push_back(page.key);
-            if(!meshStore.beginStaging(pageKeys))return streamingFailure(D3DERR_INVALIDCALL,"page staging","staging already open");
+            std::vector<uint8_t> elidedPages;bool anyElided=false;elidedPages.reserve(payload->pages->pages.size());
+            for(const auto& page:payload->pages->pages){pageKeys.push_back(page.key);elidedPages.push_back(page.elided);anyElided|=page.elided;}
+            if(!meshStore.beginStaging(pageKeys,anyElided?elidedPages:std::vector<uint8_t>())){
+                if(!meshStore.elidedMisses())return streamingFailure(D3DERR_INVALIDCALL,"page staging","staging already open");
+                // An elided page has no CPU data and its buffer is gone (trimmed, replaced, device reset): this plan cannot be
+                // staged. Nothing was claimed. Publish no keys (the rebuilt plan elides nothing, so this cannot repeat) and drop the
+                // payload: the next frame asks the worker for a fresh generation through the payload-rebuild path.
+                if(elidedFallbacks++<12)logf("WORLD elided page missed at staging: misses=%zu of %zu pages, rebuilding the generation without elision (fallback %u)",meshStore.elidedMisses(),pageKeys.size(),elidedFallbacks);
+                {std::lock_guard<std::mutex> lock(mutex);residentPages.reset();residentMap.clear();}
+                active->meshPlan->payload.discard();
+                return uploadedMap==active->map&&vertices&&indices;
+            }
             syncMeshBuffers();
             const auto& staged=meshStore.staging();
             uint64_t missVertexBytes=0,missIndexBytes=0;for(uint32_t page:staged.upload){missVertexBytes+=pageKeys[page].vertexBytes;missIndexBytes+=pageKeys[page].indexBytes;}
@@ -1838,6 +1862,7 @@ private:
                 const uint32_t id=staging.uploadBuffer[cursor];
                 if(!meshStore.markWriting(id)||id>=meshBuffers.size())return false; // never an active (drawn) buffer; the old key dies before the first write
                 auto& page=meshBuffers[id];const auto& cpu=payload.pages->pages[staging.upload[cursor]];
+                if(cpu.elided)return false; // an elided page is always a store hit and never in the upload list
                 const auto& entry=meshStore.entries()[id];
                 if(step==S::CreateVertices||step==S::CreateIndices){
                     const bool vb=step==S::CreateVertices;
@@ -1913,6 +1938,7 @@ private:
                 // Keep the previous complete geometry drawable until publication fits.
                 if(uploadedTextureBytes<=NorthlightStreaming::DeferredRelease<IDirect3DTexture9>::MaxBytes&&
                    !retiredMaterials.enqueue(materials,uploadedTextureBytes))return vertices&&indices&&uploadedMap==active->map;
+                size_t elidedAtCommit=0;for(const auto& page:payload.pages->pages)elidedAtCommit+=page.elided;
                 const bool coldStart=meshStore.table().empty();clearMesh();const auto stagedPages=meshStore.commit(); /* 0.3.216: atomic switch of the active page table; replaced buffers go idle */
                 {const uint32_t first=meshStore.bufferOf(0);vertices=first<meshBuffers.size()?meshBuffers[first].vb:nullptr;indices=first<meshBuffers.size()?meshBuffers[first].ib:nullptr;}
                 materials=std::move(next.textures);uploadedTextureBytes=size_t(plan.textureBytes);vertexCount=plan.vertexCount;
@@ -1924,12 +1950,13 @@ private:
                  if(committedFixed)retirementBacklog.retire(reaper,committedFixed,committedFixed->size()*48);
                  if(committedOwners)retirementBacklog.retire(reaper,committedOwners,committedOwners->placements*(sizeof(StaticShadow::Placement)+64));}
                 uploaded=next.bvh;uploadedMap=std::move(committedMap);
+                publishResidentPages(uploadedMap);
                 ++meshGeneration;rebuildTerrainLists();
                 // 0.3.214 (task 42): the GPU copy is MANAGED and complete; drop the plan's CPU payload (pages, cutout
                 // textures). The pending packet's reference is then the last and is freed on the reaper below.
                 const uint64_t releasedBytes=plan.payload.discard();
-                if(NorthlightDiagnostics::enabled())logf("WORLD staged mesh committed: vertices=%u triangles=%zu materials=%zu textureUploads=%u stagingFrames=%u stagingMs=%lu releasedPayloadMiB=%.2f pages=%zu reusedPages=%zu uploadedPages=%zu reusedMiB=%.2f uploadedMiB=%.2f",vertexCount,size_t(plan.triangleCount),materials.size(),next.textureUploads,next.frames,(unsigned long)(GetTickCount()-next.started),double(releasedBytes)/1048576,
-                    stagedPages.pages,stagedPages.reusedPages,stagedPages.uploadedPages,double(stagedPages.reusedBytes)/1048576,double(stagedPages.uploadedBytes)/1048576);
+                if(NorthlightDiagnostics::enabled())logf("WORLD staged mesh committed: vertices=%u triangles=%zu materials=%zu textureUploads=%u stagingFrames=%u stagingMs=%lu releasedPayloadMiB=%.2f pages=%zu reusedPages=%zu uploadedPages=%zu reusedMiB=%.2f uploadedMiB=%.2f elidedPages=%zu",vertexCount,size_t(plan.triangleCount),materials.size(),next.textureUploads,next.frames,(unsigned long)(GetTickCount()-next.started),double(releasedBytes)/1048576,
+                    stagedPages.pages,stagedPages.reusedPages,stagedPages.uploadedPages,double(stagedPages.reusedBytes)/1048576,double(stagedPages.uploadedBytes)/1048576,elidedAtCommit);
                 retirePendingCpu();pendingMesh.reset();meshRetry.clear();
                 trimMeshPoolAfterCommit(coldStart?0:stagedPages.uploadedCapacity); /* a cold start held no buffer idle */
             }

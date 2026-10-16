@@ -53,7 +53,15 @@ class Store {
     std::vector<uint32_t> active_;
     Staging staging_;
     uint64_t clock_=0;
+    size_t elidedMisses_=0;
 public:
+    size_t elidedMisses()const{return elidedMisses_;}
+    // Keys of the buffers the ACTIVE table references (they cannot be released while active): what the worker may elide.
+    NorthlightMeshPageKey::KeySet activeKeys()const{
+        NorthlightMeshPageKey::KeySet set;set.reserve(active_.size());
+        for(uint32_t id:active_)if(id<entries_.size()&&entries_[id].keyValid&&entries_[id].usable())set.insert(entries_[id].key);
+        return set;
+    }
     const std::vector<Entry>& entries()const{return entries_;}
     const std::vector<uint32_t>& table()const{return active_;}
     const Staging& staging()const{return staging_;}
@@ -82,7 +90,11 @@ public:
     // Plans the upload of a new page list: hits reuse a buffer holding exactly that page (active or idle), misses
     // claim the cheapest idle buffer (tiers below; missing or too small resources are (re)created by the renderer) or, last,
     // a new slot. Returns false if a staging is already open.
-    bool beginStaging(const std::vector<Key>& keys){
+    // `elided` (optional, parallel to keys): pages whose data the plan no longer holds. Each MUST hit; if any misses (its
+    // buffer was released or replaced since the key set was published) nothing is claimed or changed, false is returned
+    // and elidedMisses() is the count, so the caller can drop the plan and have a full one rebuilt.
+    bool beginStaging(const std::vector<Key>& keys,const std::vector<uint8_t>& elided={}){
+        elidedMisses_=0;
         if(staging_.open)return false;
         Staging s;s.open=true;s.keys=keys;s.table.assign(keys.size(),None);
         std::unordered_map<Key,uint32_t,NorthlightMeshPageKey::KeyHash> byKey;byKey.reserve(entries_.size());
@@ -100,6 +112,8 @@ public:
             if(it==byKey.end())continue;
             s.table[i]=it->second;reserved[it->second]=1;
         }
+        for(uint32_t i=0;i<keys.size()&&i<elided.size();++i)if(elided[i]&&s.table[i]==None)++elidedMisses_;
+        if(elidedMisses_)return false;
         std::unordered_map<Key,uint32_t,NorthlightMeshPageKey::KeyHash> claimed; // identical pages inside this build share a buffer
         for(uint32_t i=0;i<keys.size();++i){
             const uint64_t payload=uint64_t(keys[i].vertexBytes)+keys[i].indexBytes;

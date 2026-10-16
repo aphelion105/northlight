@@ -123,6 +123,7 @@ static size_t sharedTail(const P::Plan& a,const P::Plan& b){
 static size_t matching(const P::Plan& a,const P::Plan& b){
     size_t n=0;for(const auto& p:b.pages)for(const auto& q:a.pages)if(p.key==q.key){++n;break;}return n;
 }
+static NorthlightMeshPageKey::Key key(uint64_t id){NorthlightMeshPageKey::Key k;k.lo=id;k.hi=~id;k.vertexBytes=32;k.indexBytes=12;return k;}
 static void testAnchors(){
     std::vector<uint32_t> base;for(uint32_t i=0;i<300;++i)base.push_back(i);
     auto edit=base;edit.insert(edit.begin()+4,1000);                  // insertion early in the plan
@@ -165,6 +166,36 @@ static void testAnchors(){
     P::Plan seq,anch;assert(P::build(bi,seq,error,{},off)&&P::build(bi,anch,error));verify(bi,seq);verify(bi,anch);
     std::printf("anchors large batch: pages %zu sequential %zu\n",anch.pages.size(),seq.pages.size());
     std::puts("PASS content anchors: resynchronisation after insertion/removal, identical keys for identical bytes, whole batches, hard limits");
+}
+// 0.3.216 (issue #66): pages the GPU already holds are elided on the worker (data freed, key and sizes kept).
+static void testElision(){
+    std::vector<uint32_t> ids;for(uint32_t i=0;i<120;++i)ids.push_back(i);
+    WorldScene scene;WorldMeshUploadPlan input;makePlan(scene,input,ids);
+    P::Plan full,plan;std::string error;assert(P::build(input,full,error));assert(P::build(input,plan,error));assert(full.pages.size()>=8);
+    // Nothing resident (no snapshot, another map's snapshot is never passed in): nothing elided, still fully valid.
+    NorthlightMeshPageKey::KeySet none;auto stats=P::elide(plan,none);
+    assert(stats.pages==0&&stats.bytes==0&&plan.cpuBytes()==full.cpuBytes()&&!P::validatePages(input,plan));
+    // Half of the pages resident (plus a key that is not in the plan).
+    NorthlightMeshPageKey::KeySet resident;resident.insert(key(777777));
+    for(size_t i=0;i<full.pages.size();i+=2)resident.insert(full.pages[i].key);
+    const size_t expected=(full.pages.size()+1)/2;
+    stats=P::elide(plan,resident);
+    assert(stats.pages==expected&&stats.bytes>0&&plan.cpuBytes()+stats.bytes<=full.cpuBytes()&&plan.cpuBytes()<full.cpuBytes());
+    for(size_t i=0;i<plan.pages.size();++i){
+        const auto& p=plan.pages[i];assert(p.key==full.pages[i].key&&p.elided==(i%2==0));
+        if(p.elided){assert(p.vertices.capacity()==0&&p.indices.capacity()==0&&p.vertexCount()==full.pages[i].vertices.size()&&p.indexCount()==full.pages[i].indices.size());}
+        else assert(p.vertices.size()==full.pages[i].vertices.size()&&!std::memcmp(p.vertices.data(),full.pages[i].vertices.data(),p.vertices.size()*sizeof(WorldVertex))&&p.indices==full.pages[i].indices);
+    }
+    assert(plan.vertexBytes==full.vertexBytes&&plan.indexBytes==full.indexBytes&&plan.batches.size()==full.batches.size());
+    assert(!P::validatePages(input,plan));
+    assert(P::elide(plan,resident).pages==0); // idempotent
+    // The rest of the validation is intact: a bad batch range, key size or data inside an elided page is still refused.
+    auto broken=plan;broken.batches[0].vertexCount=P::PageVertexLimit+1;assert(P::validatePages(input,broken));
+    broken=plan;broken.pages[0].key.vertexBytes+=32;assert(P::validatePages(input,broken));
+    broken=plan;broken.pages[0].vertices.push_back(vertex(1));assert(P::validatePages(input,broken));
+    broken=plan;broken.pages[1].elided=true;assert(P::validatePages(input,broken)); // elided flag on a page that still has data
+    broken=plan;broken.pages[1].key.indexBytes+=4;assert(P::validatePages(input,broken));
+    std::printf("PASS page elision: %zu of %zu pages elided, plan CPU %.2f -> %.2f MiB, sizes and batches intact, validation still strict (seal() accounts pages->cpuBytes())\n",expected,full.pages.size(),double(full.cpuBytes())/1048576,double(plan.cpuBytes())/1048576);
 }
 static void testTransactionalFailure(){
     WorldScene scene;WorldMeshUploadPlan input;initialize(scene,input,3);addBatch(input,1,0,3);
@@ -220,4 +251,4 @@ static void testSeal(){
     assert(P::seal(borrowed,pages,error));assert(!P::validateSealed(borrowed));assert(source->vertices.size()==3);
     std::puts("PASS sealed ownership: source release, exact placement proofs, retained GI, cheap validation and transactional failures");
 }
-int main(){testVertexLimits();testIndexLimits();testKeepBatches();testDegenerateAndExactBoundary();testAnchors();testTransactionalFailure();testSeal();std::puts("All world mesh page tests passed");}
+int main(){testVertexLimits();testIndexLimits();testKeepBatches();testDegenerateAndExactBoundary();testAnchors();testElision();testTransactionalFailure();testSeal();std::puts("All world mesh page tests passed");}

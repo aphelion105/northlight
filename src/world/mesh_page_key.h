@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <unordered_set>
 
 // 0.3.216 (issue #66): content identity of one world-mesh page. The key is a 128-bit word-wise hash of the page's
 // vertex bytes then index bytes plus both byte sizes. Two pages with an equal key are treated as byte-identical
@@ -15,6 +16,7 @@ struct Key {
     bool operator!=(const Key& o)const{return !(*this==o);}
 };
 struct KeyHash {size_t operator()(const Key& k)const{return size_t(k.lo^(k.hi*0x9E3779B97F4A7C15ull));}};
+using KeySet=std::unordered_set<Key,KeyHash>; // keys of the pages the GPU holds (published by the render thread)
 inline uint64_t rotl(uint64_t v,unsigned r){return (v<<r)|(v>>(64-r));}
 inline uint64_t avalanche(uint64_t h){h^=h>>33;h*=0xff51afd7ed558ccdull;h^=h>>33;h*=0xc4ceb9fe1a85ec53ull;h^=h>>33;return h;}
 // Two independent multiply-rotate lanes over the same 8-byte words (xxHash64-style rounds with different primes).
