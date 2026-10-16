@@ -59,13 +59,27 @@ int main(){
     // Builder demand (0.3.212 player log: 520-765 MiB for minutes, builder stalled at 768, guard idle above 400).
     {Guard g;auto d=g.update(720*MiB,500*MiB,0,0);assert(!d.entered&&!g.pressure());          // no demand: 720 is normal
      d=g.update(720*MiB,500*MiB,1000,768*MiB);assert(d.entered&&d.trim&&d.demand&&g.pressure()&&g.trims()==1&&d.report);
-     assert(g.demandFloor()==768*MiB&&g.recoverAvailable()==896*MiB);
-     for(std::uint32_t t=2000;t<120000;t+=1000){auto e=g.update(700*MiB,500*MiB,t,768*MiB);assert(!e.trim&&!e.entered&&g.pressure());} // one trim per episode
-     d=g.update(800*MiB,500*MiB,120000,0);assert(!d.recovered); // demand met and cleared: still below 768+128
-     for(std::uint32_t t=121000;t<=200000;t+=1000)assert(!g.update(890*MiB,500*MiB,t,0).recovered&&g.pressure()); // no regrowth cycle at 640
-     g.update(896*MiB,500*MiB,201000,0);d=g.update(896*MiB,500*MiB,211000,0);assert(d.recovered&&!g.pressure()&&g.demandFloor()==0&&g.recoverAvailable()==640*MiB);
-     d=g.update(700*MiB,500*MiB,212000,0);assert(!d.entered);
-     d=g.update(700*MiB,500*MiB,213000,768*MiB);assert(d.entered&&d.trim&&g.trims()==2);}   // a new episode after the cooldown trims again
+     assert(g.demandFloor()==768*MiB&&g.recoverAvailable()==640*MiB&&!g.capsHalved()&&!d.capsChanged&&!d.halfCaps); // 0.3.216: demand-only: full caps, the floor does not gate recovery
+     for(std::uint32_t t=2000;t<120000;t+=1000){auto e=g.update(700*MiB,500*MiB,t,768*MiB);assert(!e.trim&&!e.entered&&!e.capsChanged&&g.pressure());} // one trim per episode
+     // demand stops at 119 s (avail 660-1016 as in the Dalaran/Stormwind log, largest 628): healthy was held all along, so the 5 s quiet window decides: recovery at 124 s, not at floor+128
+     d=g.update(660*MiB,628*MiB,120000,0);assert(!d.recovered&&g.pressure());
+     for(std::uint32_t t=121000;t<124000;t+=1000)assert(!g.update(t%2?1016*MiB:700*MiB,628*MiB,t,0).recovered);
+     d=g.update(700*MiB,628*MiB,124000,0);assert(d.recovered&&!d.capsChanged&&!g.pressure()&&g.demandFloor()==0&&g.recoverAvailable()==640*MiB);
+     d=g.update(700*MiB,500*MiB,125000,0);assert(!d.entered);
+     d=g.update(700*MiB,500*MiB,126000,768*MiB);assert(d.entered&&d.demand&&d.trim&&g.trims()==2&&!d.capsChanged);}   // a new episode after the cooldown trims again, with full caps
+    // Demand that never stops (the builder keeps re-demanding in the next town): the demand-only episode stays, harmlessly with full caps; the quiet window blocks recovery.
+    {Guard g;g.update(660*MiB,628*MiB,0,768*MiB);
+     for(std::uint32_t t=1000;t<60000;t+=1000){auto e=g.update(900*MiB,628*MiB,t,768*MiB);assert(!e.recovered&&!e.capsChanged&&g.pressure());}
+     auto d=g.update(900*MiB,628*MiB,60000,0);assert(!d.recovered);                       // quiet for a moment only
+     for(std::uint32_t t=61000;t<64000;t+=1000)assert(!g.update(900*MiB,628*MiB,t,0).recovered);
+     assert(g.update(900*MiB,628*MiB,64000,0).recovered);}
+    // An own-threshold sample during a demand-only episode halves the caps (as before) and the old floor rule governs the recovery; recovery restores full caps.
+    {Guard g;auto d=g.update(700*MiB,500*MiB,0,768*MiB);assert(d.entered&&!d.capsChanged&&!g.capsHalved());
+     d=g.update(300*MiB,100*MiB,1000,768*MiB);assert(!d.entered&&d.capsChanged&&d.halfCaps&&g.capsHalved()&&g.recoverAvailable()==896*MiB);
+     d=g.update(300*MiB,100*MiB,2000,768*MiB);assert(!d.capsChanged);                          // already halved: no second edge
+     g.update(800*MiB,500*MiB,3000,0);for(std::uint32_t t=4000;t<=20000;t+=1000)assert(!g.update(800*MiB,500*MiB,t,0).recovered); // 800 < 896
+     g.update(900*MiB,500*MiB,21000,0);d=g.update(900*MiB,500*MiB,31000,0);assert(d.recovered&&d.capsChanged&&!d.halfCaps&&!g.capsHalved());}
+    {Guard g;auto d=g.update(300*MiB,100*MiB,0);assert(d.entered&&d.capsChanged&&d.halfCaps);} // an own-threshold entry halves, as before
     {Guard g;assert(g.update(1000*MiB,100*MiB,0).trim);g.update(1000*MiB,300*MiB,1000);assert(g.update(1000*MiB,300*MiB,11000).recovered);
      auto d=g.update(700*MiB,500*MiB,12000,768*MiB);assert(d.entered&&d.demand&&!d.trim&&g.trims()==1);} // demand entry inside the cooldown: caps only
     {Guard g;auto d=g.update(800*MiB,500*MiB,0,768*MiB);assert(!d.entered&&!g.pressure()&&g.demandFloor()==0);} // demand already met: nothing
@@ -78,13 +92,13 @@ int main(){
      assert(!g.requestDue(1000)&&g.requestDue(3000));
      g.update(300*MiB,500*MiB,3000,768*MiB);assert(!g.requestDue(3999)&&g.requestDue(4000));}
     // The demand floor decays after demandDecayMs without demand: recovery returns to 640.
-    {Guard g;g.update(700*MiB,500*MiB,0,768*MiB);assert(g.recoverAvailable()==896*MiB);
+    {Guard g;g.update(300*MiB,500*MiB,0,768*MiB);assert(g.recoverAvailable()==896*MiB); // (halved caps: the floor still gates)
      g.update(700*MiB,500*MiB,1000,0);assert(g.demandFloor()==768*MiB);
      g.update(700*MiB,500*MiB,299999,0);assert(g.demandFloor()==768*MiB);
      g.update(700*MiB,500*MiB,300000,0);assert(g.demandFloor()==0&&g.recoverAvailable()==640*MiB);
      g.update(700*MiB,500*MiB,301000,0);auto d=g.update(700*MiB,500*MiB,311000,0);assert(d.recovered&&!g.pressure());
      d=g.update(700*MiB,500*MiB,312000,768*MiB);assert(d.entered&&g.demandFloor()==768*MiB);}
-    {Guard g;g.update(700*MiB,500*MiB,0,768*MiB);g.update(700*MiB,500*MiB,200000,768*MiB);   // demand still active: no decay
+    {Guard g;g.update(300*MiB,500*MiB,0,768*MiB);g.update(700*MiB,500*MiB,200000,768*MiB);   // demand still active: no decay
      g.update(700*MiB,500*MiB,400000,0);assert(g.demandFloor()==768*MiB);g.update(700*MiB,500*MiB,500000,0);assert(g.demandFloor()==0);}
     // Walk cadence: first request immediately, 3 s normally, 1 s under pressure; wrap-safe.
     {Guard g;assert(g.requestDue(100));assert(!g.requestDue(2000));assert(g.requestDue(3100));
@@ -287,8 +301,8 @@ trim=r[r.index('    void trimMemory(const NorthlightMemoryDiagnostics::Sample& t
 checks={
  'sampler always created (no diagnostics gate), below-normal walk':'try{memoryDiagnostics=std::make_unique<NorthlightMemoryDiagnostics::Sampler>(&queryAddressSpace);}' in r and 'SetThreadPriority(GetCurrentThread(),THREAD_PRIORITY_BELOW_NORMAL)' in r,
  'render thread requests on the guard cadence, never walks':'if(memoryGuard.requestDue(now))memoryDiagnostics->request();' in finish and 'VirtualQuery' not in finish,
- 'caps and trim only after clearFrame() (frame boundary)':re.search(r'clearFrame\(\);\}\n        if\(memoryCaps>=0&&world\)world->setMemoryPressure\(memoryCaps==1\);\n        if\(memoryCaps>=0&&NorthlightReplayCopies::enabled\.load\(std::memory_order_relaxed\)\)NorthlightReplayCopies::setPressure\(memoryCaps==1\);[^\n]*\n        if\(memoryCaps>=0\)NorthlightStream::memoryPressure\.store\(memoryCaps==1,std::memory_order_relaxed\);[^\n]*\n        if\(memoryTrim\)trimMemory\(memorySample\);',finish) is not None and finish.count('trimMemory(memorySample)')==1 and finish.count('setMemoryPressure(')==1,
- 'caps follow pressure transitions':'memoryCaps=decision.entered?1:0;' in finish,
+ 'caps and trim only after clearFrame() (frame boundary)':re.search(r'clearFrame\(\);\}\n        if\(memoryWorld>=0&&world\)world->setMemoryPressure\(memoryWorld==1\);\n        if\(memoryCaps>=0&&NorthlightReplayCopies::enabled\.load\(std::memory_order_relaxed\)\)NorthlightReplayCopies::setPressure\(memoryCaps==1\);[^\n]*\n        if\(memoryCaps>=0\)NorthlightStream::memoryPressure\.store\(memoryCaps==1,std::memory_order_relaxed\);[^\n]*\n        if\(memoryTrim\)trimMemory\(memorySample\);',finish) is not None and finish.count('trimMemory(memorySample)')==1 and finish.count('setMemoryPressure(')==1,
+ 'stream/replay-copy caps follow the guard\'s caps edges (a demand-only episode keeps full caps), the world follows every episode':'if(decision.capsChanged)memoryCaps=decision.halfCaps?1:0;' in finish and 'memoryWorld=decision.entered?1:0;' in finish and 'memoryGuard.capsHalved()?"half":"full"' in finish,
  'periodic line gated, events ungated':'if(decision.report&&diagnostics())logf("MEMORY frame=' in finish and 'logf("MEMORY guard %s' in finish and 'if(decision.afterTrim)logf(' in finish,
  'trim: world caches, exact-walk before values, estimates, no address-space ballast':'t=world->trimMemory();' in trim and 'memoryGuard.trimCompleted(now);' in trim and 'logf("MEMORY guard trim frame=%u exactWalk=1 beforeAvailableVirtualMiB=' in trim and all(x not in r for x in ['Ballast','ballast','MEM_RESERVE','VirtualAlloc(']),
  'guard fed only by the exact full walk':'memoryGuard.update(sample.availableVirtual,sample.largestFree,DWORD(sample.tick),demand)' in finish and 'world->geometryMemoryDemand.load(' in finish and 'auto& sample=memorySample;' in finish and 'if(memoryTrim)trimMemory(memorySample);' in finish and 'geometryAdmission' not in finish,

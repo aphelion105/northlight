@@ -24,11 +24,16 @@ struct Policy {
     // A demand floor with no demand for this long is dropped: recovery returns to the
     // policy level instead of holding halved caps for the rest of the session.
     std::uint32_t demandDecayMs=300000;
+    // 0.3.216 (issue #66 follow-up): a demand-only episode (caps stay full) ends when the guard's own recovery levels hold for recoverHoldMs and the
+    // builder has not demanded for this long; the demand floor no longer gates it (it only protected halved caps from regrowing into the next stall).
+    std::uint32_t demandQuietMs=5000;
 };
 struct Decision {
     bool trim=false,entered=false,recovered=false;
     bool afterTrim=false; // first sample walked after the last completed trim
     bool demand=false;    // this entry/trim was caused by the builder's demand, not the guard's own thresholds
+    bool capsChanged=false; // 0.3.216: the stream/replay-copy/world caps must switch now; halfCaps tells to what (true: halved, false: full)
+    bool halfCaps=false;
     bool report=false;    // periodic diagnostic line due (caller gates on Diagnostics)
 };
 // Ticks are GetTickCount() milliseconds; every comparison is wrap-safe. Feed
@@ -37,6 +42,7 @@ class Guard {
     Policy policy_;
     bool pressure_=false,trimmed_=false,healthy_=false,requested_=false,reported_=false,afterPending_=false;
     bool demandOnly_=false; // pressure entered by a demand and no own-threshold low sample since
+    bool halved_=false;     // 0.3.216: the caps are halved: only the guard's own thresholds do that (a demand-only episode keeps full caps: halving dropped the buffer shadows and made every lock a sync round trip)
     std::uint32_t lastTrim_=0,trimDone_=0,healthySince_=0,lastRequest_=0,lastReport_=0,lastDemand_=0;
     std::uint64_t minAvailable_=~0ull,minLargest_=~0ull,demandFloor_=0;
     unsigned trims_=0,entries_=0,samples_=0;
@@ -66,16 +72,19 @@ public:
         if(low){
             healthy_=false;demandOnly_=false;
             if(!pressure_){pressure_=true;++entries_;d.entered=true;}
+            if(!halved_){halved_=true;d.capsChanged=d.halfCaps=true;}   // also a demand-only episode that now meets a real low sample
             // Repeated trims while still low, at most once per cooldown.
             if(!trimmed_||sampleTick-lastTrim_>=policy_.trimCooldownMs){trimmed_=true;lastTrim_=sampleTick;++trims_;d.trim=true;}
         }else if(demanded&&!pressure_){
-            // Halved caps for the episode and one trim (cooldown-limited); a demand alone
-            // never repeats the trim while it stays unmet.
+            // One trim (cooldown-limited), caps unchanged; a demand alone never repeats the trim while it stays unmet.
             healthy_=false;pressure_=true;demandOnly_=true;++entries_;d.entered=true;d.demand=true;
             if(!trimmed_||sampleTick-lastTrim_>=policy_.trimCooldownMs){trimmed_=true;lastTrim_=sampleTick;++trims_;d.trim=true;}
         }else if(pressure_&&healthy){
             if(!healthy_){healthy_=true;healthySince_=sampleTick;}
-            if(sampleTick-healthySince_>=policy_.recoverHoldMs){pressure_=false;healthy_=false;demandOnly_=false;demandFloor_=0;d.recovered=true;}
+            if(sampleTick-healthySince_>=policy_.recoverHoldMs&&(!demandOnly_||sampleTick-lastDemand_>=policy_.demandQuietMs)){
+                pressure_=false;healthy_=false;demandOnly_=false;demandFloor_=0;d.recovered=true;
+                if(halved_){halved_=false;d.capsChanged=true;}
+            }
         }else healthy_=false; // between the thresholds: keep the current state
         if(!reported_||sampleTick-lastReport_>=policy_.reportMs||d.trim||d.entered||d.recovered){reported_=true;lastReport_=sampleTick;d.report=true;}
         return d;
@@ -83,10 +92,12 @@ public:
     // The caller finished the trim a decision asked for (frame tick).
     void trimCompleted(std::uint32_t now){trimDone_=now;afterPending_=true;}
     bool pressure()const{return pressure_;}
+    bool capsHalved()const{return halved_;}
     std::uint64_t demandFloor()const{return demandFloor_;}
-    // Aggregate level recovery needs: the policy's, or the episode's largest demand plus regrowth.
+    // Aggregate level recovery needs: the policy's, or (halved caps only) the episode's largest demand plus regrowth. A demand-only episode never
+    // halved anything, so the demand floor must not keep it alive: in the 0.3.215 player log it held 896 MiB against 700-1016 MiB available for the rest of the session.
     std::uint64_t recoverAvailable()const{
-        const std::uint64_t floor=demandFloor_?demandFloor_+policy_.demandRegrowth:0;
+        const std::uint64_t floor=demandFloor_&&!demandOnly_?demandFloor_+policy_.demandRegrowth:0;
         return floor>policy_.recoverAvailable?floor:policy_.recoverAvailable;
     }
     unsigned trims()const{return trims_;}
