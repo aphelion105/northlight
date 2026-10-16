@@ -59,7 +59,9 @@ float3 localNormal(float2 uv,float3 p) {
 }
 float localVisibility(float3 delta,float3 normal) {
     float distance=length(delta);
-    if(distance<=LocalShadow.x||distance>=LocalShadow.y)return 1;
+    // Task 43: dot(normal,delta)>=0 is a face turned from the lamp (facing 0, estimate 0): the correction is 0 whatever
+    // the visibility, so the 4-tap cube PCF is skipped.
+    if(distance<=LocalShadow.x||distance>=LocalShadow.y||dot(normal,delta)>=0)return 1;
     float3 direction=delta/max(distance,.00001);
     // World-unit normal bias remains independent of cube near/far precision.
     float grazing=1-abs(dot(normal,direction));

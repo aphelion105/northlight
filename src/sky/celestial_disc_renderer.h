@@ -299,7 +299,7 @@ public:
         if(!check(d->SetRenderTarget(0,target),"target"))return false;
         d->SetVertexShader(nullptr);d->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1);d->SetStreamSourceFreq(0,1);d->SetPixelShader(ps);
         // Sky phase (occlude=false): behave like the native sprite. The sky
-        // occupies its own depth band (viewport MinZ..MaxZ, e.g. .94..1) and
+        // occupies its own depth band (client viewport MinZ..MaxZ = 0.9990234375..1, above the 0..0.94 world and the horizon band) and
         // the native sprite writes depth inside it, so the world drawn later
         // (real mountains, z below the band) covers it and the sky dome drawn
         // after it in the band does not. Without depth our quad was painted

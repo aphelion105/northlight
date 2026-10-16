@@ -30,10 +30,27 @@ def main():
     b,_=fixture();struct.pack_into('<h',b,210,-1);assert not hidden_batches(b,[batch])
     b,_=fixture();struct.pack_into('<I',b,188,999999);assert not hidden_batches(b,[batch])
     b,_=fixture();assert not hidden_batches(b[:200],[batch])
-    for field,value in [(11,65535),(11,2),(8,2)]:
+    for field,value in [(11,65535),(11,2)]:
         altered=list(batch);altered[field]=value;assert not hidden_batches(b,[altered])
+    # The game applies the texture weight to any textured batch, not only to a single-texture one.
+    b,_=fixture();altered=list(batch);altered[8]=2;assert hidden_batches(b,[altered])=={0}
+    altered[8]=0;assert not hidden_batches(b,[altered])   # untextured: the weight is not applied
+    # Shadow casters need colour alpha * weight >= 0.55: bounded by each track's largest key over all sequences.
+    b,_=fixture((16384,),kind=1);assert not hidden_batches(b,[batch]) and hidden_batches(b,[batch],.55)=={0}
+    b,_=fixture((16384,32767),kind=1,sequences=2);assert not hidden_batches(b,[batch],.55)   # a key reaches 1
+    b,_=fixture((32767,));assert not hidden_batches(b,[batch],.55)
+    # Colour-track alpha (header +72, alpha track at +20 of a 40-byte colour; batch colour index at [5]).
+    def coloured(value):
+        b,_=fixture((32767,));struct.pack_into('<II',b,72,1,440);struct.pack_into('<Hh4I',b,460,0,-1,1,480,1,488)
+        struct.pack_into('<II',b,480,1,496);struct.pack_into('<II',b,488,1,500);struct.pack_into('<I',b,496,0);struct.pack_into('<h',b,500,value)
+        return b
+    colored=list(batch);colored[5]=0
+    assert hidden_batches(coloured(0),[colored])=={0}
+    assert hidden_batches(coloured(16384),[colored],.55)=={0} and not hidden_batches(coloured(16384),[colored])
+    assert not hidden_batches(coloured(32767),[colored],.55)
+    assert not hidden_batches(coloured(0),[batch])   # colour index 65535: no colour alpha
     # Hidden first pass cannot suppress a later visible pass sharing the submesh.
-    visible=list(batch);visible[11]=65535;assert hidden_batches(b,[batch,visible])=={0}
+    b,_=fixture();visible=list(batch);visible[11]=65535;assert hidden_batches(b,[batch,visible])=={0}
     assets=Assets()
     try:
         builder=Builder(assets)

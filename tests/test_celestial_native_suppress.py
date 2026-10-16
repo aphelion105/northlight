@@ -31,6 +31,8 @@ assert 'if((!early&&!observer.lateDisc(i,suppressed))||' in fp.src('celestial_di
 # 0.3.187: one claim helper (count<=4 first) used by drawHook, the shared body of the four draw entry points.
 hooks=re.findall(r'if\(count<=4&&celestialDiscs&&enabled&&!applied&&celestialDiscs->nativeClaimPossible\(t,count\)\)',renderer)
 assert len(hooks)==1,len(hooks)
+# item 8: viewport-band pre-filter ahead of the texture-identity claim
+assert 'skyClaimPossible(worldMinDepth,worldMaxDepth,vp.MinZ,vp.MaxZ)' in renderer and renderer.index('skyClaimPossible(')<renderer.index('claimNativeGlare(t,count)')
 assert renderer.count('skyClaim(t,count,claimed);')==2 and renderer.count('return drawHook(t,count,')==4
 effects=renderer[renderer.index('    void renderEffects() {'):renderer.index('template<class Capture> void prepareDraw(')]
 assert effects.index('if (applied || !enabled || failed || !projectionValid) return;')<effects.index('celestialDiscs->render(')

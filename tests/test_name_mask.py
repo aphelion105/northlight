@@ -197,8 +197,8 @@ checks['debug view: the last effect pass before applied=true when the frame has 
     'if(maskOn&&nameMask.debug)nameMaskDebugView(saved.targets[0]);' in r and r.index('nameMaskDebugView(saved.targets[0]);')<r.index('applied = true; ++appliedFrames;')
     and 'D3DRS_STENCILFUNC,D3DCMP_EQUAL' in r and 'D3DRS_STENCILWRITEMASK,0' in r)
 checks['depth upgrade: the key read from the ini at CreateDevice, D24S8 checked with CheckDeviceFormat and CheckDepthStencilMatch before the auto depth and CreateDepthStencilSurface change, Reset too, the stream applies it on the game thread']=(
-    'const bool stream=NorthlightStream::commandStreamRequested(rootPath,&framesAhead,&frameSkip,&nameMaskWanted);' in r and r.index('commandStreamRequested(rootPath,&framesAhead,&frameSkip,&nameMaskWanted)')<r.index('upgradeAutoDepth(real,adapter,type,pp,nameMaskWanted,"CreateDevice");')
-    and 'nameMaskRequested' not in r and 'if(nameMask)*nameMask=s.nameMask!=0;' in sh and 'return commandStreamFromText(text,has,framesAhead,frameSkip,nameMask);' in sh
+    'const bool stream=NorthlightStream::commandStreamRequested(rootPath,&framesAhead,&frameSkip,&nameMaskWanted,&occlusionLocal);' in r and r.index('commandStreamRequested(rootPath,&framesAhead,&frameSkip,&nameMaskWanted,&occlusionLocal)')<r.index('upgradeAutoDepth(real,adapter,type,pp,nameMaskWanted,"CreateDevice");')
+    and 'nameMaskRequested' not in r and 'if(nameMask)*nameMask=s.nameMask!=0;' in sh and 'return commandStreamFromText(text,has,framesAhead,frameSkip,nameMask,occlusionLocal);' in sh
     and 'if(nameMask.setting){const D3DFORMAT upgraded' not in r and 'D3DUSAGE_DEPTHSTENCIL,D3DRTYPE_SURFACE,D3DFMT_D24S8' in r and 'CheckDepthStencilMatch(' in r
     and 'upgradeAutoDepth(parent,cp.AdapterOrdinal,cp.DeviceType,pp,true,"Reset");' in r and 'if(pp&&world&&world->nameMask())' in r
     and 'NorthlightStream::upgradedDepthFormat(unsigned(Format))' in r and 'D3DFORMAT(NorthlightStream::upgradedDepthFormat(unsigned(fmt)))' in sd

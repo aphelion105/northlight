@@ -11,9 +11,10 @@ HERE=Path(__file__).resolve().parent
 ctx=fp.src('world_context.h').read_text();snap=fp.src('game_snapshot.h').read_text();store=fp.src('snapshot_store.h').read_text()
 r=fp.src('renderer.cpp').read_text();wr=fp.src('world_renderer.h').read_text();hooks=fp.src('stream_hooks.h').read_text();tags=fp.src('shader_tags.h').read_text()
 checks={}
-checks['readSelf: one thread_local null check, else the unchanged live read']=('inline bool readSelfLive(uintptr_t address,void* output,size_t size) {\n    SelfReadStats::calls' in ctx
+checks['readSelf: one thread_local null check, else the unchanged live read']=('inline bool readSelfLive(uintptr_t address,void* output,size_t size) {\n    const unsigned long long n=SelfReadStats::calls' in ctx
     and 'if(NorthlightStream::GameSnapshot* snapshot=NorthlightStream::activeSnapshot)\n        return NorthlightStream::snapshotRead(*snapshot,address,output,size,readSelfLive,NorthlightStream::codeRange());\n    return readSelfLive(address,output,size);' in ctx
     and 'inline thread_local GameSnapshot* activeSnapshot=nullptr;' in store)
+checks['readSelfLive: QPC clock only on every 8th call and only under RenderProfile, ticks scaled']=('(n&7)==0 && SelfReadStats::timed.load' in ctx and '(end.QuadPart-begin.QuadPart)*8' in ctx)
 checks['capture runs the raw readers with the injected readSelf, recording while ScopedRecording is active']=(
     'captureReaders(NorthlightWorldContext::readSelf);' in snap and 'ScopedRecording recording(s);' in snap
     and all(x in snap for x in ('readCurrent(read,','readCurrentBasis(read,','readSnapshot(read,sky)','NorthlightCelestialDisc::readIdentities(read)','NorthlightCelestialGlare::readIdentities(read)','read(0xd38b00,first,sizeof first);read(0xd38b00,second,sizeof second)','readMapAndCamera(map,camera)')))

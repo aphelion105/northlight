@@ -32,10 +32,11 @@ ROOT = b''.join([chunk('MVER', struct.pack('<I', 17)), chunk('MOHD', struct.pack
                  chunk('MOTX', b'wall.blp\0\0\0\0'), chunk('MOMT', struct.pack('<16I', 0, 0, 0, 0, *[0] * 12))])
 
 
-def group(extra=0, cut=0, flags=0x2000):
+def group(extra=0, cut=0, flags=0x2000, moba_flags=0, tz=0, modr=()):
     sub = b''.join([chunk('MOPY', struct.pack('<2B', 0, 0)), chunk('MOVI', struct.pack('<3H', 0, 1, 2)),
                     chunk('MOVT', struct.pack('<9f', 0, 0, 0, 1, 0, 0, 0, 1, 0)), chunk('MONR', struct.pack('<9f', 0, 0, 1, 0, 0, 1, 0, 0, 1)),
-                    chunk('MOTV', struct.pack('<6f', 0, 0, 1, 0, 0, 1)), chunk('MOBA', struct.pack('<6hI3H2B', *[0] * 6, 0, 3, 0, 2, 0, 0))])
+                    chunk('MOTV', struct.pack('<6f', 0, 0, 1, 0, 0, 1)), chunk('MOBA', struct.pack('<6hI3H2B', 0, 0, 0, 0, 0, tz, 0, 3, 0, 2, moba_flags, 0))]
+                   + ([chunk('MODR', struct.pack(f'<{len(modr)}H', *modr))] if modr else []))
     header = struct.pack('<2I', 0, 0) + struct.pack('<I6f', flags, *BOUNDS) + bytes(68 - 36)
     blob = chunk('MVER', struct.pack('<I', 17)) + chunk('MOGP', header + sub, extra)
     return blob[:len(blob) - cut] if cut else blob
@@ -101,5 +102,17 @@ for _ in range(2):   # a second tile placing the same WMOs reads neither again
     assert len(indoors) == 1 and all(lo <= hi for lo, hi in zip(indoors[0][:3], indoors[0][3:])), indoors
 assert list(unreadable) == ['b.wmo'] and 'b.wmo' in unreadable['b.wmo'] and clamped == {'a_000.wmo'}, (unreadable, clamped)
 assert stats['wmo_roots'] == 2 and reads == {'a.wmo': 1, 'a_000.wmo': 1, 'b.wmo': 1}, (stats, reads)
+# f) Interior is the game's test (CMap::CreateMapObjDefGroups): neither 0x8 (outdoor) nor 0x40 (exterior lit).
+for flags, interior in ((0x2000, True), (0, True), (0x2000 | 0x8, False), (0x2000 | 0x40, False), (0x48, False), (0x8, False)):
+    got = fog.indoor_groups({'x.wmo': ROOT, 'x_000.wmo': group(flags=flags)}.__getitem__, 'x.wmo', collections.Counter(), set())
+    assert bool(got) == interior, (hex(flags), got)
+
+# g) The batch material is always the byte at +0x17 (CMapObj::UnifiedRender), whatever the low flag nibble holds.
+mesh = Builder(FakeAssets({'x.wmo': ROOT, 'x_000.wmo': group(moba_flags=2, tz=5)})).wmo('x.wmo')
+assert [t[3] for t in mesh[1]] == [0], mesh[1]
+
+# h) The doodad refs (MODR) of every group are collected for the doodad selection.
+mesh = Builder(FakeAssets({'x.wmo': ROOT, 'x_000.wmo': group(modr=(3, 7))})).wmo('x.wmo')
+assert mesh[4] == {3, 7}, mesh[4]
 print('wmo_group_tolerance: clamp only top-level MOGP, identical scene mesh and fog bounds, strict sub-chunks, '
       'unreadable WMO recorded without rejecting the tile OK')

@@ -43,6 +43,7 @@
 #include "weather_state.h"
 #include "ui_boundary.h"
 #include "weather_detect.h"
+#include "weather_memory.h"
 #include "translucent_depth.h"
 #include "name_stencil.h"
 #include "log_rotation.h"
@@ -704,7 +705,7 @@ private:
         if(celestial){
             NorthlightCelestial::Context sky;float inverseView[16],projection[3];
             if(world->celestialContext(sky,inverseView,projection)){sunElevation=sky.sun.direction[2]-sky.horizonSine; /* over the camera's far edge, as the composite's haze band */
-                celestialDiscs->setWeatherGain(world->weatherEffects().discGain()); /* 0.3.198 (rain): the discs, glare and veil follow the weather */
+                celestialDiscs->setWeatherGain(world->weatherEffects().discGain()*world->underwaterScale()); /* 0.3.198 (rain): the discs, glare and veil follow the weather */
                 celestialDiscs->render(saved.targets[0],depthTex,waterMask,width,height,world->legacyFogParameters(),worldMinDepth,worldMaxDepth,nearZ,farZ,projection,inverseView,sky,celestialGlowHue());}
         }
         gpuProfile->mark("CelestialDiscs");
@@ -742,10 +743,11 @@ private:
             gpuProfile->mark("AO");
             // 0.3.201 (task 18): the raw IGN-rotated AO is denoised by a half-resolution bilateral pass into `ao`,
             // which every consumer (legacy composite, world fold) keeps reading. s2 is released afterwards.
+            // Task 43: s0 (LINEAR) carries the raw AO too for the blur's 9-read bilinear early-out (AOBlur never reads Scene); the scene copy is rebound after.
             if (error(ext->SetRenderTarget(0,aoSurface),"AO blur render target")) return;
-            bindEffects(aoRaw);ext->SetPixelShader(aoBlurPS);
+            bindEffects(aoRaw);ext->SetTexture(0,aoRaw);ext->SetPixelShader(aoBlurPS);
             if (error(quad(width/2,height/2),"AO blur pass")) return;
-            ext->SetTexture(2,nullptr);
+            ext->SetTexture(2,nullptr);ext->SetTexture(0,scene);
             gpuProfile->mark("AOBlur");effectsBuckets.mark(Bucket::AO);
         }
         // 0.3.174 FOLD: with a ready world and no effect debug view, WorldComposite applies the
@@ -904,11 +906,18 @@ private:
     }
     // task 34: a draw with no vertex shader bound (fixed function: ribbons, beams) returns from prepareDrawImpl early; the spell layer still needs its world domain, the
     // same test as the programmable path (viewport depth range and Z enable) and nothing else of what that path does.
+    // DepthFuncAware: the spell layer's "depth tested" is ZENABLE on and ZFUNC not ALWAYS (the client's depth-off is ZFUNC ALWAYS); the world domain itself stays ZENABLE only (name and UI-hash draws are decided inside it).
+    bool spellDepthTested(DWORD depthEnabled){
+        if(depthEnabled==FALSE)return false;
+        DWORD func=D3DCMP_LESSEQUAL;
+        if(!zFuncAware||FAILED(ext->GetRenderState(D3DRS_ZFUNC,&func)))return true;
+        return NorthlightWorldDrawDomain::depthTested(depthEnabled,func);
+    }
     void spellFixedDomain(){
         if(!world||!projectionValid)return;
         D3DVIEWPORT9 viewport={};DWORD depthEnabled=FALSE;
         if(FAILED(ext->GetViewport(&viewport))||FAILED(ext->GetRenderState(D3DRS_ZENABLE,&depthEnabled)))return;
-        spellDomain=NorthlightWorldDrawDomain::accepts(projectionValid,depthEnabled!=FALSE,worldMinDepth,worldMaxDepth,viewport.MinZ,viewport.MaxZ);spellZEnable=depthEnabled!=FALSE;
+        spellDomain=NorthlightWorldDrawDomain::accepts(projectionValid,depthEnabled!=FALSE,worldMinDepth,worldMaxDepth,viewport.MinZ,viewport.MaxZ);spellZEnable=spellDepthTested(depthEnabled);
     }
     template<class Capture> void prepareDrawImpl(Capture capture,UINT count) {
         ++drawCalls;maskKind=0;if(nameRun)nameMaskRunBreak();
@@ -937,7 +946,7 @@ private:
             const bool statesRead=SUCCEEDED(ext->GetViewport(&viewport))&&SUCCEEDED(ext->GetRenderState(D3DRS_ZENABLE,&depthEnabled));
             const bool worldDomain=statesRead&&NorthlightWorldDrawDomain::accepts(projectionValid,depthEnabled!=FALSE,
                 worldMinDepth,worldMaxDepth,viewport.MinZ,viewport.MaxZ);
-            if(spellOn){spellDomain=worldDomain;spellZEnable=depthEnabled!=FALSE;} /* task 34 */
+            if(spellOn){spellDomain=worldDomain;spellZEnable=spellDepthTested(depthEnabled);} /* task 34 */
             if(worldDomain){if(gateFrame)++gateCounts.capture;
                 /* 0.3.188 (task 3): lazy state reads for the early resolve, its undo and the census, each read at most once per draw */
                 auto rs=[&](D3DRENDERSTATETYPE t){return [this,t,v=DWORD(0),known=false]()mutable{if(!known){v=drawRenderState(t);known=true;}return v;};};
@@ -1063,7 +1072,8 @@ private:
     static_assert(NorthlightWeatherDetect::kFmtA8R8G8B8==D3DFMT_A8R8G8B8,"weather signature format");
     NorthlightWeatherDetect::Detector weatherDetect;NorthlightWeather::Tracker weatherTracker;NorthlightWeather::Sample weatherSample;
     unsigned weatherMistSkips=0,weatherMistUnknown=0,weatherMistOtherStage=0,weatherMistReports=0; /* 0.3.199 (rain mist): this frame's skipped mist draws and diagnostics */
-    LONGLONG weatherTick=0;double weatherLogClock=0;NorthlightWeather::Kind weatherLoggedKind=NorthlightWeather::Kind::None;bool weatherLoggedBlendHigh=false,weatherLoggedBlendLow=false,weatherOffReported=false;
+    LONGLONG weatherTick=0;double weatherLogClock=0;NorthlightWeather::Kind weatherLoggedKind=NorthlightWeather::Kind::None;bool weatherLoggedBlendHigh=false,weatherLoggedBlendLow=false,weatherOffReported=false;int weatherMemoryState=-1;bool skyBandSeen=false;
+    NorthlightWeatherMemory::Source weatherMemory;NorthlightWeatherMemory::CrossCheck weatherCross; /* the game's own weather state (memory); the detector above is its fallback and cross-check */
     // RenderProfile sample frames only: the largest draw before the effects (WEATHER probe), to calibrate detection.
     struct WeatherProbe {UINT count=0;const void* texture=nullptr;bool known=false,candidate=false,vs=false,ps=false;} weatherProbe;
     void weatherProbeDraw(UINT count){
@@ -1108,7 +1118,7 @@ private:
     LONGLONG* sampledHookTimer()const{return hookTimer;}
     // Native sky claim: glare, then the native disc draw, for full-viewport sky draws of 1..4 primitives.
     void skyClaim(D3DPRIMITIVETYPE t,UINT count,bool& claimed){
-        if(count<=4&&celestialDiscs&&enabled&&!applied&&celestialDiscs->nativeClaimPossible(t,count)){D3DSURFACE_DESC desc;if(fullViewport(desc)){
+        if(count<=4&&celestialDiscs&&enabled&&!applied&&celestialDiscs->nativeClaimPossible(t,count)){D3DSURFACE_DESC desc;D3DVIEWPORT9 vp={};if(fullViewport(desc,&vp)&&NorthlightWorldDrawDomain::skyClaimPossible(worldMinDepth,worldMaxDepth,vp.MinZ,vp.MaxZ)){ /* viewport band pre-filter: no texture-identity read for a draw outside the sky band */
             claimed=celestialDiscs->claimNativeGlare(t,count);
             if(!claimed)claimed=celestialDiscs->claimNativeDraw(t,count,true,[&](const char* map,const float* camera){return world->celestialPalette(map,camera);});}}
     }
@@ -1335,6 +1345,7 @@ private:
         // 0.3.198 (rain): the whole per-draw cost of weather detection, before any other work and in both gate paths: one pointer comparison.
         if(weatherDetect.hot&&mirrorState.textureKnown[0]&&mirrorState.textures[0]==weatherDetect.hot){weatherSample.primitives+=count;++weatherSample.draws;rainBlend=weatherDetect.hotKind==NorthlightWeather::Kind::Rain&&world&&world->rainBlendSetting();} /* 0.3.199 (rain): counted after applied too (the rest of the rain); 0.3.202: no boundary here, the effects run at the UI again */
         else if(weatherDetect.mistArmed)mist=mistDraw(count); /* 0.3.199 (rain mist): a mist puff in rain is skipped; unarmed, one bool test */
+        if(!skyBandSeen&&mirrorState.viewportKnown&&NorthlightWorldDrawDomain::classify(worldMinDepth,worldMaxDepth,mirrorState.viewport.MinZ,mirrorState.viewport.MaxZ)==NorthlightWorldDrawDomain::Band::Sky)skyBandSeen=true; /* WeatherMemory: the world drew in the sky band this frame (the mirror's viewport, no device read) */
         if(rainMrtBound&&!rainBlend)rainMrtUnbind(); /* 0.3.202 (rain mask MRT): every other draw (and all its capture/effect work) meets the game's targets only; dry frames one bool test */
         waterPending.valid=false; /* 0.3.214 (water MRT): set by this draw's captureWater only */
         if(water&&water->isMrtBound()&&(rainBlend||applied||!enabled||failed||!nextDrawIsWater()))rainMrtUnbind(); /* the water mask's target 1 stays bound across consecutive water draws only */
@@ -1374,6 +1385,7 @@ private:
     // Every layer call runs inside extensionWork (a fault drops the layer: reset()) on the thread that executes the device.
     NorthlightSpellLayer::Layer spell;NorthlightSpellLayer::FadeRun spellFade;NorthlightSpellLayer::DrawArgs spellArgs; /* spellArgs: set by the four draw overrides (SpellLayer=1 only) */
     bool spellOn=false;unsigned spellClasses=15,spellIdle=0;unsigned spellSampleFrame=~0u;bool spellSampleOn=false;
+    bool zFuncAware=true; /* DepthFuncAware (a creation-time key): ZFUNC counts as part of depth-tested, and the UI fallback requires ZFUNC ALWAYS */
     bool spellDomain=false,spellZEnable=false;IDirect3DVertexShader9* spellVs=nullptr; /* prepareDrawImpl's reads of this draw (identities only; SpellLayer=1 only) */
     void* spellTexKey=nullptr;IDirect3DSurface9* spellTexFor=nullptr; /* the layer target's container texture (null: T is not a texture level), computed once per target */
     void* spellQuery[8]={};unsigned spellQueryFrame[8]={},spellQueryN=0,spellQueryUnknownFrame=0;bool spellQueryUnknown=false; /* open D3DQUERYTYPE_OCCLUSION brackets (raw queries), by Issue(BEGIN) frame; spellQueryUnknown: a bracket was lost to a full table (its frame in spellQueryUnknownFrame) */
@@ -1860,7 +1872,7 @@ private:
         uiFallbackDraw(vc,vs);
     }
     // 0.3.203 (task 17): fallback boundary for font mods that replace the UI VS and PS (or only the PS): the first screen-space draw after the world with
-    // ZWRITE off, full-target viewport and ortho rows, by a (VS,PS) pair learned over 120 frames without a hash boundary. WoW draws UI with ZENABLE on, so z is not tested.
+    // ZWRITE off, full-target viewport and ortho rows, by a (VS,PS) pair learned over 120 frames without a hash boundary. WoW draws UI with ZENABLE on and ZFUNC ALWAYS (DepthFuncAware: the func is required).
     // On stock the whole step is one bool test per draw: collecting() needs two world frames in a row without the hash boundary, and the first one disarms it for good.
     void uiFallbackDraw(const VsClass& vc,IDirect3DVertexShader9* vs){
         if(!uiFallback.collecting()||!terrain||applied||hashBoundaryThisFrame||fallbackBoundaryThisFrame||vc.wmo)return;
@@ -1874,8 +1886,9 @@ private:
         const std::uintptr_t vsId=reinterpret_cast<std::uintptr_t>(vs),psId=reinterpret_cast<std::uintptr_t>(ps);
         if(armed&&!uiFallback.isBoundary(vsId,psId))return;
         DWORD zw=0;if(FAILED(ext->GetRenderState(D3DRS_ZWRITEENABLE,&zw)))return;
+        DWORD zf=D3DCMP_ALWAYS;if(zFuncAware&&FAILED(ext->GetRenderState(D3DRS_ZFUNC,&zf)))return; /* the client's UI draws all run with ZFUNC ALWAYS */
         float c[16]={};if(FAILED(ext->GetVertexShaderConstantF(0,c,4)))return;
-        if(!NorthlightUiBoundary::accepts(zw!=0,c)){if(!armed){triageVs=vs;triagePs=ps;triageZw=zw;for(int i=0;i<4;++i)triageC3[i]=c[12+i];++triageDraws;}return;}
+        if(!NorthlightUiBoundary::accepts(zw!=0,c,zf==D3DCMP_ALWAYS)){if(!armed){triageVs=vs;triagePs=ps;triageZw=zw;for(int i=0;i<4;++i)triageC3[i]=c[12+i];++triageDraws;}return;}
         D3DSURFACE_DESC desc={};
         if(!fullViewport(desc,nullptr,true))return; // last, and quiet: minimap and portrait targets are expected here
         if(!armed){uiFallback.noteCandidate(vsId,psId);return;}
@@ -2037,6 +2050,7 @@ public:
         char skyRoot[MAX_PATH*3];WideCharToMultiByte(CP_UTF8,0,rootPath,-1,skyRoot,sizeof skyRoot,nullptr,nullptr);celestialDiscs=std::make_unique<NorthlightCelestialDiscRenderer>(ext,std::string(skyRoot)+"world-cache/celestial");celestialDiscs->setTerrainSource([this]{return world->celestialTerrainGeneration();},[this](unsigned body,const float* matrix){return world->drawCelestialTerrain(body,matrix);},[this](unsigned body){world->noteCelestialTerrainReuse(body);});celestialDiscs->setIdentityMap([this](std::uintptr_t exposed){return mirrorResources.rawOf(exposed,!mirrorState.enabled);});shadowBlobs=std::make_unique<NorthlightShadowBlobFilter>(ext,world->blobShadowStrength());shadowBlobs->setTexturePeek([](void* e,DWORD stage,IDirect3DBaseTexture9*& out){return static_cast<ExtensionDevice*>(e)->peekTexture(stage,out);},ext); /* 0.3.196 (task 12): borrowed stage-0 identity */water=std::make_unique<NorthlightWaterRenderer>(ext); logf("D3D9 device wrapped. Ctrl+Shift+F7 fog; F8 GI; F9 shadows; F10 all effects; F12 world debug (all with Ctrl+Shift). F11 unassigned. Components start ON; GI cache stays warm.");
         contactAO=world->contactAO(); /* 0.3.201 (task 18) */
         spellConfigure(); /* task 34: SpellLayer, SpellLayerClasses, SpellTrace (creation-time keys) */
+        zFuncAware=world->depthFuncAware();
         nameMask.setting=world->nameMask();nameMask.debug=world->nameMaskDebug(); /* 0.3.212 (task 32) */
         frameDrawGates=world->frameDrawGates();latchDrawGates(); /* 0.3.187: after the renderers exist */
         {wchar_t markers[MAX_PATH];if(swprintf(markers,MAX_PATH,L"%lsnorthlight-frame-markers.txt",rootPath)>0&&GetFileAttributesW(markers)!=INVALID_FILE_ATTRIBUTES){frameMarkers=true;logf("FRAMEMARKERS on: E after the world effects, P before Present");}}
@@ -2173,6 +2187,15 @@ public:
         if(cpuFrequency.QuadPart>0&&QueryPerformanceCounter(&now)){if(weatherTick)dt=double(now.QuadPart-weatherTick)/double(cpuFrequency.QuadPart);weatherTick=now.QuadPart;}
         if(!mirrorState.enabled){weatherDetect.setOff(true);if(!weatherOffReported){weatherOffReported=true;logf("WEATHER detect=off (mirror inactive)");}}
         weatherSample.kind=weatherSample.draws?weatherDetect.hotKind:W::Kind::None;
+        { // the game's own weather state is the primary source when its proofs and reads succeed; the detector is the fallback and the cross-check
+            const bool memoryWanted=NorthlightWeatherMemory::enabled()&&(!world||world->weatherMemorySetting()); /* WeatherMemory=0: no proofs and no reads at all */
+            const NorthlightWeatherMemory::Reading memory=memoryWanted?weatherMemory.frame(NorthlightWorldContext::readSelf):NorthlightWeatherMemory::Reading{};
+            const bool memoryCounts=NorthlightWeatherMemory::counts(memoryWanted,memory.valid,mirrorState.enabled,skyBandSeen);skyBandSeen=false; /* indoors the client draws no sky and no weather: the frame then goes the draw-based way (hold, fade) */
+            weatherSample.memory=memoryCounts;weatherSample.memoryKind=memory.kind;weatherSample.memoryIntensity=memory.intensity;
+            if(memoryWanted&&int(memory.valid)!=weatherMemoryState){weatherMemoryState=int(memory.valid);logf("WEATHER memory %s (proofs=%d reads=%u failures=%u kind=%s storm=%.3f intensity=%.3f)",memory.valid?"valid":"invalid, texture detector in use",int(weatherMemory.proofsOk()),weatherMemory.reads,weatherMemory.failures,W::kindName(memory.kind),memory.stormIntensity,memory.intensity);}
+            const auto sort=weatherCross.frame(memoryCounts,memory.intensity>0?memory.kind:W::Kind::None,weatherSample.kind);
+            if(sort!=NorthlightWeatherMemory::CrossCheck::Result::Agree)logf("WEATHER memory and texture detector disagree: %s (memory kind=%s storm=%.3f intensity=%.3f, texture kind=%s draws=%u)",NorthlightWeatherMemory::CrossCheck::name(sort),W::kindName(memory.kind),memory.stormIntensity,memory.intensity,W::kindName(weatherSample.kind),weatherSample.draws);
+        }
         weatherTracker.frame(weatherSample,float(dt));const W::State& st=weatherTracker.state();
         const bool counted=weatherSample.draws!=0;const W::Sample frameSample=weatherSample;weatherSample={};
         weatherDetect.endFrame(counted); /* hot drew: it stays; otherwise the next candidate (the tracker's hold bridges the rotation) */
@@ -2507,11 +2530,12 @@ public:
     ULONG STDMETHODCALLTYPE Release() override{auto n=InterlockedDecrement(&refs);if(!n)delete this;return n;}
     // 0.3.192 (CS): wraps the Device in the command stream; on any failure the game keeps the Device directly (the worker core
     // budgets were read with the stream flag set, a harmless one core less).
-    IDirect3DDevice9* startStream(IDirect3DDevice9* device,D3DPRESENT_PARAMETERS* pp,unsigned framesAhead,unsigned frameSkip){
+    IDirect3DDevice9* startStream(IDirect3DDevice9* device,D3DPRESENT_PARAMETERS* pp,unsigned framesAhead,unsigned frameSkip,bool occlusionLocal){
         Device* target=static_cast<Device*>(device);const char* reason="unknown";
         NorthlightStream::StreamDevice::Options options;
         options.framesAhead=framesAhead;options.budget=NorthlightStream::budgetForFramesAhead(framesAhead); /* 0.3.200 (pipeline): StreamFramesAhead, read with CommandStream; the queue budget grows with it (bounded) */
         options.frameSkip=frameSkip; /* 0.3.200 (frame skip): StreamFrameSkip, read with CommandStream */
+        options.occlusionLocal=occlusionLocal; /* StreamOcclusionLocal, read with CommandStream */
         options.capture=&NorthlightStream::capture;
         options.threadStart=[target]{target->adoptOwnerThread();};
         options.log=[](const char* line){logf("%s",line);};
@@ -2525,7 +2549,7 @@ public:
         if(!stream){NorthlightStream::streamActive.store(false,std::memory_order_relaxed);NorthlightReplayCopies::enabled.store(false,std::memory_order_relaxed);target->setExclusiveOwner(false);target->adoptOwnerThread(); /* the gate owner is this thread again (a replay thread that ran has been joined) */
             logf("CSTREAM disabled reason=%s",reason);return device;}
         target->limitGpuLatency=stream->framesAhead()>=2; /* 0.3.200 (pipeline): see Device::limitGpuLatency */
-        logf("CSTREAM active gameTid=%lu replayTid=%lu exclusiveGate=%d framesAhead=%u frameSkip=%u budgetMiB=%u gpuLatencyLimit=%d",NorthlightStream::gameTid.load(),NorthlightStream::replayTid.load(),int(exclusiveOwner),stream->framesAhead(),frameSkip,unsigned(NorthlightStream::budgetForFramesAhead(framesAhead)>>20),int(target->limitGpuLatency));
+        logf("CSTREAM active gameTid=%lu replayTid=%lu exclusiveGate=%d framesAhead=%u frameSkip=%u occlusionLocal=%d budgetMiB=%u gpuLatencyLimit=%d",NorthlightStream::gameTid.load(),NorthlightStream::replayTid.load(),int(exclusiveOwner),stream->framesAhead(),frameSkip,int(occlusionLocal),unsigned(NorthlightStream::budgetForFramesAhead(framesAhead)>>20),int(target->limitGpuLatency));
         return stream;
     }
     HRESULT STDMETHODCALLTYPE CreateDevice(UINT adapter,D3DDEVTYPE type,HWND window,DWORD flags,D3DPRESENT_PARAMETERS* pp,IDirect3DDevice9** out) override {
@@ -2546,7 +2570,7 @@ public:
                 return D3DERR_NOTAVAILABLE;
             }
         }
-        unsigned framesAhead=1,frameSkip=0;bool nameMaskWanted=false;const bool stream=NorthlightStream::commandStreamRequested(rootPath,&framesAhead,&frameSkip,&nameMaskWanted); /* 0.3.192 (CS): CommandStream=0 or an unreadable ini is the old path below; 0.3.200 (pipeline): StreamFramesAhead from the same read; 0.3.212 (task 32): NameMask too */
+        unsigned framesAhead=1,frameSkip=0;bool nameMaskWanted=false,occlusionLocal=false;const bool stream=NorthlightStream::commandStreamRequested(rootPath,&framesAhead,&frameSkip,&nameMaskWanted,&occlusionLocal); /* 0.3.192 (CS): CommandStream=0 or an unreadable ini is the old path below; 0.3.200 (pipeline): StreamFramesAhead from the same read; 0.3.212 (task 32): NameMask too */
         upgradeAutoDepth(real,adapter,type,pp,nameMaskWanted,"CreateDevice"); /* 0.3.212 (task 32) */
         if(stream)NorthlightStream::streamActive.store(true,std::memory_order_relaxed); /* before the Device exists: worker core budgets read it once */
         if(stream)NorthlightReplayCopies::enabled.store(true,std::memory_order_relaxed); /* 0.3.192 (CS): before the first game buffer is wrapped: the replay-side CPU copies of replay_copies.h; never on with CommandStream=0 */
@@ -2555,7 +2579,7 @@ public:
         HRESULT hr=real->CreateDevice(adapter,type,window,flags,pp,out);
         logf("CreateDevice HRESULT=0x%08lx flags=0x%lx",(unsigned long)hr,(unsigned long)flags);
         if(SUCCEEDED(hr)&&out&&*out)*out=new Device(*out,this);
-        if(SUCCEEDED(hr)&&out&&*out&&stream)*out=startStream(*out,pp,framesAhead,frameSkip);
+        if(SUCCEEDED(hr)&&out&&*out&&stream)*out=startStream(*out,pp,framesAhead,frameSkip,occlusionLocal);
         return hr;
     }
 };

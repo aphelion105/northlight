@@ -161,6 +161,7 @@ test_translucent_actor_depth.py
 test_translucent_depth_census.py
 test_ui_boundary.py
 test_uncached_map_skip_wiring.py
+test_underwater_fade.py
 test_unlisted_archive.py
 test_upload_locks.py
 test_upload_payload_release.py
@@ -173,6 +174,7 @@ test_water_shaders.py
 test_weather_detect.py
 test_weather_effects.py
 test_weather_effects_wiring.py
+test_weather_memory.py
 test_weather_state.py
 test_weather_textures.py
 test_weather_wiring.py

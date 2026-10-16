@@ -1,10 +1,12 @@
 #pragma once
 #include "stream_hooks.h"
+#include "weather_memory.h"
 #include "name_stencil.h"
 #include "world_context.h"
 #include "effect_switches.h"
 #include "world_camera.h"
 #include "wmo_context.h"
+#include "underwater_fade.h"
 #include "projection.h"
 #include "celestial_context.h"
 #include "celestial_sources.h"
@@ -304,6 +306,8 @@ private:
     bool neutralShadowMaps=false;
     V sourceDirections[2],sourceColors[2];
     float sourceWeights[2]={1,0};
+    NorthlightUnderwater::Fade underwaterFade; // the camera in liquid: the sun and moon fade out (updateWorldContext)
+    DWORD underwaterLogAt=0;bool underwaterLogged=false;
     float sourceMatrices[2][2][16]={};
     // Far/NearShadowInterval>1 only: the map and matrix of the last complete far/near cascade render per source.
     NorthlightQuality::ShadowMapReuse farShadow[2],nearShadow[2];unsigned shadowPasses=0;
@@ -321,7 +325,7 @@ private:
     /* glow hue: the game's light slots (band 9 native glare, band 10 sunHalo), held for 2 s on one map without a proven read. */
     std::uint32_t lightSlots[NorthlightSunHue::Slots]={};bool lightSlotsValid=false;std::string lightSlotsMap;DWORD lightSlotsAt=0;
     NorthlightSunHue::GlowHue glowHueFrame;
-    NorthlightWmoContext::LightingHold globalLightHold; /* 0.3.207: sky block reads caught between the colour copy and the weather rescale */
+    NorthlightWmoContext::LightingHold globalLightHold; /* 0.3.207: sky block reads caught between the colour copy and the glare darkening (wmo_context.h) */
     NorthlightHorizonHaze::Constants hazeFrame; /* last composite haze constants, for the celestial veil */
     NorthlightSpellFog::Hold spellFogHold;DWORD spellFogTick=0;bool spellFogResetLogged=false; /* SpellFog: the smoothed per-frame estimate (spell_fog.h) */
     float skyTransmittanceFrame=1; /* CPU estimate of the fog transmittance toward the sun, for the veil */
@@ -837,6 +841,7 @@ private:
     LONGLONG terrainCaptureTicks=0,replayCaptureTicks=0;
     LARGE_INTEGER captureFrequency={};
     unsigned terrainCaptureCalls=0,terrainUPCalls=0,replayCaptureCalls=0,unknownCaptureCalls=0;
+    unsigned rejSmall=0,rejGate=0,rejCut=0,rejBudget=0,rejOther=0; /* task 43: per frame; WORLD CPU capture line */
     std::uint64_t previousCacheHits=0;
     size_t capturedConstantBytes=0,capturedConstantCalls=0;
     // 0.3.180 (C1): the device mirror's constant clock, read in place under the draw's gate.
@@ -2042,6 +2047,7 @@ private:
         logf("QUALITY ActorShadows=%u: %s; forced off: %s",quality.actorShadows,quality.actorShadows?"actor and static shadows":"static shadows only",forced.c_str());
         logf("QUALITY ActorShadowDetail=%u: %s",quality.actorShadowDetail,NorthlightQuality::actorShadowMap(quality,true)?"actor shadow map and soft filter":"actor shadows in the near cascade"); /* 0.3.209 (task 29) */
         NorthlightDiagnostics::configure(quality.diagnostics!=0);
+        NorthlightWeatherMemory::configure(quality.weatherMemory!=0); /* WeatherMemory=0: no weather reads, also not in the stream snapshot */
         NorthlightMemorySwitches::configure(quality.memMap!=0); /* task 42: MemMap (also read earlier by the process-level MEMMAP points) */
         NorthlightRenderThreadProbe::configure(NorthlightQuality::renderProfile(quality),NorthlightQuality::replayProbe(quality));
         NorthlightWorldContext::SelfReadStats::timed.store(NorthlightQuality::renderProfile(quality),std::memory_order_relaxed); /* 0.3.160 */
@@ -2144,7 +2150,7 @@ public:
         logReplayProbeWindow();
         for(int slot=0;slot<4;++slot){lastCascadeActions[slot]=cascadeActions[slot];cascadeActions[slot]='-';}
         if(captureSampled&&captureFrequency.QuadPart>0){double ms=1000.0/double(captureFrequency.QuadPart);
-            logf("WORLD CPU capture terrain=%.3fms replay=%.3fms terrainCalls=%u terrainUP=%u replayCandidates=%u unknownCalls=%u acceptedReplay=%zu captureSkipped=%u",terrainCaptureTicks*ms,replayCaptureTicks*ms,terrainCaptureCalls,terrainUPCalls,replayCaptureCalls,unknownCaptureCalls,replays.size(),unsigned(captureMode==CaptureSkipped));
+            logf("WORLD CPU capture terrain=%.3fms replay=%.3fms terrainCalls=%u terrainUP=%u replayCandidates=%u unknownCalls=%u acceptedReplay=%zu captureSkipped=%u rejSmall=%u rejGate=%u rejCut=%u rejBudget=%u",terrainCaptureTicks*ms,replayCaptureTicks*ms,terrainCaptureCalls,terrainUPCalls,replayCaptureCalls,unknownCaptureCalls,replays.size(),unsigned(captureMode==CaptureSkipped),rejSmall,rejGate,rejCut,rejBudget);
         }
         if(captureSampled)logf("WORLD capture cache hits=%llu frameHits=%llu entries=%zu bytes=%llu constantsReadBytes=%zu constantReadCalls=%zu sm1Draws=%u relativeDraws=%u",(unsigned long long)terrainBoundsCache.persistentHits(),(unsigned long long)(terrainBoundsCache.persistentHits()-previousCacheHits),terrainBoundsCache.persistentEntries(),(unsigned long long)terrainBoundsCache.persistentBytes(),capturedConstantBytes,capturedConstantCalls,capturedSM1Draws,capturedRelativeDraws);
         if(captureSampled)logf("WORLD optimized caches terrainTrackedHits=%llu terrainAvoidedBytes=%llu boundsHits=%llu boundsMisses=%llu boundsAvoidedVertices=%llu boundsLookupMs=%.3f staticMaintenanceVisits=%llu staticPublications=%llu",
@@ -2199,6 +2205,7 @@ public:
         admission.endFrame(size_t(captureBudgetMiB)*1048576,replaySnapshots.bytesRead());admissionOn=false;rootMemo.clear();rootReads=rootMemoHits=0;gatedBodies.clear(); /* 0.3.211 (task 31): the next frame's cut, after the log read this frame's counters; no-op when no skinned draw armed it */
         previousCacheHits=terrainBoundsCache.persistentHits();capturedConstantBytes=capturedConstantCalls=0;capturedSM1Draws=capturedRelativeDraws=0;
         terrainCaptureTicks=replayCaptureTicks=0;terrainCaptureCalls=terrainUPCalls=replayCaptureCalls=unknownCaptureCalls=0;captureSampled=false;
+        rejSmall=rejGate=rejCut=rejBudget=rejOther=0;
         valid=false;traceContext=0;traceFog=0;legacyFogKnown=false;shadowFrameReady=false;legacyFog=NorthlightLegacyFog::Constants{};
         // Bound retained vector capacities across changing scenes. Reuse storage,
         // never old geometry: each subsequent draw still re-reads every byte.
@@ -2261,6 +2268,8 @@ public:
     unsigned spellLayerClassesSetting()const{return quality.spellLayerClasses;}
     unsigned spellTraceSetting()const{return quality.spellTrace;}
     void spellFogHint(const float game[3],bool bare){spellFogHold.addHint(game,bare);} /* SpellFog: a falling-ramp game constant the layer saw; fitted with the next publish (spell_fog.h Hold) */
+    bool weatherMemorySetting()const{return quality.weatherMemory!=0;} /* WeatherMemory: the game's weather state drives the weather effects (weather_memory.h); 0 = the texture detector only */
+    bool depthFuncAware()const{return quality.depthFuncAware!=0;} /* DepthFuncAware: read once at device creation */
     unsigned spellFogSetting()const{return quality.spellFog;} /* SpellFog (task 34): read once with the others */
     const NorthlightSpellFog::Frame& spellFogFrame()const{return spellFogHold.out;} /* Northlight's fog toward the view axis (previous frame's estimate while the next frame's records are made): the spell layer folds it into the recorded fog constants */
     bool frameDrawGates()const{return quality.frameDrawGates!=0;} /* 0.3.187: read once at device creation */ /* 0.3.158: ActorShadows=0 leaves actor shadows to the game's blobs */
@@ -2290,6 +2299,7 @@ public:
     // CPU estimate (0..1) of the 128-unit fog volume's transmittance on a sky pixel toward
     // the sun, i.e. the fog.a the composite applies there. 1 with fog off or where the field has no air.
     float skyTransmittance()const{return skyTransmittanceFrame;}
+    float underwaterScale()const{return underwaterFade.scale();}
     bool celestialContext(NorthlightCelestial::Context& out,float* inverseView,float* projectionOut)const{
         if(!hasContext()||!celestialValid)return false;
         out=celestial;out.horizonSine=apparentHorizon.valid?apparentHorizon.value:0.f;memcpy(inverseView,context.inverseView,64);memcpy(projectionOut,projection,12);return true;
@@ -2362,6 +2372,11 @@ public:
     void updateWorldContext(const char* map,const float* camera,const NorthlightWmoContext::Lighting* global=nullptr){
         if(unsigned fault=workerFault()){if(!failed)logf("WORLD worker stopped: %s; restart required",workerFaultMessage(fault));failed=true;valid=false;return;}
         if(!reportedContext){logf("WORLD context validated: map=%s camera=(%.2f %.2f %.2f) sun=(%.3f %.3f %.3f)",map,camera[0],camera[1],camera[2],context.lightDirection[0],context.lightDirection[1],context.lightDirection[2]);reportedContext=true;}
+        {   // The camera's liquid type from the proven predictor reads (wmo_context.h); unproven frames hold the state for UnderwaterFade::HoldMs.
+            const bool known=global&&global->predictors;const DWORD now=GetTickCount();
+            underwaterFade.update(map,known,known&&global->liquidType!=0,now);
+            if(underwaterFade.underwater!=underwaterLogged&&(DWORD(now-underwaterLogAt)>250||NorthlightDiagnostics::enabled())){underwaterLogAt=now;underwaterLogged=underwaterFade.underwater;logf("WORLD underwater %s liquid=%u",underwaterFade.underwater?"on":"off",known?global->liquidType:0u);} // a flip suppressed by the rate limit is logged later, once the state still differs
+        }
         celestialValid=NorthlightCelestial::read(camera,context.direct,celestial);
         // 0.3.200: a sky block read rejected for one frame (the two copies differ while the game rewrites it, more often with the game frames
         // ahead) dropped the sun weight to 0 for that frame: the sun light, shadows and shafts flashed off. The last good read on the same map
@@ -2948,13 +2963,14 @@ public:
         // frames skip only this shadow capture, before its device state queries.
         // The game's original draw and the shared draw-domain gate are untouched.
         fate.reason=NorthlightShadowFate::Small;
-        if(smallShadow&&!actorCaptureEnabled()){if(sample)++smallShadowEarly;return;}
+        if(smallShadow&&!actorCaptureEnabled()){if(sample)++smallShadowEarly;++rejSmall;return;}
         // 0.3.211 (task 31): the palette root once per skinned draw, then the capture admission (radius gate, distance cut)
         // before any budget is spent; near-reserve hits always pass. A draw without a root is never gated or cut.
         float root[3];bool rooted=false;NorthlightCaptureAdmission::Decision admit;
         if(priority&&quality.actorShadows){nearAnchorTake();rooted=drawRootMemo(current,root);
             if(admissionOn){admit=admission.decide(reinterpret_cast<std::uintptr_t>(current),count,vertexTotal,rooted?root:nullptr,nearDraw(rooted?root:nullptr));
                 if(admit.verdict!=NorthlightCaptureAdmission::Verdict::Admit){
+                    if(admit.verdict==NorthlightCaptureAdmission::Verdict::RadiusGate)++rejGate;else ++rejCut;
                     if(admit.verdict==NorthlightCaptureAdmission::Verdict::RadiusGate){fate.reason=NorthlightShadowFate::RadiusGate;gatedBodies.insert(gatedBodies.end(),root,root+3);}
                     else{fate.reason=NorthlightShadowFate::DistanceCut;captureShortfall=true;}
                     return;}}}
@@ -2965,7 +2981,7 @@ public:
         bool nearby=false;
         if(replaySnapshots.captureExhausted(priority)){const bool candidate=nearCandidate(priority,rooted?root:nullptr);
             if(candidate&&!replaySnapshots.captureExhausted(priority,true))nearby=true;
-            else{nearRefused+=candidate;captureShortfall=true;if(admit.rooted)admission.budgetRefused(admit,root,vertexTotal,count);
+            else{nearRefused+=candidate;captureShortfall=true;++rejBudget;if(admit.rooted)admission.budgetRefused(admit,root,vertexTotal,count);
                 if(sample&&priority){++skinnedSnapshotRejected;++skinnedBudgetRejected;}
                 if(sample&&!priority)++otherBudgetRejected;
                 return;}
@@ -3807,7 +3823,7 @@ public:
         // Same soft ramp, shifted 0.5 world units closer.
         c[58][0]=3.5f;c[58][1]=1.f/12;c[58][2]=10.f*lampGain*wx.lampFogGain();c[58][3]=.12f*lampGain*wx.lampFogGain(); /* 0.3.198 (rain): lamp fog gain (x1 since 0.3.199); 0.3.199 (fog clouds): 10 / .12 (were 13 / .156): the glow read too strong in the game test */
         const float airFloor=atmosphere.airFloor; /* atmosphereWork: .0017f plus the rain's extra, thinned in dense zones */
-        c[59][2]=wx.shadowSoften();c[59][3]=airFloor; /* 0.3.198 (rain): direct shadow softening (0 when dry), air extinction floor (WorldFog) */
+        c[59][2]=std::max(wx.shadowSoften(),1.f-underwaterFade.scale()); /* underwater: the sun correction goes to 0 and the shadow softens fully (the rain path), alpha and baseline keep the true visibility */ c[59][3]=airFloor; /* 0.3.198 (rain): direct shadow softening (0 when dry), air extinction floor (WorldFog) */
         if(uploadedFogField){c[31][0]=uploadedFogField->originX;c[31][1]=uploadedFogField->originY;}
         c[31][2]=1.f/(NorthlightRegionalFog::N*NorthlightRegionalFog::Spacing);
         c[31][3]=atmosphere.c[31][3]; /* nightFactor, atmosphereWork */
@@ -3863,7 +3879,7 @@ public:
         // The warm lobe toward the sun follows the disc over the camera's far edge (full until 95% under it, out one
         // diameter below), not the light, which now lasts to the handover 9 deg under: a low camera saw the lobe glow
         // on the water with the sun gone. apparentHorizon is last frame's (updated below).
-        const float hazeSunWeight=celestialValid?NorthlightCelestialGlow::horizonGlow(celestialLight.sun.direction[2]-(apparentHorizon.valid?apparentHorizon.value:0.f),std::sin(celestialLight.sun.angularRadius)):sourceWeights[0];
+        const float hazeSunWeight=underwaterFade.scale()*(celestialValid?NorthlightCelestialGlow::horizonGlow(celestialLight.sun.direction[2]-(apparentHorizon.valid?apparentHorizon.value:0.f),std::sin(celestialLight.sun.angularRadius)):sourceWeights[0]);
         const auto haze=NorthlightHorizonHaze::constants(horizonHazeState,{quality.horizonHaze,quality.horizonHazeStart,quality.horizonHazeBand,quality.horizonHazeTerrain},
             farZ,hazeZone,effects.fog,celestialValid,hazeSun,hazeSunWeight,hazeLift,wx.hazeTauScale());
         c[57][1]=haze.shape[0];c[57][2]=haze.shape[1];c[57][3]=haze.shape[2];c[67][2]=haze.sun[0];c[67][3]=haze.sun[1];
@@ -3903,6 +3919,7 @@ public:
             // ambient-only volume pass must never read an unrendered map for
             // a sub-threshold celestial source.
             float rgb[4]={sourceActive[source]?sourceColors[source].x:0.f,sourceActive[source]?sourceColors[source].y:0.f,sourceActive[source]?sourceColors[source].z:0.f,0};
+            if(volume){const float keep=underwaterFade.scale();rgb[0]*=keep;rgb[1]*=keep;rgb[2]*=keep;} /* underwater: the fog/volume pass (shafts) fades with the sun; the lighting and actor passes keep the real colour (their shadow test and alpha read it) */
             // fog passes only: the sun's direct scatter takes the glow hue; the forward soft cap
             // rises so the aureole brightens toward the sun. c17/c18 are restored after the fog loop.
             if(volume&&source==0)NorthlightSunHue::fogDirect(rgb,glowHueFrame,rgb);
@@ -3975,6 +3992,7 @@ public:
         if(effects.gi)d->SetTexture(8,probePrev); /* 0.3.197: WorldGI reads the previous SH on s8 (LightingBuffer is not read here); null without the texture, moment.w is then None */
         if(effects.gi&&!check(quad(w/2,h/2),"world GI pass"))return false;
         d->SetTexture(8,textures[8]); /* 0.3.197: restore the frame-start binding */
+        if(profile)profile->mark("GI"); /* task 43: the GI pass alone; the lamp batches are LocalLights */
         if(localDirectCount&&debug==0){
             d->SetPixelShader(localDirectPS);d->SetRenderState(D3DRS_SCISSORTESTENABLE,NorthlightLocalLightScissor::Enabled);
             d->SetTexture(12,baselineLight); /* sun visibility (baseline alpha); the temporal pass rebinds it anyway */
@@ -3988,7 +4006,7 @@ public:
             }
             d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);
         }
-        if(profile)profile->mark("GI");bucket(NorthlightEffectsBuckets::GI);d->SetRenderState(D3DRS_COLORWRITEENABLE,15);
+        if(profile)profile->mark("LocalLights");bucket(NorthlightEffectsBuckets::GI);d->SetRenderState(D3DRS_COLORWRITEENABLE,15);
         if(debug==0&&pointReady){
             renderPointLighting(depth,waterMask,w,h,nearZ,farZ,minZ,maxZ);
             // Optional pass temporarily owns PS c0..9 and s0..2. Restore the
@@ -4001,6 +4019,8 @@ public:
             }
             d->SetRenderState(D3DRS_COLORWRITEENABLE,15);
         }
+        // Task 43: the old PointLighting interval in three marks: PointLight (the shadowed point lamp), RemovalSmooth, TemporalLight.
+        if(profile)profile->mark("PointLight");
         {   // Temporal stabilization: light + history -> temporalLight[cur] (MRT with view distance).
             const unsigned cur=temporalIndex,prev=1-temporalIndex;
             d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE);d->SetRenderState(D3DRS_COLORWRITEENABLE,15);
@@ -4015,6 +4035,7 @@ public:
             if(!check(d->SetRenderTarget(0,smoothSurface),"removal smoothing target"))return false;
             const bool removalDrawn=c[30][1]>0; // no drawn source: smoothRemoval would be a pure copy, TemporalLight reads the raw light
             if(removalDrawn){d->SetPixelShader(removalPS);if(!check(quad(w/2,h/2),"removal smoothing pass"))return false;}
+            if(profile)profile->mark("RemovalSmooth");
             if(!check(d->SetRenderTarget(0,temporalLightSurface[cur]),"temporal light target")||!check(d->SetRenderTarget(1,temporalDepthSurface[cur]),"temporal depth target"))return false;
             d->SetRenderState(D3DRS_COLORWRITEENABLE1,15);
             // 0.3.171: LightHistory (s14) is read bilinearly at the unrounded reprojection; the depth history
@@ -4028,7 +4049,7 @@ public:
             d->SetRenderTarget(1,nullptr);d->SetTexture(14,nullptr);d->SetTexture(15,nullptr);d->SetTexture(9,nullptr);d->SetSamplerState(9,D3DSAMP_MINFILTER,D3DTEXF_LINEAR);d->SetSamplerState(9,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);
             temporalIndex=prev;temporalValid=true;memcpy(previousView,context.view,64);previousCamera=vec(context.camera);temporalMap=active->map;
         }
-        if(profile)profile->mark("PointLighting");
+        if(profile)profile->mark("TemporalLight");
         bucket(NorthlightEffectsBuckets::PointLighting);
         // Source visibility (1x1 per source, temporally smoothed): drives the
         // fog aureole when the body is behind geometry; broad scattering uses
@@ -4188,7 +4209,7 @@ public:
             logf("WORLD GPU diagnostic capture=%u scene=%s",capture,foldScene?"pre-AO (folded AO/bloom)":"post-AO composite");
         }
         if(++frames==1||(frames%600==0&&NorthlightDiagnostics::enabled()))logf("WORLD frame=%u GI probes=%u valid=%u rays=%u bounces=%u cacheTriangles=%zu replayDraws=%zu liveTerrainChunks=%zu terrainAttempts=%u terrainSnapshots=%u cascadesPerSource=2x1024 volumeStepsMax=49 fogWorldSpacing=2.667 fogShadowFilter=1.5 fogLightHeight=12 fogAmbient=0.35",frames,NorthlightGI::probeLayout().count(),active->validProbes,quality.giRays,quality.giBounces,active->bvh->triangleCount(),replays.size(),liveTerrainChunks.size(),terrainAttempts,terrainSnapshots);
-        if(frames%600==0&&NorthlightDiagnostics::enabled())logf("WORLD global light holds=%u",globalLightHold.held); /* 0.3.207: sky block reads between the copy and the weather rescale */
+        if(frames%600==0&&NorthlightDiagnostics::enabled())logf("WORLD global light holds=%u predicted=%u mispredicted=%u",globalLightHold.held,globalLightHold.predictedAccepts,globalLightHold.predictedMisses); /* 0.3.207: sky block reads between the copy and the glare darkening; colours matched / not matched by the glow prediction */
         if(captureSampled)logf("VOLUME sources sunRGB=%.5f,%.5f,%.5f moonRGB=%.5f,%.5f,%.5f ambientRGB=%.5f,%.5f,%.5f sunGain=1.2 moonGain=1.2 directCaps=0.38,0.24 airCells=%u airDensity=%.5f,%.5f forestAir=%.4f night=%.3f",
             sourceColors[0].x,sourceColors[0].y,sourceColors[0].z,sourceColors[1].x,sourceColors[1].y,sourceColors[1].z,
             context.ambient[0],context.ambient[1],context.ambient[2],uploadedFogField?uploadedFogField->airCells:0,c[32][0],c[32][1],c[22][3],c[31][3]);

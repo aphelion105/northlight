@@ -31,6 +31,8 @@ struct Memory {
         put32(0xc5df88,0x3000000);put32(0x3000000,0xa2e718);put32(0x3000000+0x1af8,0);
         float view[16];for(int i=0;i<16;++i)view[i]=float(i);put(0x3000000+0x1b00,view,sizeof view);
         unsigned char sky[0x388];for(unsigned i=0;i<sizeof sky;++i)sky[i]=(unsigned char)(i*7+1);put(0xd38b00,sky,sizeof sky);
+        put32(0xd38f4c,0x3e4ccccd);put32(0xcd8794,0);                  // sun glare glow and the camera's liquid type (wmo_context.h readPredictors)
+        unsigned char weather[0x148]={};put32(0xcd7544,0x2a40000);put(0x2a40000,weather,sizeof weather); // World::s_weather and the Weather object
     }
     void clobber(){for(auto& b:bytes)b.second=(unsigned char)(b.second^0x5a);} // the game moves on
 };
@@ -72,6 +74,7 @@ static void testPlayback() {
     std::vector<Spy> captured,replayed;
     const auto run=[&](std::vector<Spy>& log){return [&log,&s,&live,&range](std::uintptr_t a,void* o,std::size_t n){
         const bool ok=snapshotRead(*s,a,o,n,live,range);log.push_back({a,n,ok,ok?fnv(o,n):0});return ok;};};
+    NorthlightWeatherMemory::configure(true); // WeatherMemory=1 (the default): the weather reads are part of the snapshot
     { ScopedRecording rec(*s);assert(activeSnapshot==s.get()&&s->mode==GameSnapshot::Mode::Recording);captureReaders(run(captured)); }
     assert(activeSnapshot==nullptr&&s->mode==GameSnapshot::Mode::Idle&&s->usable());
     // the readers walked the whole chain, the double reads and the glare/body identities
@@ -79,6 +82,8 @@ static void testPlayback() {
     unsigned skyReads=0;for(auto& r:captured)skyReads+=r.address==0xd38b00&&r.size==0x388;
     assert(skyReads==2);
     assert(s->has(0xb7436c,4)&&s->has(0xd38b00,0x388)&&s->has(0xd38b00,0x1b8)&&s->has(0xc5df88,4));
+    assert(s->has(0xd38f4c,4)&&s->has(0xcd8794,4)&&s->has(0xcd7544,4)&&s->has(0x2a40000,0x148)); // the light predictors and the weather memory, recorded with the sky block
+    {unsigned glow=0,liquid=0,pointer=0,object=0;for(auto& r:captured){glow+=r.address==0xd38f4c;liquid+=r.address==0xcd8794;pointer+=r.address==0xcd7544;object+=r.address==0x2a40000&&r.size==0x148;}assert(glow==2&&liquid==2&&pointer==2&&object==2);} // each twice
     // the torn pair is in the snapshot as two different copies
     {std::uint64_t h[2]={};unsigned i=0;for(auto& r:captured)if(r.address==0xd38b00&&r.size==0x388)h[i++]=r.hash;assert(h[0]!=h[1]);}
     // the game moves on; replay still sees the captured moment, in the same order, with zero live reads

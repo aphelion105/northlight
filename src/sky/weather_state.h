@@ -11,7 +11,9 @@ namespace NorthlightWeather {
 enum class Kind:std::uint8_t{None,Rain,Snow,Sand}; /* Sand is reserved: never detected in this phase */
 inline const char* kindName(Kind k){switch(k){case Kind::Rain:return "rain";case Kind::Snow:return "snow";case Kind::Sand:return "sand";default:return "none";}}
 // What the draw hook counted in one frame for the hot candidate (kind = that candidate's kind).
-struct Sample{Kind kind=Kind::None;std::uint32_t primitives=0,draws=0;};
+// memory: the game's own weather state read from memory (weather_memory.h), valid when set; it then replaces the draw counts as the source (kind incl. sand,
+// intensity 0..1 as the game applies it, no hold: the memory does not flicker like a rotating candidate); the draw counts only feed `primitives`.
+struct Sample{Kind kind=Kind::None;std::uint32_t primitives=0,draws=0;bool memory=false;Kind memoryKind=Kind::None;float memoryIntensity=0;};
 // kind: the kind whose blend is non-zero (None only once fully faded out); intensity 0..1 (smoothed primitive
 // count over kFullPrimitives); blend 0..1 (smoothstep fade of the layer in/out);
 // secondsSinceSeen: clamped seconds since a weather draw;
@@ -31,25 +33,30 @@ class Tracker{
 public:
     void frame(const Sample& sample,float dtSeconds){
         const float dt=dtSeconds>0?std::min(dtSeconds,kMaxDt):0.0f; /* NaN and negatives are 0 */
-        const bool seen=sample.kind!=Kind::None&&sample.kind!=Kind::Sand&&sample.draws>0;
+        const bool mem=sample.memory;
+        const Kind kind=mem?sample.memoryKind:sample.kind;
+        const float memIntensity=std::isfinite(sample.memoryIntensity)?std::clamp(sample.memoryIntensity,0.0f,1.0f):0.0f;
+        const bool seen=mem?kind!=Kind::None&&memIntensity>0:sample.kind!=Kind::None&&sample.kind!=Kind::Sand&&sample.draws>0;
+        const float hold=mem?0.0f:kHoldSeconds;
         everSeen=everSeen||seen;
         s.secondsSinceSeen=seen||!everSeen?0.0f:std::min(s.secondsSinceSeen+dt,kHoldSeconds*4); /* 0 until the first weather draw */
         if(seen){
-            if(kind_==Kind::None)begin(sample);
-            else if(kind_!=sample.kind)pending=sample.kind; /* the old kind ramps fully out first */
-            else{pending=Kind::None;const float raw=std::min(1.0f,float(sample.primitives)/kFullPrimitives);s.intensity+=(raw-s.intensity)*(1-std::exp(-dt/kIntensityTau));}
+            const float raw=mem?memIntensity:std::min(1.0f,float(sample.primitives)/kFullPrimitives);
+            if(kind_==Kind::None)begin(kind,raw);
+            else if(kind_!=kind)pending=kind; /* the old kind ramps fully out first */
+            else{pending=Kind::None;if(mem)s.intensity=raw;else s.intensity+=(raw-s.intensity)*(1-std::exp(-dt/kIntensityTau));}
         }
         if(kind_!=Kind::None){
-            if(pending!=Kind::None||s.secondsSinceSeen>kHoldSeconds)phase-=dt/kBlendOutSeconds;
+            if(pending!=Kind::None||(mem?!seen:s.secondsSinceSeen>hold))phase-=dt/kBlendOutSeconds;
             else if(seen)phase+=dt/kBlendInSeconds; /* a gap shorter than the hold freezes the ramp */
             phase=std::min(1.0f,phase);
-            if(phase<=0){phase=0;kind_=Kind::None;s.intensity=0;const Kind next=pending;pending=Kind::None;if(next!=Kind::None&&seen&&sample.kind==next)begin(sample);}
+            if(phase<=0){phase=0;kind_=Kind::None;s.intensity=0;const Kind next=pending;pending=Kind::None;if(next!=Kind::None&&seen&&kind==next)begin(kind,mem?memIntensity:std::min(1.0f,float(sample.primitives)/kFullPrimitives));}
         }
-        s.kind=kind_;s.blend=kind_==Kind::None?0.0f:smoothstep01(phase);s.primitives=seen&&sample.kind==kind_?sample.primitives:0;
+        s.kind=kind_;s.blend=kind_==Kind::None?0.0f:smoothstep01(phase);s.primitives=sample.draws>0&&sample.kind!=Kind::None&&sample.kind==kind_?sample.primitives:0;
     }
     const State& state()const{return s;}
 private:
-    void begin(const Sample& sample){kind_=sample.kind;pending=Kind::None;phase=0;s.intensity=std::min(1.0f,float(sample.primitives)/kFullPrimitives);}
+    void begin(Kind kind,float intensity){kind_=kind;pending=Kind::None;phase=0;s.intensity=intensity;}
     State s;Kind kind_=Kind::None,pending=Kind::None;float phase=0;bool everSeen=false;
 };
 }

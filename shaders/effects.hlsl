@@ -8,6 +8,8 @@ sampler2D Scene : register(s0);
 sampler2D Depth : register(s1);
 sampler2D Ambient : register(s2);
 sampler2D WaterMask : register(s3);
+// AOBlur only: the raw AO on s0 (LINEAR, CLAMP: Scene's sampler state; AOBlur never reads Scene) for its bilinear early-out.
+sampler2D AmbientLinear : register(s0);
 float4 WaterInfo : register(c4); // coherent actual-liquid mask available
 
 float4 ImageAndClip : register(c0); // 1/width, 1/height, near, far
@@ -213,9 +215,15 @@ float3 NeighbourNormal(float2 uv, float3 p)
 // IGN's period) on the centre's plane and normal, so silhouettes stay sharp. Same bindings as the AO pass
 // (s2 = the RAW AO texture, POINT); bloom rgb passes through untouched, sky and water return the raw texel.
 // Cost: (1) unoccluded early-out: AO is saturate(1 - ...), so an unoccluded texel is exactly 1.0 (and
-// A16B16G16R16F stores 1.0 exactly); when all 25 tap AO values are >= 0.9995 the weighted average is 1 and the
-// raw texel is returned before any depth work (open ground, sky, most of the screen). The tap at offset 0 is the
-// raw texel itself. (2) the silhouette guard is one extra depth read per tap instead of NeighbourNormal's two:
+// A16B16G16R16F stores 1.0 exactly); when the whole 5x5 is (nearly) 1 the raw texel is returned before any depth
+// work (open ground, sky, most of the screen). Task 43: 9 bilinear reads of the raw AO (s0 LINEAR) instead of 25 POINT
+// reads: per axis a texel corner at -1.5 (texels -2,-1), at +.5 (0,+1) and the centre of +2, so the 9 footprints tile
+// exactly the 25 taps (the taps' own step 2/w; an odd width shifts every footprint by under 2/w texel, each needed texel
+// keeps a weight of about .5 or 1, and 8-bit subtexel filtering rounds that shift away). Each read is the
+// mean of 1, 2 or 4 texels, all <= 1: every read >= .9995 (the old per-texel threshold, so every 5x5 the old 25-tap min
+// accepted still passes) means every texel >= 1 - 4 * .0005 = .998 (>= .99707 if the GPU filters in fp16 and rounds the
+// mean up to 1 - 2^-11), so the weighted 5x5 mean lies within .003 (under 1/255) of the returned raw texel. (2) the silhouette guard is one
+// extra depth read per tap instead of NeighbourNormal's two:
 // the tap's tangent along the screen axis the centre normal leans towards (x if |n.x| > |n.y|) must lie in the
 // centre's plane, weight *= saturate(1 - 2 * sin^2) with sin = dot(r - q, n) / |r - q|. At a grazing limb the
 // plane distance alone lets far-wall taps through (their points sit near the limb's tangent plane), but the
@@ -230,12 +238,12 @@ float4 AOBlur(float2 uv : TEXCOORD0) : COLOR0
 {
     float2 tapStep = 2.0 * ImageAndClip.xy;
     float4 raw = tex2Dlod(Ambient, float4(uv, 0, 0));
-    float minAO = raw.a;
-    [loop] for (int k = 0; k < 25; ++k)
+    float minAO = 1.0;
+    [loop] for (int k = 0; k < 9; ++k)
     {
-        float krow = floor((k + 0.5) * 0.2);
-        float2 ko = float2(k - krow * 5.0 - 2.0, krow - 2.0);
-        minAO = min(minAO, tex2Dlod(Ambient, float4(uv + ko * tapStep, 0, 0)).a);
+        float krow = floor((k + 0.5) * (1.0 / 3.0));
+        // footprint k % 3 and k / 3 per axis -> -1.5, .5, 2 AO texels from the centre
+        minAO = min(minAO, tex2Dlod(AmbientLinear, float4(uv + min(float2(k - krow * 3.0, krow) * 2.0 - 1.5, 2.0) * tapStep, 0, 0)).a);
     }
     [branch] if (minAO >= 0.9995) return raw;
     float2 size = 1.0 / ImageAndClip.xy;

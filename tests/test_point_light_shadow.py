@@ -47,6 +47,24 @@ class PointReferenceTests(unittest.TestCase):
                     correction=-min(min(intensity,2)*attenuation,.35)*(1-visibility)
                     self.assertTrue(math.isfinite(correction));self.assertGreaterEqual(correction,-.35)
                     if distance>=10 or visibility==1:self.assertEqual(correction,0)
+    def test_backfacing_skips_pcf(self):
+        # Task 43: localVisibility returns 1 (no cube taps) where dot(normal,delta)>=0. There facing=saturate(dot(n,-delta/d)) is 0,
+        # so estimate and the correction are 0 whatever the visibility; every face toward the lamp still runs the PCF.
+        src=fp.src('local_light_effects.hlsl').read_text()
+        self.assertEqual(src.count('if(distance<=LocalShadow.x||distance>=LocalShadow.y||dot(normal,delta)>=0)return 1;'),1)
+        self.assertIn('float occlusion=1-localVisibility(delta,n);',src);self.assertIn('float3 estimate=min(max(LocalColor.rgb,0),2)*atten*facing;',src)
+        import random
+        rng=random.Random(43);skipped=kept=0
+        for _ in range(20000):
+            n=[rng.uniform(-1,1) for _ in range(3)];ln=math.sqrt(dot(n,n)) or 1;n=[v/ln for v in n]
+            delta=[rng.uniform(-9,9) for _ in range(3)];d=math.sqrt(dot(delta,delta))
+            if d<=.0001:continue
+            facing=max(0,min(1,dot(n,[-v/d for v in delta])))
+            if dot(n,delta)>=0:
+                skipped+=1;self.assertEqual(facing,0)
+                for visibility in (0,.25,1):self.assertEqual(-min(1.5*facing,.35)*(1-visibility),0)
+            else:kept+=1;self.assertGreater(facing,0)
+        self.assertGreater(skipped,5000);self.assertGreater(kept,5000)
     def test_compiled_artifacts(self):
         manifest=json.loads(fp.src('local-light-shader-build.json').read_text())
         self.assertEqual(manifest['source_sha256'],hashlib.sha256(fp.src('local_light_effects.hlsl').read_bytes()).hexdigest())

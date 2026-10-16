@@ -15,7 +15,7 @@ inline bool skyDepth(float skyMin,float skyMax,float worldMax,float& output){
     if(!std::isfinite(skyMin)||!std::isfinite(skyMax)||!std::isfinite(worldMax)||
        skyMin<0||skyMax>1||skyMin>=skyMax||worldMax<0||worldMax>=skyMax)return false;
     const float lower=std::max(skyMin,worldMax);
-    const float depth=lower+(skyMax-lower)*.92f;
+    const float depth=lower+(skyMax-lower)*.92f; // skyMin/skyMax are the client's own sky viewport (0.9990234375..1), so this lands at ~0.99992, inside the sky band
     if(depth<=lower||depth>=skyMax)return false;
     output=depth;return true;
 }

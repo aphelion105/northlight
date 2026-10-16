@@ -11,7 +11,10 @@ import re
 r=fp.src('renderer.cpp').read_text()
 checks={}
 for name in ('stream_device.h','stream_proxies.h','game_snapshot.h'):
-    checks[f'{name} does not mention weather']='weather' not in fp.src(name).read_text().lower()
+    # game_snapshot.h only records the game's own weather state next to the sky block (weather_memory.h); the texture detection stays out of the stream path
+    text='\n'.join(l for l in fp.src(name).read_text().split('\n') if not(name=='game_snapshot.h' and ('NorthlightWeatherMemory' in l or 'weather_memory.h' in l)))
+    checks[f'{name} does not mention weather detection']='weather' not in text.lower()
+checks['game_snapshot.h captures the weather memory reader with the injected read function']='NorthlightWeatherMemory::readState(read,memoryWeather);' in fp.src('game_snapshot.h').read_text()
 checks['Device::SetTexture unchanged']=('    HRESULT STDMETHODCALLTYPE SetTexture(DWORD Stage, IDirect3DBaseTexture9* pTexture) override{Guard mirrorLock(mirrorState.gate);return ext->SetTexture(Stage, mirrorResources.unwrap(pTexture));}\n') in r
 checks['no weather in any Set*/Get* Device method']=not re.search(r'HRESULT STDMETHODCALLTYPE (Set|Get)\w+\([^\n]*weather',r)
 

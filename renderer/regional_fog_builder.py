@@ -36,7 +36,7 @@ def water_records(root,chunk_positions,liquid_types,stats):
         if count>16:raise ValueError('MH2O layer count')
         for layer in range(count):
             liquid,fmt,lo,hi,x,y,w,h,mask_offset,vertex=unpack('<2H2f4B2I',b,offset+layer*24)
-            if liquid_types.get(liquid) not in (0,1):stats['non_water_liquid_layers']+=1;continue
+            if liquid_types.get(liquid) not in (1,3):stats['non_water_liquid_layers']+=1;continue
             if fmt>2 or x+w>8 or y+h>8 or not w or not h or not all(math.isfinite(z) for z in (lo,hi)):
                 stats['unsupported_water_layers']+=1;continue
             size=(w*h+7)//8
@@ -50,7 +50,8 @@ def water_records(root,chunk_positions,liquid_types,stats):
     return out
 
 def indoor_groups(read,path,stats,clamped):
-    """World-local bounds of the indoor (flag 0x2000) groups of a root WMO; needs only each MOGP header."""
+    """World-local bounds of the interior groups of a root WMO; needs only each MOGP header. Interior is the
+    game's own test (CMap::CreateMapObjDefGroups): neither flag 0x8 (outdoor) nor 0x40 (exterior lit)."""
     root=dict(chunks(read(path)));count=unpack('<I',root['MOHD'],4)[0];out=[]
     if count>4096:raise ValueError('WMO group count')
     for i in range(count):
@@ -59,7 +60,7 @@ def indoor_groups(read,path,stats,clamped):
         except (FileNotFoundError,KeyError):stats['missing_wmo_groups']+=1;continue
         if overrun:clamped.add(group)
         flags=unpack('<I',g,8)[0]
-        if not flags&0x2000:continue
+        if flags&0x48:continue
         bounds=unpack('<6f',g,12)
         if not all(math.isfinite(v) for v in bounds) or any(bounds[j]>bounds[j+3] for j in range(3)):raise ValueError('WMO bounds')
         out.append(bounds);stats['unique_indoor_groups']+=1
@@ -93,7 +94,7 @@ def main():
     parser.add_argument('--output',type=Path,help='default: <cache>/fog')
     client_archives.add_arguments(parser);args=parser.parse_args()
     started=time.time();assets=Assets.from_args(args);cache=args.cache or assets.client/'world-cache';args.output=args.output or cache/'fog';stats=collections.Counter();records,strings=dbc(assets.read('DBFilesClient\\AreaTable.dbc'));areas={r[0]:r for r in records}
-    liquid,_=dbc(assets.read('DBFilesClient\\LiquidType.dbc'));types={r[0]:r[3] for r in liquid}
+    liquid,_=dbc(assets.read('DBFilesClient\\LiquidType.dbc'));types={r[0]:r[14] for r in liquid}   # materialID: the game's visual class (1 water, 2 magma, 3 procedural water)
     # The catalog is proven by id and parent (a top-level zone); the name is in the client's own locale
     # column (11 enUS/enGB, 14 deDE, ...), so it is only compared where the enUS column is filled.
     def area_name(row):
@@ -106,7 +107,7 @@ def main():
             raise ValueError(f'Forest catalog/AreaTable mismatch: {i} {name}')
     memo={};clamped=set()   # every root WMO's indoor bounds or its read error, once per run
     destination=args.output;destination.mkdir(parents=True,exist_ok=True)
-    manifest={'format':'FRF1','zones':proof,'maps':{},'unsupported':{},'unreadable_wmos':{},'sources':['ADT MCNK.areaid','AreaTable.dbc parent','MH2O liquid presence','MOGP indoor flag0x2000 + group bounds','MODF placement'],
+    manifest={'format':'FRF1','zones':proof,'maps':{},'unsupported':{},'unreadable_wmos':{},'sources':['ADT MCNK.areaid','AreaTable.dbc parent','MH2O liquid presence (LiquidType.dbc materialID)','MOGP interior (no flag 0x8/0x40) + group bounds','MODF placement'],
               'limitations':['Indoor group bounds conservatively exclude their footprint; this is not exact portal containment.','No dynamic weather source is inferred.','Unknown maps/zones have zero added fog.','Water max authored height is used for near-water influence; no liquid wave simulation.']}
     for mapname in ('Azeroth','Kalimdor','Expansion01','Northrend'):
         outdir=destination/mapname;outdir.mkdir(exist_ok=True);files=sorted((cache/mapname).glob('*.fg3'));done=0;digest=hashlib.sha256()

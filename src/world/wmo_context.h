@@ -1,6 +1,7 @@
 #pragma once
 #include "world_context.h"
 #include "wmo_shader_signatures.h"
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -12,10 +13,14 @@ struct Lighting {
     float dayFraction=0;
     // the game's 18 current light colours (sky +0xd4, see sun_hue.h for the slot order).
     // slotsConsistent: this read's slot 1 equals its raw copy at +0x17c (0x7ee892), a free
-    // per-frame check of the slot layout. Not +0x1a8/+0x1ac: weather and lightning rescale
-    // those after the copy (0x7f36c6/0x7f36da), which made overcast Tirisfal fail (0.3.163). slotsProven: that, and the sampler/copy code
+    // per-frame check of the slot layout. Not +0x1a8/+0x1ac: the sun-glare darkening, the underwater darkening and the spell flash
+    // rewrite those after the copy, which made overcast Tirisfal fail (0.3.163). slotsProven: that, and the sampler/copy code
     // matched lightSlotProofs() (Windows reads only).
     std::uint32_t slots[18]={};bool slotsConsistent=false,slotsProven=false;
+    // The light1 colours as read (+0x1a8 direct, +0x1ac ambient) and what predicts their rewrite: the spell flash blend (+0x50 of the
+    // block), the sun glare screen glow (0xd38f4c) and the camera's liquid type (0xcd8794). predictors: glow and liquid were read twice
+    // alike and predictionProofs() matched (Windows reads only); without it the prediction is never used.
+    std::uint32_t packedDirect=0,packedAmbient=0,liquidType=0;float glow=0;std::uint8_t flash=0;bool predictors=false;
 };
 inline const WmoShaderSignature* signature(std::uint64_t hash) {
     size_t low=0,high=sizeof(kWmoShaderSignatures)/sizeof(kWmoShaderSignatures[0]);
@@ -52,7 +57,8 @@ inline bool decodeGlobalLighting(const unsigned char* bytes,size_t size,const fl
     if(cameraError>SkyCameraTolerance*SkyCameraTolerance||lengthSquared<.25f||lengthSquared>2.25f)return false;
     const float inverseLength=1/std::sqrt(lengthSquared);
     for(auto& component:value.lightDirection)component*=inverseLength;
-    rgb(packed(bytes,0x1a8),value.direct);rgb(packed(bytes,0x1ac),value.ambient);
+    value.packedDirect=packed(bytes,0x1a8);value.packedAmbient=packed(bytes,0x1ac);value.flash=bytes[0x50];
+    rgb(value.packedDirect,value.direct);rgb(value.packedAmbient,value.ambient);
     std::memcpy(value.slots,bytes+LightSlotBytes,sizeof value.slots);
     value.slotsConsistent=value.slots[1]==packed(bytes,0x17c);
     out=value;return true;
@@ -61,13 +67,46 @@ inline bool decodeCoherentGlobalLighting(const unsigned char* first,const unsign
                                          const float* expectedCamera,Lighting& out) {
     return first&&second&&size>=SkyBytes&&!std::memcmp(first,second,SkyBytes)&&decodeGlobalLighting(first,size,expectedCamera,out);
 }
-// 0.3.207: the game copies the band colours into the sky block and only then rescales its direct
-// (+0x1a8, 0x7f36c6) and ambient (+0x1ac, 0x7f36da) for the weather. Since the command stream the
-// block is read on the replay thread while the game thread may be between the copy and the rescale:
-// a coherent read then holds the unscaled band colours, equal to their own slots (direct = slot 1,
-// ambient = slot 0). In Duskwood (scale ~.8-.93) the sun light and its fog glow flashed brighter for
-// that single frame. A read whose colour equals its slot keeps the last accepted colour when that one
-// was rescaled DARKER than the band (a brighter rescale, e.g. a lightning flash, is never stretched).
+// The game rewrites light1 (direct +0x1a8, ambient +0x1ac) after the band copy (SetColors, 0x7f356d), in this order:
+//  (a) underwater (0xcd8794 non-zero): DarkenColor of the ambient (store 0x7f36c6) and then the direct (0x7f36da);
+//  (b) a spell-visual flash (+0x50 non-zero): InterpColor of both towards +0x51;
+//  (c) DayNight::Update (0x7816f0): the sun glare darkening, scale = int((1 - 0.35 glow) 255), c = (scale c + 255) >> 8 per channel
+//      (ambient 0x78184e, then direct 0x7818b0). glow is g_sunGlare.m_screenGlow (0xd38f4c) from the previous frame's RenderGlares.
+// The weather (storm blend) is already inside the band colours when they are copied. So without (a) and (b) the colours are
+// a pure function of the bands (slot 1 direct, slot 0 ambient) and the glow: predictScale/predictColour below, accepted within
+// one LSB per channel (the x87 float steps). Since the command stream the block is read on the replay thread, where the game thread
+// may be between the copy and (c): such a read holds the unscaled band colours (Duskwood, scale ~.8-.93: the sun light and its fog
+// glow flashed brighter for that single frame, 0.3.207).
+inline std::uint8_t predictScale(float glow){
+    const float glare=glow*0.35f,scaled=(1.0f-glare)*255.0f; /* the game's float steps; fint = round to nearest */
+    if(!std::isfinite(scaled)||scaled<-1e6f||scaled>1e6f)return 255;
+    return std::uint8_t(std::lrintf(scaled)&255);
+}
+inline std::uint32_t predictColour(std::uint32_t band,std::uint8_t scale){
+    std::uint32_t out=band&0xff000000u;
+    for(unsigned shift=0;shift<24;shift+=8)out|=((std::uint32_t(scale)*((band>>shift)&255)+255)>>8)<<shift;
+    return out;
+}
+inline bool withinLsb(std::uint32_t a,std::uint32_t b,int tolerance=1){
+    for(unsigned shift=0;shift<24;shift+=8){const int d=int((a>>shift)&255)-int((b>>shift)&255);if(d>tolerance||d<-tolerance)return false;}
+    return true;
+}
+// Glow and liquid type, each read twice (the glow changes once a frame in RenderGlares, the liquid on a camera move); a pair that differs
+// leaves `out.predictors` false. Read order identical at capture and replay (game_snapshot.h captureReaders).
+template<class Read> inline void readPredictors(Read read,Lighting& out){
+    float glow[2];std::uint32_t liquid[2];out.predictors=false;
+    if(!read(0xd38f4c,&glow[0],4)||!read(0xd38f4c,&glow[1],4)||!read(0xcd8794,&liquid[0],4)||!read(0xcd8794,&liquid[1],4))return;
+    if(std::memcmp(glow,glow+1,4)||liquid[0]!=liquid[1]||!std::isfinite(glow[0]))return;
+    out.glow=glow[0];out.liquidType=liquid[0];out.predictors=true;
+}
+// A read the prediction applies to: layout confirmed, no liquid, no flash. Returns true and the predicted packed colours when so.
+inline bool predicted(const Lighting& l,std::uint32_t& direct,std::uint32_t& ambient){
+    if(!l.predictors||!l.slotsConsistent||l.liquidType||l.flash)return false;
+    const std::uint8_t scale=predictScale(l.glow);direct=predictColour(l.slots[1],scale);ambient=predictColour(l.slots[0],scale);return true;
+}
+// A coherent read already equal to the prediction skips the hold and is accepted as read; the hold remains for everything else: the unscaled colours of a read between the copy and
+// the rewrite, a stale glow, underwater, a flash, and frames where the client skips the darkening (DayNight::Update's reset path, ~0x781781, leaves the scale unset). Such a read falls back to the hold: a read whose colour equals its slot keeps the last accepted colour when
+// that one was rescaled DARKER than the band (a brighter rescale is never stretched).
 // The race lasts one read: MaxHeld consecutive unscaled reads, or HoldMs since the last accepted one
 // (a loading screen, alt-tab), accept them again (the weather ended). The direction and the slots of
 // the read are used as read. Filter a copy and keep it only when the context accepts the read, so a
@@ -76,17 +115,17 @@ struct LightingHold {
     static constexpr std::uint32_t HoldMs=500;
     static constexpr unsigned MaxHeld=2;
     struct Colour {float value[3]={};bool darker=false;std::uint32_t at=0;unsigned run=0;bool valid=false;};
-    Colour direct,ambient;std::string map;unsigned held=0;
+    Colour direct,ambient;std::string map;unsigned held=0,predictedAccepts=0,predictedMisses=0; /* per colour: matched / not matched when predictable */
     // darker: no channel above the band colour and at least one below it.
     static bool darker(const float* colour,const float* band){
         bool below=false;
         for(unsigned i=0;i<3;++i){if(colour[i]>band[i])return false;below|=colour[i]<band[i];}
         return below;
     }
-    static bool keep(Colour& c,float* colour,std::uint32_t slot,bool force,std::uint32_t now){
+    static bool keep(Colour& c,float* colour,std::uint32_t slot,bool force,std::uint32_t now,bool accepted=false){
         float band[3];rgb(slot,band);
         const bool unscaled=colour[0]==band[0]&&colour[1]==band[1]&&colour[2]==band[2];
-        const bool hold=c.valid&&c.darker&&(unscaled||force)&&c.run<MaxHeld&&now-c.at<=HoldMs;
+        const bool hold=!accepted&&c.valid&&c.darker&&(unscaled||force)&&c.run<MaxHeld&&now-c.at<=HoldMs;
         if(hold){std::memcpy(colour,c.value,sizeof c.value);++c.run;return true;}
         std::memcpy(c.value,colour,sizeof c.value);c.darker=darker(colour,band);c.at=now;c.run=0;c.valid=true;return false;
     }
@@ -94,9 +133,14 @@ struct LightingHold {
     bool filter(Lighting& light,const char* nextMap,std::uint32_t now){
         if(!nextMap||map!=nextMap){direct=Colour{};ambient=Colour{};map=nextMap?nextMap:"";}
         if(!light.slotsConsistent)return false; /* the slot layout is unconfirmed: nothing to compare against */
-        const bool heldDirect=keep(direct,light.direct,light.slots[1],false,now);
-        // The ambient is rescaled after the direct: an unscaled direct means an unscaled ambient.
-        const bool heldAmbient=keep(ambient,light.ambient,light.slots[0],heldDirect,now);
+        std::uint32_t wantDirect=0,wantAmbient=0;bool matchDirect=false,matchAmbient=false;
+        if(predicted(light,wantDirect,wantAmbient)){
+            matchDirect=withinLsb(light.packedDirect,wantDirect);matchAmbient=withinLsb(light.packedAmbient,wantAmbient);
+            predictedAccepts+=matchDirect+matchAmbient;predictedMisses+=!matchDirect+!matchAmbient;
+        }
+        // The game rewrites the ambient first and the direct after it (0x78184e, 0x7818b0): an unscaled ambient means an unscaled direct.
+        const bool heldAmbient=keep(ambient,light.ambient,light.slots[0],false,now,matchAmbient);
+        const bool heldDirect=keep(direct,light.direct,light.slots[1],heldAmbient,now,matchDirect);
         held+=heldDirect||heldAmbient;
         return heldDirect||heldAmbient;
     }
@@ -166,6 +210,34 @@ inline const CodeProof* lightSlotProofs(size_t& count) {
         {0x7ee887,rawDirectCopy,sizeof rawDirectCopy}};
     count=sizeof(values)/sizeof(values[0]);return values;
 }
+// The code behind predictScale/predictColour and the two conditions that void it (bytes of the stock 3.3.5a client, checked by validate_wmo_context.py):
+// SetLightColors copies slot 1 to light1 direct (0x7ee756) and slot 0 to light1 ambient (0x7ee774 load, 0x7ee84a store); SetColors darkens the
+// ambient (0x7f36c6) and the direct (0x7f36da) underwater from the camera's liquid type (SceneCamLiquidStatus 0x780620 returns 0xcd8794) and
+// flashes the ambient from +0x50 (0x7f3748); DayNight::Update (0x7816f0) reads glow 0xd38f4c, scales by 0.35 (constant 0xa3e860), makes
+// scale = fistp((1 - glare) 255) (255.0 at 0x9e30c0) and applies (scale c + 255) >> 8 to the ambient (store 0x78184e) and the direct (0x7818b0).
+inline const CodeProof* predictionProofs(size_t& count) {
+    static const unsigned char directCopy[]={0x8b,0x15,0xd8,0x8b,0xd3,0x00,0x0f,0xb6,0x0d,0xd6,0x8b,0xd3,0x00,0x89,0x15,0xa8,0x8c,0xd3,0x00};
+    static const unsigned char ambientLoad[]={0x8b,0x35,0xd4,0x8b,0xd3,0x00};
+    static const unsigned char ambientStore[]={0x89,0x35,0xac,0x8c,0xd3,0x00};
+    static const unsigned char liquidGetter[]={0x55,0x8b,0xec,0x8b,0x45,0x08,0x85,0xc0,0x74,0x08,0xd9,0x05,0x90,0x87,0xcd,0x00,0xd9,0x18,0xa1,0x94,0x87,0xcd,0x00,0x5d};
+    static const unsigned char darkenAmbient[]={0x89,0x0d,0xac,0x8c,0xd3,0x00};
+    static const unsigned char darkenDirect[]={0xa3,0xa8,0x8c,0xd3,0x00};
+    static const unsigned char flashAmbient[]={0x0f,0xb6,0x05,0x50,0x8b,0xd3,0x00,0x85,0xc0,0x89,0x75,0xfc,0x74,0x15,0x8d,0x4d,0xfc,0x51,0x50,0xb9,0xac,0x8c,0xd3,0x00};
+    static const unsigned char glowRead[]={0xd9,0x05,0x4c,0x8f,0xd3,0x00,0xd8,0x0d,0x60,0xe8,0xa3,0x00,0xd9,0x55,0xfc};
+    static const unsigned char scaleFormula[]={0xd9,0xe8,0xd8,0x65,0xfc,0x83,0xc4,0x04,0xd8,0x0d,0xc0,0x30,0x9e,0x00,0xd9,0x55};
+    static const unsigned char scaleRound[]={0xd9,0x5d,0x08,0xd9,0x45,0x08,0xdb,0x5d,0x0c,0x0f,0xb6,0x45,0x0c};
+    static const unsigned char scaleApply[]={0x0f,0xaf,0xc8,0x81,0xc1,0xff,0x00,0x00,0x00,0xc1,0xe9,0x08};
+    static const unsigned char scaledAmbient[]={0x89,0x96,0xac,0x01,0x00,0x00};
+    static const unsigned char scaledDirect[]={0x89,0x8e,0xa8,0x01,0x00,0x00};
+    static const unsigned char glareScaleConstant[]={0x33,0x33,0xb3,0x3e}; /* 0.35f */
+    static const unsigned char byteMaxConstant[]={0x00,0x00,0x7f,0x43};    /* 255.0f */
+    static const CodeProof values[]={{0x7ee756,directCopy,sizeof directCopy},{0x7ee774,ambientLoad,sizeof ambientLoad},{0x7ee84a,ambientStore,sizeof ambientStore},
+        {0x780620,liquidGetter,sizeof liquidGetter},{0x7f36c6,darkenAmbient,sizeof darkenAmbient},{0x7f36da,darkenDirect,sizeof darkenDirect},
+        {0x7f3748,flashAmbient,sizeof flashAmbient},{0x781783,glowRead,sizeof glowRead},{0x7817d8,scaleFormula,sizeof scaleFormula},
+        {0x7817e9,scaleRound,sizeof scaleRound},{0x781803,scaleApply,sizeof scaleApply},{0x78184e,scaledAmbient,sizeof scaledAmbient},
+        {0x7818b0,scaledDirect,sizeof scaledDirect},{0xa3e860,glareScaleConstant,sizeof glareScaleConstant},{0x9e30c0,byteMaxConstant,sizeof byteMaxConstant}};
+    count=sizeof(values)/sizeof(values[0]);return values;
+}
 #ifdef _WIN32
 inline bool proven(const CodeProof* proof,size_t count) {
     for(size_t i=0;i<count;++i){unsigned char actual[64];if(proof[i].size>sizeof actual||
@@ -186,6 +258,8 @@ inline bool readGlobalLighting(const float* expectedCamera,Lighting& out) {
     if(!(NorthlightWorldContext::readSelf(0xd38b00,first,sizeof first)&&
          NorthlightWorldContext::readSelf(0xd38b00,second,sizeof second)&&
          decodeCoherentGlobalLighting(first,second,SkyBytes,expectedCamera,out)))return false;
+    static const bool predictionCode=[]{size_t count;const auto* proof=predictionProofs(count);return proven(proof,count);}();
+    readPredictors(NorthlightWorldContext::readSelf,out);out.predictors=out.predictors&&predictionCode&&slots&&out.slotsConsistent;
     out.slotsProven=slots&&out.slotsConsistent;return true;
 }
 #endif

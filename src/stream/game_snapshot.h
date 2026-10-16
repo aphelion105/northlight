@@ -11,6 +11,7 @@
 #include "wmo_context.h"
 #include "celestial_context.h"
 #include "celestial_glare_native.h"
+#include "weather_memory.h"
 #include "shader_tags.h"
 
 namespace NorthlightStream {
@@ -19,7 +20,7 @@ inline const char* triggerName(Trigger t){return t==Trigger::FrameStart?"frame":
 
 // Per-frame decision of whether a draw takes a snapshot, called by the StreamDevice once per draw on the game thread
 // with the draw's vertex-shader tags (shader_tags.h triggerTags). Pure state: no memory reads, no allocation. A capture
-// is about 33 reads of game memory, so a frame takes at most three, and the replay keeps the latest one active until the
+// is about 45 reads of game memory, so a frame takes at most three, and the replay keeps the latest one active until the
 // next (the sky and glare draws of a frame replay under the FrameStart or World snapshot of that same frame):
 //   FrameStart: the first draw after Present, so the draws of frame N see frame N's game memory, not N-1's.
 //   World:      the first draw whose VS is terrain or WMO (the camera / view stack / sky block are valid for the whole
@@ -54,6 +55,10 @@ template<class Read> inline void captureReaders(Read read){
     NorthlightCelestial::readSnapshot(read,sky);               // 0xd38b00 sky block, size 0x388, twice
     unsigned char first[NorthlightWmoContext::SkyBytes],second[NorthlightWmoContext::SkyBytes];
     read(0xd38b00,first,sizeof first);read(0xd38b00,second,sizeof second); // wmo_context.h readGlobalLighting: size SkyBytes, twice
+    NorthlightWmoContext::Lighting predictors;
+    NorthlightWmoContext::readPredictors(read,predictors);     // wmo_context.h readGlobalLighting, after the block: sun glare glow 0xd38f4c and liquid type 0xcd8794, each twice
+    NorthlightWeatherMemory::Reading memoryWeather;
+    if(NorthlightWeatherMemory::enabled())NorthlightWeatherMemory::readState(read,memoryWeather); // World::s_weather 0xcd7544 twice, then the Weather object (0x148 bytes) twice; none with WeatherMemory=0
     NorthlightCelestialDisc::readIdentities(read);             // sun, moon, moon02 texture identities (each read twice)
     NorthlightCelestialGlare::readIdentities(read);            // sun and moon glare identities
 }

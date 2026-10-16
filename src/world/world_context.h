@@ -68,14 +68,15 @@ struct SelfReadStats {
     static inline std::atomic<bool> timed{false};
 };
 inline bool readSelfLive(uintptr_t address,void* output,size_t size) {
-    SelfReadStats::calls.fetch_add(1,std::memory_order_relaxed);
+    const unsigned long long n=SelfReadStats::calls.fetch_add(1,std::memory_order_relaxed);
     SelfReadStats::bytes.fetch_add(size,std::memory_order_relaxed);
-    const bool timed=SelfReadStats::timed.load(std::memory_order_relaxed);
+    // Profile only: clock one call in 8 (two QPC reads each) and scale, so RenderProfile=1 stops costing about half of what it measures.
+    const bool timed=(n&7)==0 && SelfReadStats::timed.load(std::memory_order_relaxed);
     LARGE_INTEGER begin{},end{};if(timed)QueryPerformanceCounter(&begin);
     SIZE_T copied=0;
     const bool ok=address>=0x10000 && ReadProcessMemory(GetCurrentProcess(),
         reinterpret_cast<LPCVOID>(address),output,size,&copied) && copied==size;
-    if(timed){QueryPerformanceCounter(&end);SelfReadStats::ticks.fetch_add(end.QuadPart-begin.QuadPart,std::memory_order_relaxed);}
+    if(timed){QueryPerformanceCounter(&end);SelfReadStats::ticks.fetch_add((end.QuadPart-begin.QuadPart)*8,std::memory_order_relaxed);}
     if(!ok)SelfReadStats::failures.fetch_add(1,std::memory_order_relaxed);
     return ok;
 }

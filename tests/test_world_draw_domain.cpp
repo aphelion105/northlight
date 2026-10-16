@@ -28,7 +28,19 @@ int main(){
     for(float bad:{-1.f,2.f,std::numeric_limits<float>::quiet_NaN(),std::numeric_limits<float>::infinity()}){
         assert(!accepts(true,true,0,.94f,bad,1));assert(!accepts(true,true,0,bad,0,.94f));++cases;
     }
+    {using NorthlightWorldDrawDomain::depthTested; // the client's depth-off is ZFUNC ALWAYS (8) with ZENABLE still TRUE
+     for(unsigned long f=1;f<=8;++f){assert(depthTested(1,f)==(f!=8));assert(!depthTested(0,f));++cases;}}
     assert(!accepts(true,true,0,0,0,0));assert(!accepts(true,true,0,.94f,.5f,.4f));
+    {using namespace NorthlightWorldDrawDomain;
+     assert(classify(0,.94f,0,.94f)==Band::World);assert(classify(0,.94f,.998046875f,.9990234375f)==Band::Horizon);
+     assert(classify(0,.94f,.9990234375f,1)==Band::Sky);assert(classify(0,.94f,0,1)==Band::Other);assert(classify(0,.94f,.94f,1)==Band::Other);
+     assert(classify(0,.94f,.9990234f,1.00001f)==Band::Sky); // epsilon
+     assert(classify(0,.94f,.9970f,.9990234375f)==Band::Other);
+     assert(classify(0,.5f,.9990234375f,1)==Band::Other&&classify(0.1f,.94f,.9990234375f,1)==Band::Other); // unusual learned band
+     assert(classify(std::numeric_limits<float>::quiet_NaN(),.94f,.9990234375f,1)==Band::Other);
+     assert(skyClaimPossible(0,.94f,.9990234375f,1)&&!skyClaimPossible(0,.94f,0,.94f)&&!skyClaimPossible(0,.94f,0,1)&&!skyClaimPossible(0,.94f,.998046875f,.9990234375f));
+     assert(skyClaimPossible(0,.5f,0,1)&&skyClaimPossible(0,1,0,1)); // unusual client: pre-filter stays open
+     cases+=5;}
     BVH old,corrected;std::string error;
     assert(old.build(casters(false),error));assert(corrected.build(casters(true),error));
     for(int x=-9;x<=9;++x)if(x){

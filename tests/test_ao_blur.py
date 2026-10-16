@@ -6,8 +6,10 @@ CPU reference only: no game, graphics device or GPU. The 8-tap AO rotates its ke
 gradient noise), which in occluded creases (character skin, cloth folds) leaves a regular dark diamond lattice;
 WorldComposite only bilinear-upsamples the half-resolution AO, so nothing filtered it. AOBlur is a half-resolution
 pass: 5x5 AO texels (weights .5,1,1,1,.5 per axis) kept on the centre's plane and normal, sky/water taps weight 0,
-bloom rgb passed through. Cost: it returns the raw texel before any depth work when all 25 tap AO values are
->= .9995 (unoccluded, exactly 1.0), and its silhouette guard reads ONE extra depth per tap (the tap's tangent along
+bloom rgb passed through. Cost: it returns the raw texel before any depth work when the 5x5 is (nearly) unoccluded:
+task 43 reads it as 9 bilinear footprints (1, 2 or 4 texels each, s0 LINEAR) instead of 25 POINT taps, all >= .9995
+(every 5x5 the old per-texel test accepted still passes), so every texel is >= .998 (>= .99707 with fp16 filtering) and
+the skipped filter is within .003 (under 1/255); its silhouette guard reads ONE extra depth per tap (the tap's tangent along
 the axis the centre normal leans towards, weight *= saturate(1 - 2 sin^2) against the centre plane) instead of
 NeighbourNormal's two. This test runs a float32 emulation of AOImpl (as test_ao_rotation_stripes.py) and of
 AOBlur exactly as written in shaders/effects.hlsl, on synthetic raw-D24 depth surfaces:
@@ -21,7 +23,9 @@ AOBlur exactly as written in shaders/effects.hlsl, on synthetic raw-D24 depth su
       must not be darkened, and edge texels of the cylinder not lightened, by the other surface (blurred versus
       the plain mean of the same surface's raw AO in the 5x5), and must stay inside that surface's raw min/max;
   (4) passthrough of the sky centre (all four channels) and of the bloom rgb at a surface centre;
-  (4b) the early-out is output-identical to the full path (unoccluded surface texels, random all-ones windows);
+  (4b) the early-out is output-identical to the full path (unoccluded surface texels, random all-ones windows), the
+       9 footprints tile the 25 taps, every window of texels >= 1 - 2^-11 takes it, and on random near-1 windows it never
+       fires with a texel below .99707 and stays within .003 of the full filter (fp32 and fp16-rounded bilinear means);
   (5) source and wiring audits (effects.hlsl, shader-build.json, compile_shaders.py, renderer.cpp).
 Run this file to regenerate its JSON report.
 """
@@ -208,15 +212,25 @@ class RawAO:
 
 
 EARLY_OUT = .9995
+FOOT = ((-2, -1), (0, 1), (2,))   # per axis: the texels behind the bilinear reads at -1.5, +.5 and +2 AO texels
+
+
+def f16(x):
+    return struct.unpack('e', struct.pack('e', x))[0]
+
+
+def early_min(raw, i, j, filt=f32):
+    """The 9 bilinear reads of AOBlur's early-out: each the (filtered) mean of its 1, 2 or 4 raw texels."""
+    return min(filt(sum(raw(i+x, j+y)[3] for y in fy for x in fx)/(len(fx)*len(fy))) for fy in FOOT for fx in FOOT)
 TANGENT_K = 2.
 
 
-def ao_blur(sc, raw, i, j, diag=None, early=True):
+def ao_blur(sc, raw, i, j, diag=None, early=True, filt=f32):
     """AOBlur for AO texel (i, j), line by line as in effects.hlsl (WaterInfo.x = 0: no water).
     early=False skips the unoccluded early-out (the full path, for the identity check)."""
     taps = [(t-math.floor((t+.5)*.2)*5-2, math.floor((t+.5)*.2)-2) for t in range(25)]
     r = raw(i, j)
-    if early and min(raw(i+ox, j+oy)[3] for ox, oy in taps) >= EARLY_OUT:
+    if early and early_min(raw, i, j, filt) >= EARLY_OUT:
         if diag is not None:
             diag['total'], diag['early'] = 1., True
         return r
@@ -417,10 +431,16 @@ def audit_source():
     assert re.search(r'a\.x > 1\.5 \? 0\.5 : 1\.0\) \* \(a\.y > 1\.5 \? 0\.5 : 1\.0\)', blur), '.5 edge weights'
     assert 'float planeScale = 2.0 / max(0.025, min(Options.y * 0.1, p.z * 0.002));' in blur
     assert 'exp2(-abs(dot(q - p, n)) * planeScale)' in blur
-    # unoccluded early-out: 25 AO-only reads and a dynamic branch before any depth read
+    # unoccluded early-out: 9 bilinear AO-only reads (s0) and a dynamic branch before any depth read
     early = blur.index('[branch] if (minAO >= 0.9995) return raw;')
-    assert re.search(r'for \(int k = 0; k < 25; \+\+k\)', blur[:early]) and 'ReadDepth' not in blur[:early], 'early-out first'
-    assert 'minAO = min(minAO, tex2Dlod(Ambient' in blur[:early]
+    assert re.search(r'for \(int k = 0; k < 9; \+\+k\)', blur[:early]) and 'ReadDepth' not in blur[:early], 'early-out first'
+    assert 'minAO = min(minAO, tex2Dlod(AmbientLinear, float4(uv + min(float2(k - krow * 3.0, krow) * 2.0 - 1.5, 2.0) * tapStep, 0, 0)).a);' in blur[:early]
+    assert 'float krow = floor((k + 0.5) * (1.0 / 3.0));' in blur[:early]
+    assert 'sampler2D AmbientLinear : register(s0);' in text and 'Scene' not in blur, 'AOBlur reads the raw AO on s0, never Scene'
+    # the footprints (min(2s - 1.5, 2) for s = 0, 1, 2) cover exactly the 25 taps' texels, each once
+    spots = [min(2*s_-1.5, 2.) for s_ in range(3)]
+    assert spots == [-1.5, .5, 2.] and sorted(t for f in FOOT for t in f) == [-2, -1, 0, 1, 2]
+    assert all(tuple(range(math.floor(c), math.ceil(c)+1)) if c % 1 else (int(c),) == f for c, f in zip(spots, FOOT))
     assert blur.index('if (d >= SKY_DEPTH || IsWater(cuv, d)) return raw;') > early, 'sky/water passthrough kept'
     # the guard: one extra depth read per tap (no NeighbourNormal), tangent along the axis the normal leans towards
     assert 'NeighbourNormal' not in blur, 'the two-read normal term must be gone'
@@ -474,7 +494,37 @@ def check_early_out():
     d = {}
     ao_blur(c.sc, window_raw, *CENTRE, diag=d)
     assert not d.get('early') and ao_blur(c.sc, window_raw, *CENTRE)[3] < 1., 'one occluded tap must run the full filter'
-    return {'unoccluded_texels_compared': n_early, 'random_all_ones_windows': cases, 'differences': 0}
+    # any single texel of the 25 below .99707 (1 - 6 * 2^-11 in fp16) defeats it, wherever it sits
+    for oy in range(-2, 3):
+        for ox in range(-2, 3):
+            one = {(CENTRE[0]+ox, CENTRE[1]+oy): (0., 0., 0., f16(1-7*2.**-11))}
+            probe = lambda i, j: one.get((i, j), (0., 0., 0., 1.))
+            assert early_min(probe, *CENTRE) < EARLY_OUT and early_min(probe, *CENTRE, filt=f16) < EARLY_OUT, (ox, oy)
+    # never fewer early-outs than the old per-texel min >= .9995: a 5x5 of 1 - 2^-11 (.99951) texels in any mix with 1.0 passes
+    for trial in range(200):
+        mix = {(CENTRE[0]+x, CENTRE[1]+y): (0., 0., 0., rng.choice((1., f16(1-2.**-11)))) for y in range(-2, 3) for x in range(-2, 3)}
+        probe = lambda i, j: mix[(i, j)]
+        assert early_min(probe, *CENTRE) >= EARLY_OUT and early_min(probe, *CENTRE, filt=f16) >= EARLY_OUT, trial
+    # near-1 windows (fp16 texels 1 - k * 2^-11, k = 0..9): fires only with every texel >= .99707 and stays within .003
+    fp16_near = [f16(1-k*2.**-11) for k in range(10)]
+    worst, fired, runs = 0., 0, 0
+    for filt in (f32, f16):
+        for trial in range(400):
+            near = {}
+
+            def near_raw(i, j):
+                if (i, j) not in near:
+                    near[(i, j)] = (0., 0., 0., fp16_near[0 if rng.random() < .85 else rng.randrange(1, 10)])
+                return near[(i, j)]
+            runs += 1
+            i, j = CENTRE[0]+rng.randrange(-3, 4), CENTRE[1]+rng.randrange(-3, 4)
+            if early_min(near_raw, i, j, filt) >= EARLY_OUT:
+                fired += 1
+                assert min(near_raw(i+x, j+y)[3] for y in range(-2, 3) for x in range(-2, 3)) >= .99707
+                worst = max(worst, abs(ao_blur(c.sc, near_raw, i, j, filt=filt)[3]-ao_blur(c.sc, near_raw, i, j, early=False)[3]))
+    assert fired > 20 and worst <= .003, (fired, worst)
+    return {'unoccluded_texels_compared': n_early, 'random_all_ones_windows': cases, 'differences': 0,
+            'near_one_windows': runs, 'near_one_early_outs': fired, 'near_one_worst_difference': worst}
 
 
 def audit_wiring():
@@ -482,7 +532,8 @@ def audit_wiring():
     fn = text[text.index('SetRenderTarget(0,aoRawSurface)')-400:]
     a = fn.index('SetRenderTarget(0,aoRawSurface)')
     seq = [fn.index(s, a) for s in ('quad(width/2,height/2),"AO pass"', 'SetRenderTarget(0,aoSurface)', 'bindEffects(aoRaw)',
-                                    'SetPixelShader(aoBlurPS)', 'quad(width/2,height/2),"AO blur pass"',
+                                    'SetTexture(0,aoRaw)', 'SetPixelShader(aoBlurPS)', 'quad(width/2,height/2),"AO blur pass"',
+                                    'ext->SetTexture(2,nullptr);ext->SetTexture(0,scene);',
                                     'auto legacyComposite', 'world->render(')]
     assert seq == sorted(seq), seq
     assert 'SetPixelShader(constants[7]==0.f?aoContactBloomPS:aoPS)' in fn[a:seq[0]]

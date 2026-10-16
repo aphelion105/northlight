@@ -49,8 +49,10 @@ checks['host: history weight 0 unless fogHistoryValid&&useHistory; weight consta
 checks['host: reads raw fog s9 + fogHistory s14 + previous depth temporalDepth[temporalIndex] s15, writes fogBlurred; s14/s15 put back']=(
     'SetRenderTarget(0,fogBlurredSurface)' in pas and 'SetTexture(9,fog)' in pas and 'SetTexture(14,fogHistory)' in pas and 'SetTexture(15,temporalDepth[temporalIndex])' in pas
     and 'SetTexture(14,nullptr)' in pas and 'SetTexture(15,nullptr)' in pas and 'D3DSAMP_MINFILTER,D3DTEXF_POINT' in pas)
-checks['host: FogTemporal profile mark after the pass (worst case <= MaxMarks 24)']=(pas.index('quad(w/2,h/2),"fog temporal pass"')<pas.index('profile->mark("FogTemporal")') and
-    len(set(re.findall(r'profile->mark\("(\w+)"\)',w)))+6+2<=24)
+# task 43: worst case = the world's literal marks + its 8 per-source names (Sun/Moon Near, Far, NearReplays, Actor) + the 7 renderer.cpp marks of one frame
+maxMarks=int(re.search(r'MaxMarks=(\d+)',fp.src('gpu_profile.h').read_text())[1])
+checks['host: FogTemporal profile mark after the pass (worst case <= MaxMarks)']=(pas.index('quad(w/2,h/2),"fog temporal pass"')<pas.index('profile->mark("FogTemporal")') and
+    len(set(re.findall(r'profile->mark\("(\w+)"\)',w)))+8+7<=maxMarks)
 bl=g[g.index('// Separable depth-aware blur'):g.index('// c34 belongs')]
 checks['host: blur unchanged when the pass did not run (fog -> fogBlurred -> fog), resolved: fogHistory -> fog -> fogBlurred']=(
     'SetRenderTarget(0,fogResolved?fogSurface:fogBlurredSurface);d->SetTexture(9,fogResolved?fogHistory:fog)' in bl

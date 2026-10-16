@@ -249,6 +249,7 @@ struct StreamCore {
     static constexpr unsigned kTexSpares=2;static constexpr std::size_t kTexSpareMaxBytes=(std::size_t(256)<<10)+kLockSlack;
     std::vector<unsigned char> texSpare[kTexSpares];
     LockScratch scratch;             // game thread: small staged buffer locks
+    bool occlusionLocal=true;        // StreamOcclusionLocal: a FLUSH GetData on an occlusion query with a polled result is answered on the game thread (StreamQuery::GetData)
     unsigned framesAhead=1;          // 0.3.204 (task 21): StreamFramesAhead (clamped), set once by the StreamDevice: the buffers' slice rings hold framesAhead+2 slices at most
     // 0.3.204 (task 21): large-buffer slices that were dropped or swapped away while the replay thread may still read them (a zero-copy unlock refers to the bytes until it retires): the storage waits here
     // (under texMutex) with the seq of the last command that reads it, and is freed by trimRetired once replayedSeq has passed it. Their bytes leave shadowBytes/largeShadowBytes at once and count in the ring budget (retired*Bytes) until freed.
@@ -1089,7 +1090,7 @@ inline HRESULT lockBuffer(ProxyBase& self,BufferState& s,UINT off,UINT size,void
     if(SUCCEEDED(hr)){s.mode=BufferState::Pass;*pp=got;}
     return hr;
 }
-inline void noteRecorded(ProxyBase& p,const BufferState& s,UINT bytes){add(p.core->q.stats.lockRecordedBytes,bytes);if(s.whole)add(p.core->q.stats.wholeLockBytes,bytes);}
+inline void noteRecorded(ProxyBase& p,const BufferState& s,UINT bytes){auto& st=p.core->q.stats;own(st.lockRecordedBytes,bytes);if(s.whole)own(st.wholeLockBytes,bytes);}   // game thread is the only writer: no locked instruction per buffer unlock
 inline HRESULT unlockBufferImpl(ProxyBase& self,BufferState& s,bool& zcDone,bool& overlapStaged){
     LockScope _ts(*self.core);Queue& q=self.core->q;
     switch(s.mode){
@@ -1403,6 +1404,14 @@ struct StreamQuery final:IDirect3DQuery9,ProxyBase {
     unsigned type;unsigned dataSize;
     std::atomic<std::uint32_t> gen{0},readyGen{0};   // gen: END issues by the game; readyGen: the replay's polled result belongs to it
     unsigned char result[64]{};DWORD resultSize=0;std::uint32_t issueSeen=0;   // issueSeen: END issues the replay thread ran
+    std::atomic<std::uint32_t> resultSeq{0};   // seqlock around result/resultSize: odd while the replay thread writes, so a stale read (FLUSH, below) never sees a torn result
+    void writeResult(const unsigned char* buf,DWORD n){const std::uint32_t s=resultSeq.load(std::memory_order_relaxed);resultSeq.store(s+1,std::memory_order_relaxed);std::atomic_thread_fence(std::memory_order_release);
+        std::memcpy(result,buf,sizeof result);resultSize=n;resultSeq.store(s+2,std::memory_order_release);}
+    DWORD readResult(void* data,DWORD size){   // the latest polled result into the game's buffer, consistent
+        for(;;){const std::uint32_t s1=resultSeq.load(std::memory_order_acquire);if(s1&1)continue;
+            const DWORD n=resultSize;unsigned char tmp[sizeof result];std::memcpy(tmp,result,sizeof tmp);std::atomic_thread_fence(std::memory_order_acquire);
+            if(resultSeq.load(std::memory_order_relaxed)!=s1)continue;
+            if(data&&size)std::memcpy(data,tmp,size<n?size:n);return n;}}
     StreamQuery(StreamCore* c,unsigned t):ProxyBase(c,Kind::Query),type(t),dataSize(queryDataSize(t)){info.type=t;ProxyInit<ProxyBase>::apply(this,static_cast<IDirect3DQuery9*>(this));}
     ~StreamQuery(){liveProxyObjects.fetch_sub(1);}
     NORTHLIGHT_STREAM_QUERY_METHODS
@@ -1415,7 +1424,13 @@ struct StreamQuery final:IDirect3DQuery9,ProxyBase {
     HRESULT STDMETHODCALLTYPE GetData(void* data,DWORD size,DWORD flags) override{
         Queue& q=core->q;
         if(dead.load())return D3DERR_INVALIDCALL;   // the real create failed: an error, not S_FALSE forever
+        // StreamOcclusionLocal: WoW's QueryGetData (glare occlusion, D3DQUERYTYPE_OCCLUSION) loops GetData(FLUSH) while S_FALSE, normally after a non-FLUSH availability probe that
+        // succeeded; the pixel count only fades the sun/moon glare, so the latest completed result (this frame's when the probe saw it, else older) is answered without draining the
+        // queue. Never completed (readyGen 0): the real GetData below once, so the game's loop cannot spin. Event queries (type 8, the gxFixLag wait) keep the real wait.
+        if(flags&D3::kGetDataFlush&&type==9&&core->occlusionLocal&&gen.load()&&readyGen.load(std::memory_order_acquire)){
+            readResult(data,size);own(core->q.stats.queryFlushLocal);return D3D_OK;}
         if((flags&D3::kGetDataFlush)||!gen.load()){   // FLUSH, or a query never issued: the real GetData with the game's buffer, after everything recorded so far
+            if(flags&D3::kGetDataFlush)own(core->q.stats.queryFlushSynced);
             HRESULT hr=D3DERR_INVALIDCALL;
             if(!runTask(*core,[&](StreamCore&){if(inner)hr=static_cast<IDirect3DQuery9*>(inner)->GetData(data,size,flags);},Cmd::SyncGetData))return D3DERR_INVALIDCALL;   // e.g. WoW's event-query wait: shows as SyncGetData in the census
             return hr;
@@ -1423,7 +1438,7 @@ struct StreamQuery final:IDirect3DQuery9,ProxyBase {
         q.publish();   // the replay thread must see the Issue this GetData polls for, or a spin on S_FALSE would never end
         const std::uint32_t g=gen.load();
         if(g&&readyGen.load(std::memory_order_acquire)==g){
-            if(data&&size)std::memcpy(data,result,size<resultSize?size:resultSize);
+            readResult(data,size);
             return D3D_OK;}
         return S_FALSE;}
 };

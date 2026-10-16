@@ -13,7 +13,7 @@ from pathlib import Path
 sys.path[:0]=[str(Path(__file__).resolve().parents[1]),str(Path(__file__).resolve().parent)]  # repo root, renderer/
 from world_scene_builder import Assets,CLIENT,chunks,unpack,array,matvec,retry
 import client_archives
-from world_light_placements import discover as discover_placements,wmo_doodads
+from world_light_placements import discover as discover_placements,wmo_doodads,group_refs,group_blobs
 
 import outdoor_light_profiles
 
@@ -142,7 +142,7 @@ def build(cache,output,maps,assets=None):
     placement_cache={};placement_provenance={};unsupported_assets={}
     def read_placement_wmo(path):
         if path not in placement_cache:
-            blob=assets.read(path);placement_cache[path]=wmo_doodads(blob)
+            blob=assets.read(path);placement_cache[path]=wmo_doodads(blob,group_refs(group_blobs(assets.read,path,blob)))
             placement_provenance[path]={'archive':assets.origin(path),'asset_sha256':hashlib.sha256(blob).hexdigest()}
         return placement_cache[path]
     try:
