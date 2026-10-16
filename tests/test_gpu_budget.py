@@ -93,6 +93,32 @@ int main(){
     {   // late or gappy readings: a long gap counts as MaxDt, never a jump of several levels
         B::Controller c;c.update(4,9,Dt);c.update(4,9,10.f);assert(c.level<=1);
     }
+    {   // task 45: the lighten gate. Default argument = today's behaviour; lighten=false only blocks stepping down
+        B::Controller a,b;const float heavy[4]={6,6,6,6};
+        for(int i=0;i<600;++i){a.update(4,6,Dt);b.update(4,6,Dt,true);}assert(a.level==b.level&&a.changes==b.changes&&a.smoothed==b.smoothed&&a.level==B::MaxLevel);
+        B::Controller g;for(int i=0;i<1200;++i)g.update(4,9,Dt,false);assert(g.level==0&&g.changes==0&&g.over==0.f&&g.smoothed>5.f); /* heavily over, but not the limit: no step down */
+        run(a,4,heavy,1.f);const unsigned high=a.level;assert(high==B::MaxLevel);
+        B::Controller k=a;for(int i=0;i<60*60;++i)k.update(4,6,Dt,false);assert(k.level==high&&k.changes==a.changes); /* over budget, gate closed: neither down nor up */
+        B::Controller u=a;for(int i=0;i<60*60&&u.level>0;++i)u.update(4,2,Dt,false);assert(u.level==0); /* well under: the usual up-hold returns the full picture */
+        B::Controller f=a;for(int i=0;i<60*20;++i)f.update(4,3.2f,Dt,false);assert(f.level==high); /* 80 % of the budget is not well under, gate or not */
+        B::Controller o;for(int i=0;i<60;++i)o.update(4,6,Dt,true);const unsigned l1=o.level;assert(l1>=1); /* the gate closing resets the over timer */
+        for(int i=0;i<20;++i)o.update(4,6,Dt,false);assert(o.level==l1&&o.over==0.f);
+        B::Controller off;assert(off.update(0,9,Dt,false)==0&&!off.primed);
+    }
+    {   // task 45: WaitSignal: smoothed per-frame wait, bound above BoundWaitMs only
+        B::WaitSignal s;for(int i=0;i<600;++i)s.update(0.f,Dt);assert(!s.bound()&&s.smoothed==0.f);
+        for(int i=0;i<600;++i)s.update(i%10==0?12.f:0.f,Dt);assert(s.bound()); /* 1.2 ms per frame on average */
+        for(int i=0;i<600;++i)s.update(0.f,Dt);assert(!s.bound());
+        for(int i=0;i<10;++i)s.update(std::numeric_limits<float>::quiet_NaN(),Dt);assert(std::isfinite(s.smoothed));
+        B::WaitSignal t;t.update(.2f,Dt);assert(!t.bound());t.reset();assert(!t.primed&&t.smoothed==0.f);
+    }
+    {   // task 45: the actor shadow radius per CPU level: level 0 is the setting (0 = unlimited stays 0), levels 1..3 cap at 30/20/12 (0 counts as unlimited)
+        for(unsigned setting:{0u,5u,12u,13u,20u,21u,30u,31u,40u,200u}){
+            assert(B::actorShadowRadius(setting,0)==setting);
+            const unsigned caps[4]={0,30,20,12};
+            for(unsigned level=1;level<=3;++level){const unsigned want=setting&&setting<caps[level]?setting:caps[level];assert(B::actorShadowRadius(setting,level)==want&&want>0);}}
+        assert(B::actorShadowRadius(0,1)==30&&B::actorShadowRadius(40,1)==30&&B::actorShadowRadius(40,2)==20&&B::actorShadowRadius(40,3)==12&&B::actorShadowRadius(20,3)==12&&B::actorShadowRadius(8,3)==8);
+    }
     std::puts("PASS gpu budget controller and level map");
     // ---- frame timer ----
     IDirect3DDevice9 d;

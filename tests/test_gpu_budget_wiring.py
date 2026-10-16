@@ -45,9 +45,9 @@ checks['renderer: once per frame in finishFrameImpl, after the profile poll, ung
 checks['renderer: GpuBudgetMs=0 resets the controller and sets level 0 before anything is polled']=(
     'if(!budget){gpuBudget.reset();gpuBudgetQpc=0;if(world)world->setGpuBudgetLevel(0);return;}' in gb and gb.index('return;}')<gb.index('poll(ms)'))
 checks['renderer: only a finished reading updates the controller (dt from the previous reading), the level goes to the world']=(
-    'if(gpuTimer&&gpuTimer->poll(ms)){' in gb and 'world->setGpuBudgetLevel(gpuBudget.update(float(budget),float(ms),dt));' in gb)
+    'if(gpuTimer&&gpuTimer->poll(ms)){' in gb and 'world->setGpuBudgetLevel(gpuBudget.update(float(budget),float(ms),dt,gpuLimited));' in gb)
 checks['renderer: GPUBUDGET line on RenderProfile sample frames, level changes logged (first 32, then with Diagnostics)']=(
-    'if(sampled()&&NorthlightRenderThreadProbe::profiling())logf("GPUBUDGET ms=%.3f smoothed=%.3f budget=%.1f level=%u"' in gb
+    'if(sampled()&&NorthlightRenderThreadProbe::profiling())logf("GPUBUDGET ms=%.3f smoothed=%.3f budget=%.1f level=%u gpuWait=%.2f gpuBound=%d"' in gb
     and 'if(gpuBudget.level!=before&&(gpuBudget.changes<=32||diagnostics()))' in gb and 'logf("GPUBUDGET level %u -> %u' in gb)
 
 # world: level gated, full level unchanged
@@ -72,6 +72,38 @@ checks['hlsl: FogTemporal still passes s9 through at weight 0 (the clouds\' copy
 # settings and docs
 checks['settings: GpuBudgetMs (0..20, presets 4/3/2, default 4)']=(
     re.search(r'\{\s*"GpuBudgetMs"\s*,\s*&Settings::gpuBudgetMs\s*,\s*0\s*,\s*20\s*,\s*\{\s*4\s*,\s*3\s*,\s*2\s*\}\s*\}',q) is not None and 'unsigned gpuBudgetMs=4;' in q)
+
+# task 45: GPU-bound gate and the CPU budget (ActorShadowCpuMs)
+wl=fp.src('world_shadow_experiment.inl').read_text();wlc=code(wl)
+checks['task 45 gate: the signal is the previous Present\'s latency wait, kept apart from the logging counters; known only with the latency limit']=(
+    'latencyLastMs=0;' in rc and 'latencyLastMs=double(qpcNow()-t0)*perMs;++latencyWaits;latencyWaitMs+=latencyLastMs;' in rc
+    and 'boundKnown=limitGpuLatency&&!latencyFailed;gpuLimited=!boundKnown||gpuBound.bound();' in gb
+    and 'cpuLimited=(!replayKnown||replayWait.bound())&&(!boundKnown||!gpuBound.bound());' in gb
+    and 'NorthlightStream::get(streamStats->presentNs)+NorthlightStream::get(streamStats->backpressureNs)' in gb and 'replayKnown=streamStats!=nullptr;' in gb
+    and 'target->streamStats=&stream->streamCore().q.stats;' in r
+    and 'gpuBound.update(float(latencyLastMs),' in gb and gb.index('gpuBound.update(')<gb.index('const unsigned budget=world?world->gpuBudgetMs():0;'))
+checks['task 45 gate: BoundWaitMs and the lighten parameter default to the old behaviour']=(
+    'constexpr float BoundWaitMs=.5f;' in b and 'unsigned update(float budgetMs,float ms,float dt,bool lighten=true){' in b
+    and 'over=lighten&&smoothed>budgetMs?over+dt:0.f;' in code(b) and 'under=smoothed<budgetMs*UpFraction?under+dt:0.f;' in code(b))
+cb=rc[rc.index('void cpuBudgetFrame(){'):rc.index('void finishFrameImpl() {')]
+checks['task 45 cpu: the effects span is always measured (two QPC reads, after the applied check), consumed once per frame, off at ActorShadowCpuMs=0']=(
+    'struct EffectsSpan { std::int64_t& out; std::int64_t start; ~EffectsSpan(){out=qpcNow()-start;} } effectsSpan{cpuEffectsQpc,qpcNow()};' in re_
+    and re_.index('if (applied || !enabled || failed || !projectionValid) return;')<re_.index('effectsSpan{')
+    and 'if(!budget){cpuBudget.reset();cpuBudgetQpc=0;cpuEffectsQpc=0;if(world)world->setCpuBudgetLevel(0);return;}' in cb
+    and 'world->setCpuBudgetLevel(cpuBudget.update(float(budget),float(ms),dt,cpuLimited));' in cb and 'cpuEffectsQpc=0;' in cb
+    and 'gpuBudgetFrame();cpuBudgetFrame();' in fin and rc.count('cpuBudgetFrame();')==1)
+checks['task 45 cpu: level changes and the sample line are logged']=(
+    'if(cpuBudget.level!=before&&(cpuBudget.changes<=32||diagnostics()))' in cb and 'logf("CPUBUDGET level %u -> %u smoothed=%.3f budget=%u radius=%u changes=%u"' in cb
+    and 'logf("CPUBUDGET ms=%.3f smoothed=%.3f budget=%.1f level=%u radius=%u gpuBound=%d replayWait=%.2f replayBound=%d"' in cb)
+checks['task 45 radius: one accessor (the setting at level 0); admission and selection read it, not quality.actorShadowRadius']=(
+    'unsigned effectiveActorShadowRadius()const{return NorthlightGpuBudget::actorShadowRadius(quality.actorShadowRadius,cpuBudgetLevel);}' in wc
+    and 'void setCpuBudgetLevel(unsigned level){cpuBudgetLevel=quality.actorShadowCpuMs?std::min(level,NorthlightGpuBudget::MaxLevel):0u;}' in wc
+    and 'centre.yards=float(effectiveActorShadowRadius());' in wc and len(re.findall(r'quality\.actorShadowRadius',wlc))==1 and 'quality.actorShadowRadius,stable.radiusDropped' in wlc # the selection log prints the setting
+    and len(re.findall(r'quality\.actorShadowRadius',wc))==2) # the accessor and the SHADOW experiment log of the setting
+checks['task 45 radius: leaving the radius path clears the radius identities']='if(!radius&&actorShadowHistory.radiusSize())actorShadowHistory.clearRadius();' in wlc and 'void clearRadius(){radius_.clear();}' in fp.src('actor_shadow_selection.h').read_text()
+checks['task 45 settings: ActorShadowCpuMs (0..20, presets 3/3/2, default 3), documented in the ini and the package README']=(
+    re.search(r'\{\s*"ActorShadowCpuMs"\s*,\s*&Settings::actorShadowCpuMs\s*,\s*0\s*,\s*20\s*,\s*\{\s*3\s*,\s*3\s*,\s*2\s*\}\s*\}',q) is not None and 'unsigned actorShadowCpuMs=3;' in q
+    and ';ActorShadowCpuMs=3' in fp.src('windows-package/northlight-quality.ini').read_text() and 'ActorShadowCpuMs' in fp.src('windows-package/README.txt').read_text(encoding='utf-8'))
 
 # nothing on the game thread
 stream=[p for p in (fp.REPO/'src'/'stream').glob('*') if p.is_file()]

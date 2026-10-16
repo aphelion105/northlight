@@ -14,7 +14,8 @@
             if(p->shadowSelected&&p->shadowSkinned){actorBytes+=p->mesh().byteSize();++actors;}}
         NorthlightReplayShadowPolicy::Result result;result.kept=actors;result.keptBytes=actorBytes;NorthlightActorShadowSelection::Result stable;bool ranked=false,stableRan=false;
         auto transition=[this](bool over){actorShadowTransitions+=over!=actorShadowOver;actorShadowOver=over;}; /* over<->under budget crossings per log window */
-        const bool radius=NorthlightActorShadowSelection::Enabled&&quality.actorShadowRadius;
+        const bool radius=NorthlightActorShadowSelection::Enabled&&effectiveActorShadowRadius();
+        if(!radius&&actorShadowHistory.radiusSize())actorShadowHistory.clearRadius(); /* task 45: the CPU budget left the radius path (setting 0 and level back to 0): drop the identities; the next level>0 restarts them from scratch */
         if(!radius)transition(budget&&actorBytes>budget);
         try{
             // Ranking is necessary only if the captured actor geometry exceeds
@@ -313,7 +314,7 @@
         const auto prepared=captureSampled?std::chrono::steady_clock::now():std::chrono::steady_clock::time_point{};
         // Radius: the eye and the pivot (origin) find the player on the centre ray; the quota
         // ranks (shouldRank) on the bytes inside the radius.
-        const NorthlightActorShadowSelection::Radius radius{float(quality.actorShadowRadius),context.camera,true,true};
+        const NorthlightActorShadowSelection::Radius radius{float(effectiveActorShadowRadius()),context.camera,true,true};
         const auto result=NorthlightActorShadowSelection::choose(actorShadowDraws,actorShadowScratch,budget,actorShadowHistory,captureSampled,
             NorthlightActorShadowSelection::FlickerFixes&&actorShadowOriginValid?actorShadowOrigin:nullptr,tuning,radius.active()?&radius:nullptr);
         if(captureSampled){const auto chosen=std::chrono::steady_clock::now();

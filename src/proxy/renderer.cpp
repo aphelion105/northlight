@@ -318,6 +318,9 @@ class Device final : public GuardedMirrorDevice {
     // 0.3.200 (gpu budget): GpuBudgetMs > 0 only: Northlight's GPU time on every effects frame (two timestamps, read back late, never waited on)
     // feeds the controller; its level goes to the world for the next frames. GpuBudgetMs=0: no query is created, the world stays at level 0.
     std::unique_ptr<NorthlightGpuFrameTimer> gpuTimer;NorthlightGpuBudget::Controller gpuBudget;std::int64_t gpuBudgetQpc=0;double gpuBudgetLastMs=0;
+    // task 45: the GPU-bound signal (smoothed per-frame latency wait) and the CPU budget (ActorShadowCpuMs). cpuEffectsQpc: this frame's effects span in QPC ticks
+    // (0 = the effects did not run), always measured: two QueryPerformanceCounter reads per applying frame; unlike cpuEffects it is not reset by the sample logging.
+    NorthlightGpuBudget::WaitSignal gpuBound,replayWait;std::uint64_t replayWaitPrevNs=0;std::int64_t boundQpc=0,cpuBudgetQpc=0,cpuEffectsQpc=0;NorthlightGpuBudget::Controller cpuBudget;double cpuBudgetLastMs=0;bool boundKnown=false,gpuLimited=true,cpuLimited=true,replayKnown=false;
     std::unique_ptr<NorthlightMemoryDiagnostics::Sampler> memoryDiagnostics; /* also feeds the functional memory guard */
     NorthlightMemoryGuard::Guard memoryGuard;
     IDirect3DTexture9 *scene = nullptr, *depthTex = nullptr, *ao = nullptr, *aoRaw = nullptr;
@@ -376,14 +379,16 @@ public:
     // so the replay does it: before each Present it waits until the graphics card finished the previous frame (one EVENT query issued
     // right after every Present). The game thread is not involved; it stays its frames ahead.
     bool limitGpuLatency=false;
+    const NorthlightStream::Counters* streamStats=nullptr; // task 45: the command stream's counters (null without CommandStream), read-only for the CPU budget
 private:
-    IDirect3DQuery9* latencyQuery=nullptr;bool latencyPending=false,latencyFailed=false;std::uint64_t latencyWaits=0;double latencyWaitMs=0;
+    IDirect3DQuery9* latencyQuery=nullptr;bool latencyPending=false,latencyFailed=false;std::uint64_t latencyWaits=0;double latencyWaitMs=0;double latencyLastMs=0; /* task 45: the last Present's wait, not reset by logging */
     void waitPreviousFrameGpu(){
+        latencyLastMs=0;
         if(!latencyPending||!latencyQuery)return;latencyPending=false;
         if(latencyQuery->GetData(nullptr,0,D3DGETDATA_FLUSH)!=S_FALSE)return;
         const std::int64_t t0=qpcNow();const double perMs=cpuFrequency.QuadPart>0?1000.0/double(cpuFrequency.QuadPart):0;
         while(latencyQuery->GetData(nullptr,0,D3DGETDATA_FLUSH)==S_FALSE){if(double(qpcNow()-t0)*perMs>100.0)break;SwitchToThread();} /* a lost device or a stuck query never holds the replay */
-        ++latencyWaits;latencyWaitMs+=double(qpcNow()-t0)*perMs;
+        latencyLastMs=double(qpcNow()-t0)*perMs;++latencyWaits;latencyWaitMs+=latencyLastMs;
     }
     void markFrameGpu(){
         if(!latencyQuery&&!latencyFailed&&(FAILED(ext->CreateQuery(D3DQUERYTYPE_EVENT,&latencyQuery))||!latencyQuery)){latencyQuery=nullptr;latencyFailed=true;logf("CSTREAM GPU latency limit unavailable: no event query");}
@@ -681,6 +686,8 @@ private:
         // 0.3.154: sceneMs end = the last entry before effects apply; the read is billed to cpuEffects.
         if(gateFrame&&!applied){QueryPerformanceCounter(&gateSceneEnd);gateSceneDraws=drawCalls;gateSceneReads=CpuScope::reads;}
         if (applied || !enabled || failed || !projectionValid) return;
+        // task 45: the always-on effects span for the CPU budget (applying frames only; every return path below ends it).
+        struct EffectsSpan { std::int64_t& out; std::int64_t start; ~EffectsSpan(){out=qpcNow()-start;} } effectsSpan{cpuEffectsQpc,qpcNow()};
         // RenderProfile: every applying frame (two clock reads), the FRAME cost effects series.
         CpuScope frameCostScope(!sampled()&&NorthlightRenderThreadProbe::profiling()?&cpuEffects:nullptr);
         // The scope outlives every SavedState, including nested depth passes.
@@ -2091,7 +2098,7 @@ public:
         NorthlightMirrorResources::generation.fetch_add(1,std::memory_order_relaxed); /* task 34: Reset drops the render-target verdicts of every texture */
         if(spellOn){spell.reset();spellSync();spellQueryN=0;spellQueryUnknown=false;spellTexFor=nullptr;spellTexKey=nullptr;spellFade.reset();} /* task 34: no state block, upload buffer or surface may outlive the device state */
         frameIntervals.reset();frameCost.reset();backDescKnown=false;backSurface=nullptr;
-        NorthlightTrackedBuffers::invalidateAll();gpuProfile->reset();gpuTimer->reset();gpuBudgetQpc=0;drop(latencyQuery);latencyPending=false;latencyFailed=false; releaseResources(); if(world)world->reset();if(water)water->reset();if(celestialDiscs)celestialDiscs->reset();if(shadowBlobs)shadowBlobs->reset(); weatherDetect.reset();weatherSample={}; /* 0.3.198 (rain) */failed=false;latchDrawGates();
+        NorthlightTrackedBuffers::invalidateAll();gpuProfile->reset();gpuTimer->reset();gpuBudgetQpc=0;boundQpc=0;cpuBudgetQpc=0;cpuEffectsQpc=0;gpuBound.reset();replayWait.reset();replayWaitPrevNs=0;drop(latencyQuery);latencyPending=false;latencyFailed=false; releaseResources(); if(world)world->reset();if(water)water->reset();if(celestialDiscs)celestialDiscs->reset();if(shadowBlobs)shadowBlobs->reset(); weatherDetect.reset();weatherSample={}; /* 0.3.198 (rain) */failed=false;latchDrawGates();
         if(pp&&world&&world->nameMask()){D3DDEVICE_CREATION_PARAMETERS cp={};if(SUCCEEDED(ext->GetCreationParameters(&cp)))upgradeAutoDepth(parent,cp.AdapterOrdinal,cp.DeviceType,pp,true,"Reset");} /* 0.3.212 (task 32) */
         HRESULT hr=ext->Reset(pp); logf("Reset HRESULT=0x%08lx",(unsigned long)hr); return hr;
     }
@@ -2219,16 +2226,43 @@ public:
     // 0.3.200 (gpu budget): once per frame: a finished timer reading (if any) updates the controller and the world's level; a level change is
     // logged (the first 32 always, later with Diagnostics), the state on RenderProfile sample frames. GpuBudgetMs=0: level 0, nothing measured.
     void gpuBudgetFrame(){
+        // task 45: this frame's GPU latency wait (the previous Present's), smoothed per frame. Known only with the latency limit (command stream, framesAhead>=2);
+        // unknown: the budgets lighten as before 45. Not GPU-bound = the CPU is the limit, so the GPU budget buys nothing and the CPU budget acts.
+        const std::int64_t boundNow=qpcNow();
+        const float boundDt=boundQpc&&cpuFrequency.QuadPart>0?float(double(boundNow-boundQpc)/double(cpuFrequency.QuadPart)):0.f;
+        if(limitGpuLatency&&!latencyFailed)gpuBound.update(float(latencyLastMs),boundDt);else gpuBound.reset();
+        boundQpc=boundNow;
+        boundKnown=limitGpuLatency&&!latencyFailed;gpuLimited=!boundKnown||gpuBound.bound();
+        // The game thread's wait for this thread (Present + backpressure), from the stream's relaxed atomic counters: when the game never waits, this thread is not what limits the frame.
+        replayKnown=streamStats!=nullptr;
+        if(replayKnown){const std::uint64_t waitNs=NorthlightStream::get(streamStats->presentNs)+NorthlightStream::get(streamStats->backpressureNs);
+            replayWait.update(replayWaitPrevNs&&waitNs>=replayWaitPrevNs?float(double(waitNs-replayWaitPrevNs)*1e-6):0.f,boundDt);replayWaitPrevNs=waitNs;}
+        else replayWait.reset();
+        cpuLimited=(!replayKnown||replayWait.bound())&&(!boundKnown||!gpuBound.bound());
         const unsigned budget=world?world->gpuBudgetMs():0;
         if(!budget){gpuBudget.reset();gpuBudgetQpc=0;if(world)world->setGpuBudgetLevel(0);return;}
         double ms=0;
         if(gpuTimer&&gpuTimer->poll(ms)){const std::int64_t now=qpcNow();
             const float dt=gpuBudgetQpc&&cpuFrequency.QuadPart>0?float(double(now-gpuBudgetQpc)/double(cpuFrequency.QuadPart)):0.f;gpuBudgetQpc=now;gpuBudgetLastMs=ms;
-            const unsigned before=gpuBudget.level;world->setGpuBudgetLevel(gpuBudget.update(float(budget),float(ms),dt));
+            const unsigned before=gpuBudget.level;world->setGpuBudgetLevel(gpuBudget.update(float(budget),float(ms),dt,gpuLimited));
             if(gpuBudget.level!=before&&(gpuBudget.changes<=32||diagnostics()))
                 logf("GPUBUDGET level %u -> %u smoothed=%.3f budget=%u changes=%u",before,gpuBudget.level,double(gpuBudget.smoothed),budget,gpuBudget.changes);}
         if(limitGpuLatency&&sampled()&&NorthlightRenderThreadProbe::profiling()){logf("CSTREAM GPU latency waits=%llu waitMs=%.1f",(unsigned long long)latencyWaits,latencyWaitMs);latencyWaits=0;latencyWaitMs=0;}
-        if(sampled()&&NorthlightRenderThreadProbe::profiling())logf("GPUBUDGET ms=%.3f smoothed=%.3f budget=%.1f level=%u",gpuBudgetLastMs,double(gpuBudget.smoothed),double(budget),gpuBudget.level);
+        if(sampled()&&NorthlightRenderThreadProbe::profiling())logf("GPUBUDGET ms=%.3f smoothed=%.3f budget=%.1f level=%u gpuWait=%.2f gpuBound=%d",gpuBudgetLastMs,double(gpuBudget.smoothed),double(budget),gpuBudget.level,double(gpuBound.smoothed),boundKnown?int(gpuBound.bound()):-1);
+    }
+    // task 45: ActorShadowCpuMs. The effects span of this frame (renderEffects from the applied check to its return: the world render incl. the actor shadow replay,
+    // job joins and the effect passes' D3D calls; NOT the capture of the frame's draws, which is spread over per-draw hooks and only timed on sample frames) feeds a
+    // second controller (same hysteresis); its level sets the effective actor shadow radius. It lightens only while the frame is not GPU-bound (or the signal is unknown).
+    void cpuBudgetFrame(){
+        const unsigned budget=world?world->actorShadowCpuMs():0;
+        if(!budget){cpuBudget.reset();cpuBudgetQpc=0;cpuEffectsQpc=0;if(world)world->setCpuBudgetLevel(0);return;}
+        if(cpuEffectsQpc>0&&cpuFrequency.QuadPart>0){const std::int64_t now=qpcNow();
+            const float dt=cpuBudgetQpc?float(double(now-cpuBudgetQpc)/double(cpuFrequency.QuadPart)):0.f;cpuBudgetQpc=now;
+            const double ms=double(cpuEffectsQpc)*1000.0/double(cpuFrequency.QuadPart);cpuBudgetLastMs=ms;cpuEffectsQpc=0;
+            const unsigned before=cpuBudget.level;world->setCpuBudgetLevel(cpuBudget.update(float(budget),float(ms),dt,cpuLimited));
+            if(cpuBudget.level!=before&&(cpuBudget.changes<=32||diagnostics()))
+                logf("CPUBUDGET level %u -> %u smoothed=%.3f budget=%u radius=%u changes=%u",before,cpuBudget.level,double(cpuBudget.smoothed),budget,world->effectiveActorShadowRadius(),cpuBudget.changes);}
+        if(sampled()&&NorthlightRenderThreadProbe::profiling())logf("CPUBUDGET ms=%.3f smoothed=%.3f budget=%.1f level=%u radius=%u gpuBound=%d replayWait=%.2f replayBound=%d",cpuBudgetLastMs,double(cpuBudget.smoothed),double(budget),cpuBudget.level,world->effectiveActorShadowRadius(),boundKnown?int(gpuBound.bound()):-1,double(replayWait.smoothed),replayKnown?int(replayWait.bound()):-1);
     }
     void finishFrameImpl() {
         nameMaskRunEnd(); /* 0.3.212 (task 32) */
@@ -2241,7 +2275,7 @@ public:
         if(diagnostics()&&QueryPerformanceCounter(&intervalTick)&&frameIntervals.sample(intervalTick.QuadPart,cpuFrequency.QuadPart,intervalReport)){
             logf("FRAME interval device=%ld frame=%u tick=%lu enabled=%d samples=%u meanMs=%.3f p50Ms=%.3f p95Ms=%.3f maxMs=%.3f fps=%.2f gi=%u shadows=%u fog=%u focus=%d",diagnosticId,frame,(unsigned long)GetTickCount(),enabled,intervalReport.count,intervalReport.meanMs,intervalReport.p50Ms,intervalReport.p95Ms,intervalReport.maxMs,1000.0/intervalReport.meanMs,unsigned(frameEffects.gi),unsigned(frameEffects.shadows),unsigned(frameEffects.fog),int(intervalFocus));intervalFocus=true;}
         if(diagnostics())gpuProfile->poll();
-        gpuBudgetFrame();
+        gpuBudgetFrame();cpuBudgetFrame(); /* task 45 */
         // Poll only while this game owns foreground focus.
         bool modifiers=(GetAsyncKeyState(VK_CONTROL)&0x8000)&&(GetAsyncKeyState(VK_SHIFT)&0x8000);
         bool k10=focus&&modifiers&&(GetAsyncKeyState(VK_F10)&0x8000);
@@ -2548,6 +2582,7 @@ public:
         try{stream=NorthlightStream::StreamDevice::make(device,this,pp,std::move(options),&reason);}catch(...){reason="exception";}
         if(!stream){NorthlightStream::streamActive.store(false,std::memory_order_relaxed);NorthlightReplayCopies::enabled.store(false,std::memory_order_relaxed);target->setExclusiveOwner(false);target->adoptOwnerThread(); /* the gate owner is this thread again (a replay thread that ran has been joined) */
             logf("CSTREAM disabled reason=%s",reason);return device;}
+        target->streamStats=&stream->streamCore().q.stats; /* task 45: read-only (relaxed loads) by the CPU budget */
         target->limitGpuLatency=stream->framesAhead()>=2; /* 0.3.200 (pipeline): see Device::limitGpuLatency */
         logf("CSTREAM active gameTid=%lu replayTid=%lu exclusiveGate=%d framesAhead=%u frameSkip=%u occlusionLocal=%d budgetMiB=%u gpuLatencyLimit=%d",NorthlightStream::gameTid.load(),NorthlightStream::replayTid.load(),int(exclusiveOwner),stream->framesAhead(),frameSkip,int(occlusionLocal),unsigned(NorthlightStream::budgetForFramesAhead(framesAhead)>>20),int(target->limitGpuLatency));
         return stream;
