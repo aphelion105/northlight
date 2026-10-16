@@ -2,6 +2,8 @@
 #include "shadow_terrain.h"
 #include "shadow_bounds.h"
 #include "world_math.h"
+#include "mesh_buffer_store.h"
+#include "mesh_pool_trim.h"
 #include <cassert>
 #include <chrono>
 #include <cstdio>
@@ -14,11 +16,11 @@ namespace P=NorthlightWorldMeshPages;
 // 0.3.216 (issue #66): how much of the next build's pages an earlier build already holds, for sequential paging
 // (anchorModulus 0) and content-defined paging, with the page counts and 64 KiB-rounded GPU capacity.
 struct Sample {
-    WorldScene local,far;NorthlightWorldMesh::WorldMeshUploadPlan input;
+    WorldScene local,far;NorthlightWorldMesh::WorldMeshUploadPlan input,oldInput;
     P::Plan sequential,anchored;double sequentialMs=0,anchoredMs=0;
 };
-static uint64_t roundedCapacity(const P::Plan& plan) {
-    uint64_t bytes=0;for(const auto& p:plan.pages)for(uint64_t b:{uint64_t(p.vertices.size())*sizeof(WorldVertex),uint64_t(p.indices.size())*4})bytes+=(b+65535)/65536*65536;return bytes;
+static uint64_t roundedCapacity(const P::Plan& plan,uint64_t step=65536) {
+    uint64_t bytes=0;for(const auto& p:plan.pages)for(uint64_t b:{uint64_t(p.vertices.size())*sizeof(WorldVertex),uint64_t(p.indices.size())*4})bytes+=(b+step-1)/step*step;return bytes;
 }
 static std::unique_ptr<Sample> sample(const std::string& root,Vec3 c,std::string& error) {
     int tx=int(std::floor((17066.6666667-c.y)/533.3333333)),ty=int(std::floor((17066.6666667-c.x)/533.3333333));
@@ -32,10 +34,14 @@ static std::unique_ptr<Sample> sample(const std::string& root,Vec3 c,std::string
     assert(loadInstancedScenes(nearFiles,root+"/models",c-Vec3(288,288,320),c+Vec3(288,288,320),s->local,error));
     const float radius=NorthlightShadowTerrain::Radius;
     assert(loadInstancedScenes(farFiles,root+"/models",c-Vec3(radius,radius,radius),c+Vec3(radius,radius,radius),s->far,error,1));
-    assert(NorthlightShadowTerrain::build(s->local,s->far,c,s->input,error));
     using Clock=std::chrono::steady_clock;
     auto ms=[](Clock::time_point a){return std::chrono::duration<double,std::milli>(Clock::now()-a).count();};
-    auto t=Clock::now();assert(P::build(s->input,s->sequential,error,{},P::Options{0,0}));s->sequentialMs=ms(t);
+    // OLD = material-major plan order + sequential pages; NEW = the production spatial order + content-defined pages.
+    NorthlightWorldMesh::planOrder={0,false};
+    assert(NorthlightShadowTerrain::build(s->local,s->far,c,s->oldInput,error));
+    auto t=Clock::now();assert(P::build(s->oldInput,s->sequential,error,{},P::Options{0,0}));s->sequentialMs=ms(t);
+    NorthlightWorldMesh::planOrder=NorthlightWorldMesh::PlanOrder();
+    assert(NorthlightShadowTerrain::build(s->local,s->far,c,s->input,error));
     t=Clock::now();assert(P::build(s->input,s->anchored,error));s->anchoredMs=ms(t);
     return s;
 }
@@ -46,6 +52,42 @@ static void reuse(const P::Plan& prior,const P::Plan& next,size_t& pages,double&
     size_t hit=0;double hitBytes=0,all=0;
     for(const auto& p:next.pages){const double b=double(p.key.vertexBytes)+p.key.indexBytes;all+=b;if(keys.count(p.key)){++hit;hitBytes+=b;}}
     pages=hit;bytes=all?hitBytes/all:0;
+}
+// A walk of `steps` commits (one plan per step): the store is driven like the renderer (staging, upload sizing, commit, trim
+// decision). Gate: the store's peak pool stays below the old double-buffered pool (2 x the largest sequential mesh, 64 KiB
+// rounding) and, on a diagonal walk, page reuse is far above the old sequential paging's. Reports the table of the variants.
+static void walk(const std::string& root,const char* name,Vec3 c,Vec3 delta,unsigned steps,bool gateReuse) {
+    namespace S=NorthlightMeshBufferStore;
+    std::string error;S::Store store;NorthlightMeshPoolTrim::State trim;
+    std::unique_ptr<Sample> prior;double peakPool=0,oldMax=0,newReuse=0,oldReuse=0,activeSum=0,oldMeshSum=0;unsigned counted=0;size_t pagesSum=0,oldPagesSum=0,batchSum=0,oldBatchSum=0;
+    for(unsigned k=0;k<steps;++k) {
+        auto next=sample(root,c+delta*float(k),error);
+        std::vector<S::Key> keys;for(const auto& p:next->anchored.pages)keys.push_back(p.key);
+        assert(store.beginStaging(keys));
+        const auto& staging=store.staging();
+        for(size_t u=0;u<staging.upload.size();++u) { // the Create steps of the upload cursor
+            const uint32_t id=staging.uploadBuffer[u];const auto& key=keys[staging.upload[u]];assert(store.markWriting(id));
+            if(store.entries()[id].vbCapacity<key.vertexBytes)assert(store.setCapacity(id,true,uint32_t(S::roundBuffer(key.vertexBytes))));
+            if(store.entries()[id].ibCapacity<key.indexBytes)assert(store.setCapacity(id,false,uint32_t(S::roundBuffer(key.indexBytes))));
+        }
+        const auto stats=store.commit();
+        for(uint32_t i=0;i<keys.size();++i){const auto& e=store.entries()[store.bufferOf(i)];assert(e.keyValid&&e.key==keys[i]&&e.vbCapacity>=keys[i].vertexBytes&&e.ibCapacity>=keys[i].indexBytes);}
+        const uint64_t pool=store.poolBytes(),mesh=store.activeBytes();
+        if(const uint64_t request=trim.onCommit(pool,mesh,k?stats.uploadedCapacity:0))store.trimIdle(request,[](uint32_t){});
+        peakPool=std::max(peakPool,double(pool));const uint64_t oldMesh=roundedCapacity(next->sequential);oldMax=std::max(oldMax,double(oldMesh));
+        if(prior) {
+            size_t pages;double bytes;reuse(prior->sequential,next->sequential,pages,bytes);oldReuse+=bytes;
+            newReuse+=double(stats.reusedBytes)/double(stats.reusedBytes+stats.uploadedBytes);++counted;
+        }
+        activeSum+=double(mesh);oldMeshSum+=double(oldMesh);pagesSum+=next->anchored.pages.size();oldPagesSum+=next->sequential.pages.size();
+        batchSum+=next->anchored.batches.size();oldBatchSum+=next->sequential.batches.size();
+        prior=std::move(next);
+    }
+    const double MiB=1048576.;
+    std::printf("WALK %s %s: reuse old %.1f%% new %.1f%%; peak pool new %.1f MiB vs old 2x %.1f MiB; active mesh new %.1f old %.1f MiB; pages new %zu old %zu; batches new %zu old %zu (avg over %u commits)\n",name,gateReuse?"diagonal":"straight",
+        oldReuse/counted*100,newReuse/counted*100,peakPool/MiB,2*oldMax/MiB,activeSum/steps/MiB,oldMeshSum/steps/MiB,pagesSum/steps,oldPagesSum/steps,batchSum/steps,oldBatchSum/steps,steps);
+    assert(peakPool<2*oldMax);
+    assert(newReuse/counted>oldReuse/counted+.15);
 }
 static void measure(const std::string& root,const char* name,Vec3 c) {
     std::string error;
@@ -145,6 +187,8 @@ int main(int argc,char** argv) {
         std::printf("OWNERSHIP %s original plan %.3f MiB -> pages + retained metadata %.3f MiB (delta %+.3f MiB)\n",fixture.name,double(originalCpu)/1048576.,double(sealedCpu)/1048576.,(double(sealedCpu)-double(originalCpu))/1048576.);
         const auto& sealedPages=*ownedPages;
         measure(root,fixture.name,c);
+        walk(root,fixture.name,c,{14,14,0},8,true);
+        walk(root,fixture.name,c,{20,0,0},8,false);
         std::printf("PASS %s full local + far terrain: vertices %u -> %llu; triangles %u exact; batches %zu -> %zu; pages %zu; worker %.3f ms; pages CPU %.3f MiB; conservative rejected subbatches clip=%u directional=%u at 0/2/5/15/38 degrees\n",fixture.name,input.vertexCount,(unsigned long long)(sealedPages.vertexBytes/sizeof(WorldVertex)),input.triangleCount,input.batches.size(),sealedPages.batches.size(),sealedPages.pages.size(),ms,double(sealedPages.cpuBytes())/1048576.,rejected,directionalRejected);
     }
 }
