@@ -124,7 +124,6 @@
 #include "gi_solve_pool.h"
 #include "near_reserve.h"
 #include "capture_admission.h"
-#include "unused_capture.h"
 #include "effects_buckets.h"
 #include <cstdarg>
 #include "rigid_memory.h"
@@ -716,7 +715,6 @@ private:
     UINT width=0,height=0,vertexCount=0;
     struct Replay {
         IDirect3DVertexShader9* shader=nullptr,*originalShader=nullptr;
-        mutable std::uint32_t usedStamp=0;std::uint64_t unusedKey=0;bool unusedKeyed=false,unusedPredicted=false; /* task 43 (B): usedStamp = unusedCapture.frame() when any consumer used it this frame */
         NorthlightReplayBounds::Bounds pointBounds;
         NorthlightReplayBounds::WorkInfo boundsWork; // scheduling hint; cleared every frame, never an identity proof
         std::shared_ptr<const NorthlightReplayBounds::Prepared> boundsPrepared;
@@ -760,7 +758,7 @@ private:
         uint32_t staticProofMask=0,staticM2Mask=0;uint64_t staticProofRevision=0;std::string staticProofModel;const std::string* staticM2Model=nullptr; /* staticM2Model: the M2 proof's model key, owned by its StaticM2Dedup entry (valid for the frame) */ /* staticM2Mask: slots whose cache holds this rigid M2 (bounds in staticProofLow/High) */
         V staticProofLow,staticProofHigh;
         D3DPRIMITIVETYPE type;INT base;UINT min,vertices,start,count;bool indexed;
-        void releaseResources(bool retainSnapshot=false){unusedKeyed=unusedPredicted=false;unusedKey=0;usedStamp=0;NorthlightReplayCaptureConstants::reset(*this);program=nullptr;declCopy=nullptr;prepareStamp=0;declared=false;elementCount=0;drop(shader);drop(originalShader);pointBounds={};boundsWork={};boundsPrepared.reset();drop(decl);drop(index);drop(texture);for(auto& s:stream)drop(s);shared.reset();if(!retainSnapshot)snapshot=NorthlightDrawSnapshot::Mesh{};}
+        void releaseResources(bool retainSnapshot=false){NorthlightReplayCaptureConstants::reset(*this);program=nullptr;declCopy=nullptr;prepareStamp=0;declared=false;elementCount=0;drop(shader);drop(originalShader);pointBounds={};boundsWork={};boundsPrepared.reset();drop(decl);drop(index);drop(texture);for(auto& s:stream)drop(s);shared.reset();if(!retainSnapshot)snapshot=NorthlightDrawSnapshot::Mesh{};}
         ~Replay(){releaseResources();}
     };
     std::vector<std::unique_ptr<Replay>> replays,freeReplays,heldShadowReplays;
@@ -843,7 +841,7 @@ private:
     LONGLONG terrainCaptureTicks=0,replayCaptureTicks=0;
     LARGE_INTEGER captureFrequency={};
     unsigned terrainCaptureCalls=0,terrainUPCalls=0,replayCaptureCalls=0,unknownCaptureCalls=0;
-    NorthlightUnusedCapture::Memory unusedCapture;unsigned unusedPredicted=0,unusedPredictedUsed=0,unusedSkipped=0,unusedKnown=0,rejSmall=0,rejGate=0,rejCut=0,rejBudget=0,rejOther=0; /* task 43: per frame; WORLD CPU capture line */
+    unsigned rejSmall=0,rejGate=0,rejCut=0,rejBudget=0,rejOther=0; /* task 43: per frame; WORLD CPU capture line */
     std::uint64_t previousCacheHits=0;
     size_t capturedConstantBytes=0,capturedConstantCalls=0;
     // 0.3.180 (C1): the device mirror's constant clock, read in place under the draw's gate.
@@ -2134,18 +2132,6 @@ public:
              unsigned(NorthlightUpload::readBackLock()),unsigned(m.processVertices),
              m.copyServed/frames,m.copyServedBytes/frames/kib,m.copyFallback/frames,unsigned(m.copyFills),m.copyFillBytes/kib,unsigned(m.copyEvictions),unsigned(m.copyInvalidations),unsigned(m.copyRefused),m.copyResidentBytes/kib,unsigned(m.copyResidentBuffers),m.copyCapBytes/kib,m.copyLargeBytes/kib,unsigned(m.copyLargeGrants),unsigned(m.copyLargeDrops));
     }
-    // Task 43 (B): the capture frame's verdicts. A draw is "used" when a cascade, the actor map, a point cube, a GI packet or the static proof took it
-    // (usedStamp). Unused only counts as evidence when every consumer ran: no cascade reused or deferred this frame and no point light selected
-    // (its cube refreshes on its own schedule). unusedKnown: keyed draws seen; unusedPredictedUsed: predicted unused yet used (the visual cost in Mode 2).
-    void unusedObserve(){
-        if(!NorthlightUnusedCapture::Mode||captureMode!=CaptureFresh)return;
-        bool info=pointSelected.sourceId==0&&!captureShortfall;for(int slot=0;slot<4;++slot)info=info&&(cascadeActions[slot]=='R'||cascadeActions[slot]=='-');
-        const auto stamp=unusedCapture.frame();
-        for(const auto& p:replays){if(!p->unusedKeyed)continue;const bool used=p->usedStamp==stamp;++unusedKnown;
-            if(p->unusedPredicted&&used)++unusedPredictedUsed;
-            unusedCapture.observe(p->unusedKey,used,info);}
-        unusedCapture.endFrame();
-    }
     void endFrame(bool retainPool=true){
         flushDeferredLogs(); /* 0.3.176 (U0/S0): after every bucketed span of the frame */
         frameFence.endFrame(); /* 0.3.192 (DXVK3): the one Issue of the frame's fence, after every replay/terrain draw, before any early return; reset() calls endFrame() too */
@@ -2158,14 +2144,13 @@ public:
         replayBoundsAbandon(); /* render() joined it; packets are recycled below */
         paletteFrameValid=false;staticPivotReady=false;rigidMemory.clearDrawn(); /* 0.3.173: drawn marks are per capture frame */
         if(!valid||failed||workerFault())stateBlocks.clear();
-        unusedObserve();
         /* 0.3.149 RenderProfile lines: after every measured span of the frame */
         if(profileSampled())logRenderProfile();else{replayProfileUsed.clear();replayGiPacked.clear();}
         frameStaging=frameProbeUpload=false;
         logReplayProbeWindow();
         for(int slot=0;slot<4;++slot){lastCascadeActions[slot]=cascadeActions[slot];cascadeActions[slot]='-';}
         if(captureSampled&&captureFrequency.QuadPart>0){double ms=1000.0/double(captureFrequency.QuadPart);
-            logf("WORLD CPU capture terrain=%.3fms replay=%.3fms terrainCalls=%u terrainUP=%u replayCandidates=%u unknownCalls=%u acceptedReplay=%zu captureSkipped=%u rejSmall=%u rejGate=%u rejCut=%u rejBudget=%u unusedMode=%u unusedKnown=%u unusedPredicted=%u unusedPredictedUsed=%u unusedSkipped=%u unusedEntries=%zu",terrainCaptureTicks*ms,replayCaptureTicks*ms,terrainCaptureCalls,terrainUPCalls,replayCaptureCalls,unknownCaptureCalls,replays.size(),unsigned(captureMode==CaptureSkipped),rejSmall,rejGate,rejCut,rejBudget,NorthlightUnusedCapture::Mode,unusedKnown,unusedPredicted,unusedPredictedUsed,unusedSkipped,unusedCapture.size());
+            logf("WORLD CPU capture terrain=%.3fms replay=%.3fms terrainCalls=%u terrainUP=%u replayCandidates=%u unknownCalls=%u acceptedReplay=%zu captureSkipped=%u rejSmall=%u rejGate=%u rejCut=%u rejBudget=%u",terrainCaptureTicks*ms,replayCaptureTicks*ms,terrainCaptureCalls,terrainUPCalls,replayCaptureCalls,unknownCaptureCalls,replays.size(),unsigned(captureMode==CaptureSkipped),rejSmall,rejGate,rejCut,rejBudget);
         }
         if(captureSampled)logf("WORLD capture cache hits=%llu frameHits=%llu entries=%zu bytes=%llu constantsReadBytes=%zu constantReadCalls=%zu sm1Draws=%u relativeDraws=%u",(unsigned long long)terrainBoundsCache.persistentHits(),(unsigned long long)(terrainBoundsCache.persistentHits()-previousCacheHits),terrainBoundsCache.persistentEntries(),(unsigned long long)terrainBoundsCache.persistentBytes(),capturedConstantBytes,capturedConstantCalls,capturedSM1Draws,capturedRelativeDraws);
         if(captureSampled)logf("WORLD optimized caches terrainTrackedHits=%llu terrainAvoidedBytes=%llu boundsHits=%llu boundsMisses=%llu boundsAvoidedVertices=%llu boundsLookupMs=%.3f staticMaintenanceVisits=%llu staticPublications=%llu",
@@ -2220,7 +2205,7 @@ public:
         admission.endFrame(size_t(captureBudgetMiB)*1048576,replaySnapshots.bytesRead());admissionOn=false;rootMemo.clear();rootReads=rootMemoHits=0;gatedBodies.clear(); /* 0.3.211 (task 31): the next frame's cut, after the log read this frame's counters; no-op when no skinned draw armed it */
         previousCacheHits=terrainBoundsCache.persistentHits();capturedConstantBytes=capturedConstantCalls=0;capturedSM1Draws=capturedRelativeDraws=0;
         terrainCaptureTicks=replayCaptureTicks=0;terrainCaptureCalls=terrainUPCalls=replayCaptureCalls=unknownCaptureCalls=0;captureSampled=false;
-        unusedPredicted=unusedPredictedUsed=unusedSkipped=unusedKnown=rejSmall=rejGate=rejCut=rejBudget=rejOther=0;
+        rejSmall=rejGate=rejCut=rejBudget=rejOther=0;
         valid=false;traceContext=0;traceFog=0;legacyFogKnown=false;shadowFrameReady=false;legacyFog=NorthlightLegacyFog::Constants{};
         // Bound retained vector capacities across changing scenes. Reuse storage,
         // never old geometry: each subsequent draw still re-reads every byte.
@@ -2759,7 +2744,6 @@ public:
         if(!actorCaptureDecided){actorCaptureDecided=true;actorCaptureDue=!lastActorCapture||GetTickCount()-lastActorCapture>=200;}if(actorCaptureDue&&!actorJob)actorJob=std::make_shared<NorthlightActorGeometry::ActorJob>();return actorCaptureDue;}
     void appendActor(IDirect3DVertexShader9* original,const Replay& replay,bool sample=false){
         if(!actorCaptureEnabled())return;
-        replay.usedStamp=unusedCapture.frame(); /* a GI packet is a consumer */
         auto it=actorPrograms.find(original);if(it==actorPrograms.end())return;const auto& program=*it->second;
         if(!program.skinned&&!replay.mesh().dynamic)return;
         if(actorJob->packets.size()>=128)return;
@@ -2990,14 +2974,6 @@ public:
                     if(admit.verdict==NorthlightCaptureAdmission::Verdict::RadiusGate){fate.reason=NorthlightShadowFate::RadiusGate;gatedBodies.insert(gatedBodies.end(),root,root+3);}
                     else{fate.reason=NorthlightShadowFate::DistanceCut;captureShortfall=true;}
                     return;}}}
-        // Task 43 (B): a rooted skinned draw that no consumer used for NorthlightUnusedCapture::MinStreak information frames, same identity and
-        // root cell. Mode 1 only predicts (the draw is captured and the verdict checked at the end of the frame); Mode 2 skips the capture.
-        const bool unusedKeyed=NorthlightUnusedCapture::Mode&&rooted&&priority&&quality.actorShadows;
-        std::uint64_t unusedKey=0;bool unusedPredictedHere=false;
-        if(unusedKeyed){unusedKey=NorthlightUnusedCapture::key(reinterpret_cast<std::uintptr_t>(current),count,vertexTotal,root);
-            unusedPredictedHere=unusedCapture.predict(unusedKey);
-            if(unusedPredictedHere){++unusedPredicted;
-                if(NorthlightUnusedCapture::Mode>=2&&NorthlightNearReserve::test(nearAnchor,root)==NorthlightNearReserve::None&&!actorCaptureEnabled()){++unusedSkipped;fate.reason=NorthlightShadowFate::Unknown;return;}}}
         fate.reason=NorthlightShadowFate::CaptureBudget;
         // Only reject when no legal snapshot can fit, including cache hits
         // and UP draws. A previous oversized failure is not an exhaustion proof.
@@ -3030,7 +3006,6 @@ public:
         if(!snapshotFrameBegun)snapshotBeginFrame(sample);
         NorthlightDrawSnapshot::SnapshotSpan<decltype(snapshotMeter)> snapshotSpan(snapshotMeter); /* 0.3.181 (S3): to the constants phase or a return */
         std::unique_ptr<Replay,ReplayRecycle> p(acquireReplay().release(),ReplayRecycle{this});p->shadowSkinned=priority;p->shadowSelected=!smallShadow;p->shadowSmall=smallShadow;p->boneKnown=false;p->selfShadow=false;p->captureRootValid=rooted;if(rooted)std::memcpy(p->captureRoot,root,sizeof p->captureRoot);p->anchorValid=false;p->fateSlot=-1;p->fateClass=smallShadow?NorthlightShadowFate::Small:NorthlightShadowFate::NotRanked;p->fateDistance=0;p->projectionKind=kind;p->shader=metadata.replacement;p->shader->AddRef();p->originalShader=current;p->originalShader->AddRef();p->pointBounds={};
-        p->usedStamp=0;p->unusedKeyed=unusedKeyed;p->unusedKey=unusedKey;p->unusedPredicted=unusedPredictedHere;
         if(replaySnapshots.lookup()==NorthlightDrawSnapshot::Frame::Lookup::Prefetch&&!freeReplays.empty())prefetchReplay(*freeReplays.back()); /* 0.3.181 (S2) */
         if(FAILED(d->GetVertexDeclaration(&p->decl))||!p->decl)return;
         NorthlightDrawSnapshot::Draw draw{type,base,minimum,vertexTotal,start,count,indexed};NorthlightDrawSnapshot::Diagnostics why;
@@ -3268,7 +3243,6 @@ public:
     }
     void replayCullSettle(){for(auto& job:replayCulls)if(job.kicked){job.kicked=false;replayJobs_.wait(job.done);job.done.clearFailure();}}
     template<class Split,class Check> bool submitReplay(const Replay* p,NorthlightReplayDrawState::Cache& replayBindings,NorthlightReplayPoses::Pass<BOOL>& poseConstants,const float* rows,Split& split,size_t& replayConstantBytes,size_t& replayConstantCalls,Check&& ok){
-        p->usedStamp=unusedCapture.frame();
         if constexpr(!Split::Calls)return poseConstants.prepare(*p,rows); /* DiagReplayProbe logic-only mode: no D3D9 call */
         if(!ok(replayBindings.geometry(*p),"replay geometry state"))return false;
         split.mark(NorthlightRenderThreadProbe::State);
@@ -3672,7 +3646,6 @@ public:
                     // Diagnostic only (no behaviour change): the proved model must be in
                     // this slot's committed cache content. Must stay 0 (same-frame commit).
                     if(key.staticContent.valid&&!key.staticContent.contains(p->staticProofModel,p->staticProofRevision))++staticDedupUncommitted;
-                    p->usedStamp=unusedCapture.frame(); /* the proof needs this capture every frame */
                     ++staticDedupSkipped;continue;
                 }
                 // The actor map takes a caster whose bounds lie fully inside the inset, and keeps a skinned one while they lie within Stay (hysteresis,
@@ -3700,7 +3673,6 @@ public:
                 // recorded content holds the model at this revision with the replay's box inside the drawn bounds. Otherwise the replay is drawn.
                 if(p->staticM2Mask&(1u<<slot)&&p->staticM2Model&&cacheCurrent&&staticCasters.stats().readyModels&&StaticShadow::containsBounds(cachedMatrix,p->staticProofLow,p->staticProofHigh)&&
                    key.staticContent.containsBox(*p->staticM2Model,p->staticProofRevision,p->staticProofLow,p->staticProofHigh,StaticM2Dedup::BoundsPad)){
-                    p->usedStamp=unusedCapture.frame();
                     ++staticM2Skipped;++replaySlotM2Skipped[slot];continue;
                 }
                 ++replaySlotTested[slot];replaySlotBounded[slot]+=p->pointBounds.valid;

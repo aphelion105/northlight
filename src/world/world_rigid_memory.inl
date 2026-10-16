@@ -174,7 +174,7 @@
                     p->constantUsage=c.usage;p->projectionKind=c.projectionKind;p->cutoff=c.cutoff;p->addressU=c.addressU;p->addressV=c.addressV;
                     p->type=c.type;p->base=0;p->min=0;p->vertices=p->mesh().vertexCount;p->start=0;p->count=c.count;p->indexed=c.indexed;
                     p->captureRootValid=false;p->selfShadow=false;std::memcpy(p->anchor,e.world+9,sizeof p->anchor);p->anchorValid=true;p->pointBounds={};p->gpuCached=false;p->shadowSkinned=p->shadowSelected=true;p->shadowSmall=false;p->fateSlot=-1;p->fateClass=NorthlightShadowFate::NotRanked;p->fateDistance=0;
-                    p->unusedKeyed=p->unusedPredicted=false;p->unusedKey=0;p->usedStamp=0;p->staticProofMask=p->staticM2Mask=0;p->staticM2Model=nullptr;p->boneKnown=false;p->bone=NAN;p->constantGroup=++group;
+                    p->staticProofMask=p->staticM2Mask=0;p->staticM2Model=nullptr;p->boneKnown=false;p->bone=NAN;p->constantGroup=++group;
                     replays.emplace_back(p.release());++rigidInjected;}});
         }
         if(captureSampled){const auto& s=rigidMemory.stats();const double ms=rigidObserveMs+std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();
