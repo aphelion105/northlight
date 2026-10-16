@@ -107,7 +107,11 @@ int main(){
     }
     {   // task 45: WaitSignal: smoothed per-frame wait, bound above BoundWaitMs only
         B::WaitSignal s;for(int i=0;i<600;++i)s.update(0.f,Dt);assert(!s.bound()&&s.smoothed==0.f);
-        for(int i=0;i<600;++i)s.update(i%10==0?12.f:0.f,Dt);assert(s.bound()); /* 1.2 ms per frame on average */
+        for(int i=0;i<600;++i)s.update(1.f,Dt);assert(s.bound()); /* a 1 ms wait on every frame */
+        for(int i=0;i<600;++i)s.update(0.f,Dt);assert(!s.bound());
+        {bool ever=false;s.update(30.f,Dt);ever|=s.bound();for(int i=0;i<600;++i){s.update(0.f,Dt);ever|=s.bound();}assert(!ever);} /* one 30 ms hitch never counts (MaxWaitMs) */
+        {bool ever=false;for(int i=0;i<600;++i){s.update(i%10==0?12.f:0.f,Dt);ever|=s.bound();}assert(!ever);} /* a hitch every 10th frame is not a bound thread */
+        for(int i=0;i<600;++i)s.update(i%2==0?2.f:0.f,Dt);assert(s.bound()); /* a capped wait on every other frame is */
         for(int i=0;i<600;++i)s.update(0.f,Dt);assert(!s.bound());
         for(int i=0;i<10;++i)s.update(std::numeric_limits<float>::quiet_NaN(),Dt);assert(std::isfinite(s.smoothed));
         B::WaitSignal t;t.update(.2f,Dt);assert(!t.bound());t.reset();assert(!t.primed&&t.smoothed==0.f);

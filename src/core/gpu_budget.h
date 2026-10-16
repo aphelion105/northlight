@@ -23,6 +23,10 @@ constexpr float MaxDt=.25f;           // a long gap between samples counts as th
 // with framesAhead>=2). A smoothed wait over this many ms per frame counts as GPU-bound (measured: hundreds of ms per 120 frames when GPU-bound, ~0 when CPU-bound).
 constexpr float BoundWaitMs=.5f;
 // task 45: the same threshold for the game thread's wait for the replay thread (Present + backpressure waits per frame): above it the replay thread is the limit.
+// task 45: one frame's wait counts as at most this many ms. A single hitch (a 10-30 ms backpressure wait while a large texture uploads) kept the smoothed
+// wait over BoundWaitMs for more than DownSeconds and stepped the CPU budget down in game although the game thread never otherwise waited; only a wait
+// on most frames (bound needs about a quarter of the frames at the cap) now counts.
+constexpr float MaxWaitMs=2.f;
 
 // task 45: a per-frame wait (ms, 0 on a frame that did not wait) smoothed like the controller's time: the renderer's GPU latency wait (GPU-bound) and the
 // game thread's wait for the replay thread (replay-bound). Callers gate on whether the wait is measured at all.
@@ -31,6 +35,7 @@ struct WaitSignal {
     void reset(){*this=WaitSignal{};}
     void update(float waitMs,float dt){
         if(!std::isfinite(waitMs)||waitMs<0)waitMs=0;
+        if(waitMs>MaxWaitMs)waitMs=MaxWaitMs;
         dt=std::isfinite(dt)&&dt>0?(dt<MaxDt?dt:MaxDt):0.f;
         if(!primed){smoothed=waitMs;primed=true;}else smoothed+=(waitMs-smoothed)*(1.f-std::exp(-dt/SmoothSeconds));}
     bool bound()const{return smoothed>BoundWaitMs;}
