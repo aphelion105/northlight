@@ -33,24 +33,24 @@ static_assert(sizeof(CommandHeader)==8,"header is 8 bytes");
 
 constexpr std::size_t ChunkBytes=std::size_t(1)<<20;
 constexpr std::size_t MaxInlinePayload=ChunkBytes/4;   // larger payloads travel in a Block
-// 0.3.192 (CS): the stream's own memory shares a 32-bit address space with the game and the world renderer, which stalled for lack of a
-// contiguous block while the stream held ~100 MiB. Real sessions peak at ~12 MiB of queue; every cap is now 16 MiB (queue, texture shadows, buffer shadows; worst case ~64 MiB) plus the large allowance (36 MiB since 0.3.204, see below: worst case ~100 MiB
-// game-side) plus the replay-side copies' own 16+16 MiB, see replay_copies.h; ~20-30 MiB typically). 0.3.204 (task 21): the zero-copy slice rings add a budget of their own, independent of the adaptive caps: regular rings <= RingRegularBudgetBytes (20 MiB since 0.3.205) and large rings
-// <= LargeShadowBudgetBytes (36 MiB), live plus retired, and slices retired while the replay thread still reads them (transient, at most the shadows dropped meanwhile). Worst case game-side buffers: 32 (adaptive regular max) + 36 (large) + 20 + 36 (rings) = 124 MiB, + texture
-// shadows 16 + queue 32 + replay copies 32 = ~204 MiB; typical sessions use a small part (rings only grow while a buffer DISCARDs with the replay behind, and are freed after 60 idle frames) and the idle pools are kept small (kPoolMaxChunks, kMaxPooledBlockBytes, PoolTuner). 0.3.200 (pipeline): the queue may take 32 MiB with StreamFramesAhead >= 2 (budgetForFramesAhead below): worst case +16 MiB.
+// 0.3.192 (CS): the stream's own memory shares a 32-bit address space with the game and the world renderer. Real sessions hold 17-30 MiB in all (queue ~3-12, buffer shadows 4-50, texture shadows <= 16, rings only while a buffer DISCARDs with the replay behind;
+// rings are freed after 60 idle frames, idle pools are kept small: kPoolMaxChunks, kMaxPooledBlockBytes, PoolTuner).
+// 0.3.216 (issue #66 follow-up): memory pressure never refuses a shadow, a large grant or a ring slice, never drops one and never waits for a slice: each of those turned a buffer lock into a synchronous round trip to the replay thread
+// (hundreds per frame, an unplayable game), which costs more than the memory. Pressure only halves the queue budget and frees pooled chunks, Blocks, scratch, spare level allocations and free ring slices. WORST CASE game-side under pressure
+// (every cap at its maximum at once, which no session approaches): buffer shadows 32 (adaptive regular max) + large allowance 36 + rings 20 (regular) + 36 (large) + texture shadows 16 + queue 16 (the halved 32) = 156 MiB, plus the replay-side
+// copies' 16+16 MiB (replay_copies.h; halved under pressure) = ~172-188 MiB. The same without pressure but with the queue at 32: 172 + 16.
 constexpr std::size_t BudgetBytes=std::size_t(16)<<20;
 // 0.3.200 (pipeline): StreamFramesAhead (1..kMaxFramesAhead) frames may be in flight; the queue budget grows by BudgetBytes per extra frame up to
-// kMaxBudgetBytes (32 MiB: the address-space rule above; still halved under memory pressure). 1 = BudgetBytes, the 0.3.199 queue.
+// kMaxBudgetBytes (32 MiB; halved under memory pressure). 1 = BudgetBytes, the 0.3.199 queue.
 constexpr unsigned kMaxFramesAhead=3;
 constexpr std::size_t kMaxBudgetBytes=std::size_t(32)<<20;
 constexpr unsigned clampFramesAhead(unsigned n){return n<1?1:n>kMaxFramesAhead?kMaxFramesAhead:n;}
 constexpr std::size_t budgetForFramesAhead(unsigned n){return BudgetBytes*clampFramesAhead(n)<kMaxBudgetBytes?BudgetBytes*clampFramesAhead(n):kMaxBudgetBytes;}
-constexpr std::size_t TextureShadowBudgetBytes=std::size_t(16)<<20;   // per-level texture shadows; halved under pressure; evictable (LRU)
+constexpr std::size_t TextureShadowBudgetBytes=std::size_t(16)<<20;   // per-level texture shadows; not halved under pressure (0.3.216); evictable (LRU)
 // 0.3.192 (CS): CPU shadows of buffers (DYNAMIC and re-locked non-DYNAMIC ones; evictable LRU, never while locked). The cap is ADAPTIVE: ShadowBudgetBytes is
-// the base/start value; it grows by kShadowGrowStep (up to kShadowBudgetMaxBytes) only when the shadows thrash AND there is no memory pressure: the LRU had
+// the base/start value; it grows by kShadowGrowStep (up to kShadowBudgetMaxBytes) only when the shadows thrash (also under memory pressure since 0.3.216: refusing growth sent hot buffers to the synchronous pass-through): the LRU had
 // to evict a HOT shadow (locked within kShadowHotFrames Presents) or a re-lock found no victim at all. At most one step per kShadowGrowFrames Presents
-// (and none in the first interval). Under pressure the cap never grows, is halved (the pressure path evicts LRU down to it) and the adaptive part is
-// forgotten (back to the base); after the pressure it can grow again only by the thrash rule. Growth is game-thread; the cap is read by any thread.
+// (and none in the first interval). Pressure changes nothing here (0.3.216). Growth is game-thread; the cap is read by any thread.
 constexpr std::size_t ShadowBudgetBytes=std::size_t(16)<<20;
 // 0.3.205: the ring budget of regular-cap buffers (live + retired slices; was ShadowBudgetBytes, 16 MiB): in crowds several skinning buffers of 2-3 MiB DISCARD many times a frame and the 16 MiB ring
 // made them wait for a slice the replay thread still read (waitWhy budget). Rings are dropped under memory pressure and freed after 60 idle frames, so the extra 4 MiB is only held while they are busy.
@@ -59,9 +59,9 @@ constexpr std::size_t kShadowBudgetMaxBytes=std::size_t(32)<<20,kShadowGrowStep=
 constexpr std::uint64_t kShadowHotFrames=60,kShadowGrowFrames=60;
 // 0.3.192 (CS): LARGE-buffer allowance, outside the regular cap: a DYNAMIC buffer above a quarter of the current cap (so never admitted by shadowAdmit) up to
 // kMaxLargeShadow may keep a shadow in a separate budget of LargeShadowBudgetBytes (the game's ~15.8 MB dynamic buffer whose every lock was a synchronous pass-through, and
-// 0.3.204: on some clients also an ~18 MB one, so two fit). Only without memory pressure (granted nowhere under it, dropped when it starts, never while locked).
+// 0.3.204: on some clients also an ~18 MB one, so two fit). Granted and kept under memory pressure too (0.3.216: dropping it made every lock of the buffer a synchronous readback).
 // Granted at creation when the allowance is free, else at a write re-lock (readback) or a DISCARD lock; another large buffer takes it over only by LRU
-// when the holder is unlocked and idle for kLargeIdleFrames (a 16 MB readback must not ping-pong). Worst case +36 MiB game-side on top of the regular cap; still dropped whole under memory pressure.
+// when the holder is unlocked and idle for kLargeIdleFrames (a 16 MB readback must not ping-pong). Worst case +36 MiB game-side on top of the regular cap; not dropped under memory pressure (0.3.216).
 constexpr std::size_t LargeShadowBudgetBytes=std::size_t(36)<<20,kMaxLargeShadow=std::size_t(24)<<20;   // 0.3.204: was 16/16 MiB (one ~15.8 MB buffer); a player's client also has an 18 MB one
 constexpr std::uint64_t kLargeIdleFrames=60;
 constexpr std::size_t kPoolMaxChunks=4,kReserveChunks=2;   // idle chunks kept at most / after a quiet window
@@ -394,7 +394,7 @@ public:
     // Thrash signal (game thread, `frame` = Presents so far): one more step, if no pressure, below the maximum and past the interval. true = grew.
     bool growShadowCap(std::uint64_t frame){
         const std::size_t c=shadowCapCur_.load(std::memory_order_relaxed);
-        if(pressure_.load()||c+kShadowGrowStep>kShadowBudgetMaxBytes||frame<shadowGrowAt_)return false;
+        if(c+kShadowGrowStep>kShadowBudgetMaxBytes||frame<shadowGrowAt_)return false;
         shadowCapCur_.store(c+kShadowGrowStep,std::memory_order_relaxed);shadowGrowAt_=frame+kShadowGrowFrames;add(stats.shadowCapGrows);return true;
     }
     // A new shadow of `bytes` fits the cap now (shadowAdmit; making room by evicting is the game thread's job, see makeRoomForBufferShadow).

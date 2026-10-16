@@ -909,7 +909,7 @@ static void memoryPressureRelease(){
     core.memoryPressure.store(true);d->Present(nullptr,nullptr,nullptr,nullptr);rig.sync();
     CHECK(q.pressure()&&s.texShadowBytes.load()<=std::int64_t(q.texShadowCap())&&s.shadowBytes.load()<=std::int64_t(q.shadowCap()));
     CHECK(shadowOf(0)&&shadowOf(1)&&shadowOf(2)&&shadowOf(3)&&shadowOf(4));   // 0.3.216: no shadow is dropped under pressure (a drop is a synchronous readback at the next lock)
-    CHECK(rig.sd->replayerOf().memory().total()<=before.total()&&get(s.texShadowEvicted)==0);
+    {const auto after=rig.sd->replayerOf().memory();CHECK(after.queue<before.queue&&get(s.texShadowEvicted)==0);}   // 0.3.216: pressure frees pooled queue memory (strictly) and nothing a lock needs
     // the locked ones keep working and the game reads what the real resource holds
     CHECK(vb[4]->Unlock()==D3D_OK&&tex[0]->UnlockRect(0)==D3D_OK);
     void* p=nullptr;CHECK(vb[4]->Lock(0,16,&p,D3::kLockReadOnly)==D3D_OK&&((unsigned char*)p)[0]==0x77&&((unsigned char*)p)[15]==0x77);CHECK(vb[4]->Unlock()==D3D_OK);
