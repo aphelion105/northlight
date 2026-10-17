@@ -654,14 +654,18 @@ class Installer:
         return None
 
     def chosen_instances(self, client):
-        """The instance groups the client has, in group order: those of the cache's instances-manifest.json, else the
-        recorded choice (a run killed while the cache folder was being swapped has the manifest elsewhere)."""
-        manifest = read_json(client / CACHE / INSTANCES)
-        if manifest is not None:
-            groups = manifest.get('groups')
-            return [k for k in instance_maps.KEYS if isinstance(groups, dict) and k in groups]
-        groups = (read_json(client / CHOICE) or {}).get('groups')
-        return [k for k in instance_maps.KEYS if isinstance(groups, list) and k in groups]
+        """The instance groups the client is meant to have, in group order: the recorded choice (written before every
+        instance build, so a failed or killed run keeps it), else the cache's instances-manifest.json."""
+        choice = read_json(client / CHOICE)
+        if choice is not None:
+            groups = choice.get('groups')
+            return [k for k in instance_maps.KEYS if isinstance(groups, list) and k in groups]
+        return self.built_instances(client)
+
+    def built_instances(self, client):
+        """The groups the cache's instances-manifest.json records as built."""
+        groups = (read_json(client / CACHE / INSTANCES) or {}).get('groups')
+        return [k for k in instance_maps.KEYS if isinstance(groups, dict) and k in groups]
 
     def remember_instances(self, client, keys):
         """Record the choice beside world-cache/; the next run's default, and uninstall removes it."""
@@ -1101,7 +1105,7 @@ class Installer:
                 report['world_cache'] = 'not installed (--no-world-cache)'
             if action != 'skip':   # nothing selected and nothing built earlier: no process
                 self.remember_instances(client, p['instances'])   # before the long step: a failure keeps the intent
-                if p['instances'] or self.chosen_instances(client):
+                if p['instances'] or self.built_instances(client):   # also to remove what is built
                     # The layer is optional: its failure is a warning in the summary, never a reason to skip the renderer.
                     self.still_closed('building the instance world cache')
                     try:
@@ -1262,7 +1266,8 @@ class Installer:
         state = {'package_version': self.pkg.version, 'client': str(client),
                  'world_cache': {'owner': owner, 'variant': (manifest or {}).get('variant'),
                                  'digest': (manifest or {}).get('cache_digest') or (manifest or {}).get('fingerprint'),
-                                 'instances': self.chosen_instances(client)},
+                                 'instances': self.chosen_instances(client),
+                                 'instances_built': self.built_instances(client)},
                  'transactions': [{'backup': str(b), 'kind': r.get('kind', 'package'), 'version': r.get('version'),
                                    'files': len(r.get('files', []))} for b, r in self.all_transactions(client)],
                  'running': self.running(), 'game_started_by_this_tool': False}

@@ -37,8 +37,8 @@ INSTALLATION
 6. Then the installer
    - builds the world cache from the game's own files (after an interruption
      it continues where it left off),
-   - asks which dungeon and raid groups to add to the cache (optional, none by
-     default; see "Dungeon and raid world cache" below),
+   - builds the dungeon and raid groups you chose (optional, none by default;
+     see "Dungeon and raid world cache" below),
    - builds the lighting layer (Data/patch-z.mpq and Data/<locale>/patch-<locale>-z.mpq)
      from the game's own light tables in a few seconds,
    - installs the renderer as mods/d3d9.dll, adds it to WoWSilicon's
@@ -56,9 +56,11 @@ Options (add them after the command):
   --no-world-cache       the renderer only, without the cache (no static world shadows and no GI)
   --instances 1,2,6      the dungeon and raid groups to have, without the question: numbers 1-6, names, all or none
   --yes                  accept the recommended answers without asking
+
 Dungeon and raid world cache (optional): the continents get static world
 shadows and GI from the world cache. Dungeons and raids do not, unless you
-add them. The installer asks, after the continents are done:
+add them. The installer asks while it checks the client, before anything is
+built, and builds the chosen groups after the continents:
   1  Classic dungeons  ~0.6 GB  ~1.7 min
   2  Classic raids     ~0.3 GB  ~0.9 min
   3  TBC dungeons      ~0.6 GB  ~1.8 min

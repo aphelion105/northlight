@@ -949,6 +949,24 @@ class Install(Base):
         self.installer().install(self.client)
         self.assertEqual(self.instance_calls()[-1][self.instance_calls()[-1].index('--instances') + 1], 'classic-raids')
 
+    def test_a_failed_group_stays_chosen_for_the_next_yes_run(self):
+        self.installer().install(self.client, instances='classic-raids')
+
+        def failing_wotlk(script, args, show=True):
+            args = [str(x) for x in args]
+            if '--instances' in args and '--instances-plan' not in args and 'wotlk-raids' in args[args.index('--instances') + 1]:
+                return 1, {'event': 'failed', 'problems': ['instances wotlk-raids: no tiles built'], 'logs': []}
+            return self.fake_run(script, args, show)
+        inst = self.installer(yes=True); inst.run = failing_wotlk
+        report = inst.install(self.client, instances='classic-raids,wotlk-raids')
+        self.assertEqual(report['instances_failed']['groups'], ['classic-raids', 'wotlk-raids'])
+        state = self.installer().status(self.client)
+        self.assertEqual(state['world_cache']['instances'], ['classic-raids', 'wotlk-raids'])
+        self.assertEqual(state['world_cache']['instances_built'], ['classic-raids'])   # what differs is not built yet
+        self.installer(yes=True).install(self.client)
+        args = self.instance_calls()[-1]
+        self.assertEqual(args[args.index('--instances') + 1], 'classic-raids,wotlk-raids')
+
     def test_a_game_started_during_the_instance_step_still_stops_the_install(self):
         inst = self.installer()
         states = iter([[], [], [], ['wow.exe']])   # closed for the checks and the cache, running when the layer starts

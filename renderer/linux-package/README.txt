@@ -55,8 +55,8 @@ INSTALLATION
 5. Then the installer
    - builds the world cache from the game's own files (after an interruption
      it continues where it left off),
-   - asks which dungeon and raid groups to add to the cache (optional, none by
-     default; see "Dungeon and raid world cache" below),
+   - builds the dungeon and raid groups you chose (optional, none by default;
+     see "Dungeon and raid world cache" below),
    - builds the lighting layer (Data/patch-z.mpq and Data/<locale>/patch-<locale>-z.mpq)
      from the game's own light tables in a few seconds,
    - installs the renderer (d3d9.dll), DXVK and the settings files as one
@@ -108,7 +108,8 @@ Installation status without changes:  bash install.sh status --client ~/Games/Wo
 
 Dungeon and raid world cache (optional): the continents get static world
 shadows and GI from the world cache. Dungeons and raids do not, unless you
-add them. The installer asks, after the continents are done:
+add them. The installer asks while it checks the client, before anything is
+built, and builds the chosen groups after the continents:
   1  Classic dungeons  ~0.6 GB  ~1.7 min
   2  Classic raids     ~0.3 GB  ~0.9 min
   3  TBC dungeons      ~0.6 GB  ~1.8 min
