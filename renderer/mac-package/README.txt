@@ -71,8 +71,10 @@ Close the game and WoWSilicon. In Terminal, type  bash  and a space, drag
 "Uninstall Northlight.command" into the window and press Enter. Every change the
 installer made is undone from the newest to the oldest (mods/d3d9.dll, the
 dlls.txt line, the settings files, patch-z). The cache (world-cache) is removed
-only if the installer made it. The restore copies stay in the game folder's
-renderer-backups folder.
+only if the installer made it. The renderer-backups folder in the game folder
+keeps only the files that were there before Northlight first changed them;
+every update removes the copies of older Northlight versions, and uninstall
+puts those originals back. Files changed later are not overwritten.
 
 SOURCES AND LICENSES
 LICENSES folder: Python (PSF; python-build-standalone), StormLib (MIT) and the
