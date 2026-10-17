@@ -1,0 +1,416 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Northlight Zone Tuner</title>
+<style>
+:root {
+  --bg: #121417; --panel: #1b1e23; --line: #2a2f37; --text: #d9dde3; --dim: #8a929e; --faint: #5b626d;
+  --accent: #e0a43a; --live: #4fbf6a; --stale: #d9a13b; --dead: #d0544a; --sun: #f0c060; --moon: #8fb4ee;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--text); }
+body { font: 12px/1.35 system-ui, -apple-system, "Segoe UI", sans-serif; padding: 8px; max-width: 560px; }
+button, input { font: inherit; color: inherit; }
+button { background: #262a31; border: 1px solid var(--line); border-radius: 4px; padding: 2px 8px; cursor: pointer; }
+button:hover { border-color: var(--dim); }
+button:disabled { opacity: .4; cursor: default; }
+.num { font-variant-numeric: tabular-nums; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px; }
+
+header { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; display: grid; gap: 4px; }
+.top { display: flex; align-items: center; gap: 8px; }
+.pill { display: inline-flex; align-items: center; gap: 5px; font-weight: 600; text-transform: uppercase; font-size: 10px; letter-spacing: .05em; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dead); }
+.live .dot { background: var(--live); box-shadow: 0 0 6px var(--live); }
+.stale .dot { background: var(--stale); }
+.zone { font-size: 14px; font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zone small { color: var(--dim); font-weight: 400; font-size: 11px; }
+.meta { display: flex; gap: 10px; color: var(--dim); align-items: center; flex-wrap: wrap; }
+.night { flex: 1; min-width: 90px; height: 6px; border-radius: 3px; background: linear-gradient(90deg, var(--sun), var(--moon)); position: relative; }
+.night i { position: absolute; top: -3px; width: 2px; height: 12px; background: #fff; border-radius: 1px; }
+.switch { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
+.switch input { accent-color: var(--accent); margin: 0; }
+
+.hint { grid-column: 1 / -1; color: var(--faint); font-size: 10px; font-style: italic; margin-top: -2px; }
+.note { margin: 0 8px 4px; padding: 4px 6px; border-radius: 4px; background: #2a2416; color: var(--stale); font-size: 11px; }
+.note[hidden] { display: none; }
+.banner { margin-top: 6px; padding: 6px 8px; border-radius: 5px; background: #4a1d1a; border: 1px solid var(--dead); color: #ffd6d0; font-weight: 600; white-space: pre-wrap; }
+.banner[hidden] { display: none; }
+
+.target { display: flex; gap: 6px; align-items: center; margin: 8px 0 4px; }
+.target .label { flex: 1; min-width: 0; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.target .label b { color: var(--text); }
+button.pin.on { background: var(--accent); color: #1a1406; border-color: var(--accent); font-weight: 600; }
+.goto { width: 110px; background: #0e1013; border: 1px solid var(--line); border-radius: 4px; padding: 2px 5px; }
+
+details { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; margin-top: 6px; }
+summary { padding: 5px 8px; cursor: pointer; font-weight: 600; display: flex; gap: 6px; align-items: center; list-style: none; }
+summary::-webkit-details-marker { display: none; }
+summary::before { content: "\25B8"; color: var(--faint); }
+details[open] > summary::before { content: "\25BE"; }
+summary .count { color: var(--accent); font-weight: 400; font-size: 11px; }
+.sun > summary { color: var(--sun); } .moon > summary { color: var(--moon); }
+.rows { padding: 0 8px 6px; }
+
+.row { display: grid; grid-template-columns: 92px 1fr 52px 18px; gap: 2px 6px; align-items: center; padding: 3px 0 3px 6px; border-left: 2px solid transparent; border-top: 1px solid #22262c; }
+.row:first-child { border-top: none; }
+.row.ov { border-left-color: var(--accent); background: linear-gradient(90deg, rgba(224,164,58,.08), transparent 60%); }
+.row.ov .name { color: var(--accent); font-weight: 600; }
+.row.off { opacity: .35; pointer-events: none; }
+.name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.base { grid-column: 1 / -1; color: var(--faint); font-size: 10px; margin-top: -2px; display: flex; gap: 8px; }
+.base .eff { color: var(--dim); }
+.base .warn { color: var(--stale); }
+input[type=range] { width: 100%; margin: 0; accent-color: var(--accent); height: 16px; }
+input[type=number] { width: 52px; background: #0e1013; border: 1px solid var(--line); border-radius: 3px; padding: 1px 3px; text-align: right; }
+input[type=color] { width: 100%; height: 18px; padding: 0; border: 1px solid var(--line); border-radius: 3px; background: none; cursor: pointer; }
+.reset { padding: 0; width: 18px; height: 18px; line-height: 14px; color: var(--dim); visibility: hidden; }
+.row.ov .reset { visibility: visible; }
+.chan { display: grid; grid-template-columns: 12px 1fr 52px; gap: 6px; align-items: center; grid-column: 2 / 4; }
+.chan span { color: var(--faint); font-size: 10px; }
+.sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: -1px; border: 1px solid #0006; }
+
+.list { padding: 2px 8px 8px; display: grid; gap: 2px; }
+.list button { text-align: left; display: flex; justify-content: space-between; border-color: transparent; background: none; padding: 2px 4px; }
+.list button:hover { background: #242830; }
+.list button.cur { border-color: var(--accent); }
+.list .k { color: var(--dim); }
+.foot { display: flex; justify-content: space-between; gap: 8px; color: var(--faint); margin-top: 8px; font-size: 10px; }
+.empty { color: var(--faint); padding: 12px 8px; text-align: center; }
+</style>
+</head>
+<body>
+<header>
+  <div class="top">
+    <span id="status" class="pill"><span class="dot"></span><span id="statusText">connecting</span></span>
+    <span id="zone" class="zone">&mdash;</span>
+  </div>
+  <div class="meta">
+    <span>day</span><span class="night" title="night factor"><i id="nightMark" style="left:0"></i></span><span>night</span>
+    <span id="nightValue" class="num">&ndash;</span>
+    <label class="switch" title="[tuning] enabled: off = the game ignores all overrides (A/B compare)"><input type="checkbox" id="enabled"> overrides</label>
+  </div>
+  <div class="meta num" id="dllInfo"></div>
+</header>
+<div id="errorBanner" class="banner" hidden></div>
+<div id="writeBanner" class="banner" hidden></div>
+
+<div class="target">
+  <span class="label" id="targetLabel">No zone</span>
+  <input class="goto num" id="goto" placeholder="Map:ZoneID" title="Edit another section (Enter); pins it">
+  <button class="pin" id="pin" title="Pinned: walking into another zone does not switch the panel">Pin</button>
+  <button id="resetZone" title="Remove every override of this section">Reset zone</button>
+</div>
+
+<div id="editor"></div>
+<div id="noTarget" class="empty">Waiting for the game (northlight-tuning-state.json), or pick a zone below.</div>
+
+<details open>
+  <summary>Zones with overrides <span class="count" id="listCount"></span></summary>
+  <div class="list" id="list"></div>
+</details>
+<div class="foot"><span id="filePath"></span><span id="saved"></span></div>
+
+<script>
+'use strict';
+const KEYS = {
+  disc: {label: 'disc', rgb: true, min: 0, max: 1, step: .01},
+  disc_gain: {label: 'disc gain', min: 0, max: 4, step: .01},
+  light: {label: 'light (linear)', rgb: true, min: 0, max: 1, step: .01},
+  light_mix: {label: 'light mix', min: 0, max: 1, step: .01},
+  light_strength: {label: 'light strength', min: 0, max: 4, step: .01},
+  fog_gain: {label: 'fog gain', min: 0, max: 8, step: .05},
+  fog_height_scale: {label: 'fog height', min: .25, max: 4, step: .01},
+  horizon_haze: {label: 'horizon haze', min: 0, max: 4, step: .01},
+};
+const GROUPS = [
+  {id: 'sun', title: 'Sun', cls: 'sun', keys: Object.keys(KEYS).map(k => 'sun_' + k)},
+  {id: 'moon', title: 'Moon', cls: 'moon', keys: Object.keys(KEYS).map(k => 'moon_' + k)},
+  {id: 'terrain', title: 'Terrain shadow', keys: ['terrain_radius'], zoneOnly: true},
+  {id: 'fog', title: 'Ground fog', keys: ['ground_fog_day_scale', 'ground_fog_night_scale'], zoneOnly: true},
+];
+const SPEC = {
+  terrain_radius: {label: 'radius', min: 928, max: 4096, step: 32},
+  ground_fog_day_scale: {label: 'day scale', min: 0, max: 4, step: .05},
+  ground_fog_night_scale: {label: 'night scale', min: 0, max: 4, step: .05},
+};
+for (const k of Object.keys(KEYS)) SPEC['sun_' + k] = SPEC['moon_' + k] = KEYS[k];
+
+let live = null;          // /api/state
+let ov = null;            // /api/overrides
+let target = '';          // section being edited
+let pinned = false;
+let dragging = false;
+let local = {};           // target's overrides as edited here
+let baseBySection = {};   // /api/base values
+let pending = null;       // {timer, section, values}
+let inflight = 0;
+const uncommitted = new Set();   // zone-only keys dragged but not yet released
+const seqs = {};                 // last PUT seq per section
+const rows = {};
+
+const $ = id => document.getElementById(id);
+const r4 = v => Math.round(v * 10000) / 10000;
+const show = v => v === undefined || v === null ? '–' : Array.isArray(v) ? v.map(c => (+c).toFixed(2)).join(' ') : (+v % 1 ? (+v).toFixed(v >= 100 ? 0 : 2) : String(+v));
+const same = (a, b) => { a = [].concat(a); b = [].concat(b); return a.length === b.length && a.every((x, i) => Math.abs(x - b[i]) < 5e-4); };
+const hex = rgb => '#' + rgb.map(c => Math.round(Math.min(1, Math.max(0, c)) * 255).toString(16).padStart(2, '0')).join('');
+const unhex = h => [1, 3, 5].map(i => r4(parseInt(h.substr(i, 2), 16) / 255));
+const zoneOnly = k => k in SPEC && !k.startsWith('sun_') && !k.startsWith('moon_');
+
+async function api(path, opts) {
+  const res = await fetch(path, opts);
+  const body = await res.json().catch(() => ({error: 'bad response ' + res.status}));
+  if (!res.ok) throw new Error(body.error || res.statusText);
+  return body;
+}
+
+// ---- editor DOM ----
+function el(tag, attrs, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) k === 'class' ? e.className = v : e.setAttribute(k, v);
+  for (const k of kids) e.append(k);
+  return e;
+}
+function slider(spec, onInput) {
+  const range = el('input', {type: 'range', min: spec.min, max: spec.max, step: spec.step});
+  const num = el('input', {type: 'number', class: 'num', min: spec.min, max: spec.max, step: spec.step});
+  // input: while dragging; change: the value is committed (released, or typed and entered).
+  range.addEventListener('input', () => { num.value = range.value; onInput(+range.value, false); });
+  range.addEventListener('change', () => onInput(+range.value, true));
+  num.addEventListener('change', () => {
+    const v = Math.min(spec.max, Math.max(spec.min, +num.value || 0));
+    num.value = v; range.value = v; onInput(v, true);
+  });
+  return {range, num};
+}
+function buildRow(key) {
+  const spec = SPEC[key];
+  const row = el('div', {class: 'row'});
+  const reset = el('button', {class: 'reset', title: 'Reset to base (remove the override)'}, '×');
+  reset.addEventListener('click', () => { delete local[key]; render(); write(true); });
+  const base = el('div', {class: 'base'});
+  const r = {row, base, spec};
+  if (spec.rgb) {
+    const color = el('input', {type: 'color'});
+    color.addEventListener('input', () => setValue(key, unhex(color.value)));
+    r.color = color;
+    r.chans = [0, 1, 2].map(i => slider(spec, v => { const c = current(key).slice(); c[i] = v; setValue(key, c); }));
+    row.append(el('span', {class: 'name'}, spec.label), color, el('span'), reset);
+    ['R', 'G', 'B'].forEach((n, i) => row.append(el('div', {class: 'chan'}, el('span', {}, n), r.chans[i].range, r.chans[i].num)));
+    row.append(base);
+  } else {
+    const s = slider(spec, (v, committed) => setValue(key, v, committed));
+    r.range = s.range; r.num = s.num;
+    row.append(el('span', {class: 'name'}, spec.label), s.range, s.num, reset, base);
+    if (zoneOnly(key)) row.append(el('div', {class: 'hint'}, 'applies after release, rebuilds ~2 s'));
+  }
+  rows[key] = r;
+  return row;
+}
+function buildEditor() {
+  const root = $('editor');
+  for (const g of GROUPS) {
+    const d = el('details', {class: g.cls || '', open: ''});
+    const count = el('span', {class: 'count'});
+    const note = el('div', {class: 'note', hidden: ''}, 'No regional ground fog in this zone; use fog gain / fog height / horizon haze.');
+    d.append(el('summary', {}, g.title, count), note, el('div', {class: 'rows'}, ...g.keys.map(buildRow)));
+    g.node = d; g.count = count; g.note = note;
+    root.append(d);
+  }
+  document.addEventListener('pointerdown', e => { if (e.target.type === 'range' || e.target.type === 'color') dragging = true; });
+  for (const ev of ['pointerup', 'pointercancel', 'blur']) window.addEventListener(ev, () => { dragging = false; });
+}
+
+// ---- values ----
+function baseValues() {
+  // The game's own base for the zone it is in; the server's reading of the game root's inis otherwise.
+  if (live && live.state && live.section === target && live.state.base) return live.state.base;
+  return baseBySection[target] || {};
+}
+function current(key) { return key in local ? local[key] : baseValues()[key]; }
+// terrain_radius and the ground fog scales make the game rebuild its geometry (~2 s): they are
+// written only when committed, never while dragging. Celestial keys are written live.
+function setValue(key, v, committed) {
+  if (!target) return;
+  local[key] = Array.isArray(v) ? v.map(r4) : r4(v);
+  render();
+  if (!zoneOnly(key)) return write(false);
+  if (committed) { uncommitted.delete(key); write(true); } else uncommitted.add(key);
+}
+function nextSeq(section) {
+  seqs[section] = Math.max(Date.now(), (seqs[section] || 0) + 1);   // survives a page reload
+  return seqs[section];
+}
+function write(now) {
+  if (!target) return;
+  const values = JSON.parse(JSON.stringify(local));
+  const saved = (ov && ov.sections[target]) || {};
+  for (const k of uncommitted) { if (k in saved) values[k] = saved[k]; else delete values[k]; }
+  const job = {section: target, values};
+  if (pending) clearTimeout(pending.timer);
+  pending = job;
+  job.timer = setTimeout(() => flush(job), now ? 0 : 150);
+}
+async function flush(job) {
+  if (pending !== job) return;
+  pending = null; inflight++;
+  try {
+    const res = await api('/api/overrides', {method: 'PUT', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({section: job.section, values: job.values, seq: nextSeq(job.section)})});
+    $('writeBanner').hidden = true;
+    if (!res.stale) ov = res;
+    $('saved').textContent = 'saved ' + new Date().toLocaleTimeString();
+  } catch (e) {
+    $('writeBanner').textContent = 'Not saved: ' + e.message;
+    $('writeBanner').hidden = false;
+  } finally { inflight--; }
+  renderList();
+}
+async function setTarget(section, pin) {
+  if (pending) { clearTimeout(pending.timer); await flush(pending); }
+  if (pin !== undefined) pinned = pin;
+  target = section; uncommitted.clear();
+  local = JSON.parse(JSON.stringify((ov && ov.sections[section]) || {}));
+  if (section && !baseBySection[section]) {
+    try { baseBySection[section] = (await api('/api/base?section=' + encodeURIComponent(section))).values; }
+    catch (e) { baseBySection[section] = {}; }
+  }
+  render(); renderList();
+}
+
+// ---- rendering ----
+function render() {
+  const has = !!target;
+  $('editor').hidden = !has; $('noTarget').hidden = has;
+  $('resetZone').disabled = !has || !Object.keys(local).length;
+  $('pin').classList.toggle('on', pinned);
+  $('pin').textContent = pinned ? 'Pinned' : 'Pin';
+  const name = target && ov && ov.names && ov.names[target] || (live && live.section === target ? live.zoneName : '');
+  $('targetLabel').innerHTML = has ? 'Editing <b></b>' + (pinned ? '' : ' (follows player)') : 'No zone';
+  if (has) $('targetLabel').querySelector('b').textContent = '[' + target + ']' + (name ? ' ' + name : '');
+  if (!has) return;
+  const base = baseValues();
+  const inZone = live && live.section === target && live.status === 'live';
+  const eff = inZone ? live.state.effective || {} : null;
+  const noFog = inZone && live.state.groundFogActive === false;   // a missing field counts as true
+  for (const g of GROUPS) {
+    const off = g.zoneOnly && target === 'default';
+    g.node.hidden = off;
+    if (g.id === 'fog') {
+      g.note.hidden = !noFog;
+      for (const k of g.keys) rows[k].row.classList.toggle('off', noFog);
+    }
+    g.count.textContent = g.keys.filter(k => k in local).length ? g.keys.filter(k => k in local).length + ' changed' : '';
+  }
+  for (const [key, r] of Object.entries(rows)) {
+    const v = current(key), isOv = key in local;
+    r.row.classList.toggle('ov', isOv);
+    if (v !== undefined) {
+      if (r.spec.rgb) {
+        if (document.activeElement !== r.color) r.color.value = hex(v);
+        r.chans.forEach((c, i) => { if (!dragging || document.activeElement !== c.range) c.range.value = v[i]; if (document.activeElement !== c.num) c.num.value = v[i]; });
+      } else {
+        if (!dragging || document.activeElement !== r.range) r.range.value = v;
+        if (document.activeElement !== r.num) r.num.value = v;
+      }
+    }
+    const b = base[key];
+    r.base.textContent = '';
+    r.base.append(el('span', {}, 'base ', b !== undefined && r.spec.rgb ? el('span', {class: 'sw', style: 'background:' + hex(b)}) : '', ' ' + show(b)));
+    if (key === 'terrain_radius' && inZone) r.base.append(el('span', {class: 'eff'}, 'reached ' + show(live.state.terrainReach)));
+    if (eff && eff[key] !== undefined && v !== undefined && !same(eff[key], v))
+      r.base.append(el('span', {class: 'warn'}, 'game ' + show(eff[key]) + (live.state.overridesEnabled ? '' : ' (overrides off)')));
+  }
+}
+function renderList() {
+  const list = $('list'); list.textContent = '';
+  const sections = ov ? Object.keys(ov.sections) : [];
+  $('listCount').textContent = sections.length ? sections.length : '';
+  for (const s of sections) {
+    const b = el('button', {class: s === target ? 'cur' : ''},
+      el('span', {}, '[' + s + '] ' + ((ov.names || {})[s] || '')),
+      el('span', {class: 'k'}, Object.keys(ov.sections[s]).length + ' keys'));
+    b.addEventListener('click', () => setTarget(s, true));
+    list.append(b);
+  }
+  if (!sections.length) list.append(el('div', {class: 'k'}, 'none'));
+  const d = el('button', {}, el('span', {}, 'Edit [default] (all zones)'));
+  d.addEventListener('click', () => setTarget('default', true));
+  list.append(d);
+  if (ov) {
+    $('filePath').textContent = ov.path;
+    $('enabled').checked = ov.enabled;
+  }
+  const err = [];
+  if (live && live.state && live.state.overridesError) err.push('Game rejected northlight-tuning.ini: ' + live.state.overridesError);
+  if (ov && ov.error) err.push('northlight-tuning.ini: ' + ov.error);
+  if (live && live.status === 'invalid') err.push('State file unreadable: ' + live.error);
+  $('errorBanner').textContent = err.join('\n');
+  $('errorBanner').hidden = !err.length;
+}
+function renderStatus() {
+  const s = live ? live.status : 'offline';
+  const text = {live: 'live', stale: 'stale', missing: 'no state file', invalid: 'bad state', offline: 'tool offline'}[s] || s;
+  $('status').className = 'pill ' + s;
+  $('statusText').textContent = text + (s === 'stale' && live.age !== undefined ? ' ' + Math.round(live.age) + 's' : '');
+  const st = live && live.state;
+  if (st) {
+    const zone = $('zone'); zone.textContent = (live.zoneName || (st.zone ? 'zone ' + st.zone : 'unknown zone')) + ' ';
+    zone.append(el('small', {}, (st.map || '?') + ':' + st.zone));
+    $('nightMark').style.left = 'calc(' + Math.min(1, Math.max(0, st.night || 0)) * 100 + '% - 1px)';
+    $('nightValue').textContent = (+st.night || 0).toFixed(2);
+    $('dllInfo').textContent = (st.build || '') + '  rev ' + st.overridesRevision + '  ' + st.overridesLoaded + ' applied' + (st.overridesEnabled ? '' : '  (overrides OFF in game)');
+  } else {
+    $('zone').textContent = '—'; $('dllInfo').textContent = live && live.path ? live.path : '';
+  }
+}
+
+// ---- polling ----
+async function pollState() {
+  try { live = await api('/api/state'); } catch (e) { live = null; }
+  renderStatus();
+  if (!pinned && !dragging && !pending && !inflight && live && live.section && live.section !== target) await setTarget(live.section);
+  else render();
+  renderList();
+}
+async function pollOverrides() {
+  if (dragging || pending || inflight || uncommitted.size) return;
+  try {
+    ov = await api('/api/overrides');
+    if (target && !dragging && !pending && !inflight && !uncommitted.size) {
+      const fresh = ov.sections[target] || {};
+      if (JSON.stringify(fresh) !== JSON.stringify(local)) { local = JSON.parse(JSON.stringify(fresh)); render(); }
+    }
+  } catch (e) { /* shown by the state poll */ }
+  renderList();
+}
+
+$('enabled').addEventListener('change', async e => {
+  try { ov = await api('/api/overrides', {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({enabled: e.target.checked})}); $('writeBanner').hidden = true; }
+  catch (err) { $('writeBanner').textContent = 'Not saved: ' + err.message; $('writeBanner').hidden = false; }
+  renderList();
+});
+$('pin').addEventListener('click', () => {
+  pinned = !pinned;
+  if (!pinned && live && live.section && live.section !== target) setTarget(live.section); else render();
+});
+$('resetZone').addEventListener('click', () => {
+  if (target && confirm('Remove every override of [' + target + ']?')) { local = {}; render(); write(true); }
+});
+$('goto').addEventListener('keydown', e => {
+  if (e.key !== 'Enter') return;
+  const v = e.target.value.trim();
+  if (v === 'default' || /^(Azeroth|Kalimdor|Expansion01|Northrend):\d{1,6}$/.test(v)) { setTarget(v, true); e.target.value = ''; }
+  else e.target.style.borderColor = 'var(--dead)';
+});
+$('goto').addEventListener('input', e => { e.target.style.borderColor = ''; });
+
+buildEditor();
+render();
+(async () => { await pollOverrides(); await pollState(); })();
+setInterval(pollState, 500);
+setInterval(pollOverrides, 1000);
+</script>
+</body>
+</html>
