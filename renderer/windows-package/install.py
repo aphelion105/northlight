@@ -3,7 +3,10 @@
 The renderer is installed as the game-folder d3d9.dll (a D3D9 proxy); wow.exe is
 never read or written, so any wow.exe works. A foreign game-folder d3d9.dll
 (DXVK, ReShade) is moved to renderer-backends/legacy/legacy_d3d9.dll: only the
-proxy may carry the module name d3d9.dll. Restore returns every file exactly."""
+proxy may carry the module name d3d9.dll. Restore returns every file exactly.
+A transaction copies each file it replaces, so an interrupted run rolls back byte for byte. Once a run is installed,
+consolidate() keeps only the copies of the files as they were before Northlight first changed them (the copies of
+our own older versions are deleted); restore then puts the originals back."""
 import argparse
 import hashlib
 import json
@@ -105,6 +108,10 @@ def is_renderer(data):
     """Any renderer build carries its log banner; every proxy build also its PROXY start-up line."""
     return MARKER in data or PROXY_SIGNATURE in data
 
+def afters(e):
+    """Every digest the transaction entry may have left at its path: its after, plus those of the entries merged into it."""
+    return {e['after'], *e.get('afters', [])}
+
 def is_ours(client, name=PROXY):
     """client/name is a renderer build, or holds exactly what one of our unrestored transactions wrote there
     (ownership by recorded digest: a build is recognised without matching any name inside it)."""
@@ -112,7 +119,7 @@ def is_ours(client, name=PROXY):
     if not path.is_file(): return False
     data = path.read_bytes()
     return is_renderer(data) or hashlib.sha256(data).hexdigest() in \
-        {e['after'] for _, r in transactions(client) for e in r['files'] if e['path'] == name}
+        {a for _, r in transactions(client) for e in r['files'] if e['path'] == name for a in afters(e)}
 
 def config_backend(path):
     if not path.is_file(): return None
@@ -140,12 +147,14 @@ def chain_problems(client, chain):
             problems.append((backup, 'Backup belongs to another client')); continue
         for e in record['files']:
             current = now(e['path'])
+            ok = {e['before']} | afters(e)
             # A user-editable settings file that was edited after installation is left as it is.
-            if e.get('preserve') and current not in (e['before'], e['after']): continue
-            if current not in (e['before'], e['after']):
+            if e.get('preserve') and current not in ok: continue
+            if current not in ok:
                 problems.append((backup, 'File changed after installation: '+str(safe_path(client, e['path'])))); continue
-            if e['before'] and sha(safe_path(backup/'before', e['path'])) != e['before']:
-                problems.append((backup, 'Backup damaged: '+e['path']))
+            if e['before']:
+                copy = safe_path(backup/'before', e['path'])
+                if not copy.is_file() or sha(copy) != e['before']: problems.append((backup, 'Backup damaged: '+e['path']))
             state[e['path']] = e['before']
     return problems
 
@@ -164,24 +173,112 @@ def restore(client, backup):
     for e in reversed(record['files']):
         target = safe_path(client, e['path'])
         current = sha(target) if target.exists() else None
-        if current == e['before'] or (e.get('preserve') and current != e['after']): continue
+        if current == e['before'] or (e.get('preserve') and current not in afters(e)): continue
         if e['before'] is None: target.unlink(missing_ok=True)
         else: replace_file(safe_path(backup/'before', e['path']), target)
     record['status'] = 'restored'
     atomic_json(backup/'transaction.json', record)
     print('Restored previous files:', backup)
 
+def install_order(t):
+    """Sort key of (folder, record): the second, then the exact creation time (same-second installs), then the folder name."""
+    return (t[0].name[:15], t[1].get('created', ''), t[0].name)
+
+def load_records(root, kind, client, restored=False):
+    """Records of this kind and client under root/*/transaction.json, oldest first: [(folder, record)]. Unreadable
+    JSON is skipped. restored=False leaves out the restored ones."""
+    found = []
+    for path in root.glob('*/transaction.json'):
+        try:
+            record = json.loads(path.read_text(encoding='utf-8'))
+            if record.get('kind', 'package') == kind and Path(record.get('client', '')).resolve() == client.resolve() and \
+                    (restored or record.get('status') != 'restored'):
+                found.append((path.parent, record))
+        except (OSError, ValueError, AttributeError, TypeError): continue
+    return sorted(found, key=install_order)
+
 def transactions(client, root=None):
     """Unrestored package transactions of this client, oldest first: [(backup folder, record)]."""
-    found = []
-    for path in (root or client/'renderer-backups').glob('*/transaction.json'):
-        try: record = json.loads(path.read_text(encoding='utf-8'))
-        except (OSError, ValueError): continue
-        if record.get('kind', 'package') == 'package' and record.get('status') != 'restored' and \
-                Path(record.get('client', '')).resolve() == client.resolve():
-            found.append((path.parent, record))
-    # Install order: second, then the exact creation time (same-second installs), then the folder name.
-    return sorted(found, key=lambda t: (t[0].name[:15], t[1].get('created', ''), t[0].name))
+    return load_records(root or client/'renderer-backups', 'package', client)
+
+def tree_size(path):
+    return sum(f.stat().st_size for f in path.rglob('*') if f.is_file() and not f.is_symlink()) if path.is_dir() else 0
+
+def consolidate_records(records):
+    """Keep only the originals of the records [(folder, record)] (oldest first, every status, one kind, one client).
+    Per path, an entry is a start when its before is not something an earlier live entry (or a restored record) of
+    that path wrote; the rest are dropped, together with their copies. A start's after becomes the last after of its
+    segment and its afters the union of the segment's, so every digest we wrote stays recognisable.
+    Returns (bytes freed, removed folders, reason or None): with a reason nothing was written or deleted. Every
+    intermediate state is a valid chain: records are rewritten oldest first, deletion comes last."""
+    live = [(b, r) for b, r in records if r.get('status') != 'restored']
+    dead = [b for b, r in records if r.get('status') == 'restored']
+    def listed(e):
+        return [*e.get('afters', []), e['after']]
+    try:
+        for _, r in live:
+            for e in r['files']: e['path'], e['before'], e['after'], listed(e)
+    except (KeyError, TypeError, AttributeError): return 0, [], 'a transaction record is malformed'
+    known, starts, last = {}, {}, {}   # per path key: digests seen | start entries | the latest start
+    for b, r in records:
+        if r.get('status') == 'restored' and isinstance(r.get('files'), list):
+            for e in r['files']:
+                try: known.setdefault(e['path'].lower(), set()).update(listed(e))
+                except (KeyError, TypeError, AttributeError): pass
+    restored_afters = {k: set(v) for k, v in known.items()}
+    keep = []   # (folder, record, entries to keep)
+    for b, r in live:
+        entries = []
+        for e in r['files']:
+            key = e['path'].lower()
+            if key in last and e['before'] in known[key]:
+                start = last[key]
+                start['after'] = e['after']
+                start['afters'] += [a for a in listed(e) if a not in start['afters']]
+            else:
+                start = dict(e); start['afters'] = list(dict.fromkeys(listed(e)))
+                last[key] = start; entries.append(start); known.setdefault(key, set())
+            known[key].update(listed(e))
+        keep.append((b, r, entries))
+    for key, start in last.items():
+        start['afters'] += [a for a in sorted(restored_afters.get(key, ()), key=str) if a not in start['afters']]
+    for _, _, entries in keep:
+        for start in entries:
+            if set(start['afters']) == {start['after']}: del start['afters']
+    # Validate before any write: every kept original must be there and intact.
+    used = set()
+    for b, _, entries in keep:
+        for start in entries:
+            if start['before'] is None: continue
+            try:
+                copy = safe_path(b/'before', start['path'])
+                if not copy.is_file() or sha(copy) != start['before']: return 0, [], 'the saved original of '+start['path']+' is missing or damaged'
+            except (OSError, ValueError): return 0, [], 'the saved original of '+start['path']+' cannot be read'
+            st = copy.stat(); used.add((st.st_dev, st.st_ino))   # by identity: a case-insensitive disk may spell the folders differently
+    # Rewrite oldest first, emptied records too (files: []), so no half-merged record is left under a rewritten one.
+    for b, r, entries in keep:
+        if entries != r['files']: atomic_json(b/'transaction.json', {**r, 'files': entries})
+    # Delete only after every rewrite.
+    freed, removed = 0, []
+    for b, _, entries in keep:
+        if not entries: freed += tree_size(b); shutil.rmtree(b); removed.append(b)
+    for b, _, entries in keep:
+        if not entries: continue
+        before = b/'before'
+        for f in sorted(before.rglob('*'), reverse=True) if before.is_dir() else ():
+            if f.is_file() or f.is_symlink():
+                if f.is_symlink() or (f.stat().st_dev, f.stat().st_ino) not in used: freed += f.lstat().st_size; f.unlink()
+            elif not any(f.iterdir()): f.rmdir()
+        if before.is_dir() and not any(before.iterdir()): before.rmdir()
+        freed += tree_size(b/'staged'); shutil.rmtree(b/'staged', ignore_errors=True)
+    for b in dead:
+        freed += tree_size(b); shutil.rmtree(b); removed.append(b)
+    return freed, removed, None
+
+def consolidate(client):
+    """consolidate_records over this client's package transactions: (bytes freed, removed folders, reason or None)."""
+    root = client/'renderer-backups'
+    return consolidate_records(load_records(root, 'package', client, restored=True)) if root.is_dir() else (0, [], None)
 
 def legacy_cache_transactions(client):
     """Unrestored transactions of the old full packages (0.3.98-0.3.144), which recorded every world-cache file."""
@@ -405,11 +502,14 @@ def main():
     else:
         if args.backup: backup=args.backup.resolve(strict=True)
         else:
-            choices=sorted((client/'renderer-backups').glob('*/transaction.json'))
-            choices=[p.parent for p in choices if json.loads(p.read_text())['status']!='restored']
-            if not choices: raise ValueError('No unrestored backup found')
-            backup=choices[-1]
-            print('Restore:',backup)
+            # Updates keep only the originals (consolidate), so there is no single step back: restore the whole chain.
+            chain=list(reversed(transactions(client)))
+            if not chain: raise ValueError('No unrestored backup found')
+            problems=chain_problems(client,chain)
+            if problems: raise ValueError(problems[0][1])
+            for backup,_ in chain:
+                print('Restore:',backup); restore(client,backup)
+            return
         restore(client,backup)
 
 if __name__=='__main__':

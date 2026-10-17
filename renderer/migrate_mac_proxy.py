@@ -24,6 +24,9 @@ Refused before any write unless WoWSilicon's dlls.txt preload is active and it d
 not use MTLD3D for this client.
 Restore removes only what is still ours (dlls.txt line, mods/d3d9.dll, backend
 copy, ini); a recorded path outside these four is left as it is.
+Every migration copies the files it replaces, so an interrupted one undoes itself byte for byte.
+consolidate() then drops the copies of our own older versions and keeps only the originals
+(the records stay a valid chain; undo recognises every digest we wrote).
 The player installer (northlight_install.py) calls plan() and apply() with its own
 backup root (<client>/renderer-backups/mac-proxy, never the package or a repository).
 """
@@ -114,8 +117,8 @@ def write(path,data):
 
 def recorded(client,roots):
     """sha256 values our unrestored migrations of this client wrote to mods/d3d9.dll."""
-    return {e['after'] for d in backups(client,roots) if (r:=json.loads((d/'transaction.json').read_text())).get('status')!='restored'
-            for e in r['files'] if e['path']==PROXY}
+    return {a for d in backups(client,roots) if (r:=json.loads((d/'transaction.json').read_text())).get('status')!='restored'
+            for e in r['files'] if e['path']==PROXY for a in m.afters(e)}
 def ours(data,digests=()):
     """A renderer build (banner or PROXY start-up line), or exactly what one of our migrations wrote."""
     return m.is_renderer(data) or digest(data) in digests
@@ -156,7 +159,7 @@ def undo(client,steps,record_dir):
             else:report.append('dlls.txt: '+ENTRY+' already absent')
             continue
         if now is None:report.append(s['path']+': already absent');continue
-        mine=digest(now)==s['after'] or (s['path']==PROXY and m.is_renderer(now))
+        mine=digest(now) in m.afters(s) or (s['path']==PROXY and m.is_renderer(now))
         if not mine:report.append(s['path']+': changed since the migration; left as it is');continue
         if s['before'] is None:path.unlink();report.append(s['path']+': removed')
         else:
@@ -197,8 +200,20 @@ def apply(client,dll,backup_root,roots=()):
     return record_dir
 
 def backups(client,roots):
-    found=sorted((p.parent for root in roots for p in root.glob('*/transaction.json')),key=lambda d:d.name)
-    return [d for d in found if (r:=json.loads((d/'transaction.json').read_text())).get('kind')==KIND and Path(r['client'])==client]
+    """Migration records of this client, oldest first (install order, as install.transactions); unreadable or malformed ones are skipped."""
+    found=[]
+    for root in roots:
+        for p in root.glob('*/transaction.json'):
+            try:
+                r=json.loads(p.read_text(encoding='utf-8'))
+                if r.get('kind')==KIND and Path(r['client']).resolve()==client.resolve() and isinstance(r['files'],list):found.append((p.parent,r))
+            except (OSError,ValueError,KeyError,TypeError,AttributeError):continue
+    return [d for d,_ in sorted(found,key=m.install_order)]
+
+def consolidate(client,root):
+    """Keep only the originals of this client's migrations under root (see install.consolidate_records):
+    (bytes freed, removed folders, reason or None)."""
+    return m.consolidate_records(m.load_records(root,KIND,client,restored=True)) if root.is_dir() else (0,[],None)
 
 def info(client):
     """Informational identity lines (never preconditions): the game-folder d3d9.dll."""
@@ -254,7 +269,9 @@ def main(argv=None):
     for warning in launcher(client):print('  WARNING:',warning)
     if not args.apply:print('Dry run: nothing written. Add --apply to migrate.');return
     record_dir=apply(client,args.dll,root,roots)
-    print('Migrated. Proxy preloaded from dlls.txt. Rollback record:',record_dir)
+    freed,_,why=consolidate(client,root)
+    print('Migrated. Proxy preloaded from dlls.txt. Rollback record:',record_dir if record_dir.exists() else root)
+    if why:print('Older backups kept as they are:',why)
 
 if __name__=='__main__':
     try:main()

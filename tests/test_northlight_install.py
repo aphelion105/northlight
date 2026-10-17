@@ -551,9 +551,17 @@ class Install(Base):
             self.pkg_root = self.version_package(160 + i)
             self.installer().install(self.client, world_cache=False)
 
+    def backup_bytes(self):
+        return sum(p.stat().st_size for p in (self.client / 'renderer-backups').rglob('*') if p.is_file() and p.suffix != '.json')
+
     def test_uninstall_after_three_stacked_installs(self):
-        self.stack()
-        self.assertGreaterEqual(len([b for b, r in self.installer().all_transactions(self.client) if r.get('kind', 'package') == 'package']), 3)
+        sizes = []
+        for i in range(1, 4):
+            self.pkg_root = self.version_package(160 + i)
+            self.installer().install(self.client, world_cache=False)
+            sizes.append(self.backup_bytes())
+        self.assertLessEqual(len([b for b, r in self.installer().all_transactions(self.client) if r.get('kind', 'package') == 'package']), 1)
+        self.assertEqual(sizes[1], sizes[2])   # an update adds no copies of our own files
         self.installer().uninstall(self.client)
         self.assertEqual(tree(self.client), self.before)
 
@@ -571,8 +579,10 @@ class Install(Base):
         self.assertNotIn('restored', state[1])
 
     def test_uninstall_refused_with_damaged_backup(self):
+        # A pre-existing file is replaced by the first install, so its original is what the record keeps.
+        (self.client / 'celestial-profiles.ini').write_bytes(b'[Sun]\nmine=1\n')
+        self.before = tree(self.client)
         self.stack()
-        # The first install had nothing to back up; the second one's before/ holds the first one's files.
         damaged = [p for b, r in reversed(self.installer().all_transactions(self.client)) if r.get('kind', 'package') == 'package'
                    for p in (b / 'before').rglob('*') if p.is_file()]
         self.assertTrue(damaged); damaged[0].write_bytes(b'bad')
@@ -581,6 +591,66 @@ class Install(Base):
             self.installer().uninstall(self.client)
         self.assertIn('Backup damaged', str(cm.exception))
         self.assertEqual(self.stacked_state(), state)
+
+    def stack_untidied(self, n=3):
+        """An old-style chain: one record per install, as releases before the tidy step left it."""
+        with patch.object(fi.Installer, 'tidy_backups', lambda self_, client: (0, None)):
+            self.stack(n)
+
+    def test_old_style_chain_is_pruned_by_the_next_install(self):
+        self.stack_untidied()
+        self.assertGreater(len(self.backups()), 2)
+        before_bytes = self.backup_bytes()
+        report = self.installer().install(self.client, world_cache=False)
+        self.assertGreater(report['backups_freed'], 0)
+        self.assertLess(self.backup_bytes(), before_bytes)
+        self.assertIn('MiB of older Northlight copies removed; only the original files are kept', self.last_output)
+        self.assertEqual(report['backups'], [])   # this run's own record, if any, was merged away or never made
+        self.assertLessEqual(len([b for b, r in self.installer().all_transactions(self.client) if r.get('kind', 'package') == 'package']), 1)
+        self.installer().uninstall(self.client)
+        self.assertEqual(tree(self.client), self.before)
+
+    def test_tidy_leaves_unrelated_folders_and_other_clients(self):
+        root = self.client / 'renderer-backups'
+        (root / 'unknown').mkdir(parents=True); (root / 'unknown/keep.txt').write_bytes(b'x')
+        other = root / '20200101-000000-aaaaaaaa'; (other / 'before').mkdir(parents=True); (other / 'before/f').write_bytes(b'f')
+        (other / 'transaction.json').write_text(json.dumps({'kind': 'package', 'client': str(self.base / 'elsewhere'),
+                                                            'status': 'installed', 'files': [{'path': 'f', 'before': sha(b'f'), 'after': sha(b'g')}]}))
+        self.stack()
+        for kept in ('unknown/keep.txt', '20200101-000000-aaaaaaaa/before/f', '20200101-000000-aaaaaaaa/transaction.json'):
+            self.assertTrue((root / kept).exists(), kept)
+
+    def test_user_edited_quality_ini_survives_install_tidy_and_uninstall(self):
+        self.installer().install(self.client, world_cache=False)
+        (self.client / 'northlight-quality.ini').write_bytes(b'[Quality]\nPreset=Balanced\n')
+        self.stack()
+        self.assertEqual((self.client / 'northlight-quality.ini').read_bytes(), b'[Quality]\nPreset=Balanced\n')
+        self.installer().uninstall(self.client)
+        self.assertEqual((self.client / 'northlight-quality.ini').read_bytes(), b'[Quality]\nPreset=Balanced\n')
+        rest = tree(self.client); rest.pop('northlight-quality.ini')
+        self.assertEqual(rest, {k: v for k, v in self.before.items() if k != 'northlight-quality.ini'})
+
+    def test_our_art_layer_is_not_foreign_after_tidying(self):
+        layers = [b'MPQ\x1a layer one', b'MPQ\x1a layer two', b'MPQ\x1a layer three']
+        for layer in layers:
+            with patch.object(sys.modules[__name__], 'ART', layer):
+                report = self.installer().install(self.client)
+            self.assertEqual(self.installer().foreign_z(self.client, 'enUS'), [])
+        self.assertIn(f'replaced {sha(layers[2])[:8]} Data/patch-z.mpq', report['art_layer'])
+        self.installer().uninstall(self.client)
+        self.assertEqual(tree(self.client), self.before)
+
+    def test_stacked_migrations_leave_one_mac_record(self):
+        if self.platform != 'mac':
+            self.skipTest('macOS proxy migrations only')
+        self.stack()
+        records = mig.backups(self.client, [self.installer().mac_backups(self.client)])
+        self.assertEqual(len(records), 1)
+        self.assertEqual({p.relative_to(records[0]).as_posix() for p in records[0].rglob('*') if p.is_file()} - {'transaction.json'},
+                         {p.relative_to(records[0]).as_posix() for p in (records[0] / 'before').rglob('*') if p.is_file()})
+        self.assertNotIn(b'MZ Northlight renderer 0.3.16', b''.join(p.read_bytes() for p in (records[0] / 'before').rglob('d3d9.dll')))
+        self.installer().uninstall(self.client)
+        self.assertEqual(tree(self.client), self.before)
 
     def test_uninstall_keeps_foreign_cache(self):
         (self.client / 'world-cache/dev').mkdir(parents=True); (self.client / 'world-cache/dev/x.fg3').write_bytes(b'dev')
@@ -701,7 +771,7 @@ class WindowsInstall(Install):
         legacy = INSTALL.install(self.client, old)
         self.installer().install(self.client, backend='native')
         self.assertEqual(self.identified, ['zy'])   # the old patch-y goes away first: the stock match still holds
-        self.assertEqual(json.loads((legacy / 'transaction.json').read_text())['status'], 'restored')
+        self.assertFalse(legacy.exists())   # restored, then tidied away
         self.assertFalse((self.client / 'Data/patch-y.mpq').exists())
         self.assertEqual((self.client / 'd3d9.dll').read_bytes(), PROXY)
         self.assertEqual((self.client / 'northlight-renderer.ini').read_bytes(), b'[Renderer]\r\nBackend=native\r\n')
@@ -723,7 +793,7 @@ class WindowsInstall(Install):
         self.assertEqual([b for b, _ in INSTALL.transactions(self.client)], [first, second])
         self.installer().install(self.client, backend='native')
         for b in (first, second):
-            self.assertEqual(json.loads((b / 'transaction.json').read_text())['status'], 'restored')
+            self.assertFalse(b.exists())   # restored, then tidied away
         self.assertEqual((self.client / 'd3d9.dll').read_bytes(), PROXY)
         self.assertFalse((self.client / 'world-cache/a.fgm').exists())
         self.installer().uninstall(self.client)

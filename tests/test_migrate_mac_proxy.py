@@ -8,7 +8,8 @@ failure injection at every step, semantic restore (Mod Manager re-sorts, user
 removals); wow.exe is never read or written. No Wine or game."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp; fp.use_source_modules()
-import hashlib,importlib.util,io,json,os,shutil,tempfile,unittest
+import hashlib,importlib.util,io,json,os,shutil,tempfile,types,unittest
+from datetime import datetime,timedelta
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
@@ -143,9 +144,10 @@ class Migration(unittest.TestCase):
         old=b'MZ renamed-away build 0.3.165';(self.client/'mods/d3d9.dll').write_bytes(old);self.old_record(old)
         self.before=tree(self.client);self.run_main('--apply')
         self.assertEqual(tree(self.client),{**self.migrated(),'mods/d3d9.dll':PROXY})
-        record_dir=sorted(self.backups.glob('*'))[-1];files=json.loads((record_dir/'transaction.json').read_text())['files']
-        self.assertEqual([f['before'] for f in files if f['path']==mig.PROXY],[sha(old)])
-        self.assertEqual((record_dir/'before'/mig.PROXY).read_bytes(),old)
+        # The consolidation merged the replacement into the older record: it keeps the original (absent) and both digests.
+        files=json.loads((self.backups/'20260101-000000-old/transaction.json').read_text())['files']
+        self.assertEqual([(f['before'],f['after'],set(f['afters'])) for f in files if f['path']==mig.PROXY],[(None,sha(PROXY),{sha(old),sha(PROXY)})])
+        self.assertEqual([p.name for p in self.backups.rglob('d3d9.dll')],[])
     def test_old_signature_proxy_is_accepted_without_record(self):
         old=b'MZ renamed-away build; PROXY module=%ls root=%ls';(self.client/'mods/d3d9.dll').write_bytes(old)
         self.before=tree(self.client);self.run_main('--apply')
@@ -198,6 +200,46 @@ class Migration(unittest.TestCase):
         self.assertEqual(mig.with_entry('a.dll'),'a.dll\nmods/d3d9.dll\n');self.assertEqual(mig.with_entry(''),'mods/d3d9.dll\n')
         self.assertEqual(mig.with_entry('MODS\\D3D9.DLL\r\n'),'MODS\\D3D9.DLL\r\n')
         self.assertEqual(mig.without_entry('x\r\n Mods/D3D9.dll \r\ny'),'x\r\ny');self.assertEqual(mig.without_entry('x\n'),'x\n')
+
+    def migrate_versions(self,n=3):
+        """n migrations, each with a newer build (the proxy is replaced every time)."""
+        for i in range(1,n+1):
+            self.dll.write_bytes(PROXY+b' v%d'%i);self.run_main('--apply')
+    def test_consolidate_keeps_one_record_without_old_proxy_copies(self):
+        self.before=tree(self.client);self.migrate_versions()
+        records=list(self.backups.glob('*/transaction.json'));self.assertEqual(len(records),1)
+        record=json.loads(records[0].read_text())
+        self.assertEqual(tree(self.client)['mods/d3d9.dll'],PROXY+b' v3')
+        for e in record['files']:
+            if e['path']!='dlls.txt':self.assertEqual(sha(tree(self.client)[e['path']]),e['after'])
+        self.assertEqual([p.name for p in records[0].parent.rglob('d3d9.dll')],[])   # no copy of an older mods/d3d9.dll
+        self.assertEqual(mig.consolidate(self.client,self.backups)[2:],(None,))
+        self.run_main('--restore','--apply')
+        self.assertEqual(tree(self.client),self.before)
+    def test_consolidate_aborts_on_a_damaged_original_copy(self):
+        (self.client/'northlight-renderer.ini').write_bytes(b'[Renderer]\r\nBackend=native\r\n')
+        self.before=tree(self.client);self.migrate_versions(2)
+        copy=next(self.backups.glob('*/before/northlight-renderer.ini'));copy.write_bytes(b'bad')
+        files=tree(self.backups)
+        freed,removed,why=mig.consolidate(self.client,self.backups)
+        self.assertEqual((freed,removed),(0,[]));self.assertIn('northlight-renderer.ini',why);self.assertEqual(tree(self.backups),files)
+    def test_same_second_records_keep_install_order_and_damaged_json_is_skipped(self):
+        ticks=iter(range(1000));hexes=iter(range(10**6))
+        fake_dt=types.SimpleNamespace(now=lambda:datetime(2030,1,1,12,0,0)+timedelta(microseconds=next(ticks)))
+        fake_uuid=types.SimpleNamespace(uuid4=lambda:types.SimpleNamespace(hex='%08x'%(0xfffffff-next(hexes))+'0'*24))
+        self.before=tree(self.client);dirs=[]
+        with patch.object(mig,'datetime',fake_dt),patch.object(mig,'uuid',fake_uuid):
+            for i in range(1,4):
+                self.dll.write_bytes(PROXY+b' v%d'%i);dirs.append(mig.apply(self.client.resolve(),self.dll,self.backups))
+        self.assertGreater(dirs[0].name,dirs[2].name)
+        (self.backups/'broken').mkdir();(self.backups/'broken/transaction.json').write_text('{not json')
+        (self.backups/'odd').mkdir();(self.backups/'odd/transaction.json').write_text('[]')
+        self.assertEqual(mig.backups(self.client.resolve(),[self.backups]),dirs)
+        self.assertEqual(mig.recorded(self.client.resolve(),[self.backups]),{sha(PROXY+b' v%d'%i) for i in (1,2,3)})
+        self.assertEqual(mig.consolidate(self.client.resolve(),self.backups)[2],None)
+        self.assertTrue((self.backups/'broken/transaction.json').exists())
+        self.assertEqual(mig.backups(self.client.resolve(),[self.backups]),dirs[:1])
+        self.run_main('--restore','--apply');self.assertEqual(tree(self.client),self.before)
 
 @unittest.skipUnless(all((LIVE/n).is_file() for n in ['wow.exe','d3d9.dll','dlls.txt']),'live client files not present')
 class RealFilesCopy(unittest.TestCase):

@@ -242,8 +242,10 @@ UNINSTALL
 Close the game and open Uninstall.cmd. Give the same game folder. Every change
 the installer made is undone from the newest to the oldest, including the game
 folder's earlier d3d9.dll and the patch-z files. The cache (world-cache) is
-removed only if the installer made it. The restore copies stay in the game
-folder's renderer-backups folder. Files changed later are not overwritten;
+removed only if the installer made it. The renderer-backups folder in the game
+folder keeps only the files that were there before Northlight first changed
+them; every update removes the copies of older Northlight versions, and
+uninstall puts those originals back. Files changed later are not overwritten;
 a conflict stops the restore before any change.
   Uninstall.cmd --client "C:\Games\WoW"
 

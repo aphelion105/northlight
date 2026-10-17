@@ -32,7 +32,9 @@ The launchers (Install Northlight.command, Install.cmd, install.sh) run this wit
 A failed pipeline step shows the last lines of its log and the log's path on the console.
 One run per client at a time (<client>/northlight-installer.lock). Rerunning is safe: current parts are skipped. Uninstall restores every transaction of this
 client, newest first, and deletes the world cache only if this installer or install_world_cache
-made it. Every transaction's backups stay in <client>/renderer-backups. Log: <package>/logs/.
+made it. <client>/renderer-backups keeps only the files as they were before Northlight first changed
+them: each install copies what it replaces (so an interrupted run rolls back), then drops the copies of
+older Northlight versions and of restored transactions (tidy_backups). Log: <package>/logs/.
 """
 import argparse
 import contextlib
@@ -718,7 +720,7 @@ class Installer:
         for path in (client / 'renderer-backups').glob('*/transaction.json'):
             record = read_json(path) or {}
             if Path(record.get('client', '')).resolve() == client:
-                found |= {e['after'] for e in record.get('files', []) if e['path'].lower() == name.lower() and e['after']}
+                found |= {a for e in record.get('files', []) if e['path'].lower() == name.lower() for a in INSTALL.afters(e) if a}
         return found
 
     def foreign_z(self, client, locale):
@@ -787,6 +789,15 @@ class Installer:
         return sorted(found, key=lambda br: (br[0].name[:15], br[1].get('kind', 'package') == 'package',
                                               br[1].get('created', ''), br[0].name),
                       reverse=True)
+
+    def tidy_backups(self, client):
+        """Drop the copies of Northlight's own older versions and of restored transactions; only the original files
+        stay (package records, and on macOS the migration records). Returns (bytes freed, reason it stopped or None)."""
+        freed, _, why = INSTALL.consolidate(client)
+        if why is None and self.platform == 'mac':
+            more, _, why = migrate().consolidate(client, self.mac_backups(client))
+            freed += more
+        return freed, why
 
     def restore(self, client, backup, record):
         if record.get('kind', 'package') == 'package':
@@ -1006,8 +1017,13 @@ class Installer:
                 payload = ('installed: ' if payload.startswith('kept') else payload + '; ') + ', '.join(files)
         if self.proxy:   # the leftover of 0.3.189-0.3.194, whatever the backend; only after the commit
             INSTALL.safe_path(client, INSTALL.LEGACY_DXVK3_MARKER).unlink(missing_ok=True)
-        report.update(payload=payload, backups=[str(b) for b in backups])
-        changed = backups or not report['world_cache'].startswith(('kept', 'not'))
+        changed = bool(backups) or not report['world_cache'].startswith(('kept', 'not'))
+        try:   # never fails the install: the copies just stay
+            freed, kept_why = self.tidy_backups(client)
+        except (OSError, ValueError) as e:
+            freed, kept_why = 0, str(e)
+        backups = [b for b in backups if b.exists()]   # the run's own record is often merged away
+        report.update(payload=payload, backups=[str(b) for b in backups], backups_freed=freed)
         self.say('')
         self.say(f'Northlight renderer {self.pkg.version}: ' + ('installed.' if changed else 'already installed; nothing changed.'))
         self.say(f'  world cache: {report["world_cache"]}')
@@ -1017,6 +1033,10 @@ class Installer:
                 self.say('    ' + iwc.archive_warning_text(warning))
         self.say(f'  art layer:   {report["art_layer"]}')
         self.say(f'  renderer:    {payload}' + (f' (backend {p["backend"]})' if self.proxy else ''))
+        if freed:
+            self.say(f'  backups:     {freed / (1 << 20):.1f} MiB of older Northlight copies removed; only the original files are kept')
+        if kept_why:
+            self.say(f'  backups:     kept as they are: {kept_why}')
         for b in backups:
             self.say('  rollback:   ', b)
         if self.platform == 'linux':

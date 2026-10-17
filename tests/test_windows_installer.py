@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import tempfile
 import types
 import unittest
@@ -418,5 +419,209 @@ class InstallerTests(unittest.TestCase):
         with patch.object(m,'datetime',fake_dt),patch.object(m,'uuid',fake_uuid):backups=self.stack()
         self.assertEqual(len({b.name[:15] for b in backups}),1);self.assertGreater(backups[0].name,backups[2].name)
         self.assertEqual([b for b,_ in m.transactions(self.client)],backups)
+
+    # ---- consolidate: only the originals stay ----
+    def backup_files(self):
+        root=self.client/'renderer-backups'
+        return {p.relative_to(root).as_posix():p.read_bytes() for p in root.rglob('*') if p.is_file()} if root.exists() else {}
+    def copy_bytes(self):
+        return sum(len(d) for n,d in self.backup_files().items() if '/before/' in n)
+    def update(self,i):
+        self.set_payload('d3d9.dll',PROXY+b' v%d'%i)
+        if i==2:self.set_payload('northlight-renderer.ini',b'[Renderer]\r\nBackend=native\r\n')
+        return m.install(self.client,self.pkg,version='v%d'%i)
+    def restore_all(self):
+        for b,_ in self.chain():m.restore(self.client,b)
+    def test_consolidate_leaves_one_record_with_only_originals(self):
+        self.foreign();before=self.snapshot();self.stack()
+        freed,removed,why=m.consolidate(self.client)
+        self.assertIsNone(why);self.assertGreater(freed,0);self.assertEqual(len(removed),2)
+        chain=m.transactions(self.client);self.assertEqual(len(chain),1)
+        record=chain[0][1]
+        for e in record['files']:   # the disproof: what is on disk is what the record says it wrote
+            self.assertEqual(hashlib.sha256((self.client/e['path']).read_bytes()).hexdigest(),e['after'],e['path'])
+        self.assertEqual({p.relative_to(chain[0][0]).as_posix() for p in chain[0][0].rglob('*') if p.is_file()},
+                         {'transaction.json','before/d3d9.dll'})
+        self.assertEqual(m.chain_problems(self.client,self.chain()),[])
+        self.restore_all()
+        self.assertEqual(self.snapshot(),before)   # foreign d3d9.dll back, absent files gone
+    def test_consolidate_is_idempotent_and_repeated_updates_add_no_copies(self):
+        self.foreign();before=self.snapshot();sizes=[]
+        for i in range(1,5):
+            self.update(i);self.assertIsNone(m.consolidate(self.client)[2]);sizes.append(self.copy_bytes())
+        self.assertEqual(len(set(sizes)),1)
+        self.assertEqual(m.consolidate(self.client),(0,[],None))
+        self.restore_all();self.assertEqual(self.snapshot(),before)
+    def test_consolidate_keeps_a_foreign_intermediate_as_a_start(self):
+        self.foreign();first=self.update(1)
+        (self.client/'d3d9.dll').write_bytes(b'second foreign d3d9')   # the user swapped it between installs
+        self.update(2)
+        problems=m.chain_problems(self.client,self.chain())
+        self.assertTrue(problems)
+        m.consolidate(self.client)
+        self.assertEqual([(b.name,t) for b,t in m.chain_problems(self.client,self.chain())],[(b.name,t) for b,t in problems])
+        copies={p.read_bytes() for p in (self.client/'renderer-backups').rglob('before/d3d9.dll')}
+        self.assertEqual(copies,{FOREIGN,b'second foreign d3d9'})
+        m.restore(self.client,self.chain()[0][0])
+        self.assertEqual(self.read('d3d9.dll'),b'second foreign d3d9')
+    def tx(self,changes):
+        """Commit {path: bytes or None} as one transaction of staged files."""
+        plan,staged=[],{}
+        for name,data in changes.items():
+            cur=self.client/name;old=m.sha(cur) if cur.exists() else None
+            plan.append({'path':name,'before':old,'after':None if data is None else hashlib.sha256(data).hexdigest(),**({'source':'staged'} if data is not None else {})})
+            if data is not None:staged[name]=data
+        return m.commit(self.client,plan,staged,self.pkg/'payload')
+    def test_consolidate_collapses_a_removal_followed_by_a_re_add(self):
+        name='extra/a.bin'
+        for data in (b'one',None,b'two'):self.tx({name:data})
+        freed,removed,why=m.consolidate(self.client)
+        self.assertIsNone(why);self.assertEqual(len(m.transactions(self.client)),1);self.assertEqual(len(removed),2)
+        self.assertEqual(self.read(name),b'two');self.assertEqual(m.chain_problems(self.client,self.chain()),[])
+        self.restore_all();self.assertIsNone(self.read(name))
+    def test_consolidate_aborts_without_changes_on_a_damaged_original(self):
+        self.foreign();backups=self.stack();(backups[0]/'before/d3d9.dll').write_bytes(b'bad')
+        files=self.backup_files()
+        freed,removed,why=m.consolidate(self.client)
+        self.assertEqual((freed,removed),(0,[]));self.assertIn('d3d9.dll',why)
+        self.assertEqual(self.backup_files(),files)
+    def test_consolidate_leaves_unrelated_folders_and_removes_restored_ones(self):
+        self.foreign();backups=self.stack()
+        root=self.client/'renderer-backups'
+        (root/'unknown').mkdir();(root/'unknown/keep.txt').write_bytes(b'x')
+        (root/'broken').mkdir();(root/'broken/transaction.json').write_text('{not json')
+        other=root/'20200101-000000-aaaaaaaa';other.mkdir();(other/'before').mkdir();(other/'before/f').write_bytes(b'f')
+        record=json.loads((backups[0]/'transaction.json').read_text());record['client']=str(self.base/'elsewhere')
+        (other/'transaction.json').write_text(json.dumps(record))
+        old=m.commit(self.client,[],{},self.pkg/'payload');m.restore(self.client,old)   # a restored record
+        mac=root/'mac-proxy';mac.mkdir();(mac/'note').write_bytes(b'n')
+        m.consolidate(self.client)
+        for kept in ('unknown/keep.txt','broken/transaction.json','20200101-000000-aaaaaaaa/before/f','20200101-000000-aaaaaaaa/transaction.json','mac-proxy/note'):
+            self.assertTrue((root/kept).exists(),kept)
+        self.assertFalse(old.exists())
+    def three_part_chain(self):
+        """Three records where the first two both survive a rewrite: a is merged into the oldest, c stays with the second."""
+        (self.client/'extra').mkdir();(self.client/'extra/a.bin').write_bytes(b'orig a')
+        self.tx({'extra/a.bin':b'a1','extra/b.bin':b'b1'});self.tx({'extra/a.bin':b'a2','extra/c.bin':b'c2'});self.tx({'extra/a.bin':b'a3'})
+        return self.snapshot()
+    def test_crash_while_rewriting_records_keeps_the_chain_valid(self):
+        start=dict(self.three_part_chain())
+        real=m.atomic_json;count=[0]
+        def fail(path,value):
+            count[0]+=1
+            if count[0]==2:raise OSError('simulated crash')
+            return real(path,value)
+        with patch.object(m,'atomic_json',fail):
+            with self.assertRaises(OSError):m.consolidate(self.client)
+        self.assertEqual(m.chain_problems(self.client,self.chain()),[])
+        self.assertEqual(self.snapshot(),start)
+        self.assertIsNone(m.consolidate(self.client)[2]);self.assertEqual(m.chain_problems(self.client,self.chain()),[])
+        self.assertEqual(len(m.transactions(self.client)),2)
+        self.restore_all();self.assertEqual(self.read('extra/a.bin'),b'orig a');self.assertIsNone(self.read('extra/b.bin'))
+    def test_crash_while_deleting_keeps_the_chain_valid(self):
+        self.three_part_chain()
+        with patch.object(m.shutil,'rmtree',side_effect=OSError('simulated crash')):
+            with self.assertRaises(OSError):m.consolidate(self.client)
+        self.assertEqual(m.chain_problems(self.client,self.chain()),[])
+        self.assertIsNone(m.consolidate(self.client)[2])
+        self.assertEqual(m.chain_problems(self.client,self.chain()),[])
+        self.restore_all();self.assertEqual(self.read('extra/a.bin'),b'orig a');self.assertIsNone(self.read('extra/b.bin'));self.assertIsNone(self.read('extra/c.bin'))
+    def test_crashed_uninstall_then_install_still_uninstalls_to_the_originals(self):
+        (self.client/'extra').mkdir();(self.client/'extra/a.bin').write_bytes(b'orig a')
+        self.tx({'extra/a.bin':b'a1'});second=self.tx({'extra/a.bin':b'a2'})
+        m.restore(self.client,second)   # an uninstall that died after the newest record
+        self.tx({'extra/a.bin':b'a3'})
+        freed,removed,why=m.consolidate(self.client)
+        self.assertIsNone(why);self.assertFalse(second.exists())
+        self.assertEqual(len(m.transactions(self.client)),1);self.assertEqual(m.chain_problems(self.client,self.chain()),[])
+        self.restore_all();self.assertEqual(self.read('extra/a.bin'),b'orig a')
+    def test_failure_in_an_update_on_top_of_a_consolidated_chain_rolls_back(self):
+        self.foreign();self.update(1);m.consolidate(self.client)
+        self.set_payload('d3d9.dll',PROXY+b' v2');self.set_payload('renderer-backends/dxvk/dxvk_d3d9.dll',b'MZ DXVK: \0v3.1.2\0')
+        before=self.snapshot()
+        for failing in [1,2]:
+            with self.subTest(failing=failing):
+                real=m.replace_file;count=[0]
+                def fail(src,dst):
+                    count[0]+=1
+                    if count[0]==failing:raise OSError('simulated disk failure')
+                    return real(src,dst)
+                with patch.object(m,'replace_file',fail):
+                    with self.assertRaises(OSError):m.install(self.client,self.pkg)
+                self.assertEqual(self.snapshot(),before)
+    def test_path_letter_case_does_not_create_a_second_start(self):
+        root=self.client/'renderer-backups';records=[]
+        for i,(path,before,after) in enumerate([('Data/A.bin','o','d1'),('data/a.bin','d1','d2')]):
+            folder=root/('2030010%d-000000-0000000%d'%(i+1,i));(folder/'before').mkdir(parents=True)
+            h=lambda x:hashlib.sha256(x.encode()).hexdigest()
+            if i==0:(folder/'before/Data').mkdir();(folder/'before/Data/A.bin').write_bytes(b'o')
+            record={'kind':'package','created':'%d'%i,'client':str(self.client.resolve()),'status':'installed',
+                    'files':[{'path':path,'before':h(before),'after':h(after)}]}
+            (folder/'transaction.json').write_text(json.dumps(record));records.append((folder,record))
+        freed,removed,why=m.consolidate_records(records)
+        self.assertIsNone(why);self.assertEqual(removed,[records[1][0]])
+        kept=json.loads((records[0][0]/'transaction.json').read_text())['files'][0]
+        self.assertEqual(kept['after'],hashlib.sha256(b'd2').hexdigest())
+        self.assertEqual(set(kept['afters']),{hashlib.sha256(b'd1').hexdigest(),hashlib.sha256(b'd2').hexdigest()})
+
+    def test_consolidate_keeps_an_original_whose_folder_differs_in_case(self):
+        probe=self.base/'CaseProbe';probe.write_bytes(b'x')
+        if not (self.base/'caseprobe').exists():self.skipTest('the temporary disk is case-sensitive: one folder cannot have two spellings')
+        self.tx({'data/foo/b':b'b1'})
+        (self.client/'Data/Foo/c').write_bytes(b'orig c')
+        self.tx({'data/foo/b':b'b2','Data/Foo/c':b'c2'})   # the copy of c lands in before/data/foo/
+        freed,removed,why=m.consolidate(self.client)
+        self.assertIsNone(why);self.assertEqual(len(m.transactions(self.client)),2)
+        self.assertEqual(m.chain_problems(self.client,self.chain()),[])
+        self.restore_all()
+        self.assertEqual(self.read('Data/Foo/c'),b'orig c');self.assertIsNone(self.read('data/foo/b'))
+    def test_missing_original_copy_is_reported_as_damaged(self):
+        self.foreign();backups=self.stack();(backups[0]/'before/d3d9.dll').unlink()
+        self.assertEqual(m.chain_problems(self.client,self.chain()),[(backups[0],'Backup damaged: d3d9.dll')])
+        self.assertTrue(m.restore_problems(self.client,backups[0]) is not None)
+    def test_a_crash_at_any_write_or_delete_keeps_the_chain_restorable(self):
+        (self.client/'extra').mkdir();(self.client/'extra/x.bin').write_bytes(b'orig x')
+        for i in range(1,6):
+            changes={'extra/x.bin':b'x%d'%i}
+            if i==1:changes['extra/z.bin']=b'z1'
+            if i==2:changes['extra/z.bin']=None
+            if i==3:changes['extra/z.bin']=b'z3'
+            if i>=3:changes['extra/w%d.bin'%i]=b'w%d'%i   # these records survive; record 2 is left empty
+            self.tx(changes)
+        original=self.snapshot();original['extra/x.bin']=b'orig x';original.pop('extra/z.bin',None)
+        for k in [k for k in original if k.startswith('extra/w')]:original.pop(k)
+        keep=self.base/'saved';other=self.base/'crashed'
+        def save(dst):
+            shutil.rmtree(dst,ignore_errors=True);shutil.copytree(self.client,dst,ignore=shutil.ignore_patterns('wow.exe'))
+        def load(src):
+            for child in self.client.iterdir():
+                if child.name!='wow.exe':shutil.rmtree(child) if child.is_dir() else child.unlink()
+            for child in src.iterdir():
+                (shutil.copytree if child.is_dir() else shutil.copy2)(child,self.client/child.name)
+        save(keep)
+        def run(crash_at):
+            count=[0];real_json,real_unlink,real_rmtree=m.atomic_json,Path.unlink,shutil.rmtree
+            def tick():
+                count[0]+=1
+                if count[0]==crash_at:raise OSError('simulated crash')
+            def json_(*a):tick();return real_json(*a)
+            def unlink(self_,*a,**k):tick();return real_unlink(self_,*a,**k)
+            def rmtree(*a,**k):tick();return real_rmtree(*a,**k)
+            with patch.object(m,'atomic_json',json_),patch.object(Path,'unlink',unlink),patch.object(shutil,'rmtree',rmtree):
+                try:m.consolidate(self.client)
+                except OSError:return count[0]
+            return None
+        for n in range(1,40):
+            with self.subTest(crash_at=n):
+                load(keep)
+                if run(n) is None:break   # n is beyond the last write: done
+                self.assertEqual(m.chain_problems(self.client,self.chain()),[])
+                save(other)
+                self.restore_all();self.assertEqual(self.snapshot(),original)
+                load(other)
+                self.assertIsNone(m.consolidate(self.client)[2])
+                self.assertEqual(m.chain_problems(self.client,self.chain()),[])
+                self.restore_all();self.assertEqual(self.snapshot(),original)
+        else:self.fail('the run never finished: raise the range')
 
 if __name__=='__main__':unittest.main()
