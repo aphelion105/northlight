@@ -65,6 +65,13 @@ rejects(lambda: zt.edit_overrides(text, section='Kalimdor:440', values={'moon_li
 rejects(lambda: zt.edit_overrides(text, section='Kalimdor:440', values={'terrain_radius': 900}), 'terrain_radius 900')
 rejects(lambda: zt.edit_overrides(text, section='Kalimdor:440', values={'terrain_radius': 4128}), 'terrain_radius 4128')
 rejects(lambda: zt.edit_overrides(text, section='Kalimdor:440', values={'ground_fog_night_scale': -0.1}), 'ground fog scale -0.1')
+rejects(lambda: zt.edit_overrides(text, section='Kalimdor:440', values={'ground_fog_day_add': .0501}), 'ground fog density .0501')
+rejects(lambda: zt.edit_overrides(text, section='Kalimdor:440', values={'ground_fog_night_add': -.0002}), 'ground fog density -.0002')
+rejects(lambda: zt.edit_overrides(text, section='default', values={'ground_fog_day_add': .001}), 'a ground fog density in [default]')
+dens = zt.edit_overrides('', section='Kalimdor:440', values={'ground_fog_day_add': .0012, 'ground_fog_night_add': .00035})
+check('ground_fog_day_add = 0.0012\n' in dens and 'ground_fog_night_add = 0.00035\n' in dens
+      and zt.parse_overrides(dens)['sections']['Kalimdor:440'] == {'ground_fog_day_add': .0012, 'ground_fog_night_add': .00035},
+      'ground fog densities round-trip with 6 decimals')
 rejects(lambda: zt.edit_overrides(text, section='Kalimdor:440', values={'sun_bloom': 1}), 'an unknown key')
 rejects(lambda: zt.edit_overrides(text, section='Kalimdor:440', values={'sun_disc_gain': float('nan')}), 'NaN')
 rejects(lambda: zt.edit_overrides(text, section='default', values={'terrain_radius': 1024}), 'a zone-only key in [default]')
@@ -101,9 +108,9 @@ try:
     overrides = work / zt.OVERRIDES
     t = zt.edit_overrides('', section='Kalimdor:440', values={
         'sun_disc': [1, .9, .7], 'sun_light_mix': old_tanaris['sun_light_mix'], 'sun_horizon_haze': .6,
-        'terrain_radius': 3072, 'ground_fog_day_scale': 1.5})
+        'terrain_radius': 3072, 'ground_fog_day_scale': 1.5, 'ground_fog_night_add': .0024})
     t = zt.edit_overrides(t, section='Azeroth:3', values={'moon_disc_gain': 1.4, 'terrain_radius': 2048})
-    t = zt.edit_overrides(t, section='Azeroth:12', values={'terrain_radius': 928})
+    t = zt.edit_overrides(t, section='Azeroth:12', values={'terrain_radius': 928, 'ground_fog_day_add': .0006})
     t = zt.edit_overrides(t, section='default', values={'sun_fog_gain': 4.5})
     overrides.write_text(t)
     out = io.StringIO()
@@ -134,8 +141,9 @@ try:
           and '[Azeroth:12] # Elwynn Forest\nterrain_radius = 928\n' in sh, 'shadow ranges: replaced in place, appended, 928 kept in its section')
     check(sh.replace('terrain_radius = 3072', 'terrain_radius = 4096').replace('terrain_radius = 928', 'terrain_radius = 1856')
           == sh_old + '\n[Azeroth:3] # Badlands\nterrain_radius = 2048\n', 'nothing else in shadow-range-profiles.ini changed')
-    check('Kalimdor:440' in report and 'day x1.5' in report and 'if(zone==440){out.day*=1.5f;out.nightExtra*=1f;}' in report,
-          'ground fog scales are printed for regional_fog.h')
+    check('if(zone==440){out.day=out.day*1.5f+0f;out.nightExtra=out.nightExtra*1f+0.0024f;}' in report
+          and 'if(zone==12){out.day=out.day*1f+0.0006f;out.nightExtra=out.nightExtra*1f+0f;}' in report
+          and 'AFTER the line `out.nightExtra*=1.2f;`' in report, 'ground fog lines for policy() combine scale and density')
     check('+sun_horizon_haze = 0.6' in report and '-sun_disc = ' in report, 'the export prints a diff')
     out = io.StringIO()
     zt.export(overrides, celestial, shadow, NAMES, out=out)

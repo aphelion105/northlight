@@ -53,14 +53,17 @@ CELESTIAL = {'disc': (0, 1, True), 'disc_gain': (0, 4, False), 'light': (0, 1, T
              'light_strength': (0, 4, False), 'fog_gain': (0, 8, False), 'fog_height_scale': (.25, 4, False),
              'horizon_haze': (0, 4, False)}
 ZONE_ONLY = {'terrain_radius': (DEFAULT_RADIUS, 4096, False), 'ground_fog_day_scale': (0, 4, False),
-             'ground_fog_night_scale': (0, 4, False)}
+             'ground_fog_night_scale': (0, 4, False), 'ground_fog_day_add': (0, .05, False),
+             'ground_fog_night_add': (0, .05, False)}
+FOG_KEYS = ('ground_fog_day_scale', 'ground_fog_night_scale', 'ground_fog_day_add', 'ground_fog_night_add')
 KEYS = {**{s + k: r for s in ('sun_', 'moon_') for k, r in CELESTIAL.items()}, **ZONE_ONLY}
 # The DLL's built-in profile (NorthlightCelestialProfiles::Profile) under celestial-profiles.ini [default].
 BUILTIN = {'sun_disc': [1, .96, .88], 'sun_disc_gain': 3.5, 'sun_light': [1, 1, 1], 'sun_light_mix': 0,
            'sun_light_strength': 1, 'sun_fog_gain': 1, 'sun_fog_height_scale': 1, 'sun_horizon_haze': 1,
            'moon_disc': [.94, .97, 1], 'moon_disc_gain': 1.1, 'moon_light': [1, 1, 1], 'moon_light_mix': 0,
            'moon_light_strength': 1, 'moon_fog_gain': 1, 'moon_fog_height_scale': 1, 'moon_horizon_haze': 1,
-           'terrain_radius': DEFAULT_RADIUS, 'ground_fog_day_scale': 1, 'ground_fog_night_scale': 1}
+           'terrain_radius': DEFAULT_RADIUS, 'ground_fog_day_scale': 1, 'ground_fog_night_scale': 1,
+           'ground_fog_day_add': 0, 'ground_fog_night_add': 0}
 
 SECTION_RE = re.compile(r'^\s*\[([^\]]*)\]\s*(#.*)?$')
 KEY_RE = re.compile(r'^(\s*)([^=#\[\s][^=#]*?)(\s*=\s*)([^#]*?)(\s*#.*)?$')
@@ -68,9 +71,9 @@ KEY_RE = re.compile(r'^(\s*)([^=#\[\s][^=#]*?)(\s*=\s*)([^#]*?)(\s*#.*)?$')
 
 # ---- values ----
 
-def fmt(v, rgb=False):
+def fmt(v, rgb=False, places=4):
     """Up to 4 decimals; RGB components keep at least 2 (the client-config style, 0.90)."""
-    s = f'{v:.4f}'.rstrip('0')
+    s = f'{v:.{places}f}'.rstrip('0')
     if rgb:
         s += '0' * max(0, 2 - len(s.split('.')[1]))
     s = s.rstrip('.')
@@ -78,7 +81,9 @@ def fmt(v, rgb=False):
 
 
 def format_value(key, v):
-    return ', '.join(fmt(c, True) for c in v) if KEYS[key][2] else fmt(v)
+    if KEYS[key][2]:
+        return ', '.join(fmt(c, True) for c in v)
+    return fmt(v, places=6 if key.endswith('_add') else 4)   # densities are .0002-sized: 4 decimals would lose them
 
 
 def parse_value(key, text):
@@ -579,8 +584,8 @@ def export(overrides_path, celestial_path, shadow_path, names, dry_run=False, ou
                 unchanged = False
             if not unchanged and (old is not None or not same(v, DEFAULT_RADIUS)):
                 shadow.set(section, 'terrain_radius', format_value('terrain_radius', v), header_comment=comment)
-        if 'ground_fog_day_scale' in values or 'ground_fog_night_scale' in values:
-            fog.append((section, zone_name, values.get('ground_fog_day_scale', 1), values.get('ground_fog_night_scale', 1)))
+        if any(k in values for k in FOG_KEYS):
+            fog.append((section, zone_name, *(values.get(k, BUILTIN[k]) for k in FOG_KEYS)))
     written = []
     for path, old, doc in ((celestial_path, celestial_old, celestial), (shadow_path, shadow_old, shadow)):
         new = doc.text()
@@ -593,14 +598,17 @@ def export(overrides_path, celestial_path, shadow_path, names, dry_run=False, ou
         if not dry_run:
             write_atomic(path, new)
     if fog:
-        print('\nGround fog scales (no ini; paste into NorthlightRegionalFog::policy, src/sky/regional_fog.h,', file=out)
-        print('before the night multiplier: multiply the zone\'s out.day / out.nightExtra). A zone that has no branch', file=out)
-        print('of its own in policy() (groundFogActive false in the state, e.g. Tanaris) needs a new branch there first:', file=out)
-        print('scaling its zero day / nightExtra changes nothing.', file=out)
-        for section, zone_name, day, night in fog:
+        print('\nGround fog (no ini): paste each line into NorthlightRegionalFog::policy (src/sky/regional_fog.h)', file=out)
+        print('AFTER the line `out.nightExtra*=1.2f;` and before `return out;`. The dev DLL applies scale and add to', file=out)
+        print("policy()'s final values (night multiplier included) on outdoor cells, which is what these lines do", file=out)
+        print('there (indoor cells have returned earlier), so they reproduce the tuned fog exactly. They work in a', file=out)
+        print('zone without a branch of its own too: its zero density is only raised by the add.', file=out)
+        for section, zone_name, day, night, day_add, night_add in fog:
             zone = section.split(':')[1]
-            print(f'  {section:<18} {zone_name or "?":<24} day x{fmt(day)}  night x{fmt(night)}', file=out)
-            print(f'    if(zone=={zone}){{out.day*={fmt(day)}f;out.nightExtra*={fmt(night)}f;}}', file=out)
+            print(f'  {section:<18} {zone_name or "?":<24} day x{fmt(day)} +{fmt(day_add, places=6)}  '
+                  f'night x{fmt(night)} +{fmt(night_add, places=6)}', file=out)
+            print(f'    if(zone=={zone}){{out.day=out.day*{fmt(day)}f+{fmt(day_add, places=6)}f;'
+                  f'out.nightExtra=out.nightExtra*{fmt(night)}f+{fmt(night_add, places=6)}f;}}', file=out)
     print(('\n(dry run: nothing written)' if dry_run else f'\nwritten: {", ".join(p.name for p in written) or "nothing"}'), file=out)
     return written
 

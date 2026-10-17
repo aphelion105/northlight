@@ -128,12 +128,17 @@ const GROUPS = [
   {id: 'sun', title: 'Sun', cls: 'sun', keys: Object.keys(KEYS).map(k => 'sun_' + k)},
   {id: 'moon', title: 'Moon', cls: 'moon', keys: Object.keys(KEYS).map(k => 'moon_' + k)},
   {id: 'terrain', title: 'Terrain shadow', keys: ['terrain_radius'], zoneOnly: true},
-  {id: 'fog', title: 'Ground fog', keys: ['ground_fog_day_scale', 'ground_fog_night_scale'], zoneOnly: true},
+  {id: 'fog', title: 'Ground fog', keys: ['ground_fog_day_scale', 'ground_fog_night_scale', 'ground_fog_day_add', 'ground_fog_night_add'], zoneOnly: true},
 ];
 const SPEC = {
   terrain_radius: {label: 'radius', min: 928, max: 4096, step: 32},
   ground_fog_day_scale: {label: 'day scale', min: 0, max: 4, step: .05},
   ground_fog_night_scale: {label: 'night scale', min: 0, max: 4, step: .05},
+  // Extinction density added after the scale; shown x1000 (per mille), written raw.
+  ground_fog_day_add: {label: 'day density +', min: 0, max: .05, step: .0002, display: 1000, unit: ' \u2030',
+    hint: 'thin ground layer by day (about 1 yard in most zones); applies after release, rebuilds ~2 s'},
+  ground_fog_night_add: {label: 'night density +', min: 0, max: .05, step: .0002, display: 1000, unit: ' \u2030',
+    hint: 'thickens to about 6 yards at night; applies after release, rebuilds ~2 s'},
 };
 for (const k of Object.keys(KEYS)) SPEC['sun_' + k] = SPEC['moon_' + k] = KEYS[k];
 
@@ -152,8 +157,10 @@ const rows = {};
 
 const $ = id => document.getElementById(id);
 const r4 = v => Math.round(v * 10000) / 10000;
+const r6 = v => Math.round(v * 1e6) / 1e6;
 const show = v => v === undefined || v === null ? '–' : Array.isArray(v) ? v.map(c => (+c).toFixed(2)).join(' ') : (+v % 1 ? (+v).toFixed(v >= 100 ? 0 : 2) : String(+v));
-const same = (a, b) => { a = [].concat(a); b = [].concat(b); return a.length === b.length && a.every((x, i) => Math.abs(x - b[i]) < 5e-4); };
+const showKey = (key, v) => SPEC[key].display && v !== undefined && v !== null ? r6(v * SPEC[key].display) + SPEC[key].unit : show(v);
+const same = (a, b) => { a = [].concat(a); b = [].concat(b); return a.length === b.length && a.every((x, i) => Math.abs(x - b[i]) < 1e-6 + 1e-3 * Math.abs(b[i])); };   // relative: densities are ~.001
 const hex = rgb => '#' + rgb.map(c => Math.round(Math.min(1, Math.max(0, c)) * 255).toString(16).padStart(2, '0')).join('');
 const unhex = h => [1, 3, 5].map(i => r4(parseInt(h.substr(i, 2), 16) / 255));
 const zoneOnly = k => k in SPEC && !k.startsWith('sun_') && !k.startsWith('moon_');
@@ -173,14 +180,16 @@ function el(tag, attrs, ...kids) {
   return e;
 }
 function slider(spec, onInput) {
-  const range = el('input', {type: 'range', min: spec.min, max: spec.max, step: spec.step});
-  const num = el('input', {type: 'number', class: 'num', min: spec.min, max: spec.max, step: spec.step});
+  // The controls work in display units (spec.display, e.g. x1000); onInput gets the raw value.
+  const k = spec.display || 1, min = r6(spec.min * k), max = r6(spec.max * k), step = r6(spec.step * k);
+  const range = el('input', {type: 'range', min, max, step});
+  const num = el('input', {type: 'number', class: 'num', min, max, step});
   // input: while dragging; change: the value is committed (released, or typed and entered).
-  range.addEventListener('input', () => { num.value = range.value; onInput(+range.value, false); });
-  range.addEventListener('change', () => onInput(+range.value, true));
+  range.addEventListener('input', () => { num.value = range.value; onInput(+range.value / k, false); });
+  range.addEventListener('change', () => onInput(+range.value / k, true));
   num.addEventListener('change', () => {
-    const v = Math.min(spec.max, Math.max(spec.min, +num.value || 0));
-    num.value = v; range.value = v; onInput(v, true);
+    const v = Math.min(max, Math.max(min, +num.value || 0));
+    num.value = v; range.value = v; onInput(v / k, true);
   });
   return {range, num};
 }
@@ -203,7 +212,7 @@ function buildRow(key) {
     const s = slider(spec, (v, committed) => setValue(key, v, committed));
     r.range = s.range; r.num = s.num;
     row.append(el('span', {class: 'name'}, spec.label), s.range, s.num, reset, base);
-    if (zoneOnly(key)) row.append(el('div', {class: 'hint'}, 'applies after release, rebuilds ~2 s'));
+    if (zoneOnly(key)) row.append(el('div', {class: 'hint'}, spec.hint || 'applies after release, rebuilds ~2 s'));
   }
   rows[key] = r;
   return row;
@@ -213,7 +222,7 @@ function buildEditor() {
   for (const g of GROUPS) {
     const d = el('details', {class: g.cls || '', open: ''});
     const count = el('span', {class: 'count'});
-    const note = el('div', {class: 'note', hidden: ''}, 'No regional ground fog in this zone; use fog gain / fog height / horizon haze.');
+    const note = el('div', {class: 'note', hidden: ''}, 'No policy ground fog in this zone: the scales need it. The density + sliders work everywhere.');
     d.append(el('summary', {}, g.title, count), note, el('div', {class: 'rows'}, ...g.keys.map(buildRow)));
     g.node = d; g.count = count; g.note = note;
     root.append(d);
@@ -233,7 +242,7 @@ function current(key) { return key in local ? local[key] : baseValues()[key]; }
 // written only when committed, never while dragging. Celestial keys are written live.
 function setValue(key, v, committed) {
   if (!target) return;
-  local[key] = Array.isArray(v) ? v.map(r4) : r4(v);
+  local[key] = Array.isArray(v) ? v.map(r4) : SPEC[key].display ? r6(v) : r4(v);
   render();
   if (!zoneOnly(key)) return write(false);
   if (committed) { uncommitted.delete(key); write(true); } else uncommitted.add(key);
@@ -299,7 +308,7 @@ function render() {
     g.node.hidden = off;
     if (g.id === 'fog') {
       g.note.hidden = !noFog;
-      for (const k of g.keys) rows[k].row.classList.toggle('off', noFog);
+      for (const k of g.keys) rows[k].row.classList.toggle('off', noFog && k.endsWith('_scale'));
     }
     g.count.textContent = g.keys.filter(k => k in local).length ? g.keys.filter(k => k in local).length + ' changed' : '';
   }
@@ -311,16 +320,17 @@ function render() {
         if (document.activeElement !== r.color) r.color.value = hex(v);
         r.chans.forEach((c, i) => { if (!dragging || document.activeElement !== c.range) c.range.value = v[i]; if (document.activeElement !== c.num) c.num.value = v[i]; });
       } else {
-        if (!dragging || document.activeElement !== r.range) r.range.value = v;
-        if (document.activeElement !== r.num) r.num.value = v;
+        const shown = r6(v * (r.spec.display || 1));
+        if (!dragging || document.activeElement !== r.range) r.range.value = shown;
+        if (document.activeElement !== r.num) r.num.value = shown;
       }
     }
     const b = base[key];
     r.base.textContent = '';
-    r.base.append(el('span', {}, 'base ', b !== undefined && r.spec.rgb ? el('span', {class: 'sw', style: 'background:' + hex(b)}) : '', ' ' + show(b)));
+    r.base.append(el('span', {}, 'base ', b !== undefined && r.spec.rgb ? el('span', {class: 'sw', style: 'background:' + hex(b)}) : '', ' ' + showKey(key, b)));
     if (key === 'terrain_radius' && inZone) r.base.append(el('span', {class: 'eff'}, 'reached ' + show(live.state.terrainReach)));
     if (eff && eff[key] !== undefined && v !== undefined && !same(eff[key], v))
-      r.base.append(el('span', {class: 'warn'}, 'game ' + show(eff[key]) + (live.state.overridesEnabled ? '' : ' (overrides off)')));
+      r.base.append(el('span', {class: 'warn'}, 'game ' + showKey(key, eff[key]) + (live.state.overridesEnabled ? '' : ' (overrides off)')));
   }
 }
 function renderList() {

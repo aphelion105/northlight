@@ -32,11 +32,16 @@ base value, **Reset zone** removes the whole section. The overrides checkbox wri
 DLL reports when it differs from the panel (not applied yet, or overrides off).
 
 Sun and moon values are written live while a slider moves (debounced about 150 ms). terrain_radius
-and the ground fog scales make the game rebuild its geometry (about 2 s), so they are written only
-when the slider is released or a typed number is entered. When the state reports
-`groundFogActive: false` (the zone's ground fog policy has no density, e.g. Tanaris; a DLL without
-the field counts as true), the ground fog sliders are disabled: use fog gain, fog height and
-horizon haze there. Each write carries a sequence number; the server drops a write older than the
+and the ground fog keys make the game rebuild its geometry (about 2 s), so they are written only
+when the slider is released or a typed number is entered.
+
+Ground fog per outdoor cell is `policy * scale + add`. The scales (`ground_fog_day_scale`,
+`ground_fog_night_scale`, 0..4) multiply the density of `NorthlightRegionalFog::policy`; when the
+state reports `groundFogActive: false` (the zone has no policy fog, e.g. Tanaris; a DLL without the
+field counts as true) they do nothing and their sliders are disabled. The densities
+(`ground_fog_day_add`, `ground_fog_night_add`, extinction per unit, 0..0.05, shown x1000 as per
+mille, written raw with up to 6 decimals) work in every zone: by day the added fog is a thin ground
+layer (about 1 yard in most zones), at night it thickens to about 6 yards. Each write carries a sequence number; the server drops a write older than the
 last one it applied to that section, so a slow request cannot undo a newer value.
 
 ## Workflow
@@ -49,9 +54,11 @@ last one it applied to that section, so a slow request cannot undo a newer value
    place, new keys go after the section's last key, a new zone section is appended with a
    `# <Zone name>` comment. A radius set back to 928 is written as 928 in an existing section; a
    new section is not added for 928.
-   Ground fog scales have no ini: export prints them per zone for `NorthlightRegionalFog::policy`
-   in `src/sky/regional_fog.h`. A zone with no branch of its own in `policy()` needs a new branch
-   there first: scaling its zero density changes nothing.
+   Ground fog has no ini: export prints one line per zone,
+   `if(zone==440){out.day=out.day*S+A;out.nightExtra=out.nightExtra*S2+A2;}`, to paste into
+   `NorthlightRegionalFog::policy` (`src/sky/regional_fog.h`) after `out.nightExtra*=1.2f;`.
+   The dev DLL applies scale and add to policy()'s final values, so there the line reproduces the
+   tuned fog exactly, also in a zone without a branch of its own.
 3. The export then runs `client-config/check_client_config.py`, which compares client-config/
    with the game root's live copies; it reports DIFFERS until the new files are installed in the
    game root. Review, commit, and delete or empty `northlight-tuning.ini`.
