@@ -9,6 +9,7 @@ import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).reso
 import northlight_paths as fp
 import io
 import json
+import re
 import os
 import shutil
 import tempfile
@@ -165,7 +166,7 @@ try:
     check(all(l in new_lines for l in kept) and len(new_lines) == len(old_lines) + 1 + 4 + 2, 'every comment and unrelated line is kept')
     check('[Kalimdor:440] # Tanaris\nterrain_radius = 3072\n' in sh and sh.endswith('\n\n[Azeroth:3] # Badlands\nterrain_radius = 2048\n')
           and '[Azeroth:12] # Elwynn Forest\nterrain_radius = 928\n' in sh, 'shadow ranges: replaced in place, appended, 928 kept in its section')
-    check(sh.replace('terrain_radius = 3072', 'terrain_radius = 4096').replace('terrain_radius = 928', 'terrain_radius = 1856')
+    check(sh.replace('terrain_radius = 3072', 'terrain_radius = 4096').replace('terrain_radius = 928', 'terrain_radius = ' + re.search(r'\[Azeroth:12\][^\n]*\nterrain_radius = (\d+)', sh_old).group(1))
           == sh_old + '\n[Azeroth:3] # Badlands\nterrain_radius = 2048\n', 'nothing else in shadow-range-profiles.ini changed')
     check('if(zone==440){out.day=out.day*1.5f+0f;out.nightExtra=out.nightExtra*1f+0.0024f;}' in report
           and 'if(zone==12){out.day=out.day*1f+0.0006f;out.nightExtra=out.nightExtra*1f+0f;}' in report
@@ -178,7 +179,7 @@ try:
     # ---- base values ----
     base = zt.base_values('Kalimdor:440', celestial, shadow)
     check(zt.base_values('Azeroth:10', fp.REPO / 'client-config/celestial-profiles.ini', shadow)['sun_glow_strength'] == .9
-          and base['sun_glow'] == [1, 1, 1] and base['moon_glow_mix'] == .25, 'base values include the glow keys (Duskwood 0.90 shipped)')
+          and zt.base_values('Kalimdor:215', celestial, shadow)['sun_glow'] == [1, 1, 1] and base['moon_glow_mix'] == .25, 'base values include the glow keys (Duskwood 0.90 shipped)')
     check(base['sun_disc'] == [1, .9, .7] and base['terrain_radius'] == 3072 and base['sun_fog_gain'] == 4.5
           and base['moon_fog_height_scale'] == 1, 'base values: zone section over [default] over the built-in profile')
 
