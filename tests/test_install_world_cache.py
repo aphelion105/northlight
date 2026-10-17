@@ -440,11 +440,12 @@ code, last = inst_run('classic-raids,tbc-raids', '--instances-plan')
 assert (code, last['event'], last['build'], last['keep'], last['remove']) == (0, 'instances_plan', ['tbc-raids'], ['classic-raids'], ['wotlk-raids']), last
 assert before_plan == sorted(p.relative_to(icache).as_posix() for p in icache.rglob('*')) and built_groups == []
 # Model files are named by a hash of the model's name, not its content: a rebuilt group replaces the models its old
-# tiles used (the sources may have changed their content) but leaves a continent's model of the same name alone.
+# tiles used (the sources may have changed their content) but leaves a model a continent tile (SHARED) or only a
+# continent (CONTINENT_ONLY) uses byte-identical.
 BUILD = ' rebuilt'
 assert inst_run('classic-raids,wotlk-raids', '--force')[1]['built'] == ['classic-raids', 'wotlk-raids']
 unique = icache / 'models' / (key_of('unique-' + raids[0]).hex() + '.fgs')
-assert unique.read_text().endswith(' rebuilt') and (icache / 'models' / (SHARED.hex() + '.fgs')).read_text().endswith(' rebuilt')
+assert unique.read_text().endswith(' rebuilt') and (icache / 'models' / (SHARED.hex() + '.fgs')).read_text() == 'model ' + SHARED.hex()
 assert not (icache / 'models' / (CONTINENT_ONLY.hex() + '.fgs')).read_text().endswith(' rebuilt')
 BUILD = ''
 # a group with missing folders is built again; --force rebuilds the selected ones

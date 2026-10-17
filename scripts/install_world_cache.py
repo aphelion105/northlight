@@ -865,11 +865,11 @@ def apply_instances(staging, output):
     models, lights = output / 'models', output / 'lights'
     models.mkdir(parents=True, exist_ok=True)
     lights.mkdir(parents=True, exist_ok=True)
-    replace = set(ready['prune'])   # models the replaced or removed tiles used
+    replace = set(ready.get('replace', ready['prune']))   # models only the replaced or removed tiles used
     for path in (staging / 'models').glob('*.fgs'):
         # A model file is named by a hash of the model's name (sha256 of 'FGS3-v1:' + name), not of its content. One this
-        # layer's own old tiles used is replaced by the fresh build (the sources may have changed its content); any
-        # other existing file (a continent's model of the same name) is left alone.
+        # layer's own old tiles used, and no tile outside the rebuilt groups uses, is replaced by the fresh build (the
+        # sources may have changed its content); any other existing file (shared with a continent or a kept group) stays.
         if path.stem in replace or not (models / path.name).exists():
             retry(os.replace, path, models / path.name)
     for m in ready['drop_maps']:
@@ -1014,8 +1014,13 @@ def run_instances(args, client, locale, output, inputs, started):
     prune = set()   # models the replaced or removed tiles used; the move deletes those no tile references any more
     for m in [*drop, *(m for m in built_maps if (output / m).is_dir())]:
         prune |= tile_keys(output / m)
+    outside = set()   # models a tile of the continents or of a kept group uses: shared, never replaced
+    for folder in output.iterdir() if output.is_dir() else []:
+        if folder.is_dir() and folder.name not in NOT_MAPS and folder.name not in (*drop, *built_maps):
+            outside |= tile_keys(folder)
     (staging / INSTANCE_READY).write_text(json.dumps({'digests': wanted, 'built_maps': built_maps, 'drop_maps': drop,
-                                                       'prune': sorted(prune), 'manifest': manifest}) + '\n')
+                                                       'prune': sorted(prune), 'replace': sorted(prune - outside),
+                                                       'manifest': manifest}) + '\n')
     state.unlink(missing_ok=True)
     pruned = apply_instances(staging, output)
     if remove:
