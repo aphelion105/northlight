@@ -8,7 +8,7 @@ import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).reso
 import northlight_paths as fp
 import re
 
-TOKENS = re.compile(r'NorthlightZoneTuning|zone_tuning\.h|\bdev(?:Poll|Reload|WriteState|Snapshot|Overrides|Mutex|TerrainReach|Error|Revision|Path|FogScale)\b|\bcelestialShipped\b|\breachZone\b')
+TOKENS = re.compile(r'NorthlightZoneTuning|\bdev(?:Built|BuiltSnapshot|Builds)\b|\btuning\b|zone_tuning\.h|\bdev(?:Poll|Reload|WriteState|Snapshot|Overrides|Mutex|TerrainReach|Error|Revision|Path|FogScale)\b|\bcelestialShipped\b|\breachZone\b')
 
 def outside_dev(text):
     """Lines (number, text) not inside an active `#if NORTHLIGHT_DEV_TUNING` branch, comments removed."""
@@ -40,6 +40,9 @@ assert w.count('#if NORTHLIGHT_DEV_TUNING') >= 6, 'the dev hooks (include, membe
 # The shipped branches survive: the reach lookup and buildField call of the release build are still present in their #else.
 assert 'const float profileReach=shadowRanges.at(r.map,NorthlightRegionalFog::zoneAt(paletteRegion->region,center.x,center.y));' in w
 assert 'buildField(replacement->scene(),region,center.x,center.y,fogScale)' in w and 'fogScale=nullptr;' in w  # null scale = identity
+# One overrides snapshot per build serves both the terrain reach and the ground fog scales; the published build records it (no mixed or lost mid-build change).
+assert 'NorthlightZoneTuning::terrainRadius(*tuning,' in w and 'NorthlightZoneTuning::fogScale(*tuning,' in w and 'devBuilt=tuning;' in w and w.count('devSnapshot()') >= 2
+assert w.index('const auto tuning=devSnapshot();') < w.index('// BEGIN REGION BUILD')
 f = fp.src('regional_fog.h').read_text()
 assert 'const ZoneScale* zoneScale=nullptr' in f and 'if(zoneScale&&*zoneScale)(*zoneScale)(zone,cell.day,cell.nightExtra);' in f  # identity unless a scale is passed
 assert 'zone_tuning' not in f and 'ZoneTuning' not in f, 'the portable fog policy stays free of the dev overlay'

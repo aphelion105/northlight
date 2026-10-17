@@ -311,16 +311,20 @@ private:
     std::shared_ptr<const NorthlightZoneTuning::Overrides> devOverrides=std::make_shared<const NorthlightZoneTuning::Overrides>(); // guarded by devMutex
     std::mutex devMutex;
     std::atomic<float> devTerrainReach{0};
+    std::shared_ptr<const NorthlightZoneTuning::Overrides> devBuilt; // guarded by devMutex: the overrides snapshot of the last published build
+    std::atomic<unsigned> devBuilds{0};                              // published builds so far
     std::string devError;unsigned devRevision=0;
-    DWORD devPollAt=0,devStateAt=0,devChangeAt=0;bool devKeySeen=false,devStampSeen=false;uint64_t devStamp[2]={};
-    std::array<float,4> devKey{},devRequestedKey{}; // enabled, terrain_radius, ground fog day / night scale of the current zone (-1 = not overridden)
+    DWORD devPollAt=0,devStateAt=0,devChangeAt=0,devRequestedAt=0;bool devStampSeen=false;uint64_t devStamp[2]={};
+    unsigned devSeenRevision=~0u,devBuildsAtRequest=0; // render thread: the revision last seen (for the quiet timer), builds counted at the last request
     std::shared_ptr<const NorthlightZoneTuning::Overrides> devSnapshot(){std::lock_guard<std::mutex> lock(devMutex);return devOverrides;}
+    std::shared_ptr<const NorthlightZoneTuning::Overrides> devBuiltSnapshot(){std::lock_guard<std::mutex> lock(devMutex);return devBuilt;}
     static std::wstring devPath(const wchar_t* name){return std::wstring(rootPath)+name;}
     void devReload(){
         std::string text,error;const bool present=readSmallFile(devPath(L"northlight-tuning.ini"),text);
         NorthlightZoneTuning::Overrides next;std::istringstream in(text);
         if(present&&!NorthlightZoneTuning::parse(in,next,error)){devError=error;logf("TUNING overrides revision=%u keys=%u error=%s",devRevision,devSnapshot()->count(),error.c_str());return;}
         devError.clear();
+        next.revision=devRevision+1;
         const auto published=std::make_shared<const NorthlightZoneTuning::Overrides>(std::move(next));
         celestialProfiles=NorthlightZoneTuning::applyCelestial(celestialShipped,*published);
         {std::lock_guard<std::mutex> lock(devMutex);devOverrides=published;}
@@ -330,7 +334,7 @@ private:
         const auto ov=devSnapshot();NorthlightZoneTuning::State s;
         s.build="dev-tuning";s.tick=GetTickCount();s.inWorld=true;s.map=map;s.zone=zone;std::memcpy(s.camera,camera,sizeof s.camera);
         s.night=NorthlightRegionalFog::nightFactor(celestialValid?celestial.dayFraction:-1.f);
-        s.enabled=ov->enabled;s.loaded=ov->enabled?ov->count():0;s.groundFogActive=NorthlightZoneTuning::groundFogActive(zone);s.error=devError;s.revision=devRevision;
+        s.enabled=ov->enabled;s.loaded=ov->enabled?ov->count():0;s.groundFogActive=NorthlightZoneTuning::groundFogActive(zone);s.error=devError;s.revision=devRevision;{const auto built=devBuiltSnapshot();s.builtRevision=built?built->revision:0;}
         s.base=NorthlightZoneTuning::baseValues(celestialShipped,shadowRanges,s.map,zone);
         s.effective=NorthlightZoneTuning::effectiveValues(s.base,celestialProfiles,*ov,s.map,zone);
         const float reach=devTerrainReach.load();s.terrainReach=reach>0?reach:s.effective.terrainRadius;
@@ -350,12 +354,13 @@ private:
                 stamp[0]=(uint64_t(a.ftLastWriteTime.dwHighDateTime)<<32)|a.ftLastWriteTime.dwLowDateTime;stamp[1]=(uint64_t(a.nFileSizeHigh)<<32)|a.nFileSizeLow;}
             if(!devStampSeen||stamp[0]!=devStamp[0]||stamp[1]!=devStamp[1]){devStampSeen=true;devStamp[0]=stamp[0];devStamp[1]=stamp[1];devReload();}
         }
-        // A change of the current zone's worker values (or the enabled flag) asks for one rebuild once they have been quiet for 2 s.
-        {const auto ov=devSnapshot();const auto* z=NorthlightZoneTuning::zoneOverride(*ov,map,zone);
-         const std::array<float,4> key={ov->enabled?1.f:0.f,z?z->radius:-1.f,z?z->fogDay:-1.f,z?z->fogNight:-1.f};
-         if(!devKeySeen){devKeySeen=true;devKey=devRequestedKey=key;}else if(key!=devKey){devKey=key;devChangeAt=now;}}
-        if(devKey!=devRequestedKey&&DWORD(now-devChangeAt)>=2000){
-            devRequestedKey=devKey;
+        // Only real override changes ask for a rebuild: the last published build used a snapshot that is not worker-equivalent to the
+        // current one. Debounced (the snapshot unchanged for 2 s); one request outstanding, the next waits for a build to be published (or 5 s).
+        const auto current=devSnapshot();const auto built=devBuiltSnapshot();
+        if(current->revision!=devSeenRevision){devSeenRevision=current->revision;devChangeAt=now;}
+        const unsigned builds=devBuilds.load(std::memory_order_relaxed);
+        if(built&&!current->sameWorker(*built)&&DWORD(now-devChangeAt)>=2000&&(builds!=devBuildsAtRequest||DWORD(now-devRequestedAt)>=5000)){
+            devBuildsAtRequest=builds;devRequestedAt=now?now:1;
             {std::lock_guard<std::mutex> lock(mutex);geometryRebuild=true;pending=true;}
             wake.notify_one();logf("TUNING worker rebuild requested (terrain_radius / ground fog scale changed)");
         }
@@ -1294,6 +1299,9 @@ private:
                 continue;
             }
             auto built=std::make_unique<Built>();
+#if NORTHLIGHT_DEV_TUNING
+            const auto tuning=devSnapshot(); // ONE snapshot per build: the terrain reach and the ground fog scales both use it
+#endif
             // BEGIN REGION BUILD: tests substitute a synthetic region for this block.
             {
                 const auto memoryBefore=workerAdmissionProbe.stats();const double memoryMsBefore=workerMemoryMs;
@@ -1389,7 +1397,7 @@ private:
                 };
 #if NORTHLIGHT_DEV_TUNING
                 const uint32_t reachZone=NorthlightRegionalFog::zoneAt(paletteRegion->region,center.x,center.y);
-                const float profileReach=NorthlightZoneTuning::terrainRadius(*devSnapshot(),shadowRanges.at(r.map,reachZone),r.map,reachZone);
+                const float profileReach=NorthlightZoneTuning::terrainRadius(*tuning,shadowRanges.at(r.map,reachZone),r.map,reachZone);
 #else
                 const float profileReach=shadowRanges.at(r.map,NorthlightRegionalFog::zoneAt(paletteRegion->region,center.x,center.y));
 #endif
@@ -1479,7 +1487,6 @@ private:
                 const auto& region=paletteRegion->region;
                 const NorthlightRegionalFog::ZoneScale* fogScale=nullptr;
 #if NORTHLIGHT_DEV_TUNING
-                const auto tuning=devSnapshot();
                 const NorthlightRegionalFog::ZoneScale devFogScale=[&](uint32_t zone,float& day,float& nightExtra){NorthlightZoneTuning::fogScale(*tuning,r.map,zone,day,nightExtra);};
                 fogScale=&devFogScale;
 #endif
@@ -1498,6 +1505,10 @@ private:
             // The replaced build (tens of MB) is freed after unlocking, never under the mutex.
             {std::lock_guard<std::mutex> lock(mutex);if(stopping||builderExit)return;
              std::swap(builtGeometry,built);geometryWanted=false;}
+#if NORTHLIGHT_DEV_TUNING
+            {std::lock_guard<std::mutex> lock(devMutex);devBuilt=tuning;} // what the last published build used
+            devBuilds.fetch_add(1,std::memory_order_relaxed);
+#endif
             wake.notify_one();built.reset();
             stallEnd(memoryStall.reduced?"reduced":"published");entryLift.clear();
             builtMap=r.map;builtCenter=r.geometryCenter;builtValid=true;wanted=false;superseded=0;

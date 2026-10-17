@@ -19,14 +19,16 @@ struct ZoneOverride {
     bool sameWorker(const ZoneOverride& o)const {return radius==o.radius&&fogDay==o.fogDay&&fogNight==o.fogNight;}
 };
 struct Overrides {
-    bool enabled=true;
+    bool enabled=true;unsigned revision=0; // revision: set by the renderer when it publishes a parse
     ZoneOverride fallback;                                      // [default]: celestial keys only
     std::map<std::pair<std::string,uint32_t>,ZoneOverride> zones;
     unsigned count()const {unsigned n=fallback.count();for(const auto& z:zones)n+=z.second.count();return n;}
     // The terrain_radius / ground fog parts the geometry worker consumes (a change needs a rebuild).
     bool sameWorker(const Overrides& o)const {
-        if(enabled!=o.enabled||zones.size()!=o.zones.size())return false;
-        for(auto a=zones.begin(),b=o.zones.begin();a!=zones.end();++a,++b)if(a->first!=b->first||!a->second.sameWorker(b->second))return false;
+        if(enabled!=o.enabled)return false;
+        auto worker=[](const ZoneOverride& z){return z.radius>=0||z.fogDay>=0||z.fogNight>=0;}; // celestial-only zones are no worker difference
+        for(const auto& z:zones){auto i=o.zones.find(z.first);if(i==o.zones.end()?worker(z.second):!z.second.sameWorker(i->second))return false;}
+        for(const auto& z:o.zones)if(!zones.count(z.first)&&worker(z.second))return false;
         return true;
     }
 };
@@ -113,7 +115,7 @@ inline Values effectiveValues(const Values& base,const NorthlightCelestialProfil
 // Can the regional ground fog policy add any density in this zone at all? (False: the ground fog scales are no-ops.)
 inline bool groundFogActive(uint32_t zone){auto t=NorthlightRegionalFog::policy(zone,0.f,1.f,1.f,false);return t.day>0||t.nightExtra>0;}
 struct State {
-    std::string build,map,error;unsigned tick=0,revision=0,loaded=0;bool inWorld=false,enabled=true,groundFogActive=false;
+    std::string build,map,error;unsigned tick=0,revision=0,builtRevision=0,loaded=0;bool inWorld=false,enabled=true,groundFogActive=false;
     uint32_t zone=0;float camera[3]={},night=0,terrainReach=0;Values base,effective;
 };
 inline std::string jsonNumber(float v){char b[32];std::snprintf(b,sizeof b,"%.6g",std::isfinite(v)?double(v):0.);return b;}
@@ -140,7 +142,7 @@ inline std::string stateJson(const State& s){
     return "{\"version\":1,\"build\":"+jsonString(s.build)+",\"tick\":"+std::to_string(s.tick)+",\"inWorld\":"+b(s.inWorld)+",\"map\":"+jsonString(s.map)+
         ",\"zone\":"+std::to_string(s.zone)+",\"camera\":["+jsonNumber(s.camera[0])+","+jsonNumber(s.camera[1])+","+jsonNumber(s.camera[2])+"],\"night\":"+jsonNumber(s.night)+
         ",\"overridesEnabled\":"+b(s.enabled)+",\"overridesLoaded\":"+std::to_string(s.loaded)+",\"overridesError\":"+jsonString(s.error)+
-        ",\"overridesRevision\":"+std::to_string(s.revision)+",\"base\":"+valuesJson(s.base)+",\"effective\":"+valuesJson(s.effective)+
+        ",\"overridesRevision\":"+std::to_string(s.revision)+",\"builtRevision\":"+std::to_string(s.builtRevision)+",\"base\":"+valuesJson(s.base)+",\"effective\":"+valuesJson(s.effective)+
         ",\"terrainReach\":"+jsonNumber(s.terrainReach)+",\"groundFogActive\":"+b(s.groundFogActive)+"}\n";
 }
 } // namespace NorthlightZoneTuning

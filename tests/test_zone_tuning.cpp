@@ -60,10 +60,12 @@ int main(int argc,char** argv){
     {Overrides celestialOnly,other;std::string e;
      assert(parseText("[default]\nsun_fog_gain=1\n[Kalimdor:215]\nsun_light_mix=.5\n",celestialOnly,e)&&parseText("[Kalimdor:215]\nsun_light_mix=.1\n",other,e));
      assert(celestialOnly.sameWorker(other)&&!ov.sameWorker(celestialOnly));
-     Overrides moved=ov;moved.zones.at({"Kalimdor",215u}).radius=2000;assert(!ov.sameWorker(moved));Overrides off=ov;off.enabled=false;assert(!ov.sameWorker(off));}
+     Overrides moved=ov;moved.zones.at({"Kalimdor",215u}).radius=2000;assert(!ov.sameWorker(moved));Overrides off=ov;off.enabled=false;assert(!ov.sameWorker(off));
+     Overrides extra=ov;extra.zones[{"Azeroth",12u}].celestial.emplace_back("sun_fog_gain","2");assert(ov.sameWorker(extra)&&extra.sameWorker(ov)); // a celestial-only zone is no worker change
+     extra.zones[{"Azeroth",12u}].fogDay=2;assert(!ov.sameWorker(extra)&&!extra.sameWorker(ov));}
     // State JSON.
     State s;s.build="dev \"tuning\"";s.tick=123456;s.inWorld=true;s.map="Kalimdor";s.zone=215;s.camera[0]=-1234.5f;s.camera[1]=7;s.camera[2]=std::nanf("");s.night=.25f;
-    s.enabled=true;s.loaded=ov.count();s.revision=3;s.error="line 2: bad\nthing";
+    s.enabled=true;s.loaded=ov.count();s.revision=3;s.builtRevision=2;s.error="line 2: bad\nthing";
     auto ranges=NorthlightRegionalShadow::Table();ranges.zones[{"Kalimdor",215u}]=1500;
     s.base=baseValues(shipped,ranges,"Kalimdor",215);s.effective=effectiveValues(s.base,eff,ov,"Kalimdor",215);s.terrainReach=2048;s.groundFogActive=true;
     assert(groundFogActive(10)&&groundFogActive(33)&&!groundFogActive(0)&&!groundFogActive(215)&&!groundFogActive(440)&&!groundFogActive(1519)); // Tanaris, Mulgore, Stormwind: no ground fog

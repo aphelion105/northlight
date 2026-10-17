@@ -21,7 +21,7 @@ with tempfile.TemporaryDirectory(prefix='northlight-zone-tuning-') as tmp:
         print(label, subprocess.check_output([str(exe), str(state)], text=True), end='', flush=True)
     j = json.loads(state.read_text(encoding='utf-8'))
     assert j['version'] == 1 and j['tick'] == 123456 and j['inWorld'] is True and j['map'] == 'Kalimdor' and j['zone'] == 215
-    assert j['build'] == 'dev "tuning"' and j['overridesError'] == 'line 2: bad\nthing' and j['overridesRevision'] == 3
+    assert j['build'] == 'dev "tuning"' and j['overridesError'] == 'line 2: bad\nthing' and j['overridesRevision'] == 3 and j['builtRevision'] == 2
     assert j['overridesEnabled'] is True and j['overridesLoaded'] == 7 and j['terrainReach'] == 2048 and j['groundFogActive'] is True and j['night'] == 0.25
     assert j['camera'] == [-1234.5, 7, 0]  # a non-finite number is written as 0, never as NaN
     expected = [f'{b}_{k}' for b in ('sun', 'moon') for k in CELESTIAL] + ['terrain_radius', 'ground_fog_day_scale', 'ground_fog_night_scale']
