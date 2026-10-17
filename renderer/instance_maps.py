@@ -10,26 +10,27 @@ Naxxramas (Stratholme Raid) is a Wrath raid, Onyxia's Lair a Classic raid.
 from __future__ import annotations
 import math, re, struct
 
-# est_gb is new disk on top of a continent cache, est_minutes the build CPU time of the group
+# est_gb is new disk on top of a continent cache (map folders plus the model files a continent build lacks), est_minutes
+# the scene build CPU time of the group; both measured from the stock client (about 3.8 GB and 10 CPU minutes for all six)
 GROUPS=[
-    {'key':'classic-dungeons','label':'Classic dungeons','est_gb':1.0,'est_minutes':2.,'maps':[
+    {'key':'classic-dungeons','label':'Classic dungeons','est_gb':.6,'est_minutes':1.7,'maps':[
         'Shadowfang','StormwindJail','DeadminesInstance','WailingCaverns','RazorfenKraulInstance','Blackfathom','Uldaman',
         'GnomeragonInstance','SunkenTemple','RazorfenDowns','MonasteryInstances','TanarisInstance','BlackRockSpire',
         'BlackrockDepths','SchoolofNecromancy','Stratholme','Mauradon','OrgrimmarInstance','DireMaul']},
-    {'key':'classic-raids','label':'Classic raids','est_gb':.3,'est_minutes':1.,'maps':[
+    {'key':'classic-raids','label':'Classic raids','est_gb':.3,'est_minutes':.9,'maps':[
         'OnyxiaLairInstance',"Zul'gurub",'MoltenCore','BlackwingLair','AhnQiraj','AhnQirajTemple']},
-    {'key':'tbc-dungeons','label':'TBC dungeons','est_gb':.8,'est_minutes':2.,'maps':[
+    {'key':'tbc-dungeons','label':'TBC dungeons','est_gb':.6,'est_minutes':1.8,'maps':[
         'HellfireMilitary','HellfireDemon','HellfireRampart','CoilfangPumping','CoilfangMarsh','CoilfangDraenei',
         'TempestKeepArcane','TempestKeepAtrium','TempestKeepFactory','AuchindounShadow','AuchindounDemon',
         'AuchindounEthereal','AuchindounDraenei','HillsbradPast','CavernsOfTime','Sunwell5ManFix']},
-    {'key':'tbc-raids','label':'TBC raids','est_gb':.4,'est_minutes':1.5,'maps':[
+    {'key':'tbc-raids','label':'TBC raids','est_gb':.4,'est_minutes':1.3,'maps':[
         'Karazahn','HyjalPast','HellfireRaid','CoilfangRaid','TempestKeepRaid','BlackTemple','GruulsLair','ZulAman',
         'SunwellPlateau']},
-    {'key':'wotlk-dungeons','label':'Wrath dungeons','est_gb':1.3,'est_minutes':4.,'maps':[
+    {'key':'wotlk-dungeons','label':'Wrath dungeons','est_gb':1.3,'est_minutes':2.3,'maps':[
         'Valgarde70','UtgardePinnacle','Nexus70','Nexus80','StratholmeCOT','Ulduar70','DrakTheronKeep','Azjol_Uppercity',
         'Ulduar80','GunDrak','DalaranPrison','Azjol_LowerCity','IcecrownCitadel5Man','ArgentTournamentDungeon',
         'QuarryofTears','HallsOfReflection']},
-    {'key':'wotlk-raids','label':'Wrath raids','est_gb':.7,'est_minutes':2.,'maps':[
+    {'key':'wotlk-raids','label':'Wrath raids','est_gb':.7,'est_minutes':1.9,'maps':[
         'Stratholme Raid','UlduarRaid','ChamberOfAspectsBlack','NexusRaid','WintergraspRaid','IcecrownCitadel',
         'ArgentTournamentRaid','ChamberofAspectsRed']},
 ]
