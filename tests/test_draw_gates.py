@@ -208,6 +208,7 @@ struct MockExt{
 struct MockWorld{
     Env* env=nullptr;bool context=true,actorShadows=true,shadows=true,composited=true;IDirect3DPixelShader9 replacement{9,nullptr};
     bool hasContext()const{return context;}
+    bool ready()const{return context;} /* the old code has no ready(); following the context keeps the runs equivalent */
     bool rainBlendSetting()const{return false;}
     bool actorShadowsEnabled()const{return actorShadows;}
     bool shadowsRequested()const{return shadows;}

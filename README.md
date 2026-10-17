@@ -44,7 +44,8 @@ Every effect below is on by default and is drawn on top of the game's own frame.
   longer flash brighter for a frame in Duskwood (0.3.207). The darkening is predicted from the game's own glare
   value, so matching reads skip the hold; the hold stays for underwater, spell flashes and frames where the client skips the darkening.
   In dungeons, raids and battlegrounds, which have no world cache, the geometry builder checks the cache once
-  per entry and skips the repeated build attempts (0.3.210).
+  per entry and skips the repeated build attempts (0.3.210). These maps get no Northlight shadows, so the game's own
+  shadows and its round blob shadows under characters are drawn as the game draws them there.
 - **Lamps.** Up to 32 nearby lamps, lanterns, braziers and fires light the ground and walls around
   them and glow in the fog. In direct sun lamps dim. Lamp shadows are off by default (`PointShadows=1`
   turns them on): only lights inside buildings cast faint shadows, at dusk and night; street lamps,
