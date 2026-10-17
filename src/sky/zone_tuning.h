@@ -140,6 +140,7 @@ inline std::string valuesJson(const Values& v){
         triple((b+"disc").c_str(),p.disc[s]);one((b+"disc_gain").c_str(),p.gain[s]);triple((b+"light").c_str(),p.light[s]);
         one((b+"light_mix").c_str(),p.mix[s]);one((b+"light_strength").c_str(),p.strength[s]);one((b+"fog_gain").c_str(),p.fogGain[s]);
         one((b+"fog_height_scale").c_str(),p.fogHeightScale[s]);one((b+"horizon_haze").c_str(),p.horizonHaze[s]);
+        one((b+"glow_strength").c_str(),p.glowStrength[s]);triple((b+"glow").c_str(),p.glow[s]);one((b+"glow_mix").c_str(),p.glowMix[s]);
     }
     one("terrain_radius",v.terrainRadius);one("ground_fog_day_scale",v.fogDay);one("ground_fog_night_scale",v.fogNight);one("ground_fog_day_add",v.fogDayAdd);o+="\"ground_fog_night_add\":"+jsonNumber(v.fogNightAdd)+"}";
     return o;

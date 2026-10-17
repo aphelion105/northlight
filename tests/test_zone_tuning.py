@@ -11,7 +11,7 @@ import northlight_paths as fp
 import json, subprocess, tempfile
 
 HERE = Path(__file__).resolve().parent
-CELESTIAL = ['disc', 'disc_gain', 'light', 'light_mix', 'light_strength', 'fog_gain', 'fog_height_scale', 'horizon_haze']
+CELESTIAL = ['disc', 'disc_gain', 'light', 'light_mix', 'light_strength', 'fog_gain', 'fog_height_scale', 'horizon_haze', 'glow_strength', 'glow', 'glow_mix']
 with tempfile.TemporaryDirectory(prefix='northlight-zone-tuning-') as tmp:
     for label, flags in [('O2', ['-O2']), ('asan', ['-O1', '-g', '-fsanitize=address,undefined', '-fno-sanitize-recover=all'])]:
         exe = Path(tmp) / ('test-' + label)
@@ -22,12 +22,14 @@ with tempfile.TemporaryDirectory(prefix='northlight-zone-tuning-') as tmp:
     j = json.loads(state.read_text(encoding='utf-8'))
     assert j['version'] == 1 and j['tick'] == 123456 and j['inWorld'] is True and j['map'] == 'Kalimdor' and j['zone'] == 215
     assert j['build'] == 'dev "tuning"' and j['overridesError'] == 'line 2: bad\nthing' and j['overridesRevision'] == 3 and j['builtRevision'] == 2
-    assert j['overridesEnabled'] is True and j['overridesLoaded'] == 9 and j['terrainReach'] == 2048 and j['groundFogActive'] is True and j['night'] == 0.25
+    assert j['overridesEnabled'] is True and j['overridesLoaded'] == 10 and j['terrainReach'] == 2048 and j['groundFogActive'] is True and j['night'] == 0.25
     assert j['camera'] == [-1234.5, 7, 0]  # a non-finite number is written as 0, never as NaN
     expected = [f'{b}_{k}' for b in ('sun', 'moon') for k in CELESTIAL] + ['terrain_radius', 'ground_fog_day_scale', 'ground_fog_night_scale', 'ground_fog_day_add', 'ground_fog_night_add']
     for part in ('base', 'effective'):
         assert sorted(j[part]) == sorted(expected), part
         assert len(j[part]['sun_disc']) == 3 and len(j[part]['moon_light']) == 3
     assert j['base']['terrain_radius'] == 1500 and j['effective']['terrain_radius'] == 4096
+    assert j['base']['sun_glow'] == [1, 1, 1] and j['base']['sun_glow_strength'] == 1 and j['base']['moon_glow_mix'] == 0
+    assert all(abs(a - b) < 1e-5 for a, b in zip(j['effective']['sun_glow'], [0.2, 0.4, 0.8]))
     assert abs(j['effective']['sun_disc'][1] - 0.93) < 1e-5 and abs(j['base']['sun_light_mix'] - 0.4) < 1e-5
     print('state json ok')

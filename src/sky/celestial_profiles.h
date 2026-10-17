@@ -19,11 +19,15 @@ struct Profile {
     float fogGain[2]={1,1},fogHeightScale[2]={1,1};
     // Horizon haze optical-depth multiplier (horizon_haze.h), day/night. 1 = the global strength.
     float horizonHaze[2]={1,1};
+    // Glow (fog shafts / aureole) colour of the source, independent of light_strength: its own strength, and an optional hue
+    // (glowMix 0 = follows the light hue and mix, 1 = the glow hue at the authored luminance).
+    float glowStrength[2]={1,1},glow[2][3]={{1,1,1},{1,1,1}},glowMix[2]={0,0};
 };
 inline Profile blend(const Profile& a,const Profile& b,float t){
     Profile p; t=std::clamp(t,0.f,1.f);
     for(unsigned s=0;s<2;++s){
-        for(unsigned c=0;c<3;++c){p.disc[s][c]=a.disc[s][c]+(b.disc[s][c]-a.disc[s][c])*t;p.light[s][c]=a.light[s][c]+(b.light[s][c]-a.light[s][c])*t;}
+        for(unsigned c=0;c<3;++c){p.disc[s][c]=a.disc[s][c]+(b.disc[s][c]-a.disc[s][c])*t;p.light[s][c]=a.light[s][c]+(b.light[s][c]-a.light[s][c])*t;p.glow[s][c]=a.glow[s][c]+(b.glow[s][c]-a.glow[s][c])*t;}
+        p.glowStrength[s]=a.glowStrength[s]+(b.glowStrength[s]-a.glowStrength[s])*t;p.glowMix[s]=a.glowMix[s]+(b.glowMix[s]-a.glowMix[s])*t;
         p.gain[s]=a.gain[s]+(b.gain[s]-a.gain[s])*t;
         p.mix[s]=a.mix[s]+(b.mix[s]-a.mix[s])*t;p.strength[s]=a.strength[s]+(b.strength[s]-a.strength[s])*t;
         p.fogGain[s]=a.fogGain[s]+(b.fogGain[s]-a.fogGain[s])*t;
@@ -59,11 +63,15 @@ inline const char* assignKey(Profile& profile,const std::string& key,std::string
     else if(name=="fog_gain"){target=&p->fogGain[s];maximum=8;}
     else if(name=="fog_height_scale"){target=&p->fogHeightScale[s];maximum=4;}
     else if(name=="horizon_haze"){target=&p->horizonHaze[s];maximum=4;}
+    else if(name=="glow_strength"){target=&p->glowStrength[s];maximum=4;}
+    else if(name=="glow"){target=p->glow[s];count=3;}
+    else if(name=="glow_mix")target=&p->glowMix[s];
     else return "unknown key";
     for(char& c:value)if(c==',')c=' ';std::istringstream values(value);
     for(unsigned i=0;i<count;++i)if(!(values>>target[i])||!std::isfinite(target[i])||target[i]<0||target[i]>maximum)return "invalid numeric value";
     std::string extra;if(values>>extra)return "too many values";
     if(name=="light"&&target[0]+target[1]+target[2]<.01f)return "light hue cannot be black; use light_strength=0";
+    if(name=="glow"&&target[0]+target[1]+target[2]<.01f)return "glow hue cannot be black; use glow_strength=0";
     if(name=="fog_height_scale"&&target[0]<.25f)return "fog height scale must be at least .25";
     return nullptr;
 }
@@ -117,16 +125,20 @@ public:
     }
 };
 inline void apply(const Profile& p,const float* direct,NorthlightCelestial::Context& sky){
-    NorthlightCelestial::Body* bodies[]={&sky.sun,&sky.moon};float* colors[]={sky.sunColor,sky.moonColor};
+    NorthlightCelestial::Body* bodies[]={&sky.sun,&sky.moon};float* colors[]={sky.sunColor,sky.moonColor};float* glows[]={sky.sunGlowColor,sky.moonGlowColor};
     const float weight[]={sky.sunWeight,sky.moonWeight};
     const float energy=direct[0]*.2126f+direct[1]*.7152f+direct[2]*.0722f;
     for(unsigned s=0;s<2;++s){
         bodies[s]->emission=p.gain[s];
-        float luma=p.light[s][0]*.2126f+p.light[s][1]*.7152f+p.light[s][2]*.0722f;
+        float luma=p.light[s][0]*.2126f+p.light[s][1]*.7152f+p.light[s][2]*.0722f,glowLuma=p.glow[s][0]*.2126f+p.glow[s][1]*.7152f+p.glow[s][2]*.0722f;
         for(unsigned c=0;c<3;++c){
             bodies[s]->tint[c]=p.disc[s][c];
             float tinted=p.light[s][c]*(energy/std::max(luma,.001f));
-            colors[s][c]=(direct[c]+(tinted-direct[c])*p.mix[s])*p.strength[s]*weight[s];
+            const float lit=direct[c]+(tinted-direct[c])*p.mix[s];
+            colors[s][c]=lit*p.strength[s]*weight[s];
+            // The glow starts from the same lit colour (strength 1: exactly today's look) and moves toward its own hue.
+            const float tintedGlow=p.glow[s][c]*(energy/std::max(glowLuma,.001f));
+            glows[s][c]=(lit+(tintedGlow-lit)*p.glowMix[s])*p.glowStrength[s]*weight[s];
         }
     }
 }

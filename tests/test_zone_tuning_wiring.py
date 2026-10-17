@@ -49,4 +49,6 @@ assert '!indoors&&cell.height>0)(*zoneScale)' in f, 'the hook never touches indo
 assert 'zone_tuning' not in f and 'ZoneTuning' not in f, 'the portable fog policy stays free of the dev overlay'
 b = (fp.REPO / 'scripts' / 'build_renderer.py').read_text()
 assert "'-DNORTHLIGHT_DEV_TUNING=1'" in b and b.count('NORTHLIGHT_DEV_TUNING') == 1, 'the define is added in one place, behind --dev-tuning'
+# glow_strength split: the fog volume pass (shafts / aureole) reads the glow colours, the surface passes the light colours.
+assert 'const V& shown=volume?sourceGlowColors[source]:sourceColors[source];' in w and 'celestialLight.sunGlowColor' in w
 print('zone tuning wiring ok')

@@ -374,7 +374,7 @@ private:
     static constexpr DWORD CelestialHoldMs=500;NorthlightCelestial::Context celestialHeld;std::string celestialHeldMap;DWORD celestialHeldAt=0;bool celestialHeldOk=false;unsigned long celestialHolds=0;
     NorthlightEffectSwitches::Settings effects;
     bool neutralShadowMaps=false;
-    V sourceDirections[2],sourceColors[2];
+    V sourceDirections[2],sourceColors[2],sourceGlowColors[2]; // sourceGlowColors: the same sources for the fog volume pass (glow_strength / glow hue instead of light_strength)
     float sourceWeights[2]={1,0};
     NorthlightUnderwater::Fade underwaterFade; // the camera in liquid: the sun and moon fade out (updateWorldContext)
     DWORD underwaterLogAt=0;bool underwaterLogged=false;
@@ -2559,7 +2559,7 @@ public:
         if(lightSlotsMap!=map||DWORD(slotsNow-lightSlotsAt)>NorthlightSunHue::HoldMs){lightSlotsValid=false;lightSlotsMap=map;}
         if(global&&global->slotsProven){memcpy(lightSlots,global->slots,sizeof lightSlots);lightSlotsValid=true;lightSlotsAt=slotsNow;}
         glowHueFrame=NorthlightSunHue::compute(lightSlotsValid?lightSlots:nullptr,celestialPalette(map,camera).disc[1]);
-        sourceDirections[0]=vec(context.lightDirection);sourceColors[0]=vec(context.direct);
+        sourceDirections[0]=vec(context.lightDirection);sourceColors[0]=vec(context.direct);sourceGlowColors[0]=sourceColors[0];sourceGlowColors[1]=V();
         sourceDirections[1]=V(0,0,1);sourceColors[1]=V();sourceWeights[0]=1;sourceWeights[1]=0;
         // The sun and moon light (shadows, rays) from 6 deg at the lowest (MinLightElevation), also under the horizon up to the handover;
         // the discs and the twilight keep their real elevation.
@@ -2572,7 +2572,8 @@ public:
             celestialValid?celestialLight.sunWeight:0.f,celestialValid?celestialLight.moonWeight:0.f);
         if(celestialValid){resolvedSources.sources[0].color=vec(celestialLight.sunColor);resolvedSources.sources[1].color=vec(celestialLight.moonColor);}
         authoredFill=resolvedSources.authoredFill;
-        for(unsigned source=0;source<2;++source){rawSourceDirections[source]=resolvedSources.sources[source].direction;sourceDirections[source]=continuousCelestialShadows?resolvedSources.sources[source].direction:NorthlightWorldMath::quantizeDirection(resolvedSources.sources[source].direction,float(quality.shadowDirectionSteps));sourceColors[source]=resolvedSources.sources[source].color;sourceWeights[source]=resolvedSources.sources[source].weight;}
+        for(unsigned source=0;source<2;++source){rawSourceDirections[source]=resolvedSources.sources[source].direction;sourceDirections[source]=continuousCelestialShadows?resolvedSources.sources[source].direction:NorthlightWorldMath::quantizeDirection(resolvedSources.sources[source].direction,float(quality.shadowDirectionSteps));sourceColors[source]=resolvedSources.sources[source].color;sourceGlowColors[source]=sourceColors[source];sourceWeights[source]=resolvedSources.sources[source].weight;}
+        if(celestialValid){sourceGlowColors[0]=vec(celestialLight.sunGlowColor);sourceGlowColors[1]=vec(celestialLight.moonGlowColor);}
         requestStaticCasters(map);
         Request r;r.map=map;r.camera=vec(camera);r.light.sunDirection=sourceDirections[0];r.light.sunIrradiance=sourceColors[0]*3.14159265f;r.light.skyRadiance=vec(context.ambient);r.light.maxBounces=quality.giBounces;
         r.light.additionalDirections.push_back({sourceDirections[1],sourceColors[1]*3.14159265f});
@@ -4077,7 +4078,8 @@ public:
             // Match the shadow-render activity threshold exactly. The mandatory
             // ambient-only volume pass must never read an unrendered map for
             // a sub-threshold celestial source.
-            float rgb[4]={sourceActive[source]?sourceColors[source].x:0.f,sourceActive[source]?sourceColors[source].y:0.f,sourceActive[source]?sourceColors[source].z:0.f,0};
+            const V& shown=volume?sourceGlowColors[source]:sourceColors[source]; // the fog volume's glow has its own strength and hue; surface passes keep the light colour
+            float rgb[4]={sourceActive[source]?shown.x:0.f,sourceActive[source]?shown.y:0.f,sourceActive[source]?shown.z:0.f,0};
             if(volume){const float keep=underwaterFade.scale();rgb[0]*=keep;rgb[1]*=keep;rgb[2]*=keep;} /* underwater: the fog/volume pass (shafts) fades with the sun; the lighting and actor passes keep the real colour (their shadow test and alpha read it) */
             // fog passes only: the sun's direct scatter takes the glow hue; the forward soft cap
             // rises so the aureole brightens toward the sun. c17/c18 are restored after the fog loop.
@@ -4377,7 +4379,7 @@ public:
             context.ambient[0],context.ambient[1],context.ambient[2],uploadedFogField?uploadedFogField->airCells:0,c[32][0],c[32][1],c[22][3],c[31][3]);
         if(profileSampled()){ /* hue candidates (RenderProfile): compare at Brill / Durotar coast / Orgrimmar with the Light DBC */
             const auto& g=glowHueFrame;float fogDirectRGB[3],fogAmbientRGB[3],liftRGB[3],slot[5][3];
-            const float sunRGB[3]={sourceColors[0].x,sourceColors[0].y,sourceColors[0].z};NorthlightSunHue::fogDirect(sunRGB,g,fogDirectRGB);NorthlightSunHue::coolAmbient(c[18],g,sourceWeights[0],fogAmbientRGB);NorthlightSunHue::horizonLift(g,liftRGB);
+            const float sunRGB[3]={sourceGlowColors[0].x,sourceGlowColors[0].y,sourceGlowColors[0].z};NorthlightSunHue::fogDirect(sunRGB,g,fogDirectRGB);NorthlightSunHue::coolAmbient(c[18],g,sourceWeights[0],fogAmbientRGB);NorthlightSunHue::horizonLift(g,liftRGB);
             const unsigned slots[5]={NorthlightSunHue::SlotDirect,NorthlightSunHue::SlotFog,NorthlightSunHue::SlotSun,NorthlightSunHue::SlotSunHalo,NorthlightSunHue::SlotSkyAboveHorizon};
             for(unsigned i=0;i<5;++i)NorthlightSunHue::unpack(lightSlots[slots[i]],slot[i]);
             logf("SUNHUE valid=%d slots=%d native=%.3f strength=%.3f direct=%.3f,%.3f,%.3f legacyFog=%.3f,%.3f,%.3f band0=%.3f,%.3f,%.3f band7fog=%.3f,%.3f,%.3f band9sunGlare=%.3f,%.3f,%.3f band10sunHalo=%.3f,%.3f,%.3f slot6band5sky=%.3f,%.3f,%.3f "

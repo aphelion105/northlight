@@ -23,6 +23,9 @@ int main(int argc,char** argv){
         else if(entry.first!=std::make_pair(std::string("Kalimdor"),215u))
             assert(near(entry.second.fogGain[0],4.3f)&&entry.second.fogHeightScale[0]==2);
     }
+    // glow_strength was split from light_strength: every shipped zone keeps its glow at its light_strength (the pre-split look).
+    assert(t.fallback.glowStrength[0]==t.fallback.strength[0]&&t.fallback.glowStrength[1]==t.fallback.strength[1]);
+    for(const auto& entry:t.zones)for(unsigned s=0;s<2;++s)assert(near(entry.second.glowStrength[s],entry.second.strength[s])&&entry.second.glowMix[s]==0);
     // All volume knobs inherit and interpolate without changing surface light.
     auto middle=blend(t.fallback,prairie,.5f);
     assert(near(middle.fogGain[0],4.3f)&&near(middle.fogHeightScale[0],2.f));

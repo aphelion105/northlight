@@ -25,16 +25,33 @@ int main(int argc,char** argv){
     Overrides ov;std::string error;
     const std::string good=
         "# header\n[tuning]\nenabled = 1   # on\n\n[default]\nsun_fog_gain = 5\n"
-        "[Kalimdor:215]\nsun_disc = 1.00, 0.93, 0.80\nsun_light_mix = 0.3\nterrain_radius = 4096\nground_fog_day_scale = 1.5\nground_fog_night_scale = 0\nground_fog_day_add = 0.004\nground_fog_night_add = 0.05\n"
+        "[Kalimdor:215]\nsun_disc = 1.00, 0.93, 0.80\nsun_light_mix = 0.3\nterrain_radius = 4096\nground_fog_day_scale = 1.5\nground_fog_night_scale = 0\nsun_glow = 0.2, 0.4, 0.8\nground_fog_day_add = 0.004\nground_fog_night_add = 0.05\n"
         "[Northrend:100]\nmoon_fog_gain=1\n";
     assert(parseText(good,ov,error)&&error.empty());
-    assert(ov.enabled&&ov.fallback.count()==1&&ov.zones.size()==2&&ov.count()==1+7+1);
+    assert(ov.enabled&&ov.fallback.count()==1&&ov.zones.size()==2&&ov.count()==1+8+1);
     assert(near(ov.zones.at({"Kalimdor",215u}).radius,4096)&&near(ov.zones.at({"Kalimdor",215u}).fogNight,0));
+    // Glow keys: parsed like the shipped ones, blended, and independent of light_strength in apply().
+    {CP::Profile p;assert(!CP::assignKey(p,"sun_glow_strength","2")&&near(p.glowStrength[0],2)&&!CP::assignKey(p,"moon_glow","0.1, 0.2, 0.3")&&near(p.glow[1][2],.3f)&&!CP::assignKey(p,"moon_glow_mix","1")&&near(p.glowMix[1],1));
+     assert(CP::assignKey(p,"sun_glow_strength","4.1")&&CP::assignKey(p,"sun_glow","0,0,0")&&CP::assignKey(p,"sun_glow_mix","1.1")&&CP::assignKey(p,"sun_glow","1,2,0.5")&&CP::assignKey(p,"sun_glow_mix","-1"));
+     CP::Profile a,b;b.glowStrength[0]=3;b.glow[0][0]=0;b.glowMix[0]=1;auto m=CP::blend(a,b,.5f);assert(near(m.glowStrength[0],2)&&near(m.glow[0][0],.5f)&&near(m.glowMix[0],.5f)&&near(m.glowStrength[1],1));}
+    {float direct[3]={1,.8f,.6f};
+     auto run=[&](const CP::Profile& p,NorthlightCelestial::Context& sky){sky=NorthlightCelestial::Context();sky.sunWeight=.5f;sky.moonWeight=.25f;CP::apply(p,direct,sky);};
+     NorthlightCelestial::Context sky;CP::Profile p; // default profile = the old behaviour: glow colour equals the light colour
+     run(p,sky);for(unsigned c=0;c<3;++c)assert(near(sky.sunColor[c],direct[c]*.5f)&&near(sky.sunGlowColor[c],sky.sunColor[c])&&near(sky.moonGlowColor[c],direct[c]*.25f));
+     p.strength[0]=.5f;run(p,sky);for(unsigned c=0;c<3;++c)assert(near(sky.sunColor[c],direct[c]*.25f)&&near(sky.sunGlowColor[c],direct[c]*.5f)); // light_strength leaves the glow alone
+     p.glowStrength[0]=.5f;run(p,sky);for(unsigned c=0;c<3;++c)assert(near(sky.sunGlowColor[c],sky.sunColor[c])); // the old coupled look is glow_strength = light_strength
+     p.strength[0]=1;p.glowStrength[0]=2;p.mix[0]=1;p.light[0][0]=1;p.light[0][1]=0;p.light[0][2]=0;run(p,sky); // surface hue red, glow follows it at glow_mix 0
+     for(unsigned c=0;c<3;++c)assert(near(sky.sunGlowColor[c],sky.sunColor[c]*2));
+     p.glow[0][0]=0;p.glow[0][1]=0;p.glow[0][2]=1;p.glowMix[0]=1;p.glowStrength[0]=1;run(p,sky); // own blue hue at the authored luminance
+     const float energy=direct[0]*.2126f+direct[1]*.7152f+direct[2]*.0722f;
+     assert(near(sky.sunGlowColor[0],0)&&near(sky.sunGlowColor[1],0)&&near(sky.sunGlowColor[2],energy/.0722f*.5f,1e-4f)&&sky.sunColor[0]>sky.sunColor[1]);
+     p.glowMix[0]=.5f;run(p,sky);assert(near(sky.sunGlowColor[0],sky.sunColor[0]*.5f)&&sky.sunGlowColor[2]>0); // half way
+     p.glowStrength[0]=0;run(p,sky);for(unsigned c=0;c<3;++c)assert(sky.sunGlowColor[c]==0&&sky.sunColor[c]>=0);}
     // Every malformed input is rejected with a line number and keeps the previous overrides.
     const char* bad[]={
         "[tuning]\nenabled=2","[tuning]\nsun_fog_gain=1","[tuning]\n[tuning]","[bogus]","[Kalimdor]","[Mars:5]","[Kalimdor:0]","[Kalimdor:x]","[Kalimdor:215]\n[Kalimdor:215]",
         "sun_fog_gain=1","[default]\nsun_fog_gain=8.01","[default]\nsun_fog_height_scale=0.2","[default]\nsun_light=0,0,0","[default]\nsun_disc=1,2,3","[default]\nsun_disc=0.1,0.2",
-        "[default]\nsun_disc_gain=4.1","[default]\nmoon_horizon_haze=-1","[default]\nsun_fog_gain=1\nsun_fog_gain=2","[default]\nterrain_radius=1000","[default]\nground_fog_day_scale=1","[default]\nground_fog_day_add=0.01","[Kalimdor:215]\nground_fog_day_add=0.0501","[Kalimdor:215]\nground_fog_night_add=-0.001","[Kalimdor:215]\nground_fog_night_add=x",
+        "[default]\nsun_disc_gain=4.1","[default]\nmoon_horizon_haze=-1","[default]\nsun_fog_gain=1\nsun_fog_gain=2","[default]\nterrain_radius=1000","[default]\nground_fog_day_scale=1","[default]\nsun_glow=0,0,0","[default]\nmoon_glow_strength=4.5","[Kalimdor:215]\nsun_glow_mix=2","[default]\nground_fog_day_add=0.01","[Kalimdor:215]\nground_fog_day_add=0.0501","[Kalimdor:215]\nground_fog_night_add=-0.001","[Kalimdor:215]\nground_fog_night_add=x",
         "[Kalimdor:215]\nterrain_radius=927","[Kalimdor:215]\nterrain_radius=4097","[Kalimdor:215]\nground_fog_day_scale=4.1","[Kalimdor:215]\nground_fog_night_scale=-0.1",
         "[Kalimdor:215]\nsun_unknown=1","[Kalimdor:215]\nterrain_radius=nan","[Kalimdor:215]\nterrain_radius=1000 2000","[Kalimdor:215]\nterrain_radius","[Kalimdor:215]\nfoo=1",
     };
