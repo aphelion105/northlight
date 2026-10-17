@@ -865,8 +865,12 @@ def apply_instances(staging, output):
     models, lights = output / 'models', output / 'lights'
     models.mkdir(parents=True, exist_ok=True)
     lights.mkdir(parents=True, exist_ok=True)
-    for path in (staging / 'models').glob('*.fgs'):   # names are content hashes: an existing file is the same model
-        if not (models / path.name).exists():
+    replace = set(ready['prune'])   # models the replaced or removed tiles used
+    for path in (staging / 'models').glob('*.fgs'):
+        # A model file is named by a hash of the model's name (sha256 of 'FGS3-v1:' + name), not of its content. One this
+        # layer's own old tiles used is replaced by the fresh build (the sources may have changed its content); any
+        # other existing file (a continent's model of the same name) is left alone.
+        if path.stem in replace or not (models / path.name).exists():
             retry(os.replace, path, models / path.name)
     for m in ready['drop_maps']:
         if (output / m).exists():
@@ -924,6 +928,10 @@ def run_instances(args, client, locale, output, inputs, started):
     digest = _hash(digests)
     staging = instance_staging(output)
     base = {'layer': 'instances', 'output': str(output)}
+    if args.instances_plan:   # a dry run for the installer's disk check
+        build, keep, remove = instance_plan(digests, selected, read_json(output / INSTANCE_MANIFEST), output, args.force)
+        print(json.dumps({'event': 'instances_plan', 'build': build, 'keep': keep, 'remove': remove}), flush=True)
+        return 0
     has_cache = (output / 'install-manifest.json').is_file() or (output / 'northlight-cache.json').is_file()
     if selected and not has_cache:
         return final('failed', 2, stage='preflight', layer='instances',
@@ -1031,6 +1039,8 @@ def main(argv=None):
     ap.add_argument('--keep-previous', action='store_true', help='keep the replaced cache as <output>.previous')
     ap.add_argument('--instances', metavar='SPEC', help='only the instance layer on top of the cache in --output: group keys or '
                     'numbers (see renderer/instance_maps.py), "all" or "none" (removes it)')
+    ap.add_argument('--instances-plan', action='store_true',
+                    help='with --instances: print {"build": [...], "keep": [...], "remove": [...]} and change nothing')
     ap.add_argument('--progress', choices=['json', 'human'], default='json', help='progress format (default json)')
     args = ap.parse_args(argv)
     PROGRESS = args.progress

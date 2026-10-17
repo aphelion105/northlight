@@ -328,9 +328,11 @@ def key_of(name):
 
 def model_file(folder, key):
     (folder / 'models').mkdir(parents=True, exist_ok=True)
-    (folder / 'models' / (key.hex() + '.fgs')).write_text('model ' + key.hex())
+    (folder / 'models' / (key.hex() + '.fgs')).write_text('model ' + key.hex() + BUILD)
 
 
+BUILD = ''                                                                      # the "content" a build writes into its models
+CONTINENT_ONLY = key_of('continent-only')
 SHARED = key_of('shared')                                                       # a model a continent tile and instance tiles use
 
 
@@ -358,7 +360,7 @@ def fake_run_parallel(specs, jobs, budget=float('inf')):
             for m in args[args.index('--map') + 1:args.index('--output')]:
                 (staging / m).mkdir(parents=True, exist_ok=True)
                 (staging / m / '1_1.fg3').write_bytes(tile(SHARED, key_of('unique-' + m)))
-                model_file(staging, SHARED), model_file(staging, key_of('unique-' + m))
+                model_file(staging, SHARED), model_file(staging, key_of('unique-' + m)), model_file(staging, CONTINENT_ONLY)
                 (staging / f'build-{m}-100-1.json').write_text(json.dumps({
                     'failures': [{'tile': [1, 1], 'error': 'x'}] if key in fail_group else [], 'empty_source_tiles': [],
                     'clamped_wmo_groups': [], 'archive_warnings': []}))
@@ -391,7 +393,7 @@ def inst_run(spec, *extra):
 
 
 def models_of(folder):
-    return sorted(p.stem for p in (folder / 'models').glob('*.fgs'))
+    return sorted(p.stem for p in (folder / 'models').glob('*.fgs') if p.stem != CONTINENT_ONLY.hex())   # that one always stays
 
 
 raids = instance_maps.maps_for(['classic-raids'])
@@ -402,7 +404,8 @@ assert (code, last['event'], last['stage']) == (2, 'failed', 'preflight') and 'c
 assert inst_run('none')[1]['event'] == 'up_to_date' and not icache.exists() and not istaging.exists()
 fake_cache(icache, {'digests': base})
 model_file(icache, SHARED)
-(icache / 'Azeroth/3_3.fg3').write_bytes(tile(SHARED))
+(icache / 'Azeroth/3_3.fg3').write_bytes(tile(SHARED, CONTINENT_ONLY))
+model_file(icache, CONTINENT_ONLY)
 continents = sorted(p.relative_to(icache).as_posix() for p in icache.rglob('*') if p.is_file())
 assert inst_run('bogus')[0] == 2 and inst_run('none')[1]['event'] == 'up_to_date' and not (icache / iwc.INSTANCE_MANIFEST).exists()
 # 8a. one group: tiles, lights and the models it needs move in; the shared model is not duplicated; staging is gone
@@ -416,6 +419,7 @@ assert record['groups']['classic-raids']['maps_built'] == raids and record['grou
 assert record['lights'] == [f'{m}.fgl' for m in raids]
 assert models_of(icache) == sorted([SHARED.hex(), *(key_of('unique-' + m).hex() for m in raids)])
 assert (icache / 'models' / (SHARED.hex() + '.fgs')).read_text() == 'model ' + SHARED.hex()
+assert (icache / 'models' / (CONTINENT_ONLY.hex() + '.fgs')).read_text() == 'model ' + CONTINENT_ONLY.hex()
 assert [m['map'] for m in json.loads((icache / 'lights' / iwc.INSTANCE_MANIFEST).read_text())['maps']] == raids
 assert (icache / 'instances-validation.json').is_file() and (icache / 'logs/instances-lights.log').parent.is_dir()
 assert all(f in sorted(p.relative_to(icache).as_posix() for p in icache.rglob('*') if p.is_file()) for f in continents)
@@ -430,6 +434,19 @@ assert (code, last['built'], last['kept']) == (0, ['wotlk-raids'], ['classic-rai
 assert list(json.loads((icache / iwc.INSTANCE_MANIFEST).read_text())['groups']) == ['classic-raids', 'wotlk-raids']
 assert [m['map'] for m in json.loads((icache / 'lights' / iwc.INSTANCE_MANIFEST).read_text())['maps']] == raids + wotlk
 assert iwc.plan(base, recorded, icache, False, 'z') == ('up_to_date', [])
+# --instances-plan is a dry run: it names what would be built and changes nothing
+before_plan = sorted(p.relative_to(icache).as_posix() for p in icache.rglob('*'))
+code, last = inst_run('classic-raids,tbc-raids', '--instances-plan')
+assert (code, last['event'], last['build'], last['keep'], last['remove']) == (0, 'instances_plan', ['tbc-raids'], ['classic-raids'], ['wotlk-raids']), last
+assert before_plan == sorted(p.relative_to(icache).as_posix() for p in icache.rglob('*')) and built_groups == []
+# Model files are named by a hash of the model's name, not its content: a rebuilt group replaces the models its old
+# tiles used (the sources may have changed their content) but leaves a continent's model of the same name alone.
+BUILD = ' rebuilt'
+assert inst_run('classic-raids,wotlk-raids', '--force')[1]['built'] == ['classic-raids', 'wotlk-raids']
+unique = icache / 'models' / (key_of('unique-' + raids[0]).hex() + '.fgs')
+assert unique.read_text().endswith(' rebuilt') and (icache / 'models' / (SHARED.hex() + '.fgs')).read_text().endswith(' rebuilt')
+assert not (icache / 'models' / (CONTINENT_ONLY.hex() + '.fgs')).read_text().endswith(' rebuilt')
+BUILD = ''
 # a group with missing folders is built again; --force rebuilds the selected ones
 shutil.rmtree(icache / raids[0])
 assert inst_run('classic-raids,wotlk-raids')[1]['built'] == ['classic-raids']
