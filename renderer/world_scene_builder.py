@@ -659,7 +659,8 @@ def main():
                 'limitations':limitations,'archive_priority':[p.relative_to(assets.client).as_posix() for p in assets.paths],'archive_fingerprint':assets.fingerprint()}
             if info:report['global_wmo']=info
             (args.output/f'build-{mapname}-{int(time.time())}-{os.getpid()}.json').write_text(json.dumps(report,indent=2)+'\n')
-            totals.update(generated=len(records),failures=len(failures),clamped_wmo_groups=len(clamped))
+            totals.update(generated=len(records),failures=len(failures))
+            builder.meshes.clear();builder.mesh_names.clear()   # parsed models are the bulk of the memory; the next map re-reads what it shares
         print(json.dumps({'generated':totals['generated'],'failures':totals['failures'],'unsupported':len(assets.unsupported),'clamped_wmo_groups':len(assets.clamped),'seconds':round(time.time()-start,1)}))
     finally:assets.close()
 
