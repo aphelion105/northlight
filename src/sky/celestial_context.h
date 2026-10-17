@@ -27,7 +27,8 @@ struct Context {
     float dayFraction=0;
     Body sun, moon, secondaryMoon;
     float sunWeight=0, moonWeight=0;
-    float sunColor[3]={}, moonColor[3]={}; // Same units as input terrain direct RGB.
+    float sunColor[3]={}, moonColor[3]={}; // Same units as input terrain direct RGB. SURFACE light (shadows, GI, lighting): scaled by light_strength.
+    float sunGlowColor[3]={}, moonGlowColor[3]={}; // The same source colour for the volumetric glow (fog shafts, aureole): scaled by glow_strength, own hue (profiles apply()).
     float horizonSine=0; // the camera's far edge (apparent_horizon.h), 0..-sin 3 deg; discs and the glow ring only
 };
 inline float smooth(float x) { x=std::max(0.f,std::min(1.f,x));return x*x*(3-2*x); }
@@ -76,6 +77,7 @@ inline bool decode(const Snapshot& s,const float* camera,const float* direct,Con
     for(int i=0;i<3;++i) {
         candidate.sunColor[i]=direct[i]*candidate.sunWeight;
         candidate.moonColor[i]=direct[i]*candidate.moonWeight;
+        candidate.sunGlowColor[i]=candidate.sunColor[i];candidate.moonGlowColor[i]=candidate.moonColor[i];
     }
     out=candidate;return true;
 }

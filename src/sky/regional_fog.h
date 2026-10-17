@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <string>
 #include <vector>
@@ -163,7 +164,9 @@ inline bool cityOpaqueAt(const NorthlightGI::WorldMaterial& m,float u,float v){
 }
 // originX/Y are the WORLD POSITION OF TEXEL(0,0)'S CENTER. Shader UV is
 // (worldXY-originXY)/(N*Spacing)+0.5/N. Two outer sample rows fade to zero.
-inline Field buildField(const NorthlightGI::WorldScene& scene,const Region& region,float centerX,float centerY){
+// Optional per-zone adjustment of an outdoor cell's day / nightExtra density (dev tuning only); null = identity.
+using ZoneScale=std::function<void(uint32_t zone,float& day,float& nightExtra)>;
+inline Field buildField(const NorthlightGI::WorldScene& scene,const Region& region,float centerX,float centerY,const ZoneScale* zoneScale=nullptr){
     Field out;if(!std::isfinite(centerX)||!std::isfinite(centerY)||std::fabs(centerX)>100000||std::fabs(centerY)>100000)return out;
     out.originX=std::floor(centerX/Spacing)*Spacing-float(N/2)*Spacing;
     out.originY=std::floor(centerY/Spacing)*Spacing-float(N/2)*Spacing;
@@ -209,7 +212,7 @@ inline Field buildField(const NorthlightGI::WorldScene& scene,const Region& regi
         float basin=count?smooth((surrounding/count-ground[i]-.25f)/2.f):0;
         float surface=ground[i],wet=wetness(region,px,py,ground[i],surface);
         const uint32_t zone=zoneAt(region,px,py);
-        auto cell=policy(zone,surface,wet,basin,indoors);out.lush[i]=!indoors&&lushZone(zone);
+        auto cell=policy(zone,surface,wet,basin,indoors);if(zoneScale&&*zoneScale&&!indoors&&cell.height>0)(*zoneScale)(zone,cell.day,cell.nightExtra); /* outdoor cells of a known zone only (finite ground is guaranteed above) */out.lush[i]=!indoors&&lushZone(zone);
         float edge=smooth(float(std::min({x,y,N-1-x,N-1-y}))/2.f);cell.day*=edge;cell.nightExtra*=edge;
         out.texels[i]=cell;if(cell.day>0||cell.nightExtra>0)++out.fogCells;
         if(cell.height>0&&edge>0)++out.airCells;
