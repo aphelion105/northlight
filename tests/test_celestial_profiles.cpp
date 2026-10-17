@@ -20,12 +20,14 @@ int main(int argc,char** argv){
             assert(near(entry.second.fogGain[0],4.3f)&&entry.second.fogHeightScale[0]==1);
         else if(entry.first==std::make_pair(std::string("Azeroth"),85u)) /* Tirisfal: sun_fog_gain 3.4 since 2026-09-24 */
             assert(near(entry.second.fogGain[0],3.4f)&&entry.second.fogHeightScale[0]==2);
+        else if(entry.first==std::make_pair(std::string("Azeroth"),33u)) /* Stranglethorn: sun_fog_height_scale 3 (2026-10-17 tuning) */
+            assert(near(entry.second.fogGain[0],4.3f)&&entry.second.fogHeightScale[0]==3);
         else if(entry.first!=std::make_pair(std::string("Kalimdor"),215u))
             assert(near(entry.second.fogGain[0],4.3f)&&entry.second.fogHeightScale[0]==2);
     }
-    // glow_strength was split from light_strength: every shipped zone keeps its glow at its light_strength (the pre-split look).
+    // glow_strength was split from light_strength: the zones that lowered light_strength before the split keep that glow.
     assert(t.fallback.glowStrength[0]==t.fallback.strength[0]&&t.fallback.glowStrength[1]==t.fallback.strength[1]);
-    for(const auto& entry:t.zones)for(unsigned s=0;s<2;++s)assert(near(entry.second.glowStrength[s],entry.second.strength[s])&&entry.second.glowMix[s]==0);
+    assert(near(t.at("Azeroth",10).glowStrength[0],.90f)&&near(t.at("Kalimdor",148).glowStrength[0],.95f));
     // All volume knobs inherit and interpolate without changing surface light.
     auto middle=blend(t.fallback,prairie,.5f);
     assert(near(middle.fogGain[0],4.3f)&&near(middle.fogHeightScale[0],2.f));
@@ -41,10 +43,11 @@ int main(int argc,char** argv){
         apply(p,direct,a);apply(Profile{},direct,b);
         for(unsigned c=0;c<3;++c)assert(a.sunColor[c]==b.sunColor[c]);
     }
-    // Horizon haze multipliers: identity in [default] and every shipped zone, day/night
+    // Horizon haze multipliers: identity in [default] and every shipped zone but Crystalsong, day/night
     // blend like fog_height_scale, 0..4, atomic reject, never surface light.
     assert(t.fallback.horizonHaze[0]==1&&t.fallback.horizonHaze[1]==1&&near(horizonHaze(t.fallback,.3f),1));
-    for(const auto& entry:t.zones)assert(entry.second.horizonHaze[0]==1&&entry.second.horizonHaze[1]==1);
+    for(const auto& entry:t.zones)if(entry.first!=std::make_pair(std::string("Northrend"),2817u))assert(entry.second.horizonHaze[0]==1&&entry.second.horizonHaze[1]==1);
+    assert(near(t.at("Northrend",2817).horizonHaze[0],2.46f)&&t.at("Northrend",2817).horizonHaze[1]==1); /* Crystalsong (2026-10-17 tuning) */
     for(const char* bad:{"sun_horizon_haze=-1","sun_horizon_haze=4.1","moon_horizon_haze=nan","sun_horizon_haze=1,1","sun_horizon_haze=1\nsun_horizon_haze=2"}){
         Table check;std::istringstream input(std::string("[Kalimdor:215]\n")+bad);
         assert(!parse(input,check,error));
