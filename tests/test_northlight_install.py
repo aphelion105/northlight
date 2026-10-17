@@ -140,6 +140,11 @@ class Base(unittest.TestCase):
             (out / 'art-layer-manifest.json').write_text(json.dumps({'targets': targets, 'steps': [
                 {'step': 'relighting'}, {'step': 'mulgore'}, {'step': 'outdoor_sun', 'skipped': 'no HD sky'}]}))
             return 0, {'targets': targets}
+        if Path(script).name == 'install_world_cache.py' and '--instances-plan' in args:
+            keys = opt('--instances').split(',')
+            old = (fi.read_json(Path(opt('--output')) / fi.INSTANCES) or {}).get('groups', {})
+            return 0, {'event': 'instances_plan', 'build': [k for k in keys if k not in old],
+                       'keep': [k for k in keys if k in old], 'remove': [k for k in old if k not in keys]}
         if Path(script).name == 'install_world_cache.py' and '--instances' in args:
             return self.fake_instances(Path(opt('--output')), opt('--instances'))
         if Path(script).name == 'install_world_cache.py':
@@ -786,7 +791,7 @@ class Install(Base):
     # ---- the instance (dungeon and raid) world cache layer ----
 
     def instance_calls(self):
-        return [a for n, a in self.calls if n == 'install_world_cache.py' and '--instances' in a]
+        return [a for n, a in self.calls if n == 'install_world_cache.py' and '--instances' in a and '--instances-plan' not in a]
 
     def tty(self, *answers):
         """A terminal that types `answers`; returns the prompts shown."""
@@ -930,17 +935,55 @@ class Install(Base):
                 return 1, {'event': 'failed', 'problems': ['instances classic-raids: no tiles built'], 'logs': [str(log)]}
             return self.fake_run(script, args, show)
         inst = self.installer(); inst.run = failing
+        report = inst.install(self.client, instances='classic-raids')   # the optional layer never blocks the renderer
+        text = inst.out.getvalue()
+        self.assertIn('instance world cache build failed', text)
+        self.assertIn(f'Instance world cache: Classic raids failed (see {log}); the renderer was updated. '
+                      'Run the installer again, or use --instances none to skip.', text)
+        self.assertEqual(report['instances_failed'], {'groups': ['classic-raids'], 'log': str(log)})
+        self.assertTrue(report['payload'].startswith('installed'))
+        self.assertEqual((self.client / ('mods/d3d9.dll' if self.platform == 'mac' else 'd3d9.dll')).read_bytes(), PROXY)
+        self.assertTrue((self.client / 'world-cache/Azeroth/32_48.fg3').is_file())
+        # the choice is kept: the next run tries again
+        self.assertEqual(self.installer().chosen_instances(self.client), ['classic-raids'])
+        self.installer().install(self.client)
+        self.assertEqual(self.instance_calls()[-1][self.instance_calls()[-1].index('--instances') + 1], 'classic-raids')
+
+    def test_a_game_started_during_the_instance_step_still_stops_the_install(self):
+        inst = self.installer()
+        states = iter([[], [], [], ['wow.exe']])   # closed for the checks and the cache, running when the layer starts
+        inst.running = lambda: next(states, ['wow.exe'])
         with self.assertRaises(fi.Failed) as e:
             inst.install(self.client, instances='classic-raids')
-        self.assertIn('instance world cache build failed', str(e.exception))
-        self.assertIn(str(log), str(e.exception))
+        self.assertIn('started while the installer was working', str(e.exception))
+
+    def test_kept_groups_need_no_disk_space(self):
+        self.installer().install(self.client, instances='classic-raids')
+        base = fi.MIN_FREE + sum(m['bytes'] for m in self.manifest['files'].values())
+        inst = self.installer(); inst.free_bytes = lambda path: base
+        inst.plan_install(self.client, None, None, None, True, True, 'classic-raids')   # kept: nothing to build
+        with self.assertRaises(fi.Refusal):
+            inst.plan_install(self.client, None, None, None, True, True, 'classic-raids,wotlk-raids')
+
+    def test_a_kill_between_the_carry_and_the_rename_keeps_the_selection(self):
+        self.installer().install(self.client, instances='classic-raids,tbc-raids')
+        self.assertEqual(json.loads((self.client / fi.CHOICE).read_text()), {'groups': ['classic-raids', 'tbc-raids']})
+        # the extract swap was killed after the manifest moved into the new folder and before the rename
+        staging = self.client / 'world-cache.extract'
+        staging.mkdir()
+        (self.client / 'world-cache' / fi.INSTANCES).rename(staging / fi.INSTANCES)
+        self.assertEqual(self.installer().chosen_instances(self.client), ['classic-raids', 'tbc-raids'])
+        self.installer().install(self.client)                      # no argument: nothing is removed
+        self.assertEqual(self.installer().chosen_instances(self.client), ['classic-raids', 'tbc-raids'])
+        args = self.instance_calls()[-1]
+        self.assertEqual(args[args.index('--instances') + 1], 'classic-raids,tbc-raids')
 
     def test_uninstall_removes_the_instance_staging_but_not_a_foreign_one(self):
         self.installer().install(self.client, instances='classic-raids')
         staging, foreign = self.client / fi.INSTMP, self.client / 'world-cache.extract'
         staging.mkdir(); (staging / 'install-state.json').write_text('{}')
         self.installer().uninstall(self.client)
-        self.assertFalse(staging.exists() or (self.client / 'world-cache').exists())
+        self.assertFalse(staging.exists() or (self.client / 'world-cache').exists() or (self.client / fi.CHOICE).exists())
         other = self.client / fi.INSTMP
         other.mkdir(); (other / 'somebody-elses.txt').write_text('x')
         self.installer().uninstall(self.client)

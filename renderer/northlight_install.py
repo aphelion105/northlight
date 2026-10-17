@@ -87,6 +87,7 @@ CACHE, PREVIOUS = 'world-cache', 'world-cache.previous'
 STAGING = 'world-cache.staging'   # install_world_cache.py's build folder
 INSTMP = 'world-cache.instmp'     # and its instance layer's
 INSTANCES = 'instances-manifest.json'   # in world-cache/: the groups built
+CHOICE = 'world-cache.instances.json'   # beside world-cache/, ours: the groups chosen (survives a swap of the folder)
 EXTRACT = 'world-cache.extract'   # this installer's extraction folder
 LOCK = 'northlight-installer.lock'   # one installer run per client at a time
 VARIANT_FORMAT = 'northlight-cache-variant/1'
@@ -653,9 +654,33 @@ class Installer:
         return None
 
     def chosen_instances(self, client):
-        """The instance groups the client's cache has (its instances-manifest.json), in group order."""
-        groups = (read_json(client / CACHE / INSTANCES) or {}).get('groups')
-        return [k for k in instance_maps.KEYS if isinstance(groups, dict) and k in groups]
+        """The instance groups the client has, in group order: those of the cache's instances-manifest.json, else the
+        recorded choice (a run killed while the cache folder was being swapped has the manifest elsewhere)."""
+        manifest = read_json(client / CACHE / INSTANCES)
+        if manifest is not None:
+            groups = manifest.get('groups')
+            return [k for k in instance_maps.KEYS if isinstance(groups, dict) and k in groups]
+        groups = (read_json(client / CHOICE) or {}).get('groups')
+        return [k for k in instance_maps.KEYS if isinstance(groups, list) and k in groups]
+
+    def remember_instances(self, client, keys):
+        """Record the choice beside world-cache/; the next run's default, and uninstall removes it."""
+        if keys or (client / CHOICE).exists():
+            INSTALL.atomic_json(client / CHOICE, {'groups': keys})
+
+    def instances_to_build(self, client, locale, without, keys):
+        """The selected groups that will be built: those the orchestrator's dry run names, else all selected."""
+        if not keys:
+            return []
+        try:
+            code, last = self.run(APP / 'scripts/install_world_cache.py',
+                                  ['--client', client, '--locale', locale, '--output', client / CACHE, '--without', without,
+                                   '--instances', ','.join(keys), '--instances-plan'], show=False)
+            if code == 0 and isinstance(last, dict) and isinstance(last.get('build'), list):
+                return [k for k in keys if k in last['build']]
+        except (OSError, ValueError):
+            pass
+        return keys
 
     def choose_instances(self, client, spec):
         """The instance group keys to have: --instances SPEC (Refusal when invalid), else asked, else the current ones."""
@@ -771,7 +796,6 @@ class Installer:
     def build_instances(self, client, locale, jobs, without, keys):
         """The instance layer (install_world_cache.py --instances): builds the selected groups, removes the others.
         Returns {'built': [...], 'kept': [...], 'removed': [...]} (group keys)."""
-        self.still_closed('building the instance world cache')
         if keys:
             self.say('Building the instance world cache: ' + ', '.join(self.instance_labels(keys)) +
                      ' (a few minutes per group; a rerun resumes if interrupted)...')
@@ -782,9 +806,11 @@ class Installer:
         if code != 0:
             why = last.get('error') or '; '.join(last.get('problems') or []) or 'see the log'
             logs = ''.join(f'\n  {log}' for log in last.get('logs') or [])
-            raise Failed(f'The instance world cache build failed (exit {code}): {why}.' +
-                         (f' The last lines of these logs are shown above:{logs}' if logs else '') +
-                         '\nRun the installer again to resume.')
+            error = Failed(f'The instance world cache build failed (exit {code}): {why}.' +
+                           (f' The last lines of these logs are shown above:{logs}' if logs else '') +
+                           '\nRun the installer again to resume.')
+            error.logs = last.get('logs') or []
+            raise error
         return {k: last.get(k) or [] for k in ('built', 'kept', 'removed')}
 
     def archive_warnings(self, client):
@@ -1034,7 +1060,8 @@ class Installer:
         keys = self.choose_instances(client, instances) if world_cache else []
         need = MIN_FREE + (sum(m['bytes'] for m in manifest['files'].values()) if action == 'extract' else
                            LOCAL_BUILD_BYTES if action == 'build' else 0)
-        need += int(sum(g['est_gb'] for g in instance_maps.GROUPS if g['key'] in keys) * INSTANCE_DISK * GIB)
+        building = self.instances_to_build(client, locale, without, keys)   # kept groups need no space
+        need += int(sum(g['est_gb'] for g in instance_maps.GROUPS if g['key'] in building) * INSTANCE_DISK * GIB)
         free = self.free_bytes(client)
         if free < need:
             raise Refusal(f'Not enough free disk space on the game drive: {free / GIB:.1f} GiB free, '
@@ -1073,10 +1100,18 @@ class Installer:
             else:
                 report['world_cache'] = 'not installed (--no-world-cache)'
             if action != 'skip':   # nothing selected and nothing built earlier: no process
+                self.remember_instances(client, p['instances'])   # before the long step: a failure keeps the intent
                 if p['instances'] or self.chosen_instances(client):
-                    done = self.build_instances(client, locale, jobs, p['without'], p['instances'])
-                    report['instances'] = done
-                    instance_changed = bool(done['built'] or done['removed'])
+                    # The layer is optional: its failure is a warning in the summary, never a reason to skip the renderer.
+                    self.still_closed('building the instance world cache')
+                    try:
+                        done = self.build_instances(client, locale, jobs, p['without'], p['instances'])
+                        report['instances'] = done
+                        instance_changed = bool(done['built'] or done['removed'])
+                    except Failed as e:
+                        logs = getattr(e, 'logs', None) or [str(self.log.name) if self.log else 'the installer log']
+                        report['instances_failed'] = {'groups': p['instances'], 'log': logs[0]}
+                        self.say(f'WARNING: {e}')
         finally:
             if p['source']:
                 p['source'].close()
@@ -1120,6 +1155,10 @@ class Installer:
         self.say(f'Northlight renderer {self.pkg.version}: ' + ('installed.' if changed else 'already installed; nothing changed.'))
         self.say(f'  world cache: {report["world_cache"]}')
         self.say('  ' + self.instance_summary(report['instances']))
+        if report.get('instances_failed'):
+            failed = report['instances_failed']
+            self.say('  Instance world cache: ' + ', '.join(self.instance_labels(failed['groups'])) + f' failed (see {failed["log"]}); '
+                     'the renderer was updated. Run the installer again, or use --instances none to skip.')
         if report['archive_warnings']:   # shown during the build too; repeated here, where it is not scrolled away
             import install_world_cache as iwc
             for warning in report['archive_warnings']:
@@ -1167,6 +1206,7 @@ class Installer:
             self.say('Restoring', backup)
             self.restore(client, backup, record)
         owner, _ = self.cache_owner(client)
+        (client / CHOICE).unlink(missing_ok=True)
         if owner in ('variant', 'local'):
             self.say('Deleting the world cache...')
             remove_tree(client / CACHE)
