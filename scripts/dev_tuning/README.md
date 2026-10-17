@@ -31,6 +31,11 @@ base value, **Reset zone** removes the whole section. The overrides checkbox wri
 `[tuning] enabled` for A/B comparison and keeps the values. "game" under a row shows the value the
 DLL reports when it differs from the panel (not applied yet, or overrides off).
 
+Each body group has a Glow sub-group: glow strength (0..4) scales the sun/moon glow in the fog
+volume (shafts, aureole in fog), glow colour is its own hue and glow mix (0 = the glow follows the
+light hue, 1 = the glow colour) blends between them. "Light strength (surface)" scales only the
+light on surfaces. A tuning file written before these keys loads unchanged.
+
 Sun and moon values are written live while a slider moves (debounced about 150 ms). terrain_radius
 and the ground fog keys make the game rebuild its geometry (about 2 s), so they are written only
 when the slider is released or a typed number is entered.
@@ -46,7 +51,8 @@ last one it applied to that section, so a slow request cannot undo a newer value
 
 ## Workflow
 
-1. Tune in the game. Every change is saved to `<game root>/northlight-tuning.ini` at once
+1. Tune in the game (dev DLL and tuner from the same revision: an older tuner rejects keys it does
+   not know, such as the glow keys; restart `serve` after updating). Every change is saved to `<game root>/northlight-tuning.ini` at once
    (debounced about 150 ms), so nothing is lost when the game or the tool stops.
 2. `python3 scripts/dev_tuning/zone_tuner.py export --dry-run` shows the diff;
    `export` merges the overrides into `client-config/celestial-profiles.ini` (sun/moon keys) and

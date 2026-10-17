@@ -77,6 +77,12 @@ rejects(lambda: zt.edit_overrides(text, section='Kalimdor:440', values={'sun_dis
 rejects(lambda: zt.edit_overrides(text, section='default', values={'terrain_radius': 1024}), 'a zone-only key in [default]')
 rejects(lambda: zt.edit_overrides(text, section='Outland:3483', values={'sun_disc_gain': 1}), 'an unsupported map')
 rejects(lambda: zt.edit_overrides(text, section='Kalimdor:0', values={'sun_disc_gain': 1}), 'zone id 0')
+rejects(lambda: zt.edit_overrides(text, section='Kalimdor:440', values={'sun_glow_strength': 4.01}), 'glow_strength 4.01')
+rejects(lambda: zt.edit_overrides(text, section='Kalimdor:440', values={'moon_glow': [0, .004, 0]}), 'black glow')
+rejects(lambda: zt.edit_overrides(text, section='Kalimdor:440', values={'sun_glow_mix': 1.5}), 'glow_mix 1.5')
+glow = zt.edit_overrides('', section='default', values={'sun_glow_strength': .9, 'moon_glow': [.8, .9, 1], 'moon_glow_mix': .5})
+check(zt.parse_overrides(glow)['sections'] == {'default': {'sun_glow_strength': .9, 'moon_glow': [.8, .9, 1], 'moon_glow_mix': .5}}
+      and 'moon_glow = 0.80, 0.90, 1.00\n' in glow, 'glow keys round-trip, also in [default]')
 rejects(lambda: zt.parse_overrides('[tuning]\nenabled = 2\n'), 'enabled = 2')
 rejects(lambda: zt.parse_overrides('[Kalimdor:440]\nsun_disc_gain = 1\nsun_disc_gain = 2\n'), 'a duplicate key')
 rejects(lambda: zt.parse_overrides('[Kalimdor:440]\n[Kalimdor:440]\n'), 'a duplicate section')
@@ -94,6 +100,19 @@ check('sun_disc_gain = 3.25\nsun_horizon_haze = 0.5\n# tried 2.5 too\n' in edite
 removed = zt.edit_overrides(hand, section='Azeroth:12', values={})
 check('[Azeroth:12]' not in removed and 'sun_light_mix' not in removed and '[Kalimdor:440] # Tanaris\nsun_disc_gain = 3\n' in removed,
       'an empty section is removed; the next one stays')
+# A file written before the glow keys (the shape of a real tuning session) loads and stays untouched.
+older = (zt.HEADER + '\n[tuning]\nenabled = 1\n\n[Kalimdor:440] # Tanaris\nsun_light = 1.00, 0.88, 0.72\nsun_light_strength = 1.15\n'
+         'moon_disc_gain = 1.4\nterrain_radius = 4096\nsun_fog_height_scale = 1.6\n\n[Azeroth:10] # Duskwood\nsun_light_strength = 0.85\n')
+older_model = zt.parse_overrides(older)
+check(older_model['sections']['Kalimdor:440'] == {'sun_light': [1, .88, .72], 'sun_light_strength': 1.15, 'moon_disc_gain': 1.4,
+                                                   'terrain_radius': 4096, 'sun_fog_height_scale': 1.6},
+      'an overrides file without glow keys parses as before')
+same_back = zt.edit_overrides(older, section='Kalimdor:440', values=older_model['sections']['Kalimdor:440'])
+check(same_back == older, 'writing the same values back changes no byte')
+glowed = zt.edit_overrides(older, section='Kalimdor:440', values={**older_model['sections']['Kalimdor:440'], 'sun_glow_strength': 1.2})
+check(glowed == older.replace('sun_fog_height_scale = 1.6\n', 'sun_fog_height_scale = 1.6\nsun_glow_strength = 1.2\n'),
+      'adding a glow key adds one line and leaves every other line as it was')
+check(zt.edit_overrides(older, enabled=False) == older.replace('enabled = 1', 'enabled = 0'), 'the A/B toggle changes only its line')
 new_zone = zt.edit_overrides(hand, section='Azeroth:3', values={'sun_disc_gain': 2}, names={'Azeroth:3': 'Badlands'})
 check(new_zone.startswith(hand) and new_zone.endswith('\n\n[Azeroth:3] # Badlands\nsun_disc_gain = 2\n'), 'a new section is appended')
 
@@ -111,7 +130,8 @@ try:
         'terrain_radius': 3072, 'ground_fog_day_scale': 1.5, 'ground_fog_night_add': .0024})
     t = zt.edit_overrides(t, section='Azeroth:3', values={'moon_disc_gain': 1.4, 'terrain_radius': 2048})
     t = zt.edit_overrides(t, section='Azeroth:12', values={'terrain_radius': 928, 'ground_fog_day_add': .0006})
-    t = zt.edit_overrides(t, section='default', values={'sun_fog_gain': 4.5})
+    t = zt.edit_overrides(t, section='default', values={'sun_fog_gain': 4.5, 'moon_glow_mix': .25})
+    t = zt.edit_overrides(t, section='Azeroth:10', values={'sun_glow_strength': .8, 'sun_glow': [1, .9, .8]})
     overrides.write_text(t)
     out = io.StringIO()
     dry = zt.export(overrides, celestial, shadow, NAMES, dry_run=True, out=out)
@@ -123,9 +143,10 @@ try:
     cel, sh = celestial.read_text(), shadow.read_text()
     old_lines, new_lines = cel_old.splitlines(), cel.splitlines()
     tanaris = new_lines.index('[Kalimdor:440]')
-    check(old_lines.index('[Kalimdor:440]') == tanaris, 'the Tanaris section stays where it was')
+    old_tanaris_at = old_lines.index('[Kalimdor:440]')
+    check(new_lines[tanaris - 3:tanaris] == old_lines[old_tanaris_at - 3:old_tanaris_at], 'the Tanaris section stays where it was')
     section = new_lines[tanaris:new_lines.index('', tanaris)]
-    old_section = old_lines[tanaris:old_lines.index('', tanaris)]
+    old_section = old_lines[old_tanaris_at:old_lines.index('', old_tanaris_at)]
     check([l for l in section if l.startswith('sun_disc =')] == ['sun_disc = 1.00, 0.90, 0.70']
           and section.index('sun_disc = 1.00, 0.90, 0.70') == [l.split(' =')[0] for l in old_section].index('sun_disc'),
           'an existing key is replaced in place')
@@ -133,10 +154,15 @@ try:
     check([l for l in section if l.startswith('sun_light_mix')] == [l for l in old_section if l.startswith('sun_light_mix')],
           'a key with the same value keeps its own formatting')
     check(cel.endswith('\n\n# Badlands\n[Azeroth:3]\nmoon_disc_gain = 1.4\n'), 'a new zone section is appended with its name comment')
+    dusk_old = old_lines[old_lines.index('[Azeroth:10]'):old_lines.index('', old_lines.index('[Azeroth:10]'))]
+    dusk = new_lines[new_lines.index('[Azeroth:10]'):new_lines.index('', new_lines.index('[Azeroth:10]'))]
+    check('sun_glow_strength = 0.90' in dusk_old and dusk == [l.replace('sun_glow_strength = 0.90', 'sun_glow_strength = 0.8') for l in dusk_old]
+          + ['sun_glow = 1.00, 0.90, 0.80'], 'export: glow_strength replaced in place, glow appended')
+    check('moon_glow_mix = 0.25' in new_lines[:new_lines.index('[Azeroth:12]')], 'export: a glow key into [default]')
     check('sun_fog_gain = 4.5' in new_lines[:new_lines.index('[Azeroth:12]')] and 'terrain_radius' not in cel and 'ground_fog' not in cel,
           '[default] is merged; zone-only keys stay out of celestial-profiles.ini')
     kept = [l for l in old_lines if l.startswith('#')]
-    check(all(l in new_lines for l in kept) and len(new_lines) == len(old_lines) + 1 + 4, 'every comment and unrelated line is kept')
+    check(all(l in new_lines for l in kept) and len(new_lines) == len(old_lines) + 1 + 4 + 2, 'every comment and unrelated line is kept')
     check('[Kalimdor:440] # Tanaris\nterrain_radius = 3072\n' in sh and sh.endswith('\n\n[Azeroth:3] # Badlands\nterrain_radius = 2048\n')
           and '[Azeroth:12] # Elwynn Forest\nterrain_radius = 928\n' in sh, 'shadow ranges: replaced in place, appended, 928 kept in its section')
     check(sh.replace('terrain_radius = 3072', 'terrain_radius = 4096').replace('terrain_radius = 928', 'terrain_radius = 1856')
@@ -151,6 +177,8 @@ try:
 
     # ---- base values ----
     base = zt.base_values('Kalimdor:440', celestial, shadow)
+    check(zt.base_values('Azeroth:10', fp.REPO / 'client-config/celestial-profiles.ini', shadow)['sun_glow_strength'] == .9
+          and base['sun_glow'] == [1, 1, 1] and base['moon_glow_mix'] == .25, 'base values include the glow keys (Duskwood 0.90 shipped)')
     check(base['sun_disc'] == [1, .9, .7] and base['terrain_radius'] == 3072 and base['sun_fog_gain'] == 4.5
           and base['moon_fog_height_scale'] == 1, 'base values: zone section over [default] over the built-in profile')
 

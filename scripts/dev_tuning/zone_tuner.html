@@ -58,7 +58,8 @@ summary .count { color: var(--accent); font-weight: 400; font-size: 11px; }
 .row.ov { border-left-color: var(--accent); background: linear-gradient(90deg, rgba(224,164,58,.08), transparent 60%); }
 .row.ov .name { color: var(--accent); font-weight: 600; }
 .row.off { opacity: .35; pointer-events: none; }
-.name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.name { overflow-wrap: anywhere; line-height: 1.2; }
+.sub { margin: 6px 0 0; padding: 3px 0 1px 6px; border-top: 1px solid var(--line); color: var(--dim); font-size: 10px; text-transform: uppercase; letter-spacing: .05em; }
 .base { grid-column: 1 / -1; color: var(--faint); font-size: 10px; margin-top: -2px; display: flex; gap: 8px; }
 .base .eff { color: var(--dim); }
 .base .warn { color: var(--stale); }
@@ -119,10 +120,14 @@ const KEYS = {
   disc_gain: {label: 'disc gain', min: 0, max: 4, step: .01},
   light: {label: 'light (linear)', rgb: true, min: 0, max: 1, step: .01},
   light_mix: {label: 'light mix', min: 0, max: 1, step: .01},
-  light_strength: {label: 'light strength', min: 0, max: 4, step: .01},
+  light_strength: {label: 'light strength (surface)', min: 0, max: 4, step: .01},
   fog_gain: {label: 'fog gain', min: 0, max: 8, step: .05},
   fog_height_scale: {label: 'fog height', min: .25, max: 4, step: .01},
   horizon_haze: {label: 'horizon haze', min: 0, max: 4, step: .01},
+  // Glow in the fog volume (shafts, aureole); light_strength scales only surface light.
+  glow_strength: {label: 'glow strength', min: 0, max: 4, step: .01, sub: 'Glow (shafts, aureole in fog)'},
+  glow: {label: 'glow colour', rgb: true, min: 0, max: 1, step: .01},
+  glow_mix: {label: 'glow mix', min: 0, max: 1, step: .01, hint: '0 = glow follows the light hue, 1 = the glow colour'},
 };
 const GROUPS = [
   {id: 'sun', title: 'Sun', cls: 'sun', keys: Object.keys(KEYS).map(k => 'sun_' + k)},
@@ -212,7 +217,7 @@ function buildRow(key) {
     const s = slider(spec, (v, committed) => setValue(key, v, committed));
     r.range = s.range; r.num = s.num;
     row.append(el('span', {class: 'name'}, spec.label), s.range, s.num, reset, base);
-    if (zoneOnly(key)) row.append(el('div', {class: 'hint'}, spec.hint || 'applies after release, rebuilds ~2 s'));
+    if (zoneOnly(key) || spec.hint) row.append(el('div', {class: 'hint'}, spec.hint || 'applies after release, rebuilds ~2 s'));
   }
   rows[key] = r;
   return row;
@@ -223,7 +228,8 @@ function buildEditor() {
     const d = el('details', {class: g.cls || '', open: ''});
     const count = el('span', {class: 'count'});
     const note = el('div', {class: 'note', hidden: ''}, 'No policy ground fog in this zone: the scales need it. The density + sliders work everywhere.');
-    d.append(el('summary', {}, g.title, count), note, el('div', {class: 'rows'}, ...g.keys.map(buildRow)));
+    const rowNodes = g.keys.flatMap(k => SPEC[k].sub ? [el('div', {class: 'sub'}, SPEC[k].sub), buildRow(k)] : [buildRow(k)]);
+    d.append(el('summary', {}, g.title, count), note, el('div', {class: 'rows'}, ...rowNodes));
     g.node = d; g.count = count; g.note = note;
     root.append(d);
   }
