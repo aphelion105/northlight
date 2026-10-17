@@ -172,7 +172,7 @@ def human(f):
         return f"World cache: {f['archives']} archives, locale {f['locale']}"
     if event == 'plan':
         if f['mode'] == 'instances':
-            return (f"Building the instance world cache: {', '.join(f['groups'])}, up to {f['jobs']} groups at a time. "
+            return None if not f['groups'] else (f"Building the instance world cache: {', '.join(f['groups'])}, up to {f['jobs']} groups at a time. "
                     'This takes a few minutes per group.')
         if f['mode'] == 'full':
             return (f"Building the world cache: {', '.join(f['maps'])}, up to {f['jobs']} maps at a time "
