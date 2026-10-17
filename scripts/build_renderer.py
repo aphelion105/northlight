@@ -12,8 +12,10 @@ import northlight_paths  # noqa: E402
 import check_layout  # noqa: E402  (scripts/ is this script's directory)
 SHADERS = northlight_paths.SHADERS                         # *.hlsl and their *-shader-build.json manifests
 DLL = northlight_paths.RENDERER / 'frd9.dll'
+DEV_DLL = northlight_paths.RENDERER / 'frd9-dev-tuning.dll'  # the dev variant never overwrites frd9.dll
 
-def main():
+def main(argv=None):
+    dev_tuning = '--dev-tuning' in (sys.argv[1:] if argv is None else argv)
     # A source recreated at its old renderer/ path would silently fork.
     problems = check_layout.layout_problems()
     if problems:
@@ -48,9 +50,13 @@ def main():
                '-std=c++17', '-fno-rtti', '-Wall', '-Wextra', '-Wno-microsoft-exception-spec',
                *northlight_paths.include_flags(),
                *[str(northlight_paths.src(n)) for n in ('renderer.cpp', 'world_gi.cpp', 'world_mesh_plan.cpp', 'static_shadow_scene.cpp', 'frd9.def')],
-               '-luser32', '-luuid', '-o', str(DLL)]
+               '-luser32', '-luuid', '-o', str(DEV_DLL if dev_tuning else DLL)]
+    if dev_tuning:
+        # Developer-only zone tuning (scripts/dev_tuning/). The DLL carries a marker that renderer/build_packages.py refuses.
+        command.insert(command.index('-luser32'), '-DNORTHLIGHT_DEV_TUNING=1')
+        print('Building the DEV TUNING variant (NORTHLIGHT DEV TUNING BUILD): not for release packages.')
     subprocess.run(command, env=env, check=True)
-    print('Built', DLL)
+    print('Built', DEV_DLL if dev_tuning else DLL)
 
 if __name__ == '__main__':
     main()

@@ -18,6 +18,9 @@
 #include "regional_fog.h"
 #include "regional_shadow_range.h"
 #include "celestial_profiles.h"
+#if NORTHLIGHT_DEV_TUNING
+#include "zone_tuning.h"
+#endif
 #include "world_gi.h"
 #include "world_local_lights.h"
 #include "local_light_selection.h"
@@ -300,6 +303,65 @@ private:
     NorthlightCelestialProfiles::Transition paletteTransition;
     NorthlightCelestialProfiles::Profile framePalette;
     bool paletteFrameValid=false;std::string paletteFrameMap;DWORD paletteLogAt=0;
+#if NORTHLIGHT_DEV_TUNING
+    // Developer-only zone tuning (scripts/dev_tuning/zone_tuner.py), never compiled into a release build. Two files in the game root:
+    // northlight-tuning.ini (polled, render thread) and northlight-tuning-state.json (written). celestialProfiles holds the EFFECTIVE table
+    // (shipped + overrides); celestialShipped keeps the pristine one. The worker reads terrain_radius / ground fog scales from devOverrides.
+    NorthlightCelestialProfiles::Table celestialShipped;
+    std::shared_ptr<const NorthlightZoneTuning::Overrides> devOverrides=std::make_shared<const NorthlightZoneTuning::Overrides>(); // guarded by devMutex
+    std::mutex devMutex;
+    std::atomic<float> devTerrainReach{0};
+    std::string devError;unsigned devRevision=0;
+    DWORD devPollAt=0,devStateAt=0,devChangeAt=0;bool devKeySeen=false,devStampSeen=false;uint64_t devStamp[2]={};
+    std::array<float,4> devKey{},devRequestedKey{}; // enabled, terrain_radius, ground fog day / night scale of the current zone (-1 = not overridden)
+    std::shared_ptr<const NorthlightZoneTuning::Overrides> devSnapshot(){std::lock_guard<std::mutex> lock(devMutex);return devOverrides;}
+    static std::wstring devPath(const wchar_t* name){return std::wstring(rootPath)+name;}
+    void devReload(){
+        std::string text,error;const bool present=readSmallFile(devPath(L"northlight-tuning.ini"),text);
+        NorthlightZoneTuning::Overrides next;std::istringstream in(text);
+        if(present&&!NorthlightZoneTuning::parse(in,next,error)){devError=error;logf("TUNING overrides revision=%u keys=%u error=%s",devRevision,devSnapshot()->count(),error.c_str());return;}
+        devError.clear();
+        const auto published=std::make_shared<const NorthlightZoneTuning::Overrides>(std::move(next));
+        celestialProfiles=NorthlightZoneTuning::applyCelestial(celestialShipped,*published);
+        {std::lock_guard<std::mutex> lock(devMutex);devOverrides=published;}
+        logf("TUNING overrides revision=%u keys=%u error=%s",++devRevision,published->count(),"");
+    }
+    void devWriteState(const char* map,const float* camera,uint32_t zone){
+        const auto ov=devSnapshot();NorthlightZoneTuning::State s;
+        s.build="dev-tuning";s.tick=GetTickCount();s.inWorld=true;s.map=map;s.zone=zone;std::memcpy(s.camera,camera,sizeof s.camera);
+        s.night=NorthlightRegionalFog::nightFactor(celestialValid?celestial.dayFraction:-1.f);
+        s.enabled=ov->enabled;s.loaded=ov->enabled?ov->count():0;s.groundFogActive=NorthlightZoneTuning::groundFogActive(zone);s.error=devError;s.revision=devRevision;
+        s.base=NorthlightZoneTuning::baseValues(celestialShipped,shadowRanges,s.map,zone);
+        s.effective=NorthlightZoneTuning::effectiveValues(s.base,celestialProfiles,*ov,s.map,zone);
+        const float reach=devTerrainReach.load();s.terrainReach=reach>0?reach:s.effective.terrainRadius;
+        const std::string json=NorthlightZoneTuning::stateJson(s);
+        const std::wstring path=devPath(L"northlight-tuning-state.json"),tmp=path+L".tmp";
+        HANDLE f=CreateFileW(tmp.c_str(),GENERIC_WRITE,FILE_SHARE_READ,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);if(f==INVALID_HANDLE_VALUE)return;
+        DWORD wrote=0;const bool ok=WriteFile(f,json.data(),DWORD(json.size()),&wrote,nullptr)&&wrote==json.size();CloseHandle(f);
+        if(!ok||!MoveFileExW(tmp.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING))DeleteFileW(tmp.c_str());
+    }
+    // Render thread, once per frame (from celestialPalette): poll the overrides (250 ms), ask the worker to rebuild after a terrain /
+    // ground fog change (the existing geometryRebuild request, at most every 750 ms), write the state (500 ms).
+    void devPoll(const char* map,const float* camera,uint32_t zone){
+        const DWORD now=GetTickCount();
+        if(!devPollAt||DWORD(now-devPollAt)>=250){
+            devPollAt=now?now:1;WIN32_FILE_ATTRIBUTE_DATA a{};uint64_t stamp[2]={};
+            if(GetFileAttributesExW(devPath(L"northlight-tuning.ini").c_str(),GetFileExInfoStandard,&a)){
+                stamp[0]=(uint64_t(a.ftLastWriteTime.dwHighDateTime)<<32)|a.ftLastWriteTime.dwLowDateTime;stamp[1]=(uint64_t(a.nFileSizeHigh)<<32)|a.nFileSizeLow;}
+            if(!devStampSeen||stamp[0]!=devStamp[0]||stamp[1]!=devStamp[1]){devStampSeen=true;devStamp[0]=stamp[0];devStamp[1]=stamp[1];devReload();}
+        }
+        // A change of the current zone's worker values (or the enabled flag) asks for one rebuild once they have been quiet for 2 s.
+        {const auto ov=devSnapshot();const auto* z=NorthlightZoneTuning::zoneOverride(*ov,map,zone);
+         const std::array<float,4> key={ov->enabled?1.f:0.f,z?z->radius:-1.f,z?z->fogDay:-1.f,z?z->fogNight:-1.f};
+         if(!devKeySeen){devKeySeen=true;devKey=devRequestedKey=key;}else if(key!=devKey){devKey=key;devChangeAt=now;}}
+        if(devKey!=devRequestedKey&&DWORD(now-devChangeAt)>=2000){
+            devRequestedKey=devKey;
+            {std::lock_guard<std::mutex> lock(mutex);geometryRebuild=true;pending=true;}
+            wake.notify_one();logf("TUNING worker rebuild requested (terrain_radius / ground fog scale changed)");
+        }
+        if(!devStateAt||DWORD(now-devStateAt)>=500){devStateAt=now?now:1;devWriteState(map,camera,zone);}
+    }
+#endif
     struct PaletteRegion {std::string map;NorthlightRegionalFog::Region region;int tx=0,ty=0;};
     std::shared_ptr<const PaletteRegion> publishedPaletteRegion; // guarded by mutex
     bool celestialValid=false,shadowFrameReady=false;float authoredFill=1;
@@ -1325,9 +1387,17 @@ private:
                     logf("WORLD terrain allocation requestMiB=%.2f requiredContiguousMiB=%.2f",double(bytes)/1048576,double(bytes+NorthlightGeometryMemory::ContiguousMargin)/1048576);
                     return false;
                 };
+#if NORTHLIGHT_DEV_TUNING
+                const uint32_t reachZone=NorthlightRegionalFog::zoneAt(paletteRegion->region,center.x,center.y);
+                const float profileReach=NorthlightZoneTuning::terrainRadius(*devSnapshot(),shadowRanges.at(r.map,reachZone),r.map,reachZone);
+#else
                 const float profileReach=shadowRanges.at(r.map,NorthlightRegionalFog::zoneAt(paletteRegion->region,center.x,center.y));
+#endif
                 const auto reachChoice=NorthlightTerrainReach::choose(reachState,profileReach,GetTickCount(),entryAvailable,entryLargest);
                 reach=reachChoice.reach;
+#if NORTHLIGHT_DEV_TUNING
+                devTerrainReach.store(reach);
+#endif
                 if(reachChoice.tierChanged)logf("WORLD shadow terrain reach tier from=%.0f to=%.0f reason=headroom availableMiB=%llu largestMiB=%llu",reachChoice.tierFrom,reach,(unsigned long long)(entryAvailable>>20),(unsigned long long)(entryLargest>>20));
                 if(reachChoice.restored)logf("WORLD shadow terrain reach restored to=%.0f",reach);
                 // Memory refusal of an extended build: rebuild the terrain stages at the base reach now.
@@ -1407,7 +1477,13 @@ private:
                     built->lights.push_back({vec(light.position),vec(light.diffuse)*3.14159265f,light.attenuationStart,light.attenuationEnd});
                 if(NorthlightDiagnostics::enabled())logf("GI local lights map=%s count=%zu (indirect only; authored direct light retained)",r.map.c_str(),built->lights.size());
                 const auto& region=paletteRegion->region;
-                built->fog=std::make_shared<NorthlightRegionalFog::Field>(NorthlightRegionalFog::buildField(replacement->scene(),region,center.x,center.y));
+                const NorthlightRegionalFog::ZoneScale* fogScale=nullptr;
+#if NORTHLIGHT_DEV_TUNING
+                const auto tuning=devSnapshot();
+                const NorthlightRegionalFog::ZoneScale devFogScale=[&](uint32_t zone,float& day,float& nightExtra){NorthlightZoneTuning::fogScale(*tuning,r.map,zone,day,nightExtra);};
+                fogScale=&devFogScale;
+#endif
+                built->fog=std::make_shared<NorthlightRegionalFog::Field>(NorthlightRegionalFog::buildField(replacement->scene(),region,center.x,center.y,fogScale));
                 if(NorthlightDiagnostics::enabled())logf("REGIONAL FOG map=%s tiles=%zu missing=%u groundCells=%u fogCells=%u airCells=%u indoorCells=%u citySurfaceCells=%u",r.map.c_str(),region.tiles.size(),region.missing,built->fog->groundCells,built->fog->fogCells,built->fog->airCells,built->fog->indoorCells,built->fog->citySurfaceCells);
                 const double environmentMs=phaseElapsed();const auto& memoryAfter=workerAdmissionProbe.stats();
                 if(NorthlightDiagnostics::enabled())logf("WORLD geometry phases buildId=%llu localMs=%.3f terrainLoadMs=%.3f shadowPlanMs=%.3f pagesMs=%.3f environmentMs=%.3f memoryMs=%.3f memoryRequests=%llu witnessHits=%llu fullScans=%llu regionQueries=%llu memoryTimeIncluded=1",
@@ -2128,6 +2204,10 @@ public:
         (void)NorthlightStreaming::cpuRetirement();
         bool paletteLoaded=NorthlightCelestialProfiles::load(root+"celestial-profiles.ini",celestialProfiles,paletteError);
         logf("CELESTIAL profiles loaded=%d zones=%zu %s",paletteLoaded,celestialProfiles.zones.size(),paletteError.c_str());
+#if NORTHLIGHT_DEV_TUNING
+        celestialShipped=celestialProfiles;
+        logf("TUNING %s: %snorthlight-tuning.ini is polled, never ship this DLL",NorthlightZoneTuning::Marker,root.c_str());
+#endif
         std::string rangeError;bool rangesLoaded=NorthlightRegionalShadow::load(root+"shadow-range-profiles.ini",shadowRanges,rangeError);
         logf("SHADOW regional terrain loaded=%d zones=%zu %s",rangesLoaded,shadowRanges.zones.size(),rangeError.c_str());
         staticStream=std::make_unique<StaticShadow::Streamer>(root+"world-cache");
@@ -2336,6 +2416,9 @@ public:
         if(paletteFrameValid&&paletteFrameMap==map)return framePalette;
         std::shared_ptr<const PaletteRegion> region;
         {std::lock_guard<std::mutex> lock(mutex);region=publishedPaletteRegion;}
+#if NORTHLIGHT_DEV_TUNING
+        devPoll(map,camera,region&&region->map==map?NorthlightRegionalFog::zoneAt(region->region,camera[0],camera[1]):0);
+#endif
         auto target=celestialProfiles.fallback;
         if(region&&region->map==map)target=NorthlightCelestialProfiles::sample(celestialProfiles,region->region,map,camera[0],camera[1]);
         framePalette=paletteTransition.update(target,map,camera[0],camera[1],double(GetTickCount())*.001);

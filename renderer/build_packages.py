@@ -83,6 +83,7 @@ RUNTIME_DROP = {'mac': runtime_drop('darwin'), 'linux': runtime_drop('x86_64-lin
 CACHE_MEMBER = re.compile(r'^([A-Za-z0-9]+/\d+_\d+\.fg3|models/[0-9a-f]+\.fgs|lights/[A-Za-z0-9]+\.fgl|'
                           r'fog/[A-Za-z0-9]+/\d+_\d+\.frf|celestial/(sun|moon)\.fct|northlight-cache\.json)$')
 MARKER = re.compile(rb'Northlight renderer (\d+\.\d+\.\d+);')
+DEV_MARKER = b'NORTHLIGHT DEV TUNING BUILD'  # embedded by build_renderer.py --dev-tuning; never ships
 
 
 def sha(path):
@@ -141,6 +142,8 @@ def check_dll(data):
         raise SystemExit('the renderer DLL is not a 32-bit PE')
     if not MARKER.search(data) or b'PROXY module=%ls root=%ls' not in data:
         raise SystemExit('the renderer DLL is not a proxy-capable Northlight renderer build')
+    if DEV_MARKER in data:
+        raise SystemExit('the renderer DLL is a NORTHLIGHT DEV TUNING BUILD (built with build_renderer.py --dev-tuning); rebuild it without --dev-tuning')
     return MARKER.search(data).group(1).decode()
 
 
