@@ -10,11 +10,16 @@
 
 namespace NorthlightCelestialGlow {
 // Terrain-mask extent (prepare gate, mask matrix, c46.y) and glare support
-// (scissor, c12.y) are separate. terrainVisibility() returns 1 outside the
-// mask and the raw-depth repair still removes WDL, so a wider glare needs no
-// extra mask redraw.
-constexpr float SunMaskRadius=10.f,MoonMaskRadius=2.5f;
+// (scissor, c12.y). terrainVisibility() returns 1 outside the mask, and loaded
+// terrain past the game's far clip is not in the depth buffer at all. A mask
+// narrower than the glare (10R/2.5R before 0.3.217) let the glow wash distant
+// mountains outside it and not inside: a sharp square edge, seen as a diamond
+// when the world-aligned mask basis lies diagonally on screen (a radial fade
+// of that mask left a dark blot round the body instead). The mask therefore
+// spans the whole glare support; it holds only terrain past the far clip and
+// is redrawn when the eye has moved enough to shift it (celestial_terrain.h).
 constexpr float SunGlareSupport=20.f,MoonGlareSupport=6.f;
+constexpr float SunMaskRadius=SunGlareSupport,MoonMaskRadius=MoonGlareSupport;
 // Glare profile (0.3.164; user: 0.3.163 "like a football with sharp edges").
 // The shader outputs 1-exp(-x*colour) through a screen blend, so nothing clips
 // to a plateau: x = core weight*2^(-rate r²) (the small hot core, ~1-1.5R)
@@ -27,7 +32,7 @@ constexpr float SunCoreWeight=2.4f,SunCoreRate=1.1f,SunTailWeight=.9f,SunTailWei
 constexpr float LowSunStart=.2588f,LowSunEnd=.0523f; // sin 15 deg, sin 3 deg
 // Veil over geometry relative to the sky glare, and ring wrap.
 constexpr float VeilStrength=.75f,Wrap=.6f;
-// Ring taps (disc radii) for the wrap visibility; inside the 10R sun mask.
+// Ring taps (disc radii) for the wrap visibility; inside the 20R sun mask.
 constexpr float RingInner=2.f,RingOuter=4.f;
 
 // Per-frame glow colours in encoded 0..1 (from the renderer's GlowHue).

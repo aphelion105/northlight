@@ -22,10 +22,12 @@ checks={
     and 'const int64_t started=NorthlightRenderThreadProbe::profiling()?QpcClock::now():0;' in draw and 'if(NorthlightDiagnostics::enabled()&&(!m.lastLog||now-m.lastLog>=10000))' in draw,
  'per-body redraw and reuse callbacks':'!terrainDraw(body,matrix))return false;' in sky and 'if(terrainReuse)terrainReuse(body);' in sky
     and '[this](unsigned body,const float* matrix){return world->drawCelestialTerrain(body,matrix);},[this](unsigned body){world->noteCelestialTerrainReuse(body);}' in r,
- 'reuse needs a bitwise identical eye and every probed ray within ReuseTexels of the DRAWN mask':'!std::memcmp(view+12,terrainCamera[body],sizeof terrainCamera[body])' in sky
+ 'reuse needs an eye within the parallax limit of the DRAWN cut and every probed ray within ReuseTexels of the DRAWN mask':'NorthlightCelestialTerrain::eyeReusable(terrainCamera[body],view+12,terrainNear[body],nearCut)' in sky
+    and 'const float nearCut=NorthlightCelestialTerrain::maskNear(maskFarClip);' in sky and 'NorthlightCelestialTerrain::matrix(disc,view+12,body?MoonMaskRadius:SunMaskRadius,size,matrix,nearCut);' in sky
+    and sky.count('maskFarClip=farZ;')==1 and 'maskFarClip=0;' in sky
     and 'NorthlightCelestialTerrain::rayShiftTexels(terrainMatrix[body],matrix,disc,body?MoonMaskRadius:SunMaskRadius,size)<=NorthlightCelestialTerrain::ReuseTexels' in sky and 'constexpr float ReuseTexels=' in fp.src('celestial_terrain.h').read_text(),
- 'stored matrix and eye are written only after a successful draw, and reset with the generation':sky.index('terrainDraw(body,matrix))return false;')<sky.index('std::memcpy(terrainMatrix[body],matrix,sizeof matrix);std::memcpy(terrainCamera[body],view+12,sizeof terrainCamera[body]);terrainGeneration[body]=generation;')
-    and sky.count('std::memcpy(terrainCamera[body]')==1 and 'terrainGeneration[i]=0;std::fill(terrainCamera[i]' in sky,
+ 'stored matrix and eye are written only after a successful draw, and reset with the generation':sky.index('terrainDraw(body,matrix))return false;')<sky.index('std::memcpy(terrainMatrix[body],matrix,sizeof matrix);std::memcpy(terrainCamera[body],view+12,sizeof terrainCamera[body]);terrainNear[body]=nearCut;terrainGeneration[body]=generation;')
+    and sky.count('std::memcpy(terrainCamera[body]')==1 and 'terrainGeneration[i]=0;std::fill(terrainCamera[i],terrainCamera[i]+3,0.f);terrainNear[i]=0;}' in sky,
 }
 for name,ok in checks.items():print(('PASS ' if ok else 'FAIL ')+name)
 assert all(checks.values())

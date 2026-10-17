@@ -45,15 +45,15 @@ int main(){
     h.advance(2000,197,1280,720,pos,.7f,c);assert(c[0]==0); // stale
     History midnight;midnight.advance(100,0,100,100,pos,.999999f,c);midnight.advance(116,1,100,100,pos,.000001f,c);assert(c[0]==1);
     History wrap;wrap.advance(UINT32_MAX-7,0,100,100,pos,.5f,c);wrap.advance(8,1,100,100,pos,.5f,c);assert(c[0]==1&&c[1]>0&&c[1]<1);
-    // wrap ring: 32 equal-area annulus taps at 2-4R, all inside the 10R
-    // sun terrain mask (terrain-mask UV .3...7); the ring's own history resets
+    // wrap ring: 32 equal-area annulus taps at 2-4R, all inside the 20R
+    // sun terrain mask (terrain-mask UV .4...6); the ring's own history resets
     // like the disc's. There is no moon ring (the moon has no veil), so the
-    // 2.5R moon mask, which the halo PS reads without a range check, is never
+    // 6R moon mask, which the halo PS reads without a range check, is never
     // sampled beyond its extent.
     {float rx=0,ry=0;for(unsigned i=0;i<Samples;++i){float x,y;NorthlightCelestialGlow::ringOffset(i,x,y);const float r2=x*x+y*y;
         assert(r2>NorthlightCelestialGlow::RingInner*NorthlightCelestialGlow::RingInner&&r2<NorthlightCelestialGlow::RingOuter*NorthlightCelestialGlow::RingOuter);
         const float u=.5f+.5f*x/NorthlightCelestialGlow::SunMaskRadius,v=.5f-.5f*y/NorthlightCelestialGlow::SunMaskRadius;assert(u>.29f&&u<.71f&&v>.29f&&v<.71f);rx+=x;ry+=y;}
      assert(std::fabs(rx/Samples)<.12f&&std::fabs(ry/Samples)<.12f&&NorthlightCelestialGlow::RingOuter<=NorthlightCelestialGlow::SunMaskRadius);
      History ring;ring.advance(100,0,1920,1080,pos,.5f,c);assert(c[0]==0);ring.advance(116,1,1920,1080,pos,.5f,c);assert(c[0]==1);ring.advance(140,3,1920,1080,pos,.5f,c);assert(c[0]==0);}
-    std::puts("PASS halo: 32 fixed disc taps; 32 ring taps 2-4R inside the 10R sun mask; 22000 subpixel edges; FPS-independent smoothing; full occlusion; twig oscillation; first/skip/resize/teleport/clock/stale/wrap resets");
+    std::puts("PASS halo: 32 fixed disc taps; 32 ring taps 2-4R inside the 20R sun mask; 22000 subpixel edges; FPS-independent smoothing; full occlusion; twig oscillation; first/skip/resize/teleport/clock/stale/wrap resets");
 }

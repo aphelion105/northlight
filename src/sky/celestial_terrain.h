@@ -8,10 +8,12 @@
 // Viewer-to-sky occlusion, deliberately independent of light-to-world shadows.
 namespace NorthlightCelestialTerrain {
 constexpr float Near=.5f,Far=16384.f; // encloses the maximum loaded 4096u terrain square
+// nearDistance: the mask's near plane along the body direction (maskNear() below); Near keeps all terrain.
 inline void matrix(const NorthlightCelestialDisc::Disc& disc,const float* camera,
-                   float extent,unsigned size,float* out){
+                   float extent,unsigned size,float* out,float nearDistance=Near){
     std::fill(out,out+16,0.f);
-    const float scale=disc.tangentRadius*extent,depth=Far/(Far-Near);
+    const float cut=std::isfinite(nearDistance)&&nearDistance>Near&&nearDistance<Far*.5f?nearDistance:Near;
+    const float scale=disc.tangentRadius*extent,depth=Far/(Far-cut);
     for(unsigned row=0;row<3;++row){
         out[row*4]=disc.right[row]/scale-disc.direction[row]/size;
         out[row*4+1]=disc.up[row]/scale+disc.direction[row]/size;
@@ -20,7 +22,23 @@ inline void matrix(const NorthlightCelestialDisc::Disc& disc,const float* camera
     }
     for(unsigned col=0;col<4;++col)for(unsigned row=0;row<3;++row)
         out[12+col]-=camera[row]*out[row*4+col];
-    out[14]-=Near*depth;
+    out[14]-=cut*depth;
+}
+// 0.3.217: the mask spans the whole glare (20R sun, 6R moon), so it must be cheap to keep. Terrain nearer than the
+// game's far clip is in the depth buffer, which already hides the glare there; the mask keeps only what lies past
+// it. Its near plane is perpendicular to the body direction, and every mask ray is within ~31 deg of that direction
+// (the 20R corner of the sun mask), so a plane at FarCut x far clip drops only terrain nearer than the far clip.
+constexpr float FarCut=.85f;
+inline float maskNear(float farClip){return std::isfinite(farClip)&&farClip>0?std::max(Near,FarCut*farClip):Near;}
+// Everything left in the mask lies at least drawnCut away, so an eye move of m shifts it by at most m/drawnCut
+// radians. The glare is soft: a mask drawn from an eye within ParallaxLimit (~3e-3 rad, a few screen pixels) is
+// reused. A nearer cut than the drawn one (the far clip closing in) needs a redraw; a farther one does not, the
+// extra terrain is in the depth buffer anyway. With the default Near the tolerance is ~1.5 mm: a moved eye redraws.
+constexpr float ParallaxLimit=3e-3f;
+inline bool eyeReusable(const float* drawnEye,const float* eye,float drawnCut,float cut){
+    if(!drawnEye||!eye||!std::isfinite(drawnCut)||!std::isfinite(cut)||!(drawnCut>0)||drawnCut>cut*1.001f)return false;
+    double move2=0;for(unsigned k=0;k<3;++k){const double d=double(eye[k])-drawnEye[k];if(!std::isfinite(d))return false;move2+=d*d;}
+    const double limit=double(ParallaxLimit)*drawnCut;return move2<=limit*limit;
 }
 // A quarter texel of the 2048 sun mask is ~5e-5 rad, far below a screen pixel; the body drifts about a quarter
 // texel per second, so a still eye redraws about every second or less instead of every frame.
