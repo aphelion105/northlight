@@ -26,8 +26,8 @@ checks={
   not re.search(r'[mM]ap=%s',w) and w.count('ap=\\"%s\\"')>=16,
  'the tile path stays a plain concatenation (an apostrophe or space needs no escaping in a file path)':
   w.count('"%sworld-cache/%s/%d_%d.fg3"')==2 and 'FindFirstFileA((root+"world-cache/"+map+"/*.fg3").c_str(),&data)' in w,
- 'local lights keep their strict name check: instance maps have no continent light file, the load just fails':
-  "c=='_'))return false;" in lights and 'if(!safeMap(map)' in lights,
+ 'local lights accept the same names (<map>.fgl exists for instance maps) and still reject separators':
+  "c=='_'||c=='\\''||c==' '))return false;" in lights and 'if(!safeMap(map)' in lights and 'map.empty()||map.size()>63' in lights,
 }
 for k,v in checks.items():print(('PASS ' if v else 'FAIL ')+k)
 assert all(checks.values())
