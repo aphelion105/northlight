@@ -44,7 +44,8 @@ assert 'buildField(replacement->scene(),region,center.x,center.y,fogScale)' in w
 assert 'NorthlightZoneTuning::terrainRadius(*tuning,' in w and 'NorthlightZoneTuning::fogScale(*tuning,' in w and 'devBuilt=tuning;' in w and w.count('devSnapshot()') >= 2
 assert w.index('const auto tuning=devSnapshot();') < w.index('// BEGIN REGION BUILD')
 f = fp.src('regional_fog.h').read_text()
-assert 'const ZoneScale* zoneScale=nullptr' in f and 'if(zoneScale&&*zoneScale)(*zoneScale)(zone,cell.day,cell.nightExtra);' in f  # identity unless a scale is passed
+assert 'const ZoneScale* zoneScale=nullptr' in f and '(*zoneScale)(zone,cell.day,cell.nightExtra);' in f  # identity unless a scale is passed
+assert '!indoors&&cell.height>0)(*zoneScale)' in f, 'the hook never touches indoor cells or an unknown zone (policy returned early there)'
 assert 'zone_tuning' not in f and 'ZoneTuning' not in f, 'the portable fog policy stays free of the dev overlay'
 b = (fp.REPO / 'scripts' / 'build_renderer.py').read_text()
 assert "'-DNORTHLIGHT_DEV_TUNING=1'" in b and b.count('NORTHLIGHT_DEV_TUNING') == 1, 'the define is added in one place, behind --dev-tuning'

@@ -25,16 +25,16 @@ int main(int argc,char** argv){
     Overrides ov;std::string error;
     const std::string good=
         "# header\n[tuning]\nenabled = 1   # on\n\n[default]\nsun_fog_gain = 5\n"
-        "[Kalimdor:215]\nsun_disc = 1.00, 0.93, 0.80\nsun_light_mix = 0.3\nterrain_radius = 4096\nground_fog_day_scale = 1.5\nground_fog_night_scale = 0\n"
+        "[Kalimdor:215]\nsun_disc = 1.00, 0.93, 0.80\nsun_light_mix = 0.3\nterrain_radius = 4096\nground_fog_day_scale = 1.5\nground_fog_night_scale = 0\nground_fog_day_add = 0.004\nground_fog_night_add = 0.05\n"
         "[Northrend:100]\nmoon_fog_gain=1\n";
     assert(parseText(good,ov,error)&&error.empty());
-    assert(ov.enabled&&ov.fallback.count()==1&&ov.zones.size()==2&&ov.count()==1+5+1);
+    assert(ov.enabled&&ov.fallback.count()==1&&ov.zones.size()==2&&ov.count()==1+7+1);
     assert(near(ov.zones.at({"Kalimdor",215u}).radius,4096)&&near(ov.zones.at({"Kalimdor",215u}).fogNight,0));
     // Every malformed input is rejected with a line number and keeps the previous overrides.
     const char* bad[]={
         "[tuning]\nenabled=2","[tuning]\nsun_fog_gain=1","[tuning]\n[tuning]","[bogus]","[Kalimdor]","[Mars:5]","[Kalimdor:0]","[Kalimdor:x]","[Kalimdor:215]\n[Kalimdor:215]",
         "sun_fog_gain=1","[default]\nsun_fog_gain=8.01","[default]\nsun_fog_height_scale=0.2","[default]\nsun_light=0,0,0","[default]\nsun_disc=1,2,3","[default]\nsun_disc=0.1,0.2",
-        "[default]\nsun_disc_gain=4.1","[default]\nmoon_horizon_haze=-1","[default]\nsun_fog_gain=1\nsun_fog_gain=2","[default]\nterrain_radius=1000","[default]\nground_fog_day_scale=1",
+        "[default]\nsun_disc_gain=4.1","[default]\nmoon_horizon_haze=-1","[default]\nsun_fog_gain=1\nsun_fog_gain=2","[default]\nterrain_radius=1000","[default]\nground_fog_day_scale=1","[default]\nground_fog_day_add=0.01","[Kalimdor:215]\nground_fog_day_add=0.0501","[Kalimdor:215]\nground_fog_night_add=-0.001","[Kalimdor:215]\nground_fog_night_add=x",
         "[Kalimdor:215]\nterrain_radius=927","[Kalimdor:215]\nterrain_radius=4097","[Kalimdor:215]\nground_fog_day_scale=4.1","[Kalimdor:215]\nground_fog_night_scale=-0.1",
         "[Kalimdor:215]\nsun_unknown=1","[Kalimdor:215]\nterrain_radius=nan","[Kalimdor:215]\nterrain_radius=1000 2000","[Kalimdor:215]\nterrain_radius","[Kalimdor:215]\nfoo=1",
     };
@@ -54,13 +54,13 @@ int main(int argc,char** argv){
     {Overrides off=ov;off.enabled=false;auto same=applyCelestial(shipped,off);assert(near(same.fallback.fogGain[0],4.3f)&&near(same.at("Kalimdor",215).mix[0],.4f));}
     // Zone-only keys for the worker.
     assert(near(terrainRadius(ov,928,"Kalimdor",215),4096)&&near(terrainRadius(ov,1500,"Kalimdor",216),1500)&&near(terrainRadius(ov,928,"Azeroth",215),928));
-    {float day=2,night=3;fogScale(ov,"Kalimdor",215,day,night);assert(near(day,3)&&near(night,0));
+    {float day=2,night=3;fogScale(ov,"Kalimdor",215,day,night);assert(near(day,3.004f)&&near(night,.05f)); // policy*scale+add
      day=2;night=3;fogScale(ov,"Kalimdor",216,day,night);assert(near(day,2)&&near(night,3));
      Overrides off=ov;off.enabled=false;day=2;night=3;fogScale(off,"Kalimdor",215,day,night);assert(near(day,2)&&near(night,3));assert(near(terrainRadius(off,928,"Kalimdor",215),928));}
     {Overrides celestialOnly,other;std::string e;
      assert(parseText("[default]\nsun_fog_gain=1\n[Kalimdor:215]\nsun_light_mix=.5\n",celestialOnly,e)&&parseText("[Kalimdor:215]\nsun_light_mix=.1\n",other,e));
      assert(celestialOnly.sameWorker(other)&&!ov.sameWorker(celestialOnly));
-     Overrides moved=ov;moved.zones.at({"Kalimdor",215u}).radius=2000;assert(!ov.sameWorker(moved));Overrides off=ov;off.enabled=false;assert(!ov.sameWorker(off));
+     Overrides moved=ov;moved.zones.at({"Kalimdor",215u}).radius=2000;assert(!ov.sameWorker(moved));Overrides added=ov;added.zones.at({"Kalimdor",215u}).addDay=.005f;assert(!ov.sameWorker(added));Overrides off=ov;off.enabled=false;assert(!ov.sameWorker(off));
      Overrides extra=ov;extra.zones[{"Azeroth",12u}].celestial.emplace_back("sun_fog_gain","2");assert(ov.sameWorker(extra)&&extra.sameWorker(ov)); // a celestial-only zone is no worker change
      extra.zones[{"Azeroth",12u}].fogDay=2;assert(!ov.sameWorker(extra)&&!extra.sameWorker(ov));}
     // State JSON.
@@ -69,7 +69,7 @@ int main(int argc,char** argv){
     auto ranges=NorthlightRegionalShadow::Table();ranges.zones[{"Kalimdor",215u}]=1500;
     s.base=baseValues(shipped,ranges,"Kalimdor",215);s.effective=effectiveValues(s.base,eff,ov,"Kalimdor",215);s.terrainReach=2048;s.groundFogActive=true;
     assert(groundFogActive(10)&&groundFogActive(33)&&!groundFogActive(0)&&!groundFogActive(215)&&!groundFogActive(440)&&!groundFogActive(1519)); // Tanaris, Mulgore, Stormwind: no ground fog
-    assert(near(s.base.terrainRadius,1500)&&near(s.base.fogDay,1)&&near(s.effective.terrainRadius,4096)&&near(s.effective.fogDay,1.5f)&&near(s.effective.fogNight,0));
+    assert(near(s.base.terrainRadius,1500)&&near(s.base.fogDay,1)&&near(s.effective.terrainRadius,4096)&&near(s.effective.fogDay,1.5f)&&near(s.effective.fogNight,0)&&near(s.base.fogDayAdd,0)&&near(s.effective.fogDayAdd,.004f)&&near(s.effective.fogNightAdd,.05f));
     assert(near(s.base.profile.fogGain[0],3.f)&&near(s.effective.profile.fogGain[0],3.f)&&near(s.effective.profile.mix[0],.3f)&&near(s.base.profile.mix[0],.4f));
     std::ofstream(std::string(argv[1]))<<stateJson(s);
     std::cout<<"zone tuning ok"<<std::endl;

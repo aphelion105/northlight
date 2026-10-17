@@ -11,12 +11,14 @@
 namespace NorthlightZoneTuning {
 // The dev DLL embeds this (logged at startup); renderer/build_packages.py refuses any DLL containing it.
 constexpr char Marker[]="NORTHLIGHT DEV TUNING BUILD";
-constexpr float RadiusMin=NorthlightRegionalShadow::DefaultRadius,RadiusMax=NorthlightRegionalShadow::MaximumRadius,FogScaleMax=4;
+// FogAddMax: the policy's own peak is Duskwood night (.003+.015+.008)*1.2 = .031 extinction per unit; .05 leaves headroom above it.
+constexpr float RadiusMin=NorthlightRegionalShadow::DefaultRadius,RadiusMax=NorthlightRegionalShadow::MaximumRadius,FogScaleMax=4,FogAddMax=.05f;
 struct ZoneOverride {
     std::vector<std::pair<std::string,std::string>> celestial; // sun_/moon_ keys, validated by NorthlightCelestialProfiles::assignKey, in file order
-    float radius=-1,fogDay=-1,fogNight=-1;                     // <0 = not overridden
-    unsigned count()const {return unsigned(celestial.size())+(radius>=0)+(fogDay>=0)+(fogNight>=0);}
-    bool sameWorker(const ZoneOverride& o)const {return radius==o.radius&&fogDay==o.fogDay&&fogNight==o.fogNight;}
+    float radius=-1,fogDay=-1,fogNight=-1,addDay=-1,addNight=-1; // <0 = not overridden; add* is density added after the scale
+    unsigned count()const {return unsigned(celestial.size())+(radius>=0)+(fogDay>=0)+(fogNight>=0)+(addDay>=0)+(addNight>=0);}
+    bool worker()const {return radius>=0||fogDay>=0||fogNight>=0||addDay>=0||addNight>=0;}
+    bool sameWorker(const ZoneOverride& o)const {return radius==o.radius&&fogDay==o.fogDay&&fogNight==o.fogNight&&addDay==o.addDay&&addNight==o.addNight;}
 };
 struct Overrides {
     bool enabled=true;unsigned revision=0; // revision: set by the renderer when it publishes a parse
@@ -26,7 +28,7 @@ struct Overrides {
     // The terrain_radius / ground fog parts the geometry worker consumes (a change needs a rebuild).
     bool sameWorker(const Overrides& o)const {
         if(enabled!=o.enabled)return false;
-        auto worker=[](const ZoneOverride& z){return z.radius>=0||z.fogDay>=0||z.fogNight>=0;}; // celestial-only zones are no worker difference
+        auto worker=[](const ZoneOverride& z){return z.worker();}; // celestial-only zones are no worker difference
         for(const auto& z:zones){auto i=o.zones.find(z.first);if(i==o.zones.end()?worker(z.second):!z.second.sameWorker(i->second))return false;}
         for(const auto& z:o.zones)if(!zones.count(z.first)&&worker(z.second))return false;
         return true;
@@ -64,11 +66,13 @@ inline bool parse(std::istream& input,Overrides& out,std::string& error){
             if(!parseNumber(value,0,1,v)||(v!=0&&v!=1))return fail("enabled must be 0 or 1");
             next.enabled=v==1;continue;
         }
-        if(key=="terrain_radius"||key=="ground_fog_day_scale"||key=="ground_fog_night_scale"){
+        float* zoneKey=key=="terrain_radius"?&zone->radius:key=="ground_fog_day_scale"?&zone->fogDay:key=="ground_fog_night_scale"?&zone->fogNight:
+            key=="ground_fog_day_add"?&zone->addDay:key=="ground_fog_night_add"?&zone->addNight:nullptr;
+        if(zoneKey){
             if(kind==Default)return fail("zone-only key in [default]");
-            const bool radius=key=="terrain_radius";
-            if(!parseNumber(value,radius?RadiusMin:0.f,radius?RadiusMax:FogScaleMax,v))return fail("invalid numeric value");
-            (radius?zone->radius:key=="ground_fog_day_scale"?zone->fogDay:zone->fogNight)=v;continue;
+            const bool radius=zoneKey==&zone->radius,add=zoneKey==&zone->addDay||zoneKey==&zone->addNight;
+            if(!parseNumber(value,radius?RadiusMin:0.f,radius?RadiusMax:add?FogAddMax:FogScaleMax,v))return fail("invalid numeric value");
+            *zoneKey=v;continue;
         }
         NorthlightCelestialProfiles::Profile scratch;
         if(const char* why=NorthlightCelestialProfiles::assignKey(scratch,key,value))return fail(why);
@@ -100,17 +104,20 @@ inline const ZoneOverride* zoneOverride(const Overrides& o,const std::string& ma
 inline float terrainRadius(const Overrides& o,float shipped,const std::string& map,uint32_t zone){
     auto z=zoneOverride(o,map,zone);return z&&z->radius>=0?z->radius:shipped;
 }
+// Ground fog density of an outdoor cell: policy value * scale + add (the hook of NorthlightRegionalFog::buildField).
 inline void fogScale(const Overrides& o,const std::string& map,uint32_t zone,float& day,float& nightExtra){
     auto z=zoneOverride(o,map,zone);if(!z)return;
     if(z->fogDay>=0)day*=z->fogDay;if(z->fogNight>=0)nightExtra*=z->fogNight;
+    if(z->addDay>=0)day+=z->addDay;if(z->addNight>=0)nightExtra+=z->addNight;
 }
-struct Values {NorthlightCelestialProfiles::Profile profile;float terrainRadius=NorthlightRegionalShadow::DefaultRadius,fogDay=1,fogNight=1;};
+struct Values {NorthlightCelestialProfiles::Profile profile;float terrainRadius=NorthlightRegionalShadow::DefaultRadius,fogDay=1,fogNight=1,fogDayAdd=0,fogNightAdd=0;};
 inline Values baseValues(const NorthlightCelestialProfiles::Table& shipped,const NorthlightRegionalShadow::Table& ranges,const std::string& map,uint32_t zone){
     Values v;v.profile=shipped.at(map,zone);v.terrainRadius=ranges.at(map,zone);return v;
 }
 inline Values effectiveValues(const Values& base,const NorthlightCelestialProfiles::Table& effective,const Overrides& o,const std::string& map,uint32_t zone){
     Values v=base;v.profile=effective.at(map,zone);v.terrainRadius=terrainRadius(o,base.terrainRadius,map,zone);
-    fogScale(o,map,zone,v.fogDay,v.fogNight);return v;
+    auto z=zoneOverride(o,map,zone);if(z){v.fogDay=z->fogDay>=0?z->fogDay:base.fogDay;v.fogNight=z->fogNight>=0?z->fogNight:base.fogNight;v.fogDayAdd=z->addDay>=0?z->addDay:0;v.fogNightAdd=z->addNight>=0?z->addNight:0;}
+    return v;
 }
 // Can the regional ground fog policy add any density in this zone at all? (False: the ground fog scales are no-ops.)
 inline bool groundFogActive(uint32_t zone){auto t=NorthlightRegionalFog::policy(zone,0.f,1.f,1.f,false);return t.day>0||t.nightExtra>0;}
@@ -134,7 +141,7 @@ inline std::string valuesJson(const Values& v){
         one((b+"light_mix").c_str(),p.mix[s]);one((b+"light_strength").c_str(),p.strength[s]);one((b+"fog_gain").c_str(),p.fogGain[s]);
         one((b+"fog_height_scale").c_str(),p.fogHeightScale[s]);one((b+"horizon_haze").c_str(),p.horizonHaze[s]);
     }
-    one("terrain_radius",v.terrainRadius);one("ground_fog_day_scale",v.fogDay);o+="\"ground_fog_night_scale\":"+jsonNumber(v.fogNight)+"}";
+    one("terrain_radius",v.terrainRadius);one("ground_fog_day_scale",v.fogDay);one("ground_fog_night_scale",v.fogNight);one("ground_fog_day_add",v.fogDayAdd);o+="\"ground_fog_night_add\":"+jsonNumber(v.fogNightAdd)+"}";
     return o;
 }
 inline std::string stateJson(const State& s){
