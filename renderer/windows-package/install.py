@@ -152,8 +152,9 @@ def chain_problems(client, chain):
             if e.get('preserve') and current not in ok: continue
             if current not in ok:
                 problems.append((backup, 'File changed after installation: '+str(safe_path(client, e['path'])))); continue
-            if e['before'] and sha(safe_path(backup/'before', e['path'])) != e['before']:
-                problems.append((backup, 'Backup damaged: '+e['path']))
+            if e['before']:
+                copy = safe_path(backup/'before', e['path'])
+                if not copy.is_file() or sha(copy) != e['before']: problems.append((backup, 'Backup damaged: '+e['path']))
             state[e['path']] = e['before']
     return problems
 
@@ -253,24 +254,24 @@ def consolidate_records(records):
                 copy = safe_path(b/'before', start['path'])
                 if not copy.is_file() or sha(copy) != start['before']: return 0, [], 'the saved original of '+start['path']+' is missing or damaged'
             except (OSError, ValueError): return 0, [], 'the saved original of '+start['path']+' cannot be read'
-            used.add(str(copy))
-    # Rewrite oldest first; a record left without entries waits for the delete phase.
-    emptied = []
+            st = copy.stat(); used.add((st.st_dev, st.st_ino))   # by identity: a case-insensitive disk may spell the folders differently
+    # Rewrite oldest first, emptied records too (files: []), so no half-merged record is left under a rewritten one.
     for b, r, entries in keep:
-        if not entries: emptied.append(b)
-        elif entries != r['files']: atomic_json(b/'transaction.json', {**r, 'files': entries})
-    # Delete last.
+        if entries != r['files']: atomic_json(b/'transaction.json', {**r, 'files': entries})
+    # Delete only after every rewrite.
     freed, removed = 0, []
+    for b, _, entries in keep:
+        if not entries: freed += tree_size(b); shutil.rmtree(b); removed.append(b)
     for b, _, entries in keep:
         if not entries: continue
         before = b/'before'
         for f in sorted(before.rglob('*'), reverse=True) if before.is_dir() else ():
             if f.is_file() or f.is_symlink():
-                if str(f) not in used: freed += f.lstat().st_size; f.unlink()
+                if f.is_symlink() or (f.stat().st_dev, f.stat().st_ino) not in used: freed += f.lstat().st_size; f.unlink()
             elif not any(f.iterdir()): f.rmdir()
         if before.is_dir() and not any(before.iterdir()): before.rmdir()
         freed += tree_size(b/'staged'); shutil.rmtree(b/'staged', ignore_errors=True)
-    for b in [*emptied, *dead]:
+    for b in dead:
         freed += tree_size(b); shutil.rmtree(b); removed.append(b)
     return freed, removed, None
 

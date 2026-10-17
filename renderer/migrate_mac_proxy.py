@@ -206,7 +206,7 @@ def backups(client,roots):
         for p in root.glob('*/transaction.json'):
             try:
                 r=json.loads(p.read_text(encoding='utf-8'))
-                if r.get('kind')==KIND and Path(r['client'])==client and isinstance(r['files'],list):found.append((p.parent,r))
+                if r.get('kind')==KIND and Path(r['client']).resolve()==client.resolve() and isinstance(r['files'],list):found.append((p.parent,r))
             except (OSError,ValueError,KeyError,TypeError,AttributeError):continue
     return [d for d,_ in sorted(found,key=m.install_order)]
 

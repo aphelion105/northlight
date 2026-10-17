@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import tempfile
 import types
 import unittest
@@ -562,5 +563,65 @@ class InstallerTests(unittest.TestCase):
         kept=json.loads((records[0][0]/'transaction.json').read_text())['files'][0]
         self.assertEqual(kept['after'],hashlib.sha256(b'd2').hexdigest())
         self.assertEqual(set(kept['afters']),{hashlib.sha256(b'd1').hexdigest(),hashlib.sha256(b'd2').hexdigest()})
+
+    def test_consolidate_keeps_an_original_whose_folder_differs_in_case(self):
+        probe=self.base/'CaseProbe';probe.write_bytes(b'x')
+        if not (self.base/'caseprobe').exists():self.skipTest('the temporary disk is case-sensitive: one folder cannot have two spellings')
+        self.tx({'data/foo/b':b'b1'})
+        (self.client/'Data/Foo/c').write_bytes(b'orig c')
+        self.tx({'data/foo/b':b'b2','Data/Foo/c':b'c2'})   # the copy of c lands in before/data/foo/
+        freed,removed,why=m.consolidate(self.client)
+        self.assertIsNone(why);self.assertEqual(len(m.transactions(self.client)),2)
+        self.assertEqual(m.chain_problems(self.client,self.chain()),[])
+        self.restore_all()
+        self.assertEqual(self.read('Data/Foo/c'),b'orig c');self.assertIsNone(self.read('data/foo/b'))
+    def test_missing_original_copy_is_reported_as_damaged(self):
+        self.foreign();backups=self.stack();(backups[0]/'before/d3d9.dll').unlink()
+        self.assertEqual(m.chain_problems(self.client,self.chain()),[(backups[0],'Backup damaged: d3d9.dll')])
+        self.assertTrue(m.restore_problems(self.client,backups[0]) is not None)
+    def test_a_crash_at_any_write_or_delete_keeps_the_chain_restorable(self):
+        (self.client/'extra').mkdir();(self.client/'extra/x.bin').write_bytes(b'orig x')
+        for i in range(1,6):
+            changes={'extra/x.bin':b'x%d'%i}
+            if i==1:changes['extra/z.bin']=b'z1'
+            if i==2:changes['extra/z.bin']=None
+            if i==3:changes['extra/z.bin']=b'z3'
+            if i>=3:changes['extra/w%d.bin'%i]=b'w%d'%i   # these records survive; record 2 is left empty
+            self.tx(changes)
+        original=self.snapshot();original['extra/x.bin']=b'orig x';original.pop('extra/z.bin',None)
+        for k in [k for k in original if k.startswith('extra/w')]:original.pop(k)
+        keep=self.base/'saved';other=self.base/'crashed'
+        def save(dst):
+            shutil.rmtree(dst,ignore_errors=True);shutil.copytree(self.client,dst,ignore=shutil.ignore_patterns('wow.exe'))
+        def load(src):
+            for child in self.client.iterdir():
+                if child.name!='wow.exe':shutil.rmtree(child) if child.is_dir() else child.unlink()
+            for child in src.iterdir():
+                (shutil.copytree if child.is_dir() else shutil.copy2)(child,self.client/child.name)
+        save(keep)
+        def run(crash_at):
+            count=[0];real_json,real_unlink,real_rmtree=m.atomic_json,Path.unlink,shutil.rmtree
+            def tick():
+                count[0]+=1
+                if count[0]==crash_at:raise OSError('simulated crash')
+            def json_(*a):tick();return real_json(*a)
+            def unlink(self_,*a,**k):tick();return real_unlink(self_,*a,**k)
+            def rmtree(*a,**k):tick();return real_rmtree(*a,**k)
+            with patch.object(m,'atomic_json',json_),patch.object(Path,'unlink',unlink),patch.object(shutil,'rmtree',rmtree):
+                try:m.consolidate(self.client)
+                except OSError:return count[0]
+            return None
+        for n in range(1,40):
+            with self.subTest(crash_at=n):
+                load(keep)
+                if run(n) is None:break   # n is beyond the last write: done
+                self.assertEqual(m.chain_problems(self.client,self.chain()),[])
+                save(other)
+                self.restore_all();self.assertEqual(self.snapshot(),original)
+                load(other)
+                self.assertIsNone(m.consolidate(self.client)[2])
+                self.assertEqual(m.chain_problems(self.client,self.chain()),[])
+                self.restore_all();self.assertEqual(self.snapshot(),original)
+        else:self.fail('the run never finished: raise the range')
 
 if __name__=='__main__':unittest.main()
