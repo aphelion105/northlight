@@ -403,7 +403,7 @@ private:
         }
     }
     // Appends to the CSTREAM line, never past the buffer (n stays below kLine).
-    static constexpr int kLine=2000;
+    static constexpr int kLine=3072;   // 0.3.216: was 2000, which cut the pass[...] reasons off the line during pressure episodes
     __attribute__((format(printf,3,4))) static void put(char* buf,int& n,const char* fmt,...){
         if(n<0||n>=kLine-1)return;va_list ap;va_start(ap,fmt);const int w=std::vsnprintf(buf+n,size_t(kLine-n),fmt,ap);va_end(ap);
         if(w>0)n=n+w<kLine-1?n+w:kLine-1;
@@ -449,6 +449,7 @@ private:
              double(std::max<std::int64_t>(0,s.shadowBytes.load()))/1048576.0,double(core.q.shadowCap())/1048576.0,double(rbD-lastBufRbD_)*f,double(rbS-lastBufRbS_)*f,double(evD+evS-lastBufEv_)*f,double(evH-lastBufHot_)*f,double(rf-lastBufRef_)*f,
              (unsigned long long)get(s.shadowCapGrows),double(core.q.largeBytes())/1048576.0,double(LargeShadowBudgetBytes)/1048576.0,(unsigned long long)get(s.largeShadowGrants),(unsigned long long)get(s.largeShadowDrops),(unsigned long long)rbD,(unsigned long long)rbS,(unsigned long long)evD,(unsigned long long)evS,(unsigned long long)evH,(unsigned long long)rf,get(s.relockRefusedBytes)/1048576.0);
          lastBufRbD_=rbD;lastBufRbS_=rbS;lastBufEv_=evD+evS;lastBufHot_=evH;lastBufRef_=rf;}
+        put(buf,n," syncStorms=%llu",(unsigned long long)get(s.syncStorms));
         put(buf,n," pass[");
         for(unsigned r=0;r<Counters::kPassReasons;++r)put(buf,n,"%s%s=%llu",r?",":"",passReasonName(r),(unsigned long long)get(s.passThrough[r]));
         put(buf,n,"] census[");

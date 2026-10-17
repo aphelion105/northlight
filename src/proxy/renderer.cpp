@@ -2301,7 +2301,7 @@ public:
         if(frame==1||(frame%600==0&&diagnostics()))logf("frame=%u applied=%u terrainShaders=%u uiShaders=%u projectionRejects=%u terrainThisFrame=%d depth=%d draws=%u missingVS=%u terrainDraws=%u terrainShadowDraws=%u viewportRejects=%u depthRejects=%u uiDraws=%u uiAfterTerrain=%u uiFallback=%u uiFallbackState=%c",frame,appliedFrames,matchedTerrain,matchedUI,projectionRejects,terrain,captured,drawCalls,missingVS,terrainDraws,terrainShadowDraws,viewportRejects,depthRejects,uiDraws,uiAfterTerrain,uiFallbackBoundaries,uiFallback.disarmed()?'d':uiFallback.armed()?'a':'l');
         // The address-space sweep is asynchronous; the render thread only compares
         // its result. Trims run below, after clearFrame(), at the frame boundary.
-        bool memoryTrim=false;int memoryCaps=-1; /* -1 unchanged, 0 full, 1 half */
+        bool memoryTrim=false;int memoryCaps=-1,memoryWorld=-1; /* -1 unchanged, 0 full, 1 half (stream, replay copies); memoryWorld: 1 in any pressure episode (the world's caches and pool shrink, no lock cost), 0 after recovery */
         NorthlightMemoryDiagnostics::Sample memorySample; /* exact full walk (never an admission witness bound) */
         if(memoryDiagnostics){
             try{
@@ -2316,13 +2316,14 @@ public:
                         memoryTrim=decision.trim;
                         if(decision.afterTrim)logf("MEMORY guard after-trim exactWalk=1 availableVirtualMiB=%llu largestFreeMiB=%llu regions=%llu pressure=%u trims=%u sampleTick=%llu",
                             (unsigned long long)(sample.availableVirtual>>20),(unsigned long long)(sample.largestFree>>20),(unsigned long long)sample.regions,unsigned(memoryGuard.pressure()),memoryGuard.trims(),(unsigned long long)sample.tick);
-                        if(decision.entered||decision.recovered){
-                            memoryCaps=decision.entered?1:0;
-                            logf("MEMORY guard %s exactWalk=1 availableVirtualMiB=%llu largestFreeMiB=%llu enterBelowMiB=%llu/%llu recoverAboveMiB=%llu/%llu caps=%s entries=%u trims=%u reason=%s demandMiB=%llu",decision.entered?"pressure":"recovered",
+                        if(decision.entered||decision.recovered||decision.capsChanged){
+                            if(decision.entered||decision.recovered)memoryWorld=decision.entered?1:0;
+                            if(decision.capsChanged)memoryCaps=decision.halfCaps?1:0; /* 0.3.216 (issue #66 follow-up): a demand-only episode keeps full caps (halving them dropped the buffer shadows and made every lock a sync round trip) */
+                            logf("MEMORY guard %s exactWalk=1 availableVirtualMiB=%llu largestFreeMiB=%llu enterBelowMiB=%llu/%llu recoverAboveMiB=%llu/%llu caps=%s entries=%u trims=%u reason=%s demandMiB=%llu",decision.recovered?"recovered":"pressure",
                                 (unsigned long long)(sample.availableVirtual>>20),(unsigned long long)(sample.largestFree>>20),
                                 (unsigned long long)(memoryGuard.policy().enterLargest>>20),(unsigned long long)(memoryGuard.policy().enterAvailable>>20),
                                 (unsigned long long)(memoryGuard.policy().recoverLargest>>20),(unsigned long long)(memoryGuard.recoverAvailable()>>20),
-                                decision.entered?"half":"full",memoryGuard.entries(),memoryGuard.trims(),decision.demand?"geometry-demand":"address-space",(unsigned long long)(demand>>20));
+                                memoryGuard.capsHalved()?"half":"full",memoryGuard.entries(),memoryGuard.trims(),decision.demand?"geometry-demand":"address-space",(unsigned long long)(demand>>20));
                         }
                         if(decision.report&&diagnostics())logf("MEMORY frame=%u availableVirtualMiB=%llu largestFreeMiB=%llu availablePhysicalMiB=%llu device=%ld totalVirtualMiB=%llu virtualQueryFreeMiB=%llu liveDevices=%ld tick=%lu async=1 sampleTick=%llu sampleAgeMs=%lu sampleWallMs=%.3f regions=%llu pressure=%u minAvailableMiB=%llu minLargestMiB=%llu trims=%u exactWalk=1",frame,
                             (unsigned long long)(sample.availableVirtual>>20),(unsigned long long)(sample.largestFree>>20),(unsigned long long)(sample.availablePhysical>>20),diagnosticId,
@@ -2355,7 +2356,7 @@ public:
             int(applied),int(enabled),int(projectionValid),int(terrain),traceWorld,world?world->frameTraceContext():0u,world?world->frameTraceFog():0u,traceWorld==0&&world?world->lastSkipReason():"-");
         traceWorld=-1;
         {CpuScope cpu(sampledFrame?&cleanup:nullptr);clearFrame();}
-        if(memoryCaps>=0&&world)world->setMemoryPressure(memoryCaps==1);
+        if(memoryWorld>=0&&world)world->setMemoryPressure(memoryWorld==1);
         if(memoryCaps>=0&&NorthlightReplayCopies::enabled.load(std::memory_order_relaxed))NorthlightReplayCopies::setPressure(memoryCaps==1); /* 0.3.192 (CS): replay thread: halves the CPU copies' cap and evicts down to it */
         if(memoryCaps>=0)NorthlightStream::memoryPressure.store(memoryCaps==1,std::memory_order_relaxed); /* 0.3.192 (CS): the stream's game side halves its queue budget at its next Present */
         if(memoryTrim)trimMemory(memorySample);

@@ -401,7 +401,8 @@ public:
         PresentMark& slot=presentHist[core.frameNo%framesAhead_];const PresentMark prev=slot;slot=PresentMark{q.recordedSeq(),core.frameNo};
         HRESULT result=D3D_OK;
         if(prev.seq){q.waitReplayed(prev.seq,WaitKind::Present);result=presentResult(prev);}   // framesAhead_ frames ahead: that frame's real HRESULT
-        q.setPressure(core.memoryPressure.load(std::memory_order_relaxed)||NorthlightStream::memoryPressure.load(std::memory_order_relaxed));
+        const bool pressureAsked=core.memoryPressure.load(std::memory_order_relaxed)||NorthlightStream::memoryPressure.load(std::memory_order_relaxed);
+        q.setPressure(pressureAsked);stormWatch(q,pressureAsked,nowAtPresent);
         frameEnd=nowNs();
         if(core.timing){const std::uint64_t e=frameEnd-nowAtPresent,w=gameWaitsNs(q.stats)-waits0;own(q.stats.presentBookNs,e>w?e-w:0);}   // 0.3.204 (task 21): Present bookkeeping, waits excluded (no extra clock reads)
         waitsAtFrameEnd=get(q.stats.syncNs)+get(q.stats.backpressureNs);
@@ -417,6 +418,22 @@ public:
             if(replayer.log){char b[128];std::snprintf(b,sizeof b,"CSTREAM memory pressure %s memMB=%.1f",pressureNow?"on":"off",replayer.memory().total()/1048576.0);replayer.log(b);}
         }
         return result;
+    }
+    // 0.3.216 (issue #66 follow-up): the sync-storm detector, a logged diagnostic for any cause. The game thread's synchronous round trips (SyncLock and the other tasks, plus the
+    // express texture readbacks, which also wait for the replay thread) are counted (the storm test); the slice waits (rename, write, overlap) and backpressure waits are counted apart and only shown ("waits"), not part of the test. They are counted over kStormWindowNs; kStormSyncPerFrame (100) or more per frame is a storm: start and end are
+    // logged with the pressure state, and each start counts in syncStorms. It changes nothing: removing the storms is done by design (no shadow is dropped under pressure).
+    static constexpr std::uint64_t kStormWindowNs=2000000000ull;static constexpr unsigned kStormSyncPerFrame=100;
+    void stormWatch(Queue& q,bool pressureAsked,std::uint64_t now){
+        const std::uint64_t sync=get(q.stats.syncCalls)+get(q.stats.expressReadbacks),waits=get(q.stats.renameWaits)+get(q.stats.writeWaits)+get(q.stats.zcOverlapWaits)+get(q.stats.backpressureWaits);
+        if(!stormStartNs_){stormStartNs_=now;stormSyncAt_=sync;stormWaitAt_=waits;stormFrameAt_=core.frameNo;return;}
+        if(now-stormStartNs_<kStormWindowNs)return;
+        const std::uint64_t frames=core.frameNo-stormFrameAt_;const double perFrame=frames?double(sync-stormSyncAt_)/double(frames):0.0;
+        const double waitsPerFrame=frames?double(waits-stormWaitAt_)/double(frames):0.0;
+        stormStartNs_=now;stormSyncAt_=sync;stormWaitAt_=waits;stormFrameAt_=core.frameNo;
+        const bool storm=perFrame>=double(kStormSyncPerFrame);
+        if(storm==stormSeen_)return;
+        stormSeen_=storm;if(storm)add(q.stats.syncStorms);
+        if(replayer.log){char b[200];std::snprintf(b,sizeof b,"CSTREAM sync-storm %s: %.0f syncs/frame (+%.0f slice/backpressure waits/frame) over %llu frames pressure=%d storms=%llu",storm?"begins":"ends",perFrame,waitsPerFrame,(unsigned long long)frames,int(pressureAsked),(unsigned long long)get(q.stats.syncStorms));replayer.log(b);}
     }
     // The real result of a recorded Present (its command sequence number and ordinal), recorded by the replay thread.
     struct PresentMark {std::uint64_t seq=0,ordinal=0;};
@@ -588,7 +605,7 @@ private:
     std::unique_ptr<StreamCore> coreOwner;StreamCore& core;Replayer replayer;StreamState st;std::function<void()> restoreOwner;
     IDirect3D9* parent;D3DCAPS9 caps{};D3DDEVICE_CREATION_PARAMETERS creation{};D3DPRESENT_PARAMETERS pp{};
     StreamSwapChain* sc0=nullptr;std::atomic<LONG> refs{1};
-    bool recording=false,pressureApplied=false,filter=true;BOOL cursorVisible=0;void* hCursor=nullptr;std::mutex cursorMutex;CursorApi cursor=CursorApi::native();unsigned getsSincePublish=0;std::uint64_t frameEnd=0,waitsAtFrameEnd=0;std::uint64_t drawOrdinal=0;
+    bool recording=false,pressureApplied=false,filter=true;std::uint64_t stormStartNs_=0,stormSyncAt_=0,stormWaitAt_=0,stormFrameAt_=0;bool stormSeen_=false;BOOL cursorVisible=0;void* hCursor=nullptr;std::mutex cursorMutex;CursorApi cursor=CursorApi::native();unsigned getsSincePublish=0;std::uint64_t frameEnd=0,waitsAtFrameEnd=0;std::uint64_t drawOrdinal=0;
     unsigned framesAhead_=1;PresentMark presentHist[kMaxFramesAhead];   // 0.3.200 (pipeline): see presentCommon
     std::thread::id gameThread=std::this_thread::get_id();
     PoolTuner tuner;TriggerPolicy policy;bool (*capture)(GameSnapshot&,Trigger,std::uint64_t)=nullptr;
@@ -632,11 +649,11 @@ private:
             if(i<n&&SUCCEEDED(sc->GetBackBuffer(i,(D3DBACKBUFFER_TYPE)0,&b))&&b){c.reg.bindInner(k,b);k->dead.store(false);}else k->dead.store(true);
         }
     }
-    // Under memory pressure (caps already halved): trim every idle chunk and Block, evict texture shadows down to the halved cap (least recently
-    // locked first, never one that is locked), and drop buffer shadows idle for 120 frames (then the least recent while over the cap).
+    // Under memory pressure (queue budget halved): trim every idle chunk and Block, the scratch slots, the spare level allocations and the free ring slices.
+    // 0.3.216 (issue #66 follow-up): no shadow (buffer, large, texture) is dropped or capped any more: losing one costs a synchronous readback at its next lock.
     // Everything here is game-thread or pool-locked state: nothing the replay thread may read.
     void releaseUnderPressure(){
-        core.q.trim();core.scratch.trim();core.q.resetShadowCap(core.frameNo);makeRoomForShadow(core,0,true,nullptr);trimTexSpares(core);dropIdleBufferShadows(core,120);trimRetired(core);   // 0.3.200 (pipeline): the spare level allocations go too   // (the adaptive buffer-shadow cap goes back to its base first; both kinds of buffer shadow go LRU)
+        core.q.trim();core.scratch.trim();trimTexSpares(core);releaseBufferRings(core);trimRetired(core);   // 0.3.200 (pipeline): the spare level allocations go too   // (the adaptive buffer-shadow cap goes back to its base first; both kinds of buffer shadow go LRU)
     }
     void finalRelease(){
         st.clear();sc0->comRelease();   // binds and the swap chain's own reference go; the Destroys run before the Target's release

@@ -47,12 +47,23 @@ bool terrainChunk(Vec3 a,Vec3 b,Vec3 c,int& x,int& y){
     for(Vec3 p:{a,b,c})if(p.x<lowX-tolerance||p.x>highX+tolerance||p.y<lowY-tolerance||p.y>highY+tolerance)return false;
     x=cx;y=cy;return true;
 }
-uint64_t key(uint32_t material,int x,int y){
-    return (uint64_t(material)<<22)|(uint64_t(y+1)<<11)|uint64_t(x+1);
+// Sort key: [cell 22][low 42]. low = (y+1, x+1, material) chunk-major or (material, y+1, x+1) material-major.
+constexpr uint32_t MaterialBits=20,NoCell=0x3FFFFF;
+uint64_t key(uint32_t cell,uint32_t material,int x,int y,bool chunkMajor){
+    const uint64_t chunk=(uint64_t(y+1)<<11)|uint64_t(x+1);
+    return (uint64_t(cell)<<42)|(chunkMajor?(chunk<<MaterialBits)|material:(uint64_t(material)<<22)|chunk);
+}
+// Coarse cell of a triangle's centroid in the terrain chunk grid (terrain_capture_bounds.h convention).
+uint32_t spatialCell(Vec3 a,Vec3 b,Vec3 c,unsigned cellChunks){
+    if(!cellChunks)return 0;
+    constexpr double origin=17066.666666666666,step=100.0/3.0;
+    const double gx=std::floor((origin-(double(a.y)+b.y+c.y)/3)/step),gy=std::floor((origin-(double(a.x)+b.x+c.x)/3)/step);
+    if(gx<0||gx>=1024||gy<0||gy>=1024)return NoCell;
+    return (uint32_t(gy)/cellChunks<<11)|(uint32_t(gx)/cellChunks);
 }
 }
 
-bool buildUploadPlan(const NorthlightGI::WorldScene& scene,WorldMeshUploadPlan& output,std::string& error,const NorthlightGI::AllocationAdmission& admit,const std::vector<NorthlightGI::WorldMaterial>* textures){
+bool buildUploadPlan(const NorthlightGI::WorldScene& scene,WorldMeshUploadPlan& output,std::string& error,const NorthlightGI::AllocationAdmission& admit,const std::vector<NorthlightGI::WorldMaterial>* textures,const PlanOrder& order){
     static_assert(sizeof(NorthlightGI::WorldVertex)==32,"D3D world vertex layout must remain 32 bytes");
     error.clear();WorldMeshUploadPlan next;
     const uint64_t vertexBytes=uint64_t(scene.vertices.size())*sizeof(NorthlightGI::WorldVertex);
@@ -74,6 +85,7 @@ bool buildUploadPlan(const NorthlightGI::WorldScene& scene,WorldMeshUploadPlan& 
         }
     }
     auto allowed=[&](uint64_t bytes){if(!admit||admit(bytes))return true;error="Geometry allocation deferred";return false;};
+    if(scene.materials.size()>=(1u<<MaterialBits)){error="Too many upload materials";return false;}
     try{
         auto records=std::make_shared<NorthlightLocalShadowSignature::Records>();
         std::unordered_map<ContentCell,uint32_t,CellHash> cells;
@@ -97,7 +109,8 @@ bool buildUploadPlan(const NorthlightGI::WorldScene& scene,WorldMeshUploadPlan& 
             int x=-1,y=-1;
             if(scene.materials[t.material].terrain&&!terrainChunk(scene.vertices[t.v0].position,scene.vertices[t.v1].position,scene.vertices[t.v2].position,x,y))
                 ++next.unmaskableTerrainTriangles;
-            uint64_t k=key(t.material,x,y);keys.push_back(k);++counts[k];
+            const uint32_t cell=spatialCell(scene.vertices[t.v0].position,scene.vertices[t.v1].position,scene.vertices[t.v2].position,order.cellChunks);
+            uint64_t k=key(cell,t.material,x,y,order.chunkMajor);keys.push_back(k);++counts[k];
         }
         std::vector<Group> groups;groups.reserve(counts.size());
         for(const auto& pair:counts)groups.push_back({pair.first,pair.second,0});
@@ -109,8 +122,10 @@ bool buildUploadPlan(const NorthlightGI::WorldScene& scene,WorldMeshUploadPlan& 
         uint32_t offset=0;
         for(uint32_t i=0;i<groups.size();++i){
             auto& g=groups[i];g.cursor=offset;lookup.emplace(g.key,i);
-            uint32_t material=uint32_t(g.key>>22);
-            int x=int(g.key&2047)-1,y=int((g.key>>11)&2047)-1;
+            const uint64_t low=g.key&((1ull<<42)-1);
+            const uint32_t material=order.chunkMajor?uint32_t(low&((1u<<MaterialBits)-1)):uint32_t(low>>22);
+            const uint64_t chunk=order.chunkMajor?low>>MaterialBits:low&((1u<<22)-1);
+            int x=int(chunk&2047)-1,y=int((chunk>>11)&2047)-1;
             next.batches.push_back({offset,g.count,material,x,y,scene.materials[material].terrain});offset+=g.count*3;
         }
         for(size_t i=0;i<scene.triangles.size();++i){

@@ -53,5 +53,26 @@ int main(){
      State t;t.onCommit(10*MiB,84*MiB);t.reset();assert(t.windowMax()==0&&t.count==0);}
     // Pool smaller than the target (growing mesh) is no surplus and does not underflow.
     {State s;assert(!s.onCommit(10*MiB,35*MiB)&&surplus(10*MiB,35*MiB)==0);}
+    // 0.3.216 (issue #66): target = windowMax(mesh) + windowMax(staged); no reuse (staged == mesh) is the old 2 x mesh.
+    assert(target(35*MiB,5*MiB)==40*MiB&&target(35*MiB)==70*MiB&&surplus(60*MiB,35*MiB,5*MiB)==20*MiB&&surplus(30*MiB,35*MiB,5*MiB)==0);
+    // Steady incremental builds (5 MiB uploaded per commit): a 70 MiB pool trims down to mesh + staged, bounded per step.
+    {State s;uint64_t pool=70*MiB;unsigned n=0;uint64_t step=0;
+     for(;n<200&&pool>40*MiB+SurplusBytes;++n){const uint64_t r=s.onCommit(pool,35*MiB,5*MiB);assert(r<=MaxReleaseBytes);if(r){assert(r<=pool);pool-=r;if(r>step)step=r;}}
+     assert(n<=5&&pool<=40*MiB+SurplusBytes&&pool>=40*MiB);
+     for(int i=0;i<100;++i)assert(!s.onCommit(pool,35*MiB,5*MiB));}
+    // A pool of mesh + staged is not a surplus; the same pool is one when the staged window max is smaller.
+    {State s;for(int i=0;i<50;++i)assert(!s.onCommit(40*MiB,35*MiB,5*MiB));
+     State t;for(int i=0;i<50;++i)assert(!t.onCommit(70*MiB,35*MiB,35*MiB));}
+    // A large staged build (map change: everything uploaded) keeps the double target for the window, then the target falls.
+    {State s;assert(!s.onCommit(70*MiB,35*MiB,35*MiB));
+     unsigned trimsInWindow=0;for(unsigned i=0;i<WindowCommits-1;++i)trimsInWindow+=s.onCommit(70*MiB,35*MiB,2*MiB)!=0;
+     assert(trimsInWindow==0&&s.stagedWindowMax()==35*MiB);
+     uint64_t freed=0;for(int i=0;i<10;++i)freed+=s.onCommit(70*MiB,35*MiB,2*MiB);
+     assert(freed>0&&s.stagedWindowMax()==2*MiB);}
+    // Capped at the old 2 x mesh even if the uploads were larger than the mesh (oversized buffers), and 0 staged is a cold start.
+    assert(target(35*MiB,50*MiB)==70*MiB&&target(35*MiB,0)==35*MiB&&surplus(80*MiB,35*MiB,50*MiB)==10*MiB);
+    // The two-argument form is the zero-hit form; reset clears the staged window too.
+    {State a,b;for(int i=0;i<6;++i)assert(a.onCommit(159*MiB,35*MiB)==b.onCommit(159*MiB,35*MiB,35*MiB));
+     a.reset();assert(a.stagedWindowMax()==0&&a.windowMax()==0);}
     std::cout<<"ok\n";
 }

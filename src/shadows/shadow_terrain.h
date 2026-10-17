@@ -80,7 +80,8 @@ template<class Snapshot> void appendLiveDirectional(const Snapshot& snapshot,
 }
 inline bool build(const NorthlightGI::WorldScene& local,const NorthlightGI::WorldScene& terrain,
                   Vec3 center,NorthlightWorldMesh::WorldMeshUploadPlan& output,std::string& error,
-                  const NorthlightGI::AllocationAdmission& admit = {},float radius=Radius){
+                  const NorthlightGI::AllocationAdmission& admit = {},float radius=Radius,
+                  const NorthlightWorldMesh::PlanOrder& order = {}){
     try {
     const Vec3 low=center-Vec3(288,288,320),high=center+Vec3(288,288,320);
     auto allowed=[&](uint64_t bytes){if(!admit||admit(bytes))return true;error="Geometry allocation deferred";return false;};
@@ -133,7 +134,7 @@ inline bool build(const NorthlightGI::WorldScene& local,const NorthlightGI::Worl
            cl.y>=center.y-radius&&ch.y<=center.y+radius)fixed.insert(key);
     }
     NorthlightWorldMesh::WorldMeshUploadPlan plan;
-    if(!NorthlightWorldMesh::buildUploadPlan(*merged,plan,error,admit,&local.materials))return false;
+    if(!NorthlightWorldMesh::buildUploadPlan(*merged,plan,error,admit,&local.materials,order))return false;
     plan.ownedSource=merged;plan.fixedTerrainChunks=std::move(fixed);
     output=std::move(plan);return true;
     }catch(...){error="Cannot allocate shadow terrain mesh";return false;}
