@@ -46,8 +46,10 @@ struct Controller {
     unsigned level=0,changes=0;bool primed=false,probing=false; // probing: the last change was a step up (a step down within BounceSeconds is a bounce)
     void reset(){*this=Controller{};}
     // budgetMs 0: off, level 0 and the state forgotten. A non-finite, non-positive or huge ms is ignored (level kept, nothing advances).
-    // task 45: lighten=false (the frame is not limited by what this budget measures) only blocks stepping down (over stays 0); the level is kept
-    // and the up condition is the unchanged "well under the budget". The smoothed time still follows the readings. The default keeps the earlier behaviour.
+    // task 45: lighten=false (the frame is not limited by what this budget measures) blocks stepping down (over stays 0). 0.3.217: it also
+    // counts toward stepping up, like "well under the budget": a cut that buys no frame time is given back one level per upHold (the same
+    // oscillation backoff applies when the restored level makes this the limit again). Before, a scene that sat over the budget but was
+    // not GPU-bound kept the lowest level for good. The smoothed time still follows the readings. The default keeps the earlier behaviour.
     unsigned update(float budgetMs,float ms,float dt,bool lighten=true){
         if(!(budgetMs>0)){reset();return level;}
         if(!std::isfinite(ms)||!(ms>0)||ms>MaxSampleMs)return level;
@@ -59,7 +61,7 @@ struct Controller {
         if(probing&&sinceUp>=CalmSeconds){probing=false;upHold=UpHoldBase;}
         if(settle>0){settle-=dt;over=under=0;return level;}
         over=lighten&&smoothed>budgetMs?over+dt:0.f;
-        under=smoothed<budgetMs*UpFraction?under+dt:0.f;
+        under=smoothed<budgetMs*UpFraction||!lighten?under+dt:0.f;
         if(over>=DownSeconds&&level<MaxLevel){
             if(probing&&sinceUp<BounceSeconds)upHold=upHold*2<UpHoldMax?upHold*2:UpHoldMax;
             probing=false;++level;changed();

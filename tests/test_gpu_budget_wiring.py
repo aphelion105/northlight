@@ -85,7 +85,7 @@ checks['task 45 gate: the signal is the previous Present\'s latency wait, kept a
     and 'gpuBound.update(float(latencyLastMs),' in gb and gb.index('gpuBound.update(')<gb.index('const unsigned budget=world?world->gpuBudgetMs():0;'))
 checks['task 45 gate: BoundWaitMs and the lighten parameter default to the old behaviour']=(
     'constexpr float BoundWaitMs=.5f;' in b and 'unsigned update(float budgetMs,float ms,float dt,bool lighten=true){' in b
-    and 'over=lighten&&smoothed>budgetMs?over+dt:0.f;' in code(b) and 'under=smoothed<budgetMs*UpFraction?under+dt:0.f;' in code(b))
+    and 'over=lighten&&smoothed>budgetMs?over+dt:0.f;' in code(b) and 'under=smoothed<budgetMs*UpFraction||!lighten?under+dt:0.f;' in code(b))
 cb=rc[rc.index('void cpuBudgetFrame(){'):rc.index('void finishFrameImpl() {')]
 checks['task 45 cpu: the effects span is always measured (two QPC reads, after the applied check), consumed once per frame, off at ActorShadowCpuMs=0']=(
     'struct EffectsSpan { std::int64_t& out; std::int64_t start; ~EffectsSpan(){out=qpcNow()-start;} } effectsSpan{cpuEffectsQpc,qpcNow()};' in re_
