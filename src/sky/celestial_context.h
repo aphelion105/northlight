@@ -100,7 +100,7 @@ inline void clampLightElevation(float* direction){
     const float h=std::sqrt(direction[0]*direction[0]+direction[1]*direction[1]),k=h>0?std::sqrt(1-MinLightElevation*MinLightElevation)/h:0.f;
     direction[0]*=k;direction[1]*=k;direction[2]=MinLightElevation;
 }
-// Extension appearance/energy policy, applied AFTER clock-based orbit evaluation. Native
+// Extension appearance/energy policy, applied after reading the native placement. Native
 // billboard RGBA is zone sky artwork state, not celestial irradiance: the
 // midnight captures have moon z=.81 but alpha 0, 14/255 or 1 by location.
 // A raw-alpha change must not switch off the disc, shadows or fog lighting.
@@ -123,17 +123,17 @@ inline void applyRendererPolicy(Context& c,const float* direct){
     }
 }
 inline NorthlightCelestialOrbit::Result resolveRendererSky(Context& c,const float* direct){
-    const auto orbit=NorthlightCelestialOrbit::evaluate(c.dayFraction);
-    if(!orbit.valid)return orbit;
-    std::memcpy(c.sun.direction,orbit.sun.direction,sizeof c.sun.direction);
-    std::memcpy(c.moon.direction,orbit.moon.direction,sizeof c.moon.direction);
-    // Fixed native base sizes: sun 1, moon 1.75 (client initialization at
-    // 0x7f296c / 0x7f2989). Native r.size multiplies these by a time curve,
-    // enlarging the bodies near the horizon. Keep that raw radius only for
-    // diagnostics; the owned orbit uses constant sizes with our latest scales.
-    // Repeated resolves, native size animation and zone artwork cannot resize it.
-    c.sun.angularRadius=std::atan(.506736f*1.f/24.f); /* 0.3.145: -10% */
-    c.moon.angularRadius=std::atan(.46176318f*1.75f/24.f); /* 0.3.145: -10% */
+    NorthlightCelestialOrbit::Result orbit;
+    if(!std::isfinite(c.dayFraction)||c.dayFraction<0||c.dayFraction>=1)return orbit;
+    // Keep the native billboard's orbit and animated horizon enlargement. Effects
+    // may change its appearance, but toggling them must not move or resize it.
+    std::memcpy(orbit.sun.direction,c.sun.direction,sizeof c.sun.direction);
+    std::memcpy(orbit.moon.direction,c.moon.direction,sizeof c.moon.direction);
+    orbit.sun.elevation=NorthlightCelestialOrbit::elevationDegrees(c.sun.direction[2]);
+    orbit.moon.elevation=NorthlightCelestialOrbit::elevationDegrees(c.moon.direction[2]);
+    orbit.valid=true;
+    c.sun.angularRadius=c.sun.nativeAngularRadius;
+    c.moon.angularRadius=c.moon.nativeAngularRadius;
     applyRendererPolicy(c,direct);return orbit;
 }
 

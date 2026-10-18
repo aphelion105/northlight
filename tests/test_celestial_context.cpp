@@ -69,10 +69,10 @@ int main() {
     assert(std::fabs(c.sunWeight-.5f)<1e-6f&&std::fabs(c.moonWeight-.5f)<1e-6f); // level under the horizon: the handover's midpoint (the higher body lights)
     const float black[3]={};c.moon.direction[2]=.81f;applyRendererPolicy(c,black);
     for(float v:c.moonColor)assert(v==0); // no invented light when zone budget is zero
-    // Sky-only frames use current native snapshots and the SAME clock-based orbit as
+    // Sky-only frames use current native snapshots and the SAME native placement as
     // world lighting. Missing world passes do not resurrect native appearance
     // or freeze the body. Intermittent world reads must agree with sky reads.
-    float previousMoonZ=NorthlightCelestialOrbit::evaluate(2./24).moon.direction[2];
+    float previousMoonZ=.81f;
     for(unsigned frame=0;frame<6000;++frame){
         const double seconds=frame/60.;
         const float moonZ=.81f-float(seconds)*.00002f;
@@ -89,56 +89,24 @@ int main() {
             for(unsigned k=0;k<3;++k)assert(std::fabs(world.moon.direction[k]-sky.moon.direction[k])<1e-6f);
         }
     }
-    // Region artwork/native positions cannot alter the clock-based direction.
-    // First-frame sky and world agree at all times, including dawn/dusk.
+    // Native geometry survives effects toggles at all clocks, azimuths and sizes.
+    // In particular the moon may cycle independently of the daily solar clock.
     for(unsigned minute=0;minute<1440;++minute){
-        Context sky,world;
-        s=scene(-.17f,.8f);s.dayFraction=float(minute/1440.);
-        assert(decode(s,camera,direct,sky));
-        s=scene(.5f,-.17f);s.dayFraction=float(minute/1440.);
-        s.bodies[0].color=0;s.bodies[1].color=0;
-        assert(decode(s,camera,direct,world));
-        const auto result=resolveRendererSky(sky,direct);assert(result.valid);
-        resolveRendererSky(world,direct);
-        for(unsigned k=0;k<3;++k){
-            assert(sky.sun.direction[k]==world.sun.direction[k]);
-            assert(sky.moon.direction[k]==world.moon.direction[k]);
-            assert(sky.sunColor[k]==world.sunColor[k]);
-            assert(sky.moonColor[k]==world.moonColor[k]);
-            assert(sky.sunColor[k]+sky.moonColor[k]<=direct[k]+1e-6f);
-        }
-        const double seconds=minute*60.;
-        // The higher body lights; the light passes from one to the other where they cross 9 deg under the horizon.
-        const float sunZ=sky.sun.direction[2],moonZ=sky.moon.direction[2];
-        assert(std::fabs(sky.sunWeight+sky.moonWeight-1)<1e-6f);
-        if(sunZ>moonZ+HandoverWidth*.5f)assert(sky.sunWeight==1);
-        if(moonZ>sunZ+HandoverWidth*.5f)assert(sky.moonWeight==1);
-        if(sunZ>0)assert(sky.sunWeight==1);
-        if(moonZ>0)assert(sky.moonWeight==1);
-        if(seconds>=NorthlightCelestialOrbit::kSunsetSeconds&&seconds<=20*3600+40*60)assert(sky.sunWeight==1);   // until the crossing at 20:41
-        if(seconds>=20*3600+42*60&&seconds<=NorthlightCelestialOrbit::kMoonriseSeconds)assert(sky.moonWeight==1);
-        if(seconds>=5*3600+45*60&&seconds<=5*3600+59*60)assert(sky.moonWeight==1);                                // and back at 06:00
-        if(seconds>=6*3600+1*60&&seconds<=NorthlightCelestialOrbit::kSunriseSeconds)assert(sky.sunWeight==1);
-        assert(std::fabs(std::tan(sky.moon.angularRadius)*24/1.75-.46176318)<1e-6);
-        assert(std::fabs(std::tan(sky.sun.angularRadius)*24-.506736)<1e-6);
-        const float radius=sky.moon.angularRadius,sunRadius=sky.sun.angularRadius;
-        resolveRendererSky(sky,direct);assert(sky.moon.angularRadius==radius&&sky.sun.angularRadius==sunRadius);
-        // Native horizon enlargement (including zero/stale artwork size) must
-        // not affect the owned disc. Exercise the full orbit, both bodies and
-        // all renderer-policy outputs while keeping decode faithful to native data.
+        const float angle=float(minute)*.01f;
+        s=scene(std::sin(angle)*.8f,std::cos(angle)*.8f);s.dayFraction=float(minute/1440.);
+        for(auto& body:s.bodies){const float horizontal=body.center[0];body.center[0]=horizontal*std::cos(angle);body.center[1]=horizontal*std::sin(angle);}
         for(float nativeSize:{0.f,.5f,1.f,1.75f,3.5f,12.f}){
             s.bodies[0].size=nativeSize;s.bodies[1].size=12.f-nativeSize;
-            Context animated;assert(decode(s,camera,direct,animated));
-            assert(animated.sun.nativeAngularRadius==std::atan(nativeSize/24.f));
-            assert(animated.moon.nativeAngularRadius==std::atan((12.f-nativeSize)/24.f));
-            resolveRendererSky(animated,direct);
-            assert(animated.sun.angularRadius==sunRadius&&animated.moon.angularRadius==radius);
+            Context native;assert(decode(s,camera,direct,native));Context sky=native;
+            const auto result=resolveRendererSky(sky,direct);assert(result.valid);
+            assert(sky.sun.angularRadius==native.sun.angularRadius&&sky.moon.angularRadius==native.moon.angularRadius);
             for(unsigned k=0;k<3;++k){
-                assert(animated.sun.direction[k]==sky.sun.direction[k]);
-                assert(animated.moon.direction[k]==sky.moon.direction[k]);
-                assert(animated.sunColor[k]==sky.sunColor[k]);
-                assert(animated.moonColor[k]==sky.moonColor[k]);
+                assert(sky.sun.direction[k]==native.sun.direction[k]&&sky.moon.direction[k]==native.moon.direction[k]);
+                assert(result.sun.direction[k]==native.sun.direction[k]&&result.moon.direction[k]==native.moon.direction[k]);
+                assert(std::fabs(sky.sunColor[k]+sky.moonColor[k]-direct[k])<1e-6f);
             }
+            Context world=sky;resolveRendererSky(world,direct);
+            assert(std::memcmp(&sky,&world,sizeof sky)==0);
         }
     }
     c.dayFraction=-1;const auto before=c;
@@ -161,5 +129,5 @@ int main() {
         auto changed=[&](uintptr_t address,void* dst,size_t size){bool ok=codeReader(address,dst,size);if(address==table[bad].address)static_cast<unsigned char*>(dst)[0]^=1;return ok;};
         assert(!verifyCode(changed));
     }
-    std::printf("{\"energy_continuity_cases\":%d,\"appearance_alpha_cases\":%u,\"sky_only_frames\":6000,\"clock_region_cases\":1440,\"constant_size_cases\":8640,\"signature_mutations_rejected\":%zu,\"translation_invariance\":true,\"malformed_and_torn_reads_rejected\":true}\n",energyCases,appearanceCases,count);
+    std::printf("{\"energy_continuity_cases\":%d,\"appearance_alpha_cases\":%u,\"sky_only_frames\":6000,\"native_orbit_cases\":1440,\"native_placement_size_cases\":8640,\"signature_mutations_rejected\":%zu,\"translation_invariance\":true,\"malformed_and_torn_reads_rejected\":true}\n",energyCases,appearanceCases,count);
 }
