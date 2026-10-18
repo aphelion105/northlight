@@ -79,7 +79,7 @@ checks['point: both replay loops and the count gated on withReplays']=(pb.count(
     and code(pb[gs:ge]).count('{')==code(pb[gs:ge]).count('}')+1
     and re.search(r'\breplays(\[|\.size\(\))',code(outside)) is None)
 # Blob filter: one helper for all four draw entry points, off with ActorShadows=0 (F9 keeps its meaning).
-helper='bool blobFilterActive()const{return shadowBlobs&&shadowBlobs->active()&&enabled&&effectKeys.settings.shadows&&!applied&&terrain&&!failed&&world&&world->hasContext()&&world->actorShadowsEnabled();}'
+helper='bool blobFilterActive()const{return shadowBlobs&&shadowBlobs->active()&&enabled&&effectKeys.settings.shadows&&!applied&&terrain&&!failed&&world&&world->hasContext()&&world->ready()&&world->actorShadowsEnabled();}'
 # 0.3.187: the four draw entry points share drawHook(); FrameDrawGates=0 and =1 both test the helper.
 checks['blob filter: one helper, every draw through drawHook']=(r.count(helper)==1 and r.count('if(!claimed&&blobFilterActive())extensionWork("blob shadow filter",[&]{blobFilter(count,claimed);});')==1
     and r.count('if(!claimed&&drawGates.blob){stage="blob shadow filter";if(blobFilterActive())blobFilter(count,claimed);}')==1 and r.count('return drawHook(t,count,')==4

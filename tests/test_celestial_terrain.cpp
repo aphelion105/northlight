@@ -1,4 +1,5 @@
 #include "celestial_terrain.h"
+#include "celestial_glow.h"
 #include "world_mesh_pages.h"
 #include "shadow_terrain.h"
 #include <cstdint>
@@ -26,8 +27,9 @@ static void realPages(const std::string& root,const NorthlightWorldMeshPages::Op
 static void lowSun(const std::string& root);
 static void syntheticRuns();
 static void reuseShift();
+static void farCut();
 int main(int argc,char** argv){
-    reuseShift();
+    reuseShift();farCut();
     using namespace NorthlightCelestialTerrain;
     std::mt19937 random(114);std::uniform_real_distribution<float> point(-6000,6000),extent(0,120);
     unsigned cases=0,retained=0;
@@ -195,8 +197,43 @@ static void realPages(const std::string& root,const P::Options& paging,bool coun
         frusta,runs?double(accepted)/double(runs):0.,(unsigned long long)accepted,(unsigned long long)runs,gapDiffers,pageDiffers);
 }
 
+// 0.3.217 far cut and eye reuse: the mask's near plane drops exactly the terrain nearer than FarCut x far clip along
+// the body direction, never terrain past the far clip anywhere in the 20R sun mask; an eye within ParallaxLimit x the
+// drawn cut reuses the mask, a farther move or a nearer cut redraws.
+static void farCut(){
+    using namespace NorthlightCelestialTerrain;
+    assert(maskNear(0)==Near&&maskNear(-5)==Near&&maskNear(std::numeric_limits<float>::quiet_NaN())==Near&&maskNear(.1f)==Near);
+    assert(std::fabs(maskNear(1277)-FarCut*1277)<1e-3f);
+    const float camera[]={-9000,-3500,40},tint[]={1,1,1};
+    for(float elevation:{.5f,5.f,40.f})for(const bool sun:{true,false}){
+        const float e=elevation*3.14159265f/180,a=.7f,d[]={std::cos(e)*std::cos(a),std::cos(e)*std::sin(a),std::sin(e)};
+        NorthlightCelestialDisc::Disc disc;assert(NorthlightCelestialDisc::prepare(d,tint,1,sun?std::atan(.506736f/24):std::atan(.46176318f*1.75f/24),disc));
+        const float extent=sun?NorthlightCelestialGlow::SunMaskRadius:NorthlightCelestialGlow::MoonMaskRadius,farClip=1277,c0=maskNear(farClip);
+        float full[16],cut[16];matrix(disc,camera,extent,2048,full);matrix(disc,camera,extent,2048,cut,c0);
+        const Frustum fullF(full),cutF(cut);
+        // Points on mask rays (centre, edges, corners) at a range of distances.
+        for(int sy=-1;sy<=1;++sy)for(int sx=-1;sx<=1;++sx)for(float dist:{50.f,500.f,1000.f,.99f*farClip,1.01f*farClip,3000.f}){
+            const float reach=disc.tangentRadius*extent*.999f;float r[3],len=0;
+            for(unsigned k=0;k<3;++k){r[k]=disc.direction[k]+reach*(sx*disc.right[k]+sy*disc.up[k]);len+=r[k]*r[k];}
+            len=std::sqrt(len);V p{camera[0]+dist*r[0]/len,camera[1]+dist*r[1]/len,camera[2]+dist*r[2]/len};
+            const float along=dist*(r[0]*disc.direction[0]+r[1]*disc.direction[1]+r[2]*disc.direction[2])/len;
+            assert(!fullF.reject(p,p));
+            if(dist>=farClip)assert(!cutF.reject(p,p)); // past the far clip: always kept
+            if(along<c0*.999f)assert(cutF.reject(p,p));else if(along>c0*1.001f)assert(!cutF.reject(p,p));
+        }
+    }
+    const float eye[]={100,200,30};
+    auto moved=[&](float m){static float out[3];out[0]=eye[0]+m*.6f;out[1]=eye[1];out[2]=eye[2]+m*.8f;return out;};
+    const float c0=maskNear(1277),step=ParallaxLimit*c0;
+    assert(eyeReusable(eye,eye,c0,c0)&&eyeReusable(eye,moved(.99f*step),c0,c0)&&!eyeReusable(eye,moved(1.01f*step),c0,c0));
+    assert(eyeReusable(eye,eye,c0,c0*1.5f)); // a farther cut: the drawn mask holds more, still valid
+    assert(!eyeReusable(eye,eye,c0,c0*.9f)); // a nearer cut (far clip closing in): redraw
+    assert(!eyeReusable(eye,moved(.01f),Near,Near)&&eyeReusable(eye,eye,Near,Near)); // no far clip known: any move redraws
+    assert(!eyeReusable(nullptr,eye,c0,c0)&&!eyeReusable(eye,eye,0,c0)&&!eyeReusable(eye,eye,std::numeric_limits<float>::quiet_NaN(),c0));
+    std::printf("PASS far cut: near plane at %.2f x far clip keeps all terrain past it in the 20R/6R masks; eye reuse within %.4f x cut (%.2f yd at 1277)\n",FarCut,ParallaxLimit,step);
+}
 // rayShiftTexels: the reuse metric of prepareTerrain. It ignores camera translation by design (prepareTerrain
-// compares the eye bitwise and separately), so only the body direction is varied here.
+// compares the eye separately), so only the body direction is varied here.
 static void reuseShift(){
     using namespace NorthlightCelestialTerrain;
     const float camera[]={-9000,-3500,40},tint[]={1,1,1};

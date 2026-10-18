@@ -30,7 +30,7 @@ for valid,depth,water_on,dist,alpha in itertools.product([0,1],[0,.94,.9999999,1
 # The sun's glare must peak at the center and decay without a bright ring;
 # the lunar texture exclusion remains unchanged. Both use source visibility.
 # a broad solar term to the 20R support and a wider lunar skirt (6R);
-# the terrain masks stay 10R/2.5R (no extra mask redraws).
+# the terrain masks span the same 20R/6R (0.3.217; narrower masks left a square edge).
 # 0.3.164 (user: 0.3.163 "like a football with sharp edges"): the glare is an
 # optical depth x (small hot core + long soft tail) written as 1-exp(-x*colour)
 # through a screen blend, so no plateau/clip rim anywhere. Constants are read
@@ -134,13 +134,14 @@ assert 'float edge=1-smoothstep(.35*DiscEmission.y,DiscEmission.y,radius);' in s
 assert 'return saturate(lerp(DiscGlowHue.rgb,DiscGlowCore.rgb,smoothstep(0,1,exp2(-DiscEmission.x*radius*radius))));' in shader
 assert 'float3 glowShoulder(float x,float3 color){return 1-exp2(-1.442695*x*color);}' in shader
 assert 'if(DiscEmission.w>.5)encoded=glowShoulder(alpha,encoded);' in shader
-assert 'constexpr float SunMaskRadius=10.f,MoonMaskRadius=2.5f;' in glow
 assert 'constexpr float SunGlareSupport=20.f,MoonGlareSupport=6.f;' in glow
+# 0.3.217: the terrain mask spans the whole glare support (no square edge on distant mountains).
+assert 'constexpr float SunMaskRadius=SunGlareSupport,MoonMaskRadius=MoonGlareSupport;' in glow
 assert 'c[12][1]=i?MoonGlareSupport:SunGlareSupport;' in host
 assert 'halo.tangentRadius*=i?MoonGlareSupport:SunGlareSupport;' in host
-# The terrain-mask gate, mask matrix and c46 extent keep 10R/2.5R.
+# The terrain-mask gate, mask matrix and c46 extent use the mask radius (20R/6R).
 assert 'support.tangentRadius*=i?MoonMaskRadius:SunMaskRadius;' in host
-assert 'NorthlightCelestialTerrain::matrix(disc,view+12,body?MoonMaskRadius:SunMaskRadius,size,matrix);' in host
+assert 'NorthlightCelestialTerrain::matrix(disc,view+12,body?MoonMaskRadius:SunMaskRadius,size,matrix,nearCut);' in host
 assert 'const float terrainPolicy[]={terrainReady[i]?1.f:0.f,i?MoonMaskRadius:SunMaskRadius,0,0};' in host
 # Small hot core (x >= 1 only to ~1.6R with the sun up), tinted tail past 10R,
 # zero at the 20R support; a low sun only widens the tail.

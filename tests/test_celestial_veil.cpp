@@ -62,12 +62,12 @@ int main(){
     // Occlusion = max(disc, wrap x ring): trunk (disc hidden, ring visible)
     // keeps a wrapped glow; roof or hill (both hidden) none.
     assert(std::fabs(occlusion(0,1,Wrap)-Wrap)<1e-7f&&occlusion(0,0,Wrap)==0&&occlusion(1,1,Wrap)==1&&occlusion(.3f,1,0)==.3f);
-    // Ring taps: equal-area 2-4R annulus, inside the 10R sun mask.
+    // Ring taps: equal-area 2-4R annulus, inside the 20R sun mask.
     float mx=0,my=0;
     for(unsigned i=0;i<NorthlightCelestialHalo::Samples;++i){float x,y;ringOffset(i,x,y);const float r=std::sqrt(x*x+y*y);
         assert(r>RingInner&&r<RingOuter&&r<SunMaskRadius);mx+=x;my+=y;}
     assert(std::fabs(mx/32)<.12f&&std::fabs(my/32)<.12f);
-    assert(RingOuter<=SunMaskRadius&&SunGlareSupport>SunMaskRadius&&MoonGlareSupport>MoonMaskRadius);
+    assert(RingOuter<=SunMaskRadius&&SunMaskRadius>=SunGlareSupport&&MoonMaskRadius>=MoonGlareSupport);
     // On-screen normalisation: the unchanged shader's 1/32 mean equals the
     // mean over the taps on screen; every on-screen tap keeps an even share.
     for(unsigned onScreen:{0u,1u,7u,16u,20u,31u,32u}){
@@ -208,5 +208,5 @@ int main(){
         H::Smooth s;assert(s.update(-.05f,0)==-.05f&&s.update(0,400)>-.05f*.37f-1e-6f&&s.update(0,400)<0);
         assert(s.update(-1,10000)==-H::Deepest&&s.update(NAN,10001)<0);
     }
-    std::puts("PASS veil: gating (strength/haze/opacity/fade), haze-at-sun, wrap occlusion, ring taps in the 10R mask, on-screen normalisation 0..32 taps, hue constants, glare profiles, draw sequence (no RT switch when bound, 1 additive scissored draw, no call when off)");
+    std::puts("PASS veil: gating (strength/haze/opacity/fade), haze-at-sun, wrap occlusion, ring taps in the 20R mask, on-screen normalisation 0..32 taps, hue constants, glare profiles, draw sequence (no RT switch when bound, 1 additive scissored draw, no call when off)");
 }

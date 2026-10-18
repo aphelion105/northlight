@@ -1072,8 +1072,9 @@ private:
     // 0.3.193 BlobShadowStrength (held by the filter, read once at device creation): 100 = the filter is off and the
     // game's blobs are drawn as they are; 0 = they are skipped (0.3.154..0.3.192); 1..99 = drawn with a lighter
     // texture (skipped when the game's blend cannot be lightened). Applies only while the mod draws actor shadows: effects (F10) and shadows (F9) on, a world
-    // context, and 0.3.158 ActorShadows=1 (with 0 the game's blobs are the actor shadows).
-    bool blobFilterActive()const{return shadowBlobs&&shadowBlobs->active()&&enabled&&effectKeys.settings.shadows&&!applied&&terrain&&!failed&&world&&world->hasContext()&&world->actorShadowsEnabled();}
+    // context, and 0.3.158 ActorShadows=1 (with 0 the game's blobs are the actor shadows). The world must also be ready:
+    // in maps without a world cache (dungeons, raids, battlegrounds) it draws no actor shadows, so the blobs stay as they are.
+    bool blobFilterActive()const{return shadowBlobs&&shadowBlobs->active()&&enabled&&effectKeys.settings.shadows&&!applied&&terrain&&!failed&&world&&world->hasContext()&&world->ready()&&world->actorShadowsEnabled();}
     // 0.3.198 (rain): weather detection. weatherDetect.hot is the one candidate texture the draw hook compares
     // stage 0 with (weather_detect.h); the sample is what that comparison counted this frame. Both are touched
     // under the gate only, on whichever thread makes the draw (stream: replay thread; fallback: game thread).
