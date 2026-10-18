@@ -20,8 +20,8 @@ checks={}
 
 # controller and timer headers
 checks['gpu_budget.h: portable (no D3D, Win32, clock or allocation)']=all(x not in code(b) for x in ('d3d9','windows.h','chrono','QueryPerformance','new ','malloc','std::vector'))
-checks['gpu_budget.h: level 0 is the full image (40 cloud / 48 fog intervals, the light limit, no alternation, zero interval constant)']=all(x in b for x in (
-    'return level==0?40u:level==1?32u:24u;','return level>=3?40u:48u;','return level>=3&&limit>16?16u:limit;','return steps==fullSteps||!steps||!fullSteps?0.f:'))
+checks['gpu_budget.h: level 0 is the full image (40 cloud / 48 fog intervals, the light limit at every level since 0.3.217, no alternation, zero interval constant)']=all(x in b for x in (
+    'return level==0?40u:level==1?32u:24u;','return level>=3?40u:48u;','inline unsigned lightLimit(unsigned limit,unsigned){return limit;}','return steps==fullSteps||!steps||!fullSteps?0.f:'))
 tc=code(t)
 reads=re.findall(r'->GetData\(([^;]*?)\)',tc)
 checks['timer: every GetData with flags 0, no D3DGETDATA_FLUSH, no wait loop, sleep or spin']=(len(reads)==4 and all(x.rstrip().endswith(',0') for x in reads)

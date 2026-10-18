@@ -148,7 +148,7 @@ Individual settings (Quality / Balanced / Performance):
   MinSkinnedTriangles   100/150/180    small animated parts cast no shadow
   FarShadowInterval     4 / 5 / 6      distant shadows (beyond ~48 m) are drawn every Nth frame (1..16)
   NearShadowInterval    1 / 2 / 2      moving parts of the near shadows (characters) every Nth frame (1..16)
-  LocalLightLimit       32 / 24 / 16   lamps lighting at the same time (8..64; above 32 = more distant lamps too)
+  LocalLightLimit       48 / 32 / 24   lamps lighting at the same time (8..64; lamps in view first; the GPU budget never lowers it)
   PointShadows          0 / 0 / 0      lamp shadows (1 = on): only lights inside buildings cast faint shadows, at dusk and night; street lamps, lanterns and torches never do; off by default
   PointShadowRefreshMs  0 / 33 / 33    lamp shadow update interval
   PointShadowFacesPerFrame 6 / 6 / 6   lamp shadow directions updated per frame (1..6; 6 = all at once; lower = smaller spikes, a brief seam at the edge)
@@ -181,7 +181,7 @@ Individual settings (Quality / Balanced / Performance):
   RainFog               1 / 1 / 1      how strongly rain and snow thicken the fog and haze and dim shafts, sun and moon (0..2; 0 = no change, 2 = twice as strong; snow acts at 60 percent)
   FogClouds             1 / 1 / 0      low fog banks that drift with the wind, thicker and faster in rain, few and faint in clear weather and then only in forest and grass zones (0 = none; its own half-resolution pass; Ctrl+Shift+F7 and F10 turn them off with the rest)
   FogCloudDensity       100 / 100 / 100 how much of the ground the fog clouds cover, in percent (0..200; 0 = none, 200 = twice as much)
-  GpuBudgetMs           4 / 3 / 2      graphics card time per frame for Northlight's own effects, in ms (0..20; 0 = off, always the full picture); while the measured time stays over it, fewer fog cloud steps in two stages, then fewer fog steps and at most 16 lamps; the full picture comes back when the time is well under it for a few seconds
+  GpuBudgetMs           4 / 3 / 2      graphics card time per frame for Northlight's own effects, in ms (0..20; 0 = off, always the full picture); while the measured time stays over it, fewer fog cloud steps in two stages, then fewer fog steps (never fewer lamps); the full picture comes back when the time is well under it for a few seconds
   ActorShadowCpuMs      3 / 3 / 2      processor time per frame for Northlight's effects on the renderer thread, in ms (0..20; 0 = off, always ActorShadowRadius); while the measured time stays over it and Northlight's render thread is what limits the frame rate (the game waits for it or it skips frames to catch up, and the graphics card is not the limit), the character shadow radius shrinks in three steps (30, 20, 12 yards, at most ActorShadowRadius); the set radius comes back when the time is well under it for a few seconds
   StreamFramesAhead     2 / 2 / 2      with CommandStream=1, how many frames the game may record before the renderer thread has drawn them (1..3; 1 = as in 0.3.199; more smooths out spikes, the picture can lag by that many frames and the stream may use up to 16 MiB more memory; read at game start)
   ReplayJobs            1 / 1 / 1      the renderer thread hands the lamp choice, the fog clouds and sun-ray fog, the terrain under the sun and moon shadows and part of the character shadow culling to 1 to 4 helper threads; the picture is exactly the same (0 = all on the renderer thread as before 0.3.200, for comparisons)

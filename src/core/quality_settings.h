@@ -15,7 +15,7 @@ enum class Preset { Quality, Balanced, Performance };
 struct Settings {
     Preset preset=Preset::Quality;
     unsigned minSkinnedTriangles=100,captureBudgetMiB=32,actorShadowBudgetMiB=0;
-    unsigned farShadowInterval=4,nearShadowInterval=1,localLightLimit=32,pointShadows=0,pointShadowRefreshMs=0,shadowDirectionSteps=2048;
+    unsigned farShadowInterval=4,nearShadowInterval=1,localLightLimit=48,pointShadows=0,pointShadowRefreshMs=0,shadowDirectionSteps=2048;
     // Where each value in Keys order came from: 'd' code default (Quality), 'p' Balanced/Performance
     // preset, 'l' legacy shadow-experiment.ini, 'f' northlight-quality.ini key. Not part of ==.
     // 0.3.138 GI: worker probe solve (rays, bounces, request step), actor/dynamic probes, solver threads.
@@ -133,7 +133,7 @@ inline const Key Keys[]={
     {"ActorShadowBudgetMiB",&Settings::actorShadowBudgetMiB,0,32,{0,16,8}},
     {"FarShadowInterval",&Settings::farShadowInterval,1,16,{4,5,6}},
     {"NearShadowInterval",&Settings::nearShadowInterval,1,16,{1,2,2}},
-    {"LocalLightLimit",&Settings::localLightLimit,8,64,{32,24,16}},
+    {"LocalLightLimit",&Settings::localLightLimit,8,64,{48,32,24}}, /* 0.3.217: was 32/24/16 (lamps in view first, screen-coherent batches; 32 lamps measured ~0.15 ms GPU) */
     {"PointShadows",&Settings::pointShadows,0,1,{0,0,0}}, /* 0.3.176: off in every preset (only building lights cast) */
     {"PointShadowRefreshMs",&Settings::pointShadowRefreshMs,0,100,{0,33,33}},
     {"ShadowDirectionSteps",&Settings::shadowDirectionSteps,256,2048,{2048,2048,2048}},
