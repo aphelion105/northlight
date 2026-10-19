@@ -1390,7 +1390,7 @@ private:
                     if(localDeferred){localGeometry.reset();liftEntry("local-geometry",localRequired,localSample.available,localLargest);stallBegin("local-geometry",localSample,localRequired,localLargest);deferBuild("local-geometry-retry",workerMemory(),1000);continue;}
                     result->message=error.empty()?"No cached geometry for "+r.map:error;publishError();continue;
                 }
-                const auto& localStats=localGeometry.stats();
+                const auto localStats=localGeometry.stats();
                 if(NorthlightDiagnostics::enabled())logf("WORLD local incremental: reads=%llu built=%llu reused=%llu reusedTriangles=%llu builtTriangles=%llu retainedMiB=%.2f flatMiB=%.2f bvhMiB=%.2f loadMs=%.3f pieceMs=%.3f assembleMs=%.3f bvhMs=%.3f totalMs=%.3f",
                     (unsigned long long)localStats.modelReads,(unsigned long long)localStats.pieceBuilds,(unsigned long long)localStats.pieceReuses,
                     (unsigned long long)localStats.reusedTriangles,(unsigned long long)localStats.builtTriangles,double(localStats.retainedBytes)/1048576,
@@ -1420,6 +1420,15 @@ private:
                     if(bytes<NorthlightGeometryMemory::MiB)return true;
                     ++terrainChecks;
                     const auto budget=NorthlightGeometryMemory::inBuildBudget(bytes);auto sample=workerMemory(budget);
+                    if(!NorthlightGeometryMemory::admits(sample,budget)&&localGeometry.stats().retainedBytes){
+                        // Pieces accelerate the NEXT local build; the finished
+                        // BVH owns its scene. Release this optional duplicate
+                        // before refusing a terrain/plan/page allocation.
+                        const auto cached=localGeometry.stats().retainedBytes;
+                        localGeometry.reset();sample=workerMemory(budget);
+                        logf("WORLD geometry reclaimed incremental cache estimatedMiB=%.2f availableMiB=%llu stage=shadow-plan",
+                             double(cached)/1048576,(unsigned long long)(sample.available>>20));
+                    }
                     if(NorthlightGeometryMemory::admits(sample,budget))return true;
                     terrainDeferred=true;terrainSample=sample;terrainRequired=budget.available;terrainRequiredLargest=budget.largest;logGeometryMemory("shadow-terrain-allocation-deferred",sample,generations.live(),workerMemoryExact,&budget);
                     logf("WORLD terrain allocation requestMiB=%.2f requiredContiguousMiB=%.2f",double(bytes)/1048576,double(bytes+NorthlightGeometryMemory::ContiguousMargin)/1048576);

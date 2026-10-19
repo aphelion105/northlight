@@ -6,6 +6,7 @@
 #include <cstring>
 #include <new>
 #include <stdexcept>
+#include <type_traits>
 #include <utility>
 
 // CPU worker preparation: bounded managed resources keep first residency from
@@ -111,15 +112,33 @@ inline bool build(const NorthlightWorldMesh::WorldMeshUploadPlan& input,Plan& ou
         auto finishPage=[&](Page& p){
             p.key=NorthlightMeshPageKey::keyOf(p.vertices.data(),p.vertices.size()*sizeof(NorthlightGI::WorldVertex),p.indices.data(),p.indices.size()*sizeof(uint32_t));
             next.vertexBytes+=p.key.vertexBytes;next.indexBytes+=p.key.indexBytes;
-            const uint64_t capacity=p.vertices.capacity()*sizeof(NorthlightGI::WorldVertex)+p.indices.capacity()*sizeof(uint32_t);
+            uint64_t capacity=p.vertices.capacity()*sizeof(NorthlightGI::WorldVertex)+p.indices.capacity()*sizeof(uint32_t);
             peakLive=std::max(peakLive,liveKept+capacity);
             if(options.resident&&options.resident->count(p.key)){
                 std::vector<NorthlightGI::WorldVertex>().swap(p.vertices);std::vector<uint32_t>().swap(p.indices);p.elided=true;
-            }else liveKept+=capacity;
+            }else{
+                // Content anchors often close city pages half full. Keep the
+                // exact bytes, not a full 512 KiB vertex capacity per page.
+                // Only one bounded page is copied; resident pages skip it.
+                auto compact=[&](auto& buffer){
+                    using Buffer=std::decay_t<decltype(buffer)>;
+                    using Value=typename Buffer::value_type;
+                    const uint64_t oldBytes=buffer.capacity()*sizeof(Value),bytes=buffer.size()*sizeof(Value);
+                    if(buffer.capacity()<=buffer.size()+buffer.size()/4||oldBytes-bytes<65536)return true;
+                    if(!allowed(bytes))return false;
+                    Buffer exact(buffer.begin(),buffer.end());
+                    const uint64_t newBytes=exact.capacity()*sizeof(Value);
+                    peakLive=std::max(peakLive,liveKept+capacity+newBytes);
+                    buffer.swap(exact);capacity=capacity-oldBytes+newBytes;return true;
+                };
+                if(!compact(p.vertices)||!compact(p.indices))return false;
+                liveKept+=capacity;
+            }
+            return true;
         };
         auto newPage=[&](){
             closeAfter=false;
-            if(!next.pages.empty())finishPage(next.pages.back());
+            if(!next.pages.empty()&&!finishPage(next.pages.back()))return false;
             // Covers both bounded buffers plus vector growth transient copies.
             if(!allowed(2u*(PageVertexByteLimit+PageIndexByteLimit)))return false;
             if(next.pages.size()==next.pages.capacity()) {
@@ -214,7 +233,7 @@ inline bool build(const NorthlightWorldMesh::WorldMeshUploadPlan& input,Plan& ou
             if(anchored)closeAfter=true;
         }
         if(expectedStart!=input.indices.size())return fail("Paged mesh batches do not cover all indices");
-        if(!next.pages.empty())finishPage(next.pages.back());
+        if(!next.pages.empty()&&!finishPage(next.pages.back()))return fail("Paged mesh compaction allocation deferred");
         if(options.peakLiveBytes)*options.peakLiveBytes=peakLive;
         output=std::move(next);error.clear();return true;
     } catch(const std::bad_alloc&) {return fail("Paged mesh worker allocation failed");}

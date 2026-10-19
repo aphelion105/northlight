@@ -174,6 +174,9 @@ bool buildUploadPlan(const NorthlightGI::WorldScene& scene,WorldMeshUploadPlan& 
             if(record)record->content.add(content.finish(1));
         }
         next.localShadowRecords=std::move(records);
+        // Per-triangle sort keys are dead after scatter. In a city they can
+        // otherwise overlap another ~16 MiB of cutout upload textures.
+        std::vector<uint64_t>().swap(keys);
         next.materials.resize(scene.materials.size());
         for(size_t i=0;i<scene.materials.size();++i){
             const auto& meta=scene.materials[i];const auto& source=texel(i);auto& dest=next.materials[i];

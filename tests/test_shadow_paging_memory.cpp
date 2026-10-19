@@ -13,13 +13,21 @@ int main(int argc,char**argv){
         auto p=root+"/Northrend/"+std::to_string(x)+"_"+std::to_string(y)+".fg3";
         if(std::filesystem::exists(p)){farFiles.push_back(p);if(std::abs(x-tx)<=1&&std::abs(y-ty)<=1)nearFiles.push_back(p);}
     }
-    WorldScene local,far;std::string error;
-    assert(loadInstancedScenes(nearFiles,root+"/models",center-Vec3(288,288,320),center+Vec3(288,288,320),local,error));
+    LocalSceneCache localCache;BVH localBvh;WorldScene far;std::string error;
+    assert(localCache.build(nearFiles,root+"/models","Northrend",center-Vec3(288,288,320),center+Vec3(288,288,320),localBvh,error,{},true));
+    const auto& local=localBvh.scene();
+    assert(local.vertices.capacity()==local.vertices.size()&&local.triangles.capacity()==local.triangles.size());
+    const auto cached=localCache.stats().retainedBytes;assert(cached>0);
     const auto radius=NorthlightShadowTerrain::Radius;
     assert(loadInstancedScenes(farFiles,root+"/models",center-Vec3(radius,radius,radius),center+Vec3(radius,radius,radius),far,error,1));
     NorthlightWorldMesh::WorldMeshUploadPlan legacy,compact;
     assert(NorthlightShadowTerrain::build(local,far,center,legacy,error));
-    assert(NorthlightShadowTerrain::build(local,far,center,compact,error,{},radius,{},true));
+    const auto* retainedVertices=local.vertices.data();const auto retainedTriangles=local.triangles.size();bool trimmed=false;
+    assert(NorthlightShadowTerrain::build(local,far,center,compact,error,[&](uint64_t){
+        if(!trimmed){localCache.reset();trimmed=true;}
+        assert(local.vertices.data()==retainedVertices&&local.triangles.size()==retainedTriangles);return true;
+    },radius,{},true));
+    assert(trimmed&&localCache.stats().retainedBytes==0);
     assert(!compact.source&&!compact.ownedSource&&compact.pagingVertices);
     assert(legacy.indices==compact.indices&&legacy.fixedTerrainChunks==compact.fixedTerrainChunks);
     assert(legacy.vertexCount==compact.vertexCount&&legacy.triangleCount==compact.triangleCount);
@@ -43,6 +51,6 @@ int main(int argc,char**argv){
     }
     assert(P::seal(compact,pages,error)&&!P::validateSealed(compact));
     assert(local.triangles.size()>1000000&&saved>30u*1024u*1024u);
-    std::printf("PASS Dalaran localTriangles=%zu shadowTriangles=%u pages=%zu freedBeforePagingMiB=%.3f exactGeometry=1 exactAlpha=1 reserveChanged=0\n",
-        local.triangles.size(),triangles,pages->pages.size(),double(saved)/1048576);
+    std::printf("PASS Dalaran localTriangles=%zu shadowTriangles=%u pages=%zu freedBeforePagingMiB=%.3f optionalCacheMiB=%.3f exactGeometry=1 exactAlpha=1 retainedGI=1 reserveChanged=0\n",
+        local.triangles.size(),triangles,pages->pages.size(),double(saved)/1048576,double(cached)/1048576);
 }
