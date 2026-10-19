@@ -1426,7 +1426,7 @@ private:
                         // before refusing a terrain/plan/page allocation.
                         const auto cached=localGeometry.stats().retainedBytes;
                         localGeometry.reset();sample=workerMemory(budget);
-                        logf("WORLD geometry reclaimed incremental cache estimatedMiB=%.2f availableMiB=%llu stage=shadow-plan",
+                        if(NorthlightDiagnostics::enabled())logf("WORLD geometry reclaimed incremental cache estimatedMiB=%.2f availableMiB=%llu stage=shadow-plan",
                              double(cached)/1048576,(unsigned long long)(sample.available>>20));
                     }
                     if(NorthlightGeometryMemory::admits(sample,budget))return true;
