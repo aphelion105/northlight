@@ -102,6 +102,7 @@ test_night_floor.py
 test_night_floor_wiring.py
 test_northlight_install.py
 test_outdoor_light_profiles.py
+test_particle_texture_stats.py
 test_pending_release_wiring.py
 test_point_light_shadow.py
 test_point_shadow_schedule.py
