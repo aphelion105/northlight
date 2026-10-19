@@ -20,6 +20,9 @@ static void policy(){
     float camera[]={0,0,0};NorthlightReplayBounds::Bounds bounds;bounds.valid=true;
     bounds.low[0]=64;bounds.high[0]=65;assert(!NorthlightReplayBounds::outsideSphere(bounds,camera,64));
     bounds.low[0]=64.01f;assert(NorthlightReplayBounds::outsideSphere(bounds,camera,64));
+    ReceiverCensus census;census.observe(false,true,true,false,true,false,true);
+    census.observe(true,true,false,true,true,true,true);census.observe(false,false,false,false,false,false,false);
+    assert(census.before==2&&census.after==1&&census.depthWrites==1&&census.blended==1&&census.alphaCut==2&&census.alreadyResolved==1&&census.worldDepth==2&&census.stateFailures==1);
 }
 static std::vector<Word> synthetic(){
     // Affine column model-view followed by the native DetailDoodad column projection.
@@ -51,6 +54,8 @@ static void positions(const NorthlightActorDeformation::Program& program){
     NorthlightReplayBounds::Budget budget;NorthlightReplayBounds::Bounds original;
     assert(NorthlightReplayBounds::calculate(program,mesh,declaration,5,constants,inverse,budget,original)==NorthlightReplayBounds::Status::Valid);
     assert(original.low[0]<=1002&&original.high[0]>=1042&&original.high[2]>=250);
+    NorthlightReplayBounds::Bounds box;assert(NorthlightDetailShadow::bounds(program,mesh,declaration,5,constants,inverse,box));
+    for(unsigned axis=0;axis<3;++axis){assert(box.low[axis]<=original.low[axis]&&box.high[axis]>=original.high[axis]);}
     // Rotation of the camera leaves the absolute submitted bounds unchanged.
     constants[0]=constants[5]=0;constants[1]=-1;constants[4]=1;constants[12]=20;constants[13]=-10;
     inverse[0]=inverse[5]=0;inverse[1]=1;inverse[4]=-1;
@@ -58,9 +63,42 @@ static void positions(const NorthlightActorDeformation::Program& program){
     assert(NorthlightReplayBounds::calculate(program,mesh,declaration,5,constants,inverse,budget,rotated)==NorthlightReplayBounds::Status::Valid);
     for(unsigned i=0;i<3;++i){assert(std::fabs(original.low[i]-rotated.low[i])<.01f);assert(std::fabs(original.high[i]-rotated.high[i])<.01f);}
 }
+static void enclosure(const NorthlightActorDeformation::Program& program){
+    std::uint32_t state=0x2911;
+    const auto sample=[&](){state^=state<<13;state^=state>>17;state^=state<<5;return (float(state%200001)-100000)*.001f;};
+    NorthlightDrawSnapshot::Mesh mesh;mesh.vertexCount=99;mesh.streams[0].stride=36;mesh.streams[0].bytes.resize(99*36);
+    D3DVERTEXELEMENT9 declaration[]={{0,0,2,0,0,0},{0xff,0,17,0,0,0}};
+    for(unsigned run=0;run<200;++run){
+        float constants[1024]={},inverse[16]={};
+        for(unsigned axis=0;axis<3;++axis){for(unsigned k=0;k<3;++k){constants[4*k+axis]=sample()*.01f;inverse[4*k+axis]=sample()*.01f;}
+            constants[12+axis]=sample()*10;inverse[12+axis]=sample()*100;}
+        constants[15]=inverse[15]=1;
+        for(unsigned i=0;i<99;++i){const float xyz[]={sample(),sample(),sample()};std::memcpy(mesh.streams[0].bytes.data()+i*36,xyz,12);}
+        NorthlightReplayBounds::Bounds bounds;assert(NorthlightDetailShadow::bounds(program,mesh,declaration,2,constants,inverse,bounds));
+        for(unsigned i=0;i<99;++i){float xyz[3];std::memcpy(xyz,mesh.streams[0].bytes.data()+i*36,12);
+            for(bool fused:{false,true}){
+                float view[3],world[3];const auto mad=[&](float a,float b,float c){return fused?std::fma(a,b,c):a*b+c;};
+                for(unsigned axis=0;axis<3;++axis){float v=constants[4+axis]*xyz[1];v=mad(xyz[0],constants[axis],v);v=mad(xyz[2],constants[8+axis],v);view[axis]=v+constants[12+axis];}
+                for(unsigned axis=0;axis<3;++axis){float v=inverse[12+axis];for(unsigned k=0;k<3;++k)v=mad(view[k],inverse[4*k+axis],v);world[axis]=v;
+                    assert(bounds.low[axis]<=world[axis]&&bounds.high[axis]>=world[axis]);}
+            }
+        }
+    }
+    mesh.streams[0].bytes[2]=0xff;const float nan=std::numeric_limits<float>::quiet_NaN();std::memcpy(mesh.streams[0].bytes.data(),&nan,4);
+    float constants[1024]={},inverse[16]={};NorthlightReplayBounds::Bounds bounds;
+    assert(!NorthlightDetailShadow::bounds(program,mesh,declaration,2,constants,inverse,bounds)&&!bounds.valid);
+}
 int main(int argc,char** argv){
     policy();auto code=synthetic();NorthlightActorDeformation::Program program;
-    assert(NorthlightActorDeformation::compile(code.data(),code.size(),program,false,1));positions(program);
+    assert(NorthlightActorDeformation::compile(code.data(),code.size(),program,false,1));positions(program);enclosure(program);
+    // Worst admitted vertex count: report the bounded CPU cost, not game FPS.
+    {NorthlightDrawSnapshot::Mesh mesh;mesh.topology=D3DPT_TRIANGLELIST;mesh.vertexCount=8190;mesh.primitiveCount=2730;mesh.indexed=false;mesh.streams[0].stride=36;mesh.streams[0].bytes.resize(8190*36);
+     for(unsigned i=0;i<8190;++i){float xyz[]={float(i%31),float(i%13),float(i%7)};std::memcpy(mesh.streams[0].bytes.data()+36*i,xyz,12);}
+     D3DVERTEXELEMENT9 declaration[]={{0,0,2,0,0,0},{0xff,0,17,0,0,0}};
+     float constants[1024]={},inverse[16]={};constants[0]=constants[5]=constants[10]=constants[15]=1;for(unsigned i=0;i<4;++i)inverse[5*i]=1;
+     auto start=std::chrono::steady_clock::now();
+     for(unsigned pass=0;pass<128;++pass){NorthlightReplayBounds::Bounds bounds;assert(NorthlightDetailShadow::bounds(program,mesh,declaration,2,constants,inverse,bounds));}
+     std::printf("grass source-box bounds 8190 vertices ms=%.6f (128 passes)\n",std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()/128);}
     assert(!NorthlightActorDeformation::compile(code.data(),code.size(),program));
     for(unsigned i=27;i<code.size()-1;++i){auto bad=code;bad[i]^=1;assert(!NorthlightActorDeformation::compile(bad.data(),bad.size(),program,false,1));}
     assert(!NorthlightActorDeformation::compile(code.data(),code.size(),program,false,3));

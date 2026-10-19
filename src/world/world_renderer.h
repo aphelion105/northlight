@@ -3308,10 +3308,9 @@ public:
         p->cutoff=alpha?(float(ref)+(alphaFunc==D3DCMP_GREATER?.5f:0.f))/255.f:shaderCutoff;p->alphaMode=alphaMode;
         if(metadata.detailDoodad){
             const D3DVERTEXELEMENT9* elements=nullptr;UINT n=0;
-            NorthlightReplayBounds::Bounds bounds;NorthlightReplayBounds::Budget budget;
-            budget.maxVertices=NorthlightDetailShadow::Budget::MaxVertices;
+            NorthlightReplayBounds::Bounds bounds;
             if(!declarationCache.get(p->decl,elements,n)||
-               NorthlightReplayBounds::calculate(*metadata.program,p->mesh(),elements,n,p->constants,context.inverseView,budget,bounds)!=NorthlightReplayBounds::Status::Valid||
+               !NorthlightDetailShadow::bounds(*metadata.program,p->mesh(),elements,n,p->constants,context.inverseView,bounds)||
                NorthlightReplayBounds::outsideSphere(bounds,context.camera,64)){++detailRangeRejected;return;}
             if(!detailBudget.take(p->mesh().vertexCount,p->mesh().byteSize())){++detailBudgetRejected;return;}
         }
