@@ -13,6 +13,7 @@ test_ao_rotation_stripes.py
 test_ao_texel_snap.py
 test_art_layer.py
 test_async_memory_diagnostics.py
+test_atlas_upload_proof.py
 test_backend_proxy.py
 test_band_retime.py
 test_bytes_equal.py
@@ -159,6 +160,8 @@ test_shadow_shimmer.py
 test_snapshot_allocation.py
 test_snapshot_prediction.py
 test_solar_volume.py
+test_spell_asset_manifest.py
+test_spell_asset_manifest_client.py
 test_spell_emitter_patch.py
 test_spell_fog_fit.py
 test_spell_fog_proof_client.py
