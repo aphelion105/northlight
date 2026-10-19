@@ -109,7 +109,7 @@ checks={
    and 'if(!rigidEventTokens||rigidEventLines>=RigidEventLines){++rigidEventSuppressed;continue;}' in t)(fp.src('world_rigid_memory.inl').read_text()),
  'celestial mask counters (0.3.175): on the gated CELESTIAL line, the clock only with RenderProfile':(lambda t:'const int64_t started=NorthlightRenderThreadProbe::profiling()?QpcClock::now():0;' in t
    and 'if(NorthlightDiagnostics::enabled()&&(!m.lastLog||now-m.lastLog>=10000)){m.lastLog=now;' in t)(w),
- 'point/envelope diagnostics gated':'const bool diagnostics=NorthlightDiagnostics::enabled()&&(frames==0||frames%120==0);' in fp.src('world_point_rendering.inl').read_text(),
+ 'point/envelope diagnostics gated and sampled once per rendered frame':(lambda t:t.count('const bool diagnostics=replayBoundsDiagnosticSample();')==2 and 'if(!NorthlightDiagnostics::enabled()||(frames&&frames%120)||(replayBoundsLogSeen&&replayBoundsLogFrame==frames))return false;' in t)(fp.src('world_point_rendering.inl').read_text()),
 }
 for name,ok in checks.items():print(('PASS ' if ok else 'FAIL ')+name)
 assert all(checks.values())
