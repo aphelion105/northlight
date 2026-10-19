@@ -2,11 +2,57 @@
 #include "actor_deformation.h"
 #include "replay_bounds.h"
 #include "shader_tags.h"
+#include "m2_shader_families.h"
 #include <cassert>
 #include <chrono>
 #include <cstdio>
 #include <limits>
 using Word=std::uint32_t;
+// Test adapter: route one scalar output to UV0.xy, allowing the existing
+// sliced native VS evaluator to execute the exact native fade arithmetic.
+static NorthlightActorDeformation::Program scalarProgram(const std::vector<Word>& source,unsigned color,unsigned channel){
+    using namespace NorthlightShadowShader;auto code=source;const unsigned major=(source[0]>>8)&255;
+    unsigned output=color,type=5;
+    if(major==3){type=6;bool found=false;
+        for(size_t at=1;at<code.size();){const unsigned op=code[at]&65535,n=(code[at]>>24)&15;if(op==65535)break;
+            if(op==65534){at+=1+((code[at]>>16)&32767);continue;}
+            if(op==31&&n==2&&regType(code[at+2])==6){if((code[at+1]&15)==5&&((code[at+1]>>16)&15)==0)code[at+1]=0x80060005;
+                if((code[at+1]&15)==10&&((code[at+1]>>16)&15)==color){output=regIndex(code[at+2]);found=true;}}
+            at+=n+1;}
+        assert(found);
+    }
+    for(size_t at=1;at<code.size();){const unsigned op=code[at]&65535,n=(code[at]>>24)&15;if(op==65535)break;
+        if(op==65534){at+=1+((code[at]>>16)&32767);continue;}
+        if(op!=31&&op!=81&&n){Word& destination=code[at+1];const unsigned dt=regType(destination),index=regIndex(destination),mask=(destination>>16)&15;
+            if(dt==type&&index==output&&(mask&(1u<<channel))){assert(mask==(1u<<channel));destination=replaceReg((destination&~Word(15u<<16))|(3u<<16),6,major==3?11:0);}
+            else if(major==2&&dt==6&&index==0)destination=replaceReg(destination,6,6);
+        }at+=n+1;}
+    if(major==3)code.insert(code.begin()+1,{0x0200001f,0x80000005,0xe003000b});
+    NorthlightActorDeformation::Program program;assert(NorthlightActorDeformation::compile(code.data(),code.size(),program,true));return program;
+}
+static void nativeFade(const std::vector<Word>& native){
+    const auto original=native;std::vector<Word> shadow;
+    assert(NorthlightDetailShadow::shadowFade(native,shadow)&&native==original&&shadow.size()==native.size());
+    unsigned changed=0;for(unsigned i=0;i<native.size();++i)if(shadow[i]!=native[i]){++changed;const unsigned mask=(native[i]>>16)&15;assert(mask==1||mask==8);}
+    assert(changed==2);
+    std::vector<Word> replay;assert(NorthlightShadowShader::patch(shadow.data(),shadow.size(),replay));
+    const auto source=scalarProgram(native,1,0),result=scalarProgram(replay,0,3);
+    for(float rawFade:{-.25f,0.f,.25f,.5f,1.f,1.25f})for(float lighting:{0.f,.37f,1.f})for(float slope:{.125f,-.5f})for(unsigned projection=0;projection<4;++projection){
+        const float fade=std::max(0.f,std::min(1.f,rawFade));
+        float constants[1024]={};constants[0]=constants[5]=constants[10]=constants[15]=1;
+        constants[9*4]=slope;constants[9*4+1]=rawFade-slope*4;
+        // Replay changes c4..7 to the light projection. The c9 fade must
+        // continue using the native preprojection view Z from c0..3.
+        for(unsigned j=0;j<16;++j)constants[16+j]=projection==0?float(j%5==0):projection==1?float(j+1)*.37f:projection==2?-float(j+1)*13.f:float(j%3==0)*.003f;
+        NorthlightActorDeformation::Four inputs[16]={},before,after;inputs[0]={2,3,4,1};inputs[2]={1,1,1,lighting};
+        assert(NorthlightActorDeformation::evaluate(source,inputs,constants,before)&&NorthlightActorDeformation::evaluate(result,inputs,constants,after));
+        assert(before[0]==fade&&after[0]==fade);
+        for(float texture:{0.f,.25f,.5f,1.f})for(float cutoff:{0.f,.25f,.5f,1.f}){
+            const float nativeAlpha=texture*before[0],shadowAlpha=texture*after[0];assert(nativeAlpha==shadowAlpha&&((nativeAlpha>=cutoff)==(shadowAlpha>=cutoff)));}
+    }
+    std::vector<Word> sentinel{123};auto unknown=native;unknown[unknown.size()-2]^=1;
+    assert(!NorthlightDetailShadow::shadowFade(unknown,sentinel)&&sentinel==std::vector<Word>{123});
+}
 static void policy(){
     using namespace NorthlightDetailShadow;
     assert(shader(0x7f2707e33c6c97beULL)&&shader(0xc8e41181431a84c7ULL));
@@ -106,8 +152,11 @@ int main(int argc,char** argv){
         FILE* file=std::fopen(argv[i],"rb");assert(file);std::fseek(file,0,SEEK_END);const auto size=std::ftell(file);std::rewind(file);
         assert(size>0&&size%4==0);std::vector<Word> native(size/4);assert(std::fread(native.data(),1,size,file)==size_t(size));std::fclose(file);
         assert(NorthlightDetailShadow::shader(NorthlightShaderTags::fnv1a(native.data(),size)));
+        assert(m2ShaderFamily(NorthlightShaderTags::fnv1a(native.data(),size))==NorthlightM2Family::kNone);
+        nativeFade(native);
         NorthlightShadowShader::PatchInfo info;std::vector<Word> patched;
-        assert(NorthlightShadowShader::patch(native.data(),native.size(),patched,&info)&&info.texcoord0XY&&info.color0W);
+        std::vector<Word> shadow;assert(NorthlightDetailShadow::shadowFade(native,shadow));
+        assert(NorthlightShadowShader::patch(shadow.data(),shadow.size(),patched,&info)&&info.texcoord0XY&&info.color0W);
         assert(NorthlightActorDeformation::compile(native.data(),native.size(),program,false,1));positions(program);
         NorthlightActorDeformation::Program uv;assert(NorthlightActorDeformation::compile(native.data(),native.size(),uv,true));
         float constants[1024]={};NorthlightActorDeformation::Four inputs[16]={},result;inputs[3]={.125f,.875f,0,1};

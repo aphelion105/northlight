@@ -2693,7 +2693,10 @@ public:
         std::vector<uint32_t> words(size/4),output;
         if(FAILED(shader->GetFunction(words.data(),&size)))return;
         NorthlightShadowShader::PatchInfo info;
-        if(!NorthlightShadowShader::patch(words.data(),words.size(),output,&info)||!info.texcoord0XY)return;
+        std::vector<uint32_t> fadeWords;
+        if(detail&&!NorthlightDetailShadow::shadowFade(words,fadeWords))return;
+        const auto& shadowInput=detail?fadeWords:words;
+        if(!NorthlightShadowShader::patch(shadowInput.data(),shadowInput.size(),output,&info)||!info.texcoord0XY)return;
         NorthlightDrawSnapshot::Ref<IDirect3DVertexShader9> replacement;
         if(SUCCEEDED(d->CreateVertexShader(reinterpret_cast<const DWORD*>(output.data()),replacement.out()))&&replacement.p){
             CaptureShader metadata;metadata.replacement=replacement.p;metadata.projectionKind=kind;metadata.color0W=info.color0W;metadata.detailDoodad=detail;

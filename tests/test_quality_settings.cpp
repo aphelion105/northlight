@@ -593,12 +593,12 @@ int main(){
       assert(actorShadowWork(d,true)&&!actorShadowWork(d,false)&&!actorShadowWork(zero,true)&&!actorShadowWork(zero,false));
       for(Preset pr:{Preset::Quality,Preset::Balanced,Preset::Performance}){Settings z=preset(pr);z.actorShadows=0;
           assert(captureSkipPossible(z,actorShadowWork(z,true))&&captureSkipPossible(preset(pr),actorShadowWork(preset(pr),true))==captureSkipPossible(preset(pr),true));}}
-    {assert(d.grassShadows==0&&!grassShadowWork(d,true));
-      for(Preset p:{Preset::Quality,Preset::Balanced,Preset::Performance})assert(preset(p).grassShadows==0);
+    {assert(d.grassShadows==1&&grassShadowWork(d,true));
+      assert(preset(Preset::Quality).grassShadows==1&&preset(Preset::Balanced).grassShadows==0&&preset(Preset::Performance).grassShadows==0);
       const auto on=parse("[Quality]\nGrassShadows=1\n");
-      assert(on.grassShadows==1&&on!=d&&grassShadowWork(on,true)&&!grassShadowWork(on,false));
+      assert(on.grassShadows==1&&on==d&&grassShadowWork(on,true)&&!grassShadowWork(on,false));
       assert(!grassShadowWork(parse("[Quality]\nGrassShadows=1\nActorShadows=0\n"),true));
-      assert(parse("[Quality]\nGrassShadows=0\n")==d);
+      const auto off=parse("[Quality]\nGrassShadows=0\n");assert(off!=d&&off.grassShadows==0&&!grassShadowWork(off,true));
       unsigned index=0;for(const auto& k:Keys){if(std::string(k.name)=="GrassShadows")break;++index;}
       assert(index<sizeof(Keys)/sizeof(Keys[0])&&on.origin[index]=='f'&&d.origin[index]=='d');
       assert(describe(on).find("GrassShadows=1(file)")!=std::string::npos);
