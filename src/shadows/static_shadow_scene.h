@@ -92,6 +92,10 @@ public:
     Streamer(const Streamer&)=delete;
     Streamer& operator=(const Streamer&)=delete;
     void request(const Request&);
+    // Frame-boundary recovery when the consumer has no drawable world. Cancels
+    // publication, frees worker-owned caches asynchronously, and prevents reads
+    // until resumed. External immutable snapshot holders stay valid.
+    void setPaused(bool);
     std::shared_ptr<const Snapshot> snapshot() const;
     // Native offline tests/diagnostics only; never block the render thread.
     bool waitIdle(unsigned timeoutMs=30000) const;

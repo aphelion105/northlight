@@ -1144,6 +1144,7 @@ private:
     }
     void requestStaticCasters(const char* map){
         if(!staticStream)return;
+        if(staticRecoveryPaused&&!(active&&active->bvh))return;
         staticFramePivot=shadowPivot();staticPivotReady=true;
         const DWORD now=GetTickCount();
         if(!staticMemoryTick||DWORD(now-staticMemoryTick)>=1000){
@@ -1154,7 +1155,8 @@ private:
         const bool lit[2]={NorthlightGI::dot(sourceColors[0],sourceColors[0])>1e-10f,
                            NorthlightGI::dot(sourceColors[1],sourceColors[1])>1e-10f};
         try {staticStream->request(StaticShadow::makeRequest(map,staticFramePivot,sourceDirections,lit,
-                celestialValid,celestialValid?celestial.dayFraction:0.,staticAllowLoads));}
+                celestialValid,celestialValid?celestial.dayFraction:0.,staticAllowLoads));
+             if(staticRecoveryPaused){staticStream->setPaused(false);staticRecoveryPaused=false;logf("STATIC SHADOW recovery paused=0 reason=geometry-ready");}}
         catch(...){if(staticDrawFailures++<4)logf("STATIC SHADOW request deferred: allocation failure; existing shadows retained");}
     }
     void updateStaticCasters(bool allowUploads=true,NorthlightStreaming::Budget* budget=nullptr){
@@ -1245,6 +1247,7 @@ private:
           DWORD memoryReportAt=0;
           NorthlightTerrainReach::State reachState;NorthlightGI::SceneSizeHint terrainSizeHint; /* terrain scene counts of the last build; keyed by reach, reset per map */NorthlightTerrainReach::Episode memoryStall;
           NorthlightGeometryMemory::EntryLift entryLift;
+          std::string entryLiftMap;V entryLiftCenter;
           // Episode logs (begin on the first memory refusal, end when the build is delivered or dropped).
           // `required` is the refused check's aggregate floor: published (at most the plain entry floor)
           // as the memory guard's demand, so the mod's own caches shrink while the builder waits.
@@ -1262,6 +1265,11 @@ private:
               geometryMemoryDemand.store(0,std::memory_order_relaxed);
               uint32_t ms=0;unsigned tries=0;
               if(memoryStall.end(GetTickCount(),ms,tries))logf("WORLD geometry memory stall end ms=%u attempts=%u outcome=%s",ms,tries,outcome);
+          };
+          auto abandonGeometry=[&](){
+              // A measured peak belongs to the abandoned spatial region. It
+              // must not refuse a different region before that build starts.
+              entryLift.clear();terrainSizeHint={};stallEnd("superseded");
           };
           NorthlightLocalLights::Cache lightCache(root+"world-cache/lights");
           // Last delivered region. Any build that does not deliver forces the next
@@ -1312,7 +1320,7 @@ private:
                  buildWake.wait_for(lock,std::chrono::milliseconds(delay),[&]{return stopping||builderExit||request.id!=r.id;});
                  // The request moved on and this region no longer applies: the stalled build is dropped.
                  abandoned=stopping||builderExit||!NorthlightWorldStreaming::applicable(r.map,r.geometryCenter,request.map,request.camera);}
-                if(abandoned)stallEnd("superseded");
+                if(abandoned)abandonGeometry();
             };
             // Issue #40: a map without world-cache tiles (dungeons, raids, battlegrounds) is checked
             // once per entry; its error is published once and no build runs until the map changes.
@@ -1325,6 +1333,11 @@ private:
                 if(!uncachedPublished){result->message="No cached geometry for "+r.map;uncachedPublished=publishError();}
                 else if(r.id!=uncachedSkippedId){uncachedSkippedId=r.id;++uncachedSkips;} /* one count per GI request, not per builder wake */
                 continue;
+            }
+            // Keep the refused attempt's anchor: a stream of small requests
+            // must not carry its peak estimate across arbitrarily far travel.
+            if(entryLift.armed&&!NorthlightWorldStreaming::applicable(entryLiftMap,entryLiftCenter,r.map,r.camera)){
+                entryLift.clear();terrainSizeHint={};
             }
             auto built=std::make_unique<Built>();
 #if NORTHLIGHT_DEV_TUNING
@@ -1358,6 +1371,7 @@ private:
                 geometryMemoryDemand.store(0,std::memory_order_relaxed); // admitted: the build's own use is not a demand (the episode stays open)
                 // A memory refusal after entry: the next entry waits for what this attempt lacked.
                 auto liftEntry=[&](const char* stage,uint64_t required,uint64_t observed,uint64_t requiredLargest){
+                    entryLiftMap=r.map;entryLiftCenter=r.geometryCenter;
                     entryLift.refused(entryAvailable,required,observed,GetTickCount(),requiredLargest);
                     logf("WORLD geometry entry raised stage=%s requiredAvailableMiB=%llu requiredLargestMiB=%llu entryMiB=%llu refusedMiB=%llu stageRequiredMiB=%llu holdMs=%u",
                         stage,(unsigned long long)(entryLift.available>>20),(unsigned long long)(entryLift.largest>>20),(unsigned long long)(entryAvailable>>20),
@@ -1393,7 +1407,7 @@ private:
                     (unsigned long long)localStats.modelReads,(unsigned long long)localStats.pieceBuilds,(unsigned long long)localStats.pieceReuses,
                     (unsigned long long)localStats.reusedTriangles,(unsigned long long)localStats.builtTriangles,double(localStats.retainedBytes)/1048576,
                     double(localStats.flatBytes)/1048576,double(localStats.bvhBytes)/1048576,localStats.loadMs,localStats.pieceMs,localStats.assembleMs,localStats.bvhMs,localStats.totalMs);
-                if(!currentGeometry()){++superseded;stallEnd("superseded");continue;}
+                if(!currentGeometry()){++superseded;abandonGeometry();continue;}
                 // The local BVH and its cache are this build's own memory: entry reserved their headroom,
                 // so this gate keeps the in-build floor. The entry floor here refused every attempt that
                 // entered within one BVH of 768 MiB and rebuilt it each second (0.3.212 player log).
@@ -1475,7 +1489,7 @@ private:
                 const double shadowPlanMs=phaseElapsed();
                 if(NorthlightDiagnostics::enabled())logf("WORLD terrain allocation largestMiB=%.2f checks=%u hinted=%u",double(terrainLargest)/1048576,terrainChecks,terrainSizeHint.hinted?1u:0u);
                 if(NorthlightDiagnostics::enabled())logf("WORLD shadow terrain: localTriangles=%zu shadowTriangles=%u fixedChunks=%zu reach=%.0f tiles=%zu",replacement->triangleCount(),plan->triangleCount,plan->fixedTerrainChunks.size(),reach,shadowTiles.size());
-                if(!currentGeometry()){++superseded;stallEnd("superseded");continue;}
+                if(!currentGeometry()){++superseded;abandonGeometry();continue;}
                 shadowTerrain=NorthlightGI::WorldScene{}; // merged shadow plan already owns its data
                 auto pages=std::make_shared<NorthlightWorldMeshPages::Plan>();
                 // 0.3.216 (issue #66): pages the GPU already holds (same map, keys published at the last commit) are freed inside
@@ -2433,6 +2447,7 @@ public:
         if(captureMode!=CaptureSkipped)replaySnapshots.clearFrame();
         lastCaptureSkipped=captureMode==CaptureSkipped;actorCaptureDecided=false;actorJob.reset();captureMode=CaptureUndecided;actorVerticesEvaluated=actorDraws=actorSkippedAlpha=0;
         releaseExpiredMesh();
+        reclaimInactiveCasters();
     }
     bool ready()const{return valid&&active&&active->bvh&&!failed&&!workerFault();}
     // task 42 (MEMMAP northlight line): the render thread's own view, no lock and no counters beyond plain reads. Render thread only

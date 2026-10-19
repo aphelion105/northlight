@@ -68,6 +68,26 @@ int main(int argc,char**argv){
         q.center.x=0;stream.request(q);assert(stream.waitIdle());auto returned=stream.snapshot();assert(returned->stats.metadataReads>current->stats.metadataReads&&returned->stats.modelReads==current->stats.modelReads+1);
     }
     // Budget failure retains ready snapshots and never publishes a partial model.
+    // Recovery releases even the last-needed model. A consumer-held immutable
+    // snapshot survives, paused requests do not repopulate, and a stationary
+    // resume must publish the latest request rather than the pre-pause map.
+    {Streamer stream(root.string());stream.setPaused(true);assert(stream.waitIdle());stream.setPaused(false);assert(stream.waitIdle());
+     Request q;q.map="Azeroth";stream.request(q);assert(stream.waitIdle());
+     auto held=stream.snapshot();assert(held&&!held->models.empty());std::weak_ptr<const Model> weak=held->models.begin()->second;
+     const auto oldGeneration=held->mapGeneration;stream.setPaused(true);assert(stream.waitIdle());assert(!stream.snapshot());
+     assert(!weak.expired()&&held->models.begin()->second->vertices.size()==3);held.reset();
+     const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(4);
+     while(!weak.expired()&&std::chrono::steady_clock::now()<deadline)std::this_thread::sleep_for(std::chrono::milliseconds(10));assert(weak.expired());
+     q.map="Kalimdor";for(unsigned i=0;i<50;++i){stream.request(q);stream.setPaused(true);}assert(stream.waitIdle());assert(!stream.snapshot());
+     stream.setPaused(false);assert(stream.waitIdle());auto resumed=stream.snapshot();assert(resumed&&resumed->map=="Kalimdor"&&resumed->mapGeneration>oldGeneration&&resumed->placements.size()==1&&resumed->placements[0].uid==9);
+     stream.setPaused(true);assert(stream.waitIdle());assert(!stream.snapshot());}
+    // Cancellation may race selection, I/O or publication. A paused worker
+    // must finish all old work before waitIdle; destruction also joins it.
+    {Streamer stream(root.string());Request q;
+     for(unsigned i=0;i<100;++i){q.map=i%2?"Azeroth":"Kalimdor";stream.request(q);stream.setPaused(false);stream.setPaused(true);}
+     assert(stream.waitIdle());assert(!stream.snapshot());q.map="Kalimdor";q.center={0,0,0};stream.request(q);stream.setPaused(false);assert(stream.waitIdle());
+     auto snap=stream.snapshot();assert(snap&&snap->map=="Kalimdor"&&snap->placements.size()==1&&snap->placements[0].uid==9);}
+    {Streamer stream(root.string());Request q;q.map="Azeroth";stream.request(q);stream.setPaused(true);} // stop with a pending reclaim
     {Limits l;l.residentBytes=1;Streamer s(root.string(),l);r.map="Azeroth";s.request(r);assert(s.waitIdle());auto snap=s.snapshot();assert(snap&&snap->models.empty()&&!snap->stats.complete&&snap->stats.deferred>0&&snap->stats.cpuBytes==0);}
     // A corrupt new resource must leave already valid shared models in place.
     {std::ofstream broken(root/"models"/(key(2)+".fgs"),std::ios::binary|std::ios::trunc);broken<<"broken";}
