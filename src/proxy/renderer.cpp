@@ -216,6 +216,7 @@ template<class T> static uint64_t shaderHash(T* shader, std::vector<DWORD>& word
 }
 
 #include "saved_state.h"
+#include "atlas_gpu_diagnostic.h"
 #include "depth_probe.h"
 
 #include "gpu_profile.h"
@@ -379,6 +380,7 @@ class Device final : public GuardedMirrorDevice {
     NorthlightUiBoundary::Arming uiFallback;bool hashBoundaryThisFrame=false,fallbackBoundaryThisFrame=false,uiFallbackNoCandidateLogged=false;unsigned uiFallbackBoundaries=0;std::uint64_t uiFallbackPublished=0; /* the value last stored in NorthlightStream::learnedUiVsHash */
     IDirect3DVertexShader9* triageVs=nullptr;IDirect3DPixelShader9* triagePs=nullptr;DWORD triageZw=0;float triageC3[4]={};unsigned triageDraws=0; /* most recent post-terrain draw rejected by zwrite or the c3/rows test while learning (identities only, never dereferenced) */
     bool failed = false, projectionValid = false, key10 = false, key12=false;
+    unsigned atlasDiagnosticCaptures=0;
     // 0.3.200 (frame markers): diagnostics only, while northlight-frame-markers.txt exists in the game folder at device creation: two 40x40
     // squares at the left edge whose colour cycles with the frame number. E (upper) is filled right after the world effects, P (lower) right
     // before the real Present, so a screen recording shows which presented images went through the effects and the replay's Present, in order.
@@ -485,6 +487,20 @@ private:
     // periodic lines. Never a rendering decision; Diagnostics=0 turns every sample off.
     bool sampled()const{return NorthlightRenderThreadProbe::sampleFrame(frame)&&NorthlightDiagnostics::enabled();}
     static bool diagnostics(){return NorthlightDiagnostics::enabled();}
+    void captureAtlasDiagnostic()noexcept{
+        if(!diagnostics()||atlasDiagnosticCaptures>=4)return;
+        ++atlasDiagnosticCaptures;
+        try{
+            wchar_t directory[MAX_PATH];if(swprintf(directory,MAX_PATH,L"%lsnorthlight-diagnostics",rootPath)<0)return;
+            if(!CreateDirectoryW(directory,nullptr)&&GetLastError()!=ERROR_ALREADY_EXISTS){logf("UIATLAS capture directory failed error=%lu",GetLastError());return;}
+            char folder[MAX_PATH*3]={};if(!WideCharToMultiByte(CP_UTF8,0,directory,-1,folder,sizeof folder,nullptr,nullptr))return;
+            const std::string prefix=std::string(folder)+"/ui-atlas-"+std::to_string(GetCurrentProcessId())+"-"+std::to_string(GetTickCount());
+            ExtensionDevice::RawScope raw(*ext);
+            const auto r=NorthlightAtlasDiagnostic::dump(ext,prefix,frame);
+            const auto* core=NorthlightStream::activeCore.load();
+            logf("UIATLAS capture frame=%u session=%u/4 captured=%u failed=%u knownTiles=%u sourceRawMismatch=%u rawGpuBadPixels=%u replayFailures=%llu prefix=%s",frame,atlasDiagnosticCaptures,r.captured,r.failed,r.knownTiles,r.rawMismatches,r.pixelMismatches,core?(unsigned long long)NorthlightStream::get(core->q.stats.replayFailures):0,prefix.c_str());
+        }catch(...){logf("UIATLAS capture failed (allocation/exception); renderer continues");}
+    }
     // 0.3.154: the per-draw timing scopes; off on drawGate U frames (gateUntimed needs RenderProfile).
     bool sampledDrawTimers()const{return sampled()&&!gateUntimed;}
     // stage is read when a fault is reported (0.3.187: drawHook names the step that was running).
@@ -1414,6 +1430,11 @@ private:
     }
     template<class Capture,class Draw> HRESULT drawHook(D3DPRIMITIVETYPE t,UINT count,Capture capture,Draw draw){
         bool claimed=false,rainBlend=false,mist=false;
+        if(diagnostics()&&mirrorState.textureKnown[0])if(auto* atlas=NorthlightAtlasProof::cache().viewed(mirrorState.textures[0],frame)){
+            atlas->samplerKnown=0;for(unsigned n=1;n<14;++n){atlas->samplers[n]=mirrorState.samplers[0][n];if(mirrorState.samplerKnown[0][n])atlas->samplerKnown|=1u<<n;}
+            auto vs=vsHashes.find(mirrorState.vertexShaderKnown?mirrorState.vertexShader:nullptr);auto ps=psHashes.find(mirrorState.pixelShaderKnown?mirrorState.pixelShader:nullptr);
+            atlas->vsHash=vs==vsHashes.end()?0:vs->second;atlas->psHash=ps==psHashes.end()?0:ps->second;
+        }
         // 0.3.198 (rain): the whole per-draw cost of weather detection, before any other work and in both gate paths: one pointer comparison.
         if(weatherDetect.hot&&mirrorState.textureKnown[0]&&mirrorState.textures[0]==weatherDetect.hot){weatherSample.primitives+=count;++weatherSample.draws;rainBlend=weatherDetect.hotKind==NorthlightWeather::Kind::Rain&&world&&world->rainBlendSetting();} /* 0.3.199 (rain): counted after applied too (the rest of the rain); 0.3.202: no boundary here, the effects run at the UI again */
         else if(weatherDetect.mistArmed)mist=mistDraw(count); /* 0.3.199 (rain mist): a mist puff in rain is skipped; unarmed, one bool test */
@@ -2119,6 +2140,7 @@ public:
         mirrorState.gate.reportContext=this;mirrorState.gate.report=&gateForeignReport;
         parent->AddRef(); QueryPerformanceFrequency(&cpuFrequency);
         gpuProfile=std::make_unique<NorthlightGpuProfile>(ext);gpuSceneProfile=std::make_unique<NorthlightGpuProfile>(ext,"GPU frame",2);gpuTimer=std::make_unique<NorthlightGpuFrameTimer>(ext); world=std::make_unique<WorldRenderer>(ext);world->setEffectsBuckets(&effectsBuckets);
+        NorthlightAtlasProof::enabled.store(diagnostics(),std::memory_order_relaxed);
         world->setConstantEpochSource({&mirrorState.constantEpoch,&mirrorState}); /* 0.3.180 (C1): read in place under the draw's gate */
         char skyRoot[MAX_PATH*3];WideCharToMultiByte(CP_UTF8,0,rootPath,-1,skyRoot,sizeof skyRoot,nullptr,nullptr);celestialDiscs=std::make_unique<NorthlightCelestialDiscRenderer>(ext,std::string(skyRoot)+"world-cache/celestial");celestialDiscs->setTerrainSource([this]{return world->celestialTerrainGeneration();},[this](unsigned body,const float* matrix){return world->drawCelestialTerrain(body,matrix);},[this](unsigned body){world->noteCelestialTerrainReuse(body);});celestialDiscs->setIdentityMap([this](std::uintptr_t exposed){return mirrorResources.rawOf(exposed,!mirrorState.enabled);});shadowBlobs=std::make_unique<NorthlightShadowBlobFilter>(ext,world->blobShadowStrength());shadowBlobs->setTexturePeek([](void* e,DWORD stage,IDirect3DBaseTexture9*& out){return static_cast<ExtensionDevice*>(e)->peekTexture(stage,out);},ext); /* 0.3.196 (task 12): borrowed stage-0 identity */water=std::make_unique<NorthlightWaterRenderer>(ext); logf("D3D9 device wrapped. Ctrl+Shift+F7 fog; F8 GI; F9 shadows; F10 all effects; F12 world debug (all with Ctrl+Shift). F11 unassigned. Components start ON; GI cache stays warm.");
         particleOn=world->equipmentLightsOn();
@@ -2364,7 +2386,7 @@ public:
         bool retry=k10&&!key10&&!enabled;
         if(k10&&!key10){enabled=!enabled;frameIntervals.reset();frameCost.reset();stallFrames.reset();mirrorResources.queryProfile={};logf("Effects %s tick=%lu",enabled?"ON":"OFF",(unsigned long)GetTickCount());}
         bool k12=focus&&modifiers&&(GetAsyncKeyState(VK_F12)&0x8000);
-        if(k12&&!key12){worldDebug=(worldDebug+1)%4;if(worldDebug==1)depthProbePending=true;logf("World debug %d tick=%lu (0 normal,1 shadows,2 GI,3 volume)",worldDebug,(unsigned long)GetTickCount());}
+        if(k12&&!key12){captureAtlasDiagnostic();worldDebug=(worldDebug+1)%4;if(worldDebug==1)depthProbePending=true;logf("World debug %d tick=%lu (0 normal,1 shadows,2 GI,3 volume)",worldDebug,(unsigned long)GetTickCount());}
         key12=k12;key10=k10;
         uiFallbackEndFrame();
         if(frame==1||(frame%600==0&&diagnostics()))logf("frame=%u applied=%u terrainShaders=%u uiShaders=%u projectionRejects=%u terrainThisFrame=%d depth=%d draws=%u missingVS=%u terrainDraws=%u terrainShadowDraws=%u viewportRejects=%u depthRejects=%u uiDraws=%u uiAfterTerrain=%u uiFallback=%u uiFallbackState=%c",frame,appliedFrames,matchedTerrain,matchedUI,projectionRejects,terrain,captured,drawCalls,missingVS,terrainDraws,terrainShadowDraws,viewportRejects,depthRejects,uiDraws,uiAfterTerrain,uiFallbackBoundaries,uiFallback.disarmed()?'d':uiFallback.armed()?'a':'l');

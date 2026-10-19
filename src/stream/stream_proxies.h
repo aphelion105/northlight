@@ -28,6 +28,7 @@
 #include "command_stream.inl"
 #include "tex_readback_diag.h"
 #include "particle_texture_stats.h"
+#include "atlas_upload_proof.h"
 
 namespace NorthlightStream {
 // D3D9 ABI values the stream needs (identical in d3d9.h / d3d9types.h; kept here so the code reads the same under the test stub).
@@ -182,14 +183,14 @@ public:
     std::function<IUnknown*(IUnknown*,Kind)> rawOf;
     static bool takesRaw(Kind k){return k==Kind::Surface||k==Kind::Texture||k==Kind::CubeTexture||k==Kind::VolumeTexture||k==Kind::VertexBuffer||k==Kind::IndexBuffer||k==Kind::VertexShader||k==Kind::PixelShader||k==Kind::VertexDeclaration;}
     void bindInner(ProxyBase* p,IUnknown* inner){
-        if(p->kind==Kind::Texture)NorthlightParticleTextures::cache().erase(p->raw,p);
+        if(p->kind==Kind::Texture){NorthlightParticleTextures::cache().erase(p->raw,p);NorthlightAtlasProof::cache().erase(p->raw,p);}
         {std::lock_guard<std::mutex> l(m_);p->inner=inner;byInner_[inner]=p;}
         p->raw=rawOf&&inner&&takesRaw(p->kind)?rawOf(inner,p->kind):nullptr;
     }   // the newest proxy of an object wins identity
-    void unbindInner(ProxyBase* p){if(p->kind==Kind::Texture)NorthlightParticleTextures::cache().erase(p->raw,p);p->raw=nullptr;std::lock_guard<std::mutex> l(m_);if(p->inner){auto i=byInner_.find(p->inner);if(i!=byInner_.end()&&i->second==p)byInner_.erase(i);}}
+    void unbindInner(ProxyBase* p){if(p->kind==Kind::Texture){NorthlightParticleTextures::cache().erase(p->raw,p);NorthlightAtlasProof::cache().erase(p->raw,p);}p->raw=nullptr;std::lock_guard<std::mutex> l(m_);if(p->inner){auto i=byInner_.find(p->inner);if(i!=byInner_.end()&&i->second==p)byInner_.erase(i);}}
     ProxyBase* findInner(const void* inner){std::lock_guard<std::mutex> l(m_);auto i=byInner_.find(inner);return i==byInner_.end()?nullptr:i->second;}
     // Replay thread (destroy): forget the proxy; the inner entry only if it still names this proxy.
-    void erase(ProxyBase* p){if(p->kind==Kind::Texture)NorthlightParticleTextures::cache().erase(p->raw,p);std::lock_guard<std::mutex> l(m_);byProxy_.erase(p->unk);if(p->inner){auto i=byInner_.find(p->inner);if(i!=byInner_.end()&&i->second==p)byInner_.erase(i);}}
+    void erase(ProxyBase* p){if(p->kind==Kind::Texture){NorthlightParticleTextures::cache().erase(p->raw,p);NorthlightAtlasProof::cache().erase(p->raw,p);}std::lock_guard<std::mutex> l(m_);byProxy_.erase(p->unk);if(p->inner){auto i=byInner_.find(p->inner);if(i!=byInner_.end()&&i->second==p)byInner_.erase(i);}}
     // The Target-level object behind a proxy pointer the game stored in its own memory (an opaque value, never dereferenced).
     const void* innerOf(const void* maybeProxy){std::lock_guard<std::mutex> l(m_);auto i=byProxy_.find(maybeProxy);return i==byProxy_.end()||!i->second->inner?maybeProxy:static_cast<const void*>(i->second->inner);}
     // Init failure only (the replay thread is gone or about to be): release every Target object the proxies hold, and hand the proxies out to be deleted.
@@ -394,8 +395,8 @@ struct UnlockBufferRefArgs {ProxyBase* proxy;const unsigned char* src;UINT off,s
 enum ImageRoute:UINT{RouteSurface=0,RouteTexture=1,RouteCube=2,RouteVolumeTexture=3,RouteVolume=4};
 
 inline ProxyBase* particleTextureRoot(ProxyBase* p){if(p&&p->kind==Kind::Surface)p=p->parent;return p&&p->kind==Kind::Texture?p:nullptr;}
-inline void invalidateParticleTexture(ProxyBase* p){if(auto* root=particleTextureRoot(p))NorthlightParticleTextures::cache().invalidate(root->raw);}
-inline void captureParticleTexture(const UnlockImageArgs& a,const unsigned char* src,bool success){
+inline void invalidateParticleTexture(ProxyBase* p){if(auto* root=particleTextureRoot(p)){NorthlightParticleTextures::cache().invalidate(root->raw);NorthlightAtlasProof::cache().invalidate(root->raw);}}
+inline void captureParticleTexture(const UnlockImageArgs& a,const unsigned char* src,bool success,unsigned failure=0){
     auto* root=particleTextureRoot(a.proxy);if(!root||a.flags&D3::kLockReadOnly)return;
     if(root->info.usage&(D3::kUsageRT|D3::kUsageDS|D3::kUsageAutoGen)){invalidateParticleTexture(root);return;}
     // Do not read kids/SubRes: the game thread can already be recording later
@@ -404,6 +405,8 @@ inline void captureParticleTexture(const UnlockImageArgs& a,const unsigned char*
     const unsigned w=D3::mipDim(root->info.w,level),h=D3::mipDim(root->info.h,level);
     const bool whole=a.slices==1&&(!a.hasRect||(a.l==0&&a.t==0&&a.r==LONG(w)&&a.b==LONG(h)));
     NorthlightParticleTextures::cache().upload(root->raw,root,w,h,level,root->info.fmt,src,std::size_t(a.rows)*a.pitch,a.pitch,whole,success);
+    if(root->info.pool==D3::kPoolManaged&&a.slices==1)NorthlightAtlasProof::cache().upload(root->raw,root,root->info.fmt,w,h,level,
+        a.hasRect?unsigned(a.l):0,a.hasRect?unsigned(a.t):0,a.hasRect?unsigned(a.r):w,a.hasRect?unsigned(a.b):h,src,std::size_t(a.rows)*a.pitch,a.pitch,success,failure);
 }
 
 inline void countPass(ProxyBase& p,PassReason r){own(p.core->q.stats.passThrough[unsigned(r)]);}   // game thread only
@@ -546,12 +549,13 @@ inline bool applyImageUnlock(StreamCore& core,const UnlockImageArgs& a,const uns
     if(!p->inner||p->dead.load()||!src){captureParticleTexture(a,src,false);add(core.q.stats.replayFailures);return false;}
     D3DLOCKED_RECT lr{};D3DLOCKED_BOX lb{};RECT rect=RECT{a.l,a.t,a.r,a.b};D3DBOX box{};box.Left=UINT(a.l);box.Top=UINT(a.t);box.Right=UINT(a.r);box.Bottom=UINT(a.b);box.Front=a.bf;box.Back=a.bk;
     const bool volume=a.route==RouteVolume||a.route==RouteVolumeTexture;
-    if(FAILED(callLock(a.route,p->inner,a.level,a.face,&lr,&lb,a.hasRect&&!volume?&rect:nullptr,a.hasRect&&volume?&box:nullptr,a.flags))){captureParticleTexture(a,src,false);add(core.q.stats.replayFailures);return false;}
+    const HRESULT lockResult=callLock(a.route,p->inner,a.level,a.face,&lr,&lb,a.hasRect&&!volume?&rect:nullptr,a.hasRect&&volume?&box:nullptr,a.flags);
+    if(FAILED(lockResult)){captureParticleTexture(a,src,false,unsigned(lockResult));add(core.q.stats.replayFailures);return false;}
     auto* dst=static_cast<unsigned char*>(volume?lb.pBits:lr.pBits);const INT rowPitch=volume?lb.RowPitch:lr.Pitch;const INT slicePitch=volume?lb.SlicePitch:0;
     if(dst)for(UINT s=0;s<a.slices;++s)for(UINT r=0;r<a.rows;++r)
         std::memcpy(dst+std::ptrdiff_t(s)*slicePitch+std::ptrdiff_t(r)*rowPitch,src+std::size_t(s)*a.slicePitch+std::size_t(r)*a.pitch,a.rowBytes);
     const HRESULT unlockResult=callUnlock(a.route,p->inner,a.level,a.face);const bool success=dst&&SUCCEEDED(unlockResult);
-    captureParticleTexture(a,src,success);if(!success)add(core.q.stats.replayFailures);return success;
+    captureParticleTexture(a,src,success,unsigned(dst?unlockResult:D3DERR_INVALIDCALL));if(!success)add(core.q.stats.replayFailures);return success;
 }
 inline UnlockImageArgs makeUnlockArgs(ProxyBase& self,const SubRes& sub,UINT route,UINT level,UINT face){
     UnlockImageArgs a{};a.proxy=&self;a.level=level;a.face=face;a.flags=sub.flags;a.hasRect=sub.hasRect;a.rows=sub.rows;a.slices=sub.slices;a.rowBytes=sub.rowBytes;a.pitch=sub.pitch;a.slicePitch=sub.slicePitch;

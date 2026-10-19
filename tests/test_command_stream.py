@@ -270,6 +270,8 @@ with tempfile.TemporaryDirectory(prefix='command-stream-') as tmp:
     (Path(tmp) / 'd3d9_stub.h').write_text('#ifndef FALSE\n#define FALSE 0\n#endif\n'+stub())
     (Path(tmp) / 'cs_generated.inc').write_text(generated_cpp())
     compile_run(tmp, 'o2', ['-O2'])
+    compile_run(tmp, 'atlas-low-memory-o0', ['-O0'], source='test_atlas_low_memory.cpp')
+    compile_run(tmp, 'atlas-low-memory-o2', ['-O2'], source='test_atlas_low_memory.cpp')
     compile_run(tmp, 'query-caller', ['-O2'], source='test_query_caller.cpp')
     compile_run(tmp, 'asan', ['-O1', '-g', '-fsanitize=address,undefined', '-fno-omit-frame-pointer'])
     # Redundant-state filtering compiled out: the Target sees every Set, and the equivalence run requires the exact trace again.
