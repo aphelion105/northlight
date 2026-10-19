@@ -218,6 +218,7 @@ test_world_cache_diff.py
 test_world_light_placements.py
 test_world_local_lights.py
 test_world_mesh_pages.py
+test_shadow_paging_memory.py
 test_world_mesh_pages_real.py
 test_world_mesh_plan.py
 test_world_probe_coverage.py

@@ -90,7 +90,10 @@ inline bool build(const NorthlightWorldMesh::WorldMeshUploadPlan& input,Plan& ou
     try {
         if(input.indices.size()!=uint64_t(input.triangleCount)*3)
             return fail("Paged mesh triangle/index count mismatch");
-        if(!input.indices.empty()&&(!input.source||input.source->vertices.size()!=input.vertexCount))
+        const auto* vertices=input.verticesForPaging();
+        if(input.pagesSealed||(input.pagingVertices&&(input.source||input.ownedSource)))
+            return fail("Paged mesh source ownership mismatch");
+        if(!input.indices.empty()&&(!vertices||vertices->size()!=input.vertexCount))
             return fail("Paged mesh source/vertex count mismatch");
         Plan next;
         if(input.indices.empty()){
@@ -189,7 +192,7 @@ inline bool build(const NorthlightWorldMesh::WorldMeshUploadPlan& input,Plan& ou
                     if(local==IndexMap::Missing) {
                         auto insertion=remap.insert(ids[k],uint32_t(page.vertices.size()));local=insertion.first;
                         if(insertion.second) {
-                            const auto& vertex=input.source->vertices[ids[k]];
+                            const auto& vertex=(*vertices)[ids[k]];
                             if(!std::isfinite(vertex.position.x)||!std::isfinite(vertex.position.y)||!std::isfinite(vertex.position.z))
                                 return fail("Paged mesh nonfinite vertex position");
                             page.vertices.push_back(vertex);
@@ -203,7 +206,7 @@ inline bool build(const NorthlightWorldMesh::WorldMeshUploadPlan& input,Plan& ou
                 }
                 batch.vertexCount=maxVertex-batch.minVertex+1;++batch.count;
                 if(options.anchorModulus&&page.vertices.size()>=options.minFillVertices) {
-                    const auto& sv=input.source->vertices;
+                    const auto& sv=*vertices;
                     const uint64_t anchor=NorthlightMeshPageKey::triangleHash(&sv[ids[0]].position.x,&sv[ids[1]].position.x,&sv[ids[2]].position.x);
                     if(anchor%options.anchorModulus==0){if(fitsEmpty)anchored=true;else closeAfter=true;}
                 }
@@ -266,7 +269,7 @@ inline const char* validatePages(const NorthlightWorldMesh::WorldMeshUploadPlan&
 inline const char* validatePages(const NorthlightWorldMesh::WorldMeshUploadPlan& input,const Plan& pages) {return validatePages(input,pages,input.materials);}
 // Render thread only (shares the payload). A released payload is not a sealed plan any more.
 inline const char* validateSealed(const NorthlightWorldMesh::WorldMeshUploadPlan& input) {
-    if(!input.pagesSealed||input.source||input.ownedSource||!input.indices.empty())return "paged ownership not sealed";
+    if(!input.pagesSealed||input.source||input.ownedSource||input.pagingVertices||!input.indices.empty())return "paged ownership not sealed";
     const auto payload=input.payload.share();
     if(!payload||!payload->pages)return "paged payload released";
     return validatePages(input,*payload->pages,payload->materials);
@@ -279,15 +282,18 @@ inline const char* validateSealed(const NorthlightWorldMesh::WorldMeshUploadPlan
 inline bool seal(NorthlightWorldMesh::WorldMeshUploadPlan& input,std::shared_ptr<const Plan> pages,std::string& error,
                  const NorthlightGI::AllocationAdmission& admit = {}) {
     auto fail=[&](const char* reason){error=reason;return false;};
-    if(input.pagesSealed||!input.source||!pages)return fail("paged seal requires unsealed source and pages");
+    if(input.pagesSealed||!input.verticesForPaging()||!pages)return fail("paged seal requires unsealed source and pages");
+    if(input.pagingVertices&&(input.source||input.ownedSource))return fail("paged seal source ownership mismatch");
     if(input.ownedSource&&input.source!=input.ownedSource.get())return fail("paged seal source identity mismatch");
-    if(input.source->vertices.size()!=input.vertexCount||input.source->triangles.size()!=input.triangleCount||input.source->materials.size()!=input.materials.size()||input.indices.size()!=uint64_t(input.triangleCount)*3)return fail("paged seal source counts mismatch");
+    if(input.verticesForPaging()->size()!=input.vertexCount||input.indices.size()!=uint64_t(input.triangleCount)*3)return fail("paged seal source counts mismatch");
+    if(input.source&&(input.source->triangles.size()!=input.triangleCount||input.source->materials.size()!=input.materials.size()))return fail("paged seal source counts mismatch");
     if(const char* reason=validatePages(input,*pages))return fail(reason);
     try {
-        uint64_t ownerBytes=input.source->completePlacements.size()*sizeof(NorthlightGI::WorldPlacementCoverage);
-        for(const auto& owner:input.source->completePlacements)ownerBytes+=owner.modelKey.size()+1;
+        const auto& sourceOwners=input.source?input.source->completePlacements:input.completePlacements;
+        uint64_t ownerBytes=sourceOwners.size()*sizeof(NorthlightGI::WorldPlacementCoverage);
+        for(const auto& owner:sourceOwners)ownerBytes+=owner.modelKey.size()+1;
         if(admit&&!admit(ownerBytes))return fail("paged ownership allocation deferred");
-        auto owners=input.source->completePlacements;
+        auto owners=sourceOwners;
         const uint64_t cpuBytes=pages->cpuBytes();
         // 0.3.214 (task 42): pages and cutout textures move into the separately owned payload.
         auto payload=std::make_shared<NorthlightWorldMesh::UploadPayload>();
@@ -295,7 +301,7 @@ inline bool seal(NorthlightWorldMesh::WorldMeshUploadPlan& input,std::shared_ptr
         for(const auto& material:input.materials)payload->bytes+=material.bgra.capacity();
         payload->pages=std::move(pages);payload->materials.swap(input.materials);
         input.completePlacements=std::move(owners);input.payload.set(std::move(payload));input.pagedCpuBytes=cpuBytes;
-        input.source=nullptr;input.ownedSource.reset();std::vector<uint32_t>().swap(input.indices);
+        input.source=nullptr;input.ownedSource.reset();input.pagingVertices.reset();std::vector<uint32_t>().swap(input.indices);
         input.pagesSealed=true;error.clear();return true;
     } catch(const std::bad_alloc&) {return fail("paged ownership allocation failed");}
       catch(const std::length_error&) {return fail("paged ownership size overflow");}

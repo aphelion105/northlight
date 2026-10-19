@@ -81,7 +81,7 @@ template<class Snapshot> void appendLiveDirectional(const Snapshot& snapshot,
 inline bool build(const NorthlightGI::WorldScene& local,const NorthlightGI::WorldScene& terrain,
                   Vec3 center,NorthlightWorldMesh::WorldMeshUploadPlan& output,std::string& error,
                   const NorthlightGI::AllocationAdmission& admit = {},float radius=Radius,
-                  const NorthlightWorldMesh::PlanOrder& order = {}){
+                  const NorthlightWorldMesh::PlanOrder& order = {},bool pagingOnly=false){
     try {
     const Vec3 low=center-Vec3(288,288,320),high=center+Vec3(288,288,320);
     auto allowed=[&](uint64_t bytes){if(!admit||admit(bytes))return true;error="Geometry allocation deferred";return false;};
@@ -133,9 +133,19 @@ inline bool build(const NorthlightGI::WorldScene& local,const NorthlightGI::Worl
         if(outside(cl,ch,low,high)&&cl.x>=center.x-radius&&ch.x<=center.x+radius&&
            cl.y>=center.y-radius&&ch.y<=center.y+radius)fixed.insert(key);
     }
+    // The terrain vertex remap is dead after assembly; do not carry it into
+    // the packed-index/signature allocations.
+    std::vector<uint32_t>().swap(remap);
     NorthlightWorldMesh::WorldMeshUploadPlan plan;
     if(!NorthlightWorldMesh::buildUploadPlan(*merged,plan,error,admit,&local.materials,order))return false;
-    plan.ownedSource=merged;plan.fixedTerrainChunks=std::move(fixed);
+    if(pagingOnly){
+        // The unique merged scene is temporary. Its triangles are now packed
+        // in plan.indices; retaining both through paging costs tens of MiB in
+        // cities. Move vertices/proofs, then destroy the unused scene here.
+        plan.pagingVertices=std::make_shared<const std::vector<NorthlightGI::WorldVertex>>(std::move(merged->vertices));
+        plan.completePlacements=std::move(merged->completePlacements);plan.source=nullptr;
+    }else plan.ownedSource=merged;
+    plan.fixedTerrainChunks=std::move(fixed);
     output=std::move(plan);return true;
     }catch(...){error="Cannot allocate shadow terrain mesh";return false;}
 }

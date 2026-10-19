@@ -288,4 +288,26 @@ static void testSeal(){
     assert(P::seal(borrowed,pages,error));assert(!P::validateSealed(borrowed));assert(source->vertices.size()==3);
     std::puts("PASS sealed ownership: source release, exact placement proofs, retained GI, cheap validation and transactional failures");
 }
-int main(){testIndexMap();testVertexLimits();testIndexLimits();testKeepBatches();testDegenerateAndExactBoundary();testAnchors();testElision();testTransactionalFailure();testSeal();std::puts("All world mesh page tests passed");}
+static void testCompactSource(){
+    auto scene=std::make_shared<WorldScene>();WorldMeshUploadPlan input;initialize(*scene,input,3);addBatch(input,1,0,3);
+    scene->triangles.push_back({0,1,2,0});scene->materials.resize(3);
+    scene->completePlacements.emplace_back();scene->completePlacements.back().modelKey="preserve-owner";
+    input.vertexBytes=96;input.indexBytes=12;for(auto& m:input.materials)m.bgra={255,255,255,255};
+    std::string error;P::Plan reference;assert(P::build(input,reference,error));
+    const auto* vertices=scene->vertices.data();
+    input.pagingVertices=std::make_shared<const std::vector<WorldVertex>>(std::move(scene->vertices));
+    input.completePlacements=std::move(scene->completePlacements);input.source=nullptr;scene.reset();
+    assert(input.verticesForPaging()->data()==vertices);
+    auto pages=std::make_shared<P::Plan>();assert(P::build(input,*pages,error));
+    assert(pages->pages[0].key==reference.pages[0].key&&pages->pages[0].indices==reference.pages[0].indices);
+    assert(!std::memcmp(pages->pages[0].vertices.data(),reference.pages[0].vertices.data(),96));
+    auto broken=input;broken.source=reinterpret_cast<const WorldScene*>(1);
+    P::Plan untouched=reference;assert(!P::build(broken,untouched,error));assert(!P::seal(broken,pages,error));
+    broken=input;broken.vertexCount=4;assert(!P::build(broken,untouched,error));assert(!P::seal(broken,pages,error));
+    assert(!P::seal(input,pages,error,[](uint64_t){return false;}));
+    assert(input.pagingVertices&&input.completePlacements[0].modelKey=="preserve-owner");
+    assert(P::seal(input,pages,error)&&!P::validateSealed(input));
+    assert(!input.pagingVertices&&input.completePlacements[0].modelKey=="preserve-owner");
+    std::puts("PASS compact paging: zero-copy vertices, exact pages, strict ownership/count checks, transactional sealing");
+}
+int main(){testIndexMap();testVertexLimits();testIndexLimits();testKeepBatches();testDegenerateAndExactBoundary();testAnchors();testElision();testTransactionalFailure();testSeal();testCompactSource();std::puts("All world mesh page tests passed");}
