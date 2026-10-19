@@ -16,6 +16,7 @@ CLIENT=northlight_paths.client_root(required=False) or HERE.parent.parent
 from mpq import Archive
 import client_archives
 from m2_visibility import hidden_batches
+import instance_maps
 ZERO=17066.666666666668
 # Windows: a virus scanner or the indexer briefly holds a just-written file; replace() is retried.
 LOCK_RETRIES=(.2,.4,.8,1.6,3.) if os.name=='nt' else ()
@@ -35,6 +36,9 @@ CASTER_MIN_ALPHA=.55   # GatherModelBatchesShadowMap: opacity below this casts n
 
 class DeletedAsset(ValueError):
     pass
+
+class EmptyTile(ValueError):
+    """A tile with no terrain triangles and no placed object, and nothing that failed to load: empty by design."""
 
 
 def retry(fn,*args):
@@ -144,11 +148,12 @@ class Assets:
     An archive without a readable (listfile) (private-server patches often strip it; the game does not
     need it) cannot be listed: every name the other archives list is probed in it (SFileHasFile), so a
     file it replaces still resolves to it, read() looks a name no listing has up in it, and the continents'
-    64x64 ADT grids are probed in it, so tiles it adds are built. Other files it adds stay out of providers:
+    64x64 ADT grids are probed in it, so tiles it adds are built (so are the WDT and the MAIN tiles of the
+    other `maps` asked for). Other files it adds stay out of providers:
     a builder that enumerates them (world_lights_builder's model names) misses them. A custom patch archive
     (client_archives.is_custom_patch) StormLib cannot open is left out, after the Windows lock retries; any
     other still fails. Both are reported: unlisted, unreadable, warnings(), fingerprint()."""
-    def __init__(self,client=None,archives='all',locale=None,without=''):
+    def __init__(self,client=None,archives='all',locale=None,without='',maps=()):
         self.client=Path(client) if client else CLIENT;self.view=archives
         self.locale=client_archives.detect_locale(self.client,locale)
         self.archives=[];self.unreadable=[]
@@ -170,11 +175,28 @@ class Assets:
                 if provider<index and has(name):self.providers[name]=index
             for name in tiles:
                 if name not in self.providers and has(name):self.providers[name]=index
+        if self.blind:self.probe_maps([m for m in maps if m not in CONTINENTS])
         self.unlisted=[self.paths[i].relative_to(self.client).as_posix() for i in self.blind]
         self.stats=collections.Counter();self.missing=set();self.unsupported=set();self.clamped=set()
+    def probe_maps(self,maps):
+        """Probe the unlisted archives for the WDT of each map, then for the ADTs its MAIN lists."""
+        def probe(names):
+            for index in self.blind:   # in priority order, so the later archive still wins
+                has=self.archives[index].has
+                for name in names:
+                    if (name not in self.providers or self.providers[name]<index) and has(name):self.providers[name]=index
+        probe([instance_maps.wdt_path(m) for m in maps]);tiles=[]
+        for m in maps:
+            name=instance_maps.wdt_path(m)
+            if name not in self.providers:continue
+            try:wdt=instance_maps.read_wdt(self.archives[self.providers[name]].read(name))
+            except (OSError,ValueError):continue   # the build reports an unreadable WDT
+            tiles+=[f'world\\maps\\{m}\\{m}_{x}_{y}.adt'.lower() for x,y in wdt['tiles']]
+        probe(tiles)
     @classmethod
     def from_args(cls,args):
-        return cls(args.client,args.archives,args.locale,getattr(args,'without',''))
+        maps=getattr(args,'map',None) or getattr(args,'maps',None) or ()
+        return cls(args.client,args.archives,args.locale,getattr(args,'without',''),[maps] if isinstance(maps,str) else maps)
     def provider(self,name):
         """Index of the archive that provides a lower-case backslash name, or None. A name no listing
         has may still be in an unlisted archive (the highest one that holds it wins)."""
@@ -262,9 +284,9 @@ def decode_blp(b,maximum=128):
 
 class Builder:
     def __init__(self,assets):
-        self.assets=assets;self.meshes={};self.mesh_names={};self.textures={};self.reset()
+        self.assets=assets;self.meshes={};self.mesh_names={};self.textures={};self.skipped_groups=[];self.skip_bad_groups=False;self.reset()
     def reset(self):
-        self.vertices=[];self.triangles=[];self.materials=[];self.material_ids={};self.tile_stats=collections.Counter()
+        self.vertices=[];self.triangles=[];self.materials=[];self.material_ids={};self.tile_stats=collections.Counter();self.tile_errors=0
     def material(self,path='',blend=0,flat=False):
         key=(path,blend,flat)
         if key in self.material_ids:return self.material_ids[key]
@@ -351,6 +373,8 @@ class Builder:
             pos=array(sub['MOVT'],0,len(sub['MOVT'])//12,'<3f')
             normals=array(sub['MONR'],0,len(sub['MONR'])//12,'<3f')
             uv=array(sub['MOTV'],0,len(sub['MOTV'])//8,'<2f')
+            if self.skip_bad_groups and not all(math.isfinite(v) for t in (pos,normals,uv) for row in t for v in row):
+                self.skipped_groups.append({'wmo':path,'group':group,'reason':'nonfinite_vertex'});continue
             inds=[x[0] for x in array(sub['MOVI'],0,len(sub['MOVI'])//2,'<H')]
             props=array(sub['MOPY'],0,len(sub['MOPY'])//2,'<2B');base=len(vertices)
             vertices.extend(tuple(p)+tuple(normals[i])+tuple(uv[i]) for i,p in enumerate(pos))
@@ -422,7 +446,8 @@ class Builder:
             self.triangles.append((base+a,base+b,base+c,material))
         self.vertices.extend(p+normalize(normal[i])+(0.,0.) for i,p in enumerate(positions))
         self.tile_stats['terrain_chunks']+=1;self.tile_stats['terrain_triangles']+=len(local_triangles)
-    def build(self,mapname,x,y,destination):
+    def parse(self,mapname,x,y):
+        """Read the ADT: terrain into vertices/triangles, placed M2/WMO through add_mesh."""
         self.reset();name=f'world\\maps\\{mapname}\\{mapname}_{x}_{y}.adt'
         blob=self.assets.read(name)
         if not blob:raise DeletedAsset('Empty highest-priority MPQ deletion marker')
@@ -439,7 +464,7 @@ class Builder:
             if ('m2',uid) in seen:continue
             seen.add(('m2',uid));path=model_names[name_id]
             try:self.add_mesh(self.m2(path),*placement(entry[2:5],entry[5:8],entry[8]/1024),'m2',uid)
-            except (ValueError,FileNotFoundError,IndexError) as exc:self.assets.unsupported.add('m2:'+path+':'+str(exc))
+            except (ValueError,FileNotFoundError,IndexError) as exc:self.assets.unsupported.add('m2:'+path+':'+str(exc));self.tile_errors+=1
         for entry in array(root.get('MODF',b''),0,len(root.get('MODF',b''))//64,'<2I12f4H'):
             name_id,uid=entry[:2]
             if ('wmo',uid) in seen:continue
@@ -447,8 +472,12 @@ class Builder:
             try:
                 mesh=self.wmo(path);matrix,translation=placement(entry[2:5],entry[5:8],1.)
                 self.add_mesh(mesh[:3],matrix,translation,'wmo',uid);self.wmo_doodads(mesh[3],mesh[4],entry[15],matrix,translation,uid)
-            except (ValueError,FileNotFoundError,IndexError,KeyError) as exc:self.assets.unsupported.add('wmo:'+path+':'+str(exc))
+            except (ValueError,FileNotFoundError,IndexError,KeyError) as exc:self.assets.unsupported.add('wmo:'+path+':'+str(exc));self.tile_errors+=1
+    def build(self,mapname,x,y,destination):
+        self.parse(mapname,x,y)
         if not self.vertices or not self.triangles:raise ValueError('Empty world tile')
+        return self.finish(mapname,x,y,destination)
+    def finish(self,mapname,x,y,destination):
         self.write_scene(destination)
         return {'map':mapname,'tile':[x,y],'vertices':len(self.vertices),'triangles':len(self.triangles),
                 'materials':len(self.materials),'bytes':destination.stat().st_size,'geometry':dict(self.tile_stats),
@@ -473,7 +502,7 @@ class Builder:
 class InstancedBuilder(Builder):
     """FGS3 tile instance lists referencing shared FGS2 meshes."""
     def __init__(self,assets,output):
-        self.output=output;self.exported={};self.instances=[]
+        self.output=output;self.exported={};self.instances=[];self.model_triangles={}
         super().__init__(assets)
     def reset(self):
         super().reset();self.instances=[]
@@ -492,7 +521,7 @@ class InstancedBuilder(Builder):
             temporary.add_mesh(compact,((1,0,0),(0,1,0),(0,0,1)),(0,0,0),'model')
             temporary.write_scene(self.output/'models'/(key.hex()+'.fgs'))
             bounds=tuple(tuple(fn(v[i] for v in compact[0]) for i in range(3)) for fn in (min,max))
-            self.exported[name]=(key,bounds)
+            self.exported[name]=(key,bounds);self.model_triangles[key]=len(triangles)
         key,(lo,hi)=self.exported[name]
         corners=[tuple(matvec(matrix,(x,y,z))[i]+translation[i] for i in range(3)) for x in (lo[0],hi[0]) for y in (lo[1],hi[1]) for z in (lo[2],hi[2])]
         bounds=tuple(fn(v[i] for v in corners) for fn in (min,max) for i in range(3))
@@ -500,53 +529,139 @@ class InstancedBuilder(Builder):
         self.instances.append((key,instance_id,kind,*bounds,*(v for row in matrix for v in row),*translation))
         self.tile_stats[category+'_instances']+=1;self.tile_stats[category+'_triangles']+=len(mesh[1])
     def build(self,mapname,x,y,destination):
+        self.parse(mapname,x,y)
         terrain_key=hashlib.sha256(f'FGS3-v1:terrain:{mapname}:{x}:{y}'.encode()).digest()
         terrain_file=self.output/'models'/(terrain_key.hex()+'.fgs')
-        report=super().build(mapname,x,y,terrain_file)
-        lo,hi=report['bounds'];record=(terrain_key,(x<<16)|y,0,*lo,*hi,1.,0.,0.,0.,1.,0.,0.,0.,1.,0.,0.,0.)
-        self.instances.insert(0,record)
-        destination.parent.mkdir(parents=True,exist_ok=True);temp=destination.with_suffix(f'.{os.getpid()}.tmp')
-        with temp.open('wb') as f:
-            f.write(struct.pack('<4sII',b'FGS3',3,len(self.instances)))
-            for record in self.instances:f.write(struct.pack('<32sQI18f',*record))
-        retry(temp.replace,destination)
+        if self.vertices and self.triangles:
+            report=self.finish(mapname,x,y,terrain_file)
+            lo,hi=report['bounds'];record=(terrain_key,(x<<16)|y,0,*lo,*hi,1.,0.,0.,0.,1.,0.,0.,0.,1.,0.,0.,0.)
+            self.instances.insert(0,record);terrain_bytes=terrain_file.stat().st_size
+        elif self.instances:   # fully holed terrain (e.g. Icecrown Citadel): the placed objects still make a tile
+            lo=[min(r[3+i] for r in self.instances) for i in range(3)];hi=[max(r[6+i] for r in self.instances) for i in range(3)]
+            report={'map':mapname,'tile':[x,y],'vertices':0,'triangles':0,'materials':0,'geometry':dict(self.tile_stats),'bounds':[lo,hi]};terrain_bytes=0
+        else:raise ValueError('Empty world tile') if self.tile_errors else EmptyTile('Empty world tile')
+        self.write_tile(destination,self.instances)
         report.update(format='FGS3',instances=len(self.instances),shared_model_count=len(self.exported),
-                      bytes=destination.stat().st_size,terrain_bytes=terrain_file.stat().st_size,
+                      bytes=destination.stat().st_size,terrain_bytes=terrain_bytes,
                       sha256=hashlib.sha256(destination.read_bytes()).hexdigest())
         return report
+    def write_tile(self,destination,instances):
+        destination.parent.mkdir(parents=True,exist_ok=True);temp=destination.with_suffix(f'.{os.getpid()}.tmp')
+        with temp.open('wb') as f:
+            f.write(struct.pack('<4sII',b'FGS3',3,len(instances)))
+            for record in instances:f.write(struct.pack('<32sQI18f',*record))
+        retry(temp.replace,destination)
+    def build_global(self,mapname):
+        """A map that is one placed WMO (WDT MPHD flag 1, no ADTs): the WMO and its doodads, written into every
+        tile their bounds overlap. Returns (per-tile reports, map info). The WDT's MODF position is in the
+        ADT axes, but a global WMO has no 17066.67 offset (AreaTrigger.dbc positions lie inside the placed
+        bounds only in this frame): translation (-z, -x, y) instead of placement()'s (ZERO-z, ZERO-x, y)."""
+        wdt=instance_maps.read_wdt(self.assets.read(instance_maps.wdt_path(mapname)))
+        if not wdt['global_wmo']:raise ValueError('Not a global WMO map')
+        if not wdt['mwmo'] or not wdt['modf']:raise ValueError('Global WMO map without MWMO/MODF')
+        path=wdt['mwmo'].replace('/','\\').lower();entry=wdt['modf'];uid=entry[1]
+        self.reset();self.skipped_groups=[];self.skip_bad_groups=True
+        try:mesh=self.wmo(path)
+        finally:self.skip_bad_groups=False
+        matrix,translation=placement(entry[2:5],entry[5:8],1.)
+        translation=(0.-entry[4],0.-entry[2],entry[3])
+        self.add_mesh(mesh[:3],matrix,translation,'wmo',uid);self.wmo_doodads(mesh[3],mesh[4],entry[15],matrix,translation,uid)
+        tiles={};outside=0
+        for record in self.instances:
+            x0,y0,x1,y1=record[3],record[4],record[6],record[7]
+            for tx in range(instance_maps.tile_of(x0,y1)[0],instance_maps.tile_of(x0,y0)[0]+1):
+                for ty in range(instance_maps.tile_of(x1,y0)[1],instance_maps.tile_of(x0,y0)[1]+1):
+                    if 0<=tx<64 and 0<=ty<64:tiles.setdefault((tx,ty),[]).append(record)
+                    else:outside+=1
+        if not tiles:raise ValueError('Empty world tile')
+        reports=[]
+        for (tx,ty),records in sorted(tiles.items()):
+            destination=self.output/mapname/f'{tx}_{ty}.fg3'
+            self.write_tile(destination,records)
+            geometry=collections.Counter({1:'m2_instances',2:'wmo_instances',3:'wmo_doodad_instances'}[r[2]] for r in records)
+            reports.append({'map':mapname,'tile':[tx,ty],'vertices':0,'triangles':sum(self.model_triangles[r[0]] for r in records),'materials':0,
+                            'geometry':dict(geometry),'format':'FGS3','instances':len(records),'bytes':destination.stat().st_size,
+                            'sha256':hashlib.sha256(destination.read_bytes()).hexdigest()})
+        info={'kind':'global_wmo','wmo':path,'wmo_uid':uid,'instances':len(self.instances),'tiles_outside_grid':outside,
+              'bounds':[[min(r[3+i] for r in self.instances) for i in range(3)],[max(r[6+i] for r in self.instances) for i in range(3)]],
+              'skipped_wmo_groups':list(self.skipped_groups)}
+        return reports,info
 
+
+def plan_map(assets,mapname):
+    """('adt', tiles) for a map built per ADT tile, ('global', wdt) for a single placed WMO. Continents list
+    their tiles by ADT name; any other map by its WDT's MAIN (so a flagged tile whose ADT is missing is reported)."""
+    if mapname in CONTINENTS:
+        pattern=re.compile(r'world\\maps\\'+re.escape(mapname)+r'\\'+re.escape(mapname)+r'_(\d+)_(\d+)\.adt$',re.I)
+        return 'adt',sorted(tuple(map(int,match.groups())) for name in assets.providers if (match:=pattern.fullmatch(name)))
+    wdt=instance_maps.read_wdt(assets.read(instance_maps.wdt_path(mapname)))
+    return ('global',wdt) if wdt['global_wmo'] else ('adt',wdt['tiles'])
+
+def built_global(output,mapname):
+    """True when an earlier run's report for a global-WMO map lists tiles that are all still there (a global map
+    has no tile list before it is built, so a resumed run cannot tell from the files alone)."""
+    for report in output.glob(f'build-{mapname}-*.json'):
+        try:tiles=[tuple(r['tile']) for r in json.loads(report.read_text())['generated']]
+        except (OSError,ValueError,KeyError,TypeError):continue
+        if tiles and all((output/mapname/f'{x}_{y}.fg3').is_file() for x,y in tiles):return True
+    return False
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--map',default='Azeroth');p.add_argument('--tiles',nargs=4,type=int,metavar=('X0','Y0','X1','Y1'))
+    p=argparse.ArgumentParser();p.add_argument('--map',nargs='+',default=['Azeroth'],help='one or more maps (Map.dbc directory names)');p.add_argument('--tiles',nargs=4,type=int,metavar=('X0','Y0','X1','Y1'))
     p.add_argument('--all-continents',action='store_true');p.add_argument('--output',type=Path,help='default: <client>/world-cache');p.add_argument('--force',action='store_true');p.add_argument('--instanced',action='store_true')
-    client_archives.add_arguments(p);args=p.parse_args();assets=Assets.from_args(args);args.output=args.output or assets.client/'world-cache';builder=InstancedBuilder(assets,args.output) if args.instanced else Builder(assets);start=time.time();records=[];failures=[];deleted=[]
-    maps=CONTINENTS if args.all_continents else [args.map]
+    client_archives.add_arguments(p);args=p.parse_args();assets=Assets.from_args(args);args.output=args.output or assets.client/'world-cache';builder=InstancedBuilder(assets,args.output) if args.instanced else Builder(assets);start=time.time()
+    maps=CONTINENTS if args.all_continents else list(dict.fromkeys(args.map))
     for warning in assets.warnings():print(json.dumps({'archive_warning':warning}),flush=True)   # install_world_cache shows these at once
     try:
+        plans={};plan_errors={}
         for mapname in maps:
-            pattern=re.compile(r'world\\maps\\'+re.escape(mapname)+r'\\'+re.escape(mapname)+r'_(\d+)_(\d+)\.adt$',re.I)
-            tiles=sorted(tuple(map(int,match.groups())) for name in assets.providers if (match:=pattern.fullmatch(name)))
-            if args.tiles:tiles=[(x,y) for x,y in tiles if args.tiles[0]<=x<=args.tiles[2] and args.tiles[1]<=y<=args.tiles[3]]
-            print(json.dumps({'map':mapname,'tiles_total':len(tiles)}),flush=True)
-            for x,y in tiles:
-                destination=args.output/mapname/(f'{x}_{y}.fg3' if args.instanced else f'{x}_{y}.fgs')
-                if destination.exists() and not args.force:continue
-                try:
-                    record=builder.build(mapname,x,y,destination);records.append(record)
-                    print(json.dumps({'tile':f'{mapname}/{x}_{y}','triangles':record['triangles'],'MB':round(record['bytes']/1e6,1),'seconds':round(time.time()-start,1)}),flush=True)
-                except DeletedAsset:
-                    deleted.append({'map':mapname,'tile':[x,y]})
-                except (ValueError,FileNotFoundError,IndexError,KeyError) as exc:
-                    failures.append({'map':mapname,'tile':[x,y],'error':str(exc)});print('ERROR',failures[-1],flush=True)
-        report={'format':'FGS3' if args.instanced else 'FGS2','generated':records,'failures':failures,'deleted_source_tiles':deleted,'missing_assets':sorted(assets.missing),
-                'unsupported_assets':sorted(assets.unsupported),'clamped_wmo_groups':sorted(assets.clamped),'archive_warnings':assets.warnings(),'statistics':dict(assets.stats),'elapsed_seconds':time.time()-start,
-                'limitations':['Static M2 bind pose; animated characters absent.','Terrain albedo is first-layer texture mean; terrain geometry is exact including 4x4 holes.',
+            try:plans[mapname]=plan_map(assets,mapname)
+            except (ValueError,FileNotFoundError) as exc:plan_errors[mapname]=str(exc)
+            if mapname in plans and args.tiles and plans[mapname][0]=='adt':
+                plans[mapname]=('adt',[(x,y) for x,y in plans[mapname][1] if args.tiles[0]<=x<=args.tiles[2] and args.tiles[1]<=y<=args.tiles[3]])
+        # one progress total for the process: a global-WMO map counts as one unit (its tile list is known only once built)
+        print(json.dumps({'tiles_total':sum(len(v) if kind=='adt' else 1 for kind,v in plans.values()),'maps':maps}),flush=True)
+        limitations=['Static M2 bind pose; animated characters absent.','Terrain albedo is first-layer texture mean; terrain geometry is exact including 4x4 holes.',
                 f'BLP2 selected mip up to 128px; alpha cutout threshold {ALPHA_KEY_CUTOFF} (game shadow pass: 128/255 at full resolution).','Additive/translucent batches excluded from opaque lighting geometry.',
-                'M2 active world geosets use first opaque/cutout material per submesh.','Cross-tile placed object duplicates may exist; runtime should deduplicate triangle geometry.'],
-                'archive_priority':[p.relative_to(assets.client).as_posix() for p in assets.paths],'archive_fingerprint':assets.fingerprint()}
-        args.output.mkdir(parents=True,exist_ok=True)
-        (args.output/f'build-{args.map}-{int(time.time())}-{os.getpid()}.json').write_text(json.dumps(report,indent=2)+'\n')
-        print(json.dumps({'generated':len(records),'failures':len(failures),'unsupported':len(assets.unsupported),'clamped_wmo_groups':len(assets.clamped),'seconds':round(time.time()-start,1)}))
+                'M2 active world geosets use first opaque/cutout material per submesh.','Cross-tile placed object duplicates may exist; runtime should deduplicate triangle geometry.']
+        args.output.mkdir(parents=True,exist_ok=True);totals=collections.Counter();seen=dict(stats=collections.Counter(),missing=set(),unsupported=set(),clamped=set())
+        for mapname in maps:
+            records=[];failures=[];deleted=[];empty=[];info=None
+            if mapname in plan_errors:failures.append({'map':mapname,'tile':None,'error':plan_errors[mapname]})
+            elif plans[mapname][0]=='global':
+                if not args.instanced:failures.append({'map':mapname,'tile':None,'error':'A global-WMO map needs --instanced'})
+                elif built_global(args.output,mapname) and not args.force:
+                    print(json.dumps({'tile':f'{mapname}/global','triangles':0,'MB':0.,'seconds':round(time.time()-start,1)}),flush=True)
+                else:
+                    try:
+                        records,info=builder.build_global(mapname)
+                        print(json.dumps({'tile':f'{mapname}/global','triangles':sum(r['triangles'] for r in records),'MB':round(sum(r['bytes'] for r in records)/1e6,1),'seconds':round(time.time()-start,1)}),flush=True)
+                    except (ValueError,FileNotFoundError,IndexError,KeyError) as exc:
+                        failures.append({'map':mapname,'tile':None,'error':str(exc)});print('ERROR',failures[-1],flush=True)
+            else:
+                for x,y in plans[mapname][1]:
+                    destination=args.output/mapname/(f'{x}_{y}.fg3' if args.instanced else f'{x}_{y}.fgs')
+                    if destination.exists() and not args.force:continue
+                    try:
+                        record=builder.build(mapname,x,y,destination);records.append(record)
+                        print(json.dumps({'tile':f'{mapname}/{x}_{y}','triangles':record['triangles'],'MB':round(record['bytes']/1e6,1),'seconds':round(time.time()-start,1)}),flush=True)
+                    except DeletedAsset:
+                        deleted.append({'map':mapname,'tile':[x,y]})
+                    except EmptyTile:   # fully holed terrain and no objects, e.g. most of NexusRaid
+                        empty.append({'map':mapname,'tile':[x,y]});print(json.dumps({'tile':f'{mapname}/{x}_{y}','triangles':0,'MB':0.,'empty':True,'seconds':round(time.time()-start,1)}),flush=True)
+                    except (ValueError,FileNotFoundError,IndexError,KeyError) as exc:
+                        failures.append({'map':mapname,'tile':[x,y],'error':str(exc)});print('ERROR',failures[-1],flush=True)
+            # a report holds what this map added to the shared tallies
+            stats=assets.stats-seen['stats'];missing=assets.missing-seen['missing'];unsupported=assets.unsupported-seen['unsupported'];clamped=assets.clamped-seen['clamped']
+            seen=dict(stats=collections.Counter(assets.stats),missing=set(assets.missing),unsupported=set(assets.unsupported),clamped=set(assets.clamped))
+            report={'format':'FGS3' if args.instanced else 'FGS2','generated':records,'failures':failures,'deleted_source_tiles':deleted,'empty_source_tiles':empty,'missing_assets':sorted(missing),
+                'unsupported_assets':sorted(unsupported),'clamped_wmo_groups':sorted(clamped),'archive_warnings':assets.warnings(),'statistics':dict(stats),'elapsed_seconds':time.time()-start,
+                'limitations':limitations,'archive_priority':[p.relative_to(assets.client).as_posix() for p in assets.paths],'archive_fingerprint':assets.fingerprint()}
+            if info:report['global_wmo']=info
+            (args.output/f'build-{mapname}-{int(time.time())}-{os.getpid()}.json').write_text(json.dumps(report,indent=2)+'\n')
+            totals.update(generated=len(records),failures=len(failures))
+            builder.meshes.clear();builder.mesh_names.clear()   # parsed models are the bulk of the memory; the next map re-reads what it shares
+        print(json.dumps({'generated':totals['generated'],'failures':totals['failures'],'unsupported':len(assets.unsupported),'clamped_wmo_groups':len(assets.clamped),'seconds':round(time.time()-start,1)}))
     finally:assets.close()
 
 

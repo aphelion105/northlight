@@ -104,7 +104,8 @@ inline bool supportedClient() {
         !std::memcmp(actualMap,mapCode,sizeof mapCode);
 }
 
-// Basename corresponds directly to Map.dbc Directory (Azeroth, Kalimdor,...).
+// Basename corresponds directly to Map.dbc Directory (Azeroth, Kalimdor,...). Instance
+// directories may carry an apostrophe or a space (Zul'gurub, Stratholme Raid).
 // On failure no partially read result is published to the caller.
 inline bool readMapAndCamera(char (&map)[64],float (&camera)[3]) {
     static const bool supported=supportedClient();
@@ -117,7 +118,7 @@ inline bool readMapAndCamera(char (&map)[64],float (&camera)[3]) {
     unsigned count=0;
     for(;count<sizeof name && name[count];++count) {
         const char c=name[count];
-        if(!((c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')||c=='_'))return false;
+        if(!((c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')||c=='_'||c=='\''||c==' '))return false;
     }
     if(count==0 || count==sizeof name)return false;
     for(float coordinate:candidateCamera)
