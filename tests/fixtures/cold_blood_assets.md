@@ -11,7 +11,7 @@ Build the optional offline decoder with the configured Zig toolchain:
 
 ```powershell
 zig c++ -std=c++17 -O2 -Isrc/replay tests/cold_blood_texture_probe.cpp -o out/cold_blood_texture_probe.exe
-python scripts/build_spell_asset_manifest.py --output tests/fixtures/cold_blood_assets.json --local-fixtures out/cold-blood-fixtures --native-decoder out/cold_blood_texture_probe.exe
+python scripts/build_spell_asset_manifest.py --output out/cold-blood-manifest.json --local-fixtures out/cold-blood-fixtures --native-decoder out/cold_blood_texture_probe.exe
 python tests/test_spell_asset_manifest.py
 python tests/test_spell_asset_manifest_client.py
 ```
@@ -19,7 +19,9 @@ python tests/test_spell_asset_manifest_client.py
 Set `NORTHLIGHT_CLIENT`, `NORTHLIGHT_STORMLIB` and `NORTHLIGHT_ZIG` for the local
 machine. The client test compiles and executes the native decoder at O0 and O2.
 Extracted mip/vertex bytes and decoded RGBA stay in ignored `out/`; Git contains
-only metadata, hashes, code and tests. Per-mip `rgba_sha256` uses the BLP decoder;
+only the minimal frozen DBC graph, model/texture hashes, decoder reference, code
+and tests. The full local report includes bone and particle tracks. Per-mip
+`rgba_sha256` uses the BLP decoder;
 `runtime_reference` uses the exact ActorTexture decoder on the most detailed mip
 no larger than64. Their RGB565 rounding can differ.
 
