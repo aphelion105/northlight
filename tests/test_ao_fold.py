@@ -88,7 +88,7 @@ checks['AOContactBloom: five Scene taps (centre x4, +-4 px per axis), .125*Optio
     and 'float4 AOContactBloom(float2 uv : TEXCOORD0) : COLOR0' in entry and 'return float4(ContactBloomRgb(uv), AOImpl(uv, false).a);' in entry
     and 'saturate(mad(dot(c, float3(0.2126, 0.7152, 0.0722)), 1.0 / 0.28, -0.72 / 0.28))' in effects
     and 'AOContact(' not in effects and 'float3 Bright(float3 c)' in effects)
-asm = fp.src('AOContactBloom.bin.asm').read_text().splitlines()
+asm = [re.sub(r'^(?:/\*.*?\*/|\d+:)\s*','',line.strip()) for line in fp.src('AOContactBloom.bin.asm').read_text().splitlines()]
 texld = [i for i, l in enumerate(asm) if re.match(r'\s*texld\s', l)]
 flow = [i for i, l in enumerate(asm) if re.match(r'\s*(if|rep|loop|break|ret|call)', l)]
 checks[f'AOContactBloom: its {len(texld)} tex2D reads (texld, s0) precede all flow control (sky/water return included)'] = (
@@ -163,13 +163,15 @@ checks['diagnostic capture: the folded scene dump is labelled pre-AO'] = 'foldSc
 
 # 5. shaders: WorldComposite folds, smoothRemoval reads the AO, removalScale has no floor
 composite = world[world.index('float4 WorldComposite('):]
-checks['WorldComposite: AO in the tent (same weight, nearest fallback), bloom bilinear, original\' before fogPart'] = (
+checks['WorldComposite: AO in the tent, native fog preserved before surface AO, bloom bilinear'] = (
     'sampler2D AmbientOcclusion : register(s10);' in world
-    and 'ao=mad(occlusion,weight,ao);' in composite and 'fallbackAO=occlusion;' in composite
+    and 'ao=mad(occlusion,weight,ao);' in composite and 'fallbackAO=tex2Dlod(AmbientOcclusion,float4(fallbackUV,0,0)).a;' in composite
     and 'ao=relight?(total<.02?fallbackAO:ao/total):1;' in composite
     and 'float3 bloom=tex2D(AmbientOcclusion,uv).rgb;' in composite
-    and composite.index("original.rgb=saturate(mad(bloom,1-saturate(original.rgb*ao),original.rgb*ao));")
-    < composite.index('float3 color=original.rgb;') < composite.index('float3 fogPart=min((1-legacyT)*LegacyFogColor.rgb,original.rgb);')
+    and composite.index('float3 fogPart=min((1-legacyT)*LegacyFogColor.rgb,original.rgb);')
+    < composite.index('original.rgb=mad(original.rgb-fogPart,ao,fogPart);')
+    < composite.index('original.rgb=saturate(mad(bloom,1-saturate(original.rgb),original.rgb));')
+    < composite.index('float3 color=original.rgb;')
     < composite.index('if(relight){\n        // Thin receivers'))
 checks['smoothRemoval: both Scene reads times the AO alpha; removalScale without the .0001 floor'] = (
     world.count('tex2Dlod(Scene,float4(q,0,0)).rgb*tex2Dlod(AmbientOcclusion,float4(q,0,0)).a') == 1
@@ -178,8 +180,8 @@ checks['smoothRemoval: both Scene reads times the AO alpha; removalScale without
 wm = json.loads(fp.src('world-shader-build.json').read_text())['shaders']
 # 0.3.185: the removal smoothing (Scene, AO, baseline reads) moved to RemovalSmooth; TemporalLight keeps no s0/s10/s12 read and gains s9.
 checks[f"world manifest: WorldComposite {wm['WorldComposite']['static_instruction_slots']} <= 512 with s10; RemovalSmooth {wm['RemovalSmooth']['static_instruction_slots']} (s10 AO) <= 512; TemporalLight {wm['TemporalLight']['static_instruction_slots']} == 293"] = (
-    wm['WorldComposite']['static_instruction_slots'] <= 512 and wm['WorldComposite']['samplers'] == [0, 1, 2, 8, 9, 10, 11, 12, 13]  # 0.3.202: the SM3 limit (512) replaces the old 500 headroom guard; the rain mask adds s13, the dither s2
-    and wm['RemovalSmooth']['static_instruction_slots'] <= 512 and wm['RemovalSmooth']['samplers'] == [0, 1, 8, 10, 12, 14]
+    wm['WorldComposite']['static_instruction_slots'] <= 512 and wm['WorldComposite']['samplers'] == [0, 1, 2, 8, 9, 10, 11, 12, 13, 15]  # s15 is the shared distance MRT.
+    and wm['RemovalSmooth']['static_instruction_slots'] <= 512 and wm['RemovalSmooth']['samplers'] == [0, 1, 8, 10, 12, 14, 15]
     and wm['TemporalLight']['static_instruction_slots'] == 293 and wm['TemporalLight']['samplers'] == [1, 8, 9, 14, 15])
 
 # 6. no new key
