@@ -330,7 +330,7 @@ int main(){
   h.issue({3,5,4});assert(h.settled());{std::lock_guard<std::mutex> lock(h.f.mutex);assert(h.f.published->map=="Azeroth"&&h.f.published->bvh&&h.f.buildsDone==2);}
   auto second=entry(before+3);assert(second!=first);
   h.issue({3,5,4});assert(h.settled());
-  unsigned entries=0,ends=0;{std::lock_guard<std::mutex> lock(logMutex);for(const auto& l:logLines){if(l=="WORLD cache absent map=SunkenTemple; geometry builds skipped until the map changes")++entries;if(l.rfind("WORLD cache absent end map=SunkenTemple",0)==0)++ends;}}
+  unsigned entries=0,ends=0;{std::lock_guard<std::mutex> lock(logMutex);for(const auto& l:logLines){if(l=="WORLD cache absent map=\"SunkenTemple\"; geometry builds skipped until the map changes")++entries;if(l.rfind("WORLD cache absent end map=\"SunkenTemple\"",0)==0)++ends;}}
   assert(entries==2&&ends==2); /* the end line is logged when the map changes back */std::puts("uncached map: one probe and one error snapshot per entry, camera moves start no build, continent builds again");}
  std::puts("PASS concurrent geometry build: moves solved on the previous generation during builds; settled atlas bit-identical to a sequential final-generation solve; still-camera deferral; stop mid-build; builder and worker faults join; map change, build failure and stale adoption during builds; orphaned staged upload released (0.3.156); same-map teleports recover with a still camera; 0.3.169 120/150 hold adopts without a stall; lead region idles without spinning");
 }

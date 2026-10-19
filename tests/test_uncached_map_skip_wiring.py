@@ -27,8 +27,8 @@ checks={
  'the error is published once; a superseded publication retries without another probe':
   'if(!uncachedPublished){result->message="No cached geometry for "+r.map;uncachedPublished=publishError();}' in gate and 'else if(r.id!=uncachedSkippedId){uncachedSkippedId=r.id;++uncachedSkips;}' in gate and gate.rstrip().endswith('}'),
  'entry line unconditional, end line Diagnostics-gated':
-  gate.count('logf("WORLD cache absent map=%s; geometry builds skipped until the map changes"')==1
-  and 'if(!cacheMapHasTiles&&NorthlightDiagnostics::enabled())logf("WORLD cache absent end map=%s skippedBuilds=%u"' in gate,
+  gate.count('logf("WORLD cache absent map=\\"%s\\"; geometry builds skipped until the map changes"')==1
+  and 'if(!cacheMapHasTiles&&NorthlightDiagnostics::enabled())logf("WORLD cache absent end map=\\"%s\\" skippedBuilds=%u"' in gate,
  'builder memo state':'std::string cacheCheckedMap;bool cacheMapHasTiles=true,uncachedPublished=false;unsigned uncachedSkips=0;uint64_t uncachedSkippedId=0;' in work,
  'the GI worker clears only on the first drop (a region still held), and restarts a stall episode begun on another map, on a drop or an adoption':
   'if(bvh){' in drop and drop.index('if(bvh){')<drop.index('probeCache.clear();')<drop.index('dynamicProbes.reset(')<drop.index('bvh.reset();')

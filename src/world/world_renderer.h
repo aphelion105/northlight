@@ -247,7 +247,7 @@ public:
         if(started&&captureFrequency.QuadPart>0){m.ms=double(QpcClock::now()-started)*1000.0/double(captureFrequency.QuadPart);m.peakMs=std::max(m.peakMs,m.ms);}
         const DWORD now=GetTickCount();
         if(NorthlightDiagnostics::enabled()&&(!m.lastLog||now-m.lastLog>=10000)){m.lastLog=now;
-            logf("CELESTIAL terrain mask map=%s generation=%llu draws=%u triangles=%llu candidates=%zu accepted=%u runs=%u listed=%d redraws=%u,%u reuses=%u,%u ms=%.3f peakMs=%.3f",
+            logf("CELESTIAL terrain mask map=\"%s\" generation=%llu draws=%u triangles=%llu candidates=%zu accepted=%u runs=%u listed=%d redraws=%u,%u reuses=%u,%u ms=%.3f peakMs=%.3f",
                 uploadedMap.c_str(),(unsigned long long)meshGeneration,m.runs,(unsigned long long)m.triangles,m.candidates,m.accepted,m.runs,int(m.listed),
                 m.redraws[0],m.redraws[1],m.reuses[0],m.reuses[1],m.ms,m.peakMs);
             m.redraws[0]=m.redraws[1]=m.reuses[0]=m.reuses[1]=0;m.peakMs=0;}
@@ -1169,7 +1169,7 @@ private:
             logf("STATIC SHADOW PUBLISH publications=%llu publishMs=%.3f peakMs=%.3f exactDiffs=%llu diffFallbacks=%llu ownerTests=%llu idleReleases=%llu exact=%u grouped=%u idle=%u",
                  (unsigned long long)g.publications,g.publishMs,g.publishPeakMs,(unsigned long long)g.publishDiffs,(unsigned long long)g.publishDiffFallbacks,(unsigned long long)g.ownerTests,(unsigned long long)g.planIdleReleases,
                  unsigned(StaticShadow::GpuCache::ExactPublishDiff),unsigned(StaticShadow::GpuCache::GroupedOwnerInvalidation),unsigned(StaticShadow::GpuCache::IdlePlanRelease));
-            logf("STATIC SHADOW map=%s generation=%llu placements=%u cpuModels=%u readyGPU=%u pendingCPU=%u pendingGPU=%u metadataReads=%llu modelReads=%llu reused=%llu cpuMiB=%.2f cpuPeakMiB=%.2f transientPeakMiB=%.2f gpuMiB=%.2f gpuPeakMiB=%.2f uploadBytes=%llu totalUploadBytes=%llu uploadMs=%.3f readMs=%.3f packMs=%.3f maxJobMs=%.3f latencyMs=%.3f instancing=%u draws=%llu instances=%llu cpuFailures=%llu gpuFailures=%llu dedupSkipped=%u complete=%u dedupAttempts=%u dedupMatches=%u localOwners=%zu metadataMiB=%.2f selectionMs=%.3f m2Skipped=%u m2Verified=%u m2Rejected=%u",
+            logf("STATIC SHADOW map=\"%s\" generation=%llu placements=%u cpuModels=%u readyGPU=%u pendingCPU=%u pendingGPU=%u metadataReads=%llu modelReads=%llu reused=%llu cpuMiB=%.2f cpuPeakMiB=%.2f transientPeakMiB=%.2f gpuMiB=%.2f gpuPeakMiB=%.2f uploadBytes=%llu totalUploadBytes=%llu uploadMs=%.3f readMs=%.3f packMs=%.3f maxJobMs=%.3f latencyMs=%.3f instancing=%u draws=%llu instances=%llu cpuFailures=%llu gpuFailures=%llu dedupSkipped=%u complete=%u dedupAttempts=%u dedupMatches=%u localOwners=%zu metadataMiB=%.2f selectionMs=%.3f m2Skipped=%u m2Verified=%u m2Rejected=%u",
                  staticScene->map.c_str(),(unsigned long long)staticScene->mapGeneration,c.placements,c.models,g.readyModels,c.pendingModels,g.pendingModels,
                  (unsigned long long)c.metadataReads,(unsigned long long)c.modelReads,(unsigned long long)c.modelReuses,
                  double(c.cpuBytes)/1048576,double(c.cpuPeak)/1048576,double(c.transientPeak)/1048576,double(g.residentBytes)/1048576,double(g.peakBytes)/1048576,
@@ -1293,9 +1293,9 @@ private:
             // Issue #40: a map without world-cache tiles (dungeons, raids, battlegrounds) is checked
             // once per entry; its error is published once and no build runs until the map changes.
             if(r.map!=cacheCheckedMap){
-                if(!cacheMapHasTiles&&NorthlightDiagnostics::enabled())logf("WORLD cache absent end map=%s skippedBuilds=%u",cacheCheckedMap.c_str(),uncachedSkips);
+                if(!cacheMapHasTiles&&NorthlightDiagnostics::enabled())logf("WORLD cache absent end map=\"%s\" skippedBuilds=%u",cacheCheckedMap.c_str(),uncachedSkips);
                 cacheCheckedMap=r.map;cacheMapHasTiles=worldCacheHasTiles(r.map);uncachedPublished=false;uncachedSkips=0;entryLift.clear();reachState={};terrainSizeHint={};
-                if(!cacheMapHasTiles)logf("WORLD cache absent map=%s; geometry builds skipped until the map changes",r.map.c_str());
+                if(!cacheMapHasTiles)logf("WORLD cache absent map=\"%s\"; geometry builds skipped until the map changes",r.map.c_str());
             }
             if(!cacheMapHasTiles){
                 if(!uncachedPublished){result->message="No cached geometry for "+r.map;uncachedPublished=publishError();}
@@ -1487,7 +1487,7 @@ private:
                 float eye[]={center.x,center.y,center.z};
                 if(lightCache.loadLights(r.map,eye,520,built->rawLights))for(auto& light:built->rawLights)
                     built->lights.push_back({vec(light.position),vec(light.diffuse)*3.14159265f,light.attenuationStart,light.attenuationEnd});
-                if(NorthlightDiagnostics::enabled())logf("GI local lights map=%s count=%zu (indirect only; authored direct light retained)",r.map.c_str(),built->lights.size());
+                if(NorthlightDiagnostics::enabled())logf("GI local lights map=\"%s\" count=%zu (indirect only; authored direct light retained)",r.map.c_str(),built->lights.size());
                 const auto& region=paletteRegion->region;
                 const NorthlightRegionalFog::ZoneScale* fogScale=nullptr;
 #if NORTHLIGHT_DEV_TUNING
@@ -1495,7 +1495,7 @@ private:
                 fogScale=&devFogScale;
 #endif
                 built->fog=std::make_shared<NorthlightRegionalFog::Field>(NorthlightRegionalFog::buildField(replacement->scene(),region,center.x,center.y,fogScale));
-                if(NorthlightDiagnostics::enabled())logf("REGIONAL FOG map=%s tiles=%zu missing=%u groundCells=%u fogCells=%u airCells=%u indoorCells=%u citySurfaceCells=%u",r.map.c_str(),region.tiles.size(),region.missing,built->fog->groundCells,built->fog->fogCells,built->fog->airCells,built->fog->indoorCells,built->fog->citySurfaceCells);
+                if(NorthlightDiagnostics::enabled())logf("REGIONAL FOG map=\"%s\" tiles=%zu missing=%u groundCells=%u fogCells=%u airCells=%u indoorCells=%u citySurfaceCells=%u",r.map.c_str(),region.tiles.size(),region.missing,built->fog->groundCells,built->fog->fogCells,built->fog->airCells,built->fog->indoorCells,built->fog->citySurfaceCells);
                 const double environmentMs=phaseElapsed();const auto& memoryAfter=workerAdmissionProbe.stats();
                 if(NorthlightDiagnostics::enabled())logf("WORLD geometry phases buildId=%llu localMs=%.3f terrainLoadMs=%.3f shadowPlanMs=%.3f pagesMs=%.3f environmentMs=%.3f memoryMs=%.3f memoryRequests=%llu witnessHits=%llu fullScans=%llu regionQueries=%llu memoryTimeIncluded=1",
                     (unsigned long long)r.id,localPhaseMs,terrainLoadMs,shadowPlanMs,pagesMs,environmentMs,workerMemoryMs-memoryMsBefore,
@@ -1853,7 +1853,7 @@ private:
     // while effects are off (F10): recovery then happens on the first frame after re-enabling.
     void releaseOrphanedPending(const char* site){
         if(!pendingOrphaned(pendingMesh.get(),active.get()))return;
-        logf("WORLD pending mesh released orphan=%s site=%s map=%s",!active?"inactive":pendingMesh->map!=active->map?"map":"replaced",site,pendingMesh->map.c_str());
+        logf("WORLD pending mesh released orphan=%s site=%s map=\"%s\"",!active?"inactive":pendingMesh->map!=active->map?"map":"replaced",site,pendingMesh->map.c_str());
         if(active&&pendingMesh->plan&&pendingMesh->plan!=active->meshPlan)pendingMesh->plan->payload.discard(); /* 0.3.214 (task 42): a superseded plan is never uploaded */
         meshStore.cancel(); /* 0.3.216: claimed buffers return to idle; the written ones already have an invalid key */
         retirePendingCpu();pendingMesh.reset();meshRetry.clear();
@@ -1865,7 +1865,7 @@ private:
         const auto& w=payloadRebuildAsked;const DWORD now=GetTickCount();
         if(!w.owner_before(active->bvh)&&!active->bvh.owner_before(w)&&DWORD(now-payloadRebuildTick)<15000u)return;
         payloadRebuildAsked=active->bvh;payloadRebuildTick=now;++payloadRebuilds;
-        deferLogf("WORLD mesh upload payload was released after commit; GPU mesh lost, rebuilding the generation map=%s count=%u",active->map.c_str(),payloadRebuilds);
+        deferLogf("WORLD mesh upload payload was released after commit; GPU mesh lost, rebuilding the generation map=\"%s\" count=%u",active->map.c_str(),payloadRebuilds);
         {std::lock_guard<std::mutex> lock(mutex);geometryRebuild=true;pending=true;}
         wake.notify_one();
     }
@@ -2460,7 +2460,7 @@ public:
         paletteFrameMap=map;paletteFrameValid=true;
         DWORD now=GetTickCount();if(NorthlightDiagnostics::enabled()&&(!paletteLogAt||now-paletteLogAt>=10000)){paletteLogAt=now;
             uint32_t zone=region&&region->map==map?NorthlightRegionalFog::zoneAt(region->region,camera[0],camera[1]):0;
-            logf("CELESTIAL palette map=%s zone=%u moonDisc=(%.3f %.3f %.3f) lightMix=%.3f/%.3f strength=%.3f/%.3f",map,zone,framePalette.disc[1][0],framePalette.disc[1][1],framePalette.disc[1][2],framePalette.mix[0],framePalette.mix[1],framePalette.strength[0],framePalette.strength[1]);
+            logf("CELESTIAL palette map=\"%s\" zone=%u moonDisc=(%.3f %.3f %.3f) lightMix=%.3f/%.3f strength=%.3f/%.3f",map,zone,framePalette.disc[1][0],framePalette.disc[1][1],framePalette.disc[1][2],framePalette.mix[0],framePalette.mix[1],framePalette.strength[0],framePalette.strength[1]);
         }return framePalette;
     }
     // the per-frame glow hue for the celestial renderer (sun: the game's band 10
@@ -2504,7 +2504,7 @@ public:
         valid=true;traceContext=3;projection[0]=rows[0];projection[1]=rows[5];projection[2]=rows[11];
         readOriginalFog(30,it->second->fog);if(legacyFogKnown)traceFog=1;
         updateWorldContext(map,camera.camera,globalRead?&light:nullptr);
-        if(++wmoContexts==1||(wmoContexts%600==0&&NorthlightDiagnostics::enabled()))logf("CITY WMO context accepted map=%s count=%u fogProof=%d globalLight=%d",map,wmoContexts,it->second->fog,globalRead);
+        if(++wmoContexts==1||(wmoContexts%600==0&&NorthlightDiagnostics::enabled()))logf("CITY WMO context accepted map=\"%s\" count=%u fogProof=%d globalLight=%d",map,wmoContexts,it->second->fog,globalRead);
         return true;
     }
     void terrainContext(){
@@ -2523,7 +2523,7 @@ public:
         traceContext=globalRead?1u:2u;
         bool agreement=decoded;
         if(!agreement){
-            if(++contextRejects==1||(contextRejects%3600==0&&NorthlightDiagnostics::enabled()))logf("WORLD context rejected: registers=%d affineLight=%d clientRead=%d cameraAgreement=%d map=%s shaderCamera=(%.2f %.2f %.2f) gameCamera=(%.2f %.2f %.2f) light=(%.3f %.3f %.3f) count=%u",registers,decoded,gameContext,agreement,map,context.camera[0],context.camera[1],context.camera[2],camera[0],camera[1],camera[2],lighting[0],lighting[1],lighting[2],contextRejects);return;}
+            if(++contextRejects==1||(contextRejects%3600==0&&NorthlightDiagnostics::enabled()))logf("WORLD context rejected: registers=%d affineLight=%d clientRead=%d cameraAgreement=%d map=\"%s\" shaderCamera=(%.2f %.2f %.2f) gameCamera=(%.2f %.2f %.2f) light=(%.3f %.3f %.3f) count=%u",registers,decoded,gameContext,agreement,map,context.camera[0],context.camera[1],context.camera[2],camera[0],camera[1],camera[2],lighting[0],lighting[1],lighting[2],contextRejects);return;}
         if(++cameraChecks==1||(cameraChecks%3600==0&&NorthlightDiagnostics::enabled()))logf("CITY camera audit read=%d terrainAgreement=%d reject=%s permissiveSignatures=%d failingSignature=%d",cameraRead,cameraMatches,NorthlightWorldCamera::rejectName(why.reason),int(NorthlightWorldCamera::kPermissiveCameraSignatures),NorthlightWorldCamera::failingSignature());
         if(globalLighting)globalLightHold=std::move(lightHold);
         valid=true;projection[0]=p[0];projection[1]=p[5];projection[2]=p[11];
@@ -2545,7 +2545,7 @@ public:
     }
     void updateWorldContext(const char* map,const float* camera,const NorthlightWmoContext::Lighting* global=nullptr){
         if(unsigned fault=workerFault()){if(!failed)logf("WORLD worker stopped: %s; restart required",workerFaultMessage(fault));failed=true;valid=false;return;}
-        if(!reportedContext){logf("WORLD context validated: map=%s camera=(%.2f %.2f %.2f) sun=(%.3f %.3f %.3f)",map,camera[0],camera[1],camera[2],context.lightDirection[0],context.lightDirection[1],context.lightDirection[2]);reportedContext=true;}
+        if(!reportedContext){logf("WORLD context validated: map=\"%s\" camera=(%.2f %.2f %.2f) sun=(%.3f %.3f %.3f)",map,camera[0],camera[1],camera[2],context.lightDirection[0],context.lightDirection[1],context.lightDirection[2]);reportedContext=true;}
         {   // The camera's liquid type from the proven predictor reads (wmo_context.h); unproven frames hold the state for UnderwaterFade::HoldMs.
             const bool known=global&&global->predictors;const DWORD now=GetTickCount();
             underwaterFade.update(map,known,known&&global->liquidType!=0,now);
@@ -2631,7 +2631,7 @@ public:
             // 0.3.156 watchdog (log only): the builder waited for a free geometry generation
             // for GenerationStallLogMs; name the holders once per episode. Nothing is dropped.
             if(generationStall.due(GetTickCount(),GenerationStallLogMs))
-                logf("WORLD geometry stalled ms=%lu pending=%u pendingMap=%s pendingActive=%u pendingPublished=%u active=%u activeId=%llu activeCenter=(%.1f %.1f %.1f) published=%u publishedId=%llu publishedMap=%s publishedCenter=(%.1f %.1f %.1f) publishedApplicable=%u camera=(%.1f %.1f %.1f) map=%s",
+                logf("WORLD geometry stalled ms=%lu pending=%u pendingMap=\"%s\" pendingActive=%u pendingPublished=%u active=%u activeId=%llu activeCenter=(%.1f %.1f %.1f) published=%u publishedId=%llu publishedMap=\"%s\" publishedCenter=(%.1f %.1f %.1f) publishedApplicable=%u camera=(%.1f %.1f %.1f) map=\"%s\"",
                     (unsigned long)(GetTickCount()-generationStall.since),unsigned(bool(pendingMesh)),pendingMesh?pendingMesh->map.c_str():"-",unsigned(pendingMesh&&active&&pendingMesh->bvh==active->bvh),unsigned(pendingMesh&&published&&pendingMesh->bvh==published->bvh),
                     unsigned(bool(active)),(unsigned long long)(active?active->requestId:0),active?active->center.x:0.f,active?active->center.y:0.f,active?active->center.z:0.f,
                     unsigned(bool(published)),(unsigned long long)(published?published->requestId:0),published?published->map.c_str():"-",published?published->center.x:0.f,published?published->center.y:0.f,published?published->center.z:0.f,
@@ -4392,7 +4392,7 @@ public:
                 char suffix[80];std::snprintf(suffix,sizeof suffix,"/capture-%u-constants.f32",capture);
                 if(FILE* f=std::fopen((directory+suffix).c_str(),"wb")){std::fwrite(actual,sizeof actual,1,f);std::fclose(f);}
             }
-            logf("WORLD GPU diagnostic capture=%u map=%s eye=(%.3f %.3f %.3f) moon=(%.6f %.6f %.6f) constantsHRESULT=%08lx",capture,active->map.c_str(),context.camera[0],context.camera[1],context.camera[2],sourceDirections[1].x,sourceDirections[1].y,sourceDirections[1].z,(unsigned long)read);
+            logf("WORLD GPU diagnostic capture=%u map=\"%s\" eye=(%.3f %.3f %.3f) moon=(%.6f %.6f %.6f) constantsHRESULT=%08lx",capture,active->map.c_str(),context.camera[0],context.camera[1],context.camera[2],sourceDirections[1].x,sourceDirections[1].y,sourceDirections[1].z,(unsigned long)read);
             using NorthlightWorldDiagnostics::dump;
             dump(d,shadowSurface[firstSource*2],directory,"shadow-near",capture);
             dump(d,shadowSurface[firstSource*2+1],directory,"shadow-far",capture);

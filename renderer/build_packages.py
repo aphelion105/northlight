@@ -57,7 +57,7 @@ APP_FILES = [
     'scripts/install_world_cache.py', 'scripts/client_identity.py',
     'renderer/northlight_install.py', 'renderer/migrate_mac_proxy.py', 'renderer/windows-package/install.py',
     'renderer/world_scene_builder.py', 'renderer/m2_visibility.py', 'renderer/world_lights_builder.py',
-    'renderer/world_light_placements.py', 'renderer/outdoor_light_profiles.py', 'renderer/outdoor-light-profiles.json',
+    'renderer/instance_maps.py', 'renderer/world_light_placements.py', 'renderer/outdoor_light_profiles.py', 'renderer/outdoor-light-profiles.json',
     'renderer/regional_fog_builder.py', 'renderer/build_celestial_disc_assets.py',
     'tests/validate_world_cache.py', 'src/sky/forest_regions.inc',
 ]

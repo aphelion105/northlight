@@ -8,6 +8,7 @@ unchanged; an old full Windows package is restored first. The pipeline scripts a
 runner and client identification by a stub. No game, Wine or Windows binary runs."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
+import builtins
 import hashlib
 import importlib.util
 import io
@@ -21,6 +22,7 @@ from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('northlight_install', fp.src('northlight_install.py'))
 fi = importlib.util.module_from_spec(spec); spec.loader.exec_module(fi)
+import instance_maps   # on the path since northlight_install added renderer/
 INSTALL = fi.INSTALL
 mig = fi.migrate()
 sha = lambda b: hashlib.sha256(b).hexdigest()
@@ -28,6 +30,7 @@ PROXY = b'MZ Northlight renderer 0.3.162; PROXY module=%ls root=%ls'
 DXVK = b'MZ DXVK: \0\0\0v1.10.3-20230507-async (macOS)\0'
 CACHE_FILES = {'Azeroth/32_48.fg3': b'tile' * 50, 'models/0123.fgs': b'model' * 99, 'fog/Azeroth/32_48.frf': b'fog',
                'lights/Azeroth.fgl': b'lights', 'celestial/sun.fct': b'sun'}
+INSTANCE_KEY = b'\x07instance'.ljust(32, b'.')   # the model key of every fake instance tile
 ART = b'MPQ\x1a fake art layer'
 BASE = ['common', 'common-2', 'expansion', 'lichking', 'patch', 'patch-2', 'patch-3']
 
@@ -137,6 +140,13 @@ class Base(unittest.TestCase):
             (out / 'art-layer-manifest.json').write_text(json.dumps({'targets': targets, 'steps': [
                 {'step': 'relighting'}, {'step': 'mulgore'}, {'step': 'outdoor_sun', 'skipped': 'no HD sky'}]}))
             return 0, {'targets': targets}
+        if Path(script).name == 'install_world_cache.py' and '--instances-plan' in args:
+            keys = opt('--instances').split(',')
+            old = (fi.read_json(Path(opt('--output')) / fi.INSTANCES) or {}).get('groups', {})
+            return 0, {'event': 'instances_plan', 'build': [k for k in keys if k not in old],
+                       'keep': [k for k in keys if k in old], 'remove': [k for k in old if k not in keys]}
+        if Path(script).name == 'install_world_cache.py' and '--instances' in args:
+            return self.fake_instances(Path(opt('--output')), opt('--instances'))
         if Path(script).name == 'install_world_cache.py':
             out = Path(opt('--output'))
             (out / 'fog').mkdir(parents=True, exist_ok=True)
@@ -144,6 +154,29 @@ class Base(unittest.TestCase):
                                                                    'tolerated': {'archive_warnings': self.archive_warnings}}))
             return 0, {'event': 'done'}
         raise AssertionError(script)
+
+    def fake_instances(self, out, spec):
+        """install_world_cache.py --instances: a tile and a model per map of the selected groups, the manifest."""
+        keys = [] if spec == 'none' else spec.split(',')
+        old = (fi.read_json(out / fi.INSTANCES) or {}).get('groups', {})
+        for key in old:
+            if key not in keys:
+                for m in instance_maps.maps_for([key]):
+                    shutil.rmtree(out / m, ignore_errors=True)
+        for key in keys:
+            if key not in old:
+                for m in instance_maps.maps_for([key]):
+                    (out / m).mkdir(parents=True, exist_ok=True)
+                    (out / m / '1_1.fg3').write_bytes(b'FGS3' + (3).to_bytes(4, 'little') + (1).to_bytes(4, 'little') +
+                                                      INSTANCE_KEY + bytes(84))
+        (out / 'models').mkdir(parents=True, exist_ok=True)
+        (out / 'models' / (INSTANCE_KEY.hex() + '.fgs')).write_bytes(b'instance model')
+        if keys:
+            (out / fi.INSTANCES).write_text(json.dumps({'groups': {k: {'maps_built': instance_maps.maps_for([k])} for k in keys}}))
+        else:
+            (out / fi.INSTANCES).unlink(missing_ok=True)
+        return 0, {'event': 'done', 'built': [k for k in keys if k not in old], 'kept': [k for k in keys if k in old],
+                   'removed': [k for k in old if k not in keys]}
 
     def assert_untouched(self):
         self.assertEqual(tree(self.client), self.before)
@@ -755,6 +788,241 @@ class Install(Base):
             self.assertEqual(r.returncode, 0, name + r.stderr)
         self.assertEqual(self.installer().child_command('s.py', ['--a'])[:5], [sys.executable, '-I', '-B', '-X', 'utf8'])
 
+    # ---- the instance (dungeon and raid) world cache layer ----
+
+    def instance_calls(self):
+        return [a for n, a in self.calls if n == 'install_world_cache.py' and '--instances' in a and '--instances-plan' not in a]
+
+    def tty(self, *answers):
+        """A terminal that types `answers`; returns the prompts shown."""
+        prompts, typed = [], list(answers)
+        stdin = type('Tty', (), {'isatty': lambda self: True})()
+
+        def fake_input(prompt=''):
+            prompts.append(prompt)
+            return typed.pop(0)
+        for p in (patch.object(sys, 'stdin', stdin), patch.object(builtins, 'input', fake_input)):
+            p.start(); self.addCleanup(p.stop)
+        return prompts
+
+    def test_instances_default_to_none_and_start_no_process(self):
+        report = self.installer().install(self.client)
+        self.assertEqual(self.instance_calls(), [])
+        self.assertEqual(report['instances'], {'built': [], 'kept': [], 'removed': []})
+        self.assertIn('Instance world cache: none', self.last_output)
+        self.assertFalse((self.client / 'world-cache' / fi.INSTANCES).exists())
+
+    def test_instances_argument_skips_the_question_and_reaches_the_orchestrator(self):
+        prompts = self.tty()
+        report = self.installer().install(self.client, instances='1 6')
+        self.assertEqual(prompts, [])
+        (args,) = self.instance_calls()
+        self.assertEqual(args[args.index('--instances') + 1], 'classic-dungeons,wotlk-raids')
+        self.assertEqual(Path(args[args.index('--output') + 1]), self.client / 'world-cache')
+        for name in ('--client', '--locale', '--without', '--progress'):
+            self.assertIn(name, args)
+        self.assertEqual(args[args.index('--progress') + 1], 'human')
+        self.assertEqual(report['instances']['built'], ['classic-dungeons', 'wotlk-raids'])
+        self.assertIn('Instance world cache: Classic dungeons (built), Wrath raids (built)', self.last_output)
+        for m in instance_maps.maps_for(['wotlk-raids']):
+            self.assertTrue((self.client / 'world-cache' / m / '1_1.fg3').is_file())
+
+    def test_instances_jobs_argument_is_passed(self):
+        self.installer().install(self.client, instances='all', jobs=2)
+        (args,) = self.instance_calls()
+        self.assertEqual(args[args.index('--jobs') + 1], '2')
+        self.assertEqual(args[args.index('--instances') + 1], ','.join(instance_maps.KEYS))
+
+    def test_bad_instances_argument_is_refused_before_anything_is_written(self):
+        with self.assertRaises(fi.Refusal) as e:
+            self.installer().install(self.client, instances='7')
+        self.assertIn("Unknown instance group: '7'", str(e.exception))
+        self.assert_untouched()
+
+    def test_previous_selection_is_remembered_and_none_removes_it(self):
+        self.installer().install(self.client, instances='classic-raids,tbc-raids')
+        report = self.installer().install(self.client)   # no argument, no terminal: what the client has
+        (args,) = self.instance_calls()[1:]
+        self.assertEqual(args[args.index('--instances') + 1], 'classic-raids,tbc-raids')
+        self.assertEqual(report['instances'], {'built': [], 'kept': ['classic-raids', 'tbc-raids'], 'removed': []})
+        self.assertIn('Instance world cache: Classic raids (kept), TBC raids (kept)', self.last_output)
+        self.assertIn('already installed; nothing changed', self.last_output)
+        report = self.installer().install(self.client, instances='none')
+        self.assertEqual(self.instance_calls()[-1][self.instance_calls()[-1].index('--instances') + 1], 'none')
+        self.assertEqual(report['instances']['removed'], ['classic-raids', 'tbc-raids'])
+        self.assertIn('Instance world cache: Classic raids (removed), TBC raids (removed)', self.last_output)
+        self.assertFalse((self.client / 'world-cache' / fi.INSTANCES).exists())
+
+    def test_the_question_lists_the_groups_and_takes_typed_answers(self):
+        prompts = self.tty('2 6')
+        inst = self.installer()
+        self.assertEqual(inst.choose_instances(self.client, None), ['classic-raids', 'wotlk-raids'])
+        text = inst.out.getvalue()
+        self.assertIn('Dungeon and raid world cache (optional: GI, AO and world shadows inside instances).', text)
+        for g in instance_maps.GROUPS:
+            self.assertIn(f'{g["label"]}', text)
+            self.assertIn(f'~{g["est_gb"]:g} GB  ~{g["est_minutes"]:g} min', text)
+        self.assertIn('Groups to build (e.g. "1 2 6"), "all", "none", or Enter to keep: none', prompts[0])
+
+    def test_pick_rules(self):
+        inst = self.installer()
+        prompts = self.tty('', 'bogus', '3', 'x', 'y', 'all')
+        self.assertEqual(inst.choose_instances(self.client, None), [])                      # Enter keeps the default
+        self.assertEqual(inst.choose_instances(self.client, None), ['tbc-dungeons'])        # invalid once, then valid
+        self.assertEqual(inst.choose_instances(self.client, None), [])                      # invalid twice: the default
+        self.assertEqual(len(prompts), 5)
+        self.assertEqual(inst.choose_instances(self.client, None), list(instance_maps.KEYS))
+        self.assertIn('Unknown instance group', inst.out.getvalue())
+        yes = self.installer(yes=True)
+        self.tty()                                                                          # --yes never asks
+        self.assertEqual(yes.choose_instances(self.client, None), [])
+        (self.client / 'world-cache').mkdir()
+        (self.client / 'world-cache' / fi.INSTANCES).write_text(json.dumps({'groups': {'wotlk-dungeons': {}, 'bogus': {}}}))
+        self.assertEqual(yes.choose_instances(self.client, None), ['wotlk-dungeons'])       # ... it keeps what is there
+        self.assertEqual(yes.choose_instances(self.client, 'none'), [])                     # the argument wins
+        prompts = self.tty('1')
+        self.assertEqual(self.installer().choose_instances(self.client, None), ['classic-dungeons'])
+        self.assertIn('Enter to keep: Wrath dungeons >', prompts[0])
+
+    def test_no_terminal_takes_the_default(self):
+        with patch.object(sys, 'stdin', None):
+            self.assertEqual(self.installer().choose_instances(self.client, None), [])
+
+    def test_disk_need_grows_with_the_selection(self):
+        extract = sum(m['bytes'] for m in self.manifest['files'].values())
+        enough = fi.MIN_FREE + extract
+        inst = self.installer()
+        inst.free_bytes = lambda path: enough
+        inst.plan_install(self.client, None, None, None, True, True, 'none')
+        for spec, groups in [('classic-raids', ['classic-raids']), ('all', instance_maps.KEYS)]:
+            inst = self.installer()
+            inst.free_bytes = lambda path: enough
+            with self.assertRaises(fi.Refusal) as e:
+                inst.plan_install(self.client, None, None, None, True, True, spec)
+            need = enough + int(sum(g['est_gb'] for g in instance_maps.GROUPS if g['key'] in groups) * fi.INSTANCE_DISK * fi.GIB)
+            self.assertIn(f'{need / fi.GIB:.1f} GiB needed', str(e.exception))
+            inst.free_bytes = lambda path: need
+            inst.plan_install(self.client, None, None, None, True, True, spec)
+        self.assert_untouched()
+
+    def test_no_world_cache_skips_the_instances(self):
+        self.installer().install(self.client, world_cache=False, instances='all')
+        self.assertEqual(self.instance_calls(), [])
+        self.assertFalse((self.client / 'world-cache').exists())
+
+    def test_prebuilt_extract_keeps_the_instance_content(self):
+        self.installer().install(self.client, instances='classic-raids')
+        cache = self.client / 'world-cache'
+        before = tree(cache)
+        instance_files = {n: d for n, d in before.items() if n.split('/')[0] in instance_maps.ALL_MAPS or n == fi.INSTANCES}
+        model = f'models/{INSTANCE_KEY.hex()}.fgs'
+        self.assertTrue(instance_files and model in before)
+        (cache / 'models/0123.fgs').unlink()                       # an incomplete cache: extracted again
+        self.assertTrue(self.installer().install(self.client)['world_cache'].startswith('extracted'))
+        after = tree(cache)
+        self.assertEqual({n: after.get(n) for n in instance_files}, instance_files)
+        self.assertEqual(after[model], b'instance model')           # the model its tiles use came along
+        self.assertEqual(after['models/0123.fgs'], CACHE_FILES['models/0123.fgs'])
+        self.assertIn('Kept the instance world cache (6 maps).', self.last_output)
+        self.assertEqual(self.instance_calls()[-1][self.instance_calls()[-1].index('--instances') + 1], 'classic-raids')
+        self.assertFalse((self.client / 'world-cache.previous').exists())
+
+    def test_a_failing_instance_build_names_its_logs(self):
+        log = self.client / 'world-cache.instmp/logs/instances-scene-classic-raids.log'
+
+        def failing(script, args, show=True):
+            if '--instances' in [str(a) for a in args]:
+                return 1, {'event': 'failed', 'problems': ['instances classic-raids: no tiles built'], 'logs': [str(log)]}
+            return self.fake_run(script, args, show)
+        inst = self.installer(); inst.run = failing
+        report = inst.install(self.client, instances='classic-raids')   # the optional layer never blocks the renderer
+        text = inst.out.getvalue()
+        self.assertIn('instance world cache build failed', text)
+        self.assertIn(f'Instance world cache: Classic raids failed (see {log}); the renderer was updated. '
+                      'Run the installer again, or use --instances none to skip.', text)
+        self.assertEqual(report['instances_failed'], {'groups': ['classic-raids'], 'log': str(log)})
+        self.assertTrue(report['payload'].startswith('installed'))
+        self.assertEqual((self.client / ('mods/d3d9.dll' if self.platform == 'mac' else 'd3d9.dll')).read_bytes(), PROXY)
+        self.assertTrue((self.client / 'world-cache/Azeroth/32_48.fg3').is_file())
+        # the choice is kept: the next run tries again
+        self.assertEqual(self.installer().chosen_instances(self.client), ['classic-raids'])
+        self.installer().install(self.client)
+        self.assertEqual(self.instance_calls()[-1][self.instance_calls()[-1].index('--instances') + 1], 'classic-raids')
+
+    def test_a_failed_group_stays_chosen_for_the_next_yes_run(self):
+        self.installer().install(self.client, instances='classic-raids')
+
+        def failing_wotlk(script, args, show=True):
+            args = [str(x) for x in args]
+            if '--instances' in args and '--instances-plan' not in args and 'wotlk-raids' in args[args.index('--instances') + 1]:
+                return 1, {'event': 'failed', 'problems': ['instances wotlk-raids: no tiles built'], 'logs': []}
+            return self.fake_run(script, args, show)
+        inst = self.installer(yes=True); inst.run = failing_wotlk
+        report = inst.install(self.client, instances='classic-raids,wotlk-raids')
+        self.assertEqual(report['instances_failed']['groups'], ['classic-raids', 'wotlk-raids'])
+        state = self.installer().status(self.client)
+        self.assertEqual(state['world_cache']['instances'], ['classic-raids', 'wotlk-raids'])
+        self.assertEqual(state['world_cache']['instances_built'], ['classic-raids'])   # what differs is not built yet
+        self.installer(yes=True).install(self.client)
+        args = self.instance_calls()[-1]
+        self.assertEqual(args[args.index('--instances') + 1], 'classic-raids,wotlk-raids')
+
+    def test_a_game_started_during_the_instance_step_still_stops_the_install(self):
+        inst = self.installer()
+        states = iter([[], [], [], ['wow.exe']])   # closed for the checks and the cache, running when the layer starts
+        inst.running = lambda: next(states, ['wow.exe'])
+        with self.assertRaises(fi.Failed) as e:
+            inst.install(self.client, instances='classic-raids')
+        self.assertIn('started while the installer was working', str(e.exception))
+
+    def test_kept_groups_need_no_disk_space(self):
+        self.installer().install(self.client, instances='classic-raids')
+        base = fi.MIN_FREE + sum(m['bytes'] for m in self.manifest['files'].values())
+        inst = self.installer(); inst.free_bytes = lambda path: base
+        inst.plan_install(self.client, None, None, None, True, True, 'classic-raids')   # kept: nothing to build
+        with self.assertRaises(fi.Refusal):
+            inst.plan_install(self.client, None, None, None, True, True, 'classic-raids,wotlk-raids')
+
+    def test_a_kill_between_the_carry_and_the_rename_keeps_the_selection(self):
+        self.installer().install(self.client, instances='classic-raids,tbc-raids')
+        self.assertEqual(json.loads((self.client / fi.CHOICE).read_text()), {'groups': ['classic-raids', 'tbc-raids']})
+        # the extract swap was killed after the manifest moved into the new folder and before the rename
+        staging = self.client / 'world-cache.extract'
+        staging.mkdir()
+        (self.client / 'world-cache' / fi.INSTANCES).rename(staging / fi.INSTANCES)
+        self.assertEqual(self.installer().chosen_instances(self.client), ['classic-raids', 'tbc-raids'])
+        self.installer().install(self.client)                      # no argument: nothing is removed
+        self.assertEqual(self.installer().chosen_instances(self.client), ['classic-raids', 'tbc-raids'])
+        args = self.instance_calls()[-1]
+        self.assertEqual(args[args.index('--instances') + 1], 'classic-raids,tbc-raids')
+
+    def test_uninstall_removes_the_instance_staging_but_not_a_foreign_one(self):
+        self.installer().install(self.client, instances='classic-raids')
+        staging, foreign = self.client / fi.INSTMP, self.client / 'world-cache.extract'
+        staging.mkdir(); (staging / 'install-state.json').write_text('{}')
+        self.installer().uninstall(self.client)
+        self.assertFalse(staging.exists() or (self.client / 'world-cache').exists() or (self.client / fi.CHOICE).exists())
+        other = self.client / fi.INSTMP
+        other.mkdir(); (other / 'somebody-elses.txt').write_text('x')
+        self.installer().uninstall(self.client)
+        self.assertTrue(other.exists())
+        ready = self.client / fi.INSTMP
+        shutil.rmtree(ready); ready.mkdir(); (ready / 'instances-ready.json').write_text('{}')
+        self.installer().uninstall(self.client)
+        self.assertFalse(ready.exists())
+
+    def test_status_shows_the_selected_groups(self):
+        self.installer().install(self.client, instances='2 5')
+        state = self.installer().status(self.client)
+        self.assertEqual(state['world_cache']['instances'], ['classic-raids', 'wotlk-dungeons'])
+
+    def test_instance_staging_paths_fit_the_windows_limit(self):
+        names = [f'world-cache.instmp\\{m}\\build-{m}-1790000000-1234567.json' for m in instance_maps.ALL_MAPS]
+        names += [f'world-cache.instmp\\{m}\\63_63.fg3' for m in instance_maps.ALL_MAPS]
+        names += [f'world-cache.instmp\\logs\\instances-scene-{k}.log' for k in instance_maps.KEYS]
+        self.assertLessEqual(max(map(len, names)), fi.LONGEST_CACHE_NAME)
+        self.assertLessEqual(len(fi.INSTMP), len(fi.STAGING))
+
 
 class WindowsInstall(Install):
     platform = 'windows'
@@ -816,10 +1084,14 @@ class WindowsInstall(Install):
 
     def test_main_backend_defaults_to_none(self):
         seen = []
-        with patch.object(fi.Installer, 'install', lambda self, *a: seen.append(a)), patch.object(fi, 'host_platform', lambda: 'windows'):
+        kwargs = []
+        with patch.object(fi.Installer, 'install', lambda self, *a, **kw: (seen.append(a), kwargs.append(kw))), \
+                patch.object(fi, 'host_platform', lambda: 'windows'):
             self.assertEqual(fi.main(['install', '--client', str(self.client), '--package', str(self.pkg_root)]), 0)
-            self.assertEqual(fi.main(['install', '--backend', 'dxvk2', '--client', str(self.client), '--package', str(self.pkg_root)]), 0)
+            self.assertEqual(fi.main(['install', '--backend', 'dxvk2', '--instances', '1 6', '--client', str(self.client),
+                                      '--package', str(self.pkg_root)]), 0)
         self.assertEqual([a[3] for a in seen], [None, 'dxvk2'])
+        self.assertEqual([kw for kw in kwargs], [{'instances': None}, {'instances': '1 6'}])
 
     DXVK2 = 'renderer-backends/dxvk2/dxvk2_d3d9.dll'
 
