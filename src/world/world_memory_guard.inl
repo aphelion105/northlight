@@ -8,6 +8,19 @@
     bool memoryPressure=false;
     std::atomic<bool> workerMemoryTrim{false}; /* 0.3.153: the geometry builder thread drops its incremental local-geometry cache on its next request */
     std::atomic<uint64_t> geometryMemoryDemand{0}; /* the geometry builder's refused aggregate floor while it stalls for memory (0: none); the guard's demand */
+    bool staticRecoveryPaused=false;
+    void reclaimInactiveCasters(){
+        if(staticRecoveryPaused||!staticStream||(active&&active->bvh)||!geometryMemoryDemand.load(std::memory_order_relaxed))return;
+        // The last selected models are pinned indefinitely by lastNeeded and
+        // the published snapshot even while no world can use them. Give the
+        // geometry builder priority; do this once, after all frame draws end.
+        const auto cpu=staticScene?staticScene->stats.cpuBytes:0,metadata=staticScene?staticScene->stats.metadataBytes:0;
+        staticRecoveryPaused=true;staticStream->setPaused(true);
+        staticCasters.reset();staticMatcher.clear();staticM2Memory.clear();staticScene.reset();staticOwnerGeneration=UINT64_MAX;
+        workerMemoryTrim.store(true,std::memory_order_relaxed);
+        logf("STATIC SHADOW recovery paused=1 reason=geometry-demand scheduledCpuMiB=%.2f scheduledMetadataMiB=%.2f workerRelease=async",
+             double(cpu)/1048576,double(metadata)/1048576);
+    }
     static constexpr size_t ReplayPoolBytes=48u*1024u*1024u;
     size_t replayPoolLimit()const{return memoryPressure?ReplayPoolBytes/2:ReplayPoolBytes;}
     MemoryTrim trimMemory(){
