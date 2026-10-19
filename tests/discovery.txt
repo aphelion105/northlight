@@ -87,6 +87,7 @@ test_mesh_pool_trim.py
 test_migrate_mac_proxy.py
 test_mirror_resources.py
 test_model_index_cache.py
+test_mount_emitter_patch.py
 test_model_replay_pool.py
 test_model_snapshot_cache.py
 test_moon_cascade_weight.py
@@ -138,6 +139,7 @@ test_shadow_shimmer.py
 test_snapshot_allocation.py
 test_snapshot_prediction.py
 test_solar_volume.py
+test_spell_emitter_patch.py
 test_spell_fog_proof_client.py
 test_spell_layer.py
 test_static_cache_dirty_rect.py

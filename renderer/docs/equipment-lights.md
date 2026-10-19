@@ -27,8 +27,9 @@ Every generated native record is read back with the existing track parser and
 every MPQ entry is reopened and byte-compared. Generated model binaries belong
 to the user's client and must not be committed or redistributed as source.
 
-For a deliberate live test, install the staged MPQ in a verified free patch slot
-and enable `[Quality] EquipmentLights=1` in the matching DLL. The native engine
+For a deliberate live test, install the staged MPQ in a verified free patch slot.
+`EquipmentLights` defaults to 1 in Quality and 0 in Balanced/Performance; an
+explicit `[Quality] EquipmentLights=0/1` overrides that preset. The native engine
 must expose the light in a proven Model VS2/3 draw; Northlight then reuses the
 same bounded local-light and fog passes. Dynamic sources share `LocalLightLimit`,
 cap at eight, and fade out after disappearing from native draws.
@@ -38,3 +39,46 @@ particle simulation. Shader-only glows, ribbons, replacement colours, burst,
 multitexture and nonconstant emitter state are excluded. An equipment model with
 no qualifying source receives no guessed white light. Native VS1 and sources
 not selected into native point-light constants remain unsupported.
+
+When more than two anchors qualify, keep the two strongest proven sources and
+report omitted sources. This preserves the model instead of excluding it after
+support for more particle flags is added. Capture deduplicates semantic light
+banks across a frame and reserves half its reads/banks for skinned draws. This
+does not identify a source as belonging to the player; nearby creatures and
+animated scenery may share that draw type.
+
+## Mounts
+
+`python renderer/build_mount_emitters.py --client CLIENT --output STAGING`
+reads mounted-aura creature entries from Spell.dbc, resolves them through this
+server's `Cache/WDB/LOCALE/creaturecache.wdb`, then reads CreatureDisplayInfo and
+CreatureModelData. A creature entry is not a display ID. Uncached entries are
+reported rather than guessed. `--creature-cache PATH` selects another cache.
+
+Only actual additive particle colours and textures qualify. The two strongest
+anchors keep their original bones, emission-rate and enabled-state tracks.
+Models with existing lights are preserved. A shared model with display-specific
+particle replacement colours is excluded when no universal light colour exists.
+Shared NPC uses of a mount model also receive its native light. Existing source
+bytes, particles, geometry, DBC and WDB remain unchanged; the MPQ contains M2 only.
+
+## Spells
+
+`python renderer/build_spell_emitters.py --client CLIENT --output STAGING
+--exclude-report EQUIPMENT_REPORT` stages a separate, conservative spell patch.
+The default accepts only exclusively referenced missile models with luminous,
+finite particle tails and no ribbons. Read-only DBC references prove the model's
+owners; nothing edits or packs Spell.dbc. Original animated rate and enabled
+tracks drive the new light. A 1 ms global colour refresh keeps the 12340 native
+light updater committing changing intensity.
+
+The current client yields only one such safe holiday missile. General cast,
+impact, aura and area models are deliberately excluded: the native engine can
+stop their particles without stopping M2 lights. `--audit-broad` is for reports
+only and its output is marked unsuitable for installation. Adding live spell
+illumination broadly needs a separate draw/texture/lifecycle path; these M2
+patches do not provide that capability.
+
+All these sources share `EquipmentLights`, `LocalLightLimit` and the eight-source
+Northlight admission cap. Those limits do not cap the game's own per-model
+native light updates. Generated archives need an in-game performance comparison.
