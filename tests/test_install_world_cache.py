@@ -61,6 +61,7 @@ os.rename(client / 'Data/patch-3.MPQ', client / 'Data/PATCH-3.mpq')
 assert digests() == base                                                       # case
 changed = {k for k, v in digests(sources={'outdoor-light-profiles.json': 'x'}).items() if base[k] != v}
 assert changed == {'lights'}, changed
+assert {k for k,v in digests(sources={'wotlk-emitter-profiles.json':'x'}).items() if base[k]!=v} == {'lights'}
 assert {k for k, v in digests(sources={'forest_regions.inc': 'x'}).items() if base[k] != v} == {'fog'}
 assert {k for k, v in digests(sources={'build_celestial_disc_assets.py': 'x'}).items() if base[k] != v} == {'celestial'}
 assert {k for k, v in digests(sources={'world_scene_builder.py': 'x'}).items() if base[k] != v} == set(base)
