@@ -26,7 +26,7 @@ struct Kernel {
     std::vector<Op> ops;std::vector<std::uint8_t> cleared;bool valid=false,skin=false; /* cleared: temps ever read (zero at entry, as evaluate); skin: the audited four-bone template */
 };
 struct Program {
-    unsigned major=0,positionRegister=0;bool textureCoordinates=false,skinned=false;
+    unsigned major=0,positionRegister=0;bool textureCoordinates=false,skinned=false;std::uint8_t outputMask=0;
     int paletteBase=-1; /* lowest constant register addressed through a0 (the bone palette) */
     std::vector<Operation> operations;
     std::vector<Input> inputs;
@@ -64,7 +64,7 @@ inline void buildKernel(Program& p){
     k.valid=p.positionRegister<33;p.kernel=std::move(k);
 }
 inline void slice(Program& p){
-    using namespace NorthlightShadowShader;unsigned needed[34]={};needed[p.positionRegister]=p.textureCoordinates?3:15;
+    using namespace NorthlightShadowShader;unsigned needed[34]={};needed[p.positionRegister]=p.textureCoordinates?(p.outputMask?p.outputMask:3):15;
     std::vector<Operation> reverse;
     for(auto it=p.operations.rbegin();it!=p.operations.rend();++it){auto& op=*it;unsigned destination=regType(op.destination)==3?33:regIndex(op.destination),written=(op.destination>>16)&15,observed=needed[destination]&written;
         if(!observed)continue;needed[destination]&=~written;reverse.push_back(op);unsigned channels=observed;
@@ -80,17 +80,17 @@ inline void slice(Program& p){
     std::vector<Input> inputs;for(auto input:p.inputs)if(used[input.reg])inputs.push_back(input);p.inputs=std::move(inputs);
     buildKernel(p);
 }
-inline bool compile(const Word* words,std::size_t count,Program& output,bool textureCoordinates=false){
+inline bool compile(const Word* words,std::size_t count,Program& output,bool textureCoordinates=false,unsigned projectionKind=2,unsigned outputUsage=5){
     using namespace NorthlightShadowShader;output={};
-    if(!words||count<2||count>65536)return false;
-    Program p;p.textureCoordinates=textureCoordinates;p.major=(words[0]>>8)&255;
+    if(!words||count<2||count>65536||projectionKind!=2||(textureCoordinates&&outputUsage!=5&&outputUsage!=10))return false;
+    Program p;p.textureCoordinates=textureCoordinates;p.outputMask=textureCoordinates?(outputUsage==10?15:3):0;p.major=(words[0]>>8)&255;
     if(words[0]!=(p.major==1?0xfffe0101u:p.major==2?0xfffe0200u:0xfffe0300u)||p.major<1||p.major>3)return false;
-    unsigned positionType=p.major<3?4:99,positionIndex=0,uvType=6,uvIndex=p.major<3?0:99,uvWritten=0;bool inputUsed[16]={};
+    unsigned positionType=p.major<3?4:99,positionIndex=0,uvType=p.major<3&&outputUsage==10?5:6,uvIndex=p.major<3?0:99,uvWritten=0;bool inputUsed[16]={};
     auto finish=[&]()->bool{std::vector<Input> needed;for(auto i:p.inputs)if(inputUsed[i.reg]){needed.push_back(i);inputUsed[i.reg]=false;}
         for(bool missing:inputUsed)if(missing)return false;p.inputs=std::move(needed);slice(p);output=std::move(p);return true;};
     for(std::size_t at=1;at<count;){
         Word token=words[at];unsigned op=token&65535;
-        if(op==65535){if(!textureCoordinates||(uvWritten&3)!=3||at+1!=count)return false;p.positionRegister=32;return finish();}
+        if(op==65535){if(!textureCoordinates||(uvWritten&p.outputMask)!=p.outputMask||at+1!=count)return false;p.positionRegister=32;return finish();}
         if(op==65534){std::size_t n=(token>>16)&32767;if(n>count-at-1)return false;at+=n+1;continue;}
         if(token&0xf0000000u)return false;
         int formal=op==31?2:op==81?5:arithmeticOperands(op,p.major);
@@ -101,7 +101,7 @@ inline bool compile(const Word* words,std::size_t count,Program& output,bool tex
         if(op==31){if(n!=2)return false;unsigned type=regType(a[1]);
             if(type==1){if(regIndex(a[1])>=16)return false;p.inputs.push_back({regIndex(a[1]),a[0]&15,(a[0]>>16)&15});}
             else if(type==6&&(a[0]&15)==0&&((a[0]>>16)&15)==0){positionType=6;positionIndex=regIndex(a[1]);}
-            else if(type==6&&(a[0]&15)==5&&((a[0]>>16)&15)==0)uvIndex=regIndex(a[1]);
+            else if(type==6&&(a[0]&15)==outputUsage&&((a[0]>>16)&15)==0)uvIndex=regIndex(a[1]);
         }else if(op==81){if(n!=5||regType(a[0])!=2||regIndex(a[0])>=256)return false;
             Definition d;d.reg=regIndex(a[0]);std::memcpy(d.value.data(),a+1,16);p.definitions.push_back(d);
         }else{
@@ -185,7 +185,7 @@ inline bool evaluate(const Program& p,const Four inputs[16],const float* constan
                 if(p.major>=2&&std::fabs(value-std::floor(value)-.5f)<1e-6f)return false;
                 value=p.major==1?std::floor(value):std::round(value);}target[j]=value;}
     }
-    viewPosition=temp[p.positionRegister];for(unsigned i=0;i<(p.textureCoordinates?2u:4u);++i)if(!std::isfinite(viewPosition[i]))return false;
+    viewPosition=temp[p.positionRegister];for(unsigned i=0;i<(p.textureCoordinates&&p.outputMask!=15?2u:4u);++i)if(!std::isfinite(viewPosition[i]))return false;
     return p.textureCoordinates||std::fabs(viewPosition[3]-1.f)<.0001f;
 }
 // evaluate() on the decoded kernel: the same reads, arithmetic (same expressions,
@@ -241,7 +241,7 @@ inline bool evaluateFast(const Program& p,const Four inputs[16],const float* con
                 if(p.major>=2&&std::fabs(value-std::floor(value)-.5f)<1e-6f)return false;
                 value=p.major==1?std::floor(value):std::round(value);}target[j]=value;}
     }
-    viewPosition=temp[p.positionRegister];for(unsigned i=0;i<(p.textureCoordinates?2u:4u);++i)if(!std::isfinite(viewPosition[i]))return false;
+    viewPosition=temp[p.positionRegister];for(unsigned i=0;i<(p.textureCoordinates&&p.outputMask!=15?2u:4u);++i)if(!std::isfinite(viewPosition[i]))return false;
     return p.textureCoordinates||std::fabs(viewPosition[3]-1.f)<.0001f;
 }
 // Immutable declaration bindings contain only offsets/types and input metadata.
