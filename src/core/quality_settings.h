@@ -54,9 +54,9 @@ struct Settings {
     // packets (0.3.193: the game's blob shadows show with both values). Forces the replay-derived
     // keys off (effective()).
     unsigned actorShadows=1;
-    // Opt-in native detail-doodad casters. Read once with the other quality
+    // Native detail-doodad casters (Quality only). Read once with the other quality
     // keys; requires ActorShadows and the shadows toggle. Receiver census is independent.
-    unsigned grassShadows=0;
+    unsigned grassShadows=1;
     // 0.3.187 FrameDrawGates: 1 = the draw hooks skip the sky, blob and terrain shadow work in frames
     // where its per-frame preconditions are off (draw_gates.h); 0 = the 0.3.184 per-draw work. Same image.
     unsigned frameDrawGates=1;
@@ -191,7 +191,7 @@ inline const Key Keys[]={
     {"WeatherMemory",&Settings::weatherMemory,0,1,{1,1,1}},
     {"ActorShadowCpuMs",&Settings::actorShadowCpuMs,0,20,{3,3,2}}, /* task 45 */
     {"EquipmentLights",&Settings::equipmentLights,0,1,{0,0,0}},
-    {"GrassShadows",&Settings::grassShadows,0,1,{0,0,0}},
+    {"GrassShadows",&Settings::grassShadows,0,1,{1,0,0}},
 };
 inline bool operator==(const Settings& a,const Settings& b){for(const auto& k:Keys)if(a.*k.field!=b.*k.field)return false;return true;}
 inline bool operator!=(const Settings& a,const Settings& b){return !(a==b);}
