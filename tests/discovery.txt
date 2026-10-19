@@ -125,6 +125,7 @@ test_replay_upload.py
 test_rigid_memory.py
 test_shader_read_set.py
 test_shader_read_set_client.py
+test_shadow_alpha.py
 test_shadow_blob_client.py
 test_shadow_blob_model.py
 test_shadow_experiment.py

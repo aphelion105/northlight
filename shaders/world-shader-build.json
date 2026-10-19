@@ -1,5 +1,5 @@
 {
-  "source_sha256": "bb0e1b8a02a16250c86b14f03b1b3fe6cdc424236408bc3f1eb502b53fce489e",
+  "source_sha256": "0453b8b1274a932a1368a1e570fdddc75041b406c1b05b89c5f5769b4ba70f1e",
   "compiler": "Wine d3dcompiler_47 D3DCompile",
   "game_launched": false,
   "shaders": {
@@ -554,19 +554,25 @@
     },
     "ShadowReplayPS": {
       "target": "ps_3_0",
-      "bytes": 256,
-      "sha256": "194f5665d22f12a8c0e337be2938d036386c4e7982f048051a804714f85a592d",
-      "static_instruction_slots": 5,
-      "temporary_registers": 1,
+      "bytes": 408,
+      "sha256": "0a2858c45db634d9398df14cf4a7f7b35d1d521b44771e7f3de5eb40a193146f",
+      "static_instruction_slots": 14,
+      "temporary_registers": 2,
       "samplers": [
         0
       ],
       "instructions": {
+        "mov": 2,
+        "if": 1,
         "texld": 1,
-        "add": 1,
+        "add": 2,
+        "cmp": 2,
+        "mul": 1,
         "texkill": 1,
-        "mov": 1
-      }
+        "endif": 1
+      },
+      "source_sha256": "0453b8b1274a932a1368a1e570fdddc75041b406c1b05b89c5f5769b4ba70f1e",
+      "compiler": "Microsoft d3dcompiler_47 IEEE strict"
     },
     "ShadowUnion": {
       "target": "ps_3_0",
