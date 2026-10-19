@@ -764,6 +764,17 @@ bool LocalSceneCache::build(const std::vector<std::string>& files,const std::str
             stats.peakBytes=std::max(stats.peakBytes,stats.retainedBytes+sceneBytes(next)+decodedBytes+largestPiece);
         }
         cache.sized=true;cache.sizedVertices=next.vertices.size();cache.sizedTriangles=next.triangles.size();cache.sizedLow=low;cache.sizedHigh=high;
+        // Cold city builds can leave ~38 MiB of vector growth slack in the
+        // published GI scene. Compact only large waste, before tree/terrain
+        // allocations overlap it. A denied optional copy keeps the old data.
+        auto compact=[&](auto& values){
+            using Buffer=std::decay_t<decltype(values)>;using T=typename Buffer::value_type;
+            const uint64_t bytes=values.size()*sizeof(T),slack=(values.capacity()-values.size())*sizeof(T);
+            if(slack<4u*1024u*1024u||values.capacity()<=values.size()+values.size()/4||(admit&&!admit(bytes)))return;
+            try{Buffer exact(values.begin(),values.end());values.swap(exact);}
+            catch(const std::bad_alloc&){/* optional compaction: keep the complete scene */}
+        };
+        compact(next.vertices);compact(next.triangles);
         stats.flatBytes=sceneBytes(next);auto stamp=CacheClock::now();
         // Preflight the tree allocations: triangle order, nodes (the median
         // Node reserve can grow once) and SAH build-time centroids.

@@ -299,6 +299,7 @@ static void testCompactSource(){
     input.completePlacements=std::move(scene->completePlacements);input.source=nullptr;scene.reset();
     assert(input.verticesForPaging()->data()==vertices);
     auto pages=std::make_shared<P::Plan>();assert(P::build(input,*pages,error));
+    assert(pages->pages[0].vertices.capacity()==3); // a tiny anchored page does not retain 512 KiB
     assert(pages->pages[0].key==reference.pages[0].key&&pages->pages[0].indices==reference.pages[0].indices);
     assert(!std::memcmp(pages->pages[0].vertices.data(),reference.pages[0].vertices.data(),96));
     auto broken=input;broken.source=reinterpret_cast<const WorldScene*>(1);
