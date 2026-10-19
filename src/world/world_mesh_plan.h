@@ -73,6 +73,13 @@ struct WorldMeshUploadPlan {
     const NorthlightGI::WorldScene* source=nullptr;
     // Optional shadow-only source. GI retains its original local BVH unchanged.
     std::shared_ptr<const NorthlightGI::WorldScene> ownedSource;
+    // Paging needs vertices, not the already packed triangle/material scene.
+    // Shadow-only builders may move their vertices here before page allocation.
+    // GI and borrowed scenes remain immutable and use source as before.
+    std::shared_ptr<const std::vector<NorthlightGI::WorldVertex>> pagingVertices;
+    const std::vector<NorthlightGI::WorldVertex>* verticesForPaging()const{
+        return pagingVertices?pagingVertices.get():(source?&source->vertices:nullptr);
+    }
     std::set<std::pair<int,int>> fixedTerrainChunks;
     uint32_t vertexCount=0,triangleCount=0;
     std::vector<uint32_t> indices;
@@ -96,6 +103,7 @@ struct WorldMeshUploadPlan {
     uint64_t cpuBytes()const{
         uint64_t bytes=payload.bytes()+sizeof(*this)+indices.capacity()*sizeof(uint32_t)+batches.capacity()*sizeof(Batch)+materials.capacity()*sizeof(MaterialUpload);
         bytes+=completePlacements.capacity()*sizeof(NorthlightGI::WorldPlacementCoverage);
+        if(pagingVertices)bytes+=sizeof(*pagingVertices)+pagingVertices->capacity()*sizeof(NorthlightGI::WorldVertex)+64;
         for(const auto& owner:completePlacements)bytes+=owner.modelKey.capacity();
         for(const auto& material:materials)bytes+=material.bgra.capacity();
         bytes+=fixedTerrainChunks.size()*(sizeof(std::pair<int,int>)+4*sizeof(void*));
