@@ -21,9 +21,12 @@ world = fp.src('world_renderer.h').read_text()
 assert 'world->registerEquipmentShader(*out,m2ShaderFamily(h)==3?words.data():nullptr,m2ShaderFamily(h)==3?words.size():0)' in renderer
 assert 'if(world->equipmentLightsOn())world->captureEquipmentLights(vs,worldDepth);' in renderer
 capture = world[world.index('    void captureEquipmentLights('):world.index('    unsigned spellLayerSetting()')]
-assert capture.index('equipmentAttempts>=64') < capture.index('GetVertexShaderConstantF(17,bank,11)')
+assert capture.index('equipmentCapture.take(actor,') < capture.index('GetVertexShaderConstantF(17,bank,11)')
+assert 'const bool actor=isSkinnedShader(shader)' in capture
+assert 'equipmentLights.admit(bank,it->second,actor)' in capture
 assert capture.index('ds.p!=mainDepth') < capture.index('GetVertexShaderConstantF(17,bank,11)')
 assert capture.index('std::isfinite(v)') < capture.index('GetVertexShaderConstantF(17,bank,11)')
 assert 'equipmentLights.output.data()' in world and 'equipmentLights.publish(GetTickCount(),' in world
 assert 'GetRenderTargetData' not in capture and 'LockRect' not in capture
-print('actual renderer: native Model identity gate, main depth/projection gate, bounded constant reads, existing local/fog batches, no texture/GPU readback PASS')
+assert 'actorCandidates=%u' in world and 'domainRejected=%u' in world and 'selfYards=%.2f' in world
+print('actual renderer: native Model identity gate, actor reservation, proven-slot bank dedup, main depth/projection gate, bounded constant reads, source diagnostics, existing local/fog batches, no texture/GPU readback PASS')

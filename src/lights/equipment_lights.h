@@ -7,8 +7,20 @@
 #include <cstdint>
 
 namespace NorthlightEquipmentLights {
-inline constexpr unsigned Capacity=8,MaxBanksPerFrame=16;
+inline constexpr unsigned Capacity=8,MaxBanksPerFrame=16,BackgroundBanks=8,MaxReadsPerFrame=64,BackgroundReads=32;
 inline constexpr float LifeSeconds=.25f,FadeSeconds=.10f,MaxDistance=48.f;
+// Rigid scenery cannot consume the whole read/bank budget before characters
+// are drawn. These are reservations within the original 64/16 caps.
+struct CaptureBudget {
+    unsigned candidates=0,actorCandidates=0,reads=0,actorReads=0,backgroundReads=0,readLimited=0,bankLimited=0,domainRejected=0,decoded=0,rejected=0;
+    void nextFrame(){*this={};}
+    bool take(bool actor,unsigned banks,unsigned backgroundBanks){
+        ++candidates;if(actor)++actorCandidates;
+        if(banks>=MaxBanksPerFrame||(!actor&&backgroundBanks>=BackgroundBanks)){++bankLimited;return false;}
+        if(reads>=MaxReadsPerFrame||(!actor&&backgroundReads>=BackgroundReads)){++readLimited;return false;}
+        ++reads;if(actor)++actorReads;else ++backgroundReads;return true;
+    }
+};
 struct Native {float position[3]{},color[3]{},attenuation[3]{};};
 // c17..20 = diffuse, c21..24 = VIEW-space position, c25..27 = the
 // constant/linear/quadratic denominator. Layout is admitted only by the proof.
@@ -42,14 +54,24 @@ inline NorthlightLocalLights::Light light(const Native& n,std::uint64_t id,float
 }
 struct Tracker {
     struct Entry {Native source;std::uint64_t id=0;std::uint32_t seen=0;float gain=0;};
-    std::array<Entry,Capacity> entries{};unsigned count=0,banks=0,observed=0,duplicates=0,dropped=0;std::uint64_t serial=0;std::uint32_t updated=0;
-    std::array<float,44> lastBank{};bool bankKnown=false;
+    std::array<Entry,Capacity> entries{};unsigned count=0,banks=0,backgroundBanks=0,bankDuplicates=0,observed=0,duplicates=0,dropped=0;std::uint64_t serial=0;std::uint32_t updated=0;
+    struct Bank {std::array<std::array<float,9>,4> sources{};unsigned count=0;};
+    std::array<Bank,MaxBanksPerFrame> frameBanks{};
     std::array<NorthlightLocalLights::Light,Capacity> output{};unsigned outputCount=0;
     std::array<std::uint64_t,Capacity> suppressed{};unsigned suppressedCount=0;
-    void reset(){count=banks=observed=duplicates=dropped=outputCount=suppressedCount=0;bankKnown=false;updated=0;}
-    void nextFrame(){banks=observed=duplicates=dropped=0;bankKnown=false;}
-    bool admit(const float* bank){if(bankKnown&&std::equal(lastBank.begin(),lastBank.end(),bank))return false;
-        if(banks==MaxBanksPerFrame){++dropped;return false;}std::copy(bank,bank+44,lastBank.begin());bankKnown=true;++banks;return true;}
+    void reset(){count=outputCount=suppressedCount=0;updated=0;nextFrame();}
+    void nextFrame(){banks=backgroundBanks=bankDuplicates=observed=duplicates=dropped=0;}
+    bool admit(const float* bank,unsigned points=4,bool actor=true){
+        if(!bank||!points||points>4)return false;Bank key;key.count=points;
+        // Unused point slots and colour/position .w components are not inputs
+        // to the proven native lighting expression. Slot order is irrelevant.
+        for(unsigned i=0;i<points;++i)for(unsigned k=0;k<3;++k){auto& s=key.sources[i];s[k]=bank[4*i+k];s[3+k]=bank[4*(4+i)+k];s[6+k]=bank[4*(8+k)+i];}
+        for(unsigned i=0;i<points;++i)for(float v:key.sources[i])if(!std::isfinite(v))return false;
+        std::sort(key.sources.begin(),key.sources.begin()+points);
+        for(unsigned i=0;i<banks;++i)if(frameBanks[i].count==points&&frameBanks[i].sources==key.sources){++bankDuplicates;return false;}
+        if(banks==MaxBanksPerFrame||(!actor&&backgroundBanks==BackgroundBanks)){++dropped;return false;}
+        frameBanks[banks++]=key;if(!actor)++backgroundBanks;return true;
+    }
     void observe(const Native& n,std::uint32_t now,const std::vector<NorthlightLocalLights::Light>& fixed,const float* camera=nullptr){
         ++observed;if(staticDuplicate(n,fixed)){++duplicates;return;}
         unsigned at=count;float best=1.f;

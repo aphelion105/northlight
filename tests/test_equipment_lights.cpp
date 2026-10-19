@@ -20,8 +20,31 @@ int main(){
     old=bank[1];bank[1]=NAN;assert(!decode(bank,0,inv.data(),camera,n));bank[1]=old;
     assert(decode(bank,0,inv.data(),camera,n));auto l=light(n,1,1);assert(NorthlightLocalLights::valid(l));assert(l.diffuse[2]>l.diffuse[1]&&l.diffuse[1]>l.diffuse[0]);assert(l.attenuationEnd<=12);
     assert(std::fabs(l.diffuse[0]/l.diffuse[2]-.25f)<1e-6f); // Actual animated RGB hue, no item/texture name heuristic.
+    // 12340 CM2Light defaults are denominator (0,.7,.03). At one yard
+    // the compact fit preserves the native source energy (below its cap),
+    // rather than applying the MPQ intensity for a second time.
+    Native nativeDefault{};nativeDefault.color[0]=.35f;nativeDefault.color[1]=.14f;nativeDefault.color[2]=.07f;nativeDefault.attenuation[1]=.7f;nativeDefault.attenuation[2]=.03f;
+    const auto fittedDefault=light(nativeDefault,3,1);assert(std::fabs(fittedDefault.diffuse[0]-.35f/.73f)<1e-6f);
+    assert(std::fabs(fittedDefault.diffuse[1]/fittedDefault.diffuse[0]-.4f)<1e-6f);
     std::vector<NorthlightLocalLights::Light> fixed{l};assert(staticDuplicate(n,fixed));fixed[0].position[0]+=1;assert(!staticDuplicate(n,fixed));
     Tracker t;assert(t.admit(bank));assert(!t.admit(bank));for(unsigned i=1;i<MaxBanksPerFrame;++i){bank[0]=float(i);assert(t.admit(bank));}bank[0]=100;assert(!t.admit(bank));assert(t.banks==MaxBanksPerFrame);
+    // A/B/A and unused constants used to fill the bank budget again, starving
+    // later character draws although no new native source had been seen.
+    Tracker memo;bank[0]=.2f;assert(memo.admit(bank,1,false));bank[0]=.3f;assert(memo.admit(bank,1,false));bank[0]=.2f;assert(!memo.admit(bank,1,false));
+    bank[3]=17;bank[4]=99;bank[19]=-11;bank[33]=7;assert(!memo.admit(bank,1,false));assert(memo.banks==2&&memo.bankDuplicates==2);
+    std::array<float,44> ordered{};for(unsigned i=0;i<2;++i)for(unsigned k=0;k<3;++k){ordered[4*i+k]=float(i+k+1);ordered[4*(4+i)+k]=float(i+k+10);ordered[4*(8+k)+i]=float(i+k+20);}
+    assert(memo.admit(ordered.data(),2));auto swapped=ordered;
+    for(unsigned k=0;k<3;++k){std::swap(swapped[k],swapped[4+k]);std::swap(swapped[16+k],swapped[20+k]);std::swap(swapped[4*(8+k)],swapped[4*(8+k)+1]);}
+    assert(!memo.admit(swapped.data(),2));
+    CaptureBudget budget;Tracker reserved;
+    for(unsigned i=0;i<400;++i)if(budget.take(false,reserved.banks,reserved.backgroundBanks)){bank[0]=float(i);reserved.admit(bank,1,false);}
+    assert(budget.backgroundReads==BackgroundBanks&&reserved.backgroundBanks==BackgroundBanks&&reserved.banks==BackgroundBanks);
+    // The late body draw still gets room, within the unchanged total caps.
+    assert(budget.take(true,reserved.banks,reserved.backgroundBanks));bank[0]=.9f;assert(reserved.admit(bank,1,true));
+    assert(budget.actorReads==1&&reserved.banks==BackgroundBanks+1&&budget.bankLimited==400-BackgroundBanks);
+    budget.nextFrame();for(unsigned i=0;i<200;++i)budget.take(false,0,0);assert(budget.backgroundReads==BackgroundReads&&budget.reads==BackgroundReads);
+    for(unsigned i=0;i<200;++i)budget.take(true,0,0);assert(budget.reads==MaxReadsPerFrame&&budget.actorReads==MaxReadsPerFrame-BackgroundReads);
+    assert(MaxReadsPerFrame==64&&MaxBanksPerFrame==16);budget.nextFrame();assert(!budget.reads&&!budget.candidates);
     t.nextFrame();assert(t.admit(bank));std::vector<NorthlightLocalLights::Light> none;
     t.observe(n,1000,none);t.observe(n,1000,none);assert(t.count==1);t.publish(1000);t.publish(1050);assert(t.outputCount==1&&t.output[0].diffuse[2]>0);
     const auto id=t.output[0].sourceId;n.position[0]+=.1f;n.color[2]=.6f;n.color[1]=.3f;n.color[0]=.15f;t.observe(n,1060,none);t.publish(1060);assert(t.count==1&&t.output[0].sourceId==id);
@@ -52,5 +75,5 @@ int main(){
     NorthlightLocalLightSelection::Tracker select;auto out=select.update(fixed,camera,8,.016f,false,e.output.data(),e.outputCount);assert(out.count==2);
     NorthlightQuality::Settings settings;assert(!settings.equipmentLights);std::vector<std::string> problems;NorthlightQuality::apply({{"EquipmentLights","1",1}},settings,"test",'f',problems,true);assert(settings.equipmentLights==1);
     assert(!NorthlightEquipmentLightProof::analyze(nullptr,0));
-    std::puts("equipment lights: world transform, actual hue, invalid input, budget, nearest admission, static appears/disappears, dedup, movement, fade/TTL, clock wrap, shared selection limit, opt-in PASS");
+    std::puts("equipment lights: world transform, actual hue, invalid input, bank revisit/order/unused-slot dedup, reserved late actor admission under unchanged 64/16 caps, nearest admission, static appears/disappears, movement, fade/TTL, clock wrap, shared selection limit, opt-in PASS");
 }

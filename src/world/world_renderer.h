@@ -611,7 +611,7 @@ private:
     IDirect3DPixelShader9* localFogCombinePS=nullptr;IDirect3DTexture9* localFogAccum=nullptr;IDirect3DSurface9* localFogAccumSurface=nullptr;
     // 0.3.197: soft cap, incumbent bias and fades for the local lights (task 13). The clock is the selection's own: its gap and reset policy mirror useHistory.
     NorthlightEquipmentLights::Tracker equipmentLights;std::unordered_map<IDirect3DVertexShader9*,unsigned> equipmentShaders;
-    std::string equipmentMap;unsigned equipmentAttempts=0;
+    std::string equipmentMap;NorthlightEquipmentLights::CaptureBudget equipmentCapture;
     NorthlightLocalLightSelection::Tracker localLightTracker;std::string localLightMap;V localLightCamera;int64_t localLightQpc=0;double localSelectUsSum=0,localSelectUsMax=0;unsigned localSelectFrames=0;
     // Additive local light passes add exactly +0 outside their batch's projected
     // spheres; scissor them there. Counters cover one LOCAL log interval.
@@ -2279,7 +2279,7 @@ public:
              m.copyServed/frames,m.copyServedBytes/frames/kib,m.copyFallback/frames,unsigned(m.copyFills),m.copyFillBytes/kib,unsigned(m.copyEvictions),unsigned(m.copyInvalidations),unsigned(m.copyRefused),m.copyResidentBytes/kib,unsigned(m.copyResidentBuffers),m.copyCapBytes/kib,m.copyLargeBytes/kib,unsigned(m.copyLargeGrants),unsigned(m.copyLargeDrops));
     }
     void endFrame(bool retainPool=true){
-        if(equipmentLightsOn()){equipmentLights.nextFrame();equipmentAttempts=0;}
+        if(equipmentLightsOn()){equipmentLights.nextFrame();equipmentCapture.nextFrame();}
         flushDeferredLogs(); /* 0.3.176 (U0/S0): after every bucketed span of the frame */
         frameFence.endFrame(); /* 0.3.192 (DXVK3): the one Issue of the frame's fence, after every replay/terrain draw, before any early return; reset() calls endFrame() too */
         NorthlightLockMeter::endFrame();
@@ -2422,16 +2422,18 @@ public:
             if(lights&&NorthlightDiagnostics::enabled())logf("EQUIPMENT shader proven nativePointCount=%u shader=%p",lights,static_cast<void*>(shader));}
     }
     void captureEquipmentLights(IDirect3DVertexShader9* shader,IDirect3DSurface9* mainDepth){
-        if(!equipmentLightsOn()||!hasContext()||!active||equipmentAttempts>=64||equipmentLights.banks>=NorthlightEquipmentLights::MaxBanksPerFrame)return;
-        const auto it=equipmentShaders.find(shader);if(it==equipmentShaders.end()||!it->second)return;++equipmentAttempts;
-        NorthlightDrawSnapshot::Ref<IDirect3DSurface9> ds;if(!mainDepth||FAILED(d->GetDepthStencilSurface(ds.out()))||ds.p!=mainDepth)return;
+        if(!equipmentLightsOn()||!hasContext()||!active)return;
+        const auto it=equipmentShaders.find(shader);if(it==equipmentShaders.end()||!it->second)return;
         if(equipmentMap!=active->map){equipmentLights.reset();equipmentMap=active->map;}
+        const bool actor=isSkinnedShader(shader);
+        if(!equipmentCapture.take(actor,equipmentLights.banks,equipmentLights.backgroundBanks))return;
+        NorthlightDrawSnapshot::Ref<IDirect3DSurface9> ds;if(!mainDepth||FAILED(d->GetDepthStencilSurface(ds.out()))||ds.p!=mainDepth){++equipmentCapture.domainRejected;return;}
         // The proven constants are view-space: require the current main-world
         // projection before using this frame's inverse view (portraits excluded).
-        float q[16];if(FAILED(d->GetVertexShaderConstantF(2,q,4)))return;for(float v:q)if(!std::isfinite(v))return;if(std::fabs(q[0]-projection[0])>.005f||std::fabs(q[5]-projection[1])>.005f||std::fabs(q[14]-projection[2])>.005f||std::fabs(q[15])>.001f)return;
-        float bank[44];if(FAILED(d->GetVertexShaderConstantF(17,bank,11))||!equipmentLights.admit(bank))return;
+        float q[16];if(FAILED(d->GetVertexShaderConstantF(2,q,4))){++equipmentCapture.domainRejected;return;}for(float v:q)if(!std::isfinite(v)){++equipmentCapture.domainRejected;return;}if(std::fabs(q[0]-projection[0])>.005f||std::fabs(q[5]-projection[1])>.005f||std::fabs(q[14]-projection[2])>.005f||std::fabs(q[15])>.001f){++equipmentCapture.domainRejected;return;}
+        float bank[44];if(FAILED(d->GetVertexShaderConstantF(17,bank,11))||!equipmentLights.admit(bank,it->second,actor))return;
         const auto now=GetTickCount();
-        for(unsigned i=0;i<it->second;++i){NorthlightEquipmentLights::Native n;if(NorthlightEquipmentLights::decode(bank,i,context.inverseView,context.camera,n))equipmentLights.observe(n,now,active->localLights,context.camera);}
+        for(unsigned i=0;i<it->second;++i){NorthlightEquipmentLights::Native n;if(NorthlightEquipmentLights::decode(bank,i,context.inverseView,context.camera,n)){++equipmentCapture.decoded;equipmentLights.observe(n,now,active->localLights,context.camera);}else ++equipmentCapture.rejected;}
     }
     unsigned spellLayerSetting()const{return quality.spellLayer;} /* task 34: SpellLayer, SpellLayerClasses and SpellTrace are read once at device creation */
     unsigned spellLayerClassesSetting()const{return quality.spellLayerClasses;}
@@ -4005,7 +4007,13 @@ public:
         if(jobs)replayJobs_.wait(atmosphereDone);else atmosphereWork(atmosphere,nearZ,w,h,debug);
         auto& localLights=atmosphere.lights;
         localDirectCount=localLights.count;localDirectNearest=localLights.nearest;
-        if(equipmentLightsOn()&&captureSampled)logf("EQUIPMENT lights nativePoint=1 attempts=%u banks=%u observed=%u duplicateStatic=%u dropped=%u active=%u output=%u maxLights=8 maxBanks=16 ttlMs=250 falloff=bounded-linear-approx",equipmentAttempts,equipmentLights.banks,equipmentLights.observed,equipmentLights.duplicates,equipmentLights.dropped,equipmentLights.count,equipmentLights.outputCount);
+        if(equipmentLightsOn()&&captureSampled){
+            logf("EQUIPMENT lights nativePoint=1 attempts=%u banks=%u observed=%u duplicateStatic=%u dropped=%u active=%u output=%u maxLights=8 maxBanks=16 ttlMs=250 falloff=bounded-linear-approx candidates=%u actorCandidates=%u actorReads=%u backgroundReads=%u backgroundBanks=%u duplicateBanks=%u readLimited=%u bankLimited=%u domainRejected=%u decoded=%u rejected=%u",equipmentCapture.reads,equipmentLights.banks,equipmentLights.observed,equipmentLights.duplicates,equipmentLights.dropped,equipmentLights.count,equipmentLights.outputCount,equipmentCapture.candidates,equipmentCapture.actorCandidates,equipmentCapture.actorReads,equipmentCapture.backgroundReads,equipmentLights.backgroundBanks,equipmentLights.bankDuplicates,equipmentCapture.readLimited,equipmentCapture.bankLimited,equipmentCapture.domainRejected,equipmentCapture.decoded,equipmentCapture.rejected);
+            for(unsigned i=0;i<equipmentLights.count;++i){const auto& entry=equipmentLights.entries[i];if(entry.gain<=.0001f)continue;
+                const auto light=NorthlightEquipmentLights::light(entry.source,entry.id,entry.gain);
+                const float selfDistance=actorShadowHistory.selfHold()>0?std::sqrt(NorthlightEquipmentLights::distance2(light.position,actorShadowHistory.selfAt())):-1.f;
+                logf("EQUIPMENT source id=%llu position=(%.3f %.3f %.3f) nativeRGB=(%.4f %.4f %.4f) denominator=(%.4f %.4f %.4f) rgb=(%.4f %.4f %.4f) range=%.2f gain=%.3f cameraYards=%.2f selfYards=%.2f",static_cast<unsigned long long>(light.sourceId),light.position[0],light.position[1],light.position[2],entry.source.color[0],entry.source.color[1],entry.source.color[2],entry.source.attenuation[0],entry.source.attenuation[1],entry.source.attenuation[2],light.diffuse[0],light.diffuse[1],light.diffuse[2],light.attenuationEnd,entry.gain,std::sqrt(NorthlightEquipmentLights::distance2(light.position,context.camera)),selfDistance);}
+        }
         c[52][0]=float(std::min(localDirectCount,NorthlightLocalLightSelection::DirectBatchSize));c[52][1]=.9f*lampGain;
         // Near fade: no added fog within 3.5 units of the viewer, full at 15.5.
         // Same soft ramp, shifted 0.5 world units closer.
