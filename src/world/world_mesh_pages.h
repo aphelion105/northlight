@@ -124,7 +124,7 @@ inline bool build(const NorthlightWorldMesh::WorldMeshUploadPlan& input,Plan& ou
                     using Buffer=std::decay_t<decltype(buffer)>;
                     using Value=typename Buffer::value_type;
                     const uint64_t oldBytes=buffer.capacity()*sizeof(Value),bytes=buffer.size()*sizeof(Value);
-                    if(buffer.capacity()<=buffer.size()+buffer.size()/8||oldBytes-bytes<16384)return true;
+                    if(buffer.capacity()<=buffer.size()+buffer.size()/4||oldBytes-bytes<65536)return true;
                     if(!allowed(bytes))return false;
                     Buffer exact(buffer.begin(),buffer.end());
                     const uint64_t newBytes=exact.capacity()*sizeof(Value);
