@@ -11,6 +11,13 @@
 #include <vector>
 #include <mutex>
 #include <random>
+// Fake COM types below also need the portable gate implementation on Windows.
+#ifdef _WIN32
+#undef _WIN32
+#endif
+#ifdef __uuidof
+#undef __uuidof
+#endif
 using LONG=int;using ULONG=unsigned;using UINT=unsigned;using DWORD=unsigned;using HRESULT=int;using REFIID=const void*;
 #define STDMETHODCALLTYPE
 #define __uuidof(T) iid<T>()
@@ -201,6 +208,44 @@ static void replayWrite(VB b,UINT off,UINT n,DWORD flags,unsigned seed){ // Unlo
  void* p=nullptr;assert(b.vb->Lock(off,n,&p,flags)==S_OK);for(UINT i=0;i<(n?n:b.raw->desc.Size-off);++i)static_cast<unsigned char*>(p)[i]=(unsigned char)(seed*131u+i*7u+off);assert(b.vb->Unlock()==S_OK);}
 // readSame reads through the RAW pointer, exactly what the capture gets from ext->GetStreamSource/GetIndices (the wrapper is only the stream's write path)
 static bool readSame(VB b,UINT off,UINT n){C::Reader<IDirect3DVertexBuffer9> r(b.raw);void* p=nullptr;assert(r.lock(off,n,&p)==S_OK&&p);const bool same=!std::memcmp(p,b.raw->mem.data()+off,n);assert(r.unlock()==S_OK);return same;}
+template<class T> static void unchangedWriteTests(){
+ using namespace NorthlightTrackedBuffers;Device owner;C::enabled.store(true);
+ constexpr bool index=std::is_same<T,IDirect3DIndexBuffer9>::value;
+ auto* raw=new Raw<T>;raw->desc.Size=4096;raw->mem.assign(4096,0x55);T* buffer=raw;
+ wrap<T,Forward<T>>(&buffer,&owner,index);
+ auto fill=[&]{C::Reader<T> reader(raw);void* bytes=nullptr;assert(reader.lock(0,4096,&bytes)==S_OK);assert(!std::memcmp(bytes,raw->mem.data(),4096));assert(reader.unlock()==S_OK);};
+ fill();const auto start=noChangeWrites.load();void* bytes=nullptr;
+ for(unsigned i=0;i<100;++i){
+  const auto before=version(raw,index);assert(before);
+  const DWORD flags=i%3==0?D3DLOCK_DISCARD:i%3==1?D3DLOCK_NOOVERWRITE:0;
+  assert(buffer->Lock(0,i%2?0:4096,&bytes,flags)==S_OK&&version(raw,index)==0);
+  std::memset(bytes,0x55,4096);assert(buffer->Unlock()==S_OK&&version(raw,index)==before);
+  assert(metadata(buffer,index).revision==before);fill();
+ }
+ assert(noChangeWrites.load()==start+100);
+ auto before=version(raw,index);
+ assert(buffer->Lock(17,100,&bytes,D3DLOCK_NOOVERWRITE)==S_OK&&buffer->Unlock()==S_OK&&version(raw,index)==before);
+ assert(buffer->Lock(17,100,&bytes,D3DLOCK_DISCARD)==S_OK&&buffer->Unlock()==S_OK&&version(raw,index)!=before); // outside the range is undefined
+ before=version(raw,index);assert(buffer->Lock(0,4096,&bytes,0)==S_OK);static_cast<unsigned char*>(bytes)[4095]^=1;
+ assert(buffer->Unlock()==S_OK&&version(raw,index)!=before);fill(); // a one-byte change must invalidate
+ before=version(raw,index);assert(buffer->Lock(0,4096,&bytes,D3DLOCK_READONLY)==S_OK&&buffer->Unlock()==S_OK&&version(raw,index)==before);
+ assert(buffer->Lock(0,4096,&bytes,0)==S_OK);raw->failUnlock=true;assert(FAILED(buffer->Unlock())&&version(raw,index)==0);raw->failUnlock=false;
+ assert(buffer->Unlock()==S_OK&&version(raw,index)==0); // finish the failed outstanding lock; tracking is still unsafe
+ assert(buffer->Lock(0,4096,&bytes,0)==S_OK&&buffer->Unlock()==S_OK&&version(raw,index));fill(); // unsafe generation cannot be restored
+ before=version(raw,index);void* nested=nullptr;
+ assert(buffer->Lock(0,4096,&bytes,0)==S_OK&&buffer->Lock(0,4,&nested,0)==S_OK&&buffer->Unlock()==S_OK&&buffer->Unlock()==S_OK&&version(raw,index)!=before);fill();
+ before=version(raw,index);assert(buffer->Lock(0,4096,&bytes,0)==S_OK);raw->failLock=true;
+ assert(FAILED(buffer->Lock(0,4,&nested,0)));raw->failLock=false;
+ assert(buffer->Unlock()==S_OK&&version(raw,index)!=before);fill();
+ before=version(raw,index);assert(buffer->Lock(0,4096,&bytes,0)==S_OK);invalidateAll();assert(buffer->Unlock()==S_OK&&version(raw,index)!=before);fill();
+ for(unsigned i=0;i<=C::kBackoffFrames;++i)C::advanceFrame();fill(); // earlier failures may have parked the copy
+ before=version(raw,index);assert(buffer->Lock(0,4096,&bytes,0)==S_OK);
+ {auto& store=C::store();std::lock_guard<std::mutex> lock(store.m);assert(C::detail::evictOne(store));}
+ assert(buffer->Unlock()==S_OK&&version(raw,index)!=before);fill();
+ written(buffer);before=version(raw,index);assert(buffer->Lock(0,4096,&bytes,0)==S_OK&&buffer->Unlock()==S_OK&&version(raw,index)!=before); // GPU write permanently disables the proof
+ buffer->Release();C::enabled.store(false);assert(owner.refs==1&&records.empty());
+ std::printf("PASS unchanged %s writes: exact tokens, full/partial/discard, changed byte, readonly, failures, nested locks, reset, eviction, GPU writes\n",index?"IB":"VB");
+}
 static void copiesTests(){
  using namespace NorthlightTrackedBuffers;Device owner;auto& m=NorthlightLockMeter::state();
  const auto served=[&]{return m.copyServed.load();};const auto fallback=[&]{return m.copyFallback.load();};
@@ -317,8 +362,8 @@ static void copiesTests(){
   C::setPressure(false);assert(m.copyCapBytes.load()==C::kCapBytes);
   for(auto& b:v)freeVB(b);assert(m.copyResidentBytes.load()==0&&m.copyResidentBuffers.load()==0);}
  {VB b=makeVB(owner,5u<<20);replayWrite(b,0,64,0,1);for(int i=0;i<4;++i){C::advanceFrame();b.raw->readLocks=0;assert(readSame(b,0,64)&&b.raw->readLocks==1);}freeVB(b);} // above cap/4: ordinary while the large allowance is blocked (the pressure edges above start its back-off)
- // L1: the LARGE allowance: a ~15.8 MB buffer (above cap/4) gets a copy of its own, outside the regular cap, without memory pressure
- {const UINT L=15800000;for(unsigned i=0;i<C::kLargeBackoffFrames+2;++i)C::advanceFrame();   // the back-off of the pressure edges above is over
+ // L1: the largest allowed buffer gets a copy outside the regular cap, without memory pressure.
+ {const UINT L=UINT(C::kLargeCopyBytes);for(unsigned i=0;i<C::kLargeBackoffFrames+2;++i)C::advanceFrame();   // the back-off of the pressure edges above is over
   VB b=makeVB(owner,L);replayWrite(b,0,4096,0,41);const auto g0=m.copyLargeGrants.load(),d0=m.copyLargeDrops.load(),res0=m.copyResidentBytes.load();
   b.raw->readLocks=0;assert(readSame(b,0,64)&&b.raw->readLocks==1&&m.copyLargeBytes.load()==0);   // frame 1: a read-back lock, no whole-buffer fill (not even for a whole-buffer request)
   {C::Reader<IDirect3DVertexBuffer9> r(b.raw);void* p=nullptr;assert(r.lock(0,L,&p)==S_OK&&r.unlock()==S_OK);assert(m.copyLargeBytes.load()==0&&b.raw->readLocks==2);}
@@ -326,8 +371,8 @@ static void copiesTests(){
   assert(m.copyLargeBytes.load()==L&&m.copyLargeGrants.load()==g0+1&&m.copyResidentBytes.load()==res0&&m.copyFillBytes.load()>=L);   // separate budget: `resident` is the regular cap only
   b.raw->readLocks=0;const auto s0=served();assert(readSame(b,0,L)&&readSame(b,100000,200)&&b.raw->readLocks==0&&served()==s0+2);   // served through the raw pointer
   replayWrite(b,5000,300,D3DLOCK_NOOVERWRITE,42);replayWrite(b,L-100,100,0,43);assert(readSame(b,0,L)&&b.raw->readLocks==0);   // kept current from the replayed writes
-  // a second large buffer is refused while the first is read recently, regular buffers are unaffected
-  {VB c2=makeVB(owner,L);replayWrite(c2,0,64,0,44);for(int i=0;i<4;++i){C::advanceFrame();c2.raw->readLocks=0;assert(readSame(c2,0,64)&&readSame(b,0,64));assert(c2.raw->readLocks==1);}assert(m.copyLargeBytes.load()==L);freeVB(c2);}
+  // A second buffer that would exceed the total cap cannot evict a recently read holder.
+  {VB c2=makeVB(owner,UINT(C::kLargeCopyBytes));replayWrite(c2,0,64,0,44);for(int i=0;i<4;++i){C::advanceFrame();c2.raw->readLocks=0;assert(readSame(c2,0,64)&&readSame(b,0,64));assert(c2.raw->readLocks==1);}assert(m.copyLargeBytes.load()==L);freeVB(c2);}
   // pressure: dropped (a pinned one at its unpin: its bytes stay valid until then), no re-grant within the back-off, then granted again
   {assert(readSame(b,0,64));C::Reader<IDirect3DVertexBuffer9> r(b.raw);void* p=nullptr;assert(r.lock(0,128,&p)==S_OK);
    C::setPressure(true);assert(m.copyLargeBytes.load()==L&&m.copyLargeDrops.load()==d0);assert(!std::memcmp(p,b.raw->mem.data(),128));   // pinned: kept until the unpin
@@ -341,6 +386,22 @@ static void copiesTests(){
   // a GPU write invalidates it for good
   written(b.vb);assert(m.copyLargeBytes.load()==0);b.raw->readLocks=0;for(int i=0;i<3;++i){C::advanceFrame();assert(readSame(b,0,64));}assert(b.raw->readLocks==3&&m.copyLargeGrants.load()==g0+2);
   freeVB(b);assert(m.copyLargeBytes.load()==0&&m.copyResidentBytes.load()==res0);}
+ // The observed large working set stays exact through partial writes, without further driver reads.
+ {VB a=makeVB(owner,16633856),b=makeVB(owner,18874368),c=makeVB(owner,4672512);
+  replayWrite(a,0,4096,D3DLOCK_DISCARD,71);replayWrite(b,0,4096,D3DLOCK_DISCARD,72);replayWrite(c,0,4096,D3DLOCK_DISCARD,73);
+  assert(readSame(a,0,64)&&readSame(b,0,64)&&readSame(c,0,64));C::advanceFrame();assert(readSame(a,0,64)&&readSame(b,0,64)&&readSame(c,0,64));
+  assert(m.copyLargeBytes.load()==UINT(16633856+18874368+4672512));a.raw->readLocks=b.raw->readLocks=c.raw->readLocks=0;
+  for(int i=0;i<5;++i){C::advanceFrame();replayWrite(a,100,300,D3DLOCK_NOOVERWRITE,73+i);replayWrite(b,4096,512,D3DLOCK_NOOVERWRITE,79+i);assert(readSame(a,0,8192)&&readSame(b,0,8192)&&readSame(c,0,8192));}
+  assert(a.raw->readLocks==0&&b.raw->readLocks==0&&c.raw->readLocks==0);freeVB(a);freeVB(b);freeVB(c);assert(m.copyLargeBytes.load()==0);
+  C::takeRefusals();VB huge=makeVB(owner,UINT(C::kLargeCopyBytes+1));for(int i=0;i<3;++i){C::advanceFrame();assert(readSame(huge,0,64));}assert(huge.raw->readLocks==3);freeVB(huge);
+  const auto refusals=C::takeRefusals();assert(refusals.tooLarge==2&&refusals.largestBuffer==C::kLargeCopyBytes+1);}
+ // One fill may reclaim several cold holders; active readers and the total byte cap remain protected.
+ {std::vector<VB> cold;for(int i=0;i<4;++i){cold.push_back(makeVB(owner,8u<<20));assert(readSame(cold.back(),0,64));}
+  C::advanceFrame();for(auto& b:cold)assert(readSame(b,0,64));assert(m.copyLargeBytes.load()==(32u<<20));
+  VB next=makeVB(owner,24u<<20);assert(readSame(next,0,64));for(unsigned i=0;i<C::kLargeRefillFrames+1;++i)C::advanceFrame();
+  assert(readSame(next,0,64));C::advanceFrame(); // The long gap restarts the two-recent-frame admission proof.
+  const auto drops=m.copyLargeDrops.load();assert(readSame(next,0,64));assert(m.copyLargeDrops.load()==drops+2&&m.copyLargeBytes.load()==C::kLargeCapBytes);
+  for(auto& b:cold)freeVB(b);freeVB(next);assert(m.copyLargeBytes.load()==0);}
  // R1: the lookup accepts the RAW pointer (what ext->GetStreamSource/GetIndices return) as well as the wrapper; both reach the same slot
  {VB b=makeVB(owner,4096);replayWrite(b,0,4096,D3DLOCK_DISCARD,1);const auto s0=served(),f0=fallback();
   {C::Reader<IDirect3DVertexBuffer9> r(b.raw);void* p=nullptr;assert(r.lock(0,128,&p)==S_OK&&!std::memcmp(p,b.raw->mem.data(),128)&&r.unlock()==S_OK);} // the fill, through the raw pointer
@@ -451,5 +512,5 @@ int main(){using namespace NorthlightTrackedBuffers;Device owner;
  raw->AddRef();vb->Release();assert(owner.refs==1&&version(raw,false)==0&&unwrap(raw)==raw);raw->Release();
  auto* ri=new Raw<IDirect3DIndexBuffer9>;IDirect3DIndexBuffer9* ib=ri;wrap<IDirect3DIndexBuffer9,ForwardIDirect3DIndexBuffer9>(&ib,&owner,true);assert(version(ri,true)&&!version(ri,false));ib->Release();assert(owner.refs==1&&records.empty());
  puts("PASS buffer COM ownership, VB/IB identity, normal/DISCARD/NOOVERWRITE writes, READONLY, nested failed lock, failed unlock, ProcessVertices invalidation and reset");
- metadataTests();mirrorExposure();discardMeterTests();copiesTests();spellHookTests();
+ metadataTests();mirrorExposure();discardMeterTests();copiesTests();unchangedWriteTests<IDirect3DVertexBuffer9>();unchangedWriteTests<IDirect3DIndexBuffer9>();spellHookTests();
 }

@@ -1,4 +1,5 @@
 #pragma once
+#include "bytes_equal.h"
 #include "replay_constants.h"
 #include "shader_constant_usage.h"
 #include <algorithm>
@@ -52,9 +53,9 @@ public:
         assert(used.first<Count&&used.count<=Count-used.first&&desired);
         if(!desired||used.first>=Count||used.count>Count-used.first)return {};
         std::size_t first=used.first,last=first+used.count;
-        if(knownRange(first,last)&&std::memcmp(values_.data()+first*Width,desired+first*Width,(last-first)*RegisterBytes)==0)return {};
-        while(first<last&&known(first)&&std::memcmp(values_.data()+first*Width,desired+first*Width,RegisterBytes)==0)++first;
-        while(last>first&&known(last-1)&&std::memcmp(values_.data()+(last-1)*Width,desired+(last-1)*Width,RegisterBytes)==0)--last;
+        if(knownRange(first,last)&&NorthlightBytes::equal(values_.data()+first*Width,desired+first*Width,(last-first)*RegisterBytes))return {};
+        while(first<last&&known(first)&&NorthlightBytes::equal(values_.data()+first*Width,desired+first*Width,RegisterBytes))++first;
+        while(last>first&&known(last-1)&&NorthlightBytes::equal(values_.data()+(last-1)*Width,desired+(last-1)*Width,RegisterBytes))--last;
         if(first==last)return {};
         std::memcpy(values_.data()+first*Width,desired+first*Width,(last-first)*RegisterBytes);
         mark(first,last);
@@ -80,10 +81,10 @@ public:
         const auto inspect=[&](std::size_t a,std::size_t b,const T* source){
             if(a==b)return;
             const std::size_t origin=a;const bool allKnown=knownRange(a,b);
-            if(allKnown&&!std::memcmp(values_.data()+a*Width,source,(b-a)*RegisterBytes))return;
+            if(allKnown&&NorthlightBytes::equal(values_.data()+a*Width,source,(b-a)*RegisterBytes))return;
             const auto same=[&](std::size_t lo,std::size_t hi){
                 return (allKnown||knownRange(lo,hi))&&
-                    !std::memcmp(values_.data()+lo*Width,source+(lo-origin)*Width,(hi-lo)*RegisterBytes);
+                    NorthlightBytes::equal(values_.data()+lo*Width,source+(lo-origin)*Width,(hi-lo)*RegisterBytes);
             };
             constexpr std::size_t Chunk=16;
             while(b-a>=Chunk&&same(a,a+Chunk))a+=Chunk;

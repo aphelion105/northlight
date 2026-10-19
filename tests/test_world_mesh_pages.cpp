@@ -63,6 +63,21 @@ static void verify(const WorldMeshUploadPlan& input,const P::Plan& output) {
     assert(output.vertexBytes==vb&&output.indexBytes==ib&&output.cpuBytes()>=vb+ib);
 }
 static const P::Options sequential{0,0}; // no content anchors: exact limit-driven layouts
+static void testIndexMap(){
+    P::IndexMap map;
+    for(uint32_t pass=0;pass<16;++pass){
+        map.clear();assert(map.size()==0);
+        for(uint32_t i=0;i<=P::PageVertexLimit;++i){
+            const uint32_t key=i*65536u+pass;
+            assert(map.find(key)==P::IndexMap::Missing);
+            assert(map.insert(key,i)==std::make_pair(i,true));
+            assert(map.insert(key,i+1)==std::make_pair(i,false));
+        }
+        assert(map.size()==P::PageVertexLimit+1);
+        for(uint32_t i=0;i<=P::PageVertexLimit;++i)assert(map.find(i*65536u+pass)==i);
+    }
+    std::puts("PASS bounded index map: sparse/colliding keys, duplicate inserts, overflowing preflight and repeated clear");
+}
 static void testVertexLimits(){
     WorldScene scene;WorldMeshUploadPlan input;initialize(scene,input,P::PageVertexLimit*4);
     addBatch(input,30000,0,P::PageVertexLimit*4,1);
@@ -273,4 +288,4 @@ static void testSeal(){
     assert(P::seal(borrowed,pages,error));assert(!P::validateSealed(borrowed));assert(source->vertices.size()==3);
     std::puts("PASS sealed ownership: source release, exact placement proofs, retained GI, cheap validation and transactional failures");
 }
-int main(){testVertexLimits();testIndexLimits();testKeepBatches();testDegenerateAndExactBoundary();testAnchors();testElision();testTransactionalFailure();testSeal();std::puts("All world mesh page tests passed");}
+int main(){testIndexMap();testVertexLimits();testIndexLimits();testKeepBatches();testDegenerateAndExactBoundary();testAnchors();testElision();testTransactionalFailure();testSeal();std::puts("All world mesh page tests passed");}

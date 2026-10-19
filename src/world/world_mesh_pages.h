@@ -6,8 +6,7 @@
 #include <cstring>
 #include <new>
 #include <stdexcept>
-#include <unordered_map>
-#include <unordered_set>
+#include <utility>
 
 // CPU worker preparation: bounded managed resources keep first residency from
 // implicitly uploading a whole city's vertex/index allocation at once. Pages
@@ -54,6 +53,30 @@ struct Plan {
     }
 };
 
+// At most one page (or its preflight's first overflowing vertex) is indexed.
+// Contiguous slots avoid allocating/freeing a hash node for every vertex.
+class IndexMap {
+    static constexpr uint32_t Capacity=2*PageVertexLimit;
+    struct Slot {uint32_t key=0,value=0,epoch=0;};
+    std::vector<Slot> slots_=std::vector<Slot>(Capacity);
+    uint32_t epoch_=1,size_=0;
+    uint32_t slot(uint32_t key)const {
+        uint32_t i=(key*0x9e3779b9u)>>(32-15);
+        while(slots_[i].epoch==epoch_&&slots_[i].key!=key)i=(i+1)&(Capacity-1);
+        return i;
+    }
+public:
+    static_assert(Capacity==32768,"Index hash uses the upper 15 bits");
+    static constexpr uint32_t Missing=UINT32_MAX;
+    void clear(){if(!++epoch_){std::fill(slots_.begin(),slots_.end(),Slot{});epoch_=1;}size_=0;}
+    uint32_t size()const{return size_;}
+    uint32_t find(uint32_t key)const {const auto& s=slots_[slot(key)];return s.epoch==epoch_?s.value:Missing;}
+    std::pair<uint32_t,bool> insert(uint32_t key,uint32_t value) {
+        auto& s=slots_[slot(key)];if(s.epoch==epoch_)return {s.value,false};
+        s={key,value,epoch_};++size_;return {value,true};
+    }
+};
+
 // The input indices/batches must be the immutable packed upload plan. Every
 // original batch stays whole if it fits an empty page. Larger batches split
 // only at triangle boundaries. One bounded source-index map is reused per page;
@@ -75,11 +98,9 @@ inline bool build(const NorthlightWorldMesh::WorldMeshUploadPlan& input,Plan& ou
             output=std::move(next);error.clear();return true;
         }
         auto allowed=[&](uint64_t bytes){return !admit||admit(bytes);};
-        // Reserve admission for both bounded hash working sets, including nodes.
+        // Reserve admission for both bounded index tables.
         if(!allowed(2u*1024u*1024u))return fail("Paged mesh working memory deferred");
-        std::unordered_map<uint32_t,uint32_t> remap;
-        std::unordered_set<uint32_t> batchUnique;
-        remap.reserve(PageVertexLimit);batchUnique.reserve(PageVertexLimit);
+        IndexMap remap,batchUnique;
         uint64_t expectedStart=0;
         bool closeAfter=false; // an anchor closed the current page: the next triangle/batch opens a new one
         uint64_t liveKept=0,peakLive=0;
@@ -123,9 +144,9 @@ inline bool build(const NorthlightWorldMesh::WorldMeshUploadPlan& input,Plan& ou
                 for(uint64_t i=original.start;i<expectedStart;++i) {
                     const auto sourceIndex=input.indices[size_t(i)];
                     if(sourceIndex>=input.vertexCount)return fail("Paged mesh index outside source vertices");
-                    if(batchUnique.insert(sourceIndex).second) {
+                    if(batchUnique.insert(sourceIndex,0).second) {
                         if(batchUnique.size()>PageVertexLimit){fitsEmpty=false;break;}
-                        if(remap.find(sourceIndex)==remap.end())++missing;
+                        if(remap.find(sourceIndex)==IndexMap::Missing)++missing;
                     }
                 }
             }
@@ -134,15 +155,17 @@ inline bool build(const NorthlightWorldMesh::WorldMeshUploadPlan& input,Plan& ou
                 if(!newPage())return fail("Paged mesh page allocation deferred");
             size_t currentBatch=std::numeric_limits<size_t>::max();
             for(uint64_t i=original.start;i<expectedStart;i+=3) {
-                uint32_t ids[3],newVertices=0;
+                uint32_t ids[3],locals[3],newVertices=0;
                 for(unsigned k=0;k<3;++k) {
                     ids[k]=input.indices[size_t(i+k)];
                     if(ids[k]>=input.vertexCount)return fail("Paged mesh index outside source vertices");
                     bool repeated=false;for(unsigned previous=0;previous<k;++previous)repeated|=ids[k]==ids[previous];
-                    if(!repeated&&remap.find(ids[k])==remap.end())++newVertices;
+                    locals[k]=remap.find(ids[k]);
+                    if(!repeated&&locals[k]==IndexMap::Missing)++newVertices;
                 }
                 if(closeAfter||next.pages.back().vertices.size()+newVertices>PageVertexLimit||next.pages.back().indices.size()+3>PageIndexLimit) {
                     if(!newPage())return fail("Paged mesh page allocation deferred");
+                    for(auto& local:locals)local=IndexMap::Missing;
                     currentBatch=std::numeric_limits<size_t>::max();
                 }
                 auto& page=next.pages.back();
@@ -162,14 +185,16 @@ inline bool build(const NorthlightWorldMesh::WorldMeshUploadPlan& input,Plan& ou
                 auto& batch=next.batches[currentBatch];
                 uint32_t maxVertex=batch.vertexCount?batch.minVertex+batch.vertexCount-1:0;
                 for(unsigned k=0;k<3;++k) {
-                    auto insertion=remap.emplace(ids[k],uint32_t(page.vertices.size()));
-                    if(insertion.second) {
-                        const auto& vertex=input.source->vertices[ids[k]];
-                        if(!std::isfinite(vertex.position.x)||!std::isfinite(vertex.position.y)||!std::isfinite(vertex.position.z))
-                            return fail("Paged mesh nonfinite vertex position");
-                        page.vertices.push_back(vertex);
+                    uint32_t local=locals[k];
+                    if(local==IndexMap::Missing) {
+                        auto insertion=remap.insert(ids[k],uint32_t(page.vertices.size()));local=insertion.first;
+                        if(insertion.second) {
+                            const auto& vertex=input.source->vertices[ids[k]];
+                            if(!std::isfinite(vertex.position.x)||!std::isfinite(vertex.position.y)||!std::isfinite(vertex.position.z))
+                                return fail("Paged mesh nonfinite vertex position");
+                            page.vertices.push_back(vertex);
+                        }
                     }
-                    const uint32_t local=insertion.first->second;
                     page.indices.push_back(local);
                     batch.minVertex=std::min(batch.minVertex,local);maxVertex=std::max(maxVertex,local);
                     const auto& p=page.vertices[local].position;
