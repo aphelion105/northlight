@@ -23,7 +23,6 @@ inline bool clipRejectAffine(NorthlightGI::Vec3 low,NorthlightGI::Vec3 high,
     const float lo[]={low.x,low.y,low.z},hi[]={high.x,high.y,high.z};
     for(unsigned axis=0;axis<3;++axis)
         if(!std::isfinite(lo[axis])||!std::isfinite(hi[axis])||lo[axis]>hi[axis])return false;
-    double minimum[3],maximum[3];
     for(unsigned axis=0;axis<3;++axis) {
         double lower=matrix[12+axis],upper=lower,magnitude=std::fabs(lower);
         for(unsigned row=0;row<3;++row){
@@ -35,9 +34,12 @@ inline bool clipRejectAffine(NorthlightGI::Vec3 low,NorthlightGI::Vec3 high,
         // magnitude bounds EVERY corner's old roundoff expansion (including
         // world-coordinate cancellation), so this can only retain more casters.
         const double margin=double(epsilon)+magnitude*(8.0*std::numeric_limits<float>::epsilon());
-        minimum[axis]=lower-margin;maximum[axis]=upper+margin;
+        const double minimum=lower-margin,maximum=upper+margin;
+        // A separating light plane is sufficient. Do not project the other
+        // axes once this box is proven outside; invalid boxes were checked above.
+        if(axis<2?(maximum<-1||minimum>1):((!retainUpstream&&maximum<0)||minimum>1))return true;
     }
-    return maximum[0]<-1||minimum[0]>1||maximum[1]<-1||minimum[1]>1||(!retainUpstream&&maximum[2]<0)||minimum[2]>1;
+    return false;
 }
 inline bool clipReject(NorthlightGI::Vec3 low,NorthlightGI::Vec3 high,
                        const float* matrix,float epsilon=1e-4f,bool retainUpstream=false) {
