@@ -73,7 +73,11 @@ int main(){
     // Additional lights share the original global limit and deterministic sort.
     fixed={l};Tracker e;e.observe(n,4000,none);e.publish(4000);e.publish(4050);
     NorthlightLocalLightSelection::Tracker select;auto out=select.update(fixed,camera,8,.016f,false,e.output.data(),e.outputCount);assert(out.count==2);
-    NorthlightQuality::Settings settings;assert(!settings.equipmentLights);std::vector<std::string> problems;NorthlightQuality::apply({{"EquipmentLights","1",1}},settings,"test",'f',problems,true);assert(settings.equipmentLights==1);
+    NorthlightQuality::Settings settings;assert(settings.equipmentLights);std::vector<std::string> problems;
+    assert(NorthlightQuality::preset(NorthlightQuality::Preset::Quality).equipmentLights==1);
+    assert(!NorthlightQuality::preset(NorthlightQuality::Preset::Balanced).equipmentLights&&!NorthlightQuality::preset(NorthlightQuality::Preset::Performance).equipmentLights);
+    NorthlightQuality::apply({{"EquipmentLights","0",1}},settings,"test",'f',problems,true);assert(!settings.equipmentLights);
+    NorthlightQuality::apply({{"EquipmentLights","1",1}},settings,"test",'f',problems,true);assert(settings.equipmentLights==1&&problems.empty());
     assert(!NorthlightEquipmentLightProof::analyze(nullptr,0));
-    std::puts("equipment lights: world transform, actual hue, invalid input, bank revisit/order/unused-slot dedup, reserved late actor admission under unchanged 64/16 caps, nearest admission, static appears/disappears, movement, fade/TTL, clock wrap, shared selection limit, opt-in PASS");
+    std::puts("equipment lights: world transform, actual hue, invalid input, bank revisit/order/unused-slot dedup, reserved late actor admission under unchanged 64/16 caps, nearest admission, static appears/disappears, movement, fade/TTL, clock wrap, shared selection limit, Quality default and override PASS");
 }

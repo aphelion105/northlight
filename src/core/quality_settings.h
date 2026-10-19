@@ -118,7 +118,7 @@ struct Settings {
     // StreamOcclusionLocal: 1 = with CommandStream, GetData(FLUSH) on the game's occlusion query (sun/moon glare) is answered from the latest result without waiting for the renderer thread; 0 = always wait (as before). Creation-time key.
     unsigned streamOcclusionLocal=1;
     // Experimental bridge: native M2 point lights, never guessed from an additive draw.
-    unsigned equipmentLights=0;
+    unsigned equipmentLights=1;
     // DepthFuncAware: 1 = a draw counts as depth tested only with ZENABLE on and ZFUNC not ALWAYS (the client never turns ZENABLE off: its "depth test off" is ZFUNC ALWAYS), so the spell layer holds back (Order hazard) draws that ignore depth
     // and the UI-boundary fallback requires the UI's ZFUNC ALWAYS; 0 = ZENABLE only, as before. Creation-time key.
     unsigned depthFuncAware=1;
@@ -187,7 +187,7 @@ inline const Key Keys[]={
     {"DepthFuncAware",&Settings::depthFuncAware,0,1,{1,1,1}},
     {"WeatherMemory",&Settings::weatherMemory,0,1,{1,1,1}},
     {"ActorShadowCpuMs",&Settings::actorShadowCpuMs,0,20,{3,3,2}}, /* task 45 */
-    {"EquipmentLights",&Settings::equipmentLights,0,1,{0,0,0}},
+    {"EquipmentLights",&Settings::equipmentLights,0,1,{1,0,0}},
 };
 inline bool operator==(const Settings& a,const Settings& b){for(const auto& k:Keys)if(a.*k.field!=b.*k.field)return false;return true;}
 inline bool operator!=(const Settings& a,const Settings& b){return !(a==b);}
