@@ -28,7 +28,7 @@ int main(int argc,char**argv){
     assert(selected(r,{300,600,0},{310,610,30})==false);
     // Large building spans selected volume although its center is outside it.
     assert(selected(r,{100,-20,0},{1900,20,30}));
-    auto source=triangle();source.materials[0].addressU=3;source.materials[0].addressV=2;Model m;std::string error;assert(packModel(std::move(source),"test",m,error));assert(m.index16&&m.vertices.size()==3&&m.indexCount()==3&&m.indices.empty()&&m.uploadIndices16==std::vector<uint16_t>({0,1,2}));assert(m.materials[0].alphaCutoff==.37f&&m.materials[0].addressU==3&&m.materials[0].addressV==2);assert(m.materials[0].rgba[3]==0&&m.materials[0].rgba[7]==255);
+    auto source=triangle();source.materials[0].addressU=3;source.materials[0].addressV=2;Model m;std::string error;assert(packModel(std::move(source),"test",m,error));assert(m.index16&&m.vertices.size()==3&&m.indexCount()==3&&m.indices.empty()&&m.uploadIndices16==std::vector<uint16_t>({0,1,2}));assert(m.materials[0].alphaCutoff==.37f&&m.materials[0].addressU==3&&m.materials[0].addressV==2);assert(m.alphaAt(0,0)==0&&m.alphaAt(0,1)==255&&m.materials[0].rgba.capacity()==0);
     auto changed=triangle();changed.materials[0].addressU=3;changed.materials[0].addressV=2;changed.vertices[1].position.x=2;Model m2;assert(packModel(std::move(changed),"test",m2,error));assert(m.contentRevision!=m2.contentRevision);assert(m.materialKeys==m2.materialKeys);
     auto opaqueScene=triangle();opaqueScene.materials[0].rgba[3]=255;Model opaque;
     assert(packModel(std::move(opaqueScene),"opaque",opaque,error));
@@ -38,7 +38,7 @@ int main(int argc,char**argv){
     auto whiteScene=triangle();whiteScene.materials[0].rgba.clear();whiteScene.materials[0].width=whiteScene.materials[0].height=0;Model white;
     assert(packModel(std::move(whiteScene),"white",white,error));assert(white.contentRevision==opaque.contentRevision&&white.materialKeys==opaque.materialKeys);
     auto nearOpaqueScene=triangle();nearOpaqueScene.materials[0].rgba[3]=254;Model nearOpaque;
-    assert(packModel(std::move(nearOpaqueScene),"nearopaque",nearOpaque,error));assert(nearOpaque.materials[0].width==2&&nearOpaque.materials[0].rgba[3]==254&&nearOpaque.materials[0].rgba.capacity()>0);
+    assert(packModel(std::move(nearOpaqueScene),"nearopaque",nearOpaque,error));assert(nearOpaque.materials[0].width==2&&nearOpaque.alphaAt(0,0)==254&&nearOpaque.materials[0].rgba.capacity()==0);
     auto largeSource=triangle();largeSource.vertices.resize(65537,largeSource.vertices[0]);largeSource.triangles[0].v2=65536;Model largeModel;
     assert(packModel(std::move(largeSource),"wide-index",largeModel,error));assert(!largeModel.index16&&largeModel.uploadPrepared&&largeModel.uploadIndices16.empty()&&largeModel.indexCount()==3&&largeModel.indexAt(2)==65536);
     Placement transformed;float mat[9]={0,-2,0,3,0,0,0,0,-1};std::copy(mat,mat+9,transformed.matrix);transformed.translation={4,5,6};Vec3 p=transformPoint(transformed,{1,2,3});assert(p.x==0&&p.y==8&&p.z==3);Vec3 lo,hi;transformBounds(transformed,{0,0,0},{1,2,3},lo,hi);assert(lo.x==0&&lo.y==5&&lo.z==3&&hi.x==4&&hi.y==8&&hi.z==6);
