@@ -39,6 +39,7 @@ test_command_wait_windows.py
 test_concurrent_geometry_build.py
 test_contact_lighting.py
 test_contact_normal_endpoints.py
+test_detail_doodad_shadow.py
 test_dev_tuning_build.py
 test_device_mirror.py
 test_diagnostics_switch.py
