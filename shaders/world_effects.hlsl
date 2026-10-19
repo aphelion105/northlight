@@ -67,6 +67,7 @@ sampler2D PreviousSourceVisibility : register(s15); // previous value (SourceVis
 float4 SourceInfo : register(c67); // disc tangent radius, history weight, horizon sun (zw)
 float4 HorizonSun : register(c67); // zw: horizontal sun direction x lobe strength (WorldComposite only)
 sampler2D LightHistory : register(s14); // previous frame's stabilized lighting buffer (temporal pass only)
+sampler2D CurrentDistance : register(s15); // This frame's R32F view distance: WorldNormals/TemporalLight, never the previous frame.
 sampler2D DepthHistory : register(s15); // previous frame's linear view distance per half-res texel
 sampler2D SmoothedLighting : register(s9); // 0.3.185 TemporalLight only: the LightingBuffer after RemovalSmooth (s9 is FogBuffer's slot, idle and rebound before its readers)
 row_major float4x4 PreviousView : register(c53);
@@ -225,11 +226,10 @@ float directionalShadow(float3 p,float3 normal,float confidence) {
     }
     return result;
 }
-float fogShadow(float3 p) {
+float fogShadowProjected(float3 q) {
     // The 192-unit far map covers the 128-unit air volume. Use it throughout:
     // switching cascade resolution around the moving player changes thin
     // foliage visibility even at an otherwise stationary world sample.
-    float3 q=affinePoint(p,FarMatrix);
     float2 uv=float2(q.x*.5+.5,.5-q.y*.5)+.5*DepthParams.w;
     if(any(uv<0)||any(uv>1)||q.z<0||q.z>1)return 1;
     // Filter on a 1.5-world-unit light-plane lattice, independent of the shadow
@@ -239,7 +239,7 @@ float fogShadow(float3 p) {
     float2 fraction=frac(plane);
     float2 weight=fraction*fraction*(3-2*fraction);
     float receiver=q.z-PassInfo.x*4,visibility=0;
-    [loop]for(int tap=0;tap<4;++tap){
+    [unroll]for(int tap=0;tap<4;++tap){
         float row=floor(tap*.5);float2 bit=float2(tap-row*2,row);
         float2 sampleUV=uv+(bit-fraction)*(1.5/(2*DepthParams.z));
         float z=tex2Dlod(ShadowFar,float4(sampleUV,0,0)).r;
@@ -357,7 +357,7 @@ float3 tangentAxis(float3 p,float3 a,float3 b,float3 a1,float3 b1,float2 c,float
     float gap=colourGap.x-colourGap.y;
     return (abs(gap)>.05?gap<0:abs(b1.z-p.z)<abs(a1.z-p.z))?db:da;
 }
-float4 WorldNormals(float2 uv:TEXCOORD0):COLOR0 {
+float4 worldNormalValue(float2 uv) {
     float2 c=depthUV(uv);float d=normalizedDepth(c);float z=viewDistance(d);
     if(d>=.99999)return float4(0,0,1,z);
     float3 p=viewPositionDistance(c,z);
@@ -389,6 +389,15 @@ float4 WorldNormals(float2 uv:TEXCOORD0):COLOR0 {
     float3 world=n.x*InverseView[0].xyz+n.y*InverseView[1].xyz+n.z*InverseView[2].xyz;
     return float4(world,confidence);
 }
+struct NormalDistanceOutput {float4 normal:COLOR0;float4 distance:COLOR1;};
+NormalDistanceOutput WorldNormals(float2 uv:TEXCOORD0) {
+    NormalDistanceOutput o;o.normal=worldNormalValue(uv);
+    // Match RemovalSmooth's half-res centre exactly, including raster interpolation and odd sizes.
+    float2 q=(floor(uv*ScreenSize.zw)+.5)/ScreenSize.zw;
+    o.distance=viewDistance(normalizedDepth(depthUV(q))).xxxx;
+    return o;
+}
+
 struct LightingOutput {float4 correction:COLOR0;float4 baseline:COLOR1;};
 LightingOutput WorldLighting(float2 uv:TEXCOORD0) {
     float4 smoothNormal=tex2Dlod(NormalBuffer,float4(uv,0,0));float2 halfUV=uv;
@@ -638,15 +647,18 @@ float3 smoothRemoval(float4 current,float2 q,float2 base,float2 size,float z){
         float visibilityScale=2*RemovalInfo.z/GridInfo.z;
         float4 centreNormal=tex2Dlod(NormalBuffer,float4(q,0,0));
         float3 sum=max(ratio,-.45);float total=1,t=.5;float2 dir=float2(1,0);
-        [loop]for(int i=0;i<24;++i){
+        // Same spiral and accumulation order; two taps per loop control step.
+        [loop]for(int group=0;group<12;++group){
+        [unroll]for(int sub=0;sub<2;++sub){
             float2 tq=(clamp(floor(base+.5+dir*(sqrt(t*(1.0/24))*radius)),0,size-1)+.5)/size;
             float4 light=tex2Dlod(LightingBuffer,float4(tq,0,0));
             float4 tapNormal=tex2Dlod(NormalBuffer,float4(tq,0,0));
             float agree=saturate((dot(centreNormal.xyz,tapNormal.xyz)-.6428)*5.67);
-            float w=exp2(abs(viewDistance(normalizedDepth(depthUV(tq)))-z)*depthScale)*saturate(1-abs(light.a-current.a)*visibilityScale)*(centreNormal.w>.5?agree:1);
-            // Task 43: a zero-weight tap (other shadow state, a face beyond 50 degrees) adds exactly 0: skip its three removalScale reads.
-            [branch]if(w>0)sum+=max(light.rgb*legacyT/removalScale(tex2Dlod(BaselineLighting,float4(tq,0,0)).rgb,tex2Dlod(Scene,float4(tq,0,0)).rgb*tex2Dlod(AmbientOcclusion,float4(tq,0,0)).a,fog,legacyT),-.45)*w;total+=w;
+            float w=exp2(abs(tex2Dlod(CurrentDistance,float4(tq,0,0)).r-z)*depthScale)*saturate(1-abs(light.a-current.a)*visibilityScale)*(centreNormal.w>.5?agree:1);
+            // Predication keeps the wave on one path while retaining the zero-weight guard.
+            [flatten]if(w>0)sum+=max(light.rgb*legacyT/removalScale(tex2Dlod(BaselineLighting,float4(tq,0,0)).rgb,tex2Dlod(Scene,float4(tq,0,0)).rgb*tex2Dlod(AmbientOcclusion,float4(tq,0,0)).a,fog,legacyT),-.45)*w;total+=w;
             dir=float2(dir.x*-.7373688-dir.y*.6754903,dir.x*.6754903-dir.y*.7373688);t+=1;
+        }
         }
         result=lerp(ratio,sum/total,amount)*scale/legacyT;
     }
@@ -764,6 +776,8 @@ float4 WorldFog(float2 uv:TEXCOORD0):COLOR0 {
     float3 ray=view.x*InverseView[0].xyz+view.y*InverseView[1].xyz+view.z*InverseView[2].xyz;
     float surface=min(length(ray),FogInfo.w); // host supplies the positive 128-unit range
     ray*=rsqrt(max(dot(ray,ray),1e-12));
+    float3 shadowOrigin=affinePoint(Camera.xyz,FarMatrix);
+    float3 shadowRay=ray.x*FarMatrix[0].xyz+ray.y*FarMatrix[1].xyz+ray.z*FarMatrix[2].xyz;
     float transmittance=1;float3 directScatter=0;
     float cosine=dot(ray,SunDirection.xyz); // both directions are normalized
     // Normalized HG(g=.85) + isotropic mixture: most energy is broad enough
@@ -786,9 +800,10 @@ float4 WorldFog(float2 uv:TEXCOORD0):COLOR0 {
     float spacing=mad(FogInfo.w,1.0/48,FogStepInfo.z); // 0.3.200 (gpu budget): c64.z 0 = the 48 intervals; reduced levels fewer (host: 128*(1/N-1/48))
     float stepLength=spacing/abs(major.x);
     float offset=frac(major.y*(major.x<0?-1:1)/spacing);
-    [loop]for(int i=0;i<49;++i){
+    // Put the exit comparison on the loop: native SM3 compilation of a nested
+    // bare break emitted break_ne with identical operands, marching past surface.
+    [loop]for(int i=0;i<49&&max(0,(i-offset)*stepLength)<surface;++i){
         float start=max(0,(i-offset)*stepLength);
-        if(start>=surface)break;
         float end=min((i+1-offset)*stepLength,surface);
         float stepSize=end-start;
         float3 p=Camera.xyz+ray*((start+end)*.5);
@@ -829,7 +844,7 @@ float4 WorldFog(float2 uv:TEXCOORD0):COLOR0 {
             // A zero source has no valid shadow pass/maps to sample. Its air
             // still contributes environment scattering and extinction.
             float heightFade=saturate(altitude*(1.0/12));heightFade*=heightFade*(3-2*heightFade);
-            if(dot(sunSource,1)>0)directScatter+=transmittance*absorb*sunSource*(fogShadow(p)*heightFade);
+            if(dot(sunSource,1)>0)directScatter+=transmittance*absorb*sunSource*(fogShadowProjected(shadowOrigin+shadowRay*((start+end)*.5))*heightFade);
             transmittance*=1-absorb;
         }
     }
@@ -933,7 +948,7 @@ float4 FogBlur(float2 uv:TEXCOORD0):COLOR0 {
     float2 centerUV=(base+.5)/dimensions;
     float center=receiverDistance(depthUV(centerUV),normalizedDepth(depthUV(centerUV)));
     float4 sum=0;float total=0;
-    [loop]for(int i=-2;i<=2;++i){
+    [unroll]for(int i=-2;i<=2;++i){
         float2 q=(clamp(base+BlurInfo.xy*i,0,dimensions-1)+.5)/dimensions;
         float z=receiverDistance(depthUV(q),normalizedDepth(depthUV(q)));
         float w=(i==0?6:(abs(i)==1?4:1))*exp(-abs(z-center)/max(.5,center*.06));
@@ -953,6 +968,8 @@ float4 FogClouds(float2 uv:TEXCOORD0):COLOR0 {
     float3 ray=view.x*InverseView[0].xyz+view.y*InverseView[1].xyz+view.z*InverseView[2].xyz;
     float surface=min(length(ray),FogInfo.w);
     ray*=rsqrt(max(dot(ray,ray),1e-12));
+    float3 shadowOrigin=affinePoint(Camera.xyz,FarMatrix);
+    float3 shadowRay=ray.x*FarMatrix[0].xyz+ray.y*FarMatrix[1].xyz+ray.z*FarMatrix[2].xyz;
     float tauBase=0,tCloud=1,directWeight=0,ambientWeight=0; // scalar sums: the sun and sky colours multiply once after the loop; the base fog as optical depth (exp only inside a cloud)
     float3 axis=abs(ray);
     float2 major=axis.x>=axis.y?float2(ray.x,Camera.x):float2(ray.y,Camera.y);
@@ -960,9 +977,8 @@ float4 FogClouds(float2 uv:TEXCOORD0):COLOR0 {
     float spacing=mad(FogInfo.w,1.0/40,CloudInfo[0].x); // 0.3.200 (gpu budget): c60.x 0 = the 40 intervals; reduced levels fewer (host: 128*(1/N-1/40))
     float stepLength=spacing/abs(major.x);
     float offset=frac(major.y*(major.x<0?-1:1)/spacing);
-    [loop]for(int i=0;i<41;++i){
+    [loop]for(int i=0;i<41&&max(0,(i-offset)*stepLength)<surface;++i){
         float start=max(0,(i-offset)*stepLength);
-        if(start>=surface)break;
         float end=min((i+1-offset)*stepLength,surface);
         float stepSize=end-start;
         float mid=(start+end)*.5;
@@ -1001,7 +1017,7 @@ float4 FogClouds(float2 uv:TEXCOORD0):COLOR0 {
             float heightFade=saturate(altitude*(1.0/12));heightFade*=heightFade*(3-2*heightFade);
             float weight=tCloud*absorb; // the ambient: the pass blend already multiplies the base fog by tCloud, tBase must not enter twice (S*(1-Tb*Tc) in either order)
             // No DirectLight guard and no Tbase*Tcloud early out in this loop: both were cut for the 512-slot budget (the sun term is multiplied by DirectLight after the loop, so no sun = 0).
-            directWeight+=exp(-tauBase)*weight*fogShadow(p)*heightFade; // the sun light is dimmed by the base fog in front of the cloud
+            directWeight+=exp(-tauBase)*weight*fogShadowProjected(shadowOrigin+shadowRay*((start+end)*.5))*heightFade; // the sun light is dimmed by the base fog in front of the cloud
             ambientWeight+=weight;
             tCloud*=1-absorb;
         }
@@ -1102,12 +1118,12 @@ float4 WorldComposite(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {
     bool relight=d<.99999&&liquid<=0;
         float3 baseline=0;
         float3 bounce=0;float shadow=0,total=0,closest=1e20;
-        float4 fallbackLight=0;float3 fallbackBase=0;
-        float ao=0,fallbackAO=1; // 0.3.174: contact AO on the lighting grid (s10)
+        float2 fallbackUV=0,fogFallbackUV=0;
+        float ao=0; // 0.3.174: contact AO on the lighting grid (s10)
         // Fog uses the same four half-resolution texel centres, but DIFFERENT
         // depth weights and fallback. Share only coordinates/raw depth reads;
         // retain receiverDistance (including water) for each fog sample.
-        float4 fogSum=0,fogFallback=float4(0,0,0,1);
+        float4 fogSum=0;
         float fogTotal=0,fogClosest=1e20;
         // Bilinear tent over the four surrounding half-resolution texels with
         // depth agreement, like the fog upsample: the half-resolution lattice
@@ -1116,14 +1132,14 @@ float4 WorldComposite(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {
         float2 grid=uv*dimensions-.5,base=floor(grid),fraction=grid-base;
         float center=viewDistance(d);
         float centreLuma=dot(original.rgb,float3(.299,.587,.114)),depthBits=1.4427/max(.15,center*.01);
-        [loop]for(int i=0;i<4;++i){
-            float row=floor(i*.5);
-            float2 bit=float2(i-row*2,row);
+        [loop]for(int pair=0;pair<2;++pair){
+        [unroll]for(int sub=0;sub<2;++sub){
+            float2 bit=float2(sub,pair);
             float2 q=(clamp(base+bit,0,dimensions-1)+.5)/dimensions,tapUV=depthUV(q);
-            float sampleDepth=normalizedDepth(tapUV);
+            float sampleZ=tex2Dlod(CurrentDistance,float4(q,0,0)).r;
             float2 blend=lerp(1-fraction,fraction,bit);
             if(relight){
-            float delta=abs(viewDistance(sampleDepth)-center);
+            float delta=abs(sampleZ-center);
             float tapLuma=dot(tex2Dlod(Scene,float4(tapUV,0,0)).rgb,float3(.299,.587,.114));
             float guide=16*abs(centreLuma-tapLuma)/(centreLuma+tapLuma+.02),bits=delta*depthBits;
             float weight=blend.x*blend.y*exp2(-bits-guide);
@@ -1134,15 +1150,30 @@ float4 WorldComposite(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {
             float3 lit=tex2Dlod(BaselineLighting,float4(q,0,0)).rgb;
             float occlusion=tex2Dlod(AmbientOcclusion,float4(q,0,0)).a;
             bounce=mad(light.rgb,weight,bounce);shadow=mad(light.a,weight,shadow);baseline=mad(lit,weight,baseline);ao=mad(occlusion,weight,ao);total+=weight;
-            if(score<closest){closest=score;fallbackLight=light;fallbackBase=lit;fallbackAO=occlusion;}
+            if(score<closest){closest=score;fallbackUV=q;}
             }
-            float fogDelta=abs(receiverDistance(tapUV,sampleDepth)-viewZ);
+            float receiverZ=sampleZ;
+            if(WaterInfo.x>=.5){
+                float2 water=tex2Dlod(WaterMask,float4(tapUV,0,0)).rg;
+                if(water.x>ImageClip.z&&water.x<=sampleZ+max(.012,water.x*.0007)&&water.y>.003)receiverZ=water.x;
+            }
+            float fogDelta=abs(receiverZ-viewZ);
             float4 fogSample=tex2Dlod(FogBuffer,float4(q,0,0));
             float fogWeight=blend.x*blend.y*exp(-fogDelta/max(.2,viewZ*.02));
             fogSum=mad(fogSample,fogWeight,fogSum);fogTotal+=fogWeight;
-            if(fogDelta<fogClosest){fogClosest=fogDelta;fogFallback=fogSample;}
+            if(fogDelta<fogClosest){fogClosest=fogDelta;fogFallbackUV=q;}
         }
+        }
+    // Retain only fallback coordinates across the loop; fetch colours only on fallback.
+    float4 fogFallback=float4(0,0,0,1);
+    [branch]if(!(fogTotal>.00001)&&fogClosest<1e20)fogFallback=tex2Dlod(FogBuffer,float4(fogFallbackUV,0,0));
     float4 fog=fogTotal>.00001?fogSum*(1/fogTotal):fogFallback;
+    float4 fallbackLight=0;float3 fallbackBase=0;float fallbackAO=1;
+    [branch]if(relight&&total<.02&&closest<1e20){
+        fallbackLight=tex2Dlod(LightingBuffer,float4(fallbackUV,0,0));
+        fallbackBase=tex2Dlod(BaselineLighting,float4(fallbackUV,0,0)).rgb;
+        fallbackAO=tex2Dlod(AmbientOcclusion,float4(fallbackUV,0,0)).a;
+    }
     // 0.3.174: the contact AO and bloom composite, folded in (it ran as a separate full-res
     // pass before). Same result as that pass's tail: lit=original*ao, plus bloom where not
     // saturated. AO follows this pass's depth-weighted tent (1 on sky and water); bloom is the
