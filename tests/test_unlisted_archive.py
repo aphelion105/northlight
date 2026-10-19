@@ -28,6 +28,8 @@ out = fp.output_dir()
 ADT = 'World\\Maps\\Azeroth\\Azeroth_32_48.adt'
 NEW_ADT = 'World\\Maps\\Azeroth\\Azeroth_33_48.adt'
 TEXTURE = 'Textures\\Damaged.blp'
+DUNGEON_WDT = 'World\\Maps\\Dungeon\\Dungeon.wdt'
+DUNGEON_ADT = 'World\\Maps\\Dungeon\\Dungeon_3_4.adt'
 
 
 def chunk(tag, payload):
@@ -40,6 +42,14 @@ def adt(height, texture=b''):
     struct.pack_into('<I', header, 20, 128 + 8)   # MCVT, relative to the MCNK chunk header
     return chunk('MVER', struct.pack('<I', 18)) + (chunk('MTEX', texture + b'\0') if texture else b'') + \
         chunk('MCNK', bytes(header) + chunk('MCVT', struct.pack('<145f', *[height] * 145)))
+
+
+def wdt(tiles):
+    """The WDT of an ADT-tiled instance map: MAIN lists `tiles` (index y*64+x)."""
+    main = bytearray(4096 * 8)
+    for x, y in tiles:
+        struct.pack_into('<II', main, (y * 64 + x) * 8, 1, 0)
+    return chunk('MVER', struct.pack('<I', 18)) + chunk('MPHD', bytes(32)) + chunk('MAIN', bytes(main))
 
 
 def archive(path, files, listfile=True):
@@ -60,7 +70,7 @@ def make_client(root, broken=None):
     archive(data / 'patch-3.MPQ', {'Interface\\Patch3.txt': b'patch-3'})
     archive(data / 'patch-R.MPQ', {ADT: adt(10., TEXTURE.encode()), NEW_ADT: adt(20., TEXTURE.encode()),
                                    'DBFilesClient\\Light.dbc': b'patch-R', 'DBFilesClient\\Map.dbc': b'patch-R',
-                                   'World\\Generic\\new.m2': b'only in patch-R'}, listfile=False)
+                                   'World\\Generic\\new.m2': b'only in patch-R', DUNGEON_WDT: wdt([(3, 4)]), DUNGEON_ADT: adt(5.)}, listfile=False)
     archive(data / 'patch-S.MPQ', {'DBFilesClient\\Light.dbc': b'patch-S'})
     (data / 'patch-T.MPQ').write_bytes(b'MPQ\x1a damaged')
     archive(data / 'patch-U.MPQ', {TEXTURE: bytes(range(256)) * 64})
@@ -94,6 +104,7 @@ try:
     assert assets.origin(ADT) == 'Data/patch-R.MPQ' and assets.read(ADT) == adt(10., TEXTURE.encode())
     assert assets.providers[NEW_ADT.lower()] == assets.providers[ADT.lower()]       # the ADT grid probe
     assert 'world\\generic\\new.m2' not in assets.providers                         # only enumeration misses it
+    assert DUNGEON_WDT.lower() not in assets.providers and DUNGEON_ADT.lower() not in assets.providers   # not asked for
     assert assets.read('World\\Generic\\new.m2') == b'only in patch-R' and assets.origin('world\\generic\\new.m2') == 'Data/patch-R.MPQ'
     try:
         assets.read('World\\Generic\\absent.m2')
@@ -109,6 +120,14 @@ try:
     fingerprint = assets.fingerprint()
     assert fingerprint['unlisted'] == ['Data/patch-R.MPQ'] and fingerprint['unreadable'] == ['Data/patch-T.MPQ']
     assert 'data/patch-t.mpq' not in [r['archive'].lower() for r in fingerprint['archives']]
+finally:
+    assets.close()
+# An instance map asked for by name: the unlisted archive's WDT is probed, and the ADTs its MAIN lists.
+assets = Assets(client, 'all', 'enUS', maps=['Azeroth', 'Dungeon'])
+try:
+    assert assets.providers[DUNGEON_WDT.lower()] == assets.providers[ADT.lower()] == assets.providers[DUNGEON_ADT.lower()]
+    assert world_scene_builder.plan_map(assets, 'Dungeon') == ('adt', [(3, 4)]), world_scene_builder.plan_map(assets, 'Dungeon')
+    assert 'world\\maps\\dungeon\\dungeon_4_3.adt' not in assets.providers
 finally:
     assets.close()
 for broken in ['common.MPQ', 'patch-3.MPQ']:   # Blizzard's own archives: the client is broken

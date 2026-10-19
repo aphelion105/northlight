@@ -43,9 +43,11 @@ Every effect below is on by default and is drawn on top of the game's own frame.
   between the copy and the darkening keeps the last darkened colours, so the sun light and its glow in the fog no
   longer flash brighter for a frame in Duskwood (0.3.207). The darkening is predicted from the game's own glare
   value, so matching reads skip the hold; the hold stays for underwater, spell flashes and frames where the client skips the darkening.
-  In dungeons, raids and battlegrounds, which have no world cache, the geometry builder checks the cache once
+  In maps without a world cache (battlegrounds, arenas, and the dungeons and raids that were not added to it), the geometry builder checks the cache once
   per entry and skips the repeated build attempts (0.3.210). These maps get no Northlight shadows, so the game's own
-  shadows and its round blob shadows under characters are drawn as the game draws them there.
+  shadows and its round blob shadows under characters are drawn as the game draws them there. Dungeons and raids are an optional part of the cache:
+  the installer asks which of six groups (Classic, TBC and Wrath dungeons and raids; about 0.3-1.3 GB and 1-2
+  build minutes each) to build, `--instances` answers for it, and changing the choice never rebuilds the continents.
 - **Lamps.** Up to 32 nearby lamps, lanterns, braziers and fires light the ground and walls around
   them and glow in the fog. In direct sun lamps dim. Lamp shadows are off by default (`PointShadows=1`
   turns them on): only lights inside buildings cast faint shadows, at dusk and night; street lamps,
