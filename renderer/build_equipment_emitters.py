@@ -94,7 +94,7 @@ def texture_rgb(assets, name, alpha_blend=True):
     return tuple(v / weight for v in rgb)
 
 
-def sources(assets, blob):
+def sources(assets, blob, max_sources=2):
     if len(blob) < 304 or blob[:4] != b'MD20' or unpack('<I', blob, 4)[0] != 264:
         raise ValueError('Not WotLK v264')
     if unpack('<I', blob, 264)[0]:
@@ -170,10 +170,10 @@ def sources(assets, blob):
                            'rate': rate})
         except (ValueError, FileNotFoundError, struct.error) as exc:
             refusals[str(exc)] += 1
-    if len(result) > 2:
-        raise ValueError('More than two independent emitters; requires review')
     if not result:
         raise ValueError('No proven continuous additive source: ' + json.dumps(refusals, sort_keys=True))
+    if max_sources is not None:
+        result = sorted(result, key=lambda e:(-e['intensity'], e['particles'][0]))[:max_sources]
     return result
 
 
@@ -215,7 +215,8 @@ def build(assets, output):
     for path in candidates:
         try:
             original = assets.read(path)
-            emitters = sources(assets, original)
+            qualified = sources(assets, original, max_sources=None)
+            emitters = sorted(qualified, key=lambda e:(-e['intensity'], e['particles'][0]))[:2]
             patched = append_bone_lights(original, emitters)
             validate_lights(original, patched, emitters)
         except (ValueError, FileNotFoundError, struct.error) as exc:
@@ -223,7 +224,8 @@ def build(assets, output):
             continue
         payload[path] = patched
         report['models'][path] = {'before_sha256': hashlib.sha256(original).hexdigest(), 'after_sha256': hashlib.sha256(patched).hexdigest(), 'emitters': emitters,
-                                  'source_archive': assets.origin(path), 'item_visual': path in visual_models}
+                                  'source_archive': assets.origin(path), 'item_visual': path in visual_models,
+                                  'qualified_sources':len(qualified), 'omitted_sources':len(qualified)-len(emitters)}
     if not payload:
         raise ValueError('No supported equipment emitters')
     mpq = output/'equipment-lights-staged.mpq'

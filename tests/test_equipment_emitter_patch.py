@@ -143,6 +143,17 @@ class EquipmentPatch(unittest.TestCase):
         self.assertEqual(following[0]['position'], (1,2,3))
         self.assertEqual(following[0]['bone'], 0)
         self.assertEqual(following[0]['particle_flags'], [0x19])
+        # Newly supported local particles must not exclude a whole model
+        # merely because it now has more than the bounded two sources.
+        many = bytearray(blob)
+        array = len(many)
+        for index in range(3):
+            record = bytearray(blob[particle:particle+476])
+            struct.pack_into('<3f', record, 8, 1+index, 2, 3)
+            many.extend(record)
+        struct.pack_into('<II', many, 296, 3, array)
+        self.assertEqual([e['particles'] for e in sources(ActualTexture(), many)], [[0], [1]])
+        self.assertEqual(len(sources(ActualTexture(), many, max_sources=None)), 3)
         for field, value, fmt in ((40,2,'<B'), (42,11,'<h'), (4,0x8000,'<I')):
             bad = bytearray(blob)
             struct.pack_into(fmt, bad, particle+field, value)
