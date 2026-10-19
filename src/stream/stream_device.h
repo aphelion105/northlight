@@ -60,6 +60,7 @@ public:
         bool (*capture)(GameSnapshot&,Trigger,std::uint64_t)=nullptr;   // game_snapshot.h capture() in the DLL; null = no snapshots
         std::function<void()> threadStart;                              // runs on the replay thread first (owner handoff)
         std::function<void(const char*)> log;
+        void (*queryCaller)(std::uint64_t,void*,void*)=nullptr;
         // Direct replay: the ExtensionDevice (same real device and mirror as the Device) and the resolver of a Device-level object to the backend
         // object the Device would unwrap it to (null: not provably a pure unwrap). Both null / directReplay off: everything goes through the Device.
         IDirect3DDevice9* extension=nullptr;std::function<IUnknown*(IUnknown*,unsigned)> rawOf;bool directReplay=true;
@@ -377,6 +378,7 @@ public:
         Queue& q=streamQueue();
         const bool timingWas=core.timing;
         core.timing=replayer.diagnostics&&replayer.diagnostics();   // 0.3.204 (task 21): the split timers follow Diagnostics, asked once per frame on the game thread
+        if(core.timing!=timingWas)core.clearQueryWait();
         if(core.timing!=timingWas){if(core.timing)core.texDiag.resume(core.frameNo);else core.texDiag.suspend();}   // 0.3.206 (task 31): Diagnostics off or on again: no stale data, no gap across the off period
         if(core.timing&&!core.clockNs){std::uint64_t sum=0;for(int i=0;i<1024;++i){const std::uint64_t a=nowNs(),b=nowNs();sum+=b-a;}core.clockNs=sum/1024?sum/1024:1;}   // one clock read, as a timed span sees it: the mean of 1024 back-to-back pairs (the mean, not the min: the clock may tick in 100 ns steps)
         std::uint64_t nowAtPresent=0;const std::uint64_t waits0=core.timing?gameWaitsNs(q.stats):0;
@@ -407,6 +409,7 @@ public:
         if(core.timing){const std::uint64_t e=frameEnd-nowAtPresent,w=gameWaitsNs(q.stats)-waits0;own(q.stats.presentBookNs,e>w?e-w:0);}   // 0.3.204 (task 21): Present bookkeeping, waits excluded (no extra clock reads)
         waitsAtFrameEnd=get(q.stats.syncNs)+get(q.stats.backpressureNs);
         ++core.frameNo;
+        if(core.timing){++core.queryWaitFrames;if(core.frameNo%600==0)core.reportQueryWait(callerLog);}
         if(core.timing&&core.frameNo%600==0){if(callerLog)core.texDiag.report(callerLog,core.callerModule,core.frameNo,[](unsigned c){return cmdName((Cmd)c);});else core.texDiag.restart(core.frameNo);}   // 0.3.206 (task 31): the texture readback report, one window per 600 Presents (Diagnostics only); without a log sink the window still restarts (tables and old histories must not grow)
         tuner.sample(q);   // idle pool memory goes back after a quiet window
         trimIdleRings(core);   // 0.3.204 (task 21): ring slices free for kLargeIdleFrames frames go
@@ -446,6 +449,7 @@ public:
         HRESULT hr=D3DERR_INVALIDCALL;
         const bool ran=runTask(core,[&](StreamCore& c){   // everything recorded so far has run; the game waits, pumped
             for(ProxyBase* k:sc0->kids)if(k&&k->inner&&k->refs.load()==0){c.reg.unbindInner(k);k->inner->Release();k->inner=nullptr;}   // one the game still holds keeps its object, as in D3D9   // back buffers must not outlive the swap chain's reset
+            c.queryEpoch.fetch_add(1); // invalidate EVENT cache across Reset
             hr=c.target->Reset(p);c.coopState.store(c.target->TestCooperativeLevel());   // 0.3.204 (task 21): the replay thread publishes the new cooperative level; StreamDevice is not an IDirect3DDevice9Ex, so there is no ResetEx
             if(SUCCEEDED(hr)){IDirect3DSwapChain9* sc=nullptr;if(SUCCEEDED(c.target->GetSwapChain(0,&sc))&&sc){sc->GetPresentParameters(&sc0->pp);sc->Release();}}
             ensureBackBuffers(c);
@@ -620,7 +624,7 @@ private:
 
     StreamDevice(IDirect3DDevice9* target,IDirect3D9* par,const D3DPRESENT_PARAMETERS* p,Options opt)
         :coreOwner(new StreamCore(opt.budget)),core(*coreOwner),replayer(core,SnapshotPool::capFor(clampFramesAhead(opt.framesAhead))),parent(par),framesAhead_(clampFramesAhead(opt.framesAhead)),capture(opt.capture){
-        core.target=target;core.game=this;core.framesAhead=framesAhead_;core.logLine=nullptr;core.callerModule=opt.callerModule;core.occlusionLocal=opt.occlusionLocal;callerLog=opt.log;callerDiag=opt.diagnostics;core.readBackLock=opt.readBackLock;st.core=&core;
+        core.target=target;core.game=this;core.framesAhead=framesAhead_;core.logLine=nullptr;core.callerModule=opt.callerModule;core.queryCaller=opt.queryCaller;core.occlusionLocal=opt.occlusionLocal;callerLog=opt.log;callerDiag=opt.diagnostics;core.readBackLock=opt.readBackLock;st.core=&core;
         if(opt.cursorApi)cursor=*opt.cursorApi;
         restoreOwner=opt.threadStart;replayer.frameSkip=opt.frameSkip!=0;replayer.threadStart=std::move(opt.threadStart);replayer.log=opt.log;replayer.diagnostics=opt.diagnostics;filter=opt.filterRedundant;
         if(kDirectReplay&&opt.directReplay&&opt.extension&&opt.rawOf){core.ext=opt.extension;auto f=opt.rawOf;core.reg.rawOf=[f](IUnknown* e,Kind k){return f(e,unsigned(k));};}

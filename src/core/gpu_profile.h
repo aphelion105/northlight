@@ -32,6 +32,7 @@ class NorthlightGpuProfile {
     unsigned next_=0;
     bool disabled_=false,hasSampleFrame_=false;
     uint64_t lastSampleFrame_=0;
+    unsigned maxMarks_=MaxMarks;char prefix_[32]="GPU profile";
 
     static void release(IDirect3DQuery9*& q){if(q){q->Release();q=nullptr;}}
     void releaseAll(){
@@ -43,7 +44,7 @@ class NorthlightGpuProfile {
         }
     }
     void disable(const char* operation,HRESULT hr){
-        if(!disabled_)logf("GPU profile disabled: %s HRESULT=0x%08lx (rendering unaffected)",operation,static_cast<unsigned long>(static_cast<uint32_t>(hr)));
+        if(!disabled_)logf("%s disabled: %s HRESULT=0x%08lx (rendering unaffected)",prefix_,operation,static_cast<unsigned long>(static_cast<uint32_t>(hr)));
         disabled_=true;releaseAll();
     }
     bool create(D3DQUERYTYPE type,IDirect3DQuery9** output){
@@ -55,7 +56,7 @@ class NorthlightGpuProfile {
         if(s.disjoint)return true;
         // Allocate only when a free slot is first used, never allocate in poll.
         // Any partial failure releases every query and disables diagnostics only.
-        for(auto& q:s.stamps)if(!create(D3DQUERYTYPE_TIMESTAMP,&q))return false;
+        for(unsigned i=0;i<maxMarks_+2;++i)if(!create(D3DQUERYTYPE_TIMESTAMP,&s.stamps[i]))return false;
         return create(D3DQUERYTYPE_TIMESTAMPFREQ,&s.frequency)&&create(D3DQUERYTYPE_TIMESTAMPDISJOINT,&s.disjoint);
     }
     bool issue(IDirect3DQuery9* query,DWORD flags,const char* operation){
@@ -76,11 +77,11 @@ class NorthlightGpuProfile {
         // unsigned durations that would incorrectly implicate a rendering pass.
         const unsigned intervals=s.marks+1;
         for(unsigned i=0;i<intervals;++i)if(ticks[i+1]<ticks[i]){
-            logf("GPU profile frame=%llu discarded: nonmonotonic timestamps",static_cast<unsigned long long>(s.frame));return;
+            logf("%s frame=%llu discarded: nonmonotonic timestamps",prefix_,static_cast<unsigned long long>(s.frame));return;
         }
         char line[1536];
-        int wrote=std::snprintf(line,sizeof line,"GPU profile frame=%llu total=%.3fms",
-            static_cast<unsigned long long>(s.frame),double(ticks[intervals]-ticks[0])*1000.0/double(frequency));
+        int wrote=std::snprintf(line,sizeof line,"%s frame=%llu total=%.3fms",
+            prefix_,static_cast<unsigned long long>(s.frame),double(ticks[intervals]-ticks[0])*1000.0/double(frequency));
         size_t used=wrote>0?static_cast<size_t>(wrote):0;
         for(unsigned i=0;i<intervals&&used+1<sizeof line;++i){
             wrote=std::snprintf(line+used,sizeof line-used," %s=%.3fms",s.labels[i],double(ticks[i+1]-ticks[i])*1000.0/double(frequency));
@@ -92,7 +93,10 @@ class NorthlightGpuProfile {
         logf("%s",line);
     }
 public:
-    explicit NorthlightGpuProfile(IDirect3DDevice9* device):device_(device),disabled_(!device){}
+    explicit NorthlightGpuProfile(IDirect3DDevice9* device,const char* prefix="GPU profile",unsigned marks=MaxMarks)
+        :device_(device),disabled_(!device),maxMarks_(marks<MaxMarks?marks:MaxMarks){
+        std::snprintf(prefix_,sizeof prefix_,"%s",prefix?prefix:"GPU profile");
+    }
     NorthlightGpuProfile(const NorthlightGpuProfile&)=delete;
     NorthlightGpuProfile& operator=(const NorthlightGpuProfile&)=delete;
     ~NorthlightGpuProfile(){releaseAll();}
@@ -124,7 +128,7 @@ public:
     void mark(const char* name){
         if(active_<0||disabled_)return;
         Slot& s=slots_[active_];
-        if(s.marks>=MaxMarks){s.overflow=true;return;}
+        if(s.marks>=maxMarks_){s.overflow=true;return;}
         label(s.labels[s.marks],name);
         if(issue(s.stamps[s.marks+1],D3DISSUE_END,"stage timestamp"))++s.marks;
     }
@@ -147,12 +151,12 @@ public:
             HRESULT hr=s.disjoint->GetData(&disjoint,sizeof disjoint,0);
             if(hr==S_FALSE)continue;
             if(FAILED(hr)){disable("disjoint read",hr);return;}
-            if(disjoint){logf("GPU profile frame=%llu discarded: disjoint timestamp interval",static_cast<unsigned long long>(s.frame));s.pending=false;continue;}
+            if(disjoint){logf("%s frame=%llu discarded: disjoint timestamp interval",prefix_,static_cast<unsigned long long>(s.frame));s.pending=false;continue;}
             uint64_t frequency=0;
             hr=s.frequency->GetData(&frequency,sizeof frequency,0);
             if(hr==S_FALSE)continue;
             if(FAILED(hr)){disable("frequency read",hr);return;}
-            if(!frequency){logf("GPU profile frame=%llu discarded: zero timestamp frequency",static_cast<unsigned long long>(s.frame));s.pending=false;continue;}
+            if(!frequency){logf("%s frame=%llu discarded: zero timestamp frequency",prefix_,static_cast<unsigned long long>(s.frame));s.pending=false;continue;}
             uint64_t ticks[StampCount]={};bool complete=true;
             for(unsigned i=0;i<s.marks+2;++i){
                 hr=s.stamps[i]->GetData(&ticks[i],sizeof ticks[i],0);

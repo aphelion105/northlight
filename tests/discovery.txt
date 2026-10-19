@@ -31,9 +31,11 @@ test_client_archive_order.py
 test_client_archives.py
 test_client_config.py
 test_client_identity.py
+test_client_latency_diagnostics.py
 test_colour_tent_2d.py
 test_command_stream.py
 test_command_stream_wiring.py
+test_command_wait_windows.py
 test_concurrent_geometry_build.py
 test_contact_lighting.py
 test_contact_normal_endpoints.py
@@ -55,6 +57,7 @@ test_fog_clouds_wiring.py
 test_fog_locale.py
 test_fog_motion.py
 test_fog_temporal_wiring.py
+test_frame_stall_profile.py
 test_game_snapshot.py
 test_geometry_handoff.py
 test_gi_quality.py

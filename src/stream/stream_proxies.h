@@ -24,6 +24,7 @@
 #include <unordered_map>
 #include <vector>
 #include "command_queue.h"
+#include "query_poll.h"
 #include "command_stream.inl"
 #include "tex_readback_diag.h"
 
@@ -259,10 +260,22 @@ struct StreamCore {
     // timingN counts the generated calls for the 1-in-16 sampling. Both are game-thread only: the replay thread never runs a game-facing method or a Lock/Unlock path.
     bool timing=false;unsigned timingN=0;
     TexReadbackDiag texDiag;   // 0.3.206 (task 31): per-level texture readback report (game thread; recorded only while timing)
+    // Game-thread counters; reuse runTask's wait clock, without timing each GetData again.
+    struct QueryWait {std::uint64_t calls=0,flush=0,unissued=0,pending=0,errors=0,waitNs=0;};
+    QueryWait queryWait[21]{};unsigned queryWaitFrames=0; // 20 includes unknown query types
+    void clearQueryWait(){for(auto& item:queryWait)item={};queryWaitFrames=0;}
+    void reportQueryWait(const std::function<void(const char*)>& sink){
+        if(sink)for(unsigned type=0;type<21;++type){const auto& s=queryWait[type];if(!s.calls)continue;
+            char line[300];std::snprintf(line,sizeof line,"CSTREAM QUERY frames=%u type=%u calls=%llu flush=%llu unissued=%llu pending=%llu errors=%llu syncWaitMs=%.3f",
+                queryWaitFrames,type,(unsigned long long)s.calls,(unsigned long long)s.flush,(unsigned long long)s.unissued,
+                (unsigned long long)s.pending,(unsigned long long)s.errors,double(s.waitNs)/1e6);sink(line);}
+        clearQueryWait();
+    }
     std::uint64_t clockNs=0;   // the cost of one nowNs() as the scopes see it (measured once at the first timed Present), subtracted from every timed span
     std::uint64_t frameNo=0;         // game thread: Presents so far (the idle clock of buffer shadows)
     DWORD (*readBackLock)()=nullptr;             // flags of the stream's own READONLY read-backs of buffers (NorthlightUpload::readBackLock in the DLL); null = READONLY
     void (*logLine)(const char*)=nullptr;        // diagnostics sink (renderer.cpp's logf); may be null
+    void (*queryCaller)(std::uint64_t,void*,void*)=nullptr; // first EVENT/FLUSH per query, game thread, diagnostics only
     static constexpr std::size_t slicesFor(unsigned framesAhead){return std::size_t(clampFramesAhead(framesAhead))+2;}   // 0.3.204 (task 21): the least slices a buffer may own in all (current + ring)
     // 0.3.204 (task 21): a buffer that DISCARDs n times per frame has n x (framesAhead+1) + 1 slices in flight at most; never below slicesFor, never above kRingHardMax (still subject to the memory rules)
     static constexpr std::size_t kRingHardMax=12;
@@ -280,6 +293,7 @@ struct StreamCore {
     // 0.3.204 (task 21): the cooperative level TestCooperativeLevel reports, written ONLY by the replay thread (after each real Present, in the Reset task and in the
     // sync TestCooperativeLevel task); the game thread answers D3D_OK from it locally and goes synchronous for anything else. Loss shows up at most StreamFramesAhead frames late.
     std::atomic<HRESULT> coopState{D3D_OK};
+    std::atomic<std::uint32_t> queryEpoch{0}; // invalidate cached EVENT completion across Reset
     const char* (*callerModule)(void* address)=nullptr;   // diagnostics: "module+0xoffset" of a TestCooperativeLevel caller and, since 0.3.206 (task 31), of a texture lock caller in the TEXREADBACK lines (renderer.cpp, Windows; logged only with Diagnostics on); null in tests
     // Real HRESULT of the last Present commands (the game reads the one StreamFramesAhead frames back). 0.3.200 (pipeline): the slot is the Present's ordinal
     // (the replay's framesReplayed before it counts this one = the game's frameNo when it recorded it), seq still checked: with at most kMaxFramesAhead+1
@@ -1379,6 +1393,20 @@ struct StreamStateBlock final:IDirect3DStateBlock9,ProxyBase {
 };
 struct StreamQuery final:IDirect3DQuery9,ProxyBase {
     unsigned type;unsigned dataSize;
+    // EVENT completion is exact-generation only. Poll requests own no caller buffer;
+    // ordered Destroy removes the proxy only after its last queued poll has run.
+    struct PollRequest {StreamQuery* query;std::uint32_t generation;};
+    std::atomic<bool> eventPollQueued{false};
+    std::atomic<std::uint32_t> eventDoneGen{0};
+    std::atomic<HRESULT> eventStatus{S_FALSE};
+    std::atomic<BOOL> eventValue{FALSE};
+    std::uint32_t eventEpoch=0;std::uint64_t eventPendingSince=0;bool eventCallerLogged=false; // game thread only
+    void completeEvent(HRESULT hr,const unsigned char* buf){
+        if(hr==S_FALSE)return;
+        BOOL value=FALSE;if(hr==S_OK)std::memcpy(&value,buf,sizeof value);
+        eventValue.store(value,std::memory_order_relaxed);eventStatus.store(hr,std::memory_order_relaxed);
+        eventDoneGen.store(issueSeen,std::memory_order_release);
+    }
     std::atomic<std::uint32_t> gen{0},readyGen{0};   // gen: END issues by the game; readyGen: the replay's polled result belongs to it
     unsigned char result[64]{};DWORD resultSize=0;std::uint32_t issueSeen=0;   // issueSeen: END issues the replay thread ran
     std::atomic<std::uint32_t> resultSeq{0};   // seqlock around result/resultSize: odd while the replay thread writes, so a stale read (FLUSH, below) never sees a torn result
@@ -1396,20 +1424,59 @@ struct StreamQuery final:IDirect3DQuery9,ProxyBase {
     HRESULT local(CmdTag<Cmd::Query_GetDevice>,IDirect3DDevice9** pp){return devGet(pp);}
     D3DQUERYTYPE local(CmdTag<Cmd::Query_GetType>){return (D3DQUERYTYPE)type;}
     DWORD local(CmdTag<Cmd::Query_GetDataSize>){return dataSize;}
-    void observe(CmdTag<Cmd::Query_Issue>,DWORD flags){if(type!=8)core->frameHazards|=StreamCore::kHazardQuery;if(flags&D3::kIssueEnd)gen.fetch_add(1);}   // 0.3.200 (frame skip): only an event query's frame may be skipped (its Issue still runs)
+    void observe(CmdTag<Cmd::Query_Issue>,DWORD flags){if(type!=8)core->frameHazards|=StreamCore::kHazardQuery;if(flags&D3::kIssueEnd){eventEpoch=core->queryEpoch.load();eventPendingSince=0;gen.fetch_add(1);}}   // 0.3.200 (frame skip): only an event query's frame may be skipped (its Issue still runs)
     using ProxyBase::observe;
     HRESULT STDMETHODCALLTYPE GetData(void* data,DWORD size,DWORD flags) override{
         Queue& q=core->q;
         if(dead.load())return D3DERR_INVALIDCALL;   // the real create failed: an error, not S_FALSE forever
+        if(type==8&&flags==D3::kGetDataFlush&&!eventCallerLogged&&core->timing&&core->queryCaller){
+            eventCallerLogged=true;core->queryCaller(core->frameNo,this,__builtin_return_address(0));
+        }
+        const std::uint32_t issued=gen.load();
+        if(type==8&&issued&&eventEpoch==core->queryEpoch.load()&&core->coopState.load()==D3D_OK&&(flags==0||flags==D3::kGetDataFlush)&&
+           ((!data&&!size)||(data&&size==dataSize))){
+            if(eventDoneGen.load(std::memory_order_acquire)==issued){
+                const HRESULT hr=eventStatus.load(std::memory_order_relaxed);
+                if(hr==S_OK&&data){const BOOL value=eventValue.load(std::memory_order_relaxed);std::memcpy(data,&value,sizeof value);}
+                if(eventPendingSince){own(q.stats.eventPendingNs,nowNs()-eventPendingSince);own(q.stats.eventCompleted);eventPendingSince=0;}
+                own(q.stats.eventLocal);return hr;
+            }
+            if(flags==D3::kGetDataFlush){
+                if(inPumpedWait)return D3DERR_INVALIDCALL;
+                // At most one bounded FLUSH poll per query is in flight. Repeated
+                // S_FALSE probes publish progress without a stack task or sync wait.
+                if(!eventPollQueued.load(std::memory_order_acquire)){
+                    eventPollQueued.store(true,std::memory_order_relaxed);
+                    auto* request=static_cast<PollRequest*>(q.reserve((std::uint16_t)Cmd::PollEventQuery,sizeof(PollRequest)));
+                    *request={this,issued};q.commit();own(q.stats.eventRequests);
+                }
+            }
+            if(core->timing&&!eventPendingSince)eventPendingSince=nowNs();
+            q.publish();own(q.stats.eventPending);
+#if defined(__i386__)||defined(__x86_64__)
+            __builtin_ia32_pause();
+#endif
+            return S_FALSE;
+        }
         // StreamOcclusionLocal: WoW's QueryGetData (glare occlusion, D3DQUERYTYPE_OCCLUSION) loops GetData(FLUSH) while S_FALSE, normally after a non-FLUSH availability probe that
         // succeeded; the pixel count only fades the sun/moon glare, so the latest completed result (this frame's when the probe saw it, else older) is answered without draining the
-        // queue. Never completed (readyGen 0): the real GetData below once, so the game's loop cannot spin. Event queries (type 8, the gxFixLag wait) keep the real wait.
+        // queue. Never completed (readyGen 0): the real GetData below once, so the game's loop cannot spin. EVENT completion above never substitutes an older result.
         if(flags&D3::kGetDataFlush&&type==9&&core->occlusionLocal&&gen.load()&&readyGen.load(std::memory_order_acquire)){
             readResult(data,size);own(core->q.stats.queryFlushLocal);return D3D_OK;}
         if((flags&D3::kGetDataFlush)||!gen.load()){   // FLUSH, or a query never issued: the real GetData with the game's buffer, after everything recorded so far
             if(flags&D3::kGetDataFlush)own(core->q.stats.queryFlushSynced);
             HRESULT hr=D3DERR_INVALIDCALL;
-            if(!runTask(*core,[&](StreamCore&){if(inner)hr=static_cast<IDirect3DQuery9*>(inner)->GetData(data,size,flags);},Cmd::SyncGetData))return D3DERR_INVALIDCALL;   // e.g. WoW's event-query wait: shows as SyncGetData in the census
+            const bool measure=core->timing;const auto waitBefore=measure?get(q.stats.syncNs):0;
+            const bool unissued=measure&&!gen.load();
+            const bool batch=type==8&&flags==D3::kGetDataFlush&&gen.load()&&(!size||(data&&size==dataSize));
+            const bool ran=runTask(*core,[&](StreamCore&){if(inner){
+                auto poll=[&]{return static_cast<IDirect3DQuery9*>(inner)->GetData(data,size,flags);};
+                if(batch){unsigned calls=0;hr=pollEventQueryBriefly(poll,nowNs,calls);own(q.stats.eventPollBatches);own(q.stats.eventPollCalls,calls);}
+                else hr=poll();
+            }},Cmd::SyncGetData);
+            if(measure){auto& s=core->queryWait[type<20?type:20];++s.calls;s.flush+=bool(flags&D3::kGetDataFlush);s.unissued+=unissued;
+                s.pending+=ran&&hr==S_FALSE;s.errors+=!ran||FAILED(hr);s.waitNs+=get(q.stats.syncNs)-waitBefore;}
+            if(!ran)return D3DERR_INVALIDCALL;
             return hr;
         }
         q.publish();   // the replay thread must see the Issue this GetData polls for, or a spin on S_FALSE would never end
