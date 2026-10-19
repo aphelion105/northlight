@@ -27,7 +27,11 @@ import struct
 import sys
 from pathlib import Path
 
-MAPS = ['Azeroth', 'Kalimdor', 'Expansion01', 'Northrend']
+sys.path.append(str(Path(__file__).resolve().parents[1] / 'renderer'))
+import instance_maps  # noqa: E402
+
+MAPS = ['Azeroth', 'Kalimdor', 'Expansion01', 'Northrend']   # the default selection
+ALL_MAPS = MAPS + instance_maps.ALL_MAPS                      # --maps and --tiles also take the instance maps
 INSTANCE = struct.Struct('<32sQI18f')
 LIGHT = struct.Struct('<8fQII')
 KINDS = {0: 'terrain', 1: 'm2', 2: 'wmo', 3: 'wmo_doodad'}
@@ -272,7 +276,7 @@ def parse_tiles(values):
     result = []
     for v in values:
         m, *nums = v.split(':')
-        if m not in MAPS or len(nums) != 4:
+        if m not in ALL_MAPS or len(nums) != 4:
             raise argparse.ArgumentTypeError(f'--tiles wants MAP:X0:Y0:X1:Y1, got {v!r}')
         result.append((m, *map(int, nums)))
     return result
@@ -282,7 +286,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('a', type=Path, help='reference world cache')
     ap.add_argument('b', type=Path, help='candidate world cache')
-    ap.add_argument('--maps', nargs='+', choices=MAPS)
+    ap.add_argument('--maps', nargs='+', choices=ALL_MAPS, metavar='MAP',
+                    help='continents or instance maps (default: the four continents)')
     ap.add_argument('--tiles', nargs='+', metavar='MAP:X0:Y0:X1:Y1', help='compare only these tile rectangles')
     ap.add_argument('--tolerance', type=float, default=1e-3)
     ap.add_argument('--light-margin', type=float, default=64.0,
@@ -292,7 +297,7 @@ def main():
                     help="name the example models from the configured client's MPQs (needs StormLib)")
     args = ap.parse_args()
     selection = parse_tiles(args.tiles) if args.tiles else None
-    maps = args.maps or (sorted({t[0] for t in selection}, key=MAPS.index) if selection else MAPS)
+    maps = args.maps or (sorted({t[0] for t in selection}, key=ALL_MAPS.index) if selection else MAPS)
     result = diff(args.a, args.b, maps, selection, args.tolerance, args.light_margin)
     if args.names:
         name_examples(result)

@@ -1,4 +1,5 @@
 test_actor_deformation.py
+test_actor_fade_capture.py
 test_actor_scene_job.py
 test_actor_shadow_map.py
 test_actor_shadow_radius_wiring.py
@@ -62,6 +63,9 @@ test_gpu_budget_wiring.py
 test_horizon_haze.py
 test_index_working_set.py
 test_install_world_cache.py
+test_instance_map_name_filter.py
+test_instance_maps.py
+test_instance_scene.py
 test_job_system.py
 test_lamp_daylight.py
 test_legacy_fog_hold.py
@@ -81,6 +85,7 @@ test_m2_visibility.py
 test_memmap_diagnostics.py
 test_memory_admission_probe.py
 test_memory_guard.py
+test_mesh_buffer_store.py
 test_mesh_pool_trim.py
 test_migrate_mac_proxy.py
 test_mirror_resources.py
@@ -185,6 +190,9 @@ test_wmo_group_tolerance.py
 test_world_cache_diff.py
 test_world_light_placements.py
 test_world_local_lights.py
+test_world_mesh_pages.py
+test_world_mesh_pages_real.py
+test_world_mesh_plan.py
 test_world_probe_coverage.py
 test_zone_tuner.py
 test_zone_tuning.py
