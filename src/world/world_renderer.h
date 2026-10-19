@@ -1259,7 +1259,7 @@ private:
             Request r;
             {std::unique_lock<std::mutex> lock(mutex);buildWake.wait(lock,[&]{return stopping||builderExit||retry||geometryWanted||request.id!=seen;});
              if(stopping||builderExit)return;r=request;seen=r.id;retry=false;wanted=wanted||geometryWanted;geometryWanted=false;}
-            if(workerMemoryTrim.exchange(false,std::memory_order_relaxed))localGeometry.reset(); /* memory guard; rebuilt incrementally */
+            if(workerMemoryTrim.exchange(false,std::memory_order_relaxed)){localGeometry.reset();entryLift.clear();} /* reclaimed caches invalidate the previous attempt's peak estimate; interior admission remains unchanged */
             // Publish small authored zone data before expensive geometry work.
             // No cache reads are performed by the sky or world draw callbacks.
             int paletteTX=int(std::floor((NorthlightRegionalFog::WorldZero-r.camera.y)/NorthlightRegionalFog::TileSize));
@@ -1868,6 +1868,22 @@ private:
         meshStore.cancel(); /* 0.3.216: claimed buffers return to idle; the written ones already have an invalid key */
         retirePendingCpu();pendingMesh.reset();meshRetry.clear();
     }
+    bool expiredMeshPending=false;
+    // Release only at endFrame, after replay consumers are finished. A hard-expired
+    // region cannot draw again; its active page table must not defeat trimIdle().
+    void releaseExpiredMesh(){
+        if(!expiredMeshPending)return;
+        expiredMeshPending=false;
+        if(active&&active->bvh)return; // a replacement was adopted during this frame
+        const uint64_t bytes=meshStore.poolBytes()+uploadedTextureBytes;
+        clearMesh();releaseMeshPool();uploadedMap.clear();
+        uploadedStaticOwners.reset();staticOwnerGeneration=UINT64_MAX;
+        fixedTerrain.reset();fixedTerrainBits.reset();uploadedTerrain.clear();
+        liveTerrainIndexCount=liveDirectionalIndexCount=0;liveTerrainGeneration=0;
+        invalidateShadowCache();temporalValid=fogHistoryValid=false;
+        workerMemoryTrim.store(true,std::memory_order_relaxed);
+        logf("WORLD expired mesh released managedMiB=%.2f",double(bytes)/1048576);
+    }
     // 0.3.214 (task 42): the active generation's payload was freed after its commit and the GPU copy is gone
     // (device Reset, resize, recover). Ask the builder for a fresh generation once per bvh (again after 15 s
     // if it never arrived); until it is adopted the world simply has no shadow mesh.
@@ -2400,6 +2416,7 @@ public:
         snapshotEndFrame(); /* 0.3.181 (S3): reads the frame's snapshot counters */
         if(captureMode!=CaptureSkipped)replaySnapshots.clearFrame();
         lastCaptureSkipped=captureMode==CaptureSkipped;actorCaptureDecided=false;actorJob.reset();captureMode=CaptureUndecided;actorVerticesEvaluated=actorDraws=actorSkippedAlpha=0;
+        releaseExpiredMesh();
     }
     bool ready()const{return valid&&active&&active->bvh&&!failed&&!workerFault();}
     // task 42 (MEMMAP northlight line): the render thread's own view, no lock and no counters beyond plain reads. Render thread only
@@ -2620,8 +2637,14 @@ public:
          r.geometryCenter=NorthlightWorldStreaming::leadCenter(r.camera,geometryMotion.velocity(),float(geometryBuildEstimateMs.load(std::memory_order_relaxed))*.001f);
          geometryLead=std::sqrt(NorthlightGI::dot(r.geometryCenter-r.camera,r.geometryCenter-r.camera));}
         if(lastRequest.map==r.map&&completedActorSceneMap()==r.map){r.actorJob=completedActorJob();r.actorSerial=actorJobSerial();}
-        std::shared_ptr<Snapshot> retiredSnapshot;
+        std::shared_ptr<Snapshot> retiredSnapshot,expiredPublication;
         {std::lock_guard<std::mutex> lock(mutex);
+            // The publication is another owner of the old BVH/plan. Retiring only
+            // active left it resident indefinitely while the builder waited for VA.
+            // BEGIN EXPIRED PUBLICATION
+            if(published&&published->bvh&&!NorthlightWorldStreaming::retained(published->map,published->center,r.map,r.camera))
+                expiredPublication=std::move(published);
+            // END EXPIRED PUBLICATION
             if(published&&published!=observedPublication.lock()){
                 observedPublication=published;if(!published->message.empty()&&published->message!=loggedCacheMessage)logf("WORLD cache: %s",published->message.c_str());loggedCacheMessage=published->message;
             }
@@ -2647,6 +2670,10 @@ public:
             }
         {auto phase=streamingPhases.measure(NorthlightStreaming::PhaseProfile::Retire);
          auto& reaper=NorthlightStreaming::cpuRetirement();retirementBacklog.retry(reaper);
+         if(expiredPublication){
+             logf("WORLD expired publication released map=%s cpuMiB=%.2f",expiredPublication->map.c_str(),double(expiredPublication->retirementBytes)/1048576);
+             retirementBacklog.retireOrFree(reaper,expiredPublication,snapshotRetireBytes(*expiredPublication));
+         }
          const bool adopted=retiredSnapshot&&active&&retiredSnapshot->bvh!=active->bvh; /* a new region, not a GI publication */
          if(retiredSnapshot)retirementBacklog.retireOrFree(reaper,retiredSnapshot,snapshotRetireBytes(*retiredSnapshot));
          retiredSnapshot.reset();
@@ -2654,7 +2681,7 @@ public:
          // or the hard limit or a map change retires it.
          const char* retired=active&&!NorthlightWorldStreaming::retained(active->map,active->center,r.map,r.camera)?(active->map!=r.map?"map":"retired"):nullptr;
          const V held=active?active->center:V();const bool heldDrawable=active&&active->bvh; /* issue #40: an uncached map's one error snapshot stays at the entry point */
-         if(retired){retirementBacklog.retireOrFree(reaper,active,snapshotRetireBytes(*active));active.reset();}
+         if(retired){retirementBacklog.retireOrFree(reaper,active,snapshotRetireBytes(*active));active.reset();expiredMeshPending|=heldDrawable;}
          releaseOrphanedPending("range");
          const float distance=active&&active->map==r.map?std::sqrt(NorthlightGI::dot(r.camera-active->center,r.camera-active->center)):0.f;
          if(distance>coverMax)coverMax=distance;
