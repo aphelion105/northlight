@@ -1,6 +1,9 @@
 #pragma once
 #include "mirror_resource_forwarders.h"
 #include "mirror_guard.h"
+#include "render_thread_probe.h"
+#include "frame_stall_profile.h"
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <atomic>
@@ -63,6 +66,7 @@ class Registry {
         return nullptr;
     }
 public:
+    NorthlightFrameStalls::Queries queryProfile;
     Registry(IDirect3DDevice9* owner,MirrorGate& gate,void(*disable)(void*,const char*),void* context,IDirect3DDevice9* rawDevice=nullptr)
         :owner_(owner),rawDevice_(rawDevice),gate_(gate),disable_(disable),context_(context){}
     Registry(const Registry&)=delete;
@@ -205,7 +209,20 @@ using VolumeProxy=ChildProxy<IDirect3DVolume9,ForwardIDirect3DVolume9>;
 using VertexShaderProxy=Proxy<IDirect3DVertexShader9,ForwardIDirect3DVertexShader9>;
 using PixelShaderProxy=Proxy<IDirect3DPixelShader9,ForwardIDirect3DPixelShader9>;
 using DeclarationProxy=Proxy<IDirect3DVertexDeclaration9,ForwardIDirect3DVertexDeclaration9>;
-using QueryProxy=Proxy<IDirect3DQuery9,ForwardIDirect3DQuery9>;
+class QueryProxy final:public Proxy<IDirect3DQuery9,ForwardIDirect3DQuery9> {
+    NorthlightFrameStalls::QuerySpan wait;unsigned queryType=~0u;
+    static int64_t now(){return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();}
+public:
+    using Proxy::Proxy;
+    HRESULT STDMETHODCALLTYPE Issue(DWORD flags)override{MirrorGuard lock(this->registry.gate(),MirrorSite::Resource);wait.reset();NorthlightMirrorWrite::query(this->real,flags);return this->real->Issue(flags);}
+    HRESULT STDMETHODCALLTYPE GetData(void* data,DWORD size,DWORD flags)override{
+        MirrorGuard lock(this->registry.gate(),MirrorSite::Resource);
+        if(!NorthlightRenderThreadProbe::profiling()){wait.reset();return this->real->GetData(data,size,flags);}
+        if(queryType==~0u)queryType=unsigned(this->real->GetType());
+        const int64_t start=now();const HRESULT hr=this->real->GetData(data,size,flags);const int64_t end=now();
+        wait.record(this->registry.queryProfile,queryType,flags,hr,start,end);return hr;
+    }
+};
 NORTHLIGHT_RESOURCE_FACTORY(IDirect3DSurface9,SurfaceProxy)
 NORTHLIGHT_RESOURCE_FACTORY(IDirect3DTexture9,TextureProxy)
 NORTHLIGHT_RESOURCE_FACTORY(IDirect3DCubeTexture9,CubeProxy)

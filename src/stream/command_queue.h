@@ -325,6 +325,12 @@ public:
         if(replayed_.load()>=seq)return;
         publish();
         const auto t0=nowNs();waitSeq_.store(seq);
+        // Match the consumer's short spin: quick replies need no window-message pump.
+        // A replay blocked in SendMessage still falls back to the pumped wait.
+        while(replayed_.load()<seq){
+            for(unsigned i=0;i<64&&replayed_.load()<seq;++i)relax();
+            if(nowNs()-t0>=50000)break;
+        }
         while(replayed_.load()<seq)progress_.waitPumped(50);
         waitSeq_.store(0);
         const auto ns=nowNs()-t0;
@@ -461,6 +467,15 @@ public:
     // bounded by ms and publish()/nextChunk()'s wake() ends it at once. Returns the next command, or nullptr after ms / on interrupt.
     const CommandHeader* nextTimed(std::uint32_t ms){
         if(auto* h=peek())return h;
+        // Keep quick sync replies on the same spin path as next(true), even while queries are pending.
+        if(ms){
+            const auto t0=nowNs();
+            for(;;){
+                for(int i=0;i<64;++i){if(auto* h=peek())return h;if(interrupted_.load(std::memory_order_relaxed)||express_.load(std::memory_order_relaxed))return nullptr;relax();}
+                wakeWaiters();
+                if(nowNs()-t0>50000)break;
+            }
+        }
         if(interrupted_.load())return nullptr;
         sleeping_.store(true);
         std::atomic_thread_fence(std::memory_order_seq_cst);   // as in next(): the flag is visible before the cursor is re-read

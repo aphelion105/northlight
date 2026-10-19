@@ -743,6 +743,40 @@ static void childrenOutliveTheDevice(){
     Rig again(true);IDirect3DTexture9* t2=nullptr;CHECK(again.dev->CreateTexture(8,8,1,0,(D3DFORMAT)22,(D3DPOOL)1,&t2,nullptr)==D3D_OK);
     again.dev->SetTexture(0,t2);t2->Release();again.checkFlagged();again.dev->Release();CHECK(gDeviceDeletes.load()==deletes+2);checkClean();
 }
+static void eventQueryBatch(){
+    unsigned calls=0,clocks=0;HRESULT hr;
+    hr=pollEventQueryBriefly([]{return D3D_OK;},[&]()->std::uint64_t{++clocks;return 0;},calls);
+    CHECK(hr==D3D_OK&&calls==1&&clocks==0);
+    hr=pollEventQueryBriefly([]{return D3DERR_DEVICELOST;},[&]()->std::uint64_t{++clocks;return 0;},calls);
+    CHECK(hr==D3DERR_DEVICELOST&&calls==1&&clocks==0);
+    unsigned n=0;DWORD result=0;
+    std::uint64_t readyTick=0;
+    hr=pollEventQueryBriefly([&]()->HRESULT{if(++n<7)return S_FALSE;result=123;return D3D_OK;},[&]{readyTick+=2000;return readyTick;},calls);
+    CHECK(hr==D3D_OK&&calls==7&&result==123);
+    n=0;readyTick=0;hr=pollEventQueryBriefly([&]()->HRESULT{return ++n==3?D3DERR_DEVICELOST:S_FALSE;},[&]{readyTick+=2000;return readyTick;},calls);
+    CHECK(hr==D3DERR_DEVICELOST&&calls==3);
+    hr=pollEventQueryBriefly([]{return S_FALSE;},[]()->std::uint64_t{return 0;},calls);
+    CHECK(hr==S_FALSE&&calls==1);    // a stalled clock cannot cause an unbounded spin or a driver-poll storm
+    std::uint64_t pacedTick=0;hr=pollEventQueryBriefly([]{return S_FALSE;},[&]{const auto t=pacedTick;pacedTick+=1000;return t;},calls);
+    CHECK(hr==S_FALSE&&calls==25);   // 50 us span, at least 2 us between driver calls
+    std::uint64_t tick=0;hr=pollEventQueryBriefly([]{return S_FALSE;},[&]{const auto t=tick;tick+=10000;return t;},calls);
+    CHECK(hr==S_FALSE&&calls==5);    // time bound precedes the iteration bound
+
+    gTrace.clear();gKnobs.holdQueries.store(true);gKnobs.eventPendingFlush.store(7);Rig rig(true);auto& s=rig.core().q.stats;
+    IDirect3DQuery9* q=nullptr;CHECK(rig.dev->CreateQuery((D3DQUERYTYPE)8,&q)==D3D_OK);
+    CHECK(q->GetData(nullptr,0,D3::kGetDataFlush)==S_FALSE&&get(s.eventPollBatches)==0&&gKnobs.eventPendingFlush.load()==6);   // unissued: one real call
+    gKnobs.eventPendingFlush.store(7);CHECK(q->Issue(D3::kIssueEnd)==D3D_OK);DWORD data=0;
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(3);
+    do{hr=q->GetData(&data,4,D3::kGetDataFlush);CHECK(std::chrono::steady_clock::now()<deadline);std::this_thread::yield();}while(hr==S_FALSE);
+    CHECK(hr==D3D_OK&&data==0xABCD0000u&&get(s.eventPollCalls)==8&&get(s.eventPollBatches)>0&&get(s.eventPollBatches)<=get(s.eventRequests));
+    gKnobs.eventFlushResult.store(D3DERR_DEVICELOST);const auto polls=get(s.eventPollCalls);data=456;
+    // A new END must not return the previous generation's completed value.
+    CHECK(q->Issue(D3::kIssueEnd)==D3D_OK);
+    CHECK(q->GetData(&data,4,D3::kGetDataFlush)==S_FALSE&&data==456);
+    do{hr=q->GetData(&data,4,D3::kGetDataFlush);CHECK(std::chrono::steady_clock::now()<deadline);std::this_thread::yield();}while(hr==S_FALSE);
+    CHECK(hr==D3DERR_DEVICELOST&&data==456&&get(s.eventPollCalls)==polls+1);
+    gKnobs.eventFlushResult.store(D3D_OK);q->Release();gKnobs.holdQueries.store(false);rig.finish();checkClean();
+}
 static void queryProbeAndDeadQuery(){
     gTrace.clear();Rig rig(true);
     CHECK(rig.dev->CreateQuery((D3DQUERYTYPE)9,nullptr)==D3D_OK&&rig.dev->CreateQuery((D3DQUERYTYPE)77,nullptr)==D3DERR_NOTAVAILABLE);   // the Target's own answer
@@ -754,6 +788,7 @@ static void queryProbeAndDeadQuery(){
 // polled yet) and a never-issued query still run the real GetData, an event query (type 8, the gxFixLag wait) always does, and occlusionLocal=false restores every FLUSH sync.
 static void occlusionFlushLocal(bool on){
     gTrace.clear();StreamDevice::Options opt;opt.occlusionLocal=on;Rig rig(true,opt);auto& s=rig.core().q.stats;
+    rig.core().timing=true;
     IDirect3DQuery9* oq=nullptr;CHECK(rig.dev->CreateQuery((D3DQUERYTYPE)9,&oq)==D3D_OK&&oq);DWORD d=0;
     CHECK(oq->GetData(&d,4,D3::kGetDataFlush)==D3D_OK&&get(s.queryFlushSynced)==1&&get(s.queryFlushLocal)==0);   // never issued: the real GetData, local or not
     gKnobs.holdQueries.store(true);CHECK(oq->Issue(D3::kIssueEnd)==D3D_OK);d=0;const auto sy0=get(s.syncCalls);   // held: the replay thread cannot complete the poll yet
@@ -769,7 +804,11 @@ static void occlusionFlushLocal(bool on){
         CHECK(oq->GetData(&d,4,D3::kGetDataFlush)==D3D_OK&&d==0xABCD0000u&&get(s.syncCalls)==sy2&&get(s.queryFlushLocal)==2);gKnobs.holdQueries.store(false);}
     IDirect3DQuery9* eq=nullptr;CHECK(rig.dev->CreateQuery((D3DQUERYTYPE)8,&eq)==D3D_OK&&eq);   // the event query: always the real wait
     CHECK(eq->Issue(D3::kIssueEnd)==D3D_OK);spins=0;while((hr=eq->GetData(&d,4,0))==S_FALSE&&++spins<2000000)std::this_thread::yield();CHECK(hr==D3D_OK);
-    const auto sy3=get(s.syncCalls),l3=get(s.queryFlushLocal);CHECK(eq->GetData(&d,4,D3::kGetDataFlush)==D3D_OK&&get(s.syncCalls)==sy3+1&&get(s.queryFlushLocal)==l3);
+    const auto sy3=get(s.syncCalls),l3=get(s.queryFlushLocal);CHECK(eq->GetData(&d,4,D3::kGetDataFlush)==D3D_OK&&get(s.syncCalls)==sy3&&get(s.queryFlushLocal)==l3);
+    CHECK(rig.core().queryWait[8].calls==0&&rig.core().queryWait[8].unissued==0);
+    CHECK(rig.core().queryWait[9].calls==(on?2u:3u)&&rig.core().queryWait[9].unissued==1);
+    rig.core().reportQueryWait(nullptr);CHECK(rig.core().queryWait[8].calls==0&&rig.core().queryWait[9].calls==0);
+    rig.core().timing=false;CHECK(eq->GetData(&d,4,D3::kGetDataFlush)==D3D_OK&&rig.core().queryWait[8].calls==0);
     eq->Release();oq->Release();rig.finish();checkClean();
 }
 // An init failure after the replay thread ran the owner callback: the implicit objects bound so far are released, no proxy or
@@ -1214,11 +1253,14 @@ static void replayTimingAccounting(){
 static std::atomic<bool> gDiagOn{false};
 static int frameSalt(){static int n=0;return n+=1000;}
 static void diagnosticsOffSkipsAudit(){
-    gTrace.clear();gDiagOn.store(false);StreamDevice::Options opt;opt.diagnostics=[]{return gDiagOn.load();};opt.log=[](const char*){};
+    gTrace.clear();gDiagOn.store(false);std::atomic<unsigned> offSummaries{0};StreamDevice::Options opt;opt.diagnostics=[]{return gDiagOn.load();};
+    opt.log=[&](const char* line){if(std::strstr(line,"CSTREAM cmds=")&&std::strstr(line," diag=0"))++offSummaries;};
     Rig rig(true,opt);Replayer& rp=rig.sd->replayerOf();
+    rp.sampleEvery=2;
     auto frame=[&]{for(int i=0;i<300;++i)rig.dev->SetRenderState((D3DRENDERSTATETYPE)(7+i%5),DWORD(i+frameSalt()));rig.dev->Present(nullptr,nullptr,nullptr,nullptr);rig.sync();};
     auto& st=rig.core().q.stats;
     frame();frame();CHECK(rp.auditSets()==0);
+    CHECK(offSummaries.load()==1);   // pipeline totals remain visible without per-call timers or the audit
     CHECK(get(st.recordSampledNs)==0&&get(st.presentBookNs)==0&&get(st.lockNs)==0);   // 0.3.204 (task 21): the split timers stay off with Diagnostics
     gDiagOn.store(true);frame();CHECK(rp.auditSets()==0);   // the frame that was running when it turned on: not recorded
     frame();CHECK(rp.auditSets()>0);
@@ -2018,7 +2060,7 @@ static void textureReadbackTable(){
 }
 static void streamTests(bool threadsOnly){
     layoutIsolation();replayTimingAccounting();diagnosticsOffSkipsAudit();idlePollWakes();
-    lifetimeAndIdentity();pressureKeepsShadows();syncStormDetector();stateKnownUnknown();locksPreserveBytes();staticBufferShadows();dynamicBufferShadows();largeBufferAllowance();twoLargeBuffers();adaptiveShadowCap();shadowCap();queriesAndSyncCensus();occlusionFlushLocal(true);occlusionFlushLocal(false);resetAndShutdown();directReplayRaw();redundantFiltering();renderTargetResetsViewport();textureShadows();textureExpressReadback();textureReadbackDiagnostics();textureExpressBehind();textureReadbackTable();statsLine();childrenOutliveTheDevice();queryProbeAndDeadQuery();initFailureFallback();cursorHandling();nestedSyncInPump();testCooperativeLevelLocal(1);testCooperativeLevelLocal(3);upDrawsAndBackpressure();snapshotTriggers();snapshotPoolNotExhausted();memoryPressureRelease();impossibleBlockIsRefusedAtOnce();smallStagedLocksUseScratch();
+    lifetimeAndIdentity();pressureKeepsShadows();syncStormDetector();stateKnownUnknown();locksPreserveBytes();staticBufferShadows();dynamicBufferShadows();largeBufferAllowance();twoLargeBuffers();adaptiveShadowCap();shadowCap();queriesAndSyncCensus();eventQueryBatch();occlusionFlushLocal(true);occlusionFlushLocal(false);resetAndShutdown();directReplayRaw();redundantFiltering();renderTargetResetsViewport();textureShadows();textureExpressReadback();textureReadbackDiagnostics();textureExpressBehind();textureReadbackTable();statsLine();childrenOutliveTheDevice();queryProbeAndDeadQuery();initFailureFallback();cursorHandling();nestedSyncInPump();testCooperativeLevelLocal(1);testCooperativeLevelLocal(3);upDrawsAndBackpressure();snapshotTriggers();snapshotPoolNotExhausted();memoryPressureRelease();impossibleBlockIsRefusedAtOnce();smallStagedLocksUseScratch();
     framesAheadPacing();textureShadowSpares();frameSkipping();frameSkipReleasesPresentWait();   // 0.3.200 (frame skip)
     zeroCopyRenames();zeroCopyRingBudget();zeroCopyAdaptiveRing();zeroCopyRetire();zeroCopyPumpedLock(0);zeroCopyPumpedLock(1);
     for(UINT len:{512u<<10,2u<<20}){zeroCopyRenames(len);zeroCopyRetire(len);zeroCopyPumpedLock(0,len);zeroCopyPumpedLock(1,len);}   // 0.3.204 (task 21): the same for DYNAMIC buffers in the regular shadow cap

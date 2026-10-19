@@ -254,10 +254,10 @@ def generated_cpp():
     return '\n'.join(out) + '\n'
 
 
-def compile_run(tmp, name, flags, args=(), expect_fail=False):
+def compile_run(tmp, name, flags, args=(), expect_fail=False, source="test_command_stream.cpp"):
     exe = Path(tmp) / name
     command = ['clang++', '-std=c++17', '-Wall', '-Wextra', '-Werror', '-pthread', '-DNL_STUB', *flags, '-I', str(tmp), *fp.test_include_flags(),
-               str(HERE / 'test_command_stream.cpp'), '-o', str(exe)]
+               str(HERE / source), '-o', str(exe)]
     subprocess.run(command, check=True)
     run = subprocess.run([str(exe), *args], capture_output=True, text=True, timeout=900)
     print(run.stdout, run.stderr, flush=True)
@@ -267,9 +267,10 @@ def compile_run(tmp, name, flags, args=(), expect_fail=False):
 
 
 with tempfile.TemporaryDirectory(prefix='command-stream-') as tmp:
-    (Path(tmp) / 'd3d9_stub.h').write_text(stub())
+    (Path(tmp) / 'd3d9_stub.h').write_text('#ifndef FALSE\n#define FALSE 0\n#endif\n'+stub())
     (Path(tmp) / 'cs_generated.inc').write_text(generated_cpp())
     compile_run(tmp, 'o2', ['-O2'])
+    compile_run(tmp, 'query-caller', ['-O2'], source='test_query_caller.cpp')
     compile_run(tmp, 'asan', ['-O1', '-g', '-fsanitize=address,undefined', '-fno-omit-frame-pointer'])
     # Redundant-state filtering compiled out: the Target sees every Set, and the equivalence run requires the exact trace again.
     compile_run(tmp, 'nofilter', ['-O2', '-DNORTHLIGHT_STREAM_FILTER=0'])
