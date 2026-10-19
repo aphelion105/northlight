@@ -32,6 +32,13 @@ VIEWS = ('all', 'stock')
 LOCALES = ('enUS', 'enGB', 'deDE', 'frFR', 'esES', 'esMX', 'ruRU', 'koKR', 'zhCN', 'zhTW')
 
 
+def map_name(value):
+    """A client map-directory name, safe as both a path component and a cache key."""
+    if not re.fullmatch(r'[A-Za-z][A-Za-z0-9_-]*', value):
+        raise ValueError('map name must start with a letter and contain only letters, digits, _ or -')
+    return value
+
+
 def _entries(folder):
     """{lowercase name: actual path} of a folder's entries; {} if it does not exist."""
     try:
