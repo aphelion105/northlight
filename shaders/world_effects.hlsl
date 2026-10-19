@@ -1179,17 +1179,15 @@ float4 WorldComposite(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {
         fallbackBase=tex2Dlod(BaselineLighting,float4(fallbackUV,0,0)).rgb;
         fallbackAO=tex2Dlod(AmbientOcclusion,float4(fallbackUV,0,0)).a;
     }
-    // 0.3.174: the contact AO and bloom composite, folded in (it ran as a separate full-res
-    // pass before). Same result as that pass's tail: lit=original*ao, plus bloom where not
-    // saturated. AO follows this pass's depth-weighted tent (1 on sky and water); bloom is the
-    // hardware-bilinear half-res value, like the old pass's unfiltered glow.
+    // Native distance fog is already in Scene. AO belongs to its transported
+    // surface term, never to atmospheric radiance in front of that surface.
+    // Unknown fog is the identity. The same split also bounds relighting below.
     ao=relight?(total<.02?fallbackAO:ao/total):1;
-    float3 bloom=tex2D(AmbientOcclusion,uv).rgb;
-    original.rgb=saturate(mad(bloom,1-saturate(original.rgb*ao),original.rgb*ao));
-    float3 color=original.rgb;
-    // Terrain fog is only an estimate on interior/blended materials. It cannot
-    // account for more light than the observed color in any channel.
     float3 fogPart=min((1-legacyT)*LegacyFogColor.rgb,original.rgb);
+    original.rgb=mad(original.rgb-fogPart,ao,fogPart);
+    float3 bloom=tex2D(AmbientOcclusion,uv).rgb;
+    original.rgb=saturate(mad(bloom,1-saturate(original.rgb),original.rgb));
+    float3 color=original.rgb;
     if(relight){
         // Thin receivers whose depth matches none of the four texels keep the
         // nearest-depth texel instead of losing their shadow and GI entirely.
