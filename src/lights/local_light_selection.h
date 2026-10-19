@@ -99,7 +99,7 @@ struct Tracker {
         while(lo<hi){const unsigned mid=(lo+hi)/2;if(entries[mid].id<id)lo=mid+1;else hi=mid;}
         return lo<count&&entries[lo].id==id&&entries[lo].selected;
     }
-    Selection update(const std::vector<NorthlightLocalLights::Light>& lights,const float* camera,unsigned limit,float dtSeconds,bool continuous,const NorthlightLocalLights::Light* additional=nullptr,unsigned additionalCount=0){
+    Selection update(const std::vector<NorthlightLocalLights::Light>& lights,const float* camera,unsigned limit,float dtSeconds,bool continuous,const NorthlightLocalLights::Light* additional=nullptr,unsigned additionalCount=0,const std::uint64_t* immediate=nullptr,unsigned immediateCount=0){
         limit=std::min(limit,Capacity);
         if(!limit)reset();
         Selection out;fading=0;if(!limit)return out;
@@ -147,6 +147,9 @@ struct Tracker {
             const float target=sel[i].shown;
             const bool known=old<count&&entries[old].id==sel[i].id;const float prev=known?entries[old++].shown:0.f;
             sel[i].shown=!continuous||std::fabs(target-prev)<=step?target:target>prev?prev+step:prev-step;
+            // Current particle colour already includes its authored alpha and
+            // lifetime. A short burst must not wait through the lamp fade-in.
+            if(immediate&&std::find(immediate,immediate+immediateCount,sel[i].id)!=immediate+immediateCount)sel[i].shown=target;
         }
         while(old<count)leaving(old++);
         if(fades>Spare){ // keep the brightest, then restore id order

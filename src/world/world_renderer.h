@@ -25,6 +25,8 @@
 #include "world_local_lights.h"
 #include "local_light_selection.h"
 #include "equipment_lights.h"
+#include "particle_lights.h"
+#include "particle_uploads.h"
 #include "equipment_light_proof.h"
 #include "local_light_scissor.h"
 #include "point_light_shadow.h"
@@ -616,6 +618,7 @@ private:
     IDirect3DPixelShader9* localFogCombinePS=nullptr;IDirect3DTexture9* localFogAccum=nullptr;IDirect3DSurface9* localFogAccumSurface=nullptr;
     // 0.3.197: soft cap, incumbent bias and fades for the local lights (task 13). The clock is the selection's own: its gap and reset policy mirror useHistory.
     NorthlightEquipmentLights::Tracker equipmentLights;std::unordered_map<IDirect3DVertexShader9*,unsigned> equipmentShaders;
+    NorthlightParticleLights::Frame particleLights;std::string particleMap;
     std::string equipmentMap;NorthlightEquipmentLights::CaptureBudget equipmentCapture;
     NorthlightLocalLightSelection::Tracker localLightTracker;std::string localLightMap;V localLightCamera;int64_t localLightQpc=0;double localSelectUsSum=0,localSelectUsMax=0;unsigned localSelectFrames=0;
     // Additive local light passes add exactly +0 outside their batch's projected
@@ -2303,7 +2306,7 @@ public:
         }
         effects=next;
     }
-    void reset(){equipmentLights.reset();equipmentMap.clear();shadowsComposited=false;pivotValid=false;pivotDistance=12.f;pivotCorrection.reset();pivotSelfCaptured=false;cascadeAnchor.reset();endFrame();replaySnapshots.clearIndexCache();actorJobComplete.reset();actorJobSerial_=0;actorSceneMap_.clear();lastActorCapture=0;terrainBoundsCache.clearPersistent();previousCacheHits=0;freeReplays.clear();pooledSnapshotBytes=0;valid=false;failed=false;releaseGPU(true); /* task 42: the committed MANAGED mesh survives any Reset, failed or not */}
+    void reset(){equipmentLights.reset();equipmentMap.clear();particleLights.reset();particleMap.clear();shadowsComposited=false;pivotValid=false;pivotDistance=12.f;pivotCorrection.reset();pivotSelfCaptured=false;cascadeAnchor.reset();endFrame();replaySnapshots.clearIndexCache();actorJobComplete.reset();actorJobSerial_=0;actorSceneMap_.clear();lastActorCapture=0;terrainBoundsCache.clearPersistent();previousCacheHits=0;freeReplays.clear();pooledSnapshotBytes=0;valid=false;failed=false;releaseGPU(true); /* task 42: the committed MANAGED mesh survives any Reset, failed or not */}
     // 0.3.176 (U0/S0): the sample-frame lines of the selection and upload spans (and the RIGID event
     // lines) are formatted where they are today and written here, from endFrame, so no log write (a
     // vfprintf and fflush under the log lock) is inside a bucketed span. The text is the same.
@@ -2329,7 +2332,7 @@ public:
         logf("REPLAY COPIES refused budget=%llu tooLarge=%llu backoff=%llu unsafe=%llu locked=%llu pressure=%llu allocation=%llu largestBufferKiB=%.0f largeCapMiB=%.0f maxLargeMiB=%.0f",(unsigned long long)r.budget,(unsigned long long)r.tooLarge,(unsigned long long)r.backoff,(unsigned long long)r.unsafe,(unsigned long long)r.locked,(unsigned long long)r.pressure,(unsigned long long)r.allocation,double(r.largestBuffer)/kib,double(NorthlightReplayCopies::kLargeCapBytes)/1048576,double(NorthlightReplayCopies::kLargeCopyBytes)/1048576);
     }
     void endFrame(bool retainPool=true){
-        if(equipmentLightsOn()){equipmentLights.nextFrame();equipmentCapture.nextFrame();}
+        if(equipmentLightsOn()){equipmentLights.nextFrame();equipmentCapture.nextFrame();particleLights.nextFrame();NorthlightParticleUploads::cache().nextFrame();}
         flushDeferredLogs(); /* 0.3.176 (U0/S0): after every bucketed span of the frame */
         frameFence.endFrame(); /* 0.3.192 (DXVK3): the one Issue of the frame's fence, after every replay/terrain draw, before any early return; reset() calls endFrame() too */
         NorthlightLockMeter::endFrame();
@@ -2474,6 +2477,12 @@ public:
     bool nameMask()const{return quality.nameMask!=0;} bool nameMaskDebug()const{return quality.nameMaskDebug!=0;} /* 0.3.212 (task 32): read once at device creation */
     bool contactAO()const{return quality.contactAO!=0;} /* 0.3.201 (task 18): read once at device creation */
     bool equipmentLightsOn()const{return quality.equipmentLights!=0;}
+    NorthlightParticleLights::Frame& particleFrame(){return particleLights;}
+    bool particleContext(float* inverseView,float* camera,float* projectionOut){
+        if(!equipmentLightsOn()||!hasContext()||!active)return false;
+        if(particleMap!=active->map){particleLights.reset();particleMap=active->map;}
+        std::memcpy(inverseView,context.inverseView,64);std::memcpy(camera,context.camera,12);std::memcpy(projectionOut,projection,12);return true;
+    }
     void registerEquipmentShader(IDirect3DVertexShader9* shader,const DWORD* words,size_t count){
         if(equipmentLightsOn()){const unsigned lights=NorthlightEquipmentLightProof::analyze(reinterpret_cast<const uint32_t*>(words),count);equipmentShaders[shader]=lights;
             if(lights&&NorthlightDiagnostics::enabled())logf("EQUIPMENT shader proven nativePointCount=%u shader=%p",lights,static_cast<void*>(shader));}
@@ -3399,8 +3408,10 @@ public:
             equipmentLights.publish(GetTickCount(),active?&active->localLights:nullptr);
             for(unsigned i=0;i<equipmentLights.suppressedCount;++i)localLightTracker.forget(equipmentLights.suppressed[i]);
             NorthlightEquipmentLights::replaceFadingDuplicates(localLightTracker,equipmentLights.output.data(),equipmentLights.outputCount);
+            if(active)particleLights.publish(equipmentLights.output.data(),equipmentLights.outputCount,active->localLights,context.camera,localLightTracker);
+            else particleLights.reset();
         }
-        a.lights=active?localLightTracker.update(active->localLights,context.camera,NorthlightGpuBudget::lightLimit(quality.localLightLimit,gpuBudgetLevel),float(selectDt),selectContinuous,equipmentLightsOn()?equipmentLights.output.data():nullptr,equipmentLightsOn()?equipmentLights.outputCount:0) /* 0.3.200 (gpu budget): the setting at level 0 */:NorthlightLocalLightSelection::Selection{};
+        a.lights=active?localLightTracker.update(active->localLights,context.camera,NorthlightGpuBudget::lightLimit(quality.localLightLimit,gpuBudgetLevel),float(selectDt),selectContinuous,equipmentLightsOn()?particleLights.output.data():nullptr,equipmentLightsOn()?particleLights.outputCount:0,equipmentLightsOn()?particleLights.immediate.data():nullptr,equipmentLightsOn()?particleLights.immediateCount:0) /* one shared dynamic cap; particles carry current-frame alpha */:NorthlightLocalLightSelection::Selection{};
         auto& localLights=a.lights;
         if(NorthlightDiagnostics::enabled()){const double us=double(QpcClock::now()-selectT0)*1e6/(captureFrequency.QuadPart>0?double(captureFrequency.QuadPart):1.);localSelectUsSum+=us;localSelectUsMax=std::max(localSelectUsMax,us);++localSelectFrames;} /* selectUs on LOCAL direct */
         localLightQpc=selectT0;localLightCamera=vec(context.camera);if(active&&localLightMap!=active->map)localLightMap=active->map;
@@ -4130,6 +4141,11 @@ public:
         auto& localLights=atmosphere.lights;
         localDirectCount=localLights.count;localDirectNearest=localLights.nearest;
         if(equipmentLightsOn()&&captureSampled){
+            const auto uploads=NorthlightParticleUploads::cache().stats();
+            logf("PARTICLELIGHT draws=%u background=%u accepted=%u deferred=%u triangles=%u points=%u output=%u shaderMiss=%u textureMiss=%u bufferMiss=%u stateMiss=%u geometryMiss=%u dropped=%u uploadHits=%llu uploadMisses=%llu uploadKiB=%u ttlMs=0 readback=0",particleLights.draws,particleLights.backgroundDraws,particleLights.accepted,particleLights.deferred,particleLights.triangles,particleLights.points,particleLights.immediateCount,particleLights.shaderMiss,particleLights.textureMiss,particleLights.bufferMiss,particleLights.stateMiss,particleLights.geometryMiss,particleLights.dropped,static_cast<unsigned long long>(uploads.hits),static_cast<unsigned long long>(uploads.misses),NorthlightParticleUploads::cache().bytes()/1024);
+            for(unsigned i=0;i<particleLights.outputCount;++i){const auto& light=particleLights.output[i];
+                if(std::find(particleLights.immediate.begin(),particleLights.immediate.begin()+particleLights.immediateCount,light.sourceId)==particleLights.immediate.begin()+particleLights.immediateCount)continue;
+                logf("PARTICLELIGHT source id=%llu position=(%.3f %.3f %.3f) rgb=(%.4f %.4f %.4f) range=%.2f cameraYards=%.2f",static_cast<unsigned long long>(light.sourceId),light.position[0],light.position[1],light.position[2],light.diffuse[0],light.diffuse[1],light.diffuse[2],light.attenuationEnd,std::sqrt(NorthlightEquipmentLights::distance2(light.position,context.camera)));}
             logf("EQUIPMENT lights nativePoint=1 attempts=%u banks=%u observed=%u duplicateStatic=%u dropped=%u active=%u output=%u maxLights=8 maxBanks=16 ttlMs=250 falloff=bounded-linear-approx candidates=%u actorCandidates=%u actorReads=%u backgroundReads=%u backgroundBanks=%u duplicateBanks=%u readLimited=%u bankLimited=%u domainRejected=%u decoded=%u rejected=%u",equipmentCapture.reads,equipmentLights.banks,equipmentLights.observed,equipmentLights.duplicates,equipmentLights.dropped,equipmentLights.count,equipmentLights.outputCount,equipmentCapture.candidates,equipmentCapture.actorCandidates,equipmentCapture.actorReads,equipmentCapture.backgroundReads,equipmentLights.backgroundBanks,equipmentLights.bankDuplicates,equipmentCapture.readLimited,equipmentCapture.bankLimited,equipmentCapture.domainRejected,equipmentCapture.decoded,equipmentCapture.rejected);
             for(unsigned i=0;i<equipmentLights.count;++i){const auto& entry=equipmentLights.entries[i];if(entry.gain<=.0001f)continue;
                 const auto light=NorthlightEquipmentLights::light(entry.source,entry.id,entry.gain);

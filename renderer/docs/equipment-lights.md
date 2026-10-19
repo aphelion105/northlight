@@ -76,8 +76,33 @@ The current client yields only one such safe holiday missile. General cast,
 impact, aura and area models are deliberately excluded: the native engine can
 stop their particles without stopping M2 lights. `--audit-broad` is for reports
 only and its output is marked unsuitable for installation. Adding live spell
-illumination broadly needs a separate draw/texture/lifecycle path; these M2
-patches do not provide that capability.
+illumination broadly uses the live draw path below; these M2 patches do not
+provide that capability.
+
+## Live particle lighting
+
+`EquipmentLights=1` also samples accepted native Particle, ParticleUnlit and
+single-texture additive Model draws. The shader's proven position, COLOR0 and
+UV instructions supply the current particle position and colour. Texture RGB
+and alpha come from successful CPU uploads, including native BC formats and
+sRGB sampler state. No GPU texture or buffer readback is started. Unsupported
+shaders, missing uploads, multitexture effects, UI draws and ordinary alpha
+surfaces stay unlit.
+
+Sampling is bounded to 32 additive draws and 16 triangles per draw. Nearby
+samples form compact lights, sharing the eight-source cap with native item and
+mount lights. Overlapping native sources are suppressed. Unlike native lamps,
+particle lights have no TTL or selection fade: only this frame's accepted
+submissions contribute, including draws deferred by SpellLayer. This preserves
+the effect's authored opacity and end of life without touching Spell.dbc.
+
+Cold Blood 14177 is the reference case: its cast and aura use the native
+right-hand attachment and blue particle textures. The read-only fixture and
+native shader/texture tests cover this asset chain. Runtime diagnostics report
+`PARTICLELIGHT` accepted draws, cache misses and selected source RGB/position;
+`PTEX` reports the bounded replay texture cache. A new dynamic buffer may miss
+its first draw until a subsequent successful upload; stale bytes never supply a
+light. In-game appearance and frame cost still require a client comparison.
 
 All these sources share `EquipmentLights`, `LocalLightLimit` and the eight-source
 Northlight admission cap. Those limits do not cap the game's own per-model
