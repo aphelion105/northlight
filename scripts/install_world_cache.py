@@ -259,10 +259,7 @@ def step_digests(inputs, without=None):
     sources = inputs['sources']
     own = {step: {n: sources.get(n) for n in names} for step, names in STEP_SOURCES.items()}
     tiles = list(inputs['tiles']) if inputs['tiles'] else None
-    # Keep the legacy continent order so existing digests remain stable; explicit
-    # dungeon/raid maps must participate too, otherwise the installer omits them.
-    maps = [m for m in MAPS if m in inputs['maps']] + sorted(set(inputs['maps']) - set(MAPS))
-    scene = {m: _hash('scene', chain, inputs['locale'], m, tiles, own['scene']) for m in maps}
+    scene = {m: _hash('scene', chain, inputs['locale'], m, tiles, own['scene']) for m in MAPS if m in inputs['maps']}
     digests = {f'scene:{m}': d for m, d in scene.items()}
     digests['lights'] = _hash('lights', list(scene.values()), own['lights'])
     digests['fog'] = _hash('fog', list(scene.values()), own['fog'])
@@ -404,7 +401,7 @@ def _windows_memory():
 
 def map_jobs(maps, override_gb=None):
     """[(map, memory budget in bytes)], largest first."""
-    return sorted(((m, (override_gb or MAP_MEMORY_GB.get(m, max(MAP_MEMORY_GB.values()))) * (1 << 30)) for m in maps), key=lambda job: -job[1])
+    return sorted(((m, (override_gb or MAP_MEMORY_GB[m]) * (1 << 30)) for m in maps), key=lambda job: -job[1])
 
 
 def admit(needs, used, running, jobs, budget):
@@ -647,7 +644,7 @@ def post_specs(steps, cache, staging, built, common):
     logs = staging / 'logs'
     specs = {'lights': [fp.tracked('world_lights_builder.py'), '--cache', cache, '--output', staging / 'lights',
                         '--maps', *built, *common],
-             'fog': [fp.tracked('regional_fog_builder.py'), '--cache', cache, '--output', staging / 'fog', '--maps', *built, *common],
+             'fog': [fp.tracked('regional_fog_builder.py'), '--cache', cache, '--output', staging / 'fog', *common],
              'celestial': [fp.tracked('build_celestial_disc_assets.py'), '--output', staging / 'celestial', *common]}
     return [(s, specs[s], logs / f'{s}.log', None, POST_MEMORY_GB * (1 << 30)) for s in steps]
 
@@ -659,7 +656,7 @@ def main(argv=None):
     client_archives.add_arguments(ap)
     ap.set_defaults(without='z')
     ap.add_argument('--output', type=Path, help='world cache folder (default: <client>/world-cache)')
-    ap.add_argument('--maps', nargs='+', type=client_archives.map_name, default=MAPS, help='client map directories (default: four continents); also accepts explicit instance maps')
+    ap.add_argument('--maps', nargs='+', choices=MAPS, default=MAPS)
     ap.add_argument('--tiles', nargs=4, type=int, metavar=('X0', 'Y0', 'X1', 'Y1'), help='only these tiles (testing)')
     ap.add_argument('--jobs', type=int, help='parallel builder processes (default: by the memory budgets and CPUs)')
     ap.add_argument('--job-memory-gb', type=float, help='memory budget of every map process (default: per map)')

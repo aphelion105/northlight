@@ -517,7 +517,7 @@ class InstancedBuilder(Builder):
 
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--map',type=client_archives.map_name,default='Azeroth');p.add_argument('--tiles',nargs=4,type=int,metavar=('X0','Y0','X1','Y1'))
+    p=argparse.ArgumentParser();p.add_argument('--map',default='Azeroth');p.add_argument('--tiles',nargs=4,type=int,metavar=('X0','Y0','X1','Y1'))
     p.add_argument('--all-continents',action='store_true');p.add_argument('--output',type=Path,help='default: <client>/world-cache');p.add_argument('--force',action='store_true');p.add_argument('--instanced',action='store_true')
     client_archives.add_arguments(p);args=p.parse_args();assets=Assets.from_args(args);args.output=args.output or assets.client/'world-cache';builder=InstancedBuilder(assets,args.output) if args.instanced else Builder(assets);start=time.time();records=[];failures=[];deleted=[]
     maps=CONTINENTS if args.all_continents else [args.map]

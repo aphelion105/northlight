@@ -238,6 +238,6 @@ def build(cache,output,maps,assets=None):
     finally:assets.close()
 
 if __name__=='__main__':
-    p=argparse.ArgumentParser();p.add_argument('--cache',type=Path,help='default: <client>/world-cache');p.add_argument('--output',type=Path,help='default: <cache>/lights');p.add_argument('--maps',nargs='+',default=MAPS,type=client_archives.map_name)
+    p=argparse.ArgumentParser();p.add_argument('--cache',type=Path,help='default: <client>/world-cache');p.add_argument('--output',type=Path,help='default: <cache>/lights');p.add_argument('--maps',nargs='+',default=MAPS,choices=MAPS)
     client_archives.add_arguments(p);args=p.parse_args();assets=Assets.from_args(args);cache=args.cache or assets.client/'world-cache'
     build(cache,args.output or cache/'lights',args.maps,assets)

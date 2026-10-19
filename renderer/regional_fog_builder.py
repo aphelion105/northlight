@@ -92,7 +92,6 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--cache',type=Path,help='world cache whose FGS3 tiles select the ADTs (default: <client>/world-cache)')
     parser.add_argument('--output',type=Path,help='default: <cache>/fog')
-    parser.add_argument('--maps',nargs='+',type=client_archives.map_name,default=['Azeroth','Kalimdor','Expansion01','Northrend'])
     client_archives.add_arguments(parser);args=parser.parse_args()
     started=time.time();assets=Assets.from_args(args);cache=args.cache or assets.client/'world-cache';args.output=args.output or cache/'fog';stats=collections.Counter();records,strings=dbc(assets.read('DBFilesClient\\AreaTable.dbc'));areas={r[0]:r for r in records}
     liquid,_=dbc(assets.read('DBFilesClient\\LiquidType.dbc'));types={r[0]:r[14] for r in liquid}   # materialID: the game's visual class (1 water, 2 magma, 3 procedural water)
@@ -110,7 +109,7 @@ def main():
     destination=args.output;destination.mkdir(parents=True,exist_ok=True)
     manifest={'format':'FRF1','zones':proof,'maps':{},'unsupported':{},'unreadable_wmos':{},'sources':['ADT MCNK.areaid','AreaTable.dbc parent','MH2O liquid presence (LiquidType.dbc materialID)','MOGP interior (no flag 0x8/0x40) + group bounds','MODF placement'],
               'limitations':['Indoor group bounds conservatively exclude their footprint; this is not exact portal containment.','No dynamic weather source is inferred.','Unknown maps/zones have zero added fog.','Water max authored height is used for near-water influence; no liquid wave simulation.']}
-    for mapname in args.maps:
+    for mapname in ('Azeroth','Kalimdor','Expansion01','Northrend'):
         outdir=destination/mapname;outdir.mkdir(exist_ok=True);files=sorted((cache/mapname).glob('*.fg3'));done=0;digest=hashlib.sha256()
         for tile in files:
             tx,ty=map(int,tile.stem.split('_'));name=f'world\\maps\\{mapname}\\{mapname}_{tx}_{ty}.adt'

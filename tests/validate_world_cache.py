@@ -17,16 +17,15 @@ MAPS=['Azeroth','Kalimdor','Expansion01','Northrend']
 
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--cache',type=Path,help='default: <client>/world-cache')
-    p.add_argument('--report',type=Path,help='default: <cache>/validation.json');p.add_argument('--maps',nargs='+',type=client_archives.map_name,default=MAPS)
+    p.add_argument('--report',type=Path,help='default: <cache>/validation.json');p.add_argument('--maps',nargs='+',choices=MAPS,default=MAPS)
     p.add_argument('--tiles',nargs=4,type=int,metavar=('X0','Y0','X1','Y1'),help='expect only these source tiles (partial test builds)')
     client_archives.add_arguments(p);args=p.parse_args()
     assets=Assets.from_args(args);root=args.cache or assets.client/'world-cache';models={};counts={};missing=[]
     try:
         for mapname in args.maps:
-            pattern=re.compile(r'world\\maps\\'+re.escape(mapname)+r'\\'+re.escape(mapname)+r'_(\d+)_(\d+)\.adt$',re.I)
+            pattern=re.compile(r'world\\maps\\'+mapname+r'\\'+mapname+r'_(\d+)_(\d+)\.adt$',re.I)
             expected={tuple(map(int,m.groups())) for path in assets.providers if (m:=pattern.fullmatch(path))}
             if args.tiles:expected={(x,y) for x,y in expected if args.tiles[0]<=x<=args.tiles[2] and args.tiles[1]<=y<=args.tiles[3]}
-            if not expected:missing.append(f'{mapname}: no source ADT tiles (WDT-only maps require another builder)')
             checked=0;instance_count=0;deleted=[]
             for x,y in sorted(expected):
                 path=root/mapname/f'{x}_{y}.fg3'

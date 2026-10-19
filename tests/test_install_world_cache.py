@@ -69,22 +69,6 @@ assert all(o['scene:Azeroth'] != base['scene:Azeroth'] for o in [digests(locale=
 azeroth = digests(maps=['Azeroth'])                                             # a map's scene is its own
 assert set(azeroth) == {'scene:Azeroth', *iwc.POST} and azeroth['scene:Azeroth'] == base['scene:Azeroth']
 assert azeroth['lights'] != base['lights']
-instances = ['UlduarRaid', 'MonasteryInstances']
-instance_digests = digests(maps=instances)
-assert set(instance_digests) == {f'scene:{m}' for m in instances} | set(iwc.POST)
-assert instance_digests == digests(maps=list(reversed(instances)))
-assert digests(maps=[*iwc.MAPS, *instances])['scene:Azeroth'] == base['scene:Azeroth']
-assert instance_digests['lights'] != base['lights']
-assert all(v != instance_digests[k] for k, v in digests(maps=instances, sources={'world_scene_builder.py': 'instance-change'}).items())
-for name in [*iwc.MAPS, *instances, 'TempestKeepRaid', 'Dungeon_1-test']:
-    assert iwc.client_archives.map_name(name) == name
-for name in ['../UlduarRaid', 'a/b', 'a\\b', '.', 'A.*', '', 'C:map', '-option']:
-    try:
-        iwc.client_archives.map_name(name)
-    except ValueError:
-        pass
-    else:
-        raise AssertionError(name)
 assert digests('stock') == base                                                # the view is not an input, the chain is
 (client / 'Data/patch-x.MPQ').write_bytes(b'hd pack')
 assert all(v != base[k] for k, v in digests().items())                         # a new archive: everything
@@ -217,8 +201,6 @@ assert (cache / 'fog/manifest.json').is_file() and not (cache / 'fog.previous').
 GB = 1 << 30
 assert [m for m, _ in iwc.map_jobs(iwc.MAPS)] == ['Northrend', 'Azeroth', 'Expansion01', 'Kalimdor']
 needs = [need for _, need in iwc.map_jobs(iwc.MAPS)]
-assert all(need == max(iwc.MAP_MEMORY_GB.values()) * GB for _, need in iwc.map_jobs(instances))
-assert iwc.map_jobs(instances, 9) == [(name, 9 * GB) for name in instances]
 assert iwc.admit(needs, 0, 0, 4, 1 * GB) == 0                                  # the first one always starts
 assert iwc.admit(needs[1:], 6.5 * GB, 1, 4, 12 * GB) == 0                      # Azeroth fits next to Northrend
 assert iwc.admit(needs[2:], 11 * GB, 2, 4, 12 * GB) is None                    # nothing else fits
