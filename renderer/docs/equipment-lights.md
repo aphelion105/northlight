@@ -81,7 +81,7 @@ provide that capability.
 
 ## Live particle lighting
 
-`EquipmentLights=1` also samples accepted native Particle, ParticleUnlit and
+With `CommandStream=1`, `EquipmentLights=1` also samples accepted native Particle, ParticleUnlit and
 single-texture additive Model draws. The shader's proven position, COLOR0 and
 UV instructions supply the current particle position and colour. Texture RGB
 and alpha come from successful CPU uploads, including native BC formats and
