@@ -19,13 +19,23 @@ static void fillBlock(unsigned char* p,unsigned fmt,unsigned short c){
     if(fmt!=D3DFMT_DXT1){std::memset(p,0xff,8);if(fmt==D3DFMT_DXT5){p[0]=p[1]=255;std::memset(p+2,0,6);}p+=8;}
     std::memcpy(p,&c,2);std::memcpy(p+2,&c,2);std::memset(p+4,0,4);
 }
-static void writeTile(IDirect3DTexture9* texture,unsigned fmt,unsigned cell,unsigned variant,bool dirty){
+static void fillInterpolatedBlock(unsigned char* p,unsigned fmt,unsigned variant){
+    if(fmt!=D3DFMT_DXT1){
+        if(fmt==D3DFMT_DXT3)for(unsigned n=0;n<8;++n)p[n]=static_cast<unsigned char>((2*n+1)*16+2*n);
+        else{p[0]=variant%2?0:255;p[1]=variant%2?255:0;std::uint64_t bits=0;for(unsigned n=0;n<16;++n)bits|=std::uint64_t(n%8)<<(3*n);for(unsigned n=0;n<6;++n)p[n+2]=static_cast<unsigned char>(bits>>(8*n));}
+        p+=8;
+    }
+    constexpr unsigned short endpoints[][2]={{0xfff2,0x2046},{0x07e0,0},{0xffff,0},{0x1234,0xdddd},{0,0},{0xffff,0xffff},{0x0821,0},{1,0}};
+    std::memcpy(p,&endpoints[variant%8][0],2);std::memcpy(p+2,&endpoints[variant%8][1],2);
+    const std::uint32_t indices=0xe4e4e4e4;std::memcpy(p+4,&indices,4);
+}
+static void writeTile(IDirect3DTexture9* texture,unsigned fmt,unsigned cell,unsigned variant,bool dirty,bool interpolate=false){
     IDirect3DSurface9* surface=nullptr;check(texture->GetSurfaceLevel(0,&surface),"GetSurfaceLevel");
     const RECT rect={LONG(cell%8*Tile),LONG(cell/8*Tile),LONG((cell%8+1)*Tile),LONG((cell/8+1)*Tile)};
     D3DLOCKED_RECT lock{};check(surface->LockRect(&lock,&rect,dirty?D3DLOCK_NO_DIRTY_UPDATE:0),"Lock tile");
     const unsigned block=fmt==D3DFMT_DXT1?8:16;
     std::vector<unsigned char> mip(16*16*block);
-    for(unsigned i=0;i<256;++i)fillBlock(mip.data()+i*block,fmt,colors[(cell+variant)%8]);
+    for(unsigned i=0;i<256;++i){if(interpolate)fillInterpolatedBlock(mip.data()+i*block,fmt,i);else fillBlock(mip.data()+i*block,fmt,colors[(cell+variant)%8]);}
     for(unsigned row=0;row<16;++row)std::memcpy(static_cast<unsigned char*>(lock.pBits)+row*lock.Pitch,mip.data()+row*16*block,16*block);
     check(surface->UnlockRect(),"Unlock tile");surface->Release();
     if(dirty)check(texture->AddDirtyRect(&rect),"AddDirtyRect");
@@ -109,6 +119,20 @@ int main(int argc,char** argv){
                 }
                 for(auto* t:evictions)t->Release();
             }
+            // Exercise all color/alpha selectors and contrast endpoints. Solid
+            // endpoint colors above cannot reveal valid hardware BC differences.
+            for(unsigned cell=0;cell<64;++cell)writeTile(texture,fmt,cell,0,false,true);
+            draw(d,texture,render);sync(stream);
+            NorthlightAtlasDiagnostic::Result interpolation;
+            auto captureInterpolation=[&](){
+                NorthlightAtlasProof::Entry entry{};entry.format=fmt;entry.raw=texture;
+                if(stream){auto* raw=NorthlightStream::ProxyBase::of(texture)->raw;auto* known=NorthlightAtlasProof::cache().find(raw);if(!known){++interpolation.failed;return;}entry=*known;}
+                if(NorthlightAtlasDiagnostic::capture(target,entry,std::string(argv[2])+"-interpolation-"+(streamed?"stream-":"direct-")+std::to_string(fmt),interpolation))++interpolation.captured;else ++interpolation.failed;
+            };
+            if(stream){if(!NorthlightStream::runTask(*NorthlightStream::activeCore.load(),[&](NorthlightStream::StreamCore&){captureInterpolation();},NorthlightStream::Cmd::SyncInit))return 22;}
+            else captureInterpolation();
+            errors+=interpolation.failed+interpolation.rawMismatches+interpolation.pixelMismatches;
+            std::printf("INTERPOLATION mode=%s fmt=%u captured=%u failed=%u sourceRawMismatch=%u outsideEnvelopePixels=%u\n",streamed?"stream":"direct",fmt,interpolation.captured,interpolation.failed,interpolation.rawMismatches,interpolation.pixelMismatches);
             // Source SYSTEMMEM atlas -> DEFAULT atlas via GPU update, then shader sampling.
             IDirect3DTexture9 *system=nullptr,*gpu=nullptr;
             check(d->CreateTexture(Size,Size,1,0,(D3DFORMAT)fmt,D3DPOOL_SYSTEMMEM,&system,nullptr),"Create system atlas");

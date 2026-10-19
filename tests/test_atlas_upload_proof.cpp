@@ -1,11 +1,34 @@
 // SPDX-License-Identifier: MIT
 #include "atlas_upload_proof.h"
+#include "bc_decode_comparison.h"
 #include <cassert>
 #include <vector>
 #include <cstdio>
 using namespace NorthlightAtlasProof;
 static const void* key(unsigned n){return reinterpret_cast<const void*>(std::uintptr_t(n));}
 int main(){
+    // A high-contrast green BC selector can differ by six UNORM8 steps on
+    // real hardware. Retain exact endpoint extremes and reject large errors.
+    unsigned char bc[16]{},gpu[]={0,178,0,255};
+    const unsigned short hi=0x07e0,lo=0x0040;const unsigned selectors=0xaaaaaaaa;
+    std::memcpy(bc,&hi,2);std::memcpy(bc+2,&lo,2);std::memcpy(bc+4,&selectors,4);
+    assert(NorthlightBcComparison::pixel(0x31545844,bc,0,gpu));
+    gpu[1]=190;assert(!NorthlightBcComparison::pixel(0x31545844,bc,0,gpu));
+    gpu[1]=255;bc[4]=0;assert(NorthlightBcComparison::pixel(0x31545844,bc,0,gpu));
+    gpu[1]=254;assert(!NorthlightBcComparison::pixel(0x31545844,bc,0,gpu));
+    // BC1 three-color transparency; BC2 always four-color even with c0<c1.
+    std::memset(bc,0,sizeof bc);bc[4]=3;gpu[1]=gpu[3]=0;
+    assert(NorthlightBcComparison::pixel(0x31545844,bc,0,gpu));
+    gpu[3]=1;assert(!NorthlightBcComparison::pixel(0x31545844,bc,0,gpu));
+    std::memcpy(bc+10,&hi,2);bc[12]=3;bc[0]=15;gpu[1]=170;gpu[3]=255;
+    assert(NorthlightBcComparison::pixel(0x33545844,bc,0,gpu));
+    // BC3 fractional alpha reference, six-alpha special endpoints, malformed input.
+    std::memset(bc,0,sizeof bc);bc[0]=255;bc[2]=2;gpu[1]=0;gpu[3]=218;
+    assert(NorthlightBcComparison::pixel(0x35545844,bc,0,gpu));
+    gpu[3]=200;assert(!NorthlightBcComparison::pixel(0x35545844,bc,0,gpu));
+    bc[0]=0;bc[1]=255;bc[2]=6;gpu[3]=0;assert(NorthlightBcComparison::pixel(0x35545844,bc,0,gpu));
+    gpu[3]=1;assert(!NorthlightBcComparison::pixel(0x35545844,bc,0,gpu));
+    assert(!NorthlightBcComparison::pixel(0,bc,0,gpu)&&!NorthlightBcComparison::pixel(0x35545844,bc,16,gpu));
     enabled=true;Cache cache;constexpr unsigned fmt=0x31545844,pitch=144;
     std::vector<unsigned char> tile(pitch*16,0xee),packed(128*16);
     for(unsigned y=0;y<16;++y)for(unsigned x=0;x<128;++x)packed[y*128+x]=tile[y*pitch+x]=static_cast<unsigned char>(x+y*11);

@@ -59,3 +59,38 @@ it does not prove that the original UI draw's state was correct. GPU writes and
 unobserved pass-through writes invalidate source knowledge. Unknown tiles and
 unmatched resources remain explicitly unknown. No diagnostic exception disables
 the renderer; state is restored after successful and failed captures.
+
+## Captured precision differences (2026-10-20)
+
+The installed `45f8cc2` / DLL `e82f8e13` produced four DXVK3 capture sets and
+four DXVK2 capture sets. All known source/raw tiles matched (148 in the first
+session, up to 167 in the second), with no upload HRESULT or replay failures.
+All captured textures have one mip level. Their independently rendered GPU
+atlas images contain recognizable, intact icons, including those reported
+corrupt in the inventory. This does not reproduce the original UI draw.
+
+The former fixed `abs(error)>1` counter incorrectly called normal BC
+interpolation differences bad pixels: 104,595 per DXVK3 set, up to 120,122 per
+DXVK2 set. Maximum RGBA differences were `[1,6,1,4]`; every pixel fits the
+per-block precision envelope. The adapter identifies itself as an RTX 4090;
+the configured vendor ID `1002` is a compatibility override.
+
+BC1/2/3 decoding is not bit exact across hardware. The comparison now uses the
+[D3D11.3 precision rules, section 19.5.2](https://microsoft.github.io/DirectX-Specs/d3d/archive/D3D11_3_FunctionalSpec.htm#19.5.2%20Error%20Tolerance):
+one UNORM8 step plus 3% of each channel's endpoint range, with half a step for
+the diagnostic render target's UNORM8 conversion. Reference extremes remain
+exact. This is a conservative diagnostic envelope, not a conformance test.
+`raw_decode_vs_gpu_bad_pixels` counts only pixels outside it;
+`raw_decode_vs_gpu_gt1_pixels` and `max_abs_rgba_error` retain the original
+CPU/GPU differences. Source/raw hash comparison stays exact. The manual GPU
+probe additionally tests contrast endpoints and every color/alpha selector
+through direct and command-stream paths, at O0 and O2.
+
+The next missing evidence is the original UI draw: its referenced vertex/index
+bytes, stride/offset/declaration, UVs, shader words/constants, and actual bound
+textures and sampler states. Current captures only retain shader hashes and a
+sampler *known mask*; values outside that mask are unknown. A bounded capture
+armed by F12 at a matching atlas draw can fill this gap without periodic GPU
+readbacks. Neither texture upload code nor the game's UI rendering is changed
+by this diagnostic correction. The unsuccessful native backend attempt did
+not create a device, so it supplies no rendering comparison.

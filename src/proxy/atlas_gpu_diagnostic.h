@@ -4,6 +4,7 @@
 // point-sampled GPU pixels. Errors restore state and never disable the renderer.
 #include "atlas_upload_proof.h"
 #include "actor_texture.h"
+#include "bc_decode_comparison.h"
 #include "saved_state.h"
 #include <cstdio>
 #include <cstring>
@@ -62,14 +63,16 @@ inline bool capture(IDirect3DDevice9* d,const NorthlightAtlasProof::Entry& entry
         const unsigned tx=n%8*Tile,ty=n/8*Tile;
         for(unsigned y=0;y<16;++y)std::memcpy(tile.data()+y*16*block,raw.data()+std::size_t(ty/4+y)*pitch+tx/4*block,16*block);
         const auto hash=hashRows(tile.data(),16*block,16,16*block);const bool known=(entry.known>>n&1)!=0,match=known&&hash==entry.tiles[n];
-        unsigned badPixels=0;
+        unsigned badPixels=0,differencePixels=0,maxError[4]{};
         if(NorthlightActorTexture::decode(tile.data(),tile.size(),Tile,Tile,16*block,format,rgba))for(unsigned y=0;y<Tile;++y)for(unsigned x=0;x<Tile;++x){
-            bool bad=false;for(unsigned c=0;c<4;++c){const int actual=pixels[(std::size_t(ty+y)*Size+tx+x)*4+(c<3?2-c:3)],expected=rgba[(y*Tile+x)*4+c];bad|=std::abs(actual-expected)>1;}badPixels+=bad;}
+            const auto* actual=pixels.data()+(std::size_t(ty+y)*Size+tx+x)*4;
+            bool different=false;for(unsigned c=0;c<4;++c){const unsigned error=unsigned(std::abs(int(actual[c<3?2-c:3])-int(rgba[(y*Tile+x)*4+c])));maxError[c]=std::max(maxError[c],error);different|=error>1;}differencePixels+=different;
+            badPixels+=!NorthlightBcComparison::pixel(entry.format,tile.data()+((y/4)*16+x/4)*block,(y%4)*4+x%4,actual);}
         else badPixels=Tile*Tile;
         result.knownTiles+=known;result.rawMismatches+=known&&!match;result.pixelMismatches+=badPixels;
-        std::fprintf(report,"%s{\"index\":%u,\"cpu_known\":%s,\"cpu_fnv1a64\":\"%016llx\",\"raw_fnv1a64\":\"%016llx\",\"source_matches_raw\":%s,\"raw_decode_vs_gpu_bad_pixels\":%u}",n?",":"",n,known?"true":"false",(unsigned long long)entry.tiles[n],(unsigned long long)hash,match?"true":"false",badPixels);
+        std::fprintf(report,"%s{\"index\":%u,\"cpu_known\":%s,\"cpu_fnv1a64\":\"%016llx\",\"raw_fnv1a64\":\"%016llx\",\"source_matches_raw\":%s,\"raw_decode_vs_gpu_bad_pixels\":%u,\"raw_decode_vs_gpu_gt1_pixels\":%u,\"max_abs_rgba_error\":[%u,%u,%u,%u]}",n?",":"",n,known?"true":"false",(unsigned long long)entry.tiles[n],(unsigned long long)hash,match?"true":"false",badPixels,differencePixels,maxError[0],maxError[1],maxError[2],maxError[3]);
     }
-    std::fprintf(report,"],\"note\":\"Known source hashes prove submitted upload bytes; raw BC and independent point-sampled GPU rendering distinguish managed content from draw state/UV. Original sampler states are recorded, not used for this diagnostic render.\"}\n");
+    std::fprintf(report,"],\"pixel_comparison\":\"BC1/2/3 per-block D3D11.3 19.5.2 precision envelope plus half a UNORM8 render-target step; bad_pixels counts only outside this envelope. gt1_pixels and max_abs_rgba_error retain ideal CPU decoder differences.\",\"note\":\"Known source hashes prove submitted upload bytes; raw BC and independent point-sampled GPU rendering distinguish managed content from draw state/UV. Original sampler states are recorded, not used for this diagnostic render.\"}\n");
     const bool reportOk=std::fclose(report)==0;
     const bool rawOk=save(prefix+".bc",raw.data(),raw.size());
     const std::uint32_t header[]={0x31524746,Size,Size,unsigned(D3DFMT_A8R8G8B8),4};
