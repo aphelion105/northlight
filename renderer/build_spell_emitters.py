@@ -15,7 +15,7 @@ northlight_paths.use_source_modules()
 import client_archives
 from world_scene_builder import Assets, array, string, unpack
 from world_lights_builder import constant_track
-from build_equipment_emitters import NATIVE_REFERENCE, REFERENCES, sources as particle_sources
+from build_equipment_emitters import NATIVE_REFERENCE, REFERENCES, lifetime_track, sources as particle_sources
 from equipment_emitter_patch import append_bone_lights
 from mpq import Archive
 
@@ -62,7 +62,7 @@ def write_track(out, track, fmt, scale=1):
     return struct.pack('<hh4I', track['interpolation'], track['sequence'], len(times), ot, len(keys), ok)
 
 
-def spell_sources(assets, blob):
+def spell_sources(assets, blob, max_sources=2):
     if len(blob) < 304 or blob[:4] != b'MD20' or unpack('<I', blob, 4)[0] != 264:
         raise ValueError('Not WotLK v264')
     if unpack('<I', blob, 264)[0]:
@@ -109,7 +109,7 @@ def spell_sources(assets, blob):
             rejected[index] = str(exc)
     if not result:
         raise ValueError('No proven additive source: ' + json.dumps(collections.Counter(rejected.values()), sort_keys=True))
-    if len(result) > 2:
+    if max_sources is not None and len(result) > max_sources:
         raise ValueError('More than two independent sources/schedules; excluded')
     return result, rejected
 
@@ -167,14 +167,20 @@ def validate_spell_lights(original, patched, emitters):
             raise ValueError('Animated intensity requires per-frame RGB update')
 
 
-def effect_models(assets):
-    blob = assets.read('dbfilesclient\\spellvisualeffectname.dbc')
+def dbc_table(assets, name):
+    blob = assets.read(name)
     magic, count, fields, size, length = unpack('<4s4I', blob)
-    if magic != b'WDBC' or fields != 7 or size != 28 or len(blob) != 20 + count * size + length:
-        raise ValueError('Unsupported 3.3.5 SpellVisualEffectName schema')
-    strings = blob[20 + count * size:]
+    if magic != b'WDBC' or size != fields * 4 or len(blob) != 20 + count * size + length:
+        raise ValueError('Unsupported DBC schema: ' + name)
+    return blob, array(blob, 20, count, '<%dI' % fields), blob[20 + count * size:]
+
+
+def effect_models(assets):
+    blob, rows, strings = dbc_table(assets, 'dbfilesclient\\spellvisualeffectname.dbc')
+    if unpack('<I', blob, 8)[0] != 7:
+        raise ValueError('Unsupported SpellVisualEffectName schema')
     models = collections.defaultdict(list)
-    for row in array(blob, 20, count, '<7I'):
+    for row in rows:
         path = string(strings, row[2])
         if path.endswith('.mdx'):
             path = path[:-4] + '.m2'
@@ -183,19 +189,126 @@ def effect_models(assets):
     return dict(models)
 
 
-def build(assets, output, excluded):
+def missile_models(assets, models):
+    """Reject every shared path with a non-missile DBC owner, not just shared IDs."""
+    by_id = {i:p for p, ids in models.items() for i in ids}
+    references, non_missile, hashes, opaque = collections.defaultdict(list), collections.defaultdict(set), {}, []
+    def rows(name, fields):
+        path = 'dbfilesclient\\' + name + '.dbc'
+        blob, records, _ = dbc_table(assets, path)
+        if unpack('<I', blob, 8)[0] != fields:
+            raise ValueError('Unsupported lifecycle graph schema: ' + path)
+        hashes[path] = hashlib.sha256(blob).hexdigest()
+        return records
+    for row in rows('spellvisual', 32):
+        if row[7] and row[8] in by_id:
+            references[by_id[row[8]]].append({'visual_id': row[0], 'effect_id': row[8]})
+    for row in rows('spellvisualkit', 38):
+        for effect in row[3:15]:
+            if effect in by_id:
+                non_missile[by_id[effect]].add('SpellVisualKit: ' + str(row[0]))
+    for row in rows('spellvisualkitmodelattach', 10):
+        if row[2] in by_id:
+            non_missile[by_id[row[2]]].add('SpellVisualKitModelAttach: ' + str(row[0]))
+    for row in rows('unitblood', 10):
+        for effect in row[1:5]:
+            if effect in by_id:
+                non_missile[by_id[effect]].add('UnitBlood: ' + str(row[0]))
+    _, effect_rows, effect_strings = dbc_table(assets, 'dbfilesclient\\spellvisualeffectname.dbc')
+    for row in effect_rows:
+        if row[0] in by_id and string(effect_strings, row[1]).startswith('hardcoded '):
+            non_missile[by_id[row[0]]].add('Hardcoded CEffect owner: ' + str(row[0]))
+    # Also reject direct file-name bindings in all other client DBC string
+    # tables (ItemVisualEffects, AreaModel, CreatureModelData, GameObject, ...).
+    for path in sorted(n for n in assets.providers if n.startswith('dbfilesclient\\') and n.endswith('.dbc')):
+        blob = assets.read(path)
+        hashes[path] = hashlib.sha256(blob).hexdigest()
+        if path == 'dbfilesclient\\spellvisualeffectname.dbc':
+            continue
+        if blob[:4] != b'WDBC':
+            # Opaque auxiliary tables cannot hide a direct M2 path from this
+            # conservative byte scan; any occurrence excludes the model.
+            opaque.append(path)
+            raw = blob.lower().replace(b'/', b'\\')
+            for name in references:
+                if any(v.encode() in raw for v in (name, name[:-3]+'.mdx')):
+                    non_missile[name].add(path)
+            continue
+        _, count, fields, size, length = unpack('<4s4I', blob)
+        if not fields or not size or len(blob) != 20 + count * size + length:
+            raise ValueError('Cannot audit malformed owner table: ' + path)
+        strings = blob[20 + count * size:]
+        for value in strings.split(b'\0'):
+            name = value.decode('utf8', errors='replace').lower().replace('/', '\\')
+            if name.endswith('.mdx'):
+                name = name[:-4] + '.m2'
+            if name in references:
+                non_missile[name].add(path)
+    eligible = {p:v for p,v in references.items() if not non_missile[p]}
+    return eligible, {'missile_models': len(references), 'exclusive_missile_models': len(eligible),
+        'other_owners': {p:sorted(v) for p,v in non_missile.items() if p in references and v},
+        'opaque_tables_scanned_for_model_paths': opaque, 'dbc_sha256': hashes}
+
+
+def luminous_missile_tail(blob, emitters, rejected):
+    """Every particle keeping WaitForModelFX alive must remain visibly luminous."""
+    count, offset = unpack('<II', blob, 296)
+    stride = 492 if unpack('<I', blob, 16)[0] & 0x200 else 476
+    if rejected or {i for e in emitters for i in e['particles']} != set(range(count)) or unpack('<I', blob, 288)[0]:
+        raise ValueError('Missile must have only qualified additive particles, no ribbons')
+    bounds = []
+    for index in range(count):
+        p = offset + index * stride
+        life = lifecycle_track(blob, p+152, '<f', 0.)
+        variation = unpack('<f', blob, p+172)[0]
+        values = [v for c in life['curves'] for v in c['values']]
+        if not math.isfinite(variation) or not all(0 < v-abs(variation) <= v+abs(variation) <= 8 for v in values):
+            raise ValueError('Missile particle lifetime must be finite and bounded by eight seconds')
+        if unpack('<f', blob, p+196)[0] != 0 or not unpack('<I', blob, p+4)[0] & 0x20000 or unpack('<HH', blob, p+48) != (1,1):
+            raise ValueError('Missile requires deterministic emission and single-cell particle heads')
+        colors = lifetime_track(blob, p+260, '<3f')
+        alpha = lifetime_track(blob, p+276, '<h')
+        scale = lifetime_track(blob, p+292, '<2f')
+        scale_variation = unpack('<2f', blob, p+308)
+        _, on, low, high = unpack('<4f', blob, p+352)
+        if not all(math.isfinite(v) for v in (*scale_variation, on, low, high)) or on < 1 or min(low, high) <= 0:
+            raise ValueError('Missile twinkle can hide living particles')
+        if not all(max(v) > .01 for t,v in colors if t < 32767):
+            raise ValueError('Missile RGB extinguishes before particle death')
+        if unpack('<B', blob, p+40)[0] == 4 and not all(v[0] > 0 for t,v in alpha if t < 32767):
+            raise ValueError('Missile alpha extinguishes before particle death')
+        if not all(all(math.isfinite(v[k]) and v[k] > abs(scale_variation[k]) for k in range(2)) for t,v in scale if t < 32767):
+            raise ValueError('Missile scale extinguishes before particle death')
+        bounds.append(max(values) + abs(variation))
+    return max(bounds)
+
+
+def build(assets, output, excluded, audit_broad=False):
     output.mkdir(parents=True, exist_ok=True)
     candidates = effect_models(assets)
+    eligible, graph = ({}, {}) if audit_broad else missile_models(assets, candidates)
     report = {'format': 'native WotLK v264 spell lights with authored lifecycle',
+        'scope': 'audit-only broad spell models' if audit_broad else 'exclusive missile models with luminous finite particle tails',
+        'lifecycle_graph': graph,
         'models': {}, 'skipped': {}, 'excluded_models': sorted(excluded), 'source_archives': assets.fingerprint(),
-        'format_references': REFERENCES + [NATIVE_REFERENCE + 'Engine/Source/Model2/M2Model.cpp'],
+        'format_references': REFERENCES + [NATIVE_REFERENCE + p for p in ('Engine/Source/Model2/M2Model.cpp',
+            'Engine/Source/Services/ParticleSystem2.cpp', 'WoW/Source/Object/ObjectClient/Missile_C.cpp',
+            'WoW/Source/Object/ObjectClient/Unit_C.cpp', 'WoW/Source/Object/ObjectClient/Effect_C.cpp',
+            'WoW/Source/Object/ObjectClient/DynamicObject_C.cpp')],
         'native_lifecycle_symbols': ['CM2Model::AnimateParticlesMT', 'M2AnimateTrack<float, float>',
             'M2AnimateTrack<uint8_t, uint8_t>', 'CM2Model::AnimateMT', 'CM2Model::SetEmittersEnabled', 'CM2Model::DetachFromScene'],
-        'installation_ready': False, 'requires_external_emitter_lifecycle_review': True,
+        'retirement_proof': [
+            'CGUnit_C::ReleaseMissiles releases the borrowed precast reference before FireMissiles (Unit_C.cpp:18302-18322).',
+            'CMissile::WaitForModelFX stops emitters/ribbons, retains only live particles/ribbons, otherwise DeleteSelf (Missile_C.cpp:1101-1130).',
+            'Default qualification forbids ribbons and requires every particle to remain luminous with a finite <=8s lifetime.',
+            'CParticleEmitter2::StepUpdate destroys particles when age reaches lifetime; HasLiveParticles checks the live list (ParticleSystem2.cpp:1393,2033-2081).',
+            'CMissile destructor detaches and releases the model; CM2Model free/detach unlinks its native lights (Missile_C.cpp:960-970; M2Model.cpp:73-100,3880-3919).'],
+        'installation_ready': not audit_broad, 'requires_external_emitter_lifecycle_review': audit_broad,
         'limitations': ['Only SpellVisualEffectName-referenced Spells/*.m2; no DBC is changed or packed.',
             'Intensity follows authored emission rate immediately; existing particle tails are not simulated.',
-            'External CM2Model::SetEmittersEnabled is independent of native lights. The staged patch requires lifecycle review before installation; no runtime hook is included.',
-            'Native lights unlink on model detach/free; both source and light also use native model alpha.',
+            'Broad audit mode is unsafe for installation: external SetEmittersEnabled is independent of native lights.',
+            'Default scope excludes shared CEffect/DynamicObject/DBC owners. Missile retirement stops emission, waits only for luminous finite tails, then deletes/releases the model and unlinks lights.',
+            'Native lights and particles share effectiveAlpha/fadeAlpha; baseAlpha alone does not suppress native lights.',
             'Only inline step/linear lifecycle tracks, actual additive particles 3/4, actual texture RGB and lifetime colour.',
             'At most two independent sources per model; runtime shares LocalLightLimit and caps admitted dynamic sources at eight.',
             'Model VS2/3 capture is required for Northlight local/fog lighting; particle-only draws may not expose a light.',
@@ -206,9 +319,13 @@ def build(assets, output, excluded):
         if path in excluded:
             report['skipped'][path] = 'Excluded: equipment/enchant patch owns this model'
             continue
+        if not audit_broad and path not in eligible:
+            report['skipped'][path] = 'Not an exclusive missile model; external emitter gate is not proven safe'
+            continue
         try:
             original = assets.read(path)
             emitters, rejected = spell_sources(assets, original)
+            tail_bound = None if audit_broad else luminous_missile_tail(original, emitters, rejected)
             patched = append_spell_lights(original, emitters)
         except (ValueError, FileNotFoundError, struct.error) as exc:
             report['skipped'][path] = str(exc)
@@ -216,7 +333,8 @@ def build(assets, output, excluded):
         payload[path] = patched
         report['models'][path] = {'before_sha256': hashlib.sha256(original).hexdigest(),
             'after_sha256': hashlib.sha256(patched).hexdigest(), 'emitters': emitters,
-            'rejected_particles': rejected, 'source_archive': assets.origin(path), 'spell_visual_effect_ids': visual_ids}
+            'rejected_particles': rejected, 'source_archive': assets.origin(path), 'spell_visual_effect_ids': visual_ids,
+            'missile_visual_bindings': eligible.get(path, []), 'maximum_particle_tail_seconds': tail_bound}
     if not payload:
         raise ValueError('No supported spell emitters')
     mpq = output / 'spell-lights-staged.mpq'
@@ -248,11 +366,12 @@ if __name__ == '__main__':
     client_archives.add_arguments(parser)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--exclude-report', type=Path, required=True, help='Equipment/enchant report whose model paths must not be replaced')
+    parser.add_argument('--audit-broad', action='store_true', help='Audit unsupported external lifecycles too; output must never be installed')
     args = parser.parse_args()
     excluded = {p.lower().replace('/', '\\') for p in json.loads(args.exclude_report.read_text())['models']}
     assets = Assets.from_args(args)
     try:
-        result = build(assets, args.output, excluded)
+        result = build(assets, args.output, excluded, args.audit_broad)
     finally:
         assets.close()
     print(json.dumps(result['counts'], indent=2))
