@@ -2687,7 +2687,7 @@ public:
         {auto phase=streamingPhases.measure(NorthlightStreaming::PhaseProfile::Retire);
          auto& reaper=NorthlightStreaming::cpuRetirement();retirementBacklog.retry(reaper);
          if(expiredPublication){
-             logf("WORLD expired publication released map=%s cpuMiB=%.2f",expiredPublication->map.c_str(),double(expiredPublication->retirementBytes)/1048576);
+             logf("WORLD expired publication released map=\"%s\" cpuMiB=%.2f",expiredPublication->map.c_str(),double(expiredPublication->retirementBytes)/1048576);
              retirementBacklog.retireOrFree(reaper,expiredPublication,snapshotRetireBytes(*expiredPublication));
          }
          const bool adopted=retiredSnapshot&&active&&retiredSnapshot->bvh!=active->bvh; /* a new region, not a GI publication */
