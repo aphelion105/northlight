@@ -40,7 +40,10 @@ void prepareUpload(Model& model){
     auto compact=std::make_shared<Model>();compact->key=model.key;compact->contentRevision=model.contentRevision;compact->batches=model.batches;compact->index16=model.index16;
     for(auto& material:model.materials){
         auto alpha=std::make_shared<std::vector<uint8_t>>(size_t(std::max(1u,material.width))*std::max(1u,material.height),255);
-        for(size_t i=0;i<alpha->size();++i){size_t j=i*4;if(j+3<material.rgba.size()){(*alpha)[i]=material.rgba[j+3];material.rgba[j]=material.rgba[j+1]=material.rgba[j+2]=255;}}
+        for(size_t i=0;i<alpha->size();++i){size_t j=i*4;if(j+3<material.rgba.size())(*alpha)[i]=material.rgba[j+3];}
+        // Only alpha reaches the shadow target. Expand to white RGB during the
+        // bounded upload instead of retaining a second four-byte texel array.
+        model.bytes-=material.rgba.capacity();std::vector<uint8_t>().swap(material.rgba);
         model.bytes+=alpha->capacity();model.uploadAlpha.push_back(std::move(alpha));
         NorthlightGI::WorldMaterial mat;mat.alphaCutoff=material.alphaCutoff;mat.addressU=material.addressU;mat.addressV=material.addressV;compact->materials.push_back(std::move(mat));
     }

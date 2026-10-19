@@ -30,6 +30,13 @@ struct Model {
     bool index16=false;
     size_t indexCount()const{return uploadPrepared&&index16?uploadIndices16.size():indices.size();}
     uint32_t indexAt(size_t i)const{return uploadPrepared&&index16?uploadIndices16[i]:indices[i];}
+    uint8_t alphaAt(size_t material,size_t pixel)const{
+        if(uploadPrepared&&material<uploadAlpha.size()&&uploadAlpha[material]){
+            const auto& alpha=*uploadAlpha[material];return pixel<alpha.size()?alpha[pixel]:255;
+        }
+        const auto& rgba=materials[material].rgba;
+        return pixel<rgba.size()/4?rgba[pixel*4+3]:255;
+    }
 };
 struct Placement {
     uint64_t uid=0;
