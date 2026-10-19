@@ -83,6 +83,7 @@
 #include "capture_phase_profile.h"
 #include "world_compiled_shaders.h"
 #include "patch_shadow_shader.h"
+#include "shadow_alpha.h"
 #include "terrain_capture_bounds.h"
 #include "draw_snapshot.h"
 #include "replay_gpu_cache.h"
@@ -399,7 +400,7 @@ private:
     NorthlightHorizonHaze::Constants hazeFrame; /* last composite haze constants, for the celestial veil */
     NorthlightSpellFog::Hold spellFogHold;DWORD spellFogTick=0;bool spellFogResetLogged=false; /* SpellFog: the smoothed per-frame estimate (spell_fog.h) */
     float skyTransmittanceFrame=1; /* CPU estimate of the fog transmittance toward the sun, for the veil */
-    struct FogShader { unsigned major=0;int colorRegister=-1;bool verified=false; };
+    struct FogShader { unsigned major=0;int colorRegister=-1;bool verified=false;NorthlightShadowAlpha::Info alpha; };
     std::unordered_map<IDirect3DPixelShader9*,FogShader> fogShaders;
     unsigned fogReports=0;
     float projection[3]={1,1,1};
@@ -799,7 +800,7 @@ private:
         const float* constants=constantStorage;const BOOL* bools=boolStorage;const int* ints=intStorage;
         NorthlightConstantEpoch::Stamp constantStamp;
         Replay()=default;Replay(const Replay&)=delete;Replay& operator=(const Replay&)=delete;
-        float cutoff=-1;
+        float cutoff=-1;unsigned alphaMode=0;
         NorthlightShaderConstants::Usage constantUsage;
         unsigned constantGroup=0; // exact consecutive banks, rebuilt from this frame's captures
         unsigned projectionKind=2;DWORD addressU=D3DTADDRESS_WRAP,addressV=D3DTADDRESS_WRAP;
@@ -935,11 +936,12 @@ private:
     NorthlightCapturePhases::Stats<CapturePhaseCount> capturePhases;
     NorthlightCapturePhases::Stats<3> actorPhases;
     NorthlightCapturePhases::Stats<2> replayUploadPhases;
+    unsigned shaderAlphaCaptured=0,shaderAlphaRejected=0;
     unsigned capturePhaseSerial=0,capturePhaseDraws=0,capturePhaseAccepted=0,alphaStateQueriesSkipped=0;
     unsigned actorPhaseCandidates=0,actorTextureReads=0,replayUploadCalls=0,replayUploadFallbacks=0;
     void clearCaptureDiagnostics(){
         capturePhases.clear();actorPhases.clear();replayUploadPhases.clear();constantEpochStats={};constantEpochProfile={};constantSelfCheckState.serial=0;
-        capturePhaseDraws=capturePhaseAccepted=alphaStateQueriesSkipped=0;
+        capturePhaseDraws=capturePhaseAccepted=alphaStateQueriesSkipped=shaderAlphaCaptured=shaderAlphaRejected=0;
         actorPhaseCandidates=actorTextureReads=replayUploadCalls=replayUploadFallbacks=0;
     }
     std::unique_ptr<Replay> acquireReplay(){
@@ -958,7 +960,7 @@ private:
     // record before the pointer can be used for a different shader object.
     struct CaptureShader {
         IDirect3DVertexShader9* replacement=nullptr;
-        unsigned projectionKind=0;
+        bool color0W=false;unsigned projectionKind=0;
         NorthlightShaderConstants::Usage usage;
         bool skinned=false,sm1=false;
         std::shared_ptr<const NorthlightActorDeformation::Program> program; /* 0.3.179 (T1): actorPrograms' object (null: none) */
@@ -2318,7 +2320,7 @@ public:
             // Raw totals of the rotating subset; do not multiply by 16. Rejected
             // candidates contribute only the phases they actually reached.
             const auto& c=capturePhases.ticks;
-            logf("MODEL capture phases stride=16 measured=%u accepted=%u clockReads=%u stateMs=%.3f projectionMs=%.3f snapshotMs=%.3f constantsMs=%.3f materialMs=%.3f finalizeMs=%.3f actorMs=%.3f alphaQueriesSkipped=%u",capturePhaseDraws,capturePhaseAccepted,capturePhases.clockReads,c[CaptureState]*ms,c[CaptureProjection]*ms,c[CaptureSnapshot]*ms,c[CaptureConstants]*ms,c[CaptureMaterial]*ms,c[CaptureFinalize]*ms,c[CaptureActor]*ms,alphaStateQueriesSkipped);
+            logf("MODEL capture phases stride=16 measured=%u accepted=%u clockReads=%u stateMs=%.3f projectionMs=%.3f snapshotMs=%.3f constantsMs=%.3f materialMs=%.3f finalizeMs=%.3f actorMs=%.3f alphaQueriesSkipped=%u shaderAlphaCaptured=%u shaderAlphaRejected=%u",capturePhaseDraws,capturePhaseAccepted,capturePhases.clockReads,c[CaptureState]*ms,c[CaptureProjection]*ms,c[CaptureSnapshot]*ms,c[CaptureConstants]*ms,c[CaptureMaterial]*ms,c[CaptureFinalize]*ms,c[CaptureActor]*ms,alphaStateQueriesSkipped,shaderAlphaCaptured,shaderAlphaRejected);
             const auto& a=actorPhases.ticks;
             logf("MODEL actor capture phases candidates=%u textureReads=%u packets=%u vertices=%u clockReads=%u probeMs=%.3f textureMs=%.3f packetMs=%.3f",actorPhaseCandidates,actorTextureReads,actorDraws,actorVerticesEvaluated,actorPhases.clockReads,a[0]*ms,a[1]*ms,a[2]*ms);
             const auto& u=replayUploadPhases.ticks;
@@ -2665,7 +2667,7 @@ public:
         if(!shader||FAILED(shader->GetFunction(nullptr,&size))||size<8||size>65536||size%4)return;
         std::vector<uint32_t> code(size/4);if(FAILED(shader->GetFunction(code.data(),&size)))return;
         FogShader info;info.major=(code[0]>>8)&255;
-        info.colorRegister=NorthlightLegacyFog::ps3FogColorRegister(code.data(),code.size());info.verified=info.colorRegister>=0;fogShaders[shader]=info;
+        info.colorRegister=NorthlightLegacyFog::ps3FogColorRegister(code.data(),code.size());info.verified=info.colorRegister>=0;info.alpha=NorthlightShadowAlpha::analyze(code.data(),code.size());fogShaders[shader]=info;
     }
     void registerShader(IDirect3DVertexShader9* shader,uint64_t hash){
         ++worldShaderGen; /* 0.3.196 (task 12): before any map changes */
@@ -2688,7 +2690,7 @@ public:
         if(!NorthlightShadowShader::patch(words.data(),words.size(),output,&info)||!info.texcoord0XY)return;
         NorthlightDrawSnapshot::Ref<IDirect3DVertexShader9> replacement;
         if(SUCCEEDED(d->CreateVertexShader(reinterpret_cast<const DWORD*>(output.data()),replacement.out()))&&replacement.p){
-            CaptureShader metadata;metadata.replacement=replacement.p;metadata.projectionKind=kind;
+            CaptureShader metadata;metadata.replacement=replacement.p;metadata.projectionKind=kind;metadata.color0W=info.color0W;
             metadata.usage=NorthlightShaderConstants::analyze(words.data(),words.size(),kind);
             NorthlightActorDeformation::Program program;
             if(NorthlightActorDeformation::compile(words.data(),words.size(),program)){
@@ -2911,7 +2913,7 @@ public:
         V firstPosition(positions[0].x,positions[0].y,positions[0].z);V distance=firstPosition-vec(context.camera);if(NorthlightGI::dot(distance,distance)>96*96)return;
         actorVerticesEvaluated+=replay.mesh().vertexCount;
         phase.next(1); // Copy current game texture; pure decode runs on the GI worker.
-        NorthlightGI::WorldMaterial material;material.albedo=V(.35f,.35f,.35f);material.alphaCutoff=std::max(0.f,replay.cutoff);
+        NorthlightGI::WorldMaterial material;material.albedo=V(.35f,.35f,.35f);material.alphaCutoff=replay.alphaMode==2?0.f:std::max(0.f,replay.cutoff);
         NorthlightActorTexture::Snapshot texture;
         auto uvProgram=actorUVPrograms.find(original);bool hasUV=uvProgram!=actorUVPrograms.end();
         if(sample&&hasUV)++actorTextureReads;
@@ -2920,7 +2922,7 @@ public:
         material.addressU=replay.addressU;material.addressV=replay.addressV;
         phase.next(2); // Immutable packet construction and queueing.
         NorthlightActorGeometry::Packet packet;packet.sharedMesh=replay.shared;if(!packet.sharedMesh)packet.mesh=replay.mesh();packet.position=program;
-        if(hasUV)packet.uv=uvProgram->second;packet.hasUV=hasUV;packet.alphaTest=replay.cutoff>=0;
+        if(hasUV)packet.uv=uvProgram->second;packet.hasUV=hasUV;packet.alphaTest=replay.cutoff>=0&&replay.alphaMode!=2;
         packet.elements.assign(elements,elements+n);std::memcpy(packet.constants.data(),replay.constants,sizeof replay.constantStorage);std::memcpy(packet.inverseView.data(),context.inverseView,64);
         packet.material=std::move(material);packet.texture=std::move(texture);actorJob->packets.push_back(std::move(packet));++actorDraws;
         if(sample&&NorthlightRenderThreadProbe::profiling())try{replayGiPacked.push_back(&replay);}catch(...){} /* capture waste (RenderProfile) */
@@ -3151,6 +3153,19 @@ public:
         if(alpha){if(FAILED(d->GetRenderState(D3DRS_ALPHAREF,&ref))||FAILED(d->GetRenderState(D3DRS_ALPHAFUNC,&alphaFunc)))return;}
         else if(sample)alphaStateQueriesSkipped+=2;
         if(alpha&&alphaFunc!=D3DCMP_GREATER&&alphaFunc!=D3DCMP_GREATEREQUAL)return;
+        float shaderCutoff=-1;unsigned alphaMode=0;
+        if(!alpha){
+            NorthlightDrawSnapshot::Ref<IDirect3DPixelShader9> pixel;
+            if(FAILED(d->GetPixelShader(pixel.out())))return;
+            const auto it=fogShaders.find(pixel.p);
+            if(it!=fogShaders.end()&&it->second.alpha.discard){
+                const auto& mask=it->second.alpha;
+                if(!mask.known||!metadata.color0W){if(sample)++shaderAlphaRejected;return;}
+                float value[4];if(FAILED(d->GetPixelShaderConstantF(mask.ref,value,1)))return;
+                shaderCutoff=value[mask.component];if(!std::isfinite(shaderCutoff)||shaderCutoff<0||shaderCutoff>1){if(sample)++shaderAlphaRejected;return;}
+                alphaMode=unsigned(mask.mode);if(sample)++shaderAlphaCaptured;
+            }
+        }
         // Validate the main camera before touching model buffers. Full constant
         // banks are copied only for snapshots that survive range/budget checks.
         phase.next(CaptureProjection);fate.reason=NorthlightShadowFate::Projection;
@@ -3197,11 +3212,11 @@ public:
         },sample?&constantEpochProfile:nullptr,constantSelfCheck,constantSelfCheckState))return;
         if(sample){capturedSM1Draws+=metadata.sm1;capturedRelativeDraws+=usage.relativeFloat;}
         phase.next(CaptureMaterial);fate.reason=NorthlightShadowFate::Material;
-        if(FAILED(d->GetTexture(0,&p->texture))||(alpha&&!p->texture))return;
+        if(FAILED(d->GetTexture(0,&p->texture))||((alpha||alphaMode==1)&&!p->texture))return;
         if(FAILED(d->GetSamplerState(0,D3DSAMP_ADDRESSU,&p->addressU))||FAILED(d->GetSamplerState(0,D3DSAMP_ADDRESSV,&p->addressV)))return;
         if(p->addressU<D3DTADDRESS_WRAP||p->addressU>D3DTADDRESS_CLAMP||p->addressV<D3DTADDRESS_WRAP||p->addressV>D3DTADDRESS_CLAMP)return;
         phase.next(CaptureFinalize);
-        p->cutoff=alpha?(float(ref)+(alphaFunc==D3DCMP_GREATER?.5f:0.f))/255.f:-1.f;
+        p->cutoff=alpha?(float(ref)+(alphaFunc==D3DCMP_GREATER?.5f:0.f))/255.f:shaderCutoff;p->alphaMode=alphaMode;
         p->type=type;p->base=0;p->min=0;p->vertices=p->mesh().vertexCount;p->start=0;p->count=count;p->indexed=indexed;
         if(sample){if(priority){++skinnedAccepted;acceptedSkinnedBytes+=p->mesh().byteSize();}else acceptedOtherBytes+=p->mesh().byteSize();}
         p->constantGroup=replays.empty()?0:replays.back()->constantGroup+

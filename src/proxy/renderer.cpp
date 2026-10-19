@@ -1558,12 +1558,14 @@ private:
         IDirect3DBaseTexture9* container=nullptr;
         if(destination&&FAILED(destination->GetContainer(__uuidof(IDirect3DBaseTexture9),reinterpret_cast<void**>(&container))))container=nullptr;
         struct Drop{IDirect3DBaseTexture9* p;~Drop(){if(p)p->Release();}} dropContainer{container};
-        /* The layer's colour target copied into a texture (the game's glow copy, ffxGlow 1): allowed, the pending draws stay deferred. The copy then holds the world
-           without them (they replay at B, after the glow passes), so they get no game glow; a depth source, a copy into the target or depth, or into a non-texture
-           surface (GetRenderTargetData into system memory) is still the Copy hazard. */
+        // Include all preceding translucent draws in the native glow copy. Leaving them queued
+        // made bloom depend on which earlier resource boundary happened to drain the layer.
         D3DSURFACE_DESC destDesc={};
         if(container&&source&&source==spell.target()&&!mine(destination)&&SUCCEEDED(destination->GetDesc(&destDesc))&&destDesc.Pool==D3DPOOL_DEFAULT){ /* a default-pool texture level only: not a managed or system-memory one (GetRenderTargetData) */
-            ++spellCopiesAllowed;spellGlowFrame=frame+1;spellGlowTex=static_cast<void*>(container);spellGlowPassN=0;spellTextureWrite(static_cast<void*>(container));return;
+            ++spellCopiesAllowed;spellGlowFrame=frame+1;spellGlowTex=static_cast<void*>(container);spellGlowPassN=0;
+            nameMaskRunEnd();
+            extensionWork("spell glow copy",[&]{ExtensionDevice::RawScope raw(*ext);spell.beforeColorCopy();});
+            spellSync();return;
         }
         if(mine(source)||mine(destination)){spellFlush(NorthlightSpellLayer::Reason::Copy,true,NorthlightSpellLayer::InPlaceKind::None,"copy",mine(source),mine(destination));return;}
         if(container)spellTextureWrite(static_cast<void*>(container));

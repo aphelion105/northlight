@@ -1,5 +1,5 @@
 {
-  "source_sha256": "8384136aed76da0449f7a6985e69321e36132e34e6023dc14d84df8a2e11672d",
+  "source_sha256": "a4402f8826a7c732ea53dba85732f0ddce8f10486adb677b090e2a22f02a2b3b",
   "game_launched": false,
   "device_created": false,
   "shaders": {
@@ -19,27 +19,27 @@
     },
     "LocalShadowPS": {
       "target": "ps_3_0",
-      "bytes": 568,
-      "sha256": "fac56df05d1a075c5fe0809708324b1d9b7acbba741909afe25c943bc445660a",
-      "static_instruction_slots": 26,
+      "bytes": 576,
+      "sha256": "8e1b93941800b562a027328d2a03ec59f3e5b0ada0c1a2e81010a7f0c61c5f30",
+      "compiler": "Microsoft d3dcompiler_47 IEEE strict",
+      "static_instruction_slots": 24,
       "temporary_registers": 2,
       "samplers": [
         0
       ],
       "instructions": {
-        "mul": 2,
+        "mul": 3,
         "add": 5,
-        "mov": 6,
+        "mov": 3,
         "dp3": 1,
         "texkill": 2,
-        "cmp": 1,
         "if": 1,
         "texld": 1,
-        "else": 1,
+        "cmp": 2,
         "endif": 1,
         "rcp": 1
       },
-      "cube_instruction_extra_slots": 0
+      "source_sha256": "a4402f8826a7c732ea53dba85732f0ddce8f10486adb677b090e2a22f02a2b3b"
     },
     "LocalLighting": {
       "target": "ps_3_0",
