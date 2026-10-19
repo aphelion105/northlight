@@ -76,6 +76,17 @@ class MountPatch(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'No proven'):
                 build(source, cache(), Path(folder))
 
+    def test_model_id_aliases_share_the_same_patched_file(self):
+        source, _ = assets(replacement=True)
+        display = bytearray(source.extra['dbfilesclient\\creaturedisplayinfo.dbc'])
+        struct.pack_into('<I', display, 20+2*64+4, 99)
+        source.extra['dbfilesclient\\creaturedisplayinfo.dbc'] = bytes(display)
+        models = bytearray(source.extra['dbfilesclient\\creaturemodeldata.dbc'])
+        struct.pack_into('<I', models, 20+112+8, 1)
+        source.extra['dbfilesclient\\creaturemodeldata.dbc'] = bytes(models)
+        rows, _ = mount_models(source, creature_cache(cache()))
+        self.assertEqual(rows['creature\\real_mount.m2']['replacement_colors'], [123])
+
     def test_mount_rate_enable_and_original_assets_are_preserved(self):
         source, particle = assets()
         original_dbc = dict(source.extra)

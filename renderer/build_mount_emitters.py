@@ -75,10 +75,13 @@ def mount_models(assets, cache):
             if row[71+i] == 6 and row[95+i] == 78 and 0 < row[110+i] < 0x80000000:
                 entries[row[110+i]].append(row[0])
     display_by_id, model_by_id = {r[0]:r for r in displays}, {r[0]:r for r in models}
+    def model_path(row):
+        path = string(names, row[2]).lower().replace('/', '\\')
+        return path[:-4]+'.m2' if path.endswith('.mdx') else path
     colors = collections.defaultdict(set)
     for row in displays:
-        if row[13]:
-            colors[row[1]].add(row[13])
+        if row[13] and row[1] in model_by_id:
+            colors[model_path(model_by_id[row[1]])].add(row[13])
     candidates, missing = {}, {}
     for entry, spells in sorted(entries.items()):
         if entry not in cache:
@@ -90,15 +93,13 @@ def mount_models(assets, cache):
             if not model:
                 missing[entry] = 'Display/model ID absent in this client'
                 continue
-            path = string(names, model[2]).lower().replace('/', '\\')
-            if path.endswith('.mdx'):
-                path = path[:-4]+'.m2'
+            path = model_path(model)
             if not path.startswith('creature\\') or not path.endswith('.m2') or any(p in ('.','..') for p in path.split('\\')):
                 missing[entry] = 'Unsupported mount model path'
                 continue
             item = candidates.setdefault(path, {'references': [], 'replacement_colors': set()})
             item['references'].append({'creature':entry, 'display':display, 'spells':sorted(set(spells))})
-            item['replacement_colors'].update(colors[model[0]])
+            item['replacement_colors'].update(colors[path])
     for item in candidates.values():
         item['replacement_colors'] = sorted(item['replacement_colors'])
     return candidates, missing
