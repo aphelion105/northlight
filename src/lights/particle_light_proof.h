@@ -51,7 +51,8 @@ inline bool initialized(const NorthlightActorDeformation::Program& p){
     return p.positionRegister<33&&(temp[p.positionRegister]&p.outputMask)==p.outputMask;
 }
 inline bool compileVertex(const Word* code,size_t words,unsigned family,Vertex& out){
-    out={};if(!code||words<2||words>65536||(code[0]!=0xfffe0200u&&code[0]!=0xfffe0300u))return false;
+    out={};try{
+    if(!code||words<2||words>65536||(code[0]!=0xfffe0200u&&code[0]!=0xfffe0300u))return false;
     if(family!=NorthlightM2Family::kParticle&&family!=NorthlightM2Family::kParticleUnlit&&family!=NorthlightM2Family::kModel)return false;
     std::uint64_t hash=14695981039346656037ull;const auto* bytes=reinterpret_cast<const unsigned char*>(code);
     for(size_t i=0;i<words*4;++i)hash=(hash^bytes[i])*1099511628211ull;
@@ -61,11 +62,12 @@ inline bool compileVertex(const Word* code,size_t words,unsigned family,Vertex& 
        !NorthlightActorDeformation::compile(code,words,next.uv,true,2,5)||
        !initialized(next.color)||!initialized(next.uv))return false;
     next.valid=true;out=std::move(next);return true;
+    }catch(...){out={};return false;}
 }
 inline bool evaluateVertex(const Vertex& p,const Four inputs[16],const float* constants,Four& color,float (&uv)[2]){
     color={};uv[0]=uv[1]=0;if(!p.valid||!inputs||!constants)return false;Four c,t;
-    if(!NorthlightActorDeformation::evaluateFast(p.color,inputs,constants,c)||
-       !NorthlightActorDeformation::evaluateFast(p.uv,inputs,constants,t))return false;
+    if(!NorthlightActorDeformation::evaluateFast<true>(p.color,inputs,constants,c)||
+       !NorthlightActorDeformation::evaluateFast<true>(p.uv,inputs,constants,t))return false;
     // A shader-model-dependent COLOR clamp must never create an inferred tint.
     for(float v:c)if(!std::isfinite(v)||v<0||v>1)return false;
     color=c;uv[0]=t[0];uv[1]=t[1];return true;
@@ -85,7 +87,7 @@ struct Expressions {
     bool value(unsigned id,float& v)const {if(!id||nodes[id].op!=Literal)return false;std::memcpy(&v,&nodes[id].a,4);return true;}
     unsigned mul(unsigned a,unsigned b){
         if(!a||!b)return 0;float x=0,y=0;const bool ax=value(a,x),by=value(b,y);
-        if(ax&&by)return literal(x*y);if((ax&&x==0)||(by&&y==0))return literal(0);if(ax&&x==1)return b;if(by&&y==1)return a;return node(Mul,a,b);
+        if(ax&&by)return literal(x*y);if(ax&&x==1)return b;if(by&&y==1)return a;return node(Mul,a,b);
     }
     unsigned add(unsigned a,unsigned b){
         if(!a||!b)return 0;float x=0,y=0;const bool ax=value(a,x),by=value(b,y);
@@ -114,7 +116,8 @@ struct Expressions {
 };
 } // namespace detail
 inline bool compilePixel(const Word* code,size_t words,Pixel& out){
-    out={};if(!code||words<2||words>4096||(code[0]!=0xffff0200u&&code[0]!=0xffff0300u))return false;
+    out={};try{
+    if(!code||words<2||words>4096||(code[0]!=0xffff0200u&&code[0]!=0xffff0300u))return false;
     using namespace NorthlightShadowShader;using namespace detail;
     const unsigned major=(code[0]>>8)&255;Expressions e;
     std::array<unsigned,4> temp[32]{},output{},definitions[224]{};
@@ -187,6 +190,7 @@ inline bool compilePixel(const Word* code,size_t words,Pixel& out){
         }
         for(unsigned c=0;c<4;++c)if(mask&(1u<<c))target[c]=result[c];
     }return false;
+    }catch(...){out={};return false;}
 }
 // Intrinsic shader RGBA before the proven native fog epilogue. Fog colour is
 // neither emitted light nor sampled texture; PS constants therefore do not enter.
