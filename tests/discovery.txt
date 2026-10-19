@@ -49,6 +49,7 @@ test_dxvk3_lock_flags.py
 test_effect_switches.py
 test_effects_buckets.py
 test_effects_cost_report.py
+test_emitter_patch.py
 test_emitter_pin_report.py
 test_entrypoints_isolated.py
 test_fast_memcmp.py
