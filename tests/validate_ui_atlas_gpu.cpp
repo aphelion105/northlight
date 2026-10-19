@@ -74,6 +74,7 @@ static std::vector<IDirect3DTexture9*> pressure(IDirect3DDevice9* d){
         result.push_back(t);}
     return result;
 }
+#include "ui_draw_diagnostic_scenarios.h"
 
 int main(int argc,char** argv){
     if(argc!=3&&argc!=4)return 2;
@@ -143,6 +144,7 @@ int main(int argc,char** argv){
             unsigned bad=readPixels(d,render,readback,path,3);errors+=bad;std::printf("ATLAS mode=%s fmt=%u pass=gpu badPixels=%u\n",streamed?"stream":"direct",fmt,bad);
             system->Release();gpu->Release();texture->Release();
         }
+        uiDrawScenarios(d,target,stream,std::string(argv[2])+"-uidraw-"+(streamed?"stream":"direct"));
         d->SetTexture(0,nullptr);render->Release();readback->Release();d->Release();
     }
     d3d->Release();DestroyWindow(window);FreeLibrary(module);

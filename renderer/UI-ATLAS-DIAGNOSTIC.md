@@ -94,3 +94,37 @@ armed by F12 at a matching atlas draw can fill this gap without periodic GPU
 readbacks. Neither texture upload code nor the game's UI rendering is changed
 by this diagnostic correction. The unsuccessful native backend attempt did
 not create a device, so it supplies no rendering comparison.
+
+## Original draw observation
+
+The same F12 action now arms a second, bounded observer: up to four different
+candidate atlas draws, over the next two frames and at most 8,192 draw probes.
+It runs immediately before the real game Draw call, after extension preparation,
+so the recorded backend state includes any restore error. Selection accepts
+either a bound actual atlas or a known mirrored atlas, preserving evidence of a
+texture-binding mismatch. `UIDRAW submit` logs the actual Draw HRESULT.
+
+Companion `-draw-N.draw.json` files record draw arguments, actual and known
+mirrored bindings, declaration/FVF, stream offsets/strides/frequencies, textures
+and all pixel-sampler states, selected render states, viewport/scissor and target
+descriptors. Shader words and float constants are binary companions. Referenced
+indices and up to 64 decoded UV samples per TEXCOORD element are in JSON; bounded
+VB/IB companions preserve exact input bytes. JSON distinguishes an unknown mirror
+slot from a known difference and records read/unlock HRESULTs, flags and origin.
+
+Limits per draw are a 4,096-vertex range, 12,288 indices and 256 KiB total VB/IB.
+UP payloads are copied during the call; buffered reads use a pinned VALID replay
+CPU copy or an explicit F12-only backend read lock with the existing backend's
+readback flags. Failed/unsupported reads stay unknown. Pins, locks and temporary
+COM references are released before the original Draw; no interface is retained
+between draws. The observer reads the backend under the existing device guard,
+without RawScope (which would erase mirror knowledge), setters or rendering.
+Allocation/IO failures never disable the renderer. Outside the armed window the
+draw wrapper takes one boolean branch and does no diagnostic device reads.
+
+The hidden-window regression checks all four draw kinds, negative BaseVertex,
+nonzero stream/StartIndex offsets, dynamic WRITEONLY buffers, UP payload bounds,
+valid-copy pin release, cache misses, arm expiry/caps, and known mirror mismatch.
+Python independently checks emitted byte slices, UVs, shader words/constants and
+JSON state. Int/bool shader constants, vertex textures and visible-pixel proof are
+outside this observer's scope.

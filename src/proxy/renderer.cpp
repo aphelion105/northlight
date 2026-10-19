@@ -233,6 +233,7 @@ static void logClientLatency(std::uint64_t frame,const char* reason){
 #include "shadow_blob_filter.h"
 #include "spell_layer.h"
 #include "particle_light_capture.h"
+#include "ui_draw_diagnostic.h"
 #include "shader_read_set.h"
 // The counter index of a raw extension method (the D3D calls line), ~0u if unknown.
 static unsigned rawMethodIndex(const char* name){for(unsigned i=0;i<ExtensionDevice::RawMethods;++i)if(!std::strcmp(ExtensionDevice::rawMethodName(i),name))return i;return ~0u;}
@@ -381,6 +382,7 @@ class Device final : public GuardedMirrorDevice {
     IDirect3DVertexShader9* triageVs=nullptr;IDirect3DPixelShader9* triagePs=nullptr;DWORD triageZw=0;float triageC3[4]={};unsigned triageDraws=0; /* most recent post-terrain draw rejected by zwrite or the c3/rows test while learning (identities only, never dereferenced) */
     bool failed = false, projectionValid = false, key10 = false, key12=false;
     unsigned atlasDiagnosticCaptures=0;
+    NorthlightUiDrawDiagnostic::Window uiDrawDiagnostic;
     // 0.3.200 (frame markers): diagnostics only, while northlight-frame-markers.txt exists in the game folder at device creation: two 40x40
     // squares at the left edge whose colour cycles with the frame number. E (upper) is filled right after the world effects, P (lower) right
     // before the real Present, so a screen recording shows which presented images went through the effects and the replay's Present, in order.
@@ -495,11 +497,35 @@ private:
             if(!CreateDirectoryW(directory,nullptr)&&GetLastError()!=ERROR_ALREADY_EXISTS){logf("UIATLAS capture directory failed error=%lu",GetLastError());return;}
             char folder[MAX_PATH*3]={};if(!WideCharToMultiByte(CP_UTF8,0,directory,-1,folder,sizeof folder,nullptr,nullptr))return;
             const std::string prefix=std::string(folder)+"/ui-atlas-"+std::to_string(GetCurrentProcessId())+"-"+std::to_string(GetTickCount());
+            uiDrawDiagnostic.arm(prefix,frame);
             ExtensionDevice::RawScope raw(*ext);
             const auto r=NorthlightAtlasDiagnostic::dump(ext,prefix,frame);
             const auto* core=NorthlightStream::activeCore.load();
             logf("UIATLAS capture frame=%u session=%u/4 captured=%u failed=%u knownTiles=%u sourceRawMismatch=%u rawGpuBadPixels=%u replayFailures=%llu prefix=%s",frame,atlasDiagnosticCaptures,r.captured,r.failed,r.knownTiles,r.rawMismatches,r.pixelMismatches,core?(unsigned long long)NorthlightStream::get(core->q.stats.replayFailures):0,prefix.c_str());
         }catch(...){logf("UIATLAS capture failed (allocation/exception); renderer continues");}
+    }
+    void captureOriginalUiDraw()noexcept{
+        if(!diagnostics()||!uiDrawDiagnostic.probe(frame))return;
+        try{
+            // Read the backend directly under the draw's existing Device guard.
+            // RawScope would invalidate the mirror before we could compare it.
+            auto* backend=ext->real;NorthlightUiDrawDiagnostic::Ref<IDirect3DBaseTexture9> texture;
+            const HRESULT hr=backend->GetTexture(0,texture.out());
+            const void* atlas=SUCCEEDED(hr)&&NorthlightAtlasProof::cache().find(texture.p)?texture.p:nullptr;
+            if(!atlas&&mirrorState.textureKnown[0]&&NorthlightAtlasProof::cache().find(mirrorState.textures[0]))atlas=mirrorState.textures[0];
+            if(!uiDrawDiagnostic.claim(atlas,frame))return;
+            const std::string prefix=uiDrawDiagnostic.prefix+"-draw-"+std::to_string(uiDrawDiagnostic.captured-1);
+            const bool ok=NorthlightUiDrawDiagnostic::capture(backend,mirrorState,spellArgs,prefix,frame,atlas);
+            logf("UIDRAW capture frame=%u index=%u ok=%u atlas=%p prefix=%s",frame,uiDrawDiagnostic.captured-1,unsigned(ok),atlas,prefix.c_str());
+        }catch(...){uiDrawDiagnostic.left=0;logf("UIDRAW capture failed (allocation/exception); renderer continues");}
+    }
+    template<class Draw> HRESULT originalUiDraw(Draw draw){
+        if(!uiDrawDiagnostic.left)return draw();
+        const unsigned before=uiDrawDiagnostic.captured;
+        captureOriginalUiDraw();
+        const HRESULT hr=draw();
+        if(uiDrawDiagnostic.captured!=before)logf("UIDRAW submit frame=%u index=%u HRESULT=0x%08lx",frame,uiDrawDiagnostic.captured-1,(unsigned long)hr);
+        return hr;
     }
     // 0.3.154: the per-draw timing scopes; off on drawGate U frames (gateUntimed needs RenderProfile).
     bool sampledDrawTimers()const{return sampled()&&!gateUntimed;}
@@ -2644,20 +2670,20 @@ public:
     }
     // 0.3.187: the four draw entry points share drawHook(); each passes its capture and its real draw.
     HRESULT STDMETHODCALLTYPE DrawPrimitive(D3DPRIMITIVETYPE t,UINT start,UINT count) override { Guard mirrorLock(mirrorState.gate);
-        auto draw=[&]{return ext->DrawPrimitive(t,start,count);};
-        if(spellOn||particleOn)spellArgs=NorthlightSpellLayer::DrawArgs::primitive(t,start,count);
+        auto draw=[&]{return originalUiDraw([&]{return ext->DrawPrimitive(t,start,count);});};
+        if(spellOn||particleOn||uiDrawDiagnostic.left)spellArgs=NorthlightSpellLayer::DrawArgs::primitive(t,start,count);
         return drawHook(t,count,[&](IDirect3DVertexShader9* vs){world->capture(t,0,0,0,start,count,false,vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame));captureWater(vs,NorthlightWaterRenderer::NoUserPointer,draw);},draw);}
     HRESULT STDMETHODCALLTYPE DrawIndexedPrimitive(D3DPRIMITIVETYPE t,INT base,UINT min,UINT vertices,UINT start,UINT count) override { Guard mirrorLock(mirrorState.gate);
-        auto draw=[&]{return ext->DrawIndexedPrimitive(t,base,min,vertices,start,count);};
-        if(spellOn||particleOn)spellArgs=NorthlightSpellLayer::DrawArgs::indexed(t,base,min,vertices,start,count);
+        auto draw=[&]{return originalUiDraw([&]{return ext->DrawIndexedPrimitive(t,base,min,vertices,start,count);});};
+        if(spellOn||particleOn||uiDrawDiagnostic.left)spellArgs=NorthlightSpellLayer::DrawArgs::indexed(t,base,min,vertices,start,count);
         return drawHook(t,count,[&](IDirect3DVertexShader9* vs){world->capture(t,base,min,vertices,start,count,true,vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame));captureWater(vs,NorthlightWaterRenderer::NoUserPointer,draw);},draw);}
     HRESULT STDMETHODCALLTYPE DrawPrimitiveUP(D3DPRIMITIVETYPE t,UINT count,const void* data,UINT stride) override { Guard mirrorLock(mirrorState.gate);
-        auto draw=[&]{return ext->DrawPrimitiveUP(t,count,data,stride);};
-        if(spellOn||particleOn)spellArgs=NorthlightSpellLayer::DrawArgs::primitiveUP(t,count,data,stride);
+        auto draw=[&]{return originalUiDraw([&]{return ext->DrawPrimitiveUP(t,count,data,stride);});};
+        if(spellOn||particleOn||uiDrawDiagnostic.left)spellArgs=NorthlightSpellLayer::DrawArgs::primitiveUP(t,count,data,stride);
         return drawHook(t,count,[&](IDirect3DVertexShader9* vs){world->captureUP(t,0,0,count,nullptr,D3DFMT_UNKNOWN,data,stride,false,vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame));captureWater(vs,NorthlightWaterRenderer::UserVertices,draw);},draw);}
     HRESULT STDMETHODCALLTYPE DrawIndexedPrimitiveUP(D3DPRIMITIVETYPE t,UINT min,UINT vertices,UINT count,const void* indices,D3DFORMAT fmt,const void* data,UINT stride) override { Guard mirrorLock(mirrorState.gate);
-        auto draw=[&]{return ext->DrawIndexedPrimitiveUP(t,min,vertices,count,indices,fmt,data,stride);};
-        if(spellOn||particleOn)spellArgs=NorthlightSpellLayer::DrawArgs::indexedUP(t,min,vertices,count,indices,fmt,data,stride);
+        auto draw=[&]{return originalUiDraw([&]{return ext->DrawIndexedPrimitiveUP(t,min,vertices,count,indices,fmt,data,stride);});};
+        if(spellOn||particleOn||uiDrawDiagnostic.left)spellArgs=NorthlightSpellLayer::DrawArgs::indexedUP(t,min,vertices,count,indices,fmt,data,stride);
         return drawHook(t,count,[&](IDirect3DVertexShader9* vs){world->captureUP(t,min,vertices,count,indices,fmt,data,stride,true,vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame));captureWater(vs,NorthlightWaterRenderer::UserVerticesAndIndices,draw);},draw);}
 };
 
