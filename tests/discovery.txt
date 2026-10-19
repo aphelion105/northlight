@@ -47,6 +47,7 @@ test_effects_buckets.py
 test_effects_cost_report.py
 test_emitter_pin_report.py
 test_entrypoints_isolated.py
+test_equipment_emitter_patch.py
 test_equipment_light_proof_client.py
 test_equipment_lights.py
 test_fast_memcmp.py
