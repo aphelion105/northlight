@@ -1,38 +1,38 @@
 {
-  "source_sha256": "bb0e1b8a02a16250c86b14f03b1b3fe6cdc424236408bc3f1eb502b53fce489e",
-  "compiler": "Wine d3dcompiler_47 D3DCompile",
+  "source_sha256": "ce16d46e68854aadfa1461b7e1b5b8e7caa09657089153a86cb67e80903851ba",
+  "compiler": "Microsoft d3dcompiler_47 IEEE strict",
   "game_launched": false,
   "shaders": {
     "WorldNormals": {
       "target": "ps_3_0",
-      "bytes": 7216,
-      "sha256": "0e7f19ae9b86eec736665d3b990e94c7ae81015744832921550ec140447ba837",
-      "static_instruction_slots": 483,
-      "temporary_registers": 31,
+      "bytes": 4952,
+      "sha256": "625cd9190b0c3a3abc43b5622a1fe648ca1932298ec1be43466ddb3506292062",
+      "static_instruction_slots": 305,
+      "temporary_registers": 23,
       "samplers": [
         0,
         1
       ],
       "instructions": {
-        "mul": 58,
-        "frc": 2,
-        "add": 103,
-        "max": 19,
-        "min": 11,
-        "mov": 128,
-        "texldl": 6,
-        "rcp": 18,
-        "cmp": 47,
-        "if": 6,
+        "mul": 70,
+        "frc": 3,
+        "add": 79,
+        "max": 8,
+        "mov": 27,
+        "min": 8,
+        "texldl": 7,
+        "rcp": 13,
+        "cmp": 34,
+        "if": 3,
+        "else": 3,
         "rep": 3,
-        "break": 3,
-        "else": 6,
-        "endif": 6,
-        "abs": 18,
         "dp3": 14,
         "rsq": 5,
-        "endrep": 3
-      }
+        "endrep": 3,
+        "endif": 3
+      },
+      "source_sha256": "ce16d46e68854aadfa1461b7e1b5b8e7caa09657089153a86cb67e80903851ba",
+      "compiler": "Microsoft d3dcompiler_47 IEEE strict"
     },
     "WorldLighting": {
       "target": "ps_3_0",
@@ -67,7 +67,9 @@
         "break": 3,
         "dp2add": 1,
         "endrep": 2
-      }
+      },
+      "source_sha256": "bb0e1b8a02a16250c86b14f03b1b3fe6cdc424236408bc3f1eb502b53fce489e",
+      "compiler": "Wine d3dcompiler_47 D3DCompile"
     },
     "ActorShadow": {
       "target": "ps_3_0",
@@ -101,7 +103,9 @@
         "break": 3,
         "dp2add": 2,
         "endrep": 2
-      }
+      },
+      "source_sha256": "bb0e1b8a02a16250c86b14f03b1b3fe6cdc424236408bc3f1eb502b53fce489e",
+      "compiler": "Wine d3dcompiler_47 D3DCompile"
     },
     "ActorTiles": {
       "target": "ps_3_0",
@@ -120,7 +124,9 @@
         "mov": 50,
         "texldl": 16,
         "min": 16
-      }
+      },
+      "source_sha256": "bb0e1b8a02a16250c86b14f03b1b3fe6cdc424236408bc3f1eb502b53fce489e",
+      "compiler": "Wine d3dcompiler_47 D3DCompile"
     },
     "WorldGI": {
       "target": "ps_3_0",
@@ -159,14 +165,16 @@
         "rsq": 1,
         "dp4": 6,
         "endrep": 1
-      }
+      },
+      "source_sha256": "bb0e1b8a02a16250c86b14f03b1b3fe6cdc424236408bc3f1eb502b53fce489e",
+      "compiler": "Wine d3dcompiler_47 D3DCompile"
     },
     "WorldFog": {
       "target": "ps_3_0",
-      "bytes": 8820,
-      "sha256": "0436709c5843d1179287da4efc946f4a448f7d233e81ac2068fe54bc47432f6c",
-      "static_instruction_slots": 512,
-      "temporary_registers": 29,
+      "bytes": 6956,
+      "sha256": "67cabea3e0cc85ab180b1902cfa0038189096bc999882e2317e8f2bd71df70de",
+      "static_instruction_slots": 390,
+      "temporary_registers": 21,
       "samplers": [
         1,
         3,
@@ -175,67 +183,67 @@
         15
       ],
       "instructions": {
-        "add": 104,
-        "cmp": 34,
-        "mov": 127,
-        "if": 8,
-        "mul": 109,
-        "frc": 5,
-        "max": 23,
-        "min": 9,
-        "texldl": 8,
+        "mov": 38,
+        "if": 5,
+        "else": 3,
+        "mul": 116,
+        "frc": 4,
+        "add": 95,
+        "max": 10,
+        "min": 7,
+        "texldl": 11,
         "rcp": 12,
-        "else": 8,
-        "endif": 8,
+        "cmp": 34,
+        "endif": 5,
         "dp3": 3,
-        "rsq": 2,
-        "log": 1,
-        "exp": 2,
+        "rsq": 1,
         "mad": 4,
-        "abs": 3,
-        "rep": 2,
-        "break": 3,
+        "pow": 1,
+        "rep": 1,
+        "break": 1,
         "dp4": 5,
-        "endrep": 2
-      }
+        "exp": 1,
+        "dp2add": 2,
+        "endrep": 1
+      },
+      "source_sha256": "ce16d46e68854aadfa1461b7e1b5b8e7caa09657089153a86cb67e80903851ba",
+      "compiler": "Microsoft d3dcompiler_47 IEEE strict"
     },
     "FogBlur": {
       "target": "ps_3_0",
-      "bytes": 3400,
-      "sha256": "b48b12488d6233e53031b9f947e643a47d5892fc7fd478356a0a08037a3a1e78",
-      "static_instruction_slots": 199,
-      "temporary_registers": 12,
+      "bytes": 5508,
+      "sha256": "a058d8c3d631ff6f7b9a0f5d8a7c9a5290e927b673ef6bb0aabbe1af06ff005a",
+      "static_instruction_slots": 347,
+      "temporary_registers": 9,
       "samplers": [
         1,
         9,
         11
       ],
       "instructions": {
-        "mul": 28,
-        "frc": 3,
-        "add": 40,
-        "rcp": 13,
-        "max": 12,
-        "min": 7,
-        "mov": 41,
-        "texldl": 5,
-        "cmp": 20,
-        "if": 3,
-        "else": 3,
-        "endif": 3,
-        "rep": 1,
-        "break": 1,
-        "abs": 3,
-        "exp": 1,
-        "endrep": 1
-      }
+        "mul": 77,
+        "frc": 7,
+        "add": 91,
+        "rcp": 16,
+        "max": 15,
+        "mov": 19,
+        "min": 9,
+        "texldl": 17,
+        "if": 6,
+        "else": 6,
+        "cmp": 44,
+        "endif": 6,
+        "exp": 5
+      },
+      "source_sha256": "ce16d46e68854aadfa1461b7e1b5b8e7caa09657089153a86cb67e80903851ba",
+      "compiler": "Microsoft d3dcompiler_47 IEEE strict"
     },
     "FogClouds": {
       "target": "ps_3_0",
-      "bytes": 8648,
-      "sha256": "a7952daac14f844119501a3fd632d481f2e84408bd6d10c7c2721a8977657176",
-      "static_instruction_slots": 511,
-      "temporary_registers": 30,
+      "bytes": 6972,
+      "sha256": "8be74a36f112075088b5caa97a1132a1f77c113b4bb5fd6c7dc60333670a1ae1",
+      "static_instruction_slots": 396,
+      "temporary_registers": 21,
       "samplers": [
         1,
         3,
@@ -244,28 +252,30 @@
         14
       ],
       "instructions": {
-        "mul": 106,
-        "frc": 5,
-        "add": 97,
-        "max": 23,
-        "min": 10,
-        "mov": 133,
-        "texldl": 9,
-        "cmp": 33,
-        "if": 8,
+        "mul": 116,
+        "frc": 4,
+        "add": 91,
+        "max": 11,
+        "mov": 44,
+        "min": 8,
+        "texldl": 12,
+        "if": 5,
+        "else": 4,
         "rcp": 12,
-        "else": 8,
-        "endif": 8,
+        "cmp": 33,
+        "endif": 5,
         "dp3": 2,
-        "rsq": 2,
-        "abs": 3,
+        "rsq": 1,
         "mad": 7,
-        "rep": 2,
-        "break": 3,
+        "rep": 1,
+        "break": 1,
         "dp4": 5,
         "exp": 2,
-        "endrep": 2
-      }
+        "dp2add": 2,
+        "endrep": 1
+      },
+      "source_sha256": "ce16d46e68854aadfa1461b7e1b5b8e7caa09657089153a86cb67e80903851ba",
+      "compiler": "Microsoft d3dcompiler_47 IEEE strict"
     },
     "FogTemporal": {
       "target": "ps_3_0",
@@ -293,7 +303,9 @@
         "else": 7,
         "endif": 7,
         "abs": 2
-      }
+      },
+      "source_sha256": "bb0e1b8a02a16250c86b14f03b1b3fe6cdc424236408bc3f1eb502b53fce489e",
+      "compiler": "Wine d3dcompiler_47 D3DCompile"
     },
     "LocalDirect": {
       "target": "ps_3_0",
@@ -322,45 +334,47 @@
         "endif": 2,
         "dp3": 16,
         "rsq": 8
-      }
+      },
+      "source_sha256": "bb0e1b8a02a16250c86b14f03b1b3fe6cdc424236408bc3f1eb502b53fce489e",
+      "compiler": "Wine d3dcompiler_47 D3DCompile"
     },
     "RemovalSmooth": {
       "target": "ps_3_0",
-      "bytes": 4496,
-      "sha256": "40980bd08bf15ba11a8754ab2a3497eb10e92adda4aa94e20755b4c65e5c3959",
-      "static_instruction_slots": 269,
-      "temporary_registers": 24,
+      "bytes": 3936,
+      "sha256": "03dc46f9c27e90c304c68cccabde3059cd8c107d712743e76dc64170325b43a8",
+      "static_instruction_slots": 222,
+      "temporary_registers": 18,
       "samplers": [
         0,
         1,
         8,
         10,
         12,
-        14
+        14,
+        15
       ],
       "instructions": {
-        "mul": 49,
+        "mul": 55,
         "frc": 4,
-        "add": 38,
-        "rcp": 23,
-        "mov": 67,
-        "texldl": 12,
+        "add": 43,
+        "rcp": 19,
         "max": 15,
+        "mov": 11,
         "min": 7,
-        "cmp": 7,
-        "if": 4,
+        "texldl": 18,
+        "cmp": 8,
+        "if": 2,
         "mad": 2,
-        "log": 1,
-        "exp": 2,
+        "pow": 1,
         "rep": 1,
-        "break": 1,
-        "else": 4,
-        "endif": 4,
-        "rsq": 1,
-        "dp3": 1,
-        "abs": 2,
-        "endrep": 1
-      }
+        "rsq": 2,
+        "dp3": 2,
+        "exp": 2,
+        "endrep": 1,
+        "endif": 2
+      },
+      "source_sha256": "ce16d46e68854aadfa1461b7e1b5b8e7caa09657089153a86cb67e80903851ba",
+      "compiler": "Microsoft d3dcompiler_47 IEEE strict"
     },
     "TemporalLight": {
       "target": "ps_3_0",
@@ -391,7 +405,9 @@
         "rsq": 1,
         "else": 4,
         "endif": 4
-      }
+      },
+      "source_sha256": "bb0e1b8a02a16250c86b14f03b1b3fe6cdc424236408bc3f1eb502b53fce489e",
+      "compiler": "Wine d3dcompiler_47 D3DCompile"
     },
     "LocalFog": {
       "target": "ps_3_0",
@@ -419,7 +435,9 @@
         "dp3": 9,
         "rsq": 10,
         "abs": 8
-      }
+      },
+      "source_sha256": "bb0e1b8a02a16250c86b14f03b1b3fe6cdc424236408bc3f1eb502b53fce489e",
+      "compiler": "Wine d3dcompiler_47 D3DCompile"
     },
     "LocalFogCombine": {
       "target": "ps_3_0",
@@ -439,7 +457,9 @@
         "mul": 5,
         "log": 1,
         "exp": 1
-      }
+      },
+      "source_sha256": "bb0e1b8a02a16250c86b14f03b1b3fe6cdc424236408bc3f1eb502b53fce489e",
+      "compiler": "Wine d3dcompiler_47 D3DCompile"
     },
     "SourceVisibilityPS": {
       "target": "ps_3_0",
@@ -465,14 +485,16 @@
         "max": 2,
         "else": 2,
         "endif": 2
-      }
+      },
+      "source_sha256": "bb0e1b8a02a16250c86b14f03b1b3fe6cdc424236408bc3f1eb502b53fce489e",
+      "compiler": "Wine d3dcompiler_47 D3DCompile"
     },
     "WorldComposite": {
       "target": "ps_3_0",
-      "bytes": 8808,
-      "sha256": "fc06fed50c36df5c1abb6bc83af2ccb8530b547e03cdf624b02fc9ed669d08ef",
-      "static_instruction_slots": 512,
-      "temporary_registers": 30,
+      "bytes": 7232,
+      "sha256": "d7c9d74e7a39881ddafb28fc7fe78216119291d01ecad4aff7ca47bc678aeb3c",
+      "static_instruction_slots": 415,
+      "temporary_registers": 24,
       "samplers": [
         0,
         1,
@@ -482,33 +504,35 @@
         10,
         11,
         12,
-        13
+        13,
+        15
       ],
       "instructions": {
-        "texld": 4,
         "mul": 70,
         "frc": 4,
-        "add": 87,
-        "max": 23,
-        "min": 12,
-        "mov": 140,
-        "cmp": 45,
-        "if": 8,
-        "texldl": 9,
-        "rcp": 21,
-        "else": 8,
-        "endif": 8,
-        "mad": 16,
-        "log": 2,
-        "exp": 6,
-        "dp3": 3,
+        "add": 83,
+        "max": 14,
+        "mov": 33,
+        "min": 8,
+        "texld": 4,
+        "if": 9,
+        "else": 4,
+        "rcp": 17,
+        "cmp": 46,
+        "texldl": 20,
+        "endif": 9,
+        "mad": 22,
+        "pow": 2,
+        "dp3": 4,
         "rep": 1,
-        "break": 1,
-        "abs": 6,
+        "exp": 6,
+        "abs": 2,
         "endrep": 1,
-        "rsq": 3,
-        "dp2add": 3
-      }
+        "dp2add": 4,
+        "rsq": 3
+      },
+      "source_sha256": "ce16d46e68854aadfa1461b7e1b5b8e7caa09657089153a86cb67e80903851ba",
+      "compiler": "Microsoft d3dcompiler_47 IEEE strict"
     },
     "ShadowVS": {
       "target": "vs_3_0",
@@ -521,7 +545,9 @@
         "mul": 12,
         "add": 12,
         "mov": 7
-      }
+      },
+      "source_sha256": "bb0e1b8a02a16250c86b14f03b1b3fe6cdc424236408bc3f1eb502b53fce489e",
+      "compiler": "Wine d3dcompiler_47 D3DCompile"
     },
     "ShadowCacheVS": {
       "target": "vs_3_0",
@@ -534,7 +560,9 @@
         "mul": 12,
         "add": 12,
         "mov": 11
-      }
+      },
+      "source_sha256": "bb0e1b8a02a16250c86b14f03b1b3fe6cdc424236408bc3f1eb502b53fce489e",
+      "compiler": "Wine d3dcompiler_47 D3DCompile"
     },
     "ShadowPS": {
       "target": "ps_3_0",
@@ -550,7 +578,9 @@
         "add": 1,
         "texkill": 1,
         "mov": 1
-      }
+      },
+      "source_sha256": "bb0e1b8a02a16250c86b14f03b1b3fe6cdc424236408bc3f1eb502b53fce489e",
+      "compiler": "Wine d3dcompiler_47 D3DCompile"
     },
     "ShadowReplayPS": {
       "target": "ps_3_0",
@@ -566,7 +596,9 @@
         "add": 1,
         "texkill": 1,
         "mov": 1
-      }
+      },
+      "source_sha256": "ce16d46e68854aadfa1461b7e1b5b8e7caa09657089153a86cb67e80903851ba",
+      "compiler": "Microsoft d3dcompiler_47 IEEE strict"
     },
     "ShadowUnion": {
       "target": "ps_3_0",
@@ -591,7 +623,9 @@
         "max": 1,
         "else": 1,
         "endif": 1
-      }
+      },
+      "source_sha256": "bb0e1b8a02a16250c86b14f03b1b3fe6cdc424236408bc3f1eb502b53fce489e",
+      "compiler": "Wine d3dcompiler_47 D3DCompile"
     }
   }
 }

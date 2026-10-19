@@ -257,10 +257,11 @@ float4 AOBlur(float2 uv : TEXCOORD0) : COLOR0
     float planeScale = 2.0 / max(0.025, min(Options.y * 0.1, p.z * 0.002));
     float sumAO = 0.0;
     float sumWeight = 0.0;
-    [loop] for (int i = 0; i < 25; ++i)
+    // Visit the same 25 taps in row order without per-tap division/floor.
+    [loop] for(int y=0;y<5;++y)
+    [loop] for(int x=0;x<5;++x)
     {
-        float row = floor((i + 0.5) * 0.2);
-        float2 o = float2(i - row * 5.0 - 2.0, row - 2.0);
+        float2 o=float2(x-2,y-2);
         float2 tapUV = uv + o * tapStep;
         float2 quv = DepthTexelUV(tapUV, size);
         float qd = ReadDepth(quv);

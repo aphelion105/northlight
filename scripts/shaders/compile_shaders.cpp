@@ -3,10 +3,11 @@
 #include <d3dcompiler.h>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 int main(int argc, char **argv) {
-    if (argc != 5) {
-        std::fprintf(stderr, "Usage: compile_shaders.exe input.hlsl entry target output.bin\n");
+    if (argc != 5 && !(argc == 6 && std::strcmp(argv[5], "--native") == 0)) {
+        std::fprintf(stderr, "Usage: compile_shaders.exe input.hlsl entry target output.bin [--native]\n");
         return 2;
     }
     FILE *input = std::fopen(argv[1], "rb");
@@ -26,7 +27,8 @@ int main(int argc, char **argv) {
     if (!compile) { std::free(source); FreeLibrary(compiler); return 4; }
     ID3DBlob *shader = nullptr, *diagnostics = nullptr;
     HRESULT result = compile(source, size, argv[1], nullptr, nullptr, argv[2], argv[3],
-        D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &shader, &diagnostics);
+        (argc == 6 ? D3DCOMPILE_ENABLE_BACKWARDS_COMPATIBILITY | D3DCOMPILE_IEEE_STRICTNESS
+                   : D3DCOMPILE_ENABLE_STRICTNESS) | D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &shader, &diagnostics);
     std::free(source);
     if (diagnostics) {
         std::fwrite(diagnostics->GetBufferPointer(), 1, diagnostics->GetBufferSize(), stderr);
