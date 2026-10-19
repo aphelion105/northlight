@@ -18,7 +18,7 @@ struct Model {
     uint64_t contentRevision=0;
     std::vector<Vertex> vertices;
     std::vector<uint32_t> indices;
-    // Prepared by the file worker, never converted in the render submission.
+    // Indices and compact alpha masks are prepared by the file worker.
     std::vector<uint16_t> uploadIndices16;
     std::vector<std::shared_ptr<const std::vector<uint8_t>>> uploadAlpha;
     std::shared_ptr<const Model> drawModel;
