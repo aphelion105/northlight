@@ -3178,7 +3178,7 @@ public:
         if(metadata.detailDoodad){
             ++detailCandidates;
             const unsigned vertices=indexed?vertexTotal:type==D3DPT_TRIANGLELIST?count*3:count+2;
-            if(!effects.shadows||!quality.actorShadows||count>8192||!detailBudget.room(vertices)){++detailBudgetRejected;return;}
+            if(!NorthlightQuality::grassShadowWork(quality,effects.shadows)||count>8192||!detailBudget.room(vertices)){++detailBudgetRejected;return;}
         }
         // 0.3.173 rigid memory: did the game draw a remembered prop? Before every capture rejection.
         if(!rigidDrawKeys.empty()&&rigidDrawKeys.contains(current,count))rigidMemoryDrawn(current,count);
