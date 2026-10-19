@@ -386,6 +386,13 @@ private:
         const bool audit=diag_;diag_=diag;   // the next frame records the audit state iff diagnostics are on now; switched on mid-frame: starts clean next frame
         if(audit&&diag&&frames%sampleEvery==1)runAudit();
         if(log&&frames%sampleEvery==0)cstreamLine(frames);   // existing counters only; keep the pipeline summary without per-call diagnostics
+        if(log&&diag&&frames%sampleEvery==0){
+            const auto& texture=NorthlightParticleTextures::cache();const auto& t=texture.counts;char line[640];
+            std::snprintf(line,sizeof line,"PTEX frame=%llu source=replay-cpu entries=%u bytes=%llu uploads=%llu retained=%llu hits=%llu misses=%llu partial=%llu failed=%llu unsupported=%llu large=%llu invalidations=%llu evictions=%llu releases=%llu",
+                (unsigned long long)frames,texture.size(),(unsigned long long)texture.bytes(),(unsigned long long)t.uploads,(unsigned long long)t.retained,
+                (unsigned long long)t.hits,(unsigned long long)t.misses,(unsigned long long)t.partial,(unsigned long long)t.failed,(unsigned long long)t.unsupported,
+                (unsigned long long)t.large,(unsigned long long)t.invalidations,(unsigned long long)t.evictions,(unsigned long long)t.releases);log(line);
+        }
         touched_.clear();std::fill(touchedFlag_.begin(),touchedFlag_.end(),false);
     }
     // Scalar slots set this frame must read back from the Target as set; a mismatch (a backend that normalizes) makes the slot sync-only for good.
@@ -504,8 +511,21 @@ private:
         if(current_)snapshots.release(current_);
         current_=s;if(s)playback_.emplace(*s);
     }
+    static void invalidateParticleWrite(const CommandHeader* h){
+        IUnknown* destination=nullptr;
+        switch((Cmd)h->id){
+        case Cmd::Device_UpdateSurface:destination=reinterpret_cast<const Args_Device_UpdateSurface*>(h+1)->dst_surface;break;
+        case Cmd::Device_UpdateTexture:destination=reinterpret_cast<const Args_Device_UpdateTexture*>(h+1)->pDestinationTexture;break;
+        case Cmd::Device_StretchRect:destination=reinterpret_cast<const Args_Device_StretchRect*>(h+1)->dst_surface;break;
+        case Cmd::Device_ColorFill:destination=reinterpret_cast<const Args_Device_ColorFill*>(h+1)->surface;break;
+        case Cmd::Texture_GenerateMipSubLevels:destination=reinterpret_cast<const Args_Texture_GenerateMipSubLevels*>(h+1)->self;break;
+        default:return;
+        }
+        invalidateParticleTexture(ProxyBase::of(destination));
+    }
     void execute(const CommandHeader* h){
         if(skipping_&&skipCommand(h))return;   // 0.3.200 (frame skip)
+        invalidateParticleWrite(h); // replay position, never the producer's future resource state
         Translator tr{core};
         if(dispatchGenerated(h,tr)){
             if(h->id==(std::uint16_t)Cmd::Device_SetRenderState){const auto* a=reinterpret_cast<const Args_Device_SetRenderState*>(h+1);if(diag_&&unsigned(a->State)<StreamState::kRS){auditRS_[a->State]=a->Value;note(unsigned(a->State));}}
@@ -521,7 +541,10 @@ private:
             return;
         }
         switch((Cmd)h->id){
-        case Cmd::Sync:{SyncCall* sc;std::memcpy(&sc,h+1,sizeof sc);if(!executeSync(*sc,tr))sc->done.store(2);return;}
+        case Cmd::Sync:{SyncCall* sc;std::memcpy(&sc,h+1,sizeof sc);
+            if(sc->id==Cmd::Device_GetRenderTargetData){auto& args=*static_cast<MethodTraits<Cmd::Device_GetRenderTargetData>::Tuple*>(sc->args);invalidateParticleTexture(ProxyBase::of(std::get<1>(args)));}
+            else if(sc->id==Cmd::Device_GetFrontBufferData){auto& args=*static_cast<MethodTraits<Cmd::Device_GetFrontBufferData>::Tuple*>(sc->args);invalidateParticleTexture(ProxyBase::of(std::get<1>(args)));}
+            if(!executeSync(*sc,tr))sc->done.store(2);return;}
         case Cmd::PollEventQuery:{
             const auto& request=*reinterpret_cast<const StreamQuery::PollRequest*>(h+1);
             auto* query=request.query;
