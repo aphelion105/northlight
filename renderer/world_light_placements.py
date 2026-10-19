@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Authored light placement discovery independent of renderable mesh coverage.
 
-Only ADT MDDF/MODF and the WMO doodads the game instantiates (MODR refs, MODS sets, MODD) establish instances.
+Only ADT MDDF/MODF (or the WDT MODF of a global-WMO map) and the WMO doodads the game instantiates (MODR refs, MODS sets, MODD) establish instances.
 No skin/triangle requirement, no fabricated lamps, no runtime/game clocks.
 Matrices use the same audited world-scene placement functions as FGS3.
 """
@@ -88,11 +88,23 @@ def discover(blob,read_wmo,source_label=''):
         if (2,uid) in seen:continue
         seen.add((2,uid));path=wmos[name_id]
         matrix,translation=placement(entry[2:5],entry[5:8],1.)
-        yield path,record(path,uid,2,matrix,translation)
-        doodads,sets,refs=read_wmo(path)
-        for index in doodad_indices(sets,len(doodads),refs,entry[15]):   # same selection as the client cache
-            name,pos,quat,scale=doodads[index]
-            if scale==0:continue
-            local=quaternion_matrix(quat,scale);rotation=matmul(matrix,local);offset=matvec(matrix,pos)
-            item=record(name,(uid<<32)|index,3,rotation,tuple(offset[i]+translation[i] for i in range(3)))
-            if item is not None:yield name,item
+        yield from building(path,uid,entry[15],matrix,translation,read_wmo)
+
+def building(path,uid,doodadset,matrix,translation,read_wmo):
+    """The WMO placement and its doodads (same selection as the client cache) at a given transform."""
+    yield path,record(path,uid,2,matrix,translation)
+    doodads,sets,refs=read_wmo(path)
+    for index in doodad_indices(sets,len(doodads),refs,doodadset):
+        name,pos,quat,scale=doodads[index]
+        if scale==0:continue
+        local=quaternion_matrix(quat,scale);rotation=matmul(matrix,local);offset=matvec(matrix,pos)
+        item=record(name,(uid<<32)|index,3,rotation,tuple(offset[i]+translation[i] for i in range(3)))
+        if item is not None:yield name,item
+
+def discover_global(wdt,read_wmo):
+    """Yield (canonical source asset, FGS3-shaped instance) for the one WMO of a global-WMO map (a read_wdt
+    result). As in the scene builder the frame has no 17066.67 offset: translation (-z, -x, y)."""
+    entry=wdt['modf']
+    if not wdt['global_wmo'] or not wdt['mwmo'] or entry is None:raise ValueError('Not a global WMO map')
+    matrix,_=placement(entry[2:5],entry[5:8],1.)
+    yield from building(wdt['mwmo'].replace('/','\\').lower(),entry[1],entry[15],matrix,(0.-entry[4],0.-entry[2],entry[3]),read_wmo)
