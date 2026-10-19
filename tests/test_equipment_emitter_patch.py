@@ -136,7 +136,14 @@ class EquipmentPatch(unittest.TestCase):
         self.assertAlmostEqual(sources(ActualTexture(), bytes(half))[0]['intensity'], .35*16384/32767)
         struct.pack_into('<B', half, particle+40, 3)
         self.assertAlmostEqual(sources(ActualTexture(), bytes(half))[0]['intensity'], .35)
-        for field, value, fmt in ((40,2,'<B'), (42,11,'<h'), (4,0x10,'<I')):
+        local = bytearray(blob)
+        struct.pack_into('<I', local, particle+4, 0x19)
+        following = sources(ActualTexture(), bytes(local))
+        self.assertEqual(following[0]['rgb'], (0,0,1))
+        self.assertEqual(following[0]['position'], (1,2,3))
+        self.assertEqual(following[0]['bone'], 0)
+        self.assertEqual(following[0]['particle_flags'], [0x19])
+        for field, value, fmt in ((40,2,'<B'), (42,11,'<h'), (4,0x8000,'<I')):
             bad = bytearray(blob)
             struct.pack_into(fmt, bad, particle+field, value)
             with self.assertRaisesRegex(ValueError, 'No proven'):

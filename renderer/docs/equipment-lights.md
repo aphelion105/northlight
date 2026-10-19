@@ -18,6 +18,11 @@ The [native light update](https://github.com/SatyPardus/wowdecomp/blob/b1c71b8bd
 transforms each light through its bone and scene view inverse. These are version
 3.3.5a/build 12340 references, not a later client's particle enum.
 
+Particle flag 0x10 is supported: the 12340 particle renderer applies the
+emitter transform at draw time, so the light follows the same original bone.
+For world-space particle trails the light approximates the current emitter
+anchor rather than illuminating every old particle separately.
+
 Every generated native record is read back with the existing track parser and
 every MPQ entry is reopened and byte-compared. Generated model binaries belong
 to the user's client and must not be committed or redistributed as source.

@@ -24,6 +24,7 @@ NATIVE_REFERENCE = 'https://github.com/SatyPardus/wowdecomp/blob/b1c71b8bd108823
 REFERENCES = [NATIVE_REFERENCE + 'README.md',
               NATIVE_REFERENCE + 'Engine/Source/Model2/M2Model.cpp#L7394',
               NATIVE_REFERENCE + 'Engine/Source/Model2/M2Model.cpp#L2513',
+              NATIVE_REFERENCE + 'Engine/Source/Services/ParticleSystem2.cpp#L804',
               NATIVE_REFERENCE + 'Engine/Source/Gx/Types.h#L23']
 
 
@@ -114,8 +115,11 @@ def sources(assets, blob):
             blend, emitter_type, replacement = unpack('<BBh', particle, 40)
             # 12340 CM2Model: particle 3 -> Gx NoAlphaAdd, 4 -> Gx Add;
             # particle 2 is ordinary alpha blending. See REFERENCES.
-            if blend not in (3, 4) or replacement not in (-1, 0) or flags & (0x10 | 0x8000 | 0x10000000):
-                raise ValueError('Unsupported blend, replacement colour, world-space, burst or multitexture')
+            # 12340 maps M2 flag 0x10 to emitter 0x200: particles follow
+            # the emitter transform at render time. This is suitable for a
+            # bone light, not a reason to exclude weapon flame/glow models.
+            if blend not in (3, 4) or replacement not in (-1, 0) or flags & (0x8000 | 0x10000000):
+                raise ValueError('Unsupported blend, replacement colour, burst or multitexture')
             if emitter_type not in (1, 2) or unpack('<I', particle, 24)[0] > 1 or unpack('<I', particle, 32)[0] > 1:
                 raise ValueError('Noncompact, model or child particle emitter')
             if not 0 <= bone < bones or texture >= len(textures):
@@ -156,12 +160,13 @@ def sources(assets, blob):
                 neighbour['rgb'], neighbour['intensity'] = tuple(v/power for v in combined), min(1., power)
                 neighbour['particles'].append(i)
                 neighbour['particle_blends'].append(blend)
+                neighbour['particle_flags'].append(flags)
                 if name not in neighbour['textures']:
                     neighbour['textures'].append(name)
                 continue
             result.append({'bone': bone, 'position': position, 'rgb': tuple(v/peak for v in rgb),
                            'intensity': intensity, 'start': .5, 'end': 8.,
-                           'particles': [i], 'particle_blends': [blend], 'textures': [name], 'basis': 'native 12340 additive particle, lifetime colour × actual texture; original animated bone',
+                           'particles': [i], 'particle_blends': [blend], 'particle_flags': [flags], 'textures': [name], 'basis': 'native 12340 additive particle, lifetime colour × actual texture; original animated bone',
                            'rate': rate})
         except (ValueError, FileNotFoundError, struct.error) as exc:
             refusals[str(exc)] += 1
