@@ -12,7 +12,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import northlight_paths
 northlight_paths.use_source_modules()
-from build_spell_emitters import append_spell_lights, build, effect_models, lifecycle_track, spell_sources
+from build_spell_emitters import append_spell_lights, build, effect_models, lifecycle_track, luminous_missile_tail, missile_models, spell_sources
 
 
 def append(blob, data):
@@ -42,18 +42,24 @@ def model(rate=None, enabled=None, sequence=-1):
     particle = append(blob, bytes(476))
     struct.pack_into('<II', blob, 296, 1, particle)
     struct.pack_into('<3f', blob, particle+8, 1, 2, 3)
+    struct.pack_into('<I', blob, particle+4, 0x20010)  # Visible head following emitter.
     struct.pack_into('<BBh', blob, particle+40, 4, 1, -1)
+    struct.pack_into('<HH', blob, particle+48, 1, 1)
+    struct.pack_into('<4f', blob, particle+352, 10, 1, 1, 1)
     name = b'particles\\real-blue.blp\0'
     name_offset = append(blob, name)
     texture = append(blob, struct.pack('<4I', 0, 0, len(name), name_offset))
     struct.pack_into('<II', blob, 80, 1, texture)
     blob[particle+176:particle+196] = raw_track(blob, rate or [([0, 100, 200, 300], [0, 10, 10, 0])], sequence=sequence)
+    blob[particle+152:particle+172] = raw_track(blob, [([0], [1])])
     blob[particle+456:particle+476] = raw_track(blob, enabled or [([0, 150, 250], [1, 0, 1])], '<B', interpolation=0, sequence=sequence)
     stamps = append(blob, struct.pack('<H', 0))
     colour = append(blob, struct.pack('<3f', 255, 255, 255))
     alpha = append(blob, struct.pack('<h', 32767))
     struct.pack_into('<4I', blob, particle+260, 1, stamps, 1, colour)
     struct.pack_into('<4I', blob, particle+276, 1, stamps, 1, alpha)
+    scale = append(blob, struct.pack('<2f', .1, .1))
+    struct.pack_into('<4I', blob, particle+292, 1, stamps, 1, scale)
     return bytes(blob), particle
 
 
@@ -84,6 +90,7 @@ def native_sample(blob, offset, fmt, time, animation=0, default=0):
 class Assets:
     def __init__(self, blob, extra=None):
         self.blob, self.extra = blob, extra or {}
+        self.providers = dict.fromkeys(self.extra)
     def read(self, path):
         if path in self.extra:
             return self.extra[path]
@@ -162,11 +169,52 @@ class SpellPatch(unittest.TestCase):
         assets = Assets(original, {'dbfilesclient\\spellvisualeffectname.dbc': dbc})
         self.assertEqual(effect_models(assets), {'spells\\actual.m2': [1], 'spells\\owned.m2': [2]})
         with tempfile.TemporaryDirectory(dir=northlight_paths.output_dir()) as folder:
-            result = build(assets, Path(folder), {'spells\\owned.m2'})
+            result = build(assets, Path(folder), {'spells\\owned.m2'}, audit_broad=True)
             self.assertEqual(list(result['models']), ['spells\\actual.m2'])
             self.assertEqual(result['counts']['mpq_byte_roundtrips'], 1)
             self.assertEqual(result['counts']['dbc_files'], 0)
+            self.assertFalse(result['installation_ready'])
             self.assertEqual(assets.extra['dbfilesclient\\spellvisualeffectname.dbc'], dbc)
+
+    def test_owner_graph_rejects_shared_ids_and_direct_dbc_paths(self):
+        def dbc(fields, rows, strings=b'\0'):
+            return struct.pack('<4s4I', b'WDBC', len(rows), fields, fields*4, len(strings)) + b''.join(struct.pack('<%dI'%fields, *r) for r in rows) + strings
+        visual = [0]*32
+        visual[0], visual[7], visual[8] = 22, 1, 7
+        kit = [0]*38
+        kit[0], kit[3] = 33, 9
+        extra = {'dbfilesclient\\spellvisual.dbc': dbc(32, [visual]),
+                 'dbfilesclient\\spellvisualkit.dbc': dbc(38, [kit]),
+                 'dbfilesclient\\spellvisualkitmodelattach.dbc': dbc(10, []),
+                 'dbfilesclient\\unitblood.dbc': dbc(10, []),
+                 'dbfilesclient\\spellvisualeffectname.dbc': dbc(7, [(7,0,1,0,0,0,0)], b'\0Spells\\actual.mdx\0')}
+        original, particle = model()
+        assets = Assets(original, extra)
+        eligible, _ = missile_models(assets, {'spells\\actual.m2': [7]})
+        self.assertEqual(list(eligible), ['spells\\actual.m2'])
+        eligible, _ = missile_models(assets, {'spells\\actual.m2': [7,9]})
+        self.assertFalse(eligible)  # Different effect IDs still share one path.
+        assets.extra['dbfilesclient\\itemvisualeffects.dbc'] = dbc(2, [(1,1)], b'\0Spells\\actual.mdx\0')
+        assets.providers = dict.fromkeys(assets.extra)
+        eligible, _ = missile_models(assets, {'spells\\actual.m2': [7]})
+        self.assertFalse(eligible)
+        del assets.extra['dbfilesclient\\itemvisualeffects.dbc']
+        assets.providers = dict.fromkeys(assets.extra)
+        with tempfile.TemporaryDirectory(dir=northlight_paths.output_dir()) as folder:
+            result = build(assets, Path(folder), set())
+            self.assertTrue(result['installation_ready'])
+            self.assertEqual(result['counts']['patched'], 1)
+            self.assertEqual(result['models']['spells\\actual.m2']['maximum_particle_tail_seconds'], 1)
+
+    def test_retirement_bound_requires_all_live_particles_luminous(self):
+        original, particle = model()
+        emitters, rejected = spell_sources(Assets(original), original)
+        self.assertEqual(luminous_missile_tail(original, emitters, rejected), 1)
+        for field, fmt, value in ((288-particle, '<I', 1), (352+4, '<f', .5), (196, '<f', 1), (48, '<H', 2), (172, '<f', float('inf'))):
+            bad = bytearray(original)
+            struct.pack_into(fmt, bad, particle+field, value)
+            with self.assertRaises(ValueError):
+                luminous_missile_tail(bad, emitters, rejected)
 
 
 def audit_stage(folder):
