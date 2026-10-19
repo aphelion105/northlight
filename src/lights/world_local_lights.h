@@ -33,7 +33,7 @@ inline float attenuation(const Light& l,float distance) {
 }
 inline bool safeMap(const std::string& map) {
     if(map.empty()||map.size()>63)return false;
-    for(char c:map)if(!((c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')||c=='_'))return false;
+    for(char c:map)if(!((c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')||c=='_'||c=='\''||c==' '))return false;
     return true;
 }
 inline bool readFile(const std::string& path,std::vector<Light>& output) {
