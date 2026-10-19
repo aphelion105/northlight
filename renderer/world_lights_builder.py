@@ -11,9 +11,10 @@ import argparse,collections,hashlib,json,math,os,struct,time
 import sys
 from pathlib import Path
 sys.path[:0]=[str(Path(__file__).resolve().parents[1]),str(Path(__file__).resolve().parent)]  # repo root, renderer/
-from world_scene_builder import Assets,CLIENT,chunks,unpack,array,matvec,retry
+from world_scene_builder import Assets,CLIENT,CONTINENTS,chunks,unpack,array,matvec,retry
+import instance_maps
 import client_archives
-from world_light_placements import discover as discover_placements,wmo_doodads,group_refs,group_blobs
+from world_light_placements import discover as discover_placements,discover_global,wmo_doodads,group_refs,group_blobs
 
 import outdoor_light_profiles
 
@@ -136,7 +137,7 @@ def instance_lights(lights,record,path):
         result.append((*p,*color,start,end,source_id,source,flags))
     return result
 
-def build(cache,output,maps,assets=None):
+def build(cache,output,maps,assets=None,manifest='manifest.json'):
     catalog=outdoor_light_profiles.load()
     started=time.time();assets=assets or Assets();stats=collections.Counter();extracted={};provenance={};errors=[];reports=[]
     placement_cache={};placement_provenance={};unsupported_assets={}
@@ -188,7 +189,18 @@ def build(cache,output,maps,assets=None):
                 magic,version,count=unpack('<4sII',b)
                 if magic!=b'FGS3' or version!=3 or len(b)!=12+count*INSTANCE.size:raise ValueError('Invalid FGS3 '+str(tile))
                 for r in INSTANCE.iter_unpack(b[12:]):consume(r)
-            for tile in tiles:
+            wdt=None
+            if mapname not in CONTINENTS:   # an instance map: a global-WMO one has no ADTs, its WMO is in the WDT
+                path=instance_maps.wdt_path(mapname)
+                try:
+                    blob=assets.read(path);wdt=instance_maps.read_wdt(blob)
+                    if wdt['global_wmo']:
+                        inputs.update(path.encode());inputs.update(blob)
+                        for asset,r in discover_global(wdt,read_placement_wmo):consume(r,asset,True)
+                        adt_count+=1
+                except (ValueError,FileNotFoundError,IndexError,KeyError,struct.error) as exc:
+                    errors.append({'placement_wdt':path,'error':str(exc)});wdt=None
+            for tile in tiles if wdt is None or not wdt['global_wmo'] else ():
                 x,y=map(int,tile.stem.split('_'))
                 path=f'world\\maps\\{mapname.lower()}\\{mapname.lower()}_{x}_{y}.adt'
                 try:
@@ -233,11 +245,12 @@ def build(cache,output,maps,assets=None):
                     'Unsupported native M2 tracks remain excluded. Reviewed exact models may supply a separate steady artistic emitter; no frame-zero animation freeze.',
                     'M2 ambient light tracks excluded; only supported diffuse point emitters exported.',
                     'No invented inverse-square attenuation: start/end are authored ranges; transport chooses documented attenuation policy.']}
-        (output/'manifest.json').write_text(json.dumps(result,indent=2)+'\n')
+        (output/manifest).write_text(json.dumps(result,indent=2)+'\n')
         return result
     finally:assets.close()
 
 if __name__=='__main__':
-    p=argparse.ArgumentParser();p.add_argument('--cache',type=Path,help='default: <client>/world-cache');p.add_argument('--output',type=Path,help='default: <cache>/lights');p.add_argument('--maps',nargs='+',default=MAPS,choices=MAPS)
+    p=argparse.ArgumentParser();p.add_argument('--cache',type=Path,help='default: <client>/world-cache');p.add_argument('--output',type=Path,help='default: <cache>/lights');p.add_argument('--maps',nargs='+',default=MAPS,choices=MAPS+instance_maps.ALL_MAPS)
+    p.add_argument('--manifest',default='manifest.json',help='file name of the manifest in --output (instance maps use their own)')
     client_archives.add_arguments(p);args=p.parse_args();assets=Assets.from_args(args);cache=args.cache or assets.client/'world-cache'
-    build(cache,args.output or cache/'lights',args.maps,assets)
+    build(cache,args.output or cache/'lights',args.maps,assets,args.manifest)

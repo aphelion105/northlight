@@ -74,6 +74,9 @@ test_grass_receiving_order.py
 test_horizon_haze.py
 test_index_working_set.py
 test_install_world_cache.py
+test_instance_map_name_filter.py
+test_instance_maps.py
+test_instance_scene.py
 test_interval_temporaries.py
 test_job_system.py
 test_lamp_daylight.py
