@@ -5,6 +5,9 @@ static void particleTextureStream(){
     using namespace NorthlightParticleTextures;
     enabled.store(true);
     Rig rig(true);IDirect3DTexture9* texture=nullptr;
+    // Disabling direct dispatch also omits its production identity resolver.
+    // This fake backend still proves raw identity, independently of dispatch.
+    if(!kDirectReplay)CHECK(runTask(rig.core(),[](StreamCore& c){c.reg.rawOf=[](IUnknown* p,Kind){return unwrapFake(p);};}));
     CHECK(rig.dev->CreateTexture(64,32,0,0,(D3DFORMAT)21,(D3DPOOL)1,&texture,nullptr)==D3D_OK);
     rig.sync();auto* proxy=ProxyBase::of(texture);CHECK(proxy&&proxy->raw);
     const void* raw=proxy->raw;
