@@ -137,6 +137,7 @@ test_replay_bounds.py
 test_replay_bounds_job.py
 test_replay_bounds_safety.py
 test_replay_capture_constants.py
+test_replay_diagnostic_cadence.py
 test_replay_draw_state.py
 test_replay_envelope_cache.py
 test_replay_envelopes.py
