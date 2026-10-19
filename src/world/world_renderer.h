@@ -4575,6 +4575,8 @@ public:
             dump(d,c[30][1]>0?smoothSurface:lightSurface,directory,"smoothed-light",capture); // what TemporalLight read: the raw light when no source is drawn
             dump(d,temporalLightSurface[1-temporalIndex],directory,"temporal-light",capture);
             dump(d,temporalDepthSurface[1-temporalIndex],directory,"distance",capture);
+            if(waterMask){IDirect3DSurface9* waterSurface=nullptr;
+                if(SUCCEEDED(waterMask->GetSurfaceLevel(0,&waterSurface))){dump(d,waterSurface,directory,"water-mask",capture);waterSurface->Release();}}
             dump(d,fogResolved?fogBlurredSurface:fogSurface,directory,"fog",capture);
             // 0.3.174 FOLD: the proxy's scene copy, before AO and bloom (the colour copy was skipped).
             if(foldScene){IDirect3DSurface9* folded=nullptr;if(SUCCEEDED(foldScene->GetSurfaceLevel(0,&folded))){dump(d,folded,directory,"scene",capture);folded->Release();}}

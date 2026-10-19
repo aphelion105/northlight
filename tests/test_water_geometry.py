@@ -27,6 +27,40 @@ def reconstruct_depth(raw,near,far,minz=0,maxz=1):
     return f32(f32(n*f)/max(f32(f-f32(d*f32(f-n))),.00001))
 def visible(mask_z,alpha,opaque_z,near):return mask_z>near and mask_z<=opaque_z+max(.012,mask_z*.0007) and alpha>.003
 class Geometry(unittest.TestCase):
+    def test_fog_water_uses_actual_scene_depth_before_sky_cap(self):
+        # Independent flat-sea intersections in the last stretch of the frustum.
+        # Native transparent water leaves clear scene depth at 1. Capping that
+        # depth before testing the mask used to discard these valid receivers.
+        cases=0
+        for near in (.1,.2,.5,1.,2.):
+            for far in (727.12,1277.,2000.):
+                capped=reconstruct_depth(store_depth(far,near,far),near,far)
+                n,f,d=f32(near),f32(far),f32(.99999)
+                dry=f32(f32(n*f)/max(f32(f-f32(d*f32(f-n))),.00001))
+                self.assertLess(dry,capped)
+                for fraction in (.25,.5,.75):
+                    z=dry+(capped-dry)*fraction
+                    eye=(0.,0.,6.)
+                    ray=(0.,1.,-eye[2]/z)
+                    plane_z=-eye[2]/ray[2]
+                    mask=f32(plane_z)
+                    self.assertTrue(visible(mask,1,capped,near))
+                    if visible(mask,1,dry,near):continue
+                    old=dry
+                    new=mask if visible(mask,1,capped,near) else dry
+                    self.assertGreater(abs(eye[2]+ray[2]*old),.001)
+                    self.assertLess(abs(eye[2]+ray[2]*new),1e-5)
+                    cases+=1
+                # Foreground opaque surfaces and empty/transparent masks stay
+                # dry, and dry sky keeps exactly the old capped march length.
+                for mask,alpha,scene in ((far*.8,1,far*.4),(far*.8,0,capped),(0,1,capped)):
+                    self.assertFalse(visible(mask,alpha,scene,near))
+                    self.assertEqual(mask if visible(mask,alpha,scene,near) else dry,dry)
+        self.assertGreater(cases,25)
+        shader=(fp.SHADERS/'world_effects.hlsl').read_text()
+        self.assertIn('float water=waterDistance(uv,d);return water>0?water:viewDistance(min(d,.99999));',shader)
+        self.assertEqual(shader.count('fogReceiverDistance(uv,depth)'),3)
+        self.assertNotIn('receiverDistance(uv,min(depth,.99999))',shader)
     def test_geometry_mask_excludes_land_and_foreground(self):
         # Camera sees an actual rectangular liquid mesh. An infinite sloped
         # terrain plane crosses it at x=0; positive-x terrain occludes water.

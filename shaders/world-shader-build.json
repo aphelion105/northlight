@@ -1,5 +1,5 @@
 {
-  "source_sha256": "ead5516c43cb11561e6e44ac0b5523bfa58877778eca5e4922d757b2613b90a2",
+  "source_sha256": "8c2a90bce1a5711b8e7f7280fcdbe1884ac25dc75108ed1418f5b5bcceb29d1c",
   "compiler": "Microsoft d3dcompiler_47 IEEE strict",
   "game_launched": false,
   "shaders": {
@@ -171,9 +171,9 @@
     },
     "WorldFog": {
       "target": "ps_3_0",
-      "bytes": 6956,
-      "sha256": "67cabea3e0cc85ab180b1902cfa0038189096bc999882e2317e8f2bd71df70de",
-      "static_instruction_slots": 390,
+      "bytes": 6968,
+      "sha256": "69ab6e52d46455c0aac6bd74b07b25a892d658cdee55b8b688af033eff7f51d1",
+      "static_instruction_slots": 391,
       "temporary_registers": 21,
       "samplers": [
         1,
@@ -183,7 +183,7 @@
         15
       ],
       "instructions": {
-        "mov": 38,
+        "mov": 39,
         "if": 5,
         "else": 3,
         "mul": 116,
@@ -206,7 +206,7 @@
         "dp2add": 2,
         "endrep": 1
       },
-      "source_sha256": "ce16d46e68854aadfa1461b7e1b5b8e7caa09657089153a86cb67e80903851ba",
+      "source_sha256": "8c2a90bce1a5711b8e7f7280fcdbe1884ac25dc75108ed1418f5b5bcceb29d1c",
       "compiler": "Microsoft d3dcompiler_47 IEEE strict"
     },
     "FogBlur": {
@@ -240,9 +240,9 @@
     },
     "FogClouds": {
       "target": "ps_3_0",
-      "bytes": 6972,
-      "sha256": "8be74a36f112075088b5caa97a1132a1f77c113b4bb5fd6c7dc60333670a1ae1",
-      "static_instruction_slots": 396,
+      "bytes": 6984,
+      "sha256": "99a7ae79e0907bedd2ad3675656e6fb307be04ddf4cb757322b361b8f3657292",
+      "static_instruction_slots": 397,
       "temporary_registers": 21,
       "samplers": [
         1,
@@ -256,7 +256,7 @@
         "frc": 4,
         "add": 91,
         "max": 11,
-        "mov": 44,
+        "mov": 45,
         "min": 8,
         "texldl": 12,
         "if": 5,
@@ -274,7 +274,7 @@
         "dp2add": 2,
         "endrep": 1
       },
-      "source_sha256": "ce16d46e68854aadfa1461b7e1b5b8e7caa09657089153a86cb67e80903851ba",
+      "source_sha256": "8c2a90bce1a5711b8e7f7280fcdbe1884ac25dc75108ed1418f5b5bcceb29d1c",
       "compiler": "Microsoft d3dcompiler_47 IEEE strict"
     },
     "FogTemporal": {
@@ -411,33 +411,32 @@
     },
     "LocalFog": {
       "target": "ps_3_0",
-      "bytes": 8332,
-      "sha256": "60fa0c9e83b0d11caa370ee289d5c6cee36aa76d787d03220ec536e15d32316f",
-      "static_instruction_slots": 473,
-      "temporary_registers": 5,
+      "bytes": 7064,
+      "sha256": "8d9254aa8959a25c0d2ccb47f70dfcd4c108280464049ed7287895dbe9e5b35b",
+      "static_instruction_slots": 397,
+      "temporary_registers": 6,
       "samplers": [
         1,
         11
       ],
       "instructions": {
-        "mul": 123,
+        "mul": 124,
         "frc": 1,
-        "add": 139,
-        "max": 42,
-        "min": 17,
-        "mov": 30,
+        "add": 131,
+        "max": 36,
+        "mov": 6,
+        "min": 11,
         "texldl": 2,
-        "cmp": 52,
         "if": 1,
-        "rcp": 33,
         "else": 1,
+        "rcp": 25,
+        "cmp": 36,
         "endif": 1,
         "dp3": 9,
-        "rsq": 10,
-        "abs": 8
+        "rsq": 9
       },
-      "source_sha256": "bb0e1b8a02a16250c86b14f03b1b3fe6cdc424236408bc3f1eb502b53fce489e",
-      "compiler": "Wine d3dcompiler_47 D3DCompile"
+      "source_sha256": "8c2a90bce1a5711b8e7f7280fcdbe1884ac25dc75108ed1418f5b5bcceb29d1c",
+      "compiler": "Microsoft d3dcompiler_47 IEEE strict"
     },
     "LocalFogCombine": {
       "target": "ps_3_0",
