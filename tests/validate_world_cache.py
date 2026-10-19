@@ -9,29 +9,43 @@ import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).reso
 import northlight_paths as fp; fp.use_source_modules()
 import argparse, json, math, re, struct, time
 from pathlib import Path
-from world_scene_builder import Assets, CLIENT, decode_blp, placement, quaternion_matrix, matvec
-import client_archives
+from world_scene_builder import Assets, CLIENT, decode_blp, placement, quaternion_matrix, matvec, chunks, unpack
+import client_archives, instance_maps
 
 MAPS=['Azeroth','Kalimdor','Expansion01','Northrend']
 
 
+def empty_by_design(blob):
+    """True for an ADT the scene builder writes no tile for: no placed object and every terrain chunk fully holed."""
+    sections=list(chunks(blob));root=dict(sections)
+    return not root.get('MDDF') and not root.get('MODF') and all(unpack('<I',d,60)[0]&0xffff==0xffff for t,d in sections if t=='MCNK')
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--cache',type=Path,help='default: <client>/world-cache')
-    p.add_argument('--report',type=Path,help='default: <cache>/validation.json');p.add_argument('--maps',nargs='+',choices=MAPS,default=MAPS)
+    p.add_argument('--report',type=Path,help='default: <cache>/validation.json');p.add_argument('--maps',nargs='+',choices=MAPS+instance_maps.ALL_MAPS,default=MAPS)
     p.add_argument('--tiles',nargs=4,type=int,metavar=('X0','Y0','X1','Y1'),help='expect only these source tiles (partial test builds)')
     client_archives.add_arguments(p);args=p.parse_args()
     assets=Assets.from_args(args);root=args.cache or assets.client/'world-cache';models={};counts={};missing=[]
     try:
         for mapname in args.maps:
-            pattern=re.compile(r'world\\maps\\'+mapname+r'\\'+mapname+r'_(\d+)_(\d+)\.adt$',re.I)
-            expected={tuple(map(int,m.groups())) for path in assets.providers if (m:=pattern.fullmatch(path))}
+            deleted=[];empty=[]
+            if mapname in MAPS:
+                pattern=re.compile(r'world\\maps\\'+mapname+r'\\'+mapname+r'_(\d+)_(\d+)\.adt$',re.I)
+                expected={tuple(map(int,m.groups())) for path in assets.providers if (m:=pattern.fullmatch(path))}
+            else:   # an instance map: the tiles its WDT lists, or for one global WMO whatever tiles were written
+                wdt=instance_maps.read_wdt(assets.read(instance_maps.wdt_path(mapname)))
+                expected={tuple(map(int,p.stem.split('_'))) for p in (root/mapname).glob('*.fg3')} if wdt['global_wmo'] else set(wdt['tiles'])
+                if wdt['global_wmo'] and not expected:missing.append(f'{mapname}/*.fg3')
             if args.tiles:expected={(x,y) for x,y in expected if args.tiles[0]<=x<=args.tiles[2] and args.tiles[1]<=y<=args.tiles[3]}
-            checked=0;instance_count=0;deleted=[]
+            checked=0;instance_count=0
             for x,y in sorted(expected):
                 path=root/mapname/f'{x}_{y}.fg3'
                 if not path.exists():
                     source=f'world\\maps\\{mapname}\\{mapname}_{x}_{y}.adt'
-                    if not assets.read(source):deleted.append([x,y]);continue
+                    blob=assets.read(source)
+                    if not blob:deleted.append([x,y]);continue
+                    if mapname not in MAPS and empty_by_design(blob):empty.append([x,y]);continue
                     missing.append(str(path.relative_to(root)));continue
                 data=path.read_bytes();magic,version,count=struct.unpack_from('<4sII',data)
                 assert magic==b'FGS3' and version==3 and len(data)==12+116*count,path
@@ -51,7 +65,7 @@ def main():
                         assert model.stat().st_size>=20+32*nv+16*nt+28*nm,model
                         models[key]=model.stat().st_size
                 checked+=1;instance_count+=count
-            counts[mapname]={'source_tiles':len(expected),'source_deletion_markers':deleted,'active_source_tiles':len(expected)-len(deleted),'cached_tiles':checked,'instances':instance_count}
+            counts[mapname]={'source_tiles':len(expected),'source_deletion_markers':deleted,'empty_source_tiles':empty,'active_source_tiles':len(expected)-len(deleted)-len(empty),'cached_tiles':checked,'instances':instance_count}
         header=bytearray(148);header[:4]=b'BLP2';struct.pack_into('<I',header,4,1)
         struct.pack_into('<4BII',header,8,2,1,0,1,4,4);struct.pack_into('<I',header,20,148);struct.pack_into('<I',header,84,8)
         bits=sum((3 if i%2 else 1)<<(i*2) for i in range(16))
