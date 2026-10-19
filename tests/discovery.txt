@@ -1,4 +1,5 @@
 test_actor_deformation.py
+test_actor_fade_capture.py
 test_actor_scene_job.py
 test_actor_shadow_map.py
 test_actor_shadow_radius_wiring.py
@@ -14,6 +15,7 @@ test_art_layer.py
 test_async_memory_diagnostics.py
 test_backend_proxy.py
 test_band_retime.py
+test_bytes_equal.py
 test_cache_shadow_optimizations.py
 test_cache_variant.py
 test_camera_upstream_capture.py
@@ -80,6 +82,7 @@ test_m2_visibility.py
 test_memmap_diagnostics.py
 test_memory_admission_probe.py
 test_memory_guard.py
+test_mesh_buffer_store.py
 test_mesh_pool_trim.py
 test_migrate_mac_proxy.py
 test_mirror_resources.py
@@ -98,6 +101,8 @@ test_point_light_shadow.py
 test_point_shadow_schedule.py
 test_prepare_worker.py
 test_probe_blend.py
+test_probe_blend_equivalence.py
+test_probe_texture_upload.py
 test_progressive_gi_worker.py
 test_quality_docs.py
 test_quality_settings.py
@@ -135,6 +140,7 @@ test_shadow_shimmer.py
 test_snapshot_allocation.py
 test_snapshot_prediction.py
 test_solar_volume.py
+test_spell_fog_fit.py
 test_spell_fog_proof_client.py
 test_spell_layer.py
 test_static_cache_dirty_rect.py
@@ -150,6 +156,7 @@ test_terrain_cache_capacity.py
 test_terrain_capture_bounds.py
 test_terrain_capture_optimization.py
 test_terrain_content_cache.py
+test_terrain_metadata.py
 test_terrain_reach_fallback.py
 test_terrain_reach_fallback_wiring.py
 test_terrain_shadow_candidates.py
@@ -184,6 +191,9 @@ test_wmo_group_tolerance.py
 test_world_cache_diff.py
 test_world_light_placements.py
 test_world_local_lights.py
+test_world_mesh_pages.py
+test_world_mesh_pages_real.py
+test_world_mesh_plan.py
 test_world_probe_coverage.py
 test_zone_tuner.py
 test_zone_tuning.py

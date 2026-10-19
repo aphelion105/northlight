@@ -1,5 +1,6 @@
 #pragma once
 #include "world_probe_cache.h"
+#include "bytes_equal.h"
 #include <algorithm>
 #include <cstring>
 #include <string>
@@ -13,7 +14,7 @@ namespace NorthlightProbeBlend {
 inline constexpr float BlendSeconds=.3f; // shaders/world_effects.hlsl probeIrradiance uses (1/.3)
 inline constexpr float None=-1000.f;     // blend start meaning "no blend": saturate((now-None)/BlendSeconds)==1
 class Mirror {
-    struct Slot {NorthlightGI::ProbeGridKey key;bool valid=false;float cur[12]={},prev[12]={};float start=None;};
+    struct Slot {NorthlightGI::ProbeGridKey key;bool valid=false;NorthlightGI::Vec3 cur[4];float prev[12]={};float start=None;};
     std::vector<Slot> slots;
     std::string map;
 public:
@@ -26,14 +27,21 @@ public:
         unsigned blended=0;
         for(size_t i=0;i<slots.size();++i){
             auto& slot=slots[i];const auto& entry=atlas[i];
+            static_assert(sizeof slot.cur==12*sizeof(float),"SH comparison excludes padding");
+            // Resident unchanged probes need no transpose to the GPU channel order.
+            const bool resident=slot.valid&&entry.occupied&&entry.probe.valid&&slot.key==entry.key;
+            if(resident&&NorthlightBytes::equal(slot.cur,entry.probe.sh,sizeof slot.cur))continue;
             float next[12];
             for(int k=0;k<4;++k){next[k]=entry.probe.sh[k].x;next[4+k]=entry.probe.sh[k].y;next[8+k]=entry.probe.sh[k].z;}
-            if(!entry.occupied||!entry.probe.valid){slot.valid=false;slot.start=None;std::memcpy(slot.cur,next,sizeof next);std::memcpy(slot.prev,next,sizeof next);continue;}
-            if(!slot.valid||!(slot.key==entry.key)){slot.key=entry.key;slot.valid=true;std::memcpy(slot.cur,next,sizeof next);std::memcpy(slot.prev,next,sizeof next);slot.start=None;continue;}
-            if(std::memcmp(next,slot.cur,sizeof next)==0)continue;
+            if(!entry.occupied||!entry.probe.valid){slot.valid=false;slot.start=None;std::memcpy(slot.cur,entry.probe.sh,sizeof slot.cur);std::memcpy(slot.prev,next,sizeof next);continue;}
+            if(!resident){slot.key=entry.key;slot.valid=true;std::memcpy(slot.cur,entry.probe.sh,sizeof slot.cur);std::memcpy(slot.prev,next,sizeof next);slot.start=None;continue;}
             const float t=slot.start==None?1.f:std::clamp((now-slot.start)/BlendSeconds,0.f,1.f);
-            for(int k=0;k<12;++k)slot.prev[k]=slot.prev[k]+(slot.cur[k]-slot.prev[k])*t;
-            std::memcpy(slot.cur,next,sizeof next);slot.start=now;++blended;
+            for(int k=0;k<4;++k){
+                slot.prev[k]=slot.prev[k]+(slot.cur[k].x-slot.prev[k])*t;
+                slot.prev[4+k]=slot.prev[4+k]+(slot.cur[k].y-slot.prev[4+k])*t;
+                slot.prev[8+k]=slot.prev[8+k]+(slot.cur[k].z-slot.prev[8+k])*t;
+            }
+            std::memcpy(slot.cur,entry.probe.sh,sizeof slot.cur);slot.start=now;++blended;
         }
         return blended;
     }

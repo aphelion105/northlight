@@ -29,6 +29,9 @@ struct MaterialUpload {
     uint32_t width=1,height=1;
     // Tightly packed D3DFMT_A8R8G8B8 memory bytes: B,G,R,A.
     std::vector<uint8_t> bgra;
+    // Full BGRA identity, prepared on the worker. A hash match is only a
+    // lookup shortcut; reuse also requires equal dimensions and exact bytes.
+    NorthlightLocalShadowSignature::Digest textureIdentity;
     float alphaCutoff=0;
     bool terrain=false;
 };

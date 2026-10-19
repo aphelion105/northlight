@@ -102,6 +102,7 @@ bool buildUploadPlan(const NorthlightGI::WorldScene& scene,WorldMeshUploadPlan& 
         std::vector<uint64_t> keys;keys.reserve(scene.triangles.size());
         std::unordered_map<uint64_t,uint32_t> counts;
         counts.reserve(std::min<size_t>(scene.materials.size()+512,16384));
+        uint64_t previousKey=0;uint32_t* previousCount=nullptr;
         for(const auto& t:scene.triangles){
             if(t.v0>=scene.vertices.size()||t.v1>=scene.vertices.size()||t.v2>=scene.vertices.size()||t.material>=scene.materials.size()){
                 error="Invalid upload triangle index";return false;
@@ -110,7 +111,9 @@ bool buildUploadPlan(const NorthlightGI::WorldScene& scene,WorldMeshUploadPlan& 
             if(scene.materials[t.material].terrain&&!terrainChunk(scene.vertices[t.v0].position,scene.vertices[t.v1].position,scene.vertices[t.v2].position,x,y))
                 ++next.unmaskableTerrainTriangles;
             const uint32_t cell=spatialCell(scene.vertices[t.v0].position,scene.vertices[t.v1].position,scene.vertices[t.v2].position,order.cellChunks);
-            uint64_t k=key(cell,t.material,x,y,order.chunkMajor);keys.push_back(k);++counts[k];
+            uint64_t k=key(cell,t.material,x,y,order.chunkMajor);keys.push_back(k);
+            if(!previousCount||k!=previousKey){previousCount=&counts[k];previousKey=k;}
+            ++*previousCount; // unordered_map references survive a rehash
         }
         std::vector<Group> groups;groups.reserve(counts.size());
         for(const auto& pair:counts)groups.push_back({pair.first,pair.second,0});
@@ -128,8 +131,9 @@ bool buildUploadPlan(const NorthlightGI::WorldScene& scene,WorldMeshUploadPlan& 
             int x=int(chunk&2047)-1,y=int((chunk>>11)&2047)-1;
             next.batches.push_back({offset,g.count,material,x,y,scene.materials[material].terrain});offset+=g.count*3;
         }
+        uint32_t groupIndex=0;
         for(size_t i=0;i<scene.triangles.size();++i){
-            const uint32_t groupIndex=lookup.at(keys[i]);
+            if(!i||keys[i]!=previousKey){groupIndex=lookup.at(keys[i]);previousKey=keys[i];}
             auto& group=groups[groupIndex];auto& batch=next.batches[groupIndex];const auto& t=scene.triangles[i];
             next.indices[group.cursor++]=t.v0;next.indices[group.cursor++]=t.v1;next.indices[group.cursor++]=t.v2;
             NorthlightLocalShadowSignature::Record* record=nullptr;
@@ -179,6 +183,10 @@ bool buildUploadPlan(const NorthlightGI::WorldScene& scene,WorldMeshUploadPlan& 
                 dest.width=source.width;dest.height=source.height;if(!allowed(source.rgba.size()))return false;dest.bgra.resize(source.rgba.size());
                 for(size_t p=0;p<source.rgba.size();p+=4){dest.bgra[p]=source.rgba[p+2];dest.bgra[p+1]=source.rgba[p+1];dest.bgra[p+2]=source.rgba[p];dest.bgra[p+3]=source.rgba[p+3];}
             }
+            NorthlightLocalShadowSignature::Hasher textureHash;
+            textureHash.word(dest.width);textureHash.word(dest.height);
+            for(size_t p=0;p<dest.bgra.size();p+=4){uint32_t pixel;std::memcpy(&pixel,dest.bgra.data()+p,4);textureHash.word(pixel);}
+            dest.textureIdentity=textureHash.finish();
             next.textureBytes+=dest.bgra.size();
         }
     }catch(...){error="Cannot allocate world mesh upload plan";return false;}

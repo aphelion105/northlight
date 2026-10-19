@@ -1,5 +1,6 @@
 #pragma once
 #include "intrusive_lru.h"
+#include "bytes_equal.h"
 #include <unordered_map>
 // Exact chunk coverage of the terrain triangles actually submitted this frame.
 // This snapshots buffers or reuses a fully write-tracked immutable snapshot.
@@ -10,6 +11,7 @@
 #include "lock_meter_readback.h"
 #include "replay_copy_reader.h"
 #include "vertex_declaration_cache.h"
+#include "capture_buffer_metadata.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -163,6 +165,7 @@ private:
         bool operator==(const Stamp& b)const{return vb==b.vb&&ib==b.ib&&vertexVersion==b.vertexVersion&&indexVersion==b.indexVersion;}
     };
     IdentityFn identity_=nullptr;VersionFn version_=nullptr;
+    NorthlightCaptureMetadata::Read metadata_=nullptr;
     NorthlightVertexDeclarations::Cache* declarations_=nullptr;
     HRESULT declarationElements(IDirect3DVertexDeclaration9* declaration,D3DVERTEXELEMENT9* storage,
         UINT& count,const D3DVERTEXELEMENT9*& elements){
@@ -170,9 +173,17 @@ private:
         if(declarations_)return declarations_->get(declaration,elements,count)?D3D_OK:D3DERR_INVALIDCALL;
         return declaration->GetDeclaration(storage,&count);
     }
-    Stamp stamp(IDirect3DVertexBuffer9* vb,IDirect3DIndexBuffer9* ib)const{
+    void metadata(IDirect3DVertexBuffer9* vb,IDirect3DIndexBuffer9* ib,NorthlightCaptureMetadata::Info* info){
+        if(!metadata_||!identity_||!version_)return;
+        const NorthlightCaptureMetadata::Request requests[]={{vb,false},{ib,true}};
+        metadata_(requests,info,2);++maintenance_.metadataBatches;
+    }
+    Stamp stamp(IDirect3DVertexBuffer9* vb,IDirect3DIndexBuffer9* ib,const NorthlightCaptureMetadata::Info* info=nullptr){
         if(!identity_||!version_)return {};
-        Stamp s;s.vb=identity_(vb,false);s.ib=identity_(ib,true);s.vertexVersion=version_(vb,false);s.indexVersion=version_(ib,true);return s;
+        NorthlightCaptureMetadata::Info fresh[2];if(!info){metadata(vb,ib,fresh);info=fresh;}
+        const bool v=info[0].known&&info[0].identity,i=info[1].known&&info[1].identity;
+        Stamp s;s.vb=v?info[0].identity:identity_(vb,false);s.ib=i?info[1].identity:identity_(ib,true);
+        s.vertexVersion=v?info[0].revision:version_(vb,false);s.indexVersion=i?info[1].revision:version_(ib,true);return s;
     }
 
     struct Key {
@@ -191,11 +202,12 @@ private:
         bool operator==(const ContentKey& b)const{return draw==b.draw&&stream==b.stream&&format==b.format&&vertexBytes==b.vertexBytes&&indexBytes==b.indexBytes;}
     };
     struct ContentEntry {
-        ContentKey key;Stamp stamp;std::uint64_t hash=0,bytes=0;size_t slot=0;
+        ContentKey key;Stamp stamp;std::uint64_t hash=0,bytes=0,charged=0;size_t slot=0;
         NorthlightIntrusiveLRU::Links<ContentEntry> lru;
         UINT smallest=0,largest=0;
         float low[3]={},high[3]={};
         std::vector<unsigned char> indices,vertices;
+        std::vector<UINT> sourceOffsets; // Validated byte offsets, in snapshot position order.
         std::shared_ptr<const MeshSnapshot> snapshot;
     };
     static constexpr std::uint64_t ContentLimit=32u*1024u*1024u;
@@ -208,7 +220,11 @@ private:
     std::uint64_t contentBytes=ContentBaseBytes,contentHits=0,trackedHits_=0,avoidedReadBytes_=0;
     std::uint64_t contentLimit=ContentLimit; /* lowered under address-space pressure */
 public:
-    struct Maintenance {unsigned lookupMisses=0,evictions=0,countPressure=0,bytePressure=0;};
+    struct Maintenance {
+        unsigned lookupMisses=0,evictions=0,countPressure=0,bytePressure=0;
+        unsigned trackedHits=0,unproven=0,lifetimeChanged=0,vertexChanged=0,indexChanged=0,unstable=0,exactReuses=0,rebuilds=0,indexTokenHits=0;
+        unsigned metadataBatches=0,metadataHits=0,metadataFallbacks=0;
+    };
 private:
     Maintenance maintenance_;
     static std::uint64_t contentHash(const ContentKey& k){
@@ -232,9 +248,14 @@ private:
     }
     void rememberContent(const ContentKey& key,std::uint64_t hash,UINT smallest,UINT largest,
                          const std::vector<unsigned char>& rawIndices,const std::vector<unsigned char>& rawVertices,
+                         const std::vector<UINT>& sourceOffsets,
                          const std::shared_ptr<const MeshSnapshot>& snapshot,const Diagnostics& detail,Stamp verified){
       try {
-        const std::uint64_t estimate=sizeof(ContentEntry)+sizeof(MeshSnapshot)+256+rawIndices.size()+rawVertices.size()+
+        // Keep exact indices and a mapping to the captured XYZ for revalidation
+        // after buffer writes. The other vertex attributes are not used here.
+        const bool keepRaw=!verified.valid();
+        const std::uint64_t estimate=sizeof(ContentEntry)+sizeof(MeshSnapshot)+256+rawIndices.size()+
+            (keepRaw?rawVertices.size():sourceOffsets.size()*sizeof(UINT))+
             snapshot->positions.capacity()*sizeof(Position)+snapshot->indices.capacity()*sizeof(std::uint32_t)+snapshot->bounds.chunks.capacity()*sizeof(ChunkBounds);
         if(estimate>contentLimit-ContentBaseBytes)return;
         const auto range=contentLookup.equal_range(hash);
@@ -251,9 +272,20 @@ private:
         // the retained cache. Accounting includes object/capacity/node allowance.
         if(!makeRoom(estimate))return;
         auto next=std::make_unique<ContentEntry>();next->key=key;next->stamp=verified;next->hash=hash;next->smallest=smallest;next->largest=largest;
-        next->indices=rawIndices;next->vertices=rawVertices;next->snapshot=snapshot;
+        next->charged=rawIndices.size()+rawVertices.size();
+        next->indices=rawIndices;
+        if(keepRaw)next->vertices=rawVertices;
+        else{
+            next->sourceOffsets.reserve(sourceOffsets.size());
+            for(UINT offset:sourceOffsets){
+                const std::uint64_t byte=std::uint64_t(offset)*key.draw.stride;
+                if(byte+sizeof(Position)>rawVertices.size())return;
+                next->sourceOffsets.push_back(UINT(byte));
+            }
+        }
+        next->snapshot=snapshot;
         std::memcpy(next->low,detail.low,sizeof next->low);std::memcpy(next->high,detail.high,sizeof next->high);
-        next->bytes=sizeof(ContentEntry)+sizeof(MeshSnapshot)+256+next->indices.capacity()+next->vertices.capacity()+
+        next->bytes=sizeof(ContentEntry)+sizeof(MeshSnapshot)+256+next->indices.capacity()+next->vertices.capacity()+next->sourceOffsets.capacity()*sizeof(UINT)+
             next->snapshot->positions.capacity()*sizeof(Position)+next->snapshot->indices.capacity()*sizeof(std::uint32_t)+
             next->snapshot->bounds.chunks.capacity()*sizeof(ChunkBounds);
         if(next->bytes>contentLimit-ContentBaseBytes||!makeRoom(next->bytes))return;
@@ -268,8 +300,8 @@ private:
     }
     Limits limits;
     // Scratch retains capacity only. Misses overwrite all decoded indices and
-    // reset the remap range; hits independently verify both live byte ranges.
-    std::vector<std::uint32_t> scratchIndices,scratchRemap;
+    // reset the remap range; hits verify live indices and referenced positions.
+    std::vector<std::uint32_t> scratchIndices,scratchRemap,scratchSourceOffsets;
     std::vector<unsigned char> scratchRawIndices,scratchRawVertices;
     std::uint64_t readBytes=0,chargedBytes=0;
     unsigned snapshots=0;
@@ -309,6 +341,9 @@ public:
     void setDeclarationCache(NorthlightVertexDeclarations::Cache* cache){declarations_=cache;}
     void setIdentityProvider(IdentityFn f){clearPersistent();identity_=f;}
     void setVersionProvider(VersionFn f){clearPersistent();version_=f;}
+    // The batch must use the same lifetime/revision domain as the legacy providers.
+    // Consume it only for this draw; the post-read stamp takes a fresh batch.
+    void setMetadataProvider(NorthlightCaptureMetadata::Read f){clearPersistent();metadata_=f;}
 
     // pVertexStreamZeroData points at vertex ZERO, not MinVertexIndex. Verified
     // against the installed D9VK DrawIndexedPrimitiveUP: it copies
@@ -425,7 +460,7 @@ public:
 
     // Snapshot immediately before the original draw. DYNAMIC/WRITEONLY is not
     // a rejection: the verified D9VK backend exposes its current CPU mapping
-    // for READONLY locks. Cached results require exact current IB/VB bytes and
+    // for READONLY locks. Cached results require exact indices and positions and
     // the full draw/layout contract; pointer identity alone is never trusted.
     // Returned immutable snapshots cannot change after later DISCARD/NOOVERWRITE
     // writes. Cache hits share the object without copying its geometry.
@@ -479,8 +514,11 @@ public:
         const unsigned componentBytes=position->Type==D3DDECLTYPE_FLOAT4?16:12;
         if(!detail.stride||unsigned(position->Offset)+componentBytes>detail.stride)return reject(RejectReason::Stride);
         D3DVERTEXBUFFER_DESC vd={};D3DINDEXBUFFER_DESC id={};
-        hr=vb.p->GetDesc(&vd);if(FAILED(hr))return reject(RejectReason::VertexDescription,hr);
-        hr=ib.p->GetDesc(&id);if(FAILED(hr))return reject(RejectReason::IndexDescription,hr);
+        NorthlightCaptureMetadata::Info info[2];metadata(vb.p,ib.p,info);
+        if(info[0].known&&info[0].identity){vd.Size=info[0].size;vd.Usage=info[0].usage;++maintenance_.metadataHits;}
+        else{++maintenance_.metadataFallbacks;hr=vb.p->GetDesc(&vd);if(FAILED(hr))return reject(RejectReason::VertexDescription,hr);}
+        if(info[1].known&&info[1].identity){id.Size=info[1].size;id.Usage=info[1].usage;id.Format=info[1].format;++maintenance_.metadataHits;}
+        else{++maintenance_.metadataFallbacks;hr=ib.p->GetDesc(&id);if(FAILED(hr))return reject(RejectReason::IndexDescription,hr);}
         detail.vertexUsage=vd.Usage;detail.indexUsage=id.Usage;
         detail.dynamicSnapshot=((vd.Usage|id.Usage)&D3DUSAGE_DYNAMIC)!=0;
         if(id.Format!=D3DFMT_INDEX16&&id.Format!=D3DFMT_INDEX32)return reject(RejectReason::IndexFormat);
@@ -490,9 +528,17 @@ public:
         if(indexOffset+indexBytes>id.Size)return reject(RejectReason::IndexRange);
         ContentKey contentKey{{vb.p,ib.p,streamOffset,detail.stride,position->Offset,position->Type,base,minimum,vertexCount,start,primitiveCount,topology},position->Stream,id.Format,vd.Size,id.Size};
         const auto hash=contentHash(contentKey);ContentEntry* cached=findContent(contentKey,hash);
-        const Stamp before=stamp(vb.p,ib.p);
+        const Stamp before=stamp(vb.p,ib.p,info);
+        if(cached){
+            if(!before.valid()||!cached->stamp.valid())++maintenance_.unproven;
+            else if(before.vb!=cached->stamp.vb||before.ib!=cached->stamp.ib)++maintenance_.lifetimeChanged;
+            else{
+                maintenance_.vertexChanged+=before.vertexVersion!=cached->stamp.vertexVersion;
+                maintenance_.indexChanged+=before.indexVersion!=cached->stamp.indexVersion;
+            }
+        }
         if(cached&&before.valid()&&cached->stamp==before){
-            const std::uint64_t charged=cached->indices.size()+cached->vertices.size();
+            const std::uint64_t charged=cached->charged;
             if(charged>limits.maxReadBytesPerFrame-chargedBytes)return reject(RejectReason::ByteBudget);
             // No Lock, memcpy or memcmp: the intercepted buffer lifetime/write
             // tokens are proof that both exact live byte ranges are unchanged.
@@ -502,22 +548,34 @@ public:
                 detail.firstIndex=cached->smallest;detail.lastIndex=cached->largest;
                 std::memcpy(detail.low,cached->low,sizeof detail.low);std::memcpy(detail.high,cached->high,sizeof detail.high);
                 chargedBytes+=charged;avoidedReadBytes_+=charged;++trackedHits_;++contentHits;++snapshots;contentLRU.touch(*cached);
+                ++maintenance_.trackedHits;
                 if(diagnostics)*diagnostics=detail;return true;
             }
+            ++maintenance_.unstable;
         }
         if(chargedBytes+indexBytes>limits.maxReadBytesPerFrame)return reject(RejectReason::ByteBudget);
-        scratchRawIndices.resize(size_t(indexBytes));
-        auto& indices=scratchIndices;indices.resize(static_cast<std::size_t>(indexCount));
-        void* raw=nullptr;NorthlightReplayCopies::Reader<IDirect3DIndexBuffer9> readIndices(ib.p);hr=readIndices.lock(UINT(indexOffset),UINT(indexBytes),&raw);
-        if(FAILED(hr))return reject(RejectReason::IndexLock,hr);
-        if(!raw){readIndices.unlock();return reject(RejectReason::IndexLock,E_POINTER);}
-        chargedBytes+=indexBytes;readBytes+=indexBytes;
-        const bool sameIndices=cached&&cached->indices.size()==indexBytes&&!std::memcmp(raw,cached->indices.data(),size_t(indexBytes));
-        if(!sameIndices)std::memcpy(scratchRawIndices.data(),raw,size_t(indexBytes));
-        hr=readIndices.unlock();
-        if(FAILED(hr))return reject(RejectReason::IndexUnlock,hr);
+        auto& indices=scratchIndices;
+        // A vertex write does not invalidate the independently tracked index buffer.
+        // Unknown/pending revisions still require the complete byte verification.
+        bool sameIndices=cached&&before.valid()&&cached->stamp.valid()&&
+            before.ib==cached->stamp.ib&&before.indexVersion==cached->stamp.indexVersion;
+        void* raw=nullptr;
+        if(sameIndices){chargedBytes+=indexBytes;avoidedReadBytes_+=indexBytes;++maintenance_.indexTokenHits;}
+        else{
+            // Capacity may allocate; do it before acquiring a real D3D lock.
+            scratchRawIndices.reserve(size_t(indexBytes));
+            NorthlightReplayCopies::Reader<IDirect3DIndexBuffer9> readIndices(ib.p);hr=readIndices.lock(UINT(indexOffset),UINT(indexBytes),&raw);
+            if(FAILED(hr))return reject(RejectReason::IndexLock,hr);
+            if(!raw){readIndices.unlock();return reject(RejectReason::IndexLock,E_POINTER);}
+            chargedBytes+=indexBytes;readBytes+=indexBytes;
+            sameIndices=cached&&cached->indices.size()==indexBytes&&NorthlightBytes::equal(raw,cached->indices.data(),size_t(indexBytes));
+            if(!sameIndices){scratchRawIndices.resize(size_t(indexBytes));std::memcpy(scratchRawIndices.data(),raw,size_t(indexBytes));}
+            hr=readIndices.unlock();
+            if(FAILED(hr))return reject(RejectReason::IndexUnlock,hr);
+        }
         UINT smallest=std::numeric_limits<UINT>::max(),largest=0;bool valid=true;
         const auto decodeIndices=[&](){
+            indices.resize(static_cast<std::size_t>(indexCount));
             for(std::size_t i=0;i<indices.size();++i){
                 if(indexSize==2){std::uint16_t value;std::memcpy(&value,scratchRawIndices.data()+i*2,2);indices[i]=value;}
                 else std::memcpy(&indices[i],scratchRawIndices.data()+i*4,4);
@@ -535,34 +593,43 @@ public:
         const std::uint64_t span=lastByte-firstByte;
         if(lastByte>vd.Size||!span)return reject(RejectReason::VertexRange);
         if(chargedBytes+span>limits.maxReadBytesPerFrame)return reject(RejectReason::ByteBudget);
-        scratchRawVertices.resize(size_t(span));
+        scratchRawVertices.reserve(size_t(span)); // resize below cannot allocate while locked
         raw=nullptr;NorthlightReplayCopies::Reader<IDirect3DVertexBuffer9> readVertices(vb.p);hr=readVertices.lock(UINT(firstByte),UINT(span),&raw);
         if(FAILED(hr))return reject(RejectReason::VertexLock,hr);
         if(!raw){readVertices.unlock();return reject(RejectReason::VertexLock,E_POINTER);}
         chargedBytes+=span;readBytes+=span;
-        const bool sameVertices=sameIndices&&cached->vertices.size()==span&&!std::memcmp(raw,cached->vertices.data(),size_t(span));
-        if(!sameVertices)std::memcpy(scratchRawVertices.data(),raw,size_t(span));
+        bool sameVertices=sameIndices&&cached->vertices.size()==span&&NorthlightBytes::equal(raw,cached->vertices.data(),size_t(span));
+        if(sameIndices&&!sameVertices&&!cached->sourceOffsets.empty()&&cached->sourceOffsets.size()==cached->snapshot->positions.size()){
+            sameVertices=true;
+            for(size_t i=0;i<cached->sourceOffsets.size();++i){
+                const auto offset=cached->sourceOffsets[i];
+                if(!NorthlightBytes::equal(static_cast<const unsigned char*>(raw)+offset,&cached->snapshot->positions[i],sizeof(Position))){sameVertices=false;break;}
+            }
+        }
+        if(!sameVertices){scratchRawVertices.resize(size_t(span));std::memcpy(scratchRawVertices.data(),raw,size_t(span));}
         hr=readVertices.unlock();if(FAILED(hr))return reject(RejectReason::VertexUnlock,hr);
         if(sameVertices){
-            // Both current buffers matched in full and both locks are released.
+            // Exact live indices and every referenced XYZ matched; locks released.
             // Only const ownership escapes; eviction or later buffer mutation
             // cannot invalidate a previously returned snapshot.
-            output=cached->snapshot;detail.contentCacheHit=true;
+            output=cached->snapshot;detail.contentCacheHit=true;++maintenance_.exactReuses;
             const Stamp after=stamp(vb.p,ib.p);cached->stamp=before.valid()&&after==before?before:Stamp{};
             std::memcpy(detail.low,cached->low,sizeof detail.low);std::memcpy(detail.high,cached->high,sizeof detail.high);
             contentLRU.touch(*cached);++contentHits;++snapshots;
             if(diagnostics)*diagnostics=detail;return true;
         }
-        if(sameIndices){std::memcpy(scratchRawIndices.data(),cached->indices.data(),size_t(indexBytes));decodeIndices();}
+        if(sameIndices){scratchRawIndices.resize(size_t(indexBytes));std::memcpy(scratchRawIndices.data(),cached->indices.data(),size_t(indexBytes));decodeIndices();}
         const UINT unused=std::numeric_limits<UINT>::max();
         auto& remap=scratchRemap;remap.assign(std::size_t(largest)-smallest+1,unused);
         MeshSnapshot result;result.positions.resize(std::min(indices.size(),remap.size()));UINT unique=0;
+        scratchSourceOffsets.clear();scratchSourceOffsets.reserve(result.positions.size());
         const float infinity=std::numeric_limits<float>::infinity();
         for(unsigned j=0;j<3;++j){detail.low[j]=infinity;detail.high[j]=-infinity;}
         for(auto& index:indices){
             UINT& mapped=remap[index-smallest];
             if(mapped==unused){
                 mapped=unique++;Position& p=result.positions[mapped];
+                scratchSourceOffsets.push_back(index-smallest);
                 std::memcpy(&p,scratchRawVertices.data()+std::size_t(index-smallest)*detail.stride,12);
                 const float values[]={p.x,p.y,p.z};
                 for(unsigned j=0;j<3;++j){
@@ -584,7 +651,8 @@ public:
         if(!classifyIndexedTriangles(result.positions.data(),result.positions.size(),result.indices.data(),result.indices.size(),D3DPT_TRIANGLELIST,result.bounds))return reject(RejectReason::ChunkCoverage);
         std::shared_ptr<const MeshSnapshot> shared=std::make_shared<const MeshSnapshot>(std::move(result));
         const Stamp after=stamp(vb.p,ib.p);
-        rememberContent(contentKey,hash,smallest,largest,scratchRawIndices,scratchRawVertices,shared,detail,before.valid()&&after==before?before:Stamp{});
+        ++maintenance_.rebuilds;
+        rememberContent(contentKey,hash,smallest,largest,scratchRawIndices,scratchRawVertices,scratchSourceOffsets,shared,detail,before.valid()&&after==before?before:Stamp{});
         ++snapshots;output=std::move(shared);if(diagnostics)*diagnostics=detail;return true;
     }
 

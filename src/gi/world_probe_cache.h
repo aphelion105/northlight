@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <limits>
 #include <list>
+#include <mutex>
 #include <unordered_map>
 #include <vector>
 
@@ -143,5 +144,62 @@ public:
         }
         return result;
     }
+};
+// Fixed world slots retain transport across colour changes. Exact geometry /
+// direction / light-layout changes invalidate them; there is no brightness
+// quantization. Bounded storage and per-access locking also cover GIThreads>1.
+class ProbeRelightCache {
+    struct Entry {ProbeGridKey key;ProbeResponse response;uint64_t epoch=0;uint32_t seed=0;};
+    std::vector<Entry> entries_;
+    Lighting shape_;unsigned rays_=0,mask_=0;uint64_t epoch_=1;
+    bool ready_=false,allocationTried_=false;
+    mutable std::mutex mutex_;
+    static bool same(Vec3 a,Vec3 b){return a.x==b.x&&a.y==b.y&&a.z==b.z;}
+    bool sameShape(const Lighting& l,unsigned rays,unsigned mask)const{
+        if(rays_!=rays||mask_!=mask||!same(l.sunDirection,shape_.sunDirection)||!same(l.worldUp,shape_.worldUp)||
+           l.maxDistance!=shape_.maxDistance||l.rayBias!=shape_.rayBias||l.maxBounces!=shape_.maxBounces||
+           l.additionalDirections.size()!=shape_.additionalDirections.size()||l.points.size()!=shape_.points.size())return false;
+        for(size_t i=0;i<l.additionalDirections.size();++i)if(!same(l.additionalDirections[i].direction,shape_.additionalDirections[i].direction))return false;
+        for(size_t i=0;i<l.points.size();++i){const auto& a=l.points[i];const auto& b=shape_.points[i];
+            if(!same(a.position,b.position)||!same(a.irradiance,b.irradiance)||a.attenuationStart!=b.attenuationStart||a.attenuationEnd!=b.attenuationEnd)return false;}
+        return true;
+    }
+public:
+    static constexpr size_t BudgetBytes=4u*1024u*1024u;
+    struct Stats {uint64_t hits=0,misses=0,resets=0;size_t bytes=0;};
+private:
+    Stats stats_;
+public:
+    void reset(){std::lock_guard<std::mutex> lock(mutex_);ready_=false;++epoch_;}
+    // Called between solve groups, never while a pool job is running.
+    void configure(const PreparedLighting& prepared,unsigned rays){
+        std::lock_guard<std::mutex> lock(mutex_);
+        if(!prepared.valid()||prepared.values().additionalDirections.size()>1){ready_=false;return;}
+        const auto& l=prepared.values();
+        const unsigned mask=(dot(l.sunIrradiance,l.sunIrradiance)>=1e-16f?1u:0u)|
+            (!l.additionalDirections.empty()&&dot(l.additionalDirections[0].irradiance,l.additionalDirections[0].irradiance)>=1e-16f?2u:0u);
+        if(ready_&&sameShape(l,rays,mask))return;
+        ready_=false;
+        try{
+            if(!allocationTried_){allocationTried_=true;entries_.resize(std::min(probeLayout().atlasSize(),BudgetBytes/sizeof(Entry)));}
+            if(entries_.empty())return;
+            shape_=l;rays_=rays;mask_=mask;++epoch_;++stats_.resets;stats_.bytes=entries_.capacity()*sizeof(Entry);ready_=true;
+        }catch(...){ready_=false;} // optional cache: allocation failure keeps the ordinary solver
+    }
+    Probe solve(const BVH& bvh,ProbeGridKey key,Vec3 position,const PreparedLighting& prepared,unsigned rays,uint32_t seed){
+        bool cached=false;
+        {std::lock_guard<std::mutex> lock(mutex_);cached=ready_;
+         if(cached){const auto& e=entries_[probeAtlasIndex(key)%entries_.size()];
+             if(e.epoch==epoch_&&e.key==key&&e.seed==seed&&same(e.response.fixed.position,position)){
+                 ++stats_.hits;return relightProbe(e.response,prepared);
+             }}++stats_.misses;}
+        if(!cached)return solveProbePrepared(bvh,position,prepared,rays,seed);
+        ProbeResponse response;
+        Probe result=solveProbeResponse(bvh,position,prepared,rays,seed,response);
+        {std::lock_guard<std::mutex> lock(mutex_);
+         auto& e=entries_[probeAtlasIndex(key)%entries_.size()];e.key=key;e.seed=seed;e.response=response;e.epoch=epoch_;}
+        return result;
+    }
+    Stats stats()const{std::lock_guard<std::mutex> lock(mutex_);return stats_;}
 };
 } // namespace NorthlightGI
