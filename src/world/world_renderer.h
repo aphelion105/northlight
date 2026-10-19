@@ -500,9 +500,10 @@ private:
         try {plan.drawCalls(matrix,candidates,long(ShadowCacheSize),StaticCacheDirtyMargin,w.costs);}catch(...){return false;}
         /* 0.3.215 (task 45): the flat bitmap answers the per-batch fixed-chunk test without a red-black tree walk (same membership: it falls back to the set off-grid or when it does not describe this set). */
         const auto& fixedSet=fixedTerrainChunks();const bool fixedBits=fixedTerrainBits.source()==&fixedSet;
+        const bool affine=NorthlightShadowBounds::affineLightMatrix(matrix);
         for(const auto& b:batches){
             if(b.terrain&&!(fixedBits?fixedTerrainBits.contains({b.chunkX,b.chunkY}):fixedSet.count({b.chunkX,b.chunkY})!=0))continue;
-            if(NorthlightShadowBounds::directionalClipReject(b.boundsLow,b.boundsHigh,matrix))continue;
+            if(affine&&NorthlightShadowBounds::directionalClipRejectAffine(b.boundsLow,b.boundsHigh,matrix))continue;
             NorthlightShadowBounds::TexelRect footprint;const bool known=NorthlightShadowBounds::texelFootprint(b.boundsLow,b.boundsHigh,matrix,long(ShadowCacheSize),StaticCacheDirtyMargin,footprint);
             ++w.costs[0];for(size_t k=1;k<candidates.size();++k)for(const auto& r:*candidates[k])if(!known||NorthlightShadowBounds::intersects(footprint,r))++w.costs[k];
         }
@@ -3456,10 +3457,10 @@ public:
         void operator()(){r->replayCullWork(*this);}};
     ReplayCull replayCulls[4];
     void replayCullWork(ReplayCull& job){
-        const size_t n=replays.size();job.flags.resize(n);
+        const size_t n=replays.size();job.flags.resize(n);const bool affine=NorthlightShadowBounds::affineLightMatrix(job.matrix);
         for(size_t index=0;index<n;++index){const auto& p=*replays[index];uint8_t f=0;
             if((p.staticProofMask&(1u<<job.slot))&&StaticShadow::containsBounds(job.cached,p.staticProofLow,p.staticProofHigh))f|=1;
-            if(p.pointBounds.valid&&NorthlightShadowBounds::clipReject(V(p.pointBounds.low[0],p.pointBounds.low[1],p.pointBounds.low[2]),V(p.pointBounds.high[0],p.pointBounds.high[1],p.pointBounds.high[2]),job.matrix))f|=2;
+            if(affine&&p.pointBounds.valid&&NorthlightShadowBounds::clipRejectAffine(V(p.pointBounds.low[0],p.pointBounds.low[1],p.pointBounds.low[2]),V(p.pointBounds.high[0],p.pointBounds.high[1],p.pointBounds.high[2]),job.matrix))f|=2;
             job.flags[index]=f;}
     }
     void replayCullKick(int fromSlot,const bool* sourceActive){
@@ -3741,15 +3742,16 @@ public:
                 UINT boundPage=UINT_MAX;const NorthlightShadowBounds::TexelRect* staticScissor=nullptr;
                 /* 0.3.215 (task 45): the flat bitmap answers the per-batch fixed-chunk test without a red-black tree walk (same membership: it falls back to the set off-grid or when it does not describe this set). */
                 const auto& fixedSet=fixedTerrainChunks();const bool fixedBits=fixedTerrainBits.source()==&fixedSet;
+                const bool affine=NorthlightShadowBounds::affineLightMatrix(cachedMatrix);
                 for(auto& b:batches){
                     if(b.terrain&&!(fixedBits?fixedTerrainBits.contains({b.chunkX,b.chunkY}):fixedSet.count({b.chunkX,b.chunkY})!=0))continue;
-                    if(NorthlightShadowBounds::directionalClipReject(b.boundsLow,b.boundsHigh,cachedMatrix)){if(real)++culledBatches[cascade];continue;}
+                    if(affine&&NorthlightShadowBounds::directionalClipRejectAffine(b.boundsLow,b.boundsHigh,cachedMatrix)){if(real)++culledBatches[cascade];continue;}
                     size_t passes=1;
                     if(partial){NorthlightShadowBounds::TexelRect footprint;const bool known=NorthlightShadowBounds::texelFootprint(b.boundsLow,b.boundsHigh,cachedMatrix,long(ShadowCacheSize),StaticCacheDirtyMargin,footprint);
                         staticDirtyHits.clear();for(const auto& r:staticDirty)if(!known||NorthlightShadowBounds::intersects(footprint,r))staticDirtyHits.push_back(&r);
                         if(staticDirtyHits.empty()){++shadowCachePartialSkippedDraws;continue;}passes=staticDirtyHits.size();}
                     if(real)++drawnBatches[cascade];
-                    const bool interior=NorthlightShadowBounds::depthFullyInside(b.boundsLow,b.boundsHigh,cachedMatrix);
+                    const bool interior=affine&&NorthlightShadowBounds::depthFullyInsideAffine(b.boundsLow,b.boundsHigh,cachedMatrix);
                     const bool opaque=uploadedAlphaCutoffs[b.material]<=0;
                     IDirect3DPixelShader9* ps=interior?(opaque&&cachedOpaqueFastPS?cachedOpaqueFastPS:cachedFastPS):(opaque?cachedOpaquePS:cachedShadowPS);
                     if(!ps)ps=cachedShadowPS;
@@ -3826,9 +3828,10 @@ public:
             d->SetVertexShader(shadowVS);d->SetVertexShaderConstantF(0,matrices[cascade],4);d->SetPixelShader(shadowPS);
             // Cached-mesh terrain chunks that the game did not draw live this frame.
             UINT terrainBoundPage=UINT_MAX;
+            const bool replayAffine=NorthlightShadowBounds::affineLightMatrix(matrices[cascade]);
             if(jobs)replayJobs_.wait(terrainDone); /* 0.3.200 (jobs): the candidates' first reader */
             if(!terrainCandidates.forEach(batches,fixedTerrainChunks(),liveTerrainChunks,[&](const Batch& b){
-                if(NorthlightShadowBounds::clipReject(b.boundsLow,b.boundsHigh,matrices[cascade])){++culledBatches[cascade];return true;}
+                if(replayAffine&&NorthlightShadowBounds::clipRejectAffine(b.boundsLow,b.boundsHigh,matrices[cascade])){++culledBatches[cascade];return true;}
                 ++drawnBatches[cascade];float material[]={1,1,1,uploadedAlphaCutoffs[b.material]};
                 d->SetPixelShaderConstantF(0,material,1);d->SetTexture(0,materials[b.material]);
                 return bindMeshPage(b,terrainBoundPage)&&check(d->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,b.minVertex,b.vertexCount,b.start,b.count),"static shadow cache draw");
@@ -3910,7 +3913,7 @@ public:
                     ++staticM2Skipped;++replaySlotM2Skipped[slot];continue;
                 }
                 ++replaySlotTested[slot];replaySlotBounded[slot]+=p->pointBounds.valid;
-                if(p->pointBounds.valid&&(cull?(cull[index]&2)!=0:NorthlightShadowBounds::clipReject(V(p->pointBounds.low[0],p->pointBounds.low[1],p->pointBounds.low[2]),V(p->pointBounds.high[0],p->pointBounds.high[1],p->pointBounds.high[2]),matrices[cascade]))){++culledReplayDraws;++replaySlotCulled[slot];continue;}
+                if(p->pointBounds.valid&&(cull?(cull[index]&2)!=0:(replayAffine&&NorthlightShadowBounds::clipRejectAffine(V(p->pointBounds.low[0],p->pointBounds.low[1],p->pointBounds.low[2]),V(p->pointBounds.high[0],p->pointBounds.high[1],p->pointBounds.high[2]),matrices[cascade])))){++culledReplayDraws;++replaySlotCulled[slot];continue;}
                 split.mark(Own);
                 if(!submitReplay(p.get(),replayBindings,poseConstants,rows,split,replayConstantBytes,replayConstantCalls,[&](HRESULT h,const char* s){return check(h,s);}))return false;
                 split.drawn(p.get());
