@@ -121,6 +121,11 @@ float waterDistance(float2 uv,float d) {
 float receiverDistance(float2 uv,float d) {
     float water=waterDistance(uv,d);return water>0?water:viewDistance(d);
 }
+float fogReceiverDistance(float2 uv,float d) {
+    // Validate liquid against the actual scene depth. Clamping sky first would
+    // reject visible water near the far clip; keep only the dry fallback capped.
+    float water=waterDistance(uv,d);return water>0?water:viewDistance(min(d,.99999));
+}
 float3 affinePoint(float3 p,row_major float4x4 transformMatrix) {
     // Explicit vector rows avoid scalarizing mul(float4,matrix) in Wine's
     // Shader Model 3 compiler while preserving row-vector multiplication.
@@ -770,7 +775,7 @@ float4 SourceVisibilityPS(float2 uv:TEXCOORD0):COLOR0 {
 float4 WorldFog(float2 uv:TEXCOORD0):COLOR0 {
     if(FogInfo.x<.5)return float4(0,0,0,1);
     uv=depthUV(uv);
-    float depth=normalizedDepth(uv);float3 view=viewPositionDistance(uv,receiverDistance(uv,min(depth,.99999)));
+    float depth=normalizedDepth(uv);float3 view=viewPositionDistance(uv,fogReceiverDistance(uv,depth));
     // Rotate a direction directly: adding then subtracting a large camera
     // translation loses precision as the player moves through world space.
     float3 ray=view.x*InverseView[0].xyz+view.y*InverseView[1].xyz+view.z*InverseView[2].xyz;
@@ -873,7 +878,7 @@ float atanFast(float x){
 }
 float4 LocalFog(float2 uv:TEXCOORD0):COLOR0 {
     uv=depthUV(uv);
-    float depth=normalizedDepth(uv);float3 endpoint=affinePoint(viewPositionDistance(uv,receiverDistance(uv,min(depth,.99999))),InverseView);
+    float depth=normalizedDepth(uv);float3 endpoint=affinePoint(viewPositionDistance(uv,fogReceiverDistance(uv,depth)),InverseView);
     float3 ray=endpoint-Camera.xyz;float D=min(length(ray),max(FogInfo.w,0));
     ray*=rsqrt(max(dot(ray,ray),1e-12));
     float3 result=0;float capped=0;
@@ -964,7 +969,7 @@ float4 FogBlur(float2 uv:TEXCOORD0):COLOR0 {
 float4 FogClouds(float2 uv:TEXCOORD0):COLOR0 {
     // (no FogInfo.x test: the host draws this pass only when c21.x >= .5)
     uv=depthUV(uv);
-    float depth=normalizedDepth(uv);float3 view=viewPositionDistance(uv,receiverDistance(uv,min(depth,.99999)));
+    float depth=normalizedDepth(uv);float3 view=viewPositionDistance(uv,fogReceiverDistance(uv,depth));
     float3 ray=view.x*InverseView[0].xyz+view.y*InverseView[1].xyz+view.z*InverseView[2].xyz;
     float surface=min(length(ray),FogInfo.w);
     ray*=rsqrt(max(dot(ray,ray),1e-12));
