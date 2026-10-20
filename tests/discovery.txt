@@ -97,6 +97,7 @@ test_name_mask.py
 test_near_reserve.py
 test_night_floor.py
 test_night_floor_wiring.py
+test_native_shadow_install.py
 test_northlight_install.py
 test_outdoor_light_profiles.py
 test_pending_release_wiring.py
