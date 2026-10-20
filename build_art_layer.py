@@ -44,6 +44,7 @@ import northlight_paths as fp  # noqa: E402
 fp.use_source_modules()
 import client_archives  # noqa: E402
 from mpq import Archive  # noqa: E402
+import native_model_lights  # noqa: E402
 from world_scene_builder import Assets, decode_blp  # noqa: E402
 import build_lighting  # noqa: E402
 import build_mulgore_lighting  # noqa: E402
@@ -51,7 +52,6 @@ import build_stormwind_single_sun  # noqa: E402
 import build_outdoor_single_sun  # noqa: E402
 import build_outdoor_single_moon  # noqa: E402
 import build_weather_textures  # noqa: E402
-import native_model_lights  # noqa: E402
 from build_lighting import DBC, Skip  # noqa: E402
 
 DBC_NAME = 'DBFilesClient\\{}.dbc'
@@ -125,6 +125,9 @@ def build(client, output, world_cache, locale=None, letter='z', archives='all'):
             if manifest.get('sky_clone_skipped'):
                 report['steps'][-1]['sky_clone_skipped'] = manifest['sky_clone_skipped']
                 print(f"{name}: sky clone skipped ({manifest['sky_clone_skipped']})", flush=True)
+        dynamic_models, dynamic_steps = native_model_lights.build(assets, work, read_archive)
+        payload.update(dynamic_models)
+        report['steps'].extend(dynamic_steps)
         # 0.3.198 (rain): after the sky steps, so their skybox edits are kept: private storm profiles, then the weather textures.
         final = {n: DBC(payload[DBC_NAME.format(n)]) for n in build_lighting.TABLES}
         storm = build_lighting.stormify(final, stock)
@@ -134,9 +137,6 @@ def build(client, output, world_cache, locale=None, letter='z', archives='all'):
         textures.update(build_weather_textures.mist_textures(assets.read, decode_blp))   # 0.3.199 (rain mist)
         payload.update(textures)
         report['steps'].append({'step': 'weather_textures', 'files': sorted(textures)})
-        dynamic_models, dynamic_steps = native_model_lights.build(assets, work, read_archive)
-        payload.update(dynamic_models)
-        report['steps'].extend(dynamic_steps)
         last = None   # the payload is no longer a step's archive
         unchanged = sorted(n for n, data in payload.items() if n.lower() in assets.providers and assets.read(n) == data)
         payload = {n: data for n, data in payload.items() if n not in unchanged}
