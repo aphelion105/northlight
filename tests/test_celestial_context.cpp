@@ -66,7 +66,19 @@ int main() {
         }
     }
     s=scene(-.1f,-.1f);assert(decode(s,camera,direct,c));applyRendererPolicy(c,direct);
-    assert(std::fabs(c.sunWeight-.5f)<1e-6f&&std::fabs(c.moonWeight-.5f)<1e-6f); // level under the horizon: the handover's midpoint (the higher body lights)
+    assert(c.sunWeight==0&&c.moonWeight==0); // both under the horizon: no light, the game's own stays (authoredFill)
+    // The light follows the visible share of the disc: whole over the 1.9 deg fade, none under the horizon, even between.
+    {const float radius=.05f,r=std::sin(radius);
+     assert(discVisibility(r+NativeFadeSine,radius)==1&&discVisibility(-r,radius)==0&&discVisibility(-1,radius)==0);
+     assert(discVisibility(0,0)==0&&discVisibility(NAN,radius)==0);
+     float previous=0;
+     for(int i=0;i<=1000;++i){const float z=-r+(2*r+NativeFadeSine)*i/1000.f,v=discVisibility(z,radius);
+         assert(v>=0&&v<=1&&v+1e-6f>=previous&&v-previous<.01f);previous=v;}
+     assert(std::fabs(discVisibility(NativeFadeSine*.5f,radius)-.5f)<.02f); // the centre on the fade's middle: half
+     Context both;both.sun.direction[2]=.5f;both.moon.direction[2]=.5f;both.sun.angularRadius=both.moon.angularRadius=radius;
+     applyRendererPolicy(both,direct);assert(both.sunWeight==1&&both.moonWeight==0); // the sun first, the moon takes the rest
+     both.sun.direction[2]=NativeFadeSine*.5f;applyRendererPolicy(both,direct);
+     assert(both.sunWeight>.45f&&both.sunWeight<.55f&&std::fabs(both.sunWeight+both.moonWeight-1)<1e-6f);}
     const float black[3]={};c.moon.direction[2]=.81f;applyRendererPolicy(c,black);
     for(float v:c.moonColor)assert(v==0); // no invented light when zone budget is zero
     // Sky-only frames use current native snapshots and the SAME native placement as
@@ -103,7 +115,7 @@ int main() {
             for(unsigned k=0;k<3;++k){
                 assert(sky.sun.direction[k]==native.sun.direction[k]&&sky.moon.direction[k]==native.moon.direction[k]);
                 assert(result.sun.direction[k]==native.sun.direction[k]&&result.moon.direction[k]==native.moon.direction[k]);
-                assert(std::fabs(sky.sunColor[k]+sky.moonColor[k]-direct[k])<1e-6f);
+                assert(sky.sunColor[k]+sky.moonColor[k]<=direct[k]+1e-6f&&std::fabs(sky.sunColor[k]+sky.moonColor[k]-direct[k]*(sky.sunWeight+sky.moonWeight))<1e-6f); // never more than the zone's light
             }
             Context world=sky;resolveRendererSky(world,direct);
             assert(std::memcmp(&sky,&world,sizeof sky)==0);

@@ -29,7 +29,7 @@ struct Context {
     float sunWeight=0, moonWeight=0;
     float sunColor[3]={}, moonColor[3]={}; // Same units as input terrain direct RGB. SURFACE light (shadows, GI, lighting): scaled by light_strength.
     float sunGlowColor[3]={}, moonGlowColor[3]={}; // The same source colour for the volumetric glow (fog shafts, aureole): scaled by glow_strength, own hue (profiles apply()).
-    float horizonSine=0; // the camera's far edge (apparent_horizon.h), 0..-sin 3 deg; discs and the glow ring only
+    float horizonSine=0; // the camera's far edge (apparent_horizon.h), 0..-sin 3 deg; the veil's haze at the sun
 };
 inline float smooth(float x) { x=std::max(0.f,std::min(1.f,x));return x*x*(3-2*x); }
 inline bool decodeBody(const BodyRecord& r,const float* camera,Body& out) {

@@ -11,10 +11,10 @@ inline constexpr double PrewarmSeconds=20;
 inline Request makeRequest(const std::string& map,Vec3 pivot,const Vec3* directions,
                            const bool* lit,bool orbitValid,double day,bool allowLoads){
     Request r;r.map=map;r.center=pivot;r.allowLoads=allowLoads;
-    const auto current=NorthlightCelestialOrbit::evaluate(day);
+    const auto current=NorthlightCelestialOrbit::evaluateNative(day);
     double nextDay=day+PrewarmSeconds/NorthlightCelestialOrbit::kDaySeconds;
     nextDay-=std::floor(nextDay);
-    const auto future=NorthlightCelestialOrbit::evaluate(nextDay);
+    const auto future=NorthlightCelestialOrbit::evaluateNative(nextDay);
     for(unsigned source=0;source<2;++source){
         r.directions[source]=directions[source];r.active[source]=lit[source];
         if(lit[source]||!orbitValid||!current.valid||!future.valid)continue;
