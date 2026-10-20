@@ -1406,7 +1406,9 @@ struct StreamQuery final:IDirect3DQuery9,ProxyBase {
     // no sent message, and a waiting game thread should sleep instead of spinning through a long GPU frame.
     static constexpr std::uint64_t kEventLocalNs=1000000;
     void completeEvent(HRESULT hr,const unsigned char* buf){
-        if(hr==S_FALSE)return;
+        // Replay thread only. Publish a generation once: pollQueries polls a query PollEventQuery already completed, and a
+        // later error must not replace the published status or value (two relaxed stores a reader could pair across publications).
+        if(hr==S_FALSE||eventDoneGen.load(std::memory_order_relaxed)==issueSeen)return;
         BOOL value=FALSE;if(hr==S_OK)std::memcpy(&value,buf,sizeof value);
         eventValue.store(value,std::memory_order_relaxed);eventStatus.store(hr,std::memory_order_relaxed);
         eventDoneGen.store(issueSeen,std::memory_order_release);
@@ -1486,6 +1488,7 @@ struct StreamQuery final:IDirect3DQuery9,ProxyBase {
                 if(event){unsigned calls=0;hr=waitEventQuery(poll,nowNs,[]{std::this_thread::yield();},calls);own(q.stats.eventPollCalls,calls);own(q.stats.eventWaitTrips);}
                 else hr=poll();
             }},Cmd::SyncGetData);
+            if(event&&ran&&hr!=S_FALSE&&eventPendingSince){own(q.stats.eventPendingNs,nowNs()-eventPendingSince);own(q.stats.eventCompleted);eventPendingSince=0;}   // a wait that ended on this pumped path
             if(measure){auto& s=core->queryWait[type<20?type:20];++s.calls;s.flush+=bool(flags&D3::kGetDataFlush);s.unissued+=unissued;
                 s.pending+=ran&&hr==S_FALSE;s.errors+=!ran||FAILED(hr);s.waitNs+=get(q.stats.syncNs)-waitBefore;}
             if(!ran)return D3DERR_INVALIDCALL;
