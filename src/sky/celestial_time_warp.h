@@ -65,13 +65,37 @@ inline Body body(double elevation){
     b.direction[1]=float(h*std::sin(kAzimuthRadians));
     b.direction[2]=float(std::sin(e));return b;
 }
-// The smooth orbit above, kept for the ambient policies (night floor, twilight fill) so their dusk and dawn timing stays.
+// The native moon (DayNight::SetPlanets, s_moonTheta, interpolated as DayNight::InterpTable): the polar angle from
+// the zenith, 35 deg (55 up) from 23:55 to 00:05, down to 100 deg (10 under, parked) at 04:00, up from there at 22:00.
+// It is up from about 22:17 to 03:24. Since PR 77 the discs, light and shadows follow the native billboards.
+inline double nativeLunarElevation(double day){
+    struct Key{double day,polar;};
+    static constexpr Key keys[5]={{0.,.61086524},{.0034722222,.61086524},{.16666667,1.7453293},{.91666669,1.7453293},{.99652779,.61086524}};
+    const double t=std::clamp(day,0.,1.);
+    unsigned index=0;while(index<5&&t>keys[index].day)++index;
+    unsigned prev;if(index==5){index=0;prev=4;}else prev=index?index-1:4;
+    double range=keys[index].day-keys[prev].day;
+    if(std::fabs(range)<.001)return 90-keys[prev].polar*180/kPi;
+    if(range<0)range+=1;
+    double offset=t-keys[prev].day;if(offset<0)offset+=1;
+    return 90-(keys[prev].polar+(keys[index].polar-keys[prev].polar)*offset/range)*180/kPi;
+}
+// The renderer's own smooth orbit, no longer drawn or lit since PR 77 (kept with its tests).
 inline Result evaluateNatural(double dayFraction){
     Result r;
     if(!std::isfinite(dayFraction)||dayFraction<0||dayFraction>=1)return r;
     const double seconds=dayFraction*kDaySeconds;
     r.sun=body(solarElevation(dayFraction));
     r.moon=body(lunarElevation(seconds));
+    r.valid=true;return r;
+}
+// The native orbit (the sun's keys above are the native table too): the ambient policies (night floor, twilight
+// fill) and the static shadow prewarm, so they run on the sun and moon that are shown and light the world.
+inline Result evaluateNative(double dayFraction){
+    Result r;
+    if(!std::isfinite(dayFraction)||dayFraction<0||dayFraction>=1)return r;
+    r.sun=body(solarElevation(dayFraction));
+    r.moon=body(nativeLunarElevation(dayFraction));
     r.valid=true;return r;
 }
 // The displayed orbit (discs, light, shadows). Sun and moon share one azimuth, so they pass each other between sunset

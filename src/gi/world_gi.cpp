@@ -764,6 +764,17 @@ bool LocalSceneCache::build(const std::vector<std::string>& files,const std::str
             stats.peakBytes=std::max(stats.peakBytes,stats.retainedBytes+sceneBytes(next)+decodedBytes+largestPiece);
         }
         cache.sized=true;cache.sizedVertices=next.vertices.size();cache.sizedTriangles=next.triangles.size();cache.sizedLow=low;cache.sizedHigh=high;
+        // Cold city builds can leave ~38 MiB of vector growth slack in the
+        // published GI scene. Compact only large waste, before tree/terrain
+        // allocations overlap it. A denied optional copy keeps the old data.
+        auto compact=[&](auto& values){
+            using Buffer=std::decay_t<decltype(values)>;using T=typename Buffer::value_type;
+            const uint64_t bytes=values.size()*sizeof(T),slack=(values.capacity()-values.size())*sizeof(T);
+            if(slack<4u*1024u*1024u||values.capacity()<=values.size()+values.size()/4||(admit&&!admit(bytes)))return;
+            try{Buffer exact(values.begin(),values.end());values.swap(exact);}
+            catch(const std::bad_alloc&){/* optional compaction: keep the complete scene */}
+        };
+        compact(next.vertices);compact(next.triangles);
         stats.flatBytes=sceneBytes(next);auto stamp=CacheClock::now();
         // Preflight the tree allocations: triangle order, nodes (the median
         // Node reserve can grow once) and SAH build-time centroids.
@@ -792,9 +803,9 @@ Vec3 cosineDirection(Vec3 n,RNG& rng){
 }
 // Record: static-only transport (movingGeometry null) that logs every moving
 // query a moving solve would issue along this unchanged path, in order.
-template<bool Record=false>
+template<bool Record=false,bool Response=false>
 Vec3 transport(const BVH& bvh,Vec3 origin,Vec3 direction,const Lighting& l,const BVH* movingGeometry,RNG& rng,float& firstDistance,bool& firstBackFace,
-               std::vector<StaticPathRecord::Query>* record=nullptr){
+               std::vector<StaticPathRecord::Query>* record=nullptr,Vec3* response=nullptr){
     Vec3 throughput(1,1,1),radiance;const Vec3 sun=l.sunDirection,up=l.worldUp;
     firstDistance=l.maxDistance;firstBackFace=false;
     for(unsigned bounce=0;bounce<=l.maxBounces;++bounce){
@@ -803,28 +814,32 @@ Vec3 transport(const BVH& bvh,Vec3 origin,Vec3 direction,const Lighting& l,const
         if(movingGeometry){auto actor=movingGeometry->trace(origin,direction,.0005f,h.hit?h.distance:l.maxDistance);if(actor.hit)h=actor;}
         if(bounce==0){firstDistance=h.hit?h.distance:l.maxDistance;firstBackFace=h.hit&&h.backFace;}
         if(!h.hit){
-            if(dot(direction,up)>0)radiance=radiance+throughput*l.skyRadiance;
+            if(dot(direction,up)>0){radiance=radiance+throughput*l.skyRadiance;if constexpr(Response)response[1]=response[1]+throughput;}
             break;
         }
         if(bounce==l.maxBounces)break;
         Vec3 offset=h.position+h.geometricNormal*l.rayBias;
-        auto illuminate=[&](Vec3 direction,Vec3 irradiance,float distance){
+        auto illuminate=[&](Vec3 direction,Vec3 irradiance,float distance,unsigned source){
             float cosine=std::max(0.f,dot(h.normal,direction));
             if(cosine<=0||dot(h.geometricNormal,direction)<=0||dot(irradiance,irradiance)<1e-16f)return;
             if(bvh.occluded(offset,direction,distance,.0005f))return;
             if constexpr(Record)record->push_back({offset,direction,distance});
             if(movingGeometry&&movingGeometry->occluded(offset,direction,distance,.0005f))return;
             radiance=radiance+throughput*h.albedo*irradiance*(cosine/PI);
+            if constexpr(Response){
+                const Vec3 contribution=throughput*h.albedo*(cosine/PI);
+                response[source]=response[source]+(source==3?throughput*h.albedo*irradiance*(cosine/PI):contribution);
+            }
         };
-        illuminate(sun,l.sunIrradiance,l.maxDistance);
+        illuminate(sun,l.sunIrradiance,l.maxDistance,0);
         for(const auto& light:l.additionalDirections)
-            illuminate(light.direction,light.irradiance,l.maxDistance);
+            illuminate(light.direction,light.irradiance,l.maxDistance,2);
         for(const auto& light:l.points){
             Vec3 delta=light.position-offset;float squared=dot(delta,delta);
             if(squared<1e-8f||squared>=light.attenuationEnd*light.attenuationEnd)continue;
             float distance=std::sqrt(squared);
             float attenuation=clamp01((light.attenuationEnd-distance)/std::max(light.attenuationEnd-light.attenuationStart,.0001f));
-            illuminate(delta/distance,light.irradiance*attenuation,std::max(.0006f,distance-l.rayBias));
+            illuminate(delta/distance,light.irradiance*attenuation,std::max(.0006f,distance-l.rayBias),3);
         }
         throughput=throughput*h.albedo;
         if(std::max(throughput.x,std::max(throughput.y,throughput.z))<1e-6f)break;
@@ -896,6 +911,34 @@ Probe solveProbePrepared(const BVH& bvh,Vec3 position,const PreparedLighting& pr
     const Lighting& l=prepared.values();
     return accumulateProbe(position,l,rays,seed,[&](unsigned,Vec3 direction,RNG& rng,float& distance,bool& backFace){
         return transport(bvh,position,direction,l,movingGeometry,rng,distance,backFace);});
+}
+Probe solveProbeResponse(const BVH& bvh,Vec3 position,const PreparedLighting& prepared,unsigned rays,uint32_t seed,ProbeResponse& response){
+    response={};
+    if(!prepared.valid()||prepared.values().additionalDirections.size()>1||!finite(position)||rays<6||rays>1048576)
+        return solveProbePrepared(bvh,position,prepared,rays,seed);
+    Vec3 fixed[4];const auto& l=prepared.values();
+    Probe out=accumulateProbe(position,l,rays,seed,[&](unsigned,Vec3 direction,RNG& rng,float& distance,bool& backFace){
+        Vec3 terms[4];
+        const Vec3 color=transport<false,true>(bvh,position,direction,l,nullptr,rng,distance,backFace,nullptr,terms);
+        const float sh[4]={.2820947918f,.4886025119f*direction.x,.4886025119f*direction.y,.4886025119f*direction.z};
+        for(unsigned j=0;j<4;++j){
+            const float weight=sh[j]*(4*PI/float(rays));
+            for(unsigned source=0;source<3;++source)response.sources[source][j]=response.sources[source][j]+terms[source]*weight;
+            fixed[j]=fixed[j]+terms[3]*weight;
+        }
+        return color;
+    });
+    response.fixed=out;
+    for(unsigned j=0;j<4;++j)response.fixed.sh[j]=out.valid?fixed[j]:Vec3{};
+    if(!out.valid)for(auto& source:response.sources)for(auto& sh:source)sh={};
+    return out;
+}
+Probe relightProbe(const ProbeResponse& response,const PreparedLighting& prepared){
+    Probe out=response.fixed;const auto& l=prepared.values();
+    const Vec3 secondary=l.additionalDirections.empty()?Vec3{}:l.additionalDirections[0].irradiance;
+    for(unsigned j=0;j<4;++j)out.sh[j]=out.sh[j]+response.sources[0][j]*l.sunIrradiance+
+        response.sources[1][j]*l.skyRadiance+response.sources[2][j]*secondary;
+    return out;
 }
 Probe solveProbeMoving(const BVH& bvh,Vec3 position,const PreparedLighting& prepared,unsigned rays,uint32_t seed,
                        const BVH& moving,StaticPathRecord& record,uint64_t generation,MovingSolveStats* stats){

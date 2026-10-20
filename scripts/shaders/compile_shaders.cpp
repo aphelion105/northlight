@@ -1,14 +1,57 @@
 // Standalone build tool. This program never loads the game or a rendering device.
+// It compiles with Microsoft's d3dcompiler_47.dll 10.0.17134.12 (x64) placed next to the
+// executable (shader_compiler.py pins its SHA-256) and refuses any other module, so Wine's
+// builtin reimplementation can never stand in for it.
 #include <windows.h>
 #include <d3dcompiler.h>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <cwchar>
+
+// The module must be the file next to this executable, a real PE (not a Wine builtin or
+// placeholder, which carry "Wine " in the DOS stub) and FileVersion 10.0.17134.12.
+static bool microsoft_compiler(HMODULE module, const wchar_t *expected) {
+    wchar_t loaded[MAX_PATH * 4];
+    DWORD length = GetModuleFileNameW(module, loaded, MAX_PATH * 4);
+    if (!length || length >= MAX_PATH * 4 || _wcsicmp(loaded, expected) != 0) {
+        std::fprintf(stderr, "d3dcompiler_47 loaded from %ls, expected %ls\n", length ? loaded : L"?", expected);
+        return false;
+    }
+    if (std::memcmp(reinterpret_cast<const char *>(module) + 0x40, "Wine ", 5) == 0) {
+        std::fprintf(stderr, "d3dcompiler_47 is Wine's builtin, not Microsoft's\n");
+        return false;
+    }
+    HRSRC info = FindResourceW(module, MAKEINTRESOURCEW(1), MAKEINTRESOURCEW(16));   // RT_VERSION
+    const unsigned char *data = info ? static_cast<const unsigned char *>(LockResource(LoadResource(module, info))) : nullptr;
+    DWORD size = info ? SizeofResource(module, info) : 0;
+    for (DWORD i = 0; data && i + sizeof(VS_FIXEDFILEINFO) <= size; i += 4) {
+        VS_FIXEDFILEINFO fixed;
+        std::memcpy(&fixed, data + i, sizeof fixed);
+        if (fixed.dwSignature != 0xFEEF04BD) continue;
+        if (fixed.dwFileVersionMS == MAKELONG(0, 10) && fixed.dwFileVersionLS == MAKELONG(12, 17134)) return true;
+        std::fprintf(stderr, "d3dcompiler_47 FileVersion %lu.%lu.%lu.%lu, expected 10.0.17134.12\n",
+            (unsigned long)HIWORD(fixed.dwFileVersionMS), (unsigned long)LOWORD(fixed.dwFileVersionMS),
+            (unsigned long)HIWORD(fixed.dwFileVersionLS), (unsigned long)LOWORD(fixed.dwFileVersionLS));
+        return false;
+    }
+    std::fprintf(stderr, "d3dcompiler_47 has no version resource\n");
+    return false;
+}
 
 int main(int argc, char **argv) {
     if (argc != 5) {
         std::fprintf(stderr, "Usage: compile_shaders.exe input.hlsl entry target output.bin\n");
         return 2;
     }
+    wchar_t path[MAX_PATH * 4];
+    DWORD length = GetModuleFileNameW(nullptr, path, MAX_PATH * 4);
+    wchar_t *slash = length && length < MAX_PATH * 4 ? std::wcsrchr(path, L'\\') : nullptr;
+    if (!slash || std::wcslen(path) + 20 >= MAX_PATH * 4) return 4;
+    std::wcscpy(slash + 1, L"d3dcompiler_47.dll");
+    HMODULE compiler = LoadLibraryW(path);
+    if (!compiler) { std::fprintf(stderr, "LoadLibrary %ls: %lu\n", path, GetLastError()); return 4; }
+    if (!microsoft_compiler(compiler, path)) { FreeLibrary(compiler); return 4; }
     FILE *input = std::fopen(argv[1], "rb");
     if (!input) { std::perror(argv[1]); return 3; }
     std::fseek(input, 0, SEEK_END);
@@ -20,13 +63,12 @@ int main(int argc, char **argv) {
         std::fclose(input); std::free(source); return 3;
     }
     std::fclose(input);
-    HMODULE compiler = LoadLibraryA("d3dcompiler_47.dll");
-    if (!compiler) { std::fprintf(stderr, "LoadLibrary d3dcompiler_47.dll: %lu\n", GetLastError()); std::free(source); return 4; }
     auto compile = reinterpret_cast<pD3DCompile>(GetProcAddress(compiler, "D3DCompile"));
     if (!compile) { std::free(source); FreeLibrary(compiler); return 4; }
     ID3DBlob *shader = nullptr, *diagnostics = nullptr;
     HRESULT result = compile(source, size, argv[1], nullptr, nullptr, argv[2], argv[3],
-        D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &shader, &diagnostics);
+        D3DCOMPILE_ENABLE_BACKWARDS_COMPATIBILITY | D3DCOMPILE_IEEE_STRICTNESS | D3DCOMPILE_OPTIMIZATION_LEVEL3,
+        0, &shader, &diagnostics);
     std::free(source);
     if (diagnostics) {
         std::fwrite(diagnostics->GetBufferPointer(), 1, diagnostics->GetBufferSize(), stderr);
@@ -46,9 +88,9 @@ int main(int argc, char **argv) {
     ID3DBlob *assembly = nullptr;
     if (disassemble && SUCCEEDED(disassemble(shader->GetBufferPointer(), shader->GetBufferSize(),
             D3D_DISASM_ENABLE_INSTRUCTION_NUMBERING, nullptr, &assembly)) && assembly) {
-        char path[MAX_PATH * 4];
-        std::snprintf(path, sizeof(path), "%s.asm", argv[4]);
-        FILE *asm_file = std::fopen(path, "wb");
+        char asm_path[MAX_PATH * 4];
+        std::snprintf(asm_path, sizeof(asm_path), "%s.asm", argv[4]);
+        FILE *asm_file = std::fopen(asm_path, "wb");
         if (asm_file) {
             std::fwrite(assembly->GetBufferPointer(), 1, assembly->GetBufferSize(), asm_file);
             std::fclose(asm_file);

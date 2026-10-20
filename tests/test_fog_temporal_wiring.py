@@ -7,6 +7,7 @@ final buffer, and nothing in the stream or proxy files."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
 import json
+import hashlib
 import re
 import subprocess
 
@@ -22,8 +23,8 @@ checks={}
 checks['build: FogTemporal is an ENTRIES member right after FogClouds']=('FogClouds' in names and 'FogTemporal' in names and names.index('FogTemporal')==names.index('FogClouds')+1)
 checks['manifest: FogTemporal ps_3_0, <= 512 slots, < 32 temporaries']=(ft.get('target')=='ps_3_0' and ft.get('static_instruction_slots',999)<=512 and ft.get('temporary_registers',99)<32)
 checks['compiled: FogTemporal.bin and generated kFogTemporalShader']=((fp.COMPILED/'FogTemporal.bin').exists() and 'static const DWORD kFogTemporalShader[]' in fp.src('world_compiled_shaders.h').read_text())
-# WorldFog stays the 0.3.198 bytecode (the working tree state is not a test input: a git-status check failed on any other uncommitted shader edit)
-checks['compiled: WorldFog bytecode as of 0.3.200 (gpu budget: the interval as mad with c64.z; 512 slots)']=json.loads((fp.SHADERS/'world-shader-build.json').read_text())['shaders']['WorldFog']['sha256']=='0436709c5843d1179287da4efc946f4a448f7d233e81ac2068fe54bc47432f6c'
+# The temporal pass must not consume bytecode missing from its build manifest.
+checks['compiled: WorldFog bytecode matches its manifest']=json.loads((fp.SHADERS/'world-shader-build.json').read_text())['shaders']['WorldFog']['sha256']==hashlib.sha256((fp.COMPILED/'WorldFog.bin').read_bytes()).hexdigest()
 
 body=h[h.index('float4 FogTemporal('):]
 body=body[:body.index('\n}\n')]

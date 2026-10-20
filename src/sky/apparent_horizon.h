@@ -1,9 +1,9 @@
 #pragma once
 // The far edge as the camera sees it: the surface (ground, or the water raised over it in the regional fog
 // field) under the eye and toward the sun, seen at the far clip. A camera high over the sea sees the edge under
-// the mathematical horizon and a setting disc a little longer; a low one sees it on the horizon. Only the disc
-// and its glow ring follow it (celestial_disc.h, celestial_glow.h); the light and the haze keep the mathematical
-// horizon, so camera moves never switch shadows or GI. Pure: no D3D.
+// the mathematical horizon; a low one sees it on the horizon. The composite's horizon haze band starts at it (and
+// the veil's haze at the sun); the discs, their glow and the light end at the true horizon like the native billboard
+// (celestial_disc_effects.hlsl, discVisibility), so camera moves never switch shadows or GI. Pure: no D3D.
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
