@@ -34,6 +34,7 @@ test_colour_tent_2d.py
 test_command_stream.py
 test_command_stream_wiring.py
 test_concurrent_geometry_build.py
+test_contact_fog.py
 test_contact_lighting.py
 test_contact_normal_endpoints.py
 test_detail_doodad_shadow.py

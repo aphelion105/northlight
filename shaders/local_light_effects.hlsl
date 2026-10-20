@@ -32,7 +32,7 @@ float4 LocalShadowPS(float2 uv:TEXCOORD0,float4 clipPosition:TEXCOORD7,float4 di
     // Light-space offset from the face clip position (faceMatrix: right=x+h*w, up=y-h*w, forward=w).
     float3 offset=float3(clipPosition.x+LocalSphere.y*clipPosition.w,clipPosition.y-LocalSphere.y*clipPosition.w,clipPosition.w);
     clip(LocalSphere.x-dot(offset,offset));
-    if(LocalMaterial.w>=0){
+    [branch]if(LocalMaterial.w>=0){
         float alpha=LocalMaterial.x==2?diffuse.a:tex2D(LocalAlpha,uv).a;
         if(LocalMaterial.x==1)alpha*=diffuse.a;
         clip(alpha-LocalMaterial.w);

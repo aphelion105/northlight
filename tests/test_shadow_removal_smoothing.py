@@ -86,13 +86,13 @@ checks['no quality key (always on): no ShadowRemovalSmoothing in settings, ini, 
     'ShadowRemovalSmoothing' not in t and 'removalSmoothing' not in t for t in (q,ini,readme,r,w))
 # The emulation below mirrors these shader constants; fail loudly if the shader moves.
 for needle in ('clamp(RemovalInfo.w/z,3,16)','-1.442695/max(.25,z*.03)','2*RemovalInfo.z/GridInfo.z','saturate((1-current.a*RemovalInfo.z)/GridInfo.z)','[branch]if(amount>1.0/256){',
-               '[loop]for(int i=0;i<24;++i)','sqrt(t*(1.0/24))','float3 sum=max(ratio,-.45);float total=1,t=.5;float2 dir=float2(1,0);',
+               '[loop]for(int group=0;group<12;++group)','sqrt(t*(1.0/24))','float3 sum=max(ratio,-.45);float total=1,t=.5;float2 dir=float2(1,0);',
                'return max(legacyT*max(baseline,.15),scene-min(fog,scene));','float3 ratio=current.rgb*legacyT/scale;',
                # 0.3.174: both Scene reads carry the contact AO (s10; a neutral 1 unless the world folds it)
                'tex2Dlod(Scene,float4(q,0,0)).rgb*tex2Dlod(AmbientOcclusion,float4(q,0,0)).a,fog,legacyT);',
                'tex2Dlod(Scene,float4(tq,0,0)).rgb*tex2Dlod(AmbientOcclusion,float4(tq,0,0)).a,fog,legacyT),-.45)*w;total+=w;',
                # task 43: a zero-weight tap skips its three removalScale reads (it adds exactly 0; total+=w stays outside the branch)
-               '[branch]if(w>0)sum+=max(light.rgb*legacyT/removalScale(tex2Dlod(BaselineLighting,float4(tq,0,0)).rgb,',
+               '[flatten]if(w>0)sum+=max(light.rgb*legacyT/removalScale(tex2Dlod(BaselineLighting,float4(tq,0,0)).rgb,',
                'float legacyT=max(mad(LegacyFog.w,saturate(pow(max(mad(z*Projection.z,LegacyFog.x,LegacyFog.y),0),LegacyFog.z))-1,1),.001);',
                'float3 fog=(1-legacyT)*LegacyFogColor.rgb;','sum+=max(light.rgb*legacyT/removalScale(','fog,legacyT),-.45)*w;total+=w;',
                # 0.3.185 normal weight (cos 50 = .6428, 1/(cos 30 - cos 50) = 4.48) and the centre/tap normal reads
@@ -106,6 +106,9 @@ for needle in ('clamp(RemovalInfo.w/z,3,16)','-1.442695/max(.25,z*.03)','2*Remov
                'float3 fogPart=min((1-legacyT)*LegacyFogColor.rgb,original.rgb);','float3 albedoT=min(transported/oldLight,legacyT);',
                'color=max(color,mad(-.45,transported,original.rgb));'):
     assert hlsl.count(needle)==1,needle
+
+removal_body=hlsl[hlsl.index('float3 smoothRemoval'):hlsl.index('float4 RemovalSmooth')]
+assert removal_body.count('[unroll]for(int sub=0;sub<2;++sub)')==1
 
 # ---- emulation of smoothRemoval (float64; the shader runs fp32 on fp16 buffers) ----
 def legacy_t(z,fog):

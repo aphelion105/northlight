@@ -10,7 +10,7 @@
 ;wine = /opt/wine
 ; StormLib shared library for mpq.py. Default: tools/storm-build/storm.framework/storm
 ;stormlib = ~/tools/libstorm.dylib
-; Third-party downloads folder (DXVK, StormLib, zig). Default: tools/
+; Third-party downloads folder (DXVK, StormLib, zig, d3dcompiler_47-10.0.17134.12-x64/). Default: tools/
 ;tools = ~/northlight-tools
 ; External archive (holds renderer/rollback-*, renderer/runtime-diagnostics-*). No default.
 ;archive = ~/renderer-archive
