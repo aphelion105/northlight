@@ -356,6 +356,7 @@ class Device final : public GuardedMirrorDevice {
     NorthlightMirrorAuditSchedule mirrorAuditSchedule;bool mirrorFallbackReported=false;
     UINT width = 0, height = 0;
     D3DFORMAT sceneFormat = D3DFMT_UNKNOWN, depthSnapshotFormat = D3DFMT_UNKNOWN;
+    bool df24Refused = false; // the device refused a DF24 depth snapshot: INTZ for the session
     bool terrain = false, captured = false, applied = false, enabled = true;
     // 0.3.202 (rain): the rain streak alpha mask (RainMask, s13 of WorldComposite): created on the first mask draw at the effect resources' size; the
     // flags and the cached eligibility are per frame (clearFrame), the counters are read and zeroed by the WEATHER line.
@@ -496,8 +497,12 @@ private:
         // DXVK 3's 1x depth+stencil RESZ copy can leave INTZ unchanged (proved
         // with a nonzero sentinel). DF24 copies depth alone, which is all our
         // snapshots consume; NameMask still uses the original world stencil.
-        const D3DFORMAT depthFormat=selectedBackend==NorthlightBackend::Kind::Dxvk&&worldDepthDescKnown&&worldDepthDesc.MultiSampleType==D3DMULTISAMPLE_NONE
-            ?(D3DFORMAT)MAKEFOURCC('D','F','2','4'):(D3DFORMAT)MAKEFOURCC('I','N','T','Z');
+        // A frame whose world depth was not bound (bindWorldDepth failed after projectionValid) keeps the current
+        // format: deciding INTZ there recreated every effect resource, and DF24 again on the next frame. A DF24 the
+        // device refused stays INTZ for the session (df24Refused).
+        const D3DFORMAT intz=(D3DFORMAT)MAKEFOURCC('I','N','T','Z'),df24=(D3DFORMAT)MAKEFOURCC('D','F','2','4');
+        const D3DFORMAT depthFormat=!worldDepthDescKnown&&depthSnapshotFormat!=D3DFMT_UNKNOWN?depthSnapshotFormat
+            :selectedBackend==NorthlightBackend::Kind::Dxvk&&!df24Refused&&worldDepthDescKnown&&worldDepthDesc.MultiSampleType==D3DMULTISAMPLE_NONE?df24:intz;
         if (sceneSurface && aoSurface && aoRawSurface && depthTex && w == width && h == height && format == sceneFormat && depthFormat == depthSnapshotFormat) return true;
         // Resource replacement must not invalidate this frame's retained depth surface.
         drop(sceneSurface); drop(scene);
@@ -512,7 +517,16 @@ private:
         if (!contactBloomPS && error(ext->CreatePixelShader(kContactBloomShader, &contactBloomPS), "contact bloom shader")) return false;
         if (!compositePS && error(ext->CreatePixelShader(kCompositeShader, &compositePS), "composite shader")) return false;
         if (error(ext->CreateTexture(w, h, 1, D3DUSAGE_RENDERTARGET, format, D3DPOOL_DEFAULT, &scene, nullptr), "scene texture")) return false;
-        if (!depthTex && error(ext->CreateTexture(w, h, 1, D3DUSAGE_DEPTHSTENCIL, depthSnapshotFormat, D3DPOOL_DEFAULT, &depthTex, nullptr), "depth snapshot texture")) return false;
+        if (!depthTex) {
+            HRESULT hr=ext->CreateTexture(w, h, 1, D3DUSAGE_DEPTHSTENCIL, depthSnapshotFormat, D3DPOOL_DEFAULT, &depthTex, nullptr);
+            // A DXVK without the DF formats (d3d9.supportDFFormats off) refuses DF24: INTZ, not the effects disabled.
+            if (FAILED(hr) && depthSnapshotFormat==df24) {
+                logf("Depth snapshot DF24 refused HRESULT=0x%08lx: INTZ for this session", (unsigned long)hr);
+                df24Refused=true;depthSnapshotFormat=intz;
+                hr=ext->CreateTexture(w, h, 1, D3DUSAGE_DEPTHSTENCIL, depthSnapshotFormat, D3DPOOL_DEFAULT, &depthTex, nullptr);
+            }
+            if (error(hr, "depth snapshot texture")) return false;
+        }
         if (!ao && error(ext->CreateTexture(w/2, h/2, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A16B16G16R16F, D3DPOOL_DEFAULT, &ao, nullptr), "half resolution AO texture")) return false;
         if (!aoRaw && error(ext->CreateTexture(w/2, h/2, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A16B16G16R16F, D3DPOOL_DEFAULT, &aoRaw, nullptr), "half resolution raw AO texture")) return false;
         if (error(scene->GetSurfaceLevel(0, &sceneSurface), "scene surface")) return false;
