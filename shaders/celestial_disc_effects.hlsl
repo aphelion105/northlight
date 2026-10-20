@@ -1,6 +1,6 @@
 // Draw after the native opaque world, before AO's scene copy and the extension
 // world/fog composite, so atmosphere layers over the disc; always before UI.
-// Core blend SRCALPHA/INVSRCALPHA; glare (and veil) blend INVDESTCOLOR/ONE:
+// Core blend SRCALPHA/ONE (added to the sky, like the native billboard under the sky dome); glare (and veil) blend INVDESTCOLOR/ONE:
 // a screen blend of 1-exp(-glow), so the glow never clips to a plateau.
 // CelestialVeilPS draws later (after the world composite and water, before UI).
 // Samples only clear world-depth pixels; native
@@ -104,7 +104,9 @@ float4 CelestialHaloVisibilityPS(float2 uv:TEXCOORD0):COLOR0 {
     [loop]for(int i=0;i<32;++i){
         float4 source=DiscSourceUV[i];
         float terrain=DiscTerrainPolicy.x>.5?1-saturate(tex2Dlod(DiscTerrain,float4(source.zw,0,0)).r):1;
-        current+=filteredSkyVisibility(source)*terrain;
+        // As the disc: no visibility under the true horizon, the native fade over the 1.9 deg above it.
+        float3 ray=discRay(source.xy);
+        current+=filteredSkyVisibility(source)*terrain*saturate(30*ray.z/max(dot(ray,DiscDirection.xyz),1e-6));
     }
     current*=1.0/32;
     // Retain more halo around a partially covered source: half-visible yields
@@ -171,6 +173,9 @@ float4 CelestialDiscPS(float2 uv:TEXCOORD0):COLOR0 {
     // Limit brightness before tinting so bright cores retain the regional hue.
     encoded=saturate(texel.rgb*DiscEmission.x)*lerp(saturate(DiscColor.rgb),DiscGlowCore.rgb,.5*DiscGlowHue.w);
     alpha=texel.a*saturate(DiscColor.w);
+    // The native billboard's horizon fade (DNPlanet::ClipGeometry): on its plane 12 away, opaque from 0.4 over the
+    // camera's height down to 0 there (1.9 deg), nothing below.
+    alpha*=saturate(30*ray.z/forward);
     }
     alpha*=terrainVisible;
     // In the early sky pass an invisible quad pixel must not write sky depth.
