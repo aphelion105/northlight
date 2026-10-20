@@ -11,7 +11,8 @@ composite afterwards. Float64 emulation plus a source/assembly audit; no game, W
 Writes ao-fold-validation.json.
 """
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
-import northlight_paths as fp
+import northlight_paths as fp; fp.use_source_modules()
+from shader_compiler import instructions
 import json
 import math
 import random
@@ -88,9 +89,9 @@ checks['AOContactBloom: five Scene taps (centre x4, +-4 px per axis), .125*Optio
     and 'float4 AOContactBloom(float2 uv : TEXCOORD0) : COLOR0' in entry and 'return float4(ContactBloomRgb(uv), AOImpl(uv, false).a);' in entry
     and 'saturate(mad(dot(c, float3(0.2126, 0.7152, 0.0722)), 1.0 / 0.28, -0.72 / 0.28))' in effects
     and 'AOContact(' not in effects and 'float3 Bright(float3 c)' in effects)
-asm = [re.sub(r'^(?:/\*.*?\*/|\d+:)\s*','',line.strip()) for line in fp.src('AOContactBloom.bin.asm').read_text().splitlines()]
-texld = [i for i, l in enumerate(asm) if re.match(r'\s*texld\s', l)]
-flow = [i for i, l in enumerate(asm) if re.match(r'\s*(if|rep|loop|break|ret|call)', l)]
+asm = instructions(fp.src('AOContactBloom.bin.asm'))
+texld = [i for i, l in enumerate(asm) if re.match(r'texld\s', l)]
+flow = [i for i, l in enumerate(asm) if re.match(r'(if|rep|loop|break|ret|call)', l)]
 checks[f'AOContactBloom: its {len(texld)} tex2D reads (texld, s0) precede all flow control (sky/water return included)'] = (
     len(texld) == 5 and all(asm[i].rstrip().endswith('s0') for i in texld) and flow and max(texld) < min(flow))
 manifest = json.loads(fp.src('shader-build.json').read_text())['shaders']
@@ -165,7 +166,7 @@ checks['diagnostic capture: the folded scene dump is labelled pre-AO'] = 'foldSc
 composite = world[world.index('float4 WorldComposite('):]
 checks['WorldComposite: AO in the tent, native fog preserved before surface AO, bloom bilinear'] = (
     'sampler2D AmbientOcclusion : register(s10);' in world
-    and 'ao=mad(occlusion,weight,ao);' in composite and 'fallbackAO=tex2Dlod(AmbientOcclusion,float4(fallbackUV,0,0)).a;' in composite
+    and 'ao=mad(occlusion,weight,ao);' in composite and 'fallbackAO=tex2Dlod(AmbientOcclusion,float4(fallbackUV,0,0)).a;' in composite  # gh#80: the nearest tap's AO is read once after the tent
     and 'ao=relight?(total<.02?fallbackAO:ao/total):1;' in composite
     and 'float3 bloom=tex2D(AmbientOcclusion,uv).rgb;' in composite
     and composite.index('float3 fogPart=min((1-legacyT)*LegacyFogColor.rgb,original.rgb);')
@@ -179,10 +180,11 @@ checks['smoothRemoval: both Scene reads times the AO alpha; removalScale without
     and 'return max(legacyT*max(baseline,.15),scene-min(fog,scene));' in world and '.0001));' not in world[world.index('float3 removalScale('):world.index('float3 smoothRemoval(')])
 wm = json.loads(fp.src('world-shader-build.json').read_text())['shaders']
 # 0.3.185: the removal smoothing (Scene, AO, baseline reads) moved to RemovalSmooth; TemporalLight keeps no s0/s10/s12 read and gains s9.
-checks[f"world manifest: WorldComposite {wm['WorldComposite']['static_instruction_slots']} <= 512 with s10; RemovalSmooth {wm['RemovalSmooth']['static_instruction_slots']} (s10 AO) <= 512; TemporalLight {wm['TemporalLight']['static_instruction_slots']} == 293"] = (
-    wm['WorldComposite']['static_instruction_slots'] <= 512 and wm['WorldComposite']['samplers'] == [0, 1, 2, 8, 9, 10, 11, 12, 13, 15]  # s15 is the shared distance MRT.
+checks[f"world manifest: WorldComposite {wm['WorldComposite']['static_instruction_slots']} <= 512 with s10; RemovalSmooth {wm['RemovalSmooth']['static_instruction_slots']} (s10 AO) <= 512; TemporalLight {wm['TemporalLight']['static_instruction_slots']} == 210"] = (
+    wm['WorldComposite']['static_instruction_slots'] <= 512 and wm['WorldComposite']['samplers'] == [0, 1, 2, 8, 9, 10, 11, 12, 13, 15]  # 0.3.202: the SM3 limit (512) replaces the old 500 headroom guard; the rain mask adds s13, the dither s2; gh#80 CurrentDistance s15
     and wm['RemovalSmooth']['static_instruction_slots'] <= 512 and wm['RemovalSmooth']['samplers'] == [0, 1, 8, 10, 12, 14, 15]
-    and wm['TemporalLight']['static_instruction_slots'] == 293 and wm['TemporalLight']['samplers'] == [1, 8, 9, 14, 15])
+    and wm['TemporalLight']['static_instruction_slots'] == 210 and  # Microsoft d3dcompiler_47 (Wine's builtin: 293)
+    wm['TemporalLight']['samplers'] == [1, 8, 9, 14, 15])
 
 # 6. no new key
 config = [fp.src('quality_settings.h').read_text(), fp.src('windows-package/northlight-quality.ini').read_text(),

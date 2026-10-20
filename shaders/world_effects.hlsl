@@ -190,8 +190,8 @@ float shadowMap(float3 lp,bool useNear,float radius,float2 gradient) {
     float2 base=floor(pixel+(useNear?.5:0)),fraction=pixel-base;
     float start=useNear?-2:-1;
     float visibility=0,total=0;
-    [loop]for(int i=0;i<25;++i){
-        if(i>=size*size)break;
+    // The exit lives in the loop condition: Microsoft's compiler turned the nested bare break into break_ne with identical operands.
+    [loop]for(int i=0;i<25&&i<size*size;++i){
         float row=floor((i+.5)/size); // +.5: rcp may give 10/5 = 1.99999, which floors to row 1
         float2 offset=float2(i-row*size,row)+start;
         float2 tapUV=(base+offset+.5)*DepthParams.w;
@@ -524,8 +524,7 @@ float4 ActorShadow(float2 uv:TEXCOORD0,uniform row_major float4x4 ActorMatrix:re
     float size=floor(2*reach)+1;
     float2 first=floor(pixel-reach)+1;
     float visibility=0,total=0;
-    [loop]for(int k=0;k<81;++k){
-        if(k>=size*size)break;
+    [loop]for(int k=0;k<81&&k<size*size;++k){ // exit in the loop condition, as in shadowMap
         float row=floor((k+.5)/size); // +.5: rcp may give 10/5 = 1.99999, which floors to row 1
         float2 tap=first+float2(k-row*size,row);
         float2 tapUV=(tap+.5)*ActorInfo.y;

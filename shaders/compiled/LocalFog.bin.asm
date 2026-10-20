@@ -444,3 +444,4 @@
  392:     add oC0.w, r0.x, r0.w
 
 // approximately 397 instruction slots used (4 texture, 393 arithmetic)
+ 
