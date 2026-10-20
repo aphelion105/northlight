@@ -115,7 +115,9 @@ Every effect below is on by default and is drawn on top of the game's own frame.
 - clang++ and c++ (Xcode command line tools) for the native tests.
 - Optional:
   - a WoW 3.3.5a client (game data, world cache);
-  - Wine, for the shader compilers only (`scripts/shaders/compile_*_shaders.py`);
+  - Wine and Microsoft's redistributable `d3dcompiler_47.dll` 10.0.17134.12 (x64), for the shader
+    compilers only (`scripts/shaders/compile_*_shaders.py`): put the DLL in
+    `tools/d3dcompiler_47-10.0.17134.12-x64/` (it is not in git; `shader_compiler.py` pins its SHA-256);
   - StormLib, for reading MPQs;
   - the external archive and `backups/`, for differential tests against old versions.
 
@@ -132,15 +134,17 @@ regenerates the forwarding headers in `src/generated/`. It checks every `shaders
 DLL bytes depend on the build directory, because the PDB paths feed the build ID. Compare builds
 with `pe_normalized_hash.py`, which zeroes only those fields.
 
-After editing a shader, recompile it (Wine, compiler only; nothing touches the game):
+After editing a shader, recompile it (Microsoft's compiler under Wine, natively on Windows; nothing
+touches the game):
 
 ```sh
 python3 scripts/shaders/compile_world_shaders.py   # or compile_shaders, compile_local_light_shaders, ...
 ```
 
 A compiler writes `shaders/compiled/<Entry>.bin` and `.bin.asm`, `src/generated/*_compiled_shaders.h`
-and the `shaders/*-shader-build.json` manifest. `build_environment.py` keeps the Wine prefix
-outside the client folder.
+and the `shaders/*-shader-build.json` manifest. Every shader uses the one toolchain in
+`scripts/shaders/shader_compiler.py` (IEEE strict, O3; Wine's builtin compiler is refused).
+`build_environment.py` keeps the Wine prefix outside the client folder.
 
 ## Test
 
@@ -169,7 +173,7 @@ it is ignored by git), then a default. `python3 northlight_paths.py` prints what
 | `NORTHLIGHT_ZIG` | `tools/zig-*/zig`, then `zig` on `PATH` (must be 0.15.2) | DLL build, generators, shader tools |
 | `NORTHLIGHT_WINE` | WoWSilicon's bundled Wine, then `wine` on `PATH` | shader compilers only |
 | `NORTHLIGHT_STORMLIB` | `tools/storm-build/storm.framework/storm` | `mpq.py` |
-| `NORTHLIGHT_TOOLS` | `tools/` | third-party downloads (DXVK, StormLib, zig) |
+| `NORTHLIGHT_TOOLS` | `tools/` | third-party downloads (DXVK, StormLib, zig, d3dcompiler_47) |
 | `NORTHLIGHT_ARCHIVE` | none | old rollbacks and runtime diagnostics (`<archive>/renderer/`) |
 | `NORTHLIGHT_BACKUPS` | `backups/` | old renderer tarballs |
 | `NORTHLIGHT_OUT` | `out/` | build and test output |

@@ -355,7 +355,8 @@ class Device final : public GuardedMirrorDevice {
     unsigned blobSignatureReports=0;
     NorthlightMirrorAuditSchedule mirrorAuditSchedule;bool mirrorFallbackReported=false;
     UINT width = 0, height = 0;
-    D3DFORMAT sceneFormat = D3DFMT_UNKNOWN;
+    D3DFORMAT sceneFormat = D3DFMT_UNKNOWN, depthSnapshotFormat = D3DFMT_UNKNOWN;
+    bool df24Refused = false; // the device refused a DF24 depth snapshot: INTZ for the session
     bool terrain = false, captured = false, applied = false, enabled = true;
     // 0.3.202 (rain): the rain streak alpha mask (RainMask, s13 of WorldComposite): created on the first mask draw at the effect resources' size; the
     // flags and the cached eligibility are per frame (clearFrame), the counters are read and zeroed by the WEATHER line.
@@ -457,7 +458,7 @@ private:
     MirrorGate gateBenchGate; /* 0.3.180: private, for ownerNs (0.3.182: the real owner entry and exit on it) */
     const int debugMode = 0;int worldDebug=0;
     NorthlightEffectSwitches::Hotkeys effectKeys;
-    float nearZ = .1f, farZ = 1000.f, scaleX = 1.f, scaleY = 1.f;
+    float nearZ = .1f, farZ = 1000.f, scaleX = 1.f, scaleY = 1.f, fogForward = 1.f;
     float worldMinDepth=0.f,worldMaxDepth=1.f;
 
     // Diagnostic sample frame (every 120th; RenderProfile=1: every 127th, which reaches
@@ -493,26 +494,47 @@ private:
         failed = true; return true;
     }
     bool resources(UINT w, UINT h, D3DFORMAT format) {
-        if (sceneSurface && aoSurface && aoRawSurface && depthTex && w == width && h == height && format == sceneFormat) return true;
+        // DXVK 3's 1x depth+stencil RESZ copy can leave INTZ unchanged (proved
+        // with a nonzero sentinel). DF24 copies depth alone, which is all our
+        // snapshots consume; NameMask still uses the original world stencil.
+        // DXVK 2.7.1 has the same ResolveZ and the same copy-path choice (a depth+stencil copy goes through the
+        // shader copy on AMD drivers, depth alone through vkCmdCopyImage), so both packaged DXVKs take DF24.
+        // A frame whose world depth was not bound (bindWorldDepth failed after projectionValid) keeps the current
+        // format: deciding INTZ there recreated every effect resource, and DF24 again on the next frame. A DF24 the
+        // device refused stays INTZ for the session (df24Refused).
+        const D3DFORMAT intz=(D3DFORMAT)MAKEFOURCC('I','N','T','Z'),df24=(D3DFORMAT)MAKEFOURCC('D','F','2','4');
+        const D3DFORMAT depthFormat=!worldDepthDescKnown&&depthSnapshotFormat!=D3DFMT_UNKNOWN?depthSnapshotFormat
+            :NorthlightBackend::isPackagedDxvk(selectedBackend)&&!df24Refused&&worldDepthDescKnown&&worldDepthDesc.MultiSampleType==D3DMULTISAMPLE_NONE?df24:intz;
+        if (sceneSurface && aoSurface && aoRawSurface && depthTex && w == width && h == height && format == sceneFormat && depthFormat == depthSnapshotFormat) return true;
         // Resource replacement must not invalidate this frame's retained depth surface.
         drop(sceneSurface); drop(scene);
-        if (w!=width || h!=height) {
+        if (w!=width || h!=height || depthFormat!=depthSnapshotFormat) {
+            rainMrtUnbind();rainDepthOk=rainMaskCleared=rainMaskDrawn=false;rainMaskFailed=false;
             drop(aoSurface); drop(ao); drop(aoRawSurface); drop(aoRaw); drop(depthTex); captured=false;drop(rainMaskMS);drop(rainMaskSurface);drop(rainMask);drop(rainDepth); /* 0.3.202 (rain): the mask follows the effect size */
         }
-        width = w; height = h; sceneFormat = format;
+        width = w; height = h; sceneFormat = format;depthSnapshotFormat=depthFormat;
         if (!aoPS && error(ext->CreatePixelShader(kAoShader, &aoPS), "AO shader")) return false;
         if (!aoContactBloomPS && error(ext->CreatePixelShader(kAoContactBloomShader, &aoContactBloomPS), "AO contact bloom shader")) return false;
         if (!aoBlurPS && error(ext->CreatePixelShader(kAoBlurShader, &aoBlurPS), "AO blur shader")) return false;
         if (!contactBloomPS && error(ext->CreatePixelShader(kContactBloomShader, &contactBloomPS), "contact bloom shader")) return false;
         if (!compositePS && error(ext->CreatePixelShader(kCompositeShader, &compositePS), "composite shader")) return false;
         if (error(ext->CreateTexture(w, h, 1, D3DUSAGE_RENDERTARGET, format, D3DPOOL_DEFAULT, &scene, nullptr), "scene texture")) return false;
-        if (!depthTex && error(ext->CreateTexture(w, h, 1, D3DUSAGE_DEPTHSTENCIL, (D3DFORMAT)MAKEFOURCC('I','N','T','Z'), D3DPOOL_DEFAULT, &depthTex, nullptr), "INTZ depth texture")) return false;
+        if (!depthTex) {
+            HRESULT hr=ext->CreateTexture(w, h, 1, D3DUSAGE_DEPTHSTENCIL, depthSnapshotFormat, D3DPOOL_DEFAULT, &depthTex, nullptr);
+            // A DXVK without the DF formats (d3d9.supportDFFormats off) refuses DF24: INTZ, not the effects disabled.
+            if (FAILED(hr) && depthSnapshotFormat==df24) {
+                logf("Depth snapshot DF24 refused HRESULT=0x%08lx: INTZ for this session", (unsigned long)hr);
+                df24Refused=true;depthSnapshotFormat=intz;
+                hr=ext->CreateTexture(w, h, 1, D3DUSAGE_DEPTHSTENCIL, depthSnapshotFormat, D3DPOOL_DEFAULT, &depthTex, nullptr);
+            }
+            if (error(hr, "depth snapshot texture")) return false;
+        }
         if (!ao && error(ext->CreateTexture(w/2, h/2, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A16B16G16R16F, D3DPOOL_DEFAULT, &ao, nullptr), "half resolution AO texture")) return false;
         if (!aoRaw && error(ext->CreateTexture(w/2, h/2, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A16B16G16R16F, D3DPOOL_DEFAULT, &aoRaw, nullptr), "half resolution raw AO texture")) return false;
         if (error(scene->GetSurfaceLevel(0, &sceneSurface), "scene surface")) return false;
         if (!aoSurface && error(ao->GetSurfaceLevel(0, &aoSurface), "AO surface")) return false;
         if (!aoRawSurface && error(aoRaw->GetSurfaceLevel(0, &aoRawSurface), "raw AO surface")) return false;
-        logf("Resources %ux%u, AO %ux%u, format=%u", w,h,w/2,h/2,unsigned(format));
+        logf("Resources %ux%u, AO %ux%u, format=%u depthSnapshot=%s sourceMSAA=%u", w,h,w/2,h/2,unsigned(format),depthSnapshotFormat==(D3DFORMAT)MAKEFOURCC('D','F','2','4')?"DF24":"INTZ",unsigned(worldDepthDesc.MultiSampleType));
         return true;
     }
     // Swap chain 0's back buffer description only changes through Reset.
@@ -564,7 +586,7 @@ private:
         if (!decodeProjection(p,q)) return false;
         D3DVIEWPORT9 vp={};
         if(FAILED(ext->GetViewport(&vp))||!std::isfinite(vp.MinZ)||!std::isfinite(vp.MaxZ)||vp.MinZ<0||vp.MaxZ>1||vp.MaxZ<=vp.MinZ)return false;
-        nearZ=q.nearZ; farZ=q.farZ; scaleX=q.scaleX; scaleY=q.scaleY;
+        nearZ=q.nearZ; farZ=q.farZ; scaleX=q.scaleX; scaleY=q.scaleY;fogForward=p[11];
         worldMinDepth=vp.MinZ;worldMaxDepth=vp.MaxZ;
         return true;
     }
@@ -574,7 +596,7 @@ private:
         if (!resolveDepthInto(depthTex, true)) return false;
         captured = true; return true;
     }
-    // 0.3.202 (rain mask MRT): resolveDepth's copy (the RESZ protocol below) into any INTZ texture. fatal: a failed step disables the effects (depthTex);
+    // 0.3.202 (rain mask MRT): resolveDepth's copy (the RESZ protocol below) into a depth snapshot texture. fatal: a failed step disables the effects (depthTex);
     // otherwise it only returns false (the rain depth snapshot). RT1 is unbound first: SavedState would restore it under a different draw.
     bool resolveDepthInto(IDirect3DTexture9* target, bool fatal) {
         rainMrtUnbind();
@@ -585,7 +607,7 @@ private:
         // D9VK implements AMD RESZ: POINTSIZE magic 0x7fa05000 copies/resolves
         // the bound depth surface into texture slot 0, including MSAA sample zero.
         if (step(ext->SetDepthStencilSurface(worldDepth), "bind scene depth")) return false;
-        if (step(ext->SetTexture(0, target), "bind INTZ resolve target")) return false;
+        if (step(ext->SetTexture(0, target), "bind depth resolve target")) return false;
         if(selectedBackend==NorthlightBackend::Kind::Native){
             // AMD's RESZ protocol requires a dummy draw to flush sampler binding
             // through the native D3D9 runtime. Disable ALL writes, then SavedState
@@ -727,6 +749,9 @@ private:
         auto bindEffects=[&](IDirect3DTexture9* ambient){
             ext->SetPixelShaderConstantF(4,waterFlags,1);ext->SetTexture(3,waterMask);
             ext->SetPixelShaderConstantF(0,constants,4);
+            auto nativeFog=world?world->legacyFogConstants():NorthlightLegacyFog::Constants{};
+            nativeFog.parameters[0]*=fogForward; // Position() reconstructs positive view distance.
+            ext->SetPixelShaderConstantF(5,nativeFog.parameters,1);ext->SetPixelShaderConstantF(6,nativeFog.color,1);
             ext->SetTexture(0,scene); ext->SetTexture(1,depthTex); ext->SetTexture(2,ambient);
         };
         bindEffects(nullptr);
@@ -1212,10 +1237,10 @@ private:
         if(SUCCEEDED(hr)&&rainMaskWantType!=D3DMULTISAMPLE_NONE)hr=ext->CreateRenderTarget(width,height,D3DFMT_A8R8G8B8,rainMaskWantType,rainMaskWantQuality,FALSE,&rainMaskMS,nullptr); /* the multisampled twin the draws go to */
         if(FAILED(hr)){drop(rainMaskMS);drop(rainMaskSurface);drop(rainMask);rainMaskFailed=true;logf("WEATHER rain mask disabled (%ux%u A8R8G8B8 target ms=%u) HRESULT=0x%08lx",width,height,unsigned(rainMaskWantType),(unsigned long)hr);return false;}
         rainMaskMsType=rainMaskWantType;rainMaskMsQuality=rainMaskWantQuality;
-        if(!rainDepth)hr=ext->CreateTexture(width,height,1,D3DUSAGE_DEPTHSTENCIL,(D3DFORMAT)MAKEFOURCC('I','N','T','Z'),D3DPOOL_DEFAULT,&rainDepth,nullptr); /* 0.3.202 (rain mask MRT): the depth snapshot */
+        if(!rainDepth)hr=ext->CreateTexture(width,height,1,D3DUSAGE_DEPTHSTENCIL,depthSnapshotFormat,D3DPOOL_DEFAULT,&rainDepth,nullptr); /* 0.3.202 (rain mask MRT): the depth snapshot */
         if(SUCCEEDED(hr)&&!rainMrtPS)hr=ext->CreatePixelShader(kRainMaskMrtShader,&rainMrtPS);
         if(SUCCEEDED(hr)&&!rainScrubPS)hr=ext->CreatePixelShader(kRainScrubShader,&rainScrubPS);
-        if(FAILED(hr)){drop(rainMaskMS);drop(rainMaskSurface);drop(rainMask);drop(rainDepth);drop(rainMrtPS);drop(rainScrubPS);rainMaskFailed=true;logf("WEATHER rain mask disabled (rain depth INTZ / mask shaders %ux%u) HRESULT=0x%08lx",width,height,(unsigned long)hr);return false;}
+        if(FAILED(hr)){drop(rainMaskMS);drop(rainMaskSurface);drop(rainMask);drop(rainDepth);drop(rainMrtPS);drop(rainScrubPS);rainMaskFailed=true;logf("WEATHER rain mask disabled (rain depth snapshot / mask shaders %ux%u) HRESULT=0x%08lx",width,height,(unsigned long)hr);return false;}
         return true;
     }
     // The mask target is cleared with RT0 swapped away (the fallback when ColorFill is refused); the game's target, viewport and scissor come back.
