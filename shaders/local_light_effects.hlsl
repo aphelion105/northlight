@@ -32,7 +32,7 @@ float4 LocalShadowPS(float2 uv:TEXCOORD0,float4 clipPosition:TEXCOORD7):COLOR0 {
     // Light-space offset from the face clip position (faceMatrix: right=x+h*w, up=y-h*w, forward=w).
     float3 offset=float3(clipPosition.x+LocalSphere.y*clipPosition.w,clipPosition.y-LocalSphere.y*clipPosition.w,clipPosition.w);
     clip(LocalSphere.x-dot(offset,offset));
-    if(LocalMaterial.w>=0)clip(tex2D(LocalAlpha,uv).a-LocalMaterial.w);
+    [branch]if(LocalMaterial.w>=0)clip(tex2D(LocalAlpha,uv).a-LocalMaterial.w); // a real branch: opaque replay skips bind no texture (replay_draw_state.h)
     return saturate(clipPosition.z/clipPosition.w);
 }
 float2 localDepthUV(float2 uv) {

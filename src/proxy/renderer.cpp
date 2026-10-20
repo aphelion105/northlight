@@ -458,7 +458,7 @@ private:
     MirrorGate gateBenchGate; /* 0.3.180: private, for ownerNs (0.3.182: the real owner entry and exit on it) */
     const int debugMode = 0;int worldDebug=0;
     NorthlightEffectSwitches::Hotkeys effectKeys;
-    float nearZ = .1f, farZ = 1000.f, scaleX = 1.f, scaleY = 1.f;
+    float nearZ = .1f, farZ = 1000.f, scaleX = 1.f, scaleY = 1.f, fogForward = 1.f;
     float worldMinDepth=0.f,worldMaxDepth=1.f;
 
     // Diagnostic sample frame (every 120th; RenderProfile=1: every 127th, which reaches
@@ -565,7 +565,7 @@ private:
         if (!decodeProjection(p,q)) return false;
         D3DVIEWPORT9 vp={};
         if(FAILED(ext->GetViewport(&vp))||!std::isfinite(vp.MinZ)||!std::isfinite(vp.MaxZ)||vp.MinZ<0||vp.MaxZ>1||vp.MaxZ<=vp.MinZ)return false;
-        nearZ=q.nearZ; farZ=q.farZ; scaleX=q.scaleX; scaleY=q.scaleY;
+        nearZ=q.nearZ; farZ=q.farZ; scaleX=q.scaleX; scaleY=q.scaleY;fogForward=p[11];
         worldMinDepth=vp.MinZ;worldMaxDepth=vp.MaxZ;
         return true;
     }
@@ -728,6 +728,9 @@ private:
         auto bindEffects=[&](IDirect3DTexture9* ambient){
             ext->SetPixelShaderConstantF(4,waterFlags,1);ext->SetTexture(3,waterMask);
             ext->SetPixelShaderConstantF(0,constants,4);
+            auto nativeFog=world?world->legacyFogConstants():NorthlightLegacyFog::Constants{};
+            nativeFog.parameters[0]*=fogForward; // Position() reconstructs positive view distance.
+            ext->SetPixelShaderConstantF(5,nativeFog.parameters,1);ext->SetPixelShaderConstantF(6,nativeFog.color,1);
             ext->SetTexture(0,scene); ext->SetTexture(1,depthTex); ext->SetTexture(2,ambient);
         };
         bindEffects(nullptr);
