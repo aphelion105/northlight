@@ -164,8 +164,9 @@ float4 CelestialDiscPS(float2 uv:TEXCOORD0):COLOR0 {
         // a fully hidden sun (disc and ring) cannot leak glow around a roof.
         encoded=glowColor(radius);
         alpha=saturate(DiscColor.w)*glareProfile(radius);
-        // Preserve lunar craters/tint; solar glare also fills its center.
-        if(DiscRepair.w<.5)alpha*=1-texel.a;
+        // Preserve lunar craters/tint; solar glare also fills its center. Only where the disc is drawn: under the
+        // horizon fade below the disc leaves its place, and a full hole showed as a dark disc in the glare.
+        if(DiscRepair.w<.5)alpha*=1-texel.a*saturate(30*ray.z/forward);
     }else{
     clip(1-max(abs(local.x),abs(local.y)));
     // Explicit LOD is valid after divergent silhouette/depth branches; the CPU

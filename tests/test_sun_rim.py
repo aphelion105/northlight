@@ -122,7 +122,7 @@ assert shader.index('current=current*(2-current);')<shader.index('value=lerp(pre
 assert 'constexpr float SunCoreWeight=2.4f,SunCoreRate=1.1f,SunTailWeight=.9f,SunTailWeightLow=1.8f,MoonGlareStrength=1.f;' in glow
 assert 'c[12][2]=i?NorthlightCelestialGlow::MoonGlareStrength:NorthlightCelestialGlow::SunCoreWeight;' in host
 assert '{D3DRS_SRCBLEND,DWORD(glare?D3DBLEND_INVDESTCOLOR:D3DBLEND_SRCALPHA)},{D3DRS_DESTBLEND,DWORD(D3DBLEND_ONE)}' in host
-assert 'if(DiscRepair.w<.5)alpha*=1-texel.a;' in shader
+assert 'if(DiscRepair.w<.5)alpha*=1-texel.a*saturate(30*ray.z/forward);' in shader
 assert 'if(DiscPolicy.w>.5&&depth<.99999994)return 0;' in shader
 assert 'if(DiscRepair.w>.5){float a=saturate((1-length(local))/.56);texel.a=a*a*(3-2*a);}' in shader
 assert 'if(DiscRepair.w>.5)return (DiscEmission.z*exp2(-DiscEmission.x*r2)*disc+' in shader
