@@ -1,4 +1,23 @@
-# Optional equipment light patch
+# Equipment and particle lights
+
+The normal Northlight installer packages and runs the equipment and conservative
+spell generators as part of its art-layer transaction. Their model-only entries
+are merged into both patch-Z archives. No separate MPQ installation, source
+checkout or post-install command is required. Reinstalling reads the original
+archive chain without Northlight's own patch-Z; uninstall restores the original
+files through the existing installer transaction. Foreign patch-Z archives are
+preserved, so their owners must resolve any art-layer conflict.
+
+Quality enables `EquipmentLights=1` and `CommandStream=1` by default, including
+live particle lighting for accepted equipment, mount and spell draws. Explicit
+player overrides are preserved. Balanced and Performance keep equipment lights
+off. No Spell.dbc or other gameplay table is modified.
+
+When a supported server creature cache exists, installation also generates the
+proven mount M2 additions. A fresh client without that cache still gets live
+mount-particle lighting; the installer never guesses server creature mappings.
+An absent or malformed WDB does not prevent installation. The following commands
+are development/audit entry points, not player installation requirements.
 
 `python renderer/build_equipment_emitters.py --client CLIENT --output STAGING`
 reads the user's own 3.3.5a MPQs and creates `equipment-lights-staged.mpq`
@@ -27,7 +46,7 @@ Every generated native record is read back with the existing track parser and
 every MPQ entry is reopened and byte-compared. Generated model binaries belong
 to the user's client and must not be committed or redistributed as source.
 
-For a deliberate live test, install the staged MPQ in a verified free patch slot.
+For a deliberate standalone development test, use a verified free patch slot.
 `EquipmentLights` defaults to 1 in Quality and 0 in Balanced/Performance; an
 explicit `[Quality] EquipmentLights=0/1` overrides that preset. The native engine
 must expose the light in a proven Model VS2/3 draw; Northlight then reuses the

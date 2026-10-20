@@ -97,6 +97,7 @@ test_model_snapshot_cache.py
 test_moon_cascade_weight.py
 test_mount_emitter_patch.py
 test_name_mask.py
+test_native_model_install.py
 test_near_reserve.py
 test_night_floor.py
 test_night_floor_wiring.py

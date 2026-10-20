@@ -59,6 +59,9 @@ APP_FILES = [
     'renderer/world_scene_builder.py', 'renderer/m2_visibility.py', 'renderer/world_lights_builder.py',
     'renderer/instance_maps.py', 'renderer/world_light_placements.py', 'renderer/outdoor_light_profiles.py', 'renderer/outdoor-light-profiles.json',
     'renderer/regional_fog_builder.py', 'renderer/build_celestial_disc_assets.py',
+    'renderer/native_model_lights.py', 'renderer/build_equipment_emitters.py',
+    'renderer/build_spell_emitters.py', 'renderer/build_mount_emitters.py',
+    'renderer/equipment_emitter_patch.py',
     'tests/validate_world_cache.py', 'src/sky/forest_regions.inc',
 ]
 PAYLOAD_COMMON = {'celestial-profiles.ini': 'client-config/celestial-profiles.ini',
