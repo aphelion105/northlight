@@ -1,12 +1,14 @@
 {
-  "source_sha256": "8384136aed76da0449f7a6985e69321e36132e34e6023dc14d84df8a2e11672d",
+  "source_sha256": "2df3a0e625fde6a984b211b5d00918d29c8b6a1755230e8364ceacfe82fd2946",
+  "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
+  "compiler_sha256": "3c5f066a121a446e55db9c699b392da5d3aca6ad9019437b722360d09698e3c3",
   "game_launched": false,
   "device_created": false,
   "shaders": {
     "LocalShadowVS": {
       "target": "vs_3_0",
-      "bytes": 320,
-      "sha256": "31bc77bfc051cf04547ddd1fa572343f573d7fa63046eeefa6fd3bf73c67c16a",
+      "bytes": 336,
+      "sha256": "2b9e9cce6ee9bc83e9a1decab2926253426040492ac321fda7be399b14b46789",
       "static_instruction_slots": 9,
       "temporary_registers": 2,
       "samplers": [],
@@ -19,23 +21,21 @@
     },
     "LocalShadowPS": {
       "target": "ps_3_0",
-      "bytes": 568,
-      "sha256": "fac56df05d1a075c5fe0809708324b1d9b7acbba741909afe25c943bc445660a",
-      "static_instruction_slots": 26,
+      "bytes": 492,
+      "sha256": "5e57eba04b0ccbc8eadeb22a00792ded08105a0a4af668a6a5c2350327d344c4",
+      "static_instruction_slots": 20,
       "temporary_registers": 2,
       "samplers": [
         0
       ],
       "instructions": {
         "mul": 2,
-        "add": 5,
-        "mov": 6,
+        "add": 4,
+        "mov": 3,
         "dp3": 1,
         "texkill": 2,
-        "cmp": 1,
         "if": 1,
         "texld": 1,
-        "else": 1,
         "endif": 1,
         "rcp": 1
       },
@@ -43,31 +43,31 @@
     },
     "LocalLighting": {
       "target": "ps_3_0",
-      "bytes": 7988,
-      "sha256": "9bf30905e52e7daf5f09e25d07eb93475bf5fc807a9b427480ceba408499e9ca",
-      "static_instruction_slots": 504,
-      "temporary_registers": 12,
+      "bytes": 6124,
+      "sha256": "d29f3427bce1c48c36b7135268afa7eb9dd52017464a0bbd67330ee42a03f097",
+      "static_instruction_slots": 386,
+      "temporary_registers": 13,
       "samplers": [
         0,
         1,
         2
       ],
       "instructions": {
-        "mov": 77,
-        "rcp": 39,
-        "add": 111,
+        "rcp": 21,
+        "add": 105,
         "frc": 2,
-        "mul": 98,
-        "max": 35,
-        "min": 13,
+        "mul": 92,
+        "max": 22,
+        "min": 8,
+        "mov": 25,
         "texldl": 10,
-        "cmp": 42,
         "if": 5,
         "else": 5,
+        "cmp": 34,
         "endif": 5,
-        "dp3": 16,
-        "rsq": 4,
-        "abs": 10
+        "dp3": 15,
+        "rsq": 2,
+        "nrm": 1
       },
       "cube_instruction_extra_slots": 12
     }

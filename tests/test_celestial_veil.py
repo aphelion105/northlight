@@ -74,11 +74,10 @@ compiled=manifest['source_sha256']==hashlib.sha256(shader_path.read_bytes()).hex
 budget={}
 if compiled:
     shaders=manifest['shaders']
-    # The halo PS source is unchanged; its bytes moved only because fxc places the literal (def) registers after the
-    # highest declared constant, and the file now declares c47/c48. The asm equals the 0.3.162 asm (e47ec123...) with
-    # every c>=47 renumbered by +2 (checked at integration).
-    assert shaders['CelestialHaloVisibilityPS']['sha256']=='a155a54312069dcac2e2973169513d1d30dffa491439dce094d6cbc8fc29805f'
-    assert shaders['CelestialHaloVisibilityPS']['static_instruction_slots']==497
+    # The halo PS source is unchanged by the veil: its bytecode is pinned (Microsoft d3dcompiler_47 build; Wine's builtin
+    # compiler gave a155a543..., 497 slots).
+    assert shaders['CelestialHaloVisibilityPS']['sha256']=='250e7dae3d6de3f8ceb7ea55360b594f3ad362c7955d4f704450b8ff7d28c7f4'
+    assert shaders['CelestialHaloVisibilityPS']['static_instruction_slots']==189
     for entry in ('CelestialDiscPS','CelestialVeilPS'):
         assert shaders[entry]['static_instruction_slots']<=480 and shaders[entry]['temporary_registers']<=32,entry
         budget[entry]=shaders[entry]['static_instruction_slots']

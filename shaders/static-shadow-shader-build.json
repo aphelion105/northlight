@@ -1,40 +1,41 @@
 {
   "source_sha256": "d11ded7248dc73794f1f7345b4472032573f357f4b9809ec0f2f12762b329561",
-  "compiler": "Wine d3dcompiler_47 D3DCompile",
+  "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
+  "compiler_sha256": "3c5f066a121a446e55db9c699b392da5d3aca6ad9019437b722360d09698e3c3",
   "game_launched": false,
   "shaders": {
     "StaticCasterVS": {
       "target": "vs_3_0",
-      "bytes": 928,
-      "sha256": "6158b185c0d3e8a9b2c3de2dd10b1f069af3c3711021605bb47cd644cebf801d",
-      "static_instruction_slots": 40,
+      "bytes": 548,
+      "sha256": "e57813c0be88c5d8ea0ccce9ab3b05797fd452c6e497ee080858d5d0d75e9b39",
+      "static_instruction_slots": 15,
       "temporary_registers": 3,
       "samplers": [],
       "instructions": {
-        "mov": 13,
+        "mul": 4,
+        "add": 4,
         "dp4": 3,
-        "mul": 12,
-        "add": 12
+        "mov": 4
       }
     },
     "StaticCasterInstancedVS": {
       "target": "vs_3_0",
-      "bytes": 832,
-      "sha256": "49575c4b2af2af633fbc535f4234cc45be40703a1d088c0da99a5cf3f38a98b4",
-      "static_instruction_slots": 40,
+      "bytes": 484,
+      "sha256": "44d4b2e018abb13838b585d212994d56138e4bc7de76b93b6e9e4db75ab2bac4",
+      "static_instruction_slots": 15,
       "temporary_registers": 3,
       "samplers": [],
       "instructions": {
-        "mov": 13,
+        "mul": 4,
+        "add": 4,
         "dp4": 3,
-        "mul": 12,
-        "add": 12
+        "mov": 4
       }
     },
     "StaticCasterPS": {
       "target": "ps_3_0",
-      "bytes": 332,
-      "sha256": "a1ef7de03e42ba06dfc0aa7740d94773deb1471aa958a3fc09f197fcb52203f6",
+      "bytes": 348,
+      "sha256": "1e72edb2ce3a2f0fba9ee718b5bdb40309734427ca320e63871179c7ac5fa183",
       "static_instruction_slots": 10,
       "temporary_registers": 1,
       "samplers": [
@@ -50,8 +51,8 @@
     },
     "StaticCasterFastPS": {
       "target": "ps_3_0",
-      "bytes": 256,
-      "sha256": "e5feba23f8b70c62fef7476922f14131d8ad2b242a5bbe6c53614e2b096060d3",
+      "bytes": 272,
+      "sha256": "9e91f43f41cbbd093ac267d1315858838f8c1415371a44bedf3cb747d1fe5f4e",
       "static_instruction_slots": 5,
       "temporary_registers": 1,
       "samplers": [
@@ -66,8 +67,8 @@
     },
     "StaticCasterOpaqueFastPS": {
       "target": "ps_3_0",
-      "bytes": 100,
-      "sha256": "88e8f923c594a6e8e74b1704709e796801de942d210df815c354ba3c6df72241",
+      "bytes": 116,
+      "sha256": "822d5a5087e3f1dfaaf1cf532a382fa7cb74a121aef94636a1a2f3ac613404a0",
       "static_instruction_slots": 1,
       "temporary_registers": 0,
       "samplers": [],
@@ -77,8 +78,8 @@
     },
     "StaticCasterOpaquePS": {
       "target": "ps_3_0",
-      "bytes": 176,
-      "sha256": "078dc107dbedcc5f24c2af6f601f6ed5129415f0d5944efbf4ff90082dd52d52",
+      "bytes": 192,
+      "sha256": "77a469dc94a33e8dde109a98e05a996b8913b7cddb3ce7e2f0eba94667dcce24",
       "static_instruction_slots": 6,
       "temporary_registers": 1,
       "samplers": [],

@@ -37,23 +37,24 @@ PRE_LIFT_COMPOSITE_SLOTS = 467
 # same instruction, so 467 (by inspection of WorldComposite.bin.asm). SourceVisibilityPS: +8 ring taps,
 # estimated 440-460 but not knowable without the compiler.
 # 0.3.174: WorldComposite folds the AO/bloom composite (s10 AO in the tent loop, bloom, original'): 498.
-LIFT_COMPOSITE_SLOTS = 512  # composite dither: was 509 (NightBrightness ambient: was 505) (0.3.202 rain mask: was 498)
-SOURCE_VISIBILITY_SLOTS = 492  # compiled at integration (was 281 before the wrap ring)
+LIFT_COMPOSITE_SLOTS = 416  # Microsoft d3dcompiler_47 (gh#80); Wine's builtin: 512 composite dither, was 509 (NightBrightness ambient: was 505) (0.3.202 rain mask: was 498)
+SOURCE_VISIBILITY_SLOTS = 285  # Microsoft d3dcompiler_47; Wine's builtin: 492 (was 281 before the wrap ring)
+# Rebased to the one Microsoft d3dcompiler_47 build (every pass recompiled; Wine's builtin compiler is gone).
 BEFORE = {
-    'WorldNormals': '1e8d22d66a1022bad26c930dd719398eba02c22179084a275f4fe52bf54c1db5',
-    'WorldLighting': 'e132fcd3de96d86e61a1b33cecfd981e8a633bd8098946b3addf571306a680bb',
-    'WorldGI': '23dfdd6e1d08800f8958b278b09aebc97f0558f6b0ac83b5cf447891ef1466e7',
-    'WorldFog': '4b40e8e5e49892a4f47b41bc21bb1079abf61664d7d623abc12a784efda189fe',
-    'FogBlur': 'b48b12488d6233e53031b9f947e643a47d5892fc7fd478356a0a08037a3a1e78',
-    'LocalDirect': '94b34eebb6a542f79c23643c9b9b25ce70d49318c36703e5abf1692604bd7c8f',
-    'TemporalLight': '9dd41a793a99539b457cc5cab7ab3aeaf3638349106addaa6ef970fa163aceff',
-    'LocalFog': '3439bb63d20ae45ae5cd2d7975e7d97231d3445ab086063d65af1d44232d4f70',
-    'SourceVisibilityPS': '55e6fbcb330f068f97418c9059fc6433381f3ec206c6563aa03a7abf9f2a0a1f',
-    'ShadowVS': '10172c530a92bd9cd5bbf13dff11ebbb53888c355b5b9b13a8aebe764215c165',
-    'ShadowCacheVS': '54092470516c229529f1e86cadacb240ac6fcb2a877114b00e0cfed1d4f7a753',
-    'ShadowPS': '318fe2a445a91294b3f1b0a4711ba226fee07397c1f2816d9d96d09a18fdbffd',
-    'ShadowReplayPS': '194f5665d22f12a8c0e337be2938d036386c4e7982f048051a804714f85a592d',
-    'ShadowUnion': 'd090109910314885bc31fdf67ebd4c393f95c499da6dbd0c055498981f28d4c6',
+    'WorldNormals': '625cd9190b0c3a3abc43b5622a1fe648ca1932298ec1be43466ddb3506292062',
+    'WorldLighting': '408425df88ee74682237683394353b9fb4257069c67382219083857546c2d2df',
+    'WorldGI': '98e33a0ff1a8412e7dd0d1801596cc4dc8f5dc2d4fde4880e4760a6eee267992',
+    'WorldFog': '67cabea3e0cc85ab180b1902cfa0038189096bc999882e2317e8f2bd71df70de',
+    'FogBlur': 'a058d8c3d631ff6f7b9a0f5d8a7c9a5290e927b673ef6bb0aabbe1af06ff005a',
+    'LocalDirect': '830bd4d6d2ef73a8141608b93773b1115d415e038b03476293a88cd3d909aff3',
+    'TemporalLight': '9392d2a1566c6f88d7a4e613fa67ff4fd5b4c58e1cd9edef0850637171b45574',
+    'LocalFog': '715bbb1bca383d1de4eb11aeea15c39496a2e61bf630f8144e12769608335b4c',
+    'SourceVisibilityPS': '92d8784a4ce86a5be232c60a311e5cd350586ab227a6285117970cf2bbc6a8b2',
+    'ShadowVS': 'ef0d0273c0630c9992e0cdd40cb4d812cf58c26ad1a456c6a10b7d6c1f17962f',
+    'ShadowCacheVS': '170f8b0774125a59a13c1ceb634bb9e1a4d586e803c05a2883ef1652cb95b3a5',
+    'ShadowPS': '33b4b97c97e1fe2834da7b06a7bd8a2ef0eaacf9966455e0e066ad801a15473f',
+    'ShadowReplayPS': '2812775436581fd44ad92f3d69607792161ea8440e05aa2b9b8310b2155c0805',
+    'ShadowUnion': '43b59a16f449ca2c0b4e940dad1716a84f1f6eb21de4347a508ac3092cb9b479',
 }
 # northlight-renderer.log of 0.3.153: the two known terrain fog sets (Pz=+1) and far clip.
 FOG_SETS = {'default': (-0.0017645, 1.0, 1.0), 'tanaris': (-0.0015527, 0.690, 1.0)}
@@ -389,8 +390,8 @@ def main():
                 assert info['sha256'] == BEFORE[name], name
                 unchanged.append(name)
         assert sorted(unchanged) == sorted(k for k in BEFORE if k not in ('TemporalLight', 'SourceVisibilityPS', 'WorldLighting', 'LocalDirect', 'WorldNormals', 'WorldGI', 'WorldFog', 'LocalFog'))
-        assert manifest['shaders']['WorldNormals']['static_instruction_slots'] == 483  # r77: both wide samples or neither; 0.3.208: colour-picked one-sided side (was 434)
-        assert manifest['shaders']['WorldFog']['static_instruction_slots'] == 512  # 0.3.198 (rain): the same 512 slots (the literal .0017 became c59.w)
+        assert manifest['shaders']['WorldNormals']['static_instruction_slots'] == 305  # Microsoft d3dcompiler_47 (Wine's builtin: 483); r77: both wide samples or neither; 0.3.208: colour-picked one-sided side (was 434)
+        assert manifest['shaders']['WorldFog']['static_instruction_slots'] == 391  # Microsoft d3dcompiler_47 (Wine's builtin: 512); 0.3.198 (rain): the same 512 slots (the literal .0017 became c59.w)
         assert SOURCE_VISIBILITY_SLOTS is not None, 'TODO(lead): pin SOURCE_VISIBILITY_SLOTS to the compiled count (%d)' % manifest['shaders']['SourceVisibilityPS']['static_instruction_slots']
         assert manifest['shaders']['SourceVisibilityPS']['static_instruction_slots'] == SOURCE_VISIBILITY_SLOTS <= 512
         assert manifest['shaders']['WorldComposite']['sha256'] != '772d438995ed33d36db7e26f9b169a5effd94a876ce5d8b8af9fd8aad5381990'
