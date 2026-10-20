@@ -2562,7 +2562,7 @@ public:
         glowHueFrame=NorthlightSunHue::compute(lightSlotsValid?lightSlots:nullptr,celestialPalette(map,camera).disc[1]);
         sourceDirections[0]=vec(context.lightDirection);sourceColors[0]=vec(context.direct);sourceGlowColors[0]=sourceColors[0];sourceGlowColors[1]=V();
         sourceDirections[1]=V(0,0,1);sourceColors[1]=V();sourceWeights[0]=1;sourceWeights[1]=0;
-        // The sun and moon light (shadows, rays) from 6 deg at the lowest (MinLightElevation), also under the horizon up to the handover;
+        // The sun and moon light (shadows, rays) from 6 deg at the lowest (MinLightElevation), its weight ending with the disc (discVisibility);
         // the discs and the twilight keep their real elevation.
         float sunLightDirection[3],moonLightDirection[3];std::memcpy(sunLightDirection,celestialLight.sun.direction,sizeof sunLightDirection);
         std::memcpy(moonLightDirection,celestialLight.moon.direction,sizeof moonLightDirection);

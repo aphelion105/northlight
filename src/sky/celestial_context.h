@@ -82,14 +82,22 @@ inline bool decode(const Snapshot& s,const float* camera,const float* direct,Con
     out=candidate;return true;
 }
 
-// The light passes from the sun to the moon where they cross under the horizon (about -9 deg at 20:41) and back
-// at dawn (06:00), crossfaded over this much elevation difference (sine, 1.5 deg: some 20 s at the crossing). Both
-// share one azimuth and light from 6 deg at the lowest, so the shadows do not turn at the handover.
-inline constexpr float HandoverWidth=.0262f;
-// A sun 4.6 deg up keeps the day's light whatever the moon does (the orbit never has both up).
-inline float sunShare(float sunZ,float moonZ){
-    if(!std::isfinite(sunZ)||!std::isfinite(moonZ))return 0;
-    return std::max(smooth((sunZ-moonZ)/HandoverWidth+.5f),smooth(sunZ/.08f));
+// Light follows what is seen of the disc: its area over the true horizon, each row weighted by the native fade
+// (DNPlanet::ClipGeometry: opaque from 0.4 over the camera's height on the billboard plane 12 away, 1.9 deg, to none
+// at it; the disc shader's saturate(30*ray.z/forward)). A setting body loses its light, shadows and rays evenly as it
+// sinks; a hidden one gives none, and what is left stays the game's own light (authoredFill).
+inline constexpr float NativeFadeSine=.4f/12;
+inline float discVisibility(float elevationSine,float angularRadius){
+    if(!std::isfinite(elevationSine)||!std::isfinite(angularRadius)||!(angularRadius>0))return 0;
+    const float r=std::sin(angularRadius);
+    if(elevationSine-r>=NativeFadeSine)return 1;
+    if(elevationSine+r<=0)return 0;
+    constexpr int Rows=32;float seen=0,area=0;
+    for(int i=0;i<Rows;++i){
+        const float v=-1+(i+.5f)*2/Rows,width=std::sqrt(1-v*v);
+        seen+=width*std::clamp((elevationSine+v*r)/NativeFadeSine,0.f,1.f);area+=width;
+    }
+    return seen/area;
 }
 // Lowest elevation (sine, 6 deg) of a light direction: a grazing light would stretch shadows to infinity. At 2 deg
 // the near shadow map reached so far toward the light that a moving camera pulled 150-260 model replays into it
@@ -110,11 +118,9 @@ inline void applyRendererPolicy(Context& c,const float* direct){
     c.sun.emission=3.5f;c.moon.emission=1.1f;
     const float tint[2][3]={{1,.96f,.88f},{.94f,.97f,1}};
     for(unsigned i=0;i<3;++i){c.sun.tint[i]=tint[0][i];c.moon.tint[i]=tint[1][i];}
-    // Whichever body is higher lights the world (rays, shadows), handed over where they cross under the horizon. The
-    // sun's light ended one radius under the horizon: seen from high up past the far edge, it went out while still in
-    // view, and the moon lit nothing until 4.6 deg up.
-    c.sun.altitudeVisibility=sunShare(c.sun.direction[2],c.moon.direction[2]);
-    c.moon.altitudeVisibility=1-c.sun.altitudeVisibility;
+    // Each body lights the world (rays, shadows) as much as its disc is seen; the sun first, the moon takes the rest.
+    c.sun.altitudeVisibility=discVisibility(c.sun.direction[2],c.sun.angularRadius);
+    c.moon.altitudeVisibility=(1-c.sun.altitudeVisibility)*discVisibility(c.moon.direction[2],c.moon.angularRadius);
     c.sunWeight=c.sun.altitudeVisibility;
     c.moonWeight=c.moon.altitudeVisibility;
     for(unsigned i=0;i<3;++i){
