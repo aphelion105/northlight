@@ -1,5 +1,4 @@
 #pragma once
-#include "bytes_equal.h"
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -36,10 +35,10 @@ public:
             std::memcpy(values_.data(),desired,BankBytes);valid_=true;
             return {0,static_cast<uint32_t>(Count)};
         }
-        if(NorthlightBytes::equal(values_.data(),desired,BankBytes))return {};
+        if(std::memcmp(values_.data(),desired,BankBytes)==0)return {};
         std::size_t first=0,last=Count;
-        while(first<Count&&NorthlightBytes::equal(values_.data()+first*Width,desired+first*Width,RegisterBytes))++first;
-        while(last>first&&NorthlightBytes::equal(values_.data()+(last-1)*Width,desired+(last-1)*Width,RegisterBytes))--last;
+        while(first<Count&&std::memcmp(values_.data()+first*Width,desired+first*Width,RegisterBytes)==0)++first;
+        while(last>first&&std::memcmp(values_.data()+(last-1)*Width,desired+(last-1)*Width,RegisterBytes)==0)--last;
         std::memcpy(values_.data()+first*Width,desired+first*Width,(last-first)*RegisterBytes);
         return {static_cast<uint32_t>(first),static_cast<uint32_t>(last-first)};
     }

@@ -1,5 +1,4 @@
 #pragma once
-#include "bytes_equal.h"
 #include <cassert>
 #include "captured_constant_epoch.h"
 #include "replay_pose_groups.h"
@@ -34,7 +33,7 @@ template<class Replay,class FetchFloats> void verify(Replay& p,FetchFloats& fetc
     const auto f=p.constantUsage.floats;float check[1024];
     if(!f.count||!fetchFloats(f.first,f.count,check+4*f.first))return;
     if(stats)++stats->selfChecks;
-    if(NorthlightBytes::equal(check+4*f.first,p.constants+4*f.first,std::size_t(f.count)*16))return;
+    if(!std::memcmp(check+4*f.first,p.constants+4*f.first,std::size_t(f.count)*16))return;
     if(stats)++stats->selfCheckMismatches;
     std::memcpy(p.constantStorage+4*f.first,check+4*f.first,std::size_t(f.count)*16);
     p.constants=p.constantStorage;p.constantStamp={};
@@ -100,7 +99,7 @@ template<class Replay,class Fetch,class FetchFloats> bool captureBlocks(Replay& 
             if(!fetchFloats(first,last-first,p.constantStorage+4*first))return false;
             // Nothing may write between the stamps; if it did, read everything.
             raced=!NorthlightConstantEpoch::exact(before,read(context,reader));
-            shared=!raced&&NorthlightBytes::equal(p.constantStorage+4*first,previous->constants+4*first,std::size_t(last-first)*16);
+            shared=!raced&&!std::memcmp(p.constantStorage+4*first,previous->constants+4*first,std::size_t(last-first)*16);
         }
         if(!raced){
             if(shared)p.constants=previous->constants;
@@ -178,7 +177,7 @@ template<class Replay,class Source,class Fetch,class FetchFloats> bool captureBl
         if(!shared){
             if(!fetchFloats(first,last-first,p.constantStorage+4*first))return false;
             if constexpr(ValidateEvery)assert(E::exact(before,source.snapshot()));
-            shared=NorthlightBytes::equal(p.constantStorage+4*first,previous->constants+4*first,std::size_t(last-first)*16);
+            shared=!std::memcmp(p.constantStorage+4*first,previous->constants+4*first,std::size_t(last-first)*16);
         }
         if(shared)p.constants=previous->constants;
         else{
@@ -220,8 +219,8 @@ template<class Replay> bool samePose(const Replay& a,const Replay& b,Stats* stat
             const unsigned projection=b.projectionKind==1?4:2;
             const unsigned endA=last<projection?last:projection,beginB=first>projection+4?first:projection+4;
             if(stats){++stats->poseBlockHits;stats->poseBytesAvoided+=full-std::uint64_t(last-first)*16;}
-            return (first>=endA||NorthlightBytes::equal(a.constants+4*first,b.constants+4*first,std::size_t(endA-first)*16))&&
-                   (beginB>=last||NorthlightBytes::equal(a.constants+4*beginB,b.constants+4*beginB,std::size_t(last-beginB)*16));
+            return (first>=endA||!std::memcmp(a.constants+4*first,b.constants+4*first,std::size_t(endA-first)*16))&&
+                   (beginB>=last||!std::memcmp(a.constants+4*beginB,b.constants+4*beginB,std::size_t(last-beginB)*16));
         }
     }
     return NorthlightReplayPoses::sameCaptured(a,b);

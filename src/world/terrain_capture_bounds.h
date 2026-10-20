@@ -1,6 +1,5 @@
 #pragma once
 #include "intrusive_lru.h"
-#include "bytes_equal.h"
 #include <unordered_map>
 // Exact chunk coverage of the terrain triangles actually submitted this frame.
 // This snapshots buffers or reuses a fully write-tracked immutable snapshot.
@@ -568,7 +567,7 @@ public:
             if(FAILED(hr))return reject(RejectReason::IndexLock,hr);
             if(!raw){readIndices.unlock();return reject(RejectReason::IndexLock,E_POINTER);}
             chargedBytes+=indexBytes;readBytes+=indexBytes;
-            sameIndices=cached&&cached->indices.size()==indexBytes&&NorthlightBytes::equal(raw,cached->indices.data(),size_t(indexBytes));
+            sameIndices=cached&&cached->indices.size()==indexBytes&&!std::memcmp(raw,cached->indices.data(),size_t(indexBytes));
             if(!sameIndices){scratchRawIndices.resize(size_t(indexBytes));std::memcpy(scratchRawIndices.data(),raw,size_t(indexBytes));}
             hr=readIndices.unlock();
             if(FAILED(hr))return reject(RejectReason::IndexUnlock,hr);
@@ -598,12 +597,12 @@ public:
         if(FAILED(hr))return reject(RejectReason::VertexLock,hr);
         if(!raw){readVertices.unlock();return reject(RejectReason::VertexLock,E_POINTER);}
         chargedBytes+=span;readBytes+=span;
-        bool sameVertices=sameIndices&&cached->vertices.size()==span&&NorthlightBytes::equal(raw,cached->vertices.data(),size_t(span));
+        bool sameVertices=sameIndices&&cached->vertices.size()==span&&!std::memcmp(raw,cached->vertices.data(),size_t(span));
         if(sameIndices&&!sameVertices&&!cached->sourceOffsets.empty()&&cached->sourceOffsets.size()==cached->snapshot->positions.size()){
             sameVertices=true;
             for(size_t i=0;i<cached->sourceOffsets.size();++i){
                 const auto offset=cached->sourceOffsets[i];
-                if(!NorthlightBytes::equal(static_cast<const unsigned char*>(raw)+offset,&cached->snapshot->positions[i],sizeof(Position))){sameVertices=false;break;}
+                if(std::memcmp(static_cast<const unsigned char*>(raw)+offset,&cached->snapshot->positions[i],sizeof(Position))){sameVertices=false;break;}
             }
         }
         if(!sameVertices){scratchRawVertices.resize(size_t(span));std::memcpy(scratchRawVertices.data(),raw,size_t(span));}

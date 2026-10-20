@@ -1,5 +1,4 @@
 #pragma once
-#include "bytes_equal.h"
 #include <d3d9.h>
 #include "upload_lock.h"
 #include "lock_meter_readback.h"
@@ -256,7 +255,7 @@ private:
     enum class Erase:unsigned {Evict=1,Revalidation,Replacement,Clear};
     void dropPrediction(Erase site){if(unsigned(site)!=NORTHLIGHT_SNAPSHOT_COUNTERFACTUAL)predicted_=nullptr;}
     static bool predictedEqual(const CacheKey& entry,const CacheKey& key){
-        if(NORTHLIGHT_SNAPSHOT_COUNTERFACTUAL==5)return NorthlightBytes::equal(&entry,&key,offsetof(CacheKey,base));
+        if(NORTHLIGHT_SNAPSHOT_COUNTERFACTUAL==5)return !std::memcmp(&entry,&key,offsetof(CacheKey,base));
         return entry==key;
     }
     void evictOldest(){
@@ -271,7 +270,7 @@ private:
     bool revalidate(const CacheEntry& e,Ref<IDirect3DVertexBuffer9>* vertices,IDirect3DIndexBuffer9* ib,const UINT* extent){
         ++revalidated_;const Mesh& m=*e.mesh;
         if(e.key.indexed){void* ptr=nullptr;NorthlightReplayCopies::Reader<IDirect3DIndexBuffer9> read(ib);if(!ib||FAILED(read.lock(UINT(e.ibBegin),UINT(e.ibBytes),&ptr)))return false;
-            const bool same=ptr&&e.rawIndices.size()==e.ibBytes&&NorthlightBytes::equal(ptr,e.rawIndices.data(),size_t(e.ibBytes));
+            const bool same=ptr&&e.rawIndices.size()==e.ibBytes&&!std::memcmp(ptr,e.rawIndices.data(),size_t(e.ibBytes));
             if(FAILED(read.unlock())||!same)return false;}
         for(UINT s=0;s<4;++s){if(!extent[s]||!vertices[s].p)continue;
             const auto& target=m.streams[s];const UINT stride=e.key.stride[s];void* ptr=nullptr;
@@ -279,10 +278,10 @@ private:
             if(FAILED(read.lock(UINT(e.begins[s]),UINT(e.lockBytes[s]),&ptr)))return false;
             bool same=ptr!=nullptr;
             if(same){const auto* source=static_cast<const std::uint8_t*>(ptr);
-                if(!e.compacted)same=NorthlightBytes::equal(target.bytes.data(),source,size_t(e.readBytes[s]));
+                if(!e.compacted)same=!std::memcmp(target.bytes.data(),source,size_t(e.readBytes[s]));
                 else for(const auto& run:e.runs){if(!same)break;const size_t offset=size_t(std::uint64_t(run.source)-e.low)*stride;
                     const size_t bytes=size_t(run.count)*stride-(run.destination+run.count==m.vertexCount?stride-extent[s]:0);
-                    same=NorthlightBytes::equal(target.bytes.data()+size_t(run.destination)*stride,source+offset,bytes);}}
+                    same=!std::memcmp(target.bytes.data()+size_t(run.destination)*stride,source+offset,bytes);}}
             if(FAILED(read.unlock())||!same)return false;
         }
         return true;
@@ -468,7 +467,7 @@ private:
         const size_t rawBytes=size_t(count)*(format==D3DFMT_INDEX16?2:4);
         activeRuns_=&copyRuns_;const auto hash=fingerprint(data,rawBytes);
         const auto matches=[&](const DecodedEntry* entry){return entry&&entry->fingerprint==hash&&entry->minimum==draw.minimum&&entry->vertices==draw.vertices&&entry->format==format&&entry->raw.size()==rawBytes&&
-            NorthlightBytes::equal(entry->raw.data(),data,rawBytes);};
+            !std::memcmp(entry->raw.data(),data,rawBytes);};
         DecodedEntry* cached=matches(recent_)?recent_:nullptr;
         if(!cached){auto range=decodedLookup_.equal_range(hash);for(auto it=range.first;it!=range.second;++it)if(it->second!=recent_&&matches(it->second)){cached=it->second;break;}}
         if(cached){

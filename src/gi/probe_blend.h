@@ -1,6 +1,5 @@
 #pragma once
 #include "world_probe_cache.h"
-#include "bytes_equal.h"
 #include <algorithm>
 #include <cstring>
 #include <string>
@@ -30,7 +29,7 @@ public:
             static_assert(sizeof slot.cur==12*sizeof(float),"SH comparison excludes padding");
             // Resident unchanged probes need no transpose to the GPU channel order.
             const bool resident=slot.valid&&entry.occupied&&entry.probe.valid&&slot.key==entry.key;
-            if(resident&&NorthlightBytes::equal(slot.cur,entry.probe.sh,sizeof slot.cur))continue;
+            if(resident&&!std::memcmp(slot.cur,entry.probe.sh,sizeof slot.cur))continue;
             float next[12];
             for(int k=0;k<4;++k){next[k]=entry.probe.sh[k].x;next[4+k]=entry.probe.sh[k].y;next[8+k]=entry.probe.sh[k].z;}
             if(!entry.occupied||!entry.probe.valid){slot.valid=false;slot.start=None;std::memcpy(slot.cur,entry.probe.sh,sizeof slot.cur);std::memcpy(slot.prev,next,sizeof next);continue;}
