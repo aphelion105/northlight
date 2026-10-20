@@ -370,16 +370,27 @@ def upgrade_quality_features(text, template):
                 preset = value
     if preset != 'quality':
         return text
-    lines = []
+    lines, reset = [], set()
     for feature, settings in QUALITY_UPGRADE.findall(template):
         applied = '; Northlight Quality upgrade applied: ' + feature
         if applied in text.splitlines():
             continue
-        lines.extend([applied, *settings.split()])
+        lines.append(applied)
+        reset.update(setting.split('=', 1)[0].lower() for setting in settings.split())
     if not lines:
         return text
+    # Remove obsolete overrides rather than pinning new active ones: a later
+    # change to Balanced/Performance must still use that preset's defaults.
+    original, section = [], ''
+    for raw in text.splitlines(keepends=True):
+        line = re.split('[;#]', raw, maxsplit=1)[0].strip()
+        if line.startswith('[') and line.endswith(']'):
+            section = line[1:-1].strip().lower()
+        elif section == 'quality' and '=' in line and line.split('=', 1)[0].strip().lower() in reset:
+            raw = '; Previous Quality override: ' + raw
+        original.append(raw)
     eol = '\r\n' if '\r\n' in text else '\n'
-    return text.rstrip('\r\n') + eol + eol + '[Quality]' + eol + eol.join(lines) + eol
+    return ''.join(original).rstrip('\r\n') + eol + eol + eol.join(lines) + eol
 
 def merge_quality_ini(user, template):
     """The user's northlight-quality.ini with every setting of the package template it does not mention yet appended:
