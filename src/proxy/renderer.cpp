@@ -497,12 +497,14 @@ private:
         // DXVK 3's 1x depth+stencil RESZ copy can leave INTZ unchanged (proved
         // with a nonzero sentinel). DF24 copies depth alone, which is all our
         // snapshots consume; NameMask still uses the original world stencil.
+        // DXVK 2.7.1 has the same ResolveZ and the same copy-path choice (a depth+stencil copy goes through the
+        // shader copy on AMD drivers, depth alone through vkCmdCopyImage), so both packaged DXVKs take DF24.
         // A frame whose world depth was not bound (bindWorldDepth failed after projectionValid) keeps the current
         // format: deciding INTZ there recreated every effect resource, and DF24 again on the next frame. A DF24 the
         // device refused stays INTZ for the session (df24Refused).
         const D3DFORMAT intz=(D3DFORMAT)MAKEFOURCC('I','N','T','Z'),df24=(D3DFORMAT)MAKEFOURCC('D','F','2','4');
         const D3DFORMAT depthFormat=!worldDepthDescKnown&&depthSnapshotFormat!=D3DFMT_UNKNOWN?depthSnapshotFormat
-            :selectedBackend==NorthlightBackend::Kind::Dxvk&&!df24Refused&&worldDepthDescKnown&&worldDepthDesc.MultiSampleType==D3DMULTISAMPLE_NONE?df24:intz;
+            :NorthlightBackend::isPackagedDxvk(selectedBackend)&&!df24Refused&&worldDepthDescKnown&&worldDepthDesc.MultiSampleType==D3DMULTISAMPLE_NONE?df24:intz;
         if (sceneSurface && aoSurface && aoRawSurface && depthTex && w == width && h == height && format == sceneFormat && depthFormat == depthSnapshotFormat) return true;
         // Resource replacement must not invalidate this frame's retained depth surface.
         drop(sceneSurface); drop(scene);

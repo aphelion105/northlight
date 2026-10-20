@@ -89,9 +89,9 @@ checks['rain mask: created lazily at the effect size, failure logged once and di
     and 'D3DUSAGE_DEPTHSTENCIL,depthSnapshotFormat,D3DPOOL_DEFAULT,&rainDepth' in cr and 'CreatePixelShader(kRainMaskMrtShader,&rainMrtPS)' in cr and 'CreatePixelShader(kRainScrubShader,&rainScrubPS)' in cr and 'drop(rainDepth);drop(rainMrtPS);drop(rainScrubPS);rainMaskFailed=true;' in cr)
 res=r[r.index('    bool resources(UINT w, UINT h, D3DFORMAT format) {'):]
 res=res[:res.index('\n    }\n')]
-checks['depth snapshot: DF24 only on single-sample DXVK 3 with the world depth known; an unknown depth keeps the current format; a refused DF24 falls back to INTZ for the session']=(
+checks['depth snapshot: DF24 only on single-sample packaged DXVK (3.1.1 and 2.7.1) with the world depth known; an unknown depth keeps the current format; a refused DF24 falls back to INTZ for the session']=(
     "const D3DFORMAT depthFormat=!worldDepthDescKnown&&depthSnapshotFormat!=D3DFMT_UNKNOWN?depthSnapshotFormat" in res
-    and ":selectedBackend==NorthlightBackend::Kind::Dxvk&&!df24Refused&&worldDepthDescKnown&&worldDepthDesc.MultiSampleType==D3DMULTISAMPLE_NONE?df24:intz;" in res
+    and ":NorthlightBackend::isPackagedDxvk(selectedBackend)&&!df24Refused&&worldDepthDescKnown&&worldDepthDesc.MultiSampleType==D3DMULTISAMPLE_NONE?df24:intz;" in res
     and "if (FAILED(hr) && depthSnapshotFormat==df24) {" in res and "df24Refused=true;depthSnapshotFormat=intz;" in res
     and res.index("df24Refused=true;depthSnapshotFormat=intz;")<res.index('if (error(hr, "depth snapshot texture")) return false;'))
 checks['rain mask: MSAA twin via CreateRenderTarget with the wanted type/quality only when not NONE, all dropped on failure, type/quality stored; draw target is the twin else the texture surface; recreated on a type/quality change']=(
