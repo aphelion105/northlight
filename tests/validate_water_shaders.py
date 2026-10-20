@@ -10,8 +10,8 @@ from pathlib import Path
 import os,subprocess,json,re,hashlib
 from extract_water_shaders import accepted_originals,patch
 from water_shader_patch import patch_mrt   # 0.3.214 (water MRT): the pixel variant of the game's own water draw
-from build_environment import wine_build_prefix, zig_env, ZIG
-from compile_world_shaders import validate_assembly,HERE,WINE_ROOT   # HERE: scripts/shaders (the tool sources)
+from build_environment import wine_build_prefix, zig_env, ZIG, WINE_ROOT
+from shader_compiler import validate_assembly,HERE   # HERE: scripts/shaders (the tool sources)
 
 def main():
     binaries=fp.output_dir()/'water-mask-bin';out=fp.output_dir()/'water-mask-assembly'

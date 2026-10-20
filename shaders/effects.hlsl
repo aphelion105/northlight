@@ -11,6 +11,8 @@ sampler2D WaterMask : register(s3);
 // AOBlur only: the raw AO on s0 (LINEAR, CLAMP: Scene's sampler state; AOBlur never reads Scene) for its bilinear early-out.
 sampler2D AmbientLinear : register(s0);
 float4 WaterInfo : register(c4); // coherent actual-liquid mask available
+float4 LegacyFog : register(c5); // validated signed fog slope folded to positive view Z; identity when unknown
+float4 LegacyFogColor : register(c6); // proven native RGB, preserved by AO
 
 float4 ImageAndClip : register(c0); // 1/width, 1/height, near, far
 float4 Lighting : register(c1);    // projection x/y scales, AO, indirect
@@ -257,10 +259,11 @@ float4 AOBlur(float2 uv : TEXCOORD0) : COLOR0
     float planeScale = 2.0 / max(0.025, min(Options.y * 0.1, p.z * 0.002));
     float sumAO = 0.0;
     float sumWeight = 0.0;
-    [loop] for (int i = 0; i < 25; ++i)
+    // Visit the same 25 taps in row order without per-tap division/floor.
+    [loop] for(int y=0;y<5;++y)
+    [loop] for(int x=0;x<5;++x)
     {
-        float row = floor((i + 0.5) * 0.2);
-        float2 o = float2(i - row * 5.0 - 2.0, row - 2.0);
+        float2 o=float2(x-2,y-2);
         float2 tapUV = uv + o * tapStep;
         float2 quv = DepthTexelUV(tapUV, size);
         float qd = ReadDepth(quv);
@@ -345,8 +348,10 @@ float4 Composite(float2 uv : TEXCOORD0) : COLOR0
     bloom += Bright(tex2Dlod(Scene, float4(uv + float2(0,  b.y), 0, 0)).rgb);
     bloom += Bright(tex2Dlod(Scene, float4(uv + float2(0, -b.y), 0, 0)).rgb);
     bloom *= 0.125;
-    float3 lit = original.rgb * ambient.a;
-    lit += ambient.rgb * Lighting.w * saturate(original.rgb + 0.1);
+    float legacyT=mad(LegacyFog.w,saturate(pow(max(mad(p.z,LegacyFog.x,LegacyFog.y),0),LegacyFog.z))-1,1);
+    float3 fogPart=min((1-legacyT)*LegacyFogColor.rgb,original.rgb);
+    float3 lit = mad(original.rgb-fogPart,ambient.a,fogPart);
+    lit += ambient.rgb * Lighting.w * saturate(original.rgb + 0.1) * legacyT;
     lit += bloom * Options.x * (1.0 - saturate(lit));
     return float4(saturate(lit), original.a);
 }
