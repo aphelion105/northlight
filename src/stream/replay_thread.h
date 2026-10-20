@@ -385,7 +385,7 @@ private:
         const bool diag=diagnostics&&diagnostics();
         const bool audit=diag_;diag_=diag;   // the next frame records the audit state iff diagnostics are on now; switched on mid-frame: starts clean next frame
         if(audit&&diag&&frames%sampleEvery==1)runAudit();
-        if(log&&frames%sampleEvery==0)cstreamLine(frames);   // existing counters only; keep the pipeline summary without per-call diagnostics
+        if(diag&&log&&frames%sampleEvery==0)cstreamLine(frames);
         touched_.clear();std::fill(touchedFlag_.begin(),touchedFlag_.end(),false);
     }
     // Scalar slots set this frame must read back from the Target as set; a mismatch (a backend that normalizes) makes the slot sync-only for good.

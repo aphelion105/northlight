@@ -62,7 +62,7 @@ checks={
  'mirror_guarded_device.h is up to date with its generator':regenerated==before,
  'MirrorGate has ownerTid, set by the Device constructor':'std::uint32_t ownerTid;' in guard and 'mirrorState.gate.ownerTid=MirrorGuard::threadId();' in proxy['renderer.cpp'],
  'census only after the nested return (outer entries: elided, locked, foreign)':ctor.count('gate.entered(')==1 and ctor.index('if(kMirrorSingleGate&&previous_==&gate)return;')<ctor.index('gate.mutex.lock();')<ctor.index('gate.entered('),
- 'census site classes at every site':proxy['mirror_resources.h'].count('MirrorSite::Registry')==10 and proxy['mirror_resources.h'].count('MirrorSite::Resource')==6
+ 'census site classes at every site':proxy['mirror_resources.h'].count('MirrorSite::Registry')==10 and proxy['mirror_resources.h'].count('MirrorSite::Resource')==8
    and proxy['device_mirror.h'].count('MirrorSite::StateBlock')==4 and 'lock(owner.m->gate,MirrorSite::Raw)' in proxy['device_mirror.h']
    and proxy['renderer.cpp'].count('MirrorGuard lock(resources->gate(),MirrorSite::SwapChain);')==3,
  'tracked buffers report Lock/Unlock/Release':proxy['tracked_buffers.h'].count('if(census)census->noteBuffer();')==3 and proxy['renderer.cpp'].count('&bufferEscape,&mirrorState.gate)')==4,

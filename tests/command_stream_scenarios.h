@@ -1260,7 +1260,7 @@ static void diagnosticsOffSkipsAudit(){
     auto frame=[&]{for(int i=0;i<300;++i)rig.dev->SetRenderState((D3DRENDERSTATETYPE)(7+i%5),DWORD(i+frameSalt()));rig.dev->Present(nullptr,nullptr,nullptr,nullptr);rig.sync();};
     auto& st=rig.core().q.stats;
     frame();frame();CHECK(rp.auditSets()==0);
-    CHECK(offSummaries.load()==1);   // pipeline totals remain visible without per-call timers or the audit
+    CHECK(offSummaries.load()==0);   // the periodic CSTREAM line is a diagnostic: none with Diagnostics=0
     CHECK(get(st.recordSampledNs)==0&&get(st.presentBookNs)==0&&get(st.lockNs)==0);   // 0.3.204 (task 21): the split timers stay off with Diagnostics
     gDiagOn.store(true);frame();CHECK(rp.auditSets()==0);   // the frame that was running when it turned on: not recorded
     frame();CHECK(rp.auditSets()>0);

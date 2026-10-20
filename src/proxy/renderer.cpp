@@ -216,7 +216,6 @@ template<class T> static uint64_t shaderHash(T* shader, std::vector<DWORD>& word
 }
 
 #include "saved_state.h"
-#include "depth_probe.h"
 
 #include "gpu_profile.h"
 #include "gpu_frame_timer.h" // 0.3.200 (gpu budget)
@@ -467,7 +466,7 @@ private:
     LARGE_INTEGER gateSceneEnd={};LONGLONG gatePresentDone=0;unsigned gateSceneDraws=0;unsigned long long gateSceneReads=0;
     std::recursive_mutex gateBenchLock; /* private, uncontended: the microbenchmark's lock */
     MirrorGate gateBenchGate; /* 0.3.180: private, for ownerNs (0.3.182: the real owner entry and exit on it) */
-    const int debugMode = 0;int worldDebug=0;bool depthProbePending=false;
+    const int debugMode = 0;int worldDebug=0;
     NorthlightEffectSwitches::Hotkeys effectKeys;
     float nearZ = .1f, farZ = 1000.f, scaleX = 1.f, scaleY = 1.f, fogForward = 1.f;
     float worldMinDepth=0.f,worldMaxDepth=1.f;
@@ -731,12 +730,6 @@ private:
         ExtensionDevice::RawScope rawEffects(*ext);
         D3DSURFACE_DESC desc;
         if (!fullViewport(desc) || !resources(desc.Width, desc.Height, desc.Format) || !resolveDepth()) return;
-        if(depthProbePending){
-            depthProbePending=false;
-            logf("DEPTH probe begin device=%ld frame=%u backend=%s early=%u worldDebug=%d",diagnosticId,frame,NorthlightBackend::name(selectedBackend),unsigned(earlyDepth.earlyCaptured),worldDebug);
-            NorthlightDepthProbe::run(ext,depthTex,worldDepth,frame,"before-effects");
-            logf("DEPTH probe end device=%ld frame=%u",diagnosticId,frame);
-        }
         SavedState saved(ext,&stateBlocks);
         if (!saved.ok) return;
         // 0.3.200 (gpu budget): the frame timer brackets every effect pass (closed on every return path by the guard, after the profile's end).
@@ -2335,7 +2328,7 @@ public:
         bool retry=k10&&!key10&&!enabled;
         if(k10&&!key10){enabled=!enabled;frameIntervals.reset();frameCost.reset();stallFrames.reset();mirrorResources.queryProfile={};logf("Effects %s tick=%lu",enabled?"ON":"OFF",(unsigned long)GetTickCount());}
         bool k12=focus&&modifiers&&(GetAsyncKeyState(VK_F12)&0x8000);
-        if(k12&&!key12){worldDebug=(worldDebug+1)%4;if(worldDebug==1)depthProbePending=true;logf("World debug %d tick=%lu (0 normal,1 shadows,2 GI,3 volume)",worldDebug,(unsigned long)GetTickCount());}
+        if(k12&&!key12){worldDebug=(worldDebug+1)%4;logf("World debug %d tick=%lu (0 normal,1 shadows,2 GI,3 volume)",worldDebug,(unsigned long)GetTickCount());}
         key12=k12;key10=k10;
         uiFallbackEndFrame();
         if(frame==1||(frame%600==0&&diagnostics()))logf("frame=%u applied=%u terrainShaders=%u uiShaders=%u projectionRejects=%u terrainThisFrame=%d depth=%d draws=%u missingVS=%u terrainDraws=%u terrainShadowDraws=%u viewportRejects=%u depthRejects=%u uiDraws=%u uiAfterTerrain=%u uiFallback=%u uiFallbackState=%c",frame,appliedFrames,matchedTerrain,matchedUI,projectionRejects,terrain,captured,drawCalls,missingVS,terrainDraws,terrainShadowDraws,viewportRejects,depthRejects,uiDraws,uiAfterTerrain,uiFallbackBoundaries,uiFallback.disarmed()?'d':uiFallback.armed()?'a':'l');
