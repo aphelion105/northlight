@@ -65,7 +65,13 @@ int main(){
  assert(dusk<=61*60&&dawn<=68*60);
  std::printf("PASS quarter-sine moon: rise %.3f / set %.3f deg/h, hold -43 from %.0f to %.0f s, dusk %.1f / dawn %.1f min without full light\n",
   rate(kMoonriseSeconds+1)*3600,rate(kMoonsetSeconds+1)*3600,holdStart,holdEnd,dusk/60.,dawn/60.);
- for(double bad:{-1.,1.,std::numeric_limits<double>::infinity(),std::numeric_limits<double>::quiet_NaN()})assert(!evaluate(bad).valid&&!evaluateNatural(bad).valid);
+ for(double bad:{-1.,1.,std::numeric_limits<double>::infinity(),std::numeric_limits<double>::quiet_NaN()})assert(!evaluate(bad).valid&&!evaluateNatural(bad).valid&&!evaluateNative(bad).valid);
+ // The native moon (DayNight::SetPlanets): 55 deg at midnight, parked 10 under from 04:00 to 22:00, up 22:17:41-03:23:51;
+ // 2.46 deg at gameDay .931987 in a game log. The native sun is the sun above.
+ near(evaluateNative(0).moon.elevation,55,1e-4);near(evaluateNative(.5).moon.elevation,-10,1e-4);
+ near(evaluateNative(80261.54/kDaySeconds).moon.elevation,0,1e-3);near(evaluateNative(12230.77/kDaySeconds).moon.elevation,0,1e-3);
+ near(evaluateNative(.931987).moon.elevation,2.47,.01);
+ for(int t=0;t<86400;t+=60){auto a=evaluateNative(t/kDaySeconds),b=evaluateNatural(t/kDaySeconds);near(a.sun.elevation,b.sun.elevation);}
  // Held clock samples remain smoothed for both lights/rays at native speeds.
  for(double start:{6*3600.+15*60,19*3600.+40*60,21*3600.,5*3600.})for(unsigned fps:{30u,60u,144u}){
   LightMotion smooth;double lastRaw=0,lastLight=0,maxRaw=0,maxLight=0;bool movedOnHeld=false;

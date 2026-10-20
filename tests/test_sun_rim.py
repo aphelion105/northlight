@@ -121,8 +121,8 @@ assert 'current=current*(2-current);' in shader
 assert shader.index('current=current*(2-current);')<shader.index('value=lerp(previous,current')
 assert 'constexpr float SunCoreWeight=2.4f,SunCoreRate=1.1f,SunTailWeight=.9f,SunTailWeightLow=1.8f,MoonGlareStrength=1.f;' in glow
 assert 'c[12][2]=i?NorthlightCelestialGlow::MoonGlareStrength:NorthlightCelestialGlow::SunCoreWeight;' in host
-assert '{D3DRS_SRCBLEND,DWORD(glare?D3DBLEND_INVDESTCOLOR:D3DBLEND_SRCALPHA)},{D3DRS_DESTBLEND,DWORD(glare?D3DBLEND_ONE:D3DBLEND_INVSRCALPHA)}' in host
-assert 'if(DiscRepair.w<.5)alpha*=1-texel.a;' in shader
+assert '{D3DRS_SRCBLEND,DWORD(glare?D3DBLEND_INVDESTCOLOR:D3DBLEND_SRCALPHA)},{D3DRS_DESTBLEND,DWORD(D3DBLEND_ONE)}' in host
+assert 'if(DiscRepair.w<.5)alpha*=1-texel.a*saturate(30*ray.z/forward);' in shader
 assert 'if(DiscPolicy.w>.5&&depth<.99999994)return 0;' in shader
 assert 'if(DiscRepair.w>.5){float a=saturate((1-length(local))/.56);texel.a=a*a*(3-2*a);}' in shader
 assert 'if(DiscRepair.w>.5)return (DiscEmission.z*exp2(-DiscEmission.x*r2)*disc+' in shader
@@ -142,7 +142,7 @@ assert 'halo.tangentRadius*=i?MoonGlareSupport:SunGlareSupport;' in host
 # The terrain-mask gate, mask matrix and c46 extent use the mask radius (20R/6R).
 assert 'support.tangentRadius*=i?MoonMaskRadius:SunMaskRadius;' in host
 assert 'NorthlightCelestialTerrain::matrix(disc,view+12,body?MoonMaskRadius:SunMaskRadius,size,matrix,nearCut);' in host
-assert 'const float terrainPolicy[]={terrainReady[i]?1.f:0.f,i?MoonMaskRadius:SunMaskRadius,0,0};' in host
+assert 'const float terrainPolicy[]={terrainReady[i]?1.f:0.f,i?MoonMaskRadius:SunMaskRadius,' in host
 # Small hot core (x >= 1 only to ~1.6R with the sun up), tinted tail past 10R,
 # zero at the 20R support; a low sun only widens the tail.
 assert glare(1.5,True)>1 and glare(2,True)<1 and glare(4,True)<.7 and glare(10,True)>.2 and glare(15,True)>.03 and glare(19.99,True)<.000001
