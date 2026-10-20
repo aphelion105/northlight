@@ -120,18 +120,22 @@ inline bool build(const NorthlightWorldMesh::WorldMeshUploadPlan& input,Plan& ou
                 // Content anchors often close city pages half full. Keep the
                 // exact bytes, not a full 512 KiB vertex capacity per page.
                 // Only one bounded page is copied; resident pages skip it.
+                // Optional: a refused or failed copy keeps the page as it is
+                // (same bytes, larger capacity) instead of failing the build.
                 auto compact=[&](auto& buffer){
                     using Buffer=std::decay_t<decltype(buffer)>;
                     using Value=typename Buffer::value_type;
                     const uint64_t oldBytes=buffer.capacity()*sizeof(Value),bytes=buffer.size()*sizeof(Value);
-                    if(buffer.capacity()<=buffer.size()+buffer.size()/4||oldBytes-bytes<65536)return true;
-                    if(!allowed(bytes))return false;
-                    Buffer exact(buffer.begin(),buffer.end());
-                    const uint64_t newBytes=exact.capacity()*sizeof(Value);
-                    peakLive=std::max(peakLive,liveKept+capacity+newBytes);
-                    buffer.swap(exact);capacity=capacity-oldBytes+newBytes;return true;
+                    if(buffer.capacity()<=buffer.size()+buffer.size()/4||oldBytes-bytes<65536)return;
+                    if(!allowed(bytes))return;
+                    try{
+                        Buffer exact(buffer.begin(),buffer.end());
+                        const uint64_t newBytes=exact.capacity()*sizeof(Value);
+                        peakLive=std::max(peakLive,liveKept+capacity+newBytes);
+                        buffer.swap(exact);capacity=capacity-oldBytes+newBytes;
+                    }catch(const std::bad_alloc&){}
                 };
-                if(!compact(p.vertices)||!compact(p.indices))return false;
+                compact(p.vertices);compact(p.indices);
                 liveKept+=capacity;
             }
             return true;
@@ -233,7 +237,7 @@ inline bool build(const NorthlightWorldMesh::WorldMeshUploadPlan& input,Plan& ou
             if(anchored)closeAfter=true;
         }
         if(expectedStart!=input.indices.size())return fail("Paged mesh batches do not cover all indices");
-        if(!next.pages.empty()&&!finishPage(next.pages.back()))return fail("Paged mesh compaction allocation deferred");
+        if(!next.pages.empty())finishPage(next.pages.back()); // never fails: compaction is optional
         if(options.peakLiveBytes)*options.peakLiveBytes=peakLive;
         output=std::move(next);error.clear();return true;
     } catch(const std::bad_alloc&) {return fail("Paged mesh worker allocation failed");}

@@ -302,6 +302,13 @@ static void testCompactSource(){
     assert(pages->pages[0].vertices.capacity()==3); // a tiny anchored page does not retain 512 KiB
     assert(pages->pages[0].key==reference.pages[0].key&&pages->pages[0].indices==reference.pages[0].indices);
     assert(!std::memcmp(pages->pages[0].vertices.data(),reference.pages[0].vertices.data(),96));
+    // Compaction is optional: an admission that refuses its exact-size copies (only those requests here) keeps
+    // the page uncompacted with the same key and bytes instead of failing the build.
+    {P::Plan kept;const auto refuseCompaction=[](uint64_t bytes){return bytes!=96&&bytes!=12;}; /* the exact 3-vertex / 3-index copies */
+     assert(P::build(input,kept,error,refuseCompaction)&&error.empty());
+     assert(kept.pages.size()==pages->pages.size()&&kept.pages[0].vertices.capacity()>3);
+     assert(kept.pages[0].key==pages->pages[0].key&&kept.pages[0].indices==pages->pages[0].indices);
+     assert(!std::memcmp(kept.pages[0].vertices.data(),pages->pages[0].vertices.data(),96));}
     auto broken=input;broken.source=reinterpret_cast<const WorldScene*>(1);
     P::Plan untouched=reference;assert(!P::build(broken,untouched,error));assert(!P::seal(broken,pages,error));
     broken=input;broken.vertexCount=4;assert(!P::build(broken,untouched,error));assert(!P::seal(broken,pages,error));
@@ -309,6 +316,6 @@ static void testCompactSource(){
     assert(input.pagingVertices&&input.completePlacements[0].modelKey=="preserve-owner");
     assert(P::seal(input,pages,error)&&!P::validateSealed(input));
     assert(!input.pagingVertices&&input.completePlacements[0].modelKey=="preserve-owner");
-    std::puts("PASS compact paging: zero-copy vertices, exact pages, strict ownership/count checks, transactional sealing");
+    std::puts("PASS compact paging: zero-copy vertices, exact pages, a refused compaction keeps the page, strict ownership/count checks, transactional sealing");
 }
 int main(){testIndexMap();testVertexLimits();testIndexLimits();testKeepBatches();testDegenerateAndExactBoundary();testAnchors();testElision();testTransactionalFailure();testSeal();testCompactSource();std::puts("All world mesh page tests passed");}
