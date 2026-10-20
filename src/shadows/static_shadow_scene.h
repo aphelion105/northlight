@@ -18,7 +18,7 @@ struct Model {
     uint64_t contentRevision=0;
     std::vector<Vertex> vertices;
     std::vector<uint32_t> indices;
-    // Prepared by the file worker, never converted in the render submission.
+    // Indices and compact alpha masks are prepared by the file worker.
     std::vector<uint16_t> uploadIndices16;
     std::vector<std::shared_ptr<const std::vector<uint8_t>>> uploadAlpha;
     std::shared_ptr<const Model> drawModel;
@@ -30,6 +30,13 @@ struct Model {
     bool index16=false;
     size_t indexCount()const{return uploadPrepared&&index16?uploadIndices16.size():indices.size();}
     uint32_t indexAt(size_t i)const{return uploadPrepared&&index16?uploadIndices16[i]:indices[i];}
+    uint8_t alphaAt(size_t material,size_t pixel)const{
+        if(uploadPrepared&&material<uploadAlpha.size()&&uploadAlpha[material]){
+            const auto& alpha=*uploadAlpha[material];return pixel<alpha.size()?alpha[pixel]:255;
+        }
+        const auto& rgba=materials[material].rgba;
+        return pixel<rgba.size()/4?rgba[pixel*4+3]:255;
+    }
 };
 struct Placement {
     uint64_t uid=0;
@@ -85,6 +92,10 @@ public:
     Streamer(const Streamer&)=delete;
     Streamer& operator=(const Streamer&)=delete;
     void request(const Request&);
+    // Frame-boundary recovery when the consumer has no drawable world. Cancels
+    // publication, frees worker-owned caches asynchronously, and prevents reads
+    // until resumed. External immutable snapshot holders stay valid.
+    void setPaused(bool);
     std::shared_ptr<const Snapshot> snapshot() const;
     // Native offline tests/diagnostics only; never block the render thread.
     bool waitIdle(unsigned timeoutMs=30000) const;

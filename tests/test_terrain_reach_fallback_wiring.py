@@ -61,10 +61,12 @@ for text in ('WORLD geometry memory stall begin stage=%s availableMiB=%llu large
              'WORLD shadow terrain reach tier from=%.0f to=%.0f reason=headroom availableMiB=%llu largestMiB=%llu',
              'WORLD shadow terrain reach restored to=%.0f'):
     assert text in w, text
-assert 'stallEnd(memoryStall.reduced?"reduced":"published")' in w and w.count('stallEnd("superseded")') == 3
+# A superseded build ends its stall in abandonGeometry() (one stallEnd("superseded"), also clearing the abandoned region's peak),
+# called from the three places that used to call stallEnd("superseded") directly.
+assert 'stallEnd(memoryStall.reduced?"reduced":"published")' in w and w.count('stallEnd("superseded")') == 1 and w.count('abandonGeometry();') == 3
 assert 'WORLD skip episode begin reason=%s' in r and 'WORLD skip episode reason=%s last=%s frames=%u ms=%lu' in r
 assert '#include "terrain_reach_fallback.h"' in (Path(__file__).parent / 'test_concurrent_geometry_build.py').read_text()
-assert 'stallEnd("error")' in w and 'if(abandoned)stallEnd("superseded")' in w
+assert 'stallEnd("error")' in w and 'if(abandoned)abandonGeometry();' in w
 print('terrain reach fallback wiring PASS')
 
 # Geometry-memory logs: a non-exact largest is printed as ">=N" and every refusal names its limit.

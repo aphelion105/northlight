@@ -1,11 +1,36 @@
 #include <string>
 #include "geometry_memory.h"
+#include "world_streaming.h"
 #include <cassert>
 #include <iostream>
 #include <vector>
 using namespace NorthlightGeometryMemory;
 int main(){
     auto build=buildBudget();
+    // Player log: a discarded terrain attempt lifted entry from 771 by the
+    // 640-618 shortfall to 793 MiB; the next region had zero live generations.
+    // Discarding the old estimate must admit a new 772 MiB entry, while keeping
+    // the ordinary 768 MiB aggregate and 96 MiB contiguous guards unchanged.
+    EntryLift oldRegion;
+    oldRegion.refused(771*MiB,640*MiB,618*MiB,1000,96*MiB);
+    assert(oldRegion.apply(buildBudget(64*MiB),1100).available==793*MiB);
+    assert(!admits({772*MiB,332*MiB,true},oldRegion.apply(buildBudget(64*MiB),1100)));
+    oldRegion.clear();
+    assert(admits({772*MiB,332*MiB,true},oldRegion.apply(buildBudget(64*MiB),1101)));
+    assert(!admits({748*MiB,332*MiB,true},oldRegion.apply(buildBudget(64*MiB),1101)));
+    assert(!admits({772*MiB,95*MiB,true},oldRegion.apply(buildBudget(64*MiB),1101)));
+    // Many small retargets must compare against the measured attempt's fixed
+    // anchor, not just the previous request; camera/GI retargets inside its
+    // coverage retain the anti-rebuild backoff.
+    const NorthlightGI::Vec3 refusedCenter{0,0,0};
+    oldRegion.refused(771*MiB,640*MiB,618*MiB,2000,96*MiB);
+    for(int step=1;step<=13;++step){
+        const NorthlightGI::Vec3 eye{float(step*8),0,0};
+        if(!NorthlightWorldStreaming::applicable("Northrend",refusedCenter,"Northrend",eye))oldRegion.clear();
+        assert(oldRegion.armed==(step<=12));
+    }
+    assert(admits({772*MiB,332*MiB,true},oldRegion.apply(buildBudget(64*MiB),2100)));
+    assert(!NorthlightWorldStreaming::applicable("Northrend",refusedCenter,"UlduarRaid",refusedCenter));
     assert(build.available==768*MiB);
     assert(build.largest==32*MiB);
     assert(admits({768*MiB,32*MiB,true},build));

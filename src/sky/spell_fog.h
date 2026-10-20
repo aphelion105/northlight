@@ -40,8 +40,18 @@ struct Frame{
         return std::exp(-tau[kSamples-1]);
     }
 };
+// The clamped and bare shader variants refine the same six candidates.
+// Share only that search within one refit; acceptance and fallback stay separate.
+struct FitWork{
+    struct Candidate{float a,b,p,e;};
+    Candidate refined[6];unsigned count=0;bool ready=false;
+    float game[3]={},tau[kSamples]={};
+    bool matches(const Frame& f,const float g[3])const{
+        return ready&&!std::memcmp(game,g,sizeof game)&&!std::memcmp(tau,f.tau,sizeof tau);
+    }
+};
 inline bool flatConstant(const float game[3]);
-inline bool emitFog(const Frame& f,const float game[3],float out[3],bool bareBase=false,bool* bareSkip=nullptr);
+inline bool emitFog(const Frame& f,const float game[3],float out[3],bool bareBase=false,bool* bareSkip=nullptr,FitWork* work=nullptr);
 // The frame's numbers move toward the raw estimate with a time constant (no pumping when the camera crosses a fog bank), fade to nothing when the effect is off, and the frame is
 // inactive (identity) below a negligible optical depth. `revision` moves only when a sample's optical depth, the scatter colour or `active` changed by more than ~1 % relative to the values at
 // the last move; then the precomputed fits are redone (here, on the thread of the world render: the record path of the layer does no fitting for them).
@@ -55,19 +65,21 @@ struct Hold{
         const unsigned at=hintN<kRamps?hintN++:(hintNext++%kRamps);
         std::memcpy(hints[at],game,12);hints[at][3]=bare?1.f:0.f;hintsNew=true;
     }
-    static void fitOne(const Frame& f,const float game[3],bool bare,Fit& slot){
-        slot=Fit{};slot.valid=true;slot.bare=bare;std::memcpy(slot.key,game,12);slot.ok=emitFog(f,game,slot.fit,bare,&slot.bareSkip);
+    static void fitOne(const Frame& f,const float game[3],bool bare,Fit& slot,FitWork* work=nullptr){
+        slot=Fit{};slot.valid=true;slot.bare=bare;std::memcpy(slot.key,game,12);slot.ok=emitFog(f,game,slot.fit,bare,&slot.bareSkip,work);
     }
     void refit(bool all){
         static const float kFlat[3]={0,1,1};
         if(all){out.flat[0]=Fit{};out.flat[1]=Fit{};for(auto& r:out.ramp)r=Fit{};}
         if(!out.active)return;
-        if(all)for(int bare=0;bare<2;++bare)fitOne(out,kFlat,bare!=0,out.flat[bare]);
+        FitWork work[kRamps+1];
+        if(all)for(int bare=0;bare<2;++bare)fitOne(out,kFlat,bare!=0,out.flat[bare],&work[0]);
         for(unsigned i=0;i<hintN;++i){
             bool have=false;for(const Fit& r:out.ramp)if(r.valid&&r.bare==(hints[i][3]!=0)&&!std::memcmp(r.key,hints[i],12))have=true;
             if(have)continue;
             unsigned slot=0;while(slot<kRamps&&out.ramp[slot].valid)++slot;if(slot==kRamps)slot=i;
-            fitOne(out,hints[i],hints[i][3]!=0,out.ramp[slot]);
+            unsigned shared=0;while(shared<i&&std::memcmp(hints[shared],hints[i],12))++shared;
+            fitOne(out,hints[i],hints[i][3]!=0,out.ramp[slot],&work[shared+1]);
         }
     }
     unsigned resets=0;                            // non-finite input or state: the hold was reset and went on (the world renderer logs the first)
@@ -109,8 +121,14 @@ struct Freshness{
 constexpr float kClearNear=20,kClearFade=15;
 inline float clearFade(float z){const float u=std::min(1.f,std::max(0.f,(z-kClearNear)/kClearFade));return u*u*(3-2*u);}
 inline float foldedTransmittance(const Frame& f,float z){return 1-(1-f.transmittance(z))*clearFade(z);}
+// Positive powers of a base >= 1 are clamped to 1 by every fit sample.
+// Keep pow for all other inputs, including invalid exponents and signed zero.
+inline float clampedPower(float base,float power){
+    const float w=std::max(base,0.f);
+    return w>=1.f&&power>0?1.f:std::min(1.f,std::pow(w,power));
+}
 // The game's visibility at view distance z for its fog constant (x, y, power).
-inline float gameVisibility(const float g[3],float z){return std::min(1.f,std::pow(std::max(z*g[0]+g[1],0.f),g[2]));}
+inline float gameVisibility(const float g[3],float z){return clampedPower(z*g[0]+g[1],g[2]);}
 // A flat game constant: visibility 1 at every distance (|x| ~ 0 and min(pow(max(y, 0), p), 1) = 1), how the game switches an effect's own fog off. Northlight's fog is then folded alone: the fit
 // target is T_N(z) over 0..kRange. A bare-ramp shader (the pow of the ramp without a max) must not reach 0 before kFlatBareEnd then, so the fog does not come back after the zero crossing
 // (D3D pow takes |base|); powers up to kFlatMaxPower are searched for a flat constant, so thick fog within kRange stays reachable.
@@ -121,7 +139,7 @@ inline bool flatConstant(const float game[3]){
 }
 // The fit F: out = (a, b, p). False: identity (leave the game's constant): no fog, a constant the shader would not use as a fog ramp (non-finite, an exponent outside .05..16, a ramp that
 // rises and stays below 1), or a range too short to matter.
-inline bool emitFog(const Frame& f,const float game[3],float out[3],bool bareBase,bool* bareSkip){
+inline bool emitFog(const Frame& f,const float game[3],float out[3],bool bareBase,bool* bareSkip,FitWork* work){
     if(bareSkip)*bareSkip=false;
     if(!f.active||!(f.tau[kSamples-1]>=.004f))return false;                 // no fog (transmittance 1 everywhere): the game's constant
     for(unsigned i=0;i<3;++i)if(!std::isfinite(game[i]))return false;
@@ -137,14 +155,14 @@ inline bool emitFog(const Frame& f,const float game[3],float out[3],bool bareBas
     for(unsigned i=0;i<N;++i)h[i]=gameVisibility(game,z[i])*foldedTransmittance(f,z[i]);
     static const float scale[]={.6f,.8f,1.f,1.25f,1.6f,2.f,2.6f,3.5f};
     float best=1e30f,bestFit[3]={game[0],game[1],game[2]};bool found=false;
-    auto error=[&](float a,float b,float p){float e=0;for(unsigned i=0;i<N;++i){const float v=std::min(1.f,std::pow(std::max(a*z[i]+b,0.f),p)),d=v-h[i];e+=wt[i]*d*d;}return e;};
+    auto error=[&](float a,float b,float p,float limit=INFINITY){float e=0;for(unsigned i=0;i<N;++i){const float v=clampedPower(a*z[i]+b,p),d=v-h[i];e+=wt[i]*d*d;if(e>limit)break;}return e;};
     // A bare-ramp shader (D3D pow takes |base|) must be usable as a whole: visible near the eye (below kClearNear within .02 of the game's own where that is 1, else within .06) and, past its zero crossing, not coming back
     // above the game's own bare ramp times the transmittance (+0.15) out to the game's end (1024 for a flat constant). Thick fog cannot satisfy both with one power law of at most 32: then the record folds nothing (bareSkip), not a bad fit.
     auto bareGood=[&](float a,float b,float p){
-        for(unsigned i=0;i<N&&z[i]<=kClearNear;++i){const float g0=gameVisibility(game,z[i]);if(std::min(1.f,std::pow(std::max(a*z[i]+b,0.f),p))<g0-(g0>=.99f?.02f:.06f))return false;}
+        for(unsigned i=0;i<N&&z[i]<=kClearNear;++i){const float g0=gameVisibility(game,z[i]);if(clampedPower(a*z[i]+b,p)<g0-(g0>=.99f?.02f:.06f))return false;}
         for(float zf:{64.f,128.f,256.f,512.f,768.f,1024.f,end})   // the view distances that exist: up to the game's own end (a flat constant: 1024)
             if(zf<=(flat?1024.f:end))
-            if(std::min(1.f,std::pow(std::fabs(a*zf+b),p))>std::min(1.f,std::pow(std::fabs(game[0]*zf+game[1]),flat?1.f:game[2]))*f.transmittance(zf)+.15f)return false;   // against the game's own bare ramp (it too comes back after its end)
+            if(clampedPower(std::fabs(a*zf+b),p)>clampedPower(std::fabs(game[0]*zf+game[1]),flat?1.f:game[2])*f.transmittance(zf)+.15f)return false;   // against the game's own bare ramp (it too comes back after its end)
         return true;
     };
     const float gp=flat?1.f:game[2];                                         // a flat constant's own exponent says nothing: the fit does not depend on it (one fit per frame serves them all)
@@ -153,40 +171,62 @@ inline bool emitFog(const Frame& f,const float game[3],float out[3],bool bareBas
     for(float p:{3.f,4.f,6.f,8.f,12.f,16.f,24.f,32.f})if(flat||p>gp*3.5f)powers[np++]=p;   // a ramp gets the steeper powers the plateau asks for
     // two starts per power: the line through h^(1/p) over every sample, and over the samples beyond the fade only (it then rises above 1 near the eye: the plateau). Only the kRefine best starts
     // by error are refined (damped Gauss-Newton on the weighted error in visibility itself: the clamp at 1 and the plateau of a game ramp that starts late): a fit costs tens of microseconds.
-    struct Start{float a,b,p,e;};Start starts[64];unsigned ns=0;
-    for(unsigned pi=0;pi<np&&ns<62;++pi){
-        const float p=std::min(powers[pi],flat?kFlatMaxPower:1e30f);if(!(p>.05f))continue;
-        for(int start=0;start<2;++start){
-            float sz=0,sy=0,szz=0,szy=0,sn=0;
-            for(unsigned i=0;i<N;++i){if(start&&z[i]<kClearNear+kClearFade)continue;const float y=std::pow(std::max(h[i],0.f),1.f/p);sz+=z[i];sy+=y;szz+=z[i]*z[i];szy+=z[i]*y;sn+=1;}
-            const float den=sn*szz-sz*sz;if(!(sn>=2)||!(std::fabs(den)>1e-9f))continue;
-            float a=(sn*szy-sz*sy)/den,b=(sy-a*sz)/sn;
-            if(!(b>0))b=1;if(!(a<-1e-7f))a=-1.f/hi;
-            starts[ns++]=Start{a,b,p,error(a,b,p)};
-        }
-    }
-    constexpr unsigned kRefine=6;
-    for(unsigned r=0;r<kRefine&&r<ns;++r){
-        unsigned m=r;for(unsigned i=r+1;i<ns;++i)if(starts[i].e<starts[m].e)m=i;
-        std::swap(starts[r],starts[m]);
-        float a=starts[r].a,b=starts[r].b;const float p=starts[r].p;
-        float e=starts[r].e,lambda=1e-3f;
-        for(int it=0;it<10;++it){
-            float jaa=0,jab=0,jbb=0,ga=0,gb=0;
-            for(unsigned i=0;i<N;++i){
-                const float w=a*z[i]+b;if(!(w>0))continue;
-                const float v=std::pow(w,p);if(v>=1)continue;
-                const float d=p*v/w,r2=v-h[i],k=wt[i];
-                jaa+=k*d*z[i]*d*z[i];jab+=k*d*z[i]*d;jbb+=k*d*d;ga+=k*d*z[i]*r2;gb+=k*d*r2;
+    FitWork local;FitWork& search=work?*work:local;
+    if(!search.matches(f,game)){
+        search.count=0;
+        using Start=FitWork::Candidate;Start starts[64];unsigned ns=0;
+        constexpr unsigned kRefine=sizeof search.refined/sizeof search.refined[0];
+        float bestErrors[kRefine]={};unsigned bestCount=0;
+        bool bounded=true;for(unsigned i=0;i<N;++i)bounded&=std::isfinite(h[i])&&h[i]>=0&&h[i]<=1;
+        for(unsigned pi=0;pi<np&&ns<62;++pi){
+            const float p=std::min(powers[pi],flat?kFlatMaxPower:1e30f);if(!(p>.05f))continue;
+            float roots[M];
+            for(unsigned i=0;i<N;++i)roots[i]=std::pow(std::max(h[i],0.f),1.f/p);
+            for(int start=0;start<2;++start){
+                float sz=0,sy=0,szz=0,szy=0,sn=0;
+                for(unsigned i=0;i<N;++i){if(start&&z[i]<kClearNear+kClearFade)continue;const float y=roots[i];sz+=z[i];sy+=y;szz+=z[i]*z[i];szy+=z[i]*y;sn+=1;}
+                const float den=sn*szz-sz*sz;if(!(sn>=2)||!(std::fabs(den)>1e-9f))continue;
+                float a=(sn*szy-sz*sy)/den,b=(sy-a*sz)/sn;
+                if(!(b>0))b=1;if(!(a<-1e-7f))a=-1.f/hi;
+                // Positive squared terms only grow. Once this exceeds the best
+                // six errors already seen, the start cannot reach the six refined.
+                const float e=error(a,b,p,bounded&&bestCount==kRefine?bestErrors[kRefine-1]:INFINITY);
+                starts[ns++]=Start{a,b,p,e};
+                if(bounded&&(bestCount<kRefine||e<bestErrors[kRefine-1])){
+                    unsigned at=std::min(bestCount,kRefine-1);
+                    while(at&&e<bestErrors[at-1]){bestErrors[at]=bestErrors[at-1];--at;}
+                    bestErrors[at]=e;if(bestCount<kRefine)++bestCount;
+                }
             }
-            const float m00=jaa*(1+lambda)+1e-12f,m11=jbb*(1+lambda)+1e-12f,det=m00*m11-jab*jab;
-            if(!(std::fabs(det)>1e-18f))break;
-            const float da=-(m11*ga-jab*gb)/det,db=-(m00*gb-jab*ga)/det;
-            const float na=a+da,nb=b+db;
-            if(!(na<-1e-7f)||!(nb>0)){lambda*=10;continue;}
-            const float ne=error(na,nb,p);
-            if(ne<e){a=na;b=nb;e=ne;lambda=std::max(lambda*.3f,1e-6f);}else lambda*=10;
         }
+        for(unsigned r=0;r<kRefine&&r<ns;++r){
+            unsigned m=r;for(unsigned i=r+1;i<ns;++i)if(starts[i].e<starts[m].e)m=i;
+            std::swap(starts[r],starts[m]);
+            float a=starts[r].a,b=starts[r].b;const float p=starts[r].p;
+            float e=starts[r].e,lambda=1e-3f;
+            for(int it=0;it<10;++it){
+                float jaa=0,jab=0,jbb=0,ga=0,gb=0;
+                for(unsigned i=0;i<N;++i){
+                    const float w=a*z[i]+b;if(!(w>0)||w>=1)continue;
+                    const float v=std::pow(w,p);if(v>=1)continue;
+                    const float d=p*v/w,r2=v-h[i],k=wt[i];
+                    jaa+=k*d*z[i]*d*z[i];jab+=k*d*z[i]*d;jbb+=k*d*d;ga+=k*d*z[i]*r2;gb+=k*d*r2;
+                }
+                const float m00=jaa*(1+lambda)+1e-12f,m11=jbb*(1+lambda)+1e-12f,det=m00*m11-jab*jab;
+                if(!(std::fabs(det)>1e-18f))break;
+                const float da=-(m11*ga-jab*gb)/det,db=-(m00*gb-jab*ga)/det;
+                const float na=a+da,nb=b+db;
+                if(!(na<-1e-7f)||!(nb>0)){lambda*=10;continue;}
+                const float ne=error(na,nb,p);
+                if(ne<e){a=na;b=nb;e=ne;lambda=std::max(lambda*.3f,1e-6f);}else lambda*=10;
+            }
+            search.refined[search.count++]=Start{a,b,p,e};
+        }
+        std::memcpy(search.game,game,sizeof search.game);std::memcpy(search.tau,f.tau,sizeof search.tau);search.ready=true;
+    }
+    for(unsigned r=0;r<search.count;++r){
+        const auto& candidate=search.refined[r];
+        const float a=candidate.a,b=candidate.b,p=candidate.p,e=candidate.e;
         if(!(a<-1e-7f)||!(b>0))continue;                                    // nonincreasing and visible at the eye
         if(bareBase&&(-b/a<end*.98f||!bareGood(a,b,p)))continue;           // a shader that takes the pow of the bare ramp (no max): the ramp must not reach 0 before the game's own, a negative base is not 0 there and the fog would come back
         if(e<best){best=e;bestFit[0]=a;bestFit[1]=b;bestFit[2]=p;found=true;}

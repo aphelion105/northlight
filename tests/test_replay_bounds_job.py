@@ -210,7 +210,7 @@ struct Scene {
     // Identical packet lists for both worlds: same meshes, same frozen banks.
     void frame(unsigned f,size_t count,bool unknown,std::vector<World*> worlds){
         const size_t actors=count/4+1;banks.resize(actors);for(size_t a=0;a<actors;++a)pose(rng,banks[a].data(),unsigned(a),f);
-        for(auto* w:worlds){w->replays.clear();view(w->context.inverseView,f);w->frames=f%7?1:0;} /* frames==0: sampled diagnostics */
+        for(auto* w:worlds){w->replays.clear();view(w->context.inverseView,f);w->frames=f*120+(f%7?1:0);} /* monotonic rendered frames; every seventh sample is diagnostic */
         std::mt19937 local(f*2654435761u+17);
         for(size_t i=0;i<count;++i){const size_t actor=i/4;const size_t mesh=(actor*7+i%4+(f/200))%pool.size();
             const bool owned=local()%33==0,odd=unknown&&local()%29==0;
@@ -276,7 +276,7 @@ int main(int argc,char** argv){
                 const bool settle=f<=8;TestClock::step=settle?1:cfg.step; /* 8 frames with room for everything build the meshes' envelopes; the crowd is then in its steady state */
                 if(!settle)for(unsigned k=0;k<3;++k){const size_t m=scene.rng()%cheap.size();if(m>=bigNear&&m<bigNear+ringSize[0])continue; /* a few meshes (not the self's) are replaced every frame: their envelopes are cold and need the build phase */
                     scene.pool[cheap[m]]=std::make_shared<const Mesh>(randomMesh(scene.rng,30+scene.rng()%700,1+scene.rng()%40));}
-                scene.frame(0,total,false,{&w}); /* the same draw list every frame */
+                scene.frame(0,total,false,{&w});w.frames=f*120; /* same draw list, monotonic sampled rendered frames */
                 for(unsigned i=0;i<total;++i){auto& p=*w.replays[slotOf[i]];position(i,p.captureRoot);p.captureRootValid=true;p.selfShadow=group[i]==0;
                     const bool heavyOne=i<nearCount&&i>=ringSize[0]&&i%20==0; /* not the self: on the plain turn its heavy parts wait for the pass */
                     p.shared=scene.pool[heavyOne?heavy[(i/20)%heavy.size()]:i<nearCount?cheap[bigNear+i]:cheap[bigNear+nearCount+i%(cheap.size()-bigNear-nearCount)]];p.originalShader=&scene.shaders[heavyOne?1:0];}
