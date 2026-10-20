@@ -21,6 +21,8 @@ installed art layer). Steps, each on the previous step's archive, as the HD chai
 8. weather_textures  procedural rain streak (1:16), red rain and snow flake (1:2) BLPs
    (build_weather_textures), replacing the client's; generated, no client bytes. Plus the client's
    weather mist puffs resampled to 1:4 (the renderer's signature to skip them in rain)
+9. world_model_lights  reviewed, hash-pinned WotLK model lights, generated locally from
+   the same archive chain as the light cache; existing native lights are preserved
 
 Steps 2-6 hold the HD sky cleanup: a step whose HD sky ids, profiles or textures are absent is
 skipped with the reason (build_lighting.Skip). Mulgore and Stormwind find their profiles through
@@ -51,6 +53,7 @@ import build_stormwind_single_sun  # noqa: E402
 import build_outdoor_single_sun  # noqa: E402
 import build_outdoor_single_moon  # noqa: E402
 import build_weather_textures  # noqa: E402
+import build_emitter_patch  # noqa: E402
 from build_lighting import DBC, Skip  # noqa: E402
 
 DBC_NAME = 'DBFilesClient\\{}.dbc'
@@ -75,6 +78,21 @@ def write_archive(path, payload):
 def read_archive(path):
     with Archive(path) as archive:
         return {n: archive.read(n) for n in archive.names() if not n.startswith('(')}
+
+
+def model_lights(assets, work):
+    """Generate reviewed native emitters in the same transaction as the art layer."""
+    output = work / 'world-model-lights'
+    try:
+        result = build_emitter_patch.build(assets, output, fp.RENDERER / 'outdoor-light-profiles.json', reviewed_only=True)
+    except ValueError as error:
+        if str(error) != 'No supported model changes':
+            raise
+        return {}, {'step': 'world_model_lights', 'skipped': str(error)}
+    models = read_archive(output / 'patch-y.mpq')
+    if any(not name.lower().startswith('world\\') or not name.lower().endswith('.m2') for name in models):
+        raise ValueError('World emitter archive contains a non-model entry')
+    return models, {'step': 'world_model_lights', 'counts': result['counts'], 'models': len(models)}
 
 
 def build(client, output, world_cache, locale=None, letter='z', archives='all'):
@@ -133,6 +151,9 @@ def build(client, output, world_cache, locale=None, letter='z', archives='all'):
         textures.update(build_weather_textures.mist_textures(assets.read, decode_blp))   # 0.3.199 (rain mist)
         payload.update(textures)
         report['steps'].append({'step': 'weather_textures', 'files': sorted(textures)})
+        models, model_report = model_lights(assets, work)
+        payload.update(models)
+        report['steps'].append(model_report)
         last = None   # the payload is no longer a step's archive
         unchanged = sorted(n for n, data in payload.items() if n.lower() in assets.providers and assets.read(n) == data)
         payload = {n: data for n, data in payload.items() if n not in unchanged}

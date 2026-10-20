@@ -45,6 +45,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp  # noqa: E402
 fp.use_source_modules()
 import build_stormlib  # noqa: E402
+import install_world_cache  # noqa: E402
 
 PINS = json.loads((fp.RENDERER / 'package-pins.json').read_text(encoding='utf-8'))
 PLATFORMS = {'mac': 'macOS', 'windows': 'Windows', 'linux': 'Linux'}
@@ -162,6 +163,16 @@ def variant_digest(files):
     """The cache digest as scripts/build_cache_variant.py records it (recomputed here, not trusted)."""
     rows = ''.join(f"{name}\0{f['sha256']}\0{f['bytes']}\n" for name, f in sorted(files.items()))
     return hashlib.sha256(rows.encode()).hexdigest()
+
+
+def check_variant_sources(manifest):
+    """Never ship an old stock cache beside a new builder or emitter catalog."""
+    expected = install_world_cache.source_hashes()
+    actual = manifest.get('build', {}).get('sources', {})
+    changed = sorted(name for name, digest in expected.items() if actual.get(name) != digest)
+    if changed:
+        raise SystemExit('Stale cache variant ' + str(manifest.get('variant', '?')) +
+                         ': regenerate with scripts/build_cache_variant.py (changed sources: ' + ', '.join(changed) + ')')
 
 
 def check_cache_zip(path, manifest):
@@ -317,6 +328,8 @@ def launchers(platform, version):
 
 
 def build(platform, version, dll, variants, out, stormlib_dir):
+    for manifest in variants.values():
+        check_variant_sources(manifest)
     top = f'Northlight-{version}-{PLATFORMS[platform]}'
     tree = Tree(top)
     stamp = commit_time()
@@ -396,6 +409,7 @@ def main():
         manifest = json.loads(path.read_text(encoding='utf-8'))
         if manifest.get('format') != 'northlight-cache-variant/1' or variant_digest(manifest['files']) != manifest['cache_digest']:
             raise SystemExit(f'{path}: not a northlight-cache-variant/1 manifest with a matching digest')
+        check_variant_sources(manifest)
         variants[manifest['variant']] = manifest
     reports = []
     for zip_path in args.cache_zip:
@@ -405,6 +419,7 @@ def main():
             raise SystemExit(f'{zip_path.name}: its northlight-cache.json differs from --variant-manifest')
         variants[manifest['variant']] = manifest
         check_cache_zip(zip_path, manifest)
+        check_variant_sources(manifest)
         name = f'Northlight-cache-{manifest["variant"]}-{manifest["cache_digest"][:12]}.zip'
         if (out / name).resolve() != zip_path.resolve():
             (out / name).unlink(missing_ok=True)

@@ -145,7 +145,7 @@ def profile(assets, path, blob, catalog):
             'position_basis': '; '.join(sorted({p[2] for p in points}))}
 
 
-def build(assets, output, catalog_path):
+def build(assets, output, catalog_path, reviewed_only=False):
     output.mkdir(parents=True, exist_ok=True)
     catalog = load() if catalog_path == Path(__file__).with_name('outdoor-light-profiles.json') else load(catalog_path)
     document = json.loads(json.dumps({'version':1,'profiles':catalog}))
@@ -157,9 +157,15 @@ def build(assets, output, catalog_path):
     stats = collections.Counter()
     for path in sorted(n for n in assets.providers if n.startswith('world\\') and n.endswith('.m2')):
         stats['world_models_scanned'] += 1
+        if reviewed_only and path not in catalog:
+            continue
         if path not in catalog and UNLIT.search(path.rsplit('\\', 1)[-1]):
             continue
         blob = assets.read(path)
+        if reviewed_only and hashlib.sha256(blob).hexdigest() not in pinned(catalog[path]):
+            report['skipped'][path] = 'Source revision has no reviewed hash pin'
+            stats['unsupported_candidates'] += 1
+            continue
         if len(blob) < 304 or blob[:4] != b'MD20' or unpack('<I', blob, 4)[0] != 264:
             continue
         if unpack('<I', blob, 264)[0]:

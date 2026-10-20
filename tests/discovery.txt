@@ -62,6 +62,7 @@ test_gpu_budget.py
 test_gpu_budget_wiring.py
 test_horizon_haze.py
 test_index_working_set.py
+test_install_delivery.py
 test_install_world_cache.py
 test_instance_map_name_filter.py
 test_instance_maps.py
