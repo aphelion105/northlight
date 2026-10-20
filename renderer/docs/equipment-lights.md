@@ -10,7 +10,9 @@ preserved, so their owners must resolve any art-layer conflict.
 
 Quality enables `EquipmentLights=1` and `CommandStream=1` by default, including
 live particle lighting for accepted equipment, mount and spell draws. Explicit
-player overrides are preserved. Balanced and Performance keep equipment lights
+Quality upgrades enable the new equipment/particle bundle and its CommandStream
+dependency once, including old explicit zeros. Later player edits are preserved.
+Balanced and Performance keep equipment lights
 off. No Spell.dbc or other gameplay table is modified.
 
 When a supported server creature cache exists, installation also generates the
