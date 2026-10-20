@@ -108,6 +108,7 @@ test_point_shadow_schedule.py
 test_prepare_worker.py
 test_probe_blend.py
 test_probe_blend_equivalence.py
+test_probe_relight_cache.py
 test_probe_texture_upload.py
 test_progressive_gi_worker.py
 test_quality_docs.py

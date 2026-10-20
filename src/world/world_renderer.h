@@ -1268,7 +1268,7 @@ private:
             Request r;
             {std::unique_lock<std::mutex> lock(mutex);buildWake.wait(lock,[&]{return stopping||builderExit||retry||geometryWanted||request.id!=seen;});
              if(stopping||builderExit)return;r=request;seen=r.id;retry=false;wanted=wanted||geometryWanted;geometryWanted=false;}
-            if(workerMemoryTrim.exchange(false,std::memory_order_relaxed)){localGeometry.reset();entryLift.clear();} /* reclaimed caches invalidate the previous attempt's peak estimate; interior admission remains unchanged */
+            if(workerMemoryTrim.exchange(false,std::memory_order_relaxed))localGeometry.reset(); /* the entry lift stays: it is a floor on measured free memory, so what a trim freed already counts */
             // Publish small authored zone data before expensive geometry work.
             // No cache reads are performed by the sky or world draw callbacks.
             int paletteTX=int(std::floor((NorthlightRegionalFog::WorldZero-r.camera.y)/NorthlightRegionalFog::TileSize));
@@ -1559,7 +1559,7 @@ private:
         std::shared_ptr<NorthlightGI::BVH> bvh;std::shared_ptr<NorthlightWorldMesh::WorldMeshUploadPlan> scenePlan;std::shared_ptr<const PreparedCommit> scenePrepared;V sceneCenter;std::shared_ptr<const NorthlightRegionalFog::Field> sceneFog;std::string sceneMap;uint64_t serial=0,sceneBuild=0;
         std::shared_ptr<Snapshot> previousLighting;
         NorthlightGI::ProbeCache probeCache;
-        NorthlightGI::ProbeRelightCache relightCache;
+        NorthlightGI::ProbeRelightCache relightCache;std::string relightMap;
         NorthlightGI::DynamicProbeLayer dynamicProbes;
         std::vector<NorthlightGI::PointLight> sceneLights;
         std::vector<NorthlightLocalLights::Light> rawSceneLights;
@@ -1580,6 +1580,9 @@ private:
             {std::unique_lock<std::mutex> lock(mutex);wake.wait(lock,[&]{return stopping||pending||builtGeometry;});if(stopping)return;r=request;pending=false;workerBusy=true;adopted=std::move(builtGeometry);if(geometryRebuild){geometryRebuild=false;geometryWanted=true;}} /* 0.3.214 (task 42): render thread lost the GPU mesh and the payload */
             buildWake.notify_one(); /* the builder follows the same request stream */
             struct WorkerIdle {std::atomic<bool>& busy;~WorkerIdle(){busy=false;}} idle{workerBusy};
+            // No solve runs here: a memory trim or a new map frees the relight slots (1-4 MiB); configure() allocates them again.
+            if(giMemoryTrim.exchange(false,std::memory_order_relaxed)||(!relightMap.empty()&&relightMap!=r.map))relightCache.release();
+            relightMap=r.map;
             auto result=std::make_shared<Snapshot>();result->map=r.map;result->center=r.camera;
             DWORD started=GetTickCount();result->requestId=r.id;result->requestedAt=r.queuedAt;result->queueMs=started-r.queuedAt;
             bool concurrent=false;
@@ -1892,13 +1895,17 @@ private:
         meshStore.cancel(); /* 0.3.216: claimed buffers return to idle; the written ones already have an invalid key */
         retirePendingCpu();pendingMesh.reset();meshRetry.clear();
     }
-    bool expiredMeshPending=false;
+    bool expiredMeshPending=false,expiredMeshMapChanged=false;
     // Release only at endFrame, after replay consumers are finished. A hard-expired
     // region cannot draw again; its active page table must not defeat trimIdle().
+    // On the same map without memory demand or pressure the pages stay: the next build
+    // elides the ones it shares (residentPages) instead of uploading them all again, and
+    // its commit trims the rest. A demand or pressure that comes later still releases them.
     void releaseExpiredMesh(){
         if(!expiredMeshPending)return;
-        expiredMeshPending=false;
-        if(active&&active->bvh)return; // a replacement was adopted during this frame
+        if(active&&active->bvh){expiredMeshPending=expiredMeshMapChanged=false;return;} // a replacement was adopted
+        if(!expiredMeshMapChanged&&!memoryPressure&&!geometryMemoryDemand.load(std::memory_order_relaxed))return;
+        expiredMeshPending=expiredMeshMapChanged=false;
         const uint64_t bytes=meshStore.poolBytes()+uploadedTextureBytes;
         clearMesh();releaseMeshPool();uploadedMap.clear();
         uploadedStaticOwners.reset();staticOwnerGeneration=UINT64_MAX;
@@ -2707,7 +2714,7 @@ public:
          // or the hard limit or a map change retires it.
          const char* retired=active&&!NorthlightWorldStreaming::retained(active->map,active->center,r.map,r.camera)?(active->map!=r.map?"map":"retired"):nullptr;
          const V held=active?active->center:V();const bool heldDrawable=active&&active->bvh; /* issue #40: an uncached map's one error snapshot stays at the entry point */
-         if(retired){retirementBacklog.retireOrFree(reaper,active,snapshotRetireBytes(*active));active.reset();expiredMeshPending|=heldDrawable;}
+         if(retired){expiredMeshMapChanged|=heldDrawable&&active->map!=r.map;retirementBacklog.retireOrFree(reaper,active,snapshotRetireBytes(*active));active.reset();expiredMeshPending|=heldDrawable;}
          releaseOrphanedPending("range");
          const float distance=active&&active->map==r.map?std::sqrt(NorthlightGI::dot(r.camera-active->center,r.camera-active->center)):0.f;
          if(distance>coverMax)coverMax=distance;

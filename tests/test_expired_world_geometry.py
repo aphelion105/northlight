@@ -19,10 +19,10 @@ expiry = source.split('// BEGIN EXPIRED PUBLICATION\n', 1)[1].split('// END EXPI
 start = source.index('    void releaseExpiredMesh(){')
 release = source[start:source.index('\n    }', start) + 6]
 assert 'retirementBacklog.retireOrFree(reaper,expiredPublication,snapshotRetireBytes(*expiredPublication));' in source
-assert 'active.reset();expiredMeshPending|=heldDrawable;' in source
+assert 'expiredMeshMapChanged|=heldDrawable&&active->map!=r.map;' in source and 'active.reset();expiredMeshPending|=heldDrawable;' in source
 end_frame = source[source.index('    void endFrame(bool retainPool=true){'):source.index('    bool ready()const')]
 assert end_frame.index('replays.clear();') < end_frame.index('releaseExpiredMesh();')
-assert 'localGeometry.reset();entryLift.clear();' in source
+assert 'if(workerMemoryTrim.exchange(false,std::memory_order_relaxed))localGeometry.reset();' in source  # a trim keeps the entry lift
 
 fixture = r'''
 #include "world_streaming.h"
@@ -47,8 +47,8 @@ struct Harness {
  std::shared_ptr<int> uploadedStaticOwners,fixedTerrain,fixedTerrainBits;
  std::string uploadedMap="Northrend",uploadedTerrain="resident";
  unsigned liveTerrainIndexCount=7,liveDirectionalIndexCount=8,liveTerrainGeneration=9;
- bool expiredMeshPending=false,temporalValid=true,fogHistoryValid=true;
- std::atomic<bool> workerMemoryTrim{false};
+ bool expiredMeshPending=false,expiredMeshMapChanged=false,memoryPressure=false,temporalValid=true,fogHistoryValid=true;
+ std::atomic<bool> workerMemoryTrim{false};std::atomic<uint64_t> geometryMemoryDemand{0};
  unsigned meshClears=0,poolReleases=0,invalidates=0;
  void clearMesh(){++meshClears;resident-=uploadedTextureBytes;uploadedTextureBytes=0;}
  void releaseMeshPool(){++poolReleases;resident-=meshStore.bytes;meshStore.bytes=0;}
@@ -59,7 +59,7 @@ struct Harness {
   active->bvh=std::make_shared<Counted>(142*MiB);active->plan=std::make_shared<Counted>(10*MiB);
   meshStore.bytes=67*MiB;uploadedTextureBytes=9*MiB;resident+=76*MiB;}
  void range(){expire();if(active&&!NorthlightWorldStreaming::retained(active->map,active->center,r.map,r.camera)){
-  expiredMeshPending|=bool(active->bvh);active.reset();}}
+  expiredMeshMapChanged|=bool(active->bvh)&&active->map!=r.map;expiredMeshPending|=bool(active->bvh);active.reset();}}
  void endFrame(){expiredPublication.reset();releaseExpiredMesh();}
  ~Harness(){expiredPublication.reset();published.reset();active.reset();resident-=meshStore.bytes+uploadedTextureBytes;}
 };
@@ -73,7 +73,7 @@ int main(){
  // must not free pages still used by replay; after frame retirement it recovers
  // enough modeled VA to meet the *unchanged* 768 MiB aggregate reserve.
  {Harness h;h.install();std::weak_ptr<Counted> bvh=h.active->bvh,plan=h.active->plan;
-  h.r.camera=Vec3(160.01f,0,0);const uint64_t totalFreeAndReclaimable=615*MiB+resident;
+  h.r.camera=Vec3(160.01f,0,0);h.geometryMemoryDemand=768*MiB;const uint64_t totalFreeAndReclaimable=615*MiB+resident;
   assert(!admits({totalFreeAndReclaimable-resident,115*MiB,true},buildBudget(64*MiB)));
   h.range();assert(!h.active&&!h.published&&h.expiredPublication&&!bvh.expired());
   assert(h.meshStore.bytes==67*MiB&&h.poolReleases==0);h.endFrame();
@@ -86,7 +86,7 @@ int main(){
  // Preserve legitimate worker ownership; expiry drops no reference behind its
  // back and the weak generation expires only after the worker is finished.
  {Harness h;h.install();auto worker=h.active->bvh;std::weak_ptr<Counted> observed=worker;
-  h.r.camera=Vec3(200,0,0);h.range();h.endFrame();assert(!observed.expired()&&resident==142*MiB);
+  h.r.camera=Vec3(200,0,0);h.memoryPressure=true;h.range();h.endFrame();assert(!observed.expired()&&resident==142*MiB);
   worker.reset();assert(observed.expired()&&resident==0);}
  // A same-frame replacement cancels GPU cleanup; it must never lose its table.
  {Harness h;h.install();h.r.camera=Vec3(200,0,0);h.range();
@@ -95,19 +95,26 @@ int main(){
  assert(resident==0);
  // An error snapshot adopted and retired in another context callback must not
  // cancel a pending release of the previous drawable generation.
- {Harness h;h.install();h.r.camera=Vec3(200,0,0);h.range();
+ {Harness h;h.install();h.r.camera=Vec3(200,0,0);h.geometryMemoryDemand=768*MiB;h.range();
   h.active=std::make_shared<Snapshot>();h.range();h.endFrame();assert(h.poolReleases==1&&resident==0);}
+ // Same map without demand or pressure: the pages stay for the next build's elision (residentPages); the release
+ // waits, and a demand or pressure that comes later still frees them at the next frame end.
+ {Harness h;h.install();h.r.camera=Vec3(200,0,0);h.range();h.endFrame();
+  assert(!h.active&&h.poolReleases==0&&h.meshClears==0&&h.meshStore.bytes==67*MiB&&h.expiredMeshPending&&!h.workerMemoryTrim.load());
+  h.endFrame();assert(h.poolReleases==0);h.memoryPressure=true;h.endFrame();
+  assert(h.poolReleases==1&&h.meshStore.bytes==0&&!h.expiredMeshPending&&h.workerMemoryTrim.load());}
+ assert(resident==0);
  {Harness h;h.install();h.r.map="Azeroth";h.range();h.endFrame();assert(!h.active&&!h.published&&resident==0);}
  // Keep the memoized error publication on uncached maps, so no error/build loop.
  {Harness h;h.published=std::make_shared<Snapshot>();h.r.camera=Vec3(1000,0,0);h.expire();assert(h.published&&!h.expiredPublication);}
- // Cache reclamation invalidates the previous attempt's peak estimate, while
+ // An abandoned region's peak estimate is cleared (abandonGeometry; a trim keeps it), while
  // both entry/interior aggregate and contiguous floors stay unchanged.
  {EntryLift lift;lift.refused(853*MiB,640*MiB,636*MiB,1000,53*MiB);
   assert(lift.apply(buildBudget(64*MiB),1001).available==857*MiB);lift.clear();
   assert(lift.apply(buildBudget(64*MiB),1002).available==768*MiB);
   assert(!admits({767*MiB,115*MiB,true},lift.apply(buildBudget(64*MiB),1002)));
   assert(!admits({639*MiB,115*MiB,true},inBuildBudget()));}
- std::puts("PASS expired geometry: hold bounds, publication owners, end-frame pages, same-frame replacement, map change, worker holder, unchanged memory reserves");
+ std::puts("PASS expired geometry: hold bounds, publication owners, end-frame pages under demand/pressure, same-map pages kept for elision, same-frame replacement, map change, worker holder, unchanged memory reserves");
 }
 '''.replace('EXPIRY', expiry).replace('RELEASE', release)
 

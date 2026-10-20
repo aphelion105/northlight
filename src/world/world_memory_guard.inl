@@ -7,6 +7,7 @@
     struct MemoryTrim {size_t terrain=0,snapshots=0,indices=0,pool=0,gpu=0;size_t total()const{return terrain+snapshots+indices+pool+gpu;}};
     bool memoryPressure=false;
     std::atomic<bool> workerMemoryTrim{false}; /* 0.3.153: the geometry builder thread drops its incremental local-geometry cache on its next request */
+    std::atomic<bool> giMemoryTrim{false}; /* the GI worker frees its relight cache (ProbeRelightCache) on its next request */
     std::atomic<uint64_t> geometryMemoryDemand{0}; /* the geometry builder's refused aggregate floor while it stalls for memory (0: none); the guard's demand */
     bool staticRecoveryPaused=false;
     void reclaimInactiveCasters(){
@@ -31,7 +32,7 @@
         t.pool=pooledSnapshotBytes+freeReplays.size()*sizeof(Replay);freeReplays.clear();freeReplays.shrink_to_fit();pooledSnapshotBytes=0;
         t.gpu=replayGpuCache.bytes();replayGpuCache.clear();t.gpu+=trimMeshPools(); /* 0.3.216: idle page buffers (never the active table), unless a staged upload is in progress */
         rigidMemoryClear(); /* 0.3.172: remembered rigid replays (their shared meshes and COM references) */
-        workerMemoryTrim.store(true,std::memory_order_relaxed);
+        workerMemoryTrim.store(true,std::memory_order_relaxed);giMemoryTrim.store(true,std::memory_order_relaxed);
         return t;
     }
     // 0.3.172 near capture reserve (near_reserve.h): off under pressure and with ActorShadows=0.

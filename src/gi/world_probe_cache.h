@@ -171,6 +171,8 @@ private:
     Stats stats_;
 public:
     void reset(){std::lock_guard<std::mutex> lock(mutex_);ready_=false;++epoch_;}
+    // Frees the slots (memory trim, map change); the next configure() allocates them again.
+    void release(){std::lock_guard<std::mutex> lock(mutex_);std::vector<Entry>().swap(entries_);ready_=allocationTried_=false;++epoch_;stats_.bytes=0;}
     // Called between solve groups, never while a pool job is running.
     void configure(const PreparedLighting& prepared,unsigned rays){
         std::lock_guard<std::mutex> lock(mutex_);
