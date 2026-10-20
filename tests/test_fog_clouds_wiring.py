@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 # northlight-test:
 """0.3.199 (fog clouds): wiring of the moving fog banks - source checks, no compiler.
-The FogClouds shader (own entry after FogBlur; WorldFog and every other entry byte-identical), the c60..c63 CloudInfo block (.yzw only),
+The FogClouds shader (own entry after FogBlur), the c60..c63 CloudInfo block (.yzw only),
 the pass guarded by the derived frame with every state the later passes read put back, the CPU sigmaAt mirror under the same guard,
 and nothing new on the game thread (stream hooks, proxies, snapshots)."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
 import json
+import hashlib
 import re
 
 w=fp.src('world_renderer.h').read_text()
@@ -14,14 +15,15 @@ h=(fp.SHADERS/'world_effects.hlsl').read_text()
 py=(fp.REPO/'scripts'/'shaders'/'compile_world_shaders.py').read_text()
 manifest=json.loads((fp.SHADERS/'world-shader-build.json').read_text())['shaders']
 checks={}
-WORLD_FOG_SHA='0436709c5843d1179287da4efc946f4a448f7d233e81ac2068fe54bc47432f6c' # 0.3.200 (gpu budget) bytecode (the interval as mad with c64.z), 512 slots
 fc=manifest.get('FogClouds',{})
 names=re.findall(r'\("(\w+)", "[vp]s_3_0"\)',py)
 
 # shader entry and build
 checks['build: FogClouds is an ENTRIES member placed right after FogBlur']=('FogBlur' in names and 'FogClouds' in names and names.index('FogClouds')==names.index('FogBlur')+1)
 checks['manifest: FogClouds ps_3_0, <= 512 slots, < 32 temporaries, samples s14 (the volume)']=(fc.get('target')=='ps_3_0' and fc.get('static_instruction_slots',999)<=512 and fc.get('temporary_registers',99)<32 and 14 in fc.get('samplers',[]))
-checks['manifest: WorldFog bytecode unchanged (sha, 512 slots)']=(manifest['WorldFog']['sha256']==WORLD_FOG_SHA and manifest['WorldFog']['static_instruction_slots']==512)
+checks['manifest: WorldFog matches its bytecode and fits SM3']=(
+    manifest['WorldFog']['sha256']==hashlib.sha256((fp.COMPILED/'WorldFog.bin').read_bytes()).hexdigest()
+    and manifest['WorldFog']['static_instruction_slots']<=512)
 checks['manifest: s14 is read by no fog-stage entry other than FogClouds (FogBlur, WorldComposite, LocalFog, WorldFog)']=all(14 not in manifest[n]['samplers'] for n in ('FogBlur','WorldComposite','LocalFog','WorldFog'))
 checks['compiled: FogClouds.bin exists']=(fp.COMPILED/'FogClouds.bin').exists()
 gen=fp.src('world_compiled_shaders.h').read_text()
@@ -40,7 +42,7 @@ checks['hlsl: no jitter or history, 40 world-fixed intervals (0.3.200: fewer at 
 checks['hlsl: the cloud sigma matches the CPU sigma (.65/.35 mix, quantile threshold x sharpness ramp, squared height falloff, zone .7, sigmaMax, field coverage x near fade)']=all(s in body for s in (
     'saturate(mad(nL,CloudInfo[3].w,mad(nS,CloudInfo[3].x,CloudInfo[2].y)))','saturate(1-altitude/max(mad(nL,CloudInfo[2].z,WeatherInfo.y),.001))','mad(saturate(mad(field.w,1/3.75,-1.25/3.75)),-.3,1)',
     '[branch]if(min(valid,CloudInfo[2].x-altitude)>0){','[branch]if(nL>CloudInfo[1].x){','CloudInfo[2].w*valid*nearFade','tex3Dlod(CloudNoise,float4(rel*CloudInfo[3].y+CloudInfo[0].yzw,0))','tex3Dlod(CloudNoise,float4(rel*CloudInfo[3].z+CloudInfo[1].yzw,0))'))
-checks['hlsl: direct part soft-capped by FogInfo.z, shadowed by fogShadow, branch only inside a cloud']=('cap=max(FogInfo.z,.0001)' in body and 'fogShadow(p)' in body and '[branch]if(sigma>0)' in body)
+checks['hlsl: direct part soft-capped by FogInfo.z, shadowed by fogShadow, branch only inside a cloud']=('cap=max(FogInfo.z,.0001)' in body and 'fogShadowProjected(shadowOrigin+shadowRay*((start+end)*.5))' in body and '[branch]if(sigma>0)' in body)
 
 wf=h[h.index('float4 WorldFog('):h.index('// Glow of')]
 exact=['float profile=saturate((field.w-2.5)/2.5);','float groundHeight=lerp(field.w,6,RegionalFogInfo.w*(1-profile));','float vertical=saturate(1-altitude/max(groundHeight,.001));',
@@ -48,7 +50,7 @@ exact=['float profile=saturate((field.w-2.5)/2.5);','float groundHeight=lerp(fie
     'float nearFade=saturate(((start+end)*.5-FogRange.x)*FogRange.y);nearFade*=nearFade*(3-2*nearFade);'.replace('((start+end)*.5-FogRange.x)','(mid-FogRange.x)')]
 checks['hlsl: FogClouds copies WorldFog\'s groundSigma lines (profile, groundHeight, vertical, groundSigma), altitude and valid exactly; nearFade with mid for (start+end)*.5']=all(l in body and l.replace('(mid-FogRange.x)','((start+end)*.5-FogRange.x)') in wf for l in exact)
 checks['hlsl: base fog only attenuates the cloud light (tBase; the ambient does not carry it: the blend already multiplies the fog by tCloud), alpha out stays tCloud; air term is the documented constant floor WeatherInfo.w (slot budget)']=(
-    'tauBase+=baseSigma*stepSize;' in body and 'float weight=tCloud*absorb;' in body and 'directWeight+=exp(-tauBase)*weight*fogShadow(p)*heightFade;' in body and 'ambientWeight+=weight;' in body and 'float airSigma=WeatherInfo.w;' in body and 'for the slot budget' in body and body.rstrip().endswith('directScatter,tCloud);\n}'.rstrip()))
+    'tauBase+=baseSigma*stepSize;' in body and 'float weight=tCloud*absorb;' in body and 'directWeight+=exp(-tauBase)*weight*fogShadowProjected(shadowOrigin+shadowRay*((start+end)*.5))*heightFade;' in body and 'ambientWeight+=weight;' in body and 'float airSigma=WeatherInfo.w;' in body and 'for the slot budget' in body and body.rstrip().endswith('directScatter,tCloud);\n}'.rstrip()))
 # renderer wiring
 checks['cpp: noise generated off the game and render threads on first need (std::thread, detached, leaked holder), logged once']=(
     'std::thread([this]' in w and '.detach()' in w and 'new FogCloudNoise' in w and 'WORLD fog clouds noise ms=%.1f' in w and 'fogCloudNoise().request()' in w)

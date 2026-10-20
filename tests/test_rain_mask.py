@@ -12,16 +12,17 @@ h=(fp.SHADERS/'world_effects.hlsl').read_text()
 manifest=json.loads((fp.SHADERS/'world-shader-build.json').read_text())['shaders']
 checks={}
 
-# sha256 of every other entry before the change (0.3.200 manifest)
+# sha256 of every other entry before the change (0.3.200 manifest); the entries the check compares are
+# rebased to the one Microsoft d3dcompiler_47 build (Wine's builtin compiler is gone)
 BEFORE={'WorldNormals':'e647de5f5ba48db3fa790f329731d066a47fa965fdf474dcc568c337f36fac34','WorldLighting':'066f20c71ece663605e7a17c0e1e37510d83dc6a968efa49b39f9afc990d55d3',
- 'WorldGI':'be71727902a86616b9f08e8816ad0eab064b517a0bdba0f5162e21b7f534e598','WorldFog':'0436709c5843d1179287da4efc946f4a448f7d233e81ac2068fe54bc47432f6c',
- 'FogBlur':'b48b12488d6233e53031b9f947e643a47d5892fc7fd478356a0a08037a3a1e78','FogClouds':'a7952daac14f844119501a3fd632d481f2e84408bd6d10c7c2721a8977657176',
- 'FogTemporal':'9c7c3c17bdd66e739fa8a239cbde4fc4d3b6e10b6884507578a75e460e4caf89','LocalDirect':'ad4107aef51fb39a9f5ed21d7f3884c63f4e580954ddf34d0fb0b46a7bbca7cc',
- 'RemovalSmooth':'485461e2b8a2bf2928a5819a8cd13527e1ee21203934aeae22187fb54b5e22c1','TemporalLight':'c2dcff7332ca899b45c1f3b7580b1ef505a602bbc03cd96e5fd3f45d5f2cc75b',
- 'LocalFog':'bf1b7073635c9d064779277099aab540516464d3f0016a150e6666c639e973a7','SourceVisibilityPS':'65a5e68fe23513a5750c8714975b0d4276a2b5241d44d2314fd044bb9b73671e',
- 'WorldComposite':'1f3884872a55ec91f9ee42fd153aa988d16c81382de23cdd22b3347794240cd4','ShadowVS':'10172c530a92bd9cd5bbf13dff11ebbb53888c355b5b9b13a8aebe764215c165',
- 'ShadowCacheVS':'54092470516c229529f1e86cadacb240ac6fcb2a877114b00e0cfed1d4f7a753','ShadowPS':'318fe2a445a91294b3f1b0a4711ba226fee07397c1f2816d9d96d09a18fdbffd',
- 'ShadowReplayPS':'194f5665d22f12a8c0e337be2938d036386c4e7982f048051a804714f85a592d','ShadowUnion':'d090109910314885bc31fdf67ebd4c393f95c499da6dbd0c055498981f28d4c6'}
+ 'WorldGI':'98e33a0ff1a8412e7dd0d1801596cc4dc8f5dc2d4fde4880e4760a6eee267992','WorldFog':'69ab6e52d46455c0aac6bd74b07b25a892d658cdee55b8b688af033eff7f51d1',
+ 'FogBlur':'a058d8c3d631ff6f7b9a0f5d8a7c9a5290e927b673ef6bb0aabbe1af06ff005a','FogClouds':'99a7ae79e0907bedd2ad3675656e6fb307be04ddf4cb757322b361b8f3657292',
+ 'FogTemporal':'109d660cfb840966860cad5150ccb8111d4335c86a6c2d2800302878247f4cae','LocalDirect':'830bd4d6d2ef73a8141608b93773b1115d415e038b03476293a88cd3d909aff3',
+ 'RemovalSmooth':'485461e2b8a2bf2928a5819a8cd13527e1ee21203934aeae22187fb54b5e22c1','TemporalLight':'9392d2a1566c6f88d7a4e613fa67ff4fd5b4c58e1cd9edef0850637171b45574',
+ 'LocalFog':'bf1b7073635c9d064779277099aab540516464d3f0016a150e6666c639e973a7','SourceVisibilityPS':'92d8784a4ce86a5be232c60a311e5cd350586ab227a6285117970cf2bbc6a8b2',
+ 'WorldComposite':'1f3884872a55ec91f9ee42fd153aa988d16c81382de23cdd22b3347794240cd4','ShadowVS':'ef0d0273c0630c9992e0cdd40cb4d812cf58c26ad1a456c6a10b7d6c1f17962f',
+ 'ShadowCacheVS':'170f8b0774125a59a13c1ceb634bb9e1a4d586e803c05a2883ef1652cb95b3a5','ShadowPS':'33b4b97c97e1fe2834da7b06a7bd8a2ef0eaacf9966455e0e066ad801a15473f',
+ 'ShadowReplayPS':'2812775436581fd44ad92f3d69607792161ea8440e05aa2b9b8310b2155c0805','ShadowUnion':'43b59a16f449ca2c0b4e940dad1716a84f1f6eb21de4347a508ac3092cb9b479'}
 
 # HLSL
 checks['source: RainMask declared on s13 (aliasing RegionalFog, as s8/s10 do)']=('sampler2D RainMask : register(s13);' in h)
@@ -61,7 +62,8 @@ mid=composite(col,haze,fa,fr,.5)
 checks['numeric: mask .5 is the midpoint']=all(abs(m_-(o+c)/2)<1e-12 for m_,o,c in zip(mid,old,col))
 # 0.3.202 (rain mask MRT): the two ps_2_0 shaders of the MRT mask (shaders/rain_mask.hlsl); the ps_3_0 entries of effects.hlsl stay byte-identical
 eff=json.loads((fp.SHADERS/'shader-build.json').read_text())['shaders']
-EFF_BEFORE={'AO':'778be1ea3b147c4bd34bed3e8b13536506fea805acf6660e85119f8cbb4a9bb9','AOContactBloom':'15618e0c53efdbe986b4ff74e34ef7d2c3e93e5847ac3b85bdd8c637a24eeeda','Composite':'0bfee11760ad650d421136aa252d412c632dad0af6d84ade6a1305f7219c3988'}
+# The Microsoft d3dcompiler_47 build (rebased from the Wine builtin hashes)
+EFF_BEFORE={'AO':'fa7a14b42bb3b1238fb440c91deebbc6dc85ad6be2b7770ade831e592e5826c6','AOContactBloom':'69f09b7b034b86e714fe56b0aa596fe0896b927940db9b0cc80ee98984545105','Composite':'36d90667788788500a5e0a6a7c8f100fe858ed9ec550dd489edb8fe5a6ca02f2'}
 import hashlib
 checks['MRT shaders: effects.hlsl untouched (the rain shaders have their own source, hashed in the manifest)']=('RainMaskMRT' not in (fp.SHADERS/'effects.hlsl').read_text() and json.loads((fp.SHADERS/'shader-build.json').read_text()).get('rain_source_sha256')==hashlib.sha256((fp.SHADERS/'rain_mask.hlsl').read_bytes()).hexdigest())
 checks['MRT shaders: AO, AOContactBloom and Composite byte-identical to 0.3.201']=all(eff[n]['sha256']==x for n,x in EFF_BEFORE.items())

@@ -427,7 +427,7 @@ def audit_source():
     text = fp.src('effects.hlsl').read_text()
     assert 'float4 AOBlur(float2 uv : TEXCOORD0) : COLOR0' in text
     blur = text[text.index('float4 AOBlur('):text.index('float4 Composite(')]
-    assert re.search(r'for\s*\(int i = 0; i < 25; \+\+i\)', blur), '25-tap loop'
+    assert 'float2 o=float2(x-2,y-2);' in blur, '25 taps in row order'
     assert re.search(r'a\.x > 1\.5 \? 0\.5 : 1\.0\) \* \(a\.y > 1\.5 \? 0\.5 : 1\.0\)', blur), '.5 edge weights'
     assert 'float planeScale = 2.0 / max(0.025, min(Options.y * 0.1, p.z * 0.002));' in blur
     assert 'exp2(-abs(dot(q - p, n)) * planeScale)' in blur
@@ -448,6 +448,9 @@ def audit_source():
     assert re.search(r'tangent = PositionInv\(quv \+ tangentStep, ReadDepth\(quv \+ tangentStep\), invFocal\) - q;\s*'
                      r'float tangentOff = dot\(tangent, n\);\s*'
                      r'weight \*= saturate\(1\.0 - 2\.0 \* tangentOff \* tangentOff / dot\(tangent, tangent\)\);', blur), 'tangent guard'
+    assert [(x-2,y-2) for y in range(5) for x in range(5)] == [
+        (i-math.floor((i+.5)*.2)*5-2,math.floor((i+.5)*.2)-2) for i in range(25)]
+    assert '[loop] for(int y=0;y<5;++y)' in blur and '[loop] for(int x=0;x<5;++x)' in blur
     assert blur.count('ReadDepth(') == 3, 'centre + tap + tangent: one extra depth read per tap'
     assert re.search(r'qd < SKY_DEPTH && !IsWater\(quv, qd\) \? 1\.0 : 0\.0', blur), 'sky/water taps weight 0'
     assert 'return float4(raw.rgb' in blur
