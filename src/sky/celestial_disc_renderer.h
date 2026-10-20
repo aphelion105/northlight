@@ -21,7 +21,7 @@ class NorthlightCelestialDiscRenderer {
     static constexpr float SunMaskRadius=NorthlightCelestialGlow::SunMaskRadius,MoonMaskRadius=NorthlightCelestialGlow::MoonMaskRadius;
     static constexpr float SunGlareSupport=NorthlightCelestialGlow::SunGlareSupport,MoonGlareSupport=NorthlightCelestialGlow::MoonGlareSupport;
     IDirect3DDevice9* d;std::string root;NorthlightCelestialDisc::NativeObserver observer;
-    IDirect3DTexture9* texture[2]={};IDirect3DPixelShader9* ps=nullptr;
+    IDirect3DTexture9* texture[2]={};unsigned textureWidth[2]={};IDirect3DPixelShader9* ps=nullptr;
     IDirect3DTexture9* terrainMask[2]={};IDirect3DSurface9* terrainSurface[2]={};
     IDirect3DVertexShader9* terrainVS=nullptr;IDirect3DPixelShader9* terrainPS=nullptr;
     bool terrainReady[2]={};uint64_t terrainGeneration[2]={};float terrainMatrix[2][16]={},terrainCamera[2][3]={},terrainNear[2]={};
@@ -113,12 +113,18 @@ private:
         if(!load())return false;if(!ps&&!check(d->CreatePixelShader(kCelestialDiscPSShader,&ps),"shader"))return false;
         for(unsigned body=0;body<2;++body)if(!texture[body]){
             NorthlightCelestialDisc::Texture source;if(!NorthlightCelestialDisc::loadTexture(root+(body?"/moon.fct":"/sun.fct"),source)){failed=true;return false;}
-            if(body==1){NorthlightCelestialDisc::softenMoonSurface(source);NorthlightCelestialDisc::softenMoonRim(source);}
-            if(!check(d->CreateTexture(source.width,source.height,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&texture[body],nullptr),"body texture"))return false;
-            D3DLOCKED_RECT lock={};if(!check(texture[body]->LockRect(0,&lock,nullptr,0),"body lock"))return false;
-            bool valid=lock.pBits&&lock.Pitch>=INT(source.width*4);
-            if(valid)for(unsigned y=0;y<source.height;++y)for(unsigned x=0;x<source.width;++x){const auto* p=source.rgba.data()+(y*source.width+x)*4;auto* q=static_cast<unsigned char*>(lock.pBits)+std::size_t(y)*unsigned(lock.Pitch)+x*4;q[0]=p[2];q[1]=p[1];q[2]=p[0];q[3]=p[3];}
-            if(!check(texture[body]->UnlockRect(0),"body unlock")||!valid){failed=true;return false;}
+            if(body==1)NorthlightCelestialDisc::softenMoonRim(source);
+            // The full mip chain: drawDisc picks the level from the disc's size on screen (c46.z), so the authored
+            // surface stays sharp without shimmering when the texture is larger than the disc.
+            if(!check(d->CreateTexture(source.width,source.height,0,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&texture[body],nullptr),"body texture"))return false;
+            textureWidth[body]=source.width;
+            for(DWORD level=0,levels=texture[body]->GetLevelCount();level<levels;++level){
+                if(level)source=NorthlightCelestialDisc::halve(source);
+                D3DLOCKED_RECT lock={};if(!check(texture[body]->LockRect(level,&lock,nullptr,0),"body lock"))return false;
+                bool valid=lock.pBits&&lock.Pitch>=INT(source.width*4);
+                if(valid)for(unsigned y=0;y<source.height;++y)for(unsigned x=0;x<source.width;++x){const auto* p=source.rgba.data()+(y*source.width+x)*4;auto* q=static_cast<unsigned char*>(lock.pBits)+std::size_t(y)*unsigned(lock.Pitch)+x*4;q[0]=p[2];q[1]=p[1];q[2]=p[0];q[3]=p[3];}
+                if(!check(texture[body]->UnlockRect(level),"body unlock")||!valid){failed=true;return false;}
+            }
         }
         return true;
     }
@@ -315,9 +321,11 @@ public:
         d->SetTextureStageState(0,D3DTSS_TEXCOORDINDEX,0);d->SetTextureStageState(0,D3DTSS_TEXTURETRANSFORMFLAGS,D3DTTFF_DISABLE);
         for(unsigned k=0;k<6;++k){d->SetSamplerState(k,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(k,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);
             d->SetSamplerState(k,D3DSAMP_MINFILTER,(k==1||k==4)?D3DTEXF_LINEAR:D3DTEXF_POINT);d->SetSamplerState(k,D3DSAMP_MAGFILTER,(k==1||k==4)?D3DTEXF_LINEAR:D3DTEXF_POINT);
-            d->SetSamplerState(k,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(k,D3DSAMP_SRGBTEXTURE,FALSE);}
+            d->SetSamplerState(k,D3DSAMP_MIPFILTER,k==1?D3DTEXF_LINEAR:D3DTEXF_NONE);d->SetSamplerState(k,D3DSAMP_SRGBTEXTURE,FALSE);}
         d->SetTexture(0,depth);d->SetTexture(2,water);d->SetTexture(4,terrainReady[i]?terrainMask[i]:nullptr);
-        const float terrainPolicy[]={terrainReady[i]?1.f:0.f,i?MoonMaskRadius:SunMaskRadius,0,0};
+        // c46.z: the body texture's LOD for the disc's radius in pixels (tangent radius x vertical projection scale).
+        const float terrainPolicy[]={terrainReady[i]?1.f:0.f,i?MoonMaskRadius:SunMaskRadius,
+            NorthlightCelestialDisc::discLod(textureWidth[i],disc.tangentRadius*std::fabs(projection[1])*.5f*float(height)),0};
         d->SetPixelShaderConstantF(46,terrainPolicy,1);
         std::memcpy(c[46],terrainPolicy,16);c[0][0]=1.f/width;c[0][1]=1.f/height;c[0][2]=minZ;c[0][3]=1/(maxZ-minZ);
         // Glare: c12.x = hot-core rate, c12.z = core weight (moon: strength),

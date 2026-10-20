@@ -23,38 +23,30 @@ struct Texture {unsigned width=0,height=0;std::vector<std::uint8_t> rgba;};
 inline bool loadTexture(const std::string& path,Texture& out){
     std::ifstream f(path,std::ios::binary|std::ios::ate);if(!f)return false;auto length=f.tellg();if(length<16)return false;f.seekg(0);
     std::uint32_t h[4];f.read(reinterpret_cast<char*>(h),16);
-    if(!f||h[0]!=0x31544346||h[1]!=1||!h[2]||!h[3]||h[2]>256||h[3]>256||std::uint64_t(length)!=16+std::uint64_t(h[2])*h[3]*4)return false;
+    if(!f||h[0]!=0x31544346||h[1]!=1||!h[2]||!h[3]||h[2]>512||h[3]>512||std::uint64_t(length)!=16+std::uint64_t(h[2])*h[3]*4)return false;
     Texture t;t.width=h[2];t.height=h[3];t.rgba.resize(t.width*t.height*4);f.read(reinterpret_cast<char*>(t.rgba.data()),t.rgba.size());if(!f)return false;out=std::move(t);return true;
 }
-// Soften lunar surface detail once at texture creation. Alpha-weighted
-// binomial filtering prevents transparent black texels darkening the rim.
-// Keep large crater shapes while reducing their contrast slightly.
-inline void softenMoonSurface(Texture& texture){
-    const auto original=texture.rgba;
-    const int kernel[]={1,8,28,56,70,56,28,8,1};
-    double mean[3]={},totalAlpha=0;
-    for(std::size_t i=0;i<original.size();i+=4){
-        totalAlpha+=original[i+3];
-        for(unsigned c=0;c<3;++c)mean[c]+=double(original[i+c])*original[i+3];
-    }
-    if(totalAlpha<=0)return;
-    for(auto& channel:mean)channel/=totalAlpha;
-    for(int y=0;y<int(texture.height);++y)for(int x=0;x<int(texture.width);++x){
-        const auto index=(std::size_t(y)*texture.width+x)*4;
-        if(!original[index+3])continue;
-        double sum[3]={},weight=0;
-        for(int dy=-4;dy<=4;++dy)for(int dx=-4;dx<=4;++dx){
-            const int px=x+dx,py=y+dy;
-            if(px<0||py<0||px>=int(texture.width)||py>=int(texture.height))continue;
-            const auto sample=(std::size_t(py)*texture.width+px)*4;
-            const double w=kernel[dx+4]*kernel[dy+4]*original[sample+3];
-            weight+=w;for(unsigned c=0;c<3;++c)sum[c]+=w*original[sample+c];
+// The next mip level (half size, at least 1). Colour is averaged by alpha, so the transparent black exterior
+// never darkens the rim of a smaller level; alpha is the plain average.
+inline Texture halve(const Texture& texture){
+    Texture out;out.width=std::max(1u,texture.width/2);out.height=std::max(1u,texture.height/2);out.rgba.resize(std::size_t(out.width)*out.height*4);
+    for(unsigned y=0;y<out.height;++y)for(unsigned x=0;x<out.width;++x){
+        unsigned sum[3]={},alpha=0,count=0;
+        for(unsigned dy=0;dy<2;++dy)for(unsigned dx=0;dx<2;++dx){
+            const unsigned sx=std::min(texture.width-1,x*2+dx),sy=std::min(texture.height-1,y*2+dy);
+            const auto* p=texture.rgba.data()+(std::size_t(sy)*texture.width+sx)*4;
+            for(unsigned c=0;c<3;++c)sum[c]+=p[c]*p[3];alpha+=p[3];++count;
         }
-        for(unsigned c=0;c<3;++c){
-            const double filtered=.3*original[index+c]+.7*sum[c]/weight;
-            texture.rgba[index+c]=std::uint8_t(std::lround(.85*filtered+.15*mean[c]));
-        }
+        auto* q=out.rgba.data()+(std::size_t(y)*out.width+x)*4;
+        for(unsigned c=0;c<3;++c)q[c]=alpha?std::uint8_t((sum[c]+alpha/2)/alpha):0;
+        q[3]=std::uint8_t((alpha+count/2)/count);
     }
+    return out;
+}
+// Texture LOD for a disc of `radiusPixels` on screen: the texture spans the diameter.
+inline float discLod(unsigned textureWidth,float radiusPixels){
+    if(!(radiusPixels>0)||!textureWidth)return 0;
+    return std::max(0.f,std::log2(float(textureWidth)/(2*radiusPixels)));
 }
 // Inward 6-texel feather of the authored lunar silhouette. Preserve RGB and
 // existing partial coverage; transparent exterior texels never gain opacity.

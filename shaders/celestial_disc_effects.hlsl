@@ -11,7 +11,7 @@ sampler2D DiscWater : register(s2);
 sampler2D DiscHaloVisibility : register(s3); // current halo, previous 1x1 value in visibility pass
 sampler2D DiscTerrain : register(s4); // viewer-ray coverage of already loaded terrain
 sampler2D DiscRingVisibility : register(s5); // 1x1 visibility of the 2-4R ring (sun), else the halo value
-float4 DiscTerrainPolicy : register(c46); // ready, mask extent in body radii
+float4 DiscTerrainPolicy : register(c46); // ready, mask extent in body radii, body texture LOD
 float4 DiscImage : register(c0); // inv fullWidth/Height, world depthMin, inverse depthRange
 float4 DiscProjection : register(c1); // signed X,Y,Zsign, waterReady
 row_major float4x4 DiscInverseView : register(c2);
@@ -143,7 +143,7 @@ float4 CelestialDiscPS(float2 uv:TEXCOORD0):COLOR0 {
     clip(terrainVisible-.001);
     float forward=dot(ray,DiscDirection.xyz);clip(forward-.000001);
     float2 local=float2(dot(ray,DiscRight.xyz),-dot(ray,DiscUp.xyz))/(forward*DiscDirection.w);
-    float4 texel=tex2Dlod(DiscTexture,float4(local*.5+.5,0,0));
+    float4 texel=tex2Dlod(DiscTexture,float4(local*.5+.5,0,DiscTerrainPolicy.z)); // LOD from the disc size (c46.z)
     // suncenter.blp has only 16 alpha levels. Its magnified rim and the
     // complementary glare mask showed those steps as sharp concentric edges.
     // r43: a soft edge (opaque core ~0.44 radius) that fades continuously to 1,
@@ -166,8 +166,8 @@ float4 CelestialDiscPS(float2 uv:TEXCOORD0):COLOR0 {
         if(DiscRepair.w<.5)alpha*=1-texel.a;
     }else{
     clip(1-max(abs(local.x),abs(local.y)));
-    // Explicit LOD is valid after divergent silhouette/depth branches. Assets
-    // are decoded at <=256 pixels; the caller can supply their original mips.
+    // Explicit LOD is valid after divergent silhouette/depth branches; the CPU
+    // picks it from the disc's size on screen (assets are decoded at <=512 pixels).
     // Limit brightness before tinting so bright cores retain the regional hue.
     encoded=saturate(texel.rgb*DiscEmission.x)*lerp(saturate(DiscColor.rgb),DiscGlowCore.rgb,.5*DiscGlowHue.w);
     alpha=texel.a*saturate(DiscColor.w);

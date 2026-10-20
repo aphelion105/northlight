@@ -12,7 +12,7 @@ def main():
     assets=Assets.from_args(args);output=args.output or assets.client/'world-cache/celestial';output.mkdir(parents=True,exist_ok=True);manifest=[]
     try:
         for stem,path in [('sun','textures\\suncenter.blp'),('moon','textures\\moon.blp')]:
-            blob=assets.read(path);w,h,rgba=decode_blp(blob,256)
+            blob=assets.read(path);w,h,rgba=decode_blp(blob,512)  # the HD moon.blp is 512: its full detail
             data=struct.pack('<4sIII',b'FCT1',1,w,h)+rgba;destination=output/(stem+'.fct');destination.write_bytes(data)
             # Matching references retain the source's encoded mip bytes. Native
             # BC uploads can be compared byte-for-byte; decompressed uploads use
