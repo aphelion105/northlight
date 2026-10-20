@@ -135,6 +135,7 @@ class Queue {
     std::atomic<ExpressTask*> express_{nullptr};
     std::atomic<std::size_t> shadowCapCur_{ShadowBudgetBytes};std::uint64_t shadowGrowAt_=kShadowGrowFrames;   // adaptive buffer-shadow cap; first frame it may grow
     std::size_t budget_;
+    unsigned timedSpinSkip_=0;   // consumer only: idle waits nextTimed() still sleeps at once after a spin found nothing
     Event consumerEv_{false},progress_{false},expressDone_{false};
     std::mutex pool_;std::vector<Chunk*> freeChunks_;std::vector<Block*> freeBlocks_[kBlockClasses];std::size_t pooledBlockBytes_=0;
 
@@ -467,14 +468,18 @@ public:
     // bounded by ms and publish()/nextChunk()'s wake() ends it at once. Returns the next command, or nullptr after ms / on interrupt.
     const CommandHeader* nextTimed(std::uint32_t ms){
         if(auto* h=peek())return h;
-        // Keep quick sync replies on the same spin path as next(true), even while queries are pending.
-        if(ms){
+        // Keep quick sync replies on the same spin path as next(true), even while queries are pending. WoW keeps a query
+        // pending almost every frame, so this wait recurs every ms while the game is quiet: a spin that found nothing skips
+        // the next 16 waits (about 0.3% of a core instead of 5%), and a command that ends a wait turns it back on.
+        if(ms&&timedSpinSkip_)--timedSpinSkip_;
+        else if(ms){
             const auto t0=nowNs();
             for(;;){
                 for(int i=0;i<64;++i){if(auto* h=peek())return h;if(interrupted_.load(std::memory_order_relaxed)||express_.load(std::memory_order_relaxed))return nullptr;relax();}
                 wakeWaiters();
                 if(nowNs()-t0>50000)break;
             }
+            timedSpinSkip_=16;
         }
         if(interrupted_.load())return nullptr;
         sleeping_.store(true);
@@ -485,7 +490,8 @@ public:
         own(stats.consumerSleeps);
         if(!interrupted_.load())consumerEv_.wait(ms);
         sleeping_.store(false);
-        return peek();
+        auto* h=peek();if(h)timedSpinSkip_=0;
+        return h;
     }
     // Marks the command returned by next() executed: releases its Block, advances replayedSeq, recycles a finished chunk.
     void retire(const CommandHeader* h){

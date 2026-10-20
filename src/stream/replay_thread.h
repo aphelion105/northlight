@@ -415,6 +415,7 @@ private:
         const Counters& s=core.q.stats;char buf[kLine];int n=std::snprintf(buf,sizeof buf,"CSTREAM ");   // the prefix the log is searched by
         {char part[700];formatCounters(part,sizeof part,s);put(buf,n,"%s",part);}
         put(buf,n," diag=%u",unsigned(diag_));
+        put(buf,n," eventTrips=%llu",(unsigned long long)get(s.eventWaitTrips));
         put(buf,n," eventBatches=%llu eventPolls=%llu eventRequests=%llu eventLocal=%llu eventPending=%llu",(unsigned long long)get(s.eventPollBatches),(unsigned long long)get(s.eventPollCalls),(unsigned long long)get(s.eventRequests),(unsigned long long)get(s.eventLocal),(unsigned long long)get(s.eventPending));
         put(buf,n," eventCompleted=%llu eventPendingMs=%.3f",(unsigned long long)get(s.eventCompleted),get(s.eventPendingNs)/1e6);
         const double inv=avg_.n?1.0/avg_.n:0.0;

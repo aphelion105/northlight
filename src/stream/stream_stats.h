@@ -76,7 +76,7 @@ struct Counters {
     Counter replayIdleNs{0};   // Existing queue-wait clock, shared with the slow-frame diagnostics.
     Counter directCalls{0};   // replayed straight on the extension device
     Counter queryPolls{0},deadCreates{0},createFailures{0},replayFailures{0},syncOnlySlots{0},proxyMismatch{0};   // replayFailures: the game thread adds rarely too
-    Counter eventPollBatches{0},eventPollCalls{0};   // bounded EVENT/FLUSH polls per replay request; replay thread only
+    Counter eventPollBatches{0},eventPollCalls{0},eventWaitTrips{0};   // bounded EVENT/FLUSH polls per replay request; replay thread only
     Counter skippedFrames{0},skippedCommands{0};   // 0.3.200 (frame skip): frames replayed in skip mode (no draws, no real Present) and the draws/clears they dropped
     // ---- Both threads write: memory in flight (chunks handed to the producer and not yet recycled, live blocks, registered shadows). ----
     alignas(kLine) Counter chunksLive{0};
