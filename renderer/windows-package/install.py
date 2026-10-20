@@ -354,15 +354,44 @@ def commit(client, plan, staged, payload=None, version='__RELEASE_VERSION__', ki
 
 QUALITY_KEY = re.compile(r'^\s*;?\s*([A-Za-z][A-Za-z0-9]*)\s*=')
 QUALITY_ADDED = '; Added by the Northlight installer: settings this file did not mention yet. Commented out, so the preset\'s values apply.'
+QUALITY_UPGRADE = re.compile(r'^\s*; Northlight Quality upgrade: ([a-z0-9-]+) ((?:[A-Za-z][A-Za-z0-9]*=1\s*)+)$', re.M)
+
+
+def upgrade_quality_features(text, template):
+    """Enable newly introduced Quality features once; later player edits stay intact."""
+    preset, section = 'quality', ''
+    for raw in text.splitlines():
+        line = re.split('[;#]', raw, maxsplit=1)[0].strip()
+        if line.startswith('[') and line.endswith(']'):
+            section = line[1:-1].strip().lower()
+        elif section == 'quality' and '=' in line:
+            key, value = (part.strip().lower() for part in line.split('=', 1))
+            if key == 'preset' and value in ('quality', 'balanced', 'performance'):
+                preset = value
+    if preset != 'quality':
+        return text
+    lines = []
+    for feature, settings in QUALITY_UPGRADE.findall(template):
+        applied = '; Northlight Quality upgrade applied: ' + feature
+        if applied in text.splitlines():
+            continue
+        lines.extend([applied, *settings.split()])
+    if not lines:
+        return text
+    eol = '\r\n' if '\r\n' in text else '\n'
+    return text.rstrip('\r\n') + eol + eol + '[Quality]' + eol + eol.join(lines) + eol
 
 def merge_quality_ini(user, template):
     """The user's northlight-quality.ini with every setting of the package template it does not mention yet appended:
     each with its comment block, as written in the template (commented out). A key counts as mentioned when any line
-    sets it, active or commented. Nothing already in the file changes. None when nothing is missing or the file is
+    sets it, active or commented. New Quality feature bundles are enabled once; other values remain intact.
+    None when nothing is missing or upgraded, or the file is
     not UTF-8 text (left alone)."""
     try: text, tmpl = user.decode('utf-8-sig'), template.decode('utf-8-sig')
     except UnicodeDecodeError: return None
     if '\x00' in text: return None
+    original = text
+    text = upgrade_quality_features(text, tmpl)
     have = {m.group(1).lower() for m in map(QUALITY_KEY.match, text.splitlines()) if m}
     blocks, comments = [], []
     for line in tmpl.splitlines():
@@ -376,10 +405,10 @@ def merge_quality_ini(user, template):
     for key, block in blocks:
         if key in have or key in seen: continue
         seen.add(key); missing.append(block)
-    if not missing: return None
+    if not missing and text == original: return None
     eol = '\r\n' if '\r\n' in text else '\n'
     out = text if text.endswith(('\n', '\r')) or not text else text+eol
-    out += eol+QUALITY_ADDED+eol
+    if missing: out += eol+QUALITY_ADDED+eol
     for block in missing: out += eol+eol.join(block)+eol
     bom = user.startswith(b'\xef\xbb\xbf')
     return (b'\xef\xbb\xbf' if bom else b'')+out.encode('utf-8')
@@ -442,16 +471,22 @@ def payload_plan(client, package, use_existing=False, backend=None, extra=None, 
                     plan.append({'path':e['path'], 'before':sha(dst), 'after':None})
                 continue
         old = sha(dst) if dst.exists() else None
-        # User settings (northlight-quality.ini) are installed only when missing, never overwritten: an existing file
-        # keeps every line and value; settings it does not mention yet are appended, commented out (merge_quality_ini).
+        # Existing settings keep ordinary overrides. New Quality feature bundles migrate once;
+        # the complete result is backed up and installed through this same transaction.
         if e.get('preserve') and dst.exists():
             merged = merge_quality_ini(dst.read_bytes(), safe_path(package/'payload', e['path']).read_bytes()) if e['sha256'] is not None else None
             if merged is None:
                 print('Keeping your existing', e['path'], flush=True); continue
-            print('Keeping your existing', e['path'], 'and adding the settings it does not mention yet', flush=True)
+            print('Updating', e['path'], '(new settings and Quality feature defaults; other overrides kept)', flush=True)
             staged[e['path']] = merged
             plan.append({'path':e['path'], 'before':old, 'after':hashlib.sha256(merged).hexdigest(), 'source':'staged', 'preserve':True}); continue
         entry = {'path':e['path'], 'before':old, 'after':e['sha256'], **({'preserve':True} if e.get('preserve') else {})}
+        if e.get('preserve') and e['path'] == 'northlight-quality.ini' and not dst.exists():
+            template = safe_path(package/'payload', e['path']).read_bytes()
+            merged = merge_quality_ini(template, template)
+            if merged is not None:
+                staged[e['path']] = merged
+                entry.update(after=hashlib.sha256(merged).hexdigest(), source='staged')
         if e['path'] == CONFIG and config:
             staged[CONFIG] = config; entry.update(after=hashlib.sha256(config).hexdigest(), source='staged')
         if entry['after'] is None: continue
