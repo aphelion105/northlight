@@ -18,12 +18,12 @@ int main(){
     frame.observe(blue,camera);blue.position[0]=.2f;frame.observe(blue,camera);
     frame.publish(nullptr,0,fixed,camera,selection);assert(frame.outputCount==1&&frame.immediateCount==1);
     const auto id=frame.output[0].sourceId;assert(frame.output[0].diffuse[2]>frame.output[0].diffuse[0]*5);
-    auto lit=selection.update(fixed,camera,32,1.f/120,true,frame.output.data(),frame.outputCount,frame.immediate.data(),frame.immediateCount);
+    auto lit=selection.update(fixed,camera,32,1.f/120,true,nullptr,frame.output.data(),frame.outputCount,frame.immediate.data(),frame.immediateCount);
     assert(lit.count==1&&std::fabs(lit.color[0][2]-frame.output[0].diffuse[2])<1e-6f);
     frame.nextFrame();blue.position[0]=.3f;frame.observe(blue,camera);frame.publish(nullptr,0,fixed,camera,selection);
     assert(frame.output[0].sourceId==id);
     frame.nextFrame();frame.publish(nullptr,0,fixed,camera,selection);
-    lit=selection.update(fixed,camera,32,1.f/120,true,frame.output.data(),frame.outputCount,frame.immediate.data(),frame.immediateCount);
+    lit=selection.update(fixed,camera,32,1.f/120,true,nullptr,frame.output.data(),frame.outputCount,frame.immediate.data(),frame.immediateCount);
     assert(lit.count==0&&selection.count==0); // no 250ms TTL or 400ms fade tail
     frame.reset();frame.observe(blue,camera);Light native{};
     for(unsigned k=0;k<3;++k){native.position[k]=blue.position[k];native.diffuse[k]=blue.rgb[k];}
@@ -33,6 +33,18 @@ int main(){
     frame.publish(nullptr,0,fixed,camera,selection);assert(frame.outputCount<=8);
     frame.reset();blue.position[0]=0;frame.observe(blue,camera);native.position[0]=0;fixed.push_back(native);
     frame.publish(nullptr,0,fixed,camera,selection);assert(frame.outputCount==0);
+    // Samples of different hues at one place are one light: the average colour at the strongest sample's level.
+    {fixed.clear();frame.reset();Sample white{{0,0,4},{.5f,.5f,.5f}},pale=blue;pale.rgb[0]=.3f;
+     frame.observe(blue,camera);frame.observe(white,camera);frame.observe(pale,camera);frame.publish(nullptr,0,fixed,camera,selection);
+     assert(frame.outputCount==1&&std::fabs(peak(frame.output[0].diffuse)-.7f*.7f)<1e-5f&&frame.output[0].diffuse[2]>frame.output[0].diffuse[0]);}
+    // Continuous frames: a source shows this frame's samples only and keeps its id while it is drawn.
+    const float dt=1.f/170,goal=blue.rgb[2]*.7f;fixed.clear();frame.reset();
+    frame.observe(blue,camera);frame.publish(nullptr,0,fixed,camera,selection,dt);
+    assert(frame.outputCount==1&&std::fabs(frame.output[0].diffuse[2]-goal)<1e-6f);const auto flash=frame.output[0].sourceId;
+    for(unsigned f=0;f<20;++f){frame.nextFrame();frame.observe(blue,camera);frame.publish(nullptr,0,fixed,camera,selection,dt);}
+    assert(frame.outputCount==1&&frame.output[0].sourceId==flash);
+    frame.nextFrame();frame.publish(nullptr,0,fixed,camera,selection,dt);assert(frame.outputCount==0); // no release tail
+    for(unsigned f=0;f<170;++f){frame.nextFrame();frame.publish(nullptr,0,fixed,camera,selection,dt);}assert(frame.outputCount==0);
 
     NorthlightParticleUploads::Cache uploads;int key=0;unsigned in[4]={1,2,3,4},out[4]={};
     uploads.write(&key,1,16,in,sizeof in,false);assert(uploads.read(&key,16,sizeof out,out)&&out[3]==4);
@@ -51,5 +63,5 @@ int main(){
     uploads.nextFrame();for(unsigned i=unsigned(keys.size());i>0;--i)uploads.write(&keys[i-1],1,0,large.data(),unsigned(large.size()),false);
     assert(uploads.bytes()<=NorthlightParticleUploads::ByteBudget&&uploads.stats().evictions>0);
     uploads.clear();assert(uploads.bytes()==0);
-    std::cout<<"PASS particle lights: actual colour, compact clustering, indexed bounds, shared cap/dedup, instantaneous lifecycle and bounded replay upload bytes\n";
+    std::cout<<"PASS particle lights: actual colour, compact clustering (one light per place), indexed bounds, shared cap/dedup, instantaneous lifecycle without a frame clock, no fade with one, and bounded replay upload bytes\n";
 }

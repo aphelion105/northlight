@@ -1556,10 +1556,10 @@
         1.0,
         0.9058824181556702
       ],
-      "intensity": 1.15,
+      "intensity": 0.7,
       "start": 1.0,
-      "end": 10.0,
-      "family": "wotlk_lantern",
+      "end": 5.0,
+      "family": "wotlk_candle",
       "position_basis": "v264 unlit additive skin batch: world\\generic\\orc\\passive doodads\\voodoostuff\\genericglow1.blp",
       "asset_sha256": "68b49949ee96c77527bd64167b1de102573a74bb3f72dd93dabe1d208e972324",
       "variants": {
@@ -1574,9 +1574,9 @@
             1.0,
             0.9058824181556702
           ],
-          "intensity": 1.15,
+          "intensity": 0.7,
           "start": 1.0,
-          "end": 10.0,
+          "end": 5.0,
           "position_basis": "v264 unlit additive skin batch: world\\generic\\orc\\passive doodads\\voodoostuff\\genericglow1.blp"
         }
       },
@@ -2544,10 +2544,10 @@
         0.2533257920909726,
         0.0298868196296046
       ],
-      "intensity": 1.15,
+      "intensity": 0.7,
       "start": 1.0,
-      "end": 14.0,
-      "family": "wotlk_fire",
+      "end": 5.0,
+      "family": "wotlk_candle",
       "position_basis": "v264 additive flame: item\\objectcomponents\\weapon\\flamelicksmall.blp",
       "asset_sha256": "cc8bf3475f7af888f1d199290ef4c464b614a2cafe03a5d0b70b0f15af4016cb",
       "variants": {
@@ -2562,9 +2562,9 @@
             0.2533257920909726,
             0.0298868196296046
           ],
-          "intensity": 1.15,
+          "intensity": 0.7,
           "start": 1.0,
-          "end": 14.0,
+          "end": 5.0,
           "position_basis": "v264 additive flame: item\\objectcomponents\\weapon\\flamelicksmall.blp"
         }
       },
@@ -2696,10 +2696,10 @@
         0.16923154336038396,
         0.010080366684593424
       ],
-      "intensity": 1.15,
+      "intensity": 0.7,
       "start": 1.0,
-      "end": 14.0,
-      "family": "wotlk_fire",
+      "end": 5.0,
+      "family": "wotlk_candle",
       "position_basis": "v264 additive flame: world\\azeroth\\elwynn\\passivedoodads\\smalldock\\flamelicksmallblue.blp",
       "asset_sha256": "e5bf9490cb9f004ba8b076477586e519c4c7a78abd232a66e087899b9de62be0",
       "variants": {
@@ -2714,9 +2714,9 @@
             0.16923154336038396,
             0.010080366684593424
           ],
-          "intensity": 1.15,
+          "intensity": 0.7,
           "start": 1.0,
-          "end": 14.0,
+          "end": 5.0,
           "position_basis": "v264 additive flame: world\\azeroth\\elwynn\\passivedoodads\\smalldock\\flamelicksmallblue.blp"
         }
       },
@@ -2848,10 +2848,10 @@
         0.6716470588235295,
         0.11372549767587699
       ],
-      "intensity": 1.15,
+      "intensity": 0.7,
       "start": 1.0,
-      "end": 14.0,
-      "family": "wotlk_fire",
+      "end": 5.0,
+      "family": "wotlk_candle",
       "position_basis": "v264 additive flame: particles\\flame02.blp",
       "asset_sha256": "481250804649db42fabfee8871d311f4bcbd0a6453d6039ab6e1480bb88a2354",
       "variants": {
@@ -2866,9 +2866,9 @@
             0.6716470588235295,
             0.11372549767587699
           ],
-          "intensity": 1.15,
+          "intensity": 0.7,
           "start": 1.0,
-          "end": 14.0,
+          "end": 5.0,
           "position_basis": "v264 additive flame: particles\\flame02.blp"
         }
       },
@@ -2886,10 +2886,10 @@
         0.20307785203246076,
         0.013860504191315962
       ],
-      "intensity": 1.15,
+      "intensity": 0.7,
       "start": 1.0,
-      "end": 14.0,
-      "family": "wotlk_fire",
+      "end": 5.0,
+      "family": "wotlk_candle",
       "position_basis": "v264 additive flame: item\\objectcomponents\\weapon\\flamelicksmall.blp",
       "asset_sha256": "14be6391ca05340a4b071b7c8f65106c829aa79cf4b713346bcc7530a32fbfee",
       "variants": {
@@ -2904,9 +2904,9 @@
             0.20307785203246076,
             0.013860504191315962
           ],
-          "intensity": 1.15,
+          "intensity": 0.7,
           "start": 1.0,
-          "end": 14.0,
+          "end": 5.0,
           "position_basis": "v264 additive flame: item\\objectcomponents\\weapon\\flamelicksmall.blp"
         }
       },
@@ -2924,10 +2924,10 @@
         0.20307785203246076,
         0.013860504191315962
       ],
-      "intensity": 1.15,
+      "intensity": 0.7,
       "start": 1.0,
-      "end": 14.0,
-      "family": "wotlk_fire",
+      "end": 5.0,
+      "family": "wotlk_candle",
       "position_basis": "v264 additive flame: item\\objectcomponents\\weapon\\flamelicksmall.blp",
       "asset_sha256": "77e01f3f006fb0d2e2d4129686260271ca5936512d5b24136d7d54eeb5242756",
       "variants": {
@@ -2942,9 +2942,9 @@
             0.20307785203246076,
             0.013860504191315962
           ],
-          "intensity": 1.15,
+          "intensity": 0.7,
           "start": 1.0,
-          "end": 14.0,
+          "end": 5.0,
           "position_basis": "v264 additive flame: item\\objectcomponents\\weapon\\flamelicksmall.blp"
         }
       },
@@ -2962,10 +2962,10 @@
         0.6716470588235295,
         0.11372549767587699
       ],
-      "intensity": 1.15,
+      "intensity": 0.7,
       "start": 1.0,
-      "end": 14.0,
-      "family": "wotlk_fire",
+      "end": 5.0,
+      "family": "wotlk_candle",
       "position_basis": "v264 additive flame: particles\\flame02.blp",
       "asset_sha256": "6ebec39567b98c591f002b8476f0fd4dce0e9f185de1d2d60236cbfb5413c2b5",
       "variants": {
@@ -2980,9 +2980,9 @@
             0.6716470588235295,
             0.11372549767587699
           ],
-          "intensity": 1.15,
+          "intensity": 0.7,
           "start": 1.0,
-          "end": 14.0,
+          "end": 5.0,
           "position_basis": "v264 additive flame: particles\\flame02.blp"
         }
       },
@@ -3228,10 +3228,10 @@
         0.6716470588235295,
         0.11372549767587699
       ],
-      "intensity": 1.15,
+      "intensity": 0.7,
       "start": 1.0,
-      "end": 14.0,
-      "family": "wotlk_fire",
+      "end": 5.0,
+      "family": "wotlk_candle",
       "position_basis": "v264 additive flame: particles\\flame02.blp",
       "asset_sha256": "2bf7188db205bc19de666fda36fdb665a27ba35c3357985989262f584a69903a",
       "variants": {
@@ -3246,9 +3246,9 @@
             0.6716470588235295,
             0.11372549767587699
           ],
-          "intensity": 1.15,
+          "intensity": 0.7,
           "start": 1.0,
-          "end": 14.0,
+          "end": 5.0,
           "position_basis": "v264 additive flame: particles\\flame02.blp"
         }
       },
@@ -3266,10 +3266,10 @@
         0.6716470588235295,
         0.11372549767587699
       ],
-      "intensity": 1.15,
+      "intensity": 0.7,
       "start": 1.0,
-      "end": 14.0,
-      "family": "wotlk_fire",
+      "end": 5.0,
+      "family": "wotlk_candle",
       "position_basis": "v264 additive flame: particles\\flame02.blp",
       "asset_sha256": "5c000121db2807f58891266a7b7c7c584cbfb43657a21e1071f6d2a464ec06e3",
       "variants": {
@@ -3284,9 +3284,9 @@
             0.6716470588235295,
             0.11372549767587699
           ],
-          "intensity": 1.15,
+          "intensity": 0.7,
           "start": 1.0,
-          "end": 14.0,
+          "end": 5.0,
           "position_basis": "v264 additive flame: particles\\flame02.blp"
         }
       },
@@ -3874,10 +3874,10 @@
         0.5279220742476816,
         0.0858225108119407
       ],
-      "intensity": 1.15,
+      "intensity": 0.7,
       "start": 1.0,
-      "end": 10.0,
-      "family": "wotlk_lantern",
+      "end": 5.0,
+      "family": "wotlk_candle",
       "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\candelabras\\glowwhite32.blp; v264 unlit additive skin batch: world\\lordaeron\\scholomance\\passivedoodads\\candles\\candleflameorange.blp",
       "asset_sha256": "5eb7d6fad55c4c0645ab378ab81a5724fd4f6c5134fd5f67ed9e1145fce97c56",
       "variants": {
@@ -3892,9 +3892,9 @@
             0.5279220742476816,
             0.0858225108119407
           ],
-          "intensity": 1.15,
+          "intensity": 0.7,
           "start": 1.0,
-          "end": 10.0,
+          "end": 5.0,
           "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\candelabras\\glowwhite32.blp; v264 unlit additive skin batch: world\\lordaeron\\scholomance\\passivedoodads\\candles\\candleflameorange.blp"
         }
       },
@@ -3912,10 +3912,10 @@
         0.8531250385916782,
         0.04213068197826491
       ],
-      "intensity": 1.15,
+      "intensity": 0.7,
       "start": 1.0,
-      "end": 10.0,
-      "family": "wotlk_lantern",
+      "end": 5.0,
+      "family": "wotlk_candle",
       "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\candelabras\\glowwhite32.blp; v264 unlit additive skin batch: world\\lordaeron\\scholomance\\passivedoodads\\candles\\candleflameorange.blp",
       "asset_sha256": "124ccec9a599ee0d1f6e21aba80f770a6a27c8490cb2b266ae424a3a239409f5",
       "variants": {
@@ -3930,9 +3930,9 @@
             0.8531250385916782,
             0.04213068197826491
           ],
-          "intensity": 1.15,
+          "intensity": 0.7,
           "start": 1.0,
-          "end": 10.0,
+          "end": 5.0,
           "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\candelabras\\glowwhite32.blp; v264 unlit additive skin batch: world\\lordaeron\\scholomance\\passivedoodads\\candles\\candleflameorange.blp"
         }
       },
@@ -3950,10 +3950,10 @@
         0.3898268395206401,
         0.08287878825559598
       ],
-      "intensity": 1.15,
+      "intensity": 0.7,
       "start": 1.0,
-      "end": 10.0,
-      "family": "wotlk_lantern",
+      "end": 5.0,
+      "family": "wotlk_candle",
       "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\candelabras\\glowwhite32.blp; v264 unlit additive skin batch: world\\lordaeron\\scholomance\\passivedoodads\\candles\\candleflameorange.blp",
       "asset_sha256": "01292cfbfe8c81e67e0d116ff750a7f00301b35c97b9cec1250b36e4ff4dcb14",
       "variants": {
@@ -3968,9 +3968,9 @@
             0.3898268395206401,
             0.08287878825559598
           ],
-          "intensity": 1.15,
+          "intensity": 0.7,
           "start": 1.0,
-          "end": 10.0,
+          "end": 5.0,
           "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\candelabras\\glowwhite32.blp; v264 unlit additive skin batch: world\\lordaeron\\scholomance\\passivedoodads\\candles\\candleflameorange.blp"
         }
       },
@@ -3988,10 +3988,10 @@
         0.3558441484953631,
         0.0016450216238814042
       ],
-      "intensity": 1.15,
+      "intensity": 0.7,
       "start": 1.0,
-      "end": 10.0,
-      "family": "wotlk_lantern",
+      "end": 5.0,
+      "family": "wotlk_candle",
       "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\candelabras\\glowwhite32.blp",
       "asset_sha256": "4bf81b7bfcf97442ef249be6954057b1ae80c283822f8227ec6d93ebff916d4f",
       "variants": {
@@ -4006,9 +4006,9 @@
             0.3558441484953631,
             0.0016450216238814042
           ],
-          "intensity": 1.15,
+          "intensity": 0.7,
           "start": 1.0,
-          "end": 10.0,
+          "end": 5.0,
           "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\candelabras\\glowwhite32.blp"
         }
       },
@@ -4026,10 +4026,10 @@
         1.0,
         0.024759944508802947
       ],
-      "intensity": 1.15,
+      "intensity": 0.7,
       "start": 1.0,
-      "end": 10.0,
-      "family": "wotlk_lantern",
+      "end": 5.0,
+      "family": "wotlk_candle",
       "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\candelabras\\glowwhite32.blp",
       "asset_sha256": "c02449cfe29e5cdc187e319750e3a97b00cc993779d7abccd71718ce67e8bcf4",
       "variants": {
@@ -4044,9 +4044,9 @@
             1.0,
             0.024759944508802947
           ],
-          "intensity": 1.15,
+          "intensity": 0.7,
           "start": 1.0,
-          "end": 10.0,
+          "end": 5.0,
           "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\candelabras\\glowwhite32.blp"
         }
       },
@@ -4064,10 +4064,10 @@
         0.1580246903541666,
         0.0015637859982964403
       ],
-      "intensity": 1.15,
+      "intensity": 0.7,
       "start": 1.0,
-      "end": 10.0,
-      "family": "wotlk_lantern",
+      "end": 5.0,
+      "family": "wotlk_candle",
       "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\candelabras\\glowwhite32.blp",
       "asset_sha256": "f8c582ed116027d6f4d1de04af32608824baac6832b0747b326277a6edda1715",
       "variants": {
@@ -4082,9 +4082,9 @@
             0.1580246903541666,
             0.0015637859982964403
           ],
-          "intensity": 1.15,
+          "intensity": 0.7,
           "start": 1.0,
-          "end": 10.0,
+          "end": 5.0,
           "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\candelabras\\glowwhite32.blp"
         }
       },
@@ -4102,10 +4102,10 @@
         0.3558441484953631,
         0.0016450216238814042
       ],
-      "intensity": 1.15,
+      "intensity": 0.7,
       "start": 1.0,
-      "end": 10.0,
-      "family": "wotlk_lantern",
+      "end": 5.0,
+      "family": "wotlk_candle",
       "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\candelabras\\glowwhite32.blp",
       "asset_sha256": "790cca9aad084cfb03caa59e80a2e3fcdd13f9ff6533ce4ec793ba1e274d0f7a",
       "variants": {
@@ -4120,9 +4120,9 @@
             0.3558441484953631,
             0.0016450216238814042
           ],
-          "intensity": 1.15,
+          "intensity": 0.7,
           "start": 1.0,
-          "end": 10.0,
+          "end": 5.0,
           "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\candelabras\\glowwhite32.blp"
         }
       },
@@ -4140,10 +4140,10 @@
         1.0,
         0.002741702706469007
       ],
-      "intensity": 1.15,
+      "intensity": 0.7,
       "start": 1.0,
-      "end": 10.0,
-      "family": "wotlk_lantern",
+      "end": 5.0,
+      "family": "wotlk_candle",
       "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\candelabras\\glowwhite32.blp",
       "asset_sha256": "de047f392cabed38dd47251c20d0565c39ccee1c690afbad21e12b6d450b2492",
       "variants": {
@@ -4158,9 +4158,9 @@
             1.0,
             0.002741702706469007
           ],
-          "intensity": 1.15,
+          "intensity": 0.7,
           "start": 1.0,
-          "end": 10.0,
+          "end": 5.0,
           "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\candelabras\\glowwhite32.blp"
         }
       },
@@ -4178,10 +4178,10 @@
         0.17402597086428412,
         0.0016450216238814042
       ],
-      "intensity": 1.15,
+      "intensity": 0.7,
       "start": 1.0,
-      "end": 10.0,
-      "family": "wotlk_lantern",
+      "end": 5.0,
+      "family": "wotlk_candle",
       "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\candelabras\\glowwhite32.blp",
       "asset_sha256": "ec789cb26d0e8b7ede734bec74000719e2c1a2a91360141f2750bcc01b3a92ae",
       "variants": {
@@ -4196,9 +4196,9 @@
             0.17402597086428412,
             0.0016450216238814042
           ],
-          "intensity": 1.15,
+          "intensity": 0.7,
           "start": 1.0,
-          "end": 10.0,
+          "end": 5.0,
           "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\candelabras\\glowwhite32.blp"
         }
       },
@@ -4216,10 +4216,10 @@
         0.3558441484953631,
         0.0016450216238814042
       ],
-      "intensity": 1.15,
+      "intensity": 0.7,
       "start": 1.0,
-      "end": 10.0,
-      "family": "wotlk_lantern",
+      "end": 5.0,
+      "family": "wotlk_candle",
       "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\candelabras\\glowwhite32.blp",
       "asset_sha256": "8b7fa65f0d25ea5d122e1511d00a5f2a9a33a75c614b9d990812e818a5c53a14",
       "variants": {
@@ -4234,9 +4234,9 @@
             0.3558441484953631,
             0.0016450216238814042
           ],
-          "intensity": 1.15,
+          "intensity": 0.7,
           "start": 1.0,
-          "end": 10.0,
+          "end": 5.0,
           "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\candelabras\\glowwhite32.blp"
         }
       },
@@ -4254,10 +4254,10 @@
         0.3558441484953631,
         0.0016450216238814042
       ],
-      "intensity": 1.15,
+      "intensity": 0.7,
       "start": 1.0,
-      "end": 10.0,
-      "family": "wotlk_lantern",
+      "end": 5.0,
+      "family": "wotlk_candle",
       "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\candelabras\\glowwhite32.blp",
       "asset_sha256": "62aeda78f0c1dc12860e80f4b6171d35300988438d93f0975708d792ddea7647",
       "variants": {
@@ -4272,9 +4272,9 @@
             0.3558441484953631,
             0.0016450216238814042
           ],
-          "intensity": 1.15,
+          "intensity": 0.7,
           "start": 1.0,
-          "end": 10.0,
+          "end": 5.0,
           "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\candelabras\\glowwhite32.blp"
         }
       },
@@ -4292,10 +4292,10 @@
         0.3558441484953631,
         0.0016450216238814042
       ],
-      "intensity": 1.15,
+      "intensity": 0.7,
       "start": 1.0,
-      "end": 10.0,
-      "family": "wotlk_lantern",
+      "end": 5.0,
+      "family": "wotlk_candle",
       "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\candelabras\\glowwhite32.blp",
       "asset_sha256": "86ea0d8770c73837f1d83ba003e73884c1eaa23c3f0f3868019705441ceeb348",
       "variants": {
@@ -4310,9 +4310,9 @@
             0.3558441484953631,
             0.0016450216238814042
           ],
-          "intensity": 1.15,
+          "intensity": 0.7,
           "start": 1.0,
-          "end": 10.0,
+          "end": 5.0,
           "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\candelabras\\glowwhite32.blp"
         }
       },
@@ -4330,10 +4330,10 @@
         0.3558441484953631,
         0.0016450216238814042
       ],
-      "intensity": 1.15,
+      "intensity": 0.7,
       "start": 1.0,
-      "end": 10.0,
-      "family": "wotlk_lantern",
+      "end": 5.0,
+      "family": "wotlk_candle",
       "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\candelabras\\glowwhite32.blp",
       "asset_sha256": "ded909d82dcef14aec50c2143bb7eb3f3097b14e1abaa8beeda83b1256bc655f",
       "variants": {
@@ -4348,9 +4348,9 @@
             0.3558441484953631,
             0.0016450216238814042
           ],
-          "intensity": 1.15,
+          "intensity": 0.7,
           "start": 1.0,
-          "end": 10.0,
+          "end": 5.0,
           "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\candelabras\\glowwhite32.blp"
         }
       },
@@ -4368,10 +4368,10 @@
         0.3558441484953631,
         0.0016450216238814042
       ],
-      "intensity": 1.15,
+      "intensity": 0.7,
       "start": 1.0,
-      "end": 10.0,
-      "family": "wotlk_lantern",
+      "end": 5.0,
+      "family": "wotlk_candle",
       "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\candelabras\\glowwhite32.blp",
       "asset_sha256": "39f0adea5b7d2c7966331c340fef211f0de1f9a77e540d6df9ee5f72df73f6d5",
       "variants": {
@@ -4386,9 +4386,9 @@
             0.3558441484953631,
             0.0016450216238814042
           ],
-          "intensity": 1.15,
+          "intensity": 0.7,
           "start": 1.0,
-          "end": 10.0,
+          "end": 5.0,
           "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\candelabras\\glowwhite32.blp"
         }
       },
@@ -4406,10 +4406,10 @@
         0.3558441484953631,
         0.0016450216238814042
       ],
-      "intensity": 1.15,
+      "intensity": 0.7,
       "start": 1.0,
-      "end": 10.0,
-      "family": "wotlk_lantern",
+      "end": 5.0,
+      "family": "wotlk_candle",
       "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\candelabras\\glowwhite32.blp",
       "asset_sha256": "7afa433332cb3e6242c01c8ab9ffe4b778bafe40897f38da771d0c50a953321e",
       "variants": {
@@ -4424,9 +4424,9 @@
             0.3558441484953631,
             0.0016450216238814042
           ],
-          "intensity": 1.15,
+          "intensity": 0.7,
           "start": 1.0,
-          "end": 10.0,
+          "end": 5.0,
           "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\candelabras\\glowwhite32.blp"
         }
       },
@@ -4444,10 +4444,10 @@
         0.3558441484953631,
         0.0016450216238814042
       ],
-      "intensity": 1.15,
+      "intensity": 0.7,
       "start": 1.0,
-      "end": 10.0,
-      "family": "wotlk_lantern",
+      "end": 5.0,
+      "family": "wotlk_candle",
       "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\candelabras\\glowwhite32.blp",
       "asset_sha256": "68b41c83c2488031b600c08e6cc80b7579fcf0c7171d68a2309b2578ac15d035",
       "variants": {
@@ -4462,9 +4462,9 @@
             0.3558441484953631,
             0.0016450216238814042
           ],
-          "intensity": 1.15,
+          "intensity": 0.7,
           "start": 1.0,
-          "end": 10.0,
+          "end": 5.0,
           "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\candelabras\\glowwhite32.blp"
         }
       },
@@ -4482,10 +4482,10 @@
         0.3558441484953631,
         0.0016450216238814042
       ],
-      "intensity": 1.15,
+      "intensity": 0.7,
       "start": 1.0,
-      "end": 10.0,
-      "family": "wotlk_lantern",
+      "end": 5.0,
+      "family": "wotlk_candle",
       "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\candelabras\\glowwhite32.blp",
       "asset_sha256": "34f1993960627a73b132c9f4023869fd713cfe762cf6d6be9eb66c202bdb340f",
       "variants": {
@@ -4500,9 +4500,9 @@
             0.3558441484953631,
             0.0016450216238814042
           ],
-          "intensity": 1.15,
+          "intensity": 0.7,
           "start": 1.0,
-          "end": 10.0,
+          "end": 5.0,
           "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\candelabras\\glowwhite32.blp"
         }
       },
@@ -4520,10 +4520,10 @@
         0.3558441484953631,
         0.0016450216238814042
       ],
-      "intensity": 1.15,
+      "intensity": 0.7,
       "start": 1.0,
-      "end": 10.0,
-      "family": "wotlk_lantern",
+      "end": 5.0,
+      "family": "wotlk_candle",
       "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\candelabras\\glowwhite32.blp",
       "asset_sha256": "40b5d761c57875a56f5db904095cb5b91aba136069618f8c60868db7b46537d5",
       "variants": {
@@ -4538,9 +4538,9 @@
             0.3558441484953631,
             0.0016450216238814042
           ],
-          "intensity": 1.15,
+          "intensity": 0.7,
           "start": 1.0,
-          "end": 10.0,
+          "end": 5.0,
           "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\candelabras\\glowwhite32.blp"
         }
       },

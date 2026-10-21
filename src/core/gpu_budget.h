@@ -46,8 +46,10 @@ struct Controller {
     unsigned level=0,changes=0;bool primed=false,probing=false; // probing: the last change was a step up (a step down within BounceSeconds is a bounce)
     void reset(){*this=Controller{};}
     // budgetMs 0: off, level 0 and the state forgotten. A non-finite, non-positive or huge ms is ignored (level kept, nothing advances).
-    // task 45: lighten=false (the frame is not limited by what this budget measures) only blocks stepping down (over stays 0); the level is kept
-    // and the up condition is the unchanged "well under the budget". The smoothed time still follows the readings. The default keeps the earlier behaviour.
+    // task 45: lighten=false (the frame is not limited by what this budget measures) blocks stepping down (over stays 0). 0.3.217: it also
+    // counts toward stepping up, like "well under the budget": a cut that buys no frame time is given back one level per upHold (the same
+    // oscillation backoff applies when the restored level makes this the limit again). Before, a scene that sat over the budget but was
+    // not GPU-bound kept the lowest level for good. The smoothed time still follows the readings. The default keeps the earlier behaviour.
     unsigned update(float budgetMs,float ms,float dt,bool lighten=true){
         if(!(budgetMs>0)){reset();return level;}
         if(!std::isfinite(ms)||!(ms>0)||ms>MaxSampleMs)return level;
@@ -59,7 +61,7 @@ struct Controller {
         if(probing&&sinceUp>=CalmSeconds){probing=false;upHold=UpHoldBase;}
         if(settle>0){settle-=dt;over=under=0;return level;}
         over=lighten&&smoothed>budgetMs?over+dt:0.f;
-        under=smoothed<budgetMs*UpFraction?under+dt:0.f;
+        under=smoothed<budgetMs*UpFraction||!lighten?under+dt:0.f;
         if(over>=DownSeconds&&level<MaxLevel){
             if(probing&&sinceUp<BounceSeconds)upHold=upHold*2<UpHoldMax?upHold*2:UpHoldMax;
             probing=false;++level;changed();
@@ -75,9 +77,9 @@ private:
 inline unsigned cloudSteps(unsigned level){return level==0?40u:level==1?32u:24u;}
 // WorldFog march intervals: 48 (full), 40 (level 3).
 inline unsigned fogSteps(unsigned level){return level>=3?40u:48u;}
-// Lamps lit at once. Active shadow slots reserve lit sources even at budget level 3.
-inline unsigned lightLimit(unsigned limit,unsigned level,unsigned shadowReserve=0){
-    return std::max(level>=3&&limit>16?16u:limit,shadowReserve);}
+// Lamps keep the configured limit at every budget level; active shadow slots stay lit.
+inline unsigned lightLimit(unsigned limit,unsigned,unsigned shadowReserve=0){
+    return std::max(limit,shadowReserve);}
 // Shader constant that lengthens an interval of a march written as mad(range,1/fullSteps,delta): 0 when steps==fullSteps.
 inline float spacingDelta(float range,unsigned steps,unsigned fullSteps){
     return steps==fullSteps||!steps||!fullSteps?0.f:range*(1.f/float(steps)-1.f/float(fullSteps));}

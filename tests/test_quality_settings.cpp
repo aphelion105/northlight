@@ -63,7 +63,7 @@ int main(){
        and the 0.3.176 PointShadows 0 (off in every preset). */
     const Settings d{};
     assert(d.minSkinnedTriangles==100&&d.captureBudgetMiB==32&&d.actorShadowBudgetMiB==0&&d.farShadowInterval==4);
-    assert(d.localLightLimit==NorthlightLocalLightSelection::Limit&&d.pointShadows==1&&d.pointShadowLimit==4&&d.pointShadowRefreshMs==0&&d.shadowDirectionSteps==2048);
+    assert(d.localLightLimit==48&&d.pointShadows==1&&d.pointShadowLimit==4&&d.pointShadowRefreshMs==0&&d.shadowDirectionSteps==2048);
     assert(parse(nullptr)==d&&parse("")==d&&parse("[Quality]\nPreset=Quality\n")==d&&preset(Preset::Quality)==d);
     for(const auto& k:Keys){assert(k.preset[0]==d.*k.field);for(unsigned p=0;p<3;++p)assert(k.preset[p]>=k.low&&k.preset[p]<=k.high);}
     { /* The shipped default file must be exactly Quality, with no warnings. */
@@ -132,7 +132,7 @@ int main(){
         std::vector<NorthlightLocalLights::Light> lights(size_t(rng()%90));uint64_t id=1;
         for(auto& l:lights){l={};for(int k=0;k<3;++k){l.position[k]=pos(rng);l.diffuse[k]=u(rng)+1;}l.attenuationStart=reach(rng)*.5f;l.attenuationEnd=reach(rng);l.sourceId=(rng()%4)?id++:1;l.kind=2;}
         const float camera[]={pos(rng)*.2f,pos(rng)*.2f,pos(rng)*.05f};
-        auto a=NorthlightLocalLightSelection::select(lights,camera),b=NorthlightLocalLightSelection::select(lights,camera,d.localLightLimit);
+        auto a=NorthlightLocalLightSelection::select(lights,camera),b=NorthlightLocalLightSelection::select(lights,camera,NorthlightLocalLightSelection::Limit);
         assert(a.count==b.count&&a.nearest==b.nearest&&a.fogDistance==b.fogDistance&&a.position==b.position&&a.color==b.color&&a.fog==b.fog);
         /* Default 32 is byte-identical to 0.3.139 (capacity 32), including every direct/fog batch. */
         sameAsOld(a,oldSelect(lights,camera));sameAsOld(b,oldSelect(lights,camera));

@@ -60,7 +60,7 @@ int main(){
     // Static publication after capture must remove the previous dynamic light
     // AND the selection's already visible/fading entry, in this same frame.
     n.position[0]=camera[0]+2;Tracker publication;publication.observe(n,4000,none);publication.publish(4000);publication.publish(4050);
-    NorthlightLocalLightSelection::Tracker pubSelect;pubSelect.update(none,camera,8,.016f,false,publication.output.data(),publication.outputCount);
+    NorthlightLocalLightSelection::Tracker pubSelect;pubSelect.update(none,camera,8,.016f,false,nullptr,publication.output.data(),publication.outputCount);
     const auto staticSource=light(n,77,1);std::vector<NorthlightLocalLights::Light> appeared{staticSource};
     publication.publish(4060,&appeared);assert(!publication.count&&publication.suppressedCount==1);
     for(unsigned i=0;i<publication.suppressedCount;++i)pubSelect.forget(publication.suppressed[i]);
@@ -69,10 +69,10 @@ int main(){
     // old static selection tail instead of adding two versions for .4 seconds.
     publication.observe(n,4070,none);publication.publish(4070);publication.publish(4120);
     replaceFadingDuplicates(pubSelect,publication.output.data(),publication.outputCount);
-    auto disappearedOut=pubSelect.update(none,camera,8,.016f,true,publication.output.data(),publication.outputCount);assert(disappearedOut.count==1);
+    auto disappearedOut=pubSelect.update(none,camera,8,.016f,true,nullptr,publication.output.data(),publication.outputCount);assert(disappearedOut.count==1);
     // Additional lights share the original global limit and deterministic sort.
     fixed={l};Tracker e;e.observe(n,4000,none);e.publish(4000);e.publish(4050);
-    NorthlightLocalLightSelection::Tracker select;auto out=select.update(fixed,camera,8,.016f,false,e.output.data(),e.outputCount);assert(out.count==2);
+    NorthlightLocalLightSelection::Tracker select;auto out=select.update(fixed,camera,8,.016f,false,nullptr,e.output.data(),e.outputCount);assert(out.count==2);
     NorthlightQuality::Settings settings;assert(settings.equipmentLights);std::vector<std::string> problems;
     assert(NorthlightQuality::preset(NorthlightQuality::Preset::Quality).equipmentLights==1);
     assert(!NorthlightQuality::preset(NorthlightQuality::Preset::Balanced).equipmentLights&&!NorthlightQuality::preset(NorthlightQuality::Preset::Performance).equipmentLights);

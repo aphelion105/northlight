@@ -123,6 +123,7 @@ public:
         }
         return false;
     }
+    bool recording()const {return active_>=0&&!disabled_;} /* a sampled frame is open: marks issue timestamps */
     uint64_t sampledFrame()const {return active_>=0&&!disabled_?slots_[active_].frame:0;}
     // label names the interval ending here (e.g. mark("AO") after the AO draw).
     void mark(const char* name){

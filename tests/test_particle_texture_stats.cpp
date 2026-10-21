@@ -14,7 +14,8 @@ int main(){
     c.upload(key(1),key(10),2,1,0,21,atlas,sizeof atlas,8,true,true);assert(c.bytes()==0&&!c.counts.uploads&&!c.lookup(key(1),v));
     enabled.store(true);
     assert(!c.lookup(key(1),v));
-    c.upload(key(1),key(10),2,1,0,21,atlas,sizeof atlas,8,true,true);assert(c.lookup(key(1),v));
+    c.upload(key(1),key(10),2,1,0,21,atlas,sizeof atlas,8,true,true);assert(c.counts.retained==1&&!c.counts.decoded); // kept as uploaded, not decoded
+    assert(c.lookup(key(1),v)&&c.counts.decoded==1);assert(c.lookup(key(1),v)&&c.counts.decoded==1); // decoded once, at the first lookup
     const auto life=v.lifetime,revision=v.revision,hash=v.rgbaHash;
     assert(v.sample(.25f,.5f,false,3,3,rgba));close(rgba[0],1);close(rgba[2],0);close(rgba[3],1);
     assert(v.sample(.75f,.5f,false,3,3,rgba));close(rgba[0],0);close(rgba[2],1);close(rgba[3],0); // Atlas cell stays transparent and blue, never an average white.
@@ -40,11 +41,14 @@ int main(){
     const std::uint8_t bc3[]={0,255,0,0,0,0,0,0,0,248,0,0,0,0,0,0};
     c.upload(key(3),key(20),4,4,0,0x35545844,bc3,16,16,true,true);assert(c.lookup(key(3),v));assert(v.sample(.5f,.5f,false,3,3,rgba));close(rgba[0],1);close(rgba[3],0);
     c.clear();assert(c.bytes()==0&&c.size()==0);
-    std::vector<std::uint8_t> large(64*64*4,255);
-    for(unsigned i=1;i<=500;++i){c.upload(key(i),key(i+1000),64,64,0,21,large.data(),large.size(),256,true,true);assert(c.bytes()<=Cache::PixelBudget);assert(c.size()<=Cache::MaxEntries);}
-    assert(c.counts.evictions>0&&c.size()==Cache::PixelBudget/large.size());assert(!c.lookup(key(1),v)&&c.lookup(key(500),v));
-    c.invalidate(key(500));assert(!c.lookup(key(500),v));
-    enabled.store(false);assert(!c.lookup(key(499),v));c.upload(key(499),key(1499),64,64,0,21,large.data(),large.size(),256,true,true);enabled.store(true);assert(!c.lookup(key(499),v));
+    std::vector<std::uint8_t> large(32*32*4,255);const unsigned uploads=unsigned(Cache::PixelBudget/large.size())+600;
+    for(unsigned i=1;i<=uploads;++i){c.upload(key(i),key(i+100000),32,32,0,21,large.data(),large.size(),128,true,true);assert(c.bytes()<=Cache::PixelBudget);assert(c.size()<=Cache::MaxEntries);}
+    assert(c.counts.evictions>0&&c.size()<=Cache::PixelBudget/large.size()&&c.size()>=(Cache::PixelBudget-Cache::PixelBudget/8)/large.size());
+    assert(!c.lookup(key(1),v)&&c.lookup(key(uploads),v));
+    c.lookup(key(1),v);assert(c.lastMiss()==Evicted); // an evicted texture is reported as such
+    c.upload(key(uploads+1),key(uploads+1),64,32,0,21,large.data(),large.size(),256,true,true);assert(!c.lookup(key(uploads+1),v)&&c.lastMiss()==Large);
+    c.invalidate(key(uploads));assert(!c.lookup(key(uploads),v));
+    enabled.store(false);assert(!c.lookup(key(uploads-1),v));c.upload(key(uploads-1),key(uploads-1+100000),32,32,0,21,large.data(),large.size(),128,true,true);enabled.store(true);assert(!c.lookup(key(uploads-1),v));
     c.clear();assert(!c.bytes());
-    std::puts("particle textures: actual atlas UV/alpha, wrap/mirror/clamp, point/bilinear, sRGB alpha parity, native BC decode, lifetime/revision, mip order, partial/failed/GPU invalidation, bounded eviction PASS");
+    std::puts("particle textures: decode on first lookup, actual atlas UV/alpha, wrap/mirror/clamp, point/bilinear, sRGB alpha parity, native BC decode, lifetime/revision, mip order, partial/failed/GPU invalidation, bounded eviction PASS");
 }
