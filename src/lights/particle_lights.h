@@ -10,6 +10,10 @@
 namespace NorthlightParticleLights {
 using Light=NorthlightLocalLights::Light;
 inline constexpr unsigned Capacity=8,Clusters=32,DrawLimit=32,TrianglesPerDraw=16,Tracks=16;
+// Draws placed per frame (one triangle each). Only a placed draw within MaxDistance
+// takes one of the DrawLimit sampling slots: distant particle systems drawn first
+// (city torches, fountains) used to fill the slots and leave the player's weapon dark.
+inline constexpr unsigned ProbeLimit=128;inline constexpr float MaxDistance=48.f;
 // A particle source flashes per frame (lightning) and a sampled draw can miss a
 // frame (cache or sample placement). Each source therefore follows its samples:
 // a flash shows at once (a delayed rise swallowed one-frame flashes) and dims
@@ -52,7 +56,7 @@ class Frame {
 public:
     std::array<Light,Capacity> output{};unsigned outputCount=0;
     std::array<std::uint64_t,Capacity> immediate{};unsigned immediateCount=0;
-    unsigned draws=0,backgroundDraws=0,accepted=0,deferred=0,triangles=0,points=0,dropped=0;
+    unsigned draws=0,backgroundDraws=0,accepted=0,deferred=0,triangles=0,points=0,dropped=0,probes=0,distant=0;
     unsigned shaderMiss=0,textureMiss=0,bufferMiss=0,stateMiss=0,geometryMiss=0;
     // stateMiss by the check that refused the draw (PARTICLELIGHT state=...).
     enum State {BlendOp,AlphaTest,ColorWrite,Depth,Sampler,Projection,States};
@@ -67,12 +71,13 @@ public:
     }
     void missTexture(const TextureMiss& miss){if(wantsTextureMiss(miss.key))textureMisses[textureMissCount++]=miss;}
     void reset(){count_=previousCount_=trackCount_=outputCount=immediateCount=0;nextFrame();}
-    void nextFrame(){count_=0;draws=backgroundDraws=accepted=deferred=triangles=points=dropped=0;shaderMiss=textureMiss=bufferMiss=stateMiss=geometryMiss=0;stateWhy={};}
+    void nextFrame(){count_=0;draws=backgroundDraws=accepted=deferred=triangles=points=dropped=probes=distant=0;shaderMiss=textureMiss=bufferMiss=stateMiss=geometryMiss=0;stateWhy={};}
+    bool takeProbe(){if(probes>=ProbeLimit){++dropped;return false;}++probes;return true;}
     bool takeDraw(bool particle=true){if(draws>=DrawLimit||(!particle&&backgroundDraws>=DrawLimit/2)){++dropped;return false;}++draws;if(!particle)++backgroundDraws;return true;}
     void observe(const Sample& sample,const float* camera){
         for(unsigned k=0;k<3;++k)if(!std::isfinite(sample.position[k])||std::fabs(sample.position[k])>=100000||
             !std::isfinite(sample.rgb[k])||sample.rgb[k]<0||sample.rgb[k]>16||!std::isfinite(camera[k]))return;
-        if(peak(sample.rgb)<.003f||NorthlightEquipmentLights::distance2(sample.position,camera)>48.f*48.f)return;
+        if(peak(sample.rgb)<.003f||NorthlightEquipmentLights::distance2(sample.position,camera)>MaxDistance*MaxDistance)return;
         ++points;
         for(unsigned i=0;i<count_;++i)if(same(current_[i].sample,sample)){add(current_[i],sample);return;}
         unsigned at=count_;

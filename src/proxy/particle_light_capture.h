@@ -70,7 +70,7 @@ public:
         if(FAILED(device->GetRenderState(D3DRS_ALPHABLENDENABLE,&blend))||!blend||
            FAILED(device->GetRenderState(D3DRS_SRCBLEND,&src))||(src!=D3DBLEND_ONE&&src!=D3DBLEND_SRCALPHA)||
            FAILED(device->GetRenderState(D3DRS_DESTBLEND,&dst))||dst!=D3DBLEND_ONE)return result;
-        if(!frame.takeDraw(families_.at(vs)!=3))return result;
+        const bool particle=families_.at(vs)!=3;if(!frame.takeProbe())return result;
         using F=NorthlightParticleLights::Frame;
         if(FAILED(device->GetRenderState(D3DRS_BLENDOP,&op))||op!=D3DBLENDOP_ADD){frame.refuse(F::BlendOp);return result;}
         // The game keeps its alpha test on for additive particles (ALPHAREF 1,
@@ -180,6 +180,17 @@ public:
         };
         const unsigned samples=std::min(args.primCount,NorthlightParticleLights::TrianglesPerDraw);
         const float bary[4][3]={{1.f/3,1.f/3,1.f/3},{.6f,.2f,.2f},{.2f,.6f,.2f},{.2f,.2f,.6f}};
+        // Place the draw by its first loadable triangle before it takes a sampling slot:
+        // beyond the lights' reach, or with no loadable bytes, it can add no light.
+        bool placed=false;
+        for(unsigned sample=0;sample<samples&&!placed;++sample){
+            std::uint64_t references[3];if(!NorthlightParticleLights::triangleIndices(unsigned(args.prim),std::uint64_t(sample)*args.primCount/samples,references))continue;
+            Point points[3];if(!load(references[0],points[0])||!load(references[1],points[1])||!load(references[2],points[2]))continue;
+            float world[3];for(unsigned j=0;j<3;++j){world[j]=inverseView[12+j];for(unsigned k=0;k<3;++k)world[j]+=(points[0].position[k]+points[1].position[k]+points[2].position[k])/3*inverseView[k*4+j];}
+            if(!(NorthlightEquipmentLights::distance2(world,camera)<=NorthlightParticleLights::MaxDistance*NorthlightParticleLights::MaxDistance)){++frame.distant;return result;}
+            placed=true;
+        }
+        if(!placed||!frame.takeDraw(particle))return result;
         for(unsigned sample=0;sample<samples;++sample){
             std::uint64_t references[3];if(!NorthlightParticleLights::triangleIndices(unsigned(args.prim),std::uint64_t(sample)*args.primCount/samples,references))continue;
             Point points[3];if(!load(references[0],points[0])||!load(references[1],points[1])||!load(references[2],points[2]))continue;
