@@ -62,7 +62,8 @@ class NorthlightAutoDisplacement {
         uint64_t h=1469598103934665603ull;auto add=[&](uint64_t v){h^=v;h*=1099511628211ull;};
         add(source.vertexCount);add(source.primitiveCount);add(source.topology);add(source.indexed);
         // A bounded shortlist, never proof: full source bytes still authorize every alias.
-        auto sample=[&](const void* data,size_t size){add(size);const auto* p=static_cast<const unsigned char*>(data);const size_t n=std::min(size,size_t(32));for(size_t i=0;i<n;++i)add(p[i]);for(size_t i=size-n;i<size;++i)add(p[i]);};
+        auto sample=[&](const void* data,size_t size){add(size);const auto* p=static_cast<const unsigned char*>(data);const size_t n=std::min(size,size_t(32));
+            auto span=[&](size_t begin){size_t i=0;for(;i+sizeof(uint64_t)<=n;i+=sizeof(uint64_t)){uint64_t word;std::memcpy(&word,p+begin+i,sizeof word);add(word);}for(;i<n;++i)add(p[begin+i]);};span(0);span(size-n);};
         sample(source.streams[0].bytes.data(),source.streams[0].bytes.size());sample(source.indices.data(),source.indices.size()*sizeof(uint32_t));return h;
     }
     static uint64_t materialFingerprint(uint64_t source,uint64_t program,unsigned detail,unsigned address,unsigned domain,unsigned material,const void* texture,const void* texture1,uint64_t version,uint64_t version1,const std::vector<float>& uv){
@@ -87,6 +88,7 @@ class NorthlightAutoDisplacement {
         Entry* overlay=nullptr;candidates(source,fingerprint,true,[&](Entry& e){if(e.sourceDecl==declaration&&e.domain==1&&e.baseFrame==uint64_t(frames)+1&&(!overlay||e.used>overlay->used||(e.used==overlay->used&&e.order<overlay->order))&&sameSource(e,source,true))overlay=&e;});return overlay;
     }
     bool retains(const Mesh* source,const Entry* except=nullptr)const{for(const auto& e:entries)if(e.get()!=except&&e->source.get()==source)return true;return false;}
+    uint64_t retainedFingerprint(const std::shared_ptr<const Mesh>& source)const{const auto it=sourceLookup.find(source.get());return it!=sourceLookup.end()?it->second->fingerprint:sourceFingerprint(*source);}
     void evictOldest(){
         auto old=std::min_element(entries.begin(),entries.end(),[](const auto& a,const auto& b){return a->used<b->used;});Entry* e=old->get();
         resident-=e->bytes;if(!retains(e->source.get(),e))resident-=e->source->byteSize();
@@ -225,7 +227,7 @@ m.layered=NorthlightActorDeformation::compile(words,count,m.uv1,true,2,5,1)&&Nor
         const auto revision=NorthlightMaterialHeight::version(static_cast<IDirect3DTexture9*>(tex.p)),revision1=tex1.p?NorthlightMaterialHeight::version(static_cast<IDirect3DTexture9*>(tex1.p)):0;
         const unsigned address=u|(v<<8);uvKey(shader->second,constants,domain==2&&material==6,uvScratch);
         Entry* overlay=domain==1&&material==2?findOverlay(source,fingerprint,decl.p):nullptr;
-        Entry* hit=domain==1&&material==2?nullptr:firstMaterial(materialFingerprint(equivalent?fingerprint:sourceFingerprint(*source),shader->second.id,detail,address,domain,material,tex.p,tex1.p,revision,revision1,uvScratch),[&](Entry& e){if(e.sourceDecl!=decl.p||e.domain!=domain)return false;
+        Entry* hit=domain==1&&material==2?nullptr:firstMaterial(materialFingerprint(equivalent?fingerprint:retainedFingerprint(source),shader->second.id,detail,address,domain,material,tex.p,tex1.p,revision,revision1,uvScratch),[&](Entry& e){if(e.sourceDecl!=decl.p||e.domain!=domain)return false;
             return e.program==shader->second.id&&e.detail==detail&&e.address==address&&e.material==material&&e.texture==tex.p&&e.texture1==tex1.p&&e.uvConstants==uvScratch&&e.heightVersion==revision&&e.heightVersion1==revision1&&sameSource(e,source,equivalent);});
         if(hit){current=hit;userDraw=args.vertices!=nullptr;indexedUserDraw=userDraw&&args.draw.indexed;hit->used=++clock;hit->baseFrame=uint64_t(frames)+1;++hits;return true;}
         if(overlay){current=overlay;userDraw=args.vertices!=nullptr;indexedUserDraw=userDraw&&args.draw.indexed;overlay->used=++clock;++hits;return true;}
