@@ -408,7 +408,7 @@ bench = r"""
 
 def build(root, name, source, flags, defines=()):
     (root / (name + '.cpp')).write_text(source)
-    subprocess.run(['clang++', *(['-stdlib=libc++'] if sys.platform == 'linux' else []), '-std=c++17', '-Wall', '-Wextra', '-Werror', *flags, *defines,
+    subprocess.run(['clang++', *(['-stdlib=libc++'] if sys.platform != 'darwin' else []), '-std=c++17', '-Wall', '-Wextra', '-Werror', *flags, *defines,
                     '-I', str(root), *fp.test_include_flags(), str(root / (name + '.cpp')), '-o', str(root / name)], check=True)
     return root / name
 
