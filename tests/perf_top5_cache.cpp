@@ -21,9 +21,10 @@ struct MaterialCallMeter:ForwardIDirect3DDevice9 {
     HRESULT STDMETHODCALLTYPE SetSamplerState(DWORD n,D3DSAMPLERSTATETYPE k,DWORD v) override{++samplerSets;return real->SetSamplerState(n,k,v);}
 };
 struct GenerationMeter:MaterialCallMeter {
-    unsigned generations=0;
+    unsigned generations=0,normalDraws=0;
     explicit GenerationMeter(IDirect3DDevice9* device):MaterialCallMeter(device){}
     HRESULT STDMETHODCALLTYPE CreateTexture(UINT w,UINT h,UINT l,DWORD usage,D3DFORMAT f,D3DPOOL pool,IDirect3DTexture9** out,HANDLE* shared)override{if(usage&D3DUSAGE_RENDERTARGET)++generations;return real->CreateTexture(w,h,l,usage,f,pool,out,shared);}
+    HRESULT STDMETHODCALLTYPE DrawPrimitiveUP(D3DPRIMITIVETYPE type,UINT count,const void* data,UINT stride)override{++normalDraws;return real->DrawPrimitiveUP(type,count,data,stride);}
 };
 int main(int argc,char** argv){
     assert(argc==2);
@@ -35,6 +36,7 @@ int main(int argc,char** argv){
 
     NorthlightAutoNormalCache cache(d);std::vector<IDirect3DTexture9*> sources;
     for(unsigned i=0;i<48;++i){IDirect3DTexture9* tex=nullptr;ok(d->CreateTexture(512,512,1,0,D3DFMT_DXT1,D3DPOOL_MANAGED,&tex,nullptr));D3DLOCKED_RECT lock{};ok(tex->LockRect(0,&lock,nullptr,0));for(unsigned y=0;y<128;++y)std::memset((char*)lock.pBits+y*lock.Pitch,0,1024);tex->UnlockRect(0);sources.push_back(tex);}
+    ok(d->BeginScene());
     unsigned counts[2];
     for(unsigned round=0;round<2;++round){auto before=meter.generations;for(auto* source:sources){assert(cache.resolve(source));cache.endFrame();}counts[round]=meter.generations-before;}
     assert(counts[0]==48);
@@ -52,8 +54,8 @@ int main(int argc,char** argv){
     assert(cache.resolve(sources[2])==retained);
     auto* model=cache.resolve(sources[2],true);assert(model&&model!=retained);
     assert(cache.resolve(sources[2])==retained);
-    auto before=meter.generations;for(auto* source:sources){assert(cache.resolve(source));cache.endFrame();}assert(meter.generations>before);
+    auto before=meter.normalDraws;for(auto* source:sources){assert(cache.resolve(source));cache.endFrame();}assert(meter.normalDraws>before);
     assert(NorthlightAutoNormalMemory::budget(400ull<<20,32ull<<20)==(32ull<<20));assert(NorthlightAutoNormalMemory::budget(950ull<<20,96ull<<20)==(96ull<<20));assert(NorthlightAutoNormalMemory::budget(300ull<<20,96ull<<20)==(32ull<<20));
 #endif
-    std::printf("CACHE_PERF_PASS first=%u revisit=%u pressureFallback=checked\n",counts[0],counts[1]);cache.report();cache.reset();for(auto*& source:sources)drop(source);d->Release();api->Release();DestroyWindow(window);return 0;
+    std::printf("CACHE_PERF_PASS first=%u revisit=%u pressureFallback=checked\n",counts[0],counts[1]);cache.report();ok(d->EndScene());cache.reset();for(auto*& source:sources)drop(source);d->Release();api->Release();DestroyWindow(window);return 0;
 }
