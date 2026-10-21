@@ -18,6 +18,8 @@ FILES=['renderer.cpp','world_renderer.h','world_shadow_experiment.inl','world_po
 GATES=('NorthlightDiagnostics::enabled()','diagnostics()','sampled()','captureSampled','if(diagnostics)','shadowFate.active()','sampledFrame','profiling()','profileSampled()','if(lightingClock)')
 # Ungated lines that stay with Diagnostics=0: format prefix -> label.
 KEEP={
+ 'CELESTIAL cloudOrder=':'one-off: first phase composition',
+
  'Depth snapshot DF24 refused':'one-off: depth format changes to INTZ for the rest of the session',
  'GAME thread priority':'start-up: successful device creation',
  'TUNING ':'developer build only: file-change, debounced rebuild or settings event',
