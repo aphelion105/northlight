@@ -1282,7 +1282,10 @@ static void diagnosticsOffSkipsAudit(){
     CHECK(get(st.recordSampledNs)==0&&get(st.presentBookNs)==0&&get(st.lockNs)==0);   // 0.3.204 (task 21): the split timers stay off with Diagnostics
     gDiagOn.store(true);frame();CHECK(rp.auditSets()==0);   // the frame that was running when it turned on: not recorded
     frame();CHECK(rp.auditSets()>0);
-    CHECK(get(st.recordSampledNs)>0&&get(st.presentBookNs)>0);   // 300 generated calls a frame: sampled 1 in 16
+    // Clock-overhead subtraction can legitimately make a sampled duration zero.
+    // The sample count proves diagnostics enabled recording regardless of host clock resolution.
+    std::uint64_t samples=0;for(auto& count:st.cmdSamples)samples+=get(count);
+    CHECK(samples>0&&get(st.presentBookNs)>0);   // 300 generated calls a frame: sampled 1 in 16
     gDiagOn.store(false);const auto n=rp.auditSets();frame();frame();CHECK(rp.auditSets()<=n+300);   // one more recorded frame at most (the flip is seen at the next boundary)
     rig.finish();checkClean();
 }
