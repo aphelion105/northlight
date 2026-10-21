@@ -10,7 +10,7 @@ namespace NorthlightMaterialHeight {
 inline float sat(float x){return std::clamp(x,0.f,1.f);}
 inline float accent(float r,float g,float b){return std::max(sat((r-g)/std::max(r,.05f)*4-.1f)*sat((g-b)/std::max(g,.05f)*4-.1f),sat((g-r)/std::max(g,.05f)*4-.1f)*sat((g-b)/std::max(g,.05f)*4-.1f));}
 struct Image {unsigned width=0,height=0;std::vector<unsigned char> rgba;float mean=.5f,accentMean=0;};
-inline std::uint64_t version(IDirect3DTexture9* source){NorthlightParticleTextures::View view;return NorthlightMaterialTextures::cache().lookup(source,view)?view.lifetime*UINT64_C(0x9e3779b97f4a7c15)^view.revision:0;}
+inline std::uint64_t version(IDirect3DTexture9* source){return NorthlightMaterialTextures::cache().version(source);}
 inline void copiedTexture(IDirect3DBaseTexture9* source,IDirect3DBaseTexture9* destination,bool success){
     if(!destination||destination->GetType()!=D3DRTYPE_TEXTURE)return;auto& cache=NorthlightMaterialTextures::cache();
     if(!success||!source||source->GetType()!=D3DRTYPE_TEXTURE){cache.invalidate(destination);return;}

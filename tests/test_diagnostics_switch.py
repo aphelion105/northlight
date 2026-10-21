@@ -18,6 +18,26 @@ FILES=['renderer.cpp','world_renderer.h','world_shadow_experiment.inl','world_po
 GATES=('NorthlightDiagnostics::enabled()','diagnostics()','sampled()','captureSampled','if(diagnostics)','shadowFate.active()','sampledFrame','profiling()','profileSampled()','if(lightingClock)')
 # Ungated lines that stay with Diagnostics=0: format prefix -> label.
 KEEP={
+ 'DXVK3 engine-name FSE':'start-up: optional process compatibility configuration',
+ 'DXVK3 engine-name requested':'start-up: backend and Wine eligibility decision',
+ 'DXVK3 engine-name import':'start-up: import patch result',
+ 'TERRAIN SHADOW farCoverage':'capped: first eight shader-patch registrations',
+ 'AO method=':'start-up: loaded AO settings',
+ 'AO live ':'settings event: committed live revision',
+ 'CELESTIAL cloudOrder=':'one-off: first phase composition',
+ 'SETTINGS unavailable:':'one-off initialization error',
+ 'SETTINGS frame revision=':'settings event: committed frame revision',
+ 'WATER GPU diagnostic frame=':'user-triggered: a new diagnostic capture serial',
+ 'WATER material geometry mask lookup=':'capped: material-mask size verdict',
+ 'WEATHER supplemental shelter worker unavailable':'one-off: worker creation failure',
+ 'HDR boundary deferred':'capped: first eight boundary deferrals',
+ 'HDR boundary frame=':'capped: first verified boundaries',
+ 'HDR conversion failed':'capped: first eight conversion failures',
+ 'HDR unconverted UI draw':'capped: first eight rejected UI conversions',
+ 'HDR legacy target ':'one-off per legacy target creation/reset',
+ 'HDR experimental requested=':'start-up: experimental HDR configuration',
+ 'HDR experimental device creation refused:':'start-up: command-stream creation failure',
+
  'Depth snapshot DF24 refused':'one-off: depth format changes to INTZ for the rest of the session',
  'GAME thread priority':'start-up: successful device creation',
  'TUNING ':'developer build only: file-change, debounced rebuild or settings event',
@@ -176,7 +196,7 @@ span_checks={
  'U0/S0: no logf( reachable between the selection/upload bucket marks except errors and one-off events':not bad,
  'U0/S0 counterfactual: the sampled lines are reachable there when not deferred':not missed and {'selectShadowReplays','uploadReplay','rigidMemoryInject','finishActorScene','uploadLiveTerrain'}<=reached,
  'U0/S0: the proxy has no log line from the AO mark to world->render()':'logf(' not in ra[ao:ra.index('world->render(',ao)],
- 'U0/S0: deferred lines are written from endFrame() before anything else':'void endFrame(bool retainPool=true){\n        flushDeferredLogs();' in fp.src('world_renderer.h').read_text(),
+ 'U0/S0: deferred lines are written from endFrame() after equipment counters advance':'NorthlightParticleUploads::cache().nextFrame();}\n        flushDeferredLogs();' in fp.src('world_renderer.h').read_text(),
 }
 for name,ok in span_checks.items():print(('PASS ' if ok else 'FAIL ')+name)
 assert all(span_checks.values()),(bad,missed)

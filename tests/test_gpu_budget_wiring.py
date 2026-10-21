@@ -33,9 +33,12 @@ checks['timer: a full ring skips the frame (begin returns false), disjoint / zer
 # renderer.cpp: timer bracket, poll, controller, logs
 rc=code(r)
 re_=rc[rc.index('void renderEffects() {'):rc.index('applied = true; ++appliedFrames;')]
-checks['renderer: timer opened only with GpuBudgetMs > 0, right after the SavedState, closed by a scope guard (every return path)']=(
-    'struct TimerEnd { NorthlightGpuFrameTimer* t; bool open; ~TimerEnd(){if(open)t->end();} } timerEnd{gpuTimer.get(),world&&world->gpuBudgetMs()&&gpuTimer->begin()};' in re_
-    and re_.index('if (!saved.ok) return;')<re_.index('timerEnd{')<re_.index('gpuProfile->beginFrame(')<re_.index('profileEnd{'))
+# Surface effects finish after deferred spells; clearFrame also closes the timer on early exits.
+checks['renderer: timer spans surface work through deferred spells and is closed on frame cleanup']=(
+    'surfaceTimerOpen=world&&world->gpuBudgetMs()&&gpuTimer->begin();' in re_
+    and re_.index('if (!saved.ok) return;')<re_.index('surfaceTimerOpen=')<re_.index('gpuProfile->beginFrame(')
+    and 'if(surfaceTimerOpen){if(gpuTimer)gpuTimer->end();surfaceTimerOpen=false;}' in rc
+    and rc.count('if(surfaceTimerOpen){gpuTimer->end();surfaceTimerOpen=false;}')==2)
 checks['renderer: the timer is created, reset before a device Reset and destroyed with the profiler']=(
     'gpuTimer=std::make_unique<NorthlightGpuFrameTimer>(ext);' in rc and 'gpuProfile->reset();gpuSceneProfile->reset();gpuFrameStarted=gpuSceneSplit=gpuEffectsSplit=false;gpuTimer->reset();' in rc and 'gpuProfile.reset();gpuSceneProfile.reset();gpuTimer.reset();' in rc)
 fin=rc[rc.index('void finishFrameImpl() {'):]

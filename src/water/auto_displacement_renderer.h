@@ -5,6 +5,7 @@
 #include "actor_texture.h"
 #include "material_height.h"
 #include "replay_bounds.h"
+#include "upload_lock.h"
 #include <memory>
 #include <cfloat>
 
@@ -149,8 +150,8 @@ m.layered=NorthlightActorDeformation::compile(words,count,m.uv1,true,2,5,1)&&Nor
         MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;if(entry->bytes>budget||!GlobalMemoryStatusEx(&memory)||memory.ullAvailVirtual<entry->bytes+(160u<<20)){++refused;return false;}
         while(!entries.empty()&&(resident+entry->bytes>budget||entries.size()>=256)){auto old=std::min_element(entries.begin(),entries.end(),[](const auto& a,const auto& b){return a->used<b->used;});resident-=(*old)->bytes;entries.erase(old);}
         const auto vbBytes=UINT(output.streams[0].bytes.size()),ibBytes=UINT(output.indices.size()*4);void* data=nullptr;
-        if(FAILED(d->CreateVertexBuffer(vbBytes,D3DUSAGE_WRITEONLY,0,D3DPOOL_DEFAULT,&entry->vb,nullptr))||FAILED(entry->vb->Lock(0,vbBytes,&data,0)))return false;std::memcpy(data,output.streams[0].bytes.data(),vbBytes);if(FAILED(entry->vb->Unlock()))return false;
-        if(FAILED(d->CreateIndexBuffer(ibBytes,D3DUSAGE_WRITEONLY,D3DFMT_INDEX32,D3DPOOL_DEFAULT,&entry->ib,nullptr))||FAILED(entry->ib->Lock(0,ibBytes,&data,0)))return false;std::memcpy(data,output.indices.data(),ibBytes);if(FAILED(entry->ib->Unlock()))return false;
+        if(FAILED(d->CreateVertexBuffer(vbBytes,D3DUSAGE_WRITEONLY,0,D3DPOOL_DEFAULT,&entry->vb,nullptr))||FAILED(entry->vb->Lock(0,vbBytes,&data,NorthlightUpload::FreshBufferLock)))return false;std::memcpy(data,output.streams[0].bytes.data(),vbBytes);if(FAILED(entry->vb->Unlock()))return false;
+        if(FAILED(d->CreateIndexBuffer(ibBytes,D3DUSAGE_WRITEONLY,D3DFMT_INDEX32,D3DPOOL_DEFAULT,&entry->ib,nullptr))||FAILED(entry->ib->Lock(0,ibBytes,&data,NorthlightUpload::FreshBufferLock)))return false;std::memcpy(data,output.indices.data(),ibBytes);if(FAILED(entry->ib->Unlock()))return false;
         elements[count-1]={0,WORD(stream.stride),D3DDECLTYPE_FLOAT3,D3DDECLMETHOD_DEFAULT,D3DDECLUSAGE_TEXCOORD,7};elements[count]=D3DDECL_END();if(FAILED(d->CreateVertexDeclaration(elements,&entry->decl)))return false;
         entry->source=source;entry->sourceDecl=decl.p;entry->sourceDecl->AddRef();entry->texture=static_cast<IDirect3DTexture9*>(tex.p);entry->texture->AddRef();entry->texture1=static_cast<IDirect3DTexture9*>(tex1.p);if(entry->texture1)entry->texture1->AddRef();entry->detail=detail;entry->program=shader->second.id;entry->domain=domain;entry->material=material;entry->uvConstants=std::move(key);entry->address=address;entry->heightVersion=revision;entry->heightVersion1=revision1;entry->vertices=output.vertexCount;entry->primitives=output.primitiveCount;entry->stride=output.streams[0].stride;entry->used=++clock;entry->baseFrame=uint64_t(frames)+1;resident+=entry->bytes;current=entry.get();userDraw=args.vertices!=nullptr;indexedUserDraw=userDraw&&args.draw.indexed;entries.push_back(std::move(entry));++builds;return true;
     }

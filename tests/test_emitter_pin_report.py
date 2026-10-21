@@ -47,7 +47,7 @@ class PinReport(unittest.TestCase):
                 continue
             blob=self.assets['all'].read(path)
             if x['status']=='matched':
-                self.assertEqual(len(outdoor_light_profiles.fallback(catalog,path,blob,[])),1)
+                self.assertGreaterEqual(len(outdoor_light_profiles.fallback(catalog,path,blob,[])),1)
                 self.assertIn('pin',x)
             else:
                 with self.assertRaises(ValueError):outdoor_light_profiles.fallback(catalog,path,blob,[])

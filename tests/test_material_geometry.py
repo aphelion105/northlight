@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
-# northlight-test: requires=windows-gpu,zig
+# northlight-test: requires=windows-exe,zig
 """CPU geometry, resident snapshot and equipment-atlas contracts on Windows."""
 from pathlib import Path
 import subprocess
