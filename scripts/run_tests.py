@@ -46,6 +46,14 @@ def probe(name):
     if name == 'cxx':
         missing = [c for c in ('clang++', 'c++') if not shutil.which(c)]
         return f'host C++ compiler not on PATH: {", ".join(missing)}' if missing else None
+    if name == 'lua51':
+        env = os.environ.copy()
+        if env.get('NORTHLIGHT_LUA_PYTHONPATH'):
+            env['PYTHONPATH'] = env['NORTHLIGHT_LUA_PYTHONPATH'] + os.pathsep + env.get('PYTHONPATH', '')
+        r = subprocess.run([sys.executable, '-c', 'from lupa.lua51 import LuaRuntime; assert LuaRuntime().eval("_VERSION") == "Lua 5.1"'], env=env, capture_output=True)
+        return None if r.returncode == 0 else 'Lua 5.1 test runtime missing (lupa.lua51)'
+    if name == 'windows-gpu':
+        return None if os.name == 'nt' else 'The offscreen D3D9 oracle requires Windows'
     if name == 'base':
         base = os.environ.get('BASE')
         return None if base and (Path(base) / 'renderer.cpp').is_file() else \
