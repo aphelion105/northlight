@@ -157,7 +157,7 @@ checks['world: copy skipped only with foldScene, Scene s0 = foldScene, s10 = AO 
     and 'SetTexture(10' not in render_fn[render_fn.index('temporalIndex=prev;temporalValid=true;'):render_fn.index('"world composite"')])
 checks['world: composited cleared at entry, set right after the WorldComposite quad; neutral 1x1 (0,0,0,1) created and released'] = (
     'shadowsComposited=false;composited=false;lastRenderDebug=debug;' in render_fn
-    and 'compositeOk=check(quad(w,h),"world composite");}' in render_fn and render_fn.index('compositeOk=check(quad(w,h),"world composite");}')<render_fn.index('if(!compositeOk)return false;composited=true;') # 0.3.212: the quad inside the name mask's composite bind
+    and 'compositeOk=check(quad(w,h),"world composite");' in render_fn and render_fn.index('compositeOk=check(quad(w,h),"world composite");')<render_fn.index('if(!compositeOk)return false;') < render_fn.index('composited=true;') # 0.3.212: the quad inside the name mask's composite bind
     and 'CreateTexture(1,1,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&neutralAO,nullptr)' in wr
     and '*static_cast<DWORD*>(lock.pBits)=0xff000000u;' in wr and 'drop(neutralAO);' in wr)
 checks['diagnostic capture: the folded scene dump is labelled pre-AO'] = 'foldScene?"pre-AO (folded AO/bloom)":"post-AO composite"' in wr
