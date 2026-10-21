@@ -50,11 +50,11 @@ def main():
     for contract in ('frac(major.y*(major.x<0?-1:1)/spacing)',
                      'float altitude=p.z-field.x;',
                      'heightFade=saturate(altitude*(1.0/12))',
-                     'fogShadow(p)*heightFade', 'SourcePolicy.x*.35'):
+                     'fogShadowProjected(shadowOrigin+shadowRay*((start+end)*.5))*heightFade', 'SourcePolicy.x*.35'):
         assert contract in fog
     assert 'sin(' not in fog and 'SourcePolicy.z' not in fog
     assert '.35+.65*visible' not in fog
-    shadow = shader.split('float fogShadow(', 1)[1].split('float2 probeUV', 1)[0]
+    shadow = shader.split('float fogShadowProjected(', 1)[1].split('float2 probeUV', 1)[0]
     assert 'ShadowNear' not in shadow
     assert '(q.xy-FarMatrix[3].xy)' in shadow
     assert 'visibility+=(receiver<=z?1:0)*w.x*w.y' in shadow
