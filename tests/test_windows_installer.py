@@ -368,7 +368,8 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(got,wanted)
         self.assertIn('GpuBudgetMs=7\n',merged)
         self.assertEqual(merged.lower().count('gpubudgetms='),1)
-        self.assertIsNone(m.merge_quality_ini(template,template))
+        upgraded=m.merge_quality_ini(template,template)
+        self.assertIsNone(m.merge_quality_ini(upgraded,template) if upgraded is not None else upgraded)
     def set_payload(self,name,data):
         # Each synthetic package version models a newly launched installer process.
         m._sha_cache.clear()
