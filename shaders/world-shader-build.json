@@ -1,6 +1,6 @@
 {
   "bump_include_sha256": "b852586a08da120aaeb838fa7509cd5368a745fbfaac9d9723fee58d2a3cbb34",
-  "source_sha256": "ef5a97fa83c9cbb42295fa32eca4325053e76c83f92335efe181845a9c253528",
+  "source_sha256": "6d06d2cb927586640fc39e79ff95556df730907b918708e2be394c6a1c94593a",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
   "game_launched": false,
@@ -33,7 +33,7 @@
         "endrep": 3,
         "endif": 3
       },
-      "source_sha256": "ef5a97fa83c9cbb42295fa32eca4325053e76c83f92335efe181845a9c253528"
+      "source_sha256": "6d06d2cb927586640fc39e79ff95556df730907b918708e2be394c6a1c94593a"
     },
     "WorldLighting": {
       "target": "ps_3_0",
@@ -71,7 +71,7 @@
         "break": 1,
         "endrep": 2
       },
-      "source_sha256": "ef5a97fa83c9cbb42295fa32eca4325053e76c83f92335efe181845a9c253528"
+      "source_sha256": "6d06d2cb927586640fc39e79ff95556df730907b918708e2be394c6a1c94593a"
     },
     "ActorShadow": {
       "target": "ps_3_0",
@@ -105,7 +105,7 @@
         "endrep": 2,
         "break": 1
       },
-      "source_sha256": "ef5a97fa83c9cbb42295fa32eca4325053e76c83f92335efe181845a9c253528"
+      "source_sha256": "6d06d2cb927586640fc39e79ff95556df730907b918708e2be394c6a1c94593a"
     },
     "ActorTiles": {
       "target": "ps_3_0",
@@ -125,7 +125,7 @@
         "texldl": 16,
         "min": 16
       },
-      "source_sha256": "ef5a97fa83c9cbb42295fa32eca4325053e76c83f92335efe181845a9c253528"
+      "source_sha256": "6d06d2cb927586640fc39e79ff95556df730907b918708e2be394c6a1c94593a"
     },
     "WorldGI": {
       "target": "ps_3_0",
@@ -163,7 +163,7 @@
         "rsq": 1,
         "endrep": 1
       },
-      "source_sha256": "ef5a97fa83c9cbb42295fa32eca4325053e76c83f92335efe181845a9c253528"
+      "source_sha256": "6d06d2cb927586640fc39e79ff95556df730907b918708e2be394c6a1c94593a"
     },
     "WorldFog": {
       "target": "ps_3_0",
@@ -201,7 +201,7 @@
         "dp2add": 2,
         "endrep": 1
       },
-      "source_sha256": "ef5a97fa83c9cbb42295fa32eca4325053e76c83f92335efe181845a9c253528"
+      "source_sha256": "6d06d2cb927586640fc39e79ff95556df730907b918708e2be394c6a1c94593a"
     },
     "FogBlur": {
       "target": "ps_3_0",
@@ -229,7 +229,7 @@
         "endif": 6,
         "exp": 5
       },
-      "source_sha256": "ef5a97fa83c9cbb42295fa32eca4325053e76c83f92335efe181845a9c253528"
+      "source_sha256": "6d06d2cb927586640fc39e79ff95556df730907b918708e2be394c6a1c94593a"
     },
     "FogClouds": {
       "target": "ps_3_0",
@@ -267,7 +267,7 @@
         "dp2add": 2,
         "endrep": 1
       },
-      "source_sha256": "ef5a97fa83c9cbb42295fa32eca4325053e76c83f92335efe181845a9c253528"
+      "source_sha256": "6d06d2cb927586640fc39e79ff95556df730907b918708e2be394c6a1c94593a"
     },
     "FogTemporal": {
       "target": "ps_3_0",
@@ -297,7 +297,7 @@
         "dp4": 1,
         "endif": 6
       },
-      "source_sha256": "ef5a97fa83c9cbb42295fa32eca4325053e76c83f92335efe181845a9c253528"
+      "source_sha256": "6d06d2cb927586640fc39e79ff95556df730907b918708e2be394c6a1c94593a"
     },
     "LocalDirect": {
       "target": "ps_3_0",
@@ -329,37 +329,39 @@
         "rsq": 9,
         "nrm": 1
       },
-      "source_sha256": "ef5a97fa83c9cbb42295fa32eca4325053e76c83f92335efe181845a9c253528"
+      "source_sha256": "6d06d2cb927586640fc39e79ff95556df730907b918708e2be394c6a1c94593a"
     },
     "LocalDirect16": {
       "target": "ps_3_0",
-      "bytes": 5608,
-      "sha256": "7303805424a660a4fab4d965eaefd51914b87430f78dbaea4da6bfc5d0a306ab",
-      "static_instruction_slots": 314,
-      "temporary_registers": 6,
+      "bytes": 6420,
+      "sha256": "76cb82cecd2e3a4169be309a40a4c394962683082218556d0a81a0517d001166",
+      "static_instruction_slots": 364,
+      "temporary_registers": 7,
       "samplers": [
         1,
+        9,
         11,
         12,
         14
       ],
       "instructions": {
-        "mul": 103,
+        "mul": 115,
         "frc": 1,
-        "add": 88,
+        "add": 103,
         "max": 2,
-        "mov": 7,
-        "min": 1,
-        "texldl": 4,
-        "if": 2,
-        "else": 2,
-        "rcp": 21,
-        "cmp": 25,
-        "endif": 2,
-        "dp3": 32,
-        "rsq": 16
+        "mov": 9,
+        "min": 2,
+        "texldl": 5,
+        "if": 3,
+        "else": 3,
+        "rcp": 23,
+        "cmp": 31,
+        "endif": 3,
+        "dp3": 33,
+        "rsq": 17,
+        "nrm": 1
       },
-      "source_sha256": "ef5a97fa83c9cbb42295fa32eca4325053e76c83f92335efe181845a9c253528"
+      "source_sha256": "6d06d2cb927586640fc39e79ff95556df730907b918708e2be394c6a1c94593a"
     },
     "RemovalSmooth": {
       "target": "ps_3_0",
@@ -396,7 +398,7 @@
         "endrep": 1,
         "endif": 2
       },
-      "source_sha256": "ef5a97fa83c9cbb42295fa32eca4325053e76c83f92335efe181845a9c253528"
+      "source_sha256": "6d06d2cb927586640fc39e79ff95556df730907b918708e2be394c6a1c94593a"
     },
     "TemporalLight": {
       "target": "ps_3_0",
@@ -428,7 +430,7 @@
         "rsq": 1,
         "endif": 4
       },
-      "source_sha256": "ef5a97fa83c9cbb42295fa32eca4325053e76c83f92335efe181845a9c253528"
+      "source_sha256": "6d06d2cb927586640fc39e79ff95556df730907b918708e2be394c6a1c94593a"
     },
     "LocalFog": {
       "target": "ps_3_0",
@@ -456,7 +458,7 @@
         "dp3": 9,
         "rsq": 9
       },
-      "source_sha256": "ef5a97fa83c9cbb42295fa32eca4325053e76c83f92335efe181845a9c253528"
+      "source_sha256": "6d06d2cb927586640fc39e79ff95556df730907b918708e2be394c6a1c94593a"
     },
     "LocalFogCombine": {
       "target": "ps_3_0",
@@ -477,7 +479,7 @@
         "pow": 1,
         "mov": 1
       },
-      "source_sha256": "ef5a97fa83c9cbb42295fa32eca4325053e76c83f92335efe181845a9c253528"
+      "source_sha256": "6d06d2cb927586640fc39e79ff95556df730907b918708e2be394c6a1c94593a"
     },
     "SourceVisibilityPS": {
       "target": "ps_3_0",
@@ -502,7 +504,7 @@
         "else": 2,
         "endif": 2
       },
-      "source_sha256": "ef5a97fa83c9cbb42295fa32eca4325053e76c83f92335efe181845a9c253528"
+      "source_sha256": "6d06d2cb927586640fc39e79ff95556df730907b918708e2be394c6a1c94593a"
     },
     "WorldComposite": {
       "target": "ps_3_0",
@@ -546,7 +548,7 @@
         "dp2add": 4,
         "rsq": 3
       },
-      "source_sha256": "ef5a97fa83c9cbb42295fa32eca4325053e76c83f92335efe181845a9c253528"
+      "source_sha256": "6d06d2cb927586640fc39e79ff95556df730907b918708e2be394c6a1c94593a"
     },
     "MaterialComposite": {
       "target": "ps_3_0",
@@ -587,7 +589,7 @@
         "mad": 2,
         "pow": 1
       },
-      "source_sha256": "ef5a97fa83c9cbb42295fa32eca4325053e76c83f92335efe181845a9c253528"
+      "source_sha256": "6d06d2cb927586640fc39e79ff95556df730907b918708e2be394c6a1c94593a"
     },
     "ShadowVS": {
       "target": "vs_3_0",
@@ -601,7 +603,7 @@
         "add": 3,
         "mov": 3
       },
-      "source_sha256": "ef5a97fa83c9cbb42295fa32eca4325053e76c83f92335efe181845a9c253528"
+      "source_sha256": "6d06d2cb927586640fc39e79ff95556df730907b918708e2be394c6a1c94593a"
     },
     "ShadowCacheVS": {
       "target": "vs_3_0",
@@ -615,7 +617,7 @@
         "add": 3,
         "mov": 4
       },
-      "source_sha256": "ef5a97fa83c9cbb42295fa32eca4325053e76c83f92335efe181845a9c253528"
+      "source_sha256": "6d06d2cb927586640fc39e79ff95556df730907b918708e2be394c6a1c94593a"
     },
     "ShadowPS": {
       "target": "ps_3_0",
@@ -632,7 +634,7 @@
         "texkill": 1,
         "mov": 1
       },
-      "source_sha256": "ef5a97fa83c9cbb42295fa32eca4325053e76c83f92335efe181845a9c253528"
+      "source_sha256": "6d06d2cb927586640fc39e79ff95556df730907b918708e2be394c6a1c94593a"
     },
     "ShadowReplayPS": {
       "target": "ps_3_0",
@@ -653,7 +655,7 @@
         "texkill": 1,
         "endif": 1
       },
-      "source_sha256": "ef5a97fa83c9cbb42295fa32eca4325053e76c83f92335efe181845a9c253528"
+      "source_sha256": "6d06d2cb927586640fc39e79ff95556df730907b918708e2be394c6a1c94593a"
     },
     "ShadowUnion": {
       "target": "ps_3_0",
@@ -679,7 +681,7 @@
         "endif": 1,
         "min": 1
       },
-      "source_sha256": "ef5a97fa83c9cbb42295fa32eca4325053e76c83f92335efe181845a9c253528"
+      "source_sha256": "6d06d2cb927586640fc39e79ff95556df730907b918708e2be394c6a1c94593a"
     }
   }
 }

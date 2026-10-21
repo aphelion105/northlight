@@ -617,14 +617,14 @@ float4 LocalDirect(float2 uv:TEXCOORD0):COLOR0 {
     return float4(result*(LocalLightInfo.y*(1-LocalLightInfo.z*sunlit)),0);
 }
 // Sixteen lamps in one pass (local_light_batches.h wide(): two neighbouring 8-lamp batches whose joint rect costs less than
-// both): the same term as LocalDirect per lamp, the lamps in entry uniforms c68..c83 (position, w attenuation end) and
-// c84..c99 (colour, w 1/(end-start)); unused slots are zero. c52 (LocalLightInfo.yz) and s12 as for LocalDirect.
-float4 LocalDirect16(float2 uv:TEXCOORD0,uniform float4 LampPos[16]:register(c68),uniform float4 LampColor[16]:register(c84)):COLOR0 {
+// both): the same term as LocalDirect per lamp, the lamps in entry uniforms c84..c99 (position, w attenuation end) and
+// c100..c115 (colour, w 1/(end-start)); c73..c78 retain material controls; unused slots are zero. c52 (LocalLightInfo.yz) and s12 as for LocalDirect.
+float4 LocalDirect16(float2 uv:TEXCOORD0,uniform float4 LampPos[16]:register(c84),uniform float4 LampColor[16]:register(c100)):COLOR0 {
     float3 smoothNormal=tex2Dlod(NormalBuffer,float4(uv,0,0)).xyz;
     float sunlit=saturate((tex2Dlod(BaselineLighting,float4(uv,0,0)).a-(1-GridInfo.z))/max(GridInfo.z,.001));
     uv=depthUV(uv);
     float d=normalizedDepth(uv);if(d>=.99999||waterDistance(uv,d)>0)return 0;
-    float3 p=worldPosition(uv,d);float3 n=smoothNormal;
+    float3 p=worldPosition(uv,d);float3 n=autoBumpNormal(uv,p,smoothNormal,viewDistance(d),InverseView[0].xyz,InverseView[1].xyz,InverseView[2].xyz);
     float3 result=0;
     [unroll]for(int i=0;i<16;++i){
         float3 toLight=LampPos[i].xyz-p;
