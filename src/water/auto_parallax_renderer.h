@@ -11,10 +11,12 @@ class NorthlightAutoParallax {
     static constexpr D3DSAMPLERSTATETYPE keys[]={D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER,D3DSAMP_MIPFILTER,D3DSAMP_ADDRESSU,D3DSAMP_ADDRESSV,D3DSAMP_SRGBTEXTURE,D3DSAMP_MAXMIPLEVEL,D3DSAMP_MIPMAPLODBIAS};
     struct State {
         IDirect3DDevice9* d;IDirect3DPixelShader9* pixel=nullptr;IDirect3DVertexShader9* vertex=nullptr;
-        IDirect3DBaseTexture9* textures[2]={};DWORD samplers[2][8]={};float constants[8]={};unsigned layers=0,constantBase=0,samplerChanged[2]={};bool changed=false;
+        IDirect3DBaseTexture9* textures[2]={};DWORD samplers[2][8]={};float constants[8]={};unsigned layers=0,constantBase=0,samplerChanged[2]={};bool changed=false,borrowedVertex=false,borrowedPixel=false;
         explicit State(IDirect3DDevice9* device):d(device){}
-        bool saveShaders(){
-            if(FAILED(d->GetVertexShader(&vertex))||!vertex||FAILED(d->GetPixelShader(&pixel))||!pixel)return false;return true;
+        bool saveShaders(IDirect3DVertexShader9* boundVertex,IDirect3DPixelShader9* boundPixel){
+            // The caller retains these authoritative bindings until this draw returns.
+            vertex=boundVertex;pixel=boundPixel;borrowedVertex=vertex!=nullptr;borrowedPixel=pixel!=nullptr;
+            if((!borrowedVertex&&FAILED(d->GetVertexShader(&vertex)))||!vertex||(!borrowedPixel&&FAILED(d->GetPixelShader(&pixel)))||!pixel)return false;return true;
         }
         bool saveSamplers(unsigned count){
             for(unsigned n=0;n<count;++n){layers=n+1;if(FAILED(d->GetTexture(14+n,&textures[n])))return false;for(unsigned i=0;i<8;++i)if(FAILED(d->GetSamplerState(14+n,keys[i],&samplers[n][i])))return false;}return true;
@@ -23,7 +25,7 @@ class NorthlightAutoParallax {
             for(unsigned n=0;n<layers;++n){d->SetTexture(14+n,textures[n]);for(unsigned i=0;i<8;++i)if(samplerChanged[n]&(1u<<i))d->SetSamplerState(14+n,keys[i],samplers[n][i]);}}
             changed=false;}
         ~State(){restore();
-            drop(vertex);drop(pixel);for(auto*& t:textures)drop(t);}
+            if(!borrowedVertex)drop(vertex);if(!borrowedPixel)drop(pixel);for(auto*& t:textures)drop(t);}
     };
 public:
     NorthlightAutoParallax(IDirect3DDevice9* device,NorthlightAutoNormalCache& cache):d(device),normals(cache){}
@@ -39,8 +41,8 @@ public:
         return entry.shader!=nullptr;
     }
     void endFrame(){if(draws&&frames++%600==0)logf("AUTOPARALLAX draws=%u skipped=%u pixel_variants=%zu vertex_variants=%zu",draws,skipped,pixels.size(),vertices.size());draws=skipped=0;}
-    template<class Draw> HRESULT draw(IDirect3DVertexShader9* knownVertex,IDirect3DVertexShader9* forwarded,unsigned material,const float* projection,const float* control,Draw nativeDraw,bool model=false){
-        const bool dual=material==6;State saved(d);if(!saved.saveShaders())return nativeDraw();
+    template<class Draw> HRESULT draw(IDirect3DVertexShader9* knownVertex,IDirect3DVertexShader9* forwarded,unsigned material,const float* projection,const float* control,Draw nativeDraw,bool model=false,IDirect3DVertexShader9* boundVertex=nullptr,IDirect3DPixelShader9* boundPixel=nullptr){
+        const bool dual=material==6;State saved(d);if(!saved.saveShaders(boundVertex,boundPixel))return nativeDraw();
         DWORD z=0,zwrite=0,zfunc=0,stencil=0;
         if(FAILED(d->GetRenderState(D3DRS_ZENABLE,&z))||FAILED(d->GetRenderState(D3DRS_ZWRITEENABLE,&zwrite))||FAILED(d->GetRenderState(D3DRS_ZFUNC,&zfunc))||FAILED(d->GetRenderState(D3DRS_STENCILENABLE,&stencil))||!z||zfunc==D3DCMP_ALWAYS||stencil||(!zwrite&&material>2))return nativeDraw();
         IDirect3DVertexShader9* vertex=forwarded;
@@ -60,7 +62,8 @@ public:
         saved.changed=true;
         for(unsigned n=0;n<(dual?2u:1u);++n){DWORD u=D3DTADDRESS_WRAP,v=D3DTADDRESS_WRAP;d->GetSamplerState(n,D3DSAMP_ADDRESSU,&u);d->GetSamplerState(n,D3DSAMP_ADDRESSV,&v);
             const DWORD values[]={D3DTEXF_LINEAR,D3DTEXF_LINEAR,D3DTEXF_LINEAR,u,v,FALSE,0,0};d->SetTexture(14+n,maps.t[n]);for(unsigned i=0;i<8;++i)if(saved.samplers[n][i]!=values[i]){saved.samplerChanged[n]|=1u<<i;d->SetSamplerState(14+n,keys[i],values[i]);}}
-        if(FAILED(d->SetVertexShader(vertex))||FAILED(d->SetPixelShader(it->second.shader))||FAILED(d->SetPixelShaderConstantF(saved.constantBase,projection,1))||FAILED(d->SetPixelShaderConstantF(saved.constantBase+1,control,1))){saved.restore();return nativeDraw();}
+        float bank[8];std::copy(projection,projection+4,bank);std::copy(control,control+4,bank+4);
+        if(FAILED(d->SetVertexShader(vertex))||FAILED(d->SetPixelShader(it->second.shader))||FAILED(d->SetPixelShaderConstantF(saved.constantBase,bank,2))){saved.restore();return nativeDraw();}
         ++draws;return nativeDraw();
     }
 };

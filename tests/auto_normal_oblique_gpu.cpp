@@ -10,6 +10,11 @@ static void logf(const char* f,...){va_list a;va_start(a,f);std::vprintf(f,a);st
 #include "auto_bump_renderer.h"
 #include "world_compiled_shaders.h"
 #include "patch_terrain_shadow_coverage.h"
+#include "forwarders.h"
+struct MaterialDepthMeter:ForwardIDirect3DDevice9 {
+    unsigned reads=0;explicit MaterialDepthMeter(IDirect3DDevice9* d):ForwardIDirect3DDevice9(d){}
+    HRESULT STDMETHODCALLTYPE GetDepthStencilSurface(IDirect3DSurface9** s)override{++reads;return real->GetDepthStencilSurface(s);}
+};
 #ifdef NORTHLIGHT_MATERIAL_MIRROR
 #include "device_mirror.h"
 struct MaterialAllocationMeter:ForwardIDirect3DDevice9 {
@@ -107,7 +112,7 @@ int main(int argc,char** argv){
         ok(d->SetVertexShaderConstantF(0,constants,256));
     };
     if(samples){ok(d->SetDepthStencilSurface(nullptr));ok(d->SetRenderTarget(0,output));ok(d->StretchRect(drawSurface,nullptr,baseSurface,nullptr,D3DTEXF_NONE));ok(d->SetRenderTarget(0,drawSurface));ok(d->SetDepthStencilSurface(zbuffer));referenceDepth([&]{return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,floor,sizeof(V));});}
-    NorthlightAutoBump bump(d);NorthlightQuality::Settings settings;settings.autoBump=1;settings.autoBumpStrength=100;bump.configure(settings);bump.setProjection(xs,ys,-1);
+    MaterialDepthMeter captureDevice(d);NorthlightAutoBump bump(&captureDevice);NorthlightQuality::Settings settings;settings.autoBump=1;settings.autoBumpStrength=100;bump.configure(settings);bump.setProjection(xs,ys,-1);
 #ifdef NORTHLIGHT_MATERIAL_MIRROR
     bump.setConstantEpochSource(&extension,[](void* context,NorthlightConstantEpoch::Stamp& stamp){return static_cast<ExtensionDevice*>(context)->constantStamp(stamp);});
 #endif
@@ -168,7 +173,15 @@ int main(int argc,char** argv){
             ok(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0xff18212d,1,0));
         }
 #endif
-        bump.capture(vs,native,!indexed,&geometry);
+        const auto depthReads=captureDevice.reads;bump.capture(vs,native,!indexed,&geometry);
+        if(mode==2){
+#ifdef NORTHLIGHT_MATERIAL_STATE_BASELINE
+            assert(captureDevice.reads-depthReads==1+unsigned(samples!=0));
+#else
+            assert(captureDevice.reads-depthReads==1);
+#endif
+            std::printf("MATERIAL_DEPTH_READS samples=%u reads=%u\n",unsigned(samples),captureDevice.reads-depthReads);
+        }
         {IDirect3DSurface9 *rt=nullptr,*ds=nullptr;ok(d->GetRenderTarget(0,&rt));ok(d->GetDepthStencilSurface(&ds));assert(rt==drawSurface&&ds==zbuffer);drop(rt);drop(ds);assert(bump.active()&&bump.texture());}
         if((mode>=5&&mode<8||mode==9)){assert(bump.geometryPrepared());if(!unsafeSkin)assert(bump.geometryPrimitives()>2);std::printf("DISPLACEMENT_PREPARED mode=%u triangles=%u\n",mode,bump.geometryPrimitives());}
         if(mode==8)assert(!bump.geometryPrepared());

@@ -156,13 +156,13 @@ public:
     float distance()const{return range;}
     template<class Draw> HRESULT nativeDraw(Draw draw,IDirect3DVertexShader9* provenVS=nullptr,IDirect3DPixelShader9* provenPS=nullptr){
         if(!active()||pomControl[0]<=0||(modes[0]!=2&&modes[1]!=2&&modes[2]!=2&&modes[3]!=2))return draw();
-        IDirect3DVertexShader9* vs=nullptr;IDirect3DPixelShader9* ps=nullptr;
-        if((!provenVS&&FAILED(d->GetVertexShader(&vs)))||(!provenPS&&FAILED(d->GetPixelShader(&ps)))){drop(vs);drop(ps);return draw();}
-        auto v=vertices.find(provenVS?provenVS:vs);auto p=pixels.find(provenPS?provenPS:ps);drop(vs);drop(ps);
+        struct BoundShaders {IDirect3DVertexShader9* vs=nullptr;IDirect3DPixelShader9* ps=nullptr;~BoundShaders(){drop(vs);drop(ps);}} bound;
+        if((!provenVS&&FAILED(d->GetVertexShader(&bound.vs)))||(!provenPS&&FAILED(d->GetPixelShader(&bound.ps))))return draw();
+        auto v=vertices.find(provenVS?provenVS:bound.vs);auto p=pixels.find(provenPS?provenPS:bound.ps);
         if(v==vertices.end()||p==pixels.end()||v->second.kind>4||modes[v->second.kind-1]!=2)return draw();
         const unsigned domain=v->second.kind,material=p->second;
         if((domain==1&&material>2)||(domain==2&&material!=3&&material!=5&&material!=6)||(domain==3&&material!=4))return draw();
-        return parallax.draw(v->first,v->second.patched,material,projection,pomControl,draw,domain==4);
+        return parallax.draw(v->first,v->second.patched,material,projection,pomControl,draw,domain==4,bound.vs,bound.ps);
     }
     void registerVertex(IDirect3DVertexShader9* original,std::uint64_t hash,const DWORD* code,size_t count,unsigned modelFamily=0){
         auto found=vertices.find(original);if(found!=vertices.end()){drop(found->second.patched);vertices.erase(found);}
@@ -194,7 +194,7 @@ public:
            !rs(D3DRS_ALPHAFUNC,alphaFunc)||!rs(D3DRS_STENCILENABLE,stencil)||!z||zfunc==D3DCMP_ALWAYS||stencil)return;
         D3DVIEWPORT9 viewport{};if(FAILED(d->GetViewport(&viewport))||viewport.X||viewport.Y||viewport.Width<8||viewport.Height<8)return;
         for(unsigned i=1;i<4;++i){IDirect3DSurface9* extra=nullptr;d->GetRenderTarget(i,&extra);if(extra){drop(extra);return;}}
-        IDirect3DSurface9* depth=nullptr;if(FAILED(d->GetDepthStencilSurface(&depth))||!depth)return;drop(depth);
+        if(FAILED(d->GetDepthStencilSurface(&saved.depth))||!saved.depth)return;
         for(auto& state:saved.states)if(FAILED(d->GetRenderState(state.key,&state.value)))return;
         const auto& s=saved.states;
         const bool alpha=s[1].value!=0;
@@ -208,9 +208,8 @@ public:
         const bool multisampled=desc.MultiSampleType!=D3DMULTISAMPLE_NONE;
         if(multisampled){
             if(!captureDepth&&!check(d->CreateDepthStencilSurface(width,heightPixels,D3DFMT_D24S8,D3DMULTISAMPLE_NONE,0,FALSE,&captureDepth,nullptr),"material depth"))return;
-            if(FAILED(d->GetDepthStencilSurface(&saved.depth))||!saved.depth)return;
             saved.states[0].replay=saved.states[0].value;
-        }
+        }else drop(saved.depth);
         if(domain<=4&&modes[domain-1]==3&&geometry)displacement.prepare(original,domain,material,*geometry);
         if(!height){
             const std::uint64_t bytes=std::uint64_t(width)*heightPixels*8;

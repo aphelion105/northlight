@@ -99,6 +99,7 @@ test_m2_shader_families_client.py
 test_m2_visibility.py
 test_material_geometry.py
 test_material_ray_work.py
+test_material_replay_state.py
 test_memmap_diagnostics.py
 test_memory_admission_probe.py
 test_memory_guard.py
