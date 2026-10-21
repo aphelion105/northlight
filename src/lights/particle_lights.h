@@ -58,6 +58,13 @@ public:
     enum State {BlendOp,AlphaTest,ColorWrite,Depth,Sampler,Projection,States};
     std::array<unsigned,States> stateWhy{};
     void refuse(State why){++stateMiss;++stateWhy[why];}
+    // Diagnostics: textures particle draws missed, kept until the PARTICLELIGHT line reads them.
+    struct TextureMiss {const void* key=nullptr;unsigned seen=0,width=0,height=0,format=0,levels=0,pool=0,usage=0,type=0;};
+    std::array<TextureMiss,8> textureMisses{};unsigned textureMissCount=0;
+    void missTexture(const TextureMiss& miss){
+        for(unsigned i=0;i<textureMissCount;++i)if(textureMisses[i].key==miss.key)return;
+        if(textureMissCount<textureMisses.size())textureMisses[textureMissCount++]=miss;
+    }
     void reset(){count_=previousCount_=trackCount_=outputCount=immediateCount=0;nextFrame();}
     void nextFrame(){count_=0;draws=backgroundDraws=accepted=deferred=triangles=points=dropped=0;shaderMiss=textureMiss=bufferMiss=stateMiss=geometryMiss=0;stateWhy={};}
     bool takeDraw(bool particle=true){if(draws>=DrawLimit||(!particle&&backgroundDraws>=DrawLimit/2)){++dropped;return false;}++draws;if(!particle)++backgroundDraws;return true;}

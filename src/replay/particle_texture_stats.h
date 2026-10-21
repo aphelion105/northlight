@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -40,8 +41,11 @@ struct View {
         return true;
     }
 };
+// Diagnostics: what the cache last saw of a texture that a particle draw then missed.
+enum Seen : std::uint8_t {Never,Held,Large,Evicted,Invalidated,Partial,Failed,Unsupported,Released,SeenKinds};
 struct Counters {
-    std::uint64_t uploads=0,retained=0,decoded=0,hits=0,misses=0,missEvicted=0,missLarge=0,partial=0,failed=0,unsupported=0,large=0,invalidations=0,evictions=0,releases=0;
+    std::array<std::uint64_t,SeenKinds> missWhy{};
+    std::uint64_t uploads=0,retained=0,decoded=0,hits=0,misses=0,partial=0,failed=0,unsupported=0,large=0,invalidations=0,evictions=0,releases=0;
 };
 class Cache {
 public:
@@ -60,9 +64,10 @@ private:
         bool held()const{return !pixels.empty()||!source.empty();}
     };
     std::array<Entry,MaxEntries> entries_{};
-    // Diagnostics only: why a lookup missed (PTEX missEvicted/missLarge).
-    std::array<const void*,1024> evicted_{},large_{};unsigned evictedNext_=0,largeNext_=0;
-    void evicted(const Entry& e){evicted_[evictedNext_++%evicted_.size()]=e.raw;}
+    // Diagnostics only (PTEX misses=...): the last event per texture key, bounded.
+    std::unordered_map<const void*,Seen> history_;Seen lastMiss_=Never;
+    void note(const void* raw,Seen seen){if(!raw)return;if(history_.size()>=65536)history_.clear();history_[raw]=seen;}
+    void evicted(const Entry& e){note(e.raw,Evicted);}
     std::size_t bytes_=0;
     std::uint64_t serial_=0,clock_=0;
     Entry* find(const void* raw){if(raw)for(auto& e:entries_)if(e.raw==raw)return &e;return nullptr;}
@@ -82,11 +87,12 @@ private:
     }
 public:
     Counters counts;
+    Seen lastMiss()const{return lastMiss_;}
     std::size_t bytes()const{return bytes_;}
     unsigned size()const{unsigned n=0;for(const auto& e:entries_)n+=e.held();return n;}
-    void clear(){for(auto& e:entries_){drop(e);e={};}}
-    void erase(const void* raw,const void* owner=nullptr){if(auto* e=find(raw))if(!owner||e->owner==owner){drop(*e);*e={};++counts.releases;}}
-    void invalidate(const void* raw){if(auto* e=find(raw)){drop(*e);++e->revision;++counts.invalidations;}}
+    void clear(){for(auto& e:entries_){drop(e);e={};}history_.clear();}
+    void erase(const void* raw,const void* owner=nullptr){if(auto* e=find(raw))if(!owner||e->owner==owner){drop(*e);*e={};++counts.releases;note(raw,Released);}}
+    void invalidate(const void* raw){note(raw,Invalidated);if(auto* e=find(raw)){drop(*e);++e->revision;++counts.invalidations;}}
     // Other full mips do not change this mip. Partial/failed writes invalidate
     // the texture conservatively. Only a later complete CPU upload can restore it.
     void upload(const void* raw,const void* owner,unsigned width,unsigned height,unsigned mip,unsigned d3dFormat,
@@ -94,31 +100,30 @@ public:
         if(!enabled.load(std::memory_order_relaxed)){invalidate(raw);return;}
         ++counts.uploads;
         try{
-        if(!success){++counts.failed;invalidate(raw);return;}
-        if(!whole){++counts.partial;invalidate(raw);return;}
+        if(!success){++counts.failed;invalidate(raw);note(raw,Failed);return;}
+        if(!whole){++counts.partial;invalidate(raw);note(raw,Partial);return;}
         if(auto* old=find(raw))if(old->owner!=owner)erase(raw);
         NorthlightActorTexture::Format decodedFormat;
-        if(!raw||!owner||!format(d3dFormat,decodedFormat)){++counts.unsupported;invalidate(raw);return;}
-        if(!width||!height||width>MaxDimension||height>MaxDimension){++counts.large;if(!find(raw))large_[largeNext_++%large_.size()]=raw;return;}
+        if(!raw||!owner||!format(d3dFormat,decodedFormat)){++counts.unsupported;invalidate(raw);note(raw,Unsupported);return;}
+        if(!width||!height||width>MaxDimension||height>MaxDimension){++counts.large;if(!find(raw))note(raw,Large);return;}
         auto* previous=find(raw);
         if(previous&&previous->owner==owner&&previous->held()&&mip>previous->mip){++previous->revision;return;}
-        if(!source||!sourceBytes||sourceBytes>std::size_t(MaxDimension)*MaxDimension*16){++counts.failed;invalidate(raw);return;}
+        if(!source||!sourceBytes||sourceBytes>std::size_t(MaxDimension)*MaxDimension*16){++counts.failed;invalidate(raw);note(raw,Failed);return;}
         Entry& e=slot(raw,owner);drop(e);
         while(bytes_+sourceBytes>PixelBudget){auto* victim=oldest(&e);if(!victim)break;evicted(*victim);drop(*victim);*victim={};++counts.evictions;}
         e.source.assign(static_cast<const std::uint8_t*>(source),static_cast<const std::uint8_t*>(source)+sourceBytes);e.pitch=pitch;
-        e.width=width;e.height=height;e.mip=mip;e.format=d3dFormat;++e.revision;e.used=++clock_;bytes_+=e.source.size();++counts.retained;
+        e.width=width;e.height=height;e.mip=mip;e.format=d3dFormat;++e.revision;e.used=++clock_;bytes_+=e.source.size();++counts.retained;note(raw,Held);
         }catch(...){++counts.failed;invalidate(raw);}
     }
     bool lookup(const void* raw,View& out){
         out={};if(!enabled.load(std::memory_order_relaxed))return false;auto* e=find(raw);if(!e||!e->held()){++counts.misses;
-            if(std::find(evicted_.begin(),evicted_.end(),raw)!=evicted_.end())++counts.missEvicted;
-            else if(std::find(large_.begin(),large_.end(),raw)!=large_.end())++counts.missLarge;
+            const auto seen=history_.find(raw);lastMiss_=seen!=history_.end()?seen->second:Never;++counts.missWhy[lastMiss_];
             return false;}
         if(e->pixels.empty()){
             NorthlightActorTexture::Format decodedFormat;std::vector<std::uint8_t> decoded;
             try{if(!format(e->format,decodedFormat)||!NorthlightActorTexture::decode(e->source.data(),e->source.size(),e->width,e->height,e->pitch,decodedFormat,decoded))decoded.clear();}
             catch(...){decoded.clear();}
-            if(decoded.empty()){++counts.failed;++counts.misses;invalidate(raw);return false;}
+            if(decoded.empty()){++counts.failed;++counts.misses;invalidate(raw);note(raw,Failed);lastMiss_=Failed;++counts.missWhy[Failed];return false;}
             bytes_-=e->source.size();std::vector<std::uint8_t>().swap(e->source);
             while(bytes_+decoded.size()>PixelBudget){auto* victim=oldest(e);if(!victim)break;evicted(*victim);drop(*victim);*victim={};++counts.evictions;}
             e->rgbaHash=14695981039346656037ull;for(auto byte:decoded){e->rgbaHash^=byte;e->rgbaHash*=1099511628211ull;}
