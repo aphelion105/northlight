@@ -48,7 +48,6 @@ struct Presentation {
     const char* ineligible()const{
         if(!settings.requested)return "disabled";if(!stream)return "command-stream-disabled";if(!dxvk)return "backend-not-dxvk";
         if(!logical.hDeviceWindow)return "missing-window";if(!logical.Windowed)return "windowed-mode-required";
-        if(logical.MultiSampleType!=D3DMULTISAMPLE_NONE)return "msaa-enabled";
         if(logical.BackBufferFormat!=D3DFMT_X8R8G8B8&&logical.BackBufferFormat!=D3DFMT_A8R8G8B8)return "unsupported-legacy-format";
         return nullptr;
     }

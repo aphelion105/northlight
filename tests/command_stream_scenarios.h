@@ -1213,6 +1213,19 @@ static void equivalence(int steps,std::uint64_t seed,unsigned framesAhead=1){
 }
 // Direct replay: a proxy caches the backend object behind its inner right when the create/derive/first-sight bound it, a proxy without one
 // replays through the Device, and the cache follows Reset.
+static void effectHookReplay(){
+    for(bool direct:{false,true}){
+        std::thread::id replay;StreamDevice::Options opt;opt.threadStart=[&]{replay=std::this_thread::get_id();};
+        Rig rig(true,opt,direct);const auto syncs=get(rig.core().q.stats.syncCalls);
+        const unsigned calls=rig.target->renderTargetCalls;
+        CHECK(rig.dev->SetRenderTarget(0,nullptr)==D3D_OK);
+        CHECK(get(rig.core().q.stats.syncCalls)==syncs); // recording the HDR-sensitive setter stays asynchronous
+        rig.sync();CHECK(rig.target->renderTargetCalls==calls+1);
+        CHECK(rig.target->renderTargetThread==replay&&replay!=std::this_thread::get_id());
+        rig.finish();checkClean();
+    }
+    std::puts("effect hooks: SetRenderTarget reaches Device on replay thread with direct dispatch on/off PASS");
+}
 static void directReplayRaw(){
     if(!kDirectReplay)return;
     gTrace.clear();Rig rig(true);auto& s=rig.core().q.stats;IDirect3DDevice9* d=rig.dev;
@@ -1241,7 +1254,7 @@ static void directReplayRaw(){
     ProxyBase* kid=ProxyBase::of(bb);CHECK(rawOk(kid));
     D3DPRESENT_PARAMETERS pp{};pp.BackBufferWidth=800;pp.BackBufferHeight=600;pp.BackBufferFormat=(D3DFORMAT)22;pp.BackBufferCount=2;lvl->Release();
     CHECK(d->Reset(&pp)==D3D_OK);CHECK(rawOk(kid));   // raw follows the re-derived back buffer (an address compare with the old raw is not valid: the allocator may reuse it)
-    d->SetTexture(0,tex);d->SetRenderTarget(0,bb);rig.sync();   // calls on the re-derived back buffer are direct again
+    d->SetTexture(0,tex);d->SetRenderTarget(0,bb);rig.sync();   // raw identities follow Reset; render targets retain the HDR handler
     d->SetRenderTarget(0,nullptr);
     plain->Release();cube->Release();tex->Release();vb->Release();ib->Release();vs->Release();ps->Release();dc->Release();
     rig.finish();checkClean();
@@ -2080,7 +2093,7 @@ static void textureReadbackTable(){
     }
 }
 static void streamTests(bool threadsOnly){
-    layoutIsolation();replayTimingAccounting();diagnosticsOffSkipsAudit();idlePollWakes();
+    layoutIsolation();replayTimingAccounting();diagnosticsOffSkipsAudit();idlePollWakes();effectHookReplay();
     lifetimeAndIdentity();pressureKeepsShadows();syncStormDetector();stateKnownUnknown();locksPreserveBytes();staticBufferShadows();dynamicBufferShadows();largeBufferAllowance();twoLargeBuffers();adaptiveShadowCap();shadowCap();queriesAndSyncCensus();eventQueryBatch();occlusionFlushLocal(true);occlusionFlushLocal(false);resetAndShutdown();directReplayRaw();redundantFiltering();renderTargetResetsViewport();textureShadows();textureExpressReadback();textureReadbackDiagnostics();textureExpressBehind();textureReadbackTable();statsLine();childrenOutliveTheDevice();queryProbeAndDeadQuery();initFailureFallback();cursorHandling();nestedSyncInPump();testCooperativeLevelLocal(1);testCooperativeLevelLocal(3);upDrawsAndBackpressure();snapshotTriggers();snapshotPoolNotExhausted();memoryPressureRelease();impossibleBlockIsRefusedAtOnce();smallStagedLocksUseScratch();
     framesAheadPacing();textureShadowSpares();frameSkipping();frameSkipReleasesPresentWait();   // 0.3.200 (frame skip)
     zeroCopyRenames();zeroCopyRingBudget();zeroCopyAdaptiveRing();zeroCopyRetire();zeroCopyPumpedLock(0);zeroCopyPumpedLock(1);

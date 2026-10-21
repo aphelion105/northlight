@@ -6,6 +6,7 @@ import os
 import platform
 from pathlib import Path
 import shutil
+import struct
 import subprocess
 import sys
 
@@ -23,6 +24,7 @@ def main():
     for name in ('dxvk2', 'dxvk3', 'captured-ui', 'output'):
         parser.add_argument('--' + name, required=True, type=Path)
     parser.add_argument('--prebuilt', type=Path, help='Use the supplied x86 oracle and existing compiled shaders, without a compiler.')
+    parser.add_argument('--modes', nargs='+', default=['raw', 'hdr', 'hdr-small', 'hdr-triple', 'hdr-graded', 'sdr', 'stream-off', 'hdr-msaa2', 'hdr-msaa4', 'hdr-msaa2-triple', 'hdr-msaa4-graded', 'hdr-msaa2-4k'])
     args = parser.parse_args()
     output = args.output.resolve()
     # Keep every DLL/config/log in dedicated test directories, including reruns.
@@ -50,6 +52,9 @@ def main():
             for stage in ('PS', 'VS'):
                 compiler.compile(fp.TESTS / 'hdr_fixture.hlsl', 'HdrFixture' + stage,
                                  f'{stage.lower()}_{major}_0', shaders / f'HdrFixture{stage}-{major}.bin')
+    # Match the game's large-address-aware process for full-resolution readbacks.
+    data = bytearray(harness.read_bytes()); flags = struct.unpack_from('<I', data, 0x3c)[0]+22
+    struct.pack_into('<H', data, flags, struct.unpack_from('<H', data, flags)[0] | 0x20); harness.write_bytes(data)
     wine = None if os.name == 'nt' else str(fp.wine_root() / 'bin/wine')
     def winpath(path):
         return str(path) if os.name == 'nt' else 'Z:' + str(path)
@@ -66,10 +71,10 @@ def main():
         runtime.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(dll, runtime)
         (folder / 'dxvk.conf').write_text('dxvk.allowFse = False\n')
-        for mode in ('raw', 'hdr', 'hdr-small', 'hdr-triple', 'hdr-graded', 'sdr', 'stream-off'):
+        for mode in args.modes:
             (folder / 'northlight-renderer.ini').write_text(
                 f'[Renderer]\nBackend={backend}\nExperimentalHDR={int(mode != "sdr")}\nHDRPaperWhite=203\nHDRUIWhite=160\n'
-                + ('HDRContrast=1.35\nHDRExposure=-1.25\n' if mode == 'hdr-graded' else ''))
+                + ('HDRContrast=1.35\nHDRExposure=-1.25\n' if mode in ('hdr-graded','hdr-msaa4-graded') else ''))
             (folder / 'northlight-quality.ini').write_text(
                 f'[Quality]\nPreset=Performance\nCommandStream={int(mode != "stream-off")}\nStreamFramesAhead=1\nStreamFrameSkip=0\nDiagnostics=0\nRenderProfile=0\n'
                 'SpellLayer=0\nEquipmentLights=0\nGI=0\nActorShadows=0\nContactAO=0\nNameMask=0\nWeather=0\n')
@@ -82,13 +87,14 @@ def main():
             if wine:
                 command.insert(0, wine)
             if mode != 'raw':
-                command.append('--proxy' if mode == 'hdr' else '--small-proxy' if mode == 'hdr-small' else '--triple-proxy' if mode == 'hdr-triple' else '--graded-proxy' if mode == 'hdr-graded' else '--sdr-proxy')
+                command.append('--'+mode.removeprefix('hdr-')+'-proxy' if mode.startswith('hdr-msaa') else '--proxy' if mode == 'hdr' else '--small-proxy' if mode == 'hdr-small' else '--triple-proxy' if mode == 'hdr-triple' else '--graded-proxy' if mode == 'hdr-graded' else '--sdr-proxy')
             result = subprocess.run(command, cwd=folder, env=run_env, text=True, capture_output=True, timeout=60)
             evidence = {'backend': version, 'mode': mode, 'backend_sha256': sha(dll),
                         'exit_code': result.returncode, 'stdout': result.stdout, 'stderr': result.stderr}
             if mode != 'raw':
                 log = (folder / 'northlight-renderer.log').read_text(errors='replace')
                 evidence['hdr_status'] = [line for line in log.splitlines() if line.startswith('HDR experimental')]
+                evidence['reset_status'] = [line for line in log.splitlines() if line.startswith('Reset HRESULT=')]
                 shutil.copy2(folder / 'northlight-renderer.log', folder / f'{mode}-northlight.log')
             dxvk_log = (folder / 'hdr_integration_gpu_d3d9.log').read_text(errors='replace')
             evidence['scRGB_presented'] = 'Color space:  VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT' in dxvk_log
@@ -99,8 +105,10 @@ def main():
             print(version, mode, result.stdout.strip(), flush=True)
             if result.returncode:
                 raise SystemExit(result.stderr or result.stdout or f'GPU oracle failed: {result.returncode}')
-            if evidence['hdr_presented'] != (mode in ('raw', 'hdr', 'hdr-small', 'hdr-triple', 'hdr-graded')):
+            if evidence['hdr_presented'] != (mode == 'raw' or mode.startswith('hdr')):
                 raise SystemExit('DXVK presentation color space differs from the requested mode.')
+            if mode.startswith('hdr') and (not evidence['reset_status'] or any('HDR=1' not in line for line in evidence['reset_status'])):
+                raise SystemExit('HDR did not remain active across Reset.')
     print('PASS: ' + str(output / 'validation.json'))
 
 
