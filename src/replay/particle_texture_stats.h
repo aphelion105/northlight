@@ -90,6 +90,7 @@ public:
     void clear(){for(auto& e:entries_){drop(e);e={};}}
     void erase(const void* raw,const void* owner=nullptr){if(auto* e=find(raw))if(!owner||e->owner==owner){drop(*e);*e={};++counts.releases;}}
     void invalidate(const void* raw){if(auto* e=find(raw)){drop(*e);++e->revision;++counts.invalidations;}}
+    std::uint64_t version(const void* raw){if(!Enabled->load(std::memory_order_relaxed))return 0;auto* e=find(raw);if(e)e->used=++clock_;return e?e->lifetime*UINT64_C(0x9e3779b97f4a7c15)^e->revision:0;}
     bool copy(const void* source,const void* destination,const void* owner)noexcept{try{
         if(source==destination)return false;auto* original=find(source);if(!original||original->pixels.empty()){invalidate(destination);return false;}
         // Copy before slot/eviction can invalidate the borrowed source.

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# northlight-test: requires=zig,windows-exe
 """Run production context gates: an unfogged actor must not hide later world fog."""
 from pathlib import Path
 import os

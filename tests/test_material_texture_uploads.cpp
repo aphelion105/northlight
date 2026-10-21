@@ -11,6 +11,12 @@ int main(){
     assert(c.updateRect(key(2),key(20),512,512,0,21,patch.data(),patch.size(),64*4,64,64,128,128,true));assert(c.lookup(key(2),view)&&view.revision>revision&&view.rgbaHash!=sourceHash);
     const auto* pixel=view.rgba+(20*128+20)*4;assert(pixel[0]==10&&pixel[1]==40&&pixel[2]==220);assert(view.rgba[0]==160);
     assert(!c.updateRect(key(2),key(20),512,512,0,21,patch.data(),patch.size(),64*4,65,64,129,128,true));assert(!c.lookup(key(2),view)&&c.lookup(key(1),view)&&view.rgbaHash==sourceHash);
-    for(unsigned i=3;i<200;++i){c.copy(key(1),key(i),key(i+1000));assert(c.bytes()<=Cache::PixelBudget&&c.size()<=Cache::MaxEntries);}
+    // Losing CPU pixels must not erase the revision: two later GPU writes are distinct cache invalidations.
+    const auto invalidated=c.version(key(2));assert(invalidated);
+    c.invalidate(key(2));assert(c.version(key(2))!=invalidated&&!c.lookup(key(2),view));
+    const auto written=c.version(key(2));c.invalidate(key(2));assert(c.version(key(2))!=written);
+    enabled.store(false);assert(!c.version(key(2)));enabled.store(true);
+    c.erase(key(2));assert(!c.version(key(2)));
+    for(unsigned i=3;i<200;++i){assert(c.version(key(1)));assert(c.copy(key(1),key(i),key(i+1000)));assert(c.bytes()<=Cache::PixelBudget&&c.size()<=Cache::MaxEntries);}
     c.clear();assert(c.bytes()==0);std::puts("MATERIAL_TEXTURE_UPLOAD_PASS atlas_downsample copy_revision aligned_partial_update unaligned_invalidation bounded_eviction");
 }
