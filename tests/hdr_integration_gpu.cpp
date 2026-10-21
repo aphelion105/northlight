@@ -218,6 +218,28 @@ int main(int argc,char** argv){
             }
             ++cases;
         }
+        // Alternate complete frames without rebinding RT0. Present must return
+        // rendering to the logical target, including SwapChain::Present.
+        ok(d->SetRenderTarget(0,back));ok(d->SetViewport(&offscreenVp));
+        ok(d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE));ok(d->SetVertexShader(vs[1]));ok(d->SetPixelShader(ps[1]));
+        ok(d->SetRenderState(D3DRS_ZENABLE,FALSE));ok(d->SetRenderState(D3DRS_ZWRITEENABLE,FALSE));
+        ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));ok(d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_SRCALPHA));ok(d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_INVSRCALPHA));
+        for(unsigned frame=0;frame<12;++frame){
+            const unsigned red=frame%2?204:51;ok(d->Clear(0,nullptr,D3DCLEAR_TARGET,D3DCOLOR_XRGB(red,102,153),1,0));
+            float input[]={frame%2?.15f:.7f,.35f,.15f,.5f};UiVertex quad[4];vertices(quad,input);
+            ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(UiVertex)));ok(d->EndScene());
+            float actual[4];pixel(d,back,readback,actual,true);
+            const double background[]={red/255.,102/255.,153/255.};
+            const double luminance=std::max(.2126*decode(background[0])+.7152*decode(background[1])+.0722*decode(background[2]),.000001);
+            const double worldGrade=graded?std::pow(luminance/.18,.35)*std::exp2(-1.25):1;
+            const double alpha=input[3]*texel[3];
+            for(unsigned c=0;c<3;++c){const double expected=decode(background[c])*worldGrade*(203./80)*(1-alpha)+decode(input[c]*texel[c])*2*alpha;
+                const double error=std::fabs(actual[c]-expected);maximum=std::max(maximum,error);
+                if(!std::isfinite(actual[c])||error>.002){if(failures++<4)std::printf("FAIL repeated HDR frame=%u channel=%u got=%.8f want=%.8f\n",frame,c,actual[c],expected);}}
+            if(frame%2){IDirect3DSwapChain9* primary=nullptr;ok(d->GetSwapChain(0,&primary));ok(primary->Present(nullptr,nullptr,nullptr,nullptr,0));primary->Release();}
+            else ok(d->Present(nullptr,nullptr,nullptr,nullptr));
+            ++cases;
+        }
         referenceRead->Release();reference->Release();readback->Release();back->Release();
     }
     IDirect3DSurface9* resetBack=nullptr;ok(d->GetBackBuffer(0,0,D3DBACKBUFFER_TYPE_MONO,&resetBack));ok(d->SetRenderTarget(0,resetBack));resetBack->Release();

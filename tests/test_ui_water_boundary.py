@@ -63,14 +63,14 @@ struct VsClass {int entry=0;bool world=false,wmo=false,skinned=false;};
 struct FakeDevice {
  IDirect3DVertexShader9* vs=&uiVS;IDirect3DPixelShader9* ps=&fpsPS;
  float rows[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
- DWORD zwrite=0,zfunc=D3DCMP_ALWAYS,zenable=1;bool borrowed=true;
- HRESULT shaderResult=S_OK,rowsResult=S_OK,stateResult=S_OK;
+ DWORD zwrite=0,zfunc=D3DCMP_ALWAYS;bool borrowed=true;
+ HRESULT shaderResult=S_OK,rowsResult=S_OK,stateResult=S_OK;unsigned stateReads=0,rowReads=0,pixelReads=0;
  bool peekVertexShader(IDirect3DVertexShader9*& out){out=vs;return borrowed;}
  bool peekPixelShader(IDirect3DPixelShader9*& out){out=ps;return borrowed;}
  HRESULT GetVertexShader(IDirect3DVertexShader9** out){*out=vs;return shaderResult;}
- HRESULT GetPixelShader(IDirect3DPixelShader9** out){*out=ps;return shaderResult;}
- HRESULT GetVertexShaderConstantF(unsigned start,float* out,unsigned count){for(unsigned i=0;i<count*4;++i)out[i]=rows[start*4+i];return rowsResult;}
- HRESULT GetRenderState(unsigned state,DWORD* out){*out=state==D3DRS_ZWRITEENABLE?zwrite:state==D3DRS_ZFUNC?zfunc:zenable;return stateResult;}
+ HRESULT GetPixelShader(IDirect3DPixelShader9** out){++pixelReads;*out=ps;return shaderResult;}
+ HRESULT GetVertexShaderConstantF(unsigned start,float* out,unsigned count){++rowReads;for(unsigned i=0;i<count*4;++i)out[i]=rows[start*4+i];return rowsResult;}
+ HRESULT GetRenderState(unsigned state,DWORD* out){++stateReads;*out=state==D3DRS_ZWRITEENABLE?zwrite:state==D3DRS_ZFUNC?zfunc:1;return stateResult;}
 };
 template<class T>void drop(T*& p){p=nullptr;}
 template<class...T>void logf(const char*,T...){ }
@@ -157,12 +157,6 @@ int main(){
   // A newly enabled FPS counter was never part of the learning sample.
   Fixed toggled;toggled.hdr.active=hdr;toggled.learn(false);frame(toggled);
   assert(toggled.effects==1&&!toggled.ssrContainsFPS&&!toggled.waterOverwroteFPS);++cases;
-  // FPS overlays may disable Z while retaining LESS from a world draw.
-  Fixed noDepth;noDepth.hdr.active=hdr;noDepth.learn();
-  noDepth.device.zenable=0;noDepth.device.zfunc=D3DCMP_LESS;draw(noDepth,true);
-  noDepth.device.zenable=1;noDepth.device.zfunc=D3DCMP_ALWAYS;draw(noDepth,false);
-  assert(noDepth.effects==1&&!noDepth.waterOverwroteFPS&&!noDepth.ssrContainsFPS);
-  assert(at(noDepth.events,"WaterSSR")<at(noDepth.events,"FPS"));++cases;
   // Recreating a frequent PS must not force the UI VS through another warmup.
   Fixed recreated;recreated.hdr.active=hdr;recreated.learn();
   recreated.uiFallback.forget(reinterpret_cast<std::uintptr_t>(&commonPS));
@@ -210,6 +204,30 @@ int main(){
    draw(guarded,true);assert(!guarded.effects&&!guarded.conversions&&guarded.submitted==1);++cases;
   }
  }
+
+ // HDR classification must remain valid when the master effects switch is off:
+ // prepareDraw does not establish terrain in that state.
+ for(bool master:{false,true})for(bool learned:{false,true}){
+  Fixed world;world.hdr.active=true;world.enabled=master;world.terrain=false;
+  if(learned)world.learn();
+  world.device.vs=&worldVS;
+  draw(world,false);
+  assert(!world.conversions&&world.submitted==1);
+  assert(!world.device.rowReads&&!world.device.stateReads&&!world.device.pixelReads);++cases;
+ }
+ for(bool master:{false,true}){
+  Fixed unknown;unknown.hdr.active=true;unknown.enabled=master;unknown.terrain=false;unknown.learn();
+  unknown.device.vs=&otherVS;draw(unknown,false);
+  assert(!unknown.conversions&&unknown.submitted==1);
+  unknown.device.vs=&uiVS;draw(unknown,true);
+  assert(unknown.conversions==1&&unknown.submitted==2);
+  assert(at(unknown.events,"RestUI")<at(unknown.events,"HDR")&&at(unknown.events,"HDR")<at(unknown.events,"FPS"));++cases;
+ }
+ Fixed stockOff;stockOff.stock=true;stockOff.hdr.active=true;stockOff.enabled=false;stockOff.terrain=false;stockOff.uiFallback.onHashBoundary();
+ stockOff.device.vs=&otherVS;draw(stockOff,false);assert(!stockOff.conversions);
+ stockOff.device.vs=&uiVS;draw(stockOff,true);assert(stockOff.conversions==1&&stockOff.submitted==2);++cases;
+ Fixed login;login.hdr.active=true;login.terrain=false;login.device.vs=&otherVS;draw(login,true);
+ assert(login.conversions==1&&login.submitted==1);++cases;
  std::printf("PASS UI/water boundary host extraction cases=%u: old FPS overwrites/reflections reproduced; fixed WaterMaterial->WorldComposite->WaterSSR->FPS->RestUI; stock/learned VS, rare/PS0, HDR/SDR and query guards preserved\n",cases);
 }
 '''

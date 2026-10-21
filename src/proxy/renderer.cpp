@@ -314,7 +314,7 @@ class Device final : public GuardedMirrorDevice {
     NorthlightHdr::Presentation hdr;NorthlightHdr::Color hdrColor;
     IDirect3DSurface9* hdrLegacyBack=nullptr;IDirect3DSurface9* hdrPresentBack=nullptr;
     std::vector<IDirect3DSurface9*> hdrLegacyExtra;
-    bool hdrUiPhase=false;unsigned hdrFailuresLogged=0;
+    bool hdrUiPhase=false;unsigned hdrFailuresLogged=0,hdrLogicalCopies=0;
     const char* hdrLastBoundary=nullptr;unsigned hdrBoundaryLogs=0,hdrDeferredLogs=0,hdrDeferredFrame=~0u;
     NorthlightStateBlockPool stateBlocks;
     static void mirrorEscape(void* context,const char* reason)noexcept{static_cast<DeviceMirror*>(context)->disable(reason);}
@@ -529,20 +529,26 @@ private:
         return hr;
     }
     const char* hdrBoundarySource(){
-        IDirect3DVertexShader9* vs=nullptr;IDirect3DPixelShader9* ps=nullptr;
-        const bool vsBorrowed=ext->peekVertexShader(vs),psBorrowed=ext->peekPixelShader(ps);
-        const HRESULT vsHr=vsBorrowed?S_OK:ext->GetVertexShader(&vs),psHr=psBorrowed?S_OK:ext->GetPixelShader(&ps);
-        if(FAILED(vsHr)||FAILED(psHr)){
-            if(!vsBorrowed)drop(vs);if(!psBorrowed)drop(ps);
+        IDirect3DVertexShader9* vs=nullptr;
+        const bool borrowed=ext->peekVertexShader(vs);
+        const HRESULT hr=borrowed?S_OK:ext->GetVertexShader(&vs);
+        if(FAILED(hr)){
+            if(!borrowed)drop(vs);
             if(hdrDeferredLogs<8&&hdrDeferredFrame!=frame){hdrDeferredFrame=frame;++hdrDeferredLogs;
-                logf("HDR boundary deferred frame=%u reason=shader-query-failed VS=0x%08lx PS=0x%08lx",frame,(unsigned long)vsHr,(unsigned long)psHr);}
+                logf("HDR boundary deferred frame=%u reason=shader-query-failed VS=0x%08lx",frame,(unsigned long)hr);}
             return nullptr;
         }
         const VsClass& vc=classifyVs(vs);
+        // Once the world UI is known, keep that proof even with effects off.
+        // prepareDraw does not establish terrain while the master switch is off.
         const char* source=(vc.entry&kTagMask)==2?"stock-ui":
-            uiFallback.isBoundary(reinterpret_cast<std::uintptr_t>(vs),reinterpret_cast<std::uintptr_t>(ps))?"learned-ui":
-            !terrain&&!vc.world&&!vc.wmo&&!vc.skinned&&!(vc.entry&kWaterTag)?"screen-space":nullptr;
-        if(!vsBorrowed)drop(vs);if(!psBorrowed)drop(ps);return source;
+            uiFallback.isBoundary(reinterpret_cast<std::uintptr_t>(vs),0)?"learned-ui":
+            !terrain&&!uiFallback.armed()&&!uiFallback.disarmed()&&!vc.world&&!vc.wmo&&!vc.skinned&&!(vc.entry&kWaterTag)?"screen-space":nullptr;
+        if(!borrowed)drop(vs);return source;
+    }
+    void hdrLogicalCopy(const char* operation,IDirect3DSurface9* source,IDirect3DSurface9* destination){
+        if(!hdr.active||!hdrUiPhase||!diagnostics()||(source!=hdrLegacyBack&&destination!=hdrLegacyBack))return;
+        if(++hdrLogicalCopies<=8)logf("HDR logical copy after UI frame=%u operation=%s readLegacy=%u writeLegacy=%u count=%u",frame,operation,unsigned(source==hdrLegacyBack),unsigned(destination==hdrLegacyBack),hdrLogicalCopies);
     }
     void hdrBoundaryLog(const char* boundary,unsigned boundaryFrame,bool effectsApplied,bool worldSeen){
         if(hdrBoundaryLogs<12||(hdrBoundaryLogs<64&&hdrLastBoundary!=boundary)){
@@ -554,7 +560,7 @@ private:
         if(!hdr.active||hdrUiPhase)return S_FALSE;
         if(!hdrLegacyBack||!hdrPresentBack)return E_FAIL;
         D3DSURFACE_DESC desc{};HRESULT hr=hdrLegacyBack->GetDesc(&desc);
-        if(SUCCEEDED(hr)&&!resources(desc.Width,desc.Height,desc.Format))hr=E_FAIL;
+        if(SUCCEEDED(hr)&&!resources(desc.Width,desc.Height,desc.Format,true))hr=E_FAIL;
         bool ownScene=false;if(SUCCEEDED(hr)&&present)ownScene=SUCCEEDED(ext->BeginScene());
         if(SUCCEEDED(hr)){ExtensionDevice::RawScope raw(*ext);hr=hdrColor.convertWorld(ext,hdrLegacyBack,hdrPresentBack,scene,sceneSurface,desc.Width,desc.Height,hdr.settings.paperWhite,hdr.settings.maxNits,&stateBlocks,hdr.settings.contrast,hdr.settings.exposure);}
         if(ownScene)ext->EndScene();
@@ -570,18 +576,11 @@ private:
         if(!hdr.active)return draw();
         bool linear=false;
         extensionWork("HDR UI preparation",[&]{
-            if(!hdrUiPhase){
+            if(!hdrUiPhase)if(const char* boundary=hdrBoundarySource()){
                 D3DSURFACE_DESC desc{};float rows[16];DWORD zwrite=1,zfunc=0,z=1;
                 if(SUCCEEDED(ext->GetRenderState(D3DRS_ZWRITEENABLE,&zwrite))&&SUCCEEDED(ext->GetRenderState(D3DRS_ZFUNC,&zfunc))&&
                    SUCCEEDED(ext->GetRenderState(D3DRS_ZENABLE,&z))&&SUCCEEDED(ext->GetVertexShaderConstantF(0,rows,4))&&NorthlightUiBoundary::accepts(zwrite!=0,rows,zfunc==D3DCMP_ALWAYS,z!=0)&&fullViewport(desc,nullptr,true,false)&&hdrBackTarget()){
-                    // c0..3 can also be an affine world transform. In-world HDR
-                    // waits for the same verified UI VS as the effect boundary.
-                    if(const char* boundary=hdrBoundarySource()){
-                        if(!applied){renderEffects();spellReplay();}hdrBegin(false,boundary);
-                    }else if(hdrDeferredLogs<8&&hdrDeferredFrame!=frame){
-                        hdrDeferredFrame=frame;++hdrDeferredLogs;
-                        logf("HDR boundary deferred frame=%u reason=unverified-world-ui applied=%u terrain=%u",frame,unsigned(applied),unsigned(terrain));
-                    }
+                    if(!applied){renderEffects();spellReplay();}hdrBegin(false,boundary);
                 }
             }
             linear=hdrUiPhase&&hdrBackTarget();
@@ -624,7 +623,7 @@ private:
         if (!failed) logf("DISABLED: %s failed HRESULT=0x%08lx", stage, (unsigned long)hr);
         failed = true; return true;
     }
-    bool resources(UINT w, UINT h, D3DFORMAT format) {
+    bool resources(UINT w, UINT h, D3DFORMAT format, bool colorOnly=false) {
         // DXVK 3's 1x depth+stencil RESZ copy can leave INTZ unchanged (proved
         // with a nonzero sentinel). DF24 copies depth alone, which is all our
         // snapshots consume; NameMask still uses the original world stencil.
@@ -636,22 +635,27 @@ private:
         const D3DFORMAT intz=(D3DFORMAT)MAKEFOURCC('I','N','T','Z'),df24=(D3DFORMAT)MAKEFOURCC('D','F','2','4');
         const D3DFORMAT depthFormat=!worldDepthDescKnown&&depthSnapshotFormat!=D3DFMT_UNKNOWN?depthSnapshotFormat
             :NorthlightBackend::isPackagedDxvk(selectedBackend)&&!df24Refused&&worldDepthDescKnown&&worldDepthDesc.MultiSampleType==D3DMULTISAMPLE_NONE?df24:intz;
-        // Method switches replace shaders while keeping the existing scene/depth targets.
-        const DWORD* aoContactShaders[]={kAoContactBloomShader,kHdaoContactBloomShader,kHbaoPlusContactBloomShader,kGtaoContactBloomShader};
-        if (!aoPS && error(ext->CreatePixelShader(kAoShader, &aoPS), "AO shader")) return false;
-        if (!aoContactBloomPS && error(ext->CreatePixelShader(aoContactShaders[aoMethod], &aoContactBloomPS), "AO contact bloom shader")) return false;
-        if (!aoBlurPS && error(ext->CreatePixelShader(kAoBlurShader, &aoBlurPS), "AO blur shader")) return false;
-        if (!contactBloomPS && error(ext->CreatePixelShader(kContactBloomShader, &contactBloomPS), "contact bloom shader")) return false;
-        if (!compositePS && error(ext->CreatePixelShader(kCompositeShader, &compositePS), "composite shader")) return false;
-        if (sceneSurface && aoSurface && aoRawSurface && depthTex && w == width && h == height && format == sceneFormat && depthFormat == depthSnapshotFormat) return true;
+        if(!colorOnly){
+            // Method switches replace shaders while keeping the existing scene/depth targets.
+            const DWORD* aoContactShaders[]={kAoContactBloomShader,kHdaoContactBloomShader,kHbaoPlusContactBloomShader,kGtaoContactBloomShader};
+            if (!aoPS && error(ext->CreatePixelShader(kAoShader, &aoPS), "AO shader")) return false;
+            if (!aoContactBloomPS && error(ext->CreatePixelShader(aoContactShaders[aoMethod], &aoContactBloomPS), "AO contact bloom shader")) return false;
+            if (!aoBlurPS && error(ext->CreatePixelShader(kAoBlurShader, &aoBlurPS), "AO blur shader")) return false;
+            if (!contactBloomPS && error(ext->CreatePixelShader(kContactBloomShader, &contactBloomPS), "contact bloom shader")) return false;
+            if (!compositePS && error(ext->CreatePixelShader(kCompositeShader, &compositePS), "composite shader")) return false;
+        }
+        if (sceneSurface && w == width && h == height && format == sceneFormat && (colorOnly || (aoSurface && aoRawSurface && depthTex && depthFormat == depthSnapshotFormat))) return true;
         // Resource replacement must not invalidate this frame's retained depth surface.
-        drop(sceneSurface); drop(scene);
-        if (w!=width || h!=height || depthFormat!=depthSnapshotFormat) {
+        if (w!=width || h!=height || format!=sceneFormat) {drop(sceneSurface); drop(scene);}
+        if (w!=width || h!=height || (!colorOnly && depthFormat!=depthSnapshotFormat)) {
             rainMrtUnbind();rainDepthOk=rainMaskCleared=rainMaskDrawn=false;rainMaskFailed=false;
             drop(aoSurface); drop(ao); drop(aoRawSurface); drop(aoRaw); drop(depthTex); captured=false;drop(rainMaskMS);drop(rainMaskSurface);drop(rainMask);drop(rainDepth); /* 0.3.202 (rain): the mask follows the effect size */
         }
-        width = w; height = h; sceneFormat = format;depthSnapshotFormat=depthFormat;
-        if (error(ext->CreateTexture(w, h, 1, D3DUSAGE_RENDERTARGET, format, D3DPOOL_DEFAULT, &scene, nullptr), "scene texture")) return false;
+        width = w; height = h; sceneFormat = format;
+        if (!scene && error(ext->CreateTexture(w, h, 1, D3DUSAGE_RENDERTARGET, format, D3DPOOL_DEFAULT, &scene, nullptr), "scene texture")) return false;
+        if (!sceneSurface && error(scene->GetSurfaceLevel(0, &sceneSurface), "scene surface")) return false;
+        if(colorOnly)return true; // HDR conversion needs no depth snapshot, AO targets or effect shaders.
+        depthSnapshotFormat=depthFormat;
         if (!depthTex) {
             HRESULT hr=ext->CreateTexture(w, h, 1, D3DUSAGE_DEPTHSTENCIL, depthSnapshotFormat, D3DPOOL_DEFAULT, &depthTex, nullptr);
             // A DXVK without the DF formats (d3d9.supportDFFormats off) refuses DF24: INTZ, not the effects disabled.
@@ -664,7 +668,6 @@ private:
         }
         if (!ao && error(ext->CreateTexture(w/2, h/2, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A16B16G16R16F, D3DPOOL_DEFAULT, &ao, nullptr), "half resolution AO texture")) return false;
         if (!aoRaw && error(ext->CreateTexture(w/2, h/2, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A16B16G16R16F, D3DPOOL_DEFAULT, &aoRaw, nullptr), "half resolution raw AO texture")) return false;
-        if (error(scene->GetSurfaceLevel(0, &sceneSurface), "scene surface")) return false;
         if (!aoSurface && error(ao->GetSurfaceLevel(0, &aoSurface), "AO surface")) return false;
         if (!aoRawSurface && error(aoRaw->GetSurfaceLevel(0, &aoRawSurface), "raw AO surface")) return false;
         logf("Resources %ux%u, AO %ux%u, format=%u depthSnapshot=%s sourceMSAA=%u", w,h,w/2,h/2,unsigned(format),depthSnapshotFormat==(D3DFORMAT)MAKEFOURCC('D','F','2','4')?"DF24":"INTZ",unsigned(worldDepthDesc.MultiSampleType));
@@ -2319,7 +2322,7 @@ public:
     HRESULT STDMETHODCALLTYPE CreateCubeTexture(UINT EdgeLength, UINT Levels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool, IDirect3DCubeTexture9** ppCubeTexture, HANDLE* pSharedHandle) override{Guard mirrorLock(mirrorState.gate);HRESULT hr=ext->CreateCubeTexture(EdgeLength, Levels, Usage, Format, Pool, ppCubeTexture, pSharedHandle);if(SUCCEEDED(hr)){NorthlightReplayDrawState::noteTextureFormat(Format);weatherDetect.forget(static_cast<IDirect3DBaseTexture9*>(*ppCubeTexture));waterMaterials.forget(*ppCubeTexture); /* 0.3.198 (rain): address reuse */mirrorResources.wrap(ppCubeTexture);}return hr;}
     HRESULT STDMETHODCALLTYPE CreateRenderTarget(UINT Width, UINT Height, D3DFORMAT Format, D3DMULTISAMPLE_TYPE MultiSample, DWORD MultisampleQuality, WINBOOL Lockable, IDirect3DSurface9** ppSurface, HANDLE* pSharedHandle) override{Guard mirrorLock(mirrorState.gate);HRESULT hr=ext->CreateRenderTarget(Width, Height, Format, MultiSample, MultisampleQuality, Lockable, ppSurface, pSharedHandle);if(SUCCEEDED(hr)){mirrorResources.wrap(ppSurface);}return hr;}
     HRESULT STDMETHODCALLTYPE CreateDepthStencilSurface(UINT Width, UINT Height, D3DFORMAT Format, D3DMULTISAMPLE_TYPE MultiSample, DWORD MultisampleQuality, WINBOOL Discard, IDirect3DSurface9** ppSurface, HANDLE* pSharedHandle) override{Guard mirrorLock(mirrorState.gate);{const D3DFORMAT upgraded=D3DFORMAT(NorthlightStream::upgradedDepthFormat(unsigned(Format)));if(upgraded!=Format){Format=upgraded;static bool logged=false;if(!logged){logged=true;logf("NAMEMASK depth upgraded D24X8->D24S8 where=CreateDepthStencilSurface");}}} /* 0.3.212 (task 32): depthUpgrade is set only with NameMask on, as on the StreamDevice path */HRESULT hr=ext->CreateDepthStencilSurface(Width, Height, Format, MultiSample, MultisampleQuality, Discard, ppSurface, pSharedHandle);if(SUCCEEDED(hr)){mirrorResources.wrap(ppSurface);}return hr;}
-    HRESULT STDMETHODCALLTYPE UpdateSurface(IDirect3DSurface9 *src_surface, const RECT *src_rect, IDirect3DSurface9 *dst_surface, const POINT *dst_point) override{Guard mirrorLock(mirrorState.gate);rainMrtUnbind(); /* 0.3.202 (rain mask MRT) */IDirect3DSurface9* rawSource=mirrorResources.unwrap(src_surface);IDirect3DSurface9* rawDestination=mirrorResources.unwrap(dst_surface);if(spellOn)spellCopy(rawSource,rawDestination);const HRESULT result=ext->UpdateSurface(rawSource,src_rect,rawDestination,dst_point);NorthlightMaterialHeight::copiedSurface(rawSource,src_rect,rawDestination,dst_point,SUCCEEDED(result));return result;}
+    HRESULT STDMETHODCALLTYPE UpdateSurface(IDirect3DSurface9 *src_surface, const RECT *src_rect, IDirect3DSurface9 *dst_surface, const POINT *dst_point) override{Guard mirrorLock(mirrorState.gate);rainMrtUnbind(); /* 0.3.202 (rain mask MRT) */IDirect3DSurface9* rawSource=mirrorResources.unwrap(src_surface);IDirect3DSurface9* rawDestination=mirrorResources.unwrap(dst_surface);hdrLogicalCopy("UpdateSurface",rawSource,rawDestination);if(spellOn)spellCopy(rawSource,rawDestination);const HRESULT result=ext->UpdateSurface(rawSource,src_rect,rawDestination,dst_point);NorthlightMaterialHeight::copiedSurface(rawSource,src_rect,rawDestination,dst_point,SUCCEEDED(result));return result;}
     HRESULT STDMETHODCALLTYPE UpdateTexture(IDirect3DBaseTexture9* pSourceTexture, IDirect3DBaseTexture9* pDestinationTexture) override{Guard mirrorLock(mirrorState.gate);rainMrtUnbind(); /* 0.3.202 (rain mask MRT) */IDirect3DBaseTexture9* rawDestination=mirrorResources.unwrap(pDestinationTexture);if(spellOn)spellTextureWrite(static_cast<void*>(rawDestination));auto* rawSource=mirrorResources.unwrap(pSourceTexture);const HRESULT result=ext->UpdateTexture(rawSource,rawDestination);NorthlightMaterialHeight::copiedTexture(rawSource,rawDestination,SUCCEEDED(result));return result;}
     HRESULT STDMETHODCALLTYPE GetRenderTargetData(IDirect3DSurface9* pRenderTarget, IDirect3DSurface9* pDestSurface) override{Guard mirrorLock(mirrorState.gate);rainMrtUnbind(); /* 0.3.202 (rain mask MRT) */IDirect3DSurface9* rawSource=mirrorResources.unwrap(pRenderTarget);IDirect3DSurface9* rawDestination=mirrorResources.unwrap(pDestSurface);
         // Explicit FP16 captures see the HDR image; ordinary SDR readbacks keep the legacy format.
@@ -2333,10 +2336,10 @@ public:
                 if(FAILED(hr)){drop(resolved);return hr;}rawSource=resolved;
             }
         }}
-        if(spellOn)spellCopy(rawSource,rawDestination);const HRESULT hr=ext->GetRenderTargetData(rawSource,rawDestination);drop(resolved);return hr;}
+        hdrLogicalCopy("GetRenderTargetData",rawSource,rawDestination);if(spellOn)spellCopy(rawSource,rawDestination);const HRESULT hr=ext->GetRenderTargetData(rawSource,rawDestination);drop(resolved);return hr;}
     HRESULT STDMETHODCALLTYPE GetFrontBufferData(UINT iSwapChain, IDirect3DSurface9* pDestSurface) override{Guard mirrorLock(mirrorState.gate);return ext->GetFrontBufferData(iSwapChain, mirrorResources.unwrap(pDestSurface));}
-    HRESULT STDMETHODCALLTYPE StretchRect(IDirect3DSurface9 *src_surface, const RECT *src_rect, IDirect3DSurface9 *dst_surface, const RECT *dst_rect, D3DTEXTUREFILTERTYPE filter) override{Guard mirrorLock(mirrorState.gate);rainMrtUnbind(); /* 0.3.202 (rain mask MRT) */IDirect3DSurface9* rawSource=mirrorResources.unwrap(src_surface);IDirect3DSurface9* rawDestination=mirrorResources.unwrap(dst_surface);if(spellOn)spellCopy(rawSource,rawDestination);return ext->StretchRect(rawSource, src_rect, rawDestination, dst_rect, filter);}
-    HRESULT STDMETHODCALLTYPE ColorFill(IDirect3DSurface9 *surface, const RECT *rect, D3DCOLOR color) override{Guard mirrorLock(mirrorState.gate);rainMrtUnbind(); /* 0.3.202 (rain mask MRT) */IDirect3DSurface9* rawSurface=mirrorResources.unwrap(surface);if(spellOn)spellCopy(nullptr,rawSurface);return ext->ColorFill(rawSurface, rect, color);}
+    HRESULT STDMETHODCALLTYPE StretchRect(IDirect3DSurface9 *src_surface, const RECT *src_rect, IDirect3DSurface9 *dst_surface, const RECT *dst_rect, D3DTEXTUREFILTERTYPE filter) override{Guard mirrorLock(mirrorState.gate);rainMrtUnbind(); /* 0.3.202 (rain mask MRT) */IDirect3DSurface9* rawSource=mirrorResources.unwrap(src_surface);IDirect3DSurface9* rawDestination=mirrorResources.unwrap(dst_surface);hdrLogicalCopy("StretchRect",rawSource,rawDestination);if(spellOn)spellCopy(rawSource,rawDestination);return ext->StretchRect(rawSource, src_rect, rawDestination, dst_rect, filter);}
+    HRESULT STDMETHODCALLTYPE ColorFill(IDirect3DSurface9 *surface, const RECT *rect, D3DCOLOR color) override{Guard mirrorLock(mirrorState.gate);rainMrtUnbind(); /* 0.3.202 (rain mask MRT) */IDirect3DSurface9* rawSurface=mirrorResources.unwrap(surface);hdrLogicalCopy("ColorFill",nullptr,rawSurface);if(spellOn)spellCopy(nullptr,rawSurface);return ext->ColorFill(rawSurface, rect, color);}
     HRESULT STDMETHODCALLTYPE CreateOffscreenPlainSurface(UINT Width, UINT Height, D3DFORMAT Format, D3DPOOL Pool, IDirect3DSurface9** ppSurface, HANDLE* pSharedHandle) override{Guard mirrorLock(mirrorState.gate);HRESULT hr=ext->CreateOffscreenPlainSurface(Width, Height, Format, Pool, ppSurface, pSharedHandle);if(SUCCEEDED(hr)){mirrorResources.wrap(ppSurface);}return hr;}
     HRESULT STDMETHODCALLTYPE SetRenderTarget(DWORD RenderTargetIndex, IDirect3DSurface9* pRenderTarget) override{Guard mirrorLock(mirrorState.gate);auto* target=mirrorResources.unwrap(pRenderTarget);if(hdr.active&&hdrUiPhase&&RenderTargetIndex==0&&target==hdrLegacyBack)target=hdrPresentBack;return ext->SetRenderTarget(RenderTargetIndex,target);}
     HRESULT STDMETHODCALLTYPE GetRenderTarget(DWORD RenderTargetIndex, IDirect3DSurface9** ppRenderTarget) override{Guard mirrorLock(mirrorState.gate);HRESULT hr=ext->GetRenderTarget(RenderTargetIndex, ppRenderTarget);if(SUCCEEDED(hr)&&ppRenderTarget&&*ppRenderTarget){if(hdr.active&&RenderTargetIndex==0&&*ppRenderTarget==hdrPresentBack){(*ppRenderTarget)->Release();*ppRenderTarget=hdrLegacyBack;hdrLegacyBack->AddRef();}mirrorResources.wrap(ppRenderTarget);}return hr;}
@@ -2689,6 +2692,7 @@ public:
         key12=k12;key10=k10;
         uiFallbackEndFrame();
         if(frame==1||(frame%600==0&&diagnostics()))logf("frame=%u applied=%u terrainShaders=%u uiShaders=%u projectionRejects=%u terrainThisFrame=%d depth=%d draws=%u missingVS=%u terrainDraws=%u terrainShadowDraws=%u viewportRejects=%u depthRejects=%u uiDraws=%u uiAfterTerrain=%u uiFallback=%u uiFallbackState=%c",frame,appliedFrames,matchedTerrain,matchedUI,projectionRejects,terrain,captured,drawCalls,missingVS,terrainDraws,terrainShadowDraws,viewportRejects,depthRejects,uiDraws,uiAfterTerrain,uiFallbackBoundaries,uiFallback.disarmed()?'d':uiFallback.armed()?'a':'l');
+        if(hdr.active&&diagnostics()&&frame%600==0)logf("HDR state frame=%u uiPhase=%u effectsEnabled=%u patched=%u rejected=%u logicalCopiesAfterUI=%u",frame,unsigned(hdrUiPhase),unsigned(enabled),hdrColor.patched,hdrColor.rejected,hdrLogicalCopies);
         // The address-space sweep is asynchronous; the render thread only compares
         // its result. Trims run below, after clearFrame(), at the frame boundary.
         bool memoryTrim=false;int memoryCaps=-1,memoryWorld=-1; /* -1 unchanged, 0 full, 1 half (stream, replay copies); memoryWorld: 1 in any pressure episode (the world's caches and pool shrink, no lock cost), 0 after recovery */
