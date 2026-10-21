@@ -22,6 +22,9 @@ installed art layer). Steps, each on the previous step's archive, as the HD chai
    (build_weather_textures), replacing the client's; generated, no client bytes. Plus the client's
    weather mist puffs resampled to 1:4 (the renderer's signature to skip them in rain)
 
+Reviewed world-model emitters are supplied by world-cache/lights. Do not also inject
+them into patch-Z: the client's native lighting would add the same source a second time.
+
 Steps 2-6 hold the HD sky cleanup: a step whose HD sky ids, profiles or textures are absent is
 skipped with the reason (build_lighting.Skip). Mulgore and Stormwind find their profiles through
 their Light rows and apply their bands without the HD sky (the step records sky_clone_skipped), so
@@ -133,6 +136,7 @@ def build(client, output, world_cache, locale=None, letter='z', archives='all'):
         textures.update(build_weather_textures.mist_textures(assets.read, decode_blp))   # 0.3.199 (rain mist)
         payload.update(textures)
         report['steps'].append({'step': 'weather_textures', 'files': sorted(textures)})
+        report['steps'].append({'step': 'world_model_lights', 'skipped': 'Rendered from world-cache/lights'})
         last = None   # the payload is no longer a step's archive
         unchanged = sorted(n for n, data in payload.items() if n.lower() in assets.providers and assets.read(n) == data)
         payload = {n: data for n, data in payload.items() if n not in unchanged}

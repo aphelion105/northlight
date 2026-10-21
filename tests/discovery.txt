@@ -49,6 +49,7 @@ test_dxvk3_lock_flags.py
 test_effect_switches.py
 test_effects_buckets.py
 test_effects_cost_report.py
+test_emitter_patch.py
 test_emitter_pin_report.py
 test_entrypoints_isolated.py
 test_expired_world_geometry.py
@@ -66,6 +67,7 @@ test_gpu_budget.py
 test_gpu_budget_wiring.py
 test_horizon_haze.py
 test_index_working_set.py
+test_install_delivery.py
 test_install_world_cache.py
 test_instance_map_name_filter.py
 test_instance_maps.py
@@ -80,6 +82,7 @@ test_live_terrain_gpu.py
 test_local_fog_batching.py
 test_local_fog_profile.py
 test_local_ini.py
+test_local_light_batches.py
 test_local_light_selection.py
 test_log_format_literals.py
 test_log_rotation.py
