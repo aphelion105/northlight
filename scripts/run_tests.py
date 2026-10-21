@@ -48,14 +48,14 @@ def probe(name):
         missing = [c for c in ('clang++', 'c++') if not shutil.which(c)]
         return f'host C++ compiler not on PATH: {", ".join(missing)}' if missing else None
     if name == 'libcxx':
-        if sys.platform != 'linux':
+        if sys.platform == 'darwin':
             return None
         if not shutil.which('clang++'):
             return 'clang++ with LLVM libc++ is not on PATH'
         output = fp.out() / 'requirements'
         output.mkdir(parents=True, exist_ok=True)
         result = subprocess.run(['clang++', '-stdlib=libc++', '-x', 'c++', '-', '-o', str(output / 'libcxx-probe')],
-                                input='#include <vector>\nint main(){std::vector<int> v;return v.size();}\n',
+                                input='#include <vector>\n#ifndef _LIBCPP_VERSION\n#error LLVM libc++ required\n#endif\nint main(){std::vector<int> v;return v.size();}\n',
                                 capture_output=True, text=True)
         return None if result.returncode == 0 else 'LLVM libc++ headers/runtime missing (install libc++-dev and libc++abi-dev)'
     if name == 'lua51':
