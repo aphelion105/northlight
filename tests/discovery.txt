@@ -51,6 +51,7 @@ test_detail_doodad_shadow.py
 test_dev_tuning_build.py
 test_device_mirror.py
 test_diagnostics_switch.py
+test_displacement_state_reuse.py
 test_dll_memcmp.py
 test_draw_gates.py
 test_draw_snapshot.py
