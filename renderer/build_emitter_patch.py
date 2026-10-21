@@ -28,6 +28,8 @@ UNLIT = re.compile(r'off|broken|unlit|extinguish|unlight|firewood|burntout')
 FLAME = re.compile(r'flame|fire[0-9_.]|firelick|fireball')
 GLOW = re.compile(r'glow|flame|lampglass|candle|lantern|flare')
 NOT_BULB = re.compile(r'ground|ring|reflect|smoke|shadow')
+CANDLE = re.compile(r'candle|candel')
+CANDLE_LIGHT = {'intensity': .7, 'start': 1., 'end': 5.}
 
 
 def particle_points(assets, blob):
@@ -138,11 +140,15 @@ def profile(assets, path, blob, catalog):
     rgb = tuple(sum(p[1][k] for p in points) / len(points) for k in range(3))
     peak = max(rgb)
     rgb = tuple(x / peak for x in rgb)
+    basis = '; '.join(sorted({p[2] for p in points}))
+    # A candle lights its table or alcove, not the room: the WMO's own lights already do.
+    if CANDLE.search(path.rsplit('\\', 1)[-1]):
+        return {'position': position, 'rgb': rgb, **CANDLE_LIGHT, 'family': 'wotlk_candle', 'position_basis': basis}
     flame = bool(fire) or bool(re.search(r'torch|brazier|fire', path.rsplit('\\', 1)[-1]))
     return {'position': position, 'rgb': rgb, 'intensity': 1.15,
             'start': 1., 'end': 14. if flame else 10.,
             'family': 'wotlk_fire' if flame else 'wotlk_lantern',
-            'position_basis': '; '.join(sorted({p[2] for p in points}))}
+            'position_basis': basis}
 
 
 def build(assets, output, catalog_path, reviewed_only=False):
