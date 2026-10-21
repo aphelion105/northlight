@@ -1,7 +1,7 @@
 #pragma once
 // 0.3.203 (task 17): fallback effect boundary for clients whose UI shaders were replaced by another module (font mods). Pure logic, no D3D/Windows.
-// The stock boundary is found by shader hash; when it never fires although the world draws, this learns the (VS,PS) pair that draws the screen-space
-// UI after the world (ZWRITE off, full-target viewport, ortho rows with c3=(0,0,0,1)) and uses it as the boundary. Identities are shader object pointers.
+// The stock boundary is found by shader hash; otherwise frequent screen-space draws establish the UI VS. Once learned, rare font/background PS
+// variants must trigger the same boundary too. The host still checks ZWRITE, projection, depth function and the full back-buffer target.
 #include <cstddef>
 #include <cstdint>
 #include <cmath>
@@ -34,7 +34,7 @@ public:
     // A stock client sees the hash boundary in its first world frame, so its draws never reach the fallback's state reads (or fullViewport's log).
     bool collecting()const{return armedNow||(!disarmedForever&&streak>=kWarmFrames);}
     void noteCandidate(std::uintptr_t vs,std::uintptr_t ps){
-        if(!learning())return;
+        if(!vs||!learning())return;
         for(unsigned i=0;i<used;++i)if(slots[i].vs==vs&&slots[i].ps==ps){++frame[i];return;}
         if(used>=kSlots){++dropped;return;}
         frame[used]=1;slots[used++]=Pair{vs,ps,0};
@@ -57,16 +57,12 @@ public:
         if(++streak<kArmFrames)return Result::None;
         return tryArm()?Result::Armed:Result::None;
     }
-    bool isBoundary(std::uintptr_t vs,std::uintptr_t ps)const{
-        if(!armedNow||vs!=lVs)return false;
-        for(unsigned i=0;i<lPsCount;++i)if(lPs[i]==ps)return true;
-        return false;
-    }
+    bool isBoundary(std::uintptr_t vs,std::uintptr_t /*ps*/)const{return armedNow&&vs==lVs;}
     void forget(std::uintptr_t obj){
         if(disarmedForever)return;
         if(armedNow){
-            bool hit=obj==lVs;for(unsigned i=0;i<lPsCount;++i)if(lPs[i]==obj)hit=true;
-            if(hit){armedNow=false;streak=lostStreak=0;clearCounts();}
+            if(obj==lVs){armedNow=false;streak=lostStreak=0;clearCounts();}
+            else{unsigned w=0;for(unsigned i=0;i<lPsCount;++i)if(lPs[i]!=obj)lPs[w++]=lPs[i];lPsCount=w;}
             return;
         }
         unsigned w=0;for(unsigned i=0;i<used;++i)if(slots[i].vs!=obj&&slots[i].ps!=obj){frame[w]=frame[i];slots[w++]=slots[i];}

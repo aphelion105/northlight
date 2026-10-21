@@ -8,6 +8,7 @@ test_actor_shadows_wiring.py
 test_actor_texture_worker.py
 test_affected_tests.py
 test_ao_blur.py
+test_ao_fog_capture.py
 test_ao_fold.py
 test_ao_rotation_stripes.py
 test_ao_texel_snap.py
@@ -97,6 +98,7 @@ test_mirror_resources.py
 test_model_index_cache.py
 test_model_replay_pool.py
 test_model_snapshot_cache.py
+test_model_world_context.py
 test_moon_cascade_weight.py
 test_name_mask.py
 test_near_reserve.py
@@ -145,6 +147,7 @@ test_shadow_blob_model.py
 test_shadow_culling_batch.py
 test_shadow_experiment.py
 test_shadow_layer_analysis.py
+test_shadow_paging_memory.py
 test_shadow_pivot.py
 test_shadow_removal_smoothing.py
 test_shadow_shimmer.py
@@ -171,6 +174,7 @@ test_terrain_metadata.py
 test_terrain_reach_fallback.py
 test_terrain_reach_fallback_wiring.py
 test_terrain_shadow_candidates.py
+test_terrain_shadow_coverage.py
 test_terrain_shared_snapshot.py
 test_terrain_snapshot.py
 test_terrain_tracked_cache.py
@@ -203,7 +207,6 @@ test_world_cache_diff.py
 test_world_light_placements.py
 test_world_local_lights.py
 test_world_mesh_pages.py
-test_shadow_paging_memory.py
 test_world_mesh_pages_real.py
 test_world_mesh_plan.py
 test_world_probe_coverage.py
