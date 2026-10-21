@@ -6,11 +6,11 @@
   byte of a table or header, blind to file data outside the tables; a non-MPQ is refused;
 - match(): extra, missing and changed archives are listed; Blizzard's localized archives match by
   name; load_variants() reads a variants folder;
-- the configured client (the dev HD client): its stock view matches a stock variant built from it
+- the configured client: its stock view matches a stock variant built from it
   (the 7 base archives by table hash), its full chain does not, and patch-y and the HD letters are
   listed as the differences; the identity of the stock view and of the base archives does not
-  depend on the locale (enUS against deDE);
-- a client of symlinks to the configured client's stock-view archives plus a synthetic foreign
+  depend on any installed locale;
+- a client of read-only links to the configured client's stock-view archives plus a synthetic foreign
   Data/patch-z.mpq: 'stock' with the default without='z', but 'extra Data/patch-z.mpq' with
   without='' (the caller's verdict for a foreign z); an unreadable archive is a difference;
 - with NORTHLIGHT_STOCK_CLIENT (the stock test client, read only): it identifies as 'stock' against a
@@ -101,7 +101,8 @@ assert list(ci.load_variants(folder)) == ['stock'] and list(ci.load_variants(var
 
 # 3. The configured (dev HD) client.
 client = fp.client_root()
-stock_view = ci.chain_identity(client, 'stock', 'enUS')
+locale = client_archives.detect_locale(client)
+stock_view = ci.chain_identity(client, 'stock', locale)
 assert [e['name'] for e in stock_view['chain'] if e['role'] == 'base'] == \
     ['common.mpq', 'common-2.mpq', 'expansion.mpq', 'lichking.mpq', 'patch.mpq', 'patch-2.mpq', 'patch-3.mpq']
 assert all('table_sha256' in e for e in stock_view['chain'] if e['role'] == 'base')
@@ -117,22 +118,27 @@ if 'patch-y.mpq' in names:                                                      
 else:
     print('the configured client has no patch-y: identified as', result['variant'], result['differences'])
 assert 'patch-z.mpq' not in names and 'patch-<loc>-z.mpq' not in names            # our art layer is left out
-if any(l.lower() == 'dede' for l in client_archives.installed_locales(client)):
-    german = ci.chain_identity(client, 'stock', 'deDE')
-    assert german['chain'] == stock_view['chain'] and german['sha256'] == stock_view['sha256']
-    both = [ci.chain_identity(client, 'all', l)['chain'] for l in ('enUS', 'deDE')]
+for other_locale in client_archives.installed_locales(client):
+    other = ci.chain_identity(client, 'stock', other_locale)
+    assert other['chain'] == stock_view['chain'] and other['sha256'] == stock_view['sha256']
+    both = [ci.chain_identity(client, 'all', l)['chain'] for l in (locale, other_locale)]
     assert [e for e in both[0] if e['role'] == 'base'] == [e for e in both[1] if e['role'] == 'base']
-    print('locale: stock-view identity equal for enUS and deDE; HD locale letters that differ per locale:',
+    print('locale:', locale, other_locale, 'stock identity equal; differing HD locale letters:',
           ', '.join(a['name'] for a, b in zip(*both) if a != b) or 'none')
 
 # 4. A foreign patch-z, and an unreadable archive (symlinks to the client's archives, read only).
 links = out / 'linked-client'
 shutil.rmtree(links, ignore_errors=True)
-(links / 'Data/enUS').mkdir(parents=True)
+(links / 'Data' / locale).mkdir(parents=True)
 (links / 'Wow.exe').write_bytes(b'')
-for source in client_archives.chain(client, 'stock', 'enUS'):
-    rel = source.relative_to(client)
-    os.symlink(source, links / 'Data' / ('enUS/' if len(rel.parts) == 3 else '') / rel.name)
+for source in client_archives.chain(client, 'stock', locale):
+    target = links / source.relative_to(client)
+    try:
+        os.symlink(source, target)
+    except OSError as exc:
+        if getattr(exc, 'winerror', None) != 1314:
+            raise
+        os.link(source, target)   # Read-only archive fixture; no large client copy or symlink privilege needed.
 archive(links / 'Data/patch-z.mpq')                                                # someone else's z
 assert ci.identify(links, None, dev_variant)['variant'] == 'stock'
 foreign = ci.identify(links, None, dev_variant, without='')
