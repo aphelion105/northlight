@@ -103,9 +103,11 @@ private:
     // moon 2). The late disc owns a suppressed body (not "observed", so
     // canFallback stays true); the native glare is suppressed for owned bodies.
     unsigned suppressed=0,suppressedPrevious=0,suppressedDraws=0,suppressedGlares=0,ownFrame=~0u;
-    // A validated previous render() arms replacement at the next native sky
-    // draw. World debug and F10 skip render(): natives return.
-    bool owning()const{return ownFrame+1==frames;}
+    // A current validated planet phase also owns the bodies when looking into
+    // sky with no terrain/model draw to supply a late world context.
+    bool owning()const{return ownFrame==frames||ownFrame+1==frames;}
+    NorthlightCelestial::Context earlySkyHeld;std::string earlySkyMap;DWORD earlySkyAt=0;bool earlySkyOk=false;
+    unsigned claimSkyHeld=0;
     bool check(HRESULT hr,const char* stage){if(SUCCEEDED(hr))return true;if(!failed)logf("CELESTIAL disabled stage=%s hr=%08lx",stage,(unsigned long)hr);failed=true;return false;}
     bool load(){if(loaded)return true;if(failed)return false;loaded=observer.load(root);if(!loaded){failed=true;logf("CELESTIAL native texture identity signature gate unavailable");}return loaded;}
     bool resources(){
@@ -176,14 +178,14 @@ public:
     explicit NorthlightCelestialDiscRenderer(IDirect3DDevice9* device,std::string sourceRoot="world-cache/celestial"):d(device),root(std::move(sourceRoot)){}
     ~NorthlightCelestialDiscRenderer(){reset();}
     NorthlightCelestialDiscRenderer(const NorthlightCelestialDiscRenderer&)=delete;
-    void reset(){for(auto& s:ringSurface)drop(s);for(auto& t:ringVisibility)drop(t);drop(veilPS);ringIndex=0;ringHistory={};ringWritten=false;sunGlare=Glare{};glow=NorthlightCelestialGlow::Hue{};
+    void reset(){earlySkyOk=false;earlySkyMap.clear();for(auto& s:ringSurface)drop(s);for(auto& t:ringVisibility)drop(t);drop(veilPS);ringIndex=0;ringHistory={};ringWritten=false;sunGlare=Glare{};glow=NorthlightCelestialGlow::Hue{};
         for(unsigned i=0;i<2;++i){edge[i]={};haloWritten[i]=false;haloFrame[i]=0;}
         for(auto& t:terrainMask)drop(t);for(auto& t:terrainSurface)drop(t);drop(terrainVS);drop(terrainPS);for(unsigned i=0;i<2;++i){terrainReady[i]=false;terrainGeneration[i]=0;std::fill(terrainCamera[i],terrainCamera[i]+3,0.f);terrainNear[i]=0;}maskFarClip=0;skyBand={};for(auto& h:haloHistory)h={};for(auto& body:haloSurface)for(auto& s:body)drop(s);for(auto& body:haloVisibility)for(auto& t:body)drop(t);drop(haloPS);haloIndex[0]=haloIndex[1]=0;for(auto& p:earlyPlacement)p.valid=false;for(auto& t:texture)drop(t);drop(ps);observer.reset();loaded=false;failed=false;drawn=0;earlyValid=false;drawnEarly=0;earlyWidth=earlyHeight=0;glareRead=false;drawnLate=offscreenOwned=0;suppressed=suppressedPrevious=0;ownFrame=~0u;}
     // Ownership: once the renderer has a validated sky context,
     // the game's own sun/primary-moon billboards are skipped on later frames.
     // Native planet draws are replaced in place, before clouds and opaque
-    // geometry. Mod off (F10) or an invalid CURRENT sky restores native
-    // draws. Missing a terrain/effect pass must not alternate native/custom moon.
+    // geometry. Mod off (F10), debug, an invalid camera or an expired sky read
+    // restores native draws. Missing terrain must not alternate native/custom moon.
     unsigned claimedDraws=0;
     void setIdentityMap(std::function<std::uintptr_t(std::uintptr_t)> map){observer.setIdentityMap(std::move(map));glareRead=false;}
     void endFrame(){suppressedPrevious=suppressed;suppressed=0;terrainReady[0]=terrainReady[1]=false;sunGlare.valid=false;for(auto& p:earlyPlacement)p.valid=false;observer.beginFrame();drawn=0;++frames;drawnEarly=0;drawnLate=offscreenOwned=0;glareRead=false;}
@@ -211,8 +213,7 @@ public:
         IDirect3DBaseTexture9* source=nullptr;int body=-1;
         if(SUCCEEDED(d->GetTexture(0,&source))){body=observer.claimIndex(source);drop(source);}
         if(body<0){++claimNoBody;return false;}
-        if(!owning())return false; // no live late disc (world debug, no sky context): keep the native one
-        if(body==2){++claimSecondary;return true;} // native moon02 is skipped, never redrawn
+        if(body==2){if(!owning())return false;++claimSecondary;return true;} // native moon02 is skipped, never redrawn
         D3DVIEWPORT9 nativeViewport={};
         if(SUCCEEDED(d->GetViewport(&nativeViewport)))
             skyBand.observe(nativeViewport.MinZ,nativeViewport.MaxZ,earlyWorldMaxDepth);
@@ -220,14 +221,20 @@ public:
         // Current camera from the client; without it the native draw stays.
         char map[64]={};NorthlightWorldCamera::Camera camera;NorthlightWorldCamera::Diagnostics why;
         if(!NorthlightWorldCamera::readSkyPhase(map,earlyProjection[2],camera,&why)){++claimCamera;if(earlyFailures++<4)logf("CELESTIAL early draw skipped: camera %s",NorthlightWorldCamera::rejectName(why.reason));return false;}
-        NorthlightCelestial::Context currentSky;const float neutralDirect[3]={1,1,1};
-        if(!NorthlightCelestial::read(camera.camera,neutralDirect,currentSky)){++claimCamera;return false;}
+        NorthlightCelestial::Context currentSky;const float neutralDirect[3]={1,1,1};const DWORD now=GetTickCount();
+        // Match the world's bounded coherent-sky hold. Keep the fresh validated
+        // camera above; never hold a camera or carry sky data across maps.
+        if(NorthlightCelestial::read(camera.camera,neutralDirect,currentSky)){
+            earlySkyHeld=currentSky;earlySkyMap=map;earlySkyAt=now;earlySkyOk=true;
+        }else if(earlySkyOk&&earlySkyMap==map&&DWORD(now-earlySkyAt)<=2000){currentSky=earlySkyHeld;++claimSkyHeld;}
+        else{++claimCamera;return false;}
         NorthlightCelestial::resolveRendererSky(currentSky,neutralDirect);
         NorthlightCelestialProfiles::apply(palette(map,camera.camera),neutralDirect,currentSky);
         IDirect3DSurface9* target=nullptr;D3DSURFACE_DESC desc={};
         if(FAILED(d->GetRenderTarget(0,&target))||!target)return false;
         struct Release {IDirect3DSurface9* p;~Release(){drop(p);}} guard{target};
         if(FAILED(target->GetDesc(&desc))||desc.Width!=earlyWidth||desc.Height!=earlyHeight)return false;
+        ownFrame=frames;
         const NorthlightCelestial::Body* bodies[]={&currentSky.sun,&currentSky.moon};
         if(++claimedDraws==1)logf("CELESTIAL cloudOrder=planet-phase core=early moonHalo=early lateSurface=off skyDepthWrite=off");
         // Both bodies share the native planet phase. A zone may omit one native
@@ -428,7 +435,7 @@ public:
             if(!prepareTerrain(i,disc[i],bodyView)||
                !drawDisc(i,target,width,height,bodyProjection,bodyView,disc[i],bounds[i],depth,water,minZ,maxZ,nearZ,farZ,legacyFog,true,emission,true,skyBand.depth(maxZ)))return false;
         }
-        if(frames%120==0&&NorthlightDiagnostics::enabled())logf("CELESTIAL fallback=%u earlyMask=%u nativeMask=%u identitySnapshots=%u ambiguousBodies=%u claimedNativeDraws=%u claimGate=%u claimNoBody=%u claimCamera=%u claimOffscreen=%u claimDrawn=%u claimSecondary=%u suppressedMask=%u suppressedDraws=%u suppressedGlares=%u",drawn,drawnEarly,observer.mask(),observer.attempts(),observer.ambiguities(),claimedDraws,claimGate,claimNoBody,claimCamera,claimOffscreen,claimDrawn,claimSecondary,suppressed,suppressedDraws,suppressedGlares);
+        if(frames%120==0&&NorthlightDiagnostics::enabled())logf("CELESTIAL fallback=%u earlyMask=%u nativeMask=%u identitySnapshots=%u ambiguousBodies=%u claimedNativeDraws=%u claimGate=%u claimNoBody=%u claimCamera=%u claimOffscreen=%u claimDrawn=%u claimSecondary=%u suppressedMask=%u suppressedDraws=%u suppressedGlares=%u earlySkyHeld=%u",drawn,drawnEarly,observer.mask(),observer.attempts(),observer.ambiguities(),claimedDraws,claimGate,claimNoBody,claimCamera,claimOffscreen,claimDrawn,claimSecondary,suppressed,suppressedDraws,suppressedGlares,claimSkyHeld);
         return drawn!=0||drawnEarly!=0;
     }
     // wrap ring: after render(), before the scene copy, in the same group of
