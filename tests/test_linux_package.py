@@ -38,10 +38,14 @@ class LinuxPackageRules(unittest.TestCase):
                 self.assertIn(b'chmod u+x "$PY"', data)
                 self.assertNotIn(b'BASH_SOURCE', data)   # `sh install.sh` runs dash on Debian/Ubuntu
                 self.assertNotIn(b'read -r -p', data)
-                for shell in ['sh', 'bash'] + (['dash'] if shutil.which('dash') else []):   # macOS ships /bin/dash
-                    self.assertTrue(vp.shell_syntax(shell, data), shell)
                 self.assertIn(b'uname -m', data)   # an ARM computer gets its own message
                 self.assertTrue(vp.allowed(name, 'linux', launchers, {}))
+
+    @unittest.skipUnless(shutil.which('sh') and shutil.which('bash'), 'POSIX sh and bash are needed for launcher syntax checks')
+    def test_launcher_syntax(self):
+        for data in bp.launchers('linux', '0.3.202').values():
+            for shell in ['sh', 'bash'] + (['dash'] if shutil.which('dash') else []):
+                self.assertTrue(vp.shell_syntax(shell, data), shell)
 
     def test_runtime_prune(self):
         keep = ['bin/python3.13', 'bin/python3', 'lib/python3.13/os.py', 'lib/python3.13/ctypes/__init__.py',
