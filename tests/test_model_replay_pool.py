@@ -24,6 +24,7 @@ replay=block('struct Replay {')
 methods='\n'.join(block(needle)for needle in ['std::unique_ptr<Replay> acquireReplay(){','void recycleReplay(Replay* raw){','struct ReplayRecycle {'])
 text=fixture+r'''
 #include <memory>
+#include <cmath>
 #include "shader_constant_usage.h"
 #include "replay_capture_constants.h" /* Replay::constantStamp, releaseResources() (0.3.136) */
 #include "world_gi.h"
