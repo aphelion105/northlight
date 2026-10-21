@@ -1227,7 +1227,8 @@ static void directReplayRaw(){
     // the direct calls count, and the Target saw what it would have through the Device
     const auto d0=get(s.directCalls);
     d->SetRenderState((D3DRENDERSTATETYPE)7,3);d->SetTexture(0,tex);d->SetStreamSource(0,vb,0,20);d->SetIndices(ib);d->SetVertexShader(vs);d->SetPixelShader(ps);d->SetVertexDeclaration(dc);d->SetRenderTarget(1,lvl);rig.sync();
-    CHECK(get(s.directCalls)==d0+8);
+    // SetRenderTarget must visit Device for logical HDR target remapping.
+    CHECK(get(s.directCalls)==d0+7);
     // a dead create has no raw and its calls are not direct (they go through the Device, which drops them)
     IDirect3DCubeTexture9* cube=nullptr;CHECK(d->CreateCubeTexture(8,1,0,(D3DFORMAT)22,(D3DPOOL)1,&cube,nullptr)==D3D_OK);rig.sync();CHECK(!ProxyBase::of(cube)->raw);
     const auto d1=get(s.directCalls);d->SetTexture(5,cube);rig.sync();CHECK(get(s.directCalls)==d1);d->SetTexture(5,nullptr);
