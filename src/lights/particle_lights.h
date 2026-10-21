@@ -20,11 +20,14 @@ inline constexpr unsigned ProbeLimit=128;inline constexpr float MaxDistance=48.f
 // over ~ReleaseSeconds once its particles stop, instead of switching a
 // several-yard light off between frames.
 inline constexpr float ReleaseSeconds=.12f,FollowSeconds=.05f,MinEnergy=.003f;
-struct Sample {float position[3]{},rgb[3]{};};
+struct Sample {float position[3]{},rgb[3]{};float brightest=0;}; // brightest: the strongest sample merged into this one
 struct Cluster {Sample sample;unsigned count=0;};
 inline float peak(const float* rgb){return std::max({rgb[0],rgb[1],rgb[2]});}
+inline float brightness(const Sample& s){return std::max(s.brightest,peak(s.rgb));}
+// One light per place, whatever the hue: a lightning texture's blue, pale blue and
+// white samples made seven stacked lights whose sum followed the particle count.
 inline bool same(const Sample& a,const Sample& b,float radius=1.25f){
-    return NorthlightEquipmentLights::distance2(a.position,b.position)<radius*radius&&NorthlightEquipmentLights::hueClose(a.rgb,b.rgb);
+    return NorthlightEquipmentLights::distance2(a.position,b.position)<radius*radius;
 }
 inline bool triangleIndices(unsigned primitive,std::uint64_t triangle,std::uint64_t (&out)[3]){
     if(triangle>UINT32_MAX)return false;
@@ -43,7 +46,7 @@ struct Draw {
     }
 };
 inline void add(Cluster& cluster,const Sample& sample){
-    const float scale=1.f/float(cluster.count+1);
+    const float scale=1.f/float(cluster.count+1);cluster.sample.brightest=std::max(brightness(cluster.sample),brightness(sample));
     for(unsigned k=0;k<3;++k){cluster.sample.position[k]+=(sample.position[k]-cluster.sample.position[k])*scale;
         cluster.sample.rgb[k]+=(sample.rgb[k]-cluster.sample.rgb[k])*scale;}
     ++cluster.count;
@@ -99,7 +102,8 @@ public:
             for(const auto& l:fixed)if(NorthlightEquipmentLights::distance2(s.position,l.position)<.25f*.25f&&
                 NorthlightEquipmentLights::hueClose(s.rgb,l.diffuse)){duplicate=true;break;}
             if(duplicate)continue;
-            float target[3];for(unsigned k=0;k<3;++k)target[k]=s.rgb[k]*std::min(.7f,1.f/peak(s.rgb));
+            // The average colour at the strongest sample's level (at most 1): not the sum of a draw's particles.
+            float target[3];for(unsigned k=0;k<3;++k)target[k]=s.rgb[k]/peak(s.rgb)*std::min(1.f,.7f*brightness(s));
             Track* track=nullptr;float best=2.f*2.f;
             for(unsigned t=0;t<trackCount_;++t){auto& c=tracks_[t];const float d=NorthlightEquipmentLights::distance2(s.position,c.position);
                 if(!c.seen&&d<best){track=&c;best=d;}} // nearest only: a flash's hue varies from frame to frame

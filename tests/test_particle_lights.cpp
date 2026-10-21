@@ -33,6 +33,10 @@ int main(){
     frame.publish(nullptr,0,fixed,camera,selection);assert(frame.outputCount<=8);
     frame.reset();blue.position[0]=0;frame.observe(blue,camera);native.position[0]=0;fixed.push_back(native);
     frame.publish(nullptr,0,fixed,camera,selection);assert(frame.outputCount==0);
+    // Samples of different hues at one place are one light: the average colour at the strongest sample's level.
+    {fixed.clear();frame.reset();Sample white{{0,0,4},{.5f,.5f,.5f}},pale=blue;pale.rgb[0]=.3f;
+     frame.observe(blue,camera);frame.observe(white,camera);frame.observe(pale,camera);frame.publish(nullptr,0,fixed,camera,selection);
+     assert(frame.outputCount==1&&std::fabs(peak(frame.output[0].diffuse)-.7f*.7f)<1e-5f&&frame.output[0].diffuse[2]>frame.output[0].diffuse[0]);}
     // Continuous frames: a flash shows at once and dims over ~120 ms; a one-frame gap keeps the same light.
     const float dt=1.f/170,goal=blue.rgb[2]*.7f;fixed.clear();frame.reset();
     frame.observe(blue,camera);frame.publish(nullptr,0,fixed,camera,selection,dt);
@@ -61,5 +65,5 @@ int main(){
     uploads.nextFrame();for(unsigned i=unsigned(keys.size());i>0;--i)uploads.write(&keys[i-1],1,0,large.data(),unsigned(large.size()),false);
     assert(uploads.bytes()<=NorthlightParticleUploads::ByteBudget&&uploads.stats().evictions>0);
     uploads.clear();assert(uploads.bytes()==0);
-    std::cout<<"PASS particle lights: actual colour, compact clustering, indexed bounds, shared cap/dedup, instantaneous lifecycle without a frame clock, instant flash and 120 ms release with one, and bounded replay upload bytes\n";
+    std::cout<<"PASS particle lights: actual colour, compact clustering (one light per place), indexed bounds, shared cap/dedup, instantaneous lifecycle without a frame clock, instant flash and 120 ms release with one, and bounded replay upload bytes\n";
 }
