@@ -14,6 +14,7 @@ HERE=Path(__file__).resolve().parent
 stub=r'''
 #pragma once
 #include <cstdint>
+#include <climits>
 using UINT=unsigned;using INT=int;using DWORD=unsigned;using HRESULT=std::int32_t;
 constexpr HRESULT D3D_OK=0,D3DERR_INVALIDCALL=HRESULT(0x8876086cu),E_POINTER=HRESULT(0x80004003u);
 inline bool FAILED(HRESULT value){return value<0;}
