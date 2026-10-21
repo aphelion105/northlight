@@ -45,6 +45,12 @@ def main(argv=None):
     static_manifest = json.loads((SHADERS/'static-shadow-shader-build.json').read_text())
     if hashlib.sha256((SHADERS/'static_shadow_effects.hlsl').read_bytes()).hexdigest() != static_manifest['source_sha256']:
         raise SystemExit('Static caster shader source differs from offline build.')
+    surface_manifest = json.loads((SHADERS/'surface-shader-build.json').read_text())
+    if hashlib.sha256((SHADERS/'surface_effects.hlsl').read_bytes()).hexdigest() != surface_manifest['source_sha256']:
+        raise SystemExit('Water/weather shader source differs from offline build.')
+    water_mask_manifest=json.loads((SHADERS/'water-material-mask-build.json').read_text())
+    if hashlib.sha256((SHADERS/'water_material_mask.hlsl').read_bytes()).hexdigest()!=water_mask_manifest['source_sha256']:
+        raise SystemExit('Water material mask differs from offline build.')
     env = northlight_paths.zig_env()
     command = [str(zig), 'c++', '-target', 'x86-windows-gnu', '-O2', '-shared',
                '-std=c++17', '-fno-rtti', '-Wall', '-Wextra', '-Wno-microsoft-exception-spec',

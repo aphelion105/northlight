@@ -1,0 +1,326 @@
+{
+  "source_sha256": "4d89dd8e0df7175d0cd0b14e37c59f58065de550b8aa3608a5a3dbfa4b53af0a",
+  "target": "ps_3_0",
+  "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
+  "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+  "game_launched": false,
+  "shaders": {
+    "SurfaceDepthCopy": {
+      "bytes": 192,
+      "sha256": "62e377f59b8c30a1451ccad6c0cd1b1ba0c5da23c14606c7a34deb15eead17fd",
+      "static_instruction_slots": 2,
+      "temporary_registers": 1,
+      "samplers": [
+        0
+      ],
+      "instructions": {
+        "texld": 1,
+        "mov": 1
+      }
+    },
+    "WaterQuality": {
+      "bytes": 6192,
+      "sha256": "bb54b9c4f301aab3ca96f452e11fd51ed490ca0f5bd197880fcd459c1e640153",
+      "static_instruction_slots": 370,
+      "temporary_registers": 11,
+      "samplers": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "instructions": {
+        "texld": 4,
+        "add": 93,
+        "mul": 97,
+        "rcp": 7,
+        "cmp": 26,
+        "max": 4,
+        "texkill": 4,
+        "dsx": 3,
+        "dsy": 3,
+        "mov": 23,
+        "dp3": 18,
+        "rsq": 2,
+        "dp2add": 3,
+        "rep": 2,
+        "frc": 3,
+        "endrep": 2,
+        "nrm": 4,
+        "texldl": 3,
+        "min": 4,
+        "exp": 3,
+        "lrp": 1,
+        "if": 4,
+        "pow": 2,
+        "break": 2,
+        "endif": 4,
+        "else": 2
+      }
+    },
+    "WaterBalanced": {
+      "bytes": 6192,
+      "sha256": "545ab7d91083f80598e93b52ae6769c3ed2206979a38bd6003b6fdf7176d93b2",
+      "static_instruction_slots": 370,
+      "temporary_registers": 11,
+      "samplers": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "instructions": {
+        "texld": 4,
+        "add": 93,
+        "mul": 97,
+        "rcp": 7,
+        "cmp": 26,
+        "max": 4,
+        "texkill": 4,
+        "dsx": 3,
+        "dsy": 3,
+        "mov": 23,
+        "dp3": 18,
+        "rsq": 2,
+        "dp2add": 3,
+        "rep": 2,
+        "frc": 3,
+        "endrep": 2,
+        "nrm": 4,
+        "texldl": 3,
+        "min": 4,
+        "exp": 3,
+        "lrp": 1,
+        "if": 4,
+        "pow": 2,
+        "break": 2,
+        "endif": 4,
+        "else": 2
+      }
+    },
+    "WaterPerformance": {
+      "bytes": 5316,
+      "sha256": "96bf13c7791f3ac4cf772bc71c36491506514f99473688deae9e991aeb80281c",
+      "static_instruction_slots": 299,
+      "temporary_registers": 10,
+      "samplers": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "instructions": {
+        "texld": 4,
+        "add": 79,
+        "mul": 84,
+        "rcp": 5,
+        "cmp": 19,
+        "max": 3,
+        "texkill": 4,
+        "dsx": 3,
+        "dsy": 3,
+        "mov": 19,
+        "dp3": 18,
+        "rsq": 2,
+        "dp2add": 1,
+        "rep": 1,
+        "frc": 3,
+        "endrep": 1,
+        "nrm": 4,
+        "texldl": 2,
+        "min": 4,
+        "pow": 2,
+        "exp": 3,
+        "lrp": 1,
+        "if": 1,
+        "else": 1,
+        "endif": 1
+      }
+    },
+    "PrecipitationQuality": {
+      "bytes": 5048,
+      "sha256": "09dc5ddac9346c9b5d7aba438c579461572090170ec3310922e0c4467a3d09ab",
+      "static_instruction_slots": 276,
+      "temporary_registers": 8,
+      "samplers": [
+        3
+      ],
+      "instructions": {
+        "mov": 7,
+        "mul": 108,
+        "add": 94,
+        "rcp": 9,
+        "cmp": 12,
+        "frc": 12,
+        "dp3": 12,
+        "dp2add": 3,
+        "rsq": 6,
+        "max": 9,
+        "texld": 1
+      }
+    },
+    "PrecipitationPerformance": {
+      "bytes": 3848,
+      "sha256": "63d280b89a5f2ac18d7ece6c93aca0d933794dbde701f597159b2f7da9a8f4b5",
+      "static_instruction_slots": 199,
+      "temporary_registers": 7,
+      "samplers": [
+        3
+      ],
+      "instructions": {
+        "mov": 7,
+        "mul": 78,
+        "add": 67,
+        "rcp": 7,
+        "cmp": 9,
+        "frc": 8,
+        "dp3": 8,
+        "dp2add": 2,
+        "rsq": 4,
+        "max": 6,
+        "texld": 1
+      }
+    },
+    "WaterPointLights": {
+      "bytes": 4872,
+      "sha256": "cee45506bb89a0def73b09b8d298717ff2a681af1f979ae044865fdf02c0e8ab",
+      "static_instruction_slots": 306,
+      "temporary_registers": 12,
+      "samplers": [
+        2,
+        3
+      ],
+      "instructions": {
+        "texld": 2,
+        "add": 71,
+        "mul": 67,
+        "rcp": 6,
+        "cmp": 33,
+        "max": 3,
+        "texkill": 4,
+        "dsx": 3,
+        "dsy": 3,
+        "mov": 16,
+        "dp3": 14,
+        "rsq": 3,
+        "rep": 3,
+        "frc": 3,
+        "endrep": 3,
+        "dp2add": 3,
+        "nrm": 4,
+        "if": 4,
+        "break": 3,
+        "endif": 4,
+        "else": 1,
+        "texldl": 1,
+        "pow": 2,
+        "min": 1
+      }
+    },
+    "WaterSSR": {
+      "bytes": 7348,
+      "sha256": "0aa4cab6a2e15225bde10249f5d7760767c251885fc575c11800873e3453b9bd",
+      "static_instruction_slots": 487,
+      "temporary_registers": 15,
+      "samplers": [
+        0,
+        2,
+        3,
+        5
+      ],
+      "instructions": {
+        "rcp": 23,
+        "mul": 98,
+        "frc": 9,
+        "add": 121,
+        "texld": 2,
+        "cmp": 46,
+        "max": 10,
+        "texkill": 4,
+        "dsx": 3,
+        "dsy": 3,
+        "mov": 40,
+        "dp3": 9,
+        "rsq": 2,
+        "rep": 3,
+        "endrep": 3,
+        "nrm": 3,
+        "dp2add": 1,
+        "min": 14,
+        "if": 8,
+        "else": 6,
+        "break": 6,
+        "log": 1,
+        "texldl": 5,
+        "endif": 8
+      }
+    },
+    "SSRDepthBounds": {
+      "bytes": 3316,
+      "sha256": "3d71b995c2a2ab0417e36f925711a454519b69a7548317f6e14ea772b391f72b",
+      "static_instruction_slots": 224,
+      "temporary_registers": 12,
+      "samplers": [
+        3,
+        5
+      ],
+      "instructions": {
+        "mov": 25,
+        "mul": 37,
+        "if": 1,
+        "add": 23,
+        "texldl": 32,
+        "max": 33,
+        "min": 33,
+        "rcp": 2,
+        "cmp": 2,
+        "else": 1,
+        "endif": 1
+      }
+    },
+    "LateWaterSSR": {
+      "bytes": 5952,
+      "sha256": "48482508d126a8148a4f95fa5d7c32d3fbef2a2469f25e704a9584cab66bef24",
+      "static_instruction_slots": 352,
+      "temporary_registers": 11,
+      "samplers": [
+        0,
+        2,
+        3,
+        4,
+        6,
+        7
+      ],
+      "instructions": {
+        "texld": 4,
+        "add": 95,
+        "mul": 90,
+        "rcp": 9,
+        "cmp": 34,
+        "max": 6,
+        "texkill": 4,
+        "dsx": 3,
+        "dsy": 3,
+        "mov": 17,
+        "dp3": 9,
+        "rsq": 2,
+        "rep": 1,
+        "frc": 5,
+        "endrep": 1,
+        "dp2add": 1,
+        "nrm": 3,
+        "dp4": 1,
+        "if": 2,
+        "else": 2,
+        "pow": 1,
+        "texldl": 12,
+        "exp": 4,
+        "abs": 3,
+        "endif": 2
+      }
+    }
+  }
+}

@@ -96,6 +96,9 @@ struct Settings {
     // Creation-time key (the renderer reads it once with the device).
     unsigned contactAO=1;
     // NightBrightness (0..100): how much of the art layer's darker night ambient is given back, as added light; 0 = Northlight's night, 100 = the original game's night ambient (shadows stay); default 50. Ramped by the sun below the horizon.
+    unsigned water=1,waterSSR=1,waterSSRResolution=100,waterSSRSteps=64,waterSSRDistance=0;
+    unsigned waterSSRThickness=30,waterSSRRefineSteps=4,waterSSRStrength=100;
+    unsigned waterRefraction=1,waterGlints=1,waterPointLights=1;
     unsigned nightBrightness=50;
     // 0.3.209 (task 29) ActorShadowDetail: 1 = a dedicated 4x finer shadow map around the player holds the moving casters (characters, mounts) and a
     // contact-hardening soft filter pass reads it (sharp at the feet, softer further from the caster); 0 = the 0.3.207 shadows (near cascade, 5x5 tent). ActorShadows=0 disables it too.
@@ -123,7 +126,7 @@ struct Settings {
     // WeatherMemory: 1 = the game's own weather state (kind incl. sand, intensity), read from memory, drives the weather effects on frames where the world drew a sky-band draw (the client skips weather
     // while the viewer is inside a building); 0 = the texture/draw detector only, as before.
     unsigned weatherMemory=1;
-    char origin[57]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
+    char origin[68]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
 };
 struct Key { const char* name; unsigned Settings::*field; unsigned low,high; unsigned preset[3]; };
 // preset[] = Quality, Balanced, Performance. Quality must equal Settings{}.
@@ -185,6 +188,17 @@ inline const Key Keys[]={
     {"DepthFuncAware",&Settings::depthFuncAware,0,1,{1,1,1}},
     {"WeatherMemory",&Settings::weatherMemory,0,1,{1,1,1}},
     {"ActorShadowCpuMs",&Settings::actorShadowCpuMs,0,20,{3,3,2}}, /* task 45 */
+    {"Water",&Settings::water,0,1,{1,1,1}},
+    {"WaterSSR",&Settings::waterSSR,0,1,{1,1,1}},
+    {"WaterSSRResolution",&Settings::waterSSRResolution,25,100,{100,50,25}},
+    {"WaterSSRSteps",&Settings::waterSSRSteps,4,128,{64,40,24}},
+    {"WaterSSRDistance",&Settings::waterSSRDistance,0,4096,{0,0,0}},
+    {"WaterSSRThickness",&Settings::waterSSRThickness,1,200,{30,30,30}},
+    {"WaterSSRRefineSteps",&Settings::waterSSRRefineSteps,0,6,{4,4,3}},
+    {"WaterSSRStrength",&Settings::waterSSRStrength,0,100,{100,100,100}},
+    {"WaterRefraction",&Settings::waterRefraction,0,1,{1,1,1}},
+    {"WaterGlints",&Settings::waterGlints,0,1,{1,1,0}},
+    {"WaterPointLights",&Settings::waterPointLights,0,1,{1,1,0}},
 };
 inline bool operator==(const Settings& a,const Settings& b){for(const auto& k:Keys)if(a.*k.field!=b.*k.field)return false;return true;}
 inline bool operator!=(const Settings& a,const Settings& b){return !(a==b);}

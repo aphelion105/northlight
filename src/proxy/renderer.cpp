@@ -221,7 +221,9 @@ template<class T> static uint64_t shaderHash(T* shader, std::vector<DWORD>& word
 #include "gpu_frame_timer.h" // 0.3.200 (gpu budget)
 #include "gpu_budget.h"
 #include "water_renderer.h"
+#include "water_material.h"
 #include "world_renderer.h"
+#include "surface_renderer.h"
 #include "client_latency_diagnostics.h"
 static void logClientLatency(std::uint64_t frame,const char* reason){
     const auto s=NorthlightClientLatency::read(reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)),NorthlightWorldContext::readSelfLive);
@@ -316,6 +318,11 @@ class Device final : public GuardedMirrorDevice {
     }
 
     std::unique_ptr<WorldRenderer> world;
+    std::unique_ptr<NorthlightSurfaceRenderer> surface;
+    bool surfaceDepthFrozen=false;
+    bool waterDiagnosticPending=false;unsigned waterDiagnosticPoll=0,waterDiagnosticCaptures=0,waterDiagnosticFrame=~0u,waterAfterEffects=0;
+    float surfaceTime=0,weatherLayerGate=0;
+    bool surfaceTimerOpen=false;
     std::unique_ptr<NorthlightCelestialDiscRenderer> celestialDiscs;
     std::unique_ptr<NorthlightShadowBlobFilter> shadowBlobs;
     std::unique_ptr<NorthlightWaterRenderer> water;
@@ -342,7 +349,8 @@ class Device final : public GuardedMirrorDevice {
     // Task 34: bits 3..5 hold the M2 shader family (m2_shader_families.h, NorthlightSpellLayer::Family) of the vertex shader, set at registration.
     static constexpr int kTagMask=3,kWaterTag=4,kFamilyShift=3;
     std::unordered_map<IDirect3DVertexShader9*, int> vsTags;
-    bool drawWaterVS=false,drawUiHashVS=false; // beforeDraw() results for the current draw (drawUiHashVS: uiTextVs, the UI hash or the font mod's learned UI VS)
+    bool drawWaterVS=false,drawUiHashVS=false,drawWaterMaterial=false; // current draw's material/VS verdict
+    NorthlightWaterMaterial::Detector waterMaterials;unsigned waterMaterialLogs=0;
     std::unordered_map<IDirect3DPixelShader9*, int> psTags;
     std::unordered_map<IDirect3DVertexShader9*, uint64_t> vsHashes;
     std::unordered_map<IDirect3DVertexShader9*, unsigned> vsMajor; // 0.3.202 (rain mask MRT): the shader model major version from the version token (0 unknown)
@@ -419,7 +427,7 @@ private:
     unsigned nonWorldCaptureRejects=0;
     unsigned drawCalls=0, missingVS=0, terrainDraws=0, terrainShadowDraws=0, viewportRejects=0, depthRejects=0, uiDraws=0, uiAfterTerrain=0;
     unsigned viewportReports=0;
-    unsigned postEffectWorldDraws=0,postEffectSkinnedDraws=0;
+    unsigned postEffectWorldDraws=0,postEffectSkinnedDraws=0,postEffectDepthWrites=0,postEffectDepthStateFailures=0,postEffectMaterialDraws=0;
     // 0.3.188 (task 3): per-sample-frame census of the early depth resolve, read-only, logged as TRANSLUCENT. Positions are 1-based census draw
     // indices (0 = none), over the whole frame (with a Clear(Z) between world passes read them against clearResolve): lastOpaqueZ is the last
     // non-water Z-writing draw writing RGB effectively opaque (the undo rule); clearResolve marks a Clear(Z)-triggered resolve.
@@ -488,14 +496,17 @@ private:
         });
     }
     void clearFrame() {
+        waterAfterEffects=0;
+        if(surfaceTimerOpen){if(gpuTimer)gpuTimer->end();surfaceTimerOpen=false;}
         if(gpuSceneProfile)gpuSceneProfile->endFrame();
         gpuFrameStarted=gpuSceneSplit=gpuEffectsSplit=false;
         if(!applied||failed)stateBlocks.clear();
         if(!enabled||extensionFault){stateBlocks.clear();if(world)world->releaseStateCache();if(water)water->releaseStateCache();}
-        if(world)world->endFrame(!extensionFault);if(water)water->endFrame();if(celestialDiscs)celestialDiscs->endFrame();if(shadowBlobs)shadowBlobs->endFrame();
-        drop(worldDepth);worldDepthDescKnown=false; rainMrtUnbind();terrain = captured = applied = projectionValid = false;rainMaskCleared=rainMaskDrawn=rainMaskFrame=rainMaskOk=rainDepthOk=false; /* 0.3.202 (rain mask MRT): RT1 never outlives a frame */earlyDepth.reset();resetTranslucentCensus(); /* the TRANSLUCENT line is logged before clearFrame */
+        if(world)world->endFrame(!extensionFault);if(water)water->endFrame();if(surface)surface->endFrame();if(celestialDiscs)celestialDiscs->endFrame();if(shadowBlobs)shadowBlobs->endFrame();
+        drop(worldDepth);worldDepthDescKnown=false; rainMrtUnbind();terrain = captured = applied = projectionValid = false;rainMaskCleared=rainMaskDrawn=rainMaskFrame=rainMaskOk=rainDepthOk=false;surfaceDepthFrozen=false; /* 0.3.202 (rain mask MRT): RT1 never outlives a frame */earlyDepth.reset();resetTranslucentCensus(); /* the TRANSLUCENT line is logged before clearFrame */
     }
     void releaseResources() {
+        if(surface)surface->reset();
         rainMrtUnbind();stateBlocks.clear();clearFrame();maskFormatFor=nullptr;maskFormatValue=0;maskStencil=false;maskDsId=nullptr; /* 0.3.212 (task 32): the depth may change with the device */
         drop(sceneSurface); drop(aoSurface); drop(aoRawSurface); drop(scene); drop(depthTex); drop(ao); drop(aoRaw);drop(rainMaskMS);drop(rainMaskSurface);drop(rainMask);drop(rainDepth);rainMaskFailed=false; /* 0.3.202 (rain) */
         drop(aoPS); drop(aoBlurPS); drop(aoContactBloomPS); drop(contactBloomPS); drop(compositePS);drop(rainMrtPS);drop(rainScrubPS); width = height = 0;
@@ -707,6 +718,64 @@ private:
         effectState(); /* stencil off, blending off, no depth-stencil bound: the effect passes' state */
         ext->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1);
     }
+    bool surfaceContext(NorthlightSurfaceFrame& context){
+        if(!world||!projectionValid||!width||!height||!world->surfaceContext(context))return false;
+        context.c[0][0]=1.f/width;context.c[0][1]=1.f/height;context.c[0][2]=nearZ;context.c[0][3]=farZ;
+        context.c[1][3]=surfaceTime;context.c[2][0]=worldMinDepth;context.c[2][1]=1.f/(worldMaxDepth-worldMinDepth);return true;
+    }
+    IDirect3DTexture9* surfaceFinalDepth(bool freeze=false){
+        if(!surface||!world||memoryGuard.capsHalved())return nullptr;
+        auto* target=surface->completedDepthTarget(width,height,depthSnapshotFormat,world->surfaceSettings());
+        if(!target||(!surfaceDepthFrozen&&!resolveDepthInto(target,false)))return nullptr;
+        // AO intentionally freezes before translucent Z draws. SSR needs their depth,
+        // retained before a native Clear(Z), or freshly resolved at the world composite.
+        if(freeze)surfaceDepthFrozen=true;
+        return target;
+    }
+    void surfaceDiagnostic(IDirect3DSurface9* target,IDirect3DTexture9* mask){
+        if(!diagnostics()||!surface||!world||debugMode||worldDebug||waterDiagnosticCaptures>=4)return;
+        const std::wstring request=std::wstring(rootPath)+L"northlight-diagnostics\\water-capture.request";
+        if(frame-waterDiagnosticPoll>=120){waterDiagnosticPoll=frame;if(GetFileAttributesW(request.c_str())!=INVALID_FILE_ATTRIBUTES)waterDiagnosticPending=true;}
+        const auto* context=surface->diagnosticContext();
+        if(!waterDiagnosticPending||!mask||!context)return;
+        char root[MAX_PATH*3];if(!WideCharToMultiByte(CP_UTF8,0,rootPath,-1,root,sizeof root,nullptr,nullptr))return;
+        const std::string parent=std::string(root)+"northlight-diagnostics";
+        CreateDirectoryA(parent.c_str(),nullptr);
+        const std::string directory=parent+"/water-session-"+std::to_string(GetCurrentProcessId())+"-"+std::to_string(GetTickCount());
+        if(!CreateDirectoryA(directory.c_str(),nullptr))return;
+        const unsigned capture=++waterDiagnosticCaptures;
+        waterDiagnosticFrame=frame;
+        const auto dump=[&](IDirect3DSurface9* buffer,const char* name){return NorthlightWorldDiagnostics::dump(ext,buffer,directory,name,capture);};
+        const bool products=surface->diagnosticDump(mask,surfaceFinalDepth(),dump);
+        const bool material=dump(sceneSurface,"water-pre-world");
+        const bool final=dump(target,"final-water");
+        const auto dumpTexture=[&](IDirect3DTexture9* texture,const char* name){if(!texture)return;IDirect3DSurface9* buffer=nullptr;if(SUCCEEDED(texture->GetSurfaceLevel(0,&buffer))){dump(buffer,name);buffer->Release();}};
+        dumpTexture(world->surfaceFogTexture(),"water-air-fog");dumpTexture(world->surfaceFogDistance(),"water-air-distance");
+        const auto& q=world->surfaceSettings();
+        bool metadata=false;
+        if(FILE* f=std::fopen((directory+"/frame.json").c_str(),"wb")){
+            std::fprintf(f,"{\"frame\":%u,\"capture\":%u,\"width\":%u,\"height\":%u,\"waterAfterEffectsSoFar\":%u,\"worldDebug\":%d,\"ssrResolution\":%u,\"ssrSteps\":%u,\"ssrRange\":%u,\"ssrThickness\":%u,\"ssrRefine\":%u,\"ssrStrength\":%u,\"refraction\":%u,\"glints\":%u,\"pointLights\":%u,\"actorShadows\":%u,\"context\":[",frame,capture,width,height,waterAfterEffects,worldDebug,q.waterSSRResolution,q.waterSSRSteps,q.waterSSRDistance,q.waterSSRThickness,q.waterSSRRefineSteps,q.waterSSRStrength,q.waterRefraction,q.waterGlints,q.waterPointLights,q.actorShadows);
+            for(unsigned i=0;i<44;++i)std::fprintf(f,"%s%.9g",i?",":"",context->c[i/4][i%4]);
+            std::fprintf(f,"],\"fog\":[");for(unsigned i=0;i<8;++i)std::fprintf(f,"%s%.9g",i?",":"",context->fog[i/4][i%4]);
+            std::fprintf(f,"],\"psConstants\":[");const float* constants=surface->diagnosticConstants();
+            for(unsigned i=0;i<104;++i)std::fprintf(f,"%s%.9g",i?",":"",constants[i]);
+            std::fprintf(f,"]}\n");metadata=std::ferror(f)==0;if(std::fclose(f))metadata=false;
+        }
+        if(products&&material&&final&&metadata){waterDiagnosticPending=false;DeleteFileW(request.c_str());}
+        logf("WATER GPU diagnostic frame=%u capture=%u saved=%u directory=%s",frame,capture,unsigned(products&&material&&final&&metadata),directory.c_str());
+    }
+    void surfaceWeather(){
+        if(!surface||!world||!applied||!enabled||failed||debugMode||worldDebug||!depthTex||!world->weatherSetting()||world->underwaterScale()<.9f||memoryGuard.capsHalved()){weatherLayerGate=0;return;}
+        const auto& weather=world->weather();
+        if((weather.kind!=NorthlightWeather::Kind::Rain&&weather.kind!=NorthlightWeather::Kind::Snow)||weather.blend<=0){weatherLayerGate=0;return;}
+        const bool outside=skyBandSeen&&world->supplementalWeatherOutdoors();
+        if(!outside){weatherLayerGate=0;return;}weatherLayerGate+=(1-weatherLayerGate)*.1f;
+        NorthlightSurfaceFrame context;if(!surfaceContext(context))return;
+        context.c[3][0]=weatherLayerGate*weather.blend*(.35f+.65f*weather.intensity);context.c[3][1]=weather.kind==NorthlightWeather::Kind::Snow?1.f:0.f;
+        ExtensionDevice::RawScope raw(*ext);SavedState saved(ext,&stateBlocks);if(!saved.ok)return;
+        surface->precipitation(saved.targets[0],depthTex,width,height,context,world->qualityPreset(),nameMask.armed()&&nameMask.hasMarks()&&maskStencil?worldDepth:nullptr);
+        gpuProfile->mark("Precipitation");
+    }
     void renderEffects() {
         nameMaskRunEnd(); /* 0.3.212 (task 32): the effect passes and SavedState meet the game's stencil states */
         CpuScope cpu(sampled()?&cpuEffects:nullptr);
@@ -733,14 +802,18 @@ private:
         SavedState saved(ext,&stateBlocks);
         if (!saved.ok) return;
         // 0.3.200 (gpu budget): the frame timer brackets every effect pass (closed on every return path by the guard, after the profile's end).
-        struct TimerEnd { NorthlightGpuFrameTimer* t; bool open; ~TimerEnd(){if(open)t->end();} } timerEnd{gpuTimer.get(),world&&world->gpuBudgetMs()&&gpuTimer->begin()};
+        surfaceTimerOpen=world&&world->gpuBudgetMs()&&gpuTimer->begin();
         if(gpuSceneProfile&&!gpuSceneSplit){gpuSceneProfile->mark("GameScene");gpuSceneSplit=true;}
         if(diagnostics())gpuProfile->beginFrame(frame,NorthlightRenderThreadProbe::sampleFrame(frame)); // otherwise no queries; mark/endFrame are no-ops
         effectsBuckets.mark(Bucket::Setup);
-        struct ProfileEnd { NorthlightGpuProfile* p;Device* self; ~ProfileEnd(){if(p){p->endFrame();self->gpuEffectsEnd();}} } profileEnd{spellOn?nullptr:gpuProfile.get(),this}; /* the spell layer replays right after this returns: spellReplay() closes the profile frame with its own "Spells" interval */
+        // spellReplay closes profiling after both deferred spells and precipitation.
         IDirect3DTexture9* rainMaskTex=world&&debugMode==0?rainMaskPrepare():nullptr; /* 0.3.202 (rain mask MRT): the mask resolved and cut by the final depth (own SavedState) */
         if(water&&debugMode==0)water->resolveMask(); /* 0.3.214 (water MRT): decodes the frame's render target 1 data (own SavedState; false: no mask from it, maskTextureForDepth answers null) */
         IDirect3DTexture9* waterMask=water?water->maskTextureForDepth(worldMinDepth,worldMaxDepth):nullptr;
+        // A geometry-demand trim keeps full caps. Only actual low-address-space caps suspend surface effects.
+        if(surface&&world&&debugMode==0&&worldDebug==0&&world->underwaterScale()>.9f&&!memoryGuard.capsHalved()){
+            NorthlightSurfaceFrame context;if(surfaceContext(context))surface->water(saved.targets[0],waterMask,depthTex,width,height,context,world->surfaceSettings(),world->surfacePointLights(),nameMask.armed()&&nameMask.hasMarks()&&maskStencil?worldDepth:nullptr,surfaceFinalDepth(),true);
+            gpuProfile->mark("WaterMaterial");}
         gpuProfile->mark("PreCelestial"); /* task 45: the rain and water mask preparation (and GPU work still pending from the game's scene) end here, so CelestialDiscs bills the discs and the terrain mask alone */
         // discs and glare, then the wrap-ring visibility in the same group of
         // 1x1 passes before the scene copy; the veil follows water (below).
@@ -827,6 +900,12 @@ private:
             // A folded frame the world did not composite (skipped or failed; it left the target
             // untouched): re-establish the effect state it changed, then the legacy composite.
             if(fold&&!world->composited){effectState();bindEffects(ao);if(!legacyComposite())return;}
+        }
+        // Trace colour after relighting; preserve the material and fog above.
+        if(surface&&world&&debugMode==0&&worldDebug==0&&world->underwaterScale()>.9f&&!memoryGuard.capsHalved()){
+            NorthlightSurfaceFrame context;if(surfaceContext(context))surface->waterReflections(saved.targets[0],waterMask,surfaceFinalDepth(),width,height,context,world->surfaceSettings(),maskOn?worldDepth:nullptr,world->surfaceFogTexture(),world->surfaceFogDistance());
+            gpuProfile->mark("WaterSSR");
+            surfaceDiagnostic(saved.targets[0],waterMask);
         }
         if(celestial){
             const auto& haze=world->horizonHazeConstants();
@@ -974,11 +1053,15 @@ private:
         if(spellOn){spellDomain=false;spellVs=nullptr;} /* task 34: this draw's reads for spellDrawImpl, valid only if this function gets that far */
         if(failed||!enabled)return;
         if(applied){
-            if(sampled()){IDirect3DVertexShader9* late=nullptr;const bool borrowed=ext->peekVertexShader(late); // 0.3.196 (task 12): identity lookup only
+            if(sampled()||waterDiagnosticFrame==frame){
+                DWORD z=0,write=0;if(readDrawRenderState(D3DRS_ZENABLE,z)&&readDrawRenderState(D3DRS_ZWRITEENABLE,write)){if(z&&write)++postEffectDepthWrites;}else ++postEffectDepthStateFailures;
+                IDirect3DVertexShader9* late=nullptr;const bool borrowed=ext->peekVertexShader(late); // 0.3.196 (task 12): identity lookup only
                 if((borrowed||(SUCCEEDED(ext->GetVertexShader(&late))&&late))&&world){
                     const VsClass& vc=classifyVs(late);
                     if(vc.world)++postEffectWorldDraws;
                     if(vc.skinned)++postEffectSkinnedDraws;
+                    if(vc.entry&kWaterTag)++waterAfterEffects;
+                    else{IDirect3DBaseTexture9* lookup=nullptr;if(ext->peekTexture(0,lookup)&&waterMaterials.candidate(lookup))++postEffectMaterialDraws;}
                 }if(!borrowed)drop(late);
             }return;
         }
@@ -1070,6 +1153,34 @@ private:
         if(original)original->Release();
         return hr;
     }
+    bool liquidMaterial(IDirect3DVertexShader9* vs,bool trusted){
+        if(!water||!world||!world->hasContext()||!projectionValid||applied||!enabled||failed||!vs)return false;
+        IDirect3DBaseTexture9 *lookup=nullptr,*surfaceTex=nullptr;bool own0=false,own1=false;
+        struct Textures {IDirect3DBaseTexture9*& a;IDirect3DBaseTexture9*& b;bool& x;bool& y;~Textures(){if(x)drop(a);if(y)drop(b);}} release{lookup,surfaceTex,own0,own1};
+        if(!ext->peekTexture(0,lookup)){own0=true;if(FAILED(ext->GetTexture(0,&lookup)))return false;}
+        if(!lookup||(!trusted&&!waterMaterials.candidate(lookup)))return false;
+        if(!ext->peekTexture(1,surfaceTex)){own1=true;if(FAILED(ext->GetTexture(1,&surfaceTex)))return false;}
+        if(!surfaceTex||lookup->GetType()!=D3DRTYPE_TEXTURE||surfaceTex->GetType()!=D3DRTYPE_TEXTURE)return false;
+        D3DSURFACE_DESC a{},b{};
+        if(FAILED(static_cast<IDirect3DTexture9*>(lookup)->GetLevelDesc(0,&a))||FAILED(static_cast<IDirect3DTexture9*>(surfaceTex)->GetLevelDesc(0,&b)))return false;
+        if(a.Usage&(D3DUSAGE_RENDERTARGET|D3DUSAGE_DEPTHSTENCIL))return false;
+        if(trusted)waterMaterials.learn(lookup);
+        if(!waterMaterials.matches(lookup,b.Width,b.Height,b.Usage&(D3DUSAGE_RENDERTARGET|D3DUSAGE_DEPTHSTENCIL)))return false;
+        // The own mask VS implements this specific liquid position ABI. A texture
+        // lookalike with a different declaration or matrix keeps the native draw.
+        IDirect3DVertexDeclaration9* declaration=nullptr;D3DVERTEXELEMENT9 elements[64];UINT count=64;
+        if(FAILED(ext->GetVertexDeclaration(&declaration))||!declaration)return false;
+        const HRESULT hr=declaration->GetDeclaration(elements,&count);drop(declaration);if(FAILED(hr))return false;
+        bool position=false;for(UINT i=0;i<count&&i<64;++i)if(elements[i].Stream!=0xff&&elements[i].Usage==D3DDECLUSAGE_POSITION&&elements[i].UsageIndex==0)
+            position=elements[i].Type==D3DDECLTYPE_FLOAT3&&elements[i].Method==D3DDECLMETHOD_DEFAULT;
+        if(!position)return false;
+        float constants[9][4];if(FAILED(ext->GetVertexShaderConstantF(0,constants[0],9)))return false;
+        Projection projection;if(!decodeProjection(constants[0],projection)||std::fabs(projection.scaleX-scaleX)>.002f*scaleX||std::fabs(projection.scaleY-scaleY)>.002f*scaleY)return false;
+        for(unsigned i=5;i<9;++i)for(float v:constants[i])if(!std::isfinite(v))return false;
+        if(std::fabs(constants[5][3])>.002f||std::fabs(constants[6][3])>.002f||std::fabs(constants[7][3])>.002f||std::fabs(constants[8][3]-1)>.002f)return false;
+        if(waterMaterialLogs++<8)logf("WATER material geometry mask lookup=%ux%u surface=%ux%u trustedVS=%d",a.Width,a.Height,b.Width,b.Height,int(trusted));
+        return true;
+    }
     // Liquid mask only (AO/GI/fog consume it). The depth identity, target
     // description and viewport read here are reused by the mask capture.
     // 0.3.214 (water MRT): a draw the MRT conditions hold for is only planned here (waterPending); waterMrtDraw binds render target 1 and the mask variants of its shaders
@@ -1087,14 +1198,22 @@ private:
         IDirect3DPixelShader9* ps=nullptr;struct PixelRelease {IDirect3DPixelShader9*& p;~PixelRelease(){drop(p);}} releasePS{ps};
         if(FAILED(ext->GetPixelShader(&ps))||!ps)return;
         if(!waterCapsChecked)waterMrtCaps();
-        const auto plan=water->plan(vs,ps,desc.Width,desc.Height,viewport);
+        const auto plan=drawWaterMaterial?NorthlightWaterRenderer::Plan::Redraw:water->plan(vs,ps,desc.Width,desc.Height,viewport);
         if(plan==NorthlightWaterRenderer::Plan::Skip)return;
+        if(surface&&surface->canCapture()&&world->surfaceSettings().water&&enabled&&!applied&&depthTex&&!memoryGuard.capsHalved()&&world->underwaterScale()>.9f){
+            rainMrtUnbind();ExtensionDevice::RawScope raw(*ext);
+            if(resolveDepthInto(depthTex,false)){
+                SavedState color(ext,&stateBlocks);if(color.ok)surface->capture(color.targets[0],depthTex,desc.Width,desc.Height,world->surfaceSettings());
+                captured=false; // final depth must be resolved again after the water and later opaque draws
+            }
+        }
         /* the twin must match the game's depth buffer too (D3D9: every bound target and the depth share multisample type and quality) */
         const bool sameMs=worldDepthDescKnown&&worldDepthDesc.MultiSampleType==desc.MultiSampleType&&worldDepthDesc.MultiSampleQuality==desc.MultiSampleQuality;
         if(plan==NorthlightWaterRenderer::Plan::Mrt&&sameMs){waterPending={vs,ps,userPointer,desc.Width,desc.Height,desc.MultiSampleType,desc.MultiSampleQuality,viewport,true};return;}
         if(plan==NorthlightWaterRenderer::Plan::Mrt&&!waterMsLogged){waterMsLogged=true;logf("WATER mask MRT skipped: render target ms=%u/%lu, depth ms=%u/%lu",unsigned(desc.MultiSampleType),(unsigned long)desc.MultiSampleQuality,worldDepthDescKnown?unsigned(worldDepthDesc.MultiSampleType):0u,worldDepthDescKnown?(unsigned long)worldDepthDesc.MultiSampleQuality:0ul);}
         if(water->isMrtBound())rainMrtUnbind(); /* the second draw and the game's own draw after it meet no render target 1 */
-        water->capture(vs,ps,desc.Width,desc.Height,worldDepth,viewport,userPointer,mirrorState.invalidations,draw);
+        if(drawWaterMaterial)water->captureMaterial(vs,ps,desc.Width,desc.Height,worldDepth,viewport,userPointer,mirrorState.invalidations,draw);
+        else water->capture(vs,ps,desc.Width,desc.Height,worldDepth,viewport,userPointer,mirrorState.invalidations,draw);
     }
     // 0.3.214 (water MRT): once per device, the caps the MRT mask needs: two render targets with independent write masks and bit depths (G32R32F next to the game's target),
     // blending on the extra target (the game's own blend applies to it: the format must be a post-pixel-shader blending render target) and pixel shader 2.0.
@@ -1805,7 +1924,7 @@ private:
     // At the effects boundary, right after renderEffects() returned (also when it bailed out): the deferred draws, after the composite and the veil
     // passes, before the UI draw. Closes the frame for the layer.
     void spellReplay(){
-        if(!spellOn)return;
+        if(!spellOn){surfaceWeather();if(surfaceTimerOpen){gpuTimer->end();surfaceTimerOpen=false;}if(diagnostics()){gpuProfile->endFrame();gpuEffectsEnd();}return;}
         unsigned replayed=0;
         extensionWork("spell replay",[&]{
             CpuScope timer(sampledOnce()?&spellReplayTicks:nullptr);
@@ -1815,7 +1934,10 @@ private:
             if(spellTraceFrame&&n)logf("SPELLTRACE frame=%u event=replay count=%u replayed=%u skipped=%u",frame,n,spell.frameCounters().replayedDraws,spell.frameCounters().replaySkipped);
         });
         spellSync();
-        if(diagnostics()){if(replayed)gpuProfile->mark("Spells");gpuProfile->endFrame();gpuEffectsEnd();} /* GPU time of the replay (sampled frames only; renderEffects left the profile frame open for it) */
+        if(diagnostics()&&replayed)gpuProfile->mark("Spells");
+        surfaceWeather();
+        if(surfaceTimerOpen){gpuTimer->end();surfaceTimerOpen=false;}
+        if(diagnostics()){gpuProfile->endFrame();gpuEffectsEnd();}
     }
     // Frame end (finishFrameImpl, after the frame's diagnostics lines): the layer's frame boundary, the SPELLLAYER line, the idle trim, the trace window.
     void spellFrameEnd(){
@@ -1900,7 +2022,7 @@ private:
     bool uiTextVs(IDirect3DVertexShader9* vs,int tag)const{return tag==2||(vs&&uiFallback.armed()&&reinterpret_cast<std::uintptr_t>(vs)==uiFallback.learnedVs());}
     void beforeDraw(IDirect3DVertexShader9* vs) {
         const VsClass& vc=classifyVs(vs); const int entry=vc.entry; int tag=entry&kTagMask;
-        drawWaterVS=(entry&kWaterTag)!=0;drawUiHashVS=uiTextVs(vs,tag);
+        drawWaterVS=(entry&kWaterTag)!=0;drawWaterMaterial=liquidMaterial(vs,drawWaterVS);drawWaterVS|=drawWaterMaterial;drawUiHashVS=uiTextVs(vs,tag);
         bool wmo=tag!=1&&vc.wmo;if(gateFrame&&wmo)++gateCounts.wmo;
         if(wmo&&projectionValid&&world->hasContext()&&world->hasOriginalFog())return;
         const bool model=tag!=1&&!wmo&&vc.skinned&&(!projectionValid||!world->hasContext());
@@ -2115,6 +2237,7 @@ public:
         mirrorState.gate.reportContext=this;mirrorState.gate.report=&gateForeignReport;
         parent->AddRef(); QueryPerformanceFrequency(&cpuFrequency);
         gpuProfile=std::make_unique<NorthlightGpuProfile>(ext);gpuSceneProfile=std::make_unique<NorthlightGpuProfile>(ext,"GPU frame",2);gpuTimer=std::make_unique<NorthlightGpuFrameTimer>(ext); world=std::make_unique<WorldRenderer>(ext);world->setEffectsBuckets(&effectsBuckets);
+        surface=std::make_unique<NorthlightSurfaceRenderer>(ext);
         world->setConstantEpochSource({&mirrorState.constantEpoch,&mirrorState}); /* 0.3.180 (C1): read in place under the draw's gate */
         char skyRoot[MAX_PATH*3];WideCharToMultiByte(CP_UTF8,0,rootPath,-1,skyRoot,sizeof skyRoot,nullptr,nullptr);celestialDiscs=std::make_unique<NorthlightCelestialDiscRenderer>(ext,std::string(skyRoot)+"world-cache/celestial");celestialDiscs->setTerrainSource([this]{return world->celestialTerrainGeneration();},[this](unsigned body,const float* matrix){return world->drawCelestialTerrain(body,matrix);},[this](unsigned body){world->noteCelestialTerrainReuse(body);});celestialDiscs->setIdentityMap([this](std::uintptr_t exposed){return mirrorResources.rawOf(exposed,!mirrorState.enabled);});shadowBlobs=std::make_unique<NorthlightShadowBlobFilter>(ext,world->blobShadowStrength());shadowBlobs->setTexturePeek([](void* e,DWORD stage,IDirect3DBaseTexture9*& out){return static_cast<ExtensionDevice*>(e)->peekTexture(stage,out);},ext); /* 0.3.196 (task 12): borrowed stage-0 identity */water=std::make_unique<NorthlightWaterRenderer>(ext); logf("D3D9 device wrapped. Ctrl+Shift+F7 fog; F8 GI; F9 shadows; F10 all effects; F12 world debug (all with Ctrl+Shift). F11 unassigned. Components start ON; GI cache stays warm.");
         contactAO=world->contactAO(); /* 0.3.201 (task 18) */
@@ -2140,6 +2263,7 @@ public:
         logGateThreads("destroy");
         memoryDiagnostics.reset();
         spellTeardown();
+        surface.reset();
         dropBlobFaint();shadowBlobs.reset();celestialDiscs.reset();gpuProfile.reset();gpuSceneProfile.reset();gpuTimer.reset();drop(latencyQuery);water.reset();world.reset();releaseResources();
         stateBlocks.clear();ext->Release();ext=nullptr;
         const ULONG backendReferences=real->Release();parent->Release();
@@ -2167,6 +2291,7 @@ public:
     // Frame boundary only (after clearFrame()): no draw of the finished frame
     // still references a trimmed cache. Warnings are logged with Diagnostics=0.
     void trimMemory(const NorthlightMemoryDiagnostics::Sample& trigger){
+        if(surface)surface->reset();
         LARGE_INTEGER start={},end={};QueryPerformanceCounter(&start);
         WorldRenderer::MemoryTrim t;if(world)t=world->trimMemory();
         QueryPerformanceCounter(&end);const DWORD now=GetTickCount();memoryGuard.trimCompleted(now);
@@ -2254,6 +2379,7 @@ public:
         if(gateFrame){logWeatherProbe(sampleFrame);weatherProbe={};}
         LARGE_INTEGER now={};double dt=0;
         if(cpuFrequency.QuadPart>0&&QueryPerformanceCounter(&now)){if(weatherTick)dt=double(now.QuadPart-weatherTick)/double(cpuFrequency.QuadPart);weatherTick=now.QuadPart;}
+        surfaceTime+=float(std::clamp(dt,0.,.1));
         if(!mirrorState.enabled){weatherDetect.setOff(true);if(!weatherOffReported){weatherOffReported=true;logf("WEATHER detect=off (mirror inactive)");}}
         weatherSample.kind=weatherSample.draws?weatherDetect.hotKind:W::Kind::None;
         { // the game's own weather state is the primary source when its proofs and reads succeed; the detector is the fallback and the cross-check
@@ -2357,7 +2483,7 @@ public:
         bool retry=k10&&!key10&&!enabled;
         if(k10&&!key10){enabled=!enabled;frameIntervals.reset();frameCost.reset();stallFrames.reset();mirrorResources.queryProfile={};logf("Effects %s tick=%lu",enabled?"ON":"OFF",(unsigned long)GetTickCount());}
         bool k12=focus&&modifiers&&(GetAsyncKeyState(VK_F12)&0x8000);
-        if(k12&&!key12){worldDebug=(worldDebug+1)%4;logf("World debug %d tick=%lu (0 normal,1 shadows,2 GI,3 volume)",worldDebug,(unsigned long)GetTickCount());}
+        if(k12&&!key12){worldDebug=(worldDebug+1)%4;if(worldDebug==0)waterDiagnosticPending=true;logf("World debug %d tick=%lu (0 normal,1 shadows,2 GI,3 volume)",worldDebug,(unsigned long)GetTickCount());}
         key12=k12;key10=k10;
         uiFallbackEndFrame();
         if(frame==1||(frame%600==0&&diagnostics()))logf("frame=%u applied=%u terrainShaders=%u uiShaders=%u projectionRejects=%u terrainThisFrame=%d depth=%d draws=%u missingVS=%u terrainDraws=%u terrainShadowDraws=%u viewportRejects=%u depthRejects=%u uiDraws=%u uiAfterTerrain=%u uiFallback=%u uiFallbackState=%c",frame,appliedFrames,matchedTerrain,matchedUI,projectionRejects,terrain,captured,drawCalls,missingVS,terrainDraws,terrainShadowDraws,viewportRejects,depthRejects,uiDraws,uiAfterTerrain,uiFallbackBoundaries,uiFallback.disarmed()?'d':uiFallback.armed()?'a':'l');
@@ -2399,8 +2525,8 @@ public:
         }
         const unsigned sampleFrame=frame;LONGLONG cleanup=0;
         // Read before clearFrame() resets the water renderer's frame counters.
-        const unsigned waterRedraws=water?water->frameCaptures():0,waterMrt=water?water->frameMrtDraws():0,waterDegraded=water?water->frameMrtDegraded():0,waterDraws=waterRedraws+waterMrt,waterScans=water?water->frameMaskScans():0,waterClears=water?water->frameClears():0,waterReadFailures=water?water->frameReadFailures():0,waterBinds=water?water->frameMrtBinds():0,waterLongestRun=water?water->frameMrtLongestRun():0;
-        if(sampled())logf("EFFECT trailing world frame=%u worldDraws=%u skinnedDraws=%u",frame,postEffectWorldDraws,postEffectSkinnedDraws);
+        const unsigned waterRedraws=water?water->frameCaptures():0,waterMrt=water?water->frameMrtDraws():0,waterDegraded=water?water->frameMrtDegraded():0,waterDraws=waterRedraws+waterMrt,waterScans=water?water->frameMaskScans():0,waterClears=water?water->frameClears():0,waterReadFailures=water?water->frameReadFailures():0,waterBinds=water?water->frameMrtBinds():0,waterLongestRun=water?water->frameMrtLongestRun():0,waterLate=waterAfterEffects;
+        if(sampled()||waterDiagnosticFrame==frame)logf("EFFECT trailing world frame=%u worldDraws=%u skinnedDraws=%u depthWrites=%u depthStateFailures=%u waterDraws=%u materialCandidates=%u",frame,postEffectWorldDraws,postEffectSkinnedDraws,postEffectDepthWrites,postEffectDepthStateFailures,waterAfterEffects,postEffectMaterialDraws);
         if(sampled()&&nameMask.armed()){
             const double us=cpuFrequency.QuadPart>0?1e6/double(cpuFrequency.QuadPart):0.0;
             const double decide=nameDecideTimed?double(cpuNameDecide)*double(nameDecideCalls)/double(nameDecideTimed)*us:0.0,mark=double(cpuNameMark)*us,unmark=double(cpuNameUnmark)*us;
@@ -2409,7 +2535,7 @@ public:
         cpuNameDecide=cpuNameMark=cpuNameUnmark=0;nameDecideCalls=nameDecideTimed=0;
         nameMask.endFrame(); /* 0.3.212 (task 32): marks never outlive the frame (the next frame's first Clear(Z) clears the stencil) */
         if(sampled())logf("TRANSLUCENT frame=%u draws=%u lastOpaqueZ=%u clearResolve=%u earlyResolve=%u earlyResolveAt=%u earlyResolveTotal=%u earlyResolveUndone=%u earlyResolveUndoneTotal=%u",frame,censusDraws,lastOpaqueZAt,clearResolveAt,earlyResolves,earlyResolveAt,earlyResolveTotal,earlyResolveUndone,earlyResolveUndoneTotal);
-        postEffectWorldDraws=postEffectSkinnedDraws=0;
+        postEffectWorldDraws=postEffectSkinnedDraws=postEffectDepthWrites=postEffectDepthStateFailures=postEffectMaterialDraws=0;
         spellFrameEnd(); /* task 34: after the frame's diagnostics lines */
         const bool sampledFrame=sampled(),frameApplied=applied;
         // 0.3.200 (frame trace): with Diagnostics, 240 consecutive frames out of every 1800 get one line each: whether the effects ran, the world drew,
@@ -2442,7 +2568,7 @@ public:
             LARGE_INTEGER a={},b={},t={};QueryPerformanceCounter(&a);for(unsigned i=0;i<32;++i)QueryPerformanceCounter(&t);QueryPerformanceCounter(&b);
             const double qpcNs=double(b.QuadPart-a.QuadPart)*1e9/double(cpuFrequency.QuadPart)/33.0;
             if(!gateUntimed)logf("CPU capture split frame=%u captureWorld=%.3fms captureWater=%.3fms qpcNs=%.1f",sampleFrame,std::max(0.0,double(cpuCapture-cpuWaterCapture)*ms),cpuWaterCapture*ms,qpcNs);
-            logf("WATER mask draws=%u deferred=%u clears=%u scans=%u readFailures=%u mrt=%u redraw=%u degraded=%u binds=%u longestRun=%u",waterDraws,0u,waterClears,waterScans,waterReadFailures,waterMrt,waterRedraws,waterDegraded,waterBinds,waterLongestRun); /* 0.3.215: binds = render target 1 binds for the water mask, longestRun = the most MRT draws under one bind (both per frame like the rest); 0.3.214 (water MRT): draws = mrt (the game draw wrote the mask itself) + redraw (second draws; degraded = planned as mrt, made as second draws) */
+            logf("WATER mask draws=%u deferred=%u clears=%u scans=%u readFailures=%u mrt=%u redraw=%u degraded=%u binds=%u longestRun=%u afterEffects=%u",waterDraws,0u,waterClears,waterScans,waterReadFailures,waterMrt,waterRedraws,waterDegraded,waterBinds,waterLongestRun,waterLate); /* 0.3.215: binds = render target 1 binds for the water mask, longestRun = the most MRT draws under one bind (both per frame like the rest); 0.3.214 (water MRT): draws = mrt (the game draw wrote the mask itself) + redraw (second draws; degraded = planned as mrt, made as second draws) */
             if(NorthlightRenderThreadProbe::profiling()){
                 // Extension D3D9 calls of this frame by method, inside renderEffects' raw scope (all
                 // cascades, the point cube, full-screen passes, DiagReplayProbe); capture reads are mirror answers.
@@ -2555,7 +2681,7 @@ public:
         if ((flags&D3DCLEAR_ZBUFFER)&&terrain&&(!captured||earlyDepth.earlyCaptured)&&!applied&&enabled&&!failed) {
             IDirect3DSurface9* ds=nullptr;ext->GetDepthStencilSurface(&ds);
             /* 0.3.188 (task 3): a Clear(Z) after the early resolve freezes it (no later undo would find the cleared depth useful); census position of either */
-            if(ds==worldDepth&&(captured?(earlyDepth.freeze(),true):resolveDepth())&&sampled()&&!clearResolveAt)clearResolveAt=censusDraws+1;drop(ds);
+            if(ds==worldDepth){surfaceFinalDepth(true);if((captured?(earlyDepth.freeze(),true):resolveDepth())&&sampled()&&!clearResolveAt)clearResolveAt=censusDraws+1;}drop(ds);
         }
         if(spellOn)spellClear(flags); /* task 34 */
         return ext->Clear(n,rects,flags,color,z,stencil);

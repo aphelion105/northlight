@@ -1,4 +1,6 @@
 #pragma once
+#include "surface_frame.h"
+#include "weather_shelter.h"
 #include "stream_hooks.h"
 #include "weather_memory.h"
 #include "dither_noise.h"
@@ -859,6 +861,8 @@ private:
     std::vector<NorthlightReplayShadowPolicy::Candidate> shadowCandidates;
     unsigned minSkinnedShadowTriangles=0,captureBudgetMiB=32,actorShadowBudgetMiB=0;bool shadowFateDiagnostics=false;
     NorthlightQuality::Settings quality; /* northlight-quality.ini; Settings{} is the full-quality default */
+    std::unique_ptr<NorthlightWeatherShelter::Worker> weatherShelter;
+    bool weatherShelterUnavailable=false;
     bool shadowSelectionDone=false;
     unsigned replayTriangleBins[6]={},skinnedTriangleBins[6]={},acceptedTriangleBins[6]={},acceptedSkinnedTriangleBins[6]={};
     unsigned smallShadowEarly=0,smallShadowGI=0;
@@ -2332,7 +2336,7 @@ public:
         }
         effects=next;
     }
-    void reset(){shadowsComposited=false;pivotValid=false;pivotDistance=12.f;pivotCorrection.reset();pivotSelfCaptured=false;cascadeAnchor.reset();endFrame();replaySnapshots.clearIndexCache();actorJobComplete.reset();actorJobSerial_=0;actorSceneMap_.clear();lastActorCapture=0;terrainBoundsCache.clearPersistent();previousCacheHits=0;freeReplays.clear();pooledSnapshotBytes=0;valid=false;failed=false;releaseGPU(true); /* task 42: the committed MANAGED mesh survives any Reset, failed or not */}
+    void reset(){weatherShelter.reset();weatherShelterUnavailable=false;shadowsComposited=false;pivotValid=false;pivotDistance=12.f;pivotCorrection.reset();pivotSelfCaptured=false;cascadeAnchor.reset();endFrame();replaySnapshots.clearIndexCache();actorJobComplete.reset();actorJobSerial_=0;actorSceneMap_.clear();lastActorCapture=0;terrainBoundsCache.clearPersistent();previousCacheHits=0;freeReplays.clear();pooledSnapshotBytes=0;valid=false;failed=false;releaseGPU(true); /* task 42: the committed MANAGED mesh survives any Reset, failed or not */}
     // 0.3.176 (U0/S0): the sample-frame lines of the selection and upload spans (and the RIGID event
     // lines) are formatted where they are today and written here, from endFrame, so no log write (a
     // vfprintf and fflush under the log lock) is inside a bucketed span. The text is the same.
@@ -2473,6 +2477,31 @@ public:
     bool captureSkippedLastFrame()const{return lastCaptureSkipped;} /* for the sampled CPU profile, logged after endFrame */
     unsigned capturePhaseReadsLastFrame()const{return lastCapturePhaseReads;} /* 0.3.150: clock reads of the capture-phase subset (inside the capture timers), likewise */
     bool hasContext()const{return valid&&!failed&&!workerFault();}
+    NorthlightQuality::Preset qualityPreset()const{return quality.preset;}
+    const NorthlightQuality::Settings& surfaceSettings()const{return quality;}
+    NorthlightSurfaceLights surfacePointLights()const{
+        NorthlightSurfaceLights out;
+        if(!quality.waterPointLights||!active||active->map!=lastRequest.map||localLightMap!=active->map||different(vec(context.camera),localLightCamera,40))return out;
+        if(!localLightQpc||captureFrequency.QuadPart<=0||double(QpcClock::now()-localLightQpc)/captureFrequency.QuadPart>.25)return out;
+        // The last completed atmosphere publication already includes stable selection/fades and equipment lights.
+        out.count=std::min(atmosphere.lights.count,quality.preset==NorthlightQuality::Preset::Quality?4u:2u);
+        for(unsigned i=0;i<out.count;++i){std::memcpy(out.position[i],atmosphere.lights.position[i].data(),16);std::memcpy(out.color[i],atmosphere.lights.color[i].data(),16);}return out;
+    }
+    bool surfaceContext(NorthlightSurfaceFrame& frame)const{
+        if(!hasContext())return false;
+        const auto& fog=legacyFogConstants();
+        std::memcpy(frame.fog[0],fog.parameters,16);std::memcpy(frame.fog[1],fog.color,16);
+        std::memcpy(frame.c[1],projection,12);std::memcpy(frame.c[4],context.inverseView,64);
+        std::memcpy(frame.c[8],context.ambient,12);std::memcpy(frame.c[9],context.direct,12);std::memcpy(frame.c[10],context.lightDirection,12);
+        const unsigned body=NorthlightGI::dot(sourceColors[1],sourceColors[1])>NorthlightGI::dot(sourceColors[0],sourceColors[0])?1:0;
+        if(NorthlightGI::dot(rawSourceDirections[body],rawSourceDirections[body])>.5f){std::memcpy(frame.c[10],&rawSourceDirections[body].x,12);std::memcpy(frame.c[9],&sourceColors[body].x,12);}return true;
+    }
+    bool supplementalWeatherOutdoors(){
+        if(!hasContext()||!active||!active->bvh||active->map!=lastRequest.map)return false;
+        if(weatherShelterUnavailable)return false;
+        if(!weatherShelter)try{weatherShelter=std::make_unique<NorthlightWeatherShelter::Worker>();}catch(...){weatherShelterUnavailable=true;logf("WEATHER supplemental shelter worker unavailable; native precipitation retained");return false;}
+        return weatherShelter->sample(active->bvh,vec(context.camera),active->map,GetTickCount64());
+    }
     unsigned frameTraceFog()const{return traceFog;}
     unsigned frameTraceContext()const{return traceContext;} /* 0.3.200 (frame trace) */
     bool actorShadowsEnabled()const{return quality.actorShadows!=0;}
@@ -3593,12 +3622,14 @@ public:
         return ok(hr,"animated shadow draw");
     }
     // 0.3.174: true once this frame's WorldComposite quad has drawn (the proxy's FOLD fallback reads it).
-    bool composited=false;
+    bool composited=false;IDirect3DTexture9* surfaceFogOutput=nullptr;
+    IDirect3DTexture9* surfaceFogTexture()const{return composited&&lastRenderDebug==0?surfaceFogOutput:nullptr;}
+    IDirect3DTexture9* surfaceFogDistance()const{return composited&&lastRenderDebug==0?temporalDepth[1-temporalIndex]:nullptr;}
     // foldScene/foldAO (0.3.174 FOLD): the proxy's pre-AO scene copy replaces the world colour
     // copy, and its AOContactBloom target (bloom rgb, AO alpha) is applied by TemporalLight's
     // removal smoothing and WorldComposite. Null: the proxy composited already (neutral s10).
     bool render(IDirect3DSurface9* targetSurface,IDirect3DTexture9* depth,UINT w,UINT h,D3DFORMAT fmt,float nearZ,float farZ,float minZ,float maxZ,int debug,NorthlightGpuProfile* profile,IDirect3DTexture9* waterMask,IDirect3DTexture9* foldScene=nullptr,IDirect3DTexture9* foldAO=nullptr){
-        shadowsComposited=false;composited=false;lastRenderDebug=debug;
+        shadowsComposited=false;composited=false;surfaceFogOutput=nullptr;lastRenderDebug=debug;
         if(debug!=1)gpuDiagnosticArmed=true;
         // 0.3.169 lastSkipReason(): why this call returned false. Untagged returns below the
         // upload gate are failed device calls in the draw stages ("draw").
@@ -4546,7 +4577,7 @@ public:
         bool compositeOk=false;
         {IDirect3DSurface9* maskDepth=nameMaskDepth;nameMaskDepth=nullptr;NameMaskCompositeBind mask(d,maskDepth);compositeOk=check(quad(w,h),"world composite");}
         d->SetTexture(15,nullptr);d->SetTexture(2,nullptr);d->SetSamplerState(2,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(2,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);
-        if(!compositeOk)return false;composited=true;d->SetTexture(13,regionalFogTexture);if(profile)profile->mark("WorldComposite");
+        if(!compositeOk)return false;composited=true;surfaceFogOutput=fogResolved?fogBlurred:fog;d->SetTexture(13,regionalFogTexture);
         if(diagnosticCapture){
             gpuDiagnosticArmed=false;unsigned capture=++gpuDiagnosticCaptures;
             const std::string& directory=gpuDiagnosticDirectory;

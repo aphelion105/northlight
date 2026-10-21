@@ -1,0 +1,32 @@
+{
+  "source_sha256": "2c4c951445b570b7cb1b4983d83ac76a9b4830cf03705db249b9fd95586091f6",
+  "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
+  "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+  "game_launched": false,
+  "shaders": {
+    "WaterMaterialMaskVS": {
+      "target": "vs_3_0",
+      "sha256": "edd0664c4b1e1b7e4bf216056da4a8573412ce0ff34a3f1c518b06b38781af6c",
+      "static_instruction_slots": 15,
+      "temporary_registers": 3,
+      "samplers": [],
+      "instructions": {
+        "mul": 7,
+        "add": 6,
+        "abs": 1,
+        "mov": 1
+      }
+    },
+    "WaterMaterialMaskPS": {
+      "target": "ps_3_0",
+      "sha256": "be014f999f8e839b20a45a0cf99635915a073f01eb85c9891f96e909d5228311",
+      "static_instruction_slots": 2,
+      "temporary_registers": 1,
+      "samplers": [],
+      "instructions": {
+        "mul": 1,
+        "add": 1
+      }
+    }
+  }
+}

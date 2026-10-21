@@ -196,6 +196,17 @@ Individual settings (Quality / Balanced / Performance):
   SpellFog              1 / 1 / 1      the held-back effects get Northlight's fog (haze, rain, ground fog, fog clouds along the view direction) by folding it into the effect's own fog constants when it is recorded, with no extra pass (approximate: the camera's heading stands for the whole effect (rays to effect height above the ground), 128 units at most, no horizon haze, the in-scatter colour is the sky ambient, a quarter-second smoothing; only effects whose vertex shader is proven to use the game's fog ramp; ribbons and beams are not fogged by it); 0 = the recorded game values (0..1; needs SpellLayer=1; read once at start)
   NameMask              1 / 1 / 1      1 = floating unit names and other world text keep the colour the game drew them in (not darkened, lit or hazed by the scene effects; a solid object in front still covers them; with a font mod that replaces the UI shaders, from when the effects start); 0 = as before 0.3.212 (0..1; read once at start)
   NameMaskDebug         0 / 0 / 0      1 = the pixels NameMask protects are painted 50 percent magenta over the finished frame (a diagnostic view); 0 = off (0..1)
+  Water 1 / 1 / 1   See the quality INI for the allowed range.
+  WaterSSR 1 / 1 / 1   See the quality INI for the allowed range.
+  WaterSSRResolution 100 / 50 / 25   See the quality INI for the allowed range.
+  WaterSSRSteps 64 / 40 / 24   See the quality INI for the allowed range.
+  WaterSSRDistance 0 / 0 / 0   See the quality INI for the allowed range.
+  WaterSSRThickness 30 / 30 / 30   See the quality INI for the allowed range.
+  WaterSSRRefineSteps 4 / 4 / 3   See the quality INI for the allowed range.
+  WaterSSRStrength 100 / 100 / 100   See the quality INI for the allowed range.
+  WaterRefraction 1 / 1 / 1   See the quality INI for the allowed range.
+  WaterGlints 1 / 1 / 0   See the quality INI for the allowed range.
+  WaterPointLights 1 / 1 / 0   See the quality INI for the allowed range.
 When both NearShadowInterval and FarShadowInterval are at least 2, frames that
 draw neither shadow also skip copying the character geometry (about 1–1.5 ms
 of CPU per skipped frame). Light and normal frames alternate: the average FPS
