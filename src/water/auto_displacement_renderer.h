@@ -23,7 +23,7 @@ class NorthlightAutoDisplacement {
     struct Entry {
         std::shared_ptr<const Mesh> source;IDirect3DTexture9* texture=nullptr,*texture1=nullptr;
         IDirect3DVertexBuffer9* vb=nullptr;IDirect3DIndexBuffer9* ib=nullptr;IDirect3DVertexDeclaration9* decl=nullptr,*sourceDecl=nullptr;
-        std::vector<float> uvConstants;unsigned vertices=0,primitives=0,stride=0,detail=0,address=0,domain=0,material=0;size_t bytes=0;uint64_t used=0,program=0,baseFrame=0,heightVersion=0,heightVersion1=0;
+        std::vector<float> uvConstants;unsigned vertices=0,primitives=0,stride=0,detail=0,address=0,domain=0,material=0;size_t bytes=0;uint64_t used=0,program=0,baseFrame=0,heightVersion=0,heightVersion1=0,order=0,fingerprint=0;
         ~Entry(){drop(texture);drop(texture1);drop(vb);drop(ib);drop(decl);drop(sourceDecl);}
     };
     IDirect3DDevice9* d;
@@ -47,10 +47,47 @@ class NorthlightAutoDisplacement {
     std::vector<Texture> textures;
     std::unordered_map<const Mesh*,Bounds> bounds;
     std::vector<std::unique_ptr<Entry>> entries;
+    std::unordered_multimap<const Mesh*,Entry*> sourceLookup;
+    std::unordered_multimap<uint64_t,Entry*> contentLookup;
+    bool indexedEntries=true;uint64_t entrySerial=0;
     std::vector<float> uvScratch;
     Entry* current=nullptr;float controls[4][4]={};
     float strength=.12f,range=12,worldStrength=.12f,worldRange=12,modelStrength=.03f,modelRange=8;unsigned worldDetail=4,modelDetail=2,polarity=0,heightDetails=75,heightBalance=50;unsigned detail=4,buildsThisFrame=0,readsThisFrame=0,poseVerticesThisFrame=0;
     size_t resident=0,boundsBytes=0,cacheBudget=64u<<20;uint64_t clock=0,materialClock=0,builds=0,hits=0,draws=0,triangles=0,refused=0;unsigned frames=0,domainDraws[4]={},stateRejected=0,heightRejected=0,shaderRejected=0,meshRejected=0,snapshotRejected=0;bool userDraw=false,indexedUserDraw=false;
+    uint64_t snapshotAttempts=0,snapshotUP=0;std::array<uint64_t,size_t(NorthlightDrawSnapshot::Error::Unlock)+1> snapshotReasons{};
+    static bool sameSource(const Entry& e,const std::shared_ptr<const Mesh>& source,bool equivalent){return e.source==source||(equivalent&&e.source->vertexCount==source->vertexCount&&e.source->primitiveCount==source->primitiveCount&&e.source->topology==source->topology&&e.source->indexed==source->indexed&&e.source->streams[0].bytes==source->streams[0].bytes&&e.source->indices==source->indices);}
+    static uint64_t sourceFingerprint(const Mesh& source){
+        uint64_t h=1469598103934665603ull;auto add=[&](uint64_t v){h^=v;h*=1099511628211ull;};
+        add(source.vertexCount);add(source.primitiveCount);add(source.topology);add(source.indexed);
+        // A bounded shortlist, never proof: full source bytes still authorize every alias.
+        auto sample=[&](const void* data,size_t size){add(size);const auto* p=static_cast<const unsigned char*>(data);const size_t n=std::min(size,size_t(32));for(size_t i=0;i<n;++i)add(p[i]);for(size_t i=size-n;i<size;++i)add(p[i]);};
+        sample(source.streams[0].bytes.data(),source.streams[0].bytes.size());sample(source.indices.data(),source.indices.size()*sizeof(uint32_t));return h;
+    }
+    template<class Visit> void candidates(const std::shared_ptr<const Mesh>& source,uint64_t fingerprint,bool equivalent,Visit visit){
+        if(!indexedEntries){for(auto& e:entries)visit(*e);}
+        else if(equivalent){const auto range=contentLookup.equal_range(fingerprint);for(auto it=range.first;it!=range.second;++it)visit(*it->second);}
+        else{const auto range=sourceLookup.equal_range(source.get());for(auto it=range.first;it!=range.second;++it)visit(*it->second);}
+    }
+    template<class Match> Entry* firstCandidate(const std::shared_ptr<const Mesh>& source,uint64_t fingerprint,bool equivalent,Match match){
+        Entry* first=nullptr;candidates(source,fingerprint,equivalent,[&](Entry& e){if((!first||e.order<first->order)&&match(e))first=&e;});return first;
+    }
+    Entry* findOverlay(const std::shared_ptr<const Mesh>& source,uint64_t fingerprint,IDirect3DVertexDeclaration9* declaration){
+        Entry* overlay=nullptr;candidates(source,fingerprint,true,[&](Entry& e){if(e.sourceDecl==declaration&&e.domain==1&&e.baseFrame==uint64_t(frames)+1&&(!overlay||e.used>overlay->used||(e.used==overlay->used&&e.order<overlay->order))&&sameSource(e,source,true))overlay=&e;});return overlay;
+    }
+    bool retains(const Mesh* source,const Entry* except=nullptr)const{for(const auto& e:entries)if(e.get()!=except&&e->source.get()==source)return true;return false;}
+    void evictOldest(){
+        auto old=std::min_element(entries.begin(),entries.end(),[](const auto& a,const auto& b){return a->used<b->used;});Entry* e=old->get();
+        resident-=e->bytes;if(!retains(e->source.get(),e))resident-=e->source->byteSize();
+        auto erase=[&](auto& lookup,const auto& key){auto range=lookup.equal_range(key);for(auto it=range.first;it!=range.second;)if(it->second==e)it=lookup.erase(it);else ++it;};
+        erase(sourceLookup,e->source.get());erase(contentLookup,e->fingerprint);entries.erase(old);
+    }
+    void makeRoom(const std::shared_ptr<const Mesh>& source,size_t bytes){while(!entries.empty()&&(resident+bytes+(retains(source.get())?0:source->byteSize())>cacheBudget||entries.size()>=256))evictOldest();}
+    void retain(std::unique_ptr<Entry> entry){
+        const size_t bytes=entry->bytes+(retains(entry->source.get())?0:entry->source->byteSize());entry->order=++entrySerial;entry->fingerprint=sourceFingerprint(*entry->source);
+        entries.push_back(std::move(entry));resident+=bytes;Entry* e=entries.back().get();
+        if(indexedEntries)try{sourceLookup.emplace(e->source.get(),e);contentLookup.emplace(e->fingerprint,e);}catch(...){sourceLookup.clear();contentLookup.clear();indexedEntries=false;}
+    }
+    bool snapshotFailure(const NorthlightDrawSnapshot::Diagnostics& why){++snapshotRejected;const auto reason=size_t(why.error);++snapshotReasons[reason<snapshotReasons.size()?reason:0];return false;}
     static std::vector<unsigned> usedUVRegisters(const Material& m,bool layered){
         bool used[256]={};for(const auto* p:{&m.uv,&m.uv1,&m.blend})if(p==&m.uv||layered)for(const auto& op:p->operations)for(const auto& source:op.source){if(NorthlightShadowShader::regType(source.token)!=2)continue;const auto index=NorthlightShadowShader::regIndex(source.token);bool defined=false;for(const auto& def:p->definitions)defined|=def.reg==index;if(!defined&&index<256)used[index]=true;}
         std::vector<unsigned> result;for(unsigned i=0;i<256;++i)if(used[i])result.push_back(i);return result;
@@ -63,7 +100,7 @@ class NorthlightAutoDisplacement {
         if(memoryPressure)cacheBudget=32u<<20;
         else if(memory.ullAvailVirtual<(896ull<<20))cacheBudget=32u<<20;
         else if(memory.ullAvailVirtual>=(1024ull<<20))cacheBudget=128u<<20;
-        while(resident>cacheBudget&&!entries.empty()){auto old=std::min_element(entries.begin(),entries.end(),[](const auto& a,const auto& b){return a->used<b->used;});resident-=(*old)->bytes;entries.erase(old);}
+        while(resident>cacheBudget&&!entries.empty())evictOldest();
     }
     const Height* height(IDirect3DTexture9* source,bool model=false){
         const auto revision=NorthlightMaterialHeight::version(source);
@@ -110,8 +147,9 @@ public:
         if(on){bounds.clear();boundsBytes=0;snapshots.clearIndexCache();}
     }
     void trimMemory(){setMemoryPressure(memoryPressure);}
-    void reset(){current=nullptr;constantStamp={};entries.clear();bounds.clear();boundsBytes=resident=0;for(auto& t:textures)drop(t.source);textures.clear();snapshots.clearIndexCache();declarations.clear();}
-    void endFrame(){current=nullptr;if(frames%60==0){MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;if(GlobalMemoryStatusEx(&memory))refreshBudget(memory);}buildsThisFrame=readsThisFrame=poseVerticesThisFrame=0;snapshots.clearFrame();if(draws&&frames%600==0)logf("DISPLACEMENT cached=%zu bytes=%zu builds=%llu hits=%llu draws=%llu triangles=%llu refused=%llu terrain=%u walls=%u grass=%u models=%u stateRejected=%u heightRejected=%u shaderRejected=%u snapshotRejected=%u meshRejected=%u budgetMiB=%zu",entries.size(),resident,(unsigned long long)builds,(unsigned long long)hits,(unsigned long long)draws,(unsigned long long)triangles,(unsigned long long)refused,domainDraws[0],domainDraws[1],domainDraws[2],domainDraws[3],stateRejected,heightRejected,shaderRejected,snapshotRejected,meshRejected,cacheBudget>>20);++frames;}
+    void reset(){current=nullptr;constantStamp={};sourceLookup.clear();contentLookup.clear();indexedEntries=true;entries.clear();bounds.clear();boundsBytes=resident=0;for(auto& t:textures)drop(t.source);textures.clear();snapshots.clearIndexCache();declarations.clear();}
+    void endFrame(){current=nullptr;if(frames%60==0){MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;if(GlobalMemoryStatusEx(&memory))refreshBudget(memory);}buildsThisFrame=readsThisFrame=poseVerticesThisFrame=0;snapshots.clearFrame();if((draws||snapshotRejected)&&frames%600==0){logf("DISPLACEMENT cached=%zu bytes=%zu builds=%llu hits=%llu draws=%llu triangles=%llu refused=%llu terrain=%u walls=%u grass=%u models=%u stateRejected=%u heightRejected=%u shaderRejected=%u snapshotRejected=%u meshRejected=%u budgetMiB=%zu",entries.size(),resident,(unsigned long long)builds,(unsigned long long)hits,(unsigned long long)draws,(unsigned long long)triangles,(unsigned long long)refused,domainDraws[0],domainDraws[1],domainDraws[2],domainDraws[3],stateRejected,heightRejected,shaderRejected,snapshotRejected,meshRejected,cacheBudget>>20);
+        logf("DISPLACEMENT snapshots attempts=%llu up=%llu buffered=%llu unknown=%llu arguments=%llu declaration=%llu stream=%llu instancing=%llu indexBuffer=%llu indexRange=%llu vertexRange=%llu budget=%llu lock=%llu unlock=%llu",(unsigned long long)snapshotAttempts,(unsigned long long)snapshotUP,(unsigned long long)(snapshotAttempts-snapshotUP),(unsigned long long)snapshotReasons[0],(unsigned long long)snapshotReasons[1],(unsigned long long)snapshotReasons[2],(unsigned long long)snapshotReasons[3],(unsigned long long)snapshotReasons[4],(unsigned long long)snapshotReasons[5],(unsigned long long)snapshotReasons[6],(unsigned long long)snapshotReasons[7],(unsigned long long)snapshotReasons[8],(unsigned long long)snapshotReasons[9],(unsigned long long)snapshotReasons[10]);}++frames;}
     void registerVariant(IDirect3DVertexShader9* original,const DWORD* code,size_t count,bool skinned=false){
         auto old=shaders.find(original);if(old!=shaders.end()){drop(old->second.patched);drop(old->second.source);shaders.erase(old);}std::vector<uint32_t> patched;Shader shader;
         if(NorthlightDisplacementPatch::patch(reinterpret_cast<const uint32_t*>(code),count,patched,shader.binding,skinned)){const HRESULT result=d->CreateVertexShader(reinterpret_cast<const DWORD*>(patched.data()),&shader.patched);if(FAILED(result))logf("DISPLACEMENT vertex shader rejected: 0x%08lx model=%08lx",static_cast<unsigned long>(result),static_cast<unsigned long>(code[0]));}
@@ -136,14 +174,15 @@ m.layered=NorthlightActorDeformation::compile(words,count,m.uv1,true,2,5,1)&&Nor
         NorthlightDrawSnapshot::Ref<IDirect3DVertexDeclaration9> decl;if(FAILED(d->GetVertexDeclaration(decl.out()))||!decl.p)return false;
         const D3DVERTEXELEMENT9* elements=nullptr;UINT count=0;if(!declarations.get(decl.p,elements,count)||count>MAXD3DDECLLENGTH)return false;
         Mesh local;std::shared_ptr<const Mesh> source;
-        if(args.vertices){if(!snapshots.readUP(decl.p,args.draw,args.indices,args.format,args.vertices,args.stride,local)){++snapshotRejected;return false;}}
-        else if(!snapshots.read(d,decl.p,args.draw,local,nullptr,false,&source)){++snapshotRejected;return false;}
+        NorthlightDrawSnapshot::Diagnostics why;++snapshotAttempts;if(args.vertices)++snapshotUP;
+        if(args.vertices){if(!snapshots.readUP(decl.p,args.draw,args.indices,args.format,args.vertices,args.stride,local,&why))return snapshotFailure(why);}
+        else if(!snapshots.read(d,decl.p,args.draw,local,&why,false,&source))return snapshotFailure(why);
         if(!source)source=std::make_shared<Mesh>(std::move(local));
-        auto sameSource=[&](const Entry& e){return e.source==source||((args.vertices||(domain==1&&material==2))&&e.source->vertexCount==source->vertexCount&&e.source->primitiveCount==source->primitiveCount&&e.source->topology==source->topology&&e.source->indexed==source->indexed&&e.source->streams[0].bytes==source->streams[0].bytes&&e.source->indices==source->indices);};
+        const bool equivalent=args.vertices||(domain==1&&material==2);const uint64_t fingerprint=equivalent?sourceFingerprint(*source):0;
         // UP snapshots have fresh identities even when every byte is unchanged.
         // Reuse the proven source before rebuilding its bounds or skin envelope.
-        if(args.vertices)for(const auto& e:entries)if(e->sourceDecl==decl.p&&e->program==shader->second.id&&e->domain==domain&&sameSource(*e)){source=e->source;break;}
-        if(domain==1&&material!=2)for(auto& e:entries)if(e->sourceDecl==decl.p&&e->domain==domain&&sameSource(*e))e->baseFrame=0;
+        if(args.vertices){auto* e=firstCandidate(source,fingerprint,true,[&](const Entry& e){return e.sourceDecl==decl.p&&e.program==shader->second.id&&e.domain==domain&&sameSource(e,source,true);});if(e)source=e->source;}
+        if(domain==1&&material!=2)candidates(source,fingerprint,equivalent,[&](Entry& e){if(e.sourceDecl==decl.p&&e.domain==domain&&sameSource(e,source,equivalent))e.baseFrame=0;});
         // Reject whole draws outside the sphere before decoding textures or subdividing.
         const auto position=std::find_if(elements,elements+count,[](const D3DVERTEXELEMENT9& e){return e.Stream==0&&e.Usage==0&&e.UsageIndex==0;});
         if(position==elements+count||position->Type!=D3DDECLTYPE_FLOAT3)return false;
@@ -172,10 +211,10 @@ m.layered=NorthlightActorDeformation::compile(words,count,m.uv1,true,2,5,1)&&Nor
         DWORD u=0,v=0;d->GetSamplerState(0,D3DSAMP_ADDRESSU,&u);d->GetSamplerState(0,D3DSAMP_ADDRESSV,&v);if((u!=D3DTADDRESS_WRAP&&u!=D3DTADDRESS_CLAMP)||(v!=D3DTADDRESS_WRAP&&v!=D3DTADDRESS_CLAMP))return false;
         const auto revision=NorthlightMaterialHeight::version(static_cast<IDirect3DTexture9*>(tex.p)),revision1=tex1.p?NorthlightMaterialHeight::version(static_cast<IDirect3DTexture9*>(tex1.p)):0;
         const unsigned address=u|(v<<8);uvKey(shader->second,constants,domain==2&&material==6,uvScratch);
-        Entry* overlay=nullptr;
-        for(auto& e:entries){if(e->sourceDecl==decl.p&&e->domain==domain){
-                if(domain==1&&material==2){if(e->baseFrame==uint64_t(frames)+1&&(!overlay||e->used>overlay->used)&&sameSource(*e))overlay=e.get();}
-                else if(e->program==shader->second.id&&e->detail==detail&&e->address==address&&e->material==material&&e->texture==tex.p&&e->texture1==tex1.p&&e->uvConstants==uvScratch&&e->heightVersion==revision&&e->heightVersion1==revision1&&sameSource(*e)){current=e.get();userDraw=args.vertices!=nullptr;indexedUserDraw=userDraw&&args.draw.indexed;e->used=++clock;e->baseFrame=uint64_t(frames)+1;++hits;return true;}}}
+        Entry* overlay=domain==1&&material==2?findOverlay(source,fingerprint,decl.p):nullptr;
+        Entry* hit=domain==1&&material==2?nullptr:firstCandidate(source,fingerprint,equivalent,[&](Entry& e){if(e.sourceDecl!=decl.p||e.domain!=domain)return false;
+            return e.program==shader->second.id&&e.detail==detail&&e.address==address&&e.material==material&&e.texture==tex.p&&e.texture1==tex1.p&&e.uvConstants==uvScratch&&e.heightVersion==revision&&e.heightVersion1==revision1&&sameSource(e,source,equivalent);});
+        if(hit){current=hit;userDraw=args.vertices!=nullptr;indexedUserDraw=userDraw&&args.draw.indexed;hit->used=++clock;hit->baseFrame=uint64_t(frames)+1;++hits;return true;}
         if(overlay){current=overlay;userDraw=args.vertices!=nullptr;indexedUserDraw=userDraw&&args.draw.indexed;overlay->used=++clock;++hits;return true;}
         if((domain==1&&material==2)||buildsThisFrame>=2){++refused;return false;}
         auto* a=height(static_cast<IDirect3DTexture9*>(tex.p),domain==4);if(!a){++heightRejected;return false;}Height first=*a;const Height* second=nullptr;
@@ -191,16 +230,16 @@ m.layered=NorthlightActorDeformation::compile(words,count,m.uv1,true,2,5,1)&&Nor
         ++buildsThisFrame;Mesh output;if(!NorthlightDisplacementGeometry::build(*source,elements,count,uv,first,factor,domain==1,u==D3DTADDRESS_CLAMP,v==D3DTADDRESS_CLAMP,output,second,second?&uv1:nullptr,second?&weights:nullptr,shader->second.influences)){++meshRejected;return false;}
         if(builds<8){float peak=0;for(unsigned i=0;i<output.vertexCount;++i){float delta[3];std::memcpy(delta,output.streams[0].bytes.data()+size_t(i)*output.streams[0].stride+stream.stride,12);peak=std::max(peak,std::sqrt(delta[0]*delta[0]+delta[1]*delta[1]+delta[2]*delta[2])*strength);}logf("DISPLACEMENT build domain=%u vertices=%u triangles=%u maxOffset=%.5f VScontrol=%u",domain,output.vertexCount,output.primitiveCount,peak,shaders.find(original)->second.binding.constant);}
         const auto indexBytes=NorthlightDisplacementGeometry::indexElementBytes(output);
-        auto entry=std::make_unique<Entry>();entry->bytes=output.byteSize()-output.indices.size()*(sizeof(uint32_t)-indexBytes)+source->byteSize();
-        MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;if(!GlobalMemoryStatusEx(&memory)||memory.ullAvailVirtual<entry->bytes+(160u<<20)){++refused;return false;}
-        refreshBudget(memory);if(entry->bytes>cacheBudget){++refused;return false;}
-        while(!entries.empty()&&(resident+entry->bytes>cacheBudget||entries.size()>=256)){auto old=std::min_element(entries.begin(),entries.end(),[](const auto& a,const auto& b){return a->used<b->used;});resident-=(*old)->bytes;entries.erase(old);}
+        auto entry=std::make_unique<Entry>();entry->bytes=output.byteSize()-output.indices.size()*(sizeof(uint32_t)-indexBytes);
+        MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;if(!GlobalMemoryStatusEx(&memory)||memory.ullAvailVirtual<entry->bytes+source->byteSize()+(160u<<20)){++refused;return false;}
+        refreshBudget(memory);if(entry->bytes+source->byteSize()>cacheBudget){++refused;return false;}
+        makeRoom(source,entry->bytes);
         const auto vbBytes=UINT(output.streams[0].bytes.size()),ibBytes=UINT(output.indices.size()*indexBytes);void* data=nullptr;
         if(FAILED(d->CreateVertexBuffer(vbBytes,D3DUSAGE_WRITEONLY,0,D3DPOOL_DEFAULT,&entry->vb,nullptr))||FAILED(entry->vb->Lock(0,vbBytes,&data,NorthlightUpload::FreshBufferLock)))return false;std::memcpy(data,output.streams[0].bytes.data(),vbBytes);if(FAILED(entry->vb->Unlock()))return false;
         if(FAILED(d->CreateIndexBuffer(ibBytes,D3DUSAGE_WRITEONLY,indexBytes==sizeof(uint16_t)?D3DFMT_INDEX16:D3DFMT_INDEX32,D3DPOOL_DEFAULT,&entry->ib,nullptr))||FAILED(entry->ib->Lock(0,ibBytes,&data,NorthlightUpload::FreshBufferLock)))return false;NorthlightDisplacementGeometry::copyIndices(output,data);if(FAILED(entry->ib->Unlock()))return false;
         D3DVERTEXELEMENT9 outputElements[MAXD3DDECLLENGTH+1];std::copy(elements,elements+count,outputElements);
         outputElements[count-1]={0,WORD(stream.stride),D3DDECLTYPE_FLOAT3,D3DDECLMETHOD_DEFAULT,D3DDECLUSAGE_TEXCOORD,7};outputElements[count]=D3DDECL_END();if(FAILED(d->CreateVertexDeclaration(outputElements,&entry->decl)))return false;
-        entry->source=source;entry->sourceDecl=decl.p;entry->sourceDecl->AddRef();entry->texture=static_cast<IDirect3DTexture9*>(tex.p);entry->texture->AddRef();entry->texture1=static_cast<IDirect3DTexture9*>(tex1.p);if(entry->texture1)entry->texture1->AddRef();entry->detail=detail;entry->program=shader->second.id;entry->domain=domain;entry->material=material;entry->uvConstants=uvScratch;entry->address=address;entry->heightVersion=revision;entry->heightVersion1=revision1;entry->vertices=output.vertexCount;entry->primitives=output.primitiveCount;entry->stride=output.streams[0].stride;entry->used=++clock;entry->baseFrame=uint64_t(frames)+1;resident+=entry->bytes;current=entry.get();userDraw=args.vertices!=nullptr;indexedUserDraw=userDraw&&args.draw.indexed;entries.push_back(std::move(entry));++builds;return true;
+        entry->source=source;entry->sourceDecl=decl.p;entry->sourceDecl->AddRef();entry->texture=static_cast<IDirect3DTexture9*>(tex.p);entry->texture->AddRef();entry->texture1=static_cast<IDirect3DTexture9*>(tex1.p);if(entry->texture1)entry->texture1->AddRef();entry->detail=detail;entry->program=shader->second.id;entry->domain=domain;entry->material=material;entry->uvConstants=uvScratch;entry->address=address;entry->heightVersion=revision;entry->heightVersion1=revision1;entry->vertices=output.vertexCount;entry->primitives=output.primitiveCount;entry->stride=output.streams[0].stride;entry->used=++clock;entry->baseFrame=uint64_t(frames)+1;current=entry.get();userDraw=args.vertices!=nullptr;indexedUserDraw=userDraw&&args.draw.indexed;retain(std::move(entry));++builds;return true;
     }
     template<class Draw> HRESULT draw(Draw original,bool native=false){
         if(!current)return original();
