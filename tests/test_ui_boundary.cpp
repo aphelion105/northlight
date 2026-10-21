@@ -29,6 +29,7 @@ int main(){
         assert(accepts(false,c));
         assert(!accepts(true,c));
         assert(accepts(false,c,true)&&!accepts(false,c,false)&&!accepts(true,c,true)); // ZENABLE on + ZFUNC not ALWAYS (a depth-tested draw) is no UI draw
+        assert(accepts(false,c,false,false)&&!accepts(true,c,false,false)); // Disabled Z ignores a stale LESS function, but never permits Z writes.
         assert(!accepts(false,nullptr));
         ortho(p);p[15]=0;assert(!accepts(false,p));
     }
