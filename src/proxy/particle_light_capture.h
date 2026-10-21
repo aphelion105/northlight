@@ -89,7 +89,7 @@ public:
         NorthlightDrawSnapshot::Ref<IDirect3DBaseTexture9> texture;
         if(FAILED(device->GetTexture(material.sampler,texture.out()))||!texture.p){++frame.textureMiss;return result;}
         NorthlightParticleTextures::View image;
-        if(!NorthlightParticleTextures::cache().lookup(texture.p,image)){++frame.textureMiss;
+        if(!NorthlightParticleTextures::cache().lookup(texture.p,image)){++frame.textureMiss;if(!frame.wantsTextureMiss(texture.p))return result;
             NorthlightParticleLights::Frame::TextureMiss miss;miss.key=texture.p;miss.seen=NorthlightParticleTextures::cache().lastMiss();miss.type=texture.p->GetType();
             if(miss.type==D3DRTYPE_TEXTURE){D3DSURFACE_DESC d{};auto* t=static_cast<IDirect3DTexture9*>(texture.p);miss.levels=t->GetLevelCount();
                 if(SUCCEEDED(t->GetLevelDesc(0,&d))){miss.width=d.Width;miss.height=d.Height;miss.format=unsigned(d.Format);miss.pool=unsigned(d.Pool);miss.usage=unsigned(d.Usage);}}

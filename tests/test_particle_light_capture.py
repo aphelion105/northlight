@@ -36,7 +36,7 @@ def native_fixture():
         assert encoding == 2
         width, height = unpack('<II', blob, 12)
         offsets, sizes = unpack('<16I', blob, 20), unpack('<16I', blob, 84)
-        level = next(i for i in range(16) if offsets[i] and sizes[i] and max(width >> i, height >> i) <= 64)
+        level = next(i for i in range(16) if offsets[i] and sizes[i] and max(width >> i, height >> i) <= 32)  # the cache keeps mips up to 32 texels
         width, height = max(1, width >> level), max(1, height >> level)
         block = 8 if depth in (0, 1) else 16
         d3d = 0x31545844 if block == 8 else 0x33545844 if alpha == 1 else 0x35545844

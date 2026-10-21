@@ -61,10 +61,11 @@ public:
     // Diagnostics: textures particle draws missed, kept until the PARTICLELIGHT line reads them.
     struct TextureMiss {const void* key=nullptr;unsigned seen=0,width=0,height=0,format=0,levels=0,pool=0,usage=0,type=0;};
     std::array<TextureMiss,8> textureMisses{};unsigned textureMissCount=0;
-    void missTexture(const TextureMiss& miss){
-        for(unsigned i=0;i<textureMissCount;++i)if(textureMisses[i].key==miss.key)return;
-        if(textureMissCount<textureMisses.size())textureMisses[textureMissCount++]=miss;
+    bool wantsTextureMiss(const void* key)const{
+        if(textureMissCount==textureMisses.size())return false;
+        for(unsigned i=0;i<textureMissCount;++i)if(textureMisses[i].key==key)return false;return true;
     }
+    void missTexture(const TextureMiss& miss){if(wantsTextureMiss(miss.key))textureMisses[textureMissCount++]=miss;}
     void reset(){count_=previousCount_=trackCount_=outputCount=immediateCount=0;nextFrame();}
     void nextFrame(){count_=0;draws=backgroundDraws=accepted=deferred=triangles=points=dropped=0;shaderMiss=textureMiss=bufferMiss=stateMiss=geometryMiss=0;stateWhy={};}
     bool takeDraw(bool particle=true){if(draws>=DrawLimit||(!particle&&backgroundDraws>=DrawLimit/2)){++dropped;return false;}++draws;if(!particle)++backgroundDraws;return true;}

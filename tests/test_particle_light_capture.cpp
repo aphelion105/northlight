@@ -27,7 +27,7 @@ struct Pixel final:IDirect3DPixelShader9 {
     HRESULT STDMETHODCALLTYPE GetDevice(IDirect3DDevice9**)override{assert(false);return E_NOTIMPL;}
     HRESULT STDMETHODCALLTYPE GetFunction(void*,UINT*)override{assert(false);return E_NOTIMPL;}
 };
-struct Texture final:IDirect3DBaseTexture9 {
+struct Texture final:IDirect3DTexture9 {
     ULONG refs=1;
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID,void**)override{return E_NOINTERFACE;}
     ULONG STDMETHODCALLTYPE AddRef()override{return ++refs;}
@@ -42,10 +42,15 @@ struct Texture final:IDirect3DBaseTexture9 {
     D3DRESOURCETYPE STDMETHODCALLTYPE GetType()override{return D3DRTYPE_TEXTURE;}
     DWORD STDMETHODCALLTYPE SetLOD(DWORD)override{assert(false);return 0;}
     DWORD STDMETHODCALLTYPE GetLOD()override{assert(false);return 0;}
-    DWORD STDMETHODCALLTYPE GetLevelCount()override{assert(false);return 0;}
+    DWORD STDMETHODCALLTYPE GetLevelCount()override{return 1;} // PARTICLELIGHT textureMiss diagnostics
     HRESULT STDMETHODCALLTYPE SetAutoGenFilterType(D3DTEXTUREFILTERTYPE)override{assert(false);return E_NOTIMPL;}
     D3DTEXTUREFILTERTYPE STDMETHODCALLTYPE GetAutoGenFilterType()override{assert(false);return D3DTEXF_NONE;}
     void STDMETHODCALLTYPE GenerateMipSubLevels()override{assert(false);}
+    HRESULT STDMETHODCALLTYPE GetLevelDesc(UINT level,D3DSURFACE_DESC* out)override{assert(!level&&out);*out={};out->Width=out->Height=32;out->Format=D3DFMT_DXT5;out->Pool=D3DPOOL_MANAGED;return D3D_OK;}
+    HRESULT STDMETHODCALLTYPE GetSurfaceLevel(UINT,IDirect3DSurface9**)override{assert(false);return E_NOTIMPL;}
+    HRESULT STDMETHODCALLTYPE LockRect(UINT,D3DLOCKED_RECT*,const RECT*,DWORD)override{assert(false);return E_NOTIMPL;} // never locked: CPU uploads only
+    HRESULT STDMETHODCALLTYPE UnlockRect(UINT)override{assert(false);return E_NOTIMPL;}
+    HRESULT STDMETHODCALLTYPE AddDirtyRect(const RECT*)override{assert(false);return E_NOTIMPL;}
 };
 struct Declaration final:IDirect3DVertexDeclaration9 {
     ULONG refs=1;

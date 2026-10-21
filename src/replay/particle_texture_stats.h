@@ -49,8 +49,12 @@ struct Counters {
 };
 class Cache {
 public:
-    static constexpr unsigned MaxDimension=64,MaxEntries=512; // 128 evicted textures that particle draws still sampled
-    static constexpr std::size_t PixelBudget=4u<<20;
+    // The game uploads a MANAGED texture once, so an evicted particle texture never
+    // comes back: one play session evicted 2,049 with 512 entries and every texture
+    // miss (88,612) was such an eviction. A 32-texel mip is enough for a light's
+    // colour (0.5-4 KiB uploaded), so every small mip the game loads fits.
+    static constexpr unsigned MaxDimension=32,MaxEntries=16384;
+    static constexpr std::size_t PixelBudget=8u<<20;
 private:
     struct Entry {
         const void* raw=nullptr;
@@ -63,21 +67,29 @@ private:
         std::vector<std::uint8_t> source;std::size_t pitch=0;
         bool held()const{return !pixels.empty()||!source.empty();}
     };
-    std::array<Entry,MaxEntries> entries_{};
+    std::unordered_map<const void*,Entry> entries_;
     // Diagnostics only (PTEX misses=...): the last event per texture key, bounded.
     std::unordered_map<const void*,Seen> history_;Seen lastMiss_=Never;
     void note(const void* raw,Seen seen){if(!raw)return;if(history_.size()>=65536)history_.clear();history_[raw]=seen;}
     void evicted(const Entry& e){note(e.raw,Evicted);}
     std::size_t bytes_=0;
     std::uint64_t serial_=0,clock_=0;
-    Entry* find(const void* raw){if(raw)for(auto& e:entries_)if(e.raw==raw)return &e;return nullptr;}
+    Entry* find(const void* raw){if(!raw)return nullptr;const auto it=entries_.find(raw);return it!=entries_.end()?&it->second:nullptr;}
     void drop(Entry& e){bytes_-=e.pixels.size()+e.source.size();std::vector<std::uint8_t>().swap(e.pixels);std::vector<std::uint8_t>().swap(e.source);e.width=e.height=0;}
-    Entry* oldest(const Entry* except=nullptr){Entry* result=nullptr;for(auto& e:entries_)if(e.raw && &e!=except&&(!result||e.used<result->used))result=&e;return result;}
+    // Over a limit: evict the least recently used down to 7/8 of it, so a load burst scans the entries once, not per upload.
+    void evict(std::size_t incoming,const Entry* keep){
+        if(bytes_+incoming<=PixelBudget&&entries_.size()<=MaxEntries)return;
+        std::vector<std::pair<std::uint64_t,const void*>> order;order.reserve(entries_.size());
+        for(const auto& [raw,e]:entries_)if(&e!=keep)order.emplace_back(e.used,raw);
+        std::sort(order.begin(),order.end());
+        for(const auto& [used,raw]:order){
+            if(bytes_+incoming<=PixelBudget-PixelBudget/8&&entries_.size()<=MaxEntries-MaxEntries/8)break;
+            auto it=entries_.find(raw);evicted(it->second);drop(it->second);entries_.erase(it);++counts.evictions;
+        }
+    }
     Entry& slot(const void* raw,const void* owner){
         if(auto* e=find(raw)){if(e->owner==owner)return *e;drop(*e);*e={};}
-        Entry* selected=nullptr;for(auto& e:entries_)if(!e.raw){selected=&e;break;}
-        if(!selected){selected=oldest();evicted(*selected);drop(*selected);++counts.evictions;}
-        *selected={};selected->raw=raw;selected->owner=owner;selected->lifetime=++serial_;selected->used=++clock_;return *selected;
+        Entry& e=entries_[raw];e={};e.raw=raw;e.owner=owner;e.lifetime=++serial_;e.used=++clock_;return e;
     }
     static bool format(unsigned d3d,NorthlightActorTexture::Format& out){
         using F=NorthlightActorTexture::Format;
@@ -89,9 +101,9 @@ public:
     Counters counts;
     Seen lastMiss()const{return lastMiss_;}
     std::size_t bytes()const{return bytes_;}
-    unsigned size()const{unsigned n=0;for(const auto& e:entries_)n+=e.held();return n;}
-    void clear(){for(auto& e:entries_){drop(e);e={};}history_.clear();}
-    void erase(const void* raw,const void* owner=nullptr){if(auto* e=find(raw))if(!owner||e->owner==owner){drop(*e);*e={};++counts.releases;note(raw,Released);}}
+    unsigned size()const{unsigned n=0;for(const auto& [raw,e]:entries_)n+=e.held();return n;}
+    void clear(){entries_.clear();bytes_=0;history_.clear();}
+    void erase(const void* raw,const void* owner=nullptr){if(auto* e=find(raw))if(!owner||e->owner==owner){drop(*e);entries_.erase(raw);++counts.releases;note(raw,Released);}}
     void invalidate(const void* raw){note(raw,Invalidated);if(auto* e=find(raw)){drop(*e);++e->revision;++counts.invalidations;}}
     // Other full mips do not change this mip. Partial/failed writes invalidate
     // the texture conservatively. Only a later complete CPU upload can restore it.
@@ -109,8 +121,7 @@ public:
         auto* previous=find(raw);
         if(previous&&previous->owner==owner&&previous->held()&&mip>previous->mip){++previous->revision;return;}
         if(!source||!sourceBytes||sourceBytes>std::size_t(MaxDimension)*MaxDimension*16){++counts.failed;invalidate(raw);note(raw,Failed);return;}
-        Entry& e=slot(raw,owner);drop(e);
-        while(bytes_+sourceBytes>PixelBudget){auto* victim=oldest(&e);if(!victim)break;evicted(*victim);drop(*victim);*victim={};++counts.evictions;}
+        Entry& e=slot(raw,owner);drop(e);evict(sourceBytes,&e);
         e.source.assign(static_cast<const std::uint8_t*>(source),static_cast<const std::uint8_t*>(source)+sourceBytes);e.pitch=pitch;
         e.width=width;e.height=height;e.mip=mip;e.format=d3dFormat;++e.revision;e.used=++clock_;bytes_+=e.source.size();++counts.retained;note(raw,Held);
         }catch(...){++counts.failed;invalidate(raw);}
@@ -125,13 +136,13 @@ public:
             catch(...){decoded.clear();}
             if(decoded.empty()){++counts.failed;++counts.misses;invalidate(raw);note(raw,Failed);lastMiss_=Failed;++counts.missWhy[Failed];return false;}
             bytes_-=e->source.size();std::vector<std::uint8_t>().swap(e->source);
-            while(bytes_+decoded.size()>PixelBudget){auto* victim=oldest(e);if(!victim)break;evicted(*victim);drop(*victim);*victim={};++counts.evictions;}
+            evict(decoded.size(),e);
             e->rgbaHash=14695981039346656037ull;for(auto byte:decoded){e->rgbaHash^=byte;e->rgbaHash*=1099511628211ull;}
             e->pixels=std::move(decoded);bytes_+=e->pixels.size();++counts.decoded;
         }
         e->used=++clock_;out={e->pixels.data(),e->width,e->height,e->mip,e->format,e->lifetime,e->revision,e->rgbaHash};++counts.hits;return true;
     }
 };
-static_assert(sizeof(Cache)+Cache::PixelBudget+Cache::MaxDimension*Cache::MaxDimension*4<(5u<<20),"particle texture cache plus decode scratch stays below 5 MiB");
+static_assert(Cache::PixelBudget+Cache::MaxDimension*Cache::MaxDimension*4<(9u<<20),"particle texture bytes plus decode scratch stay below 9 MiB");
 inline Cache& cache(){static thread_local Cache value;return value;}
 } // namespace NorthlightParticleTextures
