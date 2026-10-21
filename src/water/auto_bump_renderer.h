@@ -120,6 +120,7 @@ public:
     unsigned geometryPrimitives()const{return displacement.preparedPrimitives();}
     void beginDraw(){displacement.beginDraw();}
     void setGeometryTracking(uint64_t(*identity)(void*,bool),uint64_t(*version)(void*,bool),NorthlightCaptureMetadata::Read metadata){displacement.tracking(identity,version,metadata);}
+    void setConstantEpochSource(void* context,NorthlightConstantEpoch::Reader reader){displacement.setConstantEpochSource(context,reader);}
     template<class Draw> HRESULT geometryDraw(Draw draw,bool native=false){return displacement.draw(draw,native);}
     void setProjection(float x,float y,float z){projection[0]=x;projection[1]=y;projection[2]=z;}
     void setLight(const float* light){std::copy(light,light+4,occlusionLight);}

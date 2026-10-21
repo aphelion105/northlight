@@ -44,7 +44,9 @@ for model in (('3',) if args.quick else ('3','2')):
             (folder/'gpu.log').write_text(run.stdout+run.stderr)
             if run.returncode:raise RuntimeError(str(folder)+'\n'+run.stdout[-2500:]+run.stderr[-1000:])
             assert 'DISPLACEMENT_PREPARED mode=9' in run.stdout
-            assert len(re.findall(r'DISPLACEMENT build domain=4 ',run.stdout))==2,'Pose or unused secondary UVs rebuilt the mesh'
+            # The separately asserted one-build reuse probe runs only for skinned fixtures.
+            probeBuilds=1 if 'MATERIAL_CONSTANT_REUSE_PASS' in run.stdout else 0
+            assert len(re.findall(r'DISPLACEMENT build domain=4 ',run.stdout))==2+probeBuilds,'Pose or unused secondary UVs rebuilt the mesh'
             normal=frame(folder/'normal-on.fgr');geometry=frame(folder/'displacement-on.fgr');assert np.isfinite(geometry).all()
             for alt in ('displacement-indexed','displacement-coverage'):assert np.max(np.abs(frame(folder/(alt+'.fgr'))-geometry))<.0002
             assert np.max(np.abs(frame(folder/'displacement-zero.fgr')-normal))<.0002

@@ -19,6 +19,11 @@ struct MaterialAllocationMeter:ForwardIDirect3DDevice9 {
         return real->CreateTexture(w,h,l,usage,format,pool,result,shared);
     }
 };
+struct MaterialConstantMeter:ForwardIDirect3DDevice9 {
+    unsigned calls=0,registers=0,builds=0;explicit MaterialConstantMeter(IDirect3DDevice9* d):ForwardIDirect3DDevice9(d){}
+    HRESULT STDMETHODCALLTYPE GetVertexShaderConstantF(UINT first,float* values,UINT count)override{++calls;registers+=count;return real->GetVertexShaderConstantF(first,values,count);}
+    HRESULT STDMETHODCALLTYPE CreateVertexBuffer(UINT bytes,DWORD usage,DWORD fvf,D3DPOOL pool,IDirect3DVertexBuffer9** result,HANDLE* shared)override{++builds;return real->CreateVertexBuffer(bytes,usage,fvf,pool,result,shared);}
+};
 #endif
 #ifndef NORTHLIGHT_OBLIQUE_WIDTH
 #define NORTHLIGHT_OBLIQUE_WIDTH 1280
@@ -103,6 +108,9 @@ int main(int argc,char** argv){
     };
     if(samples){ok(d->SetDepthStencilSurface(nullptr));ok(d->SetRenderTarget(0,output));ok(d->StretchRect(drawSurface,nullptr,baseSurface,nullptr,D3DTEXF_NONE));ok(d->SetRenderTarget(0,drawSurface));ok(d->SetDepthStencilSurface(zbuffer));referenceDepth([&]{return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,floor,sizeof(V));});}
     NorthlightAutoBump bump(d);NorthlightQuality::Settings settings;settings.autoBump=1;settings.autoBumpStrength=100;bump.configure(settings);bump.setProjection(xs,ys,-1);
+#ifdef NORTHLIGHT_MATERIAL_MIRROR
+    bump.setConstantEpochSource(&extension,[](void* context,NorthlightConstantEpoch::Stamp& stamp){return static_cast<ExtensionDevice*>(context)->constantStamp(stamp);});
+#endif
     bump.setMemoryPressure(pressure);assert(bump.active());
     bump.setGeometryTracking([](void* p,bool){return uint64_t(reinterpret_cast<uintptr_t>(p));},[](void*,bool){return uint64_t(1);},nullptr);
     bump.registerVertex(vs,NorthlightWaterShaderPatch::fnv1a64((std::uint32_t*)vsBytes.data(),vsBytes.size()/4),(DWORD*)vsBytes.data(),vsBytes.size()/4,model?3:0);bump.registerPixel(ps,NorthlightWaterShaderPatch::fnv1a64((std::uint32_t*)psBytes.data(),psBytes.size()/4));
@@ -140,6 +148,26 @@ int main(int argc,char** argv){
         auto native=[&]{return indexed?d->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,0,4,0,2):d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,floor,sizeof(V));};
         const float preserved[16]={.13f,.24f,.35f,.46f,.57f,.68f,.79f,.81f,.92f,.12f,.23f,.34f,.45f,.56f,.67f,.78f};ok(d->SetVertexShaderConstantF(252,preserved,4));
         float allConstants[256*4];ok(d->GetVertexShaderConstantF(0,allConstants,256));
+#ifdef NORTHLIGHT_MATERIAL_MIRROR
+        if(model&&mode==5){
+            MaterialConstantMeter reads(d);NorthlightAutoDisplacement probe(&reads);probe.configure(settings);
+            probe.setConstantEpochSource(&extension,[](void* context,NorthlightConstantEpoch::Stamp& stamp){return static_cast<ExtensionDevice*>(context)->constantStamp(stamp);});
+            probe.registerMaterial(vs,reinterpret_cast<const DWORD*>(vsBytes.data()),vsBytes.size()/4,4);
+            if(probe.skinned(vs)){
+            assert(probe.prepare(vs,4,7,geometry));reads.calls=reads.registers=0;
+            assert(probe.prepare(vs,4,7,geometry));assert(reads.calls==0);
+            for(unsigned repeat=0;repeat<3;++repeat){
+                ok(probe.draw(native));ok(probe.draw(native,true));reads.calls=reads.registers=0;
+                assert(probe.prepare(vs,4,7,geometry));assert(reads.calls==1&&reads.registers<=32);
+            }
+            assert(reads.builds==1);
+            std::printf("MATERIAL_CONSTANT_REUSE_PASS unchangedCalls=0 afterReplayRegisters=%u builds=1\n",reads.registers);
+            D3DVERTEXELEMENT9 packed[sizeof decls/sizeof *decls];std::copy(std::begin(decls),std::end(decls),packed);packed[0].Type=D3DDECLTYPE_SHORT4N;
+            IDirect3DVertexDeclaration9* unsupported=nullptr;ok(d->CreateVertexDeclaration(packed,&unsupported));ok(d->SetVertexDeclaration(unsupported));assert(!probe.prepare(vs,4,7,geometry));ok(d->SetVertexDeclaration(decl));drop(unsupported);assert(probe.prepare(vs,4,7,geometry));
+            }
+            ok(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0xff18212d,1,0));
+        }
+#endif
         bump.capture(vs,native,!indexed,&geometry);
         {IDirect3DSurface9 *rt=nullptr,*ds=nullptr;ok(d->GetRenderTarget(0,&rt));ok(d->GetDepthStencilSurface(&ds));assert(rt==drawSurface&&ds==zbuffer);drop(rt);drop(ds);assert(bump.active()&&bump.texture());}
         if((mode>=5&&mode<8||mode==9)){assert(bump.geometryPrepared());if(!unsafeSkin)assert(bump.geometryPrimitives()>2);std::printf("DISPLACEMENT_PREPARED mode=%u triangles=%u\n",mode,bump.geometryPrimitives());}
