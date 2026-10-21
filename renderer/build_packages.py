@@ -45,6 +45,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp  # noqa: E402
 fp.use_source_modules()
 import build_stormlib  # noqa: E402
+import install_world_cache  # noqa: E402
 
 PINS = json.loads((fp.RENDERER / 'package-pins.json').read_text(encoding='utf-8'))
 PLATFORMS = {'mac': 'macOS', 'windows': 'Windows', 'linux': 'Linux'}
@@ -58,13 +59,20 @@ APP_FILES = [
     'renderer/northlight_install.py', 'renderer/migrate_mac_proxy.py', 'renderer/windows-package/install.py',
     'renderer/world_scene_builder.py', 'renderer/m2_visibility.py', 'renderer/world_lights_builder.py',
     'renderer/instance_maps.py', 'renderer/world_light_placements.py', 'renderer/outdoor_light_profiles.py', 'renderer/outdoor-light-profiles.json',
+    'renderer/wotlk-emitter-profiles.json', 'renderer/m2_emitter_patch.py',
+    'renderer/build_emitter_patch.py', 'renderer/emitter_pin_report.py',
     'renderer/regional_fog_builder.py', 'renderer/build_celestial_disc_assets.py',
+    'renderer/native_model_lights.py', 'renderer/build_equipment_emitters.py',
+    'renderer/build_spell_emitters.py', 'renderer/build_mount_emitters.py',
+    'renderer/equipment_emitter_patch.py',
     'tests/validate_world_cache.py', 'src/sky/forest_regions.inc',
 ]
 PAYLOAD_COMMON = {'celestial-profiles.ini': 'client-config/celestial-profiles.ini',
                   'shadow-range-profiles.ini': 'client-config/shadow-range-profiles.ini',
                   'northlight-quality.ini': 'renderer/windows-package/northlight-quality.ini'}
-PRESERVE = {'northlight-quality.ini'}
+PRESERVE = set(PAYLOAD_COMMON)
+for addon_file in ('NorthlightSettings.toc', 'NorthlightAPI.lua', 'NorthlightMenu.lua'):
+    PAYLOAD_COMMON['Interface/AddOns/NorthlightSettings/' + addon_file] = 'renderer/addons/NorthlightSettings/' + addon_file
 DXVK_BACKEND = 'renderer-backends/dxvk/dxvk_d3d9.dll'
 DXVK2_BACKEND = 'renderer-backends/dxvk2/dxvk2_d3d9.dll'
 
@@ -160,6 +168,16 @@ def variant_digest(files):
     """The cache digest as scripts/build_cache_variant.py records it (recomputed here, not trusted)."""
     rows = ''.join(f"{name}\0{f['sha256']}\0{f['bytes']}\n" for name, f in sorted(files.items()))
     return hashlib.sha256(rows.encode()).hexdigest()
+
+
+def check_variant_sources(manifest):
+    """Never ship an old stock cache beside a new builder or emitter catalog."""
+    expected = install_world_cache.source_hashes()
+    actual = manifest.get('build', {}).get('sources', {})
+    changed = sorted(name for name, digest in expected.items() if actual.get(name) != digest)
+    if changed:
+        raise SystemExit('Stale cache variant ' + str(manifest.get('variant', '?')) +
+                         ': regenerate with scripts/build_cache_variant.py (changed sources: ' + ', '.join(changed) + ')')
 
 
 def check_cache_zip(path, manifest):
@@ -315,6 +333,8 @@ def launchers(platform, version):
 
 
 def build(platform, version, dll, variants, out, stormlib_dir):
+    for manifest in variants.values():
+        check_variant_sources(manifest)
     top = f'Northlight-{version}-{PLATFORMS[platform]}'
     tree = Tree(top)
     stamp = commit_time()
@@ -363,6 +383,7 @@ def build(platform, version, dll, variants, out, stormlib_dir):
             'variants': {n: {'cache_digest': m['cache_digest'], 'files': len(m['files'])} for n, m in sorted(variants.items())},
             'app_files': {n: sha(fp.REPO / n) for n in APP_FILES}}
     tree.add('BUILD-INFO.json', (json.dumps(info, indent=2) + '\n').encode())
+    tree.add('LICENSES/AO-methods.txt', fp.REPO / 'licenses/ao-methods.txt')
     path = out / f'{top}.zip'
     tree.write_zip(path, stamp)
     return {'platform': platform, 'file': path.name, 'sha256': sha(path), 'bytes': path.stat().st_size,
@@ -394,6 +415,7 @@ def main():
         manifest = json.loads(path.read_text(encoding='utf-8'))
         if manifest.get('format') != 'northlight-cache-variant/1' or variant_digest(manifest['files']) != manifest['cache_digest']:
             raise SystemExit(f'{path}: not a northlight-cache-variant/1 manifest with a matching digest')
+        check_variant_sources(manifest)
         variants[manifest['variant']] = manifest
     reports = []
     for zip_path in args.cache_zip:
@@ -403,6 +425,7 @@ def main():
             raise SystemExit(f'{zip_path.name}: its northlight-cache.json differs from --variant-manifest')
         variants[manifest['variant']] = manifest
         check_cache_zip(zip_path, manifest)
+        check_variant_sources(manifest)
         name = f'Northlight-cache-{manifest["variant"]}-{manifest["cache_digest"][:12]}.zip'
         if (out / name).resolve() != zip_path.resolve():
             (out / name).unlink(missing_ok=True)

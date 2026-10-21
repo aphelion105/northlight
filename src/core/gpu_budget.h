@@ -75,8 +75,9 @@ private:
 inline unsigned cloudSteps(unsigned level){return level==0?40u:level==1?32u:24u;}
 // WorldFog march intervals: 48 (full), 40 (level 3).
 inline unsigned fogSteps(unsigned level){return level>=3?40u:48u;}
-// Lamps lit at once (LocalLightLimit): at most 16 at level 3 (the Performance value), else the setting.
-inline unsigned lightLimit(unsigned limit,unsigned level){return level>=3&&limit>16?16u:limit;}
+// Lamps lit at once. Active shadow slots reserve lit sources even at budget level 3.
+inline unsigned lightLimit(unsigned limit,unsigned level,unsigned shadowReserve=0){
+    return std::max(level>=3&&limit>16?16u:limit,shadowReserve);}
 // Shader constant that lengthens an interval of a march written as mad(range,1/fullSteps,delta): 0 when steps==fullSteps.
 inline float spacingDelta(float range,unsigned steps,unsigned fullSteps){
     return steps==fullSteps||!steps||!fullSteps?0.f:range*(1.f/float(steps)-1.f/float(fullSteps));}

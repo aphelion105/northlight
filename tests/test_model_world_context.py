@@ -104,8 +104,7 @@ struct Device {
     std::map<IDirect3DPixelShader9*,int> psTags;
     const VsClass& classifyVs(IDirect3DVertexShader9*){return vc;}
     bool uiTextVs(IDirect3DVertexShader9*,int){return false;}
-    bool zFuncAware=true;
-    bool fullViewport(D3DSURFACE_DESC& d,D3DVIEWPORT9* p=nullptr,bool quiet=false){d.Width=1920;d.Height=1080;d.Format=D3DFMT_A8R8G8B8;if(p)*p=state.vp;return viewportOK;}
+    bool fullViewport(D3DSURFACE_DESC& d,D3DVIEWPORT9* p=nullptr){d.Width=1920;d.Height=1080;d.Format=D3DFMT_A8R8G8B8;if(p)*p=state.vp;return viewportOK;}
     bool bindWorldDepth(const D3DSURFACE_DESC&){++binds;return depthOK;}
     void resources(UINT,UINT,D3DFORMAT){++allocations;}
     void uiFallbackDraw(const VsClass&,IDirect3DVertexShader9*){}

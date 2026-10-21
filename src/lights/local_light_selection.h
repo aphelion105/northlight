@@ -7,8 +7,8 @@
 
 namespace NorthlightLocalLightSelection {
 // Limit: the default selection (0.3.136..0.3.139). Capacity: the most a user may select
-// (northlight-quality.ini LocalLightLimit up to 64); extra lights only add 8-/4-light batches.
-inline constexpr unsigned Limit=32,Capacity=64,DirectBatchSize=8,FogBatchSize=4;
+// (northlight-quality.ini LocalLightLimit up to 128); extra lights only add 8-/4-light batches.
+inline constexpr unsigned Limit=32,Capacity=128,DirectBatchSize=8,FogBatchSize=4;
 static_assert(Capacity%DirectBatchSize==0&&Capacity%FogBatchSize==0&&Limit<=Capacity,"whole batches");
 // Viewer distance to the influence sphere, not the bulb. Keep nearby energy
 // unchanged; introduce distant lights with a smooth ramp instead of a pop.
@@ -19,7 +19,7 @@ inline float visibilityGain(float reach){
 }
 using Constant=std::array<float,4>;
 // 0.3.197: soft cap, incumbent bias and time-based fades (task 13).
-inline constexpr unsigned Spare=8,Slots=Capacity+Spare;       // 72: whole 8-/4-light batches
+inline constexpr unsigned Spare=8,Slots=Capacity+Spare;       // 136: whole 8-/4-light batches
 static_assert(Slots%DirectBatchSize==0&&Slots%FogBatchSize==0,"whole batches");
 inline constexpr float FadeSeconds=.4f;    // full 0<->1 change
 inline constexpr float StickyBias=4.f;     // world units subtracted from an incumbent's score
@@ -40,6 +40,7 @@ template<unsigned N> struct Batch {
     unsigned count=0;
 };
 struct Selection {
+    std::array<NorthlightLocalLights::Light,Slots> sources{}; // Same source, colour and fade as the direct-light pass.
     std::array<Constant,Slots> position{},color{},fog{}; // 0.3.197: Slots, select() fills at most Capacity
     unsigned count=0;float nearest=0,fogDistance=128.f;
     template<unsigned N> Batch<N> batch(unsigned first)const{
@@ -73,6 +74,7 @@ inline Selection select(const std::vector<NorthlightLocalLights::Light>& lights,
         // Complete the selected influence sphere even for scaled bonfires.
         out.fogDistance=std::max(out.fogDistance,picks[i].score+2*l.attenuationEnd);
         out.color[i]={l.diffuse[0]*gain,l.diffuse[1]*gain,l.diffuse[2]*gain,1.f/std::max(l.attenuationEnd-std::min(l.attenuationStart,l.attenuationEnd*.9f),.05f)};
+        out.sources[i]=l;for(unsigned k=0;k<3;++k)out.sources[i].diffuse[k]=out.color[i][k];
     }
     return out;
 }
@@ -89,12 +91,17 @@ struct Tracker {
     std::array<Entry,Slots> entries{};unsigned count=0; // sorted by id
     unsigned fading=0;                                  // fading-out lights in the last update's output
     void reset(){count=0;fading=0;}
+    // A newly published static lamp replaces a dynamic observation immediately;
+    // retaining its fading tail would add the same physical source twice.
+    void forget(std::uint64_t id){
+        for(unsigned i=0;i<count;++i)if(entries[i].id==id){std::move(entries.begin()+i+1,entries.begin()+count,entries.begin()+i);--count;return;}
+    }
     bool incumbent(std::uint64_t id)const{
         unsigned lo=0,hi=count;
         while(lo<hi){const unsigned mid=(lo+hi)/2;if(entries[mid].id<id)lo=mid+1;else hi=mid;}
         return lo<count&&entries[lo].id==id&&entries[lo].selected;
     }
-    Selection update(const std::vector<NorthlightLocalLights::Light>& lights,const float* camera,unsigned limit,float dtSeconds,bool continuous){
+    Selection update(const std::vector<NorthlightLocalLights::Light>& lights,const float* camera,unsigned limit,float dtSeconds,bool continuous,const NorthlightLocalLights::Light* additional=nullptr,unsigned additionalCount=0,const std::uint64_t* immediate=nullptr,unsigned immediateCount=0){
         limit=std::min(limit,Capacity);
         if(!limit)reset();
         Selection out;fading=0;if(!limit)return out;
@@ -102,18 +109,20 @@ struct Tracker {
         struct Pick {float score,biased;const NorthlightLocalLights::Light* light;};
         const auto better=[](const Pick& a,const Pick& b){return a.biased!=b.biased?a.biased<b.biased:a.light->sourceId<b.light->sourceId;};
         std::array<Pick,Capacity+1> heap;unsigned n=0;const unsigned cap=limit+1; // best limit+1 by (biased,id); heap[0] is the worst
-        for(const auto& l:lights){
+        const auto consider=[&](const NorthlightLocalLights::Light& l){
             float d2=0;for(unsigned i=0;i<3;++i){const float d=l.position[i]-camera[i];d2+=d*d;}
             const float reach=VisibilityEnd+l.attenuationEnd;
-            if(d2>=reach*reach*(1+1e-5f))continue; // beyond VisibilityEnd with margin: no sqrt, no valid()
-            if(!NorthlightLocalLights::valid(l)||l.attenuationEnd<=.11f)continue;
-            const float score=std::sqrt(d2)-l.attenuationEnd;if(!(score<VisibilityEnd))continue;
-            if(n==cap&&!better(Pick{score,score-StickyBias,&l},heap[0]))continue; // not even as an incumbent
+            if(d2>=reach*reach*(1+1e-5f))return; // beyond VisibilityEnd with margin: no sqrt, no valid()
+            if(!NorthlightLocalLights::valid(l)||l.attenuationEnd<=.11f)return;
+            const float score=std::sqrt(d2)-l.attenuationEnd;if(!(score<VisibilityEnd))return;
+            if(n==cap&&!better(Pick{score,score-StickyBias,&l},heap[0]))return; // not even as an incumbent
             const bool inc=count&&incumbent(l.sourceId);
             const Pick p{score,score-(inc?StickyBias:0.f),&l};
             if(n<cap){heap[n++]=p;std::push_heap(heap.begin(),heap.begin()+n,better);}
             else if(better(p,heap[0])){std::pop_heap(heap.begin(),heap.begin()+cap,better);heap[cap-1]=p;std::push_heap(heap.begin(),heap.begin()+cap,better);}
-        }
+        };
+        for(const auto& l:lights)consider(l);
+        for(unsigned i=0;additional&&i<additionalCount;++i)consider(additional[i]);
         std::sort_heap(heap.begin(),heap.begin()+n,better);
         const bool saturated=n>limit;const unsigned selected=saturated?limit:n;
         float edgeBiased=0,edgeGain=0,width=1;
@@ -140,6 +149,9 @@ struct Tracker {
             const float target=sel[i].shown;
             const bool known=old<count&&entries[old].id==sel[i].id;const float prev=known?entries[old++].shown:0.f;
             sel[i].shown=!continuous||std::fabs(target-prev)<=step?target:target>prev?prev+step:prev-step;
+            // Current particle colour already includes its authored alpha and
+            // lifetime. A short burst must not wait through the lamp fade-in.
+            if(immediate&&std::find(immediate,immediate+immediateCount,sel[i].id)!=immediate+immediateCount)sel[i].shown=target;
         }
         while(old<count)leaving(old++);
         if(fades>Spare){ // keep the brightest, then restore id order
@@ -156,7 +168,8 @@ struct Tracker {
         const auto emit=[&](unsigned slot,const NorthlightLocalLights::Light& l,float score,float gain){
             out.position[slot]={l.position[0],l.position[1],l.position[2],l.attenuationEnd};
             out.fogDistance=std::max(out.fogDistance,score+2*l.attenuationEnd);
-            out.color[slot]={l.diffuse[0]*gain,l.diffuse[1]*gain,l.diffuse[2]*gain,1.f/std::max(l.attenuationEnd-std::min(l.attenuationStart,l.attenuationEnd*.9f),.05f)};};
+            out.color[slot]={l.diffuse[0]*gain,l.diffuse[1]*gain,l.diffuse[2]*gain,1.f/std::max(l.attenuationEnd-std::min(l.attenuationStart,l.attenuationEnd*.9f),.05f)};
+            out.sources[slot]=l;for(unsigned k=0;k<3;++k)out.sources[slot].diffuse[k]=out.color[slot][k];};
         for(unsigned i=0;i<selected;++i){const Sel& s=sel[order[i]];emit(i,*s.light,s.score,s.shown);}
         for(unsigned i=0;i<fades;++i){const Fade& f=fade[tail[i]];emit(selected+i,entries[f.index].light,f.score,f.shown);}
         if(out.count)out.nearest=selected?sel[order[0]].score:fade[tail[0]].score;

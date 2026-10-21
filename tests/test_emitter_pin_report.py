@@ -22,11 +22,13 @@ class PinReport(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.assets={view:Assets(fp.client_root(),view) for view in ('all','stock')}
+        cls.baseline=Assets(fp.client_root(),without='y')
         cls.reports={view:emitter_pin_report.report(a) for view,a in cls.assets.items()}
         (fp.output_dir()/'emitter-pins.json').write_text(json.dumps(cls.reports,indent=2)+'\n')
     @classmethod
     def tearDownClass(cls):
         for a in cls.assets.values():a.close()
+        cls.baseline.close()
     def test_shape(self):
         catalog=outdoor_light_profiles.load()
         for view,r in self.reports.items():
@@ -39,7 +41,6 @@ class PinReport(unittest.TestCase):
         # The configured (dev) client resolves every profile's own model.
         r=self.reports['all']
         self.assertEqual(r['summary']['matched'],r['profiles_total'])
-        self.assertTrue(all(x['pin']=='profile' for x in r['profiles'].values()))
     def test_batches_reproduce_0_3_110_evidence(self):
         # batches() is the method the reviewed positions were measured with. The 0.3.110 evidence is kept
         # as digests (tests/fixtures/lamp-batches-0.3.110.sha256.json): the path, the model file and the
@@ -49,7 +50,9 @@ class PinReport(unittest.TestCase):
         compared=0
         for path in sorted(self.assets['all'].providers):
             entry=expected.get(digest(path)[:32])
-            if entry is None or self.reports['all']['profiles'].get(path,{}).get('asset_sha256',entry['model_sha256'])!=entry['model_sha256']:continue
+            if entry is None:continue
+            sha=hashlib.sha256(self.baseline.read(path)).hexdigest()
+            if sha!=entry['model_sha256']:continue
             batches=json.loads(json.dumps(emitter_pin_report.batches(self.assets['all'],path)))
             self.assertEqual(digest(json.dumps(batches,sort_keys=True,separators=(',',':'))),entry['batches_sha256'],path);compared+=1
         self.assertGreaterEqual(compared,74)

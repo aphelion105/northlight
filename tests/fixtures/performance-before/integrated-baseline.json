@@ -1,0 +1,8 @@
+{
+  "purpose": "Current integrated shader ABI, with zero-extinction interval skipping and flattened composite taps reverted.",
+  "optimized_source_sha256": "160898a7c80c0552463624129a74ff325d552f007e28e72750f28ee6eb909efc",
+  "baseline_source_sha256": "81974703a829cea65aca7fa22bddc0404c8a19ac88c68cb25753319632e054ed",
+  "bump_include_sha256": "b852586a08da120aaeb838fa7509cd5368a745fbfaac9d9723fee58d2a3cbb34",
+  "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
+  "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3"
+}

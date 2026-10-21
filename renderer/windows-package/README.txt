@@ -136,9 +136,11 @@ northlight-quality.ini in the game folder chooses the quality: Preset=Quality (t
 default, full quality), Balanced or Performance. On a weaker processor, Balanced
 or Performance raises the FPS by lightening mainly shadows and lamps.
 The file is read when the game starts; restart WoW after a change.
-The installer adds the file if it does not exist yet. An update never changes
-your lines or values: it only appends the settings your file does not mention
-yet, commented out (the preset's values apply until you enable one).
+The installer adds the file if it does not exist yet. For Quality, an update
+enables newly introduced effect bundles once, including their required settings.
+Other overrides stay intact; later edits to migrated effects are preserved.
+Balanced and Performance are not opted into Quality effects. Missing ordinary
+settings are appended commented out, so the preset's values apply.
 northlight-renderer.log shows the values in use (QUALITY).
 Individual settings (Quality / Balanced / Performance):
   ActorShadowBudgetMiB  0 / 16 / 8     character shadows, nearest first (0 = no limit)
@@ -149,7 +151,7 @@ Individual settings (Quality / Balanced / Performance):
   FarShadowInterval     4 / 5 / 6      distant shadows (beyond ~48 m) are drawn every Nth frame (1..16)
   NearShadowInterval    1 / 2 / 2      moving parts of the near shadows (characters) every Nth frame (1..16)
   LocalLightLimit       32 / 24 / 16   lamps lighting at the same time (8..64; above 32 = more distant lamps too)
-  PointShadows          0 / 0 / 0      lamp shadows (1 = on): only lights inside buildings cast faint shadows, at dusk and night; street lamps, lanterns and torches never do; off by default
+  PointShadows          1 / 1 / 1      lamp shadows (1 = on): only lights inside buildings cast faint shadows, at dusk and night; street lamps, lanterns and torches never do; off by default
   PointShadowRefreshMs  0 / 33 / 33    lamp shadow update interval
   PointShadowFacesPerFrame 6 / 6 / 6   lamp shadow directions updated per frame (1..6; 6 = all at once; lower = smaller spikes, a brief seam at the edge)
   ShadowDirectionSteps  2048/2048/2048 sun direction quantization (fewer jumps)
@@ -189,6 +191,8 @@ Individual settings (Quality / Balanced / Performance):
   StreamOcclusionLocal  1 / 1 / 1      with CommandStream=1, 1 = the game's sun/moon glare visibility query is answered with the latest measured result instead of waiting for the renderer thread (0 = always wait, as before; read at game start)
   DepthFuncAware        1 / 1 / 1      1 = draws that ignore depth (the game's depth comparison set to ALWAYS) are recognised: the effect layer holds back only effects that test depth (a world draw that ignores depth while effects are held back flushes them: that frame is drawn the old way and the layer pauses briefly), and the font-mod UI fallback requires the UI's depth setting; 0 = judged by the Z on/off flag only, as before (0..1; read once at start)
   WeatherMemory         1 / 1 / 1      1 = the weather effects follow the game's own weather state (type including sand, intensity), read from its memory, on frames where the sky is drawn (indoors they fade out); the art layer's weather textures are the fallback when the read fails (0 = only those textures' draws decide, as before)
+  GrassShadows           1 / 0 / 0      experimental: native alpha-cut DetailDoodad grass casts nearby shadows with ActorShadows=1; bounded to 32 draws, 8192 vertices and 512 KiB per frame within 64 yards (0..1, read at start; needs visual testing)
+  EquipmentLights        1 / 0 / 0      experimental: native M2 point lights and proven additive particles light nearby surfaces and fog; live particles require CommandStream=1 and contribute only while drawn; bounded to 8 sources, shares LocalLightLimit, deduplicates native/static lights (0..1, read at start; needs visual testing)
   ContactAO             1 / 1 / 1      1 = the darkening in creases and corners (contact shading) is computed, 0 = off: it and its smoothing pass are skipped, which saves about 0.5 ms of graphics card time per frame; the bloom glow stays (0..1; read once at start)
   NightBrightness       50 / 50 / 50   gives back the night ambient light the lighting layer takes away (0..100; 0 = Northlight's full night darkness, 100 = the original game's night ambient); added like light, so shadows and lamps keep their contrast; fades in with sunset and out with sunrise; daytime, sky, water and places without a sky of their own (dungeons, raids) are unchanged
   ActorShadowDetail     1 / 1 / 0      characters and other moving casters near you get their own shadow map (four times finer) and a soft filter that is sharp at the caster and softer further away (0 = moving casters are drawn into the near shadow map as before 0.3.209; ActorShadows=0 turns it off too; 0..1)
@@ -196,6 +200,21 @@ Individual settings (Quality / Balanced / Performance):
   SpellFog              1 / 1 / 1      the held-back effects get Northlight's fog (haze, rain, ground fog, fog clouds along the view direction) by folding it into the effect's own fog constants when it is recorded, with no extra pass (approximate: the camera's heading stands for the whole effect (rays to effect height above the ground), 128 units at most, no horizon haze, the in-scatter colour is the sky ambient, a quarter-second smoothing; only effects whose vertex shader is proven to use the game's fog ramp; ribbons and beams are not fogged by it); 0 = the recorded game values (0..1; needs SpellLayer=1; read once at start)
   NameMask              1 / 1 / 1      1 = floating unit names and other world text keep the colour the game drew them in (not darkened, lit or hazed by the scene effects; a solid object in front still covers them; with a font mod that replaces the UI shaders, from when the effects start); 0 = as before 0.3.212 (0..1; read once at start)
   NameMaskDebug         0 / 0 / 0      1 = the pixels NameMask protects are painted 50 percent magenta over the finished frame (a diagnostic view); 0 = off (0..1)
+  AOMethod 0 / 0 / 0   See the quality INI for the allowed range.
+  AOStrength 100 / 100 / 100   See the quality INI for the allowed range.
+  AORadius 200 / 200 / 200   See the quality INI for the allowed range.
+  Water 1 / 1 / 1   See the quality INI for the allowed range.
+  WaterSSR 1 / 1 / 1   See the quality INI for the allowed range.
+  WaterSSRResolution 100 / 50 / 25   See the quality INI for the allowed range.
+  WaterSSRSteps 64 / 40 / 24   See the quality INI for the allowed range.
+  WaterSSRDistance 0 / 0 / 0   See the quality INI for the allowed range.
+  WaterSSRThickness 30 / 30 / 30   See the quality INI for the allowed range.
+  WaterSSRRefineSteps 4 / 4 / 3   See the quality INI for the allowed range.
+  WaterSSRStrength 100 / 100 / 100   See the quality INI for the allowed range.
+  WaterRefraction 1 / 1 / 1   See the quality INI for the allowed range.
+  WaterGlints 1 / 1 / 0   See the quality INI for the allowed range.
+  WaterPointLights 1 / 1 / 0   See the quality INI for the allowed range.
+  PointShadowLimit 4 / 4 / 4   See the quality INI for the allowed range.
   AutoBump 1 / 0 / 0   See the quality INI for the allowed range.
   AutoBumpStrength 75 / 60 / 40   See the quality INI for the allowed range.
   AutoBumpDistance 48 / 36 / 24   See the quality INI for the allowed range.
@@ -205,11 +224,6 @@ Individual settings (Quality / Balanced / Performance):
   AutoParallaxDepth 100 / 75 / 50   See the quality INI for the allowed range.
   AutoParallaxDistance 16 / 12 / 8   See the quality INI for the allowed range.
   AutoParallaxSteps 16 / 12 / 8   See the quality INI for the allowed range.
-  AutoParallaxShadows 1 / 0 / 0   See the quality INI for the allowed range.
-  AutoParallaxShadowStrength 70 / 60 / 50   See the quality INI for the allowed range.
-  AutoParallaxShadowSteps 8 / 6 / 4   See the quality INI for the allowed range.
-  AutoCavity 1 / 0 / 0   See the quality INI for the allowed range.
-  AutoCavityStrength 35 / 30 / 25   See the quality INI for the allowed range.
   AutoDisplacementStrength 100 / 75 / 50   See the quality INI for the allowed range.
   AutoDisplacementDistance 12 / 8 / 6   See the quality INI for the allowed range.
   AutoDisplacementDetail 4 / 3 / 2   See the quality INI for the allowed range.
@@ -220,6 +234,11 @@ Individual settings (Quality / Balanced / Performance):
   AutoHeightPolarity 0 / 0 / 0   See the quality INI for the allowed range.
   AutoHeightDetails 75 / 75 / 75   See the quality INI for the allowed range.
   AutoHeightBalance 50 / 50 / 50   See the quality INI for the allowed range.
+  AutoParallaxShadows 1 / 0 / 0   See the quality INI for the allowed range.
+  AutoParallaxShadowStrength 70 / 60 / 50   See the quality INI for the allowed range.
+  AutoParallaxShadowSteps 8 / 6 / 4   See the quality INI for the allowed range.
+  AutoCavity 1 / 0 / 0   See the quality INI for the allowed range.
+  AutoCavityStrength 35 / 30 / 25   See the quality INI for the allowed range.
 When both NearShadowInterval and FarShadowInterval are at least 2, frames that
 draw neither shadow also skip copying the character geometry (about 1–1.5 ms
 of CPU per skipped frame). Light and normal frames alternate: the average FPS

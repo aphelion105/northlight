@@ -591,8 +591,8 @@ float4 regionalFogAt(float2 uv,out float coverage) {
 }
 // Direct light from the nearest authored local sources (lanterns, braziers,
 // fires) on nearby surfaces. The game only glows the lamp model itself; this
-// lights the ground and walls around it. Unshadowed; the separate point pass
-// still subtracts the baked estimate of the one selected shadowed lamp.
+// lights the ground and walls around it. The separate point passes subtract
+// exactly the occluded contribution of each selected shadow-casting source.
 float4 LocalDirect(float2 uv:TEXCOORD0):COLOR0 {
     float3 smoothNormal=tex2Dlod(NormalBuffer,float4(uv,0,0)).xyz;
     // r47 K4: lamps read weaker in direct sun (30%). The first lighting pass (the sun, by day) left
@@ -801,13 +801,12 @@ float4 WorldFog(float2 uv:TEXCOORD0):COLOR0 {
     // Normalized HG(g=.85) + isotropic mixture: most energy is broad enough
     // for side/back views of geometry-cut shafts; a small forward aureole remains.
     float narrow=.2775*pow(max(1.7225-1.7*cosine,.01),-1.5);
-    // Disc visibility only gates the narrow aureole. A branch between the
-    // camera and moon must not dim every lit air column in the world.
-    // Each volume sample's shadow ray decides whether that air receives light.
-    float visible=saturate(tex2Dlod(SourceVisibility,float4(.5,.5,0,0)).r);
+    // The phase describes the air, independent of screen-space disc occlusion.
+    // Each sample's shadow ray determines illumination; receiver depth ends
+    // the march at foreground geometry, including the player.
     // 0.3.145: the broad part leans gently toward the source (x1.15 facing it,
     // x1 at 90 degrees, x.85 facing away); its sphere integral is unchanged.
-    float phasePi=mad(.03*visible,narrow,mad(.033,cosine,.22));
+    float phasePi=mad(.03,narrow,mad(.033,cosine,.22));
     float3 sunSource=max(DirectLight.rgb,0)*phasePi*saturate(FogColor.rgb)*max(FogInfo.y,0);
     // Intervals are cut by fixed world-axis planes, not concentric shells
     // travelling with the camera. Use the dominant ray axis to avoid grazing
@@ -820,7 +819,9 @@ float4 WorldFog(float2 uv:TEXCOORD0):COLOR0 {
     float offset=frac(major.y*(major.x<0?-1:1)/spacing);
     // Put the exit comparison on the loop: native SM3 compilation of a nested
     // bare break emitted break_ne with identical operands, marching past surface.
-    [loop]for(int i=0;i<49&&max(0,(i-offset)*stepLength)<surface;++i){
+    // Intervals ending before the near fade have exactly zero extinction.
+    int first=max(0,(int)floor(max(FogRange.x,0)/stepLength+offset));
+    [loop]for(int i=first;i<49&&max(0,(i-offset)*stepLength)<surface;++i){
         float start=max(0,(i-offset)*stepLength);
         float end=min((i+1-offset)*stepLength,surface);
         float stepSize=end-start;
@@ -995,7 +996,8 @@ float4 FogClouds(float2 uv:TEXCOORD0):COLOR0 {
     float spacing=mad(FogInfo.w,1.0/40,CloudInfo[0].x); // 0.3.200 (gpu budget): c60.x 0 = the 40 intervals; reduced levels fewer (host: 128*(1/N-1/40))
     float stepLength=spacing/abs(major.x);
     float offset=frac(major.y*(major.x<0?-1:1)/spacing);
-    [loop]for(int i=0;i<41&&max(0,(i-offset)*stepLength)<surface;++i){
+    int first=max(0,(int)floor(max(FogRange.x,0)/stepLength+offset));
+    [loop]for(int i=first;i<41&&max(0,(i-offset)*stepLength)<surface;++i){
         float start=max(0,(i-offset)*stepLength);
         float end=min((i+1-offset)*stepLength,surface);
         float stepSize=end-start;
@@ -1150,9 +1152,9 @@ float4 WorldComposite(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {
         float2 grid=uv*dimensions-.5,base=floor(grid),fraction=grid-base;
         float center=viewDistance(d);
         float centreLuma=dot(original.rgb,float3(.299,.587,.114)),depthBits=1.4427/max(.15,center*.01);
-        [loop]for(int pair=0;pair<2;++pair){
-        [unroll]for(int sub=0;sub<2;++sub){
-            float2 bit=float2(sub,pair);
+        [loop]for(int tap=0;tap<4;++tap){
+            float row=floor(tap*.5);
+            float2 bit=float2(tap-row*2,row);
             float2 q=(clamp(base+bit,0,dimensions-1)+.5)/dimensions,tapUV=depthUV(q);
             float sampleZ=tex2Dlod(CurrentDistance,float4(q,0,0)).r;
             float2 blend=lerp(1-fraction,fraction,bit);
@@ -1180,7 +1182,6 @@ float4 WorldComposite(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {
             float fogWeight=blend.x*blend.y*exp(-fogDelta/max(.2,viewZ*.02));
             fogSum=mad(fogSample,fogWeight,fogSum);fogTotal+=fogWeight;
             if(fogDelta<fogClosest){fogClosest=fogDelta;fogFallbackUV=q;}
-        }
         }
     // Retain only fallback coordinates across the loop; fetch colours only on fallback.
     float4 fogFallback=float4(0,0,0,1);
@@ -1290,8 +1291,13 @@ float4 Material:register(c0); // rgb unused in depth pass, w alpha cutoff
 float4 ShadowPS(float2 uv:TEXCOORD0,float depth:TEXCOORD1):COLOR0 {
     clip(tex2D(Scene,uv).a-Material.w);return depth.xxxx;
 }
-float4 ShadowReplayPS(float2 uv:TEXCOORD0,float4 lightClip:TEXCOORD7):COLOR0 {
-    clip(tex2D(Scene,uv).a-Material.w);return lightClip.zzzz;
+float4 ShadowReplayPS(float2 uv:TEXCOORD0,float4 lightClip:TEXCOORD7,float4 diffuse:COLOR0):COLOR0 {
+    if(Material.w>=0){
+        float alpha=Material.x==2?diffuse.a:tex2D(Scene,uv).a;
+        if(Material.x==1)alpha*=diffuse.a;
+        clip(alpha-Material.w);
+    }
+    return lightClip.zzzz;
 }
 // Union of a per-frame dynamic depth map (s0, working size) with a cached
 // static depth map (s1, cachedSize) at an integer texel offset and an exact

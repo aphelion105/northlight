@@ -15,7 +15,7 @@ enum class Preset { Quality, Balanced, Performance };
 struct Settings {
     Preset preset=Preset::Quality;
     unsigned minSkinnedTriangles=100,captureBudgetMiB=32,actorShadowBudgetMiB=0;
-    unsigned farShadowInterval=4,nearShadowInterval=1,localLightLimit=32,pointShadows=0,pointShadowRefreshMs=0,shadowDirectionSteps=2048;
+    unsigned farShadowInterval=4,nearShadowInterval=1,localLightLimit=32,pointShadows=1,pointShadowLimit=4,pointShadowRefreshMs=0,shadowDirectionSteps=2048;
     // Where each value in Keys order came from: 'd' code default (Quality), 'p' Balanced/Performance
     // preset, 'l' legacy shadow-experiment.ini, 'f' northlight-quality.ini key. Not part of ==.
     // 0.3.138 GI: worker probe solve (rays, bounces, request step), actor/dynamic probes, solver threads.
@@ -54,6 +54,9 @@ struct Settings {
     // packets (0.3.193: the game's blob shadows show with both values). Forces the replay-derived
     // keys off (effective()).
     unsigned actorShadows=1;
+    // Native detail-doodad casters (Quality only). Read once with the other quality
+    // keys; requires ActorShadows and the shadows toggle. Receiver census is independent.
+    unsigned grassShadows=1;
     // 0.3.187 FrameDrawGates: 1 = the draw hooks skip the sky, blob and terrain shadow work in frames
     // where its per-frame preconditions are off (draw_gates.h); 0 = the 0.3.184 per-draw work. Same image.
     unsigned frameDrawGates=1;
@@ -95,10 +98,14 @@ struct Settings {
     // 0.3.201 (task 18) ContactAO: 1 = the screen-space contact AO (AO pass and its AOBlur denoise) runs; 0 = neither runs (bloom stays, no contact shading in creases and corners).
     // Creation-time key (the renderer reads it once with the device).
     unsigned contactAO=1;
-    // NightBrightness (0..100): how much of the art layer's darker night ambient is given back, as added light; 0 = Northlight's night, 100 = the original game's night ambient (shadows stay); default 50. Ramped by the sun below the horizon.
+    unsigned aoMethod=0,aoStrength=100,aoRadius=200; // Live AO method, percent, hundredths of a yard.
     unsigned autoBump=1,autoBumpStrength=75,autoBumpDistance=48,autoBumpTerrain=3,autoBumpWalls=3,autoBumpGrass=1;
     unsigned autoParallaxDepth=100,autoParallaxDistance=16,autoParallaxSteps=16;
     unsigned autoParallaxShadows=1,autoParallaxShadowStrength=70,autoParallaxShadowSteps=8,autoCavity=1,autoCavityStrength=35;
+    unsigned water=1,waterSSR=1,waterSSRResolution=100,waterSSRSteps=64,waterSSRDistance=0;
+    unsigned waterSSRThickness=30,waterSSRRefineSteps=4,waterSSRStrength=100;
+    unsigned waterRefraction=1,waterGlints=1,waterPointLights=1;
+    // NightBrightness (0..100): how much of the art layer's darker night ambient is given back, as added light; 0 = Northlight's night, 100 = the original game's night ambient (shadows stay); default 50. Ramped by the sun below the horizon.
     unsigned nightBrightness=50;
     // 0.3.209 (task 29) ActorShadowDetail: 1 = a dedicated 4x finer shadow map around the player holds the moving casters (characters, mounts) and a
     // contact-hardening soft filter pass reads it (sharp at the feet, softer further from the caster); 0 = the 0.3.207 shadows (near cascade, 5x5 tent). ActorShadows=0 disables it too.
@@ -120,6 +127,8 @@ struct Settings {
     unsigned memMap=0;
     // StreamOcclusionLocal: 1 = with CommandStream, GetData(FLUSH) on the game's occlusion query (sun/moon glare) is answered from the latest result without waiting for the renderer thread; 0 = always wait (as before). Creation-time key.
     unsigned streamOcclusionLocal=1;
+    // Experimental bridge: native M2 point lights, never guessed from an additive draw.
+    unsigned equipmentLights=1;
     // DepthFuncAware: 1 = a draw counts as depth tested only with ZENABLE on and ZFUNC not ALWAYS (the client never turns ZENABLE off: its "depth test off" is ZFUNC ALWAYS), so the spell layer holds back (Order hazard) draws that ignore depth
     // and the UI-boundary fallback requires the UI's ZFUNC ALWAYS; 0 = ZENABLE only, as before. Creation-time key.
     unsigned depthFuncAware=1;
@@ -129,7 +138,7 @@ struct Settings {
     unsigned autoDisplacementStrength=100,autoDisplacementDistance=12,autoDisplacementDetail=4;
     unsigned autoBumpModels=3,autoModelDisplacementStrength=25,autoModelDisplacementDistance=8,autoModelDisplacementDetail=2;
     unsigned autoHeightPolarity=0,autoHeightDetails=75,autoHeightBalance=50;
-    char origin[81]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
+    char origin[98]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
 };
 struct Key { const char* name; unsigned Settings::*field; unsigned low,high; unsigned preset[3]; };
 // preset[] = Quality, Balanced, Performance. Quality must equal Settings{}.
@@ -139,8 +148,8 @@ inline const Key Keys[]={
     {"ActorShadowBudgetMiB",&Settings::actorShadowBudgetMiB,0,32,{0,16,8}},
     {"FarShadowInterval",&Settings::farShadowInterval,1,16,{4,5,6}},
     {"NearShadowInterval",&Settings::nearShadowInterval,1,16,{1,2,2}},
-    {"LocalLightLimit",&Settings::localLightLimit,8,64,{32,24,16}},
-    {"PointShadows",&Settings::pointShadows,0,1,{0,0,0}}, /* 0.3.176: off in every preset (only building lights cast) */
+    {"LocalLightLimit",&Settings::localLightLimit,8,128,{32,24,16}},
+    {"PointShadows",&Settings::pointShadows,0,1,{1,1,1}},
     {"PointShadowRefreshMs",&Settings::pointShadowRefreshMs,0,100,{0,33,33}},
     {"ShadowDirectionSteps",&Settings::shadowDirectionSteps,256,2048,{2048,2048,2048}},
     {"GI",&Settings::gi,0,1,{1,1,1}},
@@ -191,6 +200,23 @@ inline const Key Keys[]={
     {"DepthFuncAware",&Settings::depthFuncAware,0,1,{1,1,1}},
     {"WeatherMemory",&Settings::weatherMemory,0,1,{1,1,1}},
     {"ActorShadowCpuMs",&Settings::actorShadowCpuMs,0,20,{3,3,2}}, /* task 45 */
+    {"GrassShadows",&Settings::grassShadows,0,1,{1,0,0}},
+    {"EquipmentLights",&Settings::equipmentLights,0,1,{1,0,0}},
+    {"AOMethod",&Settings::aoMethod,0,3,{0,0,0}},
+    {"AOStrength",&Settings::aoStrength,0,200,{100,100,100}},
+    {"AORadius",&Settings::aoRadius,10,1000,{200,200,200}},
+    {"Water",&Settings::water,0,1,{1,1,1}},
+    {"WaterSSR",&Settings::waterSSR,0,1,{1,1,1}},
+    {"WaterSSRResolution",&Settings::waterSSRResolution,25,100,{100,50,25}},
+    {"WaterSSRSteps",&Settings::waterSSRSteps,4,128,{64,40,24}},
+    {"WaterSSRDistance",&Settings::waterSSRDistance,0,4096,{0,0,0}},
+    {"WaterSSRThickness",&Settings::waterSSRThickness,1,200,{30,30,30}},
+    {"WaterSSRRefineSteps",&Settings::waterSSRRefineSteps,0,6,{4,4,3}},
+    {"WaterSSRStrength",&Settings::waterSSRStrength,0,100,{100,100,100}},
+    {"WaterRefraction",&Settings::waterRefraction,0,1,{1,1,1}},
+    {"WaterGlints",&Settings::waterGlints,0,1,{1,1,0}},
+    {"WaterPointLights",&Settings::waterPointLights,0,1,{1,1,0}},
+    {"PointShadowLimit",&Settings::pointShadowLimit,4,128,{4,4,4}},
     {"AutoBump",&Settings::autoBump,0,1,{1,0,0}},
     {"AutoBumpStrength",&Settings::autoBumpStrength,0,150,{75,60,40}},
     {"AutoBumpDistance",&Settings::autoBumpDistance,8,96,{48,36,24}},
@@ -200,11 +226,6 @@ inline const Key Keys[]={
     {"AutoParallaxDepth",&Settings::autoParallaxDepth,0,200,{100,75,50}},
     {"AutoParallaxDistance",&Settings::autoParallaxDistance,4,32,{16,12,8}},
     {"AutoParallaxSteps",&Settings::autoParallaxSteps,8,32,{16,12,8}},
-    {"AutoParallaxShadows",&Settings::autoParallaxShadows,0,1,{1,0,0}},
-    {"AutoParallaxShadowStrength",&Settings::autoParallaxShadowStrength,0,100,{70,60,50}},
-    {"AutoParallaxShadowSteps",&Settings::autoParallaxShadowSteps,4,16,{8,6,4}},
-    {"AutoCavity",&Settings::autoCavity,0,1,{1,0,0}},
-    {"AutoCavityStrength",&Settings::autoCavityStrength,0,100,{35,30,25}},
     {"AutoDisplacementStrength",&Settings::autoDisplacementStrength,0,200,{100,75,50}},
     {"AutoDisplacementDistance",&Settings::autoDisplacementDistance,4,24,{12,8,6}},
     {"AutoDisplacementDetail",&Settings::autoDisplacementDetail,1,5,{4,3,2}},
@@ -215,6 +236,11 @@ inline const Key Keys[]={
     {"AutoHeightPolarity",&Settings::autoHeightPolarity,0,2,{0,0,0}},
     {"AutoHeightDetails",&Settings::autoHeightDetails,0,100,{75,75,75}},
     {"AutoHeightBalance",&Settings::autoHeightBalance,0,100,{50,50,50}},
+    {"AutoParallaxShadows",&Settings::autoParallaxShadows,0,1,{1,0,0}},
+    {"AutoParallaxShadowStrength",&Settings::autoParallaxShadowStrength,0,100,{70,60,50}},
+    {"AutoParallaxShadowSteps",&Settings::autoParallaxShadowSteps,4,16,{8,6,4}},
+    {"AutoCavity",&Settings::autoCavity,0,1,{1,0,0}},
+    {"AutoCavityStrength",&Settings::autoCavityStrength,0,100,{35,30,25}},
 };
 inline bool operator==(const Settings& a,const Settings& b){for(const auto& k:Keys)if(a.*k.field!=b.*k.field)return false;return true;}
 inline bool operator!=(const Settings& a,const Settings& b){return !(a==b);}
@@ -254,6 +280,7 @@ inline std::string forcedOff(const Settings& requested){
     return out.empty()?"none":out;}
 // Replay shadow work actually requested: shadows on (F9) and ActorShadows=1.
 inline bool actorShadowWork(const Settings& s,bool shadows){return shadows&&s.actorShadows;}
+inline bool grassShadowWork(const Settings& s,bool shadows){return s.grassShadows&&actorShadowWork(s,shadows);}
 // 0.3.209 (task 29): the dedicated actor shadow map is drawn and read.
 inline bool actorShadowMap(const Settings& s,bool shadows){return actorShadowWork(s,shadows)&&s.actorShadowDetail;}
 inline const char* name(Preset p){return p==Preset::Balanced?"Balanced":p==Preset::Performance?"Performance":"Quality";}
@@ -269,6 +296,13 @@ inline std::string trim(const std::string& s){
 inline bool number(const std::string& text,unsigned& out){
     if(text.empty()||text.size()>6||text.find_first_not_of("0123456789")!=std::string::npos)return false;
     out=unsigned(std::strtoul(text.c_str(),nullptr,10));return true;
+}
+inline const char* aoName(unsigned method){const char* names[]={"SSAO","HDAO","HBAOPlus-D3D9","GTAO"};return names[method<4?method:0];}
+inline bool aoNumber(const std::string& text,unsigned& out){
+    const auto value=lower(text);
+    if(value=="ssao")out=0;else if(value=="hdao")out=1;
+    else if(value=="hbaoplus"||value=="hbao+")out=2;else if(value=="gtao")out=3;
+    else return number(text,out);return true;
 }
 // Explicit key values of one INI section, in file order. Unrecognised
 // sections are skipped; comments start with ';' or '#', also after a value.
@@ -300,7 +334,7 @@ inline void apply(const std::vector<Entry>& entries,Settings& s,const char* sour
         if(retired){problems.push_back(where+retired->name+" retired in "+retired->version+" (ignored)");continue;}
         if(!match){problems.push_back(where+"unknown key "+e.key+" ignored");continue;}
         unsigned v=0;
-        if(!number(e.value,v)||v<match->low||v>match->high){
+        if(!(match->field==&Settings::aoMethod?aoNumber(e.value,v):number(e.value,v))||v<match->low||v>match->high){
             problems.push_back(where+e.key+"="+e.value+" invalid (allowed "+std::to_string(match->low)+".."+std::to_string(match->high)+"); kept "+std::to_string(s.*match->field));continue;}
         s.*match->field=v;s.origin[index]=origin;
     }

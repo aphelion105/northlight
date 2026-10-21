@@ -35,6 +35,10 @@ Every effect below is on by default and is drawn on top of the game's own frame.
 - **Global illumination.** Sky light and bounced light from probes ray traced against the world
   geometry on a background thread, about 76 yards around the camera (52 in the Balanced and Performance
   presets); characters add their own bounce and occlusion (Quality preset).
+- **Experimental grass shadows.** Set `GrassShadows=1` in `northlight-quality.ini` and restart WoW
+  to enable bounded nearby native grass casters; `ActorShadows=1` and shadows must also be on.
+  It defaults to `1` in Quality and `0` in Balanced/Performance. `GrassShadows=0` skips
+  the additional capture and replay work; sampled receiver diagnostics remain available.
 - **Ambient occlusion.** Screen-space AO with contact shading and a light bloom.
 - **Fog and air.** Volumetric sun and moon light with light shafts through the shadows; soft haze on
   the far landscape and the lowest sky in the game's own fog colour; regional ground fog in forests,
@@ -49,10 +53,12 @@ Every effect below is on by default and is drawn on top of the game's own frame.
   the installer asks which of six groups (Classic, TBC and Wrath dungeons and raids; about 0.3-1.3 GB and 1-2
   build minutes each) to build, `--instances` answers for it, and changing the choice never rebuilds the continents.
 - **Lamps.** Up to 32 nearby lamps, lanterns, braziers and fires light the ground and walls around
-  them and glow in the fog. In direct sun lamps dim. Lamp shadows are off by default (`PointShadows=1`
-  turns them on): only lights inside buildings cast faint shadows, at dusk and night; street lamps,
-  lanterns and torches never do. Overlapping lamp glows are capped once over all lamps (0.3.205), so the
-  glow no longer flickers when walking or riding past rows of lamps.
+  them and glow in the fog. In direct sun lamps dim. Local shadows are enabled by default:
+  two compact sources at once, adjustable to four with `PointShadowLimit` in the Shadows menu.
+  Torches, candles, lamps and compact fires cast shadows; diffuse glows, runes and sparkles do not.
+  Shadows work day and night, fading where their source is weak compared with sunlight at the
+  receiver. Each pass removes only the blocked contribution added by Northlight's matching direct
+  light; it does not subtract an estimate of baked light. Overlapping lamp glows are capped once.
 - **Lighting art layer.** An MPQ patch (`patch-z`) built from your client's own `Light*.dbc`: retuned
   outdoor clear-weather light and fog colours, warmer Mulgore, denser Stormwind day fog. Storm weather
   gets darker light and fog bands. Sky models

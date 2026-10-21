@@ -21,7 +21,7 @@ checks['fallback: ZFUNC ALWAYS required (DepthFuncAware), read with ZWRITE befor
 checks['fallback: no ZENABLE requirement']='D3DRS_ZENABLE,&z)' in fb and fb.count('D3DRS_ZENABLE')==1 and 'zenable' not in fb.lower().replace('d3drs_zenable','')
 checks['fallback: zwrite read, then isBoundary before it, accepts() the one predicate, quiet fullViewport last']=(fb.index('isBoundary(')<fb.index('D3DRS_ZWRITEENABLE')<fb.index('NorthlightUiBoundary::accepts(zw!=0,c,zf==D3DCMP_ALWAYS)')<fb.index('fullViewport(desc,nullptr,true)')
     and fb.count('fullViewport(')==1 and 'screenSpaceRows' not in fb)
-checks['fullViewport: quiet probes preserve the world-size gate by default']='desc.Width>=640&&desc.Height>=360' in r
+checks['fullViewport: quiet probes preserve the world-size gate by default']='bool fullViewport(D3DSURFACE_DESC& desc,D3DVIEWPORT9* viewport=nullptr,bool quiet=false,bool requireWorldSize=true)' in r and '(!requireWorldSize||(desc.Width>=640&&desc.Height>=360))' in r and 'if(!ok&&!quiet){\n            ++viewportRejects;' in r
 checks['fallback: learning skips frames without effects (enabled/failed), the armed boundary still runs renderEffects']=fb.index('if(!armed&&(!enabled||failed))return;')<fb.index('peekPixelShader')
 checks['fallback: world/water test before the PS lookup']=fb.index('vc.world||drawWaterVS')<fb.index('peekPixelShader')
 checks['fallback: renders effects with the fallback flag and counter']=all(x in fb for x in ('fallbackBoundaryThisFrame=true','++uiFallbackBoundaries','kind=ui-fallback','renderEffects();'))
