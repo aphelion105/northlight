@@ -7,6 +7,7 @@
 #include <chrono>
 #include <unordered_map>
 #include <optional>
+#include <string>
 
 // All submitted snapshot vertices, after the audited original deformation.
 // This helper never samples one vertex to infer a model/actor bounding box.
