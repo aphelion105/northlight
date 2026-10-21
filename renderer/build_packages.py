@@ -62,6 +62,9 @@ APP_FILES = [
     'renderer/wotlk-emitter-profiles.json', 'renderer/m2_emitter_patch.py',
     'renderer/build_emitter_patch.py', 'renderer/emitter_pin_report.py',
     'renderer/regional_fog_builder.py', 'renderer/build_celestial_disc_assets.py',
+    'renderer/native_model_lights.py', 'renderer/build_equipment_emitters.py',
+    'renderer/build_spell_emitters.py', 'renderer/build_mount_emitters.py',
+    'renderer/equipment_emitter_patch.py',
     'tests/validate_world_cache.py', 'src/sky/forest_regions.inc',
 ]
 PAYLOAD_COMMON = {'celestial-profiles.ini': 'client-config/celestial-profiles.ini',

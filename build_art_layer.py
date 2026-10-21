@@ -47,6 +47,7 @@ import northlight_paths as fp  # noqa: E402
 fp.use_source_modules()
 import client_archives  # noqa: E402
 from mpq import Archive  # noqa: E402
+import native_model_lights  # noqa: E402
 from world_scene_builder import Assets, decode_blp  # noqa: E402
 import build_lighting  # noqa: E402
 import build_mulgore_lighting  # noqa: E402
@@ -127,6 +128,9 @@ def build(client, output, world_cache, locale=None, letter='z', archives='all'):
             if manifest.get('sky_clone_skipped'):
                 report['steps'][-1]['sky_clone_skipped'] = manifest['sky_clone_skipped']
                 print(f"{name}: sky clone skipped ({manifest['sky_clone_skipped']})", flush=True)
+        dynamic_models, dynamic_steps = native_model_lights.build(assets, work, read_archive)
+        payload.update(dynamic_models)
+        report['steps'].extend(dynamic_steps)
         # 0.3.198 (rain): after the sky steps, so their skybox edits are kept: private storm profiles, then the weather textures.
         final = {n: DBC(payload[DBC_NAME.format(n)]) for n in build_lighting.TABLES}
         storm = build_lighting.stormify(final, stock)
