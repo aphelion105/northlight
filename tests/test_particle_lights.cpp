@@ -33,6 +33,16 @@ int main(){
     frame.publish(nullptr,0,fixed,camera,selection);assert(frame.outputCount<=8);
     frame.reset();blue.position[0]=0;frame.observe(blue,camera);native.position[0]=0;fixed.push_back(native);
     frame.publish(nullptr,0,fixed,camera,selection);assert(frame.outputCount==0);
+    // Continuous frames: a flashing source brightens within ~30 ms and dims over ~120 ms; a one-frame gap keeps the same light.
+    const float dt=1.f/170,goal=blue.rgb[2]*.7f;fixed.clear();frame.reset();
+    frame.observe(blue,camera);frame.publish(nullptr,0,fixed,camera,selection,dt);
+    assert(frame.outputCount==1&&frame.output[0].diffuse[2]>0&&frame.output[0].diffuse[2]<goal*.3f);const auto flash=frame.output[0].sourceId;
+    for(unsigned f=0;f<20;++f){frame.nextFrame();frame.observe(blue,camera);frame.publish(nullptr,0,fixed,camera,selection,dt);}
+    assert(frame.outputCount==1&&frame.output[0].sourceId==flash&&frame.output[0].diffuse[2]>goal*.95f);
+    frame.nextFrame();frame.publish(nullptr,0,fixed,camera,selection,dt);
+    assert(frame.outputCount==1&&frame.output[0].sourceId==flash&&frame.output[0].diffuse[2]>goal*.9f&&frame.output[0].diffuse[2]<goal);
+    frame.nextFrame();frame.observe(blue,camera);frame.publish(nullptr,0,fixed,camera,selection,dt);assert(frame.output[0].sourceId==flash);
+    for(unsigned f=0;f<170;++f){frame.nextFrame();frame.publish(nullptr,0,fixed,camera,selection,dt);}assert(frame.outputCount==0);
 
     NorthlightParticleUploads::Cache uploads;int key=0;unsigned in[4]={1,2,3,4},out[4]={};
     uploads.write(&key,1,16,in,sizeof in,false);assert(uploads.read(&key,16,sizeof out,out)&&out[3]==4);
@@ -51,5 +61,5 @@ int main(){
     uploads.nextFrame();for(unsigned i=unsigned(keys.size());i>0;--i)uploads.write(&keys[i-1],1,0,large.data(),unsigned(large.size()),false);
     assert(uploads.bytes()<=NorthlightParticleUploads::ByteBudget&&uploads.stats().evictions>0);
     uploads.clear();assert(uploads.bytes()==0);
-    std::cout<<"PASS particle lights: actual colour, compact clustering, indexed bounds, shared cap/dedup, instantaneous lifecycle and bounded replay upload bytes\n";
+    std::cout<<"PASS particle lights: actual colour, compact clustering, indexed bounds, shared cap/dedup, instantaneous lifecycle without a frame clock, 30/120 ms attack/release with one, and bounded replay upload bytes\n";
 }

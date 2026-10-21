@@ -44,8 +44,8 @@ struct Counters {
 };
 class Cache {
 public:
-    static constexpr unsigned MaxDimension=64,MaxEntries=128;
-    static constexpr std::size_t PixelBudget=768u<<10;
+    static constexpr unsigned MaxDimension=64,MaxEntries=512; // 128 evicted textures that particle draws still sampled
+    static constexpr std::size_t PixelBudget=4u<<20;
 private:
     struct Entry {
         const void* raw=nullptr;
@@ -120,6 +120,6 @@ public:
         e->used=++clock_;out={e->pixels.data(),e->width,e->height,e->mip,e->format,e->lifetime,e->revision,e->rgbaHash};++counts.hits;return true;
     }
 };
-static_assert(sizeof(Cache)+Cache::PixelBudget+Cache::MaxDimension*Cache::MaxDimension*4<(1u<<20),"particle texture cache plus decode scratch stays below 1 MiB");
+static_assert(sizeof(Cache)+Cache::PixelBudget+Cache::MaxDimension*Cache::MaxDimension*4<(5u<<20),"particle texture cache plus decode scratch stays below 5 MiB");
 inline Cache& cache(){static thread_local Cache value;return value;}
 } // namespace NorthlightParticleTextures

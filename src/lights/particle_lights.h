@@ -9,7 +9,12 @@
 // selection fade is allowed to keep a retired particle source alive.
 namespace NorthlightParticleLights {
 using Light=NorthlightLocalLights::Light;
-inline constexpr unsigned Capacity=8,Clusters=32,DrawLimit=32,TrianglesPerDraw=16;
+inline constexpr unsigned Capacity=8,Clusters=32,DrawLimit=32,TrianglesPerDraw=16,Tracks=16;
+// A particle source flashes per frame (lightning) and a sampled draw can miss a
+// frame (cache or sample placement). Each source therefore follows its samples:
+// it brightens within ~AttackSeconds and dims over ~ReleaseSeconds once its
+// particles stop, instead of switching a several-yard light on and off per frame.
+inline constexpr float AttackSeconds=.03f,ReleaseSeconds=.12f,FollowSeconds=.05f,MinEnergy=.003f;
 struct Sample {float position[3]{},rgb[3]{};};
 struct Cluster {Sample sample;unsigned count=0;};
 inline float peak(const float* rgb){return std::max({rgb[0],rgb[1],rgb[2]});}
@@ -41,6 +46,8 @@ inline void add(Cluster& cluster,const Sample& sample){
 class Frame {
     std::array<Cluster,Clusters> current_{};unsigned count_=0;
     std::array<Light,Capacity> previous_{};unsigned previousCount_=0;std::uint64_t serial_=0;
+    struct Track {float position[3]{},rgb[3]{},target[3]{};std::uint64_t id=0;bool seen=false;};
+    std::array<Track,Tracks> tracks_{};unsigned trackCount_=0;
 public:
     std::array<Light,Capacity> output{};unsigned outputCount=0;
     std::array<std::uint64_t,Capacity> immediate{};unsigned immediateCount=0;
@@ -50,7 +57,7 @@ public:
     enum State {BlendOp,AlphaTest,ColorWrite,Depth,Sampler,Projection,States};
     std::array<unsigned,States> stateWhy{};
     void refuse(State why){++stateMiss;++stateWhy[why];}
-    void reset(){count_=previousCount_=outputCount=immediateCount=0;nextFrame();}
+    void reset(){count_=previousCount_=trackCount_=outputCount=immediateCount=0;nextFrame();}
     void nextFrame(){count_=0;draws=backgroundDraws=accepted=deferred=triangles=points=dropped=0;shaderMiss=textureMiss=bufferMiss=stateMiss=geometryMiss=0;stateWhy={};}
     bool takeDraw(bool particle=true){if(draws>=DrawLimit||(!particle&&backgroundDraws>=DrawLimit/2)){++dropped;return false;}++draws;if(!particle)++backgroundDraws;return true;}
     void observe(const Sample& sample,const float* camera){
@@ -67,23 +74,38 @@ public:
         }else ++count_;
         current_[at]={sample,1};
     }
+    // dtSeconds 0 (a gap, a new map, the tests' single frames): every source shows its current samples at once.
     void publish(const Light* native,unsigned nativeCount,const std::vector<Light>& fixed,
-                 const float* camera,NorthlightLocalLightSelection::Tracker& selection){
-        std::array<Light,Clusters+Capacity> candidates{};unsigned count=0;
+                 const float* camera,NorthlightLocalLightSelection::Tracker& selection,float dtSeconds=0){
+        const auto rate=[&](float seconds){return dtSeconds>0?1-std::exp(-dtSeconds/seconds):1.f;};
+        const float rise=rate(AttackSeconds),fall=rate(ReleaseSeconds),follow=rate(FollowSeconds);
+        for(unsigned t=0;t<trackCount_;++t)tracks_[t].seen=false;
         for(unsigned i=0;i<count_;++i){
             const auto& s=current_[i].sample;bool duplicate=false;
             for(const auto& l:fixed)if(NorthlightEquipmentLights::distance2(s.position,l.position)<.25f*.25f&&
                 NorthlightEquipmentLights::hueClose(s.rgb,l.diffuse)){duplicate=true;break;}
             if(duplicate)continue;
-            Light l{};for(unsigned k=0;k<3;++k){l.position[k]=s.position[k];l.diffuse[k]=s.rgb[k]*std::min(.7f,1.f/peak(s.rgb));}
-            l.attenuationStart=.5f;l.attenuationEnd=2.f+4.f*std::sqrt(std::min(1.f,peak(l.diffuse)));l.kind=2;
-            for(unsigned j=0;j<previousCount_;++j)if(NorthlightEquipmentLights::distance2(l.position,previous_[j].position)<2.f*2.f&&
-                NorthlightEquipmentLights::hueClose(l.diffuse,previous_[j].diffuse)){
-                bool used=false;for(unsigned n=0;n<count;++n)used|=candidates[n].sourceId==previous_[j].sourceId;
-                if(!used){l.sourceId=previous_[j].sourceId;break;}
+            float target[3];for(unsigned k=0;k<3;++k)target[k]=s.rgb[k]*std::min(.7f,1.f/peak(s.rgb));
+            Track* track=nullptr;float best=2.f*2.f;
+            for(unsigned t=0;t<trackCount_;++t){auto& c=tracks_[t];const float d=NorthlightEquipmentLights::distance2(s.position,c.position);
+                if(!c.seen&&d<best&&NorthlightEquipmentLights::hueClose(target,c.target)){track=&c;best=d;}}
+            if(track){for(unsigned k=0;k<3;++k){track->position[k]+=(s.position[k]-track->position[k])*follow;track->target[k]=target[k];}}
+            else{
+                if(trackCount_<Tracks)track=&tracks_[trackCount_++];
+                else{float weakest=INFINITY;for(auto& c:tracks_)if(!c.seen&&peak(c.rgb)<weakest){weakest=peak(c.rgb);track=&c;}
+                    if(!track){++dropped;continue;}}
+                *track={};track->id=0xfed0000000000000ull|++serial_;
+                for(unsigned k=0;k<3;++k){track->position[k]=s.position[k];track->target[k]=target[k];}
             }
-            if(!l.sourceId)l.sourceId=0xfed0000000000000ull|++serial_;
-            candidates[count++]=l;
+            track->seen=true;
+        }
+        std::array<Light,Tracks+Capacity> candidates{};unsigned count=0;
+        for(unsigned t=0;t<trackCount_;){auto& c=tracks_[t];
+            for(unsigned k=0;k<3;++k){const float goal=c.seen?c.target[k]:0.f;c.rgb[k]+=(goal-c.rgb[k])*(goal>c.rgb[k]?rise:fall);}
+            if(!c.seen&&peak(c.rgb)<MinEnergy){c=tracks_[--trackCount_];continue;}
+            Light l{};for(unsigned k=0;k<3;++k){l.position[k]=c.position[k];l.diffuse[k]=c.rgb[k];}
+            l.attenuationStart=.5f;l.attenuationEnd=2.f+4.f*std::sqrt(std::min(1.f,peak(c.rgb)));l.kind=2;l.sourceId=c.id;
+            candidates[count++]=l;++t;
         }
         const unsigned particleCount=count;
         for(unsigned i=0;native&&i<nativeCount&&i<Capacity;++i){
