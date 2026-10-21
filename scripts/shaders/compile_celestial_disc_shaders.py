@@ -4,7 +4,7 @@ import hashlib,json,sys
 from pathlib import Path
 sys.path[:0] = [str(Path(__file__).resolve().parents[2]), str(Path(__file__).resolve().parent)]  # repo root, scripts/shaders/
 import northlight_paths as fp  # noqa: E402
-from shader_compiler import Compiler,PROVENANCE,rows,validate_assembly
+from shader_compiler import Compiler,rows,validate_assembly
 def main():
     source=fp.SHADERS/'celestial_disc_effects.hlsl';digest=hashlib.sha256(source.read_bytes()).hexdigest()
     compiler=Compiler(allow_compatible_binary='--compatible-compiler' in sys.argv)
