@@ -21,6 +21,7 @@ fixture=r'''
 #include "quality_settings.h"
 #include <cassert>
 #include <functional>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <cstdio>

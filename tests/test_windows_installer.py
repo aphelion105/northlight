@@ -370,6 +370,8 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(merged.lower().count('gpubudgetms='),1)
         self.assertIsNone(m.merge_quality_ini(template,template))
     def set_payload(self,name,data):
+        # Each synthetic package version models a newly launched installer process.
+        m._sha_cache.clear()
         (self.pkg/'payload'/name).write_bytes(data)
         manifest=json.loads((self.pkg/'payload-manifest.json').read_text())
         for e in manifest:

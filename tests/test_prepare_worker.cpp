@@ -27,6 +27,7 @@
 #include "vertex_declaration_cache.h"
 #include "actor_client_programs.h"
 #include <cassert>
+#include <climits>
 #include <cstdio>
 #include <cstdlib>
 #include <random>
