@@ -54,7 +54,7 @@ int main(){
             for(auto& p:replays){p.shader=&shaders[rng()%6];p.originalShader=rng()%3?&shaders[rng()%2]:nullptr;p.decl=rng()%4?&declarations[rng()%3]:nullptr;
                 p.texture=rng()%3?&textures[rng()%4]:nullptr;p.cutoff=rng()%2?-1.f:float(rng()%4)*.25f;p.shared=rng()%4?meshes[rng()%5]:nullptr;
                 for(unsigned k=0;k<1024;++k)p.constantStorage[k]=float(rng()%1000);for(auto& b:p.boolStorage)b=int(rng()%2);for(auto& i:p.intStorage)i=int(rng()%9);
-                p.constantUsage.floats={rng()%8,rng()%256};p.constantUsage.analyzed=rng()%2;p.projectionKind=1+rng()%2;p.addressU=1+rng()%3;p.addressV=1+rng()%3;
+                p.constantUsage.floats={unsigned(rng()%8),unsigned(rng()%256)};p.constantUsage.analyzed=rng()%2;p.projectionKind=1+rng()%2;p.addressU=1+rng()%3;p.addressV=1+rng()%3;
                 p.type=rng()%2?D3DPT_TRIANGLELIST:D3DPT_TRIANGLESTRIP;p.count=rng()%500;p.indexed=rng()%2;}
             const size_t lead=replays.size()-draws; /* another group's copies first */
             for(auto& p:replays)h.rigidGroupDraws.push_back(&p);
