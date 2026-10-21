@@ -287,7 +287,7 @@ local function tooltip(row)
     GameTooltip:SetOwner(row, "ANCHOR_RIGHT"); GameTooltip:SetText(fieldLabel(f)); GameTooltip:AddLine(f.key, .65, .65, .65)
     GameTooltip:AddLine(f.file .. " / [" .. f.section .. "]", 1, 1, 1)
     GameTooltip:AddLine("Saved: " .. shownValue(f, true) .. "   Active: " .. (f.available and f.active or "unavailable"), 1, 1, 1, true)
-    if f.key == "AutoBump" then GameTooltip:AddLine("Generates and caches normal maps from installed textures. Directional detail is applied at full screen resolution. MPQs remain unchanged. Requires MSAA off (1x). Apply to compare on and off.", .8, .8, .8, true) end
+    if f.key == "AutoBump" then GameTooltip:AddLine("Generates and caches normal maps from installed textures. Directional detail is applied at full screen resolution. MPQs remain unchanged. Supports MSAA. Apply to compare on and off.", .8, .8, .8, true) end
     if f.key == "AutoBumpStrength" then GameTooltip:AddLine("Higher values make details more pronounced and can exaggerate painted shadows. Start at 75%.", .8, .8, .8, true) end
     if f.key == "AutoBumpTerrain" then GameTooltip:AddLine("Includes grass, dirt and stone painted on the ground.", .8, .8, .8, true) end
     if f.key == "AutoBumpGrass" then GameTooltip:AddLine("Applies to separate native grass tufts and respects their fade.", .8, .8, .8, true) end
@@ -306,12 +306,11 @@ local function tooltip(row)
     if f.key == "PointShadowLimit" then GameTooltip:AddLine("Raises the local light pool when needed. For a shadow-only comparison, set Maximum local lights to 128 and GPU effect budget to 0 first; then compare 4 / 8 / 16 / 32 / 64 / 128 in the same scene.", .8, .8, .8, true) end
     if f.file == "R" and f.key ~= "Backend" then
         GameTooltip:AddLine("HDR output: " .. tostring(snapshot.hdrStatus or "unknown") .. " (" .. tostring(snapshot.hdrCode or "?") .. ")", 1, 0.85, 0.4, true)
-        GameTooltip:AddLine("Requires DXVK 2/3, CommandStream, windowed mode, MSAA off and HDR output from the system or Wine. Restart after toggling HDR; sliders apply in game.", 0.8, 0.8, 0.8, true)
+        GameTooltip:AddLine("Requires DXVK 2/3, CommandStream, windowed mode and HDR output from the system or Wine. MSAA is supported. Restart after toggling HDR; sliders apply in game.", 0.8, 0.8, 0.8, true)
         local reasons = {
             ["command-stream-disabled"]="Enable CommandStream in Performance, then restart.",
             ["backend-not-dxvk"]="Select DXVK 2 or 3 in Renderer, then restart.",
             ["windowed-mode-required"]="Enable windowed mode.",
-            ["msaa-enabled"]="Disable multisampling (MSAA).",
             ["host-scrgb-unavailable"]="The system/Wine driver does not expose HDR scRGB. Check display HDR and the Wine/Vulkan driver.",
             ["dxvk-hdr-interface-missing"]="This DXVK build lacks the D3D9 HDR interface.",
         }
