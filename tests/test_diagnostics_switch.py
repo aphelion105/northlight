@@ -23,6 +23,7 @@ KEEP={
  'HDR boundary frame=':'capped: first verified boundaries',
  'HDR conversion failed':'capped: first eight conversion failures',
  'HDR unconverted UI draw':'capped: first eight rejected UI conversions',
+ 'HDR logical copy after UI':'gated and capped: helper returns unless diagnostics() is on, first eight logical copies after the UI boundary',
  'HDR legacy target ':'one-off per legacy target creation/reset',
  'HDR experimental requested=':'start-up: experimental HDR configuration',
  'HDR experimental device creation refused:':'start-up: command-stream creation failure',
