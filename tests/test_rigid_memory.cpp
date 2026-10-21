@@ -211,17 +211,20 @@ static void states(){
 static void trackMerge(){
     unsigned frames=0,checks=0;
     for(unsigned seed=1;seed<=12;++seed){std::mt19937 rng(seed);Tuning t;t.maxTracks=seed%3==0?150:2048;Scene s(t);
+        // Enter with a real remembered object; random captures alone need not settle a track on every standard library.
+        assert(s.settle(sign(1000,20,0,3),s.away)&&s.reg.stats().remembered>0);
         std::uniform_int_distribution<unsigned> coin(0,99),shape(1,40);std::uniform_real_distribution<float> at(-60,60);
         std::vector<Observation> still;for(unsigned i=0;i<30;++i)still.push_back(sign(shape(rng),at(rng),at(rng),float(i%5)));
         for(unsigned f=0;f<700;++f){std::vector<Observation> list;
-            for(const auto& o:still)if(coin(rng)<85)list.push_back(o); /* settled signs, sometimes not drawn */
-            for(unsigned r=coin(rng)%12;r-->0;)list.push_back(sign(shape(rng),at(rng),at(rng),at(rng)*.1f)); /* riders' weapons: new tracks */
-            if(coin(rng)<2){s.pivot[0]+=coin(rng)<50?150.f:-150.f;} /* teleport */
+            for(const auto& o:still)if(coin(rng)<85)list.push_back(o);
+            for(unsigned r=coin(rng)%12;r-->0;)list.push_back(sign(shape(rng),at(rng),at(rng),at(rng)*.1f));
+            if(coin(rng)<2){s.pivot[0]+=coin(rng)<50?150.f:-150.f;}
             s.step(list,coin(rng)<50?s.away:s.toward,coin(rng)<80,coin(rng)<5?2100u:16u);
             assert(s.reg.consistent());++checks;}
-        frames+=700;assert(s.reg.stats().remembered>0);}
-    std::printf("PASS track merge: %u random frames (12 sessions: new tracks every frame, 2 s forgetting, the 150/2048 cap, entries, teleports), order == full sort, serial index exact, entry links exact after every frame (%u checks)\n",frames,checks);
+        frames+=700;}
+    std::printf("PASS track merge: %u random frames, seeded remembered entry, order and serial links consistent (%u checks)\n",frames,checks);
 }
+
 static void caps(){
     // 70 signs at 2..71 yd (both orders): the 64 nearest stay, the farthest go.
     for(bool reversed:{false,true}){Scene s;std::vector<Observation> all;for(unsigned i=0;i<70;++i){const unsigned k=reversed?69-i:i;all.push_back(sign(100+k,-2.f-k,0,2));}

@@ -99,7 +99,7 @@ with tempfile.TemporaryDirectory(prefix='northlight-rigid-memory-') as tmp:
  assert gated.count(gate)==1
  ungated=gated.replace(gate,'if(p.boneKnown)b=p.bone;')
  harness=(HERE/'test_rigid_observe.cpp').read_text().replace('/*OBSERVE_METHODS*/','struct Gated:Base{using Base::Base;\n'+gated+'\nOBSERVE_LOOP};\nstruct Ungated:Base{using Base::Base;\n'+ungated+'\nOBSERVE_LOOP};')
- (p/'test_rigid_observe.cpp').write_text(harness)
+ (p/'test_rigid_observe.cpp').write_text('#include <climits>\n'+harness)
  for label,flags in (('O2',['-O2']),('asan',['-O1','-g','-fsanitize=address,undefined','-fno-omit-frame-pointer'])):
   exe=p/('observe-'+label)
   subprocess.run(['clang++','-std=c++17','-Wall','-Wextra','-Werror',*flags,'-UNDEBUG','-I',str(p),*fp.test_include_flags(),str(p/'test_rigid_observe.cpp'),str(fp.src('world_gi.cpp')),'-o',str(exe)],check=True)
@@ -113,7 +113,7 @@ with tempfile.TemporaryDirectory(prefix='northlight-rigid-memory-') as tmp:
    i+=1
  copies='\n'.join(block(m,h) for h in ('    template<class T> struct RigidRef {','    struct RigidDraw {','    struct RigidPayload {',
   '    static void rigidFill(const Replay& p,RigidDraw& c){','    size_t rigidGroupEnd(size_t n)const{','    RigidPayload rigidCopy(size_t n){','    void rigidRefresh(size_t n,RigidPayload& out){'))
- (p/'test_rigid_refresh.cpp').write_text((HERE/'test_rigid_refresh.cpp').read_text().replace('/*REFRESH_METHODS*/',copies))
+ (p/'test_rigid_refresh.cpp').write_text('#include <climits>\n'+(HERE/'test_rigid_refresh.cpp').read_text().replace('/*REFRESH_METHODS*/',copies))
  for label,flags in (('O2',['-O2']),('asan',['-O1','-g','-fsanitize=address,undefined','-fno-omit-frame-pointer'])):
   exe=p/('refresh-'+label)
   subprocess.run(['clang++','-std=c++17','-Wall','-Wextra','-Werror',*flags,'-UNDEBUG','-I',str(p),*fp.test_include_flags(),str(p/'test_rigid_refresh.cpp'),'-o',str(exe)],check=True)

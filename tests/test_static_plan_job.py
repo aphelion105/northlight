@@ -90,9 +90,10 @@ with tempfile.TemporaryDirectory(prefix='northlight-0.3.152-') as tmp:
     for a,b in edits:
         assert src.count(a)==1,f'equality proof changed: {a}';src=src.replace(a,b)
     (Path(tmp)/'plan_hash.cpp').write_text(src)
-    for arch in ['arm64','x86_64'] if platform.machine()=='arm64' else [platform.machine()]:
+    if sys.platform!='darwin':print('SKIP historical Apple Clang golden hashes; portable plan/worker equality checks still run')
+    for arch in (['arm64','x86_64'] if platform.machine()=='arm64' else [platform.machine()]) if sys.platform=='darwin' else []:
         exe=Path(tmp)/f'plan_hash-{arch}'
-        b=subprocess.run(['clang++','-arch',arch,'-std=c++17','-O2',*fp.test_include_flags(),'-I',str(fp.SUPPORT),str(Path(tmp)/'plan_hash.cpp'),str(fp.src('static_shadow_scene.cpp')),str(fp.src('world_gi.cpp')),'-o',str(exe)],capture_output=True,text=True)
+        b=subprocess.run(['clang++',*(['-arch',arch] if sys.platform=='darwin' else []),'-std=c++17','-O2',*fp.test_include_flags(),'-I',str(fp.SUPPORT),str(Path(tmp)/'plan_hash.cpp'),str(fp.src('static_shadow_scene.cpp')),str(fp.src('world_gi.cpp')),'-o',str(exe)],capture_output=True,text=True)
         got=re.search(r'HASH (\d+)',subprocess.run([str(exe)],capture_output=True,text=True).stdout) if not b.returncode else None
         want=BASE_0_3_151.get(arch)
         check(f'plan bytes and draw records identical to base 0.3.151 [{arch}]',got and want is not None and int(got.group(1))==want,f'hash {got.group(1) if got else b.stderr.strip()[-200:]} base {want}')
