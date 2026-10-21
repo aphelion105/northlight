@@ -10,8 +10,8 @@ import northlight_paths as fp
 
 source = fp.src('renderer.cpp').read_text(encoding='utf-8')
 predicates = re.findall(r'!?memoryGuard\.(?:pressure|capsHalved)\(\)', source[:source.index('    void trimMemory(')])
-assert len(predicates) == 5, 'Review every material/SSR/depth/weather memory gate'
-# The first two predicates reject a pass; the remaining three admit one.
+assert len(predicates) == 6, 'Review every material/SSR/depth/weather memory gate'
+# The first two predicates reject a pass; the remaining four admit one.
 allowed = ['!(' + p + ')' if i < 2 else p for i, p in enumerate(predicates)]
 harness = r'''
 #include "memory_guard.h"
@@ -31,7 +31,7 @@ int main(){
     memoryGuard.update(500*MiB,200*MiB,121000,0);check(false);
     memoryGuard.update(900*MiB,557*MiB,122000,0);check(false);
     memoryGuard.update(900*MiB,557*MiB,132000,0);assert(!memoryGuard.pressure());check(true);
-    std::cout<<"Surface admission: five production gates; sustained geometry demand, actual low memory and recovery passed\n";
+    std::cout<<"Surface admission: six production gates; sustained geometry demand, actual low memory and recovery passed\n";
 }
 '''.replace('__PREDICATES__', ','.join(allowed))
 with tempfile.TemporaryDirectory(prefix='northlight-surface-admission-') as tmp:
