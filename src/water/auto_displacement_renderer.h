@@ -9,6 +9,7 @@
 #include "captured_constant_epoch.h"
 #include "vertex_declaration_cache.h"
 #include <memory>
+#include <map>
 #include <cfloat>
 
 class NorthlightAutoDisplacement {
@@ -48,7 +49,7 @@ class NorthlightAutoDisplacement {
     std::unordered_map<const Mesh*,Bounds> bounds;
     std::vector<std::unique_ptr<Entry>> entries;
     std::unordered_multimap<const Mesh*,Entry*> sourceLookup;
-    std::unordered_multimap<uint64_t,Entry*> contentLookup;
+    std::multimap<uint64_t,Entry*> contentLookup;
     std::unordered_multimap<uint64_t,Entry*> materialLookup;
     bool indexedEntries=true;uint64_t entrySerial=0;
     std::vector<float> uvScratch;
@@ -73,6 +74,9 @@ class NorthlightAutoDisplacement {
         else{const auto range=sourceLookup.equal_range(source.get());for(auto it=range.first;it!=range.second;++it)visit(*it->second);}
     }
     template<class Match> Entry* firstCandidate(const std::shared_ptr<const Mesh>& source,uint64_t fingerprint,bool equivalent,Match match){
+        // Equivalent keys keep insertion order, so UP canonicalization can stop at its original first match.
+        if(indexedEntries&&equivalent){const auto range=contentLookup.equal_range(fingerprint);for(auto it=range.first;it!=range.second;++it)if(match(*it->second))return it->second;return nullptr;}
+        if(!indexedEntries){for(auto& e:entries)if(match(*e))return e.get();return nullptr;}
         Entry* first=nullptr;candidates(source,fingerprint,equivalent,[&](Entry& e){if((!first||e.order<first->order)&&match(e))first=&e;});return first;
     }
     template<class Match> Entry* firstMaterial(uint64_t fingerprint,Match match){
