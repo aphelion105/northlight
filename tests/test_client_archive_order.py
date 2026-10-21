@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 # northlight-test: requires=client,stormlib
-"""0.3.162: which archive wins each file on the configured client, the 0.3.161 builder order
-against the game's order (client_archives.chain). Reports the winners of Light.dbc and
-AreaTable.dbc before and after, and the changed winners by top-level folder. Fails if a world\\
-file (ADT, WMO, M2, skin) or a texture changes provider: that would make an existing world cache
-stale. Reads MPQ listfiles only; no game, no Wine."""
+"""Report the historical archive-order migration on the configured client and verify that
+today's world builder resolves all world/texture providers in game order. Historical changes
+depend on the installed pack and locale; they are evidence, not a fixed client fixture.
+Reads MPQ listfiles only; no game, no Wine."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
-import northlight_paths as fp
+import northlight_paths as fp; fp.use_source_modules()
 import collections, json
 import client_archives
 from mpq import Archive
+from world_scene_builder import Assets
 
 client = fp.client_root()
 data = client_archives.data_dir(client)
@@ -56,4 +56,14 @@ report = {'client_locale': locale, 'legacy_order': [p.relative_to(client).as_pos
 for n in watch[:1] + watch[3:4]:
     print(f"{n}: {before.get(n)} -> {after.get(n)}")
 print('changed winners by folder:', dict(by_folder.most_common()), '| no longer loaded:', sum(dropped.values()))
-assert not report['changed_world_or_texture'], report['changed_world_or_texture'][:20]
+# The historical migration report depends on the installed pack and locale. Current builders
+# must resolve every world/texture provider in the game's order, including locale overrides.
+assets = Assets(client, 'all', client_archives.detect_locale(client))
+try:
+    checked = [n for n in after if n.startswith(('world\\', 'textures\\', 'tileset\\'))]
+    assert checked
+    for name in checked:
+        assert assets.origin(name).lower().replace('\\', '/') == after[name], name
+finally:
+    assets.close()
+print('game-order world/texture providers checked:', len(checked))
