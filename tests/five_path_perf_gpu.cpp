@@ -21,7 +21,7 @@ int main(int argc,char** argv){
     FILE* report=std::fopen(argv[4],"w");assert(report);std::fprintf(report,"[\n");unsigned cases=0;
     const char* names[]={"GTAOContactBloom","WorldFog","FogClouds","WorldComposite","LateWaterSSR"};
     for(unsigned pass=1;pass<4;++pass)for(unsigned scenario=0;scenario<(pass==0?5u:4u);++scenario){
-        const unsigned FW=2560,FH=1440,W=pass<3?FW/2:FW,H=pass<3?FH/2:FH;
+        const unsigned FW=3840,FH=2160,W=pass<3?FW/2:FW,H=pass<3?FH/2:FH;
         float c[80][4]{};c[0][0]=1.f/FW;c[0][1]=1.f/FH;c[0][2]=.2f;c[0][3]=1000;
         c[1][0]=1.3f;c[1][1]=1.9f;c[1][2]=1;c[2][0]=1;c[2][1]=48;c[2][2]=192;c[2][3]=1.f/1024;
         c[3][0]=c[4][2]=c[5][1]=c[6][3]=1;c[6][2]=2;
@@ -41,6 +41,7 @@ int main(int argc,char** argv){
         c[62][0]=22;c[62][1]=-1.25f;c[62][2]=32;c[62][3]=.06f;
         c[63][0]=.875f;c[63][1]=1.f/64;c[63][2]=1.f/16;c[63][3]=1.625f;
         if(pass==0){std::memset(c[1],0,6*16);c[1][0]=1.3f;c[1][1]=1.9f;c[1][2]=.6f;c[2][1]=scenario==0?.1f:scenario==1?2:10;c[3][1]=c[3][2]=1;c[5][1]=c[5][2]=1;}
+        if(pass==1||pass==2){c[31][0]=scenario==1?-8.f:scenario==2?1024.f:-256.f;c[31][1]=scenario==1?-8.f:scenario==2?1024.f:-256.f;}
         if(pass==3){c[30][0]=scenario==3;}
         if(pass==4){
             std::memset(c[1],0,25*16);c[1][0]=1.3f;c[1][1]=1.9f;c[1][2]=-1;c[1][3]=7;c[2][1]=1;
