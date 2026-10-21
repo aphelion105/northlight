@@ -14,12 +14,10 @@ inline constexpr unsigned Capacity=8,Clusters=32,DrawLimit=32,TrianglesPerDraw=1
 // takes one of the DrawLimit sampling slots: distant particle systems drawn first
 // (city torches, fountains) used to fill the slots and leave the player's weapon dark.
 inline constexpr unsigned ProbeLimit=128;inline constexpr float MaxDistance=48.f;
-// A particle source flashes per frame (lightning) and a sampled draw can miss a
-// frame (cache or sample placement). Each source therefore follows its samples:
-// a flash shows at once (a delayed rise swallowed one-frame flashes) and dims
-// over ~ReleaseSeconds once its particles stop, instead of switching a
-// several-yard light off between frames.
-inline constexpr float ReleaseSeconds=.12f,FollowSeconds=.05f,MinEnergy=.003f;
+// A source keeps its id while its samples stay within 2 yards, and its position
+// follows them over ~FollowSeconds. Its light shows only this frame's samples:
+// no fade-in (it swallowed one-frame flashes) and no release tail.
+inline constexpr float FollowSeconds=.05f,MinEnergy=.003f;
 struct Sample {float position[3]{},rgb[3]{};float brightest=0;}; // brightest: the strongest sample merged into this one
 struct Cluster {Sample sample;unsigned count=0;};
 inline float peak(const float* rgb){return std::max({rgb[0],rgb[1],rgb[2]});}
@@ -95,7 +93,7 @@ public:
     void publish(const Light* native,unsigned nativeCount,const std::vector<Light>& fixed,
                  const float* camera,NorthlightLocalLightSelection::Tracker& selection,float dtSeconds=0){
         const auto rate=[&](float seconds){return dtSeconds>0?1-std::exp(-dtSeconds/seconds):1.f;};
-        const float fall=rate(ReleaseSeconds),follow=rate(FollowSeconds);
+        const float follow=rate(FollowSeconds);
         for(unsigned t=0;t<trackCount_;++t)tracks_[t].seen=false;
         for(unsigned i=0;i<count_;++i){
             const auto& s=current_[i].sample;bool duplicate=false;
@@ -119,7 +117,7 @@ public:
         }
         std::array<Light,Tracks+Capacity> candidates{};unsigned count=0;
         for(unsigned t=0;t<trackCount_;){auto& c=tracks_[t];
-            for(unsigned k=0;k<3;++k){const float goal=c.seen?c.target[k]:0.f;c.rgb[k]=goal>c.rgb[k]?goal:c.rgb[k]+(goal-c.rgb[k])*fall;}
+            for(unsigned k=0;k<3;++k){const float goal=c.seen?c.target[k]:0.f;c.rgb[k]=goal;}
             if(!c.seen&&peak(c.rgb)<MinEnergy){c=tracks_[--trackCount_];continue;}
             Light l{};for(unsigned k=0;k<3;++k){l.position[k]=c.position[k];l.diffuse[k]=c.rgb[k];}
             l.attenuationStart=.5f;l.attenuationEnd=2.f+4.f*std::sqrt(std::min(1.f,peak(c.rgb)));l.kind=2;l.sourceId=c.id;
