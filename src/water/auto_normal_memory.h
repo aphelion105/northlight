@@ -2,6 +2,12 @@
 #include <cstdint>
 
 namespace NorthlightAutoNormalMemory {
+inline std::uint64_t budget(std::uint64_t available,std::uint64_t current){
+    // Leave the world's 768 MiB build floor plus room for native streaming.
+    // Separate recovery keeps the cache from growing back into the same stall.
+    if(available<(896ull<<20))return 32ull<<20;
+    return available>=(1024ull<<20)?96ull<<20:current;
+}
 inline std::uint64_t mipBytes(D3DFORMAT format,unsigned width,unsigned height,unsigned levels){
     unsigned block=0,texel=16;
     switch(format){

@@ -1,5 +1,5 @@
 {
-  "source_sha256": "eafb03cdcd723971e0d100f205b0a4bbe29a514d5fc9764b8baab071a38de40c",
+  "source_sha256": "2d516d772cc6007662be236e5550d8079aafc2b7c1506049bd90caee4b4b4d05",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
   "game_launched": false,
@@ -77,27 +77,30 @@
     },
     "CelestialHaloVisibilityPS": {
       "target": "ps_3_0",
-      "bytes": 2324,
-      "sha256": "b42fd49bb9034bfda22c449c2c920f849c50e434c4efc41914a4616e6e422ab5",
-      "static_instruction_slots": 98,
-      "temporary_registers": 7,
+      "bytes": 3996,
+      "sha256": "ccfd3d3e9b9171bcb82c7036f8307f10a5be2a164d2a6b928ee1a90c9270bec7",
+      "static_instruction_slots": 209,
+      "temporary_registers": 10,
       "samplers": [
+        0,
+        2,
         3,
         4
       ],
       "instructions": {
-        "mov": 7,
-        "add": 21,
-        "rcp": 3,
-        "mul": 13,
+        "rcp": 5,
+        "add": 53,
+        "mov": 10,
+        "frc": 2,
+        "cmp": 61,
+        "mul": 27,
         "rep": 1,
-        "cmp": 39,
-        "texldl": 2,
+        "texldl": 10,
+        "if": 6,
+        "endif": 6,
         "dp3": 1,
         "endrep": 1,
-        "if": 1,
-        "else": 1,
-        "endif": 1
+        "else": 1
       }
     },
     "CelestialVeilPS": {

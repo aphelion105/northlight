@@ -2,6 +2,7 @@
 """Run every surface admission predicate against the production memory guard."""
 from pathlib import Path
 import re
+import os
 import subprocess
 import sys
 import tempfile
@@ -10,8 +11,8 @@ import northlight_paths as fp
 
 source = fp.src('renderer.cpp').read_text(encoding='utf-8')
 predicates = re.findall(r'!?memoryGuard\.(?:pressure|capsHalved)\(\)', source[:source.index('    void trimMemory(')])
-assert len(predicates) == 6, 'Review every material/SSR/depth/weather memory gate'
-# The first two predicates reject a pass; the remaining four admit one.
+assert len(predicates) == 5, 'Review every SSR/depth/weather memory gate'
+# The first two predicates reject a pass; the remaining three admit one.
 allowed = ['!(' + p + ')' if i < 2 else p for i, p in enumerate(predicates)]
 harness = r'''
 #include "memory_guard.h"
@@ -38,5 +39,6 @@ with tempfile.TemporaryDirectory(prefix='northlight-surface-admission-') as tmp:
     cpp = Path(tmp) / 'admission.cpp'
     exe = Path(tmp) / 'admission.exe'
     cpp.write_text(harness, encoding='utf-8')
-    subprocess.run(['clang++', '-std=c++17', '-O2', '-UNDEBUG', *fp.test_include_flags(), str(cpp), '-o', str(exe)], check=True)
-    subprocess.run([str(exe)], check=True)
+    compiler=[str(fp.zig()),'c++','-target','x86_64-windows-gnu'] if os.name=='nt' else ['clang++']
+    subprocess.run([*compiler, '-std=c++17', '-O2', '-UNDEBUG', *fp.test_include_flags(), str(cpp), '-o', str(exe)], env=fp.zig_env(), check=True)
+    subprocess.run([str(exe)], env=fp.zig_env(), check=True)

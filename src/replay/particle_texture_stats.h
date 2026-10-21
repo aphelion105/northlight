@@ -95,6 +95,7 @@ public:
         if(source==destination)return false;auto* original=find(source);if(!original||original->pixels.empty()){invalidate(destination);return false;}
         // Copy before slot/eviction can invalidate the borrowed source.
         auto pixels=original->pixels;const auto w=original->width,h=original->height,mip=original->mip,fmt=original->format;const auto hash=original->rgbaHash;
+        if(auto* same=find(destination))if(same->width==w&&same->height==h&&same->mip==mip&&same->format==fmt&&same->rgbaHash==hash&&same->pixels==pixels){same->used=++clock_;return true;}
         Entry& e=slot(destination,owner);drop(e);while(bytes_+pixels.size()>PixelBudget){auto* victim=oldest(&e);if(!victim)break;drop(*victim);*victim={};++counts.evictions;}
         e.pixels=std::move(pixels);e.width=w;e.height=h;e.mip=mip;e.format=fmt;e.rgbaHash=hash;++e.revision;e.used=++clock_;bytes_+=e.pixels.size();return true;
     }catch(...){invalidate(destination);++counts.failed;return false;}}
@@ -107,8 +108,8 @@ public:
         // edit invalidates it instead of inventing the missing old subpixels.
         if(left%sx||right%sx||top%sy||bottom%sy)return fail();std::vector<std::uint8_t> patch;
         if(!decodeImage(source,sourceBytes,right-left,bottom-top,pitch,decodedFormat,patch))return fail();
-        for(unsigned y=top/sy;y<bottom/sy;++y)for(unsigned x=left/sx;x<right/sx;++x){unsigned sum[4]={};for(unsigned j=0;j<sy;++j)for(unsigned i=0;i<sx;++i)for(unsigned c=0;c<4;++c)sum[c]+=patch[((size_t(y*sy-top+j))*(right-left)+x*sx-left+i)*4+c];for(unsigned c=0;c<4;++c)e->pixels[(size_t(y)*e->width+x)*4+c]=std::uint8_t((sum[c]+sx*sy/2)/(sx*sy));}
-        e->owner=owner;e->rgbaHash=14695981039346656037ull;for(auto b:e->pixels)e->rgbaHash=(e->rgbaHash^b)*1099511628211ull;++e->revision;e->used=++clock_;return true;
+        bool changed=false;for(unsigned y=top/sy;y<bottom/sy;++y)for(unsigned x=left/sx;x<right/sx;++x){unsigned sum[4]={};for(unsigned j=0;j<sy;++j)for(unsigned i=0;i<sx;++i)for(unsigned c=0;c<4;++c)sum[c]+=patch[((size_t(y*sy-top+j))*(right-left)+x*sx-left+i)*4+c];for(unsigned c=0;c<4;++c){auto& old=e->pixels[(size_t(y)*e->width+x)*4+c];auto value=std::uint8_t((sum[c]+sx*sy/2)/(sx*sy));changed|=old!=value;old=value;}}
+        e->owner=owner;if(!changed){e->used=++clock_;return true;}e->rgbaHash=14695981039346656037ull;for(auto b:e->pixels)e->rgbaHash=(e->rgbaHash^b)*1099511628211ull;++e->revision;e->used=++clock_;return true;
     }catch(...){invalidate(raw);++counts.failed;return false;}}
     // Other full mips do not change this mip. Partial/failed writes invalidate
     // the texture conservatively. Only a later complete CPU upload can restore it.
@@ -129,9 +130,11 @@ public:
         if(!decodeImage(source,sourceBytes,width,height,pitch,decodedFormat,decoded)){++counts.failed;invalidate(raw);return;}
         if constexpr(DecodeDimension>Dimension){if(width>Dimension||height>Dimension){const unsigned w=std::min(width,Dimension),h=std::min(height,Dimension);std::vector<std::uint8_t> small(size_t(w)*h*4);
             for(unsigned y=0;y<h;++y)for(unsigned x=0;x<w;++x){unsigned sum[4]={},n=0;for(unsigned sy=y*height/h;sy<(y+1)*height/h;++sy)for(unsigned sx=x*width/w;sx<(x+1)*width/w;++sx){for(unsigned c=0;c<4;++c)sum[c]+=decoded[(size_t(sy)*width+sx)*4+c];++n;}for(unsigned c=0;c<4;++c)small[(size_t(y)*w+x)*4+c]=std::uint8_t((sum[c]+n/2)/n);}decoded=std::move(small);width=w;height=h;}}
+        std::uint64_t hash=14695981039346656037ull;for(auto byte:decoded)hash=(hash^byte)*1099511628211ull;
+        if constexpr(DecodeDimension>Dimension){if(previous&&previous->owner==owner&&previous->width==width&&previous->height==height&&previous->mip==mip&&previous->format==d3dFormat&&previous->rgbaHash==hash&&previous->pixels==decoded){previous->used=++clock_;return;}}
         Entry& e=slot(raw,owner);drop(e);
         while(bytes_+decoded.size()>PixelBudget){auto* victim=oldest(&e);if(!victim)break;drop(*victim);*victim={};++counts.evictions;}
-        e.rgbaHash=14695981039346656037ull;for(auto byte:decoded){e.rgbaHash^=byte;e.rgbaHash*=1099511628211ull;}
+        e.rgbaHash=hash;
         e.pixels=std::move(decoded);e.width=width;e.height=height;e.mip=mip;e.format=d3dFormat;++e.revision;e.used=++clock_;bytes_+=e.pixels.size();++counts.retained;
         }catch(...){++counts.failed;invalidate(raw);}
     }

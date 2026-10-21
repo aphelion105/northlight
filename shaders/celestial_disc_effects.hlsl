@@ -65,8 +65,8 @@ float filteredSkyVisibility(float4 source){
 // plateau or clipping rim). Solar: a small hot core (weight c12.z, rate c12.x,
 // ~1-1.5R) plus a long soft tail (weight c47.w) to the 20R support. Lunar: the
 // M1 skirt .35*2^(-1.11(r-1)) times c12.z. The edge fades both to 0 at the support.
-// The compact core uses per-pixel depth. The shared halo taps measure terrain
-// and horizon, without making a foreground model dim the whole screen.
+// The compact core uses per-pixel depth. The shared halo taps also test source
+// visibility against native geometry, terrain and the horizon.
 // The 2-4R ring (x wrap) carries only a core-free tail: the
 // tail shifted out by 3R, tail(sqrt(r^2+9)), flat-topped at the tail's 3R
 // level. Both parts fall monotonically with radius, so a barely hidden sun
@@ -108,23 +108,23 @@ float4 CelestialHaloVisibilityPS(float2 uv:TEXCOORD0):COLOR0 {
         float terrain=DiscTerrainPolicy.x>.5?1-saturate(tex2Dlod(DiscTerrain,float4(source.zw,0,0)).r):1;
         // As the disc: no visibility under the true horizon, the native fade over the 1.9 deg above it.
         float3 ray=discRay(source.xy);
-        // Screen depth belongs to the output pixel, not the source's global
-        // brightness. Otherwise a wing over the disc dims every halo pixel.
-        current+=(source.x>=0?1:0)*terrain*saturate(30*ray.z/max(dot(ray,DiscDirection.xyz),1e-6));
+        // Both the disc and wrap ring must see the source through native
+        // geometry. Per-output depth alone cannot stop the diffuse veil indoors.
+        current+=filteredSkyVisibility(source)*terrain*saturate(30*ray.z/max(dot(ray,DiscDirection.xyz),1e-6));
     }
     current*=1.0/32;
     // Retain more halo around a partially covered source: half-visible yields
     // 75% instead of 50%. Endpoints stay exact; a full blocker still hides it.
     // Apply before temporal filtering so the existing full-occlusion fade holds.
     current=current*(2-current);
+    // A fully covered source must not retain the previous frame's glare on a wall.
+    if(current<=0)return 0;
     // Do not read uninitialized ping-pong storage on first use or a reset.
     float value=current;
     if(DiscHistory.x>.5){
         float previous=saturate(tex2Dlod(DiscHaloVisibility,float4(.5,.5,0,0)).r);
         value=lerp(previous,current,current<previous?DiscHistory.y:DiscHistory.z);
     }
-    // Make sustained full occlusion exactly zero after the short fade.
-    if(current<=0&&value<.001)value=0;
     return saturate(value).xxxx;
 }
 float4 CelestialDiscPS(float2 uv:TEXCOORD0):COLOR0 {
@@ -162,7 +162,7 @@ float4 CelestialDiscPS(float2 uv:TEXCOORD0):COLOR0 {
     if(DiscEmission.w>.5){
         float radius=length(local);
         clip(DiscEmission.y-radius);
-        // Shared terrain/horizon attenuation never includes a foreground model.
+        // Shared source visibility includes native geometry and distant terrain.
         // The output pixel already passed its own strict depth test above.
         // The late atmospheric tail carries no compact white colour core.
         encoded=DiscTerrainPolicy.w>.5?glowColor(radius):DiscGlowHue.rgb;

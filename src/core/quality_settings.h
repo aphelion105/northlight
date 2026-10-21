@@ -226,7 +226,7 @@ inline const Key Keys[]={
     {"AutoParallaxDepth",&Settings::autoParallaxDepth,0,200,{100,75,50}},
     {"AutoParallaxDistance",&Settings::autoParallaxDistance,4,32,{16,12,8}},
     {"AutoParallaxSteps",&Settings::autoParallaxSteps,8,32,{16,12,8}},
-    {"AutoDisplacementStrength",&Settings::autoDisplacementStrength,0,200,{100,75,50}},
+    {"AutoDisplacementStrength",&Settings::autoDisplacementStrength,0,1000,{100,75,50}},
     {"AutoDisplacementDistance",&Settings::autoDisplacementDistance,4,24,{12,8,6}},
     {"AutoDisplacementDetail",&Settings::autoDisplacementDetail,1,5,{4,3,2}},
     {"AutoBumpModels",&Settings::autoBumpModels,0,3,{3,1,1}},

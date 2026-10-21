@@ -117,7 +117,7 @@ inline void ringOffset(unsigned i,float& x,float& y){
     const float angle=float(i)*2.39996322972865332f;
     x=radius*std::cos(angle);y=radius*std::sin(angle);
 }
-// CelestialHaloVisibilityPS averages 32 terrain/horizon taps and an
+// CelestialHaloVisibilityPS averages 32 geometry/terrain/horizon taps and an
 // off-screen tap (xy = -1) counts as hidden. Refill the slots from the
 // on-screen taps, spread evenly, so its fixed 1/32 mean is the mean over the
 // taps on screen: the value no longer dims as the source nears the screen edge.

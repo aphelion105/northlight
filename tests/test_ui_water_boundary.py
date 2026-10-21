@@ -63,14 +63,14 @@ struct VsClass {int entry=0;bool world=false,wmo=false,skinned=false;};
 struct FakeDevice {
  IDirect3DVertexShader9* vs=&uiVS;IDirect3DPixelShader9* ps=&fpsPS;
  float rows[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
- DWORD zwrite=0,zfunc=D3DCMP_ALWAYS;bool borrowed=true;
+ DWORD zwrite=0,zfunc=D3DCMP_ALWAYS,zenable=1;bool borrowed=true;
  HRESULT shaderResult=S_OK,rowsResult=S_OK,stateResult=S_OK;
  bool peekVertexShader(IDirect3DVertexShader9*& out){out=vs;return borrowed;}
  bool peekPixelShader(IDirect3DPixelShader9*& out){out=ps;return borrowed;}
  HRESULT GetVertexShader(IDirect3DVertexShader9** out){*out=vs;return shaderResult;}
  HRESULT GetPixelShader(IDirect3DPixelShader9** out){*out=ps;return shaderResult;}
  HRESULT GetVertexShaderConstantF(unsigned start,float* out,unsigned count){for(unsigned i=0;i<count*4;++i)out[i]=rows[start*4+i];return rowsResult;}
- HRESULT GetRenderState(unsigned state,DWORD* out){*out=state==D3DRS_ZWRITEENABLE?zwrite:state==D3DRS_ZFUNC?zfunc:1;return stateResult;}
+ HRESULT GetRenderState(unsigned state,DWORD* out){*out=state==D3DRS_ZWRITEENABLE?zwrite:state==D3DRS_ZFUNC?zfunc:zenable;return stateResult;}
 };
 template<class T>void drop(T*& p){p=nullptr;}
 template<class...T>void logf(const char*,T...){ }
@@ -157,6 +157,12 @@ int main(){
   // A newly enabled FPS counter was never part of the learning sample.
   Fixed toggled;toggled.hdr.active=hdr;toggled.learn(false);frame(toggled);
   assert(toggled.effects==1&&!toggled.ssrContainsFPS&&!toggled.waterOverwroteFPS);++cases;
+  // FPS overlays may disable Z while retaining LESS from a world draw.
+  Fixed noDepth;noDepth.hdr.active=hdr;noDepth.learn();
+  noDepth.device.zenable=0;noDepth.device.zfunc=D3DCMP_LESS;draw(noDepth,true);
+  noDepth.device.zenable=1;noDepth.device.zfunc=D3DCMP_ALWAYS;draw(noDepth,false);
+  assert(noDepth.effects==1&&!noDepth.waterOverwroteFPS&&!noDepth.ssrContainsFPS);
+  assert(at(noDepth.events,"WaterSSR")<at(noDepth.events,"FPS"));++cases;
   // Recreating a frequent PS must not force the UI VS through another warmup.
   Fixed recreated;recreated.hdr.active=hdr;recreated.learn();
   recreated.uiFallback.forget(reinterpret_cast<std::uintptr_t>(&commonPS));

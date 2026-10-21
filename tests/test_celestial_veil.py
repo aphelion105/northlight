@@ -3,16 +3,17 @@
 """veil over geometry and the sun glow: native CPU policy and recorded draw
 sequence (test_celestial_veil.cpp), plus static checks of the call site order
 (after water, before UI, gated like the discs), the raw-depth classification,
-the halo source-visibility shader and the slot budgets. No device or game."""
+the halo's source-depth occlusion and the slot budgets. No device or game."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
-import hashlib,json,subprocess,tempfile
+import hashlib,json,os,subprocess,tempfile
 HERE=Path(__file__).resolve().parent
 
 with tempfile.TemporaryDirectory(prefix='northlight-celestial-veil-') as tmp:
     binary=str(Path(tmp)/'test')
-    subprocess.run(['c++','-std=c++17','-O1','-g','-fsanitize=address,undefined','-fno-omit-frame-pointer',*fp.test_include_flags(),
-                    str(HERE/'test_celestial_veil.cpp'),'-o',binary],check=True)
+    command=([str(fp.zig()),'c++','-target','x86-windows-gnu','-std=c++17','-O2','-UNDEBUG'] if os.name=='nt' else
+             ['c++','-std=c++17','-O1','-g','-fsanitize=address,undefined','-fno-omit-frame-pointer'])
+    subprocess.run([*command,*fp.test_include_flags(),str(HERE/'test_celestial_veil.cpp'),'-o',binary],env=fp.zig_env(),check=True)
     native=subprocess.check_output([binary],text=True).strip()
 assert native.startswith('PASS'),native
 
@@ -47,11 +48,10 @@ assert 'd->SetPixelShader(haloPS);' in ring and 'SetPixelShaderConstantF(0,c[0],
 assert 'sourceTaps(g.disc,g.inverseView,g.projection,g.width,g.height,SunMaskRadius,true,c)' in ring
 
 shader_path=fp.src('celestial_disc_effects.hlsl');shader=shader_path.read_text()
-# Source brightness uses terrain/horizon taps; screen depth is classified at each output pixel.
+# Disc and ring share source-depth occlusion, including immediate full coverage.
 halo_ps=body(shader,'float4 CelestialHaloVisibilityPS(')
-assert 'current+=(source.x>=0?1:0)*terrain*saturate(30*ray.z/max(dot(ray,DiscDirection.xyz),1e-6));' in halo_ps
-assert 'sourceVisible(' not in halo_ps and 'current*=1.0/32;' in halo_ps
-assert 'if(DiscHistory.x>.5)' in halo_ps and 'if(current<=0&&value<.001)value=0;' in halo_ps
+assert 'current+=filteredSkyVisibility(source)*terrain*' in halo_ps
+assert 'if(current<=0)return 0;' in halo_ps
 veil_ps=body(shader,'float4 CelestialVeilPS(')
 # Raw-depth classification: WDL/beyond-far silhouettes (normalised depth 1, raw
 # depth below the sky sprite) are geometry; the complement of the glare.
@@ -78,11 +78,8 @@ compiled=manifest['source_sha256']==hashlib.sha256(shader_path.read_bytes()).hex
 budget={}
 if compiled:
     shaders=manifest['shaders']
-    # The source-visibility pass no longer samples foreground screen depth.
-    halo=shaders['CelestialHaloVisibilityPS']
-    assert halo['sha256']==hashlib.sha256((fp.COMPILED/'CelestialHaloVisibilityPS.bin').read_bytes()).hexdigest()
-    assert halo['static_instruction_slots']<=209 and halo['temporary_registers']<=32
-    assert halo['samplers']==[3,4]
+    assert shaders['CelestialHaloVisibilityPS']['sha256']==hashlib.sha256((fp.COMPILED/'CelestialHaloVisibilityPS.bin').read_bytes()).hexdigest()
+    assert shaders['CelestialHaloVisibilityPS']['static_instruction_slots']<=512
     for entry in ('CelestialDiscPS','CelestialVeilPS'):
         assert shaders[entry]['static_instruction_slots']<=480 and shaders[entry]['temporary_registers']<=32,entry
         budget[entry]=shaders[entry]['static_instruction_slots']

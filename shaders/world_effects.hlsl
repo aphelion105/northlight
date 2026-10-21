@@ -796,7 +796,7 @@ float4 WorldFog(float2 uv:TEXCOORD0):COLOR0 {
     ray*=rsqrt(max(dot(ray,ray),1e-12));
     float3 shadowOrigin=affinePoint(Camera.xyz,FarMatrix);
     float3 shadowRay=ray.x*FarMatrix[0].xyz+ray.y*FarMatrix[1].xyz+ray.z*FarMatrix[2].xyz;
-    float transmittance=1;float3 directScatter=0;
+    float transmittance=1,directWeight=0;
     float cosine=dot(ray,SunDirection.xyz); // both directions are normalized
     // Normalized HG(g=.85) + isotropic mixture: most energy is broad enough
     // for side/back views of geometry-cut shafts; a small forward aureole remains.
@@ -820,8 +820,16 @@ float4 WorldFog(float2 uv:TEXCOORD0):COLOR0 {
     // Put the exit comparison on the loop: native SM3 compilation of a nested
     // bare break emitted break_ne with identical operands, marching past surface.
     // Intervals ending before the near fade have exactly zero extinction.
-    int first=max(0,(int)floor(max(FogRange.x,0)/stepLength+offset));
-    [loop]for(int i=first;i<49&&max(0,(i-offset)*stepLength)<surface;++i){
+    // Skip whole world-grid intervals beyond the regional field support.
+    float2 invRay=(ray.xy<0?-1:1)/max(abs(ray.xy),1e-8);
+    float2 fieldA=(RegionalFogInfo.xy-Camera.xy)*invRay;
+    float2 fieldB=(RegionalFogInfo.xy+63.0/(64*max(RegionalFogInfo.z,1e-8))-Camera.xy)*invRay;
+    float2 entry=min(fieldA,fieldB),exit=max(fieldA,fieldB);
+    float fieldEntry=max(0,max(entry.x,entry.y)),fieldExit=min(exit.x,exit.y);
+    if(fieldExit<fieldEntry)return float4(0,0,0,1);
+    float marchEnd=min(surface,fieldExit+stepLength);
+    int first=max(0,(int)floor(max(max(FogRange.x,0),fieldEntry-stepLength)/stepLength+offset));
+    [loop]for(int i=first;i<49&&max(0,(i-offset)*stepLength)<marchEnd;++i){
         float start=max(0,(i-offset)*stepLength);
         float end=min((i+1-offset)*stepLength,surface);
         float stepSize=end-start;
@@ -863,10 +871,11 @@ float4 WorldFog(float2 uv:TEXCOORD0):COLOR0 {
             // A zero source has no valid shadow pass/maps to sample. Its air
             // still contributes environment scattering and extinction.
             float heightFade=saturate(altitude*(1.0/12));heightFade*=heightFade*(3-2*heightFade);
-            if(dot(sunSource,1)>0)directScatter+=transmittance*absorb*sunSource*(fogShadowProjected(shadowOrigin+shadowRay*((start+end)*.5))*heightFade);
+            if(dot(sunSource,1)>0)directWeight+=transmittance*absorb*(fogShadowProjected(shadowOrigin+shadowRay*((start+end)*.5))*heightFade);
             transmittance*=1-absorb;
         }
     }
+    float3 directScatter=sunSource*directWeight;
     // Bound only accumulated direct scattering, preserving RGB hue and leaving
     // genuine environment fog intact at night or with the source below horizon.
     // No channel of the direct contribution can exceed this source's bound.
@@ -996,8 +1005,16 @@ float4 FogClouds(float2 uv:TEXCOORD0):COLOR0 {
     float spacing=mad(FogInfo.w,1.0/40,CloudInfo[0].x); // 0.3.200 (gpu budget): c60.x 0 = the 40 intervals; reduced levels fewer (host: 128*(1/N-1/40))
     float stepLength=spacing/abs(major.x);
     float offset=frac(major.y*(major.x<0?-1:1)/spacing);
-    int first=max(0,(int)floor(max(FogRange.x,0)/stepLength+offset));
-    [loop]for(int i=first;i<41&&max(0,(i-offset)*stepLength)<surface;++i){
+    // Skip whole world-grid intervals beyond the regional field support.
+    float2 invRay=(ray.xy<0?-1:1)/max(abs(ray.xy),1e-8);
+    float2 fieldA=(RegionalFogInfo.xy-Camera.xy)*invRay;
+    float2 fieldB=(RegionalFogInfo.xy+63.0/(64*max(RegionalFogInfo.z,1e-8))-Camera.xy)*invRay;
+    float2 entry=min(fieldA,fieldB),exit=max(fieldA,fieldB);
+    float fieldEntry=max(0,max(entry.x,entry.y)),fieldExit=min(exit.x,exit.y);
+    if(fieldExit<fieldEntry)return float4(0,0,0,1);
+    float marchEnd=min(surface,fieldExit+stepLength);
+    int first=max(0,(int)floor(max(max(FogRange.x,0),fieldEntry-stepLength)/stepLength+offset));
+    [loop]for(int i=first;i<41&&max(0,(i-offset)*stepLength)<marchEnd;++i){
         float start=max(0,(i-offset)*stepLength);
         float end=min((i+1-offset)*stepLength,surface);
         float stepSize=end-start;

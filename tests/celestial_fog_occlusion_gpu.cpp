@@ -49,14 +49,14 @@ int main(int argc,char** argv){
         if(angle==0&&depth==one&&map==shadow)shaftContrast=std::fabs(hidden[(8*N+3)*4]-hidden[(8*N+13)*4]);
         ++cases;
     }
-    // A wing covering every source tap changes neither the sun halo nor its ring.
+    // Full source occlusion hides the halo/ring; fog air shadowing above remains independent.
     std::memset(c,0,sizeof c);const float cs=std::cos(.4f),sn=std::sin(.4f);
     c[0][0]=c[0][1]=1.f/N;c[0][3]=1/.94f;c[1][0]=c[1][1]=5;c[1][2]=1;c[2][1]=1;c[3][0]=-sn;c[3][2]=cs;c[4][0]=cs;c[4][2]=sn;
     c[6][0]=cs;c[6][2]=sn;c[6][3]=.04f;
     for(unsigned j=13;j<45;++j)c[j][0]=c[j][1]=c[j][2]=c[j][3]=.5f;
     ok(d->SetTexture(3,zero));ok(d->SetTexture(4,zero));ok(d->SetTexture(0,one));const auto clear=capture(halo,c);
     ok(d->SetTexture(0,nearDepth));const auto blocked=capture(halo,c),oldBlocked=capture(oldHalo,c);
-    for(unsigned p=0;p<N*N;++p)if(clear[p*4]<.999f||blocked[p*4]!=clear[p*4]||oldBlocked[p*4]!=0)++failures;
+    for(unsigned p=0;p<N*N;++p)if(clear[p*4]<.999f||blocked[p*4]!=0||oldBlocked[p*4]!=0)++failures;
     c[46][0]=1;ok(d->SetTexture(4,one));const auto mountain=capture(halo,c);for(unsigned p=0;p<N*N;++p)if(mountain[p*4]!=0)++failures;
     if(!baselineDim||shaftContrast<.02)++failures;
     std::printf("fog/halo GPU cases=%u baselineDimChannels=%u shaftContrast=%g maxOcclusionError=%g failures=%u\n",cases+3,baselineDim,shaftContrast,maxError,failures);

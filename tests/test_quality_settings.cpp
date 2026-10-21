@@ -604,6 +604,11 @@ int main(){
       assert(describe(on).find("GrassShadows=1(file)")!=std::string::npos);
       for(const char* value:{"-1","2","bad"}){std::vector<std::string> problems;
         assert(parse(("[Quality]\nGrassShadows="+std::string(value)+"\n").c_str(),nullptr,problems)==d&&problems.size()==1);}}
+    // Strong world relief must not change the independent animated-model strength.
+    {auto strong=parse("[Quality]\nAutoDisplacementStrength=600\n");
+     assert(strong.autoDisplacementStrength==600&&strong.autoModelDisplacementStrength==d.autoModelDisplacementStrength);
+     assert(parse("[Quality]\nAutoDisplacementStrength=1000\n").autoDisplacementStrength==1000);
+     std::vector<std::string> p;assert(parse("[Quality]\nAutoDisplacementStrength=1001\n",nullptr,p)==d&&p.size()==1);}
     std::printf("quality: %s\n",describe(d).c_str());
     std::printf("quality: defaults==0.3.136, presets, overrides, legacy precedence and fallbacks, BOM/CRLF, range edges, shipped ini, identical default code paths passed\n");
 }

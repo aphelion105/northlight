@@ -17,12 +17,19 @@ static void vertices(UiVertex* v,const float* color){
 }
 static void pixel(IDirect3DDevice9* d,IDirect3DSurface9* target,IDirect3DSurface9* staging,float* out,bool fp16=false){
     ok(d->GetRenderTargetData(target,staging));D3DLOCKED_RECT lock{};ok(staging->LockRect(&lock,nullptr,D3DLOCK_READONLY));
-    if(fp16){for(unsigned i=0;i<4;++i){std::uint16_t h;std::memcpy(&h,static_cast<char*>(lock.pBits)+2*i,2);out[i]=half(h);}}
-    else std::memcpy(out,lock.pBits,16);ok(staging->UnlockRect());
+    // The fixture's clip-space quad has partial MSAA coverage at its outer
+    // corners. Uniform-colour checks use an interior texel; the edge test below
+    // separately checks every pixel's resolved coverage.
+    const auto* at=static_cast<const char*>(lock.pBits)+2*lock.Pitch+2*(fp16?8:16);
+    if(fp16){for(unsigned i=0;i<4;++i){std::uint16_t h;std::memcpy(&h,at+2*i,2);out[i]=half(h);}}
+    else std::memcpy(out,at,16);ok(staging->UnlockRect());
 }
 static void pixel8(IDirect3DDevice9* d,IDirect3DSurface9* target,IDirect3DSurface9* staging,float* out){
+    D3DSURFACE_DESC desc{};ok(target->GetDesc(&desc));IDirect3DSurface9* resolved=nullptr;
+    if(desc.MultiSampleType!=D3DMULTISAMPLE_NONE){ok(d->CreateRenderTarget(desc.Width,desc.Height,desc.Format,D3DMULTISAMPLE_NONE,0,FALSE,&resolved,nullptr));ok(d->StretchRect(target,nullptr,resolved,nullptr,D3DTEXF_NONE));target=resolved;}
     ok(d->GetRenderTargetData(target,staging));D3DLOCKED_RECT lock{};ok(staging->LockRect(&lock,nullptr,D3DLOCK_READONLY));
-    const auto* p=static_cast<const unsigned char*>(lock.pBits);out[0]=p[2]/255.f;out[1]=p[1]/255.f;out[2]=p[0]/255.f;out[3]=1;ok(staging->UnlockRect());
+    const auto* p=static_cast<const unsigned char*>(lock.pBits)+2*lock.Pitch+8;out[0]=p[2]/255.f;out[1]=p[1]/255.f;out[2]=p[0]/255.f;out[3]=1;ok(staging->UnlockRect());
+    if(resolved)resolved->Release();
 }
 static void patchChecks(const std::vector<unsigned char>& bytes){
     const auto* input=reinterpret_cast<const std::uint32_t*>(bytes.data());const auto n=bytes.size()/4;
@@ -40,28 +47,37 @@ int main(int argc,char** argv){
     SetUnhandledExceptionFilter(&crash);
     assert(argc==4||argc==5);const bool proxy=argc==5;
     const bool small=proxy&&!std::strcmp(argv[4],"--small-proxy");
-    const bool graded=proxy&&!std::strcmp(argv[4],"--graded-proxy");
-    const bool triple=graded||(proxy&&!std::strcmp(argv[4],"--triple-proxy"));
-    const bool hdrExpected=!proxy||small||triple||!std::strcmp(argv[4],"--proxy");
+    const bool full4k=proxy&&!std::strcmp(argv[4],"--msaa2-4k-proxy");
+    const bool msaa2=full4k||(proxy&&(!std::strcmp(argv[4],"--msaa2-proxy")||!std::strcmp(argv[4],"--msaa2-triple-proxy")));
+    const bool msaa4=proxy&&(!std::strcmp(argv[4],"--msaa4-proxy")||!std::strcmp(argv[4],"--msaa4-graded-proxy"));
+    const bool msaa8=proxy&&!std::strcmp(argv[4],"--msaa8-proxy");
+    const bool graded=proxy&&(!std::strcmp(argv[4],"--graded-proxy")||!std::strcmp(argv[4],"--msaa4-graded-proxy"));
+    const bool triple=full4k||graded||(proxy&&(!std::strcmp(argv[4],"--triple-proxy")||!std::strcmp(argv[4],"--msaa2-triple-proxy")));
+    const auto samples=msaa2?D3DMULTISAMPLE_2_SAMPLES:msaa4?D3DMULTISAMPLE_4_SAMPLES:msaa8?D3DMULTISAMPLE_8_SAMPLES:D3DMULTISAMPLE_NONE;
+    const bool hdrExpected=!proxy||small||triple||msaa2||msaa4||msaa8||!std::strcmp(argv[4],"--proxy");
     assert(!proxy||hdrExpected||!std::strcmp(argv[4],"--sdr-proxy"));
     std::vector<std::vector<unsigned char>> programs={read(std::string(argv[2])+"/HdrFixturePS-2.bin"),read(std::string(argv[2])+"/HdrFixturePS-3.bin"),read(argv[3])};
     for(const auto& code:programs)patchChecks(code);
     WNDCLASSW wc{};wc.lpfnWndProc=DefWindowProcW;wc.lpszClassName=L"NorthlightHdrIntegrationOracle";wc.hInstance=GetModuleHandleW(nullptr);assert(RegisterClassW(&wc));
     HWND window=CreateWindowExW(0,wc.lpszClassName,L"",WS_OVERLAPPED,0,0,64,64,nullptr,nullptr,wc.hInstance,nullptr);assert(window);
     HMODULE module=LoadLibraryA(argv[1]);assert(module);auto create=reinterpret_cast<IDirect3D9*(WINAPI*)(UINT)>(reinterpret_cast<void*>(GetProcAddress(module,"Direct3DCreate9")));assert(create);
-    const unsigned backWidth=small?320:640,backHeight=small?180:360;
+    const unsigned backWidth=full4k?3840:small?320:640,backHeight=full4k?2160:small?180:360;
     IDirect3D9* api=create(D3D_SDK_VERSION);assert(api);D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=window;pp.BackBufferWidth=backWidth;pp.BackBufferHeight=backHeight;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;pp.PresentationInterval=D3DPRESENT_INTERVAL_IMMEDIATE;
     if(triple)pp.BackBufferCount=2;
+    pp.MultiSampleType=samples;pp.EnableAutoDepthStencil=samples!=D3DMULTISAMPLE_NONE;pp.AutoDepthStencilFormat=D3DFMT_D24S8;
     NorthlightHdr::Presentation presentation;
     if(!proxy)presentation.formatsPrepared=NorthlightHdr::unlockFormats(api);
     IDirect3DDevice9* d=nullptr;ok(api->CreateDevice(0,D3DDEVTYPE_HAL,window,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_FPU_PRESERVE|D3DCREATE_MULTITHREADED,&pp,&d));assert(pp.BackBufferFormat==D3DFMT_X8R8G8B8);
     if(!proxy){presentation.settings.requested=true;presentation.logical=pp;presentation.stream=presentation.dxvk=true;assert(presentation.activate(d,d)==S_OK&&presentation.active);}
     IDirect3DSwapChain9* swap=nullptr;ok(d->GetSwapChain(0,&swap));D3DPRESENT_PARAMETERS exposed{};ok(swap->GetPresentParameters(&exposed));
     assert(exposed.BackBufferFormat==(proxy?D3DFMT_X8R8G8B8:D3DFMT_A16B16G16R16F));swap->Release();
-    if(triple){assert(exposed.BackBufferCount==2);IDirect3DSurface9* second=nullptr;ok(d->GetBackBuffer(0,1,D3DBACKBUFFER_TYPE_MONO,&second));D3DSURFACE_DESC desc{};ok(second->GetDesc(&desc));assert(desc.Format==D3DFMT_X8R8G8B8);second->Release();}
+    assert(exposed.MultiSampleType==samples);
+    if(triple){assert(exposed.BackBufferCount==2);IDirect3DSurface9* second=nullptr;ok(d->GetBackBuffer(0,1,D3DBACKBUFFER_TYPE_MONO,&second));D3DSURFACE_DESC desc{};ok(second->GetDesc(&desc));assert(desc.Format==D3DFMT_X8R8G8B8&&desc.MultiSampleType==samples);second->Release();}
     IDirect3DSurface9* initialBack=nullptr;ok(d->GetBackBuffer(0,0,D3DBACKBUFFER_TYPE_MONO,&initialBack));D3DSURFACE_DESC physical{};ok(initialBack->GetDesc(&physical));initialBack->Release();
     // CommandStream exposes the game's original backbuffer description.
     assert(physical.Format==(!proxy&&hdrExpected?D3DFMT_A16B16G16R16F:D3DFMT_X8R8G8B8));
+    assert(physical.MultiSampleType==samples);
+    if(samples!=D3DMULTISAMPLE_NONE){IDirect3DSurface9* depth=nullptr;ok(d->GetDepthStencilSurface(&depth));D3DSURFACE_DESC desc{};ok(depth->GetDesc(&desc));assert(desc.MultiSampleType==samples);depth->Release();}
     constexpr unsigned size=8;
     IDirect3DSurface9 *target=nullptr,*staging=nullptr;ok(d->CreateRenderTarget(size,size,D3DFMT_A32B32G32R32F,D3DMULTISAMPLE_NONE,0,FALSE,&target,nullptr));ok(d->CreateOffscreenPlainSurface(size,size,D3DFMT_A32B32G32R32F,D3DPOOL_SYSTEMMEM,&staging,nullptr));
     IDirect3DPixelShader9* ps[3]{};IDirect3DVertexShader9* vs[2]{};
@@ -115,6 +131,36 @@ int main(int argc,char** argv){
         assert(std::fabs(actual[3]-128./255)<.00001);++cases;
     }
     worldSource->Release();worldCopySurface->Release();worldCopy->Release();
+    if(proxy&&samples!=D3DMULTISAMPLE_NONE){
+        IDirect3DSurface9 *back=nullptr,*resolved=nullptr,*legacyRead=nullptr,*hdrRead=nullptr;
+        ok(d->GetBackBuffer(0,0,D3DBACKBUFFER_TYPE_MONO,&back));
+        ok(d->CreateRenderTarget(backWidth,backHeight,D3DFMT_X8R8G8B8,D3DMULTISAMPLE_NONE,0,FALSE,&resolved,nullptr));
+        ok(d->CreateOffscreenPlainSurface(backWidth,backHeight,D3DFMT_X8R8G8B8,D3DPOOL_SYSTEMMEM,&legacyRead,nullptr));
+        ok(d->CreateOffscreenPlainSurface(backWidth,backHeight,D3DFMT_A16B16G16R16F,D3DPOOL_SYSTEMMEM,&hdrRead,nullptr));
+        ok(d->SetRenderTarget(0,back));D3DVIEWPORT9 vp={0,0,backWidth,backHeight,0,1};ok(d->SetViewport(&vp));
+        ok(d->SetVertexShader(vs[1]));ok(d->SetPixelShader(ps[1]));ok(d->SetRenderState(D3DRS_ZWRITEENABLE,TRUE));
+        ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE));ok(d->SetRenderState(D3DRS_MULTISAMPLEANTIALIAS,TRUE));
+        ok(d->SetRenderState(D3DRS_MULTISAMPLEMASK,0xffffffff));ok(d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0));
+        float white[]={2,2,2,1};UiVertex quad[4];vertices(quad,white);
+        ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLELIST,1,quad,sizeof(UiVertex)));ok(d->EndScene());
+        ok(d->StretchRect(back,nullptr,resolved,nullptr,D3DTEXF_NONE));ok(d->GetRenderTargetData(resolved,legacyRead));
+        D3DLOCKED_RECT bytes{};ok(legacyRead->LockRect(&bytes,nullptr,D3DLOCK_READONLY));std::vector<unsigned char> red(backWidth*backHeight);
+        unsigned partial=0;for(unsigned y=0;y<backHeight;++y)for(unsigned x=0;x<backWidth;++x){
+            const auto value=static_cast<const unsigned char*>(bytes.pBits)[y*bytes.Pitch+x*4+2];red[y*backWidth+x]=value;partial+=value>3&&value<250;
+        }ok(legacyRead->UnlockRect());assert(partial>20);
+        // Transparent UI crosses the real HDR boundary without changing world radiance.
+        ok(d->SetRenderState(D3DRS_ZWRITEENABLE,FALSE));ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));
+        ok(d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_SRCALPHA));ok(d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_INVSRCALPHA));
+        float transparent[]={1,1,1,0};vertices(quad,transparent);ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(UiVertex)));ok(d->EndScene());
+        ok(d->GetRenderTargetData(back,hdrRead));D3DLOCKED_RECT hdrPixels{};ok(hdrRead->LockRect(&hdrPixels,nullptr,D3DLOCK_READONLY));
+        for(unsigned y=0;y<backHeight;++y)for(unsigned x=0;x<backWidth;++x){
+            std::uint16_t encoded;std::memcpy(&encoded,static_cast<const char*>(hdrPixels.pBits)+y*hdrPixels.Pitch+x*8,2);
+            const double linear=decode(red[y*backWidth+x]/255.),grade=graded?std::pow(std::max(linear,.000001)/.18,.35)*std::exp2(-1.25):1;
+            const double error=std::fabs(half(encoded)-linear*grade*203/80);maximum=std::max(maximum,error);if(error>.003)++failures;
+        }ok(hdrRead->UnlockRect());ok(d->Present(nullptr,nullptr,nullptr,nullptr));++cases;
+        std::printf("MSAA edge coverage samples=%u fractionalPixels=%u HDR curve preserved=1\n",unsigned(samples),partial);
+        hdrRead->Release();legacyRead->Release();resolved->Release();back->Release();
+    }
     // Full Northlight + CommandStream path: legacy game format stays visible,
     // first screen-space UI draw converts the world and preserves UI alpha.
     if(proxy&&hdrExpected){
@@ -154,6 +200,14 @@ int main(int argc,char** argv){
             const double worldGrade=graded?std::pow(luminance/.18,.35)*std::exp2(-1.25):1;
             for(unsigned c=0;c<3;++c){double expected=decode(before[c])*worldGrade*(203.0/80)*std::pow(1-original[3],2)+decode(original[c])*2*(1-std::pow(1-original[3],2));double error=std::fabs(actual[c]-expected);maximum=std::max(maximum,error);if(!std::isfinite(actual[c])||error>.002){if(failures++<4)std::printf("FAIL proxy UI shader=%u channel=%u got=%.8f want=%.8f\n",program,c,actual[c],expected);}}
             ok(d->SetRenderTarget(0,back));
+            if(program==1){
+                // Rebinding the logical backbuffer after an offscreen draw must retain the HDR UI target.
+                D3DVIEWPORT9 full={0,0,backWidth,backHeight,0,1};ok(d->SetViewport(&full));ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE));
+                ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(UiVertex)));ok(d->EndScene());
+                float rebound[4];pixel(d,back,readback,rebound,true);
+                for(unsigned c=0;c<3;++c){const double expected=decode(original[c])*2,error=std::fabs(rebound[c]-expected);maximum=std::max(maximum,error);if(!std::isfinite(rebound[c])||error>.002){if(failures++<4)std::printf("FAIL HDR UI target rebind channel=%u got=%.8f want=%.8f\n",c,rebound[c],expected);}}
+                ++cases;
+            }
             if(program==1){D3DVIEWPORT9 inset={4,4,backWidth-8,backHeight-8,0,1};RECT clip={4,4,LONG(backWidth-4),LONG(backHeight-4)};ok(d->SetViewport(&inset));ok(d->SetScissorRect(&clip));ok(d->SetRenderState(D3DRS_SCISSORTESTENABLE,TRUE));}
             if(program==1)ok(d->Present(nullptr,nullptr,nullptr,nullptr));
             else{IDirect3DSwapChain9* primary=nullptr;ok(d->GetSwapChain(0,&primary));ok(primary->Present(nullptr,nullptr,nullptr,nullptr,0));primary->Release();}
@@ -173,7 +227,15 @@ int main(int argc,char** argv){
     if(proxy)ok(d->Reset(&pp));else ok(presentation.reset(d,d,&pp));assert(pp.BackBufferFormat==D3DFMT_X8R8G8B8);
     IDirect3DSurface9* resized=nullptr;ok(d->GetBackBuffer(0,0,D3DBACKBUFFER_TYPE_MONO,&resized));ok(resized->GetDesc(&physical));resized->Release();
     assert(physical.Width==800&&physical.Height==450&&physical.Format==(!proxy&&hdrExpected?D3DFMT_A16B16G16R16F:D3DFMT_X8R8G8B8));
+    assert(physical.MultiSampleType==samples);
     ok(d->Clear(0,nullptr,D3DCLEAR_TARGET,D3DCOLOR_XRGB(51,102,153),1,0));ok(d->Present(nullptr,nullptr,nullptr,nullptr));
-    std::printf("HDR integration GPU proxy=%u hdr=%u cases=%u failures=%u maxError=%.9g originalShaderRestored=1 constants223Unchanged=1 uiCapturedShaderPreserved=1 resetResize=1 present=1\n",unsigned(proxy),unsigned(hdrExpected),cases,failures,maximum);
+    if(proxy&&samples!=D3DMULTISAMPLE_NONE)for(auto next:{D3DMULTISAMPLE_NONE,D3DMULTISAMPLE_2_SAMPLES,D3DMULTISAMPLE_4_SAMPLES,samples}){
+        pp.MultiSampleType=next;ok(d->Reset(&pp));
+        IDirect3DSurface9 *back=nullptr,*depth=nullptr;ok(d->GetBackBuffer(0,0,D3DBACKBUFFER_TYPE_MONO,&back));
+        ok(back->GetDesc(&physical));assert(physical.MultiSampleType==next&&physical.Format==D3DFMT_X8R8G8B8);back->Release();
+        ok(d->GetDepthStencilSurface(&depth));D3DSURFACE_DESC desc{};ok(depth->GetDesc(&desc));assert(desc.MultiSampleType==next);depth->Release();
+        ok(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,D3DCOLOR_XRGB(51,102,153),1,0));ok(d->Present(nullptr,nullptr,nullptr,nullptr));++cases;
+    }
+    std::printf("HDR integration GPU proxy=%u hdr=%u msaa=%u cases=%u failures=%u maxError=%.9g originalShaderRestored=1 constants223Unchanged=1 uiCapturedShaderPreserved=1 resetResize=1 present=1\n",unsigned(proxy),unsigned(hdrExpected),unsigned(samples),cases,failures,maximum);
     d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);UnregisterClassW(wc.lpszClassName,wc.hInstance);return failures?1:0;
 }

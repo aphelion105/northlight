@@ -39,6 +39,10 @@ int main(int argc,char** argv){
     const auto displacementDocs=applyChanges(docs,fields,"Q\tQuality\tAutoBumpTerrain\t3\nQ\tQuality\tAutoBumpWalls\t3\nQ\tQuality\tAutoDisplacementStrength\t125\nQ\tQuality\tAutoDisplacementDistance\t16\nQ\tQuality\tAutoDisplacementDetail\t5\n");
     const auto displaced=liveQualityUpdate(active.quality,configOf(displacementDocs,"").quality);
     assert(displaced.autoBumpTerrain==3&&displaced.autoBumpWalls==3&&displaced.autoDisplacementStrength==125&&displaced.autoDisplacementDistance==16&&displaced.autoDisplacementDetail==5);
+    auto strongRelief=applyChanges(docs,fields,"Q\tQuality\tAutoDisplacementStrength\t600\n");
+    auto strongQuality=qualityOf(strongRelief[0],"");assert(strongQuality.autoDisplacementStrength==600&&strongQuality.autoModelDisplacementStrength==active.quality.autoModelDisplacementStrength);
+    assert(liveQualityUpdate(active.quality,strongQuality).autoDisplacementStrength==600);
+    fails([&]{applyChanges(docs,fields,"Q\tQuality\tAutoDisplacementStrength\t1001\n");});
     fails([&]{applyChanges(docs,fields,"Q\tQuality\tAutoDisplacementDetail\t6\n");});fails([&]{applyChanges(docs,fields,"Q\tQuality\tAutoDisplacementDistance\t3\n");});
     const auto occlusionDocs=applyChanges(docs,fields,"Q\tQuality\tAutoParallaxShadows\t0\nQ\tQuality\tAutoParallaxShadowStrength\t85\nQ\tQuality\tAutoParallaxShadowSteps\t12\nQ\tQuality\tAutoCavity\t1\nQ\tQuality\tAutoCavityStrength\t55\n");
     const auto modelDocs=applyChanges(docs,fields,"Q\tQuality\tAutoBumpModels\t3\nQ\tQuality\tAutoModelDisplacementStrength\t40\nQ\tQuality\tAutoModelDisplacementDistance\t10\nQ\tQuality\tAutoModelDisplacementDetail\t3\nQ\tQuality\tAutoHeightPolarity\t2\nQ\tQuality\tAutoHeightDetails\t90\nQ\tQuality\tAutoHeightBalance\t60\n");

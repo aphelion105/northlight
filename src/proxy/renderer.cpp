@@ -571,9 +571,9 @@ private:
         bool linear=false;
         extensionWork("HDR UI preparation",[&]{
             if(!hdrUiPhase){
-                D3DSURFACE_DESC desc{};float rows[16];DWORD zwrite=1,zfunc=0;
+                D3DSURFACE_DESC desc{};float rows[16];DWORD zwrite=1,zfunc=0,z=1;
                 if(SUCCEEDED(ext->GetRenderState(D3DRS_ZWRITEENABLE,&zwrite))&&SUCCEEDED(ext->GetRenderState(D3DRS_ZFUNC,&zfunc))&&
-                   SUCCEEDED(ext->GetVertexShaderConstantF(0,rows,4))&&NorthlightUiBoundary::accepts(zwrite!=0,rows,zfunc==D3DCMP_ALWAYS)&&fullViewport(desc,nullptr,true,false)&&hdrBackTarget()){
+                   SUCCEEDED(ext->GetRenderState(D3DRS_ZENABLE,&z))&&SUCCEEDED(ext->GetVertexShaderConstantF(0,rows,4))&&NorthlightUiBoundary::accepts(zwrite!=0,rows,zfunc==D3DCMP_ALWAYS,z!=0)&&fullViewport(desc,nullptr,true,false)&&hdrBackTarget()){
                     // c0..3 can also be an affine world transform. In-world HDR
                     // waits for the same verified UI VS as the effect boundary.
                     if(const char* boundary=hdrBoundarySource()){
@@ -1254,8 +1254,9 @@ private:
     }
     void dropTerrainShadowSwap(){if(shadowSwapOriginal)shadowSwapOriginal->Release();shadowSwapOriginal=shadowSwapReplacement=nullptr;if(shadowSwapVertexOriginal)shadowSwapVertexOriginal->Release();shadowSwapVertexOriginal=shadowSwapVertexReplacement=nullptr;}
     template<class Draw> HRESULT materialNativeDraw(Draw draw,IDirect3DVertexShader9* vs=nullptr,IDirect3DPixelShader9* ps=nullptr){
-        if(autoBump&&enabled&&!applied&&!failed&&!memoryGuard.capsHalved()){
-            ExtensionDevice::RawScope materialRaw(*ext);return autoBump->nativeDraw(draw,vs,ps);
+        if(autoBump&&enabled&&!applied&&!failed){
+            // Replay restores state through ext; keeping the mirror avoids per-draw cache resets.
+            return autoBump->nativeDraw(draw,vs,ps);
         }return draw();
     }
     template<class Draw> HRESULT terrainShadowDraw(bool claimed,Draw draw){
@@ -2221,11 +2222,11 @@ private:
             ++uiAfterTerrain;
             // Fonts can use a rare PS on the stock UI VS. Confirm screen-space
             // state and the main target instead of filtering the text shader.
-            DWORD zw=1,zf=D3DCMP_ALWAYS;float rows[16];D3DSURFACE_DESC desc{};
+            DWORD zw=1,zf=D3DCMP_ALWAYS,z=1;float rows[16];D3DSURFACE_DESC desc{};
             if (SUCCEEDED(ext->GetRenderState(D3DRS_ZWRITEENABLE,&zw)) &&
-                (!zFuncAware||SUCCEEDED(ext->GetRenderState(D3DRS_ZFUNC,&zf))) &&
+                (!zFuncAware||(SUCCEEDED(ext->GetRenderState(D3DRS_ZFUNC,&zf))&&SUCCEEDED(ext->GetRenderState(D3DRS_ZENABLE,&z)))) &&
                 SUCCEEDED(ext->GetVertexShaderConstantF(0,rows,4)) &&
-                NorthlightUiBoundary::accepts(zw!=0,rows,zf==D3DCMP_ALWAYS) &&
+                NorthlightUiBoundary::accepts(zw!=0,rows,zf==D3DCMP_ALWAYS,z!=0) &&
                 fullViewport(desc,nullptr,true)){
                 hashBoundaryThisFrame=true;
                 if(sampled()){DWORD z=0,zw=0,blend=0;ext->GetRenderState(D3DRS_ZENABLE,&z);ext->GetRenderState(D3DRS_ZWRITEENABLE,&zw);ext->GetRenderState(D3DRS_ALPHABLENDENABLE,&blend);
@@ -2237,7 +2238,7 @@ private:
     }
     // 0.3.203 (task 17): fallback boundary for font mods that replace the UI VS and PS (or only the PS): the first screen-space draw after the world with
     // ZWRITE off, full-target viewport and ortho rows, by a VS learned over 120 frames without a hash boundary. Every PS on that UI VS is eligible,
-    // including infrequent FPS text. WoW draws UI with ZENABLE on and ZFUNC ALWAYS (DepthFuncAware: the func is required).
+    // including infrequent FPS text. UI can disable Z or use ZFUNC ALWAYS.
     // On stock the whole step is one bool test per draw: collecting() needs two world frames in a row without the hash boundary, and the first one disarms it for good.
     void uiFallbackDraw(const VsClass& vc,IDirect3DVertexShader9* vs){
         if(!uiFallback.collecting()||!terrain||applied||hashBoundaryThisFrame||fallbackBoundaryThisFrame||vc.wmo)return;
@@ -2251,9 +2252,9 @@ private:
         if(!borrowed)drop(ps);
         if(armed&&!uiFallback.isBoundary(vsId,psId))return;
         DWORD zw=0;if(FAILED(ext->GetRenderState(D3DRS_ZWRITEENABLE,&zw)))return;
-        DWORD zf=D3DCMP_ALWAYS;if(zFuncAware&&FAILED(ext->GetRenderState(D3DRS_ZFUNC,&zf)))return; /* the client's UI draws all run with ZFUNC ALWAYS */
+        DWORD zf=D3DCMP_ALWAYS,z=1;if(zFuncAware&&(FAILED(ext->GetRenderState(D3DRS_ZFUNC,&zf))||FAILED(ext->GetRenderState(D3DRS_ZENABLE,&z))))return;
         float c[16]={};if(FAILED(ext->GetVertexShaderConstantF(0,c,4)))return;
-        if(!NorthlightUiBoundary::accepts(zw!=0,c,zf==D3DCMP_ALWAYS)){if(!armed){triageVs=vs;triagePs=ps;triageZw=zw;for(int i=0;i<4;++i)triageC3[i]=c[12+i];++triageDraws;}return;}
+        if(!NorthlightUiBoundary::accepts(zw!=0,c,zf==D3DCMP_ALWAYS,z!=0)){if(!armed){triageVs=vs;triagePs=ps;triageZw=zw;for(int i=0;i<4;++i)triageC3[i]=c[12+i];++triageDraws;}return;}
         D3DSURFACE_DESC desc={};
         if(!fullViewport(desc,nullptr,true))return; // last, and quiet: minimap and portrait targets are expected here
         if(!armed){uiFallback.noteCandidate(vsId,psId);return;}
@@ -2322,8 +2323,17 @@ public:
     HRESULT STDMETHODCALLTYPE UpdateTexture(IDirect3DBaseTexture9* pSourceTexture, IDirect3DBaseTexture9* pDestinationTexture) override{Guard mirrorLock(mirrorState.gate);rainMrtUnbind(); /* 0.3.202 (rain mask MRT) */IDirect3DBaseTexture9* rawDestination=mirrorResources.unwrap(pDestinationTexture);if(spellOn)spellTextureWrite(static_cast<void*>(rawDestination));auto* rawSource=mirrorResources.unwrap(pSourceTexture);const HRESULT result=ext->UpdateTexture(rawSource,rawDestination);NorthlightMaterialHeight::copiedTexture(rawSource,rawDestination,SUCCEEDED(result));return result;}
     HRESULT STDMETHODCALLTYPE GetRenderTargetData(IDirect3DSurface9* pRenderTarget, IDirect3DSurface9* pDestSurface) override{Guard mirrorLock(mirrorState.gate);rainMrtUnbind(); /* 0.3.202 (rain mask MRT) */IDirect3DSurface9* rawSource=mirrorResources.unwrap(pRenderTarget);IDirect3DSurface9* rawDestination=mirrorResources.unwrap(pDestSurface);
         // Explicit FP16 captures see the HDR image; ordinary SDR readbacks keep the legacy format.
-        if(hdr.active&&hdrUiPhase&&rawSource==hdrLegacyBack&&rawDestination){D3DSURFACE_DESC desc{};if(SUCCEEDED(rawDestination->GetDesc(&desc))&&desc.Format==D3DFMT_A16B16G16R16F)rawSource=hdrPresentBack;}
-        if(spellOn)spellCopy(rawSource,rawDestination);return ext->GetRenderTargetData(rawSource, rawDestination);}
+        IDirect3DSurface9* resolved=nullptr;
+        if(hdr.active&&hdrUiPhase&&rawSource==hdrLegacyBack&&rawDestination){D3DSURFACE_DESC desc{};if(SUCCEEDED(rawDestination->GetDesc(&desc))&&desc.Format==D3DFMT_A16B16G16R16F){
+            rawSource=hdrPresentBack;HRESULT hr=rawSource->GetDesc(&desc);if(FAILED(hr))return hr;
+            // Explicit HDR captures resolve MSAA before the CPU readback.
+            if(desc.MultiSampleType!=D3DMULTISAMPLE_NONE){
+                hr=ext->CreateRenderTarget(desc.Width,desc.Height,desc.Format,D3DMULTISAMPLE_NONE,0,FALSE,&resolved,nullptr);
+                if(SUCCEEDED(hr))hr=ext->StretchRect(rawSource,nullptr,resolved,nullptr,D3DTEXF_NONE);
+                if(FAILED(hr)){drop(resolved);return hr;}rawSource=resolved;
+            }
+        }}
+        if(spellOn)spellCopy(rawSource,rawDestination);const HRESULT hr=ext->GetRenderTargetData(rawSource,rawDestination);drop(resolved);return hr;}
     HRESULT STDMETHODCALLTYPE GetFrontBufferData(UINT iSwapChain, IDirect3DSurface9* pDestSurface) override{Guard mirrorLock(mirrorState.gate);return ext->GetFrontBufferData(iSwapChain, mirrorResources.unwrap(pDestSurface));}
     HRESULT STDMETHODCALLTYPE StretchRect(IDirect3DSurface9 *src_surface, const RECT *src_rect, IDirect3DSurface9 *dst_surface, const RECT *dst_rect, D3DTEXTUREFILTERTYPE filter) override{Guard mirrorLock(mirrorState.gate);rainMrtUnbind(); /* 0.3.202 (rain mask MRT) */IDirect3DSurface9* rawSource=mirrorResources.unwrap(src_surface);IDirect3DSurface9* rawDestination=mirrorResources.unwrap(dst_surface);if(spellOn)spellCopy(rawSource,rawDestination);return ext->StretchRect(rawSource, src_rect, rawDestination, dst_rect, filter);}
     HRESULT STDMETHODCALLTYPE ColorFill(IDirect3DSurface9 *surface, const RECT *rect, D3DCOLOR color) override{Guard mirrorLock(mirrorState.gate);rainMrtUnbind(); /* 0.3.202 (rain mask MRT) */IDirect3DSurface9* rawSurface=mirrorResources.unwrap(surface);if(spellOn)spellCopy(nullptr,rawSurface);return ext->ColorFill(rawSurface, rect, color);}
@@ -2451,12 +2461,12 @@ public:
         if(!hdr.active)return S_OK;
         HRESULT hr=ext->GetBackBuffer(0,0,D3DBACKBUFFER_TYPE_MONO,&hdrPresentBack);D3DSURFACE_DESC desc{};
         if(SUCCEEDED(hr)&&hdrPresentBack)hr=hdrPresentBack->GetDesc(&desc);else if(SUCCEEDED(hr))hr=E_FAIL;
-        if(SUCCEEDED(hr))hr=ext->CreateRenderTarget(desc.Width,desc.Height,hdr.logical.BackBufferFormat,D3DMULTISAMPLE_NONE,0,FALSE,&hdrLegacyBack,nullptr);
+        if(SUCCEEDED(hr))hr=ext->CreateRenderTarget(desc.Width,desc.Height,hdr.logical.BackBufferFormat,hdr.logical.MultiSampleType,hdr.logical.MultiSampleQuality,FALSE,&hdrLegacyBack,nullptr);
         // DISCARD contents are undefined after Present; every exposed buffer keeps the game's 8-bit format.
-        for(unsigned i=1;SUCCEEDED(hr)&&i<hdr.logical.BackBufferCount;++i){IDirect3DSurface9* target=nullptr;hr=ext->CreateRenderTarget(desc.Width,desc.Height,hdr.logical.BackBufferFormat,D3DMULTISAMPLE_NONE,0,FALSE,&target,nullptr);if(SUCCEEDED(hr))hdrLegacyExtra.push_back(target);}
+        for(unsigned i=1;SUCCEEDED(hr)&&i<hdr.logical.BackBufferCount;++i){IDirect3DSurface9* target=nullptr;hr=ext->CreateRenderTarget(desc.Width,desc.Height,hdr.logical.BackBufferFormat,hdr.logical.MultiSampleType,hdr.logical.MultiSampleQuality,FALSE,&target,nullptr);if(SUCCEEDED(hr))hdrLegacyExtra.push_back(target);}
         if(SUCCEEDED(hr))hr=ext->SetRenderTarget(0,hdrLegacyBack);
         if(FAILED(hr)){releaseHdrTargets();if(settingsService)settingsService->setHdrStatus(false,unsigned(hr));}
-        logf("HDR legacy target %ux%u format=%u status=0x%08lx",desc.Width,desc.Height,unsigned(hdr.logical.BackBufferFormat),(unsigned long)hr);return hr;
+        logf("HDR legacy target %ux%u format=%u msaa=%u quality=%lu status=0x%08lx",desc.Width,desc.Height,unsigned(hdr.logical.BackBufferFormat),unsigned(hdr.logical.MultiSampleType),(unsigned long)hdr.logical.MultiSampleQuality,(unsigned long)hr);return hr;
     }
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id,void** out) override { Guard mirrorLock(mirrorState.gate);
         if (!out) return E_POINTER;
@@ -2480,7 +2490,7 @@ public:
     // Frame boundary only (after clearFrame()): no draw of the finished frame
     // still references a trimmed cache. Warnings are logged with Diagnostics=0.
     void trimMemory(const NorthlightMemoryDiagnostics::Sample& trigger){
-        if(surface)surface->reset();if(autoBump)autoBump->reset();
+        if(surface)surface->reset();if(autoBump)autoBump->trimMemory();stateBlocks.clear();if(water)water->releaseStateCache();
         LARGE_INTEGER start={},end={};QueryPerformanceCounter(&start);
         WorldRenderer::MemoryTrim t;if(world)t=world->trimMemory();
         QueryPerformanceCounter(&end);const DWORD now=GetTickCount();memoryGuard.trimCompleted(now);
@@ -2762,6 +2772,7 @@ public:
                 logf("AO live method=%s enabled=%u preview=%u",NorthlightQuality::aoName(aoMethod),unsigned(contactAO),unsigned(preview>=0));}
         }
         if(memoryWorld>=0&&world)world->setMemoryPressure(memoryWorld==1);
+        if(memoryWorld>=0&&autoBump)autoBump->setMemoryPressure(memoryWorld==1);
         if(memoryCaps>=0&&NorthlightReplayCopies::enabled.load(std::memory_order_relaxed))NorthlightReplayCopies::setPressure(memoryCaps==1); /* 0.3.192 (CS): replay thread: halves the CPU copies' cap and evicts down to it */
         if(memoryCaps>=0)NorthlightStream::memoryPressure.store(memoryCaps==1,std::memory_order_relaxed); /* 0.3.192 (CS): the stream's game side halves its queue budget at its next Present */
         if(memoryTrim)trimMemory(memorySample);
@@ -2959,22 +2970,22 @@ public:
         NorthlightAutoDisplacement::Args geometry{{t,0,0,0,start,count,false}};
         auto draw=[&]{return hdrDraw([&]{auto raw=[&]{return ext->DrawPrimitive(t,start,count);};return autoBump?autoBump->geometryDraw(raw,true):raw();});};
         if(spellOn||particleOn)spellArgs=NorthlightSpellLayer::DrawArgs::primitive(t,start,count);
-        return drawHook(t,count,[&](IDirect3DVertexShader9* vs){if(autoBump&&enabled&&!applied&&!failed&&!memoryGuard.capsHalved()){ExtensionDevice::RawScope bumpRaw(*ext);autoBump->capture(vs,[&]{return ext->DrawPrimitive(t,start,count);},false,&geometry);}world->capture(t,0,0,0,start,count,false,vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame));captureWater(vs,NorthlightWaterRenderer::NoUserPointer,draw);},draw);}
+        return drawHook(t,count,[&](IDirect3DVertexShader9* vs){if(autoBump&&enabled&&!applied&&!failed){autoBump->capture(vs,[&]{return ext->DrawPrimitive(t,start,count);},false,&geometry);}world->capture(t,0,0,0,start,count,false,vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame));captureWater(vs,NorthlightWaterRenderer::NoUserPointer,draw);},draw);}
     HRESULT STDMETHODCALLTYPE DrawIndexedPrimitive(D3DPRIMITIVETYPE t,INT base,UINT min,UINT vertices,UINT start,UINT count) override { Guard mirrorLock(mirrorState.gate);
         NorthlightAutoDisplacement::Args geometry{{t,base,min,vertices,start,count,true}};
         auto draw=[&]{return hdrDraw([&]{auto raw=[&]{return ext->DrawIndexedPrimitive(t,base,min,vertices,start,count);};return autoBump?autoBump->geometryDraw(raw,true):raw();});};
         if(spellOn||particleOn)spellArgs=NorthlightSpellLayer::DrawArgs::indexed(t,base,min,vertices,start,count);
-        return drawHook(t,count,[&](IDirect3DVertexShader9* vs){if(autoBump&&enabled&&!applied&&!failed&&!memoryGuard.capsHalved()){ExtensionDevice::RawScope bumpRaw(*ext);autoBump->capture(vs,[&]{return ext->DrawIndexedPrimitive(t,base,min,vertices,start,count);},false,&geometry);}world->capture(t,base,min,vertices,start,count,true,vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame));captureWater(vs,NorthlightWaterRenderer::NoUserPointer,draw);},draw);}
+        return drawHook(t,count,[&](IDirect3DVertexShader9* vs){if(autoBump&&enabled&&!applied&&!failed){autoBump->capture(vs,[&]{return ext->DrawIndexedPrimitive(t,base,min,vertices,start,count);},false,&geometry);}world->capture(t,base,min,vertices,start,count,true,vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame));captureWater(vs,NorthlightWaterRenderer::NoUserPointer,draw);},draw);}
     HRESULT STDMETHODCALLTYPE DrawPrimitiveUP(D3DPRIMITIVETYPE t,UINT count,const void* data,UINT stride) override { Guard mirrorLock(mirrorState.gate);
         NorthlightAutoDisplacement::Args geometry{{t,0,0,0,0,count,false},nullptr,D3DFMT_UNKNOWN,data,stride};
         auto draw=[&]{return hdrDraw([&]{auto raw=[&]{return ext->DrawPrimitiveUP(t,count,data,stride);};return autoBump?autoBump->geometryDraw(raw,true):raw();});};
         if(spellOn||particleOn)spellArgs=NorthlightSpellLayer::DrawArgs::primitiveUP(t,count,data,stride);
-        return drawHook(t,count,[&](IDirect3DVertexShader9* vs){if(autoBump&&enabled&&!applied&&!failed&&!memoryGuard.capsHalved()){ExtensionDevice::RawScope bumpRaw(*ext);autoBump->capture(vs,[&]{return ext->DrawPrimitiveUP(t,count,data,stride);},true,&geometry);}world->captureUP(t,0,0,count,nullptr,D3DFMT_UNKNOWN,data,stride,false,vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame));captureWater(vs,NorthlightWaterRenderer::UserVertices,draw);},draw);}
+        return drawHook(t,count,[&](IDirect3DVertexShader9* vs){if(autoBump&&enabled&&!applied&&!failed){autoBump->capture(vs,[&]{return ext->DrawPrimitiveUP(t,count,data,stride);},true,&geometry);}world->captureUP(t,0,0,count,nullptr,D3DFMT_UNKNOWN,data,stride,false,vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame));captureWater(vs,NorthlightWaterRenderer::UserVertices,draw);},draw);}
     HRESULT STDMETHODCALLTYPE DrawIndexedPrimitiveUP(D3DPRIMITIVETYPE t,UINT min,UINT vertices,UINT count,const void* indices,D3DFORMAT fmt,const void* data,UINT stride) override { Guard mirrorLock(mirrorState.gate);
         NorthlightAutoDisplacement::Args geometry{{t,0,min,vertices,0,count,true},indices,fmt,data,stride};
         auto draw=[&]{return hdrDraw([&]{auto raw=[&]{return ext->DrawIndexedPrimitiveUP(t,min,vertices,count,indices,fmt,data,stride);};return autoBump?autoBump->geometryDraw(raw,true):raw();});};
         if(spellOn||particleOn)spellArgs=NorthlightSpellLayer::DrawArgs::indexedUP(t,min,vertices,count,indices,fmt,data,stride);
-        return drawHook(t,count,[&](IDirect3DVertexShader9* vs){if(autoBump&&enabled&&!applied&&!failed&&!memoryGuard.capsHalved()){ExtensionDevice::RawScope bumpRaw(*ext);autoBump->capture(vs,[&]{return ext->DrawIndexedPrimitiveUP(t,min,vertices,count,indices,fmt,data,stride);},true,&geometry);}world->captureUP(t,min,vertices,count,indices,fmt,data,stride,true,vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame));captureWater(vs,NorthlightWaterRenderer::UserVerticesAndIndices,draw);},draw);}
+        return drawHook(t,count,[&](IDirect3DVertexShader9* vs){if(autoBump&&enabled&&!applied&&!failed){autoBump->capture(vs,[&]{return ext->DrawIndexedPrimitiveUP(t,min,vertices,count,indices,fmt,data,stride);},true,&geometry);}world->captureUP(t,min,vertices,count,indices,fmt,data,stride,true,vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame));captureWater(vs,NorthlightWaterRenderer::UserVerticesAndIndices,draw);},draw);}
 };
 
 static bool hdrGamePresentation(IDirect3DDevice9* owner,D3DPRESENT_PARAMETERS* out){return static_cast<Device*>(owner)->gamePresentation(out);}

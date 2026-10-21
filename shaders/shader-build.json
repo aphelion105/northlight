@@ -1,5 +1,5 @@
 {
-  "source_sha256": "ebcf03528411b8bb94024de565c531df43c40b641647ccd280fff4a9abc204b0",
+  "source_sha256": "32c38f25f42077c1e2df5f27d390dd932fe575e103cd287464b3439a2d38b218",
   "rain_source_sha256": "10948a355dc52e824d9ae61b5251a5146a20955295070dbe9ce749dec0eac172",
   "target": "ps_3_0",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
@@ -37,7 +37,7 @@
         "rep": 1,
         "endrep": 1
       },
-      "source_sha256": "ebcf03528411b8bb94024de565c531df43c40b641647ccd280fff4a9abc204b0"
+      "source_sha256": "32c38f25f42077c1e2df5f27d390dd932fe575e103cd287464b3439a2d38b218"
     },
     "AOContactBloom": {
       "bytes": 5176,
@@ -71,7 +71,7 @@
         "rep": 1,
         "endrep": 1
       },
-      "source_sha256": "ebcf03528411b8bb94024de565c531df43c40b641647ccd280fff4a9abc204b0"
+      "source_sha256": "32c38f25f42077c1e2df5f27d390dd932fe575e103cd287464b3439a2d38b218"
     },
     "ContactBloom": {
       "bytes": 804,
@@ -90,7 +90,7 @@
         "mov": 3,
         "add": 2
       },
-      "source_sha256": "ebcf03528411b8bb94024de565c531df43c40b641647ccd280fff4a9abc204b0"
+      "source_sha256": "32c38f25f42077c1e2df5f27d390dd932fe575e103cd287464b3439a2d38b218"
     },
     "HDAOContactBloom": {
       "bytes": 4300,
@@ -125,7 +125,7 @@
         "sincos": 1,
         "endrep": 1
       },
-      "source_sha256": "ebcf03528411b8bb94024de565c531df43c40b641647ccd280fff4a9abc204b0"
+      "source_sha256": "32c38f25f42077c1e2df5f27d390dd932fe575e103cd287464b3439a2d38b218"
     },
     "HBAOPlusContactBloom": {
       "bytes": 4992,
@@ -160,13 +160,13 @@
         "sincos": 1,
         "endrep": 1
       },
-      "source_sha256": "ebcf03528411b8bb94024de565c531df43c40b641647ccd280fff4a9abc204b0"
+      "source_sha256": "32c38f25f42077c1e2df5f27d390dd932fe575e103cd287464b3439a2d38b218"
     },
     "GTAOContactBloom": {
-      "bytes": 7452,
-      "sha256": "cabf747147020f704d70f0b805d9e5ca378cacceb924a383a9c1598e251528a7",
+      "bytes": 7412,
+      "sha256": "505ba6a93b9ab52ec6b121f990d48225738ad86714d2fe58e2cd8ecf9e541730",
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "static_instruction_slots": 457,
+      "static_instruction_slots": 458,
       "temporary_registers": 16,
       "samplers": [
         0,
@@ -177,25 +177,25 @@
         "texld": 5,
         "dp3": 20,
         "mad": 12,
-        "mul": 133,
+        "mul": 132,
         "mov": 22,
-        "add": 118,
+        "add": 117,
         "rcp": 24,
         "frc": 6,
-        "max": 6,
+        "max": 7,
         "min": 9,
         "texldl": 8,
-        "cmp": 37,
-        "if": 2,
+        "cmp": 35,
+        "if": 3,
         "else": 2,
-        "endif": 2,
+        "endif": 3,
         "rsq": 13,
         "dp2add": 4,
         "rep": 2,
         "sincos": 1,
         "endrep": 2
       },
-      "source_sha256": "ebcf03528411b8bb94024de565c531df43c40b641647ccd280fff4a9abc204b0"
+      "source_sha256": "32c38f25f42077c1e2df5f27d390dd932fe575e103cd287464b3439a2d38b218"
     },
     "AOBlur": {
       "bytes": 5188,
@@ -229,7 +229,7 @@
         "rsq": 1,
         "exp": 1
       },
-      "source_sha256": "ebcf03528411b8bb94024de565c531df43c40b641647ccd280fff4a9abc204b0"
+      "source_sha256": "32c38f25f42077c1e2df5f27d390dd932fe575e103cd287464b3439a2d38b218"
     },
     "Composite": {
       "bytes": 5428,
@@ -265,7 +265,7 @@
         "log": 2,
         "pow": 1
       },
-      "source_sha256": "ebcf03528411b8bb94024de565c531df43c40b641647ccd280fff4a9abc204b0"
+      "source_sha256": "32c38f25f42077c1e2df5f27d390dd932fe575e103cd287464b3439a2d38b218"
     },
     "RainMaskMRT": {
       "bytes": 264,

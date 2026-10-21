@@ -290,8 +290,9 @@ float NewAO(float2 uv, int method)
         float3 axis = cross(tangent, view);
         axis *= rsqrt(max(dot(axis, axis), 1e-12));
         float3 projected = normal - axis * dot(normal, axis);
-        float projectedLength = sqrt(max(dot(projected, projected), 1e-12));
-        float cosine = saturate(dot(projected, view) / projectedLength);
+        float inverseProjectedLength = rsqrt(max(dot(projected, projected), 1e-12));
+        float projectedLength = 1/inverseProjectedLength;
+        float cosine = saturate(dot(projected, view) * inverseProjectedLength);
         float sine = (dot(tangent, projected) >= 0 ? 1 : -1) * sqrt(max(1 - cosine * cosine, 0));
         float2 low = float2(-sine, sine);
         float2 horizon = low;
@@ -301,7 +302,8 @@ float NewAO(float2 uv, int method)
             float2 offset = direction * uvRadius * sampleRadius * sampleRadius;
             float4 a = AOSample(uv + offset), b = AOSample(uv - offset);
             float3 da = a.xyz - p, db = b.xyz - p;
-            float2 distance = sqrt(max(float2(dot(da, da), dot(db, db)), 1e-12));
+            float2 inverseDistance = rsqrt(max(float2(dot(da, da), dot(db, db)), 1e-12));
+            float2 distance = 1/inverseDistance;
             float2 weight = saturate((radius - distance) / (radius * .5)) * float2(a.w, b.w);
             weight *= float2(distance.x > .00001, distance.y > .00001);
             // Both inner taps can resolve to the receiver texel at distance.
@@ -309,9 +311,12 @@ float NewAO(float2 uv, int method)
             weight *= any(abs(offset) > .51 * ImageAndClip.xy) ? 1 : 0;
             // Match the SSAO coplanar tolerance for grazing D24 derivatives.
             weight *= float2(dot(normal, da) > .08 * distance.x, dot(normal, db) > .08 * distance.y);
-            float2 candidate = float2(dot(da, view), dot(db, view)) / distance;
+            float2 candidate = float2(dot(da, view), dot(db, view)) * inverseDistance;
             horizon = max(horizon, lerp(low, candidate, weight));
         }
+        float open = projectedLength * (cosine + AOAcos(cosine) * abs(sine));
+        [branch] if (max(horizon.x-low.x,horizon.y-low.y)>.00001)
+        {
         float2 ch = clamp(horizon.yx, -1, 1);
         float2 h = float2(-AOAcos(ch.x), AOAcos(ch.y));
         float2 sh = float2(-1, 1) * sqrt(max(1 - ch * ch, 0));
@@ -319,9 +324,9 @@ float NewAO(float2 uv, int method)
         float2 arc = (cosine + 2 * h * sine - ((2 * ch * ch - 1) * cosine + 2 * sh * ch * sine)) * .25;
         // Normalize against this slice's open hemisphere, so perspective and
         // tilted receiver normals do not turn a flat plane into an occluder.
-        float open = projectedLength * (cosine + AOAcos(cosine) * abs(sine));
         float loss = max(0, open - projectedLength * (arc.x + arc.y));
-        obscurance += loss * (max(horizon.x - low.x, horizon.y - low.y) > .00001 ? 1 : 0);
+        obscurance += loss;
+        }
         openVisibility += open;
     }
     return saturate(1 - Lighting.z * obscurance / max(openVisibility, .00001));

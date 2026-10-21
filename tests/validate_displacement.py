@@ -5,6 +5,8 @@ import numpy as np
 from PIL import Image,ImageDraw,ImageFont
 root=Path(__file__).resolve().parents[1];sys.path.insert(0,str(root))
 import northlight_paths as fp
+sys.path.insert(0,str(root/'renderer'))
+from world_scene_builder import Assets,decode_blp
 parser=argparse.ArgumentParser();parser.add_argument('--backend',required=True);parser.add_argument('--output-subdir',default='displacement');parser.add_argument('--families',nargs='+',default=['terrain','wall','composite','grass']);args=parser.parse_args()
 out=fp.out()/args.output_subdir;out.mkdir(exist_ok=True)
 env=fp.zig_env();env.update(TEMP=str(fp.out()/'tmp'),TMP=str(fp.out()/'tmp'))
@@ -26,6 +28,17 @@ for family in args.families:
         folder=out/(family+'-sm'+model);folder.mkdir(exist_ok=True)
         for p in (fp.out()/'oblique-cobble').iterdir():
             if p.name.startswith('source.fgr') or p.name=='PreviewBase.bin':shutil.copy2(p,folder/p.name)
+        if family=='grass':
+            assets=Assets()
+            try:data=assets.read('world\\nodxt\\detail\\silvermoondetaildoodad01.blp')
+            finally:assets.close()
+            level=0
+            while True:
+                w,h,pixels=decode_blp(data,max(1,256>>level));bgra=bytearray(pixels);bgra[0::4]=pixels[2::4];bgra[2::4]=pixels[0::4];payload=struct.pack('<5I',0x31524746,w,h,21,4)+bgra
+                (folder/('source.fgr.'+str(level))).write_bytes(payload)
+                if not level:(folder/'source.fgr').write_bytes(payload)
+                if w==h==1:break
+                level+=1
         vertex='detaildoodad' if family=='grass' else 'terrain' if family=='terrain' else 'mapobjspecular_t1' if family=='composite' else 'mapobjdiffuse_t1'
         pixel='detaildoodad' if family=='grass' else 'terrain1' if family=='terrain' else 'mapobjcomposite' if family=='composite' else 'mapobjopaque'
         shutil.copy2(fp.out()/'bump-recon'/(f'shaders_vertex_vs_{model}_0_{vertex}.bls-'+('30' if family=='composite' else '0')+'.bin'),folder/'terrain-vs.bin')
@@ -55,6 +68,6 @@ for family in args.families:
                 canvas.paste(Image.fromarray(np.uint8(np.clip(pixels[:,:,:3],0,1)*255)).resize((1024,640)),(0,i*680+40))
             canvas.save(folder/(name+'.png'))
             if profile:assert silhouette>8,(family,model,silhouette)
-            records.append({'family':family,'shader_model':model,'profile':profile,'max_rgb_delta':float(delta.max()),'max_view_depth_delta':float(depth_delta[valid].max()),'new_silhouette_pixels':silhouette})
+            records.append({'family':family,'height_balance':100 if family=='minimum' else 50,'shader_model':model,'profile':profile,'max_rgb_delta':float(delta.max()),'max_view_depth_delta':float(depth_delta[valid].max()),'new_silhouette_pixels':silhouette})
             print('DISPLACEMENT_GPU_PASS',records[-1],flush=True)
 (out/'validation.json').write_text(json.dumps(records,indent=2)+'\n')

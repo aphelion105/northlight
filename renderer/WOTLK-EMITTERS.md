@@ -1,15 +1,25 @@
-# Light-only WotLK model patches
+# WotLK world emitters and standalone model patches
 
-The normal Northlight installer generates reviewed, hash-pinned world-model
-emitters from the player's own WoW 3.3.5a archives. They are included in both
-copies of its patch-Z art layer and use the same reviewed catalog as the light
-cache. Reinstalling reads the original chain without Northlight's patch-Z, so
-lights are not appended twice. Existing native lights and unknown model
-revisions are preserved. Uninstall and rollback use the existing art transaction.
+The normal Northlight installer supplies reviewed, hash-pinned world-model
+emitters through `world-cache/lights`. It does not inject those lights into the
+M2 models in patch-Z. Native M2 lights are evaluated by the game, while
+Northlight's `LocalDirect` pass adds the cached source to the rendered scene;
+enabling both for the same authored source applies its lighting twice. This
+is visible around fixtures such as inn chandeliers. Cache source IDs and
+parent-WMO duplicate suppression cannot deduplicate the game's separate pass.
 
-No extra command or separate MPQ is needed for the reviewed catalog. A foreign
-patch-Z is preserved by the normal installer; the authored cache lights still
-work, but Northlight cannot replace that archive with its model/art payload.
+The light cache remains the owner of these added static world sources,
+including multi-region fixtures and lights without a renderable mesh. Existing
+native lights and unknown model revisions are preserved. No spatial heuristic
+is used to discard nearby independent lamps.
+
+Reinstalling regenerates both owned patch-Z archives from the original chain,
+removing world-model light payloads installed by earlier versions of this PR.
+The FGL sources and their IDs are unchanged; this fix needs an art-layer rebuild,
+not a manual cache edit. Uninstall and rollback use the existing transaction.
+A foreign patch-Z is preserved. Separately installed development emitter
+overlays (such as patch-Y) are not removed automatically: remove those overlays
+before using Northlight's cached lighting for the same sources.
 
 For development, the wider discovery/audit command remains available:
 
@@ -18,9 +28,11 @@ python renderer/build_emitter_patch.py --client /path/to/WoW --output out/emitte
 ```
 
 It writes `patch-y.mpq`, a catalog and an audit report without installing files
-or launching the client. Newly discovered models are not installed automatically:
-review their pins and regenerate the light cache before release. The release
-packager refuses prebuilt cache variants whose builder/catalog sources are stale.
+or launching the client. This is an alternative native-light experiment, not
+an overlay to install alongside Northlight's light cache. Newly discovered
+models are not installed automatically: review their pins and regenerate the
+light cache before release. The release packager refuses prebuilt cache variants
+whose builder/catalog sources are stale.
 
 The generator accepts MD20 version 264, preserves existing native lights and
 keeps original geometry, material and animation payloads byte-for-byte. New lights
@@ -29,7 +41,7 @@ index as 65535, so it is not a valid sentinel. Separate luminous regions can use
 up to 16 reviewed lights. Unknown revisions fail their hash pin. Unlit/broken
 variants and unsupported animated sources are skipped rather than guessed.
 
-The optional catalog contains 182 locally reviewed model patches, including 35
+The catalog contains 182 locally reviewed model patches, including 35
 additional models with 69 sources. Nine additions have multiple separated light
 regions. Ordinary native sources still take precedence. Generated models retain
 the authored source IDs so parent-WMO duplicate suppression continues to work.

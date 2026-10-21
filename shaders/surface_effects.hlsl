@@ -156,19 +156,32 @@ float3 liquidWaves(float2 world) {
     }
     return wave;
 }
-void liquidGeometry(float2 uv,out float3 p,out float3 world,out float3 normal,out float waterZ,out float coverage,out float crest) {
+void liquidGeometry(float2 uv,out float3 p,out float3 world,out float3 normal,out float waterZ,out float coverage,out float crest,bool repairEdge=true) {
     float2 mask=tex2D(LiquidMask,uv).rg;float finalZ=linearDepth(tex2D(FinalDepth,uv).r);
     float maskEdge=abs(ddx(mask.y))+abs(ddy(mask.y));
+    p=position(uv,mask.x);world=toWorld(p);
+    float3 dx=ddx(p),dy=ddy(p);
+    float footprint=dot(fwidth(world.xy),fwidth(world.xy));
     if(mask.y<=.003||mask.x<=Clip.z||mask.x>finalZ+max(.012,mask.x*.0007))discard;
-    if(maskEdge>.5)discard; // mixed derivative quad: retain the native shoreline
-    p=position(uv,mask.x);world=toWorld(p);waterZ=mask.x;coverage=saturate(mask.y);
-    float3 geometric=cross(ddx(p),ddy(p));float lengthSquared=dot(geometric,geometric);
+    // A foreground actor can leave a hole in the liquid mask. Reconstruct its
+    // edge from covered neighbours instead of retaining bright native water.
+    if(!repairEdge&&maskEdge>.5)discard; // SSR retains the material's sky term at an uncertain edge.
+    [branch]if(repairEdge&&maskEdge>.5){
+        float2 stepX=float2(Clip.x,0),stepY=float2(0,Clip.y);
+        float2 right=tex2Dlod(LiquidMask,float4(uv+stepX,0,0)).rg,left=tex2Dlod(LiquidMask,float4(uv-stepX,0,0)).rg;
+        float2 down=tex2Dlod(LiquidMask,float4(uv+stepY,0,0)).rg,up=tex2Dlod(LiquidMask,float4(uv-stepY,0,0)).rg;
+        if(max(right.y,left.y)<=.003||max(down.y,up.y)<=.003)discard;
+        bool useRight=right.y>.003,useDown=down.y>.003;
+        dx=position(uv+stepX*(useRight?1:-1),useRight?right.x:left.x)-p;
+        dy=position(uv+stepY*(useDown?1:-1),useDown?down.x:up.x)-p;
+    }
+    waterZ=mask.x;coverage=saturate(mask.y);
+    float3 geometric=cross(dx,dy);float lengthSquared=dot(geometric,geometric);
     if(!(lengthSquared>1e-12&&lengthSquared<1e20))discard;geometric*=rsqrt(lengthSquared);
     float3 worldNormal=geometric.x*Inv0.xyz+geometric.y*Inv1.xyz+geometric.z*Inv2.xyz;
     if(abs(worldNormal.z)<.88)discard; // waterfalls keep their native material
     float3 wave=liquidWaves(world.xy);crest=wave.x;
     float3 up=toViewDirection(float3(0,0,1));float facing=dot(up,normalize(-p));
-    float footprint=dot(fwidth(world.xy),fwidth(world.xy));
     // At grazing angles a wave must not turn a reflection down into the bed.
     float2 slope=wave.yz*abs(facing)*rsqrt(1+footprint*.25);
     normal=normalize(up-toViewDirection(float3(slope,0)));
@@ -176,7 +189,7 @@ void liquidGeometry(float2 uv,out float3 p,out float3 world,out float3 normal,ou
 }
 float4 WaterSSR(float2 uv:TEXCOORD0):COLOR0 {
     uv=(floor(uv/Clip.xy)+.5)*Clip.xy;
-    float3 p,world,normal;float waterZ,coverage,crest;liquidGeometry(uv,p,world,normal,waterZ,coverage,crest);
+    float3 p,world,normal;float waterZ,coverage,crest;liquidGeometry(uv,p,world,normal,waterZ,coverage,crest,false);
     return reflection(p,reflect(normalize(p),normal));
 }
 float airTransmission(float2 uv,float waterZ) {
