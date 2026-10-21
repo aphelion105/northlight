@@ -14,6 +14,8 @@ up=w[w.index('    bool uploadLiveTerrain(){'):w.index('    // Win32 wide-path re
 reset='liveTerrainIndexCount=liveDirectionalIndexCount=0;liveIndexBase=0;liveTerrainChunks.clear();uploadedTerrain.clear();return true;'
 release=w[w.index('    void releaseGPU(bool keepMesh=false){'):]
 release=release[:release.index('\n')]
+frame_start=w.index('void endFrame(bool retainPool=true){')
+frame_prefix=w[frame_start:w.index('frameFence.endFrame();',frame_start)]
 checks={
  'no index vectors left: counts only':'liveTerrainIndices' not in w+pr and 'liveDirectionalIndices' not in w+pr
     and 'size_t liveTerrainIndexCount=0,liveDirectionalIndexCount=0;' in w,
@@ -39,9 +41,9 @@ checks={
     and 'liveIndexBase=0;' in release and 'NorthlightDynamicRing::reset(liveIndexRing,0,' in release,
  'every other write of liveIndexBase is a reset to 0 (releaseGPU, recreate, S_FALSE, growth refusal)':
     w.count('liveIndexBase=')==6 and w.count('liveIndexBase=0;')==5, # the member, recreateLiveIndices, S_FALSE, growth refusal, releaseGPU; the one non-zero write is the slot
- '0.3.192 frame fence: one member, endFrame() first in WorldRenderer::endFrame, drop() in the release paths, touch() on the reuse path and at both live IB draw sites':
+ '0.3.192 frame fence: one member, endFrame() after deferred logs before any early return, drop() in the release paths, touch() on the reuse path and at both live IB draw sites':
     w.count('NorthlightDynamicRing::FrameFence frameFence;')==1 and w.count('DeviceQueries')==0
-    and 'void endFrame(bool retainPool=true){\n        flushDeferredLogs(); /* 0.3.176 (U0/S0): after every bucketed span of the frame */\n        frameFence.endFrame();' in w
+    and 'flushDeferredLogs();' in frame_prefix and 'return' not in frame_prefix
     and 'queries.drop();' in release and w.count('queries.drop();')==2
     and 'if(reuse){terrainUploadReused=true;if(liveTerrainIndexCount||liveDirectionalIndexCount)NorthlightDynamicRing::touch(liveIndexRing,fence());return true;}' in up
     and w.count('NorthlightDynamicRing::touch(')==2 and pr.count('NorthlightDynamicRing::touch(liveIndexRing,fence());')==1
