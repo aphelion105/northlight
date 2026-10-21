@@ -10,7 +10,8 @@ needles: one strong memcmp, no_builtin, in renderer.cpp only and not exported. R
 under Rosetta is neither WoW nor Wine; nothing else is run."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
-import hashlib,json,re,signal,subprocess,tempfile
+import hashlib,json,platform,re,signal,subprocess,tempfile
+ARCHES=('arm64','x86_64') if sys.platform=='darwin' else (platform.machine(),)
 HERE=Path(__file__).resolve().parent
 FILES=['northlight_mem.h','renderer.cpp','frd9.def','test_fast_memcmp.cpp','test_fast_memcmp.py']
 report={'scope':'Host tests of NorthlightMem::compare; no DLL, game or Wine run.',
@@ -19,16 +20,16 @@ SANITIZE=['-O1','-g','-fsanitize=address,undefined','-fno-sanitize-recover=all']
 with tempfile.TemporaryDirectory(prefix='northlight-fast-memcmp-') as tmp:
     def build(name,arch,flags):
         exe=Path(tmp)/name
-        subprocess.run(['clang++','-std=c++17','-Wall','-Wextra','-Werror','-arch',arch,*flags,*fp.test_include_flags(),str(HERE/'test_fast_memcmp.cpp'),'-o',str(exe)],check=True)
+        subprocess.run(['clang++','-std=c++17','-Wall','-Wextra','-Werror',*(['-arch',arch] if sys.platform=='darwin' else []),*flags,*fp.test_include_flags(),str(HERE/'test_fast_memcmp.cpp'),'-o',str(exe)],check=True)
         return exe
-    for arch in ('arm64','x86_64'):
+    for arch in ARCHES:
         for label,flags in (('O2',['-O2']),('asan+ubsan',SANITIZE)):
             run=subprocess.run([str(build(f'{arch}-{label}',arch,flags))],capture_output=True,text=True)
             print(f'{arch} {label}: {run.stdout.strip()}',flush=True);assert run.returncode==0,(arch,label,run.stdout,run.stderr)
             report['runs'].append({'arch':arch,'build':label,'stdout':run.stdout})
     counterfactuals={1:'sign-only result',2:'signed-char difference',3:'no overlapping tail',4:'16-byte tail loaded at i (over-read)'}
     for cf,what in counterfactuals.items():
-        for arch in (('x86_64',) if cf==4 else ('arm64','x86_64')):
+        for arch in tuple(a for a in ARCHES if cf!=4 or a in ('x86_64','AMD64')):
             exe=build(f'cf{cf}-{arch}',arch,['-O2',f'-DNORTHLIGHT_MEMCMP_COUNTERFACTUAL={cf}'])
             run=subprocess.run([str(exe),'guard' if cf==4 else 'all'],capture_output=True,text=True)
             failed=run.returncode in (-signal.SIGSEGV,-signal.SIGBUS) if cf==4 else run.returncode!=0 and 'MISMATCH' in run.stderr
