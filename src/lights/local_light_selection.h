@@ -1,5 +1,6 @@
 #pragma once
 #include "world_local_lights.h"
+#include "local_light_scissor.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -76,6 +77,25 @@ inline Selection select(const std::vector<NorthlightLocalLights::Light>& lights,
     }
     return out;
 }
+// Off-screen preference (view given): a light whose attenuation sphere lies outside the view pyramid lights no pixel this
+// frame. Over the cap it ranks after every light in view (OffscreenPenalty on its biased score), so the slots go to lights the
+// camera can see; under the cap nothing changes. The test is the sphere against the pyramid's four side planes (they meet at
+// the eye, so a light behind the camera fails them), each plane pushed out by the light's distance times the margin sine:
+// lights within about 20 degrees of the screen edge count as in view (they are lit before they enter it), incumbents within 30
+// (no flip at the edge). Conservative (the plane test keeps the pyramid's edges and corners). An invalid view counts every
+// light in view.
+inline constexpr float OffscreenPenalty=2*VisibilityEnd;
+inline constexpr float ViewMarginSin=.34f,IncumbentMarginSin=.5f; // about 20 and 30 degrees
+inline bool inView(const NorthlightLocalLightScissor::View& v,const NorthlightLocalLights::Light& l,float marginSin){
+    if(!v.valid)return true;
+    double d[3],c[3]={};
+    for(int i=0;i<3;++i){if(!std::isfinite(l.position[i]))return true;d[i]=double(l.position[i])-v.eye[i];}
+    for(int i=0;i<3;++i)for(int k=0;k<3;++k)c[i]+=v.inverse[i][k]*d[k];  // (x, y, forward) as the scissor reconstructs them
+    const double len=std::sqrt(c[0]*c[0]+c[1]*c[1]+c[2]*c[2]),r=double(l.attenuationEnd)*v.stretch+len*marginSin;
+    if(!std::isfinite(r))return true;
+    const double px=1/std::fabs(v.projX),py=1/std::fabs(v.projY),nx=1/std::sqrt(1+px*px),ny=1/std::sqrt(1+py*py);
+    return (c[0]-px*c[2])*nx<=r&&(-c[0]-px*c[2])*nx<=r&&(c[1]-py*c[2])*ny<=r&&(-c[1]-py*c[2])*ny<=r;
+}
 // 0.3.197: stateful layer over the same scoring as select(). Under the cap every light's factor is exactly
 // select()'s; over it the factor eases to 0 across the last capBand(limit) ranks (incumbents get StickyBias)
 // and every factor moves at most dt/FadeSeconds per update, keyed by sourceId. Lights that lose a slot stay
@@ -99,7 +119,9 @@ struct Tracker {
         while(lo<hi){const unsigned mid=(lo+hi)/2;if(entries[mid].id<id)lo=mid+1;else hi=mid;}
         return lo<count&&entries[lo].id==id&&entries[lo].selected;
     }
-    Selection update(const std::vector<NorthlightLocalLights::Light>& lights,const float* camera,unsigned limit,float dtSeconds,bool continuous,const NorthlightLocalLights::Light* additional=nullptr,unsigned additionalCount=0,const std::uint64_t* immediate=nullptr,unsigned immediateCount=0){
+    unsigned offscreen=0;                               // lights in the last update's candidates ranked off-screen (view given)
+    Selection update(const std::vector<NorthlightLocalLights::Light>& lights,const float* camera,unsigned limit,float dtSeconds,bool continuous,const NorthlightLocalLightScissor::View* view=nullptr,const NorthlightLocalLights::Light* additional=nullptr,unsigned additionalCount=0,const std::uint64_t* immediate=nullptr,unsigned immediateCount=0){
+        offscreen=0;
         limit=std::min(limit,Capacity);
         if(!limit)reset();
         Selection out;fading=0;if(!limit)return out;
@@ -113,9 +135,12 @@ struct Tracker {
             if(d2>=reach*reach*(1+1e-5f))return; // beyond VisibilityEnd with margin: no sqrt, no valid()
             if(!NorthlightLocalLights::valid(l)||l.attenuationEnd<=.11f)return;
             const float score=std::sqrt(d2)-l.attenuationEnd;if(!(score<VisibilityEnd))return;
-            if(n==cap&&!better(Pick{score,score-StickyBias,&l},heap[0]))return; // not even as an incumbent
+            if(n==cap&&!better(Pick{score,score-StickyBias,&l},heap[0]))return; // not even as an incumbent in view
             const bool inc=count&&incumbent(l.sourceId);
-            const Pick p{score,score-(inc?StickyBias:0.f),&l};
+            float biased=score-(inc?StickyBias:0.f);
+            if(view&&!inView(*view,l,inc?IncumbentMarginSin:ViewMarginSin)){biased+=OffscreenPenalty;++offscreen;
+                if(n==cap&&!better(Pick{score,biased,&l},heap[0]))return;}
+            const Pick p{score,biased,&l};
             if(n<cap){heap[n++]=p;std::push_heap(heap.begin(),heap.begin()+n,better);}
             else if(better(p,heap[0])){std::pop_heap(heap.begin(),heap.begin()+cap,better);heap[cap-1]=p;std::push_heap(heap.begin(),heap.begin()+cap,better);}
         };

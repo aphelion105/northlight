@@ -1,15 +1,15 @@
 {
-  "source_sha256": "509a6345a585440bb3b7eb140efd538469ea825664a892c618e4c77aadc22516",
+  "source_sha256": "7f4091794b7d6a380a50affe9c2e0f47d6ad045db2345ab80ffdc995e8153074",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "3c5f066a121a446e55db9c699b392da5d3aca6ad9019437b722360d09698e3c3",
   "game_launched": false,
   "device_created": false,
   "shader": {
     "target": "ps_3_0",
-    "bytes": 4292,
-    "sha256": "b903f14648cb8c59e49db3bbc0cb2bd56d6a59916321b4fdfccd2e96e0694433",
-    "static_instruction_slots": 251,
-    "temporary_registers": 6,
+    "bytes": 4416,
+    "sha256": "4473d7aa62db18e5af3cae0303b495f1e8d06552d0b86f56a74fcab13a764c59",
+    "static_instruction_slots": 259,
+    "temporary_registers": 7,
     "samplers": [
       0,
       1,
@@ -19,13 +19,13 @@
       5
     ],
     "instructions": {
-      "rcp": 8,
+      "rcp": 10,
       "add": 50,
       "frc": 2,
-      "mul": 61,
+      "mul": 68,
       "max": 4,
       "min": 1,
-      "mov": 22,
+      "mov": 21,
       "texldl": 6,
       "texkill": 8,
       "cmp": 14,
@@ -42,10 +42,10 @@
   "shaders": {
     "CelestialDiscPS": {
       "target": "ps_3_0",
-      "bytes": 4292,
-      "sha256": "b903f14648cb8c59e49db3bbc0cb2bd56d6a59916321b4fdfccd2e96e0694433",
-      "static_instruction_slots": 251,
-      "temporary_registers": 6,
+      "bytes": 4416,
+      "sha256": "4473d7aa62db18e5af3cae0303b495f1e8d06552d0b86f56a74fcab13a764c59",
+      "static_instruction_slots": 259,
+      "temporary_registers": 7,
       "samplers": [
         0,
         1,
@@ -55,13 +55,13 @@
         5
       ],
       "instructions": {
-        "rcp": 8,
+        "rcp": 10,
         "add": 50,
         "frc": 2,
-        "mul": 61,
+        "mul": 68,
         "max": 4,
         "min": 1,
-        "mov": 22,
+        "mov": 21,
         "texldl": 6,
         "texkill": 8,
         "cmp": 14,
@@ -77,10 +77,10 @@
     },
     "CelestialHaloVisibilityPS": {
       "target": "ps_3_0",
-      "bytes": 3632,
-      "sha256": "250e7dae3d6de3f8ceb7ea55360b594f3ad362c7955d4f704450b8ff7d28c7f4",
-      "static_instruction_slots": 189,
-      "temporary_registers": 7,
+      "bytes": 4056,
+      "sha256": "17aedf5d288e37d98cf9dbabbcf85a8d70ada206b0768b606fe44efb721f0550",
+      "static_instruction_slots": 209,
+      "temporary_registers": 10,
       "samplers": [
         0,
         2,
@@ -88,16 +88,17 @@
         4
       ],
       "instructions": {
-        "rcp": 2,
-        "add": 49,
-        "mov": 9,
+        "rcp": 5,
+        "add": 54,
+        "mov": 10,
         "frc": 2,
-        "cmp": 63,
+        "cmp": 64,
+        "mul": 27,
         "rep": 1,
-        "mul": 18,
         "texldl": 10,
         "if": 5,
         "endif": 5,
+        "dp3": 1,
         "endrep": 1,
         "else": 1
       }

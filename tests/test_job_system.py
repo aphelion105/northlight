@@ -42,7 +42,7 @@ check('each body inline at its old place with ReplayJobs=0, joined there (or at 
       and 'if(jobs&&!replayCullsKicked){replayCullsKicked=true;replayCullKick(slot,sourceActive);}' in render
       and render.index('replayBoundsJoin(); /* 0.3.143: first pointBounds reader */')<render.index('replayCullKick(slot,sourceActive)')
       and '(cull?(cull[index]&1)!=0:StaticShadow::containsBounds(cachedMatrix,p->staticProofLow,p->staticProofHigh))' in render
-      and '(cull?(cull[index]&2)!=0:NorthlightShadowBounds::clipReject(' in render)
+      and '(cull?(cull[index]&2)!=0:(replayAffine&&NorthlightShadowBounds::clipRejectAffine(' in render)
 check('a later slot uses its job only when both matrices still match',
       '!std::memcmp(job.matrix,matrix,sizeof job.matrix)&&!std::memcmp(job.cached,cached,sizeof job.cached)?job.flags.data():nullptr' in w)
 check('the veil keeps both sums; the bank picks by the final activity (ensureCloudNoise on the renderer thread)',

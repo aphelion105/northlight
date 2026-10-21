@@ -67,7 +67,7 @@ template<class T> static void drop(T*& p){p=nullptr;}
 // One game draw as the device saw it: both targets, the pixel shader, every state the mask touches.
 struct DrawRec{Surface* rt;Surface* rt1;IDirect3DPixelShader9* ps;DWORD colorWrite,colorWrite1,blend,sep,srcA,dstA,opA,src,dst,op;};
 struct Ext{DWORD rs[256]={};DWORD tss[2][32]={};std::vector<std::pair<int,DWORD>> sets;
-    Surface gameRT,gameDS;bool hasDS=true,peekDS=true;Surface* rt=&gameRT;Surface* rt1=nullptr;D3DVIEWPORT9 vp;IDirect3DTexture9 maskTex,depthMock;Surface msTarget;bool createFails=false,createMsFails=false,createDepthFails=false,stretchFails=false,colorFillFails=false,capsGetFails=false;unsigned msCreates=0,stretches=0,creates=0,depthCreates=0,colorFills=0,clears=0,rt1Binds=0,rt1Unbinds=0,rtSets=0,shaderCreates=0;D3DMULTISAMPLE_TYPE msCreatedType=D3DMULTISAMPLE_NONE;DWORD msCreatedQuality=0;
+    Surface gameRT,gameDS;bool hasDS=true,peekDS=true;Surface* rt=&gameRT;Surface* rt1=nullptr;D3DVIEWPORT9 vp;IDirect3DTexture9 maskTex,depthMock;Surface msTarget;bool createFails=false,createMsFails=false,createDepthFails=false,stretchFails=false,colorFillFails=false,capsGetFails=false;D3DFORMAT depthCreatedFormat{};unsigned msCreates=0,stretches=0,creates=0,depthCreates=0,colorFills=0,clears=0,rt1Binds=0,rt1Unbinds=0,rtSets=0,shaderCreates=0;D3DMULTISAMPLE_TYPE msCreatedType=D3DMULTISAMPLE_NONE;DWORD msCreatedQuality=0;
     D3DCAPS9 caps;IDirect3DPixelShader9 psMrt{1},psScrub{2},gamePs{9};IDirect3DPixelShader9* ps=nullptr;IDirect3DVertexShader9 gameVs{7};IDirect3DVertexShader9* vsBound=nullptr;bool borrowOk=true;
     Mirror* mirror=nullptr;void* stage0=nullptr;unsigned textureReads=0; /* GetTexture: the device's stage 0, and the mirror learns it back */
     HRESULT GetTexture(DWORD st,IDirect3DBaseTexture9** o){++textureReads;*o=nullptr;if(st==0&&mirror&&stage0){mirror->textures[0]=stage0;mirror->textureKnown[0]=true;}return 0;}
@@ -92,8 +92,8 @@ struct Ext{DWORD rs[256]={};DWORD tss[2][32]={};std::vector<std::pair<int,DWORD>
     HRESULT GetViewport(D3DVIEWPORT9* o){*o=vp;return 0;}HRESULT SetViewport(const D3DVIEWPORT9* v){vp=*v;return 0;}
     HRESULT Clear(DWORD,const D3DRECT*,DWORD,D3DCOLOR,float,DWORD){++clears;return 0;}
     HRESULT ColorFill(Surface*,const RECT*,D3DCOLOR){++colorFills;return colorFillFails?-1:0;}
-    HRESULT CreateTexture(UINT w,UINT h,UINT,DWORD usage,D3DFORMAT,D3DPOOL,IDirect3DTexture9** o,void*){
-        if(usage&D3DUSAGE_DEPTHSTENCIL){++depthCreates;if(createDepthFails)return -2005530516;depthMock.s.desc.Width=w;depthMock.s.desc.Height=h;*o=&depthMock;return 0;}
+    HRESULT CreateTexture(UINT w,UINT h,UINT,DWORD usage,D3DFORMAT format,D3DPOOL,IDirect3DTexture9** o,void*){
+        if(usage&D3DUSAGE_DEPTHSTENCIL){++depthCreates;depthCreatedFormat=format;if(createDepthFails)return -2005530516;depthMock.s.desc.Width=w;depthMock.s.desc.Height=h;*o=&depthMock;return 0;}
         ++creates;if(createFails)return -2005530516;maskTex.s.desc.Width=w;maskTex.s.desc.Height=h;*o=&maskTex;return 0;}
     HRESULT CreatePixelShader(const DWORD* code,IDirect3DPixelShader9** o){++shaderCreates;*o=code[0]==1?&psMrt:&psScrub;return 0;}
     HRESULT CreateRenderTarget(UINT w,UINT h,D3DFORMAT,D3DMULTISAMPLE_TYPE t,DWORD q,int,Surface** o,void*){++msCreates;if(createMsFails)return -2005530516;msCreatedType=t;msCreatedQuality=q;msTarget.desc.Width=w;msTarget.desc.Height=h;msTarget.desc.MultiSampleType=t;msTarget.desc.MultiSampleQuality=q;*o=&msTarget;return 0;}
@@ -108,7 +108,7 @@ struct Hook{
     Mirror mirrorState;Detector weatherDetect;Sample weatherSample;bool applied=false,terrain=true,enabled=true,failed=false;UINT width=0,height=0;IDirect3DTexture9* rainMask=nullptr;Surface* rainMaskSurface=nullptr;Surface* rainMaskMS=nullptr;D3DMULTISAMPLE_TYPE rainMaskMsType=D3DMULTISAMPLE_NONE,rainMaskWantType=D3DMULTISAMPLE_NONE;DWORD rainMaskMsQuality=0,rainMaskWantQuality=0;bool rainMaskFailed=false,rainMaskCleared=false,rainMaskDrawn=false,rainMaskFrame=false,rainMaskOk=false,rainMaskMismatchLogged=false;unsigned rainMaskDraws=0;
     IDirect3DTexture9* rainDepth=nullptr;IDirect3DPixelShader9 *rainMrtPS=nullptr,*rainScrubPS=nullptr;bool rainMrtBound=false,rainDepthOk=false,rainCapsChecked=false,rainCapsOk=false,rainSkipLogged=false;unsigned rainMrtRuns=0,rainMaskSkips=0;DWORD rainMrtPrev[5]={};bool rainMrtPrevKnown[5]={};
     std::unordered_map<IDirect3DVertexShader9*,unsigned> vsMajor;
-    HRESULT rainMaskResolveHr=0;IDirect3DTexture9 depthTexObj;IDirect3DTexture9* depthTex=&depthTexObj;Surface* worldDepth=nullptr;int stateBlocks=0;
+    HRESULT rainMaskResolveHr=0;IDirect3DTexture9 depthTexObj;IDirect3DTexture9* depthTex=&depthTexObj;D3DFORMAT depthSnapshotFormat=(D3DFORMAT)MAKEFOURCC('D','F','2','4');Surface* worldDepth=nullptr;int stateBlocks=0;
     unsigned snapshots=0,effectStates=0,quads=0;bool snapshotOk=true;IDirect3DTexture9* snapshotTarget=nullptr;bool snapshotFatal=true;DrawRec quadRec{};IDirect3DTexture9* quadTex0=nullptr;IDirect3DTexture9* quadTex1=nullptr;bool quadFails=false;
     bool resolveDepthInto(IDirect3DTexture9* target,bool fatal){++snapshots;snapshotTarget=target;snapshotFatal=fatal;ext->stage0=mirrorState.textures[0];ext->mirror=&mirrorState;mirrorState.textureKnown[0]=false;return snapshotOk;} /* its state-block Apply forgets the mirror's stage 0 */
     void effectState(){++effectStates;}
@@ -265,6 +265,7 @@ int main(){
             assert(snap(h)==before&&h.ext->ps==nullptr&&h.ext->rt==&h.ext->gameRT&&h.ext->vp.X==vp0.X&&h.ext->vp.Width==vp0.Width&&h.ext->sr.right==70); /* every state back, no game target or viewport change */
             assert(h.rainMrtBound&&h.ext->rt1==&h.ext->maskTex.s&&h.ext->rt1Binds==1&&h.ext->rt1Unbinds==0); /* RT1 stays bound (lazy) */
             assert(h.snapshots==1&&h.snapshotTarget==h.rainDepth&&!h.snapshotFatal&&h.ext->colorFills==1&&h.ext->clears==0&&h.ext->creates==1&&h.ext->depthCreates==1&&h.ext->shaderCreates==2); /* one depth snapshot (non-fatal), ColorFill clear, no RT0 swap */
+            assert(h.ext->depthCreatedFormat==h.depthSnapshotFormat); /* the rain depth takes the world snapshot's format (DF24 on single-sample DXVK 3) */
             h.draw(10);h.draw(10);assert(h.drawn==3&&h.rainMaskDraws==3&&h.rainMrtRuns==1&&h.ext->rt1Binds==1&&h.snapshots==1&&h.ext->colorFills==1&&h.ext->draws[2].rt1==&h.ext->maskTex.s); /* consecutive rain draws: no rebind, no second snapshot or clear */
             h.bind(0,3);h.draw(10);assert(h.drawn==4&&h.ext->draws[3].rt1==nullptr&&h.ext->draws[3].ps==nullptr&&!h.rainMrtBound&&h.ext->rt1Unbinds==1&&h.rainMaskDraws==3); /* a non-rain draw unbinds RT1 BEFORE it draws */
             h.bind(0,50);h.draw(10);assert(h.drawn==5&&h.rainMrtRuns==2&&h.ext->rt1Binds==2&&h.ext->draws[4].rt1==&h.ext->maskTex.s&&h.snapshots==1&&h.ext->colorFills==1); /* rebinds; the frame's snapshot and clear stay */

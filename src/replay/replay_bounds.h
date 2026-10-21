@@ -6,6 +6,7 @@
 #include <memory>
 #include <chrono>
 #include <unordered_map>
+#include <optional>
 
 // All submitted snapshot vertices, after the audited original deformation.
 // This helper never samples one vertex to infer a model/actor bounding box.
@@ -48,7 +49,9 @@ inline bool linear(const NorthlightActorDeformation::Program& p){
     return true;
 }
 inline bool evaluateIntervals(const NorthlightActorDeformation::Program& p,const Vector inputs[16],const float* constants,Vector& position,bool definitionsApplied=false){
-    using namespace NorthlightShadowShader;Vector temp[33]={},address={};
+    // Most rigid programs touch only a few temporaries. Construct their values
+    // on first write; the lane masks still prove every subsequent read.
+    using namespace NorthlightShadowShader;std::optional<Vector> temp[33];Vector address={};
     // Zeroed host storage is not proof that a GPU temporary/address component
     // was initialized. Track writes and only inspect lanes actually consumed by
     // this instruction (DP3/DP4 consume their full dot-product source lanes).
@@ -59,7 +62,7 @@ inline bool evaluateIntervals(const NorthlightActorDeformation::Program& p,const
         unsigned type=regType(s.token);int index=int(regIndex(s.token));Vector value={};
         if(s.token&0x2000){unsigned c=p.major>=2?((s.address>>16)&3):0;if(!(addressInitialized&(1u<<c))||address[c].error!=0||!std::isfinite(address[c].value)||std::fabs(address[c].value)>4096)return false;index+=int(address[c].value);}
         unsigned valid=15;
-        if(type==0){if(index<0||index>=32)return false;value=temp[index];valid=initialized[index];}
+        if(type==0){if(index<0||index>=32||!initialized[index])return false;value=*temp[index];valid=initialized[index];}
         else if(type==1){if(index<0||index>=16||!(inputInitialized&(1u<<index)))return false;value=inputs[index];}
         else if(type==3){if(index)return false;value=address;valid=addressInitialized;}
         else if(type==2){if(index<0||index>=256)return false;for(unsigned j=0;j<4;++j)value[j].value=constants[4*index+j];if(!definitionsApplied)for(auto& d:p.definitions)if(d.reg==unsigned(index))for(unsigned j=0;j<4;++j)value[j].value=d.value[j];}
@@ -83,7 +86,9 @@ inline bool evaluateIntervals(const NorthlightActorDeformation::Program& p,const
             case 4:{auto product=mul(a[j],b[j]);result[j]=add(product,c[j]);result[j].error+=roundError(std::fabs(double(a[j].value)*b[j].value)+std::fabs(c[j].value));break;}
             default:return false;}}
         const unsigned type=regType(op.destination),index=regIndex(op.destination),mask=(op.destination>>16)&15;
-        if((type!=0&&type!=3)||(type==0&&index>=32)||(type==3&&index))return false;Vector& target=type==3?address:temp[index];
+        if((type!=0&&type!=3)||(type==0&&index>=32)||(type==3&&index))return false;
+        if(type==0&&!initialized[index])temp[index].emplace();
+        Vector& target=type==3?address:*temp[index];
         for(unsigned j=0;j<4;++j)if(mask&(1u<<j)){auto v=result[j];if(!std::isfinite(v.value)||!std::isfinite(v.error)||v.error<0)return false;
             if(op.destination&(1u<<20)){double lo=std::max(0.,std::min(1.,double(v.value)-v.error)),hi=std::max(0.,std::min(1.,double(v.value)+v.error));v.value=std::max(0.f,std::min(1.f,v.value));v.error=std::max(v.value-lo,hi-v.value);}
             if(type==3){double lo=double(v.value)-v.error,hi=double(v.value)+v.error;if(lo<-4096||hi>4096)return false;
@@ -94,7 +99,7 @@ inline bool evaluateIntervals(const NorthlightActorDeformation::Program& p,const
     // Bounds consumers transform an ordinary Vec3 with implicit homogeneous
     // W=1. A near-one or uncertain W is not interchangeable at large world or
     // light translations, so it must fail open rather than enter that path.
-    position=temp[p.positionRegister];return position[3].value==1.f&&position[3].error==0;
+    position=*temp[p.positionRegister];return position[3].value==1.f&&position[3].error==0;
 }
 inline bool evaluate(const NorthlightActorDeformation::Program& p,const NorthlightActorDeformation::Four inputs[16],const float* constants,Vector& position){
     Vector intervals[16]={};for(unsigned i=0;i<16;++i)for(unsigned j=0;j<4;++j)intervals[i][j].value=inputs[i][j];

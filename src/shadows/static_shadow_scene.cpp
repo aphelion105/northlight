@@ -40,7 +40,10 @@ void prepareUpload(Model& model){
     auto compact=std::make_shared<Model>();compact->key=model.key;compact->contentRevision=model.contentRevision;compact->batches=model.batches;compact->index16=model.index16;
     for(auto& material:model.materials){
         auto alpha=std::make_shared<std::vector<uint8_t>>(size_t(std::max(1u,material.width))*std::max(1u,material.height),255);
-        for(size_t i=0;i<alpha->size();++i){size_t j=i*4;if(j+3<material.rgba.size()){(*alpha)[i]=material.rgba[j+3];material.rgba[j]=material.rgba[j+1]=material.rgba[j+2]=255;}}
+        for(size_t i=0;i<alpha->size();++i){size_t j=i*4;if(j+3<material.rgba.size())(*alpha)[i]=material.rgba[j+3];}
+        // Only alpha reaches the shadow target. Expand to white RGB during the
+        // bounded upload instead of retaining a second four-byte texel array.
+        model.bytes-=material.rgba.capacity();std::vector<uint8_t>().swap(material.rgba);
         model.bytes+=alpha->capacity();model.uploadAlpha.push_back(std::move(alpha));
         NorthlightGI::WorldMaterial mat;mat.alphaCutoff=material.alphaCutoff;mat.addressU=material.addressU;mat.addressV=material.addressV;compact->materials.push_back(std::move(mat));
     }
@@ -181,7 +184,7 @@ struct Streamer::State {
     struct Resident {std::shared_ptr<const Model> model;Stamp used;};
     std::string root;Limits limits;
     mutable std::mutex mutex;mutable std::condition_variable wake;
-    Request requested;uint64_t generation=0,requestSerial=0,doneSerial=0;bool stop=false,hasRequest=false;
+    Request requested;uint64_t generation=0,requestSerial=0,doneSerial=0;bool stop=false,hasRequest=false,paused=false,reclaimPending=false,busy=false;
     std::shared_ptr<const Snapshot> published;
     std::thread worker;
     std::map<Cell,Tile> tiles;
@@ -312,11 +315,14 @@ struct Streamer::State {
 #ifdef _WIN32
         SetThreadPriority(GetCurrentThread(),THREAD_PRIORITY_BELOW_NORMAL);
 #endif
-        for(;;){Request r;uint64_t gen=0,serial=0;bool work=false;
-            {std::unique_lock<std::mutex> lock(mutex);wake.wait_for(lock,std::chrono::seconds(1),[&]{return stop||(hasRequest&&doneSerial<requestSerial);});if(stop)return;work=hasRequest&&doneSerial<requestSerial;if(work){r=requested;gen=generation;serial=requestSerial;}}
+        for(;;){Request r;uint64_t gen=0,serial=0;bool work=false,reclaim=false;
+            {std::unique_lock<std::mutex> lock(mutex);wake.wait_for(lock,std::chrono::seconds(1),[&]{return stop||reclaimPending||(!paused&&hasRequest&&doneSerial<requestSerial);});if(stop)return;
+             reclaim=reclaimPending;reclaimPending=false;work=!paused&&hasRequest&&doneSerial<requestSerial;
+             if(reclaim||work){gen=generation;serial=requestSerial;busy=true;if(work)r=requested;}}
+            if(reclaim){reset(gen);std::lock_guard<std::mutex> lock(mutex);busy=work;if(!work){doneSerial=serial;wake.notify_all();continue;}}
             if(!work){try{maintain();}catch(...){++stats.failures;}continue;}
             try{process(r,gen,serial);}catch(...){++stats.failures;}
-            {std::lock_guard<std::mutex> lock(mutex);doneSerial=serial;retryAfter=Clock::now()+std::chrono::milliseconds(500);wake.notify_all();}
+            {std::lock_guard<std::mutex> lock(mutex);busy=false;doneSerial=serial;retryAfter=Clock::now()+std::chrono::milliseconds(500);wake.notify_all();}
         }
     }
 };
@@ -336,5 +342,13 @@ void Streamer::request(const Request& r){
     if(retired)NorthlightStreaming::cpuRetirement().retire(retired,retired->retirementBytes);
 }
 std::shared_ptr<const Snapshot> Streamer::snapshot()const {auto& s=*state_;std::lock_guard<std::mutex> lock(s.mutex);return s.published;}
-bool Streamer::waitIdle(unsigned timeoutMs)const {auto& s=*state_;std::unique_lock<std::mutex> lock(s.mutex);return s.wake.wait_for(lock,std::chrono::milliseconds(timeoutMs),[&]{return s.stop||s.doneSerial==s.requestSerial;});}
+void Streamer::setPaused(bool paused){
+    auto& s=*state_;std::shared_ptr<const Snapshot> retired;
+    {std::lock_guard<std::mutex> lock(s.mutex);if(s.paused==paused)return;s.paused=paused;
+     ++s.requestSerial;
+     if(paused){++s.generation;s.reclaimPending=true;retired=std::move(s.published);}}
+    s.wake.notify_all();
+    if(retired)NorthlightStreaming::cpuRetirement().retire(retired,retired->retirementBytes);
+}
+bool Streamer::waitIdle(unsigned timeoutMs)const {auto& s=*state_;std::unique_lock<std::mutex> lock(s.mutex);return s.wake.wait_for(lock,std::chrono::milliseconds(timeoutMs),[&]{return s.stop||(!s.busy&&!s.reclaimPending&&(!s.hasRequest||s.paused||s.doneSerial==s.requestSerial));});}
 }

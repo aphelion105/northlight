@@ -28,7 +28,7 @@ int main(int argc,char**argv){
     assert(selected(r,{300,600,0},{310,610,30})==false);
     // Large building spans selected volume although its center is outside it.
     assert(selected(r,{100,-20,0},{1900,20,30}));
-    auto source=triangle();source.materials[0].addressU=3;source.materials[0].addressV=2;Model m;std::string error;assert(packModel(std::move(source),"test",m,error));assert(m.index16&&m.vertices.size()==3&&m.indexCount()==3&&m.indices.empty()&&m.uploadIndices16==std::vector<uint16_t>({0,1,2}));assert(m.materials[0].alphaCutoff==.37f&&m.materials[0].addressU==3&&m.materials[0].addressV==2);assert(m.materials[0].rgba[3]==0&&m.materials[0].rgba[7]==255);
+    auto source=triangle();source.materials[0].addressU=3;source.materials[0].addressV=2;Model m;std::string error;assert(packModel(std::move(source),"test",m,error));assert(m.index16&&m.vertices.size()==3&&m.indexCount()==3&&m.indices.empty()&&m.uploadIndices16==std::vector<uint16_t>({0,1,2}));assert(m.materials[0].alphaCutoff==.37f&&m.materials[0].addressU==3&&m.materials[0].addressV==2);assert(m.alphaAt(0,0)==0&&m.alphaAt(0,1)==255&&m.materials[0].rgba.capacity()==0);
     auto changed=triangle();changed.materials[0].addressU=3;changed.materials[0].addressV=2;changed.vertices[1].position.x=2;Model m2;assert(packModel(std::move(changed),"test",m2,error));assert(m.contentRevision!=m2.contentRevision);assert(m.materialKeys==m2.materialKeys);
     auto opaqueScene=triangle();opaqueScene.materials[0].rgba[3]=255;Model opaque;
     assert(packModel(std::move(opaqueScene),"opaque",opaque,error));
@@ -38,7 +38,7 @@ int main(int argc,char**argv){
     auto whiteScene=triangle();whiteScene.materials[0].rgba.clear();whiteScene.materials[0].width=whiteScene.materials[0].height=0;Model white;
     assert(packModel(std::move(whiteScene),"white",white,error));assert(white.contentRevision==opaque.contentRevision&&white.materialKeys==opaque.materialKeys);
     auto nearOpaqueScene=triangle();nearOpaqueScene.materials[0].rgba[3]=254;Model nearOpaque;
-    assert(packModel(std::move(nearOpaqueScene),"nearopaque",nearOpaque,error));assert(nearOpaque.materials[0].width==2&&nearOpaque.materials[0].rgba[3]==254&&nearOpaque.materials[0].rgba.capacity()>0);
+    assert(packModel(std::move(nearOpaqueScene),"nearopaque",nearOpaque,error));assert(nearOpaque.materials[0].width==2&&nearOpaque.alphaAt(0,0)==254&&nearOpaque.materials[0].rgba.capacity()==0);
     auto largeSource=triangle();largeSource.vertices.resize(65537,largeSource.vertices[0]);largeSource.triangles[0].v2=65536;Model largeModel;
     assert(packModel(std::move(largeSource),"wide-index",largeModel,error));assert(!largeModel.index16&&largeModel.uploadPrepared&&largeModel.uploadIndices16.empty()&&largeModel.indexCount()==3&&largeModel.indexAt(2)==65536);
     Placement transformed;float mat[9]={0,-2,0,3,0,0,0,0,-1};std::copy(mat,mat+9,transformed.matrix);transformed.translation={4,5,6};Vec3 p=transformPoint(transformed,{1,2,3});assert(p.x==0&&p.y==8&&p.z==3);Vec3 lo,hi;transformBounds(transformed,{0,0,0},{1,2,3},lo,hi);assert(lo.x==0&&lo.y==5&&lo.z==3&&hi.x==4&&hi.y==8&&hi.z==6);
@@ -68,6 +68,26 @@ int main(int argc,char**argv){
         q.center.x=0;stream.request(q);assert(stream.waitIdle());auto returned=stream.snapshot();assert(returned->stats.metadataReads>current->stats.metadataReads&&returned->stats.modelReads==current->stats.modelReads+1);
     }
     // Budget failure retains ready snapshots and never publishes a partial model.
+    // Recovery releases even the last-needed model. A consumer-held immutable
+    // snapshot survives, paused requests do not repopulate, and a stationary
+    // resume must publish the latest request rather than the pre-pause map.
+    {Streamer stream(root.string());stream.setPaused(true);assert(stream.waitIdle());stream.setPaused(false);assert(stream.waitIdle());
+     Request q;q.map="Azeroth";stream.request(q);assert(stream.waitIdle());
+     auto held=stream.snapshot();assert(held&&!held->models.empty());std::weak_ptr<const Model> weak=held->models.begin()->second;
+     const auto oldGeneration=held->mapGeneration;stream.setPaused(true);assert(stream.waitIdle());assert(!stream.snapshot());
+     assert(!weak.expired()&&held->models.begin()->second->vertices.size()==3);held.reset();
+     const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(4);
+     while(!weak.expired()&&std::chrono::steady_clock::now()<deadline)std::this_thread::sleep_for(std::chrono::milliseconds(10));assert(weak.expired());
+     q.map="Kalimdor";for(unsigned i=0;i<50;++i){stream.request(q);stream.setPaused(true);}assert(stream.waitIdle());assert(!stream.snapshot());
+     stream.setPaused(false);assert(stream.waitIdle());auto resumed=stream.snapshot();assert(resumed&&resumed->map=="Kalimdor"&&resumed->mapGeneration>oldGeneration&&resumed->placements.size()==1&&resumed->placements[0].uid==9);
+     stream.setPaused(true);assert(stream.waitIdle());assert(!stream.snapshot());}
+    // Cancellation may race selection, I/O or publication. A paused worker
+    // must finish all old work before waitIdle; destruction also joins it.
+    {Streamer stream(root.string());Request q;
+     for(unsigned i=0;i<100;++i){q.map=i%2?"Azeroth":"Kalimdor";stream.request(q);stream.setPaused(false);stream.setPaused(true);}
+     assert(stream.waitIdle());assert(!stream.snapshot());q.map="Kalimdor";q.center={0,0,0};stream.request(q);stream.setPaused(false);assert(stream.waitIdle());
+     auto snap=stream.snapshot();assert(snap&&snap->map=="Kalimdor"&&snap->placements.size()==1&&snap->placements[0].uid==9);}
+    {Streamer stream(root.string());Request q;q.map="Azeroth";stream.request(q);stream.setPaused(true);} // stop with a pending reclaim
     {Limits l;l.residentBytes=1;Streamer s(root.string(),l);r.map="Azeroth";s.request(r);assert(s.waitIdle());auto snap=s.snapshot();assert(snap&&snap->models.empty()&&!snap->stats.complete&&snap->stats.deferred>0&&snap->stats.cpuBytes==0);}
     // A corrupt new resource must leave already valid shared models in place.
     {std::ofstream broken(root/"models"/(key(2)+".fgs"),std::ios::binary|std::ios::trunc);broken<<"broken";}

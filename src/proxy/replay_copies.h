@@ -35,13 +35,12 @@
    per-frame decision); a buffer above cap/4 never gets a copy. Thrash guard in FRAMES (advanceFrame(), once per frame from WorldRenderer::endFrame; a frame
    makes hundreds of reads, so reads are no time base): an eviction or invalidation clears the buffer's read-frame count (a big buffer needs 2 more frames
    of reads before it refills); a refill within kThrashFrames of that is a strike; after kMaxStrikes strikes in a row the buffer stays on the fallback for kBackoffFrames.
-   LARGE allowance: a buffer above cap/4 (the game's ~15.8 MB DYNAMIC buffer) may hold a copy of up to kLargeCopyBytes (16 MiB) in a SEPARATE budget of
-   kLargeCapBytes (one such buffer; outside kCapBytes, never counted in `used`), only without memory pressure. It fills only after reads in 2 distinct recent
+   LARGE allowance: a buffer above cap/4 may hold a copy of up to kLargeCopyBytes (24 MiB) in a SEPARATE budget of
+   kLargeCapBytes (40 MiB; outside kCapBytes, never counted in `used`), only without memory pressure. This fits the game's ~15.8 MiB and 18 MiB dynamic buffers plus the observed 4.5 MiB holder.
+   It fills only after reads in 2 distinct recent
    frames (a whole-buffer request does not shortcut that), not within kLargeRefillFrames of its own eviction/invalidation, and not within kLargeBackoffFrames
    after a pressure edge (the fill is one 16 MB read on the replay thread: it must not repeat). Pressure drops it at once, or at its unpin when pinned
    (never freed while pinned); another large buffer takes the allowance only when the holder is unpinned and unread for kLargeRefillFrames.
-   0.3.204: deliberately still one holder of at most 16 MiB here, unlike the command stream's two-buffer CPU shadow allowance (command_queue.h,
-   LargeShadowBudgetBytes): a larger buffer (e.g. an 18 MB one) never gets a replay-side copy and its reads keep taking the readBackLock path.
    A buffer without a valid copy takes today's readBackLock() path.
    Gate: `enabled` (set where the stream starts, with CommandStream=0 it stays false): no wrapper hook copies anything, no Reader changes a call.
    Threads: every writer and every capture site runs on the replay thread; the registry is still mutex-guarded (the wrapper can be released
@@ -53,7 +52,7 @@ namespace NorthlightReplayCopies {
 inline constexpr std::uint64_t kCapBytes=16u<<20;
 inline constexpr UINT kEagerBytes=64u<<10;
 inline constexpr unsigned kMaxStrikes=3;                 // refills within kThrashFrames of an eviction/invalidation before the buffer is left on the fallback
-inline constexpr std::uint64_t kLargeCapBytes=16u<<20,kLargeCopyBytes=16u<<20;
+inline constexpr std::uint64_t kLargeCapBytes=40u<<20,kLargeCopyBytes=24u<<20;
 inline constexpr std::uint64_t kLargeRefillFrames=60,kLargeBackoffFrames=600;
 inline constexpr std::uint64_t kThrashFrames=4,kBackoffFrames=600,kRecentFrames=8;   // frames (advanceFrame) = the time base; kRecentFrames: gap that restarts a buffer's read-frame count
 inline std::atomic<bool> enabled{false};
@@ -70,11 +69,13 @@ struct Slot {
 // 0.3.196 (task 12): the outstanding write lock of ONE wrapper (a member of the tracked Buffer, no mutex): noteWrite() fills it at Lock, commitWrite() consumes it at Unlock
 // under ONE store mutex acquisition. `drop`: the lock cannot be mirrored exactly (nested, null pointer, offset past the end): the copy is dropped at Unlock.
 struct PendingWrite {bool active=false,drop=false;UINT off=0,end=0;const unsigned char* ptr=nullptr;};
+struct Refusals {std::uint64_t budget=0,tooLarge=0,backoff=0,unsafe=0,locked=0,pressure=0,allocation=0;UINT largestBuffer=0;};
 struct Store {
     std::mutex m;std::unordered_map<const void*,Slot*> registry;std::vector<Slot*> list;   // list: Filling and Valid slots
     std::uint64_t used=0,clock=0,frame=1,cap=kCapBytes,largeUsed=0,largeBlockUntil=0;bool pressure=false;   // largeUsed: the large allowance's bytes (not in `used`)
     // 0.3.196 (task 12): the data vector of a slot evicted INSIDE beginFill, held only until that same call sizes the new fill (then freed): at most one vector, never kept across calls.
     std::vector<unsigned char> spare;bool recycling=false;
+    Refusals refusals;
 };
 inline Store& store(){static Store s;return s;}
 inline void pinRef(Slot& c){++c.pins;if(c.owner)c.ref(c.owner,true);}   // a pin holds the wrapper alive (see LIFETIME); store mutex held
@@ -101,13 +102,15 @@ inline bool evictOne(Store& s){
     if(!victim)return false;
     drop(s,*victim,Why::Evict);return true;
 }
-// The large allowance is free for `c`: nobody holds it, or the holder is unpinned, Valid and unread for kLargeRefillFrames (then it is dropped).
+// Reclaim only unpinned, Valid holders unread for kLargeRefillFrames.
 inline bool freeLarge(Store& s,const Slot& c){
-    if(s.largeUsed+c.size<=kLargeCapBytes)return true;
-    Slot* victim=nullptr;
-    for(Slot* o:s.list)if(o->large&&o!=&c&&o->state.load()==Slot::Valid&&!o->pins&&s.frame>=o->lastFrame+kLargeRefillFrames)victim=o;
-    if(!victim)return false;
-    drop(s,*victim,Why::Evict);return s.largeUsed+c.size<=kLargeCapBytes;
+    while(s.largeUsed+c.size>kLargeCapBytes){
+        Slot* victim=nullptr;
+        for(Slot* o:s.list)if(o->large&&o!=&c&&o->state.load()==Slot::Valid&&!o->pins&&s.frame>=o->lastFrame+kLargeRefillFrames&&(!victim||o->used<victim->used))victim=o;
+        if(!victim)return false;
+        drop(s,*victim,Why::Evict);
+    }
+    return true;
 }
 }
 // ---- wrapper side (tracked_buffers.h, replay thread) ----
@@ -140,17 +143,19 @@ inline void invalidate(Slot& c,bool gpuWrite=false){
 }
 // Before the wrapper forwards Unlock (the pointer is still mapped): copy the written range into the copy. before = locks outstanding (this one included). ONE mutex acquisition;
 // the slot may have been evicted or invalidated since the Lock (evictOne, setPressure, a failed nested Lock): then only the record is cleared.
-inline void beforeUnlock(Slot& c,PendingWrite& w,unsigned before){
-    if(!w.active)return;   // a READONLY lock's Unlock: nothing was written
+inline bool beforeUnlock(Slot& c,PendingWrite& w,unsigned before,bool compare=false){
+    if(!w.active)return false;   // a READONLY lock's Unlock: nothing was written
     const PendingWrite p=w;w=PendingWrite{};
-    if(c.state.load()!=Slot::Valid)return;
+    if(c.state.load()!=Slot::Valid)return false;
     Store& s=store();std::lock_guard<std::mutex> g(s.m);
-    if(c.state.load()!=Slot::Valid)return;
-    if(p.drop||before>1){detail::drop(s,c,detail::Why::Invalidate);return;}   // which lock does this Unlock close? unknown: drop
+    if(c.state.load()!=Slot::Valid)return false;
+    if(p.drop||before>1){detail::drop(s,c,detail::Why::Invalidate);return false;}   // which lock does this Unlock close? unknown: drop
     if(p.end>p.off){   // the stream's own replayed write names its source bytes (cached memory, see unlock_source.h); a pass-through lock is read back from the mapped pointer
         const UnlockSource& u=unlockSource;
         const unsigned char* from=u.bytes&&u.off==p.off&&u.size==p.end-p.off?u.bytes:p.ptr;
+        if(compare&&!std::memcmp(c.data.data()+p.off,from,p.end-p.off))return true;
         std::memcpy(c.data.data()+p.off,from,p.end-p.off);}
+    return false;
 }
 // ---- reader side (replay_copy_reader.h) ----
 // Once per frame (replay thread, WorldRenderer::endFrame): the time base of the thrash guard and of the deferred fill.
@@ -184,19 +189,27 @@ inline void unpin(Slot& c){
 // the budget, <= 12.5% of the slot, and only until the slot is dropped); anything else, and every leftover, is freed before returning.
 inline bool beginFillLocked(Store& s,Slot& c,UINT requested){
     auto& m=NorthlightLockMeter::state();
+    auto refused=[&](std::uint64_t& reason){++reason;if(c.size>s.refusals.largestBuffer)s.refusals.largestBuffer=c.size;m.copyRefused.fetch_add(1,std::memory_order_relaxed);return false;};
     const bool large=c.size>s.cap/4;   // above the regular per-buffer limit: the large allowance or nothing
     const bool wanted=large?c.frames>=2:(c.size<=kEagerBytes||requested>=c.size||c.frames>=2);   // a big buffer read for a small range: only once it proved to be read in 2 recent frames
     if(c.state.load()!=Slot::None||c.pins||!wanted)return false;
-    if(s.frame<c.parkUntil||c.gpuWritten||(c.locks&&c.locks->load())){m.copyRefused.fetch_add(1,std::memory_order_relaxed);return false;}
-    if(large&&(c.size>kLargeCopyBytes||s.pressure||s.frame<s.largeBlockUntil||(c.evicted&&s.frame-c.evictedFrame<kLargeRefillFrames)||!detail::freeLarge(s,c))){m.copyRefused.fetch_add(1,std::memory_order_relaxed);return false;}
+    if(s.frame<c.parkUntil)return refused(s.refusals.backoff);
+    if(c.gpuWritten)return refused(s.refusals.unsafe);
+    if(c.locks&&c.locks->load())return refused(s.refusals.locked);
+    if(large){
+        if(c.size>kLargeCopyBytes)return refused(s.refusals.tooLarge);
+        if(s.pressure)return refused(s.refusals.pressure);
+        if(s.frame<s.largeBlockUntil||(c.evicted&&s.frame-c.evictedFrame<kLargeRefillFrames))return refused(s.refusals.backoff);
+        if(!detail::freeLarge(s,c))return refused(s.refusals.budget);
+    }
     const bool recent=c.evicted&&s.frame-c.evictedFrame<=kThrashFrames;
-    if(recent&&c.strikes>=kMaxStrikes){c.parkUntil=s.frame+kBackoffFrames;c.strikes=0;c.evicted=false;m.copyRefused.fetch_add(1,std::memory_order_relaxed);return false;}   // thrash guard: parked
+    if(recent&&c.strikes>=kMaxStrikes){c.parkUntil=s.frame+kBackoffFrames;c.strikes=0;c.evicted=false;return refused(s.refusals.backoff);}   // thrash guard: parked
     struct SpareScope {Store& s;explicit SpareScope(Store& st):s(st){s.recycling=true;}~SpareScope(){s.recycling=false;std::vector<unsigned char>().swap(s.spare);}} spare(s);
-    if(!large)while(s.used+c.size>s.cap)if(!detail::evictOne(s)){m.copyRefused.fetch_add(1,std::memory_order_relaxed);return false;}
+    if(!large)while(s.used+c.size>s.cap)if(!detail::evictOne(s))return refused(s.refusals.budget);
     try{
         if(s.spare.capacity()>=c.size&&s.spare.capacity()-c.size<=std::size_t(c.size)/8)c.data.swap(s.spare);   // evicted a moment ago: same allocation, no malloc/free pair
         c.data.assign(c.size,0);s.list.push_back(&c);
-    }catch(...){std::vector<unsigned char>().swap(c.data);m.copyRefused.fetch_add(1,std::memory_order_relaxed);return false;}
+    }catch(...){std::vector<unsigned char>().swap(c.data);return refused(s.refusals.allocation);}
     c.listAt=unsigned(s.list.size()-1);c.state.store(Slot::Filling);c.used=++s.clock;pinRef(c);c.dropAtUnpin=false;
     if(large){c.large=true;s.largeUsed+=c.size;m.copyLargeGrants.fetch_add(1,std::memory_order_relaxed);}else s.used+=c.size;
     if(recent)++c.strikes;else c.strikes=0;detail::gauges(s);
@@ -234,4 +247,5 @@ inline void setPressure(bool on){
 }
 inline void served(UINT bytes){auto& m=NorthlightLockMeter::state();m.copyServed.fetch_add(1,std::memory_order_relaxed);m.copyServedBytes.fetch_add(bytes,std::memory_order_relaxed);}
 inline void fallback(){NorthlightLockMeter::state().copyFallback.fetch_add(1,std::memory_order_relaxed);}
+inline Refusals takeRefusals(){Store& s=store();std::lock_guard<std::mutex> g(s.m);const auto r=s.refusals;s.refusals={};return r;}
 }

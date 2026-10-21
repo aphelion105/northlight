@@ -6,7 +6,8 @@ the test output):
   changes colour bands 1-7 and 12 and fog bands 0-1 of its profile; Stormwind (Light 51/52/77)
   the fog end of its profiles. Both record their sky clone as skipped, every other HD sky step is
   skipped with a reason (not a KeyError), and the archive holds the four band tables, no sky clone
-  and no moon02, plus the weather textures and reviewed model lights. Against the relighting plus the retime, exactly
+  and no moon02, plus the weather textures. Reviewed world-model lights stay in the light cache,
+  without native M2 injection in either archive. Against the relighting plus the retime, exactly
   those band rows differ, and every outdoor Light row differs in column 9 only (its private storm
   profile, see build_lighting.stormify; the storm step runs after the sky steps).
 - both views (stock and the client's own chain), against the relighting alone: no band whose key
@@ -17,7 +18,7 @@ the test output):
   keys, a fog end within the source storm's (x0.85, never below 350 yards unless shorter) and untouched water bands, and the skybox rule holds;
   the five BLPs in both archives are the generated ones (uncompressed, 1:16 rain, 1:2 snow) and the client's mist puffs at 1:4.
 - the client's own chain: rebuilding twice without installed patch-Z produces identical
-  payloads and archives; an older patch-Z may lack newly supported model lights."""
+  payloads and archives; an older patch-Z may contain world-model lights that must be removed."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp; fp.use_source_modules()
 import hashlib, json, shutil
@@ -47,7 +48,8 @@ assert set(skipped) == {'orgrimmar', 'outdoor_sun', 'outdoor_moon'}, r['steps']
 sky_skipped = {s['step']: s['sky_clone_skipped'] for s in r['steps'] if 'sky_clone_skipped' in s}
 assert set(sky_skipped) == {'mulgore', 'stormwind'}, r['steps']
 models = set(r['files']) - files
-assert models and all(n.lower().startswith(('world\\', 'item\\objectcomponents\\', 'spells\\', 'creature\\')) and n.lower().endswith('.m2') for n in models), sorted(models)
+assert not any(n.lower().startswith('world\\') and n.lower().endswith('.m2') for n in models), sorted(models)
+assert all(n.lower().startswith(('item\\objectcomponents\\', 'spells\\', 'creature\\')) and n.lower().endswith('.m2') for n in models), sorted(models)
 assert sum(s.get('models', 0) for s in r['steps'] if s['step'] in model_steps) == len(models)
 assert r['steps'][0]['profiles'] > 0 and not r['steps'][0]['skipped_incomplete_profiles']
 for target in r['targets']:
@@ -177,12 +179,13 @@ shutil.rmtree(own, ignore_errors=True)
 r_own = build_art_layer.build(client, own, cache)
 report['own_retime'] = real_tables('all', own, r_own)
 report['own_storm'] = storm_checks('all', own, r_own)
-# A new installer may add reviewed models absent from an older installed patch-Z.
+# A new installer removes world-model light injection from an older patch-Z.
 # Rebuilding from the same original archive chain must still be reproducible.
 again = out / 'own-again'
 again.mkdir(exist_ok=True)
 r_again = build_art_layer.build(client, again, cache)
 assert r_again['files'] == r_own['files']
+assert not any(n.lower().startswith('world\\') and n.lower().endswith('.m2') for n in r_own['files'])
 got = [hashlib.sha256((own / t).read_bytes()).hexdigest() for t in r_own['targets']]
 assert got == [r_again['archive_sha256']] * 2
 report['own'] = {'rebuilt_sha256': got, 'models': sum(n.lower().endswith('.m2') for n in r_own['files'])}

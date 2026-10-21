@@ -10,7 +10,12 @@ class Profiles(unittest.TestCase):
     def test_catalog_and_no_guessing(self):
         catalog=p.load();self.assertGreaterEqual(len(catalog),75)
         self.assertIn("world\\generic\\passivedoodads\\lights\\torch.m2",catalog)
-        self.assertFalse(any(any(s in name for s in ('unlit','broken','smoke','ember','off.m2')) for name in catalog))
+        # This brazier contains proved additive fire islands; "smoker" in its
+        # name does not make the visible flames a smoke-only source.
+        reviewed_smoker='world\\expansion02\\doodads\\generic\\scarletonslaught\\scarleto_brazier_smoker.m2'
+        self.assertFalse(any(any(s in name for s in ('unlit','broken','smoke','ember','off.m2'))
+                             for name in catalog if name!=reviewed_smoker))
+        self.assertIn('t_vfx_fire_anim02',catalog[reviewed_smoker]['position_basis'])
         for name,c in catalog.items():
             self.assertEqual(len(c['position']),3)
             self.assertTrue(c['position_basis'])

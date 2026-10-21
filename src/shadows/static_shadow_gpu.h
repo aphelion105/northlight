@@ -357,9 +357,10 @@ private:
         if(previous){size_t bytes=previous->retirementBytes;if(!bytes){bytes=previous->placements.capacity()*sizeof(Placement);for(const auto& kv:previous->models)bytes+=kv.second->bytes;}NorthlightStreaming::cpuRetirement().retire(previous,bytes);}
         expire(frame);drainRetired();
     }
-    static bool sameAlpha(const Texture& t,const NorthlightGI::WorldMaterial& m){
+    static bool sameAlpha(const Texture& t,const Model& model,size_t material){
+        const auto& m=model.materials[material];
         if(std::max(1u,m.width)!=t.width||std::max(1u,m.height)!=t.height)return false;
-        for(size_t i=0;i<size_t(t.width)*t.height;++i){size_t j=i*4+3;const auto* old=t.owner?&t.owner->materials[t.material]:nullptr;unsigned a=old?(j<old->rgba.size()?old->rgba[j]:255):(t.preparedAlpha?(*t.preparedAlpha)[i]:t.alpha[i]),b=j<m.rgba.size()?m.rgba[j]:255;if(a!=b)return false;}return true;
+        for(size_t i=0;i<size_t(t.width)*t.height;++i){unsigned a=t.owner?t.owner->alphaAt(t.material,i):(t.preparedAlpha?(*t.preparedAlpha)[i]:t.alpha[i]);if(a!=model.alphaAt(material,i))return false;}return true;
     }
     static uint64_t mix(uint64_t h,uint64_t v){return (h^v)*1099511628211ull;}
     static Instance transform(const Placement& p){Instance x{};for(unsigned r=0;r<3;++r){for(unsigned c=0;c<3;++c)x.row[r*4+c]=p.matrix[r*3+c];x.row[r*4+3]=r==0?p.translation.x:r==1?p.translation.y:p.translation.z;}return x;}
@@ -536,7 +537,7 @@ private:
         // Add resource before material admission so all allocated bytes count.
         const std::string identity=resourceKey(*model);resources_[identity]=std::move(r);Resource& dest=*resources_.at(identity);
         dest.textures.resize(model->materials.size());
-        for(const auto& mat:model->materials)dest.opaque.push_back(mat.alphaCutoff<=0||((!mat.width||!mat.height||mat.rgba.empty())&&mat.alphaCutoff<=1));
+        for(const auto& mat:model->materials)dest.opaque.push_back(mat.alphaCutoff<=0||((!mat.width||!mat.height||(!model->uploadPrepared&&mat.rgba.empty()))&&mat.alphaCutoff<=1));
         staging_=identity;return true;
     }
     bool advance(IDirect3DDevice9* d,Resource& r,size_t& budget,const std::chrono::steady_clock::time_point& start){
@@ -550,7 +551,7 @@ private:
             bool all=true;
             for(size_t i=0;i<r.textures.size();++i){
                 if(timedOut()){all=false;break;}
-                if(!r.textures[i]){const auto& mat=m.materials[i];uint64_t key=m.materialKeys[i];auto range=textures_.equal_range(key);for(auto it=range.first;it!=range.second;++it){auto candidate=it->second.lock();if(candidate&&sameAlpha(*candidate,mat)){r.textures[i]=std::move(candidate);break;}}
+                if(!r.textures[i]){const auto& mat=m.materials[i];uint64_t key=m.materialKeys[i];auto range=textures_.equal_range(key);for(auto it=range.first;it!=range.second;++it){auto candidate=it->second.lock();if(candidate&&sameAlpha(*candidate,m,i)){r.textures[i]=std::move(candidate);break;}}
                     if(!r.textures[i]){auto texture=std::make_shared<Texture>();texture->key=key;texture->owner=r.model;texture->material=i;texture->width=std::max(1u,mat.width);texture->height=std::max(1u,mat.height);texture->bytes=size_t(texture->width)*texture->height*4;makeRoom(texture->bytes);
                         if(sharedBudget_&&!sharedBudget_->available())return true;
                         const bool admitted=admission(texture->bytes);
@@ -562,8 +563,7 @@ private:
                 auto& t=*r.textures[i];if(t.ready)continue;all=false;const size_t rowBytes=size_t(t.width)*4;if(rowBytes>budget)break;const unsigned rows=unsigned(std::min({size_t(t.height-t.nextRow),budget/rowBytes,size_t(64)}));
                 RECT rect{0,LONG(t.nextRow),LONG(t.width),LONG(t.nextRow+rows)};D3DLOCKED_RECT lock{};if(FAILED(t.gpu->LockRect(0,&lock,&rect,0))||!lock.pBits)return false;const auto& mat=m.materials[i];
                 for(unsigned y=0;y<rows;++y){auto* dst=reinterpret_cast<uint32_t*>(static_cast<char*>(lock.pBits)+y*lock.Pitch);const size_t offset=size_t(t.nextRow+y)*rowBytes;
-                    if(m.uploadPrepared&&offset+rowBytes<=mat.rgba.size())std::memcpy(dst,mat.rgba.data()+offset,rowBytes);
-                    else if(m.uploadPrepared)std::fill(dst,dst+t.width,0xffffffffu);
+                    if(m.uploadPrepared){const auto& alpha=*m.uploadAlpha[i];const size_t first=size_t(t.nextRow+y)*t.width;for(unsigned x=0;x<t.width;++x)dst[x]=(uint32_t(alpha[first+x])<<24)|0x00ffffffu;}
                     else for(unsigned x=0;x<t.width;++x){const size_t j=offset+x*4;const unsigned a=j+3<mat.rgba.size()?mat.rgba[j+3]:255;dst[x]=(a<<24)|0x00ffffff;t.alpha[size_t(t.nextRow+y)*t.width+x]=uint8_t(a);}}
                 if(FAILED(t.gpu->UnlockRect(0)))return false;t.nextRow+=rows;t.ready=t.nextRow==t.height;if(t.ready)t.owner.reset();budget-=rows*rowBytes;if(sharedBudget_)sharedBudget_->consume(rows*rowBytes);break;
             }
