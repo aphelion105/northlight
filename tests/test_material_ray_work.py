@@ -21,6 +21,20 @@ out.mkdir(parents=True, exist_ok=True)
 source = (fp.SHADERS / 'auto_parallax.hlsl').read_text()
 # The reference completes every shadow tap, including fully blocked rays.
 reference = '''
+float2 referenceUV(sampler2D map,float2 uv,float distance,float4 control,MaterialFrame f) {
+    float fade=parallaxFade(distance,f.tx,f.ty,control.y);
+    if(control.x<=0||fade<=0)return uv;
+    float3 view=float3(dot(-f.p,f.tangent),dot(-f.p,f.bitangent),abs(dot(-f.p,f.normal)));
+    float steps=clamp(control.z,8,32),stepDepth=1/steps;
+    float2 rayUV=clamp(view.xy/max(view.z,.15*length(f.p)),-4,4)*control.x*fade;
+    float2 stepUV=rayUV*stepDepth;
+    float depth=0;float2 sampleUV=uv+rayUV*.5;
+    float sampled=1-tex2Dgrad(map,sampleUV,f.tx,f.ty).b;
+    [loop]for(int i=0;i<32&&i<steps&&depth<sampled;++i){sampleUV-=stepUV;depth+=stepDepth;sampled=1-tex2Dgrad(map,sampleUV,f.tx,f.ty).b;}
+    float previous=1-tex2Dgrad(map,sampleUV+stepUV,f.tx,f.ty).b-(depth-stepDepth);
+    float after=sampled-depth;
+    return sampleUV+stepUV*saturate(after/min(after-previous,-.00001));
+}
 float referenceShadow(sampler2D map,float2 uv,float height,float distance,MaterialFrame f,float4 control,float4 light,float steps) {
     float3 ray=float3(dot(light.xyz,f.tangent),dot(light.xyz,f.bitangent),dot(light.xyz,f.normal));
     float fade=parallaxFade(distance,f.tx,f.ty,control.y);
@@ -46,7 +60,7 @@ float4 Ray(float2 uv:TEXCOORD0,float4 p:TEXCOORD1):COLOR0 {
 }
 float4 ReferenceRay(float2 uv:TEXCOORD0,float4 p:TEXCOORD1):COLOR0 {
     MaterialFrame f=materialFrame(uv,p,Projection);
-    return float4(parallaxUVFrame(HeightMap,uv,p.w,Control,f),0,1);
+    return float4(referenceUV(HeightMap,uv,p.w,Control,f),0,1);
 }
 float4 Shadow(float2 uv:TEXCOORD0,float4 p:TEXCOORD1):COLOR0 {
     MaterialFrame f=materialFrame(uv,p,Projection);
@@ -56,11 +70,23 @@ float4 ReferenceShadow(float2 uv:TEXCOORD0,float4 p:TEXCOORD1):COLOR0 {
     MaterialFrame f=materialFrame(uv,p,Projection);
     return referenceShadow(HeightMap,uv,ShadowControl.x,p.w,f,Control,float4(.96,0,.28,1),ShadowControl.y);
 }
+void selectZeroIteration(float2 uv,float4 p) {
+    MaterialFrame f=materialFrame(uv,p,Projection);
+    float3 view=float3(dot(-f.p,f.tangent),dot(-f.p,f.bitangent),abs(dot(-f.p,f.normal)));
+    float2 rayUV=clamp(view.xy/max(view.z,.15*length(f.p)),-4,4)*Control.x*parallaxFade(p.w,f.tx,f.ty,Control.y);
+    float2 start=uv+rayUV*.5,stepUV=rayUV/clamp(Control.z,8,32);
+    float initial=tex2Dgrad(HeightMap,start,f.tx,f.ty).b;
+    float prior=tex2Dgrad(HeightMap,start+stepUV,f.tx,f.ty).b;
+    clip(initial-.999999);
+    clip(abs(initial-prior)-.001);
+}
+float4 ZeroRay(float2 uv:TEXCOORD0,float4 p:TEXCOORD1):COLOR0 {selectZeroIteration(uv,p);return Ray(uv,p);}
+float4 ReferenceZeroRay(float2 uv:TEXCOORD0,float4 p:TEXCOORD1):COLOR0 {selectZeroIteration(uv,p);return ReferenceRay(uv,p);}
 '''
 path = out / 'material-rays.hlsl'
 path.write_text(source + reference + fixture)
 compiler = Compiler(allow_compatible_binary=args.compatible_compiler)
-for entry in ('Ray', 'ReferenceRay', 'Shadow', 'ReferenceShadow'):
+for entry in ('Ray', 'ReferenceRay', 'Shadow', 'ReferenceShadow', 'ZeroRay', 'ReferenceZeroRay'):
     compiler.compile(path, entry, 'ps_3_0', out / (entry + '.bin'))
     validate_assembly(out / (entry + '.bin.asm'), 'ps_3_0')
 exe = out / 'material-ray-work.exe'
@@ -70,5 +96,5 @@ subprocess.run([str(fp.zig()), 'c++', '-target', 'x86-windows-gnu', '-O2', '-UND
 backend = os.environ.get('NORTHLIGHT_TEST_D3D9', str(Path(os.environ.get('SystemRoot', 'C:/Windows')) / 'SysWOW64/d3d9.dll'))
 subprocess.run([str(exe), backend, str(out)], cwd=out, check=True, timeout=120)
 rows = json.loads((out / 'material-ray-work.json').read_text())
-assert len(rows) == 18 and all(row['max_error'] <= .00001 for row in rows)
-print('PASS 18 paired material ray cases, including fade boundaries, blocked and unblocked shadow rays')
+assert len(rows) == 55 and all(row['max_error'] <= .00001 for row in rows)
+print('PASS 55 paired material ray cases, including round-trip counterexamples, seams, gradients and mixed-height zero-iteration rays')

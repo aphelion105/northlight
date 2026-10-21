@@ -13,8 +13,10 @@ static BOOL cacheMemory(LPMEMORYSTATUSEX p){p->ullAvailVirtual=uint64_t(availabl
 #include "auto_displacement_renderer.h"
 #undef GlobalMemoryStatusEx
 #include "forwarders.h"
-struct BuildMeter:ForwardIDirect3DDevice9 {unsigned builds=0;explicit BuildMeter(IDirect3DDevice9* d):ForwardIDirect3DDevice9(d){}
-HRESULT STDMETHODCALLTYPE CreateVertexBuffer(UINT n,DWORD usage,DWORD fvf,D3DPOOL pool,IDirect3DVertexBuffer9** v,HANDLE* shared)override{++builds;return real->CreateVertexBuffer(n,usage,fvf,pool,v,shared);}};
+struct BuildMeter:ForwardIDirect3DDevice9 {unsigned builds=0,narrow=0,wide=0;size_t indexBytes=0,fullWidthBytes=0;explicit BuildMeter(IDirect3DDevice9* d):ForwardIDirect3DDevice9(d){}
+HRESULT STDMETHODCALLTYPE CreateVertexBuffer(UINT n,DWORD usage,DWORD fvf,D3DPOOL pool,IDirect3DVertexBuffer9** v,HANDLE* shared)override{++builds;return real->CreateVertexBuffer(n,usage,fvf,pool,v,shared);}
+HRESULT STDMETHODCALLTYPE CreateIndexBuffer(UINT n,DWORD usage,D3DFORMAT format,D3DPOOL pool,IDirect3DIndexBuffer9** v,HANDLE* shared)override{
+    const HRESULT hr=real->CreateIndexBuffer(n,usage,format,pool,v,shared);if(SUCCEEDED(hr)){D3DINDEXBUFFER_DESC desc{};ok((*v)->GetDesc(&desc));assert(desc.Format==format&&desc.Size==n);indexBytes+=n;fullWidthBytes+=n*(format==D3DFMT_INDEX16?2:1);if(format==D3DFMT_INDEX16)++narrow;else{assert(format==D3DFMT_INDEX32);++wide;}}return hr;}};
 static constexpr unsigned W=256,H=160;
 static IDirect3DTexture9* sourceTexture(IDirect3DDevice9* d,const std::string& path){
     auto first=image(path);IDirect3DTexture9* t=nullptr;ok(d->CreateTexture(first.width,first.height,0,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&t,nullptr));
@@ -65,6 +67,10 @@ int main(int argc,char** argv){
     assert(made[1]==0);
 #endif
     assert(made[2]>0);
+#ifndef PERF_BASELINE
+    assert(meter.narrow==meter.builds&&meter.wide==0&&meter.indexBytes*2==meter.fullWidthBytes);
+#endif
+    std::printf("DISPLACEMENT_INDEX_PASS buffers16=%u buffers32=%u indexBytes=%zu fullWidthBytes=%zu\n",meter.narrow,meter.wide,meter.indexBytes,meter.fullWidthBytes);
     std::printf("DISPLACEMENT_CACHE_PASS first=%u revisit=%u pressureRebuild=%u firstMs=%.3f revisitMs=%.3f pressureMs=%.3f\n",made[0],made[1],made[2],elapsed[0],elapsed[1],elapsed[2]);
     geometry.reset();drop(decl);drop(textured);drop(white);drop(vs);drop(forwardVS);drop(beauty);drop(color);drop(depth);drop(zbuffer);rawDevice->Release();api->Release();DestroyWindow(window);return 0;
 }

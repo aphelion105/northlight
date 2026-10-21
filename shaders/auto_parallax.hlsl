@@ -24,8 +24,11 @@ float2 parallaxUVFrame(sampler2D heightMap,float2 uv,float distance,float4 contr
     // March from above it: values above/below .5 protrude/recede respectively.
     float depth=0;float2 sampleUV=uv+rayUV*.5;
     float sampled=1-tex2Dgrad(heightMap,sampleUV,tx,ty).b;
-    [loop]for(int i=0;i<32&&i<steps&&depth<sampled;++i){sampleUV-=stepUV;depth+=stepDepth;sampled=1-tex2Dgrad(heightMap,sampleUV,tx,ty).b;}
-    float previous=1-tex2Dgrad(heightMap,sampleUV+stepUV,tx,ty).b-(depth-stepDepth);
+    // Reuse only identical coordinates; subtraction/addition may round.
+    float previous=sampled;float2 priorUV=sampleUV;
+    [loop]for(int i=0;i<32&&i<steps&&depth<sampled;++i){previous=sampled;priorUV=sampleUV;sampleUV-=stepUV;depth+=stepDepth;sampled=1-tex2Dgrad(heightMap,sampleUV,tx,ty).b;}
+    [branch]if(any(priorUV!=sampleUV+stepUV))previous=1-tex2Dgrad(heightMap,sampleUV+stepUV,tx,ty).b;
+    previous-=depth-stepDepth;
     float after=sampled-depth;
     sampleUV+=stepUV*saturate(after/min(after-previous,-.00001));
     return sampleUV;
