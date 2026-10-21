@@ -18,12 +18,12 @@ int main(){
     frame.observe(blue,camera);blue.position[0]=.2f;frame.observe(blue,camera);
     frame.publish(nullptr,0,fixed,camera,selection);assert(frame.outputCount==1&&frame.immediateCount==1);
     const auto id=frame.output[0].sourceId;assert(frame.output[0].diffuse[2]>frame.output[0].diffuse[0]*5);
-    auto lit=selection.update(fixed,camera,32,1.f/120,true,frame.output.data(),frame.outputCount,frame.immediate.data(),frame.immediateCount);
+    auto lit=selection.update(fixed,camera,32,1.f/120,true,nullptr,frame.output.data(),frame.outputCount,frame.immediate.data(),frame.immediateCount);
     assert(lit.count==1&&std::fabs(lit.color[0][2]-frame.output[0].diffuse[2])<1e-6f);
     frame.nextFrame();blue.position[0]=.3f;frame.observe(blue,camera);frame.publish(nullptr,0,fixed,camera,selection);
     assert(frame.output[0].sourceId==id);
     frame.nextFrame();frame.publish(nullptr,0,fixed,camera,selection);
-    lit=selection.update(fixed,camera,32,1.f/120,true,frame.output.data(),frame.outputCount,frame.immediate.data(),frame.immediateCount);
+    lit=selection.update(fixed,camera,32,1.f/120,true,nullptr,frame.output.data(),frame.outputCount,frame.immediate.data(),frame.immediateCount);
     assert(lit.count==0&&selection.count==0); // no 250ms TTL or 400ms fade tail
     frame.reset();frame.observe(blue,camera);Light native{};
     for(unsigned k=0;k<3;++k){native.position[k]=blue.position[k];native.diffuse[k]=blue.rgb[k];}

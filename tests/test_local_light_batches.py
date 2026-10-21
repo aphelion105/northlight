@@ -31,7 +31,7 @@ assert slots('LocalDirect16')<=512
 cpu=fp.src('world_renderer.h').read_text()
 assert 'localScissorView=NorthlightLocalLightScissor::view(' in cpu
 assert cpu.index('localScissorView=NorthlightLocalLightScissor::view(')<cpu.index('a.lights=active?localLightTracker.update(')
-assert 'selectContinuous,debug==0?&localScissorView:nullptr)' in cpu  # debug views keep the plain order
+assert 'selectContinuous,debug==0?&localScissorView:nullptr,' in cpu  # debug views keep the plain order
 assert cpu.index('NorthlightLocalLightBatches::arrange(localLights,localScissorView)')<cpu.index('a.directRects[first/NorthlightLocalLightSelection::DirectBatchSize]=')
 assert cpu.index('NorthlightLocalLightBatches::arrange(localLights,localScissorView)')<cpu.index('localLights.fog[i][0]=sigmaAt(')
 loop=cpu[cpu.index('profileSplit(profile,lightSurface); /* sample frames'):cpu.index('if(profile)profile->mark("LocalLights");')]
