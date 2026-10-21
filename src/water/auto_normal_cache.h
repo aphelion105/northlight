@@ -1,4 +1,5 @@
 #pragma once
+#include "auto_normal_memory.h"
 
 // GPU-only per-texture normal maps. Source references prevent pointer reuse;
 // the budget includes their estimated byte size as well as the generated maps.
@@ -23,7 +24,7 @@ public:
         if(generated>=2)return nullptr;
         D3DSURFACE_DESC desc{};if(FAILED(source->GetLevelDesc(0,&desc))||!desc.Width||!desc.Height||(desc.Usage&(D3DUSAGE_DYNAMIC|D3DUSAGE_RENDERTARGET)))return nullptr;
         const UINT width=std::min(desc.Width,512u),height=std::min(desc.Height,512u);
-        const std::uint64_t cost=(std::uint64_t(width)*height*4+std::uint64_t(desc.Width)*desc.Height*4)*4/3;
+        const std::uint64_t cost=NorthlightAutoNormalMemory::mipBytes(D3DFMT_A8R8G8B8,width,height,0)+NorthlightAutoNormalMemory::mipBytes(desc.Format,desc.Width,desc.Height,source->GetLevelCount());
         constexpr std::uint64_t budget=32ull<<20;if(cost>budget)return nullptr;
         while(!entries.empty()&&(bytes+cost>budget||entries.size()>=128)){
             auto oldest=std::min_element(entries.begin(),entries.end(),[](const Entry& a,const Entry& b){return a.used<b.used;});

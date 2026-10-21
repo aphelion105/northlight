@@ -1,9 +1,23 @@
 from pathlib import Path
-import json,struct,subprocess,sys
+import argparse,json,shutil,struct,subprocess,sys
 import numpy as np
 from PIL import Image,ImageDraw,ImageFont
 root=Path(__file__).resolve().parents[1];sys.path.insert(0,str(root))
 import northlight_paths as fp
+sys.path.insert(0,str(root/'scripts/shaders'))
+from shader_compiler import Compiler
+parser=argparse.ArgumentParser(__doc__);parser.add_argument('--compatible-compiler',action='store_true');args=parser.parse_args()
+compiler=Compiler(allow_compatible_binary=args.compatible_compiler)
+for name,material in [('oblique','rocka'),('oblique-cobble','floor')]:
+    folder=fp.out()/name;folder.mkdir(parents=True,exist_ok=True)
+    sources=list((fp.out()/'bump-gpu'/material).glob('source.fgr*'))
+    if not sources:raise SystemExit('Run tests/validate_auto_bump.py first to prepare the local textures.')
+    for source in sources:shutil.copy2(source,folder/source.name)
+    for stage,family in [('vertex_vs','terrain'),('pixel_ps','terrain1')]:
+        source=fp.out()/'bump-recon'/('shaders_'+stage+'_3_0_'+family+'.bls-0.bin')
+        shutil.copy2(source,folder/('terrain-vs.bin' if stage.startswith('vertex') else 'terrain-ps.bin'))
+    compiler.compile(fp.SHADERS/'auto_normal_preview.hlsl','PreviewBase','ps_3_0',folder/'PreviewBase.bin')
+
 env=fp.zig_env();env.update(TEMP=str(fp.out()/'tmp'),TMP=str(fp.out()/'tmp'))
 exe=fp.out()/'oblique-gpu.exe'
 subprocess.run([str(fp.zig()),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std=c++17',*fp.test_include_flags(),str(root/'tests/auto_normal_oblique_gpu.cpp'),'-luser32','-o',str(exe)],env=env,check=True)

@@ -31,17 +31,17 @@ MaterialValue materialValue(sampler2D map,float2 uv,float4 p) {
     return v;
 }
 CaptureResult captureValue(MaterialValue v,float4 p,float alpha) {
-    clip(alpha-BumpCapture.z);clip(BumpCapture.y-p.w);
+    clip(alpha-BumpCapture.z);
     CaptureResult o;o.normal=float4(octEncode(v.normal),p.w,saturate(alpha));o.occlusion=float4(v.occlusion,saturate(alpha));return o;
 }
-CaptureResult BumpOpaque(float2 uv:TEXCOORD0,float4 p:TEXCOORD7){return captureValue(materialValue(GeneratedNormal,uv,p),p,1);}
-CaptureResult BumpLayer(float2 uv:TEXCOORD0,float2 maskUV:TEXCOORD1,float4 p:TEXCOORD7){return captureValue(materialValue(GeneratedNormal,uv,p),p,saturate(dot(tex2D(LayerMask,maskUV),NativeLayerMask)));}
-CaptureResult BumpWall(float2 uv:TEXCOORD0,float4 color:COLOR0,float4 p:TEXCOORD7){
+CaptureResult BumpOpaque(float2 uv:TEXCOORD0,float4 p:TEXCOORD7){clip(BumpCapture.y-p.w);return captureValue(materialValue(GeneratedNormal,uv,p),p,1);}
+CaptureResult BumpLayer(float2 uv:TEXCOORD0,float2 maskUV:TEXCOORD1,float4 p:TEXCOORD7){clip(BumpCapture.y-p.w);return captureValue(materialValue(GeneratedNormal,uv,p),p,saturate(dot(tex2D(LayerMask,maskUV),NativeLayerMask)));}
+CaptureResult BumpWall(float2 uv:TEXCOORD0,float4 color:COLOR0,float4 p:TEXCOORD7){clip(BumpCapture.y-p.w);
     MaterialValue v=materialValue(GeneratedNormal,uv,p);return captureValue(v,p,tex2Dgrad(Diffuse,v.uv,ddx(uv),ddy(uv)).a*color.a);
 }
-CaptureResult BumpGrass(float2 uv:TEXCOORD0,float4 fade:COLOR1,float4 p:TEXCOORD7){return captureValue(materialValue(GeneratedNormal,uv,p),p,tex2D(Diffuse,uv).a*fade.x);}
-CaptureResult BumpWallOpaque(float2 uv:TEXCOORD0,float4 color:COLOR0,float4 p:TEXCOORD7){return captureValue(materialValue(GeneratedNormal,uv,p),p,color.a);}
-CaptureResult BumpComposite(float2 uv:TEXCOORD0,float2 uv1:TEXCOORD1,float4 color:COLOR0,float4 blend:COLOR1,float4 p:TEXCOORD7){
+CaptureResult BumpGrass(float2 uv:TEXCOORD0,float4 fade:COLOR1,float4 p:TEXCOORD7){clip(BumpCapture.y-p.w);return captureValue(materialValue(GeneratedNormal,uv,p),p,tex2D(Diffuse,uv).a*fade.x);}
+CaptureResult BumpWallOpaque(float2 uv:TEXCOORD0,float4 color:COLOR0,float4 p:TEXCOORD7){clip(BumpCapture.y-p.w);return captureValue(materialValue(GeneratedNormal,uv,p),p,color.a);}
+CaptureResult BumpComposite(float2 uv:TEXCOORD0,float2 uv1:TEXCOORD1,float4 color:COLOR0,float4 blend:COLOR1,float4 p:TEXCOORD7){clip(BumpCapture.y-p.w);
     MaterialValue first=materialValue(GeneratedNormal,uv,p),second=materialValue(GeneratedNormal1,uv1,p);
     float alpha=lerp(tex2Dgrad(LayerMask,second.uv,ddx(uv1),ddy(uv1)).a,tex2Dgrad(Diffuse,first.uv,ddx(uv),ddy(uv)).a,blend.w)*color.a;
     first.normal=normalize(lerp(second.normal,first.normal,saturate(blend.w)));first.occlusion=lerp(second.occlusion,first.occlusion,saturate(blend.w));return captureValue(first,p,alpha);

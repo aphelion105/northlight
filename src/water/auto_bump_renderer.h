@@ -27,7 +27,7 @@ class NorthlightAutoBump {
         float constant[20]={};
         IDirect3DBaseTexture9* texture2=nullptr,*texture3=nullptr;bool composite=false;
         const D3DSAMPLERSTATETYPE samplerKeys[8]={D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER,D3DSAMP_MIPFILTER,D3DSAMP_ADDRESSU,D3DSAMP_ADDRESSV,D3DSAMP_SRGBTEXTURE,D3DSAMP_MAXMIPLEVEL,D3DSAMP_MIPMAPLODBIAS};
-        DWORD samplerValues[8]={},samplerValues3[8]={};
+        DWORD samplerValues[8]={},samplerValues3[8]={};unsigned samplerChanged=0,samplerChanged3=0;
         struct State{D3DRENDERSTATETYPE key;DWORD value,replay;};
         State states[14]={
             {D3DRS_ZWRITEENABLE,0,FALSE},{D3DRS_ALPHATESTENABLE,0,FALSE},
@@ -54,8 +54,8 @@ class NorthlightAutoBump {
                 if(auxiliary)d->SetRenderTarget(1,nullptr);
                 d->SetRenderTarget(0,target);d->SetViewport(&viewport);
                 d->SetVertexShader(vertex);d->SetPixelShader(pixel);d->SetPixelShaderConstantF(20,constant,5);
-                d->SetTexture(2,texture2);for(unsigned i=0;i<8;++i)d->SetSamplerState(2,samplerKeys[i],samplerValues[i]);
-                if(composite){d->SetTexture(3,texture3);for(unsigned i=0;i<8;++i)d->SetSamplerState(3,samplerKeys[i],samplerValues3[i]);}
+                d->SetTexture(2,texture2);for(unsigned i=0;i<8;++i)if(samplerChanged&(1u<<i))d->SetSamplerState(2,samplerKeys[i],samplerValues[i]);
+                if(composite){d->SetTexture(3,texture3);for(unsigned i=0;i<8;++i)if(samplerChanged3&(1u<<i))d->SetSamplerState(3,samplerKeys[i],samplerValues3[i]);}
                 for(auto& s:states)if(s.value!=s.replay)d->SetRenderState(s.key,s.value);
                 // UP draws reset stream 0 and (for indexed UP) the index binding.
                 if(userMemory){d->SetStreamSource(0,stream,offset,stride);d->SetIndices(indices);}
@@ -194,8 +194,8 @@ public:
         DWORD addressU=D3DTADDRESS_WRAP,addressV=D3DTADDRESS_WRAP;d->GetSamplerState(0,D3DSAMP_ADDRESSU,&addressU);d->GetSamplerState(0,D3DSAMP_ADDRESSV,&addressV);
         saved.apply();d->SetTexture(2,normal);
         const DWORD normalSampler[]={D3DTEXF_LINEAR,D3DTEXF_LINEAR,D3DTEXF_LINEAR,addressU,addressV,FALSE,0,0};
-        for(unsigned i=0;i<8;++i)d->SetSamplerState(2,saved.samplerKeys[i],normalSampler[i]);
-        if(normal1){d->SetTexture(3,normal1);for(unsigned i=0;i<8;++i)d->SetSamplerState(3,saved.samplerKeys[i],normalSampler[i]);}
+        for(unsigned i=0;i<8;++i)if(saved.samplerValues[i]!=normalSampler[i]){saved.samplerChanged|=1u<<i;d->SetSamplerState(2,saved.samplerKeys[i],normalSampler[i]);}
+        if(normal1){d->SetTexture(3,normal1);for(unsigned i=0;i<8;++i)if(saved.samplerValues3[i]!=normalSampler[i]){saved.samplerChanged3|=1u<<i;d->SetSamplerState(3,saved.samplerKeys[i],normalSampler[i]);}}
         if(!check(d->SetRenderTarget(0,target),"capture target"))return;
         if(occlusionTarget){saved.auxiliary=true;if(FAILED(d->SetRenderTarget(1,occlusionTarget))){drop(occlusionTarget);drop(occlusionMap);occlusionUnavailable=true;d->SetRenderTarget(1,nullptr);}}
         if(!cleared){if(!check(d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0),"height clear"))return;cleared=true;}

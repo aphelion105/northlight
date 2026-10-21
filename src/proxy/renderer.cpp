@@ -1071,22 +1071,11 @@ private:
                  bound=SUCCEEDED(ext->SetVertexShader(vertexReplacement))&&SUCCEEDED(ext->SetPixelShader(replacement))&&SUCCEEDED(ext->SetPixelShaderConstantF(shadowSwapConstantBase,shadowSwapConstants,shadowSwapConstantCount));
                  if(!bound){ext->SetPixelShaderConstantF(shadowSwapConstantBase,saved,shadowSwapConstantCount);ext->SetPixelShader(original);ext->SetVertexShader(vertexOriginal);}
              }}
-            hr=draw();
-            if(bound){CpuScope swap(sampledHookTimer());ext->SetPixelShaderConstantF(shadowSwapConstantBase,saved,shadowSwapConstantCount);ext->SetPixelShader(original);ext->SetVertexShader(vertexOriginal);++terrainShadowDraws;}
-        }
-        else if(!claimed&&replacement&&vertexOriginal){
-            float saved[24];bool bound=false;
-            {CpuScope swap(sampledHookTimer());
-             if(SUCCEEDED(ext->GetPixelShaderConstantF(shadowSwapConstantBase,saved,shadowSwapConstantCount))){
-                 bound=SUCCEEDED(ext->SetVertexShader(vertexReplacement))&&SUCCEEDED(ext->SetPixelShader(replacement))&&SUCCEEDED(ext->SetPixelShaderConstantF(shadowSwapConstantBase,shadowSwapConstants,shadowSwapConstantCount));
-                 if(!bound){ext->SetPixelShaderConstantF(shadowSwapConstantBase,saved,shadowSwapConstantCount);ext->SetPixelShader(original);ext->SetVertexShader(vertexOriginal);}
-             }}
             hr=materialNativeDraw(draw,vertexOriginal,original);
             if(bound){CpuScope swap(sampledHookTimer());ext->SetPixelShaderConstantF(shadowSwapConstantBase,saved,shadowSwapConstantCount);ext->SetPixelShader(original);ext->SetVertexShader(vertexOriginal);++terrainShadowDraws;}
         }
         else if(!claimed&&replacement){{CpuScope swap(sampledHookTimer());ext->SetPixelShader(replacement);}hr=materialNativeDraw(draw,nullptr,original);{CpuScope swap(sampledHookTimer());ext->SetPixelShader(original);}++terrainShadowDraws;}
         else if(!claimed)hr=materialNativeDraw(draw,vertexOriginal,original);
-        if(vertexOriginal)vertexOriginal->Release();
         if(vertexOriginal)vertexOriginal->Release();
         if(original)original->Release();
         return hr;

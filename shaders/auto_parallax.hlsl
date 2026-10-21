@@ -14,9 +14,9 @@ MaterialFrame materialFrame(float2 uv,float4 clipPosition,float4 projection) {
 float parallaxFade(float distance,float2 tx,float2 ty,float range){return saturate((range-distance)/max(range*.4,1))*saturate(2-max(length(tx),length(ty))*128);}
 float2 parallaxUVFrame(sampler2D heightMap,float2 uv,float distance,float4 control,MaterialFrame f) {
     float2 tx=f.tx,ty=f.ty;float3 p=f.p,tangent=f.tangent,bitangent=f.bitangent,normal=f.normal;
-    if(control.x<=0||distance>=control.y)return uv;
-    float3 view=float3(dot(-p,tangent),dot(-p,bitangent),abs(dot(-p,normal)));
     float fade=parallaxFade(distance,tx,ty,control.y);
+    if(control.x<=0||fade<=0)return uv;
+    float3 view=float3(dot(-p,tangent),dot(-p,bitangent),abs(dot(-p,normal)));
     float steps=clamp(control.z,8,32),stepDepth=1/steps;
     float2 stepUV=clamp(view.xy/max(view.z,.15*length(p)),-4,4)*control.x*fade*stepDepth;
     float depth=0;float2 sampleUV=uv;
@@ -32,8 +32,8 @@ float2 parallaxUV(sampler2D heightMap,float2 uv,float4 clipPosition,float4 proje
 }
 float parallaxShadow(sampler2D heightMap,float2 uv,float height,float distance,MaterialFrame f,float4 control,float4 light,float steps) {
     float3 ray=float3(dot(light.xyz,f.tangent),dot(light.xyz,f.bitangent),dot(light.xyz,f.normal));
-    if(control.x<=0||light.w<=0||ray.z<=.04||distance>=control.y)return 1;
     float fade=parallaxFade(distance,f.tx,f.ty,control.y);
+    if(control.x<=0||light.w<=0||ray.z<=.04||fade<=0)return 1;
     float span=1-height;
     float2 extent=clamp(ray.xy/max(ray.z,.08),-6,6)*control.x*span*fade;
     float blocked=0;

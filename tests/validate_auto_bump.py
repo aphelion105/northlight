@@ -8,8 +8,8 @@ from world_scene_builder import Assets,decode_blp
 from PIL import Image,ImageDraw,ImageFont
 import numpy as np
 
-parser=argparse.ArgumentParser();parser.add_argument('--backend',required=True);args=parser.parse_args()
-out=fp.out()/'bump-gpu';out.mkdir(exist_ok=True)
+parser=argparse.ArgumentParser();parser.add_argument('--backend',required=True);parser.add_argument('--baseline',action='store_true');parser.add_argument('--output-subdir',default='bump-gpu');args=parser.parse_args()
+out=fp.out()/args.output_subdir;out.mkdir(exist_ok=True)
 assets=Assets();sources={}
 try:
     for key in ('grassa','grassb','grassc','rocka'):
@@ -22,7 +22,7 @@ try:
 finally:assets.close()
 env=fp.zig_env();tmp=out/'tmp';tmp.mkdir(exist_ok=True);env.update(TEMP=str(tmp),TMP=str(tmp))
 exe=out/'auto-bump-gpu.exe'
-build=[str(fp.zig()),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std=c++17',*fp.test_include_flags(),str(root/'tests/auto_bump_gpu.cpp'),'-luser32','-o',str(exe)]
+build=[str(fp.zig()),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std=c++17',*(['-I'+str(fp.out()/'perf-baseline')] if args.baseline else []),*fp.test_include_flags(),str(root/'tests/auto_bump_gpu.cpp'),'-luser32','-o',str(exe)]
 subprocess.run(build,env=env,check=True)
 records=[];previews=[]
 for key,(name,data) in sources.items():

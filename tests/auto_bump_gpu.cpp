@@ -9,6 +9,13 @@ static void logf(const char* format,...){va_list args;va_start(args,format);std:
 #include "saved_state.h"
 #include "auto_bump_renderer.h"
 #include "world_compiled_shaders.h"
+#include "forwarders.h"
+struct MaterialCallMeter:ForwardIDirect3DDevice9 {
+    unsigned samplerGets=0,samplerSets=0;
+    explicit MaterialCallMeter(IDirect3DDevice9* device):ForwardIDirect3DDevice9(device){}
+    HRESULT STDMETHODCALLTYPE GetSamplerState(DWORD n,D3DSAMPLERSTATETYPE k,DWORD* v) override{++samplerGets;return real->GetSamplerState(n,k,v);}
+    HRESULT STDMETHODCALLTYPE SetSamplerState(DWORD n,D3DSAMPLERSTATETYPE k,DWORD v) override{++samplerSets;return real->SetSamplerState(n,k,v);}
+};
 static constexpr unsigned W=256,H=256;
 static Image solid(float x,float y,float z,float a){Image i{W,H,D3DFMT_A32B32G32R32F,16,std::vector<unsigned char>(W*H*16)};float v[]={x,y,z,a};for(unsigned at=0;at<W*H;++at)std::memcpy(i.pixels.data()+at*16,v,16);return i;}
 static IDirect3DTexture9* mipTexture(IDirect3DDevice9* d,const std::string& path){
@@ -33,6 +40,7 @@ int main(int argc,char** argv){
     auto module=LoadLibraryA(argv[1]);assert(module);auto create=(IDirect3D9*(WINAPI*)(UINT))GetProcAddress(module,"Direct3DCreate9");assert(create);auto api=create(D3D_SDK_VERSION);assert(api);
     D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=window;pp.BackBufferWidth=64;pp.BackBufferHeight=64;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;pp.PresentationInterval=D3DPRESENT_INTERVAL_IMMEDIATE;
     IDirect3DDevice9* d=nullptr;ok(api->CreateDevice(0,D3DDEVTYPE_HAL,window,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_FPU_PRESERVE,&pp,&d));
+    MaterialCallMeter meter(d);d=&meter;
     IDirect3DSurface9 *target=nullptr,*depth=nullptr;ok(d->CreateRenderTarget(W,H,D3DFMT_A32B32G32R32F,D3DMULTISAMPLE_NONE,0,FALSE,&target,nullptr));ok(d->CreateDepthStencilSurface(W,H,D3DFMT_D24S8,D3DMULTISAMPLE_NONE,0,FALSE,&depth,nullptr));
     ok(d->SetRenderTarget(0,target));ok(d->SetDepthStencilSurface(depth));D3DVIEWPORT9 vp={0,0,W,H,0,.94f};ok(d->SetViewport(&vp));
     std::string folder=argv[2];std::wstring root(folder.begin(),folder.end());if(root.back()!=L'/'&&root.back()!=L'\\')root+=L'/';
@@ -185,5 +193,5 @@ int main(int argc,char** argv){
         }
         d->SetTexture(6,nullptr);drop(blockedSun);drop(blockedMoon);drop(cavity);d->SetTexture(9,nullptr);bump.endFrame();drop(vs);drop(ps);
     }
-    bump.reset();std::printf("AUTOBUMP_GPU_PASS cases=%u changed_components=%u\n",cases,totalChanged);drop(materialPS);drop(flatColor);drop(zero);drop(retainedStream);drop(retainedIndices);drop(local);drop(oldLocal);drop(zTexture);drop(normals);drop(white);drop(diffuse);drop(decl);drop(depth);drop(target);d->Release();api->Release();DestroyWindow(window);return 0;
+    bump.reset();std::printf("MATERIAL_CALLS samplerGets=%u samplerSets=%u\n",meter.samplerGets,meter.samplerSets);std::printf("AUTOBUMP_GPU_PASS cases=%u changed_components=%u\n",cases,totalChanged);drop(materialPS);drop(flatColor);drop(zero);drop(retainedStream);drop(retainedIndices);drop(local);drop(oldLocal);drop(zTexture);drop(normals);drop(white);drop(diffuse);drop(decl);drop(depth);drop(target);d->Release();api->Release();DestroyWindow(window);return 0;
 }
