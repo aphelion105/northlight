@@ -124,11 +124,11 @@ checks['rain scrub: RT1 unbound, MSAA twin resolved by StretchRect (failure: nul
     and 'if(FAILED(rainMaskResolveHr)&&!rainMaskResolveLogged){rainMaskResolveLogged=true;logf("WEATHER rain mask resolve failed HRESULT' in r)
 # every device operation that could draw, clear, copy or change targets runs rainMrtUnbind() first
 def method(name):
-    i=r.index('HRESULT STDMETHODCALLTYPE '+name+'(');return r[i:r.index('\n',i)+1]
+    i=r.index('HRESULT STDMETHODCALLTYPE '+name+'(');return r[i:r.index('\n    HRESULT STDMETHODCALLTYPE ',i+1)]
 for name in ('UpdateSurface','UpdateTexture','GetRenderTargetData','StretchRect','ColorFill'):
-    m=method(name);checks[f'rain mask MRT: Device::{name} unbinds RT1 before the call']=('rainMrtUnbind();' in m and m.index('rainMrtUnbind();')<m.index('return ext->'+name))
+    m=method(name);checks[f'rain mask MRT: Device::{name} unbinds RT1 before the call']=('rainMrtUnbind();' in m and m.index('rainMrtUnbind();')<m.index('ext->'+name))
 cl=r[r.index('HRESULT STDMETHODCALLTYPE Clear('):r.index('HRESULT STDMETHODCALLTYPE CreateVertexBuffer(')]
-checks['rain mask MRT: Device::Clear unbinds RT1 first (before the Z resolve and the real Clear)']=('rainMrtUnbind();' in cl and cl.index('rainMrtUnbind();')<cl.index('resolveDepth()')<cl.index('return ext->Clear('))
+checks['rain mask MRT: Device::Clear unbinds RT1 first (before the Z resolve and the real Clear)']=('rainMrtUnbind();' in cl and cl.index('rainMrtUnbind();')<cl.index('resolveDepth()')<cl.index('ext->Clear('))
 def dmethod(name):  # the whole Device method, up to the next one (a fixed span broke whenever a line grew)
     i=r.index('HRESULT STDMETHODCALLTYPE '+name+'(',r.index('class Device final'));return r[i:r.index('\n    HRESULT STDMETHODCALLTYPE ',i+1)]
 rst=dmethod('Reset');pre=dmethod('Present');es=dmethod('EndScene')
@@ -138,9 +138,9 @@ checks['rain mask MRT: Reset, Present and EndScene unbind first; finishFrame (al
     and 'void finishFrame() {\n        Guard mirrorLock(mirrorState.gate);\n        rainMrtUnbind();' in r and 'finishDeviceFrame(owner);' in r)
 checks['rain mask MRT: renderEffects unbinds before its first device work; drawHook unbinds for every draw that is not a rain draw, before any capture or effect work']=(
     'rainMrtUnbind(); /* 0.3.202 (rain mask MRT) */\n        ExtensionDevice::RawScope rawEffects(*ext);' in r and 'if(rainMrtBound&&!rainBlend)rainMrtUnbind();' in hook and hook.index('if(rainMrtBound&&!rainBlend)rainMrtUnbind();')<hook.index('if(!frameDrawGates){')<hook.index('prepareDraw(capture,count)'))
-checks['rain mask MRT: SetRenderTarget and SetDepthStencilSurface stay pure unwrap + forward (they are on the generator DIRECT list: the replay calls ext->, never the Device method); the next draw/Clear/StretchRect unbinds']=(
-    'HRESULT STDMETHODCALLTYPE SetRenderTarget(DWORD RenderTargetIndex, IDirect3DSurface9* pRenderTarget) override{Guard mirrorLock(mirrorState.gate);return ext->SetRenderTarget(RenderTargetIndex, mirrorResources.unwrap(pRenderTarget));}' in r
-    and 'HRESULT STDMETHODCALLTYPE SetDepthStencilSurface(IDirect3DSurface9* pNewZStencil) override{Guard mirrorLock(mirrorState.gate);return ext->SetDepthStencilSurface(mirrorResources.unwrap(pNewZStencil));}' in r)
+checks['rain mask MRT: logical HDR target mapping stays on the Device; depth target remains a pure forward']=(
+    'if(hdr.active&&hdrUiPhase&&RenderTargetIndex==0&&target==hdrLegacyBack)target=hdrPresentBack;return ext->SetRenderTarget(RenderTargetIndex,target);' in r
+    and 'return ext->SetDepthStencilSurface(mirrorResources.unwrap(pNewZStencil));' in r)
 pdi_=r[r.index('template<class Capture> void prepareDrawImpl('):r.index('    // Terrain draws run with the game')]
 checks['rain mask: no scrub left in prepareDrawImpl or the hook']=('rainScrubDraw' not in pdi_ and 'rainScrubDraw' not in hook)
 checks['rain mask: WEATHER line carries the counters; world binds RainMask on s13 for the composite only']=('rainMask=%u rainMrtRuns=%u rainMaskSkips=%u' in r and 'rainMaskScrub' not in r and 'd->SetTexture(13,rainMask?rainMask:neutralZero);rainMask=nullptr;' in w and 'composited=true;d->SetTexture(13,regionalFogTexture);' in w and 'void setRainMask(IDirect3DTexture9* t){rainMask=t;}' in w)

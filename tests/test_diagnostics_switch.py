@@ -18,6 +18,15 @@ FILES=['renderer.cpp','world_renderer.h','world_shadow_experiment.inl','world_po
 GATES=('NorthlightDiagnostics::enabled()','diagnostics()','sampled()','captureSampled','if(diagnostics)','shadowFate.active()','sampledFrame','profiling()','profileSampled()','if(lightingClock)')
 # Ungated lines that stay with Diagnostics=0: format prefix -> label.
 KEEP={
+ 'TERRAIN SHADOW farCoverage':'capped: first eight shader-patch registrations',
+ 'HDR boundary deferred':'capped: first eight boundary deferrals',
+ 'HDR boundary frame=':'capped: first verified boundaries',
+ 'HDR conversion failed':'capped: first eight conversion failures',
+ 'HDR unconverted UI draw':'capped: first eight rejected UI conversions',
+ 'HDR legacy target ':'one-off per legacy target creation/reset',
+ 'HDR experimental requested=':'start-up: experimental HDR configuration',
+ 'HDR experimental device creation refused:':'start-up: command-stream creation failure',
+
  'Depth snapshot DF24 refused':'one-off: depth format changes to INTZ for the rest of the session',
  'GAME thread priority':'start-up: successful device creation',
  'TUNING ':'developer build only: file-change, debounced rebuild or settings event',
