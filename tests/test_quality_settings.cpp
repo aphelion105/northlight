@@ -485,7 +485,7 @@ int main(){
      assert(describe(d).find(" RainFog=1(default) FogClouds=1(default) FogCloudDensity=100(default)")!=std::string::npos);}
     // 0.3.201 (task 18): ContactAO 1/1/1 (0..1), an origin slot; a creation-time key (ActorShadows=0 does not force it), 0 = no contact AO and no AOBlur pass.
     assert(d.contactAO==1&&preset(Preset::Balanced).contactAO==1&&preset(Preset::Performance).contactAO==1);
-    assert(std::string(Keys[43].name)=="ContactAO"&&Keys[43].field==&Settings::contactAO&&Keys[43].low==0&&Keys[43].high==1&&sizeof(Keys)/sizeof(Keys[0])==60&&sizeof(d.origin)==57);
+    assert(std::string(Keys[43].name)=="ContactAO"&&Keys[43].field==&Settings::contactAO&&Keys[43].low==0&&Keys[43].high==1&&sizeof(Keys)/sizeof(Keys[0])==60&&sizeof(d.origin)==60);
     {auto off=parse("[Quality]\nContactAO=0\n");assert(off.contactAO==0&&off!=d&&off.origin[43]=='f'&&off.origin[42]=='d');
      unsigned i=0;for(const auto& k:Keys){assert(off.origin[i]==(std::string(k.name)=="ContactAO"?'f':'d'));++i;}
      assert(effective(off).contactAO==0&&effective(parse("[Quality]\nActorShadows=0\n")).contactAO==1);
@@ -493,7 +493,7 @@ int main(){
      assert(describe(d).find(" StreamFrameSkip=1(default) ContactAO=1(default)")!=std::string::npos&&describe(off).find(" ContactAO=0(file)")!=std::string::npos);}
     // NightBrightness 50/50/50 (0..100), the last key and origin slot; picture only (ActorShadows=0 does not force it), 0 = Northlight's night.
     assert(d.nightBrightness==50&&preset(Preset::Balanced).nightBrightness==50&&preset(Preset::Performance).nightBrightness==50);
-    assert(std::string(Keys[44].name)=="NightBrightness"&&Keys[44].field==&Settings::nightBrightness&&Keys[44].low==0&&Keys[44].high==100&&sizeof(Keys)/sizeof(Keys[0])==60&&sizeof(d.origin)==57);
+    assert(std::string(Keys[44].name)=="NightBrightness"&&Keys[44].field==&Settings::nightBrightness&&Keys[44].low==0&&Keys[44].high==100&&sizeof(Keys)/sizeof(Keys[0])==60&&sizeof(d.origin)==60);
     {auto lo=parse("[Quality]\nNightBrightness=0\n"),hi=parse("[Quality]\nNightBrightness=100\n");
      assert(lo.nightBrightness==0&&lo.origin[44]=='f'&&lo!=d&&hi.nightBrightness==100&&hi.origin[44]=='f'&&hi!=d&&hi.origin[43]=='d');
      std::vector<std::string> p;auto bad=parse("[Quality]\nNightBrightness=101\n",nullptr,p);assert(bad==d&&bad.nightBrightness==50&&bad.origin[44]=='d'&&p.size()==1);
@@ -501,7 +501,7 @@ int main(){
      assert(describe(d).find(" ContactAO=1(default) NightBrightness=50(default)")!=std::string::npos&&describe(hi).find(" NightBrightness=100(file)")!=std::string::npos);}
     // 0.3.209 (task 29) ActorShadowDetail 1/1/0 (0..1), the last key and origin slot; ActorShadows=0 disables the actor map too (actorShadowMap), the key alone does not force other keys.
     assert(d.actorShadowDetail==1&&preset(Preset::Balanced).actorShadowDetail==1&&preset(Preset::Performance).actorShadowDetail==0);
-    assert(std::string(Keys[45].name)=="ActorShadowDetail"&&Keys[45].field==&Settings::actorShadowDetail&&Keys[45].low==0&&Keys[45].high==1&&sizeof(Keys)/sizeof(Keys[0])==60&&sizeof(d.origin)==57);
+    assert(std::string(Keys[45].name)=="ActorShadowDetail"&&Keys[45].field==&Settings::actorShadowDetail&&Keys[45].low==0&&Keys[45].high==1&&sizeof(Keys)/sizeof(Keys[0])==60&&sizeof(d.origin)==60);
     {auto off=parse("[Quality]\nActorShadowDetail=0\n");assert(off.actorShadowDetail==0&&off.origin[45]=='f'&&off!=d&&parse("[Quality]\nActorShadowDetail=1\n")==d);
      std::vector<std::string> p;assert(parse("[Quality]\nActorShadowDetail=2\n",nullptr,p)==d&&p.size()==1);
      assert(actorShadowMap(d,true)&&!actorShadowMap(d,false)&&!actorShadowMap(off,true)&&!actorShadowMap(parse("[Quality]\nActorShadows=0\n"),true));
@@ -519,7 +519,7 @@ int main(){
     // 0.3.212 (task 32) NameMask 1/1/1 (0..1) and NameMaskDebug 0/0/0 (0..1), the last two keys after SpellFog and origin slots; creation-time keys, NameMask=0 = no mask.
     assert(d.nameMask==1&&preset(Preset::Balanced).nameMask==1&&preset(Preset::Performance).nameMask==1&&d.nameMaskDebug==0&&preset(Preset::Performance).nameMaskDebug==0);
     assert(std::string(Keys[50].name)=="NameMask"&&Keys[50].field==&Settings::nameMask&&Keys[50].low==0&&Keys[50].high==1);
-    assert(std::string(Keys[51].name)=="NameMaskDebug"&&Keys[51].field==&Settings::nameMaskDebug&&Keys[51].low==0&&Keys[51].high==1&&sizeof(Keys)/sizeof(Keys[0])==60&&sizeof(d.origin)==57);
+    assert(std::string(Keys[51].name)=="NameMaskDebug"&&Keys[51].field==&Settings::nameMaskDebug&&Keys[51].low==0&&Keys[51].high==1&&sizeof(Keys)/sizeof(Keys[0])==60&&sizeof(d.origin)==60);
     {auto off=parse("[Quality]\nNameMask=0\n");assert(off.nameMask==0&&off.origin[50]=='f'&&off.origin[51]=='d'&&off!=d&&parse("[Quality]\nNameMask=1\n")==d);
      auto dbg=parse("[Quality]\nNameMaskDebug=1\n");assert(dbg.nameMaskDebug==1&&dbg.origin[51]=='f'&&dbg.origin[50]=='d'&&dbg!=d);
      std::vector<std::string> p;assert(parse("[Quality]\nNameMask=2\nNameMaskDebug=2\n",nullptr,p)==d&&p.size()==2);
@@ -536,7 +536,7 @@ int main(){
      assert(describe(d).find(" FogCloudDensity=100(default) GpuBudgetMs=4(default)")!=std::string::npos);}
     // 0.3.200 (pipeline): StreamFramesAhead 2/2/2 (1..3), origin slot 40; a creation-time key (ActorShadows=0 does not force it), 1 = the 0.3.199 pacing.
     assert(d.streamFramesAhead==2&&preset(Preset::Balanced).streamFramesAhead==2&&preset(Preset::Performance).streamFramesAhead==2);
-    assert(std::string(Keys[40].name)=="StreamFramesAhead"&&Keys[40].field==&Settings::streamFramesAhead&&Keys[40].low==1&&Keys[40].high==3&&sizeof(Keys)/sizeof(Keys[0])==60&&sizeof(d.origin)==57);
+    assert(std::string(Keys[40].name)=="StreamFramesAhead"&&Keys[40].field==&Settings::streamFramesAhead&&Keys[40].low==1&&Keys[40].high==3&&sizeof(Keys)/sizeof(Keys[0])==60&&sizeof(d.origin)==60);
     // StreamOcclusionLocal 1/1/1 (0..1), the last key and origin slot 53; a creation-time key (ActorShadows=0 does not force it), 0 = every FLUSH GetData waits for the renderer thread.
     {assert(d.streamOcclusionLocal==1&&preset(Preset::Balanced).streamOcclusionLocal==1&&preset(Preset::Performance).streamOcclusionLocal==1&&std::string(Keys[53].name)=="StreamOcclusionLocal"&&Keys[53].field==&Settings::streamOcclusionLocal&&Keys[53].high==1);
      auto off=parse("[Quality]\nStreamOcclusionLocal=0\n");assert(off.streamOcclusionLocal==0&&off.origin[53]=='f'&&off.origin[52]=='d'&&off!=d&&effective(parse("[Quality]\nActorShadows=0\n")).streamOcclusionLocal==1);
@@ -559,7 +559,7 @@ int main(){
      assert(describe(d).find(" GpuBudgetMs=4(default) StreamFramesAhead=2(default)")!=std::string::npos&&describe(one).find(" StreamFramesAhead=1(file)")!=std::string::npos);}
     // 0.3.200 (frame skip): StreamFrameSkip 1/1/1 (0..1), an origin slot; a creation-time key (ActorShadows=0 does not force it), 0 = every frame drawn.
     assert(d.streamFrameSkip==1&&preset(Preset::Balanced).streamFrameSkip==1&&preset(Preset::Performance).streamFrameSkip==1);
-    assert(std::string(Keys[42].name)=="StreamFrameSkip"&&Keys[42].field==&Settings::streamFrameSkip&&Keys[42].low==0&&Keys[42].high==1&&sizeof(Keys)/sizeof(Keys[0])==60&&sizeof(d.origin)==57);
+    assert(std::string(Keys[42].name)=="StreamFrameSkip"&&Keys[42].field==&Settings::streamFrameSkip&&Keys[42].low==0&&Keys[42].high==1&&sizeof(Keys)/sizeof(Keys[0])==60&&sizeof(d.origin)==60);
     {auto off=parse("[Quality]\nStreamFrameSkip=0\n");assert(off.streamFrameSkip==0&&off!=d&&off.origin[42]=='f'&&off.origin[41]=='d');
      unsigned i=0;for(const auto& k:Keys){assert(off.origin[i]==(std::string(k.name)=="StreamFrameSkip"?'f':'d'));++i;}
      assert(effective(off).streamFrameSkip==0&&effective(parse("[Quality]\nActorShadows=0\n")).streamFrameSkip==1);
