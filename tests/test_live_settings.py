@@ -19,6 +19,7 @@ harness=r'''
 #include <cassert>
 #include <iostream>
 namespace NorthlightDiagnostics {bool value;void configure(bool v){value=v;}}
+namespace NorthlightWorldContext {struct SelfReadStats{inline static std::atomic<bool> timed{false};};}
 namespace NorthlightWeatherMemory {void configure(bool){}}
 namespace NorthlightMemorySwitches {void configure(bool){}}
 namespace NorthlightRenderThreadProbe {void configure(bool,bool){}}
