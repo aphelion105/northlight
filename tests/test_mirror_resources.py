@@ -49,9 +49,11 @@ struct CheckedGateMutex {
 static std::atomic<int>* resourceBody=nullptr;
 static std::atomic<unsigned> resourceEntries{0};
 static int allocationFailure=-1;
+#ifndef NORTHLIGHT_TEST_TSAN
 void* operator new(std::size_t n){if(allocationFailure==0)throw std::bad_alloc();if(allocationFailure>0)--allocationFailure;if(void* p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
 void operator delete(void* p)noexcept{std::free(p);}
 void operator delete(void* p,std::size_t)noexcept{std::free(p);}
+#endif
 #include "mirror_resources.h"
 using namespace NorthlightMirrorResources;
 static unsigned devicesDestroyed=0;
@@ -144,10 +146,12 @@ static void rawLookup(){
  p->Release();assert(d.registry.rawOf(exposed)==0&&d.registry.size()==0&&d.refs==1); // released proxy: no longer mapped
 }
 static void failures(){
+#ifndef NORTHLIGHT_TEST_TSAN
  unsigned failed=0,passed=0;
  for(int fail=0;fail<12;++fail){Device d;Resource<IDirect3DTexture9> raw(d);raw.type=D3DRTYPE_TEXTURE;IDirect3DTexture9* p=&raw;allocationFailure=fail;d.registry.wrap(&p);allocationFailure=-1;
   if(d.disabled){++failed;assert(p==&raw&&d.registry.size()==0&&raw.refs==1&&d.refs==1);}else{++passed;assert(p!=&raw&&d.refs==2);p->Release();assert(d.registry.size()==0&&d.refs==1&&raw.refs==0);}}
  assert(failed>=3&&passed>=1);
+#endif
 }
 static void threads(){
  Device d;Resource<IDirect3DVertexShader9> raw(d);IDirect3DVertexShader9* retained=&raw;d.registry.wrap(&retained);
@@ -263,13 +267,13 @@ def main():
     report={'status':'running','source_sha256':hashes,'runs':[],'game_launched':False,'wine_launched':False,'limitations':['Fake COM backend; does not validate full device integration or real driver behavior.','GetPrivateData conservatively disables mirror because arbitrary GUID contents may contain an interface.']}
     with tempfile.TemporaryDirectory(prefix='northlight-resource-mirror-') as tmp:
         tmp=Path(tmp);(tmp/'d3d9.h').write_text(stub());(tmp/'test.cpp').write_text(HARNESS)
-        for label,flags in [('O2',['-O2']),('ASan+UBSan',['-O1','-g','-fsanitize=address,undefined','-fno-sanitize-recover=all']),('TSan',['-O1','-g','-fsanitize=thread'])]:
+        for label,flags in [('O2',['-O2']),('ASan+UBSan',['-O1','-g','-fsanitize=address,undefined','-fno-sanitize-recover=all']),('TSan',['-O1','-g','-fsanitize=thread','-DNORTHLIGHT_TEST_TSAN=1'])]:
             binary=tmp/label.replace('+','-');command=['clang++','-std=c++17','-pthread',*flags,'-Wno-inconsistent-missing-override','-I'+str(tmp),*fp.test_include_flags(),str(tmp/'test.cpp'),'-o',str(binary)]
             subprocess.run(command,check=True);run=subprocess.run([str(binary)],capture_output=True,text=True,check=True,timeout=900);report['runs'].append({'build':label,'stdout':run.stdout,'stderr':run.stderr,'status':'pass'})
         # 0.3.182 (D1) counterfactual: a foreign thread that skips the wait on inside overlaps the owner's body.
         binary=tmp/'skip-wait';subprocess.run(['clang++','-std=c++17','-pthread','-O2','-DNORTHLIGHT_GATE_ELISION_COUNTERFACTUAL=2','-Wno-inconsistent-missing-override','-I'+str(tmp),*fp.test_include_flags(),str(tmp/'test.cpp'),'-o',str(binary)],check=True)
         # Deterministic: the pinned elided call is entered (an assertion). A hang is never a detection.
-        run=subprocess.run([str(binary),'elision'],capture_output=True,text=True,timeout=300);caught=run.returncode!=0 and 'Assertion failed' in run.stderr
+        run=subprocess.run([str(binary),'elision'],capture_output=True,text=True,timeout=300);caught=run.returncode!=0 and ('Assertion failed' in run.stderr or 'Assertion `' in run.stderr or 'Assertion "' in run.stderr)
         print('elision counterfactual (foreign skips the wait): '+('overlap detected (expected failure)' if caught else 'NOT DETECTED'),flush=True);assert caught,(run.returncode,run.stdout,run.stderr)
         report['runs'].append({'build':'O2 -DNORTHLIGHT_GATE_ELISION_COUNTERFACTUAL=2','mode':'elision','exit_code':run.returncode,'expected':'failure'})
     assert all('ThreadSanitizer' not in run['stderr'] for run in report['runs'] if run.get('status')=='pass')

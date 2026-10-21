@@ -88,11 +88,11 @@ def run_native(cache_dir=None):
         for i,x in enumerate(bad):(p/f'bad{i}.fgl').write_bytes(x)
         binary=p/'test';command=['c++','-std=c++17','-O1','-g','-fsanitize=address,undefined','-fno-omit-frame-pointer',*fp.test_include_flags(),str(ROOT/'test_world_local_lights.cpp'),'-o',str(binary)]
         subprocess.run(command,check=True)
-        return json.loads(subprocess.check_output([str(binary),str(p),str(cache_dir or b.CLIENT/'world-cache/lights')],text=True))
+        return json.loads(subprocess.check_output([str(binary),str(p),str(cache_dir or '')],text=True))
 
 if __name__=='__main__':
     import argparse
-    parser=argparse.ArgumentParser();parser.add_argument('--cache',type=pathlib.Path,default=b.CLIENT/'world-cache/lights');args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument('--cache',type=pathlib.Path,default=None,help='optional cache built by this branch; synthetic coverage always runs');args=parser.parse_args()
     suite=unittest.TestSuite(unittest.defaultTestLoader.loadTestsFromTestCase(cls) for cls in (BuilderTests,PlacementTests))
     result=unittest.TextTestRunner().run(suite)
     if not result.wasSuccessful():raise SystemExit(1)
