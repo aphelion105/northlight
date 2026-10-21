@@ -2058,11 +2058,11 @@ private:
             ++uiAfterTerrain;
             // Fonts can use a rare PS on the stock UI VS. Confirm screen-space
             // state and the main target instead of filtering the text shader.
-            DWORD zw=1,zf=D3DCMP_ALWAYS;float rows[16];D3DSURFACE_DESC desc{};
+            DWORD zw=1,zf=D3DCMP_ALWAYS,z=1;float rows[16];D3DSURFACE_DESC desc{};
             if (SUCCEEDED(ext->GetRenderState(D3DRS_ZWRITEENABLE,&zw)) &&
-                (!zFuncAware||SUCCEEDED(ext->GetRenderState(D3DRS_ZFUNC,&zf))) &&
+                (!zFuncAware||(SUCCEEDED(ext->GetRenderState(D3DRS_ZFUNC,&zf))&&SUCCEEDED(ext->GetRenderState(D3DRS_ZENABLE,&z)))) &&
                 SUCCEEDED(ext->GetVertexShaderConstantF(0,rows,4)) &&
-                NorthlightUiBoundary::accepts(zw!=0,rows,zf==D3DCMP_ALWAYS) &&
+                NorthlightUiBoundary::accepts(zw!=0,rows,zf==D3DCMP_ALWAYS,z!=0) &&
                 fullViewport(desc,nullptr,true)){
                 hashBoundaryThisFrame=true;
                 if(sampled()){DWORD z=0,zw=0,blend=0;ext->GetRenderState(D3DRS_ZENABLE,&z);ext->GetRenderState(D3DRS_ZWRITEENABLE,&zw);ext->GetRenderState(D3DRS_ALPHABLENDENABLE,&blend);
@@ -2074,7 +2074,7 @@ private:
     }
     // 0.3.203 (task 17): fallback boundary for font mods that replace the UI VS and PS (or only the PS): the first screen-space draw after the world with
     // ZWRITE off, full-target viewport and ortho rows, by a VS learned over 120 frames without a hash boundary. Every PS on that UI VS is eligible,
-    // including infrequent FPS text. WoW draws UI with ZENABLE on and ZFUNC ALWAYS (DepthFuncAware: the func is required).
+    // including infrequent FPS text. UI can disable Z or use ZFUNC ALWAYS.
     // On stock the whole step is one bool test per draw: collecting() needs two world frames in a row without the hash boundary, and the first one disarms it for good.
     void uiFallbackDraw(const VsClass& vc,IDirect3DVertexShader9* vs){
         if(!uiFallback.collecting()||!terrain||applied||hashBoundaryThisFrame||fallbackBoundaryThisFrame||vc.wmo)return;
@@ -2088,9 +2088,9 @@ private:
         if(!borrowed)drop(ps);
         if(armed&&!uiFallback.isBoundary(vsId,psId))return;
         DWORD zw=0;if(FAILED(ext->GetRenderState(D3DRS_ZWRITEENABLE,&zw)))return;
-        DWORD zf=D3DCMP_ALWAYS;if(zFuncAware&&FAILED(ext->GetRenderState(D3DRS_ZFUNC,&zf)))return; /* the client's UI draws all run with ZFUNC ALWAYS */
+        DWORD zf=D3DCMP_ALWAYS,z=1;if(zFuncAware&&(FAILED(ext->GetRenderState(D3DRS_ZFUNC,&zf))||FAILED(ext->GetRenderState(D3DRS_ZENABLE,&z))))return;
         float c[16]={};if(FAILED(ext->GetVertexShaderConstantF(0,c,4)))return;
-        if(!NorthlightUiBoundary::accepts(zw!=0,c,zf==D3DCMP_ALWAYS)){if(!armed){triageVs=vs;triagePs=ps;triageZw=zw;for(int i=0;i<4;++i)triageC3[i]=c[12+i];++triageDraws;}return;}
+        if(!NorthlightUiBoundary::accepts(zw!=0,c,zf==D3DCMP_ALWAYS,z!=0)){if(!armed){triageVs=vs;triagePs=ps;triageZw=zw;for(int i=0;i<4;++i)triageC3[i]=c[12+i];++triageDraws;}return;}
         D3DSURFACE_DESC desc={};
         if(!fullViewport(desc,nullptr,true))return; // last, and quiet: minimap and portrait targets are expected here
         if(!armed){uiFallback.noteCandidate(vsId,psId);return;}

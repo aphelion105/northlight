@@ -46,9 +46,9 @@
 //
 
     ps_3_0
-          def c3, -9.99999975e-006, 100000, 0.00300000003, 0.000699999975
-          def c9, 1, 0, 0.0120000001, 0.5
-          def c10, 2, -2, -1, 1
+          def c3, 2, -2, -1, 1
+          def c9, 1, 0, 0.000699999975, 0.0120000001
+          def c10, -9.99999975e-006, 100000, 0.5, 0.00300000003
           def c11, 9.99999996e-013, -1.00000002e+020, -0.879999995, 0.189999998
           def c12, 0.119999997, -0.0900000036, 3, 0.569999993
           def c13, 2, 6, 0.103, 0.103100002
@@ -57,7 +57,7 @@
           def c16, 17.2999992, 0.479999989, 0.25, 0.980000019
           def c17, 0.0199999996, 1.25, 0.200000003, 5
           def c18, 0.109999999, 0.180000007, 0.25, 1.44269502
-          def c19, 1, 1.00000002e+020, 0, 0
+          def c19, 0.5, 1, 0, 1.00000002e+020
           defi i0, 3, 0, 0, 0
           dcl_texcoord v0.xy
           dcl_2d s0
@@ -73,313 +73,359 @@
    3:     mul r0.x, r0.y, r0.x
    4:     add r0.x, -r0.x, c0.w
    5:     rcp r0.y, r0.x
-   6:     add r0.x, r0.x, c3.x
-   7:     cmp r0.x, r0.x, r0.y, c3.y
+   6:     add r0.x, r0.x, c10.x
+   7:     cmp r0.x, r0.x, r0.y, c10.y
    8:     mul r0.y, c0.w, c0.z
    9:     mul r0.x, r0.x, r0.y
   10:     texld r1, v0, s2
-  10:     add r0.y, -r1.y, c3.z
+  10:     add r0.y, -r1.y, c10.w
   11:     add r0.z, -r1.x, c0.z
   12:     cmp r0.yz, r0, c9.x, c9.y
   13:     add r0.y, r0.z, r0.y
   14:     cmp r0.y, -r0.y, c9.y, c9.x
-  15:     mul r0.z, r1.x, c3.w
-  16:     max r1.z, c9.z, r0.z
+  15:     mul r0.z, r1.x, c9.z
+  16:     max r1.z, c9.w, r0.z
   17:     add r0.x, r0.x, r1.z
   18:     add r0.x, -r1.x, r0.x
   19:     cmp r0.x, r0.x, c9.y, c9.x
   20:     add r0.x, r0.x, r0.y
-  21:     cmp r0, -r0.x, -c9.y, -c9.x
-  22:     texkill r0
-  23:     dsx r0.x, r1.y
-  25:     dsy r0.y, r1.y
-  27:     add r0.x, r0_abs.y, r0_abs.x
-  28:     add r0.x, -r0.x, c9.w
-  29:     cmp r0, r0.x, -c9.y, -c9.x
-  30:     texkill r0
-  31:     mov r0.xyw, c9
-  32:     mul r0.zw, r0.w, c0.xyxy
-  33:     add r0.zw, -r0, v0.xyxy
-  34:     mul r0.zw, r0, c10.xyxy
-  35:     add r0.zw, r0, c10
-  36:     rcp r2.x, c1.x
-  37:     rcp r2.y, c1.y
-  38:     mul r2.xy, r0.zwzw, r2
-  39:     mov r2.z, c1.z
-  40:     mul r2.xyz, r1.x, r2
-  41:     dsx r3.xyz, r2.zxyw
-  43:     dsy r4.xyz, r2.yzxw
-  45:     mul r5.xyz, r3, r4
-  46:     mul r3.xyz, r3.zxyw, r4.yzxw
-  47:     add r3.xyz, -r5, r3
-  48:     dp3 r0.z, r3, r3
-  49:     add r0.w, r0.z, c11.y
-  50:     cmp r0.w, r0.w, -c9.y, -c9.x
-  51:     add r1.z, -r0.z, c11.x
-  52:     cmp r0.w, r1.z, c9.y, r0.w
-  53:     cmp r4, r0.w, -c9.x, -c9.y
-  54:     texkill r4
-  55:     rsq r0.z, r0.z
-  56:     mul r3.xyz, r0.z, r3
-  57:     mul r0.z, r3.x, c4.z
-  58:     mul r0.w, r3.y, c5.z
-  59:     add r0.z, r0.w, r0.z
-  60:     mul r0.w, r3.z, c6.z
-  61:     add r0.z, r0.w, r0.z
-  62:     add r0.z, r0_abs.z, c11.z
-  63:     cmp r3, r0.z, -c9.y, -c9.x
-  64:     texkill r3
-  65:     mul r0.zw, r2.x, c4.xyxy
-  66:     mul r1.zw, r2.y, c5.xyxy
-  67:     add r0.zw, r0, r1
-  68:     mul r1.zw, r2.z, c6.xyxy
-  69:     add r0.zw, r0, r1
-  70:     add r0.zw, r0, c7.xyxy
-  71:     mul r1.zw, r0, c11.w
-  72:     mov r2.w, c1.w
-  73:     mul r3.xy, r2.w, c12
-  74:     add r1.zw, r1, r3.xyxy
-  75:     mov r3.xy, r1.zwzw
-  76:     mov r3.zw, c9.y
-  77:     mov r2.w, c12.w
-  78:     rep i0
-  81:       frc r4, r3.yyxx
-  82:       add r5, r3.yyxx, -r4
-  83:       add r5, r5, c9.yxyx
-  84:       mul r5, r5, c13.zzww
-  85:       frc r5, r5
-  86:       add r6, r5, c14.x
-  87:       mul r7, r5.zwzw, r6.xxyy
-  88:       mul r6, r5.xxyy, r6.zwzw
-  89:       add r6, r6, r7
-  90:       add r7, r5.xxyy, r6
-  91:       add r5, r5.zwzw, r6
-  92:       mul r5, r7, r5
-  93:       mul r5, r5, c14.y
-  94:       frc r5, r5
-  95:       add r6.xyz, -r5.yxxw, r5
-  96:       add r4.x, -r5.z, r6.x
-  97:       add r4.x, r5.w, r4.x
-  98:       mul r5.yz, r4.xyww, r4.xyww
-  99:       mul r7, r4.wywy, c13.xxyy
- 100:       add r6.xw, -r7.yyzx, c12.z
- 101:       mul r5.yz, r5, r6.xxww
- 102:       mul r4.xz, r4.x, r5.yyzw
- 103:       add r6.xw, r4.xyzz, r6.yyzz
- 104:       add r4.xy, -r4.wyzw, c9.x
- 105:       mul r4.xy, r4, r7.zwzw
- 106:       mul r4.xy, r6.xwzw, r4
- 107:       mul r4.xy, r4, c14.z
- 108:       mul r4.xy, r2.w, r4
- 109:       add r3.zw, r3, r4.xyxy
- 110:       mul r4.xy, r5.zyzw, r6.yzzw
- 111:       add r4.x, r4.x, r5.x
- 112:       add r4.x, r4.y, r4.x
- 113:       mul r4.y, r5.y, r4.z
- 114:       add r4.x, r4.y, r4.x
- 115:       mul r5, r3.xyxy, c15.xyzx
- 116:       add r4.yz, r5.xyww, r5.xxzw
- 117:       mul r4.yz, r4, c14.w
- 118:       mul r4.x, r4.x, c15.w
- 119:       add r4.xy, r4.x, r4.yzzw
- 120:       add r3.xy, r4, c16.x
- 121:       mul r2.w, r2.w, c16.y
- 122:     endrep
- 124:     dsy r1.zw, r0
- 126:     dsx r0.zw, r0
- 128:     add r0.zw, r1_abs, r0_abs
- 129:     dp2add r0.z, r0.zwzw, r0.zwzw, c9.y
- 131:     mul r0.z, r0.z, c16.z
- 132:     add r0.z, r0.z, c9.x
- 133:     rsq r0.z, r0.z
- 134:     dp3 r4.x, r0.yyxw, c4
- 135:     dp3 r4.y, r0.yyxw, c5
- 136:     dp3 r4.z, r0.yyxw, c6
- 137:     nrm r5.xyz, -r2
- 140:     dp3 r0.x, r4, r5
- 141:     mul r0.yw, r0_abs.x, r3.xzzw
- 142:     mul r3.xy, r0.z, r0.ywzw
- 143:     mov r3.z, c9.y
- 144:     dp3 r5.z, r3, c6
- 145:     dp3 r5.x, r3, c4
- 146:     dp3 r5.y, r3, c5
- 147:     add r0.yzw, r4.xxyz, -r5.xxyz
- 148:     nrm r3.xyz, r0.yzww
- 151:     cmp r0.x, r0.x, c10.w, c10.z
- 152:     mul r0.xyz, r0.x, r3
- 153:     mov_sat r1.y, r1.y
- 154:     rcp r3.x, c0.x
- 155:     rcp r3.y, c0.y
- 156:     mul r1.zw, r3.xyxy, v0.xyxy
- 157:     frc r3.xy, r1.zwzw
- 158:     add r1.zw, r1, -r3.xyxy
- 159:     add r1.zw, r1, c9.w
- 160:     mul r1.zw, r1, c0.xyxy
- 161:     texld r3, r1.zwzw, s0
- 161:     texld r4, v0, s4
- 161:     cmp r5, -r4_abs, c9.y, c9.x
- 162:     dp4 r0.w, r5, r5
- 163:     if_ge -r0.w, c9.y
- 166:     else
- 167:       nrm r5.xyz, -r2
- 170:       dp3_sat r0.x, r0, r5
- 171:       mov r0.y, c17.y
- 172:       mul r0.yzw, r0.y, c8.xxyz
- 173:       add_sat r0.yzw, r0, c18.xxyz
- 174:       mul r0.yzw, r4.w, r0
- 175:       add r0.yzw, -r0, r4.xxyz
- 176:       add r0.x, -r0.x, c9.x
- 177:       mul r1.z, r0.x, r0.x
- 178:       mul r1.z, r1.z, r1.z
- 179:       mul r0.x, r0.x, r1.z
- 180:       mul r0.x, r0.x, c16.w
- 181:       add r0.x, r0.x, c17.x
- 182:       mul r0.x, r0.x, c22.z
- 183:       mul r0.x, r1.y, r0.x
- 184:       mul r1.y, r1.x, c1.z
- 185:       mul r1.y, r1.y, c20.x
- 186:       add r1.y, r1.y, c20.y
- 187:       max r2.x, r1.y, c9.y
- 188:       pow_sat r1.y, r2.x, c20.z
- 191:       add r1.y, r1.y, -c9.x
- 192:       mul r1.y, r1.y, c20.w
- 193:       add r1.y, r1.y, c9.x
- 194:       mul r0.x, r0.x, r1.y
- 195:       mov r1.w, c9.w
- 196:       if_lt c25.z, r1.w
- 199:         mov r1.y, c9.x
- 200:       else
- 201:         rcp r2.xz, c25.x
- 202:         rcp r2.yw, c25.y
- 203:         mul r2, r2, v0.xyxy
- 204:         add r2, r2, -c9.w
- 205:         frc r1.zw, r2
- 206:         add r2, -r1.zwzw, r2
- 207:         add r4, r2, c9.yxxx
- 208:         add r4, r4, c9.w
- 209:         mul r4, r4, c25.xyxy
- 210:         mul r5, r4.zwxx, c9.xxyy
- 211:         texldl r6, r5, s6
- 211:         mul r2.x, r1.x, c17.x
- 212:         rcp r2.y, r2.x
- 213:         add r2.x, -r2.x, c17.z
- 214:         cmp r2.x, r2.x, c17.w, r2.y
- 215:         texldl r7, r5.xyww, s7
- 215:         texldl r5, r5.xyww, s2
- 215:         add r2.y, -r5.y, c3.z
- 216:         mul r4.z, r5.x, c3.w
- 217:         max r5.y, c9.z, r4.z
- 218:         add r4.z, r5.y, r7.x
- 219:         add r4.z, -r5.x, r4.z
- 220:         cmp r4.z, r4.z, -c9.x, -c9.y
- 221:         add r4.w, -r5.x, c0.z
- 222:         cmp r4.z, r4.w, c9.y, r4.z
- 223:         cmp r2.y, r2.y, c9.y, r4.z
- 224:         cmp r2.y, r2.y, r7.x, r5.x
- 225:         add r2.y, -r1.x, r2.y
- 226:         mul r4.z, r1.w, r1.z
- 227:         mul r4.w, r2.x, -r2_abs.y
- 228:         mul r4.w, r4.w, c18.w
- 229:         exp r4.w, r4.w
- 230:         mul r4.z, r4.w, r4.z
- 231:         add r5, r2.zwzw, c9.wwxy
- 232:         mul r7.xy, r5, c25
- 233:         mov r7.zw, c9.y
- 234:         texldl r8, r7, s6
- 234:         add r2.zw, r5, c9.w
- 235:         mul r5.xy, r2.zwzw, c25
- 236:         texldl r9, r7.xyww, s7
- 236:         texldl r7, r7.xyww, s2
- 236:         add r2.z, -r7.y, c3.z
- 237:         mul r2.w, r7.x, c3.w
- 238:         max r4.w, c9.z, r2.w
- 239:         add r2.w, r4.w, r9.x
- 240:         add r2.w, -r7.x, r2.w
- 241:         cmp r2.w, r2.w, -c9.x, -c9.y
- 242:         add r4.w, -r7.x, c0.z
- 243:         cmp r2.w, r4.w, c9.y, r2.w
- 244:         cmp r2.z, r2.z, c9.y, r2.w
- 245:         cmp r2.z, r2.z, r9.x, r7.x
- 246:         mov r5.zw, c9.y
- 247:         texldl r7, r5, s6
- 247:         add r2.z, -r1.x, r2.z
- 248:         abs r6.y, r2.z
- 249:         mov r6.x, r8.w
- 250:         add r2.z, r6.y, c11.y
- 251:         cmp r2.zw, r2.z, c19.xyxy, r6.xyxy
- 252:         mov r7.x, r7.w
- 253:         texldl r9, r5.xyww, s7
- 253:         texldl r5, r5.xyww, s2
- 253:         add r4.w, -r5.y, c3.z
- 254:         mul r5.y, r5.x, c3.w
- 255:         max r6.x, c9.z, r5.y
- 256:         add r5.y, r6.x, r9.x
- 257:         add r5.y, -r5.x, r5.y
- 258:         cmp r5.y, r5.y, -c9.x, -c9.y
- 259:         add r5.z, -r5.x, c0.z
- 260:         cmp r5.y, r5.z, c9.y, r5.y
- 261:         cmp r4.w, r4.w, c9.y, r5.y
- 262:         cmp r4.w, r4.w, r9.x, r5.x
- 263:         add r4.w, -r1.x, r4.w
- 264:         abs r7.y, r4.w
- 265:         add r4.w, -r2.w, r7.y
- 266:         cmp r2.zw, r4.w, r2, r7.xyxy
- 267:         mul r5, r4.xyxx, c9.xxyy
- 268:         texldl r9, r5, s6
- 268:         mov r4.x, r9.w
- 269:         texldl r10, r5.xyww, s7
- 269:         texldl r5, r5.xyww, s2
- 269:         add r4.w, -r5.y, c3.z
- 270:         mul r5.y, r5.x, c3.w
- 271:         max r6.x, c9.z, r5.y
- 272:         add r5.y, r6.x, r10.x
- 273:         add r5.y, -r5.x, r5.y
- 274:         cmp r5.y, r5.y, -c9.x, -c9.y
- 275:         add r5.z, -r5.x, c0.z
- 276:         cmp r5.y, r5.z, c9.y, r5.y
- 277:         cmp r4.w, r4.w, c9.y, r5.y
- 278:         cmp r4.w, r4.w, r10.x, r5.x
- 279:         add r1.x, -r1.x, r4.w
- 280:         abs r4.y, r1.x
- 281:         add r1.x, -r2.w, r4.y
- 282:         cmp r2.zw, r1.x, r2, r4.xyxy
- 283:         add r1.x, -r2.w, r2_abs.y
- 284:         cmp r1.x, r1.x, r2.z, r6.w
- 285:         mul r2.y, r2.x, -r6.y
- 286:         mul r2.y, r2.y, c18.w
- 287:         exp r2.y, r2.y
- 288:         mul r2.z, r2.x, -r7.y
- 289:         mul r2.z, r2.z, c18.w
- 290:         exp r2.z, r2.z
- 291:         add r4.xw, -r1.wyzz, c9.x
- 292:         mul r1.zw, r1, r4.xyxw
- 293:         mul r1.z, r2.z, r1.z
- 294:         mul r2.z, r4.x, r4.w
- 295:         mul r2.y, r2.y, r2.z
- 296:         add r2.z, r1.z, r2.y
- 297:         mul r2.x, r2.x, -r4.y
- 298:         mul r2.x, r2.x, c18.w
- 299:         exp r2.x, r2.x
- 300:         mul r1.w, r1.w, r2.x
- 301:         add r2.x, r1.w, r2.z
- 302:         add r2.x, r4.z, r2.x
- 303:         mul r2.y, r2.y, r8.w
- 304:         mul r1.z, r1.z, r7.w
- 305:         add r1.z, r1.z, r2.y
- 306:         mul r1.w, r1.w, r9.w
- 307:         add r1.z, r1.w, r1.z
- 308:         mul r1.w, r4.z, r6.w
- 309:         add r1.z, r1.w, r1.z
- 310:         rcp r1.w, r2.x
- 311:         mul r1.z, r1.w, r1.z
- 312:         add r1.w, -r2.x, -c3.x
- 313:         cmp_sat r1.y, r1.w, r1.x, r1.z
- 314:       endif
- 315:       mul r0.x, r0.x, r1.y
- 316:       mul r0.xyz, r0.x, r0.yzww
- 317:       add r3.xyz, r0, r3
- 318:     endif
- 319:     mov oC0, r3
+  21:     rcp r2.x, c1.x
+  22:     rcp r2.y, c1.y
+  23:     mov r3.z, c1.z
+  24:     cmp r0, -r0.x, -c9.y, -c9.x
+  25:     texkill r0
+  26:     mov r0.z, c10.z
+  27:     mul r0.xy, r0.z, c0
+  28:     add r1.zw, -r0.xyxy, v0.xyxy
+  29:     mul r1.zw, r1, c3.xyxy
+  30:     add r1.zw, r1, c3
+  31:     mul r3.xy, r2, r1.zwzw
+  32:     mul r3.xyz, r1.x, r3
+  33:     dsx r0.w, r1.y
+  35:     dsy r1.z, r1.y
+  37:     add r0.w, r0_abs.w, r1_abs.z
+  38:     dsx_pp r4.xyz, r3
+  40:     dsy_pp r5.xyz, r3
+  42:     if_lt c10.z, r0.w
+  45:       mov r6.zw, c9.y
+  46:       mov r7.xy, c9
+  47:       mul r7, r7.xyyx, c0.xxxy
+  48:       add r6.xy, r7, v0
+  49:       texldl r6, r6, s2
+  49:       add r8.xy, -r7, v0
+  50:       mov r8.zw, c9.y
+  51:       texldl r8, r8, s2
+  51:       add r9.xy, r7.zwzw, v0
+  52:       mov r9.zw, c9.y
+  53:       texldl r9, r9, s2
+  53:       add r10.xy, -r7.zwzw, v0
+  54:       mov r10.zw, c9.y
+  55:       texldl r10, r10, s2
+  55:       max r0.w, r6.y, r8.y
+  56:       add r0.w, -r0.w, c10.w
+  57:       cmp r0.w, r0.w, c9.x, c9.y
+  58:       max r1.z, r9.y, r10.y
+  59:       add r1.z, -r1.z, c10.w
+  60:       cmp r1.z, r1.z, c9.x, c9.y
+  61:       add r0.w, r0.w, r1.z
+  62:       cmp r11, -r0.w, -c9.y, -c9.x
+  63:       texkill r11
+  64:       add r0.w, -r6.y, c10.w
+  65:       cmp r1.z, r0.w, r8.x, r6.x
+  66:       add r1.w, -r9.y, c10.w
+  67:       cmp r2.z, r1.w, r10.x, r9.x
+  68:       cmp r1.w, r1.w, c3.z, c3.w
+  69:       mul r6.xy, r1.w, r7.zwzw
+  70:       add r6.xy, r6, v0
+  71:       add r6.xy, -r0, r6
+  72:       mul r6.xy, r6, c3
+  73:       add r6.xy, r6, c3.zwzw
+  74:       mul r6.xy, r2, r6
+  75:       cmp r0.w, r0.w, c3.z, c3.w
+  76:       mul r7.xy, r0.w, r7
+  77:       add r7.xy, r7, v0
+  78:       add r0.xy, -r0, r7
+  79:       mul r0.xy, r0, c3
+  80:       add r0.xy, r0, c3.zwzw
+  81:       mul r7.xy, r2, r0
+  82:       mov r7.z, c1.z
+  83:       mul r0.xyw, r1.z, r7.xyzz
+  84:       add r4.xyz, -r3, r0.xyww
+  85:       mov r6.z, c1.z
+  86:       mul r0.xyw, r2.z, r6.xyzz
+  87:       add r5.xyz, -r3, r0.xyww
+  88:     endif
+  89:     mul r0.xyw, r4.zxzy, r5.yzzx
+  90:     mul r2.xyz, r4.yzxw, r5.zxyw
+  91:     add r0.xyw, -r0, r2.xyzz
+  92:     dp3 r1.z, r0.xyww, r0.xyww
+  93:     add r1.w, r1.z, c11.y
+  94:     cmp r1.w, r1.w, -c9.y, -c9.x
+  95:     add r2.x, -r1.z, c11.x
+  96:     cmp r1.w, r2.x, c9.y, r1.w
+  97:     cmp r2, r1.w, -c9.x, -c9.y
+  98:     texkill r2
+  99:     rsq r1.z, r1.z
+ 100:     mul r0.xyw, r0, r1.z
+ 101:     mul r0.x, r0.x, c4.z
+ 102:     mul r0.y, r0.y, c5.z
+ 103:     add r0.x, r0.y, r0.x
+ 104:     mul r0.y, r0.w, c6.z
+ 105:     add r0.x, r0.y, r0.x
+ 106:     add r0.x, r0_abs.x, c11.z
+ 107:     cmp r2, r0.x, -c9.y, -c9.x
+ 108:     texkill r2
+ 109:     mul r0.xy, r3.x, c4
+ 110:     mul r1.zw, r3.y, c5.xyxy
+ 111:     add r0.xy, r0, r1.zwzw
+ 112:     mul r1.zw, r3.z, c6.xyxy
+ 113:     add r0.xy, r0, r1.zwzw
+ 114:     add r0.xy, r0, c7
+ 115:     dsx r1.zw, r0.xyxy
+ 117:     dsy r2.xy, r0
+ 119:     add r1.zw, r1_abs, r2_abs.xyxy
+ 120:     dp2add r0.w, r1.zwzw, r1.zwzw, c9.y
+ 122:     mul r0.xy, r0, c11.w
+ 123:     mov r1.w, c1.w
+ 124:     mul r1.zw, r1.w, c12.xyxy
+ 125:     add r0.xy, r0, r1.zwzw
+ 126:     mov r1.zw, r0.xyxy
+ 127:     mov r2.xy, c9.y
+ 128:     mov r2.z, c12.w
+ 129:     rep i0
+ 132:       frc r4, r1.wwzz
+ 133:       add r5, r1.wwzz, -r4
+ 134:       add r5, r5, c9.yxyx
+ 135:       mul r5, r5, c13.zzww
+ 136:       frc r5, r5
+ 137:       add r6, r5, c14.x
+ 138:       mul r7, r5.zwzw, r6.xxyy
+ 139:       mul r6, r5.xxyy, r6.zwzw
+ 140:       add r6, r6, r7
+ 141:       add r7, r5.xxyy, r6
+ 142:       add r5, r5.zwzw, r6
+ 143:       mul r5, r7, r5
+ 144:       mul r5, r5, c14.y
+ 145:       frc r5, r5
+ 146:       add r6.xyz, -r5.yxxw, r5
+ 147:       add r2.w, -r5.z, r6.x
+ 148:       add r2.w, r5.w, r2.w
+ 149:       mul r4.xz, r4.yyww, r4.yyww
+ 150:       mul r7, r4.wywy, c13.xxyy
+ 151:       add r5.yz, -r7.xyxw, c12.z
+ 152:       mul r4.xz, r4, r5.yyzw
+ 153:       mul r5.yz, r2.w, r4.xxzw
+ 154:       add r5.yw, r5.xyzz, r6.xyzz
+ 155:       add r4.yw, -r4.xwzy, c3.w
+ 156:       mul r4.yw, r4, r7.xzzw
+ 157:       mul r4.yw, r5, r4
+ 158:       mul r4.yw, r4, c14.z
+ 159:       mul r4.yw, r2.z, r4
+ 160:       add r2.xy, r2, r4.ywzw
+ 161:       mul r4.yz, r4.xzxw, r6
+ 162:       add r2.w, r4.y, r5.x
+ 163:       add r2.w, r4.z, r2.w
+ 164:       mul r3.w, r4.x, r5.z
+ 165:       add r2.w, r2.w, r3.w
+ 166:       mul r4, r1.zwzw, c15.xyzx
+ 167:       add r4.xy, r4.ywzw, r4.xzzw
+ 168:       mul r4.xy, r4, c14.w
+ 169:       mul r2.w, r2.w, c15.w
+ 170:       add r4.xy, r2.w, r4
+ 171:       add r1.zw, r4.xyxy, c16.x
+ 172:       mul r2.z, r2.z, c16.y
+ 173:     endrep
+ 175:     mul r0.x, r0.w, c16.z
+ 176:     add r0.x, r0.x, c3.w
+ 177:     rsq r0.x, r0.x
+ 178:     mov r4.xy, c9
+ 179:     dp3 r5.x, r4.yyxw, c4
+ 180:     dp3 r5.y, r4.yyxw, c5
+ 181:     dp3 r5.z, r4.yyxw, c6
+ 182:     nrm r4.xyz, -r3
+ 185:     dp3 r0.y, r5, r4
+ 186:     mul r1.zw, r0_abs.y, r2.xyxy
+ 187:     mul r2.xy, r0.x, r1.zwzw
+ 188:     mov r2.z, c9.y
+ 189:     dp3 r4.z, r2, c6
+ 190:     dp3 r4.x, r2, c4
+ 191:     dp3 r4.y, r2, c5
+ 192:     add r2.xyz, -r4, r5
+ 193:     nrm r4.xyz, r2
+ 196:     cmp r0.x, r0.y, c3.w, c3.z
+ 197:     mul r0.xyw, r0.x, r4.xyzz
+ 198:     mov_sat r1.y, r1.y
+ 199:     rcp r2.x, c0.x
+ 200:     rcp r2.y, c0.y
+ 201:     mul r1.zw, r2.xyxy, v0.xyxy
+ 202:     frc r2.xy, r1.zwzw
+ 203:     add r1.zw, r1, -r2.xyxy
+ 204:     add r1.zw, r1, c10.z
+ 205:     mul r1.zw, r1, c0.xyxy
+ 206:     texld r2, r1.zwzw, s0
+ 206:     texld r4, v0, s4
+ 206:     cmp r5, -r4_abs, c9.y, c9.x
+ 207:     dp4 r1.z, r5, r5
+ 208:     if_ge -r1.z, c9.y
+ 211:     else
+ 212:       nrm r5.xyz, -r3
+ 215:       dp3_sat r0.x, r0.xyww, r5
+ 216:       mov r0.y, c17.y
+ 217:       mul r3.xyz, r0.y, c8
+ 218:       add_sat r3.xyz, r3, c18
+ 219:       mul r3.xyz, r4.w, r3
+ 220:       add r3.xyz, -r3, r4
+ 221:       add r0.x, -r0.x, c3.w
+ 222:       mul r0.y, r0.x, r0.x
+ 223:       mul r0.y, r0.y, r0.y
+ 224:       mul r0.x, r0.y, r0.x
+ 225:       mul r0.x, r0.x, c16.w
+ 226:       add r0.x, r0.x, c17.x
+ 227:       mul r0.x, r0.x, c22.z
+ 228:       mul r0.x, r1.y, r0.x
+ 229:       mul r0.y, r1.x, c1.z
+ 230:       mul r0.y, r0.y, c20.x
+ 231:       add r0.y, r0.y, c20.y
+ 232:       max r1.y, r0.y, c9.y
+ 233:       pow_sat r0.y, r1.y, c20.z
+ 236:       add r0.y, r0.y, c3.z
+ 237:       mul r0.y, r0.y, c20.w
+ 238:       add r0.y, r0.y, c3.w
+ 239:       mul r0.x, r0.y, r0.x
+ 240:       if_lt c25.z, r0.z
+ 243:         mov r0.y, c3.w
+ 244:       else
+ 245:         rcp r4.xz, c25.x
+ 246:         rcp r4.yw, c25.y
+ 247:         mul r4, r4, v0.xyxy
+ 248:         add r4, r4, -c10.z
+ 249:         frc r0.zw, r4
+ 250:         add r4, -r0.zwzw, r4
+ 251:         add r5, r4, c9.yxxx
+ 252:         add r5, r5, c10.z
+ 253:         mul r5, r5, c25.xyxy
+ 254:         mul r6, r5.zwxx, c9.xxyy
+ 255:         texldl r7, r6, s6
+ 255:         mul r1.y, r1.x, c17.x
+ 256:         rcp r1.z, r1.y
+ 257:         add r1.y, -r1.y, c17.z
+ 258:         cmp r1.y, r1.y, c17.w, r1.z
+ 259:         texldl r8, r6.xyww, s7
+ 259:         texldl r6, r6.xyww, s2
+ 259:         add r1.z, -r6.y, c10.w
+ 260:         mul r1.w, r6.x, c9.z
+ 261:         max r3.w, c9.w, r1.w
+ 262:         add r1.w, r3.w, r8.x
+ 263:         add r1.w, -r6.x, r1.w
+ 264:         cmp r1.w, r1.w, -c9.x, -c9.y
+ 265:         add r3.w, -r6.x, c0.z
+ 266:         cmp r1.w, r3.w, c9.y, r1.w
+ 267:         cmp r1.z, r1.z, c9.y, r1.w
+ 268:         cmp r1.z, r1.z, r8.x, r6.x
+ 269:         add r1.z, -r1.x, r1.z
+ 270:         mul r1.w, r0.w, r0.z
+ 271:         mul r3.w, r1.y, -r1_abs.z
+ 272:         mul r3.w, r3.w, c18.w
+ 273:         exp r3.w, r3.w
+ 274:         mul r1.w, r1.w, r3.w
+ 275:         add r4, r4.zwzw, c19.xxyz
+ 276:         mul r6.xy, r4, c25
+ 277:         mov r6.zw, c9.y
+ 278:         texldl r8, r6, s6
+ 278:         add r4.xy, r4.zwzw, c10.z
+ 279:         mul r4.xy, r4, c25
+ 280:         texldl r9, r6.xyww, s7
+ 280:         texldl r6, r6.xyww, s2
+ 280:         add r3.w, -r6.y, c10.w
+ 281:         mul r5.z, r6.x, c9.z
+ 282:         max r6.y, c9.w, r5.z
+ 283:         add r5.z, r6.y, r9.x
+ 284:         add r5.z, -r6.x, r5.z
+ 285:         cmp r5.z, r5.z, -c9.x, -c9.y
+ 286:         add r5.w, -r6.x, c0.z
+ 287:         cmp r5.z, r5.w, c9.y, r5.z
+ 288:         cmp r3.w, r3.w, c9.y, r5.z
+ 289:         cmp r3.w, r3.w, r9.x, r6.x
+ 290:         mov r4.zw, c9.y
+ 291:         texldl r6, r4, s6
+ 291:         add r3.w, -r1.x, r3.w
+ 292:         abs r6.y, r3.w
+ 293:         mov r6.x, r8.w
+ 294:         add r3.w, r6.y, c11.y
+ 295:         cmp r5.zw, r3.w, c19.xyyw, r6.xyxy
+ 296:         mov r7.x, r6.w
+ 297:         texldl r9, r4.xyww, s7
+ 297:         texldl r4, r4.xyww, s2
+ 297:         add r3.w, -r4.y, c10.w
+ 298:         mul r4.y, r4.x, c9.z
+ 299:         max r6.x, c9.w, r4.y
+ 300:         add r4.y, r6.x, r9.x
+ 301:         add r4.y, -r4.x, r4.y
+ 302:         cmp r4.y, r4.y, -c9.x, -c9.y
+ 303:         add r4.z, -r4.x, c0.z
+ 304:         cmp r4.y, r4.z, c9.y, r4.y
+ 305:         cmp r3.w, r3.w, c9.y, r4.y
+ 306:         cmp r3.w, r3.w, r9.x, r4.x
+ 307:         add r3.w, -r1.x, r3.w
+ 308:         abs r7.y, r3.w
+ 309:         add r3.w, -r5.w, r7.y
+ 310:         cmp r4.xy, r3.w, r5.zwzw, r7
+ 311:         mul r5, r5.xyxx, c9.xxyy
+ 312:         texldl r9, r5, s6
+ 312:         mov r8.x, r9.w
+ 313:         texldl r10, r5.xyww, s7
+ 313:         texldl r5, r5.xyww, s2
+ 313:         add r3.w, -r5.y, c10.w
+ 314:         mul r4.z, r5.x, c9.z
+ 315:         max r5.y, c9.w, r4.z
+ 316:         add r4.z, r5.y, r10.x
+ 317:         add r4.z, -r5.x, r4.z
+ 318:         cmp r4.z, r4.z, -c9.x, -c9.y
+ 319:         add r4.w, -r5.x, c0.z
+ 320:         cmp r4.z, r4.w, c9.y, r4.z
+ 321:         cmp r3.w, r3.w, c9.y, r4.z
+ 322:         cmp r3.w, r3.w, r10.x, r5.x
+ 323:         add r1.x, -r1.x, r3.w
+ 324:         abs r8.y, r1.x
+ 325:         add r1.x, -r4.y, r8.y
+ 326:         cmp r4.xy, r1.x, r4, r8
+ 327:         add r1.x, r1_abs.z, -r4.y
+ 328:         cmp r1.x, r1.x, r4.x, r7.w
+ 329:         mul r1.z, r1.y, -r6.y
+ 330:         mul r1.z, r1.z, c18.w
+ 331:         exp r1.z, r1.z
+ 332:         mul r3.w, r1.y, -r7.y
+ 333:         mul r3.w, r3.w, c18.w
+ 334:         exp r3.w, r3.w
+ 335:         add r4.xy, -r0.wzzw, c3.w
+ 336:         mul r0.zw, r0, r4.xyxy
+ 337:         mul r0.z, r3.w, r0.z
+ 338:         mul r3.w, r4.x, r4.y
+ 339:         mul r1.z, r1.z, r3.w
+ 340:         add r3.w, r0.z, r1.z
+ 341:         mul r1.y, r1.y, -r8.y
+ 342:         mul r1.y, r1.y, c18.w
+ 343:         exp r1.y, r1.y
+ 344:         mul r0.w, r0.w, r1.y
+ 345:         add r1.y, r0.w, r3.w
+ 346:         add r1.y, r1.w, r1.y
+ 347:         mul r1.z, r1.z, r8.w
+ 348:         mul r0.z, r0.z, r6.w
+ 349:         add r0.z, r0.z, r1.z
+ 350:         mul r0.w, r0.w, r9.w
+ 351:         add r0.z, r0.w, r0.z
+ 352:         mul r0.w, r1.w, r7.w
+ 353:         add r0.z, r0.w, r0.z
+ 354:         rcp r0.w, r1.y
+ 355:         mul r0.z, r0.w, r0.z
+ 356:         add r0.w, -r1.y, -c10.x
+ 357:         cmp_sat r0.y, r0.w, r1.x, r0.z
+ 358:       endif
+ 359:       mul r0.x, r0.y, r0.x
+ 360:       mul r0.xyz, r0.x, r3
+ 361:       add r2.xyz, r0, r2
+ 362:     endif
+ 363:     mov oC0, r2
 
-// approximately 348 instruction slots used (28 texture, 320 arithmetic)
+// approximately 400 instruction slots used (36 texture, 364 arithmetic)
  
