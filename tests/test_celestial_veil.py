@@ -47,8 +47,8 @@ assert 'd->SetPixelShader(haloPS);' in ring and 'SetPixelShaderConstantF(0,c[0],
 assert 'sourceTaps(g.disc,g.inverseView,g.projection,g.width,g.height,SunMaskRadius,true,c)' in ring
 
 shader_path=fp.src('celestial_disc_effects.hlsl');shader=shader_path.read_text()
-# The halo-visibility PS (497/512) is reused without edits for the ring.
-assert hashlib.sha256(body(shader,'float4 CelestialHaloVisibilityPS(').encode()).hexdigest()=='8ee5fbdf13aece7843af3b0dd842cad26078d540842cffac57ae0e8f7c5580e4'
+# The halo-visibility PS is reused without edits for the ring (it also fades taps under the true horizon).
+assert hashlib.sha256(body(shader,'float4 CelestialHaloVisibilityPS(').encode()).hexdigest()=='e67e3f4ea4232d0a34617a55cb0e5d190e3db010a7435d0623c709877355b1c7'
 veil_ps=body(shader,'float4 CelestialVeilPS(')
 # Raw-depth classification: WDL/beyond-far silhouettes (normalised depth 1, raw
 # depth below the sky sprite) are geometry; the complement of the glare.
@@ -74,10 +74,9 @@ compiled=manifest['source_sha256']==hashlib.sha256(shader_path.read_bytes()).hex
 budget={}
 if compiled:
     shaders=manifest['shaders']
-    # The halo PS source is unchanged by the veil: its bytecode is pinned (Microsoft d3dcompiler_47 build; Wine's builtin
-    # compiler gave a155a543..., 497 slots).
-    assert shaders['CelestialHaloVisibilityPS']['sha256']=='250e7dae3d6de3f8ceb7ea55360b594f3ad362c7955d4f704450b8ff7d28c7f4'
-    assert shaders['CelestialHaloVisibilityPS']['static_instruction_slots']==189
+    # The halo PS bytecode is pinned (Microsoft d3dcompiler_47 build, with the taps faded under the true horizon).
+    assert shaders['CelestialHaloVisibilityPS']['sha256']=='17aedf5d288e37d98cf9dbabbcf85a8d70ada206b0768b606fe44efb721f0550'
+    assert shaders['CelestialHaloVisibilityPS']['static_instruction_slots']==209
     for entry in ('CelestialDiscPS','CelestialVeilPS'):
         assert shaders[entry]['static_instruction_slots']<=480 and shaders[entry]['temporary_registers']<=32,entry
         budget[entry]=shaders[entry]['static_instruction_slots']

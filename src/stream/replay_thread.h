@@ -136,7 +136,7 @@ public:
     SnapshotPool snapshots;
     std::function<void()> threadStart;                  // runs on the replay thread before the first command (owner handoff)
     std::function<void(const char*)> log;               // diagnostics line sink; may be empty
-    bool (*diagnostics)()=nullptr;                      // Diagnostics on: the CSTREAM line and the sync-only audit (asked per frame)
+    bool (*diagnostics)()=nullptr;                      // Diagnostics on: per-call timers and the sync-only audit (asked per frame)
     unsigned sampleEvery=600;
     // 0.3.200 (frame skip): StreamFrameSkip (set before start()). A frame is replayed in SKIP MODE when, at its first command, it and at least one later frame are
     // completely recorded (presentsRecorded >= ordinal+2: the replay is two frames behind and the game would soon wait for it), the game marked it hazard-free
@@ -153,12 +153,12 @@ public:
     // 0.3.192 (CS): replay time is accounted by what it is NOT doing: idleNs is the time spent waiting for commands (written by the replay
     // thread around its blocking wait only, no clock read per command). Busy = wall - idle; the CSTREAM line's replayBusyMs/frame is that
     // difference per window, so it now excludes the per-command timer overhead it used to include.
-    std::atomic<std::uint64_t> idleNs{0};
+    Counter& idleNs;
     std::uint64_t wallNs()const{const auto s=startNs_.load(std::memory_order_relaxed);return s?nowNs()-s:0;}
     std::uint64_t busyNsTotal()const{const auto w=wallNs(),i=idleNs.load(std::memory_order_relaxed);return w>i?w-i:0;}
     // Diagnostics bookkeeping (the audit's value mirror and touched list) runs only while diagnostics were on at the last frame boundary.
     std::uint64_t auditSets()const{return get(auditSets_);}   // audited Sets recorded by the replay thread (0 while diagnostics are off)
-    explicit Replayer(StreamCore& c,std::size_t snapshotCap=SnapshotPool::DefaultCap):core(c),snapshots(snapshotCap){}   // 0.3.200 (pipeline): SnapshotPool::capFor(StreamFramesAhead)
+    explicit Replayer(StreamCore& c,std::size_t snapshotCap=SnapshotPool::DefaultCap):core(c),snapshots(snapshotCap),idleNs(c.q.stats.replayIdleNs){}   // 0.3.200 (pipeline): SnapshotPool::capFor(StreamFramesAhead)
     ~Replayer(){join();}
     Replayer(const Replayer&)=delete;Replayer& operator=(const Replayer&)=delete;
 
@@ -253,7 +253,10 @@ private:
             if(q->dead.load()||!q->inner)done=true;
             else{
                 unsigned char buf[64]={};add(core.q.stats.queryPolls);
-                if(static_cast<IDirect3DQuery9*>(q->inner)->GetData(buf,q->dataSize,0)==S_OK){q->writeResult(buf,q->dataSize);q->readyGen.store(q->issueSeen,std::memory_order_release);done=true;}
+                const HRESULT hr=static_cast<IDirect3DQuery9*>(q->inner)->GetData(buf,q->dataSize,0);
+                if(q->type==8)q->completeEvent(hr,buf);
+                if(hr==S_OK){q->writeResult(buf,q->dataSize);q->readyGen.store(q->issueSeen,std::memory_order_release);done=true;}
+                else if(q->type==8&&FAILED(hr))done=true;
             }
             if(done){pending_[i]=pending_.back();pending_.pop_back();}else ++i;
         }
@@ -411,6 +414,10 @@ private:
     void cstreamLine(std::uint64_t frames){
         const Counters& s=core.q.stats;char buf[kLine];int n=std::snprintf(buf,sizeof buf,"CSTREAM ");   // the prefix the log is searched by
         {char part[700];formatCounters(part,sizeof part,s);put(buf,n,"%s",part);}
+        put(buf,n," diag=%u",unsigned(diag_));
+        put(buf,n," eventTrips=%llu",(unsigned long long)get(s.eventWaitTrips));
+        put(buf,n," eventBatches=%llu eventPolls=%llu eventRequests=%llu eventLocal=%llu eventPending=%llu",(unsigned long long)get(s.eventPollBatches),(unsigned long long)get(s.eventPollCalls),(unsigned long long)get(s.eventRequests),(unsigned long long)get(s.eventLocal),(unsigned long long)get(s.eventPending));
+        put(buf,n," eventCompleted=%llu eventPendingMs=%.3f",(unsigned long long)get(s.eventCompleted),get(s.eventPendingNs)/1e6);
         const double inv=avg_.n?1.0/avg_.n:0.0;
         const std::uint64_t wall=nowNs(),idle=idleNs.load(std::memory_order_relaxed),dWall=wall-lastWall_,dIdle=idle-lastIdle_,dBusy=dWall>dIdle?dWall-dIdle:0;lastWall_=wall;lastIdle_=idle;
         const std::uint64_t pubs=get(s.publishes),sleeps=get(s.consumerSleeps),dPubs=pubs-lastPubs_,dSleeps=sleeps-lastSleeps_;lastPubs_=pubs;lastSleeps_=sleeps;
@@ -516,6 +523,20 @@ private:
         }
         switch((Cmd)h->id){
         case Cmd::Sync:{SyncCall* sc;std::memcpy(&sc,h+1,sizeof sc);if(!executeSync(*sc,tr))sc->done.store(2);return;}
+        case Cmd::PollEventQuery:{
+            const auto& request=*reinterpret_cast<const StreamQuery::PollRequest*>(h+1);
+            auto* query=request.query;
+            if(query->issueSeen==request.generation&&query->eventDoneGen.load(std::memory_order_acquire)!=request.generation){
+                unsigned char buf[64]={};HRESULT hr=D3DERR_INVALIDCALL;
+                if(!query->dead.load()&&query->inner){
+                    unsigned calls=0;
+                    hr=pollEventQueryBriefly([&]{return static_cast<IDirect3DQuery9*>(query->inner)->GetData(buf,query->dataSize,D3::kGetDataFlush);},nowNs,calls);
+                    own(core.q.stats.eventPollBatches);own(core.q.stats.eventPollCalls,calls);
+                }
+                query->completeEvent(hr,buf);
+            }
+            query->eventPollQueued.store(false,std::memory_order_release);return;
+        }
         case Cmd::Quiesce:{Task* t;std::memcpy(&t,h+1,sizeof t);t->fn(t->arg,core);return;}
         case Cmd::Destroy:{ProxyBase* p;std::memcpy(&p,h+1,sizeof p);destroy(p);return;}
         case Cmd::Derive:derive(*reinterpret_cast<const DeriveArgs*>(h+1));return;

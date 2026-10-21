@@ -222,6 +222,11 @@ template<class T> static uint64_t shaderHash(T* shader, std::vector<DWORD>& word
 #include "gpu_budget.h"
 #include "water_renderer.h"
 #include "world_renderer.h"
+#include "client_latency_diagnostics.h"
+static void logClientLatency(std::uint64_t frame,const char* reason){
+    const auto s=NorthlightClientLatency::read(reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)),NorthlightWorldContext::readSelfLive);
+    logf("CLIENT latency frame=%llu tick=%lu reason=%s verified=%d gxFixLagCvar=%d gxFixLagRuntime=%d",static_cast<unsigned long long>(frame),static_cast<unsigned long>(GetTickCount()),reason,int(s.verified),s.configured,s.runtime);
+}
 #include "celestial_disc_renderer.h"
 #include "shadow_blob_filter.h"
 #include "spell_layer.h"
@@ -314,7 +319,11 @@ class Device final : public GuardedMirrorDevice {
     std::unique_ptr<NorthlightCelestialDiscRenderer> celestialDiscs;
     std::unique_ptr<NorthlightShadowBlobFilter> shadowBlobs;
     std::unique_ptr<NorthlightWaterRenderer> water;
-    std::unique_ptr<NorthlightGpuProfile> gpuProfile;
+    std::unique_ptr<NorthlightGpuProfile> gpuProfile,gpuSceneProfile;
+    bool gpuFrameStarted=false,gpuSceneSplit=false,gpuEffectsSplit=false;
+    void gpuEffectsEnd(){
+        if(gpuSceneSplit&&!gpuEffectsSplit){gpuSceneProfile->mark("Effects");gpuEffectsSplit=true;}
+    }
     // 0.3.200 (gpu budget): GpuBudgetMs > 0 only: Northlight's GPU time on every effects frame (two timestamps, read back late, never waited on)
     // feeds the controller; its level goes to the world for the next frames. GpuBudgetMs=0: no query is created, the world stays at level 0.
     std::unique_ptr<NorthlightGpuFrameTimer> gpuTimer;NorthlightGpuBudget::Controller gpuBudget;std::int64_t gpuBudgetQpc=0;double gpuBudgetLastMs=0;
@@ -355,7 +364,8 @@ class Device final : public GuardedMirrorDevice {
     unsigned blobSignatureReports=0;
     NorthlightMirrorAuditSchedule mirrorAuditSchedule;bool mirrorFallbackReported=false;
     UINT width = 0, height = 0;
-    D3DFORMAT sceneFormat = D3DFMT_UNKNOWN;
+    D3DFORMAT sceneFormat = D3DFMT_UNKNOWN, depthSnapshotFormat = D3DFMT_UNKNOWN;
+    bool df24Refused = false; // the device refused a DF24 depth snapshot: INTZ for the session
     bool terrain = false, captured = false, applied = false, enabled = true;
     // 0.3.202 (rain): the rain streak alpha mask (RainMask, s13 of WorldComposite): created on the first mask draw at the effect resources' size; the
     // flags and the cached eligibility are per frame (clearFrame), the counters are read and zeroed by the WEATHER line.
@@ -443,6 +453,7 @@ private:
     // follow the DiagReplayProbe windows, and per-type extension call counts of profile sample
     // frames (DeviceMirror::rawMethodCalls).
     NorthlightRenderThreadProbe::FrameCostWindow frameCost;uint64_t frameCostWindow=0;NorthlightRenderThreadProbe::ProbeMode frameCostMode=NorthlightRenderThreadProbe::ProbeOff;
+    NorthlightFrameStalls::Tracker stallFrames;NorthlightFrameStalls::Frame stallFrame;LONGLONG stallScene=0;std::uint64_t stallSceneIdle=0;
     unsigned frameStartDrawCalls=0;std::uint64_t frameStartAnswered=0,frameStartForwarded=0;unsigned long long frameStartScopeReads=0;
     // 0.3.154 drawGate A/B, RenderProfile sample frames only (both flags set once per frame in
     // finishFrameImpl from profiling(); RenderProfile=0 leaves them false). Sample frames alternate
@@ -477,6 +488,8 @@ private:
         });
     }
     void clearFrame() {
+        if(gpuSceneProfile)gpuSceneProfile->endFrame();
+        gpuFrameStarted=gpuSceneSplit=gpuEffectsSplit=false;
         if(!applied||failed)stateBlocks.clear();
         if(!enabled||extensionFault){stateBlocks.clear();if(world)world->releaseStateCache();if(water)water->releaseStateCache();}
         if(world)world->endFrame(!extensionFault);if(water)water->endFrame();if(celestialDiscs)celestialDiscs->endFrame();if(shadowBlobs)shadowBlobs->endFrame();
@@ -493,26 +506,47 @@ private:
         failed = true; return true;
     }
     bool resources(UINT w, UINT h, D3DFORMAT format) {
-        if (sceneSurface && aoSurface && aoRawSurface && depthTex && w == width && h == height && format == sceneFormat) return true;
+        // DXVK 3's 1x depth+stencil RESZ copy can leave INTZ unchanged (proved
+        // with a nonzero sentinel). DF24 copies depth alone, which is all our
+        // snapshots consume; NameMask still uses the original world stencil.
+        // DXVK 2.7.1 has the same ResolveZ and the same copy-path choice (a depth+stencil copy goes through the
+        // shader copy on AMD drivers, depth alone through vkCmdCopyImage), so both packaged DXVKs take DF24.
+        // A frame whose world depth was not bound (bindWorldDepth failed after projectionValid) keeps the current
+        // format: deciding INTZ there recreated every effect resource, and DF24 again on the next frame. A DF24 the
+        // device refused stays INTZ for the session (df24Refused).
+        const D3DFORMAT intz=(D3DFORMAT)MAKEFOURCC('I','N','T','Z'),df24=(D3DFORMAT)MAKEFOURCC('D','F','2','4');
+        const D3DFORMAT depthFormat=!worldDepthDescKnown&&depthSnapshotFormat!=D3DFMT_UNKNOWN?depthSnapshotFormat
+            :NorthlightBackend::isPackagedDxvk(selectedBackend)&&!df24Refused&&worldDepthDescKnown&&worldDepthDesc.MultiSampleType==D3DMULTISAMPLE_NONE?df24:intz;
+        if (sceneSurface && aoSurface && aoRawSurface && depthTex && w == width && h == height && format == sceneFormat && depthFormat == depthSnapshotFormat) return true;
         // Resource replacement must not invalidate this frame's retained depth surface.
         drop(sceneSurface); drop(scene);
-        if (w!=width || h!=height) {
+        if (w!=width || h!=height || depthFormat!=depthSnapshotFormat) {
+            rainMrtUnbind();rainDepthOk=rainMaskCleared=rainMaskDrawn=false;rainMaskFailed=false;
             drop(aoSurface); drop(ao); drop(aoRawSurface); drop(aoRaw); drop(depthTex); captured=false;drop(rainMaskMS);drop(rainMaskSurface);drop(rainMask);drop(rainDepth); /* 0.3.202 (rain): the mask follows the effect size */
         }
-        width = w; height = h; sceneFormat = format;
+        width = w; height = h; sceneFormat = format;depthSnapshotFormat=depthFormat;
         if (!aoPS && error(ext->CreatePixelShader(kAoShader, &aoPS), "AO shader")) return false;
         if (!aoContactBloomPS && error(ext->CreatePixelShader(kAoContactBloomShader, &aoContactBloomPS), "AO contact bloom shader")) return false;
         if (!aoBlurPS && error(ext->CreatePixelShader(kAoBlurShader, &aoBlurPS), "AO blur shader")) return false;
         if (!contactBloomPS && error(ext->CreatePixelShader(kContactBloomShader, &contactBloomPS), "contact bloom shader")) return false;
         if (!compositePS && error(ext->CreatePixelShader(kCompositeShader, &compositePS), "composite shader")) return false;
         if (error(ext->CreateTexture(w, h, 1, D3DUSAGE_RENDERTARGET, format, D3DPOOL_DEFAULT, &scene, nullptr), "scene texture")) return false;
-        if (!depthTex && error(ext->CreateTexture(w, h, 1, D3DUSAGE_DEPTHSTENCIL, (D3DFORMAT)MAKEFOURCC('I','N','T','Z'), D3DPOOL_DEFAULT, &depthTex, nullptr), "INTZ depth texture")) return false;
+        if (!depthTex) {
+            HRESULT hr=ext->CreateTexture(w, h, 1, D3DUSAGE_DEPTHSTENCIL, depthSnapshotFormat, D3DPOOL_DEFAULT, &depthTex, nullptr);
+            // A DXVK without the DF formats (d3d9.supportDFFormats off) refuses DF24: INTZ, not the effects disabled.
+            if (FAILED(hr) && depthSnapshotFormat==df24) {
+                logf("Depth snapshot DF24 refused HRESULT=0x%08lx: INTZ for this session", (unsigned long)hr);
+                df24Refused=true;depthSnapshotFormat=intz;
+                hr=ext->CreateTexture(w, h, 1, D3DUSAGE_DEPTHSTENCIL, depthSnapshotFormat, D3DPOOL_DEFAULT, &depthTex, nullptr);
+            }
+            if (error(hr, "depth snapshot texture")) return false;
+        }
         if (!ao && error(ext->CreateTexture(w/2, h/2, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A16B16G16R16F, D3DPOOL_DEFAULT, &ao, nullptr), "half resolution AO texture")) return false;
         if (!aoRaw && error(ext->CreateTexture(w/2, h/2, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A16B16G16R16F, D3DPOOL_DEFAULT, &aoRaw, nullptr), "half resolution raw AO texture")) return false;
         if (error(scene->GetSurfaceLevel(0, &sceneSurface), "scene surface")) return false;
         if (!aoSurface && error(ao->GetSurfaceLevel(0, &aoSurface), "AO surface")) return false;
         if (!aoRawSurface && error(aoRaw->GetSurfaceLevel(0, &aoRawSurface), "raw AO surface")) return false;
-        logf("Resources %ux%u, AO %ux%u, format=%u", w,h,w/2,h/2,unsigned(format));
+        logf("Resources %ux%u, AO %ux%u, format=%u depthSnapshot=%s sourceMSAA=%u", w,h,w/2,h/2,unsigned(format),depthSnapshotFormat==(D3DFORMAT)MAKEFOURCC('D','F','2','4')?"DF24":"INTZ",unsigned(worldDepthDesc.MultiSampleType));
         return true;
     }
     // Swap chain 0's back buffer description only changes through Reset.
@@ -574,7 +608,7 @@ private:
         if (!resolveDepthInto(depthTex, true)) return false;
         captured = true; return true;
     }
-    // 0.3.202 (rain mask MRT): resolveDepth's copy (the RESZ protocol below) into any INTZ texture. fatal: a failed step disables the effects (depthTex);
+    // 0.3.202 (rain mask MRT): resolveDepth's copy (the RESZ protocol below) into a depth snapshot texture. fatal: a failed step disables the effects (depthTex);
     // otherwise it only returns false (the rain depth snapshot). RT1 is unbound first: SavedState would restore it under a different draw.
     bool resolveDepthInto(IDirect3DTexture9* target, bool fatal) {
         rainMrtUnbind();
@@ -585,7 +619,7 @@ private:
         // D9VK implements AMD RESZ: POINTSIZE magic 0x7fa05000 copies/resolves
         // the bound depth surface into texture slot 0, including MSAA sample zero.
         if (step(ext->SetDepthStencilSurface(worldDepth), "bind scene depth")) return false;
-        if (step(ext->SetTexture(0, target), "bind INTZ resolve target")) return false;
+        if (step(ext->SetTexture(0, target), "bind depth resolve target")) return false;
         if(selectedBackend==NorthlightBackend::Kind::Native){
             // AMD's RESZ protocol requires a dummy draw to flush sampler binding
             // through the native D3D9 runtime. Disable ALL writes, then SavedState
@@ -684,7 +718,7 @@ private:
         struct BucketsEnd {NorthlightEffectsBuckets::Frame& f;~BucketsEnd(){f.end();}} bucketsEnd{effectsBuckets};
         using NorthlightEffectsBuckets::Bucket;
         // 0.3.154: sceneMs end = the last entry before effects apply; the read is billed to cpuEffects.
-        if(gateFrame&&!applied){QueryPerformanceCounter(&gateSceneEnd);gateSceneDraws=drawCalls;gateSceneReads=CpuScope::reads;}
+        if((gateFrame||NorthlightRenderThreadProbe::profiling())&&!applied){QueryPerformanceCounter(&gateSceneEnd);stallSceneIdle=streamStats?NorthlightStream::get(streamStats->replayIdleNs):0;gateSceneDraws=drawCalls;gateSceneReads=CpuScope::reads;}
         if (applied || !enabled || failed || !projectionValid) return;
         // task 45: the always-on effects span for the CPU budget (applying frames only; every return path below ends it).
         struct EffectsSpan { std::int64_t& out; std::int64_t start; ~EffectsSpan(){out=qpcNow()-start;} } effectsSpan{cpuEffectsQpc,qpcNow()};
@@ -700,9 +734,10 @@ private:
         if (!saved.ok) return;
         // 0.3.200 (gpu budget): the frame timer brackets every effect pass (closed on every return path by the guard, after the profile's end).
         struct TimerEnd { NorthlightGpuFrameTimer* t; bool open; ~TimerEnd(){if(open)t->end();} } timerEnd{gpuTimer.get(),world&&world->gpuBudgetMs()&&gpuTimer->begin()};
+        if(gpuSceneProfile&&!gpuSceneSplit){gpuSceneProfile->mark("GameScene");gpuSceneSplit=true;}
         if(diagnostics())gpuProfile->beginFrame(frame,NorthlightRenderThreadProbe::sampleFrame(frame)); // otherwise no queries; mark/endFrame are no-ops
         effectsBuckets.mark(Bucket::Setup);
-        struct ProfileEnd { NorthlightGpuProfile* p; ~ProfileEnd(){if(p)p->endFrame();} } profileEnd{spellOn?nullptr:gpuProfile.get()}; /* the spell layer replays right after this returns: spellReplay() closes the profile frame with its own "Spells" interval */
+        struct ProfileEnd { NorthlightGpuProfile* p;Device* self; ~ProfileEnd(){if(p){p->endFrame();self->gpuEffectsEnd();}} } profileEnd{spellOn?nullptr:gpuProfile.get(),this}; /* the spell layer replays right after this returns: spellReplay() closes the profile frame with its own "Spells" interval */
         IDirect3DTexture9* rainMaskTex=world&&debugMode==0?rainMaskPrepare():nullptr; /* 0.3.202 (rain mask MRT): the mask resolved and cut by the final depth (own SavedState) */
         if(water&&debugMode==0)water->resolveMask(); /* 0.3.214 (water MRT): decodes the frame's render target 1 data (own SavedState; false: no mask from it, maskTextureForDepth answers null) */
         IDirect3DTexture9* waterMask=water?water->maskTextureForDepth(worldMinDepth,worldMaxDepth):nullptr;
@@ -931,6 +966,10 @@ private:
         spellDomain=NorthlightWorldDrawDomain::accepts(projectionValid,depthEnabled!=FALSE,worldMinDepth,worldMaxDepth,viewport.MinZ,viewport.MaxZ);spellZEnable=spellDepthTested(depthEnabled);
     }
     template<class Capture> void prepareDrawImpl(Capture capture,UINT count) {
+        if(!gpuFrameStarted){
+            gpuFrameStarted=true;
+            if(gpuSceneProfile&&diagnostics())gpuSceneProfile->beginFrame(frame,NorthlightRenderThreadProbe::sampleFrame(frame));
+        }
         ++drawCalls;maskKind=0;if(nameRun)nameMaskRunBreak();
         if(spellOn){spellDomain=false;spellVs=nullptr;} /* task 34: this draw's reads for spellDrawImpl, valid only if this function gets that far */
         if(failed||!enabled)return;
@@ -1215,10 +1254,10 @@ private:
         if(SUCCEEDED(hr)&&rainMaskWantType!=D3DMULTISAMPLE_NONE)hr=ext->CreateRenderTarget(width,height,D3DFMT_A8R8G8B8,rainMaskWantType,rainMaskWantQuality,FALSE,&rainMaskMS,nullptr); /* the multisampled twin the draws go to */
         if(FAILED(hr)){drop(rainMaskMS);drop(rainMaskSurface);drop(rainMask);rainMaskFailed=true;logf("WEATHER rain mask disabled (%ux%u A8R8G8B8 target ms=%u) HRESULT=0x%08lx",width,height,unsigned(rainMaskWantType),(unsigned long)hr);return false;}
         rainMaskMsType=rainMaskWantType;rainMaskMsQuality=rainMaskWantQuality;
-        if(!rainDepth)hr=ext->CreateTexture(width,height,1,D3DUSAGE_DEPTHSTENCIL,(D3DFORMAT)MAKEFOURCC('I','N','T','Z'),D3DPOOL_DEFAULT,&rainDepth,nullptr); /* 0.3.202 (rain mask MRT): the depth snapshot */
+        if(!rainDepth)hr=ext->CreateTexture(width,height,1,D3DUSAGE_DEPTHSTENCIL,depthSnapshotFormat,D3DPOOL_DEFAULT,&rainDepth,nullptr); /* 0.3.202 (rain mask MRT): the depth snapshot */
         if(SUCCEEDED(hr)&&!rainMrtPS)hr=ext->CreatePixelShader(kRainMaskMrtShader,&rainMrtPS);
         if(SUCCEEDED(hr)&&!rainScrubPS)hr=ext->CreatePixelShader(kRainScrubShader,&rainScrubPS);
-        if(FAILED(hr)){drop(rainMaskMS);drop(rainMaskSurface);drop(rainMask);drop(rainDepth);drop(rainMrtPS);drop(rainScrubPS);rainMaskFailed=true;logf("WEATHER rain mask disabled (rain depth INTZ / mask shaders %ux%u) HRESULT=0x%08lx",width,height,(unsigned long)hr);return false;}
+        if(FAILED(hr)){drop(rainMaskMS);drop(rainMaskSurface);drop(rainMask);drop(rainDepth);drop(rainMrtPS);drop(rainScrubPS);rainMaskFailed=true;logf("WEATHER rain mask disabled (rain depth snapshot / mask shaders %ux%u) HRESULT=0x%08lx",width,height,(unsigned long)hr);return false;}
         return true;
     }
     // The mask target is cleared with RT0 swapped away (the fallback when ColorFill is refused); the game's target, viewport and scissor come back.
@@ -1757,7 +1796,7 @@ private:
             if(spellTraceFrame&&n)logf("SPELLTRACE frame=%u event=replay count=%u replayed=%u skipped=%u",frame,n,spell.frameCounters().replayedDraws,spell.frameCounters().replaySkipped);
         });
         spellSync();
-        if(diagnostics()){if(replayed)gpuProfile->mark("Spells");gpuProfile->endFrame();} /* GPU time of the replay (sampled frames only; renderEffects left the profile frame open for it) */
+        if(diagnostics()){if(replayed)gpuProfile->mark("Spells");gpuProfile->endFrame();gpuEffectsEnd();} /* GPU time of the replay (sampled frames only; renderEffects left the profile frame open for it) */
     }
     // Frame end (finishFrameImpl, after the frame's diagnostics lines): the layer's frame boundary, the SPELLLAYER line, the idle trim, the trace window.
     void spellFrameEnd(){
@@ -2046,7 +2085,7 @@ public:
         mirrorState.gate.ownerTid=MirrorGuard::threadId(); /* 0.3.180 (D0): the CreateDevice caller */
         mirrorState.gate.reportContext=this;mirrorState.gate.report=&gateForeignReport;
         parent->AddRef(); QueryPerformanceFrequency(&cpuFrequency);
-        gpuProfile=std::make_unique<NorthlightGpuProfile>(ext);gpuTimer=std::make_unique<NorthlightGpuFrameTimer>(ext); world=std::make_unique<WorldRenderer>(ext);world->setEffectsBuckets(&effectsBuckets);
+        gpuProfile=std::make_unique<NorthlightGpuProfile>(ext);gpuSceneProfile=std::make_unique<NorthlightGpuProfile>(ext,"GPU frame",2);gpuTimer=std::make_unique<NorthlightGpuFrameTimer>(ext); world=std::make_unique<WorldRenderer>(ext);world->setEffectsBuckets(&effectsBuckets);
         world->setConstantEpochSource({&mirrorState.constantEpoch,&mirrorState}); /* 0.3.180 (C1): read in place under the draw's gate */
         char skyRoot[MAX_PATH*3];WideCharToMultiByte(CP_UTF8,0,rootPath,-1,skyRoot,sizeof skyRoot,nullptr,nullptr);celestialDiscs=std::make_unique<NorthlightCelestialDiscRenderer>(ext,std::string(skyRoot)+"world-cache/celestial");celestialDiscs->setTerrainSource([this]{return world->celestialTerrainGeneration();},[this](unsigned body,const float* matrix){return world->drawCelestialTerrain(body,matrix);},[this](unsigned body){world->noteCelestialTerrainReuse(body);});celestialDiscs->setIdentityMap([this](std::uintptr_t exposed){return mirrorResources.rawOf(exposed,!mirrorState.enabled);});shadowBlobs=std::make_unique<NorthlightShadowBlobFilter>(ext,world->blobShadowStrength());shadowBlobs->setTexturePeek([](void* e,DWORD stage,IDirect3DBaseTexture9*& out){return static_cast<ExtensionDevice*>(e)->peekTexture(stage,out);},ext); /* 0.3.196 (task 12): borrowed stage-0 identity */water=std::make_unique<NorthlightWaterRenderer>(ext); logf("D3D9 device wrapped. Ctrl+Shift+F7 fog; F8 GI; F9 shadows; F10 all effects; F12 world debug (all with Ctrl+Shift). F11 unassigned. Components start ON; GI cache stays warm.");
         contactAO=world->contactAO(); /* 0.3.201 (task 18) */
@@ -2072,7 +2111,7 @@ public:
         logGateThreads("destroy");
         memoryDiagnostics.reset();
         spellTeardown();
-        dropBlobFaint();shadowBlobs.reset();celestialDiscs.reset();gpuProfile.reset();gpuTimer.reset();drop(latencyQuery);water.reset();world.reset();releaseResources();
+        dropBlobFaint();shadowBlobs.reset();celestialDiscs.reset();gpuProfile.reset();gpuSceneProfile.reset();gpuTimer.reset();drop(latencyQuery);water.reset();world.reset();releaseResources();
         stateBlocks.clear();ext->Release();ext=nullptr;
         const ULONG backendReferences=real->Release();parent->Release();
         logf("DEVICE lifetime event=destroy-end id=%ld live=%ld backendReleaseCount=%lu tick=%lu",diagnosticId,InterlockedDecrement(&liveDevices),(unsigned long)backendReferences,(unsigned long)GetTickCount());
@@ -2091,8 +2130,8 @@ public:
         rainMrtUnbind(); /* 0.3.202 (rain mask MRT) */
         NorthlightMirrorResources::generation.fetch_add(1,std::memory_order_relaxed); /* task 34: Reset drops the render-target verdicts of every texture */
         if(spellOn){spell.reset();spellSync();spellQueryN=0;spellQueryUnknown=false;spellTexFor=nullptr;spellTexKey=nullptr;spellFade.reset();} /* task 34: no state block, upload buffer or surface may outlive the device state */
-        frameIntervals.reset();frameCost.reset();backDescKnown=false;backSurface=nullptr;
-        NorthlightTrackedBuffers::invalidateAll();gpuProfile->reset();gpuTimer->reset();gpuBudgetQpc=0;boundQpc=0;cpuBudgetQpc=0;cpuEffectsQpc=0;gpuBound.reset();replayWait.reset();replaySkipPrev=0;replayWaitPrevNs=0;drop(latencyQuery);latencyPending=false;latencyFailed=false; releaseResources(); if(world)world->reset();if(water)water->reset();if(celestialDiscs)celestialDiscs->reset();if(shadowBlobs)shadowBlobs->reset(); weatherDetect.reset();weatherSample={}; /* 0.3.198 (rain) */failed=false;latchDrawGates();
+        frameIntervals.reset();frameCost.reset();stallFrames.reset();mirrorResources.queryProfile={};backDescKnown=false;backSurface=nullptr;
+        NorthlightTrackedBuffers::invalidateAll();gpuProfile->reset();gpuSceneProfile->reset();gpuFrameStarted=gpuSceneSplit=gpuEffectsSplit=false;gpuTimer->reset();gpuBudgetQpc=0;boundQpc=0;cpuBudgetQpc=0;cpuEffectsQpc=0;gpuBound.reset();replayWait.reset();replaySkipPrev=0;replayWaitPrevNs=0;drop(latencyQuery);latencyPending=false;latencyFailed=false; releaseResources(); if(world)world->reset();if(water)water->reset();if(celestialDiscs)celestialDiscs->reset();if(shadowBlobs)shadowBlobs->reset(); weatherDetect.reset();weatherSample={}; /* 0.3.198 (rain) */failed=false;latchDrawGates();
         if(pp&&world&&world->nameMask()){D3DDEVICE_CREATION_PARAMETERS cp={};if(SUCCEEDED(ext->GetCreationParameters(&cp)))upgradeAutoDepth(parent,cp.AdapterOrdinal,cp.DeviceType,pp,true,"Reset");} /* 0.3.212 (task 32) */
         HRESULT hr=ext->Reset(pp); logf("Reset HRESULT=0x%08lx",(unsigned long)hr); return hr;
     }
@@ -2270,7 +2309,8 @@ public:
         LARGE_INTEGER intervalTick={};NorthlightFrameIntervals::Report intervalReport;
         if(diagnostics()&&QueryPerformanceCounter(&intervalTick)&&frameIntervals.sample(intervalTick.QuadPart,cpuFrequency.QuadPart,intervalReport)){
             logf("FRAME interval device=%ld frame=%u tick=%lu enabled=%d samples=%u meanMs=%.3f p50Ms=%.3f p95Ms=%.3f maxMs=%.3f fps=%.2f gi=%u shadows=%u fog=%u focus=%d",diagnosticId,frame,(unsigned long)GetTickCount(),enabled,intervalReport.count,intervalReport.meanMs,intervalReport.p50Ms,intervalReport.p95Ms,intervalReport.maxMs,1000.0/intervalReport.meanMs,unsigned(frameEffects.gi),unsigned(frameEffects.shadows),unsigned(frameEffects.fog),int(intervalFocus));intervalFocus=true;}
-        if(diagnostics())gpuProfile->poll();
+        if(diagnostics()){gpuProfile->poll();if(gpuSceneProfile)gpuSceneProfile->poll();}
+        if(diagnostics()&&frame%600==0)logClientLatency(frame,"periodic");
         gpuBudgetFrame();cpuBudgetFrame(); /* task 45 */
         // Poll only while this game owns foreground focus.
         bool modifiers=(GetAsyncKeyState(VK_CONTROL)&0x8000)&&(GetAsyncKeyState(VK_SHIFT)&0x8000);
@@ -2281,12 +2321,12 @@ public:
         if(effectKeys.poll(focus,modifiers,componentKeys)){
             const auto& settings=effectKeys.settings;
             if(world)world->setEffects(settings);
-            frameIntervals.reset();frameCost.reset();
+            frameIntervals.reset();frameCost.reset();stallFrames.reset();mirrorResources.queryProfile={};
             logf("Effects components tick=%lu master=%u GI=%s shadows=%s fog=%s giCache=warm",
                 (unsigned long)GetTickCount(),unsigned(enabled),settings.gi?"ON":"OFF",settings.shadows?"ON":"OFF",settings.fog?"ON":"OFF");
         }
         bool retry=k10&&!key10&&!enabled;
-        if(k10&&!key10){enabled=!enabled;frameIntervals.reset();frameCost.reset();logf("Effects %s tick=%lu",enabled?"ON":"OFF",(unsigned long)GetTickCount());}
+        if(k10&&!key10){enabled=!enabled;frameIntervals.reset();frameCost.reset();stallFrames.reset();mirrorResources.queryProfile={};logf("Effects %s tick=%lu",enabled?"ON":"OFF",(unsigned long)GetTickCount());}
         bool k12=focus&&modifiers&&(GetAsyncKeyState(VK_F12)&0x8000);
         if(k12&&!key12){worldDebug=(worldDebug+1)%4;logf("World debug %d tick=%lu (0 normal,1 shadows,2 GI,3 volume)",worldDebug,(unsigned long)GetTickCount());}
         key12=k12;key10=k10;
@@ -2359,6 +2399,8 @@ public:
             if(frameCost.count()>=(probe?P::FrameCostWindow::Capacity:600u)||(probe&&window!=frameCostWindow))logFrameCost();
             frameCostWindow=window;frameCostMode=probe?world->probeMode():P::ProbeOff;
             frameCost.close(double(cpuEffects)*1000.0/double(cpuFrequency.QuadPart),P::kindOf(frameApplied,world&&world->lastNearDrawn(),world&&world->lastFarDrawn()),sampledFrame);
+            stallFrame={};stallFrame.id=sampleFrame;stallFrame.kind=P::kindOf(frameApplied,world&&world->lastNearDrawn(),world&&world->lastFarDrawn());
+            stallFrame.effectsMs=double(cpuEffects)*1000.0/double(cpuFrequency.QuadPart);stallFrame.applied=frameApplied;stallFrame.sampled=sampledFrame;stallFrame.focus=focus;stallScene=gateSceneEnd.QuadPart;
         }
         if(retry){if(world)world->recover();if(water)water->recover();if(failed){releaseResources();failed=false;logf("Effects retry requested after frame cleanup");}}
         if(sampledFrame&&cpuFrequency.QuadPart>0){
@@ -2443,6 +2485,19 @@ public:
     // After the real Present, under the gate. Arithmetic only; windows are logged by finishFrame.
     void presented(const PresentTicks& t){
         if(t.on)frameCost.presented(t.entry.QuadPart,t.finished.QuadPart,t.done.QuadPart,cpuFrequency.QuadPart,threadLogLines);
+        if(t.on){
+            stallFrame.queries=mirrorResources.queryProfile;
+            if(stallFrames.presented(stallFrame,t.entry.QuadPart,t.finished.QuadPart,t.done.QuadPart,cpuFrequency.QuadPart,stallScene,threadLogLines,streamStats!=nullptr,stallSceneIdle,streamStats?NorthlightStream::get(streamStats->replayIdleNs):0)){
+                const auto report=stallFrames.take();
+                if(report.slow)logf("FRAME slow window end=%u frames=%u slow=%u retained=%u",stallFrame.id,report.frames,report.slow,report.count);
+                for(unsigned i=0;i<report.count;++i){const auto& f=report.worst[i];const auto& q=f.queries;
+                    logf("FRAME slow frame=%u kind=%s applied=%u focus=%u sampled=%u logged=%u phases=%u totalMs=%.3f sceneMs=%.3f effectsMs=%.3f tailMs=%.3f finishMs=%.3f presentMs=%.3f queryCalls=%u queryEvent=%u queryOcclusion=%u queryFlush=%u queryPending=%u queryErrors=%u queryWallMs=%.3f queryMaxMs=%.3f querySpans=%u querySpanMs=%.3f sceneQueueIdleMs=%.3f frameQueueIdleMs=%.3f",
+                        f.id,NorthlightRenderThreadProbe::kindName(f.kind),unsigned(f.applied),unsigned(f.focus),unsigned(f.sampled),unsigned(f.logged),unsigned(f.phases),f.totalMs,f.sceneMs,f.effectsMs,f.tailMs,f.finishMs,f.presentMs,
+                        q.calls,q.events,q.occlusion,q.flush,q.pending,q.errors,double(q.wallNs)*1e-6,double(q.maxCallNs)*1e-6,q.completed,double(q.pendingNs)*1e-6,f.sceneIdleMs,f.frameIdleMs);
+                }
+            }
+        }else stallFrames.reset();
+        mirrorResources.queryProfile={};gateSceneEnd={};
         if(t.on)gatePresentDone=t.done.QuadPart; /* 0.3.154: sceneMs start of the next frame */
     }
     HRESULT STDMETHODCALLTYPE GetSwapChain(UINT index,IDirect3DSwapChain9** out) override { Guard mirrorLock(mirrorState.gate);
@@ -2570,6 +2625,11 @@ public:
         options.capture=&NorthlightStream::capture;
         options.threadStart=[target]{target->adoptOwnerThread();};
         options.log=[](const char* line){logf("%s",line);};
+        options.queryCaller=[](std::uint64_t frame,void* query,void* caller){
+            if(!NorthlightDiagnostics::enabled())return;
+            logf("CSTREAM EVENT caller=%s frame=%llu query=%p",tclCallerModule(caller),static_cast<unsigned long long>(frame),query);
+            logClientLatency(frame,"event-wait");
+        };
         options.diagnostics=&NorthlightDiagnostics::enabled;
         options.readBackLock=&NorthlightUpload::readBackLock;
         options.callerModule=&tclCallerModule; /* 0.3.204 (task 21): who calls TestCooperativeLevel (CSTREAM line, Diagnostics only) */

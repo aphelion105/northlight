@@ -66,11 +66,12 @@ struct Device final:IDirect3DDevice9 {
 };
 template<class T>struct Resource:T {
  std::atomic<unsigned> refs{1};Device* device;unsigned type=0;IUnknown* container=nullptr;IDirect3DSurface9* surface=nullptr;IDirect3DVolume9* volume=nullptr;bool* mustDisable=nullptr;unsigned calls=0;
+ HRESULT queryResult=S_OK;void* queryData=nullptr;DWORD querySize=0,queryFlags=0,queryIssue=0;unsigned typeReads=0;
  explicit Resource(Device& d):device(&d){}
  HRESULT QueryInterface(REFIID id,void** out)override{if(!out)return E_POINTER;*out=nullptr;if(id!=777&&!supported<T>(id))return E_NOINTERFACE;*out=static_cast<T*>(this);AddRef();return S_OK;}
  ULONG AddRef()override{return ++refs;}ULONG Release()override{assert(refs);return --refs;}
  HRESULT GetDevice(IDirect3DDevice9** out)override{if(!out)return D3DERR_INVALIDCALL;*out=device;device->AddRef();return D3D_OK;}
- unsigned GetType(){return type;}
+ unsigned GetType(){++typeReads;return type;}
  HRESULT GetContainer(REFIID id,void** out){if(!container)return E_NOINTERFACE;return container->QueryInterface(id,out);}
  HRESULT GetSurfaceLevel(UINT,IDirect3DSurface9** out){if(!out)return D3DERR_INVALIDCALL;*out=surface;if(surface)surface->AddRef();return D3D_OK;}
  HRESULT GetCubeMapSurface(D3DCUBEMAP_FACES,UINT,IDirect3DSurface9** out){return GetSurfaceLevel(0,out);}
@@ -78,8 +79,26 @@ template<class T>struct Resource:T {
  HRESULT GetPrivateData(REFGUID,void* data,DWORD* size){assert(!mustDisable||*mustDisable);if(resourceBody){assert(resourceBody->fetch_add(1)==0);resourceBody->fetch_sub(1);}++resourceEntries;++calls;if(size)*size=4;if(data)*static_cast<unsigned*>(data)=123;return S_OK;}
  HRESULT GetFunction(void* data,UINT* size){++calls;if(size)*size=4;if(data)*static_cast<unsigned*>(data)=456;return S_OK;}
  HRESULT GetDeclaration(D3DVERTEXELEMENT9*,UINT* count){++calls;if(count)*count=17;return S_OK;}
- HRESULT Issue(DWORD){++calls;return S_OK;}
+ HRESULT Issue(DWORD flags){++calls;queryIssue=flags;return S_OK;}
+ HRESULT GetData(void* data,DWORD size,DWORD flags){++calls;queryData=data;querySize=size;queryFlags=flags;if(queryResult==S_OK&&data&&size>=4)*static_cast<DWORD*>(data)=987;return queryResult;}
 };
+
+static void queryProfiling(){
+ Device d;Resource<IDirect3DQuery9> raw(d);raw.type=8;IDirect3DQuery9* p=&raw;d.registry.wrap(&p);DWORD value=77;
+ NorthlightRenderThreadProbe::configure(false,false);raw.queryResult=1;
+ assert(p->GetData(&value,4,1)==1&&value==77&&raw.calls==1&&raw.typeReads==0&&d.registry.queryProfile.calls==0);
+ NorthlightRenderThreadProbe::configure(true,false);
+ assert(p->GetData(&value,4,1)==1&&value==77&&raw.queryData==&value&&raw.querySize==4&&raw.queryFlags==1);
+ raw.queryResult=S_OK;assert(p->GetData(&value,4,0)==S_OK&&value==987&&raw.queryFlags==0);
+ assert(raw.typeReads==1&&d.registry.queryProfile.calls==2&&d.registry.queryProfile.pending==1&&d.registry.queryProfile.events==2&&d.registry.queryProfile.completed==1);
+ d.registry.queryProfile={};raw.queryResult=1;assert(p->GetData(nullptr,0,1)==1);
+ assert(p->Issue(2)==S_OK&&raw.queryIssue==2);raw.queryResult=S_OK;
+ assert(p->GetData(nullptr,0,1)==S_OK&&d.registry.queryProfile.completed==0);
+ raw.queryResult=D3DERR_INVALIDCALL;assert(p->GetData(&value,4,1)==D3DERR_INVALIDCALL&&d.registry.queryProfile.errors==1);
+ const auto count=d.registry.queryProfile.calls;NorthlightRenderThreadProbe::configure(false,false);
+ assert(p->GetData(nullptr,0,0)==D3DERR_INVALIDCALL&&d.registry.queryProfile.calls==count);
+ p->Release();assert(d.registry.size()==0&&raw.refs==0);
+}
 template<class T>void lifetime(unsigned type=0){
  Device d;Resource<T> raw(d);raw.type=type;T* p=&raw;d.registry.wrap(&p);assert(p!=&raw&&d.refs==2&&raw.refs==1&&d.registry.size()==1);
  assert(d.registry.unwrap(p)==&raw&&!d.disabled);assert(d.registry.unwrap(static_cast<T*>(nullptr))==nullptr&&!d.disabled);
@@ -232,6 +251,7 @@ int main(int argc,char** argv){
  ownerElision(10000);
  census();
  shapeUnwrap();
+ queryProfiling();
  lifetime<IDirect3DSurface9>(D3DRTYPE_SURFACE);lifetime<IDirect3DTexture9>(D3DRTYPE_TEXTURE);lifetime<IDirect3DCubeTexture9>(D3DRTYPE_CUBETEXTURE);lifetime<IDirect3DVolumeTexture9>(D3DRTYPE_VOLUMETEXTURE);lifetime<IDirect3DVolume9>();lifetime<IDirect3DVertexShader9>();lifetime<IDirect3DPixelShader9>();lifetime<IDirect3DVertexDeclaration9>();lifetime<IDirect3DQuery9>();
  containment();escapes();rawLookup();failures();threads();foreignInputs();ownerLifetime();
  std::puts("PASS gate census: one real acquisition per wrapping device call, registry/resource classes, foreign resource calls with the first {tid,site}, owner-thread final release destroys the device after its guard; rawOf map-only lookup (miss 0 while active, pass-through after escape); O(1) shape unwrap for nine proxy classes incl. base-texture views, foreign-registry and raw inputs keep the map path; nine resource types, COM identity/refcounts, child/container wrapping, foreign device escape, allocation failures, raw input disables, 8000 concurrent wraps, 4000 foreign unwraps, 64 pointer reuse cycles, final owner/gate lifetime");

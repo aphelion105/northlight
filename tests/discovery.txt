@@ -30,9 +30,11 @@ test_client_archive_order.py
 test_client_archives.py
 test_client_config.py
 test_client_identity.py
+test_client_latency_diagnostics.py
 test_colour_tent_2d.py
 test_command_stream.py
 test_command_stream_wiring.py
+test_command_wait_windows.py
 test_concurrent_geometry_build.py
 test_contact_fog.py
 test_contact_lighting.py
@@ -50,12 +52,14 @@ test_effects_cost_report.py
 test_emitter_patch.py
 test_emitter_pin_report.py
 test_entrypoints_isolated.py
+test_expired_world_geometry.py
 test_fast_memcmp.py
 test_fog_clouds.py
 test_fog_clouds_wiring.py
 test_fog_locale.py
 test_fog_motion.py
 test_fog_temporal_wiring.py
+test_frame_stall_profile.py
 test_game_snapshot.py
 test_geometry_handoff.py
 test_gi_quality.py
@@ -68,6 +72,7 @@ test_install_world_cache.py
 test_instance_map_name_filter.py
 test_instance_maps.py
 test_instance_scene.py
+test_interval_temporaries.py
 test_job_system.py
 test_lamp_daylight.py
 test_legacy_fog_hold.py
@@ -106,6 +111,9 @@ test_point_light_shadow.py
 test_point_shadow_schedule.py
 test_prepare_worker.py
 test_probe_blend.py
+test_probe_blend_equivalence.py
+test_probe_relight_cache.py
+test_probe_texture_upload.py
 test_progressive_gi_worker.py
 test_quality_docs.py
 test_quality_settings.py
@@ -119,6 +127,7 @@ test_replay_bounds.py
 test_replay_bounds_job.py
 test_replay_bounds_safety.py
 test_replay_capture_constants.py
+test_replay_diagnostic_cadence.py
 test_replay_draw_state.py
 test_replay_envelope_cache.py
 test_replay_envelopes.py
@@ -135,6 +144,7 @@ test_shader_read_set.py
 test_shader_read_set_client.py
 test_shadow_blob_client.py
 test_shadow_blob_model.py
+test_shadow_culling_batch.py
 test_shadow_experiment.py
 test_shadow_layer_analysis.py
 test_shadow_pivot.py
@@ -143,6 +153,7 @@ test_shadow_shimmer.py
 test_snapshot_allocation.py
 test_snapshot_prediction.py
 test_solar_volume.py
+test_spell_fog_fit.py
 test_spell_fog_proof_client.py
 test_spell_layer.py
 test_static_cache_dirty_rect.py
@@ -158,6 +169,7 @@ test_terrain_cache_capacity.py
 test_terrain_capture_bounds.py
 test_terrain_capture_optimization.py
 test_terrain_content_cache.py
+test_terrain_metadata.py
 test_terrain_reach_fallback.py
 test_terrain_reach_fallback_wiring.py
 test_terrain_shadow_candidates.py
@@ -193,6 +205,7 @@ test_world_cache_diff.py
 test_world_light_placements.py
 test_world_local_lights.py
 test_world_mesh_pages.py
+test_shadow_paging_memory.py
 test_world_mesh_pages_real.py
 test_world_mesh_plan.py
 test_world_probe_coverage.py

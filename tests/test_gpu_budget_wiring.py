@@ -37,11 +37,11 @@ checks['renderer: timer opened only with GpuBudgetMs > 0, right after the SavedS
     'struct TimerEnd { NorthlightGpuFrameTimer* t; bool open; ~TimerEnd(){if(open)t->end();} } timerEnd{gpuTimer.get(),world&&world->gpuBudgetMs()&&gpuTimer->begin()};' in re_
     and re_.index('if (!saved.ok) return;')<re_.index('timerEnd{')<re_.index('gpuProfile->beginFrame(')<re_.index('profileEnd{'))
 checks['renderer: the timer is created, reset before a device Reset and destroyed with the profiler']=(
-    'gpuTimer=std::make_unique<NorthlightGpuFrameTimer>(ext);' in rc and 'gpuProfile->reset();gpuTimer->reset();' in rc and 'gpuProfile.reset();gpuTimer.reset();' in rc)
+    'gpuTimer=std::make_unique<NorthlightGpuFrameTimer>(ext);' in rc and 'gpuProfile->reset();gpuSceneProfile->reset();gpuFrameStarted=gpuSceneSplit=gpuEffectsSplit=false;gpuTimer->reset();' in rc and 'gpuProfile.reset();gpuSceneProfile.reset();gpuTimer.reset();' in rc)
 fin=rc[rc.index('void finishFrameImpl() {'):]
 gb=rc[rc.index('void gpuBudgetFrame(){'):rc.index('void finishFrameImpl() {')]
 checks['renderer: once per frame in finishFrameImpl, after the profile poll, ungated by Diagnostics']=(
-    fin.index('if(diagnostics())gpuProfile->poll();')<fin.index('gpuBudgetFrame();')<fin.index('bool modifiers=(GetAsyncKeyState(VK_CONTROL)') and rc.count('gpuBudgetFrame();')==1)
+    fin.index('if(diagnostics()){gpuProfile->poll();if(gpuSceneProfile)gpuSceneProfile->poll();}')<fin.index('gpuBudgetFrame();')<fin.index('bool modifiers=(GetAsyncKeyState(VK_CONTROL)') and rc.count('gpuBudgetFrame();')==1)
 checks['renderer: GpuBudgetMs=0 resets the controller and sets level 0 before anything is polled']=(
     'if(!budget){gpuBudget.reset();gpuBudgetQpc=0;if(world)world->setGpuBudgetLevel(0);return;}' in gb and gb.index('return;}')<gb.index('poll(ms)'))
 checks['renderer: only a finished reading updates the controller (dt from the previous reading), the level goes to the world']=(

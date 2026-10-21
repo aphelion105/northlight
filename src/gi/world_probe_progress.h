@@ -54,7 +54,8 @@ class ProbePublicationCadence {
     uint32_t last_=0;
     bool published_=false,dirty_=false;
 public:
-    static constexpr uint32_t IntervalMs=250;
+    // Publish during camera motion: 250 ms was thirty frames at 120 Hz.
+    static constexpr uint32_t IntervalMs=33;
     void reset(){last_=0;published_=dirty_=false;}
     void solved(){dirty_=true;}
     bool due(uint32_t now,unsigned processed)const {

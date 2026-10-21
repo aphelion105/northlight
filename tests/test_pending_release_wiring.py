@@ -23,7 +23,7 @@ def method(signature,text=w):
 render=method('    bool render(IDirect3DSurface9* targetSurface');upload=method('    bool upload(NorthlightStreaming::Budget& streamBudget){')
 context=method('    void updateWorldContext(const char* map,const float* camera,const NorthlightWmoContext::Lighting* global=nullptr){');helper=method('    void releaseOrphanedPending(const char* site){')
 gate='if(!ready()||!resources(w,h,fmt)||!upload(streamBudget)){'
-reset='active.reset();}'
+reset='active.reset();expiredMeshPending|=heldDrawable;}'
 retire='const char* retired=active&&!NorthlightWorldStreaming::retained(active->map,active->center,r.map,r.camera)?(active->map!=r.map?"map":"retired"):nullptr;'
 adopt='if(published&&published!=active&&NorthlightWorldStreaming::adopts(published->map,published->center,bool(published->bvh),active&&active->bvh,r.map,r.camera)){'
 builder=w[w.index('    void work() {'):w.index('\n    bool check(HRESULT h,const char* s)')]
@@ -42,7 +42,7 @@ checks={
   context.count(reset)==1 and context.count('releaseOrphanedPending("range");')==1 and context.index(reset)<context.index('releaseOrphanedPending("range");')<context.index('logf("WORLD camera tick='), # 0.3.200 added an earlier GetTickCount() local; anchor on the camera line
  '0.3.169 retire on the hard limit or a map change, then the release rule (A2, A5)':
   context.count(retire)==1 and context.index(retire)<context.index(reset)<context.index('releaseOrphanedPending("range");')
-  and 'if(retired){retirementBacklog.retireOrFree(reaper,active,snapshotRetireBytes(*active));active.reset();}' in context
+  and 'if(retired){expiredMeshMapChanged|=heldDrawable&&active->map!=r.map;retirementBacklog.retireOrFree(reaper,active,snapshotRetireBytes(*active));active.reset();expiredMeshPending|=heldDrawable;}' in context
   and 'NorthlightWorldStreaming::applicable(active->map,active->center,r.map,r.camera)){retirementBacklog' not in context,
  '0.3.169 adoption uses the same hard limit and never takes an error snapshot over a drawable one (A1, A3)':
   context.count(adopt)==1 and context.index(adopt)<context.index(retire)

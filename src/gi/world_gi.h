@@ -240,6 +240,13 @@ Probe solveProbe(const BVH& bvh, Vec3 position, const Lighting& lighting,
 Probe solveProbePrepared(const BVH& bvh, Vec3 position, const PreparedLighting& lighting,
                          unsigned rays = 32, uint32_t seed = 1,
                          const BVH* movingGeometry = nullptr);
+// Colour-independent transport for the renderer's sun, sky and one secondary
+// direction. Point-light irradiance is fixed by the cache's geometry signature.
+// Relighting changes only floating-point grouping, not paths or sample counts.
+struct ProbeResponse { Probe fixed; Vec3 sources[3][4]; };
+Probe solveProbeResponse(const BVH& bvh,Vec3 position,const PreparedLighting& lighting,
+                         unsigned rays,uint32_t seed,ProbeResponse& response);
+Probe relightProbe(const ProbeResponse& response,const PreparedLighting& lighting);
 // Static-only paths of one probe's rays, stored as the exact moving-geometry
 // queries a moving solve issues while its path equals the static path. Owned
 // per probe by the caller; valid for one static BVH/lighting generation.

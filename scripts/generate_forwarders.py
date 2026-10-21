@@ -147,7 +147,7 @@ CUSTOM_IDS = ('Nop', 'Sync', 'Destroy', 'Derive', 'Snapshot', 'Quiesce', 'Stop',
               'CreateVertexShader', 'CreatePixelShader', 'CreateQuery', 'CreateStateBlock', 'BeginStateBlock', 'EndStateBlock',
               'CreateAdditionalSwapChain', 'UnlockBuffer', 'UnlockBufferRef', 'UnlockRect', 'UnlockBox', 'DrawPrimitiveUP', 'DrawIndexedPrimitiveUP',
               # census labels of task-based sync calls (never recorded as commands of their own; see runTask)
-              'SyncGetData', 'SyncLock', 'SyncUnlock', 'SyncCreate', 'SyncReset', 'SyncRelease', 'SyncUpDraw', 'SyncInit')
+              'SyncGetData', 'SyncLock', 'SyncUnlock', 'SyncCreate', 'SyncReset', 'SyncRelease', 'SyncUpDraw', 'SyncInit', 'PollEventQuery')
 DEVICE = 'IDirect3DDevice9'
 ITYPE = re.compile(r'(?:const\s+)?(?:struct\s+)?IDirect3D\w*9\s*\*')
 
