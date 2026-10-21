@@ -1,7 +1,7 @@
 {
   "normal_source_sha256": "3b08ce9850b9f32f72b75a4be8f709302e3ba4ab6be562ff148c306bd59a23e4",
   "parallax_source_sha256": {
-    "auto_parallax.hlsl": "58c500515a3786cff0bc68933f495544a27624ecfc262eb6a1832686a80303b8",
+    "auto_parallax.hlsl": "d118f6e181bf56e437780426d083264e6edb9dd0ae7bee54be1c28115ca372af",
     "auto_parallax_prefix.hlsl": "aaceb5594e0c881e7d05ab582e671fd6713640414e2cd6da79583b5faa74c103"
   },
   "source_sha256": "8edd159c2ce7d4369ac0b92ba498ea4fd735a0925fabc6201d167cf1d793b038",
@@ -9,8 +9,8 @@
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
   "shaders": {
     "BumpOpaque": {
-      "sha256": "2e3e196b6d790a9062fbadfd83efa1c7f4aca97e387a1d5e57e2e7bc602b2e50",
-      "static_instruction_slots": 250,
+      "sha256": "f04e1a0267d8f7700588a019b467915dbdccce9f30daa80d699f1935c92bb3e1",
+      "static_instruction_slots": 255,
       "temporary_registers": 10,
       "samplers": [
         2
@@ -19,8 +19,8 @@
         "mov": 19,
         "mul": 44,
         "rcp": 13,
-        "add": 52,
-        "cmp": 21,
+        "add": 54,
+        "cmp": 24,
         "texkill": 2,
         "dsx": 2,
         "dsy": 2,
@@ -40,8 +40,8 @@
       }
     },
     "BumpLayer": {
-      "sha256": "6204c9a697ef5885fab9169311ce601e0eaacf6c87202f9df36ffb931a45d035",
-      "static_instruction_slots": 250,
+      "sha256": "21012b9c2ee9c61dc4f74e5054a193f52fd9f4d7fcbd9649b5ac630575b637d5",
+      "static_instruction_slots": 255,
       "temporary_registers": 10,
       "samplers": [
         1,
@@ -51,8 +51,8 @@
         "mov": 19,
         "mul": 43,
         "rcp": 13,
-        "add": 51,
-        "cmp": 21,
+        "add": 53,
+        "cmp": 24,
         "texkill": 2,
         "dsx": 2,
         "dsy": 2,
@@ -74,8 +74,8 @@
       }
     },
     "BumpWall": {
-      "sha256": "98501ecf07b5b3be61edff6a1ba6a31c8208baf1ebe557e0b3c1f3bb5a45d71d",
-      "static_instruction_slots": 253,
+      "sha256": "ca604bc4e931916394b0e67ebc2398f24b76cf99079f4cf330f8be14db694ccb",
+      "static_instruction_slots": 258,
       "temporary_registers": 10,
       "samplers": [
         0,
@@ -85,8 +85,8 @@
         "mov": 20,
         "mul": 44,
         "rcp": 13,
-        "add": 51,
-        "cmp": 21,
+        "add": 53,
+        "cmp": 24,
         "texkill": 2,
         "dsx": 2,
         "dsy": 2,
@@ -106,8 +106,8 @@
       }
     },
     "BumpGrass": {
-      "sha256": "00a959d75c3cd547ef4c60ab42894c3334c3a57072ba7ddbc32504c9e3b00a07",
-      "static_instruction_slots": 251,
+      "sha256": "6ac90dba182ba6e8d35d9c085933d935307cb2179a4ec7f61159fa1b4e624d97",
+      "static_instruction_slots": 256,
       "temporary_registers": 10,
       "samplers": [
         0,
@@ -117,8 +117,8 @@
         "mov": 20,
         "mul": 44,
         "rcp": 13,
-        "add": 51,
-        "cmp": 21,
+        "add": 53,
+        "cmp": 24,
         "texkill": 2,
         "dsx": 2,
         "dsy": 2,
@@ -139,8 +139,8 @@
       }
     },
     "BumpWallOpaque": {
-      "sha256": "f9fc69c7389d701d078aa51e9fe5a42a632506e36c2fa58cd59ee4aa8d79f712",
-      "static_instruction_slots": 249,
+      "sha256": "cdef32a2f7fa9e608ae1e1082e1de3d9129da5d9b9cbc2cb8f26d1bc6cf16bd3",
+      "static_instruction_slots": 254,
       "temporary_registers": 10,
       "samplers": [
         2
@@ -149,8 +149,8 @@
         "mov": 20,
         "mul": 43,
         "rcp": 13,
-        "add": 51,
-        "cmp": 21,
+        "add": 53,
+        "cmp": 24,
         "texkill": 2,
         "dsx": 2,
         "dsy": 2,
@@ -170,8 +170,8 @@
       }
     },
     "BumpComposite": {
-      "sha256": "a42881027bbd5160c5352bba8bb8c703b28ae958861960ea012acff63e7f95ce",
-      "static_instruction_slots": 469,
+      "sha256": "189d0a111b7fdcbf9ee592dbe283381ca7ed457580ecb19fa6d3eafd00ab7ae4",
+      "static_instruction_slots": 479,
       "temporary_registers": 15,
       "samplers": [
         0,
@@ -183,8 +183,8 @@
         "mov": 34,
         "mul": 80,
         "rcp": 22,
-        "add": 99,
-        "cmp": 35,
+        "add": 103,
+        "cmp": 41,
         "dsy": 3,
         "dp2add": 6,
         "rsq": 13,

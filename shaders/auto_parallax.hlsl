@@ -37,7 +37,7 @@ float parallaxShadow(sampler2D heightMap,float2 uv,float height,float distance,M
     float span=1-height;
     float2 extent=clamp(ray.xy/max(ray.z,.08),-6,6)*control.x*span*fade;
     float blocked=0;
-    [loop]for(int i=1;i<=16&&i<=steps;++i){
+    [loop]for(int i=1;i<=16&&i<=steps&&blocked<1;++i){
         float part=i/steps;
         float h=tex2Dgrad(heightMap,uv+extent*part,f.tx,f.ty).b;
         blocked=max(blocked,saturate((h-height-span*part-.012)*16));

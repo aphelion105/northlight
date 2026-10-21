@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# northlight-test: requires=windows-gpu,zig
-"""Check compressed mip accounting and the unchanged material-cache capacity."""
+# northlight-test: requires=windows-exe,zig
+"""Check compressed mip accounting and the adaptive bounded material-cache capacity."""
 from pathlib import Path
 import subprocess,sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
