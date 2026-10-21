@@ -7,6 +7,13 @@
 #include "displacement_geometry.h"
 int main(){
     using namespace NorthlightDisplacementGeometry;
+    // Packing preserves index values/order at the 16-bit boundary; larger meshes retain 32-bit indices.
+    {Mesh indices;indices.vertexCount=65536;indices.indices={0,65535,12345};
+     std::array<uint16_t,4> narrow={0,0,0,0xCAFE};assert(indexElementBytes(indices)==2);copyIndices(indices,narrow.data());
+     assert(narrow[0]==0&&narrow[1]==65535&&narrow[2]==12345&&narrow[3]==0xCAFE);
+     indices.vertexCount=65537;indices.indices={65536,65535,0};
+     std::array<uint32_t,4> wide={0,0,0,0xCAFE};assert(indexElementBytes(indices)==4);copyIndices(indices,wide.data());
+     assert(wide[0]==65536&&wide[1]==65535&&wide[2]==0&&wide[3]==0xCAFE);}
     struct V {float x,y,z,nx,ny,nz,u,v;};
     const V data[]={{0,0,0,0,0,1,0,0},{1,0,0,0,0,1,1,0},{0,1,0,0,0,1,0,1},{1,1,0,0,0,1,1,1}};
     const D3DVERTEXELEMENT9 decl[]={{0,0,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_POSITION,0},{0,12,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_NORMAL,0},{0,24,D3DDECLTYPE_FLOAT2,0,D3DDECLUSAGE_TEXCOORD,0},D3DDECL_END()};

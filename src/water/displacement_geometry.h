@@ -5,6 +5,11 @@
 namespace NorthlightDisplacementGeometry {
 using Mesh=NorthlightDrawSnapshot::Mesh;
 using Four=NorthlightActorDeformation::Four;
+inline unsigned indexElementBytes(const Mesh& mesh){return mesh.vertexCount<=65536?sizeof(uint16_t):sizeof(uint32_t);}
+inline void copyIndices(const Mesh& mesh,void* destination){
+    if(indexElementBytes(mesh)==sizeof(uint16_t))std::copy(mesh.indices.begin(),mesh.indices.end(),static_cast<uint16_t*>(destination));
+    else std::memcpy(destination,mesh.indices.data(),mesh.indices.size()*sizeof(uint32_t));
+}
 struct Height {
     unsigned width=0,height=0;std::vector<float> values;
     float sample(float u,float v,bool clampU=false,bool clampV=false)const{
