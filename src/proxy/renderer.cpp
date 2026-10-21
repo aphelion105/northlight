@@ -222,6 +222,7 @@ template<class T> static uint64_t shaderHash(T* shader, std::vector<DWORD>& word
 #include "gpu_budget.h"
 #include "water_renderer.h"
 #include "world_renderer.h"
+#include "auto_bump_renderer.h"
 #include "client_latency_diagnostics.h"
 static void logClientLatency(std::uint64_t frame,const char* reason){
     const auto s=NorthlightClientLatency::read(reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)),NorthlightWorldContext::readSelfLive);
@@ -316,6 +317,7 @@ class Device final : public GuardedMirrorDevice {
     }
 
     std::unique_ptr<WorldRenderer> world;
+    std::unique_ptr<NorthlightAutoBump> autoBump;
     std::unique_ptr<NorthlightCelestialDiscRenderer> celestialDiscs;
     std::unique_ptr<NorthlightShadowBlobFilter> shadowBlobs;
     std::unique_ptr<NorthlightWaterRenderer> water;
@@ -492,10 +494,11 @@ private:
         gpuFrameStarted=gpuSceneSplit=gpuEffectsSplit=false;
         if(!applied||failed)stateBlocks.clear();
         if(!enabled||extensionFault){stateBlocks.clear();if(world)world->releaseStateCache();if(water)water->releaseStateCache();}
-        if(world)world->endFrame(!extensionFault);if(water)water->endFrame();if(celestialDiscs)celestialDiscs->endFrame();if(shadowBlobs)shadowBlobs->endFrame();
+        if(world)world->endFrame(!extensionFault);if(water)water->endFrame();if(autoBump)autoBump->endFrame();if(celestialDiscs)celestialDiscs->endFrame();if(shadowBlobs)shadowBlobs->endFrame();
         drop(worldDepth);worldDepthDescKnown=false; rainMrtUnbind();terrain = captured = applied = projectionValid = false;rainMaskCleared=rainMaskDrawn=rainMaskFrame=rainMaskOk=rainDepthOk=false; /* 0.3.202 (rain mask MRT): RT1 never outlives a frame */earlyDepth.reset();resetTranslucentCensus(); /* the TRANSLUCENT line is logged before clearFrame */
     }
     void releaseResources() {
+        if(autoBump)autoBump->reset();
         rainMrtUnbind();stateBlocks.clear();clearFrame();maskFormatFor=nullptr;maskFormatValue=0;maskStencil=false;maskDsId=nullptr; /* 0.3.212 (task 32): the depth may change with the device */
         drop(sceneSurface); drop(aoSurface); drop(aoRawSurface); drop(scene); drop(depthTex); drop(ao); drop(aoRaw);drop(rainMaskMS);drop(rainMaskSurface);drop(rainMask);drop(rainDepth);rainMaskFailed=false; /* 0.3.202 (rain) */
         drop(aoPS); drop(aoBlurPS); drop(aoContactBloomPS); drop(contactBloomPS); drop(compositePS);drop(rainMrtPS);drop(rainScrubPS); width = height = 0;
@@ -598,7 +601,7 @@ private:
         if (!decodeProjection(p,q)) return false;
         D3DVIEWPORT9 vp={};
         if(FAILED(ext->GetViewport(&vp))||!std::isfinite(vp.MinZ)||!std::isfinite(vp.MaxZ)||vp.MinZ<0||vp.MaxZ>1||vp.MaxZ<=vp.MinZ)return false;
-        nearZ=q.nearZ; farZ=q.farZ; scaleX=q.scaleX; scaleY=q.scaleY;fogForward=p[11];
+        nearZ=q.nearZ; farZ=q.farZ; scaleX=q.scaleX; scaleY=q.scaleY;fogForward=p[11];if(autoBump)autoBump->setProjection(scaleX,scaleY,fogForward);
         worldMinDepth=vp.MinZ;worldMaxDepth=vp.MaxZ;
         return true;
     }
@@ -813,6 +816,7 @@ private:
         if(!fold&&!legacyComposite())return;
         if(world&&debugMode==0){
             traceWorld=0;
+            world->setMaterialDetail(autoBump?autoBump->texture():nullptr,autoBump?autoBump->gain():0.f,autoBump?autoBump->distance():48.f,autoBump?autoBump->occlusionTexture():nullptr);
             world->setNameMask(maskOn?worldDepth:nullptr); /* 0.3.212 (task 32) */
             world->setRainMask(rainMaskTex); /* 0.3.202 (rain): RainMask for this frame's composite only (resolved and scrubbed at the top of renderEffects) */
             if(!world->render(saved.targets[0],depthTex,width,height,sceneFormat,nearZ,farZ,worldMinDepth,worldMaxDepth,worldDebug,gpuProfile.get(),waterMask,fold?scene:nullptr,fold?ao:nullptr)){
@@ -1010,6 +1014,7 @@ private:
                     if(resolveDepth()){earlyDepth.success();++earlyResolves;++earlyResolveTotal;if(sampled())earlyResolveAt=censusDraws+1;}}
                 if(sampled()){const unsigned at=++censusDraws; /* 0.3.188 (task 3): read-only census before capture(vs) so no early return hides a draw; sample frames only */
                     if(!drawWaterVS&&NorthlightTranslucentDepth::opaqueZWrite(zw,ab,sb,db,cw))lastOpaqueZAt=at;}
+                if(autoBump){float light[4];world->materialLight(light);autoBump->setLight(light);}
                 {const unsigned long long reads=CpuScope::reads;{CpuScope cap(sampledDrawTimers()?&cpuCapture:nullptr);capture(vs);}if(CpuScope::reads!=reads)cpuCaptureReads+=CpuScope::reads-reads-1;}
                 if(mirrorState.active()&&mirrorAuditSchedule.afterWorldCapture(frame,
                     mirrorState.vsFloatKnown[0]&&mirrorState.vsFloatKnown[DeviceMirror::VsFloat-1])){
@@ -1047,8 +1052,13 @@ private:
     }
     void dropTerrainShadowSwap(){if(shadowSwapOriginal)shadowSwapOriginal->Release();shadowSwapOriginal=shadowSwapReplacement=nullptr;if(shadowSwapVertexOriginal)shadowSwapVertexOriginal->Release();shadowSwapVertexOriginal=shadowSwapVertexReplacement=nullptr;}
 
+    template<class Draw> HRESULT materialNativeDraw(Draw draw,IDirect3DVertexShader9* vs=nullptr,IDirect3DPixelShader9* ps=nullptr){
+        if(autoBump&&enabled&&!applied&&!failed&&!memoryGuard.capsHalved()){
+            ExtensionDevice::RawScope materialRaw(*ext);return autoBump->nativeDraw(draw,vs,ps);
+        }return draw();
+    }
     template<class Draw> HRESULT terrainShadowDraw(bool claimed,Draw draw){
-        if(!shadowSwapOriginal)return claimed?D3D_OK:draw(); /* 0.3.187: no swap planned (planTerrainShadowSwap sets both or neither) */
+        if(!shadowSwapOriginal)return claimed?D3D_OK:materialNativeDraw(draw); /* no shadow swap planned */
         IDirect3DPixelShader9* original=shadowSwapOriginal;IDirect3DPixelShader9* replacement=shadowSwapReplacement;
         IDirect3DVertexShader9* vertexOriginal=shadowSwapVertexOriginal;IDirect3DVertexShader9* vertexReplacement=shadowSwapVertexReplacement;
         shadowSwapOriginal=shadowSwapReplacement=nullptr;
@@ -1064,8 +1074,19 @@ private:
             hr=draw();
             if(bound){CpuScope swap(sampledHookTimer());ext->SetPixelShaderConstantF(shadowSwapConstantBase,saved,shadowSwapConstantCount);ext->SetPixelShader(original);ext->SetVertexShader(vertexOriginal);++terrainShadowDraws;}
         }
-        else if(!claimed&&replacement){{CpuScope swap(sampledHookTimer());ext->SetPixelShader(replacement);}hr=draw();{CpuScope swap(sampledHookTimer());ext->SetPixelShader(original);}++terrainShadowDraws;}
-        else if(!claimed)hr=draw();
+        else if(!claimed&&replacement&&vertexOriginal){
+            float saved[24];bool bound=false;
+            {CpuScope swap(sampledHookTimer());
+             if(SUCCEEDED(ext->GetPixelShaderConstantF(shadowSwapConstantBase,saved,shadowSwapConstantCount))){
+                 bound=SUCCEEDED(ext->SetVertexShader(vertexReplacement))&&SUCCEEDED(ext->SetPixelShader(replacement))&&SUCCEEDED(ext->SetPixelShaderConstantF(shadowSwapConstantBase,shadowSwapConstants,shadowSwapConstantCount));
+                 if(!bound){ext->SetPixelShaderConstantF(shadowSwapConstantBase,saved,shadowSwapConstantCount);ext->SetPixelShader(original);ext->SetVertexShader(vertexOriginal);}
+             }}
+            hr=materialNativeDraw(draw,vertexOriginal,original);
+            if(bound){CpuScope swap(sampledHookTimer());ext->SetPixelShaderConstantF(shadowSwapConstantBase,saved,shadowSwapConstantCount);ext->SetPixelShader(original);ext->SetVertexShader(vertexOriginal);++terrainShadowDraws;}
+        }
+        else if(!claimed&&replacement){{CpuScope swap(sampledHookTimer());ext->SetPixelShader(replacement);}hr=materialNativeDraw(draw,nullptr,original);{CpuScope swap(sampledHookTimer());ext->SetPixelShader(original);}++terrainShadowDraws;}
+        else if(!claimed)hr=materialNativeDraw(draw,vertexOriginal,original);
+        if(vertexOriginal)vertexOriginal->Release();
         if(vertexOriginal)vertexOriginal->Release();
         if(original)original->Release();
         return hr;
@@ -2115,6 +2136,7 @@ public:
         mirrorState.gate.reportContext=this;mirrorState.gate.report=&gateForeignReport;
         parent->AddRef(); QueryPerformanceFrequency(&cpuFrequency);
         gpuProfile=std::make_unique<NorthlightGpuProfile>(ext);gpuSceneProfile=std::make_unique<NorthlightGpuProfile>(ext,"GPU frame",2);gpuTimer=std::make_unique<NorthlightGpuFrameTimer>(ext); world=std::make_unique<WorldRenderer>(ext);world->setEffectsBuckets(&effectsBuckets);
+        autoBump=std::make_unique<NorthlightAutoBump>(ext);autoBump->configure(world->surfaceSettings());
         world->setConstantEpochSource({&mirrorState.constantEpoch,&mirrorState}); /* 0.3.180 (C1): read in place under the draw's gate */
         char skyRoot[MAX_PATH*3];WideCharToMultiByte(CP_UTF8,0,rootPath,-1,skyRoot,sizeof skyRoot,nullptr,nullptr);celestialDiscs=std::make_unique<NorthlightCelestialDiscRenderer>(ext,std::string(skyRoot)+"world-cache/celestial");celestialDiscs->setTerrainSource([this]{return world->celestialTerrainGeneration();},[this](unsigned body,const float* matrix){return world->drawCelestialTerrain(body,matrix);},[this](unsigned body){world->noteCelestialTerrainReuse(body);});celestialDiscs->setIdentityMap([this](std::uintptr_t exposed){return mirrorResources.rawOf(exposed,!mirrorState.enabled);});shadowBlobs=std::make_unique<NorthlightShadowBlobFilter>(ext,world->blobShadowStrength());shadowBlobs->setTexturePeek([](void* e,DWORD stage,IDirect3DBaseTexture9*& out){return static_cast<ExtensionDevice*>(e)->peekTexture(stage,out);},ext); /* 0.3.196 (task 12): borrowed stage-0 identity */water=std::make_unique<NorthlightWaterRenderer>(ext); logf("D3D9 device wrapped. Ctrl+Shift+F7 fog; F8 GI; F9 shadows; F10 all effects; F12 world debug (all with Ctrl+Shift). F11 unassigned. Components start ON; GI cache stays warm.");
         contactAO=world->contactAO(); /* 0.3.201 (task 18) */
@@ -2140,6 +2162,7 @@ public:
         logGateThreads("destroy");
         memoryDiagnostics.reset();
         spellTeardown();
+        autoBump.reset();
         dropBlobFaint();shadowBlobs.reset();celestialDiscs.reset();gpuProfile.reset();gpuSceneProfile.reset();gpuTimer.reset();drop(latencyQuery);water.reset();world.reset();releaseResources();
         stateBlocks.clear();ext->Release();ext=nullptr;
         const ULONG backendReferences=real->Release();parent->Release();
@@ -2167,6 +2190,7 @@ public:
     // Frame boundary only (after clearFrame()): no draw of the finished frame
     // still references a trimmed cache. Warnings are logged with Diagnostics=0.
     void trimMemory(const NorthlightMemoryDiagnostics::Sample& trigger){
+        if(autoBump)autoBump->reset();
         LARGE_INTEGER start={},end={};QueryPerformanceCounter(&start);
         WorldRenderer::MemoryTrim t;if(world)t=world->trimMemory();
         QueryPerformanceCounter(&end);const DWORD now=GetTickCount();memoryGuard.trimCompleted(now);
@@ -2600,31 +2624,31 @@ public:
     }
     HRESULT STDMETHODCALLTYPE CreateVertexShader(const DWORD* code,IDirect3DVertexShader9** out) override { Guard mirrorLock(mirrorState.gate);
         HRESULT hr=ext->CreateVertexShader(code,out);
-        if(SUCCEEDED(hr)&&out&&*out)extensionWork("vertex shader registration",[&]{++vsGeneration;std::vector<DWORD> words;auto h=shaderHash(*out,words);int tag=NorthlightShaderTags::deviceTag(h);vsHashes[*out]=h;if(spellOn){shaderReads[static_cast<void*>(*out)]=NorthlightShaderReads::scan(reinterpret_cast<const uint32_t*>(words.data()),words.size());{bool bare=false;const bool ok=NorthlightSpellFog::vsFogProven(reinterpret_cast<const uint32_t*>(words.data()),words.size(),&bare);vsFogProven[*out]=uint8_t(ok?(bare?2:1):0);}}uiFallbackForget(*out);vsMajor[*out]=!words.empty()&&(words[0]>>16)==0xFFFEu?unsigned((words[0]>>8)&0xFFu):0u;if(world)world->registerShader(*out,h);if(water)water->registerVertex(*out,h,words.data(),words.size());vsTags[*out]=tag|(water&&water->hasVertex(*out)?kWaterTag:0)|int(m2ShaderFamily(h)<<kFamilyShift);if(tag==1)++matchedTerrain;else if(tag==2)++matchedUI;});
+        if(SUCCEEDED(hr)&&out&&*out)extensionWork("vertex shader registration",[&]{++vsGeneration;std::vector<DWORD> words;auto h=shaderHash(*out,words);int tag=NorthlightShaderTags::deviceTag(h);vsHashes[*out]=h;if(spellOn){shaderReads[static_cast<void*>(*out)]=NorthlightShaderReads::scan(reinterpret_cast<const uint32_t*>(words.data()),words.size());{bool bare=false;const bool ok=NorthlightSpellFog::vsFogProven(reinterpret_cast<const uint32_t*>(words.data()),words.size(),&bare);vsFogProven[*out]=uint8_t(ok?(bare?2:1):0);}}uiFallbackForget(*out);vsMajor[*out]=!words.empty()&&(words[0]>>16)==0xFFFEu?unsigned((words[0]>>8)&0xFFu):0u;if(world)world->registerShader(*out,h);if(autoBump)autoBump->registerVertex(*out,h,words.data(),words.size());if(water)water->registerVertex(*out,h,words.data(),words.size());vsTags[*out]=tag|(water&&water->hasVertex(*out)?kWaterTag:0)|int(m2ShaderFamily(h)<<kFamilyShift);if(tag==1)++matchedTerrain;else if(tag==2)++matchedUI;});
         if(SUCCEEDED(hr))mirrorResources.wrap(out);return hr;
     }
     HRESULT STDMETHODCALLTYPE CreatePixelShader(const DWORD* code,IDirect3DPixelShader9** out) override { Guard mirrorLock(mirrorState.gate);
         HRESULT hr=ext->CreatePixelShader(code,out);
-        if(SUCCEEDED(hr)&&out&&*out)extensionWork("pixel shader registration",[&]{std::vector<DWORD> words;auto h=shaderHash(*out,words);uiFallbackForget(*out);psTags[*out]=contains(kUiPS,h)?2:0;psHashes[*out]=h;if(spellOn)shaderReads[static_cast<void*>(*out)]=NorthlightShaderReads::scan(reinterpret_cast<const uint32_t*>(words.data()),words.size());psMajor[*out]=!words.empty()&&(words[0]>>16)==0xFFFFu?unsigned((words[0]>>8)&0xFFu):0u;if(spellOn)psFogReg[*out]=psMajor[*out]==3?NorthlightLegacyFog::ps3FogColorRegister(reinterpret_cast<const uint32_t*>(words.data()),words.size()):-1;if(water)water->registerPixel(*out,h,words.data(),words.size());if(world)world->registerPixelShader(*out);});
+        if(SUCCEEDED(hr)&&out&&*out)extensionWork("pixel shader registration",[&]{std::vector<DWORD> words;auto h=shaderHash(*out,words);uiFallbackForget(*out);psTags[*out]=contains(kUiPS,h)?2:0;psHashes[*out]=h;if(spellOn)shaderReads[static_cast<void*>(*out)]=NorthlightShaderReads::scan(reinterpret_cast<const uint32_t*>(words.data()),words.size());psMajor[*out]=!words.empty()&&(words[0]>>16)==0xFFFFu?unsigned((words[0]>>8)&0xFFu):0u;if(spellOn)psFogReg[*out]=psMajor[*out]==3?NorthlightLegacyFog::ps3FogColorRegister(reinterpret_cast<const uint32_t*>(words.data()),words.size()):-1;if(autoBump)autoBump->registerPixel(*out,h);if(water)water->registerPixel(*out,h,words.data(),words.size());if(world)world->registerPixelShader(*out);});
         if(SUCCEEDED(hr))mirrorResources.wrap(out);return hr;
     }
     // 0.3.187: the four draw entry points share drawHook(); each passes its capture and its real draw.
     HRESULT STDMETHODCALLTYPE DrawPrimitive(D3DPRIMITIVETYPE t,UINT start,UINT count) override { Guard mirrorLock(mirrorState.gate);
         auto draw=[&]{return ext->DrawPrimitive(t,start,count);};
         if(spellOn)spellArgs=NorthlightSpellLayer::DrawArgs::primitive(t,start,count);
-        return drawHook(t,count,[&](IDirect3DVertexShader9* vs){world->capture(t,0,0,0,start,count,false,vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame));captureWater(vs,NorthlightWaterRenderer::NoUserPointer,draw);},draw);}
+        return drawHook(t,count,[&](IDirect3DVertexShader9* vs){if(autoBump&&enabled&&!applied&&!failed&&!memoryGuard.capsHalved()){ExtensionDevice::RawScope bumpRaw(*ext);autoBump->capture(vs,[&]{return ext->DrawPrimitive(t,start,count);});}world->capture(t,0,0,0,start,count,false,vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame));captureWater(vs,NorthlightWaterRenderer::NoUserPointer,draw);},draw);}
     HRESULT STDMETHODCALLTYPE DrawIndexedPrimitive(D3DPRIMITIVETYPE t,INT base,UINT min,UINT vertices,UINT start,UINT count) override { Guard mirrorLock(mirrorState.gate);
         auto draw=[&]{return ext->DrawIndexedPrimitive(t,base,min,vertices,start,count);};
         if(spellOn)spellArgs=NorthlightSpellLayer::DrawArgs::indexed(t,base,min,vertices,start,count);
-        return drawHook(t,count,[&](IDirect3DVertexShader9* vs){world->capture(t,base,min,vertices,start,count,true,vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame));captureWater(vs,NorthlightWaterRenderer::NoUserPointer,draw);},draw);}
+        return drawHook(t,count,[&](IDirect3DVertexShader9* vs){if(autoBump&&enabled&&!applied&&!failed&&!memoryGuard.capsHalved()){ExtensionDevice::RawScope bumpRaw(*ext);autoBump->capture(vs,[&]{return ext->DrawIndexedPrimitive(t,base,min,vertices,start,count);});}world->capture(t,base,min,vertices,start,count,true,vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame));captureWater(vs,NorthlightWaterRenderer::NoUserPointer,draw);},draw);}
     HRESULT STDMETHODCALLTYPE DrawPrimitiveUP(D3DPRIMITIVETYPE t,UINT count,const void* data,UINT stride) override { Guard mirrorLock(mirrorState.gate);
         auto draw=[&]{return ext->DrawPrimitiveUP(t,count,data,stride);};
         if(spellOn)spellArgs=NorthlightSpellLayer::DrawArgs::primitiveUP(t,count,data,stride);
-        return drawHook(t,count,[&](IDirect3DVertexShader9* vs){world->captureUP(t,0,0,count,nullptr,D3DFMT_UNKNOWN,data,stride,false,vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame));captureWater(vs,NorthlightWaterRenderer::UserVertices,draw);},draw);}
+        return drawHook(t,count,[&](IDirect3DVertexShader9* vs){if(autoBump&&enabled&&!applied&&!failed&&!memoryGuard.capsHalved()){ExtensionDevice::RawScope bumpRaw(*ext);autoBump->capture(vs,[&]{return ext->DrawPrimitiveUP(t,count,data,stride);},true);}world->captureUP(t,0,0,count,nullptr,D3DFMT_UNKNOWN,data,stride,false,vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame));captureWater(vs,NorthlightWaterRenderer::UserVertices,draw);},draw);}
     HRESULT STDMETHODCALLTYPE DrawIndexedPrimitiveUP(D3DPRIMITIVETYPE t,UINT min,UINT vertices,UINT count,const void* indices,D3DFORMAT fmt,const void* data,UINT stride) override { Guard mirrorLock(mirrorState.gate);
         auto draw=[&]{return ext->DrawIndexedPrimitiveUP(t,min,vertices,count,indices,fmt,data,stride);};
         if(spellOn)spellArgs=NorthlightSpellLayer::DrawArgs::indexedUP(t,min,vertices,count,indices,fmt,data,stride);
-        return drawHook(t,count,[&](IDirect3DVertexShader9* vs){world->captureUP(t,min,vertices,count,indices,fmt,data,stride,true,vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame));captureWater(vs,NorthlightWaterRenderer::UserVerticesAndIndices,draw);},draw);}
+        return drawHook(t,count,[&](IDirect3DVertexShader9* vs){if(autoBump&&enabled&&!applied&&!failed&&!memoryGuard.capsHalved()){ExtensionDevice::RawScope bumpRaw(*ext);autoBump->capture(vs,[&]{return ext->DrawIndexedPrimitiveUP(t,min,vertices,count,indices,fmt,data,stride);},true);}world->captureUP(t,min,vertices,count,indices,fmt,data,stride,true,vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame));captureWater(vs,NorthlightWaterRenderer::UserVerticesAndIndices,draw);},draw);}
 };
 
 static void finishDeviceFrame(IDirect3DDevice9* owner) {static_cast<Device*>(owner)->finishFrame();}

@@ -1,0 +1,209 @@
+#pragma once
+#include "auto_bump_compiled_shaders.h"
+#include "auto_bump_identities.h"
+#include "water_shader_patch.h"
+#include "quality_settings.h"
+#include "auto_normal_cache.h"
+#include "auto_parallax_renderer.h"
+
+// Prototype: one material-height replay per recognised draw; all texture work stays on GPU.
+// Included after drop and logf. Original shaders/geometry/textures remain untouched.
+class NorthlightAutoBump {
+    IDirect3DDevice9* d;
+    NorthlightAutoNormalCache normals;
+    NorthlightAutoParallax parallax;
+    float projection[4]={1,1,-1,0};
+    // Only these states are changed by the replay. A full state block per material
+    // copied every shader constant/texture and rebound all MRT/depth surfaces.
+    struct ReplayState {
+        IDirect3DDevice9* d;
+        IDirect3DPixelShader9* pixel=nullptr;
+        IDirect3DVertexShader9* vertex;
+        IDirect3DSurface9* target=nullptr;
+        IDirect3DVertexBuffer9* stream=nullptr;
+        IDirect3DIndexBuffer9* indices=nullptr;
+        UINT offset=0,stride=0;
+        D3DVIEWPORT9 viewport;
+        float constant[20]={};
+        IDirect3DBaseTexture9* texture2=nullptr,*texture3=nullptr;bool composite=false;
+        const D3DSAMPLERSTATETYPE samplerKeys[8]={D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER,D3DSAMP_MIPFILTER,D3DSAMP_ADDRESSU,D3DSAMP_ADDRESSV,D3DSAMP_SRGBTEXTURE,D3DSAMP_MAXMIPLEVEL,D3DSAMP_MIPMAPLODBIAS};
+        DWORD samplerValues[8]={},samplerValues3[8]={};
+        struct State{D3DRENDERSTATETYPE key;DWORD value,replay;};
+        State states[14]={
+            {D3DRS_ZWRITEENABLE,0,FALSE},{D3DRS_ALPHATESTENABLE,0,FALSE},
+            {D3DRS_FOGENABLE,0,FALSE},{D3DRS_SRGBWRITEENABLE,0,FALSE},
+            {D3DRS_COLORWRITEENABLE,0,15},{D3DRS_ALPHABLENDENABLE,0,TRUE},
+            {D3DRS_BLENDOP,0,D3DBLENDOP_ADD},{D3DRS_SRCBLEND,0,D3DBLEND_SRCALPHA},
+            {D3DRS_DESTBLEND,0,D3DBLEND_INVSRCALPHA},{D3DRS_SEPARATEALPHABLENDENABLE,0,TRUE},
+            {D3DRS_BLENDOPALPHA,0,D3DBLENDOP_ADD},{D3DRS_SRCBLENDALPHA,0,D3DBLEND_ONE},
+            {D3DRS_DESTBLENDALPHA,0,D3DBLEND_INVSRCALPHA},{D3DRS_COLORWRITEENABLE1,0,15}};
+        bool changed=false,userMemory=false,auxiliary=false;
+        ReplayState(IDirect3DDevice9* device,IDirect3DVertexShader9* vs,const D3DVIEWPORT9& vp):d(device),vertex(vs),viewport(vp){}
+        bool save(bool up,bool twoLayers=false){
+            composite=twoLayers;
+            if(composite){if(FAILED(d->GetTexture(3,&texture3)))return false;for(unsigned i=0;i<8;++i)if(FAILED(d->GetSamplerState(3,samplerKeys[i],&samplerValues3[i])))return false;}
+            if(!pixel||FAILED(d->GetRenderTarget(0,&target))||!target||
+               FAILED(d->GetPixelShaderConstantF(20,constant,5))||FAILED(d->GetTexture(2,&texture2)))return false;
+            for(unsigned i=0;i<8;++i)if(FAILED(d->GetSamplerState(2,samplerKeys[i],&samplerValues[i])))return false;
+            for(auto& s:states)if(FAILED(d->GetRenderState(s.key,&s.value)))return false;
+            if(up){if(FAILED(d->GetStreamSource(0,&stream,&offset,&stride))||FAILED(d->GetIndices(&indices)))return false;userMemory=true;}
+            return true;
+        }
+        ~ReplayState(){
+            if(changed){
+                if(auxiliary)d->SetRenderTarget(1,nullptr);
+                d->SetRenderTarget(0,target);d->SetViewport(&viewport);
+                d->SetVertexShader(vertex);d->SetPixelShader(pixel);d->SetPixelShaderConstantF(20,constant,5);
+                d->SetTexture(2,texture2);for(unsigned i=0;i<8;++i)d->SetSamplerState(2,samplerKeys[i],samplerValues[i]);
+                if(composite){d->SetTexture(3,texture3);for(unsigned i=0;i<8;++i)d->SetSamplerState(3,samplerKeys[i],samplerValues3[i]);}
+                for(auto& s:states)if(s.value!=s.replay)d->SetRenderState(s.key,s.value);
+                // UP draws reset stream 0 and (for indexed UP) the index binding.
+                if(userMemory){d->SetStreamSource(0,stream,offset,stride);d->SetIndices(indices);}
+            }
+            drop(pixel);drop(target);drop(stream);drop(indices);drop(texture2);drop(texture3);
+        }
+        void apply(){changed=true;for(auto& s:states)if(s.value!=s.replay)d->SetRenderState(s.key,s.replay);}
+    };
+    struct Vertex {IDirect3DVertexShader9* patched=nullptr;unsigned kind=0;};
+    std::unordered_map<IDirect3DVertexShader9*,Vertex> vertices;
+    std::unordered_map<IDirect3DPixelShader9*,unsigned> pixels;
+    IDirect3DPixelShader9* shaders[6]={};
+    IDirect3DTexture9* height=nullptr;
+    IDirect3DSurface9* target=nullptr;
+    IDirect3DTexture9* occlusionMap=nullptr;IDirect3DSurface9* occlusionTarget=nullptr;
+    bool occlusionUnavailable=false;
+    float occlusionControl[4]={.7f,8,.35f,0},occlusionLight[4]={};
+    UINT width=0,heightPixels=0;
+    bool cleared=false,drawn=false,failed=false;
+    bool enabled=false,terrain=true,walls=true,grass=true;
+    float strength=.75f,range=48;
+    unsigned modes[3]={2,2,1};float pomControl[4]={.018f,16,16,0};
+    unsigned draws[3]={},frames=0,rejected=0;
+    template<size_t N> static unsigned kind(const AutoBumpIdentity (&table)[N],std::uint64_t hash){
+        auto i=std::lower_bound(table,table+N,hash,[](const AutoBumpIdentity& a,std::uint64_t h){return a.hash<h;});
+        return i!=table+N&&i->hash==hash?i->kind:0;
+    }
+    bool check(HRESULT hr,const char* stage){
+        if(SUCCEEDED(hr))return true;
+        if(!failed)logf("AUTOBUMP failed stage=%s hr=%08lx; native rendering retained",stage,(unsigned long)hr);
+        failed=true;return false;
+    }
+public:
+    explicit NorthlightAutoBump(IDirect3DDevice9* device):d(device),normals(device),parallax(device,normals){}
+    void setProjection(float x,float y,float z){projection[0]=x;projection[1]=y;projection[2]=z;}
+    void setLight(const float* light){std::copy(light,light+4,occlusionLight);}
+    void configure(const NorthlightQuality::Settings& settings){
+        const bool changed=enabled!=(settings.autoBump!=0)||strength!=settings.autoBumpStrength*.01f||range!=float(settings.autoBumpDistance)||terrain!=(settings.autoBumpTerrain!=0)||walls!=(settings.autoBumpWalls!=0)||grass!=(settings.autoBumpGrass!=0);
+        enabled=settings.autoBump!=0;strength=settings.autoBumpStrength*.01f;range=float(settings.autoBumpDistance);
+        terrain=settings.autoBumpTerrain!=0;walls=settings.autoBumpWalls!=0;grass=settings.autoBumpGrass!=0;
+        modes[0]=settings.autoBumpTerrain;modes[1]=settings.autoBumpWalls;modes[2]=settings.autoBumpGrass;
+        pomControl[0]=settings.autoParallaxDepth*.00018f;pomControl[1]=float(settings.autoParallaxDistance);pomControl[2]=float(settings.autoParallaxSteps);
+        const float shadow=settings.autoParallaxShadows?settings.autoParallaxShadowStrength*.01f:0,cavity=settings.autoCavity?settings.autoCavityStrength*.01f:0;
+        if(shadow!=occlusionControl[0]||cavity!=occlusionControl[2]||float(settings.autoParallaxShadowSteps)!=occlusionControl[1])logf("MATERIAL_OCCLUSION shadow=%.2f steps=%u cavity=%.2f",shadow,settings.autoParallaxShadowSteps,cavity);
+        occlusionControl[0]=shadow;occlusionControl[1]=float(settings.autoParallaxShadowSteps);occlusionControl[2]=cavity;
+        if(shadow<=0&&cavity<=0){drop(occlusionTarget);drop(occlusionMap);occlusionUnavailable=false;}
+        if(changed)logf("AUTOBUMP enabled=%d strength=%.2f distance=%.0f terrain=%d walls=%d grass=%d",int(enabled),strength,range,int(terrain),int(walls),int(grass));
+        if(!enabled&&height)reset();
+    }
+    ~NorthlightAutoBump(){reset();for(auto& v:vertices)drop(v.second.patched);for(auto*& p:shaders)drop(p);}
+    void reset(){normals.reset();drop(target);drop(height);drop(occlusionTarget);drop(occlusionMap);occlusionUnavailable=false;width=heightPixels=0;cleared=drawn=failed=false;}
+    void endFrame(){
+        normals.endFrame();
+        parallax.endFrame();
+        if(drawn&&frames%600==0)normals.report();
+        if(drawn&&((frames++%600)==0))logf("AUTOBUMP captured terrain=%u walls=%u grass=%u target=%ux%u bytes=%llu rejected=%u",draws[0],draws[1],draws[2],width,heightPixels,(unsigned long long)width*heightPixels*8,rejected);
+        for(auto& n:draws)n=0;rejected=0;cleared=drawn=false;
+    }
+    bool active()const{return enabled&&(strength>0||occlusionControl[0]>0||occlusionControl[2]>0)&&!failed;}
+    IDirect3DTexture9* texture()const{return active()&&drawn?height:nullptr;}
+    IDirect3DTexture9* occlusionTexture()const{return active()&&drawn?occlusionMap:nullptr;}
+    float gain()const{return texture()?strength:0;}
+    float distance()const{return range;}
+    template<class Draw> HRESULT nativeDraw(Draw draw,IDirect3DVertexShader9* provenVS=nullptr,IDirect3DPixelShader9* provenPS=nullptr){
+        if(!active()||pomControl[0]<=0||(modes[0]!=2&&modes[1]!=2))return draw();
+        IDirect3DVertexShader9* vs=nullptr;IDirect3DPixelShader9* ps=nullptr;
+        if((!provenVS&&FAILED(d->GetVertexShader(&vs)))||(!provenPS&&FAILED(d->GetPixelShader(&ps)))){drop(vs);drop(ps);return draw();}
+        auto v=vertices.find(provenVS?provenVS:vs);auto p=pixels.find(provenPS?provenPS:ps);drop(vs);drop(ps);
+        if(v==vertices.end()||p==pixels.end()||v->second.kind>2||modes[v->second.kind-1]!=2)return draw();
+        const unsigned domain=v->second.kind,material=p->second;
+        if((domain==1&&material>2)||(domain==2&&material!=3&&material!=5&&material!=6))return draw();
+        return parallax.draw(v->first,v->second.patched,material,projection,pomControl,draw);
+    }
+    void registerVertex(IDirect3DVertexShader9* original,std::uint64_t hash,const DWORD* code,size_t count){
+        auto found=vertices.find(original);if(found!=vertices.end()){drop(found->second.patched);vertices.erase(found);}
+        const unsigned k=kind(kAutoBumpVertex,hash);if(!k||vertices.size()>=1536)return;
+        std::vector<std::uint32_t> patched;
+        if(NorthlightWaterShaderPatch::patch(reinterpret_cast<const std::uint32_t*>(code),count,patched))return;
+        IDirect3DVertexShader9* shader=nullptr;
+        if(SUCCEEDED(d->CreateVertexShader(reinterpret_cast<const DWORD*>(patched.data()),&shader)))vertices[original]={shader,k};
+    }
+    void registerPixel(IDirect3DPixelShader9* original,std::uint64_t hash){
+        pixels.erase(original);const unsigned k=kind(kAutoBumpPixel,hash);
+        if(k&&pixels.size()<1536)pixels[original]=k;
+    }
+    template<class Draw> void capture(IDirect3DVertexShader9* original,Draw draw,bool userMemory=false){
+        if(!active())return;
+        auto v=vertices.find(original);if(v==vertices.end())return;
+        const unsigned domain=v->second.kind;
+        if((domain==1&&!terrain)||(domain==2&&!walls)||(domain==3&&!grass))return;
+        IDirect3DPixelShader9* native=nullptr;if(FAILED(d->GetPixelShader(&native))||!native)return;
+        auto p=pixels.find(native);if(p==pixels.end()){drop(native);return;}
+        const unsigned material=p->second;
+        if((domain==1&&material>2)||(domain==2&&material!=3&&material!=5&&material!=6)||(domain==3&&material!=4)){drop(native);return;}
+        ReplayState saved(d,original,D3DVIEWPORT9{});saved.pixel=native;
+        DWORD z=0,zfunc=0,ref=0,alphaFunc=0,stencil=0;
+        auto rs=[&](D3DRENDERSTATETYPE key,DWORD& value){return SUCCEEDED(d->GetRenderState(key,&value));};
+        if(!rs(D3DRS_ZENABLE,z)||!rs(D3DRS_ZFUNC,zfunc)||!rs(D3DRS_ALPHAREF,ref)||
+           !rs(D3DRS_ALPHAFUNC,alphaFunc)||!rs(D3DRS_STENCILENABLE,stencil)||!z||zfunc==D3DCMP_ALWAYS||stencil)return;
+        D3DVIEWPORT9 viewport{};if(FAILED(d->GetViewport(&viewport))||viewport.X||viewport.Y||viewport.Width<8||viewport.Height<8)return;
+        for(unsigned i=1;i<4;++i){IDirect3DSurface9* extra=nullptr;d->GetRenderTarget(i,&extra);if(extra){drop(extra);return;}}
+        IDirect3DSurface9* depth=nullptr;if(FAILED(d->GetDepthStencilSurface(&depth))||!depth)return;drop(depth);
+        saved.viewport=viewport;if(!saved.save(userMemory,material==6))return;
+        const auto& s=saved.states;
+        const bool alpha=s[1].value!=0;
+        if(!(s[4].value&7)||(!s[0].value&&domain!=1)||
+           (s[5].value&&(s[7].value!=D3DBLEND_SRCALPHA||s[8].value!=D3DBLEND_INVSRCALPHA))||
+           (alpha&&alphaFunc!=D3DCMP_GREATER&&alphaFunc!=D3DCMP_GREATEREQUAL))return;
+        D3DSURFACE_DESC desc{};if(FAILED(saved.target->GetDesc(&desc)))return;
+        // ponytail: first prototype supports 1x MSAA. Resolve-aware capture is the upgrade path.
+        if(desc.MultiSampleType!=D3DMULTISAMPLE_NONE||desc.Width!=viewport.Width||desc.Height!=viewport.Height){++rejected;return;}
+        if(width!=desc.Width||heightPixels!=desc.Height){reset();width=desc.Width;heightPixels=desc.Height;}
+        if(!height){
+            const std::uint64_t bytes=std::uint64_t(width)*heightPixels*8;
+            MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;
+            if(bytes>(64ull<<20)||!GlobalMemoryStatusEx(&memory)||memory.ullAvailVirtual<bytes+(128ull<<20)){++rejected;return;}
+            if(!check(d->CreateTexture(width,heightPixels,1,D3DUSAGE_RENDERTARGET,D3DFMT_A16B16G16R16F,D3DPOOL_DEFAULT,&height,nullptr),"height texture")||
+               !check(height->GetSurfaceLevel(0,&target),"height surface"))return;
+        }
+        if((occlusionControl[0]>0||occlusionControl[2]>0)&&!occlusionMap&&!occlusionUnavailable){
+            D3DCAPS9 caps{};MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;const auto bytes=std::uint64_t(width)*heightPixels*4;
+            bool available=SUCCEEDED(d->GetDeviceCaps(&caps))&&caps.NumSimultaneousRTs>=2&&(caps.PrimitiveMiscCaps&D3DPMISCCAPS_MRTINDEPENDENTBITDEPTHS)&&GlobalMemoryStatusEx(&memory)&&memory.ullAvailVirtual>bytes+(128ull<<20);
+            if(available)available=SUCCEEDED(d->CreateTexture(width,heightPixels,1,D3DUSAGE_RENDERTARGET,D3DFMT_A8R8G8B8,D3DPOOL_DEFAULT,&occlusionMap,nullptr))&&SUCCEEDED(occlusionMap->GetSurfaceLevel(0,&occlusionTarget));
+            if(!available){drop(occlusionTarget);drop(occlusionMap);occlusionUnavailable=true;logf("MATERIAL_OCCLUSION unavailable; normal maps and POM retained");}
+        }
+        const DWORD* codes[]={kBumpOpaqueShader,kBumpLayerShader,kBumpWallShader,kBumpGrassShader,kBumpWallOpaqueShader,kBumpCompositeShader};
+        if(!shaders[material-1]&&!check(d->CreatePixelShader(codes[material-1],&shaders[material-1]),"capture shader"))return;
+        IDirect3DBaseTexture9* diffuse=nullptr;if(FAILED(d->GetTexture(0,&diffuse)))return;
+        auto* normal=normals.resolve(diffuse);drop(diffuse);if(!normal)return;
+        // Resolving a second large layer may evict the first cache entry.
+        // Keep both maps alive until this replay has finished.
+        normal->AddRef();
+        struct NormalLease{IDirect3DTexture9* a;IDirect3DTexture9* b=nullptr;~NormalLease(){drop(a);drop(b);}} lease{normal};
+        IDirect3DTexture9* normal1=nullptr;
+        if(material==6){IDirect3DBaseTexture9* second=nullptr;if(FAILED(d->GetTexture(1,&second)))return;normal1=normals.resolve(second);drop(second);if(!normal1)return;normal1->AddRef();lease.b=normal1;}
+        DWORD addressU=D3DTADDRESS_WRAP,addressV=D3DTADDRESS_WRAP;d->GetSamplerState(0,D3DSAMP_ADDRESSU,&addressU);d->GetSamplerState(0,D3DSAMP_ADDRESSV,&addressV);
+        saved.apply();d->SetTexture(2,normal);
+        const DWORD normalSampler[]={D3DTEXF_LINEAR,D3DTEXF_LINEAR,D3DTEXF_LINEAR,addressU,addressV,FALSE,0,0};
+        for(unsigned i=0;i<8;++i)d->SetSamplerState(2,saved.samplerKeys[i],normalSampler[i]);
+        if(normal1){d->SetTexture(3,normal1);for(unsigned i=0;i<8;++i)d->SetSamplerState(3,saved.samplerKeys[i],normalSampler[i]);}
+        if(!check(d->SetRenderTarget(0,target),"capture target"))return;
+        if(occlusionTarget){saved.auxiliary=true;if(FAILED(d->SetRenderTarget(1,occlusionTarget))){drop(occlusionTarget);drop(occlusionMap);occlusionUnavailable=true;d->SetRenderTarget(1,nullptr);}}
+        if(!cleared){if(!check(d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0),"height clear"))return;cleared=true;}
+        const float constants[]={domain==1?.18f:domain==2?.14f:.06f,range,alpha?(float(ref)+(alphaFunc==D3DCMP_GREATER?.5f:0.f))/255.f:.001f,0};
+        float pom[4];std::copy(pomControl,pomControl+4,pom);if(domain>2||modes[domain-1]!=2||!parallax.supports(saved.pixel,material))pom[0]=0;
+        float occult[4];std::copy(occlusionControl,occlusionControl+4,occult);occult[3]=occlusionTarget?1.f:0.f;if(pom[0]<=0||occlusionLight[3]<=0)occult[0]=0;
+        if(!check(d->SetVertexShader(v->second.patched),"capture VS")||!check(d->SetPixelShader(shaders[material-1]),"capture PS")||
+           !check(d->SetPixelShaderConstantF(20,constants,1),"capture constants")||!check(d->SetPixelShaderConstantF(21,projection,1),"capture projection")||!check(d->SetPixelShaderConstantF(22,pom,1),"capture POM")||!check(d->SetPixelShaderConstantF(23,occult,1),"capture occlusion")||!check(d->SetPixelShaderConstantF(24,occlusionLight,1),"capture light"))return;
+        if(check(draw(),"material replay")){drawn=true;++draws[domain-1];}
+    }
+};
