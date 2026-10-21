@@ -31,8 +31,8 @@ int main(int argc,char** argv){
     for(unsigned y=0;y<64;++y)for(unsigned x=0;x<64;++x){auto* p=(unsigned char*)lock.pBits+y*lock.Pitch+x*4;p[0]=static_cast<unsigned char>((x/4+y/4)%2?230:26);p[1]=p[2]=128;p[3]=255;}
     ok(height->UnlockRect(0));ok(d->SetTexture(0,height));for(auto key:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})ok(d->SetSamplerState(0,key,D3DTEXF_LINEAR));
     ok(d->SetSamplerState(0,D3DSAMP_ADDRESSU,D3DTADDRESS_WRAP));ok(d->SetSamplerState(0,D3DSAMP_ADDRESSV,D3DTADDRESS_WRAP));
-    IDirect3DPixelShader9* shaders[4]={};const char* names[]={"ReferenceRay","Ray","ReferenceShadow","Shadow"};
-    for(unsigned i=0;i<4;++i){auto bytes=read(folder+names[i]+".bin");ok(d->CreatePixelShader((DWORD*)bytes.data(),&shaders[i]));}
+    IDirect3DPixelShader9* shaders[6]={};const char* names[]={"ReferenceRay","Ray","ReferenceShadow","Shadow","ReferenceZeroRay","ZeroRay"};
+    for(unsigned i=0;i<6;++i){auto bytes=read(folder+names[i]+".bin");ok(d->CreatePixelShader((DWORD*)bytes.data(),&shaders[i]));}
     struct Vertex{float x,y,z,w,u,v,px,py,pz,pw;};
     Vertex quad[]={{-.5f,-.5f,0,1,0,0},{W-.5f,-.5f,0,1,1,0},{-.5f,H-.5f,0,1,0,1},{W-.5f,H-.5f,0,1,1,1}};
     ok(d->SetVertexShader(nullptr));ok(d->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX2|D3DFVF_TEXCOORDSIZE4(1)));
@@ -40,18 +40,29 @@ int main(int argc,char** argv){
     ok(d->CreateQuery(D3DQUERYTYPE_EVENT,&event));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&start));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&end));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPFREQ,&freq));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPDISJOINT,&disjoint));
     std::ofstream report(folder+"material-ray-work.json");report<<"[\n";
     unsigned cases=0;
-    for(unsigned kind=0;kind<2;++kind)for(unsigned test=0;test<9;++test){
+    for(unsigned kind=0;kind<3;++kind)for(unsigned test=0;test<(kind==2?4u:kind?9u:42u);++test){
         float c[3][4]={{1,1,-1,0},{.018f,16,16,0},{0,8,0,0}};
-        const float distance=kind?2.f:test<3?15.999f:test<6?16.f:16.001f;
-        c[1][2]=float(8u<<(test%3));c[2][0]=kind?float(test/3)*.45f:0;c[2][1]=float(4u<<(test%3));
+        const float distance=kind?2.f:test<3?15.999f:test<6?16.f:test<9?16.001f:test<12?2.f:test<15?8.f:1.f;
+        const unsigned steps[]={8,12,16,32};c[1][2]=float(steps[test%4]);c[2][0]=kind?float(test/3)*.45f:0;c[2][1]=float(4u<<(test%3));
         if(kind&&test>=6)c[2][0]=.99f;
-        for(unsigned i=0;i<4;++i){const float u=i&1?1.f:0.f,v=i&2?1.f:0.f;quad[i].px=u*2-1;quad[i].py=v*2-1;quad[i].pw=distance+(u-.5f)*.004f;}
+        if(kind&&test==0){ok(height->LockRect(0,&lock,nullptr,0));for(unsigned y=0;y<64;++y)for(unsigned x=0;x<64;++x)static_cast<unsigned char*>(lock.pBits)[y*lock.Pitch+x*4]=static_cast<unsigned char>((x/4+y/4)%2?230:26);ok(height->UnlockRect(0));}
+        if(kind==2&&test==0){ok(height->LockRect(0,&lock,nullptr,0));for(unsigned y=0;y<64;++y)for(unsigned x=0;x<64;++x)static_cast<unsigned char*>(lock.pBits)[y*lock.Pitch+x*4]=static_cast<unsigned char>((x/4+y/4)%2?255:0);ok(height->UnlockRect(0));}
+        if(!kind&&test>=9)c[1][0]=.036f;
+        if(!kind&&test>=33){ok(height->LockRect(0,&lock,nullptr,0));for(unsigned y=0;y<64;++y)for(unsigned x=0;x<64;++x)static_cast<unsigned char*>(lock.pBits)[y*lock.Pitch+x*4]=test<37?255:0;ok(height->UnlockRect(0));}
+        // Signed-origin round-trip counterexample: retain the independent full-tap reference.
+        if(!kind&&test==41){c[1][2]=8;ok(height->LockRect(0,&lock,nullptr,0));for(unsigned y=0;y<64;++y)for(unsigned x=0;x<64;++x)static_cast<unsigned char*>(lock.pBits)[y*lock.Pitch+x*4]=static_cast<unsigned char>((x/4+y/4)%2?230:26);ok(height->UnlockRect(0));}
+        const auto address=!kind&&test>=9&&test%2&&test!=41?D3DTADDRESS_CLAMP:D3DTADDRESS_WRAP;ok(d->SetSamplerState(0,D3DSAMP_ADDRESSU,address));ok(d->SetSamplerState(0,D3DSAMP_ADDRESSV,address));
+        const float scale=!kind&&test==41?.7f+8*.43f:!kind&&test>=9?test%3==0?1.f:test%3==1?4.f:7.9f:1.f;
+        if((!kind&&test>=17)||kind==2)c[0][2]=-.1f;
+        if(kind==2)c[1][0]=.036f;
+        for(unsigned i=0;i<4;++i){const float u=i&1?1.f:0.f,v=i&2?1.f:0.f;quad[i].u=u*scale+(!kind&&test==41?67*.013579f:!kind&&test>=9?.99999f:0);quad[i].v=v*scale+(!kind&&test==41?67*.019137f:-.00001f);quad[i].px=u*2-1+((!kind&&test>=17)||kind==2?4.f:0);quad[i].py=v*2-1;quad[i].pw=distance+(u-.5f)*.004f;}
         ok(d->SetPixelShaderConstantF(0,c[0],3));std::vector<float> reference;float error=0;
-        for(unsigned mode=0;mode<2;++mode){ok(d->SetPixelShader(shaders[kind*2+mode]));ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(Vertex)));ok(d->EndScene());auto values=readPixels(d,target);
+        for(unsigned mode=0;mode<2;++mode){ok(d->SetPixelShader(shaders[kind*2+mode]));ok(d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0));ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(Vertex)));ok(d->EndScene());auto values=readPixels(d,target);
             if(!mode)reference=std::move(values);else for(unsigned i=0;i<values.size();++i){assert(std::isfinite(values[i])&&std::isfinite(reference[i]));error=std::max(error,std::fabs(values[i]-reference[i]));}}
         assert(error<=.00001f);
-        if(kind&&test<3)assert(*std::min_element(reference.begin(),reference.end())<.01f);
-        if(kind&&test>=6)assert(*std::min_element(reference.begin(),reference.end())>.99f);
+        if(kind==1&&test<3)assert(*std::min_element(reference.begin(),reference.end())<.01f);
+        if(kind==1&&test>=6)assert(*std::min_element(reference.begin(),reference.end())>.99f);
+        if(kind==2){unsigned selected=0;for(unsigned i=3;i<reference.size();i+=4)selected+=reference[i]>.5f;assert(selected>0);}
         std::vector<double> timings[2];
         // Interleave the two variants so clock/power drift does not select one side.
         for(unsigned block=0;block<10;++block)for(unsigned turn=0;turn<2;++turn){const unsigned mode=(block+turn)&1;ok(d->SetPixelShader(shaders[kind*2+mode]));
@@ -62,7 +73,7 @@ int main(int argc,char** argv){
             if(block>=3)timings[mode].push_back(double(b-a)/f*1000/8);
         }
         for(auto& times:timings)std::sort(times.begin(),times.end());const double before=timings[0][timings[0].size()/2],after=timings[1][timings[1].size()/2];
-        if(cases++)report<<",\n";report<<"{\"kind\":\""<<(kind?"shadow":"fade")<<"\",\"case\":"<<test<<",\"max_error\":"<<error<<",\"reference_ms\":"<<before<<",\"optimized_ms\":"<<after<<"}";
+        if(cases++)report<<",\n";report<<"{\"kind\":\""<<(kind==2?"zero":kind?"shadow":"fade")<<"\",\"case\":"<<test<<",\"max_error\":"<<error<<",\"reference_ms\":"<<before<<",\"optimized_ms\":"<<after<<"}";
         std::printf("MATERIAL_RAY_WORK kind=%u case=%u maxError=%.9g referenceMs=%.6f optimizedMs=%.6f\n",kind,test,error,before,after);std::fflush(stdout);
     }
     report<<"\n]\n";report.close();
