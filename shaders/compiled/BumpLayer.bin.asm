@@ -208,53 +208,58 @@
  189:           mov r1.w, c1.y
  190:           mov r2.x, c7.x
  191:           rep i1
- 194:             break_lt c23.y, r2.x
- 197:             mul r2.y, r0.x, r2.x
- 198:             mul r2.zw, r1.xyyz, r2.y
- 199:             add r2.zw, r2, r5
- 200:             texldd r3, r2.zwzw, s2, r0.zwzw, r5
- 202:             add r2.z, -r7.z, r3.z
- 203:             mul r2.y, r0.y, r2.y
- 204:             add r2.y, -r2.y, r2.z
- 205:             add r2.y, r2.y, c6.y
- 206:             mul_sat r2.y, r2.y, c6.x
- 207:             max r3.x, r1.w, r2.y
- 208:             add r2.x, r2.x, c7.x
- 209:             mov r1.w, r3.x
- 210:           endrep
- 212:           add r1.x, -r1.w, c7.x
- 213:         endif
- 214:         add r0.x, r1.x, c7.y
- 215:         mul r0.x, r0.x, c23.x
- 216:         add r0.x, r0.x, c7.x
- 217:         mov r0.w, c24.w
- 218:         add r0.z, -r0.w, c6.z
- 219:         mov r0.y, c7.x
- 220:         cmp r9.xy, r0.z, r0, r0.yxzw
- 221:       else
- 222:         mov r9.xy, c7.x
- 223:       endif
- 224:     else
- 225:       mov r9.xyz, c7.x
- 226:     endif
- 227:     texld r0, v1, s1
- 227:     dp4_sat r9.w, r0, c0
- 228:     mov oC1, r9
- 229:     dp3 r0.x, r8_abs, c7.x
- 230:     rcp r0.y, r0.x
- 231:     add r0.x, r0.x, c6.w
- 232:     cmp r0.x, r0.x, r0.y, c7.w
- 233:     mul r0.xyz, r0.x, r8
- 234:     add r1.xy, -r0_abs.yxzw, c7.x
- 235:     cmp r1.zw, r0.xyxy, c7.x, c7.y
- 236:     mul r1.xy, r1.zwzw, r1
- 237:     cmp r0.xy, r0.z, r0, r1
- 238:     mul r0.xy, r0, c3.w
- 239:     add oC0.xy, r0, c3.w
- 240:     add r0, r9.w, -c20.z
- 241:     texkill r0
- 242:     mov oC0.z, v2.w
- 243:     mov oC0.w, r9.w
+ 194:             add r2.y, r1.w, c7.y
+ 195:             cmp r2.y, r2.y, -c2.y, -c2.x
+ 196:             add r2.z, -r2.x, c23.y
+ 197:             cmp r2.y, r2.z, r2.y, c1.y
+ 198:             cmp r2.y, r2.y, c2.x, c2.y
+ 199:             break_ne r2.y, -r2.y
+ 202:             mul r2.y, r0.x, r2.x
+ 203:             mul r2.zw, r1.xyyz, r2.y
+ 204:             add r2.zw, r2, r5
+ 205:             texldd r3, r2.zwzw, s2, r0.zwzw, r5
+ 207:             add r2.z, -r7.z, r3.z
+ 208:             mul r2.y, r0.y, r2.y
+ 209:             add r2.y, -r2.y, r2.z
+ 210:             add r2.y, r2.y, c6.y
+ 211:             mul_sat r2.y, r2.y, c6.x
+ 212:             max r3.x, r1.w, r2.y
+ 213:             add r2.x, r2.x, c7.x
+ 214:             mov r1.w, r3.x
+ 215:           endrep
+ 217:           add r1.x, -r1.w, c7.x
+ 218:         endif
+ 219:         add r0.x, r1.x, c7.y
+ 220:         mul r0.x, r0.x, c23.x
+ 221:         add r0.x, r0.x, c7.x
+ 222:         mov r0.w, c24.w
+ 223:         add r0.z, -r0.w, c6.z
+ 224:         mov r0.y, c7.x
+ 225:         cmp r9.xy, r0.z, r0, r0.yxzw
+ 226:       else
+ 227:         mov r9.xy, c7.x
+ 228:       endif
+ 229:     else
+ 230:       mov r9.xyz, c7.x
+ 231:     endif
+ 232:     texld r0, v1, s1
+ 232:     dp4_sat r9.w, r0, c0
+ 233:     mov oC1, r9
+ 234:     dp3 r0.x, r8_abs, c7.x
+ 235:     rcp r0.y, r0.x
+ 236:     add r0.x, r0.x, c6.w
+ 237:     cmp r0.x, r0.x, r0.y, c7.w
+ 238:     mul r0.xyz, r0.x, r8
+ 239:     add r1.xy, -r0_abs.yxzw, c7.x
+ 240:     cmp r1.zw, r0.xyxy, c7.x, c7.y
+ 241:     mul r1.xy, r1.zwzw, r1
+ 242:     cmp r0.xy, r0.z, r0, r1
+ 243:     mul r0.xy, r0, c3.w
+ 244:     add oC0.xy, r0, c3.w
+ 245:     add r0, r9.w, -c20.z
+ 246:     texkill r0
+ 247:     mov oC0.z, v2.w
+ 248:     mov oC0.w, r9.w
 
-// approximately 250 instruction slots used (6 texture, 244 arithmetic)
+// approximately 255 instruction slots used (6 texture, 249 arithmetic)
  

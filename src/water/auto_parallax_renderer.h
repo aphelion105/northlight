@@ -39,7 +39,7 @@ public:
         return entry.shader!=nullptr;
     }
     void endFrame(){if(draws&&frames++%600==0)logf("AUTOPARALLAX draws=%u skipped=%u pixel_variants=%zu vertex_variants=%zu",draws,skipped,pixels.size(),vertices.size());draws=skipped=0;}
-    template<class Draw> HRESULT draw(IDirect3DVertexShader9* knownVertex,IDirect3DVertexShader9* forwarded,unsigned material,const float* projection,const float* control,Draw nativeDraw){
+    template<class Draw> HRESULT draw(IDirect3DVertexShader9* knownVertex,IDirect3DVertexShader9* forwarded,unsigned material,const float* projection,const float* control,Draw nativeDraw,bool model=false){
         const bool dual=material==6;State saved(d);if(!saved.saveShaders())return nativeDraw();
         DWORD z=0,zwrite=0,zfunc=0,stencil=0;
         if(FAILED(d->GetRenderState(D3DRS_ZENABLE,&z))||FAILED(d->GetRenderState(D3DRS_ZWRITEENABLE,&zwrite))||FAILED(d->GetRenderState(D3DRS_ZFUNC,&zfunc))||FAILED(d->GetRenderState(D3DRS_STENCILENABLE,&stencil))||!z||zfunc==D3DCMP_ALWAYS||stencil||(!zwrite&&material>2))return nativeDraw();
@@ -55,7 +55,7 @@ public:
         auto it=pixels.find(saved.pixel);
         saved.constantBase=it->second.constants;if(FAILED(d->GetPixelShaderConstantF(saved.constantBase,saved.constants,2)))return nativeDraw();
         struct Maps{IDirect3DTexture9* t[2]={};~Maps(){for(auto*& p:t)drop(p);}} maps;
-        for(unsigned n=0;n<(dual?2u:1u);++n){IDirect3DBaseTexture9* source=nullptr;if(FAILED(d->GetTexture(n,&source)))return nativeDraw();maps.t[n]=normals.resolve(source);drop(source);if(!maps.t[n])return nativeDraw();maps.t[n]->AddRef();}
+        for(unsigned n=0;n<(dual?2u:1u);++n){IDirect3DBaseTexture9* source=nullptr;if(FAILED(d->GetTexture(n,&source)))return nativeDraw();maps.t[n]=normals.resolve(source,model);drop(source);if(!maps.t[n])return nativeDraw();maps.t[n]->AddRef();}
         if(!saved.saveSamplers(dual?2:1))return nativeDraw();
         saved.changed=true;
         for(unsigned n=0;n<(dual?2u:1u);++n){DWORD u=D3DTADDRESS_WRAP,v=D3DTADDRESS_WRAP;d->GetSamplerState(n,D3DSAMP_ADDRESSU,&u);d->GetSamplerState(n,D3DSAMP_ADDRESSV,&v);

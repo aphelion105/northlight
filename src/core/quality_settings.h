@@ -205,7 +205,7 @@ inline const Key Keys[]={
     {"AutoParallaxShadowSteps",&Settings::autoParallaxShadowSteps,4,16,{8,6,4}},
     {"AutoCavity",&Settings::autoCavity,0,1,{1,0,0}},
     {"AutoCavityStrength",&Settings::autoCavityStrength,0,100,{35,30,25}},
-    {"AutoDisplacementStrength",&Settings::autoDisplacementStrength,0,200,{100,75,50}},
+    {"AutoDisplacementStrength",&Settings::autoDisplacementStrength,0,1000,{100,75,50}},
     {"AutoDisplacementDistance",&Settings::autoDisplacementDistance,4,24,{12,8,6}},
     {"AutoDisplacementDetail",&Settings::autoDisplacementDetail,1,5,{4,3,2}},
     {"AutoBumpModels",&Settings::autoBumpModels,0,3,{3,1,1}},

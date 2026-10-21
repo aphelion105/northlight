@@ -8,7 +8,7 @@
 #include "auto_displacement_renderer.h"
 #include "native_material_capture_patch.h"
 
-// Prototype: one material-height replay per recognised draw; all texture work stays on GPU.
+// Prototype: one material-height replay per recognised draw; source textures remain intact.
 // Included after drop and logf. Original resources stay intact; displacement draws use private subdivided buffers.
 class NorthlightAutoBump {
     IDirect3DDevice9* d;
@@ -23,6 +23,7 @@ class NorthlightAutoBump {
         IDirect3DPixelShader9* pixel=nullptr;
         IDirect3DVertexShader9* vertex;
         IDirect3DSurface9* target=nullptr;
+        IDirect3DSurface9* depth=nullptr;
         IDirect3DVertexBuffer9* stream=nullptr;
         IDirect3DIndexBuffer9* indices=nullptr;
         UINT offset=0,stride=0;
@@ -48,14 +49,14 @@ class NorthlightAutoBump {
             if(!pixel||FAILED(d->GetRenderTarget(0,&target))||!target||
                FAILED(d->GetPixelShaderConstantF(constantBase,constant,5))||FAILED(d->GetTexture(normalStage,&texture2)))return false;
             for(unsigned i=0;i<8;++i)if(FAILED(d->GetSamplerState(normalStage,samplerKeys[i],&samplerValues[i])))return false;
-            for(auto& s:states)if(FAILED(d->GetRenderState(s.key,&s.value)))return false;
             if(up){if(FAILED(d->GetStreamSource(0,&stream,&offset,&stride))||FAILED(d->GetIndices(&indices)))return false;userMemory=true;}
             return true;
         }
         ~ReplayState(){
             if(changed){
                 if(auxiliary)d->SetRenderTarget(1,nullptr);
-                d->SetRenderTarget(0,target);d->SetViewport(&viewport);
+                if(depth)d->SetDepthStencilSurface(nullptr);
+                d->SetRenderTarget(0,target);if(depth)d->SetDepthStencilSurface(depth);d->SetViewport(&viewport);
                 d->SetVertexShader(vertex);d->SetPixelShader(pixel);d->SetPixelShaderConstantF(constantBase,constant,5);
                 d->SetTexture(normalStage,texture2);for(unsigned i=0;i<8;++i)if(samplerChanged&(1u<<i))d->SetSamplerState(normalStage,samplerKeys[i],samplerValues[i]);
                 if(composite){d->SetTexture(3,texture3);for(unsigned i=0;i<8;++i)if(samplerChanged3&(1u<<i))d->SetSamplerState(3,samplerKeys[i],samplerValues3[i]);}
@@ -63,7 +64,7 @@ class NorthlightAutoBump {
                 // UP draws reset stream 0 and (for indexed UP) the index binding.
                 if(userMemory){d->SetStreamSource(0,stream,offset,stride);d->SetIndices(indices);}
             }
-            drop(pixel);drop(target);drop(stream);drop(indices);drop(texture2);drop(texture3);
+            drop(pixel);drop(target);drop(depth);drop(stream);drop(indices);drop(texture2);drop(texture3);
         }
         void apply(){changed=true;for(auto& s:states)if(s.value!=s.replay)d->SetRenderState(s.key,s.replay);}
     };
@@ -82,12 +83,16 @@ class NorthlightAutoBump {
     }
     IDirect3DTexture9* height=nullptr;
     IDirect3DSurface9* target=nullptr;
+    // The composite validates the captured linear depth against final scene depth.
+    // A private 1x depth lets the replay shade MSAA scenes without 2/4/8 copies
+    // of the full-screen normal/occlusion targets or a resolve after every draw.
+    IDirect3DSurface9* captureDepth=nullptr;
     IDirect3DTexture9* occlusionMap=nullptr;IDirect3DSurface9* occlusionTarget=nullptr;
-    bool occlusionUnavailable=false;
+    bool occlusionUnavailable=false;unsigned occlusionRetry=0;
     float occlusionControl[4]={.7f,8,.35f,0},occlusionLight[4]={};
     UINT width=0,heightPixels=0;
     bool cleared=false,drawn=false,failed=false;
-    bool enabled=false,terrain=true,walls=true,grass=true;
+    bool enabled=false,terrain=true,walls=true,grass=true,memoryPressure=false;
     float strength=.75f,range=48;
     unsigned modes[4]={2,2,1,3};float pomControl[4]={.018f,16,16,0};
     unsigned draws[4]={},frames=0,rejected=0;
@@ -97,11 +102,20 @@ class NorthlightAutoBump {
     }
     bool check(HRESULT hr,const char* stage){
         if(SUCCEEDED(hr))return true;
+        if(hr==E_OUTOFMEMORY||hr==D3DERR_OUTOFVIDEOMEMORY){
+            trimMemory();logf("AUTOBUMP allocation retry stage=%s hr=%08lx; modes retained",stage,(unsigned long)hr);return false;
+        }
         if(!failed)logf("AUTOBUMP failed stage=%s hr=%08lx; native rendering retained",stage,(unsigned long)hr);
         failed=true;return false;
     }
 public:
     explicit NorthlightAutoBump(IDirect3DDevice9* device):d(device),normals(device),parallax(device,normals),displacement(device){}
+    void setMemoryPressure(bool on){
+        if(memoryPressure==on)return;memoryPressure=on;
+        normals.setMemoryPressure(on);displacement.setMemoryPressure(on);
+        logf("MATERIAL_MEMORY pressure=%u normalBudgetMiB=%u geometryBudgetMiB=%u relief=active",unsigned(on),on?32:96,on?32:128);
+    }
+    void trimMemory(){normals.trimMemory();displacement.trimMemory();}
     bool geometryPrepared()const{return displacement.prepared();}
     unsigned geometryPrimitives()const{return displacement.preparedPrimitives();}
     void beginDraw(){displacement.beginDraw();}
@@ -124,12 +138,13 @@ public:
         if(!enabled&&height)reset();
     }
     ~NorthlightAutoBump(){reset();for(auto& v:vertices)drop(v.second.patched);for(auto*& p:shaders)drop(p);for(auto& n:nativeCaptures){drop(n.second.shader);drop(n.second.source);}}
-    void reset(){displacement.reset();normals.reset();drop(target);drop(height);drop(occlusionTarget);drop(occlusionMap);occlusionUnavailable=false;width=heightPixels=0;cleared=drawn=failed=false;}
+    void reset(){displacement.reset();normals.reset();drop(captureDepth);drop(target);drop(height);drop(occlusionTarget);drop(occlusionMap);occlusionUnavailable=false;occlusionRetry=0;width=heightPixels=0;cleared=drawn=failed=false;}
     void endFrame(){
+        if(occlusionRetry)--occlusionRetry;
         displacement.endFrame();
         normals.endFrame();
         parallax.endFrame();
-        if(drawn&&frames%600==0)normals.report();
+        if(drawn&&frames%600==0){normals.report();auto& cache=NorthlightMaterialTextures::cache();const auto& c=cache.counts;logf("MHEIGHT cached=%u bytes=%zu uploads=%llu retained=%llu failed=%llu invalidated=%llu evicted=%llu",cache.size(),cache.bytes(),(unsigned long long)c.uploads,(unsigned long long)c.retained,(unsigned long long)c.failed,(unsigned long long)c.invalidations,(unsigned long long)c.evictions);}
         if(drawn&&((frames++%600)==0))logf("AUTOBUMP captured terrain=%u walls=%u grass=%u models=%u target=%ux%u bytes=%llu rejected=%u",draws[0],draws[1],draws[2],draws[3],width,heightPixels,(unsigned long long)width*heightPixels*8,rejected);
         for(auto& n:draws)n=0;rejected=0;cleared=drawn=false;
     }
@@ -146,7 +161,7 @@ public:
         if(v==vertices.end()||p==pixels.end()||v->second.kind>4||modes[v->second.kind-1]!=2)return draw();
         const unsigned domain=v->second.kind,material=p->second;
         if((domain==1&&material>2)||(domain==2&&material!=3&&material!=5&&material!=6)||(domain==3&&material!=4))return draw();
-        return parallax.draw(v->first,v->second.patched,material,projection,pomControl,draw);
+        return parallax.draw(v->first,v->second.patched,material,projection,pomControl,draw,domain==4);
     }
     void registerVertex(IDirect3DVertexShader9* original,std::uint64_t hash,const DWORD* code,size_t count,unsigned modelFamily=0){
         auto found=vertices.find(original);if(found!=vertices.end()){drop(found->second.patched);vertices.erase(found);}
@@ -179,34 +194,41 @@ public:
         D3DVIEWPORT9 viewport{};if(FAILED(d->GetViewport(&viewport))||viewport.X||viewport.Y||viewport.Width<8||viewport.Height<8)return;
         for(unsigned i=1;i<4;++i){IDirect3DSurface9* extra=nullptr;d->GetRenderTarget(i,&extra);if(extra){drop(extra);return;}}
         IDirect3DSurface9* depth=nullptr;if(FAILED(d->GetDepthStencilSurface(&depth))||!depth)return;drop(depth);
-        saved.viewport=viewport;if(!saved.save(userMemory,material==6&&domain!=4))return;
+        for(auto& state:saved.states)if(FAILED(d->GetRenderState(state.key,&state.value)))return;
         const auto& s=saved.states;
         const bool alpha=s[1].value!=0;
         if(!(s[4].value&7)||(!s[0].value&&domain!=1)||
            (s[5].value&&(s[7].value!=D3DBLEND_SRCALPHA||s[8].value!=D3DBLEND_INVSRCALPHA))||
            (alpha&&alphaFunc!=D3DCMP_GREATER&&alphaFunc!=D3DCMP_GREATEREQUAL))return;
+        saved.viewport=viewport;if(!saved.save(userMemory,material==6&&domain!=4))return;
         D3DSURFACE_DESC desc{};if(FAILED(saved.target->GetDesc(&desc)))return;
-        // ponytail: first prototype supports 1x MSAA. Resolve-aware capture is the upgrade path.
-        if(desc.MultiSampleType!=D3DMULTISAMPLE_NONE||desc.Width!=viewport.Width||desc.Height!=viewport.Height){++rejected;return;}
+        if(desc.Width!=viewport.Width||desc.Height!=viewport.Height){++rejected;return;}
         if(width!=desc.Width||heightPixels!=desc.Height){reset();width=desc.Width;heightPixels=desc.Height;}
+        const bool multisampled=desc.MultiSampleType!=D3DMULTISAMPLE_NONE;
+        if(multisampled){
+            if(!captureDepth&&!check(d->CreateDepthStencilSurface(width,heightPixels,D3DFMT_D24S8,D3DMULTISAMPLE_NONE,0,FALSE,&captureDepth,nullptr),"material depth"))return;
+            if(FAILED(d->GetDepthStencilSurface(&saved.depth))||!saved.depth)return;
+            saved.states[0].replay=saved.states[0].value;
+        }
         if(domain<=4&&modes[domain-1]==3&&geometry)displacement.prepare(original,domain,material,*geometry);
         if(!height){
             const std::uint64_t bytes=std::uint64_t(width)*heightPixels*8;
             MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;
             if(bytes>(64ull<<20)||!GlobalMemoryStatusEx(&memory)||memory.ullAvailVirtual<bytes+(128ull<<20)){++rejected;return;}
-            if(!check(d->CreateTexture(width,heightPixels,1,D3DUSAGE_RENDERTARGET,D3DFMT_A16B16G16R16F,D3DPOOL_DEFAULT,&height,nullptr),"height texture")||
-               !check(height->GetSurfaceLevel(0,&target),"height surface"))return;
+            if(!check(d->CreateTexture(width,heightPixels,1,D3DUSAGE_RENDERTARGET,D3DFMT_A16B16G16R16F,D3DPOOL_DEFAULT,&height,nullptr),"height texture"))return;
         }
-        if((occlusionControl[0]>0||occlusionControl[2]>0)&&!occlusionMap&&!occlusionUnavailable){
+        if(!target&&!check(height->GetSurfaceLevel(0,&target),"height surface"))return;
+        if((occlusionControl[0]>0||occlusionControl[2]>0)&&!occlusionMap&&!occlusionUnavailable&&!occlusionRetry){
             D3DCAPS9 caps{};MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;const auto bytes=std::uint64_t(width)*heightPixels*4;
-            bool available=SUCCEEDED(d->GetDeviceCaps(&caps))&&caps.NumSimultaneousRTs>=2&&(caps.PrimitiveMiscCaps&D3DPMISCCAPS_MRTINDEPENDENTBITDEPTHS)&&GlobalMemoryStatusEx(&memory)&&memory.ullAvailVirtual>bytes+(128ull<<20);
+            const bool supported=SUCCEEDED(d->GetDeviceCaps(&caps))&&caps.NumSimultaneousRTs>=2&&(caps.PrimitiveMiscCaps&D3DPMISCCAPS_MRTINDEPENDENTBITDEPTHS);
+            bool available=supported&&GlobalMemoryStatusEx(&memory)&&memory.ullAvailVirtual>bytes+(128ull<<20);
             if(available)available=SUCCEEDED(d->CreateTexture(width,heightPixels,1,D3DUSAGE_RENDERTARGET,D3DFMT_A8R8G8B8,D3DPOOL_DEFAULT,&occlusionMap,nullptr))&&SUCCEEDED(occlusionMap->GetSurfaceLevel(0,&occlusionTarget));
-            if(!available){drop(occlusionTarget);drop(occlusionMap);occlusionUnavailable=true;logf("MATERIAL_OCCLUSION unavailable; normal maps and POM retained");}
+            if(!available){drop(occlusionTarget);drop(occlusionMap);occlusionUnavailable=!supported;occlusionRetry=supported?60:0;logf("MATERIAL_OCCLUSION allocation retry=%u unsupported=%u; settings retained",occlusionRetry,unsigned(!supported));}
         }
         const DWORD* codes[]={kBumpOpaqueShader,kBumpLayerShader,kBumpWallShader,kBumpGrassShader,kBumpWallOpaqueShader,kBumpCompositeShader};
         if(!model&&!shaders[material-1]&&!check(d->CreatePixelShader(codes[material-1],&shaders[material-1]),"capture shader"))return;
         IDirect3DBaseTexture9* diffuse=nullptr;if(FAILED(d->GetTexture(0,&diffuse)))return;
-        auto* normal=normals.resolve(diffuse);drop(diffuse);if(!normal)return;
+        auto* normal=normals.resolve(diffuse,domain==4);drop(diffuse);if(!normal)return;
         // Resolving a second large layer may evict the first cache entry.
         // Keep both maps alive until this replay has finished.
         normal->AddRef();
@@ -218,14 +240,17 @@ public:
         const DWORD normalSampler[]={D3DTEXF_LINEAR,D3DTEXF_LINEAR,D3DTEXF_LINEAR,addressU,addressV,FALSE,0,0};
         for(unsigned i=0;i<8;++i)if(saved.samplerValues[i]!=normalSampler[i]){saved.samplerChanged|=1u<<i;d->SetSamplerState(saved.normalStage,saved.samplerKeys[i],normalSampler[i]);}
         if(normal1){d->SetTexture(3,normal1);for(unsigned i=0;i<8;++i)if(saved.samplerValues3[i]!=normalSampler[i]){saved.samplerChanged3|=1u<<i;d->SetSamplerState(3,saved.samplerKeys[i],normalSampler[i]);}}
+        if(multisampled)d->SetDepthStencilSurface(nullptr);
         if(!check(d->SetRenderTarget(0,target),"capture target"))return;
+        if(multisampled&&!check(d->SetDepthStencilSurface(captureDepth),"material depth bind"))return;
         if(occlusionTarget){saved.auxiliary=true;if(FAILED(d->SetRenderTarget(1,occlusionTarget))){drop(occlusionTarget);drop(occlusionMap);occlusionUnavailable=true;d->SetRenderTarget(1,nullptr);}}
-        if(!cleared){if(!check(d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0),"height clear"))return;cleared=true;}
+        if(!cleared){if(!check(d->Clear(0,nullptr,D3DCLEAR_TARGET|(multisampled?D3DCLEAR_ZBUFFER:0),0,1,0),"height clear"))return;cleared=true;}
         const float constants[]={domain==1?.18f:domain==2?.14f:.06f,range,alpha?(float(ref)+(alphaFunc==D3DCMP_GREATER?.5f:0.f))/255.f:.001f,domain==4&&alpha?1.f:0.f};
         float pom[4];std::copy(pomControl,pomControl+4,pom);if(modes[domain-1]!=2||!parallax.supports(saved.pixel,material))pom[0]=0;
         float occult[4];std::copy(occlusionControl,occlusionControl+4,occult);occult[3]=occlusionTarget?1.f:0.f;if(pom[0]<=0||occlusionLight[3]<=0)occult[0]=0;
+        float bank[20];for(unsigned i=0;i<4;++i){bank[i]=constants[i];bank[4+i]=projection[i];bank[8+i]=pom[i];bank[12+i]=occult[i];bank[16+i]=occlusionLight[i];}
         if(!check(d->SetVertexShader(v->second.patched),"capture VS")||!check(d->SetPixelShader(model?model->shader:shaders[material-1]),"capture PS")||
-           !check(d->SetPixelShaderConstantF(saved.constantBase+0,constants,1),"capture constants")||!check(d->SetPixelShaderConstantF(saved.constantBase+1,projection,1),"capture projection")||!check(d->SetPixelShaderConstantF(saved.constantBase+2,pom,1),"capture POM")||!check(d->SetPixelShaderConstantF(saved.constantBase+3,occult,1),"capture occlusion")||!check(d->SetPixelShaderConstantF(saved.constantBase+4,occlusionLight,1),"capture light"))return;
+           !check(d->SetPixelShaderConstantF(saved.constantBase,bank,5),"capture constants"))return;
         if(check(displacement.draw(draw),"material replay")){drawn=true;++draws[domain-1];}
     }
 };

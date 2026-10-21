@@ -5,6 +5,12 @@
 #include <cstdio>
 int main(){
     using NorthlightAutoNormalMemory::mipBytes;
+    using NorthlightAutoNormalMemory::budget;
+    assert(budget(715ull<<20,96ull<<20)==(32ull<<20));
+    assert(budget(895ull<<20,96ull<<20)==(32ull<<20));
+    assert(budget(950ull<<20,32ull<<20)==(32ull<<20));
+    assert(budget(950ull<<20,96ull<<20)==(96ull<<20));
+    assert(budget(1024ull<<20,32ull<<20)==(96ull<<20));
     assert(mipBytes(D3DFMT_DXT1,1,1,1)==8);
     assert(mipBytes(D3DFMT_DXT5,5,7,1)==64);
     assert(mipBytes(D3DFMT_DXT1,4,4,0)==24);

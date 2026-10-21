@@ -21,9 +21,9 @@ inline void copiedTexture(IDirect3DBaseTexture9* source,IDirect3DBaseTexture9* d
 inline void copiedSurface(IDirect3DSurface9* source,const RECT* rect,IDirect3DSurface9* destination,const POINT* point,bool success){
     if(!destination)return;IDirect3DTexture9* from=nullptr,*to=nullptr;
     if(FAILED(destination->GetContainer(IID_IDirect3DTexture9,reinterpret_cast<void**>(&to)))||!to)return;
-    auto& cache=NorthlightMaterialTextures::cache();cache.invalidate(to);
+    auto& cache=NorthlightMaterialTextures::cache();
     D3DSURFACE_DESC a{},b{},level{};
-    if(success&&source&&(!point||(!point->x&&!point->y))&&SUCCEEDED(source->GetDesc(&a))&&SUCCEEDED(destination->GetDesc(&b))&&a.Width==b.Width&&a.Height==b.Height&&(!rect||(!rect->left&&!rect->top&&rect->right==LONG(a.Width)&&rect->bottom==LONG(a.Height)))&&SUCCEEDED(source->GetContainer(IID_IDirect3DTexture9,reinterpret_cast<void**>(&from)))&&from&&SUCCEEDED(from->GetLevelDesc(0,&level))&&a.Width==level.Width&&a.Height==level.Height&&SUCCEEDED(to->GetLevelDesc(0,&level))&&b.Width==level.Width&&b.Height==level.Height)copiedTexture(from,to,true);
+    if(success&&source&&(!point||(!point->x&&!point->y))&&SUCCEEDED(source->GetDesc(&a))&&SUCCEEDED(destination->GetDesc(&b))&&a.Width==b.Width&&a.Height==b.Height&&(!rect||(!rect->left&&!rect->top&&rect->right==LONG(a.Width)&&rect->bottom==LONG(a.Height)))&&SUCCEEDED(source->GetContainer(IID_IDirect3DTexture9,reinterpret_cast<void**>(&from)))&&from&&SUCCEEDED(from->GetLevelDesc(0,&level))&&a.Width==level.Width&&a.Height==level.Height&&SUCCEEDED(to->GetLevelDesc(0,&level))&&b.Width==level.Width&&b.Height==level.Height)copiedTexture(from,to,true);else cache.invalidate(to);
     if(from)from->Release();to->Release();
 }
 inline void means(Image& out){out.mean=out.accentMean=0;for(size_t i=0;i<out.rgba.size();i+=4){float r=out.rgba[i]/255.f,g=out.rgba[i+1]/255.f,b=out.rgba[i+2]/255.f;out.mean+=r*.299f+g*.587f+b*.114f;out.accentMean+=accent(r,g,b);}out.mean/=out.width*out.height;out.accentMean/=out.width*out.height;}
@@ -45,5 +45,13 @@ inline std::array<float,4> profile(const Image& im,unsigned polarity,unsigned de
 inline float value(float r,float g,float b,const std::array<float,4>& p){
     const float base=.5f+(r*.299f+g*.587f+b*.114f-p[0])*.7f*p[2];
     const float a=accent(r,g,b)*p[1];return std::clamp(std::max(base,base+(.5f+.35f*a-base)*a)+p[3],.02f,.98f);
+}
+// Model albedo contains painted anatomy and skin colour. Only local detail may
+// become model relief; broad lighting/colour regions must not inflate a body.
+inline float modelValue(const Image& im,unsigned x,unsigned y,unsigned polarity){
+    auto luma=[&](int x,int y){x=std::clamp(x,0,int(im.width)-1);y=std::clamp(y,0,int(im.height)-1);const auto* p=im.rgba.data()+(size_t(y)*im.width+x)*4;return (p[0]*.299f+p[1]*.587f+p[2]*.114f)/255;};
+    const int rx=std::max(1u,im.width/32),ry=std::max(1u,im.height/32);
+    const float around=(luma(int(x)-rx,y)+luma(int(x)+rx,y)+luma(x,int(y)-ry)+luma(x,int(y)+ry))*.25f;
+    return .5f+std::clamp((luma(x,y)-around)*.7f*(polarity==2?-1.f:1.f),-.12f,.12f);
 }
 }

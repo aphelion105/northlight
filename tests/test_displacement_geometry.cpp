@@ -23,16 +23,26 @@ int main(){
     assert(build(source,decl,4,uv,h,4,false,false,false,out,&black,&uv,&blend));for(unsigned i=0;i<out.vertexCount;++i){float d[3];std::memcpy(d,out.streams[0].bytes.data()+i*out.streams[0].stride+sizeof(V),12);assert(std::fabs(d[2])<1e-6f);}
     auto bad=source;bad.indices[0]=100;assert(!build(bad,decl,4,uv,h,8,false,false,false,out));
     auto badUV=uv;badUV[0][0]=std::numeric_limits<float>::quiet_NaN();assert(!build(source,decl,4,badUV,h,8,false,false,false,out));
-    assert(!build(source,decl,4,uv,h,64,false,false,false,out));assert(!build(source,decl,4,uv,h,8,false,false,false,out,&black));
+    assert(build(source,decl,4,uv,h,64,false,false,false,out));assert(out.primitiveCount==8192);
+    assert(build(source,decl,4,uv,h,128,false,false,false,out));assert(out.primitiveCount==32768&&out.vertexCount==16641);
+    assert(!build(source,decl,4,uv,h,256,false,false,false,out));assert(!build(source,decl,4,uv,h,8,false,false,false,out,&black));
+    Height dense=h;dense.width=dense.height=128;dense.values.assign(128*128,.8f);
+    assert(textureFactor(uv,dense,1)==2&&textureFactor(uv,dense,4)==32&&textureFactor(uv,dense,5)==64);
+    auto tiled=uv;for(auto& p:tiled)for(auto& c:p)c*=4;assert(textureFactor(tiled,dense,4)==128);
     h.values={0,1,1,0};h.width=h.height=2;assert(std::fabs(h.sample(.5f,.5f)-.5f)<1e-6f);assert(h.sample(0,0,true,true)==0);assert(std::fabs(h.sample(-.25f,.25f)-1)<1e-6f);
-    // New vertices merge actual influence IDs; numeric averaging creates
-    // nonexistent bones (e.g. 0 and 74 must never turn into bone 37).
+    // Varying skin transforms keep the original triangle: interpolating both
+    // weights and positions changes its animated shape even at zero height.
     struct Skin {V v;unsigned char weights[4],bones[4];};Skin skin[4];
     for(unsigned i=0;i<4;++i){skin[i]={data[i],{255,0,0,0},{static_cast<unsigned char>(i&1?74:0),0,0,0}};}
     auto skinned=source;skinned.streams[0].stride=sizeof(Skin);skinned.streams[0].bytes.resize(sizeof skin);std::memcpy(skinned.streams[0].bytes.data(),skin,sizeof skin);
     D3DVERTEXELEMENT9 skinDecl[6];std::memcpy(skinDecl,decl,3*sizeof(*decl));skinDecl[3]={0,32,D3DDECLTYPE_UBYTE4N,0,D3DDECLUSAGE_BLENDWEIGHT,0};skinDecl[4]={0,36,D3DDECLTYPE_UBYTE4,0,D3DDECLUSAGE_BLENDINDICES,0};skinDecl[5]=D3DDECL_END();
-    assert(build(skinned,skinDecl,6,uv,h,8,false,false,false,out));bool merged=false;
-    for(unsigned i=0;i<out.vertexCount;++i){Skin s;std::memcpy(&s,out.streams[0].bytes.data()+i*out.streams[0].stride,sizeof s);unsigned sum=0,live=0;for(unsigned k=0;k<4;++k){sum+=s.weights[k];if(s.weights[k]){assert(s.bones[k]==0||s.bones[k]==74);++live;}}assert(sum==255);merged|=live==2;}assert(merged);
+    assert(build(skinned,skinDecl,6,uv,h,8,false,false,false,out));assert(out.primitiveCount==2&&out.vertexCount==4);
+    for(unsigned i=0;i<out.vertexCount;++i){Skin s;std::memcpy(&s,out.streams[0].bytes.data()+i*out.streams[0].stride,sizeof s);unsigned sum=0;for(unsigned k=0;k<4;++k){sum+=s.weights[k];if(s.weights[k]){assert(s.bones[k]==0||s.bones[k]==74);}}assert(sum==255);}
+    // Even an isolated UV-seam triangle gets an interior relief sample at the
+    // lowest geometry budget; splitting boundary edges alone was all flat.
+    auto isolated=source;isolated.vertexCount=3;isolated.primitiveCount=1;isolated.indices={0,1,2};auto triUV=uv;triUV.resize(3);h.width=h.height=8;h.values.assign(64,.8f);
+    assert(build(isolated,decl,4,triUV,h,2,false,false,false,out));assert(out.primitiveCount==3);unsigned raised=0;
+    for(unsigned i=0;i<out.vertexCount;++i){float delta[3];std::memcpy(delta,out.streams[0].bytes.data()+size_t(i)*out.streams[0].stride+sizeof(V),12);raised+=delta[2]>.2f;}assert(raised==1);
     // A rigid shader may share a declaration with unused, all-zero skin weights.
     // Those fields must not reject an otherwise valid rigid surface.
     for(auto& v:skin)for(auto& w:v.weights)w=0;std::memcpy(skinned.streams[0].bytes.data(),skin,sizeof skin);

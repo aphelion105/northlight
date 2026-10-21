@@ -395,7 +395,7 @@ struct UnlockBufferRefArgs {ProxyBase* proxy;const unsigned char* src;UINT off,s
 enum ImageRoute:UINT{RouteSurface=0,RouteTexture=1,RouteCube=2,RouteVolumeTexture=3,RouteVolume=4};
 
 inline ProxyBase* particleTextureRoot(ProxyBase* p){if(p&&p->kind==Kind::Surface)p=p->parent;return p&&p->kind==Kind::Texture?p:nullptr;}
-inline void invalidateParticleTexture(ProxyBase* p){if(auto* root=particleTextureRoot(p)){NorthlightParticleTextures::cache().invalidate(root->raw);NorthlightMaterialTextures::cache().invalidate(root->raw);}}
+inline void invalidateParticleTexture(ProxyBase* p,bool material=true){if(auto* root=particleTextureRoot(p)){NorthlightParticleTextures::cache().invalidate(root->raw);if(material)NorthlightMaterialTextures::cache().invalidate(root->raw);}}
 inline void captureParticleTexture(const UnlockImageArgs& a,const unsigned char* src,bool success){
     auto* root=particleTextureRoot(a.proxy);if(!root||a.flags&D3::kLockReadOnly)return;
     // Only immutable creation metadata is read here, on the replay thread.

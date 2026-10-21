@@ -14,9 +14,9 @@ class NorthlightAutoDisplacement {
     using Mesh=NorthlightDrawSnapshot::Mesh;
     using Height=NorthlightDisplacementGeometry::Height;
     struct Shader {IDirect3DVertexShader9* patched=nullptr,*source=nullptr;NorthlightDisplacementPatch::Binding binding;};
-    struct Material {Program uv,view,uv1,blend;bool layered=false,skinned=false;uint64_t id=0;unsigned first=0,count=0,influences=0;};
+    struct Material {Program uv,view,uv1,blend;std::vector<unsigned> uvRegisters[2];bool layered=false,skinned=false;uint64_t id=0;unsigned first=0,count=0,influences=0;};
     struct Bounds {std::shared_ptr<const Mesh> source;float low[3],high[3];uint64_t used=0;std::unique_ptr<NorthlightReplayBounds::SkinEnvelope> skin;};
-    struct Texture {IDirect3DTexture9* source=nullptr;Height height;uint64_t used=0,version=0;};
+    struct Texture {IDirect3DTexture9* source=nullptr;Height height;uint64_t used=0,version=0;bool model=false;};
     struct Entry {
         std::shared_ptr<const Mesh> source;IDirect3DTexture9* texture=nullptr,*texture1=nullptr;
         IDirect3DVertexBuffer9* vb=nullptr;IDirect3DIndexBuffer9* ib=nullptr;IDirect3DVertexDeclaration9* decl=nullptr,*sourceDecl=nullptr;
@@ -30,23 +30,34 @@ class NorthlightAutoDisplacement {
     std::vector<Texture> textures;
     std::unordered_map<const Mesh*,Bounds> bounds;
     std::vector<std::unique_ptr<Entry>> entries;
+    std::vector<float> uvScratch;
     Entry* current=nullptr;float controls[4][4]={};
     float strength=.12f,range=12,worldStrength=.12f,worldRange=12,modelStrength=.03f,modelRange=8;unsigned worldDetail=4,modelDetail=2,polarity=0,heightDetails=75,heightBalance=50;unsigned detail=4,buildsThisFrame=0,readsThisFrame=0,poseVerticesThisFrame=0;
-    size_t resident=0,boundsBytes=0;uint64_t clock=0,materialClock=0;unsigned builds=0,hits=0,draws=0,triangles=0,refused=0,frames=0;bool userDraw=false,indexedUserDraw=false;
-    static std::vector<float> uvKey(const Material& m,const float* constants){
-        bool used[256]={};for(const auto* p:{&m.uv,&m.uv1,&m.blend})for(const auto& op:p->operations)for(const auto& s:op.source){if(NorthlightShadowShader::regType(s.token)!=2)continue;const auto index=NorthlightShadowShader::regIndex(s.token);bool defined=false;for(const auto& def:p->definitions)defined|=def.reg==index;if(!defined&&index<256)used[index]=true;}
-        std::vector<float> key;for(unsigned i=0;i<256;++i)if(used[i]){key.push_back(float(i));key.insert(key.end(),constants+i*4,constants+i*4+4);}return key;
+    size_t resident=0,boundsBytes=0,cacheBudget=64u<<20;uint64_t clock=0,materialClock=0,builds=0,hits=0,draws=0,triangles=0,refused=0;unsigned frames=0,domainDraws[4]={},stateRejected=0,heightRejected=0,shaderRejected=0,meshRejected=0,snapshotRejected=0;bool userDraw=false,indexedUserDraw=false;
+    static std::vector<unsigned> usedUVRegisters(const Material& m,bool layered){
+        bool used[256]={};for(const auto* p:{&m.uv,&m.uv1,&m.blend})if(p==&m.uv||layered)for(const auto& op:p->operations)for(const auto& source:op.source){if(NorthlightShadowShader::regType(source.token)!=2)continue;const auto index=NorthlightShadowShader::regIndex(source.token);bool defined=false;for(const auto& def:p->definitions)defined|=def.reg==index;if(!defined&&index<256)used[index]=true;}
+        std::vector<unsigned> result;for(unsigned i=0;i<256;++i)if(used[i])result.push_back(i);return result;
     }
-    const Height* height(IDirect3DTexture9* source){
+    static void uvKey(const Material& m,const float* constants,bool layered,std::vector<float>& key){
+        const auto& registers=m.uvRegisters[layered?1:0];key.clear();key.reserve(registers.size()*5);for(auto i:registers){key.push_back(float(i));key.insert(key.end(),constants+i*4,constants+i*4+4);}
+    }
+    bool memoryPressure=false;
+    void refreshBudget(const MEMORYSTATUSEX& memory){
+        if(memoryPressure)cacheBudget=32u<<20;
+        else if(memory.ullAvailVirtual<(896ull<<20))cacheBudget=32u<<20;
+        else if(memory.ullAvailVirtual>=(1024ull<<20))cacheBudget=128u<<20;
+        while(resident>cacheBudget&&!entries.empty()){auto old=std::min_element(entries.begin(),entries.end(),[](const auto& a,const auto& b){return a->used<b->used;});resident-=(*old)->bytes;entries.erase(old);}
+    }
+    const Height* height(IDirect3DTexture9* source,bool model=false){
         const auto revision=NorthlightMaterialHeight::version(source);
-        for(auto it=textures.begin();it!=textures.end();++it)if(it->source==source){if(it->version!=revision){drop(it->source);textures.erase(it);break;}it->used=++clock;return it->height.width?&it->height:nullptr;}
+        for(auto it=textures.begin();it!=textures.end();++it)if(it->source==source&&it->model==model){if(it->version!=revision){drop(it->source);textures.erase(it);break;}it->used=++clock;return it->height.width?&it->height:nullptr;}
         if(readsThisFrame>=2)return nullptr;++readsThisFrame;
-        auto reject=[&]()->const Height*{if(textures.size()>=32){auto old=std::min_element(textures.begin(),textures.end(),[](const Texture& a,const Texture& b){return a.used<b.used;});drop(old->source);textures.erase(old);}Texture failed;failed.source=source;source->AddRef();failed.used=++clock;failed.version=revision;textures.push_back(std::move(failed));return nullptr;};
+        auto reject=[&]()->const Height*{if(textures.size()>=32){auto old=std::min_element(textures.begin(),textures.end(),[](const Texture& a,const Texture& b){return a.used<b.used;});drop(old->source);textures.erase(old);}Texture failed;failed.source=source;source->AddRef();failed.used=++clock;failed.version=revision;failed.model=model;textures.push_back(std::move(failed));return nullptr;};
         NorthlightMaterialHeight::Image image;if(!NorthlightMaterialHeight::read(source,image))return reject();
         if(textures.size()>=32){auto oldest=std::min_element(textures.begin(),textures.end(),[](const Texture& a,const Texture& b){return a.used<b.used;});drop(oldest->source);textures.erase(oldest);}
-        Texture item;item.source=source;source->AddRef();item.used=++clock;item.version=revision;item.height.width=image.width;item.height.height=image.height;item.height.values.resize(size_t(image.width)*image.height);
+        Texture item;item.source=source;source->AddRef();item.used=++clock;item.version=revision;item.model=model;item.height.width=image.width;item.height.height=image.height;item.height.values.resize(size_t(image.width)*image.height);
         const auto profile=NorthlightMaterialHeight::profile(image,polarity,heightDetails,heightBalance);
-        for(size_t i=0;i<item.height.values.size();++i)item.height.values[i]=NorthlightMaterialHeight::value(image.rgba[i*4]/255.f,image.rgba[i*4+1]/255.f,image.rgba[i*4+2]/255.f,profile);
+        for(size_t i=0;i<item.height.values.size();++i)item.height.values[i]=model?NorthlightMaterialHeight::modelValue(image,unsigned(i%image.width),unsigned(i/image.width),polarity):NorthlightMaterialHeight::value(image.rgba[i*4]/255.f,image.rgba[i*4+1]/255.f,image.rgba[i*4+2]/255.f,profile);
         textures.push_back(std::move(item));return &textures.back().height;
     }
     bool viewRows(const Program& program,const float* constants){
@@ -59,7 +70,7 @@ class NorthlightAutoDisplacement {
     }
 public:
     struct Args {NorthlightDrawSnapshot::Draw draw;const void* indices=nullptr;D3DFORMAT format=D3DFMT_UNKNOWN;const void* vertices=nullptr;UINT stride=0;};
-    explicit NorthlightAutoDisplacement(IDirect3DDevice9* device):d(device){textures.reserve(32);snapshots.setSnapshotCacheLimit(16u<<20);snapshots.setChargeResidentHits(false);}
+    explicit NorthlightAutoDisplacement(IDirect3DDevice9* device):d(device){textures.reserve(32);snapshots.setSnapshotCacheLimit(32u<<20);snapshots.setChargeResidentHits(false);}
     ~NorthlightAutoDisplacement(){reset();for(auto& s:shaders){drop(s.second.patched);drop(s.second.source);}}
     void tracking(uint64_t(*identity)(void*,bool),uint64_t(*version)(void*,bool),NorthlightCaptureMetadata::Read metadata){snapshots.setIdentityProvider(identity);snapshots.setVersionProvider(version);snapshots.setMetadataProvider(metadata);}
     void configure(const NorthlightQuality::Settings& s){
@@ -73,8 +84,14 @@ public:
     bool skinned(IDirect3DVertexShader9* original)const{auto it=materials.find(original);return it!=materials.end()&&it->second.skinned;}
     unsigned preparedPrimitives()const{return current?current->primitives:0;}
     void beginDraw(){current=nullptr;}
+    void setMemoryPressure(bool on){
+        current=nullptr;memoryPressure=on;snapshots.setSnapshotCacheLimit(on?8u<<20:32u<<20);
+        MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;GlobalMemoryStatusEx(&memory);refreshBudget(memory);
+        if(on){bounds.clear();boundsBytes=0;snapshots.clearIndexCache();}
+    }
+    void trimMemory(){setMemoryPressure(memoryPressure);}
     void reset(){current=nullptr;entries.clear();bounds.clear();boundsBytes=resident=0;for(auto& t:textures)drop(t.source);textures.clear();snapshots.clearIndexCache();}
-    void endFrame(){current=nullptr;buildsThisFrame=readsThisFrame=poseVerticesThisFrame=0;snapshots.clearFrame();if(draws&&frames%600==0)logf("DISPLACEMENT cached=%zu bytes=%zu builds=%u hits=%u draws=%u triangles=%u refused=%u",entries.size(),resident,builds,hits,draws,triangles,refused);++frames;}
+    void endFrame(){current=nullptr;if(frames%60==0){MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;if(GlobalMemoryStatusEx(&memory))refreshBudget(memory);}buildsThisFrame=readsThisFrame=poseVerticesThisFrame=0;snapshots.clearFrame();if(draws&&frames%600==0)logf("DISPLACEMENT cached=%zu bytes=%zu builds=%llu hits=%llu draws=%llu triangles=%llu refused=%llu terrain=%u walls=%u grass=%u models=%u stateRejected=%u heightRejected=%u shaderRejected=%u snapshotRejected=%u meshRejected=%u budgetMiB=%zu",entries.size(),resident,(unsigned long long)builds,(unsigned long long)hits,(unsigned long long)draws,(unsigned long long)triangles,(unsigned long long)refused,domainDraws[0],domainDraws[1],domainDraws[2],domainDraws[3],stateRejected,heightRejected,shaderRejected,snapshotRejected,meshRejected,cacheBudget>>20);++frames;}
     void registerVariant(IDirect3DVertexShader9* original,const DWORD* code,size_t count,bool skinned=false){
         auto old=shaders.find(original);if(old!=shaders.end()){drop(old->second.patched);drop(old->second.source);shaders.erase(old);}std::vector<uint32_t> patched;Shader shader;
         if(NorthlightDisplacementPatch::patch(reinterpret_cast<const uint32_t*>(code),count,patched,shader.binding,skinned)){const HRESULT result=d->CreateVertexShader(reinterpret_cast<const DWORD*>(patched.data()),&shader.patched);if(FAILED(result))logf("DISPLACEMENT vertex shader rejected: 0x%08lx model=%08lx",static_cast<unsigned long>(result),static_cast<unsigned long>(code[0]));}
@@ -88,21 +105,22 @@ public:
 m.layered=NorthlightActorDeformation::compile(words,count,m.uv1,true,2,5,1)&&NorthlightActorDeformation::compile(words,count,m.blend,true,2,10,1,8);
         unsigned first=256,last=0;for(const auto* p:{&m.uv,&m.view,&m.uv1,&m.blend})for(const auto& op:p->operations)for(const auto& source:op.source){if(NorthlightShadowShader::regType(source.token)!=2)continue;unsigned i=NorthlightShadowShader::regIndex(source.token);bool defined=false;for(const auto& def:p->definitions)defined|=def.reg==i;if(!defined){first=std::min(first,i);last=std::max(last,i);}}
         if(first>last||last>=256)return;m.first=m.skinned?0:first;m.count=m.skinned?256:last-first+1;m.id=++materialClock;
-        const bool skinned=m.skinned;materials.emplace(original,std::move(m));registerVariant(original,code,count,skinned);
+        m.uvRegisters[0]=usedUVRegisters(m,false);m.uvRegisters[1]=usedUVRegisters(m,true);const bool skinned=m.skinned;materials.emplace(original,std::move(m));registerVariant(original,code,count,skinned);
     }
     bool prepare(IDirect3DVertexShader9* original,unsigned domain,unsigned material,const Args& args){
-        current=nullptr;strength=domain==4?modelStrength:worldStrength;range=domain==4?modelRange:worldRange;detail=domain==4?modelDetail:domain==3?std::min(worldDetail,3u):worldDetail;auto shader=materials.find(original);auto patched=shaders.find(original);if(shader==materials.end()||strength<=0||domain>4||patched==shaders.end()||!patched->second.patched)return false;
+        current=nullptr;strength=domain==4?modelStrength:worldStrength;range=domain==4?modelRange:worldRange;detail=domain==4?modelDetail:domain==3?std::min(worldDetail,3u):worldDetail;auto shader=materials.find(original);auto patched=shaders.find(original);if(shader==materials.end()||strength<=0||domain>4||patched==shaders.end()||!patched->second.patched){++shaderRejected;return false;}
         DWORD z=0,write=0,blendState=0;d->GetRenderState(D3DRS_ZENABLE,&z);d->GetRenderState(D3DRS_ZWRITEENABLE,&write);d->GetRenderState(D3DRS_ALPHABLENDENABLE,&blendState);
-        if(!z||(!write&&domain!=1)||(blendState&&!(domain==1&&material==2)))return false;
+        bool cutout=false;if(blendState&&write){DWORD alpha=0,src=0,dst=0,func=0;d->GetRenderState(D3DRS_ALPHATESTENABLE,&alpha);d->GetRenderState(D3DRS_SRCBLEND,&src);d->GetRenderState(D3DRS_DESTBLEND,&dst);d->GetRenderState(D3DRS_ALPHAFUNC,&func);cutout=alpha&&src==D3DBLEND_SRCALPHA&&dst==D3DBLEND_INVSRCALPHA&&(func==D3DCMP_GREATER||func==D3DCMP_GREATEREQUAL);}
+        if(!z||(!write&&domain!=1)||(blendState&&!cutout&&!(domain==1&&material==2))){++stateRejected;return false;}
         float constants[256*4]={};if(FAILED(d->GetVertexShaderConstantF(shader->second.first,constants+shader->second.first*4,shader->second.count))||(!shader->second.skinned&&!viewRows(shader->second.view,constants)))return false;
         NorthlightDrawSnapshot::Ref<IDirect3DVertexDeclaration9> decl;if(FAILED(d->GetVertexDeclaration(decl.out()))||!decl.p)return false;
         D3DVERTEXELEMENT9 elements[MAXD3DDECLLENGTH+1];UINT count=MAXD3DDECLLENGTH+1;if(FAILED(decl->GetDeclaration(elements,&count))||count>MAXD3DDECLLENGTH)return false;
         Mesh local;std::shared_ptr<const Mesh> source;
-        if(args.vertices){if(!snapshots.readUP(decl.p,args.draw,args.indices,args.format,args.vertices,args.stride,local))return false;}
-        else if(!snapshots.read(d,decl.p,args.draw,local,nullptr,false,&source))return false;
+        if(args.vertices){if(!snapshots.readUP(decl.p,args.draw,args.indices,args.format,args.vertices,args.stride,local)){++snapshotRejected;return false;}}
+        else if(!snapshots.read(d,decl.p,args.draw,local,nullptr,false,&source)){++snapshotRejected;return false;}
         if(!source)source=std::make_shared<Mesh>(std::move(local));
         auto sameSource=[&](const Entry& e){return e.source==source||((args.vertices||(domain==1&&material==2))&&e.source->vertexCount==source->vertexCount&&e.source->primitiveCount==source->primitiveCount&&e.source->topology==source->topology&&e.source->indexed==source->indexed&&e.source->streams[0].bytes==source->streams[0].bytes&&e.source->indices==source->indices);};
-        if(domain==1&&material!=2)for(auto& e:entries)if(sameSource(*e)&&e->sourceDecl==decl.p&&e->domain==domain)e->baseFrame=0;
+        if(domain==1&&material!=2)for(auto& e:entries)if(e->sourceDecl==decl.p&&e->domain==domain&&sameSource(*e))e->baseFrame=0;
         // Reject whole draws outside the sphere before decoding textures or subdividing.
         const auto position=std::find_if(elements,elements+count,[](const D3DVERTEXELEMENT9& e){return e.Stream==0&&e.Usage==0&&e.UsageIndex==0;});
         if(position==elements+count||position->Type!=D3DDECLTYPE_FLOAT3)return false;
@@ -130,30 +148,34 @@ m.layered=NorthlightActorDeformation::compile(words,count,m.uv1,true,2,5,1)&&Nor
         if(domain==2&&material==6&&(FAILED(d->GetTexture(1,tex1.out()))||!tex1.p||tex1->GetType()!=D3DRTYPE_TEXTURE||!shader->second.layered))return false;
         DWORD u=0,v=0;d->GetSamplerState(0,D3DSAMP_ADDRESSU,&u);d->GetSamplerState(0,D3DSAMP_ADDRESSV,&v);if((u!=D3DTADDRESS_WRAP&&u!=D3DTADDRESS_CLAMP)||(v!=D3DTADDRESS_WRAP&&v!=D3DTADDRESS_CLAMP))return false;
         const auto revision=NorthlightMaterialHeight::version(static_cast<IDirect3DTexture9*>(tex.p)),revision1=tex1.p?NorthlightMaterialHeight::version(static_cast<IDirect3DTexture9*>(tex1.p)):0;
-        const unsigned address=u|(v<<8);auto key=uvKey(shader->second,constants);
+        const unsigned address=u|(v<<8);uvKey(shader->second,constants,domain==2&&material==6,uvScratch);
         Entry* overlay=nullptr;
-        for(auto& e:entries){if(sameSource(*e)&&e->sourceDecl==decl.p&&e->domain==domain){
-                if(domain==1&&material==2){if(e->baseFrame==uint64_t(frames)+1&&(!overlay||e->used>overlay->used))overlay=e.get();}
-                else if(e->program==shader->second.id&&e->detail==detail&&e->address==address&&e->material==material&&e->texture==tex.p&&e->texture1==tex1.p&&e->uvConstants==key&&e->heightVersion==revision&&e->heightVersion1==revision1){current=e.get();userDraw=args.vertices!=nullptr;indexedUserDraw=userDraw&&args.draw.indexed;e->used=++clock;e->baseFrame=uint64_t(frames)+1;++hits;return true;}}}
+        for(auto& e:entries){if(e->sourceDecl==decl.p&&e->domain==domain){
+                if(domain==1&&material==2){if(e->baseFrame==uint64_t(frames)+1&&(!overlay||e->used>overlay->used)&&sameSource(*e))overlay=e.get();}
+                else if(e->program==shader->second.id&&e->detail==detail&&e->address==address&&e->material==material&&e->texture==tex.p&&e->texture1==tex1.p&&e->uvConstants==uvScratch&&e->heightVersion==revision&&e->heightVersion1==revision1&&sameSource(*e)){current=e.get();userDraw=args.vertices!=nullptr;indexedUserDraw=userDraw&&args.draw.indexed;e->used=++clock;e->baseFrame=uint64_t(frames)+1;++hits;return true;}}}
         if(overlay){current=overlay;userDraw=args.vertices!=nullptr;indexedUserDraw=userDraw&&args.draw.indexed;overlay->used=++clock;++hits;return true;}
         if((domain==1&&material==2)||buildsThisFrame>=2){++refused;return false;}
-        auto* a=height(static_cast<IDirect3DTexture9*>(tex.p));if(!a)return false;Height first=*a;const Height* second=nullptr;
+        auto* a=height(static_cast<IDirect3DTexture9*>(tex.p),domain==4);if(!a){++heightRejected;return false;}Height first=*a;const Height* second=nullptr;
         if(tex1.p){second=height(static_cast<IDirect3DTexture9*>(tex1.p));if(!second)return false;}
         std::vector<std::array<float,2>> uv,uv1;std::vector<float> weights;
         if(!NorthlightActorDeformation::textureUVs(shader->second.uv,*source,elements,count,constants,uv))return false;
         if(second){if(!NorthlightActorDeformation::textureUVs(shader->second.uv1,*source,elements,count,constants,uv1))return false;
             weights.resize(source->vertexCount);for(unsigned i=0;i<source->vertexCount;++i){NorthlightActorDeformation::Four inputs[16],value;if(!NorthlightActorDeformation::sampledVertexInputsAt(shader->second.blend,*source,elements,count,i,inputs,true)||!NorthlightActorDeformation::evaluateFast(shader->second.blend,inputs,constants,value))return false;if(!std::isfinite(value[3]))return false;weights[i]=value[3];}}
         if(source->primitiveCount>8192)return false;
-        ++buildsThisFrame;Mesh output;if(!NorthlightDisplacementGeometry::build(*source,elements,count,uv,first,1u<<detail,domain==1,u==D3DTADDRESS_CLAMP,v==D3DTADDRESS_CLAMP,output,second,second?&uv1:nullptr,second?&weights:nullptr,shader->second.influences))return false;
+        unsigned factor=domain==4?1u<<detail:NorthlightDisplacementGeometry::textureFactor(uv,first,detail);
+        if(second)factor=std::max(factor,NorthlightDisplacementGeometry::textureFactor(uv1,*second,detail));
+        if(domain==3)factor=std::min(factor,16u);
+        ++buildsThisFrame;Mesh output;if(!NorthlightDisplacementGeometry::build(*source,elements,count,uv,first,factor,domain==1,u==D3DTADDRESS_CLAMP,v==D3DTADDRESS_CLAMP,output,second,second?&uv1:nullptr,second?&weights:nullptr,shader->second.influences)){++meshRejected;return false;}
         if(builds<8){float peak=0;for(unsigned i=0;i<output.vertexCount;++i){float delta[3];std::memcpy(delta,output.streams[0].bytes.data()+size_t(i)*output.streams[0].stride+stream.stride,12);peak=std::max(peak,std::sqrt(delta[0]*delta[0]+delta[1]*delta[1]+delta[2]*delta[2])*strength);}logf("DISPLACEMENT build domain=%u vertices=%u triangles=%u maxOffset=%.5f VScontrol=%u",domain,output.vertexCount,output.primitiveCount,peak,shaders.find(original)->second.binding.constant);}
-        auto entry=std::make_unique<Entry>();entry->bytes=output.byteSize()+source->byteSize();constexpr size_t budget=64u<<20;
-        MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;if(entry->bytes>budget||!GlobalMemoryStatusEx(&memory)||memory.ullAvailVirtual<entry->bytes+(160u<<20)){++refused;return false;}
-        while(!entries.empty()&&(resident+entry->bytes>budget||entries.size()>=256)){auto old=std::min_element(entries.begin(),entries.end(),[](const auto& a,const auto& b){return a->used<b->used;});resident-=(*old)->bytes;entries.erase(old);}
+        auto entry=std::make_unique<Entry>();entry->bytes=output.byteSize()+source->byteSize();
+        MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;if(!GlobalMemoryStatusEx(&memory)||memory.ullAvailVirtual<entry->bytes+(160u<<20)){++refused;return false;}
+        refreshBudget(memory);if(entry->bytes>cacheBudget){++refused;return false;}
+        while(!entries.empty()&&(resident+entry->bytes>cacheBudget||entries.size()>=256)){auto old=std::min_element(entries.begin(),entries.end(),[](const auto& a,const auto& b){return a->used<b->used;});resident-=(*old)->bytes;entries.erase(old);}
         const auto vbBytes=UINT(output.streams[0].bytes.size()),ibBytes=UINT(output.indices.size()*4);void* data=nullptr;
         if(FAILED(d->CreateVertexBuffer(vbBytes,D3DUSAGE_WRITEONLY,0,D3DPOOL_DEFAULT,&entry->vb,nullptr))||FAILED(entry->vb->Lock(0,vbBytes,&data,NorthlightUpload::FreshBufferLock)))return false;std::memcpy(data,output.streams[0].bytes.data(),vbBytes);if(FAILED(entry->vb->Unlock()))return false;
         if(FAILED(d->CreateIndexBuffer(ibBytes,D3DUSAGE_WRITEONLY,D3DFMT_INDEX32,D3DPOOL_DEFAULT,&entry->ib,nullptr))||FAILED(entry->ib->Lock(0,ibBytes,&data,NorthlightUpload::FreshBufferLock)))return false;std::memcpy(data,output.indices.data(),ibBytes);if(FAILED(entry->ib->Unlock()))return false;
         elements[count-1]={0,WORD(stream.stride),D3DDECLTYPE_FLOAT3,D3DDECLMETHOD_DEFAULT,D3DDECLUSAGE_TEXCOORD,7};elements[count]=D3DDECL_END();if(FAILED(d->CreateVertexDeclaration(elements,&entry->decl)))return false;
-        entry->source=source;entry->sourceDecl=decl.p;entry->sourceDecl->AddRef();entry->texture=static_cast<IDirect3DTexture9*>(tex.p);entry->texture->AddRef();entry->texture1=static_cast<IDirect3DTexture9*>(tex1.p);if(entry->texture1)entry->texture1->AddRef();entry->detail=detail;entry->program=shader->second.id;entry->domain=domain;entry->material=material;entry->uvConstants=std::move(key);entry->address=address;entry->heightVersion=revision;entry->heightVersion1=revision1;entry->vertices=output.vertexCount;entry->primitives=output.primitiveCount;entry->stride=output.streams[0].stride;entry->used=++clock;entry->baseFrame=uint64_t(frames)+1;resident+=entry->bytes;current=entry.get();userDraw=args.vertices!=nullptr;indexedUserDraw=userDraw&&args.draw.indexed;entries.push_back(std::move(entry));++builds;return true;
+        entry->source=source;entry->sourceDecl=decl.p;entry->sourceDecl->AddRef();entry->texture=static_cast<IDirect3DTexture9*>(tex.p);entry->texture->AddRef();entry->texture1=static_cast<IDirect3DTexture9*>(tex1.p);if(entry->texture1)entry->texture1->AddRef();entry->detail=detail;entry->program=shader->second.id;entry->domain=domain;entry->material=material;entry->uvConstants=uvScratch;entry->address=address;entry->heightVersion=revision;entry->heightVersion1=revision1;entry->vertices=output.vertexCount;entry->primitives=output.primitiveCount;entry->stride=output.streams[0].stride;entry->used=++clock;entry->baseFrame=uint64_t(frames)+1;resident+=entry->bytes;current=entry.get();userDraw=args.vertices!=nullptr;indexedUserDraw=userDraw&&args.draw.indexed;entries.push_back(std::move(entry));++builds;return true;
     }
     template<class Draw> HRESULT draw(Draw original,bool native=false){
         if(!current)return original();
@@ -169,7 +191,7 @@ m.layered=NorthlightActorDeformation::compile(words,count,m.uv1,true,2,5,1)&&Nor
         if(FAILED(d->GetStreamSource(0,saved.vb.out(),&saved.offset,&saved.stride))||FAILED(d->GetIndices(saved.ib.out()))||FAILED(d->GetVertexDeclaration(saved.decl.out()))||FAILED(d->GetVertexShaderConstantF(saved.constant,saved.values,saved.constantCount)))return original();
         saved.changed=true;
         bound=SUCCEEDED(d->SetStreamSource(0,current->vb,0,current->stride))&&SUCCEEDED(d->SetIndices(current->ib))&&SUCCEEDED(d->SetVertexDeclaration(current->decl))&&SUCCEEDED(d->SetVertexShader(shader->second.patched))&&SUCCEEDED(d->SetVertexShaderConstantF(saved.constant,controls[0],saved.constantCount));
-        if(bound){hr=d->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,0,current->vertices,0,current->primitives);if(SUCCEEDED(hr)){++draws;triangles+=current->primitives;}}
+        if(bound){hr=d->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,0,current->vertices,0,current->primitives);if(SUCCEEDED(hr)){++draws;++domainDraws[current->domain-1];triangles+=current->primitives;}}
         }
         if(!bound)return original();
         if(native&&userDraw){d->SetStreamSource(0,nullptr,0,0);if(indexedUserDraw)d->SetIndices(nullptr);}
