@@ -209,6 +209,11 @@ Every preset turns on the distance selection of character shadows (ActorShadowRa
 and ActorShadowBudgetMiB in Balanced/Performance; about 0.4 ms); the benefit comes
 from drawing clearly fewer characters into shadows.
 The file can be saved as UTF-8, ANSI or Notepad's Unicode.
+  SpellLayerClasses 15 / 15 / 15   See the quality INI for the allowed range.
+  SpellTrace 0 / 0 / 0   See the quality INI for the allowed range.
+  AOMethod 0 / 0 / 0   See the quality INI for the allowed range.
+  AOStrength 100 / 100 / 100   See the quality INI for the allowed range.
+  AORadius 200 / 200 / 200   See the quality INI for the allowed range.
 
 WINDOWS TEST
 Before a test or a problem report, set Diagnostics=1 in northlight-quality.ini

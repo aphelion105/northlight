@@ -54,3 +54,5 @@ video-review-*/
 # ---- renderer/records: validation evidence and install backups, local only ----
 # Tests read their inputs from tests/fixtures/; records are written with run_tests.py --record.
 /renderer/records/
+
+!/licenses/
