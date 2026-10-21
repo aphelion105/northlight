@@ -48,13 +48,23 @@ void DisplacementStateTestAccess::cache(){
     original->uvConstants={-0.f};const std::vector<float> zero={0.f},nan={std::numeric_limits<float>::quiet_NaN()};
     assert(g.firstCandidate(query,fingerprint,true,[&](const E& e){return e.uvConstants==zero;})==original);
     assert(!g.firstCandidate(query,fingerprint,true,[&](const E& e){return e.uvConstants==nan;}));
+    auto keyed=entry(query,100,501,3);keyed->uvConstants={-0.f};auto* keyedPointer=keyed.get();g.retain(std::move(keyed));
+    auto key=[&](const E& e,const std::vector<float>& uv){return G::materialFingerprint(G::sourceFingerprint(*e.source),e.program,e.detail,e.address,e.domain,e.material,e.texture,e.texture1,e.heightVersion,e.heightVersion1,uv);};
+    const auto exact=key(*keyedPointer,zero);assert(exact==keyedPointer->materialFingerprint);
+    assert(g.firstMaterial(exact,[&](const E& e){return e.uvConstants==zero&&G::sameSource(e,alias,true);})==keyedPointer);
+    assert(!g.firstMaterial(exact,[&](const E& e){return e.uvConstants==nan;})); // Even a hash collision cannot authorize NaN equality.
+    assert(!g.firstMaterial(exact,[&](const E& e){return G::sameSource(e,collision,true);}));
+    for(unsigned field=0;field<10;++field){auto changed=entry(query,100,1,3);changed->uvConstants=zero;
+        switch(field){case 0:changed->program=4;break;case 1:changed->detail=1;break;case 2:changed->address=1;break;case 3:changed->domain=2;break;case 4:changed->material=1;break;case 5:changed->texture=reinterpret_cast<IDirect3DTexture9*>(uintptr_t(1));break;case 6:changed->texture1=reinterpret_cast<IDirect3DTexture9*>(uintptr_t(1));break;case 7:changed->heightVersion=1;break;case 8:changed->heightVersion1=1;break;case 9:changed->uvConstants={1};break;}
+        const auto changedKey=key(*changed,changed->uvConstants);changed->texture=changed->texture1=nullptr;assert(!g.firstMaterial(changedKey,[](const E&){return true;}));}
+    keyedPointer->baseFrame=0;
     // Latest successful base wins, and equal stamps preserve insertion order.
     assert(g.findOverlay(query,fingerprint,nullptr)->source==alias);original->used=500;assert(g.findOverlay(query,fingerprint,nullptr)==original);
     g.candidates(query,fingerprint,true,[&](E& e){if(G::sameSource(e,query,true))e.baseFrame=0;});assert(!g.findOverlay(query,fingerprint,nullptr));
     // Source sharing charges only one payload and releases that charge on its last owner.
     g.reset();auto shared=mesh(42);const auto sourceBytes=shared->byteSize();std::weak_ptr<const Mesh> lifetime=shared;
     for(unsigned i=0;i<10;++i)g.retain(entry(shared,100,i+1));assert(g.resident==1000+sourceBytes);
-    for(unsigned i=0;i<9;++i){g.evictOldest();assert(g.resident==(9-i)*100+sourceBytes);assert(g.sourceLookup.size()==9-i&&g.contentLookup.size()==9-i);}
+    for(unsigned i=0;i<9;++i){g.evictOldest();assert(g.resident==(9-i)*100+sourceBytes);assert(g.sourceLookup.size()==9-i&&g.contentLookup.size()==9-i&&g.materialLookup.size()==9-i);}
     shared.reset();assert(!lifetime.expired());g.evictOldest();assert(lifetime.expired()&&g.resident==0&&g.sourceLookup.empty()&&g.contentLookup.empty());
     // Evicting the last old owner while admitting a new variant restores the source charge.
     shared=mesh(7);g.retain(entry(shared,100,1));g.cacheBudget=sourceBytes+110;g.makeRoom(shared,110);assert(g.entries.empty());g.retain(entry(shared,110,2));assert(g.resident==sourceBytes+110);
@@ -63,7 +73,7 @@ void DisplacementStateTestAccess::cache(){
     g.entries[0]->bytes=40u<<20;g.resident+=40u<<20;g.resident-=110;g.refreshBudget(memory);assert(g.resident==100+another->byteSize()&&g.entries.size()==1);
     assert(!find(shared,false)&&find(another,false));g.reset();assert(g.resident==0&&g.sourceLookup.empty()&&g.contentLookup.empty());
     // Both partial index-population failures must leave the ordered fallback usable.
-    for(int failure=0;failure<2;++failure){g.entries.reserve(4);g.sourceLookup.reserve(4);g.contentLookup.reserve(4);auto next=entry(shared,100,1);failAllocationAfter=failure;g.retain(std::move(next));assert(failAllocationAfter==-1&&!g.indexedEntries&&g.sourceLookup.empty()&&g.contentLookup.empty());assert(find(shared,false));g.reset();}
+    for(int failure=0;failure<3;++failure){g.entries.reserve(4);g.sourceLookup.reserve(4);g.contentLookup.reserve(4);g.materialLookup.reserve(4);auto next=entry(shared,100,1);failAllocationAfter=failure;g.retain(std::move(next));assert(failAllocationAfter==-1&&!g.indexedEntries&&g.sourceLookup.empty()&&g.contentLookup.empty()&&g.materialLookup.empty());assert(find(shared,false)&&g.firstMaterial(0,[](const E&){return true;}));g.reset();}
     {G empty(nullptr);auto next=entry(shared,100,1);failAllocationAfter=0;bool failed=false;try{empty.retain(std::move(next));}catch(const std::bad_alloc&){failed=true;}assert(failed&&empty.resident==0&&empty.entries.empty()&&empty.sourceLookup.empty());}
     // Unknown and future errors remain visible rather than disappearing from the total.
     for(unsigned i=0;i<g.snapshotReasons.size();++i){NorthlightDrawSnapshot::Diagnostics why;why.error=NorthlightDrawSnapshot::Error(i);assert(!g.snapshotFailure(why));}
