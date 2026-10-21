@@ -9,9 +9,10 @@ import hashlib,json,math,re
 from pathlib import Path
 
 EMITTER=('position','rgb','intensity','start','end')
-VARIANT_FIELDS={'asset','family','position','position_basis','rgb','intensity','start','end'}
+VARIANT_FIELDS={'asset','family','position','position_basis','rgb','intensity','start','end','casts_shadows'}
 
 def check(p):
+    if 'casts_shadows' in p and type(p['casts_shadows']) is not bool:raise ValueError('Invalid shadow policy')
     if len(p['position'])!=3 or len(p['rgb'])!=3:raise ValueError('Emitter vector size')
     if not all(math.isfinite(v) for v in [*p['position'],*p['rgb'],p['intensity'],p['start'],p['end']]):raise ValueError('Nonfinite emitter')
     if any(abs(v)>100 for v in p['position']) or not all(0<=v<=1 for v in p['rgb']) or max(p['rgb'])<=0 or not 0<p['intensity']<=4 or not 0<=p['start']<p['end']<=32:raise ValueError('Emitter outside bounded policy')
@@ -34,6 +35,9 @@ def pinned(p):
     """{asset sha256: emitter fields} of every asset a profile covers, the profile's own first."""
     result={p['asset_sha256']:{k:p[k] for k in EMITTER}}
     for sha,v in p.get('variants',{}).items():result[sha]={k:v.get(k,p[k]) for k in EMITTER}
+    for sha,values in result.items():
+        source=p.get('variants',{}).get(sha,p)
+        values['casts_shadows']=source.get('casts_shadows',p.get('casts_shadows',False))
     return result
 
 def fallback(catalog,path,blob,native):
@@ -42,7 +46,7 @@ def fallback(catalog,path,blob,native):
     if native or path not in catalog:return native
     p=pinned(catalog[path]).get(hashlib.sha256(blob).hexdigest())
     if p is None:raise ValueError('Emitter profile asset changed: '+path)
-    return [(tuple(p['position']),tuple(c*p['intensity'] for c in p['rgb']),p['start'],p['end'],0x80000000,3,0)]
+    return [(tuple(p['position']),tuple(c*p['intensity'] for c in p['rgb']),p['start'],p['end'],0x80000000,3,2 if p.get('casts_shadows',False) else 0)]
 
 def deduplicate_parent_lights(records,owners):
     # Only compare a WMO child against native lights from ITS OWN parent.

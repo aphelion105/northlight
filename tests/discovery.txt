@@ -81,6 +81,7 @@ test_local_fog_batching.py
 test_local_fog_profile.py
 test_local_ini.py
 test_local_light_selection.py
+test_local_source_shadows.py
 test_log_format_literals.py
 test_log_rotation.py
 test_logger_cost.py
@@ -145,6 +146,7 @@ test_shadow_blob_model.py
 test_shadow_culling_batch.py
 test_shadow_experiment.py
 test_shadow_layer_analysis.py
+test_shadow_paging_memory.py
 test_shadow_pivot.py
 test_shadow_removal_smoothing.py
 test_shadow_shimmer.py
@@ -203,7 +205,6 @@ test_world_cache_diff.py
 test_world_light_placements.py
 test_world_local_lights.py
 test_world_mesh_pages.py
-test_shadow_paging_memory.py
 test_world_mesh_pages_real.py
 test_world_mesh_plan.py
 test_world_probe_coverage.py
