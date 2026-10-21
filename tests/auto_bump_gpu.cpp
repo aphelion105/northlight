@@ -14,11 +14,17 @@ static void logf(const char* format,...){va_list args;va_start(args,format);std:
 #include "device_mirror.h"
 #endif
 struct MaterialCallMeter:ForwardIDirect3DDevice9 {
-    unsigned samplerGets=0,samplerSets=0,constantSets=0,renderGets=0,constantGets=0;
+    unsigned samplerGets=0,samplerSets=0,constantSets=0,renderGets=0,constantGets=0,vertexGets=0,pixelGets=0;
+    int fault=-1;
+    bool fail(int at){if(fault!=at)return false;fault=-1;return true;}
+    HRESULT STDMETHODCALLTYPE GetVertexShader(IDirect3DVertexShader9** s)override{++vertexGets;if(fail(0)){*s=nullptr;return E_FAIL;}return real->GetVertexShader(s);}
+    HRESULT STDMETHODCALLTYPE GetPixelShader(IDirect3DPixelShader9** s)override{++pixelGets;if(fail(1)){*s=nullptr;return E_FAIL;}return real->GetPixelShader(s);}
+    HRESULT STDMETHODCALLTYPE SetVertexShader(IDirect3DVertexShader9* s)override{if(fail(2))return E_FAIL;return real->SetVertexShader(s);}
+    HRESULT STDMETHODCALLTYPE SetPixelShader(IDirect3DPixelShader9* s)override{if(fail(3))return E_FAIL;return real->SetPixelShader(s);}
     HRESULT STDMETHODCALLTYPE GetRenderState(D3DRENDERSTATETYPE k,DWORD* v)override{++renderGets;return real->GetRenderState(k,v);}
     HRESULT STDMETHODCALLTYPE GetVertexShaderConstantF(UINT a,float* v,UINT n)override{++constantGets;return real->GetVertexShaderConstantF(a,v,n);}
     explicit MaterialCallMeter(IDirect3DDevice9* device):ForwardIDirect3DDevice9(device){}
-    HRESULT STDMETHODCALLTYPE SetPixelShaderConstantF(UINT a,const float* v,UINT n)override{++constantSets;return real->SetPixelShaderConstantF(a,v,n);}
+    HRESULT STDMETHODCALLTYPE SetPixelShaderConstantF(UINT a,const float* v,UINT n)override{++constantSets;if(fail(4))return E_FAIL;return real->SetPixelShaderConstantF(a,v,n);}
     HRESULT STDMETHODCALLTYPE GetSamplerState(DWORD n,D3DSAMPLERSTATETYPE k,DWORD* v) override{++samplerGets;return real->GetSamplerState(n,k,v);}
     HRESULT STDMETHODCALLTYPE SetSamplerState(DWORD n,D3DSAMPLERSTATETYPE k,DWORD v) override{++samplerSets;return real->SetSamplerState(n,k,v);}
 };
@@ -129,12 +135,34 @@ int main(int argc,char** argv){
         const float preservedPOM[8]={7,8,9,10,11,12,13,14};d->SetPixelShaderConstantF(160,preservedPOM,2);d->SetTexture(14,white);d->SetSamplerState(14,D3DSAMP_MAXMIPLEVEL,3);d->SetSamplerState(14,D3DSAMP_ADDRESSU,D3DTADDRESS_MIRROR);
         std::vector<float> nativeBaseline;
         for(unsigned mode=0;mode<4;++mode){auto policy=settings;policy.autoBumpTerrain=policy.autoBumpWalls=mode==0?0:mode==1?1:2;policy.autoParallaxDepth=mode==3?0:100;bump.configure(policy);
+            const auto vertexGets=meter.vertexGets,pixelGets=meter.pixelGets,constantSets=meter.constantSets;
             ok(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0,1,0));bool replaced=false;ok(d->BeginScene());ok(native([&]{IDirect3DPixelShader9* bound=nullptr;d->GetPixelShader(&bound);replaced=bound!=ps;drop(bound);return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,mesh,sizeof(V));}));ok(d->EndScene());
+#ifndef NORTHLIGHT_MATERIAL_MIRROR
+            // One classification read per shader, no repeat save read; the callback reads PS once.
+            if(replaced){
+#ifdef NORTHLIGHT_MATERIAL_STATE_BASELINE
+                assert(meter.vertexGets-vertexGets==2&&meter.pixelGets-pixelGets==3&&meter.constantSets-constantSets==3);
+#else
+                assert(meter.vertexGets-vertexGets==1&&meter.pixelGets-pixelGets==2&&meter.constantSets-constantSets==2);
+#endif
+                std::printf("POM_STATE_CALLS family=%s vertexGets=%u pixelGets=%u constantSets=%u\n",testCase,meter.vertexGets-vertexGets,meter.pixelGets-pixelGets,meter.constantSets-constantSets);
+            }
+#endif
             assert(replaced==(!grass&&mode==2));auto values=pixels(d,target);unsigned difference=0;for(unsigned at=0;at<values.size();++at){assert(std::isfinite(values[at]));if(mode)difference+=std::fabs(values[at]-nativeBaseline[at])>.00001f;}
+            {std::ofstream file(folder+testCase+"-native-"+std::to_string(mode)+".f32",std::ios::binary);file.write((char*)values.data(),values.size()*4);}
             if(!mode)nativeBaseline=values;else if(grass||mode!=2)assert(difference==0);else {assert(difference>100);totalChanged+=difference;}
             float restored[8];d->GetPixelShaderConstantF(160,restored,2);assert(!std::memcmp(restored,preservedPOM,sizeof restored));DWORD state=0;d->GetSamplerState(14,D3DSAMP_MAXMIPLEVEL,&state);assert(state==3);d->GetSamplerState(14,D3DSAMP_ADDRESSU,&state);assert(state==D3DTADDRESS_MIRROR);IDirect3DBaseTexture9* texture14=nullptr;d->GetTexture(14,&texture14);assert(texture14==white);drop(texture14);
             d->GetPixelShader(&actualPS);assert(actualPS==ps);drop(actualPS);++cases;
         }bump.configure(settings);
+#ifndef NORTHLIGHT_MATERIAL_MIRROR
+        // Every query/upload failure keeps one native callback with original bindings/constants.
+        if(!grass)for(int fault=0;fault<5;++fault){meter.fault=fault;unsigned callbacks=0;
+            ok(native([&]{++callbacks;IDirect3DVertexShader9* actual=nullptr;IDirect3DPixelShader9* pixel=nullptr;
+                ok(d->GetVertexShader(&actual));ok(d->GetPixelShader(&pixel));assert(actual==vs&&pixel==ps);drop(actual);drop(pixel);
+                float restored[8];ok(d->GetPixelShaderConstantF(160,restored,2));assert(!std::memcmp(restored,preservedPOM,sizeof restored));return S_OK;}));
+            assert(callbacks==1&&meter.fault==-1);
+        }
+#endif
         if(terrain&&!sm2&&!layer){
             std::vector<std::uint32_t> shadowVS,shadowPS;NorthlightTerrainCoverage::PixelInfo info;
             assert(NorthlightTerrainCoverage::vertex(reinterpret_cast<std::uint32_t*>(vsBytes.data()),vsBytes.size()/4,shadowVS));
