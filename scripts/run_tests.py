@@ -18,6 +18,7 @@ run alone at the end. Reports go to out/test-output/<run>/<test>/ unless --recor
 import argparse
 import concurrent.futures as cf
 import fnmatch
+import hashlib
 import os
 import re
 import shutil
@@ -46,14 +47,44 @@ def probe(name):
     if name == 'cxx':
         missing = [c for c in ('clang++', 'c++') if not shutil.which(c)]
         return f'host C++ compiler not on PATH: {", ".join(missing)}' if missing else None
+    if name == 'libcxx':
+        if sys.platform != 'linux':
+            return None
+        if not shutil.which('clang++'):
+            return 'clang++ with LLVM libc++ is not on PATH'
+        output = fp.out() / 'requirements'
+        output.mkdir(parents=True, exist_ok=True)
+        result = subprocess.run(['clang++', '-stdlib=libc++', '-x', 'c++', '-', '-o', str(output / 'libcxx-probe')],
+                                input='#include <vector>\nint main(){std::vector<int> v;return v.size();}\n',
+                                capture_output=True, text=True)
+        return None if result.returncode == 0 else 'LLVM libc++ headers/runtime missing (install libc++-dev and libc++abi-dev)'
     if name == 'lua51':
         env = os.environ.copy()
         if env.get('NORTHLIGHT_LUA_PYTHONPATH'):
             env['PYTHONPATH'] = env['NORTHLIGHT_LUA_PYTHONPATH'] + os.pathsep + env.get('PYTHONPATH', '')
         r = subprocess.run([sys.executable, '-c', 'from lupa.lua51 import LuaRuntime; assert LuaRuntime().eval("_VERSION") == "Lua 5.1"'], env=env, capture_output=True)
         return None if r.returncode == 0 else 'Lua 5.1 test runtime missing (lupa.lua51)'
+    if name == 'windows-exe':
+        return None if os.name == 'nt' else 'The host cannot execute Windows test programs'
+    if name in ('lldb', 'objdump'):
+        return None if shutil.which(name) else f'{name} is not on PATH'
     if name == 'windows-gpu':
-        return None if os.name == 'nt' else 'The offscreen D3D9 oracle requires Windows'
+        if os.name != 'nt':
+            return 'The offscreen D3D9 oracle requires Windows'
+        try:
+            zig = fp.zig()
+        except fp.Missing as e:
+            return str(e)
+        source = fp.TESTS / 'windows_gpu_probe.cpp'
+        output = fp.out() / 'requirements'
+        output.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha256(source.read_bytes() + str(zig).encode()).hexdigest()[:16]
+        executable = output / f'windows-gpu-{digest}.exe'
+        if not executable.is_file():
+            subprocess.run([str(zig), 'c++', '-target', 'x86-windows-gnu', '-O2', '-std=c++17',
+                            str(source), '-luser32', '-o', str(executable)], env=fp.zig_env(), check=True)
+        result = subprocess.run([str(executable)], capture_output=True, text=True, timeout=30)
+        return None if result.returncode == 0 else result.stdout.strip() or 'System D3D9 hidden device unavailable'
     if name == 'base':
         base = os.environ.get('BASE')
         return None if base and (Path(base) / 'renderer.cpp').is_file() else \
@@ -132,7 +163,10 @@ def main():
     plan, results = [], {}
     for t in tests:
         requires, flags = tags(t)
-        missing = [(r, probes.setdefault(r, probe(r))) for r in requires]
+        for requirement in requires:
+            if requirement not in probes:
+                probes[requirement] = probe(requirement)
+        missing = [(r, probes[r]) for r in requires]
         missing = [(r, why) for r, why in missing if why]
         if 'manual' in flags and not args.patterns:
             results[t.name] = ('SKIP', 0.0, 'manual: run it by name')
