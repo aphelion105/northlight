@@ -3,7 +3,7 @@
 """veil over geometry and the sun glow: native CPU policy and recorded draw
 sequence (test_celestial_veil.cpp), plus static checks of the call site order
 (after water, before UI, gated like the discs), the raw-depth classification,
-the unchanged halo-visibility shader and the slot budgets. No device or game."""
+the halo source-visibility shader and the slot budgets. No device or game."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
 import hashlib,json,subprocess,tempfile
@@ -47,8 +47,11 @@ assert 'd->SetPixelShader(haloPS);' in ring and 'SetPixelShaderConstantF(0,c[0],
 assert 'sourceTaps(g.disc,g.inverseView,g.projection,g.width,g.height,SunMaskRadius,true,c)' in ring
 
 shader_path=fp.src('celestial_disc_effects.hlsl');shader=shader_path.read_text()
-# The halo-visibility PS is reused without edits for the ring (it also fades taps under the true horizon).
-assert hashlib.sha256(body(shader,'float4 CelestialHaloVisibilityPS(').encode()).hexdigest()=='e67e3f4ea4232d0a34617a55cb0e5d190e3db010a7435d0623c709877355b1c7'
+# Source brightness uses terrain/horizon taps; screen depth is classified at each output pixel.
+halo_ps=body(shader,'float4 CelestialHaloVisibilityPS(')
+assert 'current+=(source.x>=0?1:0)*terrain*saturate(30*ray.z/max(dot(ray,DiscDirection.xyz),1e-6));' in halo_ps
+assert 'sourceVisible(' not in halo_ps and 'current*=1.0/32;' in halo_ps
+assert 'if(DiscHistory.x>.5)' in halo_ps and 'if(current<=0&&value<.001)value=0;' in halo_ps
 veil_ps=body(shader,'float4 CelestialVeilPS(')
 # Raw-depth classification: WDL/beyond-far silhouettes (normalised depth 1, raw
 # depth below the sky sprite) are geometry; the complement of the glare.
@@ -59,7 +62,8 @@ assert 'overEdge' not in veil_ps  # no far-edge cut: it drew a line across near 
 # the core only by the disc taps' visibility; the ring (x wrap) only for the
 # core-free tail shifted out by 3R, so the profile is monotonic (no dark ring).
 profile=shader[shader.index('float glareProfile(float radius){'):shader.index('float3 glowColor(')]
-assert 'float ring=DiscGlowCore.w*saturate(tex2Dlod(DiscRingVisibility,float4(.5,.5,0,0)).r);' in profile
+assert 'float ring=DiscTerrainPolicy.w>.5?0:DiscGlowCore.w*saturate(tex2Dlod(DiscRingVisibility,float4(.5,.5,0,0)).r);' in profile
+assert 'float disc=DiscTerrainPolicy.w>.5?1:saturate(tex2Dlod(DiscHaloVisibility,float4(.5,.5,0,0)).r);' in profile
 assert 'float tailed=max(disc*dot(tail,float3(.25,.35,.40)),ring*dot(tail,float3(.118257,.299458,.380527)));' in profile
 assert 'return (DiscEmission.z*exp2(-DiscEmission.x*r2)*disc+DiscGlowHue.w*tailed)*edge;' in profile
 assert 'smoothstep(1.5,3' not in profile
@@ -74,9 +78,11 @@ compiled=manifest['source_sha256']==hashlib.sha256(shader_path.read_bytes()).hex
 budget={}
 if compiled:
     shaders=manifest['shaders']
-    # The halo PS bytecode is pinned (Microsoft d3dcompiler_47 build, with the taps faded under the true horizon).
-    assert shaders['CelestialHaloVisibilityPS']['sha256']=='17aedf5d288e37d98cf9dbabbcf85a8d70ada206b0768b606fe44efb721f0550'
-    assert shaders['CelestialHaloVisibilityPS']['static_instruction_slots']==209
+    # The source-visibility pass no longer samples foreground screen depth.
+    halo=shaders['CelestialHaloVisibilityPS']
+    assert halo['sha256']==hashlib.sha256((fp.COMPILED/'CelestialHaloVisibilityPS.bin').read_bytes()).hexdigest()
+    assert halo['static_instruction_slots']<=209 and halo['temporary_registers']<=32
+    assert halo['samplers']==[3,4]
     for entry in ('CelestialDiscPS','CelestialVeilPS'):
         assert shaders[entry]['static_instruction_slots']<=480 and shaders[entry]['temporary_registers']<=32,entry
         budget[entry]=shaders[entry]['static_instruction_slots']
