@@ -52,6 +52,10 @@ def probe(name):
             env['PYTHONPATH'] = env['NORTHLIGHT_LUA_PYTHONPATH'] + os.pathsep + env.get('PYTHONPATH', '')
         r = subprocess.run([sys.executable, '-c', 'from lupa.lua51 import LuaRuntime; assert LuaRuntime().eval("_VERSION") == "Lua 5.1"'], env=env, capture_output=True)
         return None if r.returncode == 0 else 'Lua 5.1 test runtime missing (lupa.lua51)'
+    if name == 'windows-exe':
+        return None if os.name == 'nt' else 'The host cannot execute Windows test programs'
+    if name in ('lldb', 'objdump'):
+        return None if shutil.which(name) else f'{name} is not on PATH'
     if name == 'windows-gpu':
         return None if os.name == 'nt' else 'The offscreen D3D9 oracle requires Windows'
     if name == 'base':

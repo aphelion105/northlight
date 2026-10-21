@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# northlight-test: requires=cxx
+# northlight-test: requires=windows-exe,zig
 """Execute the production context/gate bodies with injected camera/device reads.
 
 No game or GPU is started. Camera matrix validation has its own native test.
@@ -9,8 +9,11 @@ import os
 import shlex
 import subprocess
 import tempfile
+import sys
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+import northlight_paths as fp
 
 
 def method(file, signature):
@@ -92,6 +95,9 @@ __MODEL__
 #undef NorthlightWmoContext
 };
 struct Device {
+    struct MaterialProjection {void setProjection(float,float,float){}};
+    MaterialProjection* autoBump=nullptr;
+    bool drawWaterMaterial=false;bool liquidMaterial(IDirect3DVertexShader9*,bool){return false;}
     Ext state;Ext* ext=&state;World owned{&state};World* world=&owned;
     static constexpr int kTagMask=3,kWaterTag=4;
     struct VsClass{int entry=0;bool wmo=false,skinned=true;} vc;
@@ -155,7 +161,7 @@ int main(){
 
 if __name__ == '__main__':
     includes = [v for p in sorted((ROOT / 'src').iterdir()) if p.is_dir() for v in ('-I', str(p))]
-    zig = os.environ.get('NORTHLIGHT_ZIG')
+    zig = os.environ.get('NORTHLIGHT_ZIG') or str(fp.zig())
     compiler = [zig, 'c++', '-target', 'x86-windows-gnu'] if zig else shlex.split(os.environ.get('CXX', 'c++'))
     with tempfile.TemporaryDirectory(prefix='model-context-') as tmp:
         source = Path(tmp) / 'test.cpp'

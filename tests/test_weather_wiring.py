@@ -124,11 +124,11 @@ checks['rain scrub: RT1 unbound, MSAA twin resolved by StretchRect (failure: nul
     and 'if(FAILED(rainMaskResolveHr)&&!rainMaskResolveLogged){rainMaskResolveLogged=true;logf("WEATHER rain mask resolve failed HRESULT' in r)
 # every device operation that could draw, clear, copy or change targets runs rainMrtUnbind() first
 def method(name):
-    i=r.index('HRESULT STDMETHODCALLTYPE '+name+'(');return r[i:r.index('\n',i)+1]
+    i=r.index('HRESULT STDMETHODCALLTYPE '+name+'(');return r[i:r.index('\n    HRESULT STDMETHODCALLTYPE ',i+1)]
 for name in ('UpdateSurface','UpdateTexture','GetRenderTargetData','StretchRect','ColorFill'):
-    m=method(name);checks[f'rain mask MRT: Device::{name} unbinds RT1 before the call']=('rainMrtUnbind();' in m and m.index('rainMrtUnbind();')<m.index('return ext->'+name))
+    m=method(name);checks[f'rain mask MRT: Device::{name} unbinds RT1 before the call']=('rainMrtUnbind();' in m and m.index('rainMrtUnbind();')<m.index('ext->'+name))
 cl=r[r.index('HRESULT STDMETHODCALLTYPE Clear('):r.index('HRESULT STDMETHODCALLTYPE CreateVertexBuffer(')]
-checks['rain mask MRT: Device::Clear unbinds RT1 first (before the Z resolve and the real Clear)']=('rainMrtUnbind();' in cl and cl.index('rainMrtUnbind();')<cl.index('resolveDepth()')<cl.index('return ext->Clear('))
+checks['rain mask MRT: Device::Clear unbinds RT1 first (before the Z resolve and the real Clear)']=('rainMrtUnbind();' in cl and cl.index('rainMrtUnbind();')<cl.index('resolveDepth()')<cl.index('ext->Clear('))
 def dmethod(name):  # the whole Device method, up to the next one (a fixed span broke whenever a line grew)
     i=r.index('HRESULT STDMETHODCALLTYPE '+name+'(',r.index('class Device final'));return r[i:r.index('\n    HRESULT STDMETHODCALLTYPE ',i+1)]
 rst=dmethod('Reset');pre=dmethod('Present');es=dmethod('EndScene')
@@ -143,7 +143,7 @@ checks['rain mask MRT: SetRenderTarget and SetDepthStencilSurface stay pure unwr
     and 'HRESULT STDMETHODCALLTYPE SetDepthStencilSurface(IDirect3DSurface9* pNewZStencil) override{Guard mirrorLock(mirrorState.gate);return ext->SetDepthStencilSurface(mirrorResources.unwrap(pNewZStencil));}' in r)
 pdi_=r[r.index('template<class Capture> void prepareDrawImpl('):r.index('    // Terrain draws run with the game')]
 checks['rain mask: no scrub left in prepareDrawImpl or the hook']=('rainScrubDraw' not in pdi_ and 'rainScrubDraw' not in hook)
-checks['rain mask: WEATHER line carries the counters; world binds RainMask on s13 for the composite only']=('rainMask=%u rainMrtRuns=%u rainMaskSkips=%u' in r and 'rainMaskScrub' not in r and 'd->SetTexture(13,rainMask?rainMask:neutralZero);rainMask=nullptr;' in w and 'composited=true;d->SetTexture(13,regionalFogTexture);' in w and 'void setRainMask(IDirect3DTexture9* t){rainMask=t;}' in w)
+checks['rain mask: WEATHER line carries the counters; world binds RainMask on s13 for the composite only']=('rainMask=%u rainMrtRuns=%u rainMaskSkips=%u' in r and 'rainMaskScrub' not in r and 'd->SetTexture(13,rainMask?rainMask:neutralZero);rainMask=nullptr;' in w and 'composited=true;surfaceFogOutput=fogResolved?fogBlurred:fog;d->SetTexture(13,regionalFogTexture);' in w and 'void setRainMask(IDirect3DTexture9* t){rainMask=t;}' in w)
 st=r[r.index('bool rainMaskStart(IDirect3DSurface9* maskTarget){'):r.index('bool rainMrtBegin(){')]
 checks['rain mask: after the depth snapshot the mirror relearns stage 0 from the device, so the frame\'s later rain draws still match the rain texture']=(
     'snapped=resolveDepthInto(rainDepth,false);}' in st and st.index('resolveDepthInto(rainDepth,false)')<st.index('{IDirect3DBaseTexture9* stage0=nullptr;if(SUCCEEDED(ext->GetTexture(0,&stage0)))drop(stage0);}')<st.index('if(!snapped)return false;'))

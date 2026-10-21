@@ -85,7 +85,7 @@ checks['resolveMask: unbinds, resolves the twin once, clears the mask unless a s
     and resolve.count('quad()')==1 and resolve.count('StretchRect(')==1)
 checks['maskTextureForDepth: the min/max Z contract kept; MRT data only after the decode']=('std::fabs(minZ-maskMinZ)<.0001f&&std::fabs(maxZ-maskMaxZ)<.0001f' in w and '(captured||mrtResolved)&&!mrtDirty' in w)
 checks['endFrame / reset: the MRT flags go with the frame and the resources']=('captured=mrtCaptured=mrtResolved=mrtDirty=mrtCleared=false;' in w and 'drop(rawSurface);drop(raw);drop(twin);' in w)
-checks['WATER line: draws = mrt + redraw, with the three counters, the binds and the longest run']=('mrt=%u redraw=%u degraded=%u binds=%u longestRun=%u",waterDraws,0u,waterClears,waterScans,waterReadFailures,waterMrt,waterRedraws,waterDegraded,waterBinds,waterLongestRun' in r and 'waterDraws=waterRedraws+waterMrt' in r)
+checks['WATER line: draws = mrt + redraw, with the three counters, the binds and the longest run']=('mrt=%u redraw=%u degraded=%u binds=%u longestRun=%u afterEffects=%u",waterDraws,0u,waterClears,waterScans,waterReadFailures,waterMrt,waterRedraws,waterDegraded,waterBinds,waterLongestRun,waterLate' in r and 'waterDraws=waterRedraws+waterMrt' in r)
 
 # ---- the other unbind sites (the rain mask's list) still unbind ----
 for site in ('HRESULT STDMETHODCALLTYPE Clear(','HRESULT STDMETHODCALLTYPE StretchRect(','HRESULT STDMETHODCALLTYPE ColorFill(','HRESULT STDMETHODCALLTYPE UpdateSurface(','HRESULT STDMETHODCALLTYPE GetRenderTargetData(','HRESULT STDMETHODCALLTYPE EndScene('):

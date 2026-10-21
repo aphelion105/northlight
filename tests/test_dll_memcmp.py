@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# northlight-test: requires=dll
+# northlight-test: requires=dll,lldb,objdump
 """0.3.181 (r90) and r89 S1/S2 needles on the built DLL (renderer/frd9.dll with its frd9.pdb), read
 with lldb and objdump; nothing is run. memcmp resolves to the one definition in renderer.cpp (zig
 compiler_rt's byte loop is not linked), every call site calls it, and its body contains no call and no
