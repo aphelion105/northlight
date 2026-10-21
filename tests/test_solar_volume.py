@@ -147,11 +147,11 @@ def main():
     # Tie this reference to the actual implementation's interface and essential
     # equations; a future change requires revisiting these numeric expectations.
     for anchor in ('float4 VolumeAir : register(c32)', 'regionalFogAt(float2 uv,out float coverage)',
-                   'float phasePi=mad(.03*visible,narrow,mad(.033,cosine,.22))', '[loop]for(int i=0;i<49;++i)',
-                   'float start=max(0,(i-offset)*stepLength);', 'if(start>=surface)break;',
+                   'float phasePi=mad(.03*visible,narrow,mad(.033,cosine,.22))', '[loop]for(int i=0;i<49&&max(0,(i-offset)*stepLength)<surface;++i)',
+                   'float start=max(0,(i-offset)*stepLength);',
                    'float end=min((i+1-offset)*stepLength,surface);',
                    'visibility+=(receiver<=z?1:0)*w.x*w.y;', 'float4 ScreenSize : register(c33)',
-                   'if(dot(sunSource,1)>0)directScatter+=transmittance*absorb*sunSource*(fogShadow(p)*heightFade)',
+                   'if(dot(sunSource,1)>0)directScatter+=transmittance*absorb*sunSource*(fogShadowProjected(shadowOrigin+shadowRay*((start+end)*.5))*heightFade)',
                    'directScatter*=cap/(cap+peak)', 'skySource*(1-transmittance)+directScatter'):
         assert anchor in shader, anchor
     assert 'c[32][0]=.0055f+.0089f*c[31][3];c[32][1]=.0037f+.00705f*c[31][3]' in cpu
