@@ -228,18 +228,14 @@ public:
         const DWORD* codes[]={kBumpOpaqueShader,kBumpLayerShader,kBumpWallShader,kBumpGrassShader,kBumpWallOpaqueShader,kBumpCompositeShader};
         if(!model&&!shaders[material-1]&&!check(d->CreatePixelShader(codes[material-1],&shaders[material-1]),"capture shader"))return;
         IDirect3DBaseTexture9* diffuse=nullptr;if(FAILED(d->GetTexture(0,&diffuse)))return;
-        auto* normal=normals.resolve(diffuse,domain==4);drop(diffuse);if(!normal)return;
-        // Resolving a second large layer may evict the first cache entry.
-        // Keep both maps alive until this replay has finished.
-        normal->AddRef();
-        struct NormalLease{IDirect3DTexture9* a;IDirect3DTexture9* b=nullptr;~NormalLease(){drop(a);drop(b);}} lease{normal};
-        IDirect3DTexture9* normal1=nullptr;
-        if(material==6&&domain!=4){IDirect3DBaseTexture9* second=nullptr;if(FAILED(d->GetTexture(1,&second)))return;normal1=normals.resolve(second);drop(second);if(!normal1)return;normal1->AddRef();lease.b=normal1;}
+        auto normal=normals.acquire(diffuse,domain==4);drop(diffuse);if(!normal)return;
+        NorthlightAutoNormalCache::Lease normal1;
+        if(material==6&&domain!=4){IDirect3DBaseTexture9* second=nullptr;if(FAILED(d->GetTexture(1,&second)))return;normal1=normals.acquire(second);drop(second);if(!normal1)return;}
         DWORD addressU=D3DTADDRESS_WRAP,addressV=D3DTADDRESS_WRAP;d->GetSamplerState(0,D3DSAMP_ADDRESSU,&addressU);d->GetSamplerState(0,D3DSAMP_ADDRESSV,&addressV);
-        saved.apply();d->SetTexture(saved.normalStage,normal);
+        saved.apply();d->SetTexture(saved.normalStage,normal.get());
         const DWORD normalSampler[]={D3DTEXF_LINEAR,D3DTEXF_LINEAR,D3DTEXF_LINEAR,addressU,addressV,FALSE,0,0};
         for(unsigned i=0;i<8;++i)if(saved.samplerValues[i]!=normalSampler[i]){saved.samplerChanged|=1u<<i;d->SetSamplerState(saved.normalStage,saved.samplerKeys[i],normalSampler[i]);}
-        if(normal1){d->SetTexture(3,normal1);for(unsigned i=0;i<8;++i)if(saved.samplerValues3[i]!=normalSampler[i]){saved.samplerChanged3|=1u<<i;d->SetSamplerState(3,saved.samplerKeys[i],normalSampler[i]);}}
+        if(normal1){d->SetTexture(3,normal1.get());for(unsigned i=0;i<8;++i)if(saved.samplerValues3[i]!=normalSampler[i]){saved.samplerChanged3|=1u<<i;d->SetSamplerState(3,saved.samplerKeys[i],normalSampler[i]);}}
         if(multisampled)d->SetDepthStencilSurface(nullptr);
         if(!check(d->SetRenderTarget(0,target),"capture target"))return;
         if(multisampled&&!check(d->SetDepthStencilSurface(captureDepth),"material depth bind"))return;

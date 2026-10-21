@@ -56,12 +56,12 @@ public:
         if(!supports(saved.pixel,material)){++skipped;return nativeDraw();}
         auto it=pixels.find(saved.pixel);
         saved.constantBase=it->second.constants;if(FAILED(d->GetPixelShaderConstantF(saved.constantBase,saved.constants,2)))return nativeDraw();
-        struct Maps{IDirect3DTexture9* t[2]={};~Maps(){for(auto*& p:t)drop(p);}} maps;
-        for(unsigned n=0;n<(dual?2u:1u);++n){IDirect3DBaseTexture9* source=nullptr;if(FAILED(d->GetTexture(n,&source)))return nativeDraw();maps.t[n]=normals.resolve(source,model);drop(source);if(!maps.t[n])return nativeDraw();maps.t[n]->AddRef();}
+        NorthlightAutoNormalCache::Lease maps[2];
+        for(unsigned n=0;n<(dual?2u:1u);++n){IDirect3DBaseTexture9* source=nullptr;if(FAILED(d->GetTexture(n,&source)))return nativeDraw();maps[n]=normals.acquire(source,model);drop(source);if(!maps[n])return nativeDraw();}
         if(!saved.saveSamplers(dual?2:1))return nativeDraw();
         saved.changed=true;
         for(unsigned n=0;n<(dual?2u:1u);++n){DWORD u=D3DTADDRESS_WRAP,v=D3DTADDRESS_WRAP;d->GetSamplerState(n,D3DSAMP_ADDRESSU,&u);d->GetSamplerState(n,D3DSAMP_ADDRESSV,&v);
-            const DWORD values[]={D3DTEXF_LINEAR,D3DTEXF_LINEAR,D3DTEXF_LINEAR,u,v,FALSE,0,0};d->SetTexture(14+n,maps.t[n]);for(unsigned i=0;i<8;++i)if(saved.samplers[n][i]!=values[i]){saved.samplerChanged[n]|=1u<<i;d->SetSamplerState(14+n,keys[i],values[i]);}}
+            const DWORD values[]={D3DTEXF_LINEAR,D3DTEXF_LINEAR,D3DTEXF_LINEAR,u,v,FALSE,0,0};d->SetTexture(14+n,maps[n].get());for(unsigned i=0;i<8;++i)if(saved.samplers[n][i]!=values[i]){saved.samplerChanged[n]|=1u<<i;d->SetSamplerState(14+n,keys[i],values[i]);}}
         float bank[8];std::copy(projection,projection+4,bank);std::copy(control,control+4,bank+4);
         if(FAILED(d->SetVertexShader(vertex))||FAILED(d->SetPixelShader(it->second.shader))||FAILED(d->SetPixelShaderConstantF(saved.constantBase,bank,2))){saved.restore();return nativeDraw();}
         ++draws;return nativeDraw();
