@@ -84,9 +84,10 @@ Installation status without changes:  bash "<dragged Install Northlight.command>
 QUALITY SETTINGS
 northlight-quality.ini in the game folder chooses the quality: Preset=Quality (the
 default), Balanced or Performance. The file is read when the game starts. The
-installer adds it if it does not exist yet. An update never changes your lines
-or values: it only appends the settings your file does not mention yet,
-commented out. The comments in the file explain every setting.
+installer adds it if it does not exist yet. An update enables newly introduced
+Quality effect bundles once when Quality is selected. Other overrides and later
+edits to migrated effects stay intact. Balanced and Performance are unchanged.
+Missing ordinary settings are appended commented out.
 
 UNINSTALL
 Close the game and WoWSilicon. In Terminal, type  bash  and a space, drag

@@ -22,11 +22,13 @@ class PinReport(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.assets={view:Assets(fp.client_root(),view) for view in ('all','stock')}
+        cls.baseline=Assets(fp.client_root(),without='y')
         cls.reports={view:emitter_pin_report.report(a) for view,a in cls.assets.items()}
         (fp.output_dir()/'emitter-pins.json').write_text(json.dumps(cls.reports,indent=2)+'\n')
     @classmethod
     def tearDownClass(cls):
         for a in cls.assets.values():a.close()
+        cls.baseline.close()
     def test_shape(self):
         catalog=outdoor_light_profiles.load()
         for view,r in self.reports.items():

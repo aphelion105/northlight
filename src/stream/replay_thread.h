@@ -387,10 +387,10 @@ private:
         if(audit&&diag&&frames%sampleEvery==1)runAudit();
         if(diag&&log&&frames%sampleEvery==0)cstreamLine(frames);
         if(log&&diag&&frames%sampleEvery==0){
-            const auto& texture=NorthlightParticleTextures::cache();const auto& t=texture.counts;char line[640];
-            std::snprintf(line,sizeof line,"PTEX frame=%llu source=replay-cpu entries=%u bytes=%llu uploads=%llu retained=%llu hits=%llu misses=%llu partial=%llu failed=%llu unsupported=%llu large=%llu invalidations=%llu evictions=%llu releases=%llu",
-                (unsigned long long)frames,texture.size(),(unsigned long long)texture.bytes(),(unsigned long long)t.uploads,(unsigned long long)t.retained,
-                (unsigned long long)t.hits,(unsigned long long)t.misses,(unsigned long long)t.partial,(unsigned long long)t.failed,(unsigned long long)t.unsupported,
+            const auto& texture=NorthlightParticleTextures::cache();const auto& t=texture.counts;char line[800];
+            std::snprintf(line,sizeof line,"PTEX frame=%llu source=replay-cpu entries=%u bytes=%llu uploads=%llu retained=%llu decoded=%llu hits=%llu misses=%llu (never=%llu evicted=%llu large=%llu invalidated=%llu partial=%llu failed=%llu unsupported=%llu released=%llu) partial=%llu failed=%llu unsupported=%llu large=%llu invalidations=%llu evictions=%llu releases=%llu",
+                (unsigned long long)frames,texture.size(),(unsigned long long)texture.bytes(),(unsigned long long)t.uploads,(unsigned long long)t.retained,(unsigned long long)t.decoded,
+                (unsigned long long)t.hits,(unsigned long long)t.misses,(unsigned long long)t.missWhy[0],(unsigned long long)t.missWhy[3],(unsigned long long)t.missWhy[2],(unsigned long long)t.missWhy[4],(unsigned long long)t.missWhy[5],(unsigned long long)t.missWhy[6],(unsigned long long)t.missWhy[7],(unsigned long long)t.missWhy[8],(unsigned long long)t.partial,(unsigned long long)t.failed,(unsigned long long)t.unsupported,
                 (unsigned long long)t.large,(unsigned long long)t.invalidations,(unsigned long long)t.evictions,(unsigned long long)t.releases);log(line);
         }
         touched_.clear();std::fill(touchedFlag_.begin(),touchedFlag_.end(),false);

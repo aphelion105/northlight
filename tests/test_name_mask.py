@@ -146,7 +146,7 @@ checks['font mods (Lexara, TweakWoW2): a name may also be drawn with the VS the 
     'bool uiTextVs(IDirect3DVertexShader9* vs,int tag)const{return tag==2||(vs&&uiFallback.armed()&&reinterpret_cast<std::uintptr_t>(vs)==uiFallback.learnedVs());}' in r
     and r.count('uiTextVs(')==3 and '} else if (tag==2) {' in r)
 checks['the boundary keeps its own test: tag 2, orthographic rows, depth state and main-target viewport call renderEffects (screen UI is never a name)']=(
-    'NorthlightUiBoundary::accepts(zw!=0,rows,zf==D3DCMP_ALWAYS)' in r and 'fullViewport(desc,nullptr,true)' in r and 'SUCCEEDED(ext->GetVertexShaderConstantF(0,rows,4))' in r)
+    'NorthlightUiBoundary::accepts(zw!=0,rows,zf==D3DCMP_ALWAYS,z!=0)' in r and 'fullViewport(desc,nullptr,true)' in r and 'SUCCEEDED(ext->GetVertexShaderConstantF(0,rows,4))' in r)
 indexed=r[r.index('HRESULT STDMETHODCALLTYPE DrawIndexedPrimitive('):r.index('HRESULT STDMETHODCALLTYPE DrawPrimitiveUP(')]
 checks['draw states: a mirror-known render state is read in place under the gate of the draw hook (no lock, no COM call), the same active() and known test as GetRenderState, else GetRenderState']=(
     'v=drawRenderState(t);known=true;' in impl and 'if(unsigned(t)<DeviceMirror::RenderStates&&mirrorState.active()&&mirrorState.renderStateKnown[t]){v=mirrorState.renderStates[t];return true;}' in r
@@ -227,6 +227,6 @@ checks['cost: sample frames only (sampledDrawTimers/sampled), plain CpuScopes; d
     and 'double(cpuNameDecide)*double(nameDecideCalls)/double(nameDecideTimed)*us' in r and 'decideUs=%.1f markUs=%.1f unmarkUs=%.1f cpuUs=%.1f' in fl and 'cpuNameDecide=cpuNameMark=cpuNameUnmark=0;' in r
     and all(x not in r for x in ('CountedScope','qpcPairTicks','NAMEMASK timer calibration','cpuNameComposite','takeNameMaskQpc')) and 'netTicks' not in h)
 checks['no duplicate draw, no GPU pair timer: names are marked by the game\'s own draw']=('nameMarkDraw' not in r and 'nameGpu' not in r and 'NorthlightGpuPairTimer' not in r and not (fp.REPO/'src'/'core'/'gpu_pair_timer.h').exists())
-checks['banner: 0.3.216 with the name mask']='logf("Northlight renderer 0.3.216;' in r and "floating names keep the game's colour (stencil mask); instance map names with an apostrophe or a space reach the world context; backend=%s" in r
+checks['banner: 0.3.216 with the name mask']='logf("Northlight renderer 0.3.216;' in r and "floating names keep the game's colour (stencil mask); instance map names with an apostrophe or a space reach the world context; lamps in view first, screen-coherent lamp batches (16-lamp passes); backend=%s" in r
 for n,ok in checks.items():print(('PASS ' if ok else 'FAIL ')+n)
 assert all(checks.values())

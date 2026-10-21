@@ -1,10 +1,12 @@
 #pragma once
 #include "actor_texture.h"
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -39,14 +41,121 @@ struct View {
         return true;
     }
 };
+// Diagnostics: what the cache last saw of a texture that a particle draw then missed.
+enum Seen : std::uint8_t {Never,Held,Large,Evicted,Invalidated,Partial,Failed,Unsupported,Released,SeenKinds};
 struct Counters {
-    std::uint64_t uploads=0,retained=0,hits=0,misses=0,partial=0,failed=0,unsupported=0,large=0,invalidations=0,evictions=0,releases=0;
+    std::array<std::uint64_t,SeenKinds> missWhy{};
+    std::uint64_t uploads=0,retained=0,decoded=0,hits=0,misses=0,partial=0,failed=0,unsupported=0,large=0,invalidations=0,evictions=0,releases=0;
 };
-template<unsigned Dimension=64,std::size_t BudgetBytes=(768u<<10),const std::atomic<bool>* Enabled=&enabled,unsigned DecodeDimension=Dimension>
-class TextureCache {
+class Cache {
 public:
-    static constexpr unsigned MaxDimension=Dimension,MaxEntries=128;
-    static constexpr std::size_t PixelBudget=BudgetBytes;
+    // The game uploads a MANAGED texture once, so an evicted particle texture never
+    // comes back: one play session evicted 2,049 with 512 entries and every texture
+    // miss (88,612) was such an eviction. A 32-texel mip is enough for a light's
+    // colour (0.5-4 KiB uploaded), so every small mip the game loads fits.
+    static constexpr unsigned MaxDimension=32,MaxEntries=16384;
+    static constexpr std::size_t PixelBudget=8u<<20;
+private:
+    struct Entry {
+        const void* raw=nullptr;
+        const void* owner=nullptr;
+        std::uint64_t lifetime=0,revision=0,used=0,rgbaHash=0;
+        unsigned width=0,height=0,mip=0,format=0;
+        std::vector<std::uint8_t> pixels;
+        // The upload's own bytes until a particle draw first asks for them:
+        // most small mips are never sampled, so decoding waits for lookup().
+        std::vector<std::uint8_t> source;std::size_t pitch=0;
+        bool held()const{return !pixels.empty()||!source.empty();}
+    };
+    std::unordered_map<const void*,Entry> entries_;
+    // Diagnostics only (PTEX misses=...): the last event per texture key, bounded.
+    std::unordered_map<const void*,Seen> history_;Seen lastMiss_=Never;
+    void note(const void* raw,Seen seen){if(!raw)return;if(history_.size()>=65536)history_.clear();history_[raw]=seen;}
+    void evicted(const Entry& e){note(e.raw,Evicted);}
+    std::size_t bytes_=0;
+    std::uint64_t serial_=0,clock_=0;
+    Entry* find(const void* raw){if(!raw)return nullptr;const auto it=entries_.find(raw);return it!=entries_.end()?&it->second:nullptr;}
+    void drop(Entry& e){bytes_-=e.pixels.size()+e.source.size();std::vector<std::uint8_t>().swap(e.pixels);std::vector<std::uint8_t>().swap(e.source);e.width=e.height=0;}
+    // Over a limit: evict the least recently used down to 7/8 of it, so a load burst scans the entries once, not per upload.
+    void evict(std::size_t incoming,const Entry* keep){
+        if(bytes_+incoming<=PixelBudget&&entries_.size()<=MaxEntries)return;
+        std::vector<std::pair<std::uint64_t,const void*>> order;order.reserve(entries_.size());
+        for(const auto& [raw,e]:entries_)if(&e!=keep)order.emplace_back(e.used,raw);
+        std::sort(order.begin(),order.end());
+        for(const auto& [used,raw]:order){
+            if(bytes_+incoming<=PixelBudget-PixelBudget/8&&entries_.size()<=MaxEntries-MaxEntries/8)break;
+            auto it=entries_.find(raw);evicted(it->second);drop(it->second);entries_.erase(it);++counts.evictions;
+        }
+    }
+    Entry& slot(const void* raw,const void* owner){
+        if(auto* e=find(raw)){if(e->owner==owner)return *e;drop(*e);*e={};}
+        Entry& e=entries_[raw];e={};e.raw=raw;e.owner=owner;e.lifetime=++serial_;e.used=++clock_;return e;
+    }
+    static bool format(unsigned d3d,NorthlightActorTexture::Format& out){
+        using F=NorthlightActorTexture::Format;
+        switch(d3d){case 21:out=F::BGRA8;break;case 22:out=F::BGRX8;break;case 23:out=F::RGB565;break;
+        case 24:out=F::XRGB1555;break;case 25:out=F::ARGB1555;break;case 26:out=F::ARGB4444;break;
+        case 0x31545844:out=F::BC1;break;case 0x33545844:out=F::BC2;break;case 0x35545844:out=F::BC3;break;default:return false;}return true;
+    }
+public:
+    Counters counts;
+    Seen lastMiss()const{return lastMiss_;}
+    std::size_t bytes()const{return bytes_;}
+    unsigned size()const{unsigned n=0;for(const auto& [raw,e]:entries_)n+=e.held();return n;}
+    void clear(){entries_.clear();bytes_=0;history_.clear();}
+    void erase(const void* raw,const void* owner=nullptr){if(auto* e=find(raw))if(!owner||e->owner==owner){drop(*e);entries_.erase(raw);++counts.releases;note(raw,Released);}}
+    void invalidate(const void* raw){note(raw,Invalidated);if(auto* e=find(raw)){drop(*e);++e->revision;++counts.invalidations;}}
+    // Other full mips do not change this mip. Partial/failed writes invalidate
+    // the texture conservatively. Only a later complete CPU upload can restore it.
+    void upload(const void* raw,const void* owner,unsigned width,unsigned height,unsigned mip,unsigned d3dFormat,
+                const void* source,std::size_t sourceBytes,std::size_t pitch,bool whole,bool success)noexcept{
+        if(!enabled.load(std::memory_order_relaxed)){invalidate(raw);return;}
+        ++counts.uploads;
+        try{
+        if(!success){++counts.failed;invalidate(raw);note(raw,Failed);return;}
+        if(!whole){++counts.partial;invalidate(raw);note(raw,Partial);return;}
+        if(auto* old=find(raw))if(old->owner!=owner)erase(raw);
+        NorthlightActorTexture::Format decodedFormat;
+        if(!raw||!owner||!format(d3dFormat,decodedFormat)){++counts.unsupported;invalidate(raw);note(raw,Unsupported);return;}
+        if(!width||!height||width>MaxDimension||height>MaxDimension){++counts.large;if(!find(raw))note(raw,Large);return;}
+        auto* previous=find(raw);
+        if(previous&&previous->owner==owner&&previous->held()&&mip>previous->mip){++previous->revision;return;}
+        if(!source||!sourceBytes||sourceBytes>std::size_t(MaxDimension)*MaxDimension*16){++counts.failed;invalidate(raw);note(raw,Failed);return;}
+        Entry& e=slot(raw,owner);drop(e);evict(sourceBytes,&e);
+        e.source.assign(static_cast<const std::uint8_t*>(source),static_cast<const std::uint8_t*>(source)+sourceBytes);e.pitch=pitch;
+        e.width=width;e.height=height;e.mip=mip;e.format=d3dFormat;++e.revision;e.used=++clock_;bytes_+=e.source.size();++counts.retained;note(raw,Held);
+        }catch(...){++counts.failed;invalidate(raw);}
+    }
+    bool lookup(const void* raw,View& out){
+        out={};if(!enabled.load(std::memory_order_relaxed))return false;auto* e=find(raw);if(!e||!e->held()){++counts.misses;
+            const auto seen=history_.find(raw);lastMiss_=seen!=history_.end()?seen->second:Never;++counts.missWhy[lastMiss_];
+            return false;}
+        if(e->pixels.empty()){
+            NorthlightActorTexture::Format decodedFormat;std::vector<std::uint8_t> decoded;
+            try{if(!format(e->format,decodedFormat)||!NorthlightActorTexture::decode(e->source.data(),e->source.size(),e->width,e->height,e->pitch,decodedFormat,decoded))decoded.clear();}
+            catch(...){decoded.clear();}
+            if(decoded.empty()){++counts.failed;++counts.misses;invalidate(raw);note(raw,Failed);lastMiss_=Failed;++counts.missWhy[Failed];return false;}
+            bytes_-=e->source.size();std::vector<std::uint8_t>().swap(e->source);
+            evict(decoded.size(),e);
+            e->rgbaHash=14695981039346656037ull;for(auto byte:decoded){e->rgbaHash^=byte;e->rgbaHash*=1099511628211ull;}
+            e->pixels=std::move(decoded);bytes_+=e->pixels.size();++counts.decoded;
+        }
+        e->used=++clock_;out={e->pixels.data(),e->width,e->height,e->mip,e->format,e->lifetime,e->revision,e->rgbaHash};++counts.hits;return true;
+    }
+};
+static_assert(Cache::PixelBudget+Cache::MaxDimension*Cache::MaxDimension*4<(9u<<20),"particle texture bytes plus decode scratch stay below 9 MiB");
+inline Cache& cache(){static thread_local Cache value;return value;}
+} // namespace NorthlightParticleTextures
+
+// Equipment atlases retain their own bounded mip and exact upload revisions.
+namespace NorthlightMaterialTextures {
+inline std::atomic<bool> enabled{true};
+using View=NorthlightParticleTextures::View;
+using Counters=NorthlightParticleTextures::Counters;
+class Cache {
+public:
+    static constexpr unsigned MaxDimension=128,DecodeDimension=1024,MaxEntries=128;
+    static constexpr std::size_t PixelBudget=4u<<20;
 private:
     struct Entry {
         const void* raw=nullptr;
@@ -90,7 +199,7 @@ public:
     void clear(){for(auto& e:entries_){drop(e);e={};}}
     void erase(const void* raw,const void* owner=nullptr){if(auto* e=find(raw))if(!owner||e->owner==owner){drop(*e);*e={};++counts.releases;}}
     void invalidate(const void* raw){if(auto* e=find(raw)){drop(*e);++e->revision;++counts.invalidations;}}
-    std::uint64_t version(const void* raw){if(!Enabled->load(std::memory_order_relaxed))return 0;auto* e=find(raw);if(e)e->used=++clock_;return e?e->lifetime*UINT64_C(0x9e3779b97f4a7c15)^e->revision:0;}
+    std::uint64_t version(const void* raw){if(!enabled.load(std::memory_order_relaxed))return 0;auto* e=find(raw);if(e)e->used=++clock_;return e?e->lifetime*UINT64_C(0x9e3779b97f4a7c15)^e->revision:0;}
     bool copy(const void* source,const void* destination,const void* owner)noexcept{try{
         if(source==destination)return false;auto* original=find(source);if(!original||original->pixels.empty()){invalidate(destination);return false;}
         // Copy before slot/eviction can invalidate the borrowed source.
@@ -115,7 +224,7 @@ public:
     // the texture conservatively. Only a later complete CPU upload can restore it.
     void upload(const void* raw,const void* owner,unsigned width,unsigned height,unsigned mip,unsigned d3dFormat,
                 const void* source,std::size_t sourceBytes,std::size_t pitch,bool whole,bool success)noexcept{
-        if(!Enabled->load(std::memory_order_relaxed)){invalidate(raw);return;}
+        if(!enabled.load(std::memory_order_relaxed)){invalidate(raw);return;}
         ++counts.uploads;
         try{
         if(!success){++counts.failed;invalidate(raw);return;}
@@ -128,10 +237,10 @@ public:
         if(previous&&previous->owner==owner&&!previous->pixels.empty()&&mip>previous->mip){++previous->revision;return;}
         std::vector<std::uint8_t> decoded;
         if(!decodeImage(source,sourceBytes,width,height,pitch,decodedFormat,decoded)){++counts.failed;invalidate(raw);return;}
-        if constexpr(DecodeDimension>Dimension){if(width>Dimension||height>Dimension){const unsigned w=std::min(width,Dimension),h=std::min(height,Dimension);std::vector<std::uint8_t> small(size_t(w)*h*4);
+        if constexpr(DecodeDimension>MaxDimension){if(width>MaxDimension||height>MaxDimension){const unsigned w=std::min(width,MaxDimension),h=std::min(height,MaxDimension);std::vector<std::uint8_t> small(size_t(w)*h*4);
             for(unsigned y=0;y<h;++y)for(unsigned x=0;x<w;++x){unsigned sum[4]={},n=0;for(unsigned sy=y*height/h;sy<(y+1)*height/h;++sy)for(unsigned sx=x*width/w;sx<(x+1)*width/w;++sx){for(unsigned c=0;c<4;++c)sum[c]+=decoded[(size_t(sy)*width+sx)*4+c];++n;}for(unsigned c=0;c<4;++c)small[(size_t(y)*w+x)*4+c]=std::uint8_t((sum[c]+n/2)/n);}decoded=std::move(small);width=w;height=h;}}
         std::uint64_t hash=14695981039346656037ull;for(auto byte:decoded)hash=(hash^byte)*1099511628211ull;
-        if constexpr(DecodeDimension>Dimension){if(previous&&previous->owner==owner&&previous->width==width&&previous->height==height&&previous->mip==mip&&previous->format==d3dFormat&&previous->rgbaHash==hash&&previous->pixels==decoded){previous->used=++clock_;return;}}
+        if constexpr(DecodeDimension>MaxDimension){if(previous&&previous->owner==owner&&previous->width==width&&previous->height==height&&previous->mip==mip&&previous->format==d3dFormat&&previous->rgbaHash==hash&&previous->pixels==decoded){previous->used=++clock_;return;}}
         Entry& e=slot(raw,owner);drop(e);
         while(bytes_+decoded.size()>PixelBudget){auto* victim=oldest(&e);if(!victim)break;drop(*victim);*victim={};++counts.evictions;}
         e.rgbaHash=hash;
@@ -139,19 +248,9 @@ public:
         }catch(...){++counts.failed;invalidate(raw);}
     }
     bool lookup(const void* raw,View& out){
-        out={};if(!Enabled->load(std::memory_order_relaxed))return false;auto* e=find(raw);if(!e||e->pixels.empty()){++counts.misses;return false;}
+        out={};if(!enabled.load(std::memory_order_relaxed))return false;auto* e=find(raw);if(!e||e->pixels.empty()){++counts.misses;return false;}
         e->used=++clock_;out={e->pixels.data(),e->width,e->height,e->mip,e->format,e->lifetime,e->revision,e->rgbaHash};++counts.hits;return true;
     }
 };
-using Cache=TextureCache<>;
-static_assert(sizeof(Cache)+Cache::PixelBudget+Cache::MaxDimension*Cache::MaxDimension*4<(1u<<20),"particle texture cache plus decode scratch stays below 1 MiB");
-inline Cache& cache(){static thread_local Cache value;return value;}
-} // namespace NorthlightParticleTextures
-
-// Composited equipment atlases retain only a bounded CPU upload mip. This
-// avoids GPU readback and preserves versions when an atlas is edited in place.
-namespace NorthlightMaterialTextures {
-inline std::atomic<bool> enabled{true};
-using Cache=NorthlightParticleTextures::TextureCache<128,(4u<<20),&enabled,1024>;
 inline Cache& cache(){static thread_local Cache value;return value;}
 }

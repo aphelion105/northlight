@@ -53,8 +53,12 @@ test_dxvk3_lock_flags.py
 test_effect_switches.py
 test_effects_buckets.py
 test_effects_cost_report.py
+test_emitter_patch.py
 test_emitter_pin_report.py
 test_entrypoints_isolated.py
+test_equipment_emitter_patch.py
+test_equipment_light_proof_client.py
+test_equipment_lights.py
 test_expired_world_geometry.py
 test_fast_memcmp.py
 test_fog_clouds.py
@@ -70,6 +74,7 @@ test_gpu_budget.py
 test_gpu_budget_wiring.py
 test_horizon_haze.py
 test_index_working_set.py
+test_install_delivery.py
 test_install_world_cache.py
 test_instance_map_name_filter.py
 test_instance_maps.py
@@ -84,6 +89,7 @@ test_live_terrain_gpu.py
 test_local_fog_batching.py
 test_local_fog_profile.py
 test_local_ini.py
+test_local_light_batches.py
 test_local_light_selection.py
 test_log_format_literals.py
 test_log_rotation.py
@@ -105,12 +111,19 @@ test_model_replay_pool.py
 test_model_snapshot_cache.py
 test_model_world_context.py
 test_moon_cascade_weight.py
+test_mount_emitter_patch.py
 test_name_mask.py
+test_native_model_install.py
 test_near_reserve.py
 test_night_floor.py
 test_night_floor_wiring.py
 test_northlight_install.py
 test_outdoor_light_profiles.py
+test_particle_light_capture.py
+test_particle_light_proof.py
+test_particle_light_proof_client.py
+test_particle_lights.py
+test_particle_texture_stats.py
 test_pending_release_wiring.py
 test_point_light_shadow.py
 test_point_shadow_schedule.py
@@ -122,6 +135,7 @@ test_probe_texture_upload.py
 test_progressive_gi_worker.py
 test_quality_docs.py
 test_quality_settings.py
+test_quality_upgrade.py
 test_rain_mask.py
 test_raster_reconstruction.py
 test_regional_surface_shadow.py
@@ -159,6 +173,9 @@ test_shadow_shimmer.py
 test_snapshot_allocation.py
 test_snapshot_prediction.py
 test_solar_volume.py
+test_spell_asset_manifest.py
+test_spell_asset_manifest_client.py
+test_spell_emitter_patch.py
 test_spell_fog_fit.py
 test_spell_fog_proof_client.py
 test_spell_layer.py
