@@ -3,7 +3,13 @@
 #include <cassert>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
+#include <new>
 #include <unordered_map>
+static int failAllocationAfter=-1;
+void* operator new(std::size_t n){if(failAllocationAfter==0){failAllocationAfter=-1;throw std::bad_alloc();}if(failAllocationAfter>0)--failAllocationAfter;if(void* p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
+void operator delete(void* p)noexcept{std::free(p);}
+void operator delete(void* p,std::size_t)noexcept{std::free(p);}
 #include "forwarders.h"
 template<class T>static void drop(T*& p){if(p)p->Release();p=nullptr;}
 static void logf(const char*,...){}
@@ -12,6 +18,7 @@ static void logf(const char*,...){}
 #include "device_mirror.h"
 
 struct DisplacementStateTestAccess {
+    static void cache();
     static bool read(NorthlightAutoDisplacement& g,bool skinned=true){return g.readConstants(skinned?0:20,skinned?256:4,skinned);}
     static const float* values(const NorthlightAutoDisplacement& g){return g.constants;}
     static bool certified(const NorthlightAutoDisplacement& g){return g.constantStamp.valid;}
@@ -23,6 +30,46 @@ struct DisplacementStateTestAccess {
         assert(n==2&&e[1].Stream==0xff); // The source end element must never be overwritten.
     }
 };
+void DisplacementStateTestAccess::cache(){
+    using G=NorthlightAutoDisplacement;using Mesh=NorthlightDrawSnapshot::Mesh;using E=G::Entry;
+    auto mesh=[](unsigned n){auto p=std::make_shared<Mesh>();p->vertexCount=3;p->primitiveCount=1;p->indexed=true;p->indices={0,1,2};p->streams[0].bytes.resize(256);std::memcpy(p->streams[0].bytes.data(),&n,sizeof n);return std::shared_ptr<const Mesh>(p);};
+    auto entry=[](const std::shared_ptr<const Mesh>& s,size_t bytes,uint64_t used,unsigned program=1){auto e=std::make_unique<E>();e->source=s;e->bytes=bytes;e->used=used;e->domain=1;e->program=program;e->baseFrame=1;return e;};
+    G g(nullptr);std::shared_ptr<const Mesh> query;
+    for(unsigned i=0;i<256;++i){query=mesh(i);g.retain(entry(query,100,i+1));}
+    unsigned visits=0;g.candidates(query,0,false,[&](const E& e){assert(e.source==query);++visits;});assert(visits==1);
+    g.indexedEntries=false;unsigned linear=0;g.candidates(query,0,false,[&](const E&){++linear;});assert(linear==256);g.indexedEntries=true;
+    auto alias=std::make_shared<Mesh>(*query);alias->streams[0].stride=96;alias->streams[1].bytes={1,2,3};
+    const auto fingerprint=G::sourceFingerprint(*query);assert(G::sourceFingerprint(*alias)==fingerprint);
+    auto find=[&](const std::shared_ptr<const Mesh>& s,bool equivalent,unsigned program=1){return g.firstCandidate(s,G::sourceFingerprint(*s),equivalent,[&](const E& e){return e.program==program&&G::sameSource(e,s,equivalent);});};
+    assert(!find(alias,false)&&find(alias,true)->source==query);
+    // A sampled-content collision must still compare the unsampled bytes.
+    auto collision=std::make_shared<Mesh>(*query);collision->streams[0].bytes[128]=1;assert(G::sourceFingerprint(*collision)==fingerprint);assert(!find(collision,true)&&!g.findOverlay(collision,fingerprint,nullptr));
+    auto* original=find(alias,true);g.retain(entry(alias,200,500,2));assert(find(alias,true)==original&&find(alias,true,2)->source==alias);
+    original->uvConstants={-0.f};const std::vector<float> zero={0.f},nan={std::numeric_limits<float>::quiet_NaN()};
+    assert(g.firstCandidate(query,fingerprint,true,[&](const E& e){return e.uvConstants==zero;})==original);
+    assert(!g.firstCandidate(query,fingerprint,true,[&](const E& e){return e.uvConstants==nan;}));
+    // Latest successful base wins, and equal stamps preserve insertion order.
+    assert(g.findOverlay(query,fingerprint,nullptr)->source==alias);original->used=500;assert(g.findOverlay(query,fingerprint,nullptr)==original);
+    g.candidates(query,fingerprint,true,[&](E& e){if(G::sameSource(e,query,true))e.baseFrame=0;});assert(!g.findOverlay(query,fingerprint,nullptr));
+    // Source sharing charges only one payload and releases that charge on its last owner.
+    g.reset();auto shared=mesh(42);const auto sourceBytes=shared->byteSize();std::weak_ptr<const Mesh> lifetime=shared;
+    for(unsigned i=0;i<10;++i)g.retain(entry(shared,100,i+1));assert(g.resident==1000+sourceBytes);
+    for(unsigned i=0;i<9;++i){g.evictOldest();assert(g.resident==(9-i)*100+sourceBytes);assert(g.sourceLookup.size()==9-i&&g.contentLookup.size()==9-i);}
+    shared.reset();assert(!lifetime.expired());g.evictOldest();assert(lifetime.expired()&&g.resident==0&&g.sourceLookup.empty()&&g.contentLookup.empty());
+    // Evicting the last old owner while admitting a new variant restores the source charge.
+    shared=mesh(7);g.retain(entry(shared,100,1));g.cacheBudget=sourceBytes+110;g.makeRoom(shared,110);assert(g.entries.empty());g.retain(entry(shared,110,2));assert(g.resident==sourceBytes+110);
+    auto another=mesh(8);g.retain(entry(another,100,3));g.memoryPressure=true;MEMORYSTATUSEX memory{};memory.ullAvailVirtual=1024ull<<20;
+    // Pressure uses the same eviction path, including every candidate index.
+    g.entries[0]->bytes=40u<<20;g.resident+=40u<<20;g.resident-=110;g.refreshBudget(memory);assert(g.resident==100+another->byteSize()&&g.entries.size()==1);
+    assert(!find(shared,false)&&find(another,false));g.reset();assert(g.resident==0&&g.sourceLookup.empty()&&g.contentLookup.empty());
+    // Both partial index-population failures must leave the ordered fallback usable.
+    for(int failure=0;failure<2;++failure){g.entries.reserve(4);g.sourceLookup.reserve(4);g.contentLookup.reserve(4);auto next=entry(shared,100,1);failAllocationAfter=failure;g.retain(std::move(next));assert(failAllocationAfter==-1&&!g.indexedEntries&&g.sourceLookup.empty()&&g.contentLookup.empty());assert(find(shared,false));g.reset();}
+    {G empty(nullptr);auto next=entry(shared,100,1);failAllocationAfter=0;bool failed=false;try{empty.retain(std::move(next));}catch(const std::bad_alloc&){failed=true;}assert(failed&&empty.resident==0&&empty.entries.empty()&&empty.sourceLookup.empty());}
+    // Unknown and future errors remain visible rather than disappearing from the total.
+    for(unsigned i=0;i<g.snapshotReasons.size();++i){NorthlightDrawSnapshot::Diagnostics why;why.error=NorthlightDrawSnapshot::Error(i);assert(!g.snapshotFailure(why));}
+    NorthlightDrawSnapshot::Diagnostics unknown;unknown.error=NorthlightDrawSnapshot::Error(999);g.snapshotFailure(unknown);uint64_t sum=0;for(auto count:g.snapshotReasons)sum+=count;assert(sum==g.snapshotRejected&&g.snapshotReasons[0]==2);
+    std::printf("DISPLACEMENT_LOOKUP_PASS indexedVisits=%u linearVisits=%u sharedBytes=%zu repeatedChargeBytes=%zu\n",visits,linear,1000+sourceBytes,10*(100+sourceBytes));
+}
 struct Backend:ForwardIDirect3DDevice9 {
     float bank[1024]={};bool fail=false;IDirect3DDevice9* mutate=nullptr;
     Backend():ForwardIDirect3DDevice9(nullptr){}
@@ -46,6 +93,7 @@ struct Declaration:IDirect3DVertexDeclaration9 {
     HRESULT STDMETHODCALLTYPE GetDeclaration(D3DVERTEXELEMENT9* out,UINT* count)override{++reads;if(fail||*count<2)return D3DERR_INVALIDCALL;std::memcpy(out,elements,sizeof elements);*count=2;return D3D_OK;}
 };
 int main(){
+    DisplacementStateTestAccess::cache();
     Backend backend;DeviceMirror mirror;ExtensionDevice extension(&backend,&mirror);Meter meter(&extension);
     NorthlightAutoDisplacement g(&meter);
     auto attach=[&]{g.setConstantEpochSource(&extension,[](void* c,NorthlightConstantEpoch::Stamp& s){return static_cast<ExtensionDevice*>(c)->constantStamp(s);});};
