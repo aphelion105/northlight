@@ -143,12 +143,16 @@ int main(int argc,char** argv){
                 ok(d->SetRenderState(D3DRS_ZWRITEENABLE,FALSE));ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));
             }
             float before[4];pixel8(d,reference,referenceRead,before);
-            float input[]={.5f,.35f,.15f,.5f};UiVertex quad[4];vertices(quad,input);ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(UiVertex)));ok(d->EndScene());float actual[4];pixel(d,back,readback,actual,true);
+            float input[]={.5f,.35f,.15f,.5f};UiVertex quad[4];vertices(quad,input);ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(UiVertex)));ok(d->EndScene());
+            // Switching away and back after the HDR UI boundary must retain Device interception.
+            ok(d->SetRenderTarget(0,reference));ok(d->SetRenderTarget(0,back));
+            ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(UiVertex)));ok(d->EndScene());
+            float actual[4];pixel(d,back,readback,actual,true);
             // Re-evaluate the original UI on the separate floating-point target.
             ok(d->SetRenderTarget(0,target));D3DVIEWPORT9 small={0,0,size,size,0,1};ok(d->SetViewport(&small));ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE));ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(UiVertex)));ok(d->EndScene());float original[4];pixel(d,target,staging,original);
             const double luminance=std::max(.2126*decode(before[0])+.7152*decode(before[1])+.0722*decode(before[2]),.000001);
             const double worldGrade=graded?std::pow(luminance/.18,.35)*std::exp2(-1.25):1;
-            for(unsigned c=0;c<3;++c){double expected=decode(before[c])*worldGrade*(203.0/80)*(1-original[3])+decode(original[c])*2*original[3];double error=std::fabs(actual[c]-expected);maximum=std::max(maximum,error);if(!std::isfinite(actual[c])||error>.002){if(failures++<4)std::printf("FAIL proxy UI shader=%u channel=%u got=%.8f want=%.8f\n",program,c,actual[c],expected);}}
+            for(unsigned c=0;c<3;++c){double expected=decode(before[c])*worldGrade*(203.0/80)*std::pow(1-original[3],2)+decode(original[c])*2*(1-std::pow(1-original[3],2));double error=std::fabs(actual[c]-expected);maximum=std::max(maximum,error);if(!std::isfinite(actual[c])||error>.002){if(failures++<4)std::printf("FAIL proxy UI shader=%u channel=%u got=%.8f want=%.8f\n",program,c,actual[c],expected);}}
             ok(d->SetRenderTarget(0,back));
             if(program==1){D3DVIEWPORT9 inset={4,4,backWidth-8,backHeight-8,0,1};RECT clip={4,4,LONG(backWidth-4),LONG(backHeight-4)};ok(d->SetViewport(&inset));ok(d->SetScissorRect(&clip));ok(d->SetRenderState(D3DRS_SCISSORTESTENABLE,TRUE));}
             if(program==1)ok(d->Present(nullptr,nullptr,nullptr,nullptr));
