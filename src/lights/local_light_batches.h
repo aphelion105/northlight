@@ -15,7 +15,7 @@
 
 namespace NorthlightLocalLightBatches {
 // Per-pixel cost of one pass in shader slots (shaders/world-shader-build.json static_instruction_slots) plus Blend, the
-// blended FP16 read-modify-write and the four screen fetches every pass repeats.
+// blended FP16 read-modify-write and shared screen fetches every pass repeats.
 inline constexpr double DirectSlots=244,Direct16Slots=364,FogSlots=397,Blend=40;
 using Rect=NorthlightLocalLightScissor::Rect;
 inline Rect unite(const Rect& a,const Rect& b){
