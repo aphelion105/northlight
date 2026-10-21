@@ -57,7 +57,7 @@ jl=r.index('logf("JOBS frame=%u jobs=%u jobMs=%.3f joinWaitMs=%.3f replayMs=%.3f
 check('JOBS line on RenderProfile sample frames only',r.count('logf("JOBS frame=')==1 and r.rindex('if(sampledFrame&&cpuFrequency.QuadPart>0){',0,jl)<r.rindex('if(NorthlightRenderThreadProbe::profiling()){',0,jl)<jl<r.index('logf("D3D calls frame=',jl))
 
 # --- native proof ---------------------------------------------------------------------------
-configs=[('O2',['-O2']),('asan+ubsan',['-O1','-g','-fsanitize=address,undefined','-fno-sanitize-recover=all']),('tsan',['-O1','-g','-fsanitize=thread'])]
+configs=[('O2',['-O2']),('asan+ubsan',['-O1','-g','-fsanitize=address,undefined','-fno-sanitize-recover=all']),('tsan',['-O1','-g','-fsanitize=thread','-DNORTHLIGHT_TEST_TSAN=1'])]
 with tempfile.TemporaryDirectory(prefix='northlight-jobs-') as tmp:
     for label,flags in configs:
         exe=Path(tmp)/f'jobs-{label.replace("+","_")}'

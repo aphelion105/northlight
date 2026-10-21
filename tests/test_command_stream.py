@@ -272,7 +272,8 @@ if __name__ == '__main__':
         (Path(tmp) / 'cs_generated.inc').write_text(generated_cpp())
         compile_run(tmp, 'o2', ['-O2'])
         compile_run(tmp, 'query-caller', ['-O2'], source='test_query_caller.cpp')
-        compile_run(tmp, 'asan', ['-O1', '-g', '-fsanitize=address,undefined', '-fno-omit-frame-pointer'])
+        # Fake raw identities are deliberately shifted pointers; vptr checks would dereference them.
+        compile_run(tmp, 'asan', ['-O1', '-g', '-fsanitize=address,undefined', '-fno-sanitize=vptr', '-fno-omit-frame-pointer'])
         # Redundant-state filtering compiled out: the Target sees every Set, and the equivalence run requires the exact trace again.
         compile_run(tmp, 'nofilter', ['-O2', '-DNORTHLIGHT_STREAM_FILTER=0'])
         compile_run(tmp, 'nodirect', ['-O2', '-DNORTHLIGHT_STREAM_DIRECT=0'])   # every call replayed through the Device: the same traces
