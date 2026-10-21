@@ -49,6 +49,14 @@ def variant_manifest(files):
 class Base(unittest.TestCase):
     platform = 'mac'
 
+    def directory_link(self, path, target):
+        try:
+            path.symlink_to(target, target_is_directory=True)
+        except OSError as exc:
+            if getattr(exc, 'winerror', None) == 1314:
+                self.skipTest('Windows directory symlink privilege is unavailable')
+            raise
+
     def setUp(self):
         self.base = fp.output_dir() / self.id().rsplit('.', 2)[-2] / self._testMethodName
         shutil.rmtree(self.base, ignore_errors=True)
@@ -63,7 +71,8 @@ class Base(unittest.TestCase):
             z.writestr('northlight-cache.json', json.dumps(self.manifest))
         self.calls, self.answers, self.variant, self.identified = [], [], 'stock', []
         self.archive_warnings = []   # what the fake install_world_cache records as tolerated
-        self.patches = [patch.object(mig, 'VERSIONS', self.base / 'no-versions.json'),
+        # Ordinary cases must not inherit the runner's console; tty() supplies interactive input explicitly.
+        self.patches = [patch.object(sys, 'stdin', io.StringIO()), patch.object(mig, 'VERSIONS', self.base / 'no-versions.json'),
                         patch.object(mig, 'running', lambda: []),
                         # The scratch path is long; the Windows limit is kept relative to it.
                         patch.object(fi, 'WINDOWS_MAX_PATH', len(str(self.client)) + fi.LONGEST_CACHE_NAME + 40)]
@@ -279,6 +288,7 @@ class RunningCheck(unittest.TestCase):
         # a tool (not our ancestor) that only mentions WoWSilicon in its arguments is not WoWSilicon
         self.assertEqual(mig.busy(self.LAUNCHER + [(80, 1, '/usr/bin/less', 'less /Volumes/Games/WoWSilicon.log')], 61), [])
 
+    @unittest.skipUnless(shutil.which('ps'), 'The macOS process probe needs POSIX ps')
     def test_this_host_runs(self):
         self.assertIsInstance(mig.running(), list)
 
@@ -309,7 +319,7 @@ class LinuxPreflight(WindowsPreflight):
         deep = self.base / ('x' * 60) / ('y' * 60) / 'WoW'
         deep.parent.mkdir(parents=True); self.client.rename(deep); self.client = deep
         link = self.base / 'prefix/drive_c/WoW'
-        link.parent.mkdir(parents=True); link.symlink_to(deep)
+        link.parent.mkdir(parents=True); self.directory_link(link, deep)
         inst = self.installer()
         self.assertEqual(inst.preflight(inst.resolve_client(link), None), 'enUS')
         self.assertEqual(fi.wine_path(inst.given), 'C:\\WoW')
@@ -1200,7 +1210,7 @@ class WindowsInstall(Install):
         elsewhere.mkdir()
         (elsewhere / 'northlight-dxvk3-init.pending').write_bytes(b'pending')
         (self.client / 'renderer-backends').mkdir()
-        (self.client / 'renderer-backends/dxvk').symlink_to(elsewhere, target_is_directory=True)
+        self.directory_link(self.client / 'renderer-backends/dxvk', elsewhere)
         with self.assertRaises(ValueError):
             self.installer().install(self.client)
         with self.assertRaises(fi.Refusal):
