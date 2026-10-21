@@ -1,6 +1,8 @@
 sampler2D Diffuse:register(s0);
 float4 Texel:register(c0); // source texel size, normal strength, unused
-float luminance(float2 uv){return dot(tex2Dlod(Diffuse,float4(uv,0,0)).rgb,float3(.299,.587,.114));}
+float4 HeightProfile:register(c1);
+#include "auto_material_height.hlsl"
+float luminance(float2 uv){return inferredHeight(tex2Dlod(Diffuse,float4(uv,0,0)).rgb,HeightProfile);}
 float4 AutoNormal(float2 uv:TEXCOORD0):COLOR0 {
     // Central differences in texture space, independent of the screen footprint.
     float x=luminance(uv+float2(Texel.x,0))-luminance(uv-float2(Texel.x,0));

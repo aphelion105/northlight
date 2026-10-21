@@ -199,8 +199,8 @@ Individual settings (Quality / Balanced / Performance):
   AutoBump 1 / 0 / 0   See the quality INI for the allowed range.
   AutoBumpStrength 75 / 60 / 40   See the quality INI for the allowed range.
   AutoBumpDistance 48 / 36 / 24   See the quality INI for the allowed range.
-  AutoBumpTerrain 2 / 1 / 1   See the quality INI for the allowed range.
-  AutoBumpWalls 2 / 1 / 1   See the quality INI for the allowed range.
+  AutoBumpTerrain 3 / 1 / 1   See the quality INI for the allowed range.
+  AutoBumpWalls 3 / 1 / 1   See the quality INI for the allowed range.
   AutoBumpGrass 1 / 1 / 1   See the quality INI for the allowed range.
   AutoParallaxDepth 100 / 75 / 50   See the quality INI for the allowed range.
   AutoParallaxDistance 16 / 12 / 8   See the quality INI for the allowed range.
@@ -210,6 +210,16 @@ Individual settings (Quality / Balanced / Performance):
   AutoParallaxShadowSteps 8 / 6 / 4   See the quality INI for the allowed range.
   AutoCavity 1 / 0 / 0   See the quality INI for the allowed range.
   AutoCavityStrength 35 / 30 / 25   See the quality INI for the allowed range.
+  AutoDisplacementStrength 100 / 75 / 50   See the quality INI for the allowed range.
+  AutoDisplacementDistance 12 / 8 / 6   See the quality INI for the allowed range.
+  AutoDisplacementDetail 4 / 3 / 2   See the quality INI for the allowed range.
+  AutoBumpModels 3 / 1 / 1   See the quality INI for the allowed range.
+  AutoModelDisplacementStrength 25 / 15 / 10   See the quality INI for the allowed range.
+  AutoModelDisplacementDistance 8 / 6 / 4   See the quality INI for the allowed range.
+  AutoModelDisplacementDetail 2 / 2 / 1   See the quality INI for the allowed range.
+  AutoHeightPolarity 0 / 0 / 0   See the quality INI for the allowed range.
+  AutoHeightDetails 75 / 75 / 75   See the quality INI for the allowed range.
+  AutoHeightBalance 50 / 50 / 50   See the quality INI for the allowed range.
 When both NearShadowInterval and FarShadowInterval are at least 2, frames that
 draw neither shadow also skip copying the character geometry (about 1–1.5 ms
 of CPU per skipped frame). Light and normal frames alternate: the average FPS

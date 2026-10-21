@@ -44,7 +44,7 @@ int main(int argc,char** argv){
     IDirect3DSurface9 *target=nullptr,*depth=nullptr;ok(d->CreateRenderTarget(W,H,D3DFMT_A32B32G32R32F,D3DMULTISAMPLE_NONE,0,FALSE,&target,nullptr));ok(d->CreateDepthStencilSurface(W,H,D3DFMT_D24S8,D3DMULTISAMPLE_NONE,0,FALSE,&depth,nullptr));
     ok(d->SetRenderTarget(0,target));ok(d->SetDepthStencilSurface(depth));D3DVIEWPORT9 vp={0,0,W,H,0,.94f};ok(d->SetViewport(&vp));
     std::string folder=argv[2];std::wstring root(folder.begin(),folder.end());if(root.back()!=L'/'&&root.back()!=L'\\')root+=L'/';
-    NorthlightAutoBump bump(d);NorthlightQuality::Settings settings;settings.autoBump=1;settings.autoBumpStrength=100;bump.configure(settings);
+    NorthlightAutoBump bump(d);NorthlightQuality::Settings settings;settings.autoBumpTerrain=2;settings.autoBumpWalls=2;settings.autoBump=1;settings.autoBumpStrength=100;bump.configure(settings);
     struct V {float x,y,z,nx,ny,nz;DWORD color;float u,v;};
     const V mesh[]={{-1,1,-1,0,0,1,0xffffffff,0,0},{1,1,-1,0,0,1,0xffffffff,1,0},{-1,-1,-1,0,0,1,0xffffffff,0,1},{1,-1,-1,0,0,1,0xffffffff,1,1}};
     IDirect3DVertexBuffer9* retainedStream=nullptr;IDirect3DIndexBuffer9* retainedIndices=nullptr;

@@ -1,28 +1,32 @@
 #pragma once
 #include "auto_normal_memory.h"
+#include "quality_settings.h"
+#include "material_height.h"
 
 // GPU-only per-texture normal maps. Source references prevent pointer reuse;
 // the budget includes their estimated byte size as well as the generated maps.
 class NorthlightAutoNormalCache {
-    struct Entry {IDirect3DTexture9* source;IDirect3DTexture9* normal;std::uint64_t bytes,used;};
+    struct Entry {IDirect3DTexture9* source;IDirect3DTexture9* normal;std::uint64_t bytes,used,version;unsigned frame;bool mutableSource;};
     IDirect3DDevice9* d;
     NorthlightStateBlockPool states;
     std::vector<Entry> entries;
     IDirect3DPixelShader9* shader=nullptr;
     std::uint64_t bytes=0,clock=0;
     unsigned generated=0,builds=0,hits=0,evictions=0;
+    unsigned polarity=0,details=75,balance=50,frame=0;
 public:
     explicit NorthlightAutoNormalCache(IDirect3DDevice9* device):d(device),states(device){}
     ~NorthlightAutoNormalCache(){reset();drop(shader);}
     void reset(){states.clear();for(auto& e:entries){drop(e.source);drop(e.normal);}entries.clear();bytes=0;}
-    void endFrame(){generated=0;}
+    void configure(const NorthlightQuality::Settings& s){if(polarity!=s.autoHeightPolarity||details!=s.autoHeightDetails||balance!=s.autoHeightBalance){reset();polarity=s.autoHeightPolarity;details=s.autoHeightDetails;balance=s.autoHeightBalance;}}
+    void endFrame(){generated=0;++frame;}
     void report(){logf("AUTONORMAL cached=%zu bytes=%llu generated=%u hits=%u evicted=%u",entries.size(),(unsigned long long)bytes,builds,hits,evictions);}
     IDirect3DTexture9* resolve(IDirect3DBaseTexture9* base){
         if(!base||base->GetType()!=D3DRTYPE_TEXTURE)return nullptr;
         auto* source=static_cast<IDirect3DTexture9*>(base);++clock;
-        for(auto& e:entries)if(e.source==source){e.used=clock;++hits;return e.normal;}
+        for(auto it=entries.begin();it!=entries.end();++it)if(it->source==source){if((it->version||it->mutableSource)&&(NorthlightMaterialHeight::version(source)!=it->version||(it->mutableSource&&!it->version&&frame-it->frame>=30))){bytes-=it->bytes;drop(it->source);drop(it->normal);entries.erase(it);break;}it->used=clock;++hits;return it->normal;}
         if(generated>=2)return nullptr;
-        D3DSURFACE_DESC desc{};if(FAILED(source->GetLevelDesc(0,&desc))||!desc.Width||!desc.Height||(desc.Usage&(D3DUSAGE_DYNAMIC|D3DUSAGE_RENDERTARGET)))return nullptr;
+        D3DSURFACE_DESC desc{};if(FAILED(source->GetLevelDesc(0,&desc))||!desc.Width||!desc.Height||(desc.Usage&D3DUSAGE_DEPTHSTENCIL))return nullptr;
         const UINT width=std::min(desc.Width,512u),height=std::min(desc.Height,512u);
         const std::uint64_t cost=NorthlightAutoNormalMemory::mipBytes(D3DFMT_A8R8G8B8,width,height,0)+NorthlightAutoNormalMemory::mipBytes(desc.Format,desc.Width,desc.Height,source->GetLevelCount());
         constexpr std::uint64_t budget=32ull<<20;if(cost>budget)return nullptr;
@@ -45,10 +49,11 @@ public:
         d->SetSamplerState(0,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(0,D3DSAMP_SRGBTEXTURE,FALSE);
         d->SetSamplerState(0,D3DSAMP_MAXMIPLEVEL,0);d->SetSamplerState(0,D3DSAMP_MIPMAPLODBIAS,0);
         d->SetSamplerState(0,D3DSAMP_ADDRESSU,D3DTADDRESS_WRAP);d->SetSamplerState(0,D3DSAMP_ADDRESSV,D3DTADDRESS_WRAP);
-        const float texel[]={1.f/width,1.f/height,5.f,0};d->SetPixelShaderConstantF(0,texel,1);
+        NorthlightMaterialHeight::Image image;NorthlightMaterialHeight::read(source,image);const auto profile=NorthlightMaterialHeight::profile(image,polarity,details,balance);
+        const float texel[]={1.f/width,1.f/height,5.f,0};d->SetPixelShaderConstantF(0,texel,1);d->SetPixelShaderConstantF(1,profile.data(),1);
         struct V {float x,y,z,w,u,v;};const V quad[]={{-.5f,-.5f,0,1,0,0},{width-.5f,-.5f,0,1,1,0},{-.5f,height-.5f,0,1,0,1},{width-.5f,height-.5f,0,1,1,1}};
         if(FAILED(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(V)))){drop(normal);return nullptr;}
         normal->SetAutoGenFilterType(D3DTEXF_LINEAR);normal->GenerateMipSubLevels();
-        source->AddRef();try{entries.push_back({source,normal,cost,clock});}catch(...){source->Release();drop(normal);return nullptr;}bytes+=cost;++generated;++builds;return normal;
+        source->AddRef();try{entries.push_back({source,normal,cost,clock,NorthlightMaterialHeight::version(source),frame,(desc.Usage&(D3DUSAGE_DYNAMIC|D3DUSAGE_RENDERTARGET))!=0||(source->GetLevelCount()==1&&desc.Format==D3DFMT_A8R8G8B8&&desc.Width>=256&&desc.Height>=256)});}catch(...){source->Release();drop(normal);return nullptr;}bytes+=cost;++generated;++builds;return normal;
     }
 };

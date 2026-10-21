@@ -46,3 +46,6 @@ CaptureResult BumpComposite(float2 uv:TEXCOORD0,float2 uv1:TEXCOORD1,float4 colo
     float alpha=lerp(tex2Dgrad(LayerMask,second.uv,ddx(uv1),ddy(uv1)).a,tex2Dgrad(Diffuse,first.uv,ddx(uv),ddy(uv)).a,blend.w)*color.a;
     first.normal=normalize(lerp(second.normal,first.normal,saturate(blend.w)));first.occlusion=lerp(second.occlusion,first.occlusion,saturate(blend.w));return captureValue(first,p,alpha);
 }
+
+// Native alpha is computed by the original material program in BumpNativePatch.
+CaptureResult BumpNative(float2 uv:TEXCOORD0,float4 nativeColor:COLOR0,float4 p:TEXCOORD7){clip(BumpCapture.y-p.w);return captureValue(materialValue(GeneratedNormal,uv,p),p,lerp(1,nativeColor.a,BumpCapture.w));}

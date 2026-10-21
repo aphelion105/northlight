@@ -16,11 +16,11 @@ try:
         if stage.startswith('vertex'):
             kind=1 if family=='terrain' else 2 if family in ('mapobjdiffuse_t1','mapobjspecular_t1','mapobjdiffuse_comp') else 3 if family=='detaildoodad' else 0
         else:
-            kind=1 if family in ('terrain1','terrain2','terrain2_pcf','terrain3','terrain3_pcf') else 2 if family=='terrain0' else 3 if family in ('mapobjdiffuse','mapobjspecular') else 5 if family=='mapobjopaque' else 4 if family=='detaildoodad' else 6 if family=='mapobjcomposite' else 0
+            kind=1 if family in ('terrain1','terrain2','terrain2_pcf','terrain3','terrain3_pcf') else 2 if family=='terrain0' else 3 if family in ('mapobjdiffuse','mapobjspecular') else 5 if family=='mapobjopaque' else 4 if family=='detaildoodad' else 6 if family=='mapobjcomposite' else 7 if family.startswith("combiners_") else 0
         if not kind:continue
         table=vertex if stage.startswith('vertex') else pixel
         for index,_,code in variants(assets.read(name)):
-            table[fnv1a64(code)]=kind
+            table.setdefault(fnv1a64(code),kind)
         names.append(name)
 finally:assets.close()
 lines=['// Generated from enabled client archives; exact original shader identities.','#pragma once','#include <cstdint>',
