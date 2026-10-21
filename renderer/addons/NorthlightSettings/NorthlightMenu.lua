@@ -5,7 +5,7 @@ panel.name = "Northlight"
 panel:Hide()
 local view = CreateFrame("Frame", nil, panel); view:SetAllPoints(panel)
 local snapshot, draft, rows, busy, saving = nil, {}, {}, false, false
-local confirmed, refreshing = {}, false
+local confirmed, submitted, refreshing = {}, {}, false
 local cached = false
 local previewTarget
 local file, category, section, suppress = "Q", "all", "quality", false
@@ -187,12 +187,12 @@ visible = function(f)
 end
 local function values(text) local out = {}; for s in text:gmatch("[^,]+") do out[#out + 1] = tonumber(s) or s end; return out end
 local function shownValue(f, savedOnly)
-    local value = (not savedOnly and draft[f.id]) or confirmed[f.id]
+    local value = (not savedOnly and (draft[f.id] or submitted[f.id])) or confirmed[f.id]
     if value == "@factory" and f.factoryOverride ~= "~" then return f.factory end
     local inherited = value == "~" or value == "@factory"
     if value == nil and f.override == "~" then
         local presetId = snapshot.fields[1].id
-        inherited = (f.file == "Q" and ((not savedOnly and draft[presetId]) or confirmed[presetId])) or (f.file == "C" and f.section ~= "default")
+        inherited = (f.file == "Q" and ((not savedOnly and (draft[presetId] or submitted[presetId])) or confirmed[presetId])) or (f.file == "C" and f.section ~= "default")
     end
     if inherited then
         if f.file == "C" and f.section ~= "default" then for _, p in ipairs(snapshot.fields) do if p.file == "C" and p.section == "default" and p.key == f.key then return shownValue(p, savedOnly) end end end
@@ -259,7 +259,7 @@ requestPreset = function(key, label)
     if not presetDialog then updateStatus("Close another dialog and try again.") else updateStatus() end
 end
 previewAO = function(reset)
-    if busy or not snapshot or not snapshot.aoPreview then return end
+    if busy or saving or not snapshot or not snapshot.aoPreview then return end
     local method, enabled
     for _, f in ipairs(snapshot.fields) do if f.file == "Q" then
         if f.key == "AOMethod" then method = shownValue(f) elseif f.key == "ContactAO" then enabled = shownValue(f) == "1" end
@@ -379,7 +379,7 @@ local function makeRow(index)
         local edit = CreateFrame("EditBox", "NorthlightEdit" .. index .. "_" .. c, row, "InputBoxTemplate")
         edit:SetAutoFocus(false); edit:SetMaxLetters(16); edit:SetHeight(20); edit:SetTextInsets(2, 2, 0, 0); edit:SetJustifyH("RIGHT"); edit:SetFontObject(GameFontHighlightSmall)
         edit:HookScript("OnEditFocusGained", function(self) focusedEdit = self end)
-        edit:SetScript("OnTextChanged", function(_, userInput) if userInput and not suppress and not busy and not presetDialog then VideoOptionsFrameApply:Enable() end end)
+        edit:SetScript("OnTextChanged", function(_, userInput) if userInput and not suppress and not busy and not saving and not presetDialog then VideoOptionsFrameApply:Enable() end end)
         edit:SetScript("OnEditFocusLost", function(self)
             self:HighlightText(0, 0)
             if focusedEdit == self then focusedEdit = nil end
@@ -416,7 +416,10 @@ updateStatus = function(message)
     if busy or presetDialog then blocker:Show(); CloseDropDownMenus() else blocker:Hide() end
     for _, item in ipairs(presetChoices) do if busy or presetDialog or not snapshot then item.select:Disable() else item.select:Enable() end end
     if VideoOptionsFrameCancel then if saving then VideoOptionsFrameCancel:Disable() else VideoOptionsFrameCancel:Enable() end end
+    if saving then VideoOptionsFrameApply:Disable(); VideoOptionsFrameOkay:Disable() else VideoOptionsFrameOkay:Enable() end
+    if busy or saving then refresh:Disable() else refresh:Enable() end
     if message then state:SetText(message); return end
+    if saving then state:SetText("Northlight: saving settings…"); return end
     if busy then
         local d = NorthlightSettingsDiagnostics
         state:SetText("Northlight: loading settings" .. (d and d.pages and d.pages > 0 and (" " .. tostring(d.page) .. "/" .. tostring(d.pages)) or "…")); return
@@ -555,7 +558,7 @@ local function renderSnapshot()
     updateStatus(); return true
 end
 refreshSnapshot = function()
-    if busy or refreshing then return end
+    if busy or saving or refreshing then return end
     local initial = not snapshot or cached and not previewTarget
     refreshing, busy = true, not snapshot; updateStatus()
     local id, why = API.GetSnapshot(function(ok, result)
@@ -565,27 +568,35 @@ refreshSnapshot = function()
     end)
     if not id then refreshing, busy = false, false; updateStatus(why) end
 end
-local function save(done)
-    if busy or not snapshot then return end
+local function save(done, keepEditing)
+    if busy or saving or not snapshot then return end
     if refreshing then API.CancelSnapshot(); refreshing = false end
     API.CancelPreview()
     local lines = {}; for id, value in pairs(draft) do lines[#lines + 1] = id .. "\t" .. value end; table.sort(lines)
-    busy, saving = true, true; updateStatus()
-    local id, why = API.Commit(snapshot.revision, table.concat(lines, "\n"), function(ok, result)
+    -- Freeze only the submitted transaction; later edits belong to the next Apply.
+    submitted, draft = draft, {}
+    busy, saving = not keepEditing, true; updateStatus()
+    local function complete(ok, result)
         busy, saving = false, false
-        if not ok then updateStatus(tostring(result)); return end
+        if not ok then
+            for key, value in pairs(submitted) do if draft[key] == nil then draft[key] = value end end
+            submitted = {}; renderSnapshot(); updateStatus(tostring(result)); return
+        end
         snapshot.revision = result; cached = false
         previewTarget = "saved"
-        for key, value in pairs(draft) do confirmed[key] = value end
-        draft = {}; renderSnapshot()
+        for key, value in pairs(submitted) do confirmed[key] = value end
+        submitted = {}; renderSnapshot()
         -- Keep acknowledged edits visible while the authoritative status loads in the background.
         refreshSnapshot()
         if done then done() end
-    end)
-    if not id then busy, saving = false, false; updateStatus(why) end
+        if dirtyCount() > 0 then previewAO() end
+        updateStatus()
+    end
+    local id, why = API.Commit(snapshot.revision, table.concat(lines, "\n"), complete)
+    if not id then complete(false, why) end
 end
 panel.okay = function() end -- The native buttons wait for the asynchronous save before running other Video panels.
-panel.cancel = function() if not busy then blurEdit(false); StaticPopup_Hide("NORTHLIGHT_CONFIRM_PRESET"); draft = {}; refreshRows(); updateStatus(); previewAO(true) end end
+panel.cancel = function() if not busy and not saving then blurEdit(false); StaticPopup_Hide("NORTHLIGHT_CONFIRM_PRESET"); draft = {}; refreshRows(); updateStatus(); previewAO(true) end end
 panel.default = function() if snapshot and not busy then blurEdit(false); for _, f in ipairs(snapshot.fields) do if f.available then draft[f.id] = "@factory" end end; refreshRows(); updateStatus(); previewAO() end end
 panel.refresh = function() if snapshot then renderSnapshot() end end
 local function showSection(owner, key)
@@ -609,11 +620,11 @@ end end)
 for _, b in ipairs({VideoOptionsFrameOkay, VideoOptionsFrameApply}) do
     local original = b:GetScript("OnClick")
     b:SetScript("OnClick", function(self, mouseButton)
-        if busy or presetDialog then return end
+        if busy or saving or presetDialog then return end
         blurEdit(true)
         if dirtyCount() == 0 then previewAO(true); original(self, mouseButton); return end
         local called = false
-        save(function() if called then return end; called = true; if VideoOptionsFrame:IsShown() then original(self, mouseButton) end end)
+        save(function() if called then return end; called = true; if VideoOptionsFrame:IsShown() then original(self, mouseButton) end end, self == VideoOptionsFrameApply)
     end)
 end
 VideoOptionsFrame:HookScript("OnHide", function() if not busy then panel.cancel() end end)

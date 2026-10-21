@@ -19,7 +19,7 @@ for key,low,high,presets in keys:
 for key,value,low,high in [('HDRPaperWhite','203','80','400'),('HDRUIWhite','160','40','400'),('HDRMaxNits','1000','80','10000'),('HDRContrast','1','0.5','2'),('HDRExposure','0','-4','4')]:
     step = '0.05' if key in ('HDRContrast','HDRExposure') else '1'
     fields.append('\t'.join(['F','R','Renderer',key,'slider',low,high,step,value,value,value,value,'F','','f',value,value,'1'])+'\n')
-for available,width,hidden,scenario in ((False,420,False,'menu'),(True,420,False,'menu'),(True,360,False,'menu'),(True,420,True,'menu'),(True,420,False,'layout'),(True,420,False,'latency'),(True,420,False,'inheritance'),(True,420,False,'ao'),(True,420,False,'loading'),(True,420,False,'bump'),(True,413,False,'presets'),(True,413,False,'inputs')):
+for available,width,hidden,scenario in ((False,420,False,'menu'),(True,420,False,'menu'),(True,360,False,'menu'),(True,420,True,'menu'),(True,420,False,'layout'),(True,420,False,'latency'),(True,420,False,'saving'),(True,420,False,'inheritance'),(True,420,False,'ao'),(True,420,False,'loading'),(True,420,False,'bump'),(True,413,False,'presets'),(True,413,False,'inputs')):
     lua = LuaRuntime()
     assert lua.eval('_VERSION') == 'Lua 5.1'
     lua.globals().HDR_AVAILABLE = available
@@ -44,6 +44,7 @@ for available,width,hidden,scenario in ((False,420,False,'menu'),(True,420,False
     elif scenario == 'inputs': lua.globals().CheckNumericInputs()
     elif scenario == 'layout': lua.globals().CheckLayoutFailure()
     elif scenario == 'latency': lua.globals().CheckApplyLatency()
+    elif scenario == 'saving': lua.globals().CheckApplyEditing()
     elif scenario == 'inheritance': lua.globals().CheckAcknowledgedInheritance()
     elif scenario == 'ao': lua.globals().CheckAOPreview()
     elif scenario == 'loading':

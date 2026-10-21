@@ -343,6 +343,43 @@ function CheckApplyLatency()
     edit(false); panel.cancel(); assert(FindWeatherRow().check:GetChecked(), "a background timeout must not block editing or Cancel")
     print("Delayed Lua transport: Apply unlocks within 0.153 s, repeated Apply, background edits, Cancel, save error and Okay passed")
 end
+function CheckApplyEditing()
+    local padding = {}
+    for i = 1, 900 do padding[i] = field("C", "Azeroth:" .. i, "sun_disc_gain", "slider", "1") end
+    SNAPSHOT_PADDING, NATIVE_DELAY = table.concat(padding), .08
+    local panel = assert(VideoOptionsFrame.northlight); panel:Show(); Tick(500)
+    local function weatherEdit(value)
+        NorthlightSection_atmosphere:Show()
+        local row = FindWeatherRow(); row.check:SetChecked(value); row.check:GetScript("OnClick")(row.check)
+    end
+    local function apply() VideoOptionsFrameApply:GetScript("OnClick")(VideoOptionsFrameApply, "LeftButton") end
+    weatherEdit(false); NATIVE_DELAY = 2; apply()
+    assert(commits == 1 and originalCalls == 0 and VideoOptionsFrameCancel.disabled)
+    weatherEdit(true)
+    assert(FindWeatherRow().check:GetChecked(), "Apply must accept edits before the save acknowledgement")
+    NorthlightSection_materials:Show(); ExpandAll()
+    FindSetting("AutoBumpStrength").sliders[1]:SetValue(105)
+    assert(FindSetting("AutoBumpStrength").edits[1]:GetText() == "105", "sliders must remain editable during Apply")
+    local mode = FindSetting("AutoBumpTerrain").dropdown; menuItems = {}; mode.initialize()
+    for _, item in ipairs(menuItems) do if item.text == "Normal maps" then item.func(); break end end
+    assert(FindSetting("AutoBumpTerrain").dropdown.text == "Normal maps", "dropdowns must remain editable during Apply")
+    assert(VideoOptionsFrameApply.disabled and VideoOptionsFrameOkay.disabled, "writes must remain serialized")
+    apply(); panel.cancel()
+    assert(commits == 1 and originalCalls == 0 and not NorthlightSettingsAPI.CancelSnapshot(), "pending saves cannot be repeated or cancelled")
+    Tick(40); NATIVE_DELAY = .08
+    assert(originalCalls == 1 and not VideoOptionsFrameApply.disabled, "the native Apply callback must not disable the next draft")
+    Tick(500); weatherEdit(true)
+    assert(FindWeatherRow().check:GetChecked(), "save acknowledgement and refresh must preserve the next draft")
+    apply(); Tick(3)
+    assert(commits == 2 and weather == "1" and LAST_COMMIT:find("AutoBumpStrength\t105", 1, true), "next Apply must submit the new draft at the acknowledged revision")
+    Tick(500); weatherEdit(false); failSave = true; NATIVE_DELAY = 2; apply(); weatherEdit(true)
+    Tick(40); NATIVE_DELAY = .08
+    assert(commits == 2 and FindWeatherRow().check:GetChecked(), "save failure must preserve a newer edit of the submitted field")
+    panel.cancel(); assert(FindWeatherRow().check:GetChecked(), "Cancel must restore the last acknowledged settings")
+    failSave = false; weatherEdit(false); live = false; apply(); weatherEdit(true); Tick(110)
+    assert(commits == 2 and FindWeatherRow().check:GetChecked() and not VideoOptionsFrameCancel.disabled, "timeout must preserve newer edits without retrying a write")
+    print("Apply editing: immediate checkbox/slider/dropdown edits, delayed acknowledgement, next revision, native callback, failure and timeout passed")
+end
 function CheckAcknowledgedInheritance()
     local function inherit(line, options)
         local parts = {}; for v in (line:gsub("\n$", "") .. "\t"):gmatch("(.-)\t") do parts[#parts + 1] = v end
