@@ -2669,7 +2669,7 @@ public:
          geometryMotion.update(r.map,r.camera,length>1e-6f?r.camera+forward*(pivotDistance/length):r.camera,GetTickCount());
          r.geometryCenter=NorthlightWorldStreaming::leadCenter(r.camera,geometryMotion.velocity(),float(geometryBuildEstimateMs.load(std::memory_order_relaxed))*.001f);
          geometryLead=std::sqrt(NorthlightGI::dot(r.geometryCenter-r.camera,r.geometryCenter-r.camera));}
-        if(lastRequest.map==r.map&&completedActorSceneMap()==r.map){r.actorJob=completedActorJob();r.actorSerial=actorJobSerial();}
+        if(NorthlightQuality::giActorCapture(quality)&&lastRequest.map==r.map&&completedActorSceneMap()==r.map){r.actorJob=completedActorJob();r.actorSerial=actorJobSerial();}
         std::shared_ptr<Snapshot> retiredSnapshot,expiredPublication;
         {std::lock_guard<std::mutex> lock(mutex);
             // The publication is another owner of the old BVH/plan. Retiring only
@@ -3543,7 +3543,7 @@ public:
         // ready/resources/upload, live terrain) up to the replay upload; logged with WORLD profile frame.
         uploadWindowTicks=-1;const int64_t uploadWindowStart=profileSampled()?QpcClock::now():0;
         {std::lock_guard<std::mutex> lock(mutex);
-         if(valid&&completedActorSceneMap()==lastRequest.map&&!pending&&!workerBusy&&actorJobSerial()!=lastRequest.actorSerial&&submissionStart-actorRequestTick>=250){
+         if(valid&&NorthlightQuality::giActorCapture(quality)&&completedActorSceneMap()==lastRequest.map&&!pending&&!workerBusy&&actorJobSerial()!=lastRequest.actorSerial&&submissionStart-actorRequestTick>=250){
              Request r=lastRequest;r.actorJob=completedActorJob();r.actorSerial=actorJobSerial();r.reason=64;
              r.id=request.id+1;r.queuedAt=submissionStart;request=r;lastRequest=r;pending=true;actorRequestTick=submissionStart;wake.notify_one();
          }}

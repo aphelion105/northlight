@@ -477,7 +477,7 @@ private:
     bool sampled()const{return NorthlightRenderThreadProbe::sampleFrame(frame)&&NorthlightDiagnostics::enabled();}
     static bool diagnostics(){return NorthlightDiagnostics::enabled();}
     // 0.3.154: the per-draw timing scopes; off on drawGate U frames (gateUntimed needs RenderProfile).
-    bool sampledDrawTimers()const{return sampled()&&!gateUntimed;}
+    bool sampledDrawTimers()const{return NorthlightRenderThreadProbe::profiling()&&sampled()&&!gateUntimed;}
     // stage is read when a fault is reported (0.3.187: drawHook names the step that was running).
     template<class Work> bool extensionWork(const char* const& stage,Work&& work) noexcept {
         if(extensionFault)return false;
