@@ -124,11 +124,11 @@ checks['rain scrub: RT1 unbound, MSAA twin resolved by StretchRect (failure: nul
     and 'if(FAILED(rainMaskResolveHr)&&!rainMaskResolveLogged){rainMaskResolveLogged=true;logf("WEATHER rain mask resolve failed HRESULT' in r)
 # every device operation that could draw, clear, copy or change targets runs rainMrtUnbind() first
 def method(name):
-    i=r.index('HRESULT STDMETHODCALLTYPE '+name+'(');return r[i:r.index('\n',i)+1]
+    i=r.index('HRESULT STDMETHODCALLTYPE '+name+'(');return r[i:r.index('\n    HRESULT STDMETHODCALLTYPE ',i+1)]
 for name in ('UpdateSurface','UpdateTexture','GetRenderTargetData','StretchRect','ColorFill'):
-    m=method(name);checks[f'rain mask MRT: Device::{name} unbinds RT1 before the call']=('rainMrtUnbind();' in m and m.index('rainMrtUnbind();')<m.index('return ext->'+name))
+    m=method(name);checks[f'rain mask MRT: Device::{name} unbinds RT1 before the call']=('rainMrtUnbind();' in m and m.index('rainMrtUnbind();')<m.index('ext->'+name))
 cl=r[r.index('HRESULT STDMETHODCALLTYPE Clear('):r.index('HRESULT STDMETHODCALLTYPE CreateVertexBuffer(')]
-checks['rain mask MRT: Device::Clear unbinds RT1 first (before the Z resolve and the real Clear)']=('rainMrtUnbind();' in cl and cl.index('rainMrtUnbind();')<cl.index('resolveDepth()')<cl.index('return ext->Clear('))
+checks['rain mask MRT: Device::Clear unbinds RT1 first (before the Z resolve and the real Clear)']=('rainMrtUnbind();' in cl and cl.index('rainMrtUnbind();')<cl.index('resolveDepth()')<cl.index('ext->Clear('))
 def dmethod(name):  # the whole Device method, up to the next one (a fixed span broke whenever a line grew)
     i=r.index('HRESULT STDMETHODCALLTYPE '+name+'(',r.index('class Device final'));return r[i:r.index('\n    HRESULT STDMETHODCALLTYPE ',i+1)]
 rst=dmethod('Reset');pre=dmethod('Present');es=dmethod('EndScene')

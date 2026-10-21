@@ -287,6 +287,7 @@ function CheckMenu()
         end end
     end
     for key in (EXPECTED_KEYS or ""):gmatch("%S+") do assert(seen["Q\tQuality\t" .. key], "setting missing from semantic sections: " .. key) end
+    for key in (UNSUPPORTED_KEYS or ""):gmatch("%S+") do assert(not seen["Q\tQuality\t" .. key], "unsupported setting exposed: " .. key) end
     failSave, live = false, false
     local finished = false
     assert(NorthlightSettingsAPI.GetSnapshot(function(ok, result) finished = true; assert(not ok and result:find("did not respond")) end))

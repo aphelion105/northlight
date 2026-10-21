@@ -98,3 +98,5 @@ describe (for example [support/gpu_profile/README.md](support/gpu_profile/README
   `tests/test_quality_docs.py`.
 - A known failure is tagged `known-fail=` and listed in [KNOWN_FAILURES.md](KNOWN_FAILURES.md), not
   left red.
+
+CPU fixtures that execute Windows binaries declare `windows-exe`; offscreen D3D9 tests declare `windows-gpu`. Binary inspection tests declare `lldb` and `objdump`.
