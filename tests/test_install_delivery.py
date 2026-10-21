@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # northlight-test: requires=stormlib
-"""Installer model staging and release-cache freshness, without changing a client."""
+"""Standalone model generation and release-cache freshness, without changing a client."""
 from pathlib import Path
 import copy
 import hashlib
@@ -15,6 +15,7 @@ import northlight_paths as fp
 fp.use_source_modules()
 import build_art_layer as art
 import build_packages as packages
+import build_emitter_patch
 import test_emitter_patch
 
 
@@ -30,37 +31,10 @@ class Delivery(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, 'regenerate'):
             packages.check_variant_sources({'variant': 'stock'})
 
-    def test_art_stages_only_reviewed_models(self):
-        assets = object()
-        work = Path('staging')
-        models = {'world\\test\\lamp.m2': b'model'}
-        with patch.object(art.build_emitter_patch, 'build', return_value={'counts': {'patched_models': 1}}) as generate, \
-             patch.object(art, 'read_archive', return_value=models):
-            payload, report = art.model_lights(assets, work)
-        self.assertEqual(payload, models)
-        self.assertEqual(report['models'], 1)
-        self.assertTrue(generate.call_args.kwargs['reviewed_only'])
-        self.assertIs(generate.call_args.args[0], assets)
-
-    def test_art_refuses_non_model_payload_and_unexpected_failure(self):
-        with patch.object(art.build_emitter_patch, 'build', return_value={'counts': {}}), \
-             patch.object(art, 'read_archive', return_value={'DBFilesClient\\Spell.dbc': b'bad'}):
-            with self.assertRaisesRegex(ValueError, 'non-model'):
-                art.model_lights(object(), Path('staging'))
-        with patch.object(art.build_emitter_patch, 'build', side_effect=ValueError('broken model archive')):
-            with self.assertRaisesRegex(ValueError, 'broken model archive'):
-                art.model_lights(object(), Path('staging'))
-
-    def test_client_without_supported_models_keeps_normal_art(self):
-        with patch.object(art.build_emitter_patch, 'build', side_effect=ValueError('No supported model changes')):
-            payload, report = art.model_lights(object(), Path('staging'))
-        self.assertEqual(payload, {})
-        self.assertIn('skipped', report)
-
     def test_packaged_imports_are_complete(self):
         packages.check_closure(packages.APP_FILES)
 
-    def test_automatic_generation_never_guesses_unknown_models_or_revisions(self):
+    def test_reviewed_generation_never_guesses_unknown_models_or_revisions(self):
         original = test_emitter_patch.LightPatch().model()
         name = 'world\\torch.m2'
         class Assets:
@@ -75,9 +49,9 @@ class Delivery(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=fp.output_dir()) as folder:
             path = Path(folder) / 'profiles.json'
             path.write_text(json.dumps({'version': 1, 'profiles': {name: profile}}))
-            with patch.object(art.build_emitter_patch, 'profile', side_effect=AssertionError('must not guess')):
+            with patch.object(build_emitter_patch, 'profile', side_effect=AssertionError('must not guess')):
                 with self.assertRaisesRegex(ValueError, 'No supported model changes'):
-                    art.build_emitter_patch.build(Assets(), Path(folder) / 'out', path, reviewed_only=True)
+                    build_emitter_patch.build(Assets(), Path(folder) / 'out', path, reviewed_only=True)
             self.assertFalse((Path(folder) / 'out/patch-y.mpq').exists())
 
     def test_generated_model_matches_the_reviewed_light_cache_source(self):
@@ -101,7 +75,7 @@ class Delivery(unittest.TestCase):
             folder = Path(folder)
             path = folder / 'profiles.json'
             path.write_text(json.dumps({'version': 1, 'profiles': {name: profile}}))
-            art.build_emitter_patch.build(Assets(), folder / 'out', path, reviewed_only=True)
+            build_emitter_patch.build(Assets(), folder / 'out', path, reviewed_only=True)
             payload = art.read_archive(folder / 'out/patch-y.mpq')
             self.assertEqual(set(payload), {name})
             catalog = load(folder / 'out/outdoor-light-profiles.json')
