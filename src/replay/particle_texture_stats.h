@@ -1,5 +1,6 @@
 #pragma once
 #include "actor_texture.h"
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -40,7 +41,7 @@ struct View {
     }
 };
 struct Counters {
-    std::uint64_t uploads=0,retained=0,decoded=0,hits=0,misses=0,partial=0,failed=0,unsupported=0,large=0,invalidations=0,evictions=0,releases=0;
+    std::uint64_t uploads=0,retained=0,decoded=0,hits=0,misses=0,missEvicted=0,missLarge=0,partial=0,failed=0,unsupported=0,large=0,invalidations=0,evictions=0,releases=0;
 };
 class Cache {
 public:
@@ -59,6 +60,9 @@ private:
         bool held()const{return !pixels.empty()||!source.empty();}
     };
     std::array<Entry,MaxEntries> entries_{};
+    // Diagnostics only: why a lookup missed (PTEX missEvicted/missLarge).
+    std::array<const void*,1024> evicted_{},large_{};unsigned evictedNext_=0,largeNext_=0;
+    void evicted(const Entry& e){evicted_[evictedNext_++%evicted_.size()]=e.raw;}
     std::size_t bytes_=0;
     std::uint64_t serial_=0,clock_=0;
     Entry* find(const void* raw){if(raw)for(auto& e:entries_)if(e.raw==raw)return &e;return nullptr;}
@@ -67,7 +71,7 @@ private:
     Entry& slot(const void* raw,const void* owner){
         if(auto* e=find(raw)){if(e->owner==owner)return *e;drop(*e);*e={};}
         Entry* selected=nullptr;for(auto& e:entries_)if(!e.raw){selected=&e;break;}
-        if(!selected){selected=oldest();drop(*selected);++counts.evictions;}
+        if(!selected){selected=oldest();evicted(*selected);drop(*selected);++counts.evictions;}
         *selected={};selected->raw=raw;selected->owner=owner;selected->lifetime=++serial_;selected->used=++clock_;return *selected;
     }
     static bool format(unsigned d3d,NorthlightActorTexture::Format& out){
@@ -95,25 +99,28 @@ public:
         if(auto* old=find(raw))if(old->owner!=owner)erase(raw);
         NorthlightActorTexture::Format decodedFormat;
         if(!raw||!owner||!format(d3dFormat,decodedFormat)){++counts.unsupported;invalidate(raw);return;}
-        if(!width||!height||width>MaxDimension||height>MaxDimension){++counts.large;return;}
+        if(!width||!height||width>MaxDimension||height>MaxDimension){++counts.large;if(!find(raw))large_[largeNext_++%large_.size()]=raw;return;}
         auto* previous=find(raw);
         if(previous&&previous->owner==owner&&previous->held()&&mip>previous->mip){++previous->revision;return;}
         if(!source||!sourceBytes||sourceBytes>std::size_t(MaxDimension)*MaxDimension*16){++counts.failed;invalidate(raw);return;}
         Entry& e=slot(raw,owner);drop(e);
-        while(bytes_+sourceBytes>PixelBudget){auto* victim=oldest(&e);if(!victim)break;drop(*victim);*victim={};++counts.evictions;}
+        while(bytes_+sourceBytes>PixelBudget){auto* victim=oldest(&e);if(!victim)break;evicted(*victim);drop(*victim);*victim={};++counts.evictions;}
         e.source.assign(static_cast<const std::uint8_t*>(source),static_cast<const std::uint8_t*>(source)+sourceBytes);e.pitch=pitch;
         e.width=width;e.height=height;e.mip=mip;e.format=d3dFormat;++e.revision;e.used=++clock_;bytes_+=e.source.size();++counts.retained;
         }catch(...){++counts.failed;invalidate(raw);}
     }
     bool lookup(const void* raw,View& out){
-        out={};if(!enabled.load(std::memory_order_relaxed))return false;auto* e=find(raw);if(!e||!e->held()){++counts.misses;return false;}
+        out={};if(!enabled.load(std::memory_order_relaxed))return false;auto* e=find(raw);if(!e||!e->held()){++counts.misses;
+            if(std::find(evicted_.begin(),evicted_.end(),raw)!=evicted_.end())++counts.missEvicted;
+            else if(std::find(large_.begin(),large_.end(),raw)!=large_.end())++counts.missLarge;
+            return false;}
         if(e->pixels.empty()){
             NorthlightActorTexture::Format decodedFormat;std::vector<std::uint8_t> decoded;
             try{if(!format(e->format,decodedFormat)||!NorthlightActorTexture::decode(e->source.data(),e->source.size(),e->width,e->height,e->pitch,decodedFormat,decoded))decoded.clear();}
             catch(...){decoded.clear();}
             if(decoded.empty()){++counts.failed;++counts.misses;invalidate(raw);return false;}
             bytes_-=e->source.size();std::vector<std::uint8_t>().swap(e->source);
-            while(bytes_+decoded.size()>PixelBudget){auto* victim=oldest(e);if(!victim)break;drop(*victim);*victim={};++counts.evictions;}
+            while(bytes_+decoded.size()>PixelBudget){auto* victim=oldest(e);if(!victim)break;evicted(*victim);drop(*victim);*victim={};++counts.evictions;}
             e->rgbaHash=14695981039346656037ull;for(auto byte:decoded){e->rgbaHash^=byte;e->rgbaHash*=1099511628211ull;}
             e->pixels=std::move(decoded);bytes_+=e->pixels.size();++counts.decoded;
         }
