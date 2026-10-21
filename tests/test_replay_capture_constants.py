@@ -9,7 +9,7 @@ validation build's assertion, on the block and the full-fetch path. Plus a sourc
 renderer wiring. Native code and static analysis only; no Wine, Windows binary or game is run."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
-import hashlib,json,subprocess,tempfile
+import hashlib,json,re,subprocess,tempfile
 HERE=Path(__file__).resolve().parent
 FILES=['replay_capture_constants.h','captured_constant_epoch.h','world_renderer.h','renderer.cpp','device_mirror.h',
        'test_replay_capture_constants.cpp','test_replay_palette_blocks.cpp','test_replay_capture_constants.py']
@@ -27,7 +27,7 @@ with tempfile.TemporaryDirectory(prefix='northlight-capture-constants-') as tmp:
             if test=='test_replay_capture_constants' and label=='validate':
                 for mode in ('c2-race-block','c2-race-full'):
                     bad=subprocess.run([str(exe),mode],capture_output=True,text=True)
-                    tripped=bad.returncode!=0 and 'Assertion failed' in bad.stderr
+                    tripped=bad.returncode!=0 and re.search(r'Assertion[^\n]*failed',bad.stderr)
                     print(f'C2 counterfactual {mode}: '+('assertion tripped' if tripped else 'NOT DETECTED'),flush=True)
                     assert tripped,(mode,bad.returncode,bad.stdout,bad.stderr)
                     report['runs'].append({'test':test,'build':label,'counterfactual':mode,'exit_code':bad.returncode})
