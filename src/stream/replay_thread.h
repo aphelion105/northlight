@@ -388,8 +388,8 @@ private:
         if(diag&&log&&frames%sampleEvery==0)cstreamLine(frames);
         if(log&&diag&&frames%sampleEvery==0){
             const auto& texture=NorthlightParticleTextures::cache();const auto& t=texture.counts;char line[640];
-            std::snprintf(line,sizeof line,"PTEX frame=%llu source=replay-cpu entries=%u bytes=%llu uploads=%llu retained=%llu hits=%llu misses=%llu partial=%llu failed=%llu unsupported=%llu large=%llu invalidations=%llu evictions=%llu releases=%llu",
-                (unsigned long long)frames,texture.size(),(unsigned long long)texture.bytes(),(unsigned long long)t.uploads,(unsigned long long)t.retained,
+            std::snprintf(line,sizeof line,"PTEX frame=%llu source=replay-cpu entries=%u bytes=%llu uploads=%llu retained=%llu decoded=%llu hits=%llu misses=%llu partial=%llu failed=%llu unsupported=%llu large=%llu invalidations=%llu evictions=%llu releases=%llu",
+                (unsigned long long)frames,texture.size(),(unsigned long long)texture.bytes(),(unsigned long long)t.uploads,(unsigned long long)t.retained,(unsigned long long)t.decoded,
                 (unsigned long long)t.hits,(unsigned long long)t.misses,(unsigned long long)t.partial,(unsigned long long)t.failed,(unsigned long long)t.unsupported,
                 (unsigned long long)t.large,(unsigned long long)t.invalidations,(unsigned long long)t.evictions,(unsigned long long)t.releases);log(line);
         }

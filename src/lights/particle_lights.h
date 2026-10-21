@@ -46,8 +46,12 @@ public:
     std::array<std::uint64_t,Capacity> immediate{};unsigned immediateCount=0;
     unsigned draws=0,backgroundDraws=0,accepted=0,deferred=0,triangles=0,points=0,dropped=0;
     unsigned shaderMiss=0,textureMiss=0,bufferMiss=0,stateMiss=0,geometryMiss=0;
+    // stateMiss by the check that refused the draw (PARTICLELIGHT state=...).
+    enum State {BlendOp,AlphaTest,ColorWrite,Depth,Sampler,Projection,States};
+    std::array<unsigned,States> stateWhy{};
+    void refuse(State why){++stateMiss;++stateWhy[why];}
     void reset(){count_=previousCount_=outputCount=immediateCount=0;nextFrame();}
-    void nextFrame(){count_=0;draws=backgroundDraws=accepted=deferred=triangles=points=dropped=0;shaderMiss=textureMiss=bufferMiss=stateMiss=geometryMiss=0;}
+    void nextFrame(){count_=0;draws=backgroundDraws=accepted=deferred=triangles=points=dropped=0;shaderMiss=textureMiss=bufferMiss=stateMiss=geometryMiss=0;stateWhy={};}
     bool takeDraw(bool particle=true){if(draws>=DrawLimit||(!particle&&backgroundDraws>=DrawLimit/2)){++dropped;return false;}++draws;if(!particle)++backgroundDraws;return true;}
     void observe(const Sample& sample,const float* camera){
         for(unsigned k=0;k<3;++k)if(!std::isfinite(sample.position[k])||std::fabs(sample.position[k])>=100000||

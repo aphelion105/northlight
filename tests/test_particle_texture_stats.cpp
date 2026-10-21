@@ -14,7 +14,8 @@ int main(){
     c.upload(key(1),key(10),2,1,0,21,atlas,sizeof atlas,8,true,true);assert(c.bytes()==0&&!c.counts.uploads&&!c.lookup(key(1),v));
     enabled.store(true);
     assert(!c.lookup(key(1),v));
-    c.upload(key(1),key(10),2,1,0,21,atlas,sizeof atlas,8,true,true);assert(c.lookup(key(1),v));
+    c.upload(key(1),key(10),2,1,0,21,atlas,sizeof atlas,8,true,true);assert(c.counts.retained==1&&!c.counts.decoded); // kept as uploaded, not decoded
+    assert(c.lookup(key(1),v)&&c.counts.decoded==1);assert(c.lookup(key(1),v)&&c.counts.decoded==1); // decoded once, at the first lookup
     const auto life=v.lifetime,revision=v.revision,hash=v.rgbaHash;
     assert(v.sample(.25f,.5f,false,3,3,rgba));close(rgba[0],1);close(rgba[2],0);close(rgba[3],1);
     assert(v.sample(.75f,.5f,false,3,3,rgba));close(rgba[0],0);close(rgba[2],1);close(rgba[3],0); // Atlas cell stays transparent and blue, never an average white.
@@ -46,5 +47,5 @@ int main(){
     c.invalidate(key(500));assert(!c.lookup(key(500),v));
     enabled.store(false);assert(!c.lookup(key(499),v));c.upload(key(499),key(1499),64,64,0,21,large.data(),large.size(),256,true,true);enabled.store(true);assert(!c.lookup(key(499),v));
     c.clear();assert(!c.bytes());
-    std::puts("particle textures: actual atlas UV/alpha, wrap/mirror/clamp, point/bilinear, sRGB alpha parity, native BC decode, lifetime/revision, mip order, partial/failed/GPU invalidation, bounded eviction PASS");
+    std::puts("particle textures: decode on first lookup, actual atlas UV/alpha, wrap/mirror/clamp, point/bilinear, sRGB alpha parity, native BC decode, lifetime/revision, mip order, partial/failed/GPU invalidation, bounded eviction PASS");
 }

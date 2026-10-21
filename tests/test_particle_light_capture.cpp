@@ -75,7 +75,7 @@ struct Vertex {float position[3];D3DCOLOR color;float uv[2];};
 static_assert(sizeof(Vertex)==24&&offsetof(Vertex,color)==12&&offsetof(Vertex,uv)==16,"native packed stream layout");
 struct Device final:ForwardIDirect3DDevice9 {
     Texture texture;Declaration declaration;Buffer vertices;Indices indices;
-    float constants[1024]{};DWORD source=D3DBLEND_SRCALPHA;unsigned streamOffset=0;
+    float constants[1024]{};DWORD source=D3DBLEND_SRCALPHA,alphaTest=TRUE,alphaRef=1,alphaFunc=D3DCMP_GREATEREQUAL;unsigned streamOffset=0;
     Device():ForwardIDirect3DDevice9(nullptr){
         constants[8]=constants[13]=constants[18]=constants[22]=1; // c2..5, clip.w = view.z
         constants[24]=constants[29]=1; // Native UV0 matrix.
@@ -84,7 +84,8 @@ struct Device final:ForwardIDirect3DDevice9 {
     HRESULT STDMETHODCALLTYPE GetRenderState(D3DRENDERSTATETYPE type,DWORD* out)override{
         switch(type){case D3DRS_ALPHABLENDENABLE:*out=TRUE;break;case D3DRS_SRCBLEND:*out=source;break;
         case D3DRS_DESTBLEND:*out=D3DBLEND_ONE;break;case D3DRS_BLENDOP:*out=D3DBLENDOP_ADD;break;
-        case D3DRS_ALPHATESTENABLE:*out=FALSE;break;case D3DRS_COLORWRITEENABLE:*out=15;break;case D3DRS_ZENABLE:*out=TRUE;break;
+        case D3DRS_ALPHATESTENABLE:*out=alphaTest;break;case D3DRS_ALPHAREF:*out=alphaRef;break;case D3DRS_ALPHAFUNC:*out=alphaFunc;break; // the game's own particle state (traced in play)
+        case D3DRS_COLORWRITEENABLE:*out=15;break;case D3DRS_ZENABLE:*out=TRUE;break;
         default:assert(false);return E_NOTIMPL;}return D3D_OK;
     }
     HRESULT STDMETHODCALLTYPE GetSamplerState(DWORD sampler,D3DSAMPLERSTATETYPE type,DWORD* out)override{
@@ -123,7 +124,7 @@ int main(int argc,char** argv){
     const float inverse[16]{1,0,0,0,0,1,0,0,0,0,1,0,100,200,300,1},camera[3]{100,200,300},projection[3]{1,1,1};
     NorthlightParticleLights::Frame frame;NorthlightLocalLightSelection::Tracker selection;std::vector<NorthlightLocalLights::Light> fixed;
     const auto prepare=[&](Shader& shader){return capture.prepare(&device,&shader,&ps,args,inverse,camera,projection,frame);};
-    const auto publish=[&](){frame.publish(nullptr,0,fixed,camera,selection);return selection.update(fixed,camera,8,1.f/120,true,frame.output.data(),frame.outputCount,frame.immediate.data(),frame.immediateCount);};
+    const auto publish=[&](){frame.publish(nullptr,0,fixed,camera,selection);return selection.update(fixed,camera,8,1.f/120,true,nullptr,frame.output.data(),frame.outputCount,frame.immediate.data(),frame.immediateCount);};
     auto prepared=prepare(vertex);assert(prepared.count==1&&frame.triangles==1);
     const auto& emitted=prepared.clusters[0].sample;assert(close(emitted.position[0],100)&&close(emitted.position[1],200)&&close(emitted.position[2],302));
     assert(emitted.rgb[2]>emitted.rgb[0]&&emitted.rgb[2]>emitted.rgb[1]);
@@ -135,7 +136,10 @@ int main(int argc,char** argv){
     frame.nextFrame();const auto indexed=args;args.type=NorthlightSpellLayer::DrawType::PrimitiveUP;args.first=0;args.vertexData=vertices.data();args.stride=sizeof(Vertex);
     assert(prepare(vertex).count==1);args=indexed; // UP bytes use their pointer, never the bound stream's offset.
     frame.nextFrame();for(auto& v:vertices)v.color&=0xffffff;upload();assert(!prepare(vertex).count); // SRCALPHA / ONE must respect native alpha.
-    frame.nextFrame();device.source=D3DBLEND_ONE;assert(prepare(vertex).count==1); // ONE / ONE deliberately ignores alpha.
+    frame.nextFrame();device.source=D3DBLEND_ONE;assert(!prepare(vertex).count); // ONE / ONE: the draw's alpha test (ref 1) drops alpha 0 too.
+    frame.nextFrame();device.alphaTest=FALSE;assert(prepare(vertex).count==1);device.alphaTest=TRUE; // Without the test ONE / ONE ignores alpha.
+    frame.nextFrame();device.alphaRef=NorthlightParticleCapture::MaxAlphaRef+1;assert(!prepare(vertex).count&&frame.stateMiss==1&&frame.stateWhy[NorthlightParticleLights::Frame::AlphaTest]==1);
+    frame.nextFrame();device.alphaRef=1;device.alphaFunc=D3DCMP_LESS;assert(!prepare(vertex).count&&frame.stateWhy[NorthlightParticleLights::Frame::AlphaTest]==1);device.alphaFunc=D3DCMP_GREATEREQUAL;
     frame.nextFrame();device.source=D3DBLEND_SRCALPHA;for(auto& v:vertices)v.color=0;upload();
     const auto constant=prepare(white);assert(constant.count==1); // Native ParticleUnlit constant white is not VB COLOR0.
     for(unsigned k=0;k<3;++k)assert(close(constant.clusters[0].sample.rgb[k],texel[k]*texel[3]));

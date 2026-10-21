@@ -9,6 +9,8 @@
 
 // No texture/buffer Lock is allowed here. Upload-cache misses stay dark.
 namespace NorthlightParticleCapture {
+// Highest ALPHAREF accepted with a GREATER/GREATEREQUAL alpha test (the game uses 1).
+inline constexpr DWORD MaxAlphaRef=8;
 using Four=NorthlightActorDeformation::Four;
 struct Prepared {
     std::array<NorthlightParticleLights::Cluster,4> clusters{};unsigned count=0;
@@ -69,10 +71,18 @@ public:
            FAILED(device->GetRenderState(D3DRS_SRCBLEND,&src))||(src!=D3DBLEND_ONE&&src!=D3DBLEND_SRCALPHA)||
            FAILED(device->GetRenderState(D3DRS_DESTBLEND,&dst))||dst!=D3DBLEND_ONE)return result;
         if(!frame.takeDraw(families_.at(vs)!=3))return result;
-        if(FAILED(device->GetRenderState(D3DRS_BLENDOP,&op))||op!=D3DBLENDOP_ADD||
-           FAILED(device->GetRenderState(D3DRS_ALPHATESTENABLE,&alpha))||alpha||
-           FAILED(device->GetRenderState(D3DRS_COLORWRITEENABLE,&mask))||(mask&7)!=7||
-           FAILED(device->GetRenderState(D3DRS_ZENABLE,&z))||!z){++frame.stateMiss;return result;}
+        using F=NorthlightParticleLights::Frame;
+        if(FAILED(device->GetRenderState(D3DRS_BLENDOP,&op))||op!=D3DBLENDOP_ADD){frame.refuse(F::BlendOp);return result;}
+        // The game keeps its alpha test on for additive particles (ALPHAREF 1,
+        // GREATEREQUAL: only alpha 0 is dropped). A low reference is applied to
+        // every sample below, the same test the draw itself makes.
+        DWORD alphaFunc=D3DCMP_ALWAYS,alphaRef=0;
+        if(FAILED(device->GetRenderState(D3DRS_ALPHATESTENABLE,&alpha))||(alpha&&(
+           FAILED(device->GetRenderState(D3DRS_ALPHAFUNC,&alphaFunc))||FAILED(device->GetRenderState(D3DRS_ALPHAREF,&alphaRef))||
+           (alphaFunc!=D3DCMP_GREATER&&alphaFunc!=D3DCMP_GREATEREQUAL&&alphaFunc!=D3DCMP_ALWAYS)||alphaRef>MaxAlphaRef))){frame.refuse(F::AlphaTest);return result;}
+        if(!alpha)alphaFunc=D3DCMP_ALWAYS;
+        if(FAILED(device->GetRenderState(D3DRS_COLORWRITEENABLE,&mask))||(mask&7)!=7){frame.refuse(F::ColorWrite);return result;}
+        if(FAILED(device->GetRenderState(D3DRS_ZENABLE,&z))||!z){frame.refuse(F::Depth);return result;}
         auto pixel=pixels_.find(ps);Vertex* program=pixel!=pixels_.end()?vertex(vs):nullptr;
         if(pixel==pixels_.end()||!program){++frame.shaderMiss;return result;}
         const auto& material=pixel->second;
@@ -85,13 +95,13 @@ public:
            FAILED(device->GetSamplerState(material.sampler,D3DSAMP_ADDRESSU,&au))||
            FAILED(device->GetSamplerState(material.sampler,D3DSAMP_ADDRESSV,&av))||
            FAILED(device->GetSamplerState(material.sampler,D3DSAMP_MAGFILTER,&mag))||
-           FAILED(device->GetSamplerState(material.sampler,D3DSAMP_MINFILTER,&min))){++frame.stateMiss;return result;}
+           FAILED(device->GetSamplerState(material.sampler,D3DSAMP_MINFILTER,&min))){frame.refuse(F::Sampler);return result;}
         float constants[1024];
-        if(FAILED(device->GetVertexShaderConstantF(0,constants,256))){++frame.stateMiss;return result;}
+        if(FAILED(device->GetVertexShaderConstantF(0,constants,256))){frame.refuse(F::Projection);return result;}
         const float* q=constants+8;
-        for(unsigned i=0;i<16;++i)if(!std::isfinite(q[i])){++frame.stateMiss;return result;}
+        for(unsigned i=0;i<16;++i)if(!std::isfinite(q[i])){frame.refuse(F::Projection);return result;}
         if(std::fabs(q[0]-projection[0])>.005f||std::fabs(q[5]-projection[1])>.005f||
-           std::fabs(q[14]-projection[2])>.005f||std::fabs(q[15])>.001f){++frame.stateMiss;return result;}
+           std::fabs(q[14]-projection[2])>.005f||std::fabs(q[15])>.001f){frame.refuse(F::Projection);return result;}
         NorthlightDrawSnapshot::Ref<IDirect3DVertexDeclaration9> declaration;
         D3DVERTEXELEMENT9 elements[65];UINT elementCount=65;
         if(FAILED(device->GetVertexDeclaration(declaration.out()))||!declaration.p||
@@ -181,6 +191,8 @@ public:
                     for(unsigned j=0;j<2;++j)uv[j]+=weights[i]*points[i].uv[j];}
                 if(!image.sample(uv[0],uv[1],srgb!=0,au,av,texel.data(),mag!=D3DTEXF_POINT||min!=D3DTEXF_POINT)||
                    !NorthlightParticleLightProof::shade(material,colour,texel,nullptr,emitted)){known=false;break;}
+                const float alphaOut=std::clamp(emitted[3],0.f,1.f)*255;
+                if(alphaFunc==D3DCMP_GREATER?!(alphaOut>float(alphaRef)):alphaFunc==D3DCMP_GREATEREQUAL&&!(alphaOut>=float(alphaRef)))continue; // the draw's own alpha test drops it
                 const float alphaGain=src==D3DBLEND_SRCALPHA?std::clamp(emitted[3],0.f,1.f):1.f;
                 for(unsigned j=0;j<3;++j)value.rgb[j]+=std::max(0.f,emitted[j])*alphaGain*.25f;
             }
