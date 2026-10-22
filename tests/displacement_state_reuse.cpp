@@ -256,6 +256,13 @@ struct MaterialCaptureStateTestAccess {
         assert(b.rangeRejected==1&&!d.pixelQueries&&!d.textures&&!d.samplers&&!d.depthAllocations&&!draws);
         // A large object crossing the visible range cannot be rejected as a whole.
         b.endFrame();vertices[2]=1;b.beginDraw();b.capture(&d.vs,[&]{++draws;return D3D_OK;},true,&args);assert(!b.rangeRejected&&d.pixelQueries>0);
+        // Early displacement admission must preserve its own consumer even
+        // when normal detail has a shorter range.
+        b.endFrame();b.modes[3]=3;b.range=4;for(unsigned i=0;i<3;++i)vertices[4*i+2]=6;
+        b.beginDraw();b.capture(&d.vs,[&]{++draws;return D3D_OK;},true,&args);assert(!b.earlyRangeRejected&&d.pixelQueries>0);
+        b.endFrame();for(unsigned i=0;i<3;++i)vertices[4*i+2]=10;const auto queries=d.pixelQueries;
+        b.beginDraw();b.capture(&d.vs,[&]{++draws;return D3D_OK;},true,&args);assert(b.earlyRangeRejected==1&&d.pixelQueries==queries);
+        std::puts("MATERIAL_EARLY_DISPLACEMENT_PASS max_capture_geometry_range far_zero_state_queries near_consumer_retained");
         std::puts("MATERIAL_EFFECT_RANGE_PASS normal_48 cavity_shadow_shared_8 inactive_0 rigid_m2_far_skipped crossing_retained");
     }
     static void invisible(){

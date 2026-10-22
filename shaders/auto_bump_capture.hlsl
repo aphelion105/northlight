@@ -4,7 +4,7 @@ sampler2D LayerMask:register(s1);
 sampler2D GeneratedNormal:register(s2);
 sampler2D GeneratedNormal1:register(s3);
 float4 NativeLayerMask:register(c0);
-float4 BumpCapture:register(c20);
+float4 BumpCapture:register(c20); // w: WMO opaque coverage offset; M2 native-alpha selector
 float4 CaptureProjection:register(c21);
 float4 ParallaxControl:register(c22);
 float4 OcclusionControl:register(c23); // shadow strength, shadow steps, cavity strength, near range (0 disables)
@@ -55,13 +55,15 @@ CaptureResult captureValue(MaterialValue v,float4 p,float alpha POM_ID_PARAMETER
 CaptureResult BumpOpaque(float2 uv:TEXCOORD0,float4 p:TEXCOORD7 POM_ID_INPUT){clip(BumpCapture.y-p.w);return captureValue(materialValue(GeneratedNormal,uv,p),p,1 POM_ID_ARGUMENT);}
 CaptureResult BumpLayer(float2 uv:TEXCOORD0,float2 maskUV:TEXCOORD1,float4 p:TEXCOORD7 POM_ID_INPUT){clip(BumpCapture.y-p.w);return captureValue(materialValue(GeneratedNormal,uv,p),p,saturate(dot(tex2D(LayerMask,maskUV),NativeLayerMask)) POM_ID_ARGUMENT);}
 CaptureResult BumpWall(float2 uv:TEXCOORD0,float4 color:COLOR0,float4 p:TEXCOORD7 POM_ID_INPUT){clip(BumpCapture.y-p.w);
-    MaterialValue v=materialValue(GeneratedNormal,uv,p);return captureValue(v,p,tex2Dgrad(Diffuse,v.uv,ddx(uv),ddy(uv)).a*color.a POM_ID_ARGUMENT);
+    MaterialValue v=materialValue(GeneratedNormal,uv,p);return captureValue(v,p,tex2Dgrad(Diffuse,v.uv,ddx(uv),ddy(uv)).a*color.a+BumpCapture.w POM_ID_ARGUMENT);
 }
 CaptureResult BumpGrass(float2 uv:TEXCOORD0,float4 fade:COLOR1,float4 p:TEXCOORD7 POM_ID_INPUT){clip(BumpCapture.y-p.w);return captureValue(materialValue(GeneratedNormal,uv,p),p,tex2D(Diffuse,uv).a*fade.x POM_ID_ARGUMENT);}
-CaptureResult BumpWallOpaque(float2 uv:TEXCOORD0,float4 color:COLOR0,float4 p:TEXCOORD7 POM_ID_INPUT){clip(BumpCapture.y-p.w);return captureValue(materialValue(GeneratedNormal,uv,p),p,color.a POM_ID_ARGUMENT);}
+CaptureResult BumpWallOpaque(float2 uv:TEXCOORD0,float4 color:COLOR0,float4 p:TEXCOORD7 POM_ID_INPUT){clip(BumpCapture.y-p.w);return captureValue(materialValue(GeneratedNormal,uv,p),p,color.a+BumpCapture.w POM_ID_ARGUMENT);}
 CaptureResult BumpComposite(float2 uv:TEXCOORD0,float2 uv1:TEXCOORD1,float4 color:COLOR0,float4 blend:COLOR1,float4 p:TEXCOORD7 POM_ID_INPUT){clip(BumpCapture.y-p.w);
     MaterialValue first=materialValue(GeneratedNormal,uv,p),second=materialValue(GeneratedNormal1,uv1,p);
-    float alpha=lerp(tex2Dgrad(LayerMask,second.uv,ddx(uv1),ddy(uv1)).a,tex2Dgrad(Diffuse,first.uv,ddx(uv),ddy(uv)).a,blend.w)*color.a;
+    // Add the solid-coverage offset before the existing saturation. Folding it
+    // into MAD keeps the shared composite within the 512-slot SM3 limit.
+    float alpha=mad(lerp(tex2Dgrad(LayerMask,second.uv,ddx(uv1),ddy(uv1)).a,tex2Dgrad(Diffuse,first.uv,ddx(uv),ddy(uv)).a,blend.w),color.a,BumpCapture.w);
     first.uv1=second.uv;first.normal=normalize(lerp(second.normal,first.normal,saturate(blend.w)));first.occlusion=lerp(second.occlusion,first.occlusion,saturate(blend.w));return captureValue(first,p,alpha POM_ID_ARGUMENT);
 }
 

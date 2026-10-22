@@ -1,6 +1,64 @@
 # Material performance investigation — 22 October 2026
 
-## Latest measured M2 capture bottleneck — 22 October, 15:18 user run
+## New user run: world capture overhead and missing opaque bump — 22 October, 17:33
+
+### What the fresh logs establish
+
+The installed DLL matches the delivered `fb3ed48` build: SHA-256 `84a7caa183aae9e7e2997642f524b628a6f83497dec1da1105393e233de196a4`. The immutable snapshots are in `northlight-diagnostics/material-batch-live-20261022-1733/`; the new main log has SHA-256 `9296e189f90e29a5eee5647c6b242a22f13ba3a1faaea313d3072768cd1cdab4`. The main and previous logs both keep **M2 Off** (`modes=3/3/3/0`, also `AutoBumpModels=0` in the saved INI). Consequently, `MATERIAL_DEFERRED` reports `enabled=1 queued=0 flushed=0`: batching is permitted by the loaded DXVK 3 backend but is never exercised by M2. This run cannot establish its in-game speedup. Comparing it with the earlier M2-enabled run would conflate a code change with a different configuration.
+
+With world materials enabled, warm sampled frame 3175 reports:
+
+| Work | CPU exclusive (ms) | GPU interval (ms) |
+| --- | ---: | ---: |
+| Material constants, all domains | 0.327 | — |
+| Material source snapshots | 0.211 | — |
+| Bounds/pose checks | 0.366 | — |
+| Capture setup, all domains | 0.419 | 1.088, for only 5 WMO captures |
+| WMO capture submission | 0.0044 | 0.0777 |
+| Original terrain draws, 811 | 0.598 | 2.727 |
+| Original M2 draws, M2 materials Off | 0.312 | 0.224 |
+| Final material composite | 0.0021 | 0.1587 |
+
+Total measured material CPU work is **2.510 ms** versus roughly **1.07–1.54 ms** in later material-disabled samples. The shader/map cache is warm; displacement still builds and draws zero geometry. There are **969 rejected captures out of 974 successful range proofs**, with only five WMO replays remaining. The bounds cache has 891 entries and no new evidence of the former 1024-entry churn in this M2-disabled run. Expensive admission and target transitions remain even when practically no material pixels contribute.
+
+The warm material-enabled windows at frames 3121/3241/3361 are **12.654–13.717 ms / 72.90–79.03 FPS**. Nearby disabled windows at frames 2641/2761/2881 are **10.803–11.234 ms / 89.02–92.57 FPS**. Menu, loading, focus-loss and GI warm-up intervals are excluded. This is an observational setting comparison, not a controlled before/after measurement of the new code.
+
+The largest remaining original-scene interval in this sample is terrain rendering. Outside materials, the effect pass totals **3.134 ms**, including **FogMarch 0.847 + FogClouds 0.625 = 1.472 ms**, AO/blur 0.500 ms, and WorldComposite 0.547 ms. These are later optimization candidates; disabling those effects or reducing their quality is not part of this fix. GPU interval attribution can include transitions charged to a subsequent draw; CPU and GPU timings must not be added.
+
+### Why bump can disappear
+
+All six material-enabled 128×72 probes report `rawCaptured=0`, not merely rejected final depth. This is sampled coverage, not proof that every full-resolution pixel is empty; small coverage can miss the grid. It does show that the old normal-strength-only explanation is insufficient.
+
+A definite coverage bug was reproduced in the existing WMO path. With native alpha blending and alpha test both disabled, native WMO RGB is visible even when vertex/diffuse alpha is zero. Capture nevertheless clipped or weighted its normals by that unused alpha. In an authentic WMO shader fixture at 320×200, the previous code captures **0 pixels**; the corrected code captures **37,894 pixels**. Original native color is **bit-exact**. The final normal-lighting difference rises from **5.96e-8 numerical noise** to **0.50935 maximum RGB difference**. This proves the defect and the correction. The fresh user log does not record source alpha, so it cannot prove that this defect is the only cause of its five empty-looking captures.
+
+There is also a distance/configuration constraint: M2 is Off, the camera is about **47.6–48.8 units from the character**, and the normal range is 48. Normal detail has full weight only through 36 and fades to zero over 36–48. Character/material detail at that camera distance is therefore heavily faded or outside range. Cavity and self-shadow are still disabled; when enabled, they retain their common near range (8 in Quality). Distances, strength, POM steps, subdivision and MSAA have not been increased or reduced automatically.
+
+The sampled audit now distinguishes scene coverage inside the normal range (`sceneNormalRange`), inside the full-weight region (`sceneNormalFull`), and inside the common occlusion range (`sceneOcclusionRange`). These complement raw capture and depth-mismatch counts. They will distinguish an empty near region from a capture-coverage problem in the next user run. All nine 128×72 queries remain asynchronous and bounded; production uses no GPU waits or full-target readbacks.
+
+### Changes implemented and measured
+
+1. **Reject distant rigid displacement draws before capture state setup.** The conservative range proof now also applies to rigid mode-3 draws. Buffered mode-3 probes reuse only already resident, write-tracked geometry snapshots from the existing geometry cache: a cold or untracked source follows the original preparation path. They perform no buffer locks, consume no new-source read budget, and create no duplicate source copies in the smaller optional range cache. UP draws retain their bounded position-only probe. Rejection uses the maximum of the effective capture and geometry ranges, preserving a geometry consumer even when normal range is shorter. Unknown, nonfinite and budget-limited inputs retain the original path. Skinned mode-3 draws retain their existing pose path rather than paying for a duplicate pose probe. A proof beyond geometry range also avoids full geometry preparation when only normal capture can still contribute.
+
+   A real-device, admission-only comparison against `fb3ed48` measures **1.028003 → 0.496478 ms CPU per 1000 far draws**, averaged across 32 frames: **51.70% less admission CPU**. Pixel-shader and depth-surface queries fall from **32,000 each to zero**. Both variants perform zero GPU capture work. This is not a whole-frame FPS claim.
+
+2. **Batch safe world captures as well as M2.** Terrain opaque and supported WMO opaque captures now use the same bounded immutable replay queue. A native opaque diffuse WMO draw uses the existing map-only capture because its unused diffuse alpha creates no live-texture dependency. Normal-map binding is stored per packet (world sampler 2, M2 sampler 14); counters retain the actual material domain. Native scene order, private capture order, native color shaders and MSAA are preserved. Prepared displacement, layered/alpha-dependent captures and unsupported state keep immediate replay. The previous 512-packet/8 MiB packet budget, 2 MiB new-source read budget and 4 MiB retained source cache remain unchanged.
+
+   In the final isolated 4K/MSAA 2× WMO test, three alternating complete-pass rounds reduce median GPU time **17.583232 → 9.038208 ms (48.60%)**. CPU submission changes **0.093912 → 0.133500 ms (+0.039588 ms)**. Original color and normal/depth targets are bit-exact. The tested opaque-terrain pass similarly changes **17.809664 → 9.299584 ms (47.78%)**. These synthetic scenes use 32 native draws plus captures and color resolve, with occlusion disabled as in the user log. A concurrent validation/benchmark run timed out its diagnostic query and was excluded; the isolated WMO repeat is stable at 17.14–17.79 ms versus 8.97–9.15 ms. A user game run is still needed to establish actual FPS changes and queue utilization.
+
+3. **Honor native coverage rather than unused WMO alpha.** Opaque WMO capture writes full coverage; alpha-test and blending continue to use their native alpha. Unneeded blending of the fully covered normal target is disabled. The coverage offset folds into the shared composite's existing multiply-add, keeping its strict **512-slot SM3 limit** without reducing quality. Alpha-test and alpha-blending regressions compare the old/new outputs bit-for-bit (13 and 8 outputs respectively). The intentional change is restored bump on opaque surfaces whose native alpha is unused.
+
+### Validation and reproduction
+
+- The CPU range/state suite passes, including a normal range shorter than geometry range, conservative boundaries, source replacement, pose budgets, nonfinite values, constant epochs and reset/lifetime handling.
+- All **40 M2 shader/skin/combiner fixtures** pass; the normal/capture/native POM bytecode for M2 is unchanged. New world queue tests cover MSAA 0/2/4/8, immutable DISCARD snapshots, current matrices, changing scissor/fill state, immediate barriers, the 520-draw packet limit, unused queues, injected failure, memory pressure and complete asynchronous profiling. Native D3D9 world tests also pass with batching forced for compatibility; production still leaves batching disabled there.
+- All **56 terrain/WMO/composite/grass MSAA/pressure cases** pass, plus **256 shared-POM comparisons**. Shared POM remains disabled by default. Only the WMO coverage capture programs and the diagnostic audit change shader bytecode. CPU/GPU benchmark timings are preserved separately from correctness comparisons.
+- Prepare world fixtures with `python tests/validate_parallax_msaa.py --backend <dxvk-d3d9.dll> --output-subdir material-msaa-release`. Run `tests/validate_material_deferred.py --backend <dxvk-d3d9.dll> --family terrain --quick --baseline-ref fb3ed48 --benchmark --occlusion-off` for admission/terrain proof; use `--family wall --wall-diffuse --vertex-alpha-zero --quick --baseline-ref fb3ed48` for the missing-bump and native-alpha regressions. Use `--family wall --quick --benchmark --occlusion-off` for WMO timing, running GPU benchmarks without concurrent GPU workloads.
+
+The final Windows x86 DLL builds successfully with the same 17 proxy exports and the two existing compiler warnings. SHA-256: `753b77e19fb7176e15892f900f2353cb974dbd5113b4d75c71d87f1895b8c760`. Windows CPU geometry/state/snapshot-policy tests and final terrain, M2, WMO alpha/MSAA/queue regressions pass. Additional native clang++/sanitizer snapshot scripts could not start because clang++ is unavailable on this host; they are not counted as passes. No new compiler warning was introduced.
+
+No game process was launched and no game-root DLL or settings were replaced. The next user run should explicitly enable M2 Normals for an M2 batching comparison, retain the same camera for on/off timing, and include a close view of a WMO surface for the bump check. The new domain counters identify world batching separately from M2 batching.
+
+## M2 capture bottleneck — 22 October, 15:18 user run (previous build)
 
 The new log confirms that the shared material capture path is expensive even in normal-only mode. The installed DLL is `7c5c699`, SHA-256 `57a923a347c118496572fc06e40ed69c20b19a1f6753feb4d2342eb3939e232b`. The immutable input is `northlight-diagnostics/material-live-stages-20261022/northlight-renderer.log`, SHA-256 `79495013dbaa887454d768137ed37c99472cb0656b5f622d46ca2a83c488fa60`. This is a 3840×2160, MSAA 2×, DXVK 3.1.1 run. `parsed-stages.json` and `warm-stage-summary.json` preserve the per-frame evidence. No game process was started during this work.
 

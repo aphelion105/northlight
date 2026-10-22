@@ -250,23 +250,24 @@
  242:     endif
  243:     texldd r0, r5.zwzw, s0, r0.zwzw, r5
  245:     mul r0.x, r0.w, v1.w
- 246:     mov_sat r9.w, r0.x
- 247:     mov oC1, r9
- 248:     dp3 r0.y, r8_abs, c6.x
- 249:     rcp r0.z, r0.y
- 250:     add r0.y, r0.y, c5.w
- 251:     cmp r0.y, r0.y, r0.z, c6.w
- 252:     mul r0.yzw, r0.y, r8.xxyz
- 253:     add r1.xy, -r0_abs.zyzw, c6.x
- 254:     cmp r1.zw, r0.xyyz, c6.x, c6.y
- 255:     mul r1.xy, r1.zwzw, r1
- 256:     cmp r0.yz, r0.w, r0, r1.xxyw
- 257:     mul r0.yz, r0, c2.w
- 258:     add oC0.xy, r0.yzzw, c2.w
- 259:     add r0, r0.x, -c20.z
- 260:     texkill r0
- 261:     mov oC0.z, v2.w
- 262:     mov oC0.w, r9.w
+ 246:     add r0.x, r0.x, c20.w
+ 247:     mov_sat r9.w, r0.x
+ 248:     mov oC1, r9
+ 249:     dp3 r0.y, r8_abs, c6.x
+ 250:     rcp r0.z, r0.y
+ 251:     add r0.y, r0.y, c5.w
+ 252:     cmp r0.y, r0.y, r0.z, c6.w
+ 253:     mul r0.yzw, r0.y, r8.xxyz
+ 254:     add r1.xy, -r0_abs.zyzw, c6.x
+ 255:     cmp r1.zw, r0.xyyz, c6.x, c6.y
+ 256:     mul r1.xy, r1.zwzw, r1
+ 257:     cmp r0.yz, r0.w, r0, r1.xxyw
+ 258:     mul r0.yz, r0, c2.w
+ 259:     add oC0.xy, r0.yzzw, c2.w
+ 260:     add r0, r0.x, -c20.z
+ 261:     texkill r0
+ 262:     mov oC0.z, v2.w
+ 263:     mov oC0.w, r9.w
 
-// approximately 269 instruction slots used (6 texture, 263 arithmetic)
+// approximately 270 instruction slots used (6 texture, 264 arithmetic)
  

@@ -26,7 +26,7 @@ class NorthlightAutoBump {
         IDirect3DVertexShader9* vertex=nullptr;IDirect3DPixelShader9* pixel=nullptr;IDirect3DVertexDeclaration9* declaration=nullptr;
         std::shared_ptr<const NorthlightDrawSnapshot::Mesh> mesh;NorthlightAutoNormalCache::Lease normal;
         float vertexConstants[256*4];std::vector<float> pixelConstants;int vertexInt[64],pixelInt[64];BOOL vertexBool[16],pixelBool[16];
-        DWORD states[14],raster[DeferredRasterCount],addressU=0,addressV=0;RECT scissor{};D3DVIEWPORT9 viewport{};unsigned first=0,tag=0;bool occlusion=false;
+        DWORD states[14],raster[DeferredRasterCount],addressU=0,addressV=0;RECT scissor{};D3DVIEWPORT9 viewport{};unsigned first=0,tag=0,normalStage=14;bool occlusion=false;
         ~Deferred(){drop(vertex);drop(pixel);drop(declaration);}
     };
     const D3DRENDERSTATETYPE deferredRasterKeys[DeferredRasterCount]={D3DRS_CULLMODE,D3DRS_ZENABLE,D3DRS_ZFUNC,D3DRS_DEPTHBIAS,D3DRS_SLOPESCALEDEPTHBIAS,D3DRS_SCISSORTESTENABLE,D3DRS_MULTISAMPLEANTIALIAS,D3DRS_MULTISAMPLEMASK,D3DRS_CLIPPING,D3DRS_DITHERENABLE,D3DRS_WRAP0,D3DRS_WRAP7,D3DRS_SHADEMODE,D3DRS_FILLMODE,D3DRS_LASTPIXEL,D3DRS_ANTIALIASEDLINEENABLE,D3DRS_WRAP1,D3DRS_WRAP2,D3DRS_WRAP3,D3DRS_WRAP4,D3DRS_WRAP5,D3DRS_WRAP6,D3DRS_WRAP8,D3DRS_WRAP9,D3DRS_WRAP10,D3DRS_WRAP11,D3DRS_WRAP12,D3DRS_WRAP13,D3DRS_WRAP14,D3DRS_WRAP15};
@@ -34,6 +34,7 @@ class NorthlightAutoBump {
     NorthlightVertexDeclarations::Cache deferredDeclarations;
     std::vector<std::unique_ptr<Deferred>> deferred;size_t deferredBytes=0;bool deferredAllowed=false;
     unsigned queued=0,flushed=0,deferredFallback=0,deferredDiscarded=0,deferredUnsafe=0,deferredGeometry=0;
+    unsigned queuedDomain[4]={},earlyRangeRejected=0,opaqueCoverage=0;
     bool deferredReport=false;uint64_t deferredReportFrame=0;
     float projection[4]={1,1,-1,8};
     // Only these states are changed by the replay. A full state block per material
@@ -166,13 +167,13 @@ class NorthlightAutoBump {
             const size_t cost=sizeof(Deferred)+mesh->byteSize()+(model.last-model.first+1)*16;if(cost>(8u<<20)-deferredBytes)return false;
             auto packet=std::make_unique<Deferred>();packet->mesh=mesh;packet->tag=profileTag;packet->occlusion=auxiliary;
             packet->declaration=decl.p;decl.p=nullptr;packet->pixel=model.shader;packet->pixel->AddRef();packet->vertex=vertex;vertex->AddRef();
-            packet->first=model.first;packet->pixelConstants.resize((model.last-model.first+1)*4);packet->viewport=saved.viewport;packet->addressU=addressU;packet->addressV=addressV;
+            packet->first=model.first;packet->pixelConstants.resize((model.last-model.first+1)*4);packet->viewport=saved.viewport;packet->addressU=addressU;packet->addressV=addressV;packet->normalStage=saved.normalStage;
             for(unsigned i=0;i<14;++i)packet->states[i]=saved.states[i].replay;
             for(unsigned i=0;i<DeferredRasterCount;++i)if(FAILED(d->GetRenderState(deferredRasterKeys[i],packet->raster+i)))return false;
             if(FAILED(d->GetScissorRect(&packet->scissor))||FAILED(d->GetVertexShaderConstantF(0,packet->vertexConstants,256))||FAILED(d->GetPixelShaderConstantF(packet->first,packet->pixelConstants.data(),UINT(packet->pixelConstants.size()/4)))||
                FAILED(d->GetVertexShaderConstantI(0,packet->vertexInt,16))||FAILED(d->GetPixelShaderConstantI(0,packet->pixelInt,16))||FAILED(d->GetVertexShaderConstantB(0,packet->vertexBool,16))||FAILED(d->GetPixelShaderConstantB(0,packet->pixelBool,16)))return false;
             std::copy(captureConstants,captureConstants+20,packet->pixelConstants.begin()+(model.constant-packet->first)*4);
-            deferred.push_back(std::move(packet));deferred.back()->normal=std::move(normal);deferredBytes+=cost;++queued;timing.work(mesh->vertexCount,mesh->byteSize());return true;
+            deferred.push_back(std::move(packet));deferred.back()->normal=std::move(normal);deferredBytes+=cost;++queued;++queuedDomain[profileTag/4-1];timing.work(mesh->vertexCount,mesh->byteSize());return true;
         }catch(...){return false;}
     }
 public:
@@ -203,14 +204,14 @@ public:
             step(d->SetVertexDeclaration(packet->declaration));step(d->SetStreamSourceFreq(0,1));step(d->SetVertexShader(packet->vertex));step(d->SetPixelShader(packet->pixel));step(d->SetViewport(&packet->viewport));step(d->SetScissorRect(&packet->scissor));
             for(unsigned i=0;i<14;++i)step(d->SetRenderState(keys.states[i].key,packet->states[i]));
             for(unsigned i=0;i<DeferredRasterCount;++i)step(d->SetRenderState(deferredRasterKeys[i],packet->raster[i]));
-            step(d->SetTexture(14,packet->normal.get()));const DWORD sampler[]={D3DTEXF_LINEAR,D3DTEXF_LINEAR,D3DTEXF_LINEAR,packet->addressU,packet->addressV,FALSE,0,0};
-            for(unsigned i=0;i<8;++i)step(d->SetSamplerState(14,keys.samplerKeys[i],sampler[i]));
+            step(d->SetTexture(packet->normalStage,packet->normal.get()));const DWORD sampler[]={D3DTEXF_LINEAR,D3DTEXF_LINEAR,D3DTEXF_LINEAR,packet->addressU,packet->addressV,FALSE,0,0};
+            for(unsigned i=0;i<8;++i)step(d->SetSamplerState(packet->normalStage,keys.samplerKeys[i],sampler[i]));
             step(d->SetVertexShaderConstantF(0,packet->vertexConstants,256));step(d->SetPixelShaderConstantF(packet->first,packet->pixelConstants.data(),UINT(packet->pixelConstants.size()/4)));
             step(d->SetVertexShaderConstantI(0,packet->vertexInt,16));step(d->SetPixelShaderConstantI(0,packet->pixelInt,16));step(d->SetVertexShaderConstantB(0,packet->vertexBool,16));step(d->SetPixelShaderConstantB(0,packet->pixelBool,16));
             if(SUCCEEDED(hr))hr=d->SetRenderTarget(1,packet->occlusion?occlusionTarget:nullptr);
             if(SUCCEEDED(hr)){P::Scope draw(profile,P::CaptureDraw,packet->tag);draw.work(mesh.primitiveCount);
                 hr=mesh.indexed?d->DrawIndexedPrimitiveUP(mesh.topology,0,mesh.vertexCount,mesh.primitiveCount,mesh.indices.data(),D3DFMT_INDEX32,mesh.streams[0].bytes.data(),mesh.streams[0].stride):d->DrawPrimitiveUP(mesh.topology,mesh.primitiveCount,mesh.streams[0].bytes.data(),mesh.streams[0].stride);}
-            if(FAILED(hr)){success=false;break;}++flushed;++draws[3];if(packet->occlusion){occlusionDrawn=true;if(profile)profile->count(P::OcclusionDraw);}
+            if(FAILED(hr)){success=false;break;}++flushed;++draws[packet->tag/4-1];if(packet->occlusion){occlusionDrawn=true;if(profile)profile->count(P::OcclusionDraw);}
         }
         if(success){deferred.clear();deferredBytes=0;result.ok=true;}return success;
     }
@@ -256,9 +257,10 @@ public:
     void reset(){deferred.clear();deferredBytes=0;deferredSnapshots.clearIndexCache();deferredDeclarations.clear();sharedMaps[0]={};sharedMaps[1]={};sharedPOM.reset();displacement.reset();normals.reset();drop(captureDepth);drop(target);drop(height);drop(occlusionTarget);drop(occlusionMap);occlusionUnavailable=false;occlusionRetry=0;width=heightPixels=0;cleared=drawn=failed=occlusionCleared=occlusionDrawn=false;}
     void endFrame(){
         deferredDiscarded+=unsigned(deferred.size());deferred.clear();deferredBytes=0;deferredSnapshots.clearFrame();
-        if(deferredReport||((queued||flushed||deferredFallback||deferredDiscarded)&&frames%600==0))logf("MATERIAL_DEFERRED frame=%llu sampled=%u enabled=%u queued=%u flushed=%u snapshotFallback=%u liveState=%u preparedGeometry=%u discardedUnused=%u packetLimit=512 packetMiB=8 sourceMiB=4",(unsigned long long)(deferredReport?deferredReportFrame:frames),unsigned(deferredReport),unsigned(deferredAllowed),queued,flushed,deferredFallback,deferredUnsafe,deferredGeometry,deferredDiscarded);
+        if(deferredReport||((queued||flushed||deferredFallback||deferredDiscarded)&&frames%600==0))logf("MATERIAL_DEFERRED frame=%llu sampled=%u enabled=%u queued=%u flushed=%u snapshotFallback=%u liveState=%u preparedGeometry=%u discardedUnused=%u terrain=%u walls=%u grass=%u models=%u earlyRangeRejected=%u opaqueCoverage=%u packetLimit=512 packetMiB=8 sourceMiB=4",(unsigned long long)(deferredReport?deferredReportFrame:frames),unsigned(deferredReport),unsigned(deferredAllowed),queued,flushed,deferredFallback,deferredUnsafe,deferredGeometry,deferredDiscarded,queuedDomain[0],queuedDomain[1],queuedDomain[2],queuedDomain[3],earlyRangeRejected,opaqueCoverage);
         deferredReport=false;
         queued=flushed=deferredFallback=deferredDiscarded=deferredUnsafe=deferredGeometry=0;
+        std::fill(std::begin(queuedDomain),std::end(queuedDomain),0);earlyRangeRejected=opaqueCoverage=0;
         if(occlusionRetry)--occlusionRetry;
         displacement.endFrame();
         sharedMaps[0]={};sharedMaps[1]={};sharedPOM.endFrame();if(frames%600==0)sharedPOM.report();
@@ -317,11 +319,14 @@ public:
         DWORD colorWrite=0,depthWrite=0;
         if(FAILED(d->GetRenderState(D3DRS_COLORWRITEENABLE,&colorWrite))||FAILED(d->GetRenderState(D3DRS_ZWRITEENABLE,&depthWrite)))return;
         if(!(colorWrite&7)||(!depthWrite&&domain!=1)){++invisibleRejected;return;}
-        if(geometry&&modes[domain-1]!=3){float nearest=0;
-            if(displacement.nearestMaterialDepth(original,*geometry,nearest)){++rangeTests;
+        const bool geometryMode=modes[domain-1]==3;bool skipGeometry=false;
+        if(geometry&&(!geometryMode||!displacement.skinned(original))){float nearest=0;
+            if(displacement.nearestMaterialDepth(original,*geometry,nearest,geometryMode)){++rangeTests;
                 nearestDepth=nearest;
                 if(nearest>=pomControl[1]){pomInRange=false;++pomRangeRejected;}
-                if(captureNeeded(domain)&&nearest>captureRange(domain)){++rangeRejected;if(profile)profile->count(P::RangeRejected);return;}}
+                skipGeometry=geometryMode&&nearest>displacement.geometryRange(domain);
+                const float needed=std::max(captureRange(domain),geometryMode?displacement.geometryRange(domain):0.f);
+                if(needed>0&&nearest>needed){++rangeRejected;++earlyRangeRejected;if(profile)profile->count(P::RangeRejected);return;}}
         }
         const bool needsCapture=captureNeeded(domain);
         if(!needsCapture&&modes[domain-1]!=3){++noCaptureRequired;if(profile)profile->count(P::NoContribution);return;}
@@ -343,9 +348,10 @@ public:
         for(unsigned i=0;i<saved.stateCount;++i){if(i==0||i==4)continue;auto& state=saved.states[i];if(FAILED(d->GetRenderState(state.key,&state.value)))return;}
         const auto& s=saved.states;
         const bool alpha=s[1].value!=0;
+        const bool coverageAlpha=domain==4?alpha:alpha||s[5].value!=0;
         // These capture programs produce alpha exactly one. Their normal,
         // occlusion and UV outputs overwrite the destination without blending.
-        if((domain==1&&material==1)||(domain==4&&!alpha))saved.states[5].replay=FALSE;
+        if((domain==1&&material==1)||(domain==2&&!coverageAlpha)||(domain==4&&!alpha))saved.states[5].replay=FALSE;
         if(!(s[4].value&7)||(!s[0].value&&domain!=1)||
            (s[5].value&&(s[7].value!=D3DBLEND_SRCALPHA||s[8].value!=D3DBLEND_INVSRCALPHA))||
            (alpha&&alphaFunc!=D3DCMP_GREATER&&alphaFunc!=D3DCMP_GREATEREQUAL))return;
@@ -355,7 +361,7 @@ public:
         if(width!=desc.Width||heightPixels!=desc.Height){reset();width=desc.Width;heightPixels=desc.Height;}
         // A distant proof needs no capture constants, samplers or private depth.
         // Resolve the target size first: reset() would discard prepared geometry.
-        if(domain<=4&&modes[domain-1]==3&&geometry){displacement.prepare(original,domain,material,*geometry);
+        if(domain<=4&&geometryMode&&geometry&&!skipGeometry){displacement.prepare(original,domain,material,*geometry);
             nearestDepth=displacement.nearestPreparedDepth();
             if(needsCapture&&displacement.nearestPreparedDepth()>captureRange(domain)){++rangeTests;++rangeRejected;if(profile)profile->count(P::RangeRejected);return;}}
         if(!needsCapture){++noCaptureRequired;if(profile)profile->count(P::NoContribution);return;}
@@ -374,8 +380,12 @@ public:
         if(domain==4){model=modelCapture(native,alpha,sharing);if(!model&&sharing){sharedBinding.restore();sharing=false;model=modelCapture(native,alpha);}if(!model)return;saved.constantBase=model->constant;saved.normalStage=14;}
         if(sharing){saved.constantCount=6;saved.stateCount=16;for(unsigned i=14;i<16;++i)if(FAILED(d->GetRenderState(saved.states[i].key,&saved.states[i].value)))return;}
         const bool multisampled=desc.MultiSampleType!=D3DMULTISAMPLE_NONE;
-        const bool canDefer=deferredAllowed&&!memoryPressure&&domain==4&&multisampled&&!sharing&&!displacement.prepared()&&geometry&&model&&model->deferredSafe&&v->second.deferredSafe;
-        if(deferredAllowed&&domain==4&&multisampled){if(displacement.prepared())++deferredGeometry;else if(sharing||!model||!model->deferredSafe||!v->second.deferredSafe)++deferredUnsafe;}
+        // An opaque native wall does not consume diffuse/vertex alpha. Use
+        // the existing map-only capture, avoiding a live diffuse dependency.
+        const bool opaqueWall=domain==2&&material==3&&!coverageAlpha&&!sharing;
+        const bool independent=(domain==4&&model&&model->deferredSafe)||(domain==1&&material==1)||(domain==2&&material==5)||opaqueWall;
+        const bool canDefer=deferredAllowed&&!memoryPressure&&multisampled&&!sharing&&!displacement.prepared()&&geometry&&independent&&v->second.deferredSafe;
+        if(deferredAllowed&&multisampled){if(displacement.prepared())++deferredGeometry;else if(sharing||!independent||!v->second.deferredSafe)++deferredUnsafe;}
         saved.viewport=viewport;if(!canDefer&&!saved.save(userMemory&&!sharing,material==6&&domain!=4))return;
         if(multisampled){
             if(!captureDepth&&!check(d->CreateDepthStencilSurface(width,heightPixels,D3DFMT_D24S8,D3DMULTISAMPLE_NONE,0,FALSE,&captureDepth,nullptr),"material depth"))return;
@@ -395,20 +405,22 @@ public:
             if(available)available=SUCCEEDED(d->CreateTexture(width,heightPixels,1,D3DUSAGE_RENDERTARGET,D3DFMT_A8R8G8B8,D3DPOOL_DEFAULT,&occlusionMap,nullptr))&&SUCCEEDED(occlusionMap->GetSurfaceLevel(0,&occlusionTarget));
             if(!available){drop(occlusionTarget);drop(occlusionMap);occlusionUnavailable=!supported;occlusionRetry=supported?60:0;logf("MATERIAL_OCCLUSION allocation retry=%u unsupported=%u; settings retained",occlusionRetry,unsigned(!supported));}
         }
-        const unsigned captureIndex=model?0:material-1;auto& captureShader=sharing?sharedShaders[captureIndex]:shaders[captureIndex];
-        if(!model&&!captureShader&&!check(d->CreatePixelShader(sharing?sharedCodes[material-1]:codes[material-1],&captureShader),"capture shader"))return;
+        const unsigned captureIndex=model?0:opaqueWall?4:material-1;auto& captureShader=sharing?sharedShaders[captureIndex]:shaders[captureIndex];
+        if(!model&&!captureShader&&!check(d->CreatePixelShader(sharing?sharedCodes[captureIndex]:codes[captureIndex],&captureShader),"capture shader"))return;
         IDirect3DBaseTexture9* diffuse=nullptr;if(FAILED(d->GetTexture(0,&diffuse)))return;
         auto normal=normals.acquire(diffuse,domain==4);drop(diffuse);if(!normal)return;
         NorthlightAutoNormalCache::Lease normal1;
         if(material==6&&domain!=4){IDirect3DBaseTexture9* second=nullptr;if(FAILED(d->GetTexture(1,&second)))return;normal1=normals.acquire(second);drop(second);if(!normal1)return;}
         DWORD addressU=D3DTADDRESS_WRAP,addressV=D3DTADDRESS_WRAP;d->GetSamplerState(0,D3DSAMP_ADDRESSU,&addressU);d->GetSamplerState(0,D3DSAMP_ADDRESSV,&addressV);
-        const float constants[]={domain==1?.18f:domain==2?.14f:.06f,captureRange(domain),alpha?(float(ref)+(alphaFunc==D3DCMP_GREATER?.5f:0.f))/255.f:.001f,domain==4&&alpha?1.f:0.f};
+        if(domain==2&&!coverageAlpha)++opaqueCoverage;
+        const float constants[]={domain==1?.18f:domain==2?.14f:.06f,captureRange(domain),alpha?(float(ref)+(alphaFunc==D3DCMP_GREATER?.5f:0.f))/255.f:.001f,domain==4?(alpha?1.f:0.f):(coverageAlpha?0.f:1.f)};
         float pom[4];std::copy(pomControl,pomControl+4,pom);if(modes[domain-1]!=2||!parallax.supports(saved.pixel,material))pom[0]=0;
         float occult[4];std::copy(occlusionControl,occlusionControl+4,occult);occult[3]=needsOcclusion&&occlusionTarget?occlusionDistance():0.f;if(pom[0]<=0||occlusionLight[3]<=0)occult[0]=0;
         float bank[24];for(unsigned i=0;i<4;++i){bank[i]=constants[i];bank[4+i]=projection[i];bank[8+i]=pom[i];bank[12+i]=occult[i];bank[16+i]=occlusionLight[i];bank[20+i]=sharedPOM.control[i];}
         if(canDefer){
             const bool auxiliary=needsOcclusion&&occlusionTarget;
-            if(recordCapture(*geometry,normal,auxiliary,saved,*model,v->second.patched,bank,addressU,addressV)){drawn=true;return;}++deferredFallback;
+            NativeCapture world;world.shader=captureShader;world.constant=world.first=20;world.last=24;
+            if(recordCapture(*geometry,normal,auxiliary,saved,model?*model:world,v->second.patched,bank,addressU,addressV)){drawn=true;return;}++deferredFallback;
         }
         if(!finishCaptures())return;
         if(canDefer&&!saved.save(userMemory&&!sharing,material==6&&domain!=4))return;

@@ -558,7 +558,9 @@ public:
     // (also DYNAMIC) may be served from / stored into the persistent
     // cache as an immutable shared mesh and output is left empty. Hits charge
     // admission and the read budget exactly like the equivalent miss.
-    bool read(IDirect3DDevice9* device,IDirect3DVertexDeclaration9* declaration,const Draw& draw,Mesh& output,Diagnostics* why=nullptr,bool priority=false,std::shared_ptr<const Mesh>* shared=nullptr,bool nearby=false) {
+    // Optional admission probes may reuse tracked resident data without reads,
+    // revalidation locks or cache population. A miss leaves the normal path intact.
+    bool read(IDirect3DDevice9* device,IDirect3DVertexDeclaration9* declaration,const Draw& draw,Mesh& output,Diagnostics* why=nullptr,bool priority=false,std::shared_ptr<const Mesh>* shared=nullptr,bool nearby=false,bool residentOnly=false) {
         if(shared)shared->reset();
         Mesh mesh=std::move(output);mesh.prepare();output=Mesh{};if(why)*why={};if(!device)return fail(why,Error::Arguments);
         UINT extent[4]={},n=0;if(!layout(declaration,extent,why)||!indexCount(draw,n,why))return false;
@@ -605,7 +607,9 @@ public:
                 const std::uint64_t token=known?metadata[4].identity:identity_(ib.p,true);
                 key=makeKey(vertices,extent,draw,declaration,strides,offsets,descriptions,token,desc.Size,unsigned(desc.Format),ok,batch?metadata:nullptr);
                 key.version[4]=known?metadata[4].revision:(version_?version_(ib.p,true):0);if(!key.version[4])key.tracked=0;cacheable=ok&&token!=0&&(!mesh.dynamic||key.tracked);
+                if(residentOnly&&!key.tracked)return false;
                 if(cacheable){bool served=false;if(!serve(key,vertices,ib.p,extent,shared,why,served))return false;if(served){fastCacheHits_+=metadataKnown&&key.tracked;output=std::move(mesh);return true;}}}
+            if(residentOnly)return false;
             cacheIbBegin=begin;cacheIbBytes=bytes;
             if(!admit(why))return false;
             if(!reserve(std::size_t(bytes),why))return false;
@@ -618,7 +622,9 @@ public:
         }else{
             // DYNAMIC resources may be cached only with complete write tracking.
             if(cacheable){bool ok=true;key=makeKey(vertices,extent,draw,declaration,strides,offsets,descriptions,0,0,0,ok,batch?metadata:nullptr);cacheable=ok&&(!mesh.dynamic||key.tracked);
+                if(residentOnly&&!key.tracked)return false;
                 if(cacheable){bool served=false;if(!serve(key,vertices,nullptr,extent,shared,why,served))return false;if(served){fastCacheHits_+=metadataKnown&&key.tracked;output=std::move(mesh);return true;}}}
+            if(residentOnly)return false;
             if(!admit(why))return false;if(std::uint64_t(low)+n>std::uint64_t(UINT(-1))+1)return fail(why,Error::VertexRange);high=low+n-1;}
         std::int64_t first=std::int64_t(low)+(draw.indexed?draw.base:0),last=std::int64_t(high)+(draw.indexed?draw.base:0);
         if(first<0||last<first||last>UINT(-1))return fail(why,Error::VertexRange);

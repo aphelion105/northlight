@@ -1313,11 +1313,16 @@ float4 MaterialComposite(float2 uv:TEXCOORD0):COLOR0 {
     return color;
 }
 
-// Sampled diagnostic only: six small occlusion queries count a regular grid,
+// Sampled diagnostic only: nine small occlusion queries count a regular grid,
 // using the same depth validity and near cutoff as MaterialComposite.
-// BumpControl.w selects valid / changed normal / cavity / self-shadow / raw / depth mismatch.
+// BumpControl.w selects capture/effect counts (0..5) or scene range coverage (6..8).
 float4 MaterialAudit(float2 uv:TEXCOORD0):COLOR0 {
     float2 q=depthUV(uv);float d=normalizedDepth(q);float z=viewDistance(d);
+    if(BumpControl.w>5.5){
+        clip((d<.99999&&waterDistance(q,d)<=0)?1:-1);
+        float limit=BumpControl.w>7.5?MaterialOcclusionInfo.y:BumpControl.w>6.5?BumpControl.y-max(BumpControl.y*.25,1):BumpControl.y;
+        clip(z<limit?1:-1);return 0;
+    }
     float4 material=tex2Dlod(BumpMaterial,float4(q,0,0));
     float valid=material.a>.02&&abs(material.b/max(material.a,.001)-z)<max(.025,z*.0015);
     if(BumpControl.w>3.5){

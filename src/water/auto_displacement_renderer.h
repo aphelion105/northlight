@@ -237,11 +237,12 @@ public:
     bool prepared()const{return current!=nullptr;}
     bool preparedHeightGPU()const{return current&&current->height;}
     float nearestPreparedDepth()const{return lastDepthLower;}
+    float geometryRange(unsigned domain)const{return (domain==4?modelStrength:worldStrength)>0?(domain==4?modelRange:worldRange):0;}
     void reportHeightGPU()const{logf("DISPLACEMENT heightGPU supported=%u draws=%llu outsideRange=%llu poseBudgetRejected=%llu poseEnvelopeHits=%llu poseFallbackVertices=%llu objectBoundsVertices=%llu boundsHits=%llu boundsMisses=%llu boundsEntries=%zu boundsBytes=%zu",unsigned(gpuHeightSupported),(unsigned long long)gpuDraws,(unsigned long long)distanceRejected,(unsigned long long)poseBudgetRejected,(unsigned long long)poseEnvelopeHits,(unsigned long long)poseFallbackVertices,(unsigned long long)objectBoundsVertices,(unsigned long long)boundsHits,(unsigned long long)boundsMisses,bounds.size(),boundsBytes);}
     bool skinned(IDirect3DVertexShader9* original)const{auto it=materials.find(original);return it!=materials.end()&&it->second.skinned;}
     // Rigid affine bounds and cached skin envelopes. Unknown/budget-limited
     // draws retain per-pixel checks. UP skin draws have no reusable source owner.
-    bool nearestMaterialDepth(IDirect3DVertexShader9* original,const Args& args,float& nearest){
+    bool nearestMaterialDepth(IDirect3DVertexShader9* original,const Args& args,float& nearest,bool geometrySource=false){
         using P=NorthlightMaterialProfile;P::Scope timing(profile,P::BoundsPose);
         auto shader=materials.find(original);if(shader==materials.end())return false;
         const auto& program=shader->second.view;
@@ -256,6 +257,7 @@ public:
         Mesh local;std::shared_ptr<const Mesh> source;
         P::Scope read(profile,P::Snapshot);
         if(args.vertices){if(!rangeSnapshots.readUP(decl.p,args.draw,args.indices,args.format,args.vertices,args.stride,local))return false;}
+        else if(geometrySource){if(!snapshots.read(d,decl.p,args.draw,local,nullptr,false,&source,false,true))return false;}
         else if(!(skin?skinRangeSnapshots:rangeSnapshots).read(d,decl.p,args.draw,local,nullptr,false,&source))return false;
         if(!source)source=std::make_shared<Mesh>(std::move(local));
         read.work(source->vertexCount,source->byteSize());read.next(P::BoundsPose);

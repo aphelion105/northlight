@@ -439,7 +439,7 @@
  458:     add r0.w, -r1.w, r2.w
  459:     mul r0.w, r0.w, v3.w
  460:     add r0.w, r0.w, r1.w
- 461:     mul r0.w, r0.w, v2.w
+ 461:     mad r0.w, r0.w, v2.w, c20.w
  462:     mov_sat r1.x, v3.w
  463:     add r1.yzw, r11.xxyz, -r12.xxyz
  464:     mul r1.yzw, r1, r1.x

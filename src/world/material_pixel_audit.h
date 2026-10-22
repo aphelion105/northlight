@@ -5,7 +5,7 @@
 // Diagnostic grid only; never reads back the full material targets or waits for
 // the GPU. An occlusion query counts fragments surviving MaterialAudit's clip.
 class NorthlightMaterialPixelAudit {
-    static constexpr unsigned W=128,H=72,Ring=3,Counts=6;
+    static constexpr unsigned W=128,H=72,Ring=3,Counts=9;
     struct Slot {IDirect3DQuery9* query[Counts]={};uint64_t frame=0;bool pending=false;} slots[Ring];
     IDirect3DDevice9* d;IDirect3DPixelShader9* shader=nullptr;IDirect3DSurface9* target=nullptr;
     bool failed=false;
@@ -19,7 +19,7 @@ public:
         for(auto& s:slots){if(!s.pending)continue;DWORD value[Counts]={};bool ready=true;
             for(unsigned i=0;i<Counts;++i){HRESULT hr=s.query[i]->GetData(value+i,sizeof(DWORD),0);if(FAILED(hr)){disable();return;}if(hr==S_FALSE){ready=false;break;}}
             if(!ready)continue;s.pending=false;lastFrame=s.frame;for(unsigned i=0;i<Counts;++i)last[i]=value[i];
-            logf("MATERIAL_PIXELS frame=%llu grid=%ux%u valid=%lu normalChanged=%lu cavity=%lu selfShadow=%lu rawCaptured=%lu depthMismatch=%lu sampled_grid=1",(unsigned long long)s.frame,W,H,(unsigned long)value[0],(unsigned long)value[1],(unsigned long)value[2],(unsigned long)value[3],(unsigned long)value[4],(unsigned long)value[5]);
+            logf("MATERIAL_PIXELS frame=%llu grid=%ux%u valid=%lu normalChanged=%lu cavity=%lu selfShadow=%lu rawCaptured=%lu depthMismatch=%lu sceneNormalRange=%lu sceneNormalFull=%lu sceneOcclusionRange=%lu sampled_grid=1",(unsigned long long)s.frame,W,H,(unsigned long)value[0],(unsigned long)value[1],(unsigned long)value[2],(unsigned long)value[3],(unsigned long)value[4],(unsigned long)value[5],(unsigned long)value[6],(unsigned long)value[7],(unsigned long)value[8]);
         }
     }
     template<class Quad> void sample(NorthlightMaterialProfile* profile,NorthlightStateBlockPool* pool,Quad quad){

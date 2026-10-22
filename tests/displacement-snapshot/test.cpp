@@ -40,17 +40,23 @@ int main(){
  assert(ordinary.read(&d,&d.decl,draw,scratch,&why,false,&first));
  assert(!ordinary.read(&d,&d.decl,draw,scratch,&why,false,&next)&&why.error==Error::Budget);
  Frame geometry(charge,0);geometry.setIdentityProvider(identity);geometry.setVersionProvider(version);geometry.setChargeResidentHits(false);
+ const auto coldLocks=locks(d);assert(!geometry.read(&d,&d.decl,draw,scratch,&why,false,&next,false,true));
+ assert(locks(d)==coldLocks&&geometry.bytesRead()==0);
  assert(geometry.read(&d,&d.decl,draw,scratch,&why,false,&first));const auto before=locks(d);const auto oldBytes=first->streams[0].bytes;
  for(unsigned i=0;i<5000;++i){assert(geometry.read(&d,&d.decl,draw,scratch,&why,false,&next));assert(next==first);}
  assert(geometry.bytesRead()==charge&&geometry.trackedHits()==5000&&locks(d)==before);
+ assert(geometry.read(&d,&d.decl,draw,scratch,&why,false,&next,false,true)&&next==first);
+ assert(geometry.bytesRead()==charge&&locks(d)==before);
  // A new generation is still charged and must wait for the next read-budget window.
  d.vb[0].bytes[d.offset[0]+7*d.stride[0]+1]^=0x55;revisions[&d.vb[0]]=4;
+ assert(!geometry.read(&d,&d.decl,draw,scratch,&why,false,&next,false,true));assert(locks(d)==before&&geometry.bytesRead()==charge);
  assert(!geometry.read(&d,&d.decl,draw,scratch,&why,false,&next)&&why.error==Error::Budget);
  geometry.clearFrame();assert(geometry.read(&d,&d.decl,draw,scratch,&why,false,&next));assert(next!=first&&next->streams[0].bytes!=oldBytes&&first->streams[0].bytes==oldBytes);
  // Unknown static versions still use normal revalidation, admission and read charge.
  revisions.clear();d.vb[0].desc.Usage=d.vb[1].desc.Usage=d.ib.desc.Usage=0;
  Frame untracked(charge,0);untracked.setIdentityProvider(identity);untracked.setVersionProvider(version);untracked.setChargeResidentHits(false);
  assert(untracked.read(&d,&d.decl,draw,scratch,&why,false,&next));
+ const auto untrackedLocks=locks(d);assert(!untracked.read(&d,&d.decl,draw,scratch,&why,false,&next,false,true));assert(locks(d)==untrackedLocks);
  assert(!untracked.read(&d,&d.decl,draw,scratch,&why,false,&next)&&why.error==Error::Budget);
  puts("SNAPSHOT_GEOMETRY_POLICY_PASS default_budget tracked_5000_hits_zero_reads admission_uncharged generation_miss_budget immutable_old unknown_static_charged");
 }

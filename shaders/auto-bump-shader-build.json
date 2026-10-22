@@ -5,7 +5,7 @@
     "auto_parallax_prefix.hlsl": "5a5a6f29c2143e998602e1ae0d2687faf2158bb5db09a61b63345f238cefb6cb",
     "auto_material_height.hlsl": "bdcee7896b70c29ff3162a9fbf9694d1a451a839ebdb89b7f0d382894a124271"
   },
-  "source_sha256": "6d06c302a40413f54ee1d3ad31fede6f89ffc53a145f905f52bb248a218e4ad4",
+  "source_sha256": "d5a7565d3de2a0e430b3dd70cc2054dfcab7c88fb58a6639e2b921a3c1389125",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
   "shaders": {
@@ -75,8 +75,8 @@
       }
     },
     "BumpWall": {
-      "sha256": "f163c1b8f6d29ab3f8c0245f89c0f564f498e7b93b30e19dd47481abb76b0408",
-      "static_instruction_slots": 271,
+      "sha256": "aa8a881cf8d0dcb8f3bd8c895318e2fbf4a43afe352a69dfd0d2873bb862596d",
+      "static_instruction_slots": 272,
       "temporary_registers": 11,
       "samplers": [
         0,
@@ -86,7 +86,7 @@
         "mov": 25,
         "mul": 45,
         "rcp": 12,
-        "add": 55,
+        "add": 56,
         "cmp": 25,
         "texkill": 2,
         "dsx": 2,
@@ -140,8 +140,8 @@
       }
     },
     "BumpWallOpaque": {
-      "sha256": "dfc93d0629ee62d5ecf5396ebf5a352dc1b8926d18f22c65caccb5a7c46c87bc",
-      "static_instruction_slots": 267,
+      "sha256": "50db598369244356bc3a77550afafd89fdfadbb9dd89401a6c14a08b675de202",
+      "static_instruction_slots": 268,
       "temporary_registers": 11,
       "samplers": [
         2
@@ -150,7 +150,7 @@
         "mov": 25,
         "mul": 44,
         "rcp": 12,
-        "add": 55,
+        "add": 56,
         "cmp": 25,
         "texkill": 2,
         "dsx": 2,
@@ -171,7 +171,7 @@
       }
     },
     "BumpComposite": {
-      "sha256": "4e21bf0cc3922d0c935985e3e4259c8b16e150435902be99bdecd4fd91ae9849",
+      "sha256": "32fafd764934d23ca02b710306e561853e227b904abcba0034df3768fe759140",
       "static_instruction_slots": 503,
       "temporary_registers": 14,
       "samplers": [
@@ -184,7 +184,7 @@
         "add": 107,
         "texkill": 2,
         "rcp": 20,
-        "mul": 82,
+        "mul": 81,
         "dsx": 3,
         "dsy": 3,
         "cmp": 43,
@@ -201,7 +201,8 @@
         "break": 4,
         "endrep": 4,
         "endif": 10,
-        "nrm": 3
+        "nrm": 3,
+        "mad": 1
       }
     },
     "BumpNative": {
@@ -303,8 +304,8 @@
       }
     },
     "BumpSharedWall": {
-      "sha256": "da76bb8ce7d3769ade5e185e496407a7014bd57834a7c98d4c6978ea63a5328a",
-      "static_instruction_slots": 277,
+      "sha256": "56fa0fa1730bba16ba2848ce30fbdb758bb8c953f759d24927f533b7f2e51678",
+      "static_instruction_slots": 278,
       "temporary_registers": 11,
       "samplers": [
         0,
@@ -314,7 +315,7 @@
         "mov": 27,
         "mul": 45,
         "rcp": 12,
-        "add": 58,
+        "add": 59,
         "cmp": 25,
         "texkill": 2,
         "dsx": 2,
@@ -370,8 +371,8 @@
       }
     },
     "BumpSharedWallOpaque": {
-      "sha256": "5a10ce176ae68dcfda7b9d1df23d9fade398d67f026d0bc3069333a7e38d6085",
-      "static_instruction_slots": 273,
+      "sha256": "bc8b66ca37cb40f2748396796e0f56144b888689629895b68872f948fc109697",
+      "static_instruction_slots": 274,
       "temporary_registers": 11,
       "samplers": [
         2
@@ -380,7 +381,7 @@
         "mov": 27,
         "mul": 44,
         "rcp": 12,
-        "add": 58,
+        "add": 59,
         "cmp": 25,
         "texkill": 2,
         "dsx": 2,
@@ -402,7 +403,7 @@
       }
     },
     "BumpSharedComposite": {
-      "sha256": "09a1c2f07f41b80bec9a3bdbe23969d030ec8854b166c6558640fdd8d19fadeb",
+      "sha256": "f47742864e63ea7f6593fe7806367829956601e73b32a4c62825238b4751864a",
       "static_instruction_slots": 512,
       "temporary_registers": 15,
       "samplers": [
@@ -415,7 +416,7 @@
         "add": 110,
         "texkill": 2,
         "rcp": 20,
-        "mul": 82,
+        "mul": 81,
         "dsx": 3,
         "dsy": 3,
         "cmp": 43,
@@ -433,6 +434,7 @@
         "endrep": 4,
         "endif": 10,
         "nrm": 3,
+        "mad": 1,
         "frc": 1
       }
     },

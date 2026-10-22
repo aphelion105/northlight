@@ -443,7 +443,7 @@
  459:     add r0.w, -r1.w, r2.w
  460:     mul r0.w, r0.w, v3.w
  461:     add r0.w, r0.w, r1.w
- 462:     mul r0.w, r0.w, v2.w
+ 462:     mad r0.w, r0.w, v2.w, c20.w
  463:     mov_sat r1.x, v3.w
  464:     add r1.yzw, r11.xxyz, -r13.xxyz
  465:     mul r1.yzw, r1, r1.x
