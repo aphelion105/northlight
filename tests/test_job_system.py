@@ -39,12 +39,16 @@ check('each body inline at its old place with ReplayJobs=0, joined there (or at 
       'if(jobs)replayJobs_.wait(atmosphereDone);else atmosphereWork(atmosphere,nearZ,w,h,debug);' in render
       and 'if(!jobs)terrainJob();' in render and render.index('if(!jobs)terrainJob();')<render.index('bucket(NorthlightEffectsBuckets::TerrainSelection);')
       and render.index('if(jobs)replayJobs_.wait(terrainDone);')<render.index('if(!terrainCandidates.forEach(')
-      and 'if(jobs&&actorShadows&&!replayCullsKicked){replayCullsKicked=true;replayBoundsJoin();replayCullKick(slot,sourceActive);}' in render
-      and render.count('replayCullKick(slot,sourceActive)')==1 and 'for(int slot=fromSlot;slot<4;++slot){' in w
-      and render.index('replayCullKick(slot,sourceActive)')<render.index('const int rendered=renderCache(shadowCacheSurface[slot],partialStatic,true);') # 0.3.217: kicked before the first rendering slot static cache and terrain draws
-      and render.index('replayCullKick(slot,sourceActive)')<render.index('if(jobs)replayJobs_.wait(terrainDone); /* 0.3.200 (jobs): the candidates')
-      and render.index('replayBoundsJoin(); /* 0.3.143: first pointBounds reader */')>render.index('replayCullKick(slot,sourceActive)')
-      and render.index('const uint8_t* cull=replayCullFor(slot,cachedMatrix,matrices[cascade]);')>render.index('replayCullKick(slot,sourceActive)')
+      and 'if(jobs&&actorShadows&&!replayCullsKicked)replayCullKickOwn(slot);' in render
+      and 'if(!replayBoundsWorker.finished()){++replayCullEarlySkipped;return;}' in w # 0.3.217: the early kick only when the bounds job is finished (no blocking join)
+      and 'replayBoundsJoin();++replayCullEarly;replayCullKickSlot(slot);' in w
+      and 'for(int slot=fromSlot+1;slot<4;++slot)if(sourceActive[slot/2])replayCullKickSlot(slot);' in w # the early kick covers this slot only
+      and 'if(jobs&&!replayCullsKicked){replayCullsKicked=true;replayCullKick(slot,sourceActive);}' in render
+      and render.index('replayCullKickOwn(slot)')<render.index('const int rendered=renderCache(shadowCacheSurface[slot],partialStatic,true);')
+      and render.index('replayBoundsJoin(); /* 0.3.143: first pointBounds reader */')<render.index('replayCullKick(slot,sourceActive)')<render.index('const uint8_t* cull=replayCullFor(slot,cachedMatrix,matrices[cascade]);')
+      and render.index('replayCullKickOwn(slot)')<render.index('if(jobs)replayJobs_.wait(terrainDone); /* 0.3.200 (jobs): the candidates')
+      and 'bool finished(){if(!inFlight_)return false;' in open(HERE.parent/'src/replay/replay_bounds_job.h').read()
+      and 'earlyCullKicks=%u earlyCullSkipped=%u' in r
       and '(cull?(cull[index]&1)!=0:StaticShadow::containsBounds(cachedMatrix,p->staticProofLow,p->staticProofHigh))' in render
       and '(cull?(cull[index]&2)!=0:(replayAffine&&NorthlightShadowBounds::clipRejectAffine(' in render)
 check('a later slot uses its job only when both matrices still match',
@@ -57,7 +61,7 @@ for name in ('void atmosphereWork(AtmosphereFrame& a,float nearZ,UINT w,UINT h,i
     check(f'no device call or log in {name.split("(")[0].split()[-1]}','d->' not in body and 'check(' not in body and 'ensureCloud' not in body and 'logf(' not in body and 'Lock' not in body)
 check('every kicked job is joined before render() returns (guards)',w.count('struct JobJoin')==1 and render.count('JobJoin ')==2
       and 'struct CullSettle {WorldRenderer& r;~CullSettle(){r.replayCullSettle();}} cullSettle{*this};' in render)
-jl=r.index('logf("JOBS frame=%u jobs=%u jobMs=%.3f joinWaitMs=%.3f replayMs=%.3f"')
+jl=r.index('logf("JOBS frame=%u jobs=%u jobMs=%.3f joinWaitMs=%.3f replayMs=%.3f earlyCullKicks')
 check('JOBS line on RenderProfile sample frames only',r.count('logf("JOBS frame=')==1 and r.rindex('if(sampledFrame&&cpuFrequency.QuadPart>0){',0,jl)<r.rindex('if(NorthlightRenderThreadProbe::profiling()){',0,jl)<jl<r.index('logf("D3D calls frame=',jl))
 
 # --- native proof ---------------------------------------------------------------------------
