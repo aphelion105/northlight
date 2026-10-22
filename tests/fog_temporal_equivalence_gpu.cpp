@@ -1,4 +1,4 @@
-// Genuine baseline/candidate FogTemporal on a hidden standalone D3D9 device.
+// Genuine baseline/candidate fog filters on a hidden standalone D3D9 device.
 #define main northlight_unused_composite_main
 #include "composite_distance_gpu.cpp"
 #undef main
@@ -13,7 +13,8 @@ static void store(Image& im,unsigned x,unsigned y,const std::uint16_t* h) {
 }
 
 int main(int argc,char** argv) {
-    assert(argc==8);
+    assert(argc==8||argc==9);
+    const bool spatial=argc==9&&std::strcmp(argv[8],"FogBlur")==0;
     const unsigned fullW=std::strtoul(argv[4],nullptr,10),fullH=std::strtoul(argv[5],nullptr,10),W=fullW/2,H=fullH/2;
     const unsigned inputBits=std::strtoul(argv[6],nullptr,10),outputBits=std::strtoul(argv[7],nullptr,10);
     const D3DFORMAT format=outputBits==16?D3DFMT_A16B16G16R16F:D3DFMT_A32B32G32R32F;
@@ -30,7 +31,7 @@ int main(int argc,char** argv) {
     ok(d->CreateOffscreenPlainSurface(W,H,format,D3DPOOL_SYSTEMMEM,&staging,nullptr));
     ok(d->SetDepthStencilSurface(nullptr));ok(d->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1));
     ok(d->SetRenderState(D3DRS_ZENABLE,FALSE));ok(d->SetRenderState(D3DRS_CULLMODE,D3DCULL_NONE));ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE));
-    for(unsigned slot:{1u,9u,14u,15u}){for(auto state:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})ok(d->SetSamplerState(slot,state,slot==14?D3DTEXF_LINEAR:D3DTEXF_POINT));ok(d->SetSamplerState(slot,D3DSAMP_MIPFILTER,D3DTEXF_NONE));ok(d->SetSamplerState(slot,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP));ok(d->SetSamplerState(slot,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP));}
+    for(unsigned slot:{1u,9u,11u,14u,15u}){for(auto state:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})ok(d->SetSamplerState(slot,state,slot==9||slot==14?D3DTEXF_LINEAR:D3DTEXF_POINT));ok(d->SetSamplerState(slot,D3DSAMP_MIPFILTER,D3DTEXF_NONE));ok(d->SetSamplerState(slot,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP));ok(d->SetSamplerState(slot,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP));}
     D3DVIEWPORT9 vp={0,0,W,H,0,1};
     const Vertex quad[]={{-.5f,-.5f,0,1,0,0},{W-.5f,-.5f,0,1,1,0},{-.5f,H-.5f,0,1,0,1},{W-.5f,H-.5f,0,1,1,1}};
     IDirect3DQuery9 *event=nullptr,*start=nullptr,*end=nullptr,*frequency=nullptr,*disjoint=nullptr;
@@ -39,9 +40,16 @@ int main(int argc,char** argv) {
     unsigned cases=0,failures=0;
     for(unsigned shape=0;shape<18;++shape){
         auto current=field(W,H,inputBits),history=field(W,H,inputBits);
-        Image depth{fullW,fullH,D3DFMT_R32F,4,std::vector<unsigned char>(std::size_t(fullW)*fullH*4)},previous{W,H,D3DFMT_R32F,4,std::vector<unsigned char>(std::size_t(W)*H*4)};
+        Image depth{fullW,fullH,D3DFMT_R32F,4,std::vector<unsigned char>(std::size_t(fullW)*fullH*4)},previous{W,H,D3DFMT_R32F,4,std::vector<unsigned char>(std::size_t(W)*H*4)},water{fullW,fullH,D3DFMT_G32R32F,8,std::vector<unsigned char>(std::size_t(fullW)*fullH*8)};
         const float clipNear=.2f,clipFar=1277.f,partition=.94f,z=8;
-        for(unsigned y=0;y<fullH;++y)for(unsigned x=0;x<fullW;++x){float raw=clipFar/(clipFar-clipNear)*(1-clipNear/z)*partition;if(shape==10||shape==17)raw=1;std::memcpy(depth.pixels.data()+(std::size_t(y)*fullW+x)*4,&raw,4);}
+        for(unsigned y=0;y<fullH;++y)for(unsigned x=0;x<fullW;++x){
+            float receiver=z;if(spatial&&shape%6==2)receiver=4+.03f*x+.01f*y;if(spatial&&shape%6>=3)receiver=x<fullW/2?3.f:19.f;
+            float raw=clipFar/(clipFar-clipNear)*(1-clipNear/receiver)*partition;if(shape==10||shape==17||spatial&&shape%6==4&&y>fullH/2)raw=1;
+            if(spatial&&shape==16&&x%19==0)raw=x%2?NAN:INFINITY;
+            std::memcpy(depth.pixels.data()+(std::size_t(y)*fullW+x)*4,&raw,4);
+            const float mask[]={shape%6==5?receiver+10:receiver*.8f,(x/7+y/11)%3?.8f:0.f};
+            std::memcpy(water.pixels.data()+(std::size_t(y)*fullW+x)*8,mask,8);
+        }
         for(unsigned y=0;y<H;++y)for(unsigned x=0;x<W;++x){
             std::uint16_t a[]={0,0,0,0x3c00},b[]={0,0,0,0x3c00};
             if(shape==1){a[0]=0x4400;a[1]=0x4000;a[2]=0x4c00;a[3]=0x3900;}
@@ -55,11 +63,13 @@ int main(int argc,char** argv) {
             store(current,x,y,a);store(history,x,y,b);
             float oldZ=shape==6?999.f:shape==11&&x%7==0?19.f:z;std::memcpy(previous.pixels.data()+(std::size_t(y)*W+x)*4,&oldZ,4);
         }
-        auto ct=texture(d,current),ht=texture(d,history),dt=texture(d,depth),pt=texture(d,previous);
+        auto ct=texture(d,current),ht=texture(d,history),dt=texture(d,depth),pt=texture(d,previous),wt=spatial?texture(d,water):nullptr;
         ok(d->SetTexture(9,ct));ok(d->SetTexture(14,ht));ok(d->SetTexture(1,dt));ok(d->SetTexture(15,pt));
+        if(spatial)ok(d->SetTexture(11,wt));
         float c[68][4]{};c[0][0]=1.f/fullW;c[0][1]=1.f/fullH;c[0][2]=clipNear;c[0][3]=clipFar;c[1][0]=1.2686f;c[1][1]=1.9626f;c[1][2]=1;c[2][0]=1/partition;
         for(unsigned i=0;i<4;++i)c[3+i][i]=c[53+i][i]=1;
         c[33][0]=float(fullW);c[33][1]=float(fullH);c[33][2]=float(W);c[33][3]=float(H);
+        if(spatial){c[30][0]=shape%3!=0;c[34][shape%2]=2;}
         c[64][1]=shape==5?0:shape==15?1:shape==16?.12345f:.85f;
         if(shape==7)c[56][0]=1000;
         if(shape==8)c[56][2]=-100;
@@ -85,7 +95,7 @@ int main(int argc,char** argv) {
             std::printf("{\"width\":%u,\"height\":%u,\"input_bits\":%u,\"output_bits\":%u,\"shape\":%u,\"msaa\":%u,\"changed_bytes\":%llu,\"old_nonfinite\":%llu,\"new_nonfinite\":%llu,\"old_ms\":%.6f,\"new_ms\":%.6f}\n",fullW,fullH,inputBits,outputBits,shape,samples,static_cast<unsigned long long>(changed),static_cast<unsigned long long>(nonfinite[0]),static_cast<unsigned long long>(nonfinite[1]),median[0],median[1]);std::fflush(stdout);
             failures+=changed!=0;++cases;target->Release();
         }
-        for(unsigned slot:{1u,9u,14u,15u})ok(d->SetTexture(slot,nullptr));ct->Release();ht->Release();dt->Release();pt->Release();
+        for(unsigned slot:{1u,9u,11u,14u,15u})ok(d->SetTexture(slot,nullptr));ct->Release();ht->Release();dt->Release();pt->Release();if(wt)wt->Release();
     }
     std::printf("FOG_TEMPORAL_EQUIVALENCE cases=%u failures=%u game_launched=false\n",cases,failures);
     d->SetPixelShader(nullptr);for(auto shader:shaders)shader->Release();for(auto query:{event,start,end,frequency,disjoint})query->Release();staging->Release();resolveSurface->Release();resolved->Release();d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);UnregisterClassW(wc.lpszClassName,wc.hInstance);

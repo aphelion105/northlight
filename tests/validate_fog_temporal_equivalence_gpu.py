@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # northlight-test: requires=windows-gpu,zig manual
-"""Compare genuine baseline/candidate FogTemporal in a hidden D3D9 device, no game."""
+"""Compare genuine baseline/candidate fog filters in a hidden D3D9 device, no game."""
 import argparse
 import hashlib
 import json
@@ -22,6 +22,7 @@ def main():
     parser.add_argument('--backend', type=Path, required=True)
     parser.add_argument('--source', type=Path, default=ROOT / 'shaders/world_effects.hlsl')
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--entry', choices=('FogTemporal', 'FogBlur'), default='FogTemporal')
     parser.add_argument('--benchmark', action='store_true')
     parser.add_argument('--reuse-compiled', action='store_true')
     args = parser.parse_args()
@@ -45,31 +46,33 @@ def main():
                 data = (subprocess.check_output(['git', 'show', f'{args.baseline_ref}:shaders/{filename}'], cwd=ROOT)
                         if name == 'old' else (args.source if filename == 'world_effects.hlsl' else ROOT / 'shaders' / filename).read_bytes())
                 (source_folder / filename).write_bytes(data)
-            binary = source_folder / 'FogTemporal.bin'
-            subprocess.run([str(compiler), str(source_folder / 'world_effects.hlsl'), 'FogTemporal', 'ps_3_0', str(binary)], check=True)
+            binary = source_folder / f'{args.entry}.bin'
+            subprocess.run([str(compiler), str(source_folder / 'world_effects.hlsl'), args.entry, 'ps_3_0', str(binary)], check=True)
             metadata[name] = {'shader_sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
                               'source_sha256': hashlib.sha256((source_folder / 'world_effects.hlsl').read_bytes()).hexdigest(),
                               **validate_assembly(Path(str(binary) + '.asm'), 'ps_3_0')}
     else:
-        metadata = json.loads((folder / 'validation.json').read_text(encoding='utf-8'))['metadata']
+        previous = json.loads((folder / 'validation.json').read_text(encoding='utf-8'))
+        assert previous.get('entry', 'FogTemporal') == args.entry
+        metadata = previous['metadata']
     cases, failures = [], []
     configs = [(w, h, ib, ob) for w, h in ((256, 192), (137, 79)) for ib in (16, 32) for ob in (16, 32)]
     if args.benchmark:
         configs += [(3840, 2160, 16, 16)]
     for width, height, input_bits, output_bits in configs:
-        result = subprocess.run([str(executable), str(folder / 'old/FogTemporal.bin'), str(folder / 'new/FogTemporal.bin'),
-                                 str(args.backend.resolve()), str(width), str(height), str(input_bits), str(output_bits)],
+        result = subprocess.run([str(executable), str(folder / 'old' / f'{args.entry}.bin'), str(folder / 'new' / f'{args.entry}.bin'),
+                                 str(args.backend.resolve()), str(width), str(height), str(input_bits), str(output_bits), args.entry],
                                 cwd=folder, capture_output=True, text=True, timeout=180)
         print(result.stdout, end='', flush=True)
         cases.extend(json.loads(line) for line in result.stdout.splitlines() if line.startswith('{'))
-        (folder / 'validation.json').write_bytes((json.dumps({'baseline_ref': args.baseline_ref, 'game_launched': False,
+        (folder / 'validation.json').write_bytes((json.dumps({'baseline_ref': args.baseline_ref, 'entry': args.entry, 'game_launched': False,
             'metadata': metadata, 'cases': cases}, indent=2) + '\n').encode('utf-8'))
         if result.returncode:
             print(result.stderr, file=sys.stderr)
             failures.append((width, height, input_bits, output_bits, result.returncode))
     assert not failures, failures
     assert cases and all(row['changed_bytes'] == 0 for row in cases)
-    print(f'PASS {len(cases)} bit-exact old/new FogTemporal images, including FP16, HDR, signed zero and nonfinite stress')
+    print(f'PASS {len(cases)} bit-exact old/new {args.entry} images, including FP16, HDR, signed zero and nonfinite stress')
 
 
 if __name__ == '__main__':

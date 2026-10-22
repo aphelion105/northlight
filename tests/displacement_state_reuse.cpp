@@ -2,6 +2,7 @@
 #include <d3d9.h>
 #include <cassert>
 #include <cstdio>
+#include <cstdarg>
 #include <cstring>
 #include <cstdlib>
 #include <new>
@@ -12,7 +13,8 @@ void operator delete(void* p)noexcept{std::free(p);}
 void operator delete(void* p,std::size_t)noexcept{std::free(p);}
 #include "forwarders.h"
 template<class T>static void drop(T*& p){if(p)p->Release();p=nullptr;}
-static void logf(const char*,...){}
+static int nativeGpuConfig=-1;
+static void logf(const char* format,...){if(!std::strstr(format,"MATERIAL_CONFIG "))return;char line[2048];va_list args;va_start(args,format);std::vsnprintf(line,sizeof line,format,args);va_end(args);const auto* flag=std::strstr(line,"nativeGpuEnabled=");nativeGpuConfig=flag?std::atoi(flag+17):-1;}
 #include "quality_settings.h"
 #include "auto_displacement_renderer.h"
 #include "saved_state.h"
@@ -273,6 +275,35 @@ void DisplacementStateTestAccess::primitiveLimit(){
     std::puts("MATERIAL_PRIMITIVE_LIMIT_PASS over8192_zero_height_reads zero_uv zero_build existing_hit_preserved boundary8192_retained");
 }
 struct MaterialCaptureStateTestAccess {
+    static void inactiveNativeProfile(){
+        struct ProfileDevice:CaptureBackend {
+            unsigned creates=0,live=0,timestamps=0;
+            static uint64_t& clockReads(){static uint64_t reads=0;return reads;}
+            static uint64_t clock(){return ++clockReads();}
+            struct Query:IDirect3DQuery9 {
+                ProfileDevice& d;D3DQUERYTYPE type;unsigned refs=1;
+                Query(ProfileDevice& device,D3DQUERYTYPE t):d(device),type(t){++d.live;}
+                HRESULT STDMETHODCALLTYPE QueryInterface(REFIID,void**)override{return E_NOINTERFACE;}
+                ULONG STDMETHODCALLTYPE AddRef()override{return ++refs;}
+                ULONG STDMETHODCALLTYPE Release()override{const auto n=--refs;if(!n){--d.live;delete this;}return n;}
+                HRESULT STDMETHODCALLTYPE GetDevice(IDirect3DDevice9**)override{return E_FAIL;}
+                D3DQUERYTYPE STDMETHODCALLTYPE GetType()override{return type;}
+                DWORD STDMETHODCALLTYPE GetDataSize()override{return type==D3DQUERYTYPE_TIMESTAMPDISJOINT?4:8;}
+                HRESULT STDMETHODCALLTYPE Issue(DWORD)override{d.timestamps+=type==D3DQUERYTYPE_TIMESTAMP;return D3D_OK;}
+                HRESULT STDMETHODCALLTYPE GetData(void*,DWORD,DWORD)override{return S_FALSE;}
+            };
+            HRESULT STDMETHODCALLTYPE CreateQuery(D3DQUERYTYPE type,IDirect3DQuery9** out)override{++creates;*out=new Query(*this,type);return D3D_OK;}
+        } d;
+        {NorthlightMaterialProfile profile(&d,ProfileDevice::clock);NorthlightAutoBump b(&d);setup(b,d,4);b.setProfiler(&profile);profile.beginFrame(127,true);assert(d.creates==2);
+            std::vector<unsigned> submitted;for(unsigned phase=0;phase<3;++phase){b.enabled=phase==1;b.profileConfigFrame=~uint64_t(0);b.beginDraw();assert(nativeGpuConfig==(phase==1?1:0));const unsigned before=d.timestamps;const auto reads=ProfileDevice::clockReads();
+                for(unsigned i=0;i<32;++i){if(!b.enabled)b.capture(&d.vs,[]{return D3D_OK;});else b.profileTag=19;
+                    const HRESULT expected=i&1?E_FAIL:D3D_OK;assert(b.nativeDraw([&]{submitted.push_back(phase*32+i);return expected;})==expected);}
+                assert(d.timestamps-before==(phase==1?64u:0u));assert(ProfileDevice::clockReads()-reads==(phase==1?192u:128u));}
+            for(unsigned i=0;i<96;++i)assert(submitted[i]==i);assert(d.creates==66&&!d.pixelQueries&&!d.pixelConstants&&!d.textures&&!d.samplers&&!d.depthAllocations);
+            profile.endFrame();profile.reset();assert(!d.live);
+        }assert(d.vs.refs==1);
+        std::puts("MATERIAL_INACTIVE_NATIVE_PROFILE_PASS off_on_off_timestamp_issues=0,64,0 native_draws=96 exact_returns cpu_admission_retained no_render_state_changes query_refs_released");
+    }
     static void lazyVertex(){
         using namespace NorthlightWaterShaderPatch;
         struct Source:CaptureShader<IDirect3DVertexShader9> {
@@ -455,6 +486,7 @@ int main(){
     MaterialCaptureStateTestAccess::invisible();
     MaterialCaptureStateTestAccess::noCapture();
     MaterialCaptureStateTestAccess::disabledAndCold();
+    MaterialCaptureStateTestAccess::inactiveNativeProfile();
     MaterialCaptureStateTestAccess::lazyVertex();
     sharedGeometry();
     DisplacementStateTestAccess::capture();

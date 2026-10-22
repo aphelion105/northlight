@@ -2468,7 +2468,7 @@ public:
                 t.trackedHits,t.unproven,t.lifetimeChanged,t.vertexChanged,t.indexChanged,t.unstable,t.exactReuses,t.rebuilds,t.indexTokenHits);
             logf("TERRAIN metadata batches=%u hits=%u fallbacks=%u",t.metadataBatches,t.metadataHits,t.metadataFallbacks);
             const auto indices=terrainBoundsCache.indexStorage();
-            logf("TERRAIN index storage compactEntries=%zu wideEntries=%zu indexMiB=%.3f avoidedIndexMiB=%.3f",indices.compact,indices.wide,double(indices.bytes)/1048576,double(indices.avoided)/1048576);}
+            logf("TERRAIN index storage compactEntries=%zu wideEntries=%zu indexMiB=%.3f avoidedIndexMiB=%.3f sourceIndexBlocks=%zu sourceIndexReferences=%zu sourceIndexMiB=%.3f sourceIndexAvoidedMiB=%.3f",indices.compact,indices.wide,double(indices.bytes)/1048576,double(indices.avoided)/1048576,indices.sourceBlocks,terrainBoundsCache.persistentEntries(),double(indices.sourceBytes)/1048576,double(indices.sourceAvoided)/1048576);}
         if(captureSampled)logf("MODEL index cache hits=%u misses=%u entries=%u bytes=%zu snapshotCacheHits=%u snapshotCacheMisses=%u snapshotCacheEntries=%zu snapshotCacheBytes=%zu revalidated=%u revalidationMismatches=%u trackedHits=%u avoidedReadBytes=%zu",replaySnapshots.indexCacheHits(),replaySnapshots.indexCacheMisses(),replaySnapshots.indexCacheEntries(),replaySnapshots.indexCacheBytes(),replaySnapshots.snapshotCacheHits(),replaySnapshots.snapshotCacheMisses(),replaySnapshots.snapshotCacheEntries(),replaySnapshots.snapshotCacheBytes(),replaySnapshots.snapshotRevalidated(),replaySnapshots.snapshotRevalidationMismatches(),replaySnapshots.trackedHits(),replaySnapshots.avoidedReadBytes());
         if(captureSampled){const auto& m=replaySnapshots.maintenance();
             logf("MODEL snapshot maintenance snapshotEvictions=%u snapshotEvictedBytes=%zu snapshotMs=%.3f indexEvictions=%u indexEvictedBytes=%zu indexMs=%.3f missEvicted=%u missRevision=%u missUnknown=%u missCollision=%u missRevalidated=%u historySlots=2048",
@@ -4681,12 +4681,12 @@ public:
             setSource(source,first,true);d->SetRenderState(D3DRS_ALPHABLENDENABLE,!first);d->SetRenderState(D3DRS_COLORWRITEENABLE,first?15:7);
             if(!check(quad(w/2,h/2),"celestial volumetric raymarch"))return false;lastFogSource=source;lastFogFirst=first;first=false;
         }
+        if(profile)profile->mark("FogMarch");
         // 0.3.199 (fog clouds): the moving fog banks, a second half-resolution raymarch into the same fog buffer: rgb added (ONE), the fog already
         // there attenuated by the cloud transmittance (alpha, SRCALPHA); alpha out is the old alpha times it. The first source lights it, ambient once
         // (c27.x=1 in setSource). Afterwards every state the later passes read is put back exactly as the loop above left it (the last source's
         // setSource again, blend, write mask, s14 and the alpha-blend operands); inactive frames skip all of this.
         if(cf.active&&c[21][0]>=.5f){
-            if(profile)profile->mark("FogMarch");
             /* 0.3.199 (optimisation): the separate-alpha operands are not saved: the effects run inside the game-state save (SavedState) and with
                SEPARATEALPHABLENDENABLE back at FALSE below they are ignored. The common sun-only frame drew the source loop once with firstSource
                and first=true: setSource then already holds this pass's state, so it is neither set here nor put back after. */
@@ -4782,7 +4782,8 @@ public:
         // Separable depth-aware blur: fog -> fogBlurred (horizontal) -> fog (vertical); with the temporal pass the resolved fogHistory -> fog -> fogBlurred (the final fog).
         if(effects.fog){float blur[4]={2,0,0,0};d->SetPixelShader(fogBlurPS);
          d->SetRenderTarget(0,fogResolved?fogSurface:fogBlurredSurface);d->SetTexture(9,fogResolved?fogHistory:fog);d->SetPixelShaderConstantF(34,blur,1);if(!check(quad(w/2,h/2),"volume blur horizontal"))return false;
-         blur[0]=0;blur[1]=2;d->SetRenderTarget(0,fogResolved?fogBlurredSurface:fogSurface);d->SetTexture(9,fogResolved?fog:fogBlurred);d->SetPixelShaderConstantF(34,blur,1);if(!check(quad(w/2,h/2),"volume blur vertical"))return false;}
+         blur[0]=0;blur[1]=2;d->SetRenderTarget(0,fogResolved?fogBlurredSurface:fogSurface);d->SetTexture(9,fogResolved?fog:fogBlurred);d->SetPixelShaderConstantF(34,blur,1);if(!check(quad(w/2,h/2),"volume blur vertical"))return false;
+         if(profile)profile->mark("FogBlur");}
         // c34 belongs to the blur above and to HorizonHaze ONLY in the final pass;
         // set on fog-off frames too, where the blur did not run.
         d->SetPixelShaderConstantF(34,haze.haze,1);

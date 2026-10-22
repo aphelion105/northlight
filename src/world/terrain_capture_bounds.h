@@ -207,12 +207,17 @@ private:
         Key draw;UINT stream=0;D3DFORMAT format=D3DFMT_INDEX16;UINT vertexBytes=0,indexBytes=0;
         bool operator==(const ContentKey& b)const{return draw==b.draw&&stream==b.stream&&format==b.format&&vertexBytes==b.vertexBytes&&indexBytes==b.indexBytes;}
     };
+    struct SourceIndices {
+        const std::vector<unsigned char> bytes;size_t entries=0;
+        explicit SourceIndices(const std::vector<unsigned char>& input):bytes(input){}
+    };
+    static std::uint64_t sourceIndexBytes(const SourceIndices& source){return sizeof(SourceIndices)+32+source.bytes.capacity();}
     struct ContentEntry {
         ContentKey key;Stamp stamp;std::uint64_t hash=0,bytes=0,charged=0;size_t slot=0;
         NorthlightIntrusiveLRU::Links<ContentEntry> lru;
         UINT smallest=0,largest=0;
         float low[3]={},high[3]={};
-        std::vector<unsigned char> indices,vertices;
+        std::shared_ptr<SourceIndices> indices;std::vector<unsigned char> vertices;
         std::vector<UINT> sourceOffsets; // Validated byte offsets, in snapshot position order.
         std::shared_ptr<const MeshSnapshot> snapshot;
     };
@@ -222,7 +227,12 @@ private:
     std::array<size_t,ContentEntries> freeContent{};size_t freeContentCount=ContentEntries;
     std::unordered_multimap<std::uint64_t,ContentEntry*> contentLookup;
     NorthlightIntrusiveLRU::List<ContentEntry> contentLRU;
-    static constexpr size_t ContentBaseBytes=sizeof(content)+sizeof(freeContent);
+    // A weak one-block memo shares exact consecutive index patterns without retaining buffers
+    // or an unbounded interning table. Entry references, not temporary shared_ptrs, own its charge.
+    std::weak_ptr<SourceIndices> lastSourceIndices;
+    // An expired weak memo can keep one make_shared control/object allocation until reassignment.
+    static constexpr size_t ContentBaseBytes=sizeof(content)+sizeof(freeContent)+sizeof(lastSourceIndices)+sizeof(SourceIndices)+32;
+    size_t sourceIndexBlocks_=0;std::uint64_t sourceIndexDataBytes_=0,sourceIndexLogicalBytes_=0;
     std::uint64_t contentBytes=ContentBaseBytes,contentHits=0,trackedHits_=0,avoidedReadBytes_=0;
     std::uint64_t contentLimit=ContentLimit; /* lowered under address-space pressure */
 public:
@@ -250,6 +260,8 @@ private:
         const auto range=contentLookup.equal_range(entry.hash);
         for(auto it=range.first;it!=range.second;++it)if(it->second==&entry){contentLookup.erase(it);break;}
         const auto slot=entry.slot;contentBytes-=entry.bytes;contentLRU.remove(entry);
+        sourceIndexLogicalBytes_-=entry.indices->bytes.capacity();
+        if(!--entry.indices->entries){contentBytes-=sourceIndexBytes(*entry.indices);sourceIndexDataBytes_-=entry.indices->bytes.capacity();--sourceIndexBlocks_;}
         content[slot].reset();freeContent[freeContentCount++]=slot;
     }
     void rememberContent(const ContentKey& key,std::uint64_t hash,UINT smallest,UINT largest,
@@ -260,26 +272,33 @@ private:
         // Keep exact indices and a mapping to the captured XYZ for revalidation
         // after buffer writes. The other vertex attributes are not used here.
         const bool keepRaw=!verified.valid();
-        const std::uint64_t estimate=sizeof(ContentEntry)+sizeof(MeshSnapshot)+256+rawIndices.size()+
+        auto sharedIndices=lastSourceIndices.lock();
+        if(sharedIndices&&sharedIndices->bytes!=rawIndices)sharedIndices.reset();
+        std::uint64_t sourceBytes=sharedIndices?sourceIndexBytes(*sharedIndices):sizeof(SourceIndices)+32+rawIndices.size();
+        const auto required=[&](std::uint64_t bytes){return bytes+(!sharedIndices||!sharedIndices->entries?sourceBytes:0);};
+        const std::uint64_t estimate=sizeof(ContentEntry)+sizeof(MeshSnapshot)+256+
             (keepRaw?rawVertices.size():sourceOffsets.size()*sizeof(UINT))+
             snapshot->positions.capacity()*sizeof(Position)+snapshot->indices.allocatedBytes()+snapshot->bounds.chunks.capacity()*sizeof(ChunkBounds);
-        if(estimate>contentLimit-ContentBaseBytes)return;
+        if(required(estimate)>contentLimit-ContentBaseBytes)return;
         const auto range=contentLookup.equal_range(hash);
         for(auto it=range.first;it!=range.second;++it)if(it->second->key==key){eraseContent(*it->second);break;}
         const auto makeRoom=[&](std::uint64_t bytes){
-            while(contentBytes+bytes>contentLimit||!freeContentCount){
+            // Evicting the last entry may turn a shared block into a newly charged block.
+            // Recompute on every iteration; a temporary owner is not a retained cache entry.
+            while(contentBytes+required(bytes)>contentLimit||!freeContentCount){
                 auto* oldest=contentLRU.oldest();if(!oldest)return false;
                 maintenance_.countPressure+=!freeContentCount;
-                maintenance_.bytePressure+=contentBytes+bytes>contentLimit;
+                maintenance_.bytePressure+=contentBytes+required(bytes)>contentLimit;
                 ++maintenance_.evictions;eraseContent(*oldest);
             }return true;
         };
         // Evict before allocation, so replacement does not transiently double
         // the retained cache. Accounting includes object/capacity/node allowance.
         if(!makeRoom(estimate))return;
+        if(!sharedIndices){sharedIndices=std::make_shared<SourceIndices>(rawIndices);sourceBytes=sourceIndexBytes(*sharedIndices);}
         auto next=std::make_unique<ContentEntry>();next->key=key;next->stamp=verified;next->hash=hash;next->smallest=smallest;next->largest=largest;
         next->charged=rawIndices.size()+rawVertices.size();
-        next->indices=rawIndices;
+        next->indices=sharedIndices;
         if(keepRaw)next->vertices=rawVertices;
         else{
             next->sourceOffsets.reserve(sourceOffsets.size());
@@ -291,16 +310,19 @@ private:
         }
         next->snapshot=snapshot;
         std::memcpy(next->low,detail.low,sizeof next->low);std::memcpy(next->high,detail.high,sizeof next->high);
-        next->bytes=sizeof(ContentEntry)+sizeof(MeshSnapshot)+256+next->indices.capacity()+next->vertices.capacity()+next->sourceOffsets.capacity()*sizeof(UINT)+
+        next->bytes=sizeof(ContentEntry)+sizeof(MeshSnapshot)+256+next->vertices.capacity()+next->sourceOffsets.capacity()*sizeof(UINT)+
             next->snapshot->positions.capacity()*sizeof(Position)+next->snapshot->indices.allocatedBytes()+
             next->snapshot->bounds.chunks.capacity()*sizeof(ChunkBounds);
-        if(next->bytes>contentLimit-ContentBaseBytes||!makeRoom(next->bytes))return;
+        if(required(next->bytes)>contentLimit-ContentBaseBytes||!makeRoom(next->bytes))return;
         // Insert the optional hash node before publishing ownership/links. An
         // allocation failure must leave the computed snapshot valid and the
         // free-slot/LRU invariants intact. The per-entry allowance includes
         // hash-node and amortized bucket storage.
         const auto slot=freeContent[freeContentCount-1];next->slot=slot;
         contentLookup.emplace(hash,next.get());--freeContentCount;
+        sourceIndexLogicalBytes_+=sharedIndices->bytes.capacity();
+        if(!sharedIndices->entries++){contentBytes+=sourceBytes;sourceIndexDataBytes_+=sharedIndices->bytes.capacity();++sourceIndexBlocks_;}
+        lastSourceIndices=sharedIndices;
         contentLRU.append(*next);contentBytes+=next->bytes;content[slot]=std::move(next);
       }catch(...){return;} // Cache allocation is optional; snapshot remains valid.
     }
@@ -330,7 +352,7 @@ public:
     // or COM resource reference. Shared snapshots are immutable and remain valid
     // if callers retain them across eviction/reset. The cache budget accounts
     // for cache-owned storage; callers must separately bound retained outputs.
-    void clearPersistent(){contentLookup.clear();contentLRU.clear();for(auto& entry:content)entry.reset();contentBytes=ContentBaseBytes;contentHits=trackedHits_=avoidedReadBytes_=0;freeContentCount=ContentEntries;for(size_t i=0;i<freeContent.size();++i)freeContent[i]=i;maintenance_={};}
+    void clearPersistent(){contentLookup.clear();contentLRU.clear();lastSourceIndices.reset();for(auto& entry:content)entry.reset();sourceIndexBlocks_=0;sourceIndexDataBytes_=sourceIndexLogicalBytes_=0;contentBytes=ContentBaseBytes;contentHits=trackedHits_=avoidedReadBytes_=0;freeContentCount=ContentEntries;for(size_t i=0;i<freeContent.size();++i)freeContent[i]=i;maintenance_={};}
     // Memory guard: cap in [ContentBaseBytes+1 MiB, 32 MiB]; evicts oldest down to it now.
     void setPersistentByteLimit(std::uint64_t bytes){
         contentLimit=std::max<std::uint64_t>(ContentBaseBytes+1024u*1024u,std::min<std::uint64_t>(bytes,ContentLimit));
@@ -341,10 +363,11 @@ public:
     static constexpr size_t persistentEntryLimit(){return ContentEntries;}
     const Maintenance& maintenance()const{return maintenance_;}
     std::uint64_t persistentBytes()const{return contentBytes;}
-    struct IndexStorage {size_t compact=0,wide=0;std::uint64_t bytes=0,avoided=0;};
+    struct IndexStorage {size_t compact=0,wide=0,sourceBlocks=0;std::uint64_t bytes=0,avoided=0,sourceBytes=0,sourceAvoided=0;};
     // Sampled diagnostics only; never walk the persistent cache in a draw hook.
     IndexStorage indexStorage()const{
-        IndexStorage stats;for(const auto& entry:content)if(entry){const auto& indices=entry->snapshot->indices;const auto bytes=indices.allocatedBytes();
+        IndexStorage stats;stats.sourceBlocks=sourceIndexBlocks_;stats.sourceBytes=sourceIndexDataBytes_;stats.sourceAvoided=sourceIndexLogicalBytes_-sourceIndexDataBytes_;
+        for(const auto& entry:content)if(entry){const auto& indices=entry->snapshot->indices;const auto bytes=indices.allocatedBytes();
             const bool compact=indices.visit([](const auto* p,size_t){return sizeof(*p)==2;});
             stats.compact+=compact;stats.wide+=!compact;stats.bytes+=bytes;stats.avoided+=compact?bytes:0;}
         return stats;
@@ -582,7 +605,7 @@ public:
             if(FAILED(hr))return reject(RejectReason::IndexLock,hr);
             if(!raw){readIndices.unlock();return reject(RejectReason::IndexLock,E_POINTER);}
             chargedBytes+=indexBytes;readBytes+=indexBytes;
-            sameIndices=cached&&cached->indices.size()==indexBytes&&!std::memcmp(raw,cached->indices.data(),size_t(indexBytes));
+            sameIndices=cached&&cached->indices->bytes.size()==indexBytes&&!std::memcmp(raw,cached->indices->bytes.data(),size_t(indexBytes));
             if(!sameIndices){scratchRawIndices.resize(size_t(indexBytes));std::memcpy(scratchRawIndices.data(),raw,size_t(indexBytes));}
             hr=readIndices.unlock();
             if(FAILED(hr))return reject(RejectReason::IndexUnlock,hr);
@@ -632,7 +655,7 @@ public:
             contentLRU.touch(*cached);++contentHits;++snapshots;
             if(diagnostics)*diagnostics=detail;return true;
         }
-        if(sameIndices){scratchRawIndices.resize(size_t(indexBytes));std::memcpy(scratchRawIndices.data(),cached->indices.data(),size_t(indexBytes));decodeIndices();}
+        if(sameIndices){scratchRawIndices.resize(size_t(indexBytes));std::memcpy(scratchRawIndices.data(),cached->indices->bytes.data(),size_t(indexBytes));decodeIndices();}
         const UINT unused=std::numeric_limits<UINT>::max();
         auto& remap=scratchRemap;remap.assign(std::size_t(largest)-smallest+1,unused);
         MeshSnapshot result;result.positions.resize(std::min(indices.size(),remap.size()));UINT unique=0;

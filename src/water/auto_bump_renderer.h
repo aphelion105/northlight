@@ -343,7 +343,7 @@ public:
     void beginDraw(){displacement.beginDraw();sharedMaps[0]={};sharedMaps[1]={};sharedPOM.beginDraw();pomInRange=true;profileTag=profilePrimitives=0;
         if(profile&&profile->recording()){deferredReport=true;deferredReportFrame=profile->frameNumber();}
         if(profile&&profile->recording()&&profileConfigFrame!=profile->frameNumber()){
-            profileConfigFrame=profile->frameNumber();logf("MATERIAL_CONFIG frame=%llu enabled=%u modes=%u/%u/%u/%u normalGain=%.3f normalRange=%.1f pomDepth=%.6f pomRange=%.1f pomSteps=%.0f occlusionRange=%.1f cavity=%.3f selfShadow=%.3f shadowSteps=%.0f lightActive=%.3f sharedPOM=%u",(unsigned long long)profileConfigFrame,unsigned(enabled),modes[0],modes[1],modes[2],modes[3],strength,range,pomControl[0],pomControl[1],pomControl[2],occlusionDistance(),occlusionControl[2],occlusionControl[0],occlusionControl[1],occlusionLight[3],unsigned(sharedPOM.canTry()));}}
+            profileConfigFrame=profile->frameNumber();logf("MATERIAL_CONFIG frame=%llu enabled=%u modes=%u/%u/%u/%u normalGain=%.3f normalRange=%.1f pomDepth=%.6f pomRange=%.1f pomSteps=%.0f occlusionRange=%.1f cavity=%.3f selfShadow=%.3f shadowSteps=%.0f lightActive=%.3f sharedPOM=%u nativeGpuEnabled=%u",(unsigned long long)profileConfigFrame,unsigned(enabled),modes[0],modes[1],modes[2],modes[3],strength,range,pomControl[0],pomControl[1],pomControl[2],occlusionDistance(),occlusionControl[2],occlusionControl[0],occlusionControl[1],occlusionLight[3],unsigned(sharedPOM.canTry()),unsigned(active()));}}
     void setGeometryTracking(uint64_t(*identity)(void*,bool),uint64_t(*version)(void*,bool),NorthlightCaptureMetadata::Read metadata){displacement.tracking(identity,version,metadata);sharedPOM.tracking(identity,version,metadata);deferredSnapshots.setIdentityProvider(identity);deferredSnapshots.setVersionProvider(version);deferredSnapshots.setMetadataProvider(metadata);}
     void setConstantEpochSource(void* context,NorthlightConstantEpoch::Reader reader){displacement.setConstantEpochSource(context,reader);}
     void setVertexIdentity(void* context,VertexIdentity reader){vertexIdentityContext=context;vertexIdentity=reader;}
@@ -408,8 +408,9 @@ public:
     float distance()const{return range;}
     template<class Draw> HRESULT nativeDraw(Draw draw,IDirect3DVertexShader9* provenVS=nullptr,IDirect3DPixelShader9* provenPS=nullptr){
         using P=NorthlightMaterialProfile;
-        auto native=[&]{P::Scope timing(profileTag?profile:nullptr,P::NativeDraw,profileTag,true);timing.work(displacement.prepared()?displacement.preparedPrimitives():profilePrimitives);return draw();};
-        if(!active()||!pomInRange||pomControl[0]<=0||(modes[0]!=2&&modes[1]!=2&&modes[2]!=2&&modes[3]!=2))return native();
+        const bool materialActive=active();
+        auto native=[&]{P::Scope timing(profileTag?profile:nullptr,P::NativeDraw,profileTag,materialActive);timing.work(displacement.prepared()?displacement.preparedPrimitives():profilePrimitives);return draw();};
+        if(!materialActive||!pomInRange||pomControl[0]<=0||(modes[0]!=2&&modes[1]!=2&&modes[2]!=2&&modes[3]!=2))return native();
         struct BoundShaders {IDirect3DVertexShader9* vs=nullptr;IDirect3DPixelShader9* ps=nullptr;~BoundShaders(){drop(vs);drop(ps);}} bound;
         if((!provenVS&&FAILED(d->GetVertexShader(&bound.vs)))||(!provenPS&&FAILED(d->GetPixelShader(&bound.ps))))return native();
         auto v=vertices.find(provenVS?provenVS:bound.vs);if(v==vertices.end())v=recoverVertex(provenVS?provenVS:bound.vs);auto p=pixels.find(provenPS?provenPS:bound.ps);
