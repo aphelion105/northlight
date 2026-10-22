@@ -52,6 +52,26 @@ int main(){
  assert(!geometry.read(&d,&d.decl,draw,scratch,&why,false,&next,false,true));assert(locks(d)==before&&geometry.bytesRead()==charge);
  assert(!geometry.read(&d,&d.decl,draw,scratch,&why,false,&next)&&why.error==Error::Budget);
  geometry.clearFrame();assert(geometry.read(&d,&d.decl,draw,scratch,&why,false,&next));assert(next!=first&&next->streams[0].bytes!=oldBytes&&first->streams[0].bytes==oldBytes);
+ // Reciprocal peers serve only a proven current tracked generation. They do
+ // not populate the borrower, charge reads, or recurse on a mutual miss.
+ {Frame capture(charge,0);capture.setIdentityProvider(identity);capture.setVersionProvider(version);capture.setChargeResidentHits(false);
+  geometry.setResidentPeer(&capture);capture.setResidentPeer(&geometry);const auto resident=next;const auto noReads=locks(d);
+  assert(capture.read(&d,&d.decl,draw,scratch,&why,false,&next,false,true)&&next==resident);
+  assert(capture.residentPeerHits()==1&&!capture.bytesRead()&&!capture.snapshotCacheBytes()&&locks(d)==noReads);
+  d.vb[0].bytes[d.offset[0]+7*d.stride[0]+1]^=0x33;++revisions[&d.vb[0]];
+  assert(!capture.read(&d,&d.decl,draw,scratch,&why,false,&next,false,true)&&locks(d)==noReads);
+  assert(capture.read(&d,&d.decl,draw,scratch,&why,false,&next)&&next!=resident&&capture.bytesRead()==charge);
+  geometry.clearFrame();assert(geometry.read(&d,&d.decl,draw,scratch,&why,false,&first,false,true)&&first==next&&!geometry.bytesRead());
+  // Identical numeric revisions from a different provider are not a shared tracking domain.
+  Frame unrelated(charge,0);unrelated.setIdentityProvider(identity);unrelated.setVersionProvider([](void* p,bool i){return version(p,i);});unrelated.setChargeResidentHits(false);unrelated.setResidentPeer(&capture);
+  assert(!unrelated.read(&d,&d.decl,draw,scratch,&why,false,&first,false,true));
+  assert(unrelated.read(&d,&d.decl,draw,scratch,&why,false,&first)&&first!=next&&!unrelated.residentPeerHits()&&unrelated.bytesRead()==charge);
+  // The ordinary admission policy may not borrow its way around a budget.
+  Frame charged(charge,0);charged.setIdentityProvider(identity);charged.setVersionProvider(version);charged.setResidentPeer(&capture);
+  assert(!charged.read(&d,&d.decl,draw,scratch,&why,false,&first,false,true));
+  assert(charged.read(&d,&d.decl,draw,scratch,&why,false,&first)&&!charged.residentPeerHits()&&charged.bytesRead()==charge);
+  geometry.setResidentPeer(nullptr);capture.setResidentPeer(nullptr);
+ }
  // Unknown static versions still use normal revalidation, admission and read charge.
  revisions.clear();d.vb[0].desc.Usage=d.vb[1].desc.Usage=d.ib.desc.Usage=0;
  Frame untracked(charge,0);untracked.setIdentityProvider(identity);untracked.setVersionProvider(version);untracked.setChargeResidentHits(false);
@@ -68,5 +88,36 @@ int main(){
  const auto small=workingSet(4u<<20),large=workingSet(24u<<20);
  assert(small[1]<sources&&small[2]>0&&large[0]==sources&&large[1]==sources&&large[2]==0);
  std::printf("MATERIAL_BATCH_WORKING_SET_PASS oldHits=%zu oldReadBytes=%zu newHits=%zu newReadBytes=%zu unchangedFrameBudget=2097152\n",small[1],small[2],large[1],large[2]);
+ // The city's world + M2 set exceeds either 24 MiB cache, but fits the
+ // unchanged combined capacity when both passes share immutable sources.
+ {constexpr UINT world=96,models=160,vertices=4095;
+  for(unsigned s=0;s<2;++s)d.vb[s].bytes.resize(d.offset[s]+(world+models)*vertices*d.stride[s]);
+  const auto combined=[&](bool share){Frame displacement(2u<<20,0),capture(2u<<20,0);
+   for(auto* c:{&displacement,&capture}){c->setIdentityProvider(identity);c->setVersionProvider(version);c->setChargeResidentHits(false);c->setSnapshotCacheLimit(24u<<20);}
+   if(share){displacement.setResidentPeer(&capture);capture.setResidentPeer(&displacement);}
+   unsigned accepted=0;std::vector<std::weak_ptr<const Mesh>> previous(models);
+   for(unsigned frame=0;frame<40;++frame){displacement.clearFrame();capture.clearFrame();accepted=0;
+    for(unsigned i=0;i<world+models;++i){Draw part{D3DPT_TRIANGLELIST,0,0,0,i*vertices,vertices/3,false};std::shared_ptr<const Mesh> posed,captured;
+     accepted+=displacement.read(&d,&d.decl,part,scratch,&why,false,&posed);
+     if(i>=world){accepted+=capture.read(&d,&d.decl,part,scratch,&why,false,&captured);
+      if(share&&frame>=38){assert(posed&&posed==captured);if(frame==39)assert(previous[i-world].lock()==posed);previous[i-world]=posed;}}
+    }
+   }
+   const auto reads=displacement.bytesRead()+capture.bytesRead(),retained=displacement.snapshotCacheBytes()+capture.snapshotCacheBytes();
+   const auto peerHits=displacement.residentPeerHits()+capture.residentPeerHits();assert(displacement.snapshotCacheBytes()<=(24u<<20)&&capture.snapshotCacheBytes()<=(24u<<20));
+   std::printf("MATERIAL_SHARED_SOURCE_WORKING_SET share=%u accepted=%u peerHits=%u readBytes=%zu retainedBytes=%zu\n",unsigned(share),accepted,peerHits,reads,retained);
+   if(share)assert(accepted==world+models*2&&peerHits&&reads==0);else assert(reads>0);return reads;
+  };assert(combined(false)>combined(true));
+  const auto normals=[&](bool share){Frame skin(256u<<10,0),capture(2u<<20,0);
+   for(auto* c:{&skin,&capture}){c->setIdentityProvider(identity);c->setVersionProvider(version);c->setChargeResidentHits(false);}
+   skin.setSnapshotCacheLimit(4u<<20);capture.setSnapshotCacheLimit(24u<<20);if(share)skin.setResidentPeer(&capture);
+   for(unsigned frame=0;frame<40;++frame){skin.clearFrame();capture.clearFrame();
+    for(unsigned i=0;i<models;++i){Draw part{D3DPT_TRIANGLELIST,0,0,0,i*vertices,vertices/3,false};
+     const bool admitted=skin.read(&d,&d.decl,part,scratch,&why,false,&next);if(share&&frame==39)assert(admitted);
+     capture.read(&d,&d.decl,part,scratch,&why,false,&next);}}
+   std::printf("MATERIAL_SKIN_RANGE_SOURCE_WORKING_SET share=%u peerHits=%u readBytes=%zu\n",unsigned(share),skin.residentPeerHits(),skin.bytesRead());
+   if(share)assert(skin.residentPeerHits()&&!skin.bytesRead()&&!capture.bytesRead());else assert(skin.bytesRead());return skin.bytesRead();
+  };assert(normals(false)>normals(true));
+ }
  puts("SNAPSHOT_GEOMETRY_POLICY_PASS default_budget tracked_5000_hits_zero_reads admission_uncharged generation_miss_budget immutable_old unknown_static_charged");
 }

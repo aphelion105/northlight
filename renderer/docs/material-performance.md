@@ -1,5 +1,66 @@
 # Material performance investigation — 22 October 2026
 
+## Fresh run: GPU residency confirmed; shared source snapshots — 22 October, 20:12
+
+### What the user actually ran
+
+The installed DLL matches `ba4a755`, SHA-256 `4393bdfebae6f8f6f222472a5dbd982d38e30133d78001ef7acf0498b961187e`. The complete fresh log ends at device destruction and has SHA-256 `1993365eba85dc6170342a8488f017c0e501fe501a20f6e238238dfbf06423a3`. Immutable inputs and parsed frame records are in `northlight-diagnostics/material-m2-normals-20261022-2012/`; the folder follows the user's requested test name, not the observed mode. Its previous-log copy is the 19:37 run. The game was not launched during this investigation.
+
+**The log does not contain an M2 Normals-only interval.** M2 is Off through frame 2159 and uses **Displacement + normal maps (`mode=3`)** at samples 2286, 2413 and 2540. The saved configuration also contains `AutoBumpModels=3`; the menu maps value 1 to Normal maps and value 3 to Displacement + normal maps. Cavity and self-shadow are disabled. Therefore this run validates residency under displacement-mode admission, but cannot establish the new cost of a pure M2 Normals-only setting.
+
+### The previous optimization worked in the game
+
+At warm frames 2413 / 2540, all **328 / 351 captures** use resident GPU geometry, including **323 / 346 M2 captures**. Both frames have **zero UP draws, zero UP bytes and zero source reads in the capture cache**. New resident uploads are zero / 19,452 bytes (eight small promotions in the second frame). The material GPU geometry cache occupies approximately 20.85–20.89 MB, below its unchanged 32 MiB limit. There are no snapshot fallbacks, unsafe live-state fallbacks, texture refusals or source-cache budget failures in capture.
+
+| Material work, all domains unless specified | Frame 2413 | Frame 2540 |
+| --- | ---: | ---: |
+| Capture draw CPU submission | 0.0994 ms | 0.0995 ms |
+| Bounds / pose CPU | 1.8673 ms | 1.9003 ms |
+| M2 share of bounds / pose CPU | 1.3286 ms | 1.3596 ms |
+| Geometry snapshot CPU | 0.6049 ms | 0.6114 ms |
+| M2 share of snapshot CPU | 0.4349 ms | 0.4271 ms |
+| Capture flush setup CPU | 0.6468 ms | 0.7247 ms |
+| Packet recording CPU | 0.3122 ms | 0.3372 ms |
+| Material CPU total | 5.0308 ms | 5.1465 ms |
+| Sum of all capture flush GPU intervals | 1.8293 ms | 2.1524 ms |
+| Complete GPU frame | 10.184 ms | 11.226 ms |
+
+Capture submission previously consumed approximately 2.48–2.67 ms CPU in displacement-mode samples; it now consumes about 0.10 ms. The previous run's comparable mode-3 warm sample had 7.6292 ms material CPU attribution and a 14.704 ms complete GPU interval. The new game windows show 13.95–15.07 ms median frame times, with mean FPS 66.99–71.13, versus 17.70–19.30 ms median windows in the earlier displacement run. This is useful observational improvement, not a controlled identical-scene FPS benchmark: draw counts, GPU interval distribution, focus and outliers vary. CPU and GPU times are separate timelines and must not be added.
+
+The main remaining measured CPU cost is **bounds/pose plus source snapshot preparation**. Normal builds, mip generation, height reads, subdivision and displacement geometry uploads are zero in both warm samples. The normal-map cache retains 108 lifetime builds and zero evictions. The displacement lifetime counters show zero displaced draws in this camera position, despite mode 3 being enabled: geometry admission still runs before falling back to normal capture. Sampled pose work evaluates approximately 8,163–8,187 vertices per frame and reaches 97 pose-budget refusals. These refusals preserve native rendering/capture; they do not justify treating a model as invisible.
+
+### Cause and proof before implementation
+
+The code maintains independent full-source snapshot caches for material capture and displacement (24 MiB each), plus a 4 MiB skin-range cache used by normal/POM distance admission. Each uses the same tracked buffers and copies the same immutable mesh independently. The warmed capture set already occupies 25,163,316 bytes; displacement also admits the broader world set. The live displacement counters reach 37,704 snapshot budget refusals and 20,939 bounds misses, filling the 4,096-entry bounds table. Cache-owner churn can invalidate otherwise reusable weakly owned bounds/envelopes and repeatedly spend cold-read/build budgets. The old log does not expose displacement's exact per-frame read bytes or envelope-build share, so their precise contribution remains an inference to test with new counters.
+
+A CPU experiment reproduced the capacity problem before changing production code, using the actual snapshot reader and fake write-tracked buffers. It walks 96 world spans and 160 M2 spans, approximately 33.5 MB of unique geometry, over 40 frames. Both full-source caches retain their existing 24 MiB limits and 2 MiB/frame cold-read budgets.
+
+| Final warm frame | Independent sources | Shared immutable sources |
+| --- | ---: | ---: |
+| Accepted world + model pass reads, out of 416 | 351 | 416 |
+| Actual source read bytes | 2,096,448 | 0 |
+| Retained source bytes across the two caches | 46,146,672 | 33,656,832 |
+| Peer hits | 0 | 160 |
+
+The integrated regression reproduces these counts and proves stable shared mesh ownership across the final frames. A separate Normals distance-admission reproduction preserves its 4 MiB cache / 256 KiB read budget and the capture cache's 24 MiB / 2 MiB limits: final skin-range reads fall from **262,056 bytes to zero**, with 140 peer hits. This establishes avoided I/O, copying and source-identity churn. It does not predict a particular whole-game FPS gain or claim that all current pose evaluations disappear.
+
+### Implemented change and safeguards
+
+The existing snapshot reader now optionally serves a local cache miss from a peer's resident immutable snapshot. Displacement and capture share their full-source caches in both directions; skin-range admission may also borrow from capture. No duplicate snapshot is inserted into the borrower, no extra resource getters/readbacks are introduced for the peer lookup, and cache capacities and cold-read budgets are unchanged.
+
+Borrowing requires a fully tracked current generation, identical identity/version/metadata providers and an exact complete snapshot key, including declaration/layout, stream ranges, draw arguments and index/source revisions. Both readers must already use the private actual-read accounting policy; the ordinary capture admission policy cannot borrow around its budget. A peer lookup never follows another peer link, so reciprocal links cannot recurse. Unknown resources, changed generations and unsupported layouts take their original read/fallback paths. Bone constants and bounds are still evaluated for the current pose; old poses are never reused as a visibility proof. Reset and memory-pressure paths keep their existing release behavior.
+
+`MATERIAL_BATCH_SOURCE` now adds `sourcePeerHits`. New `MATERIAL_GEOMETRY_SOURCE` records expose displacement resident service/peer hits, misses, actual read bytes, cache occupancy, skin-range peer hits/read bytes, rigid range reads, posed vertices, and envelope readiness/build/unsupported/budget counters. Resident-service hits include requests served for the peer. These counters will distinguish remaining vertex evaluation from repeated source reads and envelope construction in the next game run. The existing `MATERIAL_BATCH_GPU` continues to verify zero repeated warm UP submission.
+
+### Validation and next measurement
+
+The final material suite passes **100 GPU checks**: the existing 60 capture/MSAA/animation/mutation/pressure/failure checks plus 40 old/new shader-family comparisons. Each old/new M2 fixture compares 14 native, normal, POM, displacement and depth outputs **bit exactly** against `ba4a755`, with the old snapshot and displacement headers restored for a genuine baseline. Source-sharing CPU tests cover revisions, reciprocal misses, provider mismatch, ordinary budget preservation, immutable generations and both displaced/normal-only working sets. Geometry and displacement-state tests pass. The existing Map/Predict/Prefetch differential test also passes in normal and forced 4-bit-hash collision builds, including its directed lifetime cases. Those runs use Zig x86 Windows builds; they are not sanitizer runs.
+
+The release DLL built successfully for x86 with all 17 exports preserved. Only the two existing compiler warnings remain. The installed DLL was not replaced.
+
+The next game run should show increasing peer hits, reduced displacement/skin-range `readBytes`, stable envelope readiness and fewer repeated builds. Compare warmed windows with the same camera and record `mode=1` explicitly when testing M2 Normals-only. If bounds/pose remains dominant with zero reads and ready envelopes, target its actual current-pose evaluator next; if capture setup dominates, reduce identical state/constant setters within an uninterrupted flush. Sparse zero-pixel audit grids are not used to disable rendering. Render distances, quality controls, cavity/self-shadow range, MSAA and installed settings were preserved.
+
+
 ## M2 Normals run: batching confirmed, repeated geometry uploads removed — 22 October, 19:37
 
 ### Fresh evidence and comparison

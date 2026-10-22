@@ -227,6 +227,11 @@ public:
     ~NorthlightAutoDisplacement(){reset();for(auto& s:shaders){drop(s.second.patched);drop(s.second.gpu);drop(s.second.source);}}
     void tracking(uint64_t(*identity)(void*,bool),uint64_t(*version)(void*,bool),NorthlightCaptureMetadata::Read metadata){for(auto* frame:{&snapshots,&rangeSnapshots,&skinRangeSnapshots}){frame->setIdentityProvider(identity);frame->setVersionProvider(version);frame->setMetadataProvider(metadata);}}
     void setConstantEpochSource(void* context,NorthlightConstantEpoch::Reader reader){constantStamp={};rangeConstantStamp={};constantContext=context;constantReader=reader;}
+    void shareCaptureSources(NorthlightDrawSnapshot::Frame& capture){snapshots.setResidentPeer(&capture);capture.setResidentPeer(&snapshots);skinRangeSnapshots.setResidentPeer(&capture);}
+    void reportSources(uint64_t frame)const{
+        const auto& e=poseEnvelopes.stats();
+        logf("MATERIAL_GEOMETRY_SOURCE frame=%llu residentHits=%u peerHits=%u misses=%u readBytes=%zu entries=%zu bytes=%zu limitMiB=%zu skinPeerHits=%u skinReadBytes=%zu rangeReadBytes=%zu poseVertices=%u envelopeEntries=%zu envelopeReady=%zu envelopeCold=%zu envelopeBuilt=%zu envelopeBuildVertices=%zu envelopeTimeDeferred=%zu envelopeOperationDeferred=%zu envelopeUnsupported=%zu",(unsigned long long)frame,snapshots.snapshotCacheHits(),snapshots.residentPeerHits(),snapshots.snapshotCacheMisses(),snapshots.bytesRead(),snapshots.snapshotCacheEntries(),snapshots.snapshotCacheBytes(),snapshots.snapshotCacheLimit()>>20,skinRangeSnapshots.residentPeerHits(),skinRangeSnapshots.bytesRead(),rangeSnapshots.bytesRead(),poseVerticesThisFrame,poseEnvelopes.entries(),e.ready,e.cold,e.completed,e.buildVertices,e.timeDeferred,e.operationDeferred,e.unsupported);
+    }
     void configure(const NorthlightQuality::Settings& s){
         current=nullptr;if(worldDetail!=s.autoDisplacementDetail||modelDetail!=s.autoModelDisplacementDetail||polarity!=s.autoHeightPolarity||heightDetails!=s.autoHeightDetails||heightBalance!=s.autoHeightBalance)reset();
         worldDetail=s.autoDisplacementDetail;modelDetail=s.autoModelDisplacementDetail;worldStrength=s.autoDisplacementStrength*.0012f;worldRange=float(s.autoDisplacementDistance);modelStrength=s.autoModelDisplacementStrength*.0012f;modelRange=float(s.autoModelDisplacementDistance);

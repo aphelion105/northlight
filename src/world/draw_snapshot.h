@@ -127,6 +127,7 @@ class Frame {
     std::vector<UINT> remapScratch_,uniqueSourceScratch_;
     size_t sourceSpanVertices_=0,uniqueVertices_=0,savedVertexBytes_=0;unsigned compactedDraws_=0;
     bool compacted_=false,chargeResidentHits_=true;
+    Frame* residentPeer_=nullptr;unsigned peerHits_=0;
     // Compact records retain source ordering; adjacent records can be copied
     // together without observing unused vertices in the gaps.
     struct CopyRun {UINT source, destination, count;};
@@ -299,14 +300,22 @@ private:
     }
     // Default: charge a resident hit like a miss, preserving capture admission.
     // A private geometry caller may exempt byte reads for fully tracked hits.
-    bool serve(const CacheKey& key,Ref<IDirect3DVertexBuffer9>* vertices,IDirect3DIndexBuffer9* ib,const UINT* extent,std::shared_ptr<const Mesh>* shared,Diagnostics* why,bool& served){
+    bool serve(const CacheKey& key,Ref<IDirect3DVertexBuffer9>* vertices,IDirect3DIndexBuffer9* ib,const UINT* extent,std::shared_ptr<const Mesh>* shared,Diagnostics* why,bool& served,bool allowPeer=true){
         served=false;CacheEntry* found=nullptr;
         // Tracked keys only: for them the revalidation branch below is never taken, so the predicted
         // path needs no map iterator.
         if(lookup_!=Lookup::Map&&(key.tracked||NORTHLIGHT_SNAPSHOT_COUNTERFACTUAL==6)&&predicted_){++predictTried_;
             if(predictedEqual(predicted_->key,key)){found=predicted_;++predictHits_;}else ++predictMisses_;}
         if(!found){
-            const auto hash=hashKey(key);auto it=cache_.find(hash);if(it==cache_.end()||!(it->second->key==key)){noteMiss(key,hash,it!=cache_.end());return true;}
+            const auto hash=hashKey(key);auto it=cache_.find(hash);if(it==cache_.end()||!(it->second->key==key)){
+                noteMiss(key,hash,it!=cache_.end());
+                // Only identical tracking domains and complete current write
+                // generations may borrow. Never revalidate/read/populate a peer,
+                // change admission accounting, or follow a second peer link.
+                if(allowPeer&&residentPeer_&&key.tracked&&!chargeResidentHits_&&!residentPeer_->chargeResidentHits_&&
+                   identity_==residentPeer_->identity_&&version_==residentPeer_->version_&&metadata_==residentPeer_->metadata_){
+                    const bool ok=residentPeer_->serve(key,vertices,ib,extent,shared,why,served,false);peerHits_+=served;return ok;}
+                return true;}
             CacheEntry& e=*it->second;
             if(!key.tracked&&(version_||(e.serial&15u)==(frame_&15u))&&!revalidate(e,vertices,ib,extent)){++revalidationMismatches_;cacheBytes_-=e.bytes;cacheLRU_.remove(e);cache_.erase(it);
                 dropPrediction(Erase::Revalidation); /* the erased entry may be the predicted one */return true;}
@@ -353,6 +362,9 @@ public:
     // Private geometry consumers may budget actual reads; write-tracked resident
     // hits read no VB/IB bytes. Other capture consumers keep their original policy.
     void setChargeResidentHits(bool value){chargeResidentHits_=value;}
+    // Non-owning; the peer must outlive reads. Both caches retain their own
+    // limits, and a borrowed mesh is not inserted or copied into this cache.
+    void setResidentPeer(Frame* peer){residentPeer_=peer==this?nullptr:peer;}
     void setVersionProvider(VersionFn f){clearSnapshotCache();version_=f;}
     // Metadata providers must share the identity/version domain of the legacy
     // providers. A batch is consumed immediately, never reused across draws.
@@ -370,6 +382,7 @@ public:
     size_t snapshotCacheBytes()const{return cacheBytes_;}
     size_t snapshotCacheEntries()const{return cache_.size();}
     unsigned snapshotCacheHits()const{return cacheHits_;}
+    unsigned residentPeerHits()const{return peerHits_;}
     unsigned trackedHits()const{return trackedHits_;}
     size_t avoidedReadBytes()const{return avoidedReadBytes_;}
     unsigned snapshotCacheMisses()const{return cacheMisses_;}
@@ -541,7 +554,7 @@ public:
     // Extra bytes for near priority draws once the main budget is spent (0: off, the 0.3.171 budget).
     void setNearReserve(std::size_t bytes){nearReserve_=bytes;}
     std::size_t nearReserve()const{return nearReserve_;}
-    void clearFrame(){maintenance_={};sampleMaintenance_=false;used_=regularUsed_=0;draws_=regularDraws_=0;sourceSpanVertices_=uniqueVertices_=savedVertexBytes_=0;compactedDraws_=0;indexHits_=indexMisses_=0;cacheHits_=cacheMisses_=revalidated_=revalidationMismatches_=trackedHits_=0;avoidedReadBytes_=0;metadataBatches_=metadataHits_=metadataFallbacks_=fastCacheHits_=0;predictTried_=predictHits_=predictMisses_=0;++frame_;}
+    void clearFrame(){maintenance_={};sampleMaintenance_=false;used_=regularUsed_=0;draws_=regularDraws_=0;sourceSpanVertices_=uniqueVertices_=savedVertexBytes_=0;compactedDraws_=0;indexHits_=indexMisses_=0;cacheHits_=cacheMisses_=revalidated_=revalidationMismatches_=trackedHits_=peerHits_=0;avoidedReadBytes_=0;metadataBatches_=metadataHits_=metadataFallbacks_=fastCacheHits_=0;predictTried_=predictHits_=predictMisses_=0;++frame_;}
     // Cache lifetime never establishes validity: reads still lock/compare current
     // IB contents and copy current VB data. Reset/destruction may drop plans.
     void clearIndexCache(){activeRuns_=&copyRuns_;recent_=nullptr;decodedLookup_.clear();decodedLRU_.clear();for(auto& entry:decoded_)entry.reset();decodedBytes_=sizeof(decoded_);decodedFreeCount_=decodedFree_.size();for(size_t i=0;i<decodedFree_.size();++i)decodedFree_[i]=i;clearSnapshotCache();}

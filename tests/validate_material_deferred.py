@@ -22,6 +22,7 @@ p.add_argument('--mesh-grid',type=int,default=0,help='Benchmark a buffered tesse
 p.add_argument('--capture-draws',type=int,default=32,help='Native/capture draws per benchmark frame')
 a=p.parse_args();out=fp.out()/a.output_subdir;out.mkdir(exist_ok=True)
 backend=str(Path(a.backend).resolve())
+BASELINE_FILES=['src/water/auto_bump_renderer.h','src/water/auto_displacement_renderer.h','src/world/draw_snapshot.h','src/generated/auto_bump_compiled_shaders.h']
 
 def compile_fixture(width,height,name,override=None):
     exe=out/(name+'.exe')
@@ -99,9 +100,14 @@ if not a.reuse_exe:
     records.append(dict(profiling=True,complete_gpu_coverage=True))
     if a.baseline_ref:
         overrides=out/'baseline';overrides.mkdir(exist_ok=True)
-        for file in ['src/water/auto_bump_renderer.h','src/generated/auto_bump_compiled_shaders.h']:
+        for file in BASELINE_FILES:
             (overrides/Path(file).name).write_bytes(subprocess.check_output(['git','show',a.baseline_ref+':'+file]))
         old=compile_fixture(320,200,'baseline-check',overrides.resolve())
+        if a.family=='models':
+            for fixture in sources:
+                folder,_=run(old,fixture,'baseline-'+fixture.name,1)
+                count=compare([out/('model-'+fixture.name+'-1'),folder],'*.fgr')
+                records.append(dict(baseline_fixture=fixture.name,outputs=count,bit_exact=True))
         if a.family=='terrain':
             timing=[]
             for build,binary in [('old',old),('new',exe)]:
@@ -131,7 +137,7 @@ if a.benchmark or a.reuse_exe:
     old_bench=None
     if a.baseline_ref:
         overrides=out/'baseline';overrides.mkdir(exist_ok=True)
-        for file in ['src/water/auto_bump_renderer.h','src/generated/auto_bump_compiled_shaders.h']:
+        for file in BASELINE_FILES:
             (overrides/Path(file).name).write_bytes(subprocess.check_output(['git','show',a.baseline_ref+':'+file]))
         old_bench=compile_fixture(3840,2160,'baseline-bench',overrides.resolve())
     timings=[]
