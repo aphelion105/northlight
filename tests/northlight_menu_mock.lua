@@ -491,7 +491,7 @@ function CheckCachedLoading()
     print("Reload: validated saved cache displays synchronously, unavailable bridge preserves draft and Cancel")
 end
 function CheckPresetConfirmation()
-    EXTRA_FIELDS = EXTRA_FIELDS:gsub("(F\tQ\tQuality\tWaterSSRResolution\t[^\n]+)", function(line)
+    EXTRA_FIELDS = EXTRA_FIELDS:gsub("(F\tQ\tQuality\tLocalLightLimit\t[^\n]+)", function(line)
         local p = {}; for v in (line .. "\t"):gmatch("(.-)\t") do p[#p + 1] = v end
         p[12], p[17] = "~", "~"; return table.concat(p, "\t")
     end) .. field("C", "default", "sun_disc_gain", "slider", "3", "F", "", nil, "1") .. field("C", "Azeroth:12", "sun_disc_gain", "slider", "2", "F", "", nil, "1")
@@ -511,13 +511,13 @@ function CheckPresetConfirmation()
     NorthlightSection_materials:Show(); assert(FindSetting("AutoBumpTerrain").dropdown.text == "Normal maps" and FindSetting("AutoBumpWalls").dropdown.text == "Normal maps", "material enum must inherit the pending preset")
     NorthlightSection_renderer:Show(); assert(FindSetting("Backend").dropdown.text == "dxvk", "presets must reset renderer settings too")
     NorthlightSection_celestial:Show(); assert(FindSetting("sun_disc_gain").edits[1]:GetText() == "1", "presets must reset regional/default settings too")
-    NorthlightSection_water:Show()
-    local resolution = FindSetting("WaterSSRResolution"); assert(resolution.edits[1]:GetText() == "25")
-    resolution.edits[1]:SetFocus(); resolution.edits[1]:SetText("100"); resolution.edits[1]:GetScript("OnEnterPressed")(resolution.edits[1])
-    assert(FindSetting("WaterSSRResolution").edits[1]:GetText() == "100", "a manual value equal to the old baseline must override the pending preset")
+    NorthlightSection_performance:Show()
+    local limit = FindSetting("LocalLightLimit"); assert(limit.edits[1]:GetText() == "24")
+    limit.edits[1]:SetFocus(); limit.edits[1]:SetText("48"); limit.edits[1]:GetScript("OnEnterPressed")(limit.edits[1])
+    assert(FindSetting("LocalLightLimit").edits[1]:GetText() == "48", "a manual value equal to the old baseline must override the pending preset")
     VideoOptionsFrameApply:GetScript("OnClick")(VideoOptionsFrameApply, "LeftButton"); Tick(8)
     assert(commits == 1 and originalCalls == 1)
-    for _, entry in ipairs({"Q\tQuality\tPreset\tPerformance", "Q\tQuality\tGI\t~", "Q\tQuality\tWaterSSRResolution\t100", "R\tRenderer\tBackend\t@factory", "C\tdefault\tsun_disc_gain\t@factory", "C\tAzeroth:12\tsun_disc_gain\t@factory"}) do assert(LAST_COMMIT:find(entry, 1, true), "missing preset replacement: " .. entry) end
+    for _, entry in ipairs({"Q\tQuality\tPreset\tPerformance", "Q\tQuality\tGI\t~", "Q\tQuality\tLocalLightLimit\t48", "R\tRenderer\tBackend\t@factory", "C\tdefault\tsun_disc_gain\t@factory", "C\tAzeroth:12\tsun_disc_gain\t@factory"}) do assert(LAST_COMMIT:find(entry, 1, true), "missing preset replacement: " .. entry) end
     print("Root presets: full-replacement confirmation, Cancel, blocked background Apply, all sections, pending inheritance override and one commit passed")
 end
 function CheckNumericInputs()

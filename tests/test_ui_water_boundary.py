@@ -2,7 +2,7 @@
 """Exercise production UI/HDR boundaries with a rare FPS font before the main UI.
 
 The recording device models colour remaining over land and water separately;
-it does not pretend to rasterize the water shaders. The old renderer/header is
+it does not pretend to rasterize the removed water shaders. The old renderer/header is
 the negative control, supplied by the immutable source next to this checkout.
 """
 import argparse
@@ -86,7 +86,7 @@ template<class Arming>struct Common {
  bool hdrUiPhase=false,full=true,back=true,stock=false;
  unsigned frame=1,drawCalls=0,uiDraws=0,uiAfterTerrain=0,uiFallbackBoundaries=0,hdrFailuresLogged=0,hdrDeferredLogs=0,hdrDeferredFrame=~0u;
  unsigned triageDraws=0;IDirect3DVertexShader9* triageVs=nullptr;IDirect3DPixelShader9* triagePs=nullptr;DWORD triageZw=0;float triageC3[4]{};
- bool fpsOverLand=false,fpsOverWater=false,waterOverwroteFPS=false,ssrContainsFPS=false;
+ bool fpsOverScene=false,fpsOverDetail=false,effectsOverwroteFPS=false,effectsCopiedFPS=false;
  unsigned effects=0,submitted=0,conversions=0;
  std::vector<std::string> events{"World"};
  const VsClass& classifyVs(IDirect3DVertexShader9* shader){classification={};classification.world=shader==&worldVS;classification.entry=stock&&shader==&uiVS?2:0;return classification;}
@@ -96,16 +96,16 @@ template<class Arming>struct Common {
  template<class Work>void extensionWork(const char*,Work work){work();}
  void renderEffects(){
   if(applied||!enabled||failed)return;
-  ++effects;events.push_back("WaterMaterial");
-  // The material uses the pre-water colour, which never contained the FPS.
-  waterOverwroteFPS=fpsOverWater;fpsOverWater=false;
+  ++effects;events.push_back("EffectsBegin");
+  // A full-screen effect must complete before the first screen-space UI draw.
+  effectsOverwroteFPS=fpsOverDetail;fpsOverDetail=false;
   events.push_back("WorldComposite");
-  // Late SSR copies the current framebuffer; world depth is unchanged by UI.
-  ssrContainsFPS=fpsOverLand;events.push_back("WaterSSR");applied=true;
+  // A later effect may read the current framebuffer, including incorrectly early UI.
+  effectsCopiedFPS=fpsOverScene;events.push_back("EffectsEnd");applied=true;
  }
  void spellReplay(){events.push_back("Spells");}
  HRESULT hdrBegin(bool,const char* ="present"){++conversions;hdrUiPhase=true;events.push_back("HDR");return S_OK;}
- HRESULT submit(bool fps){++submitted;events.push_back(fps?"FPS":"RestUI");if(fps)fpsOverLand=fpsOverWater=true;return S_OK;}
+ HRESULT submit(bool fps){++submitted;events.push_back(fps?"FPS":"RestUI");if(fps)fpsOverScene=fpsOverDetail=true;return S_OK;}
  void learn(bool rare=true){
   for(unsigned f=0;f<Arming::kArmFrames;++f){
    for(unsigned i=0;i<70;++i)uiFallback.noteCandidate(reinterpret_cast<std::uintptr_t>(&uiVS),reinterpret_cast<std::uintptr_t>(&commonPS));
@@ -142,26 +142,26 @@ int main(){
  for(bool hdr:{false,true}){
   Old historical;historical.hdr.active=hdr;historical.learn();frame(historical);
   assert(historical.effects==1&&historical.submitted==2);
-  assert(historical.waterOverwroteFPS&&historical.ssrContainsFPS);
-  assert(at(historical.events,"FPS")<at(historical.events,"WaterMaterial"));
-  assert(at(historical.events,"WaterSSR")<at(historical.events,"RestUI"));++cases;
+  assert(historical.effectsOverwroteFPS&&historical.effectsCopiedFPS);
+  assert(at(historical.events,"FPS")<at(historical.events,"EffectsBegin"));
+  assert(at(historical.events,"EffectsEnd")<at(historical.events,"RestUI"));++cases;
   Fixed fixed;fixed.hdr.active=hdr;fixed.learn();frame(fixed);
   assert(fixed.effects==1&&fixed.submitted==2);
-  assert(!fixed.waterOverwroteFPS&&!fixed.ssrContainsFPS&&fixed.fpsOverWater);
-  assert(at(fixed.events,"WaterMaterial")<at(fixed.events,"WorldComposite"));
-  assert(at(fixed.events,"WorldComposite")<at(fixed.events,"WaterSSR"));
-  assert(at(fixed.events,"WaterSSR")<at(fixed.events,"FPS"));
+  assert(!fixed.effectsOverwroteFPS&&!fixed.effectsCopiedFPS&&fixed.fpsOverDetail);
+  assert(at(fixed.events,"EffectsBegin")<at(fixed.events,"WorldComposite"));
+  assert(at(fixed.events,"WorldComposite")<at(fixed.events,"EffectsEnd"));
+  assert(at(fixed.events,"EffectsEnd")<at(fixed.events,"FPS"));
   assert(at(fixed.events,"FPS")<at(fixed.events,"RestUI"));
   assert(fixed.conversions==unsigned(hdr));
-  if(hdr)assert(at(fixed.events,"WaterSSR")<at(fixed.events,"HDR")&&at(fixed.events,"HDR")<at(fixed.events,"FPS"));++cases;
+  if(hdr)assert(at(fixed.events,"EffectsEnd")<at(fixed.events,"HDR")&&at(fixed.events,"HDR")<at(fixed.events,"FPS"));++cases;
   // A newly enabled FPS counter was never part of the learning sample.
   Fixed toggled;toggled.hdr.active=hdr;toggled.learn(false);frame(toggled);
-  assert(toggled.effects==1&&!toggled.ssrContainsFPS&&!toggled.waterOverwroteFPS);++cases;
+  assert(toggled.effects==1&&!toggled.effectsCopiedFPS&&!toggled.effectsOverwroteFPS);++cases;
   // Recreating a frequent PS must not force the UI VS through another warmup.
   Fixed recreated;recreated.hdr.active=hdr;recreated.learn();
   recreated.uiFallback.forget(reinterpret_cast<std::uintptr_t>(&commonPS));
   assert(recreated.uiFallback.armed());recreated.device.ps=&replacementPS;draw(recreated,true);
-  assert(recreated.effects==1&&!recreated.ssrContainsFPS&&recreated.submitted==1);++cases;
+  assert(recreated.effects==1&&!recreated.effectsCopiedFPS&&recreated.submitted==1);++cases;
   // Recreating the learned VS does invalidate its trust.
   Fixed forgotten;forgotten.hdr.active=hdr;forgotten.learn();
   forgotten.uiFallback.forget(reinterpret_cast<std::uintptr_t>(&uiVS));
@@ -181,13 +181,13 @@ int main(){
   // The stock UI VS also uses rare font PS variants; no fallback learning.
   Old stockOld;stockOld.stock=true;stockOld.hdr.active=hdr;stockOld.psTags[&commonPS]=2;
   stockOld.uiFallback.onHashBoundary();frame(stockOld);
-  assert(stockOld.effects==1&&stockOld.waterOverwroteFPS&&stockOld.ssrContainsFPS);++cases;
+  assert(stockOld.effects==1&&stockOld.effectsOverwroteFPS&&stockOld.effectsCopiedFPS);++cases;
   Fixed stock;stock.stock=true;stock.hdr.active=hdr;stock.uiFallback.onHashBoundary();frame(stock);
-  assert(stock.effects==1&&stock.submitted==2&&!stock.waterOverwroteFPS&&!stock.ssrContainsFPS);
-  assert(at(stock.events,"WaterSSR")<at(stock.events,"FPS")&&stock.conversions==unsigned(hdr));++cases;
+  assert(stock.effects==1&&stock.submitted==2&&!stock.effectsOverwroteFPS&&!stock.effectsCopiedFPS);
+  assert(at(stock.events,"EffectsEnd")<at(stock.events,"FPS")&&stock.conversions==unsigned(hdr));++cases;
   Fixed stockPS0;stockPS0.stock=true;stockPS0.hdr.active=hdr;stockPS0.uiFallback.onHashBoundary();stockPS0.device.ps=nullptr;
   draw(stockPS0,true);assert(stockPS0.effects==1&&stockPS0.submitted==1&&stockPS0.conversions==unsigned(hdr));
-  assert(at(stockPS0.events,"WaterSSR")<at(stockPS0.events,"FPS"));++cases;
+  assert(at(stockPS0.events,"EffectsEnd")<at(stockPS0.events,"FPS"));++cases;
   Fixed learnedPS0;learnedPS0.hdr.active=hdr;learnedPS0.learn();learnedPS0.device.ps=nullptr;
   draw(learnedPS0,true);assert(learnedPS0.effects==1&&learnedPS0.submitted==1&&learnedPS0.conversions==unsigned(hdr));++cases;
   for(unsigned reject=0;reject<9;++reject){
@@ -228,7 +228,7 @@ int main(){
  stockOff.device.vs=&uiVS;draw(stockOff,true);assert(stockOff.conversions==1&&stockOff.submitted==2);++cases;
  Fixed login;login.hdr.active=true;login.terrain=false;login.device.vs=&otherVS;draw(login,true);
  assert(login.conversions==1&&login.submitted==1);++cases;
- std::printf("PASS UI/water boundary host extraction cases=%u: old FPS overwrites/reflections reproduced; fixed WaterMaterial->WorldComposite->WaterSSR->FPS->RestUI; stock/learned VS, rare/PS0, HDR/SDR and query guards preserved\n",cases);
+ std::printf("PASS UI/effects boundary host extraction cases=%u: old FPS boundary order reproduced; fixed EffectsBegin->WorldComposite->EffectsEnd->FPS->RestUI; stock/learned VS, rare/PS0, HDR/SDR and query guards preserved\n",cases);
 }
 '''
 

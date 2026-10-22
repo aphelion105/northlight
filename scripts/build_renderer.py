@@ -47,10 +47,7 @@ def main(argv=None):
         raise SystemExit('Static caster shader source differs from offline build.')
     surface_manifest = json.loads((SHADERS/'surface-shader-build.json').read_text())
     if hashlib.sha256((SHADERS/'surface_effects.hlsl').read_bytes()).hexdigest() != surface_manifest['source_sha256']:
-        raise SystemExit('Water/weather shader source differs from offline build.')
-    water_mask_manifest=json.loads((SHADERS/'water-material-mask-build.json').read_text())
-    if hashlib.sha256((SHADERS/'water_material_mask.hlsl').read_bytes()).hexdigest()!=water_mask_manifest['source_sha256']:
-        raise SystemExit('Water material mask differs from offline build.')
+        raise SystemExit('Precipitation shader source differs from offline build.')
     hdr_manifest = json.loads((SHADERS/'hdr-shader-build.json').read_text())
     if hashlib.sha256((SHADERS/'hdr_effects.hlsl').read_bytes()).hexdigest() != hdr_manifest['source_sha256']:
         raise SystemExit('HDR shader source differs from offline build; run scripts/shaders/compile_hdr_shaders.py.')

@@ -103,9 +103,6 @@ struct Settings {
     unsigned autoParallaxDepth=100,autoParallaxDistance=16,autoParallaxSteps=16;
     unsigned autoParallaxShadows=1,autoParallaxShadowStrength=70,autoParallaxShadowSteps=8,autoCavity=1,autoCavityStrength=35;
     unsigned autoMaterialOcclusionDistance=8;
-    unsigned water=1,waterSSR=1,waterSSRResolution=100,waterSSRSteps=64,waterSSRDistance=0;
-    unsigned waterSSRThickness=30,waterSSRRefineSteps=4,waterSSRStrength=100;
-    unsigned waterRefraction=1,waterGlints=1,waterPointLights=1;
     // NightBrightness (0..100): how much of the art layer's darker night ambient is given back, as added light; 0 = Northlight's night, 100 = the original game's night ambient (shadows stay); default 50. Ramped by the sun below the horizon.
     unsigned nightBrightness=50;
     // 0.3.209 (task 29) ActorShadowDetail: 1 = a dedicated 4x finer shadow map around the player holds the moving casters (characters, mounts) and a
@@ -139,7 +136,7 @@ struct Settings {
     unsigned autoDisplacementStrength=100,autoDisplacementDistance=12,autoDisplacementDetail=4;
     unsigned autoBumpModels=3,autoModelDisplacementStrength=25,autoModelDisplacementDistance=8,autoModelDisplacementDetail=2;
     unsigned autoHeightPolarity=0,autoHeightDetails=75,autoHeightBalance=50;
-    char origin[99]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
+    char origin[88]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
 };
 struct Key { const char* name; unsigned Settings::*field; unsigned low,high; unsigned preset[3]; };
 // preset[] = Quality, Balanced, Performance. Quality must equal Settings{}.
@@ -206,17 +203,6 @@ inline const Key Keys[]={
     {"AOMethod",&Settings::aoMethod,0,3,{0,0,0}},
     {"AOStrength",&Settings::aoStrength,0,200,{100,100,100}},
     {"AORadius",&Settings::aoRadius,10,1000,{200,200,200}},
-    {"Water",&Settings::water,0,1,{1,1,1}},
-    {"WaterSSR",&Settings::waterSSR,0,1,{1,1,1}},
-    {"WaterSSRResolution",&Settings::waterSSRResolution,25,100,{100,50,25}},
-    {"WaterSSRSteps",&Settings::waterSSRSteps,4,128,{64,40,24}},
-    {"WaterSSRDistance",&Settings::waterSSRDistance,0,4096,{0,0,0}},
-    {"WaterSSRThickness",&Settings::waterSSRThickness,1,200,{30,30,30}},
-    {"WaterSSRRefineSteps",&Settings::waterSSRRefineSteps,0,6,{4,4,3}},
-    {"WaterSSRStrength",&Settings::waterSSRStrength,0,100,{100,100,100}},
-    {"WaterRefraction",&Settings::waterRefraction,0,1,{1,1,1}},
-    {"WaterGlints",&Settings::waterGlints,0,1,{1,1,0}},
-    {"WaterPointLights",&Settings::waterPointLights,0,1,{1,1,0}},
     {"PointShadowLimit",&Settings::pointShadowLimit,4,128,{4,4,4}},
     {"AutoBump",&Settings::autoBump,0,1,{1,0,0}},
     {"AutoBumpStrength",&Settings::autoBumpStrength,0,150,{75,60,40}},
@@ -273,7 +259,11 @@ inline const ForcedKey ActorShadowForced[]={
 // "retired" note instead of "unknown key". The persistent casters (PersistentCasters,
 // PersistentRigidProps): rigid_memory.h replaces the rigid-prop part.
 struct RetiredKey { const char* name; const char* version; };
-inline const RetiredKey Retired[]={{"PersistentCasters","0.3.172"},{"PersistentRigidProps","0.3.172"}};
+inline const RetiredKey Retired[]={{"PersistentCasters","0.3.172"},{"PersistentRigidProps","0.3.172"},
+    {"Water","PR93 withdrawal"},{"WaterSSR","PR93 withdrawal"},{"WaterSSRResolution","PR93 withdrawal"},
+    {"WaterSSRSteps","PR93 withdrawal"},{"WaterSSRDistance","PR93 withdrawal"},{"WaterSSRThickness","PR93 withdrawal"},
+    {"WaterSSRRefineSteps","PR93 withdrawal"},{"WaterSSRStrength","PR93 withdrawal"},{"WaterRefraction","PR93 withdrawal"},
+    {"WaterGlints","PR93 withdrawal"},{"WaterPointLights","PR93 withdrawal"}};
 inline Settings effective(Settings s){if(!s.actorShadows)for(const auto& k:ActorShadowForced)s.*k.field=0;return s;}
 // Names of the keys effective() turned off (requested non-zero), space separated; "none" if nothing.
 inline std::string forcedOff(const Settings& requested){

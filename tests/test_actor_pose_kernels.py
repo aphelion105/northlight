@@ -6,9 +6,9 @@ import argparse,hashlib,json,struct,subprocess,sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
 import client_fixtures
-p=argparse.ArgumentParser(description=__doc__);p.add_argument('--benchmark',action='store_true');a=p.parse_args()
+p=argparse.ArgumentParser(description=__doc__);p.add_argument('--benchmark',action='store_true');p.add_argument('--baseline-ref',default='1404591');a=p.parse_args()
 out=fp.output_dir();out.mkdir(parents=True,exist_ok=True)
-baseline=subprocess.check_output(['git','show','1404591:src/replay/actor_deformation.h'])
+baseline=subprocess.check_output(['git','show',a.baseline_ref+':src/replay/actor_deformation.h'])
 (out/'legacy_actor_deformation.h').write_text(baseline.decode().replace('NorthlightActorDeformation','LegacyActorDeformation'),encoding='utf-8')
 client_fixtures.actor_client_programs(out)
 corpus=out/'stock-vertex-corpus.bin';manifest=out/'stock-vertex-corpus.json'

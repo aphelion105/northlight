@@ -1,5 +1,16 @@
 # Material performance investigation — 22 October 2026
 
+## Fresh 01:23 run: pipeline invalidation and water/SSR withdrawal — 23 October
+
+The complete run tests 31d20e1 (log SHA-256 ccfdb6125a498d7fd877235fb4ca6c12a9eeddc2fb560eaf26ec88564d25cb88). Previous fixes are active:4918 terrain snapshots, no Off count-pressure evictions,2.173 MiB offset and 9.145 MiB source-index duplication avoided. Remaining byte-pressure replacement still causes12.337 ms terrain capture at Off 3048; median Off terrain is0.303 ms. Materials have zero algorithm/capture work in all 44 Off samples. Frame 3209 instead spends230.259 ms with an empty replay scene queue; that episode is not explained by AO/fog arithmetic.
+
+Water/SSR PR #93 is closed and its beauty/refraction/glint/SSR, material detector, forced redraw, copy/depth-hierarchy/target/code artifacts and eleven settings/menu controls are removed. Native liquid masks remain for AO/fog/celestial correctness. Independent precipitation and UI/HDR repairs are preserved. The old detector forced19.18 mask redraws per sampled Off frame on average despite disabled enhanced water; that unconditional path is removed. Actual new rate/FPS still require the user's run.
+
+GI settings invalidation now follows exact worker dependencies, preserving pending changes and true light/GI updates without cancelling work after unrelated material/HDR/display edits. Exact single-bone prepared bounds also improve 8.1–9.7% in component tests, saving only 0.0135–0.0182 ms/8192 vertices; GPU capture and source-lifetime churn remain larger targets. Quality, MSAA, ranges, budgets and geometry coverage remain.
+
+Three workers investigated five topics each. The detailed English report includes a staged comprehensive migration to shared immutable placement/chunk data, stable source identities, reusable BLAS/GPU pages, exact region membership/TLAS and proven GI transport reuse. That larger migration is proposed, not claimed as shipped. Current validation includes exact actor oracles/regressions, exhaustive88-key GI dependency tests,13 Lua menu scenarios,140 M2/terrain/WMO material capture comparisons and 2304 retained precipitation GPU cases. One Unix-oriented fake mask-state harness is unsupported on Windows and explicitly disclosed. The game was not launched; installed DLL/settings/assets remain untouched. Older sections below describe preceding builds.
+
+
 ## Fresh 00:50 run: exact terrain retention and actor evaluation — 23 October
 
 The complete run tests 1404591 (log SHA-256 abedd725589925ae40468c3dc7b8d55db8ac8d7231bee4dc28c787160791687d). Previous source-index sharing is active and avoids 6.445 MiB; inactive native material GPU profiling is correctly suppressed in all 15 sampled Off frames. Only 13 master-On samples actually submit materials, and AO/water-mask state changes later in the run, so this is not a controlled before/after FPS test.

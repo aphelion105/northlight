@@ -35,7 +35,7 @@ int main(int argc,char** argv){
     for(unsigned i=0;i<200;++i){reply=transport.exchange(service,request);if(reply.find("\nNLS1\t")!=reply.npos)break;std::this_thread::sleep_for(std::chrono::milliseconds(2));}assert(reply.find("\nNLS1\t")!=reply.npos);
     assert(transport.exchange(service,request)==reply);assert(transport.exchange(service,"NL1\tx\t2\t1\t1\nsnapshot").empty());
     assert(!service.submit("oversize",std::string(131073,'x')));
-    unsigned live=0;for(const auto& k:NorthlightQuality::Keys)live+=liveQuality(k.name);assert(live==89);
+    unsigned live=0;for(const auto& k:NorthlightQuality::Keys)live+=liveQuality(k.name);assert(live==78);
     const auto displacementDocs=applyChanges(docs,fields,"Q\tQuality\tAutoBumpTerrain\t3\nQ\tQuality\tAutoBumpWalls\t3\nQ\tQuality\tAutoDisplacementStrength\t125\nQ\tQuality\tAutoDisplacementDistance\t16\nQ\tQuality\tAutoDisplacementDetail\t5\n");
     const auto displaced=liveQualityUpdate(active.quality,configOf(displacementDocs,"").quality);
     assert(displaced.autoBumpTerrain==3&&displaced.autoBumpWalls==3&&displaced.autoDisplacementStrength==125&&displaced.autoDisplacementDistance==16&&displaced.autoDisplacementDetail==5);
@@ -53,16 +53,13 @@ int main(int argc,char** argv){
     const auto materialDocs=applyChanges(docs,fields,"Q\tQuality\tAutoBumpTerrain\t2\nQ\tQuality\tAutoBumpWalls\t1\nQ\tQuality\tAutoBumpGrass\t0\nQ\tQuality\tAutoParallaxDepth\t120\nQ\tQuality\tAutoParallaxDistance\t12\nQ\tQuality\tAutoParallaxSteps\t24\n");
     const auto materialConfig=configOf(materialDocs,"");assert(materialConfig.quality.autoBumpTerrain==2&&materialConfig.quality.autoBumpWalls==1&&!materialConfig.quality.autoBumpGrass&&materialConfig.quality.autoParallaxDepth==120&&materialConfig.quality.autoParallaxDistance==12&&materialConfig.quality.autoParallaxSteps==24);
     fails([&]{applyChanges(docs,fields,"Q\tQuality\tAutoBumpGrass\t4\n");});fails([&]{applyChanges(docs,fields,"Q\tQuality\tAutoBumpTerrain\t4\n");});
-    for(const auto& f:fields)if(f.file==0&&f.key.rfind("Water",0)==0)assert(f.apply=="F");
-    fails([&]{applyChanges(docs,fields,"Q\tQuality\tWaterSSRResolution\t0\n");});
-    const auto base=Store::revision(store.read());const auto command="commit\t"+base+"\nQ\tQuality\tWeather\t1\nQ\tQuality\tCommandStream\t0\nQ\tQuality\tAOMethod\tGTAO\nQ\tQuality\tWaterSSRResolution\t25\nQ\tQuality\tWaterSSRSteps\t64\nQ\tQuality\tWaterSSRDistance\t200\nQ\tQuality\tWaterSSRThickness\t50\nQ\tQuality\tWaterSSRRefineSteps\t6\nQ\tQuality\tWaterSSRStrength\t75\nQ\tQuality\tWaterRefraction\t0\nQ\tQuality\tWaterPointLights\t0\nR\tRenderer\tExperimentalHDR\t1\nR\tRenderer\tHDRPaperWhite\t240\nR\tRenderer\tHDRUIWhite\t120\nR\tRenderer\tHDRMaxNits\t600\n";
+    for(const auto& f:fields)assert(f.file!=0||f.key.rfind("Water",0)!=0);
+    fails([&]{applyChanges(docs,fields,"Q\tQuality\tWaterSSRResolution\t25\n");});
+    const auto base=Store::revision(store.read());const auto command="commit\t"+base+"\nQ\tQuality\tWeather\t1\nQ\tQuality\tCommandStream\t0\nQ\tQuality\tAOMethod\tGTAO\nR\tRenderer\tExperimentalHDR\t1\nR\tRenderer\tHDRPaperWhite\t240\nR\tRenderer\tHDRUIWhite\t120\nR\tRenderer\tHDRMaxNits\t600\n";
     assert(service.submit("save",command));std::string saved;
     auto completed=[&](const char* id){std::string result;for(unsigned i=0;i<500;++i){if(service.result(id,result))return result;std::this_thread::sleep_for(std::chrono::milliseconds(2));}assert(false);return result;};
     saved=completed("save");assert(saved.rfind("SAVED\t",0)==0);auto update=service.after("");assert(update&&update->config.quality.weather==1&&update->config.quality.commandStream==0&&update->config.quality.aoMethod==3);
     assert(update->runtime->quality.weather==1&&update->runtime->quality.commandStream==1&&update->runtime->quality.aoMethod==3);
-    assert(update->runtime->quality.waterSSRResolution==25&&update->runtime->quality.waterSSRSteps==64&&update->runtime->quality.waterSSRDistance==200);
-    assert(update->runtime->quality.waterSSRThickness==50&&update->runtime->quality.waterSSRRefineSteps==6&&update->runtime->quality.waterSSRStrength==75);
-    assert(!update->runtime->quality.waterRefraction&&!update->runtime->quality.waterPointLights);
     assert(update->runtime->hdr[0]==0&&update->runtime->hdr[1]==240&&update->runtime->hdr[2]==120&&update->runtime->hdr[3]==600);service.acknowledge(*update);
     const auto committed=store.read();assert(service.submit("save",command)&&completed("save")==saved&&store.read()==committed);
     assert(service.submit("conflict","commit\t"+base+"\nQ\tQuality\tWeather\t0\n"));assert(completed("conflict").rfind("ERROR\t",0)==0&&store.read()==committed);
@@ -102,7 +99,7 @@ int main(int argc,char** argv){
     assert(service.submit("cache-warm","snapshot"));auto warm=completed("cache-warm");
     assert(service.submit("cache-hit","snapshot"));assert(completed("cache-hit")==warm);
     const auto ini=root/FileNames[0];const auto timestamp=std::filesystem::last_write_time(ini);
-    auto image=readImage(ini);image.raw+="\n[Quality]\nWaterSSRStrength=42\n";writeImage(ini,image.raw);std::filesystem::last_write_time(ini,timestamp);
+    auto image=readImage(ini);image.raw+="\n[Quality]\nAutoCavityStrength=42\n";writeImage(ini,image.raw);std::filesystem::last_write_time(ini,timestamp);
     assert(service.submit("cache-external","snapshot"));auto external=completed("cache-external");assert(external!=warm);
     assert(external.rfind("NLS1\t"+Store::revision(store.read())+"\t",0)==0);
     assert(service.submit("cache-external-repeat","snapshot"));assert(completed("cache-external-repeat")==external);

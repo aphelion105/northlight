@@ -19,7 +19,7 @@ for name in ('water_effects.hlsl','water-shader-build.json','water_compiled_shad
     checks[f'removed: {name}']=not any(p.name==name for d in (fp.SHADERS,fp.GENERATED) for p in d.iterdir())
 checks['removed: compile_water_shaders.py']=not (fp.REPO/'scripts/shaders/compile_water_shaders.py').exists()
 every=''.join(p.read_text(errors='replace') for d in fp.SRC_DIRS for p in d.iterdir() if p.suffix in ('.h','.inl','.cpp'))
-checks['removed: no legacy appearance symbol left in src']=not re.search(r'kWaterEffectsEnabled|NorthlightWaterContext|waterContext|kWaterReflectionShader|kWaterCompositeShader|water_compiled_shaders|Bucket::Water',every) and 'reflectionPS' not in w
+checks['removed: no legacy appearance symbol left in src']=not re.search(r'kWaterEffectsEnabled|NorthlightWaterContext|waterContext|kWaterReflectionShader|kWaterCompositeShader|water_compiled_shaders|Bucket::Water',every) and 'reflectionPS' not in w and 'captureMaterial(' not in w
 checks['removed: the renderer has no render() or appearance targets']=all(s not in w for s in ('bool render(','reflectionSurface','colorSurface','compositePS'))
 checks['removed: build_renderer.py and the shader compilers do not know the water manifest']='water-shader-build' not in (fp.REPO/'scripts/build_renderer.py').read_text() and 'compile_water_shaders' not in ''.join(p.read_text() for p in (fp.REPO/'scripts/shaders').glob('*.py'))
 

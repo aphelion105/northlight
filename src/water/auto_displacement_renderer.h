@@ -368,7 +368,8 @@ m.layered=NorthlightActorDeformation::compile(words,count,m.uv1,true,2,5,1)&&Nor
             lastDepthLower=std::max(0.f,std::nextafter(low[2]>0?low[2]:high[2]<0?-high[2]:0,-INFINITY)-.001f);}
         else if(shader->second.skinned){P::Scope pose(profile,P::PoseFallback);if(source->vertexCount>8192-poseVerticesThisFrame){++poseBudgetRejected;if(profile)profile->count(P::PoseBudget);return false;}poseVerticesThisFrame+=source->vertexCount;poseFallbackVertices+=source->vertexCount;if(profile)profile->count(P::PoseVertices,source->vertexCount);pose.work(source->vertexCount);for(unsigned k=0;k<3;++k){low[k]=FLT_MAX;high[k]=-FLT_MAX;}
             const auto prepared=poseBindings.acquire(shader->second.view,*source,elements,count);if(!prepared)return false;
-            for(unsigned i=0;i<source->vertexCount;++i){NorthlightActorDeformation::Four input[16]={},view;
+            if(shader->second.view.kernel.singleSkin()){if(!NorthlightActorDeformation::singleSkinBoundsPrepared(shader->second.view,*source,*prepared,constants,low,high))return false;}
+            else for(unsigned i=0;i<source->vertexCount;++i){NorthlightActorDeformation::Four input[16]={},view;
                 for(const auto& b:prepared->bindings){const auto& s=source->streams[b.element.Stream];if(!NorthlightActorDeformation::decodeElement(s.bytes.data()+size_t(i)*s.stride+b.element.Offset,b.element.Type,input[b.input.reg]))return false;}
                 if(!NorthlightActorDeformation::evaluateFast(shader->second.view,input,constants,view))return false;
                 for(unsigned k=0;k<3;++k){if(!std::isfinite(view[k]))return false;low[k]=std::min(low[k],view[k]);high[k]=std::max(high[k],view[k]);}}

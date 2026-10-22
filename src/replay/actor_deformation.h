@@ -242,10 +242,13 @@ NO_FUSED_MULTIPLY_ADD
     result[3]=c0[1];if constexpr(Commuted)viewPosition=result;for(unsigned i=0;i<4;++i)if(!std::isfinite(viewPosition[i]))return false;
     return std::fabs(viewPosition[3]-1.f)<.0001f;
 }
-inline bool evaluateSingleSkin(const Program& p,const Four inputs[16],const float* constants,Four& viewPosition){
+inline Four singleSkinControl(const Program& p,const float* constants){
+    Four value;std::memcpy(value.data(),constants,16);for(const auto& d:p.definitions)if(!d.reg)value=d.value;return value;
+}
+template<bool Prepared=false> inline bool evaluateSingleSkin(const Program& p,const Four inputs[16],const float* constants,Four& viewPosition,const Four* control=nullptr){
     NO_FUSED_MULTIPLY_ADD
     auto constant=[&](unsigned index){Four value;std::memcpy(value.data(),constants+4*index,16);for(const auto& d:p.definitions)if(d.reg==index)value=d.value;return value;};
-    const Four c0=constant(0);const float value=p.kernel.evaluator==Kernel::SingleIndexFirst?inputs[1][0]*c0[0]:c0[0]*inputs[1][0];
+    const Four c0=Prepared?*control:constant(0);const float value=p.kernel.evaluator==Kernel::SingleIndexFirst?inputs[1][0]*c0[0]:c0[0]*inputs[1][0];
     if(!std::isfinite(value)||(p.major>=2&&std::fabs(value-std::floor(value)-.5f)<1e-6f))return false;
     const float address=p.major==1?std::floor(value):std::round(value);if(address<-4096||address>4096)return false;
     const int first=31+int(address);if(first<0||first+2>=256)return false;
@@ -339,6 +342,16 @@ public:
         ++preparations;*oldest={prepared,key,stamp_};return prepared;
     }
 };
+// The complete audited single-bone kernel reads only v0/v1. Both are fully
+// decoded each vertex; the draw-local c0 never outlives its current pose bank.
+inline bool singleSkinBoundsPrepared(const Program& program,const NorthlightDrawSnapshot::Mesh& mesh,const PreparedBindings& prepared,const float* constants,float* low,float* high){
+    if(!program.kernel.singleSkin()||!constants||!prepared.validFor(program,mesh)||prepared.bindings.size()!=2||prepared.bindings[0].input.reg>=2||prepared.bindings[1].input.reg>=2||prepared.bindings[0].input.reg==prepared.bindings[1].input.reg)return false;
+    const Four control=singleSkinControl(program,constants);Four inputs[2];
+    for(UINT vertex=0;vertex<mesh.vertexCount;++vertex){for(const auto& b:prepared.bindings){const auto& s=mesh.streams[b.element.Stream];if(!decodeElement(s.bytes.data()+size_t(vertex)*s.stride+b.element.Offset,b.element.Type,inputs[b.input.reg]))return false;}
+        Four view;if(!evaluateSingleSkin<true>(program,inputs,constants,view,&control))return false;
+        for(unsigned k=0;k<3;++k){if(!std::isfinite(view[k]))return false;low[k]=std::min(low[k],view[k]);high[k]=std::max(high[k],view[k]);}}
+    return true;
+}
 inline bool worldPositionsPrepared(const Program& program,const NorthlightDrawSnapshot::Mesh& mesh,const PreparedBindings& prepared,const float* constants,const float* inverseView,std::vector<Position>& output){
     output.clear();if(!constants||!inverseView||!prepared.validFor(program,mesh))return false;
     const auto& bindings=prepared.bindings;

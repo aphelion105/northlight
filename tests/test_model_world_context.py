@@ -97,7 +97,6 @@ __MODEL__
 struct Device {
     struct MaterialProjection {void setProjection(float,float,float){}};
     MaterialProjection* autoBump=nullptr;
-    bool drawWaterMaterial=false;bool liquidMaterial(IDirect3DVertexShader9*,bool){return false;}
     Ext state;Ext* ext=&state;World owned{&state};World* world=&owned;
     static constexpr int kTagMask=3,kWaterTag=4;
     struct VsClass{int entry=0;bool wmo=false,skinned=true;} vc;

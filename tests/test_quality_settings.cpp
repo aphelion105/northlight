@@ -62,6 +62,8 @@ int main(){
     /* Defaults: absent files, empty file and Preset=Quality are the 0.3.136 constants, except the 0.3.167 FarShadowInterval 4
        and the 0.3.176 PointShadows 0 (off in every preset). */
     const Settings d{};
+    {std::vector<std::string> notes;assert(parse("[Quality]\nWater=1\nWaterSSR=1\nWaterSSRResolution=100\n",nullptr,notes)==d);assert(notes.size()==3);
+     for(const auto& note:notes)assert(note.find("retired")!=std::string::npos);for(const auto& key:Keys)assert(std::string(key.name).rfind("Water",0)!=0);}
     assert(d.minSkinnedTriangles==100&&d.captureBudgetMiB==32&&d.actorShadowBudgetMiB==0&&d.farShadowInterval==4);
     assert(d.localLightLimit==48&&d.pointShadows==1&&d.pointShadowLimit==4&&d.pointShadowRefreshMs==0&&d.shadowDirectionSteps==2048);
     assert(parse(nullptr)==d&&parse("")==d&&parse("[Quality]\nPreset=Quality\n")==d&&preset(Preset::Quality)==d);

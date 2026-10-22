@@ -10,10 +10,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
 
 source = fp.src('renderer.cpp').read_text(encoding='utf-8')
-predicates = re.findall(r'!?memoryGuard\.(?:pressure|capsHalved)\(\)', source[:source.index('    void trimMemory(')])
-assert len(predicates) == 5, 'Review every SSR/depth/weather memory gate'
-# The first two predicates reject a pass; the remaining three admit one.
-allowed = ['!(' + p + ')' if i < 2 else p for i, p in enumerate(predicates)]
+weather = source[source.index('    void surfaceWeather()'):source.index('    void renderEffects()')]
+predicates = re.findall(r'!?memoryGuard\.(?:pressure|capsHalved)\(\)', weather)
+assert predicates == ['memoryGuard.capsHalved()'], 'Review the supplemental weather memory gate'
+allowed = ['!(' + p + ')' for p in predicates]
 harness = r'''
 #include "memory_guard.h"
 #include <cassert>
@@ -32,7 +32,7 @@ int main(){
     memoryGuard.update(500*MiB,200*MiB,121000,0);check(false);
     memoryGuard.update(900*MiB,557*MiB,122000,0);check(false);
     memoryGuard.update(900*MiB,557*MiB,132000,0);assert(!memoryGuard.pressure());check(true);
-    std::cout<<"Surface admission: six production gates; sustained geometry demand, actual low memory and recovery passed\n";
+    std::cout<<"Precipitation admission: production gate; sustained geometry demand, actual low memory and recovery passed\n";
 }
 '''.replace('__PREDICATES__', ','.join(allowed))
 with tempfile.TemporaryDirectory(prefix='northlight-surface-admission-') as tmp:

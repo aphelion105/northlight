@@ -239,11 +239,12 @@ public:
         // GI enable and bounce count travel in each Request.
         auto profiles=next.celestial;
         const auto effective=NorthlightSettings::liveQualityUpdate(quality,next.quality);
+        const bool giRequest=NorthlightSettings::giRequestChanged(quality,effective,celestialProfiles,profiles);
         const bool actorResources=quality.actorShadows!=effective.actorShadows||quality.actorShadowDetail!=effective.actorShadowDetail;
         const bool directions=quality.shadowDirectionSteps!=effective.shadowDirectionSteps;
         const bool giToggle=quality.gi!=effective.gi;
         for(const auto& k:NorthlightQuality::Keys)if(NorthlightSettings::liveQuality(k.name))quality.*k.field=effective.*k.field;
-        quality.preset=effective.preset;settingsRequestDirty=true;
+        quality.preset=effective.preset;settingsRequestDirty=settingsRequestDirty||giRequest;
         if(giToggle)effects.gi=quality.gi!=0;
         minSkinnedShadowTriangles=quality.minSkinnedTriangles;captureBudgetMiB=quality.captureBudgetMiB;actorShadowBudgetMiB=quality.actorShadowBudgetMiB;setNearReserve();
         replaySnapshots.configureBudget(size_t(captureBudgetMiB)*1048576,size_t(captureBudgetMiB)*524288);
@@ -2391,7 +2392,7 @@ public:
     // too; its cursor continues). Everything else (DEFAULT targets, dynamic rings, queries, state blocks, caches derived from
     // them) is released as before. recover() and the destructor release the mesh as well; the CPU payload is gone by then, so
     // upload() asks the builder for a fresh generation.
-    void releaseGPU(bool keepMesh=false){materialPixelAudit.reset();replayBoundsAbandon();releaseReplayProbe();staticCasters.settle();rigidMemoryClear();admission.reset();admissionOn=false;gatedBodies.clear();prepareQuiesce();neutralShadowMaps=false;prepareCaches->sampled.clear();prepareCaches->bones.clear();prepareCachesStale=false;if(replays.empty()&&heldShadowReplays.empty())prepareFrameRelease(); /* 0.3.179: no replay left to point at them */actorShadowHistory.clear();actorShadowOriginValid=false;replayBoundsMetadata.clear();replayBoundsCache.clear();declarationCache.clear();if(!keepMesh)uploadedStaticOwners.reset();staticOwnerGeneration=UINT64_MAX;staticCasters.reset();staticMatcher.clear();staticM2Memory.clear();staticScene.reset();staticRetryTick=0;stateBlocks.clear();uploadedTerrain.clear();liveTerrainIndexCount=liveDirectionalIndexCount=0;if(!keepMesh){fixedTerrain.reset();fixedTerrainBits.reset();}liveTerrainGeneration=0;drop(regionalFogTexture);drop(neutralAO);drop(neutralZero);drop(ditherNoise);rainMask=nullptr;uploadedFogField.reset();releasePointGPU();probeActivation.reset();probeBlend.reset();drop(baselineSurface);drop(baselineLight);releaseReplayGPU();liveTerrainGPU.clear();{auto& queries=fence();NorthlightDynamicRing::reset(liveIndexRing,0,queries);queries.drop();}drop(liveIndicesGPU);liveIndexBytes=0;liveIndexBase=0;if(!keepMesh){pendingMesh.reset();clearMesh();}retiredMaterials.clear();if(!keepMesh){releaseMeshPool();uploadedMap.clear();}for(auto& t:shadow)drop(t);for(auto& s:shadowSurface)drop(s);for(auto& t:shadowCache)drop(t);for(auto& s:shadowCacheSurface)drop(s);drop(shadowCacheDepth);drop(shadowVerifySurface);drop(shadowVerify);for(auto& r:shadowVerifyRead)drop(r);drop(shadowScratch);drop(shadowScratchSurface);releaseActorTargets();drop(neutralWhite);actorValid[0]=actorValid[1]=false;actorCenterValid[0]=actorCenterValid[1]=false;drop(unionPS);invalidateShadowCache();for(auto& t:probe)drop(t);drop(probePrev);drop(shadowDepth);drop(lightSurface);drop(smoothSurface);drop(fogSurface);drop(fogBlurredSurface);drop(fogHistorySurface);drop(fogHistory);drop(fogTemporalPS);fogHistoryValid=false;drop(colorSurface);drop(light);drop(smoothLight);drop(fog);drop(fogBlurred);drop(color);surfaceFogOutput=nullptr;drop(lightingPS);drop(giPS);drop(fogPS);drop(fogBlurPS);drop(fogCloudsPS);drop(cloudNoise);drop(localDirectPS);drop(localDirect16PS);drop(profileSplitSurface);profileSplitFailed=false;drop(removalPS);drop(temporalPS);drop(localFogPS);drop(localFogCombinePS);drop(localFogAccumSurface);drop(localFogAccum);drop(normalsPS);drop(normalBuffer);drop(normalSurface);drop(sourceVisPS);for(int a=0;a<2;++a)for(int b=0;b<2;++b){drop(sourceVis[a][b]);drop(sourceVisSurface[a][b]);}sourceVisValid=false;for(int i=0;i<2;++i){drop(temporalLight[i]);drop(temporalLightSurface[i]);drop(temporalDepth[i]);drop(temporalDepthSurface[i]);}temporalValid=false;drop(finalPS);drop(materialPS);drop(shadowPS);drop(replayPS);drop(shadowVS);drop(cachedShadowVS);drop(cachedShadowPS);drop(cachedFastPS);drop(cachedOpaqueFastPS);drop(cachedOpaquePS);drop(shadowDecl);drop(liveTerrainDecl);width=height=0;uploadedSerial=0;}
+    void releaseGPU(bool keepMesh=false){materialPixelAudit.reset();replayBoundsAbandon();releaseReplayProbe();staticCasters.settle();rigidMemoryClear();admission.reset();admissionOn=false;gatedBodies.clear();prepareQuiesce();neutralShadowMaps=false;prepareCaches->sampled.clear();prepareCaches->bones.clear();prepareCachesStale=false;if(replays.empty()&&heldShadowReplays.empty())prepareFrameRelease(); /* 0.3.179: no replay left to point at them */actorShadowHistory.clear();actorShadowOriginValid=false;replayBoundsMetadata.clear();replayBoundsCache.clear();declarationCache.clear();if(!keepMesh)uploadedStaticOwners.reset();staticOwnerGeneration=UINT64_MAX;staticCasters.reset();staticMatcher.clear();staticM2Memory.clear();staticScene.reset();staticRetryTick=0;stateBlocks.clear();uploadedTerrain.clear();liveTerrainIndexCount=liveDirectionalIndexCount=0;if(!keepMesh){fixedTerrain.reset();fixedTerrainBits.reset();}liveTerrainGeneration=0;drop(regionalFogTexture);drop(neutralAO);drop(neutralZero);drop(ditherNoise);rainMask=nullptr;uploadedFogField.reset();releasePointGPU();probeActivation.reset();probeBlend.reset();drop(baselineSurface);drop(baselineLight);releaseReplayGPU();liveTerrainGPU.clear();{auto& queries=fence();NorthlightDynamicRing::reset(liveIndexRing,0,queries);queries.drop();}drop(liveIndicesGPU);liveIndexBytes=0;liveIndexBase=0;if(!keepMesh){pendingMesh.reset();clearMesh();}retiredMaterials.clear();if(!keepMesh){releaseMeshPool();uploadedMap.clear();}for(auto& t:shadow)drop(t);for(auto& s:shadowSurface)drop(s);for(auto& t:shadowCache)drop(t);for(auto& s:shadowCacheSurface)drop(s);drop(shadowCacheDepth);drop(shadowVerifySurface);drop(shadowVerify);for(auto& r:shadowVerifyRead)drop(r);drop(shadowScratch);drop(shadowScratchSurface);releaseActorTargets();drop(neutralWhite);actorValid[0]=actorValid[1]=false;actorCenterValid[0]=actorCenterValid[1]=false;drop(unionPS);invalidateShadowCache();for(auto& t:probe)drop(t);drop(probePrev);drop(shadowDepth);drop(lightSurface);drop(smoothSurface);drop(fogSurface);drop(fogBlurredSurface);drop(fogHistorySurface);drop(fogHistory);drop(fogTemporalPS);fogHistoryValid=false;drop(colorSurface);drop(light);drop(smoothLight);drop(fog);drop(fogBlurred);drop(color);drop(lightingPS);drop(giPS);drop(fogPS);drop(fogBlurPS);drop(fogCloudsPS);drop(cloudNoise);drop(localDirectPS);drop(localDirect16PS);drop(profileSplitSurface);profileSplitFailed=false;drop(removalPS);drop(temporalPS);drop(localFogPS);drop(localFogCombinePS);drop(localFogAccumSurface);drop(localFogAccum);drop(normalsPS);drop(normalBuffer);drop(normalSurface);drop(sourceVisPS);for(int a=0;a<2;++a)for(int b=0;b<2;++b){drop(sourceVis[a][b]);drop(sourceVisSurface[a][b]);}sourceVisValid=false;for(int i=0;i<2;++i){drop(temporalLight[i]);drop(temporalLightSurface[i]);drop(temporalDepth[i]);drop(temporalDepthSurface[i]);}temporalValid=false;drop(finalPS);drop(materialPS);drop(shadowPS);drop(replayPS);drop(shadowVS);drop(cachedShadowVS);drop(cachedShadowPS);drop(cachedFastPS);drop(cachedOpaqueFastPS);drop(cachedOpaquePS);drop(shadowDecl);drop(liveTerrainDecl);width=height=0;uploadedSerial=0;}
     // Explicit enable/retry only, called after the wrapper's clearFrame(). This
     // never calls endFrame(), so packet capture and cleanup run exactly once.
     void recover(){meshRetry.clear();if(!failed)return;releaseGPU(true);failed=false;valid=false;streamingReports=0;logf("WORLD explicit recovery requested");}
@@ -2569,22 +2570,12 @@ public:
         for(unsigned i=0;i<3;++i)light[i]=direction.x*context.inverseView[i*4]+direction.y*context.inverseView[i*4+1]+direction.z*context.inverseView[i*4+2];
         light[3]=float(body+1);
     }
-    NorthlightSurfaceLights surfacePointLights()const{
-        NorthlightSurfaceLights out;
-        if(!quality.waterPointLights||!active||active->map!=lastRequest.map||localLightMap!=active->map||different(vec(context.camera),localLightCamera,40))return out;
-        if(!localLightQpc||captureFrequency.QuadPart<=0||double(QpcClock::now()-localLightQpc)/captureFrequency.QuadPart>.25)return out;
-        // The last completed atmosphere publication already includes stable selection/fades and equipment lights.
-        out.count=std::min(atmosphere.lights.count,quality.preset==NorthlightQuality::Preset::Quality?4u:2u);
-        for(unsigned i=0;i<out.count;++i){std::memcpy(out.position[i],atmosphere.lights.position[i].data(),16);std::memcpy(out.color[i],atmosphere.lights.color[i].data(),16);}return out;
-    }
     bool surfaceContext(NorthlightSurfaceFrame& frame)const{
         if(!hasContext())return false;
-        const auto& fog=legacyFogConstants();
-        std::memcpy(frame.fog[0],fog.parameters,16);std::memcpy(frame.fog[1],fog.color,16);
         std::memcpy(frame.c[1],projection,12);std::memcpy(frame.c[4],context.inverseView,64);
-        std::memcpy(frame.c[8],context.ambient,12);std::memcpy(frame.c[9],context.direct,12);std::memcpy(frame.c[10],context.lightDirection,12);
+        std::memcpy(frame.c[8],context.ambient,12);std::memcpy(frame.c[9],context.direct,12);
         const unsigned body=NorthlightGI::dot(sourceColors[1],sourceColors[1])>NorthlightGI::dot(sourceColors[0],sourceColors[0])?1:0;
-        if(NorthlightGI::dot(rawSourceDirections[body],rawSourceDirections[body])>.5f){std::memcpy(frame.c[10],&rawSourceDirections[body].x,12);std::memcpy(frame.c[9],&sourceColors[body].x,12);}return true;
+        if(NorthlightGI::dot(rawSourceDirections[body],rawSourceDirections[body])>.5f){std::memcpy(frame.c[9],&sourceColors[body].x,12);}return true;
     }
     bool supplementalWeatherOutdoors(){
         if(!hasContext()||!active||!active->bvh||active->map!=lastRequest.map)return false;
@@ -3798,14 +3789,12 @@ public:
         return ok(hr,"animated shadow draw");
     }
     // 0.3.174: true once this frame's WorldComposite quad has drawn (the proxy's FOLD fallback reads it).
-    bool composited=false;IDirect3DTexture9* surfaceFogOutput=nullptr;
-    IDirect3DTexture9* surfaceFogTexture()const{return composited&&lastRenderDebug==0?surfaceFogOutput:nullptr;}
-    IDirect3DTexture9* surfaceFogDistance()const{return composited&&lastRenderDebug==0?temporalDepth[1-temporalIndex]:nullptr;}
+    bool composited=false;
     // foldScene/foldAO (0.3.174 FOLD): the proxy's pre-AO scene copy replaces the world colour
     // copy, and its AOContactBloom target (bloom rgb, AO alpha) is applied by TemporalLight's
     // removal smoothing and WorldComposite. Null: the proxy composited already (neutral s10).
     bool render(IDirect3DSurface9* targetSurface,IDirect3DTexture9* depth,UINT w,UINT h,D3DFORMAT fmt,float nearZ,float farZ,float minZ,float maxZ,int debug,NorthlightGpuProfile* profile,IDirect3DTexture9* waterMask,IDirect3DTexture9* foldScene=nullptr,IDirect3DTexture9* foldAO=nullptr){
-        shadowsComposited=false;composited=false;surfaceFogOutput=nullptr;lastRenderDebug=debug;
+        shadowsComposited=false;composited=false;lastRenderDebug=debug;
         if(debug!=1)gpuDiagnosticArmed=true;
         // 0.3.169 lastSkipReason(): why this call returned false. Untagged returns below the
         // upload gate are failed device calls in the draw stages ("draw").
@@ -4819,7 +4808,7 @@ public:
             if(materialProfile&&materialProfile->recording())logf("MATERIAL_APPLY frame=%llu gain=%.3f normalRange=%.1f occlusion=%u occlusionRange=%.1f sunRGB=%.4f,%.4f,%.4f moonRGB=%.4f,%.4f,%.4f ambientRGB=%.4f,%.4f,%.4f",(unsigned long long)materialProfile->frameNumber(),materialBumpGain,materialBumpDistance,unsigned(materialOcclusion!=nullptr),materialOcclusionDistance,sourceColors[0].x,sourceColors[0].y,sourceColors[0].z,sourceColors[1].x,sourceColors[1].y,sourceColors[1].z,context.ambient[0],context.ambient[1],context.ambient[2]);
             materialPixelAudit.sample(materialProfile,&stateBlocks,[&](UINT x,UINT y){return quad(x,y);});}
         d->SetTexture(15,nullptr);d->SetTexture(2,nullptr);d->SetSamplerState(2,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(2,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);
-        if(!compositeOk)return false;composited=true;surfaceFogOutput=fogResolved?fogBlurred:fog;d->SetTexture(13,regionalFogTexture);
+        if(!compositeOk)return false;composited=true;d->SetTexture(13,regionalFogTexture);
         if(diagnosticCapture){
             gpuDiagnosticArmed=false;unsigned capture=++gpuDiagnosticCaptures;
             const std::string& directory=gpuDiagnosticDirectory;

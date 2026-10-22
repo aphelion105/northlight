@@ -203,17 +203,6 @@ Individual settings (Quality / Balanced / Performance):
   AOMethod 0 / 0 / 0   See the quality INI for the allowed range.
   AOStrength 100 / 100 / 100   See the quality INI for the allowed range.
   AORadius 200 / 200 / 200   See the quality INI for the allowed range.
-  Water 1 / 1 / 1   See the quality INI for the allowed range.
-  WaterSSR 1 / 1 / 1   See the quality INI for the allowed range.
-  WaterSSRResolution 100 / 50 / 25   See the quality INI for the allowed range.
-  WaterSSRSteps 64 / 40 / 24   See the quality INI for the allowed range.
-  WaterSSRDistance 0 / 0 / 0   See the quality INI for the allowed range.
-  WaterSSRThickness 30 / 30 / 30   See the quality INI for the allowed range.
-  WaterSSRRefineSteps 4 / 4 / 3   See the quality INI for the allowed range.
-  WaterSSRStrength 100 / 100 / 100   See the quality INI for the allowed range.
-  WaterRefraction 1 / 1 / 1   See the quality INI for the allowed range.
-  WaterGlints 1 / 1 / 0   See the quality INI for the allowed range.
-  WaterPointLights 1 / 1 / 0   See the quality INI for the allowed range.
   PointShadowLimit 4 / 4 / 4   See the quality INI for the allowed range.
   AutoBump 1 / 0 / 0   See the quality INI for the allowed range.
   AutoBumpStrength 75 / 60 / 40   See the quality INI for the allowed range.

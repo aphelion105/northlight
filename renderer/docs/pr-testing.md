@@ -12,7 +12,6 @@ The feature PRs each contain a complete buildable checkout. Shared prerequisites
 | Celestial clouds, moon and halo composition | [90](https://github.com/lepola/northlight/pull/90) | 85 |
 | Settings menu and transactional live controls | [91](https://github.com/lepola/northlight/pull/91) | 85 |
 | Local-source shadows and selection budgets | [92](https://github.com/lepola/northlight/pull/92) | 85 |
-| Water, SSR and weather shelter | [93](https://github.com/lepola/northlight/pull/93) | 85, 87 |
 | Experimental HDR presentation | [94](https://github.com/lepola/northlight/pull/94) | 85, 87 |
 | Automatic normals, POM, self-shadowing and cavity | [95](https://github.com/lepola/northlight/pull/95) | 85, 87 |
 | UI atlas diagnostic components | [96](https://github.com/lepola/northlight/pull/96) | 85 |
@@ -20,7 +19,7 @@ The feature PRs each contain a complete buildable checkout. Shared prerequisites
 
 Existing related PRs cover [foliage shadows](https://github.com/lepola/northlight/pull/76), [world emitter catalogs](https://github.com/lepola/northlight/pull/82), [equipment/particle lights and installer migration](https://github.com/lepola/northlight/pull/83), and [native detailed-shadow installation policy](https://github.com/lepola/northlight/pull/84). This snapshot includes the local foliage/catalog/equipment implementations and the catalog's per-source shadow metadata. The native installation policy remains a separate review.
 
-The combined tree connects menu AO preview, material/height controls, HDR status, water and local-source lighting. The current material source is frozen at ba25dcc, with the installed command-stream routing behavior retained and the separately verified log-driven material optimizations ported by scope. No author checkout was edited. New atlas diagnostics remain opt-in components without a game hotkey. HDR remains off by default.
+The combined tree connects menu AO preview, material/height controls, HDR status and local-source lighting. Water beauty, refraction, glints and SSR from the closed PR #93 have been withdrawn; another contributor owns that feature. Native liquid masks remain for AO, fog and celestial receiver correctness. Independent sheltered precipitation remains, with identical shader bytecode. The current material source retains the installed command-stream routing behavior and the separately verified log-driven optimizations. No author checkout was edited. New atlas diagnostics remain opt-in components without a game hotkey. HDR remains off by default.
 
 Configure northlight.local.ini and follow tests/README.md. Run scripts/check_layout.py, scripts/affected_tests.py --why and the selected plain test scripts. Full runs belong to shared-tooling, release or main validation. Windows native Zig adaptations used for local host checks do not provide ASan/UBSan/TSan certification. Missing host requirements and manual in-game checks must remain explicit.
 

@@ -19,7 +19,6 @@
 #include "water_shader_identities.h"
 #include "water_shader_patch.h"
 #include "diagnostics_switch.h"
-#include "water_material_mask_compiled.h"
 class NorthlightWaterRenderer {
     IDirect3DDevice9* d;
     const NorthlightWaterShaderIdentity* identities;std::size_t identityCount;
@@ -31,7 +30,6 @@ class NorthlightWaterRenderer {
     IDirect3DTexture9 *mask=nullptr,*raw=nullptr;
     IDirect3DSurface9 *maskSurface=nullptr,*depth=nullptr,*rawSurface=nullptr,*twin=nullptr; // raw: the (resolved) render target 1 data; twin: its multisampled twin when the game's target is multisampled
     IDirect3DPixelShader9* resolvePS=nullptr;
-    IDirect3DVertexShader9* materialVS=nullptr;IDirect3DPixelShader9* materialPS=nullptr;
     UINT width=0,height=0;D3DMULTISAMPLE_TYPE twinType=D3DMULTISAMPLE_NONE;DWORD twinQuality=0;
     // 0.3.214 (water MRT)
     bool mrtVariants=true,mrtCaps=false,mrtFailed=false,mrtBound=false,mrtActive=false,mrtDirty=false,mrtCaptured=false,mrtResolved=false,mrtCleared=false,mrtLogged=false;
@@ -74,7 +72,7 @@ public:
     // mrt: build the MRT pixel variants at registration (the host's creation-time setting; tests that pin the second-draw pass to 0.3.140 pass false).
     explicit NorthlightWaterRenderer(IDirect3DDevice9* device,const NorthlightWaterShaderIdentity* table=kWaterShaderIdentities,std::size_t tableCount=std::size(kWaterShaderIdentities),bool mrt=true)
         :d(device),identities(table),identityCount(tableCount),stateBlocks(device),mrtVariants(mrt){}
-    ~NorthlightWaterRenderer(){reset();drop(resolvePS);drop(materialVS);drop(materialPS);for(auto& p:vertex)drop(p.second);for(auto& p:pixel)drop(p.second);for(auto& p:pixelMrt)drop(p.second.shader);}
+    ~NorthlightWaterRenderer(){reset();drop(resolvePS);for(auto& p:vertex)drop(p.second);for(auto& p:pixel)drop(p.second);for(auto& p:pixelMrt)drop(p.second.shader);}
     NorthlightWaterRenderer(const NorthlightWaterRenderer&)=delete;
     void releaseStateCache(){stateBlocks.clear();}
     // The host unbinds render target 1 before it resets or releases the device (unbindMrt); mrtBound is cleared here only to match.
@@ -191,20 +189,6 @@ public:
         if(stateEpoch!=scanEpoch){scanEpoch=stateEpoch;maskMayBeBound=true;}
         MaskRestore save(d,vs,ps,mainDepth);if(!save.read(vp,userPointer)){++readFailures;return;}
         if(maskResources(mainWidth,mainHeight))drawMask(vi->second,pi->second,vp,save,draw);
-    }
-    // Own geometry mask: material identity and position ABI were validated by
-    // the host. No native colour or per-vertex glint enters this mask.
-    template<class Draw> void captureMaterial(IDirect3DVertexShader9* vs,IDirect3DPixelShader9* ps,UINT w,UINT h,IDirect3DSurface9* mainDepth,const D3DVIEWPORT9& vp,unsigned up,std::uint64_t epoch,Draw draw){
-        if(failed||vp.X||vp.Y||vp.Width!=w||vp.Height!=h)return;
-        if((captured||mrtCaptured)&&(vp.MinZ!=maskMinZ||vp.MaxZ!=maskMaxZ))return;
-        if(epoch!=scanEpoch){scanEpoch=epoch;maskMayBeBound=true;}
-        if(!materialVS&&!check(d->CreateVertexShader(kWaterMaterialMaskVS,&materialVS),"material mask VS"))return;
-        if(!materialPS&&!check(d->CreatePixelShader(kWaterMaterialMaskPS,&materialPS),"material mask PS"))return;
-        MaskRestore save(d,vs,ps,mainDepth);if(!save.read(vp,up)){++readFailures;return;}
-        DWORD wrap=0,alpha=0;if(FAILED(d->GetRenderState(D3DRS_WRAP7,&wrap))||FAILED(d->GetRenderState(D3DRS_ALPHATESTENABLE,&alpha))){++readFailures;return;}
-        struct MaterialRestore {IDirect3DDevice9* d;DWORD wrap,alpha;~MaterialRestore(){d->SetRenderState(D3DRS_WRAP7,wrap);d->SetRenderState(D3DRS_ALPHATESTENABLE,alpha);}} restore{d,wrap,alpha};
-        if(FAILED(d->SetRenderState(D3DRS_WRAP7,0))||FAILED(d->SetRenderState(D3DRS_ALPHATESTENABLE,FALSE)))return;
-        if(maskResources(w,h))drawMask(materialVS,materialPS,vp,save,draw);
     }
     // The 0.3.140 mask pass; `save` restores everything it changes.
     template<class Draw> void drawMask(IDirect3DVertexShader9* maskVS,IDirect3DPixelShader9* maskPS,const D3DVIEWPORT9& vp,MaskRestore& save,Draw draw){
