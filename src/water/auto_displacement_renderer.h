@@ -70,7 +70,7 @@ class NorthlightAutoDisplacement {
     float strength=.12f,range=12,worldStrength=.12f,worldRange=12,modelStrength=.03f,modelRange=8;unsigned worldDetail=4,modelDetail=2,polarity=0,heightDetails=75,heightBalance=50;unsigned detail=4,buildsThisFrame=0,readsThisFrame=0,poseVerticesThisFrame=0;
     size_t resident=0,boundsBytes=0,cacheBudget=64u<<20;uint64_t clock=0,materialClock=0,builds=0,hits=0,draws=0,triangles=0,refused=0;unsigned frames=0,domainDraws[4]={},stateRejected=0,heightRejected=0,shaderRejected=0,meshRejected=0,snapshotRejected=0;bool userDraw=false,indexedUserDraw=false;
     uint64_t snapshotAttempts=0,snapshotUP=0;std::array<uint64_t,size_t(NorthlightDrawSnapshot::Error::Unlock)+1> snapshotReasons{};
-    uint64_t distanceRejected=0,poseBudgetRejected=0,poseEnvelopeHits=0,poseFallbackVertices=0;
+    uint64_t distanceRejected=0,poseBudgetRejected=0,poseEnvelopeHits=0,poseFallbackVertices=0,objectBoundsVertices=0;
     bool distantPoseBounds(const Program& program,const std::shared_ptr<const Mesh>& source,const D3DVERTEXELEMENT9* elements,UINT count,float* low,float* high){
         const float identity[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};NorthlightReplayBounds::Bounds result;
         if(poseEnvelopes.calculate(program,*source,source,elements,count,constants,identity,envelopeBudget,result)!=NorthlightReplayBounds::Status::Valid)return false;
@@ -214,7 +214,7 @@ public:
     bool prepared()const{return current!=nullptr;}
     bool preparedHeightGPU()const{return current&&current->height;}
     float nearestPreparedDepth()const{return lastDepthLower;}
-    void reportHeightGPU()const{logf("DISPLACEMENT heightGPU supported=%u draws=%llu outsideRange=%llu poseBudgetRejected=%llu poseEnvelopeHits=%llu poseFallbackVertices=%llu",unsigned(gpuHeightSupported),(unsigned long long)gpuDraws,(unsigned long long)distanceRejected,(unsigned long long)poseBudgetRejected,(unsigned long long)poseEnvelopeHits,(unsigned long long)poseFallbackVertices);}
+    void reportHeightGPU()const{logf("DISPLACEMENT heightGPU supported=%u draws=%llu outsideRange=%llu poseBudgetRejected=%llu poseEnvelopeHits=%llu poseFallbackVertices=%llu objectBoundsVertices=%llu",unsigned(gpuHeightSupported),(unsigned long long)gpuDraws,(unsigned long long)distanceRejected,(unsigned long long)poseBudgetRejected,(unsigned long long)poseEnvelopeHits,(unsigned long long)poseFallbackVertices,(unsigned long long)objectBoundsVertices);}
     bool skinned(IDirect3DVertexShader9* original)const{auto it=materials.find(original);return it!=materials.end()&&it->second.skinned;}
     // Only proven affine, rigid programs participate. Unknown/budget-limited
     // draws retain the shader's existing per-pixel distance checks.
@@ -296,9 +296,15 @@ m.layered=NorthlightActorDeformation::compile(words,count,m.uv1,true,2,5,1)&&Nor
         if(position==elements+count||position->Type!=D3DDECLTYPE_FLOAT3)return false;
         float low[3],high[3];
         if(shader->second.skinned&&distantPoseBounds(shader->second.view,source,elements,count,low,high)){++distanceRejected;return false;}
-        const auto& stream=source->streams[0];auto foundBounds=bounds.find(source.get());
-        if(foundBounds==bounds.end()){
+        // Generic skinning uses exact posed vertices below, never object-space
+        // bounds. Building/scanning/retaining those before a budget refusal was
+        // unbounded work with no consumer, especially when the source churned.
+        const bool exactSkin=shader->second.skinned&&shader->second.view.kernel.skin;
+        const bool needsBounds=!shader->second.skinned||exactSkin;
+        const auto& stream=source->streams[0];auto foundBounds=needsBounds?bounds.find(source.get()):bounds.end();
+        if(needsBounds&&foundBounds==bounds.end()){
             Bounds b;b.source=source;for(unsigned i=0;i<3;++i){b.low[i]=FLT_MAX;b.high[i]=-FLT_MAX;}
+            objectBoundsVertices+=source->vertexCount;
             for(unsigned i=0;i<source->vertexCount;++i){if(size_t(i)*stream.stride+position->Offset+12>stream.bytes.size())return false;float p[3];std::memcpy(p,stream.bytes.data()+size_t(i)*stream.stride+position->Offset,12);for(unsigned k=0;k<3;++k){if(!std::isfinite(p[k]))return false;b.low[k]=std::min(b.low[k],p[k]);b.high[k]=std::max(b.high[k],p[k]);}}
             if(shader->second.view.kernel.skin){auto envelope=std::make_unique<NorthlightReplayBounds::SkinEnvelope>();bool valid=true;
                 for(unsigned i=0;i<source->vertexCount&&valid;++i){NorthlightActorDeformation::Four input[16];valid=NorthlightActorDeformation::sampledVertexInputsAt(shader->second.view,*source,elements,count,i,input)&&envelope->add(input);}if(valid)b.skin=std::move(envelope);}
@@ -307,7 +313,7 @@ m.layered=NorthlightActorDeformation::compile(words,count,m.uv1,true,2,5,1)&&Nor
             boundsBytes+=bytes;foundBounds=bounds.emplace(source.get(),std::move(b)).first;
         }
         const float identity[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};NorthlightReplayBounds::Bounds skinBounds;
-        if(shader->second.skinned&&foundBounds->second.skin&&foundBounds->second.skin->evaluate(constants,identity,skinBounds)){foundBounds->second.used=++clock;std::copy(skinBounds.low,skinBounds.low+3,low);std::copy(skinBounds.high,skinBounds.high+3,high);
+        if(exactSkin&&foundBounds->second.skin&&foundBounds->second.skin->evaluate(constants,identity,skinBounds)){foundBounds->second.used=++clock;std::copy(skinBounds.low,skinBounds.low+3,low);std::copy(skinBounds.high,skinBounds.high+3,high);
             // Reuse the audited, outward-rounded skin envelope for normal capture.
             lastDepthLower=std::max(0.f,std::nextafter(low[2]>0?low[2]:high[2]<0?-high[2]:0,-INFINITY)-.001f);}
         else if(shader->second.skinned){if(source->vertexCount>8192-poseVerticesThisFrame){++poseBudgetRejected;return false;}poseVerticesThisFrame+=source->vertexCount;poseFallbackVertices+=source->vertexCount;for(unsigned k=0;k<3;++k){low[k]=FLT_MAX;high[k]=-FLT_MAX;}

@@ -199,14 +199,14 @@ struct CaptureBackend:Backend {
             const D3DVERTEXELEMENT9 e[]={{0,0,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_POSITION,0},{0,12,D3DDECLTYPE_UBYTE4,0,D3DDECLUSAGE_BLENDINDICES,0},D3DDECL_END()};std::memcpy(out,e,sizeof e);*count=3;return D3D_OK;
         }
     } decl;
-    unsigned pixelConstants=0,textures=0,samplers=0,depthAllocations=0;
-    HRESULT STDMETHODCALLTYPE GetPixelShader(IDirect3DPixelShader9** out)override{*out=&ps;ps.AddRef();return D3D_OK;}
+    unsigned pixelQueries=0,pixelConstants=0,textures=0,samplers=0,depthAllocations=0;DWORD colorWrite=15,depthWrite=TRUE;
+    HRESULT STDMETHODCALLTYPE GetPixelShader(IDirect3DPixelShader9** out)override{++pixelQueries;*out=&ps;ps.AddRef();return D3D_OK;}
     HRESULT STDMETHODCALLTYPE GetVertexDeclaration(IDirect3DVertexDeclaration9** out)override{*out=&decl;decl.AddRef();return D3D_OK;}
     HRESULT STDMETHODCALLTYPE GetViewport(D3DVIEWPORT9* out)override{*out={0,0,surface.size,surface.size,0,1};return D3D_OK;}
     HRESULT STDMETHODCALLTYPE GetRenderTarget(DWORD n,IDirect3DSurface9** out)override{*out=n?nullptr:&surface;if(n)return D3DERR_NOTFOUND;surface.AddRef();return D3D_OK;}
     HRESULT STDMETHODCALLTYPE GetDepthStencilSurface(IDirect3DSurface9** out)override{*out=&surface;surface.AddRef();return D3D_OK;}
     HRESULT STDMETHODCALLTYPE GetRenderState(D3DRENDERSTATETYPE key,DWORD* out)override{
-        *out=key==D3DRS_ZENABLE||key==D3DRS_ZWRITEENABLE?TRUE:key==D3DRS_ZFUNC?D3DCMP_LESSEQUAL:key==D3DRS_COLORWRITEENABLE?15:0;return D3D_OK;
+        *out=key==D3DRS_ZENABLE?TRUE:key==D3DRS_ZWRITEENABLE?depthWrite:key==D3DRS_ZFUNC?D3DCMP_LESSEQUAL:key==D3DRS_COLORWRITEENABLE?colorWrite:0;return D3D_OK;
     }
     HRESULT STDMETHODCALLTYPE GetPixelShaderConstantF(UINT,float*,UINT)override{++pixelConstants;return E_FAIL;}
     HRESULT STDMETHODCALLTYPE GetSamplerState(DWORD,D3DSAMPLERSTATETYPE,DWORD*)override{++samplers;return E_FAIL;}
@@ -220,6 +220,18 @@ struct MaterialCaptureStateTestAccess {
         d.vs.AddRef();b.vertices[&d.vs]={&d.vs,domain};b.pixels[&d.ps]=1;return b.displacement;
     }
     static unsigned rejected(const NorthlightAutoBump& b){return b.rangeRejected;}
+    static void noCapture(){
+        CaptureBackend d;NorthlightAutoBump b(&d);setup(b,d,1);b.strength=0;b.occlusionControl[0]=b.occlusionControl[2]=0;b.modes[0]=2;assert(b.active());
+        unsigned draws=0;b.capture(&d.vs,[&]{++draws;return D3D_OK;});assert(!draws&&!d.pixelQueries&&!d.pixelConstants&&!d.samplers&&!d.textures&&!d.depthAllocations);
+        b.modes[0]=1;assert(!b.active());b.modes[0]=0;b.occlusionControl[0]=1;assert(!b.active());
+        std::puts("MATERIAL_NO_CONTRIBUTION_PASS no_capture_setup native_pom_independent all_domains_off");
+    }
+    static void invisible(){
+        for(unsigned domain:{1u,4u})for(bool depthOnly:{false,true}){if(domain==1&&!depthOnly)continue;
+            CaptureBackend d;NorthlightAutoBump b(&d);setup(b,d,domain);d.colorWrite=depthOnly?0:15;d.depthWrite=depthOnly?TRUE:FALSE;
+            unsigned draws=0;b.capture(&d.vs,[&]{++draws;return D3D_OK;});assert(!draws&&!d.pixelQueries&&!d.pixelConstants&&!d.samplers&&!d.textures&&!d.decl.reads&&!d.depthAllocations);}
+        std::puts("MATERIAL_INVISIBLE_GATE_PASS depth_only noncaptured_translucency no_shader_queries no_geometry_reads");
+    }
 };
 void DisplacementStateTestAccess::capture(){
     using namespace NorthlightWaterShaderPatch;using namespace NorthlightActorDeformation;
@@ -251,11 +263,33 @@ void DisplacementStateTestAccess::capture(){
                 b.endFrame();for(unsigned i=0;i<3;++i)d.bank[4*i+2]=100;
                 auto& op=g.materials[&d.vs].view.operations.back();const auto code=op.code;op.code=6;capture();assert(!MaterialCaptureStateTestAccess::rejected(b));op.code=code;
             }
+            if(skinned){g.reset();g.endFrame();std::vector<V> large(9000);for(auto& v:large)v={0,0,0,0};for(unsigned i=0;i<3;++i)d.bank[4*i+2]=0;
+                const auto posed=g.poseFallbackVertices,scanned=g.objectBoundsVertices,rejected=g.poseBudgetRejected;
+                NorthlightAutoDisplacement::Args huge{{D3DPT_TRIANGLELIST,0,0,9000,0,3000,false},nullptr,D3DFMT_UNKNOWN,large.data(),16};
+                assert(!g.prepare(&d.vs,domain,1,huge));assert(g.poseBudgetRejected==rejected+1&&g.poseFallbackVertices==posed&&g.objectBoundsVertices==scanned&&g.bounds.empty());}
         }assert(d.vs.refs==1&&d.ps.refs==1&&d.surface.refs==1&&d.decl.refs==1);
     }
     std::puts("MATERIAL_CAPTURE_ADMISSION_PASS farDraws=128 rigid_skinned zero_capture_setup near_unknown_nonfinite_fail_open native_retained msaa resize refs");
+    std::puts("MATERIAL_REJECTED_POSE_WORK_PASS vertices=9000 objectScans=0 retainedObjectBounds=0 poseEvaluations=0");
+}
+static void sharedGeometry(){
+    using namespace NorthlightDrawSnapshot;
+    Mesh mesh;mesh.vertexCount=4;mesh.primitiveCount=2;mesh.topology=D3DPT_TRIANGLESTRIP;mesh.indexed=true;mesh.indices={0,1,2,3};
+    mesh.streams[0].stride=12;mesh.streams[0].bytes.resize(48);mesh.streams[1].stride=4;mesh.streams[1].bytes.resize(16);
+    for(unsigned i=0;i<4;++i){float p[]={float(i),float(i+1),float(i+2)};std::memcpy(mesh.streams[0].bytes.data()+12*i,p,12);std::memcpy(mesh.streams[1].bytes.data()+4*i,&i,4);}
+    const D3DVERTEXELEMENT9 elements[]={{0,0,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_POSITION,0},{1,0,D3DDECLTYPE_D3DCOLOR,0,D3DDECLUSAGE_COLOR,0},D3DDECL_END()};
+    std::vector<uint8_t> bytes;std::vector<D3DVERTEXELEMENT9> layout;UINT stride=0;assert(NorthlightSharedPOM::expand(mesh,elements,3,bytes,layout,stride)&&stride==20&&bytes.size()==120);
+    const unsigned order[]={0,1,2,2,1,3};for(unsigned i=0;i<6;++i){assert(!std::memcmp(bytes.data()+20*i,mesh.streams[0].bytes.data()+12*order[i],12));assert(!std::memcmp(bytes.data()+20*i+12,&order[i],4));float id;std::memcpy(&id,bytes.data()+20*i+16,4);assert(id==float(i/3));}
+    assert(layout[1].Stream==0&&layout[1].Offset==12&&layout[2].UsageIndex==6&&layout[3].Stream==0xff);
+    mesh.indices[3]=4;assert(!NorthlightSharedPOM::expand(mesh,elements,3,bytes,layout,stride));
+    using namespace NorthlightWaterShaderPatch;const DWORD vs[]={0xfffe0300,0x0200001f,0x80000000,dst(1,0),0x0200001f,0x80000000,dst(6,0),0x02000001,dst(6,0),src(1,0),65535};
+    std::vector<uint32_t> patched,again;assert(NorthlightSharedPOM::vertex(vs,sizeof(vs)/4,patched));assert(!NorthlightSharedPOM::vertex(reinterpret_cast<DWORD*>(patched.data()),patched.size(),again));
+    std::puts("SHARED_POM_GEOMETRY_PASS exact_attributes multistream strip_winding triangle_ids invalid_indices occupied_semantic");
 }
 int main(){
+    MaterialCaptureStateTestAccess::invisible();
+    MaterialCaptureStateTestAccess::noCapture();
+    sharedGeometry();
     DisplacementStateTestAccess::capture();
     DisplacementStateTestAccess::cache();
     DisplacementStateTestAccess::posed();

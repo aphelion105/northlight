@@ -1,5 +1,9 @@
 # Signed material height and displacement
 
+Generic skinned preparation skips unused object-space bounds before pose-budget refusal; exact current-pose/fade evaluation remains unchanged. Capture rejects existing depth-only/noncaptured translucency cases before shader/snapshot setup. If normal, cavity and applicable shadow contributions are all absent, capture and its targets are skipped while native POM and actual geometry displacement remain active. Base terrain and opaque model captures use exact alpha-one overwrites; fractional coverage keeps blending.
+
+Experimental shared POM is available with `NORTHLIGHT_EXPERIMENTAL_SHARED_POM=1`, disabled by default because complete 4K capture/native fixtures currently regress. Full-float UVs and draw/triangle identity remain in separate single-sample targets. Native MSAA shading reuses matching pixels and runs the original raymarch on misses; unsupported or centroid/partial-precision inputs retain the original path. See [material-performance.md](material-performance.md) for costs, fallbacks, evidence and reproduction.
+
 This extension uses the inferred material height for both GPU shading and bounded CPU subdivision. Height .5 is the authored surface: lower values recede and higher values protrude. Automatic interpretation centers luminance and raises sparse warm/green accents. Bright-high/dark-high overrides and surface balance are available. Color remains a heuristic; it cannot establish the physical shape of a painted material.
 
 AutoBumpTerrain, AutoBumpWalls, AutoBumpGrass and AutoBumpModels accept Off (0), Normal maps (1), Normal maps plus POM (2), or Displacement plus normal maps (3). Mode 3 does not also raymarch POM. Models share one selector covering weapons, body/clothing atlases, characters, creatures, mounts and props; the renderer cannot reliably classify these as separate item categories. Additive spell/particle programs and unsupported inputs retain native rendering.

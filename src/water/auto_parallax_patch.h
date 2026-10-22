@@ -12,29 +12,34 @@ using NorthlightShadowShader::replaceReg;
 
 // The caller proves the original material family. Only diffuse lookups change;
 // the original shader's lighting, masks, alpha, fog and shadow coverage remain.
-inline bool pixel(const Word* code,size_t count,bool dual,std::vector<Word>& result,unsigned* constantBase=nullptr) {
+inline bool pixel(const Word* code,size_t count,bool dual,std::vector<Word>& result,unsigned* constantBase=nullptr,bool shared=false,unsigned* sharedResultRegister=nullptr) {
     NorthlightTerrainCoverage::Program native;
     if(!NorthlightTerrainCoverage::analyse(code,count,native)||native.vertex||native.slots>190)return false;
-    unsigned control=160;while(control<191&&(native.constants[control]||native.constants[control+1]))++control;if(control==191)return false;
-    int uv[2]={-1,-1};bool samplers[16]={},integers[16]={};size_t first=count-1;
+    const unsigned limit=shared?190:191;
+    unsigned control=160;while(control<limit&&(native.constants[control]||native.constants[control+1]||(shared&&native.constants[control+2])))++control;if(control==limit)return false;
+    int uv[2]={-1,-1};bool samplers[16]={},integers[16]={},position=false;size_t first=count-1;
     for(const auto& op:native.ops){
         if(op.code==31){
             const Word semantic=code[op.at+1],reg=code[op.at+2];
-            if(regType(reg)==1&&(semantic&15)==5){unsigned index=(semantic>>16)&15;if(index==7)return false;if(index<2)uv[index]=int(regIndex(reg));}
+            if(regType(reg)==17)position=true;
+            if(regType(reg)==1&&(semantic&15)==5){unsigned index=(semantic>>16)&15;if(index==7||(shared&&(index==6||(index<2&&(reg&0x00600000)))))return false;if(index<2)uv[index]=int(regIndex(reg));}
         }else if(op.code!=81&&op.code!=48&&op.code!=47)first=std::min(first,op.at);
         for(unsigned i=1;i<=op.size;++i){if((op.code==81||op.code==48||op.code==47)&&i>1)break;if(op.code==31&&i==1)continue;
             const Word t=code[op.at+i];if(regType(t)==10&&regIndex(t)<16)samplers[regIndex(t)]=true;if(regType(t)==7&&regIndex(t)<16)integers[regIndex(t)]=true;}
     }
-    if(uv[0]<0||(dual&&uv[1]<0)||samplers[14]||(dual&&samplers[15]))return false;
+    if(uv[0]<0||(dual&&uv[1]<0)||samplers[14]||(dual&&samplers[15])||(shared&&(samplers[12]||samplers[13])))return false;
     unsigned varying=0;while(varying<10&&native.inputs[varying])++varying;if(varying==10)return false;
+    native.inputs[varying]=true;unsigned primitive=0;if(shared){while(primitive<10&&native.inputs[primitive])++primitive;if(primitive==10)return false;}
     unsigned integer=0;while(integer<16&&integers[integer])++integer;if(integer==16)return false;
     auto allocate=[&](){unsigned i=0;while(i<32&&native.temps[i])++i;if(i<32)native.temps[i]=true;return i;};
     const unsigned layers=dual?2:1;unsigned output[2],gx[2],gy[2];
     for(unsigned n=0;n<layers;++n){output[n]=allocate();gx[n]=allocate();gy[n]=allocate();if(gy[n]==32)return false;}
     unsigned temps[32];std::fill(std::begin(temps),std::end(temps),32u);
     unsigned constants[256];for(unsigned i=0;i<256;++i)constants[i]=i;
-    constants[220]=control;constants[221]=control+1;
-    const Word* prefix=reinterpret_cast<const Word*>(kParallaxUVShader);constexpr size_t length=sizeof(kParallaxUVShader)/sizeof(DWORD);
+    constants[220]=control;constants[221]=control+1;constants[222]=control+2;
+    const Word* prefix=reinterpret_cast<const Word*>(shared?kParallaxSharedUVShader:kParallaxUVShader);const size_t length=shared?sizeof(kParallaxSharedUVShader)/sizeof(DWORD):sizeof(kParallaxUVShader)/sizeof(DWORD);
+    unsigned prefixInputs[16]={};for(size_t at=1;at+1<length;){unsigned op=prefix[at]&65535,n=op==65534?(prefix[at]>>16)&32767:(prefix[at]>>24)&15;
+        if(op==31&&regType(prefix[at+2])==1)prefixInputs[regIndex(prefix[at+2])]=(prefix[at+1]>>16)&15;at+=n+1;}
     // Reserve the compiler's private DEF registers without touching native constants.
     for(size_t at=1;at+1<length;){unsigned op=prefix[at]&65535,n=op==65534?(prefix[at]>>16)&32767:(prefix[at]>>24)&15;
         if(op==81){unsigned c=192;while(c<220&&native.constants[c])++c;if(c==220)return false;constants[regIndex(prefix[at+1])]=c;native.constants[c]=true;}
@@ -44,13 +49,15 @@ inline bool pixel(const Word* code,size_t count,bool dual,std::vector<Word>& res
     std::vector<Word> out(code,code+first);
     out.insert(out.end(),{0x0200001f,0x80070005,dst(1,varying),0x0200001f,0x90000000,dst(10,14)});
     if(dual)out.insert(out.end(),{0x0200001f,0x90000000,dst(10,15)});
+    if(shared){out.insert(out.end(),{0x0200001f,0x80060005,dst(1,primitive,1),0x0200001f,0x90000000,dst(10,12)});if(dual)out.insert(out.end(),{0x0200001f,0x90000000,dst(10,13)});
+        if(!position)for(size_t at=1;at+1<length;){unsigned op=prefix[at]&65535,n=op==65534?(prefix[at]>>16)&32767:(prefix[at]>>24)&15;if(op==31&&regType(prefix[at+2])==17)out.insert(out.end(),prefix+at,prefix+at+n+1);at+=n+1;}}
     auto mapped=[&](Word token,unsigned layer){unsigned type=regType(token),index=regIndex(token);
         if(type==0)return replaceReg(token,0,temps[index]);
-        if(type==1)return replaceReg(token,1,index==0?unsigned(uv[layer]):varying);
+        if(type==1)return replaceReg(token,1,prefixInputs[index]==0?unsigned(uv[layer]):prefixInputs[index]==6?primitive:varying);
         if(type==2)return replaceReg(token,2,constants[index]);
         if(type==7)return replaceReg(token,7,integer);
         if(type==8)return replaceReg(token,0,output[layer]);
-        if(type==10)return replaceReg(token,10,14+layer);
+        if(type==10)return replaceReg(token,10,index==12?12:index==13?12+layer:14+layer);
         return token;};
     std::vector<Word> defs;
     for(size_t at=1;at+1<length;){unsigned op=prefix[at]&65535,n=op==65534?(prefix[at]>>16)&32767:(prefix[at]>>24)&15;
@@ -70,6 +77,6 @@ inline bool pixel(const Word* code,size_t count,bool dual,std::vector<Word>& res
         if(!changed)out.insert(out.end(),code+at,code+at+n+1);at+=n+1;
     }
     if(!replaced[0]||(dual&&!replaced[1]))return false;
-    out.push_back(65535);result.swap(out);if(constantBase)*constantBase=control;return true;
+    out.push_back(65535);result.swap(out);if(constantBase)*constantBase=control;if(sharedResultRegister)*sharedResultRegister=output[0];return true;
 }
 }
