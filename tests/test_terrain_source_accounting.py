@@ -28,7 +28,8 @@ void operator delete[](void* p,std::size_t)noexcept{::operator delete(p);}
 '''
 body=r'''
 static uint64_t identity(void*,bool index){return index?12:11;}
-static uint64_t version(void*,bool index){return index?22:21;}
+static uint64_t versions[]={21,22};
+static uint64_t version(void*,bool index){return versions[index];}
 static void fill(Device& d,UINT stride=24){d.stride=stride;d.vb.bytes.resize(16+3*size_t(stride)+16);
  d.put(0,{-10200,-1180,3});d.put(1,{-10198,-1180,4});d.put(2,{-10200,-1178,5});
  d.ib.bytes.resize(1536*2);for(unsigned i=0;i<1536;++i){uint16_t v=uint16_t(i%3);std::memcpy(d.ib.bytes.data()+i*2,&v,2);}}
@@ -65,7 +66,28 @@ static void failures(){unsigned optional=0,propagated=0;
  assert(optional>=4&&propagated>=4);
  std::printf("PASS source-index allocation failures: optional=%u propagated=%u noLeakedAllocations=1 noLeakedCharge=1\n",optional,propagated);
 }
-int main(){accounting();failures();assert(!liveAllocations);}
+static void offsets(){
+ for(UINT maximum:{65535u,65536u,131070u}){
+  versions[0]=21;Device d;const UINT stride=maximum==65535?13107:maximum==65536?16384:26214;const UINT last=maximum/stride;
+  d.stride=stride;d.vb.bytes.resize(16+(size_t(last)+1)*stride+16);
+  const uint16_t indices[]={0,1,uint16_t(last)};d.ib.bytes.resize(sizeof indices);std::memcpy(d.ib.bytes.data(),indices,sizeof indices);
+  d.put(0,{-10200,-1180,3});d.put(1,{-10198,-1180,4});d.put(last,{-10200,-1178,5});
+  FrameCache cache;cache.setIdentityProvider(identity);cache.setVersionProvider(version);
+  std::shared_ptr<const MeshSnapshot> snapshot,held;Diagnostics why;
+  auto read=[&](){cache.clearFrame();return cache.readMeshShared(&d,D3DPT_TRIANGLELIST,0,0,last+1,0,1,d.view,snapshot,&why);};
+  assert(read());held=snapshot;auto stats=cache.indexStorage();
+  assert(stats.offsetCompact==(maximum==65535)&&stats.offsetWide==(maximum!=65535));
+  assert(stats.offsetBytes==(maximum==65535?6u:12u)&&stats.offsetAvoided==(maximum==65535?6u:0u));
+  d.vb.bytes[16+4+12]^=1; // An unrelated attribute write cannot change captured XYZ.
+  ++versions[0];assert(read()&&snapshot==held&&why.contentCacheHit&&!why.trackedCacheHit&&cache.maintenance().exactReuses==1);
+  versions[0]=0;assert(read()&&snapshot==held&&cache.bytesRead()>0); // Unknown sources still require full live reads.
+  d.put(last,{-10200,-1178,55});assert(read()&&snapshot!=held&&snapshot->positions[2].z==55&&held->positions[2].z==5);
+  cache.clearPersistent();assert(!cache.indexStorage().offsetBytes&&!cache.indexStorage().offsetCompact&&!cache.indexStorage().offsetWide);
+  assert(held->positions[2].z==5&&d.vb.locks==d.vb.unlocks&&d.ib.locks==d.ib.unlocks);
+ }
+ std::puts("PASS source-offset 65535/65536/wide fallback, exact live XYZ mutation, unknown-source reads, reset and immutable lifetime");
+}
+int main(){accounting();failures();offsets();assert(!liveAllocations);}
 '''
 (out/'accounting.cpp').write_bytes((prefix+fixture+body).encode())
 for label,flags in [('release',['-O2']),('debug',['-O0','-g'])]:

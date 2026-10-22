@@ -2433,7 +2433,7 @@ public:
         const auto r=NorthlightReplayCopies::takeRefusals();
         logf("REPLAY COPIES refused budget=%llu tooLarge=%llu backoff=%llu unsafe=%llu locked=%llu pressure=%llu allocation=%llu largestBufferKiB=%.0f largeCapMiB=%.0f maxLargeMiB=%.0f",(unsigned long long)r.budget,(unsigned long long)r.tooLarge,(unsigned long long)r.backoff,(unsigned long long)r.unsafe,(unsigned long long)r.locked,(unsigned long long)r.pressure,(unsigned long long)r.allocation,double(r.largestBuffer)/kib,double(NorthlightReplayCopies::kLargeCapBytes)/1048576,double(NorthlightReplayCopies::kLargeCopyBytes)/1048576);
     }
-    void endFrame(bool retainPool=true){
+    void endFrame(bool retainPool=true,unsigned rendererFrame=0){
         if(equipmentLightsOn()){equipmentLights.nextFrame();equipmentCapture.nextFrame();particleLights.nextFrame();NorthlightParticleUploads::cache().nextFrame();}
         flushDeferredLogs(); /* 0.3.176 (U0/S0): after every bucketed span of the frame */
         frameFence.endFrame(); /* 0.3.192 (DXVK3): the one Issue of the frame's fence, after every replay/terrain draw, before any early return; reset() calls endFrame() too */
@@ -2452,7 +2452,7 @@ public:
         logReplayProbeWindow();
         for(int slot=0;slot<4;++slot){lastCascadeActions[slot]=cascadeActions[slot];cascadeActions[slot]='-';}
         if(captureSampled&&captureFrequency.QuadPart>0){double ms=1000.0/double(captureFrequency.QuadPart);
-            logf("WORLD CPU capture terrain=%.3fms replay=%.3fms terrainCalls=%u terrainUP=%u replayCandidates=%u unknownCalls=%u acceptedReplay=%zu captureSkipped=%u rejSmall=%u rejGate=%u rejCut=%u rejBudget=%u",terrainCaptureTicks*ms,replayCaptureTicks*ms,terrainCaptureCalls,terrainUPCalls,replayCaptureCalls,unknownCaptureCalls,replays.size(),unsigned(captureMode==CaptureSkipped),rejSmall,rejGate,rejCut,rejBudget);
+            logf("WORLD CPU capture terrain=%.3fms replay=%.3fms terrainCalls=%u terrainUP=%u replayCandidates=%u unknownCalls=%u acceptedReplay=%zu captureSkipped=%u rejSmall=%u rejGate=%u rejCut=%u rejBudget=%u rendererFrame=%u",terrainCaptureTicks*ms,replayCaptureTicks*ms,terrainCaptureCalls,terrainUPCalls,replayCaptureCalls,unknownCaptureCalls,replays.size(),unsigned(captureMode==CaptureSkipped),rejSmall,rejGate,rejCut,rejBudget,rendererFrame);
         }
         if(captureSampled){logf("WORLD capture cache hits=%llu frameHits=%llu entries=%zu bytes=%llu constantsReadBytes=%zu constantReadCalls=%zu sm1Draws=%u relativeDraws=%u",(unsigned long long)terrainBoundsCache.persistentHits(),(unsigned long long)(terrainBoundsCache.persistentHits()-previousCacheHits),terrainBoundsCache.persistentEntries(),(unsigned long long)terrainBoundsCache.persistentBytes(),capturedConstantBytes,capturedConstantCalls,capturedSM1Draws,capturedRelativeDraws);
             logf("BUFFER content noChangeWrites=%llu noChangeMiB=%.3f",(unsigned long long)NorthlightTrackedBuffers::noChangeWrites.load(std::memory_order_relaxed),double(NorthlightTrackedBuffers::noChangeBytes.load(std::memory_order_relaxed))/1048576);}
@@ -2461,14 +2461,14 @@ public:
             (unsigned long long)replayBoundsCache.hits(),(unsigned long long)replayBoundsCache.misses(),(unsigned long long)replayBoundsCache.avoidedVertices(),replayBoundsCache.lookupMilliseconds(),
             (unsigned long long)staticCasters.stats().maintenanceVisits,(unsigned long long)staticCasters.stats().publications);
         if(captureSampled){const auto& t=terrainBoundsCache.maintenance();
-            logf("TERRAIN content cache entryLimit=%zu byteLimit=33554432 entries=%zu bytes=%llu lookupMisses=%u evictions=%u countPressure=%u bytePressure=%u readBytes=%llu",
-                terrainBoundsCache.persistentEntryLimit(),terrainBoundsCache.persistentEntries(),(unsigned long long)terrainBoundsCache.persistentBytes(),
-                t.lookupMisses,t.evictions,t.countPressure,t.bytePressure,(unsigned long long)terrainBoundsCache.bytesRead());
-            logf("TERRAIN revalidation tracked=%u unproven=%u lifetimeChanged=%u vertexChanged=%u indexChanged=%u unstable=%u exactReuses=%u rebuilds=%u indexTokenHits=%u",
-                t.trackedHits,t.unproven,t.lifetimeChanged,t.vertexChanged,t.indexChanged,t.unstable,t.exactReuses,t.rebuilds,t.indexTokenHits);
+            logf("TERRAIN content cache entryLimit=%zu byteLimit=%llu entries=%zu bytes=%llu lookupMisses=%u evictions=%u countPressure=%u bytePressure=%u readBytes=%llu rendererFrame=%u",
+                terrainBoundsCache.persistentEntryLimit(),(unsigned long long)terrainBoundsCache.persistentByteLimit(),terrainBoundsCache.persistentEntries(),(unsigned long long)terrainBoundsCache.persistentBytes(),
+                t.lookupMisses,t.evictions,t.countPressure,t.bytePressure,(unsigned long long)terrainBoundsCache.bytesRead(),rendererFrame);
+            logf("TERRAIN revalidation tracked=%u unproven=%u lifetimeChanged=%u vertexChanged=%u indexChanged=%u unstable=%u exactReuses=%u rebuilds=%u indexTokenHits=%u rendererFrame=%u",
+                t.trackedHits,t.unproven,t.lifetimeChanged,t.vertexChanged,t.indexChanged,t.unstable,t.exactReuses,t.rebuilds,t.indexTokenHits,rendererFrame);
             logf("TERRAIN metadata batches=%u hits=%u fallbacks=%u",t.metadataBatches,t.metadataHits,t.metadataFallbacks);
             const auto indices=terrainBoundsCache.indexStorage();
-            logf("TERRAIN index storage compactEntries=%zu wideEntries=%zu indexMiB=%.3f avoidedIndexMiB=%.3f sourceIndexBlocks=%zu sourceIndexReferences=%zu sourceIndexMiB=%.3f sourceIndexAvoidedMiB=%.3f",indices.compact,indices.wide,double(indices.bytes)/1048576,double(indices.avoided)/1048576,indices.sourceBlocks,terrainBoundsCache.persistentEntries(),double(indices.sourceBytes)/1048576,double(indices.sourceAvoided)/1048576);}
+            logf("TERRAIN index storage compactEntries=%zu wideEntries=%zu indexMiB=%.3f avoidedIndexMiB=%.3f sourceIndexBlocks=%zu sourceIndexReferences=%zu sourceIndexMiB=%.3f sourceIndexAvoidedMiB=%.3f sourceOffsetCompact=%zu sourceOffsetWide=%zu sourceOffsetMiB=%.3f sourceOffsetAvoidedMiB=%.3f rendererFrame=%u",indices.compact,indices.wide,double(indices.bytes)/1048576,double(indices.avoided)/1048576,indices.sourceBlocks,terrainBoundsCache.persistentEntries(),double(indices.sourceBytes)/1048576,double(indices.sourceAvoided)/1048576,indices.offsetCompact,indices.offsetWide,double(indices.offsetBytes)/1048576,double(indices.offsetAvoided)/1048576,rendererFrame);}
         if(captureSampled)logf("MODEL index cache hits=%u misses=%u entries=%u bytes=%zu snapshotCacheHits=%u snapshotCacheMisses=%u snapshotCacheEntries=%zu snapshotCacheBytes=%zu revalidated=%u revalidationMismatches=%u trackedHits=%u avoidedReadBytes=%zu",replaySnapshots.indexCacheHits(),replaySnapshots.indexCacheMisses(),replaySnapshots.indexCacheEntries(),replaySnapshots.indexCacheBytes(),replaySnapshots.snapshotCacheHits(),replaySnapshots.snapshotCacheMisses(),replaySnapshots.snapshotCacheEntries(),replaySnapshots.snapshotCacheBytes(),replaySnapshots.snapshotRevalidated(),replaySnapshots.snapshotRevalidationMismatches(),replaySnapshots.trackedHits(),replaySnapshots.avoidedReadBytes());
         if(captureSampled){const auto& m=replaySnapshots.maintenance();
             logf("MODEL snapshot maintenance snapshotEvictions=%u snapshotEvictedBytes=%zu snapshotMs=%.3f indexEvictions=%u indexEvictedBytes=%zu indexMs=%.3f missEvicted=%u missRevision=%u missUnknown=%u missCollision=%u missRevalidated=%u historySlots=2048",

@@ -1,5 +1,18 @@
 # Material performance investigation — 22 October 2026
 
+## Fresh 00:50 run: exact terrain retention and actor evaluation — 23 October
+
+The complete run tests 1404591 (log SHA-256 abedd725589925ae40468c3dc7b8d55db8ac8d7231bee4dc28c787160791687d). Previous source-index sharing is active and avoids 6.445 MiB; inactive native material GPU profiling is correctly suppressed in all 15 sampled Off frames. Only 13 master-On samples actually submit materials, and AO/water-mask state changes later in the run, so this is not a controlled before/after FPS test.
+
+The foreground rotation bottleneck has two cache causes. At context frames 9652/9779 terrain preparation takes 7.918/11.266 ms with 373/562 entry-count evictions despite byte headroom. With materials Off, frame 11684 takes 11.520 ms with 525 misses and 531 byte-pressure evictions. The fixed entry ceiling now increases from 4096 to 8192 inside the same fully charged 32 MiB total limit. Source revalidation byte offsets use the existing exact 16/32-bit container with wide fallback; source/layout keys, lifetime/revision checks, geometry and precision remain intact.
+
+Frozen-baseline CPU fixtures separately prove both constraints: count-bound 5632 warm misses and byte-bound 1296 misses become zero, eliminating repeated reads, eviction and replacement preparation with identical geometry. Five-repeat whole-fixture medians improve 44.05% and 17.46%; these are component results, not game FPS. Slot growth alone still thrashes in the byte-bound fixture.
+
+Two additional stock skinning templates gain exact CPU evaluators shared by materials and actor/GI work. Original envelope eligibility, pose/read budgets, Strict fallback, operation order, rounding, failure/alias behavior and current transforms are preserved. New per-route vertex counters and actual renderer frame IDs make the next client run attributable. Normal/height caches are already warm; recorded GPU displacement height draws are zero in this run.
+
+All production shader sources, bytecode, sample counts, ranges, MSAA and render coverage remain unchanged. A byte-exact 630-image FogBlur experiment is excluded because repeated GPU timing regressed. Three workers investigated five topics each. Exact actor tests, eight terrain suites, six AO/post regressions, 140 M2/terrain/WMO capture comparisons and an x86 release with all 17 exports pass. The English detailed report is renderer/docs/rotation-disabled-performance.md / NORTHLIGHT_ROTATION_DISABLED_PERFORMANCE_REPORT_EN.md; the separate DLL package includes raw evidence. The game was not launched, and installed DLL/settings/assets were preserved. Actual new FPS awaits the user's comparable rotation test. Older sections below describe preceding builds.
+
+
 ## Fresh 00:23 run: terrain snapshot eviction is the foreground rotation bottleneck — 23 October
 
 The complete new log tests 11f79a8, SHA-256 c7d91da6b7154546a3f70d6f85ded70733f041ec3f5cd673526c407a14a50689. It contains both material states, AO/cloud switches and late effects toggles; sampled Off windows are analyzed separately. The preceding inactive-shader fix is confirmed: 37 queued originals, zero Off vertex compilation and zero cold vertex CPU. The new command/capture timers instead identify terrain snapshot preparation at 11.159/9.947/12.032 ms in Off frames 3556/4064/6858, with hundreds of misses and evictions at the 32 MiB CPU cache limit. Native material-reference draw CPU totals are below 1 ms in those frames; GameScene timestamps overlap submission gaps and do not establish pure GPU arithmetic cost.

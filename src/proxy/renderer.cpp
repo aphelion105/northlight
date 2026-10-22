@@ -613,7 +613,7 @@ private:
         gpuFrameStarted=gpuSceneSplit=gpuEffectsSplit=false;
         if(!applied||failed)stateBlocks.clear();
         if(!enabled||extensionFault){stateBlocks.clear();if(world)world->releaseStateCache();if(water)water->releaseStateCache();}
-        if(world)world->endFrame(!extensionFault);if(water)water->endFrame();if(surface)surface->endFrame();if(autoBump)autoBump->endFrame();if(celestialDiscs)celestialDiscs->endFrame();if(shadowBlobs)shadowBlobs->endFrame();
+        if(world)world->endFrame(!extensionFault,frame);if(water)water->endFrame();if(surface)surface->endFrame();if(autoBump)autoBump->endFrame();if(celestialDiscs)celestialDiscs->endFrame();if(shadowBlobs)shadowBlobs->endFrame();
         drop(worldDepth);worldDepthDescKnown=false; rainMrtUnbind();terrain = captured = applied = projectionValid = false;rainMaskCleared=rainMaskDrawn=rainMaskFrame=rainMaskOk=rainDepthOk=false;surfaceDepthFrozen=false; /* 0.3.202 (rain mask MRT): RT1 never outlives a frame */earlyDepth.reset();resetTranslucentCensus(); /* the TRANSLUCENT line is logged before clearFrame */
     }
     void releaseResources() {

@@ -218,11 +218,12 @@ private:
         UINT smallest=0,largest=0;
         float low[3]={},high[3]={};
         std::shared_ptr<SourceIndices> indices;std::vector<unsigned char> vertices;
-        std::vector<UINT> sourceOffsets; // Validated byte offsets, in snapshot position order.
+        NorthlightTerrainIndices::Indices sourceOffsets; // Exact 16/32-bit byte offsets, in snapshot position order.
         std::shared_ptr<const MeshSnapshot> snapshot;
     };
     static constexpr std::uint64_t ContentLimit=32u*1024u*1024u;
-    static constexpr size_t ContentEntries=4096;
+    // Entry slots share the existing byte budget; small draws need not evict at 4096.
+    static constexpr size_t ContentEntries=8192;
     std::array<std::unique_ptr<ContentEntry>,ContentEntries> content;
     std::array<size_t,ContentEntries> freeContent{};size_t freeContentCount=ContentEntries;
     std::unordered_multimap<std::uint64_t,ContentEntry*> contentLookup;
@@ -272,12 +273,14 @@ private:
         // Keep exact indices and a mapping to the captured XYZ for revalidation
         // after buffer writes. The other vertex attributes are not used here.
         const bool keepRaw=!verified.valid();
+        const std::uint64_t maximumOffset=std::uint64_t(largest-smallest)*key.draw.stride;
+        const unsigned offsetBytes=maximumOffset<=UINT16_MAX?2:4;
         auto sharedIndices=lastSourceIndices.lock();
         if(sharedIndices&&sharedIndices->bytes!=rawIndices)sharedIndices.reset();
         std::uint64_t sourceBytes=sharedIndices?sourceIndexBytes(*sharedIndices):sizeof(SourceIndices)+32+rawIndices.size();
         const auto required=[&](std::uint64_t bytes){return bytes+(!sharedIndices||!sharedIndices->entries?sourceBytes:0);};
         const std::uint64_t estimate=sizeof(ContentEntry)+sizeof(MeshSnapshot)+256+
-            (keepRaw?rawVertices.size():sourceOffsets.size()*sizeof(UINT))+
+            (keepRaw?rawVertices.size():sourceOffsets.size()*offsetBytes)+
             snapshot->positions.capacity()*sizeof(Position)+snapshot->indices.allocatedBytes()+snapshot->bounds.chunks.capacity()*sizeof(ChunkBounds);
         if(required(estimate)>contentLimit-ContentBaseBytes)return;
         const auto range=contentLookup.equal_range(hash);
@@ -301,7 +304,7 @@ private:
         next->indices=sharedIndices;
         if(keepRaw)next->vertices=rawVertices;
         else{
-            next->sourceOffsets.reserve(sourceOffsets.size());
+            next->sourceOffsets.reserve(sourceOffsets.size(),UINT(maximumOffset));
             for(UINT offset:sourceOffsets){
                 const std::uint64_t byte=std::uint64_t(offset)*key.draw.stride;
                 if(byte+sizeof(Position)>rawVertices.size())return;
@@ -310,7 +313,7 @@ private:
         }
         next->snapshot=snapshot;
         std::memcpy(next->low,detail.low,sizeof next->low);std::memcpy(next->high,detail.high,sizeof next->high);
-        next->bytes=sizeof(ContentEntry)+sizeof(MeshSnapshot)+256+next->vertices.capacity()+next->sourceOffsets.capacity()*sizeof(UINT)+
+        next->bytes=sizeof(ContentEntry)+sizeof(MeshSnapshot)+256+next->vertices.capacity()+next->sourceOffsets.allocatedBytes()+
             next->snapshot->positions.capacity()*sizeof(Position)+next->snapshot->indices.allocatedBytes()+
             next->snapshot->bounds.chunks.capacity()*sizeof(ChunkBounds);
         if(required(next->bytes)>contentLimit-ContentBaseBytes||!makeRoom(next->bytes))return;
@@ -363,13 +366,16 @@ public:
     static constexpr size_t persistentEntryLimit(){return ContentEntries;}
     const Maintenance& maintenance()const{return maintenance_;}
     std::uint64_t persistentBytes()const{return contentBytes;}
-    struct IndexStorage {size_t compact=0,wide=0,sourceBlocks=0;std::uint64_t bytes=0,avoided=0,sourceBytes=0,sourceAvoided=0;};
+    struct IndexStorage {size_t compact=0,wide=0,sourceBlocks=0,offsetCompact=0,offsetWide=0;std::uint64_t bytes=0,avoided=0,sourceBytes=0,sourceAvoided=0,offsetBytes=0,offsetAvoided=0;};
     // Sampled diagnostics only; never walk the persistent cache in a draw hook.
     IndexStorage indexStorage()const{
         IndexStorage stats;stats.sourceBlocks=sourceIndexBlocks_;stats.sourceBytes=sourceIndexDataBytes_;stats.sourceAvoided=sourceIndexLogicalBytes_-sourceIndexDataBytes_;
         for(const auto& entry:content)if(entry){const auto& indices=entry->snapshot->indices;const auto bytes=indices.allocatedBytes();
             const bool compact=indices.visit([](const auto* p,size_t){return sizeof(*p)==2;});
-            stats.compact+=compact;stats.wide+=!compact;stats.bytes+=bytes;stats.avoided+=compact?bytes:0;}
+            stats.compact+=compact;stats.wide+=!compact;stats.bytes+=bytes;stats.avoided+=compact?bytes:0;
+            const auto& offsets=entry->sourceOffsets;if(!offsets.empty()){
+                const bool small=offsets.visit([](const auto* p,size_t){return sizeof(*p)==2;});
+                const auto allocated=offsets.allocatedBytes();stats.offsetCompact+=small;stats.offsetWide+=!small;stats.offsetBytes+=allocated;stats.offsetAvoided+=small?allocated:0;}}
         return stats;
     }
     std::uint64_t persistentHits()const{return contentHits;}

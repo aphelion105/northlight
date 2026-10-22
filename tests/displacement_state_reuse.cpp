@@ -46,6 +46,7 @@ struct DisplacementStateTestAccess {
         std::puts("DISPLACEMENT_BOUNDS_CACHE_PASS workingSetMiB=32 boundsKiB_under=64 warmHits=640 weak_lifetime address_reuse reset");
     }
     static void capture();
+    static void kernels();
     static void primitiveLimit();
     static void posed(){
         using namespace NorthlightWaterShaderPatch;using namespace NorthlightActorDeformation;
@@ -251,6 +252,19 @@ struct LimitBackend:CaptureBackend {
     HRESULT STDMETHODCALLTYPE GetTexture(DWORD stage,IDirect3DBaseTexture9** out)override{++textures;*out=stage?nullptr:&texture;if(*out)(*out)->AddRef();return D3D_OK;}
     HRESULT STDMETHODCALLTYPE GetSamplerState(DWORD,D3DSAMPLERSTATETYPE,DWORD* out)override{++samplers;*out=D3DTADDRESS_WRAP;return D3D_OK;}
 };
+void DisplacementStateTestAccess::kernels(){
+    using namespace NorthlightActorDeformation;using namespace NorthlightWaterShaderPatch;
+    CaptureBackend d;NorthlightAutoDisplacement g(&d);NorthlightAutoDisplacement::Material m;m.skinned=true;m.id=1;m.count=256;m.view.major=3;m.view.positionRegister=0;m.view.skinned=true;m.view.inputs={{0,D3DDECLUSAGE_POSITION,0},{1,D3DDECLUSAGE_BLENDINDICES,0}};m.view.definitions={{0,{3,1,0,0}}};
+    auto op=[&](unsigned code,Word target,Word a,Word b=0,Word address=0){Operation o;o.code=code;o.destination=target;o.source[0].token=a;o.source[0].address=address;o.source[1].token=b;m.view.operations.push_back(o);};
+    op(1,dst(0,0,8),src(2,0,0x55));op(5,dst(0,1,1),src(2,0,0),src(1,1,0));op(46,dst(3,0,1),src(0,1,0));
+    for(unsigned axis=0;axis<3;++axis){op(9,dst(0,0,1u<<axis),src(2,31+axis)|0x2000,src(1,0),src(3,0,0));d.bank[(31+axis)*4+axis]=1;}
+    buildKernel(m.view);assert(m.view.kernel.singleSkin()&&!m.view.kernel.skin);g.materials[&d.vs]=std::move(m);g.shaders[&d.vs].patched=&d.vs;d.vs.AddRef();g.envelopeBudget.maxVertices=g.envelopeBudget.maxOperations=0;
+    struct V{float x,y,z;unsigned bone;} v[]={{1,2,100,0},{2,3,100,0},{3,4,100,0}};NorthlightAutoDisplacement::Args args{{D3DPT_TRIANGLELIST,0,0,3,0,1,false},nullptr,D3DFMT_UNKNOWN,v,16};
+    for(unsigned pass=0;pass<2;++pass){g.materials[&d.vs].view.kernel.evaluator=pass?Kernel::SingleFirst:Kernel::Generic;
+        assert(!g.prepare(&d.vs,4,1,args)&&g.poseKernelVertices[pass]==3&&g.poseVerticesThisFrame==3);
+        for(unsigned i=0;i<4;++i)assert(g.poseKernelVertices[i]==(i==pass?3u:0u));g.endFrame();for(auto count:g.poseKernelVertices)assert(count==0);}
+    std::puts("MATERIAL_POSE_KERNEL_COUNTER_PASS exact_generic_single_vertices unchanged_budget far_return frame_reset");
+}
 void DisplacementStateTestAccess::primitiveLimit(){
     LimitBackend d;NorthlightAutoDisplacement g(&d);rangeProgram(g,&d.vs);g.materials[&d.vs].id=1;
     g.materials[&d.vs].uv=g.materials[&d.vs].view;g.materials[&d.vs].uv.textureCoordinates=true;
@@ -493,6 +507,7 @@ int main(){
     DisplacementStateTestAccess::cache();
     DisplacementStateTestAccess::primitiveLimit();
     DisplacementStateTestAccess::posed();
+    DisplacementStateTestAccess::kernels();
     {SplitDeclaration decl;DisplacementStateTestAccess::positionOnly(&decl);}
     {RangeBackend backend;NorthlightAutoDisplacement g(&backend);auto* shader=reinterpret_cast<IDirect3DVertexShader9*>(uintptr_t(1));
      DisplacementStateTestAccess::rangeProgram(g,shader);
