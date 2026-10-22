@@ -20,5 +20,6 @@ A new baseline was recorded in Crystalsong Forest with terrain/wall/grass POM, m
 - All 40 model shader/skin/combiner combinations pass, including animated geometry, source bindings and vertex constants.
 - All 480 model images match the previous combined follow-up fixtures bit for bit.
 - Far-model capture is skipped while native drawing remains; returning near resumes displacement.
+- Native D3D9 and DXVK buffer-generation checks pass: over 32 color-stream updates, POSITION0-only range admission keeps 31 tracked hits and reads 168 bytes, versus zero hits and 7040 bytes with the full layout. Position writes invalidate the proof, nonfinite positions fail open, and full material capture sees every color update. These are fixture byte counts, not game timing estimates. Run `tests/validate_displacement_gpu_height.py --backend <d3d9.dll> --range-streams-only`.
 
 These are correctness tests, not a game FPS benchmark. Final acceptance needs a matching focused, full-quality game run, a positive GPU-height draw delta for geometry within camera range, and a near/far image check. In-game validation is pending an interactive login. See [material-displacement.md](material-displacement.md) for rendering contracts, fallbacks and diagnostic counters. Keep the integration PR in draft while this work remains incomplete.

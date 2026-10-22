@@ -18,6 +18,15 @@ struct MaterialDepthMeter:ForwardIDirect3DDevice9 {
     HRESULT STDMETHODCALLTYPE CreateTexture(UINT w,UINT h,UINT levels,DWORD usage,D3DFORMAT format,D3DPOOL pool,IDirect3DTexture9** t,HANDLE* shared)override{++allocations;return real->CreateTexture(w,h,levels,usage,format,pool,t,shared);}
     HRESULT STDMETHODCALLTYPE DrawPrimitiveUP(D3DPRIMITIVETYPE type,UINT n,const void* v,UINT stride)override{++gpuDraws;return real->DrawPrimitiveUP(type,n,v,stride);}
 };
+struct DisplacementStateTestAccess {
+    static unsigned rangeHits(const NorthlightAutoDisplacement& g){return g.rangeSnapshots.trackedHits();}
+    static size_t rangeBytes(const NorthlightAutoDisplacement& g){return g.rangeSnapshots.bytesRead();}
+    static void fullRangeLayout(NorthlightAutoDisplacement& g){g.rangeSnapshots.setLayoutProvider(&g.declarations,[](void* c,IDirect3DVertexDeclaration9* decl,UINT* extent){return static_cast<NorthlightVertexDeclarations::Cache*>(c)->captureLayout(decl,extent);});}
+    static void fullColor(NorthlightAutoDisplacement& g,IDirect3DDevice9* d,IDirect3DVertexDeclaration9* decl,const NorthlightAutoDisplacement::Args& args,DWORD expected){
+        NorthlightDrawSnapshot::Mesh mesh;std::shared_ptr<const NorthlightDrawSnapshot::Mesh> shared;assert(g.snapshots.read(d,decl,args.draw,mesh,nullptr,false,&shared));
+        const auto& color=(shared?*shared:mesh).streams[1].bytes;assert(color.size()>=4&&!std::memcmp(color.data(),&expected,4));
+    }
+};
 #ifdef NORTHLIGHT_MATERIAL_MIRROR
 #include "device_mirror.h"
 struct MaterialAllocationMeter:ForwardIDirect3DDevice9 {
@@ -122,6 +131,32 @@ int main(int argc,char** argv){
     bump.setMemoryPressure(pressure);assert(bump.active());
     bump.setGeometryTracking([](void* p,bool){return uint64_t(reinterpret_cast<uintptr_t>(p));},[](void*,bool){return uint64_t(1);},nullptr);
     bump.registerVertex(vs,NorthlightWaterShaderPatch::fnv1a64((std::uint32_t*)vsBytes.data(),vsBytes.size()/4),(DWORD*)vsBytes.data(),vsBytes.size()/4,model?3:0);bump.registerPixel(ps,NorthlightWaterShaderPatch::fnv1a64((std::uint32_t*)psBytes.data(),psBytes.size()/4));
+    if(std::getenv("NORTHLIGHT_TEST_RANGE_STREAMS")){
+        assert(!model&&argc<=5);auto split=std::vector<D3DVERTEXELEMENT9>(std::begin(decls),std::end(decls));for(auto& e:split)if(e.Usage==D3DDECLUSAGE_COLOR){e.Stream=1;e.Offset=0;}
+        std::stable_sort(split.begin(),split.end()-1,[](const auto& a,const auto& b){return a.Stream!=b.Stream?a.Stream<b.Stream:a.Offset<b.Offset;});
+        IDirect3DVertexDeclaration9* splitDecl=nullptr;ok(d->CreateVertexDeclaration(split.data(),&splitDecl));IDirect3DVertexBuffer9* colors=nullptr;
+        ok(d->CreateVertexBuffer(4*sizeof(DWORD),D3DUSAGE_DYNAMIC,0,D3DPOOL_DEFAULT,&colors,nullptr));
+        static std::unordered_map<void*,uint64_t> revisions;revisions[sourceVB]=revisions[sourceIB]=revisions[colors]=1;
+        NorthlightAutoDisplacement::Args geometry{{D3DPT_TRIANGLELIST,0,0,4,0,2,true}};V initial[4];std::memcpy(initial,floor,sizeof floor);
+        d->SetVertexDeclaration(splitDecl);d->SetStreamSource(0,sourceVB,0,sizeof(V));d->SetStreamSource(1,colors,0,sizeof(DWORD));d->SetStreamSourceFreq(0,1);d->SetStreamSourceFreq(1,1);d->SetIndices(sourceIB);
+        float farRow[4];std::memcpy(farRow,bank[3],16);farRow[2]-=200;ok(d->SetVertexShaderConstantF(3,farRow,1));
+        for(bool positionOnly:{false,true}){
+            ok(sourceVB->Lock(0,sizeof initial,&upload,0));std::memcpy(upload,initial,sizeof initial);ok(sourceVB->Unlock());++revisions[sourceVB];
+            NorthlightAutoDisplacement range(d);range.tracking([](void* p,bool){return uint64_t(reinterpret_cast<uintptr_t>(p));},[](void* p,bool){const auto i=revisions.find(p);return i==revisions.end()?uint64_t(0):i->second;},nullptr);
+            if(!positionOnly)DisplacementStateTestAccess::fullRangeLayout(range);
+            range.registerMaterial(vs,reinterpret_cast<const DWORD*>(vsBytes.data()),vsBytes.size()/4,1);unsigned hits=0;size_t readBytes=0;
+            for(unsigned frame=0;frame<32;++frame){const DWORD color=0xff000000|frame;ok(colors->Lock(0,0,&upload,D3DLOCK_DISCARD));for(unsigned i=0;i<4;++i)static_cast<DWORD*>(upload)[i]=color;ok(colors->Unlock());++revisions[colors];
+                float nearest=0;assert(range.nearestMaterialDepth(vs,geometry,nearest)&&nearest>48);hits+=DisplacementStateTestAccess::rangeHits(range);readBytes+=DisplacementStateTestAccess::rangeBytes(range);
+                DisplacementStateTestAccess::fullColor(range,d,splitDecl,geometry,color);range.endFrame();}
+            assert(hits==(positionOnly?31u:0u));
+            V moved[4];std::memcpy(moved,initial,sizeof moved);for(auto& v:moved)v.y-=200.f/c;
+            ok(sourceVB->Lock(0,sizeof moved,&upload,0));std::memcpy(upload,moved,sizeof moved);ok(sourceVB->Unlock());++revisions[sourceVB];
+            float nearest=0;assert(range.nearestMaterialDepth(vs,geometry,nearest)&&nearest<48&&DisplacementStateTestAccess::rangeHits(range)==0);range.endFrame();
+            moved[0].x=NAN;ok(sourceVB->Lock(0,sizeof moved,&upload,0));std::memcpy(upload,moved,sizeof moved);ok(sourceVB->Unlock());++revisions[sourceVB];assert(!range.nearestMaterialDepth(vs,geometry,nearest));
+            std::printf("RANGE_STREAM_TRACKING positionOnly=%u frames=32 trackedHits=%u readBytes=%zu positionMutation=observed nonfinite=unknown\n",unsigned(positionOnly),hits,readBytes);
+        }
+        d->SetStreamSource(1,nullptr,0,0);d->SetVertexDeclaration(decl);drop(splitDecl);drop(colors);std::puts("RANGE_STREAM_TRACKING_PASS mutable_color stable_position changed_position nonfinite full_capture");return 0;
+    }
     if(std::getenv("NORTHLIGHT_TEST_MODEL_RANGE")){
         assert(model&&std::strcmp(argv[5],"model4")==0);d->SetStreamSource(0,sourceVB,0,sizeof(V));d->SetIndices(sourceIB);d->SetVertexShader(vs);d->SetPixelShader(ps);
         NorthlightAutoDisplacement::Args geometry{{D3DPT_TRIANGLELIST,0,0,4,0,2,true}};const unsigned before=captureDevice.allocations;

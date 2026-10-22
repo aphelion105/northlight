@@ -3,11 +3,17 @@ from pathlib import Path
 import argparse,json,os,re,shutil,struct,subprocess,sys
 import numpy as np
 root=Path(__file__).resolve().parents[1];sys.path.insert(0,str(root));import northlight_paths as fp
-p=argparse.ArgumentParser();p.add_argument('--backend',required=True);p.add_argument('--range-only',action='store_true');p.add_argument('--model-range-only',action='store_true');args=p.parse_args()
+p=argparse.ArgumentParser();p.add_argument('--backend',required=True);p.add_argument('--range-only',action='store_true');p.add_argument('--model-range-only',action='store_true');p.add_argument('--range-streams-only',action='store_true');args=p.parse_args()
 name='native' if 'windows' in args.backend.lower() else 'dxvk'
 out=fp.out()/('gpu-height-'+name);out.mkdir(parents=True,exist_ok=True)
 exe=out/'height.exe'
 subprocess.run([str(fp.zig()),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec','-DNORTHLIGHT_OBLIQUE_WIDTH=320','-DNORTHLIGHT_OBLIQUE_HEIGHT=200',*fp.test_include_flags(),str(root/'tests/auto_normal_oblique_gpu.cpp'),'-luser32','-o',str(exe)],env=fp.zig_env(),check=True)
+if args.range_streams_only:
+    folder=fp.out()/'displacement-gpu-20261022/terrain-sm3';env=fp.zig_env();env['NORTHLIGHT_TEST_RANGE_STREAMS']='1'
+    run=subprocess.run([str(exe),str(Path(args.backend).resolve()),str(folder)+'/', '12','.7'],env=env,cwd=out,capture_output=True,text=True,timeout=90)
+    (out/'range-streams.log').write_text(run.stdout+run.stderr,encoding='utf-8');print(run.stdout,flush=True)
+    assert run.returncode==0 and 'RANGE_STREAM_TRACKING_PASS' in run.stdout,run.stdout+run.stderr
+    raise SystemExit()
 if args.model_range_only:
     folder=fp.out()/'model-materials-dxvk/3-weighted4-combiners_opaque';env=fp.zig_env();env['NORTHLIGHT_TEST_MODEL_RANGE']='1'
     run=subprocess.run([str(exe),str(Path(args.backend).resolve()),str(folder)+'/', '12','.7','model4'],env=env,cwd=out,capture_output=True,text=True,timeout=90)
