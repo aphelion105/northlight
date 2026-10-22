@@ -33,6 +33,13 @@ struct DisplacementStateTestAccess {
         alignas(Mesh) unsigned char storage[sizeof(Mesh)];auto first=std::shared_ptr<const Mesh>(new(storage) Mesh,[](const Mesh* p){p->~Mesh();});
         NorthlightAutoDisplacement::Bounds b{};g.retainBounds(first,std::move(b));first.reset();
         auto replacement=std::shared_ptr<const Mesh>(new(storage) Mesh,[](const Mesh* p){p->~Mesh();});assert(g.cachedBounds(replacement)==g.bounds.end());g.reset();assert(!g.boundsBytes&&g.bounds.empty());
+        // The live scene thrashes a 1024-entry cap with tiny metadata records.
+        sources.clear();for(unsigned i=0;i<1536;++i){auto source=std::make_shared<Mesh>();sources.push_back(source);NorthlightAutoDisplacement::Bounds bound{};bound.low[0]=float(i);g.retainBounds(source,std::move(bound));}
+        const auto misses=g.boundsMisses;for(unsigned repeat=0;repeat<4;++repeat)for(unsigned i=0;i<sources.size();++i){auto hit=g.cachedBounds(sources[i]);assert(hit!=g.bounds.end()&&hit->second.low[0]==float(i));}
+        assert(g.boundsMisses==misses&&g.boundsBytes<(256u<<10));
+        for(unsigned i=1536;i<5000;++i){auto source=std::make_shared<Mesh>();sources.push_back(source);NorthlightAutoDisplacement::Bounds bound{};g.retainBounds(source,std::move(bound));}
+        assert(g.bounds.size()==4096&&g.boundsBytes<=(8u<<20));g.reset();assert(!g.boundsBytes&&g.bounds.empty());
+        std::puts("DISPLACEMENT_BOUNDS_WORKING_SET_PASS entries=1536 warmHits=6144 misses=0 entryCap=4096 byteCapMiB=8");
         std::puts("DISPLACEMENT_BOUNDS_CACHE_PASS workingSetMiB=32 boundsKiB_under=64 warmHits=640 weak_lifetime address_reuse reset");
     }
     static void capture();

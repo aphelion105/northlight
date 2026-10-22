@@ -11,8 +11,8 @@
 class NorthlightMaterialProfile {
 public:
     enum Stage {Admission,Constants,Snapshot,BoundsPose,HeightRead,UV,Subdivide,GeometryUpload,
-        NormalCache,NormalBuild,Mips,CaptureSetup,CaptureDraw,CaptureRestore,PomSetup,NativeDraw,FinalApply,SharedPOM,VisibilityAudit,StageCount};
-    static const char* name(Stage s){static const char* names[]={"admission","constants","snapshot","boundsPose","heightRead","uv","subdivide","geometryUpload","normalCache","normalBuild","mips","captureSetup","captureDraw","captureRestore","pomSetup","nativeDraw","finalApply","sharedPOM","visibilityAudit"};return names[s];}
+        NormalCache,NormalBuild,Mips,CaptureSetup,CaptureDraw,CaptureRestore,PomSetup,NativeDraw,FinalApply,SharedPOM,VisibilityAudit,DeferredRecord,DeferredFlush,StageCount};
+    static const char* name(Stage s){static const char* names[]={"admission","constants","snapshot","boundsPose","heightRead","uv","subdivide","geometryUpload","normalCache","normalBuild","mips","captureSetup","captureDraw","captureRestore","pomSetup","nativeDraw","finalApply","sharedPOM","visibilityAudit","deferredRecord","deferredFlush"};return names[s];}
     using Clock=uint64_t(*)();
     enum Counter {Candidates,RangeRejected,NoContribution,NormalHit,NormalMiss,BoundsVertices,PoseVertices,PoseBudget,
         GeometryHit,GeometryBuilt,OcclusionDraw,OcclusionFarSkipped,CounterCount};

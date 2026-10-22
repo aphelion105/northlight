@@ -19,6 +19,22 @@ class NorthlightAutoBump {
     NorthlightAutoNormalCache::Lease sharedMaps[2];
     NorthlightAutoParallax parallax;
     NorthlightAutoDisplacement displacement;
+    // Frame-local replay owns immutable vertex data and the generated map. It
+    // never relies on game buffers/textures staying unchanged until the flush.
+    static constexpr unsigned DeferredRasterCount=30;
+    struct Deferred {
+        IDirect3DVertexShader9* vertex=nullptr;IDirect3DPixelShader9* pixel=nullptr;IDirect3DVertexDeclaration9* declaration=nullptr;
+        std::shared_ptr<const NorthlightDrawSnapshot::Mesh> mesh;NorthlightAutoNormalCache::Lease normal;
+        float vertexConstants[256*4];std::vector<float> pixelConstants;int vertexInt[64],pixelInt[64];BOOL vertexBool[16],pixelBool[16];
+        DWORD states[14],raster[DeferredRasterCount],addressU=0,addressV=0;RECT scissor{};D3DVIEWPORT9 viewport{};unsigned first=0,tag=0;bool occlusion=false;
+        ~Deferred(){drop(vertex);drop(pixel);drop(declaration);}
+    };
+    const D3DRENDERSTATETYPE deferredRasterKeys[DeferredRasterCount]={D3DRS_CULLMODE,D3DRS_ZENABLE,D3DRS_ZFUNC,D3DRS_DEPTHBIAS,D3DRS_SLOPESCALEDEPTHBIAS,D3DRS_SCISSORTESTENABLE,D3DRS_MULTISAMPLEANTIALIAS,D3DRS_MULTISAMPLEMASK,D3DRS_CLIPPING,D3DRS_DITHERENABLE,D3DRS_WRAP0,D3DRS_WRAP7,D3DRS_SHADEMODE,D3DRS_FILLMODE,D3DRS_LASTPIXEL,D3DRS_ANTIALIASEDLINEENABLE,D3DRS_WRAP1,D3DRS_WRAP2,D3DRS_WRAP3,D3DRS_WRAP4,D3DRS_WRAP5,D3DRS_WRAP6,D3DRS_WRAP8,D3DRS_WRAP9,D3DRS_WRAP10,D3DRS_WRAP11,D3DRS_WRAP12,D3DRS_WRAP13,D3DRS_WRAP14,D3DRS_WRAP15};
+    NorthlightDrawSnapshot::Frame deferredSnapshots{2u<<20,0};
+    NorthlightVertexDeclarations::Cache deferredDeclarations;
+    std::vector<std::unique_ptr<Deferred>> deferred;size_t deferredBytes=0;bool deferredAllowed=false;
+    unsigned queued=0,flushed=0,deferredFallback=0,deferredDiscarded=0,deferredUnsafe=0,deferredGeometry=0;
+    bool deferredReport=false;uint64_t deferredReportFrame=0;
     float projection[4]={1,1,-1,8};
     // Only these states are changed by the replay. A full state block per material
     // copied every shader constant/texture and rebound all MRT/depth surfaces.
@@ -33,6 +49,7 @@ class NorthlightAutoBump {
         IDirect3DIndexBuffer9* indices=nullptr;
         UINT offset=0,stride=0;
         D3DVIEWPORT9 viewport;
+        RECT scissor{};DWORD scissorEnabled=FALSE;
         float constant[24]={};unsigned constantBase=20,constantCount=5,normalStage=2,stateCount=14;
         IDirect3DBaseTexture9* texture2=nullptr,*texture3=nullptr;bool composite=false;
         const D3DSAMPLERSTATETYPE samplerKeys[8]={D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER,D3DSAMP_MIPFILTER,D3DSAMP_ADDRESSU,D3DSAMP_ADDRESSV,D3DSAMP_SRGBTEXTURE,D3DSAMP_MAXMIPLEVEL,D3DSAMP_MIPMAPLODBIAS};
@@ -54,6 +71,7 @@ class NorthlightAutoBump {
             if(composite){if(FAILED(d->GetTexture(3,&texture3)))return false;for(unsigned i=0;i<8;++i)if(FAILED(d->GetSamplerState(3,samplerKeys[i],&samplerValues3[i])))return false;}
             if(!pixel||!target||
                FAILED(d->GetPixelShaderConstantF(constantBase,constant,constantCount))||FAILED(d->GetTexture(normalStage,&texture2)))return false;
+            if(FAILED(d->GetScissorRect(&scissor))||FAILED(d->GetRenderState(D3DRS_SCISSORTESTENABLE,&scissorEnabled)))return false;
             for(unsigned i=0;i<8;++i)if(FAILED(d->GetSamplerState(normalStage,samplerKeys[i],&samplerValues[i])))return false;
             if(up){if(FAILED(d->GetStreamSource(0,&stream,&offset,&stride))||FAILED(d->GetIndices(&indices)))return false;userMemory=true;}
             return true;
@@ -64,7 +82,7 @@ class NorthlightAutoBump {
                 if(sharedTargets){d->SetRenderTarget(2,nullptr);d->SetRenderTarget(3,nullptr);}
                 if(auxiliary)d->SetRenderTarget(1,nullptr);
                 if(depth)d->SetDepthStencilSurface(nullptr);
-                d->SetRenderTarget(0,target);if(depth)d->SetDepthStencilSurface(depth);d->SetViewport(&viewport);
+                d->SetRenderTarget(0,target);if(depth)d->SetDepthStencilSurface(depth);d->SetViewport(&viewport);d->SetScissorRect(&scissor);d->SetRenderState(D3DRS_SCISSORTESTENABLE,scissorEnabled);
                 d->SetVertexShader(vertex);d->SetPixelShader(pixel);d->SetPixelShaderConstantF(constantBase,constant,constantCount);
                 d->SetTexture(normalStage,texture2);for(unsigned i=0;i<8;++i)if(samplerChanged&(1u<<i))d->SetSamplerState(normalStage,samplerKeys[i],samplerValues[i]);
                 if(composite){d->SetTexture(3,texture3);for(unsigned i=0;i<8;++i)if(samplerChanged3&(1u<<i))d->SetSamplerState(3,samplerKeys[i],samplerValues3[i]);}
@@ -76,18 +94,28 @@ class NorthlightAutoBump {
         }
         void apply(){changed=true;for(unsigned i=0;i<stateCount;++i){auto& s=states[i];if(s.value!=s.replay)d->SetRenderState(s.key,s.replay);}}
     };
-    struct Vertex {IDirect3DVertexShader9* patched=nullptr;unsigned kind=0;IDirect3DVertexShader9* shared=nullptr;bool sharedChecked=false;};
+    struct Vertex {IDirect3DVertexShader9* patched=nullptr;unsigned kind=0;IDirect3DVertexShader9* shared=nullptr;bool sharedChecked=false,deferredSafe=false;};
     bool sharedVertex(Vertex& vertex){if(!vertex.sharedChecked){vertex.sharedChecked=true;vertex.shared=NorthlightSharedPOM::vertexShader(d,vertex.patched);}return vertex.shared!=nullptr;}
     std::unordered_map<IDirect3DVertexShader9*,Vertex> vertices;
     std::unordered_map<IDirect3DPixelShader9*,unsigned> pixels;
     IDirect3DPixelShader9* shaders[6]={},*sharedShaders[6]={};
-    struct NativeCapture {IDirect3DPixelShader9* source=nullptr,*shader=nullptr;unsigned constant=128;};
+    struct NativeCapture {IDirect3DPixelShader9* source=nullptr,*shader=nullptr;unsigned constant=128,first=256,last=0;bool deferredSafe=false;};
     std::unordered_map<IDirect3DPixelShader9*,NativeCapture> nativeCaptures[2][2];
     NativeCapture* modelCapture(IDirect3DPixelShader9* source,bool alpha,bool shared=false){
         auto& variants=nativeCaptures[shared][alpha];auto it=variants.find(source);if(it!=variants.end())return it->second.shader?&it->second:nullptr;
         if(variants.size()>=512)return nullptr;NativeCapture entry;entry.source=source;source->AddRef();UINT bytes=0;
         if(SUCCEEDED(source->GetFunction(nullptr,&bytes))&&bytes&&bytes<65536){std::vector<DWORD> code(bytes/4);std::vector<uint32_t> patched;
-            if(SUCCEEDED(source->GetFunction(code.data(),&bytes))&&NorthlightNativeMaterialCapture::patch(reinterpret_cast<const uint32_t*>(code.data()),code.size(),patched,entry.constant,alpha,shared))d->CreatePixelShader(reinterpret_cast<const DWORD*>(patched.data()),&entry.shader);}
+            if(SUCCEEDED(source->GetFunction(code.data(),&bytes))&&NorthlightNativeMaterialCapture::patch(reinterpret_cast<const uint32_t*>(code.data()),code.size(),patched,entry.constant,alpha,shared)){
+                d->CreatePixelShader(reinterpret_cast<const DWORD*>(patched.data()),&entry.shader);
+                NorthlightTerrainCoverage::Program program;
+                if(!shared&&NorthlightTerrainCoverage::analyse(patched.data(),patched.size(),program)){
+                    bool defined[256]={};for(const auto& op:program.ops)if(op.code==81)defined[NorthlightWaterShaderPatch::regIndex(patched[op.at+1])]=true;
+                    entry.deferredSafe=true;for(const auto& op:program.ops){if(op.code==31||op.code==81||op.code==48||op.code==47||op.code==65534)continue;
+                        for(unsigned i=1;i<=op.size;++i){const auto t=patched[op.at+i];const unsigned type=NorthlightWaterShaderPatch::regType(t),r=NorthlightWaterShaderPatch::regIndex(t);if(type==10&&r!=14)entry.deferredSafe=false;
+                            if(type==2&&r<256&&!defined[r]){entry.first=std::min(entry.first,r);entry.last=std::max(entry.last,r);}}}
+                    entry.deferredSafe&=entry.first<=entry.constant&&entry.last>=entry.constant+4&&entry.last<224;
+                }
+            }}
         auto added=variants.emplace(source,entry).first;if(!entry.shader)logf("MATERIAL_MODEL capture unavailable; native material retained");return entry.shader?&added->second:nullptr;
     }
     IDirect3DTexture9* height=nullptr;
@@ -124,22 +152,85 @@ class NorthlightAutoBump {
         if(!failed)logf("AUTOBUMP failed stage=%s hr=%08lx; native rendering retained",stage,(unsigned long)hr);
         failed=true;return false;
     }
+    bool recordCapture(const NorthlightAutoDisplacement::Args& args,NorthlightAutoNormalCache::Lease& normal,bool auxiliary,const ReplayState& saved,const NativeCapture& model,IDirect3DVertexShader9* vertex,const float* captureConstants,DWORD addressU,DWORD addressV){
+        using P=NorthlightMaterialProfile;P::Scope timing(profile,P::DeferredRecord,profileTag);
+        if(deferred.size()>=512||d->GetNPatchMode()!=0||(args.draw.topology!=D3DPT_TRIANGLELIST&&args.draw.topology!=D3DPT_TRIANGLESTRIP&&args.draw.topology!=D3DPT_TRIANGLEFAN))return false;
+        try{
+            NorthlightDrawSnapshot::Ref<IDirect3DVertexDeclaration9> decl;if(FAILED(d->GetVertexDeclaration(decl.out()))||!decl.p)return false;
+            NorthlightDrawSnapshot::Mesh local;std::shared_ptr<const NorthlightDrawSnapshot::Mesh> mesh;
+            if(args.vertices){if(!deferredSnapshots.readUP(decl.p,args.draw,args.indices,args.format,args.vertices,args.stride,local))return false;mesh=std::make_shared<NorthlightDrawSnapshot::Mesh>(std::move(local));}
+            else if(!deferredSnapshots.read(d,decl.p,args.draw,local,nullptr,false,&mesh))return false;
+            if(!mesh)mesh=std::make_shared<NorthlightDrawSnapshot::Mesh>(std::move(local));
+            if(mesh->streams[0].bytes.empty())return false;for(unsigned i=1;i<4;++i)if(!mesh->streams[i].bytes.empty())return false;
+            DWORD planes=0;if(FAILED(d->GetRenderState(D3DRS_CLIPPLANEENABLE,&planes))||planes)return false;
+            const size_t cost=sizeof(Deferred)+mesh->byteSize()+(model.last-model.first+1)*16;if(cost>(8u<<20)-deferredBytes)return false;
+            auto packet=std::make_unique<Deferred>();packet->mesh=mesh;packet->tag=profileTag;packet->occlusion=auxiliary;
+            packet->declaration=decl.p;decl.p=nullptr;packet->pixel=model.shader;packet->pixel->AddRef();packet->vertex=vertex;vertex->AddRef();
+            packet->first=model.first;packet->pixelConstants.resize((model.last-model.first+1)*4);packet->viewport=saved.viewport;packet->addressU=addressU;packet->addressV=addressV;
+            for(unsigned i=0;i<14;++i)packet->states[i]=saved.states[i].replay;
+            for(unsigned i=0;i<DeferredRasterCount;++i)if(FAILED(d->GetRenderState(deferredRasterKeys[i],packet->raster+i)))return false;
+            if(FAILED(d->GetScissorRect(&packet->scissor))||FAILED(d->GetVertexShaderConstantF(0,packet->vertexConstants,256))||FAILED(d->GetPixelShaderConstantF(packet->first,packet->pixelConstants.data(),UINT(packet->pixelConstants.size()/4)))||
+               FAILED(d->GetVertexShaderConstantI(0,packet->vertexInt,16))||FAILED(d->GetPixelShaderConstantI(0,packet->pixelInt,16))||FAILED(d->GetVertexShaderConstantB(0,packet->vertexBool,16))||FAILED(d->GetPixelShaderConstantB(0,packet->pixelBool,16)))return false;
+            std::copy(captureConstants,captureConstants+20,packet->pixelConstants.begin()+(model.constant-packet->first)*4);
+            deferred.push_back(std::move(packet));deferred.back()->normal=std::move(normal);deferredBytes+=cost;++queued;timing.work(mesh->vertexCount,mesh->byteSize());return true;
+        }catch(...){return false;}
+    }
 public:
-    explicit NorthlightAutoBump(IDirect3DDevice9* device):d(device),normals(device),sharedPOM(device),parallax(device,normals),displacement(device){}
+    explicit NorthlightAutoBump(IDirect3DDevice9* device):d(device),normals(device),sharedPOM(device),parallax(device,normals),displacement(device){
+        deferredSnapshots.setSnapshotCacheLimit(4u<<20);deferredSnapshots.setChargeResidentHits(false);
+        deferredSnapshots.setDeclarationProvider(&deferredDeclarations,[](void* c,IDirect3DVertexDeclaration9* v,const D3DVERTEXELEMENT9*& e,UINT& n){return static_cast<NorthlightVertexDeclarations::Cache*>(c)->get(v,e,n);});
+        deferredSnapshots.setLayoutProvider(&deferredDeclarations,[](void* c,IDirect3DVertexDeclaration9* v,UINT* e){return static_cast<NorthlightVertexDeclarations::Cache*>(c)->captureLayout(v,e);});}
+    void setDeferredCapture(bool on){deferredAllowed=on;}
+    bool finishCaptures(){
+        if(deferred.empty())return true;using P=NorthlightMaterialProfile;P::Scope timing(profile,P::DeferredFlush,deferred.front()->tag,true);timing.work(deferred.size(),deferredBytes);
+        struct Result {NorthlightAutoBump& owner;bool ok=false;~Result(){if(!ok){owner.deferredDiscarded+=unsigned(owner.deferred.size());owner.deferred.clear();owner.deferredBytes=0;owner.drawn=owner.occlusionDrawn=false;owner.check(E_FAIL,"deferred material replay");}}} result{*this};
+        struct Constants {IDirect3DDevice9* d;float bank[256*4],pixel[224*4];bool valid=false;explicit Constants(IDirect3DDevice9* device):d(device){}~Constants(){if(valid){d->SetVertexShaderConstantF(0,bank,256);d->SetPixelShaderConstantF(0,pixel,224);}}} constants(d);
+        constants.valid=SUCCEEDED(d->GetVertexShaderConstantF(0,constants.bank,256))&&SUCCEEDED(d->GetPixelShaderConstantF(0,constants.pixel,224));
+        SavedState saved(d);if(!saved.ok||!constants.valid)return false;
+        for(unsigned i=1;i<4;++i)if(FAILED(d->SetRenderTarget(i,nullptr)))return false;
+        if(FAILED(d->SetDepthStencilSurface(nullptr))||FAILED(d->SetRenderTarget(0,target))||FAILED(d->SetDepthStencilSurface(captureDepth)))return false;
+        if(FAILED(d->SetRenderState(D3DRS_STENCILENABLE,FALSE))||FAILED(d->SetRenderState(D3DRS_CLIPPLANEENABLE,0))||FAILED(d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE)))return false;
+        if(!cleared){if(FAILED(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0,1,0)))return false;cleared=true;}
+        const bool auxiliary=std::any_of(deferred.begin(),deferred.end(),[](const auto& p){return p->occlusion;});
+        if(auxiliary&&!occlusionCleared&&occlusionTarget){
+            if(FAILED(d->SetRenderTarget(0,occlusionTarget))||FAILED(d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0))||FAILED(d->SetRenderTarget(0,target)))return false;
+            occlusionCleared=true;
+        }
+        bool success=true;
+        for(auto& packet:deferred){
+            auto& mesh=*packet->mesh;ReplayState keys(d,nullptr,{});HRESULT hr=D3D_OK;
+            auto step=[&](HRESULT result){if(FAILED(result))hr=result;};
+            step(d->SetVertexDeclaration(packet->declaration));step(d->SetStreamSourceFreq(0,1));step(d->SetVertexShader(packet->vertex));step(d->SetPixelShader(packet->pixel));step(d->SetViewport(&packet->viewport));step(d->SetScissorRect(&packet->scissor));
+            for(unsigned i=0;i<14;++i)step(d->SetRenderState(keys.states[i].key,packet->states[i]));
+            for(unsigned i=0;i<DeferredRasterCount;++i)step(d->SetRenderState(deferredRasterKeys[i],packet->raster[i]));
+            step(d->SetTexture(14,packet->normal.get()));const DWORD sampler[]={D3DTEXF_LINEAR,D3DTEXF_LINEAR,D3DTEXF_LINEAR,packet->addressU,packet->addressV,FALSE,0,0};
+            for(unsigned i=0;i<8;++i)step(d->SetSamplerState(14,keys.samplerKeys[i],sampler[i]));
+            step(d->SetVertexShaderConstantF(0,packet->vertexConstants,256));step(d->SetPixelShaderConstantF(packet->first,packet->pixelConstants.data(),UINT(packet->pixelConstants.size()/4)));
+            step(d->SetVertexShaderConstantI(0,packet->vertexInt,16));step(d->SetPixelShaderConstantI(0,packet->pixelInt,16));step(d->SetVertexShaderConstantB(0,packet->vertexBool,16));step(d->SetPixelShaderConstantB(0,packet->pixelBool,16));
+            if(SUCCEEDED(hr))hr=d->SetRenderTarget(1,packet->occlusion?occlusionTarget:nullptr);
+            if(SUCCEEDED(hr)){P::Scope draw(profile,P::CaptureDraw,packet->tag);draw.work(mesh.primitiveCount);
+                hr=mesh.indexed?d->DrawIndexedPrimitiveUP(mesh.topology,0,mesh.vertexCount,mesh.primitiveCount,mesh.indices.data(),D3DFMT_INDEX32,mesh.streams[0].bytes.data(),mesh.streams[0].stride):d->DrawPrimitiveUP(mesh.topology,mesh.primitiveCount,mesh.streams[0].bytes.data(),mesh.streams[0].stride);}
+            if(FAILED(hr)){success=false;break;}++flushed;++draws[3];if(packet->occlusion){occlusionDrawn=true;if(profile)profile->count(P::OcclusionDraw);}
+        }
+        if(success){deferred.clear();deferredBytes=0;result.ok=true;}return success;
+    }
     void setProfiler(NorthlightMaterialProfile* p){profile=p;normals.setProfiler(p);parallax.setProfiler(p);displacement.setProfiler(p);}
     void setMemoryPressure(bool on){
         if(memoryPressure==on)return;memoryPressure=on;
+        if(on&&!deferred.empty()){deferredDiscarded+=unsigned(deferred.size());deferred.clear();deferredBytes=0;drawn=occlusionDrawn=false;}
+        if(on){deferredSnapshots.clearIndexCache();deferredDeclarations.clear();}
         normals.setMemoryPressure(on);displacement.setMemoryPressure(on);sharedPOM.setMemoryPressure(on);
         logf("MATERIAL_MEMORY pressure=%u normalBudgetMiB=%u geometryBudgetMiB=%u relief=active",unsigned(on),on?32:96,on?32:128);
     }
-    void trimMemory(){sharedMaps[0]={};sharedMaps[1]={};sharedPOM.reset();normals.trimMemory();displacement.trimMemory();}
+    void trimMemory(){if(!deferred.empty()){deferredDiscarded+=unsigned(deferred.size());deferred.clear();deferredBytes=0;drawn=occlusionDrawn=false;}sharedMaps[0]={};sharedMaps[1]={};sharedPOM.reset();normals.trimMemory();displacement.trimMemory();deferredSnapshots.clearIndexCache();}
     bool geometryPrepared()const{return displacement.prepared();}
     unsigned geometryPrimitives()const{return displacement.preparedPrimitives();}
     bool geometryHeightGPU()const{return displacement.preparedHeightGPU();}
     void beginDraw(){displacement.beginDraw();sharedMaps[0]={};sharedMaps[1]={};sharedPOM.beginDraw();pomInRange=true;profileTag=profilePrimitives=0;
+        if(profile&&profile->recording()){deferredReport=true;deferredReportFrame=profile->frameNumber();}
         if(profile&&profile->recording()&&profileConfigFrame!=profile->frameNumber()){
             profileConfigFrame=profile->frameNumber();logf("MATERIAL_CONFIG frame=%llu enabled=%u modes=%u/%u/%u/%u normalGain=%.3f normalRange=%.1f pomDepth=%.6f pomRange=%.1f pomSteps=%.0f occlusionRange=%.1f cavity=%.3f selfShadow=%.3f shadowSteps=%.0f lightActive=%.3f sharedPOM=%u",(unsigned long long)profileConfigFrame,unsigned(enabled),modes[0],modes[1],modes[2],modes[3],strength,range,pomControl[0],pomControl[1],pomControl[2],occlusionDistance(),occlusionControl[2],occlusionControl[0],occlusionControl[1],occlusionLight[3],unsigned(sharedPOM.canTry()));}}
-    void setGeometryTracking(uint64_t(*identity)(void*,bool),uint64_t(*version)(void*,bool),NorthlightCaptureMetadata::Read metadata){displacement.tracking(identity,version,metadata);sharedPOM.tracking(identity,version,metadata);}
+    void setGeometryTracking(uint64_t(*identity)(void*,bool),uint64_t(*version)(void*,bool),NorthlightCaptureMetadata::Read metadata){displacement.tracking(identity,version,metadata);sharedPOM.tracking(identity,version,metadata);deferredSnapshots.setIdentityProvider(identity);deferredSnapshots.setVersionProvider(version);deferredSnapshots.setMetadataProvider(metadata);}
     void setConstantEpochSource(void* context,NorthlightConstantEpoch::Reader reader){displacement.setConstantEpochSource(context,reader);}
     template<class Draw> HRESULT geometryDraw(Draw draw,bool native=false){return parallax.shared()?sharedPOM.drawBound(true):displacement.draw(draw,native);}
     void setProjection(float x,float y,float z){projection[0]=x;projection[1]=y;projection[2]=z;}
@@ -159,11 +250,15 @@ public:
         if(changed)logf("AUTOBUMP enabled=%d strength=%.2f distance=%.0f terrain=%d walls=%d grass=%d modes=%u/%u/%u/%u pomDepth=%.6f pomRange=%.0f pomSteps=%.0f",int(enabled),strength,range,int(terrain),int(walls),int(grass),modes[0],modes[1],modes[2],modes[3],pomControl[0],pomControl[1],pomControl[2]);
         if(!enabled)reset();
         bool captureRequired=false;for(unsigned i=0;i<4;++i)captureRequired|=modes[i]&&captureNeeded(i+1);
-        if(!captureRequired){sharedMaps[0]={};sharedMaps[1]={};sharedPOM.reset();drop(captureDepth);drop(target);drop(height);drop(occlusionTarget);drop(occlusionMap);drawn=cleared=false;occlusionUnavailable=false;occlusionRetry=0;}
+        if(!captureRequired){deferredDiscarded+=unsigned(deferred.size());deferred.clear();deferredBytes=0;sharedMaps[0]={};sharedMaps[1]={};sharedPOM.reset();drop(captureDepth);drop(target);drop(height);drop(occlusionTarget);drop(occlusionMap);drawn=cleared=false;occlusionUnavailable=false;occlusionRetry=0;}
     }
     ~NorthlightAutoBump(){reset();for(auto& v:vertices){drop(v.second.patched);drop(v.second.shared);}for(auto*& p:shaders)drop(p);for(auto*& p:sharedShaders)drop(p);for(auto& groups:nativeCaptures)for(auto& variants:groups)for(auto& n:variants){drop(n.second.shader);drop(n.second.source);}}
-    void reset(){sharedMaps[0]={};sharedMaps[1]={};sharedPOM.reset();displacement.reset();normals.reset();drop(captureDepth);drop(target);drop(height);drop(occlusionTarget);drop(occlusionMap);occlusionUnavailable=false;occlusionRetry=0;width=heightPixels=0;cleared=drawn=failed=occlusionCleared=occlusionDrawn=false;}
+    void reset(){deferred.clear();deferredBytes=0;deferredSnapshots.clearIndexCache();deferredDeclarations.clear();sharedMaps[0]={};sharedMaps[1]={};sharedPOM.reset();displacement.reset();normals.reset();drop(captureDepth);drop(target);drop(height);drop(occlusionTarget);drop(occlusionMap);occlusionUnavailable=false;occlusionRetry=0;width=heightPixels=0;cleared=drawn=failed=occlusionCleared=occlusionDrawn=false;}
     void endFrame(){
+        deferredDiscarded+=unsigned(deferred.size());deferred.clear();deferredBytes=0;deferredSnapshots.clearFrame();
+        if(deferredReport||((queued||flushed||deferredFallback||deferredDiscarded)&&frames%600==0))logf("MATERIAL_DEFERRED frame=%llu sampled=%u enabled=%u queued=%u flushed=%u snapshotFallback=%u liveState=%u preparedGeometry=%u discardedUnused=%u packetLimit=512 packetMiB=8 sourceMiB=4",(unsigned long long)(deferredReport?deferredReportFrame:frames),unsigned(deferredReport),unsigned(deferredAllowed),queued,flushed,deferredFallback,deferredUnsafe,deferredGeometry,deferredDiscarded);
+        deferredReport=false;
+        queued=flushed=deferredFallback=deferredDiscarded=deferredUnsafe=deferredGeometry=0;
         if(occlusionRetry)--occlusionRetry;
         displacement.endFrame();
         sharedMaps[0]={};sharedMaps[1]={};sharedPOM.endFrame();if(frames%600==0)sharedPOM.report();
@@ -201,7 +296,9 @@ public:
         std::vector<std::uint32_t> patched;
         if(NorthlightWaterShaderPatch::patch(reinterpret_cast<const std::uint32_t*>(code),count,patched))return;
         IDirect3DVertexShader9* shader=nullptr;
-        if(SUCCEEDED(d->CreateVertexShader(reinterpret_cast<const DWORD*>(patched.data()),&shader))){vertices[original]={shader,k};displacement.registerMaterial(original,code,count,k);displacement.registerVariant(shader,reinterpret_cast<const DWORD*>(patched.data()),patched.size(),displacement.skinned(original));}
+        if(SUCCEEDED(d->CreateVertexShader(reinterpret_cast<const DWORD*>(patched.data()),&shader))){vertices[original]={shader,k};
+            NorthlightWaterShaderPatch::Analysis analysis;if(!NorthlightWaterShaderPatch::analyse(reinterpret_cast<const uint32_t*>(code),count,analysis))vertices[original].deferredSafe=analysis.used[10]==0;
+            displacement.registerMaterial(original,code,count,k);displacement.registerVariant(shader,reinterpret_cast<const DWORD*>(patched.data()),patched.size(),displacement.skinned(original));}
     }
     void registerPixel(IDirect3DPixelShader9* original,std::uint64_t hash){
         pixels.erase(original);const unsigned k=kind(kAutoBumpPixel,hash);
@@ -276,8 +373,10 @@ public:
         if(sharing&&!sharedBinding.bind(sharedPOM,false))sharing=false;
         if(domain==4){model=modelCapture(native,alpha,sharing);if(!model&&sharing){sharedBinding.restore();sharing=false;model=modelCapture(native,alpha);}if(!model)return;saved.constantBase=model->constant;saved.normalStage=14;}
         if(sharing){saved.constantCount=6;saved.stateCount=16;for(unsigned i=14;i<16;++i)if(FAILED(d->GetRenderState(saved.states[i].key,&saved.states[i].value)))return;}
-        saved.viewport=viewport;if(!saved.save(userMemory&&!sharing,material==6&&domain!=4))return;
         const bool multisampled=desc.MultiSampleType!=D3DMULTISAMPLE_NONE;
+        const bool canDefer=deferredAllowed&&!memoryPressure&&domain==4&&multisampled&&!sharing&&!displacement.prepared()&&geometry&&model&&model->deferredSafe&&v->second.deferredSafe;
+        if(deferredAllowed&&domain==4&&multisampled){if(displacement.prepared())++deferredGeometry;else if(sharing||!model||!model->deferredSafe||!v->second.deferredSafe)++deferredUnsafe;}
+        saved.viewport=viewport;if(!canDefer&&!saved.save(userMemory&&!sharing,material==6&&domain!=4))return;
         if(multisampled){
             if(!captureDepth&&!check(d->CreateDepthStencilSurface(width,heightPixels,D3DFMT_D24S8,D3DMULTISAMPLE_NONE,0,FALSE,&captureDepth,nullptr),"material depth"))return;
             saved.states[0].replay=saved.states[0].value;
@@ -303,9 +402,19 @@ public:
         NorthlightAutoNormalCache::Lease normal1;
         if(material==6&&domain!=4){IDirect3DBaseTexture9* second=nullptr;if(FAILED(d->GetTexture(1,&second)))return;normal1=normals.acquire(second);drop(second);if(!normal1)return;}
         DWORD addressU=D3DTADDRESS_WRAP,addressV=D3DTADDRESS_WRAP;d->GetSamplerState(0,D3DSAMP_ADDRESSU,&addressU);d->GetSamplerState(0,D3DSAMP_ADDRESSV,&addressV);
+        const float constants[]={domain==1?.18f:domain==2?.14f:.06f,captureRange(domain),alpha?(float(ref)+(alphaFunc==D3DCMP_GREATER?.5f:0.f))/255.f:.001f,domain==4&&alpha?1.f:0.f};
+        float pom[4];std::copy(pomControl,pomControl+4,pom);if(modes[domain-1]!=2||!parallax.supports(saved.pixel,material))pom[0]=0;
+        float occult[4];std::copy(occlusionControl,occlusionControl+4,occult);occult[3]=needsOcclusion&&occlusionTarget?occlusionDistance():0.f;if(pom[0]<=0||occlusionLight[3]<=0)occult[0]=0;
+        float bank[24];for(unsigned i=0;i<4;++i){bank[i]=constants[i];bank[4+i]=projection[i];bank[8+i]=pom[i];bank[12+i]=occult[i];bank[16+i]=occlusionLight[i];bank[20+i]=sharedPOM.control[i];}
+        if(canDefer){
+            const bool auxiliary=needsOcclusion&&occlusionTarget;
+            if(recordCapture(*geometry,normal,auxiliary,saved,*model,v->second.patched,bank,addressU,addressV)){drawn=true;return;}++deferredFallback;
+        }
+        if(!finishCaptures())return;
+        if(canDefer&&!saved.save(userMemory&&!sharing,material==6&&domain!=4))return;
         bool cacheBound=false;
         {P::Scope setup(profile,P::CaptureSetup,0,true);
-        saved.apply();d->SetTexture(saved.normalStage,normal.get());
+        saved.apply();d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);d->SetTexture(saved.normalStage,normal.get());
         const DWORD normalSampler[]={D3DTEXF_LINEAR,D3DTEXF_LINEAR,D3DTEXF_LINEAR,addressU,addressV,FALSE,0,0};
         for(unsigned i=0;i<8;++i)if(saved.samplerValues[i]!=normalSampler[i]){saved.samplerChanged|=1u<<i;d->SetSamplerState(saved.normalStage,saved.samplerKeys[i],normalSampler[i]);}
         if(normal1){d->SetTexture(3,normal1.get());for(unsigned i=0;i<8;++i)if(saved.samplerValues3[i]!=normalSampler[i]){saved.samplerChanged3|=1u<<i;d->SetSamplerState(3,saved.samplerKeys[i],normalSampler[i]);}}
@@ -321,10 +430,8 @@ public:
             saved.auxiliary=true;if(FAILED(d->SetRenderTarget(1,occlusionTarget))){drop(occlusionTarget);drop(occlusionMap);occlusionUnavailable=true;d->SetRenderTarget(1,nullptr);}}
         if(!cleared){if(!check(d->Clear(0,nullptr,D3DCLEAR_TARGET|(multisampled?D3DCLEAR_ZBUFFER:0),0,1,0),"height clear"))return;cleared=true;}
         if(sharing){saved.sharedTargets=true;cacheBound=SUCCEEDED(d->SetRenderTarget(2,sharedPOM.target(0)))&&SUCCEEDED(d->SetRenderTarget(3,material==6?sharedPOM.target(1):nullptr));if(!cacheBound){d->SetRenderTarget(2,nullptr);d->SetRenderTarget(3,nullptr);}}
-        const float constants[]={domain==1?.18f:domain==2?.14f:.06f,captureRange(domain),alpha?(float(ref)+(alphaFunc==D3DCMP_GREATER?.5f:0.f))/255.f:.001f,domain==4&&alpha?1.f:0.f};
-        float pom[4];std::copy(pomControl,pomControl+4,pom);if(modes[domain-1]!=2||!parallax.supports(saved.pixel,material))pom[0]=0;
-        float occult[4];std::copy(occlusionControl,occlusionControl+4,occult);occult[3]=saved.auxiliary?occlusionDistance():0.f;if(pom[0]<=0||occlusionLight[3]<=0)occult[0]=0;
-        float bank[24];for(unsigned i=0;i<4;++i){bank[i]=constants[i];bank[4+i]=projection[i];bank[8+i]=pom[i];bank[12+i]=occult[i];bank[16+i]=occlusionLight[i];bank[20+i]=sharedPOM.control[i];}
+        bank[15]=saved.auxiliary?occlusionDistance():0.f;
+        if(!check(d->SetScissorRect(&saved.scissor),"capture scissor")||!check(d->SetRenderState(D3DRS_SCISSORTESTENABLE,saved.scissorEnabled),"capture scissor enable"))return;
         if(!check(d->SetVertexShader(sharing?v->second.shared:v->second.patched),"capture VS")||!check(d->SetPixelShader(model?model->shader:captureShader),"capture PS")||
            !check(d->SetPixelShaderConstantF(saved.constantBase,bank,saved.constantCount),"capture constants"))return;
         }

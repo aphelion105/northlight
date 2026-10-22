@@ -85,7 +85,9 @@ class NorthlightAutoDisplacement {
     auto retainBounds(const std::shared_ptr<const Mesh>& source,Bounds&& value){
         value.source=source;value.used=++clock;
         value.bytes=sizeof(Bounds)+4*sizeof(void*)+(value.skin?sizeof(NorthlightReplayBounds::SkinEnvelope):0);
-        while(!bounds.empty()&&(boundsBytes+value.bytes>(8u<<20)||bounds.size()>=1024)){
+        // A city frame can reference more than 1024 tiny bounds. Keep the byte
+        // cap, but avoid rescanning that working set when only 64 KiB is used.
+        while(!bounds.empty()&&(boundsBytes+value.bytes>(8u<<20)||bounds.size()>=4096)){
             auto old=std::min_element(bounds.begin(),bounds.end(),[](const auto& a,const auto& b){return a.second.used<b.second.used;});boundsBytes-=old->second.bytes;bounds.erase(old);}
         auto added=bounds.emplace(source.get(),std::move(value));if(added.second)boundsBytes+=added.first->second.bytes;return added.first;
     }

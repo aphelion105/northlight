@@ -1,5 +1,61 @@
 # Material performance investigation — 22 October 2026
 
+## Latest measured M2 capture bottleneck — 22 October, 15:18 user run
+
+The new log confirms that the shared material capture path is expensive even in normal-only mode. The installed DLL is `7c5c699`, SHA-256 `57a923a347c118496572fc06e40ed69c20b19a1f6753feb4d2342eb3939e232b`. The immutable input is `northlight-diagnostics/material-live-stages-20261022/northlight-renderer.log`, SHA-256 `79495013dbaa887454d768137ed37c99472cb0656b5f622d46ca2a83c488fa60`. This is a 3840×2160, MSAA 2×, DXVK 3.1.1 run. `parsed-stages.json` and `warm-stage-summary.json` preserve the per-frame evidence. No game process was started during this work.
+
+### Where the frame time goes
+
+These are warmed samples with **zero newly created profiling queries**, not cold shader/map creation:
+
+| M2 setting / sampled frame | Material CPU, all domains (ms) | M2 capture draw GPU (ms) | Original M2 draw GPU interval (ms) | Final material composite GPU (ms) |
+| --- | ---: | ---: | ---: | ---: |
+| Displacement + normals / 2286 | 5.773 | 1.786 (332 draws) | 2.066 (510 draws) | 0.158 |
+| POM / 2921 | 4.185 | 1.890 (348 draws) | 2.231 (510 draws) | 0.159 |
+| Normals / 3175 | 3.662 | 2.144 (326 draws) | 2.039 (510 draws) | 0.159 |
+| Off / 3302 | 2.366 | 0 | 0.190 (510 draws) | 0.160 |
+
+The normal-only frame excludes POM and displacement math as the primary explanation. Its native pixel shader is unchanged, yet its original-draw interval is about 1.85 ms longer than with models off. Repeated transitions between the MSAA scene and the single-sample material targets interrupt the native pass; a backend can charge transition work to the following draw. Individual rows do not identify a shader's isolated arithmetic cost. The complete-pass experiment below tests the transition hypothesis directly.
+
+CPU work is also measurable. At frame 2286, bounds/pose evaluation costs **2.028 ms**, source snapshots **0.804 ms**, capture setup **0.893 ms**, capture submission **0.260 ms**, and restoration **0.253 ms** across all domains. At frame 3175 those stages cost **0.695 / 0.300 / 0.758 / 0.212 / 0.209 ms**. Normal-map generation, mip generation, height extraction, subdivision and geometry uploads execute **zero work** in these samples. Sampled query submission itself costs about 0.52–0.57 ms in the active-model samples; profiling is sampled, not performed every frame. CPU and GPU intervals overlap and must not be added.
+
+The observed normal-only frame window is **15.491 ms / 64.55 FPS** at frame 3240. Later model-off windows are **10.733–11.282 ms / 88.64–93.17 FPS** at frames 3480/3600/3720. Displacement-mode windows are roughly 16–17 ms; POM windows roughly 15–16 ms. Focus-loss and large-stutter windows are excluded from this comparison. These setting toggles corroborate the slowdown, but are not a before/after test of the new DLL.
+
+### Are the effects working?
+
+- **Cavity and POM self-shadow are disabled in this user run.** Every configuration reports `cavity=0.000 selfShadow=0.000`; no occlusion target is published. Their zero visible-pixel counts are expected and cannot establish a broken shader.
+- **Bump is executing but has almost no confirmed visible contribution in this scene.** Of 17 regular-grid probes, 15 report zero valid samples; the other two report only 3–4 valid samples and 3 changed normals. This 128×72 grid is not a full-resolution visibility measurement. Range clipping or occlusion may explain the result; the old probe cannot distinguish them from a depth mismatch. The camera is roughly 49 units from the character and the configured normal range is 48, which is relevant context, not proof of the rejection cause.
+- **GPU displacement is supported but executes zero height-fetch draws and builds zero geometry in this run.** The 8-yard model geometry setting cannot be blamed for tessellation that did not occur.
+- Independent production-shader fixtures confirm that all three effects can change the image near the camera: maximum RGB differences are **0.2668 normal / 0.1327 self-shadow / 0.01060 cavity**. At a tested distance of 12 yards with an 8-yard common occlusion range, cavity and self-shadow differences are exactly zero while normal detail remains visible. These are test-scene results, not evidence that the effects were enabled in the user's session.
+
+### Implemented changes and the evidence for them
+
+**1. Group eligible M2 captures after native scene rendering on the actual DXVK 3 runtime.** The existing capture shaders and single-sample material targets remain in use. Original game draws keep their order and MSAA settings. Eligible captures retain their original order within the private pass, instead of switching render targets for every model. The queue is drained before an intervening immediate capture and before final material consumption. Unsupported or prepared-displacement draws retain immediate capture; native D3D9, DXVK2 and non-MSAA paths retain it by default.
+
+The final alternating, three-round, complete-pass benchmark includes all 32 native draws, all captures, state snapshots/restoration, lazy clears, queue recording, and MSAA color resolve at 4K/MSAA 2×. Median GPU time changes from **7.702400 to 3.997312 ms (48.10% reduction)**. Median CPU submission changes from **0.063875 to 0.102362 ms (+0.038487 ms)**. Original color, captured normal/depth, and captured cavity/occlusion targets are **bit-exact**. `deferred-release-dxvk.json` preserves every measurement. This establishes a useful synthetic pass improvement; it does not establish the game's new FPS.
+
+A separate run matching the user's **normal-only, cavity/self-shadow disabled** configuration also passes. Its three alternating 4K/MSAA 2× rounds measure median **17.683584 → 9.405696 ms GPU (46.81% reduction)** and **0.065388 → 0.121262 ms CPU (+0.055874 ms)**. Both original color and captured normal/depth are bit-exact; no occlusion target is allocated. These absolute values belong to a separate benchmark configuration and should not be compared directly with the auxiliary-target benchmark above. Raw records are in `deferred-no-occlusion.json`. Add `--occlusion-off` to the benchmark command to reproduce it.
+
+Each queued draw owns an immutable mesh snapshot, current vertex/bone constants, required pixel constants, integer/boolean constants, raster/scissor/viewport state, shader/declaration references and a generated-map lease. Captures that read other live native textures, vertex textures, multiple streams, user clip planes, N-patches, or unsupported topology use the original path. Limits are **512 packets / 8 MiB charged packet-plus-source payload per batch, 2 MiB new source reads per frame, and 4 MiB retained source snapshot cache**; the existing index cache also remains bounded. Pressure disables queueing and releases pending work, its source/index caches and cached declarations. A failed batch hides incomplete material outputs and retains native rendering. Unconsumed queues are discarded at frame end without capture draws or target clears.
+
+**2. Preserve scissor state across immediate capture too.** Render-target changes reset the D3D9 scissor rectangle. The former immediate replay could widen the game's subsequent native draw and the capture region. Both paths now preserve the authored rectangle; private target clears cover the full target before per-draw scissor is restored. A regression alternates solid/wireframe rendering, scissor rectangles, buffer DISCARD writes and current bone palettes, then compares all three targets and complete VS/PS float constant banks.
+
+**3. Stop tiny bounds-cache records from thrashing at 1024 entries.** The log reaches 1024 entries / **65,536 bytes**, despite its 8 MiB byte budget. Repeated misses accompany millions of rescanned vertices: 8.28 million cumulative object scans by frame 2400 and 22.29 million by frame 3000. The count cap increases to **4096**, with the byte cap unchanged and weak source ownership preserved. A 1536-source regression now sustains **6144 warm hits with zero new misses**, uses less than 256 KiB, and still enforces entry/byte limits and address-reuse safety. A matching game run is needed to quantify its CPU benefit.
+
+**4. Expose actual visibility loss.** The sampled audit adds `rawCaptured` and `depthMismatch`. `valid`, `normalChanged`, `cavity` and `selfShadow` retain their meaning. Raw coverage with rejected depth can indicate ordinary occlusion or a mismatch; it does not prove a depth bug by itself. The six 128×72 queries use a three-slot asynchronous ring and `GetData(..., 0)`, with no production GPU wait or full-target readback. Only the diagnostic `MaterialAudit` shader bytecode changes; rendering/capture shader bytecode remains unchanged.
+
+**5. Attribute queue costs explicitly.** `deferredRecord` measures CPU snapshot/state recording; `deferredFlush` measures the complete batch GPU interval, including transitions/restoration. Its child `captureDraw` rows provide CPU submissions without overlapping GPU timestamps. `MATERIAL_DEFERRED` reports queued/flushed draws, source/state fallback, prepared geometry and unused discards on sampled frames. The next user log can therefore show whether batching was actually used and whether source budgets or live-state dependencies force frequent barriers.
+
+### Validation and remaining check
+
+DXVK: all **40 M2 shader/skin/combiner fixtures** compare 14 outputs each bit-for-bit, plus MSAA 0/4/8 comparisons, DISCARD-and-palette mutation, changing scissor/fill mode, immediate/deferred barriers, a 520-draw packet-limit case, unused queues and injected replay failure. Native D3D9 passes the weighted four-bone fixture and the same MSAA/safety cases with queueing forced for compatibility tests; queueing remains disabled there in production. The **56-case terrain/wall/composite/grass MSAA/pressure matrix** passes. CPU regressions cover bounds ownership/accounting, geometry/snapshot/upload correctness, state/constant epochs and nonblocking profiling. The shader gate recompiles all world entries; only `MaterialAudit` bytecode differs.
+
+Reproduce with `python tests/validate_material_deferred.py --backend <dxvk-d3d9.dll> --benchmark`, `python tests/validate_material_stages.py --backend <dxvk-d3d9.dll>`, `python tests/validate_parallax_msaa.py --backend <dxvk-d3d9.dll>` and the material CPU tests. Fixture prerequisites are documented by those runners. Build with `python scripts/build_renderer.py`.
+
+The Windows x86 DLL builds successfully, retains all **17 proxy exports**, and is **5,481,984 bytes** with SHA-256 `84a7caa183aae9e7e2997642f524b628a6f83497dec1da1105393e233de196a4`. The build emits the same two existing shared-POM/height-texture warnings. Injected memory pressure also passes with a populated source cache, and the live GPU profiling fixture reports complete coverage including `deferredFlush` and all six visibility counters. The installed game DLL remains unchanged; a separate test package is produced.
+
+A new user game run must confirm actual queue utilization, the complete native/capture GPU delta, bounds misses and visible coverage. Shared POM remains disabled by default. No distance, strength, subdivision quality or MSAA setting is reduced by this change.
+
 ## Material stage diagnostics and near-only occlusion — 22 October, 13:48 user run
 
 The installed DLL is the delivered `1f98a0b` build: SHA-256 `c82ea36ef2aff004e28510ffdfabdb8fcd0e42158a2baea787983139e77ed479`. The new immutable log is `northlight-diagnostics/material-stages-20261022/` (input SHA-256 `8e7d1a79ac1afe48be6afaa833d2f2ae6621ec0ec20e034b8e726e5673ab6cf6`). `inputs.json`, `log-index.json` and `frame-windows.json` preserve source identity, setting changes and matching camera windows. The game was not launched during this investigation.

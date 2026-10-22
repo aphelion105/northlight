@@ -916,6 +916,7 @@ private:
         if (!fullViewport(desc) || !resources(desc.Width, desc.Height, desc.Format) || !resolveDepth()) return;
         SavedState saved(ext,&stateBlocks);
         if (!saved.ok) return;
+        if(autoBump)autoBump->finishCaptures();
         // 0.3.200 (gpu budget): the frame timer brackets every effect pass (closed on every return path by the guard, after the profile's end).
         surfaceTimerOpen=world&&world->gpuBudgetMs()&&gpuTimer->begin();
         if(gpuSceneProfile&&!gpuSceneSplit){gpuSceneProfile->mark("GameScene");gpuSceneSplit=true;}
@@ -2424,6 +2425,9 @@ public:
         surface=std::make_unique<NorthlightSurfaceRenderer>(ext);
         autoBump=std::make_unique<NorthlightAutoBump>(ext);autoBump->setGeometryTracking(&NorthlightTrackedBuffers::identity,&NorthlightTrackedBuffers::version,&NorthlightTrackedBuffers::captureMetadata);autoBump->configure(world->surfaceSettings());
         autoBump->setProfiler(materialProfile.get());
+        // ReadBackNoOverwrite is enabled only for an actually loaded DXVK >= 3,
+        // including BackendPath and system-fallback validation.
+        autoBump->setDeferredCapture(selectedBackend==NorthlightBackend::Kind::Dxvk&&NorthlightUpload::ReadBackNoOverwrite.load(std::memory_order_relaxed));
         autoBump->setConstantEpochSource(ext,[](void* context,NorthlightConstantEpoch::Stamp& stamp){return static_cast<ExtensionDevice*>(context)->constantStamp(stamp);});
         world->setConstantEpochSource({&mirrorState.constantEpoch,&mirrorState}); /* 0.3.180 (C1): read in place under the draw's gate */
         char skyRoot[MAX_PATH*3];WideCharToMultiByte(CP_UTF8,0,rootPath,-1,skyRoot,sizeof skyRoot,nullptr,nullptr);celestialDiscs=std::make_unique<NorthlightCelestialDiscRenderer>(ext,std::string(skyRoot)+"world-cache/celestial");celestialDiscs->setTerrainSource([this]{return world->celestialTerrainGeneration();},[this](unsigned body,const float* matrix){return world->drawCelestialTerrain(body,matrix);},[this](unsigned body){world->noteCelestialTerrainReuse(body);});celestialDiscs->setIdentityMap([this](std::uintptr_t exposed){return mirrorResources.rawOf(exposed,!mirrorState.enabled);});shadowBlobs=std::make_unique<NorthlightShadowBlobFilter>(ext,world->blobShadowStrength());shadowBlobs->setTexturePeek([](void* e,DWORD stage,IDirect3DBaseTexture9*& out){return static_cast<ExtensionDevice*>(e)->peekTexture(stage,out);},ext); /* 0.3.196 (task 12): borrowed stage-0 identity */water=std::make_unique<NorthlightWaterRenderer>(ext); logf("D3D9 device wrapped. Ctrl+Shift+F7 fog; F8 GI; F9 shadows; F10 all effects; F12 world debug (all with Ctrl+Shift). F11 unassigned. Components start ON; GI cache stays warm.");
