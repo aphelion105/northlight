@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# northlight-test: requires=cxx,client,stormlib slow
+# northlight-test: requires=cxx,libcxx,client,stormlib slow timing
 """0.3.143 replay bounds worker: the asynchronous pass must reproduce the 0.3.142
 synchronous pass bit for bit (bounds, work classes, visit counts, cache state)
 under a deterministic bounds clock, whether the render thread joins early or
@@ -408,7 +408,7 @@ bench = r"""
 
 def build(root, name, source, flags, defines=()):
     (root / (name + '.cpp')).write_text(source)
-    subprocess.run(['clang++', '-std=c++17', '-Wall', '-Wextra', '-Werror', *flags, *defines,
+    subprocess.run(['clang++', *(['-stdlib=libc++'] if sys.platform != 'darwin' else []), '-std=c++17', '-Wall', '-Wextra', '-Werror', *flags, *defines,
                     '-I', str(root), *fp.test_include_flags(), str(root / (name + '.cpp')), '-o', str(root / name)], check=True)
     return root / name
 

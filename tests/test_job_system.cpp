@@ -10,9 +10,11 @@
 #include <vector>
 
 static std::atomic<long> allocations{0};
+#ifndef NORTHLIGHT_TEST_TSAN
 void* operator new(std::size_t n){allocations.fetch_add(1,std::memory_order_relaxed);if(void* p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
 void operator delete(void* p)noexcept{std::free(p);}
 void operator delete(void* p,std::size_t)noexcept{std::free(p);}
+#endif
 
 using NorthlightJobs::System;using NorthlightJobs::Counter;
 struct Add {std::atomic<long>* sum;long value;void operator()(){sum->fetch_add(value,std::memory_order_relaxed);}};
@@ -38,9 +40,18 @@ int main(){
             assert(s.wait(c)&&c.done());
             for(std::size_t i=0;i<out.size();++i){assert(out[i]==long(i)*long(i));out[i]=0;}
         }
-        assert(inlined>0); /* 1000 kicks into 64 cells: some ran inline */
+        // The workers may drain all cells while these jobs are submitted; saturation is tested below.
         Counter c;Add a{&sum,1};for(int i=0;i<200;++i)s.kick(c,a);s.wait(c);assert(sum==200);
         std::printf("correctness ok inlined=%u\n",inlined);
+    }
+    {   // Deterministic saturation: hold the only worker, fill every queue cell, then force inline fallback.
+        System s;assert(s.start(3)&&s.workers()==1);Counter held,queued;
+        std::atomic<bool> started{false},release{false};std::atomic<long> sum{0};Add add{&sum,1};
+        auto block=[&]{started=true;while(!release.load())std::this_thread::yield();};
+        assert(s.kick(held,block));while(!started.load())std::this_thread::yield();
+        for(unsigned i=0;i<NorthlightJobs::Capacity;++i)assert(s.kick(queued,add));
+        assert(!s.kick(queued,add)&&sum==1);release=true;
+        assert(s.wait(held)&&s.wait(queued)&&sum==NorthlightJobs::Capacity+1);
     }
     {   // wait-help: the only worker is held by a blocking job; the waiter runs the other job itself
         System s;assert(s.start(3)&&s.workers()==1);
@@ -68,12 +79,14 @@ int main(){
         std::vector<Parent> parents(16,Parent{&s,&sum});Counter c;for(auto& p:parents)s.kick(c,p);
         assert(s.wait(c)&&sum==256);std::printf("nested ok\n");
     }
+#ifndef NORTHLIGHT_TEST_TSAN // TSan owns operator new; optimized and ASan builds check allocations.
     {   // no allocation per job in the steady state
         System s;s.start(7);std::atomic<long> sum{0};Add a{&sum,1};Counter warm;s.kick(warm,a);s.wait(warm);
         const long before=allocations.load();
         for(int round=0;round<200;++round){Counter c;for(int i=0;i<16;++i)s.kick(c,a);s.timing(round&1);s.wait(c);s.take();}
         assert(allocations.load()==before&&sum==1+200*16);std::printf("allocation-free ok\n");
     }
+#endif
     {   // shutdown: queued jobs still run, threads joined; later kicks run inline; idempotent
         std::atomic<long> sum{0};
         {System s;s.start(7);Counter c;

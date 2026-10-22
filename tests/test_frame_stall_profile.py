@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+# northlight-test: requires=cxx
 from pathlib import Path
 import subprocess,tempfile,sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
