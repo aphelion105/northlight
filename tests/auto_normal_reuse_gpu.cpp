@@ -37,6 +37,15 @@ int main(int argc,char** argv){
     D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=window;pp.BackBufferWidth=pp.BackBufferHeight=64;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;pp.BackBufferFormat=D3DFMT_X8R8G8B8;
     IDirect3DDevice9* raw=nullptr;ok(api->CreateDevice(0,D3DDEVTYPE_HAL,window,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_FPU_PRESERVE,&pp,&raw));
     unsigned compared=0,churnAllocations=0;
+    if(std::getenv("NORTHLIGHT_TEST_NORMAL_LOOKUP")){
+        Meter device(raw);NorthlightAutoNormalCache cache(&device);std::vector<IDirect3DTexture9*> sources;IDirect3DTexture9* expected[2][100]={};
+        ok(raw->BeginScene());for(unsigned i=0;i<100;++i){auto* source=texture(raw,{1,1,D3DFMT_A8R8G8B8,4,{128,128,128,255}});sources.push_back(source);
+            for(unsigned model=0;model<2;++model){expected[model][i]=cache.resolve(source,model!=0);assert(expected[model][i]);cache.endFrame();}assert(expected[0][i]!=expected[1][i]);}
+        ok(raw->EndScene());const unsigned allocations=device.allocations;LARGE_INTEGER hz,a,b;QueryPerformanceFrequency(&hz);
+        for(unsigned run=0;run<5;++run){QueryPerformanceCounter(&a);for(unsigned cycle=0;cycle<5000;++cycle)for(unsigned i=0;i<100;++i)for(unsigned model=0;model<2;++model)assert(cache.resolve(sources[i],model!=0)==expected[model][i]);QueryPerformanceCounter(&b);
+            std::printf("NORMAL_LOOKUP_BENCH entries=200 lookups=1000000 run=%u wallMs=%.3f\n",run,double(b.QuadPart-a.QuadPart)*1000/hz.QuadPart);}
+        assert(device.allocations==allocations);cache.reset();for(auto*& source:sources)drop(source);std::puts("NORMAL_LOOKUP_PASS profile_identity stable_hits no_allocations");return 0;
+    }
     {
     Meter device(raw);NorthlightAutoNormalCache cache(&device),reference(&device);std::vector<IDirect3DTexture9*> sources;
     std::vector<std::vector<unsigned char>> expected;std::vector<std::array<DWORD,8>> expectedInputs;

@@ -25,6 +25,13 @@ int main(){
     for(unsigned i=0;i<out.vertexCount;++i){auto* bytes=out.streams[0].bytes.data()+i*out.streams[0].stride;V v;std::memcpy(&v,bytes,sizeof v);float d[3];std::memcpy(d,bytes+sizeof(V),12);
         assert(v.z==0&&d[0]==0&&d[1]==0);assert(use[i]);if(v.x==0||v.y==0||v.x==1||v.y==1){assert(d[2]==0);++boundary;}else{assert(std::fabs(d[2]-.3f)<1e-5f);++moved;}}
     assert(boundary==32&&moved==49); // shared diagonal welded, no internal cracks
+    // GPU attributes retain the same welded topology and pin mask. Reconstruct
+    // the offset from the uploaded height exactly as the vertex shader does.
+    {Mesh gpu;assert(build(source,decl,4,uv,h,8,false,false,false,gpu,nullptr,nullptr,nullptr,4,true));
+     assert(gpu.indices==out.indices&&gpu.vertexCount==out.vertexCount&&gpu.streams[0].stride==sizeof(V)+20);
+     for(unsigned i=0;i<gpu.vertexCount;++i){const auto* p=gpu.streams[0].bytes.data()+size_t(i)*gpu.streams[0].stride;float direction[3],coords[2],expected[3];
+       std::memcpy(direction,p+sizeof(V),12);std::memcpy(coords,p+sizeof(V)+12,8);std::memcpy(expected,out.streams[0].bytes.data()+size_t(i)*out.streams[0].stride+sizeof(V),12);
+       for(unsigned k=0;k<3;++k)assert(std::fabs(direction[k]*(h.sample(coords[0],coords[1])-.5f)-expected[k])<1e-6f);}}
     Mesh strip=source;strip.indexed=false;strip.topology=D3DPT_TRIANGLESTRIP;strip.indices.clear();assert(build(strip,decl,4,uv,h,8,true,false,false,out));assert(out.vertexCount==81&&out.primitiveCount==128);
     Height black=h;std::fill(black.values.begin(),black.values.end(),.2f);std::vector<float> blend(4,.5f);
     assert(build(source,decl,4,uv,h,4,false,false,false,out,&black,&uv,&blend));for(unsigned i=0;i<out.vertexCount;++i){float d[3];std::memcpy(d,out.streams[0].bytes.data()+i*out.streams[0].stride+sizeof(V),12);assert(std::fabs(d[2])<1e-6f);}

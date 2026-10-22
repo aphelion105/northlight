@@ -12,8 +12,11 @@ static void logf(const char* f,...){va_list a;va_start(a,f);std::vprintf(f,a);st
 #include "patch_terrain_shadow_coverage.h"
 #include "forwarders.h"
 struct MaterialDepthMeter:ForwardIDirect3DDevice9 {
-    unsigned reads=0;explicit MaterialDepthMeter(IDirect3DDevice9* d):ForwardIDirect3DDevice9(d){}
+    unsigned reads=0,allocations=0,gpuDraws=0;explicit MaterialDepthMeter(IDirect3DDevice9* d):ForwardIDirect3DDevice9(d){}
     HRESULT STDMETHODCALLTYPE GetDepthStencilSurface(IDirect3DSurface9** s)override{++reads;return real->GetDepthStencilSurface(s);}
+    HRESULT STDMETHODCALLTYPE GetDeviceCaps(D3DCAPS9* caps)override{const auto hr=real->GetDeviceCaps(caps);if(SUCCEEDED(hr)&&std::getenv("NORTHLIGHT_TEST_CPU_DISPLACEMENT"))caps->VertexTextureFilterCaps=0;return hr;}
+    HRESULT STDMETHODCALLTYPE CreateTexture(UINT w,UINT h,UINT levels,DWORD usage,D3DFORMAT format,D3DPOOL pool,IDirect3DTexture9** t,HANDLE* shared)override{++allocations;return real->CreateTexture(w,h,levels,usage,format,pool,t,shared);}
+    HRESULT STDMETHODCALLTYPE DrawPrimitiveUP(D3DPRIMITIVETYPE type,UINT n,const void* v,UINT stride)override{++gpuDraws;return real->DrawPrimitiveUP(type,n,v,stride);}
 };
 #ifdef NORTHLIGHT_MATERIAL_MIRROR
 #include "device_mirror.h"
@@ -119,6 +122,30 @@ int main(int argc,char** argv){
     bump.setMemoryPressure(pressure);assert(bump.active());
     bump.setGeometryTracking([](void* p,bool){return uint64_t(reinterpret_cast<uintptr_t>(p));},[](void*,bool){return uint64_t(1);},nullptr);
     bump.registerVertex(vs,NorthlightWaterShaderPatch::fnv1a64((std::uint32_t*)vsBytes.data(),vsBytes.size()/4),(DWORD*)vsBytes.data(),vsBytes.size()/4,model?3:0);bump.registerPixel(ps,NorthlightWaterShaderPatch::fnv1a64((std::uint32_t*)psBytes.data(),psBytes.size()/4));
+    if(std::getenv("NORTHLIGHT_TEST_MODEL_RANGE")){
+        assert(model&&std::strcmp(argv[5],"model4")==0);d->SetStreamSource(0,sourceVB,0,sizeof(V));d->SetIndices(sourceIB);d->SetVertexShader(vs);d->SetPixelShader(ps);
+        NorthlightAutoDisplacement::Args geometry{{D3DPT_TRIANGLELIST,0,0,4,0,2,true}};const unsigned before=captureDevice.allocations;
+        auto move=[&](float offset){for(unsigned bone=0;bone<4;++bone)bank[33+bone*3][3]+=offset;d->SetVertexShaderConstantF(0,bank[0],43);};
+        move(-150);bump.beginDraw();unsigned captures=0,natives=0;ok(d->BeginScene());bump.capture(vs,[&]{++captures;return D3D_OK;},false,&geometry);ok(bump.nativeDraw([&]{++natives;return D3D_OK;}));ok(d->EndScene());
+        assert(!captures&&natives==1&&!bump.texture()&&!bump.geometryPrepared()&&captureDevice.allocations==before);bump.endFrame();
+        move(150);bump.beginDraw();ok(d->BeginScene());bump.capture(vs,[&]{++captures;return D3D_OK;},false,&geometry);ok(d->EndScene());assert(bump.texture()&&bump.geometryPrepared());
+        std::puts("MODEL_RANGE_PASS far_capture_skipped native_preserved pose_returned_near");return 0;
+    }
+    if(std::getenv("NORTHLIGHT_TEST_MATERIAL_RANGE")){
+        assert(!model&&!grass&&argc==5);std::vector<IDirect3DTexture9*> distant;
+        for(unsigned i=0;i<40;++i){IDirect3DTexture9* t=nullptr;ok(d->CreateTexture(512,512,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&t,nullptr));D3DLOCKED_RECT lock{};ok(t->LockRect(0,&lock,nullptr,0));for(unsigned y=0;y<512;++y)std::memset(static_cast<char*>(lock.pBits)+size_t(y)*lock.Pitch,128,512*4);ok(t->UnlockRect(0));distant.push_back(t);}
+        bank[3][2]=-150;d->SetVertexShaderConstantF(0,bank[0],43);d->SetStreamSource(0,sourceVB,0,sizeof(V));d->SetIndices(sourceIB);d->SetVertexShader(vs);d->SetPixelShader(ps);
+        NorthlightAutoDisplacement::Args geometry{{D3DPT_TRIANGLELIST,0,0,4,0,2,true}};LARGE_INTEGER hz;QueryPerformanceFrequency(&hz);
+        for(unsigned gated=0;gated<2;++gated){settings.autoBump=0;bump.configure(settings);settings.autoBump=1;settings.autoBumpTerrain=2;bump.configure(settings);bump.setMemoryPressure(true);
+            const unsigned before=captureDevice.allocations,draws=captureDevice.gpuDraws;unsigned callbacks=0;LARGE_INTEGER a,b;QueryPerformanceCounter(&a);
+            for(unsigned frame=0;frame<600;++frame){d->SetTexture(0,distant[frame%distant.size()]);bump.beginDraw();ok(d->BeginScene());auto native=[&]{++callbacks;return D3D_OK;};bump.capture(vs,native,false,gated?&geometry:nullptr);ok(bump.nativeDraw(native));ok(d->EndScene());bump.endFrame();}
+            QueryPerformanceCounter(&b);const auto allocations=captureDevice.allocations-before,generated=captureDevice.gpuDraws-draws;
+            std::printf("MATERIAL_RANGE_WORKLOAD gated=%u frames=600 textureAllocations=%u generatedMaps=%u callbacks=%u wallMs=%.3f\n",gated,allocations,generated,callbacks,double(b.QuadPart-a.QuadPart)*1000/hz.QuadPart);
+            if(gated)assert(!allocations&&!generated&&callbacks==600);else assert(allocations>0&&generated>100&&callbacks==1200);
+            IDirect3DQuery9* fence=nullptr;ok(d->CreateQuery(D3DQUERYTYPE_EVENT,&fence));ok(fence->Issue(D3DISSUE_END));while(fence->GetData(nullptr,0,D3DGETDATA_FLUSH)==S_FALSE)Sleep(1);drop(fence);
+        }
+        for(auto*& t:distant)drop(t);std::puts("MATERIAL_RANGE_WORKLOAD_PASS");return 0;
+    }
     d->SetVertexShader(vs);d->SetPixelShader(ps);ok(d->BeginScene());bump.capture(vs,[&]{return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,floor,sizeof(V));},true);ok(d->EndScene());
     if(!bump.texture()){assert(pressure&&bump.active());bump.endFrame();ok(d->BeginScene());bump.capture(vs,[&]{return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,floor,sizeof(V));},true);ok(d->EndScene());std::puts("MATERIAL_ALLOCATION_RETRY_PASS modes_retained=1");}
     assert(bump.texture());
@@ -141,6 +168,9 @@ int main(int argc,char** argv){
         d->SetRenderTarget(0,drawSurface);d->SetDepthStencilSurface(zbuffer);d->SetViewport(&vp);d->SetVertexDeclaration(decl);d->SetVertexShader(vs);d->SetPixelShader(ps);d->SetVertexShaderConstantF(0,bank[0],43);
         if(model&&mode==9){float moved[4];std::memcpy(moved,bank[31],16);moved[3]+=.25f;d->SetVertexShaderConstantF(31,moved,1);}
         d->SetRenderState(D3DRS_ZENABLE,TRUE);d->SetRenderState(D3DRS_ZWRITEENABLE,TRUE);d->SetTexture(0,diffuse);d->SetTexture(1,argc>5&&std::strcmp(argv[5],"composite")==0?diffuse:white);
+        ok(d->SetTexture(D3DVERTEXTEXTURESAMPLER0,white));
+        for(auto key:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})ok(d->SetSamplerState(D3DVERTEXTEXTURESAMPLER0,key,D3DTEXF_POINT));
+        ok(d->SetSamplerState(D3DVERTEXTEXTURESAMPLER0,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP));ok(d->SetSamplerState(D3DVERTEXTEXTURESAMPLER0,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP));
         for(unsigned sampler:{0u,1u}){d->SetSamplerState(sampler,D3DSAMP_MINFILTER,D3DTEXF_LINEAR);d->SetSamplerState(sampler,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);d->SetSamplerState(sampler,D3DSAMP_MIPFILTER,D3DTEXF_LINEAR);d->SetSamplerState(sampler,D3DSAMP_ADDRESSU,D3DTADDRESS_WRAP);d->SetSamplerState(sampler,D3DSAMP_ADDRESSV,D3DTADDRESS_WRAP);}
         // Real DetailDoodad state from the game log: depth-writing alpha cutout
         // with SRCALPHA/INVSRCALPHA, rather than the opaque-only old fixture.
@@ -183,10 +213,12 @@ int main(int argc,char** argv){
             std::printf("MATERIAL_DEPTH_READS samples=%u reads=%u\n",unsigned(samples),captureDevice.reads-depthReads);
         }
         {IDirect3DSurface9 *rt=nullptr,*ds=nullptr;ok(d->GetRenderTarget(0,&rt));ok(d->GetDepthStencilSurface(&ds));assert(rt==drawSurface&&ds==zbuffer);drop(rt);drop(ds);assert(bump.active()&&bump.texture());}
-        if((mode>=5&&mode<8||mode==9)){assert(bump.geometryPrepared());if(!unsafeSkin)assert(bump.geometryPrimitives()>2);std::printf("DISPLACEMENT_PREPARED mode=%u triangles=%u\n",mode,bump.geometryPrimitives());}
+        if((mode>=5&&mode<8||mode==9)){assert(bump.geometryPrepared());if(!unsafeSkin)assert(bump.geometryPrimitives()>2);std::printf("DISPLACEMENT_PREPARED mode=%u triangles=%u heightGPU=%u\n",mode,bump.geometryPrimitives(),unsigned(bump.geometryHeightGPU()));}
         if(mode==8)assert(!bump.geometryPrepared());
         if(mode==7&&coverageVS)d->SetVertexShader(coverageVS);
         ok(bump.nativeDraw([&]{return bump.geometryDraw(native,true);}));ok(d->EndScene());
+        {IDirect3DBaseTexture9* restored=nullptr;ok(d->GetTexture(D3DVERTEXTEXTURESAMPLER0,&restored));assert(restored==white);drop(restored);
+         for(auto key:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER,D3DSAMP_ADDRESSU,D3DSAMP_ADDRESSV}){DWORD value=0;ok(d->GetSamplerState(D3DVERTEXTEXTURESAMPLER0,key,&value));assert(value==DWORD(key==D3DSAMP_MINFILTER||key==D3DSAMP_MAGFILTER?D3DTEXF_POINT:D3DTADDRESS_CLAMP));}}
         if(samples)referenceDepth([&]{return bump.geometryDraw(native);});
         if(samples){ok(d->SetDepthStencilSurface(nullptr));ok(d->SetRenderTarget(0,output));ok(d->StretchRect(drawSurface,nullptr,baseSurface,nullptr,D3DTEXF_NONE));}
 #ifdef NORTHLIGHT_MATERIAL_MIRROR

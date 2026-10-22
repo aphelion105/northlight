@@ -1,7 +1,7 @@
 {
   "normal_source_sha256": "145a87c4f22c6a6061e8e4454356afb91368af70e4ef2ba0d52c0c8770588fe7",
   "parallax_source_sha256": {
-    "auto_parallax.hlsl": "e7e8566e3c331879119a0277dd9ca7e1498f15098f22f9d3bcd297f8474f1a6f",
+    "auto_parallax.hlsl": "745a1f0cd4b0323b0d00c7eb1067241af2fe57ad289a3dd680680ee36e8b028b",
     "auto_parallax_prefix.hlsl": "aaceb5594e0c881e7d05ab582e671fd6713640414e2cd6da79583b5faa74c103",
     "auto_material_height.hlsl": "bdcee7896b70c29ff3162a9fbf9694d1a451a839ebdb89b7f0d382894a124271"
   },
@@ -10,8 +10,8 @@
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
   "shaders": {
     "BumpOpaque": {
-      "sha256": "63a7074b1bf213784b998f51982a393dd7149ebc9682dd569be96f75f5cef31e",
-      "static_instruction_slots": 271,
+      "sha256": "c379de59340e2a24ace1b2ec82e6bdebcf330f42269f5add2162034a0c4ad81e",
+      "static_instruction_slots": 269,
       "temporary_registers": 11,
       "samplers": [
         2
@@ -19,14 +19,14 @@
       "instructions": {
         "mov": 25,
         "mul": 45,
-        "rcp": 13,
+        "rcp": 12,
         "add": 56,
         "cmp": 25,
         "texkill": 2,
         "dsx": 2,
         "dsy": 2,
         "dp3": 12,
-        "rsq": 7,
+        "rsq": 6,
         "dp2add": 4,
         "max": 7,
         "if": 5,
@@ -41,8 +41,8 @@
       }
     },
     "BumpLayer": {
-      "sha256": "fdedd2775c4ec40f56fa26514112d0b782e91d52caf332be40562e95e51dc269",
-      "static_instruction_slots": 271,
+      "sha256": "f1d9048c371cf1ca0a6b7f433800846aa18c1fb2c5016e60c4c9a2f3d3f0903d",
+      "static_instruction_slots": 269,
       "temporary_registers": 11,
       "samplers": [
         1,
@@ -51,14 +51,14 @@
       "instructions": {
         "mov": 25,
         "mul": 44,
-        "rcp": 13,
+        "rcp": 12,
         "add": 55,
         "cmp": 25,
         "texkill": 2,
         "dsx": 2,
         "dsy": 2,
         "dp3": 12,
-        "rsq": 7,
+        "rsq": 6,
         "dp2add": 4,
         "max": 7,
         "if": 5,
@@ -75,8 +75,8 @@
       }
     },
     "BumpWall": {
-      "sha256": "fa527427d2c7bbff4a55ba1dadc1a175dfa364cd17c6975a75e2d85c42d8886a",
-      "static_instruction_slots": 274,
+      "sha256": "137e809678e928e9ba7135d829b4213833ca25f74926ee8f880308fbe58ce69d",
+      "static_instruction_slots": 272,
       "temporary_registers": 11,
       "samplers": [
         0,
@@ -85,14 +85,14 @@
       "instructions": {
         "mov": 26,
         "mul": 45,
-        "rcp": 13,
+        "rcp": 12,
         "add": 55,
         "cmp": 25,
         "texkill": 2,
         "dsx": 2,
         "dsy": 2,
         "dp3": 12,
-        "rsq": 7,
+        "rsq": 6,
         "dp2add": 4,
         "max": 7,
         "if": 5,
@@ -107,8 +107,8 @@
       }
     },
     "BumpGrass": {
-      "sha256": "eb4e0e89f9cfb16ca769e0e97ed2ba2b965119a959a170e8020590266da727d5",
-      "static_instruction_slots": 272,
+      "sha256": "2e0cae4b784482a53ad145b7ab7238776fd6076088809c833b4ec974f4d76a93",
+      "static_instruction_slots": 270,
       "temporary_registers": 11,
       "samplers": [
         0,
@@ -117,14 +117,14 @@
       "instructions": {
         "mov": 26,
         "mul": 45,
-        "rcp": 13,
+        "rcp": 12,
         "add": 55,
         "cmp": 25,
         "texkill": 2,
         "dsx": 2,
         "dsy": 2,
         "dp3": 12,
-        "rsq": 7,
+        "rsq": 6,
         "dp2add": 4,
         "max": 7,
         "if": 5,
@@ -140,8 +140,8 @@
       }
     },
     "BumpWallOpaque": {
-      "sha256": "c2b9877df85574e04f81bfd205a955bcf79c6d0949fb34c2608f9a8f751bcaf4",
-      "static_instruction_slots": 270,
+      "sha256": "b0cfebbdfc70127f65da5b13909cba3c20a60c6e05fc959f847360487aa20a64",
+      "static_instruction_slots": 268,
       "temporary_registers": 11,
       "samplers": [
         2
@@ -149,14 +149,14 @@
       "instructions": {
         "mov": 26,
         "mul": 44,
-        "rcp": 13,
+        "rcp": 12,
         "add": 55,
         "cmp": 25,
         "texkill": 2,
         "dsx": 2,
         "dsy": 2,
         "dp3": 12,
-        "rsq": 7,
+        "rsq": 6,
         "dp2add": 4,
         "max": 7,
         "if": 5,
@@ -171,8 +171,8 @@
       }
     },
     "BumpComposite": {
-      "sha256": "7cb761f74e86c493b0f1b9c7bc1faeb5195f986709e8757533ba2981a4b1cf03",
-      "static_instruction_slots": 508,
+      "sha256": "c4787b32eb54ccc7f09b000acc575afb10a3e1d1f96b037f0aa8d82cb48ae3d3",
+      "static_instruction_slots": 504,
       "temporary_registers": 14,
       "samplers": [
         0,
@@ -183,13 +183,13 @@
       "instructions": {
         "add": 107,
         "texkill": 2,
-        "rcp": 22,
+        "rcp": 20,
         "mul": 82,
         "dsx": 3,
         "dsy": 3,
         "cmp": 43,
         "dp3": 21,
-        "rsq": 13,
+        "rsq": 11,
         "mov": 43,
         "dp2add": 8,
         "max": 14,
@@ -205,8 +205,8 @@
       }
     },
     "BumpNative": {
-      "sha256": "1f71b7a5a5304057604962a9cf20daef29782aaae5794337fd9cb4f560d3d483",
-      "static_instruction_slots": 273,
+      "sha256": "c61bf1a2571cba07bdb6519c69de54926daa226ff87624ac4e097ac03a291ce9",
+      "static_instruction_slots": 271,
       "temporary_registers": 11,
       "samplers": [
         2
@@ -214,14 +214,14 @@
       "instructions": {
         "mov": 26,
         "mul": 45,
-        "rcp": 13,
+        "rcp": 12,
         "add": 57,
         "cmp": 25,
         "texkill": 2,
         "dsx": 2,
         "dsy": 2,
         "dp3": 12,
-        "rsq": 7,
+        "rsq": 6,
         "dp2add": 4,
         "max": 7,
         "if": 5,
@@ -275,8 +275,8 @@
       }
     },
     "ParallaxUV": {
-      "sha256": "b7e777e2b00828abed08f346ae4d40c39f8ce5a685f3dd423e9574da33dd6f97",
-      "static_instruction_slots": 149,
+      "sha256": "f159ece3a66652d13d0bcc05fcea9b36e7a0819fb6774fec2e62f14d062247bb",
+      "static_instruction_slots": 147,
       "temporary_registers": 8,
       "samplers": [
         14
@@ -284,14 +284,14 @@
       "instructions": {
         "mov": 13,
         "mul": 26,
-        "rcp": 9,
+        "rcp": 8,
         "add": 28,
         "cmp": 13,
-        "dsy": 2,
-        "dp2add": 3,
-        "rsq": 6,
         "dsx": 2,
+        "dp2add": 3,
+        "dsy": 2,
         "max": 4,
+        "rsq": 5,
         "if": 2,
         "else": 1,
         "dp3": 8,

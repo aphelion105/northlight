@@ -5,10 +5,49 @@
 
 namespace NorthlightNativeMaterialCapture {
 using namespace NorthlightWaterShaderPatch;
-// Run the original combiner to retain its exact cutout alpha, then append the
-// normal/occlusion capture. Original constants, UVs and samplers keep their ABI.
-inline bool patch(const Word* code,size_t count,std::vector<Word>& out,unsigned& control){
+// Keep only the original alpha/kill dependencies. Unknown instructions retain
+// the complete native program; coverage must never depend on this optimization.
+inline bool alphaSlice(const Word* code,const NorthlightTerrainCoverage::Program& p,bool alpha,std::vector<Word>& out){
+    unsigned needed[33]={};needed[32]=alpha?8:0;std::vector<std::vector<Word>> reverse;
+    struct Branch {std::array<unsigned,33> after{},other{};size_t begin=0;bool hasElse=false;};std::vector<Branch> branches;
+    unsigned dimensions[16]={};for(const auto& op:p.ops)if(op.code==31&&regType(code[op.at+2])==10){const unsigned sampler=regIndex(code[op.at+2]);if(sampler>=16)return false;dimensions[sampler]=(code[op.at+1]>>27)&15;}
+    for(auto it=p.ops.rbegin();it!=p.ops.rend();++it){const auto& op=*it;
+        if(op.code==31||op.code==81||op.code==48||op.code==47)continue;
+        const auto mark=[&](Word source,unsigned channels){if(regType(source)!=0)return true;const unsigned r=regIndex(source);if(r>=32)return false;
+            const unsigned modifier=(source>>24)&15;if(modifier==9)channels|=4;else if(modifier==10)channels|=8;
+            for(unsigned c=0;c<4;++c)if(channels&(1u<<c))needed[r]|=1u<<((source>>(16+2*c))&3);return true;};
+        if(op.code==43){if(op.size)return false;Branch b;b.begin=reverse.size();std::copy(needed,needed+33,b.after.begin());branches.push_back(b);reverse.emplace_back(code+op.at,code+op.at+1);continue;}
+        if(op.code==42){if(op.size||branches.empty()||branches.back().hasElse)return false;auto& b=branches.back();std::copy(needed,needed+33,b.other.begin());std::copy(b.after.begin(),b.after.end(),needed);b.hasElse=true;reverse.emplace_back(code+op.at,code+op.at+1);continue;}
+        if(op.code==40||op.code==41){if(branches.empty()||op.size!=(op.code==40?1u:2u))return false;const auto b=branches.back();branches.pop_back();
+            if(reverse.size()==b.begin+1+unsigned(b.hasElse)){reverse.resize(b.begin);std::copy(b.after.begin(),b.after.end(),needed);continue;}
+            for(unsigned i=0;i<33;++i)needed[i]|=(b.hasElse?b.other:b.after)[i];
+            for(unsigned i=1;i<=op.size;++i)if(!mark(code[op.at+i],1))return false;reverse.emplace_back(code+op.at,code+op.at+op.size+1);continue;}
+        if(op.code==65){if(op.size!=1)return false;const Word r=code[op.at+1];if(regType(r)==0&&regIndex(r)<32)needed[regIndex(r)]|=15;else if(regType(r)!=1)return false;reverse.emplace_back(code+op.at,code+op.at+op.size+1);continue;}
+        const bool texture=(op.code==66||op.code==95)&&op.size==3;
+        const int operands=op.code==88||op.code==90?4:NorthlightShadowShader::arithmeticOperands(op.code,p.major);
+        if(!texture&&(operands<2||unsigned(operands)!=op.size))return false;
+        const Word destination=code[op.at+1];const unsigned type=regType(destination),reg=regIndex(destination);
+        if(!((type==0&&reg<32)||(type==8&&!reg)))return false;
+        const unsigned slot=type==8?32:reg,written=(destination>>16)&15,observed=needed[slot]&written;
+        if(!observed)continue;needed[slot]&=~written;
+        // Scalar operations read their x swizzle; dot products couple lanes.
+        unsigned channels=observed;if(op.code==8||op.code==33||op.code==36)channels=7;else if(op.code==9||op.code==16||op.code==17)channels=15;
+        else if(op.code==6||op.code==7||op.code==14||op.code==15||op.code==32||op.code==37||op.code==78||op.code==79)channels=1;
+        if(texture){const Word sampler=code[op.at+3];const unsigned index=regIndex(sampler);if(regType(sampler)!=10||index>=16)return false;const auto dimension=dimensions[index];if(dimension<2||dimension>4)return false;
+            const unsigned channels=(dimension==2?3u:7u)|((op.code==95||(code[op.at]&0xf0000))?8u:0u);if(!mark(code[op.at+2],channels))return false;}
+        else if(op.code==90){if(!mark(code[op.at+2],3)||!mark(code[op.at+3],3)||!mark(code[op.at+4],1))return false;}
+        else for(unsigned i=2;i<=op.size;++i)if(!mark(code[op.at+i],channels))return false;
+        reverse.emplace_back(code+op.at,code+op.at+op.size+1);reverse.back()[1]=(destination&~0xf0000u)|(observed<<16);
+    }
+    if(!branches.empty())return false;for(unsigned i=0;i<33;++i)if(needed[i])return false;
+    out.assign(code,code+1);for(const auto& op:p.ops)if(op.code==31||op.code==81||op.code==48||op.code==47)out.insert(out.end(),code+op.at,code+op.at+op.size+1);
+    for(auto it=reverse.rbegin();it!=reverse.rend();++it)out.insert(out.end(),it->begin(),it->end());out.push_back(65535);return true;
+}
+// Append normal/occlusion capture to the coverage slice. Original constants,
+// UVs and samplers keep their ABI; native lighting is not a capture output.
+inline bool patch(const Word* code,size_t count,std::vector<Word>& out,unsigned& control,bool alpha=true){
     NorthlightTerrainCoverage::Program native,capture;if(!NorthlightTerrainCoverage::analyse(code,count,native)||native.vertex||!NorthlightTerrainCoverage::analyse(reinterpret_cast<const Word*>(kBumpNativeShader),sizeof(kBumpNativeShader)/sizeof(DWORD),capture)||native.slots+capture.slots>512)return false;
+    std::vector<Word> sliced;if(alphaSlice(code,native,alpha,sliced)){code=sliced.data();count=sliced.size();native={};if(!NorthlightTerrainCoverage::analyse(code,count,native))return false;}
     int uv=-1;bool samplers[16]={},integers[16]={};
     for(const auto& op:native.ops){
         if(op.code==31&&regType(code[op.at+2])==1&&(code[op.at+1]&15)==5){unsigned index=(code[op.at+1]>>16)&15;if(index==7)return false;if(!index)uv=int(regIndex(code[op.at+2]));}
@@ -32,6 +71,9 @@ inline bool patch(const Word* code,size_t count,std::vector<Word>& out,unsigned&
     out.assign(code,code+count-1);
     for(const auto& op:native.ops)if(op.code!=65534&&op.code!=31&&op.code!=81&&op.code!=48&&op.code!=47)for(unsigned i=1;i<=op.size;++i){Word& t=out[op.at+i];if(regType(t)==8&&regIndex(t)==0)t=replaceReg(t,0,color);}
     out.insert(out.begin()+native.declEnd,{0x0200001fu,0x80070005u,dst(1,varying),0x0200001fu,0x90000000u,dst(10,14)});
+    // Opaque coverage needs no original alpha; define all lanes even when the
+    // native program had no live output. The capture's alpha selector is zero.
+    if(!alpha)out.insert(out.end(),{0x02000001u,dst(0,color),src(2,control)});
     std::vector<Word> defs;
     for(size_t at=1;at+1<length;){unsigned op=prefix[at]&65535,n=op==65534?(prefix[at]>>16)&32767:(prefix[at]>>24)&15;
         if(op==81||op==48||op==47){defs.push_back(prefix[at]);defs.push_back(mapped(prefix[at+1]));defs.insert(defs.end(),prefix+at+2,prefix+at+n+1);}

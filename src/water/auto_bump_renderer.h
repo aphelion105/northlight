@@ -73,13 +73,13 @@ class NorthlightAutoBump {
     std::unordered_map<IDirect3DPixelShader9*,unsigned> pixels;
     IDirect3DPixelShader9* shaders[6]={};
     struct NativeCapture {IDirect3DPixelShader9* source=nullptr,*shader=nullptr;unsigned constant=128;};
-    std::unordered_map<IDirect3DPixelShader9*,NativeCapture> nativeCaptures;
-    NativeCapture* modelCapture(IDirect3DPixelShader9* source){
-        auto it=nativeCaptures.find(source);if(it!=nativeCaptures.end())return it->second.shader?&it->second:nullptr;
-        if(nativeCaptures.size()>=1024)return nullptr;NativeCapture entry;entry.source=source;source->AddRef();UINT bytes=0;
+    std::unordered_map<IDirect3DPixelShader9*,NativeCapture> nativeCaptures[2];
+    NativeCapture* modelCapture(IDirect3DPixelShader9* source,bool alpha){
+        auto& variants=nativeCaptures[alpha];auto it=variants.find(source);if(it!=variants.end())return it->second.shader?&it->second:nullptr;
+        if(variants.size()>=512)return nullptr;NativeCapture entry;entry.source=source;source->AddRef();UINT bytes=0;
         if(SUCCEEDED(source->GetFunction(nullptr,&bytes))&&bytes&&bytes<65536){std::vector<DWORD> code(bytes/4);std::vector<uint32_t> patched;
-            if(SUCCEEDED(source->GetFunction(code.data(),&bytes))&&NorthlightNativeMaterialCapture::patch(reinterpret_cast<const uint32_t*>(code.data()),code.size(),patched,entry.constant))d->CreatePixelShader(reinterpret_cast<const DWORD*>(patched.data()),&entry.shader);}
-        auto added=nativeCaptures.emplace(source,entry).first;if(!entry.shader)logf("MATERIAL_MODEL capture unavailable; native material retained");return entry.shader?&added->second:nullptr;
+            if(SUCCEEDED(source->GetFunction(code.data(),&bytes))&&NorthlightNativeMaterialCapture::patch(reinterpret_cast<const uint32_t*>(code.data()),code.size(),patched,entry.constant,alpha))d->CreatePixelShader(reinterpret_cast<const DWORD*>(patched.data()),&entry.shader);}
+        auto added=variants.emplace(source,entry).first;if(!entry.shader)logf("MATERIAL_MODEL capture unavailable; native material retained");return entry.shader?&added->second:nullptr;
     }
     IDirect3DTexture9* height=nullptr;
     IDirect3DSurface9* target=nullptr;
@@ -96,6 +96,7 @@ class NorthlightAutoBump {
     float strength=.75f,range=48;
     unsigned modes[4]={2,2,1,3};float pomControl[4]={.018f,16,16,0};
     unsigned draws[4]={},frames=0,rejected=0;
+    bool pomInRange=true;unsigned rangeTests=0,rangeRejected=0,pomRangeRejected=0;
     template<size_t N> static unsigned kind(const AutoBumpIdentity (&table)[N],std::uint64_t hash){
         auto i=std::lower_bound(table,table+N,hash,[](const AutoBumpIdentity& a,std::uint64_t h){return a.hash<h;});
         return i!=table+N&&i->hash==hash?i->kind:0;
@@ -118,7 +119,8 @@ public:
     void trimMemory(){normals.trimMemory();displacement.trimMemory();}
     bool geometryPrepared()const{return displacement.prepared();}
     unsigned geometryPrimitives()const{return displacement.preparedPrimitives();}
-    void beginDraw(){displacement.beginDraw();}
+    bool geometryHeightGPU()const{return displacement.preparedHeightGPU();}
+    void beginDraw(){displacement.beginDraw();pomInRange=true;}
     void setGeometryTracking(uint64_t(*identity)(void*,bool),uint64_t(*version)(void*,bool),NorthlightCaptureMetadata::Read metadata){displacement.tracking(identity,version,metadata);}
     void setConstantEpochSource(void* context,NorthlightConstantEpoch::Reader reader){displacement.setConstantEpochSource(context,reader);}
     template<class Draw> HRESULT geometryDraw(Draw draw,bool native=false){return displacement.draw(draw,native);}
@@ -138,7 +140,7 @@ public:
         if(changed)logf("AUTOBUMP enabled=%d strength=%.2f distance=%.0f terrain=%d walls=%d grass=%d",int(enabled),strength,range,int(terrain),int(walls),int(grass));
         if(!enabled&&height)reset();
     }
-    ~NorthlightAutoBump(){reset();for(auto& v:vertices)drop(v.second.patched);for(auto*& p:shaders)drop(p);for(auto& n:nativeCaptures){drop(n.second.shader);drop(n.second.source);}}
+    ~NorthlightAutoBump(){reset();for(auto& v:vertices)drop(v.second.patched);for(auto*& p:shaders)drop(p);for(auto& variants:nativeCaptures)for(auto& n:variants){drop(n.second.shader);drop(n.second.source);}}
     void reset(){displacement.reset();normals.reset();drop(captureDepth);drop(target);drop(height);drop(occlusionTarget);drop(occlusionMap);occlusionUnavailable=false;occlusionRetry=0;width=heightPixels=0;cleared=drawn=failed=false;}
     void endFrame(){
         if(occlusionRetry)--occlusionRetry;
@@ -146,8 +148,9 @@ public:
         normals.endFrame();
         parallax.endFrame();
         if(drawn&&frames%600==0){normals.report();auto& cache=NorthlightMaterialTextures::cache();const auto& c=cache.counts;logf("MHEIGHT cached=%u bytes=%zu uploads=%llu retained=%llu failed=%llu invalidated=%llu evicted=%llu",cache.size(),cache.bytes(),(unsigned long long)c.uploads,(unsigned long long)c.retained,(unsigned long long)c.failed,(unsigned long long)c.invalidations,(unsigned long long)c.evictions);}
-        if(drawn&&((frames++%600)==0))logf("AUTOBUMP captured terrain=%u walls=%u grass=%u models=%u target=%ux%u bytes=%llu rejected=%u",draws[0],draws[1],draws[2],draws[3],width,heightPixels,(unsigned long long)width*heightPixels*8,rejected);
-        for(auto& n:draws)n=0;rejected=0;cleared=drawn=false;
+        if((drawn||rangeTests)&&frames%600==0){logf("MATERIAL_RANGE proven=%u captureRejected=%u nativePomRejected=%u",rangeTests,rangeRejected,pomRangeRejected);displacement.reportHeightGPU();}
+        if(drawn&&frames%600==0)logf("AUTOBUMP captured terrain=%u walls=%u grass=%u models=%u target=%ux%u bytes=%llu rejected=%u",draws[0],draws[1],draws[2],draws[3],width,heightPixels,(unsigned long long)width*heightPixels*8,rejected);
+        for(auto& n:draws)n=0;rejected=rangeTests=rangeRejected=pomRangeRejected=0;cleared=drawn=false;pomInRange=true;++frames;
     }
     bool active()const{return enabled&&(strength>0||occlusionControl[0]>0||occlusionControl[2]>0||((modes[0]==3||modes[1]==3||modes[2]==3||modes[3]==3)&&displacement.hasDisplacement()))&&!failed;}
     IDirect3DTexture9* texture()const{return active()&&drawn?height:nullptr;}
@@ -155,7 +158,7 @@ public:
     float gain()const{return texture()?strength:0;}
     float distance()const{return range;}
     template<class Draw> HRESULT nativeDraw(Draw draw,IDirect3DVertexShader9* provenVS=nullptr,IDirect3DPixelShader9* provenPS=nullptr){
-        if(!active()||pomControl[0]<=0||(modes[0]!=2&&modes[1]!=2&&modes[2]!=2&&modes[3]!=2))return draw();
+        if(!active()||!pomInRange||pomControl[0]<=0||(modes[0]!=2&&modes[1]!=2&&modes[2]!=2&&modes[3]!=2))return draw();
         struct BoundShaders {IDirect3DVertexShader9* vs=nullptr;IDirect3DPixelShader9* ps=nullptr;~BoundShaders(){drop(vs);drop(ps);}} bound;
         if((!provenVS&&FAILED(d->GetVertexShader(&bound.vs)))||(!provenPS&&FAILED(d->GetPixelShader(&bound.ps))))return draw();
         auto v=vertices.find(provenVS?provenVS:bound.vs);auto p=pixels.find(provenPS?provenPS:bound.ps);
@@ -177,17 +180,22 @@ public:
         if(k&&pixels.size()<4096)pixels[original]=k;
     }
     template<class Draw> void capture(IDirect3DVertexShader9* original,Draw draw,bool userMemory=false,const NorthlightAutoDisplacement::Args* geometry=nullptr){
+        pomInRange=true;
         if(!active())return;
         auto v=vertices.find(original);if(v==vertices.end())return;
         const unsigned domain=v->second.kind;
         if((domain==1&&!terrain)||(domain==2&&!walls)||(domain==3&&!grass)||(domain==4&&!modes[3]))return;
+        if(geometry&&domain<=3&&modes[domain-1]!=3){float nearest=0;
+            if(displacement.nearestMaterialDepth(original,*geometry,nearest)){++rangeTests;
+                if(nearest>=pomControl[1]){pomInRange=false;++pomRangeRejected;}
+                if(nearest>range){++rangeRejected;return;}}
+        }
         IDirect3DPixelShader9* native=nullptr;if(FAILED(d->GetPixelShader(&native))||!native)return;
         auto p=pixels.find(native);if(p==pixels.end()){drop(native);return;}
         const unsigned material=p->second;
         if((domain==1&&material>2)||(domain==2&&material!=3&&material!=5&&material!=6)||(domain==3&&material!=4)){drop(native);return;}
         ReplayState saved(d,original,D3DVIEWPORT9{});saved.pixel=native;
-        NativeCapture* model=domain==4?modelCapture(native):nullptr;if(domain==4&&!model)return;
-        if(model){saved.constantBase=model->constant;saved.normalStage=14;}
+        NativeCapture* model=nullptr;
         DWORD z=0,zfunc=0,ref=0,alphaFunc=0,stencil=0;
         auto rs=[&](D3DRENDERSTATETYPE key,DWORD& value){return SUCCEEDED(d->GetRenderState(key,&value));};
         if(!rs(D3DRS_ZENABLE,z)||!rs(D3DRS_ZFUNC,zfunc)||!rs(D3DRS_ALPHAREF,ref)||
@@ -201,6 +209,7 @@ public:
         if(!(s[4].value&7)||(!s[0].value&&domain!=1)||
            (s[5].value&&(s[7].value!=D3DBLEND_SRCALPHA||s[8].value!=D3DBLEND_INVSRCALPHA))||
            (alpha&&alphaFunc!=D3DCMP_GREATER&&alphaFunc!=D3DCMP_GREATEREQUAL))return;
+        if(domain==4){model=modelCapture(native,alpha);if(!model)return;saved.constantBase=model->constant;saved.normalStage=14;}
         saved.viewport=viewport;if(!saved.save(userMemory,material==6&&domain!=4))return;
         D3DSURFACE_DESC desc{};if(FAILED(saved.target->GetDesc(&desc)))return;
         if(desc.Width!=viewport.Width||desc.Height!=viewport.Height){++rejected;return;}
@@ -210,7 +219,8 @@ public:
             if(!captureDepth&&!check(d->CreateDepthStencilSurface(width,heightPixels,D3DFMT_D24S8,D3DMULTISAMPLE_NONE,0,FALSE,&captureDepth,nullptr),"material depth"))return;
             saved.states[0].replay=saved.states[0].value;
         }else drop(saved.depth);
-        if(domain<=4&&modes[domain-1]==3&&geometry)displacement.prepare(original,domain,material,*geometry);
+        if(domain<=4&&modes[domain-1]==3&&geometry){displacement.prepare(original,domain,material,*geometry);
+            if(displacement.nearestPreparedDepth()>range){++rangeTests;++rangeRejected;return;}}
         if(!height){
             const std::uint64_t bytes=std::uint64_t(width)*heightPixels*8;
             MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;

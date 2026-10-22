@@ -50,8 +50,9 @@ inline unsigned textureFactor(const std::vector<std::array<float,2>>& uv,const H
 inline bool build(const Mesh& in,const D3DVERTEXELEMENT9* elements,UINT elementCount,
     const std::vector<std::array<float,2>>& uv,const Height& first,unsigned factor,bool terrain,
     bool clampU,bool clampV,Mesh& out,const Height* second=nullptr,
-    const std::vector<std::array<float,2>>* uv1=nullptr,const std::vector<float>* blend=nullptr,unsigned influences=4){
+    const std::vector<std::array<float,2>>* uv1=nullptr,const std::vector<float>* blend=nullptr,unsigned influences=4,bool gpuHeight=false){
     out={};if(influences>4)return false;const auto stride=in.streams[0].stride;
+    if(gpuHeight&&(second||stride>232||elementCount+2>MAXD3DDECLLENGTH))return false;
     if(!in.vertexCount||in.vertexCount>32768||stride>240||uv.size()!=in.vertexCount||factor<2||factor>128||!elements||elementCount>MAXD3DDECLLENGTH)return false;
     if(in.streams[0].bytes.size()<size_t(in.vertexCount)*stride)return false;
     if((second&&(!uv1||!blend||uv1->size()!=in.vertexCount||blend->size()!=in.vertexCount)))return false;
@@ -63,7 +64,7 @@ inline bool build(const Mesh& in,const D3DVERTEXELEMENT9* elements,UINT elementC
         if(e.Usage==D3DDECLUSAGE_NORMAL&&e.UsageIndex==0)normal=&e;
         if(e.Usage==D3DDECLUSAGE_BLENDWEIGHT)weights=&e;
         if(e.Usage==D3DDECLUSAGE_BLENDINDICES)bones=&e;
-        if(e.Usage==D3DDECLUSAGE_TEXCOORD&&e.UsageIndex==7)return false;
+        if(e.Usage==D3DDECLUSAGE_TEXCOORD&&(e.UsageIndex==7||(gpuHeight&&e.UsageIndex==6)))return false;
     }
     if(!pos||(pos->Type!=D3DDECLTYPE_FLOAT3&&pos->Type!=D3DDECLTYPE_FLOAT4))return false;
     if(weights&&!bones)return false;
@@ -90,9 +91,10 @@ inline bool build(const Mesh& in,const D3DVERTEXELEMENT9* elements,UINT elementC
         if(!rigid[i])for(unsigned k=0;k<3;++k)edges[edge(t[k],t[(k+1)%3])]=1;
     }
     std::vector<bool> boundary(in.vertexCount,false);for(auto e:edges)if(e.second!=2){boundary[unsigned(e.first>>32)]=true;boundary[unsigned(e.first)]=true;}
-    out.streams[0].stride=stride+12;out.topology=D3DPT_TRIANGLELIST;out.indexed=true;
+    const unsigned outputStride=stride+(gpuHeight?20:12);
+    out.streams[0].stride=outputStride;out.topology=D3DPT_TRIANGLELIST;out.indexed=true;
     const auto capacity=std::min(size_t(32768),triangles.size()*(factor+1)*(factor+2)/2);
-    out.streams[0].bytes.reserve(capacity*(stride+12));out.indices.reserve(triangles.size()*factor*factor*3);
+    out.streams[0].bytes.reserve(capacity*outputStride);out.indices.reserve(triangles.size()*factor*factor*3);
     std::vector<Four> decoded(size_t(elementCount)*in.vertexCount);
     for(UINT e=0;e<elementCount&&elements[e].Stream!=0xff;++e){if(&elements[e]==weights||&elements[e]==bones)continue;
         for(unsigned i=0;i<in.vertexCount;++i)if(!NorthlightActorDeformation::decodeElement(in.streams[0].bytes.data()+size_t(i)*stride+elements[e].Offset,elements[e].Type,decoded[size_t(e)*in.vertexCount+i]))return false;}
@@ -103,7 +105,7 @@ inline bool build(const Mesh& in,const D3DVERTEXELEMENT9* elements,UINT elementC
         Key key;for(unsigned k=0;k<3;++k){key.v[k*2]=sorted[k].first;key.v[k*2+1]=sorted[k].second;}
         auto found=vertices.find(key);if(found!=vertices.end())return found->second;
         if(out.vertexCount>=32768)return UINT_MAX;
-        const unsigned n=out.vertexCount++;vertices.emplace(key,n);auto& bytes=out.streams[0].bytes;bytes.resize(size_t(out.vertexCount)*(stride+12));auto* dst=bytes.data()+size_t(n)*(stride+12);
+        const unsigned n=out.vertexCount++;vertices.emplace(key,n);auto& bytes=out.streams[0].bytes;bytes.resize(size_t(out.vertexCount)*outputStride);auto* dst=bytes.data()+size_t(n)*outputStride;
         Four direction={0,0,1,0};
         for(UINT e=0;e<elementCount&&elements[e].Stream!=0xff;++e){const auto& element=elements[e];if(&element==weights||&element==bones)continue;Four value={};
             for(unsigned k=0;k<3;++k){const auto& a=decoded[size_t(e)*in.vertexCount+t[k]];for(unsigned c=0;c<4;++c)value[c]+=a[c]*(float(w[k])/factor);}
@@ -126,9 +128,10 @@ inline bool build(const Mesh& in,const D3DVERTEXELEMENT9* elements,UINT elementC
         bool pinned=false;for(unsigned k=0;k<3;++k){if(w[k]==factor&&(boundary[t[k]]||influences))pinned=true;if(!w[k]&&edges[edge(t[(k+1)%3],t[(k+2)%3])]!=2)pinned=true;
             if(w[k]==factor)std::memcpy(dst,in.streams[0].bytes.data()+size_t(t[k])*stride,stride);}
         float u=0,v=0,u1=0,v1=0,b=0;for(unsigned k=0;k<3;++k){float weight=float(w[k])/factor;u+=uv[t[k]][0]*weight;v+=uv[t[k]][1]*weight;if(uv1){u1+=(*uv1)[t[k]][0]*weight;v1+=(*uv1)[t[k]][1]*weight;}if(blend)b+=(*blend)[t[k]]*weight;}
-        float h=first.sample(u,v,clampU,clampV);if(second&&uv1&&blend)h=second->sample(u1,v1,clampU,clampV)*(1-std::clamp(b,0.f,1.f))+h*std::clamp(b,0.f,1.f);
+        float h=.5f;if(!gpuHeight&&!pinned){h=first.sample(u,v,clampU,clampV);if(second&&uv1&&blend)h=second->sample(u1,v1,clampU,clampV)*(1-std::clamp(b,0.f,1.f))+h*std::clamp(b,0.f,1.f);}
         const float length=std::sqrt(direction[0]*direction[0]+direction[1]*direction[1]+direction[2]*direction[2]);if(!std::isfinite(length)||length<1e-5f)return UINT_MAX;
-        float delta[3];for(unsigned k=0;k<3;++k)delta[k]=pinned?0:(h-.5f)*direction[k]/length;std::memcpy(dst+stride,delta,12);return n;
+        float delta[3];for(unsigned k=0;k<3;++k)delta[k]=pinned?0:(gpuHeight?1.f:h-.5f)*direction[k]/length;std::memcpy(dst+stride,delta,12);
+        if(gpuHeight){const float coordinates[]={u,v};std::memcpy(dst+stride+12,coordinates,8);}return n;
     };
     std::array<std::array<unsigned,129>,129> rows;
     for(size_t ti=0;ti<triangles.size();++ti){auto t=triangles[ti];

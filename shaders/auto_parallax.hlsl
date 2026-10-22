@@ -11,7 +11,7 @@ MaterialFrame materialFrame(float2 uv,float4 clipPosition,float4 projection) {
     float3 normal=cross(dx,dy);normal*=rsqrt(max(dot(normal,normal),1e-12));normal=dot(normal,-p)<0?-normal:normal;
     f.p=p;f.tangent=tangent;f.bitangent=bitangent;f.normal=normal;f.tx=tx;f.ty=ty;return f;
 }
-float parallaxFade(float distance,float2 tx,float2 ty,float range){return saturate((range-distance)/max(range*.4,1))*saturate(2-max(length(tx),length(ty))*128);}
+float parallaxFade(float distance,float2 tx,float2 ty,float range){return saturate((range-distance)/max(range*.4,1))*saturate(2-sqrt(max(dot(tx,tx),dot(ty,ty)))*128);}
 float2 parallaxUVFrame(sampler2D heightMap,float2 uv,float distance,float4 control,MaterialFrame f) {
     float2 tx=f.tx,ty=f.ty;float3 p=f.p,tangent=f.tangent,bitangent=f.bitangent,normal=f.normal;
     float fade=parallaxFade(distance,tx,ty,control.y);

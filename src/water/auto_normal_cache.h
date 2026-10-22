@@ -2,6 +2,7 @@
 #include "auto_normal_memory.h"
 #include "quality_settings.h"
 #include "material_height.h"
+#include <unordered_map>
 
 // Generated maps and retained source references have separate bounded budgets.
 // Source references prevent pointer reuse; they are not duplicate GPU copies.
@@ -10,12 +11,18 @@ class NorthlightAutoNormalCache {
     IDirect3DDevice9* d;
     NorthlightStateBlockPool states;
     std::vector<Entry> entries;
+    std::unordered_map<IDirect3DTexture9*,size_t> lookup[2];
     IDirect3DTexture9* leased[8]={};unsigned leaseOverflow=0;
     size_t recent=0;
     IDirect3DPixelShader9* shader=nullptr,*modelShader=nullptr;
     std::uint64_t bytes=0,sourceBytes=0,clock=0,budget=32ull<<20;
     unsigned generated=0,builds=0,hits=0,evictions=0,allocations=0,reuses=0;
     unsigned polarity=0,details=75,balance=50,frame=0;bool memoryPressure=false;
+    void erase(size_t index){
+        auto& e=entries[index];lookup[e.model].erase(e.source);bytes-=e.bytes;sourceBytes-=e.sourceBytes;drop(e.source);drop(e.normal);
+        if(index+1<entries.size()){e=entries.back();lookup[e.model].find(e.source)->second=index;}
+        entries.pop_back();recent=entries.size();
+    }
     bool reusable(IDirect3DTexture9* normal,UINT width,UINT height){
         // A fixed lease table avoids allocation on hits; overflow disables recycling.
         if(leaseOverflow)return false;for(auto* texture:leased)if(texture==normal)return false;
@@ -49,12 +56,12 @@ public:
     };
     explicit NorthlightAutoNormalCache(IDirect3DDevice9* device):d(device),states(device){refreshBudget();}
     ~NorthlightAutoNormalCache(){reset();drop(shader);drop(modelShader);}
-    void reset(){states.clear();for(auto& e:entries){drop(e.source);drop(e.normal);}entries.clear();bytes=sourceBytes=0;}
+    void reset(){states.clear();for(auto& e:entries){drop(e.source);drop(e.normal);}entries.clear();for(auto& index:lookup)index.clear();recent=0;bytes=sourceBytes=0;}
     void configure(const NorthlightQuality::Settings& s){if(polarity!=s.autoHeightPolarity||details!=s.autoHeightDetails||balance!=s.autoHeightBalance){reset();polarity=s.autoHeightPolarity;details=s.autoHeightDetails;balance=s.autoHeightBalance;}}
     void refreshBudget(){
         MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;
         budget=memoryPressure?32ull<<20:GlobalMemoryStatusEx(&memory)?NorthlightAutoNormalMemory::budget(memory.ullAvailVirtual,budget):32ull<<20;
-        while(bytes>budget&&!entries.empty()){auto old=std::min_element(entries.begin(),entries.end(),[](const Entry& a,const Entry& b){return a.used<b.used;});bytes-=old->bytes;sourceBytes-=old->sourceBytes;drop(old->source);drop(old->normal);entries.erase(old);++evictions;}
+        while(bytes>budget&&!entries.empty()){auto old=std::min_element(entries.begin(),entries.end(),[](const Entry& a,const Entry& b){return a.used<b.used;});erase(size_t(old-entries.begin()));++evictions;}
     }
     void setMemoryPressure(bool on){memoryPressure=on;refreshBudget();states.clear();}
     void trimMemory(){refreshBudget();states.clear();}
@@ -66,9 +73,9 @@ public:
         auto* source=static_cast<IDirect3DTexture9*>(base);++clock;const auto revision=NorthlightMaterialHeight::version(source);
         auto it=entries.end();
         if(recent<entries.size()&&entries[recent].source==source&&entries[recent].model==model)it=entries.begin()+recent;
-        else it=std::find_if(entries.begin(),entries.end(),[&](const Entry& e){return e.source==source&&e.model==model;});
+        else {auto found=lookup[model].find(source);if(found!=lookup[model].end())it=entries.begin()+found->second;}
         if(it!=entries.end()){
-            if(revision!=it->version||(it->mutableSource&&!it->version&&frame-it->frame>=30)){bytes-=it->bytes;sourceBytes-=it->sourceBytes;drop(it->source);drop(it->normal);entries.erase(it);}
+            if(revision!=it->version||(it->mutableSource&&!it->version&&frame-it->frame>=30))erase(size_t(it-entries.begin()));
             else{recent=size_t(it-entries.begin());it->used=clock;++hits;return it->normal;}
         }
         if(generated>=2)return nullptr;
@@ -81,7 +88,7 @@ public:
             auto oldest=std::min_element(entries.begin(),entries.end(),[](const Entry& a,const Entry& b){return a.used<b.used;});
             // Reuse only an evicted, unbound map that no pending draw borrows.
             if(!recycled.texture&&reusable(oldest->normal,width,height)){recycled.texture=oldest->normal;oldest->normal=nullptr;}
-            bytes-=oldest->bytes;sourceBytes-=oldest->sourceBytes;drop(oldest->source);drop(oldest->normal);entries.erase(oldest);++evictions;
+            erase(size_t(oldest-entries.begin()));++evictions;
         }
         // Native D3D9's fixed-function draw can clear programmable VS constants
         // beyond those restored by an ALL state block. Preserve the bank on builds.
@@ -110,6 +117,8 @@ public:
         struct V {float x,y,z,w,u,v;};const V quad[]={{-.5f,-.5f,0,1,0,0},{width-.5f,-.5f,0,1,1,0},{-.5f,height-.5f,0,1,0,1},{width-.5f,height-.5f,0,1,1,1}};
         if(FAILED(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(V)))){drop(normal);return nullptr;}
         normal->SetAutoGenFilterType(D3DTEXF_LINEAR);normal->GenerateMipSubLevels();
-        source->AddRef();try{entries.push_back({source,normal,cost,sourceCost,clock,revision,frame,(desc.Usage&(D3DUSAGE_DYNAMIC|D3DUSAGE_RENDERTARGET))!=0||(desc.Pool==D3DPOOL_DEFAULT&&source->GetLevelCount()==1),model});}catch(...){source->Release();drop(normal);return nullptr;}recent=entries.size()-1;bytes+=cost;sourceBytes+=sourceCost;++generated;++builds;return normal;
+        source->AddRef();try{entries.push_back({source,normal,cost,sourceCost,clock,revision,frame,(desc.Usage&(D3DUSAGE_DYNAMIC|D3DUSAGE_RENDERTARGET))!=0||(desc.Pool==D3DPOOL_DEFAULT&&source->GetLevelCount()==1),model});
+            try{lookup[model].emplace(source,entries.size()-1);}catch(...){entries.pop_back();throw;}
+        }catch(...){source->Release();drop(normal);return nullptr;}recent=entries.size()-1;bytes+=cost;sourceBytes+=sourceCost;++generated;++builds;return normal;
     }
 };

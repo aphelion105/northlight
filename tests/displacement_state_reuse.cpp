@@ -18,7 +18,56 @@ static void logf(const char*,...){}
 #include "device_mirror.h"
 
 struct DisplacementStateTestAccess {
+    using Mesh=NorthlightDrawSnapshot::Mesh;
     static void cache();
+    static void posed(){
+        using namespace NorthlightWaterShaderPatch;using namespace NorthlightActorDeformation;
+        NorthlightAutoDisplacement g(nullptr);Program p;p.major=3;p.positionRegister=0;p.skinned=true;
+        p.inputs={{0,D3DDECLUSAGE_POSITION,0},{1,D3DDECLUSAGE_BLENDINDICES,0}};
+        Operation address;address.code=46;address.destination=dst(3,0,1);address.source[0].token=src(1,1,0);p.operations.push_back(address);
+        Operation add;add.code=2;add.destination=dst(0,0);add.source[0].token=src(1,0);add.source[1].token=src(2,0)|0x2000;add.source[1].address=src(3,0,0);p.operations.push_back(add);
+        const D3DVERTEXELEMENT9 decl[]={{0,0,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_POSITION,0},{0,12,D3DDECLTYPE_UBYTE4,0,D3DDECLUSAGE_BLENDINDICES,0},D3DDECL_END()};
+        auto mesh=std::make_shared<Mesh>();mesh->vertexCount=3;mesh->primitiveCount=1;mesh->streams[0].stride=16;mesh->streams[0].bytes.resize(48);
+        for(unsigned i=0;i<3;++i){float v[]={float(i),float(i),float(i)};std::memcpy(mesh->streams[0].bytes.data()+16*i,v,12);mesh->streams[0].bytes[16*i+12]=uint8_t(i);}
+        std::shared_ptr<const Mesh> source=mesh;float low[3],high[3];
+        auto check=[&]{assert(g.distantPoseBounds(p,source,decl,3,low,high));for(unsigned i=0;i<3;++i){Four input[16],v;assert(sampledVertexInputsAt(p,*source,decl,3,i,input)&&evaluateFast(p,input,g.constants,v));for(unsigned k=0;k<3;++k)assert(v[k]>=low[k]&&v[k]<=high[k]);}};
+        bool ready=false;for(unsigned f=0;f<20&&!ready;++f){for(unsigned i=0;i<3;++i)g.constants[4*i+2]=100+float(f+i);ready=g.distantPoseBounds(p,source,decl,3,low,high);g.endFrame();}assert(ready);
+        for(float z:{200.f,-200.f}){g.endFrame();for(unsigned i=0;i<3;++i)g.constants[4*i+2]=z+float(i);g.poseVerticesThisFrame=8192;g.lastDepthLower=0;check();assert(g.lastDepthLower>100);}
+        for(float z:{0.f,3.f}){g.endFrame();for(unsigned i=0;i<3;++i)g.constants[4*i+2]=z+float(i);g.lastDepthLower=0;assert(!g.distantPoseBounds(p,source,decl,3,low,high)&&g.lastDepthLower==0);} // Near bounds/fade remain on the original path.
+        auto previous=source;mesh=std::make_shared<Mesh>(*source);float changed=500;for(unsigned i=0;i<3;++i)std::memcpy(mesh->streams[0].bytes.data()+16*i+8,&changed,4);source=mesh;
+        ready=false;for(unsigned f=0;f<20&&!ready;++f){g.endFrame();ready=g.distantPoseBounds(p,source,decl,3,low,high);}assert(ready&&low[2]>500); // New immutable generation cannot reuse the near source envelope.
+        previous=source;mesh=std::make_shared<Mesh>(*source);changed=0;std::memcpy(mesh->streams[0].bytes.data()+8,&changed,4);source=mesh;g.endFrame();assert(!g.distantPoseBounds(p,source,decl,3,low,high)); // A far vertex alone is not a culling proof.
+        Program unsupported=p;unsupported.operations[1].code=6;assert(!g.distantPoseBounds(unsupported,source,decl,3,low,high));
+        g.reset();assert(!g.poseEnvelopes.entries()&&!g.envelopeBudget.vertices);
+        std::puts("DISPLACEMENT_POSE_ENVELOPE_PASS relative_palette current_pose new_source cold_fallback budget reset");
+    }
+    static void positionOnly(IDirect3DVertexDeclaration9* declaration){
+        NorthlightAutoDisplacement g(nullptr);float vertices[]={1,2,60,0,3,4,61,0,5,6,62,0};Mesh mesh;
+        const NorthlightDrawSnapshot::Draw draw{D3DPT_TRIANGLELIST,0,0,3,0,1,false};
+        assert(g.rangeSnapshots.readUP(declaration,draw,nullptr,D3DFMT_UNKNOWN,vertices,16,mesh));
+        assert(mesh.streams[0].stride==16&&mesh.vertexCount==3&&mesh.streams[1].bytes.empty());
+        for(unsigned i=0;i<3;++i)assert(!std::memcmp(mesh.streams[0].bytes.data()+i*16,vertices+i*4,12));
+        assert(!g.snapshots.readUP(declaration,draw,nullptr,D3DFMT_UNKNOWN,vertices,16,mesh));
+        std::puts("MATERIAL_POSITION_ONLY_PASS unused_unbound_stream full_geometry_still_required");
+    }
+    static void rangeProgram(NorthlightAutoDisplacement& g,IDirect3DVertexShader9* key,bool skinned=false){
+        using namespace NorthlightWaterShaderPatch;
+        NorthlightAutoDisplacement::Material m;m.first=0;m.count=1;m.skinned=skinned;m.view.major=3;m.view.positionRegister=0;m.view.inputs.push_back({0,D3DDECLUSAGE_POSITION,0});
+        NorthlightActorDeformation::Operation copy;copy.code=1;copy.destination=dst(0,0);copy.source[0].token=src(1,0);m.view.operations.push_back(copy);
+        NorthlightActorDeformation::Operation move;move.code=2;move.destination=dst(0,0,7);move.source[0].token=src(0,0);move.source[1].token=src(2,0);m.view.operations.push_back(move);
+        g.materials[key]=std::move(m);
+        g.constants[2]=123;g.constantStamp.valid=true;
+    }
+    static void rangePreservesPose(const NorthlightAutoDisplacement& g){assert(g.constants[2]==123&&g.constantStamp.valid);}
+    static void rangeBudget(NorthlightAutoDisplacement& g,IDirect3DVertexShader9* shader,IDirect3DVertexDeclaration9* decl){
+        std::vector<float> vertices(90000,1.f);NorthlightAutoDisplacement::Args args{{D3DPT_TRIANGLELIST,0,0,30000,0,10000,false},nullptr,D3DFMT_UNKNOWN,vertices.data(),12};float nearest=0;
+        for(unsigned i=0;i<8;++i)g.nearestMaterialDepth(shader,args,nearest);
+        assert(g.rangeSnapshots.bytesRead()>0&&g.rangeSnapshots.bytesRead()<=(512u<<10));assert(g.snapshots.bytesRead()==0);
+        NorthlightDrawSnapshot::Mesh mesh;assert(g.snapshots.readUP(decl,args.draw,nullptr,D3DFMT_UNKNOWN,vertices.data(),12,mesh));
+        assert(g.snapshots.bytesRead()==vertices.size()*sizeof(float));g.endFrame();assert(!g.snapshots.bytesRead()&&!g.rangeSnapshots.bytesRead());
+        assert(g.snapshots.snapshotCacheLimit()+g.rangeSnapshots.snapshotCacheLimit()==(32u<<20));
+        std::puts("MATERIAL_RANGE_BUDGET_PASS isolated_reads warm_tracking combined_cache_cap");
+    }
     static bool read(NorthlightAutoDisplacement& g,bool skinned=true){return g.readConstants(skinned?0:20,skinned?256:4,skinned);}
     static const float* values(const NorthlightAutoDisplacement& g){return g.constants;}
     static bool certified(const NorthlightAutoDisplacement& g){return g.constantStamp.valid;}
@@ -102,8 +151,29 @@ struct Declaration:IDirect3DVertexDeclaration9 {
     HRESULT STDMETHODCALLTYPE GetDevice(IDirect3DDevice9**)override{return E_FAIL;}
     HRESULT STDMETHODCALLTYPE GetDeclaration(D3DVERTEXELEMENT9* out,UINT* count)override{++reads;if(fail||*count<2)return D3DERR_INVALIDCALL;std::memcpy(out,elements,sizeof elements);*count=2;return D3D_OK;}
 };
+struct RangeBackend:Backend {
+    Declaration decl;
+    HRESULT STDMETHODCALLTYPE GetVertexDeclaration(IDirect3DVertexDeclaration9** out)override{*out=&decl;decl.AddRef();return D3D_OK;}
+};
+struct SplitDeclaration:Declaration {
+    HRESULT STDMETHODCALLTYPE GetDeclaration(D3DVERTEXELEMENT9* out,UINT* count)override{
+        if(*count<3)return D3DERR_INVALIDCALL;const D3DVERTEXELEMENT9 e[]={{0,0,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_POSITION,0},{1,0,D3DDECLTYPE_D3DCOLOR,0,D3DDECLUSAGE_COLOR,0},D3DDECL_END()};std::memcpy(out,e,sizeof e);*count=3;return D3D_OK;
+    }
+};
 int main(){
     DisplacementStateTestAccess::cache();
+    DisplacementStateTestAccess::posed();
+    {SplitDeclaration decl;DisplacementStateTestAccess::positionOnly(&decl);}
+    {RangeBackend backend;NorthlightAutoDisplacement g(&backend);auto* shader=reinterpret_cast<IDirect3DVertexShader9*>(uintptr_t(1));
+     DisplacementStateTestAccess::rangeProgram(g,shader);
+     float vertices[]={0,0,50000,1,0,50001,0,1,50002};NorthlightAutoDisplacement::Args args{{D3DPT_TRIANGLELIST,0,0,3,0,1,false},nullptr,D3DFMT_UNKNOWN,vertices,12};float nearest=0;
+     for(float distance:{47.99f,48.f,48.01f,60.f,150.f}){backend.bank[2]=distance-50000;assert(g.nearestMaterialDepth(shader,args,nearest));assert(nearest<=double(vertices[2])+backend.bank[2]);if(distance>=60)assert(nearest>48);}
+     backend.bank[2]=-50000;assert(g.nearestMaterialDepth(shader,args,nearest)&&nearest==0);
+     DisplacementStateTestAccess::rangePreservesPose(g);
+     DisplacementStateTestAccess::rangeProgram(g,shader,true);assert(!g.nearestMaterialDepth(shader,args,nearest));
+     DisplacementStateTestAccess::rangeProgram(g,shader);vertices[2]=NAN;assert(!g.nearestMaterialDepth(shader,args,nearest));
+     DisplacementStateTestAccess::rangeBudget(g,shader,&backend.decl);
+     std::puts("MATERIAL_RANGE_PASS conservative_large_translation boundary_pose_changes unknown_skinned nonfinite");}
     Backend backend;DeviceMirror mirror;ExtensionDevice extension(&backend,&mirror);Meter meter(&extension);
     NorthlightAutoDisplacement g(&meter);
     auto attach=[&]{g.setConstantEpochSource(&extension,[](void* c,NorthlightConstantEpoch::Stamp& s){return static_cast<ExtensionDevice*>(c)->constantStamp(s);});};
