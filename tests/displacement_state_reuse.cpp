@@ -22,6 +22,19 @@ static void logf(const char*,...){}
 struct DisplacementStateTestAccess {
     using Mesh=NorthlightDrawSnapshot::Mesh;
     static void cache();
+    static void boundsCache(){
+        NorthlightAutoDisplacement g(nullptr);std::vector<std::shared_ptr<const Mesh>> sources;
+        for(unsigned i=0;i<64;++i){auto source=std::make_shared<Mesh>();source->streams[0].bytes.resize(512u<<10);sources.push_back(source);
+            NorthlightAutoDisplacement::Bounds b{};b.low[0]=float(i);g.retainBounds(source,std::move(b));}
+        assert(g.bounds.size()==64&&g.boundsBytes<(64u<<10));
+        for(unsigned repeat=0;repeat<10;++repeat)for(unsigned i=0;i<sources.size();++i){auto hit=g.cachedBounds(sources[i]);assert(hit!=g.bounds.end()&&hit->second.low[0]==float(i));}
+        std::weak_ptr<const Mesh> weak=sources[0];sources.clear();assert(weak.expired());
+        // Same address, different control block: an expired source cannot prove a new mesh.
+        alignas(Mesh) unsigned char storage[sizeof(Mesh)];auto first=std::shared_ptr<const Mesh>(new(storage) Mesh,[](const Mesh* p){p->~Mesh();});
+        NorthlightAutoDisplacement::Bounds b{};g.retainBounds(first,std::move(b));first.reset();
+        auto replacement=std::shared_ptr<const Mesh>(new(storage) Mesh,[](const Mesh* p){p->~Mesh();});assert(g.cachedBounds(replacement)==g.bounds.end());g.reset();assert(!g.boundsBytes&&g.bounds.empty());
+        std::puts("DISPLACEMENT_BOUNDS_CACHE_PASS workingSetMiB=32 boundsKiB_under=64 warmHits=640 weak_lifetime address_reuse reset");
+    }
     static void capture();
     static void posed(){
         using namespace NorthlightWaterShaderPatch;using namespace NorthlightActorDeformation;
@@ -226,6 +239,18 @@ struct MaterialCaptureStateTestAccess {
         b.modes[0]=1;assert(!b.active());b.modes[0]=0;b.occlusionControl[0]=1;assert(!b.active());
         std::puts("MATERIAL_NO_CONTRIBUTION_PASS no_capture_setup native_pom_independent all_domains_off");
     }
+    static void effectiveRange(){
+        CaptureBackend d;NorthlightAutoBump b(&d);auto& g=setup(b,d,4);b.modes[3]=1;
+        assert(b.captureRange(4)==48);b.strength=0;assert(b.captureRange(4)==48);b.occlusionControl[2]=0;assert(!b.captureNeeded(4));
+        b.modes[3]=2;b.occlusionLight[3]=1;assert(b.captureRange(4)==16);b.modes[3]=3;assert(!b.captureNeeded(4));
+        b.strength=.75f;b.modes[3]=1;DisplacementStateTestAccess::rangeProgram(g,&d.vs);
+        float vertices[]={0,0,60,0,1,0,60,0,0,1,60,0};NorthlightAutoDisplacement::Args args{{D3DPT_TRIANGLELIST,0,0,3,0,1,false},nullptr,D3DFMT_UNKNOWN,vertices,16};
+        unsigned draws=0;b.beginDraw();b.capture(&d.vs,[&]{++draws;return D3D_OK;},true,&args);
+        assert(b.rangeRejected==1&&!d.pixelQueries&&!d.textures&&!d.samplers&&!d.depthAllocations&&!draws);
+        // A large object crossing the visible range cannot be rejected as a whole.
+        b.endFrame();vertices[2]=1;b.beginDraw();b.capture(&d.vs,[&]{++draws;return D3D_OK;},true,&args);assert(!b.rangeRejected&&d.pixelQueries>0);
+        std::puts("MATERIAL_EFFECT_RANGE_PASS normal_cavity_48 shadow_only_16 inactive_0 rigid_m2_far_skipped crossing_retained");
+    }
     static void invisible(){
         for(unsigned domain:{1u,4u})for(bool depthOnly:{false,true}){if(domain==1&&!depthOnly)continue;
             CaptureBackend d;NorthlightAutoBump b(&d);setup(b,d,domain);d.colorWrite=depthOnly?0:15;d.depthWrite=depthOnly?TRUE:FALSE;
@@ -234,6 +259,7 @@ struct MaterialCaptureStateTestAccess {
     }
 };
 void DisplacementStateTestAccess::capture(){
+    MaterialCaptureStateTestAccess::effectiveRange();
     using namespace NorthlightWaterShaderPatch;using namespace NorthlightActorDeformation;
     for(unsigned domain:{1u,4u})for(bool skinned:{false,true})for(auto samples:{D3DMULTISAMPLE_NONE,D3DMULTISAMPLE_2_SAMPLES}){
         CaptureBackend d;d.surface.samples=samples;{
@@ -287,6 +313,7 @@ static void sharedGeometry(){
     std::puts("SHARED_POM_GEOMETRY_PASS exact_attributes multistream strip_winding triangle_ids invalid_indices occupied_semantic");
 }
 int main(){
+    DisplacementStateTestAccess::boundsCache();
     MaterialCaptureStateTestAccess::invisible();
     MaterialCaptureStateTestAccess::noCapture();
     sharedGeometry();

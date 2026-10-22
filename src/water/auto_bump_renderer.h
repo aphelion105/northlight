@@ -103,8 +103,11 @@ class NorthlightAutoBump {
     unsigned modes[4]={2,2,1,3};float pomControl[4]={.018f,16,16,0};
     unsigned draws[4]={},frames=0,rejected=0,invisibleRejected=0,noCaptureRequired=0;
     bool pomInRange=true;unsigned rangeTests=0,rangeRejected=0,pomRangeRejected=0;
-    bool captureNeeded(unsigned domain)const{return strength>0||occlusionControl[2]>0||
-        (modes[domain-1]==2&&pomControl[0]>0&&pomInRange&&occlusionControl[0]>0&&occlusionLight[3]>0);}
+    float captureRange(unsigned domain)const{
+        if(strength>0||occlusionControl[2]>0)return range;
+        return modes[domain-1]==2&&pomControl[0]>0&&pomInRange&&occlusionControl[0]>0&&occlusionLight[3]>0?std::min(range,pomControl[1]):0;
+    }
+    bool captureNeeded(unsigned domain)const{return captureRange(domain)>0;}
     template<size_t N> static unsigned kind(const AutoBumpIdentity (&table)[N],std::uint64_t hash){
         auto i=std::lower_bound(table,table+N,hash,[](const AutoBumpIdentity& a,std::uint64_t h){return a.hash<h;});
         return i!=table+N&&i->hash==hash?i->kind:0;
@@ -202,10 +205,10 @@ public:
         DWORD colorWrite=0,depthWrite=0;
         if(FAILED(d->GetRenderState(D3DRS_COLORWRITEENABLE,&colorWrite))||FAILED(d->GetRenderState(D3DRS_ZWRITEENABLE,&depthWrite)))return;
         if(!(colorWrite&7)||(!depthWrite&&domain!=1)){++invisibleRejected;return;}
-        if(geometry&&domain<=3&&modes[domain-1]!=3){float nearest=0;
+        if(geometry&&modes[domain-1]!=3){float nearest=0;
             if(displacement.nearestMaterialDepth(original,*geometry,nearest)){++rangeTests;
                 if(nearest>=pomControl[1]){pomInRange=false;++pomRangeRejected;}
-                if(nearest>range){++rangeRejected;return;}}
+                if(captureNeeded(domain)&&nearest>captureRange(domain)){++rangeRejected;return;}}
         }
         const bool needsCapture=captureNeeded(domain);
         if(!needsCapture&&modes[domain-1]!=3){++noCaptureRequired;return;}
@@ -239,7 +242,7 @@ public:
         // A distant proof needs no capture constants, samplers or private depth.
         // Resolve the target size first: reset() would discard prepared geometry.
         if(domain<=4&&modes[domain-1]==3&&geometry){displacement.prepare(original,domain,material,*geometry);
-            if(displacement.nearestPreparedDepth()>range){++rangeTests;++rangeRejected;return;}}
+            if(needsCapture&&displacement.nearestPreparedDepth()>captureRange(domain)){++rangeTests;++rangeRejected;return;}}
         if(!needsCapture){++noCaptureRequired;return;}
         const DWORD* codes[]={kBumpOpaqueShader,kBumpLayerShader,kBumpWallShader,kBumpGrassShader,kBumpWallOpaqueShader,kBumpCompositeShader};
         const DWORD* sharedCodes[]={kBumpSharedOpaqueShader,kBumpSharedLayerShader,kBumpSharedWallShader,kBumpSharedGrassShader,kBumpSharedWallOpaqueShader,kBumpSharedCompositeShader};
@@ -286,7 +289,7 @@ public:
         if(occlusionTarget){saved.auxiliary=true;if(FAILED(d->SetRenderTarget(1,occlusionTarget))){drop(occlusionTarget);drop(occlusionMap);occlusionUnavailable=true;d->SetRenderTarget(1,nullptr);}}
         if(!cleared){if(!check(d->Clear(0,nullptr,D3DCLEAR_TARGET|(multisampled?D3DCLEAR_ZBUFFER:0),0,1,0),"height clear"))return;cleared=true;}
         bool cacheBound=false;if(sharing){saved.sharedTargets=true;cacheBound=SUCCEEDED(d->SetRenderTarget(2,sharedPOM.target(0)))&&SUCCEEDED(d->SetRenderTarget(3,material==6?sharedPOM.target(1):nullptr));if(!cacheBound){d->SetRenderTarget(2,nullptr);d->SetRenderTarget(3,nullptr);}}
-        const float constants[]={domain==1?.18f:domain==2?.14f:.06f,range,alpha?(float(ref)+(alphaFunc==D3DCMP_GREATER?.5f:0.f))/255.f:.001f,domain==4&&alpha?1.f:0.f};
+        const float constants[]={domain==1?.18f:domain==2?.14f:.06f,captureRange(domain),alpha?(float(ref)+(alphaFunc==D3DCMP_GREATER?.5f:0.f))/255.f:.001f,domain==4&&alpha?1.f:0.f};
         float pom[4];std::copy(pomControl,pomControl+4,pom);if(modes[domain-1]!=2||!parallax.supports(saved.pixel,material))pom[0]=0;
         float occult[4];std::copy(occlusionControl,occlusionControl+4,occult);occult[3]=occlusionTarget?1.f:0.f;if(pom[0]<=0||occlusionLight[3]<=0)occult[0]=0;
         float bank[24];for(unsigned i=0;i<4;++i){bank[i]=constants[i];bank[4+i]=projection[i];bank[8+i]=pom[i];bank[12+i]=occult[i];bank[16+i]=occlusionLight[i];bank[20+i]=sharedPOM.control[i];}

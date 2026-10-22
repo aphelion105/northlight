@@ -1,5 +1,43 @@
 # Material performance investigation — 22 October 2026
 
+## New DLL user run at 12:52 and M2 follow-up
+
+The latest run loads the delivered f8a9a65 DLL, SHA-256 `de66ac3dc4a586d1d2dde953f04c5fe3540b4d388b4e656dc09896b1b02de9d5`. Evidence is preserved outside Git in `northlight-diagnostics/m2-performance-20261022/user-run-new-dll-1252.log` and `new-dll-log-index.json`. Resolution is 4K, MSAA 2x, HDR enabled, DXVK 3.1.1 / RTX 4090. The same logged camera gives:
+
+| State | Selected window end frames | Mean frame time | FPS from mean |
+| --- | --- | --- | --- |
+| M2 Displacement + normals only (`0/0/0/3`) | 1320–1920, six windows | 14.182 ms | 70.51 |
+| All material domains disabled | 2160–2640, five windows | 9.078 ms | 110.16 |
+
+These are observational toggles, not a controlled comparison with the previous build's different camera. CPU capture is approximately 2.1–2.3 versus 0.6–0.7 ms; GPU GameScene approximately 6.2–7.0 versus 2.1–2.9 ms. Final GPU MaterialDetail is only 0.176 ms at frame 1524. CPU/GPU timings overlap and cannot be summed. No separate normal/cavity/POM GPU timings are available in this log.
+
+GPU displacement is supported but reports zero draws/builds/cached meshes. Around 306 model material captures still run per frame. The camera is approximately 19–20 units from the character, outside model geometry's 8-unit radius. Mode 3 does not run POM or its self-shadow; normal/cavity remains active to 48. During M2-only operation, the earlier unused object-bound scans remain zero. Enabling world displacement later reaches 108,037,640 scanned object vertices by frame 4200, exposing a separate bounds-cache churn problem.
+
+This follow-up changes:
+
+- Bounds retain weak source ownership, validate control-block identity against address reuse, and charge metadata rather than complete source meshes. Limits remain 8 MiB / 1024 bounds. A 32 MiB source set retains 64 bounds in less than 64 KiB and passes 640 warm lookups; an independent old/new control reproduces the old unwanted source retention.
+- Generic posed-vertex fallback reuses the existing validated declaration bindings once per draw. Pose evaluation, geometry, fade and subdivision remain unchanged.
+- Rigid M2 normal/POM captures use the existing conservative early distance admission. Capture follows its active consumers: normal/cavity uses normal range; self-shadow-only capture uses the smaller of normal and POM range. Native POM and displaced native geometry remain independent.
+- Logs add bounds hit/miss/entry/byte counters.
+
+A separate no-POM capture specialization was evaluated and **not retained**. Although its prefix falls from 271 to 93 static slots, five alternating complete-pass 4K/MSAA 2x rounds give medians of 0.374432 ms for the original and 0.373632 ms for the specialization (0.21%, within the run-to-run spread). This does not establish a useful speedup. An unrestricted variant also changed one native D3D9 fixture by one FP16 depth step and 0.000073 in color; retaining the original shader on displaced geometry restores exact comparisons. That guarded experiment passes 3840 paired outputs across both backends and all four MSAA settings, plus 3584 alpha/texkill cases, but adds no demonstrated performance benefit. Its source, patch and results remain outside Git in `northlight-diagnostics/m2-performance-20261022/normal-capture-experiment/`. The shipping change keeps all existing shader bytecode and interfaces unchanged; tolerances are not relaxed.
+
+### Which distance should capture use?
+
+Capture replays geometry into normal/depth/coverage and occlusion targets before the native color draw; final lighting consumes them later. It is not a free copy. Normal mapping tilts lighting normals; POM shifts UVs through a height-field raymarch; displacement moves real rasterized vertices; cavity modifies ambient lighting using cached inferred detail.
+
+Capture must end when none of these captured effects contributes. The configured model geometry radius is 8 units, fading over 6–8. Normal/cavity is still visible to depth 48, fading over 36–48; POM is visible to depth 16, fading over 9.6–16 plus minification fade. Geometry uses spherical camera distance; normal/POM use view-space depth. Setting all limits to 8 would remove currently visible normal/cavity detail. No such quality setting is changed here.
+
+GPU distance/depth rejection can occur after CPU setup and vertex work. Animated models require conservative current-pose bounds; unknown or budget-limited proofs retain rendering. Objects crossing the boundary retain their near portion. General occluded-object elimination is not guaranteed. Cached data may be shared by visible instances and is retained within budgets to avoid camera-turn rebuilds; retention is not per-frame shading. Bounds no longer retain full source payloads solely to remember six numbers.
+
+### Reproduce this follow-up
+
+Run `tests/test_displacement_state_reuse.py`, `tests/test_material_geometry.py` and `tests/validate_model_materials.py --backend <d3d9.dll>` on DXVK and system D3D9. Build with `python scripts/build_renderer.py`. The state regression covers effective ranges, conservative boundary crossings, source lifetime/address reuse and cache accounting. Model fixtures cover 40 shader-model/skin/combiner combinations with actual geometry, animation and binding/constant restoration. The separate experimental comparison runner and its shader sources are preserved in the diagnostic snapshot above; its results are not attributed to the shipping shader path.
+
+The final shipping follow-up passes the CPU geometry/snapshot/upload and range/state/cache regressions, and all 40 model cases on each backend (80 total). Windows x86 builds with the same two existing warnings. All existing shader bytecode is unchanged. Tests operate offscreen; the game is not launched and the installed DLL is not replaced. A matching user game run is still required to establish its FPS effect. Shared POM remains disabled by default.
+
+## Previous investigation at 11:02
+
 The latest user-run log still shows a large material cost without displacement output. This code-only continuation removes unnecessary CPU work and capture setup. A shared native/capture POM implementation passes image comparisons, but complete-pass timing exposed a net regression, so it remains an explicit profiling opt-in. The game was not launched and no DLL was installed. **No new in-game FPS or 120 FPS result is claimed.**
 
 ## Fresh log evidence
