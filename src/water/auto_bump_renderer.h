@@ -108,19 +108,49 @@ class NorthlightAutoBump {
         }
         void apply(){changed=true;for(unsigned i=0;i<stateCount;++i){auto& s=states[i];if(s.value!=s.replay)d->SetRenderState(s.key,s.replay);}}
     };
-    struct Vertex {IDirect3DVertexShader9* patched=nullptr;unsigned kind=0;IDirect3DVertexShader9* shared=nullptr;bool sharedChecked=false,deferredSafe=false;};
+    struct Vertex {IDirect3DVertexShader9* patched=nullptr;unsigned kind=0;IDirect3DVertexShader9* shared=nullptr;bool sharedChecked=false,deferredSafe=false,failed=false;IDirect3DVertexShader9* pending=nullptr;uint64_t pendingHash=0;};
     bool sharedVertex(Vertex& vertex){if(!vertex.sharedChecked){vertex.sharedChecked=true;vertex.shared=NorthlightSharedPOM::vertexShader(d,vertex.patched);}return vertex.shared!=nullptr;}
     std::unordered_map<IDirect3DVertexShader9*,Vertex> vertices;
+    unsigned pendingVertices=0;
+    using VertexIdentity=bool(*)(void*,IDirect3DVertexShader9*,uint64_t&,unsigned&);
+    VertexIdentity vertexIdentity=nullptr;void* vertexIdentityContext=nullptr;bool vertexOverflow=false;
     std::unordered_map<IDirect3DPixelShader9*,unsigned> pixels;
     IDirect3DPixelShader9* shaders[6]={},*sharedShaders[6]={};
     struct NativeCapture {IDirect3DPixelShader9* source=nullptr,*shader=nullptr;unsigned constant=128,first=256,last=0,samplers=0;bool deferredSafe=false;};
     // Rare CPU creation work can happen outside sampled draw scopes, including
     // recognized vertex registration while materials are disabled.
-    struct ColdWork {unsigned vertexSources=0,modelMisses=0,modelBuilt=0,staticCreates=0,staticBuilt=0;uint64_t sourceBytes=0;double vertexMs=0,modelMs=0,staticMs=0;} cold;
+    struct ColdWork {unsigned vertexSources=0,vertexQueued=0,modelMisses=0,modelBuilt=0,staticCreates=0,staticBuilt=0;uint64_t sourceBytes=0;double vertexMs=0,modelMs=0,staticMs=0;} cold;
     struct ColdTimer {double& total;std::chrono::steady_clock::time_point start=std::chrono::steady_clock::now();
         ~ColdTimer(){total+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();}};
     HRESULT createCaptureShader(const DWORD* code,IDirect3DPixelShader9** output){
         ++cold.staticCreates;ColdTimer timer{cold.staticMs};const HRESULT hr=d->CreatePixelShader(code,output);cold.staticBuilt+=SUCCEEDED(hr)&&*output;return hr;
+    }
+    bool compileVertex(IDirect3DVertexShader9* original,Vertex& vertex,const DWORD* code,size_t count){
+        std::vector<std::uint32_t> patched;
+        if(NorthlightWaterShaderPatch::patch(reinterpret_cast<const std::uint32_t*>(code),count,patched))return false;
+        NorthlightDrawSnapshot::Ref<IDirect3DVertexShader9> shader;
+        if(FAILED(d->CreateVertexShader(reinterpret_cast<const DWORD*>(patched.data()),shader.out()))||!shader.p)return false;
+        NorthlightWaterShaderPatch::Analysis analysis;if(!NorthlightWaterShaderPatch::analyse(reinterpret_cast<const uint32_t*>(code),count,analysis))vertex.deferredSafe=analysis.used[10]==0;
+        displacement.registerMaterial(original,code,count,vertex.kind);displacement.registerVariant(shader.p,reinterpret_cast<const DWORD*>(patched.data()),patched.size(),displacement.skinned(original));
+        vertex.patched=shader.p;shader.p=nullptr;return true;
+    }
+    bool ensureVertex(IDirect3DVertexShader9* original,Vertex& vertex){
+        if(vertex.patched)return true;if(!vertex.pending||vertex.failed)return false;
+        ++cold.vertexSources;ColdTimer timer{cold.vertexMs};bool ready=false;
+        try{UINT bytes=0;if(SUCCEEDED(vertex.pending->GetFunction(nullptr,&bytes))&&bytes>=8&&bytes<=65536*sizeof(DWORD)&&bytes%sizeof(DWORD)==0){
+                std::vector<DWORD> code(bytes/sizeof(DWORD));if(SUCCEEDED(vertex.pending->GetFunction(code.data(),&bytes))&&bytes==code.size()*sizeof(DWORD)&&NorthlightWaterShaderPatch::fnv1a64(reinterpret_cast<const uint32_t*>(code.data()),code.size())==vertex.pendingHash){cold.sourceBytes+=bytes;ready=compileVertex(original,vertex,code.data(),code.size());}}}catch(...){}
+        if(ready){drop(vertex.pending);--pendingVertices;}else vertex.failed=true;return ready;
+    }
+    auto recoverVertex(IDirect3DVertexShader9* original){
+        // An inactive registry may fill with shaders an eager patch would reject.
+        // Recover a live missing consumer, without evicting a compiled variant.
+        if(!vertexOverflow||!vertexIdentity)return vertices.end();uint64_t hash=0;unsigned family=0;
+        if(!vertexIdentity(vertexIdentityContext,original,hash,family))return vertices.end();
+        const unsigned k=family==3?4:kind(kAutoBumpVertex,hash);if(!k||!modes[k-1])return vertices.end();
+        if(vertices.size()>=4096){auto unused=std::find_if(vertices.begin(),vertices.end(),[](const auto& entry){return entry.second.pending!=nullptr;});
+            if(unused==vertices.end())return vertices.end();drop(unused->second.pending);--pendingVertices;vertices.erase(unused);}
+        auto added=vertices.emplace(original,Vertex{nullptr,k}).first;original->AddRef();added->second.pending=original;added->second.pendingHash=hash;++pendingVertices;
+        if(!ensureVertex(original,added->second))return vertices.end();return added;
     }
     std::unordered_map<IDirect3DPixelShader9*,NativeCapture> nativeCaptures[2][2];
     NativeCapture* modelCapture(IDirect3DPixelShader9* source,bool alpha,bool shared=false){
@@ -316,6 +346,7 @@ public:
             profileConfigFrame=profile->frameNumber();logf("MATERIAL_CONFIG frame=%llu enabled=%u modes=%u/%u/%u/%u normalGain=%.3f normalRange=%.1f pomDepth=%.6f pomRange=%.1f pomSteps=%.0f occlusionRange=%.1f cavity=%.3f selfShadow=%.3f shadowSteps=%.0f lightActive=%.3f sharedPOM=%u",(unsigned long long)profileConfigFrame,unsigned(enabled),modes[0],modes[1],modes[2],modes[3],strength,range,pomControl[0],pomControl[1],pomControl[2],occlusionDistance(),occlusionControl[2],occlusionControl[0],occlusionControl[1],occlusionLight[3],unsigned(sharedPOM.canTry()));}}
     void setGeometryTracking(uint64_t(*identity)(void*,bool),uint64_t(*version)(void*,bool),NorthlightCaptureMetadata::Read metadata){displacement.tracking(identity,version,metadata);sharedPOM.tracking(identity,version,metadata);deferredSnapshots.setIdentityProvider(identity);deferredSnapshots.setVersionProvider(version);deferredSnapshots.setMetadataProvider(metadata);}
     void setConstantEpochSource(void* context,NorthlightConstantEpoch::Reader reader){displacement.setConstantEpochSource(context,reader);}
+    void setVertexIdentity(void* context,VertexIdentity reader){vertexIdentityContext=context;vertexIdentity=reader;}
     template<class Draw> HRESULT geometryDraw(Draw draw,bool native=false){return parallax.shared()?sharedPOM.drawBound(true):displacement.draw(draw,native);}
     void setProjection(float x,float y,float z){projection[0]=x;projection[1]=y;projection[2]=z;}
     void setLight(const float* light){std::copy(light,light+4,occlusionLight);}
@@ -336,11 +367,11 @@ public:
         bool captureRequired=false;for(unsigned i=0;i<4;++i)captureRequired|=modes[i]&&captureNeeded(i+1);
         if(!captureRequired){deferredDiscarded+=unsigned(deferred.size());clearDeferred();sharedMaps[0]={};sharedMaps[1]={};sharedPOM.reset();drop(captureDepth);drop(target);drop(height);drop(occlusionTarget);drop(occlusionMap);drawn=cleared=false;occlusionUnavailable=false;occlusionRetry=0;}
     }
-    ~NorthlightAutoBump(){reset();for(auto& v:vertices){drop(v.second.patched);drop(v.second.shared);}for(auto*& p:shaders)drop(p);for(auto*& p:sharedShaders)drop(p);for(auto& groups:nativeCaptures)for(auto& variants:groups)for(auto& n:variants){drop(n.second.shader);drop(n.second.source);}}
+    ~NorthlightAutoBump(){reset();for(auto& v:vertices){drop(v.second.patched);drop(v.second.shared);drop(v.second.pending);}for(auto*& p:shaders)drop(p);for(auto*& p:sharedShaders)drop(p);for(auto& groups:nativeCaptures)for(auto& variants:groups)for(auto& n:variants){drop(n.second.shader);drop(n.second.source);}}
     void reset(){clearDeferred();deferredSnapshots.clearIndexCache();deferredDeclarations.clear();deferredGPU.clear();sharedMaps[0]={};sharedMaps[1]={};sharedPOM.reset();displacement.reset();normals.reset();drop(captureDepth);drop(target);drop(height);drop(occlusionTarget);drop(occlusionMap);occlusionUnavailable=false;occlusionRetry=0;width=heightPixels=0;cleared=drawn=failed=occlusionCleared=occlusionDrawn=false;}
     void endFrame(){
         deferredDiscarded+=unsigned(deferred.size());clearDeferred();
-        if(deferredReport||cold.vertexSources||cold.modelMisses||cold.staticCreates)logf("MATERIAL_COLD frame=%llu sampled=%u enabled=%u vertexSources=%u vertexCpuMs=%.6f modelMisses=%u modelBuilt=%u modelCpuMs=%.6f staticCreates=%u staticBuilt=%u staticCpuMs=%.6f sourceBytes=%llu",(unsigned long long)(deferredReport?deferredReportFrame:frames),unsigned(deferredReport),unsigned(enabled),cold.vertexSources,cold.vertexMs,cold.modelMisses,cold.modelBuilt,cold.modelMs,cold.staticCreates,cold.staticBuilt,cold.staticMs,(unsigned long long)cold.sourceBytes);
+        if(deferredReport||cold.vertexSources||cold.vertexQueued||cold.modelMisses||cold.staticCreates)logf("MATERIAL_COLD frame=%llu sampled=%u enabled=%u vertexSources=%u vertexQueued=%u pendingVertices=%u vertexCpuMs=%.6f modelMisses=%u modelBuilt=%u modelCpuMs=%.6f staticCreates=%u staticBuilt=%u staticCpuMs=%.6f sourceBytes=%llu",(unsigned long long)(deferredReport?deferredReportFrame:frames),unsigned(deferredReport),unsigned(enabled),cold.vertexSources,cold.vertexQueued,pendingVertices,cold.vertexMs,cold.modelMisses,cold.modelBuilt,cold.modelMs,cold.staticCreates,cold.staticBuilt,cold.staticMs,(unsigned long long)cold.sourceBytes);
         cold={};
         if(deferredReport||((queued||flushed||deferredFallback||deferredDiscarded)&&frames%600==0))logf("MATERIAL_DEFERRED frame=%llu sampled=%u enabled=%u queued=%u flushed=%u snapshotFallback=%u liveState=%u preparedGeometry=%u discardedUnused=%u terrain=%u walls=%u grass=%u models=%u earlyRangeRejected=%u opaqueCoverage=%u packetLimit=512 packetMiB=8 sourceMiB=24",(unsigned long long)(deferredReport?deferredReportFrame:frames),unsigned(deferredReport),unsigned(deferredAllowed),queued,flushed,deferredFallback,deferredUnsafe,deferredGeometry,deferredDiscarded,queuedDomain[0],queuedDomain[1],queuedDomain[2],queuedDomain[3],earlyRangeRejected,opaqueCoverage);
         if(deferredReport||((queued||flushed||deferredFallback)&&frames%600==0)){
@@ -381,22 +412,19 @@ public:
         if(!active()||!pomInRange||pomControl[0]<=0||(modes[0]!=2&&modes[1]!=2&&modes[2]!=2&&modes[3]!=2))return native();
         struct BoundShaders {IDirect3DVertexShader9* vs=nullptr;IDirect3DPixelShader9* ps=nullptr;~BoundShaders(){drop(vs);drop(ps);}} bound;
         if((!provenVS&&FAILED(d->GetVertexShader(&bound.vs)))||(!provenPS&&FAILED(d->GetPixelShader(&bound.ps))))return native();
-        auto v=vertices.find(provenVS?provenVS:bound.vs);auto p=pixels.find(provenPS?provenPS:bound.ps);
+        auto v=vertices.find(provenVS?provenVS:bound.vs);if(v==vertices.end())v=recoverVertex(provenVS?provenVS:bound.vs);auto p=pixels.find(provenPS?provenPS:bound.ps);
         if(v==vertices.end()||p==pixels.end()||v->second.kind>4||modes[v->second.kind-1]!=2)return native();
         const unsigned domain=v->second.kind,material=p->second;
         if((domain==1&&material>2)||(domain==2&&material!=3&&material!=5&&material!=6)||(domain==3&&material!=4))return native();
+        if(!ensureVertex(v->first,v->second))return native();
         return parallax.draw(v->first,v->second.patched,material,projection,pomControl,native,domain==4,bound.vs,bound.ps,&sharedPOM,v->second.shared,provenVS!=nullptr);
     }
     void registerVertex(IDirect3DVertexShader9* original,std::uint64_t hash,const DWORD* code,size_t count,unsigned modelFamily=0){
-        auto found=vertices.find(original);if(found!=vertices.end()){drop(found->second.patched);drop(found->second.shared);vertices.erase(found);}
-        const unsigned k=modelFamily==3?4:kind(kAutoBumpVertex,hash);if(!k||vertices.size()>=4096)return;
+        auto found=vertices.find(original);if(found!=vertices.end()){drop(found->second.patched);drop(found->second.shared);if(found->second.pending){drop(found->second.pending);--pendingVertices;}vertices.erase(found);}
+        const unsigned k=modelFamily==3?4:kind(kAutoBumpVertex,hash);if(!k)return;if(vertices.size()>=4096){vertexOverflow=true;return;}
+        if(!active()||!modes[k-1]){auto added=vertices.emplace(original,Vertex{nullptr,k}).first;original->AddRef();added->second.pending=original;added->second.pendingHash=hash;++pendingVertices;++cold.vertexQueued;return;}
         ++cold.vertexSources;cold.sourceBytes+=count*sizeof(DWORD);ColdTimer timer{cold.vertexMs};
-        std::vector<std::uint32_t> patched;
-        if(NorthlightWaterShaderPatch::patch(reinterpret_cast<const std::uint32_t*>(code),count,patched))return;
-        IDirect3DVertexShader9* shader=nullptr;
-        if(SUCCEEDED(d->CreateVertexShader(reinterpret_cast<const DWORD*>(patched.data()),&shader))){vertices[original]={shader,k};
-            NorthlightWaterShaderPatch::Analysis analysis;if(!NorthlightWaterShaderPatch::analyse(reinterpret_cast<const uint32_t*>(code),count,analysis))vertices[original].deferredSafe=analysis.used[10]==0;
-            displacement.registerMaterial(original,code,count,k);displacement.registerVariant(shader,reinterpret_cast<const DWORD*>(patched.data()),patched.size(),displacement.skinned(original));}
+        Vertex vertex;vertex.kind=k;if(compileVertex(original,vertex,code,count))try{vertices.emplace(original,vertex);}catch(...){drop(vertex.patched);throw;}
     }
     void registerPixel(IDirect3DPixelShader9* original,std::uint64_t hash){
         pixels.erase(original);const unsigned k=kind(kAutoBumpPixel,hash);
@@ -405,7 +433,7 @@ public:
     template<class Draw> void capture(IDirect3DVertexShader9* original,Draw draw,bool userMemory=false,const NorthlightAutoDisplacement::Args* geometry=nullptr){
         pomInRange=true;
         if(!active()&&(!profile||!profile->recording()))return;
-        auto v=vertices.find(original);if(v==vertices.end())return;
+        auto v=vertices.find(original);if(v==vertices.end()&&active())v=recoverVertex(original);if(v==vertices.end())return;
         const unsigned domain=v->second.kind;
         using P=NorthlightMaterialProfile;profileTag=domain*4+modes[domain-1];profilePrimitives=geometry?geometry->draw.primitives:0;
         P::Scope timing(profile,P::Admission,profileTag);if(profile)profile->count(P::Candidates);
@@ -415,6 +443,7 @@ public:
         DWORD colorWrite=0,depthWrite=0;
         if(FAILED(d->GetRenderState(D3DRS_COLORWRITEENABLE,&colorWrite))||FAILED(d->GetRenderState(D3DRS_ZWRITEENABLE,&depthWrite)))return;
         if(!(colorWrite&7)||(!depthWrite&&domain!=1)){++invisibleRejected;return;}
+        if(!ensureVertex(original,v->second))return;
         const bool geometryMode=modes[domain-1]==3;bool skipGeometry=false;
         if(geometry&&(!geometryMode||!displacement.skinned(original))){float nearest=0;
             if(displacement.nearestMaterialDepth(original,*geometry,nearest,geometryMode)){++rangeTests;

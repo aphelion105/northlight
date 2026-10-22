@@ -5,6 +5,19 @@
 using HRESULT=std::int32_t;
 constexpr HRESULT S_OK=0,S_FALSE=1,E_FAIL=-1;
 #include "query_poll.h"
+#include "stream_stats.h"
+void replayAttribution(){
+    NorthlightStream::ReplayFrameProfile p;
+    p.begin(false,127);p.record(4,900);assert(!p.enabled&&!p.calls&&!p.totalNs);
+    p.begin(true,126);p.record(4,900);assert(!p.enabled&&!p.calls);
+    p.begin(true,127);assert(p.enabled&&p.frame==127);
+    p.record(4,300);p.record(7,200);p.record(4,400);p.record(512,10000);
+    assert(p.calls==3&&p.totalNs==900&&p.maxNs==400&&p.maxId==4);
+    assert(p.entries[4].calls==2&&p.entries[4].ns==700&&p.entries[7].ns==200);
+    p.begin(true,254);assert(p.enabled&&!p.calls&&!p.totalNs&&!p.maxNs);
+    for(const auto& e:p.entries)assert(!e.calls&&!e.ns);
+    p.record(511,1);assert(p.calls==1&&p.maxId==511);
+}
 void waitAttribution(){
     NorthlightStream::QueryWaitProfile s;
     s.record(1,false,true,S_OK,780,100,200,800,1000);
@@ -23,6 +36,7 @@ void waitAttribution(){
     s={};assert(!s.calls&&!s.waitNs&&!s.tripNs&&!s.maxTripNs);
 }
 int main(){
+    replayAttribution();
     waitAttribution();
     std::uint64_t worst=0;unsigned maxCalls=0;
     for(std::uint64_t ready=0;ready<1700000;ready+=1000){

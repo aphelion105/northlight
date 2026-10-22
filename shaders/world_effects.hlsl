@@ -1132,6 +1132,9 @@ float4 FogTemporal(float2 uv:TEXCOORD0):COLOR0 {
         agree=all(abs(footprint-w)<=tol);
     }
     float4 history=tex2Dlod(FogHistory,float4(agree?puv:pq,0,0));
+    // Current is inside its own clamp window. Keep lerp's exact arithmetic,
+    // including signed zero/nonfinite behavior, when the samples already agree.
+    [branch]if(all(history==current))return lerp(current,history,FogTemporalInfo.y);
     float4 lo=current,hi=current;
     [unroll]for(int i=0;i<8;++i){
         float2 offset=float2(i%3-1,i/3-1);

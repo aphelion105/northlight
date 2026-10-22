@@ -14,6 +14,7 @@ p.add_argument('--vertex-alpha-zero',action='store_true')
 p.add_argument('--wall-diffuse',action='store_true',help='Exercise an opaque draw using the diffuse-alpha WMO pixel program')
 p.add_argument('--alpha-test',action='store_true',help='Preserve native alpha coverage and exercise guarded texture-dependent captures')
 p.add_argument('--texture-guard',action='store_true',help='Simulate the serialized production texture-write contract')
+p.add_argument('--lazy-registration',action='store_true',help='Register the original VS with master materials Off, then enable before its first material draw')
 p.add_argument('--baseline-ref',help='Compare the coverage defect / far admission with a previous commit')
 p.add_argument('--occlusion-off',action='store_true',help='Match a normal-only capture without the auxiliary MRT')
 p.add_argument('--reuse-exe',type=Path);p.add_argument('--quick',action='store_true')
@@ -52,12 +53,14 @@ def run(exe,source,label,on,samples=2,**flags):
     if a.vertex_alpha_zero:env['NORTHLIGHT_TEST_VERTEX_ALPHA_ZERO']='1'
     if a.alpha_test:env['NORTHLIGHT_TEST_MATERIAL_ALPHA_TEST']='1'
     if a.texture_guard:env['NORTHLIGHT_TEST_TEXTURE_GUARD']='1'
+    if a.lazy_registration:env['NORTHLIGHT_TEST_LAZY_VERTEX']='1'
     if flags.get('TEXTURE_GUARD_OFF'):env.pop('NORTHLIGHT_TEST_TEXTURE_GUARD',None)
     if on:env['NORTHLIGHT_TEST_DEFERRED_CAPTURE']='1'
     variant=['model4' if 'weighted4' in source.name else 'modelunsafe' if 'varying' in source.name else 'model'] if a.family=='models' else [] if a.family=='terrain' else ['wall']
     r=subprocess.run([str(exe),backend,str(folder)+'/', '12','.7',*variant],env=env,cwd=out,capture_output=True,text=True,timeout=180)
     (out/(label+'-'+str(on)+'.log')).write_text(r.stdout+r.stderr,encoding='utf-8')
     assert r.returncode==0,(label,on,r.stdout[-3000:],r.stderr[-1500:])
+    if a.lazy_registration:assert 'MATERIAL_LAZY_VERTEX_REGISTERED_OFF_ENABLED_BEFORE_FIRST_DRAW' in r.stdout
     return folder,r.stdout
 
 def compare(folders,pattern):
@@ -105,12 +108,12 @@ if not a.reuse_exe:
         for file in BASELINE_FILES:
             (overrides/Path(file).name).write_bytes(subprocess.check_output(['git','show',a.baseline_ref+':'+file]))
         old=compile_fixture(320,200,'baseline-check',overrides.resolve())
-        if a.family=='models':
+        if a.family=='models' or a.lazy_registration:
             for fixture in sources:
                 folder,_=run(old,fixture,'baseline-'+fixture.name,1)
                 count=compare([out/('model-'+fixture.name+'-1'),folder],'*.fgr')
                 records.append(dict(baseline_fixture=fixture.name,outputs=count,bit_exact=True))
-        if a.family=='terrain':
+        if a.family=='terrain' and not a.lazy_registration:
             timing=[]
             for build,binary in [('old',old),('new',exe)]:
                 _,log=run(binary,source,'far-admission-'+build,0,FAR_ADMISSION=1)
@@ -118,7 +121,7 @@ if not a.reuse_exe:
                 timing.append(dict(build=build,cpu_ms=float(m[1]),pixel_queries=int(m[2]),depth_queries=int(m[3])))
             assert timing[0]['pixel_queries']==32000 and timing[1]['pixel_queries']==timing[1]['depth_queries']==0
             records.append(dict(far_admission=timing));print('MATERIAL_ADMISSION_COMPARISON',timing,flush=True)
-        if a.family=='wall' and a.vertex_alpha_zero:
+        if a.family=='wall' and a.vertex_alpha_zero and not a.lazy_registration:
             folders=[run(binary,source,'opaque-alpha-'+label,0)[0] for label,binary in [('old',old),('new',exe)]]
             def pixels(path):
                 data=path.read_bytes();_,w,h,_,stride=struct.unpack_from('<5I',data)
@@ -160,6 +163,6 @@ if a.benchmark or a.reuse_exe:
     if old_bench:result['baseline_deferred']={key:statistics.median(r[key] for r in timings if r['deferred']==2) for key in ['gpu_ms','cpu_ms']}
     result['gpu_reduction_percent']=100*(1-result['deferred']['gpu_ms']/result['immediate']['gpu_ms'])
 else:result=dict(backend=backend,checks=records)
-result.update(family=a.family,vertex_alpha_zero=a.vertex_alpha_zero,wall_diffuse=a.wall_diffuse,baseline_ref=a.baseline_ref,alpha_test=a.alpha_test,texture_guard=a.texture_guard,mesh_grid=a.mesh_grid,capture_draws=a.capture_draws,vary_pose=a.vary_pose,benchmark_resolution=a.benchmark_resolution)
+result.update(family=a.family,vertex_alpha_zero=a.vertex_alpha_zero,wall_diffuse=a.wall_diffuse,baseline_ref=a.baseline_ref,alpha_test=a.alpha_test,texture_guard=a.texture_guard,lazy_registration=a.lazy_registration,mesh_grid=a.mesh_grid,capture_draws=a.capture_draws,vary_pose=a.vary_pose,benchmark_resolution=a.benchmark_resolution)
 (out/'validation.json').write_text(json.dumps(result,indent=2)+'\n',encoding='utf-8')
 print('MATERIAL_DEFERRED_PASS',json.dumps(result),flush=True)

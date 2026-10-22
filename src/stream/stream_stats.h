@@ -8,6 +8,22 @@
 
 namespace NorthlightStream {
 constexpr std::size_t kMaxCmdIds=512;   // size of the sync census; command_stream.inl static_asserts Cmd::Count fits
+// Replay-thread-only wall time, on the same 1/127 frames as query attribution.
+// Fixed storage; disabled/ordinary frames read no additional clocks.
+struct ReplayFrameProfile {
+    struct Entry {std::uint64_t ns=0;unsigned calls=0;};
+    Entry entries[kMaxCmdIds]{};
+    std::uint64_t frame=0,totalNs=0,maxNs=0;unsigned calls=0,maxId=0;bool enabled=false;
+    void begin(bool diagnostics,std::uint64_t id){
+        enabled=diagnostics&&id%127==0;frame=id;
+        if(enabled){for(auto& e:entries)e={};totalNs=maxNs=0;calls=maxId=0;}
+    }
+    void record(unsigned id,std::uint64_t ns){
+        if(!enabled||id>=kMaxCmdIds)return;
+        entries[id].ns+=ns;++entries[id].calls;totalNs+=ns;++calls;
+        if(ns>maxNs){maxNs=ns;maxId=id;}
+    }
+};
 using Counter=std::atomic<std::uint64_t>;
 inline void add(Counter& c,std::uint64_t n=1){c.fetch_add(n,std::memory_order_relaxed);}
 inline void own(Counter& c,std::uint64_t n=1){c.store(c.load(std::memory_order_relaxed)+n,std::memory_order_relaxed);}

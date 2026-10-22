@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # northlight-test: requires=zig,windows-exe
-"""Bounded query polling and diagnostic trip attribution; no game or GPU."""
+"""Bounded query polling and query/replay CPU attribution; no game or GPU."""
 from pathlib import Path
 import subprocess
 import sys

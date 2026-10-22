@@ -215,7 +215,10 @@ int main(int argc,char** argv){
 #endif
     bump.setMemoryPressure(pressure);assert(bump.active());
     bump.setGeometryTracking([](void* p,bool){return uint64_t(reinterpret_cast<uintptr_t>(p));},[](void* p,bool){return p==mutationSource?mutationRevision:1;},nullptr);
+    const bool lazyVertex=std::getenv("NORTHLIGHT_TEST_LAZY_VERTEX")!=nullptr;
+    if(lazyVertex){auto disabled=settings;disabled.autoBump=0;bump.configure(disabled);assert(!bump.active());}
     bump.registerVertex(vs,NorthlightWaterShaderPatch::fnv1a64((std::uint32_t*)vsBytes.data(),vsBytes.size()/4),(DWORD*)vsBytes.data(),vsBytes.size()/4,model?3:0);bump.registerPixel(ps,NorthlightWaterShaderPatch::fnv1a64((std::uint32_t*)psBytes.data(),psBytes.size()/4));
+    if(lazyVertex){bump.configure(settings);assert(bump.active());std::puts("MATERIAL_LAZY_VERTEX_REGISTERED_OFF_ENABLED_BEFORE_FIRST_DRAW");}
     if(model&&std::getenv("NORTHLIGHT_TEST_MATERIAL_PROFILE")){
         SavedState saved(d);assert(saved.ok);ok(d->SetVertexDeclaration(decl));ok(d->SetStreamSource(0,sourceVB,0,sizeof(V)));ok(d->SetIndices(sourceIB));
         NorthlightAutoDisplacement bounds(d);bounds.tracking([](void* p,bool){return uint64_t(reinterpret_cast<uintptr_t>(p));},[](void*,bool){return uint64_t(1);},nullptr);bounds.registerMaterial(vs,reinterpret_cast<const DWORD*>(vsBytes.data()),vsBytes.size()/4,4);

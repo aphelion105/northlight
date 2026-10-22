@@ -192,6 +192,7 @@ class WorldRenderer {
         uint64_t requestId=0;
         DWORD requestedAt=0,queueMs=0,geometryMs=0,actorMs=0,solveMs=0;
         double actorWorkMs=0,solveWorkMs=0;
+        double actorDecodeMs=0,actorPoseMs=0,actorHashMs=0,actorBvhMs=0;
         unsigned actorTexturesDecoded=0;size_t actorTextureEncodedBytes=0;
         size_t retirementBytes=0;
         std::shared_ptr<const PreparedCommit> prepared; /* paired with meshPlan */
@@ -1731,8 +1732,10 @@ private:
               NorthlightActorGeometry::Result resolvedActors;
               if(r.actorJob)resolvedActors=r.actorJob->resolve();
               result->actorTexturesDecoded=resolvedActors.texturesDecoded;result->actorTextureEncodedBytes=resolvedActors.textureEncodedBytes;
+              result->actorDecodeMs=resolvedActors.decodeMs;result->actorPoseMs=resolvedActors.geometryMs;result->actorHashMs=resolvedActors.hashMs;
               actorsChanged=resolvedActors.hash!=solvedActorHash;
               if(actorsChanged){
+                const auto bvhStart=std::chrono::steady_clock::now();
                 actors.reset();std::string actorError;
                 if(resolvedActors.scene&&!resolvedActors.scene->triangles.empty()){
                     auto next=std::make_shared<NorthlightGI::BVH>();auto scene=*resolvedActors.scene;
@@ -1743,6 +1746,7 @@ private:
                 // Pose/packet change only: keep corrections whose nearby actor
                 // bounds are unchanged (0.3.35); the static generation is intact.
                 dynamicProbes.observe(actors?&actors->scene():nullptr);
+                result->actorBvhMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-bvhStart).count();
               }
               actorMemo.remember(r.actorJob);
             }
@@ -2278,9 +2282,15 @@ private:
         // 0.3.176 (U1a/U1c): the totals first, then the lists straight into the locked IB (the bytes and
         // order of the 0.3.175 concatenation); fixed-chunk membership from the bitmap beside the set.
         const auto& fixed=fixedTerrainChunks();const bool bits=fixedTerrainBits.source()==&fixed;
+        const auto containsFixed=[&](std::pair<int,int> c){return bits?fixedTerrainBits.contains(c):fixed.count(c)!=0;};
         if(!liveTerrainGPU.prepare(frameTerrain,meshGeneration,[&](const auto& snapshot,uint32_t offset,std::vector<uint32_t>& output){
-            NorthlightShadowTerrain::appendLiveDirectionalBy(snapshot,[&](std::pair<int,int> c){return bits?fixedTerrainBits.contains(c):fixed.count(c)!=0;},offset,output,captureSampled?&terrainTriangleTests:nullptr);
-        },liveTerrainIndexCount,liveDirectionalIndexCount))return check(E_FAIL,"live terrain arena membership");
+            NorthlightShadowTerrain::appendLiveDirectionalBy(snapshot,containsFixed,offset,output,captureSampled?&terrainTriangleTests:nullptr);
+        },liveTerrainIndexCount,liveDirectionalIndexCount,[&](const auto& snapshot){
+            // The original filter copies every index when none of these chunks is fixed.
+            // Unknown/empty metadata and mixed captures retain the original filtering path.
+            return !snapshot.bounds.chunks.empty()&&std::none_of(snapshot.bounds.chunks.begin(),snapshot.bounds.chunks.end(),[&](const auto& c){
+                return c.x<0||c.y<0||c.x>=1024||c.y>=1024||containsFixed({c.x,c.y});});
+        }))return check(E_FAIL,"live terrain arena membership");
         indexPhase.reset();part(1);
         if(!liveTerrainIndexCount){uploadedTerrain=frameTerrain;liveTerrainGeneration=meshGeneration;return true;}
         auto indexUpload=streamingPhases.measure(NorthlightStreaming::PhaseProfile::TerrainIndexUpload);
@@ -2864,7 +2874,7 @@ public:
             }
             if(published&&published!=active&&NorthlightWorldStreaming::adopts(published->map,published->center,bool(published->bvh),active&&active->bvh,r.map,r.camera)){
                 bool newGI=published->serial&&(!active||active->serial!=published->serial);retiredSnapshot=std::move(active);active=published;
-                if(newGI&&NorthlightDiagnostics::enabled())logf("GI activated tick=%lu id=%llu ageMs=%lu queueMs=%lu geometryMs=%lu actorMs=%lu solveMs=%lu reused=%u solved=%u cancelled=%u origin=(%.1f %.1f %.1f) dynamicReused=%u dynamicSolved=%u staticOnly=%u partial=%u processed=%u generation=%llu retargeted=%u actorTextureDecode=worker actorTextures=%u actorTextureBytes=%zu pathRecorded=%llu pathReplayedRays=%llu pathRetracedRays=%llu pathRecordKB=%zu actorWorkMs=%.3f solveWorkMs=%.3f",(unsigned long)GetTickCount(),(unsigned long long)active->requestId,(unsigned long)(GetTickCount()-active->requestedAt),(unsigned long)active->queueMs,(unsigned long)active->geometryMs,(unsigned long)active->actorMs,(unsigned long)active->solveMs,active->reusedProbes,active->solvedProbes,active->superseded,active->origin.x,active->origin.y,active->origin.z,active->dynamicReused,active->dynamicSolved,unsigned(active->staticOnly),unsigned(active->partial),active->processedProbes,(unsigned long long)active->lightingGeneration,active->retargeted,active->actorTexturesDecoded,active->actorTextureEncodedBytes,(unsigned long long)active->movingStats.recorded,(unsigned long long)active->movingStats.replayed,(unsigned long long)active->movingStats.retraced,active->pathRecordBytes/1024,active->actorWorkMs,active->solveWorkMs);
+                if(newGI&&NorthlightDiagnostics::enabled())logf("GI activated tick=%lu id=%llu ageMs=%lu queueMs=%lu geometryMs=%lu actorMs=%lu solveMs=%lu reused=%u solved=%u cancelled=%u origin=(%.1f %.1f %.1f) dynamicReused=%u dynamicSolved=%u staticOnly=%u partial=%u processed=%u generation=%llu retargeted=%u actorTextureDecode=worker actorTextures=%u actorTextureBytes=%zu pathRecorded=%llu pathReplayedRays=%llu pathRetracedRays=%llu pathRecordKB=%zu actorWorkMs=%.3f solveWorkMs=%.3f actorDecodeMs=%.3f actorPoseMs=%.3f actorHashMs=%.3f actorBvhMs=%.3f",(unsigned long)GetTickCount(),(unsigned long long)active->requestId,(unsigned long)(GetTickCount()-active->requestedAt),(unsigned long)active->queueMs,(unsigned long)active->geometryMs,(unsigned long)active->actorMs,(unsigned long)active->solveMs,active->reusedProbes,active->solvedProbes,active->superseded,active->origin.x,active->origin.y,active->origin.z,active->dynamicReused,active->dynamicSolved,unsigned(active->staticOnly),unsigned(active->partial),active->processedProbes,(unsigned long long)active->lightingGeneration,active->retargeted,active->actorTexturesDecoded,active->actorTextureEncodedBytes,(unsigned long long)active->movingStats.recorded,(unsigned long long)active->movingStats.replayed,(unsigned long long)active->movingStats.retraced,active->pathRecordBytes/1024,active->actorWorkMs,active->solveWorkMs,active->actorDecodeMs,active->actorPoseMs,active->actorHashMs,active->actorBvhMs);
             }
             r.reason=(settingsRequestDirty?256u:0u)|(lastRequest.map!=r.map?1u:0u)|(different(quantize(lastRequest.probeCenter,float(quality.giProbeMoveStep)),quantize(r.probeCenter,float(quality.giProbeMoveStep)),.1f)?2u:0u)|
                 (different(lastRequest.light.sunDirection,r.light.sunDirection,.02f)?4u:0u)|(different(lastRequest.light.sunIrradiance,r.light.sunIrradiance,.03f)?8u:0u)|(different(lastRequest.light.skyRadiance,r.light.skyRadiance,.01f)?16u:0u)|
@@ -4881,8 +4891,8 @@ public:
             quality.nearShadowInterval,quality.farShadowInterval,nearReuses,farReuses,captureSkippedFrames,captureDeferrals,unsigned(NorthlightQuality::captureSkipPossible(quality,NorthlightQuality::actorShadowWork(quality,effects.shadows))));
             nearReuses=farReuses=captureSkippedFrames=captureDeferrals=0;}
         if(lightingClock)logf("WORLD lighting setup prefixMs=%.3f atmosphereMs=%.3f constantsMs=%.3f bindingsMs=%.3f spellFitMs=%.3f spellFitRevision=%u",lightingSetupMs[0],lightingSetupMs[1],lightingSetupMs[2],lightingSetupMs[3],spellFitMs,spellFogHold.out.revision);
-        if(captureSampled)logf("WORLD terrain reuse=%u snapshots=%zu uploadBytes=%zu vertexUploadBytes=%zu reusedVertices=%zu arenaMiB=%.2f vertexStride=%zu vertexCapacity=%u rollovers=%u change=%s newOwners=%u directionalBuilds=%u directionalTriangles=%zu straddlingTriangleTests=%zu collectVisited=%zu terrainMs=%.3f,%.3f,%.3f",unsigned(terrainUploadReused),frameTerrain.size(),terrainUploadBytes,liveTerrainGPU.uploadedBytes,liveTerrainGPU.reusedVertices,double(liveTerrainGPU.bytes())/1048576,sizeof(StaticShadow::Vertex),liveTerrainGPU.vertexCapacity(),liveTerrainGPU.rollovers,
-            terrainChange,liveTerrainGPU.newOwners,liveTerrainGPU.directionalBuilds,liveTerrainGPU.directionalTriangles,terrainTriangleTests,liveTerrainGPU.collectVisited,terrainPartMs[0],terrainPartMs[1],terrainPartMs[2]);
+        if(captureSampled)logf("WORLD terrain reuse=%u snapshots=%zu uploadBytes=%zu vertexUploadBytes=%zu reusedVertices=%zu arenaMiB=%.2f vertexStride=%zu vertexCapacity=%u rollovers=%u change=%s newOwners=%u directionalBuilds=%u directionalAliases=%u indexCacheMiB=%.2f directionalTriangles=%zu straddlingTriangleTests=%zu collectVisited=%zu terrainMs=%.3f,%.3f,%.3f",unsigned(terrainUploadReused),frameTerrain.size(),terrainUploadBytes,liveTerrainGPU.uploadedBytes,liveTerrainGPU.reusedVertices,double(liveTerrainGPU.bytes())/1048576,sizeof(StaticShadow::Vertex),liveTerrainGPU.vertexCapacity(),liveTerrainGPU.rollovers,
+            terrainChange,liveTerrainGPU.newOwners,liveTerrainGPU.directionalBuilds,liveTerrainGPU.directionalAliases,double(liveTerrainGPU.indexBytes())/1048576,liveTerrainGPU.directionalTriangles,terrainTriangleTests,liveTerrainGPU.collectVisited,terrainPartMs[0],terrainPartMs[1],terrainPartMs[2]);
         if(frames==1||(frames%600==0&&NorthlightDiagnostics::enabled()))logf("WORLD replay constants bytes=%zu previousBytes=%zu calls=%zu previousCalls=%zu",replayConstantBytes,replays.size()*2*(1024*4+16*4+64*4+16*4),replayConstantCalls,replays.size()*2*4);
         if(frames==1||frames%600==0){
             if(frames==1||NorthlightDiagnostics::enabled())logf("WORLD replay cull tested=%llu,%llu,%llu,%llu bounded=%llu,%llu,%llu,%llu culled=%llu,%llu,%llu,%llu staticM2Skipped=%llu,%llu,%llu,%llu (sun near,far moon near,far)",

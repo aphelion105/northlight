@@ -34,7 +34,8 @@ checks={
     'UINT ib=UINT((liveTerrainIndexCount+liveDirectionalIndexCount)*sizeof(uint32_t));' in up
     and 'if(!check(liveIndicesGPU->Lock(slot.offset,ib,&data,slot.flags),"live index upload"))return false;\n        liveTerrainGPU.write(static_cast<uint32_t*>(data));\n        if(!check(liveIndicesGPU->Unlock(),"live index unlock"))return false;' in up
     and up.index('liveTerrainGPU.prepare(')<up.index('->Lock('),
- 'membership failure and the empty case as before':'},liveTerrainIndexCount,liveDirectionalIndexCount))return check(E_FAIL,"live terrain arena membership");' in up
+ 'membership failure and the empty case as before':'},liveTerrainIndexCount,liveDirectionalIndexCount,[&](const auto& snapshot){' in up
+    and '}))return check(E_FAIL,"live terrain arena membership");' in up
     and 'if(!liveTerrainIndexCount){uploadedTerrain=frameTerrain;liveTerrainGeneration=meshGeneration;return true;}' in up,
  'readers use the counts':'if(liveTerrainIndexCount){' in pr and 'if(liveDirectionalIndexCount){' in w
     and 'UINT(liveIndexBase+liveTerrainIndexCount),UINT(liveDirectionalIndexCount/3)),"live terrain shadow")' in w,
@@ -63,11 +64,16 @@ checks={
  'bitmap only for the set it describes, the set otherwise':'const auto& fixed=fixedTerrainChunks();const bool bits=fixedTerrainBits.source()==&fixed;' in up
     and 'return bits?fixedTerrainBits.contains(c):fixed.count(c)!=0;' in up,
  'fixedTerrain stays the shared immutable set':'std::shared_ptr<const std::set<std::pair<int,int>>> fixedTerrain;' in w,
+ 'directional aliases require exact nonempty known chunk metadata and retain generation invalidation':
+    'liveTerrainGPU.prepare(frameTerrain,meshGeneration,' in up
+    and '!snapshot.bounds.chunks.empty()&&std::none_of(snapshot.bounds.chunks.begin(),snapshot.bounds.chunks.end(),' in up
+    and 'c.x<0||c.y<0||c.x>=1024||c.y>=1024||containsFixed({c.x,c.y})' in up
+    and 'appendLiveDirectionalBy(snapshot,containsFixed,' in up,
 }
 for name,ok in checks.items():print(('PASS ' if ok else 'FAIL ')+name)
 assert all(checks.values())
 with tempfile.TemporaryDirectory(prefix='northlight-live-terrain-') as tmp:
-    for source in ['test_live_terrain_gpu.cpp','test_live_terrain_layout.cpp','test_fixed_chunk_bits.cpp']:
+    for source in ['test_live_terrain_gpu.cpp','test_live_terrain_layout.cpp','test_live_terrain_directional_alias.cpp','test_fixed_chunk_bits.cpp']:
         for label,flags in [('O2',['-O2']),('asan',['-O1','-g','-fsanitize=address,undefined'])]:
             exe=Path(tmp)/(Path(source).stem+'-'+label)
             subprocess.run(['clang++','-std=c++17','-Wall','-Wextra','-Werror','-UNDEBUG',*flags,*fp.test_include_flags(),str(HERE/source),'-o',str(exe)],check=True)

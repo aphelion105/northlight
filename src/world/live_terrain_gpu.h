@@ -39,6 +39,8 @@ template<class Snapshot,class Vertex> class Cache {
     struct Entry {
         std::weak_ptr<const Snapshot> owner;Range range;uint64_t touched=0,directionalGeneration=UINT64_MAX;
         std::vector<uint32_t> indices,directional;
+        bool directionalAll=false;
+        const std::vector<uint32_t>& directionalIndices()const{return directionalAll?indices:directional;}
     };
     struct Retired {
         IDirect3DQuery9* query=nullptr;std::vector<Range> ranges;
@@ -85,7 +87,7 @@ template<class Snapshot,class Vertex> class Cache {
 public:
     size_t uploadedBytes=0,reusedVertices=0;unsigned rollovers=0;
     // 0.3.176 (D1) this frame: owners inserted, directional lists rebuilt (and their triangles), entries collect() visited.
-    unsigned newOwners=0,directionalBuilds=0;size_t directionalTriangles=0,collectVisited=0;
+    unsigned newOwners=0,directionalBuilds=0,directionalAliases=0;size_t directionalTriangles=0,collectVisited=0;
     explicit Cache(uint32_t limitBytes=16u*1024u*1024u):limit_(limitBytes/sizeof(Vertex)){}
     ~Cache(){clear();}
     Cache(const Cache&)=delete;Cache& operator=(const Cache&)=delete;
@@ -94,7 +96,8 @@ public:
     IDirect3DVertexBuffer9* vertices()const{return vertices_;}
     uint32_t vertexCapacity()const{return capacity_;}
     size_t bytes()const{return size_t(capacity_)*sizeof(Vertex);}
-    void beginFrame(){++frame_;uploadedBytes=0;reusedVertices=0;newOwners=0;directionalBuilds=0;directionalTriangles=0;collectVisited=0;}
+    size_t indexBytes()const{return indexBytes_;}
+    void beginFrame(){++frame_;uploadedBytes=0;reusedVertices=0;newOwners=0;directionalBuilds=0;directionalAliases=0;directionalTriangles=0;collectVisited=0;}
 
     template<class Admission,class Convert> HRESULT update(IDirect3DDevice9* d,const std::vector<Owner>& active,Admission admit,Convert convert){
         activeSource_=nullptr;try{active_.assign(active.size(),nullptr);activeSource_=&active;activeFrame_=frame_;}catch(...){active_.clear();} /* unrecorded: prepare() looks up */
@@ -168,6 +171,11 @@ public:
     // false: an owner has no entry (the counts are the lists before it, as indices() leaves them), or an
     // allocation failed (contents reset, counts 0).
     template<class Directional> bool prepare(const std::vector<Owner>& active,uint64_t generation,Directional build,size_t& pointCount,size_t& directionalCount){
+        return prepare(active,generation,build,pointCount,directionalCount,[](const Snapshot&){return false;});
+    }
+    // allDirectional proves the original point list is the directional list. Alias its immutable
+    // storage instead of allocating/rebuilding an identical list; unknown/mixed captures still build.
+    template<class Directional,class AllDirectional> bool prepare(const std::vector<Owner>& active,uint64_t generation,Directional build,size_t& pointCount,size_t& directionalCount,AllDirectional allDirectional){
         pointCount=directionalCount=0;prepared_.clear();
         const bool recorded=activeSource_==&active&&activeFrame_==frame_&&active_.size()==active.size();
         try{
@@ -178,9 +186,10 @@ public:
             else{auto it=entries_.find(owner.get());if(it!=entries_.end()&&it->second.owner.lock()==owner)entry=&it->second;}
             if(!entry){prepared_.clear();return false;}
             auto& e=*entry;
-            if(e.directionalGeneration!=generation){indexBytes_-=e.directional.capacity()*sizeof(uint32_t);e.directional.clear();build(*owner,e.range.first,e.directional);indexBytes_+=e.directional.capacity()*sizeof(uint32_t);e.directionalGeneration=generation;
-                ++directionalBuilds;directionalTriangles+=e.directional.size()/3;}
-            pointCount+=e.indices.size();directionalCount+=e.directional.size();prepared_.push_back(&e);
+            if(e.directionalGeneration!=generation){indexBytes_-=e.directional.capacity()*sizeof(uint32_t);e.directional.clear();e.directionalAll=allDirectional(*owner);
+                if(e.directionalAll)++directionalAliases;else{build(*owner,e.range.first,e.directional);++directionalBuilds;directionalTriangles+=e.directional.size()/3;}
+                indexBytes_+=e.directional.capacity()*sizeof(uint32_t);e.directionalGeneration=generation;}
+            pointCount+=e.indices.size();directionalCount+=e.directionalIndices().size();prepared_.push_back(&e);
         }
         return true;
         }catch(...){resetContents();pointCount=directionalCount=0;return false;}
@@ -188,7 +197,7 @@ public:
     // After a successful prepare() and before any other call: pointCount+directionalCount indices.
     void write(uint32_t* out)const noexcept{
         for(const Entry* e:prepared_){if(!e->indices.empty())std::memcpy(out,e->indices.data(),e->indices.size()*sizeof(uint32_t));out+=e->indices.size();}
-        for(const Entry* e:prepared_){if(!e->directional.empty())std::memcpy(out,e->directional.data(),e->directional.size()*sizeof(uint32_t));out+=e->directional.size();}
+        for(const Entry* e:prepared_){const auto& list=e->directionalIndices();if(!list.empty())std::memcpy(out,list.data(),list.size()*sizeof(uint32_t));out+=list.size();}
     }
     // The 0.3.175 path (tests compare prepare()/write() with it).
     template<class Directional> bool indices(const std::vector<Owner>& active,uint64_t generation,Directional build,
@@ -198,9 +207,9 @@ public:
         for(const auto& owner:active){
             auto it=entries_.find(owner.get());if(it==entries_.end()||it->second.owner.lock()!=owner)return false;
             auto& e=it->second;
-            if(e.directionalGeneration!=generation){indexBytes_-=e.directional.capacity()*sizeof(uint32_t);e.directional.clear();build(*owner,e.range.first,e.directional);indexBytes_+=e.directional.capacity()*sizeof(uint32_t);e.directionalGeneration=generation;
+            if(e.directionalGeneration!=generation){indexBytes_-=e.directional.capacity()*sizeof(uint32_t);e.directional.clear();e.directionalAll=false;build(*owner,e.range.first,e.directional);indexBytes_+=e.directional.capacity()*sizeof(uint32_t);e.directionalGeneration=generation;
                 ++directionalBuilds;directionalTriangles+=e.directional.size()/3;}
-            point.insert(point.end(),e.indices.begin(),e.indices.end());directional.insert(directional.end(),e.directional.begin(),e.directional.end());
+            const auto& selected=e.directionalIndices();point.insert(point.end(),e.indices.begin(),e.indices.end());directional.insert(directional.end(),selected.begin(),selected.end());
         }
         return true;
         }catch(...){resetContents();point.clear();directional.clear();return false;}

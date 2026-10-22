@@ -1,107 +1,88 @@
-# Northlight rotation stalls with materials disabled
+# Northlight material-Off rotation: measured cold work and cache duplication
 
-22 October 2026, fresh run ending 23:25 local time. Baseline: `c5ef83c`. No game was launched during this investigation.
+Investigation: 23 October 2026. Input: complete user run ending 22 October at 23:49. Baseline: `bc382d9`. No game was launched by the agents.
 
-## Result
+## Findings and retained changes
 
-The user is correct: this run reproduces substantial rotation stalls **with the material master switch disabled**. Saved modes remain `3/3/3/0`, but `enabled=0` overrides them. From sampled frame 3302 onward, capture, source reads, pose evaluation, normal generation, deferred replay, material GPU uploads and material application are all zero.
+The new instrumentation proves an additional material-specific cost even while its master switch is Off: **recognized vertex shaders still eagerly created patched capture/displacement variants**. The log contains 37 registrations in 15 event batches, totaling 45.1834 ms CPU including startup. The largest batch costs **16.0119 ms for 12 sources**. This is distinct from material capture, which remains disabled correctly.
 
-An Off window averages **48.20 FPS / 20.746 ms** at frame 3469, another **59.70 FPS / 16.749 ms** at 3589, and the settled window reaches **102.01 FPS / 9.803 ms** at 3829. These are changing views within one run, not a controlled old/new DLL comparison. The renderer does not timestamp the keyboard/mouse input itself.
+The build now retains bounded immutable shader metadata while the master/domain is inactive and creates those variants only when an enabled material consumer actually needs them. The first enabled draw synchronously receives the same variants; there is no quality-reducing deferred draw. Original shader identity/lifetime, failed creation, reset and the 4,096-entry cap are explicitly tested, including recovery when unsupported pending shaders fill the registry.
 
-The principal retained optimization is outside materials: live terrain's shadow GPU arena now stores the same float positions and UVs in the existing **20-byte caster vertex format**, instead of a 32-byte world vertex with unused normals. This changes neither geometry nor precision. At the same memory limits, a pressured 19-rotation test reduces uploads from **94,841,600 to 23,316,000 bytes**, and arena rollovers from **5 to 0**. Production shadow shaders pass 96 exact image comparisons including MSAA 0/2/4/8.
+Two other exact changes are retained:
 
-A separate enabled-material fix rejects already unsupported oversized displacement meshes before height/UV processing. The build also adds missing profiling for query wait attribution, AO setup versus draw, precise GI worker stages and rare material shader creation. No quality, range, sample-count, shader arithmetic or settings reduction was made. The actual game-FPS effect of this DLL still requires the user's next run.
+- **Terrain directional index aliasing:** when validated fixed-chunk membership proves that the complete point index list is also the directional list, reuse that immutable CPU storage. Mixed/empty/unknown metadata keeps the original filtering. The GPU bytes, order, indices, coverage and fences remain unchanged. A 100-generation fixture improves prepare/write from **223.840 to 25.345 ms total**, about **2.238 to 0.253 ms per generation**. These are component timings, not game FPS.
+- **FogTemporal equal-history shortcut:** after all original reprojection/depth checks, equal current/history values do not need the eight-neighbor clamp. The original `lerp` arithmetic is preserved. Neutral production cases improve about **22.8–27.0%**, saving approximately **0.006–0.007 ms**; mixed cases can cost about **0.0009 ms** more. This is a small secondary saving.
 
-## Input and measured bottlenecks
+The later rotation slowdown is not fully explained by shader registration. At sampled frames 3937/4064, no cold registration occurs, yet GameScene takes **16.745/17.753 ms GPU elapsed**. Query profiling shows **15.110/16.230 ms before the replay query task starts**, versus **3.112/3.862 ms in the query task** and about 0.016/0.030 ms returning to the game. The queue is waiting behind earlier work. Returning a fabricated completed query would not remove that work safely.
 
-Frozen evidence directory: `northlight-diagnostics/rotation-disabled-20261022-2325/` under the game root. The fresh complete renderer log is 1,042,816 bytes, SHA-256 `14c972be1289ddf8047a4f18cbde375afbc7504a14584c3375ac20762eeefcda`. Its previous log is the genuine 22:38 run, SHA-256 `1948f37eb25e8c716e91b55c48d04cd39df52588f811a98ba63e6f9f88f588ea`.
+New sampled command attribution identifies the actual queued command categories in the next run. GI actor work is also split into decode, geometry/pose, hash and BVH stages. Actual post-change game FPS remains unmeasured until the user runs this DLL.
 
-Installed DLL SHA-256: `5a8c38d0ba7aa41878b91eca4eeac0652c2445cb524e229d94ce9b93745d18b7`. Quality INI SHA-256: `f37ee1a0729eef29cc8c9404af54a4e195881f62b5d80a77a1fe9d915cc6c78b`. The installed DLL, INIs and backend configuration were preserved.
+## Inputs and fair comparison
 
-| Off sample | Frame 3302 | Frame 3556 | Frame 3810 |
-| --- | ---: | ---: | ---: |
-| CPU world capture | 0.682 ms | 3.791 ms | not sampled by this CPU timer |
-| Complete sampled GPU interval | 6.903 ms | 13.391 ms | 7.160 ms |
-| GPU GameScene | 3.040 ms | 8.585 ms | 3.375 ms |
-| GPU Effects | 3.007 ms | 3.657 ms | 2.898 ms |
-| GPU material application | 0 | 0 | 0 |
-| Original native draw in material reference profiler | 0.8142 ms | 0.9794 ms | 0.8563 ms |
-| Material admission | 0.0561 ms | 0.0615 ms | 0.0606 ms |
+Frozen directory: `northlight-diagnostics/rotation-off-20261022-2349/` under the game root. Fresh log: 799,203 bytes, SHA-256 `f535b934ad04a85fea8aa34e64cc1e01953d7564d4abecea952f0e5bf2057993`. Its `.prev.log` is the genuine 23:25 run, SHA-256 `14c972be1289ddf8047a4f18cbde375afbc7504a14584c3375ac20762eeefcda`.
 
-The approximately 0.86–1.04 ms material-profile total in Off samples includes the original native draw. It is not an extra material render. The sampled profiler itself also reports about 0.30–0.33 ms of query CPU overhead; that is diagnostic work and must be distinguished from effect cost.
+Installed DLL SHA-256: `771b7ccda033c2c8683b827d68c54553934a7f62915fe55a633a425b6571a103`. Quality INI SHA-256: `f37ee1a0729eef29cc8c9404af54a4e195881f62b5d80a77a1fe9d915cc6c78b`, unchanged from the preceding run. All 34 material configuration samples have `enabled=0`, overriding saved modes `3/3/3/0`. Cavity and self-shadow remain disabled.
 
-The largest sampled full-run GPU frame is 40.025 ms, with 36.126 ms GameScene and 3.055 ms Effects. That sample is outside the global-Off interval. Inside Off, AO generation is ordinarily about 0.115 ms, AO blur 0.343 ms, fog march 0.817 ms, cloud fog 0.622 ms and final world composition 0.542 ms. These comparatively steady tails do not explain the whole rotation loss. An isolated AOBlur interval rises to 2.048 ms; the new split instrumentation will distinguish setup/dependency gaps from the draw interval.
+The preceding 20-byte GPU terrain layout is active (`vertexStride=20`, capacity 838,860 vertices). Rollovers reach 13 rather than the previous run's 68, but camera paths, duration and visible working sets differ: this is not a controlled percentage improvement. The current trace still has index-only generation changes rebuilding 776 lists despite zero new owners, which motivated the new aliasing fix.
 
-GPU timestamps measure elapsed command intervals, including queue starvation, resource dependencies and driver scheduling. They are not an isolated measure of shader arithmetic. CPU and GPU timelines overlap and must not be added.
+After the world is active, a rotation window averages **49.62 FPS**, recovers to **113.46–117.28 FPS**, and a later rotation returns to about **51–59 FPS**. A 607 ms loading outlier and the unfocused early startup windows are separate observations and should not be presented as ordinary rotation costs.
 
-## Fifteen separate investigations
-
-Three agents each owned a different direction and five topics. The root separately investigated command-stream waits and integrated the changes.
+## Fifteen investigations in separate directions
 
 ### GI, world and streaming
 
-| Topic | Evidence, action and remaining limit |
+| Topic | Evidence and result |
 | --- | --- |
-| 1. GI grid motion, retargeting and cancellation | The Off interval contains 179 logged GI requests, all reason 2 (grid motion). Third-person orbit really moves the eye; it is not a spurious yaw invalidation. Compatible retargets reach 23 versus six incompatible cancellations. Final static activations reuse all 5,600 probes. Probe placement, coverage and cadence remain unchanged. |
-| 2. Static region/page preparation and publication | Even with materials Off, ten region builds and nine mesh commits occur. Warm commits reuse 46–57 pages but upload 50–60 pages, about 20.21–23.15 MiB. Existing page reuse works; changed eye-centered coverage needs additional pages. Background phase durations are recorded separately and are not added to foreground frame time. No unproved page omission or delayed-lighting shortcut was adopted. |
-| 3. Terrain arena/index churn after CPU compaction | The preceding CPU compaction is working: the settled cache retains 3,197 compact snapshots, avoids 8.597 MiB of index storage and reads zero source bytes. Yet live GPU arena rollovers rise from 36 to 68 during Off. **Implemented the lossless 32 -> 20-byte GPU vertex layout**, using the existing caster type and a dedicated declaration in directional and point passes. It removes unused data and increases retained vertices in the same byte cap. |
-| 4. Dynamic actor tracing and path reuse | Actor correction remains on its existing roughly 250 ms cadence and replays approximately 8,154–8,169 of 8,192 rays. Coarse `actorMs=0` does not mean no work. Added precise `actorWorkMs` and `solveWorkMs` elapsed worker timings at stage/publication boundaries, without per-ray clocks or scheduling changes. |
-| 5. Worker scheduling, generation handoff and locks | The observed retirement-wait peak of 6.154 ms belongs to the background builder. It is not a directly measured 6.154 ms render-thread stall. Existing generation limits and retirement fences are retained. Precise worker timing plus root query attribution will separate contention from foreground waiting in the next run. |
+| 1. Probe-grid motion, retargets and GI solving | After deduplicating partial publications, 95 observed request/generation jobs remain. Warm static grids reuse all 5,600 probes. Forty-two warm full jobs have median actorWork 2.922 ms and solveWork 1.984 ms, with higher late actor batches. These are periodic background spans, not full retraces every render frame. Existing coverage and scheduling are preserved. |
+| 2. Static regions/pages and publication | Nineteen geometry builds and 15 commits occur during real camera-eye travel. Existing page reuse is retained; no unsupported stale-region/crop shortcut was introduced. Durations in background phase logs must not be added directly to foreground frame time. |
+| 3. Terrain arena/index duplication | The previous compact vertex format is working, but index regeneration still duplicates all-live lists. **Implemented exact CPU index aliasing** with conservative membership proof. Forty rotating frames compare **77,435,904 identical GPU indices**. Actual directional vector builds fall from 28,000 to 6,696; retained index allocation falls from 14,297,088 to 6,887,424 bytes. |
+| 4. Actor decode, pose, hash and BVH | Repeated 12-texture actor batches have approximately 4.8–5.5 ms worker preparation and about 2.1–3.2 ms correction work. The old aggregate does not identify the internal cause. Added `actorDecodeMs`, `actorPoseMs`, `actorHashMs`, `actorBvhMs`; clocks occur at packet/stage boundaries, not per vertex/ray. No speculative persistent texture cache was added. |
+| 5. Generation publication, waits and contention | Existing generation/retirement checks and partial publication stay intact. Some isolated slow frames have almost entirely idle replay queues; other rotating samples show a large queued-work delay. These are different stall classes. Root command attribution will distinguish queued draw/create/upload work without weakening fences. |
 
 ### Materials and capture
 
-| Topic | Evidence, action and remaining limit |
+| Topic | Evidence and result |
 | --- | --- |
-| 6. Hidden rendering while globally Off | All expensive material stages and cache bytes are zero in Off samples. Added a regression proving no capture/state/texture/snapshot/barrier work while preserving exactly one native draw. Recognized shader registration is a separate cold path, covered below. |
-| 7. Normal/height cache and rejected geometry work | Warm samples have zero normal/mip generation. A WMO UV stage repeatedly costs about 0.37–0.38 ms despite no subdivision/upload. Source inspection finds the existing 8,192-primitive cold-build rejection after UV/height work. **Moved that unchanged rejection before height and UV**, after the current range proof and exact cache/overlay hits. A new cumulative `primitiveRejected` counter can identify its actual live contribution. The old log alone does not prove every UV refusal is oversized. |
-| 8. Current animation pose and bounds | Warm enabled samples spend about 0.295 ms in envelope service and 0.576–0.586 ms in fallback, with about 8,182 current-pose vertices. Both vanish with M2 Off. The preceding O(1) rigid-bounds LRU remains in use. No stale-pose visibility proof, larger budget or approximate cull was introduced. |
-| 9. Capture packet/state/source promotion | A changing view can still cause source churn and UP fallback, but a warm sample uses 271 resident draws, zero reads/uploads/UP/expiry and skips 17,897 identical setters while issuing 1,444. Existing source sharing, weak ownership, state reuse and mutation barriers are working. Caps and lifetime validation are retained. |
-| 10. First-visible shader variants and cold dependencies | Recognized vertex registration can create patched material/displacement variants even while Off; model capture variants are lazy. The old log lacks a separate timer. Added **`MATERIAL_COLD`** counts and CPU durations for recognized registration, model variant misses/builds and static capture PS creation. Warm success/failure cache hits add no cold clock reads. This measures CPU creation/patching, not later backend pipeline compilation. |
+| 6. Effective Off and diagnostic/reference overhead | Every configuration is globally Off, and expensive source/pose/generation/capture/replay/application stages are zero. The nativeDraw scope still measures the game's original draw. At frame 4191 material CPU-exclusive attribution is 0.9546 ms, with separate sampled query CPU about 0.3402 ms. This is not evidence of extra material rendering. |
+| 7. Recognized shader creation while inactive | **Measured and fixed.** The old register path built variants regardless of the master/domain switch. Pending metadata now holds the immutable source safely; active consumers compile synchronously before drawing. Existing enabled registration remains eager. `vertexQueued` and `pendingVertices` expose the new behavior alongside actual compile counts/time. |
+| 8. Primitive/UV gate and map reuse | No enabled-material interval exists here, so this run cannot measure the preceding oversized-mesh gate or normal-generation savings. Its 8,192 boundary, cache-hit precedence and unchanged output remain covered by CPU/GPU regression checks. No invented enabled-mode speedup is claimed. |
+| 9. Snapshot, pose, bounds and packet maintenance | All expensive sampled Off counters remain zero. No source-cache expansion, stale animated bound, dropped texture barrier or changed capture state was introduced. The measured cold registration was outside those draw scopes and is now handled separately. |
+| 10. Cold lifetime, reset, failure and registry pressure | Added deferred registration identity/refcount/ABA tests, failure caching and authoritative overflow recovery from the existing device shader registry. Current bytecode is revalidated before recovered compilation. Unsupported pending records cannot permanently block supported consumers; compiled entries keep their original cap. Ordinary unknown hot draws do not perform new bytecode reads. |
 
 ### AO and postprocessing
 
-| Topic | Evidence, action and remaining limit |
+| Topic | Evidence and result |
 | --- | --- |
-| 11. AO generation and reconstruction | Ordinary Off AO generation is about 0.115 ms; all four existing AO methods retain their original shaders and samples. Ninety-six GPU method cases pass. No justification was found for lowering quality to treat the dominant scene stall. |
-| 12. AO denoise/upsample bandwidth | An isolated 2.048 ms AOBlur interval previously included render-target/state preparation plus the draw. Added **AOBlurSetup / AOBlur GPU intervals** and paired **AO_SUBMIT CPU setup/submission timings**, only on recorded samples. Full filter/output is unchanged; 144 GPU comparisons remain exact. |
-| 13. Full-resolution composition, bloom, water and HDR | WorldComposite remains approximately 0.542 ms and MaterialDetail is zero when globally Off. Shader arithmetic, bloom RGB, water rejection, formats and HDR handling are unchanged. No extra full-frame copy or lower-resolution substitute was added. |
-| 14. Temporal reprojection, disocclusion and history | Ordinary yaw does not invalidate the lighting/fog histories. Existing reprojection and resource swaps remain intact. No unproved history reset or rotation-dependent shortcut was made. Existing AO rotation/stripe/texel and fog temporal wiring regressions pass. |
-| 15. Fog/cloud/source-shadow costs and cold pipelines | A real moon remains active; its fog/cloud contribution is required. Fog/cloud costs are relatively stable. DXVK loads 1,660 cached shaders (about 18 MiB) and has eight compiler threads, but current logs do not identify per-frame pipeline creation latency. No backend setting or async draw policy was changed based on that hypothesis. |
+| 11. AO setup versus draw | AOBlurSetup rounds to 0.000 ms GPU in all 11 active-world profiles. CPU setup is 0.0004–0.0008 ms; draw submission is normally 0.0004–0.0005 ms. AOBlur is 0.259–0.378 ms GPU. These samples rule out a repeated multi-millisecond AO setup cost; no quality cut was justified. |
+| 12. AO generation/denoise/upsampling | All four AO methods retain their existing algorithms, samples, precision and strengths. The measured ordinary AO work does not explain the 16–18 ms GameScene intervals. Existing regression/bytecode remains unchanged. |
+| 13. Active-source fog/cloud/shadow costs | Moon lighting remains real work. Most stages are steady or inflate together with broader command/dependency pressure. Removing active source contribution would alter the image and was rejected. |
+| 14. World composition, bloom, water and HDR | No new unnecessary full-frame copy was proven. Composition is cheaper, not more expensive, in one worst rotation sample. HDR RGB, formats, water rejection and reconstruction remain unchanged. |
+| 15. Temporal history filtering | An isolated FogTemporal sample reaches 0.376 ms against ordinary roughly 0.041 ms; that alone does not prove arithmetic caused the spike. Independently, the equal-history proof removes an unnecessary neighborhood clamp. **648 exact comparisons** pass. Original `lerp` is deliberately retained for signed-zero/nonfinite arithmetic behavior. Mixed-path branch cost is disclosed. |
 
-## Exact implementation and evidence
+## Correctness and memory guarantees
 
-Live terrain uses `StaticShadow::Vertex`, containing the original float32 position and original zero UV. The shadow shaders do not consume the old normal. A dedicated POSITION+UV declaration is created/released with the existing world resources and selected for both actual consumers. The previous world declaration is restored afterwards. GPU indices remain uint32, and the active capture cap remains 262,144 vertices. Arena limits remain 16 MiB normally / 8 MiB for the existing admission fallback; event-query retirement, unsupported-query fallback, index ordering, admission and failure behavior remain unchanged.
+Terrain aliasing is internal to the CPU index cache. It retains uint32 GPU output and the original allocation/fence/write/reset behavior. Generation and fixed-chunk changes still invalidate the decision. Unknown/empty/out-of-grid metadata and mixed captures use the original filter. Tests cover reversed/duplicate owners, immutable replacement, map reset, straddlers, missing owners, exceptions, busy/unsupported queries, three rollovers and Lock/Unlock failure recovery. O2/O0 runs preserve all 77.4 million compared indices. Original randomized arena, actor immutability, handoff and 16/32-bit index boundary suites also pass.
 
-The pressure fixture compares 19 view rotations with about 203,000 active vertices, new immutable owners and map reset. Both busy-query and unsupported-query variants preserve exact point/directional geometry. Uploaded bytes fall 75.4%, reused vertices rise from about 0.893 million to 2.691 million, and rollovers fall from five to zero. This exceeds the per-vertex 37.5% reduction because more old owners remain resident. It is a controlled retention/upload result, not a predicted FPS gain.
+The 8.83x terrain timing improvement measures 100 generations of 700 snapshots, preparing/writing 2,150,400 GPU indices per generation. It is not a whole-frame result. Each aliased entry adds a bounded Boolean flag; actual allocated vector capacities remain accounted against the existing index limit. The existing 20-byte GPU arena, vertex cap and index width are unchanged.
 
-The real D3D9 fixture compares old/new layouts through production directional, cached and point shadow programs. All **96** comparisons are bit exact, spanning MSAA 0/2/4/8, 2,823,807 covered pixels and output digest `915430334a5a6b5c`. Seven existing terrain/live-arena suites pass in O2/O0, including allocation/update failures, reset, fence-safe reuse, randomized index preparation and exact uint32 rebasing. Additional geometry-handoff, immutable actor, static page, dynamic path and stale-publication regressions pass. Unavailable sanitizers are not described as passed.
+Lazy material registration adds no bytecode copy or additional GPU variants while inactive. Pending entries retain the original immutable shader, bounded by the existing 4,096-entry registry. No compiled success is evicted to admit another record. Failure/overflow recovery, source replacement, reset, allocation failure and COM cleanup are tested. The actual GPU fixture registers while Off, enables materials, and compares the first enabled native/material outputs against the installed baseline across shader families and MSAA. All 140 capture checks pass: 100 M2 checks plus 20 terrain and 20 WMO checks, including rigid, skinned and weighted families, alpha, mutation and state restoration. Together with FogTemporal, 788 GPU validation cases pass. The release builds as x86 PE32 with all 17 original D3D9 exports.
 
-The oversized material regression proves zero height/UV work for 8,193 primitives, unchanged preparation at the 8,192 boundary and preservation of an already cached oversized entry. The actual UV evaluator costs 0.906594 ms for the synthetic 24,579-vertex source; the new rejected path makes zero UV calls. This is not the measured cost of the live WMO shader. The complete **100-check** GPU capture suite against `c5ef83c` passes, including animation, alpha, mutation, state restoration and MSAA.
+Only FogTemporal bytecode changes. Its integrated hash is `492128b1154ec3e10f526b12c5bdf56946b405f79fa9d3d3fdbbb82761891d8b`, matching the independently tested binary. The other 23 world shader entries remain identical to `bc382d9`; local, AO and material shader binaries are unchanged. The selected shader uses 252 SM3 slots and 13 temporaries. The 594-case matrix plus 54 repeated production-image cases covers FP16/FP32, HDR, odd/even grids, MSAA, rejection paths, equal/unequal/mixed history, signed zero and nonfinite stress.
 
-AO profiling adds one timestamp mark per recorded sample and six possible lazy query objects across the six-slot ring (capacity 40 -> 41 marks). It adds no draw or flush/wait. **144** AO blur image/profile cases and **96** AO generation cases pass, covering production FP16 inputs, FP16/FP32 source cases, HDR RGB, odd/even grids and MSAA. The real query ring remains bounded/nonblocking; profiling Off adds zero AO timing clocks and recorded CPU timing uses four clock reads. All HLSL, compiled shader binaries and generated shader bytecode headers remain baseline-identical.
+## New profiling and next run
 
-## Reading the new profiling
+`CSTREAM REPLAY frame=... measuredMs=... clockReads=... maxCmd=... top=...` measures actual replay commands on one frame in 127. The five largest command totals can distinguish native draws, creates, uploads, state setters and query tasks in the large `beforeReplayMs` interval. It uses about 8 KiB of fixed per-device metadata; ordinary/disabled frames add no timing clocks. Reporting happens after Present retirement.
 
-- `WORLD terrain ... vertexStride=20 vertexCapacity=...` exposes the new layout alongside uploads, reuse and rollovers. Compare these with active owners and visible coverage rather than FPS alone.
-- `GI activated ... actorWorkMs=... solveWorkMs=...` adds sub-millisecond worker elapsed time. These durations can include worker preemption; they are not foreground frame additions or pure consumed CPU time.
-- `MATERIAL_COLD ...` identifies creation counts/time, including registration while Off. It prints sampled frames and frames containing cold work; unsampled frame numbers follow the existing local material convention. Timings can overlap an enclosing capture stage and must not be added again.
-- `GPU profile ... AOBlurSetup=... AOBlur=...` partitions the former AOBlur interval. `AO_SUBMIT frame=... blurSetupCpuMs=... blurDrawSubmitCpuMs=...` records paired CPU spans and is emitted after rendering so logging does not create a gap inside the GPU pass. The frame tag identifies the recorded GPU sample even if the line is emitted later.
-- `CSTREAM QUERYFRAME gameFrame=... replayed=...` reports sampled query trips by type. `beforeReplayMs` includes enqueue/scheduling and prior queued work, `replayMs` includes the real backend poll/wait, and `afterReplayMs` includes completion/wakeup overhead. They partition `tripMs`; `syncWaitMs` overlaps this trip and must not be added. Game/replay frame counters are explicitly separate from renderer sample labels. The 600-frame aggregate carries the same breakdown.
+Those totals include command hook/backend elapsed work and can include waits. They exclude queue idle, express work, retirement and out-of-command logging. Short commands include timer overhead; `clockReads` makes the diagnostic cost visible. They overlap query/GPU/other CPU stages and must not be added to them. Command order, skip policy, HRESULTs, exact-generation query completion and message pumping remain unchanged.
 
-Query diagnostics add four clock reads only to already synchronous query trips when diagnostics is enabled. Fast local replies add none of these new clocks. Actual HRESULTs, current-generation completion, the existing two-millisecond wait budget, polling gaps, message pumping and resource retirement are unchanged. O2/O0 tests check exact partition sums, pending/error/refused tasks, invalid clock order, reset and the 1,700-case polling sweep; real x86 SDK dispatch compilation passes.
-
-## Build, reproduction and next measurement
-
-The x86 release builds with the same 17 exports and the two existing warnings. The separate DLL package contains the English reports and input/build/test evidence. Installed DLL and settings are not replaced by the agent.
+Use `MATERIAL_COLD vertexQueued/pendingVertices/vertexSources` to verify that Off queues metadata without compiling. Use terrain `directionalAliases/indexCacheMiB` with actual list builds and unchanged GPU counts. Read actor decode/pose/hash/BVH as worker elapsed spans, which can include preemption, rather than foreground frame additions.
 
 ```powershell
-python tests/validate_live_terrain_layout_gpu.py --backend D:/Games/335_engb_mod/renderer-backends/dxvk/dxvk_d3d9.dll
 python tests/test_displacement_state_reuse.py
 python tests/test_query_poll_latency.py
-python tests/test_ao_submit_profile.py
-python tests/validate_ao_blur_equivalence_gpu.py --baseline-ref c5ef83c --profile-split --backend D:/Games/335_engb_mod/renderer-backends/dxvk/dxvk_d3d9.dll
-python tests/validate_material_deferred.py --baseline-ref c5ef83c --alpha-test --texture-guard --backend D:/Games/335_engb_mod/renderer-backends/dxvk/dxvk_d3d9.dll
+python tests/validate_material_deferred.py --baseline-ref bc382d9 --alpha-test --texture-guard --lazy-registration --backend D:/Games/335_engb_mod/renderer-backends/dxvk/dxvk_d3d9.dll
+python tests/validate_fog_temporal_equivalence_gpu.py --baseline-ref bc382d9 --backend D:/Games/335_engb_mod/renderer-backends/dxvk/dxvk_d3d9.dll --output out/.svn/fog-temporal-repro
 python scripts/build_renderer.py
 ```
 
-For a comparable next run, keep the scene, camera radius, settings and rotation path the same, first with global materials Off. Correlate frame-time windows with terrain uploads/rollovers, precise GI stages, query-trip breakdown and cold shader events. A reduction in one component does not prove the complete rotation stall is gone; native scene rendering, legitimate world-region changes and cold backend dependencies remain distinct possible contributors. The new instrumentation is intended to resolve those remaining ambiguities without reducing the rendered result.
+The separate package contains the release DLL, English reports, hashes, worker reports and machine-readable evidence. The installed DLL and settings are preserved. Keep the same scene, camera radius and orbit path for the next global-Off comparison. Later large scene/queue delays and isolated producer stalls remain explicit follow-up targets; no claim that every rotation hitch is eliminated is made.

@@ -273,6 +273,68 @@ void DisplacementStateTestAccess::primitiveLimit(){
     std::puts("MATERIAL_PRIMITIVE_LIMIT_PASS over8192_zero_height_reads zero_uv zero_build existing_hit_preserved boundary8192_retained");
 }
 struct MaterialCaptureStateTestAccess {
+    static void lazyVertex(){
+        using namespace NorthlightWaterShaderPatch;
+        struct Source:CaptureShader<IDirect3DVertexShader9> {
+            std::vector<DWORD> code{0xfffe0300,0x0200001f,0x80000000,dst(1,0),0x0200001f,0x80000000,dst(6,0),0x02000001,dst(6,0),src(1,0),65535};
+            bool fail=false,shortRead=false;
+            uint64_t hash()const{return fnv1a64(reinterpret_cast<const uint32_t*>(code.data()),code.size());}
+            HRESULT STDMETHODCALLTYPE GetFunction(void* out,UINT* bytes)override{++reads;if(fail)return E_FAIL;const UINT n=UINT(code.size()*4);if(out){if(*bytes<n)return E_FAIL;std::memcpy(out,code.data(),n);}*bytes=n-(out&&shortRead?4:0);return D3D_OK;}
+        };
+        struct Device:CaptureBackend {
+            bool fail=false;std::vector<std::vector<DWORD>> created;
+            HRESULT STDMETHODCALLTYPE GetDeviceCaps(D3DCAPS9*)override{return E_FAIL;}
+            HRESULT STDMETHODCALLTYPE CreateVertexShader(const DWORD* code,IDirect3DVertexShader9** out)override{
+                size_t n=1;while((code[n]&65535)!=65535)n+=1+((code[n]&65535)==65534?(code[n]>>16)&32767:(code[n]>>24)&15);
+                created.emplace_back(code,code+n+1);*out=fail?nullptr:&vs;if(*out)(*out)->AddRef();return fail?E_FAIL:D3D_OK;
+            }
+        };
+        auto enable=[](NorthlightAutoBump& b){b.enabled=true;b.modes[3]=1;b.strength=1;};
+        Device eager;Source baseline;
+        {NorthlightAutoBump b(&eager);enable(b);b.registerVertex(&baseline,baseline.hash(),baseline.code.data(),baseline.code.size(),3);assert(b.vertices.at(&baseline).patched&&b.vertices.at(&baseline).kind==4);}
+        assert(!eager.created.empty()&&baseline.refs==1&&eager.vs.refs==1);
+        Device lazy;Source source;
+        {NorthlightAutoBump b(&lazy);b.modes[3]=1;b.registerVertex(&source,source.hash(),source.code.data(),source.code.size(),3);
+            assert(!source.reads&&source.refs==2&&lazy.created.empty()&&b.pendingVertices==1&&b.cold.vertexQueued==1&&!b.cold.vertexSources);
+            b.reset();assert(source.refs==2&&b.pendingVertices==1);enable(b);
+            b.capture(&source,[]{return D3D_OK;});assert(b.vertices.at(&source).patched&&!b.pendingVertices&&source.reads==2&&lazy.created==eager.created);
+            const unsigned reads=source.reads;const size_t created=lazy.created.size();b.capture(&source,[]{return D3D_OK;});assert(source.reads==reads&&lazy.created.size()==created);
+        }assert(source.refs==1&&lazy.vs.refs==1);
+        // A disabled domain also defers even while another domain is enabled.
+        {Device d;Source s;NorthlightAutoBump b(&d);b.enabled=true;b.modes[0]=1;b.modes[3]=0;b.registerVertex(&s,s.hash(),s.code.data(),s.code.size(),3);assert(!s.reads&&d.created.empty());enable(b);assert(b.ensureVertex(&s,b.vertices.at(&s)));assert(d.created==eager.created);}
+        // Read/identity/driver/allocation failures cannot compile the wrong program or retry each draw.
+        for(unsigned failure=0;failure<5;++failure){Device d;Source s;
+            {NorthlightAutoBump b(&d);b.registerVertex(&s,s.hash()+(failure==2),s.code.data(),s.code.size(),3);enable(b);s.fail=failure==0;s.shortRead=failure==1;d.fail=failure==3;if(failure==4)failAllocationAfter=0;
+                assert(!b.ensureVertex(&s,b.vertices.at(&s)));failAllocationAfter=-1;const auto reads=s.reads;const auto creates=d.created.size();assert(!b.ensureVertex(&s,b.vertices.at(&s))&&s.reads==reads&&d.created.size()==creates);
+                assert(b.pendingVertices==1&&s.refs==2&&b.vertices.at(&s).failed);if(failure!=3)assert(d.created.empty());
+            }assert(s.refs==1&&d.vs.refs==1);
+        }
+        {Device d;Source s;NorthlightAutoBump b(&d);for(unsigned i=0;i<8;++i){b.registerVertex(&s,s.hash(),s.code.data(),s.code.size(),3);assert(s.refs==2&&b.pendingVertices==1);}b.registerVertex(&s,0,s.code.data(),s.code.size(),0);assert(s.refs==1&&!b.pendingVertices&&b.vertices.empty());
+            failAllocationAfter=0;bool failed=false;try{b.registerVertex(&s,s.hash(),s.code.data(),s.code.size(),3);}catch(const std::bad_alloc&){failed=true;}failAllocationAfter=-1;assert(failed&&s.refs==1&&b.vertices.empty());}
+        // Live identity recovery cannot let unsupported deferred entries exhaust supported capacity.
+        struct Identity {Source* valid=nullptr;uint64_t hash=0;unsigned calls=0;};
+        auto lookup=[](void* context,IDirect3DVertexShader9* shader,uint64_t& hash,unsigned& family){auto& i=*static_cast<Identity*>(context);++i.calls;if(shader!=i.valid)return false;hash=i.hash;family=3;return true;};
+        {Device d;Source good,unknown;std::vector<std::unique_ptr<Source>> rejected;rejected.reserve(4096);Identity identity{&good,good.hash()};
+            {NorthlightAutoBump b(&d);b.setVertexIdentity(&identity,lookup);
+                for(unsigned i=0;i<4096;++i){rejected.push_back(std::make_unique<Source>());auto& s=*rejected.back();s.fail=true;b.registerVertex(&s,s.hash(),s.code.data(),s.code.size(),3);}
+                b.registerVertex(&good,good.hash(),good.code.data(),good.code.size(),3);assert(b.vertexOverflow&&b.vertices.size()==4096&&b.pendingVertices==4096&&!good.reads&&good.refs==1&&d.created.empty());
+                // Off remains inert, including the overflow callback.
+                b.capture(&good,[]{return D3D_OK;});assert(!identity.calls&&!good.reads);enable(b);
+                b.capture(&unknown,[]{return D3D_OK;});assert(identity.calls==1&&!unknown.reads&&d.created.empty());
+                b.capture(&good,[]{return D3D_OK;});assert(good.reads==2&&b.vertices.at(&good).patched&&b.vertices.size()==4096&&b.pendingVertices==4095&&d.created==eager.created);
+                size_t retained=0;for(auto& s:rejected)retained+=s->refs==2;assert(retained==4095);
+            }for(auto& s:rejected)assert(s->refs==1);assert(good.refs==1&&d.vs.refs==1);
+        }
+        {Device d;Source good;Identity identity{&good,good.hash()+1};NorthlightAutoBump b(&d);b.vertexOverflow=true;b.setVertexIdentity(&identity,lookup);enable(b);b.capture(&good,[]{return D3D_OK;});assert(good.reads==2&&d.created.empty()&&b.vertices.at(&good).failed);}
+        {Device d;Source good;std::vector<std::unique_ptr<Source>> compiled;compiled.reserve(4096);Identity identity{&good,good.hash()};
+            {NorthlightAutoBump b(&d);enable(b);b.vertexOverflow=true;b.setVertexIdentity(&identity,lookup);for(unsigned i=0;i<4096;++i){compiled.push_back(std::make_unique<Source>());d.vs.AddRef();b.vertices[compiled.back().get()]={&d.vs,4};}
+                b.capture(&good,[]{return D3D_OK;});assert(b.vertices.size()==4096&&!good.reads&&d.created.empty()&&!b.pendingVertices);}
+            assert(d.vs.refs==1);
+        }
+        // Replacement removes retained identity before allocator address reuse.
+        {Device d;NorthlightAutoBump b(&d);alignas(Source) unsigned char storage[sizeof(Source)];auto* s=new(storage) Source;b.registerVertex(s,s->hash(),s->code.data(),s->code.size(),3);assert(s->refs==2);b.registerVertex(s,0,s->code.data(),s->code.size());assert(s->refs==1);s->~Source();s=new(storage) Source;s->code[9]=src(1,0,0);b.registerVertex(s,s->hash(),s->code.data(),s->code.size(),3);enable(b);assert(b.ensureVertex(s,b.vertices.at(s)));b.registerVertex(s,0,s->code.data(),s->code.size());assert(s->refs==1);s->~Source();}
+        std::puts("MATERIAL_LAZY_VERTEX_PASS off_zero_getfunction_create exact_eager_bytecode off_on_first_capture domain_toggle reset cached_failures allocation refs replacement_aba cap4096 overflow_hash_proof compiled_cap_retained");
+    }
     static NorthlightAutoDisplacement& setup(NorthlightAutoBump& b,CaptureBackend& d,unsigned domain){
         b.enabled=true;b.width=b.heightPixels=d.surface.size;
         for(auto& mode:b.modes)mode=0;b.modes[domain-1]=3;
@@ -296,7 +358,7 @@ struct MaterialCaptureStateTestAccess {
             assert(!d.pixelQueries&&!d.pixelConstants&&!d.textures&&!d.samplers&&!d.depthAllocations&&b.deferred.empty()&&b.deferredSnapshots.bytesRead()==0);
             assert(!b.modelCapture(&d.ps,false));assert(b.cold.modelMisses==1&&!b.cold.modelBuilt);const double measured=b.cold.modelMs;
             for(unsigned i=0;i<16;++i)assert(!b.modelCapture(&d.ps,false));assert(b.cold.modelMisses==1&&b.cold.modelMs==measured);
-            const DWORD invalidVS[]={0xfffe0300,65535};b.registerVertex(&d.vs,0,invalidVS,2,3);assert(b.cold.vertexSources==1);
+            const DWORD invalidVS[]={0xfffe0300,65535};b.registerVertex(&d.vs,0,invalidVS,2,3);assert(!b.cold.vertexSources&&b.cold.vertexQueued==1&&b.pendingVertices==1);
             assert(!b.modelCapture(&source,false)&&b.cold.modelMisses==2&&!b.cold.modelBuilt);
             const auto sourceReads=source.reads;const auto modelMs=b.cold.modelMs;assert(!b.modelCapture(&source,false)&&source.reads==sourceReads&&b.cold.modelMs==modelMs);
             IDirect3DPixelShader9* output=nullptr;assert(FAILED(b.createCaptureShader(invalidVS,&output))&&!output);d.success=true;
@@ -393,6 +455,7 @@ int main(){
     MaterialCaptureStateTestAccess::invisible();
     MaterialCaptureStateTestAccess::noCapture();
     MaterialCaptureStateTestAccess::disabledAndCold();
+    MaterialCaptureStateTestAccess::lazyVertex();
     sharedGeometry();
     DisplacementStateTestAccess::capture();
     DisplacementStateTestAccess::cache();

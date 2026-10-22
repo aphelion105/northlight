@@ -221,6 +221,7 @@ private:
     std::atomic<std::uint64_t> startNs_{0};
     bool frameOpen_=false,skipping_=false;unsigned skipRun_=0;   // 0.3.200 (frame skip): replay thread only, see frameSkip
     bool diag_=false;Counter auditSets_{0};   // diag_: diagnostics() as of the last frame boundary (asked once per frame, not per command)
+    ReplayFrameProfile replayProfile_;
     // audit: the values the game last set this frame, replay side
     DWORD auditRS_[StreamState::kRS]={},auditSamp_[StreamState::kSamplers][StreamState::kSampTypes]={},auditTss_[StreamState::kTSStages][StreamState::kTSTypes]={};
     std::vector<unsigned> touched_;std::vector<bool> touchedFlag_=std::vector<bool>(StreamState::kBits,false);
@@ -356,6 +357,7 @@ private:
     // 0.3.200 (frame skip): the decision at a frame's first command (see frameSkip). Two atomic loads a frame.
     void beginFrame(){
         frameOpen_=true;skipping_=false;
+        replayProfile_.begin(diag_,core.framesReplayed.load(std::memory_order_relaxed)+1);
         if(!frameSkip||skipRun_>=kMaxSkipRun)return;
         const std::uint64_t k=core.framesReplayed.load(std::memory_order_relaxed);
         if(core.presentsRecorded.load(std::memory_order_acquire)<k+2)return;
@@ -508,6 +510,20 @@ private:
         for(std::size_t i=0;i<top.size()&&i<12;++i)put(buf,n," %s=%.3fms/%.0f",cmdName((Cmd)top[i].second),double(top[i].first)/1e6*perFrame,double(calls[top[i].second])*16.0*perFrame);
         log(buf);
     }
+    void logReplayProfile(){
+        if(!log||!diag_||!replayProfile_.enabled)return;
+        const auto& p=replayProfile_;unsigned top[5]={};unsigned count=0;
+        for(unsigned id=0;id<kMaxCmdIds;++id){if(!p.entries[id].calls)continue;
+            unsigned pos=0;while(pos<count&&p.entries[top[pos]].ns>=p.entries[id].ns)++pos;
+            if(pos>=5)continue;const unsigned end=count<5?count++:4;
+            for(unsigned i=end;i>pos;--i)top[i]=top[i-1];top[pos]=id;
+        }
+        char buf[kLine];int n=std::snprintf(buf,sizeof buf,"CSTREAM REPLAY frame=%llu calls=%u measuredMs=%.4f clockReads=%llu maxMs=%.4f maxCmd=%s top=",
+            (unsigned long long)p.frame,p.calls,double(p.totalNs)/1e6,(unsigned long long)p.calls*2,
+            double(p.maxNs)/1e6,cmdName((Cmd)p.maxId));
+        for(unsigned i=0;i<count;++i)put(buf,n,"%s%s:%.4fms/%u",i?",":"",cmdName((Cmd)top[i]),double(p.entries[top[i]].ns)/1e6,p.entries[top[i]].calls);
+        log(buf);
+    }
     void activateSnapshot(GameSnapshot* s){
         playback_.reset();
         if(current_)snapshots.release(current_);
@@ -603,9 +619,13 @@ private:
             }
             if(h->id==(std::uint16_t)Cmd::Stop){q.retire(h);return;}
             if(!frameOpen_)beginFrame();   // 0.3.200 (frame skip)
+            const unsigned id=h->id;const bool timed=replayProfile_.enabled;
+            const auto started=timed?nowNs():0;
             execute(h);
+            if(timed){const auto ended=nowNs();replayProfile_.record(id,ended>=started?ended-started:0);}
             lastCmd=h->id;
             q.retire(h);
+            if(id==(unsigned)Cmd::Present||id==(unsigned)Cmd::SwapPresent)logReplayProfile();
         }
     }
 public:
