@@ -14,7 +14,8 @@ static void logf(const char* f,...){va_list a;va_start(a,f);std::vprintf(f,a);st
 #include "forwarders.h"
 #include "mirror_resource_forwarders.h"
 struct MaterialDepthMeter:ForwardIDirect3DDevice9 {
-    unsigned reads=0,allocations=0,gpuDraws=0,clears=0,pixelQueries=0;bool failDeferred=false;explicit MaterialDepthMeter(IDirect3DDevice9* d):ForwardIDirect3DDevice9(d){}
+    unsigned reads=0,allocations=0,gpuDraws=0,clears=0,pixelQueries=0;bool failDeferred=false,failResident=false;explicit MaterialDepthMeter(IDirect3DDevice9* d):ForwardIDirect3DDevice9(d){}
+    HRESULT STDMETHODCALLTYPE CreateVertexBuffer(UINT bytes,DWORD usage,DWORD fvf,D3DPOOL pool,IDirect3DVertexBuffer9** out,HANDLE* shared)override{if(failResident){*out=nullptr;return E_OUTOFMEMORY;}return real->CreateVertexBuffer(bytes,usage,fvf,pool,out,shared);}
     HRESULT STDMETHODCALLTYPE GetPixelShader(IDirect3DPixelShader9** ps)override{++pixelQueries;return real->GetPixelShader(ps);}
     HRESULT STDMETHODCALLTYPE SetVertexShader(IDirect3DVertexShader9* vs)override{if(failDeferred){failDeferred=false;return E_FAIL;}return real->SetVertexShader(vs);}
     HRESULT STDMETHODCALLTYPE Clear(DWORD n,const D3DRECT* rect,DWORD flags,D3DCOLOR color,float z,DWORD stencil)override{++clears;return real->Clear(n,rect,flags,color,z,stencil);}
@@ -27,13 +28,26 @@ struct MaterialDepthMeter:ForwardIDirect3DDevice9 {
     }
     HRESULT STDMETHODCALLTYPE DrawPrimitiveUP(D3DPRIMITIVETYPE type,UINT n,const void* v,UINT stride)override{++gpuDraws;return real->DrawPrimitiveUP(type,n,v,stride);}
     HRESULT STDMETHODCALLTYPE DrawIndexedPrimitiveUP(D3DPRIMITIVETYPE type,UINT low,UINT vertices,UINT n,const void* indices,D3DFORMAT format,const void* v,UINT stride)override{++gpuDraws;return real->DrawIndexedPrimitiveUP(type,low,vertices,n,indices,format,v,stride);}
+    HRESULT STDMETHODCALLTYPE DrawIndexedPrimitive(D3DPRIMITIVETYPE type,INT base,UINT low,UINT vertices,UINT first,UINT n)override{++gpuDraws;return real->DrawIndexedPrimitive(type,base,low,vertices,first,n);}
+    HRESULT STDMETHODCALLTYPE DrawPrimitive(D3DPRIMITIVETYPE type,UINT first,UINT n)override{++gpuDraws;return real->DrawPrimitive(type,first,n);}
 };
 struct MaterialCaptureStateTestAccess {
     static unsigned queued(const NorthlightAutoBump& b){return b.queued;}
     static unsigned flushed(const NorthlightAutoBump& b){return b.flushed;}
     static unsigned captured(const NorthlightAutoBump& b,unsigned domain){return b.draws[domain-1];}
     static size_t sourceReadBytes(const NorthlightAutoBump& b){return b.deferredSnapshots.bytesRead();}
-    static bool released(const NorthlightAutoBump& b){return b.deferred.empty()&&!b.deferredBytes&&!b.pendingTextures()&&!b.deferredTextureBytes&&!b.deferredSnapshots.snapshotCacheBytes();}
+    static bool released(const NorthlightAutoBump& b){return b.deferred.empty()&&!b.deferredBytes&&!b.pendingTextures()&&!b.deferredTextureBytes&&!b.deferredSnapshots.snapshotCacheBytes()
+#ifndef NORTHLIGHT_TEST_CAPTURE_BASELINE
+        &&!b.deferredGPU.bytes()
+#endif
+        ;}
+    static void residency(const NorthlightAutoBump& b,bool expected){
+#ifndef NORTHLIGHT_TEST_CAPTURE_BASELINE
+        std::printf("MATERIAL_RESIDENT_PASS resident=%u up=%u uploaded=%zu upBytes=%llu cacheBytes=%zu\n",b.residentDraws,b.uploadDraws,b.deferredGPU.uploaded(),(unsigned long long)b.uploadDrawBytes,b.deferredGPU.bytes());
+        if(expected)assert(b.residentDraws&& !b.uploadDraws&&!b.deferredGPU.uploaded()&&b.deferredGPU.bytes());
+        else assert(!b.residentDraws&&b.uploadDraws&&!b.deferredGPU.bytes());
+#endif
+    }
     static void mutation(const NorthlightAutoBump& b,const void* vertices,size_t bytes){if(b.deferred.empty())return;const auto& p=*b.deferred.back();assert(p.mesh->streams[0].bytes.size()==bytes&&!std::memcmp(p.mesh->streams[0].bytes.data(),vertices,bytes));float bank[1024];ok(b.d->GetVertexShaderConstantF(0,bank,256));assert(!std::memcmp(bank,p.vertexConstants,sizeof bank));}
     static unsigned rejected(const NorthlightAutoBump& b){return b.rangeRejected;}
     static uint64_t clears(const NorthlightAutoBump& b){return b.sharedPOM.clearCount();}
@@ -141,8 +155,20 @@ int main(int argc,char** argv){
     const D3DVERTEXELEMENT9 decls[]={{0,0,D3DDECLTYPE_FLOAT3,D3DDECLMETHOD_DEFAULT,D3DDECLUSAGE_POSITION,0},{0,12,D3DDECLTYPE_FLOAT3,D3DDECLMETHOD_DEFAULT,D3DDECLUSAGE_NORMAL,0},{0,24,D3DDECLTYPE_FLOAT2,D3DDECLMETHOD_DEFAULT,D3DDECLUSAGE_TEXCOORD,0},{0,24,D3DDECLTYPE_FLOAT2,D3DDECLMETHOD_DEFAULT,D3DDECLUSAGE_TEXCOORD,1},{0,32,D3DDECLTYPE_D3DCOLOR,D3DDECLMETHOD_DEFAULT,D3DDECLUSAGE_COLOR,0},{0,36,D3DDECLTYPE_D3DCOLOR,D3DDECLMETHOD_DEFAULT,D3DDECLUSAGE_COLOR,1},{0,40,D3DDECLTYPE_UBYTE4N,0,D3DDECLUSAGE_BLENDWEIGHT,0},{0,44,D3DDECLTYPE_UBYTE4,0,D3DDECLUSAGE_BLENDINDICES,0},D3DDECL_END()};IDirect3DVertexDeclaration9* decl=nullptr;ok(d->CreateVertexDeclaration(decls,&decl));
     IDirect3DVertexBuffer9* sourceVB=nullptr;IDirect3DIndexBuffer9* sourceIB=nullptr;void* upload=nullptr;
     const bool deferredMutation=std::getenv("NORTHLIGHT_TEST_DEFERRED_MUTATION")!=nullptr;
+    const bool deferredPose=std::getenv("NORTHLIGHT_TEST_DEFERRED_POSE")!=nullptr;
     ok(d->CreateVertexBuffer(sizeof floor,deferredMutation?D3DUSAGE_DYNAMIC|D3DUSAGE_WRITEONLY:0,0,deferredMutation?D3DPOOL_DEFAULT:D3DPOOL_MANAGED,&sourceVB,nullptr));ok(sourceVB->Lock(0,sizeof floor,&upload,0));std::memcpy(upload,floor,sizeof floor);ok(sourceVB->Unlock());
     const WORD sourceIndices[]={0,1,2,2,1,3};ok(d->CreateIndexBuffer(sizeof sourceIndices,0,D3DFMT_INDEX16,D3DPOOL_MANAGED,&sourceIB,nullptr));ok(sourceIB->Lock(0,sizeof sourceIndices,&upload,0));std::memcpy(upload,sourceIndices,sizeof sourceIndices);ok(sourceIB->Unlock());
+    const unsigned meshGrid=std::getenv("NORTHLIGHT_TEST_MESH_GRID")?std::atoi(std::getenv("NORTHLIGHT_TEST_MESH_GRID")):0;
+    unsigned sourceVertices=4,sourcePrimitives=2;
+    if(meshGrid){assert(meshGrid<=128&&!deferredMutation);std::vector<V> vertices;
+        for(unsigned y=0;y<=meshGrid;++y)for(unsigned x=0;x<=meshGrid;++x){V v=floor[0];const float u=float(x)/meshGrid,w=float(y)/meshGrid;
+            v.x+=(floor[1].x-floor[0].x)*u;v.y+=(floor[2].y-floor[0].y)*w;v.u+=(floor[1].u-floor[0].u)*u;v.v+=(floor[2].v-floor[0].v)*w;vertices.push_back(v);}
+        std::vector<WORD> indices;for(unsigned y=0;y<meshGrid;++y)for(unsigned x=0;x<meshGrid;++x){const WORD a=WORD(y*(meshGrid+1)+x),b=a+1,c=WORD(a+meshGrid+1),e=c+1;for(WORD i:{a,b,c,c,b,e})indices.push_back(i);}
+        drop(sourceVB);drop(sourceIB);const UINT vbBytes=UINT(vertices.size()*sizeof(V)),ibBytes=UINT(indices.size()*2);
+        ok(d->CreateVertexBuffer(vbBytes,0,0,D3DPOOL_MANAGED,&sourceVB,nullptr));ok(sourceVB->Lock(0,vbBytes,&upload,0));std::memcpy(upload,vertices.data(),vbBytes);ok(sourceVB->Unlock());
+        ok(d->CreateIndexBuffer(ibBytes,0,D3DFMT_INDEX16,D3DPOOL_MANAGED,&sourceIB,nullptr));ok(sourceIB->Lock(0,ibBytes,&upload,0));std::memcpy(upload,indices.data(),ibBytes);ok(sourceIB->Unlock());
+        sourceVertices=UINT(vertices.size());sourcePrimitives=UINT(indices.size()/3);
+    }
     IDirect3DVertexShader9* coverageVS=nullptr;if(argc<=5&&reinterpret_cast<DWORD*>(vsBytes.data())[0]==0xfffe0300u){std::vector<uint32_t> words;assert(NorthlightTerrainCoverage::vertex(reinterpret_cast<uint32_t*>(vsBytes.data()),vsBytes.size()/4,words));ok(d->CreateVertexShader(reinterpret_cast<DWORD*>(words.data()),&coverageVS));}
     D3DVIEWPORT9 vp={0,0,W,H,0,1};ok(d->SetRenderTarget(0,drawSurface));ok(d->SetRenderTarget(1,drawDepth));ok(d->SetDepthStencilSurface(zbuffer));d->SetViewport(&vp);
     ok(d->SetRenderState(D3DRS_MULTISAMPLEANTIALIAS,TRUE));
@@ -305,10 +331,12 @@ int main(int argc,char** argv){
         if(grass){d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE);d->SetRenderState(D3DRS_ALPHATESTENABLE,TRUE);d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_SRCALPHA);d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_INVSRCALPHA);d->SetRenderState(D3DRS_ALPHAFUNC,D3DCMP_GREATER);d->SetRenderState(D3DRS_ALPHAREF,127);}
         float nativeConstants[3][4]={};d->SetPixelShaderConstantF(0,nativeConstants[0],3);
         ok(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0xff18212d,1,0));ok(d->BeginScene());
-        const bool indexed=deferredMutation||mode==6||mode==7||mode==9||(mode>=2&&mode<=4&&std::getenv("NORTHLIGHT_TEST_SHARED_BUFFERED"));
+        const bool indexed=meshGrid||std::getenv("NORTHLIGHT_TEST_DEFERRED_RESIDENT")||deferredMutation||mode==6||mode==7||mode==9||(mode>=2&&mode<=4&&std::getenv("NORTHLIGHT_TEST_SHARED_BUFFERED"));
         NorthlightAutoDisplacement::Args geometry{{D3DPT_TRIANGLESTRIP,0,0,0,0,2,false},nullptr,D3DFMT_UNKNOWN,floor,sizeof(V)};
-        if(indexed){geometry={{D3DPT_TRIANGLELIST,0,0,4,0,2,true}};d->SetStreamSource(0,sourceVB,0,sizeof(V));d->SetIndices(sourceIB);}
-        auto native=[&]{return indexed?d->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,0,4,0,2):d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,floor,sizeof(V));};
+        if(indexed){geometry={{D3DPT_TRIANGLELIST,0,0,sourceVertices,0,sourcePrimitives,true}};d->SetStreamSource(0,sourceVB,0,sizeof(V));d->SetIndices(sourceIB);}
+        const bool bufferedStrip=std::getenv("NORTHLIGHT_TEST_DEFERRED_STRIP")!=nullptr;
+        if(bufferedStrip){geometry={{D3DPT_TRIANGLESTRIP,0,0,0,0,2,false}};ok(d->SetStreamSource(0,sourceVB,0,sizeof(V)));}
+        auto native=[&]{return bufferedStrip?d->DrawPrimitive(D3DPT_TRIANGLESTRIP,0,2):indexed?d->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,0,sourceVertices,0,sourcePrimitives):d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,floor,sizeof(V));};
         const float preserved[16]={.13f,.24f,.35f,.46f,.57f,.68f,.79f,.81f,.92f,.12f,.23f,.34f,.45f,.56f,.67f,.78f};ok(d->SetVertexShaderConstantF(252,preserved,4));
         float allConstants[256*4];ok(d->GetVertexShaderConstantF(0,allConstants,256));
 #ifdef NORTHLIGHT_MATERIAL_MIRROR
@@ -364,7 +392,7 @@ int main(int argc,char** argv){
         if(batchTiming||(mode==2&&std::getenv("NORTHLIGHT_TEST_SHARED_TIMING"))){
             IDirect3DQuery9 *frequency=nullptr,*start=nullptr,*finish=nullptr,*disjoint=nullptr;
             ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPFREQ,&frequency));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&start));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&finish));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPDISJOINT,&disjoint));
-            const bool batched=batchTiming&&std::getenv("NORTHLIGHT_TEST_MATERIAL_BATCHED"),packetLimit=std::getenv("NORTHLIGHT_TEST_DEFERRED_LIMIT")!=nullptr;const unsigned draws=batchTiming?(packetLimit?520:32):1;
+            const bool batched=batchTiming&&std::getenv("NORTHLIGHT_TEST_MATERIAL_BATCHED"),packetLimit=std::getenv("NORTHLIGHT_TEST_DEFERRED_LIMIT")!=nullptr;const unsigned draws=batchTiming?(packetLimit?520:std::getenv("NORTHLIGHT_TEST_CAPTURE_DRAWS")?std::atoi(std::getenv("NORTHLIGHT_TEST_CAPTURE_DRAWS")):32):1;
             const bool deferredEnabled=std::getenv("NORTHLIGHT_TEST_DEFERRED_CAPTURE")!=nullptr;
             const bool barrier=std::getenv("NORTHLIGHT_TEST_DEFERRED_BARRIER")!=nullptr;
             const bool textureWrite=std::getenv("NORTHLIGHT_TEST_DEFERRED_TEXTURE_WRITE")!=nullptr;
@@ -379,6 +407,8 @@ int main(int argc,char** argv){
                 for(unsigned y=0;y<first.height;++y){auto* row=static_cast<unsigned char*>(lock.pBits)+size_t(y)*lock.Pitch;for(unsigned x=0;x<first.width;++x)row[x*4+3]=restore?first.pixels[(size_t(y)*first.width+x)*4+3]:0;}
                 if(kind==1)ok(gameSurface.UnlockRect());else ok(gameTexture.UnlockRect(0));};
             if(batchTiming&&deferredEnabled&&std::getenv("NORTHLIGHT_TEST_DEFERRED_PRESSURE")){
+                for(unsigned i=0;i<3;++i){bump.endFrame();bump.beginDraw();bump.capture(vs,native,!indexed,&geometry);ok(bump.nativeDraw(native));assert(bump.finishCaptures());}
+                MaterialCaptureStateTestAccess::residency(bump,true);
                 bump.endFrame();bump.beginDraw();bump.capture(vs,native,!indexed,&geometry);ok(bump.nativeDraw(native));assert(MaterialCaptureStateTestAccess::queued(bump)==1);
                 bump.setMemoryPressure(true);assert(MaterialCaptureStateTestAccess::released(bump)&&!bump.texture()&&bump.finishCaptures());
                 ok(d->EndScene());std::puts("MATERIAL_DEFERRED_PRESSURE_PASS queue_and_source_cache_released native_retained");return 0;
@@ -404,6 +434,7 @@ int main(int argc,char** argv){
                         ok(d->SetRenderState(D3DRS_FILLMODE,i%2?D3DFILL_WIREFRAME:D3DFILL_SOLID));ok(d->SetRenderState(D3DRS_SCISSORTESTENABLE,i%3==0));RECT rect={LONG(i%7),LONG(i%5),LONG(W-i%9),LONG(H-i%11)};ok(d->SetScissorRect(&rect));
                         for(unsigned bone=0;bone<4;++bone){float pose[4];std::memcpy(pose,bank[31+3*bone],16);pose[3]+=float(i%5)*.04f;ok(d->SetVertexShaderConstantF(31+3*bone,pose,1));}}
                     if(barrier)bump.setDeferredCapture(deferredEnabled&&i%8!=7);
+                    if(deferredPose)for(unsigned bone=0;bone<4;++bone){float pose[4];std::memcpy(pose,bank[31+3*bone],16);pose[3]+=float(i%5)*.04f;ok(d->SetVertexShaderConstantF(31+3*bone,pose,1));}
                     bump.beginDraw();bump.capture(vs,native,!indexed,&geometry);
                     if(deferredMutation){V expected[4];std::memcpy(expected,floor,sizeof expected);for(auto& v:expected)v.x+=float(i%7)*.025f;MaterialCaptureStateTestAccess::mutation(bump,expected,sizeof expected);}
                     ok(bump.nativeDraw([&]{return bump.geometryDraw(native,true);}));
@@ -412,10 +443,11 @@ int main(int argc,char** argv){
                     if(deferredMutation){ok(sourceVB->Lock(0,sizeof floor,&upload,D3DLOCK_DISCARD));std::memset(upload,0,sizeof floor);ok(sourceVB->Unlock());++mutationRevision;float destroyed[4]={0,0,0,20};ok(d->SetVertexShaderConstantF(31,destroyed,1));}
                 }
                 float beforePixel[224*4],afterPixel[224*4],beforeVertex[256*4],afterVertex[256*4];
-                if(deferredMutation){ok(d->GetPixelShaderConstantF(0,beforePixel,224));ok(d->GetVertexShaderConstantF(0,beforeVertex,256));}
+                if(deferredMutation||deferredPose){ok(d->GetPixelShaderConstantF(0,beforePixel,224));ok(d->GetVertexShaderConstantF(0,beforeVertex,256));}
                 assert(bump.finishCaptures());bump.setDeferredCapture(deferredEnabled);
-                if(deferredMutation){ok(d->GetPixelShaderConstantF(0,afterPixel,224));ok(d->GetVertexShaderConstantF(0,afterVertex,256));assert(!std::memcmp(beforePixel,afterPixel,sizeof beforePixel)&&!std::memcmp(beforeVertex,afterVertex,sizeof beforeVertex));}
+                if(deferredMutation||deferredPose){ok(d->GetPixelShaderConstantF(0,afterPixel,224));ok(d->GetVertexShaderConstantF(0,afterVertex,256));assert(!std::memcmp(beforePixel,afterPixel,sizeof beforePixel)&&!std::memcmp(beforeVertex,afterVertex,sizeof beforeVertex));}
             };
+            captureDevice.failResident=std::getenv("NORTHLIGHT_TEST_DEFERRED_CACHE_FAILURE")!=nullptr;
             for(unsigned i=0;i<4;++i)render();
             ok(disjoint->Issue(D3DISSUE_BEGIN));ok(frequency->Issue(D3DISSUE_END));ok(start->Issue(D3DISSUE_END));LARGE_INTEGER cpuStart,cpuEnd,cpuHz;QueryPerformanceFrequency(&cpuHz);QueryPerformanceCounter(&cpuStart);
             const unsigned repeats=batchTiming?8:32;for(unsigned i=0;i<repeats;++i)render();QueryPerformanceCounter(&cpuEnd);
@@ -423,7 +455,8 @@ int main(int argc,char** argv){
             const auto wait=[](IDirect3DQuery9* q,void* result,DWORD size){const auto began=GetTickCount();HRESULT hr;while((hr=q->GetData(result,size,D3DGETDATA_FLUSH))==S_FALSE){assert(GetTickCount()-began<10000);Sleep(1);}ok(hr);};
             UINT64 hz=0,a=0,b=0;BOOL invalid=TRUE;wait(finish,&b,sizeof b);wait(start,&a,sizeof a);wait(frequency,&hz,sizeof hz);wait(disjoint,&invalid,sizeof invalid);assert(!invalid&&hz&&b>=a);
             std::printf("%s width=%u height=%u msaa=%u gpuMs=%.6f submitMs=%.6f repeats=%u draws=%u batched=%u\n",batchTiming?"MATERIAL_BATCH_TIMING":"SHARED_POM_TIMING",W,H,unsigned(samples),double(b-a)*1000/double(hz)/repeats,double(cpuEnd.QuadPart-cpuStart.QuadPart)*1000/double(cpuHz.QuadPart)/repeats,repeats,draws,unsigned(batched));
-            if(batchTiming&&deferredEnabled){std::printf("MATERIAL_DEFERRED_BENCH queued=%u flushed=%u mutation=%u barrier=%u\n",MaterialCaptureStateTestAccess::queued(bump),MaterialCaptureStateTestAccess::flushed(bump),unsigned(deferredMutation),unsigned(barrier));assert(MaterialCaptureStateTestAccess::queued(bump)==(multiStream?0:draws-(barrier?draws/8:0))&&MaterialCaptureStateTestAccess::flushed(bump)==MaterialCaptureStateTestAccess::queued(bump));
+            if(batchTiming&&deferredEnabled){std::printf("MATERIAL_DEFERRED_BENCH queued=%u flushed=%u mutation=%u barrier=%u\n",MaterialCaptureStateTestAccess::queued(bump),MaterialCaptureStateTestAccess::flushed(bump),unsigned(deferredMutation),unsigned(barrier));assert(MaterialCaptureStateTestAccess::queued(bump)==(multiStream||!samples?0:draws-(barrier?draws/8:0))&&MaterialCaptureStateTestAccess::flushed(bump)==MaterialCaptureStateTestAccess::queued(bump));
+                if(samples&&(meshGrid||bufferedStrip||std::getenv("NORTHLIGHT_TEST_DEFERRED_RESIDENT")))MaterialCaptureStateTestAccess::residency(bump,!captureDevice.failResident);
                 if(multiStream){assert(!MaterialCaptureStateTestAccess::sourceReadBytes(bump));std::puts("MATERIAL_MULTISTREAM_PREFLIGHT_PASS zero_source_reads immediate_retained");}}
             if(batchTiming&&std::getenv("NORTHLIGHT_TEST_MATERIAL_BATCH_VALIDATE")){
                 if(samples){ok(d->SetDepthStencilSurface(nullptr));ok(d->SetRenderTarget(0,output));ok(d->StretchRect(drawSurface,nullptr,baseSurface,nullptr,D3DTEXF_NONE));}

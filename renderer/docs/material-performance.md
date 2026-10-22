@@ -1,5 +1,75 @@
 # Material performance investigation — 22 October 2026
 
+## M2 Normals run: batching confirmed, repeated geometry uploads removed — 22 October, 19:37
+
+### Fresh evidence and comparison
+
+The tested DLL is `110a1e3`, SHA-256 `225b65ab1b12210adc5500ec67e0d41af32396543048096e8b2a5b556c6debd2`. Immutable logs, settings and frame records are saved in `northlight-diagnostics/material-m2-normals-20261022-1937/`; the fresh log SHA-256 is `ea65e59146b72203e052bedfcfdd6490c0c3cde9bde102a8ce710adfd3b9454e`. Its previous-log copy is the 18:48 run discussed below. The game was not launched during this investigation.
+
+**The last change fixed capture eligibility and source-cache churn.** At M2 Normals frames 2667 / 2794 / 2921, all **331 / 329 / 332 M2 captures** are queued and flushed. There are zero snapshot fallbacks, zero unsafe live-state fallbacks, zero texture refusals and zero source reads after warm-up. The 351 retained source snapshots occupy 25,163,316 bytes within the unchanged 24 MiB cache limit. Previously only 20–21 M2 captures were queued, with 301–302 immediate captures and 109–110 source-cache fallbacks. The texture-write guard now covers 193–194 texture-dependent draws; no source write barriers occur in these samples.
+
+**Generated normal maps are also reused.** The log reports 108 lifetime generations, zero evictions and 51,423,832 bytes of GPU maps. All three warm samples have zero `normalBuild`, zero height reads and zero mip generation. Normal-cache lookup takes only 0.0284–0.0349 ms CPU. An MPQ/disk cache would not remove the measured per-frame cost.
+
+Batching alone has not delivered a reliable whole-frame improvement. The two earlier normal samples consumed 4.687–4.692 ms of material CPU time; the new samples consume 6.109–6.907 ms. Warm GPU frame time varies from 12.001 to 14.653 ms, against 13.154–13.285 ms previously. These are different user-run windows, not a controlled performance comparison. New normal-mode windows at frames 2760 / 2880 have median frame times of 14.434 / 14.880 ms; mean FPS is 67.85 / 58.57, with a 256 ms outlier in the second window. The later M2-Off window has a 10.597 ms median and 91.14 mean FPS. Enabling M2 materials still carries a substantial cost.
+
+### Where the sampled time goes
+
+CPU figures below are exclusive stage measurements across all material domains, per frame. They must not be added to GPU timings, which measure a different timeline.
+
+| Work | Frame 2667 | Frame 2794 | Frame 2921 |
+| --- | ---: | ---: | ---: |
+| Capture draw submission, CPU | 2.4410 ms | 2.4030 ms | 2.5589 ms |
+| Native draw submission, CPU | 0.9551 ms | 0.9735 ms | 1.0699 ms |
+| Bounds / pose, CPU | 0.8703 ms | 0.9085 ms | 0.9706 ms |
+| Deferred flush setup, CPU | 0.7421 ms | 0.7405 ms | 0.8973 ms |
+| Packet recording, CPU | 0.3161 ms | 0.3132 ms | 0.4246 ms |
+| Geometry snapshot stage, CPU | 0.2881 ms | 0.2978 ms | 0.3773 ms |
+| Normal-map cache lookup, CPU | 0.0284 ms | 0.0293 ms | 0.0349 ms |
+| Material CPU total | 6.1090 ms | 6.1425 ms | 6.9069 ms |
+| M2-labelled capture flushes, GPU | 2.4276 ms | 2.4144 ms | 2.9223 ms |
+| M2 native scene draws, GPU | 0.7755 ms | 0.7507 ms | 0.8613 ms |
+| Full GPU frame | 12.001 ms | 13.171 ms | 14.653 ms |
+
+GPU interval coverage is complete. Flush intervals are labelled by their first packet, so a mixed WMO/M2 batch is attributed to that first domain; the table does not claim perfect per-domain attribution within mixed batches. The final full-screen material application is approximately 0.158–0.159 ms GPU. The current M2 bottleneck is capture submission/replay, rather than normal generation or final compositing.
+
+The code explains the CPU regression: queued meshes are immutable and cached on the CPU, but every replay still calls `DrawIndexedPrimitiveUP` / `DrawPrimitiveUP`. The sampled packets reference **48.02–48.09 MB of geometry per frame**, requiring repeated backend submission of those bytes. Six packet-budget boundaries plus the final flush produce seven flushes. The 8 MiB packet budget charges a shared mesh again for each draw; it is a retention/accounting bound, not proof that all submitted bytes are unique.
+
+### Implemented optimization
+
+Capture now reuses the existing `NorthlightReplayGPU::Cache` for immutable mesh snapshots. After reuse across frames is established, geometry lives in DEFAULT/WRITEONLY GPU vertex/index buffers and uses ordinary indexed/non-indexed draw calls. Bone matrices, native material constants, texture bindings, alpha coverage and raster state still come from each individual packet. Animated poses are not baked into the geometry cache.
+
+The cache uses snapshot ownership and source revisions, not mutable game-buffer pointers. Unchanged meshes upload once. New or changed meshes, exhausted admission budgets and failed allocations retain the original UP fallback. Existing replay-cache limits bound promotion to 16 attempts / 4 MiB / approximately 1 ms per frame, allowing the first attempt to make progress. Material residency is capped at 32 MiB, released on reset/trim, and disabled under memory pressure. CPU snapshot capacity, render distances, normal strength, shader algorithms and MSAA are unchanged.
+
+New `MATERIAL_BATCH_GPU` records expose resident draws, UP draws/bytes, actual new upload bytes, reused bytes, resident/probation meshes, creation CPU time and admission/eviction reasons. A healthy warm frame should have resident draws for unchanged meshes and low or zero `uploadedBytes` / `upBytes`; actual source revisions may legitimately cause fallback.
+
+### Controlled validation
+
+A standalone D3D9 fixture compares the previous `110a1e3` header with the new implementation using identical alpha-dependent four-bone M2 shaders, 3840×2160 output, 2× MSAA, 160 native/capture draws, a 64×64 plane grid and cavity disabled. The repeated geometry volume is **48,176,640 bytes/frame**, close to the fresh game's packet volume. Four warm-up frames precede eight measured frames; three rounds alternate the execution order. All old/new normal targets and resolved scene-color targets are **bit exact**.
+
+| Whole fixture frame submission | Previous queued UP capture | Resident capture |
+| --- | ---: | ---: |
+| Median CPU submission | 8.743713 ms | 0.784175 ms |
+| Median GPU interval | 19.906560 ms | 18.343680 ms |
+| Warm UP draws / bytes | 160 / 48,176,640 | 0 / 0 |
+| Warm new geometry upload bytes | Repeated UP submission | 0 |
+
+CPU submission falls by **91.0% (7.96 ms)** on this deliberately upload-heavy fixture. GPU samples overlap across rounds, so the median GPU difference is not evidence of a guaranteed GPU speedup. The fixture repeats one 301,104-byte mesh; the game has a much larger unique working set. This establishes removal of redundant uploads, not a predicted whole-game FPS gain. The next user run must confirm real residency and stage savings.
+
+The regression suite covers the 40 SM2/SM3 M2 shader families and compares 14 image/depth outputs each. Additional checks exercise resident indexed and non-indexed geometry, changing bone constants with resident source geometry, source-buffer mutation, alpha texture writes, forced GPU-cache allocation failure, failed replay, unused packets, packet boundaries, multi-stream fallback, memory-pressure release, and MSAA preservation. MSAA-off intentionally retains immediate capture. CPU geometry, source-cache, state-reuse and existing replay-cache failure/lifetime/budget tests are also run. Detailed machine-readable results are retained alongside this evidence.
+
+Final validation: **60 GPU regression checks passed**, plus CPU geometry/state tests and the existing replay-cache policy test. The release DLL built successfully for x86 with all 17 exports matching the installed DLL; the two pre-existing compiler warnings are unchanged. The installed DLL and game settings were preserved.
+
+### Remaining priorities
+
+1. Confirm resident capture and reduced `captureDraw` CPU time in the next game log; compare warm frames and unchanged scene settings.
+2. Deduplicate shared geometry in packet-memory accounting if packet boundaries remain frequent; preserve bounded retention and draw order.
+3. Reduce identical state/constant setters inside an uninterrupted capture flush; its current exclusive setup costs 0.74–0.90 ms CPU.
+4. Reduce repeated conservative bounds/pose work (0.87–0.97 ms CPU) without rejecting animated geometry from stale poses.
+5. Investigate capture visibility against the final scene depth if capture GPU time remains dominant. Sparse audit samples cannot safely justify skipping a draw.
+
+The visibility audit confirms a nonzero bump contribution at frame 2667, but only one coarse 128×72 sample lies in the fading normal range and none in the full-strength range. Other sampled grids miss visible contributions. This helps explain why bump looks weak in this camera position; it does not prove a broken normal shader or that every captured model is invisible. Normal detail fades over 36–48 yards; cavity/self-shadow share the configured 8-yard range and are disabled in this run. No appearance or distance setting was changed to obtain the optimization.
+
+
 ## M2 Normals run: cached maps, incomplete batching — 22 October, 18:48
 
 ### Evidence from the new user run

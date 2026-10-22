@@ -7,6 +7,7 @@
 #include "auto_parallax_renderer.h"
 #include "auto_displacement_renderer.h"
 #include "native_material_capture_patch.h"
+#include "replay_gpu_cache.h"
 
 // Prototype: one material-height replay per recognised draw; source textures remain intact.
 // Included after drop and logf. Original resources stay intact; displacement draws use private subdivided buffers.
@@ -37,6 +38,8 @@ class NorthlightAutoBump {
     const D3DRENDERSTATETYPE deferredRasterKeys[DeferredRasterCount]={D3DRS_CULLMODE,D3DRS_ZENABLE,D3DRS_ZFUNC,D3DRS_DEPTHBIAS,D3DRS_SLOPESCALEDEPTHBIAS,D3DRS_SCISSORTESTENABLE,D3DRS_MULTISAMPLEANTIALIAS,D3DRS_MULTISAMPLEMASK,D3DRS_CLIPPING,D3DRS_DITHERENABLE,D3DRS_WRAP0,D3DRS_WRAP7,D3DRS_SHADEMODE,D3DRS_FILLMODE,D3DRS_LASTPIXEL,D3DRS_ANTIALIASEDLINEENABLE,D3DRS_WRAP1,D3DRS_WRAP2,D3DRS_WRAP3,D3DRS_WRAP4,D3DRS_WRAP5,D3DRS_WRAP6,D3DRS_WRAP8,D3DRS_WRAP9,D3DRS_WRAP10,D3DRS_WRAP11,D3DRS_WRAP12,D3DRS_WRAP13,D3DRS_WRAP14,D3DRS_WRAP15};
     NorthlightDrawSnapshot::Frame deferredSnapshots{2u<<20,0};
     NorthlightVertexDeclarations::Cache deferredDeclarations;
+    NorthlightReplayGPU::Cache deferredGPU;
+    unsigned residentDraws=0,uploadDraws=0;uint64_t uploadDrawBytes=0;
     std::vector<std::unique_ptr<Deferred>> deferred;size_t deferredBytes=0;bool deferredAllowed=false;
     std::unordered_map<void*,uint64_t> deferredTextures;uint64_t deferredTextureBytes=0;
     bool textureWriteGuarded=false;void(*pendingChanged)(void*)=nullptr;void* pendingContext=nullptr;
@@ -210,6 +213,7 @@ class NorthlightAutoBump {
     }
 public:
     explicit NorthlightAutoBump(IDirect3DDevice9* device):d(device),normals(device),sharedPOM(device),parallax(device,normals),displacement(device){
+        deferredGPU.setLimit(32u<<20);
         deferredSnapshots.setSnapshotCacheLimit(24u<<20);deferredSnapshots.setChargeResidentHits(false);
         deferredSnapshots.setDeclarationProvider(&deferredDeclarations,[](void* c,IDirect3DVertexDeclaration9* v,const D3DVERTEXELEMENT9*& e,UINT& n){return static_cast<NorthlightVertexDeclarations::Cache*>(c)->get(v,e,n);});
         deferredSnapshots.setLayoutProvider(&deferredDeclarations,[](void* c,IDirect3DVertexDeclaration9* v,UINT* e){return static_cast<NorthlightVertexDeclarations::Cache*>(c)->captureLayout(v,e);});}
@@ -237,10 +241,16 @@ public:
             if(FAILED(d->SetRenderTarget(0,occlusionTarget))||FAILED(d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0))||FAILED(d->SetRenderTarget(0,target)))return false;
             occlusionCleared=true;
         }
+        struct Bindings {IDirect3DVertexBuffer9* vertex[4]={};IDirect3DIndexBuffer9* index=nullptr;
+            ~Bindings(){for(auto& v:vertex)drop(v);drop(index);}} bindings;
         bool success=true;
         for(auto& packet:deferred){
             auto& mesh=*packet->mesh;ReplayState keys(d,nullptr,{});HRESULT hr=D3D_OK;
             auto step=[&](HRESULT result){if(FAILED(result))hr=result;};
+            // Immutable snapshots already have revision-aware ownership. Reuse
+            // the replay cache's bounded promotion, weak lifetime and fallback.
+            const bool resident=deferredGPU.bind(d,packet->mesh,bindings.vertex,bindings.index,[](size_t){return true;});
+            if(resident){step(d->SetStreamSource(0,bindings.vertex[0],0,mesh.streams[0].stride));step(d->SetIndices(bindings.index));}
             step(d->SetVertexDeclaration(packet->declaration));step(d->SetStreamSourceFreq(0,1));step(d->SetVertexShader(packet->vertex));step(d->SetPixelShader(packet->pixel));step(d->SetViewport(&packet->viewport));step(d->SetScissorRect(&packet->scissor));
             for(unsigned i=0;i<14;++i)step(d->SetRenderState(keys.states[i].key,packet->states[i]));
             for(unsigned i=0;i<DeferredRasterCount;++i)step(d->SetRenderState(deferredRasterKeys[i],packet->raster[i]));
@@ -251,7 +261,8 @@ public:
             step(d->SetVertexShaderConstantI(0,packet->vertexInt,16));step(d->SetPixelShaderConstantI(0,packet->pixelInt,16));step(d->SetVertexShaderConstantB(0,packet->vertexBool,16));step(d->SetPixelShaderConstantB(0,packet->pixelBool,16));
             if(SUCCEEDED(hr))hr=d->SetRenderTarget(1,packet->occlusion?occlusionTarget:nullptr);
             if(SUCCEEDED(hr)){P::Scope draw(profile,P::CaptureDraw,packet->tag);draw.work(mesh.primitiveCount);
-                hr=mesh.indexed?d->DrawIndexedPrimitiveUP(mesh.topology,0,mesh.vertexCount,mesh.primitiveCount,mesh.indices.data(),D3DFMT_INDEX32,mesh.streams[0].bytes.data(),mesh.streams[0].stride):d->DrawPrimitiveUP(mesh.topology,mesh.primitiveCount,mesh.streams[0].bytes.data(),mesh.streams[0].stride);}
+                if(resident){++residentDraws;hr=mesh.indexed?d->DrawIndexedPrimitive(mesh.topology,0,0,mesh.vertexCount,0,mesh.primitiveCount):d->DrawPrimitive(mesh.topology,0,mesh.primitiveCount);}
+                else {++uploadDraws;uploadDrawBytes+=mesh.byteSize();hr=mesh.indexed?d->DrawIndexedPrimitiveUP(mesh.topology,0,mesh.vertexCount,mesh.primitiveCount,mesh.indices.data(),D3DFMT_INDEX32,mesh.streams[0].bytes.data(),mesh.streams[0].stride):d->DrawPrimitiveUP(mesh.topology,mesh.primitiveCount,mesh.streams[0].bytes.data(),mesh.streams[0].stride);}}
             if(FAILED(hr)){success=false;break;}++flushed;++draws[packet->tag/4-1];if(packet->occlusion){occlusionDrawn=true;if(profile)profile->count(P::OcclusionDraw);}
         }
         if(success){clearDeferred();result.ok=true;}return success;
@@ -260,11 +271,12 @@ public:
     void setMemoryPressure(bool on){
         if(memoryPressure==on)return;memoryPressure=on;deferredSnapshots.setSnapshotCacheLimit(on?4u<<20:24u<<20);
         if(on&&!deferred.empty()){deferredDiscarded+=unsigned(deferred.size());clearDeferred();drawn=occlusionDrawn=false;}
+        deferredGPU.setLimit(on?0:32u<<20);
         if(on){deferredSnapshots.clearIndexCache();deferredDeclarations.clear();}
         normals.setMemoryPressure(on);displacement.setMemoryPressure(on);sharedPOM.setMemoryPressure(on);
         logf("MATERIAL_MEMORY pressure=%u normalBudgetMiB=%u geometryBudgetMiB=%u relief=active",unsigned(on),on?32:96,on?32:128);
     }
-    void trimMemory(){if(!deferred.empty()){deferredDiscarded+=unsigned(deferred.size());clearDeferred();drawn=occlusionDrawn=false;}sharedMaps[0]={};sharedMaps[1]={};sharedPOM.reset();normals.trimMemory();displacement.trimMemory();deferredSnapshots.clearIndexCache();}
+    void trimMemory(){if(!deferred.empty()){deferredDiscarded+=unsigned(deferred.size());clearDeferred();drawn=occlusionDrawn=false;}sharedMaps[0]={};sharedMaps[1]={};sharedPOM.reset();normals.trimMemory();displacement.trimMemory();deferredSnapshots.clearIndexCache();deferredGPU.clear();}
     bool geometryPrepared()const{return displacement.prepared();}
     unsigned geometryPrimitives()const{return displacement.preparedPrimitives();}
     bool geometryHeightGPU()const{return displacement.preparedHeightGPU();}
@@ -295,12 +307,16 @@ public:
         if(!captureRequired){deferredDiscarded+=unsigned(deferred.size());clearDeferred();sharedMaps[0]={};sharedMaps[1]={};sharedPOM.reset();drop(captureDepth);drop(target);drop(height);drop(occlusionTarget);drop(occlusionMap);drawn=cleared=false;occlusionUnavailable=false;occlusionRetry=0;}
     }
     ~NorthlightAutoBump(){reset();for(auto& v:vertices){drop(v.second.patched);drop(v.second.shared);}for(auto*& p:shaders)drop(p);for(auto*& p:sharedShaders)drop(p);for(auto& groups:nativeCaptures)for(auto& variants:groups)for(auto& n:variants){drop(n.second.shader);drop(n.second.source);}}
-    void reset(){clearDeferred();deferredSnapshots.clearIndexCache();deferredDeclarations.clear();sharedMaps[0]={};sharedMaps[1]={};sharedPOM.reset();displacement.reset();normals.reset();drop(captureDepth);drop(target);drop(height);drop(occlusionTarget);drop(occlusionMap);occlusionUnavailable=false;occlusionRetry=0;width=heightPixels=0;cleared=drawn=failed=occlusionCleared=occlusionDrawn=false;}
+    void reset(){clearDeferred();deferredSnapshots.clearIndexCache();deferredDeclarations.clear();deferredGPU.clear();sharedMaps[0]={};sharedMaps[1]={};sharedPOM.reset();displacement.reset();normals.reset();drop(captureDepth);drop(target);drop(height);drop(occlusionTarget);drop(occlusionMap);occlusionUnavailable=false;occlusionRetry=0;width=heightPixels=0;cleared=drawn=failed=occlusionCleared=occlusionDrawn=false;}
     void endFrame(){
         deferredDiscarded+=unsigned(deferred.size());clearDeferred();
         if(deferredReport||((queued||flushed||deferredFallback||deferredDiscarded)&&frames%600==0))logf("MATERIAL_DEFERRED frame=%llu sampled=%u enabled=%u queued=%u flushed=%u snapshotFallback=%u liveState=%u preparedGeometry=%u discardedUnused=%u terrain=%u walls=%u grass=%u models=%u earlyRangeRejected=%u opaqueCoverage=%u packetLimit=512 packetMiB=8 sourceMiB=24",(unsigned long long)(deferredReport?deferredReportFrame:frames),unsigned(deferredReport),unsigned(deferredAllowed),queued,flushed,deferredFallback,deferredUnsafe,deferredGeometry,deferredDiscarded,queuedDomain[0],queuedDomain[1],queuedDomain[2],queuedDomain[3],earlyRangeRejected,opaqueCoverage);
         if(deferredReport||((queued||flushed||deferredFallback)&&frames%600==0))logf("MATERIAL_BATCH_SOURCE frame=%llu textureGuard=%u textureDraws=%u writeBarriers=%u refusedTexture=%u snapshotBudget=%u snapshotStreams=%u batchLimit=%u sourceHits=%u sourceMisses=%u sourceReadBytes=%zu sourceEntries=%zu sourceBytes=%zu sourceLimitMiB=%zu",(unsigned long long)(deferredReport?deferredReportFrame:frames),unsigned(textureWriteGuarded),deferredTextureDraws,textureBarriers,textureRefused,snapshotBudget,snapshotStreams,batchLimit,deferredSnapshots.snapshotCacheHits(),deferredSnapshots.snapshotCacheMisses(),deferredSnapshots.bytesRead(),deferredSnapshots.snapshotCacheEntries(),deferredSnapshots.snapshotCacheBytes(),deferredSnapshots.snapshotCacheLimit()>>20);
-        deferredReport=false;
+        if(deferredReport||((queued||flushed||deferredFallback)&&frames%600==0)){
+            const auto& g=deferredGPU.stats();const auto population=deferredGPU.population();
+            logf("MATERIAL_BATCH_GPU frame=%llu residentDraws=%u upDraws=%u upBytes=%llu uploadedBytes=%zu reusedBytes=%zu cacheBytes=%zu cacheLimitMiB=%zu residentMeshes=%zu probationMeshes=%zu created=%u createCpuMs=%.4f warmup=%u attemptDeferred=%u byteDeferred=%u timeDeferred=%u evicted=%u expired=%u",(unsigned long long)(deferredReport?deferredReportFrame:frames),residentDraws,uploadDraws,(unsigned long long)uploadDrawBytes,deferredGPU.uploaded(),deferredGPU.reused(),deferredGPU.bytes(),deferredGPU.limit()>>20,population.resident,population.probation,g.created,g.createMs,g.warmup,g.attemptDeferred,g.uploadByteDeferred,g.timeDeferred,g.evictions,g.expiredEntries);
+        }
+        residentDraws=uploadDraws=0;uploadDrawBytes=0;deferredGPU.beginFrame();deferredReport=false;
         queued=flushed=deferredFallback=deferredDiscarded=deferredUnsafe=deferredGeometry=0;
         std::fill(std::begin(queuedDomain),std::end(queuedDomain),0);earlyRangeRejected=opaqueCoverage=0;
         deferredTextureDraws=textureBarriers=snapshotBudget=snapshotStreams=textureRefused=batchLimit=0;deferredSnapshots.clearFrame();

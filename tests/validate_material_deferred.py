@@ -18,12 +18,14 @@ p.add_argument('--baseline-ref',help='Compare the coverage defect / far admissio
 p.add_argument('--occlusion-off',action='store_true',help='Match a normal-only capture without the auxiliary MRT')
 p.add_argument('--reuse-exe',type=Path);p.add_argument('--quick',action='store_true')
 p.add_argument('--output-subdir',default='material-deferred')
+p.add_argument('--mesh-grid',type=int,default=0,help='Benchmark a buffered tessellated plane (side subdivisions)')
+p.add_argument('--capture-draws',type=int,default=32,help='Native/capture draws per benchmark frame')
 a=p.parse_args();out=fp.out()/a.output_subdir;out.mkdir(exist_ok=True)
 backend=str(Path(a.backend).resolve())
 
 def compile_fixture(width,height,name,override=None):
     exe=out/(name+'.exe')
-    subprocess.run([str(fp.zig()),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec','-DNORTHLIGHT_MATERIAL_MIRROR',f'-DNORTHLIGHT_OBLIQUE_WIDTH={width}',f'-DNORTHLIGHT_OBLIQUE_HEIGHT={height}',*(['-I'+str(override)] if override else []),*fp.test_include_flags(),str(fp.TESTS/'auto_normal_oblique_gpu.cpp'),'-luser32','-luuid','-o',str(exe)],env=fp.zig_env(),check=True)
+    subprocess.run([str(fp.zig()),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec','-DNORTHLIGHT_MATERIAL_MIRROR',f'-DNORTHLIGHT_OBLIQUE_WIDTH={width}',f'-DNORTHLIGHT_OBLIQUE_HEIGHT={height}',*(['-DNORTHLIGHT_TEST_CAPTURE_BASELINE','-I'+str(override)] if override else []),*fp.test_include_flags(),str(fp.TESTS/'auto_normal_oblique_gpu.cpp'),'-luser32','-luuid','-o',str(exe)],env=fp.zig_env(),check=True)
     data=bytearray(exe.read_bytes());at=struct.unpack_from('<I',data,0x3c)[0]+22
     struct.pack_into('<H',data,at,struct.unpack_from('<H',data,at)[0]|0x20);exe.write_bytes(data)
     return exe
@@ -77,15 +79,19 @@ if not a.reuse_exe:
     for samples in [0,4,8]:
         pair=[run(exe,source,'msaa-'+str(samples),on,samples)[0] for on in [0,1]]
         records.append(dict(msaa=samples,outputs=compare(pair,'*.fgr'),bit_exact=True))
-    for flag in ['DEFERRED_MUTATION','DEFERRED_BARRIER','DEFERRED_UNUSED','DEFERRED_LIMIT','DEFERRED_MULTISTREAM']+(['DEFERRED_TEXTURE_WRITE'] if a.texture_guard and a.alpha_test else []):
-        runs=[run(exe,source,flag.lower(),on,MATERIAL_BATCH_TIMING=1,MATERIAL_BATCH_VALIDATE=1,**{flag:1}) for on in [0,1]];pair=[r[0] for r in runs]
+        pair=[run(exe,source,'resident-msaa-'+str(samples),on,samples,MATERIAL_BATCH_TIMING=1,MATERIAL_BATCH_VALIDATE=1,DEFERRED_RESIDENT=1)[0] for on in [0,1]]
+        records.append(dict(resident_msaa=samples,outputs=compare(pair,'batch-*.fgr'),bit_exact=True))
+    for flag in ['DEFERRED_RESIDENT','DEFERRED_POSE','DEFERRED_STRIP','DEFERRED_CACHE_FAILURE','DEFERRED_MUTATION','DEFERRED_BARRIER','DEFERRED_UNUSED','DEFERRED_LIMIT','DEFERRED_MULTISTREAM']+(['DEFERRED_TEXTURE_WRITE'] if a.texture_guard and a.alpha_test else []):
+        flags={flag:1}
+        if flag in ['DEFERRED_CACHE_FAILURE','DEFERRED_POSE']:flags['DEFERRED_RESIDENT']=1
+        runs=[run(exe,source,flag.lower(),on,MATERIAL_BATCH_TIMING=1,MATERIAL_BATCH_VALIDATE=1,**flags) for on in [0,1]];pair=[r[0] for r in runs]
         if flag=='DEFERRED_UNUSED':assert 'MATERIAL_DEFERRED_UNUSED_PASS' in runs[1][1]
         if flag=='DEFERRED_MULTISTREAM':assert 'MATERIAL_MULTISTREAM_PREFLIGHT_PASS' in runs[1][1]
         records.append(dict(safety=flag,outputs=compare(pair,'batch-*.fgr'),bit_exact=True))
     _,log=run(exe,source,'deferred-failure',1,MATERIAL_BATCH_TIMING=1,DEFERRED_FAILURE=1)
     assert 'MATERIAL_DEFERRED_FAILURE_PASS' in log
     records.append(dict(safety='DEFERRED_FAILURE',incomplete_capture_hidden=True))
-    _,log=run(exe,source,'deferred-pressure',1,MATERIAL_BATCH_TIMING=1,DEFERRED_PRESSURE=1,DEFERRED_MUTATION=1)
+    _,log=run(exe,source,'deferred-pressure',1,MATERIAL_BATCH_TIMING=1,DEFERRED_PRESSURE=1,DEFERRED_RESIDENT=1)
     assert 'MATERIAL_DEFERRED_PRESSURE_PASS' in log
     records.append(dict(safety='DEFERRED_PRESSURE',source_cache_released=True))
     _,log=run(exe,source,'deferred-profile',1,MATERIAL_PROFILE=1)
@@ -122,19 +128,28 @@ if not a.reuse_exe:
     print('MATERIAL_DEFERRED_EQUIVALENCE',len(records),flush=True)
 if a.benchmark or a.reuse_exe:
     exe=a.reuse_exe.resolve() if a.reuse_exe else compile_fixture(3840,2160,'deferred-bench')
+    old_bench=None
+    if a.baseline_ref:
+        overrides=out/'baseline';overrides.mkdir(exist_ok=True)
+        for file in ['src/water/auto_bump_renderer.h','src/generated/auto_bump_compiled_shaders.h']:
+            (overrides/Path(file).name).write_bytes(subprocess.check_output(['git','show',a.baseline_ref+':'+file]))
+        old_bench=compile_fixture(3840,2160,'baseline-bench',overrides.resolve())
     timings=[]
     for repeat in range(3):
         folders={}
-        for on in ([0,1] if repeat%2==0 else [1,0]):
-            folder,log=run(exe,source,'timing-'+str(repeat),on,MATERIAL_BATCH_TIMING=1,MATERIAL_BATCH_VALIDATE=1)
+        order=[0,1]+([2] if old_bench else [])
+        for on in (order if repeat%2==0 else order[::-1]):
+            folder,log=run(old_bench if on==2 else exe,source,'timing-'+str(repeat)+('-baseline' if on==2 else ''),int(on!=0),MATERIAL_BATCH_TIMING=1,MATERIAL_BATCH_VALIDATE=1,MESH_GRID=a.mesh_grid,CAPTURE_DRAWS=a.capture_draws)
             m=re.search(r'MATERIAL_BATCH_TIMING .*gpuMs=([\d.]+) submitMs=([\d.]+)',log);assert m
             record=dict(repeat=repeat,deferred=on,gpu_ms=float(m[1]),cpu_ms=float(m[2]));timings.append(record);folders[on]=folder
             print('MATERIAL_DEFERRED_TIMING',record,flush=True)
         assert compare([folders[0],folders[1]],'batch-*.fgr')==(2 if a.occlusion_off else 3)
+        if old_bench:assert compare([folders[1],folders[2]],'batch-*.fgr')==(2 if a.occlusion_off else 3)
     result=dict(backend=backend,occlusion_enabled=not a.occlusion_off,runs=timings,checks=records,targets_bit_exact=True)
     for on in [0,1]:result['deferred' if on else 'immediate']={key:statistics.median(r[key] for r in timings if r['deferred']==on) for key in ['gpu_ms','cpu_ms']}
+    if old_bench:result['baseline_deferred']={key:statistics.median(r[key] for r in timings if r['deferred']==2) for key in ['gpu_ms','cpu_ms']}
     result['gpu_reduction_percent']=100*(1-result['deferred']['gpu_ms']/result['immediate']['gpu_ms'])
 else:result=dict(backend=backend,checks=records)
-result.update(family=a.family,vertex_alpha_zero=a.vertex_alpha_zero,wall_diffuse=a.wall_diffuse,baseline_ref=a.baseline_ref,alpha_test=a.alpha_test,texture_guard=a.texture_guard)
+result.update(family=a.family,vertex_alpha_zero=a.vertex_alpha_zero,wall_diffuse=a.wall_diffuse,baseline_ref=a.baseline_ref,alpha_test=a.alpha_test,texture_guard=a.texture_guard,mesh_grid=a.mesh_grid,capture_draws=a.capture_draws)
 (out/'validation.json').write_text(json.dumps(result,indent=2)+'\n',encoding='utf-8')
 print('MATERIAL_DEFERRED_PASS',json.dumps(result),flush=True)
