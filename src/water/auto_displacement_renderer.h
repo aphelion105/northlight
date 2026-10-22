@@ -92,6 +92,7 @@ class NorthlightAutoDisplacement {
         auto added=bounds.emplace(source.get(),std::move(value));if(added.second)boundsBytes+=added.first->second.bytes;return added.first;
     }
     bool distantPoseBounds(const Program& program,const std::shared_ptr<const Mesh>& source,const D3DVERTEXELEMENT9* elements,UINT count,float* low,float* high){
+        NorthlightMaterialProfile::Scope timing(profile,NorthlightMaterialProfile::PoseEnvelope);
         const float identity[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};NorthlightReplayBounds::Bounds result;
         if(poseEnvelopes.calculate(program,*source,source,elements,count,constants,identity,envelopeBudget,result)!=NorthlightReplayBounds::Status::Valid)return false;
         ++poseEnvelopeHits;
@@ -267,6 +268,7 @@ public:
         if(!source)source=std::make_shared<Mesh>(std::move(local));
         read.work(source->vertexCount,source->byteSize());read.next(P::BoundsPose);
         if(skin){
+            P::Scope envelope(profile,P::PoseEnvelope);
             const float identity[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};NorthlightReplayBounds::Bounds result;
             if(poseEnvelopes.calculate(program,*source,source,elements,count,rangeConstants,identity,envelopeBudget,result)!=NorthlightReplayBounds::Status::Valid)return false;
             const float lo=result.low[2],hi=result.high[2];nearest=std::max(0.f,std::nextafter(lo>0?lo:hi<0?-hi:0,-INFINITY)-.001f);return true;
@@ -355,10 +357,11 @@ m.layered=NorthlightActorDeformation::compile(words,count,m.uv1,true,2,5,1)&&Nor
             foundBounds=retainBounds(source,std::move(b));
         }
         const float identity[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};NorthlightReplayBounds::Bounds skinBounds;
-        if(exactSkin&&foundBounds->second.skin&&foundBounds->second.skin->evaluate(constants,identity,skinBounds)){foundBounds->second.used=++clock;std::copy(skinBounds.low,skinBounds.low+3,low);std::copy(skinBounds.high,skinBounds.high+3,high);
+        const auto exactEnvelope=[&]{if(!exactSkin||!foundBounds->second.skin)return false;P::Scope envelope(profile,P::PoseEnvelope);return foundBounds->second.skin->evaluate(constants,identity,skinBounds);};
+        if(exactEnvelope()){foundBounds->second.used=++clock;std::copy(skinBounds.low,skinBounds.low+3,low);std::copy(skinBounds.high,skinBounds.high+3,high);
             // Reuse the audited, outward-rounded skin envelope for normal capture.
             lastDepthLower=std::max(0.f,std::nextafter(low[2]>0?low[2]:high[2]<0?-high[2]:0,-INFINITY)-.001f);}
-        else if(shader->second.skinned){if(source->vertexCount>8192-poseVerticesThisFrame){++poseBudgetRejected;if(profile)profile->count(P::PoseBudget);return false;}poseVerticesThisFrame+=source->vertexCount;poseFallbackVertices+=source->vertexCount;if(profile)profile->count(P::PoseVertices,source->vertexCount);for(unsigned k=0;k<3;++k){low[k]=FLT_MAX;high[k]=-FLT_MAX;}
+        else if(shader->second.skinned){P::Scope pose(profile,P::PoseFallback);if(source->vertexCount>8192-poseVerticesThisFrame){++poseBudgetRejected;if(profile)profile->count(P::PoseBudget);return false;}poseVerticesThisFrame+=source->vertexCount;poseFallbackVertices+=source->vertexCount;if(profile)profile->count(P::PoseVertices,source->vertexCount);pose.work(source->vertexCount);for(unsigned k=0;k<3;++k){low[k]=FLT_MAX;high[k]=-FLT_MAX;}
             const auto prepared=poseBindings.acquire(shader->second.view,*source,elements,count);if(!prepared)return false;
             for(unsigned i=0;i<source->vertexCount;++i){NorthlightActorDeformation::Four input[16]={},view;
                 for(const auto& b:prepared->bindings){const auto& s=source->streams[b.element.Stream];if(!NorthlightActorDeformation::decodeElement(s.bytes.data()+size_t(i)*s.stride+b.element.Offset,b.element.Type,input[b.input.reg]))return false;}

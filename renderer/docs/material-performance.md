@@ -1,5 +1,67 @@
 # Material performance investigation — 22 October 2026
 
+## Fresh run: shared sources confirmed; capture state reuse — 22 October, 20:42
+
+### Observed mode and input evidence
+
+The tested DLL is `840faf8`, SHA-256 `22a1407183b186cd66001ea6d0be4147a60082ee6e2fb916085d9a508f27362f`. The complete fresh log has SHA-256 `b6d586124b923178c0b69f0c1598bc61ab9c59530e1b6cbb8d287609c98a0b20` and ends at device destruction. Inputs, parsed frames, experiments and validation are preserved in `northlight-diagnostics/material-m2-normals-20261022-2042/`. The 24,328-byte `.prev.log` contains a short startup, so the representative previous run is the archived 20:12 run below. The game was not launched during this investigation.
+
+**There is no M2 Normals-only (`mode=1`) interval in this log.** The sampled modes are `3/3/3/3` initially, `3/3/3/0` from frame 3810, `3/0/0/0` from 4826, and `0/0/0/0` from 5207. Value 3 means Displacement + normal maps. Cavity and self-shadow strengths remain zero. These observations cannot establish pure Normals-mode cost or the visual operation of disabled occlusion effects.
+
+### What improved, and where time remains
+
+The previous source-sharing change is working. At warm frames 2032 / 2159 / 2540, all **379 captures** are queued and flushed: 375 M2 and four WMO draws. All use resident GPU geometry. There are **zero UP draws/bytes, zero new uploads, and zero actual source reads** in capture, displacement, skin-range and rigid-range caches. Capture borrows 259 / 259 / 255 sources; displacement reports 652 / 652 / 649 peer hits. Normal builds, height reads, mip generation, subdivision and geometry upload stages are also zero in these frames. The maps are not regenerated every frame; an MPQ cache would not remove the remaining warm cost.
+
+| Exclusive CPU stage, all material domains | Frame 2032 | Frame 2159 | Frame 2540 |
+| --- | ---: | ---: | ---: |
+| Bounds / pose | 1.5495 ms | 1.5278 ms | 1.5310 ms |
+| Native scene draw submission | 1.0592 ms | 1.0158 ms | 1.0028 ms |
+| Capture flush setup | 0.7572 ms | 0.7353 ms | 0.7232 ms |
+| Packet recording | 0.4338 ms | 0.3783 ms | 0.3849 ms |
+| Snapshot/cache service | 0.3345 ms | 0.3309 ms | 0.3136 ms |
+| Capture setup | 0.2599 ms | 0.2485 ms | 0.2375 ms |
+| Capture draw submission | 0.1210 ms | 0.1152 ms | 0.1140 ms |
+| Normal-map cache lookup | 0.0404 ms | 0.0357 ms | 0.0357 ms |
+| Total instrumented material CPU | 4.9391 ms | 4.7637 ms | 4.7150 ms |
+
+M2 bounds/pose consumes 0.9609–0.9876 ms, its snapshot service 0.1046–0.1173 ms, and M2-labelled flush setup 0.6370–0.6692 ms. The previous warm run had 1.3286–1.3596 ms M2 bounds and 0.4271–0.4349 ms M2 snapshot service, with fewer M2 captures (323–346). This supports reduced preparation work; it is not a controlled same-camera FPS comparison. The native draw stage includes the game's ordinary rendering and is not wholly incremental material overhead.
+
+Complete GPU frames take 11.185–11.551 ms. Capture flush intervals sum to 1.6363 / 1.3855 / 1.0389 ms, while final material application costs 0.1464–0.1475 ms. A mixed flush is labelled by its first packet; domain labels do not isolate its exact M2 contribution. CPU and GPU measurements are separate timelines and must not be added.
+
+The largest remaining measured CPU stage is bounds/pose. Each of these warm frames still evaluates 8,177 pose vertices, records 311 envelope time-budget deferrals, and reaches 286 pose-budget refusals. There are no cold/built/unsupported envelope events in these frames: repeated current-pose evaluation and admission remain after source reads have disappeared. Source snapshots can be cached across animation; a bound derived from old bone matrices cannot safely be reused as a current visibility proof.
+
+Movement remains more expensive. Samples 1143 / 1397 / 2667 / 3048 have roughly 9.64–12.67 ms instrumented CPU, including 3.55–4.19 ms bounds, 1.05–1.27 ms snapshot service and 1.20–1.88 ms flush setup. Newly encountered assets can use both independent cold-read budgets and return to UP fallback. Normal builds are only about 0.04–0.08 ms in these samples, although map generation/eviction does increase while travelling. The normal cache eventually reduces its limit under its own virtual-address guard; existing safety limits were preserved.
+
+### Implemented optimization and measured proof
+
+Each deferred capture previously rebound the same shaders, declaration, render states, sampler states, textures and entire constant banks even when the previous packet had identical values. The warm log measures about 0.72–0.76 ms in flush setup, making this a recurring, bounded target.
+
+The flush now skips setters whose exact state is already installed by that same uninterrupted replay. The cache is local to one flush and requires no allocation. The first packet binds every selected state. Shader constants are compared bit for bit, including complete vertex float banks and vertex/pixel integer and Boolean banks; pixel float reuse also requires identical register range and length. Texture and sampler tracking is per stage, so transitions between native inputs and generated normal-map stages remain correct. Cache entries update only after successful setters. Failed draws stop replay as before.
+
+Viewport, render targets, streams, frequency and index bindings retain their original calls, including after UP draws. The cache never crosses native rendering, a texture-write barrier, a separate flush or state restoration. Packet ownership, immutable source revisions, per-draw bone poses, alpha coverage, MSAA and all configured quality/range controls are unchanged. No additional material draw or GPU query is introduced.
+
+A submission-focused offscreen fixture compares the final code against the actual `840faf8` capture/source headers. It renders 160 native/capture pairs at 320×200 with 2× MSAA, alpha-dependent M2 capture, resident indexed geometry and a changing four-bone pose. Both binaries use the renderer's production `memcmp`; three alternating rounds each have four warm frames and eight measured frames. All native/material/depth outputs remain bit exact.
+
+| Median over three rounds | Previous deferred replay | New deferred replay |
+| --- | ---: | ---: |
+| CPU submission | 0.929013 ms | 0.761475 ms |
+| GPU command interval | 0.850304 ms | 0.515584 ms |
+
+This is an **18.03% CPU submission reduction** in this fixture. Per frame, 14,310 of 14,560 selected setter calls are skipped (98.28%); 250 remain. These counters cover only the selected setters, not every D3D call. The GPU interval includes command starvation and submission flow, so its reduction does not imply faster shader arithmetic. The small geometry deliberately isolates submission cost and does not predict game FPS.
+
+The separate 4K, 64×64 tessellated fixture remains bit exact but is GPU/backpressure sensitive: old/new CPU medians are 1.592313 / 1.565525 ms and GPU medians 21.922688 / 22.146432 ms. This does not establish a GPU improvement. Complete machine-readable results and per-round logs are retained.
+
+A prepared-envelope bounds prototype was also measured before adoption. Although it helped a four-bone microbenchmark, the 75-bone cases regressed, so that algorithm change was not included. Instead, new sampled CPU stages `poseEnvelope` and `poseFallback` separate envelope service from generic posed-vertex scans, including budget refusals. They use exclusive nested attribution without adding GPU queries. To compare with the old aggregate in future logs, add the new `boundsPose`, `poseEnvelope` and `poseFallback` exclusive times; the parent no longer includes its children's time. Bounds algorithms and budgets remain unchanged in this DLL.
+
+### Validation and next game measurement
+
+The final M2 suite passes **100 GPU checks**, including 40 genuine old/new shader-family comparisons with 14 outputs each, MSAA 0/2/4/8, animation, source DISCARD mutation, raster/scissor changes, sampler changes, float/integer/Boolean bank changes and restoration, native alpha, texture-write barriers, packet/memory limits, resident allocation failure and multistream fallback. A separate WMO run passes **19 checks**, including diffuse-dependent capture with zero vertex alpha. Geometry/source-sharing, displacement-state and material-profiler CPU tests pass. The profiler test explicitly verifies exclusive attribution for both new pose stages.
+
+The x86 release DLL builds successfully, preserving the 17 exports; only the two existing compiler warnings remain. The installed DLL and settings were not replaced. The package contains a separate replacement `d3d9.dll`.
+
+The next user-run log should report `MATERIAL_BATCH_STATE issued=... skippedIdentical=...`, together with `poseEnvelope` / `poseFallback`, existing source/read counters and resident/UP counts. A stationary warm interval will show whether skipped setters reduce game flush CPU and which bounds path dominates. For a pure M2 Normals test, the sampled configuration must show M2 value **1**. Sparse zero-pixel audit grids are not used as a reason to omit rendering.
+
+
 ## Fresh run: GPU residency confirmed; shared source snapshots — 22 October, 20:12
 
 ### What the user actually ran

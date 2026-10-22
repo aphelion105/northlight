@@ -20,6 +20,8 @@ p.add_argument('--reuse-exe',type=Path);p.add_argument('--quick',action='store_t
 p.add_argument('--output-subdir',default='material-deferred')
 p.add_argument('--mesh-grid',type=int,default=0,help='Benchmark a buffered tessellated plane (side subdivisions)')
 p.add_argument('--capture-draws',type=int,default=32,help='Native/capture draws per benchmark frame')
+p.add_argument('--vary-pose',action='store_true',help='Change the four-bone pose between benchmark draws')
+p.add_argument('--benchmark-resolution',type=int,nargs=2,default=[3840,2160],metavar=('WIDTH','HEIGHT'))
 a=p.parse_args();out=fp.out()/a.output_subdir;out.mkdir(exist_ok=True)
 backend=str(Path(a.backend).resolve())
 BASELINE_FILES=['src/water/auto_bump_renderer.h','src/water/auto_displacement_renderer.h','src/world/draw_snapshot.h','src/generated/auto_bump_compiled_shaders.h']
@@ -133,19 +135,21 @@ if not a.reuse_exe:
                 records.append(dict(native_alpha_state=state,outputs=compare(pair,'*.fgr'),bit_exact=True))
     print('MATERIAL_DEFERRED_EQUIVALENCE',len(records),flush=True)
 if a.benchmark or a.reuse_exe:
-    exe=a.reuse_exe.resolve() if a.reuse_exe else compile_fixture(3840,2160,'deferred-bench')
+    exe=a.reuse_exe.resolve() if a.reuse_exe else compile_fixture(*a.benchmark_resolution,'deferred-bench')
     old_bench=None
     if a.baseline_ref:
         overrides=out/'baseline';overrides.mkdir(exist_ok=True)
         for file in BASELINE_FILES:
             (overrides/Path(file).name).write_bytes(subprocess.check_output(['git','show',a.baseline_ref+':'+file]))
-        old_bench=compile_fixture(3840,2160,'baseline-bench',overrides.resolve())
+        old_bench=compile_fixture(*a.benchmark_resolution,'baseline-bench',overrides.resolve())
     timings=[]
     for repeat in range(3):
         folders={}
         order=[0,1]+([2] if old_bench else [])
         for on in (order if repeat%2==0 else order[::-1]):
-            folder,log=run(old_bench if on==2 else exe,source,'timing-'+str(repeat)+('-baseline' if on==2 else ''),int(on!=0),MATERIAL_BATCH_TIMING=1,MATERIAL_BATCH_VALIDATE=1,MESH_GRID=a.mesh_grid,CAPTURE_DRAWS=a.capture_draws)
+            flags=dict(MATERIAL_BATCH_TIMING=1,MATERIAL_BATCH_VALIDATE=1,MESH_GRID=a.mesh_grid,CAPTURE_DRAWS=a.capture_draws)
+            if a.vary_pose:flags['DEFERRED_POSE']=1
+            folder,log=run(old_bench if on==2 else exe,source,'timing-'+str(repeat)+('-baseline' if on==2 else ''),int(on!=0),**flags)
             m=re.search(r'MATERIAL_BATCH_TIMING .*gpuMs=([\d.]+) submitMs=([\d.]+)',log);assert m
             record=dict(repeat=repeat,deferred=on,gpu_ms=float(m[1]),cpu_ms=float(m[2]));timings.append(record);folders[on]=folder
             print('MATERIAL_DEFERRED_TIMING',record,flush=True)
@@ -156,6 +160,6 @@ if a.benchmark or a.reuse_exe:
     if old_bench:result['baseline_deferred']={key:statistics.median(r[key] for r in timings if r['deferred']==2) for key in ['gpu_ms','cpu_ms']}
     result['gpu_reduction_percent']=100*(1-result['deferred']['gpu_ms']/result['immediate']['gpu_ms'])
 else:result=dict(backend=backend,checks=records)
-result.update(family=a.family,vertex_alpha_zero=a.vertex_alpha_zero,wall_diffuse=a.wall_diffuse,baseline_ref=a.baseline_ref,alpha_test=a.alpha_test,texture_guard=a.texture_guard,mesh_grid=a.mesh_grid,capture_draws=a.capture_draws)
+result.update(family=a.family,vertex_alpha_zero=a.vertex_alpha_zero,wall_diffuse=a.wall_diffuse,baseline_ref=a.baseline_ref,alpha_test=a.alpha_test,texture_guard=a.texture_guard,mesh_grid=a.mesh_grid,capture_draws=a.capture_draws,vary_pose=a.vary_pose,benchmark_resolution=a.benchmark_resolution)
 (out/'validation.json').write_text(json.dumps(result,indent=2)+'\n',encoding='utf-8')
 print('MATERIAL_DEFERRED_PASS',json.dumps(result),flush=True)

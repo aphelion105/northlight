@@ -40,6 +40,7 @@ class NorthlightAutoBump {
     NorthlightVertexDeclarations::Cache deferredDeclarations;
     NorthlightReplayGPU::Cache deferredGPU;
     unsigned residentDraws=0,uploadDraws=0;uint64_t uploadDrawBytes=0;
+    unsigned replaySetters=0,replaySkipped=0;
     std::vector<std::unique_ptr<Deferred>> deferred;size_t deferredBytes=0;bool deferredAllowed=false;
     std::unordered_map<void*,uint64_t> deferredTextures;uint64_t deferredTextureBytes=0;
     bool textureWriteGuarded=false;void(*pendingChanged)(void*)=nullptr;void* pendingContext=nullptr;
@@ -244,27 +245,45 @@ public:
         }
         struct Bindings {IDirect3DVertexBuffer9* vertex[4]={};IDirect3DIndexBuffer9* index=nullptr;
             ~Bindings(){for(auto& v:vertex)drop(v);drop(index);}} bindings;
-        bool success=true;
+        bool success=true;const Deferred* previous=nullptr;
+        IDirect3DBaseTexture9* boundTextures[16]={};bool knownTextures[16]={};
+        DWORD samplerValues[16][13]={};unsigned knownSamplers[16]={};
         for(auto& packet:deferred){
             auto& mesh=*packet->mesh;ReplayState keys(d,nullptr,{});HRESULT hr=D3D_OK;
             auto step=[&](HRESULT result){if(FAILED(result))hr=result;};
+            // This cache lives only inside this uninterrupted replay. Creation,
+            // buffer uploads and draws do not change these captured states.
+            auto needed=[&](bool same){same?++replaySkipped:++replaySetters;return !same;};
+            auto texture=[&](unsigned stage,IDirect3DBaseTexture9* value){
+                if(needed(knownTextures[stage]&&boundTextures[stage]==value)){const HRESULT result=d->SetTexture(stage,value);step(result);if(SUCCEEDED(result)){boundTextures[stage]=value;knownTextures[stage]=true;}}};
+            auto samplerState=[&](unsigned stage,D3DSAMPLERSTATETYPE key,DWORD value){const unsigned index=unsigned(key)-1,mask=1u<<index;
+                if(needed((knownSamplers[stage]&mask)&&samplerValues[stage][index]==value)){const HRESULT result=d->SetSamplerState(stage,key,value);step(result);if(SUCCEEDED(result)){samplerValues[stage][index]=value;knownSamplers[stage]|=mask;}}};
             // Immutable snapshots already have revision-aware ownership. Reuse
             // the replay cache's bounded promotion, weak lifetime and fallback.
             const bool resident=deferredGPU.bind(d,packet->mesh,bindings.vertex,bindings.index,[](size_t){return true;});
             if(resident){step(d->SetStreamSource(0,bindings.vertex[0],0,mesh.streams[0].stride));step(d->SetIndices(bindings.index));}
-            step(d->SetVertexDeclaration(packet->declaration));step(d->SetStreamSourceFreq(0,1));step(d->SetVertexShader(packet->vertex));step(d->SetPixelShader(packet->pixel));step(d->SetViewport(&packet->viewport));step(d->SetScissorRect(&packet->scissor));
-            for(unsigned i=0;i<14;++i)step(d->SetRenderState(keys.states[i].key,packet->states[i]));
-            for(unsigned i=0;i<DeferredRasterCount;++i)step(d->SetRenderState(deferredRasterKeys[i],packet->raster[i]));
-            step(d->SetTexture(packet->normalStage,packet->normal.get()));const DWORD sampler[]={D3DTEXF_LINEAR,D3DTEXF_LINEAR,D3DTEXF_LINEAR,packet->addressU,packet->addressV,FALSE,0,0};
-            for(unsigned i=0;i<8;++i)step(d->SetSamplerState(packet->normalStage,keys.samplerKeys[i],sampler[i]));
-            for(const auto& t:packet->textures){step(d->SetTexture(t->stage,t->texture));for(unsigned i=0;i<13;++i)step(d->SetSamplerState(t->stage,D3DSAMPLERSTATETYPE(i+1),t->sampler[i]));}
-            step(d->SetVertexShaderConstantF(0,packet->vertexConstants,256));step(d->SetPixelShaderConstantF(packet->first,packet->pixelConstants.data(),UINT(packet->pixelConstants.size()/4)));
-            step(d->SetVertexShaderConstantI(0,packet->vertexInt,16));step(d->SetPixelShaderConstantI(0,packet->pixelInt,16));step(d->SetVertexShaderConstantB(0,packet->vertexBool,16));step(d->SetPixelShaderConstantB(0,packet->pixelBool,16));
+            if(needed(previous&&previous->declaration==packet->declaration))step(d->SetVertexDeclaration(packet->declaration));
+            step(d->SetStreamSourceFreq(0,1));
+            if(needed(previous&&previous->vertex==packet->vertex))step(d->SetVertexShader(packet->vertex));
+            if(needed(previous&&previous->pixel==packet->pixel))step(d->SetPixelShader(packet->pixel));
+            step(d->SetViewport(&packet->viewport));
+            if(needed(previous&&!std::memcmp(&previous->scissor,&packet->scissor,sizeof(RECT))))step(d->SetScissorRect(&packet->scissor));
+            for(unsigned i=0;i<14;++i)if(needed(previous&&previous->states[i]==packet->states[i]))step(d->SetRenderState(keys.states[i].key,packet->states[i]));
+            for(unsigned i=0;i<DeferredRasterCount;++i)if(needed(previous&&previous->raster[i]==packet->raster[i]))step(d->SetRenderState(deferredRasterKeys[i],packet->raster[i]));
+            texture(packet->normalStage,packet->normal.get());const DWORD sampler[]={D3DTEXF_LINEAR,D3DTEXF_LINEAR,D3DTEXF_LINEAR,packet->addressU,packet->addressV,FALSE,0,0};
+            for(unsigned i=0;i<8;++i)samplerState(packet->normalStage,keys.samplerKeys[i],sampler[i]);
+            for(const auto& t:packet->textures){texture(t->stage,t->texture);for(unsigned i=0;i<13;++i)samplerState(t->stage,D3DSAMPLERSTATETYPE(i+1),t->sampler[i]);}
+            if(needed(previous&&!std::memcmp(previous->vertexConstants,packet->vertexConstants,sizeof(packet->vertexConstants))))step(d->SetVertexShaderConstantF(0,packet->vertexConstants,256));
+            if(needed(previous&&previous->first==packet->first&&previous->pixelConstants.size()==packet->pixelConstants.size()&&!std::memcmp(previous->pixelConstants.data(),packet->pixelConstants.data(),packet->pixelConstants.size()*sizeof(float))))step(d->SetPixelShaderConstantF(packet->first,packet->pixelConstants.data(),UINT(packet->pixelConstants.size()/4)));
+            if(needed(previous&&!std::memcmp(previous->vertexInt,packet->vertexInt,sizeof(packet->vertexInt))))step(d->SetVertexShaderConstantI(0,packet->vertexInt,16));
+            if(needed(previous&&!std::memcmp(previous->pixelInt,packet->pixelInt,sizeof(packet->pixelInt))))step(d->SetPixelShaderConstantI(0,packet->pixelInt,16));
+            if(needed(previous&&!std::memcmp(previous->vertexBool,packet->vertexBool,sizeof(packet->vertexBool))))step(d->SetVertexShaderConstantB(0,packet->vertexBool,16));
+            if(needed(previous&&!std::memcmp(previous->pixelBool,packet->pixelBool,sizeof(packet->pixelBool))))step(d->SetPixelShaderConstantB(0,packet->pixelBool,16));
             if(SUCCEEDED(hr))hr=d->SetRenderTarget(1,packet->occlusion?occlusionTarget:nullptr);
             if(SUCCEEDED(hr)){P::Scope draw(profile,P::CaptureDraw,packet->tag);draw.work(mesh.primitiveCount);
                 if(resident){++residentDraws;hr=mesh.indexed?d->DrawIndexedPrimitive(mesh.topology,0,0,mesh.vertexCount,0,mesh.primitiveCount):d->DrawPrimitive(mesh.topology,0,mesh.primitiveCount);}
                 else {++uploadDraws;uploadDrawBytes+=mesh.byteSize();hr=mesh.indexed?d->DrawIndexedPrimitiveUP(mesh.topology,0,mesh.vertexCount,mesh.primitiveCount,mesh.indices.data(),D3DFMT_INDEX32,mesh.streams[0].bytes.data(),mesh.streams[0].stride):d->DrawPrimitiveUP(mesh.topology,mesh.primitiveCount,mesh.streams[0].bytes.data(),mesh.streams[0].stride);}}
-            if(FAILED(hr)){success=false;break;}++flushed;++draws[packet->tag/4-1];if(packet->occlusion){occlusionDrawn=true;if(profile)profile->count(P::OcclusionDraw);}
+            if(FAILED(hr)){success=false;break;}previous=packet.get();++flushed;++draws[packet->tag/4-1];if(packet->occlusion){occlusionDrawn=true;if(profile)profile->count(P::OcclusionDraw);}
         }
         if(success){clearDeferred();result.ok=true;}return success;
     }
@@ -317,10 +336,11 @@ public:
             displacement.reportSources(deferredReport?deferredReportFrame:frames);
         }
         if(deferredReport||((queued||flushed||deferredFallback)&&frames%600==0)){
+            logf("MATERIAL_BATCH_STATE frame=%llu issued=%u skippedIdentical=%u",(unsigned long long)(deferredReport?deferredReportFrame:frames),replaySetters,replaySkipped);
             const auto& g=deferredGPU.stats();const auto population=deferredGPU.population();
             logf("MATERIAL_BATCH_GPU frame=%llu residentDraws=%u upDraws=%u upBytes=%llu uploadedBytes=%zu reusedBytes=%zu cacheBytes=%zu cacheLimitMiB=%zu residentMeshes=%zu probationMeshes=%zu created=%u createCpuMs=%.4f warmup=%u attemptDeferred=%u byteDeferred=%u timeDeferred=%u evicted=%u expired=%u",(unsigned long long)(deferredReport?deferredReportFrame:frames),residentDraws,uploadDraws,(unsigned long long)uploadDrawBytes,deferredGPU.uploaded(),deferredGPU.reused(),deferredGPU.bytes(),deferredGPU.limit()>>20,population.resident,population.probation,g.created,g.createMs,g.warmup,g.attemptDeferred,g.uploadByteDeferred,g.timeDeferred,g.evictions,g.expiredEntries);
         }
-        residentDraws=uploadDraws=0;uploadDrawBytes=0;deferredGPU.beginFrame();deferredReport=false;
+        residentDraws=uploadDraws=replaySetters=replaySkipped=0;uploadDrawBytes=0;deferredGPU.beginFrame();deferredReport=false;
         queued=flushed=deferredFallback=deferredDiscarded=deferredUnsafe=deferredGeometry=0;
         std::fill(std::begin(queuedDomain),std::end(queuedDomain),0);earlyRangeRejected=opaqueCoverage=0;
         deferredTextureDraws=textureBarriers=snapshotBudget=snapshotStreams=textureRefused=batchLimit=0;deferredSnapshots.clearFrame();

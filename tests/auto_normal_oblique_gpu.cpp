@@ -13,6 +13,9 @@ static void logf(const char* f,...){va_list a;va_start(a,f);std::vprintf(f,a);st
 #include "patch_terrain_shadow_coverage.h"
 #include "forwarders.h"
 #include "mirror_resource_forwarders.h"
+#include "northlight_mem.h"
+// Match the renderer's strong memcmp implementation in submission benchmarks.
+extern "C" __attribute__((no_builtin("memcmp"),no_builtin("bcmp"))) int memcmp(const void* a,const void* b,size_t n){return NorthlightMem::compare(a,b,n);}
 struct MaterialDepthMeter:ForwardIDirect3DDevice9 {
     unsigned reads=0,allocations=0,gpuDraws=0,clears=0,pixelQueries=0;bool failDeferred=false,failResident=false;explicit MaterialDepthMeter(IDirect3DDevice9* d):ForwardIDirect3DDevice9(d){}
     HRESULT STDMETHODCALLTYPE CreateVertexBuffer(UINT bytes,DWORD usage,DWORD fvf,D3DPOOL pool,IDirect3DVertexBuffer9** out,HANDLE* shared)override{if(failResident){*out=nullptr;return E_OUTOFMEMORY;}return real->CreateVertexBuffer(bytes,usage,fvf,pool,out,shared);}
@@ -46,6 +49,11 @@ struct MaterialCaptureStateTestAccess {
         std::printf("MATERIAL_RESIDENT_PASS resident=%u up=%u uploaded=%zu upBytes=%llu cacheBytes=%zu\n",b.residentDraws,b.uploadDraws,b.deferredGPU.uploaded(),(unsigned long long)b.uploadDrawBytes,b.deferredGPU.bytes());
         if(expected)assert(b.residentDraws&& !b.uploadDraws&&!b.deferredGPU.uploaded()&&b.deferredGPU.bytes());
         else assert(!b.residentDraws&&b.uploadDraws&&!b.deferredGPU.bytes());
+#endif
+    }
+    static void stateReuse(const NorthlightAutoBump& b){
+#ifndef NORTHLIGHT_TEST_CAPTURE_BASELINE
+        std::printf("MATERIAL_STATE_REUSE_PASS issued=%u skipped=%u\n",b.replaySetters,b.replaySkipped);assert(b.replaySetters&&b.replaySkipped);
 #endif
     }
     static void mutation(const NorthlightAutoBump& b,const void* vertices,size_t bytes){if(b.deferred.empty())return;const auto& p=*b.deferred.back();assert(p.mesh->streams[0].bytes.size()==bytes&&!std::memcmp(p.mesh->streams[0].bytes.data(),vertices,bytes));float bank[1024];ok(b.d->GetVertexShaderConstantF(0,bank,256));assert(!std::memcmp(bank,p.vertexConstants,sizeof bank));}
@@ -432,7 +440,10 @@ int main(int argc,char** argv){
                     if(deferredMutation){V moved[4];std::memcpy(moved,floor,sizeof moved);for(auto& v:moved)v.x+=float(i%7)*.025f;
                         ok(sourceVB->Lock(0,sizeof moved,&upload,D3DLOCK_DISCARD));std::memcpy(upload,moved,sizeof moved);ok(sourceVB->Unlock());++mutationRevision;
                         ok(d->SetRenderState(D3DRS_FILLMODE,i%2?D3DFILL_WIREFRAME:D3DFILL_SOLID));ok(d->SetRenderState(D3DRS_SCISSORTESTENABLE,i%3==0));RECT rect={LONG(i%7),LONG(i%5),LONG(W-i%9),LONG(H-i%11)};ok(d->SetScissorRect(&rect));
-                        for(unsigned bone=0;bone<4;++bone){float pose[4];std::memcpy(pose,bank[31+3*bone],16);pose[3]+=float(i%5)*.04f;ok(d->SetVertexShaderConstantF(31+3*bone,pose,1));}}
+                        for(unsigned bone=0;bone<4;++bone){float pose[4];std::memcpy(pose,bank[31+3*bone],16);pose[3]+=float(i%5)*.04f;ok(d->SetVertexShaderConstantF(31+3*bone,pose,1));}
+                        float tint[]={.1f+float(i%5)*.05f,.2f,.3f,.8f};ok(d->SetPixelShaderConstantF(0,tint,1));
+                        ok(d->SetSamplerState(0,D3DSAMP_ADDRESSU,i%2?D3DTADDRESS_CLAMP:D3DTADDRESS_WRAP));ok(d->SetSamplerState(0,D3DSAMP_MINFILTER,i%3?D3DTEXF_LINEAR:D3DTEXF_POINT));
+                        int integer[64]={};BOOL boolean[16]={};integer[i%64]=int(i)-15;boolean[i%16]=i%2;ok(d->SetVertexShaderConstantI(0,integer,16));ok(d->SetPixelShaderConstantI(0,integer,16));ok(d->SetVertexShaderConstantB(0,boolean,16));ok(d->SetPixelShaderConstantB(0,boolean,16));}
                     if(barrier)bump.setDeferredCapture(deferredEnabled&&i%8!=7);
                     if(deferredPose)for(unsigned bone=0;bone<4;++bone){float pose[4];std::memcpy(pose,bank[31+3*bone],16);pose[3]+=float(i%5)*.04f;ok(d->SetVertexShaderConstantF(31+3*bone,pose,1));}
                     bump.beginDraw();bump.capture(vs,native,!indexed,&geometry);
@@ -443,9 +454,12 @@ int main(int argc,char** argv){
                     if(deferredMutation){ok(sourceVB->Lock(0,sizeof floor,&upload,D3DLOCK_DISCARD));std::memset(upload,0,sizeof floor);ok(sourceVB->Unlock());++mutationRevision;float destroyed[4]={0,0,0,20};ok(d->SetVertexShaderConstantF(31,destroyed,1));}
                 }
                 float beforePixel[224*4],afterPixel[224*4],beforeVertex[256*4],afterVertex[256*4];
+                int beforeInteger[2][64],afterInteger[2][64];BOOL beforeBoolean[2][16],afterBoolean[2][16];
                 if(deferredMutation||deferredPose){ok(d->GetPixelShaderConstantF(0,beforePixel,224));ok(d->GetVertexShaderConstantF(0,beforeVertex,256));}
+                if(deferredMutation){ok(d->GetVertexShaderConstantI(0,beforeInteger[0],16));ok(d->GetPixelShaderConstantI(0,beforeInteger[1],16));ok(d->GetVertexShaderConstantB(0,beforeBoolean[0],16));ok(d->GetPixelShaderConstantB(0,beforeBoolean[1],16));}
                 assert(bump.finishCaptures());bump.setDeferredCapture(deferredEnabled);
                 if(deferredMutation||deferredPose){ok(d->GetPixelShaderConstantF(0,afterPixel,224));ok(d->GetVertexShaderConstantF(0,afterVertex,256));assert(!std::memcmp(beforePixel,afterPixel,sizeof beforePixel)&&!std::memcmp(beforeVertex,afterVertex,sizeof beforeVertex));}
+                if(deferredMutation){ok(d->GetVertexShaderConstantI(0,afterInteger[0],16));ok(d->GetPixelShaderConstantI(0,afterInteger[1],16));ok(d->GetVertexShaderConstantB(0,afterBoolean[0],16));ok(d->GetPixelShaderConstantB(0,afterBoolean[1],16));assert(!std::memcmp(beforeInteger,afterInteger,sizeof beforeInteger)&&!std::memcmp(beforeBoolean,afterBoolean,sizeof beforeBoolean));}
             };
             captureDevice.failResident=std::getenv("NORTHLIGHT_TEST_DEFERRED_CACHE_FAILURE")!=nullptr;
             for(unsigned i=0;i<4;++i)render();
@@ -456,6 +470,7 @@ int main(int argc,char** argv){
             UINT64 hz=0,a=0,b=0;BOOL invalid=TRUE;wait(finish,&b,sizeof b);wait(start,&a,sizeof a);wait(frequency,&hz,sizeof hz);wait(disjoint,&invalid,sizeof invalid);assert(!invalid&&hz&&b>=a);
             std::printf("%s width=%u height=%u msaa=%u gpuMs=%.6f submitMs=%.6f repeats=%u draws=%u batched=%u\n",batchTiming?"MATERIAL_BATCH_TIMING":"SHARED_POM_TIMING",W,H,unsigned(samples),double(b-a)*1000/double(hz)/repeats,double(cpuEnd.QuadPart-cpuStart.QuadPart)*1000/double(cpuHz.QuadPart)/repeats,repeats,draws,unsigned(batched));
             if(batchTiming&&deferredEnabled){std::printf("MATERIAL_DEFERRED_BENCH queued=%u flushed=%u mutation=%u barrier=%u\n",MaterialCaptureStateTestAccess::queued(bump),MaterialCaptureStateTestAccess::flushed(bump),unsigned(deferredMutation),unsigned(barrier));assert(MaterialCaptureStateTestAccess::queued(bump)==(multiStream||!samples?0:draws-(barrier?draws/8:0))&&MaterialCaptureStateTestAccess::flushed(bump)==MaterialCaptureStateTestAccess::queued(bump));
+                if(samples&&!multiStream&&!textureWrite)MaterialCaptureStateTestAccess::stateReuse(bump);
                 if(samples&&(meshGrid||bufferedStrip||std::getenv("NORTHLIGHT_TEST_DEFERRED_RESIDENT")))MaterialCaptureStateTestAccess::residency(bump,!captureDevice.failResident);
                 if(multiStream){assert(!MaterialCaptureStateTestAccess::sourceReadBytes(bump));std::puts("MATERIAL_MULTISTREAM_PREFLIGHT_PASS zero_source_reads immediate_retained");}}
             if(batchTiming&&std::getenv("NORTHLIGHT_TEST_MATERIAL_BATCH_VALIDATE")){

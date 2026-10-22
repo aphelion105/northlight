@@ -24,6 +24,10 @@ int main(){
      p.reset();d.failCreate=true;logs.clear();p.beginFrame(3000,true);{P::Scope a(&p,P::Admission);}p.endFrame();findLog("MATERIAL_CPU");assert(!d.live);d.failCreate=false;p.reset();
      logs.clear();p.beginFrame(4000,true);{P::Scope a(&p,P::CaptureDraw,17,true);}p.endFrame();d.disjoint=true;p.poll();findLog("discarded=disjoint");d.disjoint=false;p.reset();
      p.beginFrame(5000,true);{P::Scope a(&p,P::CaptureDraw,17,true);p.reset();}assert(!d.live);
+     logs.clear();p.beginFrame(6000,true);nanos=0;
+     {P::Scope bounds(&p,P::BoundsPose,19);nanos=100;{P::Scope envelope(&p,P::PoseEnvelope);nanos=150;}nanos=200;{P::Scope fallback(&p,P::PoseFallback);nanos=300;}nanos=500;}
+     p.endFrame();findLog("stage=boundsPose domain=4 mode=3 calls=1 exclusiveMs=0.000350");
+     findLog("stage=poseEnvelope domain=4 mode=3 calls=1 exclusiveMs=0.000050");findLog("stage=poseFallback domain=4 mode=3 calls=1 exclusiveMs=0.000100");
     }assert(!d.live);
     std::puts("MATERIAL_PROFILE_PASS disabled_zero_work exclusive_nested_cpu domains_modes nonblocking_gpu saturation coverage failure_reset");
 }
