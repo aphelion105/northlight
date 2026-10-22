@@ -27,7 +27,7 @@ int main(){
     auto read=[&](UINT count=3,INT base=-3){return cache.readMesh(&d,D3DPT_TRIANGLELIST,base,7,count,1,1,d.view,out,&why);};
     assert(read()&&!why.contentCacheHit&&cache.persistentEntries()==1);
     assert(read()&&why.contentCacheHit&&cache.persistentHits()==1);
-    out.positions[0].z=999;out.indices[0]=999;out.bounds.chunks.clear();
+    out.positions[0].z=999;out.indices.set(0,999);out.bounds.chunks.clear();
     assert(read()&&why.contentCacheHit&&out.positions[0].z==3&&out.indices[0]==0&&out.bounds.chunks.size()==1);
     cache.clearFrame();assert(read()&&why.contentCacheHit); // Present does not trust identity alone.
     d.put(4,{a.x,a.y,30});assert(read()&&!why.contentCacheHit&&out.positions[0].z==30);

@@ -1291,12 +1291,12 @@ float4 WorldComposite(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {
 float4 MaterialComposite(float2 uv:TEXCOORD0):COLOR0 {
     float4 color=tex2D(Scene,uv);
     float2 q=depthUV(uv);float d=normalizedDepth(q);float z=viewDistance(d);
+    if(d>=.99999||waterDistance(q,d)>0||(BumpControl.x<=0&&MaterialOcclusionInfo.x<=0))return color;
     float3 v=viewPositionDistance(q,z);
     // Camera-relative derivatives avoid losing sub-centimetre detail at large map coordinates.
     float3 relative=v.x*InverseView[0].xyz+v.y*InverseView[1].xyz+v.z*InverseView[2].xyz;
     float3 normal=tex2Dlod(NormalBuffer,float4(uv,0,0)).xyz;
     float3 detail=autoBumpNormal(q,relative,normal,z,InverseView[0].xyz,InverseView[1].xyz,InverseView[2].xyz);
-    if(d>=.99999||waterDistance(q,d)>0||(BumpControl.x<=0&&MaterialOcclusionInfo.x<=0))return color;
     float3 occlusion=1;
     float occlusionRange=MaterialOcclusionInfo.y>0?MaterialOcclusionInfo.y:BumpControl.y;
     [branch]if(MaterialOcclusionInfo.x>0&&z<occlusionRange){

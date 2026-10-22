@@ -1,5 +1,5 @@
 {
-  "bump_include_sha256": "b852586a08da120aaeb838fa7509cd5368a745fbfaac9d9723fee58d2a3cbb34",
+  "bump_include_sha256": "bebadfa14a316d42d29da4647129db93372c38455fd6e3362a2e17bba777db33",
   "source_sha256": "2f46964750cd61fde3f54d5c61ced6933d78918baeca6eeecca9f10e933a02ec",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
@@ -45,9 +45,9 @@
     },
     "LocalLighting": {
       "target": "ps_3_0",
-      "bytes": 5848,
-      "sha256": "fb1916e2cb30120d1739f198b9758636e7124b4de2aaa2c54d90d0a0dcdf4525",
-      "static_instruction_slots": 355,
+      "bytes": 5880,
+      "sha256": "12dc2cb0c5b9b2557828bd69c8360f5c0eb5c148213fb229003de666411af9c7",
+      "static_instruction_slots": 363,
       "temporary_registers": 11,
       "samplers": [
         0,
@@ -67,12 +67,12 @@
         "mov": 19,
         "texldl": 9,
         "cmp": 28,
-        "if": 7,
-        "else": 7,
+        "if": 8,
+        "else": 8,
+        "nrm": 3,
         "dp3": 11,
         "rsq": 2,
-        "nrm": 2,
-        "endif": 7
+        "endif": 8
       },
       "cube_instruction_extra_slots": 12
     }

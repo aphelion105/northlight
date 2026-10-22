@@ -9,6 +9,7 @@
 #include "upload_lock.h"
 #include "captured_constant_epoch.h"
 #include "vertex_declaration_cache.h"
+#include "intrusive_lru.h"
 #include <memory>
 #include <map>
 #include <cfloat>
@@ -21,7 +22,8 @@ class NorthlightAutoDisplacement {
     using Height=NorthlightDisplacementGeometry::Height;
     struct Shader {IDirect3DVertexShader9* patched=nullptr,*source=nullptr,*gpu=nullptr;NorthlightDisplacementPatch::Binding binding,gpuBinding;};
     struct Material {Program uv,view,uv1,blend;std::vector<unsigned> uvRegisters[2];bool layered=false,skinned=false;uint64_t id=0;unsigned first=0,count=0,influences=0;};
-    struct Bounds {std::weak_ptr<const Mesh> source;float low[3],high[3];uint64_t used=0;size_t bytes=0;std::unique_ptr<NorthlightReplayBounds::SkinEnvelope> skin;};
+    struct Bounds {std::weak_ptr<const Mesh> source;float low[3],high[3];uint64_t used=0;size_t bytes=0;std::unique_ptr<NorthlightReplayBounds::SkinEnvelope> skin;
+        const Mesh* key=nullptr;NorthlightIntrusiveLRU::Links<Bounds> lru;};
     struct Texture {IDirect3DTexture9* source=nullptr,*gpu=nullptr;Height height;uint64_t used=0,version=0;bool model=false;};
     struct Entry {
         std::shared_ptr<const Mesh> source;IDirect3DTexture9* texture=nullptr,*texture1=nullptr,*height=nullptr;
@@ -52,6 +54,7 @@ class NorthlightAutoDisplacement {
     std::unordered_map<IDirect3DVertexShader9*,Material> materials;
     std::vector<Texture> textures;
     std::unordered_map<const Mesh*,Bounds> bounds;
+    NorthlightIntrusiveLRU::List<Bounds> boundsLRU;
     NorthlightReplayBounds::EnvelopeCache poseEnvelopes;
     NorthlightReplayBounds::Budget envelopeBudget;
     NorthlightActorDeformation::PreparedBindingCache poseBindings;
@@ -79,18 +82,19 @@ class NorthlightAutoDisplacement {
         auto found=bounds.find(source.get());
         // Weak ownership avoids charging/retaining full geometry for a tiny bound.
         // Control-block identity still rejects expired snapshots and address reuse.
-        if(found!=bounds.end()&&(found->second.source.owner_before(source)||source.owner_before(found->second.source))){boundsBytes-=found->second.bytes;bounds.erase(found);found=bounds.end();}
+        if(found!=bounds.end()&&(found->second.source.owner_before(source)||source.owner_before(found->second.source))){boundsBytes-=found->second.bytes;boundsLRU.remove(found->second);bounds.erase(found);found=bounds.end();}
         if(found==bounds.end())++boundsMisses;else ++boundsHits;return found;
     }
     auto retainBounds(const std::shared_ptr<const Mesh>& source,Bounds&& value){
-        value.source=source;value.used=++clock;
+        value.source=source;value.key=source.get();value.used=++clock;
         value.bytes=sizeof(Bounds)+4*sizeof(void*)+(value.skin?sizeof(NorthlightReplayBounds::SkinEnvelope):0);
-        // A city frame can reference more than 1024 tiny bounds. Keep the byte
-        // cap, but avoid rescanning that working set when only 64 KiB is used.
+        // Keep exact oldest-use eviction without scanning the rotating working
+        // set. Hash-table rehash preserves these non-owning list nodes.
         while(!bounds.empty()&&(boundsBytes+value.bytes>(8u<<20)||bounds.size()>=4096)){
-            auto old=std::min_element(bounds.begin(),bounds.end(),[](const auto& a,const auto& b){return a.second.used<b.second.used;});boundsBytes-=old->second.bytes;bounds.erase(old);}
-        auto added=bounds.emplace(source.get(),std::move(value));if(added.second)boundsBytes+=added.first->second.bytes;return added.first;
+            auto* old=boundsLRU.oldest();const auto* key=old->key;boundsBytes-=old->bytes;boundsLRU.remove(*old);bounds.erase(key);}
+        auto added=bounds.emplace(source.get(),std::move(value));if(added.second){boundsBytes+=added.first->second.bytes;boundsLRU.append(added.first->second);}return added.first;
     }
+    void touchBounds(Bounds& value){value.used=++clock;boundsLRU.touch(value);}
     bool distantPoseBounds(const Program& program,const std::shared_ptr<const Mesh>& source,const D3DVERTEXELEMENT9* elements,UINT count,float* low,float* high){
         NorthlightMaterialProfile::Scope timing(profile,NorthlightMaterialProfile::PoseEnvelope);
         const float identity[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};NorthlightReplayBounds::Bounds result;
@@ -283,7 +287,7 @@ public:
                 for(unsigned k=0;k<3;++k){if(!std::isfinite(p[k]))return false;b.low[k]=std::min(b.low[k],p[k]);b.high[k]=std::max(b.high[k],p[k]);}}
             found=retainBounds(source,std::move(b));
         }
-        auto& b=found->second;b.used=++clock;
+        auto& b=found->second;touchBounds(b);
         return nearestViewDepth(program,input,b.low,b.high,rangeConstants,nearest);
     }
     unsigned preparedPrimitives()const{return current?current->primitives:0;}
@@ -291,10 +295,10 @@ public:
     void setMemoryPressure(bool on){
         current=nullptr;memoryPressure=on;snapshots.setSnapshotCacheLimit(on?6u<<20:24u<<20);rangeSnapshots.setSnapshotCacheLimit(on?1u<<20:4u<<20);skinRangeSnapshots.setSnapshotCacheLimit(on?1u<<20:4u<<20);
         MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;GlobalMemoryStatusEx(&memory);refreshBudget(memory);
-        if(on){bounds.clear();boundsBytes=0;poseEnvelopes.clear();snapshots.clearIndexCache();rangeSnapshots.clearIndexCache();skinRangeSnapshots.clearIndexCache();}
+        if(on){boundsLRU.clear();bounds.clear();boundsBytes=0;poseEnvelopes.clear();snapshots.clearIndexCache();rangeSnapshots.clearIndexCache();skinRangeSnapshots.clearIndexCache();}
     }
     void trimMemory(){setMemoryPressure(memoryPressure);}
-    void reset(){current=nullptr;constantStamp={};rangeConstantStamp={};sourceLookup.clear();contentLookup.clear();materialLookup.clear();indexedEntries=true;entries.clear();bounds.clear();poseEnvelopes.clear();poseBindings={};envelopeBudget.reset();boundsBytes=resident=0;for(auto& t:textures){drop(t.gpu);drop(t.source);}textures.clear();snapshots.clearIndexCache();rangeSnapshots.clearIndexCache();skinRangeSnapshots.clearIndexCache();declarations.clear();}
+    void reset(){current=nullptr;constantStamp={};rangeConstantStamp={};sourceLookup.clear();contentLookup.clear();materialLookup.clear();indexedEntries=true;entries.clear();boundsLRU.clear();bounds.clear();poseEnvelopes.clear();poseBindings={};envelopeBudget.reset();boundsBytes=resident=0;for(auto& t:textures){drop(t.gpu);drop(t.source);}textures.clear();snapshots.clearIndexCache();rangeSnapshots.clearIndexCache();skinRangeSnapshots.clearIndexCache();declarations.clear();}
     void endFrame(){current=nullptr;if(frames%60==0){MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;if(GlobalMemoryStatusEx(&memory))refreshBudget(memory);}buildsThisFrame=readsThisFrame=poseVerticesThisFrame=0;poseEnvelopes.beginFrame(false);envelopeBudget.reset();snapshots.clearFrame();rangeSnapshots.clearFrame();skinRangeSnapshots.clearFrame();if((draws||snapshotRejected)&&frames%600==0){logf("DISPLACEMENT cached=%zu bytes=%zu builds=%llu hits=%llu draws=%llu triangles=%llu refused=%llu terrain=%u walls=%u grass=%u models=%u stateRejected=%u heightRejected=%u shaderRejected=%u snapshotRejected=%u meshRejected=%u budgetMiB=%zu",entries.size(),resident,(unsigned long long)builds,(unsigned long long)hits,(unsigned long long)draws,(unsigned long long)triangles,(unsigned long long)refused,domainDraws[0],domainDraws[1],domainDraws[2],domainDraws[3],stateRejected,heightRejected,shaderRejected,snapshotRejected,meshRejected,cacheBudget>>20);
         logf("DISPLACEMENT snapshots attempts=%llu up=%llu buffered=%llu unknown=%llu arguments=%llu declaration=%llu stream=%llu instancing=%llu indexBuffer=%llu indexRange=%llu vertexRange=%llu budget=%llu lock=%llu unlock=%llu",(unsigned long long)snapshotAttempts,(unsigned long long)snapshotUP,(unsigned long long)(snapshotAttempts-snapshotUP),(unsigned long long)snapshotReasons[0],(unsigned long long)snapshotReasons[1],(unsigned long long)snapshotReasons[2],(unsigned long long)snapshotReasons[3],(unsigned long long)snapshotReasons[4],(unsigned long long)snapshotReasons[5],(unsigned long long)snapshotReasons[6],(unsigned long long)snapshotReasons[7],(unsigned long long)snapshotReasons[8],(unsigned long long)snapshotReasons[9],(unsigned long long)snapshotReasons[10]);}++frames;}
     void registerVariant(IDirect3DVertexShader9* original,const DWORD* code,size_t count,bool skinned=false){
@@ -358,7 +362,7 @@ m.layered=NorthlightActorDeformation::compile(words,count,m.uv1,true,2,5,1)&&Nor
         }
         const float identity[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};NorthlightReplayBounds::Bounds skinBounds;
         const auto exactEnvelope=[&]{if(!exactSkin||!foundBounds->second.skin)return false;P::Scope envelope(profile,P::PoseEnvelope);return foundBounds->second.skin->evaluate(constants,identity,skinBounds);};
-        if(exactEnvelope()){foundBounds->second.used=++clock;std::copy(skinBounds.low,skinBounds.low+3,low);std::copy(skinBounds.high,skinBounds.high+3,high);
+        if(exactEnvelope()){touchBounds(foundBounds->second);std::copy(skinBounds.low,skinBounds.low+3,low);std::copy(skinBounds.high,skinBounds.high+3,high);
             // Reuse the audited, outward-rounded skin envelope for normal capture.
             lastDepthLower=std::max(0.f,std::nextafter(low[2]>0?low[2]:high[2]<0?-high[2]:0,-INFINITY)-.001f);}
         else if(shader->second.skinned){P::Scope pose(profile,P::PoseFallback);if(source->vertexCount>8192-poseVerticesThisFrame){++poseBudgetRejected;if(profile)profile->count(P::PoseBudget);return false;}poseVerticesThisFrame+=source->vertexCount;poseFallbackVertices+=source->vertexCount;if(profile)profile->count(P::PoseVertices,source->vertexCount);pose.work(source->vertexCount);for(unsigned k=0;k<3;++k){low[k]=FLT_MAX;high[k]=-FLT_MAX;}
@@ -367,7 +371,7 @@ m.layered=NorthlightActorDeformation::compile(words,count,m.uv1,true,2,5,1)&&Nor
                 for(const auto& b:prepared->bindings){const auto& s=source->streams[b.element.Stream];if(!NorthlightActorDeformation::decodeElement(s.bytes.data()+size_t(i)*s.stride+b.element.Offset,b.element.Type,input[b.input.reg]))return false;}
                 if(!NorthlightActorDeformation::evaluateFast(shader->second.view,input,constants,view))return false;
                 for(unsigned k=0;k<3;++k){if(!std::isfinite(view[k]))return false;low[k]=std::min(low[k],view[k]);high[k]=std::max(high[k],view[k]);}}
-        }else{foundBounds->second.used=++clock;const auto& b=foundBounds->second;
+        }else{touchBounds(foundBounds->second);const auto& b=foundBounds->second;
             nearestViewDepth(shader->second.view,rangeInput(shader->second.view),b.low,b.high,constants,lastDepthLower);
             for(unsigned r=0;r<3;++r){low[r]=high[r]=controls[r][3];for(unsigned k=0;k<3;++k){const float a=controls[r][k]*b.low[k],z=controls[r][k]*b.high[k];low[r]+=std::min(a,z);high[r]+=std::max(a,z);}}}
         float closestSquared=0;for(unsigned r=0;r<3;++r){float v=low[r]>0?low[r]:high[r]<0?high[r]:0;closestSquared+=v*v;}if(closestSquared>=range*range){++distanceRejected;return false;}

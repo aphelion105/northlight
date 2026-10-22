@@ -1,5 +1,17 @@
 # Material performance investigation — 22 October 2026
 
+## Fresh 22:38 run: camera rotation and 15 parallel investigations — 22 October
+
+The latest complete log is now the 22:38 run of `0be2a10`, SHA-256 `1948f37eb25e8c716e91b55c48d04cd39df52588f811a98ba63e6f9f88f588ea`. Its sampled modes are initially Off, then M2-only Displacement + normal maps, then all domains Displacement + normal maps. There is no Normals-only interval; cavity/self-shadow strengths are zero. The moon is active, unlike the preceding no-source run. Earlier sections below describe historical inputs and should not be read as findings from this newer run.
+
+A changing-view window averages 35.18 FPS and a later settled window 78.22 FPS without changing material modes. Material CPU reaches 9.7860 ms (4.1555 ms exclusive bounds/pose, 1.2737 ms snapshot service); after settling it falls to 2.9994 ms. Normal generation is only 0.1107 ms at the slow sample and zero when warm. GPU GameScene/native terrain dominate the largest GPU sample. CPU/GPU intervals are separate and query waits overlap required work.
+
+Three workers examined five topics each. The retained fixes are: constant-time material-bounds LRU instead of a 4,096-entry victim scan; lossless adaptive 16/32-bit CPU terrain indices to retain more exact views in the existing 32 MiB budget; and exact early shader rejection before unused material-normal decoding. The camera eye really travels around the avatar during orbit, so changing world/GI coverage to follow the avatar would change output and was not adopted.
+
+The frozen bounds fixture improves 3.607653 -> 0.035755 ms, with exact victim/order/output checks. The terrain fixture reduces 3,816 warm-return misses and 38,236,320 source bytes to zero, with identical expanded geometry and unchanged uint32 GPU output. All 576 old/new shader image comparisons and 100 capture checks pass, including MSAA. Far material shader fixtures improve about 16%; near paths have 2–4% branch overhead and some 4K cases are noisy or regress. These are component measurements, not a measured game FPS improvement. Quality/ranges/MSAA/lifetime safeguards and settings remain unchanged; the game was not launched.
+
+Detailed evidence, all 15 topics, validation, tradeoffs and next-run measurements are in `renderer/docs/rotation-performance.md` and the standalone `NORTHLIGHT_ROTATION_PERFORMANCE_REPORT_EN.md`. Existing selected-setter reuse is confirmed working (9,841 skipped / 673 issued at frame 3810). Generic current-pose fallback and legitimate changing-view scene work remain separate optimization targets.
+
 ## Beyond M2: parallel fog, AO and static-scene optimization — 22 October
 
 Three workers evaluated **15 hypotheses**. The latest game log ranks the main non-M2 GPU Effects costs as FogMarch 0.861 ms, FogClouds 0.642 ms, WorldComposite 0.540 ms and AOBlur 0.331 ms (medians of 20 sampled frames). Five exact-work changes were retained: invalid regional fog density elision, zero-direct cloud shadow elision, an AO centre proof that avoids a redundant nine-read probe, request-local static selection axes, and adjacent static spatial-group lookup reuse.

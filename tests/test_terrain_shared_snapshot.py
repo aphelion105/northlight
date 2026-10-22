@@ -18,11 +18,11 @@ void ownership(){
  FrameCache cache;Diagnostics why;std::shared_ptr<const MeshSnapshot> first,out;
  static_assert(std::is_const<typename decltype(out)::element_type>::value,"snapshot API must be immutable");
  auto read=[&](UINT count=3){return cache.readMeshShared(&d,D3DPT_TRIANGLELIST,-3,7,count,1,1,d.view,out,&why);};
- assert(read()&&!why.contentCacheHit);first=out;auto vertices=out->positions.data();auto indices=out->indices.data();const auto bytes=cache.bytesRead();
+ assert(read()&&!why.contentCacheHit);first=out;auto vertices=out->positions.data();auto indices=out->indices.storageIdentity();const auto bytes=cache.bytesRead();
  unsigned locks=d.vb.locks;cache.clearFrame();assert(read()&&why.contentCacheHit&&out==first);
- assert(out->positions.data()==vertices&&out->indices.data()==indices&&cache.bytesRead()==bytes&&d.vb.locks==locks+1);
+ assert(out->positions.data()==vertices&&out->indices.storageIdentity()==indices&&cache.bytesRead()==bytes&&d.vb.locks==locks+1);
  MeshSnapshot value;assert(cache.readMesh(&d,D3DPT_TRIANGLELIST,-3,7,3,1,1,d.view,value,&why));
- assert(value.positions.data()!=vertices&&value.indices.data()!=indices);value.positions[0].z=999;value.indices[0]=999;value.bounds.chunks.clear();
+ assert(value.positions.data()!=vertices&&value.indices.storageIdentity()!=indices);value.positions[0].z=999;value.indices.set(0,999);value.bounds.chunks.clear();
  assert(read()&&out==first&&out->positions[0].z==3&&out->indices[0]==0&&out->bounds.chunks.size()==1);
  d.put(4,{-10200,-1180,30});assert(read()&&!why.contentCacheHit&&out!=first&&first->positions[0].z==3&&out->positions[0].z==30);
  auto changed=out;std::uint16_t swap[]={123,8,7,9};std::memcpy(d.ib.bytes.data(),swap,sizeof swap);

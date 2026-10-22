@@ -1,6 +1,8 @@
 // Generated texture-space normals, recorded in view space with depth and coverage.
 float3 autoBumpNormal(float2 uv,float3 position,float3 normal,float distance,float3 row0,float3 row1,float3 row2) {
     if(BumpControl.x<=0)return normal;
+    // The zero-fade path still normalizes the stored (FP16) normal.
+    [branch]if(distance>=BumpControl.y)return normalize(normal);
     float4 detail=tex2Dlod(BumpMaterial,float4(uv,0,0));
     float inverseCover=1/max(detail.a,.001);
     float2 oct=detail.rg*inverseCover*2-1;

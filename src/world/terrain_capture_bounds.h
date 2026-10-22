@@ -11,6 +11,7 @@
 #include "replay_copy_reader.h"
 #include "vertex_declaration_cache.h"
 #include "capture_buffer_metadata.h"
+#include "terrain_indices.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -37,7 +38,7 @@ struct MeshSnapshot {
     Bounds bounds;
     std::vector<Position> positions;
     // Always triangle-list indices into positions; detached from game buffers.
-    std::vector<std::uint32_t> indices;
+    NorthlightTerrainIndices::Indices indices;
 };
 enum class RejectReason {
     None,Arguments,PrimitiveLimit,CaptureLimit,ByteBudget,ViewRead,ViewMismatch,
@@ -144,13 +145,19 @@ inline bool classifyTriangles(const Position* vertices,std::size_t count,
     return classifyTriangleSequence([&](std::size_t i){return vertices[i];},count,topology,output);
 }
 
-inline bool classifyIndexedTriangles(const Position* vertices,std::size_t vertexCount,
-                                     const std::uint32_t* indices,std::size_t indexCount,
+template<class Index>
+inline bool classifyIndexedBy(const Position* vertices,std::size_t vertexCount,
+                                     const Index* indices,std::size_t indexCount,
                                      D3DPRIMITIVETYPE topology,Bounds& output) {
     output=Bounds{};
     if(!vertices||!indices||!vertexCount)return false;
     for(std::size_t i=0;i<indexCount;++i)if(indices[i]>=vertexCount)return false;
     return classifyTriangleSequence([&](std::size_t i){return vertices[indices[i]];},indexCount,topology,output);
+}
+inline bool classifyIndexedTriangles(const Position* vertices,std::size_t vertexCount,
+                                     const std::uint32_t* indices,std::size_t indexCount,
+                                     D3DPRIMITIVETYPE topology,Bounds& output) {
+    return classifyIndexedBy(vertices,vertexCount,indices,indexCount,topology,output);
 }
 
 class FrameCache {
@@ -255,7 +262,7 @@ private:
         const bool keepRaw=!verified.valid();
         const std::uint64_t estimate=sizeof(ContentEntry)+sizeof(MeshSnapshot)+256+rawIndices.size()+
             (keepRaw?rawVertices.size():sourceOffsets.size()*sizeof(UINT))+
-            snapshot->positions.capacity()*sizeof(Position)+snapshot->indices.capacity()*sizeof(std::uint32_t)+snapshot->bounds.chunks.capacity()*sizeof(ChunkBounds);
+            snapshot->positions.capacity()*sizeof(Position)+snapshot->indices.allocatedBytes()+snapshot->bounds.chunks.capacity()*sizeof(ChunkBounds);
         if(estimate>contentLimit-ContentBaseBytes)return;
         const auto range=contentLookup.equal_range(hash);
         for(auto it=range.first;it!=range.second;++it)if(it->second->key==key){eraseContent(*it->second);break;}
@@ -285,7 +292,7 @@ private:
         next->snapshot=snapshot;
         std::memcpy(next->low,detail.low,sizeof next->low);std::memcpy(next->high,detail.high,sizeof next->high);
         next->bytes=sizeof(ContentEntry)+sizeof(MeshSnapshot)+256+next->indices.capacity()+next->vertices.capacity()+next->sourceOffsets.capacity()*sizeof(UINT)+
-            next->snapshot->positions.capacity()*sizeof(Position)+next->snapshot->indices.capacity()*sizeof(std::uint32_t)+
+            next->snapshot->positions.capacity()*sizeof(Position)+next->snapshot->indices.allocatedBytes()+
             next->snapshot->bounds.chunks.capacity()*sizeof(ChunkBounds);
         if(next->bytes>contentLimit-ContentBaseBytes||!makeRoom(next->bytes))return;
         // Insert the optional hash node before publishing ownership/links. An
@@ -334,6 +341,14 @@ public:
     static constexpr size_t persistentEntryLimit(){return ContentEntries;}
     const Maintenance& maintenance()const{return maintenance_;}
     std::uint64_t persistentBytes()const{return contentBytes;}
+    struct IndexStorage {size_t compact=0,wide=0;std::uint64_t bytes=0,avoided=0;};
+    // Sampled diagnostics only; never walk the persistent cache in a draw hook.
+    IndexStorage indexStorage()const{
+        IndexStorage stats;for(const auto& entry:content)if(entry){const auto& indices=entry->snapshot->indices;const auto bytes=indices.allocatedBytes();
+            const bool compact=indices.visit([](const auto* p,size_t){return sizeof(*p)==2;});
+            stats.compact+=compact;stats.wide+=!compact;stats.bytes+=bytes;stats.avoided+=compact?bytes:0;}
+        return stats;
+    }
     std::uint64_t persistentHits()const{return contentHits;}
     std::uint64_t trackedHits()const{return trackedHits_;}
     std::uint64_t avoidedReadBytes()const{return avoidedReadBytes_;}
@@ -429,7 +444,7 @@ public:
             }
             index=mapped;
         }
-        result.positions.resize(unique);result.indices.reserve(std::size_t(primitiveCount)*3);
+        result.positions.resize(unique);result.indices.reserve(std::size_t(primitiveCount)*3,unique?unique-1:0);
         for(UINT primitive=0;primitive<primitiveCount;++primitive){
             const std::size_t first=topology==D3DPT_TRIANGLELIST?std::size_t(primitive)*3:primitive;
             UINT a=indices[first],b=indices[first+1],c=indices[first+2];
@@ -437,7 +452,7 @@ public:
             if(topology==D3DPT_TRIANGLESTRIP&&(primitive&1))std::swap(a,b);
             result.indices.push_back(a);result.indices.push_back(b);result.indices.push_back(c);
         }
-        if(!classifyIndexedTriangles(result.positions.data(),result.positions.size(),result.indices.data(),result.indices.size(),D3DPT_TRIANGLELIST,result.bounds))return reject(RejectReason::ChunkCoverage);
+        if(!result.indices.visit([&](const auto* data,std::size_t count){return classifyIndexedBy(result.positions.data(),result.positions.size(),data,count,D3DPT_TRIANGLELIST,result.bounds);}))return reject(RejectReason::ChunkCoverage);
         ++snapshots;output=std::move(result);if(diagnostics)*diagnostics=detail;return true;
     }
 
@@ -639,7 +654,7 @@ public:
             index=mapped;
         }
         if(!valid)return reject(RejectReason::VertexNonfinite);
-        result.positions.resize(unique);result.indices.reserve(std::size_t(primitiveCount)*3);
+        result.positions.resize(unique);result.indices.reserve(std::size_t(primitiveCount)*3,unique?unique-1:0);
         for(UINT primitive=0;primitive<primitiveCount;++primitive){
             const std::size_t first=topology==D3DPT_TRIANGLELIST?std::size_t(primitive)*3:primitive;
             UINT a=indices[first],b=indices[first+1],c=indices[first+2];
@@ -647,7 +662,7 @@ public:
             if(topology==D3DPT_TRIANGLESTRIP&&(primitive&1))std::swap(a,b);
             result.indices.push_back(a);result.indices.push_back(b);result.indices.push_back(c);
         }
-        if(!classifyIndexedTriangles(result.positions.data(),result.positions.size(),result.indices.data(),result.indices.size(),D3DPT_TRIANGLELIST,result.bounds))return reject(RejectReason::ChunkCoverage);
+        if(!result.indices.visit([&](const auto* data,std::size_t count){return classifyIndexedBy(result.positions.data(),result.positions.size(),data,count,D3DPT_TRIANGLELIST,result.bounds);}))return reject(RejectReason::ChunkCoverage);
         std::shared_ptr<const MeshSnapshot> shared=std::make_shared<const MeshSnapshot>(std::move(result));
         const Stamp after=stamp(vb.p,ib.p);
         ++maintenance_.rebuilds;
