@@ -1779,7 +1779,9 @@ private:
     static void spellBufferHook(void* context,void* raw,UINT offset,UINT size,DWORD flags,DWORD usage,unsigned locks){static_cast<Device*>(context)->spellBufferWrite(raw,offset,size,flags,usage,locks);}
     static void spellTextureHook(void* context,void* texture){static_cast<Device*>(context)->spellTextureWrite(texture);}
     static void spellQueryHook(void* context,void* query,DWORD flags){static_cast<Device*>(context)->spellQueryIssue(static_cast<IDirect3DQuery9*>(query),flags);}
-    void spellSync(){NorthlightMirrorWrite::pending.store(spell.pending()?1u:0u,std::memory_order_relaxed);} /* what the resource proxies test per texture write */
+    void spellSync(){NorthlightMirrorWrite::pending.store(spell.pending()||(autoBump&&autoBump->pendingTextures())?1u:0u,std::memory_order_relaxed);} /* what the resource proxies test per texture write */
+    static void materialPendingChanged(void* context){static_cast<Device*>(context)->spellSync();}
+    static void materialMirrorEscape(void* context){auto* device=static_cast<Device*>(context);if(device->autoBump)device->extensionWork("material resource escape",[&]{ExtensionDevice::RawScope raw(*device->ext);device->autoBump->setTextureWriteGuard(false);});}
     void spellConfigure(){
         spellOn=world&&world->spellLayerSetting()!=0;
         if(!spellOn){logf("SPELLLAYER config on=0");return;}
@@ -1853,6 +1855,7 @@ private:
         if(!spellInDraw)spellEventDone(what,[&](char* buf,size_t n){std::snprintf(buf,n,"a=%u b=%u",a,b);}); /* a draw reports itself, with its facts */
     }
     void spellTextureWrite(void* texture){ /* a raw base texture was (or is about to be) written */
+        if(autoBump&&autoBump->samplesTexture(texture))extensionWork("material texture write",[&]{ExtensionDevice::RawScope raw(*ext);autoBump->beforeTextureWrite(texture);});
         if(!spellOn||!spell.pendingSamples(texture))return;
         if(spellTraceFrame)logf("SPELLTRACE frame=%u event=texwrite texture=%p",frame,texture);
         extensionWork("spell texture write",[&]{ExtensionDevice::RawScope raw(*ext);spell.onTextureWrite(texture);});
@@ -1901,6 +1904,10 @@ private:
     }
     // StretchRect / ColorFill / UpdateSurface / GetRenderTargetData with RAW surfaces. The layer's target or depth on either side: Copy; a surface of a texture a pending draw samples as the destination: TexWrite.
     void spellCopy(IDirect3DSurface9* source,IDirect3DSurface9* destination){
+        if(autoBump&&autoBump->pendingTextures()&&destination){
+            IDirect3DBaseTexture9* texture=nullptr;
+            if(SUCCEEDED(destination->GetContainer(__uuidof(IDirect3DBaseTexture9),reinterpret_cast<void**>(&texture)))&&texture){spellTextureWrite(texture);texture->Release();}
+        }
         if(!spellOn||!spell.pending())return;
         auto mine=[&](IDirect3DSurface9* x){return x&&(x==spell.target()||x==spell.depth());};
         if(spellTraceFrame)spellEvent("copy",mine(source),mine(destination));
@@ -2318,7 +2325,7 @@ public:
         if(kind==K::IndexBuffer){auto* raw=NorthlightTrackedBuffers::resolveInput(static_cast<IDirect3DIndexBuffer9*>(exposed),wrapped);return wrapped?static_cast<IUnknown*>(raw):nullptr;}
         return reinterpret_cast<IUnknown*>(mirrorResources.rawOf(reinterpret_cast<std::uintptr_t>(exposed),false));
     }
-    bool setExclusiveOwner(bool on){return mirrorState.gate.setExclusive(on);} /* 0.3.192 (CS): one thread makes every Device call (mirror_guard.h) */
+    bool setExclusiveOwner(bool on){if(!on&&autoBump)autoBump->setTextureWriteGuard(false);return mirrorState.gate.setExclusive(on);} /* 0.3.192 (CS): one thread makes every Device call (mirror_guard.h) */
     HRESULT STDMETHODCALLTYPE SetCursorProperties(UINT XHotSpot, UINT YHotSpot, IDirect3DSurface9* pCursorBitmap) override{Guard mirrorLock(mirrorState.gate);return ext->SetCursorProperties(XHotSpot, YHotSpot, mirrorResources.unwrap(pCursorBitmap));}
     HRESULT STDMETHODCALLTYPE GetBackBuffer(UINT iSwapChain, UINT iBackBuffer, D3DBACKBUFFER_TYPE Type, IDirect3DSurface9** ppBackBuffer) override{Guard mirrorLock(mirrorState.gate);HRESULT hr=iSwapChain==0&&Type==D3DBACKBUFFER_TYPE_MONO&&ppBackBuffer&&gameBackBuffer(iBackBuffer,ppBackBuffer)?S_OK:ext->GetBackBuffer(iSwapChain, iBackBuffer, Type, ppBackBuffer);if(SUCCEEDED(hr)){mirrorResources.wrap(ppBackBuffer);}return hr;}
     HRESULT STDMETHODCALLTYPE CreateTexture(UINT Width, UINT Height, UINT Levels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool, IDirect3DTexture9** ppTexture, HANDLE* pSharedHandle) override{Guard mirrorLock(mirrorState.gate);HRESULT hr=ext->CreateTexture(Width, Height, Levels, Usage, Format, Pool, ppTexture, pSharedHandle);if(SUCCEEDED(hr)){NorthlightReplayDrawState::noteTextureFormat(Format);weatherDetect.noteCreate(static_cast<IDirect3DBaseTexture9*>(*ppTexture),Width,Height,Levels,Format);waterMaterials.noteCreate(*ppTexture,Width,Height,Usage&(D3DUSAGE_RENDERTARGET|D3DUSAGE_DEPTHSTENCIL)); /* 0.3.198 (rain): the raw pointer, before wrap */mirrorResources.wrap(ppTexture);}return hr;}
@@ -2438,6 +2445,10 @@ public:
         aoMethod=world->aoMethod();aoStrength=world->aoStrength();aoRadius=world->aoRadius();
         logf("AO method=%s enabled=%u strength=%.3f radiusYards=%.2f",NorthlightQuality::aoName(aoMethod),unsigned(contactAO),aoStrength,aoRadius);
         spellConfigure(); /* task 34: SpellLayer, SpellLayerClasses, SpellTrace (creation-time keys) */
+        // Resource proxies and the command-stream writer serialize Lock/Unlock
+        // and device-copy hazards. Without that contract retain immediate alpha capture.
+        autoBump->setTextureWriteGuard(spellOn&&mirrorState.active()&&NorthlightStream::streamActive.load(std::memory_order_relaxed),&Device::materialPendingChanged,this);
+        mirrorState.beforeDisable=&Device::materialMirrorEscape;mirrorState.disableContext=this;
         zFuncAware=world->depthFuncAware();
         nameMask.setting=world->nameMask();nameMask.debug=world->nameMaskDebug(); /* 0.3.212 (task 32) */
         frameDrawGates=world->frameDrawGates();latchDrawGates(); /* 0.3.187: after the renderers exist */
@@ -2459,6 +2470,7 @@ public:
         logGateThreads("destroy");
         memoryDiagnostics.reset();
         spellTeardown();
+        mirrorState.beforeDisable=nullptr;mirrorState.disableContext=nullptr;
         surface.reset();autoBump.reset();
         dropBlobFaint();shadowBlobs.reset();celestialDiscs.reset();gpuProfile.reset();gpuSceneProfile.reset();materialProfile.reset();gpuTimer.reset();drop(latencyQuery);water.reset();world.reset();releaseResources();
         hdrColor.reset();releaseHdrTargets();stateBlocks.clear();ext->Release();ext=nullptr;

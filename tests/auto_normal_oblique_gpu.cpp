@@ -12,6 +12,7 @@ static void logf(const char* f,...){va_list a;va_start(a,f);std::vprintf(f,a);st
 #include "material_pixel_audit.h"
 #include "patch_terrain_shadow_coverage.h"
 #include "forwarders.h"
+#include "mirror_resource_forwarders.h"
 struct MaterialDepthMeter:ForwardIDirect3DDevice9 {
     unsigned reads=0,allocations=0,gpuDraws=0,clears=0,pixelQueries=0;bool failDeferred=false;explicit MaterialDepthMeter(IDirect3DDevice9* d):ForwardIDirect3DDevice9(d){}
     HRESULT STDMETHODCALLTYPE GetPixelShader(IDirect3DPixelShader9** ps)override{++pixelQueries;return real->GetPixelShader(ps);}
@@ -31,7 +32,8 @@ struct MaterialCaptureStateTestAccess {
     static unsigned queued(const NorthlightAutoBump& b){return b.queued;}
     static unsigned flushed(const NorthlightAutoBump& b){return b.flushed;}
     static unsigned captured(const NorthlightAutoBump& b,unsigned domain){return b.draws[domain-1];}
-    static bool released(const NorthlightAutoBump& b){return b.deferred.empty()&&!b.deferredBytes&&!b.deferredSnapshots.snapshotCacheBytes();}
+    static size_t sourceReadBytes(const NorthlightAutoBump& b){return b.deferredSnapshots.bytesRead();}
+    static bool released(const NorthlightAutoBump& b){return b.deferred.empty()&&!b.deferredBytes&&!b.pendingTextures()&&!b.deferredTextureBytes&&!b.deferredSnapshots.snapshotCacheBytes();}
     static void mutation(const NorthlightAutoBump& b,const void* vertices,size_t bytes){if(b.deferred.empty())return;const auto& p=*b.deferred.back();assert(p.mesh->streams[0].bytes.size()==bytes&&!std::memcmp(p.mesh->streams[0].bytes.data(),vertices,bytes));float bank[1024];ok(b.d->GetVertexShaderConstantF(0,bank,256));assert(!std::memcmp(bank,p.vertexConstants,sizeof bank));}
     static unsigned rejected(const NorthlightAutoBump& b){return b.rangeRejected;}
     static uint64_t clears(const NorthlightAutoBump& b){return b.sharedPOM.clearCount();}
@@ -93,6 +95,9 @@ int main(int argc,char** argv){
     IDirect3DDevice9* d=nullptr;ok(api->CreateDevice(0,D3DDEVTYPE_HAL,window,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_FPU_PRESERVE,&pp,&d));
 #ifdef NORTHLIGHT_MATERIAL_MIRROR
     MaterialAllocationMeter meter(d,pressure);DeviceMirror mirror;mirror.gate.exclusive=true;ExtensionDevice extension(&meter,&mirror);d=&extension;
+    {DeviceMirror escape;struct Probe {DeviceMirror* mirror;unsigned calls=0;} probe{&escape};escape.disableContext=&probe;
+     escape.beforeDisable=[](void* context){auto& p=*static_cast<Probe*>(context);assert(p.mirror->enabled&&p.mirror->heldByThisThread());++p.calls;};
+     escape.disable("material escape test");escape.disable("second escape");assert(probe.calls==1&&!escape.enabled&&!escape.beforeDisable);}
 #endif
     IDirect3DSurface9 *baseSurface=nullptr,*depthSurface=nullptr,*zbuffer=nullptr,*output=nullptr;
     IDirect3DTexture9 *base=nullptr,*depth=nullptr;
@@ -106,8 +111,9 @@ int main(int argc,char** argv){
         drawDepth=nullptr;
         if(resolveMSDepth){drop(depth);ok(d->CreateTexture(W,H,1,D3DUSAGE_DEPTHSTENCIL,static_cast<D3DFORMAT>(MAKEFOURCC('I','N','T','Z')),D3DPOOL_DEFAULT,&depth,nullptr));}
     }
-    auto first=image(folder+"source.fgr");IDirect3DTexture9* diffuse=nullptr;ok(d->CreateTexture(first.width,first.height,0,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&diffuse,nullptr));
-    for(unsigned level=0;level<diffuse->GetLevelCount();++level){auto im=image(folder+"source.fgr."+std::to_string(level));D3DLOCKED_RECT lock{};ok(diffuse->LockRect(level,&lock,nullptr,0));for(unsigned y=0;y<im.height;++y)std::memcpy((char*)lock.pBits+y*lock.Pitch,im.pixels.data()+y*im.width*4,im.width*4);diffuse->UnlockRect(level);}
+    const auto alphaPattern=[](Image& im){if(std::getenv("NORTHLIGHT_TEST_MATERIAL_ALPHA_TEST"))for(unsigned y=0;y<im.height;++y)for(unsigned x=0;x<im.width;++x)im.pixels[(size_t(y)*im.width+x)*4+3]=((x/std::max(1u,im.width/8)+y/std::max(1u,im.height/8))&1)?255:0;};
+    auto first=image(folder+"source.fgr");alphaPattern(first);IDirect3DTexture9* diffuse=nullptr;ok(d->CreateTexture(first.width,first.height,0,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&diffuse,nullptr));
+    for(unsigned level=0;level<diffuse->GetLevelCount();++level){auto im=image(folder+"source.fgr."+std::to_string(level));alphaPattern(im);D3DLOCKED_RECT lock{};ok(diffuse->LockRect(level,&lock,nullptr,0));for(unsigned y=0;y<im.height;++y)std::memcpy((char*)lock.pBits+y*lock.Pitch,im.pixels.data()+y*im.width*4,im.width*4);diffuse->UnlockRect(level);}
     auto vsBytes=read(folder+"terrain-vs.bin"),psBytes=read(folder+"terrain-ps.bin");std::vector<std::uint32_t> patched;assert(!NorthlightWaterShaderPatch::patch((std::uint32_t*)vsBytes.data(),vsBytes.size()/4,patched));
     IDirect3DVertexShader9 *vs=nullptr,*forwardVS=nullptr;IDirect3DPixelShader9 *ps=nullptr,*beauty=nullptr,*material=nullptr;
     ok(d->CreateVertexShader((DWORD*)vsBytes.data(),&vs));ok(d->CreateVertexShader((DWORD*)patched.data(),&forwardVS));ok(d->CreatePixelShader((DWORD*)psBytes.data(),&ps));
@@ -129,6 +135,7 @@ int main(int argc,char** argv){
     struct V{float x,y,z,nx,ny,nz,u,v;DWORD color,blend,weights=255,bones=0;};V floor[]={{-4,-3.4f,0,0,0,1,-1,-.85f,0xffffffff,0xffffffff},{4,-3.4f,0,0,0,1,1,-.85f,0xffffffff,0xffffffff},{-4,4.6f,0,0,0,1,-1,1.15f,0xffffffff,0xffffffff},{4,4.6f,0,0,0,1,1,1.15f,0xffffffff,0xffffffff}};
     if(std::getenv("NORTHLIGHT_TEST_VERTEX_ALPHA_ZERO"))for(auto& vertex:floor)vertex.color&=0x00ffffff;
     if(model){for(unsigned i=0;i<4;++i){floor[i].weights=std::strcmp(argv[5],"model4")==0?0x3f404040:255;floor[i].bones=0x100;}bank[6][0]=1;bank[6][1]=bank[6][2]=bank[6][3]=0;bank[7][1]=1;bank[7][0]=bank[7][2]=bank[7][3]=0;bank[10][0]=bank[10][1]=bank[10][2]=.7f;bank[11][0]=bank[11][1]=bank[11][2]=.3f;bank[12][0]=.4f;bank[12][1]=-.3f;bank[12][2]=-.8660254f;for(unsigned j=0;j<4;++j)bank[28][j]=1;bank[30][0]=0;bank[30][1]=bank[30][2]=1;for(unsigned r=0;r<3;++r)std::memcpy(bank[34+r],bank[31+r],16);bank[34][3]+=.15f;if(std::strcmp(argv[5],"model4")==0){for(auto& v:floor){v.weights=0x3f404040;v.bones=0x03020100;}for(unsigned bone=2;bone<4;++bone){for(unsigned r=0;r<3;++r)std::memcpy(bank[31+bone*3+r],bank[31+r],16);bank[31+bone*3][3]+=.05f*bone;}}}
+    if(model&&std::getenv("NORTHLIGHT_TEST_MATERIAL_ALPHA_TEST"))bank[10][3]=bank[11][3]=1;
     const bool unsafeSkin=argc>5&&std::strcmp(argv[5],"modelunsafe")==0;
     if(unsafeSkin){for(unsigned r=0;r<3;++r){bank[34+r][0]=.8660254f*bank[31+r][0]-.5f*bank[31+r][2];bank[34+r][2]=.5f*bank[31+r][0]+.8660254f*bank[31+r][2];}for(unsigned i=0;i<4;++i){floor[i].bones=0x03020100;floor[i].weights=(i&1)?0x0000807f:0x3f404040;}for(unsigned bone=2;bone<4;++bone){for(unsigned r=0;r<3;++r)std::memcpy(bank[31+bone*3+r],bank[31+r],16);bank[31+bone*3][3]+=.1f*bone;}}
     const D3DVERTEXELEMENT9 decls[]={{0,0,D3DDECLTYPE_FLOAT3,D3DDECLMETHOD_DEFAULT,D3DDECLUSAGE_POSITION,0},{0,12,D3DDECLTYPE_FLOAT3,D3DDECLMETHOD_DEFAULT,D3DDECLUSAGE_NORMAL,0},{0,24,D3DDECLTYPE_FLOAT2,D3DDECLMETHOD_DEFAULT,D3DDECLUSAGE_TEXCOORD,0},{0,24,D3DDECLTYPE_FLOAT2,D3DDECLMETHOD_DEFAULT,D3DDECLUSAGE_TEXCOORD,1},{0,32,D3DDECLTYPE_D3DCOLOR,D3DDECLMETHOD_DEFAULT,D3DDECLUSAGE_COLOR,0},{0,36,D3DDECLTYPE_D3DCOLOR,D3DDECLMETHOD_DEFAULT,D3DDECLUSAGE_COLOR,1},{0,40,D3DDECLTYPE_UBYTE4N,0,D3DDECLUSAGE_BLENDWEIGHT,0},{0,44,D3DDECLTYPE_UBYTE4,0,D3DDECLUSAGE_BLENDINDICES,0},D3DDECL_END()};IDirect3DVertexDeclaration9* decl=nullptr;ok(d->CreateVertexDeclaration(decls,&decl));
@@ -156,7 +163,15 @@ int main(int argc,char** argv){
         ok(d->SetVertexShaderConstantF(0,constants,256));
     };
     if(samples){ok(d->SetDepthStencilSurface(nullptr));ok(d->SetRenderTarget(0,output));ok(d->StretchRect(drawSurface,nullptr,baseSurface,nullptr,D3DTEXF_NONE));ok(d->SetRenderTarget(0,drawSurface));ok(d->SetDepthStencilSurface(zbuffer));referenceDepth([&]{return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,floor,sizeof(V));});}
-    MaterialDepthMeter captureDevice(d);NorthlightAutoBump bump(&captureDevice);bump.setDeferredCapture(std::getenv("NORTHLIGHT_TEST_DEFERRED_CAPTURE")!=nullptr);NorthlightQuality::Settings settings;settings.autoBump=1;settings.autoBumpStrength=100;bump.configure(settings);bump.setProjection(xs,ys,-1);
+    MaterialDepthMeter captureDevice(d);NorthlightAutoBump bump(&captureDevice);bump.setDeferredCapture(std::getenv("NORTHLIGHT_TEST_DEFERRED_CAPTURE")!=nullptr);bump.setTextureWriteGuard(std::getenv("NORTHLIGHT_TEST_TEXTURE_GUARD")!=nullptr);NorthlightQuality::Settings settings;settings.autoBump=1;settings.autoBumpStrength=100;bump.configure(settings);bump.setProjection(xs,ys,-1);
+    MirrorGate textureGate;
+    NorthlightMirrorResources::ForwardIDirect3DTexture9 gameTexture(diffuse,textureGate,[](void*,const char*){},nullptr);
+    NorthlightDrawSnapshot::Ref<IDirect3DSurface9> sourceSurface;ok(diffuse->GetSurfaceLevel(0,sourceSurface.out()));
+    NorthlightMirrorResources::ForwardIDirect3DSurface9 gameSurface(sourceSurface.p,textureGate,[](void*,const char*){},nullptr);
+    if(std::getenv("NORTHLIGHT_TEST_TEXTURE_GUARD")){
+        NorthlightMirrorWrite::sink={[](void* p,void* texture){static_cast<NorthlightAutoBump*>(p)->beforeTextureWrite(texture);},nullptr,&bump};
+        bump.setTextureWriteGuard(true,[](void* p){NorthlightMirrorWrite::pending.store(static_cast<NorthlightAutoBump*>(p)->pendingTextures()?1:0);},&bump);
+    }
     static void* mutationSource=nullptr;static uint64_t mutationRevision=1;
     if(deferredMutation)mutationSource=sourceVB;
     NorthlightMaterialProfile materialProfile(&captureDevice);NorthlightMaterialPixelAudit pixelAudit(&captureDevice);const bool materialProfiling=std::getenv("NORTHLIGHT_TEST_MATERIAL_PROFILE")!=nullptr;
@@ -279,7 +294,7 @@ int main(int argc,char** argv){
         d->SetRenderTarget(0,drawSurface);d->SetDepthStencilSurface(zbuffer);d->SetViewport(&vp);d->SetVertexDeclaration(decl);d->SetVertexShader(vs);d->SetPixelShader(ps);d->SetVertexShaderConstantF(0,bank[0],43);
         if(model&&mode==9){float moved[4];std::memcpy(moved,bank[31],16);moved[3]+=.25f;d->SetVertexShaderConstantF(31,moved,1);}
         d->SetRenderState(D3DRS_ZENABLE,TRUE);d->SetRenderState(D3DRS_ZWRITEENABLE,TRUE);d->SetTexture(0,diffuse);d->SetTexture(1,argc>5&&std::strcmp(argv[5],"composite")==0?diffuse:white);
-        if(std::getenv("NORTHLIGHT_TEST_WMO_CUTOUT")){ok(d->SetRenderState(D3DRS_ALPHATESTENABLE,TRUE));ok(d->SetRenderState(D3DRS_ALPHAFUNC,D3DCMP_GREATER));ok(d->SetRenderState(D3DRS_ALPHAREF,127));}
+        if(std::getenv("NORTHLIGHT_TEST_WMO_CUTOUT")||std::getenv("NORTHLIGHT_TEST_MATERIAL_ALPHA_TEST")){ok(d->SetRenderState(D3DRS_ALPHATESTENABLE,TRUE));ok(d->SetRenderState(D3DRS_ALPHAFUNC,D3DCMP_GREATER));ok(d->SetRenderState(D3DRS_ALPHAREF,127));}
         if(std::getenv("NORTHLIGHT_TEST_WMO_BLEND")){ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));ok(d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_SRCALPHA));ok(d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_INVSRCALPHA));}
         ok(d->SetTexture(D3DVERTEXTEXTURESAMPLER0,white));
         for(auto key:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})ok(d->SetSamplerState(D3DVERTEXTEXTURESAMPLER0,key,D3DTEXF_POINT));
@@ -352,6 +367,17 @@ int main(int argc,char** argv){
             const bool batched=batchTiming&&std::getenv("NORTHLIGHT_TEST_MATERIAL_BATCHED"),packetLimit=std::getenv("NORTHLIGHT_TEST_DEFERRED_LIMIT")!=nullptr;const unsigned draws=batchTiming?(packetLimit?520:32):1;
             const bool deferredEnabled=std::getenv("NORTHLIGHT_TEST_DEFERRED_CAPTURE")!=nullptr;
             const bool barrier=std::getenv("NORTHLIGHT_TEST_DEFERRED_BARRIER")!=nullptr;
+            const bool textureWrite=std::getenv("NORTHLIGHT_TEST_DEFERRED_TEXTURE_WRITE")!=nullptr;
+            const bool multiStream=std::getenv("NORTHLIGHT_TEST_DEFERRED_MULTISTREAM")!=nullptr;
+            NorthlightDrawSnapshot::Ref<IDirect3DVertexDeclaration9> multiDecl;
+            if(multiStream){D3DVERTEXELEMENT9 elements[sizeof decls/sizeof *decls];std::copy(std::begin(decls),std::end(decls),elements);elements[5].Stream=1;
+                ok(d->CreateVertexDeclaration(elements,multiDecl.out()));ok(d->SetVertexDeclaration(multiDecl.p));ok(d->SetStreamSource(1,sourceVB,0,sizeof(V)));}
+            unsigned writeKind=0;
+            const auto writeAlpha=[&](bool restore){D3DLOCKED_RECT lock{};const auto kind=restore?0u:(writeKind++%4);
+                if(kind==2)gameTexture.SetLOD(gameTexture.GetLOD());if(kind==3)gameTexture.GenerateMipSubLevels();
+                if(kind==1)ok(gameSurface.LockRect(&lock,nullptr,0));else ok(gameTexture.LockRect(0,&lock,nullptr,0));
+                for(unsigned y=0;y<first.height;++y){auto* row=static_cast<unsigned char*>(lock.pBits)+size_t(y)*lock.Pitch;for(unsigned x=0;x<first.width;++x)row[x*4+3]=restore?first.pixels[(size_t(y)*first.width+x)*4+3]:0;}
+                if(kind==1)ok(gameSurface.UnlockRect());else ok(gameTexture.UnlockRect(0));};
             if(batchTiming&&deferredEnabled&&std::getenv("NORTHLIGHT_TEST_DEFERRED_PRESSURE")){
                 bump.endFrame();bump.beginDraw();bump.capture(vs,native,!indexed,&geometry);ok(bump.nativeDraw(native));assert(MaterialCaptureStateTestAccess::queued(bump)==1);
                 bump.setMemoryPressure(true);assert(MaterialCaptureStateTestAccess::released(bump)&&!bump.texture()&&bump.finishCaptures());
@@ -372,6 +398,7 @@ int main(int argc,char** argv){
             const auto render=[&]{bump.endFrame();ok(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0xff18212d,1,0));
                 if(batched){for(unsigned i=0;i<draws;++i){bump.beginDraw();ok(bump.nativeDraw(native));}for(unsigned i=0;i<draws;++i){bump.beginDraw();bump.capture(vs,native,!indexed,&geometry);}}
                 else for(unsigned i=0;i<draws;++i){
+                    if(textureWrite){writeAlpha(true);ok(d->SetSamplerState(0,D3DSAMP_MIPFILTER,D3DTEXF_NONE));}
                     if(deferredMutation){V moved[4];std::memcpy(moved,floor,sizeof moved);for(auto& v:moved)v.x+=float(i%7)*.025f;
                         ok(sourceVB->Lock(0,sizeof moved,&upload,D3DLOCK_DISCARD));std::memcpy(upload,moved,sizeof moved);ok(sourceVB->Unlock());++mutationRevision;
                         ok(d->SetRenderState(D3DRS_FILLMODE,i%2?D3DFILL_WIREFRAME:D3DFILL_SOLID));ok(d->SetRenderState(D3DRS_SCISSORTESTENABLE,i%3==0));RECT rect={LONG(i%7),LONG(i%5),LONG(W-i%9),LONG(H-i%11)};ok(d->SetScissorRect(&rect));
@@ -380,6 +407,8 @@ int main(int argc,char** argv){
                     bump.beginDraw();bump.capture(vs,native,!indexed,&geometry);
                     if(deferredMutation){V expected[4];std::memcpy(expected,floor,sizeof expected);for(auto& v:expected)v.x+=float(i%7)*.025f;MaterialCaptureStateTestAccess::mutation(bump,expected,sizeof expected);}
                     ok(bump.nativeDraw([&]{return bump.geometryDraw(native,true);}));
+                    if(textureWrite){const auto pending=MaterialCaptureStateTestAccess::queued(bump);bump.beforeTextureWrite(baseline);assert(MaterialCaptureStateTestAccess::queued(bump)==pending);
+                        if(deferredEnabled)assert(bump.pendingTextures());writeAlpha(false);assert(!bump.pendingTextures());}
                     if(deferredMutation){ok(sourceVB->Lock(0,sizeof floor,&upload,D3DLOCK_DISCARD));std::memset(upload,0,sizeof floor);ok(sourceVB->Unlock());++mutationRevision;float destroyed[4]={0,0,0,20};ok(d->SetVertexShaderConstantF(31,destroyed,1));}
                 }
                 float beforePixel[224*4],afterPixel[224*4],beforeVertex[256*4],afterVertex[256*4];
@@ -394,7 +423,8 @@ int main(int argc,char** argv){
             const auto wait=[](IDirect3DQuery9* q,void* result,DWORD size){const auto began=GetTickCount();HRESULT hr;while((hr=q->GetData(result,size,D3DGETDATA_FLUSH))==S_FALSE){assert(GetTickCount()-began<10000);Sleep(1);}ok(hr);};
             UINT64 hz=0,a=0,b=0;BOOL invalid=TRUE;wait(finish,&b,sizeof b);wait(start,&a,sizeof a);wait(frequency,&hz,sizeof hz);wait(disjoint,&invalid,sizeof invalid);assert(!invalid&&hz&&b>=a);
             std::printf("%s width=%u height=%u msaa=%u gpuMs=%.6f submitMs=%.6f repeats=%u draws=%u batched=%u\n",batchTiming?"MATERIAL_BATCH_TIMING":"SHARED_POM_TIMING",W,H,unsigned(samples),double(b-a)*1000/double(hz)/repeats,double(cpuEnd.QuadPart-cpuStart.QuadPart)*1000/double(cpuHz.QuadPart)/repeats,repeats,draws,unsigned(batched));
-            if(batchTiming&&deferredEnabled){std::printf("MATERIAL_DEFERRED_BENCH queued=%u flushed=%u mutation=%u barrier=%u\n",MaterialCaptureStateTestAccess::queued(bump),MaterialCaptureStateTestAccess::flushed(bump),unsigned(deferredMutation),unsigned(barrier));assert(MaterialCaptureStateTestAccess::queued(bump)==draws-(barrier?draws/8:0)-(packetLimit?1:0)&&MaterialCaptureStateTestAccess::flushed(bump)==MaterialCaptureStateTestAccess::queued(bump));}
+            if(batchTiming&&deferredEnabled){std::printf("MATERIAL_DEFERRED_BENCH queued=%u flushed=%u mutation=%u barrier=%u\n",MaterialCaptureStateTestAccess::queued(bump),MaterialCaptureStateTestAccess::flushed(bump),unsigned(deferredMutation),unsigned(barrier));assert(MaterialCaptureStateTestAccess::queued(bump)==(multiStream?0:draws-(barrier?draws/8:0))&&MaterialCaptureStateTestAccess::flushed(bump)==MaterialCaptureStateTestAccess::queued(bump));
+                if(multiStream){assert(!MaterialCaptureStateTestAccess::sourceReadBytes(bump));std::puts("MATERIAL_MULTISTREAM_PREFLIGHT_PASS zero_source_reads immediate_retained");}}
             if(batchTiming&&std::getenv("NORTHLIGHT_TEST_MATERIAL_BATCH_VALIDATE")){
                 if(samples){ok(d->SetDepthStencilSurface(nullptr));ok(d->SetRenderTarget(0,output));ok(d->StretchRect(drawSurface,nullptr,baseSurface,nullptr,D3DTEXF_NONE));}
                 save(d,baseSurface,folder+"batch-color.fgr");IDirect3DSurface9* target=nullptr;ok(bump.texture()->GetSurfaceLevel(0,&target));save(d,target,folder+"batch-normal.fgr");drop(target);

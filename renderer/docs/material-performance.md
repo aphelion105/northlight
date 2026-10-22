@@ -1,5 +1,66 @@
 # Material performance investigation — 22 October 2026
 
+## M2 Normals run: cached maps, incomplete batching — 22 October, 18:48
+
+### Evidence from the new user run
+
+The installed DLL is the delivered `6db9341` build, SHA-256 `753b77e19fb7176e15892f900f2353cb974dbd5113b4d75c71d87f1895b8c760`. Immutable inputs and parsed frame records are in `northlight-diagnostics/material-m2-normals-20261022-1848/`. The new log has SHA-256 `7b741848281c5f324238379940cc028e52c5cf1d16787391587dec10c68051e9`; the previous log is the retained 17:33 run. The new run enables M2 displacement temporarily, then **M2 Normals at frames 2921/3048**, and later M2 Off. The game was not launched during this investigation.
+
+**Normal-map regeneration is not the warm bottleneck.** The cache reports 108 lifetime builds, 109,453 hits, zero evictions, 51,423,832 bytes of generated GPU maps and a 96 MiB map budget. Both normal-mode samples execute zero normal builds, zero height reads and zero mip generation. The 322 M2 cache lookups cost approximately **0.029 ms CPU**, all hits. The `AUTONORMAL generated` field is a lifetime build count, not builds per frame. `MATERIAL_STAGE normalBuild` and `mips` establish actual sampled-frame work. Original albedo textures come from the client assets; generated normals are retained GPU textures. Adding an MPQ/disk cache would not remove the measured per-frame capture cost.
+
+The expensive work is capture and its fallback paths:
+
+| M2 work | Frame 2921 | Frame 3048 |
+| --- | ---: | ---: |
+| M2 captures / queued M2 captures | 322 / 21 | 322 / 20 |
+| Immediate M2 captures | 301 | 302 |
+| Unbatchable live-state candidates | 192 | 192 |
+| Failed snapshot-path candidates | 109 | 110 |
+| Immediate setup GPU interval | 0.7035 ms | 0.7127 ms |
+| Immediate capture GPU interval | 1.4735 ms | 1.5124 ms |
+| Original 510 M2 draws, GPU interval | 2.2221 ms | 1.8555 ms |
+| Queued M2 flushes / GPU interval | 10 / 0.0594 ms | 9 / 0.0532 ms |
+| All material/native CPU attribution | 4.6866 ms | 4.6916 ms |
+
+World batching **does execute**: five WMO captures are queued and flushed, with a 0.0143 ms world flush interval at frame 2921. The remaining M2 queue is small and repeatedly interrupted by immediate capture. Thus `enabled=1` alone was insufficient evidence of useful batching. The old `snapshotFallback` field aggregates several possible refusal causes; the log cannot distinguish read-budget exhaustion from a multistream rejection. The new counters described below make that distinction explicit.
+
+With M2 Off, sampled total material/native CPU attribution is approximately 2.15–2.59 ms; the 510 original M2 draws cost 0.1976 ms GPU at frame 2667 and 0.1946 ms at frame 3302. GPU transitions can be attributed to a following original draw: the large original-draw interval in normal mode is not evidence that the unmodified native shader suddenly performs more normal math. CPU/GPU intervals overlap and must not be added. Profiling-query submission itself costs 0.57–0.58 ms in the warm normal samples, with zero new queries; instrumentation is sampled.
+
+The frame-window means around frames 3000/3120 are 17.849/16.757 ms (56.03/59.68 FPS), versus 12.113 ms (82.56 FPS) at frame 3360 with M2 Off. These windows include setting transitions near their boundaries and occasional stalls, so they are observational context, not a controlled before/after benchmark. The normal-mode GPU samples themselves total 13.154–13.285 ms. The earlier displacement sample creates new profiling queries and spends 4.295 ms in bounds/pose work; it should not be mixed into warm normal-only attribution.
+
+All twelve regular-grid audits report zero captured and zero near-scene samples, including during normal mode. This supports a distant-camera/limited near-coverage explanation, but a 128×72 grid can miss small visible regions and does not establish an empty full-resolution target. It cannot safely be used to skip the next frame's rendering. Cavity and self-shadow remain disabled. Strength, distance and quality settings are unchanged; normal detail still fades over 36–48 at the configured range of 48.
+
+### Implemented optimizations and their limits
+
+1. **Guarded batching for alpha-dependent M2 captures.** The patched native alpha program identifies the pixel samplers it actually consumes. A packet retains those 2D textures and all thirteen sampler states per consumed stage, alongside the existing immutable geometry and current shader constants. It no longer rejects a capture merely because native alpha needs the original diffuse/layer texture. Matching texture writes execute the pending private capture before any source change. Unrelated writes do not drain the batch or enter a material raw-state scope.
+
+   This reuses the existing serialized command-stream/resource-writer hooks, including Texture/Surface Lock/Unlock, dirty regions, mip generation and device copies. SetLOD and surface GetDC/ReleaseDC now also report a boundary. Production enables this path only when that writer contract exists: command stream active, mirror active and the existing spell/resource sink installed. A mirror/resource escape drains the batch before disabling the guard; a failed command-stream setup disables it too. Without the contract, native alpha capture remains immediate. Render-target/depth textures, cube/volume inputs, relative pixel constants and unsupported state retain conservative fallbacks. Ordinary managed/default 2D sources can be guarded; no texture readback or texture copy is introduced.
+
+2. **Avoid source-cache cycling under a larger working set.** Successful queued M2 captures report a cumulative 8.37–9.78 MiB of source payload per sampled frame. That sum can include repeated meshes; it is not a measurement of unique retained sources. The former 4 MiB cap cannot retain comparable larger working sets, as the controlled test below demonstrates. The retained snapshot cap is now **24 MiB**, with the existing **2 MiB/frame cold-read budget unchanged**. This bounds warm-up traffic without making cached sources cycle through a smaller-than-working-set cache. Under memory pressure the cap returns to 4 MiB, pending work and caches are released, and queueing remains disabled. Geometry is still copied into immutable snapshots; native buffer writes cannot alter pending captures.
+
+   A runnable tracked-buffer regression uses 128 source spans and sixteen warm-up frames. With the old cap its final frame has **32 hits and 2,032,236 read bytes**; with 24 MiB it has **128 hits and zero read bytes**, under the same 2 MiB/frame budget. This proves the working-set effect in the controlled test. The previous user log lacks cache miss/eviction reasons, so the exact proportion of its 109–110 failures caused by cache pressure remains to be measured.
+
+3. **Reject unsupported multistream packets before reading their buffers.** The private UP replay currently supports one stream. The declaration is now checked before source reads or texture/state recording, so an inevitable immediate fallback cannot spend the source-read budget first. A regression preserves the immediate output bit-for-bit and asserts zero snapshot bytes for these candidates.
+
+4. **Drain and retry bounded full batches.** Reaching the 512-packet or 8 MiB packet budget executes the existing queue, then retries the current packet in a fresh batch. It no longer forces that packet through an extra immediate capture. Private capture order, native scene order, MSAA and native alpha coverage are preserved. The 520-draw regression queues and replays all 520 draws across bounded batches. Native texture source references have a separate conservative 128 MiB retention cap; they allocate no duplicate texture image. Unsupported or unavailable resources still use immediate capture.
+
+5. **Log the reasons, rather than infer them from one fallback total.** `MATERIAL_BATCH_SOURCE` records whether the texture guard is active, how many texture-dependent captures queue, actual write barriers, refused textures, source-budget failures, multistream failures, batch limits, cache hits/misses, source read bytes and retained cache size. These accompany the existing CPU/GPU stages and per-domain queued/flushed counters. `enabled`, `textureGuard`, `queued` and `sourceHits` describe different facts; none should substitute for the others.
+
+### Validation and measured benefit
+
+All **40 SM2/SM3 × rigid/skinned/weighted/four-bone/varying-pose × combiner fixtures** pass with native alpha test and a visible checker mask. Fourteen image outputs per fixture compare bit-for-bit between immediate and guarded deferred capture. Additional checks cover MSAA 0/2/4/8, source DISCARD writes, current palettes/scissor/fill state, packet limits, immediate barriers, multistream fallback, unused queues, failure, pressure and complete asynchronous profiling. Disabling the texture guard restores immediate alpha capture and preserves all fourteen outputs. The test's normal/visibility probes require nonzero visible coverage; an empty alpha-clipped image does not count as success.
+
+Writes through the generated game-facing Texture/Surface wrappers, SetLOD and mip generation are tested while capture is pending. The original capture/color targets remain bit-exact after source alpha is replaced. CPU geometry, resident-snapshot working-set and displacement state/range suites pass. The one-shot mirror-disable callback is checked to run under its gate, before mirror disable. Shader source and bytecode are unchanged in this follow-up.
+
+The final isolated, alternating, three-round **complete 4K/MSAA 2× alpha-dependent M2 pass** includes 32 native draws, all captures, recording/restoration, clears and color resolve, with cavity/self-shadow disabled. Median GPU time is **3.680000 → 2.838656 ms (22.86% reduction)**; median CPU submission is **0.064838 → 0.143875 ms (+0.079037 ms)**. Both compared targets are bit-exact. An earlier repeat of the same alpha-dependent configuration measured a 26.15% GPU reduction; the final-run median is used here. These are synthetic pass results, not measured game FPS gains. Immutable records are `complete-release.json` and `m2-alpha-validation.json` beside the input log.
+
+Reproduce with `python tests/validate_material_deferred.py --backend <dxvk-d3d9.dll> --alpha-test --texture-guard --occlusion-off` for the 40-fixture suite; add `--quick --benchmark` for the complete-pass timing. Run `python tests/test_material_geometry.py` for the bounded working-set test. Keep GPU benchmarks isolated from other GPU tests.
+
+The final Windows x86 DLL builds successfully with the same 17 proxy exports and the two existing warnings. SHA-256: `225b65ab1b12210adc5500ec67e0d41af32396543048096e8b2a5b556c6debd2`. The world-capture MSAA/queue regression also passes.
+
+No game process was launched, and no game-root DLL or settings were changed. The next matching M2 Normals run should compare the number of immediate captures against the previous 301–302, confirm `textureGuard=1`, and check that warmed `sourceReadBytes` falls while `normalBuild` remains zero. That run is necessary to establish actual game FPS improvement and identify any remaining resource types or multistream captures that cannot be batched.
+
+
 ## New user run: world capture overhead and missing opaque bump — 22 October, 17:33
 
 ### What the fresh logs establish

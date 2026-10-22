@@ -58,5 +58,15 @@ int main(){
  assert(untracked.read(&d,&d.decl,draw,scratch,&why,false,&next));
  const auto untrackedLocks=locks(d);assert(!untracked.read(&d,&d.decl,draw,scratch,&why,false,&next,false,true));assert(locks(d)==untrackedLocks);
  assert(!untracked.read(&d,&d.decl,draw,scratch,&why,false,&next)&&why.error==Error::Budget);
+ // A source working set larger than the former 4 MiB cache must converge
+ // under the unchanged 2 MiB/frame cold-read budget, then perform zero reads.
+ constexpr UINT sources=128,vertices=2049;
+ for(unsigned s=0;s<2;++s){d.vb[s].bytes.resize(d.offset[s]+sources*vertices*d.stride[s]);revisions[&d.vb[s]]=s+1;}
+ const auto workingSet=[&](size_t capacity){Frame cache(2u<<20,0);cache.setIdentityProvider(identity);cache.setVersionProvider(version);cache.setChargeResidentHits(false);cache.setSnapshotCacheLimit(capacity);
+     unsigned accepted=0;for(unsigned frame=0;frame<16;++frame){cache.clearFrame();accepted=0;for(unsigned i=0;i<sources;++i){Draw part{D3DPT_TRIANGLELIST,0,0,0,i*vertices,vertices/3,false};accepted+=cache.read(&d,&d.decl,part,scratch,&why,false,&next);}}
+     assert(cache.snapshotCacheBytes()<=capacity);return std::array<size_t,3>{accepted,cache.snapshotCacheHits(),cache.bytesRead()};};
+ const auto small=workingSet(4u<<20),large=workingSet(24u<<20);
+ assert(small[1]<sources&&small[2]>0&&large[0]==sources&&large[1]==sources&&large[2]==0);
+ std::printf("MATERIAL_BATCH_WORKING_SET_PASS oldHits=%zu oldReadBytes=%zu newHits=%zu newReadBytes=%zu unchangedFrameBudget=2097152\n",small[1],small[2],large[1],large[2]);
  puts("SNAPSHOT_GEOMETRY_POLICY_PASS default_budget tracked_5000_hits_zero_reads admission_uncharged generation_miss_budget immutable_old unknown_static_charged");
 }

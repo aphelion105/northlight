@@ -22,19 +22,28 @@ class NorthlightAutoBump {
     // Frame-local replay owns immutable vertex data and the generated map. It
     // never relies on game buffers/textures staying unchanged until the flush.
     static constexpr unsigned DeferredRasterCount=30;
+    struct DeferredTexture {
+        IDirect3DBaseTexture9* texture=nullptr;unsigned stage=0;DWORD sampler[13]={};uint64_t bytes=0;
+        ~DeferredTexture(){drop(texture);}
+    };
     struct Deferred {
         IDirect3DVertexShader9* vertex=nullptr;IDirect3DPixelShader9* pixel=nullptr;IDirect3DVertexDeclaration9* declaration=nullptr;
         std::shared_ptr<const NorthlightDrawSnapshot::Mesh> mesh;NorthlightAutoNormalCache::Lease normal;
         float vertexConstants[256*4];std::vector<float> pixelConstants;int vertexInt[64],pixelInt[64];BOOL vertexBool[16],pixelBool[16];
         DWORD states[14],raster[DeferredRasterCount],addressU=0,addressV=0;RECT scissor{};D3DVIEWPORT9 viewport{};unsigned first=0,tag=0,normalStage=14;bool occlusion=false;
+        std::vector<std::unique_ptr<DeferredTexture>> textures;
         ~Deferred(){drop(vertex);drop(pixel);drop(declaration);}
     };
     const D3DRENDERSTATETYPE deferredRasterKeys[DeferredRasterCount]={D3DRS_CULLMODE,D3DRS_ZENABLE,D3DRS_ZFUNC,D3DRS_DEPTHBIAS,D3DRS_SLOPESCALEDEPTHBIAS,D3DRS_SCISSORTESTENABLE,D3DRS_MULTISAMPLEANTIALIAS,D3DRS_MULTISAMPLEMASK,D3DRS_CLIPPING,D3DRS_DITHERENABLE,D3DRS_WRAP0,D3DRS_WRAP7,D3DRS_SHADEMODE,D3DRS_FILLMODE,D3DRS_LASTPIXEL,D3DRS_ANTIALIASEDLINEENABLE,D3DRS_WRAP1,D3DRS_WRAP2,D3DRS_WRAP3,D3DRS_WRAP4,D3DRS_WRAP5,D3DRS_WRAP6,D3DRS_WRAP8,D3DRS_WRAP9,D3DRS_WRAP10,D3DRS_WRAP11,D3DRS_WRAP12,D3DRS_WRAP13,D3DRS_WRAP14,D3DRS_WRAP15};
     NorthlightDrawSnapshot::Frame deferredSnapshots{2u<<20,0};
     NorthlightVertexDeclarations::Cache deferredDeclarations;
     std::vector<std::unique_ptr<Deferred>> deferred;size_t deferredBytes=0;bool deferredAllowed=false;
+    std::unordered_map<void*,uint64_t> deferredTextures;uint64_t deferredTextureBytes=0;
+    bool textureWriteGuarded=false;void(*pendingChanged)(void*)=nullptr;void* pendingContext=nullptr;
+    void clearDeferred(){deferred.clear();deferredBytes=deferredTextureBytes=0;deferredTextures.clear();if(pendingChanged)pendingChanged(pendingContext);}
     unsigned queued=0,flushed=0,deferredFallback=0,deferredDiscarded=0,deferredUnsafe=0,deferredGeometry=0;
     unsigned queuedDomain[4]={},earlyRangeRejected=0,opaqueCoverage=0;
+    unsigned deferredTextureDraws=0,textureBarriers=0,snapshotBudget=0,snapshotStreams=0,textureRefused=0,batchLimit=0;
     bool deferredReport=false;uint64_t deferredReportFrame=0;
     float projection[4]={1,1,-1,8};
     // Only these states are changed by the replay. A full state block per material
@@ -100,7 +109,7 @@ class NorthlightAutoBump {
     std::unordered_map<IDirect3DVertexShader9*,Vertex> vertices;
     std::unordered_map<IDirect3DPixelShader9*,unsigned> pixels;
     IDirect3DPixelShader9* shaders[6]={},*sharedShaders[6]={};
-    struct NativeCapture {IDirect3DPixelShader9* source=nullptr,*shader=nullptr;unsigned constant=128,first=256,last=0;bool deferredSafe=false;};
+    struct NativeCapture {IDirect3DPixelShader9* source=nullptr,*shader=nullptr;unsigned constant=128,first=256,last=0,samplers=0;bool deferredSafe=false;};
     std::unordered_map<IDirect3DPixelShader9*,NativeCapture> nativeCaptures[2][2];
     NativeCapture* modelCapture(IDirect3DPixelShader9* source,bool alpha,bool shared=false){
         auto& variants=nativeCaptures[shared][alpha];auto it=variants.find(source);if(it!=variants.end())return it->second.shader?&it->second:nullptr;
@@ -112,7 +121,7 @@ class NorthlightAutoBump {
                 if(!shared&&NorthlightTerrainCoverage::analyse(patched.data(),patched.size(),program)){
                     bool defined[256]={};for(const auto& op:program.ops)if(op.code==81)defined[NorthlightWaterShaderPatch::regIndex(patched[op.at+1])]=true;
                     entry.deferredSafe=true;for(const auto& op:program.ops){if(op.code==31||op.code==81||op.code==48||op.code==47||op.code==65534)continue;
-                        for(unsigned i=1;i<=op.size;++i){const auto t=patched[op.at+i];const unsigned type=NorthlightWaterShaderPatch::regType(t),r=NorthlightWaterShaderPatch::regIndex(t);if(type==10&&r!=14)entry.deferredSafe=false;
+                        for(unsigned i=1;i<=op.size;++i){const auto t=patched[op.at+i];const unsigned type=NorthlightWaterShaderPatch::regType(t),r=NorthlightWaterShaderPatch::regIndex(t);if(t&0x2000u)entry.deferredSafe=false;if(type==10&&r!=14){if(r<16)entry.samplers|=1u<<r;else entry.deferredSafe=false;}
                             if(type==2&&r<256&&!defined[r]){entry.first=std::min(entry.first,r);entry.last=std::max(entry.last,r);}}}
                     entry.deferredSafe&=entry.first<=entry.constant&&entry.last>=entry.constant+4&&entry.last<224;
                 }
@@ -155,16 +164,34 @@ class NorthlightAutoBump {
     }
     bool recordCapture(const NorthlightAutoDisplacement::Args& args,NorthlightAutoNormalCache::Lease& normal,bool auxiliary,const ReplayState& saved,const NativeCapture& model,IDirect3DVertexShader9* vertex,const float* captureConstants,DWORD addressU,DWORD addressV){
         using P=NorthlightMaterialProfile;P::Scope timing(profile,P::DeferredRecord,profileTag);
-        if(deferred.size()>=512||d->GetNPatchMode()!=0||(args.draw.topology!=D3DPT_TRIANGLELIST&&args.draw.topology!=D3DPT_TRIANGLESTRIP&&args.draw.topology!=D3DPT_TRIANGLEFAN))return false;
+        if(deferred.size()>=512){++batchLimit;return false;}
+        if(d->GetNPatchMode()!=0||(args.draw.topology!=D3DPT_TRIANGLELIST&&args.draw.topology!=D3DPT_TRIANGLESTRIP&&args.draw.topology!=D3DPT_TRIANGLEFAN))return false;
         try{
             NorthlightDrawSnapshot::Ref<IDirect3DVertexDeclaration9> decl;if(FAILED(d->GetVertexDeclaration(decl.out()))||!decl.p)return false;
+            UINT extent[4]={};if(!deferredDeclarations.captureLayout(decl.p,extent))return false;
+            for(unsigned i=1;i<4;++i)if(extent[i]){++snapshotStreams;return false;}
+            std::vector<std::unique_ptr<DeferredTexture>> textures;uint64_t textureBytes=0;
+            for(unsigned stage=0;stage<16;++stage)if(model.samplers&(1u<<stage)){
+                auto binding=std::make_unique<DeferredTexture>();binding->stage=stage;
+                if(!textureWriteGuarded||FAILED(d->GetTexture(stage,&binding->texture))){++textureRefused;return false;}
+                if(binding->texture){
+                    D3DSURFACE_DESC desc{};
+                    if(binding->texture->GetType()!=D3DRTYPE_TEXTURE||FAILED(static_cast<IDirect3DTexture9*>(binding->texture)->GetLevelDesc(0,&desc))||(desc.Pool!=D3DPOOL_MANAGED&&desc.Pool!=D3DPOOL_DEFAULT)||(desc.Usage&(D3DUSAGE_RENDERTARGET|D3DUSAGE_DEPTHSTENCIL))){++textureRefused;return false;}
+                    binding->bytes=NorthlightAutoNormalMemory::mipBytes(desc.Format,desc.Width,desc.Height,binding->texture->GetLevelCount());
+                    if(!deferredTextures.count(binding->texture))textureBytes+=binding->bytes;
+                }
+                for(unsigned i=0;i<13;++i)if(FAILED(d->GetSamplerState(stage,D3DSAMPLERSTATETYPE(i+1),binding->sampler+i)))return false;
+                textures.push_back(std::move(binding));
+            }
+            if(textureBytes>(128ull<<20)-deferredTextureBytes){++batchLimit;return false;}
             NorthlightDrawSnapshot::Mesh local;std::shared_ptr<const NorthlightDrawSnapshot::Mesh> mesh;
-            if(args.vertices){if(!deferredSnapshots.readUP(decl.p,args.draw,args.indices,args.format,args.vertices,args.stride,local))return false;mesh=std::make_shared<NorthlightDrawSnapshot::Mesh>(std::move(local));}
-            else if(!deferredSnapshots.read(d,decl.p,args.draw,local,nullptr,false,&mesh))return false;
+            NorthlightDrawSnapshot::Diagnostics why;
+            if(args.vertices){if(!deferredSnapshots.readUP(decl.p,args.draw,args.indices,args.format,args.vertices,args.stride,local,&why)){snapshotBudget+=why.error==NorthlightDrawSnapshot::Error::Budget;return false;}mesh=std::make_shared<NorthlightDrawSnapshot::Mesh>(std::move(local));}
+            else if(!deferredSnapshots.read(d,decl.p,args.draw,local,&why,false,&mesh)){snapshotBudget+=why.error==NorthlightDrawSnapshot::Error::Budget;return false;}
             if(!mesh)mesh=std::make_shared<NorthlightDrawSnapshot::Mesh>(std::move(local));
-            if(mesh->streams[0].bytes.empty())return false;for(unsigned i=1;i<4;++i)if(!mesh->streams[i].bytes.empty())return false;
+            if(mesh->streams[0].bytes.empty())return false;for(unsigned i=1;i<4;++i)if(!mesh->streams[i].bytes.empty()){++snapshotStreams;return false;}
             DWORD planes=0;if(FAILED(d->GetRenderState(D3DRS_CLIPPLANEENABLE,&planes))||planes)return false;
-            const size_t cost=sizeof(Deferred)+mesh->byteSize()+(model.last-model.first+1)*16;if(cost>(8u<<20)-deferredBytes)return false;
+            const size_t cost=sizeof(Deferred)+mesh->byteSize()+(model.last-model.first+1)*16+textures.size()*(sizeof(DeferredTexture)+sizeof(void*));if(cost>(8u<<20)-deferredBytes){++batchLimit;return false;}
             auto packet=std::make_unique<Deferred>();packet->mesh=mesh;packet->tag=profileTag;packet->occlusion=auxiliary;
             packet->declaration=decl.p;decl.p=nullptr;packet->pixel=model.shader;packet->pixel->AddRef();packet->vertex=vertex;vertex->AddRef();
             packet->first=model.first;packet->pixelConstants.resize((model.last-model.first+1)*4);packet->viewport=saved.viewport;packet->addressU=addressU;packet->addressV=addressV;packet->normalStage=saved.normalStage;
@@ -173,18 +200,31 @@ class NorthlightAutoBump {
             if(FAILED(d->GetScissorRect(&packet->scissor))||FAILED(d->GetVertexShaderConstantF(0,packet->vertexConstants,256))||FAILED(d->GetPixelShaderConstantF(packet->first,packet->pixelConstants.data(),UINT(packet->pixelConstants.size()/4)))||
                FAILED(d->GetVertexShaderConstantI(0,packet->vertexInt,16))||FAILED(d->GetPixelShaderConstantI(0,packet->pixelInt,16))||FAILED(d->GetVertexShaderConstantB(0,packet->vertexBool,16))||FAILED(d->GetPixelShaderConstantB(0,packet->pixelBool,16)))return false;
             std::copy(captureConstants,captureConstants+20,packet->pixelConstants.begin()+(model.constant-packet->first)*4);
-            deferred.push_back(std::move(packet));deferred.back()->normal=std::move(normal);deferredBytes+=cost;++queued;++queuedDomain[profileTag/4-1];timing.work(mesh->vertexCount,mesh->byteSize());return true;
+            packet->textures=std::move(textures);void* inserted[16]={};unsigned insertedCount=0;
+            try{
+                for(const auto& t:packet->textures)if(t->texture&&deferredTextures.emplace(t->texture,t->bytes).second){inserted[insertedCount++]=t->texture;deferredTextureBytes+=t->bytes;}
+                deferred.push_back(std::move(packet));
+            }catch(...){for(unsigned i=0;i<insertedCount;++i){auto entry=deferredTextures.find(inserted[i]);deferredTextureBytes-=entry->second;deferredTextures.erase(entry);}throw;}
+            deferred.back()->normal=std::move(normal);deferredBytes+=cost;++queued;++queuedDomain[profileTag/4-1];deferredTextureDraws+=model.samplers!=0;if(pendingChanged)pendingChanged(pendingContext);timing.work(mesh->vertexCount,mesh->byteSize());return true;
         }catch(...){return false;}
     }
 public:
     explicit NorthlightAutoBump(IDirect3DDevice9* device):d(device),normals(device),sharedPOM(device),parallax(device,normals),displacement(device){
-        deferredSnapshots.setSnapshotCacheLimit(4u<<20);deferredSnapshots.setChargeResidentHits(false);
+        deferredSnapshots.setSnapshotCacheLimit(24u<<20);deferredSnapshots.setChargeResidentHits(false);
         deferredSnapshots.setDeclarationProvider(&deferredDeclarations,[](void* c,IDirect3DVertexDeclaration9* v,const D3DVERTEXELEMENT9*& e,UINT& n){return static_cast<NorthlightVertexDeclarations::Cache*>(c)->get(v,e,n);});
         deferredSnapshots.setLayoutProvider(&deferredDeclarations,[](void* c,IDirect3DVertexDeclaration9* v,UINT* e){return static_cast<NorthlightVertexDeclarations::Cache*>(c)->captureLayout(v,e);});}
     void setDeferredCapture(bool on){deferredAllowed=on;}
+    // Enabled only by the serialized game-resource writer, never from a backend
+    // guess. Source writes drain matching packets before changing bytes.
+    void setTextureWriteGuard(bool on,void(*changed)(void*)=nullptr,void* context=nullptr){
+        if(!on&&textureWriteGuarded)finishCaptures();textureWriteGuarded=on;pendingChanged=changed;pendingContext=context;
+    }
+    bool pendingTextures()const{return !deferredTextures.empty();}
+    bool samplesTexture(void* texture)const{return texture&&deferredTextures.count(texture);}
+    void beforeTextureWrite(void* texture){if(texture&&deferredTextures.count(texture)){++textureBarriers;finishCaptures();}}
     bool finishCaptures(){
         if(deferred.empty())return true;using P=NorthlightMaterialProfile;P::Scope timing(profile,P::DeferredFlush,deferred.front()->tag,true);timing.work(deferred.size(),deferredBytes);
-        struct Result {NorthlightAutoBump& owner;bool ok=false;~Result(){if(!ok){owner.deferredDiscarded+=unsigned(owner.deferred.size());owner.deferred.clear();owner.deferredBytes=0;owner.drawn=owner.occlusionDrawn=false;owner.check(E_FAIL,"deferred material replay");}}} result{*this};
+        struct Result {NorthlightAutoBump& owner;bool ok=false;~Result(){if(!ok){owner.deferredDiscarded+=unsigned(owner.deferred.size());owner.clearDeferred();owner.drawn=owner.occlusionDrawn=false;owner.check(E_FAIL,"deferred material replay");}}} result{*this};
         struct Constants {IDirect3DDevice9* d;float bank[256*4],pixel[224*4];bool valid=false;explicit Constants(IDirect3DDevice9* device):d(device){}~Constants(){if(valid){d->SetVertexShaderConstantF(0,bank,256);d->SetPixelShaderConstantF(0,pixel,224);}}} constants(d);
         constants.valid=SUCCEEDED(d->GetVertexShaderConstantF(0,constants.bank,256))&&SUCCEEDED(d->GetPixelShaderConstantF(0,constants.pixel,224));
         SavedState saved(d);if(!saved.ok||!constants.valid)return false;
@@ -206,6 +246,7 @@ public:
             for(unsigned i=0;i<DeferredRasterCount;++i)step(d->SetRenderState(deferredRasterKeys[i],packet->raster[i]));
             step(d->SetTexture(packet->normalStage,packet->normal.get()));const DWORD sampler[]={D3DTEXF_LINEAR,D3DTEXF_LINEAR,D3DTEXF_LINEAR,packet->addressU,packet->addressV,FALSE,0,0};
             for(unsigned i=0;i<8;++i)step(d->SetSamplerState(packet->normalStage,keys.samplerKeys[i],sampler[i]));
+            for(const auto& t:packet->textures){step(d->SetTexture(t->stage,t->texture));for(unsigned i=0;i<13;++i)step(d->SetSamplerState(t->stage,D3DSAMPLERSTATETYPE(i+1),t->sampler[i]));}
             step(d->SetVertexShaderConstantF(0,packet->vertexConstants,256));step(d->SetPixelShaderConstantF(packet->first,packet->pixelConstants.data(),UINT(packet->pixelConstants.size()/4)));
             step(d->SetVertexShaderConstantI(0,packet->vertexInt,16));step(d->SetPixelShaderConstantI(0,packet->pixelInt,16));step(d->SetVertexShaderConstantB(0,packet->vertexBool,16));step(d->SetPixelShaderConstantB(0,packet->pixelBool,16));
             if(SUCCEEDED(hr))hr=d->SetRenderTarget(1,packet->occlusion?occlusionTarget:nullptr);
@@ -213,17 +254,17 @@ public:
                 hr=mesh.indexed?d->DrawIndexedPrimitiveUP(mesh.topology,0,mesh.vertexCount,mesh.primitiveCount,mesh.indices.data(),D3DFMT_INDEX32,mesh.streams[0].bytes.data(),mesh.streams[0].stride):d->DrawPrimitiveUP(mesh.topology,mesh.primitiveCount,mesh.streams[0].bytes.data(),mesh.streams[0].stride);}
             if(FAILED(hr)){success=false;break;}++flushed;++draws[packet->tag/4-1];if(packet->occlusion){occlusionDrawn=true;if(profile)profile->count(P::OcclusionDraw);}
         }
-        if(success){deferred.clear();deferredBytes=0;result.ok=true;}return success;
+        if(success){clearDeferred();result.ok=true;}return success;
     }
     void setProfiler(NorthlightMaterialProfile* p){profile=p;normals.setProfiler(p);parallax.setProfiler(p);displacement.setProfiler(p);}
     void setMemoryPressure(bool on){
-        if(memoryPressure==on)return;memoryPressure=on;
-        if(on&&!deferred.empty()){deferredDiscarded+=unsigned(deferred.size());deferred.clear();deferredBytes=0;drawn=occlusionDrawn=false;}
+        if(memoryPressure==on)return;memoryPressure=on;deferredSnapshots.setSnapshotCacheLimit(on?4u<<20:24u<<20);
+        if(on&&!deferred.empty()){deferredDiscarded+=unsigned(deferred.size());clearDeferred();drawn=occlusionDrawn=false;}
         if(on){deferredSnapshots.clearIndexCache();deferredDeclarations.clear();}
         normals.setMemoryPressure(on);displacement.setMemoryPressure(on);sharedPOM.setMemoryPressure(on);
         logf("MATERIAL_MEMORY pressure=%u normalBudgetMiB=%u geometryBudgetMiB=%u relief=active",unsigned(on),on?32:96,on?32:128);
     }
-    void trimMemory(){if(!deferred.empty()){deferredDiscarded+=unsigned(deferred.size());deferred.clear();deferredBytes=0;drawn=occlusionDrawn=false;}sharedMaps[0]={};sharedMaps[1]={};sharedPOM.reset();normals.trimMemory();displacement.trimMemory();deferredSnapshots.clearIndexCache();}
+    void trimMemory(){if(!deferred.empty()){deferredDiscarded+=unsigned(deferred.size());clearDeferred();drawn=occlusionDrawn=false;}sharedMaps[0]={};sharedMaps[1]={};sharedPOM.reset();normals.trimMemory();displacement.trimMemory();deferredSnapshots.clearIndexCache();}
     bool geometryPrepared()const{return displacement.prepared();}
     unsigned geometryPrimitives()const{return displacement.preparedPrimitives();}
     bool geometryHeightGPU()const{return displacement.preparedHeightGPU();}
@@ -251,16 +292,18 @@ public:
         if(changed)logf("AUTOBUMP enabled=%d strength=%.2f distance=%.0f terrain=%d walls=%d grass=%d modes=%u/%u/%u/%u pomDepth=%.6f pomRange=%.0f pomSteps=%.0f",int(enabled),strength,range,int(terrain),int(walls),int(grass),modes[0],modes[1],modes[2],modes[3],pomControl[0],pomControl[1],pomControl[2]);
         if(!enabled)reset();
         bool captureRequired=false;for(unsigned i=0;i<4;++i)captureRequired|=modes[i]&&captureNeeded(i+1);
-        if(!captureRequired){deferredDiscarded+=unsigned(deferred.size());deferred.clear();deferredBytes=0;sharedMaps[0]={};sharedMaps[1]={};sharedPOM.reset();drop(captureDepth);drop(target);drop(height);drop(occlusionTarget);drop(occlusionMap);drawn=cleared=false;occlusionUnavailable=false;occlusionRetry=0;}
+        if(!captureRequired){deferredDiscarded+=unsigned(deferred.size());clearDeferred();sharedMaps[0]={};sharedMaps[1]={};sharedPOM.reset();drop(captureDepth);drop(target);drop(height);drop(occlusionTarget);drop(occlusionMap);drawn=cleared=false;occlusionUnavailable=false;occlusionRetry=0;}
     }
     ~NorthlightAutoBump(){reset();for(auto& v:vertices){drop(v.second.patched);drop(v.second.shared);}for(auto*& p:shaders)drop(p);for(auto*& p:sharedShaders)drop(p);for(auto& groups:nativeCaptures)for(auto& variants:groups)for(auto& n:variants){drop(n.second.shader);drop(n.second.source);}}
-    void reset(){deferred.clear();deferredBytes=0;deferredSnapshots.clearIndexCache();deferredDeclarations.clear();sharedMaps[0]={};sharedMaps[1]={};sharedPOM.reset();displacement.reset();normals.reset();drop(captureDepth);drop(target);drop(height);drop(occlusionTarget);drop(occlusionMap);occlusionUnavailable=false;occlusionRetry=0;width=heightPixels=0;cleared=drawn=failed=occlusionCleared=occlusionDrawn=false;}
+    void reset(){clearDeferred();deferredSnapshots.clearIndexCache();deferredDeclarations.clear();sharedMaps[0]={};sharedMaps[1]={};sharedPOM.reset();displacement.reset();normals.reset();drop(captureDepth);drop(target);drop(height);drop(occlusionTarget);drop(occlusionMap);occlusionUnavailable=false;occlusionRetry=0;width=heightPixels=0;cleared=drawn=failed=occlusionCleared=occlusionDrawn=false;}
     void endFrame(){
-        deferredDiscarded+=unsigned(deferred.size());deferred.clear();deferredBytes=0;deferredSnapshots.clearFrame();
-        if(deferredReport||((queued||flushed||deferredFallback||deferredDiscarded)&&frames%600==0))logf("MATERIAL_DEFERRED frame=%llu sampled=%u enabled=%u queued=%u flushed=%u snapshotFallback=%u liveState=%u preparedGeometry=%u discardedUnused=%u terrain=%u walls=%u grass=%u models=%u earlyRangeRejected=%u opaqueCoverage=%u packetLimit=512 packetMiB=8 sourceMiB=4",(unsigned long long)(deferredReport?deferredReportFrame:frames),unsigned(deferredReport),unsigned(deferredAllowed),queued,flushed,deferredFallback,deferredUnsafe,deferredGeometry,deferredDiscarded,queuedDomain[0],queuedDomain[1],queuedDomain[2],queuedDomain[3],earlyRangeRejected,opaqueCoverage);
+        deferredDiscarded+=unsigned(deferred.size());clearDeferred();
+        if(deferredReport||((queued||flushed||deferredFallback||deferredDiscarded)&&frames%600==0))logf("MATERIAL_DEFERRED frame=%llu sampled=%u enabled=%u queued=%u flushed=%u snapshotFallback=%u liveState=%u preparedGeometry=%u discardedUnused=%u terrain=%u walls=%u grass=%u models=%u earlyRangeRejected=%u opaqueCoverage=%u packetLimit=512 packetMiB=8 sourceMiB=24",(unsigned long long)(deferredReport?deferredReportFrame:frames),unsigned(deferredReport),unsigned(deferredAllowed),queued,flushed,deferredFallback,deferredUnsafe,deferredGeometry,deferredDiscarded,queuedDomain[0],queuedDomain[1],queuedDomain[2],queuedDomain[3],earlyRangeRejected,opaqueCoverage);
+        if(deferredReport||((queued||flushed||deferredFallback)&&frames%600==0))logf("MATERIAL_BATCH_SOURCE frame=%llu textureGuard=%u textureDraws=%u writeBarriers=%u refusedTexture=%u snapshotBudget=%u snapshotStreams=%u batchLimit=%u sourceHits=%u sourceMisses=%u sourceReadBytes=%zu sourceEntries=%zu sourceBytes=%zu sourceLimitMiB=%zu",(unsigned long long)(deferredReport?deferredReportFrame:frames),unsigned(textureWriteGuarded),deferredTextureDraws,textureBarriers,textureRefused,snapshotBudget,snapshotStreams,batchLimit,deferredSnapshots.snapshotCacheHits(),deferredSnapshots.snapshotCacheMisses(),deferredSnapshots.bytesRead(),deferredSnapshots.snapshotCacheEntries(),deferredSnapshots.snapshotCacheBytes(),deferredSnapshots.snapshotCacheLimit()>>20);
         deferredReport=false;
         queued=flushed=deferredFallback=deferredDiscarded=deferredUnsafe=deferredGeometry=0;
         std::fill(std::begin(queuedDomain),std::end(queuedDomain),0);earlyRangeRejected=opaqueCoverage=0;
+        deferredTextureDraws=textureBarriers=snapshotBudget=snapshotStreams=textureRefused=batchLimit=0;deferredSnapshots.clearFrame();
         if(occlusionRetry)--occlusionRetry;
         displacement.endFrame();
         sharedMaps[0]={};sharedMaps[1]={};sharedPOM.endFrame();if(frames%600==0)sharedPOM.report();
@@ -383,7 +426,7 @@ public:
         // An opaque native wall does not consume diffuse/vertex alpha. Use
         // the existing map-only capture, avoiding a live diffuse dependency.
         const bool opaqueWall=domain==2&&material==3&&!coverageAlpha&&!sharing;
-        const bool independent=(domain==4&&model&&model->deferredSafe)||(domain==1&&material==1)||(domain==2&&material==5)||opaqueWall;
+        const bool independent=(domain==4&&model&&model->deferredSafe&&(!model->samplers||textureWriteGuarded))||(domain==1&&material==1)||(domain==2&&material==5)||opaqueWall;
         const bool canDefer=deferredAllowed&&!memoryPressure&&multisampled&&!sharing&&!displacement.prepared()&&geometry&&independent&&v->second.deferredSafe;
         if(deferredAllowed&&multisampled){if(displacement.prepared())++deferredGeometry;else if(sharing||!independent||!v->second.deferredSafe)++deferredUnsafe;}
         saved.viewport=viewport;if(!canDefer&&!saved.save(userMemory&&!sharing,material==6&&domain!=4))return;
@@ -420,7 +463,12 @@ public:
         if(canDefer){
             const bool auxiliary=needsOcclusion&&occlusionTarget;
             NativeCapture world;world.shader=captureShader;world.constant=world.first=20;world.last=24;
+            const auto limits=batchLimit;
             if(recordCapture(*geometry,normal,auxiliary,saved,model?*model:world,v->second.patched,bank,addressU,addressV)){drawn=true;return;}++deferredFallback;
+            if(batchLimit!=limits&&!deferred.empty()){
+                if(!finishCaptures())return;
+                if(recordCapture(*geometry,normal,auxiliary,saved,model?*model:world,v->second.patched,bank,addressU,addressV)){--deferredFallback;drawn=true;return;}
+            }
         }
         if(!finishCaptures())return;
         if(canDefer&&!saved.save(userMemory&&!sharing,material==6&&domain!=4))return;

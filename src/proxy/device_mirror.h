@@ -38,6 +38,7 @@ struct DeviceMirror {
     SyncedSlots* synced=nullptr; // the spell layer's 'Model equals the device' bits (synced_slots.h): every setter below clears the slot it writes, invalidate() clears all
     std::size_t rawDepth=0; // Gate-protected; suspends caching across private extension work.
     const char* disableReason=nullptr;
+    void(*beforeDisable)(void*)=nullptr;void* disableContext=nullptr;
     IDirect3DVertexShader9* vertexShader=nullptr;bool vertexShaderKnown=false;
     bool programmableVS=false; // Accepted non-null binding, even before Get support is learned.
     IDirect3DPixelShader9* pixelShader=nullptr;bool pixelShaderKnown=false;
@@ -127,7 +128,7 @@ struct DeviceMirror {
         std::memset(vsIntKnown,0,sizeof vsIntKnown);std::memset(vsBoolKnown,0,sizeof vsBoolKnown);std::memset(psFloatKnown,0,sizeof psFloatKnown);
         std::memset(pending,0,sizeof pending);++mutations;++invalidations;
     }
-    void disable(const char* reason){MirrorGuard lock(gate);if(enabled){enabled=false;disableReason=reason;}invalidate();}
+    void disable(const char* reason){MirrorGuard lock(gate);if(enabled){auto callback=beforeDisable;beforeDisable=nullptr;if(callback)callback(disableContext);enabled=false;disableReason=reason;}invalidate();}
     // Fixed-function processing may overwrite the programmable constant banks.
     void afterDraw(bool fixed=false){if(fixed||!programmableVS){constantEpoch.invalidate();if(synced)synced->clearAll();std::memset(vsFloatKnown,0,sizeof vsFloatKnown);std::memset(vsIntKnown,0,sizeof vsIntKnown);std::memset(vsBoolKnown,0,sizeof vsBoolKnown);}}
 };

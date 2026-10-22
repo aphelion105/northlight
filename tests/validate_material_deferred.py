@@ -12,6 +12,8 @@ p.add_argument('--backend',required=True);p.add_argument('--benchmark',action='s
 p.add_argument('--family',choices=['models','terrain','wall'],default='models')
 p.add_argument('--vertex-alpha-zero',action='store_true')
 p.add_argument('--wall-diffuse',action='store_true',help='Exercise an opaque draw using the diffuse-alpha WMO pixel program')
+p.add_argument('--alpha-test',action='store_true',help='Preserve native alpha coverage and exercise guarded texture-dependent captures')
+p.add_argument('--texture-guard',action='store_true',help='Simulate the serialized production texture-write contract')
 p.add_argument('--baseline-ref',help='Compare the coverage defect / far admission with a previous commit')
 p.add_argument('--occlusion-off',action='store_true',help='Match a normal-only capture without the auxiliary MRT')
 p.add_argument('--reuse-exe',type=Path);p.add_argument('--quick',action='store_true')
@@ -43,6 +45,9 @@ def run(exe,source,label,on,samples=2,**flags):
     env.update({'NORTHLIGHT_TEST_'+k:str(v) for k,v in flags.items()})
     if a.occlusion_off:env['NORTHLIGHT_TEST_MATERIAL_BATCH_NO_OCCLUSION']='1'
     if a.vertex_alpha_zero:env['NORTHLIGHT_TEST_VERTEX_ALPHA_ZERO']='1'
+    if a.alpha_test:env['NORTHLIGHT_TEST_MATERIAL_ALPHA_TEST']='1'
+    if a.texture_guard:env['NORTHLIGHT_TEST_TEXTURE_GUARD']='1'
+    if flags.get('TEXTURE_GUARD_OFF'):env.pop('NORTHLIGHT_TEST_TEXTURE_GUARD',None)
     if on:env['NORTHLIGHT_TEST_DEFERRED_CAPTURE']='1'
     variant=['model4' if 'weighted4' in source.name else 'modelunsafe' if 'varying' in source.name else 'model'] if a.family=='models' else [] if a.family=='terrain' else ['wall']
     r=subprocess.run([str(exe),backend,str(folder)+'/', '12','.7',*variant],env=env,cwd=out,capture_output=True,text=True,timeout=180)
@@ -55,7 +60,7 @@ def compare(folders,pattern):
     for f in files:assert f.read_bytes()==(folders[1]/f.name).read_bytes(),(str(f), 'not bit exact')
     return len(files)
 
-source=fp.out()/('model-materials-dxvk/3-weighted4-combiners_opaque' if a.family=='models' else 'material-msaa-release/'+a.family)
+source=fp.out()/(('model-materials-dxvk/3-weighted4-combiners_mod_mod' if a.alpha_test else 'model-materials-dxvk/3-weighted4-combiners_opaque') if a.family=='models' else 'material-msaa-release/'+a.family)
 assert source.exists(),('Prepare validate_model_materials.py fixtures first' if a.family=='models' else 'Prepare validate_parallax_msaa.py --output-subdir material-msaa-release fixtures first')
 exe=a.reuse_exe.resolve() if a.reuse_exe else compile_fixture(320,200,'deferred-check')
 records=[]
@@ -65,12 +70,17 @@ if not a.reuse_exe:
         runs=[run(exe,fixture,'model-'+fixture.name,on) for on in [0,1]];pair=[r[0] for r in runs]
         if fixture==source:assert 'MATERIAL_DEFERRED_MODE mode=1 queued=1 flushed=1' in runs[1][1]
         count=compare(pair,'*.fgr');records.append(dict(fixture=fixture.name,outputs=count,bit_exact=True))
+    if a.texture_guard and a.alpha_test:
+        folder,log=run(exe,source,'texture-guard-off',1,TEXTURE_GUARD_OFF=1)
+        assert 'MATERIAL_DEFERRED_MODE mode=1 queued=0 flushed=0' in log
+        records.append(dict(safety='TEXTURE_GUARD_OFF',outputs=compare([out/('model-'+source.name+'-1'),folder],'*.fgr'),bit_exact=True))
     for samples in [0,4,8]:
         pair=[run(exe,source,'msaa-'+str(samples),on,samples)[0] for on in [0,1]]
         records.append(dict(msaa=samples,outputs=compare(pair,'*.fgr'),bit_exact=True))
-    for flag in ['DEFERRED_MUTATION','DEFERRED_BARRIER','DEFERRED_UNUSED','DEFERRED_LIMIT']:
+    for flag in ['DEFERRED_MUTATION','DEFERRED_BARRIER','DEFERRED_UNUSED','DEFERRED_LIMIT','DEFERRED_MULTISTREAM']+(['DEFERRED_TEXTURE_WRITE'] if a.texture_guard and a.alpha_test else []):
         runs=[run(exe,source,flag.lower(),on,MATERIAL_BATCH_TIMING=1,MATERIAL_BATCH_VALIDATE=1,**{flag:1}) for on in [0,1]];pair=[r[0] for r in runs]
         if flag=='DEFERRED_UNUSED':assert 'MATERIAL_DEFERRED_UNUSED_PASS' in runs[1][1]
+        if flag=='DEFERRED_MULTISTREAM':assert 'MATERIAL_MULTISTREAM_PREFLIGHT_PASS' in runs[1][1]
         records.append(dict(safety=flag,outputs=compare(pair,'batch-*.fgr'),bit_exact=True))
     _,log=run(exe,source,'deferred-failure',1,MATERIAL_BATCH_TIMING=1,DEFERRED_FAILURE=1)
     assert 'MATERIAL_DEFERRED_FAILURE_PASS' in log
@@ -125,6 +135,6 @@ if a.benchmark or a.reuse_exe:
     for on in [0,1]:result['deferred' if on else 'immediate']={key:statistics.median(r[key] for r in timings if r['deferred']==on) for key in ['gpu_ms','cpu_ms']}
     result['gpu_reduction_percent']=100*(1-result['deferred']['gpu_ms']/result['immediate']['gpu_ms'])
 else:result=dict(backend=backend,checks=records)
-result.update(family=a.family,vertex_alpha_zero=a.vertex_alpha_zero,wall_diffuse=a.wall_diffuse,baseline_ref=a.baseline_ref)
+result.update(family=a.family,vertex_alpha_zero=a.vertex_alpha_zero,wall_diffuse=a.wall_diffuse,baseline_ref=a.baseline_ref,alpha_test=a.alpha_test,texture_guard=a.texture_guard)
 (out/'validation.json').write_text(json.dumps(result,indent=2)+'\n',encoding='utf-8')
 print('MATERIAL_DEFERRED_PASS',json.dumps(result),flush=True)
