@@ -15,11 +15,14 @@ template<class T>static void drop(T*& p){if(p)p->Release();p=nullptr;}
 static void logf(const char*,...){}
 #include "quality_settings.h"
 #include "auto_displacement_renderer.h"
+#include "saved_state.h"
+#include "auto_bump_renderer.h"
 #include "device_mirror.h"
 
 struct DisplacementStateTestAccess {
     using Mesh=NorthlightDrawSnapshot::Mesh;
     static void cache();
+    static void capture();
     static void posed(){
         using namespace NorthlightWaterShaderPatch;using namespace NorthlightActorDeformation;
         NorthlightAutoDisplacement g(nullptr);Program p;p.major=3;p.positionRegister=0;p.skinned=true;
@@ -160,7 +163,100 @@ struct SplitDeclaration:Declaration {
         if(*count<3)return D3DERR_INVALIDCALL;const D3DVERTEXELEMENT9 e[]={{0,0,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_POSITION,0},{1,0,D3DDECLTYPE_D3DCOLOR,0,D3DDECLUSAGE_COLOR,0},D3DDECL_END()};std::memcpy(out,e,sizeof e);*count=3;return D3D_OK;
     }
 };
+template<class Interface> struct CaptureShader:Interface {
+    unsigned refs=1,reads=0;
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID,void**)override{return E_NOINTERFACE;}
+    ULONG STDMETHODCALLTYPE AddRef()override{return ++refs;}
+    ULONG STDMETHODCALLTYPE Release()override{assert(refs);return --refs;}
+    HRESULT STDMETHODCALLTYPE GetDevice(IDirect3DDevice9**)override{return E_FAIL;}
+    HRESULT STDMETHODCALLTYPE GetFunction(void*,UINT*)override{++reads;return E_FAIL;}
+};
+struct CaptureSurface:IDirect3DSurface9 {
+    unsigned refs=1;UINT size=64;D3DMULTISAMPLE_TYPE samples=D3DMULTISAMPLE_2_SAMPLES;
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID,void**)override{return E_NOINTERFACE;}
+    ULONG STDMETHODCALLTYPE AddRef()override{return ++refs;}
+    ULONG STDMETHODCALLTYPE Release()override{assert(refs);return --refs;}
+    HRESULT STDMETHODCALLTYPE GetDevice(IDirect3DDevice9**)override{return E_FAIL;}
+    HRESULT STDMETHODCALLTYPE SetPrivateData(REFGUID,const void*,DWORD,DWORD)override{return E_FAIL;}
+    HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID,void*,DWORD*)override{return E_FAIL;}
+    HRESULT STDMETHODCALLTYPE FreePrivateData(REFGUID)override{return E_FAIL;}
+    DWORD STDMETHODCALLTYPE SetPriority(DWORD)override{return 0;}
+    DWORD STDMETHODCALLTYPE GetPriority()override{return 0;}
+    void STDMETHODCALLTYPE PreLoad()override{}
+    D3DRESOURCETYPE STDMETHODCALLTYPE GetType()override{return D3DRTYPE_SURFACE;}
+    HRESULT STDMETHODCALLTYPE GetContainer(REFIID,void**)override{return E_FAIL;}
+    HRESULT STDMETHODCALLTYPE GetDesc(D3DSURFACE_DESC* out)override{*out={D3DFMT_A8R8G8B8,D3DRTYPE_SURFACE,D3DUSAGE_RENDERTARGET,D3DPOOL_DEFAULT,samples,0,size,size};return D3D_OK;}
+    HRESULT STDMETHODCALLTYPE LockRect(D3DLOCKED_RECT*,const RECT*,DWORD)override{return E_FAIL;}
+    HRESULT STDMETHODCALLTYPE UnlockRect()override{return E_FAIL;}
+    HRESULT STDMETHODCALLTYPE GetDC(HDC*)override{return E_FAIL;}
+    HRESULT STDMETHODCALLTYPE ReleaseDC(HDC)override{return E_FAIL;}
+};
+struct CaptureBackend:Backend {
+    CaptureShader<IDirect3DVertexShader9> vs;CaptureShader<IDirect3DPixelShader9> ps;CaptureSurface surface;
+    struct SkinDeclaration:Declaration {
+        HRESULT STDMETHODCALLTYPE GetDeclaration(D3DVERTEXELEMENT9* out,UINT* count)override{
+            if(*count<3)return D3DERR_INVALIDCALL;
+            const D3DVERTEXELEMENT9 e[]={{0,0,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_POSITION,0},{0,12,D3DDECLTYPE_UBYTE4,0,D3DDECLUSAGE_BLENDINDICES,0},D3DDECL_END()};std::memcpy(out,e,sizeof e);*count=3;return D3D_OK;
+        }
+    } decl;
+    unsigned pixelConstants=0,textures=0,samplers=0,depthAllocations=0;
+    HRESULT STDMETHODCALLTYPE GetPixelShader(IDirect3DPixelShader9** out)override{*out=&ps;ps.AddRef();return D3D_OK;}
+    HRESULT STDMETHODCALLTYPE GetVertexDeclaration(IDirect3DVertexDeclaration9** out)override{*out=&decl;decl.AddRef();return D3D_OK;}
+    HRESULT STDMETHODCALLTYPE GetViewport(D3DVIEWPORT9* out)override{*out={0,0,surface.size,surface.size,0,1};return D3D_OK;}
+    HRESULT STDMETHODCALLTYPE GetRenderTarget(DWORD n,IDirect3DSurface9** out)override{*out=n?nullptr:&surface;if(n)return D3DERR_NOTFOUND;surface.AddRef();return D3D_OK;}
+    HRESULT STDMETHODCALLTYPE GetDepthStencilSurface(IDirect3DSurface9** out)override{*out=&surface;surface.AddRef();return D3D_OK;}
+    HRESULT STDMETHODCALLTYPE GetRenderState(D3DRENDERSTATETYPE key,DWORD* out)override{
+        *out=key==D3DRS_ZENABLE||key==D3DRS_ZWRITEENABLE?TRUE:key==D3DRS_ZFUNC?D3DCMP_LESSEQUAL:key==D3DRS_COLORWRITEENABLE?15:0;return D3D_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetPixelShaderConstantF(UINT,float*,UINT)override{++pixelConstants;return E_FAIL;}
+    HRESULT STDMETHODCALLTYPE GetSamplerState(DWORD,D3DSAMPLERSTATETYPE,DWORD*)override{++samplers;return E_FAIL;}
+    HRESULT STDMETHODCALLTYPE GetTexture(DWORD,IDirect3DBaseTexture9** out)override{++textures;*out=nullptr;return D3D_OK;}
+    HRESULT STDMETHODCALLTYPE CreateDepthStencilSurface(UINT,UINT,D3DFORMAT,D3DMULTISAMPLE_TYPE,DWORD,BOOL,IDirect3DSurface9**,HANDLE*)override{++depthAllocations;return E_FAIL;}
+};
+struct MaterialCaptureStateTestAccess {
+    static NorthlightAutoDisplacement& setup(NorthlightAutoBump& b,CaptureBackend& d,unsigned domain){
+        b.enabled=true;b.width=b.heightPixels=d.surface.size;
+        for(auto& mode:b.modes)mode=0;b.modes[domain-1]=3;
+        d.vs.AddRef();b.vertices[&d.vs]={&d.vs,domain};b.pixels[&d.ps]=1;return b.displacement;
+    }
+    static unsigned rejected(const NorthlightAutoBump& b){return b.rangeRejected;}
+};
+void DisplacementStateTestAccess::capture(){
+    using namespace NorthlightWaterShaderPatch;using namespace NorthlightActorDeformation;
+    for(unsigned domain:{1u,4u})for(bool skinned:{false,true})for(auto samples:{D3DMULTISAMPLE_NONE,D3DMULTISAMPLE_2_SAMPLES}){
+        CaptureBackend d;d.surface.samples=samples;{
+            NorthlightAutoBump b(&d);auto& g=MaterialCaptureStateTestAccess::setup(b,d,domain);
+            NorthlightAutoDisplacement::Material m;m.skinned=true;m.id=1;m.count=3;m.view.major=3;m.view.positionRegister=0;m.view.skinned=true;
+            m.view.inputs={{0,D3DDECLUSAGE_POSITION,0},{1,D3DDECLUSAGE_BLENDINDICES,0}};
+            Operation address;address.code=46;address.destination=dst(3,0,1);address.source[0].token=src(1,1,0);m.view.operations.push_back(address);
+            Operation add;add.code=2;add.destination=dst(0,0);add.source[0].token=src(1,0);add.source[1].token=src(2,0)|0x2000;add.source[1].address=src(3,0,0);m.view.operations.push_back(add);
+            if(!skinned){m.skinned=m.view.skinned=false;m.view.inputs.resize(1);m.view.operations.erase(m.view.operations.begin());m.view.operations[0].source[1].token=src(2,0);m.view.operations[0].source[1].address=0;}
+            g.materials[&d.vs]=std::move(m);d.vs.AddRef();g.shaders[&d.vs].patched=&d.vs;
+            struct V{float x,y,z;unsigned bone;} vertices[]={{0,0,0,0},{1,0,0,1},{0,1,0,2}};
+            NorthlightAutoDisplacement::Args args{{D3DPT_TRIANGLELIST,0,0,3,0,1,false},nullptr,D3DFMT_UNKNOWN,vertices,16};
+            auto seed=[&]{Mesh mesh;assert(g.snapshots.readUP(&d.decl,args.draw,nullptr,D3DFMT_UNKNOWN,vertices,16,mesh));
+                auto e=std::make_unique<NorthlightAutoDisplacement::Entry>();e->source=std::make_shared<Mesh>(std::move(mesh));e->sourceDecl=&d.decl;d.decl.AddRef();e->program=1;e->domain=domain;g.retain(std::move(e));};
+            unsigned replayed=0;auto capture=[&]{b.beginDraw();b.capture(&d.vs,[&]{++replayed;return D3D_OK;},true,&args);};
+            for(UINT size:{64u,128u}){ // A size change clears geometry; warm a fresh immutable source afterwards.
+                d.surface.size=size;for(unsigned i=0;i<3;++i)d.bank[4*i+2]=100;
+                capture();seed();bool ready=false;
+                for(unsigned f=0;f<20&&!ready;++f){b.endFrame();capture();ready=MaterialCaptureStateTestAccess::rejected(b)>0;}assert(ready);
+                const auto reads=d.ps.reads,constants=d.pixelConstants,textures=d.textures,samplers=d.samplers,allocations=d.depthAllocations;
+                for(unsigned f=0;f<8;++f){b.endFrame();capture();assert(MaterialCaptureStateTestAccess::rejected(b)>0);}
+                assert(d.ps.reads==reads&&d.pixelConstants==constants&&d.textures==textures&&d.samplers==samplers&&d.depthAllocations==allocations&&!replayed);
+                unsigned native=0;assert(SUCCEEDED(b.nativeDraw([&]{++native;return D3D_OK;}))&&native==1);
+                b.endFrame();for(unsigned i=0;i<3;++i)d.bank[4*i+2]=0;capture();assert(!MaterialCaptureStateTestAccess::rejected(b));
+                if(domain==1)assert(d.pixelConstants==constants+1); // Near/unknown proof reaches capture, even when its state save fails.
+                b.endFrame();for(unsigned i=0;i<3;++i)d.bank[4*i+2]=NAN;capture();assert(!MaterialCaptureStateTestAccess::rejected(b));
+                b.endFrame();for(unsigned i=0;i<3;++i)d.bank[4*i+2]=100;
+                auto& op=g.materials[&d.vs].view.operations.back();const auto code=op.code;op.code=6;capture();assert(!MaterialCaptureStateTestAccess::rejected(b));op.code=code;
+            }
+        }assert(d.vs.refs==1&&d.ps.refs==1&&d.surface.refs==1&&d.decl.refs==1);
+    }
+    std::puts("MATERIAL_CAPTURE_ADMISSION_PASS farDraws=128 rigid_skinned zero_capture_setup near_unknown_nonfinite_fail_open native_retained msaa resize refs");
+}
 int main(){
+    DisplacementStateTestAccess::capture();
     DisplacementStateTestAccess::cache();
     DisplacementStateTestAccess::posed();
     {SplitDeclaration decl;DisplacementStateTestAccess::positionOnly(&decl);}

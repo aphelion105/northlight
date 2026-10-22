@@ -79,6 +79,21 @@ class NorthlightAutoDisplacement {
         std::copy(result.low,result.low+3,low);std::copy(result.high,result.high+3,high);
         lastDepthLower=std::max(0.f,std::nextafter(low[2]>0?low[2]:high[2]<0?-high[2]:0,-INFINITY)-.001f);return true;
     }
+    static unsigned rangeInput(const Program& program){
+        unsigned input=16;for(const auto& i:program.inputs){if(i.usage!=D3DDECLUSAGE_POSITION||i.index||i.reg>=16)return 16;input=i.reg;}
+        if(!NorthlightReplayBounds::detail::linear(program))return 16;
+        for(const auto& op:program.operations)for(const auto& source:op.source)if(source.token&0x2000)return 16;
+        return input;
+    }
+    static bool nearestViewDepth(const Program& program,unsigned input,const float* low,const float* high,const float* bank,float& nearest){
+        if(input>=16)return false;
+        NorthlightReplayBounds::detail::Vector inputs[16]={},view;
+        for(unsigned k=0;k<3;++k){const float middle=float((double(low[k])+high[k])*.5);inputs[input][k]={middle,std::max(double(middle)-low[k],double(high[k])-middle)};}
+        inputs[input][3]={1,0};if(!NorthlightReplayBounds::detail::evaluateIntervals(program,inputs,bank,view))return false;
+        const double lo=double(view[2].value)-view[2].error,hi=double(view[2].value)+view[2].error;
+        if(!std::isfinite(lo)||!std::isfinite(hi))return false;
+        nearest=std::max(0.f,std::nextafter(float(lo>0?lo:hi<0?-hi:0),-INFINITY)-.001f);return true;
+    }
     static bool sameSource(const Entry& e,const std::shared_ptr<const Mesh>& source,bool equivalent){return e.source==source||(equivalent&&e.source->vertexCount==source->vertexCount&&e.source->primitiveCount==source->primitiveCount&&e.source->topology==source->topology&&e.source->indexed==source->indexed&&e.source->streams[0].bytes==source->streams[0].bytes&&e.source->indices==source->indices);}
     static uint64_t sourceFingerprint(const Mesh& source){
         uint64_t h=1469598103934665603ull;auto add=[&](uint64_t v){h^=v;h*=1099511628211ull;};
@@ -206,8 +221,7 @@ public:
     bool nearestMaterialDepth(IDirect3DVertexShader9* original,const Args& args,float& nearest){
         auto shader=materials.find(original);if(shader==materials.end()||shader->second.skinned)return false;
         const auto& program=shader->second.view;
-        unsigned input=16;for(const auto& i:program.inputs){if(i.usage!=D3DDECLUSAGE_POSITION||i.index||i.reg>=16)return false;input=i.reg;}if(input==16||!NorthlightReplayBounds::detail::linear(program))return false;
-        for(const auto& op:program.operations)for(const auto& source:op.source)if(source.token&0x2000)return false;
+        const unsigned input=rangeInput(program);if(input==16)return false;
         if(FAILED(d->GetVertexShaderConstantF(shader->second.first,rangeConstants+shader->second.first*4,shader->second.count)))return false;
         NorthlightDrawSnapshot::Ref<IDirect3DVertexDeclaration9> decl;if(FAILED(d->GetVertexDeclaration(decl.out()))||!decl.p)return false;
         const D3DVERTEXELEMENT9* elements=nullptr;UINT count=0;if(!declarations.get(decl.p,elements,count))return false;
@@ -229,12 +243,7 @@ public:
             boundsBytes+=bytes;found=bounds.emplace(source.get(),std::move(b)).first;
         }
         auto& b=found->second;b.used=++clock;
-        NorthlightReplayBounds::detail::Vector inputs[16]={},view;
-        for(unsigned k=0;k<3;++k){const float middle=float((double(b.low[k])+b.high[k])*.5);inputs[input][k]={middle,std::max(double(middle)-b.low[k],double(b.high[k])-middle)};}
-        inputs[input][3]={1,0};if(!NorthlightReplayBounds::detail::evaluateIntervals(program,inputs,rangeConstants,view))return false;
-        const double low=double(view[2].value)-view[2].error,high=double(view[2].value)+view[2].error;
-        if(!std::isfinite(low)||!std::isfinite(high))return false;
-        nearest=std::max(0.f,std::nextafter(float(low>0?low:high<0?-high:0),-INFINITY)-.001f);return true;
+        return nearestViewDepth(program,input,b.low,b.high,rangeConstants,nearest);
     }
     unsigned preparedPrimitives()const{return current?current->primitives:0;}
     void beginDraw(){current=nullptr;lastDepthLower=0;}
@@ -305,6 +314,7 @@ m.layered=NorthlightActorDeformation::compile(words,count,m.uv1,true,2,5,1)&&Nor
             for(unsigned i=0;i<source->vertexCount;++i){NorthlightActorDeformation::Four input[16],view;if(!NorthlightActorDeformation::sampledVertexInputsAt(shader->second.view,*source,elements,count,i,input)||!NorthlightActorDeformation::evaluateFast(shader->second.view,input,constants,view))return false;
                 for(unsigned k=0;k<3;++k){if(!std::isfinite(view[k]))return false;low[k]=std::min(low[k],view[k]);high[k]=std::max(high[k],view[k]);}}
         }else{foundBounds->second.used=++clock;const auto& b=foundBounds->second;
+            nearestViewDepth(shader->second.view,rangeInput(shader->second.view),b.low,b.high,constants,lastDepthLower);
             for(unsigned r=0;r<3;++r){low[r]=high[r]=controls[r][3];for(unsigned k=0;k<3;++k){const float a=controls[r][k]*b.low[k],z=controls[r][k]*b.high[k];low[r]+=std::min(a,z);high[r]+=std::max(a,z);}}}
         float closestSquared=0;for(unsigned r=0;r<3;++r){float v=low[r]>0?low[r]:high[r]<0?high[r]:0;closestSquared+=v*v;}if(closestSquared>=range*range){++distanceRejected;return false;}
         if(shader->second.skinned){const float a=range*range,b=a*.5625f;controls[0][0]=strength*std::clamp((a-closestSquared)/(a-b),0.f,1.f);controls[0][1]=controls[0][2]=controls[0][3]=0;}

@@ -11,6 +11,7 @@
 // Prototype: one material-height replay per recognised draw; source textures remain intact.
 // Included after drop and logf. Original resources stay intact; displacement draws use private subdivided buffers.
 class NorthlightAutoBump {
+    friend struct MaterialCaptureStateTestAccess;
     IDirect3DDevice9* d;
     NorthlightAutoNormalCache normals;
     NorthlightAutoParallax parallax;
@@ -46,7 +47,7 @@ class NorthlightAutoBump {
         bool save(bool up,bool twoLayers=false){
             composite=twoLayers;
             if(composite){if(FAILED(d->GetTexture(3,&texture3)))return false;for(unsigned i=0;i<8;++i)if(FAILED(d->GetSamplerState(3,samplerKeys[i],&samplerValues3[i])))return false;}
-            if(!pixel||FAILED(d->GetRenderTarget(0,&target))||!target||
+            if(!pixel||!target||
                FAILED(d->GetPixelShaderConstantF(constantBase,constant,5))||FAILED(d->GetTexture(normalStage,&texture2)))return false;
             for(unsigned i=0;i<8;++i)if(FAILED(d->GetSamplerState(normalStage,samplerKeys[i],&samplerValues[i])))return false;
             if(up){if(FAILED(d->GetStreamSource(0,&stream,&offset,&stride))||FAILED(d->GetIndices(&indices)))return false;userMemory=true;}
@@ -209,18 +210,21 @@ public:
         if(!(s[4].value&7)||(!s[0].value&&domain!=1)||
            (s[5].value&&(s[7].value!=D3DBLEND_SRCALPHA||s[8].value!=D3DBLEND_INVSRCALPHA))||
            (alpha&&alphaFunc!=D3DCMP_GREATER&&alphaFunc!=D3DCMP_GREATEREQUAL))return;
-        if(domain==4){model=modelCapture(native,alpha);if(!model)return;saved.constantBase=model->constant;saved.normalStage=14;}
-        saved.viewport=viewport;if(!saved.save(userMemory,material==6&&domain!=4))return;
+        if(FAILED(d->GetRenderTarget(0,&saved.target))||!saved.target)return;
         D3DSURFACE_DESC desc{};if(FAILED(saved.target->GetDesc(&desc)))return;
         if(desc.Width!=viewport.Width||desc.Height!=viewport.Height){++rejected;return;}
         if(width!=desc.Width||heightPixels!=desc.Height){reset();width=desc.Width;heightPixels=desc.Height;}
+        // A distant proof needs no capture constants, samplers or private depth.
+        // Resolve the target size first: reset() would discard prepared geometry.
+        if(domain<=4&&modes[domain-1]==3&&geometry){displacement.prepare(original,domain,material,*geometry);
+            if(displacement.nearestPreparedDepth()>range){++rangeTests;++rangeRejected;return;}}
+        if(domain==4){model=modelCapture(native,alpha);if(!model)return;saved.constantBase=model->constant;saved.normalStage=14;}
+        saved.viewport=viewport;if(!saved.save(userMemory,material==6&&domain!=4))return;
         const bool multisampled=desc.MultiSampleType!=D3DMULTISAMPLE_NONE;
         if(multisampled){
             if(!captureDepth&&!check(d->CreateDepthStencilSurface(width,heightPixels,D3DFMT_D24S8,D3DMULTISAMPLE_NONE,0,FALSE,&captureDepth,nullptr),"material depth"))return;
             saved.states[0].replay=saved.states[0].value;
         }else drop(saved.depth);
-        if(domain<=4&&modes[domain-1]==3&&geometry){displacement.prepare(original,domain,material,*geometry);
-            if(displacement.nearestPreparedDepth()>range){++rangeTests;++rangeRejected;return;}}
         if(!height){
             const std::uint64_t bytes=std::uint64_t(width)*heightPixels*8;
             MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;
