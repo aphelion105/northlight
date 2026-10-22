@@ -3605,9 +3605,11 @@ public:
             }
         }
     }
-    // The later cascades' replay culling (per packet: the static proof's containment in the slot's cached matrix, bit 0; the pose
-    // bounds' clip test against the slot's matrix, bit 1). Kicked after the frame's first bounds join for every later active slot and
-    // read at that slot's replay loop when both matrices still match (else the loop tests inline, as before). Reads the packets only.
+    // The active cascades' replay culling (per packet: the static proof's containment in the slot's cached matrix, bit 0; the pose
+    // bounds' clip test against the slot's matrix, bit 1). 0.3.217 (jobs): kicked once, for the first rendering slot and every later
+    // active slot, right after the frame's bounds join and before that slot's static cache and live-terrain draws (its matrices are final
+    // since the frame placement), so the first slot's test overlaps its own D3D work too; read at that slot's replay loop when both
+    // matrices still match (else the loop tests inline, as before). Reads the packets only.
     struct ReplayCull {WorldRenderer* r=nullptr;int slot=0;bool kicked=false;float matrix[16]={},cached[16]={};std::vector<uint8_t> flags;NorthlightJobs::Counter done;
         void operator()(){r->replayCullWork(*this);}};
     ReplayCull replayCulls[4];
@@ -3618,8 +3620,8 @@ public:
             if(affine&&p.pointBounds.valid&&NorthlightShadowBounds::clipRejectAffine(V(p.pointBounds.low[0],p.pointBounds.low[1],p.pointBounds.low[2]),V(p.pointBounds.high[0],p.pointBounds.high[1],p.pointBounds.high[2]),job.matrix))f|=2;
             job.flags[index]=f;}
     }
-    void replayCullKick(int fromSlot,const bool* sourceActive){
-        for(int slot=fromSlot+1;slot<4;++slot){if(!sourceActive[slot/2])continue;auto& job=replayCulls[slot];
+    void replayCullKick(int fromSlot,const bool* sourceActive){ /* 0.3.217 (jobs): fromSlot itself included */
+        for(int slot=fromSlot;slot<4;++slot){if(!sourceActive[slot/2])continue;auto& job=replayCulls[slot];
             job.r=this;job.slot=slot;std::memcpy(job.matrix,sourceMatrices[slot/2][slot%2],sizeof job.matrix);std::memcpy(job.cached,staticSlotMatrix[slot],sizeof job.cached);
             job.kicked=true;replayJobs_.kick(job.done,job);}
     }
@@ -3820,7 +3822,7 @@ public:
         bucket(NorthlightEffectsBuckets::ShadowSetup);
         if(!jobs)terrainJob(); /* 0.3.200 (jobs): ReplayJobs=0 prepares here, as before; ReplayJobs=1 joins at the first terrain draw below */
         bucket(NorthlightEffectsBuckets::TerrainSelection);
-        // 0.3.200 (jobs): the later slots' replay culling is kicked at the frame's first bounds join (replayCullKick), joined per slot and here.
+        // 0.3.200 (jobs): the replay culling is kicked once (replayCullKick; 0.3.217: from the first rendering slot, before its static and terrain draws), joined per slot and here.
         bool replayCullsKicked=false;struct CullSettle {WorldRenderer& r;~CullSettle(){r.replayCullSettle();}} cullSettle{*this};
         bool anyShadowCacheRender=false;
         ++shadowPasses;
@@ -3949,6 +3951,10 @@ public:
             reuse.begin(interval); /* nothing written yet; a failure below stays unusable */
             if(cascade==0)actorValid[source]=nearActorSkip[source]=false; /* 0.3.209 (task 29): redrawn with this near map below; a reused near map (above) keeps the actor map and matrix it was made with */
             if(cascade==0)nearRendered=captureMode==CaptureFresh&&interval>1&&actorShadows;
+            // 0.3.217 (jobs): this slot's matrices (sourceMatrices, staticSlotMatrix: set before the loop), the packets, pointBounds (the bounds join) and the static proofs
+            // (prepareStaticProofs) are final here and nothing below changes them: the culling of this and every later active slot runs on the workers while this slot
+            // draws its static cache and terrain. The bounds job was kicked before the upload window, so its join here normally finds it done.
+            if(jobs&&actorShadows&&!replayCullsKicked){replayCullsKicked=true;replayBoundsJoin();replayCullKick(slot,sourceActive);}
             if(NorthlightStaticPrebuild::Scheduler::Enabled&&reason)staticPrebuild.rerender(source,cascade,cachedMatrix,!std::strcmp(reason,"direction"),staticCasters.planReady(cachedMatrix),[&](const float* m){staticCasters.discardPlan(m);});
             if(reason){
                 // Static batches only, over the margin extent, keyed for reuse.
@@ -4003,7 +4009,6 @@ public:
             }
             if(actorShadows){ /* 0.3.158: ActorShadows=0 draws no replays; terrain above and the union below stay */
             replayBoundsJoin(); /* 0.3.143: first pointBounds reader */
-            if(jobs&&!replayCullsKicked){replayCullsKicked=true;replayCullKick(slot,sourceActive);} /* 0.3.200 (jobs): the bounds are final; this slot tests inline */
             const uint8_t* cull=replayCullFor(slot,cachedMatrix,matrices[cascade]); /* null: tested inline below, as before */
             float rows[16];NorthlightWorldMath::replayProjection(context.inverseView,matrices[cascade],rows);
             d->SetPixelShader(replayPS);

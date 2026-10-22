@@ -32,15 +32,19 @@ check('lazy start on the renderer thread inside render() after the upload, never
       and render.index('const bool jobs=jobsStart();')>render.index('bucket(NorthlightEffectsBuckets::Upload);'))
 check('ReplayJobs=0 or no worker: nothing kicked','bool jobsOn()const{return quality.replayJobs!=0&&replayJobs_.started();}' in w
       and w.count('replayJobs_.kick(')==3 and all('if(jobs)replayJobs_.kick(' in l or 'job.kicked=true;replayJobs_.kick(' in l for l in w.splitlines() if 'replayJobs_.kick(' in l)
-      and 'if(jobs&&!replayCullsKicked)' in render)
+      and 'if(jobs&&actorShadows&&!replayCullsKicked)' in render)
 kicked=sorted(m.group(1) for m in re.finditer(r'replayJobs_\.kick\([\w.]+,(\w+)\)',w))
 check('three jobs: atmosphere, terrain candidates, replay cull',kicked==['atmosphereJob','job','terrainJob'],' '.join(kicked))
 check('each body inline at its old place with ReplayJobs=0, joined there (or at the first reader) with 1',
       'if(jobs)replayJobs_.wait(atmosphereDone);else atmosphereWork(atmosphere,nearZ,w,h,debug);' in render
       and 'if(!jobs)terrainJob();' in render and render.index('if(!jobs)terrainJob();')<render.index('bucket(NorthlightEffectsBuckets::TerrainSelection);')
       and render.index('if(jobs)replayJobs_.wait(terrainDone);')<render.index('if(!terrainCandidates.forEach(')
-      and 'if(jobs&&!replayCullsKicked){replayCullsKicked=true;replayCullKick(slot,sourceActive);}' in render
-      and render.index('replayBoundsJoin(); /* 0.3.143: first pointBounds reader */')<render.index('replayCullKick(slot,sourceActive)')
+      and 'if(jobs&&actorShadows&&!replayCullsKicked){replayCullsKicked=true;replayBoundsJoin();replayCullKick(slot,sourceActive);}' in render
+      and render.count('replayCullKick(slot,sourceActive)')==1 and 'for(int slot=fromSlot;slot<4;++slot){' in w
+      and render.index('replayCullKick(slot,sourceActive)')<render.index('const int rendered=renderCache(shadowCacheSurface[slot],partialStatic,true);') # 0.3.217: kicked before the first rendering slot static cache and terrain draws
+      and render.index('replayCullKick(slot,sourceActive)')<render.index('if(jobs)replayJobs_.wait(terrainDone); /* 0.3.200 (jobs): the candidates')
+      and render.index('replayBoundsJoin(); /* 0.3.143: first pointBounds reader */')>render.index('replayCullKick(slot,sourceActive)')
+      and render.index('const uint8_t* cull=replayCullFor(slot,cachedMatrix,matrices[cascade]);')>render.index('replayCullKick(slot,sourceActive)')
       and '(cull?(cull[index]&1)!=0:StaticShadow::containsBounds(cachedMatrix,p->staticProofLow,p->staticProofHigh))' in render
       and '(cull?(cull[index]&2)!=0:(replayAffine&&NorthlightShadowBounds::clipRejectAffine(' in render)
 check('a later slot uses its job only when both matrices still match',
