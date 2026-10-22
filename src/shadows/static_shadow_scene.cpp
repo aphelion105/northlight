@@ -86,24 +86,37 @@ bool readTile(const std::string& path,std::vector<Placement>& out,size_t& bytes,
     return true;
 }
 float distance2(Vec3 a,Vec3 b){return NorthlightGI::dot(a-b,a-b);}
+class SelectionVolume {
+    const Request& request;
+    struct Axes {Vec3 direction,right,up;bool prepared=false,valid=false;};
+    Axes axes[2];
+public:
+    explicit SelectionVolume(const Request& r):request(r){}
+    bool contains(Vec3 low,Vec3 high,float margin=96.f){
+        Vec3 center=(low+high)*.5f,extent=(high-low)*.5f,delta=center-request.center;
+        // Retain near fallback geometry and nearby unlit street surfaces.
+        if(std::fabs(delta.x)<=288+margin+extent.x&&std::fabs(delta.y)<=288+margin+extent.y&&std::fabs(delta.z)<=320+margin+extent.z)return true;
+        for(unsigned i=0;i<2;++i)if(request.active[i]){
+            auto& a=axes[i];
+            if(!a.prepared){
+                a.prepared=true;a.direction=NorthlightGI::normalized(request.directions[i]);
+                a.valid=NorthlightGI::dot(a.direction,a.direction)>=.5f;
+                if(a.valid){Vec3 ref=std::fabs(a.direction.z)>.95f?Vec3(0,1,0):Vec3(0,0,1);a.right=NorthlightGI::normalized(NorthlightGI::cross(a.direction,ref));a.up=NorthlightGI::cross(a.right,a.direction);}
+            }
+            if(!a.valid)continue;
+            auto overlaps=[&](Vec3 axis,float reach){float projected=std::fabs(axis.x)*extent.x+std::fabs(axis.y)*extent.y+std::fabs(axis.z)*extent.z;return std::fabs(NorthlightGI::dot(delta,axis))<=reach+margin+projected;};
+            // Same symmetric +/-640 depth; axes depend on light, never camera.
+            if(overlaps(a.right,240)&&overlaps(a.up,240)&&overlaps(a.direction,640))return true;
+        }
+        return false;
+    }
+};
 }
 
 Vec3 transformPoint(const Placement& p,Vec3 v){const float* m=p.matrix;return {m[0]*v.x+m[1]*v.y+m[2]*v.z+p.translation.x,m[3]*v.x+m[4]*v.y+m[5]*v.z+p.translation.y,m[6]*v.x+m[7]*v.y+m[8]*v.z+p.translation.z};}
 void transformBounds(const Placement& p,Vec3 low,Vec3 high,Vec3& outLow,Vec3& outHigh){Vec3 c=transformPoint(p,(low+high)*.5f),r=(high-low)*.5f;const float* m=p.matrix;Vec3 e={std::fabs(m[0])*r.x+std::fabs(m[1])*r.y+std::fabs(m[2])*r.z,std::fabs(m[3])*r.x+std::fabs(m[4])*r.y+std::fabs(m[5])*r.z,std::fabs(m[6])*r.x+std::fabs(m[7])*r.y+std::fabs(m[8])*r.z};outLow=c-e;outHigh=c+e;}
 bool selected(const Request& r,Vec3 low,Vec3 high,float margin){
-    Vec3 center=(low+high)*.5f,extent=(high-low)*.5f,delta=center-r.center;
-    // Near fallback geometry and nearby unlit street surfaces must always stay.
-    if(std::fabs(delta.x)<=288+margin+extent.x&&std::fabs(delta.y)<=288+margin+extent.y&&std::fabs(delta.z)<=320+margin+extent.z)return true;
-    for(unsigned i=0;i<2;++i)if(r.active[i]){
-        Vec3 d=NorthlightGI::normalized(r.directions[i]);if(NorthlightGI::dot(d,d)<.5f)continue;
-        Vec3 ref=std::fabs(d.z)>.95f?Vec3(0,1,0):Vec3(0,0,1);
-        Vec3 right=NorthlightGI::normalized(NorthlightGI::cross(d,ref)),up=NorthlightGI::cross(right,d);
-        auto overlaps=[&](Vec3 a,float reach){float projected=std::fabs(a.x)*extent.x+std::fabs(a.y)*extent.y+std::fabs(a.z)*extent.z;return std::fabs(NorthlightGI::dot(delta,a))<=reach+margin+projected;};
-        // Symmetric depth matches the existing +/-640 light-space clipping.
-        // The screen-orthogonal axes depend on light, never camera orientation.
-        if(overlaps(right,240)&&overlaps(up,240)&&overlaps(d,640))return true;
-    }
-    return false;
+    return SelectionVolume(r).contains(low,high,margin);
 }
 
 bool packModel(NorthlightGI::WorldScene&& scene,const std::string& key,Model& output,std::string& error){
@@ -115,14 +128,18 @@ bool packModel(NorthlightGI::WorldScene&& scene,const std::string& key,Model& ou
         // Long crossing triangles remain whole and enlarge their batch bounds.
         using Group=std::tuple<uint32_t,int,int,int>;
         std::map<Group,std::vector<uint32_t>> groups;
+        Group previousGroup{};std::vector<uint32_t>* previousIndices=nullptr;
         for(const auto& t:scene.triangles){
             if(t.v0>=model.vertices.size()||t.v1>=model.vertices.size()||t.v2>=model.vertices.size()||t.material>=scene.materials.size()){error="Invalid model triangle";return false;}
             Vec3 center=(scene.vertices[t.v0].position+scene.vertices[t.v1].position+scene.vertices[t.v2].position)/3.f;
             // Finite positions may still exceed safe float-to-int conversion.
             if(std::fabs(center.x)>1000000||std::fabs(center.y)>1000000||std::fabs(center.z)>1000000){error="Model outside supported coordinates";return false;}
             Group g(t.material,int(std::floor(center.x/64)),int(std::floor(center.y/64)),int(std::floor(center.z/64)));
-            if(groups.size()>=65536&&!groups.count(g)){error="Too many model spatial batches";return false;}
-            auto& ids=groups[g];ids.push_back(t.v0);ids.push_back(t.v1);ids.push_back(t.v2);
+            if(!previousIndices||g!=previousGroup){
+                if(groups.size()>=65536&&!groups.count(g)){error="Too many model spatial batches";return false;}
+                previousIndices=&groups[g];previousGroup=g; // std::map insertion preserves this vector's address.
+            }
+            auto& ids=*previousIndices;ids.push_back(t.v0);ids.push_back(t.v1);ids.push_back(t.v2);
         }
         model.indices.reserve(scene.triangles.size()*3);
         for(auto& group:groups){Batch b;b.firstIndex=uint32_t(model.indices.size());b.indexCount=uint32_t(group.second.size());b.material=std::get<0>(group.first);b.low=Vec3(1e30f,1e30f,1e30f);b.high=-b.low;
@@ -159,12 +176,17 @@ bool loadCompact(const std::string& path,const std::string& key,size_t cap,Model
         for(uint32_t i=0;i<count;++i){float values[8];for(unsigned j=0;j<8;++j){uint32_t u=word(block.data()+size_t(i)*32+j*4);std::memcpy(&values[j],&u,4);if(!std::isfinite(values[j])){error="Invalid FGS2 vertex";return false;}}model.vertices[start+i]={values[0],values[1],values[2],values[6],values[7]};}start+=count;
     }
     using Group=std::tuple<uint32_t,int,int,int>;std::map<Group,std::vector<uint32_t>> groups;
+    Group previousGroup{};std::vector<uint32_t>* previousIndices=nullptr;
     for(uint32_t i=0;i<nt;++i){if(i%1024==0&&!r.bytes(block.data(),size_t(std::min(1024u,nt-i))*16)){error="Truncated FGS2 triangles";return false;}
         const unsigned char* record=block.data()+(i%1024)*16;uint32_t a=word(record),b=word(record+4),c=word(record+8),material=word(record+12);if(a>=nv||b>=nv||c>=nv||material>=nm){error="Invalid FGS2 triangle";return false;}
         const auto& va=model.vertices[a];const auto& vb=model.vertices[b];const auto& vc=model.vertices[c];Vec3 center={(va.x+vb.x+vc.x)/3,(va.y+vb.y+vc.y)/3,(va.z+vb.z+vc.z)/3};
         if(!finite(center)||std::fabs(center.x)>1000000||std::fabs(center.y)>1000000||std::fabs(center.z)>1000000){error="FGS2 coordinates outside supported world";return false;}
-        Group group(material,int(std::floor(center.x/64)),int(std::floor(center.y/64)),int(std::floor(center.z/64)));if(groups.size()>=65536&&!groups.count(group)){error="Too many FGS2 spatial batches";return false;}
-        auto& ids=groups[group];ids.push_back(a);ids.push_back(b);ids.push_back(c);
+        Group group(material,int(std::floor(center.x/64)),int(std::floor(center.y/64)),int(std::floor(center.z/64)));
+        if(!previousIndices||group!=previousGroup){
+            if(groups.size()>=65536&&!groups.count(group)){error="Too many FGS2 spatial batches";return false;}
+            previousIndices=&groups[group];previousGroup=group;
+        }
+        auto& ids=*previousIndices;ids.push_back(a);ids.push_back(b);ids.push_back(c);
     }
     model.indices.reserve(size_t(nt)*3);model.batches.reserve(groups.size());
     for(auto& group:groups){Batch b;b.firstIndex=uint32_t(model.indices.size());b.indexCount=uint32_t(group.second.size());b.material=std::get<0>(group.first);b.low={1e30f,1e30f,1e30f};b.high=-b.low;for(uint32_t index:group.second){const auto& v=model.vertices[index];b.low=mn(b.low,{v.x,v.y,v.z});b.high=mx(b.high,{v.x,v.y,v.z});model.indices.push_back(index);}model.batches.push_back(b);std::vector<uint32_t>().swap(group.second);}
@@ -282,7 +304,8 @@ struct Streamer::State {
         const float reach=928.f;int x0=int(std::floor((r.center.x-reach)/limits.cellSize)),x1=int(std::floor((r.center.x+reach)/limits.cellSize));int y0=int(std::floor((r.center.y-reach)/limits.cellSize)),y1=int(std::floor((r.center.y+reach)/limits.cellSize));
         for(int y=y0;y<=y1;++y)for(int x=x0;x<=x1;++x){auto it=cells.find({x,y});if(it!=cells.end())candidates.insert(it->second.begin(),it->second.end());}candidates.insert(giants.begin(),giants.end());
         std::vector<Placement> chosen;std::map<std::string,float> priority;std::set<std::string> needed;
-        for(const auto& id:candidates){const auto& p=placements.at(id);if(!selected(r,p.low,p.high))continue;chosen.push_back(p);needed.insert(p.modelKey);float d=distance2((p.low+p.high)*.5f,r.center);auto it=priority.find(p.modelKey);if(it==priority.end()||d<it->second)priority[p.modelKey]=d;}
+        SelectionVolume volume(r); // Light-space axes depend on this request, never on the placement.
+        for(const auto& id:candidates){const auto& p=placements.at(id);if(!volume.contains(p.low,p.high))continue;chosen.push_back(p);needed.insert(p.modelKey);float d=distance2((p.low+p.high)*.5f,r.center);auto it=priority.find(p.modelKey);if(it==priority.end()||d<it->second)priority[p.modelKey]=d;}
         lastNeeded=needed;
         for(const auto& key:needed){auto it=models.find(key);if(it!=models.end()){it->second.used=now;++stats.modelReuses;}}
         std::vector<std::pair<float,std::string>> queue;for(const auto& p:priority)if(!models.count(p.first)&&!failedModels.count(p.first))queue.emplace_back(p.second,p.first);std::sort(queue.begin(),queue.end());stats.pendingModels=uint32_t(queue.size());stats.selectionMs+=ms(selectionStart);

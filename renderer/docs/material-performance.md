@@ -1,5 +1,15 @@
 # Material performance investigation — 22 October 2026
 
+## Beyond M2: parallel fog, AO and static-scene optimization — 22 October
+
+Three workers evaluated **15 hypotheses**. The latest game log ranks the main non-M2 GPU Effects costs as FogMarch 0.861 ms, FogClouds 0.642 ms, WorldComposite 0.540 ms and AOBlur 0.331 ms (medians of 20 sampled frames). Five exact-work changes were retained: invalid regional fog density elision, zero-direct cloud shadow elision, an AO centre proof that avoids a redundant nine-read probe, request-local static selection axes, and adjacent static spatial-group lookup reuse.
+
+Against standalone baseline `ddff7cf`, dense fog fixtures improve about 4.5–9.0%; dense clouds with no direct source improve 17.9%. AO improves about 3–4% on production-FP16 occluded/mixed fixtures. Three real WMO decodes use 3.34–4.03% less CPU, while the isolated static selection predicate improves 3.49x. These percentages describe separate components and must not be added or presented as game FPS gains. Fog has a measured short-view branch cost of about +0.006/+0.008 ms, and open AO has a tiny branch overhead. Earlier AO FP32-only performance claims were invalidated by production-FP16 testing and their code was discarded.
+
+**52 fog and 162 AO comparisons pass bit exactly**, including AO odd grids, MSAA 0/2/4/8, threshold impulses and HDR bloom RGB. Static selection passes 262,144 exact decisions in release/debug builds, and real decoded/packed model fingerprints match the old code. Integrated shader/reference/wiring checks and 96 four-AO-method GPU cases pass; only the three selected shader entries change, with 31 other entries byte-identical. The combined DLL retains the preceding M2 capture/source fixes and profiler stages. Game settings, sample counts, quality, ranges, MSAA, memory limits and resource lifetimes are preserved.
+
+The proposed broad unused-capture skip was deferred because a newly adopted world/light publication can introduce a consumer after capture; omitting its first lamp shadow would violate the appearance requirement. The agent did not launch the game or replace its installed DLL. Detailed English evidence, all 15 hypotheses, reproducible commands and honest performance limits are in `renderer/docs/non-m2-performance.md` and `NORTHLIGHT_NON_M2_PERFORMANCE_REPORT_EN.md`.
+
 ## Fresh run: shared sources confirmed; capture state reuse — 22 October, 20:42
 
 ### Observed mode and input evidence

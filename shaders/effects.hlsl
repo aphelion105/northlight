@@ -380,12 +380,19 @@ float4 AOBlur(float2 uv : TEXCOORD0) : COLOR0
 {
     float2 tapStep = 2.0 * ImageAndClip.xy;
     float4 raw = tex2Dlod(Ambient, float4(uv, 0, 0));
-    float minAO = 1.0;
-    [loop] for (int k = 0; k < 9; ++k)
+    float minAO = 0.0;
+    // A dark centre alone makes the +.5,+.5 bilinear footprint fail .9995.
+    // The centre contributes about 1/4; .995 leaves margin for odd grids,
+    // subtexel phase and FP16 filtering rounding.
+    [branch] if (raw.a > 0.995)
     {
-        float krow = floor((k + 0.5) * (1.0 / 3.0));
-        // footprint k % 3 and k / 3 per axis -> -1.5, .5, 2 AO texels from the centre
-        minAO = min(minAO, tex2Dlod(AmbientLinear, float4(uv + min(float2(k - krow * 3.0, krow) * 2.0 - 1.5, 2.0) * tapStep, 0, 0)).a);
+        minAO = 1.0;
+        [loop] for (int k = 0; k < 9; ++k)
+        {
+            float krow = floor((k + 0.5) * (1.0 / 3.0));
+            // footprint k % 3 and k / 3 per axis -> -1.5, .5, 2 AO texels from the centre
+            minAO = min(minAO, tex2Dlod(AmbientLinear, float4(uv + min(float2(k - krow * 3.0, krow) * 2.0 - 1.5, 2.0) * tapStep, 0, 0)).a);
+        }
     }
     [branch] if (minAO >= 0.9995) return raw;
     float2 size = 1.0 / ImageAndClip.xy;

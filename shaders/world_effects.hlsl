@@ -857,41 +857,44 @@ float4 WorldFog(float2 uv:TEXCOORD0):COLOR0 {
         float coverage;
         float4 field=regionalFogAt(fieldUV,coverage);
         float altitude=p.z-field.x;
-        // Field height also identifies the forest policy: 5 Duskwood,
-        // 2.5 STV, 1.25 other forests, .625 sparse outdoor air.
-        float profile=saturate((field.w-2.5)/2.5);
-        float generalForest=1-saturate((field.w-1.25)/1.25);
-        float groundHeight=lerp(field.w,6,RegionalFogInfo.w*(1-profile));
-        float vertical=saturate(1-altitude/max(groundHeight,.001));
-        // Coverage already rejects absent/indoor nodes and out-of-field UVs.
         float valid=altitude>=0?coverage:0;
-        // Authored regional density is world-fixed. No slanted periodic wave
-        // whose apparent vertical phase scrolls when the player moves.
-        float groundSigma=max(field.y+field.z*RegionalFogInfo.w,0)*vertical*vertical;
-        // Existing 5/2.5-unit profile tags select Duskwood/STV. This separate
-        // air term reaches tree crowns while preserving
-        // finite ground anchoring, indoor exclusions and exact ground policy.
-        float airHeight=lerp(VolumeAir.w,VolumeAir.z,profile);
-        float airVertical=saturate(1-altitude/max(airHeight,.001));
-        // Generic forest air has its own smoothly time-blended host density.
-        // Night air must not become thinner than day air while the moon rises.
-        float airBase=lerp(VolumeAir.y,VolumeAir.x,profile);
-        airBase=lerp(airBase,FogColor.w,generalForest);
-        // Shared outdoor haze doubled; regional additions stay independent.
-        airBase=WeatherInfo.w+airBase*saturate(mad(field.w,1.6,-1)); // 0.3.198 (rain): c59.w = .0017 + extra air extinction (the literal moved into the constant: no extra slot), mirrored by sigmaAt on the CPU
-        float airSigma=airBase*airVertical*airVertical;
-        // Fog is thin at the viewer and thickens with distance: density ramps
-        // from zero at FogRange.x to full one fade length later, so the player
-        // and nearby ground stay clear while the middle distance fills in.
-        float nearFade=saturate(((start+end)*.5-FogRange.x)*FogRange.y);nearFade*=nearFade*(3-2*nearFade);
-        float sigma=max(groundSigma+airSigma,0)*valid*nearFade;
-        if(sigma>0){
-            float absorb=1-exp(-sigma*stepSize);
-            // A zero source has no valid shadow pass/maps to sample. Its air
-            // still contributes environment scattering and extinction.
-            float heightFade=saturate(altitude*(1.0/12));heightFade*=heightFade*(3-2*heightFade);
-            if(dot(sunSource,1)>0)directWeight+=transmittance*absorb*(fogShadowProjected(shadowOrigin+shadowRay*((start+end)*.5))*heightFade);
-            transmittance*=1-absorb;
+        // Invalid samples contribute exactly zero; retain the world-grid intervals.
+        [branch]if(valid>0){
+            // Field height also identifies the forest policy: 5 Duskwood,
+            // 2.5 STV, 1.25 other forests, .625 sparse outdoor air.
+            float profile=saturate((field.w-2.5)/2.5);
+            float generalForest=1-saturate((field.w-1.25)/1.25);
+            float groundHeight=lerp(field.w,6,RegionalFogInfo.w*(1-profile));
+            float vertical=saturate(1-altitude/max(groundHeight,.001));
+            // Coverage already rejects absent/indoor nodes and out-of-field UVs.
+            // Authored regional density is world-fixed. No slanted periodic wave
+            // whose apparent vertical phase scrolls when the player moves.
+            float groundSigma=max(field.y+field.z*RegionalFogInfo.w,0)*vertical*vertical;
+            // Existing 5/2.5-unit profile tags select Duskwood/STV. This separate
+            // air term reaches tree crowns while preserving
+            // finite ground anchoring, indoor exclusions and exact ground policy.
+            float airHeight=lerp(VolumeAir.w,VolumeAir.z,profile);
+            float airVertical=saturate(1-altitude/max(airHeight,.001));
+            // Generic forest air has its own smoothly time-blended host density.
+            // Night air must not become thinner than day air while the moon rises.
+            float airBase=lerp(VolumeAir.y,VolumeAir.x,profile);
+            airBase=lerp(airBase,FogColor.w,generalForest);
+            // Shared outdoor haze doubled; regional additions stay independent.
+            airBase=WeatherInfo.w+airBase*saturate(mad(field.w,1.6,-1)); // 0.3.198 (rain): c59.w = .0017 + extra air extinction (the literal moved into the constant: no extra slot), mirrored by sigmaAt on the CPU
+            float airSigma=airBase*airVertical*airVertical;
+            // Fog is thin at the viewer and thickens with distance: density ramps
+            // from zero at FogRange.x to full one fade length later, so the player
+            // and nearby ground stay clear while the middle distance fills in.
+            float nearFade=saturate(((start+end)*.5-FogRange.x)*FogRange.y);nearFade*=nearFade*(3-2*nearFade);
+            float sigma=max(groundSigma+airSigma,0)*valid*nearFade;
+            if(sigma>0){
+                float absorb=1-exp(-sigma*stepSize);
+                // A zero source has no valid shadow pass/maps to sample. Its air
+                // still contributes environment scattering and extinction.
+                float heightFade=saturate(altitude*(1.0/12));heightFade*=heightFade*(3-2*heightFade);
+                if(dot(sunSource,1)>0)directWeight+=transmittance*absorb*(fogShadowProjected(shadowOrigin+shadowRay*((start+end)*.5))*heightFade);
+                transmittance*=1-absorb;
+            }
         }
     }
     float3 directScatter=sunSource*directWeight;
@@ -1045,39 +1048,42 @@ float4 FogClouds(float2 uv:TEXCOORD0):COLOR0 {
         float4 field=regionalFogAt(fieldUV,coverage);
         float altitude=p.z-field.x;
         float valid=altitude>=0?coverage:0;
-        float nearFade=saturate((mid-FogRange.x)*FogRange.y);nearFade*=nearFade*(3-2*nearFade);
-        // 0.3.199 (fog clouds): the ground term of WorldFog, copied exactly (thick Duskwood/STV ground fog must hide the clouds behind it).
-        float profile=saturate((field.w-2.5)/2.5);
-        float groundHeight=lerp(field.w,6,RegionalFogInfo.w*(1-profile));
-        float vertical=saturate(1-altitude/max(groundHeight,.001));
-        float groundSigma=max(field.y+field.z*RegionalFogInfo.w,0)*vertical*vertical;
-        // Air term reduced to its constant floor for the slot budget (no vertical profile, no forest policy).
-        float airSigma=WeatherInfo.w;
-        float baseSigma=max(groundSigma+airSigma,0)*valid*nearFade;
-        // 0.3.199 (fog clouds, optimisation): the noise only where a bank can be: inside the field above ground, below the tallest bank top
-        // (c62.x = 5.5 x height, host), and the small noise only where the large one can still give density (c61.x, host: below it either the
-        // bank top or the density is 0 whatever the small noise). Skipped samples had sigma 0.
-        float sigma=0;
-        [branch]if(min(valid,CloudInfo[2].x-altitude)>0){ // valid > 0 implies altitude >= 0
-            float nL=tex3Dlod(CloudNoise,float4(rel*CloudInfo[3].y+CloudInfo[0].yzw,0)).r;
-            [branch]if(nL>CloudInfo[1].x){
-                float nS=tex3Dlod(CloudNoise,float4(rel*CloudInfo[3].z+CloudInfo[1].yzw,0)).r;
-                float density=saturate(mad(nL,CloudInfo[3].w,mad(nS,CloudInfo[3].x,CloudInfo[2].y))); // (.65 nL + .35 nS - threshold) x sharpness, folded on the host
-                float low=saturate(1-altitude/max(mad(nL,CloudInfo[2].z,WeatherInfo.y),.001)); // height x (8 nL - 2.5), folded on the host (c62.z 8 height, c59.y -2.5 height) // 0.3.199 (fog clouds): the bank top follows the large noise (0 below nL .31, ~1.5x at .5, ~4x at .8, 5.5x at 1): thick spots tower over the trees (game tests)
-                float zone=mad(saturate(mad(field.w,1/3.75,-1.25/3.75)),-.3,1); // lerp(1,.7,saturate((field.w-1.25)/3.75))
-                sigma=density*low*low*zone*CloudInfo[2].w*valid*nearFade; // valid > 0 only above ground (altitude >= 0) in a node with a layer height tag
+        // Invalid samples contribute exactly zero; retain the world-grid intervals.
+        [branch]if(valid>0){
+            float nearFade=saturate((mid-FogRange.x)*FogRange.y);nearFade*=nearFade*(3-2*nearFade);
+            // 0.3.199 (fog clouds): the ground term of WorldFog, copied exactly (thick Duskwood/STV ground fog must hide the clouds behind it).
+            float profile=saturate((field.w-2.5)/2.5);
+            float groundHeight=lerp(field.w,6,RegionalFogInfo.w*(1-profile));
+            float vertical=saturate(1-altitude/max(groundHeight,.001));
+            float groundSigma=max(field.y+field.z*RegionalFogInfo.w,0)*vertical*vertical;
+            // Air term reduced to its constant floor for the slot budget (no vertical profile, no forest policy).
+            float airSigma=WeatherInfo.w;
+            float baseSigma=max(groundSigma+airSigma,0)*valid*nearFade;
+            // 0.3.199 (fog clouds, optimisation): the noise only where a bank can be: inside the field above ground, below the tallest bank top
+            // (c62.x = 5.5 x height, host), and the small noise only where the large one can still give density (c61.x, host: below it either the
+            // bank top or the density is 0 whatever the small noise). Skipped samples had sigma 0.
+            float sigma=0;
+            [branch]if(min(valid,CloudInfo[2].x-altitude)>0){ // valid > 0 implies altitude >= 0
+                float nL=tex3Dlod(CloudNoise,float4(rel*CloudInfo[3].y+CloudInfo[0].yzw,0)).r;
+                [branch]if(nL>CloudInfo[1].x){
+                    float nS=tex3Dlod(CloudNoise,float4(rel*CloudInfo[3].z+CloudInfo[1].yzw,0)).r;
+                    float density=saturate(mad(nL,CloudInfo[3].w,mad(nS,CloudInfo[3].x,CloudInfo[2].y))); // (.65 nL + .35 nS - threshold) x sharpness, folded on the host
+                    float low=saturate(1-altitude/max(mad(nL,CloudInfo[2].z,WeatherInfo.y),.001)); // height x (8 nL - 2.5), folded on the host (c62.z 8 height, c59.y -2.5 height) // 0.3.199 (fog clouds): the bank top follows the large noise (0 below nL .31, ~1.5x at .5, ~4x at .8, 5.5x at 1): thick spots tower over the trees (game tests)
+                    float zone=mad(saturate(mad(field.w,1/3.75,-1.25/3.75)),-.3,1); // lerp(1,.7,saturate((field.w-1.25)/3.75))
+                    sigma=density*low*low*zone*CloudInfo[2].w*valid*nearFade; // valid > 0 only above ground (altitude >= 0) in a node with a layer height tag
+                }
             }
+            [branch]if(sigma>0){
+                float absorb=1-exp(-sigma*stepSize);
+                float heightFade=saturate(altitude*(1.0/12));heightFade*=heightFade*(3-2*heightFade);
+                float weight=tCloud*absorb; // the ambient: the pass blend already multiplies the base fog by tCloud, tBase must not enter twice (S*(1-Tb*Tc) in either order)
+                // With no direct source/gain the shadowed term is exactly zero; ambient extinction still accumulates.
+                [branch]if(dot(max(DirectLight.rgb,0),1)>0&&FogInfo.y>0)directWeight+=exp(-tauBase)*weight*fogShadowProjected(shadowOrigin+shadowRay*((start+end)*.5))*heightFade; // the sun light is dimmed by the base fog in front of the cloud
+                ambientWeight+=weight;
+                tCloud*=1-absorb;
+            }
+            tauBase+=baseSigma*stepSize;
         }
-        [branch]if(sigma>0){
-            float absorb=1-exp(-sigma*stepSize);
-            float heightFade=saturate(altitude*(1.0/12));heightFade*=heightFade*(3-2*heightFade);
-            float weight=tCloud*absorb; // the ambient: the pass blend already multiplies the base fog by tCloud, tBase must not enter twice (S*(1-Tb*Tc) in either order)
-            // No DirectLight guard and no Tbase*Tcloud early out in this loop: both were cut for the 512-slot budget (the sun term is multiplied by DirectLight after the loop, so no sun = 0).
-            directWeight+=exp(-tauBase)*weight*fogShadowProjected(shadowOrigin+shadowRay*((start+end)*.5))*heightFade; // the sun light is dimmed by the base fog in front of the cloud
-            ambientWeight+=weight;
-            tCloud*=1-absorb;
-        }
-        tauBase+=baseSigma*stepSize;
     }
     // The narrow forward aureole of WorldFog is dropped here (register/slot budget): the broad phase alone.
     float3 directScatter=max(DirectLight.rgb,0)*mad(.033,dot(ray,SunDirection.xyz),.22)*(max(FogInfo.y,0)*directWeight); // FogColor.rgb (the albedo) is always 1 (host): left out for the slots
