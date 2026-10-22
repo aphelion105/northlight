@@ -426,12 +426,14 @@
                 float opaque[]={1,1,1,-1};
                 if(!pointCheck(d->SetPixelShaderConstantF(0,opaque,1),"cube live material")||
                    !pointCheck(d->SetTexture(0,nullptr),"cube live alpha")||
-                   !pointCheck(d->SetStreamSource(0,liveTerrainGPU.vertices(),0,sizeof(NorthlightGI::WorldVertex)),"cube live vertices")||
+                   !pointCheck(d->SetVertexDeclaration(liveTerrainDecl),"cube live declaration")||
+                   !pointCheck(d->SetStreamSource(0,liveTerrainGPU.vertices(),0,sizeof(StaticShadow::Vertex)),"cube live vertices")||
                    !pointCheck(d->SetIndices(liveIndicesGPU),"cube live indices"))return false;
                 NorthlightDynamicRing::touch(liveIndexRing,fence()); /* 0.3.192 (DXVK3): drawn this frame: the slice stays pending until this frame's fence */
                 for(size_t index:pointLiveCandidates[face]){const auto& batch=pointLiveBatches[index];
                     if(!pointCheck(d->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,0,liveTerrainGPU.vertexCapacity(),UINT(liveIndexBase+batch.start),batch.count),"cube live draw"))return false;++pointDraws;
                 }
+                if(!pointCheck(d->SetVertexDeclaration(shadowDecl),"cube restore terrain declaration"))return false;
             }
             if(withReplays){
             float rows[16];NorthlightWorldMath::replayProjection(context.inverseView,matrix,rows);

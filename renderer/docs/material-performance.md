@@ -1,5 +1,15 @@
 # Material performance investigation — 22 October 2026
 
+## Fresh 23:25 run: rotation stalls remain with global materials Off — 22 October
+
+The latest complete log tests `c5ef83c`, SHA-256 `14c972be1289ddf8047a4f18cbde375afbc7504a14584c3375ac20762eeefcda`. Global material `enabled=0` from sampled frame 3302 overrides retained modes 3/3/3/0. All expensive material capture, pose, source-read, generation, replay and final-application stages are zero. Reported nativeDraw is the original game rendering. The user is correct that the rotation problem persists outside materials: Off windows fall to 48.20–59.70 FPS and recover to 102.01 FPS after settling. This is not a controlled old/new DLL FPS measurement.
+
+Three agents investigated five distinct topics each in GI/world streaming, materials, and AO/postprocessing. The main new optimization is lossless 20-byte live terrain GPU vertices instead of 32-byte world vertices with unused normals. Same float positions/UVs, topology, uint32 indices, active coverage and 16/8 MiB admission limits. A pressured 19-rotation fixture reduces uploads 94,841,600 -> 23,316,000 bytes and rollovers 5 -> 0; 96 production shadow/MSAA comparisons are bit exact. This targets measured remaining GPU arena churn after the preceding CPU index compaction.
+
+A separate enabled-material optimization moves the existing oversized displacement build rejection before unused height/UV evaluation, while preserving current range proof and existing cached hits. Added profiling measures rare material shader creation (including registration while Off), precise GI actor/solve worker elapsed stages, AO setup versus draw, and query-trip queue/replay/return attribution. It does not weaken query completion, fences, material quality, range, sample count or MSAA. All HLSL and shader bytecode remain unchanged.
+
+The release builds. Current validation includes 100 material capture checks, 96 shadow-layout comparisons, 144 exact AO blur/profile cases and 96 AO-generation cases, plus CPU bounds/state/terrain/GI/page/profiler checks. The game was not launched; installed DLL and settings are preserved. Actual game FPS for this build remains to be measured by the user. Detailed evidence, all 15 topics and remaining causal limits are in renderer/docs/rotation-disabled-performance.md and NORTHLIGHT_ROTATION_DISABLED_PERFORMANCE_REPORT_EN.md. Earlier sections below refer to earlier runs.
+
 ## Fresh 22:38 run: camera rotation and 15 parallel investigations — 22 October
 
 The latest complete log is now the 22:38 run of `0be2a10`, SHA-256 `1948f37eb25e8c716e91b55c48d04cd39df52588f811a98ba63e6f9f88f588ea`. Its sampled modes are initially Off, then M2-only Displacement + normal maps, then all domains Displacement + normal maps. There is no Normals-only interval; cavity/self-shadow strengths are zero. The moon is active, unlike the preceding no-source run. Earlier sections below describe historical inputs and should not be read as findings from this newer run.

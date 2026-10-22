@@ -410,6 +410,7 @@ public:
         if(core.timing){const std::uint64_t e=frameEnd-nowAtPresent,w=gameWaitsNs(q.stats)-waits0;own(q.stats.presentBookNs,e>w?e-w:0);}   // 0.3.204 (task 21): Present bookkeeping, waits excluded (no extra clock reads)
         waitsAtFrameEnd=get(q.stats.syncNs)+get(q.stats.backpressureNs);
         ++core.frameNo;
+        if(core.timing)core.reportQueryFrame(callerLog);
         if(core.timing){++core.queryWaitFrames;if(core.frameNo%600==0)core.reportQueryWait(callerLog);}
         if(core.timing&&core.frameNo%600==0){if(callerLog)core.texDiag.report(callerLog,core.callerModule,core.frameNo,[](unsigned c){return cmdName((Cmd)c);});else core.texDiag.restart(core.frameNo);}   // 0.3.206 (task 31): the texture readback report, one window per 600 Presents (Diagnostics only); without a log sink the window still restarts (tables and old histories must not grow)
         tuner.sample(q);   // idle pool memory goes back after a quiet window

@@ -536,7 +536,8 @@ def audit_wiring():
     fn = text[text.index('SetRenderTarget(0,aoRawSurface)')-400:]
     a = fn.index('SetRenderTarget(0,aoRawSurface)')
     seq = [fn.index(s, a) for s in ('quad(width/2,height/2),"AO pass"', 'SetRenderTarget(0,aoSurface)', 'bindEffects(aoRaw)',
-                                    'SetTexture(0,aoRaw)', 'SetPixelShader(aoBlurPS)', 'quad(width/2,height/2),"AO blur pass"',
+                                    'SetTexture(0,aoRaw)', 'SetPixelShader(aoBlurPS)', 'gpuProfile->mark("AOBlurSetup")',
+                                    'aoBlurResult=quad(width/2,height/2)', 'error(aoBlurResult,"AO blur pass")',
                                     'ext->SetTexture(2,nullptr);ext->SetTexture(0,scene);',
                                     'auto legacyComposite', 'world->render(')]
     assert seq == sorted(seq), seq

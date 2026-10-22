@@ -114,11 +114,21 @@ class NorthlightAutoBump {
     std::unordered_map<IDirect3DPixelShader9*,unsigned> pixels;
     IDirect3DPixelShader9* shaders[6]={},*sharedShaders[6]={};
     struct NativeCapture {IDirect3DPixelShader9* source=nullptr,*shader=nullptr;unsigned constant=128,first=256,last=0,samplers=0;bool deferredSafe=false;};
+    // Rare CPU creation work can happen outside sampled draw scopes, including
+    // recognized vertex registration while materials are disabled.
+    struct ColdWork {unsigned vertexSources=0,modelMisses=0,modelBuilt=0,staticCreates=0,staticBuilt=0;uint64_t sourceBytes=0;double vertexMs=0,modelMs=0,staticMs=0;} cold;
+    struct ColdTimer {double& total;std::chrono::steady_clock::time_point start=std::chrono::steady_clock::now();
+        ~ColdTimer(){total+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();}};
+    HRESULT createCaptureShader(const DWORD* code,IDirect3DPixelShader9** output){
+        ++cold.staticCreates;ColdTimer timer{cold.staticMs};const HRESULT hr=d->CreatePixelShader(code,output);cold.staticBuilt+=SUCCEEDED(hr)&&*output;return hr;
+    }
     std::unordered_map<IDirect3DPixelShader9*,NativeCapture> nativeCaptures[2][2];
     NativeCapture* modelCapture(IDirect3DPixelShader9* source,bool alpha,bool shared=false){
         auto& variants=nativeCaptures[shared][alpha];auto it=variants.find(source);if(it!=variants.end())return it->second.shader?&it->second:nullptr;
         if(variants.size()>=512)return nullptr;NativeCapture entry;entry.source=source;source->AddRef();UINT bytes=0;
+        ++cold.modelMisses;ColdTimer timer{cold.modelMs};
         if(SUCCEEDED(source->GetFunction(nullptr,&bytes))&&bytes&&bytes<65536){std::vector<DWORD> code(bytes/4);std::vector<uint32_t> patched;
+            cold.sourceBytes+=bytes;
             if(SUCCEEDED(source->GetFunction(code.data(),&bytes))&&NorthlightNativeMaterialCapture::patch(reinterpret_cast<const uint32_t*>(code.data()),code.size(),patched,entry.constant,alpha,shared)){
                 d->CreatePixelShader(reinterpret_cast<const DWORD*>(patched.data()),&entry.shader);
                 NorthlightTerrainCoverage::Program program;
@@ -130,7 +140,7 @@ class NorthlightAutoBump {
                     entry.deferredSafe&=entry.first<=entry.constant&&entry.last>=entry.constant+4&&entry.last<224;
                 }
             }}
-        auto added=variants.emplace(source,entry).first;if(!entry.shader)logf("MATERIAL_MODEL capture unavailable; native material retained");return entry.shader?&added->second:nullptr;
+        auto added=variants.emplace(source,entry).first;cold.modelBuilt+=entry.shader!=nullptr;if(!entry.shader)logf("MATERIAL_MODEL capture unavailable; native material retained");return entry.shader?&added->second:nullptr;
     }
     IDirect3DTexture9* height=nullptr;
     IDirect3DSurface9* target=nullptr;
@@ -330,6 +340,8 @@ public:
     void reset(){clearDeferred();deferredSnapshots.clearIndexCache();deferredDeclarations.clear();deferredGPU.clear();sharedMaps[0]={};sharedMaps[1]={};sharedPOM.reset();displacement.reset();normals.reset();drop(captureDepth);drop(target);drop(height);drop(occlusionTarget);drop(occlusionMap);occlusionUnavailable=false;occlusionRetry=0;width=heightPixels=0;cleared=drawn=failed=occlusionCleared=occlusionDrawn=false;}
     void endFrame(){
         deferredDiscarded+=unsigned(deferred.size());clearDeferred();
+        if(deferredReport||cold.vertexSources||cold.modelMisses||cold.staticCreates)logf("MATERIAL_COLD frame=%llu sampled=%u enabled=%u vertexSources=%u vertexCpuMs=%.6f modelMisses=%u modelBuilt=%u modelCpuMs=%.6f staticCreates=%u staticBuilt=%u staticCpuMs=%.6f sourceBytes=%llu",(unsigned long long)(deferredReport?deferredReportFrame:frames),unsigned(deferredReport),unsigned(enabled),cold.vertexSources,cold.vertexMs,cold.modelMisses,cold.modelBuilt,cold.modelMs,cold.staticCreates,cold.staticBuilt,cold.staticMs,(unsigned long long)cold.sourceBytes);
+        cold={};
         if(deferredReport||((queued||flushed||deferredFallback||deferredDiscarded)&&frames%600==0))logf("MATERIAL_DEFERRED frame=%llu sampled=%u enabled=%u queued=%u flushed=%u snapshotFallback=%u liveState=%u preparedGeometry=%u discardedUnused=%u terrain=%u walls=%u grass=%u models=%u earlyRangeRejected=%u opaqueCoverage=%u packetLimit=512 packetMiB=8 sourceMiB=24",(unsigned long long)(deferredReport?deferredReportFrame:frames),unsigned(deferredReport),unsigned(deferredAllowed),queued,flushed,deferredFallback,deferredUnsafe,deferredGeometry,deferredDiscarded,queuedDomain[0],queuedDomain[1],queuedDomain[2],queuedDomain[3],earlyRangeRejected,opaqueCoverage);
         if(deferredReport||((queued||flushed||deferredFallback)&&frames%600==0)){
             logf("MATERIAL_BATCH_SOURCE frame=%llu textureGuard=%u textureDraws=%u writeBarriers=%u refusedTexture=%u snapshotBudget=%u snapshotStreams=%u batchLimit=%u sourceHits=%u sourcePeerHits=%u sourceMisses=%u sourceReadBytes=%zu sourceEntries=%zu sourceBytes=%zu sourceLimitMiB=%zu",(unsigned long long)(deferredReport?deferredReportFrame:frames),unsigned(textureWriteGuarded),deferredTextureDraws,textureBarriers,textureRefused,snapshotBudget,snapshotStreams,batchLimit,deferredSnapshots.snapshotCacheHits(),deferredSnapshots.residentPeerHits(),deferredSnapshots.snapshotCacheMisses(),deferredSnapshots.bytesRead(),deferredSnapshots.snapshotCacheEntries(),deferredSnapshots.snapshotCacheBytes(),deferredSnapshots.snapshotCacheLimit()>>20);
@@ -378,6 +390,7 @@ public:
     void registerVertex(IDirect3DVertexShader9* original,std::uint64_t hash,const DWORD* code,size_t count,unsigned modelFamily=0){
         auto found=vertices.find(original);if(found!=vertices.end()){drop(found->second.patched);drop(found->second.shared);vertices.erase(found);}
         const unsigned k=modelFamily==3?4:kind(kAutoBumpVertex,hash);if(!k||vertices.size()>=4096)return;
+        ++cold.vertexSources;cold.sourceBytes+=count*sizeof(DWORD);ColdTimer timer{cold.vertexMs};
         std::vector<std::uint32_t> patched;
         if(NorthlightWaterShaderPatch::patch(reinterpret_cast<const std::uint32_t*>(code),count,patched))return;
         IDirect3DVertexShader9* shader=nullptr;
@@ -458,7 +471,7 @@ public:
         if(geometry&&modes[domain-1]==2&&pomInRange&&pomControl[0]>0&&sharedPOM.canTry()&&!(domain==4&&material==6)){
             P::Scope shared(profile,P::SharedPOM);sharing=parallax.supportsShared(native,material)&&sharedVertex(v->second)&&
                 sharedPOM.prepare(geometry->draw,geometry->indices,geometry->format,geometry->vertices,geometry->stride,width,heightPixels,material==6);}
-        if(sharing&&domain!=4&&!sharedShaders[material-1]&&FAILED(d->CreatePixelShader(sharedCodes[material-1],&sharedShaders[material-1])))sharing=false;
+        if(sharing&&domain!=4&&!sharedShaders[material-1]&&FAILED(createCaptureShader(sharedCodes[material-1],&sharedShaders[material-1])))sharing=false;
         if(sharing&&!sharedBinding.bind(sharedPOM,false))sharing=false;
         if(domain==4){model=modelCapture(native,alpha,sharing);if(!model&&sharing){sharedBinding.restore();sharing=false;model=modelCapture(native,alpha);}if(!model)return;saved.constantBase=model->constant;saved.normalStage=14;}
         if(sharing){saved.constantCount=6;saved.stateCount=16;for(unsigned i=14;i<16;++i)if(FAILED(d->GetRenderState(saved.states[i].key,&saved.states[i].value)))return;}
@@ -489,7 +502,7 @@ public:
             if(!available){drop(occlusionTarget);drop(occlusionMap);occlusionUnavailable=!supported;occlusionRetry=supported?60:0;logf("MATERIAL_OCCLUSION allocation retry=%u unsupported=%u; settings retained",occlusionRetry,unsigned(!supported));}
         }
         const unsigned captureIndex=model?0:opaqueWall?4:material-1;auto& captureShader=sharing?sharedShaders[captureIndex]:shaders[captureIndex];
-        if(!model&&!captureShader&&!check(d->CreatePixelShader(sharing?sharedCodes[captureIndex]:codes[captureIndex],&captureShader),"capture shader"))return;
+        if(!model&&!captureShader&&!check(createCaptureShader(sharing?sharedCodes[captureIndex]:codes[captureIndex],&captureShader),"capture shader"))return;
         IDirect3DBaseTexture9* diffuse=nullptr;if(FAILED(d->GetTexture(0,&diffuse)))return;
         auto normal=normals.acquire(diffuse,domain==4);drop(diffuse);if(!normal)return;
         NorthlightAutoNormalCache::Lease normal1;

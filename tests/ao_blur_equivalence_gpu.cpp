@@ -2,6 +2,16 @@
 #define main northlight_unused_composite_main
 #include "composite_distance_gpu.cpp"
 #undef main
+#ifdef NORTHLIGHT_AO_SPLIT_PROFILE
+#include <cstdarg>
+static unsigned splitReports=0;
+static void logf(const char* format,...) {
+    char line[2048];va_list args;va_start(args,format);std::vsnprintf(line,sizeof line,format,args);va_end(args);
+    assert(std::strstr(line,"AOBlurSetup=")&&std::strstr(line,"AOBlur=")&&!std::strstr(line,"marks_truncated"));
+    ++splitReports;
+}
+#include "gpu_profile.h"
+#endif
 
 static Image rgba(unsigned w,unsigned h) {
     return {w,h,D3DFMT_A32B32G32R32F,16,std::vector<unsigned char>(std::size_t(w)*h*16)};
@@ -22,6 +32,9 @@ int main(int argc,char** argv) {
     auto api=create(D3D_SDK_VERSION);assert(api);
     D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=window;pp.BackBufferWidth=pp.BackBufferHeight=64;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;pp.PresentationInterval=D3DPRESENT_INTERVAL_IMMEDIATE;
     IDirect3DDevice9* d=nullptr;ok(api->CreateDevice(0,D3DDEVTYPE_HAL,window,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_FPU_PRESERVE,&pp,&d));
+#ifdef NORTHLIGHT_AO_SPLIT_PROFILE
+    auto* splitProfile=new NorthlightGpuProfile(d,"AO split",3);unsigned splitSamples=0;
+#endif
     IDirect3DPixelShader9* shaders[2]{};
     for(unsigned i=0;i<2;++i){auto code=read(argv[i+1]);ok(d->CreatePixelShader(reinterpret_cast<const DWORD*>(code.data()),&shaders[i]));}
     IDirect3DTexture9* resolved=nullptr;IDirect3DSurface9 *resolveSurface=nullptr,*staging=nullptr;
@@ -81,10 +94,16 @@ int main(int argc,char** argv) {
             for(unsigned block=0;block<blocks;++block){
                 const unsigned mode=(block/2)%2?1-block%2:block%2;
                 ok(d->SetPixelShader(shaders[mode]));draw(2);wait(event);
+#ifdef NORTHLIGHT_AO_SPLIT_PROFILE
+                if(block==1){assert(splitProfile->beginFrame(++splitSamples,true));ok(d->SetTexture(0,at));ok(d->SetTexture(1,dt));ok(d->SetPixelShader(shaders[mode]));splitProfile->mark("AOBlurSetup");}
+#endif
                 ok(disjoint->Issue(D3DISSUE_BEGIN));ok(start->Issue(D3DISSUE_END));draw(draws);ok(end->Issue(D3DISSUE_END));ok(frequency->Issue(D3DISSUE_END));ok(disjoint->Issue(D3DISSUE_END));wait(event);
                 UINT64 a=0,b=0,f=0;BOOL bad=FALSE;assert(start->GetData(&a,sizeof a,0)==S_OK&&end->GetData(&b,sizeof b,0)==S_OK&&frequency->GetData(&f,sizeof f,0)==S_OK&&disjoint->GetData(&bad,sizeof bad,0)==S_OK&&!bad&&b>=a&&f);
                 if(block>=4)timing[mode].push_back(double(b-a)/double(f)*1000/draws);
                 if(block<2){ok(d->StretchRect(target,nullptr,resolveSurface,nullptr,D3DTEXF_NONE));ok(d->GetRenderTargetData(resolveSurface,staging));D3DLOCKED_RECT lock{};ok(staging->LockRect(&lock,nullptr,D3DLOCK_READONLY));output[mode].resize(std::size_t(W)*H*8);for(unsigned y=0;y<H;++y)std::memcpy(output[mode].data()+std::size_t(y)*W*8,static_cast<char*>(lock.pBits)+y*lock.Pitch,W*8);ok(staging->UnlockRect());}
+#ifdef NORTHLIGHT_AO_SPLIT_PROFILE
+                if(block==1){splitProfile->mark("AOBlur");splitProfile->endFrame();}splitProfile->poll();
+#endif
             }
             std::size_t changed=0;for(std::size_t i=0;i<output[0].size();++i)changed+=output[0][i]!=output[1][i];
             std::size_t nonfinite=0;float minAO=1,maxAO=0;
@@ -98,5 +117,9 @@ int main(int argc,char** argv) {
         for(unsigned slot=0;slot<4;++slot)ok(d->SetTexture(slot,nullptr));dt->Release();at->Release();wt->Release();
     }
     std::printf("AO_BLUR_EQUIVALENCE_PASS cases=%u game_launched=false\n",cases);
+#ifdef NORTHLIGHT_AO_SPLIT_PROFILE
+    wait(event);splitProfile->poll();assert(splitReports==splitSamples);delete splitProfile;
+    std::printf("AO_SPLIT_PROFILE_PASS samples=%u reports=%u\n",splitSamples,splitReports);
+#endif
     d->SetPixelShader(nullptr);for(auto shader:shaders)shader->Release();for(auto query:{event,start,end,frequency,disjoint})query->Release();staging->Release();resolveSurface->Release();resolved->Release();d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);UnregisterClassW(wc.lpszClassName,wc.hInstance);
 }

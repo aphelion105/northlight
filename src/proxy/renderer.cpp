@@ -481,6 +481,8 @@ private:
     IDirect3DSurface9* maskFormatFor=nullptr;unsigned long maskFormatValue=0;unsigned maskFormatLogs=0;bool maskStencil=false;const void* maskDsId=nullptr; /* identities only: the world depth the format verdict is for, and the one whose Clear(Z) also clears stencil */
     void resetTranslucentCensus(){censusDraws=lastOpaqueZAt=clearResolveAt=earlyResolves=earlyResolveAt=earlyResolveUndone=0;}
     LONGLONG cpuPrep=0,cpuCapture=0,cpuWaterCapture=0,cpuEffects=0,cpuMirrorAudit=0;
+    LONGLONG cpuAOBlurSetup=0,cpuAOBlurSubmit=0;std::uint64_t cpuAOBlurFrame=0;
+    unsigned cpuAOBlurMethod=0,cpuAOBlurWidth=0,cpuAOBlurHeight=0;bool cpuAOBlurPending=false;
     NorthlightEffectsBuckets::Frame effectsBuckets;bool effectsBucketed=false; /* 0.3.175 (S3): this sample frame's effects split */
     unsigned long long cpuCaptureReads=0; /* 0.3.150: timer clock reads inside cpuCapture, sample frames (an outer pair adds one) */
     LARGE_INTEGER cpuFrequency={};
@@ -988,11 +990,22 @@ private:
             // 0.3.201 (task 18): the raw IGN-rotated AO is denoised by a half-resolution bilateral pass into `ao`,
             // which every consumer (legacy composite, world fold) keeps reading. s2 is released afterwards.
             // Task 43: s0 (LINEAR) carries the raw AO too for the blur's 9-read bilinear early-out (AOBlur never reads Scene); the scene copy is rebound after.
-            if (error(ext->SetRenderTarget(0,aoSurface),"AO blur render target")) return;
-            bindEffects(aoRaw);ext->SetTexture(0,aoRaw);ext->SetPixelShader(aoBlurPS);
-            if (error(quad(width/2,height/2),"AO blur pass")) return;
+            const bool timeAOBlur=gpuProfile->recording()&&cpuFrequency.QuadPart>0;
+            const auto aoBlurFrame=gpuProfile->sampledFrame();
+            LONGLONG aoBlurSetup=0,aoBlurSubmit=0;
+            {CpuScope timing(timeAOBlur?&aoBlurSetup:nullptr);
+             if (error(ext->SetRenderTarget(0,aoSurface),"AO blur render target")) return;
+             bindEffects(aoRaw);ext->SetTexture(0,aoRaw);ext->SetPixelShader(aoBlurPS);}
+            // Separate state/resource preparation from the draw interval. Both
+            // timestamps still include command-stream gaps and dependencies.
+            gpuProfile->mark("AOBlurSetup");
+            HRESULT aoBlurResult;
+            {CpuScope timing(timeAOBlur?&aoBlurSubmit:nullptr);aoBlurResult=quad(width/2,height/2);}
+            if (error(aoBlurResult,"AO blur pass")) return;
             ext->SetTexture(2,nullptr);ext->SetTexture(0,scene);
             gpuProfile->mark("AOBlur");effectsBuckets.mark(Bucket::AO);
+            if(timeAOBlur){cpuAOBlurSetup=aoBlurSetup;cpuAOBlurSubmit=aoBlurSubmit;cpuAOBlurFrame=aoBlurFrame;
+                cpuAOBlurMethod=aoMethod;cpuAOBlurWidth=width/2;cpuAOBlurHeight=height/2;cpuAOBlurPending=true;}
         }
         // 0.3.174 FOLD: with a ready world and no effect debug view, WorldComposite applies the
         // AO and bloom (AOContactBloom: bloom rgb, AO alpha) to the scene copy itself, so the
@@ -2814,6 +2827,11 @@ public:
         if(retry){if(world)world->recover();if(water)water->recover();if(failed){releaseResources();failed=false;logf("Effects retry requested after frame cleanup");}}
         if(sampledFrame&&cpuFrequency.QuadPart>0){
             double ms=1000.0/double(cpuFrequency.QuadPart);
+            // Report after rendering: logging must not create a gap inside the GPU stages.
+            if(cpuAOBlurPending){
+                logf("AO_SUBMIT frame=%llu method=%u width=%u height=%u blurSetupCpuMs=%.6f blurDrawSubmitCpuMs=%.6f clockReads=4",
+                    (unsigned long long)cpuAOBlurFrame,cpuAOBlurMethod,cpuAOBlurWidth,cpuAOBlurHeight,double(cpuAOBlurSetup)*ms,double(cpuAOBlurSubmit)*ms);
+                cpuAOBlurPending=false;}
             // 0.3.154: U frames have no per-draw timers; their numbers are on the DRAWGATE ab line.
             if(!gateUntimed)logf("CPU profile frame=%u drawGate=%.3fms capture=%.3fms effects=%.3fms cleanup=%.3fms total=%.3fms enabled=%d gi=%u shadows=%u fog=%u captureSkipped=%u drawHooks=%.3fms frameDrawGates=%u",sampleFrame,std::max(0.0,double(cpuPrep-cpuCapture-cpuEffects)*ms),cpuCapture*ms,cpuEffects*ms,cleanup*ms,(cpuPrep+cleanup)*ms,frameEnabled,unsigned(frameEffects.gi),unsigned(frameEffects.shadows),unsigned(frameEffects.fog),unsigned(world&&world->captureSkippedLastFrame()),
                 NorthlightRenderThreadProbe::profiling()?cpuDrawHooks*ms:-1.0,unsigned(frameDrawGates)); /* 0.3.187: drawHooks -1 = not measured (RenderProfile=0) */

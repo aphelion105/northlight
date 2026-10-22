@@ -5,7 +5,25 @@
 using HRESULT=std::int32_t;
 constexpr HRESULT S_OK=0,S_FALSE=1,E_FAIL=-1;
 #include "query_poll.h"
+void waitAttribution(){
+    NorthlightStream::QueryWaitProfile s;
+    s.record(1,false,true,S_OK,780,100,200,800,1000);
+    assert(s.calls==1&&s.flush==1&&!s.errors&&!s.pending&&!s.unissued&&s.waitNs==780);
+    assert(s.beforeNs==100&&s.replayNs==600&&s.afterNs==200&&s.tripNs==900&&s.maxTripNs==900);
+    s.record(0,true,true,S_FALSE,40,2000,2005,2040,2050);
+    assert(s.calls==2&&s.flush==1&&s.unissued==1&&s.pending==1&&!s.errors&&s.waitNs==820);
+    assert(s.beforeNs+s.replayNs+s.afterNs==s.tripNs&&s.tripNs==950&&s.maxTripNs==900);
+    // Nested/refused tasks have no replay timestamps. A backwards clock cannot
+    // turn into unsigned multi-year latency; status/call counts remain visible.
+    s.record(1,false,false,E_FAIL,0,3000,0,0,3010);
+    s.record(1,false,true,E_FAIL,12,4000,3999,4010,4020);
+    s.record(1,false,true,S_OK,0,5000,5002,5001,5003);
+    s.record(1,false,true,S_OK,0,6000,6001,6002,6000);
+    assert(s.calls==6&&s.errors==2&&s.tripNs==950&&s.maxTripNs==900);
+    s={};assert(!s.calls&&!s.waitNs&&!s.tripNs&&!s.maxTripNs);
+}
 int main(){
+    waitAttribution();
     std::uint64_t worst=0;unsigned maxCalls=0;
     for(std::uint64_t ready=0;ready<1700000;ready+=1000){
         std::uint64_t clock=0;unsigned calls=0;

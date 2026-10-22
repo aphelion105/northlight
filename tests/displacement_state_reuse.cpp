@@ -18,6 +18,7 @@ static void logf(const char*,...){}
 #include "saved_state.h"
 #include "auto_bump_renderer.h"
 #include "device_mirror.h"
+#include "mirror_resource_forwarders.h"
 
 struct DisplacementStateTestAccess {
     using Mesh=NorthlightDrawSnapshot::Mesh;
@@ -43,6 +44,7 @@ struct DisplacementStateTestAccess {
         std::puts("DISPLACEMENT_BOUNDS_CACHE_PASS workingSetMiB=32 boundsKiB_under=64 warmHits=640 weak_lifetime address_reuse reset");
     }
     static void capture();
+    static void primitiveLimit();
     static void posed(){
         using namespace NorthlightWaterShaderPatch;using namespace NorthlightActorDeformation;
         NorthlightAutoDisplacement g(nullptr);Program p;p.major=3;p.positionRegister=0;p.skinned=true;
@@ -233,6 +235,43 @@ struct CaptureBackend:Backend {
     HRESULT STDMETHODCALLTYPE GetTexture(DWORD,IDirect3DBaseTexture9** out)override{++textures;*out=nullptr;return D3D_OK;}
     HRESULT STDMETHODCALLTYPE CreateDepthStencilSurface(UINT,UINT,D3DFORMAT,D3DMULTISAMPLE_TYPE,DWORD,BOOL,IDirect3DSurface9**,HANDLE*)override{++depthAllocations;return E_FAIL;}
 };
+struct LimitTexture:NorthlightMirrorResources::ForwardIDirect3DTexture9 {
+    static MirrorGate& testGate(){static MirrorGate gate;return gate;}
+    unsigned refs=1,levels=0;LimitTexture():ForwardIDirect3DTexture9(nullptr,testGate(),[](void*,const char*){},nullptr){}
+    ULONG STDMETHODCALLTYPE AddRef()override{return ++refs;}
+    ULONG STDMETHODCALLTYPE Release()override{return --refs;}
+    D3DRESOURCETYPE STDMETHODCALLTYPE GetType()override{return D3DRTYPE_TEXTURE;}
+    DWORD STDMETHODCALLTYPE GetLevelCount()override{return 1;}
+    HRESULT STDMETHODCALLTYPE GetLevelDesc(UINT,D3DSURFACE_DESC*)override{++levels;return E_FAIL;}
+};
+struct LimitBackend:CaptureBackend {
+    LimitTexture texture;
+    HRESULT STDMETHODCALLTYPE GetTexture(DWORD stage,IDirect3DBaseTexture9** out)override{++textures;*out=stage?nullptr:&texture;if(*out)(*out)->AddRef();return D3D_OK;}
+    HRESULT STDMETHODCALLTYPE GetSamplerState(DWORD,D3DSAMPLERSTATETYPE,DWORD* out)override{++samplers;*out=D3DTADDRESS_WRAP;return D3D_OK;}
+};
+void DisplacementStateTestAccess::primitiveLimit(){
+    LimitBackend d;NorthlightAutoDisplacement g(&d);rangeProgram(g,&d.vs);g.materials[&d.vs].id=1;
+    g.materials[&d.vs].uv=g.materials[&d.vs].view;g.materials[&d.vs].uv.textureCoordinates=true;
+    d.vs.AddRef();g.shaders[&d.vs].patched=&d.vs;
+    std::vector<float> vertices(8193*3*4);for(unsigned i=0;i<8193*3;++i)vertices[i*4+3]=1;
+    NorthlightAutoDisplacement::Args args{{D3DPT_TRIANGLELIST,0,0,8193*3,0,8193,false},nullptr,D3DFMT_UNKNOWN,vertices.data(),16};
+    assert(!g.prepare(&d.vs,1,1,args)&&g.primitiveRejected==1&&g.readsThisFrame==0&&d.texture.levels==0&&g.textures.empty()&&!g.buildsThisFrame);
+    // Existing exact entries retain priority over the cold-build limit.
+    Mesh mesh;assert(g.snapshots.readUP(&d.decl,args.draw,nullptr,D3DFMT_UNKNOWN,vertices.data(),16,mesh));
+    // Measure only the existing UV evaluator's avoidable work, not a game FPS
+    // prediction. This uses the same source and function the old gate followed.
+    const D3DVERTEXELEMENT9* elements=nullptr;UINT elementCount=0;assert(g.declarations.get(&d.decl,elements,elementCount));
+    std::array<double,3> uvMs;for(auto& ms:uvMs){const auto begin=std::chrono::steady_clock::now();
+        for(unsigned repeat=0;repeat<16;++repeat){std::vector<std::array<float,2>> uv;assert(NorthlightActorDeformation::textureUVs(g.materials[&d.vs].uv,mesh,elements,elementCount,g.constants,uv)&&uv.size()==mesh.vertexCount);}
+        ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count()/16;}
+    std::sort(uvMs.begin(),uvMs.end());std::printf("MATERIAL_REJECTED_UV_BENCH_PASS vertices=%u old_uv_work_median_ms=%.6f new_uv_calls=0\n",mesh.vertexCount,uvMs[1]);
+    auto entry=std::make_unique<NorthlightAutoDisplacement::Entry>();entry->source=std::make_shared<Mesh>(std::move(mesh));entry->sourceDecl=&d.decl;d.decl.AddRef();
+    entry->program=1;entry->domain=1;entry->material=1;entry->detail=g.worldDetail;entry->address=D3DTADDRESS_WRAP|(D3DTADDRESS_WRAP<<8);entry->texture=&d.texture;d.texture.AddRef();
+    g.retain(std::move(entry));assert(g.prepare(&d.vs,1,1,args)&&g.prepared()&&g.hits==1&&g.primitiveRejected==1&&d.texture.levels==0);
+    g.reset();args.draw.vertices=8192*3;args.draw.primitives=8192;
+    assert(!g.prepare(&d.vs,1,1,args)&&g.primitiveRejected==1&&g.readsThisFrame==1&&d.texture.levels>0&&!g.buildsThisFrame);
+    std::puts("MATERIAL_PRIMITIVE_LIMIT_PASS over8192_zero_height_reads zero_uv zero_build existing_hit_preserved boundary8192_retained");
+}
 struct MaterialCaptureStateTestAccess {
     static NorthlightAutoDisplacement& setup(NorthlightAutoBump& b,CaptureBackend& d,unsigned domain){
         b.enabled=true;b.width=b.heightPixels=d.surface.size;
@@ -245,6 +284,29 @@ struct MaterialCaptureStateTestAccess {
         unsigned draws=0;b.capture(&d.vs,[&]{++draws;return D3D_OK;});assert(!draws&&!d.pixelQueries&&!d.pixelConstants&&!d.samplers&&!d.textures&&!d.depthAllocations);
         b.modes[0]=1;assert(!b.active());b.modes[0]=0;b.occlusionControl[0]=1;assert(!b.active());
         std::puts("MATERIAL_NO_CONTRIBUTION_PASS no_capture_setup native_pom_independent all_domains_off");
+    }
+    static void disabledAndCold(){
+        struct ColdBackend:CaptureBackend {bool success=false;HRESULT STDMETHODCALLTYPE CreatePixelShader(const DWORD*,IDirect3DPixelShader9** out)override{*out=success?&ps:nullptr;if(*out)(*out)->AddRef();return success?D3D_OK:E_FAIL;}} d;
+        struct NativeSource:CaptureShader<IDirect3DPixelShader9> {HRESULT STDMETHODCALLTYPE GetFunction(void* out,UINT* bytes)override{
+            using namespace NorthlightWaterShaderPatch;const DWORD code[]={0xffff0300,0x0200001f,0x80000005,dst(1,0),0x02000001,dst(8,0),src(2,0),65535};
+            ++reads;if(out){if(*bytes<sizeof code)return E_FAIL;std::memcpy(out,code,sizeof code);}*bytes=sizeof code;return D3D_OK;}} source;
+        {NorthlightAutoBump b(&d);setup(b,d,4);b.enabled=false;
+            unsigned native=0;b.beginDraw();b.capture(&d.vs,[&]{++native;return D3D_OK;});assert(b.nativeDraw([&]{++native;return D3D_OK;})==D3D_OK&&native==1);
+            b.beforeTextureWrite(&d.ps);assert(b.finishCaptures()&&!b.pendingTextures());
+            assert(!d.pixelQueries&&!d.pixelConstants&&!d.textures&&!d.samplers&&!d.depthAllocations&&b.deferred.empty()&&b.deferredSnapshots.bytesRead()==0);
+            assert(!b.modelCapture(&d.ps,false));assert(b.cold.modelMisses==1&&!b.cold.modelBuilt);const double measured=b.cold.modelMs;
+            for(unsigned i=0;i<16;++i)assert(!b.modelCapture(&d.ps,false));assert(b.cold.modelMisses==1&&b.cold.modelMs==measured);
+            const DWORD invalidVS[]={0xfffe0300,65535};b.registerVertex(&d.vs,0,invalidVS,2,3);assert(b.cold.vertexSources==1);
+            assert(!b.modelCapture(&source,false)&&b.cold.modelMisses==2&&!b.cold.modelBuilt);
+            const auto sourceReads=source.reads;const auto modelMs=b.cold.modelMs;assert(!b.modelCapture(&source,false)&&source.reads==sourceReads&&b.cold.modelMs==modelMs);
+            IDirect3DPixelShader9* output=nullptr;assert(FAILED(b.createCaptureShader(invalidVS,&output))&&!output);d.success=true;
+            assert(SUCCEEDED(b.createCaptureShader(invalidVS,&output))&&output);drop(output);assert(b.cold.staticCreates==2&&b.cold.staticBuilt==1);
+            assert(b.modelCapture(&source,true)&&b.cold.modelMisses==3&&b.cold.modelBuilt==1);
+            b.endFrame();assert(!b.cold.vertexSources&&!b.cold.modelMisses&&!b.cold.staticCreates);
+        }
+        assert(d.ps.refs==1&&d.vs.refs==1&&source.refs==1);
+        std::puts("MATERIAL_DISABLED_PASS no_capture snapshots textures state_queries barriers native_draw_retained");
+        std::puts("MATERIAL_COLD_PROFILE_PASS disabled_vertex_registration cached_failure_no_retiming static_creation_success_failure frame_reset");
     }
     static void effectiveRange(){
         CaptureBackend d;NorthlightAutoBump b(&d);auto& g=setup(b,d,4);b.modes[3]=1;
@@ -330,9 +392,11 @@ int main(){
     DisplacementStateTestAccess::boundsCache();
     MaterialCaptureStateTestAccess::invisible();
     MaterialCaptureStateTestAccess::noCapture();
+    MaterialCaptureStateTestAccess::disabledAndCold();
     sharedGeometry();
     DisplacementStateTestAccess::capture();
     DisplacementStateTestAccess::cache();
+    DisplacementStateTestAccess::primitiveLimit();
     DisplacementStateTestAccess::posed();
     {SplitDeclaration decl;DisplacementStateTestAccess::positionOnly(&decl);}
     {RangeBackend backend;NorthlightAutoDisplacement g(&backend);auto* shader=reinterpret_cast<IDirect3DVertexShader9*>(uintptr_t(1));

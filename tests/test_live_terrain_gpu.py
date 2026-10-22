@@ -17,6 +17,15 @@ release=release[:release.index('\n')]
 frame_start=w.index('void endFrame(bool retainPool=true){')
 frame_prefix=w[frame_start:w.index('frameFence.endFrame();',frame_start)]
 checks={
+ 'live terrain uses lossless20B caster vertices and a dedicated declaration in both consumers':
+    'NorthlightLiveTerrainGPU::Cache<NorthlightTerrainCapture::MeshSnapshot,StaticShadow::Vertex> liveTerrainGPU;' in w
+    and 'return StaticShadow::Vertex{p.x,p.y,p.z,0,0};' in up
+    and 'CreateVertexDeclaration(liveElements,&liveTerrainDecl)' in w
+    and 'drop(liveTerrainDecl);' in release
+    and w.count('SetVertexDeclaration(liveTerrainDecl)')==1 and pr.count('SetVertexDeclaration(liveTerrainDecl)')==1
+    and w.count('liveTerrainGPU.vertices(),0,sizeof(StaticShadow::Vertex)')==1 and pr.count('liveTerrainGPU.vertices(),0,sizeof(StaticShadow::Vertex)')==1
+    and '"restore terrain declaration"' in w and '"cube restore terrain declaration"' in pr
+    and 'frameTerrainVertices+snapshot->positions.size()>262144' in w,
  'no index vectors left: counts only':'liveTerrainIndices' not in w+pr and 'liveDirectionalIndices' not in w+pr
     and 'size_t liveTerrainIndexCount=0,liveDirectionalIndexCount=0;' in w,
  'S_FALSE and index-growth refusal keep the 0.3.175 reset':up.count(reset)==2
@@ -58,7 +67,7 @@ checks={
 for name,ok in checks.items():print(('PASS ' if ok else 'FAIL ')+name)
 assert all(checks.values())
 with tempfile.TemporaryDirectory(prefix='northlight-live-terrain-') as tmp:
-    for source in ['test_live_terrain_gpu.cpp','test_fixed_chunk_bits.cpp']:
+    for source in ['test_live_terrain_gpu.cpp','test_live_terrain_layout.cpp','test_fixed_chunk_bits.cpp']:
         for label,flags in [('O2',['-O2']),('asan',['-O1','-g','-fsanitize=address,undefined'])]:
             exe=Path(tmp)/(Path(source).stem+'-'+label)
             subprocess.run(['clang++','-std=c++17','-Wall','-Wextra','-Werror','-UNDEBUG',*flags,*fp.test_include_flags(),str(HERE/source),'-o',str(exe)],check=True)
