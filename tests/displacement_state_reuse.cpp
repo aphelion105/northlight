@@ -81,7 +81,7 @@ struct DisplacementStateTestAccess {
         assert(g.rangeSnapshots.bytesRead()>0&&g.rangeSnapshots.bytesRead()<=(512u<<10));assert(g.snapshots.bytesRead()==0);
         NorthlightDrawSnapshot::Mesh mesh;assert(g.snapshots.readUP(decl,args.draw,nullptr,D3DFMT_UNKNOWN,vertices.data(),12,mesh));
         assert(g.snapshots.bytesRead()==vertices.size()*sizeof(float));g.endFrame();assert(!g.snapshots.bytesRead()&&!g.rangeSnapshots.bytesRead());
-        assert(g.snapshots.snapshotCacheLimit()+g.rangeSnapshots.snapshotCacheLimit()==(32u<<20));
+        assert(g.snapshots.snapshotCacheLimit()+g.rangeSnapshots.snapshotCacheLimit()+g.skinRangeSnapshots.snapshotCacheLimit()==(32u<<20));
         std::puts("MATERIAL_RANGE_BUDGET_PASS isolated_reads warm_tracking combined_cache_cap");
     }
     static bool read(NorthlightAutoDisplacement& g,bool skinned=true){return g.readConstants(skinned?0:20,skinned?256:4,skinned);}
@@ -241,15 +241,15 @@ struct MaterialCaptureStateTestAccess {
     }
     static void effectiveRange(){
         CaptureBackend d;NorthlightAutoBump b(&d);auto& g=setup(b,d,4);b.modes[3]=1;
-        assert(b.captureRange(4)==48);b.strength=0;assert(b.captureRange(4)==48);b.occlusionControl[2]=0;assert(!b.captureNeeded(4));
-        b.modes[3]=2;b.occlusionLight[3]=1;assert(b.captureRange(4)==16);b.modes[3]=3;assert(!b.captureNeeded(4));
+        assert(b.captureRange(4)==48);b.strength=0;assert(b.captureRange(4)==8);b.occlusionControl[2]=0;assert(!b.captureNeeded(4));
+        b.modes[3]=2;b.occlusionLight[3]=1;assert(b.captureRange(4)==8);b.modes[3]=3;assert(!b.captureNeeded(4));
         b.strength=.75f;b.modes[3]=1;DisplacementStateTestAccess::rangeProgram(g,&d.vs);
         float vertices[]={0,0,60,0,1,0,60,0,0,1,60,0};NorthlightAutoDisplacement::Args args{{D3DPT_TRIANGLELIST,0,0,3,0,1,false},nullptr,D3DFMT_UNKNOWN,vertices,16};
         unsigned draws=0;b.beginDraw();b.capture(&d.vs,[&]{++draws;return D3D_OK;},true,&args);
         assert(b.rangeRejected==1&&!d.pixelQueries&&!d.textures&&!d.samplers&&!d.depthAllocations&&!draws);
         // A large object crossing the visible range cannot be rejected as a whole.
         b.endFrame();vertices[2]=1;b.beginDraw();b.capture(&d.vs,[&]{++draws;return D3D_OK;},true,&args);assert(!b.rangeRejected&&d.pixelQueries>0);
-        std::puts("MATERIAL_EFFECT_RANGE_PASS normal_cavity_48 shadow_only_16 inactive_0 rigid_m2_far_skipped crossing_retained");
+        std::puts("MATERIAL_EFFECT_RANGE_PASS normal_48 cavity_shadow_shared_8 inactive_0 rigid_m2_far_skipped crossing_retained");
     }
     static void invisible(){
         for(unsigned domain:{1u,4u})for(bool depthOnly:{false,true}){if(domain==1&&!depthOnly)continue;

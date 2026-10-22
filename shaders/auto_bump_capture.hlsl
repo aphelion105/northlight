@@ -7,7 +7,7 @@ float4 NativeLayerMask:register(c0);
 float4 BumpCapture:register(c20);
 float4 CaptureProjection:register(c21);
 float4 ParallaxControl:register(c22);
-float4 OcclusionControl:register(c23); // shadow strength, shadow steps, cavity strength, target enabled
+float4 OcclusionControl:register(c23); // shadow strength, shadow steps, cavity strength, near range (0 disables)
 float4 OcclusionLight:register(c24); // view direction, 1 sun / 2 moon / 0 inactive
 #ifdef NORTHLIGHT_SHARED_POM
 float4 SharedPomControl:register(c25);
@@ -35,7 +35,7 @@ MaterialValue materialValue(sampler2D map,float2 uv,float4 p) {
     float3 local=float3(xy,sqrt(saturate(1-dot(xy,xy))));
     v.normal=normalize(f.tangent*local.x+f.bitangent*local.y+f.normal*local.z);
     v.occlusion=1;
-    if(OcclusionControl.w>.5){
+    [branch]if(p.w<OcclusionControl.w){
         v.occlusion.b=lerp(1,data.a,OcclusionControl.z);
         if(OcclusionControl.x>0){
             float shade=lerp(1,parallaxShadow(map,v.uv,data.b,p.w,f,ParallaxControl,OcclusionLight,OcclusionControl.y),OcclusionControl.x);

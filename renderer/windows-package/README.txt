@@ -239,6 +239,7 @@ Individual settings (Quality / Balanced / Performance):
   AutoParallaxShadowSteps 8 / 6 / 4   See the quality INI for the allowed range.
   AutoCavity 1 / 0 / 0   See the quality INI for the allowed range.
   AutoCavityStrength 35 / 30 / 25   See the quality INI for the allowed range.
+  AutoMaterialOcclusionDistance 8 / 6 / 4   Shared near range for cavity and POM self-shadowing (2..16 yards).
 When both NearShadowInterval and FarShadowInterval are at least 2, frames that
 draw neither shadow also skip copying the character geometry (about 1–1.5 ms
 of CPU per skipped frame). Light and normal frames alternate: the average FPS

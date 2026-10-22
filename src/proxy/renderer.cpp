@@ -345,6 +345,7 @@ class Device final : public GuardedMirrorDevice {
     std::unique_ptr<NorthlightShadowBlobFilter> shadowBlobs;
     std::unique_ptr<NorthlightWaterRenderer> water;
     std::unique_ptr<NorthlightGpuProfile> gpuProfile,gpuSceneProfile;
+    std::unique_ptr<NorthlightMaterialProfile> materialProfile;
     bool gpuFrameStarted=false,gpuSceneSplit=false,gpuEffectsSplit=false;
     void gpuEffectsEnd(){
         if(gpuSceneSplit&&!gpuEffectsSplit){gpuSceneProfile->mark("Effects");gpuEffectsSplit=true;}
@@ -606,6 +607,7 @@ private:
         waterAfterEffects=0;
         if(surfaceTimerOpen){if(gpuTimer)gpuTimer->end();surfaceTimerOpen=false;}
         if(gpuSceneProfile)gpuSceneProfile->endFrame();
+        if(materialProfile)materialProfile->endFrame();
         gpuFrameStarted=gpuSceneSplit=gpuEffectsSplit=false;
         if(!applied||failed)stateBlocks.clear();
         if(!enabled||extensionFault){stateBlocks.clear();if(world)world->releaseStateCache();if(water)water->releaseStateCache();}
@@ -1008,7 +1010,7 @@ private:
         if(!fold&&!legacyComposite())return;
         if(world&&debugMode==0){
             traceWorld=0;
-            world->setMaterialDetail(autoBump?autoBump->texture():nullptr,autoBump?autoBump->gain():0.f,autoBump?autoBump->distance():48.f,autoBump?autoBump->occlusionTexture():nullptr);
+            world->setMaterialDetail(autoBump?autoBump->texture():nullptr,autoBump?autoBump->gain():0.f,autoBump?autoBump->distance():48.f,autoBump?autoBump->occlusionTexture():nullptr,autoBump?autoBump->occlusionDistance():8.f);
             world->setNameMask(maskOn?worldDepth:nullptr); /* 0.3.212 (task 32) */
             world->setRainMask(rainMaskTex); /* 0.3.202 (rain): RainMask for this frame's composite only (resolved and scrubbed at the top of renderEffects) */
             if(!world->render(saved.targets[0],depthTex,width,height,sceneFormat,nearZ,farZ,worldMinDepth,worldMaxDepth,worldDebug,gpuProfile.get(),waterMask,fold?scene:nullptr,fold?ao:nullptr)){
@@ -1171,6 +1173,7 @@ private:
         if(!gpuFrameStarted){
             gpuFrameStarted=true;
             if(gpuSceneProfile&&diagnostics())gpuSceneProfile->beginFrame(frame,NorthlightRenderThreadProbe::sampleFrame(frame));
+            if(materialProfile)materialProfile->beginFrame(frame,world&&NorthlightQuality::renderProfile(world->surfaceSettings())&&NorthlightRenderThreadProbe::sampleFrame(frame));
         }
         ++drawCalls;maskKind=0;if(nameRun)nameMaskRunBreak();
         if(spellOn){spellDomain=false;spellVs=nullptr;} /* task 34: this draw's reads for spellDrawImpl, valid only if this function gets that far */
@@ -2417,9 +2420,10 @@ public:
         parent->AddRef(); QueryPerformanceFrequency(&cpuFrequency);
         try{NorthlightSettings::bridgeLog=[](const char* line){logf("%s",line);};settingsService=NorthlightSettings::acquire(std::filesystem::path(rootPath));NorthlightStream::settingsPump=&NorthlightSettings::gameThreadPump;}
         catch(const std::exception& e){logf("SETTINGS unavailable: %s",e.what());}
-        gpuProfile=std::make_unique<NorthlightGpuProfile>(ext);gpuSceneProfile=std::make_unique<NorthlightGpuProfile>(ext,"GPU frame",2);gpuTimer=std::make_unique<NorthlightGpuFrameTimer>(ext); world=std::make_unique<WorldRenderer>(ext);world->setEffectsBuckets(&effectsBuckets);
+        gpuProfile=std::make_unique<NorthlightGpuProfile>(ext);gpuSceneProfile=std::make_unique<NorthlightGpuProfile>(ext,"GPU frame",2);materialProfile=std::make_unique<NorthlightMaterialProfile>(ext);gpuTimer=std::make_unique<NorthlightGpuFrameTimer>(ext); world=std::make_unique<WorldRenderer>(ext);world->setEffectsBuckets(&effectsBuckets);world->setMaterialProfiler(materialProfile.get());
         surface=std::make_unique<NorthlightSurfaceRenderer>(ext);
         autoBump=std::make_unique<NorthlightAutoBump>(ext);autoBump->setGeometryTracking(&NorthlightTrackedBuffers::identity,&NorthlightTrackedBuffers::version,&NorthlightTrackedBuffers::captureMetadata);autoBump->configure(world->surfaceSettings());
+        autoBump->setProfiler(materialProfile.get());
         autoBump->setConstantEpochSource(ext,[](void* context,NorthlightConstantEpoch::Stamp& stamp){return static_cast<ExtensionDevice*>(context)->constantStamp(stamp);});
         world->setConstantEpochSource({&mirrorState.constantEpoch,&mirrorState}); /* 0.3.180 (C1): read in place under the draw's gate */
         char skyRoot[MAX_PATH*3];WideCharToMultiByte(CP_UTF8,0,rootPath,-1,skyRoot,sizeof skyRoot,nullptr,nullptr);celestialDiscs=std::make_unique<NorthlightCelestialDiscRenderer>(ext,std::string(skyRoot)+"world-cache/celestial");celestialDiscs->setTerrainSource([this]{return world->celestialTerrainGeneration();},[this](unsigned body,const float* matrix){return world->drawCelestialTerrain(body,matrix);},[this](unsigned body){world->noteCelestialTerrainReuse(body);});celestialDiscs->setIdentityMap([this](std::uintptr_t exposed){return mirrorResources.rawOf(exposed,!mirrorState.enabled);});shadowBlobs=std::make_unique<NorthlightShadowBlobFilter>(ext,world->blobShadowStrength());shadowBlobs->setTexturePeek([](void* e,DWORD stage,IDirect3DBaseTexture9*& out){return static_cast<ExtensionDevice*>(e)->peekTexture(stage,out);},ext); /* 0.3.196 (task 12): borrowed stage-0 identity */water=std::make_unique<NorthlightWaterRenderer>(ext); logf("D3D9 device wrapped. Ctrl+Shift+F7 fog; F8 GI; F9 shadows; F10 all effects; F12 world debug (all with Ctrl+Shift). F11 unassigned. Components start ON; GI cache stays warm.");
@@ -2452,7 +2456,7 @@ public:
         memoryDiagnostics.reset();
         spellTeardown();
         surface.reset();autoBump.reset();
-        dropBlobFaint();shadowBlobs.reset();celestialDiscs.reset();gpuProfile.reset();gpuSceneProfile.reset();gpuTimer.reset();drop(latencyQuery);water.reset();world.reset();releaseResources();
+        dropBlobFaint();shadowBlobs.reset();celestialDiscs.reset();gpuProfile.reset();gpuSceneProfile.reset();materialProfile.reset();gpuTimer.reset();drop(latencyQuery);water.reset();world.reset();releaseResources();
         hdrColor.reset();releaseHdrTargets();stateBlocks.clear();ext->Release();ext=nullptr;
         const ULONG backendReferences=real->Release();parent->Release();
         logf("DEVICE lifetime event=destroy-end id=%ld live=%ld backendReleaseCount=%lu tick=%lu",diagnosticId,InterlockedDecrement(&liveDevices),(unsigned long)backendReferences,(unsigned long)GetTickCount());
@@ -2486,7 +2490,7 @@ public:
         NorthlightMirrorResources::generation.fetch_add(1,std::memory_order_relaxed); /* task 34: Reset drops the render-target verdicts of every texture */
         if(spellOn){spell.reset();spellSync();spellQueryN=0;spellQueryUnknown=false;spellTexFor=nullptr;spellTexKey=nullptr;spellFade.reset();} /* task 34: no state block, upload buffer or surface may outlive the device state */
         frameIntervals.reset();frameCost.reset();stallFrames.reset();mirrorResources.queryProfile={};backDescKnown=false;backSurface=nullptr;
-        NorthlightParticleTextures::cache().clear();NorthlightMaterialTextures::cache().clear();NorthlightTrackedBuffers::invalidateAll();gpuProfile->reset();gpuSceneProfile->reset();gpuFrameStarted=gpuSceneSplit=gpuEffectsSplit=false;gpuTimer->reset();gpuBudgetQpc=0;boundQpc=0;cpuBudgetQpc=0;cpuEffectsQpc=0;gpuBound.reset();replayWait.reset();replaySkipPrev=0;replayWaitPrevNs=0;drop(latencyQuery);latencyPending=false;latencyFailed=false; releaseResources(); if(world)world->reset();if(water)water->reset();if(celestialDiscs)celestialDiscs->reset();if(shadowBlobs)shadowBlobs->reset(); weatherDetect.reset();weatherSample={}; /* 0.3.198 (rain) */failed=false;latchDrawGates();
+        NorthlightParticleTextures::cache().clear();NorthlightMaterialTextures::cache().clear();NorthlightTrackedBuffers::invalidateAll();gpuProfile->reset();gpuSceneProfile->reset();if(materialProfile)materialProfile->reset();gpuFrameStarted=gpuSceneSplit=gpuEffectsSplit=false;gpuTimer->reset();gpuBudgetQpc=0;boundQpc=0;cpuBudgetQpc=0;cpuEffectsQpc=0;gpuBound.reset();replayWait.reset();replaySkipPrev=0;replayWaitPrevNs=0;drop(latencyQuery);latencyPending=false;latencyFailed=false; releaseResources(); if(world)world->reset();if(water)water->reset();if(celestialDiscs)celestialDiscs->reset();if(shadowBlobs)shadowBlobs->reset(); weatherDetect.reset();weatherSample={}; /* 0.3.198 (rain) */failed=false;latchDrawGates();
         if(pp&&world&&world->nameMask()){D3DDEVICE_CREATION_PARAMETERS cp={};if(SUCCEEDED(ext->GetCreationParameters(&cp)))upgradeAutoDepth(parent,cp.AdapterOrdinal,cp.DeviceType,pp,true,"Reset");} /* 0.3.212 (task 32) */
         hdrColor.reset();hdrUiPhase=false;releaseHdrTargets();
         HRESULT hr=hdr.settings.requested?hdr.reset(real,ext,pp):ext->Reset(pp);if(SUCCEEDED(hr))hr=initHdrTargets();logf("Reset HRESULT=0x%08lx HDR=%d",(unsigned long)hr,int(hdr.active)); return hr;
@@ -2670,6 +2674,7 @@ public:
         if(diagnostics()&&QueryPerformanceCounter(&intervalTick)&&frameIntervals.sample(intervalTick.QuadPart,cpuFrequency.QuadPart,intervalReport)){
             logf("FRAME interval device=%ld frame=%u tick=%lu enabled=%d samples=%u meanMs=%.3f p50Ms=%.3f p95Ms=%.3f maxMs=%.3f fps=%.2f gi=%u shadows=%u fog=%u focus=%d",diagnosticId,frame,(unsigned long)GetTickCount(),enabled,intervalReport.count,intervalReport.meanMs,intervalReport.p50Ms,intervalReport.p95Ms,intervalReport.maxMs,1000.0/intervalReport.meanMs,unsigned(frameEffects.gi),unsigned(frameEffects.shadows),unsigned(frameEffects.fog),int(intervalFocus));intervalFocus=true;}
         if(diagnostics()){gpuProfile->poll();if(gpuSceneProfile)gpuSceneProfile->poll();}
+        if(materialProfile)materialProfile->poll();if(world)world->pollMaterialProfile();
         if(diagnostics()&&frame%600==0)logClientLatency(frame,"periodic");
         gpuBudgetFrame();cpuBudgetFrame(); /* task 45 */
         // Poll only while this game owns foreground focus.

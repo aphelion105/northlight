@@ -2,6 +2,7 @@
 #include "auto_normal_memory.h"
 #include "quality_settings.h"
 #include "material_height.h"
+#include "material_profile.h"
 #include <unordered_map>
 
 // Generated maps and retained source references have separate bounded budgets.
@@ -9,6 +10,7 @@
 class NorthlightAutoNormalCache {
     struct Entry {IDirect3DTexture9* source;IDirect3DTexture9* normal;std::uint64_t bytes,sourceBytes,used,version;unsigned frame;bool mutableSource,model;};
     IDirect3DDevice9* d;
+    NorthlightMaterialProfile* profile=nullptr;
     NorthlightStateBlockPool states;
     std::vector<Entry> entries;
     std::unordered_map<IDirect3DTexture9*,size_t> lookup[2];
@@ -55,6 +57,7 @@ public:
         explicit operator bool()const{return texture!=nullptr;}
     };
     explicit NorthlightAutoNormalCache(IDirect3DDevice9* device):d(device),states(device){refreshBudget();}
+    void setProfiler(NorthlightMaterialProfile* p){profile=p;}
     ~NorthlightAutoNormalCache(){reset();drop(shader);drop(modelShader);}
     void reset(){states.clear();for(auto& e:entries){drop(e.source);drop(e.normal);}entries.clear();for(auto& index:lookup)index.clear();recent=0;bytes=sourceBytes=0;}
     void configure(const NorthlightQuality::Settings& s){if(polarity!=s.autoHeightPolarity||details!=s.autoHeightDetails||balance!=s.autoHeightBalance){reset();polarity=s.autoHeightPolarity;details=s.autoHeightDetails;balance=s.autoHeightBalance;}}
@@ -69,6 +72,7 @@ public:
     void report(){logf("AUTONORMAL cached=%zu bytes=%llu generated=%u hits=%u evicted=%u sourceBytes=%llu budgetMiB=%llu allocations=%u reused=%u",entries.size(),(unsigned long long)bytes,builds,hits,evictions,(unsigned long long)sourceBytes,(unsigned long long)(budget>>20),allocations,reuses);}
     Lease acquire(IDirect3DBaseTexture9* source,bool model=false){return Lease(*this,resolve(source,model));}
     IDirect3DTexture9* resolve(IDirect3DBaseTexture9* base,bool model=false){
+        using P=NorthlightMaterialProfile;P::Scope timing(profile,P::NormalCache);
         if(!base||base->GetType()!=D3DRTYPE_TEXTURE)return nullptr;
         auto* source=static_cast<IDirect3DTexture9*>(base);++clock;const auto revision=NorthlightMaterialHeight::version(source);
         auto it=entries.end();
@@ -76,11 +80,14 @@ public:
         else {auto found=lookup[model].find(source);if(found!=lookup[model].end())it=entries.begin()+found->second;}
         if(it!=entries.end()){
             if(revision!=it->version||(it->mutableSource&&!it->version&&frame-it->frame>=30))erase(size_t(it-entries.begin()));
-            else{recent=size_t(it-entries.begin());it->used=clock;++hits;return it->normal;}
+            else{recent=size_t(it-entries.begin());it->used=clock;++hits;if(profile)profile->count(P::NormalHit);return it->normal;}
         }
+        if(profile)profile->count(P::NormalMiss);
         if(generated>=2)return nullptr;
+        timing.next(P::NormalBuild);
         D3DSURFACE_DESC desc{};if(FAILED(source->GetLevelDesc(0,&desc))||!desc.Width||!desc.Height||(desc.Usage&D3DUSAGE_DEPTHSTENCIL))return nullptr;
         const UINT width=std::min(desc.Width,512u),height=std::min(desc.Height,512u);
+        timing.work(uint64_t(width)*height);
         const std::uint64_t cost=NorthlightAutoNormalMemory::mipBytes(D3DFMT_A8R8G8B8,width,height,0),sourceCost=NorthlightAutoNormalMemory::mipBytes(desc.Format,desc.Width,desc.Height,source->GetLevelCount());
         constexpr std::uint64_t sourceBudget=128ull<<20;if(cost>budget||sourceCost>sourceBudget)return nullptr;
         struct Recycled {IDirect3DTexture9* texture=nullptr;~Recycled(){drop(texture);}} recycled;
@@ -112,11 +119,12 @@ public:
         d->SetSamplerState(0,D3DSAMP_MAXMIPLEVEL,0);d->SetSamplerState(0,D3DSAMP_MIPMAPLODBIAS,0);
         d->SetSamplerState(0,D3DSAMP_ADDRESSU,model?D3DTADDRESS_CLAMP:D3DTADDRESS_WRAP);d->SetSamplerState(0,D3DSAMP_ADDRESSV,model?D3DTADDRESS_CLAMP:D3DTADDRESS_WRAP);
         // Model relief uses only profile.z (polarity); its shader derives local detail from the source.
-        NorthlightMaterialHeight::Image image;if(!model)NorthlightMaterialHeight::read(source,image);const auto profile=NorthlightMaterialHeight::profile(image,polarity,details,balance);
-        const float texel[]={1.f/width,1.f/height,5.f,0};d->SetPixelShaderConstantF(0,texel,1);d->SetPixelShaderConstantF(1,profile.data(),1);
+        NorthlightMaterialHeight::Image image;std::array<float,4> heightProfile;
+        {P::Scope read(profile,P::HeightRead);if(!model)NorthlightMaterialHeight::read(source,image);heightProfile=NorthlightMaterialHeight::profile(image,polarity,details,balance);}
+        const float texel[]={1.f/width,1.f/height,5.f,0};d->SetPixelShaderConstantF(0,texel,1);d->SetPixelShaderConstantF(1,heightProfile.data(),1);
         struct V {float x,y,z,w,u,v;};const V quad[]={{-.5f,-.5f,0,1,0,0},{width-.5f,-.5f,0,1,1,0},{-.5f,height-.5f,0,1,0,1},{width-.5f,height-.5f,0,1,1,1}};
-        if(FAILED(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(V)))){drop(normal);return nullptr;}
-        normal->SetAutoGenFilterType(D3DTEXF_LINEAR);normal->GenerateMipSubLevels();
+        {P::Scope draw(profile,P::NormalBuild,0,true);draw.work(uint64_t(width)*height);if(FAILED(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(V)))){drop(normal);return nullptr;}}
+        {P::Scope mips(profile,P::Mips,0,true);normal->SetAutoGenFilterType(D3DTEXF_LINEAR);normal->GenerateMipSubLevels();}
         source->AddRef();try{entries.push_back({source,normal,cost,sourceCost,clock,revision,frame,(desc.Usage&(D3DUSAGE_DYNAMIC|D3DUSAGE_RENDERTARGET))!=0||(desc.Pool==D3DPOOL_DEFAULT&&source->GetLevelCount()==1),model});
             try{lookup[model].emplace(source,entries.size()-1);}catch(...){entries.pop_back();throw;}
         }catch(...){source->Release();drop(normal);return nullptr;}recent=entries.size()-1;bytes+=cost;sourceBytes+=sourceCost;++generated;++builds;return normal;

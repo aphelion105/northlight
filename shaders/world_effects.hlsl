@@ -1292,11 +1292,12 @@ float4 MaterialComposite(float2 uv:TEXCOORD0):COLOR0 {
     float3 detail=autoBumpNormal(q,relative,normal,z,InverseView[0].xyz,InverseView[1].xyz,InverseView[2].xyz);
     if(d>=.99999||waterDistance(q,d)>0||(BumpControl.x<=0&&MaterialOcclusionInfo.x<=0))return color;
     float3 occlusion=1;
-    if(MaterialOcclusionInfo.x>0){
+    float occlusionRange=MaterialOcclusionInfo.y>0?MaterialOcclusionInfo.y:BumpControl.y;
+    [branch]if(MaterialOcclusionInfo.x>0&&z<occlusionRange){
         float4 material=tex2Dlod(BumpMaterial,float4(q,0,0)),occ=tex2Dlod(MaterialOcclusion,float4(q,0,0));
         float capturedZ=material.b/max(material.a,.001);
         float valid=material.a>.02&&occ.a>.02&&abs(capturedZ-z)<max(.025,z*.0015);
-        float fade=saturate((BumpControl.y-z)/max(BumpControl.y*.25,1));
+        float fade=saturate((occlusionRange-z)/max(occlusionRange*.25,1));
         occlusion=lerp(1,saturate(occ.rgb/max(occ.a,.001)),valid*fade);
     }
     float3 delta=0;
@@ -1310,6 +1311,31 @@ float4 MaterialComposite(float2 uv:TEXCOORD0):COLOR0 {
     float3 cavity=max(AmbientLight.rgb*AmbientLight.w+GridOrigin.rgb,0)*(occlusion.b-1);
     color.rgb=max(color.rgb+albedoT*(delta*visibility+cavity)*tex2D(MaterialFog,uv).a,0);
     return color;
+}
+
+// Sampled diagnostic only: four small occlusion queries count a regular grid,
+// using the same depth validity and near cutoff as MaterialComposite.
+// BumpControl.w selects valid capture / changed normal / cavity / self-shadow.
+float4 MaterialAudit(float2 uv:TEXCOORD0):COLOR0 {
+    float2 q=depthUV(uv);float d=normalizedDepth(q);float z=viewDistance(d);
+    float4 material=tex2Dlod(BumpMaterial,float4(q,0,0));
+    float valid=material.a>.02&&abs(material.b/max(material.a,.001)-z)<max(.025,z*.0015);
+    clip((valid&&d<.99999&&waterDistance(q,d)<=0)?1:-1);
+    if(BumpControl.w>.5&&BumpControl.w<1.5){
+        float3 v=viewPositionDistance(q,z);
+        float3 relative=v.x*InverseView[0].xyz+v.y*InverseView[1].xyz+v.z*InverseView[2].xyz;
+        float3 normal=tex2Dlod(NormalBuffer,float4(uv,0,0)).xyz;
+        float3 detail=autoBumpNormal(q,relative,normal,z,InverseView[0].xyz,InverseView[1].xyz,InverseView[2].xyz);
+        clip(length(detail-normal)>.001?1:-1);
+    }
+    if(BumpControl.w>1.5){
+        float occlusionRange=MaterialOcclusionInfo.y>0?MaterialOcclusionInfo.y:BumpControl.y;
+        float4 occ=tex2Dlod(MaterialOcclusion,float4(q,0,0));
+        float3 value=saturate(occ.rgb/max(occ.a,.001));
+        clip((MaterialOcclusionInfo.x>0&&z<occlusionRange&&occ.a>.02)?1:-1);
+        clip((BumpControl.w<2.5?value.b:min(value.r,value.g))<.999?1:-1);
+    }
+    return 0;
 }
 
 // Separate geometry pass: c0..3 contains the light's world->clip matrix.

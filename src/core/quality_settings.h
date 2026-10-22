@@ -102,6 +102,7 @@ struct Settings {
     unsigned autoBump=1,autoBumpStrength=75,autoBumpDistance=48,autoBumpTerrain=3,autoBumpWalls=3,autoBumpGrass=1;
     unsigned autoParallaxDepth=100,autoParallaxDistance=16,autoParallaxSteps=16;
     unsigned autoParallaxShadows=1,autoParallaxShadowStrength=70,autoParallaxShadowSteps=8,autoCavity=1,autoCavityStrength=35;
+    unsigned autoMaterialOcclusionDistance=8;
     unsigned water=1,waterSSR=1,waterSSRResolution=100,waterSSRSteps=64,waterSSRDistance=0;
     unsigned waterSSRThickness=30,waterSSRRefineSteps=4,waterSSRStrength=100;
     unsigned waterRefraction=1,waterGlints=1,waterPointLights=1;
@@ -138,7 +139,7 @@ struct Settings {
     unsigned autoDisplacementStrength=100,autoDisplacementDistance=12,autoDisplacementDetail=4;
     unsigned autoBumpModels=3,autoModelDisplacementStrength=25,autoModelDisplacementDistance=8,autoModelDisplacementDetail=2;
     unsigned autoHeightPolarity=0,autoHeightDetails=75,autoHeightBalance=50;
-    char origin[98]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
+    char origin[99]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
 };
 struct Key { const char* name; unsigned Settings::*field; unsigned low,high; unsigned preset[3]; };
 // preset[] = Quality, Balanced, Performance. Quality must equal Settings{}.
@@ -241,6 +242,7 @@ inline const Key Keys[]={
     {"AutoParallaxShadowSteps",&Settings::autoParallaxShadowSteps,4,16,{8,6,4}},
     {"AutoCavity",&Settings::autoCavity,0,1,{1,0,0}},
     {"AutoCavityStrength",&Settings::autoCavityStrength,0,100,{35,30,25}},
+    {"AutoMaterialOcclusionDistance",&Settings::autoMaterialOcclusionDistance,2,16,{8,6,4}},
 };
 inline bool operator==(const Settings& a,const Settings& b){for(const auto& k:Keys)if(a.*k.field!=b.*k.field)return false;return true;}
 inline bool operator!=(const Settings& a,const Settings& b){return !(a==b);}

@@ -35,7 +35,7 @@ int main(int argc,char** argv){
     for(unsigned i=0;i<200;++i){reply=transport.exchange(service,request);if(reply.find("\nNLS1\t")!=reply.npos)break;std::this_thread::sleep_for(std::chrono::milliseconds(2));}assert(reply.find("\nNLS1\t")!=reply.npos);
     assert(transport.exchange(service,request)==reply);assert(transport.exchange(service,"NL1\tx\t2\t1\t1\nsnapshot").empty());
     assert(!service.submit("oversize",std::string(131073,'x')));
-    unsigned live=0;for(const auto& k:NorthlightQuality::Keys)live+=liveQuality(k.name);assert(live==88);
+    unsigned live=0;for(const auto& k:NorthlightQuality::Keys)live+=liveQuality(k.name);assert(live==89);
     const auto displacementDocs=applyChanges(docs,fields,"Q\tQuality\tAutoBumpTerrain\t3\nQ\tQuality\tAutoBumpWalls\t3\nQ\tQuality\tAutoDisplacementStrength\t125\nQ\tQuality\tAutoDisplacementDistance\t16\nQ\tQuality\tAutoDisplacementDetail\t5\n");
     const auto displaced=liveQualityUpdate(active.quality,configOf(displacementDocs,"").quality);
     assert(displaced.autoBumpTerrain==3&&displaced.autoBumpWalls==3&&displaced.autoDisplacementStrength==125&&displaced.autoDisplacementDistance==16&&displaced.autoDisplacementDetail==5);
@@ -44,11 +44,11 @@ int main(int argc,char** argv){
     assert(liveQualityUpdate(active.quality,strongQuality).autoDisplacementStrength==600);
     fails([&]{applyChanges(docs,fields,"Q\tQuality\tAutoDisplacementStrength\t1001\n");});
     fails([&]{applyChanges(docs,fields,"Q\tQuality\tAutoDisplacementDetail\t6\n");});fails([&]{applyChanges(docs,fields,"Q\tQuality\tAutoDisplacementDistance\t3\n");});
-    const auto occlusionDocs=applyChanges(docs,fields,"Q\tQuality\tAutoParallaxShadows\t0\nQ\tQuality\tAutoParallaxShadowStrength\t85\nQ\tQuality\tAutoParallaxShadowSteps\t12\nQ\tQuality\tAutoCavity\t1\nQ\tQuality\tAutoCavityStrength\t55\n");
+    const auto occlusionDocs=applyChanges(docs,fields,"Q\tQuality\tAutoParallaxShadows\t0\nQ\tQuality\tAutoParallaxShadowStrength\t85\nQ\tQuality\tAutoParallaxShadowSteps\t12\nQ\tQuality\tAutoCavity\t1\nQ\tQuality\tAutoCavityStrength\t55\nQ\tQuality\tAutoMaterialOcclusionDistance\t6\n");
     const auto modelDocs=applyChanges(docs,fields,"Q\tQuality\tAutoBumpModels\t3\nQ\tQuality\tAutoModelDisplacementStrength\t40\nQ\tQuality\tAutoModelDisplacementDistance\t10\nQ\tQuality\tAutoModelDisplacementDetail\t3\nQ\tQuality\tAutoHeightPolarity\t2\nQ\tQuality\tAutoHeightDetails\t90\nQ\tQuality\tAutoHeightBalance\t60\n");
     const auto modelLive=liveQualityUpdate(active.quality,configOf(modelDocs,"").quality);assert(modelLive.autoBumpModels==3&&modelLive.autoModelDisplacementStrength==40&&modelLive.autoModelDisplacementDistance==10&&modelLive.autoModelDisplacementDetail==3&&modelLive.autoHeightPolarity==2&&modelLive.autoHeightDetails==90&&modelLive.autoHeightBalance==60);
     const auto occlusionConfig=configOf(occlusionDocs,"");const auto occlusionLive=liveQualityUpdate(active.quality,occlusionConfig.quality);
-    assert(!occlusionLive.autoParallaxShadows&&occlusionLive.autoParallaxShadowStrength==85&&occlusionLive.autoParallaxShadowSteps==12&&occlusionLive.autoCavity&&occlusionLive.autoCavityStrength==55);
+    assert(!occlusionLive.autoParallaxShadows&&occlusionLive.autoParallaxShadowStrength==85&&occlusionLive.autoParallaxShadowSteps==12&&occlusionLive.autoCavity&&occlusionLive.autoCavityStrength==55&&occlusionLive.autoMaterialOcclusionDistance==6);
     fails([&]{applyChanges(docs,fields,"Q\tQuality\tAutoCavityStrength\t101\n");});fails([&]{applyChanges(docs,fields,"Q\tQuality\tAutoParallaxShadowSteps\t3\n");});
     const auto materialDocs=applyChanges(docs,fields,"Q\tQuality\tAutoBumpTerrain\t2\nQ\tQuality\tAutoBumpWalls\t1\nQ\tQuality\tAutoBumpGrass\t0\nQ\tQuality\tAutoParallaxDepth\t120\nQ\tQuality\tAutoParallaxDistance\t12\nQ\tQuality\tAutoParallaxSteps\t24\n");
     const auto materialConfig=configOf(materialDocs,"");assert(materialConfig.quality.autoBumpTerrain==2&&materialConfig.quality.autoBumpWalls==1&&!materialConfig.quality.autoBumpGrass&&materialConfig.quality.autoParallaxDepth==120&&materialConfig.quality.autoParallaxDistance==12&&materialConfig.quality.autoParallaxSteps==24);

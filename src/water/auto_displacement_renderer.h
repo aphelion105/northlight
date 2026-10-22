@@ -1,4 +1,5 @@
 #pragma once
+#include "material_profile.h"
 #include "draw_snapshot.h"
 #include "displacement_geometry.h"
 #include "displacement_shader_patch.h"
@@ -13,6 +14,7 @@
 #include <cfloat>
 
 class NorthlightAutoDisplacement {
+    NorthlightMaterialProfile* profile=nullptr;
     friend struct DisplacementStateTestAccess;
     using Program=NorthlightActorDeformation::Program;
     using Mesh=NorthlightDrawSnapshot::Mesh;
@@ -29,22 +31,23 @@ class NorthlightAutoDisplacement {
     };
     IDirect3DDevice9* d;
     NorthlightDrawSnapshot::Frame snapshots{2u<<20,0};
-    NorthlightDrawSnapshot::Frame rangeSnapshots{512u<<10,0};
+    NorthlightDrawSnapshot::Frame rangeSnapshots{512u<<10,0},skinRangeSnapshots{256u<<10,0};
     NorthlightVertexDeclarations::Cache declarations;
     void* constantContext=nullptr;NorthlightConstantEpoch::Reader constantReader=nullptr;
-    NorthlightConstantEpoch::Stamp constantStamp;float constants[256*4]={};
+    NorthlightConstantEpoch::Stamp constantStamp,rangeConstantStamp;float constants[256*4]={};
     float rangeConstants[256*4]={}; // Range admission must not invalidate the cached model pose bank.
-    bool readConstants(unsigned first,unsigned count,bool skinned){
+    bool readConstantBank(unsigned first,unsigned count,bool skinned,float* bank,NorthlightConstantEpoch::Stamp& stamp){
         namespace E=NorthlightConstantEpoch;
         E::Stamp before;const bool valid=skinned&&constantReader&&constantReader(constantContext,before)&&before.valid;
         unsigned lo=first,hi=first+count;
-        if(valid&&E::banks(constantStamp,before,false,false))E::dirtySpan(constantStamp,before,lo,hi,lo,hi);
-        constantStamp={};
-        if(!skinned)std::fill(constants,constants+256*4,0.f);
-        if(lo!=hi&&FAILED(d->GetVertexShaderConstantF(lo,constants+lo*4,hi-lo)))return false;
-        E::Stamp after;if(valid&&constantReader(constantContext,after)&&E::exact(before,after))constantStamp=after;
+        if(valid&&E::banks(stamp,before,false,false))E::dirtySpan(stamp,before,lo,hi,lo,hi);
+        stamp={};
+        if(!skinned)std::fill(bank,bank+256*4,0.f);
+        if(lo!=hi&&FAILED(d->GetVertexShaderConstantF(lo,bank+lo*4,hi-lo)))return false;
+        E::Stamp after;if(valid&&constantReader(constantContext,after)&&E::exact(before,after))stamp=after;
         return true;
     }
+    bool readConstants(unsigned first,unsigned count,bool skinned){return readConstantBank(first,count,skinned,constants,constantStamp);}
     std::unordered_map<IDirect3DVertexShader9*,Shader> shaders;
     std::unordered_map<IDirect3DVertexShader9*,Material> materials;
     std::vector<Texture> textures;
@@ -170,6 +173,7 @@ class NorthlightAutoDisplacement {
         while(resident>cacheBudget&&!entries.empty())evictOldest();
     }
     const Height* height(IDirect3DTexture9* source,bool model=false){
+        NorthlightMaterialProfile::Scope timing(profile,NorthlightMaterialProfile::HeightRead);
         const auto revision=NorthlightMaterialHeight::version(source);
         for(auto it=textures.begin();it!=textures.end();++it)if(it->source==source&&it->model==model){if(it->version!=revision){drop(it->gpu);drop(it->source);textures.erase(it);break;}it->used=++clock;return it->height.width?&it->height:nullptr;}
         if(readsThisFrame>=2)return nullptr;++readsThisFrame;
@@ -182,6 +186,7 @@ class NorthlightAutoDisplacement {
         textures.push_back(std::move(item));return &textures.back().height;
     }
     IDirect3DTexture9* heightTexture(IDirect3DTexture9* source,bool model){
+        NorthlightMaterialProfile::Scope timing(profile,NorthlightMaterialProfile::GeometryUpload);
         for(auto& t:textures)if(t.source==source&&t.model==model&&t.height.width){
             if(t.gpu)return t.gpu;
             const auto& h=t.height;IDirect3DTexture9* map=nullptr;
@@ -202,10 +207,11 @@ class NorthlightAutoDisplacement {
         const float a=range*range,b=a*.5625f;controls[3][0]=strength;controls[3][1]=-1/(a-b);controls[3][2]=a/(a-b);controls[3][3]=0;return true;
     }
 public:
+    void setProfiler(NorthlightMaterialProfile* p){profile=p;}
     struct Args {NorthlightDrawSnapshot::Draw draw;const void* indices=nullptr;D3DFORMAT format=D3DFMT_UNKNOWN;const void* vertices=nullptr;UINT stride=0;};
-    explicit NorthlightAutoDisplacement(IDirect3DDevice9* device):d(device){textures.reserve(32);snapshots.setSnapshotCacheLimit(24u<<20);rangeSnapshots.setSnapshotCacheLimit(8u<<20);
+    explicit NorthlightAutoDisplacement(IDirect3DDevice9* device):d(device){textures.reserve(32);snapshots.setSnapshotCacheLimit(24u<<20);rangeSnapshots.setSnapshotCacheLimit(4u<<20);skinRangeSnapshots.setSnapshotCacheLimit(4u<<20);
         // Optional range admission must never consume displacement's read budget.
-        for(auto* frame:{&snapshots,&rangeSnapshots}){frame->setChargeResidentHits(false);
+        for(auto* frame:{&snapshots,&rangeSnapshots,&skinRangeSnapshots}){frame->setChargeResidentHits(false);
             frame->setDeclarationProvider(&declarations,[](void* c,IDirect3DVertexDeclaration9* decl,const D3DVERTEXELEMENT9*& e,UINT& n){return static_cast<NorthlightVertexDeclarations::Cache*>(c)->get(decl,e,n);});
             frame->setLayoutProvider(&declarations,[](void* c,IDirect3DVertexDeclaration9* decl,UINT* extent){return static_cast<NorthlightVertexDeclarations::Cache*>(c)->captureLayout(decl,extent);});}
         // Rigid range admission reads POSITION0 only. UV/color stream writes
@@ -217,8 +223,8 @@ public:
                 found=true;extent[0]=UINT(e[i].Offset)+12;}
             return found;});}
     ~NorthlightAutoDisplacement(){reset();for(auto& s:shaders){drop(s.second.patched);drop(s.second.gpu);drop(s.second.source);}}
-    void tracking(uint64_t(*identity)(void*,bool),uint64_t(*version)(void*,bool),NorthlightCaptureMetadata::Read metadata){for(auto* frame:{&snapshots,&rangeSnapshots}){frame->setIdentityProvider(identity);frame->setVersionProvider(version);frame->setMetadataProvider(metadata);}}
-    void setConstantEpochSource(void* context,NorthlightConstantEpoch::Reader reader){constantStamp={};constantContext=context;constantReader=reader;}
+    void tracking(uint64_t(*identity)(void*,bool),uint64_t(*version)(void*,bool),NorthlightCaptureMetadata::Read metadata){for(auto* frame:{&snapshots,&rangeSnapshots,&skinRangeSnapshots}){frame->setIdentityProvider(identity);frame->setVersionProvider(version);frame->setMetadataProvider(metadata);}}
+    void setConstantEpochSource(void* context,NorthlightConstantEpoch::Reader reader){constantStamp={};rangeConstantStamp={};constantContext=context;constantReader=reader;}
     void configure(const NorthlightQuality::Settings& s){
         current=nullptr;if(worldDetail!=s.autoDisplacementDetail||modelDetail!=s.autoModelDisplacementDetail||polarity!=s.autoHeightPolarity||heightDetails!=s.autoHeightDetails||heightBalance!=s.autoHeightBalance)reset();
         worldDetail=s.autoDisplacementDetail;modelDetail=s.autoModelDisplacementDetail;worldStrength=s.autoDisplacementStrength*.0012f;worldRange=float(s.autoDisplacementDistance);modelStrength=s.autoModelDisplacementStrength*.0012f;modelRange=float(s.autoModelDisplacementDistance);
@@ -231,23 +237,34 @@ public:
     float nearestPreparedDepth()const{return lastDepthLower;}
     void reportHeightGPU()const{logf("DISPLACEMENT heightGPU supported=%u draws=%llu outsideRange=%llu poseBudgetRejected=%llu poseEnvelopeHits=%llu poseFallbackVertices=%llu objectBoundsVertices=%llu boundsHits=%llu boundsMisses=%llu boundsEntries=%zu boundsBytes=%zu",unsigned(gpuHeightSupported),(unsigned long long)gpuDraws,(unsigned long long)distanceRejected,(unsigned long long)poseBudgetRejected,(unsigned long long)poseEnvelopeHits,(unsigned long long)poseFallbackVertices,(unsigned long long)objectBoundsVertices,(unsigned long long)boundsHits,(unsigned long long)boundsMisses,bounds.size(),boundsBytes);}
     bool skinned(IDirect3DVertexShader9* original)const{auto it=materials.find(original);return it!=materials.end()&&it->second.skinned;}
-    // Only proven affine, rigid programs participate. Unknown/budget-limited
-    // draws retain the shader's existing per-pixel distance checks.
+    // Rigid affine bounds and cached skin envelopes. Unknown/budget-limited
+    // draws retain per-pixel checks. UP skin draws have no reusable source owner.
     bool nearestMaterialDepth(IDirect3DVertexShader9* original,const Args& args,float& nearest){
-        auto shader=materials.find(original);if(shader==materials.end()||shader->second.skinned)return false;
+        using P=NorthlightMaterialProfile;P::Scope timing(profile,P::BoundsPose);
+        auto shader=materials.find(original);if(shader==materials.end())return false;
         const auto& program=shader->second.view;
-        const unsigned input=rangeInput(program);if(input==16)return false;
-        if(FAILED(d->GetVertexShaderConstantF(shader->second.first,rangeConstants+shader->second.first*4,shader->second.count)))return false;
+        const bool skin=shader->second.skinned;
+        if(skin&&(args.vertices||!program.skinned))return false;
+        const unsigned input=skin?16:rangeInput(program);if(!skin&&input==16)return false;
+        {P::Scope read(profile,P::Constants);if(!readConstantBank(shader->second.first,shader->second.count,skin,rangeConstants,rangeConstantStamp))return false;}
         NorthlightDrawSnapshot::Ref<IDirect3DVertexDeclaration9> decl;if(FAILED(d->GetVertexDeclaration(decl.out()))||!decl.p)return false;
         const D3DVERTEXELEMENT9* elements=nullptr;UINT count=0;if(!declarations.get(decl.p,elements,count))return false;
         const auto position=std::find_if(elements,elements+count,[](const D3DVERTEXELEMENT9& e){return e.Stream==0&&e.Usage==D3DDECLUSAGE_POSITION&&e.UsageIndex==0&&e.Type==D3DDECLTYPE_FLOAT3;});
         if(position==elements+count)return false;
         Mesh local;std::shared_ptr<const Mesh> source;
+        P::Scope read(profile,P::Snapshot);
         if(args.vertices){if(!rangeSnapshots.readUP(decl.p,args.draw,args.indices,args.format,args.vertices,args.stride,local))return false;}
-        else if(!rangeSnapshots.read(d,decl.p,args.draw,local,nullptr,false,&source))return false;
+        else if(!(skin?skinRangeSnapshots:rangeSnapshots).read(d,decl.p,args.draw,local,nullptr,false,&source))return false;
         if(!source)source=std::make_shared<Mesh>(std::move(local));
+        read.work(source->vertexCount,source->byteSize());read.next(P::BoundsPose);
+        if(skin){
+            const float identity[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};NorthlightReplayBounds::Bounds result;
+            if(poseEnvelopes.calculate(program,*source,source,elements,count,rangeConstants,identity,envelopeBudget,result)!=NorthlightReplayBounds::Status::Valid)return false;
+            const float lo=result.low[2],hi=result.high[2];nearest=std::max(0.f,std::nextafter(lo>0?lo:hi<0?-hi:0,-INFINITY)-.001f);return true;
+        }
         auto found=cachedBounds(source);
         if(found==bounds.end()){
+            if(profile)profile->count(P::BoundsVertices,source->vertexCount);
             Bounds b;for(unsigned k=0;k<3;++k){b.low[k]=FLT_MAX;b.high[k]=-FLT_MAX;}
             const auto& stream=source->streams[0];for(unsigned i=0;i<source->vertexCount;++i){
                 if(size_t(i)*stream.stride+position->Offset+12>stream.bytes.size())return false;
@@ -261,13 +278,13 @@ public:
     unsigned preparedPrimitives()const{return current?current->primitives:0;}
     void beginDraw(){current=nullptr;lastDepthLower=0;}
     void setMemoryPressure(bool on){
-        current=nullptr;memoryPressure=on;snapshots.setSnapshotCacheLimit(on?6u<<20:24u<<20);rangeSnapshots.setSnapshotCacheLimit(on?2u<<20:8u<<20);
+        current=nullptr;memoryPressure=on;snapshots.setSnapshotCacheLimit(on?6u<<20:24u<<20);rangeSnapshots.setSnapshotCacheLimit(on?1u<<20:4u<<20);skinRangeSnapshots.setSnapshotCacheLimit(on?1u<<20:4u<<20);
         MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;GlobalMemoryStatusEx(&memory);refreshBudget(memory);
-        if(on){bounds.clear();boundsBytes=0;poseEnvelopes.clear();snapshots.clearIndexCache();rangeSnapshots.clearIndexCache();}
+        if(on){bounds.clear();boundsBytes=0;poseEnvelopes.clear();snapshots.clearIndexCache();rangeSnapshots.clearIndexCache();skinRangeSnapshots.clearIndexCache();}
     }
     void trimMemory(){setMemoryPressure(memoryPressure);}
-    void reset(){current=nullptr;constantStamp={};sourceLookup.clear();contentLookup.clear();materialLookup.clear();indexedEntries=true;entries.clear();bounds.clear();poseEnvelopes.clear();poseBindings={};envelopeBudget.reset();boundsBytes=resident=0;for(auto& t:textures){drop(t.gpu);drop(t.source);}textures.clear();snapshots.clearIndexCache();rangeSnapshots.clearIndexCache();declarations.clear();}
-    void endFrame(){current=nullptr;if(frames%60==0){MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;if(GlobalMemoryStatusEx(&memory))refreshBudget(memory);}buildsThisFrame=readsThisFrame=poseVerticesThisFrame=0;poseEnvelopes.beginFrame(false);envelopeBudget.reset();snapshots.clearFrame();rangeSnapshots.clearFrame();if((draws||snapshotRejected)&&frames%600==0){logf("DISPLACEMENT cached=%zu bytes=%zu builds=%llu hits=%llu draws=%llu triangles=%llu refused=%llu terrain=%u walls=%u grass=%u models=%u stateRejected=%u heightRejected=%u shaderRejected=%u snapshotRejected=%u meshRejected=%u budgetMiB=%zu",entries.size(),resident,(unsigned long long)builds,(unsigned long long)hits,(unsigned long long)draws,(unsigned long long)triangles,(unsigned long long)refused,domainDraws[0],domainDraws[1],domainDraws[2],domainDraws[3],stateRejected,heightRejected,shaderRejected,snapshotRejected,meshRejected,cacheBudget>>20);
+    void reset(){current=nullptr;constantStamp={};rangeConstantStamp={};sourceLookup.clear();contentLookup.clear();materialLookup.clear();indexedEntries=true;entries.clear();bounds.clear();poseEnvelopes.clear();poseBindings={};envelopeBudget.reset();boundsBytes=resident=0;for(auto& t:textures){drop(t.gpu);drop(t.source);}textures.clear();snapshots.clearIndexCache();rangeSnapshots.clearIndexCache();skinRangeSnapshots.clearIndexCache();declarations.clear();}
+    void endFrame(){current=nullptr;if(frames%60==0){MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;if(GlobalMemoryStatusEx(&memory))refreshBudget(memory);}buildsThisFrame=readsThisFrame=poseVerticesThisFrame=0;poseEnvelopes.beginFrame(false);envelopeBudget.reset();snapshots.clearFrame();rangeSnapshots.clearFrame();skinRangeSnapshots.clearFrame();if((draws||snapshotRejected)&&frames%600==0){logf("DISPLACEMENT cached=%zu bytes=%zu builds=%llu hits=%llu draws=%llu triangles=%llu refused=%llu terrain=%u walls=%u grass=%u models=%u stateRejected=%u heightRejected=%u shaderRejected=%u snapshotRejected=%u meshRejected=%u budgetMiB=%zu",entries.size(),resident,(unsigned long long)builds,(unsigned long long)hits,(unsigned long long)draws,(unsigned long long)triangles,(unsigned long long)refused,domainDraws[0],domainDraws[1],domainDraws[2],domainDraws[3],stateRejected,heightRejected,shaderRejected,snapshotRejected,meshRejected,cacheBudget>>20);
         logf("DISPLACEMENT snapshots attempts=%llu up=%llu buffered=%llu unknown=%llu arguments=%llu declaration=%llu stream=%llu instancing=%llu indexBuffer=%llu indexRange=%llu vertexRange=%llu budget=%llu lock=%llu unlock=%llu",(unsigned long long)snapshotAttempts,(unsigned long long)snapshotUP,(unsigned long long)(snapshotAttempts-snapshotUP),(unsigned long long)snapshotReasons[0],(unsigned long long)snapshotReasons[1],(unsigned long long)snapshotReasons[2],(unsigned long long)snapshotReasons[3],(unsigned long long)snapshotReasons[4],(unsigned long long)snapshotReasons[5],(unsigned long long)snapshotReasons[6],(unsigned long long)snapshotReasons[7],(unsigned long long)snapshotReasons[8],(unsigned long long)snapshotReasons[9],(unsigned long long)snapshotReasons[10]);}++frames;}
     void registerVariant(IDirect3DVertexShader9* original,const DWORD* code,size_t count,bool skinned=false){
         auto old=shaders.find(original);if(old!=shaders.end()){drop(old->second.patched);drop(old->second.gpu);drop(old->second.source);shaders.erase(old);}std::vector<uint32_t> patched;Shader shader;
@@ -287,11 +304,14 @@ m.layered=NorthlightActorDeformation::compile(words,count,m.uv1,true,2,5,1)&&Nor
         m.uvRegisters[0]=usedUVRegisters(m,false);m.uvRegisters[1]=usedUVRegisters(m,true);const bool skinned=m.skinned;materials.emplace(original,std::move(m));registerVariant(original,code,count,skinned);
     }
     bool prepare(IDirect3DVertexShader9* original,unsigned domain,unsigned material,const Args& args){
+        using P=NorthlightMaterialProfile;P::Scope timing(profile,P::Admission);
         current=nullptr;lastDepthLower=0;strength=domain==4?modelStrength:worldStrength;range=domain==4?modelRange:worldRange;detail=domain==4?modelDetail:domain==3?std::min(worldDetail,3u):worldDetail;auto shader=materials.find(original);auto patched=shaders.find(original);if(shader==materials.end()||strength<=0||domain>4||patched==shaders.end()||!patched->second.patched){++shaderRejected;return false;}
         DWORD z=0,write=0,blendState=0;d->GetRenderState(D3DRS_ZENABLE,&z);d->GetRenderState(D3DRS_ZWRITEENABLE,&write);d->GetRenderState(D3DRS_ALPHABLENDENABLE,&blendState);
         bool cutout=false;if(blendState&&write){DWORD alpha=0,src=0,dst=0,func=0;d->GetRenderState(D3DRS_ALPHATESTENABLE,&alpha);d->GetRenderState(D3DRS_SRCBLEND,&src);d->GetRenderState(D3DRS_DESTBLEND,&dst);d->GetRenderState(D3DRS_ALPHAFUNC,&func);cutout=alpha&&src==D3DBLEND_SRCALPHA&&dst==D3DBLEND_INVSRCALPHA&&(func==D3DCMP_GREATER||func==D3DCMP_GREATEREQUAL);}
         if(!z||(!write&&domain!=1)||(blendState&&!cutout&&!(domain==1&&material==2))){++stateRejected;return false;}
+        timing.next(P::Constants);
         if(!readConstants(shader->second.first,shader->second.count,shader->second.skinned)||(!shader->second.skinned&&!viewRows(shader->second.view,constants)))return false;
+        timing.next(P::Snapshot);
         NorthlightDrawSnapshot::Ref<IDirect3DVertexDeclaration9> decl;if(FAILED(d->GetVertexDeclaration(decl.out()))||!decl.p)return false;
         const D3DVERTEXELEMENT9* elements=nullptr;UINT count=0;if(!declarations.get(decl.p,elements,count)||count>MAXD3DDECLLENGTH)return false;
         Mesh local;std::shared_ptr<const Mesh> source;
@@ -299,6 +319,7 @@ m.layered=NorthlightActorDeformation::compile(words,count,m.uv1,true,2,5,1)&&Nor
         if(args.vertices){if(!snapshots.readUP(decl.p,args.draw,args.indices,args.format,args.vertices,args.stride,local,&why))return snapshotFailure(why);}
         else if(!snapshots.read(d,decl.p,args.draw,local,&why,false,&source))return snapshotFailure(why);
         if(!source)source=std::make_shared<Mesh>(std::move(local));
+        timing.work(source->vertexCount,source->byteSize());timing.next(P::BoundsPose);
         const bool equivalent=args.vertices||(domain==1&&material==2);const uint64_t fingerprint=equivalent?sourceFingerprint(*source):0;
         // UP snapshots have fresh identities even when every byte is unchanged.
         // Reuse the proven source before rebuilding its bounds or skin envelope.
@@ -318,6 +339,7 @@ m.layered=NorthlightActorDeformation::compile(words,count,m.uv1,true,2,5,1)&&Nor
         if(needsBounds&&foundBounds==bounds.end()){
             Bounds b;for(unsigned i=0;i<3;++i){b.low[i]=FLT_MAX;b.high[i]=-FLT_MAX;}
             objectBoundsVertices+=source->vertexCount;
+            if(profile)profile->count(P::BoundsVertices,source->vertexCount);
             for(unsigned i=0;i<source->vertexCount;++i){if(size_t(i)*stream.stride+position->Offset+12>stream.bytes.size())return false;float p[3];std::memcpy(p,stream.bytes.data()+size_t(i)*stream.stride+position->Offset,12);for(unsigned k=0;k<3;++k){if(!std::isfinite(p[k]))return false;b.low[k]=std::min(b.low[k],p[k]);b.high[k]=std::max(b.high[k],p[k]);}}
             if(shader->second.view.kernel.skin){auto envelope=std::make_unique<NorthlightReplayBounds::SkinEnvelope>();bool valid=true;
                 for(unsigned i=0;i<source->vertexCount&&valid;++i){NorthlightActorDeformation::Four input[16];valid=NorthlightActorDeformation::sampledVertexInputsAt(shader->second.view,*source,elements,count,i,input)&&envelope->add(input);}if(valid)b.skin=std::move(envelope);}
@@ -327,7 +349,7 @@ m.layered=NorthlightActorDeformation::compile(words,count,m.uv1,true,2,5,1)&&Nor
         if(exactSkin&&foundBounds->second.skin&&foundBounds->second.skin->evaluate(constants,identity,skinBounds)){foundBounds->second.used=++clock;std::copy(skinBounds.low,skinBounds.low+3,low);std::copy(skinBounds.high,skinBounds.high+3,high);
             // Reuse the audited, outward-rounded skin envelope for normal capture.
             lastDepthLower=std::max(0.f,std::nextafter(low[2]>0?low[2]:high[2]<0?-high[2]:0,-INFINITY)-.001f);}
-        else if(shader->second.skinned){if(source->vertexCount>8192-poseVerticesThisFrame){++poseBudgetRejected;return false;}poseVerticesThisFrame+=source->vertexCount;poseFallbackVertices+=source->vertexCount;for(unsigned k=0;k<3;++k){low[k]=FLT_MAX;high[k]=-FLT_MAX;}
+        else if(shader->second.skinned){if(source->vertexCount>8192-poseVerticesThisFrame){++poseBudgetRejected;if(profile)profile->count(P::PoseBudget);return false;}poseVerticesThisFrame+=source->vertexCount;poseFallbackVertices+=source->vertexCount;if(profile)profile->count(P::PoseVertices,source->vertexCount);for(unsigned k=0;k<3;++k){low[k]=FLT_MAX;high[k]=-FLT_MAX;}
             const auto prepared=poseBindings.acquire(shader->second.view,*source,elements,count);if(!prepared)return false;
             for(unsigned i=0;i<source->vertexCount;++i){NorthlightActorDeformation::Four input[16]={},view;
                 for(const auto& b:prepared->bindings){const auto& s=source->streams[b.element.Stream];if(!NorthlightActorDeformation::decodeElement(s.bytes.data()+size_t(i)*s.stride+b.element.Offset,b.element.Type,input[b.input.reg]))return false;}
@@ -338,6 +360,7 @@ m.layered=NorthlightActorDeformation::compile(words,count,m.uv1,true,2,5,1)&&Nor
             for(unsigned r=0;r<3;++r){low[r]=high[r]=controls[r][3];for(unsigned k=0;k<3;++k){const float a=controls[r][k]*b.low[k],z=controls[r][k]*b.high[k];low[r]+=std::min(a,z);high[r]+=std::max(a,z);}}}
         float closestSquared=0;for(unsigned r=0;r<3;++r){float v=low[r]>0?low[r]:high[r]<0?high[r]:0;closestSquared+=v*v;}if(closestSquared>=range*range){++distanceRejected;return false;}
         if(shader->second.skinned){const float a=range*range,b=a*.5625f;controls[0][0]=strength*std::clamp((a-closestSquared)/(a-b),0.f,1.f);controls[0][1]=controls[0][2]=controls[0][3]=0;}
+        timing.next(P::HeightRead);
         NorthlightDrawSnapshot::Ref<IDirect3DBaseTexture9> tex,tex1;if(FAILED(d->GetTexture(0,tex.out()))||!tex.p||tex->GetType()!=D3DRTYPE_TEXTURE)return false;
         if(domain==2&&material==6&&(FAILED(d->GetTexture(1,tex1.out()))||!tex1.p||tex1->GetType()!=D3DRTYPE_TEXTURE||!shader->second.layered))return false;
         DWORD u=0,v=0;d->GetSamplerState(0,D3DSAMP_ADDRESSU,&u);d->GetSamplerState(0,D3DSAMP_ADDRESSV,&v);if((u!=D3DTADDRESS_WRAP&&u!=D3DTADDRESS_CLAMP)||(v!=D3DTADDRESS_WRAP&&v!=D3DTADDRESS_CLAMP))return false;
@@ -346,12 +369,13 @@ m.layered=NorthlightActorDeformation::compile(words,count,m.uv1,true,2,5,1)&&Nor
         Entry* overlay=domain==1&&material==2?findOverlay(source,fingerprint,decl.p):nullptr;
         Entry* hit=domain==1&&material==2?nullptr:firstMaterial(materialFingerprint(equivalent?fingerprint:retainedFingerprint(source),shader->second.id,detail,address,domain,material,tex.p,tex1.p,revision,revision1,uvScratch),[&](Entry& e){if(e.sourceDecl!=decl.p||e.domain!=domain)return false;
             return e.program==shader->second.id&&e.detail==detail&&e.address==address&&e.material==material&&e.texture==tex.p&&e.texture1==tex1.p&&e.uvConstants==uvScratch&&e.heightVersion==revision&&e.heightVersion1==revision1&&sameSource(e,source,equivalent);});
-        if(hit){current=hit;userDraw=args.vertices!=nullptr;indexedUserDraw=userDraw&&args.draw.indexed;hit->used=++clock;hit->baseFrame=uint64_t(frames)+1;++hits;return true;}
-        if(overlay){current=overlay;userDraw=args.vertices!=nullptr;indexedUserDraw=userDraw&&args.draw.indexed;overlay->used=++clock;++hits;return true;}
+        if(hit){current=hit;userDraw=args.vertices!=nullptr;indexedUserDraw=userDraw&&args.draw.indexed;hit->used=++clock;hit->baseFrame=uint64_t(frames)+1;++hits;if(profile)profile->count(P::GeometryHit);return true;}
+        if(overlay){current=overlay;userDraw=args.vertices!=nullptr;indexedUserDraw=userDraw&&args.draw.indexed;overlay->used=++clock;++hits;if(profile)profile->count(P::GeometryHit);return true;}
         if((domain==1&&material==2)||buildsThisFrame>=2){++refused;return false;}
         const auto* firstHeight=height(static_cast<IDirect3DTexture9*>(tex.p),domain==4);if(!firstHeight){++heightRejected;return false;}Height retainedFirst;const Height* second=nullptr;
         if(tex1.p){retainedFirst=*firstHeight;firstHeight=&retainedFirst;second=height(static_cast<IDirect3DTexture9*>(tex1.p));if(!second)return false;}
         const Height& first=*firstHeight;
+        timing.next(P::UV);
         std::vector<std::array<float,2>> uv,uv1;std::vector<float> weights;
         if(!NorthlightActorDeformation::textureUVs(shader->second.uv,*source,elements,count,constants,uv))return false;
         if(second){if(!NorthlightActorDeformation::textureUVs(shader->second.uv1,*source,elements,count,constants,uv1))return false;
@@ -363,7 +387,9 @@ m.layered=NorthlightActorDeformation::compile(words,count,m.uv1,true,2,5,1)&&Nor
         IDirect3DTexture9* gpuHeight=nullptr;
         const bool layoutFree=std::none_of(elements,elements+count,[](const D3DVERTEXELEMENT9& e){return e.Usage==D3DDECLUSAGE_TEXCOORD&&e.UsageIndex==6;});
         if(!second&&patched->second.gpu&&stream.stride<=232&&count+2<=MAXD3DDECLLENGTH&&layoutFree)gpuHeight=heightTexture(static_cast<IDirect3DTexture9*>(tex.p),domain==4);
+        timing.next(P::Subdivide);
         ++buildsThisFrame;Mesh output;if(!NorthlightDisplacementGeometry::build(*source,elements,count,uv,first,factor,domain==1,u==D3DTADDRESS_CLAMP,v==D3DTADDRESS_CLAMP,output,second,second?&uv1:nullptr,second?&weights:nullptr,shader->second.influences,gpuHeight!=nullptr)){++meshRejected;return false;}
+        timing.work(output.primitiveCount,output.byteSize());if(profile)profile->count(P::GeometryBuilt);timing.next(P::GeometryUpload);
         if(builds<8){float peak=0;for(unsigned i=0;i<output.vertexCount;++i){float delta[3];std::memcpy(delta,output.streams[0].bytes.data()+size_t(i)*output.streams[0].stride+stream.stride,12);peak=std::max(peak,std::sqrt(delta[0]*delta[0]+delta[1]*delta[1]+delta[2]*delta[2])*strength);}logf("DISPLACEMENT build domain=%u vertices=%u triangles=%u maxOffset=%.5f VScontrol=%u",domain,output.vertexCount,output.primitiveCount,peak,shaders.find(original)->second.binding.constant);}
         const auto indexBytes=NorthlightDisplacementGeometry::indexElementBytes(output);
         auto entry=std::make_unique<Entry>();entry->bytes=output.byteSize()-output.indices.size()*(sizeof(uint32_t)-indexBytes)+(gpuHeight?first.values.size()*sizeof(float):0);

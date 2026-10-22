@@ -4,6 +4,7 @@
 
 class NorthlightAutoParallax {
     IDirect3DDevice9* d;NorthlightAutoNormalCache& normals;
+    NorthlightMaterialProfile* profile=nullptr;
     struct Pixel {IDirect3DPixelShader9* source=nullptr,*shader=nullptr,*shared=nullptr;unsigned constants=0,sharedConstants=0;bool sharedChecked=false;};
     struct Vertex {IDirect3DVertexShader9* source=nullptr,*shader=nullptr,*shared=nullptr;bool sharedChecked=false;};
     std::unordered_map<IDirect3DPixelShader9*,Pixel> pixels;
@@ -30,6 +31,7 @@ class NorthlightAutoParallax {
     };
 public:
     NorthlightAutoParallax(IDirect3DDevice9* device,NorthlightAutoNormalCache& cache):d(device),normals(cache){}
+    void setProfiler(NorthlightMaterialProfile* p){profile=p;}
     ~NorthlightAutoParallax(){for(auto& p:pixels){drop(p.second.shader);drop(p.second.shared);drop(p.second.source);}for(auto& v:vertices){drop(v.second.shader);drop(v.second.shared);drop(v.second.source);}}
     bool shared()const{return sharedActive;}
     bool supports(IDirect3DPixelShader9* pixel,unsigned material){
@@ -54,6 +56,7 @@ public:
         }catch(...){return false;}
     }
     template<class Draw> HRESULT draw(IDirect3DVertexShader9* knownVertex,IDirect3DVertexShader9* forwarded,unsigned material,const float* projection,const float* control,Draw nativeDraw,bool model=false,IDirect3DVertexShader9* boundVertex=nullptr,IDirect3DPixelShader9* boundPixel=nullptr,NorthlightSharedPOM* sharedPOM=nullptr,IDirect3DVertexShader9* sharedVertex=nullptr,bool equivalentVertex=false){
+        NorthlightMaterialProfile::Scope timing(profile,NorthlightMaterialProfile::PomSetup);
         const bool dual=material==6;State saved(d);if(!saved.saveShaders(boundVertex,boundPixel))return nativeDraw();
         DWORD z=0,zwrite=0,zfunc=0,stencil=0;
         if(FAILED(d->GetRenderState(D3DRS_ZENABLE,&z))||FAILED(d->GetRenderState(D3DRS_ZWRITEENABLE,&zwrite))||FAILED(d->GetRenderState(D3DRS_ZFUNC,&zfunc))||FAILED(d->GetRenderState(D3DRS_STENCILENABLE,&stencil))||!z||zfunc==D3DCMP_ALWAYS||zfunc==D3DCMP_NEVER||stencil||(!zwrite&&material>2))return nativeDraw();
