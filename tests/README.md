@@ -73,6 +73,14 @@ A test declares what it needs on one line within its first 30 lines:
 A test whose requirement is missing is reported SKIP with the reason; `--require <name>` turns that
 into a FAIL.
 
+The StormLib source is reproducible from `renderer/package-pins.json`: download its
+`source_archive_url`, verify `source_archive_sha256`, and extract `source_archive_root` as
+`<NORTHLIGHT_TOOLS>/StormLib-master` (default: `tools/StormLib-master`). The tree hash uses
+case-sensitive path-component ordering on every host. The build test retains the original
+Windows, macOS and Linux binary hashes, ABI checks and empty-cache rebuild comparisons.
+Run the complete build test on a POSIX host with Zig 0.15.2; on WSL, use a short native
+`NORTHLIGHT_OUT` path for its cold compiler caches. This requires no client settings changes.
+
 ## Adding a test
 
 1. Create `tests/test_<name>.py` with `#!/usr/bin/env python3`, a `# northlight-test:` line, a
