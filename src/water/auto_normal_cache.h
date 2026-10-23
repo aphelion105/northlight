@@ -39,6 +39,11 @@ class NorthlightAutoNormalCache {
             const bool same=container==normal;drop(container);drop(target);if(same)return false;}
         return true;
     }
+    void erase(size_t index){
+        auto& e=entries[index];lookup[e.model].erase(e.source);bytes-=e.bytes;sourceBytes-=e.sourceBytes;drop(e.source);drop(e.normal);
+        if(index+1<entries.size()){e=entries.back();lookup[e.model].find(e.source)->second=index;}
+        entries.pop_back();recent=entries.size();
+    }
 public:
     // Leases must end before the cache owner is destroyed.
     class Lease {
