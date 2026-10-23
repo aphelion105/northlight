@@ -8,6 +8,7 @@
 #include "mirror_guard.h"
 #include "lock_meter.h"
 #include "replay_copies.h"
+#include "particle_uploads.h"
 
 // Only client-created buffers are wrapped. The real device always receives
 // real resources. Unknown/unwrapped resources return revision 0 (no fast cache).
@@ -116,7 +117,7 @@ template<class T> void expose(T** out){
 }
 inline void written(void* p){
     std::lock_guard<std::mutex> guard(mutex);auto it=records.find(p);
-    if(it!=records.end()){it->second->revision=clock.fetch_add(1);NorthlightReplayCopies::invalidate(it->second->copy,true);} // 0.3.192 (CS): a GPU-side write (ProcessVertices): the CPU copy is stale for good
+    if(it!=records.end()){it->second->revision=clock.fetch_add(1);NorthlightReplayCopies::invalidate(it->second->copy,true);NorthlightParticleUploads::cache().forget(it->second->raw);} // GPU ProcessVertices invalidates both replay-position CPU stores.
 }
 // The layer's markGuard callback: raw or exposed pointer of a wrapped buffer; anything else is ignored (the layer holds a reference, the record cannot be recycled).
 inline void markSpellGuard(void* buffer,bool on){
@@ -124,6 +125,7 @@ inline void markSpellGuard(void* buffer,bool on){
     if(it!=records.end())it->second->spellGuard.store(on,std::memory_order_relaxed);
 }
 inline void invalidateAll(){
+    NorthlightParticleUploads::cache().clear();
     std::lock_guard<std::mutex> guard(mutex);
     for(auto& entry:records){entry.second->revision=clock.fetch_add(1);NorthlightReplayCopies::invalidate(entry.second->copy);}
 }
@@ -136,6 +138,7 @@ template<class T,class Forward> class Buffer final:public Forward {
     // 0.3.192 (DXVK3): the size DXVK 3.x charges for a DISCARD of this buffer (DEFAULT|DYNAMIC only: direct-mapped), 0 otherwise.
     UINT discardBytes=0;
     NorthlightReplayCopies::PendingWrite pendingWrite; // 0.3.196 (task 12): this wrapper's outstanding write lock (Lock records, Unlock consumes; touched by the locking thread only)
+    NorthlightParticleUploads::Pending particleWrite;
     uint64_t previousWriteRevision=0,pendingWriteRevision=0;
 public:
     bool hasCopySlotForTest()const{return record.copy.attached;} // the CPU copy slot exists only for buffers created while the stream is active
@@ -172,6 +175,7 @@ public:
     ~Buffer(){
         {std::lock_guard<std::mutex> guard(mutex);records.erase(record.raw);records.erase(record.exposed);}
         NorthlightReplayCopies::detach(record.copy);
+        NorthlightParticleUploads::cache().forget(record.raw);
         this->real->Release();owner->Release();
     }
     ULONG STDMETHODCALLTYPE AddRef() override{return InterlockedIncrement(&refs);}
@@ -211,6 +215,12 @@ public:
         if(!(flags&D3DLOCK_READONLY))record.revision.store(clock.fetch_add(1),std::memory_order_relaxed);
         if((flags&D3DLOCK_DISCARD)&&discardBytes)NorthlightLockMeter::discard(NorthlightLockMeter::Game,discardBytes);
         const unsigned lockedBefore=record.locks.fetch_add(1);
+        if(NorthlightParticleUploads::enabled.load(std::memory_order_relaxed)&&!(flags&D3DLOCK_READONLY)){
+            auto& uploads=NorthlightParticleUploads::cache();
+            const bool valid=record.metadata.known&&offset<=record.metadata.size&&(!size||std::uint64_t(offset)+size<=record.metadata.size);
+            uploads.invalidate(record.raw,offset,size,(flags&D3DLOCK_DISCARD)||lockedBefore||!valid);
+            particleWrite={offset,valid?(size?size:UINT(record.metadata.size-offset)):0,!lockedBefore&&valid};
+        }
         // Reuse a content token only for a complete, successful, isolated write
         // whose live replay-side bytes prove unchanged. Partial DISCARD remains
         // invalidating: the driver may replace every byte outside that range.
@@ -226,6 +236,7 @@ public:
             if(FAILED(hr))NorthlightReplayCopies::invalidate(record.copy);else NorthlightReplayCopies::writeLocked(record.copy,pendingWrite,lockedBefore,offset,size,data?*data:nullptr);
         }
         if(FAILED(hr)){
+            particleWrite={};
             previousWriteRevision=pendingWriteRevision=0;
             // A rejected write cannot repair tracking after an earlier failed
             // unlock. Keep the legacy exact-read path until a write succeeds.
@@ -243,6 +254,15 @@ public:
         if(!copies)
             pendingWrite=NorthlightReplayCopies::PendingWrite{}; // copies turned off since Lock
         HRESULT hr=this->real->Unlock();
+        if(particleWrite.active){
+            const auto source=NorthlightReplayCopies::unlockSource;
+            if(SUCCEEDED(hr)&&record.locks.load(std::memory_order_relaxed)==1&&source.bytes&&source.off<=particleWrite.offset&&
+               std::uint64_t(particleWrite.offset-source.off)+particleWrite.size<=source.size)
+                NorthlightParticleUploads::cache().write(record.raw,record.metadata.identity,particleWrite.offset,
+                    source.bytes+(particleWrite.offset-source.off),particleWrite.size,(record.metadata.usage&D3DUSAGE_DYNAMIC)!=0);
+            else NorthlightParticleUploads::cache().forget(record.raw);
+        }else if(FAILED(hr))NorthlightParticleUploads::cache().forget(record.raw);
+        particleWrite={};
         if(copies&&FAILED(hr))NorthlightReplayCopies::invalidate(record.copy);
         if(SUCCEEDED(hr)&&record.locks.load(std::memory_order_relaxed)){
             uint64_t expected=pendingWriteRevision;
