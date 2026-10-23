@@ -5,6 +5,7 @@
 static void particleTextureStream(){
     using namespace NorthlightParticleTextures;
     enabled.store(true);
+    // The cache keeps mips of at most Cache::MaxDimension (32) texels; larger uploads are not cached.
     Rig rig(true);IDirect3DTexture9* texture=nullptr;
     // Disabling direct dispatch also omits its production identity resolver.
     // This fake backend still proves raw identity, independently of dispatch.
