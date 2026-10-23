@@ -2,6 +2,7 @@
 #define main northlight_unused_composite_main
 #include "composite_distance_gpu.cpp"
 #undef main
+#include <functional>
 #include "quality_settings.h"
 
 static Image constant(float r,float g,float b,float a){
@@ -86,6 +87,67 @@ int main(int argc,char** argv){
             std::fprintf(report,"%s{\"method\":\"%s\",\"shape\":%u,\"strength\":%u,\"variant\":%u,\"min\":%.6f,\"max\":%.6f,\"mean\":%.6f}",cases?",":"",names[m],shape,strength,variant,minimum,maximum,sum/count);++cases;
         }
         ok(d->SetTexture(1,nullptr));ok(d->SetTexture(3,nullptr));depth->Release();water->Release();
+    }
+    {
+        // Regression cases for the HBAO+ receiver orientation and the GTAO screen-radius clamp.
+        const float clipNear=.2f,clipFar=1000.f;
+        auto run=[&](float sx,float sy,unsigned method,const std::function<float(float,float)>& zOf,std::vector<float>& alpha){
+            Image depths{W,H,D3DFMT_R32F,4,std::vector<unsigned char>(W*H*4)};
+            for(unsigned y=0;y<H;++y)for(unsigned x=0;x<W;++x){
+                float z=zOf((2*(x+.5f)/W-1)/sx,(1-2*(y+.5f)/H)/sy);if(!(z>clipNear&&z<clipFar))z=clipFar;
+                float depth=clipFar/(clipFar-clipNear)*(1-clipNear/z);std::memcpy(depths.pixels.data()+(y*W+x)*4,&depth,4);
+            }
+            auto depth=texture(d,depths),water=texture(d,constant(1,1,0,0));ok(d->SetTexture(1,depth));ok(d->SetTexture(3,water));
+            float c[7][4]{};c[0][0]=1.f/W;c[0][1]=1.f/H;c[0][2]=clipNear;c[0][3]=clipFar;c[1][0]=sx;c[1][1]=sy;c[1][2]=.6f;c[1][3]=.12f;c[2][0]=.08f;c[2][1]=2;c[3][1]=c[3][2]=1;
+            ok(d->SetPixelShaderConstantF(0,c[0],7));ok(d->SetPixelShader(shaders[method][1]));ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(Vertex)));ok(d->EndScene());ok(d->GetRenderTargetData(target,staging));
+            D3DLOCKED_RECT lock{};ok(staging->LockRect(&lock,nullptr,D3DLOCK_READONLY));alpha.resize(AW*AH);
+            for(unsigned y=0;y<AH;++y)for(unsigned x=0;x<AW;++x)std::memcpy(&alpha[y*AW+x],static_cast<char*>(lock.pBits)+y*lock.Pitch+x*16+12,4);
+            ok(staging->UnlockRect());ok(d->SetTexture(1,nullptr));ok(d->SetTexture(3,nullptr));depth->Release();water->Release();
+        };
+        // 1. HBAO+ on a wall to the right of the view axis, nearly parallel to it: the visible face points forward in
+        // view Z (n.z>0) while facing the eye. A convex crease must stay open, a concave one must keep its occlusion.
+        {
+            const float angle[2]={6*3.14159265f/180,-24*3.14159265f/180},q[2]={1.2f,3};
+            float n[2][2],e[2];for(unsigned i=0;i<2;++i){n[i][0]=-std::cos(angle[i]);n[i][1]=std::sin(angle[i]);e[i]=n[i][0]*q[0]+n[i][1]*q[1];}
+            assert(n[0][1]>0&&e[0]<0&&e[1]<0);
+            for(unsigned fold=0;fold<2;++fold){
+                std::vector<float> alpha;
+                auto hit=[&](float rx,unsigned& face){
+                    float t[2];for(unsigned i=0;i<2;++i){float dn=n[i][0]*rx+n[i][1];t[i]=dn<0?e[i]/dn:(fold?1e9f:-1e9f);}
+                    face=(fold?t[0]<t[1]:t[0]>t[1])?0:1;return t[face]; // concave: union of the solids, convex: intersection
+                };
+                run(1.3f,1.9f,2,[&](float rx,float){unsigned face;return hit(rx,face);},alpha);
+                float minimum=1;unsigned count=0;
+                for(unsigned y=4;y<AH-4;++y)for(unsigned x=4;x<AW-4;++x){
+                    const float rx=(2*(x+.5f)/AW-1)/1.3f;unsigned face;hit(rx,face);
+                    if(std::fabs(rx-q[0]/q[1])>.07f||face)continue; // receivers on the forward-facing wall only
+                    minimum=std::min(minimum,alpha[y*AW+x]);++count;
+                }
+                assert(count);
+                std::fprintf(report,",{\"case\":\"hbao_forward_normal_%s\",\"min\":%.6f}",fold?"concave":"convex",minimum);
+                const bool bad=fold?minimum>.97f:minimum<.98f;
+                if(bad){std::printf("FAIL HBAO+ forward-facing %s min=%f\n",fold?"concave crease lost its occlusion":"convex crease darkened",minimum);++failures;}
+                ++cases;
+            }
+        }
+        // 2. GTAO close to the camera with the game's anisotropic projection, where the radius clamp is active:
+        // the same V groove along view X and along view Y must shade alike (the sample reach is isotropic in view space).
+        {
+            const float sx=1.2686f,sy=1.9626f;double mean[2]{};
+            for(unsigned axis=0;axis<2;++axis){
+                std::vector<float> alpha;
+                run(sx,sy,3,[&](float rx,float ry){const float r=axis?ry:rx;return 3/(1+1.4f*std::fabs(r));},alpha); // z+1.4|u|=3
+                unsigned count=0;
+                for(unsigned y=4;y<AH-4;++y)for(unsigned x=4;x<AW-4;++x){
+                    const float rx=(2*(x+.5f)/AW-1)/sx,ry=(1-2*(y+.5f)/AH)/sy,r=axis?ry:rx,z=3/(1+1.4f*std::fabs(r)),u=std::fabs(r)*z;
+                    if(u>.25f)continue;mean[axis]+=alpha[y*AW+x];++count;
+                }
+                assert(count);mean[axis]/=count;
+            }
+            std::fprintf(report,",{\"case\":\"gtao_clamp_isotropy\",\"grooveX\":%.6f,\"grooveY\":%.6f}",mean[0],mean[1]);
+            if(mean[0]>.97||mean[1]>.97||std::fabs(mean[0]-mean[1])>.04){std::printf("FAIL GTAO anisotropic clamp: groove along Y %f vs along X %f\n",mean[1],mean[0]);++failures;}
+            ++cases;
+        }
     }
     for(unsigned a=0;a<4;++a)for(unsigned b=a+1;b<4;++b){double difference=0;for(unsigned i=0;i<AW*AH;++i)difference+=std::fabs(corner[a][i]-corner[b][i]);if(difference/(AW*AH)<1e-5){std::printf("FAIL identical methods %s %s\n",names[a],names[b]);++failures;}}
     {std::ofstream image(std::string(argv[3])+".pgm",std::ios::binary);image<<"P5\n"<<AW*4<<" "<<AH<<"\n255\n";

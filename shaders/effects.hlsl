@@ -229,7 +229,13 @@ float NewAO(float2 uv, int method)
     if (d >= SKY_DEPTH || IsWater(uv, d)) return 1;
     float3 p = Position(uv, d), normal = SurfaceNormal(uv, p);
     float radius = Options.y; // AORadius is validated to 0.1..10 yards.
-    float2 uvRadius = min(.5 * radius * Lighting.xy / p.z, .25);
+    // Cap the screen radius with one common factor: clamping x and y separately would bend the
+    // sample direction away from the view-space direction GTAO builds its slice plane from.
+    float2 uvRadius = .5 * radius * Lighting.xy / p.z;
+    uvRadius *= min(1, .25 / max(uvRadius.x, uvRadius.y));
+    // SurfaceNormal forces n.z <= 0, which is wrong for visible faces pointing forward in view Z
+    // (camera pitched up, terrain sloping away). Orient toward the eye (receiver-to-eye vector).
+    normal *= dot(normal, p) > 0 ? -1 : 1;
     float2 rotation = AORotation(uv);
     float obscurance = 0;
 
@@ -275,9 +281,6 @@ float NewAO(float2 uv, int method)
         return saturate(1 - Lighting.z * obscurance * (2.0 / (32.0 * .9)));
     }
 
-    // At a grazing view a visible terrain face can point forward in view Z.
-    // GTAO integrates about the receiver-to-eye vector, not the camera axis.
-    normal *= dot(normal, p) > 0 ? -1 : 1;
     float3 view = -p * rsqrt(max(dot(p, p), 1e-12));
     float openVisibility = 0;
     [loop] for (int slice = 0; slice < 4; ++slice)
