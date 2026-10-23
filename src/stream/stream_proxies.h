@@ -571,7 +571,9 @@ inline bool applyImageUnlock(StreamCore& core,const UnlockImageArgs& a,const uns
     if(dst)for(UINT s=0;s<a.slices;++s)for(UINT r=0;r<a.rows;++r)
         std::memcpy(dst+std::ptrdiff_t(s)*slicePitch+std::ptrdiff_t(r)*rowPitch,src+std::size_t(s)*a.slicePitch+std::size_t(r)*a.pitch,a.rowBytes);
     const HRESULT unlockResult=callUnlock(a.route,p->inner,a.level,a.face);const bool success=dst&&SUCCEEDED(unlockResult);
-    captureParticleTexture(a,src,success);noteAtlasUpload(a,src,success?D3D_OK:unlockResult);if(!success)add(core.q.stats.replayFailures);return success;
+    captureParticleTexture(a,src,success);
+    noteAtlasUpload(a,src,success?D3D_OK:(FAILED(unlockResult)?unlockResult:D3DERR_INVALIDCALL));
+    if(!success)add(core.q.stats.replayFailures);return success;
 }
 inline UnlockImageArgs makeUnlockArgs(ProxyBase& self,const SubRes& sub,UINT route,UINT level,UINT face){
     UnlockImageArgs a{};a.proxy=&self;a.level=level;a.face=face;a.flags=sub.flags;a.hasRect=sub.hasRect;a.rows=sub.rows;a.slices=sub.slices;a.rowBytes=sub.rowBytes;a.pitch=sub.pitch;a.slicePitch=sub.slicePitch;
