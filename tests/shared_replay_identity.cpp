@@ -6,7 +6,7 @@ int main(){
     NorthlightReplayGPU::Cache cache;Device d;IDirect3DVertexBuffer9* vb[4]={};IDirect3DIndexBuffer9* ib=nullptr;auto admit=[](size_t){return true;};
     auto release=[&]{for(auto& p:vb){if(p)p->Release();p=nullptr;}if(ib)ib->Release();ib=nullptr;};
     auto a=identified(1);std::weak_ptr<const NorthlightDrawSnapshot::Mesh> expired=a;cache.beginFrame();assert(!cache.bind(&d,a,vb,ib,admit));cache.beginFrame();assert(cache.bind(&d,a,vb,ib,admit));auto* first=vb[0];const auto created=d.calls;release();a.reset();assert(expired.expired());
-    for(unsigned i=0;i<100;++i)cache.beginFrame();auto b=identified(1);assert(cache.bind(&d,b,vb,ib,admit)&&vb[0]==first&&d.calls==created&&cache.uploaded()==0&&cache.stats().reconstructedHits==1);assert(cache.bytes()==b->byteSize()&&cache.chargedBytes()==cache.bytes()+cache.stats().identityBytes);release();
+    for(unsigned i=0;i<100;++i)cache.beginFrame();auto b=identified(1);assert(cache.bind(&d,b,vb,ib,admit)&&vb[0]==first&&d.calls==created&&cache.uploaded()==0&&cache.stats().reconstructedHits==1);assert(cache.bytes()==b->byteSize()&&cache.chargedBytes()==cache.bytes()+cache.stats().identityBytes+cache.queueBytes());release();
     auto edited=identified(2);cache.beginFrame();assert(!cache.bind(&d,edited,vb,ib,admit));cache.beginFrame();d.failAt=d.calls+2;const auto previousBytes=alive;assert(!cache.bind(&d,edited,vb,ib,admit)&&alive==previousBytes);d.failAt=0;assert(cache.bind(&d,edited,vb,ib,admit));release();
     // A deliberately colliding complete hash still requires every identity word.
     const uint64_t inverse=14886173955864302971ull,seed=1469598103934665603ull,prime=1099511628211ull;
