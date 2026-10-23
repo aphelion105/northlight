@@ -64,7 +64,7 @@ The first complete gate finished before fetching upstream. Windows ran 141 scrip
 
 The tested changes were preserved in five ordinary commits ending at `3dfdb3873a0f1c686cfef37e6aaebbf5b573af6d`, with separate baseline/validated safety refs and a recoverable source snapshot. Upstream was then fetched at `5ac3d0558bcfaac561e64afd1f5a35e00ef24061` and merged normally as `dc79563`. Nine fixture conflicts were reviewed individually. The resulting merge retains the stronger upstream pinned-emitter counts, locale-case handling and resolved temporary paths while preserving integrated material, HDR, UI-boundary and optimized shader contracts. Production source did not change in that upstream merge.
 
-The optional job-system TSan build exposed a fixture defect: its allocation counter was declared even when the TSan configuration disabled every use. Moving that counter inside the existing guard makes the real optimized, ASan/UBSan and TSan executions pass. No sanitizer was disabled to obtain this result. The postmerge full gate will include the correction.
+The optional job-system TSan build exposed a fixture defect: its allocation counter was declared even when the TSan configuration disabled every use. Moving that counter inside the existing guard makes the real optimized, ASan/UBSan and TSan executions pass. No sanitizer was disabled to obtain this result. The postmerge full gate confirms all three configurations.
 
 All 15 topic histories now retain their original published heads and the same upstream commit through normal merges. The integrated renderer includes the reconciled feature branches; the separate native-shadow installation policy in #84 remains independent. Automatic materials #95 is consolidated into #97, and adaptive EVENT waits #103 into #89. Both consolidation targets include the original and reconciled source histories. Water/SSR #93 stays closed and withdrawn; native masks and precipitation remain.
 
@@ -72,6 +72,46 @@ The integration audit compares every production source, shader, shader compiler 
 
 Focused branches also receive scoped existing integration fixes instead of importing the entire combined renderer: #97 uses the exact normal-cache source/model index, and #91 avoids cancelling GI for display-only settings changes. The new three-way cache-state oracle compares the published linear implementation, the frozen integrated implementation and the current source, including forced hash collisions, revisions, eviction, allocation failure and retained leases. It is included in the final automatic test registry. The standalone material GPU tests retain MSAA 1x/2x/4x/8x and pressure recovery coverage.
 
-The second full integration gate and ordinary fast-forward publication remain pending at this source checkpoint. No force push, branch deletion, history rewrite or upstream-main PR merge is planned.
+## Final integration validation
 
-Detailed raw evidence is retained under `northlight-diagnostics/log-opt-sync-20261023`, including frozen input hashes, log rows, successful and failed attempts, component reports and test manifests. Final DLL hashes, exact test coverage, limitations and PR heads will be added after both gates complete.
+The postmerge build and full gate use source commit `79dd6da74361f1dd2fc93f2749f4de760de9c001`. All 1,175 input files remain unchanged across the native and Windows runs: source-manifest ID `eebf8db571c5fb4bb063bc10faa5862594b11257cb60e0c408291e214bab4627`. Subsequent edits to this report are documentation only and do not rebuild or replace the tested binary.
+
+| Gate | Before upstream merge | After upstream and topic reconciliation |
+| --- | --- | --- |
+| Windows scripts | 140 PASS; 1 existing profile mismatch | 140 PASS; the same profile mismatch |
+| Native Linux scripts, including serial generators | 141 PASS | 142 PASS |
+| Automatic scripts with successful core execution | 281 of 284; 13 include optional subcase skips | 282 of 285; 12 include optional subcase skips |
+| Entirely unavailable automatic scripts | 2 | The same 2 |
+| New execution failures or coverage regressions | Baseline | None |
+
+This is not a completely green or exhaustive gate: the personal configuration equality test still fails, two prerequisite-dependent tests cannot execute, and the twelve optional-subcase gaps remain recorded. The comparison has no discovery or artifact mismatch. The added normal-cache oracle passes; the actual job-system TSan run now passes without its former internal skip. Six manual scripts and 49 explicit validators are inventoried separately from automatic discovery.
+
+Two explicit validators were then run against the final integrated source. Static material capture preserves private depth and restores bindings at 1x/2x/4x/8x MSAA; its 120-frame pressure/recovery test passes. All six DXVK/workaround/HDR-setting combinations pass SDR-byte preservation, triple buffering, Present, Reset/resize and cooperative-level checks. This validates hidden fixture devices, not visible HDR output on the user's monitor. The game was not launched.
+
+The final `frd9.dll`, delivered separately as `d3d9.dll`, is 5,616,128 bytes with SHA-256 `97cf5c451e6f64abc0463aaf0f6bacc90f29b506cc02d6b5c38a1f94e685216f`. Its matching PDB is 45,916,160 bytes with SHA-256 `49f776eec07e27fe2388e56581fb0a2a66590f364b8609a1c61e6952f4bf6d99`. These hashes stay unchanged through both host suites and the explicit GPU checks.
+
+## Pull request organization
+
+All original published heads are ancestors of their reconciled branches. The following focused heads contain upstream `5ac3d0558bcfaac561e64afd1f5a35e00ef24061`; all except the independent installation policy #84 are included in the tested integration source. Changes use ordinary merges and fast-forward publication, preserving every original commit and source branch.
+
+| PR | Reconciled head | Scope or consolidation |
+| --- | --- | --- |
+| #76 | `e5facf727640` | Vegetation and translucent layers |
+| #84 | `4764a7408617` | Independent native-shadow installation policy |
+| #86 | `b7b5593fab12` | DXVK engine-name option |
+| #87 | `a180c494c341` | Render context |
+| #88 | `ea7d43c5d26a` | AO methods |
+| #89 | `f6859586dae4` | Render performance; includes #103 |
+| #90 | `d5ad8cded887` | Celestial composition |
+| #91 | `76cf54f4ad22` | Settings and selective GI invalidation |
+| #92 | `e90f4dc9adab` | Local-source shadows |
+| #94 | `ec0e26c085c1` | Experimental HDR |
+| #95 | `0a58972f60d2` | Superseded by #97; history retained |
+| #96 | `4897edf28683` | UI-atlas diagnostics |
+| #97 | `487849528d66` | Materials, displacement and normal caching; includes #95 |
+| #98 | `79dd6da74361` | Tested integration source; final report commit follows |
+| #103 | `1af1cdc7fd3c` | Superseded by #89; history retained |
+
+Focused branches have separate builds and scoped native/GPU/installer validations, recorded at their exact heads. Existing draft states are retained. #95 and #103 are consolidated by closing their redundant PRs after publishing their destination branches; no branch deletion, force push, history rewrite or merge into upstream main is used. #93 remains closed and withdrawn.
+
+Detailed raw evidence is retained under `northlight-diagnostics/log-opt-sync-20261023`: frozen inputs, successful and failed attempts, component reports, before/after coverage manifests, the comparison, explicit GPU logs, standalone branch validation and ancestry checks. The release manifest records both the tested source commit and the final documentation/publication commit. Installed DLL and configuration hashes are checked separately and remain unchanged.
