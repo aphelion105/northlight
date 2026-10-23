@@ -3213,7 +3213,7 @@ static HMODULE backend() {
 #ifndef NORTHLIGHT_SOURCE_ID
 #define NORTHLIGHT_SOURCE_ID "unrecorded"
 #endif
-    logf("BUILD identity source=%s compiled=%s %s",NORTHLIGHT_SOURCE_ID,__DATE__,__TIME__);
+    logf("BUILD identity source=%s",NORTHLIGHT_SOURCE_ID);
     logf("MEMORY policy terrain=demand-full/address-space-half normalMiB=32 lowMiB=16");
     if(result.fallback&&module)logf("BACKEND SELF-LOAD REFUSED: the configured backend resolves to this proxy (or another Northlight build); fell back to the system d3d9 runtime. Fix northlight-renderer.ini Backend/BackendPath.");
     else if(result.fallback)logf("BACKEND SELF-LOAD REFUSED: the configured backend resolves to this proxy (or another Northlight build) and the system d3d9 fallback FAILED too (expected under Wine with d3d9=n: the system d3d9 is builtin; the fallback is Windows-only). Fix northlight-renderer.ini Backend/BackendPath.");

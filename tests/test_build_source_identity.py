@@ -31,6 +31,7 @@ with tempfile.TemporaryDirectory() as folder:
     (root/'src/new.cpp').write_text('Added input')
     assert build.source_identity(root)!=ordered
 source=fp.src('renderer.cpp').read_text()
-assert 'BUILD identity source=%s compiled=%s %s' in source and 'NORTHLIGHT_SOURCE_ID' in source
+assert 'BUILD identity source=%s' in source and 'NORTHLIGHT_SOURCE_ID' in source
+assert '__DATE__' not in source and '__TIME__' not in source
 assert 'NORTHLIGHT_SOURCE_ID="' in (fp.SCRIPTS/'build_renderer.py').read_text()
 print('PASS source identity: source/shader/binary/tool changes, added file, CRLF equivalence, case-sensitive path order, private settings, startup wiring')
