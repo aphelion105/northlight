@@ -240,6 +240,7 @@ test_terrain_capture_validation.py
 test_terrain_content_cache.py
 test_terrain_indices.py
 test_terrain_metadata.py
+test_terrain_pressure_policy.py
 test_terrain_reach_fallback.py
 test_terrain_reach_fallback_wiring.py
 test_terrain_retention_budget.py

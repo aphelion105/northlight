@@ -81,6 +81,39 @@ Windows, macOS and Linux binary hashes, ABI checks and empty-cache rebuild compa
 Run the complete build test on a POSIX host with Zig 0.15.2; on WSL, use a short native
 `NORTHLIGHT_OUT` path for its cold compiler caches. This requires no client settings changes.
 
+## MPQ-backed camera rotation reproduction
+
+Prepare a private fixture from the active client archives and a recorded camera interval:
+
+```sh
+python scripts/prepare_rotation_fixture.py --log /path/to/northlight-renderer.log --start-tick 128064984 --end-tick 128068265 --terrain-radius 1277 --output out/rotation-fixture
+python tests/validate_mpq_rotation.py --fixture out/rotation-fixture --output out/rotation-comparison --rounds 3
+python scripts/run_tests.py test_terrain_pressure_policy.py
+```
+
+The ticks above select the investigated 23 October orbit; choose the bounds of the recorded
+`WORLD camera` samples in another log. The radius is the client farclip for that run, not a
+changed render distance. Output must be new or empty. The generator opens the MPQs read-only,
+uses the existing archive-priority resolver and static-world builder, and writes original ADTs,
+exact terrain heights/holes, an independent FGS3 corpus, camera samples and hashed provenance.
+Neither preparation nor replay starts the game or writes installed settings/world-cache files.
+Comparisons reject missing/unsupported inputs and unreadable archives; an unreadable override
+must not silently substitute a lower-priority asset. Every generated output is hash-checked.
+
+The Windows replay compiles both the frozen delivered cache/world-cap setter and current code.
+It reproduces the logged demand-only trim and separately tests genuine low-address-space
+pressure. Both stable revisions and per-frame vertex rewrites with unchanged XYZ are covered.
+All emitted triangle positions must match the MPQ inputs exactly; warm demand-only cache misses
+and evictions must disappear. Rewrites still require exact vertex revalidation and reads, which
+are reported separately. Genuine-low-memory behavior must remain unchanged.
+Alternating runs report CPU capture time and deterministic work counts, without a game-FPS claim.
+
+This is a CPU reproduction using fake D3D buffers and an explicit 110-degree candidate cone.
+The original D3D draw stream, game occlusion/LOD and driver waits are unavailable. Recorded
+camera motion and actual MPQ geometry are used; this does not certify live visual performance.
+Keep the generated game assets and raw logs outside Git. The automatic pressure-policy test
+also executes production wiring, admission rules and negative controls without private data.
+
 ## Adding a test
 
 1. Create `tests/test_<name>.py` with `#!/usr/bin/env python3`, a `# northlight-test:` line, a

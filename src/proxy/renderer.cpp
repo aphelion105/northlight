@@ -2641,7 +2641,7 @@ public:
         if(hdr.active&&diagnostics()&&frame%600==0)logf("HDR state frame=%u uiPhase=%u effectsEnabled=%u patched=%u rejected=%u logicalCopiesAfterUI=%u",frame,unsigned(hdrUiPhase),unsigned(enabled),hdrColor.patched,hdrColor.rejected,hdrLogicalCopies);
         // The address-space sweep is asynchronous; the render thread only compares
         // its result. Trims run below, after clearFrame(), at the frame boundary.
-        bool memoryTrim=false;int memoryCaps=-1,memoryWorld=-1; /* -1 unchanged, 0 full, 1 half (stream, replay copies); memoryWorld: 1 in any pressure episode (the world's caches and pool shrink, no lock cost), 0 after recovery */
+        bool memoryTrim=false;int memoryCaps=-1,memoryWorld=-1; /* -1 unchanged, 0 full, 1 half; memoryWorld follows any pressure episode, terrain follows only memoryCaps */
         NorthlightMemoryDiagnostics::Sample memorySample; /* exact full walk (never an admission witness bound) */
         if(memoryDiagnostics){
             try{
@@ -2659,11 +2659,11 @@ public:
                         if(decision.entered||decision.recovered||decision.capsChanged){
                             if(decision.entered||decision.recovered)memoryWorld=decision.entered?1:0;
                             if(decision.capsChanged)memoryCaps=decision.halfCaps?1:0; /* 0.3.216 (issue #66 follow-up): a demand-only episode keeps full caps (halving them dropped the buffer shadows and made every lock a sync round trip) */
-                            logf("MEMORY guard %s exactWalk=1 availableVirtualMiB=%llu largestFreeMiB=%llu enterBelowMiB=%llu/%llu recoverAboveMiB=%llu/%llu caps=%s entries=%u trims=%u reason=%s demandMiB=%llu",decision.recovered?"recovered":"pressure",
+                            logf("MEMORY guard %s exactWalk=1 availableVirtualMiB=%llu largestFreeMiB=%llu enterBelowMiB=%llu/%llu recoverAboveMiB=%llu/%llu caps=%s worldCaps=%s terrainCaptureMiB=%u entries=%u trims=%u reason=%s demandMiB=%llu",decision.recovered?"recovered":"pressure",
                                 (unsigned long long)(sample.availableVirtual>>20),(unsigned long long)(sample.largestFree>>20),
                                 (unsigned long long)(memoryGuard.policy().enterLargest>>20),(unsigned long long)(memoryGuard.policy().enterAvailable>>20),
                                 (unsigned long long)(memoryGuard.policy().recoverLargest>>20),(unsigned long long)(memoryGuard.recoverAvailable()>>20),
-                                memoryGuard.capsHalved()?"half":"full",memoryGuard.entries(),memoryGuard.trims(),decision.demand?"geometry-demand":"address-space",(unsigned long long)(demand>>20));
+                                memoryGuard.capsHalved()?"half":"full",memoryGuard.pressure()?"half":"full",memoryGuard.capsHalved()?16u:32u,memoryGuard.entries(),memoryGuard.trims(),decision.demand?"geometry-demand":"address-space",(unsigned long long)(demand>>20));
                         }
                         if(decision.report&&diagnostics())logf("MEMORY frame=%u availableVirtualMiB=%llu largestFreeMiB=%llu availablePhysicalMiB=%llu device=%ld totalVirtualMiB=%llu virtualQueryFreeMiB=%llu liveDevices=%ld tick=%lu async=1 sampleTick=%llu sampleAgeMs=%lu sampleWallMs=%.3f regions=%llu pressure=%u minAvailableMiB=%llu minLargestMiB=%llu trims=%u exactWalk=1",frame,
                             (unsigned long long)(sample.availableVirtual>>20),(unsigned long long)(sample.largestFree>>20),(unsigned long long)(sample.availablePhysical>>20),diagnosticId,
@@ -2722,7 +2722,7 @@ public:
                 contactAO=nextContact;
                 logf("AO live method=%s enabled=%u preview=%u",NorthlightQuality::aoName(aoMethod),unsigned(contactAO),unsigned(preview>=0));}
         }
-        if(memoryWorld>=0&&world)world->setMemoryPressure(memoryWorld==1);
+        if((memoryWorld>=0||memoryCaps>=0)&&world)world->setMemoryPressure(memoryGuard.pressure(),memoryGuard.capsHalved());
         if(memoryWorld>=0&&autoBump)autoBump->setMemoryPressure(memoryWorld==1);
         if(memoryCaps>=0&&NorthlightReplayCopies::enabled.load(std::memory_order_relaxed))NorthlightReplayCopies::setPressure(memoryCaps==1); /* 0.3.192 (CS): replay thread: halves the CPU copies' cap and evicts down to it */
         if(memoryCaps>=0)NorthlightStream::memoryPressure.store(memoryCaps==1,std::memory_order_relaxed); /* 0.3.192 (CS): the stream's game side halves its queue budget at its next Present */
@@ -3200,6 +3200,7 @@ static HMODULE backend() {
     // 0.3.192 (DXVK3): the NOOVERWRITE read-back flag only for the backend that actually loaded and is DXVK >= 3 (see upload_lock.h).
     NorthlightUpload::ReadBackNoOverwrite.store(module&&!result.fallback&&last.info.dxvk&&NorthlightBackend::dxvkMajor(last.info.dxvkVersion)>=3,std::memory_order_relaxed);
     logf("LOCK METER read-back lock flags readBackLock=0x%x (NOOVERWRITE only on a loaded DXVK >= 3 backend)",unsigned(NorthlightUpload::readBackLock()));
+    logf("MEMORY policy terrain=demand-full/address-space-half normalMiB=32 lowMiB=16");
     if(result.fallback&&module)logf("BACKEND SELF-LOAD REFUSED: the configured backend resolves to this proxy (or another Northlight build); fell back to the system d3d9 runtime. Fix northlight-renderer.ini Backend/BackendPath.");
     else if(result.fallback)logf("BACKEND SELF-LOAD REFUSED: the configured backend resolves to this proxy (or another Northlight build) and the system d3d9 fallback FAILED too (expected under Wine with d3d9=n: the system d3d9 is builtin; the fallback is Windows-only). Fix northlight-renderer.ini Backend/BackendPath.");
     if(module&&last.info.dxvk&&!NorthlightBackend::isPackagedDxvk(configured))
