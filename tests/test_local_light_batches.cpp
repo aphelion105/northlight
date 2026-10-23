@@ -94,6 +94,9 @@ static void arrangeTests(){
 static void wideTests(){
     const B::Rect all{0,0,640,360},left{0,0,40,40},right{600,320,640,360},none{};
     assert(B::wide(all,all));                  // two whole-target passes: one 16-lamp pass is cheaper
+    // Current shader slots prefer the joint rect; the stale 244/364 model did not.
+    const B::Rect edgeA{0,0,100,10},edgeB{41,0,141,10},pastEdge{42,0,142,10};
+    assert(B::wide(edgeA,edgeB)&&!B::wide(edgeA,pastEdge));
     assert(!B::wide(left,right));              // far apart: the joint rect is the whole target
     assert(!B::wide(none,none)&&!B::wide(left,none)); // one 8-lamp pass already covers it
     assert(B::unite(none,left).area()==left.area()&&B::unite(left,right).area()==all.area());
