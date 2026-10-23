@@ -15,9 +15,10 @@ HERE=Path(__file__).resolve().parent
 FILES=['renderer.cpp','world_renderer.h','world_shadow_experiment.inl','world_point_rendering.inl','celestial_disc_renderer.h',
        'shadow_blob_filter.h','water_renderer.h','gpu_profile.h','gpu_frame_timer.h','world_diagnostics.h','world_replay_probe.inl','world_rigid_memory.inl']
 # 0.3.149: profiling()/profileSampled() = RenderProfile, which requires Diagnostics=1 (NorthlightQuality::renderProfile).
-GATES=('NorthlightDiagnostics::enabled()','diagnostics()','sampled()','captureSampled','if(diagnostics)','shadowFate.active()','sampledFrame','profiling()','profileSampled()','if(lightingClock)')
+GATES=('NorthlightDiagnostics::enabled()','diagnostics()','sampled()','captureSampled','if(diagnostics)','shadowFate.active()','sampledFrame','profiling()','profileSampled()','if(lightingClock)','materialProfile->recording()')
 # Ungated lines that stay with Diagnostics=0: format prefix -> label.
 KEEP={
+ 'CAPTURE shared sources: join failed':'constructor-only warning: private caches remain active when the shared pool cannot join',
  'DXVK3 engine-name FSE':'start-up: optional process compatibility configuration',
  'DXVK3 engine-name requested':'start-up: backend and Wine eligibility decision',
  'DXVK3 engine-name import':'start-up: import patch result',
@@ -116,10 +117,20 @@ print(f'GATED (off with Diagnostics=0): {len(gated)} log sites');[print('  LOG '
 print(f'KEPT with Diagnostics=0: {len(kept)}');[print('  ',w,f,'--',l) for w,f,l in kept]
 assert not unknown,'ungated, unlabelled log sites:\n'+'\n'.join(f'{w} {f}' for w,f,_ in unknown)
 # Non-log diagnostic work (MEASUREMENT / COUNTER) must be gated; functional work must not be.
-r=fp.src('renderer.cpp').read_text();w=fp.src('world_renderer.h').read_text()
+r=fp.src('renderer.cpp').read_text();w=fp.src('world_renderer.h').read_text();mp=fp.src('material_profile.h').read_text()
+constructor=r[r.index('Device(IDirect3DDevice9* d,'):r.index('~Device() {')]
 checks={
+ 'shared source join warning occurs only once in the device constructor':r.count('logf("CAPTURE shared sources: join failed; using private caches")')==1 and 'logf("CAPTURE shared sources: join failed; using private caches")' in constructor,
+ 'material recording requires the sampled Diagnostics-dependent RenderProfile gate':r.count('materialProfile->beginFrame(')==1
+   and 'if(materialProfile)materialProfile->beginFrame(frame,world&&NorthlightQuality::renderProfile(world->surfaceSettings())&&NorthlightRenderThreadProbe::sampleFrame(frame));' in r
+   and 'bool recording()const{return active;}' in mp and 'endFrame();if(!sample)return;active=true;' in mp and 'active=false;parent=nullptr;' in mp,
  'lighting clock only samples with diagnostics':'int64_t lightingClock=profileSampled()&&captureFrequency.QuadPart>0?QpcClock::now():0;' in w,
- 'CpuScope timings use sampled()':all('CpuScope' not in l or 'sampled' in l or 'diagnostics()' in l for l in r.splitlines() if 'CpuScope ' in l and '(' in l and 'struct' not in l),
+ 'CpuScope timings use sampled()':all('CpuScope' not in l or 'sampled' in l or 'diagnostics()' in l
+   or any(scope in l for scope in ('CpuScope timing(timeAOBlur?&aoBlurSetup:nullptr)','CpuScope timing(timeAOBlur?&aoBlurSubmit:nullptr)'))
+   for l in r.splitlines() if 'CpuScope ' in l and '(' in l and 'struct' not in l),
+ 'AO blur scope predicate requires an active sampled GPU profile':r.count('const bool timeAOBlur=')==1
+   and 'const bool timeAOBlur=gpuProfile->recording()&&cpuFrequency.QuadPart>0;' in r
+   and 'bool recording()const {return active_>=0&&!disabled_;}' in fp.src('gpu_profile.h').read_text(),
  'world capture: raw sample frame in, diagnostics gated inside':r.count(',vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame));captureWater(')==4 and w.count('constantSelfCheck=selfCheck;sample=sample&&NorthlightDiagnostics::enabled();')==2,
  'constant self-check keeps its 0.3.140 cadence (0.3.180 C0: its own flag and serial; the profile Stats only on diagnostic samples)':'},sample?&constantEpochProfile:nullptr,constantSelfCheck,constantSelfCheckState))return;' in w,
  'GPU timestamp queries only when on':'if(diagnostics())gpuProfile->beginFrame(frame,NorthlightRenderThreadProbe::sampleFrame(frame))' in r and 'if(diagnostics()){gpuProfile->poll();if(gpuSceneProfile)gpuSceneProfile->poll();}' in r and 'if(gpuSceneProfile&&diagnostics())gpuSceneProfile->beginFrame(frame,' in r,

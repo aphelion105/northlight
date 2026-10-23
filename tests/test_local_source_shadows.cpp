@@ -55,7 +55,9 @@ int main(){
         for(unsigned i=0;i<selection.count;i+=4)fog+=selection.batch<4>(i).count;
         assert(direct==selection.count&&fog==selection.count);
     }
-    assert(NorthlightGpuBudget::lightLimit(128,3)==16); // Budget still applies without a shadow reserve.
+    // GPU budgeting preserves the configured lamp limit, including without a shadow reserve.
+    for(unsigned level=0;level<4;++level)for(unsigned limit:{4u,8u,16u,32u,64u,128u})
+        assert(NorthlightGpuBudget::lightLimit(limit,level)==limit);
     assert(NorthlightPointShadow::selectMany(many.data(),many.size(),camera,999).count==128);
     auto full=tracker.update(many,camera,128,0,false);assert(full.count==128);
     auto changed=many;for(unsigned i=0;i<8;++i)changed[i].sourceId+=1000;

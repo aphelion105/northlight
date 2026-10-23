@@ -39,8 +39,17 @@ checks['renderer: timer spans surface work through deferred spells and is closed
     and re_.index('if (!saved.ok) return;')<re_.index('surfaceTimerOpen=')<re_.index('gpuProfile->beginFrame(')
     and 'if(surfaceTimerOpen){if(gpuTimer)gpuTimer->end();surfaceTimerOpen=false;}' in rc
     and rc.count('if(surfaceTimerOpen){gpuTimer->end();surfaceTimerOpen=false;}')==2)
+def in_order(text,*tokens):
+    positions=[text.find(token) for token in tokens]
+    return all(pos>=0 for pos in positions) and all(a<b for a,b in zip(positions,positions[1:]))
+constructor=rc[rc.index('Device(IDirect3DDevice9* d,'):rc.index('~Device() {')]
+destructor=rc[rc.index('~Device() {'):rc.index('bool gamePresentation(')]
+reset=rc[rc.index('HRESULT STDMETHODCALLTYPE Reset(D3DPRESENT_PARAMETERS* pp)'):rc.index('void trimMemory(')]
+# Intervening profiler cleanup is valid; query owners must still retire before the device.
 checks['renderer: the timer is created, reset before a device Reset and destroyed with the profiler']=(
-    'gpuTimer=std::make_unique<NorthlightGpuFrameTimer>(ext);' in rc and 'gpuProfile->reset();gpuSceneProfile->reset();gpuFrameStarted=gpuSceneSplit=gpuEffectsSplit=false;gpuTimer->reset();' in rc and 'gpuProfile.reset();gpuSceneProfile.reset();gpuTimer.reset();' in rc)
+    'gpuTimer=std::make_unique<NorthlightGpuFrameTimer>(ext);' in constructor
+    and in_order(reset,'gpuProfile->reset();','gpuSceneProfile->reset();','materialProfile->reset();','gpuFrameStarted=gpuSceneSplit=gpuEffectsSplit=false;','gpuTimer->reset();','HRESULT hr=hdr.settings.requested?hdr.reset(real,ext,pp):ext->Reset(pp);')
+    and in_order(destructor,'gpuProfile.reset();','gpuSceneProfile.reset();','materialProfile.reset();','gpuTimer.reset();','ext->Release();'))
 fin=rc[rc.index('void finishFrameImpl() {'):]
 gb=rc[rc.index('void gpuBudgetFrame(){'):rc.index('void finishFrameImpl() {')]
 checks['renderer: once per frame in finishFrameImpl, after the profile poll, ungated by Diagnostics']=(

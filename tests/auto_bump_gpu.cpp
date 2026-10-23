@@ -183,11 +183,13 @@ int main(int argc,char** argv){
             if(mode==6)policy.autoBumpStrength=0;
             float light[4]={.98f,0,.2f,mode==3?2.f:1.f};bump.configure(policy);bump.setLight(light);
             ok(d->Clear(0,nullptr,D3DCLEAR_ZBUFFER,0,1,0));ok(d->BeginScene());capture(vs,[&]{return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,mesh,sizeof(V));},true);ok(d->EndScene());
-            if(mode==0||mode==5)assert(!bump.occlusionTexture());else{
+            assert(bump.texture());
+            const bool cavity=mode==1||mode==6,shadow=!grass&&(mode==2||mode==3);
+            // Normals-only and grass require no auxiliary pass without cavity.
+            if(!cavity&&!shadow)assert(!bump.occlusionTexture());else{
                 auto counts=occludedPixels(d,bump.occlusionTexture());
                 std::printf("OCCLUSION %s mode=%u sun=%u moon=%u cavity=%u\n",family,mode,counts[0],counts[1],counts[2]);std::fflush(stdout);
                 if(mode==1||mode==6){assert(counts[2]>100&&counts[0]==0&&counts[1]==0);if(mode==6)assert(bump.gain()==0&&bump.texture());}
-                else if(grass||mode==4)assert(counts[0]==0&&counts[1]==0&&counts[2]==0);
                 else if(mode==2)assert(counts[0]>0&&counts[1]==0&&counts[2]==0);
                 else if(mode==3)assert(counts[1]>0&&counts[0]==0&&counts[2]==0);
             }

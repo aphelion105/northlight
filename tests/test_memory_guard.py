@@ -296,6 +296,8 @@ int main(){
 }
 '''
 r=fp.src('renderer.cpp').read_text();w=fp.src('world_renderer.h').read_text();inl=fp.src('world_memory_guard.inl').read_text()
+reset_start=w.index('auto resetPreparation=[&]{')
+preparation_reset=w[reset_start:w.index('};',reset_start)]
 finish=r[r.index('    void finishFrameImpl() {'):r.index('    HRESULT STDMETHODCALLTYPE Present(const RECT* src,const RECT* dst,HWND wnd')]
 trim=r[r.index('    void trimMemory(const NorthlightMemoryDiagnostics::Sample& trigger){'):r.index('    void finishFrame() {')]
 checks={
@@ -310,7 +312,7 @@ checks={
  'mesh pool: the guard trim frees idle page buffers only (never the active table), never during a staged upload; after a staged commit the hysteresis trim does the same (a map change reuses the buffers)':'t.gpu+=trimMeshPools();' in inl and 'size_t trimMeshPools(uint64_t maxBytes=UINT64_MAX){\n        if(pendingMesh)return 0;' in w and 'meshStore.trimIdle(maxBytes,' in w and w.count('trimMeshPools()')==0 and w.count('trimMeshPools(request)')==1,
  'world caps: half under pressure, full on recovery':all(x in inl for x in ['setSnapshotCacheLimit(on?NorthlightDrawSnapshot::Frame::SnapshotCacheLimit/2:NorthlightDrawSnapshot::Frame::SnapshotCacheLimit)','setPersistentByteLimit(on?16u*1024u*1024u:32u*1024u*1024u)','replayGpuCache.setLimit(on?32u*1024u*1024u:64u*1024u*1024u)','memoryPressure?ReplayPoolBytes/2:ReplayPoolBytes']),
  'replay pool cap: no underflow above a lowered cap':'bool keep=capacity<=replayPoolLimit()-std::min(replayPoolLimit(),pooledSnapshotBytes);' in w,
- 'worker drops its local-geometry cache at request start; a trim keeps the entry lift (a floor on measured free memory)':w.count('if(workerMemoryTrim.exchange(false,std::memory_order_relaxed))localGeometry.reset();')==1 and w.index('workerMemoryTrim.exchange')<w.index('auto result=std::make_shared<Snapshot>();result->map=r.map;'),
+ 'worker drops all shared preparation caches at request start; a trim keeps the entry lift (a floor on measured free memory)':w.count('if(workerMemoryTrim.exchange(false,std::memory_order_relaxed))resetPreparation();')==1 and w.index('workerMemoryTrim.exchange')<w.index('auto result=std::make_shared<Snapshot>();result->map=r.map;') and all(preparation_reset.count(x)==1 for x in ('meshPreparation.reset();','sceneSources.reset();','localGeometry.reset();')) and 'entryLift' not in preparation_reset,
  'a superseded spatial region drops its entry lift and terrain hint at every cancellation':w.count('stallEnd("superseded")')==1 and 'entryLift.clear();terrainSizeHint={};stallEnd("superseded");' in w and w.count('abandonGeometry();')==3,
  'entry lift tracks the refused region across small retargets':'entryLiftMap=r.map;entryLiftCenter=r.geometryCenter;\n                    entryLift.refused(' in w and 'if(entryLift.armed&&!NorthlightWorldStreaming::applicable(entryLiftMap,entryLiftCenter,r.map,r.camera)){\n                entryLift.clear();terrainSizeHint={};' in w,
  'inactive static caster reclaim occurs only at the frame boundary and stays paused until geometry is drawable':'releaseExpiredMesh();\n        reclaimInactiveCasters();' in w and 'staticRecoveryPaused||!staticStream||(active&&active->bvh)||!geometryMemoryDemand.load(' in inl and 'staticRecoveryPaused=true;staticStream->setPaused(true);' in inl and 'if(staticRecoveryPaused&&!(active&&active->bvh))return;' in w and 'if(staticRecoveryPaused){staticStream->setPaused(false);staticRecoveryPaused=false;' in w,

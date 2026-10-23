@@ -14,7 +14,8 @@ up=w[w.index('    bool uploadLiveTerrain(){'):w.index('    // Win32 wide-path re
 reset='liveTerrainIndexCount=liveDirectionalIndexCount=0;liveIndexBase=0;liveTerrainChunks.clear();uploadedTerrain.clear();return true;'
 release=w[w.index('    void releaseGPU(bool keepMesh=false){'):]
 release=release[:release.index('\n')]
-frame_start=w.index('void endFrame(bool retainPool=true){')
+assert w.count('void endFrame(')==1
+frame_start=w.index('void endFrame(')
 frame_prefix=w[frame_start:w.index('frameFence.endFrame();',frame_start)]
 checks={
  'live terrain uses lossless20B caster vertices and a dedicated declaration in both consumers':

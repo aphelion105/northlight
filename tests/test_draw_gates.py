@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # northlight-test: requires=cxx
-"""0.3.187 per-frame draw gates: the draw hooks do the same work as 0.3.184.
+"""Per-frame draw gates preserve the reference hooks under the current debug policy.
 
-The 0.3.184 hook members and the four Draw* overrides are kept below verbatim. The test compiles
-them, and the current members extracted from renderer.cpp (drawHook and its helpers, the gates,
+The 0.3.184 hook members and four Draw* overrides are kept below verbatim. The derived reference
+adds only the later debug-mode sky-claim guard, also required by the celestial phase regression.
+The test compiles this reference and the current renderer.cpp members (drawHook and its helpers, the gates,
 prepareDraw, terrainShadowDraw, planTerrainShadowSwap, DrawPrimitive), against the same mocks of
 the device, the world, the sky renderer and the blob filter. It then runs both through randomized
 frames with FrameDrawGates=0 and =1: the per-frame inputs change only at the frame boundary, the
@@ -96,8 +97,14 @@ new_members='\n'.join([member(renderer,'template<class Work> bool extensionWork(
     member(renderer,'HRESULT STDMETHODCALLTYPE DrawPrimitive(D3DPRIMITIVETYPE t,UINT start,UINT count) override')])
 old_draws=[l for l in OLD_DRAWS.strip('\n').split('\n')]
 assert len(old_draws)==4
+# Bridge the documented debug policy without changing the raw historical oracle.
+old_claim='celestialDiscs&&enabled&&!applied&&count<=4&&celestialDiscs->nativeClaimPossible'
+debug_claim='celestialDiscs&&enabled&&debugMode==0&&worldDebug==0&&!applied&&count<=4&&celestialDiscs->nativeClaimPossible'
+assert OLD_DRAWS.count(old_claim)==4
+old_draws=[line.replace(old_claim,debug_claim) for line in old_draws]
 
 checks={}
+checks['native sky claims retain the documented debug guard']='celestialDiscs&&enabled&&debugMode==0&&worldDebug==0&&!applied' in member(renderer,'void skyClaim(')
 checks['the rain mask members were found and stubbed (rainMrtBegin inside the cut span)']=checks_rain_stub
 checkflag=fp.src('shadow_blob_filter.h').read_text()
 checks['real source: no compile-time switch left; BlobShadowStrength gates blobFilterActive and the latch (the equivalence runs use strength 0 = skip)']=('HidesNativeBlobs' not in checkflag and 'HidesNativeBlobs' not in renderer
@@ -415,7 +422,7 @@ int main(){
     assert(cover[1].skipped>cover[1].draws/10);
     std::printf("mutation (a latched input rising inside a frame) detected in %u/400 runs\n",caught);
     assert(caught>40);
-    std::printf("PASS draw gates: 0.3.184 and 0.3.187 hooks issue the same calls, results and faults\n");
+    std::printf("PASS draw gates: reference and current hooks issue the same calls, results and faults under the documented debug policy\n");
 }
 '''
 
@@ -428,4 +435,4 @@ with tempfile.TemporaryDirectory(prefix='northlight-draw-gates-') as tmp:
         print(label,subprocess.check_output([str(exe)],text=True),end='',flush=True)
 for name,ok in checks.items():print(('PASS ' if ok else 'FAIL ')+name)
 assert all(checks.values())
-print('PASS FrameDrawGates: same hook work as 0.3.184, latched inputs rise only at the latch points')
+print('PASS FrameDrawGates: reference hook work with documented debug policy; latched inputs rise only at the latch points')

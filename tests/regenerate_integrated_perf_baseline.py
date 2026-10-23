@@ -10,7 +10,7 @@ import shutil
 import sys
 sys.path[:0] = [str(Path(__file__).resolve().parents[1]), str(Path(__file__).resolve().parents[1]/'scripts/shaders')]
 import northlight_paths as fp
-from shader_compiler import Compiler
+from shader_compiler import Compiler, validate_assembly
 
 parser = argparse.ArgumentParser(__doc__)
 parser.add_argument('--compatible-compiler', action='store_true')
@@ -20,9 +20,13 @@ source = original.decode('utf-8')
 support = r'    // Skip whole world-grid intervals beyond the regional field support\.\n.*?\n    \[loop\]for\(int i=first;i<(\d+)&&max\(0,\(i-offset\)\*stepLength\)<marchEnd;\+\+i\)\{'
 source, count = re.subn(support, lambda m: '    [loop]for(int i=0;i<'+m[1]+'&&max(0,(i-offset)*stepLength)<surface;++i){', source, flags=re.S)
 assert count == 2
-source = source.replace('float transmittance=1,directWeight=0;', 'float transmittance=1;float3 directScatter=0;')
-source = source.replace('directWeight+=transmittance*absorb*(', 'directScatter+=transmittance*absorb*sunSource*(')
-source = source.replace('    float3 directScatter=sunSource*directWeight;\n', '')
+for before, after in (
+    ('float transmittance=1,directWeight=0;', 'float transmittance=1;float3 directScatter=0;'),
+    ('directWeight+=transmittance*absorb*(', 'directScatter+=transmittance*absorb*sunSource*('),
+    ('    float3 directScatter=sunSource*directWeight;\n', ''),
+):
+    assert source.count(before) == 1, before
+    source = source.replace(before, after)
 flat = '[loop]for(int tap=0;tap<4;++tap){\n            float row=floor(tap*.5);\n            float2 bit=float2(tap-row*2,row);'
 assert source.count(flat) == 1
 source = source.replace(flat, '[loop]for(int pair=0;pair<2;++pair){\n        [unroll]for(int sub=0;sub<2;++sub){\n            float2 bit=float2(sub,pair);')
@@ -40,6 +44,7 @@ fixtures = fp.TESTS/'fixtures/performance-before'
 hashes = {}
 for entry in ('WorldFog', 'FogClouds', 'WorldComposite'):
     data, _ = compiler.compile(path, entry, 'ps_3_0', out/(entry+'.bin'))
+    validate_assembly(out/(entry+'.bin.asm'), 'ps_3_0')
     target = fixtures/('perf-before-'+entry+'.bin')
     target.write_bytes(data)
     hashes[target.name] = hashlib.sha256(data).hexdigest()
