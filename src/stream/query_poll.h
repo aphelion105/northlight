@@ -21,7 +21,7 @@ inline HRESULT pollEventQueryBriefly(Poll&& poll,Clock&& now,unsigned& calls){
 }
 // The pumped round trip of an EVENT that stayed pending past the local window (stream_proxies.h): D3D9 has no blocking
 // query wait, so the replay thread holds the trip until the event completes or budgetNs passes, polling at a growing gap
-// (20 us doubling to 250 us, about 12 driver calls in 2 ms) and yielding the core in between. The game thread sleeps in
+// (20, 40, then at most 50 us between polls) and yielding the core in between. The game thread sleeps in
 // its pumped wait meanwhile; a long GPU frame takes a few trips instead of one per driver call.
 template<class Poll,class Clock,class Yield>
 inline HRESULT waitEventQuery(Poll&& poll,Clock&& now,Yield&& yield,unsigned& calls,std::uint64_t budgetNs=2000000){
@@ -34,7 +34,7 @@ inline HRESULT waitEventQuery(Poll&& poll,Clock&& now,Yield&& yield,unsigned& ca
         if(current<next){yield();continue;}
         ++calls;hr=poll();
         if(hr!=S_FALSE)break;
-        gap=gap<125000?gap*2:250000;next=current+gap;
+        gap=gap<25000?gap*2:50000;next=current+gap;
     }
     return hr;
 }
