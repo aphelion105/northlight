@@ -45,7 +45,8 @@ class PinReport(unittest.TestCase):
                 continue
             blob=self.assets['all'].read(path)
             if x['status']=='matched':
-                pin=outdoor_light_profiles.pinned(catalog[path])[x['asset_sha256']]
+                # One light per reviewed emitter: a profile may pin several emitters in one model.
+                pin=outdoor_light_profiles.pinned(catalog[path])[hashlib.sha256(blob).hexdigest()]
                 self.assertEqual(len(outdoor_light_profiles.fallback(catalog,path,blob,[])),len(pin.get('emitters',[pin])))
                 self.assertIn('pin',x)
             else:

@@ -44,7 +44,8 @@ for view in ('stock', 'all'):
         assert (azeroth['tiles'], azeroth['expected']) == (4, 4) and not manifest['unsupported'], manifest
         fog[installed] = {p.name: p.read_bytes() for p in sorted((folder / 'Azeroth').glob('*.frf'))}
         print(view, installed, 'zone 12 named', repr(manifest['zones']['12']['name']))
-    reference = fog[locale]
+    # Installed locale folders keep their on-disk case (enus); detect_locale() returns enUS.
+    reference = next(files for name, files in fog.items() if name.lower() == locale.lower())
     assert sorted(reference) == [t + '.frf' for t in tiles]
     assert all(files == reference for files in fog.values()), view
     # Always exercise the formerly failing non-English schema, even on a single-locale client.
