@@ -62,6 +62,13 @@ int main(){
     /* Defaults: absent files, empty file and Preset=Quality are the 0.3.136 constants, except the 0.3.167 FarShadowInterval 4
        and the 0.3.176 PointShadows 0 (off in every preset). */
     const Settings d{};
+    assert(parse("[Quality]\nAOMethod=GTAO\nAOStrength=150\nAORadius=300\n").aoMethod==3);
+    assert(parse("[Quality]\nAOMethod=VXAO\n").aoMethod==0);
+    {const auto combined=parse("[Quality]\nEquipmentLights=0\nAOMethod=GTAO\nAOStrength=150\nAORadius=300\n");
+     assert(combined.equipmentLights==0&&combined.aoMethod==3&&combined.aoStrength==150&&combined.aoRadius==300);
+     for(unsigned i=0;i<sizeof(Keys)/sizeof(Keys[0]);++i){const std::string name=Keys[i].name;
+         const bool changed=name=="EquipmentLights"||name=="AOMethod"||name=="AOStrength"||name=="AORadius";
+         assert(combined.origin[i]==(changed?'f':'d'));}}
     {unsigned equipmentKeys=0;for(const auto& key:Keys)if(std::string(key.name)=="EquipmentLights"){++equipmentKeys;assert(key.field==&Settings::equipmentLights);}assert(equipmentKeys==1);}
     {std::vector<std::string> notes;assert(parse("[Quality]\nWater=1\nWaterSSR=1\nWaterSSRResolution=100\n",nullptr,notes)==d);assert(notes.size()==3);
      for(const auto& note:notes)assert(note.find("retired")!=std::string::npos);for(const auto& key:Keys)assert(std::string(key.name).rfind("Water",0)!=0);}

@@ -104,6 +104,7 @@ struct Settings {
     unsigned autoParallaxShadows=1,autoParallaxShadowStrength=70,autoParallaxShadowSteps=8,autoCavity=1,autoCavityStrength=35;
     unsigned autoMaterialOcclusionDistance=8;
     // NightBrightness (0..100): how much of the art layer's darker night ambient is given back, as added light; 0 = Northlight's night, 100 = the original game's night ambient (shadows stay); default 50. Ramped by the sun below the horizon.
+    unsigned aoMethod=0,aoStrength=100,aoRadius=200; // Live AO method, percent, hundredths of a yard.
     unsigned nightBrightness=50;
     // 0.3.209 (task 29) ActorShadowDetail: 1 = a dedicated 4x finer shadow map around the player holds the moving casters (characters, mounts) and a
     // contact-hardening soft filter pass reads it (sharp at the feet, softer further from the caster); 0 = the 0.3.207 shadows (near cascade, 5x5 tent). ActorShadows=0 disables it too.
