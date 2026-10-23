@@ -12,6 +12,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
 
 parser=argparse.ArgumentParser(__doc__)
+parser.add_argument('--with-hdr',action='store_true',help='Also test an integrated HDR build')
 parser.add_argument('--client',type=Path,required=True)
 parser.add_argument('--output',type=Path,required=True)
 args=parser.parse_args()
@@ -22,7 +23,9 @@ subprocess.run([str(fp.zig()),'c++','-target','x86-windows-gnu','-std=c++17','-O
 sha=lambda path:hashlib.sha256(path.read_bytes()).hexdigest()
 report={'renderer_sha256':sha(fp.RENDERER/'frd9.dll'),'client_modified':False,'game_launched':False,
         'monitor_colours_verified':False,'alt_tab_verified':False,'magnifier_verified':False,'runs':[]}
-for backend,switch,hdr in [('dxvk',0,0),('dxvk',1,0),('dxvk',0,1),('dxvk',1,1),('dxvk2',1,1)]:
+cases=[('dxvk',0,0),('dxvk',1,0),('dxvk2',1,0)]
+if args.with_hdr:cases += [('dxvk',0,1),('dxvk',1,1),('dxvk2',1,1)]
+for backend,switch,hdr in cases:
     name=f'{backend}-workaround{switch}-hdr{hdr}';folder=output/name;folder.mkdir(exist_ok=True)
     shutil.copy2(exe,folder/exe.name);shutil.copy2(fp.RENDERER/'frd9.dll',folder/'d3d9.dll')
     runtime=folder/'renderer-backends'/backend/(backend+'_d3d9.dll');runtime.parent.mkdir(parents=True,exist_ok=True)

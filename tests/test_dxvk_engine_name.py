@@ -1,3 +1,4 @@
+# northlight-test: requires=windows-gpu,zig
 """Run the x86 Windows import/ABI oracle; does not install or launch WoW."""
 from pathlib import Path
 import subprocess
