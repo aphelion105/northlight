@@ -36,6 +36,9 @@ namespace NorthlightDrawSnapshot {
 struct Stream { UINT stride=0; std::vector<std::uint8_t> bytes; };
 struct Mesh {
     NorthlightSourceIdentity::Handle sourceIdentity;
+    // Optional byte-equality proof for GPU contents. sourceIdentity always
+    // retains the current resource/layout/revision contract independently.
+    NorthlightSourceIdentity::Handle replayIdentity;
     Stream streams[4]; std::vector<std::uint32_t> indices;
     UINT vertexCount=0,primitiveCount=0; D3DPRIMITIVETYPE topology=D3DPT_TRIANGLELIST;
     // Replay indexed with base=0,min=0,start=0,INDEX32. Nonindexed start=0.
@@ -44,7 +47,7 @@ struct Mesh {
     std::size_t capacityBytes()const{std::size_t n=indices.capacity()*4;for(auto& s:streams)n+=s.bytes.capacity();return n;}
     // Only metadata is reset. Every observed byte/index is overwritten below;
     // retaining vector sizes avoids zero-filling the complete mesh each frame.
-    void prepare(){sourceIdentity.reset();vertexCount=primitiveCount=0;indexed=dynamic=false;topology=D3DPT_TRIANGLELIST;for(auto& s:streams)s.stride=0;}
+    void prepare(){sourceIdentity.reset();replayIdentity.reset();vertexCount=primitiveCount=0;indexed=dynamic=false;topology=D3DPT_TRIANGLELIST;for(auto& s:streams)s.stride=0;}
 };
 struct Draw { D3DPRIMITIVETYPE topology=D3DPT_TRIANGLELIST; INT base=0; UINT minimum=0,vertices=0,start=0,primitives=0; bool indexed=true; };
 enum class Error { None, Arguments, Declaration, Stream, Instancing, IndexBuffer, IndexRange, VertexRange, Budget, Lock, Unlock };
@@ -213,16 +216,23 @@ private:
     using LayoutFn=bool(*)(void*,IDirect3DVertexDeclaration9*,UINT*);
     LayoutFn captureLayout_=nullptr;void* layoutContext_=nullptr;
     struct SourcePool {
+        using ReplayCandidates=std::array<std::weak_ptr<const Mesh>,2048>;
+        std::unique_ptr<ReplayCandidates> replayCandidates;
         std::unordered_map<std::uint64_t,std::unique_ptr<CacheEntry>> entries;
         std::unordered_multimap<std::uint64_t,CacheEntry*> identities;
         NorthlightIntrusiveLRU::List<CacheEntry> lru;
         std::vector<Frame*> members;size_t bytes=0,limit=0;unsigned serial=0;std::uint64_t generation=0;
         std::shared_ptr<NorthlightSourceIdentity::Ledger> live=std::make_shared<NorthlightSourceIdentity::Ledger>();size_t metadataBytes=0;
     };
+    // A weak slot can keep a make_shared allocation after its Mesh dies.
+    // Reserve the entire possible control/object allocation for every slot.
+    static constexpr size_t ReplayCandidateBytes=sizeof(SourcePool::ReplayCandidates)+32+2048*(sizeof(NorthlightSourceIdentity::Retained<Mesh>)+32);
     std::shared_ptr<SourcePool> sources_=std::make_shared<SourcePool>();
     size_t cacheLimit_=SnapshotCacheLimit;unsigned frame_=0;
     std::uint64_t predictionGeneration_=0;unsigned sharedSourceHits_=0;
-    void refreshSourceLimit(){sources_->limit=0;for(const auto* member:sources_->members)sources_->limit+=std::min(member->cacheLimit_,std::numeric_limits<size_t>::max()-sources_->limit);while(sources_->bytes>sources_->limit&&!sources_->entries.empty())evictOldest();}
+    void refreshSourceLimit(){sources_->limit=0;for(const auto* member:sources_->members)sources_->limit+=std::min(member->cacheLimit_,std::numeric_limits<size_t>::max()-sources_->limit);
+        if(sources_->replayCandidates&&sources_->limit<ReplayCandidateBytes){sources_->replayCandidates.reset();sources_->bytes-=ReplayCandidateBytes;sources_->metadataBytes-=ReplayCandidateBytes;}
+        while(sources_->bytes>sources_->limit&&!sources_->entries.empty())evictOldest();}
     struct History {std::uint64_t logical=0,full=0;bool valid=false,evicted=false;};
     // Diagnostic history is bounded and never authorizes a cache hit. Collisions
     // are reported as unknown, never guessed to be a new resource or a write.
@@ -250,6 +260,8 @@ private:
     void noteEvicted(const CacheKey& key){const auto logical=logicalHash(key);auto& h=history_[logical%history_.size()];if(h.valid&&h.logical==logical&&h.full==hashKey(key))h.evicted=true;}
 
     unsigned cacheHits_=0,cacheMisses_=0,revalidated_=0,revalidationMismatches_=0,trackedHits_=0;
+    bool replayContentReuse_=false;
+    unsigned replayContentTests_=0,replayContentHits_=0;size_t replayContentComparedBytes_=0;
     size_t avoidedReadBytes_=0;
     unsigned metadataBatches_=0,metadataHits_=0,metadataFallbacks_=0,fastCacheHits_=0;
 public:
@@ -378,8 +390,41 @@ private:
         sources_->lru.touch(e);++cacheHits_;if(key.tracked){++trackedHits_;avoidedReadBytes_+=e.charged;}if(charge)accepted();*shared=e.mesh;served=true;
         if(why){why->error=Error::None;why->hr=D3D_OK;}return true;
     }
+    static bool replayContract(const NorthlightSourceIdentity::Handle& a,const NorthlightSourceIdentity::Handle& b){
+        if(!a||!b||a->words.size()!=b->words.size()||a->words.size()<2+sizeof(CacheKey)/4+1)return false;
+        if(a->words[0]!=1||a->words[1]!=1||b->words[0]!=1||b->words[1]!=1)return false;
+        // sourceIdentity serializes each CacheKey uint32 as one uint64 word.
+        // Only the five write revisions differ; all resource, tracking-domain,
+        // layout/declaration and original draw-range words must still match.
+        for(size_t i=0;i<a->words.size();++i)if(i<2+offsetof(CacheKey,version)/4||i>=2+(offsetof(CacheKey,version)+sizeof(CacheKey::version))/4){if(a->words[i]!=b->words[i])return false;}
+        return true;
+    }
+    void replayContent(const CacheKey& key,Mesh& mesh){
+        if(!replayContentReuse_||!key.tracked||!mesh.sourceIdentity)return;
+        if(!sources_->replayCandidates){
+            if(ReplayCandidateBytes>sources_->limit)return;
+            std::unique_ptr<SourcePool::ReplayCandidates> candidates;
+            try{candidates=std::make_unique<SourcePool::ReplayCandidates>();}catch(...){return;}
+            // A world-only reader may already have filled the shared pool.
+            // Reserve optional metadata only after this material was admitted.
+            {MaintenanceTimer timer(sampleMaintenance_&&sources_->bytes>sources_->limit-ReplayCandidateBytes?&maintenance_.snapshotMs:nullptr);
+                while(sources_->bytes>sources_->limit-ReplayCandidateBytes&&!sources_->entries.empty())evictOldest();}
+            if(sources_->bytes>sources_->limit-ReplayCandidateBytes)return;
+            sources_->replayCandidates=std::move(candidates);
+            sources_->bytes+=ReplayCandidateBytes;sources_->metadataBytes+=ReplayCandidateBytes;
+        }
+        const auto previous=(*sources_->replayCandidates)[logicalHash(key)%sources_->replayCandidates->size()].lock();
+        if(!previous||!replayContract(mesh.sourceIdentity,previous->sourceIdentity))return;
+        ++replayContentTests_;
+        if(mesh.vertexCount!=previous->vertexCount||mesh.primitiveCount!=previous->primitiveCount||mesh.topology!=previous->topology||mesh.indexed!=previous->indexed||mesh.dynamic!=previous->dynamic)return;
+        replayContentComparedBytes_+=mesh.byteSize();
+        if(mesh.indices!=previous->indices)return;
+        for(unsigned s=0;s<4;++s)if(mesh.streams[s].stride!=previous->streams[s].stride||mesh.streams[s].bytes!=previous->streams[s].bytes)return;
+        mesh.replayIdentity=previous->replayIdentity?previous->replayIdentity:previous->sourceIdentity;++replayContentHits_;
+    }
     bool store(const CacheKey& key,Mesh&& mesh,std::uint64_t ibBegin,std::uint64_t ibBytes,UINT low,const std::uint64_t* begins,const std::uint64_t* lockBytes,const std::uint64_t* readBytes,std::shared_ptr<const Mesh>* shared){
         try{
+            replayContent(key,mesh);
             auto entry=std::make_unique<CacheEntry>();entry->key=key;entry->producer=this;entry->compacted=compacted_;entry->low=low;
             entry->declaration.p=static_cast<IDirect3DVertexDeclaration9*>(const_cast<void*>(key.declaration));entry->declaration.p->AddRef();
             entry->ibBegin=ibBegin;entry->ibBytes=ibBytes;
@@ -389,19 +434,26 @@ private:
             entry->charged=std::size_t(ibBytes);for(UINT s=0;s<4;++s)entry->charged+=std::size_t(readBytes[s]);
             const size_t payload=NorthlightSourceIdentity::allocationBytes<Mesh>(mesh.capacityBytes());
             entry->metadataBytes=sizeof(CacheEntry)+entry->rawIndices.capacity()+entry->runs.capacity()*sizeof(CopyRun)+96;
-            entry->bytes=entry->metadataBytes+payload+(mesh.sourceIdentity?mesh.sourceIdentity->bytes():0);
+            entry->bytes=entry->metadataBytes+payload+(mesh.sourceIdentity?mesh.sourceIdentity->bytes():0)+(mesh.replayIdentity&&mesh.replayIdentity!=mesh.sourceIdentity?mesh.replayIdentity->bytes():0);
             if(entry->bytes>sources_->limit)return false;
             {MaintenanceTimer timer(sampleMaintenance_&&sources_->bytes+entry->bytes>sources_->limit?&maintenance_.snapshotMs:nullptr);
                 while(sources_->bytes+entry->bytes>sources_->limit&&!sources_->entries.empty())evictOldest();}
+            if(entry->bytes>sources_->limit-sources_->bytes)return false;
             auto owned=NorthlightSourceIdentity::allocate<Mesh>(sources_->live,payload);entry->mesh=owned;
             entry->serial=sources_->serial++;
             const auto hash=hashKey(key);auto existing=sources_->entries.find(hash);if(existing!=sources_->entries.end()){eraseIdentity(*existing->second);sources_->bytes-=existing->second->bytes;sources_->metadataBytes-=existing->second->metadataBytes;sources_->lru.remove(*existing->second);sources_->entries.erase(existing);++sources_->generation;
                 dropPrediction(Erase::Replacement);} /* the replaced entry may be the predicted one */
             const auto bytes=entry->bytes,metadataBytes=entry->metadataBytes;auto inserted=sources_->entries.emplace(hash,std::move(entry));sources_->lru.append(*inserted.first->second);sources_->bytes+=bytes;sources_->metadataBytes+=metadataBytes;noteStored(key);
-            *owned=std::move(mesh);*shared=owned;if(owned->sourceIdentity)try{sources_->identities.emplace(owned->sourceIdentity->hash,inserted.first->second.get());}catch(...){}return true;
+            *owned=std::move(mesh);*shared=owned;if(owned->sourceIdentity)try{sources_->identities.emplace(owned->sourceIdentity->hash,inserted.first->second.get());}catch(...){}
+            if(replayContentReuse_&&sources_->replayCandidates&&key.tracked&&owned->sourceIdentity)(*sources_->replayCandidates)[logicalHash(key)%sources_->replayCandidates->size()]=owned;
+            return true;
         }catch(...){return false;}
     }
 public:
+    void setReplayContentReuse(bool on){replayContentReuse_=on;}
+    unsigned replayContentTests()const{return replayContentTests_;}
+    unsigned replayContentHits()const{return replayContentHits_;}
+    size_t replayContentComparedBytes()const{return replayContentComparedBytes_;}
     void setIdentityProvider(IdentityFn f){identity_=f;}
     // Private geometry consumers may budget actual reads; write-tracked resident
     // hits read no VB/IB bytes. Other capture consumers keep their original policy.
@@ -421,7 +473,7 @@ public:
     void setMetadataProvider(NorthlightCaptureMetadata::Read f){clearSnapshotCache();metadata_=f;}
     void setDeclarationProvider(void* context,DeclarationFn f){declarationContext_=context;declaration_=f;}
     void setLayoutProvider(void* context,LayoutFn f){layoutContext_=context;captureLayout_=f;}
-    void clearSnapshotCache(){sources_->lru.clear();sources_->identities.clear();sources_->entries.clear();sources_->bytes=sources_->metadataBytes=0;++sources_->generation;for(auto& h:history_)h={};
+    void clearSnapshotCache(){sources_->replayCandidates.reset();sources_->lru.clear();sources_->identities.clear();sources_->entries.clear();sources_->bytes=sources_->metadataBytes=0;++sources_->generation;for(auto& h:history_)h={};
         dropPrediction(Erase::Clear);} /* every entry is gone */
     // Memory guard: at most SnapshotCacheLimit; evicts oldest down to the new cap now.
     // Entries are shared immutable meshes, so holders of an evicted mesh keep it valid.
@@ -614,7 +666,7 @@ public:
     // Extra bytes for near priority draws once the main budget is spent (0: off, the 0.3.171 budget).
     void setNearReserve(std::size_t bytes){nearReserve_=bytes;}
     std::size_t nearReserve()const{return nearReserve_;}
-    void clearFrame(){maintenance_={};sampleMaintenance_=false;used_=regularUsed_=0;draws_=regularDraws_=0;sourceSpanVertices_=uniqueVertices_=savedVertexBytes_=0;compactedDraws_=0;indexHits_=indexMisses_=0;cacheHits_=cacheMisses_=revalidated_=revalidationMismatches_=trackedHits_=peerHits_=sharedSourceHits_=0;avoidedReadBytes_=0;metadataBatches_=metadataHits_=metadataFallbacks_=fastCacheHits_=0;predictTried_=predictHits_=predictMisses_=0;++frame_;}
+    void clearFrame(){maintenance_={};sampleMaintenance_=false;used_=regularUsed_=0;draws_=regularDraws_=0;sourceSpanVertices_=uniqueVertices_=savedVertexBytes_=0;compactedDraws_=0;indexHits_=indexMisses_=0;cacheHits_=cacheMisses_=revalidated_=revalidationMismatches_=trackedHits_=peerHits_=sharedSourceHits_=0;replayContentTests_=replayContentHits_=0;replayContentComparedBytes_=0;avoidedReadBytes_=0;metadataBatches_=metadataHits_=metadataFallbacks_=fastCacheHits_=0;predictTried_=predictHits_=predictMisses_=0;++frame_;}
     // Cache lifetime never establishes validity: reads still lock/compare current
     // IB contents and copy current VB data. Reset/destruction may drop plans.
     void clearIndexCache(){activeRuns_=&copyRuns_;recent_=nullptr;decodedLookup_.clear();decodedLRU_.clear();for(auto& entry:decoded_)entry.reset();decodedBytes_=sizeof(decoded_);decodedFreeCount_=decodedFree_.size();for(size_t i=0;i<decodedFree_.size();++i)decodedFree_[i]=i;clearSnapshotCache();}

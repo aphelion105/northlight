@@ -618,15 +618,18 @@ private:
         Queue& q=core.q;
         std::uint16_t lastCmd=kExpressIdle;   // the id of the last command executed (an express readback records what it waited behind), kExpressIdle after an idle wait
         for(;;){
-            q.serveExpress(lastCmd);   // 0.3.206 (task 31): between two commands only
             const CommandHeader* h=q.next(false);
             if(!h){
                 lastCmd=kExpressIdle;
+                q.serveExpress(lastCmd);
                 // Idle: the only clock reads of the replay thread. Pending queries are polled every ms; publish() wakes the wait at once.
                 if(!pending_.empty()){pollQueries();const auto t0=nowNs();h=q.nextTimed(1);own(idleNs,nowNs()-t0);}
                 else{const auto t0=nowNs();h=q.next(true);own(idleNs,nowNs()-t0);}
                 if(!h){if(stopNow_.load())return;continue;}
             }
+            // Selecting a command acquires its publication before the mailbox
+            // check, so a future END cannot pass an earlier posted query task.
+            q.serveExpress(lastCmd);
             if(h->id==(std::uint16_t)Cmd::Stop){q.retire(h);return;}
             if(!frameOpen_)beginFrame();   // 0.3.200 (frame skip)
             const unsigned id=h->id;const bool timed=replayProfile_.enabled;

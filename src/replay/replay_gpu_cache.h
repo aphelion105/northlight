@@ -58,10 +58,11 @@ private:
     static constexpr size_t EntryLimit=4096,Limit=64u*1024u*1024u,UploadLimit=4u*1024u*1024u;
     static constexpr size_t QueueMetadata=2*sizeof(Entry*); // Added links stay within the existing byte cap.
     using Mesh=NorthlightDrawSnapshot::Mesh;
-    static std::uint64_t key(const std::shared_ptr<const Mesh>& mesh){return mesh->sourceIdentity?mesh->sourceIdentity->hash:std::uint64_t(reinterpret_cast<std::uintptr_t>(mesh.get()));}
+    static const NorthlightSourceIdentity::Handle& identity(const Mesh& mesh){return mesh.replayIdentity?mesh.replayIdentity:mesh.sourceIdentity;}
+    static std::uint64_t key(const std::shared_ptr<const Mesh>& mesh){const auto& id=identity(*mesh);return id?id->hash:std::uint64_t(reinterpret_cast<std::uintptr_t>(mesh.get()));}
     auto find(const std::shared_ptr<const Mesh>& mesh){auto range=entries.equal_range(key(mesh));for(auto it=range.first;it!=range.second;){const auto& e=*it->second;
-        if(mesh->sourceIdentity?NorthlightSourceIdentity::same(e.identity,mesh->sourceIdentity):!e.identity&&e.owner.lock()==mesh)return it;
-        if(!mesh->sourceIdentity&&!e.identity&&e.owner.expired()){bytes_-=e.bytes+e.metadata;gpuBytes_-=e.bytes;if(!e.bytes)unlinkProbation(*it->second);unlink(*it->second);it=entries.erase(it);}else ++it;}return entries.end();}
+        if(identity(*mesh)?NorthlightSourceIdentity::same(e.identity,identity(*mesh)):!e.identity&&e.owner.lock()==mesh)return it;
+        if(!identity(*mesh)&&!e.identity&&e.owner.expired()){bytes_-=e.bytes+e.metadata;gpuBytes_-=e.bytes;if(!e.bytes)unlinkProbation(*it->second);unlink(*it->second);it=entries.erase(it);}else ++it;}return entries.end();}
     void erase(Entry* entry){auto range=entries.equal_range(entry->key);for(auto it=range.first;it!=range.second;++it)if(it->second.get()==entry){bytes_-=entry->bytes+entry->metadata;gpuBytes_-=entry->bytes;stats_.identityBytes-=entry->metadata-QueueMetadata;if(entry->bytes)++stats_.residentEvictions;else{++stats_.probationEvictions;unlinkProbation(*entry);}unlink(*entry);entries.erase(it);return;}}
     // Stable Entry allocations form a non-owning queue ordered by last frame
     // touched. Equal-frame ties use first-touch order, not hash iteration order.
@@ -150,8 +151,8 @@ public:
         try{
             auto it=find(mesh);
             if(it==entries.end()){
-                const size_t metadata=QueueMetadata+(mesh->sourceIdentity?mesh->sourceIdentity->bytes():0);if(metadata>limit_||mesh->byteSize()>limit_-metadata||!room(metadata))return false;
-                auto e=std::make_unique<Entry>();e->owner=mesh;e->identity=mesh->sourceIdentity;e->metadata=metadata;e->key=key(mesh);e->first=e->touched=frame_;
+                const auto& content=identity(*mesh);const size_t metadata=QueueMetadata+(content?content->bytes():0);if(metadata>limit_||mesh->byteSize()>limit_-metadata||!room(metadata))return false;
+                auto e=std::make_unique<Entry>();e->owner=mesh;e->identity=content;e->metadata=metadata;e->key=key(mesh);e->first=e->touched=frame_;
                 // Publish ownership before linking; a failed allocation leaves
                 // no dangling node in the queue.
                 auto inserted=entries.emplace(key(mesh),std::move(e));append(*inserted->second);appendProbation(*inserted->second);bytes_+=metadata;stats_.identityBytes+=metadata-QueueMetadata;

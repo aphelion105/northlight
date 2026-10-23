@@ -2,7 +2,7 @@
 # northlight-test: requires=windows-exe,zig manual timing
 """Frozen/current MPQ capture at identical caps, with exact independent coverage.
 
-This manual comparison requires the frozen BASELINE commit in local Git history.
+This manual comparison requires the selected immutable commit in local Git history.
 The automatic coverage test uses its embedded immutable oracle without Git.
 """
 import argparse
@@ -33,9 +33,12 @@ parser.add_argument('--camera-log', type=Path, required=True)
 parser.add_argument('--output', type=Path, required=True)
 parser.add_argument('--rounds', type=int, default=3)
 parser.add_argument('--camera-count', type=int, default=8)
+parser.add_argument('--baseline-ref', default=BASELINE, help='Full immutable baseline commit; defaults to the original classifier baseline')
+parser.add_argument('--storage-comparison', action='store_true', help='Keep exact geometry/coverage/caps; allow intended storage and miss counters to differ')
 parser.add_argument('--provenance-negative-control', action='store_true', help='Corrupt a generated header; the provenance guard must reject before compilation')
 args = parser.parse_args()
 assert 1 <= args.rounds <= 3 and 8 <= args.camera_count <= 16
+assert re.fullmatch('[0-9a-f]{40}', args.baseline_ref), 'Baseline must be a full immutable commit'
 out = args.output.resolve()
 assert not out.exists() or not any(out.iterdir()), 'Use a new/empty evidence directory'
 out.mkdir(parents=True, exist_ok=True)
@@ -82,8 +85,8 @@ for row in selected:
     raw += struct.pack('<Q7f', row['tick'], *row['eye'], *row['forward'], row['distance'])
 (out / 'camera.bin').write_bytes(raw)
 baseline = out / 'baseline-source'
-baseline_commit = subprocess.check_output(['git', 'rev-parse', BASELINE], cwd=fp.REPO, text=True).strip()
-assert baseline_commit == BASELINE, 'Frozen baseline must resolve to its full immutable commit'
+baseline_commit = subprocess.check_output(['git', 'rev-parse', args.baseline_ref], cwd=fp.REPO, text=True).strip()
+assert baseline_commit == args.baseline_ref, 'Frozen baseline must resolve to its full immutable commit'
 archive = subprocess.check_output(['git', 'archive', '--format=zip', baseline_commit, 'src'], cwd=fp.REPO)
 baseline_archive_sha256 = hashlib.sha256(archive).hexdigest()
 with zipfile.ZipFile(io.BytesIO(archive)) as zipped:
@@ -108,6 +111,13 @@ static void exactCoverage(const MeshSnapshot& mesh,const Device& d,const Draw& d
 driver = driver.replace('static uint64_t geometry(', oracle + '\nstatic uint64_t geometry(')
 assert driver.count('    assert(!mesh.bounds.chunks.empty());return h;') == 1
 driver = driver.replace('    assert(!mesh.bounds.chunks.empty());return h;', '    exactCoverage(mesh,d,draw);return h;')
+if args.storage_comparison:
+    marker = '            std::printf("ROTATE low='
+    assert driver.count(marker) == 1
+    storage = '''            const auto storage=cache->indexStorage();
+            std::printf("STORAGE low=%u writes=%u cycle=%u frame=%u entries=%zu blocks=%zu rawBytes=%llu avoidedRawBytes=%llu decodedBytes=%llu offsetBytes=%llu retained=%llu cap=%llu\\n",unsigned(trueLow),writes,cycle,frame,cache->persistentEntries(),storage.sourceBlocks,(unsigned long long)storage.sourceBytes,(unsigned long long)storage.sourceAvoided,(unsigned long long)storage.bytes,(unsigned long long)storage.offsetBytes,(unsigned long long)cache->persistentBytes(),(unsigned long long)cache->persistentByteLimit());
+'''
+    driver = driver.replace(marker, storage + marker)
 (out / 'rotation.cpp').write_bytes(driver.encode())
 watched = [path for source_root in (fp.SRC, baseline / 'src') for path in source_root.rglob('*') if path.is_file()]
 watched += [fp.TESTS / 'rotation_mpq.cpp']
@@ -162,7 +172,8 @@ for number in range(args.rounds):
         print(name, number, [row for row in parsed if 'geometry' in row and row['writes'] == '3' and row['low'] == '0'], flush=True)
 for number in range(args.rounds):
     for a, b in zip(results['baseline'][number], results['current'][number]):
-        assert {k: v for k, v in a.items() if k != 'captureMs'} == {k: v for k, v in b.items() if k != 'captureMs'}, (a, b)
+        semantic = {'low', 'writes', 'layout', 'cycle', 'frame', 'calls', 'digest', 'geometry', 'cap'}
+        assert {k: v for k, v in a.items() if k in semantic or (not args.storage_comparison and k != 'captureMs')} == {k: v for k, v in b.items() if k in semantic or (not args.storage_comparison and k != 'captureMs')}, (a, b)
     churn = [row for row in results['baseline'][number] if 'geometry' in row and row['writes'] == '3' and row['low'] == '0'][0]
     assert int(churn['misses']) > 0 and int(churn['evictions']) > 0, 'Fixture did not reproduce 32 MiB capacity churn'
 controls = []
@@ -180,10 +191,12 @@ unchanged(generated_inputs, 'Generated input changed')
 unchanged(output_artifacts, 'Compiler output changed')
 timings = {writes: {name: statistics.median(float(row['captureMs']) for rows in rounds for row in rows
             if 'geometry' in row and row['low'] == '0' and row['writes'] == writes) for name, rounds in results.items()} for writes in ('0', '1', '2', '3')}
-report = {'baseline': BASELINE, 'baseline_commit': baseline_commit, 'baseline_archive_sha256': baseline_archive_sha256,
+report = {'baseline': args.baseline_ref, 'baseline_commit': baseline_commit, 'baseline_archive_sha256': baseline_archive_sha256,
           'complete_fixture': True, 'inputs': inputs, 'selected_cameras': selected,
           'camera_selection': 'First observed pose in each angular heading sector, preserving recorded chronology', 'synthetic_layouts': True,
-          'identical_geometry_coverage_counters_caps_and_bytes': True, 'timings_cpu_ms': timings, 'results': results,
+          'identical_geometry_coverage_counters_caps_and_bytes': not args.storage_comparison,
+          'identical_geometry_coverage_and_caps': True, 'identical_counters_and_bytes': not args.storage_comparison,
+          'storage_comparison': args.storage_comparison, 'timings_cpu_ms': timings, 'results': results,
           'mutation_controls': controls, 'source_before': source_before, 'source_after_identical': True,
           'helper_inputs_before_import': helper_before, 'generated_inputs': generated_inputs, 'generated_inputs_unchanged': True,
           'baseline_sources_unchanged': True, 'output_artifacts': output_artifacts, 'output_artifacts_unchanged': True,
@@ -194,4 +207,5 @@ report = {'baseline': BASELINE, 'baseline_commit': baseline_commit, 'baseline_ar
                           'Explicit110-degree candidate cone and synthetic alternating layout, not an original client draw stream.',
                           'Capture timer excludes fixture copies and exact independent XYZ/coverage oracle; no GPU/driver.']}
 (out / 'validation.json').write_text(json.dumps(report, indent=2) + '\n')
-print(json.dumps({'all_equal': True, 'timings_cpu_ms': timings}, indent=2))
+print(json.dumps({'geometry_coverage_and_caps_equal': True, 'storage_comparison': args.storage_comparison,
+                  'timings_cpu_ms': timings}, indent=2))

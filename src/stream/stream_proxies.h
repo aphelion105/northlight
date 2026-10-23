@@ -1543,7 +1543,17 @@ struct StreamQuery final:IDirect3DQuery9,ProxyBase {
                 // EVENT END fences only earlier work. After that END replayed,
                 // a boundary task need not drain unrelated later draws to poll it.
                 auto express=[&]{if(issueSeen==issued&&issueSeenEpoch==epoch&&core->queryEpoch.load()==epoch&&core->coopState.load()==D3D_OK&&!dead.load()&&inner){body(true);ran=true;}};
-                q.runExpress([](void* p){(*static_cast<decltype(express)*>(p))();},&express,nullptr,ExpressKind::Query);
+                auto ready=[&]{
+                    const auto ahead=std::uint32_t(issued-issueSeen);
+                    // Only an unreplayed captured END may defer the task. The
+                    // half-range guard falls back for an ambiguous generation.
+                    return core->queryEpoch.load()!=epoch||core->coopState.load()!=D3D_OK||dead.load()||
+                           !ahead||ahead>=0x80000000u||q.recordedSeq()<=q.replayedSeq();
+                };
+                struct Work {decltype(express)* run;decltype(ready)* canRun;};Work work{&express,&ready};
+                q.publish();   // Issue returned: its END is committed; a deferred task can always advance to it.
+                q.runExpress([](void* p){(*static_cast<Work*>(p)->run)();},&work,nullptr,ExpressKind::Query,
+                             [](void* p){return (*static_cast<Work*>(p)->canRun)();});
                 if(ran){own(q.stats.expressQueryHits);own(q.stats.census[(std::size_t)Cmd::SyncGetData]);own(q.stats.syncCalls);}
                 else own(q.stats.expressQueryFallbacks);
             }
