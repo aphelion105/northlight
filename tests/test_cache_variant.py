@@ -16,7 +16,8 @@ import client_identity as ci
 client = Path(os.environ.get('NORTHLIGHT_STOCK_CLIENT') or fp.client_root())
 # The builder deliberately refuses an output inside the client, even when the checkout is there.
 with tempfile.TemporaryDirectory(prefix='northlight-cache-variant-') as work:
-    output = Path(work) / 'variant'
+    # The builder reports resolved paths; macOS temporary directories sit behind the /var symlink.
+    output = Path(work).resolve() / 'variant'
     command = [sys.executable, '-I', '-X', 'utf8', str(fp.REPO / 'scripts/build_cache_variant.py'), '--client', str(client),
                '--archives', 'stock', '--without', 'z', '--variant', 'test', '--output', str(output), '--maps', 'Azeroth',
                '--tiles', '31', '48', '32', '49', '--progress', 'json']

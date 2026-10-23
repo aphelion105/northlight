@@ -1,0 +1,227 @@
+{
+  "schema": 1,
+  "read_only": true,
+  "spell": {
+    "id": 14177,
+    "name": "cold blood",
+    "visual_ids": [
+      4371,
+      0
+    ],
+    "effect_ids": [
+      6,
+      0,
+      0
+    ],
+    "effect_aura_ids": [
+      107,
+      0,
+      0
+    ],
+    "trigger_spell_ids": [
+      0,
+      0,
+      0
+    ],
+    "graph": [
+      {
+        "visual_id": 4371,
+        "visual_column": 2,
+        "stage": "cast",
+        "kit_id": 3770,
+        "effect_id": 126,
+        "effect_label": "ice precast high hand",
+        "slot": "rightHand",
+        "attachment_id": 22,
+        "model": "spells\\ice_precast_high_hand.m2"
+      },
+      {
+        "visual_id": 4371,
+        "visual_column": 4,
+        "stage": "state",
+        "kit_id": 3771,
+        "effect_id": 121,
+        "effect_label": "ice precast med hand",
+        "slot": "rightHand",
+        "attachment_id": 22,
+        "model": "spells\\ice_precast_med_hand.m2"
+      }
+    ]
+  },
+  "models": [
+    {
+      "path": "spells\\ice_precast_high_hand.m2",
+      "stock": {
+        "sha256": "1a1b240b7f11843f1fcdd09943211637bfd87077f8171be1e5349c017cfd8210"
+      }
+    },
+    {
+      "path": "spells\\ice_precast_med_hand.m2",
+      "stock": {
+        "sha256": "7b864572ebcbcfac765efcc57b528ffe849bb7cc7f514a2a60d028257f9ccc88"
+      }
+    }
+  ],
+  "textures": [
+    {
+      "path": "item\\objectcomponents\\ammo\\blue_glow2.blp",
+      "sha256": "dc81da74a65a3d904efc448e055599a5345e898eae40a1168a0ca64a45a6ba43",
+      "runtime_reference": {
+        "level": 0,
+        "decoder": "NorthlightActorTexture::decode",
+        "rgba_sha256": "7a064a59dfdec66e015bbafb87fb59ee3b3a98fe126fe380158e4c3b930228f9",
+        "rgb_mean": [
+          0.0385952818627451,
+          0.029480698529411764,
+          0.16065410539215685
+        ],
+        "rgb_alpha_mean": [
+          0.0385952818627451,
+          0.029480698529411764,
+          0.16065410539215685
+        ],
+        "alpha_mean": 0.62890625
+      }
+    },
+    {
+      "path": "particles\\lightning_side.blp",
+      "sha256": "32282f2ab91f13cd98766ae97fc860941cfa321662dfe70a59a4d15e5a2e9b2b",
+      "runtime_reference": {
+        "level": 1,
+        "decoder": "NorthlightActorTexture::decode",
+        "rgba_sha256": "6e59ae2b8eaa26b94eb9d65a655a1e7ca717ffbd08b8476c8e8692d1646da25b",
+        "rgb_mean": [
+          0.01581839767156863,
+          0.03840954350490196,
+          0.10809972426470588
+        ],
+        "rgb_alpha_mean": [
+          0.01581839767156863,
+          0.03840954350490196,
+          0.10809972426470588
+        ],
+        "alpha_mean": 1.0
+      }
+    },
+    {
+      "path": "particles\\snowflake.blp",
+      "sha256": "0038b85c25b8840ebd7dce65c0d0bc827e780b021dca7a20950009c31bf51909",
+      "runtime_reference": {
+        "level": 0,
+        "decoder": "NorthlightActorTexture::decode",
+        "rgba_sha256": "d0b08fd217d0118c25c60a65f4a85b6661a161a243271aacbba132b8a1014f81",
+        "rgb_mean": [
+          0.2770517386642157,
+          0.2773858762254902,
+          0.2770517386642157
+        ],
+        "rgb_alpha_mean": [
+          0.151262923214629,
+          0.15121794727388504,
+          0.151262923214629
+        ],
+        "alpha_mean": 0.24225834865196078
+      }
+    },
+    {
+      "path": "spells\\cyanstarflash.blp",
+      "sha256": "9c13e79a4893cca38d0106faaaf8821bf7a0a68ab2c10434c70b74c0b2680170",
+      "runtime_reference": {
+        "level": 1,
+        "decoder": "NorthlightActorTexture::decode",
+        "rgba_sha256": "9478ea932f7a2b636f9e823343000cd849408ece7bb381d6d5fd513a09aa1885",
+        "rgb_mean": [
+          0.052706609987745096,
+          0.10452282475490196,
+          0.14063648897058822
+        ],
+        "rgb_alpha_mean": [
+          0.052706609987745096,
+          0.10452282475490196,
+          0.14063648897058822
+        ],
+        "alpha_mean": 1.0
+      }
+    },
+    {
+      "path": "spells\\greyglowball64.blp",
+      "sha256": "42f6145c09562768461373b2ff49bd10893aa6a52494f97b062b5bef077eb289",
+      "runtime_reference": {
+        "level": 0,
+        "decoder": "NorthlightActorTexture::decode",
+        "rgba_sha256": "88f867e9287b28723f477c693c1e9a945217c0494bf1c8fdf2117d6a6f74ac73",
+        "rgb_mean": [
+          0.25335094975490197,
+          0.2522039675245098,
+          0.25335094975490197
+        ],
+        "rgb_alpha_mean": [
+          0.25335094975490197,
+          0.2522039675245098,
+          0.25335094975490197
+        ],
+        "alpha_mean": 1.0
+      }
+    },
+    {
+      "path": "spells\\ribbonblur1bc.blp",
+      "sha256": "018789155a0a75d8673e81ff651f240d7f5f0b89d29c3ad5381c05d2016a2306",
+      "runtime_reference": {
+        "level": 1,
+        "decoder": "NorthlightActorTexture::decode",
+        "rgba_sha256": "37d74e32a9a039af45c90b99ac10062ca14c8de107ec0905e16bcf99371f1365",
+        "rgb_mean": [
+          0.26602902879901963,
+          0.3383291207107843,
+          0.6644263174019608
+        ],
+        "rgb_alpha_mean": [
+          0.26602902879901963,
+          0.3383291207107843,
+          0.6644263174019608
+        ],
+        "alpha_mean": 1.0
+      }
+    },
+    {
+      "path": "spells\\shockwave10.blp",
+      "sha256": "885832d49c0ce7dfb202699ed771926c86221d075d6cca8b91d8edf96d5dfee1",
+      "runtime_reference": {
+        "level": 1,
+        "decoder": "NorthlightActorTexture::decode",
+        "rgba_sha256": "3ea68241773a7cc47ae22f13c609b18c89886c940a24733caa54dad0a7a192d2",
+        "rgb_mean": [
+          0.0734240962009804,
+          0.07359547334558823,
+          0.0734240962009804
+        ],
+        "rgb_alpha_mean": [
+          0.0734240962009804,
+          0.07359547334558823,
+          0.0734240962009804
+        ],
+        "alpha_mean": 1.0
+      }
+    },
+    {
+      "path": "spells\\snowflake3.blp",
+      "sha256": "be3ea82fc18f2724981d16bedf0cf107044b70836e2f512c128d286927ea87ac",
+      "runtime_reference": {
+        "level": 0,
+        "decoder": "NorthlightActorTexture::decode",
+        "rgba_sha256": "17c5e9736baefcccfdfc22448b4d4f8218cf36947b51d24cd2fceb523708c6cd",
+        "rgb_mean": [
+          0.3365129059436274,
+          0.3361136642156863,
+          0.3365129059436274
+        ],
+        "rgb_alpha_mean": [
+          0.26413551503628413,
+          0.2637440790501249,
+          0.26413551503628413
+        ],
+        "alpha_mean": 0.3358896292892157
+      }
+    }
+  ]
+}

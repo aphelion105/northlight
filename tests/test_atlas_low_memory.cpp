@@ -23,6 +23,15 @@ struct RejectOnceSurface:TSurface {
     RejectOnceSurface():TSurface(512,512,0x31545844,0,1){}
     HRESULT LockRect(D3DLOCKED_RECT* lr,const RECT* rect,DWORD flags)override{if(reject){reject=false;return E_OUTOFMEMORY;}return TSurface::LockRect(lr,rect,flags);}
 };
+struct UploadFaultSurface:TSurface {
+    bool nullBits,failUnlock;unsigned locks=0,unlocks=0;
+    UploadFaultSurface(bool n,bool f):TSurface(512,512,0x31545844,0,1),nullBits(n),failUnlock(f){}
+    HRESULT LockRect(D3DLOCKED_RECT* lr,const RECT* rect,DWORD flags)override{
+        const HRESULT hr=TSurface::LockRect(lr,rect,flags);++locks;
+        if(SUCCEEDED(hr)&&nullBits)lr->pBits=nullptr;return hr;
+    }
+    HRESULT UnlockRect()override{++unlocks;const HRESULT hr=TSurface::UnlockRect();return failUnlock?D3DERR_DEVICELOST:hr;}
+};
 
 int main(){
     // 0: shadow allocation fails -> staged write. 1: written level allocation
@@ -60,6 +69,37 @@ int main(){
         const void* raw=proxy->raw;tex->Release();rig.sync();CHECK(!NorthlightAtlasProof::cache().find(raw));rig.finish();checkClean();
         NorthlightAtlasProof::enabled=false;
     }
+    // Texture Unlock does not delegate to the surface override. The first case
+    // covers its successful Unlock; the surface route injects actual failures.
+    for(unsigned mode=0;mode<4;++mode){
+        const bool surfaceRoute=mode!=0,nullBits=mode==0||mode==2,failUnlock=mode==1||mode==2;
+        const bool success=!nullBits&&!failUnlock;
+        gTrace.clear();NorthlightAtlasProof::enabled=true;Rig rig(true);IDirect3DTexture9* tex=nullptr;
+        CHECK(rig.dev->CreateTexture(512,512,1,0,(D3DFORMAT)0x31545844,(D3DPOOL)1,&tex,nullptr)==D3D_OK);rig.sync();
+        auto* target=gLastTexture;delete target->surf[0];auto* fault=new UploadFaultSurface(nullBits,failUnlock);fault->owner=target;target->surf[0]=fault;
+        IDirect3DSurface9* surface=nullptr;if(surfaceRoute){CHECK(tex->GetSurfaceLevel(0,&surface)==D3D_OK);rig.sync();}
+        const auto before=fault->own;auto copied=before;
+        RECT rect{0,0,64,64};D3DLOCKED_RECT lock{};
+        CHECK((surface?surface->LockRect(&lock,&rect,0):tex->LockRect(0,&lock,&rect,0))==D3D_OK);
+        CHECK(lock.pBits&&static_cast<StreamTexture*>(ProxyBase::of(tex))->subs[0].mode!=SubRes::Pass);
+        for(unsigned y=0;y<16;++y){
+            auto* row=static_cast<unsigned char*>(lock.pBits)+std::size_t(y)*lock.Pitch;
+            std::memset(row,0x60+y,128);std::memcpy(copied.data()+std::size_t(y)*fault->pitch,row,128);
+        }
+        const auto attempted=NorthlightAtlasProof::hashRows(static_cast<unsigned char*>(lock.pBits),lock.Pitch,16,128);
+        CHECK((surface?surface->UnlockRect():tex->UnlockRect(0))==D3D_OK);rig.sync();
+        CHECK(fault->locks==1&&fault->unlocks==unsigned(surfaceRoute)&&!fault->isLocked);
+        CHECK(fault->own==(nullBits?before:copied));
+        auto* proxy=ProxyBase::of(tex);auto* proof=NorthlightAtlasProof::cache().find(proxy->raw);
+        CHECK(proof&&proof->known==1&&proof->uploads==1&&proof->failedUploads==unsigned(!success));
+        CHECK(proof->lastFailure==unsigned(success?D3D_OK:(failUnlock?D3DERR_DEVICELOST:D3DERR_INVALIDCALL)));
+        CHECK(proof->tiles[0]==attempted);
+        CHECK((proof->tiles[0]==NorthlightAtlasProof::hashRows(fault->mem,fault->pitch,16,128))==!nullBits);
+        CHECK(get(rig.core().q.stats.replayFailures)==unsigned(!success));
+        const void* raw=proxy->raw;if(surface)surface->Release();tex->Release();rig.sync();
+        CHECK(!NorthlightAtlasProof::cache().find(raw));rig.finish();checkClean();NorthlightAtlasProof::enabled=false;
+    }
     std::puts("PASS: fresh shadow OOM -> staging; written shadow OOM -> raw; admission + staging OOM -> raw; original rect/flags/pitch and bytes preserved");
     std::puts("PASS: asynchronous backend E_OUTOFMEMORY leaves game Unlock successful; diagnostic retains attempted hash, exact HRESULT, mismatch and lifetime cleanup");
+    std::puts("PASS: null destination/successful Unlock, actual Unlock failures, combined failures and positive upload preserve exact evidence, bytes and cleanup");
 }
