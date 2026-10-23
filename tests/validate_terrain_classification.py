@@ -34,10 +34,12 @@ parser.add_argument('--output', type=Path, required=True)
 parser.add_argument('--rounds', type=int, default=3)
 parser.add_argument('--camera-count', type=int, default=8)
 parser.add_argument('--baseline-ref', default=BASELINE, help='Full immutable baseline commit; defaults to the original classifier baseline')
+parser.add_argument('--fitting-control', action='store_true', help='Explicit 8-pose storage comparison; requires zero baseline 32 MiB capacity misses')
 parser.add_argument('--storage-comparison', action='store_true', help='Keep exact geometry/coverage/caps; allow intended storage and miss counters to differ')
 parser.add_argument('--provenance-negative-control', action='store_true', help='Corrupt a generated header; the provenance guard must reject before compilation')
 args = parser.parse_args()
 assert 1 <= args.rounds <= 3 and 8 <= args.camera_count <= 16
+assert not args.fitting_control or (args.storage_comparison and args.camera_count == 8), 'Fitting control requires explicit storage comparison and eight poses'
 assert re.fullmatch('[0-9a-f]{40}', args.baseline_ref), 'Baseline must be a full immutable commit'
 out = args.output.resolve()
 assert not out.exists() or not any(out.iterdir()), 'Use a new/empty evidence directory'
@@ -112,9 +114,11 @@ driver = driver.replace('static uint64_t geometry(', oracle + '\nstatic uint64_t
 assert driver.count('    assert(!mesh.bounds.chunks.empty());return h;') == 1
 driver = driver.replace('    assert(!mesh.bounds.chunks.empty());return h;', '    exactCoverage(mesh,d,draw);return h;')
 if args.storage_comparison:
+    driver = driver.replace('static uint64_t geometry(', 'template<class Storage,class Cache>\nstatic auto decodedStorage(const Storage& s,const Cache& cache,bool low,unsigned writes,unsigned cycle,unsigned frame,int)->decltype(s.physicalBytes,void()){\n    std::printf("DECODED low=%u writes=%u cycle=%u frame=%u logicalBytes=%llu physicalBytes=%llu blocks=%zu blockAllocationBytes=%llu liveBlockBytes=%llu weakOwners=%zu expiredWeakOwners=%zu positionBytes=%llu positionCapacityBytes=%llu liveBytes=%zu metadataBytes=%zu retained=%llu cap=%llu\\n",unsigned(low),writes,cycle,frame,(unsigned long long)s.bytes,(unsigned long long)s.physicalBytes,s.sharedBlocks,(unsigned long long)s.sharedAllocationBytes,(unsigned long long)s.liveBlockBytes,s.weakOwners,s.expiredWeakOwners,(unsigned long long)s.positionBytes,(unsigned long long)s.positionCapacityBytes,cache.sourceLiveBytes(),cache.sourceMetadataBytes(),(unsigned long long)cache.persistentBytes(),(unsigned long long)cache.persistentByteLimit());\n}\ntemplate<class Storage,class Cache>\nstatic void decodedStorage(const Storage&,const Cache&,bool,unsigned,unsigned,unsigned,long){}\n' + '\nstatic uint64_t geometry(')
     marker = '            std::printf("ROTATE low='
     assert driver.count(marker) == 1
     storage = '''            const auto storage=cache->indexStorage();
+            decodedStorage(storage,*cache,trueLow,writes,cycle,frame,0);
             std::printf("STORAGE low=%u writes=%u cycle=%u frame=%u entries=%zu blocks=%zu rawBytes=%llu avoidedRawBytes=%llu decodedBytes=%llu offsetBytes=%llu retained=%llu cap=%llu\\n",unsigned(trueLow),writes,cycle,frame,cache->persistentEntries(),storage.sourceBlocks,(unsigned long long)storage.sourceBytes,(unsigned long long)storage.sourceAvoided,(unsigned long long)storage.bytes,(unsigned long long)storage.offsetBytes,(unsigned long long)cache->persistentBytes(),(unsigned long long)cache->persistentByteLimit());
 '''
     driver = driver.replace(marker, storage + marker)
@@ -175,7 +179,10 @@ for number in range(args.rounds):
         semantic = {'low', 'writes', 'layout', 'cycle', 'frame', 'calls', 'digest', 'geometry', 'cap'}
         assert {k: v for k, v in a.items() if k in semantic or (not args.storage_comparison and k != 'captureMs')} == {k: v for k, v in b.items() if k in semantic or (not args.storage_comparison and k != 'captureMs')}, (a, b)
     churn = [row for row in results['baseline'][number] if 'geometry' in row and row['writes'] == '3' and row['low'] == '0'][0]
-    assert int(churn['misses']) > 0 and int(churn['evictions']) > 0, 'Fixture did not reproduce 32 MiB capacity churn'
+    if args.fitting_control:
+        assert all(int(row['misses']) == 0 and int(row['evictions']) == 0 for row in results['baseline'][number] if 'geometry' in row and row['low'] == '0'), 'Fitting control unexpectedly churned'
+    else:
+        assert int(churn['misses']) > 0 and int(churn['evictions']) > 0, 'Fixture did not reproduce 32 MiB capacity churn'
 controls = []
 for name, exe in executables.items():
     for mode in ('xyz', 'index-order', 'stale-xyz', 'stale-index-order'):
@@ -196,7 +203,7 @@ report = {'baseline': args.baseline_ref, 'baseline_commit': baseline_commit, 'ba
           'camera_selection': 'First observed pose in each angular heading sector, preserving recorded chronology', 'synthetic_layouts': True,
           'identical_geometry_coverage_counters_caps_and_bytes': not args.storage_comparison,
           'identical_geometry_coverage_and_caps': True, 'identical_counters_and_bytes': not args.storage_comparison,
-          'storage_comparison': args.storage_comparison, 'timings_cpu_ms': timings, 'results': results,
+          'fitting_control': args.fitting_control, 'storage_comparison': args.storage_comparison, 'timings_cpu_ms': timings, 'results': results,
           'mutation_controls': controls, 'source_before': source_before, 'source_after_identical': True,
           'helper_inputs_before_import': helper_before, 'generated_inputs': generated_inputs, 'generated_inputs_unchanged': True,
           'baseline_sources_unchanged': True, 'output_artifacts': output_artifacts, 'output_artifacts_unchanged': True,
