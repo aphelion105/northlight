@@ -20,8 +20,8 @@ checks={}
 
 # controller and timer headers
 checks['gpu_budget.h: portable (no D3D, Win32, clock or allocation)']=all(x not in code(b) for x in ('d3d9','windows.h','chrono','QueryPerformance','new ','malloc','std::vector'))
-checks['gpu_budget.h: level 0 is the full image (40 cloud / 48 fog intervals, the light limit, no alternation, zero interval constant)']=all(x in b for x in (
-    'return level==0?40u:level==1?32u:24u;','return level>=3?40u:48u;','return level>=3&&limit>16?16u:limit;','return steps==fullSteps||!steps||!fullSteps?0.f:'))
+checks['gpu_budget.h: level 0 is the full image (40 cloud / 48 fog intervals, the light limit at every level since 0.3.217, no alternation, zero interval constant)']=all(x in b for x in (
+    'return level==0?40u:level==1?32u:24u;','return level>=3?40u:48u;','inline unsigned lightLimit(unsigned limit,unsigned){return limit;}','return steps==fullSteps||!steps||!fullSteps?0.f:'))
 tc=code(t)
 reads=re.findall(r'->GetData\(([^;]*?)\)',tc)
 checks['timer: every GetData with flags 0, no D3DGETDATA_FLUSH, no wait loop, sleep or spin']=(len(reads)==4 and all(x.rstrip().endswith(',0') for x in reads)
@@ -37,11 +37,11 @@ checks['renderer: timer opened only with GpuBudgetMs > 0, right after the SavedS
     'struct TimerEnd { NorthlightGpuFrameTimer* t; bool open; ~TimerEnd(){if(open)t->end();} } timerEnd{gpuTimer.get(),world&&world->gpuBudgetMs()&&gpuTimer->begin()};' in re_
     and re_.index('if (!saved.ok) return;')<re_.index('timerEnd{')<re_.index('gpuProfile->beginFrame(')<re_.index('profileEnd{'))
 checks['renderer: the timer is created, reset before a device Reset and destroyed with the profiler']=(
-    'gpuTimer=std::make_unique<NorthlightGpuFrameTimer>(ext);' in rc and 'gpuProfile->reset();gpuTimer->reset();' in rc and 'gpuProfile.reset();gpuTimer.reset();' in rc)
+    'gpuTimer=std::make_unique<NorthlightGpuFrameTimer>(ext);' in rc and 'gpuProfile->reset();gpuSceneProfile->reset();gpuFrameStarted=gpuSceneSplit=gpuEffectsSplit=false;gpuTimer->reset();' in rc and 'gpuProfile.reset();gpuSceneProfile.reset();gpuTimer.reset();' in rc)
 fin=rc[rc.index('void finishFrameImpl() {'):]
 gb=rc[rc.index('void gpuBudgetFrame(){'):rc.index('void finishFrameImpl() {')]
 checks['renderer: once per frame in finishFrameImpl, after the profile poll, ungated by Diagnostics']=(
-    fin.index('if(diagnostics())gpuProfile->poll();')<fin.index('gpuBudgetFrame();')<fin.index('bool modifiers=(GetAsyncKeyState(VK_CONTROL)') and rc.count('gpuBudgetFrame();')==1)
+    fin.index('if(diagnostics()){gpuProfile->poll();if(gpuSceneProfile)gpuSceneProfile->poll();}')<fin.index('gpuBudgetFrame();')<fin.index('bool modifiers=(GetAsyncKeyState(VK_CONTROL)') and rc.count('gpuBudgetFrame();')==1)
 checks['renderer: GpuBudgetMs=0 resets the controller and sets level 0 before anything is polled']=(
     'if(!budget){gpuBudget.reset();gpuBudgetQpc=0;if(world)world->setGpuBudgetLevel(0);return;}' in gb and gb.index('return;}')<gb.index('poll(ms)'))
 checks['renderer: only a finished reading updates the controller (dt from the previous reading), the level goes to the world']=(
@@ -85,7 +85,7 @@ checks['task 45 gate: the signal is the previous Present\'s latency wait, kept a
     and 'gpuBound.update(float(latencyLastMs),' in gb and gb.index('gpuBound.update(')<gb.index('const unsigned budget=world?world->gpuBudgetMs():0;'))
 checks['task 45 gate: BoundWaitMs and the lighten parameter default to the old behaviour']=(
     'constexpr float BoundWaitMs=.5f;' in b and 'unsigned update(float budgetMs,float ms,float dt,bool lighten=true){' in b
-    and 'over=lighten&&smoothed>budgetMs?over+dt:0.f;' in code(b) and 'under=smoothed<budgetMs*UpFraction?under+dt:0.f;' in code(b))
+    and 'over=lighten&&smoothed>budgetMs?over+dt:0.f;' in code(b) and 'under=smoothed<budgetMs*UpFraction||!lighten?under+dt:0.f;' in code(b))
 cb=rc[rc.index('void cpuBudgetFrame(){'):rc.index('void finishFrameImpl() {')]
 checks['task 45 cpu: the effects span is always measured (two QPC reads, after the applied check), consumed once per frame, off at ActorShadowCpuMs=0']=(
     'struct EffectsSpan { std::int64_t& out; std::int64_t start; ~EffectsSpan(){out=qpcNow()-start;} } effectsSpan{cpuEffectsQpc,qpcNow()};' in re_

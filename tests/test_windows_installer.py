@@ -188,9 +188,17 @@ class InstallerTests(unittest.TestCase):
         with patch.object(m,'sha',wraps=m.sha) as spy:
             m.package_sha(p);m.package_sha(p);self.assertEqual(spy.call_count,1)
             p.write_bytes(b'changed content');self.assertEqual(m.package_sha(p),hashlib.sha256(b'changed content').hexdigest())
+    def directory_link(self, path, target):
+        try:
+            path.symlink_to(target, target_is_directory=True)
+        except OSError as exc:
+            if getattr(exc, 'winerror', None) == 1314:
+                self.skipTest('Windows directory symlink privilege is unavailable')
+            raise
+
     def test_dxvk_folder_link_refused(self):
         (self.client/'renderer-backends').mkdir();other=self.base/'elsewhere';other.mkdir()
-        (self.client/'renderer-backends/dxvk').symlink_to(other,target_is_directory=True)
+        self.directory_link(self.client/'renderer-backends/dxvk',other)
         with self.assertRaises(ValueError):m.safe_path(self.client,m.LEGACY_DXVK3_MARKER)
         with self.assertRaises(ValueError):m.install(self.client,self.pkg)
         self.assertEqual(list(other.iterdir()),[])
@@ -289,10 +297,12 @@ class InstallerTests(unittest.TestCase):
         (backup/'before/d3d9.dll').write_bytes(b'bad')
         with self.assertRaises(ValueError):m.restore(self.client,backup)
         self.assertEqual(self.read('d3d9.dll'),PROXY)
-    def test_path_escape_and_symlink_refused(self):
+    def test_path_escape_refused(self):
         for name in ['../outside','/absolute','C:/file','a/../../file','a\\..\\b']:
             with self.assertRaises(ValueError):m.safe_path(self.client,name)
-        (self.client/'link').symlink_to(self.base,target_is_directory=True)
+
+    def test_symlink_escape_refused(self):
+        self.directory_link(self.client/'link',self.base)
         with self.assertRaises(ValueError):m.safe_path(self.client,'link/file')
     def test_backend_switch_and_two_level_rollback(self):
         first=m.install(self.client,self.pkg)
@@ -358,8 +368,11 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(got,wanted)
         self.assertIn('GpuBudgetMs=7\n',merged)
         self.assertEqual(merged.lower().count('gpubudgetms='),1)
-        self.assertIsNone(m.merge_quality_ini(template,template))
+        upgraded=m.merge_quality_ini(template,template)
+        self.assertIsNone(m.merge_quality_ini(upgraded,template) if upgraded is not None else upgraded)
     def set_payload(self,name,data):
+        # Each synthetic package version models a newly launched installer process.
+        m._sha_cache.clear()
         (self.pkg/'payload'/name).write_bytes(data)
         manifest=json.loads((self.pkg/'payload-manifest.json').read_text())
         for e in manifest:

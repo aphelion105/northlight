@@ -161,9 +161,10 @@ QUALITY SETTINGS (northlight-quality.ini)
 northlight-quality.ini in the game folder chooses the quality: Preset=Quality (the
 default, full quality), Balanced or Performance. The file is read when the game
 starts; restart WoW after a change. The installer adds the file if it does not
-exist yet; an update never changes your lines or values, it only appends the
-settings your file does not mention yet, commented out. The individual
-settings are described in the file itself.
+exist yet. An update enables newly introduced Quality effect bundles once when
+Quality is selected. Other overrides and later edits to migrated effects stay
+intact. Balanced and Performance are unchanged. Missing ordinary settings are
+appended commented out; the file describes each setting.
 
 UNINSTALL
 Close the game and run:

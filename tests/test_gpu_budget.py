@@ -38,7 +38,7 @@ int main(){
     {   // level map: level 0 is exactly the full image
         assert(B::cloudSteps(0)==40&&B::cloudSteps(1)==32&&B::cloudSteps(2)==24&&B::cloudSteps(3)==24);
         assert(B::fogSteps(0)==48&&B::fogSteps(2)==48&&B::fogSteps(3)==40);
-        for(unsigned limit=8;limit<=64;++limit){assert(B::lightLimit(limit,0)==limit&&B::lightLimit(limit,2)==limit&&B::lightLimit(limit,3)==(limit>16?16:limit));}
+        for(unsigned limit=8;limit<=64;++limit){assert(B::lightLimit(limit,0)==limit&&B::lightLimit(limit,2)==limit&&B::lightLimit(limit,3)==limit);}
         assert(B::spacingDelta(128,40,40)==0.f&&B::spacingDelta(128,48,48)==0.f&&B::spacingDelta(128,0,40)==0.f);
         for(unsigned n:{24u,32u,40u}){const float spacing=std::fma(128.f,1.f/40,B::spacingDelta(128,n,40));assert(std::fabs(spacing-128.f/float(n))<1e-4f);}
         {const float spacing=std::fma(128.f,1.f/48,B::spacingDelta(128,40,48));assert(std::fabs(spacing-3.2f)<1e-4f);}
@@ -93,14 +93,21 @@ int main(){
     {   // late or gappy readings: a long gap counts as MaxDt, never a jump of several levels
         B::Controller c;c.update(4,9,Dt);c.update(4,9,10.f);assert(c.level<=1);
     }
-    {   // task 45: the lighten gate. Default argument = today's behaviour; lighten=false only blocks stepping down
+    {   // task 45: the lighten gate. Default argument = today's behaviour; lighten=false blocks stepping down and (0.3.217) counts toward stepping up
         B::Controller a,b;const float heavy[4]={6,6,6,6};
         for(int i=0;i<600;++i){a.update(4,6,Dt);b.update(4,6,Dt,true);}assert(a.level==b.level&&a.changes==b.changes&&a.smoothed==b.smoothed&&a.level==B::MaxLevel);
         B::Controller g;for(int i=0;i<1200;++i)g.update(4,9,Dt,false);assert(g.level==0&&g.changes==0&&g.over==0.f&&g.smoothed>5.f); /* heavily over, but not the limit: no step down */
         run(a,4,heavy,1.f);const unsigned high=a.level;assert(high==B::MaxLevel);
-        B::Controller k=a;for(int i=0;i<60*60;++i)k.update(4,6,Dt,false);assert(k.level==high&&k.changes==a.changes); /* over budget, gate closed: neither down nor up */
+        B::Controller k=a;unsigned steps=0,last=k.level;float held=0;for(int i=0;i<60*60&&k.level>0;++i){k.update(4,6,Dt,false);held+=Dt;if(k.level!=last){assert(k.level+1==last&&held>=B::UpHoldBase);++steps;last=k.level;held=0;}}
+        assert(k.level==0&&steps==high); /* over budget but not the limit: one level back per upHold, never down */
         B::Controller u=a;for(int i=0;i<60*60&&u.level>0;++i)u.update(4,2,Dt,false);assert(u.level==0); /* well under: the usual up-hold returns the full picture */
-        B::Controller f=a;for(int i=0;i<60*20;++i)f.update(4,3.2f,Dt,false);assert(f.level==high); /* 80 % of the budget is not well under, gate or not */
+        B::Controller f=a;for(int i=0;i<60*20;++i)f.update(4,3.2f,Dt,true);assert(f.level==high); /* 80 % of the budget is not well under while it is the limit */
+        B::Controller r=a;for(int i=0;i<60*20&&r.level>0;++i)r.update(4,3.2f,Dt,false);assert(r.level==0); /* not the limit: the cuts come back */
+        { /* back and forth: the restored level makes it the limit again (down after DownSeconds); each bounce doubles upHold */
+            B::Controller b2=a;unsigned downs=0;bool wasBound=false;
+            for(int i=0;i<60*120;++i){const bool bound=b2.level==0;if(bound&&!wasBound)++downs;wasBound=bound;b2.update(4,6,Dt,bound);}
+            assert(b2.upHold>B::UpHoldBase&&downs<=8); /* settles: the hold grew, few round trips in two minutes */
+        }
         B::Controller o;for(int i=0;i<60;++i)o.update(4,6,Dt,true);const unsigned l1=o.level;assert(l1>=1); /* the gate closing resets the over timer */
         for(int i=0;i<20;++i)o.update(4,6,Dt,false);assert(o.level==l1&&o.over==0.f);
         B::Controller off;assert(off.update(0,9,Dt,false)==0&&!off.primed);

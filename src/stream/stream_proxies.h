@@ -20,12 +20,15 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <type_traits>
 #include <unordered_map>
 #include <vector>
 #include "command_queue.h"
+#include "query_poll.h"
 #include "command_stream.inl"
 #include "tex_readback_diag.h"
+#include "particle_texture_stats.h"
 
 namespace NorthlightStream {
 // D3D9 ABI values the stream needs (identical in d3d9.h / d3d9types.h; kept here so the code reads the same under the test stub).
@@ -180,13 +183,14 @@ public:
     std::function<IUnknown*(IUnknown*,Kind)> rawOf;
     static bool takesRaw(Kind k){return k==Kind::Surface||k==Kind::Texture||k==Kind::CubeTexture||k==Kind::VolumeTexture||k==Kind::VertexBuffer||k==Kind::IndexBuffer||k==Kind::VertexShader||k==Kind::PixelShader||k==Kind::VertexDeclaration;}
     void bindInner(ProxyBase* p,IUnknown* inner){
+        if(p->kind==Kind::Texture)NorthlightParticleTextures::cache().erase(p->raw,p);
         {std::lock_guard<std::mutex> l(m_);p->inner=inner;byInner_[inner]=p;}
         p->raw=rawOf&&inner&&takesRaw(p->kind)?rawOf(inner,p->kind):nullptr;
     }   // the newest proxy of an object wins identity
-    void unbindInner(ProxyBase* p){p->raw=nullptr;std::lock_guard<std::mutex> l(m_);if(p->inner){auto i=byInner_.find(p->inner);if(i!=byInner_.end()&&i->second==p)byInner_.erase(i);}}
+    void unbindInner(ProxyBase* p){if(p->kind==Kind::Texture)NorthlightParticleTextures::cache().erase(p->raw,p);p->raw=nullptr;std::lock_guard<std::mutex> l(m_);if(p->inner){auto i=byInner_.find(p->inner);if(i!=byInner_.end()&&i->second==p)byInner_.erase(i);}}
     ProxyBase* findInner(const void* inner){std::lock_guard<std::mutex> l(m_);auto i=byInner_.find(inner);return i==byInner_.end()?nullptr:i->second;}
     // Replay thread (destroy): forget the proxy; the inner entry only if it still names this proxy.
-    void erase(ProxyBase* p){std::lock_guard<std::mutex> l(m_);byProxy_.erase(p->unk);if(p->inner){auto i=byInner_.find(p->inner);if(i!=byInner_.end()&&i->second==p)byInner_.erase(i);}}
+    void erase(ProxyBase* p){if(p->kind==Kind::Texture)NorthlightParticleTextures::cache().erase(p->raw,p);std::lock_guard<std::mutex> l(m_);byProxy_.erase(p->unk);if(p->inner){auto i=byInner_.find(p->inner);if(i!=byInner_.end()&&i->second==p)byInner_.erase(i);}}
     // The Target-level object behind a proxy pointer the game stored in its own memory (an opaque value, never dereferenced).
     const void* innerOf(const void* maybeProxy){std::lock_guard<std::mutex> l(m_);auto i=byProxy_.find(maybeProxy);return i==byProxy_.end()||!i->second->inner?maybeProxy:static_cast<const void*>(i->second->inner);}
     // Init failure only (the replay thread is gone or about to be): release every Target object the proxies hold, and hand the proxies out to be deleted.
@@ -259,10 +263,22 @@ struct StreamCore {
     // timingN counts the generated calls for the 1-in-16 sampling. Both are game-thread only: the replay thread never runs a game-facing method or a Lock/Unlock path.
     bool timing=false;unsigned timingN=0;
     TexReadbackDiag texDiag;   // 0.3.206 (task 31): per-level texture readback report (game thread; recorded only while timing)
+    // Game-thread counters; reuse runTask's wait clock, without timing each GetData again.
+    struct QueryWait {std::uint64_t calls=0,flush=0,unissued=0,pending=0,errors=0,waitNs=0;};
+    QueryWait queryWait[21]{};unsigned queryWaitFrames=0; // 20 includes unknown query types
+    void clearQueryWait(){for(auto& item:queryWait)item={};queryWaitFrames=0;}
+    void reportQueryWait(const std::function<void(const char*)>& sink){
+        if(sink)for(unsigned type=0;type<21;++type){const auto& s=queryWait[type];if(!s.calls)continue;
+            char line[300];std::snprintf(line,sizeof line,"CSTREAM QUERY frames=%u type=%u calls=%llu flush=%llu unissued=%llu pending=%llu errors=%llu syncWaitMs=%.3f",
+                queryWaitFrames,type,(unsigned long long)s.calls,(unsigned long long)s.flush,(unsigned long long)s.unissued,
+                (unsigned long long)s.pending,(unsigned long long)s.errors,double(s.waitNs)/1e6);sink(line);}
+        clearQueryWait();
+    }
     std::uint64_t clockNs=0;   // the cost of one nowNs() as the scopes see it (measured once at the first timed Present), subtracted from every timed span
     std::uint64_t frameNo=0;         // game thread: Presents so far (the idle clock of buffer shadows)
     DWORD (*readBackLock)()=nullptr;             // flags of the stream's own READONLY read-backs of buffers (NorthlightUpload::readBackLock in the DLL); null = READONLY
     void (*logLine)(const char*)=nullptr;        // diagnostics sink (renderer.cpp's logf); may be null
+    void (*queryCaller)(std::uint64_t,void*,void*)=nullptr; // first EVENT/FLUSH per query, game thread, diagnostics only
     static constexpr std::size_t slicesFor(unsigned framesAhead){return std::size_t(clampFramesAhead(framesAhead))+2;}   // 0.3.204 (task 21): the least slices a buffer may own in all (current + ring)
     // 0.3.204 (task 21): a buffer that DISCARDs n times per frame has n x (framesAhead+1) + 1 slices in flight at most; never below slicesFor, never above kRingHardMax (still subject to the memory rules)
     static constexpr std::size_t kRingHardMax=12;
@@ -280,6 +296,7 @@ struct StreamCore {
     // 0.3.204 (task 21): the cooperative level TestCooperativeLevel reports, written ONLY by the replay thread (after each real Present, in the Reset task and in the
     // sync TestCooperativeLevel task); the game thread answers D3D_OK from it locally and goes synchronous for anything else. Loss shows up at most StreamFramesAhead frames late.
     std::atomic<HRESULT> coopState{D3D_OK};
+    std::atomic<std::uint32_t> queryEpoch{0}; // invalidate cached EVENT completion across Reset
     const char* (*callerModule)(void* address)=nullptr;   // diagnostics: "module+0xoffset" of a TestCooperativeLevel caller and, since 0.3.206 (task 31), of a texture lock caller in the TEXREADBACK lines (renderer.cpp, Windows; logged only with Diagnostics on); null in tests
     // Real HRESULT of the last Present commands (the game reads the one StreamFramesAhead frames back). 0.3.200 (pipeline): the slot is the Present's ordinal
     // (the replay's framesReplayed before it counts this one = the game's frameNo when it recorded it), seq still checked: with at most kMaxFramesAhead+1
@@ -376,6 +393,19 @@ struct UnlockBufferArgs {ProxyBase* proxy;UINT off,size,flags,inlineData;};
 // 0.3.204 (task 21): a zero-copy unlock: the replay thread reads the bytes from the game-side slice itself (src = the slice base; the range starts at src+off). The slice is kept alive until this command retires (see BufferState::sliceSeq).
 struct UnlockBufferRefArgs {ProxyBase* proxy;const unsigned char* src;UINT off,size,flags,pad;};
 enum ImageRoute:UINT{RouteSurface=0,RouteTexture=1,RouteCube=2,RouteVolumeTexture=3,RouteVolume=4};
+
+inline ProxyBase* particleTextureRoot(ProxyBase* p){if(p&&p->kind==Kind::Surface)p=p->parent;return p&&p->kind==Kind::Texture?p:nullptr;}
+inline void invalidateParticleTexture(ProxyBase* p){if(auto* root=particleTextureRoot(p))NorthlightParticleTextures::cache().invalidate(root->raw);}
+inline void captureParticleTexture(const UnlockImageArgs& a,const unsigned char* src,bool success){
+    auto* root=particleTextureRoot(a.proxy);if(!root||a.flags&D3::kLockReadOnly)return;
+    if(root->info.usage&(D3::kUsageRT|D3::kUsageDS|D3::kUsageAutoGen)){invalidateParticleTexture(root);return;}
+    // Do not read kids/SubRes: the game thread can already be recording later
+    // levels. A derived surface's immutable dimensions identify its mip.
+    unsigned level=a.level;if(a.proxy!=root){level=0;for(;level<root->info.levels;++level)if(D3::mipDim(root->info.w,level)==a.proxy->info.w&&D3::mipDim(root->info.h,level)==a.proxy->info.h)break;if(level>=root->info.levels){invalidateParticleTexture(root);return;}}
+    const unsigned w=D3::mipDim(root->info.w,level),h=D3::mipDim(root->info.h,level);
+    const bool whole=a.slices==1&&(!a.hasRect||(a.l==0&&a.t==0&&a.r==LONG(w)&&a.b==LONG(h)));
+    NorthlightParticleTextures::cache().upload(root->raw,root,w,h,level,root->info.fmt,src,std::size_t(a.rows)*a.pitch,a.pitch,whole,success);
+}
 
 inline void countPass(ProxyBase& p,PassReason r){own(p.core->q.stats.passThrough[unsigned(r)]);}   // game thread only
 // Both need StreamCore::texMutex held. A shadow is game-side memory and no queued command refers to it (Unlock copies the rows into a Block).
@@ -514,14 +544,15 @@ constexpr std::size_t kMaxStagedImage=std::size_t(8)<<20;
 // tight source (rows of rowBytes, `pitch` apart), unlock. Also the synchronous fallback when no Block is available.
 inline bool applyImageUnlock(StreamCore& core,const UnlockImageArgs& a,const unsigned char* src){
     ProxyBase* p=a.proxy;
-    if(!p->inner||p->dead.load()||!src){add(core.q.stats.replayFailures);return false;}
+    if(!p->inner||p->dead.load()||!src){captureParticleTexture(a,src,false);add(core.q.stats.replayFailures);return false;}
     D3DLOCKED_RECT lr{};D3DLOCKED_BOX lb{};RECT rect=RECT{a.l,a.t,a.r,a.b};D3DBOX box{};box.Left=UINT(a.l);box.Top=UINT(a.t);box.Right=UINT(a.r);box.Bottom=UINT(a.b);box.Front=a.bf;box.Back=a.bk;
     const bool volume=a.route==RouteVolume||a.route==RouteVolumeTexture;
-    if(FAILED(callLock(a.route,p->inner,a.level,a.face,&lr,&lb,a.hasRect&&!volume?&rect:nullptr,a.hasRect&&volume?&box:nullptr,a.flags))){add(core.q.stats.replayFailures);return false;}
+    if(FAILED(callLock(a.route,p->inner,a.level,a.face,&lr,&lb,a.hasRect&&!volume?&rect:nullptr,a.hasRect&&volume?&box:nullptr,a.flags))){captureParticleTexture(a,src,false);add(core.q.stats.replayFailures);return false;}
     auto* dst=static_cast<unsigned char*>(volume?lb.pBits:lr.pBits);const INT rowPitch=volume?lb.RowPitch:lr.Pitch;const INT slicePitch=volume?lb.SlicePitch:0;
     if(dst)for(UINT s=0;s<a.slices;++s)for(UINT r=0;r<a.rows;++r)
         std::memcpy(dst+std::ptrdiff_t(s)*slicePitch+std::ptrdiff_t(r)*rowPitch,src+std::size_t(s)*a.slicePitch+std::size_t(r)*a.pitch,a.rowBytes);
-    callUnlock(a.route,p->inner,a.level,a.face);return true;
+    const HRESULT unlockResult=callUnlock(a.route,p->inner,a.level,a.face);const bool success=dst&&SUCCEEDED(unlockResult);
+    captureParticleTexture(a,src,success);if(!success)add(core.q.stats.replayFailures);return success;
 }
 inline UnlockImageArgs makeUnlockArgs(ProxyBase& self,const SubRes& sub,UINT route,UINT level,UINT face){
     UnlockImageArgs a{};a.proxy=&self;a.level=level;a.face=face;a.flags=sub.flags;a.hasRect=sub.hasRect;a.rows=sub.rows;a.slices=sub.slices;a.rowBytes=sub.rowBytes;a.pitch=sub.pitch;a.slicePitch=sub.slicePitch;
@@ -689,7 +720,7 @@ inline HRESULT unlockImage(ProxyBase& self,SubRes& sub,UINT route,UINT level,UIN
         sub.written=true;sub.contentSeq=q.recordedSeq();return D3D_OK;   // (the no-Block fallback ran as a task: recordedSeq() is that already replayed task)
     }
     HRESULT hr=D3DERR_INVALIDCALL;
-    if(!runTask(*self.core,[&](StreamCore&){if(self.inner)hr=callUnlock(route,self.inner,level,face);},Cmd::SyncUnlock))return D3DERR_INVALIDCALL;
+    if(!runTask(*self.core,[&](StreamCore&){if(!(sub.flags&D3::kLockReadOnly))invalidateParticleTexture(&self);if(self.inner)hr=callUnlock(route,self.inner,level,face);},Cmd::SyncUnlock))return D3DERR_INVALIDCALL;
     sub.mode=SubRes::Free;if(!(sub.flags&D3::kLockReadOnly)){sub.written=true;sub.contentSeq=q.recordedSeq();}
     return hr;
 }
@@ -1379,6 +1410,25 @@ struct StreamStateBlock final:IDirect3DStateBlock9,ProxyBase {
 };
 struct StreamQuery final:IDirect3DQuery9,ProxyBase {
     unsigned type;unsigned dataSize;
+    // EVENT completion is exact-generation only. Poll requests own no caller buffer;
+    // ordered Destroy removes the proxy only after its last queued poll has run.
+    struct PollRequest {StreamQuery* query;std::uint32_t generation;};
+    std::atomic<bool> eventPollQueued{false};
+    std::atomic<std::uint32_t> eventDoneGen{0};
+    std::atomic<HRESULT> eventStatus{S_FALSE};
+    std::atomic<BOOL> eventValue{FALSE};
+    std::uint32_t eventEpoch=0;std::uint64_t eventPendingSince=0,eventLocalSince=0;bool eventCallerLogged=false; // game thread only
+    // An EVENT answered locally for this long falls back to the pumped round trip below: WoW's Sleep(0) retry loop dispatches
+    // no sent message, and a waiting game thread should sleep instead of spinning through a long GPU frame.
+    static constexpr std::uint64_t kEventLocalNs=1000000;
+    void completeEvent(HRESULT hr,const unsigned char* buf){
+        // Replay thread only. Publish a generation once: pollQueries polls a query PollEventQuery already completed, and a
+        // later error must not replace the published status or value (two relaxed stores a reader could pair across publications).
+        if(hr==S_FALSE||eventDoneGen.load(std::memory_order_relaxed)==issueSeen)return;
+        BOOL value=FALSE;if(hr==S_OK)std::memcpy(&value,buf,sizeof value);
+        eventValue.store(value,std::memory_order_relaxed);eventStatus.store(hr,std::memory_order_relaxed);
+        eventDoneGen.store(issueSeen,std::memory_order_release);
+    }
     std::atomic<std::uint32_t> gen{0},readyGen{0};   // gen: END issues by the game; readyGen: the replay's polled result belongs to it
     unsigned char result[64]{};DWORD resultSize=0;std::uint32_t issueSeen=0;   // issueSeen: END issues the replay thread ran
     std::atomic<std::uint32_t> resultSeq{0};   // seqlock around result/resultSize: odd while the replay thread writes, so a stale read (FLUSH, below) never sees a torn result
@@ -1396,20 +1446,68 @@ struct StreamQuery final:IDirect3DQuery9,ProxyBase {
     HRESULT local(CmdTag<Cmd::Query_GetDevice>,IDirect3DDevice9** pp){return devGet(pp);}
     D3DQUERYTYPE local(CmdTag<Cmd::Query_GetType>){return (D3DQUERYTYPE)type;}
     DWORD local(CmdTag<Cmd::Query_GetDataSize>){return dataSize;}
-    void observe(CmdTag<Cmd::Query_Issue>,DWORD flags){if(type!=8)core->frameHazards|=StreamCore::kHazardQuery;if(flags&D3::kIssueEnd)gen.fetch_add(1);}   // 0.3.200 (frame skip): only an event query's frame may be skipped (its Issue still runs)
+    void observe(CmdTag<Cmd::Query_Issue>,DWORD flags){if(type!=8)core->frameHazards|=StreamCore::kHazardQuery;if(flags&D3::kIssueEnd){eventEpoch=core->queryEpoch.load();eventPendingSince=eventLocalSince=0;gen.fetch_add(1);}}   // 0.3.200 (frame skip): only an event query's frame may be skipped (its Issue still runs)
     using ProxyBase::observe;
     HRESULT STDMETHODCALLTYPE GetData(void* data,DWORD size,DWORD flags) override{
         Queue& q=core->q;
         if(dead.load())return D3DERR_INVALIDCALL;   // the real create failed: an error, not S_FALSE forever
+        if(type==8&&flags==D3::kGetDataFlush&&!eventCallerLogged&&core->timing&&core->queryCaller){
+            eventCallerLogged=true;core->queryCaller(core->frameNo,this,__builtin_return_address(0));
+        }
+        const std::uint32_t issued=gen.load();
+        if(type==8&&issued&&eventEpoch==core->queryEpoch.load()&&core->coopState.load()==D3D_OK&&(flags==0||flags==D3::kGetDataFlush)&&
+           ((!data&&!size)||(data&&size==dataSize))){
+            const bool done=eventDoneGen.load(std::memory_order_acquire)==issued;
+            if(!done&&flags==D3::kGetDataFlush&&!inPumpedWait){
+                const std::uint64_t now=nowNs();if(!eventLocalSince)eventLocalSince=now;
+                if(now-eventLocalSince>=kEventLocalNs)goto pumped;
+            }
+            if(done){
+                const HRESULT hr=eventStatus.load(std::memory_order_relaxed);
+                if(hr==S_OK&&data){const BOOL value=eventValue.load(std::memory_order_relaxed);std::memcpy(data,&value,sizeof value);}
+                if(eventPendingSince){own(q.stats.eventPendingNs,nowNs()-eventPendingSince);own(q.stats.eventCompleted);eventPendingSince=0;}
+                own(q.stats.eventLocal);return hr;
+            }
+            if(flags==D3::kGetDataFlush){
+                if(inPumpedWait)return D3DERR_INVALIDCALL;
+                // At most one bounded FLUSH poll per query is in flight. Repeated
+                // S_FALSE probes publish progress without a stack task or sync wait.
+                if(!eventPollQueued.load(std::memory_order_acquire)){
+                    eventPollQueued.store(true,std::memory_order_relaxed);
+                    auto* request=static_cast<PollRequest*>(q.reserve((std::uint16_t)Cmd::PollEventQuery,sizeof(PollRequest)));
+                    *request={this,issued};q.commit();own(q.stats.eventRequests);
+                }
+            }
+            if(core->timing&&!eventPendingSince)eventPendingSince=nowNs();
+            q.publish();own(q.stats.eventPending);
+#if defined(__i386__)||defined(__x86_64__)
+            __builtin_ia32_pause();
+#endif
+            return S_FALSE;
+        }
         // StreamOcclusionLocal: WoW's QueryGetData (glare occlusion, D3DQUERYTYPE_OCCLUSION) loops GetData(FLUSH) while S_FALSE, normally after a non-FLUSH availability probe that
         // succeeded; the pixel count only fades the sun/moon glare, so the latest completed result (this frame's when the probe saw it, else older) is answered without draining the
-        // queue. Never completed (readyGen 0): the real GetData below once, so the game's loop cannot spin. Event queries (type 8, the gxFixLag wait) keep the real wait.
+        // queue. Never completed (readyGen 0): the real GetData below once, so the game's loop cannot spin. EVENT completion above never substitutes an older result.
         if(flags&D3::kGetDataFlush&&type==9&&core->occlusionLocal&&gen.load()&&readyGen.load(std::memory_order_acquire)){
             readResult(data,size);own(core->q.stats.queryFlushLocal);return D3D_OK;}
+        pumped:
         if((flags&D3::kGetDataFlush)||!gen.load()){   // FLUSH, or a query never issued: the real GetData with the game's buffer, after everything recorded so far
             if(flags&D3::kGetDataFlush)own(core->q.stats.queryFlushSynced);
             HRESULT hr=D3DERR_INVALIDCALL;
-            if(!runTask(*core,[&](StreamCore&){if(inner)hr=static_cast<IDirect3DQuery9*>(inner)->GetData(data,size,flags);},Cmd::SyncGetData))return D3DERR_INVALIDCALL;   // e.g. WoW's event-query wait: shows as SyncGetData in the census
+            const bool measure=core->timing;const auto waitBefore=measure?get(q.stats.syncNs):0;
+            const bool unissued=measure&&!gen.load();
+            // An EVENT FLUSH: the replay thread holds this trip until the GPU is done or 2 ms pass (waitEventQuery), so the game
+            // thread sleeps in its pumped wait instead of starting a new trip for every driver call.
+            const bool event=type==8&&flags==D3::kGetDataFlush&&gen.load();
+            const bool ran=runTask(*core,[&](StreamCore&){if(inner){
+                auto poll=[&]{return static_cast<IDirect3DQuery9*>(inner)->GetData(data,size,flags);};
+                if(event){unsigned calls=0;hr=waitEventQuery(poll,nowNs,[]{std::this_thread::yield();},calls);own(q.stats.eventPollCalls,calls);own(q.stats.eventWaitTrips);}
+                else hr=poll();
+            }},Cmd::SyncGetData);
+            if(event&&ran&&hr!=S_FALSE&&eventPendingSince){own(q.stats.eventPendingNs,nowNs()-eventPendingSince);own(q.stats.eventCompleted);eventPendingSince=0;}   // a wait that ended on this pumped path
+            if(measure){auto& s=core->queryWait[type<20?type:20];++s.calls;s.flush+=bool(flags&D3::kGetDataFlush);s.unissued+=unissued;
+                s.pending+=ran&&hr==S_FALSE;s.errors+=!ran||FAILED(hr);s.waitNs+=get(q.stats.syncNs)-waitBefore;}
+            if(!ran)return D3DERR_INVALIDCALL;
             return hr;
         }
         q.publish();   // the replay thread must see the Issue this GetData polls for, or a spin on S_FALSE would never end

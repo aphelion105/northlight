@@ -53,7 +53,7 @@ checks['MemMap: loadQuality stores the final value']='NorthlightMemorySwitches::
 for k,v in checks.items():print(('PASS ' if v else 'FAIL ')+k)
 assert all(checks.values())
 # task 42: new points and their threads
-ctor2=body(r,'    Device(IDirect3DDevice9* d,IDirect3D9* p)','    ~Device() {')
+ctor2=body(r,'    Device(IDirect3DDevice9* d,IDirect3D9* p','    ~Device() {')
 sched=body(r,'    void memmapSchedule(){','    bool worldDrawSeen=false')
 asyn=body(r,'    void memmapAsync(const char* point){','    // Frame end (finishFrame)')
 fac=body(r,'    HRESULT STDMETHODCALLTYPE CreateDevice(UINT adapter,D3DDEVTYPE type,HWND window,DWORD flags,D3DPRESENT_PARAMETERS* pp,IDirect3DDevice9** out) override {','    }\n};')

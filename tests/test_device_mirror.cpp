@@ -883,7 +883,7 @@ static void writeThroughDifferential(){
    case 9:writer.SetSamplerState(rng()%4,D3DSAMP_ADDRESSU,rng()%50?rng()%5:300);break;
    case 10:case 11:writer.SetRenderState(40+rng()%4,rng()%7);break;
    case 12:writer.SetRenderState(D3DRS_ALPHABLENDENABLE,rng()%9?rng()%2:5);break;
-   case 13:{D3DVIEWPORT9 vp={rng()%2,rng()%2,rng()%200?640+rng()%4:0x10000+rng()%8,360,0,rng()%2?1.f:.5f};writer.SetViewport(&vp);break;}
+   case 13:{D3DVIEWPORT9 vp={DWORD(rng()%2),DWORD(rng()%2),DWORD(rng()%200?640+rng()%4:0x10000+rng()%8),360,0,rng()%2?1.f:.5f};writer.SetViewport(&vp);break;}
    case 14:{DWORD n=rng()%4;writer.SetRenderTarget(n,n==0||rng()%3?surf[rng()%3]:nullptr);break;}
    case 15:writer.SetDepthStencilSurface(rng()%4?surf[rng()%3]:nullptr);break;
    case 16:if(rng()%2)writer.DrawPrimitiveUP(D3DPT_TRIANGLELIST,1,nullptr,16);else writer.DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST,0,3,1,nullptr,D3DFMT_INDEX16,nullptr,16);break;

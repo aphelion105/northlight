@@ -4,7 +4,7 @@
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp; fp.use_source_modules()
 from pathlib import Path
-import hashlib,json,os,subprocess,tempfile
+import hashlib,json,os,re,subprocess,tempfile
 HERE=Path(__file__).resolve().parent
 OUT=fp.output_dir()
 FILES=['extension_raw_methods.inl','mirror_guard.h','generate_extension_raw_methods.py','forwarders.h','device_mirror.h','captured_constant_epoch.h','mirror_audit_schedule.h','saved_state.h','test_device_mirror.cpp','test_device_mirror_api.h','test_device_mirror.py',
@@ -29,7 +29,7 @@ with tempfile.TemporaryDirectory(prefix='device-mirror-') as tmp:
  executable=Path(tmp)/'census-by-held'
  subprocess.run(['clang++','-std=c++17','-pthread','-O2','-DNORTHLIGHT_GATE_CENSUS_BY_HELD=1',*fp.test_include_flags(),str(HERE/'test_device_mirror.cpp'),'-o',str(executable)],check=True)
  run=subprocess.run([str(executable),'census'],capture_output=True,text=True,timeout=300)
- missed=run.returncode!=0 and 'Assertion failed' in run.stderr
+ missed=run.returncode!=0 and re.search(r'Assertion[^\n]*failed',run.stderr)
  print('census counterfactual (keyed on held_): '+('misses the foreign calls (expected failure)' if missed else 'NOT DETECTED'),flush=True);assert missed,(run.returncode,run.stdout,run.stderr)
  report['runs'].append({'flags':['-DNORTHLIGHT_GATE_CENSUS_BY_HELD=1'],'mode':'census','exit_code':run.returncode,'expected':'failure'})
  # 0.3.182 (D1) counterfactuals, each must fail: a relaxed Dekker races under TSan (stress); a foreign
@@ -41,7 +41,7 @@ with tempfile.TemporaryDirectory(prefix='device-mirror-') as tmp:
   subprocess.run(['clang++','-std=c++17','-pthread',*flags,f'-DNORTHLIGHT_GATE_ELISION_COUNTERFACTUAL={n}',*fp.test_include_flags(),str(HERE/'test_device_mirror.cpp'),'-o',str(executable)],check=True)
   # A hang is never a detection: TimeoutExpired fails the test.
   run=subprocess.run([str(executable),mode,'3000'],capture_output=True,text=True,timeout=300)
-  caught=run.returncode!=0 and expect in run.stderr
+  caught=run.returncode!=0 and (re.search(r'Assertion[^\n]*failed',run.stderr) if expect=='Assertion failed' else expect in run.stderr)
   print(f'elision counterfactual {n} ({mode}): '+('fails (expected)' if caught else 'NOT DETECTED'),flush=True);assert caught,(n,run.returncode,run.stdout,run.stderr[-2000:])
   report['runs'].append({'flags':[*flags,f'-DNORTHLIGHT_GATE_ELISION_COUNTERFACTUAL={n}'],'mode':mode,'exit_code':run.returncode,'expected':'failure'})
 # 0.3.180 (D0) needles: every gate lock site is a MirrorGuard; the census sits in the real-acquisition branch.
@@ -62,7 +62,7 @@ checks={
  'mirror_guarded_device.h is up to date with its generator':regenerated==before,
  'MirrorGate has ownerTid, set by the Device constructor':'std::uint32_t ownerTid;' in guard and 'mirrorState.gate.ownerTid=MirrorGuard::threadId();' in proxy['renderer.cpp'],
  'census only after the nested return (outer entries: elided, locked, foreign)':ctor.count('gate.entered(')==1 and ctor.index('if(kMirrorSingleGate&&previous_==&gate)return;')<ctor.index('gate.mutex.lock();')<ctor.index('gate.entered('),
- 'census site classes at every site':proxy['mirror_resources.h'].count('MirrorSite::Registry')==10 and proxy['mirror_resources.h'].count('MirrorSite::Resource')==6
+ 'census site classes at every site':proxy['mirror_resources.h'].count('MirrorSite::Registry')==10 and proxy['mirror_resources.h'].count('MirrorSite::Resource')==8
    and proxy['device_mirror.h'].count('MirrorSite::StateBlock')==4 and 'lock(owner.m->gate,MirrorSite::Raw)' in proxy['device_mirror.h']
    and proxy['renderer.cpp'].count('MirrorGuard lock(resources->gate(),MirrorSite::SwapChain);')==3,
  'tracked buffers report Lock/Unlock/Release':proxy['tracked_buffers.h'].count('if(census)census->noteBuffer();')==3 and proxy['renderer.cpp'].count('&bufferEscape,&mirrorState.gate)')==4,
