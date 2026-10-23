@@ -72,6 +72,7 @@ class Profiles(unittest.TestCase):
         catalog=p.load()
         self.assertTrue(all(type(x['casts_shadows']) is bool for x in catalog.values()))
         self.assertTrue(catalog['world\\generic\\passivedoodads\\lights\\generaltorch01.m2']['casts_shadows'])
+        self.assertFalse(catalog['world\\expansion02\\doodads\\crystalsongforest\\sparkles\\crystalsong_sparkles01.m2']['casts_shadows'])
         blob=b'reviewed';path='world\\test.m2';profile=dict(asset_sha256=hashlib.sha256(blob).hexdigest(),position=[0,0,1],rgb=[1,.5,.2],intensity=1,start=1,end=10)
         self.assertEqual(p.fallback({path:profile},path,blob,[])[0][-1],0)
         profile['casts_shadows']=True
