@@ -3649,6 +3649,7 @@ public:
             else logf("JOBS unavailable: no worker thread; the per-frame work stays on the renderer thread");}
         return jobsOn();
     }
+    void takeCullEarly(unsigned& kicked,unsigned& skipped){kicked=replayCullEarly;skipped=replayCullEarlySkipped;replayCullEarly=replayCullEarlySkipped=0;} /* 0.3.217: renderer.cpp's JOBS line */
     NorthlightJobs::Stats takeJobStats(){return replayJobs_.take();} /* renderer.cpp's JOBS line, RenderProfile sample frames */
     static constexpr float LampFogNear=3.5f; /* c58.x: the lamp glow's near fade start, the scissor view's fog near */
     // The frame's D3D-free light and fog work. Its inputs are final once upload() has run (the snapshot and its lights, the fog field,
@@ -3802,6 +3803,8 @@ public:
     // The later cascades' replay culling (per packet: the static proof's containment in the slot's cached matrix, bit 0; the pose
     // bounds' clip test against the slot's matrix, bit 1). Kicked after the frame's first bounds join for every later active slot and
     // read at that slot's replay loop when both matrices still match (else the loop tests inline, as before). Reads the packets only.
+    // 0.3.217 (jobs): the first rendering slot's own job may be kicked earlier, before its static and terrain draws, but only when the
+    // bounds worker has already finished (replayCullKickOwn): the join then does not wait, and the later slots still go at the old join.
     struct ReplayCull {WorldRenderer* r=nullptr;int slot=0;bool kicked=false;float matrix[16]={},cached[16]={};std::vector<uint8_t> flags;NorthlightJobs::Counter done;
         void operator()(){r->replayCullWork(*this);}};
     ReplayCull replayCulls[4];
@@ -3812,10 +3815,19 @@ public:
             if(affine&&p.pointBounds.valid&&NorthlightShadowBounds::clipRejectAffine(V(p.pointBounds.low[0],p.pointBounds.low[1],p.pointBounds.low[2]),V(p.pointBounds.high[0],p.pointBounds.high[1],p.pointBounds.high[2]),job.matrix))f|=2;
             job.flags[index]=f;}
     }
+    void replayCullKickSlot(int slot){
+        auto& job=replayCulls[slot];
+        job.r=this;job.slot=slot;std::memcpy(job.matrix,sourceMatrices[slot/2][slot%2],sizeof job.matrix);std::memcpy(job.cached,staticSlotMatrix[slot],sizeof job.cached);
+        job.kicked=true;replayJobs_.kick(job.done,job);
+    }
     void replayCullKick(int fromSlot,const bool* sourceActive){
-        for(int slot=fromSlot+1;slot<4;++slot){if(!sourceActive[slot/2])continue;auto& job=replayCulls[slot];
-            job.r=this;job.slot=slot;std::memcpy(job.matrix,sourceMatrices[slot/2][slot%2],sizeof job.matrix);std::memcpy(job.cached,staticSlotMatrix[slot],sizeof job.cached);
-            job.kicked=true;replayJobs_.kick(job.done,job);}
+        for(int slot=fromSlot+1;slot<4;++slot)if(sourceActive[slot/2])replayCullKickSlot(slot);
+    }
+    unsigned replayCullEarly=0,replayCullEarlySkipped=0; /* 0.3.217 (jobs): first-slot kicks before / without the static draws, per JOBS window */
+    // 0.3.217 (jobs): the current slot's own job, only when the bounds job already finished: the join (apply) then never waits. Else nothing.
+    void replayCullKickOwn(int slot){
+        if(!replayBoundsWorker.finished()){++replayCullEarlySkipped;return;}
+        replayBoundsJoin();++replayCullEarly;replayCullKickSlot(slot);
     }
     // Null: test inline (no job for the slot, or its inputs differ). The job is joined either way.
     const uint8_t* replayCullFor(int slot,const float* cached,const float* matrix){
@@ -4014,7 +4026,7 @@ public:
         bucket(NorthlightEffectsBuckets::ShadowSetup);
         if(!jobs)terrainJob(); /* 0.3.200 (jobs): ReplayJobs=0 prepares here, as before; ReplayJobs=1 joins at the first terrain draw below */
         bucket(NorthlightEffectsBuckets::TerrainSelection);
-        // 0.3.200 (jobs): the later slots' replay culling is kicked at the frame's first bounds join (replayCullKick), joined per slot and here.
+        // 0.3.200 (jobs): the replay culling is kicked once (replayCullKick; 0.3.217: from the first rendering slot, before its static and terrain draws), joined per slot and here.
         bool replayCullsKicked=false;struct CullSettle {WorldRenderer& r;~CullSettle(){r.replayCullSettle();}} cullSettle{*this};
         bool anyShadowCacheRender=false;
         ++shadowPasses;
@@ -4143,6 +4155,9 @@ public:
             reuse.begin(interval); /* nothing written yet; a failure below stays unusable */
             if(cascade==0)actorValid[source]=nearActorSkip[source]=false; /* 0.3.209 (task 29): redrawn with this near map below; a reused near map (above) keeps the actor map and matrix it was made with */
             if(cascade==0)nearRendered=captureMode==CaptureFresh&&interval>1&&actorShadows;
+            // 0.3.217 (jobs): this slot's matrices (set before the loop), the packets and the static proofs are final here; with the bounds job already finished
+            // its own cull runs on a worker while the slot draws its static cache and terrain. Not finished: nothing here, the old order (inline test) holds.
+            if(jobs&&actorShadows&&!replayCullsKicked)replayCullKickOwn(slot);
             if(NorthlightStaticPrebuild::Scheduler::Enabled&&reason)staticPrebuild.rerender(source,cascade,cachedMatrix,!std::strcmp(reason,"direction"),staticCasters.planReady(cachedMatrix),[&](const float* m){staticCasters.discardPlan(m);});
             if(reason){
                 // Static batches only, over the margin extent, keyed for reuse.
@@ -4199,7 +4214,7 @@ public:
             }
             if(actorShadows){ /* 0.3.158: ActorShadows=0 draws no replays; terrain above and the union below stay */
             replayBoundsJoin(); /* 0.3.143: first pointBounds reader */
-            if(jobs&&!replayCullsKicked){replayCullsKicked=true;replayCullKick(slot,sourceActive);} /* 0.3.200 (jobs): the bounds are final; this slot tests inline */
+            if(jobs&&!replayCullsKicked){replayCullsKicked=true;replayCullKick(slot,sourceActive);} /* 0.3.200 (jobs): the bounds are final; the later slots; this slot tests inline unless 0.3.217 kicked its own job early */
             const uint8_t* cull=replayCullFor(slot,cachedMatrix,matrices[cascade]); /* null: tested inline below, as before */
             float rows[16];NorthlightWorldMath::replayProjection(context.inverseView,matrices[cascade],rows);
             d->SetPixelShader(replayPS);

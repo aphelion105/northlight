@@ -2795,8 +2795,8 @@ public:
                         double(effectsBuckets.total())*tick,effectsBuckets.reads(),draws,buckets);}
                 // 0.3.200 (jobs): the effects' CPU split of this frame (ReplayJobs): jobMs ran on the job workers, joinWaitMs the renderer thread spent
                 // at the joins (jobs it ran itself while waiting included), replayMs the effects' wall time on the renderer thread (effects= above).
-                if(world){const auto j=world->takeJobStats();
-                    logf("JOBS frame=%u jobs=%u jobMs=%.3f joinWaitMs=%.3f replayMs=%.3f",sampleFrame,j.jobs,double(j.workerNs)*1e-6,double(j.waitNs)*1e-6,double(cpuEffects)*ms);}
+                if(world){const auto j=world->takeJobStats();unsigned earlyCulls=0,earlySkipped=0;world->takeCullEarly(earlyCulls,earlySkipped); /* 0.3.217: first-slot cull kicks before the static draws / skipped (bounds not finished), since the last sample */
+                    logf("JOBS frame=%u jobs=%u jobMs=%.3f joinWaitMs=%.3f replayMs=%.3f earlyCullKicks=%u earlyCullSkipped=%u",sampleFrame,j.jobs,double(j.workerNs)*1e-6,double(j.waitNs)*1e-6,double(cpuEffects)*ms,earlyCulls,earlySkipped);}
                 logf("D3D calls frame=%u mirrorAudit=%u counted=%d total=%u gameDraws=%u mirrorAnswered=%llu mirrorForwarded=%llu captureSkipped=%u probeRan=%u probeMode=%s%s",sampleFrame,unsigned(sampleFrame%120==60),int(mirrorState.rawCounting),rawTotal,drawCalls-frameStartDrawCalls,
                     (unsigned long long)(mirrorState.answered-frameStartAnswered),(unsigned long long)(mirrorState.forwarded-frameStartForwarded),unsigned(world&&world->captureSkippedLastFrame()),
                     unsigned(world&&world->replayProbeRanThisFrame),NorthlightRenderThreadProbe::probeModeName(world?world->probeMode():NorthlightRenderThreadProbe::ProbeOff),calls);

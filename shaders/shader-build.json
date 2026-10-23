@@ -1,5 +1,5 @@
 {
-  "source_sha256": "b3e1313fada57cef607bcbfdcdedf8d402a80cb76d7a87a4831cc7846090d4de",
+  "source_sha256": "148a13b91a9d201b722c9a063f32743a12177bb4610e70e5f6de52cf4a73db44",
   "rain_source_sha256": "10948a355dc52e824d9ae61b5251a5146a20955295070dbe9ce749dec0eac172",
   "target": "ps_3_0",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
@@ -37,7 +37,7 @@
         "rep": 1,
         "endrep": 1
       },
-      "source_sha256": "32c38f25f42077c1e2df5f27d390dd932fe575e103cd287464b3439a2d38b218"
+      "source_sha256": "148a13b91a9d201b722c9a063f32743a12177bb4610e70e5f6de52cf4a73db44"
     },
     "AOContactBloom": {
       "bytes": 5176,
@@ -71,7 +71,7 @@
         "rep": 1,
         "endrep": 1
       },
-      "source_sha256": "32c38f25f42077c1e2df5f27d390dd932fe575e103cd287464b3439a2d38b218"
+      "source_sha256": "148a13b91a9d201b722c9a063f32743a12177bb4610e70e5f6de52cf4a73db44"
     },
     "ContactBloom": {
       "bytes": 804,
@@ -90,13 +90,13 @@
         "mov": 3,
         "add": 2
       },
-      "source_sha256": "32c38f25f42077c1e2df5f27d390dd932fe575e103cd287464b3439a2d38b218"
+      "source_sha256": "148a13b91a9d201b722c9a063f32743a12177bb4610e70e5f6de52cf4a73db44"
     },
     "HDAOContactBloom": {
-      "bytes": 4300,
-      "sha256": "d692c78cea0e4b152c8c35d5465e75165da2b4f406f51e5a1393d54effae90ba",
+      "bytes": 4360,
+      "sha256": "4c65d2f852a755db38875a52f9932222b0f258ee810087ed392ba158b80b48c2",
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "static_instruction_slots": 251,
+      "static_instruction_slots": 255,
       "temporary_registers": 13,
       "samplers": [
         0,
@@ -107,12 +107,12 @@
         "texld": 5,
         "dp3": 11,
         "mad": 12,
-        "mul": 66,
+        "mul": 68,
         "mov": 11,
         "add": 58,
-        "rcp": 13,
+        "rcp": 14,
         "frc": 8,
-        "max": 2,
+        "max": 3,
         "min": 8,
         "texldl": 4,
         "cmp": 15,
@@ -125,13 +125,13 @@
         "sincos": 1,
         "endrep": 1
       },
-      "source_sha256": "32c38f25f42077c1e2df5f27d390dd932fe575e103cd287464b3439a2d38b218"
+      "source_sha256": "148a13b91a9d201b722c9a063f32743a12177bb4610e70e5f6de52cf4a73db44"
     },
     "HBAOPlusContactBloom": {
-      "bytes": 4992,
-      "sha256": "ccb1850201aae17de640323c45ceea0c435c8bcf5a22f7a46a90b2d328cfeb47",
+      "bytes": 5128,
+      "sha256": "a7036377b0ccf0ea79c73c704b5d9d18c7287390bbbccf2767fd5c5663146d3e",
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "static_instruction_slots": 296,
+      "static_instruction_slots": 303,
       "temporary_registers": 9,
       "samplers": [
         0,
@@ -140,17 +140,17 @@
       ],
       "instructions": {
         "texld": 5,
-        "dp3": 8,
+        "dp3": 9,
         "mad": 12,
-        "mul": 88,
+        "mul": 91,
         "mov": 13,
         "add": 77,
-        "rcp": 13,
+        "rcp": 14,
         "frc": 7,
-        "max": 3,
+        "max": 4,
         "min": 5,
         "texldl": 7,
-        "cmp": 19,
+        "cmp": 20,
         "if": 2,
         "else": 2,
         "endif": 2,
@@ -160,13 +160,13 @@
         "sincos": 1,
         "endrep": 1
       },
-      "source_sha256": "32c38f25f42077c1e2df5f27d390dd932fe575e103cd287464b3439a2d38b218"
+      "source_sha256": "148a13b91a9d201b722c9a063f32743a12177bb4610e70e5f6de52cf4a73db44"
     },
     "GTAOContactBloom": {
-      "bytes": 7412,
-      "sha256": "505ba6a93b9ab52ec6b121f990d48225738ad86714d2fe58e2cd8ecf9e541730",
+      "bytes": 7472,
+      "sha256": "54d0de534a12c075a15f9031645f2ac94efa174adb2e65b11d0d7d0755e2683e",
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "static_instruction_slots": 458,
+      "static_instruction_slots": 462,
       "temporary_registers": 16,
       "samplers": [
         0,
@@ -177,12 +177,12 @@
         "texld": 5,
         "dp3": 20,
         "mad": 12,
-        "mul": 132,
+        "mul": 134,
         "mov": 22,
         "add": 117,
-        "rcp": 24,
+        "rcp": 25,
         "frc": 6,
-        "max": 7,
+        "max": 8,
         "min": 9,
         "texldl": 8,
         "cmp": 35,
@@ -195,7 +195,7 @@
         "sincos": 1,
         "endrep": 2
       },
-      "source_sha256": "32c38f25f42077c1e2df5f27d390dd932fe575e103cd287464b3439a2d38b218"
+      "source_sha256": "148a13b91a9d201b722c9a063f32743a12177bb4610e70e5f6de52cf4a73db44"
     },
     "AOBlur": {
       "bytes": 5236,
@@ -229,7 +229,7 @@
         "rsq": 1,
         "exp": 1
       },
-      "source_sha256": "b3e1313fada57cef607bcbfdcdedf8d402a80cb76d7a87a4831cc7846090d4de"
+      "source_sha256": "148a13b91a9d201b722c9a063f32743a12177bb4610e70e5f6de52cf4a73db44"
     },
     "Composite": {
       "bytes": 5428,
@@ -265,7 +265,7 @@
         "log": 2,
         "pow": 1
       },
-      "source_sha256": "32c38f25f42077c1e2df5f27d390dd932fe575e103cd287464b3439a2d38b218"
+      "source_sha256": "148a13b91a9d201b722c9a063f32743a12177bb4610e70e5f6de52cf4a73db44"
     },
     "RainMaskMRT": {
       "bytes": 264,
