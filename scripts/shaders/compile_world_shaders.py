@@ -23,7 +23,8 @@ def main():
     if selected and not set(selected)<=set(e for e,_ in ENTRIES):raise SystemExit("Unknown entry")
     previous=json.loads((fp.SHADERS/"world-shader-build.json").read_text()) if selected else None
     compatible='--compatible-compiler' in sys.argv
-    retained={s.get("compiler_sha256",previous["compiler_sha256"]) for s in previous["shaders"].values()}|{previous["compiler_sha256"]} if previous else set()
+    # Only the entries kept as they are must come from an accepted compiler; the top level is the fallback for entries without their own record.
+    retained={s.get("compiler_sha256",previous["compiler_sha256"]) for e,s in previous["shaders"].items() if e not in selected} if previous else set()
     if not retained<=({DLL_SHA256,COMPATIBLE_DLL_SHA256} if compatible else {DLL_SHA256}):raise SystemExit("Retained shaders used another compiler: rebuild all entries")
     source=fp.SHADERS/"world_effects.hlsl"
     before=hashlib.sha256(source.read_bytes()).hexdigest()
