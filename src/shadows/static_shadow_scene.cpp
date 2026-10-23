@@ -35,12 +35,12 @@ void discardOpaqueTexture(NorthlightGI::WorldMaterial& material){
 
 // Run only on the loading thread. Keep original content hashes unchanged: RGB
 // does not affect shadows; alpha, addressing, cutoff and indices stay exact.
-void prepareUpload(Model& model){
+void prepareUpload(Model& model,const std::vector<NorthlightGI::WorldMaterial>* sources=nullptr){
     if(model.index16){model.uploadIndices16.reserve(model.indices.size());for(uint32_t i:model.indices)model.uploadIndices16.push_back(uint16_t(i));model.bytes+=model.uploadIndices16.capacity()*sizeof(uint16_t);model.bytes-=model.indices.capacity()*sizeof(uint32_t);std::vector<uint32_t>().swap(model.indices);}
     auto compact=std::make_shared<Model>();compact->key=model.key;compact->contentRevision=model.contentRevision;compact->batches=model.batches;compact->index16=model.index16;
-    for(auto& material:model.materials){
+    for(size_t materialIndex=0;materialIndex<model.materials.size();++materialIndex){auto& material=model.materials[materialIndex];const auto& rgba=sources?(*sources)[materialIndex].rgba:material.rgba;
         auto alpha=std::make_shared<std::vector<uint8_t>>(size_t(std::max(1u,material.width))*std::max(1u,material.height),255);
-        for(size_t i=0;i<alpha->size();++i){size_t j=i*4;if(j+3<material.rgba.size())(*alpha)[i]=material.rgba[j+3];}
+        for(size_t i=0;i<alpha->size();++i){size_t j=i*4;if(j+3<rgba.size())(*alpha)[i]=rgba[j+3];}
         // Only alpha reaches the shadow target. Expand to white RGB during the
         // bounded upload instead of retaining a second four-byte texel array.
         model.bytes-=material.rgba.capacity();std::vector<uint8_t>().swap(material.rgba);
@@ -119,7 +119,7 @@ bool selected(const Request& r,Vec3 low,Vec3 high,float margin){
     return SelectionVolume(r).contains(low,high,margin);
 }
 
-bool packModel(NorthlightGI::WorldScene&& scene,const std::string& key,Model& output,std::string& error){
+static bool packModelImpl(const NorthlightGI::WorldScene& scene,NorthlightGI::WorldScene* owned,const std::string& key,Model& output,std::string& error){
     try {
         Model model;model.key=key;model.index16=scene.vertices.size()<=65536;
         model.vertices.reserve(scene.vertices.size());
@@ -131,7 +131,10 @@ bool packModel(NorthlightGI::WorldScene&& scene,const std::string& key,Model& ou
         Group previousGroup{};std::vector<uint32_t>* previousIndices=nullptr;
         for(const auto& t:scene.triangles){
             if(t.v0>=model.vertices.size()||t.v1>=model.vertices.size()||t.v2>=model.vertices.size()||t.material>=scene.materials.size()){error="Invalid model triangle";return false;}
-            Vec3 center=(scene.vertices[t.v0].position+scene.vertices[t.v1].position+scene.vertices[t.v2].position)/3.f;
+            const auto a=scene.vertices[t.v0].position,b=scene.vertices[t.v1].position,c=scene.vertices[t.v2].position;
+            // The streaming decoder used scalar division; the public move-pack
+            // helper historically used Vec3's reciprocal multiply. Keep both.
+            Vec3 center=owned?(a+b+c)/3.f:Vec3((a.x+b.x+c.x)/3,(a.y+b.y+c.y)/3,(a.z+b.z+c.z)/3);
             // Finite positions may still exceed safe float-to-int conversion.
             if(std::fabs(center.x)>1000000||std::fabs(center.y)>1000000||std::fabs(center.z)>1000000){error="Model outside supported coordinates";return false;}
             Group g(t.material,int(std::floor(center.x/64)),int(std::floor(center.y/64)),int(std::floor(center.z/64)));
@@ -141,24 +144,31 @@ bool packModel(NorthlightGI::WorldScene&& scene,const std::string& key,Model& ou
             }
             auto& ids=*previousIndices;ids.push_back(t.v0);ids.push_back(t.v1);ids.push_back(t.v2);
         }
-        model.indices.reserve(scene.triangles.size()*3);
+        model.indices.reserve(scene.triangles.size()*3);if(!owned)model.batches.reserve(groups.size());
         for(auto& group:groups){Batch b;b.firstIndex=uint32_t(model.indices.size());b.indexCount=uint32_t(group.second.size());b.material=std::get<0>(group.first);b.low=Vec3(1e30f,1e30f,1e30f);b.high=-b.low;
             for(uint32_t index:group.second){const auto& v=model.vertices[index];b.low=mn(b.low,{v.x,v.y,v.z});b.high=mx(b.high,{v.x,v.y,v.z});model.indices.push_back(index);}model.batches.push_back(b);
         }
-        model.materials=std::move(scene.materials);
-        for(auto& material:model.materials)discardOpaqueTexture(material);
+        if(owned){model.materials=std::move(owned->materials);for(auto& material:model.materials)discardOpaqueTexture(material);}
+        else {model.materials.resize(scene.materials.size());for(size_t i=0;i<scene.materials.size();++i){const auto& source=scene.materials[i];auto& m=model.materials[i];
+            if(source.width>4096||source.height>4096||uint64_t(source.width)*source.height*4!=source.rgba.size()||((source.width==0)!=(source.height==0))||!std::isfinite(source.alphaCutoff)||source.alphaCutoff<0||source.alphaCutoff>1){error="Invalid shared model material";return false;}
+            m.albedo=source.albedo;m.width=source.width;m.height=source.height;m.alphaCutoff=source.alphaCutoff;m.addressU=source.addressU;m.addressV=source.addressV;m.terrain=source.terrain;m.wmo=source.wmo;
+            bool opaque=true;for(size_t p=3;p<source.rgba.size();p+=4)if(source.rgba[p]!=255){opaque=false;break;}if(opaque)m.width=m.height=0;
+        }}
         uint64_t revision=hashBytes(HashSeed,model.vertices.data(),model.vertices.size()*sizeof(Vertex));
         revision=hashBytes(revision,model.indices.data(),model.indices.size()*sizeof(uint32_t));
         model.bytes=model.vertices.capacity()*sizeof(Vertex)+model.indices.capacity()*sizeof(uint32_t)+model.batches.capacity()*sizeof(Batch)+model.materials.capacity()*sizeof(NorthlightGI::WorldMaterial);
-        for(auto& material:model.materials){uint64_t h=HashSeed;h=hashBytes(h,&material.width,sizeof(material.width));h=hashBytes(h,&material.height,sizeof(material.height));h=hashBytes(h,&material.alphaCutoff,sizeof(material.alphaCutoff));h=hashBytes(h,&material.addressU,sizeof(material.addressU));h=hashBytes(h,&material.addressV,sizeof(material.addressV));
+        for(size_t materialIndex=0;materialIndex<model.materials.size();++materialIndex){auto& material=model.materials[materialIndex];const auto& rgba=owned?material.rgba:scene.materials[materialIndex].rgba;uint64_t h=HashSeed;h=hashBytes(h,&material.width,sizeof(material.width));h=hashBytes(h,&material.height,sizeof(material.height));h=hashBytes(h,&material.alphaCutoff,sizeof(material.alphaCutoff));h=hashBytes(h,&material.addressU,sizeof(material.addressU));h=hashBytes(h,&material.addressV,sizeof(material.addressV));
             // Only alpha participates in a shadow texture's shared identity.
-            for(size_t i=3;i<material.rgba.size();i+=4)h=hashBytes(h,&material.rgba[i],1);
+            if(owned||(material.width&&material.height))for(size_t i=3;i<rgba.size();i+=4)h=hashBytes(h,&rgba[i],1);
             model.materialKeys.push_back(h);revision=hashBytes(revision,&h,sizeof h);model.bytes+=material.rgba.capacity();}
         // Material assignments also define content identity, not just triangles.
         for(const auto& b:model.batches){revision=hashBytes(revision,&b.firstIndex,4);revision=hashBytes(revision,&b.indexCount,4);revision=hashBytes(revision,&b.material,4);}
-        model.contentRevision=revision;prepareUpload(model);output=std::move(model);return true;
+        model.contentRevision=revision;prepareUpload(model,owned?nullptr:&scene.materials);output=std::move(model);return true;
     } catch(...) {error="Cannot allocate compact static shadow model";return false;}
 }
+
+bool packModel(NorthlightGI::WorldScene&& scene,const std::string& key,Model& output,std::string& error){return packModelImpl(scene,&scene,key,output,error);}
+bool packSharedModel(const NorthlightGI::WorldScene& scene,const std::string& key,Model& output,std::string& error){return packModelImpl(scene,nullptr,key,output,error);}
 
 namespace {
 // Streaming decoder never materializes the 32-byte GI vertices or a complete
@@ -204,7 +214,7 @@ bool loadCompact(const std::string& path,const std::string& key,size_t cap,Model
 struct Streamer::State {
     struct Tile {std::vector<Identity> refs;Stamp used;size_t bytes=0;};
     struct Resident {std::shared_ptr<const Model> model;Stamp used;};
-    std::string root;Limits limits;
+    std::string root;Limits limits;NorthlightGI::SceneSourceProvider sourceProvider;
     mutable std::mutex mutex;mutable std::condition_variable wake;
     Request requested;uint64_t generation=0,requestSerial=0,doneSerial=0;bool stop=false,hasRequest=false,paused=false,reclaimPending=false,busy=false;
     std::shared_ptr<const Snapshot> published;
@@ -217,7 +227,7 @@ struct Streamer::State {
     std::set<std::string> failedModels,lastNeeded;
     std::set<Cell> lastWanted;
     Stamp retryAfter{};Stats stats;uint64_t activeGeneration=0,revision=0;size_t residentBytes=0;
-    State(std::string r,Limits l):root(std::move(r)),limits(l){if(!root.empty()&&root.back()!='/'&&root.back()!='\\')root+='/';limits.cellSize=std::max(32u,std::min(512u,limits.cellSize));worker=std::thread([this]{run();});}
+    State(std::string r,Limits l,NorthlightGI::SceneSourceProvider provider):root(std::move(r)),limits(l),sourceProvider(std::move(provider)){if(!root.empty()&&root.back()!='/'&&root.back()!='\\')root+='/';limits.cellSize=std::max(32u,std::min(512u,limits.cellSize));worker=std::thread([this]{run();});}
     ~State(){{std::lock_guard<std::mutex> lock(mutex);stop=true;wake.notify_all();}if(worker.joinable())worker.join();}
     bool current(uint64_t gen){std::lock_guard<std::mutex> lock(mutex);return !stop&&generation==gen;}
     size_t metadataSize()const {size_t n=0;for(const auto& t:tiles)n+=t.second.refs.capacity()*sizeof(Identity);return n;}
@@ -325,9 +335,11 @@ struct Streamer::State {
             if(residentBytes+packedEstimate>limits.residentBytes)evict(needed,true);
             if(residentBytes+packedEstimate>limits.residentBytes){++stats.deferred;continue;}
             stats.transientPeak=std::max(stats.transientPeak,uint64_t(transientEstimate));
-            std::string error;Stamp readStart=Clock::now();++stats.modelReads;stats.bytesRead+=fileBytes;
-            auto model=std::make_shared<Model>();
-            if(!loadCompact(path,queued.second,limits.maxDecodeBytes,*model,error)){++stats.failures;failedModels.insert(queued.second);--stats.pendingModels;continue;}stats.readMs+=ms(readStart);
+            std::string error;Stamp readStart=Clock::now();
+            auto model=std::make_shared<Model>();bool packed=false;
+            if(sourceProvider){const auto source=sourceProvider(path,error,[this](uint64_t bytes){return bytes<=limits.maxDecodeBytes;});if(source){packed=packSharedModel(*source,queued.second,*model,error);if(packed)++stats.sharedModelSources;}}
+            if(!packed){++stats.modelReads;++stats.compactDecodes;stats.bytesRead+=fileBytes;packed=loadCompact(path,queued.second,limits.maxDecodeBytes,*model,error);}
+            if(!packed){++stats.failures;failedModels.insert(queued.second);--stats.pendingModels;continue;}stats.readMs+=ms(readStart);
             if(!current(gen)){++stats.cancellations;return;}
             if(residentBytes+model->bytes>limits.residentBytes){++stats.deferred;continue;}
             residentBytes+=model->bytes;stats.largestModel=std::max(stats.largestModel,uint64_t(model->bytes));models.emplace(queued.second,Resident{model,Clock::now()});--stats.pendingModels;stats.maxJobMs=std::max(stats.maxJobMs,ms(job));if(firstReady||ms(lastPublish)>=25){publish(r,chosen,gen,start,false);lastPublish=Clock::now();firstReady=false;}
@@ -349,7 +361,7 @@ struct Streamer::State {
         }
     }
 };
-Streamer::Streamer(std::string root,Limits limits):state_(new State(std::move(root),limits)){}
+Streamer::Streamer(std::string root,Limits limits,NorthlightGI::SceneSourceProvider provider):state_(new State(std::move(root),limits,std::move(provider))){}
 Streamer::~Streamer()=default;
 void Streamer::request(const Request& r){
     if(r.map.empty()||r.map.find("..")!=std::string::npos||r.map.find_first_of("/\\")!=std::string::npos||!finite(r.center)||std::fabs(r.center.x)>100000||std::fabs(r.center.y)>100000||std::fabs(r.center.z)>100000)return;

@@ -26,9 +26,10 @@
     size_t replayPoolLimit()const{return memoryPressure?ReplayPoolBytes/2:ReplayPoolBytes;}
     MemoryTrim trimMemory(){
         MemoryTrim t;prepareQuiesce();stateBlocks.clear(); /* 0.3.177 */
-        {const auto before=terrainBoundsCache.persistentBytes();terrainBoundsCache.clearPersistent();t.terrain=size_t(before-std::min(before,terrainBoundsCache.persistentBytes()));}
-        t.snapshots=replaySnapshots.snapshotCacheBytes();
+        {const auto before=terrainBoundsCache.sourceLiveBytes()+terrainBoundsCache.sourceMetadataBytes();terrainBoundsCache.clearPersistent();const auto after=terrainBoundsCache.sourceLiveBytes()+terrainBoundsCache.sourceMetadataBytes();t.terrain=size_t(before-std::min(before,after));}
+        const auto sourceBefore=replaySnapshots.sourceLiveBytes()+replaySnapshots.sharedSourceMetadataBytes();
         {const auto before=replaySnapshots.indexCacheBytes();replaySnapshots.clearIndexCache();t.indices=before-std::min(before,replaySnapshots.indexCacheBytes());} /* clears snapshots too */
+        const auto sourceAfter=replaySnapshots.sourceLiveBytes()+replaySnapshots.sharedSourceMetadataBytes();t.snapshots=sourceBefore-std::min(sourceBefore,sourceAfter);
         t.pool=pooledSnapshotBytes+freeReplays.size()*sizeof(Replay);freeReplays.clear();freeReplays.shrink_to_fit();pooledSnapshotBytes=0;
         t.gpu=replayGpuCache.bytes();replayGpuCache.clear();t.gpu+=trimMeshPools(); /* 0.3.216: idle page buffers (never the active table), unless a staged upload is in progress */
         rigidMemoryClear(); /* 0.3.172: remembered rigid replays (their shared meshes and COM references) */

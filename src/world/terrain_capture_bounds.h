@@ -12,6 +12,7 @@
 #include "vertex_declaration_cache.h"
 #include "capture_buffer_metadata.h"
 #include "terrain_indices.h"
+#include "source_identity.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -35,6 +36,7 @@ struct Bounds {
 };
 struct Position {float x,y,z;};
 struct MeshSnapshot {
+    NorthlightSourceIdentity::Handle sourceIdentity;
     Bounds bounds;
     std::vector<Position> positions;
     // Always triangle-list indices into positions; detached from game buffers.
@@ -207,6 +209,12 @@ private:
         Key draw;UINT stream=0;D3DFORMAT format=D3DFMT_INDEX16;UINT vertexBytes=0,indexBytes=0;
         bool operator==(const ContentKey& b)const{return draw==b.draw&&stream==b.stream&&format==b.format&&vertexBytes==b.vertexBytes&&indexBytes==b.indexBytes;}
     };
+    NorthlightSourceIdentity::Handle sourceIdentity(const ContentKey& key,Stamp proof){
+      try{if(!proof.valid())return {};const auto& d=key.draw;
+        return NorthlightSourceIdentity::make({2,reinterpret_cast<std::uintptr_t>(identity_),reinterpret_cast<std::uintptr_t>(version_),reinterpret_cast<std::uintptr_t>(metadata_),
+            proof.vb,proof.ib,proof.vertexVersion,proof.indexVersion,d.streamOffset,d.stride,d.positionOffset,d.positionType,std::uint32_t(d.base),d.minimum,d.vertices,d.start,d.primitives,unsigned(d.topology),key.stream,unsigned(key.format),key.vertexBytes,key.indexBytes});
+      }catch(...){return {};}
+    }
     struct SourceIndices {
         const std::vector<unsigned char> bytes;size_t entries=0;
         explicit SourceIndices(const std::vector<unsigned char>& input):bytes(input){}
@@ -214,6 +222,7 @@ private:
     static std::uint64_t sourceIndexBytes(const SourceIndices& source){return sizeof(SourceIndices)+32+source.bytes.capacity();}
     struct ContentEntry {
         ContentKey key;Stamp stamp;std::uint64_t hash=0,bytes=0,charged=0;size_t slot=0;
+        size_t payloadBytes=0,identityBytes=0;
         NorthlightIntrusiveLRU::Links<ContentEntry> lru;
         UINT smallest=0,largest=0;
         float low[3]={},high[3]={};
@@ -235,6 +244,8 @@ private:
     static constexpr size_t ContentBaseBytes=sizeof(content)+sizeof(freeContent)+sizeof(lastSourceIndices)+sizeof(SourceIndices)+32;
     size_t sourceIndexBlocks_=0;std::uint64_t sourceIndexDataBytes_=0,sourceIndexLogicalBytes_=0;
     std::uint64_t contentBytes=ContentBaseBytes,contentHits=0,trackedHits_=0,avoidedReadBytes_=0;
+    std::shared_ptr<NorthlightSourceIdentity::Ledger> live_=std::make_shared<NorthlightSourceIdentity::Ledger>();
+    size_t retainedPayloadBytes_=0,retainedIdentityBytes_=0;
     std::uint64_t contentLimit=ContentLimit; /* lowered under address-space pressure */
 public:
     struct Maintenance {
@@ -260,7 +271,7 @@ private:
     void eraseContent(ContentEntry& entry){
         const auto range=contentLookup.equal_range(entry.hash);
         for(auto it=range.first;it!=range.second;++it)if(it->second==&entry){contentLookup.erase(it);break;}
-        const auto slot=entry.slot;contentBytes-=entry.bytes;contentLRU.remove(entry);
+        const auto slot=entry.slot;contentBytes-=entry.bytes;retainedPayloadBytes_-=entry.payloadBytes;retainedIdentityBytes_-=entry.identityBytes;contentLRU.remove(entry);
         sourceIndexLogicalBytes_-=entry.indices->bytes.capacity();
         if(!--entry.indices->entries){contentBytes-=sourceIndexBytes(*entry.indices);sourceIndexDataBytes_-=entry.indices->bytes.capacity();--sourceIndexBlocks_;}
         content[slot].reset();freeContent[freeContentCount++]=slot;
@@ -313,9 +324,9 @@ private:
         }
         next->snapshot=snapshot;
         std::memcpy(next->low,detail.low,sizeof next->low);std::memcpy(next->high,detail.high,sizeof next->high);
-        next->bytes=sizeof(ContentEntry)+sizeof(MeshSnapshot)+256+next->vertices.capacity()+next->sourceOffsets.allocatedBytes()+
-            next->snapshot->positions.capacity()*sizeof(Position)+next->snapshot->indices.allocatedBytes()+
-            next->snapshot->bounds.chunks.capacity()*sizeof(ChunkBounds);
+        next->payloadBytes=NorthlightSourceIdentity::allocationBytes<MeshSnapshot>(snapshot->positions.capacity()*sizeof(Position)+snapshot->indices.allocatedBytes()+snapshot->bounds.chunks.capacity()*sizeof(ChunkBounds));
+        next->identityBytes=snapshot->sourceIdentity?snapshot->sourceIdentity->bytes():0;
+        next->bytes=sizeof(ContentEntry)+256+next->payloadBytes+next->identityBytes+next->vertices.capacity()+next->sourceOffsets.allocatedBytes();
         if(required(next->bytes)>contentLimit-ContentBaseBytes||!makeRoom(next->bytes))return;
         // Insert the optional hash node before publishing ownership/links. An
         // allocation failure must leave the computed snapshot valid and the
@@ -326,7 +337,7 @@ private:
         sourceIndexLogicalBytes_+=sharedIndices->bytes.capacity();
         if(!sharedIndices->entries++){contentBytes+=sourceBytes;sourceIndexDataBytes_+=sharedIndices->bytes.capacity();++sourceIndexBlocks_;}
         lastSourceIndices=sharedIndices;
-        contentLRU.append(*next);contentBytes+=next->bytes;content[slot]=std::move(next);
+        contentLRU.append(*next);contentBytes+=next->bytes;retainedPayloadBytes_+=next->payloadBytes;retainedIdentityBytes_+=next->identityBytes;content[slot]=std::move(next);
       }catch(...){return;} // Cache allocation is optional; snapshot remains valid.
     }
     Limits limits;
@@ -355,7 +366,7 @@ public:
     // or COM resource reference. Shared snapshots are immutable and remain valid
     // if callers retain them across eviction/reset. The cache budget accounts
     // for cache-owned storage; callers must separately bound retained outputs.
-    void clearPersistent(){contentLookup.clear();contentLRU.clear();lastSourceIndices.reset();for(auto& entry:content)entry.reset();sourceIndexBlocks_=0;sourceIndexDataBytes_=sourceIndexLogicalBytes_=0;contentBytes=ContentBaseBytes;contentHits=trackedHits_=avoidedReadBytes_=0;freeContentCount=ContentEntries;for(size_t i=0;i<freeContent.size();++i)freeContent[i]=i;maintenance_={};}
+    void clearPersistent(){contentLookup.clear();contentLRU.clear();lastSourceIndices.reset();for(auto& entry:content)entry.reset();sourceIndexBlocks_=0;sourceIndexDataBytes_=sourceIndexLogicalBytes_=0;retainedPayloadBytes_=retainedIdentityBytes_=0;contentBytes=ContentBaseBytes;contentHits=trackedHits_=avoidedReadBytes_=0;freeContentCount=ContentEntries;for(size_t i=0;i<freeContent.size();++i)freeContent[i]=i;maintenance_={};}
     // Memory guard: cap in [ContentBaseBytes+1 MiB, 32 MiB]; evicts oldest down to it now.
     void setPersistentByteLimit(std::uint64_t bytes){
         contentLimit=std::max<std::uint64_t>(ContentBaseBytes+1024u*1024u,std::min<std::uint64_t>(bytes,ContentLimit));
@@ -366,6 +377,10 @@ public:
     static constexpr size_t persistentEntryLimit(){return ContentEntries;}
     const Maintenance& maintenance()const{return maintenance_;}
     std::uint64_t persistentBytes()const{return contentBytes;}
+    size_t sourceLiveBytes()const{return live_->bytes.load(std::memory_order_relaxed);}
+    size_t sourceLiveObjects()const{return live_->objects.load(std::memory_order_relaxed);}
+    size_t sourceMetadataBytes()const{return size_t(contentBytes)-retainedPayloadBytes_-retainedIdentityBytes_;}
+    std::shared_ptr<const MeshSnapshot> retain(MeshSnapshot&& snapshot){const size_t bytes=NorthlightSourceIdentity::allocationBytes<MeshSnapshot>(snapshot.positions.capacity()*sizeof(Position)+snapshot.indices.allocatedBytes()+snapshot.bounds.chunks.capacity()*sizeof(ChunkBounds));auto owned=NorthlightSourceIdentity::allocate<MeshSnapshot>(live_,bytes);*owned=std::move(snapshot);return owned;}
     struct IndexStorage {size_t compact=0,wide=0,sourceBlocks=0,offsetCompact=0,offsetWide=0;std::uint64_t bytes=0,avoided=0,sourceBytes=0,sourceAvoided=0,offsetBytes=0,offsetAvoided=0;};
     // Sampled diagnostics only; never walk the persistent cache in a draw hook.
     IndexStorage indexStorage()const{
@@ -692,8 +707,9 @@ public:
             result.indices.push_back(a);result.indices.push_back(b);result.indices.push_back(c);
         }
         if(!result.indices.visit([&](const auto* data,std::size_t count){return classifyIndexedBy(result.positions.data(),result.positions.size(),data,count,D3DPT_TRIANGLELIST,result.bounds);}))return reject(RejectReason::ChunkCoverage);
-        std::shared_ptr<const MeshSnapshot> shared=std::make_shared<const MeshSnapshot>(std::move(result));
         const Stamp after=stamp(vb.p,ib.p);
+        if(before.valid()&&after==before)result.sourceIdentity=sourceIdentity(contentKey,before);
+        std::shared_ptr<const MeshSnapshot> shared=retain(std::move(result));
         ++maintenance_.rebuilds;
         rememberContent(contentKey,hash,smallest,largest,scratchRawIndices,scratchRawVertices,scratchSourceOffsets,shared,detail,before.valid()&&after==before?before:Stamp{});
         ++snapshots;output=std::move(shared);if(diagnostics)*diagnostics=detail;return true;

@@ -23,6 +23,8 @@ if args.baseline_ref:
     relative = fp.src('static_shadow_scene.cpp').relative_to(fp.REPO).as_posix()
     baseline = out/'baseline.cpp'
     baseline.write_bytes(subprocess.check_output(['git', 'show', args.baseline_ref+':'+relative], cwd=fp.REPO))
+    # Freeze declarations too: the production Streamer may gain optional providers.
+    (out/'static_shadow_scene.h').write_bytes(subprocess.check_output(['git','show',args.baseline_ref+':'+fp.src('static_shadow_scene.h').relative_to(fp.REPO).as_posix()],cwd=fp.REPO))
     sources.append(('baseline', ['-DSTATIC_SHADOW_IMPLEMENTATION="'+baseline.as_posix()+'"']))
 inputs = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in args.model}
 results = {}

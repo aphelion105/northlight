@@ -27,7 +27,7 @@ a=p.parse_args();out=fp.out()/a.output_subdir;out.mkdir(exist_ok=True)
 backend=str(Path(a.backend).resolve())
 # replay_bounds must accompany actor_deformation: its same-directory quoted
 # include would otherwise load the current actor header beside the frozen one.
-BASELINE_FILES=['src/water/auto_bump_renderer.h','src/water/auto_displacement_renderer.h','src/world/draw_snapshot.h','src/replay/actor_deformation.h','src/replay/replay_bounds.h','src/generated/auto_bump_compiled_shaders.h']
+BASELINE_FILES=['src/water/auto_bump_renderer.h','src/water/auto_displacement_renderer.h','src/world/draw_snapshot.h','src/replay/replay_gpu_cache.h','src/replay/actor_deformation.h','src/replay/replay_bounds.h','src/generated/auto_bump_compiled_shaders.h']
 
 def compile_fixture(width,height,name,override=None):
     exe=out/(name+'.exe')

@@ -230,9 +230,9 @@ class NorthlightAutoBump {
             if(textureBytes>(128ull<<20)-deferredTextureBytes){++batchLimit;return false;}
             NorthlightDrawSnapshot::Mesh local;std::shared_ptr<const NorthlightDrawSnapshot::Mesh> mesh;
             NorthlightDrawSnapshot::Diagnostics why;
-            if(args.vertices){if(!deferredSnapshots.readUP(decl.p,args.draw,args.indices,args.format,args.vertices,args.stride,local,&why)){snapshotBudget+=why.error==NorthlightDrawSnapshot::Error::Budget;return false;}mesh=std::make_shared<NorthlightDrawSnapshot::Mesh>(std::move(local));}
+            if(args.vertices){if(!deferredSnapshots.readUP(decl.p,args.draw,args.indices,args.format,args.vertices,args.stride,local,&why)){snapshotBudget+=why.error==NorthlightDrawSnapshot::Error::Budget;return false;}mesh=deferredSnapshots.retain(std::move(local));}
             else if(!deferredSnapshots.read(d,decl.p,args.draw,local,&why,false,&mesh)){snapshotBudget+=why.error==NorthlightDrawSnapshot::Error::Budget;return false;}
-            if(!mesh)mesh=std::make_shared<NorthlightDrawSnapshot::Mesh>(std::move(local));
+            if(!mesh)mesh=deferredSnapshots.retain(std::move(local));
             if(mesh->streams[0].bytes.empty())return false;for(unsigned i=1;i<4;++i)if(!mesh->streams[i].bytes.empty()){++snapshotStreams;return false;}
             DWORD planes=0;if(FAILED(d->GetRenderState(D3DRS_CLIPPLANEENABLE,&planes))||planes)return false;
             const size_t cost=sizeof(Deferred)+mesh->byteSize()+(model.last-model.first+1)*16+textures.size()*(sizeof(DeferredTexture)+sizeof(void*));if(cost>(8u<<20)-deferredBytes){++batchLimit;return false;}
@@ -253,10 +253,11 @@ class NorthlightAutoBump {
         }catch(...){return false;}
     }
 public:
+    NorthlightDrawSnapshot::Frame& captureSources(){return deferredSnapshots;}
     explicit NorthlightAutoBump(IDirect3DDevice9* device):d(device),normals(device),sharedPOM(device),parallax(device,normals),displacement(device){
         deferredGPU.setLimit(32u<<20);
-        displacement.shareCaptureSources(deferredSnapshots);
         deferredSnapshots.setSnapshotCacheLimit(24u<<20);deferredSnapshots.setChargeResidentHits(false);
+        displacement.shareCaptureSources(deferredSnapshots);
         deferredSnapshots.setDeclarationProvider(&deferredDeclarations,[](void* c,IDirect3DVertexDeclaration9* v,const D3DVERTEXELEMENT9*& e,UINT& n){return static_cast<NorthlightVertexDeclarations::Cache*>(c)->get(v,e,n);});
         deferredSnapshots.setLayoutProvider(&deferredDeclarations,[](void* c,IDirect3DVertexDeclaration9* v,UINT* e){return static_cast<NorthlightVertexDeclarations::Cache*>(c)->captureLayout(v,e);});}
     void setDeferredCapture(bool on){deferredAllowed=on;}
@@ -376,6 +377,7 @@ public:
         if(deferredReport||((queued||flushed||deferredFallback||deferredDiscarded)&&frames%600==0))logf("MATERIAL_DEFERRED frame=%llu sampled=%u enabled=%u queued=%u flushed=%u snapshotFallback=%u liveState=%u preparedGeometry=%u discardedUnused=%u terrain=%u walls=%u grass=%u models=%u earlyRangeRejected=%u opaqueCoverage=%u packetLimit=512 packetMiB=8 sourceMiB=24",(unsigned long long)(deferredReport?deferredReportFrame:frames),unsigned(deferredReport),unsigned(deferredAllowed),queued,flushed,deferredFallback,deferredUnsafe,deferredGeometry,deferredDiscarded,queuedDomain[0],queuedDomain[1],queuedDomain[2],queuedDomain[3],earlyRangeRejected,opaqueCoverage);
         if(deferredReport||((queued||flushed||deferredFallback)&&frames%600==0)){
             logf("MATERIAL_BATCH_SOURCE frame=%llu textureGuard=%u textureDraws=%u writeBarriers=%u refusedTexture=%u snapshotBudget=%u snapshotStreams=%u batchLimit=%u sourceHits=%u sourcePeerHits=%u sourceMisses=%u sourceReadBytes=%zu sourceEntries=%zu sourceBytes=%zu sourceLimitMiB=%zu",(unsigned long long)(deferredReport?deferredReportFrame:frames),unsigned(textureWriteGuarded),deferredTextureDraws,textureBarriers,textureRefused,snapshotBudget,snapshotStreams,batchLimit,deferredSnapshots.snapshotCacheHits(),deferredSnapshots.residentPeerHits(),deferredSnapshots.snapshotCacheMisses(),deferredSnapshots.bytesRead(),deferredSnapshots.snapshotCacheEntries(),deferredSnapshots.snapshotCacheBytes(),deferredSnapshots.snapshotCacheLimit()>>20);
+            logf("MATERIAL_SOURCE_LIFETIME frame=%llu participants=%zu limitMiB=%zu retainedBytes=%zu liveBytes=%zu liveObjects=%zu metadataBytes=%zu sharedHits=%u gpuIdentityHits=%u gpuReconstructedHits=%u gpuIdentityBytes=%zu gpuChargedBytes=%zu globalIdentityBytes=%zu globalCpuBytes=%zu",(unsigned long long)(deferredReport?deferredReportFrame:frames),deferredSnapshots.sharedSourceParticipants(),deferredSnapshots.sharedSourceLimit()>>20,deferredSnapshots.sharedSourceBytes(),deferredSnapshots.sourceLiveBytes(),deferredSnapshots.sourceLiveObjects(),deferredSnapshots.sharedSourceMetadataBytes(),deferredSnapshots.sharedSourceHits(),deferredGPU.stats().identityHits,deferredGPU.stats().reconstructedHits,deferredGPU.stats().identityBytes,deferredGPU.chargedBytes(),NorthlightSourceIdentity::identityLiveBytes.load(std::memory_order_relaxed),NorthlightSourceIdentity::cpuLiveBytes.load(std::memory_order_relaxed));
             displacement.reportSources(deferredReport?deferredReportFrame:frames);
         }
         if(deferredReport||((queued||flushed||deferredFallback)&&frames%600==0)){

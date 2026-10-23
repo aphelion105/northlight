@@ -2353,6 +2353,8 @@ public:
         gpuProfile=std::make_unique<NorthlightGpuProfile>(ext);gpuSceneProfile=std::make_unique<NorthlightGpuProfile>(ext,"GPU frame",2);materialProfile=std::make_unique<NorthlightMaterialProfile>(ext);gpuTimer=std::make_unique<NorthlightGpuFrameTimer>(ext); world=std::make_unique<WorldRenderer>(ext);world->setEffectsBuckets(&effectsBuckets);world->setMaterialProfiler(materialProfile.get());
         surface=std::make_unique<NorthlightSurfaceRenderer>(ext);
         autoBump=std::make_unique<NorthlightAutoBump>(ext);autoBump->setGeometryTracking(&NorthlightTrackedBuffers::identity,&NorthlightTrackedBuffers::version,&NorthlightTrackedBuffers::captureMetadata);autoBump->configure(world->surfaceSettings());
+        world->captureSources().setIdentityProvider(&NorthlightTrackedBuffers::identity);
+        if(!world->captureSources().shareSnapshotPool(autoBump->captureSources()))logf("CAPTURE shared sources: join failed; using private caches");
         autoBump->setVertexIdentity(this,[](void* context,IDirect3DVertexShader9* source,uint64_t& hash,unsigned& family){auto* self=static_cast<Device*>(context);const auto found=self->vsHashes.find(source);if(found==self->vsHashes.end())return false;hash=found->second;family=m2ShaderFamily(hash);return true;});
         autoBump->setProfiler(materialProfile.get());
         // ReadBackNoOverwrite is enabled only for an actually loaded DXVK >= 3,

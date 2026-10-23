@@ -1,5 +1,15 @@
 # Northlight render pipeline: systemic findings and water/SSR withdrawal
 
+## Implemented shared scene lifecycle refactor — 23 October 2026
+
+The previously proposed refactor is now implemented: one bounded decoded-source bank, reusable placement/terrain-chunk acceleration, reusable shadow preparation/page metadata, and shared capture source identity that survives CPU owner replacement. Current pose, complete geometry/alpha coverage, MSAA, ranges and aggregate cache limits are preserved. Water/SSR remains withdrawn.
+
+Three alternating CPU comparison rounds against `ac966ce` include actual world regions and the full 5,600-probe, 64-ray, three-bounce GI bake. Preparation plus bake takes 5.98% less time in the warm aggregate, 3.13% less during orbit/return and 31.61% less for the same region. Cold work takes 10.59% longer; warm bake alone takes 13.84% longer. These worker results are not a game-FPS measurement. Capture independently halves cold source reads in the frozen three-consumer fixture and removes retained return-orbit rereads.
+
+All 21 whole-pipeline executions match canonical scene, plan, page, ray and full bake outputs; 140 material GPU cases and 96 terrain shadow layout comparisons pass with MSAA. Optimized/debug lifecycle, allocation-failure, admission, concurrency and regression checks pass. A separate release DLL is built; installed files/settings and the game remain untouched.
+
+Full implementation, limits, costs and validation: [shared scene refactor](shared-scene-refactor.md).
+
 Client run ending 23 October 2026 at 01:23 local time. Installed baseline: `31d20e182fd9f4a849df90aed85e773e3800a8d0`, DLL SHA-256 `962fc0df155949bcbf5b480957e8ca9e69564e984f4521e8637995704996ea66`. Fresh log: `ccfdb6125a498d7fd877235fb4ca6c12a9eeddc2fb560eaf26ec88564d25cb88`; genuine preceding log: `abedd725589925ae40468c3dc7b8d55db8ac8d7231bee4dc28c787160791687d`. The game was not launched by the investigation; installed DLL, settings and assets remain untouched.
 
 The evidence separates three problems: occasional CPU geometry replacement spikes, repeated preparation of largely shared world regions, and long periods when the replay thread has no commands from the game. Steady material GPU capture is an additional real cost when enabled. A single shader optimization or another larger cache cannot solve all four.

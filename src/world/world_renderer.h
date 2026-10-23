@@ -26,6 +26,7 @@
 #include "zone_tuning.h"
 #endif
 #include "world_gi.h"
+#include "scene_source_cache.h"
 #include "world_local_lights.h"
 #include "local_light_selection.h"
 #include "equipment_lights.h"
@@ -209,6 +210,7 @@ class WorldRenderer {
     IDirect3DDevice9* d;
     NorthlightMaterialPixelAudit materialPixelAudit{d};
     std::string root;
+    std::shared_ptr<NorthlightGI::SceneSourceCache> sharedSceneSources=std::make_shared<NorthlightGI::SceneSourceCache>(8u*1024u*1024u);
     std::unique_ptr<StaticShadow::Streamer> staticStream;
     StaticShadow::GpuCache staticCasters;
     std::shared_ptr<const StaticShadow::Snapshot> staticScene;
@@ -1244,6 +1246,7 @@ private:
                  (unsigned long long)g.planBuilds,(unsigned long long)g.planHits,(unsigned long long)g.planInvalidations,
                  (unsigned long long)g.placementTests,(unsigned long long)g.batchTests,
                  (unsigned long long)g.modelPlanBuilds,(unsigned long long)g.modelPlanReuses,(unsigned long long)g.modelPlanFallbacks);
+            logf("STATIC SHARED SOURCE sharedModels=%llu compactDecodes=%llu",(unsigned long long)c.sharedModelSources,(unsigned long long)c.compactDecodes);
             logf("STATIC SHADOW PLAN COST planMs=%.3f peakMs=%.3f coveredMemoFills=%llu evictions=%llu fastLookups=%u lru=%u selfChecks=%llu selfCheckMismatches=%llu prebuilds=%u prebuildHits=%u prebuildMisses=%u prebuildFailures=%u prebuildUnstable=%u prebuildDiscards=%u planDiscards=%llu reuseMs=%.3f rebuildMs=%.3f walkMs=%.3f asyncKicks=%llu asyncBuilds=%llu stolen=%llu asyncFailures=%llu waitMs=%.3f workerMs=%.3f asyncDirtyRects=%llu kickMs=%.3f",
                  g.planMs,g.planPeakMs,(unsigned long long)g.coveredMemoFills,(unsigned long long)g.planEvictions,unsigned(StaticShadow::GpuCache::FastPlanLookups),unsigned(StaticShadow::GpuCache::LruPlanSlots),
                  (unsigned long long)g.planSelfChecks,(unsigned long long)g.planSelfCheckMismatches,staticPrebuild.stats.built,staticPrebuild.stats.hits,staticPrebuild.stats.misses,staticPrebuild.stats.failures,staticPrebuild.stats.unstable,staticPrebuild.stats.discarded,(unsigned long long)g.planDiscards,
@@ -1289,7 +1292,15 @@ private:
           SetThreadPriority(GetCurrentThread(),THREAD_PRIORITY_BELOW_NORMAL);
           try {
           NorthlightGeometryMemory::Generations<NorthlightGI::BVH> generations;
-          NorthlightGI::LocalSceneCache localGeometry;
+          // Reuse sources, placement acceleration and shadow preparation under
+          // the former 32 MiB local-cache allowance, including live GI leases.
+          NorthlightGI::LocalSceneCache localGeometry({16u*1024u*1024u});
+          auto& sceneSources=*sharedSceneSources;
+          NorthlightWorldMesh::PreparationCache meshPreparation;meshPreparation.setLimit(8u*1024u*1024u);
+          const NorthlightGI::SceneSourceProvider sceneSource=sceneSources.provider();
+          const NorthlightGI::SceneSourceRevision sceneRevision=[&](const std::string& path){return sceneSources.findIdentity(path);};
+          std::string preparationMap;
+          auto resetPreparation=[&]{meshPreparation.reset();sceneSources.reset();localGeometry.reset();};
           // Independent worker-owned address witness. Every allocation still
           // queries CURRENT aggregate free memory and a CURRENT free region;
           // a stale/split witness falls back to the complete address-space walk.
@@ -1337,7 +1348,8 @@ private:
             Request r;
             {std::unique_lock<std::mutex> lock(mutex);buildWake.wait(lock,[&]{return stopping||builderExit||retry||geometryWanted||request.id!=seen;});
              if(stopping||builderExit)return;r=request;seen=r.id;retry=false;wanted=wanted||geometryWanted;geometryWanted=false;}
-            if(workerMemoryTrim.exchange(false,std::memory_order_relaxed))localGeometry.reset(); /* the entry lift stays: it is a floor on measured free memory, so what a trim freed already counts */
+            if(workerMemoryTrim.exchange(false,std::memory_order_relaxed))resetPreparation(); /* the entry lift stays: it is a floor on measured free memory, so what a trim freed already counts */
+            if(preparationMap!=r.map){resetPreparation();preparationMap=r.map;}
             // Publish small authored zone data before expensive geometry work.
             // No cache reads are performed by the sky or world draw callbacks.
             int paletteTX=int(std::floor((NorthlightRegionalFog::WorldZero-r.camera.y)/NorthlightRegionalFog::TileSize));
@@ -1422,7 +1434,7 @@ private:
                 // entry floor (entryLift) alone keeps it for the attempt that eventually runs.
                 const auto plainEntry=NorthlightGeometryMemory::buildBudget(64*NorthlightGeometryMemory::MiB);
                 const auto entryBudget=entryLift.apply(plainEntry,GetTickCount());
-                if(!NorthlightGeometryMemory::admits(memory,plainEntry)){localGeometry.reset();memory=workerMemory(plainEntry);}
+                if(!NorthlightGeometryMemory::admits(memory,plainEntry)){resetPreparation();memory=workerMemory(plainEntry);}
                 if(!NorthlightGeometryMemory::admits(memory,entryBudget)){stallBegin("build-deferred",memory,entryBudget.available,entryBudget.largest);deferBuild("build-deferred",memory,1000,&entryBudget);continue;}
                 const uint64_t entryAvailable=memory.available,entryLargest=memory.largest;
                 geometryMemoryDemand.store(0,std::memory_order_relaxed); // admitted: the build's own use is not a demand (the episode stays open)
@@ -1454,9 +1466,10 @@ private:
                 };
                 auto replacement=std::make_shared<NorthlightGI::BVH>();
                 if(!generations.track(replacement))throw std::runtime_error("Geometry generation admission invariant");
-                if(tiles.empty()||!localGeometry.build(tiles,root+"world-cache/models",r.map,center-V(288,288,320),center+V(288,288,320),*replacement,error,localAdmission,quality.giFastBVH!=0)||!replacement->triangleCount()){
+                const auto sourceBefore=sceneSources.stats();const auto preparationBefore=meshPreparation.stats();
+                if(tiles.empty()||!localGeometry.build(tiles,root+"world-cache/models",r.map,center-V(288,288,320),center+V(288,288,320),*replacement,error,localAdmission,quality.giFastBVH!=0,sceneSource,sceneRevision)||!replacement->triangleCount()){
                     replacement.reset();
-                    if(localDeferred){localGeometry.reset();liftEntry("local-geometry",localRequired,localSample.available,localLargest);stallBegin("local-geometry",localSample,localRequired,localLargest);deferBuild("local-geometry-retry",workerMemory(),1000);continue;}
+                    if(localDeferred){resetPreparation();liftEntry("local-geometry",localRequired,localSample.available,localLargest);stallBegin("local-geometry",localSample,localRequired,localLargest);deferBuild("local-geometry-retry",workerMemory(),1000);continue;}
                     result->message=error.empty()?"No cached geometry for "+r.map:error;publishError();continue;
                 }
                 const auto localStats=localGeometry.stats();
@@ -1489,14 +1502,14 @@ private:
                     if(bytes<NorthlightGeometryMemory::MiB)return true;
                     ++terrainChecks;
                     const auto budget=NorthlightGeometryMemory::inBuildBudget(bytes);auto sample=workerMemory(budget);
-                    if(!NorthlightGeometryMemory::admits(sample,budget)&&localGeometry.stats().retainedBytes){
-                        // Pieces accelerate the NEXT local build; the finished
-                        // BVH owns its scene. Release this optional duplicate
-                        // before refusing a terrain/plan/page allocation.
-                        const auto cached=localGeometry.stats().retainedBytes;
-                        localGeometry.reset();sample=workerMemory(budget);
-                        if(NorthlightDiagnostics::enabled())logf("WORLD geometry reclaimed incremental cache estimatedMiB=%.2f availableMiB=%llu stage=shadow-plan",
-                             double(cached)/1048576,(unsigned long long)(sample.available>>20));
+                    if(!NorthlightGeometryMemory::admits(sample,budget)){
+                        // Published BVHs retain their shared pieces. Drop the
+                        // optional owners, then measure what actually became free.
+                        // Admission can run inside meshPreparation itself;
+                        // never reset that memo reentrantly while it is borrowed.
+                        sceneSources.reset();localGeometry.reset();sample=workerMemory(budget);
+                        if(NorthlightDiagnostics::enabled())logf("WORLD geometry optional source/local owners dropped availableMiB=%llu stage=shadow-plan",
+                             (unsigned long long)(sample.available>>20));
                     }
                     if(NorthlightGeometryMemory::admits(sample,budget))return true;
                     terrainDeferred=true;terrainSample=sample;terrainRequired=budget.available;terrainRequiredLargest=budget.largest;logGeometryMemory("shadow-terrain-allocation-deferred",sample,generations.live(),workerMemoryExact,&budget);
@@ -1542,11 +1555,12 @@ private:
                 }
                 NorthlightGI::WorldScene shadowTerrain;
                 { uint32_t reachBits;std::memcpy(&reachBits,&reach,sizeof reachBits);terrainSizeHint.key=reachBits; } // same map (reset above) and same reach only
-                const bool terrainLoaded=NorthlightGI::loadInstancedScenes(shadowTiles,root+"world-cache/models",center-V(reach,reach,reach),center+V(reach,reach,reach),shadowTerrain,error,1,terrainAdmission,terrainFilter,terrainChunkFilter,&terrainSizeHint);
+                const bool terrainLoaded=NorthlightGI::loadInstancedScenes(shadowTiles,root+"world-cache/models",center-V(reach,reach,reach),center+V(reach,reach,reach),shadowTerrain,error,1,terrainAdmission,terrainFilter,terrainChunkFilter,&terrainSizeHint,sceneSource);
                 if(terrainLoaded)terrainDeferred=false; // a refusal inside a successful load can only be the optional size-hint reserve (every other refusal fails the load)
                 const double terrainLoadMs=phaseElapsed();
-                if(!terrainLoaded||!NorthlightShadowTerrain::build(replacement->scene(),shadowTerrain,center,*plan,error,terrainAdmission,reach,{},true)){
+                if(!terrainLoaded||!NorthlightShadowTerrain::build(replacement->scene(),shadowTerrain,center,*plan,error,terrainAdmission,reach,{},true,replacement.get(),&meshPreparation)){
                     if(terrainDeferred){
+                        meshPreparation.reset();
                         stallBegin("shadow-terrain",terrainSample,terrainRequired,terrainRequiredLargest);
                         if(reduceReach())goto terrainStage;
                         shadowTerrain=NorthlightGI::WorldScene{};plan.reset();replacement.reset();liftEntry("shadow-terrain",terrainRequired,terrainSample.available,terrainRequiredLargest);deferBuild("shadow-terrain-retry",workerMemory(),1000);continue;}
@@ -1562,9 +1576,10 @@ private:
                 // build() the moment they are finished, so the worker's peak holds only the pages that must be uploaded.
                 std::shared_ptr<const NorthlightMeshPageKey::KeySet> resident;
                 {std::lock_guard<std::mutex> lock(mutex);if(residentPages&&residentMap==r.map)resident=residentPages;}
-                NorthlightWorldMeshPages::Options pagingOptions;pagingOptions.resident=resident.get();
+                NorthlightWorldMeshPages::Options pagingOptions;pagingOptions.resident=resident.get();pagingOptions.preparation=&meshPreparation;
                 if(!NorthlightWorldMeshPages::build(*plan,*pages,error,terrainAdmission,pagingOptions)){
                     if(terrainDeferred){
+                        meshPreparation.reset();
                         stallBegin("mesh-page",terrainSample,terrainRequired,terrainRequiredLargest);
                         if(reduceReach())goto terrainStage;
                         pages.reset();plan.reset();replacement.reset();liftEntry("mesh-page",terrainRequired,terrainSample.available,terrainRequiredLargest);deferBuild("mesh-page-retry",workerMemory(),1000);continue;}
@@ -1574,6 +1589,7 @@ private:
                 for(const auto& page:pages->pages)if(page.elided){++elided.pages;elided.bytes+=uint64_t(page.key.vertexBytes)+page.key.indexBytes;}
                 if(!NorthlightWorldMeshPages::seal(*plan,pages,error,terrainAdmission)){
                     if(terrainDeferred){
+                        meshPreparation.reset();
                         stallBegin("mesh-page-seal",terrainSample,terrainRequired,terrainRequiredLargest);
                         if(reduceReach())goto terrainStage;
                         pages.reset();plan.reset();replacement.reset();liftEntry("mesh-page-seal",terrainRequired,terrainSample.available,terrainRequiredLargest);deferBuild("mesh-page-seal-retry",workerMemory(),1000);continue;}
@@ -1601,6 +1617,24 @@ private:
                 built->fog=std::make_shared<NorthlightRegionalFog::Field>(NorthlightRegionalFog::buildField(replacement->scene(),region,center.x,center.y,fogScale));
                 if(NorthlightDiagnostics::enabled())logf("REGIONAL FOG map=\"%s\" tiles=%zu missing=%u groundCells=%u fogCells=%u airCells=%u indoorCells=%u citySurfaceCells=%u",r.map.c_str(),region.tiles.size(),region.missing,built->fog->groundCells,built->fog->fogCells,built->fog->airCells,built->fog->indoorCells,built->fog->citySurfaceCells);
                 const double environmentMs=phaseElapsed();const auto& memoryAfter=workerAdmissionProbe.stats();
+                if(NorthlightDiagnostics::enabled()){
+                    const auto& sources=sceneSources.stats();const auto& preparation=meshPreparation.stats();
+                    logf("WORLD shared scene buildId=%llu sourceHits=%llu sourceReads=%llu sourceIdentityHits=%llu sourceLoadMs=%.3f sourceIdentityMs=%.3f sourceLiveMiB=%.2f sourceEntries=%zu preparationHits=%llu preparationMisses=%llu preparationReusedTriangles=%llu preparationBuiltTriangles=%llu preparationMiB=%.2f pageMemoHits=%llu reusedMemoPages=%llu reusedMemoMiB=%.2f sourceDecodedLiveMiB=%.2f sourceUncachedLeaseMiB=%.2f optionalLimitMiB=32",
+                         (unsigned long long)r.id,(unsigned long long)(sources.hits-sourceBefore.hits),(unsigned long long)(sources.reads-sourceBefore.reads),
+                         (unsigned long long)(sources.identityHits-sourceBefore.identityHits),sources.loadMs-sourceBefore.loadMs,sources.identityMs-sourceBefore.identityMs,
+                         double(sceneSources.liveBytes())/1048576,sceneSources.entries(),(unsigned long long)(preparation.hits-preparationBefore.hits),
+                         (unsigned long long)(preparation.misses-preparationBefore.misses),(unsigned long long)(preparation.reusedTriangles-preparationBefore.reusedTriangles),
+                         (unsigned long long)(preparation.preparedTriangles-preparationBefore.preparedTriangles),double(preparation.bytes)/1048576,
+                         (unsigned long long)(preparation.pageHits-preparationBefore.pageHits),(unsigned long long)(preparation.reusedPages-preparationBefore.reusedPages),
+                         double(preparation.reusedPageBytes-preparationBefore.reusedPageBytes)/1048576,double(sceneSources.decodedLiveBytes())/1048576,double(sceneSources.uncachedLeaseBytes())/1048576);
+                    logf("WORLD shared acceleration buildId=%llu blasBuilt=%llu blasReused=%llu builtTriangles=%llu reusedTriangles=%llu tlasPieces=%llu legacyFallbacks=%llu sharedLiveMiB=%.2f compatibilityMiB=%.2f tlasKiB=%.2f fallbackTriangles=%llu mandatoryTreeMiB=%.2f",
+                         (unsigned long long)r.id,(unsigned long long)localStats.blasBuilds,(unsigned long long)localStats.blasReuses,
+                         (unsigned long long)localStats.blasTrianglesBuilt,(unsigned long long)localStats.blasTrianglesReused,(unsigned long long)localStats.tlasPieces,
+                         (unsigned long long)localStats.legacyFallbacks,double(localStats.sharedLiveBytes)/1048576,double(localStats.compatibilityBytes)/1048576,double(localStats.tlasBytes)/1024,
+                         (unsigned long long)localStats.fallbackTriangles,double(localStats.mandatoryTreeBytes)/1048576);
+                    logf("WORLD shared terrain chunks buildId=%llu built=%llu reused=%llu builtTriangles=%llu reusedTriangles=%llu",(unsigned long long)r.id,
+                         (unsigned long long)localStats.chunkBuilds,(unsigned long long)localStats.chunkReuses,(unsigned long long)localStats.chunkTrianglesBuilt,(unsigned long long)localStats.chunkTrianglesReused);
+                }
                 if(NorthlightDiagnostics::enabled())logf("WORLD geometry phases buildId=%llu localMs=%.3f terrainLoadMs=%.3f shadowPlanMs=%.3f pagesMs=%.3f environmentMs=%.3f memoryMs=%.3f memoryRequests=%llu witnessHits=%llu fullScans=%llu regionQueries=%llu memoryTimeIncluded=1",
                     (unsigned long long)r.id,localPhaseMs,terrainLoadMs,shadowPlanMs,pagesMs,environmentMs,workerMemoryMs-memoryMsBefore,
                     (unsigned long long)(memoryAfter.requests-memoryBefore.requests),(unsigned long long)(memoryAfter.witnessHits-memoryBefore.witnessHits),
@@ -2364,6 +2398,7 @@ public:
         for(auto& replay:replays)replay->constantStamp={};
         constantEpochSource=source;
     }
+    NorthlightDrawSnapshot::Frame& captureSources(){return replaySnapshots;}
     explicit WorldRenderer(IDirect3DDevice9* device):d(device),stateBlocks(device){terrainBoundsCache.setIdentityProvider(&bufferIdentity);terrainBoundsCache.setVersionProvider(&NorthlightTrackedBuffers::version);terrainBoundsCache.setMetadataProvider(&NorthlightTrackedBuffers::captureMetadata);terrainBoundsCache.setDeclarationCache(&declarationCache);replaySnapshots.setDeclarationProvider(&declarationCache,[](void* c,IDirect3DVertexDeclaration9* decl,const D3DVERTEXELEMENT9*& e,UINT& n){return static_cast<NorthlightVertexDeclarations::Cache*>(c)->get(decl,e,n);});replaySnapshots.setLayoutProvider(&declarationCache,[](void* c,IDirect3DVertexDeclaration9* decl,UINT* extent){return static_cast<NorthlightVertexDeclarations::Cache*>(c)->captureLayout(decl,extent);});replaySnapshots.setIdentityProvider(&bufferIdentity);replaySnapshots.setVersionProvider(&NorthlightTrackedBuffers::version);replaySnapshots.setMetadataProvider(&NorthlightTrackedBuffers::captureMetadata);QueryPerformanceFrequency(&captureFrequency);char path[MAX_PATH*3];WideCharToMultiByte(CP_UTF8,0,rootPath,-1,path,sizeof path,nullptr,nullptr);root=path;std::string paletteError;
         loadQuality();effects.gi=NorthlightQuality::giPass(quality,effects.gi);
         staticPrebuild.steps=float(quality.shadowDirectionSteps); /* prebuild targets the same direction lattice */
@@ -2379,7 +2414,10 @@ public:
 #endif
         std::string rangeError;bool rangesLoaded=NorthlightRegionalShadow::load(root+"shadow-range-profiles.ini",shadowRanges,rangeError);
         logf("SHADOW regional terrain loaded=%d zones=%zu %s",rangesLoaded,shadowRanges.zones.size(),rangeError.c_str());
-        staticStream=std::make_unique<StaticShadow::Streamer>(root+"world-cache");
+        // Reuse a source already decoded by the region builder. A miss goes
+        // straight to the bounded compact decoder, without another full decode.
+        staticStream=std::make_unique<StaticShadow::Streamer>(root+"world-cache",StaticShadow::Limits{},
+            [sources=sharedSceneSources](const std::string& path,std::string& error,const NorthlightGI::AllocationAdmission&){return sources->find(path,error);});
         staticCasters.setAdmission([this](size_t bytes){return admitStaticAllocation(bytes);});
         worker=std::thread([this]{work();});}
     ~WorldRenderer(){prepareWorker.join(); /* 0.3.179: first: an abandoned worker may still be inside a record */
@@ -2476,6 +2514,9 @@ public:
                 m.snapshotEvictions,m.snapshotEvictedBytes,m.snapshotMs,m.indexEvictions,m.indexEvictedBytes,m.indexMs,
                 m.missEvicted,m.missRevision,m.missUnknown,m.missCollision,replaySnapshots.snapshotRevalidationMismatches());}
         if(captureSampled)logf("MODEL capture metadata batches=%u knownBuffers=%u fallbackBuffers=%u fastSnapshotHits=%u",replaySnapshots.metadataBatches(),replaySnapshots.metadataHits(),replaySnapshots.metadataFallbacks(),replaySnapshots.fastCacheHits());
+        if(captureSampled)logf("MODEL_SOURCE_LIFETIME frame=%u participants=%zu sharedHits=%u limitMiB=%zu retainedBytes=%zu liveBytes=%zu liveObjects=%zu metadataBytes=%zu gpuIdentityHits=%u gpuReconstructedHits=%u globalIdentityBytes=%zu globalCpuBytes=%zu",rendererFrame,
+            replaySnapshots.sharedSourceParticipants(),replaySnapshots.sharedSourceHits(),replaySnapshots.sharedSourceLimit()>>20,replaySnapshots.sharedSourceBytes(),replaySnapshots.sourceLiveBytes(),replaySnapshots.sourceLiveObjects(),replaySnapshots.sharedSourceMetadataBytes(),
+            replayGpuCache.stats().identityHits,replayGpuCache.stats().reconstructedHits,NorthlightSourceIdentity::identityLiveBytes.load(std::memory_order_relaxed),NorthlightSourceIdentity::cpuLiveBytes.load(std::memory_order_relaxed));
         if(captureSampled)logf("MODEL frame capture skinnedCandidates=%u accepted=%u blendRejected=%u fadeRejected=%u projectionRejected=%u budgetRejected=%u snapshotRejected=%u acceptedSkinnedBytes=%zu acceptedOtherBytes=%zu rejectedReadBytes=%zu totalReadBytes=%zu compactedDraws=%u spanVertices=%zu uniqueVertices=%zu savedVertexBytes=%zu nearAdmitted=%u nearBytes=%zu nearRefused=%u nearSelf=%d nearReserve=%zu radiusGated=%u radiusGatedBytes=%zu cutRejected=%u cutYards=%.1f insideRefused=%u insideRefusedActors=%u noRoot=%u admissionCentre=%s rootReads=%u rootMemoHits=%u",skinnedCandidates,skinnedAccepted,skinnedBlendRejected,skinnedFadeRejected,skinnedProjectionRejected,skinnedBudgetRejected,skinnedSnapshotRejected,acceptedSkinnedBytes,acceptedOtherBytes,captureRejectedBytes,replaySnapshots.bytesRead(),replaySnapshots.compactedDraws(),replaySnapshots.sourceSpanVertices(),replaySnapshots.uniqueVertices(),replaySnapshots.savedVertexBytes(),nearAdmitted,nearBytes,nearRefused,int(nearAnchorReady&&nearAnchor.self),replaySnapshots.nearReserve(),
             admission.counters().radiusGated,admission.counters().radiusGatedBytes,admission.counters().cutRejected,admission.cutActive()?double(admission.cut()):0.0,admission.counters().insideRefusedDraws,admission.counters().insideRefusedActors,admission.counters().noRoot,
             admissionOn?(admission.centreSelf()?"self":"pivot"):"off",rootReads,rootMemoHits);
@@ -2548,8 +2589,9 @@ public:
         const double pool=double(meshStore.poolBytes()),idle=double(meshStore.idleBytes());
         double plan=0,payload=0,bvh=0;
         if(active){if(active->meshPlan){plan=double(active->meshPlan->cpuBytes());payload=double(active->meshPlan->payload.bytes());}if(active->bvh)bvh=double(active->bvh->retainedBytes());}
-        return std::snprintf(out,size,"meshPoolMiB=%.1f meshPlanCpuMiB=%.1f uploadPayloadLiveMiB=%.1f materialReuseMiB=%.1f giBvhMiB=%.1f geometryDemandMiB=%.1f meshIdleMiB=%.1f",pool/1048576.0,plan/1048576.0,payload/1048576.0,double(materialReuseBytes)/1048576.0,bvh/1048576.0,
-            double(geometryMemoryDemand.load(std::memory_order_relaxed))/1048576.0,idle/1048576.0);
+        return std::snprintf(out,size,"meshPoolMiB=%.1f meshPlanCpuMiB=%.1f uploadPayloadLiveMiB=%.1f materialReuseMiB=%.1f giBvhMiB=%.1f geometryDemandMiB=%.1f meshIdleMiB=%.1f captureCpuUniqueMiB=%.1f captureIdentityUniqueMiB=%.1f capturePoolLimitMiB=%.1f",pool/1048576.0,plan/1048576.0,payload/1048576.0,double(materialReuseBytes)/1048576.0,bvh/1048576.0,
+            double(geometryMemoryDemand.load(std::memory_order_relaxed))/1048576.0,idle/1048576.0,
+            double(NorthlightSourceIdentity::cpuLiveBytes.load(std::memory_order_relaxed))/1048576.0,double(NorthlightSourceIdentity::identityLiveBytes.load(std::memory_order_relaxed))/1048576.0,double(replaySnapshots.sharedSourceLimit())/1048576.0);
     }
     const char* lastSkipReason()const{return skipReason;} /* 0.3.169: valid after render() returned false */
     bool captureSkippedLastFrame()const{return lastCaptureSkipped;} /* for the sampled CPU profile, logged after endFrame */

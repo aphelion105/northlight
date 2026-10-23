@@ -29,6 +29,7 @@ public:
         unsigned attemptDeferred=0,uploadByteDeferred=0,expiredEntries=0;
         unsigned timeDeferred=0,created=0;double createMs=0; /* 0.3.138, per frame */
         size_t expiredBytes=0;
+        unsigned identityHits=0,reconstructedHits=0;size_t identityBytes=0;
     };
     struct Population {size_t entries=0,resident=0,probation=0;};
     // Lifetime totals survive beginFrame, including clear-before-beginFrame in
@@ -37,20 +38,27 @@ public:
 private:
     struct Entry {
         std::weak_ptr<const NorthlightDrawSnapshot::Mesh> owner;
+        NorthlightSourceIdentity::Handle identity;
         IDirect3DVertexBuffer9* vertices[4]={};IDirect3DIndexBuffer9* indices=nullptr;
         size_t bytes=0;uint64_t first=0,touched=0;
-        const NorthlightDrawSnapshot::Mesh* key=nullptr;
+        std::uint64_t key=0;size_t metadata=0;
         Entry* previous=nullptr;Entry* next=nullptr;
         ~Entry(){for(auto p:vertices)if(p)p->Release();if(indices)indices->Release();}
     };
-    std::unordered_map<const NorthlightDrawSnapshot::Mesh*,std::unique_ptr<Entry>> entries;
+    std::unordered_multimap<std::uint64_t,std::unique_ptr<Entry>> entries;
     Entry* oldest_=nullptr;Entry* newest_=nullptr;
-    size_t bytes_=0,limit_=Limit;uint64_t frame_=0; /* limit_: lowered under address-space pressure */
+    size_t bytes_=0,gpuBytes_=0,limit_=Limit;uint64_t frame_=0; /* bytes_: GPU plus identity allowance, within the old cap */
     size_t uploaded_=0,reused_=0;unsigned hits_=0,created_=0;size_t attemptedBytes_=0;unsigned attempts_=0;
     bool timeDeferredLast_=false,ignoreTimeBudget_=false; /* 0.3.138 */
     Stats stats_;
     ClearStats clearStats_;
     static constexpr size_t EntryLimit=4096,Limit=64u*1024u*1024u,UploadLimit=4u*1024u*1024u;
+    using Mesh=NorthlightDrawSnapshot::Mesh;
+    static std::uint64_t key(const std::shared_ptr<const Mesh>& mesh){return mesh->sourceIdentity?mesh->sourceIdentity->hash:std::uint64_t(reinterpret_cast<std::uintptr_t>(mesh.get()));}
+    auto find(const std::shared_ptr<const Mesh>& mesh){auto range=entries.equal_range(key(mesh));for(auto it=range.first;it!=range.second;){const auto& e=*it->second;
+        if(mesh->sourceIdentity?NorthlightSourceIdentity::same(e.identity,mesh->sourceIdentity):!e.identity&&e.owner.lock()==mesh)return it;
+        if(!mesh->sourceIdentity&&!e.identity&&e.owner.expired()){bytes_-=e.bytes;gpuBytes_-=e.bytes;unlink(*it->second);it=entries.erase(it);}else ++it;}return entries.end();}
+    void erase(Entry* entry){auto range=entries.equal_range(entry->key);for(auto it=range.first;it!=range.second;++it)if(it->second.get()==entry){bytes_-=entry->bytes+entry->metadata;gpuBytes_-=entry->bytes;stats_.identityBytes-=entry->metadata;unlink(*entry);entries.erase(it);return;}}
     // Stable Entry allocations form a non-owning queue ordered by last frame
     // touched. Equal-frame ties use first-touch order, not hash iteration order.
     // No allocation, hash scan or clock call is needed to maintain this queue.
@@ -81,28 +89,28 @@ private:
             // The head is the least recently touched entry. If it is current,
             // every entry is current: never evict this frame's used geometry.
             if(!oldest_||oldest_->touched==frame_){++stats_.roomRejected;stats_.promotionCountRejected+=promotion&&atCountLimit;return false;}
-            Entry* victim=oldest_;const auto* key=victim->key;
+            Entry* victim=oldest_;
             ++stats_.evictions;
-            bytes_-=victim->bytes;unlink(*victim);entries.erase(key);
+            erase(victim);
         }return true;
     }
 public:
     Cache()=default;
     Cache(const Cache&)=delete;Cache& operator=(const Cache&)=delete;
     Cache(Cache&&)=delete;Cache& operator=(Cache&&)=delete;
-    void clear(){++clearStats_.calls;clearStats_.entries+=entries.size();clearStats_.bytes+=bytes_;oldest_=newest_=nullptr;entries.clear();bytes_=0;}
+    void clear(){++clearStats_.calls;clearStats_.entries+=entries.size();clearStats_.bytes+=gpuBytes_;oldest_=newest_=nullptr;entries.clear();bytes_=gpuBytes_=stats_.identityBytes=0;}
     void beginFrame(){
         ++frame_;uploaded_=reused_=0;hits_=created_=attempts_=0;attemptedBytes_=0;stats_={};
         for(auto it=entries.begin();it!=entries.end();){
-            if(it->second->owner.expired()){++stats_.expiredEntries;stats_.expiredBytes+=it->second->bytes;bytes_-=it->second->bytes;unlink(*it->second);it=entries.erase(it);}else ++it;
+            if(!it->second->identity&&it->second->owner.expired()){++stats_.expiredEntries;stats_.expiredBytes+=it->second->bytes;bytes_-=it->second->bytes;gpuBytes_-=it->second->bytes;unlink(*it->second);it=entries.erase(it);}else {stats_.identityBytes+=it->second->metadata;++it;}
         }
     }
     // Memory guard, frame boundary only: evicts least recently used entries,
     // including this frame's (callers own their own references), until bytes()<=bytes.
-    void trimTo(size_t bytes){while(bytes_>bytes&&oldest_){Entry* victim=oldest_;const auto* key=victim->key;++stats_.evictions;bytes_-=victim->bytes;unlink(*victim);entries.erase(key);}}
+    void trimTo(size_t bytes){while(bytes_>bytes&&oldest_){++stats_.evictions;erase(oldest_);}}
     void setLimit(size_t bytes){limit_=std::min(bytes,Limit);trimTo(limit_);}
     size_t limit()const{return limit_;}
-    size_t bytes()const{return bytes_;}size_t uploaded()const{return uploaded_;}
+    size_t bytes()const{return gpuBytes_;}size_t chargedBytes()const{return bytes_;}size_t uploaded()const{return uploaded_;}
     size_t reused()const{return reused_;}unsigned hits()const{return hits_;}
     static constexpr size_t entryLimit(){return EntryLimit;}
     /* The last bind() returned false only because of the creation time budget. */
@@ -121,18 +129,16 @@ public:
         timeDeferredLast_=false;
         if(!mesh||!mesh->byteSize()||mesh->byteSize()>limit_)return false;
         try{
-            auto it=entries.find(mesh.get());
-            if(it!=entries.end()&&it->second->owner.lock()!=mesh){bytes_-=it->second->bytes;unlink(*it->second);entries.erase(it);it=entries.end();}
+            auto it=find(mesh);
             if(it==entries.end()){
-                if(!room(0))return false;
-                auto e=std::make_unique<Entry>();e->owner=mesh;e->key=mesh.get();e->first=e->touched=frame_;
+                const size_t metadata=mesh->sourceIdentity?mesh->sourceIdentity->bytes():0;if(metadata>limit_||mesh->byteSize()>limit_-metadata||!room(metadata))return false;
+                auto e=std::make_unique<Entry>();e->owner=mesh;e->identity=mesh->sourceIdentity;e->metadata=metadata;e->key=key(mesh);e->first=e->touched=frame_;
                 // Publish ownership before linking; a failed allocation leaves
                 // no dangling node in the queue.
-                auto inserted=entries.emplace(mesh.get(),std::move(e));
-                if(inserted.second)append(*inserted.first->second);
+                auto inserted=entries.emplace(key(mesh),std::move(e));append(*inserted->second);bytes_+=metadata;stats_.identityBytes+=metadata;
                 ++stats_.warmup;return false; // prove cross-frame reuse before allocating
             }
-            Entry& e=*it->second;touch(e);
+            Entry& e=*it->second;touch(e);if(e.identity){++stats_.identityHits;if(e.owner.lock()!=mesh)++stats_.reconstructedHits;e.owner=mesh;}
             if(!e.bytes){
                 size_t bytes=mesh->byteSize();
                 if(e.first==frame_){++stats_.warmup;return false;}
@@ -160,7 +166,7 @@ public:
                 // buffer succeeds; the temporary owns partial-failure cleanup.
                 for(unsigned s=0;s<4;++s)std::swap(e.vertices[s],built->vertices[s]);
                 std::swap(e.indices,built->indices);
-                e.bytes=bytes;bytes_+=bytes;uploaded_+=bytes;++created_;++stats_.created;
+                e.bytes=bytes;bytes_+=bytes;gpuBytes_+=bytes;uploaded_+=bytes;++created_;++stats_.created;
             }else{reused_+=e.bytes;++hits_;}
             const Entry& ready=*it->second;
             // 0.3.176 (U3'): a binding already held keeps its reference (no Release/AddRef pair).
