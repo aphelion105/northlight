@@ -845,7 +845,7 @@ static void occlusionFlushLocal(bool on){
     CHECK(!rig.core().queryFrame[9].calls&&rig.core().queryWait[9].calls==profile.calls);
     rig.core().queryFrame[9]=profile;rig.core().frameNo=128;
     rig.core().reportQueryFrame([&](const char* text){lines.emplace_back(text);});
-    CHECK(lines.size()==1&&!rig.core().queryFrame[9].calls);rig.core().frameNo=frameNo;
+    CHECK(lines.size()==(profile.maxTripNs>=20000000?2u:1u)&&!rig.core().queryFrame[9].calls);rig.core().frameNo=frameNo;
     rig.core().reportQueryWait(nullptr);CHECK(rig.core().queryWait[8].calls==0&&rig.core().queryWait[9].calls==0);
     rig.core().timing=false;CHECK(eq->GetData(&d,4,D3::kGetDataFlush)==D3D_OK&&rig.core().queryWait[8].calls==0);
     eq->Release();oq->Release();rig.finish();checkClean();

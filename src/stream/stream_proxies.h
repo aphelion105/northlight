@@ -269,7 +269,7 @@ struct StreamCore {
     QueryWait queryWait[21]{},queryFrame[21]{};unsigned queryWaitFrames=0; // 20 includes unknown query types
     void clearQueryWait(){for(auto& item:queryWait)item={};for(auto& item:queryFrame)item={};queryWaitFrames=0;}
     void reportQueryFrame(const std::function<void(const char*)>& sink){
-        if(sink&&frameNo%127==0)for(unsigned type=0;type<21;++type){const auto& s=queryFrame[type];if(!s.calls)continue;
+        if(sink)for(unsigned type=0;type<21;++type){const auto& s=queryFrame[type];if(!s.calls||(frameNo%127!=0&&s.maxTripNs<20000000))continue;
             char line[512];std::snprintf(line,sizeof line,"CSTREAM QUERYFRAME gameFrame=%llu replayed=%llu type=%u calls=%llu pending=%llu errors=%llu syncWaitMs=%.4f beforeReplayMs=%.4f replayMs=%.4f afterReplayMs=%.4f tripMs=%.4f maxTripMs=%.4f",
                 (unsigned long long)frameNo,(unsigned long long)framesReplayed.load(std::memory_order_relaxed),type,
                 (unsigned long long)s.calls,(unsigned long long)s.pending,(unsigned long long)s.errors,
@@ -1453,7 +1453,7 @@ struct StreamQuery final:IDirect3DQuery9,ProxyBase {
         eventDoneGen.store(issueSeen,std::memory_order_release);
     }
     std::atomic<std::uint32_t> gen{0},readyGen{0};   // gen: END issues by the game; readyGen: the replay's polled result belongs to it
-    unsigned char result[64]{};DWORD resultSize=0;std::uint32_t issueSeen=0;   // issueSeen: END issues the replay thread ran
+    unsigned char result[64]{};DWORD resultSize=0;std::uint32_t issueSeen=0,issueSeenEpoch=0;   // replay thread: END generation and device-reset epoch
     std::atomic<std::uint32_t> resultSeq{0};   // seqlock around result/resultSize: odd while the replay thread writes, so a stale read (FLUSH, below) never sees a torn result
     void writeResult(const unsigned char* buf,DWORD n){const std::uint32_t s=resultSeq.load(std::memory_order_relaxed);resultSeq.store(s+1,std::memory_order_relaxed);std::atomic_thread_fence(std::memory_order_release);
         std::memcpy(result,buf,sizeof result);resultSize=n;resultSeq.store(s+2,std::memory_order_release);}
@@ -1515,6 +1515,9 @@ struct StreamQuery final:IDirect3DQuery9,ProxyBase {
             readResult(data,size);own(core->q.stats.queryFlushLocal);return D3D_OK;}
         pumped:
         if((flags&D3::kGetDataFlush)||!gen.load()){   // FLUSH, or a query never issued: the real GetData with the game's buffer, after everything recorded so far
+            // Sent-message handlers may release the last external reference
+            // while this call pumps. Keep both the query and its device alive.
+            struct Hold {StreamQuery* query;explicit Hold(StreamQuery* p):query(p){query->comAddRef();}~Hold(){query->comRelease();}} hold(this);
             if(flags&D3::kGetDataFlush)own(core->q.stats.queryFlushSynced);
             HRESULT hr=D3DERR_INVALIDCALL;
             const bool measure=core->timing;const auto waitBefore=measure?get(q.stats.syncNs):0;
@@ -1523,11 +1526,28 @@ struct StreamQuery final:IDirect3DQuery9,ProxyBase {
             // thread sleeps in its pumped wait instead of starting a new trip for every driver call.
             const bool event=type==8&&flags==D3::kGetDataFlush&&gen.load();
             const auto tripStart=measure?nowNs():0;std::uint64_t replayStart=0,replayEnd=0;
-            const bool ran=runTask(*core,[&](StreamCore&){if(measure)replayStart=nowNs();if(inner){
-                auto poll=[&]{return static_cast<IDirect3DQuery9*>(inner)->GetData(data,size,flags);};
-                if(event){unsigned calls=0;hr=waitEventQuery(poll,nowNs,[]{std::this_thread::yield();},calls);own(q.stats.eventPollCalls,calls);own(q.stats.eventWaitTrips);}
-                else hr=poll();
-            }if(measure)replayEnd=nowNs();},Cmd::SyncGetData);
+            auto body=[&](bool cached){if(measure)replayStart=nowNs();if(inner){
+                if(cached&&eventDoneGen.load(std::memory_order_acquire)==issued){
+                    hr=eventStatus.load(std::memory_order_relaxed);
+                    if(hr==S_OK&&data){const BOOL value=eventValue.load(std::memory_order_relaxed);std::memcpy(data,&value,sizeof value);}
+                }else{
+                    auto poll=[&]{return static_cast<IDirect3DQuery9*>(inner)->GetData(data,size,flags);};
+                    if(event){unsigned calls=0;hr=waitEventQuery(poll,nowNs,[]{std::this_thread::yield();},calls);own(q.stats.eventPollCalls,calls);own(q.stats.eventWaitTrips);}
+                    else hr=poll();
+                }
+            }if(measure)replayEnd=nowNs();};
+            bool ran=false;
+            const auto epoch=eventEpoch;
+            if(event&&!inPumpedWait&&epoch==core->queryEpoch.load()&&core->coopState.load()==D3D_OK&&
+               ((!data&&!size)||(data&&size==dataSize))){
+                // EVENT END fences only earlier work. After that END replayed,
+                // a boundary task need not drain unrelated later draws to poll it.
+                auto express=[&]{if(issueSeen==issued&&issueSeenEpoch==epoch&&core->queryEpoch.load()==epoch&&core->coopState.load()==D3D_OK&&!dead.load()&&inner){body(true);ran=true;}};
+                q.runExpress([](void* p){(*static_cast<decltype(express)*>(p))();},&express,nullptr,ExpressKind::Query);
+                if(ran){own(q.stats.expressQueryHits);own(q.stats.census[(std::size_t)Cmd::SyncGetData]);own(q.stats.syncCalls);}
+                else own(q.stats.expressQueryFallbacks);
+            }
+            if(!ran)ran=runTask(*core,[&](StreamCore&){body(false);},Cmd::SyncGetData);
             const auto tripEnd=measure?nowNs():0;
             if(event&&ran&&hr!=S_FALSE)finishEventWait();
             if(event&&ran&&hr!=S_FALSE&&eventPendingSince){own(q.stats.eventPendingNs,nowNs()-eventPendingSince);own(q.stats.eventCompleted);eventPendingSince=0;}   // a wait that ended on this pumped path

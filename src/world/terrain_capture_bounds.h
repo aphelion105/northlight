@@ -107,6 +107,7 @@ inline bool classifyTriangleSequence(VertexAt vertexAt,std::size_t count,
     Bounds result;for(unsigned j=0;j<3;++j){result.low[j]=infinity;result.high[j]=-infinity;}
     std::unordered_set<unsigned> seen;
     unsigned previousChunk=std::numeric_limits<unsigned>::max();
+    double previousMinX=0,previousMaxX=0,previousMinY=0,previousMaxY=0;
     const std::size_t triangles=topology==D3DPT_TRIANGLELIST?count/3:count-2;
     for(std::size_t triangle=0;triangle<triangles;++triangle){
         const std::size_t first=topology==D3DPT_TRIANGLELIST?triangle*3:triangle;
@@ -118,12 +119,23 @@ inline bool classifyTriangleSequence(VertexAt vertexAt,std::size_t count,
         if(std::fabs(area)<1e-9)continue; // Includes strip connectors.
         const double centerX=(double(p[0].x)+p[1].x+p[2].x)/3.;
         const double centerY=(double(p[0].y)+p[1].y+p[2].y)/3.;
-        const double gridX=std::floor((origin-centerY)/step);
-        const double gridY=std::floor((origin-centerX)/step);
-        if(gridX<0||gridX>=1024||gridY<0||gridY>=1024)return false;
-        const int x=int(gridX),y=int(gridY);
-        const double minX=origin-(y+1)*step,maxX=origin-y*step;
-        const double minY=origin-(x+1)*step,maxY=origin-x*step;
+        int x,y;double minX,maxX,minY,maxY;
+        // A strict interior margin proves the original double floor's cell.
+        // Borderline centroids retain the original calculation and tolerance.
+        const bool reusePrevious=previousChunk!=std::numeric_limits<unsigned>::max()&&
+            centerX>previousMinX+tolerance&&centerX<previousMaxX-tolerance&&
+            centerY>previousMinY+tolerance&&centerY<previousMaxY-tolerance;
+        if(reusePrevious){
+            x=int(previousChunk%1024);y=int(previousChunk/1024);
+            minX=previousMinX;maxX=previousMaxX;minY=previousMinY;maxY=previousMaxY;
+        }else{
+            const double gridX=std::floor((origin-centerY)/step);
+            const double gridY=std::floor((origin-centerX)/step);
+            if(gridX<0||gridX>=1024||gridY<0||gridY>=1024)return false;
+            x=int(gridX);y=int(gridY);
+            minX=origin-(y+1)*step;maxX=origin-y*step;
+            minY=origin-(x+1)*step;maxY=origin-x*step;
+        }
         for(unsigned i=0;i<3;++i){
             if(p[i].x<minX-tolerance||p[i].x>maxX+tolerance||
                p[i].y<minY-tolerance||p[i].y>maxY+tolerance)return false;
@@ -136,6 +148,7 @@ inline bool classifyTriangleSequence(VertexAt vertexAt,std::size_t count,
         if(chunk!=previousChunk&&seen.insert(chunk).second)
             result.chunks.push_back({x,y,float(minX),float(minY),float(maxX),float(maxY)});
         previousChunk=chunk;
+        previousMinX=minX;previousMaxX=maxX;previousMinY=minY;previousMaxY=maxY;
     }
     if(result.chunks.empty())return false;
     std::sort(result.chunks.begin(),result.chunks.end(),[](const ChunkBounds&a,const ChunkBounds&b){return a.y<b.y||(a.y==b.y&&a.x<b.x);});

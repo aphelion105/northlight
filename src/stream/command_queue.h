@@ -88,6 +88,7 @@ struct Block {
 static_assert(sizeof(Block)==16,"block header keeps data 8-aligned");
 
 enum class WaitKind {Sync,Present,Backpressure};
+enum class ExpressKind {Readback,Query};
 
 // 0.3.206 (task 31): a unit of work for the replay thread's next command boundary (Queue::runExpress). Lives on the poster's stack.
 constexpr std::uint16_t kExpressIdle=0xFFFF;   // ExpressTask::behindCmd: the replay thread was idle (slept / empty queue) when the task was served
@@ -341,8 +342,8 @@ public:
     }
     // 0.3.206 (task 31): runs fn(arg) on the replay thread at its NEXT COMMAND BOUNDARY (between two commands, never inside one) and returns once it ran. Unlike a Quiesce task it does not wait for the
     // queue to drain: the caller must have proved that every command the work depends on has already been replayed. One poster at a time (the game thread). Counted in syncNs (comparable with the
-    // drain waits) and expressReadbacks/expressNs, not in syncCalls or the census. Wake handshake: store the mailbox, fence, wake a sleeper (the consumer sets sleeping_, fences, re-checks the mailbox).
-    void runExpress(void (*fn)(void*),void* arg,ExpressTimes* times=nullptr){   // times: Diagnostics only (the replay thread then reads the clock once at serve start)
+    // drain waits) and expressNs, with separate readback/query counters. The query caller owns syncCalls/census. Wake handshake: store the mailbox, fence, wake a sleeper (the consumer sets sleeping_, fences, re-checks the mailbox).
+    void runExpress(void (*fn)(void*),void* arg,ExpressTimes* times=nullptr,ExpressKind kind=ExpressKind::Readback){   // times: Diagnostics only (the replay thread then reads the clock once at serve start)
         ExpressTask t{fn,arg,times!=nullptr,kExpressIdle,0};
         const auto t0=nowNs();
         express_.store(&t,std::memory_order_release);
@@ -351,7 +352,9 @@ public:
         while(express_.load(std::memory_order_acquire)!=nullptr)expressDone_.waitPumped(50);   // the timeout only bounds a missed wake
         const auto ns=nowNs()-t0;
         if(times){times->behindCmd=t.behindCmd;times->startNs=t.startNs;}
-        add(stats.syncNs,ns);add(stats.expressReadbacks);add(stats.expressNs,ns);
+        add(stats.syncNs,ns);add(stats.expressNs,ns);
+        if(kind==ExpressKind::Query){add(stats.expressQueries);add(stats.queryExpressNs,ns);}
+        else{add(stats.expressReadbacks);add(stats.readbackExpressNs,ns);}
     }
     void waitDrained(WaitKind kind=WaitKind::Sync){waitReplayed(recordedSeq(),kind);}   // the last recorded command must carry kFlagWaitTarget (no production caller)
 #ifdef NORTHLIGHT_STREAM_CHECK_WAIT

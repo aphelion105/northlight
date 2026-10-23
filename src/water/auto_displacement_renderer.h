@@ -20,7 +20,7 @@ class NorthlightAutoDisplacement {
     using Program=NorthlightActorDeformation::Program;
     using Mesh=NorthlightDrawSnapshot::Mesh;
     using Height=NorthlightDisplacementGeometry::Height;
-    struct Shader {IDirect3DVertexShader9* patched=nullptr,*source=nullptr,*gpu=nullptr;NorthlightDisplacementPatch::Binding binding,gpuBinding;};
+    struct Shader {IDirect3DVertexShader9* patched=nullptr,*source=nullptr,*gpu=nullptr;NorthlightDisplacementPatch::Binding binding,gpuBinding;bool pending=false,skinned=false;};
     struct Material {Program uv,view,uv1,blend;std::vector<unsigned> uvRegisters[2];bool layered=false,skinned=false;uint64_t id=0;unsigned first=0,count=0,influences=0;};
     struct Bounds {std::weak_ptr<const Mesh> source;float low[3],high[3];uint64_t used=0;size_t bytes=0;std::unique_ptr<NorthlightReplayBounds::SkinEnvelope> skin;
         const Mesh* key=nullptr;NorthlightIntrusiveLRU::Links<Bounds> lru;};
@@ -66,6 +66,7 @@ class NorthlightAutoDisplacement {
     std::vector<float> uvScratch;
     Entry* current=nullptr;float controls[5][4]={},lastDepthLower=0;
     bool gpuHeightChecked=false,gpuHeightSupported=false;uint64_t gpuDraws=0;
+    unsigned variantSources=0,variantCPU=0,variantGPU=0,variantReadFailed=0;size_t variantBytes=0;double variantMs=0;
     bool gpuHeights(){
         if(gpuHeightChecked)return gpuHeightSupported;gpuHeightChecked=true;
         D3DCAPS9 caps{};D3DDEVICE_CREATION_PARAMETERS cp{};NorthlightDrawSnapshot::Ref<IDirect3D9> api;D3DDISPLAYMODE mode{};
@@ -73,6 +74,22 @@ class NorthlightAutoDisplacement {
         return gpuHeightSupported=d&&SUCCEEDED(d->GetDeviceCaps(&caps))&&caps.VertexShaderVersion>=D3DVS_VERSION(3,0)&&(caps.VertexTextureFilterCaps&linear)==linear&&
             SUCCEEDED(d->GetCreationParameters(&cp))&&SUCCEEDED(d->GetDirect3D(api.out()))&&api.p&&SUCCEEDED(api->GetAdapterDisplayMode(cp.AdapterOrdinal,&mode))&&
             SUCCEEDED(api->CheckDeviceFormat(cp.AdapterOrdinal,cp.DeviceType,mode.Format,D3DUSAGE_QUERY_VERTEXTEXTURE|D3DUSAGE_QUERY_FILTER,D3DRTYPE_TEXTURE,D3DFMT_R32F));
+    }
+    bool ensureVariant(Shader& shader){
+        if(!shader.pending)return shader.patched!=nullptr;
+        shader.pending=false;++variantSources;
+        const auto start=std::chrono::steady_clock::now();
+        struct Timer {double& total;std::chrono::steady_clock::time_point start;~Timer(){total+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();}} timer{variantMs,start};
+        UINT bytes=0;if(FAILED(shader.source->GetFunction(nullptr,&bytes))||bytes<8||bytes>65536*sizeof(DWORD)||bytes%sizeof(DWORD)){++variantReadFailed;return false;}
+        std::vector<DWORD> words(bytes/sizeof(DWORD));if(FAILED(shader.source->GetFunction(words.data(),&bytes))||bytes!=words.size()*sizeof(DWORD)){++variantReadFailed;return false;}
+        variantBytes+=bytes;std::vector<uint32_t> patched;
+        if(NorthlightDisplacementPatch::patch(reinterpret_cast<const uint32_t*>(words.data()),words.size(),patched,shader.binding,shader.skinned)){
+            const HRESULT result=d->CreateVertexShader(reinterpret_cast<const DWORD*>(patched.data()),&shader.patched);variantCPU+=SUCCEEDED(result)&&shader.patched;
+            if(FAILED(result))logf("DISPLACEMENT vertex shader rejected: 0x%08lx model=%08lx",static_cast<unsigned long>(result),static_cast<unsigned long>(words[0]));}
+        if(gpuHeights()&&NorthlightDisplacementPatch::patch(reinterpret_cast<const uint32_t*>(words.data()),words.size(),patched,shader.gpuBinding,shader.skinned,true)){
+            const HRESULT result=d->CreateVertexShader(reinterpret_cast<const DWORD*>(patched.data()),&shader.gpu);variantGPU+=SUCCEEDED(result)&&shader.gpu;
+            if(FAILED(result))logf("DISPLACEMENT GPU height shader rejected: 0x%08lx",static_cast<unsigned long>(result));}
+        return shader.patched!=nullptr;
     }
     float strength=.12f,range=12,worldStrength=.12f,worldRange=12,modelStrength=.03f,modelRange=8;unsigned worldDetail=4,modelDetail=2,polarity=0,heightDetails=75,heightBalance=50;unsigned detail=4,buildsThisFrame=0,readsThisFrame=0,poseVerticesThisFrame=0;
     size_t resident=0,boundsBytes=0,cacheBudget=64u<<20;uint64_t clock=0,materialClock=0,builds=0,hits=0,draws=0,triangles=0,refused=0;unsigned frames=0,domainDraws[4]={},stateRejected=0,heightRejected=0,shaderRejected=0,meshRejected=0,snapshotRejected=0;bool userDraw=false,indexedUserDraw=false;
@@ -301,14 +318,15 @@ public:
     }
     void trimMemory(){setMemoryPressure(memoryPressure);}
     void reset(){current=nullptr;constantStamp={};rangeConstantStamp={};sourceLookup.clear();contentLookup.clear();materialLookup.clear();indexedEntries=true;entries.clear();boundsLRU.clear();bounds.clear();poseEnvelopes.clear();poseBindings={};envelopeBudget.reset();boundsBytes=resident=0;for(auto& t:textures){drop(t.gpu);drop(t.source);}textures.clear();snapshots.clearIndexCache();rangeSnapshots.clearIndexCache();skinRangeSnapshots.clearIndexCache();declarations.clear();}
-    void endFrame(){current=nullptr;if(frames%60==0){MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;if(GlobalMemoryStatusEx(&memory))refreshBudget(memory);}buildsThisFrame=readsThisFrame=poseVerticesThisFrame=0;for(auto& vertices:poseKernelVertices)vertices=0;poseEnvelopes.beginFrame(false);envelopeBudget.reset();snapshots.clearFrame();rangeSnapshots.clearFrame();skinRangeSnapshots.clearFrame();if((draws||snapshotRejected)&&frames%600==0){logf("DISPLACEMENT cached=%zu bytes=%zu builds=%llu hits=%llu draws=%llu triangles=%llu refused=%llu terrain=%u walls=%u grass=%u models=%u stateRejected=%u heightRejected=%u shaderRejected=%u snapshotRejected=%u meshRejected=%u budgetMiB=%zu",entries.size(),resident,(unsigned long long)builds,(unsigned long long)hits,(unsigned long long)draws,(unsigned long long)triangles,(unsigned long long)refused,domainDraws[0],domainDraws[1],domainDraws[2],domainDraws[3],stateRejected,heightRejected,shaderRejected,snapshotRejected,meshRejected,cacheBudget>>20);
+    void endFrame(){current=nullptr;if(variantSources)logf("MATERIAL_VARIANT_COLD frame=%u sources=%u cpuBuilt=%u gpuBuilt=%u readFailed=%u sourceBytes=%zu cpuMs=%.6f",frames,variantSources,variantCPU,variantGPU,variantReadFailed,variantBytes,variantMs);variantSources=variantCPU=variantGPU=variantReadFailed=0;variantBytes=0;variantMs=0;if(frames%60==0){MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;if(GlobalMemoryStatusEx(&memory))refreshBudget(memory);}buildsThisFrame=readsThisFrame=poseVerticesThisFrame=0;for(auto& vertices:poseKernelVertices)vertices=0;poseEnvelopes.beginFrame(false);envelopeBudget.reset();snapshots.clearFrame();rangeSnapshots.clearFrame();skinRangeSnapshots.clearFrame();if((draws||snapshotRejected)&&frames%600==0){logf("DISPLACEMENT cached=%zu bytes=%zu builds=%llu hits=%llu draws=%llu triangles=%llu refused=%llu terrain=%u walls=%u grass=%u models=%u stateRejected=%u heightRejected=%u shaderRejected=%u snapshotRejected=%u meshRejected=%u budgetMiB=%zu",entries.size(),resident,(unsigned long long)builds,(unsigned long long)hits,(unsigned long long)draws,(unsigned long long)triangles,(unsigned long long)refused,domainDraws[0],domainDraws[1],domainDraws[2],domainDraws[3],stateRejected,heightRejected,shaderRejected,snapshotRejected,meshRejected,cacheBudget>>20);
         logf("DISPLACEMENT snapshots attempts=%llu up=%llu buffered=%llu unknown=%llu arguments=%llu declaration=%llu stream=%llu instancing=%llu indexBuffer=%llu indexRange=%llu vertexRange=%llu budget=%llu lock=%llu unlock=%llu",(unsigned long long)snapshotAttempts,(unsigned long long)snapshotUP,(unsigned long long)(snapshotAttempts-snapshotUP),(unsigned long long)snapshotReasons[0],(unsigned long long)snapshotReasons[1],(unsigned long long)snapshotReasons[2],(unsigned long long)snapshotReasons[3],(unsigned long long)snapshotReasons[4],(unsigned long long)snapshotReasons[5],(unsigned long long)snapshotReasons[6],(unsigned long long)snapshotReasons[7],(unsigned long long)snapshotReasons[8],(unsigned long long)snapshotReasons[9],(unsigned long long)snapshotReasons[10]);}++frames;}
     void registerVariant(IDirect3DVertexShader9* original,const DWORD* code,size_t count,bool skinned=false){
-        auto old=shaders.find(original);if(old!=shaders.end()){drop(old->second.patched);drop(old->second.gpu);drop(old->second.source);shaders.erase(old);}std::vector<uint32_t> patched;Shader shader;
-        if(NorthlightDisplacementPatch::patch(reinterpret_cast<const uint32_t*>(code),count,patched,shader.binding,skinned)){const HRESULT result=d->CreateVertexShader(reinterpret_cast<const DWORD*>(patched.data()),&shader.patched);if(FAILED(result))logf("DISPLACEMENT vertex shader rejected: 0x%08lx model=%08lx",static_cast<unsigned long>(result),static_cast<unsigned long>(code[0]));}
-        if(gpuHeights()&&NorthlightDisplacementPatch::patch(reinterpret_cast<const uint32_t*>(code),count,patched,shader.gpuBinding,skinned,true)){
-            const auto result=d->CreateVertexShader(reinterpret_cast<const DWORD*>(patched.data()),&shader.gpu);if(FAILED(result))logf("DISPLACEMENT GPU height shader rejected: 0x%08lx",static_cast<unsigned long>(result));}
-        shader.source=original;original->AddRef();shaders.emplace(original,shader);
+        auto old=shaders.find(original);if(old!=shaders.end()){drop(old->second.patched);drop(old->second.gpu);drop(old->second.source);shaders.erase(old);}Shader shader;
+        // Preserve unsupported-program admission before spending pose budgets.
+        // The retained source already owns its bytecode; device variants are
+        // needed only after a draw passes its existing geometry distance proof.
+        std::vector<uint32_t> validated;shader.pending=NorthlightDisplacementPatch::patch(reinterpret_cast<const uint32_t*>(code),count,validated,shader.binding,skinned);
+        shader.source=original;shader.skinned=skinned;original->AddRef();shaders.emplace(original,shader);
     }
     void registerMaterial(IDirect3DVertexShader9* original,const DWORD* code,size_t count,unsigned domain){
         materials.erase(original);if(domain>4)return;Material m;const auto* words=reinterpret_cast<const uint32_t*>(code);
@@ -322,7 +340,7 @@ m.layered=NorthlightActorDeformation::compile(words,count,m.uv1,true,2,5,1)&&Nor
     }
     bool prepare(IDirect3DVertexShader9* original,unsigned domain,unsigned material,const Args& args){
         using P=NorthlightMaterialProfile;P::Scope timing(profile,P::Admission);
-        current=nullptr;lastDepthLower=0;strength=domain==4?modelStrength:worldStrength;range=domain==4?modelRange:worldRange;detail=domain==4?modelDetail:domain==3?std::min(worldDetail,3u):worldDetail;auto shader=materials.find(original);auto patched=shaders.find(original);if(shader==materials.end()||strength<=0||domain>4||patched==shaders.end()||!patched->second.patched){++shaderRejected;return false;}
+        current=nullptr;lastDepthLower=0;strength=domain==4?modelStrength:worldStrength;range=domain==4?modelRange:worldRange;detail=domain==4?modelDetail:domain==3?std::min(worldDetail,3u):worldDetail;auto shader=materials.find(original);auto patched=shaders.find(original);if(shader==materials.end()||strength<=0||domain>4||patched==shaders.end()||(!patched->second.pending&&!patched->second.patched)){++shaderRejected;return false;}
         DWORD z=0,write=0,blendState=0;d->GetRenderState(D3DRS_ZENABLE,&z);d->GetRenderState(D3DRS_ZWRITEENABLE,&write);d->GetRenderState(D3DRS_ALPHABLENDENABLE,&blendState);
         bool cutout=false;if(blendState&&write){DWORD alpha=0,src=0,dst=0,func=0;d->GetRenderState(D3DRS_ALPHATESTENABLE,&alpha);d->GetRenderState(D3DRS_SRCBLEND,&src);d->GetRenderState(D3DRS_DESTBLEND,&dst);d->GetRenderState(D3DRS_ALPHAFUNC,&func);cutout=alpha&&src==D3DBLEND_SRCALPHA&&dst==D3DBLEND_INVSRCALPHA&&(func==D3DCMP_GREATER||func==D3DCMP_GREATEREQUAL);}
         if(!z||(!write&&domain!=1)||(blendState&&!cutout&&!(domain==1&&material==2))){++stateRejected;return false;}
@@ -380,6 +398,7 @@ m.layered=NorthlightActorDeformation::compile(words,count,m.uv1,true,2,5,1)&&Nor
             for(unsigned r=0;r<3;++r){low[r]=high[r]=controls[r][3];for(unsigned k=0;k<3;++k){const float a=controls[r][k]*b.low[k],z=controls[r][k]*b.high[k];low[r]+=std::min(a,z);high[r]+=std::max(a,z);}}}
         float closestSquared=0;for(unsigned r=0;r<3;++r){float v=low[r]>0?low[r]:high[r]<0?high[r]:0;closestSquared+=v*v;}if(closestSquared>=range*range){++distanceRejected;return false;}
         if(shader->second.skinned){const float a=range*range,b=a*.5625f;controls[0][0]=strength*std::clamp((a-closestSquared)/(a-b),0.f,1.f);controls[0][1]=controls[0][2]=controls[0][3]=0;}
+        if(!ensureVariant(patched->second)){++shaderRejected;return false;}
         timing.next(P::HeightRead);
         NorthlightDrawSnapshot::Ref<IDirect3DBaseTexture9> tex,tex1;if(FAILED(d->GetTexture(0,tex.out()))||!tex.p||tex->GetType()!=D3DRTYPE_TEXTURE)return false;
         if(domain==2&&material==6&&(FAILED(d->GetTexture(1,tex1.out()))||!tex1.p||tex1->GetType()!=D3DRTYPE_TEXTURE||!shader->second.layered))return false;
@@ -434,7 +453,7 @@ m.layered=NorthlightActorDeformation::compile(words,count,m.uv1,true,2,5,1)&&Nor
         // World terrain-coverage variants keep the native input layout but are
         // created by a separate subsystem. Patch each live variant once.
         if(shader==shaders.end()&&shaders.size()<4096){UINT bytes=0;if(SUCCEEDED(vs->GetFunction(nullptr,&bytes))&&bytes&&bytes<=65536*4){std::vector<DWORD> words(bytes/4);if(SUCCEEDED(vs->GetFunction(words.data(),&bytes))){bool relative=false;for(auto word:words)if((word&0x80002000u)==0x80002000u&&NorthlightShadowShader::regType(word)==2)relative=true;registerVariant(vs.p,words.data(),words.size(),relative);}}shader=shaders.find(vs.p);}
-        if(shader==shaders.end()||!shader->second.patched)return original();
+        if(shader==shaders.end()||!ensureVariant(shader->second))return original();
         const bool gpu=current->height&&shader->second.gpu;if(current->height&&!gpu)return original();
         const auto& binding=gpu?shader->second.gpuBinding:shader->second.binding;
         if(gpu){const unsigned midpoint=binding.count==2?1:4;std::fill(controls[midpoint],controls[midpoint]+4,0.f);controls[midpoint][0]=.5f;}

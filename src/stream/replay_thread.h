@@ -253,8 +253,17 @@ private:
             StreamQuery* q=pending_[i];bool done=false;
             if(q->dead.load()||!q->inner)done=true;
             else{
-                unsigned char buf[64]={};add(core.q.stats.queryPolls);
-                const HRESULT hr=static_cast<IDirect3DQuery9*>(q->inner)->GetData(buf,q->dataSize,0);
+                unsigned char buf[64]={};HRESULT hr;
+                // A FLUSH batch may already have completed this EVENT generation.
+                // Reuse that terminal result; a new END still takes the real poll.
+                if(q->type==8&&q->issueSeen&&q->issueSeenEpoch==core.queryEpoch.load(std::memory_order_relaxed)&&
+                   q->eventDoneGen.load(std::memory_order_acquire)==q->issueSeen){
+                    hr=q->eventStatus.load(std::memory_order_relaxed);
+                    if(hr==S_OK){const BOOL value=q->eventValue.load(std::memory_order_relaxed);std::memcpy(buf,&value,sizeof value);}
+                }else{
+                    add(core.q.stats.queryPolls);
+                    hr=static_cast<IDirect3DQuery9*>(q->inner)->GetData(buf,q->dataSize,0);
+                }
                 if(q->type==8)q->completeEvent(hr,buf);
                 if(hr==S_OK){q->writeResult(buf,q->dataSize);q->readyGen.store(q->issueSeen,std::memory_order_release);done=true;}
                 else if(q->type==8&&FAILED(hr))done=true;
@@ -456,9 +465,10 @@ private:
             (unsigned long long)get(s.texShadowHits),(unsigned long long)get(s.texShadowFresh),(unsigned long long)get(s.texShadowReadbacks),(unsigned long long)get(s.texShadowEvicted),(unsigned long long)get(s.texShadowFreshUseful),(unsigned long long)get(s.texShadowRefused),get(s.texShadowRefusedBytes)/1048576.0,
             (unsigned long long)get(s.texShadowSpared),(unsigned long long)get(s.texShadowSpareReuses));   // 0.3.200 (pipeline): spared=kept/reused
         // 0.3.196 (task 12): fresh keeps skipped for lack of room, readbacks by cause (fresh drop + re-locked evict + never shadowed); total and per frame in this window.
-        {const std::uint64_t sk=get(s.texShadowFreshSkipped),rf2=get(s.readbackAfterFreshDrop),rr=get(s.readbackAfterRelockedEvict),rn=get(s.readbackNeverShadowed),rs=get(s.readbackAfterFreshSkip),ex=get(s.expressReadbacks),exNs=get(s.expressNs);const double f=sampleEvery?1.0/double(sampleEvery):0.0;
+        {const std::uint64_t sk=get(s.texShadowFreshSkipped),rf2=get(s.readbackAfterFreshDrop),rr=get(s.readbackAfterRelockedEvict),rn=get(s.readbackNeverShadowed),rs=get(s.readbackAfterFreshSkip),ex=get(s.expressReadbacks),exNs=get(s.readbackExpressNs);const double f=sampleEvery?1.0/double(sampleEvery):0.0;
          put(buf,n," texFreshSkipped=%llu(%.2f/frame) texReadbackCause[freshDrop=%llu(%.2f) relockedEvict=%llu(%.2f) neverShadowed=%llu(%.2f) freshSkip=%llu(%.2f)] express=%llu(%.2f/frame) expressMs=%.3f/frame",(unsigned long long)sk,double(sk-lastTexSkip_)*f,(unsigned long long)rf2,double(rf2-lastRbFresh_)*f,
              (unsigned long long)rr,double(rr-lastRbRelocked_)*f,(unsigned long long)rn,double(rn-lastRbNever_)*f,(unsigned long long)rs,double(rs-lastRbSkip_)*f,(unsigned long long)ex,double(ex-lastExpress_)*f,double(exNs-lastExpressNs_)*f/1e6);
+         put(buf,n," queryExpressPosts=%llu queryExpressHits=%llu queryExpressFallbacks=%llu queryExpressTotalMs=%.3f",(unsigned long long)get(s.expressQueries),(unsigned long long)get(s.expressQueryHits),(unsigned long long)get(s.expressQueryFallbacks),double(get(s.queryExpressNs))/1e6);
          lastExpress_=ex;lastExpressNs_=exNs;lastTexSkip_=sk;lastRbFresh_=rf2;lastRbRelocked_=rr;lastRbNever_=rn;lastRbSkip_=rs;}
         {const std::uint64_t rbD=get(s.dynShadowReadbacks),rbS=get(s.stShadowReadbacks),evD=get(s.dynShadowEvicted),evS=get(s.stShadowEvicted),evH=get(s.hotShadowEvicted),rf=get(s.relockRefused);
          const double f=sampleEvery?1.0/double(sampleEvery):0.0;
@@ -556,7 +566,7 @@ private:
                 if(diag_&&a->Stage<StreamState::kTSStages&&unsigned(a->Type)<StreamState::kTSTypes){auditTss_[a->Stage][a->Type]=a->Value;note(StreamState::bitTss(a->Stage,unsigned(a->Type)));}}
             else if(h->id==(std::uint16_t)Cmd::Query_Issue){const auto* a=reinterpret_cast<const Args_Query_Issue*>(h+1);
                 auto* q=static_cast<StreamQuery*>(a->self);
-                if((a->dwIssueFlags&D3::kIssueEnd)&&!q->dead.load()){++q->issueSeen;if(std::find(pending_.begin(),pending_.end(),q)==pending_.end())pending_.push_back(q);}}
+                if((a->dwIssueFlags&D3::kIssueEnd)&&!q->dead.load()){++q->issueSeen;q->issueSeenEpoch=core.queryEpoch.load(std::memory_order_relaxed);if(std::find(pending_.begin(),pending_.end(),q)==pending_.end())pending_.push_back(q);}}
             else if(h->id==(std::uint16_t)Cmd::Device_DrawPrimitive||h->id==(std::uint16_t)Cmd::Device_DrawIndexedPrimitive){
                 ++draws_;if(current_&&(draws_&31)==0){SnapshotStats::ageDraws.fetch_add(draws_>=current_->triggerDraw?draws_-current_->triggerDraw:0,std::memory_order_relaxed);SnapshotStats::ageSamples.fetch_add(1,std::memory_order_relaxed);}}   // game_snapshot.h noteAge, sampled
             return;
