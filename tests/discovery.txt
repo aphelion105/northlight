@@ -8,7 +8,9 @@ test_actor_shadows_wiring.py
 test_actor_texture_worker.py
 test_affected_tests.py
 test_ao_blur.py
+test_ao_fog_capture.py
 test_ao_fold.py
+test_ao_methods.py
 test_ao_rotation_stripes.py
 test_ao_texel_snap.py
 test_art_layer.py
@@ -59,8 +61,10 @@ test_equipment_light_proof_client.py
 test_equipment_lights.py
 test_expired_world_geometry.py
 test_fast_memcmp.py
+test_five_path_perf.py
 test_fog_clouds.py
 test_fog_clouds_wiring.py
+test_fog_empty_intervals.py
 test_fog_locale.py
 test_fog_motion.py
 test_fog_temporal_wiring.py
@@ -70,6 +74,7 @@ test_geometry_handoff.py
 test_gi_quality.py
 test_gpu_budget.py
 test_gpu_budget_wiring.py
+test_gtao_grazing.py
 test_horizon_haze.py
 test_index_working_set.py
 test_install_delivery.py
@@ -105,6 +110,7 @@ test_mirror_resources.py
 test_model_index_cache.py
 test_model_replay_pool.py
 test_model_snapshot_cache.py
+test_model_world_context.py
 test_moon_cascade_weight.py
 test_mount_emitter_patch.py
 test_name_mask.py
@@ -127,6 +133,7 @@ test_probe_blend.py
 test_probe_blend_equivalence.py
 test_probe_relight_cache.py
 test_probe_texture_upload.py
+test_production_draw_timers.py
 test_progressive_gi_worker.py
 test_quality_docs.py
 test_quality_settings.py
@@ -191,6 +198,7 @@ test_terrain_metadata.py
 test_terrain_reach_fallback.py
 test_terrain_reach_fallback_wiring.py
 test_terrain_shadow_candidates.py
+test_terrain_shadow_coverage.py
 test_terrain_shared_snapshot.py
 test_terrain_snapshot.py
 test_terrain_tracked_cache.py

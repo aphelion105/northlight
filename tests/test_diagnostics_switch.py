@@ -19,6 +19,8 @@ GATES=('NorthlightDiagnostics::enabled()','diagnostics()','sampled()','captureSa
 # Ungated lines that stay with Diagnostics=0: format prefix -> label.
 KEEP={
  'CELESTIAL cloudOrder=':'one-off: first phase composition',
+ 'AO method=':'start-up: loaded AO settings',
+ 'TERRAIN SHADOW farCoverage':'capped: first eight shader-patch registrations',
 
  'Depth snapshot DF24 refused':'one-off: depth format changes to INTZ for the rest of the session',
  'GAME thread priority':'start-up: successful device creation',
