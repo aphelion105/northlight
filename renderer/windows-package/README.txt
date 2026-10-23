@@ -1,4 +1,4 @@
-NORTHLIGHT RENDERER __RELEASE_VERSION__ — WINDOWS
+NORTHLIGHT RENDERER __RELEASE_VERSION__ вЂ” WINDOWS
 
 Northlight renderer adds lighting, shadows, fog, indirect light (GI) and sky
 effects to the WoW 3.3.5a client. The package works with both an HD client and
@@ -9,7 +9,7 @@ never starts the game and never changes wow.exe.
 DOWNLOADS
 - Northlight-__RELEASE_VERSION__-Windows.zip: the installer and the renderer (about 20 MB).
 - Nothing else: the installer builds the world cache (world-cache) itself from
-  the game's own files, for an unmodified and an HD client alike (10–40 min).
+  the game's own files, for an unmodified and an HD client alike (10вЂ“40 min).
 
 REQUIREMENTS
 - 64-bit Windows 10 or 11 and a WoW 3.3.5a (12340) client.
@@ -21,7 +21,7 @@ REQUIREMENTS
   Install.cmd --backend dxvk2 (DXVK 2.7.1).
 - AMD RX 5000/6000 (RDNA 1/2): DXVK's own release notes say DXVK 3 performs
   badly on them on Windows. Install with Install.cmd --backend dxvk2.
-- Only ASCII characters in the game folder path (no ä, ö, å or other special
+- Only ASCII characters in the game folder path (no Г¤, Г¶, ГҐ or other special
   characters), a path of at most about 150 characters, and the game must not
   be in Program Files.
 - About 13 GB of free space on the game's drive and at least 8 GB of memory
@@ -82,7 +82,7 @@ current choice.
 If the game folder already holds someone else's patch-z.mpq, the installer
 leaves it in place, skips the lighting layer and builds the cache itself so
 that its content is included (it says so at the end).
-An old full renderer package (0.3.98–0.3.144), which installed the world-cache
+An old full renderer package (0.3.98вЂ“0.3.144), which installed the world-cache
 with the package, is undone first; the installer asks about this.
 
 HOW THE RENDERER IS INSTALLED
@@ -136,19 +136,21 @@ northlight-quality.ini in the game folder chooses the quality: Preset=Quality (t
 default, full quality), Balanced or Performance. On a weaker processor, Balanced
 or Performance raises the FPS by lightening mainly shadows and lamps.
 The file is read when the game starts; restart WoW after a change.
-The installer adds the file if it does not exist yet. An update never changes
-your lines or values: it only appends the settings your file does not mention
-yet, commented out (the preset's values apply until you enable one).
+The installer adds the file if it does not exist yet. For Quality, an update
+enables newly introduced effect bundles once, including their required settings.
+Other overrides stay intact; later edits to migrated effects are preserved.
+Balanced and Performance are not opted into Quality effects. Missing ordinary
+settings are appended commented out, so the preset's values apply.
 northlight-renderer.log shows the values in use (QUALITY).
 Individual settings (Quality / Balanced / Performance):
   ActorShadowBudgetMiB  0 / 16 / 8     character shadows, nearest first (0 = no limit)
   ActorShadowRadius     40 / 35 / 20   characters more than N yards from your own character cast no shadow (0..200; 0 = no limit; 1..3 = your own character, mount, weapons and whatever is right next to you)
-  ActorShadows          1 / 1 / 1      shadows of characters and moving objects (0 = static shadows only: terrain, buildings, and the trees and objects placed on the map; characters, creatures, mounts and pets lose their shadow, your own character too, and so do objects the server places, such as doors, elevators, ships, zeppelins, mailboxes and event decorations; swaying trees, windmills and flags keep a shadow frozen in their rest pose; with 0 the game's own round shadows under characters are drawn unchanged, with 1 they follow BlobShadowStrength; saves about 4–5 ms per frame in crowds and about 1 ms in quiet areas; with GIDynamicProbes=1 characters are still copied about every 200 ms for indirect light, GIDynamicProbes=0 removes that too; 0 also turns off the ShadowFateDiagnostics and DiagReplayProbe settings; no preset changes this); with 1, shop signs and other small still objects the server places keep their shadow when the camera turns away
+  ActorShadows          1 / 1 / 1      shadows of characters and moving objects (0 = static shadows only: terrain, buildings, and the trees and objects placed on the map; characters, creatures, mounts and pets lose their shadow, your own character too, and so do objects the server places, such as doors, elevators, ships, zeppelins, mailboxes and event decorations; swaying trees, windmills and flags keep a shadow frozen in their rest pose; with 0 the game's own round shadows under characters are drawn unchanged, with 1 they follow BlobShadowStrength; saves about 4вЂ“5 ms per frame in crowds and about 1 ms in quiet areas; with GIDynamicProbes=1 characters are still copied about every 200 ms for indirect light, GIDynamicProbes=0 removes that too; 0 also turns off the ShadowFateDiagnostics and DiagReplayProbe settings; no preset changes this); with 1, shop signs and other small still objects the server places keep their shadow when the camera turns away
   BlobShadowStrength    50 / 50 / 50   how dark the game's own round shadow under characters is while the renderer's character shadows are on (0..100; 100 = as the game draws it, 0 = hidden, in between = fainter, or hidden if the game's blend cannot be lightened; FPS cost not measured: a cached texture check on small draws and two SetTexture calls per blob draw, as in 0.3.192 and earlier; 100 skips it)
   MinSkinnedTriangles   100/150/180    small animated parts cast no shadow
   FarShadowInterval     4 / 5 / 6      distant shadows (beyond ~48 m) are drawn every Nth frame (1..16)
   NearShadowInterval    1 / 2 / 2      moving parts of the near shadows (characters) every Nth frame (1..16)
-  LocalLightLimit       32 / 24 / 16   lamps lighting at the same time (8..128; larger limits require more rendering work)
+  LocalLightLimit       48 / 32 / 24   lamps lighting at the same time (8..128; lamps in view first; the GPU budget never lowers it)
   PointShadows          1 / 1 / 1      bounded shadows from selected compact local sources, day and night; diffuse glows are excluded
   PointShadowRefreshMs  0 / 33 / 33    lamp shadow update interval
   PointShadowFacesPerFrame 6 / 6 / 6   lamp shadow directions updated per frame (1..6; 6 = all at once; lower = smaller spikes, a brief seam at the edge)
@@ -164,9 +166,9 @@ Individual settings (Quality / Balanced / Performance):
   GIFastBVH             1 / 1 / 1      new fast ray tracing (0 = the 0.3.137 version)
   GIStrength            60 / 60 / 60   indirect light strength in percent (0..100; 60 = standard, 100 = maximum)
   GIDistance            76 / 52 / 52   reach of the indirect light from the camera in yards (36..84, rounded down to 36/44/52/60/68/76/84; above 52 the background computation is about 1.3x (60), 1.65x (68), 2x (76) and 2.5x (84), a new area fills more slowly and slightly more memory is used; small FPS impact, because the larger light texture is updated while moving)
-  GIProbeAhead          0 / 0 / 0      moves the indirect light area forward from the camera towards your own character, in yards (0..48; 0 = around the camera; the camera is about 15–27 yards behind the character; values near the camera distance, about 15–25 (20 recommended), bring light further ahead of the character and reduce background computation when the camera turns; large values (40+) increase it; turning the camera can move the area)
+  GIProbeAhead          0 / 0 / 0      moves the indirect light area forward from the camera towards your own character, in yards (0..48; 0 = around the camera; the camera is about 15вЂ“27 yards behind the character; values near the camera distance, about 15вЂ“25 (20 recommended), bring light further ahead of the character and reduce background computation when the camera turns; large values (40+) increase it; turning the camera can move the area)
   HorizonHaze           50 / 50 / 50   horizon haze: distant terrain and the lowest band of the sky in the game's own fog colour, in percent (0..100; 0 = off, the image as in 0.3.153; the fog toggle Ctrl+Shift+F7 also turns off the haze; small FPS impact)
-  HorizonHazeStart      75 / 75 / 75   where the haze starts on the terrain, in percent of the game's own fog end distance (50..95; nearer terrain does not change; raise to 85–95 if the haze reaches too close)
+  HorizonHazeStart      75 / 75 / 75   where the haze starts on the terrain, in percent of the game's own fog end distance (50..95; nearer terrain does not change; raise to 85вЂ“95 if the haze reaches too close)
   HorizonHazeBand       6 / 6 / 6      how many degrees above the horizon the haze rises in the sky (2..15)
   HorizonHazeTerrain    1 / 1 / 1      1 = haze on distant terrain and in the sky, 0 = only the sky band
   ShadowFateDiagnostics 0 / 0 / 0      shadow diagnostics in the log (1 = on; the image does not change)
@@ -181,14 +183,15 @@ Individual settings (Quality / Balanced / Performance):
   RainFog               1 / 1 / 1      how strongly rain and snow thicken the fog and haze and dim shafts, sun and moon (0..2; 0 = no change, 2 = twice as strong; snow acts at 60 percent)
   FogClouds             1 / 1 / 0      low fog banks that drift with the wind, thicker and faster in rain, few and faint in clear weather and then only in forest and grass zones (0 = none; its own half-resolution pass; Ctrl+Shift+F7 and F10 turn them off with the rest)
   FogCloudDensity       100 / 100 / 100 how much of the ground the fog clouds cover, in percent (0..200; 0 = none, 200 = twice as much)
-  GpuBudgetMs           4 / 3 / 2      graphics card time per frame for Northlight's own effects, in ms (0..20; 0 = off, always the full picture); while the measured time stays over it, fewer fog cloud steps in two stages, then fewer fog steps and at most 16 lamps; the full picture comes back when the time is well under it for a few seconds
-  ActorShadowCpuMs      3 / 3 / 2      processor time per frame for Northlight's effects on the renderer thread, in ms (0..20; 0 = off, always ActorShadowRadius); while the measured time stays over it and Northlight's render thread is what limits the frame rate (the game waits for it or it skips frames to catch up, and the graphics card is not the limit), the character shadow radius shrinks in three steps (30, 20, 12 yards, at most ActorShadowRadius); the set radius comes back when the time is well under it for a few seconds
+  GpuBudgetMs           4 / 3 / 2      graphics card time per frame for Northlight's own effects, in ms (0..20; 0 = off, always the full picture); while the measured time stays over it, fewer fog cloud steps in two stages, then fewer fog steps (never fewer lamps); the full picture comes back when the time is well under it, or the graphics card is not what limits the frame rate, for a few seconds
+  ActorShadowCpuMs      3 / 3 / 2      processor time per frame for Northlight's effects on the renderer thread, in ms (0..20; 0 = off, always ActorShadowRadius); while the measured time stays over it and Northlight's render thread is what limits the frame rate (the game waits for it or it skips frames to catch up, and the graphics card is not the limit), the character shadow radius shrinks in three steps (30, 20, 12 yards, at most ActorShadowRadius); the set radius comes back when the time is well under it, or the renderer thread is not the limit, for a few seconds
   StreamFramesAhead     2 / 2 / 2      with CommandStream=1, how many frames the game may record before the renderer thread has drawn them (1..3; 1 = as in 0.3.199; more smooths out spikes, the picture can lag by that many frames and the stream may use up to 16 MiB more memory; read at game start)
   ReplayJobs            1 / 1 / 1      the renderer thread hands the lamp choice, the fog clouds and sun-ray fog, the terrain under the sun and moon shadows and part of the character shadow culling to 1 to 4 helper threads; the picture is exactly the same (0 = all on the renderer thread as before 0.3.200, for comparisons)
   StreamFrameSkip       1 / 1 / 1      with CommandStream=1, 1 = when the renderer thread is two whole frames behind, it skips drawing the older one (its uploads and settings still apply; frames that draw into textures, use occlusion tests or copy the picture are always drawn; at least every third frame is shown) so the game does not wait; 0 = every frame is drawn; read at game start
   StreamOcclusionLocal  1 / 1 / 1      with CommandStream=1, 1 = the game's sun/moon glare visibility query is answered with the latest measured result instead of waiting for the renderer thread (0 = always wait, as before; read at game start)
   DepthFuncAware        1 / 1 / 1      1 = draws that ignore depth (the game's depth comparison set to ALWAYS) are recognised: the effect layer holds back only effects that test depth (a world draw that ignores depth while effects are held back flushes them: that frame is drawn the old way and the layer pauses briefly), and the font-mod UI fallback requires the UI's depth setting; 0 = judged by the Z on/off flag only, as before (0..1; read once at start)
   WeatherMemory         1 / 1 / 1      1 = the weather effects follow the game's own weather state (type including sand, intensity), read from its memory, on frames where the sky is drawn (indoors they fade out); the art layer's weather textures are the fallback when the read fails (0 = only those textures' draws decide, as before)
+  EquipmentLights        1 / 0 / 0      experimental: native M2 point lights and proven additive particles light nearby surfaces and fog; live particles require CommandStream=1 and contribute only while drawn; bounded to 8 sources, shares LocalLightLimit, deduplicates native/static lights (0..1, read at start; needs visual testing)
   ContactAO             1 / 1 / 1      1 = the darkening in creases and corners (contact shading) is computed, 0 = off: it and its smoothing pass are skipped, which saves about 0.5 ms of graphics card time per frame; the bloom glow stays (0..1; read once at start)
   NightBrightness       50 / 50 / 50   gives back the night ambient light the lighting layer takes away (0..100; 0 = Northlight's full night darkness, 100 = the original game's night ambient); added like light, so shadows and lamps keep their contrast; fades in with sunset and out with sunrise; daytime, sky, water and places without a sky of their own (dungeons, raids) are unchanged
   ActorShadowDetail     1 / 1 / 0      characters and other moving casters near you get their own shadow map (four times finer) and a soft filter that is sharp at the caster and softer further away (0 = moving casters are drawn into the near shadow map as before 0.3.209; ActorShadows=0 turns it off too; 0..1)
@@ -198,7 +201,7 @@ Individual settings (Quality / Balanced / Performance):
   NameMaskDebug         0 / 0 / 0      1 = the pixels NameMask protects are painted 50 percent magenta over the finished frame (a diagnostic view); 0 = off (0..1)
   PointShadowLimit 4 / 4 / 4   See the quality INI for the allowed range.
 When both NearShadowInterval and FarShadowInterval are at least 2, frames that
-draw neither shadow also skip copying the character geometry (about 1–1.5 ms
+draw neither shadow also skip copying the character geometry (about 1вЂ“1.5 ms
 of CPU per skipped frame). Light and normal frames alternate: the average FPS
 rises, the slowest frames do not get faster.
 Near shadows lag by at most N frames (2: about 33 ms at 60 FPS); the shadow of a

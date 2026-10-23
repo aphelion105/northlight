@@ -229,6 +229,7 @@ def build(cache,output,maps,assets=None,manifest='manifest.json'):
         result={'format':'FGL1','maps':reports,'statistics':dict(stats),'errors':errors,'provenance':provenance,
                 'emitter_catalog_sha256':hashlib.sha256(Path(__file__).with_name('outdoor-light-profiles.json').read_bytes()).hexdigest(),
                 'emitter_policy_sha256':hashlib.sha256(Path(__file__).with_name('outdoor_light_profiles.py').read_bytes()).hexdigest(),
+                'emitter_extension_sha256':hashlib.sha256(Path(__file__).with_name('wotlk-emitter-profiles.json').read_bytes()).hexdigest() if Path(__file__).with_name('wotlk-emitter-profiles.json').exists() else None,
                 'builder_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),'archive_fingerprint':assets.fingerprint(),
                 'placement_builder_sha256':hashlib.sha256(Path(__file__).with_name('world_light_placements.py').read_bytes()).hexdigest(),
                 'placement_sources':placement_provenance,'unsupported_assets':unsupported_assets,
