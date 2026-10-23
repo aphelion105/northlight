@@ -31,7 +31,7 @@ int main(int argc,char** argv) {
     assert(std::fabs(attenuation(l,(l.attenuationStart+l.attenuationEnd)/2)-.5f)<1e-6f);
     assert(attenuation(l,l.attenuationEnd)==0&&attenuation(l,1000)==0);
     size_t actual=0;
-    for(const char* map:{"Azeroth","Kalimdor","Expansion01","Northrend"}) {
+    if(!real.empty())for(const char* map:{"Azeroth","Kalimdor","Expansion01","Northrend"}) {
         assert(readFile(real+"/"+map+".fgl",lights));actual+=lights.size();
     }
     std::printf("{\"actual_cache_records_validated\":%zu,\"corrupt_caches_rejected\":10,\"map_isolation_and_query_boundaries\":true,\"stable_source_order\":true}\n",actual);

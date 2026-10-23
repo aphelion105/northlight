@@ -130,7 +130,7 @@ checks['attempt latched before the resolve, resolve inside RawScope, success rec
 checks['runtime undo needs captured and earlyCaptured, clears captured, counts undone']=(lambda u:all(x in u for x in ('captured&&earlyDepth.earlyCaptured','captured=false','earlyDepth.undo()','++earlyResolveUndone')))(impl[undo-80:trig])
 checks['no SetRenderState and no resolve in the early/undo/census region']='SetRenderState' not in impl[dom:cap] and impl[dom:cap].count('resolveDepth()')==1
 checks['state reads include Z write, blend, src/dst, colour write, skinned']=all(x in impl[dom:cen] for x in ('D3DRS_ZWRITEENABLE','D3DRS_ALPHABLENDENABLE','D3DRS_SRCBLEND','D3DRS_DESTBLEND','D3DRS_COLORWRITEENABLE','classifyVs(vs).skinned'))
-hook=r[r.index('template<class Capture,class Draw> HRESULT drawHook('):][:3500]
+hook=r[r.index('template<class Capture,class Draw> HRESULT drawHook('):];hook=hook[:hook.index('\n    }\n')+7]
 # 0.3.193: the real draw goes through blobFaintDraw (it wraps terrainShadowDraw) in both drawHook modes.
 checks['early block runs before the real draw (prepareDraw/prepareDrawImpl precede draw in both drawHook modes)']=(
     hook.index('prepareDraw(capture,count);')<hook.index('nameMaskDraw(rainBlend,claimed||mist,draw)')<hook.index('prepareDrawImpl(capture,count);')<hook.rindex('nameMaskDraw(rainBlend,claimed||mist,draw)'))

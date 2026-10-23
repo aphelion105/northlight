@@ -83,9 +83,15 @@ gates_block=renderer[renderer.index('    // 0.3.187 per-frame draw gates'):rende
 _a=gates_block.index('    void rainMrtUnbind(){');_b=gates_block.index('    template<class Draw> HRESULT rainBlendDraw(');_e=gates_block.index('\n    }\n',_b)+7
 checks_rain_stub=(gates_block[_a:_e].count('rainMrtBegin')>=1)
 gates_block=gates_block[:_a]+'    void rainMrtUnbind(){if(rainMrtBound){rainMrtBound=false;}}\n    struct WaterStub{bool isMrtBound()const{return false;}bool hasVertex(void*)const{return false;}};WaterStub* water=nullptr;struct{bool valid=false;}waterPending;bool nextDrawIsWater(){return false;} /* 0.3.214 (water MRT): the water mask never runs here */\n    template<class Raw,class Chain> HRESULT waterMrtDraw(Raw,Chain chain){return chain();}\n    template<class Draw> HRESULT rainBlendDraw(bool rain,bool claimed,Draw draw){(void)rain;return blobFaintDraw(claimed,draw);}\n    template<class Draw> HRESULT nameMaskDraw(bool rain,bool claimed,Draw draw){return rainBlendDraw(rain,claimed,draw);} /* 0.3.212 (task 32) */\n'+gates_block[_e:]
+# Optional particle/material/HDR paths are disabled in this legacy gate equivalence model.
+particle_start=gates_block.find('    NorthlightParticleCapture::Capture particleCapture;')
+if particle_start>=0:
+    particle_end=gates_block.index('    template<class Capture,class Draw> HRESULT drawHook(',particle_start)
+    gates_block=gates_block[:particle_start]+"    bool particleOn=false;NorthlightParticleCapture::Prepared prepareParticleDraw(bool){return {};}void submitParticleDraw(const NorthlightParticleCapture::Prepared&,bool,bool){}\n"+gates_block[particle_end:]
 new_members='\n'.join([member(renderer,'template<class Work> bool extensionWork('),member(renderer,'template<class Capture> void prepareDraw(Capture capture,UINT count)'),
     renderer[renderer.index('    // 0.3.196 (task 12): one-entry per-draw vertex shader classification'):renderer.index('    std::unordered_map<IDirect3DPixelShader9*, uint64_t> psHashes;')],
     member(renderer,'void planTerrainShadowSwap('),member(renderer,'void dropTerrainShadowSwap('),member(renderer,'template<class Draw> HRESULT terrainShadowDraw('),
+    (member(renderer,'template<class Draw> HRESULT materialNativeDraw(') if 'template<class Draw> HRESULT materialNativeDraw(' in renderer else ''),
     gates_block,member(renderer,'bool blobFilterActive()const'),member(renderer,'NorthlightShadowBlobFilter::Result blobClaim(UINT count)'),
     member(renderer,'HRESULT STDMETHODCALLTYPE DrawPrimitive(D3DPRIMITIVETYPE t,UINT start,UINT count) override')])
 old_draws=[l for l in OLD_DRAWS.strip('\n').split('\n')]
@@ -110,9 +116,15 @@ def old_parts(line):
     return sig,cap.group(1),cap.group(2),cap.group(3),re.search(r'terrainShadowDraw\(claimed,\[&\]\{return (ext->\w+\([^)]*\));\}\)',line).group(1)
 def new_parts(sig):
     body=member(renderer,sig+' override')
-    draw=re.search(r'auto draw=\[&\]\{return (ext->\w+\([^)]*\));\};',body).group(1)
+    draw=re.search(r'return (ext->Draw\w+\([^)]*\));',body).group(1)
     cap=re.search(r'return drawHook\(t,count,\[&\]\(IDirect3DVertexShader9\* vs\)\{(.*?)captureWater\(vs,(\w+::\w+),draw\);\},draw\);\}',body)
-    return cap.group(1),cap.group(2),draw,body
+    capture=cap.group(1)
+    if capture.startswith('if(autoBump'):
+        prefix,capture=capture.split('world->capture',1)
+        assert prefix.startswith('if(autoBump&&enabled&&!applied&&!failed&&!memoryGuard.capsHalved())')
+        assert prefix.count('if(')==1 and 'autoBump->capture(vs,' in prefix and prefix.endswith(';}')
+        capture='world->capture'+capture
+    return capture,cap.group(2),draw,body
 ok=True
 for line in old_draws:
     sig,cap,water,water_draw,draw=old_parts(line)
@@ -124,7 +136,7 @@ checks['four overrides: 0.3.184 capture, water capture and draw, unchanged, thro
 # Reset, and finishFrameImpl before its final latchDrawGates().
 finish=member(renderer,'void finishFrameImpl() {')
 reset=member(renderer,'HRESULT STDMETHODCALLTYPE Reset(D3DPRESENT_PARAMETERS* pp) override')
-ctor=renderer[renderer.index('    Device(IDirect3DDevice9* d,IDirect3D9* p)'):renderer.index('    ~Device() {')]
+ctor=renderer[renderer.index('    Device(IDirect3DDevice9* d,IDirect3D9* p'):renderer.index('    ~Device() {')]
 code=re.sub(r'"(?:[^"\\]|\\.)*"','""',re.sub(r'/\*.*?\*/|//[^\n]*','',renderer))  # no comments, no string literals
 writes=lambda name,text=None:re.findall(r'(?<![.>\w])'+name+r'\s*=(?!=)\s*([^;,]*)',code if text is None else text)
 checks['enabled: rises only by F10 in finishFrameImpl; else only lowered']=sorted(writes('enabled'))==['!enabled','false','true'] and 'if(k10&&!key10){enabled=!enabled;' in finish
@@ -187,7 +199,7 @@ struct Env{
     bool bit(const std::string& what,unsigned oneIn=2){return h(what)%oneIn==0;}
     void call(const std::string& line,const char* fault=nullptr){trace->push_back(line);if(fault&&faultOneIn&&h(fault)%faultOneIn==0){trace->push_back(std::string("throw ")+fault);throw std::bad_alloc();}}
 };
-struct IDirect3DVertexShader9{int id;Env* env;void Release(){env->trace->push_back("Release vs"+std::to_string(id));}};
+struct IDirect3DVertexShader9{int id;Env* env;void AddRef(){}void Release(){env->trace->push_back("Release vs"+std::to_string(id));}};
 struct IDirect3DPixelShader9{int id;Env* env;void Release(){env->trace->push_back("Release ps"+std::to_string(id));}};
 struct IDirect3DBaseTexture9{int id;Env* env;void Release(){env->trace->push_back("Release tex"+std::to_string(id));}};
 struct IDirect3DTexture9:IDirect3DBaseTexture9{HRESULT GetSurfaceLevel(UINT,IDirect3DSurface9**){return D3D_OK;}};
@@ -203,6 +215,7 @@ struct MockExt{
     HRESULT GetRenderTarget(DWORD,IDirect3DSurface9**){return HRESULT(-1);}HRESULT SetRenderTarget(DWORD,IDirect3DSurface9*){return D3D_OK;}HRESULT GetDepthStencilSurface(IDirect3DSurface9**){return HRESULT(-1);}HRESULT GetViewport(D3DVIEWPORT9*){return D3D_OK;}HRESULT SetViewport(const D3DVIEWPORT9*){return D3D_OK;}HRESULT GetScissorRect(RECT*){return D3D_OK;}HRESULT SetScissorRect(const RECT*){return D3D_OK;}HRESULT Clear(DWORD,const D3DRECT*,DWORD,D3DCOLOR,float,DWORD){return D3D_OK;}HRESULT CreateTexture(UINT,UINT,UINT,DWORD,D3DFORMAT,D3DPOOL,IDirect3DTexture9**,void*){return HRESULT(-1);}HRESULT CreateRenderTarget(UINT,UINT,D3DFORMAT,D3DMULTISAMPLE_TYPE,DWORD,int,IDirect3DSurface9**,void*){return HRESULT(-1);}
     HRESULT GetRenderState(D3DRENDERSTATETYPE,DWORD* v){*v=0;return D3D_OK;}HRESULT SetRenderState(D3DRENDERSTATETYPE,DWORD){return D3D_OK;}
     HRESULT GetVertexShader(IDirect3DVertexShader9** out){env->call("GetVertexShader");*out=&vs;return D3D_OK;}
+    HRESULT SetVertexShader(IDirect3DVertexShader9*){return D3D_OK;}HRESULT GetPixelShaderConstantF(UINT,float*,UINT){return D3D_OK;}HRESULT SetPixelShaderConstantF(UINT,const float*,UINT){return D3D_OK;}
     HRESULT DrawPrimitive(D3DPRIMITIVETYPE t,UINT s,UINT c){env->call("DrawPrimitive "+drawName(t,s,c));return env->bit("draw failure",6)?HRESULT(-2005530516):D3D_OK;}
 };
 struct MockWorld{
@@ -215,6 +228,7 @@ struct MockWorld{
     bool terrainShadowActive()const{return shadows&&composited;}
     bool frameDrawGates()const{return true;}
     bool recognizesWmo(IDirect3DVertexShader9*)const{return false;}bool isWorldShader(IDirect3DVertexShader9*)const{return false;}bool isSkinnedShader(IDirect3DVertexShader9*)const{return false;}
+    template<class... A> bool terrainShadowCoverage(A&&...){return false;}
     IDirect3DPixelShader9* terrainShadowReplacement(IDirect3DPixelShader9* p){env->call("terrainShadowReplacement "+psName(p),"fault replacement");return env->bit("replacement")?&replacement:nullptr;}
     void capture(D3DPRIMITIVETYPE t,INT base,UINT min,UINT vertices,UINT start,UINT count,bool indexed,IDirect3DVertexShader9*,bool a,bool b){
         env->call("capture "+drawName(t,start,count)+" "+std::to_string(base+min+vertices)+std::to_string(indexed)+std::to_string(a)+std::to_string(b),"fault capture");}
@@ -252,12 +266,18 @@ struct CpuScope{LONGLONG* e;explicit CpuScope(LONGLONG* o):e(o){}~CpuScope(){if(
 template<class T> static void drop(T*& p){if(p){p->Release();p=nullptr;}}
 struct Keys{struct{bool shadows=true;}settings;};
 struct GateCounts{unsigned blobCalls=0,blobTextures=0,blobClaimed=0;};
+namespace NorthlightParticleCapture{struct Prepared{};}
+namespace NorthlightAutoDisplacement{struct Args{struct{D3DPRIMITIVETYPE t;INT base;UINT min,vertices,start,count;bool indexed;}draw;};}
+struct ExtensionDevice{struct RawScope{explicit RawScope(MockExt&){}};};
+struct BumpMock{void beginDraw(){}template<class... A> void capture(A&&...){}template<class Draw> HRESULT geometryDraw(Draw draw,bool){return draw();}template<class Draw> HRESULT nativeDraw(Draw draw,IDirect3DVertexShader9*,IDirect3DPixelShader9*){return draw();}};
 struct Base{
     virtual ~Base()=default;
     virtual HRESULT DrawPrimitive(D3DPRIMITIVETYPE,UINT,UINT)=0;
     Trace trace;Env env;MockExt extObj;MockWorld worldObj;MockSky skyObj;MockBlobs blobsObj;
     MockExt* ext=&extObj;MockWorld* world=&worldObj;MockSky* celestialDiscs=nullptr;MockBlobs* shadowBlobs=nullptr;
     MirrorStateMock mirrorState;
+    BumpMock* autoBump=nullptr;struct{bool capsHalved()const{return false;}}memoryGuard;
+    template<class Draw> HRESULT hdrDraw(Draw draw){return draw();}
     bool extensionFault=false,failed=false,enabled=true,applied=false,terrain=false,gateFrame=false,rainMaskCleared=false,rainMaskDrawn=false,rainMaskFrame=false,rainMaskOk=false,rainMrtBound=false,rainMaskFailed=false,rainMaskMismatchLogged=false;UINT width=0,height=0;IDirect3DTexture9* rainMask=nullptr;IDirect3DSurface9* rainMaskSurface=nullptr;IDirect3DSurface9* rainMaskMS=nullptr;D3DMULTISAMPLE_TYPE rainMaskMsType=D3DMULTISAMPLE_NONE,rainMaskWantType=D3DMULTISAMPLE_NONE;DWORD rainMaskMsQuality=0,rainMaskWantQuality=0;unsigned rainMaskDraws=0;
     static constexpr int debugMode=0,kTagMask=3,kFamilyShift=3;int worldDebug=0;
     struct SpellMock{void reset(){}} spell;void spellSync(){}bool spellOn=false;NorthlightSpellLayer::DrawArgs spellArgs;bool spellGate(){return false;}bool spellDraw(bool,bool){return false;}
@@ -265,6 +285,7 @@ struct Base{
     std::unordered_map<IDirect3DVertexShader9*,std::uint64_t> vsHashes;std::unordered_map<IDirect3DPixelShader9*,std::uint64_t> psHashes;
     unsigned blobSignatureReports=0,terrainShadowDraws=0,frame=0,drawCalls=0;
     IDirect3DPixelShader9 *shadowSwapOriginal=nullptr,*shadowSwapReplacement=nullptr;
+    IDirect3DVertexShader9 *shadowSwapVertexOriginal=nullptr,*shadowSwapVertexReplacement=nullptr;UINT shadowSwapConstantBase=0,shadowSwapConstantCount=0;float shadowSwapConstants[24]={};
     Keys effectKeys;GateCounts gateCounts;WeatherDetectMock weatherDetect;WeatherSampleMock weatherSample;unsigned weatherMistSkips=0,weatherMistUnknown=0,weatherMistOtherStage=0,weatherMistReports=0,weatherStateReports=0;void weatherDrawStates(UINT){}void weatherProbeDraw(UINT){}
     Base(){blobsObj.ext=&extObj;env.trace=&trace;blobsObj.faint.id=6;blobsObj.faint.env=extObj.original.env=&env;extObj.original.id=5;extObj.env=worldObj.env=skyObj.env=blobsObj.env=&env;extObj.ps[0].env=extObj.ps[1].env=extObj.vs.env=worldObj.replacement.env=&env;}
     bool sampledDrawTimers()const{return frame%2==0;}
