@@ -10,6 +10,7 @@ test_affected_tests.py
 test_ao_blur.py
 test_ao_fog_capture.py
 test_ao_fold.py
+test_ao_methods.py
 test_ao_rotation_stripes.py
 test_ao_texel_snap.py
 test_art_layer.py
@@ -69,6 +70,7 @@ test_geometry_handoff.py
 test_gi_quality.py
 test_gpu_budget.py
 test_gpu_budget_wiring.py
+test_gtao_grazing.py
 test_horizon_haze.py
 test_index_working_set.py
 test_install_delivery.py
