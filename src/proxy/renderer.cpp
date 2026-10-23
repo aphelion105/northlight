@@ -2439,14 +2439,18 @@ public:
     // Frame boundary only (after clearFrame()): no draw of the finished frame
     // still references a trimmed cache. Warnings are logged with Diagnostics=0.
     void trimMemory(const NorthlightMemoryDiagnostics::Sample& trigger){
-        if(surface)surface->reset();if(autoBump)autoBump->trimMemory();stateBlocks.clear();if(water)water->releaseStateCache();
-        LARGE_INTEGER start={},end={};QueryPerformanceCounter(&start);
+        LARGE_INTEGER start={},surfaceEnd={},materialEnd={},stateEnd={},waterEnd={},end={};QueryPerformanceCounter(&start);
+        if(surface)surface->reset();QueryPerformanceCounter(&surfaceEnd);
+        if(autoBump)autoBump->trimMemory();QueryPerformanceCounter(&materialEnd);
+        stateBlocks.clear();QueryPerformanceCounter(&stateEnd);
+        if(water)water->releaseStateCache();QueryPerformanceCounter(&waterEnd);
         WorldRenderer::MemoryTrim t;if(world)t=world->trimMemory();
         QueryPerformanceCounter(&end);const DWORD now=GetTickCount();memoryGuard.trimCompleted(now);
-        const double ms=cpuFrequency.QuadPart>0?1000.0*double(end.QuadPart-start.QuadPart)/double(cpuFrequency.QuadPart):0.0;
-        logf("MEMORY guard trim frame=%u exactWalk=1 beforeAvailableVirtualMiB=%llu beforeLargestFreeMiB=%llu regions=%llu freedEstimateMiB=%.1f terrainMiB=%.1f snapshotMiB=%.1f indexMiB=%.1f poolMiB=%.1f gpuCacheMiB=%.1f workerLocalGeometry=1 ms=%.3f trims=%u tick=%lu",frame,
+        const auto elapsed=[&](LARGE_INTEGER a,LARGE_INTEGER b){return cpuFrequency.QuadPart>0?1000.0*double(b.QuadPart-a.QuadPart)/double(cpuFrequency.QuadPart):0.0;};
+        logf("MEMORY guard trim frame=%u exactWalk=1 beforeAvailableVirtualMiB=%llu beforeLargestFreeMiB=%llu regions=%llu freedEstimateMiB=%.1f terrainMiB=%.1f snapshotMiB=%.1f indexMiB=%.1f poolMiB=%.1f gpuCacheMiB=%.1f workerLocalGeometry=1 ms=%.3f surfaceMs=%.3f materialMs=%.3f stateBlocksMs=%.3f waterStateMs=%.3f worldMs=%.3f trims=%u tick=%lu",frame,
             (unsigned long long)(trigger.availableVirtual>>20),(unsigned long long)(trigger.largestFree>>20),(unsigned long long)trigger.regions,
-            double(t.total())/1048576,double(t.terrain)/1048576,double(t.snapshots)/1048576,double(t.indices)/1048576,double(t.pool)/1048576,double(t.gpu)/1048576,ms,memoryGuard.trims(),(unsigned long)now);
+            double(t.total())/1048576,double(t.terrain)/1048576,double(t.snapshots)/1048576,double(t.indices)/1048576,double(t.pool)/1048576,double(t.gpu)/1048576,
+            elapsed(start,end),elapsed(start,surfaceEnd),elapsed(surfaceEnd,materialEnd),elapsed(materialEnd,stateEnd),elapsed(stateEnd,waterEnd),elapsed(waterEnd,end),memoryGuard.trims(),(unsigned long)now);
         try{if(memoryDiagnostics)memoryDiagnostics->request();}catch(...){} /* after-trim sample */
     }
     // RenderProfile: one line per frame kind present in the window, then all frames:
@@ -2722,11 +2726,17 @@ public:
                 contactAO=nextContact;
                 logf("AO live method=%s enabled=%u preview=%u",NorthlightQuality::aoName(aoMethod),unsigned(contactAO),unsigned(preview>=0));}
         }
-        if((memoryWorld>=0||memoryCaps>=0)&&world)world->setMemoryPressure(memoryGuard.pressure(),memoryGuard.capsHalved());
-        if(memoryWorld>=0&&autoBump)autoBump->setMemoryPressure(memoryWorld==1);
-        if(memoryCaps>=0&&NorthlightReplayCopies::enabled.load(std::memory_order_relaxed))NorthlightReplayCopies::setPressure(memoryCaps==1); /* 0.3.192 (CS): replay thread: halves the CPU copies' cap and evicts down to it */
-        if(memoryCaps>=0)NorthlightStream::memoryPressure.store(memoryCaps==1,std::memory_order_relaxed); /* 0.3.192 (CS): the stream's game side halves its queue budget at its next Present */
-        if(memoryTrim)trimMemory(memorySample);
+        if(memoryWorld>=0||memoryCaps>=0||memoryTrim){
+            LARGE_INTEGER workStart={},workEnd={};QueryPerformanceCounter(&workStart);
+            if((memoryWorld>=0||memoryCaps>=0)&&world)world->setMemoryPressure(memoryGuard.pressure(),memoryGuard.capsHalved());
+            if(memoryWorld>=0&&autoBump)autoBump->setMemoryPressure(memoryWorld==1);
+            if(memoryCaps>=0&&NorthlightReplayCopies::enabled.load(std::memory_order_relaxed))NorthlightReplayCopies::setPressure(memoryCaps==1); /* 0.3.192 (CS): replay thread: halves the CPU copies' cap and evicts down to it */
+            if(memoryCaps>=0)NorthlightStream::memoryPressure.store(memoryCaps==1,std::memory_order_relaxed); /* 0.3.192 (CS): the stream's game side halves its queue budget at its next Present */
+            if(memoryTrim)trimMemory(memorySample);
+            QueryPerformanceCounter(&workEnd);
+            const double ms=cpuFrequency.QuadPart>0?1000.0*double(workEnd.QuadPart-workStart.QuadPart)/double(cpuFrequency.QuadPart):0.0;
+            logf("MEMORY guard work frame=%u totalMs=%.3f episodeChange=%u capsChange=%u trimRequested=%u tick=%lu",frame,ms,unsigned(memoryWorld>=0),unsigned(memoryCaps>=0),unsigned(memoryTrim),(unsigned long)GetTickCount());
+        }
         if(NorthlightRenderThreadProbe::profiling()&&cpuFrequency.QuadPart>0){namespace P=NorthlightRenderThreadProbe;
             // Windows: the probe's (flushed when it changes), else 600 kept frames. Sample frames are excluded.
             const bool probe=world&&P::probing();const uint64_t window=probe?world->probeWindow():0;

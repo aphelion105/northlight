@@ -16,6 +16,9 @@ import zipfile
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
 
+MODES = {'0': 'stable_revisions', '1': 'rewritten_same_xyz',
+         '2': 'rewritten_same_xyz_and_indices', '3': 'synthetic_rebased_same_geometry'}
+
 
 def source_hashes():
     paths = [p for p in fp.SRC.rglob('*') if p.is_file()]
@@ -96,29 +99,54 @@ def main():
         old, new = results['baseline'][number], results['current'][number]
         assert len(old) == len(new)
         for a, b in zip(old, new):
-            for key in ('low', 'writes', 'cycle', 'frame', 'calls', 'digest', 'geometry'):
+            for key in ('low', 'writes', 'layout', 'cycle', 'frame', 'calls', 'digest', 'geometry'):
                 assert a.get(key) == b.get(key), (number, key, a, b)
             if a['low'] == '1':
-                for key in ('hits', 'misses', 'reads', 'evictions', 'exactReuses', 'vertexChanged', 'cap', 'retained'):
+                for key in ('hits', 'misses', 'reads', 'evictions', 'exactReuses', 'vertexChanged',
+                            'indexChanged', 'indexTokenHits', 'rebuilds', 'cap', 'retained'):
                     assert a.get(key) == b.get(key), ('true-low behavior changed', key, a, b)
-        for writes in ('0', '1'):
+        for writes in ('0', '1', '2'):
             a, b = ([r for r in side if r['summary'] and r['low'] == '0' and r['writes'] == writes][0] for side in (old, new))
             assert int(a['misses']) > 0, 'Fixture does not reproduce rotation churn'
-            assert all(int(b[key]) == 0 for key in ('misses', 'evictions')), (a, b)
+            assert all(int(b[key]) == 0 for key in ('misses', 'evictions', 'rebuilds')), (a, b)
             if writes == '0':
                 assert int(b['reads']) == 0
             else:
                 assert int(b['reads']) > 0 and int(b['exactReuses']) == int(b['calls']), b
+                assert int(b['vertexChanged']) == int(b['calls']), b
+                if writes == '2':
+                    assert int(b['indexChanged']) == int(b['calls']) and int(b['indexTokenHits']) == 0, b
+                else:
+                    assert int(b['indexChanged']) == 0 and int(b['indexTokenHits']) == int(b['calls']), b
+    controls = []
+    for name, exe in executables.items():
+        for mode in ('xyz', 'index-order', 'stale-xyz', 'stale-index-order'):
+            command = [str(exe), str(args.fixture / 'terrain.bin'), str(args.fixture / 'camera.bin'),
+                       str(manifest['terrain_radius']), mode]
+            result = subprocess.run(command, capture_output=True, text=True)
+            (args.output / f'{name}-{mode}.log').write_text(result.stdout + result.stderr, encoding='utf-8')
+            negative = mode.startswith('stale-')
+            if negative:
+                assert result.returncode != 0 and 'MPQ_TRIANGLE_XYZ_MISMATCH' in result.stderr, (name, mode, result)
+            else:
+                assert result.returncode == 0 and f'MUTATION kind={mode} exactGeometry=1 rebuilds=1' in result.stdout, (name, mode, result)
+            controls.append({'implementation': name, 'mode': mode, 'command': command,
+                             'returncode': result.returncode, 'expected_failure': negative, 'pass': True})
     timings = {mode: {name: statistics.median(float(r['captureMs']) for rows in rounds for r in rows
                                               if r['summary'] and r['low'] == '0' and r['writes'] == writes)
-                     for name, rounds in results.items()} for mode, writes in [('stable_revisions', '0'), ('rewritten_same_xyz', '1')]}
+                     for name, rounds in results.items()} for writes, mode in MODES.items()}
     report = {'baseline_ref': manifest['baseline_ref'], 'fixture_manifest_sha256': hashlib.sha256((args.fixture / 'manifest.json').read_bytes()).hexdigest(),
               'rounds': args.rounds, 'exact_triangle_outputs': True, 'actual_low_pressure_unchanged': True,
-              'timings_cpu_path_ms': timings, 'results': results, 'game_launched': False,
+              'timings_cpu_path_ms': timings, 'results': results, 'mutation_controls': controls, 'game_launched': False,
               'source_before': before, 'source_after': source_hashes(), 'compiler_commands': commands,
               'compiler_version': subprocess.check_output([str(fp.zig()), 'version'], text=True).strip(),
               'executable_sha256': {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in executables.items()},
-              'limitations': manifest['limitations'] + ['Fake D3D buffers execute production capture; no GPU/driver or client draw-list replay.']}
+              'limitations': manifest['limitations'] + [
+                  'Fake D3D buffers execute production capture; no GPU/driver or client draw-list replay.',
+                  'VB/IB revision changes are explicit scenarios, not recovered per-draw writes from the log.',
+                  'The two alternating buffer layouts are synthetic; source logs do not record D3D base/start/stride layouts.',
+                  'Rebased layouts deliberately increase cache identity diversity; zero misses are required only for fixed layouts.',
+                  'captureMs times production readMeshShared only; fixture copies and the independent triangle oracle are excluded.']}
     assert report['source_before'] == report['source_after'], 'Tested source changed during validation'
     (args.output / 'validation.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
     print(json.dumps({'exact_triangle_outputs': True, 'timings_cpu_path_ms': timings}, indent=2))

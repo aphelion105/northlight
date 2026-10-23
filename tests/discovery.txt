@@ -165,6 +165,7 @@ test_quality_upgrade.py
 test_query_poll_latency.py
 test_rain_mask.py
 test_raster_reconstruction.py
+test_regional_fog_runner_guards.py
 test_regional_surface_shadow.py
 test_render_thread_probe.py
 test_renderer_status.py
@@ -188,6 +189,8 @@ test_replay_skin_safety.py
 test_replay_upload.py
 test_rigid_memory.py
 test_scene_assembly.py
+test_scene_entry_reclaim.py
+test_scene_entry_reclaim_inputs.py
 test_scene_source_cache.py
 test_settings_client_abi.py
 test_settings_cvar_hook.py

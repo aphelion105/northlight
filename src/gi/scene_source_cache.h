@@ -83,6 +83,9 @@ public:
     uint64_t uncachedLeaseBytes()const{const auto all=decodedLiveBytes(),cached=account_->cachedDecoded.load(std::memory_order_relaxed);return all-std::min(all,cached);}
     size_t entries()const{std::lock_guard<std::recursive_mutex> lock(mutex_);return entries_.size();}
     Stats stats()const{std::lock_guard<std::recursive_mutex> lock(mutex_);return stats_;}
+    // Entry pressure may need only the decoded payloads. Keep validated revision
+    // tokens so independently retained BLAS/preparation can still reuse them.
+    void trimPayloads(){std::lock_guard<std::recursive_mutex> lock(mutex_);entries_.clear();}
     void reset(){std::lock_guard<std::recursive_mutex> lock(mutex_);entries_.clear();while(!identities_.empty())dropIdentity();} // outstanding leases remain charged
     void setLimit(uint64_t bytes){std::lock_guard<std::recursive_mutex> lock(mutex_);limit_=bytes;room(0);}
     uint64_t findIdentity(const std::string& path){

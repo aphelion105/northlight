@@ -19,6 +19,7 @@ GATES=('NorthlightDiagnostics::enabled()','diagnostics()','sampled()','captureSa
 # Ungated lines that stay with Diagnostics=0: format prefix -> label.
 KEEP={
  'MEMORY policy terrain=':'start-up: identifies the terrain pressure policy once per backend initialization',
+ 'WORLD entry reclaim':'warning: optional cache reclaim only when the unchanged geometry entry budget refuses admission',
  'CAPTURE shared sources: join failed':'constructor-only warning: private caches remain active when the shared pool cannot join',
  'DXVK3 engine-name FSE':'start-up: optional process compatibility configuration',
  'DXVK3 engine-name requested':'start-up: backend and Wine eligibility decision',

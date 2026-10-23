@@ -1434,7 +1434,19 @@ private:
                 // entry floor (entryLift) alone keeps it for the attempt that eventually runs.
                 const auto plainEntry=NorthlightGeometryMemory::buildBudget(64*NorthlightGeometryMemory::MiB);
                 const auto entryBudget=entryLift.apply(plainEntry,GetTickCount());
-                if(!NorthlightGeometryMemory::admits(memory,plainEntry)){resetPreparation();memory=workerMemory(plainEntry);}
+                // BEGIN STAGED ENTRY RECLAIM: the offline MPQ episode test uses this exact block.
+                if(!NorthlightGeometryMemory::admits(memory,plainEntry)){
+                    const auto before=memory;const auto sourceBefore=sceneSources.liveBytes(),preparationBefore=meshPreparation.stats().bytes;
+                    unsigned reclaimed=1;sceneSources.trimPayloads();memory=workerMemory(plainEntry);
+                    if(!NorthlightGeometryMemory::admits(memory,plainEntry)){reclaimed=2;localGeometry.reset();memory=workerMemory(plainEntry);}
+                    if(!NorthlightGeometryMemory::admits(memory,plainEntry)){reclaimed=3;resetPreparation();memory=workerMemory(plainEntry);}
+                    if(NorthlightDiagnostics::enabled())logf("WORLD entry reclaim buildId=%llu stage=%u admitted=%u beforeAvailableMiB=%llu afterAvailableMiB=%llu beforeLargestLowerMiB=%llu afterLargestLowerMiB=%llu beforeValid=%u afterValid=%u sourceBeforeMiB=%.3f sourceAfterMiB=%.3f preparationBeforeMiB=%.3f preparationAfterMiB=%.3f requiredAvailableMiB=%llu requiredLargestMiB=%llu",
+                        (unsigned long long)r.id,reclaimed,unsigned(NorthlightGeometryMemory::admits(memory,plainEntry)),
+                        (unsigned long long)(before.available>>20),(unsigned long long)(memory.available>>20),(unsigned long long)(before.largest>>20),(unsigned long long)(memory.largest>>20),unsigned(before.valid),unsigned(memory.valid),
+                        double(sourceBefore)/1048576,double(sceneSources.liveBytes())/1048576,double(preparationBefore)/1048576,double(meshPreparation.stats().bytes)/1048576,
+                        (unsigned long long)(plainEntry.available>>20),(unsigned long long)(plainEntry.largest>>20));
+                }
+                // END STAGED ENTRY RECLAIM
                 if(!NorthlightGeometryMemory::admits(memory,entryBudget)){stallBegin("build-deferred",memory,entryBudget.available,entryBudget.largest);deferBuild("build-deferred",memory,1000,&entryBudget);continue;}
                 const uint64_t entryAvailable=memory.available,entryLargest=memory.largest;
                 geometryMemoryDemand.store(0,std::memory_order_relaxed); // admitted: the build's own use is not a demand (the episode stays open)
