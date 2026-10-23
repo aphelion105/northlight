@@ -304,7 +304,7 @@ class Device final : public GuardedMirrorDevice {
     NorthlightStateBlockPool stateBlocks;
     static void mirrorEscape(void* context,const char* reason)noexcept{static_cast<DeviceMirror*>(context)->disable(reason);}
     static void bufferEscape(IDirect3DDevice9* owner,const char* reason)noexcept{static_cast<Device*>(owner)->mirrorState.disable(reason);}
-    // 0.3.180 (D0, r88 Р’В§3.2): the gate's thread census. Relaxed reads of the gate's atomics only, so any
+    // 0.3.180 (D0): the gate's thread census. Relaxed reads of the gate's atomics only, so any
     // thread may log it: periodic (600 frames), at destroy, and once at the first foreign entry of a class.
     static void gateForeignReport(void* context,unsigned,std::uint32_t)noexcept{static_cast<Device*>(context)->logGateThreads("first-foreign");}
     void logGateThreads(const char* event)noexcept{
