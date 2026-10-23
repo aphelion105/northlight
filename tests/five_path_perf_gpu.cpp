@@ -19,9 +19,9 @@ int main(int argc,char** argv){
     IDirect3DQuery9 *event=nullptr,*start=nullptr,*end=nullptr,*freq=nullptr,*disjoint=nullptr;
     ok(d->CreateQuery(D3DQUERYTYPE_EVENT,&event));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&start));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&end));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPFREQ,&freq));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPDISJOINT,&disjoint));
     FILE* report=std::fopen(argv[4],"w");assert(report);std::fprintf(report,"[\n");unsigned cases=0;
-    const char* names[]={"GTAOContactBloom","WorldFog","FogClouds","WorldComposite"};
-    for(unsigned pass=1;pass<4;++pass)for(unsigned scenario=0;scenario<(pass==0?5u:4u);++scenario){
-        const unsigned FW=3840,FH=2160,W=pass<3?FW/2:FW,H=pass<3?FH/2:FH;
+    const char* names[]={"WorldFog","FogClouds","WorldComposite"};
+    for(unsigned pass=0;pass<3;++pass)for(unsigned scenario=0;scenario<4;++scenario){
+        const unsigned FW=3840,FH=2160,W=pass<2?FW/2:FW,H=pass<2?FH/2:FH;
         float c[80][4]{};c[0][0]=1.f/FW;c[0][1]=1.f/FH;c[0][2]=.2f;c[0][3]=1000;
         c[1][0]=1.3f;c[1][1]=1.9f;c[1][2]=1;c[2][0]=1;c[2][1]=48;c[2][2]=192;c[2][3]=1.f/1024;
         c[3][0]=c[4][2]=c[5][1]=c[6][3]=1;c[6][2]=2;
@@ -40,21 +40,19 @@ int main(int argc,char** argv){
         c[61][0]=.3125f;c[61][1]=.52f;c[61][2]=.27f;c[61][3]=.64f;
         c[62][0]=22;c[62][1]=-1.25f;c[62][2]=32;c[62][3]=.06f;
         c[63][0]=.875f;c[63][1]=1.f/64;c[63][2]=1.f/16;c[63][3]=1.625f;
-        if(pass==0){std::memset(c[1],0,6*16);c[1][0]=1.3f;c[1][1]=1.9f;c[1][2]=.6f;c[2][1]=scenario==0?.1f:scenario==1?2:10;c[3][1]=c[3][2]=1;c[5][1]=c[5][2]=1;}
-        if(pass==1||pass==2){c[31][0]=scenario==1?-8.f:scenario==2?1024.f:-256.f;c[31][1]=scenario==1?-8.f:scenario==2?1024.f:-256.f;}
-        if(pass==3){c[30][0]=scenario==3;}
+        if(pass<2){c[31][0]=scenario==1?-8.f:scenario==2?1024.f:-256.f;c[31][1]=scenario==1?-8.f:scenario==2?1024.f:-256.f;}
+        if(pass==2){c[30][0]=scenario==3;}
         auto solid=[&](float r,float g,float b,float a){return texture(d,rgba(1,1,[&](unsigned,unsigned){return std::array<float,4>{r,g,b,a};}));};
         IDirect3DTexture9* inputs[16]{};for(auto& t:inputs)t=solid(0,0,0,0);
         auto bind=[&](unsigned slot,Image im){inputs[slot]->Release();inputs[slot]=texture(d,im);};
-        auto distanceAt=[&](unsigned x,unsigned y){return scenario==4?80.f:scenario==3?1000.f:20.f+170.f*float(x)/FW+8.f*std::sin(float(y)*.04f);};
+        auto distanceAt=[&](unsigned x,unsigned y){return scenario==3?1000.f:20.f+170.f*float(x)/FW+8.f*std::sin(float(y)*.04f);};
         bind(0,rgba(FW,FH,[&](unsigned x,unsigned y){return std::array<float,4>{.2f+.2f*float(x)/FW,.3f+.1f*float(y)/FH,.4f,.7f};}));
         bind(1,rgba(FW,FH,[&](unsigned x,unsigned y){float z=distanceAt(x,y);float depth=1000.f/999.8f*(1-.2f/z);return std::array<float,4>{depth,depth,depth,depth};}));
-        if(pass==0){bind(3,rgba(1,1,[](unsigned,unsigned){return std::array<float,4>{0,0,0,0};}));}
-        if(pass==1||pass==2){
+        if(pass<2){
             bind(3,rgba(64,64,[](unsigned x,unsigned y){return std::array<float,4>{(x/5+y/7)%2?.3f:.7f,0,0,1};}));
             bind(13,rgba(64,64,[](unsigned x,unsigned y){return std::array<float,4>{-.2f,.008f,.004f,(x/5+y/7)%5?5.f:0.f};}));
         }
-        if(pass==3){
+        if(pass==2){
             bind(8,rgba(FW/2,FH/2,[](unsigned x,unsigned y){return std::array<float,4>{-.1f+.05f*std::sin(x*.03f),.05f,.03f,(y/5)%2?.3f:1.f};}));
             bind(9,rgba(FW/2,FH/2,[](unsigned,unsigned){return std::array<float,4>{.05f,.04f,.03f,.8f};}));
             bind(10,rgba(FW/2,FH/2,[](unsigned,unsigned){return std::array<float,4>{.01f,.01f,.01f,.8f};}));
@@ -63,7 +61,7 @@ int main(int argc,char** argv){
         }
         for(unsigned s=0;s<16;++s){ok(d->SetTexture(s,inputs[s]));for(auto state:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})ok(d->SetSamplerState(s,state,s==0||s==4||s==10?D3DTEXF_LINEAR:D3DTEXF_POINT));ok(d->SetSamplerState(s,D3DSAMP_MIPFILTER,D3DTEXF_NONE));ok(d->SetSamplerState(s,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP));ok(d->SetSamplerState(s,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP));}
         IDirect3DVolumeTexture9* noise=nullptr;
-        if(pass==2){
+        if(pass==1){
             ok(d->CreateVolumeTexture(32,32,32,1,0,D3DFMT_L8,D3DPOOL_MANAGED,&noise,nullptr));D3DLOCKED_BOX box{};ok(noise->LockBox(0,&box,nullptr,0));
             for(unsigned z=0;z<32;++z)for(unsigned y=0;y<32;++y)for(unsigned x=0;x<32;++x)*((unsigned char*)box.pBits+z*box.SlicePitch+y*box.RowPitch+x)=static_cast<unsigned char>((x*37+y*17+z*53)%256);
             ok(noise->UnlockBox(0));ok(d->SetTexture(14,noise));for(auto state:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})ok(d->SetSamplerState(14,state,D3DTEXF_LINEAR));for(auto state:{D3DSAMP_ADDRESSU,D3DSAMP_ADDRESSV,D3DSAMP_ADDRESSW})ok(d->SetSamplerState(14,state,D3DTADDRESS_WRAP));
