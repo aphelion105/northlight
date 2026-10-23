@@ -95,7 +95,7 @@ inline bool matchesWorldView(IDirect3DDevice9* device,const float* expected) {
 
 // Shared pure coverage core. The accessor keeps indexed snapshots compact;
 // expanded callers retain the original public API below.
-template<class VertexAt>
+template<bool Validated=false,class VertexAt>
 inline bool classifyTriangleSequence(VertexAt vertexAt,std::size_t count,
                                      D3DPRIMITIVETYPE topology,Bounds& output) {
     output=Bounds{};
@@ -111,7 +111,8 @@ inline bool classifyTriangleSequence(VertexAt vertexAt,std::size_t count,
     for(std::size_t triangle=0;triangle<triangles;++triangle){
         const std::size_t first=topology==D3DPT_TRIANGLELIST?triangle*3:triangle;
         const Position p[]={vertexAt(first),vertexAt(first+1),vertexAt(first+2)};
-        for(unsigned i=0;i<3;++i)if(!std::isfinite(p[i].x)||!std::isfinite(p[i].y)||!std::isfinite(p[i].z))return false;
+        if constexpr(!Validated)
+            for(unsigned i=0;i<3;++i)if(!std::isfinite(p[i].x)||!std::isfinite(p[i].y)||!std::isfinite(p[i].z))return false;
         const double area=(double(p[1].x)-p[0].x)*(double(p[2].y)-p[0].y)-
                           (double(p[1].y)-p[0].y)*(double(p[2].x)-p[0].x);
         if(std::fabs(area)<1e-9)continue; // Includes strip connectors.
@@ -211,8 +212,11 @@ private:
     };
     NorthlightSourceIdentity::Handle sourceIdentity(const ContentKey& key,Stamp proof){
       try{if(!proof.valid())return {};const auto& d=key.draw;
+        // Draw fields are exactly 32 bits; pair them without dropping any key bits.
+        // Keep lifetime/revision tokens and provider addresses at their full width.
+        const auto pair=[](std::uint32_t low,std::uint32_t high){return std::uint64_t(low)|(std::uint64_t(high)<<32);};
         return NorthlightSourceIdentity::make({2,reinterpret_cast<std::uintptr_t>(identity_),reinterpret_cast<std::uintptr_t>(version_),reinterpret_cast<std::uintptr_t>(metadata_),
-            proof.vb,proof.ib,proof.vertexVersion,proof.indexVersion,d.streamOffset,d.stride,d.positionOffset,d.positionType,std::uint32_t(d.base),d.minimum,d.vertices,d.start,d.primitives,unsigned(d.topology),key.stream,unsigned(key.format),key.vertexBytes,key.indexBytes});
+            proof.vb,proof.ib,proof.vertexVersion,proof.indexVersion,pair(d.streamOffset,d.stride),pair(d.positionOffset,d.positionType),pair(std::uint32_t(d.base),d.minimum),pair(d.vertices,d.start),pair(d.primitives,unsigned(d.topology)),pair(key.stream,unsigned(key.format)),pair(key.vertexBytes,key.indexBytes)});
       }catch(...){return {};}
     }
     struct SourceIndices {
@@ -496,7 +500,9 @@ public:
             if(topology==D3DPT_TRIANGLESTRIP&&(primitive&1))std::swap(a,b);
             result.indices.push_back(a);result.indices.push_back(b);result.indices.push_back(c);
         }
-        if(!result.indices.visit([&](const auto* data,std::size_t count){return classifyIndexedBy(result.positions.data(),result.positions.size(),data,count,D3DPT_TRIANGLELIST,result.bounds);}))return reject(RejectReason::ChunkCoverage);
+        // The remap above already validates every source index and finite XYZ.
+        // Reuse that proof instead of rechecking shared vertices per triangle.
+        if(!result.indices.visit([&](const auto* data,std::size_t count){return classifyTriangleSequence<true>([&](std::size_t i){return result.positions[data[i]];},count,D3DPT_TRIANGLELIST,result.bounds);}))return reject(RejectReason::ChunkCoverage);
         ++snapshots;output=std::move(result);if(diagnostics)*diagnostics=detail;return true;
     }
 
@@ -706,7 +712,8 @@ public:
             if(topology==D3DPT_TRIANGLESTRIP&&(primitive&1))std::swap(a,b);
             result.indices.push_back(a);result.indices.push_back(b);result.indices.push_back(c);
         }
-        if(!result.indices.visit([&](const auto* data,std::size_t count){return classifyIndexedBy(result.positions.data(),result.positions.size(),data,count,D3DPT_TRIANGLELIST,result.bounds);}))return reject(RejectReason::ChunkCoverage);
+        // The remap above already validates every source index and finite XYZ.
+        if(!result.indices.visit([&](const auto* data,std::size_t count){return classifyTriangleSequence<true>([&](std::size_t i){return result.positions[data[i]];},count,D3DPT_TRIANGLELIST,result.bounds);}))return reject(RejectReason::ChunkCoverage);
         const Stamp after=stamp(vb.p,ib.p);
         if(before.valid()&&after==before)result.sourceIdentity=sourceIdentity(contentKey,before);
         std::shared_ptr<const MeshSnapshot> shared=retain(std::move(result));
