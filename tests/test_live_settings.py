@@ -19,7 +19,9 @@ harness=r'''
 #include <cassert>
 #include <iostream>
 namespace NorthlightDiagnostics {bool value;void configure(bool v){value=v;}}
+#ifndef _WIN32
 namespace NorthlightWorldContext {struct SelfReadStats{inline static std::atomic<bool> timed{false};};}
+#endif
 namespace NorthlightWeatherMemory {void configure(bool){}}
 namespace NorthlightMemorySwitches {void configure(bool){}}
 namespace NorthlightRenderThreadProbe {void configure(bool,bool){}}
@@ -43,10 +45,11 @@ int main(){
         World w;NorthlightSettings::Config next;
         for(const auto& k:NorthlightQuality::Keys)next.quality.*k.field=pass&1?k.low:k.high;
         next.quality.preset=NorthlightQuality::Preset::Performance;
-        const auto old=w.quality;w.applyLiveSettings(next);
+        const auto old=w.quality;const auto oldProfiles=w.celestialProfiles;w.applyLiveSettings(next);
         const auto effective=NorthlightQuality::effective(next.quality);
         for(const auto& k:NorthlightQuality::Keys)assert(w.quality.*k.field==(NorthlightSettings::liveQuality(k.name)?effective.*k.field:old.*k.field));
-        assert(w.settingsRequestDirty&&!w.paletteFrameValid&&w.quality.preset==next.quality.preset);
+        assert(w.settingsRequestDirty==NorthlightSettings::giRequestChanged(old,w.quality,oldProfiles,next.celestial));
+        assert(!w.paletteFrameValid&&w.quality.preset==next.quality.preset);
         assert(w.effects.gi==(next.quality.gi!=0));
         assert(w.replaySnapshots.full==size_t(w.quality.captureBudgetMiB)*1048576);
         assert(w.resets==unsigned(old.actorShadows!=w.quality.actorShadows||old.actorShadowDetail!=w.quality.actorShadowDetail));

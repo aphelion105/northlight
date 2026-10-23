@@ -21,6 +21,21 @@ inline bool liveQuality(const std::string& key){
 }
 inline NorthlightQuality::Settings liveQualityUpdate(NorthlightQuality::Settings current,const NorthlightQuality::Settings& next){for(const auto& k:NorthlightQuality::Keys)if(liveQuality(k.name))current.*k.field=next.*k.field;current.preset=next.preset;return NorthlightQuality::effective(current);}
 struct Config{NorthlightQuality::Settings quality;NorthlightCelestialProfiles::Table celestial;std::array<float,std::size(NorthlightHdrSettingsContract::Keys)> hdr={0,203,160,1000,1,0};};
+// Only these live inputs can change the worker's GI Request. Display settings
+// still apply immediately without cancelling an otherwise identical solve.
+inline bool giRequestChanged(const NorthlightQuality::Settings& before,const NorthlightQuality::Settings& after,
+                             const NorthlightCelestialProfiles::Table& oldProfiles,const NorthlightCelestialProfiles::Table& newProfiles){
+    if(before.gi!=after.gi||before.giBounces!=after.giBounces||before.giDynamicProbes!=after.giDynamicProbes||
+       before.giProbeMoveStep!=after.giProbeMoveStep||before.giProbeAhead!=after.giProbeAhead||before.shadowDirectionSteps!=after.shadowDirectionSteps)return true;
+    const auto sameLight=[](const NorthlightCelestialProfiles::Profile& a,const NorthlightCelestialProfiles::Profile& b){
+        for(unsigned s=0;s<2;++s){if(a.mix[s]!=b.mix[s]||a.strength[s]!=b.strength[s])return false;
+            for(unsigned c=0;c<3;++c)if(a.light[s][c]!=b.light[s][c])return false;}return true;
+    };
+    if(!sameLight(oldProfiles.fallback,newProfiles.fallback))return true;
+    for(const auto& entry:oldProfiles.zones)if(!sameLight(entry.second,newProfiles.at(entry.first.first,entry.first.second)))return true;
+    for(const auto& entry:newProfiles.zones)if(!sameLight(entry.second,oldProfiles.at(entry.first.first,entry.first.second)))return true;
+    return false;
+}
 inline NorthlightQuality::Settings qualityOf(const Document& d,const std::string& legacy){std::istringstream q(d.text()),l(legacy);std::vector<std::string> warnings;return NorthlightQuality::load(&q,&l,warnings);}
 inline Config configOf(const Documents& d,const std::string& legacy,bool validate=false){
     Config c;c.quality=qualityOf(d[0],legacy);std::string error;std::istringstream celestial(d[2].text()),shadow(d[3].text());NorthlightRegionalShadow::Table ranges;

@@ -229,11 +229,12 @@ public:
         // GI enable and bounce count travel in each Request.
         auto profiles=next.celestial;
         const auto effective=NorthlightSettings::liveQualityUpdate(quality,next.quality);
+        const bool giRequest=NorthlightSettings::giRequestChanged(quality,effective,celestialProfiles,profiles);
         const bool actorResources=quality.actorShadows!=effective.actorShadows||quality.actorShadowDetail!=effective.actorShadowDetail;
         const bool directions=quality.shadowDirectionSteps!=effective.shadowDirectionSteps;
         const bool giToggle=quality.gi!=effective.gi;
         for(const auto& k:NorthlightQuality::Keys)if(NorthlightSettings::liveQuality(k.name))quality.*k.field=effective.*k.field;
-        quality.preset=effective.preset;settingsRequestDirty=true;
+        quality.preset=effective.preset;settingsRequestDirty=settingsRequestDirty||giRequest;
         if(giToggle)effects.gi=quality.gi!=0;
         minSkinnedShadowTriangles=quality.minSkinnedTriangles;captureBudgetMiB=quality.captureBudgetMiB;actorShadowBudgetMiB=quality.actorShadowBudgetMiB;setNearReserve();
         replaySnapshots.configureBudget(size_t(captureBudgetMiB)*1048576,size_t(captureBudgetMiB)*524288);
