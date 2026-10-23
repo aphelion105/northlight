@@ -20,7 +20,6 @@ local sections = {
     {"materials", "Materials & parallax", "Q", "AutoBump AutoBumpTerrain AutoBumpWalls AutoBumpGrass AutoBumpStrength AutoBumpDistance AutoParallaxDepth AutoParallaxDistance AutoParallaxSteps AutoParallaxShadows AutoParallaxShadowStrength AutoParallaxShadowSteps AutoCavity AutoCavityStrength"},
     {"shadows", "Shadows", "Q", "ActorShadows ActorShadowDetail GrassShadows ActorShadowRadius BlobShadowStrength FarShadowInterval NearShadowInterval PointShadows PointShadowLimit PointShadowRefreshMs PointShadowFacesPerFrame ShadowDirectionSteps StaticCacheSlices ShadowPivotCorrection"},
     {"atmosphere", "Atmosphere & weather", "Q", "Weather WeatherMemory RainFog FogClouds FogCloudDensity HorizonHaze HorizonHazeStart HorizonHazeBand HorizonHazeTerrain"},
-    {"water", "Water & SSR", "Q", "Water WaterSSR WaterSSRResolution WaterSSRSteps WaterSSRDistance WaterSSRThickness WaterSSRRefineSteps WaterSSRStrength WaterRefraction WaterGlints WaterPointLights"},
     {"celestial", "Sun and moon", "C"},
     {"range", "Shadow range", "S"},
     {"spells", "Spells & names", "Q", "SpellLayer SpellLayerClasses SpellFog NameMask DepthFuncAware"},
@@ -44,10 +43,6 @@ local groups = {
         {"fog", "Fog banks", "FogClouds", "FogCloudDensity"},
         {"weather", "Rain and snow", "Weather", "RainFog", "WeatherMemory"},
         {"haze", "Horizon haze", nil, "HorizonHaze HorizonHazeStart HorizonHazeTerrain", "HorizonHazeBand"},
-    },
-    water = {
-        {"ssr", "Screen-space reflections (SSR)", "WaterSSR", "WaterSSRResolution WaterSSRSteps WaterSSRStrength", "WaterSSRDistance WaterSSRThickness WaterSSRRefineSteps"},
-        {"surface", "Enhanced water", "Water", "WaterRefraction WaterGlints WaterPointLights"},
     },
     hdr = {{"hdr", "HDR", "ExperimentalHDR", "HDRPaperWhite HDRUIWhite HDRMaxNits HDRContrast HDRExposure"}},
     celestial = {
@@ -81,10 +76,6 @@ local labels = {
     Preset="Quality preset", GI="Global illumination", GIStrength="Indirect light strength (%)",
     ActorShadows="Character shadows", ActorShadowDetail="Detailed character shadows", GrassShadows="Grass shadows", ActorShadowRadius="Character shadow distance",
     ContactAO="Ambient occlusion", AOMethod="AO method", AOStrength="AO strength (%)", AORadius="AO radius (0.01 yd)",
-    Water="Enhanced water", WaterSSR="Screen-space reflections (SSR)",
-    WaterSSRResolution="SSR resolution (%)", WaterSSRSteps="SSR trace steps", WaterSSRDistance="SSR distance (yards; 0 = auto)",
-    WaterSSRThickness="SSR hit tolerance (0.01 yd)", WaterSSRRefineSteps="SSR hit refinement steps", WaterSSRStrength="SSR strength (%)",
-    WaterRefraction="Refraction", WaterGlints="Sun and moon glints", WaterPointLights="Local light glints",
     Weather="Enhanced rain and snow", WeatherMemory="Read native weather state", RainFog="Weather fog strength", FogClouds="Drifting fog banks", FogCloudDensity="Fog density (%)",
     HorizonHaze="Horizon haze (%)", HorizonHazeStart="Haze start (%)", HorizonHazeBand="Haze height (degrees)", HorizonHazeTerrain="Haze over terrain",
     Backend="Graphics backend", ExperimentalHDR="Enable HDR", HDRPaperWhite="White point (nits)", HDRUIWhite="UI brightness (nits)", HDRMaxNits="HDR peak brightness (nits)", HDRContrast="Contrast", HDRExposure="Exposure (EV)",
@@ -108,8 +99,6 @@ local shortLabels = {
     AOStrength="Strength (%)", AORadius="Radius (0.01 yd)",
     ActorShadowRadius="Distance (yd)", ActorShadowDetail="Detailed shadows",
     PointShadowLimit="Shadow light sources", NightBrightness="Night brightness (%)", EquipmentLights="Equipment lights",
-    WaterSSRResolution="Resolution (%)", WaterSSRSteps="Trace steps", WaterSSRDistance="Distance (yd; 0=auto)",
-    WaterSSRThickness="Hit tolerance (0.01 yd)", WaterSSRRefineSteps="Hit refinement steps", WaterSSRStrength="Strength (%)",
     FogCloudDensity="Density (%)", HDRPaperWhite="White point (nits)", HDRUIWhite="UI brightness (nits)", HDRMaxNits="Peak brightness (nits)",
     AutoBumpStrength="Normal map strength (%)", AutoBumpDistance="Relief distance (yd)",
 }
@@ -135,9 +124,6 @@ local dependencies = {
     AutoParallaxDepth={"AutoBump"}, AutoParallaxDistance={"AutoBump"}, AutoParallaxSteps={"AutoBump"},
     AutoParallaxShadows={"AutoBump"}, AutoParallaxShadowStrength={"AutoBump","AutoParallaxShadows"}, AutoParallaxShadowSteps={"AutoBump","AutoParallaxShadows"},
     AutoCavity={"AutoBump"}, AutoCavityStrength={"AutoBump","AutoCavity"},
-    WaterSSR={"Water"}, WaterRefraction={"Water"}, WaterGlints={"Water"}, WaterPointLights={"Water"},
-    WaterSSRResolution={"Water","WaterSSR"}, WaterSSRSteps={"Water","WaterSSR"}, WaterSSRDistance={"Water","WaterSSR"},
-    WaterSSRThickness={"Water","WaterSSR"}, WaterSSRRefineSteps={"Water","WaterSSR"}, WaterSSRStrength={"Water","WaterSSR"},
     AOMethod={"ContactAO"}, AOStrength={"ContactAO"}, AORadius={"ContactAO"},
     ActorShadowBudgetMiB={"ActorShadows"}, ActorShadowRadius={"ActorShadows"}, ActorShadowCpuMs={"ActorShadows"}, ActorShadowDetail={"ActorShadows"},
     PointShadowLimit={"PointShadows"}, PointShadowRefreshMs={"PointShadows"}, PointShadowFacesPerFrame={"PointShadows"},
@@ -295,10 +281,6 @@ local function tooltip(row)
     if f.key == "AutoParallaxSteps" then GameTooltip:AddLine("More steps improve grazing angles and cost more GPU time. POM fades out at its distance limit; grass tufts use normals only.", .8, .8, .8, true) end
     if f.key == "AutoParallaxShadows" then GameTooltip:AddLine("Relief blocks the dominant sunlight or moonlight. Requires Normal maps + POM for the material. More shadow steps cost more GPU time. Local lights retain their existing shadows.", .8, .8, .8, true) end
     if f.key == "AutoCavity" then GameTooltip:AddLine("Reduces ambient light inside small cracks inferred from the texture. Works with normal maps and POM; fog and direct light are preserved. Painted shadows can become too dark at high strength.", .8, .8, .8, true) end
-    if f.key == "WaterSSR" then GameTooltip:AddLine("Reflects visible terrain, buildings and units from the completed scene. Disabling skips the SSR trace and scene copy. Off-screen geometry uses the environment reflection.", .8, .8, .8, true) end
-    if f.key == "WaterSSRResolution" then GameTooltip:AddLine("100%: full size; 50%: half width and height; 25%: quarter width and height. Changes only the SSR pass.", .8, .8, .8, true) end
-    if f.key == "WaterSSRDistance" then GameTooltip:AddLine("0 follows the camera far clip and includes distant visible walls and terrain. A positive value limits the ray length in yards.", .8, .8, .8, true) end
-    if f.key == "WaterSSRThickness" then GameTooltip:AddLine("Lower values reject false hits; higher values help thin or distant surfaces. 30 = 0.30 yards.", .8, .8, .8, true) end
     if f.key == "PointShadows" or f.key == "PointShadowLimit" then
         GameTooltip:AddLine("Torches, candles, lamps and compact fires cast shadows. Diffuse glows and short-lived effects do not. Works day and night where the local light is strong enough relative to sunlight.", .8, .8, .8, true)
         GameTooltip:AddLine("4 by default; adjustable from 4 to 128. Only nearby eligible sources allocate maps (about 3.5 MiB each, up to 448 MiB). More sources increase rendering cost.", 1, .82, 0, true)

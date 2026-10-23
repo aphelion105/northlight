@@ -26,8 +26,7 @@ optional_keys = [
     ('AutoBumpWalls','0','2','2,1,1'), ('AutoBumpGrass','0','2','1,1,1'),
     ('AutoParallaxShadows','0','1','1,0,0'), ('AutoParallaxShadowStrength','0','100','70,60,50'),
     ('AutoParallaxShadowSteps','4','16','8,6,4'), ('AutoCavity','0','1','1,0,0'),
-    ('AutoCavityStrength','0','100','35,30,25'), ('Water','0','1','1,1,1'),
-    ('WaterSSR','0','1','1,1,1'), ('WaterSSRResolution','25','100','100,50,25'),
+    ('AutoCavityStrength','0','100','35,30,25'),
 ]
 native_keys = {key for key, *_ in keys}
 optional_fields = []
