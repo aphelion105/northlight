@@ -1,4 +1,4 @@
-# northlight-test: requires=windows-gpu,zig
+# northlight-test: requires=zig,windows-exe
 """Compile the actual renderer timer gate; profiling-off must read no sample clock."""
 from pathlib import Path
 import re
