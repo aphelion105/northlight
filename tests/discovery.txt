@@ -246,6 +246,7 @@ test_terrain_capture_optimization.py
 test_terrain_capture_validation.py
 test_terrain_classification.py
 test_terrain_content_cache.py
+test_terrain_decoded_sharing.py
 test_terrain_indices.py
 test_terrain_metadata.py
 test_terrain_pressure_policy.py
