@@ -38,6 +38,17 @@ int main(int argc,char** argv){
         ok(d->BeginScene());ok(parallax.draw(vs,forward,1,projection,control,[&]{++calls;IDirect3DPixelShader9* active=nullptr;ok(d->GetPixelShader(&active));const bool replaced=active!=ps;drop(active);assert(replaced);return S_OK;}));ok(d->EndScene());
         assert(calls==1);IDirect3DPixelShader9* restored=nullptr;ok(d->GetPixelShader(&restored));assert(restored==ps);drop(restored);
         assert(meter.shaders>shaders&&meter.maps==maps+1);
+        IDirect3DSurface9* originalDepth=nullptr;ok(d->CreateDepthStencilSurface(64,64,D3DFMT_D24S8,msaa,0,FALSE,&originalDepth,nullptr));ok(d->SetDepthStencilSurface(originalDepth));
+        D3DVIEWPORT9 viewport={0,0,64,64,0,1};ok(d->SetViewport(&viewport));ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE));ok(d->SetRenderState(D3DRS_ALPHATESTENABLE,FALSE));
+        NorthlightAutoBump capture(d);NorthlightQuality::Settings settings;settings.autoBump=1;capture.configure(settings);
+        capture.registerVertex(vs,NorthlightWaterShaderPatch::fnv1a64(reinterpret_cast<uint32_t*>(vb.data()),vb.size()/4),reinterpret_cast<DWORD*>(vb.data()),vb.size()/4);
+        capture.registerPixel(ps,NorthlightWaterShaderPatch::fnv1a64(reinterpret_cast<uint32_t*>(pb.data()),pb.size()/4));
+        unsigned captures=0;ok(d->BeginScene());capture.capture(vs,[&]{
+            IDirect3DSurface9 *color=nullptr,*depth=nullptr;ok(d->GetRenderTarget(0,&color));ok(d->GetDepthStencilSurface(&depth));D3DSURFACE_DESC a{},b{};ok(color->GetDesc(&a));ok(depth->GetDesc(&b));
+            assert(a.MultiSampleType==D3DMULTISAMPLE_NONE&&b.MultiSampleType==D3DMULTISAMPLE_NONE);assert(samples==0||depth!=originalDepth);drop(color);drop(depth);++captures;return S_OK;
+        });ok(d->EndScene());assert(captures==1&&capture.texture());
+        IDirect3DSurface9 *restoredColor=nullptr,*restoredDepth=nullptr;ok(d->GetRenderTarget(0,&restoredColor));ok(d->GetDepthStencilSurface(&restoredDepth));assert(restoredColor==target&&restoredDepth==originalDepth);drop(restoredColor);drop(restoredDepth);ok(d->SetDepthStencilSurface(nullptr));drop(originalDepth);
+        std::printf("STATIC_CAPTURE_MSAA_PASS samples=%u privateDepth=1 restored=1\n",samples);
         std::printf("PARALLAX_MSAA_PASS samples=%u callbackNative=%d generatedMaps=%u stateRestored=1\n",samples,0,meter.maps-maps);++cases;drop(target);
     }
     assert(cases>=2);
