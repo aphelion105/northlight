@@ -1417,10 +1417,12 @@ struct StreamQuery final:IDirect3DQuery9,ProxyBase {
     std::atomic<std::uint32_t> eventDoneGen{0};
     std::atomic<HRESULT> eventStatus{S_FALSE};
     std::atomic<BOOL> eventValue{FALSE};
-    std::uint32_t eventEpoch=0;std::uint64_t eventPendingSince=0,eventLocalSince=0;bool eventCallerLogged=false; // game thread only
+    std::uint32_t eventEpoch=0;std::uint64_t eventPendingSince=0,eventLocalSince=0;bool eventCallerLogged=false,eventLongWait=false; // game thread only
     // An EVENT answered locally for this long falls back to the pumped round trip below: WoW's Sleep(0) retry loop dispatches
     // no sent message, and a waiting game thread should sleep instead of spinning through a long GPU frame.
-    static constexpr std::uint64_t kEventLocalNs=1000000;
+    static constexpr std::uint64_t kEventLocalNs=100000;
+    // Keep the original fast-query path; shorten the next wait only after a >=2 ms completion.
+    void finishEventWait(){if(!eventLocalSince)return;const auto elapsed=nowNs()-eventLocalSince;eventLocalSince=0;eventLongWait=elapsed>=2000000;}
     void completeEvent(HRESULT hr,const unsigned char* buf){
         // Replay thread only. Publish a generation once: pollQueries polls a query PollEventQuery already completed, and a
         // later error must not replace the published status or value (two relaxed stores a reader could pair across publications).
@@ -1460,13 +1462,13 @@ struct StreamQuery final:IDirect3DQuery9,ProxyBase {
             const bool done=eventDoneGen.load(std::memory_order_acquire)==issued;
             if(!done&&flags==D3::kGetDataFlush&&!inPumpedWait){
                 const std::uint64_t now=nowNs();if(!eventLocalSince)eventLocalSince=now;
-                if(now-eventLocalSince>=kEventLocalNs)goto pumped;
+                if(now-eventLocalSince>=(eventLongWait?kEventLocalNs:1000000))goto pumped;
             }
             if(done){
                 const HRESULT hr=eventStatus.load(std::memory_order_relaxed);
                 if(hr==S_OK&&data){const BOOL value=eventValue.load(std::memory_order_relaxed);std::memcpy(data,&value,sizeof value);}
                 if(eventPendingSince){own(q.stats.eventPendingNs,nowNs()-eventPendingSince);own(q.stats.eventCompleted);eventPendingSince=0;}
-                own(q.stats.eventLocal);return hr;
+                finishEventWait();own(q.stats.eventLocal);return hr;
             }
             if(flags==D3::kGetDataFlush){
                 if(inPumpedWait)return D3DERR_INVALIDCALL;
@@ -1504,6 +1506,7 @@ struct StreamQuery final:IDirect3DQuery9,ProxyBase {
                 if(event){unsigned calls=0;hr=waitEventQuery(poll,nowNs,[]{std::this_thread::yield();},calls);own(q.stats.eventPollCalls,calls);own(q.stats.eventWaitTrips);}
                 else hr=poll();
             }},Cmd::SyncGetData);
+            if(event&&ran&&hr!=S_FALSE)finishEventWait();
             if(event&&ran&&hr!=S_FALSE&&eventPendingSince){own(q.stats.eventPendingNs,nowNs()-eventPendingSince);own(q.stats.eventCompleted);eventPendingSince=0;}   // a wait that ended on this pumped path
             if(measure){auto& s=core->queryWait[type<20?type:20];++s.calls;s.flush+=bool(flags&D3::kGetDataFlush);s.unissued+=unissued;
                 s.pending+=ran&&hr==S_FALSE;s.errors+=!ran||FAILED(hr);s.waitNs+=get(q.stats.syncNs)-waitBefore;}

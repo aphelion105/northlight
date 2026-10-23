@@ -478,7 +478,7 @@ private:
     bool sampled()const{return NorthlightRenderThreadProbe::sampleFrame(frame)&&NorthlightDiagnostics::enabled();}
     static bool diagnostics(){return NorthlightDiagnostics::enabled();}
     // 0.3.154: the per-draw timing scopes; off on drawGate U frames (gateUntimed needs RenderProfile).
-    bool sampledDrawTimers()const{return sampled()&&!gateUntimed;}
+    bool sampledDrawTimers()const{return NorthlightRenderThreadProbe::profiling()&&sampled()&&!gateUntimed;}
     // stage is read when a fault is reported (0.3.187: drawHook names the step that was running).
     template<class Work> bool extensionWork(const char* const& stage,Work&& work) noexcept {
         if(extensionFault)return false;
@@ -2484,14 +2484,15 @@ public:
         if(retry){if(world)world->recover();if(water)water->recover();if(failed){releaseResources();failed=false;logf("Effects retry requested after frame cleanup");}}
         if(sampledFrame&&cpuFrequency.QuadPart>0){
             double ms=1000.0/double(cpuFrequency.QuadPart);
+            const bool drawTimed=NorthlightRenderThreadProbe::profiling(); // the per-draw scopes (prep, capture, water) need RenderProfile: -1 = not measured
             // 0.3.154: U frames have no per-draw timers; their numbers are on the DRAWGATE ab line.
-            if(!gateUntimed)logf("CPU profile frame=%u drawGate=%.3fms capture=%.3fms effects=%.3fms cleanup=%.3fms total=%.3fms enabled=%d gi=%u shadows=%u fog=%u captureSkipped=%u drawHooks=%.3fms frameDrawGates=%u",sampleFrame,std::max(0.0,double(cpuPrep-cpuCapture-cpuEffects)*ms),cpuCapture*ms,cpuEffects*ms,cleanup*ms,(cpuPrep+cleanup)*ms,frameEnabled,unsigned(frameEffects.gi),unsigned(frameEffects.shadows),unsigned(frameEffects.fog),unsigned(world&&world->captureSkippedLastFrame()),
+            if(!gateUntimed)logf("CPU profile frame=%u drawGate=%.3fms capture=%.3fms effects=%.3fms cleanup=%.3fms total=%.3fms enabled=%d gi=%u shadows=%u fog=%u captureSkipped=%u drawHooks=%.3fms frameDrawGates=%u",sampleFrame,drawTimed?std::max(0.0,double(cpuPrep-cpuCapture-cpuEffects)*ms):-1.0,drawTimed?cpuCapture*ms:-1.0,cpuEffects*ms,cleanup*ms,drawTimed?(cpuPrep+cleanup)*ms:-1.0,frameEnabled,unsigned(frameEffects.gi),unsigned(frameEffects.shadows),unsigned(frameEffects.fog),unsigned(world&&world->captureSkippedLastFrame()),
                 NorthlightRenderThreadProbe::profiling()?cpuDrawHooks*ms:-1.0,unsigned(frameDrawGates)); /* 0.3.187: drawHooks -1 = not measured (RenderProfile=0) */
             // captureWorld+captureWater=capture. qpcNs: one QueryPerformanceCounter call,
             // so a profile can subtract timer overhead (2 calls per CpuScope).
             LARGE_INTEGER a={},b={},t={};QueryPerformanceCounter(&a);for(unsigned i=0;i<32;++i)QueryPerformanceCounter(&t);QueryPerformanceCounter(&b);
             const double qpcNs=double(b.QuadPart-a.QuadPart)*1e9/double(cpuFrequency.QuadPart)/33.0;
-            if(!gateUntimed)logf("CPU capture split frame=%u captureWorld=%.3fms captureWater=%.3fms qpcNs=%.1f",sampleFrame,std::max(0.0,double(cpuCapture-cpuWaterCapture)*ms),cpuWaterCapture*ms,qpcNs);
+            if(!gateUntimed)logf("CPU capture split frame=%u captureWorld=%.3fms captureWater=%.3fms qpcNs=%.1f",sampleFrame,drawTimed?std::max(0.0,double(cpuCapture-cpuWaterCapture)*ms):-1.0,drawTimed?cpuWaterCapture*ms:-1.0,qpcNs);
             logf("WATER mask draws=%u deferred=%u clears=%u scans=%u readFailures=%u mrt=%u redraw=%u degraded=%u binds=%u longestRun=%u",waterDraws,0u,waterClears,waterScans,waterReadFailures,waterMrt,waterRedraws,waterDegraded,waterBinds,waterLongestRun); /* 0.3.215: binds = render target 1 binds for the water mask, longestRun = the most MRT draws under one bind (both per frame like the rest); 0.3.214 (water MRT): draws = mrt (the game draw wrote the mask itself) + redraw (second draws; degraded = planned as mrt, made as second draws) */
             if(NorthlightRenderThreadProbe::profiling()){
                 // Extension D3D9 calls of this frame by method, inside renderEffects' raw scope (all
@@ -2519,7 +2520,7 @@ public:
                 // 0.3.150: capture net of its timers: reads inside cpuCapture (CpuScopes and the capture-phase subset) x qpcNs.
                 const unsigned long long captureReads=cpuCaptureReads+(world?world->capturePhaseReadsLastFrame():0);
                 if(!gateUntimed)logf("CPU timers frame=%u mirrorAudit=%u cpuScopeClockReads=%llu qpcNs=%.1f timerOverheadMs=%.3f captureClockReads=%llu captureNetMs=%.3f",sampleFrame,unsigned(sampleFrame%120==60),reads,qpcNs,double(reads)*qpcNs/1e6,
-                    captureReads,std::max(0.0,double(cpuCapture)*ms-double(captureReads)*qpcNs/1e6));
+                    captureReads,drawTimed?std::max(0.0,double(cpuCapture)*ms-double(captureReads)*qpcNs/1e6):-1.0);
                 if(gateFrame)logDrawGate(sampleFrame,frameApplied,qpcNs,reads);
             }
         }

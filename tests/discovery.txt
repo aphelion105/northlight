@@ -59,8 +59,10 @@ test_equipment_light_proof_client.py
 test_equipment_lights.py
 test_expired_world_geometry.py
 test_fast_memcmp.py
+test_five_path_perf.py
 test_fog_clouds.py
 test_fog_clouds_wiring.py
+test_fog_empty_intervals.py
 test_fog_locale.py
 test_fog_motion.py
 test_fog_temporal_wiring.py
@@ -129,6 +131,7 @@ test_probe_blend.py
 test_probe_blend_equivalence.py
 test_probe_relight_cache.py
 test_probe_texture_upload.py
+test_production_draw_timers.py
 test_progressive_gi_worker.py
 test_quality_docs.py
 test_quality_settings.py
