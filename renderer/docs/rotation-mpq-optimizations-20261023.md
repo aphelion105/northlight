@@ -72,3 +72,13 @@ Large-WMO preparation remains a separate structural opportunity. The observed 26
 The user is installing a newer `wow_optimize`. Work against its previously installed version was stopped, remains isolated and unshipped, and is not part of this Northlight delivery. No optimizer DLL was installed or is supplied. Earlier Lua-stack findings describe the old run and must be reassessed on the user's newer version before changes to that module are considered.
 
 The game has not been launched by this work. The measured reductions apply to offline capture work, not measured game FPS; actual rotation smoothness and appearance require the user's next run. The original historical contact-normal capture coverage gap remains unrelated and is not silently marked as passed.
+
+## Built artifact
+
+The tested renderer source commit is `ae6a879ecadbf1c87948398c1d5d57e6b1f55704`. `scripts/build_renderer.py` succeeds with the existing offline shader-manifest gates. The final DLL is 5,616,128 bytes, SHA-256 `e47705e79b395659a2a5650c68ac3ea732f4c49f2f8bc79adf905191f3a57255`; its matching 45,895,680-byte PDB has SHA-256 `6a56c74da49510f563681876cacb01b5268d8ca0cfb86d652c5d898408aa2501`.
+
+The first build succeeds but its evidence wrapper rejects raw source equality because Windows generators convert five generated headers from LF to CRLF. Each generated file is proved identical to the committed source after newline normalization. A second `build-verified/` run succeeds with unchanged before/after inputs and the same DLL/PDB hashes; generated files are then restored to the exact committed bytes. The first build's two existing material-header warnings are recorded in `build/build.log`; no unrelated material changes are included. The publication follow-up only updates this report and normalizes newline encoding in the rejected offline reference/wrapper.
+
+Installed `d3d9.dll`, all six snapshotted client configuration files, and the installed world cache are not output destinations. The installed DLL and all six configuration hashes remain unchanged. The final preservation snapshot observes only the user's concurrent replacement of `wow_optimize.dll` and `wow_optimize.sym`; those files are neither restored nor included in this delivery. New-optimizer runtime behavior has not yet been evaluated.
+
+The separate `northlight-builds/northlight-rotation-pressure-ae6a879-20261023/` directory contains the replacement `d3d9.dll`, matching symbols, this English report and a hashed manifest. Installation remains a manual user action.
