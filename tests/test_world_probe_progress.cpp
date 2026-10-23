@@ -40,9 +40,10 @@ int main(){
    else {float d=dot(delta,delta);assert(d>=previous);previous=d;}}
   assert(seen.size()==2744);++windows;
  }
- ProbePublicationCadence cadence;assert(!cadence.due(100,8));cadence.solved();assert(!cadence.due(100,7)&&cadence.due(100,8));cadence.published(100);assert(!cadence.due(1000,2744));cadence.solved();assert(!cadence.due(349,8)&&cadence.due(350,8));cadence.published(350);
+ constexpr uint32_t I=ProbePublicationCadence::IntervalMs;
+ ProbePublicationCadence cadence;assert(!cadence.due(100,8));cadence.solved();assert(!cadence.due(100,7)&&cadence.due(100,8));cadence.published(100);assert(!cadence.due(1000,2744));cadence.solved();assert(!cadence.due(100+I-1,8)&&cadence.due(100+I,8));cadence.published(100+I);
  // Rapid camera requests do not reset the generation's clock or dirty work.
- for(unsigned t=351;t<600;t+=7){cadence.solved();assert(!cadence.due(t,8));}assert(cadence.due(600,8));cadence.published(UINT32_MAX-100);cadence.solved();assert(!cadence.due(148,8)&&cadence.due(149,8));cadence.reset();cadence.solved();assert(cadence.due(1,8));
+ for(unsigned t=101+I;t<100+2*I;t+=3){cadence.solved();assert(!cadence.due(t,8));}assert(cadence.due(100+2*I,8));cadence.published(UINT32_MAX-100);cadence.solved();assert(!cadence.due(I-102,8)&&cadence.due(I-101,8));cadence.reset();cadence.solved();assert(cadence.due(1,8));
  ProbeCache oldCache,newCache;for(int z=-6;z<8;++z)for(int y=-6;y<8;++y)for(int x=-6;x<8;++x)oldCache.put({x,y,z},tagged({x,y,z},2));auto old=oldCache.atlas();NorthlightProbeActivation activation;activation.begin("Azeroth");for(size_t i=0;i<old.size();++i)activation.update(i,old[i],1);
  auto order=probeSolveOrder({1,2,3});Vec3 origin=probeWindowOrigin({1,2,3});for(unsigned i=0;i<8;++i){ProbeGridKey key;assert(probeGridKey(probeWindowPosition(origin,order[i]),key));newCache.put(key,tagged(key,3));}
  auto partial=newCache.atlas();retainProbeDisplayFallback(partial,old);unsigned occupied=0,replaced=0;for(size_t i=0;i<partial.size();++i)if(partial[i].occupied){++occupied;replaced+=partial[i].probe.sh[0].x==3;assert(activation.update(i,partial[i],2)==1);}assert(occupied==2744&&replaced==8&&newCache.size()==8);

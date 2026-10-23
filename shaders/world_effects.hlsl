@@ -602,6 +602,25 @@ float4 LocalDirect(float2 uv:TEXCOORD0):COLOR0 {
     }
     return float4(result*(LocalLightInfo.y*(1-LocalLightInfo.z*sunlit)),0);
 }
+// Sixteen lamps in one pass (local_light_batches.h wide(): two neighbouring 8-lamp batches whose joint rect costs less than
+// both): the same term as LocalDirect per lamp, the lamps in entry uniforms c68..c83 (position, w attenuation end) and
+// c84..c99 (colour, w 1/(end-start)); unused slots are zero. c52 (LocalLightInfo.yz) and s12 as for LocalDirect.
+float4 LocalDirect16(float2 uv:TEXCOORD0,uniform float4 LampPos[16]:register(c68),uniform float4 LampColor[16]:register(c84)):COLOR0 {
+    float3 smoothNormal=tex2Dlod(NormalBuffer,float4(uv,0,0)).xyz;
+    float sunlit=saturate((tex2Dlod(BaselineLighting,float4(uv,0,0)).a-(1-GridInfo.z))/max(GridInfo.z,.001));
+    uv=depthUV(uv);
+    float d=normalizedDepth(uv);if(d>=.99999||waterDistance(uv,d)>0)return 0;
+    float3 p=worldPosition(uv,d);float3 n=smoothNormal;
+    float3 result=0;
+    [unroll]for(int i=0;i<16;++i){
+        float3 toLight=LampPos[i].xyz-p;
+        float inv=rsqrt(max(dot(toLight,toLight),.0025));
+        float reach=saturate((LampPos[i].w-1/inv)*LampColor[i].w);
+        float lambert=saturate(dot(n,toLight)*inv);
+        result+=LampColor[i].rgb*(reach*reach*lambert);
+    }
+    return float4(result*(LocalLightInfo.y*(1-LocalLightInfo.z*sunlit)),0);
+}
 // 0.3.159 shadow removal smoothing (always on). In sun shadow the correction removes the game's
 // painted sun light in proportion to N.L of the depth-derived FACET normal, but the
 // game painted it with smooth vertex normals: the removal steps at every facet crease

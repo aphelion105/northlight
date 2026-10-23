@@ -205,6 +205,7 @@ with tempfile.TemporaryDirectory(prefix='northlight-phase3-') as tmp:
         print(label,subprocess.check_output([str(exe)],text=True),end='',flush=True)
 
 dm=member(r,'template<class Capture> void prepareDrawImpl(Capture capture,UINT count)');bd=member(r,'    void beforeDraw(IDirect3DVertexShader9* vs)');cw=member(r,'template<class Draw> void captureWater(');fv=member(r,'bool fullViewport(D3DSURFACE_DESC& desc');bw=member(r,'bool bindWorldDepth(const D3DSURFACE_DESC& desc)')
+registration=member(w,'void registerShader(IDirect3DVertexShader9* shader,uint64_t hash)')
 checks={
  'prepareDrawImpl: peekVertexShader with the GetVertexShader fallback, released only when not borrowed':
     'const bool borrowedVS=ext->peekVertexShader(vs);' in dm and 'if(!borrowedVS&&(FAILED(ext->GetVertexShader(&vs))||!vs))' in dm
@@ -215,7 +216,7 @@ checks={
     'classifyVs(vs).skinned' in dm and 'classifyVs(vs).world' in dm and '(classifyVs(vs).entry&kTagMask)!=1' in member(r,'void planTerrainShadowSwap(')
     and 'const VsClass& vc=classifyVs(vs);' in bd and 'bool wmo=tag!=1&&vc.wmo;' in bd and 'vsTags.find' not in bd,
  'generation bumped before the maps change in CreateVertexShader registration':
-    '[&]{++vsGeneration;std::vector<DWORD> words;auto h=shaderHash(*out,words);' in r and r.count('++vsGeneration')==1 and 'void registerShader(IDirect3DVertexShader9* shader,uint64_t hash){\n        ++worldShaderGen;' in w,
+    '[&]{++vsGeneration;std::vector<DWORD> words;auto h=shaderHash(*out,words);' in r and r.count('++vsGeneration')==1 and all(registration.index('++worldShaderGen;')<registration.index(change) for change in ('wmoShaders.erase(', 'terrainShaders.erase(', 'captureShaders.erase(')),
  'captureWater: peekDepthStencilSurface first, GetDepthStencilSurface fallback':
     'ext->peekDepthStencilSurface(currentDepth)' in cw and 'ext->GetDepthStencilSurface(&currentDepth)' in cw,
  'world capture paths use the shader lookup cache':

@@ -21,6 +21,7 @@ fixture=r'''
 #include "quality_settings.h"
 #include <cassert>
 #include <functional>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <cstdio>
@@ -43,7 +44,14 @@ static Probe fixtureMoving(const BVH& bvh,Vec3 p,const PreparedLighting& light,u
 struct Fixture {
  struct PreparedCommit {int tag=0;};
 SNAPSHOT
- struct Request {V camera,probeCenter;NorthlightGI::Lighting light;std::string map="Azeroth";uint64_t id=1,baseId=1;DWORD queuedAt=0;unsigned reason=1;};
+ struct Request {std::shared_ptr<const int> actorJob;V camera,probeCenter;NorthlightGI::Lighting light;std::string map="Azeroth";uint64_t id=1,baseId=1;DWORD queuedAt=0;unsigned reason=1;};
+ // The production relight cache answers repeated keys without solving; this tail test counts every solve and advances its clock
+ // per solve, so it uses a pass-through with the same interface (the cache itself: test_probe_blend_equivalence / world_probe_cache).
+ struct PassThroughRelight {
+  void reset(){} void configure(const NorthlightGI::PreparedLighting&,unsigned){}
+  NorthlightGI::Probe solve(const NorthlightGI::BVH& b,NorthlightGI::ProbeGridKey,V q,const NorthlightGI::PreparedLighting& l,unsigned rays,uint32_t seed){return NorthlightGI::solveProbePrepared(b,q,l,rays,seed);}
+  NorthlightGI::ProbeRelightCache::Stats stats()const{return {};}
+ } relightCache;
  Request request;
  std::shared_ptr<NorthlightGI::BVH> bvh=std::make_shared<NorthlightGI::BVH>(),probeCacheGeometry,actors;
  std::shared_ptr<NorthlightWorldMesh::WorldMeshUploadPlan> scenePlan=std::make_shared<NorthlightWorldMesh::WorldMeshUploadPlan>();
@@ -81,8 +89,8 @@ static void reset(){now=0;solveCalls=0;afterSolve={};onTick={};}
 static unsigned occupied(const std::vector<NorthlightGI::ProbeAtlasEntry>& a){unsigned n=0;for(const auto& e:a)n+=e.occupied;return n;}
 int main(){
  const unsigned W=NorthlightGI::probeLayout().count(); /* 2744 at the default layout */
- reset();Fixture cold;onTick=[&]{cold.observe();};cold.run();assert(!cold.pending&&cold.published&&!cold.published->partial&&cold.published->processedProbes==W&&cold.completedBaseId==1);assert(cold.observed.front().value->partial&&cold.observed.front().value->processedProbes==8&&cold.observed.front().at==8);assert(cold.observed.size()>5&&cold.observed.size()<16);
- DWORD lastTick=0;for(const auto& o:cold.observed)if(o.value->partial){if(lastTick)assert(o.at-lastTick>=250);lastTick=o.at;assert(o.value->lightingGeneration==1);}cold.immutable();
+ reset();Fixture cold;onTick=[&]{cold.observe();};cold.run();assert(!cold.pending&&cold.published&&!cold.published->partial&&cold.published->processedProbes==W&&cold.completedBaseId==1);assert(cold.observed.front().value->partial&&cold.observed.front().value->processedProbes==8&&cold.observed.front().at==8);const unsigned interval=NorthlightGI::ProbePublicationCadence::IntervalMs;assert(cold.observed.size()>5&&cold.observed.size()<=W/interval+3);
+ DWORD lastTick=0;for(const auto& o:cold.observed)if(o.value->partial){if(lastTick)assert(o.at-lastTick>=interval);lastTick=o.at;assert(o.value->lightingGeneration==1);}cold.immutable();
  // Repeated camera changes inside one BVH region retain all solved world
  // points, refresh the nearest-first window, and do not defer the pub clock.
  reset();Fixture moving;onTick=[&]{moving.observe();};unsigned changes=0;afterSolve=[&]{if(changes<8&&solveCalls>=unsigned(100*(changes+1))){++changes;moving.next({float(changes*4),0,0});}};moving.run();assert(changes==8&&moving.retargeted==8&&moving.superseded==0&&!moving.pending&&!moving.published->partial&&moving.completedBaseId==moving.request.baseId);assert(moving.published->lightingGeneration==1&&moving.published->reusedProbes>0);assert(solveCalls<W+8*400);moving.immutable();
@@ -94,9 +102,10 @@ int main(){
  reset();Fixture lighting;onTick=[&]{lighting.observe();};afterSolve=[&]{if(solveCalls==100){lighting.next({8,0,0});lighting.request.light.skyRadiance={2,3,4};}};lighting.run();assert(lighting.superseded==1&&lighting.retargeted==0&&lighting.lightingGeneration==2&&!lighting.published->partial);for(const auto& o:lighting.observed)if(o.value->lightingGeneration==1)assert(o.at<=100);lighting.immutable();
  // Map and distant-region requests reject in-flight publication entirely.
  for(unsigned mode=0;mode<2;++mode){reset();Fixture changed;onTick=[&]{changed.observe();};afterSolve=[&]{if(solveCalls==256){changed.next(mode?V{80,0,0}:V{});if(!mode)changed.request.map="Kalimdor";}};changed.run(1);assert(changed.pending&&changed.completedBaseId==0);assert(changed.superseded==1);for(const auto& o:changed.observed)assert(o.at<=256);changed.immutable();}
- // Cancellation on the last solve cannot accidentally mark an incomplete
- // request complete. The queued retarget must still produce a full final.
- reset();Fixture last;onTick=[&]{last.observe();};afterSolve=[&]{if(solveCalls==W)last.next({8,0,0});};last.run();assert(last.retargeted==1&&last.completedBaseId==2&&!last.published->partial&&last.published->processedProbes==W);last.immutable();
+ // A camera request on the last solve cannot mark an incomplete request complete. World-keyed transport is no
+ // longer cancelled by a camera retarget (compatibleTransport), so the pass finishes and the queued request still
+ // produces a full final from the solved world points.
+ reset();Fixture last;onTick=[&]{last.observe();};afterSolve=[&]{if(solveCalls==W)last.next({8,0,0});};last.run();assert(last.retargeted==0&&last.completedBaseId==2&&!last.published->partial&&last.published->processedProbes==W);last.immutable();
  // Cancellation during a dynamic overlay publishes only an independent
  // cached-only export; current atlas is never mutated after publication.
  reset();Fixture dyn;NorthlightGI::WorldScene actor;actor.materials.push_back({});for(V p:{V{-4,-4,0},V{4,-4,0},V{0,4,0}})actor.vertices.push_back({p,{0,0,1}});actor.triangles.push_back({0,1,2,0});dyn.actors=std::make_shared<NorthlightGI::BVH>();std::string error;assert(dyn.actors->build(std::move(actor),error));onTick=[&]{dyn.observe();};afterSolve=[&]{if(solveCalls==W+6)dyn.next({8,0,0});};dyn.run();assert(dyn.completedBaseId==2&&!dyn.published->partial&&dyn.published->dynamicSolved<=128);dyn.immutable();

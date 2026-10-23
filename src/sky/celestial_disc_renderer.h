@@ -21,7 +21,7 @@ class NorthlightCelestialDiscRenderer {
     static constexpr float SunMaskRadius=NorthlightCelestialGlow::SunMaskRadius,MoonMaskRadius=NorthlightCelestialGlow::MoonMaskRadius;
     static constexpr float SunGlareSupport=NorthlightCelestialGlow::SunGlareSupport,MoonGlareSupport=NorthlightCelestialGlow::MoonGlareSupport;
     IDirect3DDevice9* d;std::string root;NorthlightCelestialDisc::NativeObserver observer;
-    IDirect3DTexture9* texture[2]={};IDirect3DPixelShader9* ps=nullptr;
+    IDirect3DTexture9* texture[2]={};unsigned textureWidth[2]={};IDirect3DPixelShader9* ps=nullptr;
     IDirect3DTexture9* terrainMask[2]={};IDirect3DSurface9* terrainSurface[2]={};
     IDirect3DVertexShader9* terrainVS=nullptr;IDirect3DPixelShader9* terrainPS=nullptr;
     bool terrainReady[2]={};uint64_t terrainGeneration[2]={};float terrainMatrix[2][16]={},terrainCamera[2][3]={},terrainNear[2]={};
@@ -113,12 +113,18 @@ private:
         if(!load())return false;if(!ps&&!check(d->CreatePixelShader(kCelestialDiscPSShader,&ps),"shader"))return false;
         for(unsigned body=0;body<2;++body)if(!texture[body]){
             NorthlightCelestialDisc::Texture source;if(!NorthlightCelestialDisc::loadTexture(root+(body?"/moon.fct":"/sun.fct"),source)){failed=true;return false;}
-            if(body==1){NorthlightCelestialDisc::softenMoonSurface(source);NorthlightCelestialDisc::softenMoonRim(source);}
-            if(!check(d->CreateTexture(source.width,source.height,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&texture[body],nullptr),"body texture"))return false;
-            D3DLOCKED_RECT lock={};if(!check(texture[body]->LockRect(0,&lock,nullptr,0),"body lock"))return false;
-            bool valid=lock.pBits&&lock.Pitch>=INT(source.width*4);
-            if(valid)for(unsigned y=0;y<source.height;++y)for(unsigned x=0;x<source.width;++x){const auto* p=source.rgba.data()+(y*source.width+x)*4;auto* q=static_cast<unsigned char*>(lock.pBits)+std::size_t(y)*unsigned(lock.Pitch)+x*4;q[0]=p[2];q[1]=p[1];q[2]=p[0];q[3]=p[3];}
-            if(!check(texture[body]->UnlockRect(0),"body unlock")||!valid){failed=true;return false;}
+            if(body==1)NorthlightCelestialDisc::softenMoonRim(source);
+            // The full mip chain: drawDisc picks the level from the disc's size on screen (c46.z), so the authored
+            // surface stays sharp without shimmering when the texture is larger than the disc.
+            if(!check(d->CreateTexture(source.width,source.height,0,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&texture[body],nullptr),"body texture"))return false;
+            textureWidth[body]=source.width;
+            for(DWORD level=0,levels=texture[body]->GetLevelCount();level<levels;++level){
+                if(level)source=NorthlightCelestialDisc::halve(source);
+                D3DLOCKED_RECT lock={};if(!check(texture[body]->LockRect(level,&lock,nullptr,0),"body lock"))return false;
+                bool valid=lock.pBits&&lock.Pitch>=INT(source.width*4);
+                if(valid)for(unsigned y=0;y<source.height;++y)for(unsigned x=0;x<source.width;++x){const auto* p=source.rgba.data()+(y*source.width+x)*4;auto* q=static_cast<unsigned char*>(lock.pBits)+std::size_t(y)*unsigned(lock.Pitch)+x*4;q[0]=p[2];q[1]=p[1];q[2]=p[0];q[3]=p[3];}
+                if(!check(texture[body]->UnlockRect(level),"body unlock")||!valid){failed=true;return false;}
+            }
         }
         return true;
     }
@@ -188,7 +194,6 @@ public:
     // everything drawn later (skybox mountains, terrain, trees) covers it
     // exactly like the native moon. Uses the current client camera (independent
     // reader), a validated projection, and a fresh orbit/appearance snapshot.
-    float horizonSine=0; // the last render()'s far edge; the sky-phase draw reads a fresh orbit but no world
     float earlyProjection[3]={};float earlyWorldMaxDepth=1;bool earlyValid=false;UINT earlyWidth=0,earlyHeight=0;unsigned drawnEarly=0,earlyFailures=0;
     unsigned claimGate=0,claimNoBody=0,claimCamera=0,claimOffscreen=0,claimDrawn=0,claimSecondary=0;
     // Side-effect-free prefixes of the claim/observe gates, so callers can skip
@@ -230,7 +235,7 @@ public:
         const NorthlightCelestial::Body* bodies[]={&currentSky.sun,&currentSky.moon};
         NorthlightCelestialDisc::Disc disc;int bounds[4];
         ++claimedDraws;
-        if(!NorthlightCelestialDisc::prepare(bodies[body]->direction,bodies[body]->tint,bodies[body]->alpha,bodies[body]->angularRadius,disc,horizonSine)){
+        if(!NorthlightCelestialDisc::prepare(bodies[body]->direction,bodies[body]->tint,bodies[body]->alpha,bodies[body]->angularRadius,disc)){
             if(bodies[body]->direction[2]<=0)offscreenOwned|=1u<<body;
             ++claimOffscreen;return true;
         }
@@ -308,16 +313,18 @@ public:
         // after it in the band does not. Without depth our quad was painted
         // over the mountains and then cut by the dome.
         const struct{D3DRENDERSTATETYPE s;DWORD v;} states[]={{D3DRS_ZENABLE,DWORD(occlude?FALSE:TRUE)},{D3DRS_ZWRITEENABLE,DWORD(occlude?FALSE:TRUE)},{D3DRS_ZFUNC,D3DCMP_LESSEQUAL},{D3DRS_ALPHATESTENABLE,FALSE},{D3DRS_ALPHABLENDENABLE,TRUE},
-          {D3DRS_SRCBLEND,DWORD(glare?D3DBLEND_INVDESTCOLOR:D3DBLEND_SRCALPHA)},{D3DRS_DESTBLEND,DWORD(glare?D3DBLEND_ONE:D3DBLEND_INVSRCALPHA)},{D3DRS_BLENDOP,D3DBLENDOP_ADD},{D3DRS_SEPARATEALPHABLENDENABLE,FALSE},
+          {D3DRS_SRCBLEND,DWORD(glare?D3DBLEND_INVDESTCOLOR:D3DBLEND_SRCALPHA)},{D3DRS_DESTBLEND,DWORD(D3DBLEND_ONE)} /* the disc adds to the sky like the native billboard, which the sky dome is added over (DayNight::RenderSky) */,{D3DRS_BLENDOP,D3DBLENDOP_ADD},{D3DRS_SEPARATEALPHABLENDENABLE,FALSE},
           {D3DRS_CULLMODE,D3DCULL_NONE},{D3DRS_COLORWRITEENABLE,7},{D3DRS_FOGENABLE,FALSE},{D3DRS_STENCILENABLE,FALSE},{D3DRS_SCISSORTESTENABLE,TRUE},
           {D3DRS_CLIPPLANEENABLE,0},{D3DRS_DEPTHBIAS,0},{D3DRS_SLOPESCALEDEPTHBIAS,0},{D3DRS_FILLMODE,D3DFILL_SOLID},{D3DRS_MULTISAMPLEMASK,0xffffffff},{D3DRS_WRAP0,0}};
         for(auto& s:states)d->SetRenderState(s.s,s.v);
         d->SetTextureStageState(0,D3DTSS_TEXCOORDINDEX,0);d->SetTextureStageState(0,D3DTSS_TEXTURETRANSFORMFLAGS,D3DTTFF_DISABLE);
         for(unsigned k=0;k<6;++k){d->SetSamplerState(k,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(k,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);
             d->SetSamplerState(k,D3DSAMP_MINFILTER,(k==1||k==4)?D3DTEXF_LINEAR:D3DTEXF_POINT);d->SetSamplerState(k,D3DSAMP_MAGFILTER,(k==1||k==4)?D3DTEXF_LINEAR:D3DTEXF_POINT);
-            d->SetSamplerState(k,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(k,D3DSAMP_SRGBTEXTURE,FALSE);}
+            d->SetSamplerState(k,D3DSAMP_MIPFILTER,k==1?D3DTEXF_LINEAR:D3DTEXF_NONE);d->SetSamplerState(k,D3DSAMP_SRGBTEXTURE,FALSE);}
         d->SetTexture(0,depth);d->SetTexture(2,water);d->SetTexture(4,terrainReady[i]?terrainMask[i]:nullptr);
-        const float terrainPolicy[]={terrainReady[i]?1.f:0.f,i?MoonMaskRadius:SunMaskRadius,0,0};
+        // c46.z: the body texture's LOD for the disc's radius in pixels (tangent radius x vertical projection scale).
+        const float terrainPolicy[]={terrainReady[i]?1.f:0.f,i?MoonMaskRadius:SunMaskRadius,
+            NorthlightCelestialDisc::discLod(textureWidth[i],disc.tangentRadius*std::fabs(projection[1])*.5f*float(height)),0};
         d->SetPixelShaderConstantF(46,terrainPolicy,1);
         std::memcpy(c[46],terrainPolicy,16);c[0][0]=1.f/width;c[0][1]=1.f/height;c[0][2]=minZ;c[0][3]=1/(maxZ-minZ);
         // Glare: c12.x = hot-core rate, c12.z = core weight (moon: strength),
@@ -326,7 +333,7 @@ public:
         c[12][2]=i?NorthlightCelestialGlow::MoonGlareStrength:NorthlightCelestialGlow::SunCoreWeight;c[12][3]=glare?1.f:0.f;
         // The glare reads the ring the previous frame's ring pass wrote (sun only).
         const bool ring=glare&&!i&&ringWritten&&ringFrame+1==frames;
-        if(glare)NorthlightCelestialGlow::glareConstants(glow,i,disc.tint,NorthlightCelestialGlow::sunTailWeight(disc.direction[2]),ring?NorthlightCelestialGlow::ringWrap(disc.direction[2],std::sin(std::atan(disc.tangentRadius)),horizonSine):0.f,c[47],c[48]);
+        if(glare)NorthlightCelestialGlow::glareConstants(glow,i,disc.tint,NorthlightCelestialGlow::sunTailWeight(disc.direction[2]),ring?NorthlightCelestialGlow::ringWrap(disc.direction[2],std::sin(std::atan(disc.tangentRadius))):0.f,c[47],c[48]);
         else NorthlightCelestialGlow::constants(glow,i,0.f,c[47],c[48]);
         c[12][2]*=fade;c[47][3]*=fade;
         if(glare){const float gain=weatherGain.load(std::memory_order_relaxed);c[12][2]*=gain;c[47][3]*=gain;} /* 0.3.198 (rain): x1 when dry */
@@ -393,7 +400,7 @@ public:
         if(failed||!target||!depth||!width||!height||!projection||!inverseView||!std::isfinite(minZ)||!std::isfinite(maxZ)||maxZ<=minZ||
            !std::isfinite(nearZ)||!std::isfinite(farZ)||nearZ<=0||farZ<=nearZ||!load())return false;
         observer.finishObservations();ownFrame=frames;maskFarClip=farZ;
-        haloDay=context.dayFraction;horizonSine=context.horizonSine;
+        haloDay=context.dayFraction; // the discs end at the true horizon, as the native billboard (no far-edge offset)
         NorthlightCelestialDisc::Disc disc[2];int bounds[2][4];bool visible[2]={};
         const NorthlightCelestial::Body* bodies[]={&context.sun,&context.moon};
         // Renderer policy has already resolved appearance, including intentional
@@ -405,7 +412,7 @@ public:
         for(unsigned i=0;i<2;++i){
             const bool early=(drawnEarly&(1u<<i))!=0;
             if((!early&&!observer.lateDisc(i,suppressed))||
-               !NorthlightCelestialDisc::prepare(bodies[i]->direction,tint[i],bodies[i]->alpha,bodies[i]->angularRadius,disc[i],horizonSine))continue;
+               !NorthlightCelestialDisc::prepare(bodies[i]->direction,tint[i],bodies[i]->alpha,bodies[i]->angularRadius,disc[i]))continue;
             visible[i]=!early&&NorthlightCelestialDisc::screenBounds(disc[i],inverseView,projection[0],projection[1],projection[2],width,height,bounds[i]);
             if(!early){
                 auto support=disc[i];support.tangentRadius*=i?MoonMaskRadius:SunMaskRadius;int supportBounds[4];
@@ -479,7 +486,7 @@ public:
         const float veil=NorthlightCelestialGlow::veilStrength(c[9][3],1,hazeAtSun,skyTransmittance);
         c[12][2]*=veil;c[47][3]*=veil;
         c[10][0]=0; // SRGBWRITE off: encoded output, like the composite before it
-        const bool ring=ringWritten&&ringFrame==frames;c[48][3]=ring?NorthlightCelestialGlow::ringWrap(g.disc.direction[2],std::sin(std::atan(g.disc.tangentRadius)),horizonSine):0.f;
+        const bool ring=ringWritten&&ringFrame==frames;c[48][3]=ring?NorthlightCelestialGlow::ringWrap(g.disc.direction[2],std::sin(std::atan(g.disc.tangentRadius))):0.f;
         if(!(veil>0)||!(c[12][2]+c[47][3]>0)){++veilStats.skipped;return false;}
         if(!veilPS&&!check(d->CreatePixelShader(kCelestialVeilPSShader,&veilPS),"veil shader"))return false;
         IDirect3DTexture9* halo=haloVisibility[0][haloIndex[0]];

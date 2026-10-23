@@ -122,6 +122,13 @@
     // joins it. Until then packets hold cleared bounds: draw, never cull.
     NorthlightReplayBoundsJob::Worker replayBoundsWorker;
     bool replayBoundsDiagnostics=false;double replayBoundsKickMs=0;
+    unsigned replayBoundsLogFrame=0;bool replayBoundsLogSeen=false;
+    bool replayBoundsDiagnosticSample(){
+        // frames counts successful world composites and can stay at zero (or
+        // a multiple of 120) while geometry is absent. Sample that value once.
+        if(!NorthlightDiagnostics::enabled()||(frames&&frames%120)||(replayBoundsLogSeen&&replayBoundsLogFrame==frames))return false;
+        replayBoundsLogSeen=true;replayBoundsLogFrame=frames;return true;
+    }
     // A metadata fallback (per-frame preparation cap) keeps the synchronous
     // pass' full-key evaluation as an unshared snapshot of the same program,
     // at most once per pair and FallbackPreparations pairs per frame. Beyond
@@ -154,7 +161,7 @@
         auto& items=replayBoundsWorker.items();
         try{items.reserve(replays.size());replayBoundsFallbacks.reserve(FallbackPreparations);}catch(...){return;}
         if(!replayBoundsWorker.ready())return;
-        const bool diagnostics=NorthlightDiagnostics::enabled()&&(frames==0||frames%120==0); /* logs and envelope timing fields only */
+        const bool diagnostics=replayBoundsDiagnosticSample(); /* logs and envelope timing fields only */
         pointBoundsValid=0;replayBoundsCache.beginFrame(diagnostics);replayBoundsMetadata.beginFrame();
         // Program/declaration lookups stay on the render thread.
         replayBoundsFallbacks.clear();replayBoundsCapped=0;
@@ -194,7 +201,7 @@
         cheapBudget.maxVertices=0;cheapBudget.maxOperations=163840;
         heavyBudget.maxVertices=0;heavyBudget.maxOperations=32768;
         buildBudget.maxVertices=2048;buildBudget.maxOperations=65536;
-        const bool diagnostics=NorthlightDiagnostics::enabled()&&(frames==0||frames%120==0); /* logs and envelope timing fields only */
+        const bool diagnostics=replayBoundsDiagnosticSample(); /* logs and envelope timing fields only */
         pointBoundsValid=0;replayBoundsCache.beginFrame(diagnostics);replayBoundsMetadata.beginFrame();
         // Hints contain no entry/declaration pointers. Current pose bounds and
         // classifications never survive to another frame or recycled packet.

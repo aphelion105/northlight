@@ -52,8 +52,9 @@ Every effect below is on by default and is drawn on top of the game's own frame.
   shadows and its round blob shadows under characters are drawn as the game draws them there. Dungeons and raids are an optional part of the cache:
   the installer asks which of six groups (Classic, TBC and Wrath dungeons and raids; about 0.3-1.3 GB and 1-2
   build minutes each) to build, `--instances` answers for it, and changing the choice never rebuilds the continents.
-- **Lamps.** Up to 32 nearby lamps, lanterns, braziers and fires light the ground and walls around
-  them and glow in the fog. In direct sun lamps dim. Lamp shadows are off by default (`PointShadows=1`
+- **Lamps.** Up to 48 nearby lamps (Quality; `LocalLightLimit`, 8..64), lanterns, braziers and fires light the ground and walls around
+  them and glow in the fog. Lamps in view take the slots first, and lamps close together on screen are drawn
+  together (0.3.217), so the same `LocalLightLimit` lights more of what you see for less GPU time. In direct sun lamps dim. Lamp shadows are off by default (`PointShadows=1`
   turns them on): only lights inside buildings cast faint shadows, at dusk and night; street lamps,
   lanterns and torches never do. Overlapping lamp glows are capped once over all lamps (0.3.205), so the
   glow no longer flickers when walking or riding past rows of lamps.

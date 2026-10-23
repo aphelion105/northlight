@@ -67,12 +67,16 @@ struct Counters {
     Counter filteredCalls{0};   // redundant Sets the game side did not record
     Counter stateAnswered{0},stateSynced{0},lockAsync{0};
     Counter coopAnswered{0};   // 0.3.204 (task 21): TestCooperativeLevel calls the game thread answered D3D_OK from StreamCore::coopState (not in stateAnswered)
+    Counter eventRequests{0},eventLocal{0},eventPending{0}; // exact EVENT cache hits, queued FLUSH batches and pending local probes
+    Counter eventPendingNs{0},eventCompleted{0}; // first pending probe -> observed completion; includes real GPU work
     Counter queryFlushLocal{0},queryFlushSynced{0};   // GetData(FLUSH) calls: answered on the game thread from the replay thread's latest polled result (occlusion queries only) / run as SyncGetData
     Counter census[kMaxCmdIds]{};   // sync calls per command id (name via cmdName in command_stream.inl)
     // ---- Consumer (replay thread) ----
     alignas(kLine) Counter consumerSleeps{0};
+    Counter replayIdleNs{0};   // Existing queue-wait clock, shared with the slow-frame diagnostics.
     Counter directCalls{0};   // replayed straight on the extension device
     Counter queryPolls{0},deadCreates{0},createFailures{0},replayFailures{0},syncOnlySlots{0},proxyMismatch{0};   // replayFailures: the game thread adds rarely too
+    Counter eventPollBatches{0},eventPollCalls{0},eventWaitTrips{0};   // bounded EVENT/FLUSH polls per replay request; replay thread only
     Counter skippedFrames{0},skippedCommands{0};   // 0.3.200 (frame skip): frames replayed in skip mode (no draws, no real Present) and the draws/clears they dropped
     // ---- Both threads write: memory in flight (chunks handed to the producer and not yet recycled, live blocks, registered shadows). ----
     alignas(kLine) Counter chunksLive{0};

@@ -138,7 +138,7 @@ checks['decision: the game must not use stencil (disable once), the depth format
     'nameMask.disable("no stencil' not in r and dc.index('D3DRS_STENCILENABLE')<dc.index('nameMask.disable("the game uses stencil")')<dc.index('worldDepth!=maskFormatFor||format!=maskFormatValue')<dc.index('NAMEMASK world depth surface=%p format=%lu')<dc.index('no stencil bits: no name mask while this surface is the world depth')
     <dc.index('nameMask.hasMarks()&&NorthlightTranslucentDepth::isUndo(')<dc.index('maskKind=2')<dc.index('maskKind=1'))
 checks['names: the UI-hash vertex shader (tag 2) whose c3 is not the screen-space (0,0,0,1) of the boundary, never water, alpha-blended, full viewport, world depth bound']=(
-    'if(water||!drawUiHashVS){' in dc and 'drawWaterVS=(entry&kWaterTag)!=0;drawUiHashVS=uiTextVs(vs,tag);' in r and 'if(!NorthlightNameStencil::nameBlend(ab,sb,db,cw))return;' in dc
+    'if(water||!drawUiHashVS){' in dc and 'drawWaterVS=(entry&kWaterTag)!=0;' in r and 'drawUiHashVS=uiTextVs(vs,tag);' in r and 'if(!NorthlightNameStencil::nameBlend(ab,sb,db,cw))return;' in dc
     and dc.index('!drawUiHashVS')<dc.index('hasMarks()&&NorthlightTranslucentDepth::isUndo(')<dc.index('nameBlend(ab,sb,db,cw)') # the cheapest test first: all but the names stop at the tag
     and 'if(FAILED(ext->GetVertexShaderConstantF(3,c3,1))||NorthlightUiBoundary::clipWOne(c3))return;' in dc
     and dc.index('!drawUiHashVS')<dc.index('GetVertexShaderConstantF(3,c3,1)')<dc.index('viewport.Width==width&&viewport.Height==height&&worldDepthBound()'))
@@ -147,9 +147,10 @@ checks['font mods (Lexara, TweakWoW2): a name may also be drawn with the VS the 
     and r.count('uiTextVs(')==3 and '} else if (tag==2) {' in r)
 checks['the boundary keeps its own test: tag 2, UI pixel shader and clipWOne(c3) call renderEffects (screen UI is never a name)']=(
     'if (isUI && SUCCEEDED(ext->GetVertexShaderConstantF(3,w,1)) && NorthlightUiBoundary::clipWOne(w)){' in r)
+indexed=r[r.index('HRESULT STDMETHODCALLTYPE DrawIndexedPrimitive('):r.index('HRESULT STDMETHODCALLTYPE DrawPrimitiveUP(')]
 checks['draw states: a mirror-known render state is read in place under the gate of the draw hook (no lock, no COM call), the same active() and known test as GetRenderState, else GetRenderState']=(
     'v=drawRenderState(t);known=true;' in impl and 'if(unsigned(t)<DeviceMirror::RenderStates&&mirrorState.active()&&mirrorState.renderStateKnown[t]){v=mirrorState.renderStates[t];return true;}' in r
-    and 'return SUCCEEDED(ext->GetRenderState(t,&v));' in r and 'DWORD drawRenderState(D3DRENDERSTATETYPE t){DWORD v=0;readDrawRenderState(t,v);return v;}' in r and 'Guard mirrorLock(mirrorState.gate);\n        auto draw=[&]{return ext->DrawIndexedPrimitive(' in r)
+    and 'return SUCCEEDED(ext->GetRenderState(t,&v));' in r and 'DWORD drawRenderState(D3DRENDERSTATETYPE t){DWORD v=0;readDrawRenderState(t,v);return v;}' in r and indexed.index('Guard mirrorLock(mirrorState.gate);')<indexed.index('auto draw=')<indexed.index('return drawHook(') and 'ext->DrawIndexedPrimitive(' in indexed)
 checks['hash UI boundary draws and everything after applied are never marked (prepareDrawImpl returns once applied; the decision sits after beforeDraw)']=(
     impl.index('if(applied){')<impl.index('beforeDraw(vs);')<impl.index('nameMaskDecide('))
 mc=r[r.index('bool nameMaskClear(){'):r.index('// The run of name draws')]
@@ -172,9 +173,9 @@ checks['draw: unmark states around the game draw; a name draws with the run set 
     md.index('maskApply(NorthlightNameStencil::kUnmark,previous)')<md.index('rainBlendDraw(rain,claimed,draw)',md.index('maskApply('))<md.index('maskRestore(NorthlightNameStencil::kUnmark,previous)')
     and md.index('nameMaskRunBegin()')<md.index('readDrawRenderState(D3DRS_ALPHATESTENABLE,alphaTest)')<md.index('maskApply(NorthlightNameStencil::kAlphaGuard,alphaPrevious)')<md.index('const HRESULT hr=rainBlendDraw(rain,claimed,draw);',md.index('kAlphaGuard'))<md.index('maskRestore(NorthlightNameStencil::kAlphaGuard,alphaPrevious)')<md.index('if(SUCCEEDED(hr)&&nameRun)nameMask.noteMark();')
     and 'if(!kind)return rainBlendDraw(rain,claimed,draw);' in md and 'if(claimed||!nameMask.armed())return rainBlendDraw(rain,claimed,draw);' in md)
-hook=r[r.index('template<class Capture,class Draw> HRESULT drawHook('):][:3800]
-checks['drawHook: both gate paths end in nameMaskDraw (the draw lambda is a pure ext->Draw* call)']=hook.count('nameMaskDraw(rainBlend,claimed||mist,draw)')==2 and 'rainBlendDraw' not in hook
-checks['draw lambdas are pure device draws']=len(re.findall(r'return drawHook\(t,count,\[&\]\(IDirect3DVertexShader9\* vs\)\{[^\n]*?\},draw\);\}',r))==4 and all(x in r for x in ('ext->DrawPrimitive(','ext->DrawIndexedPrimitive('))
+hook=r[r.index('template<class Capture,class Draw> HRESULT drawHook('):];hook=hook[:hook.index('\n    }\n')+7]
+checks['drawHook: both gate paths end in nameMaskDraw (optional draw wrappers retain the game call)']=hook.count('nameMaskDraw(rainBlend,claimed||mist,draw)')==2 and 'rainBlendDraw' not in hook
+checks['draw lambdas retain all four device entry points']=len(re.findall(r'return drawHook\(t,count,\[&\]\(IDirect3DVertexShader9\* vs\)\{[^\n]*?\},draw\);\}',r))==4 and all(x in r for x in ('ext->DrawPrimitive(','ext->DrawIndexedPrimitive('))
 clr=r[r.index('HRESULT STDMETHODCALLTYPE Clear('):][:2800]
 checks['Clear hook: the stencil flag joins the game\'s full Clear(Z) of the world depth (no rects, scissor off) while the frame has no marks; with marks it is dropped; the mask bit in the game\'s value disables']=(
     'boundDepthIs(maskDsId)' in clr and 'n==0&&SUCCEEDED(ext->GetRenderState(D3DRS_SCISSORTESTENABLE,&scissor))&&!scissor&&SUCCEEDED(ext->GetViewport(&viewport))&&nameMaskFullViewport(viewport)' in clr and 'flags|=D3DCLEAR_STENCIL;stencil=0;' in clr and 'flags&=~DWORD(D3DCLEAR_STENCIL)' in clr
@@ -192,7 +193,7 @@ checks['composite bind (one helper for both composites): the world depth-stencil
     and '{D3DRS_STENCILENABLE,D3DRS_ZENABLE,D3DRS_ZWRITEENABLE}' in bind)
 comp=w[w.index('IDirect3DSurface9* maskDepth=nameMaskDepth;'):w.index('if(!compositeOk)return false;composited=true;')]
 checks['WorldComposite: the pointer consumed, the quad inside the bind scope']=(
-    'nameMaskDepth=nullptr;NameMaskCompositeBind mask(d,maskDepth);compositeOk=check(quad(w,h),"world composite");}' in comp and 'void setNameMask(IDirect3DSurface9* depthStencil){nameMaskDepth=depthStencil;}' in w and 'nameMaskQpc' not in w)
+    'nameMaskDepth=nullptr;NameMaskCompositeBind mask(d,maskDepth);compositeOk=check(quad(w,h),"world composite");' in comp and 'void setNameMask(IDirect3DSurface9* depthStencil){nameMaskDepth=depthStencil;}' in w and 'nameMaskQpc' not in w)
 checks['debug view: the last effect pass before applied=true when the frame has marks, stencil EQUAL on the bit, ZENABLE off, nothing written']=(
     'if(maskOn&&nameMask.debug)nameMaskDebugView(saved.targets[0]);' in r and r.index('nameMaskDebugView(saved.targets[0]);')<r.index('applied = true; ++appliedFrames;')
     and 'D3DRS_STENCILFUNC,D3DCMP_EQUAL' in r and 'D3DRS_STENCILWRITEMASK,0' in r)
@@ -226,6 +227,6 @@ checks['cost: sample frames only (sampledDrawTimers/sampled), plain CpuScopes; d
     and 'double(cpuNameDecide)*double(nameDecideCalls)/double(nameDecideTimed)*us' in r and 'decideUs=%.1f markUs=%.1f unmarkUs=%.1f cpuUs=%.1f' in fl and 'cpuNameDecide=cpuNameMark=cpuNameUnmark=0;' in r
     and all(x not in r for x in ('CountedScope','qpcPairTicks','NAMEMASK timer calibration','cpuNameComposite','takeNameMaskQpc')) and 'netTicks' not in h)
 checks['no duplicate draw, no GPU pair timer: names are marked by the game\'s own draw']=('nameMarkDraw' not in r and 'nameGpu' not in r and 'NorthlightGpuPairTimer' not in r and not (fp.REPO/'src'/'core'/'gpu_pair_timer.h').exists())
-checks['banner: 0.3.216 with the name mask']='logf("Northlight renderer 0.3.216;' in r and "floating names keep the game's colour (stencil mask); instance map names with an apostrophe or a space reach the world context; backend=%s" in r
+checks['banner: 0.3.216 with the name mask']='logf("Northlight renderer 0.3.216;' in r and "floating names keep the game's colour (stencil mask); instance map names with an apostrophe or a space reach the world context; lamps in view first, screen-coherent lamp batches (16-lamp passes); backend=%s" in r
 for n,ok in checks.items():print(('PASS ' if ok else 'FAIL ')+n)
 assert all(checks.values())

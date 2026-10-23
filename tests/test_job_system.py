@@ -42,7 +42,7 @@ check('each body inline at its old place with ReplayJobs=0, joined there (or at 
       and 'if(jobs&&!replayCullsKicked){replayCullsKicked=true;replayCullKick(slot,sourceActive);}' in render
       and render.index('replayBoundsJoin(); /* 0.3.143: first pointBounds reader */')<render.index('replayCullKick(slot,sourceActive)')
       and '(cull?(cull[index]&1)!=0:StaticShadow::containsBounds(cachedMatrix,p->staticProofLow,p->staticProofHigh))' in render
-      and '(cull?(cull[index]&2)!=0:NorthlightShadowBounds::clipReject(' in render)
+      and '(cull?(cull[index]&2)!=0:(replayAffine&&NorthlightShadowBounds::clipRejectAffine(' in render)
 check('a later slot uses its job only when both matrices still match',
       '!std::memcmp(job.matrix,matrix,sizeof job.matrix)&&!std::memcmp(job.cached,cached,sizeof job.cached)?job.flags.data():nullptr' in w)
 check('the veil keeps both sums; the bank picks by the final activity (ensureCloudNoise on the renderer thread)',
@@ -57,7 +57,7 @@ jl=r.index('logf("JOBS frame=%u jobs=%u jobMs=%.3f joinWaitMs=%.3f replayMs=%.3f
 check('JOBS line on RenderProfile sample frames only',r.count('logf("JOBS frame=')==1 and r.rindex('if(sampledFrame&&cpuFrequency.QuadPart>0){',0,jl)<r.rindex('if(NorthlightRenderThreadProbe::profiling()){',0,jl)<jl<r.index('logf("D3D calls frame=',jl))
 
 # --- native proof ---------------------------------------------------------------------------
-configs=[('O2',['-O2']),('asan+ubsan',['-O1','-g','-fsanitize=address,undefined','-fno-sanitize-recover=all']),('tsan',['-O1','-g','-fsanitize=thread'])]
+configs=[('O2',['-O2']),('asan+ubsan',['-O1','-g','-fsanitize=address,undefined','-fno-sanitize-recover=all']),('tsan',['-O1','-g','-fsanitize=thread','-DNORTHLIGHT_TEST_TSAN=1'])]
 with tempfile.TemporaryDirectory(prefix='northlight-jobs-') as tmp:
     for label,flags in configs:
         exe=Path(tmp)/f'jobs-{label.replace("+","_")}'

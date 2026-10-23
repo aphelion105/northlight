@@ -66,7 +66,7 @@ int main(int argc, char **argv) {
     auto compile = reinterpret_cast<pD3DCompile>(GetProcAddress(compiler, "D3DCompile"));
     if (!compile) { std::free(source); FreeLibrary(compiler); return 4; }
     ID3DBlob *shader = nullptr, *diagnostics = nullptr;
-    HRESULT result = compile(source, size, argv[1], nullptr, nullptr, argv[2], argv[3],
+    HRESULT result = compile(source, size, argv[1], nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE, argv[2], argv[3],
         D3DCOMPILE_ENABLE_BACKWARDS_COMPATIBILITY | D3DCOMPILE_IEEE_STRICTNESS | D3DCOMPILE_OPTIMIZATION_LEVEL3,
         0, &shader, &diagnostics);
     std::free(source);

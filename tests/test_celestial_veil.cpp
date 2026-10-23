@@ -189,11 +189,12 @@ int main(){
         assert(!NorthlightCelestialVeil::draw(&d,&target,&ps,textures,c,empty,1728,1117,stats));
         assert(d.calls.empty()&&stats.skipped==2&&stats.draws==0);
     }
-    {   // The ring near the camera's far edge: none with the disc's bottom on it, full with the centre 3R over it.
+    {   // The ring: none with the disc's bottom on the horizon, full with the centre 3R over it.
         const float r=.0211f;
-        for(float edge:{0.f,-.03f}){assert(ringWrap(edge+r,r,edge)==0&&ringWrap(edge-r,r,edge)==0&&std::fabs(ringWrap(edge+3*r,r,edge)-Wrap)<1e-6f);
-            assert(ringWrap(edge+2*r,r,edge)>0&&ringWrap(edge+2*r,r,edge)<Wrap);}
-        assert(ringWrap(.5f,r,.2f)==Wrap&&ringWrap(r,r,.2f)==0&&ringWrap(NAN,r)==0&&ringWrap(.5f,0)==0&&ringWrap(.5f,r,NAN)==Wrap);
+        // Over the true horizon, like the disc: none at 1R, full at 3R.
+        assert(ringWrap(r,r)==0&&ringWrap(-r,r)==0&&std::fabs(ringWrap(3*r,r)-Wrap)<1e-6f);
+        assert(ringWrap(2*r,r)>0&&ringWrap(2*r,r)<Wrap);
+        assert(ringWrap(.5f,r)==Wrap&&ringWrap(NAN,r)==0&&ringWrap(.5f,0)==0);
     }
     {   // The apparent horizon: the lowest surface under the eye and toward the sun, seen at the far clip; 0..-sin 3 deg.
         namespace H=NorthlightApparentHorizon;const float eye[3]={0,0,30},sun[3]={1,0,.1f};

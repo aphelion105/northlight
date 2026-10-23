@@ -1,6 +1,6 @@
 // Draw after the native opaque world, before AO's scene copy and the extension
 // world/fog composite, so atmosphere layers over the disc; always before UI.
-// Core blend SRCALPHA/INVSRCALPHA; glare (and veil) blend INVDESTCOLOR/ONE:
+// Core blend SRCALPHA/ONE (added to the sky, like the native billboard under the sky dome); glare (and veil) blend INVDESTCOLOR/ONE:
 // a screen blend of 1-exp(-glow), so the glow never clips to a plateau.
 // CelestialVeilPS draws later (after the world composite and water, before UI).
 // Samples only clear world-depth pixels; native
@@ -11,7 +11,7 @@ sampler2D DiscWater : register(s2);
 sampler2D DiscHaloVisibility : register(s3); // current halo, previous 1x1 value in visibility pass
 sampler2D DiscTerrain : register(s4); // viewer-ray coverage of already loaded terrain
 sampler2D DiscRingVisibility : register(s5); // 1x1 visibility of the 2-4R ring (sun), else the halo value
-float4 DiscTerrainPolicy : register(c46); // ready, mask extent in body radii
+float4 DiscTerrainPolicy : register(c46); // ready, mask extent in body radii, body texture LOD
 float4 DiscImage : register(c0); // inv fullWidth/Height, world depthMin, inverse depthRange
 float4 DiscProjection : register(c1); // signed X,Y,Zsign, waterReady
 row_major float4x4 DiscInverseView : register(c2);
@@ -104,7 +104,9 @@ float4 CelestialHaloVisibilityPS(float2 uv:TEXCOORD0):COLOR0 {
     [loop]for(int i=0;i<32;++i){
         float4 source=DiscSourceUV[i];
         float terrain=DiscTerrainPolicy.x>.5?1-saturate(tex2Dlod(DiscTerrain,float4(source.zw,0,0)).r):1;
-        current+=filteredSkyVisibility(source)*terrain;
+        // As the disc: no visibility under the true horizon, the native fade over the 1.9 deg above it.
+        float3 ray=discRay(source.xy);
+        current+=filteredSkyVisibility(source)*terrain*saturate(30*ray.z/max(dot(ray,DiscDirection.xyz),1e-6));
     }
     current*=1.0/32;
     // Retain more halo around a partially covered source: half-visible yields
@@ -143,7 +145,7 @@ float4 CelestialDiscPS(float2 uv:TEXCOORD0):COLOR0 {
     clip(terrainVisible-.001);
     float forward=dot(ray,DiscDirection.xyz);clip(forward-.000001);
     float2 local=float2(dot(ray,DiscRight.xyz),-dot(ray,DiscUp.xyz))/(forward*DiscDirection.w);
-    float4 texel=tex2Dlod(DiscTexture,float4(local*.5+.5,0,0));
+    float4 texel=tex2Dlod(DiscTexture,float4(local*.5+.5,0,DiscTerrainPolicy.z)); // LOD from the disc size (c46.z)
     // suncenter.blp has only 16 alpha levels. Its magnified rim and the
     // complementary glare mask showed those steps as sharp concentric edges.
     // r43: a soft edge (opaque core ~0.44 radius) that fades continuously to 1,
@@ -162,15 +164,19 @@ float4 CelestialDiscPS(float2 uv:TEXCOORD0):COLOR0 {
         // a fully hidden sun (disc and ring) cannot leak glow around a roof.
         encoded=glowColor(radius);
         alpha=saturate(DiscColor.w)*glareProfile(radius);
-        // Preserve lunar craters/tint; solar glare also fills its center.
-        if(DiscRepair.w<.5)alpha*=1-texel.a;
+        // Preserve lunar craters/tint; solar glare also fills its center. Only where the disc is drawn: under the
+        // horizon fade below the disc leaves its place, and a full hole showed as a dark disc in the glare.
+        if(DiscRepair.w<.5)alpha*=1-texel.a*saturate(30*ray.z/forward);
     }else{
     clip(1-max(abs(local.x),abs(local.y)));
-    // Explicit LOD is valid after divergent silhouette/depth branches. Assets
-    // are decoded at <=256 pixels; the caller can supply their original mips.
+    // Explicit LOD is valid after divergent silhouette/depth branches; the CPU
+    // picks it from the disc's size on screen (assets are decoded at <=512 pixels).
     // Limit brightness before tinting so bright cores retain the regional hue.
     encoded=saturate(texel.rgb*DiscEmission.x)*lerp(saturate(DiscColor.rgb),DiscGlowCore.rgb,.5*DiscGlowHue.w);
     alpha=texel.a*saturate(DiscColor.w);
+    // The native billboard's horizon fade (DNPlanet::ClipGeometry): on its plane 12 away, opaque from 0.4 over the
+    // camera's height down to 0 there (1.9 deg), nothing below.
+    alpha*=saturate(30*ray.z/forward);
     }
     alpha*=terrainVisible;
     // In the early sky pass an invisible quad pixel must not write sky depth.

@@ -120,7 +120,7 @@ class WorldRenderer {public:
  bool prepareUnsettled()const{return false;}void recycleReplay(Replay* raw){delete raw;} /* 0.3.177: no abandoned prepare worker */
  static UINT roundBuffer(UINT bytes,size_t){return bytes;} // exact allocations in fake device
  explicit WorldRenderer(IDirect3DDevice9* dev):d(dev){}
- ~WorldRenderer(){frameFence.drop();replays.clear();replayGpuCache.clear();for(auto& p:replayVerticesGPU)drop(p);drop(replayIndicesGPU);}
+ ~WorldRenderer(){for(auto& ring:replayVertexRing)NorthlightDynamicRing::clearSpans(ring,frameFence);NorthlightDynamicRing::clearSpans(replayIndexRing,frameFence);frameFence.drop();replays.clear();replayGpuCache.clear();for(auto& p:replayVerticesGPU)drop(p);drop(replayIndicesGPU);}
  void add(std::shared_ptr<const NorthlightDrawSnapshot::Mesh> m,bool cached){
   auto p=std::make_unique<Replay>();if(cached)p->shared=m;else p->snapshot=*m;replays.push_back(std::move(p));}
  // 0.3.176 (U3'): at a frame boundary every live buffer holds its owner's reference (the cache entry,

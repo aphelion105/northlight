@@ -85,8 +85,15 @@ caps=r[r.index('void rainMaskCaps()'):r.index('bool rainMaskCreate()')]
 checks['rain mask MRT: caps checked once (2 RTs, independent write masks, separate alpha blend, ps_2_0), disabled with one log naming them']=(
     'caps.NumSimultaneousRTs>=2' in caps and 'D3DPMISCCAPS_INDEPENDENTWRITEMASKS' in caps and 'D3DPMISCCAPS_SEPARATEALPHABLEND' not in caps and 'D3DPMISCCAPS_MRTPOSTPIXELSHADERBLENDING' in caps and 'caps.PixelShaderVersion>=D3DPS_VERSION(2,0)' in caps and 'rainCapsChecked=true;' in caps and 'logf("WEATHER rain mask disabled: caps' in caps)
 cr=r[r.index('bool rainMaskCreate()'):r.index('void rainMaskClearSwap(')]
-checks['rain mask: created lazily at the effect size, failure logged once and disables the mask only (target, rain depth INTZ, both shaders)']=('D3DFMT_A8R8G8B8,D3DPOOL_DEFAULT,&rainMask' in r and 'rainMaskFailed=true;logf("WEATHER rain mask disabled' in r and 'if(!rainMaskSurface&&!rainMaskCreate())why|=64;' in bg
-    and 'D3DUSAGE_DEPTHSTENCIL,(D3DFORMAT)MAKEFOURCC(\'I\',\'N\',\'T\',\'Z\'),D3DPOOL_DEFAULT,&rainDepth' in cr and 'CreatePixelShader(kRainMaskMrtShader,&rainMrtPS)' in cr and 'CreatePixelShader(kRainScrubShader,&rainScrubPS)' in cr and 'drop(rainDepth);drop(rainMrtPS);drop(rainScrubPS);rainMaskFailed=true;' in cr)
+checks['rain mask: created lazily at the effect size, failure logged once and disables the mask only (target, rain depth in the snapshot format, both shaders)']=('D3DFMT_A8R8G8B8,D3DPOOL_DEFAULT,&rainMask' in r and 'rainMaskFailed=true;logf("WEATHER rain mask disabled' in r and 'if(!rainMaskSurface&&!rainMaskCreate())why|=64;' in bg
+    and 'D3DUSAGE_DEPTHSTENCIL,depthSnapshotFormat,D3DPOOL_DEFAULT,&rainDepth' in cr and 'CreatePixelShader(kRainMaskMrtShader,&rainMrtPS)' in cr and 'CreatePixelShader(kRainScrubShader,&rainScrubPS)' in cr and 'drop(rainDepth);drop(rainMrtPS);drop(rainScrubPS);rainMaskFailed=true;' in cr)
+res=r[r.index('    bool resources(UINT w, UINT h, D3DFORMAT format) {'):]
+res=res[:res.index('\n    }\n')]
+checks['depth snapshot: DF24 only on single-sample packaged DXVK (3.1.1 and 2.7.1) with the world depth known; an unknown depth keeps the current format; a refused DF24 falls back to INTZ for the session']=(
+    "const D3DFORMAT depthFormat=!worldDepthDescKnown&&depthSnapshotFormat!=D3DFMT_UNKNOWN?depthSnapshotFormat" in res
+    and ":NorthlightBackend::isPackagedDxvk(selectedBackend)&&!df24Refused&&worldDepthDescKnown&&worldDepthDesc.MultiSampleType==D3DMULTISAMPLE_NONE?df24:intz;" in res
+    and "if (FAILED(hr) && depthSnapshotFormat==df24) {" in res and "df24Refused=true;depthSnapshotFormat=intz;" in res
+    and res.index("df24Refused=true;depthSnapshotFormat=intz;")<res.index('if (error(hr, "depth snapshot texture")) return false;'))
 checks['rain mask: MSAA twin via CreateRenderTarget with the wanted type/quality only when not NONE, all dropped on failure, type/quality stored; draw target is the twin else the texture surface; recreated on a type/quality change']=(
     'rainMaskWantType!=D3DMULTISAMPLE_NONE' in cr and 'CreateRenderTarget(width,height,D3DFMT_A8R8G8B8,rainMaskWantType,rainMaskWantQuality,FALSE,&rainMaskMS,nullptr)' in cr and 'drop(rainMaskMS);drop(rainMaskSurface);drop(rainMask);rainMaskFailed=true;' in cr and 'ms=%u' in cr and 'rainMaskMsType=rainMaskWantType;rainMaskMsQuality=rainMaskWantQuality;' in cr
     and 'maskTarget=rainMaskMS?rainMaskMS:rainMaskSurface;' in bg and 'rainMaskMsType!=rainMaskWantType||rainMaskMsQuality!=rainMaskWantQuality' in bg)
@@ -117,11 +124,11 @@ checks['rain scrub: RT1 unbound, MSAA twin resolved by StretchRect (failure: nul
     and 'if(FAILED(rainMaskResolveHr)&&!rainMaskResolveLogged){rainMaskResolveLogged=true;logf("WEATHER rain mask resolve failed HRESULT' in r)
 # every device operation that could draw, clear, copy or change targets runs rainMrtUnbind() first
 def method(name):
-    i=r.index('HRESULT STDMETHODCALLTYPE '+name+'(');return r[i:r.index('\n',i)+1]
+    i=r.index('HRESULT STDMETHODCALLTYPE '+name+'(');return r[i:r.index('\n    HRESULT STDMETHODCALLTYPE ',i+1)]
 for name in ('UpdateSurface','UpdateTexture','GetRenderTargetData','StretchRect','ColorFill'):
-    m=method(name);checks[f'rain mask MRT: Device::{name} unbinds RT1 before the call']=('rainMrtUnbind();' in m and m.index('rainMrtUnbind();')<m.index('return ext->'+name))
+    m=method(name);checks[f'rain mask MRT: Device::{name} unbinds RT1 before the call']=('rainMrtUnbind();' in m and m.index('rainMrtUnbind();')<m.index('ext->'+name))
 cl=r[r.index('HRESULT STDMETHODCALLTYPE Clear('):r.index('HRESULT STDMETHODCALLTYPE CreateVertexBuffer(')]
-checks['rain mask MRT: Device::Clear unbinds RT1 first (before the Z resolve and the real Clear)']=('rainMrtUnbind();' in cl and cl.index('rainMrtUnbind();')<cl.index('resolveDepth()')<cl.index('return ext->Clear('))
+checks['rain mask MRT: Device::Clear unbinds RT1 first (before the Z resolve and the real Clear)']=('rainMrtUnbind();' in cl and cl.index('rainMrtUnbind();')<cl.index('resolveDepth()')<cl.index('ext->Clear('))
 def dmethod(name):  # the whole Device method, up to the next one (a fixed span broke whenever a line grew)
     i=r.index('HRESULT STDMETHODCALLTYPE '+name+'(',r.index('class Device final'));return r[i:r.index('\n    HRESULT STDMETHODCALLTYPE ',i+1)]
 rst=dmethod('Reset');pre=dmethod('Present');es=dmethod('EndScene')
