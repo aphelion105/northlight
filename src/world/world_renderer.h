@@ -24,7 +24,12 @@
 #include "world_gi.h"
 #include "world_local_lights.h"
 #include "local_light_selection.h"
+#include "equipment_lights.h"
+#include "particle_lights.h"
+#include "particle_uploads.h"
+#include "equipment_light_proof.h"
 #include "local_light_scissor.h"
+#include "local_light_batches.h"
 #include "point_light_shadow.h"
 #include "local_light_compiled_shaders.h"
 #include "replay_bounds.h"
@@ -561,7 +566,7 @@ private:
     void invalidateShadowCache(){staticCasters.settle();dropStaticDirtyJobs();for(auto& k:shadowCacheKey){k.valid=false;k.staticContent.valid=false;}for(auto& c:staticSlices)c.reset();pointCacheValid=false;for(int s=0;s<2;++s){farShadow[s].invalidate();nearShadow[s].invalidate();actorValid[s]=false;nearActorSkip[s]=false;actorCenterValid[s]=false;}}
     uint64_t liveChunkHash()const{uint64_t h=1469598103934665603ull;for(const auto& c:liveTerrainChunks){h^=uint64_t(uint32_t(c.first))*0x9E3779B97F4A7C15ull+uint64_t(uint32_t(c.second));h*=1099511628211ull;}return h;}
     IDirect3DPixelShader9 *cachedFastPS=nullptr,*cachedOpaqueFastPS=nullptr,*cachedOpaquePS=nullptr;
-    IDirect3DPixelShader9 *lightingPS=nullptr,*giPS=nullptr,*fogPS=nullptr,*fogBlurPS=nullptr,*localDirectPS=nullptr,*removalPS=nullptr,*temporalPS=nullptr,*localFogPS=nullptr,*normalsPS=nullptr,*sourceVisPS=nullptr,*finalPS=nullptr,*shadowPS=nullptr,*cachedShadowPS=nullptr,*replayPS=nullptr;
+    IDirect3DPixelShader9 *lightingPS=nullptr,*giPS=nullptr,*fogPS=nullptr,*fogBlurPS=nullptr,*localDirectPS=nullptr,*localDirect16PS=nullptr,*removalPS=nullptr,*temporalPS=nullptr,*localFogPS=nullptr,*normalsPS=nullptr,*sourceVisPS=nullptr,*finalPS=nullptr,*shadowPS=nullptr,*cachedShadowPS=nullptr,*replayPS=nullptr;
     IDirect3DPixelShader9 *actorShadowPS=nullptr,*actorTilesPS=nullptr; /* 0.3.209 (task 29): optional (with their targets); without them the actor shadow map stays off */
     // 0.3.199 (fog clouds): the moving fog banks' own half-resolution pass (FogClouds), its noise volume and the wind clock. The volume's bytes are
     // generated once per process on a worker thread (first active frame, never DllMain) and shared by every device; the holder is leaked on
@@ -611,12 +616,27 @@ private:
     // into the fog buffer.
     IDirect3DPixelShader9* localFogCombinePS=nullptr;IDirect3DTexture9* localFogAccum=nullptr;IDirect3DSurface9* localFogAccumSurface=nullptr;
     // 0.3.197: soft cap, incumbent bias and fades for the local lights (task 13). The clock is the selection's own: its gap and reset policy mirror useHistory.
+    NorthlightEquipmentLights::Tracker equipmentLights;std::unordered_map<IDirect3DVertexShader9*,unsigned> equipmentShaders;
+    NorthlightParticleLights::Frame particleLights;std::string particleMap;
+    std::string equipmentMap;NorthlightEquipmentLights::CaptureBudget equipmentCapture;
     NorthlightLocalLightSelection::Tracker localLightTracker;std::string localLightMap;V localLightCamera;int64_t localLightQpc=0;double localSelectUsSum=0,localSelectUsMax=0;unsigned localSelectFrames=0;
     // Additive local light passes add exactly +0 outside their batch's projected
     // spheres; scissor them there. Counters cover one LOCAL log interval.
     NorthlightLocalLightScissor::View localScissorView;
     unsigned localScissorBatches=0,localScissorClipped=0,localScissorSkipped=0;double localScissorCoverage=0;
+    unsigned localOffscreenSum=0,localArranged=0,localWidePasses=0;double localArrangeBefore=0,localArrangeAfter=0; /* LOCAL direct window: off-screen candidates, arranged frames, LocalDirect16 passes, cost model before/after */
     // 0.3.200 (jobs): known = the batch's rect from atmosphereWork (the same batchRect of the same view and positions), else computed here.
+    // RenderProfile sample frames only: a tile-based GPU (Metal under DXVK) writes a timestamp taken inside a render pass when that pass
+    // ends, so the lamp passes, which share the light (and fog) target with the passes around them, showed up in the next target switch
+    // (LocalLights 0.001 ms, RemovalSmooth carrying their cost). A one-pixel clear of its own target ends the pass; `resume` is bound again
+    // (the viewport resets to it; callers set the scissor per draw). It costs one store and load of the target on sample frames, never on others.
+    IDirect3DSurface9* profileSplitSurface=nullptr;bool profileSplitFailed=false;
+    void profileSplit(NorthlightGpuProfile* profile,IDirect3DSurface9* resume){
+        if(!profile||!profile->recording()||!resume||profileSplitFailed)return;
+        if(!profileSplitSurface&&FAILED(d->CreateRenderTarget(1,1,D3DFMT_A8R8G8B8,D3DMULTISAMPLE_NONE,0,FALSE,&profileSplitSurface,nullptr))){profileSplitSurface=nullptr;profileSplitFailed=true;return;}
+        if(SUCCEEDED(d->SetRenderTarget(0,profileSplitSurface)))d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0);
+        d->SetRenderTarget(0,resume);
+    }
     template<std::size_t N> bool localScissor(const std::array<NorthlightLocalLightSelection::Constant,N>& position,unsigned count,const NorthlightLocalLightScissor::Rect* known=nullptr){
         if(!NorthlightLocalLightScissor::Enabled)return true;
         // Fail open: without a proven view the batch draws unclipped.
@@ -1803,7 +1823,7 @@ private:
     bool resources(UINT w,UINT h,D3DFORMAT fmt){
         if(width==w&&height==h&&color)return true;
         releaseGPU(true);width=w;height=h; /* 0.3.214 (task 42): the uploaded MANAGED mesh survives a resolution change */
-        if(!check(d->CreatePixelShader(kWorldGIShader,&giPS),"world GI shader")||!check(d->CreatePixelShader(kWorldLightingShader,&lightingPS),"world lighting shader")||!check(d->CreatePixelShader(kWorldFogShader,&fogPS),"volume shader")||!check(d->CreatePixelShader(kFogBlurShader,&fogBlurPS),"volume blur shader")||!check(d->CreatePixelShader(kLocalDirectShader,&localDirectPS),"local direct light shader")||!check(d->CreatePixelShader(kRemovalSmoothShader,&removalPS),"removal smoothing shader")||!check(d->CreatePixelShader(kTemporalLightShader,&temporalPS),"temporal light shader")||!check(d->CreatePixelShader(kLocalFogShader,&localFogPS),"local fog glow shader")||!check(d->CreatePixelShader(kLocalFogCombineShader,&localFogCombinePS),"local fog combine shader")||!check(d->CreatePixelShader(kWorldNormalsShader,&normalsPS),"world normals shader")||!check(d->CreatePixelShader(kSourceVisibilityPSShader,&sourceVisPS),"source visibility shader")||!check(d->CreatePixelShader(kWorldCompositeShader,&finalPS),"world composite shader")||!check(d->CreatePixelShader(kShadowPSShader,&shadowPS),"shadow shader")||!check(d->CreatePixelShader(kShadowReplayPSShader,&replayPS),"replay shader")||!check(d->CreateVertexShader(kShadowVSShader,&shadowVS),"shadow vertex shader")||!check(d->CreateVertexShader(kShadowCacheVSShader,&cachedShadowVS),"cached shadow vertex shader")||!check(d->CreatePixelShader(kStaticCasterPSShader,&cachedShadowPS),"cached shadow depth shader"))return false;
+        if(!check(d->CreatePixelShader(kWorldGIShader,&giPS),"world GI shader")||!check(d->CreatePixelShader(kWorldLightingShader,&lightingPS),"world lighting shader")||!check(d->CreatePixelShader(kWorldFogShader,&fogPS),"volume shader")||!check(d->CreatePixelShader(kFogBlurShader,&fogBlurPS),"volume blur shader")||!check(d->CreatePixelShader(kLocalDirectShader,&localDirectPS),"local direct light shader")||!check(d->CreatePixelShader(kLocalDirect16Shader,&localDirect16PS),"local direct 16-light shader")||!check(d->CreatePixelShader(kRemovalSmoothShader,&removalPS),"removal smoothing shader")||!check(d->CreatePixelShader(kTemporalLightShader,&temporalPS),"temporal light shader")||!check(d->CreatePixelShader(kLocalFogShader,&localFogPS),"local fog glow shader")||!check(d->CreatePixelShader(kLocalFogCombineShader,&localFogCombinePS),"local fog combine shader")||!check(d->CreatePixelShader(kWorldNormalsShader,&normalsPS),"world normals shader")||!check(d->CreatePixelShader(kSourceVisibilityPSShader,&sourceVisPS),"source visibility shader")||!check(d->CreatePixelShader(kWorldCompositeShader,&finalPS),"world composite shader")||!check(d->CreatePixelShader(kShadowPSShader,&shadowPS),"shadow shader")||!check(d->CreatePixelShader(kShadowReplayPSShader,&replayPS),"replay shader")||!check(d->CreateVertexShader(kShadowVSShader,&shadowVS),"shadow vertex shader")||!check(d->CreateVertexShader(kShadowCacheVSShader,&cachedShadowVS),"cached shadow vertex shader")||!check(d->CreatePixelShader(kStaticCasterPSShader,&cachedShadowPS),"cached shadow depth shader"))return false;
         if(quality.actorShadows&&quality.actorShadowDetail&&(FAILED(d->CreatePixelShader(kActorShadowShader,&actorShadowPS))||FAILED(d->CreatePixelShader(kActorTilesShader,&actorTilesPS)))){drop(actorShadowPS);drop(actorTilesPS);logf("WORLD actor shadow map disabled: shader creation failed");} /* 0.3.209 (task 29) */
         if(FAILED(d->CreatePixelShader(kFogCloudsShader,&fogCloudsPS))){fogCloudsPS=nullptr;logf("WORLD fog clouds disabled: shader creation failed");} /* 0.3.199 (fog clouds): optional, the rest of the world never depends on it */
         if(FAILED(d->CreatePixelShader(kFogTemporalShader,&fogTemporalPS))){fogTemporalPS=nullptr;logf("WORLD fog temporal disabled: shader creation failed");} /* 0.3.199 (fog temporal): optional as well, the raw fog is the fallback */
@@ -2307,7 +2327,7 @@ public:
     // too; its cursor continues). Everything else (DEFAULT targets, dynamic rings, queries, state blocks, caches derived from
     // them) is released as before. recover() and the destructor release the mesh as well; the CPU payload is gone by then, so
     // upload() asks the builder for a fresh generation.
-    void releaseGPU(bool keepMesh=false){replayBoundsAbandon();releaseReplayProbe();staticCasters.settle();rigidMemoryClear();admission.reset();admissionOn=false;gatedBodies.clear();prepareQuiesce();neutralShadowMaps=false;prepareCaches->sampled.clear();prepareCaches->bones.clear();prepareCachesStale=false;if(replays.empty()&&heldShadowReplays.empty())prepareFrameRelease(); /* 0.3.179: no replay left to point at them */actorShadowHistory.clear();actorShadowOriginValid=false;replayBoundsMetadata.clear();replayBoundsCache.clear();declarationCache.clear();if(!keepMesh)uploadedStaticOwners.reset();staticOwnerGeneration=UINT64_MAX;staticCasters.reset();staticMatcher.clear();staticM2Memory.clear();staticScene.reset();staticRetryTick=0;stateBlocks.clear();uploadedTerrain.clear();liveTerrainIndexCount=liveDirectionalIndexCount=0;if(!keepMesh){fixedTerrain.reset();fixedTerrainBits.reset();}liveTerrainGeneration=0;drop(regionalFogTexture);drop(neutralAO);drop(neutralZero);drop(ditherNoise);rainMask=nullptr;uploadedFogField.reset();releasePointGPU();probeActivation.reset();probeBlend.reset();drop(baselineSurface);drop(baselineLight);releaseReplayGPU();liveTerrainGPU.clear();{auto& queries=fence();NorthlightDynamicRing::reset(liveIndexRing,0,queries);queries.drop();}drop(liveIndicesGPU);liveIndexBytes=0;liveIndexBase=0;if(!keepMesh){pendingMesh.reset();clearMesh();}retiredMaterials.clear();if(!keepMesh){releaseMeshPool();uploadedMap.clear();}for(auto& t:shadow)drop(t);for(auto& s:shadowSurface)drop(s);for(auto& t:shadowCache)drop(t);for(auto& s:shadowCacheSurface)drop(s);drop(shadowCacheDepth);drop(shadowVerifySurface);drop(shadowVerify);for(auto& r:shadowVerifyRead)drop(r);drop(shadowScratch);drop(shadowScratchSurface);releaseActorTargets();drop(neutralWhite);actorValid[0]=actorValid[1]=false;actorCenterValid[0]=actorCenterValid[1]=false;drop(unionPS);invalidateShadowCache();for(auto& t:probe)drop(t);drop(probePrev);drop(shadowDepth);drop(lightSurface);drop(smoothSurface);drop(fogSurface);drop(fogBlurredSurface);drop(fogHistorySurface);drop(fogHistory);drop(fogTemporalPS);fogHistoryValid=false;drop(colorSurface);drop(light);drop(smoothLight);drop(fog);drop(fogBlurred);drop(color);drop(lightingPS);drop(giPS);drop(fogPS);drop(fogBlurPS);drop(fogCloudsPS);drop(cloudNoise);drop(localDirectPS);drop(removalPS);drop(temporalPS);drop(localFogPS);drop(localFogCombinePS);drop(localFogAccumSurface);drop(localFogAccum);drop(normalsPS);drop(normalBuffer);drop(normalSurface);drop(sourceVisPS);for(int a=0;a<2;++a)for(int b=0;b<2;++b){drop(sourceVis[a][b]);drop(sourceVisSurface[a][b]);}sourceVisValid=false;for(int i=0;i<2;++i){drop(temporalLight[i]);drop(temporalLightSurface[i]);drop(temporalDepth[i]);drop(temporalDepthSurface[i]);}temporalValid=false;drop(finalPS);drop(shadowPS);drop(replayPS);drop(shadowVS);drop(cachedShadowVS);drop(cachedShadowPS);drop(cachedFastPS);drop(cachedOpaqueFastPS);drop(cachedOpaquePS);drop(shadowDecl);width=height=0;uploadedSerial=0;}
+    void releaseGPU(bool keepMesh=false){replayBoundsAbandon();releaseReplayProbe();staticCasters.settle();rigidMemoryClear();admission.reset();admissionOn=false;gatedBodies.clear();prepareQuiesce();neutralShadowMaps=false;prepareCaches->sampled.clear();prepareCaches->bones.clear();prepareCachesStale=false;if(replays.empty()&&heldShadowReplays.empty())prepareFrameRelease(); /* 0.3.179: no replay left to point at them */actorShadowHistory.clear();actorShadowOriginValid=false;replayBoundsMetadata.clear();replayBoundsCache.clear();declarationCache.clear();if(!keepMesh)uploadedStaticOwners.reset();staticOwnerGeneration=UINT64_MAX;staticCasters.reset();staticMatcher.clear();staticM2Memory.clear();staticScene.reset();staticRetryTick=0;stateBlocks.clear();uploadedTerrain.clear();liveTerrainIndexCount=liveDirectionalIndexCount=0;if(!keepMesh){fixedTerrain.reset();fixedTerrainBits.reset();}liveTerrainGeneration=0;drop(regionalFogTexture);drop(neutralAO);drop(neutralZero);drop(ditherNoise);rainMask=nullptr;uploadedFogField.reset();releasePointGPU();probeActivation.reset();probeBlend.reset();drop(baselineSurface);drop(baselineLight);releaseReplayGPU();liveTerrainGPU.clear();{auto& queries=fence();NorthlightDynamicRing::reset(liveIndexRing,0,queries);queries.drop();}drop(liveIndicesGPU);liveIndexBytes=0;liveIndexBase=0;if(!keepMesh){pendingMesh.reset();clearMesh();}retiredMaterials.clear();if(!keepMesh){releaseMeshPool();uploadedMap.clear();}for(auto& t:shadow)drop(t);for(auto& s:shadowSurface)drop(s);for(auto& t:shadowCache)drop(t);for(auto& s:shadowCacheSurface)drop(s);drop(shadowCacheDepth);drop(shadowVerifySurface);drop(shadowVerify);for(auto& r:shadowVerifyRead)drop(r);drop(shadowScratch);drop(shadowScratchSurface);releaseActorTargets();drop(neutralWhite);actorValid[0]=actorValid[1]=false;actorCenterValid[0]=actorCenterValid[1]=false;drop(unionPS);invalidateShadowCache();for(auto& t:probe)drop(t);drop(probePrev);drop(shadowDepth);drop(lightSurface);drop(smoothSurface);drop(fogSurface);drop(fogBlurredSurface);drop(fogHistorySurface);drop(fogHistory);drop(fogTemporalPS);fogHistoryValid=false;drop(colorSurface);drop(light);drop(smoothLight);drop(fog);drop(fogBlurred);drop(color);drop(lightingPS);drop(giPS);drop(fogPS);drop(fogBlurPS);drop(fogCloudsPS);drop(cloudNoise);drop(localDirectPS);drop(localDirect16PS);drop(profileSplitSurface);profileSplitFailed=false;drop(removalPS);drop(temporalPS);drop(localFogPS);drop(localFogCombinePS);drop(localFogAccumSurface);drop(localFogAccum);drop(normalsPS);drop(normalBuffer);drop(normalSurface);drop(sourceVisPS);for(int a=0;a<2;++a)for(int b=0;b<2;++b){drop(sourceVis[a][b]);drop(sourceVisSurface[a][b]);}sourceVisValid=false;for(int i=0;i<2;++i){drop(temporalLight[i]);drop(temporalLightSurface[i]);drop(temporalDepth[i]);drop(temporalDepthSurface[i]);}temporalValid=false;drop(finalPS);drop(shadowPS);drop(replayPS);drop(shadowVS);drop(cachedShadowVS);drop(cachedShadowPS);drop(cachedFastPS);drop(cachedOpaqueFastPS);drop(cachedOpaquePS);drop(shadowDecl);width=height=0;uploadedSerial=0;}
     // Explicit enable/retry only, called after the wrapper's clearFrame(). This
     // never calls endFrame(), so packet capture and cleanup run exactly once.
     void recover(){meshRetry.clear();if(!failed)return;releaseGPU(true);failed=false;valid=false;streamingReports=0;logf("WORLD explicit recovery requested");}
@@ -2324,7 +2344,7 @@ public:
         }
         effects=next;
     }
-    void reset(){shadowsComposited=false;pivotValid=false;pivotDistance=12.f;pivotCorrection.reset();pivotSelfCaptured=false;cascadeAnchor.reset();endFrame();replaySnapshots.clearIndexCache();actorJobComplete.reset();actorJobSerial_=0;actorSceneMap_.clear();lastActorCapture=0;terrainBoundsCache.clearPersistent();previousCacheHits=0;freeReplays.clear();pooledSnapshotBytes=0;valid=false;failed=false;releaseGPU(true); /* task 42: the committed MANAGED mesh survives any Reset, failed or not */}
+    void reset(){equipmentLights.reset();equipmentMap.clear();particleLights.reset();particleMap.clear();shadowsComposited=false;pivotValid=false;pivotDistance=12.f;pivotCorrection.reset();pivotSelfCaptured=false;cascadeAnchor.reset();endFrame();replaySnapshots.clearIndexCache();actorJobComplete.reset();actorJobSerial_=0;actorSceneMap_.clear();lastActorCapture=0;terrainBoundsCache.clearPersistent();previousCacheHits=0;freeReplays.clear();pooledSnapshotBytes=0;valid=false;failed=false;releaseGPU(true); /* task 42: the committed MANAGED mesh survives any Reset, failed or not */}
     // 0.3.176 (U0/S0): the sample-frame lines of the selection and upload spans (and the RIGID event
     // lines) are formatted where they are today and written here, from endFrame, so no log write (a
     // vfprintf and fflush under the log lock) is inside a bucketed span. The text is the same.
@@ -2350,6 +2370,7 @@ public:
         logf("REPLAY COPIES refused budget=%llu tooLarge=%llu backoff=%llu unsafe=%llu locked=%llu pressure=%llu allocation=%llu largestBufferKiB=%.0f largeCapMiB=%.0f maxLargeMiB=%.0f",(unsigned long long)r.budget,(unsigned long long)r.tooLarge,(unsigned long long)r.backoff,(unsigned long long)r.unsafe,(unsigned long long)r.locked,(unsigned long long)r.pressure,(unsigned long long)r.allocation,double(r.largestBuffer)/kib,double(NorthlightReplayCopies::kLargeCapBytes)/1048576,double(NorthlightReplayCopies::kLargeCopyBytes)/1048576);
     }
     void endFrame(bool retainPool=true){
+        if(equipmentLightsOn()){equipmentLights.nextFrame();equipmentCapture.nextFrame();particleLights.nextFrame();NorthlightParticleUploads::cache().nextFrame();}
         flushDeferredLogs(); /* 0.3.176 (U0/S0): after every bucketed span of the frame */
         frameFence.endFrame(); /* 0.3.192 (DXVK3): the one Issue of the frame's fence, after every replay/terrain draw, before any early return; reset() calls endFrame() too */
         NorthlightLockMeter::endFrame();
@@ -2495,6 +2516,31 @@ public:
     unsigned aoMethod()const{return quality.aoMethod;}
     float aoStrength()const{return .6f*float(quality.aoStrength)/100.f;}
     float aoRadius()const{return float(quality.aoRadius)/100.f;}
+    bool equipmentLightsOn()const{return quality.equipmentLights!=0;}
+    NorthlightParticleLights::Frame& particleFrame(){return particleLights;}
+    bool particleContext(float* inverseView,float* camera,float* projectionOut){
+        if(!equipmentLightsOn()||!hasContext()||!active)return false;
+        if(particleMap!=active->map){particleLights.reset();particleMap=active->map;}
+        std::memcpy(inverseView,context.inverseView,64);std::memcpy(camera,context.camera,12);std::memcpy(projectionOut,projection,12);return true;
+    }
+    void registerEquipmentShader(IDirect3DVertexShader9* shader,const DWORD* words,size_t count){
+        if(equipmentLightsOn()){const unsigned lights=NorthlightEquipmentLightProof::analyze(reinterpret_cast<const uint32_t*>(words),count);equipmentShaders[shader]=lights;
+            if(lights&&NorthlightDiagnostics::enabled())logf("EQUIPMENT shader proven nativePointCount=%u shader=%p",lights,static_cast<void*>(shader));}
+    }
+    void captureEquipmentLights(IDirect3DVertexShader9* shader,IDirect3DSurface9* mainDepth){
+        if(!equipmentLightsOn()||!hasContext()||!active)return;
+        const auto it=equipmentShaders.find(shader);if(it==equipmentShaders.end()||!it->second)return;
+        if(equipmentMap!=active->map){equipmentLights.reset();equipmentMap=active->map;}
+        const bool actor=isSkinnedShader(shader);
+        if(!equipmentCapture.take(actor,equipmentLights.banks,equipmentLights.backgroundBanks))return;
+        NorthlightDrawSnapshot::Ref<IDirect3DSurface9> ds;if(!mainDepth||FAILED(d->GetDepthStencilSurface(ds.out()))||ds.p!=mainDepth){++equipmentCapture.domainRejected;return;}
+        // The proven constants are view-space: require the current main-world
+        // projection before using this frame's inverse view (portraits excluded).
+        float q[16];if(FAILED(d->GetVertexShaderConstantF(2,q,4))){++equipmentCapture.domainRejected;return;}for(float v:q)if(!std::isfinite(v)){++equipmentCapture.domainRejected;return;}if(std::fabs(q[0]-projection[0])>.005f||std::fabs(q[5]-projection[1])>.005f||std::fabs(q[14]-projection[2])>.005f||std::fabs(q[15])>.001f){++equipmentCapture.domainRejected;return;}
+        float bank[44];if(FAILED(d->GetVertexShaderConstantF(17,bank,11))||!equipmentLights.admit(bank,it->second,actor))return;
+        const auto now=GetTickCount();
+        for(unsigned i=0;i<it->second;++i){NorthlightEquipmentLights::Native n;if(NorthlightEquipmentLights::decode(bank,i,context.inverseView,context.camera,n)){++equipmentCapture.decoded;equipmentLights.observe(n,now,active->localLights,context.camera);}else ++equipmentCapture.rejected;}
+    }
     unsigned spellLayerSetting()const{return quality.spellLayer;} /* task 34: SpellLayer, SpellLayerClasses and SpellTrace are read once at device creation */
     unsigned spellLayerClassesSetting()const{return quality.spellLayerClasses;}
     unsigned spellTraceSetting()const{return quality.spellTrace;}
@@ -3351,8 +3397,20 @@ public:
         const int64_t selectT0=QpcClock::now();
         const double selectDt=localLightQpc&&captureFrequency.QuadPart>0?double(selectT0-localLightQpc)/double(captureFrequency.QuadPart):0;
         const bool selectContinuous=active&&localLightQpc&&selectDt<=NorthlightLocalLightSelection::MaxGapSeconds&&active->map==localLightMap&&!different(vec(context.camera),localLightCamera,40)&&debug==0;
-        a.lights=active?localLightTracker.update(active->localLights,context.camera,NorthlightGpuBudget::lightLimit(quality.localLightLimit,gpuBudgetLevel),float(selectDt),selectContinuous) /* 0.3.200 (gpu budget): the setting at level 0 */:NorthlightLocalLightSelection::Selection{};
+        if(equipmentLightsOn()){
+            equipmentLights.publish(GetTickCount(),active?&active->localLights:nullptr);
+            for(unsigned i=0;i<equipmentLights.suppressedCount;++i)localLightTracker.forget(equipmentLights.suppressed[i]);
+            NorthlightEquipmentLights::replaceFadingDuplicates(localLightTracker,equipmentLights.output.data(),equipmentLights.outputCount);
+            if(active)particleLights.publish(equipmentLights.output.data(),equipmentLights.outputCount,active->localLights,context.camera,localLightTracker,selectContinuous?float(selectDt):0.f);
+            else particleLights.reset();
+        }
+        // Same camera, projection, near plane and glow start as c0..c6/c58: the selection prefers lights in view (debug views keep the old order), and
+        // each batch's rect of the direct (8) and fog (4) passes.
+        localScissorView=NorthlightLocalLightScissor::view(context.inverseView,projection,nearZ,LampFogNear,w,h);
+        a.lights=active?localLightTracker.update(active->localLights,context.camera,NorthlightGpuBudget::lightLimit(quality.localLightLimit,gpuBudgetLevel),float(selectDt),selectContinuous,debug==0?&localScissorView:nullptr,equipmentLightsOn()?particleLights.output.data():nullptr,equipmentLightsOn()?particleLights.outputCount:0,equipmentLightsOn()?particleLights.immediate.data():nullptr,equipmentLightsOn()?particleLights.immediateCount:0) /* one shared dynamic cap; particles carry current-frame alpha */:NorthlightLocalLightSelection::Selection{};
         auto& localLights=a.lights;
+        {const auto arranged=NorthlightLocalLightBatches::arrange(localLights,localScissorView); /* screen-coherent batches (the passes are sums) */
+         if(NorthlightDiagnostics::enabled()){localOffscreenSum+=localLightTracker.offscreen;localArranged+=arranged.arranged;localArrangeBefore+=arranged.before;localArrangeAfter+=arranged.after;}} /* counted with selectUs */
         if(NorthlightDiagnostics::enabled()){const double us=double(QpcClock::now()-selectT0)*1e6/(captureFrequency.QuadPart>0?double(captureFrequency.QuadPart):1.);localSelectUsSum+=us;localSelectUsMax=std::max(localSelectUsMax,us);++localSelectFrames;} /* selectUs on LOCAL direct */
         localLightQpc=selectT0;localLightCamera=vec(context.camera);if(active&&localLightMap!=active->map)localLightMap=active->map;
         // 0.3.199 (fog clouds): the frame clock of the clouds (a gap or the first frame counts as 0; advance() clamps) and the dense-zone damping: where the
@@ -3373,8 +3431,6 @@ public:
         const float denseDamp=NorthlightFogClouds::denseZoneDamp(cloudDenseZone);
         const float airFloor=.0017f+wx.airExtinction()*denseDamp; /* the shared outdoor air extinction (the shader's old literal .0017) plus the rain's extra (thinned in dense zones): exactly .0017f when dry */
         a.airFloor=airFloor;
-        // Same camera, projection, near plane and glow start as c0..c6/c58; each batch's rect of the direct (8) and fog (4) passes.
-        localScissorView=NorthlightLocalLightScissor::view(context.inverseView,projection,nearZ,LampFogNear,w,h);
         for(unsigned first=0;first<localLights.count;first+=NorthlightLocalLightSelection::DirectBatchSize){const auto batch=localLights.batch<NorthlightLocalLightSelection::DirectBatchSize>(first);
             a.directRects[first/NorthlightLocalLightSelection::DirectBatchSize]=NorthlightLocalLightScissor::batchRect(localScissorView,batch.position,batch.count);}
         for(unsigned first=0;first<localLights.count;first+=NorthlightLocalLightSelection::FogBatchSize){const auto batch=localLights.batch<NorthlightLocalLightSelection::FogBatchSize>(first);
@@ -4080,6 +4136,22 @@ public:
         lightingMark(1);
         auto& localLights=atmosphere.lights;
         localDirectCount=localLights.count;localDirectNearest=localLights.nearest;
+        if(equipmentLightsOn()&&captureSampled){
+            const auto uploads=NorthlightParticleUploads::cache().stats();
+            logf("PARTICLELIGHT probes=%u distant=%u draws=%u background=%u accepted=%u deferred=%u triangles=%u points=%u output=%u shaderMiss=%u textureMiss=%u bufferMiss=%u stateMiss=%u (blendOp=%u alphaTest=%u colorWrite=%u depth=%u sampler=%u projection=%u) geometryMiss=%u dropped=%u uploadHits=%llu uploadMisses=%llu uploadKiB=%u ttlMs=0 readback=0",particleLights.probes,particleLights.distant,particleLights.draws,particleLights.backgroundDraws,particleLights.accepted,particleLights.deferred,particleLights.triangles,particleLights.points,particleLights.immediateCount,particleLights.shaderMiss,particleLights.textureMiss,particleLights.bufferMiss,particleLights.stateMiss,particleLights.stateWhy[0],particleLights.stateWhy[1],particleLights.stateWhy[2],particleLights.stateWhy[3],particleLights.stateWhy[4],particleLights.stateWhy[5],particleLights.geometryMiss,particleLights.dropped,static_cast<unsigned long long>(uploads.hits),static_cast<unsigned long long>(uploads.misses),NorthlightParticleUploads::cache().bytes()/1024);
+            for(unsigned i=0;i<particleLights.textureMissCount;++i){const auto& m=particleLights.textureMisses[i];
+                static const char* const seen[]={"never","held","large","evicted","invalidated","partial","failed","unsupported","released"};
+                logf("PARTICLELIGHT textureMiss key=%p seen=%s type=%u size=%ux%u levels=%u format=0x%x pool=%u usage=0x%x",m.key,m.seen<9?seen[m.seen]:"?",m.type,m.width,m.height,m.levels,m.format,m.pool,m.usage);}
+            particleLights.textureMissCount=0;
+            for(unsigned i=0;i<particleLights.outputCount;++i){const auto& light=particleLights.output[i];
+                if(std::find(particleLights.immediate.begin(),particleLights.immediate.begin()+particleLights.immediateCount,light.sourceId)==particleLights.immediate.begin()+particleLights.immediateCount)continue;
+                logf("PARTICLELIGHT source id=%llu position=(%.3f %.3f %.3f) rgb=(%.4f %.4f %.4f) range=%.2f cameraYards=%.2f",static_cast<unsigned long long>(light.sourceId),light.position[0],light.position[1],light.position[2],light.diffuse[0],light.diffuse[1],light.diffuse[2],light.attenuationEnd,std::sqrt(NorthlightEquipmentLights::distance2(light.position,context.camera)));}
+            logf("EQUIPMENT lights nativePoint=1 attempts=%u banks=%u observed=%u duplicateStatic=%u dropped=%u active=%u output=%u maxLights=8 maxBanks=16 ttlMs=250 falloff=bounded-linear-approx candidates=%u actorCandidates=%u actorReads=%u backgroundReads=%u backgroundBanks=%u duplicateBanks=%u readLimited=%u bankLimited=%u domainRejected=%u decoded=%u rejected=%u",equipmentCapture.reads,equipmentLights.banks,equipmentLights.observed,equipmentLights.duplicates,equipmentLights.dropped,equipmentLights.count,equipmentLights.outputCount,equipmentCapture.candidates,equipmentCapture.actorCandidates,equipmentCapture.actorReads,equipmentCapture.backgroundReads,equipmentLights.backgroundBanks,equipmentLights.bankDuplicates,equipmentCapture.readLimited,equipmentCapture.bankLimited,equipmentCapture.domainRejected,equipmentCapture.decoded,equipmentCapture.rejected);
+            for(unsigned i=0;i<equipmentLights.count;++i){const auto& entry=equipmentLights.entries[i];if(entry.gain<=.0001f)continue;
+                const auto light=NorthlightEquipmentLights::light(entry.source,entry.id,entry.gain);
+                const float selfDistance=actorShadowHistory.selfHold()>0?std::sqrt(NorthlightEquipmentLights::distance2(light.position,actorShadowHistory.selfAt())):-1.f;
+                logf("EQUIPMENT source id=%llu position=(%.3f %.3f %.3f) nativeRGB=(%.4f %.4f %.4f) denominator=(%.4f %.4f %.4f) rgb=(%.4f %.4f %.4f) range=%.2f gain=%.3f cameraYards=%.2f selfYards=%.2f",static_cast<unsigned long long>(light.sourceId),light.position[0],light.position[1],light.position[2],entry.source.color[0],entry.source.color[1],entry.source.color[2],entry.source.attenuation[0],entry.source.attenuation[1],entry.source.attenuation[2],light.diffuse[0],light.diffuse[1],light.diffuse[2],light.attenuationEnd,entry.gain,std::sqrt(NorthlightEquipmentLights::distance2(light.position,context.camera)),selfDistance);}
+        }
         c[52][0]=float(std::min(localDirectCount,NorthlightLocalLightSelection::DirectBatchSize));c[52][1]=.9f*lampGain;
         // Near fade: no added fog within 3.5 units of the viewer, full at 15.5.
         // Same soft ramp, shifted 0.5 world units closer.
@@ -4266,17 +4338,37 @@ public:
         d->SetTexture(8,textures[8]); /* 0.3.197: restore the frame-start binding */
         if(profile)profile->mark("GI"); /* task 43: the GI pass alone; the lamp batches are LocalLights */
         if(localDirectCount&&debug==0){
+            profileSplit(profile,lightSurface); /* sample frames: GI's timestamp ends here, LocalLights' below */
             d->SetPixelShader(localDirectPS);d->SetRenderState(D3DRS_SCISSORTESTENABLE,NorthlightLocalLightScissor::Enabled);
             d->SetTexture(12,baselineLight); /* sun visibility (baseline alpha); the temporal pass rebinds it anyway */
-            for(unsigned firstLight=0;firstLight<localDirectCount;firstLight+=NorthlightLocalLightSelection::DirectBatchSize){
-                const auto batch=localLights.batch<NorthlightLocalLightSelection::DirectBatchSize>(firstLight);
+            // Two neighbouring 8-lamp batches whose joint rect costs less than both (local_light_batches.h wide()) draw as one LocalDirect16
+            // pass (its lamps in c68..c99; c52 as for LocalDirect). Without a proven view every rect is the whole target, so pairs merge.
+            constexpr unsigned N=NorthlightLocalLightSelection::DirectBatchSize;IDirect3DPixelShader9* bound=localDirectPS;
+            for(unsigned firstLight=0;firstLight<localDirectCount;){
+                const unsigned index=firstLight/N;
+                const bool pair=localDirect16PS&&firstLight+N<localDirectCount;
+                const NorthlightLocalLightScissor::Rect whole{0,0,long(w/2),long(h/2)};
+                const auto& a=localScissorView.valid?atmosphere.directRects[index]:whole;const auto& b=localScissorView.valid?atmosphere.directRects[index+1]:whole;
+                if(pair&&NorthlightLocalLightBatches::wide(a,b)){
+                    const auto batch=localLights.batch<2*N>(firstLight);const auto joint=NorthlightLocalLightBatches::unite(a,b);
+                    const float info[4]={float(batch.count),c[52][1],lampSunlitCut,0};
+                    if(bound!=localDirect16PS){d->SetPixelShader(localDirect16PS);bound=localDirect16PS;}
+                    d->SetPixelShaderConstantF(68,batch.position[0].data(),2*N);d->SetPixelShaderConstantF(84,batch.color[0].data(),2*N);
+                    d->SetPixelShaderConstantF(52,info,1);++localWidePasses;
+                    if(localScissor(batch.position,batch.count,&joint)&&!check(quad(w/2,h/2),"local direct 16-light batch")){d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);return false;}
+                    firstLight+=2*N;continue;
+                }
+                const auto batch=localLights.batch<N>(firstLight);
                 const float info[4]={float(batch.count),c[52][1],lampSunlitCut,0};
-                d->SetPixelShaderConstantF(36,batch.position[0].data(),NorthlightLocalLightSelection::DirectBatchSize);
-                d->SetPixelShaderConstantF(44,batch.color[0].data(),NorthlightLocalLightSelection::DirectBatchSize);
+                if(bound!=localDirectPS){d->SetPixelShader(localDirectPS);bound=localDirectPS;}
+                d->SetPixelShaderConstantF(36,batch.position[0].data(),N);
+                d->SetPixelShaderConstantF(44,batch.color[0].data(),N);
                 d->SetPixelShaderConstantF(52,info,1);
-                if(localScissor(batch.position,batch.count,&atmosphere.directRects[firstLight/NorthlightLocalLightSelection::DirectBatchSize])&&!check(quad(w/2,h/2),"local direct light batch")){d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);return false;}
+                if(localScissor(batch.position,batch.count,&atmosphere.directRects[index])&&!check(quad(w/2,h/2),"local direct light batch")){d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);return false;}
+                firstLight+=N;
             }
             d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);
+            profileSplit(profile,lightSurface);
         }
         if(profile)profile->mark("LocalLights");bucket(NorthlightEffectsBuckets::GI);d->SetRenderState(D3DRS_COLORWRITEENABLE,15);
         if(debug==0&&pointReady){
@@ -4509,10 +4601,12 @@ public:
                 g.sun[0],g.sun[1],g.sun[2],g.sunCore[0],g.sunCore[1],g.sunCore[2],g.moon[0],g.moon[1],g.moon[2],liftRGB[0],liftRGB[1],liftRGB[2],
                 fogDirectRGB[0],fogDirectRGB[1],fogDirectRGB[2],fogAmbientRGB[0],fogAmbientRGB[1],fogAmbientRGB[2],NorthlightSunHue::SunForwardCap,NorthlightSunHue::MoonForwardCap);
         }
-        if(frames==1||frames%600==0){if(frames==1||NorthlightDiagnostics::enabled())logf("LOCAL direct lights=%u limit=%u nearestReach=%.1f visibilityEnd=%.1f fogDistance=%.1f strength=%.3f lampGain=%.3f sunlitCut=%.3f available=%zu scissor=%d batches=%u clipped=%u skipped=%u coverage=%.3f fading=%u selectUs=%.1f selectMaxUs=%.1f",localDirectCount,quality.localLightLimit,localDirectNearest,NorthlightLocalLightSelection::VisibilityEnd,localLights.fogDistance,c[52][1],lampGain,lampSunlitCut,active?active->localLights.size():size_t(0),
+        if(frames==1||frames%600==0){if(frames==1||NorthlightDiagnostics::enabled())logf("LOCAL direct lights=%u limit=%u nearestReach=%.1f visibilityEnd=%.1f fogDistance=%.1f strength=%.3f lampGain=%.3f sunlitCut=%.3f available=%zu scissor=%d batches=%u clipped=%u skipped=%u coverage=%.3f fading=%u selectUs=%.1f selectMaxUs=%.1f offscreen=%.1f arranged=%u widePasses=%u arrangedCost=%.3f",localDirectCount,quality.localLightLimit,localDirectNearest,NorthlightLocalLightSelection::VisibilityEnd,localLights.fogDistance,c[52][1],lampGain,lampSunlitCut,active?active->localLights.size():size_t(0),
             int(NorthlightLocalLightScissor::Enabled),localScissorBatches,localScissorClipped,localScissorSkipped,localScissorBatches?localScissorCoverage/localScissorBatches:1.,
-            localLightTracker.fading,localSelectFrames?localSelectUsSum/localSelectFrames:0.,localSelectUsMax);
+            localLightTracker.fading,localSelectFrames?localSelectUsSum/localSelectFrames:0.,localSelectUsMax,
+            localSelectFrames?double(localOffscreenSum)/localSelectFrames:0.,localArranged,localWidePasses,localArrangeBefore>0?localArrangeAfter/localArrangeBefore:1.);
             localScissorBatches=localScissorClipped=localScissorSkipped=0;localScissorCoverage=0;localSelectUsSum=localSelectUsMax=0;localSelectFrames=0;
+            localOffscreenSum=localArranged=localWidePasses=0;localArrangeBefore=localArrangeAfter=0;
             if(frames>1&&NorthlightDiagnostics::enabled())logf("GI probe blend publishes=%u blendedSlots=%u texture=%d",probeBlendPublishes,probeBlendSlots,int(probePrev!=nullptr));
             if(frames>1&&NorthlightDiagnostics::enabled()){
                 const auto& r=active->relightStats;

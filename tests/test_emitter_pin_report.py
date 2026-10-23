@@ -22,11 +22,13 @@ class PinReport(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.assets={view:Assets(fp.client_root(),view) for view in ('all','stock')}
+        cls.baseline=Assets(fp.client_root(),without='y')
         cls.reports={view:emitter_pin_report.report(a) for view,a in cls.assets.items()}
         (fp.output_dir()/'emitter-pins.json').write_text(json.dumps(cls.reports,indent=2)+'\n')
     @classmethod
     def tearDownClass(cls):
         for a in cls.assets.values():a.close()
+        cls.baseline.close()
     def test_shape(self):
         catalog=outdoor_light_profiles.load()
         for view,r in self.reports.items():
@@ -45,7 +47,9 @@ class PinReport(unittest.TestCase):
                 continue
             blob=self.assets['all'].read(path)
             if x['status']=='matched':
-                self.assertEqual(len(outdoor_light_profiles.fallback(catalog,path,blob,[])),1)
+                # One light per reviewed emitter: a profile may pin several emitters in one model.
+                pin=outdoor_light_profiles.pinned(catalog[path])[hashlib.sha256(blob).hexdigest()]
+                self.assertEqual(len(outdoor_light_profiles.fallback(catalog,path,blob,[])),len(pin.get('emitters',[pin])))
                 self.assertIn('pin',x)
             else:
                 with self.assertRaises(ValueError):outdoor_light_profiles.fallback(catalog,path,blob,[])
@@ -59,7 +63,9 @@ class PinReport(unittest.TestCase):
         compared=0
         for path in sorted(self.assets['all'].providers):
             entry=expected.get(digest(path)[:32])
-            if entry is None or hashlib.sha256(self.assets['all'].read(path)).hexdigest()!=entry['model_sha256']:continue
+            if entry is None:continue
+            sha=hashlib.sha256(self.baseline.read(path)).hexdigest()
+            if sha!=entry['model_sha256']:continue
             batches=json.loads(json.dumps(emitter_pin_report.batches(self.assets['all'],path)))
             self.assertEqual(digest(json.dumps(batches,sort_keys=True,separators=(',',':'))),entry['batches_sha256'],path);compared+=1
         if not compared:self.skipTest('No model from the historical HD evidence is installed')

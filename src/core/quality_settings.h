@@ -15,7 +15,7 @@ enum class Preset { Quality, Balanced, Performance };
 struct Settings {
     Preset preset=Preset::Quality;
     unsigned minSkinnedTriangles=100,captureBudgetMiB=32,actorShadowBudgetMiB=0;
-    unsigned farShadowInterval=4,nearShadowInterval=1,localLightLimit=32,pointShadows=0,pointShadowRefreshMs=0,shadowDirectionSteps=2048;
+    unsigned farShadowInterval=4,nearShadowInterval=1,localLightLimit=48,pointShadows=0,pointShadowRefreshMs=0,shadowDirectionSteps=2048;
     // Where each value in Keys order came from: 'd' code default (Quality), 'p' Balanced/Performance
     // preset, 'l' legacy shadow-experiment.ini, 'f' northlight-quality.ini key. Not part of ==.
     // 0.3.138 GI: worker probe solve (rays, bounces, request step), actor/dynamic probes, solver threads.
@@ -118,13 +118,15 @@ struct Settings {
     unsigned memMap=0;
     // StreamOcclusionLocal: 1 = with CommandStream, GetData(FLUSH) on the game's occlusion query (sun/moon glare) is answered from the latest result without waiting for the renderer thread; 0 = always wait (as before). Creation-time key.
     unsigned streamOcclusionLocal=1;
+    // Experimental bridge: native M2 point lights, never guessed from an additive draw.
+    unsigned equipmentLights=1;
     // DepthFuncAware: 1 = a draw counts as depth tested only with ZENABLE on and ZFUNC not ALWAYS (the client never turns ZENABLE off: its "depth test off" is ZFUNC ALWAYS), so the spell layer holds back (Order hazard) draws that ignore depth
     // and the UI-boundary fallback requires the UI's ZFUNC ALWAYS; 0 = ZENABLE only, as before. Creation-time key.
     unsigned depthFuncAware=1;
     // WeatherMemory: 1 = the game's own weather state (kind incl. sand, intensity), read from memory, drives the weather effects on frames where the world drew a sky-band draw (the client skips weather
     // while the viewer is inside a building); 0 = the texture/draw detector only, as before.
     unsigned weatherMemory=1;
-    char origin[60]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
+    char origin[61]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
 };
 struct Key { const char* name; unsigned Settings::*field; unsigned low,high; unsigned preset[3]; };
 // preset[] = Quality, Balanced, Performance. Quality must equal Settings{}.
@@ -134,7 +136,7 @@ inline const Key Keys[]={
     {"ActorShadowBudgetMiB",&Settings::actorShadowBudgetMiB,0,32,{0,16,8}},
     {"FarShadowInterval",&Settings::farShadowInterval,1,16,{4,5,6}},
     {"NearShadowInterval",&Settings::nearShadowInterval,1,16,{1,2,2}},
-    {"LocalLightLimit",&Settings::localLightLimit,8,64,{32,24,16}},
+    {"LocalLightLimit",&Settings::localLightLimit,8,64,{48,32,24}}, /* 0.3.217: was 32/24/16 (lamps in view first, screen-coherent batches; 32 lamps measured ~0.15 ms GPU) */
     {"PointShadows",&Settings::pointShadows,0,1,{0,0,0}}, /* 0.3.176: off in every preset (only building lights cast) */
     {"PointShadowRefreshMs",&Settings::pointShadowRefreshMs,0,100,{0,33,33}},
     {"ShadowDirectionSteps",&Settings::shadowDirectionSteps,256,2048,{2048,2048,2048}},
@@ -186,6 +188,7 @@ inline const Key Keys[]={
     {"DepthFuncAware",&Settings::depthFuncAware,0,1,{1,1,1}},
     {"WeatherMemory",&Settings::weatherMemory,0,1,{1,1,1}},
     {"ActorShadowCpuMs",&Settings::actorShadowCpuMs,0,20,{3,3,2}}, /* task 45 */
+    {"EquipmentLights",&Settings::equipmentLights,0,1,{1,0,0}},
     {"AOMethod",&Settings::aoMethod,0,3,{0,0,0}},
     {"AOStrength",&Settings::aoStrength,0,200,{100,100,100}},
     {"AORadius",&Settings::aoRadius,10,1000,{200,200,200}},
