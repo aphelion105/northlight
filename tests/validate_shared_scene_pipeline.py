@@ -21,8 +21,10 @@ import northlight_paths as fp
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--baseline-ref', required=True)
 parser.add_argument('--map', choices=['Northrend', 'Azeroth'], default='Northrend')
+parser.add_argument('--terrain-radius', type=int, choices=[928, 1856, 2048], default=928)
 parser.add_argument('--rounds', type=int, default=3)
 parser.add_argument('--output', type=Path)
+parser.add_argument('--shared-baseline', action='store_true', help='The frozen source already ships the shared-scene pipeline')
 parser.add_argument('--bake-probes', action='store_true', help='Also solve the log-matched 5600-probe static window, 64 rays/3 bounces')
 args = parser.parse_args()
 assert 1 <= args.rounds <= 10
@@ -40,11 +42,12 @@ with zipfile.ZipFile(io.BytesIO(archive)) as zipped:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(zipped.read(entry))
 binaries = {}
-for name, root, shared in [('baseline', baseline, 0), ('current', fp.REPO, 1)]:
+for name, root, shared in [('baseline', baseline, int(args.shared_baseline)), ('current', fp.REPO, 1)]:
     exe = out/(name+'.exe')
     includes = [flag for folder in sorted((root/'src').iterdir()) if folder.is_dir() for flag in ['-I', str(folder)]]
     subprocess.run([str(fp.zig()), 'c++', '-target', 'x86-windows-gnu', '-std=c++17', '-O2', '-UNDEBUG',
-                    '-Wall', '-Wextra', '-Werror', '-DSHARED_SCENE_PIPELINE='+str(shared), *includes,
+                    '-Wall', '-Wextra', '-Werror', '-DSHARED_SCENE_PIPELINE='+str(shared),
+                    '-DCURRENT_TERRAIN_CHUNKS='+str(int(name == 'current')), '-DPIPELINE_RADIUS='+str(args.terrain_radius), *includes,
                     str(fp.TESTS/'validate_shared_scene_pipeline.cpp'), str(root/'src/gi/world_gi.cpp'),
                     str(root/'src/world/world_mesh_plan.cpp'), '-o', str(exe)], env=fp.zig_env(), check=True)
     binaries[name] = exe
@@ -70,7 +73,7 @@ for name, rounds in results.items():
         timings[name][label] = {key: statistics.median(float(rows[step][key]) for rows in rounds for step in steps)
                                 for key in ['localMs', 'terrainMs', 'planMs', 'pagesMs', 'totalMs', 'traceMs', 'bakeMs', 'prepareAndBakeMs']}
 report = {'baseline': subprocess.check_output(['git', 'rev-parse', args.baseline_ref], cwd=fp.REPO, text=True).strip(),
-          'map': args.map, 'rounds': args.rounds, 'regions_per_round': 7, 'rays_per_region': 8192,
+          'map': args.map, 'rounds': args.rounds, 'shared_baseline': args.shared_baseline, 'terrain_radius': args.terrain_radius, 'regions_per_round': 7, 'rays_per_region': 8192,
           'bake_probes': args.bake_probes, 'probe_count': 5600 if args.bake_probes else 0, 'probe_rays': 64, 'probe_bounces': 3,
           'canonical_checks': checks, 'all_equal': True, 'game_launched': False,
           'timings_cpu_ms': timings, 'results': results}

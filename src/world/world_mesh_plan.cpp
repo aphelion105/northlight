@@ -155,7 +155,7 @@ static bool buildCore(const NorthlightGI::WorldScene& scene,WorldMeshUploadPlan&
                     if(records->size()>=65536){records.reset();cells.clear();if(recordCells)recordCells->clear();}
                     else{
                         if(records->size()==records->capacity()){
-                            size_t capacity=std::max<size_t>(64,records->capacity()*2);
+                            size_t capacity=std::max<size_t>(geometryOnly?1:64,records->capacity()*2);
                             if(!allowed(capacity*sizeof(NorthlightLocalShadowSignature::Record)))return false;
                             records->reserve(capacity);
                         }

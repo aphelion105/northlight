@@ -55,7 +55,7 @@ struct SourcePieceRange {
     uint64_t sourceIdentity=0,membership[2]={};
     WorldPlacementCoverage placement;
     uint32_t vertexBase=0,vertexCount=0,triangleBase=0,triangleCount=0;
-    std::vector<uint32_t> materialMap;
+    std::vector<uint32_t> materialMap; // Ordered global material IDs for preparation signatures; may omit unused slots.
     bool complete=false;
 };
 struct WorldScene {
@@ -110,7 +110,8 @@ bool loadInstancedScenes(const std::vector<std::string>& tileFiles,
                          const std::function<bool(Vec3,Vec3)>& instanceFilter = {},
                          const std::function<bool(Vec3,Vec3)>& terrainChunkFilter = {},
                          SceneSizeHint* sizeHint = nullptr,
-                         const SceneSourceProvider& sourceProvider = {});
+                         const SceneSourceProvider& sourceProvider = {},
+                         bool terrainChunkProvenance = false);
 
 // Counts actual live optional acceleration storage, including published regions
 // after a cache reset. A refused reservation selects the legacy full-scene path.

@@ -1555,8 +1555,8 @@ private:
                 }
                 NorthlightGI::WorldScene shadowTerrain;
                 { uint32_t reachBits;std::memcpy(&reachBits,&reach,sizeof reachBits);terrainSizeHint.key=reachBits; } // same map (reset above) and same reach only
-                const bool terrainLoaded=NorthlightGI::loadInstancedScenes(shadowTiles,root+"world-cache/models",center-V(reach,reach,reach),center+V(reach,reach,reach),shadowTerrain,error,1,terrainAdmission,terrainFilter,terrainChunkFilter,&terrainSizeHint,sceneSource);
-                if(terrainLoaded)terrainDeferred=false; // a refusal inside a successful load can only be the optional size-hint reserve (every other refusal fails the load)
+                const bool terrainLoaded=NorthlightGI::loadInstancedScenes(shadowTiles,root+"world-cache/models",center-V(reach,reach,reach),center+V(reach,reach,reach),shadowTerrain,error,1,terrainAdmission,terrainFilter,terrainChunkFilter,&terrainSizeHint,sceneSource,true);
+                if(terrainLoaded)terrainDeferred=false; // Optional reserve/provenance refusals preserve all accepted geometry.
                 const double terrainLoadMs=phaseElapsed();
                 if(!terrainLoaded||!NorthlightShadowTerrain::build(replacement->scene(),shadowTerrain,center,*plan,error,terrainAdmission,reach,{},true,replacement.get(),&meshPreparation)){
                     if(terrainDeferred){

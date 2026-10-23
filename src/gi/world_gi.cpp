@@ -200,7 +200,7 @@ std::pair<int,int> terrainChunk(Vec3 a,Vec3 b,Vec3 c){
 struct TerrainRun {int x=-1,y=-1;uint32_t first=0,count=0;uint64_t membership[2]={};bool complete=false;NorthlightMeshPageKey::Hasher hash;};
 // hintVertices/hintTriangles (0 = not hinted): result was pre-reserved to these counts; only the first overflow past that reserve grows +1/4, then x2.
 bool appendInstance(const WorldScene& model,const Instance& instance,Vec3 low,Vec3 high,WorldScene& result,
-                    std::vector<uint32_t>& materialRemap,uint64_t& textureBytes,std::string& error,const AllocationAdmission& admit,const std::function<bool(Vec3,Vec3)>& terrainChunkFilter = {},size_t hintVertices = 0,size_t hintTriangles = 0,bool copyTextures=true,uint64_t* membership=nullptr,std::vector<TerrainRun>* terrainRuns=nullptr){
+                    std::vector<uint32_t>& materialRemap,uint64_t& textureBytes,std::string& error,const AllocationAdmission& admit,const std::function<bool(Vec3,Vec3)>& terrainChunkFilter = {},size_t hintVertices = 0,size_t hintTriangles = 0,bool copyTextures=true,uint64_t* membership=nullptr,std::vector<TerrainRun>* terrainRuns=nullptr,bool completeTerrainRuns=true){
     float normal[9];if(!normalMatrix(instance.matrix,normal)){error="FGS3 singular instance transform";return false;}
     if(admit&&!admit(model.vertices.size()*sizeof(uint32_t))){error="Geometry allocation deferred";return false;}
     std::vector<uint32_t> remap(model.vertices.size(),UINT32_MAX);
@@ -216,13 +216,25 @@ bool appendInstance(const WorldScene& model,const Instance& instance,Vec3 low,Ve
     for(const auto& t:model.triangles){
         const auto sourceOrdinal=ordinal++;
         const uint32_t source[3]={t.v0,t.v1,t.v2};Vec3 positions[3];
-        for(unsigned j=0;j<3;++j)positions[j]=transform(instance.matrix,model.vertices[source[j]].position)+instance.translation;
-        const auto chunk=terrainRuns?terrainChunk(positions[0],positions[1],positions[2]):std::pair<int,int>{-1,-1};
-        if(terrainRuns&&chunk.first>=0){try{auto found=chunkTotals.find(chunk);if(found==chunkTotals.end()){if(chunkTotals.size()>=4096||(admit&&!admit(sizeof(std::pair<const std::pair<int,int>,uint32_t>)+64)))disableRuns();else chunkTotals.emplace(chunk,1);}else ++found->second;}catch(const std::bad_alloc&){disableRuns();}}
+        // An accepted remap already owns this exact transformed position.
+        for(unsigned j=0;j<3;++j){
+            const auto mapped=remap[source[j]];
+            positions[j]=mapped==UINT32_MAX?transform(instance.matrix,model.vertices[source[j]].position)+instance.translation:result.vertices[mapped].position;
+        }
+        auto chunk=terrainRuns&&completeTerrainRuns?terrainChunk(positions[0],positions[1],positions[2]):std::pair<int,int>{-1,-1};
+        if(terrainRuns&&completeTerrainRuns&&chunk.first>=0){try{auto found=chunkTotals.find(chunk);if(found==chunkTotals.end()){if(chunkTotals.size()>=4096||(admit&&!admit(sizeof(std::pair<const std::pair<int,int>,uint32_t>)+64)))disableRuns();else chunkTotals.emplace(chunk,1);}else ++found->second;}catch(const std::bad_alloc&){disableRuns();}}
         Vec3 tl=minimum(positions[0],minimum(positions[1],positions[2])),th=maximum(positions[0],maximum(positions[1],positions[2]));
         if(!boundsOverlap(tl,th,low,high))continue;
         if(instance.terrain&&terrainChunkFilter&&!terrainChunkFilter(tl,th))continue;
         if(!finite(positions[0])||!finite(positions[1])||!finite(positions[2])){error="FGS3 transformed position overflow";return false;}
+        if(terrainRuns&&!completeTerrainRuns){
+            // Far preparation needs exact membership, not a complete-MCNK claim.
+            // Classify accepted triangles only; most remain inside the last 4x4 cell.
+            constexpr double origin=17066.666666666666,size=400.0/3.0,margin=.001;
+            const auto previous=terrainRuns->empty()?std::pair<int,int>{-1,-1}:std::pair<int,int>{terrainRuns->back().x,terrainRuns->back().y};
+            if(previous.first>=0&&tl.x>origin-(previous.second+1)*size+margin&&th.x<origin-previous.second*size-margin&&tl.y>origin-(previous.first+1)*size+margin&&th.y<origin-previous.first*size-margin)chunk=previous;
+            else{const double x=std::floor((origin-(double(positions[0].y)+positions[1].y+positions[2].y)/3)/size),y=std::floor((origin-(double(positions[0].x)+positions[1].x+positions[2].x)/3)/size);if(x>=0&&y>=0&&x<256&&y<256)chunk={int(x),int(y)};}
+        }
         if(result.vertices.size()>4000000-3||result.triangles.size()>=6000000){error="FGS3 local region geometry limit exceeded";return false;}
         if(!reserve(result.vertices,result.vertices.size()+3,hintVertices)||!reserve(result.triangles,result.triangles.size()+1,hintTriangles))return false;
         WorldTriangle out;uint32_t* target[3]={&out.v0,&out.v1,&out.v2};
@@ -246,7 +258,7 @@ bool appendInstance(const WorldScene& model,const Instance& instance,Vec3 low,Ve
         out.material=materialRemap[t.material];result.triangles.push_back(out);
         if(membership){accepted.word(sourceOrdinal);++acceptedCount;}
     }
-    if(terrainRuns)for(auto& run:*terrainRuns){const auto key=run.hash.finish(uint32_t(model.triangles.size()),run.count);run.membership[0]=key.lo;run.membership[1]=key.hi;run.complete=run.x>=0&&chunkTotals[{run.x,run.y}]==run.count;}
+    if(terrainRuns)for(auto& run:*terrainRuns){const auto key=run.hash.finish(uint32_t(model.triangles.size()),run.count);run.membership[0]=key.lo;run.membership[1]=key.hi;run.complete=completeTerrainRuns&&run.x>=0&&chunkTotals[{run.x,run.y}]==run.count;}
     if(membership){const auto key=accepted.finish(uint32_t(model.triangles.size()),acceptedCount);membership[0]=key.lo;membership[1]=key.hi;}
     return true;
 }
@@ -289,7 +301,7 @@ bool selectInstances(const std::vector<std::string>& files,Vec3 low,Vec3 high,ui
 }
 
 bool loadInstancedScenes(const std::vector<std::string>& files,const std::string& modelDirectory,
-                         Vec3 low,Vec3 high,WorldScene& output,std::string& error,uint32_t categoryMask,const AllocationAdmission& admit,const std::function<bool(Vec3,Vec3)>& instanceFilter,const std::function<bool(Vec3,Vec3)>& terrainChunkFilter,SceneSizeHint* sizeHint,const SceneSourceProvider& sourceProvider){
+                         Vec3 low,Vec3 high,WorldScene& output,std::string& error,uint32_t categoryMask,const AllocationAdmission& admit,const std::function<bool(Vec3,Vec3)>& instanceFilter,const std::function<bool(Vec3,Vec3)>& terrainChunkFilter,SceneSizeHint* sizeHint,const SceneSourceProvider& sourceProvider,bool terrainChunkProvenance){
     error.clear();if(sizeHint)sizeHint->hinted=false;
     if(files.size()>((categoryMask==1&&instanceFilter)?256u:64u)||!finite(low)||!finite(high)||low.x>high.x||low.y>high.y||low.z>high.z){error="Invalid FGS3 region or tile count";return false;}
     std::map<std::string,std::vector<Instance>> groups;
@@ -314,12 +326,47 @@ bool loadInstancedScenes(const std::vector<std::string>& files,const std::string
             for(auto& remap:materialRemap)remap.resize(model.materials.size(),UINT32_MAX);
             for(const auto& instance:group.second){
                 const size_t before=result.triangles.size(),vertexBefore=result.vertices.size();uint64_t membership[2]={};
-                if(!appendInstance(model,instance,low,high,result,materialRemap[instance.terrain?1:instance.wmo?2:0],textureBytes,error,admit,terrainChunkFilter,hintV,hintT,true,model.sourceIdentity?membership:nullptr))return false;
+                std::vector<TerrainRun> terrainRuns;
+                // One preparation entry per contiguous 4x4-cell run avoids per-MCNK metadata dominating the existing 8 MiB memo.
+                const bool chunks=terrainChunkProvenance&&instance.terrain&&model.sourceIdentity;
+                const auto& materials=materialRemap[instance.terrain?1:instance.wmo?2:0];
+                if(!appendInstance(model,instance,low,high,result,materialRemap[instance.terrain?1:instance.wmo?2:0],textureBytes,error,admit,terrainChunkFilter,hintV,hintT,true,model.sourceIdentity?membership:nullptr,chunks?&terrainRuns:nullptr,false))return false;
                 if(model.sourceIdentity&&result.triangles.size()>before){
-                    SourcePieceRange range;range.sourceIdentity=model.sourceIdentity;range.vertexBase=uint32_t(vertexBefore);range.vertexCount=uint32_t(result.vertices.size()-vertexBefore);range.triangleBase=uint32_t(before);range.triangleCount=uint32_t(result.triangles.size()-before);
-                    range.materialMap=materialRemap[instance.terrain?1:instance.wmo?2:0];range.complete=range.triangleCount==model.triangles.size();range.membership[0]=membership[0];range.membership[1]=membership[1];
-                    auto& owner=range.placement;owner.uid=instance.uid;owner.category=instance.category;owner.modelKey=group.first;std::copy(instance.matrix,instance.matrix+9,owner.matrix);owner.translation=instance.translation;owner.low=instance.low;owner.high=instance.high;
-                    result.sourcePieces.push_back(std::move(range));
+                    // Provenance is optional: refusal must retain every accepted triangle.
+                    const auto publish=[&](bool chunkRanges){
+                        const auto count=chunkRanges?terrainRuns.size():size_t(1);
+                        if(admit&&!admit(count*sizeof(SourcePieceRange)))return false;
+                        std::vector<SourcePieceRange> ranges;ranges.reserve(count);
+                        std::vector<uint8_t> used;
+                        if(chunkRanges){if(admit&&!admit(result.materials.size()))return false;used.resize(result.materials.size());}
+                        for(size_t i=0;i<count;++i){
+                            SourcePieceRange range;range.sourceIdentity=model.sourceIdentity;
+                            range.triangleBase=uint32_t(before)+(chunkRanges?terrainRuns[i].first:0);
+                            range.triangleCount=chunkRanges?terrainRuns[i].count:uint32_t(result.triangles.size()-before);
+                            range.complete=chunkRanges?terrainRuns[i].complete:range.triangleCount==model.triangles.size();
+                            range.membership[0]=chunkRanges?terrainRuns[i].membership[0]:membership[0];range.membership[1]=chunkRanges?terrainRuns[i].membership[1]:membership[1];
+                            if(chunkRanges){
+                                uint32_t first=UINT32_MAX,last=0,materialCount=0;
+                                for(size_t t=range.triangleBase;t<uint64_t(range.triangleBase)+range.triangleCount;++t){const auto& triangle=result.triangles[t];first=std::min({first,triangle.v0,triangle.v1,triangle.v2});last=std::max({last,triangle.v0,triangle.v1,triangle.v2});if(!used[triangle.material]){used[triangle.material]=1;++materialCount;}}
+                                range.vertexBase=first;range.vertexCount=last-first+1;
+                                if(admit&&!admit(uint64_t(materialCount)*sizeof(uint32_t)))return false;
+                                range.materialMap.reserve(materialCount);
+                                for(auto m:materials)if(m!=UINT32_MAX&&used[m]){range.materialMap.push_back(m);used[m]=0;}
+                            }else{
+                                range.vertexBase=uint32_t(vertexBefore);range.vertexCount=uint32_t(result.vertices.size()-vertexBefore);
+                                if(admit&&!admit(uint64_t(materials.size())*sizeof(uint32_t)))return false;range.materialMap=materials;
+                            }
+                            if(admit&&!admit(group.first.size()+1))return false;
+                            auto& owner=range.placement;owner.uid=instance.uid;owner.category=instance.category;owner.modelKey=group.first;std::copy(instance.matrix,instance.matrix+9,owner.matrix);owner.translation=instance.translation;owner.low=instance.low;owner.high=instance.high;
+                            ranges.push_back(std::move(range));
+                        }
+                        if(result.sourcePieces.capacity()<result.sourcePieces.size()+count){const auto capacity=std::max(result.sourcePieces.size()+count,result.sourcePieces.capacity()*2);if(admit&&!admit(capacity*sizeof(SourcePieceRange)))return false;result.sourcePieces.reserve(capacity);}
+                        for(auto& range:ranges)result.sourcePieces.push_back(std::move(range));
+                        return true;
+                    };
+                    bool published=false;
+                    if(chunks&&!terrainRuns.empty())try{published=publish(true);}catch(const std::bad_alloc&){}
+                    if(!published)try{publish(false);}catch(const std::bad_alloc&){}
                 }
                 // Count accepted triangles rather than trust descriptor bounds:
                 // partial crops must never suppress the complete shadow model.

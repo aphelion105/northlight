@@ -3,6 +3,10 @@
 #include "world_mesh_pages.h"
 #include "mesh_page_key.h"
 #include "world_probe_progress.h"
+#include "regional_shadow_range.h"
+#ifndef PIPELINE_RADIUS
+#define PIPELINE_RADIUS 928
+#endif
 #if SHARED_SCENE_PIPELINE
 #include "scene_source_cache.h"
 #endif
@@ -43,12 +47,15 @@ int main(int argc,char** argv){
     NorthlightMeshPageKey::KeySet resident;SceneSizeHint hint;
     const Vec3 origin=map=="Northrend"?Vec3(5248,10,508):Vec3(-8833,628,97);
     const Vec3 moves[]={{0,0,0},{0,0,0},{32,0,0},{0,32,0},{-32,0,0},{0,-32,0},{0,0,0}};
+    const float radius=float(PIPELINE_RADIUS);const bool extended=radius>NorthlightShadowTerrain::Radius;const int tileReach=extended?int(std::ceil(radius/(1600./3))):2;
     for(unsigned step=0;step<7;++step){
         const Vec3 c=origin+moves[step];const int tx=int(std::floor((17066.666666666666-c.y)/533.3333333333333)),ty=int(std::floor((17066.666666666666-c.x)/533.3333333333333));
         std::vector<std::string> nearFiles,farFiles;
-        for(int y=ty-2;y<=ty+2;++y)for(int x=tx-2;x<=tx+2;++x){
+        for(int y=ty-tileReach;y<=ty+tileReach;++y)for(int x=tx-tileReach;x<=tx+tileReach;++x){
             auto path=root+"/"+map+"/"+std::to_string(x)+"_"+std::to_string(y)+".fg3";if(!std::filesystem::exists(path))continue;
-            farFiles.push_back(path);if(std::abs(x-tx)<=1&&std::abs(y-ty)<=1)nearFiles.push_back(path);
+            if(std::abs(x-tx)<=1&&std::abs(y-ty)<=1)nearFiles.push_back(path);
+            constexpr double zero=17066.666666666666,size=1600./3;
+            if(!extended||NorthlightRegionalShadow::selected(c,{float(zero-(y+1)*size),float(zero-(x+1)*size),-100000},{float(zero-y*size),float(zero-x*size),100000}))farFiles.push_back(path);
         }
         assert(!nearFiles.empty()&&!farFiles.empty());std::string error;BVH local;WorldScene terrain;
         auto all=Clock::now(),t=all;
@@ -57,11 +64,17 @@ int main(int argc,char** argv){
 #else
         assert(cache.build(nearFiles,root+"/models",map,c-Vec3(288,288,320),c+Vec3(288,288,320),local,error));
 #endif
-        double localMs=ms(t);t=Clock::now();const float radius=NorthlightShadowTerrain::Radius;
+        double localMs=ms(t);t=Clock::now();
+        std::function<bool(Vec3,Vec3)> terrainFilter,terrainChunkFilter;
+        if(extended){terrainFilter=[c](Vec3 lo,Vec3 hi){return NorthlightRegionalShadow::selected(c,lo,hi);};terrainChunkFilter=[c](Vec3 lo,Vec3 hi){return NorthlightRegionalShadow::selectedChunk(c,lo,hi);};}
 #if SHARED_SCENE_PIPELINE
-        assert(loadInstancedScenes(farFiles,root+"/models",c-Vec3(radius,radius,radius),c+Vec3(radius,radius,radius),terrain,error,1,{}, {}, {},&hint,provider));
+        assert(loadInstancedScenes(farFiles,root+"/models",c-Vec3(radius,radius,radius),c+Vec3(radius,radius,radius),terrain,error,1,{},terrainFilter,terrainChunkFilter,&hint,provider
+#if CURRENT_TERRAIN_CHUNKS
+            ,true
+#endif
+        ));
 #else
-        assert(loadInstancedScenes(farFiles,root+"/models",c-Vec3(radius,radius,radius),c+Vec3(radius,radius,radius),terrain,error,1,{}, {}, {},&hint));
+        assert(loadInstancedScenes(farFiles,root+"/models",c-Vec3(radius,radius,radius),c+Vec3(radius,radius,radius),terrain,error,1,{},terrainFilter,terrainChunkFilter,&hint));
 #endif
         double terrainMs=ms(t);t=Clock::now();NorthlightWorldMesh::WorldMeshUploadPlan plan;
 #if SHARED_SCENE_PIPELINE

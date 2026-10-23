@@ -7,7 +7,16 @@ static WorldScene fixture(){WorldScene s;WorldMaterial m;m.width=2;m.height=1;m.
 static void same(const M::WorldMeshUploadPlan&a,const M::WorldMeshUploadPlan&b){assert(a.indices==b.indices&&a.batches.size()==b.batches.size()&&a.materials.size()==b.materials.size());for(size_t i=0;i<a.batches.size();++i){auto x=a.batches[i],y=b.batches[i];assert(x.start==y.start&&x.count==y.count&&x.material==y.material&&x.chunkX==y.chunkX&&x.chunkY==y.chunkY&&x.terrain==y.terrain&&!std::memcmp(&x.boundsLow,&y.boundsLow,12)&&!std::memcmp(&x.boundsHigh,&y.boundsHigh,12));}for(size_t i=0;i<a.materials.size();++i)assert(a.materials[i].bgra==b.materials[i].bgra);}
 int main(){auto scene=fixture();std::string error;M::WorldMeshUploadPlan base,first,second;assert(M::buildUploadPlan(scene,base,error));M::PreparationPiece piece;piece.identity="validated-source-1";piece.triangleCount=uint32_t(scene.triangles.size());piece.materials={0};std::vector<M::PreparationPiece> pieces{piece};M::PreparationCache cache;cache.setLimit(8u<<20);
  assert(M::buildUploadPlan(scene,first,error,{},nullptr,{},&pieces,&cache));same(base,first);const auto cold=cache.stats();assert(cold.misses==1&&cold.hits==0&&cold.bytes>0);assert(M::buildUploadPlan(scene,second,error,{},nullptr,{},&pieces,&cache));same(base,second);assert(cache.stats().hits==1);
- auto payload=first.preparationLayout;auto bytes=cache.stats().bytes;cache.reset();assert(cache.stats().hits==1&&cache.stats().bytes==bytes&&first.cpuBytes()>base.cpuBytes());first={};second={};assert(cache.stats().bytes==bytes);payload.reset();assert(cache.stats().bytes==0);
+ auto payload=first.preparationLayout;auto bytes=cache.stats().bytes;cache.reset();assert(cache.stats().hits==1&&cache.stats().bytes==bytes);
+ // Compare the SAME plan with and without its layout: compact preparation can be smaller than the baseline's reserve.
+ assert(payload&&payload->size()==1&&(*payload)[0].retainedBytes==bytes);
+ const auto withLayout=first.cpuBytes();first.preparationLayout.reset();const auto withoutLayout=first.cpuBytes();first.preparationLayout=payload;
+ const auto singleMetadata=sizeof(*payload)+payload->capacity()*sizeof(M::PreparationIdentity)+64+(*payload)[0].materials.capacity()*sizeof(uint32_t);
+ assert(withLayout==withoutLayout+singleMetadata+bytes);
+ // Two references to one immutable preparation owner charge its retained storage once.
+ auto duplicate=std::make_shared<M::PreparationLayout>(*payload);duplicate->push_back(duplicate->front());first.preparationLayout=duplicate;
+ const auto duplicateMetadata=sizeof(*duplicate)+duplicate->capacity()*sizeof(M::PreparationIdentity)+64+((*duplicate)[0].materials.capacity()+(*duplicate)[1].materials.capacity())*sizeof(uint32_t);
+ assert(first.cpuBytes()==withoutLayout+duplicateMetadata+bytes);first.preparationLayout=payload;duplicate.reset();first={};second={};assert(cache.stats().bytes==bytes);payload.reset();assert(cache.stats().bytes==0);
  // Evicted caches cannot re-admit beyond their cap while a publication pins metadata.
  assert(M::buildUploadPlan(scene,first,error,{},nullptr,{},&pieces,&cache));bytes=cache.stats().bytes;cache.setLimit(bytes-1);assert(cache.stats().bytes==bytes&&cache.stats().entries==0);assert(M::buildUploadPlan(scene,second,error,{},nullptr,{},&pieces,&cache));same(base,second);assert(!second.preparationLayout);first={};second={};assert(cache.stats().bytes==0);cache.setLimit(8u<<20);
  // Weak local identity prevents reuse when an address's original owner expired.
