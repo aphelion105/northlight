@@ -105,7 +105,7 @@ Every effect below is on by default and is drawn on top of the game's own frame.
 | `tests/` | test runners (`test_*.py`), native tests (`test_*.cpp/.h`), release validators (`validate_*.py`, `verify_*.py`) |
 | `tests/support/`, `tests/fixtures/` | d3d9.h/windows.h shims for native builds; the archived baselines (old sources of this project, digests) that tests compare against. Real client data (shaders, doodad placements) is read from your client by `tests/client_fixtures.py`, never stored |
 | `northlight_paths.py` | the only place that knows where the client, toolchain and outputs are |
-| `client-config/` | tracked copies of the client-root profile `.ini` files |
+| `client-config/` | factory profile `.ini` files for packages and settings reset; personal client profiles may differ |
 | `*.py` (top level) | the art layer (MPQ patch) builder `build_art_layer.py` and its steps, `mpq.py`, `client_archives.py`, `renderer_status.py` (install/uninstall on macOS) |
 | `out/` | build and test output (ignored) |
 
