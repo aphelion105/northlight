@@ -19,7 +19,7 @@ int main(int argc,char** argv){
     IDirect3DQuery9 *event=nullptr,*start=nullptr,*end=nullptr,*freq=nullptr,*disjoint=nullptr;
     ok(d->CreateQuery(D3DQUERYTYPE_EVENT,&event));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&start));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&end));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPFREQ,&freq));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPDISJOINT,&disjoint));
     FILE* report=std::fopen(argv[4],"w");assert(report);std::fprintf(report,"[\n");unsigned cases=0;
-    const char* names[]={"GTAOContactBloom","WorldFog","FogClouds","WorldComposite","LateWaterSSR"};
+    const char* names[]={"GTAOContactBloom","WorldFog","FogClouds","WorldComposite"};
     for(unsigned pass=1;pass<4;++pass)for(unsigned scenario=0;scenario<(pass==0?5u:4u);++scenario){
         const unsigned FW=3840,FH=2160,W=pass<3?FW/2:FW,H=pass<3?FH/2:FH;
         float c[80][4]{};c[0][0]=1.f/FW;c[0][1]=1.f/FH;c[0][2]=.2f;c[0][3]=1000;
@@ -43,11 +43,6 @@ int main(int argc,char** argv){
         if(pass==0){std::memset(c[1],0,6*16);c[1][0]=1.3f;c[1][1]=1.9f;c[1][2]=.6f;c[2][1]=scenario==0?.1f:scenario==1?2:10;c[3][1]=c[3][2]=1;c[5][1]=c[5][2]=1;}
         if(pass==1||pass==2){c[31][0]=scenario==1?-8.f:scenario==2?1024.f:-256.f;c[31][1]=scenario==1?-8.f:scenario==2?1024.f:-256.f;}
         if(pass==3){c[30][0]=scenario==3;}
-        if(pass==4){
-            std::memset(c[1],0,25*16);c[1][0]=1.3f;c[1][1]=1.9f;c[1][2]=-1;c[1][3]=7;c[2][1]=1;
-            c[4][1]=1;c[5][2]=1;c[6][0]=-1;c[7][2]=3;c[7][3]=1;c[8][0]=c[8][1]=c[8][2]=.1f;
-            c[20][1]=c[20][2]=1;c[22][2]=1;c[25][0]=2.f/FW;c[25][1]=2.f/FH;c[25][2]=1;
-        }
         auto solid=[&](float r,float g,float b,float a){return texture(d,rgba(1,1,[&](unsigned,unsigned){return std::array<float,4>{r,g,b,a};}));};
         IDirect3DTexture9* inputs[16]{};for(auto& t:inputs)t=solid(0,0,0,0);
         auto bind=[&](unsigned slot,Image im){inputs[slot]->Release();inputs[slot]=texture(d,im);};
@@ -65,13 +60,6 @@ int main(int argc,char** argv){
             bind(10,rgba(FW/2,FH/2,[](unsigned,unsigned){return std::array<float,4>{.01f,.01f,.01f,.8f};}));
             bind(12,rgba(FW/2,FH/2,[](unsigned,unsigned){return std::array<float,4>{.6f,.6f,.6f,1};}));
             bind(15,rgba(FW/2,FH/2,[&](unsigned x,unsigned y){return std::array<float,4>{distanceAt(2*x,2*y),0,0,1};}));
-        }
-        if(pass==4){
-            bind(2,rgba(FW,FH,[&](unsigned,unsigned y){float ry=(2.f*y/FH-1)/1.9f;float water=ry>0?3/ry:0;return std::array<float,4>{water,water>0?1.f:0.f,0,0};}));
-            bind(3,rgba(FW,FH,[](unsigned,unsigned){return std::array<float,4>{1,1,1,1};}));
-            bind(4,rgba(FW/2,FH/2,[&](unsigned x,unsigned){bool hit=scenario==1||(scenario==2&&x>FW/4);return std::array<float,4>{hit?.3f:0,hit?.2f:0,hit?.1f:0,hit?1.f:0};}));
-            bind(6,rgba(FW/2,FH/2,[](unsigned,unsigned){return std::array<float,4>{0,0,0,.7f};}));
-            bind(7,rgba(FW/2,FH/2,[](unsigned,unsigned){return std::array<float,4>{1000,0,0,0};}));
         }
         for(unsigned s=0;s<16;++s){ok(d->SetTexture(s,inputs[s]));for(auto state:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})ok(d->SetSamplerState(s,state,s==0||s==4||s==10?D3DTEXF_LINEAR:D3DTEXF_POINT));ok(d->SetSamplerState(s,D3DSAMP_MIPFILTER,D3DTEXF_NONE));ok(d->SetSamplerState(s,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP));ok(d->SetSamplerState(s,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP));}
         IDirect3DVolumeTexture9* noise=nullptr;
