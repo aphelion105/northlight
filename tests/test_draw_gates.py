@@ -264,7 +264,7 @@ struct MockBlobs{Env* env=nullptr;MockExt* ext=nullptr;bool faintMode=false;unsi
     IDirect3DTexture9* faintTexture(){return env->bit("faint texture",8)?nullptr:&faint;}};
 namespace NorthlightSpellLayer{struct DrawArgs{template<class... A> static DrawArgs primitive(A...){return {};}template<class... A> static DrawArgs indexed(A...){return {};}template<class... A> static DrawArgs primitiveUP(A...){return {};}template<class... A> static DrawArgs indexedUP(A...){return {};}};} /* task 34: the spell layer is off in this model (spellOn=false): the draw hook's one bool test */
 struct Gate{int drawTid=7;void noteFirst(int){}};
-struct MirrorStateMock{Gate gate;bool textureKnown[1]={};void* textures[1]={};bool viewportKnown=false;struct{float MinZ=0,MaxZ=1;}viewport;};
+struct MirrorStateMock{Gate gate;std::uint64_t forwarded=0;bool textureKnown[1]={};void* textures[1]={};bool viewportKnown=false;struct{float MinZ=0,MaxZ=1;}viewport;};
 struct WeatherDetectMock{const void* hot=nullptr;NorthlightWeather::Kind hotKind=NorthlightWeather::Kind::None;bool mistArmed=false;bool isMist(const void*)const{return false;}void proveMist(const void*){}};struct WeatherSampleMock{unsigned primitives=0,draws=0;}; /* 0.3.198 (rain): drawHook's one comparison; hot stays null here (test_weather_detect drives it) */
 struct Guard{explicit Guard(Gate&){}};
 namespace NorthlightRenderThreadProbe{inline bool sampleFrame(unsigned f){return f%3==0;}inline bool profiling(){return true;}}
@@ -291,6 +291,7 @@ struct Base{
     std::unordered_map<IDirect3DVertexShader9*,int> vsTags;
     std::unordered_map<IDirect3DVertexShader9*,std::uint64_t> vsHashes;std::unordered_map<IDirect3DPixelShader9*,std::uint64_t> psHashes;
     unsigned blobSignatureReports=0,terrainShadowDraws=0,frame=0,drawCalls=0;
+    struct{unsigned getRequests=0,getNative=0,setVS=0,setPS=0,setPSConstants=0,constantRegisters=0,failures=0;} terrainSwapCalls;
     IDirect3DPixelShader9 *shadowSwapOriginal=nullptr,*shadowSwapReplacement=nullptr;
     IDirect3DVertexShader9 *shadowSwapVertexOriginal=nullptr,*shadowSwapVertexReplacement=nullptr;UINT shadowSwapConstantBase=0,shadowSwapConstantCount=0;float shadowSwapConstants[24]={};
     Keys effectKeys;GateCounts gateCounts;WeatherDetectMock weatherDetect;WeatherSampleMock weatherSample;unsigned weatherMistSkips=0,weatherMistUnknown=0,weatherMistOtherStage=0,weatherMistReports=0,weatherStateReports=0;void weatherDrawStates(UINT){}void weatherProbeDraw(UINT){}

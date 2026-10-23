@@ -495,6 +495,8 @@ private:
     // sceneMs (previous Present done -> renderEffects entry) and exact counts: DRAWGATE ab.
     bool gateFrame=false,gateUntimed=false;
     struct GateCounts {unsigned prep=0,capture=0,water=0,wmo=0,fullPasses=0,audits=0,blobCalls=0,blobTextures=0,blobClaimed=0,bufferCreates=0,processVertices=0;};
+    struct TerrainSwapCalls {unsigned getRequests=0,getNative=0,setVS=0,setPS=0,setPSConstants=0,constantRegisters=0,failures=0;};
+    TerrainSwapCalls terrainSwapCalls;
     struct GateStart {unsigned missingVS=0,terrain=0,ui=0,shadowSwaps=0;std::uint64_t generations=0,vsHits=0,vsMisses=0;};
     GateCounts gateCounts;GateStart gateStart;
     LARGE_INTEGER gateSceneEnd={};LONGLONG gatePresentDone=0;unsigned gateSceneDraws=0;unsigned long long gateSceneReads=0;
@@ -1226,6 +1228,21 @@ private:
     }
     template<class Draw> HRESULT terrainShadowDraw(bool claimed,Draw draw){
         if(!shadowSwapOriginal)return claimed?D3D_OK:materialNativeDraw(draw); /* no shadow swap planned */
+        const bool counted=gateFrame;
+        auto status=[&](HRESULT hr){if(counted&&!SUCCEEDED(hr))++terrainSwapCalls.failures;return hr;};
+        auto getConstants=[&](float* values){
+            const auto before=counted?mirrorState.forwarded:0;
+            if(counted)++terrainSwapCalls.getRequests;
+            const HRESULT hr=ext->GetPixelShaderConstantF(shadowSwapConstantBase,values,shadowSwapConstantCount);
+            if(counted)terrainSwapCalls.getNative+=unsigned(mirrorState.forwarded-before);
+            return status(hr);
+        };
+        auto setVertex=[&](IDirect3DVertexShader9* shader){if(counted)++terrainSwapCalls.setVS;return status(ext->SetVertexShader(shader));};
+        auto setPixel=[&](IDirect3DPixelShader9* shader){if(counted)++terrainSwapCalls.setPS;return status(ext->SetPixelShader(shader));};
+        auto setConstants=[&](const float* values){
+            if(counted){++terrainSwapCalls.setPSConstants;terrainSwapCalls.constantRegisters+=shadowSwapConstantCount;}
+            return status(ext->SetPixelShaderConstantF(shadowSwapConstantBase,values,shadowSwapConstantCount));
+        };
         IDirect3DPixelShader9* original=shadowSwapOriginal;IDirect3DPixelShader9* replacement=shadowSwapReplacement;
         IDirect3DVertexShader9* vertexOriginal=shadowSwapVertexOriginal;IDirect3DVertexShader9* vertexReplacement=shadowSwapVertexReplacement;
         shadowSwapOriginal=shadowSwapReplacement=nullptr;
@@ -1234,14 +1251,14 @@ private:
         if(!claimed&&replacement&&vertexOriginal){
             float saved[24];bool bound=false;
             {CpuScope swap(sampledHookTimer());
-             if(SUCCEEDED(ext->GetPixelShaderConstantF(shadowSwapConstantBase,saved,shadowSwapConstantCount))){
-                 bound=SUCCEEDED(ext->SetVertexShader(vertexReplacement))&&SUCCEEDED(ext->SetPixelShader(replacement))&&SUCCEEDED(ext->SetPixelShaderConstantF(shadowSwapConstantBase,shadowSwapConstants,shadowSwapConstantCount));
-                 if(!bound){ext->SetPixelShaderConstantF(shadowSwapConstantBase,saved,shadowSwapConstantCount);ext->SetPixelShader(original);ext->SetVertexShader(vertexOriginal);}
+             if(SUCCEEDED(getConstants(saved))){
+                 bound=SUCCEEDED(setVertex(vertexReplacement))&&SUCCEEDED(setPixel(replacement))&&SUCCEEDED(setConstants(shadowSwapConstants));
+                 if(!bound){setConstants(saved);setPixel(original);setVertex(vertexOriginal);}
              }}
             hr=materialNativeDraw(draw,vertexOriginal,original);
-            if(bound){CpuScope swap(sampledHookTimer());ext->SetPixelShaderConstantF(shadowSwapConstantBase,saved,shadowSwapConstantCount);ext->SetPixelShader(original);ext->SetVertexShader(vertexOriginal);++terrainShadowDraws;}
+            if(bound){CpuScope swap(sampledHookTimer());setConstants(saved);setPixel(original);setVertex(vertexOriginal);++terrainShadowDraws;}
         }
-        else if(!claimed&&replacement){{CpuScope swap(sampledHookTimer());ext->SetPixelShader(replacement);}hr=materialNativeDraw(draw,nullptr,original);{CpuScope swap(sampledHookTimer());ext->SetPixelShader(original);}++terrainShadowDraws;}
+        else if(!claimed&&replacement){{CpuScope swap(sampledHookTimer());setPixel(replacement);}hr=materialNativeDraw(draw,nullptr,original);{CpuScope swap(sampledHookTimer());setPixel(original);}++terrainShadowDraws;}
         else if(!claimed)hr=materialNativeDraw(draw,vertexOriginal,original);
         if(vertexOriginal)vertexOriginal->Release();
         if(original)original->Release();
@@ -2783,6 +2800,9 @@ public:
                 logf("D3D calls frame=%u mirrorAudit=%u counted=%d total=%u gameDraws=%u mirrorAnswered=%llu mirrorForwarded=%llu captureSkipped=%u probeRan=%u probeMode=%s%s",sampleFrame,unsigned(sampleFrame%120==60),int(mirrorState.rawCounting),rawTotal,drawCalls-frameStartDrawCalls,
                     (unsigned long long)(mirrorState.answered-frameStartAnswered),(unsigned long long)(mirrorState.forwarded-frameStartForwarded),unsigned(world&&world->captureSkippedLastFrame()),
                     unsigned(world&&world->replayProbeRanThisFrame),NorthlightRenderThreadProbe::probeModeName(world?world->probeMode():NorthlightRenderThreadProbe::ProbeOff),calls);
+                logf("TERRAIN_SWAP frame=%u getPSConstantsRequested=%u getPSConstantsNative=%u setVS=%u setPS=%u setPSConstants=%u setPSConstantRegistersRequested=%u apiFailures=%u totalNative=%u",sampleFrame,
+                    terrainSwapCalls.getRequests,terrainSwapCalls.getNative,terrainSwapCalls.setVS,terrainSwapCalls.setPS,terrainSwapCalls.setPSConstants,terrainSwapCalls.constantRegisters,terrainSwapCalls.failures,
+                    terrainSwapCalls.getNative+terrainSwapCalls.setVS+terrainSwapCalls.setPS+terrainSwapCalls.setPSConstants);
                 // Timer overhead of this sample frame's scoped timings (capture phases report their own clockReads).
                 // mirrorAudit=1: this 127-frame sample is also the functional mirror audit frame (frame%120==60).
                 const unsigned long long reads=CpuScope::reads-frameStartScopeReads;
@@ -2813,6 +2833,7 @@ public:
         memmapSchedule(); /* task 42: world-entry / memory-deferred / periodic, queued to the sampler thread */
         // Per-type call counts run only through a RenderProfile sample frame.
         mirrorState.rawCounting=sampled()&&NorthlightRenderThreadProbe::profiling();
+        terrainSwapCalls={};
         if(mirrorState.rawCounting){std::memset(mirrorState.rawMethodCalls,0,sizeof mirrorState.rawMethodCalls);
             frameStartDrawCalls=drawCalls;frameStartAnswered=mirrorState.answered;frameStartForwarded=mirrorState.forwarded;frameStartScopeReads=CpuScope::reads;}
         // 0.3.154: drawGate A/B flags of the next frame; U = top bit of a multiplicative hash of the sample
