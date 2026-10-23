@@ -8,6 +8,7 @@ test_actor_shadows_wiring.py
 test_actor_texture_worker.py
 test_affected_tests.py
 test_ao_blur.py
+test_ao_fog_capture.py
 test_ao_fold.py
 test_ao_methods.py
 test_ao_rotation_stripes.py
@@ -105,6 +106,7 @@ test_mirror_resources.py
 test_model_index_cache.py
 test_model_replay_pool.py
 test_model_snapshot_cache.py
+test_model_world_context.py
 test_moon_cascade_weight.py
 test_mount_emitter_patch.py
 test_name_mask.py
@@ -191,6 +193,7 @@ test_terrain_metadata.py
 test_terrain_reach_fallback.py
 test_terrain_reach_fallback_wiring.py
 test_terrain_shadow_candidates.py
+test_terrain_shadow_coverage.py
 test_terrain_shared_snapshot.py
 test_terrain_snapshot.py
 test_terrain_tracked_cache.py
