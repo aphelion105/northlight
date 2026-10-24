@@ -26,6 +26,65 @@ def digest(path):
     return result.hexdigest()
 
 
+def unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f'Duplicate scene manifest key: {key}')
+        result[key] = value
+    return result
+
+
+def static_cache_inputs(scene, root, output):
+    """Validate the listed private cache inputs before creating any output."""
+    root = root.resolve(strict=True)
+    if not root.is_dir() or output == root or output.is_relative_to(root) or root.is_relative_to(output):
+        raise ValueError('Static cache source and private output must be separate directories')
+    if not isinstance(scene, dict) or type(scene.get('format')) is not int or scene['format'] != 1:
+        raise ValueError('Static cache staging requires the version 1 scene manifest')
+    records = scene.get('static_outputs')
+    if not isinstance(records, dict) or not records:
+        raise ValueError('The scene manifest has no static cache outputs')
+    files, directories, paths = set(), set(), []
+    reserved = {'con', 'prn', 'aux', 'nul'} | {f'{prefix}{i}' for prefix in ('com', 'lpt') for i in range(1, 10)}
+    for name, record in records.items():
+        if not isinstance(name, str) or not name:
+            raise ValueError('Invalid static cache relative path')
+        parts = name.split('/')
+        if any(not part or part in ('.', '..') or part[-1:] in ('.', ' ')
+               or part.split('.')[0].casefold() in reserved
+               or any(ord(c) < 32 or c in '<>:"\\|?*' for c in part) for part in parts):
+            raise ValueError(f'Invalid static cache relative path: {name}')
+        key = name.casefold()
+        parents = {'/'.join(parts[:i]).casefold() for i in range(1, len(parts))}
+        if key in files or key in directories or parents & files:
+            raise ValueError(f'Duplicate or overlapping static cache path: {name}')
+        files.add(key)
+        directories.update(parents)
+        if not isinstance(record, dict) or type(record.get('bytes')) is not int or record['bytes'] <= 0:
+            raise ValueError(f'Invalid static cache byte count: {name}')
+        sha = record.get('sha256')
+        if not isinstance(sha, str) or len(sha) != 64 or any(c not in '0123456789abcdefABCDEF' for c in sha):
+            raise ValueError(f'Invalid static cache SHA-256: {name}')
+        paths.append((name, record['bytes'], sha.lower()))
+    result, identities = [], set()
+    for name, size, sha in paths:
+        source = (root / name).resolve(strict=True)
+        if not source.is_relative_to(root) or not source.is_file():
+            raise ValueError(f'Static cache input escapes its source directory: {name}')
+        stat = source.stat()
+        identity = (stat.st_dev, stat.st_ino)
+        if source in identities or (stat.st_ino and identity in identities):
+            raise ValueError(f'Duplicate physical static cache input: {name}')
+        identities.add(source)
+        if stat.st_ino:
+            identities.add(identity)
+        if stat.st_size != size or digest(source) != sha:
+            raise ValueError(f'Static cache bytes differ from the scene manifest: {name}')
+        result.append((name, source, size, sha))
+    return root, result
+
+
 def inspect_snapshot(path):
     path = Path(path)
     if not HEADER_BYTES + 4 <= path.stat().st_size <= MAX_ARCHIVE_BYTES:
@@ -111,7 +170,13 @@ def prepare(args):
     if any(p == output or p.is_relative_to(output) for p in inputs):
         raise ValueError('Output must not contain/replace source inputs')
     before = {str(p): digest(p) for p in inputs}
-    scene = json.loads(args.scene_manifest.read_text(encoding='utf-8')) if args.scene_manifest else None
+    scene = json.loads(args.scene_manifest.read_text(encoding='utf-8'), object_pairs_hook=unique_object) if args.scene_manifest else None
+    static_root, static_files = None, []
+    if getattr(args, 'static_cache_root', None) is not None:
+        if not args.scene_manifest or not args.retracer or not args.backend_dll or not args.northlight_dll:
+            raise ValueError('Static cache staging requires a scene manifest and a Northlight replay plan')
+        static_root, static_files = static_cache_inputs(scene, args.static_cache_root, output)
+        before.update({str(source): sha for _, source, _, sha in static_files})
     trace_path = args.trace.resolve() if args.trace else None
     trace_hash = digest(trace_path) if trace_path else None
     if args.trace and not args.trace.stat().st_size:
@@ -192,6 +257,10 @@ def prepare(args):
             staged_hashes[config.relative_to(output).as_posix()] = digest(config)
             if args.quality_ini:
                 copy_input(args.quality_ini, target / 'northlight-quality.ini')
+            for relative, source, _, _ in static_files:
+                destination = target / 'world-cache' / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                copy_input(source, destination)
         plans.append({'mode': mode, 'executable': str(target / 'd3dretrace.exe'),
                       'working_directory': str(target),
                       'arguments': ['--headless', '--query-handling=run', str(trace_path)] if trace_path else None,
@@ -206,6 +275,10 @@ def prepare(args):
         'staged_sha256': staged_hashes, 'official_tool_bundle': tools,
         'trace_parsed_by_official_tool': False, 'snapshots': snapshots, 'replay_plans': plans,
         'static_scene': scene, 'full_scene_replay_ready': False, 'fps_acceptance_proven': False,
+        'static_cache': {'source_root': str(static_root), 'destination': 'northlight/world-cache',
+                         'listed_files_staged': len(static_files), 'bytes': sum(size for _, _, size, _ in static_files),
+                         'source_manifest_static_inputs_complete': scene.get('static_inputs_complete') is True}
+                        if static_root is not None else None,
         'game_launched': False, 'replay_executed': False, 'installed_files_modified': False,
         'missing_acceptance': [
             'Actual complete above-Northlight native trace parsed by the official x86 D3D9 retracer',
@@ -231,6 +304,7 @@ if __name__ == '__main__':
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--capture-layer', choices=('above-northlight', 'below-northlight'), required=True)
     parser.add_argument('--scene-manifest', type=Path)
+    parser.add_argument('--static-cache-root', type=Path, help='Explicit read-only cache root; stage every listed scene output into the private Northlight world-cache')
     parser.add_argument('--trace', type=Path)
     parser.add_argument('--snapshot-index', type=Path)
     parser.add_argument('--retracer', type=Path)
