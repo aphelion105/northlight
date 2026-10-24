@@ -3085,7 +3085,7 @@ public:
         options.occlusionLocal=occlusionLocal; /* StreamOcclusionLocal, read with CommandStream */
         options.capture=&NorthlightStream::capture;
 #ifndef NORTHLIGHT_REPLAY_STAND
-        if(diagnostics()){
+        if(NorthlightDiagnostics::enabled()){
             const auto& range=NorthlightStream::codeRange();
             logf("CSTREAM snapshot code-bypass lo=%p hi=%p cameraGlobal=%u mapGlobal=%u skyGlobal=%u weatherGlobal=%u",
                 reinterpret_cast<void*>(range.lo),reinterpret_cast<void*>(range.hi),unsigned(range.contains(0xb7436c)),

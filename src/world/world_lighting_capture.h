@@ -47,7 +47,7 @@ class Capture {
         D3DSURFACE_DESC desc{};if(!call("GetDesc",source->GetDesc(&desc)))return false;
         const unsigned stride=desc.Format==D3DFMT_A16B16G16R16F||desc.Format==D3DFMT_G32R32F?8:
             desc.Format==D3DFMT_R32F||desc.Format==D3DFMT_A8R8G8B8||desc.Format==D3DFMT_X8R8G8B8?4:0;
-        std::fprintf(journal_,"{\"event\":\"image\",\"name\":\"%s\",\"width\":%u,\"height\":%u,\"format\":%u,\"usage\":%lu,\"pool\":%u,\"samples\":%u,\"sample_quality\":%u}\n",name,desc.Width,desc.Height,unsigned(desc.Format),(unsigned long)desc.Usage,unsigned(desc.Pool),unsigned(desc.MultiSampleType),desc.MultiSampleQuality);
+        std::fprintf(journal_,"{\"event\":\"image\",\"name\":\"%s\",\"width\":%u,\"height\":%u,\"format\":%u,\"usage\":%lu,\"pool\":%u,\"samples\":%u,\"sample_quality\":%u}\n",name,desc.Width,desc.Height,unsigned(desc.Format),(unsigned long)desc.Usage,unsigned(desc.Pool),unsigned(desc.MultiSampleType),unsigned(desc.MultiSampleQuality));
         if(!stride||!desc.Width||!desc.Height||uint64_t(desc.Width)*desc.Height*stride>64u*1024u*1024u){unavailable(name,"unsupported-format-or-size");return false;}
         if(desc.MultiSampleType!=D3DMULTISAMPLE_NONE){
             // Keep the application's scene boundary. Backends that reject this
@@ -206,10 +206,10 @@ public:
         }
         for(unsigned slot=0;slot<4;++slot){Ref<IDirect3DSurface9> target;const HRESULT hr=device_->GetRenderTarget(slot,&target.p);call("GetRenderTarget-pass",hr,slot!=0);
             std::fprintf(journal_,"{\"event\":\"target-binding\",\"pass\":%u,\"slot\":%u,\"present\":%s}\n",passes_,slot,target.p?"true":"false");if(!slot&&!target.p)unavailable("target","missing-target-zero");
-            if(SUCCEEDED(hr)&&target.p){D3DSURFACE_DESC desc{};if(call("GetDesc-target-pass",target.p->GetDesc(&desc)))std::fprintf(journal_,"{\"event\":\"target\",\"pass\":%u,\"slot\":%u,\"width\":%u,\"height\":%u,\"format\":%u,\"samples\":%u,\"sample_quality\":%u}\n",passes_,slot,desc.Width,desc.Height,unsigned(desc.Format),unsigned(desc.MultiSampleType),desc.MultiSampleQuality);}}
+            if(SUCCEEDED(hr)&&target.p){D3DSURFACE_DESC desc{};if(call("GetDesc-target-pass",target.p->GetDesc(&desc)))std::fprintf(journal_,"{\"event\":\"target\",\"pass\":%u,\"slot\":%u,\"width\":%u,\"height\":%u,\"format\":%u,\"samples\":%u,\"sample_quality\":%u}\n",passes_,slot,desc.Width,desc.Height,unsigned(desc.Format),unsigned(desc.MultiSampleType),unsigned(desc.MultiSampleQuality));}}
         Ref<IDirect3DSurface9> ds;const HRESULT dsHr=device_->GetDepthStencilSurface(&ds.p);call("GetDepthStencilSurface-pass",dsHr,true);
         std::fprintf(journal_,"{\"event\":\"depth-stencil-binding\",\"pass\":%u,\"present\":%s,\"stencil_image_exported\":false}\n",passes_,ds.p?"true":"false");
-        if(ds.p){D3DSURFACE_DESC desc{};if(call("GetDesc-depth-stencil-pass",ds.p->GetDesc(&desc)))std::fprintf(journal_,"{\"event\":\"depth-stencil\",\"pass\":%u,\"width\":%u,\"height\":%u,\"format\":%u,\"samples\":%u,\"sample_quality\":%u}\n",passes_,desc.Width,desc.Height,unsigned(desc.Format),unsigned(desc.MultiSampleType),desc.MultiSampleQuality);}
+        if(ds.p){D3DSURFACE_DESC desc{};if(call("GetDesc-depth-stencil-pass",ds.p->GetDesc(&desc)))std::fprintf(journal_,"{\"event\":\"depth-stencil\",\"pass\":%u,\"width\":%u,\"height\":%u,\"format\":%u,\"samples\":%u,\"sample_quality\":%u}\n",passes_,desc.Width,desc.Height,unsigned(desc.Format),unsigned(desc.MultiSampleType),unsigned(desc.MultiSampleQuality));}
     }
     void finish(bool renderCompleted)noexcept{
         if(!active())return;finished_=true;complete_=complete_&&renderCompleted&&std::ferror(journal_)==0;
