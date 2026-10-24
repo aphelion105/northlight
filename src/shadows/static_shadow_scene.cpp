@@ -7,6 +7,7 @@
 #include <condition_variable>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <mutex>
 #include <set>
 #include <thread>
@@ -114,7 +115,32 @@ public:
 }
 
 Vec3 transformPoint(const Placement& p,Vec3 v){const float* m=p.matrix;return {m[0]*v.x+m[1]*v.y+m[2]*v.z+p.translation.x,m[3]*v.x+m[4]*v.y+m[5]*v.z+p.translation.y,m[6]*v.x+m[7]*v.y+m[8]*v.z+p.translation.z};}
-void transformBounds(const Placement& p,Vec3 low,Vec3 high,Vec3& outLow,Vec3& outHigh){Vec3 c=transformPoint(p,(low+high)*.5f),r=(high-low)*.5f;const float* m=p.matrix;Vec3 e={std::fabs(m[0])*r.x+std::fabs(m[1])*r.y+std::fabs(m[2])*r.z,std::fabs(m[3])*r.x+std::fabs(m[4])*r.y+std::fabs(m[5])*r.z,std::fabs(m[6])*r.x+std::fabs(m[7])*r.y+std::fabs(m[8])*r.z};outLow=c-e;outHigh=c+e;}
+void transformBounds(const Placement& p,Vec3 low,Vec3 high,Vec3& outLow,Vec3& outHigh){
+    const float lo[]={low.x,low.y,low.z},hi[]={high.x,high.y,high.z};
+    const float translation[]={p.translation.x,p.translation.y,p.translation.z};
+    const float unknown=std::numeric_limits<float>::quiet_NaN();
+    outLow=outHigh={unknown,unknown,unknown}; // Invalid input must never authorize culling or partial coverage.
+    for(unsigned axis=0;axis<3;++axis)
+        if(!std::isfinite(lo[axis])||!std::isfinite(hi[axis])||lo[axis]>hi[axis])return;
+    Vec3 lower,upper;float* lows[]={&lower.x,&lower.y,&lower.z};float* highs[]={&upper.x,&upper.y,&upper.z};
+    for(unsigned axis=0;axis<3;++axis){
+        double l=translation[axis],h=l,magnitude=std::fabs(l);
+        if(!std::isfinite(l))return;
+        for(unsigned j=0;j<3;++j){
+            const double coefficient=p.matrix[axis*3+j];if(!std::isfinite(coefficient))return;
+            const double a=coefficient*lo[j],b=coefficient*hi[j];
+            l+=std::min(a,b);h+=std::max(a,b);magnitude+=std::max(std::fabs(a),std::fabs(b));
+        }
+        // The float center/extent formula can shrink a box when local position
+        // and placement translation cancel. Enclose the original endpoints in
+        // double, then cover the shader's float dot products and outward casts.
+        const double margin=1e-4+magnitude*(32.0*std::numeric_limits<float>::epsilon());
+        if(l-margin<-std::numeric_limits<float>::max()||h+margin>std::numeric_limits<float>::max())return;
+        *lows[axis]=std::nextafter(float(l-margin),-INFINITY);
+        *highs[axis]=std::nextafter(float(h+margin),INFINITY);
+    }
+    outLow=lower;outHigh=upper;
+}
 bool selected(const Request& r,Vec3 low,Vec3 high,float margin){
     return SelectionVolume(r).contains(low,high,margin);
 }

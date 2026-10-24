@@ -200,9 +200,12 @@ public:
             else if(!load(references[0],points[0])||!load(references[1],points[1])||!load(references[2],points[2]))continue;
             ++frame.triangles;Four center{};for(unsigned j=0;j<4;++j)center[j]=(points[0].position[j]+points[1].position[j]+points[2].position[j])/3;
             float clip[4]{};for(unsigned j=0;j<4;++j)for(unsigned k=0;k<4;++k)clip[j]+=q[j*4+k]*center[k];
-            if(!std::isfinite(clip[3])||clip[3]<=0||std::fabs(clip[0])>clip[3]*1.2f||std::fabs(clip[1])>clip[3]*1.2f)continue;
+            // Preserve samples for the final cluster/track: an offscreen or
+            // behind-eye centroid can still illuminate visible receivers.
+            bool finiteClip=true;for(float v:clip)finiteClip&=std::isfinite(v);if(!finiteClip)continue;
             NorthlightParticleLights::Sample value;
             for(unsigned j=0;j<3;++j){value.position[j]=inverseView[12+j];for(unsigned k=0;k<3;++k)value.position[j]+=center[k]*inverseView[k*4+j];}
+            bool finite=true;for(float p:value.position)finite&=std::isfinite(p);if(!finite)continue;
             bool known=true;
             for(const auto& weights:bary){
                 Four colour{},texel{},emitted{};float uv[2]{};

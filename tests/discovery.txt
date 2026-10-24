@@ -255,6 +255,7 @@ test_static_m2_dedup.py
 test_static_plan_job.py
 test_static_shadow_grouping.py
 test_static_shadow_selection.py
+test_static_shadow_transform_bounds.py
 test_storm_bands.py
 test_stormlib_build.py
 test_stream_idle_attribution.py

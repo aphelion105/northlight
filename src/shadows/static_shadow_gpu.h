@@ -193,17 +193,7 @@ private:
     // the light-space test so coarse rejection cannot trim a visible child.
     static bool coarseVisible(const Placement& p,const Resource& r,const float* matrix,bool affine=false){
         if(!r.boundsValid)return true;
-        const float low[]={r.low.x,r.low.y,r.low.z},high[]={r.high.x,r.high.y,r.high.z};
-        const float translation[]={p.translation.x,p.translation.y,p.translation.z};
-        Vec3 lo,hi;float* lows[]={&lo.x,&lo.y,&lo.z};float* highs[]={&hi.x,&hi.y,&hi.z};
-        for(unsigned axis=0;axis<3;++axis){
-            double l=translation[axis],h=l,mag=std::fabs(l);
-            if(!std::isfinite(l))return true;
-            for(unsigned j=0;j<3;++j){const double c=p.matrix[axis*3+j];if(!std::isfinite(c))return true;
-                const double a=c*low[j],b=c*high[j];l+=std::min(a,b);h+=std::max(a,b);mag+=std::max(std::fabs(a),std::fabs(b));}
-            const double margin=1e-4+mag*(32.0*std::numeric_limits<float>::epsilon());
-            *lows[axis]=float(l-margin);*highs[axis]=float(h+margin);
-        }
+        Vec3 lo,hi;transformBounds(p,r.low,r.high,lo,hi);
         return !(affine?NorthlightShadowBounds::directionalClipRejectAffine(lo,hi,matrix):NorthlightShadowBounds::directionalClipReject(lo,hi,matrix));
     }
     void modelChanged(const Resource& resource){

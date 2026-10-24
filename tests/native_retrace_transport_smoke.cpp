@@ -215,7 +215,8 @@ static void verifyMarkerState(IDirect3DDevice9* device,IDirect3DVertexShader9* v
 }
 int main(int argc,char** argv){
     assert(argc==2||argc==3);const std::string output=argv[1];const bool resized=argc==3&&!std::strcmp(argv[2],"reset-resize");
-    const bool reset=resized||(argc==3&&!std::strcmp(argv[2],"reset-unresized"));assert(argc==2||reset);
+    const bool precopy=argc==3&&!std::strcmp(argv[2],"reset-precopy-readback");
+    const bool reset=resized||precopy||(argc==3&&!std::strcmp(argv[2],"reset-unresized"));assert(argc==2||reset);
     WNDCLASSA cls{};cls.lpfnWndProc=reset?transportWindowProc:DefWindowProcA;cls.hInstance=GetModuleHandleA(nullptr);cls.lpszClassName="NorthlightAuthoredTransport";assert(RegisterClassA(&cls));
     HWND window=CreateWindowA(cls.lpszClassName,"",WS_OVERLAPPED,0,0,128,128,nullptr,nullptr,cls.hInstance,nullptr);assert(window&&!IsWindowVisible(window));
     HMODULE module=LoadLibraryA("d3d9.dll");assert(module);auto create=reinterpret_cast<IDirect3D9*(WINAPI*)(UINT)>(GetProcAddress(module,"Direct3DCreate9"));assert(create);
@@ -247,14 +248,20 @@ int main(int argc,char** argv){
             Vertex farQuad[4];std::memcpy(farQuad,quad,sizeof quad);for(auto& v:farQuad)v.z=.95f;const float green[]={0,1,0,1};ok(d->SetPixelShaderConstantF(0,green,1));
             ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,farQuad,sizeof(Vertex)));ok(d->DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST,0,4,2,indices,D3DFMT_INDEX16,farQuad,sizeof(Vertex)));ok(d->EndScene());
             DWORD samples=0;wait(occlusion,&samples,sizeof samples);assert(samples);++occlusions;ok(event->Issue(D3DISSUE_END));BOOL finished=FALSE;wait(event,&finished,sizeof finished);assert(finished);
-            ok(d->SetDepthStencilSurface(nullptr));ok(d->SetRenderTarget(0,back));ok(d->StretchRect(target,nullptr,back,nullptr,D3DTEXF_NONE));
+            ok(d->SetDepthStencilSurface(nullptr));ok(d->SetRenderTarget(0,back));
+            if(precopy&&round==1&&frame==0){
+                std::fprintf(stderr,"PRECOPY_TARGET_READBACK_BEGIN diagnosticOnly=1 round=%u frame=%u\n",round,frame);
+                save(d,target,w,h,color,output+"/precopy-target.ppm",0,round,frame,nullptr);
+                std::fputs("PRECOPY_TARGET_READBACK_PASS originalResetGatePassed=0\n",stderr);
+            }
+            ok(d->StretchRect(target,nullptr,back,nullptr,D3DTEXF_NONE));
             char name[64];std::snprintf(name,sizeof name,"/frame%06u.ppm",images);save(d,back,w,h,color,output+name,0,round,frame,target);++images;ok(d->Present(nullptr,nullptr,nullptr,nullptr));
         }
         ok(d->SetTexture(0,nullptr));ok(d->SetStreamSource(0,nullptr,0,0));ok(d->SetIndices(nullptr));ok(d->SetVertexDeclaration(nullptr));ok(d->SetVertexShader(nullptr));ok(d->SetPixelShader(nullptr));
         event->Release();occlusion->Release();vs->Release();ps->Release();decl->Release();vb->Release();ib->Release();tex->Release();target->Release();depth->Release();back->Release();
     }
     assert(images==(reset?6u:3u)&&occlusions==images);assert(d->Release()==0);api->Release();DestroyWindow(window);FreeLibrary(module);
-    std::ofstream report(output+"/authored-source.json");report<<"{\"format\":1,\"authored_transport\":true,\"game_launched\":false,\"fps_eligible\":false,\"full_scene_ready\":false,\"raw_depth_equivalence_validated\":false,\"frames\":"<<images<<",\"draws\":"<<images*4<<",\"nonzero_occlusions\":"<<occlusions<<",\"event_completions\":"<<images<<",\"reset_requested\":"<<(reset?"true":"false")<<",\"reset_client_resize_control\":"<<(resized?"true":"false")<<",\"modules\":"<<loaded<<"}\n";report.close();assert(report);
+    std::ofstream report(output+"/authored-source.json");report<<"{\"format\":1,\"authored_transport\":true,\"game_launched\":false,\"fps_eligible\":false,\"full_scene_ready\":false,\"raw_depth_equivalence_validated\":false,\"frames\":"<<images<<",\"draws\":"<<images*4<<",\"nonzero_occlusions\":"<<occlusions<<",\"event_completions\":"<<images<<",\"reset_requested\":"<<(reset?"true":"false")<<",\"reset_client_resize_control\":"<<(resized?"true":"false")<<",\"precopy_target_readback_control\":"<<(precopy?"true":"false")<<",\"modules\":"<<loaded<<"}\n";report.close();assert(report);
     std::puts("PASS authored transport producer: actual Draw/query/color/state sequence; original game quality/FPS unproven");
 }
 #endif

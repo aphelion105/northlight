@@ -84,6 +84,8 @@ struct Limits {
 // plus 96u publication/cache drift margin. No camera vector is an input.
 bool selected(const Request&,Vec3 low,Vec3 high,float margin=96.f);
 Vec3 transformPoint(const Placement&,Vec3);
+// Conservative drawable bounds, including local/world float cancellation and
+// shader roundoff. Invalid inputs return nonfinite bounds (culling fails open).
 void transformBounds(const Placement&,Vec3 low,Vec3 high,Vec3& outLow,Vec3& outHigh);
 bool packModel(NorthlightGI::WorldScene&&,const std::string& key,Model&,std::string& error);
 // Reads an already validated immutable decode without taking its payload ownership.
