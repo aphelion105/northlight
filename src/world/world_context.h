@@ -94,8 +94,7 @@ inline bool readSelfLive(uintptr_t address,void* output,size_t size) {
 // replay thread) the read goes through it (snapshot_store.h); otherwise exactly the live read above, one null check apart.
 inline bool readSelf(uintptr_t address,void* output,size_t size) {
 #ifdef NORTHLIGHT_REPLAY_STAND
-    auto* inputs=NorthlightStream::StandInputs::active;
-    return inputs&&inputs->read(address,output,size);
+    return NorthlightStream::StandInputs::read(address,output,size);
 #else
     if(NorthlightStream::GameSnapshot* snapshot=NorthlightStream::activeSnapshot)
         return NorthlightStream::snapshotRead(*snapshot,address,output,size,readSelfLive,NorthlightStream::codeRange());
@@ -106,7 +105,8 @@ inline bool readSelf(uintptr_t address,void* output,size_t size) {
 inline bool supportedClient() {
     // This client is a fixed-base PE32. Reject another image/base outright.
 #ifdef NORTHLIGHT_REPLAY_STAND
-    if(!NorthlightStream::StandInputs::active||NorthlightStream::StandInputs::active->targetBase()!=0x400000)return false;
+    const auto* context=NorthlightStream::StandInputs::currentContext();
+    if(!context||context->targetBase()!=0x400000)return false;
 #else
     if(reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr))!=0x400000)return false;
 #endif

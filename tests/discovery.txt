@@ -230,6 +230,7 @@ test_shared_source_lifecycle.py
 test_shared_static_preparation.py
 test_snapshot_allocation.py
 test_snapshot_archive.py
+test_snapshot_client_range.py
 test_snapshot_capture_sink.py
 test_snapshot_lookup_identity.py
 test_snapshot_prediction.py
@@ -242,6 +243,7 @@ test_spell_fog_proof_client.py
 test_spell_layer.py
 test_stand_api.py
 test_stand_inputs.py
+test_stand_replay.py
 test_static_cache_dirty_rect.py
 test_static_m2_dedup.py
 test_static_plan_job.py
@@ -306,6 +308,7 @@ test_windows_installer.py
 test_wmo_group_tolerance.py
 test_world_cache_diff.py
 test_world_light_placements.py
+test_world_lighting_capture.py
 test_world_local_lights.py
 test_world_mesh_pages.py
 test_world_mesh_pages_real.py

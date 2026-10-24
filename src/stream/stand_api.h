@@ -10,11 +10,10 @@
 // first snapshot must precede Direct3DCreate9 and all signature-cache readers.
 namespace NorthlightStandApi {
 struct State {
-    std::vector<unsigned char> image;NorthlightStream::ClientImage::View view;
     NorthlightStream::GameSnapshot snapshot;
     std::unique_ptr<NorthlightStream::StandInputs::Session> inputs;
     std::unique_ptr<NorthlightStream::StandInputs::Scope> scope;
-    DWORD owner=0;bool apiStarted=false;std::uint64_t snapshots=0;
+    DWORD owner=0;std::atomic<bool> apiStarted{false};std::uint64_t snapshots=0;
 };
 inline State& state(){static State value;return value;}
 inline bool owner(const State& s){return s.owner&&s.owner==GetCurrentThreadId();}
@@ -27,10 +26,9 @@ extern "C" __declspec(dllexport) int __cdecl NorthlightStandOpen(const void* ima
     auto& s=NorthlightStandApi::state();
     if(!image||bytes<64||bytes>64u*1024u*1024u||s.apiStarted||s.inputs)return 0;
     try{
-        const auto* first=static_cast<const unsigned char*>(image);s.image.assign(first,first+bytes);
-        NorthlightStream::ClientImage::Error error;
-        if(!s.view.open(s.image.data(),s.image.size(),error)){s.image.clear();return 0;}
-        s.inputs=std::make_unique<NorthlightStream::StandInputs::Session>(s.view);
+        auto inputs=std::make_unique<NorthlightStream::StandInputs::Session>(image,bytes);
+        if(!inputs->valid())return 0;
+        s.inputs=std::move(inputs);
         s.scope=std::make_unique<NorthlightStream::StandInputs::Scope>(*s.inputs);
         if(!s.scope->entered()){s.inputs->reject();return 0;}
         s.owner=GetCurrentThreadId();return 1;
@@ -47,7 +45,8 @@ extern "C" __declspec(dllexport) int __cdecl NorthlightStandSnapshot(const void*
 extern "C" __declspec(dllexport) int __cdecl NorthlightStandStatus(std::uint64_t* output,unsigned words){
     auto& s=NorthlightStandApi::state();
     if(!output||words!=8||!NorthlightStandApi::owner(s)||!s.inputs)return 0;
-    const std::uint64_t values[8]={1,s.inputs->valid(),s.snapshots,s.inputs->staticReads,s.inputs->dynamicReads,
-        s.inputs->recordedFailures,s.inputs->missingReads,s.apiStarted};
+    const auto& context=*s.inputs->context();
+    const std::uint64_t values[8]={1,s.inputs->valid(),s.snapshots,context.staticReads.load(),context.dynamicReads.load(),
+        context.recordedFailures.load(),context.missingReads.load(),s.apiStarted.load()};
     std::memcpy(output,values,sizeof values);return 1;
 }

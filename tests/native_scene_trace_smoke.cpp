@@ -44,6 +44,61 @@ static void bindings(IDirect3DDevice9* d,IDirect3DSurface9* back,const char* sta
     std::fprintf(stderr,"BINDINGS %s heldBack=%p freshBack=%p selectedRT=%p heldEqualsFresh=%u heldEqualsSelected=%u\n",stage,(void*)back,(void*)fresh,(void*)bound,unsigned(back==fresh),unsigned(back==bound));
     describe("freshBack",fresh);describe("selectedRT",bound);fresh->Release();bound->Release();
 }
+static bool resetCopyDiagnostic=false;
+static bool resetRectDiagnostic=false;
+static bool diagnosticResult(const char* operation,HRESULT hr){
+    std::fprintf(stderr,"RESET_COPY_HR operation=%s hr=%08lx\n",operation,(unsigned long)hr);return SUCCEEDED(hr);
+}
+static void probe(IDirect3DDevice9* d,IDirect3DSurface9* surface,const char* name,unsigned w,unsigned h){
+    describe(name,surface);IDirect3DSurface9* staging=nullptr;
+    if(!diagnosticResult("CreateOffscreenPlainSurface",d->CreateOffscreenPlainSurface(w,h,D3DFMT_A8R8G8B8,D3DPOOL_SYSTEMMEM,&staging,nullptr)))return;
+    describe("probe-staging",staging);D3DLOCKED_RECT lock{};const DWORD poison=0xffe13579;
+    if(!diagnosticResult("staging-poison-LockRect",staging->LockRect(&lock,nullptr,0))){staging->Release();return;}
+    assert(lock.pBits&&lock.Pitch>=int(w*4));
+    for(unsigned y=0;y<h;++y)for(unsigned x=0;x<w;++x)std::memcpy((char*)lock.pBits+std::size_t(y)*lock.Pitch+x*4,&poison,4);
+    if(!diagnosticResult("staging-poison-UnlockRect",staging->UnlockRect())||
+       !diagnosticResult("GetRenderTargetData",d->GetRenderTargetData(surface,staging))||
+       !diagnosticResult("staging-read-LockRect",staging->LockRect(&lock,nullptr,D3DLOCK_READONLY))){staging->Release();return;}
+    assert(lock.pBits&&lock.Pitch>=int(w*4));DWORD center=0,first=0,last=0;unsigned lit=0,unmodified=0;
+    std::memcpy(&center,(const char*)lock.pBits+std::size_t(h/2)*lock.Pitch+(w/2)*4,4);
+    std::memcpy(&first,lock.pBits,4);std::memcpy(&last,(const char*)lock.pBits+std::size_t(h-1)*lock.Pitch+(w-1)*4,4);
+    for(unsigned y=0;y<h;++y)for(unsigned x=0;x<w;++x){DWORD p=0;std::memcpy(&p,(const char*)lock.pBits+std::size_t(y)*lock.Pitch+x*4,4);lit+=bool(p&0xffffff);unmodified+=p==poison;}
+    std::fprintf(stderr,"RESET_COPY_PIXELS stage=%s pitch=%d center=%08lx first=%08lx last=%08lx lit=%u poison=%u pixels=%u\n",name,int(lock.Pitch),(unsigned long)center,(unsigned long)first,(unsigned long)last,lit,unmodified,w*h);
+    diagnosticResult("staging-read-UnlockRect",staging->UnlockRect());staging->Release();
+}
+static void diagnoseResetCopy(IDirect3DDevice9* d,IDirect3DSurface9* target,IDirect3DSurface9* back,unsigned w,unsigned h){
+    // Run only after preserving the failed mandatory image; these probes cannot pass that gate.
+    std::fprintf(stderr,"RESET_COPY_DIAGNOSTIC_BEGIN mandatoryParityFailed=1\n");
+    probe(d,target,"original-scene-target",w,h);probe(d,back,"original-backbuffer",w,h);
+    IDirect3DSurface9* relay=nullptr;
+    if(!diagnosticResult("CreateRenderTarget-relay",d->CreateRenderTarget(w,h,D3DFMT_A8R8G8B8,D3DMULTISAMPLE_NONE,0,FALSE,&relay,nullptr)))return;
+    if(diagnosticResult("StretchRect-original-back-to-relay",d->StretchRect(back,nullptr,relay,nullptr,D3DTEXF_NONE)))probe(d,relay,"original-back-relay",w,h);
+    if(diagnosticResult("ColorFill-backbuffer-sentinel",d->ColorFill(back,nullptr,0xff19d7a3))){
+        probe(d,back,"sentinel-backbuffer",w,h);
+        if(diagnosticResult("StretchRect-sentinel-back-to-relay",d->StretchRect(back,nullptr,relay,nullptr,D3DTEXF_NONE)))probe(d,relay,"sentinel-back-relay",w,h);
+    }
+    if(diagnosticResult("StretchRect-scene-to-back-again",d->StretchRect(target,nullptr,back,nullptr,D3DTEXF_NONE))){
+        probe(d,back,"recopied-backbuffer",w,h);
+        if(diagnosticResult("StretchRect-recopied-back-to-relay",d->StretchRect(back,nullptr,relay,nullptr,D3DTEXF_NONE)))probe(d,relay,"recopied-back-relay",w,h);
+    }
+    relay->Release();std::fprintf(stderr,"RESET_COPY_DIAGNOSTIC_END mandatoryParityFailed=1\n");
+}
+static void diagnoseResetRects(IDirect3DDevice9* d,IDirect3DSurface9* target,IDirect3DSurface9* back,unsigned w,unsigned h){
+    std::fprintf(stderr,"RESET_RECT_DIAGNOSTIC_BEGIN mandatoryParityFailed=1\n");
+    probe(d,target,"rect-original-scene",w,h);probe(d,back,"rect-original-back",w,h);
+    IDirect3DSurface9* ordinary=nullptr;
+    if(!diagnosticResult("CreateRenderTarget-ordinary",d->CreateRenderTarget(w,h,D3DFMT_A8R8G8B8,D3DMULTISAMPLE_NONE,0,FALSE,&ordinary,nullptr)))return;
+    const RECT full{0,0,LONG(w),LONG(h)};
+    for(unsigned kind=0;kind<2;++kind)for(unsigned explicitRect=0;explicitRect<2;++explicitRect){
+        IDirect3DSurface9* destination=kind?back:ordinary;const DWORD sentinel=0xff153247+kind*0x00200000+explicitRect*0x00001000;
+        std::fprintf(stderr,"RESET_RECT_CASE destination=%s rect=%s left=0 top=0 right=%u bottom=%u sentinel=%08lx\n",kind?"currentBack":"ordinaryRT",explicitRect?"explicit":"null",w,h,(unsigned long)sentinel);
+        if(!diagnosticResult("ColorFill-destination",d->ColorFill(destination,nullptr,sentinel)))continue;
+        probe(d,destination,"rect-sentinel-destination",w,h);
+        const RECT* rectangle=explicitRect?&full:nullptr;
+        if(diagnosticResult("StretchRect-scene-to-destination",d->StretchRect(target,rectangle,destination,rectangle,D3DTEXF_NONE)))probe(d,destination,"rect-copied-destination",w,h);
+    }
+    ordinary->Release();std::fprintf(stderr,"RESET_RECT_DIAGNOSTIC_END mandatoryParityFailed=1\n");
+}
 static void save(IDirect3DDevice9* d,IDirect3DSurface9* surface,unsigned w,unsigned h,DWORD expected,const std::string& file,unsigned aa,unsigned round,unsigned frame,IDirect3DSurface9* sourceTarget){
     IDirect3DSurface9* staging=nullptr;ok(d->CreateOffscreenPlainSurface(w,h,D3DFMT_A8R8G8B8,D3DPOOL_SYSTEMMEM,&staging,nullptr));
     ok(d->GetRenderTargetData(surface,staging));D3DLOCKED_RECT lock{};ok(staging->LockRect(&lock,nullptr,D3DLOCK_READONLY));
@@ -56,8 +111,10 @@ static void save(IDirect3DDevice9* d,IDirect3DSurface9* surface,unsigned w,unsig
         const unsigned char rgb[]={p[2],p[1],p[0]};out.write((const char*)rgb,3);lit+=bool(p[0]|p[1]|p[2]);
     }ok(staging->UnlockRect());staging->Release();out.close();assert(out.good());
     if(!matched&&sourceTarget&&!aa)save(d,sourceTarget,w,h,expected,file+".target.ppm",aa,round,frame,nullptr);
-    assert(lit>w*h/4&&lit<w*h);
-    assert(matched); // The farther green quad must fail the depth test; preserve the failed image first.
+    if(!matched&&sourceTarget&&!aa&&resetCopyDiagnostic)diagnoseResetCopy(d,sourceTarget,surface,w,h);
+    if(!matched&&sourceTarget&&!aa&&resetRectDiagnostic)diagnoseResetRects(d,sourceTarget,surface,w,h);
+    // Preserve the same strict oracle, then let the tracer flush through normal CRT exit.
+    if(!(lit>w*h/4&&lit<w*h)||!matched)std::exit(EXIT_FAILURE);
 }
 struct Vertex{float x,y,z,w,u,v;};
 static constexpr DWORD vsCode[]={0xfffe0200,0x0200001f,0x80000000,0x900f0000,
@@ -69,7 +126,10 @@ static constexpr DWORD psCode[]={0xffff0200,0x0200001f,0x90000000,0xa00f0800,
 
 int main(int argc,char** argv){
     assert(argc==3||argc==4);const std::string output=argv[1];const unsigned aa=unsigned(std::strtoul(argv[2],nullptr,10));assert(aa==0||aa==2);
-    const bool afterCopyEvent=argc==4;assert(!afterCopyEvent||!std::strcmp(argv[3],"after-copy-event"));
+    const bool afterCopyEvent=argc==4&&!std::strcmp(argv[3],"after-copy-event");
+    resetCopyDiagnostic=argc==4&&!std::strcmp(argv[3],"reset-copy-diagnostic");
+    resetRectDiagnostic=argc==4&&!std::strcmp(argv[3],"reset-rect-diagnostic");
+    assert(argc==3||afterCopyEvent||resetCopyDiagnostic||resetRectDiagnostic);assert(!(resetCopyDiagnostic||resetRectDiagnostic)||!aa);
     WNDCLASSA cls{};cls.lpfnWndProc=DefWindowProcA;cls.hInstance=GetModuleHandleA(nullptr);cls.lpszClassName="NorthlightTraceSmoke";
     assert(RegisterClassA(&cls));HWND window=CreateWindowA(cls.lpszClassName,"",WS_OVERLAPPED,0,0,128,128,nullptr,nullptr,cls.hInstance,nullptr);assert(window&&!IsWindowVisible(window));
     HMODULE module=LoadLibraryA("d3d9.dll");assert(module);

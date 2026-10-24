@@ -130,6 +130,7 @@
 #include <condition_variable>
 #include <stdexcept>
 #include "world_diagnostics.h"
+#include "world_lighting_capture.h"
 #include "shadow_terrain.h"
 #include "live_terrain_gpu.h"
 #include "static_shadow_request.h"
@@ -325,7 +326,7 @@ private:
     NorthlightWorldStreaming::Motion geometryMotion;float geometryLead=0,coverMax=0,holdMax=0;
     bool coverageHold=false;DWORD holdStart=0;unsigned holdEpisodes=0;
     const char* skipReason="";
-    bool gpuDiagnosticArmed=true;unsigned gpuDiagnosticCaptures=0;
+    bool gpuDiagnosticArmed=true,gpuNormalDiagnosticRequested=false,gpuDiagnosticFrame=false;unsigned gpuDiagnosticCaptures=0;
     std::string gpuDiagnosticDirectory;
     IDirect3DTexture9* regionalFogTexture=nullptr;
     IDirect3DTexture9* neutralWhite=nullptr; // 0.3.209 (task 29): 1x1 white on s12 (ActorVisibility) for WorldLighting on frames without an ActorShadow pass
@@ -2631,6 +2632,10 @@ public:
     IDirect3DTexture9* materialDetail=nullptr,*materialOcclusion=nullptr;float materialBumpGain=0,materialBumpDistance=48,materialOcclusionDistance=8;
     NorthlightMaterialProfile* materialProfile=nullptr;
     void setMaterialProfiler(NorthlightMaterialProfile* p){materialProfile=p;}
+    // Explicit diagnostics only; normal-view capture never changes a quality
+    // setting, debug mode, shadow refresh or temporal-history decision.
+    bool requestNormalGpuDiagnosticCapture(){if(gpuDiagnosticCaptures>=4||gpuNormalDiagnosticRequested)return false;gpuNormalDiagnosticRequested=true;return true;}
+    bool diagnosticCaptureInLastRender()const{return gpuDiagnosticFrame;}
     void pollMaterialProfile(){materialPixelAudit.poll();}
     void setMaterialDetail(IDirect3DTexture9* texture,float gain,float distance,IDirect3DTexture9* occlusion=nullptr,float occlusionDistance=8){materialDetail=texture;materialBumpGain=gain;materialBumpDistance=distance;materialOcclusion=occlusion;materialOcclusionDistance=occlusionDistance;}
     void materialLight(float* light)const{
@@ -3881,8 +3886,8 @@ public:
     // foldScene/foldAO (0.3.174 FOLD): the proxy's pre-AO scene copy replaces the world colour
     // copy, and its AOContactBloom target (bloom rgb, AO alpha) is applied by TemporalLight's
     // removal smoothing and WorldComposite. Null: the proxy composited already (neutral s10).
-    bool render(IDirect3DSurface9* targetSurface,IDirect3DTexture9* depth,UINT w,UINT h,D3DFORMAT fmt,float nearZ,float farZ,float minZ,float maxZ,int debug,NorthlightGpuProfile* profile,IDirect3DTexture9* waterMask,IDirect3DTexture9* foldScene=nullptr,IDirect3DTexture9* foldAO=nullptr){
-        shadowsComposited=false;composited=false;lastRenderDebug=debug;
+    bool render(IDirect3DSurface9* targetSurface,IDirect3DTexture9* depth,UINT w,UINT h,D3DFORMAT fmt,float nearZ,float farZ,float minZ,float maxZ,int debug,NorthlightGpuProfile* profile,IDirect3DTexture9* waterMask,IDirect3DTexture9* foldScene=nullptr,IDirect3DTexture9* foldAO=nullptr,unsigned rendererFrame=0){
+        shadowsComposited=false;composited=false;lastRenderDebug=debug;gpuDiagnosticFrame=false;
         if(debug!=1)gpuDiagnosticArmed=true;
         // 0.3.169 lastSkipReason(): why this call returned false. Untagged returns below the
         // upload gate are failed device calls in the draw stages ("draw").
@@ -4018,14 +4023,27 @@ public:
         struct StaticPlanJoin {WorldRenderer& r;~StaticPlanJoin(){try{r.staticCasters.settle();}catch(...){}}} staticPlanJoin{*this}; /* before any return below */
         if(effects.shadows){const auto kickStart=std::chrono::steady_clock::now();staticPlanKick(slotPlacement,sourceActive);staticKickMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-kickStart).count();}
         if(effects.shadows&&replayShadows)pointCalculateReplayBounds(); // both cascades and the point cube
-        const unsigned diagnosticCapture=debug==1&&gpuDiagnosticArmed&&gpuDiagnosticCaptures<4?gpuDiagnosticCaptures+1:0;
+        const bool normalDiagnosticCapture=debug==0&&gpuNormalDiagnosticRequested&&gpuDiagnosticCaptures<4;
+        const unsigned shadowDiagnosticCapture=debug==1&&gpuDiagnosticArmed&&gpuDiagnosticCaptures<4?gpuDiagnosticCaptures+1:0;
+        const unsigned diagnosticCapture=normalDiagnosticCapture?gpuDiagnosticCaptures+1:shadowDiagnosticCapture;
+        if(diagnosticCapture){gpuDiagnosticFrame=true;
+            ++gpuDiagnosticCaptures;if(normalDiagnosticCapture)gpuNormalDiagnosticRequested=false;else gpuDiagnosticArmed=false;
+            logf("WORLD GPU_CAPTURE_ATTEMPT capture=%u worldFrame=%u rendererFrame=%u rendererFrameKnown=%u normalView=%u diagnostic=1 fpsEligible=0",diagnosticCapture,frames,rendererFrame,unsigned(rendererFrame!=0),unsigned(normalDiagnosticCapture));}
         if(diagnosticCapture&&gpuDiagnosticDirectory.empty()){
-            const std::string parent=root+"northlight-diagnostics";   /* beside northlight-renderer.log */
-            CreateDirectoryA(parent.c_str(),nullptr);
-            gpuDiagnosticDirectory=parent+"/session-"+std::to_string(GetCurrentProcessId())+"-"+std::to_string(GetTickCount());
-            CreateDirectoryA(gpuDiagnosticDirectory.c_str(),nullptr);
-            logf("WORLD GPU diagnostic directory=%s",gpuDiagnosticDirectory.c_str());
+            try{
+                const std::string parent=root+"northlight-diagnostics";   /* beside northlight-renderer.log */
+                CreateDirectoryA(parent.c_str(),nullptr);
+                const std::string prefix=parent+"/session-"+std::to_string(GetCurrentProcessId())+"-"+std::to_string(GetTickCount());
+                for(unsigned attempt=0;attempt<64;++attempt){const std::string candidate=prefix+"-"+std::to_string(attempt);
+                    if(CreateDirectoryA(candidate.c_str(),nullptr)){gpuDiagnosticDirectory=candidate;break;}
+                    if(GetLastError()!=ERROR_ALREADY_EXISTS)break;
+                }
+            }catch(...){/* An explicit diagnostic allocation failure cannot disable rendering. */}
+            logf("WORLD GPU diagnostic directory=%s exclusive=%u",gpuDiagnosticDirectory.empty()?"unavailable":gpuDiagnosticDirectory.c_str(),unsigned(!gpuDiagnosticDirectory.empty()));
         }
+        const unsigned diagnosticFiles=gpuDiagnosticDirectory.empty()?0:diagnosticCapture;
+        std::optional<NorthlightLightingCapture::Capture> lightingCapture;
+        if(normalDiagnosticCapture)lightingCapture.emplace(d,gpuDiagnosticDirectory,diagnosticCapture,frames,rendererFrame,w,h);
         d->SetDepthStencilSurface(nullptr);for(int i=1;i<4;++i)d->SetRenderTarget(i,nullptr);
         for(int i=0;i<14;++i)d->SetTexture(i,nullptr);
         const struct{D3DRENDERSTATETYPE s;DWORD v;} states[]={
@@ -4079,13 +4097,13 @@ public:
             bool sliceBand=false; /* an intermediate band: drawn before the cascade action, without a reason */
             const uint64_t staticNow=reason?0:staticSignature(cachedMatrix);
             const bool staticChanged=!reason&&key.staticSignature!=staticNow;
-            if(slices.current(staticNow)&&staticChanged&&!diagnosticCapture&&key.staticContent.valid&&key.staticContent.instancing==staticCasters.stats().instancing){
+            if(slices.current(staticNow)&&staticChanged&&!shadowDiagnosticCapture&&key.staticContent.valid&&key.staticContent.instancing==staticCasters.stats().instancing){
                 staticDirty=slices.band(); /* unchanged since the cycle (re)started: its next band */
                 if(slices.last()){reason=slices.reason;partialStatic=true;}else sliceBand=true;
             }else if(staticChanged){reason="static-models";
                 partialStatic=StaticCacheDirtyRects&&key.valid&&staticDirtyRects(key,cachedMatrix);
                 if(partialStatic)reason="static-models-partial";else ++shadowCacheStaticFullRenders;
-                if(NorthlightStaticSlices::sliceable(quality.staticCacheSlices,partialStatic,diagnosticCapture!=0,StaticCacheDirtyRectVerify)){
+                if(NorthlightStaticSlices::sliceable(quality.staticCacheSlices,partialStatic,shadowDiagnosticCapture!=0,StaticCacheDirtyRectVerify)){
                     staticSliceRestarts+=slices.active;
                     slices.start(staticDirty,quality.staticCacheSlices,reason,staticNow,long(ShadowCacheSize),StaticCacheDirtyTile,StaticCacheDirtyMaxRects);
                     staticDirty=slices.band();if(!slices.last()){reason=nullptr;sliceBand=true;}
@@ -4168,7 +4186,7 @@ public:
             // 0.3.209 (task 29): a near map drawn with the actor-map skip has no shadow of those casters of its own; once its actor map is gone (the source went
             // inactive, ActorShadowDetail off, a non-finite frame) it is redrawn instead of reused.
             const bool actorLost=cascade==0&&nearActorSkip[source]&&!actorValid[source];
-            const auto action=NorthlightQuality::cascadeAction(reuse,interval,shadowPasses,!reason&&key.valid&&!pull&&!actorLost,diagnosticCapture!=0,replaysComplete);
+            const auto action=NorthlightQuality::cascadeAction(reuse,interval,shadowPasses,!reason&&key.valid&&!pull&&!actorLost,shadowDiagnosticCapture!=0,replaysComplete);
             cascadeActions[slot]=action==NorthlightQuality::CascadeAction::Render?'R':action==NorthlightQuality::CascadeAction::Defer?'D':'U';
             if(action!=NorthlightQuality::CascadeAction::Render){
                 if(action==NorthlightQuality::CascadeAction::Defer){captureDemand=true;++captureDeferrals;}else ++(cascade?farReuses:nearReuses);
@@ -4197,7 +4215,7 @@ public:
                 key.valid=staticOK&&(recordable||!StaticCacheDirtyRects);key.frame=placement.frame;key.direction=sourceDirections[source];key.serial=meshGeneration;key.chunkHash=chunkHash;key.staticSignature=staticSignature(cachedMatrix);key.localContent=localShadowSignature(key,cachedMatrix);key.localContentKnown=bool(uploadedLocalShadowRecords);++shadowCacheRenders;
                 DWORD tick=GetTickCount();if(NorthlightDiagnostics::enabled()&&(!shadowCacheLogAt||tick-shadowCacheLogAt>=1000)){shadowCacheLogAt=tick;logf("WORLD shadow cache rerender source=%d cascade=%d reason=%s anchorRetained=%u prebuilds=%u prebuildHits=%u prebuildMisses=%u prebuildDiscards=%u",source,cascade,reason,unsigned(!placement.reason),staticPrebuild.stats.built,staticPrebuild.stats.hits,staticPrebuild.stats.misses,staticPrebuild.stats.discarded);}
             } else {key.serial=meshGeneration;++shadowCacheReuses;}
-            if(diagnosticCapture){
+            if(diagnosticFiles){
                 char name[80];std::snprintf(name,sizeof name,"s%d-c%d-static",source,cascade);
                 NorthlightWorldDiagnostics::dump(d,shadowCacheSurface[slot],gpuDiagnosticDirectory,name,diagnosticCapture);
                 NorthlightWorldDiagnostics::shadowFrame(gpuDiagnosticDirectory,diagnosticCapture,source,cascade,cachedMatrix,matrices[cascade],offX,offY,dz,key.serial,key.staticSignature,reason);
@@ -4230,7 +4248,7 @@ public:
                 if(!check(d->SetVertexDeclaration(shadowDecl),"restore terrain declaration"))return false;
             }
             // Original model transforms and bone palette survive; replace view->clip only.
-            if(diagnosticCapture){
+            if(diagnosticFiles){
                 char name[80];std::snprintf(name,sizeof name,"s%d-c%d-terrain",source,cascade);
                 NorthlightWorldDiagnostics::dump(d,shadowScratchSurface,gpuDiagnosticDirectory,name,diagnosticCapture);
             }
@@ -4250,7 +4268,7 @@ public:
             // drawn packets for the capture-waste count; with DiagReplayProbe the sun near map
             // records them for the probe and is timed as a whole. Every other frame (always with
             // RenderProfile=0) runs the Off instantiation, whose hooks are empty: the 0.3.148 loop.
-            const bool profiled=profileSampled(),probeRecord=replayProbeActive()&&slot==0&&captureMode==CaptureFresh&&!diagnosticCapture;
+            const bool profiled=profileSampled(),probeRecord=replayProbeActive()&&slot==0&&captureMode==CaptureFresh&&!shadowDiagnosticCapture;
             // 0.3.209 (task 29): the near cascade leaves the replays wholly inside the actor map's inset to the actor map, which draws
             // exactly those (actorReplays): no replay is drawn into both. The list is reserved first, so recording a skip never throws.
             bool nearSkip=cascade==0&&actorFrameOn[source];
@@ -4353,7 +4371,7 @@ public:
                     ++drawnHere;
                 }
                 replayPosePrepared+=actorPoses.prepared;replayPoseReused+=actorPoses.reused;
-                if(diagnosticCapture){char name[80];std::snprintf(name,sizeof name,"s%d-actor",source);NorthlightWorldDiagnostics::dump(d,actorShadowSurface[source],gpuDiagnosticDirectory,name,diagnosticCapture);}
+                if(diagnosticFiles){char name[80];std::snprintf(name,sizeof name,"s%d-actor",source);NorthlightWorldDiagnostics::dump(d,actorShadowSurface[source],gpuDiagnosticDirectory,name,diagnosticCapture);}
                 memcpy(actorMatrices[source],am,64);actorValid[source]=true;
                 if(profile)profile->mark(source==0?"SunActor":"MoonActor");bucket(NorthlightEffectsBuckets::Bucket(NorthlightEffectsBuckets::SunActor+source));
                 actorNearSkipped+=nearSkipped;actorDrawn+=drawnHere;if(sideDiag)actorSide[source].endFrame();
@@ -4366,7 +4384,7 @@ public:
             }
             } /* actorShadows */
             // Union: min(dynamic scratch, cached static at its integer texel offset + exact depth delta).
-            if(diagnosticCapture){
+            if(diagnosticFiles){
                 char name[80];std::snprintf(name,sizeof name,"s%d-c%d-live",source,cascade);
                 NorthlightWorldDiagnostics::dump(d,shadowScratchSurface,gpuDiagnosticDirectory,name,diagnosticCapture);
             }
@@ -4556,6 +4574,7 @@ public:
         c[30][0]=waterMask?1.f:0.f;d->SetPixelShaderConstantF(0,&c[0][0],68);
         IDirect3DTexture9* textures[]={foldScene?foldScene:color,depth,shadow[0],shadow[1],probe[0],probe[1],probe[2],probe[3],nullptr,nullptr,probe[4],waterMask,nullptr,regionalFogTexture};
         for(int i=0;i<14;++i){d->SetTexture(i,textures[i]);d->SetSamplerState(i,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(i,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);d->SetSamplerState(i,D3DSAMP_MINFILTER,(i==0||i==9)?D3DTEXF_LINEAR:D3DTEXF_POINT);d->SetSamplerState(i,D3DSAMP_MAGFILTER,(i==0||i==9)?D3DTEXF_LINEAR:D3DTEXF_POINT);d->SetSamplerState(i,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(i,D3DSAMP_SRGBTEXTURE,FALSE);}
+        if(lightingCapture)lightingCapture->inputs(0,1u<<1,1u<<1); // Actual full-resolution sampled depth, before any post-process reuses its slot.
         auto setSource=[&](int source,bool first,bool volume=false){
             d->SetTexture(2,shadow[source*2]);d->SetTexture(3,shadow[source*2+1]);
             // Collapse only shadow queries to the centre at depth .5. With a
@@ -4660,10 +4679,13 @@ public:
         if(effects.gi&&!check(quad(w/2,h/2),"world GI pass"))return false;
         d->SetTexture(8,textures[8]); /* 0.3.197: restore the frame-start binding */
         if(profile)profile->mark("GI"); /* task 43: the GI pass alone; the lamp batches are LocalLights */
+        constexpr unsigned directInputs=(1u<<1)|(1u<<9)|(1u<<11)|(1u<<12)|(1u<<14),fogInputs=(1u<<1)|(1u<<11);
+        if(lightingCapture){lightingCapture->sources(localLights,effects.fog);lightingCapture->image("lighting-before-local",lightSurface);}
         if(localDirectCount&&debug==0){
             profileSplit(profile,lightSurface); /* sample frames: GI's timestamp ends here, LocalLights' below */
             d->SetPixelShader(localDirectPS);d->SetRenderState(D3DRS_SCISSORTESTENABLE,NorthlightLocalLightScissor::Enabled);
             d->SetTexture(12,baselineLight); /* sun visibility (baseline alpha); the temporal pass rebinds it anyway */
+            if(lightingCapture)lightingCapture->inputs(0,directInputs,directInputs);
             // Two neighbouring 8-lamp batches whose joint rect costs less than both (local_light_batches.h wide()) draw as one LocalDirect16
             // pass (its lamps in c84..c115, preserving material c73..c78; c52 as for LocalDirect). Without a proven view every rect is the whole target, so pairs merge.
             constexpr unsigned N=NorthlightLocalLightSelection::DirectBatchSize;IDirect3DPixelShader9* bound=localDirectPS;
@@ -4680,6 +4702,7 @@ public:
                     d->SetPixelShaderConstantF(52,info,1);++localWidePasses;
                     const bool drawn=localScissor(batch.position,batch.count,&joint);const HRESULT hr=drawn?quad(w/2,h/2):S_OK;
                     sourceTrace.batch(false,firstLight,batch.count,joint,drawn,hr);
+                    if(lightingCapture)lightingCapture->pass("LocalDirect16",0,directInputs,firstLight,batch.count,drawn,hr);
                     if(drawn&&!check(hr,"local direct 16-light batch")){d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);return false;}
                     firstLight+=2*N;continue;
                 }
@@ -4691,12 +4714,14 @@ public:
                 d->SetPixelShaderConstantF(52,info,1);
                 const bool drawn=localScissor(batch.position,batch.count,&atmosphere.directRects[index]);const HRESULT hr=drawn?quad(w/2,h/2):S_OK;
                 sourceTrace.batch(false,firstLight,batch.count,a,drawn,hr);
+                if(lightingCapture)lightingCapture->pass("LocalDirect",0,directInputs,firstLight,batch.count,drawn,hr);
                 if(drawn&&!check(hr,"local direct light batch")){d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);return false;}
                 firstLight+=N;
             }
             d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);
             profileSplit(profile,lightSurface);
         }
+        if(lightingCapture)lightingCapture->image("lighting-after-local",lightSurface);
         if(profile)profile->mark("LocalLights");bucket(NorthlightEffectsBuckets::GI);d->SetRenderState(D3DRS_COLORWRITEENABLE,15);
         if(debug==0&&pointReady){
             const float sunEnergy=sourceActive[0]?std::max({sourceColors[0].x,sourceColors[0].y,sourceColors[0].z}):0.f;
@@ -4804,6 +4829,7 @@ public:
         }
         d->SetPixelShaderConstantF(17,c[17],2); /* restore the bank's direct/ambient before lamp fog, blur and composite */
         if(localDirectCount&&debug==0){
+            if(lightingCapture){lightingCapture->image("fog-before-local",fogSurface);lightingCapture->inputs(1,fogInputs,fogInputs);}
             // 0.3.205 (gh#20): every batch adds its raw glow into localFogAccum and LocalFogCombine caps the total once into the fog buffer (a cap per batch of four
             // made the glow depend on how the closest-first lights group). A batch adds exactly +0 outside its rect, so only the union of the drawn batches' rects is
             // cleared and combined, and with no batch on screen neither runs. localScissor fails open (no proven view): then every batch and the combine are unclipped.
@@ -4813,11 +4839,13 @@ public:
             if(!whole)for(unsigned b=0;b<fogBatches;++b){const auto& r=atmosphere.fogRects[b];if(!r.area())continue;
                 if(any){area.left=std::min(area.left,r.left);area.top=std::min(area.top,r.top);area.right=std::max(area.right,r.right);area.bottom=std::max(area.bottom,r.bottom);}else area=r;
                 any=true;}
-            if(!any){localScissorBatches+=fogBatches;localScissorSkipped+=fogBatches;sourceTrace.batch(true,0,localDirectCount,area,false,0);sourceTrace.combine=NorthlightLocalLightTrace::Stage::Clipped;} // what localScissor counts for the batches it skips
+            if(!any){localScissorBatches+=fogBatches;localScissorSkipped+=fogBatches;sourceTrace.batch(true,0,localDirectCount,area,false,0);sourceTrace.combine=NorthlightLocalLightTrace::Stage::Clipped;
+                if(lightingCapture)lightingCapture->skipped("LocalFog",0,localDirectCount,"all-batches-clipped");} // what localScissor counts for the batches it skips
             else{
             const RECT clip={area.left,area.top,area.right,area.bottom};const D3DRECT cleared={area.left,area.top,area.right,area.bottom};
             d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);d->SetRenderState(D3DRS_SEPARATEALPHABLENDENABLE,FALSE); // alpha adds like rgb (ONE,ONE): the sum of the lamps' capped peaks
             if(!check(d->SetRenderTarget(0,localFogAccumSurface),"lamp fog accumulator target")||!check(d->Clear(whole?0:1,whole?nullptr:&cleared,D3DCLEAR_TARGET,0,1,0),"lamp fog accumulator clear"))return false; // scissor is off here
+            if(lightingCapture)lightingCapture->image("fog-local-clear",localFogAccumSurface);
             d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE);d->SetRenderState(D3DRS_COLORWRITEENABLE,15);d->SetPixelShader(localFogPS);
             // Analytic lamp glow can reach farther without extending the
             // celestial raymarch or adding samples to it. Restore after use.
@@ -4831,6 +4859,7 @@ public:
                 const auto& rect=atmosphere.fogRects[firstLight/NorthlightLocalLightSelection::FogBatchSize];
                 const bool drawn=localScissor(batch.position,batch.count,&rect);const HRESULT hr=drawn?quad(w/2,h/2):S_OK;
                 sourceTrace.batch(true,firstLight,batch.count,whole?NorthlightLocalLightScissor::Rect{0,0,long(w/2),long(h/2)}:rect,drawn,hr);
+                if(lightingCapture)lightingCapture->pass("LocalFog",1,fogInputs,firstLight,batch.count,drawn,hr);
                 if(drawn&&!check(hr,"local fog glow batch")){d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);return false;}
             }
             // The fog buffer is the target again (SetRenderTarget resets the scissor rect, so the union is set after it); s9 (idle here, rebound before every
@@ -4839,7 +4868,10 @@ public:
             d->SetTexture(9,localFogAccum);d->SetSamplerState(9,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(9,D3DSAMP_MAGFILTER,D3DTEXF_POINT);
             const bool restored=check(d->SetRenderTarget(0,fogSurface),"lamp fog target restore");
             if(restored&&!whole){d->SetScissorRect(&clip);d->SetRenderState(D3DRS_SCISSORTESTENABLE,TRUE);}
-            const bool combined=restored&&check(quad(w/2,h/2),"local fog glow combine");
+            if(lightingCapture)lightingCapture->inputs(2,1u<<9); // The actual complete accumulator, before LocalFogCombine reads it.
+            const HRESULT combineResult=restored?quad(w/2,h/2):E_FAIL;
+            const bool combined=restored&&check(combineResult,"local fog glow combine");
+            if(lightingCapture){lightingCapture->pass("LocalFogCombine",2,1u<<9,0,localDirectCount,restored,combineResult);lightingCapture->image("fog-after-local",fogSurface);}
             sourceTrace.combine=combined?NorthlightLocalLightTrace::Stage::Submitted:NorthlightLocalLightTrace::Stage::Failed;
             d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);
             d->SetTexture(9,nullptr);d->SetSamplerState(9,D3DSAMP_MINFILTER,D3DTEXF_LINEAR);d->SetSamplerState(9,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);
@@ -4904,7 +4936,11 @@ public:
                 d->SetSamplerState(sampler,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(sampler,D3DSAMP_SRGBTEXTURE,FALSE);
                 d->SetSamplerState(sampler,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(sampler,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);
             }
-            d->SetPixelShader(materialPS);compositeOk=check(quad(w,h),"full-resolution material light");
+            d->SetPixelShader(materialPS);
+            constexpr unsigned materialInputs=(1u<<0)|(1u<<1)|(1u<<4)|(1u<<5)|(1u<<6)|(1u<<8)|(1u<<9)|(1u<<10)|(1u<<11)|(1u<<12)|(1u<<14);
+            if(lightingCapture)lightingCapture->inputs(3,materialInputs,directInputs);
+            const HRESULT materialResult=quad(w,h);compositeOk=check(materialResult,"full-resolution material light");
+            if(lightingCapture)lightingCapture->pass("MaterialComposite",3,materialInputs,0,0,true,materialResult);
          }
          if(profile)profile->mark("MaterialDetail");}
         if(compositeOk&&fullMaterial){
@@ -4913,8 +4949,8 @@ public:
         d->SetTexture(15,nullptr);d->SetTexture(2,nullptr);d->SetSamplerState(2,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(2,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);
         if(!compositeOk)return false;composited=true;d->SetTexture(13,regionalFogTexture);
         reportLocalSources(sourceTrace,diagnosticCapture,c[52][1],lampSunlitCut,c[58][2]);
-        if(diagnosticCapture){
-            gpuDiagnosticArmed=false;unsigned capture=++gpuDiagnosticCaptures;
+        if(diagnosticFiles){
+            const unsigned capture=diagnosticCapture;
             const std::string& directory=gpuDiagnosticDirectory;
             float actual[79][4]={};HRESULT read=d->GetPixelShaderConstantF(0,actual[0],79);
             if(SUCCEEDED(read)){
@@ -4939,6 +4975,7 @@ public:
             else dump(d,colorSurface,directory,"scene",capture);
             logf("WORLD GPU diagnostic capture=%u scene=%s",capture,foldScene?"pre-AO (folded AO/bloom)":"post-AO composite");
         }
+        if(lightingCapture){lightingCapture->image("lighting-final-scene",targetSurface);lightingCapture->finish(true);}
         if(++frames==1||(frames%600==0&&NorthlightDiagnostics::enabled()))logf("WORLD frame=%u GI probes=%u valid=%u rays=%u bounces=%u cacheTriangles=%zu replayDraws=%zu liveTerrainChunks=%zu terrainAttempts=%u terrainSnapshots=%u cascadesPerSource=2x1024 volumeStepsMax=49 fogWorldSpacing=2.667 fogShadowFilter=1.5 fogLightHeight=12 fogAmbient=0.35",frames,NorthlightGI::probeLayout().count(),active->validProbes,quality.giRays,quality.giBounces,active->bvh->triangleCount(),replays.size(),liveTerrainChunks.size(),terrainAttempts,terrainSnapshots);
         if(frames%600==0&&NorthlightDiagnostics::enabled())logf("WORLD global light holds=%u predicted=%u mispredicted=%u",globalLightHold.held,globalLightHold.predictedAccepts,globalLightHold.predictedMisses); /* 0.3.207: sky block reads between the copy and the glare darkening; colours matched / not matched by the glow prediction */
         if(captureSampled)logf("VOLUME sources sunRGB=%.5f,%.5f,%.5f moonRGB=%.5f,%.5f,%.5f ambientRGB=%.5f,%.5f,%.5f sunGain=1.2 moonGain=1.2 directCaps=0.38,0.24 airCells=%u airDensity=%.5f,%.5f forestAir=%.4f night=%.3f",

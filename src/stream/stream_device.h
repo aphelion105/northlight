@@ -87,7 +87,11 @@ public:
     // was handed over (nullptr, reason filled) and the caller keeps using the target directly.
     static StreamDevice* make(IDirect3DDevice9* target,IDirect3D9* parent,const D3DPRESENT_PARAMETERS* pp,Options opt,const char** reason){
         std::unique_ptr<StreamDevice> d;
-        try{d.reset(new StreamDevice(target,parent,pp,std::move(opt)));}catch(...){if(reason)*reason="allocation";return nullptr;}
+        try{d.reset(new StreamDevice(target,parent,pp,std::move(opt)));}catch(...){
+#ifdef NORTHLIGHT_REPLAY_STAND
+            if(auto* context=StandInputs::currentContext())context->reject();
+#endif
+            if(reason)*reason="allocation";return nullptr;}
         // Any failure from here: the Target's implicit objects (back buffers, depth buffer, swap chain) are released on the replay thread
         // before it stops (no Destroy commands into a queue nobody replays), the proxies are deleted, and the owner callback runs again on
         // this thread so the Device's gate names a live thread, not the joined replay thread.
@@ -95,7 +99,11 @@ public:
             if(reason)*reason=why;
             const bool ran=d->replayer.running();
             if(ran){runTask(d->core,[](StreamCore& c){c.reg.releaseInners();},Cmd::SyncInit);d->replayer.stop();}
-            d->abandon();if(ran&&d->restoreOwner)d->restoreOwner();return nullptr;};
+            d->abandon();if(ran&&d->restoreOwner)d->restoreOwner();
+#ifdef NORTHLIGHT_REPLAY_STAND
+            if(auto* context=StandInputs::currentContext())context->reject();
+#endif
+            return nullptr;};
         if(!d->replayer.start())return fail("thread");
         bool ok=false;
         const bool ran=runTask(d->core,[&](StreamCore& c){

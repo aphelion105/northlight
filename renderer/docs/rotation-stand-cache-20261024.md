@@ -1,5 +1,9 @@
 # Rotation follow-up: cache capacity and offline replay inputs
 
+This records the earlier `91cfd0b` implementation slice. Subsequent worker
+integration, a production snapshot-range correction and normal-view diagnostic
+capture are documented in [rotation-snapshot-coherence-20261024.md](rotation-snapshot-coherence-20261024.md).
+
 ## Cache decision
 
 Keep the installed settings and current default cache limits unchanged. The

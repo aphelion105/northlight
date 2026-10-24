@@ -21,6 +21,9 @@
 #include "snapshot_store.h"
 #include "stream_hooks.h"
 #include "unlock_source.h"
+#ifdef NORTHLIGHT_REPLAY_STAND
+#include "stand_inputs.h"
+#endif
 
 namespace NorthlightStream {
 // ---- implicit proxies: objects the game never created (back buffers, the default depth buffer, objects the mod bound) ----
@@ -167,20 +170,42 @@ public:
     // state is copied: DXVK sets single precision on the CreateDevice thread, and hook float math must match.
     bool start(){
         try{
+#ifdef NORTHLIGHT_REPLAY_STAND
+            const auto imported=StandInputs::shareForPlayback();if(!imported)return false;
+#endif
             idleTracking_=idleProfiling&&idleProfiling();core.q.trackIdlePublications(idleTracking_);core.idleImages.enable(idleTracking_);producerCpu_.start(idleTracking_);core.idleLog=idleTracking_?&log:nullptr;
             unsigned short cw=0;unsigned csr=0;captureFpu(cw,csr);
             std::atomic<int> ready{0};
             startNs_.store(nowNs(),std::memory_order_relaxed);lastWall_=startNs_.load(std::memory_order_relaxed);
-            th_=std::thread([this,cw,csr,&ready]{
+            th_=std::thread([this,cw,csr,&ready
+#ifdef NORTHLIGHT_REPLAY_STAND
+                ,imported
+#endif
+            ]{
+#ifdef NORTHLIGHT_REPLAY_STAND
+                StandInputs::PlaybackScope context(imported);
+                if(!context.entered()){imported->reject();ready.store(-1);return;}
+                try{
+#endif
                 applyFpu(cw,csr);if(threadStart)threadStart();replayTid.store(currentTid());
                 raisePriority();diag_=diagnostics&&diagnostics();idleProfile_.enable(idleTracking_&&diag_);
+#ifdef NORTHLIGHT_REPLAY_STAND
+                }catch(...){imported->reject();ready.store(-1);return;}
+#endif
                 ready.store(1);loop();
                 // 0.3.192 (CS): the playback scope writes this thread's thread_local activeSnapshot and reads current_'s counters: it ends here, on the thread that began it,
                 // before stop() releases current_ to the pool (the destructor, on the game thread, must find nothing to run)
                 playback_.reset();});
             while(!ready.load())std::this_thread::yield();   // the handoff is complete before CreateDevice returns to the game
+#ifdef NORTHLIGHT_REPLAY_STAND
+            if(ready.load()<0){th_.join();core.idleLog=nullptr;producerCpu_.reset();return false;}
+#endif
             return true;
-        }catch(...){core.idleLog=nullptr;producerCpu_.reset();return false;}
+        }catch(...){
+#ifdef NORTHLIGHT_REPLAY_STAND
+            if(auto* context=StandInputs::currentContext())context->reject();
+#endif
+            core.idleLog=nullptr;producerCpu_.reset();return false;}
     }
     // Stops after everything recorded so far has run. Game thread; call once.
     void stop(){

@@ -516,7 +516,7 @@ private:
     LARGE_INTEGER gateSceneEnd={};LONGLONG gatePresentDone=0;unsigned gateSceneDraws=0;unsigned long long gateSceneReads=0;
     std::recursive_mutex gateBenchLock; /* private, uncontended: the microbenchmark's lock */
     MirrorGate gateBenchGate; /* 0.3.180: private, for ownerNs (0.3.182: the real owner entry and exit on it) */
-    const int debugMode = 0;int worldDebug=0;
+    const int debugMode = 0;int worldDebug=0;bool gpuDiagnosticFrame=false;
     NorthlightEffectSwitches::Hotkeys effectKeys;
     float nearZ = .1f, farZ = 1000.f, scaleX = 1.f, scaleY = 1.f, fogForward = 1.f;
     float worldMinDepth=0.f,worldMaxDepth=1.f;
@@ -1003,7 +1003,12 @@ private:
             world->setMaterialDetail(autoBump?autoBump->texture():nullptr,autoBump?autoBump->gain():0.f,autoBump?autoBump->distance():48.f,autoBump?autoBump->occlusionTexture():nullptr,autoBump?autoBump->occlusionDistance():8.f);
             world->setNameMask(maskOn?worldDepth:nullptr); /* 0.3.212 (task 32) */
             world->setRainMask(rainMaskTex); /* 0.3.202 (rain): RainMask for this frame's composite only (resolved and scrubbed at the top of renderEffects) */
-            if(!world->render(saved.targets[0],depthTex,width,height,sceneFormat,nearZ,farZ,worldMinDepth,worldMaxDepth,worldDebug,gpuProfile.get(),waterMask,fold?scene:nullptr,fold?ao:nullptr)){
+            const bool rendered=world->render(saved.targets[0],depthTex,width,height,sceneFormat,nearZ,farZ,worldMinDepth,worldMaxDepth,worldDebug,gpuProfile.get(),waterMask,fold?scene:nullptr,fold?ao:nullptr,frame);
+            if(world->diagnosticCaptureInLastRender()){
+                gpuDiagnosticFrame=true;
+                logf("WORLD GPU_DIAGNOSTIC_FRAME rendererFrame=%u device=%ld worldRendered=%u excludeFromFps=1",frame,diagnosticId,unsigned(rendered));
+            }
+            if(!rendered){
                 if(++worldSkippedFrames<=8||(worldSkippedFrames%120==0&&diagnostics()))
                     logf("WORLD skipped frame=%u tick=%lu context=%d ready=%d count=%u reason=%s",frame,(unsigned long)GetTickCount(),world->hasContext(),world->ready(),worldSkippedFrames,world->lastSkipReason());
                 worldSkipLast=world->lastSkipReason();if(!worldSkipRun++){worldSkipStart=GetTickCount();worldSkipFirst=worldSkipLast;
@@ -2676,12 +2681,14 @@ public:
     void finishFrameImpl() {
         nameMaskRunEnd(); /* 0.3.212 (task 32) */
         const auto frameEffects=effectKeys.settings;const bool frameEnabled=enabled;
+        const bool diagnosticFrame=gpuDiagnosticFrame;gpuDiagnosticFrame=false;
+        if(diagnosticFrame){flushFrameIntervals("gpu-diagnostic-capture",frameEnabled,frameEffects);frameIntervals.reset();intervalFocus=true;}
         // Focus also goes on the FRAME interval line (0 if any frame since the last line lacked it): a background
         // window runs at the client's own frame cap (maxFPSBk), which is not renderer cost.
         D3DDEVICE_CREATION_PARAMETERS cp={}; ext->GetCreationParameters(&cp);
         const bool focus=GetForegroundWindow()==cp.hFocusWindow;intervalFocus&=focus;
         LARGE_INTEGER intervalTick={};NorthlightFrameIntervals::Report intervalReport;
-        if(diagnostics()&&QueryPerformanceCounter(&intervalTick)&&frameIntervals.sample(intervalTick.QuadPart,cpuFrequency.QuadPart,intervalReport)){
+        if(!diagnosticFrame&&diagnostics()&&QueryPerformanceCounter(&intervalTick)&&frameIntervals.sample(intervalTick.QuadPart,cpuFrequency.QuadPart,intervalReport)){
             logf("FRAME interval device=%ld frame=%u tick=%lu enabled=%d samples=%u meanMs=%.3f p50Ms=%.3f p95Ms=%.3f maxMs=%.3f fps=%.2f gi=%u shadows=%u fog=%u focus=%d",diagnosticId,frame,(unsigned long)GetTickCount(),enabled,intervalReport.count,intervalReport.meanMs,intervalReport.p50Ms,intervalReport.p95Ms,intervalReport.maxMs,1000.0/intervalReport.meanMs,unsigned(frameEffects.gi),unsigned(frameEffects.shadows),unsigned(frameEffects.fog),int(intervalFocus));intervalFocus=true;}
         if(diagnostics()){gpuProfile->poll();if(gpuSceneProfile)gpuSceneProfile->poll();}
         if(materialProfile)materialProfile->poll();if(world)world->pollMaterialProfile();
@@ -2705,7 +2712,13 @@ public:
         bool retry=k10&&!key10&&!enabled;
         if(k10&&!key10){flushFrameIntervals("master-change",frameEnabled,frameEffects);enabled=!enabled;frameIntervals.reset();frameCost.reset();stallFrames.reset();mirrorResources.queryProfile={};logf("Effects %s tick=%lu device=%llu rendererFrame=%u monotonicNs=%llu",enabled?"ON":"OFF",(unsigned long)GetTickCount(),(unsigned long long)diagnosticId,frame,(unsigned long long)NorthlightStream::nowNs());}
         bool k12=focus&&modifiers&&(GetAsyncKeyState(VK_F12)&0x8000);
-        if(k12&&!key12){worldDebug=(worldDebug+1)%4;logf("World debug %d tick=%lu (0 normal,1 shadows,2 GI,3 volume)",worldDebug,(unsigned long)GetTickCount());}
+        if(k12&&!key12){
+            if(GetAsyncKeyState(VK_MENU)&0x8000){
+                const char* reason=!enabled?"effects-off":worldDebug?"debug-view":!world?"renderer-unavailable":nullptr;
+                const bool accepted=!reason&&world->requestNormalGpuDiagnosticCapture();
+                logf("WORLD normal GPU capture request rendererFrame=%u accepted=%u reason=%s",frame,unsigned(accepted),reason?reason:accepted?"queued":"budget-or-pending");
+            }else{worldDebug=(worldDebug+1)%4;logf("World debug %d tick=%lu (0 normal,1 shadows,2 GI,3 volume)",worldDebug,(unsigned long)GetTickCount());}
+        }
         key12=k12;key10=k10;
         uiFallbackEndFrame();
         if(frame==1||(frame%600==0&&diagnostics()))logf("frame=%u applied=%u terrainShaders=%u uiShaders=%u projectionRejects=%u terrainThisFrame=%d depth=%d draws=%u missingVS=%u terrainDraws=%u terrainShadowDraws=%u viewportRejects=%u depthRejects=%u uiDraws=%u uiAfterTerrain=%u uiFallback=%u uiFallbackState=%c",frame,appliedFrames,matchedTerrain,matchedUI,projectionRejects,terrain,captured,drawCalls,missingVS,terrainDraws,terrainShadowDraws,viewportRejects,depthRejects,uiDraws,uiAfterTerrain,uiFallbackBoundaries,uiFallback.disarmed()?'d':uiFallback.armed()?'a':'l');
@@ -3071,6 +3084,14 @@ public:
         options.frameSkip=frameSkip; /* 0.3.200 (frame skip): StreamFrameSkip, read with CommandStream */
         options.occlusionLocal=occlusionLocal; /* StreamOcclusionLocal, read with CommandStream */
         options.capture=&NorthlightStream::capture;
+#ifndef NORTHLIGHT_REPLAY_STAND
+        if(diagnostics()){
+            const auto& range=NorthlightStream::codeRange();
+            logf("CSTREAM snapshot code-bypass lo=%p hi=%p cameraGlobal=%u mapGlobal=%u skyGlobal=%u weatherGlobal=%u",
+                reinterpret_cast<void*>(range.lo),reinterpret_cast<void*>(range.hi),unsigned(range.contains(0xb7436c)),
+                unsigned(range.contains(0xce06d0)),unsigned(range.contains(0xd38b00)),unsigned(range.contains(0xcd7544)));
+        }
+#endif
         options.threadStart=[target]{target->adoptOwnerThread();};
         options.log=[](const char* line){logf("%s",line);};
         options.queryCaller=[](std::uint64_t frame,void* query,void* caller){
@@ -3087,6 +3108,9 @@ public:
         const bool exclusiveOwner=target->setExclusiveOwner(true); /* before the replay thread exists: its calls take the cheap owner entry; a foreign call stays safe */
         try{stream=NorthlightStream::StreamDevice::make(device,this,pp,std::move(options),&reason);}catch(...){reason="exception";}
         if(!stream){NorthlightStream::streamActive.store(false,std::memory_order_relaxed);NorthlightReplayCopies::enabled.store(false,std::memory_order_relaxed);target->setExclusiveOwner(false);target->adoptOwnerThread(); /* the gate owner is this thread again (a replay thread that ran has been joined) */
+#ifdef NORTHLIGHT_REPLAY_STAND
+            if(auto* context=NorthlightStream::StandInputs::currentContext())context->reject();
+#endif
             logf("CSTREAM disabled reason=%s",reason);return device;}
         target->streamStats=&stream->streamCore().q.stats; /* task 45: read-only (relaxed loads) by the CPU budget */
         target->limitGpuLatency=stream->framesAhead()>=2; /* 0.3.200 (pipeline): see Device::limitGpuLatency */
@@ -3094,6 +3118,14 @@ public:
         return stream;
     }
     HRESULT STDMETHODCALLTYPE CreateDevice(UINT adapter,D3DDEVTYPE type,HWND window,DWORD flags,D3DPRESENT_PARAMETERS* pp,IDirect3DDevice9** out) override {
+#ifdef NORTHLIGHT_REPLAY_STAND
+        if(!NorthlightStandApi::beforeApi()){
+            if(out)*out=nullptr;
+            if(NorthlightStandApi::state().inputs)NorthlightStandApi::state().inputs->reject();
+            logf("NORTHLIGHT STAND REPLAY BUILD: device creation requires the admitted import owner; refused");
+            return D3DERR_INVALIDCALL;
+        }
+#endif
         if(selectedBackend!=NorthlightBackend::Kind::Legacy){
             D3DDISPLAYMODE mode={};D3DCAPS9 caps={};D3DADAPTER_IDENTIFIER9 id={};
             real->GetAdapterIdentifier(adapter,0,&id);
