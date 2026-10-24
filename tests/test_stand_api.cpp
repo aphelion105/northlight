@@ -11,6 +11,11 @@ using Open=int(__cdecl*)(const void*,unsigned);
 using Snapshot=int(__cdecl*)(const void*,unsigned,std::uint64_t,unsigned);
 using Status=int(__cdecl*)(std::uint64_t*,unsigned);
 struct Api {Open open;Snapshot snapshot;Status status;};
+template<class T> static T function(HMODULE module,const char* name){
+    const FARPROC address=GetProcAddress(module,name);assert(address);
+    static_assert(sizeof(T)==sizeof address,"Win32 function pointer representation");
+    T result;std::memcpy(&result,&address,sizeof result);return result;
+}
 struct ThreadInput {Api api;const std::vector<unsigned char>* packet;};
 static DWORD WINAPI otherThread(void* argument){
     const auto& input=*static_cast<ThreadInput*>(argument);std::uint64_t status[8]{};
@@ -21,11 +26,10 @@ int main(int argc,char** argv){
     assert(argc==4);
     const std::string mode=argv[3];
     const HMODULE module=LoadLibraryA(argv[1]);assert(module);
-    const Api api{reinterpret_cast<Open>(GetProcAddress(module,"NorthlightStandOpen")),
-                  reinterpret_cast<Snapshot>(GetProcAddress(module,"NorthlightStandSnapshot")),
-                  reinterpret_cast<Status>(GetProcAddress(module,"NorthlightStandStatus"))};
-    const auto create=reinterpret_cast<void*(WINAPI*)(unsigned)>(GetProcAddress(module,"Direct3DCreate9"));
-    const auto createEx=reinterpret_cast<HRESULT(WINAPI*)(unsigned,void**)>(GetProcAddress(module,"Direct3DCreate9Ex"));
+    const Api api{function<Open>(module,"NorthlightStandOpen"),function<Snapshot>(module,"NorthlightStandSnapshot"),
+                  function<Status>(module,"NorthlightStandStatus")};
+    const auto create=function<void*(WINAPI*)(unsigned)>(module,"Direct3DCreate9");
+    const auto createEx=function<HRESULT(WINAPI*)(unsigned,void**)>(module,"Direct3DCreate9Ex");
     assert(api.open&&api.snapshot&&api.status&&create&&createEx);
     std::ifstream input(argv[2],std::ios::binary);assert(input);
     const std::vector<unsigned char> image{std::istreambuf_iterator<char>(input),{}};

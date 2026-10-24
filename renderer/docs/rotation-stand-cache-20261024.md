@@ -99,8 +99,35 @@ preprocessor directive inserted between the normal function signature and
 body; the stand definition is now separately conditional, preserving the
 normal signature/body verbatim. The unchanged existing check then passes.
 The failed attempt is retained. Layout and the 316-entry discovery list pass
-without executing discovery's tests. Build and C-export host records follow
-the source freeze. No full test suite, old 69-test selection, game execution,
+without executing discovery's tests.
+
+The final x86 host loads the actual dedicated DLL and passes six isolated
+C-export scenarios: valid import/update, factory before image, factory before
+snapshot, wrong thread, corrupt archive and repeated draw order. No successful
+graphics factory or device call occurs. The imported WorldContext CPU scenario
+also passes O2/O0 against actual local signature bytes and authored runtime
+values. The first C-export fixture compile failed on direct FARPROC casts under
+`-Werror`; typed Win32 pointer lookup now copies the checked representation
+without disabling warnings or changing any assertion. That failure is retained.
+
+Both DLL variants build from renderer source commit
+`91cfd0b91751878237e582d35721d108dd16fb93`; BUILD identity is
+`61cdf0213da8bb1b028e41dc2bbdc703d8e2bc972771f3e9f7170fe4323c3932`.
+Production inputs remain unchanged through each build. Two existing warnings
+remain. Exact PE/PDB GUID and age match for both artifacts. Release packaging
+accepts the normal DLL and rejects the dedicated stand DLL.
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| Normal `frd9.dll` | 5,751,808 | `0b318380f62133e1f2cf892742b6a5067ff755a6574d6616c2ff9dd0e11b6360` |
+| Stand `frd9-stand-replay.dll` | 5,752,320 | `9d65f1f126500de7e1d720cbed57c6301e83a8a1477a8dcfee8332a3d7da82b3` |
+
+Private records are `native-chain/changed-path-1`,
+`native-chain/snapshot-wiring-retry-1`,
+`native-chain/final-hosts-retry-1`, `cache-build-normal` and
+`cache-build-stand`. Protected installed inputs still match the original
+hashes. The later fixture/report commit does not change renderer build inputs.
+No full test suite, old 69-test selection, game execution,
 optimizer modification or publication is part of this slice. Installed DLLs,
 personal settings and MPQs remain untouched.
 
