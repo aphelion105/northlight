@@ -7,7 +7,8 @@ namespace retrace { class Retracer; }
 
 namespace NorthlightNativeRetraceBridge {
 constexpr std::size_t HeaderBytes=256,RecordBytes=80;
-constexpr std::uint32_t Version=1,AboveNorthlight=1,AliasesRequired=2;
+constexpr std::uint32_t Version=1,AboveNorthlight=1,AliasesRequired=2,AuthoredTransport=4;
+constexpr unsigned MaxAliases=10;
 constexpr std::uint32_t MaxRecords=20000,MaxPathBytes=4096,MaxSessionBytes=64;
 constexpr std::uint64_t MaxPeBytes=64ull<<20,MaxPacketBytes=256ull<<20;
 // LE header offsets. No native structs, padding, client pointers or byte swaps

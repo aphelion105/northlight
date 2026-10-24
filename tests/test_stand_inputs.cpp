@@ -37,10 +37,15 @@ int main(int argc,char** argv){
         assert(!NorthlightWorldContext::readSelf(0x18020000,&host,4));
         assert(counters.recordedFailures==2&&session.valid());
         StandInputs::Scope nested(session);assert(!nested.entered()&&StandInputs::active==&session);
+        // This reader-only unit has no StreamDevice; no nonzero alias is admitted.
+        StandInputs::textureAliasGeneration=[](std::uintptr_t,std::uint64_t&){return false;};
+        assert(session.bindAliases(nullptr,0,100,2));
         GameSnapshot queued;
-        {StandInputs::CaptureScope admission(2,100);assert(admission.entered());ScopedRecording recording(queued);
-            assert(NorthlightWorldContext::readMapAndCamera(map,camera)&&camera[0]==10);
-            assert(!NorthlightWorldContext::readSelf(0x18020000,&host,4));}
+        {StandInputs::CaptureScope admission(2,100);assert(admission.entered());
+            {ScopedRecording recording(queued);
+                assert(NorthlightWorldContext::readMapAndCamera(map,camera)&&camera[0]==10);
+                assert(!NorthlightWorldContext::readSelf(0x18020000,&host,4));queued.triggerKind=2;queued.triggerDraw=100;}
+            assert(admission.commit(queued));}
         assert(queued.keys()==5&&queued.copies()==5&&queued.usable());
         const auto pin=StandInputs::shareForPlayback();assert(pin);
         fill(snapshot,101,11);assert(session.bind(snapshot,101,2));
@@ -58,6 +63,7 @@ int main(int argc,char** argv){
         assert(NorthlightWorldContext::readMapAndCamera(map,camera)&&camera[0]==11);
     }
     assert(!StandInputs::active&&!NorthlightWorldContext::readSelf(0xb7436c,&host,4));
+    StandInputs::textureAliasGeneration=nullptr;
     {StandInputs::Scope again(session);assert(again.entered());}
     StandInputs::Session replacement(bytes.data(),bytes.size());StandInputs::Scope refused(replacement);assert(!refused.entered());
     StandInputs::Session wrong(bytes.data(),bytes.size());assert(!wrong.bind(snapshot,102,2)&&!wrong.valid());

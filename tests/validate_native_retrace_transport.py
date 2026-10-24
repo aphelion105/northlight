@@ -40,6 +40,8 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--cwd', type=Path)
     parser.add_argument('--dispatch-negatives', action='store_true')
+    parser.add_argument('--allow-authored-transport', action='store_true')
+    parser.add_argument('--alias-fixture', type=Path)
     args = parser.parse_args()
     host, plan_path, trace_path = (p.resolve() for p in (args.host, args.plan, args.trace))
     if os.name != 'nt' or host.name.lower() != 'northlight-native-retrace.exe':
@@ -51,8 +53,10 @@ def main():
     if len(data) < 256 or data[:8] != b'NLJOIN1\0' or struct.unpack_from('<II', data, 8) != (1, 256):
         raise ValueError('A valid parent-authored NLJOIN1 fixture is required')
     count, flags, session_n, dll_n, trace_n, pe_n = struct.unpack_from('<6I', data, 24)
-    if not 1 <= count <= 20000 or flags != 1 or not 1 <= session_n <= 64:
+    if not 1 <= count <= 20000 or flags not in (1, 3, 5, 7) or not 1 <= session_n <= 64:
         raise ValueError('Positive fixture is not the supported above-Northlight transport')
+    if flags & 4 and not args.allow_authored_transport:
+        raise ValueError('Authored transport requires explicit --allow-authored-transport; it is never FPS eligible')
     pe_at = 256 + session_n + dll_n + trace_n
     records_at = pe_at + pe_n
     packets_at = records_at + count * 80
@@ -70,20 +74,27 @@ def main():
                 ('native_retrace_bridge.h', 'native_retrace_bridge.cpp', 'client_image.h',
                  'snapshot_archive.h', 'snapshot_store.h')]
     watched.append(root / 'scripts/prepare_native_retrace_host.py')
+    watched.append(root / 'tests/test_native_retrace_aliases.cpp')
+    alias_fixture = args.alias_fixture.resolve() if args.alias_fixture else None
+    if alias_fixture:
+        if alias_fixture.name.lower() != 'northlight-native-alias-fixture.exe':
+            raise ValueError('Use the distinctly named private CPU alias fixture')
+        watched.append(alias_fixture)
     watched += [root / 'src/sky' / name for name in ('celestial_disc_native.h', 'celestial_glare_native.h')]
     before = {str(p): digest(p) for p in watched}
     out.mkdir(parents=True)
     report = {'format': 1, 'inputs': before, 'cases': [], 'game_launched': False,
               'full_scene_replay_ready': False, 'fps_claimed': False,
-              'dispatch_negatives': args.dispatch_negatives}
+              'dispatch_negatives': args.dispatch_negatives, 'alias_cases': [],
+              'authored_transport': bool(flags & 4), 'fps_eligible': False}
     cases = []
 
-    def changed(name, reason, edit, payload=False, dispatch=False):
+    def changed(name, reason, edit, payload=False, dispatch=False, authored=None):
         value = bytearray(data)
         edit(value)
         if payload:
             value[224:256] = hashlib.sha256(value[256:]).digest()
-        cases.append((name, reason, bytes(value), dispatch))
+        cases.append((name, reason, bytes(value), dispatch, authored))
 
     def u32(value, at, number):
         struct.pack_into('<I', value, at, number)
@@ -95,8 +106,9 @@ def main():
     changed('version', 'plan-header', lambda b: u32(b, 8, 2))
     changed('header-size', 'plan-header', lambda b: u32(b, 12, 255))
     changed('total-size', 'plan-header', lambda b: u64(b, 16, len(b) + 1))
-    changed('unknown-flags', 'capture-layer-or-required-aliases', lambda b: u32(b, 28, 5))
-    changed('required-alias', 'capture-layer-or-required-aliases', lambda b: u32(b, 28, 3))
+    changed('unknown-flags', 'capture-layer-or-required-aliases', lambda b: u32(b, 28, flags | 8))
+    changed('alias-flag-mismatch', 'plan-alias-flag', lambda b: u32(b, 28, flags ^ 2))
+    changed('authored-without-allowance', 'authored-not-allowed', lambda b: u32(b, 28, flags | 4), authored=False)
     changed('record-cap', 'plan-capacity', lambda b: u32(b, 24, 20001))
     changed('payload-hash', 'plan-payload', lambda b: b.__setitem__(224, b[224] ^ 1))
     changed('session', 'plan-session', lambda b: b.__setitem__(256, ord(';')), payload=True)
@@ -154,21 +166,20 @@ def main():
         gx, variant = struct.unpack_from('<I', data, at + 0x24)[0], struct.unpack_from('<I', data, at + 0x3c)[0]
         if data[at + 8] & 4 and variant:
             gx = first_integer(variant + 0x18)
-        if gx and fields.get((gx + 0x38, 4)) and all(ok and struct.unpack_from('<I', data, at)[0] == 0
-                                                 for ok, at in fields[gx + 0x38, 4]):
+        if gx and fields.get((gx + 0x38, 4)) and all(ok for ok, _ in fields[gx + 0x38, 4]):
             terminal = gx + 0x38
             break
     if terminal is None:
-        raise ValueError('Parent-authored positive fixture needs a typed handle/fields/gx chain ending in DWORD0')
+        raise ValueError('Positive fixture needs a successful typed handle/fields/gx/terminal chain')
 
-    def nonzero_typed_identity(value):
+    def invalid_typed_identity(value):
         for ok, at in fields[terminal, 4]:
             if not ok:
                 raise ValueError('Terminal mutation cannot invent a successful read')
-            u32(value, at, 0x10000)
+            u32(value, at, 1)
         packet_crc(value)
 
-    changed('nonzero-typed-identity', 'packet-typed-identity', nonzero_typed_identity, payload=True)
+    changed('invalid-typed-identity', 'packet-typed-identity', invalid_typed_identity, payload=True)
     changed('truncated', 'plan-header', lambda b: b.pop())
     if args.dispatch_negatives:
         first_target = struct.unpack_from('<Q', data, records_at)[0]
@@ -212,12 +223,38 @@ def main():
         changed('wrong-final-count', 'incomplete-transport', lambda b: u64(b, 88, total_draw + 1), dispatch=True)
     try:
         report['processes_before'] = game_absent()
-        for name, reason, value, dispatch in cases:
+        if alias_fixture:
+            alias_modes = [('positive', None), ('missing', 'alias-missing-object'),
+                           ('wrong-kind', 'alias-object-kind'), ('dead', 'alias-dead-object'),
+                           ('canonical-dead', 'alias-canonical-lifetime'),
+                           ('mapping-changed', 'alias-replayed-generation'), ('reuse', 'object-reuse-or-kind'),
+                           ('dead-getter', 'object-reuse-or-kind'), ('stale-interface', 'object-reuse-or-kind'),
+                           ('index-blob', 'argument-u32'), ('index-kind', 'input-object-kind')]
+            for mode, refusal in alias_modes:
+                report['alias_before_' + mode] = game_absent()
+                command = [str(alias_fixture), mode]
+                result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+                (out / ('alias-' + mode + '.stdout')).write_text(result.stdout, encoding='utf-8')
+                (out / ('alias-' + mode + '.stderr')).write_text(result.stderr, encoding='utf-8')
+                passed = (result.returncode == 3 and ('NORTHLIGHT_NATIVE_BRIDGE refused reason=' + refusal) in result.stderr
+                          if refusal else result.returncode == 0 and 'NORTHLIGHT_NATIVE_ALIAS_FIXTURE PASS' in result.stdout)
+                passed = passed and 'warning:' not in result.stderr.lower()
+                report['alias_cases'].append({'mode': mode, 'command': command, 'exit_code': result.returncode,
+                                              'expected_refusal': refusal, 'passed': passed})
+                report['alias_after_' + mode] = game_absent()
+                if not passed:
+                    raise AssertionError(f'Alias CPU fixture {mode} failed; evidence preserved')
+                if any(digest(Path(p)) != sha for p, sha in before.items()):
+                    raise AssertionError('Frozen source/input changed during alias validation')
+        for name, reason, value, dispatch, authored in cases:
             report['process_before_' + name] = game_absent()
             fixture = out / (name + '.nlj')
             fixture.write_bytes(value)
             env = os.environ.copy()
             env['NORTHLIGHT_RETRACE_PLAN'] = str(fixture)
+            env.pop('NORTHLIGHT_RETRACE_ALLOW_AUTHORED', None)
+            if args.allow_authored_transport and authored is not False:
+                env['NORTHLIGHT_RETRACE_ALLOW_AUTHORED'] = '1'
             command = [str(host), '--headless', str(trace_path)]
             result = subprocess.run(command, cwd=str((args.cwd or host.parent).resolve()), env=env,
                                     capture_output=True, text=True, timeout=90)

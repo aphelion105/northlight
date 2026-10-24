@@ -52,21 +52,33 @@ bool hashFile(File& file,const unsigned char* expected){
     do{if(!ReadFile(file.h,block,sizeof block,&got,nullptr)||!hash.add(block,got))return false;}while(got);
     return hash.equals(expected)&&rewind(file);
 }
-bool nativeIdentities(NorthlightStream::GameSnapshot& snapshot){
-    bool missing=false,alias=false;snapshot.rewind();
+struct NativeIds {
+    std::array<std::uint32_t,MaxAliases> ids{};unsigned count=0;
+    bool invalid=false;
+    void add(std::uint32_t value){
+        if(!value)return;
+        if(!NorthlightCelestialDisc::clientPointer(value,4)){invalid=true;return;}
+        for(unsigned i=0;i<count;++i)if(ids[i]==value)return;
+        if(count==ids.size()){invalid=true;return;}
+        ids[count++]=value;
+    }
+};
+bool nativeIdentities(NorthlightStream::GameSnapshot& snapshot,NativeIds& identities){
+    bool missing=false;identities={};snapshot.rewind();
     struct Reads {
-        NorthlightStream::GameSnapshot* snapshot;bool* missing;bool* alias;
+        NorthlightStream::GameSnapshot* snapshot;bool* missing;NativeIds* identities;
         bool operator()(std::uintptr_t address,void* output,std::size_t bytes)const{
             switch(snapshot->serveRecorded(address,output,bytes)){
             case NorthlightStream::GameSnapshot::Serve::Ok:return true;
             case NorthlightStream::GameSnapshot::Serve::Failed:return false;
             default:*missing=true;return false;}
         }
-        void nativeIdentity(std::uint32_t value)const{if(value)*alias=true;}
-    } read{&snapshot,&missing,&alias};
+        void nativeIdentity(std::uint32_t value)const{identities->add(value);}
+        void invalidPointer()const{identities->invalid=true;}
+    } read{&snapshot,&missing,&identities};
     NorthlightCelestialDisc::readIdentities(read);
     NorthlightCelestialGlare::readIdentities(read);
-    snapshot.rewind();return !missing&&!alias;
+    snapshot.rewind();return !missing&&!identities.invalid;
 }
 bool path(const unsigned char* bytes,unsigned n,wchar_t* output){
     if(!n||n>MaxPathBytes||std::memchr(bytes,0,n))return false;
@@ -100,7 +112,7 @@ int named(trace::Call& c,const char* name){for(unsigned i=0;i<c.args.size();++i)
 trace::Value* output(trace::Call& c,unsigned i){auto* v=arg(c,i);const auto* a=v?v->toArray():nullptr;return a&&a->values.size()==1?a->values[0]:nullptr;}
 
 enum class Kind {Factory,Device,Swap,Texture,Cube,VolumeTexture,Surface,Volume,VertexBuffer,IndexBuffer,Declaration,VertexShader,PixelShader,StateBlock,Query};
-struct Object {Kind kind;std::uint32_t canonical;bool live=true,issued=false;unsigned queryType=0;};
+struct Object {Kind kind;std::uint32_t canonical;bool live=true,issued=false;unsigned queryType=0;void* replayed=nullptr;};
 struct Original {const char* name=nullptr;retrace::Callback callback=nullptr;};
 struct State {
     bool active=false,selected=false,installed=false,created=false,released=false,complete=false,markerPending=false;
@@ -110,6 +122,7 @@ struct State {
     std::uint64_t planBytes=0;unsigned peBytes=0,count=0;
     File planFile,traceFile,dllFile;
     std::unique_ptr<unsigned char[]> plan;
+    std::unique_ptr<NorthlightStream::GameSnapshot> aliasSnapshot;
     const unsigned char* pe=nullptr;const unsigned char* records=nullptr;const unsigned char* packets=nullptr;
     wchar_t dllPath[MaxPathBytes+1]{},tracePath[MaxPathBytes+1]{};
     char dllUtf8[MaxPathBytes+1]{},session[MaxSessionBytes+1]{};
@@ -118,6 +131,7 @@ struct State {
     HMODULE module=nullptr;
     int (__cdecl* open)(const void*,unsigned)=nullptr;
     int (__cdecl* snapshot)(const void*,unsigned,std::uint64_t,unsigned)=nullptr;
+    int (__cdecl* aliases)(const std::uint64_t*,unsigned,std::uint64_t,unsigned)=nullptr;
     int (__cdecl* status)(std::uint64_t*,unsigned)=nullptr;
     const unsigned char* record()const{return next<count?records+std::size_t(next)*RecordBytes:nullptr;}
     std::uint64_t h64(unsigned n)const{return u64(plan.get()+n);}
@@ -147,23 +161,60 @@ bool kindMatches(const char* name,Kind kind){
 }
 void inputObjects(trace::Call& c){
     static const char* names[]={"pTexture","pSourceTexture","pDestinationTexture","pSourceSurface","pDestinationSurface","pDestSurface","pRenderTarget","pNewZStencil","pStreamData","pIndexData","pShader","pDecl","pSurface","pSrcSurface","pDstSurface"};
-    for(const char* name:names){const int i=named(c,name);if(i<0)continue;const auto key=scalar(c,unsigned(i));if(!key)continue;const auto& value=object(c,unsigned(i));
+    for(const char* name:names){const int i=named(c,name);if(i<0)continue;
+        // UP carries copied index bytes; only SetIndices takes a COM object.
+        if(!std::strcmp(name,"pIndexData")&&!std::strcmp(c.name(),"IDirect3DDevice9::DrawIndexedPrimitiveUP"))continue;
+        const auto key=scalar(c,unsigned(i));if(!key)continue;const auto& value=object(c,unsigned(i));
         if((std::strstr(name,"Texture")&&(value.kind!=Kind::Texture&&value.kind!=Kind::Cube&&value.kind!=Kind::VolumeTexture))||
            ((std::strstr(name,"Surface")||!std::strcmp(name,"pRenderTarget")||!std::strcmp(name,"pNewZStencil"))&&value.kind!=Kind::Surface)||
            (!std::strcmp(name,"pStreamData")&&value.kind!=Kind::VertexBuffer)||(!std::strcmp(name,"pIndexData")&&value.kind!=Kind::IndexBuffer)||
            (!std::strcmp(name,"pDecl")&&value.kind!=Kind::Declaration)||(!std::strcmp(name,"pShader")&&value.kind!=(std::strstr(c.name(),"Pixel")?Kind::PixelShader:Kind::VertexShader)))reject("input-object-kind",&c);
     }
 }
-void observeObject(trace::Call& c,trace::Value* value,Kind kind,std::uint32_t canonical=0){
+void observeObject(trace::Call& c,trace::Value* value,Kind kind,std::uint32_t canonical=0,bool creation=false){
     std::uint64_t old=0;if(!number(value,old)||!old||old>UINT32_MAX)reject("object-result",&c);
     auto& s=state();const auto key=std::uint32_t(old);auto i=s.objects.find(key);
+    void* replayed=retrace::toObjPointer(c,*value);if(!replayed)reject("missing-replayed-object",&c);
     if(i!=s.objects.end()){
-        if(!i->second.live||i->second.kind!=kind||(canonical&&i->second.canonical!=canonical))reject("object-reuse-or-kind",&c);
+        if(creation&&!i->second.live){
+            if(canonical&&canonical!=key)reject("object-reuse-or-kind",&c);
+            // A source Create after final Release starts a new lifetime. Only
+            // this slot is replaced; the previous interface aliases stay dead.
+            i->second=Object{kind,key,true,false,0,replayed};return;
+        }
+        if(creation||!i->second.live||i->second.kind!=kind||i->second.replayed!=replayed||(canonical&&i->second.canonical!=canonical))reject("object-reuse-or-kind",&c);
     }else{
         if(s.objects.size()>=65536)reject("object-budget",&c);
-        s.objects.emplace(key,Object{kind,canonical?canonical:key,true,false,0});
+        s.objects.emplace(key,Object{kind,canonical?canonical:key,true,false,0,replayed});
     }
-    if(!retrace::toObjPointer(c,*value))reject("missing-replayed-object",&c);
+}
+std::uint32_t retireObject(Object& receiver){
+    const auto canonical=receiver.canonical;
+    for(auto& entry:state().objects)if(entry.second.canonical==canonical)entry.second.live=false;
+    return canonical;
+}
+bool texture(Kind kind){return kind==Kind::Texture||kind==Kind::Cube||kind==Kind::VolumeTexture;}
+void aliasPairs(trace::Call& c,const NativeIds& identities,std::uint64_t* pairs){
+    auto& s=state();
+    for(unsigned i=0;i<identities.count;++i){
+        const auto old=identities.ids[i];auto found=s.objects.find(old);
+        if(found==s.objects.end())reject("alias-missing-object",&c);
+        const auto& current=found->second;if(!current.live)reject("alias-dead-object",&c);
+        if(!texture(current.kind))reject("alias-object-kind",&c);
+        const auto owner=s.objects.find(current.canonical);
+        if(owner==s.objects.end()||!owner->second.live||!texture(owner->second.kind)||owner->second.kind!=current.kind)reject("alias-canonical-lifetime",&c);
+        trace::Pointer original(old);void* replayed=retrace::toObjPointer(c,original);
+        if(!replayed||replayed!=current.replayed)reject("alias-replayed-generation",&c);
+        pairs[2*i]=old;pairs[2*i+1]=reinterpret_cast<std::uintptr_t>(replayed);
+    }
+}
+void checkStatus(trace::Call& c,std::uint64_t expectedSnapshots);
+void attachAliases(trace::Call& c,const unsigned char* r){
+    auto& s=state();NorthlightStream::SnapshotArchive::Error error;NativeIds identities;
+    if(!NorthlightStream::SnapshotArchive::decode(s.packets+u64(r+Record::Offset),u32(r+Record::Bytes),*s.aliasSnapshot,error)||!nativeIdentities(*s.aliasSnapshot,identities))reject("alias-packet",&c);
+    std::uint64_t pairs[MaxAliases*2]{};aliasPairs(c,identities,pairs);
+    if(!s.aliases(identities.count?pairs:nullptr,identities.count,u64(r+Record::Draw),u32(r+Record::Trigger)))reject("alias-admission",&c);
+    checkStatus(c,s.next+1);
 }
 void checkStatus(trace::Call& c,std::uint64_t expectedSnapshots){
     auto& s=state();std::uint64_t values[8]{};
@@ -182,8 +233,8 @@ void factory(trace::Call& c){
     s.module=LoadLibraryExW(s.dllPath,nullptr,LOAD_WITH_ALTERED_SEARCH_PATH);if(!s.module)reject("stand-load",&c);
     wchar_t actual[MaxPathBytes+1];const DWORD n=GetModuleFileNameW(s.module,actual,MaxPathBytes+1);File moduleFile;
     if(!n||n>MaxPathBytes||!moduleFile.open(actual)||!sameFile(moduleFile,s.dllFile))reject("loaded-stand-identity",&c);
-    s.open=procedure<decltype(s.open)>(s.module,"NorthlightStandOpen");s.snapshot=procedure<decltype(s.snapshot)>(s.module,"NorthlightStandSnapshot");s.status=procedure<decltype(s.status)>(s.module,"NorthlightStandStatus");
-    if(!s.open||!s.snapshot||!s.status||!s.open(s.pe,s.peBytes))reject("stand-open",&c);
+    s.open=procedure<decltype(s.open)>(s.module,"NorthlightStandOpen");s.snapshot=procedure<decltype(s.snapshot)>(s.module,"NorthlightStandSnapshot");s.status=procedure<decltype(s.status)>(s.module,"NorthlightStandStatus");s.aliases=procedure<decltype(s.aliases)>(s.module,"NorthlightStandAliases");
+    if(!s.open||!s.snapshot||!s.status||!s.aliases||!s.open(s.pe,s.peBytes))reject("stand-open",&c);
     bind(c,s.record());
     g_szD3D9DllName=s.dllUtf8;g_hD3D9Module=s.module;
 }
@@ -205,6 +256,7 @@ void marker(trace::Call& c){
     for(int i=0;i<=n;++i)if(text.wide[i]!=wchar_t(static_cast<unsigned char>(expected[i])))reject("marker-contents",&c);
     if(u64(r+Record::Draw)!=s.draws+1||u64(r+Record::Frame)!=s.presents||u32(r+Record::Epoch)!=s.resets)reject("marker-domain",&c);
     if(s.next)bind(c,r);else checkStatus(c,1); // First packet was admitted before the factory.
+    attachAliases(c,r);
     s.markerPending=true;
 }
 void query(trace::Call& c){
@@ -240,7 +292,8 @@ void outputs(trace::Call& c,Object* receiver){
         if(!std::strcmp(method,"GetTexture")){
             const auto it=state().objects.find(std::uint32_t(key));if(it==state().objects.end()||!it->second.live||(it->second.kind!=Kind::Texture&&it->second.kind!=Kind::Cube&&it->second.kind!=Kind::VolumeTexture))reject("texture-alias",&c);kind=it->second.kind;
         }
-        observeObject(c,value,kind);
+        const bool creation=!std::strncmp(method,"Create",6)||!std::strcmp(method,"EndStateBlock");
+        observeObject(c,value,kind,0,creation);
         if(kind==Kind::Query&&!std::strcmp(method,"CreateQuery")){
             auto& q=state().objects.find(std::uint32_t(key))->second;q.queryType=scalar(c,1);
             if(q.queryType!=D3DQUERYTYPE_EVENT&&q.queryType!=D3DQUERYTYPE_OCCLUSION)reject("query-create-type",&c);
@@ -271,8 +324,8 @@ void dispatch(trace::Call& c){
     }
     if(!std::strcmp(name,"D3DPERF_SetMarker"))marker(c);
     if(getData)query(c);else original(c);
-    if(first)observeObject(c,c.ret,Kind::Factory);
-    if(create){observeObject(c,output(c,6),Kind::Device);s.created=true;}
+    if(first)observeObject(c,c.ret,Kind::Factory,0,true);
+    if(create){observeObject(c,output(c,6),Kind::Device,0,true);s.created=true;}
     if(draw){const auto* r=s.record();if(r&&u64(r+Record::Draw)==s.draws){s.markerPending=false;++s.next;}checkStatus(c,s.next?s.next:1);}
     if(present)++s.presents;
     if(reset){++s.resets;for(auto& entry:s.objects)entry.second.issued=false;}
@@ -283,7 +336,7 @@ void dispatch(trace::Call& c){
     outputs(c,receiver);
     const char* method=std::strstr(name,"::");
     if(receiver&&method&&!std::strcmp(method+2,"Release")&&returned(c)==0){
-        const auto canonical=receiver->canonical;for(auto& entry:s.objects)if(entry.second.canonical==canonical)entry.second.live=false;
+        const auto canonical=retireObject(*receiver);
         if(canonical==s.h64(Header::Device)){if(c.no!=s.h64(Header::FinalRelease))reject("device-release-call",&c);s.released=true;checkStatus(c,s.next);}
     }
 }
@@ -298,7 +351,9 @@ bool sourceTrace(const char* source,bool filteredOrRepeated){
     if(s.planBytes<HeaderBytes||s.planBytes>maximum)return refused("plan-size");
     s.plan.reset(new(std::nothrow) unsigned char[std::size_t(s.planBytes)]);if(!s.plan||!readAll(s.planFile,s.plan.get(),std::size_t(s.planBytes)))return refused("plan-read");
     const auto* h=s.plan.get();if(std::memcmp(h,"NLJOIN1\0",8)||u32(h+8)!=Version||u32(h+12)!=HeaderBytes||u64(h+Header::Total)!=s.planBytes)return refused("plan-header");
-    if(u32(h+Header::Flags)!=AboveNorthlight)return refused("capture-layer-or-required-aliases");
+    const auto flags=u32(h+Header::Flags);
+    if(!(flags&AboveNorthlight)||(flags&~(AboveNorthlight|AliasesRequired|AuthoredTransport)))return refused("capture-layer-or-required-aliases");
+    if(flags&AuthoredTransport){wchar_t allowed[3]{};if(GetEnvironmentVariableW(L"NORTHLIGHT_RETRACE_ALLOW_AUTHORED",allowed,3)!=1||allowed[0]!=L'1')return refused("authored-not-allowed");}
     s.count=u32(h+Header::Records);s.peBytes=u32(h+Header::PeBytes);const auto sessionBytes=u32(h+Header::SessionBytes),dllBytes=u32(h+Header::DllPathBytes),traceBytes=u32(h+Header::TracePathBytes);
     const auto packetBytes=u64(h+Header::PacketBytes);
     if(!s.count||s.count>MaxRecords||!sessionBytes||sessionBytes>MaxSessionBytes||!dllBytes||dllBytes>MaxPathBytes||!traceBytes||traceBytes>MaxPathBytes||s.peBytes<64||s.peBytes>MaxPeBytes||packetBytes>MaxPacketBytes||!s.h32(Header::OsThread))return refused("plan-capacity");
@@ -316,17 +371,20 @@ bool sourceTrace(const char* source,bool filteredOrRepeated){
     wchar_t actualPath[MaxPathBytes+1];File selected;
     if(!source||!path(reinterpret_cast<const unsigned char*>(source),unsigned(std::strlen(source)),actualPath)||!selected.open(actualPath)||!s.traceFile.open(s.tracePath)||!sameFile(selected,s.traceFile)||!hashFile(s.traceFile,h+Header::TraceHash))return refused("selected-trace");
     if(!s.dllFile.open(s.dllPath)||!hashFile(s.dllFile,h+Header::DllHash))return refused("stand-dll-hash");
-    auto scratch=std::unique_ptr<NorthlightStream::GameSnapshot>(new(std::nothrow) NorthlightStream::GameSnapshot);if(!scratch)return refused("packet-scratch");
+    s.aliasSnapshot.reset(new(std::nothrow) NorthlightStream::GameSnapshot);if(!s.aliasSnapshot)return refused("packet-scratch");
+    auto& scratch=s.aliasSnapshot;bool aliasesRequired=false;
     std::uint64_t offset=0,lastDraw=0,lastTarget=0;
     for(unsigned i=0;i<s.count;++i){const auto* r=s.records+std::size_t(i)*RecordBytes;const auto bytes=u32(r+Record::Bytes);const auto target=u64(r+Record::TargetCall),markerCall=u64(r+Record::MarkerCall),draw=u64(r+Record::Draw);
         if(target>UINT32_MAX||markerCall>UINT32_MAX||markerCall<=target||target<=s.h64(Header::CreateCall)||(i&&target<=lastTarget)||draw<=lastDraw||(!i&&draw!=1)||draw>s.h64(Header::Draws)||target>=s.h64(Header::FinalRelease)||u64(r+Record::Device)!=s.h64(Header::Device)||u32(r+Record::TraceThread)!=s.h32(Header::TraceThread)||u32(r+Record::OsThread)!=s.h32(Header::OsThread)||u32(r+Record::Epoch)>s.h64(Header::Resets)||u64(r+Record::Frame)>s.h64(Header::Presents)||u32(r+Record::Trigger)<1||u32(r+Record::Trigger)>3||u32(r+Record::Api)<1||u32(r+Record::Api)>4||u32(r+Record::Reserved)||u64(r+Record::Offset)!=offset||bytes>packetBytes-offset||bytes<44)return refused("packet-record");
         NorthlightStream::SnapshotArchive::Error error;
         if(!NorthlightStream::SnapshotArchive::decode(s.packets+offset,bytes,*scratch,error)||scratch->triggerDraw!=draw||scratch->triggerKind!=u32(r+Record::Trigger)||u32(s.packets+offset+bytes-4)!=u32(r+Record::Crc))return refused("packet-archive");
-        if(!nativeIdentities(*scratch))return refused("packet-typed-identity");
+        NativeIds identities;if(!nativeIdentities(*scratch,identities))return refused("packet-typed-identity");
+        aliasesRequired=aliasesRequired||identities.count!=0;
         offset+=bytes;lastDraw=draw;lastTarget=target;
     }
     if(offset!=packetBytes)return refused("packet-tail");
-    s.active=true;std::fprintf(stderr,"NORTHLIGHT_NATIVE_BRIDGE selected records=%u aliases_complete=0 full_scene_ready=0\n",s.count);return true;
+    if(bool(flags&AliasesRequired)!=aliasesRequired)return refused("plan-alias-flag");
+    s.active=true;std::fprintf(stderr,"NORTHLIGHT_NATIVE_BRIDGE selected records=%u aliases_required=%u authored_transport=%u fps_eligible=0 aliases_complete=0 full_scene_ready=0\n",s.count,unsigned(aliasesRequired),unsigned(bool(flags&AuthoredTransport)));return true;
 }
 void install(retrace::Retracer& retracer){
     auto& s=state();if(!s.active)return;if(s.installed)reject("callback-reinstall");s.installed=true;
@@ -339,6 +397,6 @@ void finish(){
     auto& s=state();if(!s.active)return;
     if(s.complete||!s.factoryStarted||!s.created||!s.released||!s.lastStatusValid||s.markerPending||s.next!=s.count||s.draws!=s.h64(Header::Draws)||s.presents!=s.h64(Header::Presents)||s.resets!=s.h64(Header::Resets))reject("incomplete-transport");
     if(!hashFile(s.traceFile,s.plan.get()+Header::TraceHash)||!hashFile(s.dllFile,s.plan.get()+Header::DllHash))reject("input-drift");
-    s.complete=true;std::fprintf(stderr,"NORTHLIGHT_NATIVE_BRIDGE PASS records=%u draws=%llu presents=%llu resets=%llu queryCalls=%llu queryPolls=%llu queryEarlyReady=%llu aliases_complete=0 full_scene_ready=0\n",s.next,(unsigned long long)s.draws,(unsigned long long)s.presents,(unsigned long long)s.resets,(unsigned long long)s.queryCalls,(unsigned long long)s.queryPolls,(unsigned long long)s.queryEarlyReady);
+    s.complete=true;std::fprintf(stderr,"NORTHLIGHT_NATIVE_BRIDGE PASS records=%u draws=%llu presents=%llu resets=%llu queryCalls=%llu queryPolls=%llu queryEarlyReady=%llu authored_transport=%u fps_eligible=0 aliases_complete=0 full_scene_ready=0\n",s.next,(unsigned long long)s.draws,(unsigned long long)s.presents,(unsigned long long)s.resets,(unsigned long long)s.queryCalls,(unsigned long long)s.queryPolls,(unsigned long long)s.queryEarlyReady,unsigned(bool(s.h32(Header::Flags)&AuthoredTransport)));
 }
 }

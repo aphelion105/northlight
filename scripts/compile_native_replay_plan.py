@@ -123,14 +123,14 @@ def packet_reads(data):
     return grouped
 
 
-def admit_no_resource_aliases(data):
-    """Follow only typed native texture-identity reads, preserving per-key FIFO.
+def native_resource_identities(data):
+    """Collect only typed native texture-identity reads, preserving per-key FIFO.
 
     Known failed reads retain their captured meaning. Missing reads are not
-    failures we may invent. Nonzero COM identities require a future typed,
-    lifetime-aware alias API and therefore cannot enter the current host.
+    failures we may invent. The host must resolve every collected identity
+    through its actual trace object table before dispatching the matching Draw.
     """
-    grouped, cursor = packet_reads(data), defaultdict(int)
+    grouped, cursor, identities = packet_reads(data), defaultdict(int), set()
 
     def read(address, size):
         key = address, size
@@ -149,26 +149,32 @@ def admit_no_resource_aliases(data):
 
     def identity(address):
         handle = integer(address)
-        if handle is None or handle == 0 or not valid(handle, 0x60):
+        if handle is None or handle == 0:
             return handle == 0
+        if not valid(handle, 0x60):
+            raise ValueError('Invalid typed texture handle pointer')
         fields = read(handle + 0x20, 0x40)
         if fields is None:
             return False
         gx, variant = struct.unpack_from('<I', fields, 0x24)[0], struct.unpack_from('<I', fields, 0x3c)[0]
         if fields[8] & 4 and variant:
             if not valid(variant, 0x1c):
-                return False
+                raise ValueError('Invalid typed texture variant pointer')
             gx = integer(variant + 0x18)
             if gx is None:
                 return False
         if not gx:
             return True
         if not valid(gx, 0x3c):
-            return False
+            raise ValueError('Invalid typed texture GX pointer')
         opaque = integer(gx + 0x38)
         if opaque:
-            raise ValueError('Nonzero native texture identity needs a typed resource alias bridge')
-        return opaque == 0
+            if not valid(opaque, 4):
+                raise ValueError('Invalid typed native texture identity')
+            identities.add(opaque)
+            if len(identities) > 10:
+                raise ValueError('Typed resource identity capacity exceeded')
+        return opaque is not None
 
     for body in (0xd38e28, 0xd38e48, 0xd38e68):
         if identity(body + 0x10):
@@ -177,6 +183,13 @@ def admit_no_resource_aliases(data):
         link = integer(record + 0xa8)
         if link == expected and identity(record + 0x1c) and identity(record + 0x1c):
             integer(record + 0xa8)
+    return sorted(identities)
+
+
+def admit_no_resource_aliases(data):
+    """Compatibility guard for tests/hosts that deliberately admit no aliases."""
+    if native_resource_identities(data):
+        raise ValueError('Nonzero native texture identity needs a typed resource alias bridge')
 
 
 def snapshot_inputs(root):
@@ -201,7 +214,7 @@ def snapshot_inputs(root):
         raise ValueError('Journal session/header/count differs')
     if journal[-1] != {'writer_drained': True, 'accepted': count, 'retired': count, 'failures': 0, 'trace_join_validated': False}:
         raise ValueError('Journal was not cleanly drained')
-    packets, hashes = [], {str(root / 'native-capture-status.json'): digest(root / 'native-capture-status.json'), str(journal_path): digest(journal_path)}
+    packets, identities, hashes = [], [], {str(root / 'native-capture-status.json'): digest(root / 'native-capture-status.json'), str(journal_path): digest(journal_path)}
     physical, total = set(), 0
     for number, row in enumerate(journal[1:-1]):
         if row.get('record') != number or row.get('path') != f'{number:06d}.nlsnap' or row.get('frame_domain') != 'stream-producer':
@@ -217,12 +230,12 @@ def snapshot_inputs(root):
         if (metadata['draw_ordinal'] != row.get('draw_ordinal') or metadata['trigger_kind'] != row.get('trigger') or
                 len(data) != row.get('bytes') or struct.unpack_from('<I', data, len(data) - 4)[0] != row.get('archive_crc32')):
             raise ValueError('Archive/journal provenance differs')
-        admit_no_resource_aliases(data)
+        identities.append(native_resource_identities(data))
         total += len(data)
         if total > MAX_TOTAL:
             raise ValueError('Snapshot packet budget exceeded')
         hashes[str(path)] = metadata['sha256']; packets.append(data)
-    return session, journal[1:-1], packets, hashes
+    return session, journal[1:-1], packets, hashes, identities
 
 
 def join(rows, session, journal):
@@ -325,29 +338,47 @@ def compile_plan(args):
         raise ValueError('Output must be new; prior evidence is immutable')
     root, trace, client, dll = (p.resolve() for p in (args.snapshot_dir, args.trace, args.client, args.stand_dll))
     tools = tool_runtime(args.tool_root)
-    session, journal, packets, inputs = snapshot_inputs(root)
+    session, journal, packets, inputs, identities = snapshot_inputs(root)
     host_path = root / 'capture-host.json'; host = load_json(host_path)
     for path in (trace, client, dll):
         inputs[str(path)] = digest(path)
     inputs[str(host_path)] = digest(host_path); inputs.update(tools['files'])
     if host.get('session') != session or host.get('capture_layer') != 'above-northlight' or host.get('fps_eligible') is not False:
         raise ValueError('Capture host identity/session differs')
+    authored = host.get('authored_transport', False)
+    if type(authored) is not bool or authored != bool(getattr(args, 'allow_authored_transport', False)):
+        raise ValueError('Authored transport requires an explicit matching compiler opt-in')
     if (host.get('wrapper_sha256') != digest(Path(tools['root']) / 'lib/wrappers/d3d9.dll') or
-            host.get('client_sha256') != inputs[str(client)] or Path(host.get('trace_path', '')).resolve() != trace):
-        raise ValueError('Capture must identify the exact official outer wrapper, client and trace')
+            Path(host.get('trace_path', '')).resolve() != trace):
+        raise ValueError('Capture must identify the exact official outer wrapper and trace')
+    if authored:
+        producer = Path(host.get('producer_exe_path', '')).resolve()
+        if (not producer.is_file() or host.get('producer_exe_sha256') != digest(producer) or
+                host.get('client_sha256') != host.get('producer_exe_sha256') or
+                Path(host.get('client_path', '')).resolve() != producer or
+                host.get('imported_client_pe_sha256') != inputs[str(client)] or
+                Path(host.get('imported_client_pe_path', '')).resolve() != client):
+            raise ValueError('Authored producer and imported data-only PE identities differ')
+        pe32(producer); inputs[str(producer)] = digest(producer)
+    elif host.get('client_sha256') != inputs[str(client)] or Path(host.get('client_path', '')).resolve() != client:
+        raise ValueError('A real capture must identify the exact original client PE')
     if not 64 <= client.stat().st_size <= 64 << 20 or not 0 < trace.stat().st_size <= 16 << 30:
         raise ValueError('Client or trace size exceeds the bounded protocol')
     pe32(client); pe32(dll)
     dll_data = dll.read_bytes()
     if b'NORTHLIGHT STAND REPLAY BUILD:' not in dll_data:
         raise ValueError('A dedicated import-only stand DLL is required')
+    aliases_required = any(identities)
+    if aliases_required and b'NorthlightStandAliases\0' not in dll_data:
+        raise ValueError('The selected stand DLL has no typed alias admission capability')
     if any(Path(p) == output or Path(p).is_relative_to(output) for p in inputs) or output.is_relative_to(root):
         raise ValueError('Private output must not overlap capture/source inputs')
     output.mkdir(parents=True)
     command = [str(Path(tools['root']) / 'bin/apitrace.exe'), 'dump', '--color=never', '--thread-ids=true',
                '--multiline=false', str(trace)]
     report = {'format': 1, 'command': command, 'inputs': inputs, 'diagnostic': True, 'fps_eligible': False,
-              'scene_ready': False, 'typed_resource_aliases_supported': False, 'pass': False}
+              'scene_ready': False, 'authored_transport_only': authored, 'typed_resource_aliases_required': aliases_required,
+              'typed_resource_aliases_runtime_validated': False, 'record_resource_identities': identities, 'pass': False}
     try:
         env = os.environ.copy(); env['TEMP'] = env['TMP'] = str(output)
         code = dump_trace(command, output, env)
@@ -365,7 +396,8 @@ def compile_plan(args):
             offset += size
         payload = session.encode('ascii') + b''.join(paths) + client.read_bytes() + table + b''.join(packets)
         header = bytearray(HEADER_BYTES); header[:8] = b'NLJOIN1\0'
-        struct.pack_into('<IIQ6IQ8Q2I', header, 8, 1, HEADER_BYTES, HEADER_BYTES + len(payload), len(records), 1,
+        flags = 1 | (2 if aliases_required else 0) | (4 if authored else 0)
+        struct.pack_into('<IIQ6IQ8Q2I', header, 8, 1, HEADER_BYTES, HEADER_BYTES + len(payload), len(records), flags,
                          len(session), len(paths[0]), len(paths[1]), client.stat().st_size, offset,
                          summary['factory_call'], summary['create_call'], summary['factory'], summary['device'],
                          summary['draws'], summary['presents'], summary['resets'], summary['final_release'],
@@ -392,6 +424,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for option in ('trace', 'snapshot-dir', 'client', 'stand-dll', 'tool-root', 'output'):
         parser.add_argument('--' + option, type=Path, required=True)
+    parser.add_argument('--allow-authored-transport', action='store_true',
+                        help='Admit a truthfully labelled authored producer with a separate data-only client PE; never FPS acceptance')
     print(json.dumps(compile_plan(parser.parse_args()), indent=2))
 
 

@@ -23,6 +23,7 @@ PINS = {
     'retrace/CMakeLists.txt': '2fb980ce34df926dfcaef5fb7c07246c118f17b5a9a1c9c4ebd71b6e408c5a93',
     'retrace/retrace_main.cpp': '1fa455124180f60655ac90b3651d66d9a2b7c08fb18c736f31fb36ba9d2531e2',
     'retrace/retrace.cpp': '86ca0213673b72b9327e8e11f66e0504cc645d44c69c617c741901f8ab82eb1a',
+    'retrace/retrace_swizzle.cpp': '1d934eef634284e5699e2417e0a90a236e9214e86206bbdf0f8f3879eee7edd0',
     'retrace/retrace.hpp': 'dd61f54b18345397c041f1d0ae66339dc1aa252bd1314e642ee857b738b170d9',
     'lib/trace/trace_parser.cpp': '0464d9cb784e86aa0a7c46058950e58ab2eb9d9f9fe11c35e789d16f10e8d44d',
     'lib/trace/trace_model.hpp': '318de8a0afccbd4114427430680bf86fbd4fe3233616a7b1e300f14c9255cef7',
@@ -48,16 +49,24 @@ def replace_once(text, old, new):
 
 
 def identity_header(disc, glare):
-    """Reuse pure runtime readers and observe their terminal typed result only."""
+    """Reuse runtime reader math; observe terminals and rejected pointer shapes."""
     start = disc.index('inline bool clientPointer(')
     end = disc.index('class IdentityFrame {', start)
     body = disc[start:end]
     body = replace_once(body, '    if(result&&!clientPointer(result,4))return false;',
                         '    read.nativeIdentity(result);\n    if(result&&!clientPointer(result,4))return false;')
+    body = replace_once(body, '    if(!clientPointer(handle,0x60))return false;',
+                        '    if(!clientPointer(handle,0x60)){read.invalidPointer();return false;}')
+    body = replace_once(body, '        if(!clientPointer(variant,0x1c)||!read(std::uintptr_t(variant)+0x18,&gx,4))return false;',
+                        '        if(!clientPointer(variant,0x1c)){read.invalidPointer();return false;}\n'
+                        '        if(!read(std::uintptr_t(variant)+0x18,&gx,4))return false;')
+    body = replace_once(body, '    if(!clientPointer(gx,0x3c)||!read(std::uintptr_t(gx)+0x38,&result,4))return false;',
+                        '    if(!clientPointer(gx,0x3c)){read.invalidPointer();return false;}\n'
+                        '    if(!read(std::uintptr_t(gx)+0x38,&result,4))return false;')
     start = glare.index('template<class Read>inline NorthlightCelestialDisc::Identities readIdentities(')
     end = glare.index('// Only own a native glare', start)
     return ('#pragma once\n#include <cstddef>\n#include <cstdint>\n#include <cstring>\n'
-            '// Exact source-derived reader bodies; terminal identity observation only.\n'
+            '// Source-derived reader math; terminal and invalid-pointer observations only.\n'
             'namespace NorthlightCelestialDisc {\n' + body + '\n}\n'
             'namespace NorthlightCelestialGlare {\n' + glare[start:end] + '\n}\n')
 
@@ -73,6 +82,8 @@ def prepare(args):
             raise ValueError(f'Pinned upstream source differs: {path}')
     helpers = {ROOT / 'src/stream' / name: digest(ROOT / 'src/stream' / name) for name in HELPERS}
     inputs.update(helpers)
+    fixture = ROOT / 'tests/test_native_retrace_aliases.cpp'
+    inputs[fixture] = digest(fixture)
     sky = [ROOT / 'src/sky' / name for name in ('celestial_disc_native.h', 'celestial_glare_native.h')]
     inputs.update({p: digest(p) for p in sky})
     identities = identity_header(*(p.read_text(encoding='utf-8') for p in sky))
@@ -102,6 +113,12 @@ def prepare(args):
                          + EXCEPTION_OPTIONS +
                          '    target_compile_definitions(retrace_common PRIVATE NORTHLIGHT_NATIVE_RETRACE_BRIDGE=1)\n'
                          '    set_target_properties(d3dretrace PROPERTIES OUTPUT_NAME northlight-native-retrace)\n'
+                         '    add_executable(northlight-native-alias-fixture northlight/test_native_retrace_aliases.cpp retrace.cpp retrace_swizzle.cpp)\n'
+                         '    target_include_directories(northlight-native-alias-fixture PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/northlight")\n'
+                         '    target_compile_features(northlight-native-alias-fixture PRIVATE cxx_std_17)\n'
+                         '    target_link_libraries(northlight-native-alias-fixture common image getopt dxerr winmm psapi advapi32)\n'
+                         '    add_dependencies(northlight-native-alias-fixture version)\n'
+                         + EXCEPTION_OPTIONS.replace('northlight/native_retrace_bridge.cpp', 'northlight/test_native_retrace_aliases.cpp') +
                          '    install (TARGETS d3dretrace RUNTIME DESTINATION bin)')
     shutil.copytree(source, target, ignore=shutil.ignore_patterns('.git', '__pycache__'))
     for name, value in (('retrace/d3dretrace_main.cpp', host), ('retrace/retrace_main.cpp', common),
@@ -113,6 +130,9 @@ def prepare(args):
         shutil.copyfile(path, helper_target / path.name)
         if digest(helper_target / path.name) != helpers[path]:
             raise ValueError('Copied helper differs from its frozen source')
+    shutil.copyfile(fixture, helper_target / fixture.name)
+    if digest(helper_target / fixture.name) != inputs[fixture]:
+        raise ValueError('Copied alias fixture differs from its frozen source')
     (helper_target / 'native_retrace_identity.h').write_text(identities, encoding='utf-8', newline='\n')
     for path, expected in inputs.items():
         if digest(path) != expected:
@@ -130,6 +150,8 @@ def prepare(args):
                           ('retrace/d3dretrace_main.cpp', 'retrace/retrace_main.cpp', 'retrace/CMakeLists.txt')},
         'output_name': 'northlight-native-retrace.exe', 'plan_environment': 'NORTHLIGHT_RETRACE_PLAN',
         'generated_identity_header_sha256': digest(helper_target / 'native_retrace_identity.h'),
+        'alias_fixture_sha256': digest(helper_target / fixture.name),
+        'alias_fixture_target': 'northlight-native-alias-fixture',
         'built': False, 'executed': False, 'game_launched': False, 'vendor_modified': False,
         'aliases_complete': False, 'full_scene_replay_ready': False, 'fps_claimed': False,
         'planned_build': ['cmake', '--build', '<new-private-x86-build>', '--target', 'd3dretrace'],

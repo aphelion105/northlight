@@ -69,11 +69,17 @@ static wchar_t rootPath[MAX_PATH];
 // Game folder = directory of the host exe, resolved on first use (never in
 // DllMain: the macOS proxy is preloaded under the loader lock from dlls.txt).
 // backend() calls it first; every export reaches backend() before it logs.
+// The offline stand uses its own module directory: a retracer can virtualize
+// the executable name to the ORIGINAL client, including its installed folder.
 static void ensureRootPath(){
     static const bool resolved=[]{
-        wchar_t exe[MAX_PATH]={},self[MAX_PATH]={};
-        const DWORD n=GetModuleFileNameW(nullptr,exe,MAX_PATH),m=GetModuleFileNameW(selfModule,self,MAX_PATH);
+        wchar_t self[MAX_PATH]={};const DWORD m=GetModuleFileNameW(selfModule,self,MAX_PATH);
+#ifdef NORTHLIGHT_REPLAY_STAND
+        const std::wstring root=m&&m<MAX_PATH?NorthlightBackend::directory(self):L"";
+#else
+        wchar_t exe[MAX_PATH]={};const DWORD n=GetModuleFileNameW(nullptr,exe,MAX_PATH);
         const std::wstring root=NorthlightBackend::gameRoot(n&&n<MAX_PATH?exe:L"",m&&m<MAX_PATH?self:L"");
+#endif
         if(root.size()<MAX_PATH)wcscpy(rootPath,root.c_str());
         return true;
     }();
@@ -113,6 +119,10 @@ static LONGLONG logFrequency=0,logIntervalStart=0;
 // Lines written by the calling thread (RenderProfile: frames that logged are left out of FRAME cost).
 static thread_local unsigned long long threadLogLines=0;
 static void logf(const char* fmt, ...) {
+#ifdef NORTHLIGHT_REPLAY_STAND
+    ensureRootPath();
+    if(!rootPath[0]){std::fputs("NORTHLIGHT STAND REPLAY: module root unavailable; file logging refused\n",stderr);return;}
+#endif
     LARGE_INTEGER start={};const bool timed=QueryPerformanceCounter(&start)!=0;
     // Render and worker threads share the stream. Hold one lock over opening,
     // the entire line, flushing and counters; report after releasing this lock.
@@ -3161,7 +3171,9 @@ public:
             if(!ok||!intz||!resz||!floatRT||!sm3){
                 if(out)*out=nullptr;
                 logf("UNSUPPORTED BACKEND: required depth/shader/target features missing; no quality-reducing fallback");
+#ifndef NORTHLIGHT_REPLAY_STAND
                 MessageBoxW(window,L"This graphics driver does not expose the features required by the mod (INTZ, RESZ, SM3, floating-point targets). See northlight-renderer.log. Try the other backend or a supported physical GPU. Virtual GPUs may lack these features.",L"Northlight renderer: unsupported driver",MB_OK|MB_ICONERROR);
+#endif
                 return D3DERR_NOTAVAILABLE;
             }
         }
@@ -3311,6 +3323,11 @@ static std::string fileSha(const std::wstring& path){
 // Where this proxy sits and how the game reached it; the game-folder d3d9.dll
 // (WoWSilicon's DXVK on macOS) against the backend copy that is actually used.
 static void logProxyPlacement(Win32BackendSys& sys,const std::wstring& root,const NorthlightBackendLoader::Attempt& backendAttempt,bool loaded){
+#ifdef NORTHLIGHT_REPLAY_STAND
+    (void)backendAttempt;(void)loaded;
+    logf("PROXY module=%ls root=%ls (stand module directory)",sys.selfPath.c_str(),root.c_str());
+    return;
+#endif
     const auto where=NorthlightBackend::location(sys.selfPath,root);
     std::vector<unsigned char> dlls;const bool listed=sys.read(root+L"dlls.txt",dlls)&&NorthlightBackend::dllsListed(std::string(dlls.begin(),dlls.end()));
     logf("PROXY module=%ls root=%ls (host exe directory) location=%s dlls.txt entry mods/d3d9.dll=%u",sys.selfPath.c_str(),root.c_str(),NorthlightBackend::name(where),unsigned(listed));
@@ -3326,6 +3343,9 @@ static void logProxyPlacement(Win32BackendSys& sys,const std::wstring& root,cons
 static HMODULE backend() {
     static HMODULE cached=[]() -> HMODULE {
     ensureRootPath();
+#ifdef NORTHLIGHT_REPLAY_STAND
+    if(!rootPath[0])return nullptr; // Never consult the original game folder or current directory.
+#endif
     wchar_t config[MAX_PATH]={},value[64]={},custom[MAX_PATH]={};
     swprintf(config,MAX_PATH,L"%lsnorthlight-renderer.ini",rootPath);
     DWORD attrs=GetFileAttributesW(config),configError=GetLastError();
@@ -3366,9 +3386,11 @@ static HMODULE backend() {
         logf("DXVK compatibility defaults not applied: Backend=%s keeps the current runtime rules (no vendor 1002, no cachedDynamicBuffers/cachedWriteOnlyBuffers override)",NorthlightBackend::name(configured));
     logProxyPlacement(sys,root,last,module!=nullptr);
     logf("LOG previous session log northlight-renderer.prev.log rotation=%s error=%lu",NorthlightLogRotation::name(logRotation),(unsigned long)logRotationError);
+#ifndef NORTHLIGHT_REPLAY_STAND
     if(!module)MessageBoxW(nullptr,
         L"Renderer backend could not be loaded. Check northlight-renderer.ini and northlight-renderer.log. No other backend was selected. Restore the previous package or install the correct x86 DXVK DLL.",
         L"Northlight renderer",MB_OK|MB_ICONERROR);
+#endif
     return module;
     }();
     return cached;

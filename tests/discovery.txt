@@ -244,6 +244,7 @@ test_spell_emitter_patch.py
 test_spell_fog_fit.py
 test_spell_fog_proof_client.py
 test_spell_layer.py
+test_stand_aliases.py
 test_stand_api.py
 test_stand_inputs.py
 test_stand_replay.py

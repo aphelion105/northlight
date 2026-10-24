@@ -1,5 +1,8 @@
 # Native snapshot capture and private replay bridge
 
+Subsequent typed-alias implementation, actual transport acceptance and cache
+audit: [Native texture aliases](native-texture-aliases-20261024.md).
+
 The runtime log is unchanged: 10,192,799 bytes, last write October 24 at
 03:28:59 local time, SHA-256
 `b71ba562267c13188f24219df83bd71bdf7273e9bd914210833227343d886443`.

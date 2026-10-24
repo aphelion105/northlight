@@ -89,8 +89,19 @@ template<class T> struct DefaultInitAllocator:std::allocator<T> {
 };
 using SliceMem=std::vector<unsigned char,DefaultInitAllocator<unsigned char>>;
 struct PrivEntry {std::string key;std::vector<unsigned char> bytes;IUnknown* unk=nullptr;};
+#ifdef NORTHLIGHT_REPLAY_STAND
+inline std::atomic<std::uint64_t> standProxySerial{0};
+inline std::uint64_t nextStandProxyGeneration(){
+    auto value=standProxySerial.load(std::memory_order_relaxed);
+    while(value!=~std::uint64_t(0))if(standProxySerial.compare_exchange_weak(value,value+1,std::memory_order_relaxed))return value+1;
+    return 0; // Exhaustion remains permanently unprovable, never wraps to an old identity.
+}
+#endif
 
 struct ProxyBase {
+#ifdef NORTHLIGHT_REPLAY_STAND
+    const std::uint64_t standGeneration=nextStandProxyGeneration();
+#endif
     StreamCore* core;Kind kind;IUnknown* unk=nullptr;   // unk: the proxy as the interface pointer the game holds (registry key)
     IUnknown* inner=nullptr;                            // the Target-level object: replay thread only, set when the create ran
     IUnknown* raw=nullptr;                              // the backend object behind `inner` (what Device would unwrap it to), cached with it; null = not provably a pure unwrap: replay through the Device
@@ -194,6 +205,23 @@ public:
     void erase(ProxyBase* p){if(p->kind==Kind::Texture)NorthlightParticleTextures::cache().erase(p->raw,p);if(p->kind==Kind::Texture)NorthlightMaterialTextures::cache().erase(p->raw);std::lock_guard<std::mutex> l(m_);byProxy_.erase(p->unk);if(p->inner){auto i=byInner_.find(p->inner);if(i!=byInner_.end()&&i->second==p)byInner_.erase(i);}}
     // The Target-level object behind a proxy pointer the game stored in its own memory (an opaque value, never dereferenced).
     const void* innerOf(const void* maybeProxy){std::lock_guard<std::mutex> l(m_);auto i=byProxy_.find(maybeProxy);return i==byProxy_.end()||!i->second->inner?maybeProxy:static_cast<const void*>(i->second->inner);}
+#ifdef NORTHLIGHT_REPLAY_STAND
+    static bool textureFamily(Kind kind){return kind==Kind::Texture||kind==Kind::CubeTexture||kind==Kind::VolumeTexture;}
+    bool textureGeneration(const void* exposed,std::uint64_t& generation){
+        generation=0;std::lock_guard<std::mutex> lock(m_);const auto found=byProxy_.find(exposed);
+        if(found==byProxy_.end())return false;const auto* proxy=found->second;
+        if(!textureFamily(proxy->kind)||proxy->dead.load()||!proxy->standGeneration||proxy->inUse()<=0)return false;
+        generation=proxy->standGeneration;return true;
+    }
+    const void* textureInner(const void* exposed,std::uint64_t generation){
+        std::lock_guard<std::mutex> lock(m_);const auto found=byProxy_.find(exposed);
+        if(found==byProxy_.end())return nullptr;const auto* proxy=found->second;
+        // Public references may already be released by the producer. Only the
+        // ordered replay Destroy removes the generation before later lookups.
+        return textureFamily(proxy->kind)&&generation&&proxy->standGeneration==generation&&!proxy->dead.load()&&proxy->inner?
+            static_cast<const void*>(proxy->inner):nullptr;
+    }
+#endif
     // Init failure only (the replay thread is gone or about to be): release every Target object the proxies hold, and hand the proxies out to be deleted.
     void releaseInners(){std::lock_guard<std::mutex> l(m_);for(auto& e:byProxy_)if(e.second->inner){e.second->inner->Release();e.second->inner=nullptr;e.second->dead.store(true);}byInner_.clear();}
     void takeAll(std::vector<ProxyBase*>& out){std::lock_guard<std::mutex> l(m_);for(auto& e:byProxy_)out.push_back(e.second);byProxy_.clear();byInner_.clear();}

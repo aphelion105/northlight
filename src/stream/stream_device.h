@@ -23,7 +23,27 @@ namespace NorthlightStream {
 constexpr bool kFilterRedundantState=NORTHLIGHT_STREAM_FILTER!=0;
 // The stream the process runs, for the opaque-pointer hook (celestial identities the game stored in its own memory).
 inline std::atomic<StreamCore*> activeCore{nullptr};
+#ifdef NORTHLIGHT_REPLAY_STAND
+inline bool captureTextureAliasGeneration(std::uintptr_t pointer,std::uint64_t& generation){
+    auto* context=StandInputs::currentContext();auto* core=activeCore.load(std::memory_order_acquire);
+    return context&&context->valid()&&core&&core->reg.textureGeneration(reinterpret_cast<const void*>(pointer),generation);
+}
+inline const void* innerOfActive(const void* p){
+    if(!p)return nullptr;
+    auto* context=StandInputs::currentContext();auto* core=activeCore.load(std::memory_order_acquire);
+    if(context&&context->valid()&&core&&activeSnapshot&&activeSnapshot->mode==GameSnapshot::Mode::Playing){
+        const auto& table=activeSnapshot->textureAliases();
+        if(table.sealed&&table.count<=GameSnapshot::MaxTextureAliases)for(unsigned i=0;i<table.count;++i){
+            const auto& alias=table.entries[i];if(alias.oldId!=reinterpret_cast<std::uintptr_t>(p))continue;
+            if(const auto* inner=core->reg.textureInner(reinterpret_cast<const void*>(std::uintptr_t(alias.proxy)),alias.generation))return inner;
+            break;
+        }
+    }
+    if(context)context->missing();return nullptr;
+}
+#else
 inline const void* innerOfActive(const void* p){StreamCore* c=activeCore.load(std::memory_order_acquire);return c?c->reg.innerOf(p):p;}
+#endif
 
 // The Win32 calls DXVK's hardware cursor makes (d3d9_cursor.cpp), behind function pointers so the host tests can observe them. Plain Win32 on
 // the calling thread's input queue: the stream does them on the GAME thread, at the call, exactly as DXVK would on the direct path.
@@ -119,6 +139,9 @@ public:
             d->st.loadDefaults(c.target);ok=!d->sc0->dead.load();},Cmd::SyncInit);
         if(!ran||!ok)return fail("init");
         gameTid.store(Replayer::currentTid());activeCore.store(&d->core,std::memory_order_release);innerOf=&innerOfActive;
+#ifdef NORTHLIGHT_REPLAY_STAND
+        StandInputs::textureAliasGeneration=&captureTextureAliasGeneration;
+#endif
         return d.release();
     }
     ~StreamDevice(){}
@@ -686,6 +709,9 @@ private:
         runTask(core,[&](StreamCore& c){c.target->Release();c.target=nullptr;},Cmd::SyncRelease);   // the Device's final release happens on the replay thread
         replayer.stop();
         innerOf=nullptr;activeCore.store(nullptr,std::memory_order_release);
+#ifdef NORTHLIGHT_REPLAY_STAND
+        StandInputs::textureAliasGeneration=nullptr;
+#endif
         if(hCursor){cursor.destroy(hCursor);hCursor=nullptr;}
         IDirect3D9* p=parent;
         delete this;

@@ -1,10 +1,16 @@
 #pragma once
 #include "client_image.h"
 #include "snapshot_store.h"
+#ifdef NORTHLIGHT_REPLAY_STAND
+#include "stream_hooks.h"
+#endif
 
 // Explicit offline host only. The shared capability owns immutable PE bytes;
 // the producer import cursor and queued playback snapshots remain separate.
 namespace NorthlightStream::StandInputs {
+// Installed only after StreamDevice initialization. The producer supplies an
+// exposed proxy; only the Registry may establish its numeric generation.
+inline bool (*textureAliasGeneration)(std::uintptr_t,std::uint64_t&)=nullptr;
 class Context {
     std::vector<unsigned char> bytes_;ClientImage::View image_;
     std::atomic<bool> incomplete_{false};
@@ -45,6 +51,7 @@ public:
 class Session {
     std::shared_ptr<Context> context_;GameSnapshot* snapshot_=nullptr;
     bool bound_=false,captured_=false,capturing_=false;std::uint64_t previousDraw_=0;
+    GameSnapshot::TextureAliases aliases_;
 public:
     Session(const void* bytes,std::size_t size):context_(std::make_shared<Context>(bytes,size)){}
     Session(const Session&)=delete;Session& operator=(const Session&)=delete;
@@ -58,13 +65,33 @@ public:
     bool bind(GameSnapshot& snapshot,std::uint64_t draw,unsigned trigger){
         if(!valid()||capturing_||!snapshot.usable()||trigger<1||trigger>3||snapshot.triggerKind!=trigger||snapshot.triggerDraw!=draw||
            (bound_&&draw<=previousDraw_)){reject();return false;}
-        snapshot_=&snapshot;snapshot_->rewind();previousDraw_=draw;bound_=true;captured_=false;return true;
+        snapshot_=&snapshot;snapshot_->rewind();previousDraw_=draw;bound_=true;captured_=false;aliases_={};return true;
+    }
+    bool bindAliases(const std::uint64_t* pairs,unsigned count,std::uint64_t draw,unsigned trigger){
+        if(!valid()||!bound_||capturing_||captured_||aliases_.sealed||!textureAliasGeneration||
+           count>GameSnapshot::MaxTextureAliases||(count&&!pairs)||snapshot_->triggerKind!=trigger||snapshot_->triggerDraw!=draw){reject();return false;}
+        GameSnapshot::TextureAliases table;
+        const auto maximum=(std::numeric_limits<std::uintptr_t>::max)();
+        for(unsigned i=0;i<count;++i){
+            const auto oldId=pairs[2*i],proxy=pairs[2*i+1];
+            if(oldId<0x10000||oldId>0xffffffffull-4||(oldId&3)||!proxy||proxy>maximum){reject();return false;}
+            for(unsigned j=0;j<i;++j)if(table.entries[j].oldId==oldId){reject();return false;}
+            std::uint64_t generation=0;
+            if(!textureAliasGeneration(std::uintptr_t(proxy),generation)||!generation){reject();return false;}
+            table.entries[i]={oldId,proxy,generation};
+        }
+        table.count=count;table.sealed=true;aliases_=table;return true;
     }
     bool beginCapture(unsigned trigger,std::uint64_t draw){
         if(!valid()||!bound_||captured_||capturing_||snapshot_->triggerKind!=trigger||snapshot_->triggerDraw!=draw){reject();return false;}
         snapshot_->rewind();captured_=capturing_=true;return true;
     }
     void endCapture(){capturing_=false;}
+    bool commitCapture(GameSnapshot& destination){
+        if(!valid()||!capturing_||!aliases_.sealed||snapshot_==&destination||!destination.usable()||
+           destination.mode!=GameSnapshot::Mode::Idle||destination.triggerKind!=snapshot_->triggerKind||destination.triggerDraw!=snapshot_->triggerDraw){reject();return false;}
+        destination.aliases_=aliases_;return true;
+    }
     bool read(std::uintptr_t address,void* output,std::size_t bytes){
         return context_->read(snapshot_,address,output,bytes);
     }
@@ -79,12 +106,18 @@ public:
 };
 inline thread_local Session* active=nullptr;
 inline thread_local Context* playbackContext=nullptr;
+inline Context* currentContext();
+inline void rejectCurrentInputs(){if(auto* context=currentContext())context->reject();}
 class CaptureScope {
-    Session* owner_;bool entered_;
+    Session* owner_;bool entered_,committed_=false;
 public:
     CaptureScope(unsigned trigger,std::uint64_t draw):owner_(active),entered_(owner_&&owner_->beginCapture(trigger,draw)){}
-    ~CaptureScope(){if(entered_)owner_->endCapture();}
+    ~CaptureScope(){if(entered_){if(!committed_)owner_->reject();owner_->endCapture();}}
     bool entered()const{return entered_;}
+    bool commit(GameSnapshot& destination){
+        if(!entered_||committed_){if(owner_)owner_->reject();return false;}
+        committed_=owner_->commitCapture(destination);return committed_;
+    }
     CaptureScope(const CaptureScope&)=delete;CaptureScope& operator=(const CaptureScope&)=delete;
 };
 class Scope {
@@ -99,7 +132,7 @@ public:
         if(!frozenIdentity_.compare_exchange_strong(identity,session.identity())&&identity!=session.identity()){
             occupied_.store(false);return;
         }
-        active=&session;entered_=true;
+        active=&session;rejectImportedInputs=&rejectCurrentInputs;entered_=true;
     }
     ~Scope(){if(entered_){active=nullptr;occupied_.store(false);}}
     static bool admitted(const Context& context){return frozenIdentity_.load(std::memory_order_acquire)==context.identity();}

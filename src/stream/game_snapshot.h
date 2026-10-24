@@ -69,13 +69,16 @@ inline bool capture(GameSnapshot& s,Trigger trigger,std::uint64_t drawOrdinal){
 #ifdef NORTHLIGHT_REPLAY_STAND
     StandInputs::CaptureScope admission(unsigned(trigger),drawOrdinal);if(!admission.entered())return false;
 #endif
-    ScopedRecording recording(s);
-    char map[64];float camera[3];
-    NorthlightWorldContext::readMapAndCamera(map,camera); // the independent map/camera read the sky and WMO paths pair with readCurrent
-    captureReaders(NorthlightWorldContext::readSelf);
-    s.triggerKind=std::uint32_t(trigger);s.triggerDraw=drawOrdinal;
+    {
+        ScopedRecording recording(s);
+        char map[64];float camera[3];
+        NorthlightWorldContext::readMapAndCamera(map,camera); // the independent map/camera read the sky and WMO paths pair with readCurrent
+        captureReaders(NorthlightWorldContext::readSelf);
+        s.triggerKind=std::uint32_t(trigger);s.triggerDraw=drawOrdinal;
+    }
     SnapshotStats::triggers.fetch_add(1,std::memory_order_relaxed);
 #ifdef NORTHLIGHT_REPLAY_STAND
+    if(!admission.commit(s))return false;
     const auto* context=StandInputs::currentContext();return s.usable()&&context&&context->valid();
 #else
     return s.usable();

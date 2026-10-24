@@ -17,6 +17,9 @@
 #endif
 
 namespace NorthlightStream {
+#ifdef NORTHLIGHT_REPLAY_STAND
+namespace StandInputs {class Session;}
+#endif
 // Process-wide counters, flushed from per-snapshot counts so the per-read path touches no atomic.
 struct SnapshotStats {
     static inline std::atomic<unsigned long long> hits{0},misses{0},triggers{0},overflow{0},unavailable{0},ageDraws{0},ageSamples{0};
@@ -75,11 +78,21 @@ public:
     static constexpr std::size_t ArenaBytes=64*1024,MaxKeys=64,MaxCopies=256;
     enum class Mode:std::uint8_t{Idle,Recording,Playing};
     enum class Serve:std::uint8_t{Miss,Ok,Failed};
+#ifdef NORTHLIGHT_REPLAY_STAND
+    static constexpr unsigned MaxTextureAliases=10;
+    struct TextureAlias {std::uint64_t oldId=0,proxy=0,generation=0;};
+    struct TextureAliases {TextureAlias entries[MaxTextureAliases]{};unsigned count=0;bool sealed=false;};
+    const TextureAliases& textureAliases()const noexcept{return aliases_;}
+#endif
     Mode mode=Mode::Idle;
     // Which trigger took it and the draw ordinal of that draw; the consumer's age is its own draw ordinal minus this.
     std::uint32_t triggerKind=0;std::uint64_t triggerDraw=0;
     unsigned long hits=0,misses=0; // this activation, flushed by ScopedPlayback
-    void clear(){keyCount_=copyCount_=0;used_=0;overflowed_=false;mode=Mode::Idle;triggerKind=0;triggerDraw=0;hits=misses=0;}
+    void clear(){keyCount_=copyCount_=0;used_=0;overflowed_=false;mode=Mode::Idle;triggerKind=0;triggerDraw=0;hits=misses=0;
+#ifdef NORTHLIGHT_REPLAY_STAND
+        aliases_={};
+#endif
+    }
     bool usable()const{return !overflowed_&&copyCount_>0;}
     bool overflowed()const{return overflowed_;}
     std::size_t keys()const{return keyCount_;}
@@ -127,6 +140,10 @@ public:
     }
     bool has(std::uintptr_t address,std::size_t size)const{for(std::size_t i=0;i<keyCount_;++i)if(keys_[i].address==address&&keys_[i].size==size)return true;return false;}
 private:
+#ifdef NORTHLIGHT_REPLAY_STAND
+    friend class StandInputs::Session;
+    TextureAliases aliases_;
+#endif
     static constexpr std::uint16_t None=0xffff;
     struct Key{std::uintptr_t address;std::uint32_t size;std::uint16_t head,tail,cursor;};
     struct Copy{std::uint32_t offset;std::uint16_t next;bool ok;};

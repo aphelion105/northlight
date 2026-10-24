@@ -8,10 +8,10 @@
 namespace I=NorthlightStream::StandInputs;
 static bool captureImport(GameSnapshot& destination,Trigger trigger,std::uint64_t draw){
     I::CaptureScope admission(unsigned(trigger),draw);CHECK(admission.entered());
-    ScopedRecording recording(destination);unsigned value=0;
-    CHECK(I::read(0x18000000,&value,4));value=99;CHECK(!I::read(0x18000004,&value,4)&&value==99);
-    destination.triggerKind=unsigned(trigger);destination.triggerDraw=draw;
-    return destination.usable()&&I::currentContext()->valid();
+    {ScopedRecording recording(destination);unsigned value=0;
+        CHECK(I::read(0x18000000,&value,4));value=99;CHECK(!I::read(0x18000004,&value,4)&&value==99);
+        destination.triggerKind=unsigned(trigger);destination.triggerDraw=draw;}
+    return admission.commit(destination)&&destination.usable()&&I::currentContext()->valid();
 }
 static void fillImport(GameSnapshot& snapshot,std::uint64_t draw,unsigned value){
     snapshot.clear();snapshot.triggerKind=1;snapshot.triggerDraw=draw;
@@ -64,11 +64,11 @@ int main(int argc,char** argv){
             CHECK(!stream&&reason&&std::string(reason)=="init"&&starts==1&&!session->valid());
             gKnobs.failSwapChain.store(false);target->Release();
         }else{
-            CHECK(stream&&starts==1);CHECK(stream->DrawPrimitive(4,0,1)==D3D_OK);
+            CHECK(stream&&starts==1);CHECK(session->bindAliases(nullptr,0,1,1));CHECK(stream->DrawPrimitive(4,0,1)==D3D_OK);
             stream->streamCore().q.publish();
             const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
             while(!target->entered.load()){CHECK(std::chrono::steady_clock::now()<deadline);std::this_thread::yield();}
-            fillImport(imported,2,20);CHECK(session->bind(imported,2,1));
+            fillImport(imported,2,20);CHECK(session->bind(imported,2,1)&&session->bindAliases(nullptr,0,2,1));
             if(mode=="retired-owner"){scope.reset();session.reset();CHECK(!weak.expired());}
             target->releaseFirst.store(true);DWORD n=0;CHECK(stream->ValidateDevice(&n)==5);
             CHECK(target->seen==std::vector<unsigned>({10,10,10}));
@@ -80,7 +80,7 @@ int main(int argc,char** argv){
                 CHECK(stream->DrawPrimitive(4,0,1)==D3D_OK&&stream->ValidateDevice(&n)==5);
                 CHECK(target->seen==std::vector<unsigned>({10,10,10,20,20,20,20,20,20}));
                 CHECK(stream->Present(nullptr,nullptr,nullptr,nullptr)==D3D_OK);
-                fillImport(imported,4,40);CHECK(session->bind(imported,4,1));
+                fillImport(imported,4,40);CHECK(session->bind(imported,4,1)&&session->bindAliases(nullptr,0,4,1));
                 CHECK(stream->DrawPrimitive(4,0,1)==D3D_OK&&stream->ValidateDevice(&n)==5);
                 CHECK(target->seen==std::vector<unsigned>({10,10,10,20,20,20,20,20,20,40,40,40}));
             }

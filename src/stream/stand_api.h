@@ -50,3 +50,9 @@ extern "C" __declspec(dllexport) int __cdecl NorthlightStandStatus(std::uint64_t
         context.recordedFailures.load(),context.missingReads.load(),s.apiStarted.load()};
     std::memcpy(output,values,sizeof values);return 1;
 }
+extern "C" __declspec(dllexport) int __cdecl NorthlightStandAliases(const std::uint64_t* pairs,unsigned count,std::uint64_t draw,unsigned trigger){
+    auto& s=NorthlightStandApi::state();
+    if(!NorthlightStandApi::owner(s)||!s.inputs||!s.inputs->valid())return 0;
+    try{return s.inputs->bindAliases(pairs,count,draw,trigger)?1:0;}
+    catch(...){s.inputs->reject();return 0;}
+}

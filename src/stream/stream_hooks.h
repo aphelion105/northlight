@@ -23,7 +23,15 @@ inline thread_local const void* upIdentity=nullptr;
 // Maps a pointer the game stored in its own memory (a stream proxy) to the Device-level object it wraps; set by the
 // stream while active. celestial_disc_native.h applies it before the registry's rawOf. Null = identity.
 inline const void* (*innerOf)(const void*)=nullptr;
+#ifdef NORTHLIGHT_REPLAY_STAND
+inline void (*rejectImportedInputs)()=nullptr;
+inline const void* inner(const void* p){
+    if(!p)return nullptr;if(innerOf)return innerOf(p);
+    if(rejectImportedInputs)rejectImportedInputs();return nullptr;
+}
+#else
 inline const void* inner(const void* p){return innerOf&&p?innerOf(p):p;}
+#endif
 // True from before the Device is constructed until the process ends, only when the replay thread runs. It must be set
 // before WorldRenderer / StaticShadowGpu are constructed (their core budgets read it once). A plain atomic with
 // relaxed loads: written once on the game thread during Factory::CreateDevice, never cleared.

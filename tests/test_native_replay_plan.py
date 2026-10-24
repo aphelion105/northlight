@@ -43,6 +43,24 @@ def main():
     fields = bytearray(0x40); struct.pack_into('<I', fields, 0x24, 0x20000)
     nonzero = [(0xd38e38, 4, struct.pack('<I', 0x10000)), (0x10020, 0x40, fields), (0x20038, 4, struct.pack('<I', 0x30000))]
     check('nonzero-typed-identity', lambda: plan.admit_no_resource_aliases(packet(nonzero + empty[1:])), True)
+    complete_chain = nonzero * 2 + empty[1:]
+    assert plan.native_resource_identities(packet(complete_chain)) == [0x30000]
+    checks.append('typed-alias-collector-deduplicates-double-read')
+    changed_chain = copy.deepcopy(complete_chain)
+    changed_chain[5] = (0x20038, 4, struct.pack('<I', 0x40000))
+    assert plan.native_resource_identities(packet(changed_chain)) == [0x30000, 0x40000]
+    checks.append('typed-alias-collector-keeps-distinct-FIFO-results')
+    invalid_chain = copy.deepcopy(complete_chain)
+    invalid_chain[2] = (0x20038, 4, struct.pack('<I', 3))
+    check('typed-alias-collector-invalid-terminal', lambda: plan.native_resource_identities(packet(invalid_chain)), True)
+    check('typed-alias-invalid-handle', lambda: plan.native_resource_identities(packet(
+        [(0xd38e38, 4, struct.pack('<I', 0x10003))] + empty[1:])), True)
+    invalid_fields = bytearray(fields); struct.pack_into('<I', invalid_fields, 0x24, 0x20003)
+    check('typed-alias-invalid-GX', lambda: plan.native_resource_identities(packet(
+        [(0xd38e38, 4, struct.pack('<I', 0x10000)), (0x10020, 0x40, invalid_fields)] + empty[1:])), True)
+    variant_fields = bytearray(fields); variant_fields[8] = 4; struct.pack_into('<I', variant_fields, 0x3c, 0x30003)
+    check('typed-alias-invalid-variant', lambda: plan.native_resource_identities(packet(
+        [(0xd38e38, 4, struct.pack('<I', 0x10000)), (0x10020, 0x40, variant_fields)] + empty[1:])), True)
     journal = [{'record': 0, 'device_key': 0x20000, 'frame': 0, 'epoch': 0, 'thread': 99, 'trigger': 1,
                 'draw_ordinal': 1, 'bytes': len(data), 'archive_crc32': struct.unpack_from('<I', data, len(data) - 4)[0]}]
     marker = ('NLSNAP1;session=fixture;record=0;device=20000;frame=0;epoch=0;thread=99;trigger=1;draw=1;bytes=' +
