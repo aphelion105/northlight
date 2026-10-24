@@ -22,6 +22,11 @@ public:
     enum Failure:unsigned {None=0,Destination=1,Overflow=2,Budget=4,Archive=8,Io=16,Producer=32};
     struct Limits {unsigned records=MaxRecords;std::uint64_t bytes=MaxSessionBytes;};
     struct Status {unsigned accepted,retired,failures;std::uint64_t budgetBytes;bool joined,traceJoinValidated;};
+    struct Receipt {
+        bool accepted=false;unsigned record=0,bytes=0;std::uint32_t crc32=0;
+        std::uintptr_t device=0;std::uint64_t frame=0,draw=0;
+        std::uint32_t epoch=0,thread=0,trigger=0;
+    };
     SnapshotCaptureSink()=default;
     ~SnapshotCaptureSink(){finish();}
     SnapshotCaptureSink(const SnapshotCaptureSink&)=delete;
@@ -32,7 +37,8 @@ public:
     bool start(const std::filesystem::path& destination,const std::string& session){return start(destination,session,Limits{});}
     // Producer: fixed storage, bounded codec work; no allocation, file IO,
     // mutex acquisition or waiting. A full session is permanently incomplete.
-    bool submit(const GameSnapshot& snapshot,std::uintptr_t device,std::uint64_t frame,std::uint32_t epoch,std::uint32_t thread) noexcept {
+    bool submit(const GameSnapshot& snapshot,std::uintptr_t device,std::uint64_t frame,std::uint32_t epoch,std::uint32_t thread,Receipt* receipt=nullptr) noexcept {
+        if(receipt)*receipt={};
         if(!enabled_.load(std::memory_order_acquire))return false;
         if(producerBusy_.test_and_set(std::memory_order_acquire)){fail(Producer);return false;}
         struct Release {std::atomic_flag& flag;~Release(){flag.clear(std::memory_order_release);}} release{producerBusy_};
@@ -48,6 +54,7 @@ public:
         slot.size=unsigned(size);slot.device=device;slot.frame=frame;slot.epoch=epoch;slot.thread=thread;
         slot.draw=snapshot.triggerDraw;slot.trigger=snapshot.triggerKind;budget_+=charge;
         budgetBytes_.store(budget_,std::memory_order_relaxed);
+        if(receipt)*receipt={true,w,unsigned(size),SnapshotArchive::u32(slot.bytes.data()+size-4),device,frame,snapshot.triggerDraw,epoch,thread,snapshot.triggerKind};
         write_.store(w+1,std::memory_order_release);wake_.notify_one();return true;
     }
     static void completed(void* sink,const GameSnapshot& snapshot,std::uintptr_t device,std::uint64_t frame,std::uint32_t epoch,std::uint32_t thread) noexcept {
@@ -66,6 +73,7 @@ public:
     }
 private:
     friend struct SnapshotCaptureSinkTest;
+    friend class NativeSnapshotCapture;
     static constexpr unsigned RecordLineBytes=512;
     struct Slot {
         std::array<unsigned char,SnapshotArchive::MaxBytes> bytes;

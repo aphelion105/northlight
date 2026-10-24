@@ -58,10 +58,14 @@ public:
     // Opt-in capture transport only. The owner outlives this device; the
     // noexcept callback must copy before returning and must not wait or do IO.
     using SnapshotCompleted=void(*)(void*,const GameSnapshot&,std::uintptr_t,std::uint64_t,std::uint32_t,std::uint32_t) noexcept;
+    // Separate explicit trace observation: an external recorder may serialize
+    // here. This is outside the allocation/IO/wait-free completion contract.
+    using SnapshotObserved=SnapshotCompleted;
     struct Options {
         std::size_t budget=BudgetBytes;
         bool (*capture)(GameSnapshot&,Trigger,std::uint64_t)=nullptr;   // game_snapshot.h capture() in the DLL; null = no snapshots
         SnapshotCompleted snapshotCompleted=nullptr;void* snapshotSink=nullptr;
+        SnapshotObserved snapshotObserved=nullptr;
         std::function<void()> threadStart;                              // runs on the replay thread first (owner handoff)
         std::function<void(const char*)> log;
         void (*queryCaller)(std::uint64_t,void*,void*)=nullptr;
@@ -629,6 +633,7 @@ private:
     std::thread::id gameThread=std::this_thread::get_id();
     PoolTuner tuner;TriggerPolicy policy;bool (*capture)(GameSnapshot&,Trigger,std::uint64_t)=nullptr;
     SnapshotCompleted snapshotCompleted=nullptr;void* snapshotSink=nullptr;
+    SnapshotObserved snapshotObserved=nullptr;
     // 0.3.200 (frame skip): a swap chain's back buffer (the frame's own image); a texture level or cube face (sampled later: never a skippable depth target).
     // A frame may be skipped only while every draw and clear lands in a back buffer and a standalone depth surface.
     static bool backBuffer(const ProxyBase* p){return p&&p->parent&&p->parent->kind==Kind::SwapChain;}
@@ -639,7 +644,7 @@ private:
         return false;}
 
     StreamDevice(IDirect3DDevice9* target,IDirect3D9* par,const D3DPRESENT_PARAMETERS* p,Options opt)
-        :coreOwner(new StreamCore(opt.budget)),core(*coreOwner),replayer(core,SnapshotPool::capFor(clampFramesAhead(opt.framesAhead))),parent(par),framesAhead_(clampFramesAhead(opt.framesAhead)),capture(opt.capture),snapshotCompleted(opt.snapshotCompleted),snapshotSink(opt.snapshotSink){
+        :coreOwner(new StreamCore(opt.budget)),core(*coreOwner),replayer(core,SnapshotPool::capFor(clampFramesAhead(opt.framesAhead))),parent(par),framesAhead_(clampFramesAhead(opt.framesAhead)),capture(opt.capture),snapshotCompleted(opt.snapshotCompleted),snapshotSink(opt.snapshotSink),snapshotObserved(opt.snapshotObserved){
         core.target=target;core.game=this;core.framesAhead=framesAhead_;core.logLine=nullptr;core.callerModule=opt.callerModule;core.queryCaller=opt.queryCaller;core.occlusionLocal=opt.occlusionLocal;callerLog=opt.log;callerDiag=opt.diagnostics;core.readBackLock=opt.readBackLock;st.core=&core;
         if(opt.cursorApi)cursor=*opt.cursorApi;
         restoreOwner=opt.threadStart;replayer.frameSkip=opt.frameSkip!=0;replayer.threadStart=std::move(opt.threadStart);replayer.log=opt.log;replayer.diagnostics=opt.diagnostics;replayer.idleProfiling=opt.idleProfiling;filter=opt.filterRedundant;
@@ -698,6 +703,7 @@ private:
         GameSnapshot* s=replayer.snapshots.acquire();if(!s)return;
         if(!capture(*s,t,drawOrdinal)){replayer.snapshots.release(s);if(t0)own(core.q.stats.snapNs,nowNs()-t0);return;}
         if(snapshotCompleted)snapshotCompleted(snapshotSink,*s,reinterpret_cast<std::uintptr_t>(this),core.presentsRecorded.load(std::memory_order_relaxed),core.queryEpoch.load(std::memory_order_acquire),Replayer::currentTid());
+        if(snapshotObserved)snapshotObserved(snapshotSink,*s,reinterpret_cast<std::uintptr_t>(this),core.presentsRecorded.load(std::memory_order_relaxed),core.queryEpoch.load(std::memory_order_acquire),Replayer::currentTid());
         Queue& q=core.q;auto* p=static_cast<GameSnapshot**>(q.reserve((std::uint16_t)Cmd::Snapshot,sizeof(GameSnapshot*)));*p=s;q.commit();
         if(t0)own(q.stats.snapNs,nowNs()-t0);
     }

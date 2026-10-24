@@ -55,6 +55,9 @@
 #include "northlight_mem.h"
 #include "m2_shader_families.h"
 #include "native_shadow_observation.h"
+#ifndef NORTHLIGHT_REPLAY_STAND
+#include "native_capture_windows.h"
+#endif
 
 // 0.3.181 (r90): the DLL's one memcmp. This strong definition overrides zig compiler_rt's weak byte
 // loop for every call site in all four TUs (libc++ included) and returns the same value for every
@@ -516,7 +519,7 @@ private:
     LARGE_INTEGER gateSceneEnd={};LONGLONG gatePresentDone=0;unsigned gateSceneDraws=0;unsigned long long gateSceneReads=0;
     std::recursive_mutex gateBenchLock; /* private, uncontended: the microbenchmark's lock */
     MirrorGate gateBenchGate; /* 0.3.180: private, for ownerNs (0.3.182: the real owner entry and exit on it) */
-    const int debugMode = 0;int worldDebug=0;bool gpuDiagnosticFrame=false;
+    const int debugMode = 0;int worldDebug=0;bool gpuDiagnosticFrame=false,nativeCaptureDiagnostic=false;
     NorthlightEffectSwitches::Hotkeys effectKeys;
     float nearZ = .1f, farZ = 1000.f, scaleX = 1.f, scaleY = 1.f, fogForward = 1.f;
     float worldMinDepth=0.f,worldMaxDepth=1.f;
@@ -2297,6 +2300,7 @@ private:
 public:
     // 0.3.192 (CS): the replay thread takes over as owner thread (called on it, before its first command and before CreateDevice returns).
     void adoptOwnerThread(){mirrorState.gate.ownerTid=MirrorGuard::threadId();}
+    void setNativeCaptureDiagnostic(bool enabled){nativeCaptureDiagnostic=enabled;}
     // 0.3.192 (CS): direct replay (stream mode). The extension device runs the same MirrorDevice methods on the same real device and mirror as the
     // Device's own non-overridden ones; the replay thread calls it with RAW pointers for the methods the generator's DIRECT list names.
     IDirect3DDevice9* extensionDevice(){return ext;}
@@ -2407,6 +2411,9 @@ public:
     }
     bool worldDrawSeen=false,memmapEntryDone=false,memmapDeferredSeen=false;unsigned worldDrawFrame=0;DWORD memmapPeriodicAt=0,memmapDeferredAt=0;
     Device(IDirect3DDevice9* d,IDirect3D9* p,const NorthlightHdr::Presentation& presentation):GuardedMirrorDevice(d,&mirrorState),parent(p),mirrorResources(this,mirrorState.gate,&mirrorEscape,&mirrorState,d),ext(new ExtensionDevice(d,&mirrorState)),hdr(presentation),stateBlocks(ext) {
+#ifndef NORTHLIGHT_REPLAY_STAND
+        nativeCaptureDiagnostic=NorthlightNativeCapture::Session::requested();
+#endif
         mirrorState.gate.ownerTid=MirrorGuard::threadId(); /* 0.3.180 (D0): the CreateDevice caller */
         mirrorState.gate.reportContext=this;mirrorState.gate.report=&gateForeignReport;
         parent->AddRef(); QueryPerformanceFrequency(&cpuFrequency);
@@ -2681,8 +2688,8 @@ public:
     void finishFrameImpl() {
         nameMaskRunEnd(); /* 0.3.212 (task 32) */
         const auto frameEffects=effectKeys.settings;const bool frameEnabled=enabled;
-        const bool diagnosticFrame=gpuDiagnosticFrame;gpuDiagnosticFrame=false;
-        if(diagnosticFrame){flushFrameIntervals("gpu-diagnostic-capture",frameEnabled,frameEffects);frameIntervals.reset();intervalFocus=true;}
+        const bool diagnosticFrame=gpuDiagnosticFrame||nativeCaptureDiagnostic;gpuDiagnosticFrame=false;
+        if(diagnosticFrame){flushFrameIntervals(nativeCaptureDiagnostic?"native-trace-capture":"gpu-diagnostic-capture",frameEnabled,frameEffects);frameIntervals.reset();intervalFocus=true;}
         // Focus also goes on the FRAME interval line (0 if any frame since the last line lacked it): a background
         // window runs at the client's own frame cap (maxFPSBk), which is not renderer cost.
         D3DDEVICE_CREATION_PARAMETERS cp={}; ext->GetCreationParameters(&cp);
@@ -3093,6 +3100,21 @@ public:
         }
 #endif
         options.threadStart=[target]{target->adoptOwnerThread();};
+#ifndef NORTHLIGHT_REPLAY_STAND
+        const char* captureReason=nullptr;
+        auto nativeCapture=NorthlightNativeCapture::Session::fromEnvironment(selfModule,captureReason);
+        if(captureReason){
+            target->setNativeCaptureDiagnostic(true);
+            logf("NATIVE capture active=%u diagnostic=1 fpsEligible=0 traceJoinValidated=0 reason=%s",unsigned(bool(nativeCapture)),captureReason);
+        }
+        if(nativeCapture){
+            options.snapshotSink=nativeCapture->sink();
+            options.snapshotCompleted=&NorthlightStream::NativeSnapshotCapture::completed;
+            options.snapshotObserved=&NorthlightStream::NativeSnapshotCapture::observed;
+            // Retained through worker teardown and the failure-owner restore.
+            options.threadStart=[target,nativeCapture]{target->adoptOwnerThread();};
+        }
+#endif
         options.log=[](const char* line){logf("%s",line);};
         options.queryCaller=[](std::uint64_t frame,void* query,void* caller){
             if(!NorthlightDiagnostics::enabled())return;

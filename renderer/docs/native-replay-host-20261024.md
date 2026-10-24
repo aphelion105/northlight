@@ -1,5 +1,8 @@
 # Native scene replay: executable inputs and host foundation
 
+Subsequent capture/bridge implementation and cache recommendation:
+[Native capture bridge](native-capture-bridge-20261024.md).
+
 This continues the snapshot-coherence work. The game log is unchanged and
 predates the private fixes. No whole-scene FPS, stable 120 FPS, visual parity
 or elimination of camera-turn stalls is claimed.
