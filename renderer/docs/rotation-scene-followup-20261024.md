@@ -110,3 +110,20 @@ proof inputs and resource/draw identity joins. A trace cannot reproduce the
 original client's missing CPU preparation merely by inserting recorded waits.
 No 120 FPS result, elimination of rotation stalls, or complete resolution of
 the reported shadow/equipment artifacts is claimed.
+
+
+## Private build
+
+Renderer source commit `a2512934097647317dee0a2a3cf82f28934eeea7` builds successfully with
+Zig 0.15.2; BUILD identity is `d2c187721d5b7a0396a9da728edb37d9dfab5754a4101131179462c92c751458`. The DLL is
+5,751,808 bytes, SHA-256
+`02c10596adb55d62d2ef816ccf38bcb3453ba83500f2c0b942d09a7ed09cdf59`. PE/PDB GUID and age match without
+loading the renderer. Production sources remain byte-identical through the
+build; the two pre-existing displacement indentation warnings remain.
+
+All nine selected checks are bound to their unchanged relevant source inputs;
+protected installed/configuration inputs match their initial hashes. No game,
+renderer DLL, optimizer or replay was executed. No source was published.
+The separate manual package includes the DLL, PDB, this report and manifests.
+The dynamic-light ledger is emitted after successful composite; aborted frames
+retain the existing immediate HRESULT error log instead of a completed ledger.
