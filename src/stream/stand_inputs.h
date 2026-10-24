@@ -1,5 +1,6 @@
 #pragma once
 #include "client_image.h"
+#include "client_code_observation.h"
 #include "snapshot_store.h"
 #ifdef NORTHLIGHT_REPLAY_STAND
 #include "stream_hooks.h"
@@ -13,6 +14,7 @@ namespace NorthlightStream::StandInputs {
 inline bool (*textureAliasGeneration)(std::uintptr_t,std::uint64_t&)=nullptr;
 class Context {
     std::vector<unsigned char> bytes_;ClientImage::View image_;
+    ClientCodeObservation::Proof codeProof_;bool codeProofInstalled_=false;
     std::atomic<bool> incomplete_{false};
     static inline std::atomic<std::uint64_t> serial_{0};
     const std::uint64_t identity_=serial_.fetch_add(1,std::memory_order_relaxed)+1;
@@ -29,6 +31,16 @@ public:
     void reject(){incomplete_.store(true,std::memory_order_release);}
     std::uint64_t identity()const{return identity_;}
     std::uint32_t targetBase()const{return valid()?image_.imageBase():0;}
+    // Owner only, before any import is used or published to a replay worker.
+    // Legacy authored/CPU fixtures may explicitly remain on the raw-PE path.
+    bool bindCodeProof(const void* bytes,unsigned size){
+        if(!valid()||codeProofInstalled_||staticReads.load()||dynamicReads.load()||recordedFailures.load()||workerStarts.load()||
+           !bytes||!size||size>ClientCodeObservation::MaxEncodedBytes){reject();return false;}
+        ClientCodeObservation::Error error;
+        if(!ClientCodeObservation::decode(static_cast<const unsigned char*>(bytes),size,image_,codeProof_,error)){reject();return false;}
+        codeProofInstalled_=true;return true;
+    }
+    bool codeProofInstalled()const noexcept{return codeProofInstalled_;}
     bool missing(){missingReads.fetch_add(1,std::memory_order_relaxed);reject();return false;}
     ClientImage::Region region(std::uintptr_t address,std::size_t bytes)const{return image_.region(address,bytes);}
     bool read(GameSnapshot* snapshot,std::uintptr_t address,void* output,std::size_t bytes){
@@ -36,7 +48,8 @@ public:
         if(!output||!bytes)return missing();
         const auto kind=region(address,bytes);
         if(kind==ClientImage::Region::Static){
-            if(!image_.readStatic(address,output,bytes))return missing();
+            const bool ok=codeProofInstalled_?codeProof_.read(address,output,bytes):image_.readStatic(address,output,bytes);
+            if(!ok)return missing();
             staticReads.fetch_add(1,std::memory_order_relaxed);return true;
         }
         if(kind==ClientImage::Region::Missing||!snapshot)return missing();
@@ -60,6 +73,10 @@ public:
     std::uint64_t identity()const{return context_->identity();}
     std::uint32_t targetBase()const{return context_->targetBase();}
     const std::shared_ptr<Context>& context()const{return context_;}
+    bool bindCodeProof(const void* bytes,unsigned size){
+        if(!valid()||bound_||captured_||capturing_){reject();return false;}
+        return context_->bindCodeProof(bytes,size);
+    }
     // The caller must separately prove device/epoch/trace-call identity. A draw
     // number in an index is not sufficient evidence of that join.
     bool bind(GameSnapshot& snapshot,std::uint64_t draw,unsigned trigger){

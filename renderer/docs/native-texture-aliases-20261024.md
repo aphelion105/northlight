@@ -1,5 +1,8 @@
 # Native texture identities and cache capacity follow-up
 
+The next private slice adds [strict observed client-code correspondence](native-code-correspondence-20261024.md)
+and preserves the separate Reset/image and original-scene FPS requirements.
+
 The game log remains the October 24, 03:28:59 recording: SHA-256
 `b71ba562267c13188f24219df83bd71bdf7273e9bd914210833227343d886443`.
 Its installed renderer is the older `e15cc6d` build, not the private work

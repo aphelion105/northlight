@@ -69,6 +69,10 @@ struct SelfReadStats {
     static inline std::atomic<unsigned long long> calls{0},bytes{0},failures{0};
     static inline std::atomic<long long> ticks{0};
     static inline std::atomic<bool> timed{false};
+#ifndef NORTHLIGHT_REPLAY_STAND
+    using Observer=void(*)(std::uintptr_t,const void*,std::size_t,bool) noexcept;
+    static inline std::atomic<Observer> observer{nullptr}; // Explicit native capture only.
+#endif
 };
 #ifdef NORTHLIGHT_REPLAY_STAND
 inline bool readSelfLive(uintptr_t address,void* output,size_t size) {
@@ -87,6 +91,7 @@ inline bool readSelfLive(uintptr_t address,void* output,size_t size) {
         reinterpret_cast<LPCVOID>(address),output,size,&copied) && copied==size;
     if(timed){QueryPerformanceCounter(&end);SelfReadStats::ticks.fetch_add((end.QuadPart-begin.QuadPart)*8,std::memory_order_relaxed);}
     if(!ok)SelfReadStats::failures.fetch_add(1,std::memory_order_relaxed);
+    if(const auto observer=SelfReadStats::observer.load(std::memory_order_acquire))observer(address,output,size,ok);
     return ok;
 }
 #endif

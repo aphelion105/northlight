@@ -46,6 +46,7 @@ test_client_archive_order.py
 test_client_archives.py
 test_client_config.py
 test_client_identity.py
+test_client_code_observation.py
 test_client_image.py
 test_client_latency_diagnostics.py
 test_colour_tent_2d.py
@@ -246,6 +247,7 @@ test_spell_fog_proof_client.py
 test_spell_layer.py
 test_stand_aliases.py
 test_stand_api.py
+test_stand_code_proof.py
 test_stand_inputs.py
 test_stand_replay.py
 test_static_cache_dirty_rect.py

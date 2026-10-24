@@ -27,6 +27,38 @@ def main():
                 raise AssertionError(name + ' accepted invalid input')
         checks.append(name)
 
+    def proof_blob(entries=((0x401000, b'abc', 1),), prefix=0):
+        payload = b''.join(value for _, value, _ in entries)
+        table = b''.join(struct.pack('<QII', address, len(value), seen) for address, value, seen in entries)
+        total = 48 + len(table) + len(payload) + 4
+        data = struct.pack('<8s4I2Q2I', b'NLCODE1\0', 1, total, len(entries), len(payload),
+                           sum(seen for _, _, seen in entries), prefix, 0, 0) + table + payload
+        return data + struct.pack('<I', zlib.crc32(data))
+
+    observed = proof_blob()
+    check('code-proof-framing', lambda: plan.code_observation(observed))
+    check('code-proof-crc', lambda: plan.code_observation(observed[:-1] + bytes([observed[-1] ^ 1])), True)
+    check('code-proof-unseen-prefix', lambda: plan.code_observation(proof_blob(prefix=1)), True)
+    check('code-proof-duplicate', lambda: plan.code_observation(proof_blob(((0x401000, b'a', 1), (0x401000, b'b', 1)))), True)
+    check('code-proof-span-bound', lambda: plan.code_observation(proof_blob(((0x401000, b'a' * 513, 1),))), True)
+    check('code-proof-zero-observations', lambda: plan.code_observation(proof_blob(((0x401000, b'a', 0),))), True)
+    with tempfile.TemporaryDirectory(prefix='nljoin-code-') as folder:
+        root = Path(folder); host = {'session': 'fixture', 'client_code_policy': 'strict-per-read'}
+        (root / 'client-code.nlcode').write_bytes(observed)
+        status = dict(format=1, session='fixture', complete=True, prefix_calls=0, policy='strict-per-read',
+                      bytes=len(observed), sha256=hashlib.sha256(observed).hexdigest(), fps_eligible=False)
+        def save_status():
+            (root / 'client-code-status.json').write_text(json.dumps(status))
+        save_status()
+        check('code-proof-complete-sidecar', lambda: plan.client_code_inputs(root, host, False, {}))
+        check('genuine-code-proof-required', lambda: plan.client_code_inputs(root, {'session': 'fixture'}, False, {}), True)
+        assert plan.client_code_inputs(root, {'session': 'fixture'}, True, {}) == (b'', None)
+        checks.append('explicit-authored-raw-compatibility')
+        status['complete'] = False; save_status()
+        check('code-proof-incomplete-sidecar', lambda: plan.client_code_inputs(root, host, False, {}), True)
+        status['complete'] = True; status['sha256'] = '0' * 64; save_status()
+        check('code-proof-sidecar-hash', lambda: plan.client_code_inputs(root, host, False, {}), True)
+
     def packet(entries):
         payload = b''.join(struct.pack('<QII', address, size, data is not None) + (data or b'') for address, size, data in entries)
         data = struct.pack('<8s6IQ', b'NLSNAP1\0', 1, 44 + len(payload), 1, len({(a, n) for a, n, _ in entries}),

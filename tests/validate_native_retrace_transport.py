@@ -53,7 +53,7 @@ def main():
     if len(data) < 256 or data[:8] != b'NLJOIN1\0' or struct.unpack_from('<II', data, 8) != (1, 256):
         raise ValueError('A valid parent-authored NLJOIN1 fixture is required')
     count, flags, session_n, dll_n, trace_n, pe_n = struct.unpack_from('<6I', data, 24)
-    if not 1 <= count <= 20000 or flags not in (1, 3, 5, 7) or not 1 <= session_n <= 64:
+    if not 1 <= count <= 20000 or flags not in (5, 7, 9, 11, 13, 15) or not 1 <= session_n <= 64:
         raise ValueError('Positive fixture is not the supported above-Northlight transport')
     if flags & 4 and not args.allow_authored_transport:
         raise ValueError('Authored transport requires explicit --allow-authored-transport; it is never FPS eligible')
@@ -106,7 +106,7 @@ def main():
     changed('version', 'plan-header', lambda b: u32(b, 8, 2))
     changed('header-size', 'plan-header', lambda b: u32(b, 12, 255))
     changed('total-size', 'plan-header', lambda b: u64(b, 16, len(b) + 1))
-    changed('unknown-flags', 'capture-layer-or-required-aliases', lambda b: u32(b, 28, flags | 8))
+    changed('unknown-flags', 'capture-layer-or-required-aliases', lambda b: u32(b, 28, flags | 16))
     changed('alias-flag-mismatch', 'plan-alias-flag', lambda b: u32(b, 28, flags ^ 2))
     changed('authored-without-allowance', 'authored-not-allowed', lambda b: u32(b, 28, flags | 4), authored=False)
     changed('record-cap', 'plan-capacity', lambda b: u32(b, 24, 20001))

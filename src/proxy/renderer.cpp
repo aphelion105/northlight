@@ -3094,7 +3094,11 @@ public:
     ULONG STDMETHODCALLTYPE Release() override{auto n=InterlockedDecrement(&refs);if(!n)delete this;return n;}
     // 0.3.192 (CS): wraps the Device in the command stream; on any failure the game keeps the Device directly (the worker core
     // budgets were read with the stream flag set, a harmless one core less).
-    IDirect3DDevice9* startStream(IDirect3DDevice9* device,D3DPRESENT_PARAMETERS* pp,unsigned framesAhead,unsigned frameSkip,bool occlusionLocal){
+    IDirect3DDevice9* startStream(IDirect3DDevice9* device,D3DPRESENT_PARAMETERS* pp,unsigned framesAhead,unsigned frameSkip,bool occlusionLocal
+#ifndef NORTHLIGHT_REPLAY_STAND
+        ,const std::shared_ptr<NorthlightNativeCapture::Session>& nativeCapture,const char* captureReason
+#endif
+    ){
         Device* target=static_cast<Device*>(device);const char* reason="unknown";
         NorthlightStream::StreamDevice::Options options;
         options.framesAhead=framesAhead;options.budget=NorthlightStream::budgetForFramesAhead(framesAhead); /* 0.3.200 (pipeline): StreamFramesAhead, read with CommandStream; the queue budget grows with it (bounded) */
@@ -3111,8 +3115,6 @@ public:
 #endif
         options.threadStart=[target]{target->adoptOwnerThread();};
 #ifndef NORTHLIGHT_REPLAY_STAND
-        const char* captureReason=nullptr;
-        auto nativeCapture=NorthlightNativeCapture::Session::fromEnvironment(selfModule,captureReason);
         if(captureReason){
             target->setNativeCaptureDiagnostic(true);
             logf("NATIVE capture active=%u diagnostic=1 fpsEligible=0 traceJoinValidated=0 reason=%s",unsigned(bool(nativeCapture)),captureReason);
@@ -3192,9 +3194,18 @@ public:
             logf("HDR experimental requested=1 active=%d stream=%d windowed=%d msaa=%u buffers=%u status=0x%08lx reason=%s paperWhite=%.0f uiWhite=%.0f maxNits=%.0f contrast=%.2f exposure=%.2f mode=scRGB source=legacy-encoded",int(presentation.active),int(stream),int(pp->Windowed),unsigned(pp->MultiSampleType),unsigned(pp->BackBufferCount),(unsigned long)presentation.lastStatus,presentation.reason,presentation.settings.paperWhite,presentation.settings.uiWhite,presentation.settings.maxNits,presentation.settings.contrast,presentation.settings.exposure);
             if(FAILED(hdrHr)){(*out)->Release();*out=nullptr;return hdrHr;}
         }
+#ifndef NORTHLIGHT_REPLAY_STAND
+        // Install before Device/WorldRenderer constructors can latch a client signature.
+        const char* captureReason=nullptr;
+        auto nativeCapture=SUCCEEDED(hr)&&out&&*out&&stream?NorthlightNativeCapture::Session::fromEnvironment(selfModule,captureReason):std::shared_ptr<NorthlightNativeCapture::Session>{};
+#endif
         if(SUCCEEDED(hr)&&out&&*out){auto* device=new Device(*out,this,presentation);*out=device;hr=device->initHdrTargets();if(FAILED(hr)){device->Release();*out=nullptr;return hr;}}
         if(SUCCEEDED(hr)&&out&&*out&&stream){
-            IDirect3DDevice9* device=*out;*out=startStream(device,pp,framesAhead,frameSkip,occlusionLocal);
+            IDirect3DDevice9* device=*out;*out=startStream(device,pp,framesAhead,frameSkip,occlusionLocal
+#ifndef NORTHLIGHT_REPLAY_STAND
+                ,nativeCapture,captureReason
+#endif
+            );
             if(presentation.active&&*out==device){
                 logf("HDR experimental device creation refused: CommandStream startup failed");
                 device->Release();*out=nullptr;return D3DERR_NOTAVAILABLE;

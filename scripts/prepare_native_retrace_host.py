@@ -31,7 +31,7 @@ PINS = {
     'specs/d3d9.py': '5377d7aa156b93fe1958bfdeb9e1bba0fda9c229a31187c20d0215b27c10afc6',
 }
 HELPERS = ('native_retrace_bridge.h', 'native_retrace_bridge.cpp', 'client_image.h',
-           'snapshot_archive.h', 'snapshot_store.h')
+           'snapshot_archive.h', 'snapshot_store.h', 'client_code_observation.h')
 
 
 def digest(path):

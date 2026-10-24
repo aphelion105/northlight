@@ -174,9 +174,36 @@ BOOL WINAPI DllMain(HINSTANCE module,DWORD reason,LPVOID){if(reason==DLL_PROCESS
 #include "native_scene_trace_smoke.cpp"
 #undef main
 
+static thread_local HWND resizingWindow=nullptr;
+static thread_local SIZE resizingOuter{};
+static LRESULT CALLBACK transportWindowProc(HWND window,UINT message,WPARAM wParam,LPARAM lParam){
+    const auto result=DefWindowProcA(window,message,wParam,lParam);
+    if(message==WM_GETMINMAXINFO&&window==resizingWindow){
+        auto& limits=*reinterpret_cast<MINMAXINFO*>(lParam);
+        std::fprintf(stderr,"CLIENT_RESIZE_LIMITS requestedOuter=%ldx%ld defaultMin=%ldx%ld defaultMax=%ldx%ld\n",resizingOuter.cx,resizingOuter.cy,limits.ptMinTrackSize.x,limits.ptMinTrackSize.y,limits.ptMaxTrackSize.x,limits.ptMaxTrackSize.y);
+        // Allow this owned hidden fixture's exact size, only during its explicit resize.
+        if(limits.ptMinTrackSize.x>resizingOuter.cx)limits.ptMinTrackSize.x=resizingOuter.cx;
+        if(limits.ptMinTrackSize.y>resizingOuter.cy)limits.ptMinTrackSize.y=resizingOuter.cy;
+        std::fprintf(stderr,"CLIENT_RESIZE_LIMITS appliedMin=%ldx%ld\n",limits.ptMinTrackSize.x,limits.ptMinTrackSize.y);
+        return 0;
+    }
+    return result;
+}
+static void windowGeometry(HWND window,const char* stage){
+    RECT outer{},client{};SetLastError(0);const BOOL gotOuter=GetWindowRect(window,&outer);const auto outerError=GetLastError();
+    SetLastError(0);const BOOL gotClient=GetClientRect(window,&client);const auto clientError=GetLastError();
+    std::fprintf(stderr,"CLIENT_GEOMETRY %s style=%08lx exstyle=%08lx window=%ld,%ld,%ld,%ld client=%ld,%ld,%ld,%ld rectOK=%u/%u rectError=%lu/%lu systemMinTrack=%dx%d menu=%u\n",stage,(unsigned long)GetWindowLongPtrW(window,GWL_STYLE),(unsigned long)GetWindowLongPtrW(window,GWL_EXSTYLE),outer.left,outer.top,outer.right,outer.bottom,client.left,client.top,client.right,client.bottom,unsigned(gotOuter),unsigned(gotClient),(unsigned long)outerError,(unsigned long)clientError,GetSystemMetrics(SM_CXMINTRACK),GetSystemMetrics(SM_CYMINTRACK),unsigned(GetMenu(window)!=nullptr));
+    assert(gotOuter&&gotClient);
+}
 static void resizeClient(HWND window,unsigned width,unsigned height){
-    RECT desired{0,0,LONG(width),LONG(height)};assert(AdjustWindowRectEx(&desired,DWORD(GetWindowLongPtrW(window,GWL_STYLE)),FALSE,DWORD(GetWindowLongPtrW(window,GWL_EXSTYLE))));
-    assert(SetWindowPos(window,nullptr,0,0,desired.right-desired.left,desired.bottom-desired.top,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE));
+    windowGeometry(window,"before-resize");
+    RECT desired{0,0,LONG(width),LONG(height)};SetLastError(0);
+    const BOOL adjusted=AdjustWindowRectEx(&desired,DWORD(GetWindowLongPtrW(window,GWL_STYLE)),GetMenu(window)!=nullptr,DWORD(GetWindowLongPtrW(window,GWL_EXSTYLE)));const auto adjustError=GetLastError();
+    std::fprintf(stderr,"CLIENT_RESIZE_ADJUST requestedClient=%ux%u adjusted=%u error=%lu outer=%ld,%ld,%ld,%ld\n",width,height,unsigned(adjusted),(unsigned long)adjustError,desired.left,desired.top,desired.right,desired.bottom);assert(adjusted);
+    assert(!resizingWindow);resizingOuter={desired.right-desired.left,desired.bottom-desired.top};assert(resizingOuter.cx>0&&resizingOuter.cy>0);resizingWindow=window;SetLastError(0);
+    const BOOL moved=SetWindowPos(window,nullptr,0,0,resizingOuter.cx,resizingOuter.cy,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);const auto moveError=GetLastError();resizingWindow=nullptr;
+    std::fprintf(stderr,"CLIENT_RESIZE_SET result=%u error=%lu requestedOuter=%ldx%ld\n",unsigned(moved),(unsigned long)moveError,resizingOuter.cx,resizingOuter.cy);
+    windowGeometry(window,"after-resize");assert(moved);
     RECT actual{};assert(GetClientRect(window,&actual));assert(actual.right==LONG(width)&&actual.bottom==LONG(height));
 }
 static void verifyMarkerState(IDirect3DDevice9* device,IDirect3DVertexShader9* vs,IDirect3DPixelShader9* ps,IDirect3DTexture9* texture,const D3DVIEWPORT9& viewport){
@@ -187,8 +214,9 @@ static void verifyMarkerState(IDirect3DDevice9* device,IDirect3DVertexShader9* v
     DWORD zEnable=0,zWrite=0;ok(device->GetRenderState(D3DRS_ZENABLE,&zEnable));ok(device->GetRenderState(D3DRS_ZWRITEENABLE,&zWrite));assert(zEnable==TRUE&&zWrite==TRUE);
 }
 int main(int argc,char** argv){
-    assert(argc==2||argc==3);const std::string output=argv[1];const bool reset=argc==3&&!std::strcmp(argv[2],"reset-resize");assert(argc==2||reset);
-    WNDCLASSA cls{};cls.lpfnWndProc=DefWindowProcA;cls.hInstance=GetModuleHandleA(nullptr);cls.lpszClassName="NorthlightAuthoredTransport";assert(RegisterClassA(&cls));
+    assert(argc==2||argc==3);const std::string output=argv[1];const bool resized=argc==3&&!std::strcmp(argv[2],"reset-resize");
+    const bool reset=resized||(argc==3&&!std::strcmp(argv[2],"reset-unresized"));assert(argc==2||reset);
+    WNDCLASSA cls{};cls.lpfnWndProc=reset?transportWindowProc:DefWindowProcA;cls.hInstance=GetModuleHandleA(nullptr);cls.lpszClassName="NorthlightAuthoredTransport";assert(RegisterClassA(&cls));
     HWND window=CreateWindowA(cls.lpszClassName,"",WS_OVERLAPPED,0,0,128,128,nullptr,nullptr,cls.hInstance,nullptr);assert(window&&!IsWindowVisible(window));
     HMODULE module=LoadLibraryA("d3d9.dll");assert(module);auto create=reinterpret_cast<IDirect3D9*(WINAPI*)(UINT)>(GetProcAddress(module,"Direct3DCreate9"));assert(create);
     auto api=create(D3D_SDK_VERSION);assert(api);D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=window;pp.BackBufferWidth=96;pp.BackBufferHeight=80;
@@ -196,7 +224,7 @@ int main(int argc,char** argv){
     IDirect3DDevice9* d=nullptr;ok(api->CreateDevice(0,D3DDEVTYPE_HAL,window,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_MULTITHREADED|D3DCREATE_FPU_PRESERVE,&pp,&d));
     const auto loaded=modules();unsigned images=0,occlusions=0;
     for(unsigned round=0;round<(reset?2u:1u);++round){
-        if(round){pp.BackBufferWidth=112;pp.BackBufferHeight=96;resizeClient(window,112,96);parameters("authored-client-resized-before-reset",d,window,pp);ok(d->Reset(&pp));}
+        if(round){pp.BackBufferWidth=112;pp.BackBufferHeight=96;windowGeometry(window,"before-reset-control");if(resized)resizeClient(window,112,96);parameters(resized?"authored-client-resized-before-reset":"authored-client-unresized-before-reset",d,window,pp);ok(d->Reset(&pp));}
         const unsigned w=pp.BackBufferWidth,h=pp.BackBufferHeight;IDirect3DSurface9 *target=nullptr,*depth=nullptr,*back=nullptr;IDirect3DTexture9* tex=nullptr;
         IDirect3DVertexBuffer9* vb=nullptr;IDirect3DIndexBuffer9* ib=nullptr;IDirect3DVertexDeclaration9* decl=nullptr;IDirect3DVertexShader9* vs=nullptr;IDirect3DPixelShader9* ps=nullptr;IDirect3DQuery9 *event=nullptr,*occlusion=nullptr;
         ok(d->GetBackBuffer(0,0,D3DBACKBUFFER_TYPE_MONO,&back));ok(d->CreateRenderTarget(w,h,D3DFMT_A8R8G8B8,D3DMULTISAMPLE_NONE,0,FALSE,&target,nullptr));
@@ -226,7 +254,7 @@ int main(int argc,char** argv){
         event->Release();occlusion->Release();vs->Release();ps->Release();decl->Release();vb->Release();ib->Release();tex->Release();target->Release();depth->Release();back->Release();
     }
     assert(images==(reset?6u:3u)&&occlusions==images);assert(d->Release()==0);api->Release();DestroyWindow(window);FreeLibrary(module);
-    std::ofstream report(output+"/authored-source.json");report<<"{\"format\":1,\"authored_transport\":true,\"game_launched\":false,\"fps_eligible\":false,\"full_scene_ready\":false,\"raw_depth_equivalence_validated\":false,\"frames\":"<<images<<",\"draws\":"<<images*4<<",\"nonzero_occlusions\":"<<occlusions<<",\"event_completions\":"<<images<<",\"reset_client_resize_control\":"<<(reset?"true":"false")<<",\"modules\":"<<loaded<<"}\n";report.close();assert(report);
+    std::ofstream report(output+"/authored-source.json");report<<"{\"format\":1,\"authored_transport\":true,\"game_launched\":false,\"fps_eligible\":false,\"full_scene_ready\":false,\"raw_depth_equivalence_validated\":false,\"frames\":"<<images<<",\"draws\":"<<images*4<<",\"nonzero_occlusions\":"<<occlusions<<",\"event_completions\":"<<images<<",\"reset_requested\":"<<(reset?"true":"false")<<",\"reset_client_resize_control\":"<<(resized?"true":"false")<<",\"modules\":"<<loaded<<"}\n";report.close();assert(report);
     std::puts("PASS authored transport producer: actual Draw/query/color/state sequence; original game quality/FPS unproven");
 }
 #endif

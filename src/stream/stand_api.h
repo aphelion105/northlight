@@ -42,6 +42,13 @@ extern "C" __declspec(dllexport) int __cdecl NorthlightStandSnapshot(const void*
        !s.inputs->bind(s.snapshot,draw,trigger)){s.inputs->reject();return 0;}
     ++s.snapshots;return 1;
 }
+extern "C" __declspec(dllexport) int __cdecl NorthlightStandCodeProof(const void* proof,unsigned bytes){
+    auto& s=NorthlightStandApi::state();
+    if(!NorthlightStandApi::owner(s)||!s.inputs||!s.inputs->valid())return 0;
+    if(s.apiStarted||s.snapshots||!s.scope||!s.scope->entered()){s.inputs->reject();return 0;}
+    try{return s.inputs->bindCodeProof(proof,bytes)?1:0;}
+    catch(...){s.inputs->reject();return 0;}
+}
 extern "C" __declspec(dllexport) int __cdecl NorthlightStandStatus(std::uint64_t* output,unsigned words){
     auto& s=NorthlightStandApi::state();
     if(!output||words!=8||!NorthlightStandApi::owner(s)||!s.inputs)return 0;

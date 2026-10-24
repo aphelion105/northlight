@@ -1,5 +1,6 @@
 #include "native_retrace_bridge.h"
 #include "client_image.h"
+#include "client_code_observation.h"
 #include "snapshot_archive.h"
 #include "native_retrace_identity.h" // Derived from the exact pure runtime readers by the preparation script.
 #include "d3dretrace.hpp"
@@ -124,6 +125,7 @@ struct State {
     std::unique_ptr<unsigned char[]> plan;
     std::unique_ptr<NorthlightStream::GameSnapshot> aliasSnapshot;
     const unsigned char* pe=nullptr;const unsigned char* records=nullptr;const unsigned char* packets=nullptr;
+    const unsigned char* codeProof=nullptr;unsigned codeProofBytes=0;
     wchar_t dllPath[MaxPathBytes+1]{},tracePath[MaxPathBytes+1]{};
     char dllUtf8[MaxPathBytes+1]{},session[MaxSessionBytes+1]{};
     std::array<Original,1024> originals{};
@@ -132,6 +134,7 @@ struct State {
     int (__cdecl* open)(const void*,unsigned)=nullptr;
     int (__cdecl* snapshot)(const void*,unsigned,std::uint64_t,unsigned)=nullptr;
     int (__cdecl* aliases)(const std::uint64_t*,unsigned,std::uint64_t,unsigned)=nullptr;
+    int (__cdecl* admitCodeProof)(const void*,unsigned)=nullptr;
     int (__cdecl* status)(std::uint64_t*,unsigned)=nullptr;
     const unsigned char* record()const{return next<count?records+std::size_t(next)*RecordBytes:nullptr;}
     std::uint64_t h64(unsigned n)const{return u64(plan.get()+n);}
@@ -235,6 +238,10 @@ void factory(trace::Call& c){
     if(!n||n>MaxPathBytes||!moduleFile.open(actual)||!sameFile(moduleFile,s.dllFile))reject("loaded-stand-identity",&c);
     s.open=procedure<decltype(s.open)>(s.module,"NorthlightStandOpen");s.snapshot=procedure<decltype(s.snapshot)>(s.module,"NorthlightStandSnapshot");s.status=procedure<decltype(s.status)>(s.module,"NorthlightStandStatus");s.aliases=procedure<decltype(s.aliases)>(s.module,"NorthlightStandAliases");
     if(!s.open||!s.snapshot||!s.status||!s.aliases||!s.open(s.pe,s.peBytes))reject("stand-open",&c);
+    if(s.h32(Header::Flags)&CodeProofRequired){
+        s.admitCodeProof=procedure<decltype(s.admitCodeProof)>(s.module,"NorthlightStandCodeProof");
+        if(!s.admitCodeProof||!s.admitCodeProof(s.codeProof,s.codeProofBytes))reject("stand-code-proof",&c);
+    }
     bind(c,s.record());
     g_szD3D9DllName=s.dllUtf8;g_hD3D9Module=s.module;
 }
@@ -347,18 +354,20 @@ bool sourceTrace(const char* source,bool filteredOrRepeated){
     if(!n){if(s.selected)return refused("plan-disappeared");return true;}
     if(n>=32768||s.selected||filteredOrRepeated)return refused("plan-selection-or-filter");s.selected=true;
     if(!s.planFile.open(planPath)||!s.planFile.size(s.planBytes))return refused("plan-open");
-    constexpr std::uint64_t maximum=HeaderBytes+MaxSessionBytes+2*MaxPathBytes+MaxPeBytes+MaxRecords*RecordBytes+MaxPacketBytes;
+    constexpr std::uint64_t maximum=HeaderBytes+MaxSessionBytes+2*MaxPathBytes+MaxPeBytes+MaxRecords*RecordBytes+MaxPacketBytes+NorthlightStream::ClientCodeObservation::MaxEncodedBytes;
     if(s.planBytes<HeaderBytes||s.planBytes>maximum)return refused("plan-size");
     s.plan.reset(new(std::nothrow) unsigned char[std::size_t(s.planBytes)]);if(!s.plan||!readAll(s.planFile,s.plan.get(),std::size_t(s.planBytes)))return refused("plan-read");
     const auto* h=s.plan.get();if(std::memcmp(h,"NLJOIN1\0",8)||u32(h+8)!=Version||u32(h+12)!=HeaderBytes||u64(h+Header::Total)!=s.planBytes)return refused("plan-header");
     const auto flags=u32(h+Header::Flags);
-    if(!(flags&AboveNorthlight)||(flags&~(AboveNorthlight|AliasesRequired|AuthoredTransport)))return refused("capture-layer-or-required-aliases");
+    if(!(flags&AboveNorthlight)||(flags&~(AboveNorthlight|AliasesRequired|AuthoredTransport|CodeProofRequired)))return refused("capture-layer-or-required-aliases");
     if(flags&AuthoredTransport){wchar_t allowed[3]{};if(GetEnvironmentVariableW(L"NORTHLIGHT_RETRACE_ALLOW_AUTHORED",allowed,3)!=1||allowed[0]!=L'1')return refused("authored-not-allowed");}
+    else if(!(flags&CodeProofRequired))return refused("client-code-proof-required");
     s.count=u32(h+Header::Records);s.peBytes=u32(h+Header::PeBytes);const auto sessionBytes=u32(h+Header::SessionBytes),dllBytes=u32(h+Header::DllPathBytes),traceBytes=u32(h+Header::TracePathBytes);
     const auto packetBytes=u64(h+Header::PacketBytes);
     if(!s.count||s.count>MaxRecords||!sessionBytes||sessionBytes>MaxSessionBytes||!dllBytes||dllBytes>MaxPathBytes||!traceBytes||traceBytes>MaxPathBytes||s.peBytes<64||s.peBytes>MaxPeBytes||packetBytes>MaxPacketBytes||!s.h32(Header::OsThread))return refused("plan-capacity");
     const auto expected=HeaderBytes+std::uint64_t(sessionBytes)+dllBytes+traceBytes+s.peBytes+std::uint64_t(s.count)*RecordBytes+packetBytes;
-    if(expected!=s.planBytes||!hashBytes(h+HeaderBytes,std::size_t(s.planBytes)-HeaderBytes,h+Header::PayloadHash))return refused("plan-payload");
+    if(expected>s.planBytes||s.planBytes-expected>NorthlightStream::ClientCodeObservation::MaxEncodedBytes||
+       bool(flags&CodeProofRequired)!=(expected<s.planBytes)||!hashBytes(h+HeaderBytes,std::size_t(s.planBytes)-HeaderBytes,h+Header::PayloadHash))return refused("plan-payload");
     for(unsigned offset:{Header::FactoryCall,Header::CreateCall,Header::Factory,Header::Device,Header::FinalRelease})if(s.h64(offset)>UINT32_MAX)return refused("plan-u32-identity");
     if(!s.h64(Header::Factory)||!s.h64(Header::Device)||s.h64(Header::Factory)==s.h64(Header::Device)||s.h64(Header::FactoryCall)>=s.h64(Header::CreateCall)||s.h64(Header::CreateCall)>=s.h64(Header::FinalRelease)||!s.h64(Header::Draws)||s.h64(Header::Resets)>UINT32_MAX)return refused("plan-identity-order");
     const unsigned char* p=h+HeaderBytes;
@@ -368,6 +377,11 @@ bool sourceTrace(const char* source,bool filteredOrRepeated){
     if(!path(p,traceBytes,s.tracePath))return refused("plan-trace-path");p+=traceBytes;s.pe=p;p+=s.peBytes;s.records=p;s.packets=p+std::size_t(s.count)*RecordBytes;
     NorthlightStream::ClientImage::View image;NorthlightStream::ClientImage::Error imageError;
     if(!hashBytes(s.pe,s.peBytes,h+Header::PeHash)||!image.open(s.pe,s.peBytes,imageError))return refused("plan-pe");
+    if(flags&CodeProofRequired){
+        s.codeProof=h+expected;s.codeProofBytes=unsigned(s.planBytes-expected);
+        std::unique_ptr<NorthlightStream::ClientCodeObservation::Proof> proof(new(std::nothrow) NorthlightStream::ClientCodeObservation::Proof);NorthlightStream::ClientCodeObservation::Error error;
+        if(!proof||!NorthlightStream::ClientCodeObservation::decode(s.codeProof,s.codeProofBytes,image,*proof,error))return refused("client-code-proof");
+    }
     wchar_t actualPath[MaxPathBytes+1];File selected;
     if(!source||!path(reinterpret_cast<const unsigned char*>(source),unsigned(std::strlen(source)),actualPath)||!selected.open(actualPath)||!s.traceFile.open(s.tracePath)||!sameFile(selected,s.traceFile)||!hashFile(s.traceFile,h+Header::TraceHash))return refused("selected-trace");
     if(!s.dllFile.open(s.dllPath)||!hashFile(s.dllFile,h+Header::DllHash))return refused("stand-dll-hash");

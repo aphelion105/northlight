@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import re
 import struct
+import zlib
 import subprocess
 import threading
 
@@ -121,6 +122,49 @@ def packet_reads(data):
         if flags:
             offset += size
     return grouped
+
+
+def code_observation(data):
+    """Validate bounded proof framing; C++ also verifies each span against PE bytes."""
+    if not 52 <= len(data) <= 67636 or data[:8] != b'NLCODE1\0':
+        raise ValueError('Invalid client code proof framing')
+    version, total, count, payload, observations, prefix, reserved_a, reserved_b = struct.unpack_from('<4I2Q2I', data, 8)
+    if (version != 1 or total != len(data) or not 1 <= count <= 128 or not 1 <= payload <= 65536 or
+            observations < count or prefix or reserved_a or reserved_b or
+            len(data) != 48 + count * 16 + payload + 4 or
+            struct.unpack_from('<I', data, len(data) - 4)[0] != zlib.crc32(data[:-4])):
+        raise ValueError('Invalid client code proof header/checksum')
+    keys, size_sum, observed_sum = set(), 0, 0
+    for index in range(count):
+        address, size, seen = struct.unpack_from('<QII', data, 48 + index * 16)
+        if not 0x400000 <= address <= 0xffffffff or not 1 <= size <= 512 or size > 0x100000000 - address or not seen or (address, size) in keys:
+            raise ValueError('Invalid client code proof span')
+        keys.add((address, size)); size_sum += size; observed_sum += seen
+    if size_sum != payload or observed_sum != observations:
+        raise ValueError('Client code proof counters differ')
+    return {'spans': count, 'observations': observations, 'payload_bytes': payload}
+
+
+def client_code_inputs(root, host, authored, inputs):
+    policy = host.get('client_code_policy')
+    if policy is None and authored:
+        return b'', None
+    if policy != 'strict-per-read':
+        raise ValueError('Genuine capture requires observed client code correspondence')
+    status_path, proof_path = root / 'client-code-status.json', root / 'client-code.nlcode'
+    status = load_json(status_path)
+    if (status.get('format') != 1 or status.get('session') != host.get('session') or
+            status.get('policy') != policy or status.get('complete') is not True or
+            status.get('prefix_calls') != 0 or status.get('fps_eligible') is not False):
+        raise ValueError('Incomplete client code correspondence')
+    if not 52 <= proof_path.stat().st_size <= 67636:
+        raise ValueError('Client code proof exceeds bounded framing')
+    data = proof_path.read_bytes()
+    if len(data) != status.get('bytes') or hashlib.sha256(data).hexdigest() != status.get('sha256'):
+        raise ValueError('Client code proof identity differs')
+    summary = code_observation(data)
+    inputs[str(status_path)] = digest(status_path); inputs[str(proof_path)] = digest(proof_path)
+    return data, summary
 
 
 def native_resource_identities(data):
@@ -362,6 +406,7 @@ def compile_plan(args):
         pe32(producer); inputs[str(producer)] = digest(producer)
     elif host.get('client_sha256') != inputs[str(client)] or Path(host.get('client_path', '')).resolve() != client:
         raise ValueError('A real capture must identify the exact original client PE')
+    code_proof, code_summary = client_code_inputs(root, host, authored, inputs)
     if not 64 <= client.stat().st_size <= 64 << 20 or not 0 < trace.stat().st_size <= 16 << 30:
         raise ValueError('Client or trace size exceeds the bounded protocol')
     pe32(client); pe32(dll)
@@ -371,6 +416,8 @@ def compile_plan(args):
     aliases_required = any(identities)
     if aliases_required and b'NorthlightStandAliases\0' not in dll_data:
         raise ValueError('The selected stand DLL has no typed alias admission capability')
+    if code_proof and b'NorthlightStandCodeProof\0' not in dll_data:
+        raise ValueError('The selected stand DLL has no client code proof capability')
     if any(Path(p) == output or Path(p).is_relative_to(output) for p in inputs) or output.is_relative_to(root):
         raise ValueError('Private output must not overlap capture/source inputs')
     output.mkdir(parents=True)
@@ -378,7 +425,9 @@ def compile_plan(args):
                '--multiline=false', str(trace)]
     report = {'format': 1, 'command': command, 'inputs': inputs, 'diagnostic': True, 'fps_eligible': False,
               'scene_ready': False, 'authored_transport_only': authored, 'typed_resource_aliases_required': aliases_required,
-              'typed_resource_aliases_runtime_validated': False, 'record_resource_identities': identities, 'pass': False}
+              'typed_resource_aliases_runtime_validated': False, 'record_resource_identities': identities,
+              'client_code_proof_required': bool(code_proof), 'client_code_observation': code_summary,
+              'client_code_runtime_validation_pending': bool(code_proof), 'pass': False}
     try:
         env = os.environ.copy(); env['TEMP'] = env['TMP'] = str(output)
         code = dump_trace(command, output, env)
@@ -394,9 +443,9 @@ def compile_plan(args):
             target, marker, device, draw, frame, epoch, trigger, thread, os_tid, size, crc, api = record
             table += struct.pack('<5Q6IQ2I', target, marker, device, draw, frame, epoch, trigger, thread, os_tid, size, crc, offset, api, 0)
             offset += size
-        payload = session.encode('ascii') + b''.join(paths) + client.read_bytes() + table + b''.join(packets)
+        payload = session.encode('ascii') + b''.join(paths) + client.read_bytes() + table + b''.join(packets) + code_proof
         header = bytearray(HEADER_BYTES); header[:8] = b'NLJOIN1\0'
-        flags = 1 | (2 if aliases_required else 0) | (4 if authored else 0)
+        flags = 1 | (2 if aliases_required else 0) | (4 if authored else 0) | (8 if code_proof else 0)
         struct.pack_into('<IIQ6IQ8Q2I', header, 8, 1, HEADER_BYTES, HEADER_BYTES + len(payload), len(records), flags,
                          len(session), len(paths[0]), len(paths[1]), client.stat().st_size, offset,
                          summary['factory_call'], summary['create_call'], summary['factory'], summary['device'],
