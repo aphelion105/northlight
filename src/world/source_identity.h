@@ -21,7 +21,7 @@ template<class T> std::shared_ptr<T> allocate(const std::shared_ptr<Ledger>& led
 struct Key {
     const std::vector<std::uint64_t> words;
     const std::uint64_t hash;
-    static std::uint64_t fingerprint(const std::vector<std::uint64_t>& words){
+    template<class Words> static std::uint64_t fingerprint(const Words& words){
         std::uint64_t h=1469598103934665603ull;for(auto word:words){h^=word;h*=1099511628211ull;}return h;
     }
     explicit Key(std::vector<std::uint64_t> value):words(std::move(value)),hash(fingerprint(words)){identityLiveBytes.fetch_add(bytes(),std::memory_order_relaxed);}

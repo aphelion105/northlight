@@ -14,6 +14,7 @@ test_ao_fog_capture.py
 test_ao_fold.py
 test_ao_live_switch.py
 test_ao_methods.py
+test_ao_quality.py
 test_ao_rotation_stripes.py
 test_ao_submit_profile.py
 test_ao_texel_snap.py
@@ -122,6 +123,7 @@ test_logger_cost.py
 test_m2_shader_families.py
 test_m2_shader_families_client.py
 test_m2_visibility.py
+test_material_batch_bindings.py
 test_material_geometry.py
 test_material_profile.py
 test_material_ray_work.py
@@ -220,6 +222,7 @@ test_shared_scene_ties.py
 test_shared_source_lifecycle.py
 test_shared_static_preparation.py
 test_snapshot_allocation.py
+test_snapshot_lookup_identity.py
 test_snapshot_prediction.py
 test_solar_volume.py
 test_spell_asset_manifest.py

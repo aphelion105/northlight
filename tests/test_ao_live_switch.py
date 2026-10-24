@@ -33,6 +33,7 @@ constexpr unsigned D3DFMT_UNKNOWN=0,D3DFMT_A16B16G16R16F=1,D3DUSAGE_RENDERTARGET
 bool FAILED(int hr){return hr<0;}
 namespace NorthlightBackend {bool isPackagedDxvk(int backend){return backend==1;}}
 const DWORD kAoShader[]={1},kAoContactBloomShader[]={2},kHdaoContactBloomShader[]={3},kHbaoPlusContactBloomShader[]={4},kGtaoContactBloomShader[]={5},kAoBlurShader[]={6},kContactBloomShader[]={7},kCompositeShader[]={8};
+const DWORD kHdaoContactBloomMediumShader[]={9},kHbaoPlusContactBloomMediumShader[]={10},kGtaoContactBloomMediumShader[]={11},kHdaoContactBloomLowShader[]={12},kHbaoPlusContactBloomLowShader[]={13},kGtaoContactBloomLowShader[]={14};
 unsigned alive=0;std::size_t textureBytes=0;
 struct Surface {Surface(){++alive;}void Release(){--alive;delete this;}};
 struct Texture {
@@ -57,7 +58,7 @@ struct Service {int preview=-1;int aoPreview()const{return preview;}};
 struct World {unsigned method=0;bool enabled=true;unsigned aoMethod()const{return method;}bool contactAO()const{return enabled;}};
 struct Renderer {
     Device* ext;Service* settingsService;World* world;
-    unsigned width=0,height=0,aoMethod=0,selectedBackend=0;
+    unsigned width=0,height=0,aoMethod=0,aoQuality=0,selectedBackend=0;
     unsigned sceneFormat=0,depthSnapshotFormat=0;
     bool worldDepthDescKnown=false,df24Refused=false,rainDepthOk=false,rainMaskCleared=false,rainMaskDrawn=false,rainMaskFailed=false,captured=false,contactAO=true,failed=false;
     struct {unsigned MultiSampleType=0;}worldDepthDesc;
@@ -67,6 +68,7 @@ struct Renderer {
     bool error(int hr,const char*){if(hr<0)failed=true;return hr<0;}
     void rainMrtUnbind(){}
     template<class...T>void logf(const char*,T...){}
+    __SELECT__
     __RESOURCES__
     void nextFrame(){__FRAME__}
     ~Renderer(){drop(sceneSurface);drop(aoSurface);drop(aoRawSurface);drop(scene);drop(ao);drop(aoRaw);drop(depthTex);drop(rainMaskMS);drop(rainMaskSurface);drop(rainMask);drop(rainDepth);drop(aoPS);drop(aoContactBloomPS);drop(aoBlurPS);drop(contactBloomPS);drop(compositePS);}
@@ -139,13 +141,28 @@ int main(){
         }
         world.method=2;world.enabled=false;service.preview=-1;r.nextFrame();assert(r.aoMethod==2&&!r.contactAO);assert(r.resources(800,600,10));
         assert(r.aoContactBloomPS->code==kHbaoPlusContactBloomShader&&device.textures==4);
+        const DWORD* qualityShaders[3][4]={
+            {kAoContactBloomShader,kHdaoContactBloomShader,kHbaoPlusContactBloomShader,kGtaoContactBloomShader},
+            {kAoContactBloomShader,kHdaoContactBloomMediumShader,kHbaoPlusContactBloomMediumShader,kGtaoContactBloomMediumShader},
+            {kAoContactBloomShader,kHdaoContactBloomLowShader,kHbaoPlusContactBloomLowShader,kGtaoContactBloomLowShader}};
+        for(unsigned method=0;method<4;++method)for(unsigned quality=0;quality<3;++quality){
+            r.selectAO(method,quality);assert(r.resources(800,600,10));
+            assert(r.aoContactBloomPS->code==qualityShaders[quality][method]);
+            const auto shader=r.aoContactBloomPS;const auto count=device.shaders;
+            r.selectAO(method,quality);assert(r.resources(800,600,10)&&r.aoContactBloomPS==shader&&device.shaders==count);
+            assert(r.scene==scene&&r.depthTex==depth&&r.ao==ao&&r.aoRaw==raw&&device.textures==4);
+        }
+        r.selectAO(0,0);assert(r.resources(800,600,10));
+        const auto ssao=r.aoContactBloomPS;const auto ssaoCount=device.shaders;
+        r.selectAO(0,2);assert(r.resources(800,600,10)&&r.aoContactBloomPS==ssao&&device.shaders==ssaoCount);
+        r.selectAO(2,0);assert(r.resources(800,600,10));
         service.preview=7;r.nextFrame();device.failShader=true;assert(!r.resources(800,600,10)&&r.failed);
         device.failShader=false;r.failed=false;assert(r.resources(800,600,10)&&r.aoContactBloomPS->code==kGtaoContactBloomShader&&device.textures==4);
     }
     assert(alive==0);
     std::cout<<"AO live switch and lazy HDR: 200 frame transitions, exact allocation bytes, retained targets, depth-format changes, failure/retry and lifetimes passed\n";
 }
-'''.replace('__RESOURCES__', extract('    bool resources(UINT w, UINT h, D3DFORMAT format,')).replace('__FRAME__', extract('        if(settingsService&&world){'))
+'''.replace('__SELECT__', extract('    void selectAO(')).replace('__RESOURCES__', extract('    bool resources(UINT w, UINT h, D3DFORMAT format,')).replace('__FRAME__', extract('        if(settingsService&&world){'))
 with tempfile.TemporaryDirectory(prefix='northlight-ao-live-') as tmp:
     cpp = Path(tmp) / 'ao_live.cpp'
     exe = Path(tmp) / 'ao_live.exe'

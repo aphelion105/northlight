@@ -335,17 +335,40 @@ private:
             const auto identity=m.known&&m.identity?m.identity:identity_(resource,s==4),revision=m.known&&m.identity?m.revision:version_(resource,s==4);
             if(identity!=(s<4?key.vb[s]:key.ib)||revision!=key.version[s])return false;}return true;
     }
-    NorthlightSourceIdentity::Handle sourceIdentity(CacheKey key,IDirect3DVertexDeclaration9* declaration){
-      try{
+    // Optional alias lookup borrows bounded words instead of allocating a Key.
+    // Persisted keys retain their original vector capacity and ownership.
+    struct IdentityWords {
+        static constexpr size_t Capacity=4+sizeof(CacheKey)/4+MAXD3DDECLLENGTH+1;
+        std::array<std::uint64_t,Capacity> values;size_t count=0;
+        void reserve(size_t requested){if(requested>Capacity)throw std::bad_alloc();}
+        void push_back(std::uint64_t value){if(count==Capacity)throw std::bad_alloc();values[count++]=value;}
+        const std::uint64_t* begin()const{return values.data();}
+        const std::uint64_t* end()const{return values.data()+count;}
+    };
+    template<class Words> bool sourceIdentityWords(CacheKey& key,IDirect3DVertexDeclaration9* declaration,Words& words){
         D3DVERTEXELEMENT9 local[MAXD3DDECLLENGTH+1];const D3DVERTEXELEMENT9* elements=local;UINT count=MAXD3DDECLLENGTH+1;
-        if(declaration_){if(!declaration_(declarationContext_,declaration,elements,count))return {};}
-        else if(FAILED(declaration->GetDeclaration(local,&count)))return {};
-        if(!elements||count>MAXD3DDECLLENGTH+1)return {};
-        key.declaration=nullptr;key.privateDomain=nullptr;std::vector<std::uint64_t> words;words.reserve(4+sizeof key/4+count);words.push_back(1);words.push_back(1); // stable ascending compaction, version 1
+        if(declaration_){if(!declaration_(declarationContext_,declaration,elements,count))return false;}
+        else if(FAILED(declaration->GetDeclaration(local,&count)))return false;
+        if(!elements||count>MAXD3DDECLLENGTH+1)return false;
+        key.declaration=nullptr;key.privateDomain=nullptr;words.reserve(4+sizeof key/4+count);words.push_back(1);words.push_back(1);
         for(size_t at=0;at<sizeof key;at+=4){std::uint32_t word;std::memcpy(&word,reinterpret_cast<const unsigned char*>(&key)+at,4);words.push_back(word);}
         words.push_back(count);for(UINT i=0;i<count;++i){const auto& e=elements[i];words.push_back(std::uint64_t(e.Stream)|(std::uint64_t(e.Offset)<<16)|(std::uint64_t(e.Type)<<32)|(std::uint64_t(e.Method)<<40)|(std::uint64_t(e.Usage)<<48)|(std::uint64_t(e.UsageIndex)<<56));}
+        return true;
+    }
+    NorthlightSourceIdentity::Handle sourceIdentity(CacheKey key,IDirect3DVertexDeclaration9* declaration){
+      try{
+        std::vector<std::uint64_t> words;if(!sourceIdentityWords(key,declaration,words))return {};
         return NorthlightSourceIdentity::make(std::move(words));
       }catch(...){return {};}
+    }
+    CacheEntry* sourceAlias(CacheKey key){
+      try{
+        IdentityWords words;if(!sourceIdentityWords(key,static_cast<IDirect3DVertexDeclaration9*>(const_cast<void*>(key.declaration)),words))return nullptr;
+        const auto hash=NorthlightSourceIdentity::Key::fingerprint(words);auto range=sources_->identities.equal_range(hash);
+        for(auto alias=range.first;alias!=range.second;++alias){const auto& stored=alias->second->mesh->sourceIdentity;
+            if(stored&&stored->hash==hash&&stored->words.size()==words.count&&std::equal(words.begin(),words.end(),stored->words.begin()))return alias->second;}
+      }catch(...){}
+        return nullptr;
     }
     // Default: charge a resident hit like a miss, preserving capture admission.
     // A private geometry caller may exempt byte reads for fully tracked hits.
@@ -359,8 +382,7 @@ private:
         if(!found){
             const auto hash=hashKey(key);auto it=sources_->entries.find(hash);if(it==sources_->entries.end()||!(it->second->key==key)){
                 noteMiss(key,hash,it!=sources_->entries.end());
-                if(key.tracked){const auto identity=sourceIdentity(key,static_cast<IDirect3DVertexDeclaration9*>(const_cast<void*>(key.declaration)));if(identity){auto range=sources_->identities.equal_range(identity->hash);
-                    for(auto alias=range.first;alias!=range.second;++alias)if(NorthlightSourceIdentity::same(alias->second->mesh->sourceIdentity,identity)){found=alias->second;break;}}}
+                if(key.tracked)found=sourceAlias(key);
                 if(!found){
                 // Only identical tracking domains and complete current write
                 // generations may borrow. Never revalidate/read/populate a peer,

@@ -112,6 +112,7 @@ function OptionsFrame_AddCategory(frame, panel)
     if panel.parent then assert(panel.parent == "Northlight"); frame.categories[panel.name] = panel else frame.northlight = panel end
 end
 local savedAO, previewMethod, previewEnabled, failPreview = "SSAO", "SSAO", true, false
+local savedAOQuality = "High"
 local function field(file, section, key, kind, value, apply, options, available, factory)
     return table.concat({"F", file, section, key, kind, "0", "1", "1", value, value, factory or "1", value, apply or "F", options or "", "f", value, factory or "1", available == false and "0" or "1"}, "\t") .. "\n"
 end
@@ -121,6 +122,7 @@ local function fixture()
         field("Q", "Quality", "Preset", "enum", "Quality", "R", "Quality,Balanced,Performance", nil, "Quality") ..
         field("Q", "Quality", "Weather", "check", weather, "F", "1,1,1") .. field("Q", "Quality", "GI", "check", "1", "R", "1,1,1") ..
         field("Q", "Quality", "AOMethod", "enum", savedAO, "F", "SSAO,HDAO,HBAOPlus,GTAO", nil, "SSAO") ..
+        field("Q", "Quality", "AOQuality", "enum", savedAOQuality, "F", "High,Medium,Low", nil, "High") ..
         field("R", "Renderer", "Backend", "enum", "native", "R", "native,dxvk,dxvk2,legacy", nil, "dxvk") .. field("R", "Renderer", "ExperimentalHDR", "check", "0", "R", "", HDR_AVAILABLE) .. (EXTRA_FIELDS or "") .. (SNAPSHOT_PADDING or "") .. "CAP\tHDR\tinactive\t0\n" .. (AO_PREVIEW_AVAILABLE and "CAP\tAOPreview\t1\n" or "")
 end
 local live, failSave = true, false
@@ -152,6 +154,7 @@ function SetCVar(k, v)
             local new = server.input:match("Q\tQuality\tWeather\t(%d)")
             if new then weather = new end
             savedAO = server.input:match("Q\tQuality\tAOMethod\t([^\n]+)") or savedAO
+            savedAOQuality = server.input:match("Q\tQuality\tAOQuality\t([^\n]+)") or savedAOQuality
             previewMethod, previewEnabled = savedAO, true
             revision = "r" .. (commits + 1); server.output = "SAVED\t" .. revision .. "\n"
         end
@@ -207,6 +210,21 @@ function Tick(n)
         if queuedReply and now >= replyReady then cvars.northlightSettingsReply, queuedReply = queuedReply, nil end
         for _, o in ipairs(objects) do if o.scripts.OnUpdate and not (HIDE_TRANSPORT and o.transport) and not (REPLACE_VIDEO_UPDATE and o == VideoOptionsFrame) then o.scripts.OnUpdate(o, step) end end
     end
+end
+function CheckAOQuality()
+    local panel = assert(VideoOptionsFrame.northlight); panel:Show(); Tick(30)
+    NorthlightSection_lighting:Show()
+    local function choose(value)
+        local row = FindSetting("AOQuality"); menuItems = {}; row.dropdown.initialize()
+        for _, item in ipairs(menuItems) do if item.text == value then item.func(); return end end
+        error("AO quality option missing: " .. value)
+    end
+    choose("Medium"); Tick(3); assert(commits == 0 and savedAOQuality == "High")
+    panel.cancel(); Tick(3); assert(savedAOQuality == "High" and commits == 0)
+    choose("Low"); VideoOptionsFrameApply:GetScript("OnClick")(VideoOptionsFrameApply, "LeftButton"); Tick(3)
+    assert(commits == 1 and savedAOQuality == "Low" and savedAO == "SSAO" and weather == "1")
+    assert(("\n" .. LAST_COMMIT .. "\n"):find("\nQ\tQuality\tAOQuality\tLow\n", 1, true))
+    print("AO quality: opt-in dropdown, unsaved draft, Cancel, Apply and independent method/settings passed")
 end
 function FindWeatherRow()
     for _, o in ipairs(objects) do if o.field and o.field.key == "Weather" and o:IsShown() then return o end end

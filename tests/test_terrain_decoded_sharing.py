@@ -27,7 +27,7 @@ def main():
     parser.add_argument('--output', type=Path)
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix='terrain-sharing-') as tmp:
-        out = args.output or Path(tmp)
+        out = args.output or (fp.output_dir() / 'terrain-decoded-sharing')
         assert not out.exists() or not any(out.iterdir()), 'Use a new/empty evidence directory'
         out.mkdir(parents=True, exist_ok=True)
         source = fp.TESTS / 'test_terrain_decoded_sharing.cpp'
@@ -65,32 +65,41 @@ def main():
                        '-I', str(out), *fp.test_include_flags(), str(source), '-o', str(exe)]
             compiled = run(command)
             (out / (label + '-compile.log')).write_text(compiled.stdout + compiled.stderr)
+            if compiled.returncode: print(compiled.stdout + compiled.stderr, file=sys.stderr, flush=True)
             compiled.check_returncode()
             result = run([str(exe)])
             (out / (label + '.log')).write_text(result.stdout + result.stderr)
+            if result.returncode: print(result.stdout + result.stderr, file=sys.stderr, flush=True)
             result.check_returncode()
             results.append({'mode': label, 'exe_sha256': sha(exe), 'pass': True})
             print(label, result.stdout, end='', flush=True)
 
-        mutant = out / 'negative';mutant.mkdir()
-        text = fp.src('terrain_capture_bounds.h').read_text()
-        assert text.count('&&!std::memcmp(a,b,count*sizeof(*a))') == 1
-        text = text.replace('&&!std::memcmp(a,b,count*sizeof(*a))', '&&true')
-        (mutant / 'terrain_capture_bounds.h').write_bytes(text.encode())
-        exe = mutant / 'wrong'
-        compiled = run(['clang++', '-std=c++17', '-O2', '-UNDEBUG', '-I', str(mutant), '-I', str(out),
-                        *fp.test_include_flags(), str(source), '-o', str(exe)])
-        (out / 'negative-compile.log').write_text(compiled.stdout + compiled.stderr)
-        compiled.check_returncode()
-        result = run([str(exe)])
-        (out / 'negative.log').write_text(result.stdout + result.stderr)
-        assert result.returncode != 0 and 'DECODED_XYZ_MISMATCH' in result.stderr, result
+        controls = [
+            ('decoded', '&&!std::memcmp(a,b,count*sizeof(*a))', '&&true', 'DECODED_XYZ_MISMATCH'),
+            ('offsets', 'if(std::memcmp(stored+i,&value,sizeof value))return false;',
+             '(void)value;', 'OFFSET_LAYOUT_REVALIDATION_MISMATCH'),
+        ]
+        for label, original, replacement, marker in controls:
+            mutant = out / ('negative-' + label);mutant.mkdir()
+            text = fp.src('terrain_capture_bounds.h').read_text()
+            assert text.count(original) == 1
+            (mutant / 'terrain_capture_bounds.h').write_bytes(text.replace(original, replacement).encode())
+            exe = mutant / 'wrong'
+            compiled = run(['clang++', '-std=c++17', '-O2', '-UNDEBUG', '-I', str(mutant), '-I', str(out),
+                            *fp.test_include_flags(), str(source), '-o', str(exe)])
+            (out / ('negative-' + label + '-compile.log')).write_text(compiled.stdout + compiled.stderr)
+            if compiled.returncode: print(compiled.stdout + compiled.stderr, file=sys.stderr, flush=True)
+            compiled.check_returncode()
+            result = run([str(exe)])
+            (out / ('negative-' + label + '.log')).write_text(result.stdout + result.stderr)
+            assert result.returncode != 0 and marker in result.stderr, result
         unchanged(inputs);unchanged(generated)
         (out / 'validation.json').write_text(json.dumps({'inputs': inputs, 'generated_inputs': generated,
             'inputs_unchanged': True, 'helper_inputs_before_import': helper_before, 'results': results, 'commands': commands,
             'compiler_version': subprocess.check_output(['clang++', '--version'], text=True),
-            'unsafe_equality_control_rejected': True, 'game_launched': False}, indent=2) + '\n')
-        print('PASS unsafe decoded-equality control fails the independent XYZ oracle')
+            'unsafe_equality_control_rejected': True, 'unsafe_offset_layout_control_rejected': True,
+            'game_launched': False}, indent=2) + '\n')
+        print('PASS unsafe decoded and offset equality controls fail their independent geometry/revalidation oracles')
 
 
 if __name__ == '__main__':

@@ -289,6 +289,8 @@ public:
         bool success=true;const Deferred* previous=nullptr;
         IDirect3DBaseTexture9* boundTextures[16]={};bool knownTextures[16]={};
         DWORD samplerValues[16][13]={};unsigned knownSamplers[16]={};
+        bool frequencyKnown=false,viewportKnown=false,auxiliaryKnown=false,boundAuxiliary=false;
+        D3DVIEWPORT9 boundViewport{};
         for(auto& packet:deferred){
             auto& mesh=*packet->mesh;ReplayState keys(d,nullptr,{});HRESULT hr=D3D_OK;
             auto step=[&](HRESULT result){if(FAILED(result))hr=result;};
@@ -304,10 +306,11 @@ public:
             const bool resident=deferredGPU.bind(d,packet->mesh,bindings.vertex,bindings.index,[](size_t){return true;});
             if(resident){step(d->SetStreamSource(0,bindings.vertex[0],0,mesh.streams[0].stride));step(d->SetIndices(bindings.index));}
             if(needed(previous&&previous->declaration==packet->declaration))step(d->SetVertexDeclaration(packet->declaration));
-            step(d->SetStreamSourceFreq(0,1));
+            if(needed(frequencyKnown)){const HRESULT result=d->SetStreamSourceFreq(0,1);step(result);frequencyKnown=SUCCEEDED(result);}
             if(needed(previous&&previous->vertex==packet->vertex))step(d->SetVertexShader(packet->vertex));
             if(needed(previous&&previous->pixel==packet->pixel))step(d->SetPixelShader(packet->pixel));
-            step(d->SetViewport(&packet->viewport));
+            if(needed(viewportKnown&&!std::memcmp(&boundViewport,&packet->viewport,sizeof boundViewport))){
+                const HRESULT result=d->SetViewport(&packet->viewport);step(result);if(SUCCEEDED(result)){boundViewport=packet->viewport;viewportKnown=true;}}
             if(needed(previous&&!std::memcmp(&previous->scissor,&packet->scissor,sizeof(RECT))))step(d->SetScissorRect(&packet->scissor));
             for(unsigned i=0;i<14;++i)if(needed(previous&&previous->states[i]==packet->states[i]))step(d->SetRenderState(keys.states[i].key,packet->states[i]));
             for(unsigned i=0;i<DeferredRasterCount;++i)if(needed(previous&&previous->raster[i]==packet->raster[i]))step(d->SetRenderState(deferredRasterKeys[i],packet->raster[i]));
@@ -320,10 +323,17 @@ public:
             if(needed(previous&&!std::memcmp(previous->pixelInt,packet->pixelInt,sizeof(packet->pixelInt))))step(d->SetPixelShaderConstantI(0,packet->pixelInt,16));
             if(needed(previous&&!std::memcmp(previous->vertexBool,packet->vertexBool,sizeof(packet->vertexBool))))step(d->SetVertexShaderConstantB(0,packet->vertexBool,16));
             if(needed(previous&&!std::memcmp(previous->pixelBool,packet->pixelBool,sizeof(packet->pixelBool))))step(d->SetPixelShaderConstantB(0,packet->pixelBool,16));
-            if(SUCCEEDED(hr))hr=d->SetRenderTarget(1,packet->occlusion?occlusionTarget:nullptr);
+            // A render-target bind may reset the viewport. Elide MRT1 only
+            // when that reset is equivalent to the captured full-size viewport.
+            const bool defaultViewport=!packet->viewport.X&&!packet->viewport.Y&&packet->viewport.Width==width&&packet->viewport.Height==heightPixels&&packet->viewport.MinZ==0.f&&packet->viewport.MaxZ==1.f;
+            if(SUCCEEDED(hr)&&needed(auxiliaryKnown&&boundAuxiliary==packet->occlusion&&defaultViewport)){
+                hr=d->SetRenderTarget(1,packet->occlusion?occlusionTarget:nullptr);
+                if(SUCCEEDED(hr)){auxiliaryKnown=true;boundAuxiliary=packet->occlusion;viewportKnown=false;}}
             if(SUCCEEDED(hr)){P::Scope draw(profile,P::CaptureDraw,packet->tag);draw.work(mesh.primitiveCount);
                 if(resident){++residentDraws;hr=mesh.indexed?d->DrawIndexedPrimitive(mesh.topology,0,0,mesh.vertexCount,0,mesh.primitiveCount):d->DrawPrimitive(mesh.topology,0,mesh.primitiveCount);}
-                else {++uploadDraws;uploadDrawBytes+=mesh.byteSize();hr=mesh.indexed?d->DrawIndexedPrimitiveUP(mesh.topology,0,mesh.vertexCount,mesh.primitiveCount,mesh.indices.data(),D3DFMT_INDEX32,mesh.streams[0].bytes.data(),mesh.streams[0].stride):d->DrawPrimitiveUP(mesh.topology,mesh.primitiveCount,mesh.streams[0].bytes.data(),mesh.streams[0].stride);}}
+                else {++uploadDraws;uploadDrawBytes+=mesh.byteSize();hr=mesh.indexed?d->DrawIndexedPrimitiveUP(mesh.topology,0,mesh.vertexCount,mesh.primitiveCount,mesh.indices.data(),D3DFMT_INDEX32,mesh.streams[0].bytes.data(),mesh.streams[0].stride):d->DrawPrimitiveUP(mesh.topology,mesh.primitiveCount,mesh.streams[0].bytes.data(),mesh.streams[0].stride);
+                    // Keep no binding assumptions across the UP fallback.
+                    frequencyKnown=viewportKnown=auxiliaryKnown=false;}}
             if(FAILED(hr)){success=false;break;}previous=packet.get();++flushed;++draws[packet->tag/4-1];if(packet->occlusion){occlusionDrawn=true;if(profile)profile->count(P::OcclusionDraw);}
         }
         if(success){clearDeferred();result.ok=true;}return success;

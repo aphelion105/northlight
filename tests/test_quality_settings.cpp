@@ -62,6 +62,17 @@ int main(){
     /* Defaults: absent files, empty file and Preset=Quality are the 0.3.136 constants, except the 0.3.167 FarShadowInterval 4
        and the 0.3.176 PointShadows 0 (off in every preset). */
     const Settings d{};
+    assert(d.aoQuality==0);
+    for(auto p:{Preset::Quality,Preset::Balanced,Preset::Performance})assert(preset(p).aoQuality==0);
+    for(const auto& pair:std::vector<std::pair<const char*,unsigned>>{{"High",0},{"Medium",1},{"Low",2},{"hIgH",0},{"MEDIUM",1},{"low",2},{"0",0},{"1",1},{"2",2}}){
+        const auto s=parse((std::string("[Quality]\nAOQuality=")+pair.first+"\n").c_str());assert(s.aoQuality==pair.second);
+        unsigned slot=0;for(const auto& key:Keys){assert(s.origin[slot++]==(std::string(key.name)=="AOQuality"?'f':'d'));}
+    }
+    for(const auto* bad:{"3","-1","Ultra","1x","","nan"}){
+        std::vector<std::string> notes;const auto s=parse((std::string("[Quality]\nAOQuality=Medium\nAOQuality=")+bad+"\n").c_str(),nullptr,notes);
+        assert(s.aoQuality==1&&notes.size()==1);
+    }
+    assert(std::string(aoQualityName(0))=="High"&&std::string(aoQualityName(1))=="Medium"&&std::string(aoQualityName(2))=="Low");
     assert(parse("[Quality]\nAOMethod=GTAO\nAOStrength=150\nAORadius=300\n").aoMethod==3);
     assert(parse("[Quality]\nAOMethod=VXAO\n").aoMethod==0);
     {const auto combined=parse("[Quality]\nEquipmentLights=0\nAOMethod=GTAO\nAOStrength=150\nAORadius=300\n");

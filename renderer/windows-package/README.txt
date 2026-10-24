@@ -201,6 +201,7 @@ Individual settings (Quality / Balanced / Performance):
   NameMask              1 / 1 / 1      1 = floating unit names and other world text keep the colour the game drew them in (not darkened, lit or hazed by the scene effects; a solid object in front still covers them; with a font mod that replaces the UI shaders, from when the effects start); 0 = as before 0.3.212 (0..1; read once at start)
   NameMaskDebug         0 / 0 / 0      1 = the pixels NameMask protects are painted 50 percent magenta over the finished frame (a diagnostic view); 0 = off (0..1)
   AOMethod 0 / 0 / 0   See the quality INI for the allowed range.
+  AOQuality 0 / 0 / 0   High=0, Medium=1, Low=2. High preserves the current image; Medium/Low reduce HDAO/HBAO+/GTAO samples and can add noise or shimmer. SSAO is unchanged. Apply in Lighting & AO.
   AOStrength 100 / 100 / 100   See the quality INI for the allowed range.
   AORadius 200 / 200 / 200   See the quality INI for the allowed range.
   PointShadowLimit 4 / 4 / 4   See the quality INI for the allowed range.

@@ -16,7 +16,7 @@ local sections = {
     {"quality", "Quality", "Q", "Preset GI ActorShadows ContactAO Weather FogClouds"},
     {"renderer", "Renderer", "R", "Backend"},
     {"hdr", "HDR", "R", "ExperimentalHDR HDRPaperWhite HDRUIWhite HDRMaxNits HDRContrast HDRExposure"},
-    {"lighting", "Lighting & AO", "Q", "GI GIStrength GIRays GIBounces GIProbeMoveStep GIDynamicProbes GIThreads GIFastBVH GIDistance GIProbeAhead NightBrightness ContactAO AOMethod AOStrength AORadius EquipmentLights"},
+    {"lighting", "Lighting & AO", "Q", "GI GIStrength GIRays GIBounces GIProbeMoveStep GIDynamicProbes GIThreads GIFastBVH GIDistance GIProbeAhead NightBrightness ContactAO AOMethod AOQuality AOStrength AORadius EquipmentLights"},
     {"materials", "Materials & parallax", "Q", "AutoBump AutoBumpTerrain AutoBumpWalls AutoBumpGrass AutoBumpModels AutoModelDisplacementStrength AutoModelDisplacementDistance AutoModelDisplacementDetail AutoHeightPolarity AutoHeightDetails AutoHeightBalance AutoBumpStrength AutoBumpDistance AutoParallaxDepth AutoParallaxDistance AutoParallaxSteps AutoDisplacementStrength AutoDisplacementDistance AutoDisplacementDetail AutoParallaxShadows AutoParallaxShadowStrength AutoParallaxShadowSteps AutoCavity AutoCavityStrength AutoMaterialOcclusionDistance"},
     {"shadows", "Shadows", "Q", "ActorShadows ActorShadowDetail GrassShadows ActorShadowRadius BlobShadowStrength FarShadowInterval NearShadowInterval PointShadows PointShadowLimit PointShadowRefreshMs PointShadowFacesPerFrame ShadowDirectionSteps StaticCacheSlices ShadowPivotCorrection"},
     {"atmosphere", "Atmosphere & weather", "Q", "Weather WeatherMemory RainFog FogClouds FogCloudDensity HorizonHaze HorizonHazeStart HorizonHazeBand HorizonHazeTerrain"},
@@ -30,7 +30,7 @@ local bySection = {}; for _, s in ipairs(sections) do bySection[s[1]] = s end
 local groups = {
     lighting = {
         {"gi", "Global illumination", "GI", "GIStrength GIDistance GIBounces", "GIRays GIProbeMoveStep GIDynamicProbes GIThreads GIFastBVH GIProbeAhead"},
-        {"ao", "Ambient occlusion", "ContactAO", "AOMethod AOStrength AORadius"},
+        {"ao", "Ambient occlusion", "ContactAO", "AOMethod AOQuality AOStrength AORadius"},
         {"ambient", "Environment", nil, "NightBrightness EquipmentLights"},
     },
     materials = {{"bump", "Material modes", "AutoBump", "AutoBumpTerrain AutoBumpWalls AutoBumpGrass AutoBumpStrength AutoBumpDistance"}, {"models", "Models: equipment, creatures and props", nil, "AutoBumpModels AutoModelDisplacementStrength AutoModelDisplacementDistance AutoModelDisplacementDetail"}, {"height", "Automatic height field", nil, "AutoHeightPolarity AutoHeightDetails AutoHeightBalance"}, {"parallax", "POM", nil, "AutoParallaxDepth AutoParallaxDistance AutoParallaxSteps"}, {"displacement", "Geometry displacement", nil, "AutoDisplacementStrength AutoDisplacementDistance AutoDisplacementDetail"}, {"pomshadow", "POM self-shadowing", "AutoParallaxShadows", "AutoParallaxShadowStrength AutoParallaxShadowSteps AutoMaterialOcclusionDistance"}, {"cavity", "Cavity shading", "AutoCavity", "AutoCavityStrength"}},
@@ -75,7 +75,7 @@ local labels = {
     AutoMaterialOcclusionDistance="Cavity / shadow distance (yards)", AutoCavity="Cavity shading", AutoCavityStrength="Cavity strength (%)",
     Preset="Quality preset", GI="Global illumination", GIStrength="Indirect light strength (%)",
     ActorShadows="Character shadows", ActorShadowDetail="Detailed character shadows", GrassShadows="Grass shadows", ActorShadowRadius="Character shadow distance",
-    ContactAO="Ambient occlusion", AOMethod="AO method", AOStrength="AO strength (%)", AORadius="AO radius (0.01 yd)",
+    ContactAO="Ambient occlusion", AOMethod="AO method", AOQuality="AO quality", AOStrength="AO strength (%)", AORadius="AO radius (0.01 yd)",
     Weather="Enhanced rain and snow", WeatherMemory="Read native weather state", RainFog="Weather fog strength", FogClouds="Drifting fog banks", FogCloudDensity="Fog density (%)",
     HorizonHaze="Horizon haze (%)", HorizonHazeStart="Haze start (%)", HorizonHazeBand="Haze height (degrees)", HorizonHazeTerrain="Haze over terrain",
     Backend="Graphics backend", ExperimentalHDR="Enable HDR", HDRPaperWhite="White point (nits)", HDRUIWhite="UI brightness (nits)", HDRMaxNits="HDR peak brightness (nits)", HDRContrast="Contrast", HDRExposure="Exposure (EV)",
@@ -130,7 +130,7 @@ local dependencies = {
     AutoParallaxDepth={"AutoBump"}, AutoParallaxDistance={"AutoBump"}, AutoParallaxSteps={"AutoBump"},
     AutoParallaxShadows={"AutoBump"}, AutoParallaxShadowStrength={"AutoBump","AutoParallaxShadows"}, AutoParallaxShadowSteps={"AutoBump","AutoParallaxShadows"},
     AutoMaterialOcclusionDistance={"AutoBump"}, AutoCavity={"AutoBump"}, AutoCavityStrength={"AutoBump","AutoCavity"},
-    AOMethod={"ContactAO"}, AOStrength={"ContactAO"}, AORadius={"ContactAO"},
+    AOMethod={"ContactAO"}, AOQuality={"ContactAO"}, AOStrength={"ContactAO"}, AORadius={"ContactAO"},
     ActorShadowBudgetMiB={"ActorShadows"}, ActorShadowRadius={"ActorShadows"}, ActorShadowCpuMs={"ActorShadows"}, ActorShadowDetail={"ActorShadows"},
     PointShadowLimit={"PointShadows"}, PointShadowRefreshMs={"PointShadows"}, PointShadowFacesPerFrame={"PointShadows"},
     FogCloudDensity={"FogClouds"}, RainFog={"Weather"}, RenderProfile={"Diagnostics"},
@@ -314,6 +314,7 @@ local function tooltip(row)
     GameTooltip:AddLine("Source: " .. f.origin .. (f.override == "~" and " (inherited)" or ""), 0.8, 0.8, 0.8, true)
     GameTooltip:AddLine(f.apply == "R" and "Requires a full game restart." or "Applied between frames after saving.", 1, 0.82, 0, true)
     if f.key == "AOMethod" and snapshot.aoPreview then GameTooltip:AddLine("Preview changes immediately. Apply saves the technique; Cancel restores the saved AO settings.", .8, .8, .8, true) end
+    if f.key == "AOQuality" then GameTooltip:AddLine("High keeps the current sample counts. Medium and Low reduce GPU work for HDAO, HBAO+ and GTAO but can add noise or motion shimmer. SSAO is unchanged. Apply to save.", .8, .8, .8, true) end
     if row.disabledReason then GameTooltip:AddLine(row.disabledReason, 1, .4, .3, true) end
     GameTooltip:AddLine("Right-click to restore the inherited value.", .7, .7, .7, true)
     GameTooltip:Show()

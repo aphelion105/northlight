@@ -58,6 +58,9 @@ static void append(std::vector<Position>& p,float x,float y){p.push_back({x-.005
 int main(){
     check({});check({{0,0,0},{0,0,0}});check({{0,0,0},{0,0,0},{0,0,0}});
     std::vector<Position> changed;append(changed,-2,-2);append(changed,.01f,-2);check(changed); // The deliberately wrong-cell build must fail here.
+    // Exercise both the inline set and its hash fallback, including revisits.
+    for(unsigned cells:{1u,8u,9u,32u}){std::vector<Position> p;
+        for(unsigned pass=0;pass<3;++pass)for(unsigned i=0;i<cells;++i){const unsigned cell=pass==1?cells-1-i:i;append(p,-2.f-float(cell)*100.f,-2.f);}check(p);}
     for(int gx:{0,1,511,512,513,1023})for(int gy:{0,1,511,512,513,1023}){
         const double origin=17066.666666666666,step=100.0/3.0;
         const float loX=float(origin-(gy+1)*step),hiX=float(origin-gy*step),loY=float(origin-(gx+1)*step),hiY=float(origin-gx*step);

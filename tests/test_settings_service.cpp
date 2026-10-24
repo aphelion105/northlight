@@ -35,7 +35,18 @@ int main(int argc,char** argv){
     for(unsigned i=0;i<200;++i){reply=transport.exchange(service,request);if(reply.find("\nNLS1\t")!=reply.npos)break;std::this_thread::sleep_for(std::chrono::milliseconds(2));}assert(reply.find("\nNLS1\t")!=reply.npos);
     assert(transport.exchange(service,request)==reply);assert(transport.exchange(service,"NL1\tx\t2\t1\t1\nsnapshot").empty());
     assert(!service.submit("oversize",std::string(131073,'x')));
-    unsigned live=0;for(const auto& k:NorthlightQuality::Keys)live+=liveQuality(k.name);assert(live==78);
+    unsigned live=0;for(const auto& k:NorthlightQuality::Keys)live+=liveQuality(k.name);assert(live==79);
+    {unsigned found=0;for(const auto& f:fields)if(f.key=="AOQuality"){
+        ++found;assert(f.kind=="enum"&&f.options=="High,Medium,Low"&&f.saved=="High"&&f.active=="High"&&f.factory=="High"&&f.inherited=="High"&&f.apply=="F");}
+     assert(found==1);
+     for(const auto* value:{"High","Medium","Low"}){
+        const auto selected=applyChanges(docs,fields,std::string("Q\tQuality\tAOQuality\t")+value+"\n");const auto config=configOf(selected,"");
+        assert(std::string(NorthlightQuality::aoQualityName(config.quality.aoQuality))==value);
+        assert(liveQualityUpdate(active.quality,config.quality).aoQuality==config.quality.aoQuality);
+        const auto selectedFields=schema(selected,docs,active,"");for(const auto& f:selectedFields)if(f.key=="AOQuality")assert(f.saved==value&&f.active=="High"&&f.overrideValue==value);
+        const auto restored=applyChanges(selected,fields,"Q\tQuality\tAOQuality\t@factory\n");assert(configOf(restored,"").quality.aoQuality==0);
+     }
+     fails([&]{applyChanges(docs,fields,"Q\tQuality\tAOQuality\tUltra\n");});}
     const auto displacementDocs=applyChanges(docs,fields,"Q\tQuality\tAutoBumpTerrain\t3\nQ\tQuality\tAutoBumpWalls\t3\nQ\tQuality\tAutoDisplacementStrength\t125\nQ\tQuality\tAutoDisplacementDistance\t16\nQ\tQuality\tAutoDisplacementDetail\t5\n");
     const auto displaced=liveQualityUpdate(active.quality,configOf(displacementDocs,"").quality);
     assert(displaced.autoBumpTerrain==3&&displaced.autoBumpWalls==3&&displaced.autoDisplacementStrength==125&&displaced.autoDisplacementDistance==16&&displaced.autoDisplacementDetail==5);
@@ -55,11 +66,12 @@ int main(int argc,char** argv){
     fails([&]{applyChanges(docs,fields,"Q\tQuality\tAutoBumpGrass\t4\n");});fails([&]{applyChanges(docs,fields,"Q\tQuality\tAutoBumpTerrain\t4\n");});
     for(const auto& f:fields)assert(f.file!=0||f.key.rfind("Water",0)!=0);
     fails([&]{applyChanges(docs,fields,"Q\tQuality\tWaterSSRResolution\t25\n");});
-    const auto base=Store::revision(store.read());const auto command="commit\t"+base+"\nQ\tQuality\tWeather\t1\nQ\tQuality\tCommandStream\t0\nQ\tQuality\tAOMethod\tGTAO\nR\tRenderer\tExperimentalHDR\t1\nR\tRenderer\tHDRPaperWhite\t240\nR\tRenderer\tHDRUIWhite\t120\nR\tRenderer\tHDRMaxNits\t600\n";
+    const auto base=Store::revision(store.read());const auto command="commit\t"+base+"\nQ\tQuality\tWeather\t1\nQ\tQuality\tCommandStream\t0\nQ\tQuality\tAOMethod\tGTAO\nQ\tQuality\tAOQuality\tMedium\nR\tRenderer\tExperimentalHDR\t1\nR\tRenderer\tHDRPaperWhite\t240\nR\tRenderer\tHDRUIWhite\t120\nR\tRenderer\tHDRMaxNits\t600\n";
     assert(service.submit("save",command));std::string saved;
     auto completed=[&](const char* id){std::string result;for(unsigned i=0;i<500;++i){if(service.result(id,result))return result;std::this_thread::sleep_for(std::chrono::milliseconds(2));}assert(false);return result;};
     saved=completed("save");assert(saved.rfind("SAVED\t",0)==0);auto update=service.after("");assert(update&&update->config.quality.weather==1&&update->config.quality.commandStream==0&&update->config.quality.aoMethod==3);
     assert(update->runtime->quality.weather==1&&update->runtime->quality.commandStream==1&&update->runtime->quality.aoMethod==3);
+    assert(update->config.quality.aoQuality==1&&update->runtime->quality.aoQuality==1);
     assert(update->runtime->hdr[0]==0&&update->runtime->hdr[1]==240&&update->runtime->hdr[2]==120&&update->runtime->hdr[3]==600);service.acknowledge(*update);
     const auto committed=store.read();assert(service.submit("save",command)&&completed("save")==saved&&store.read()==committed);
     assert(service.submit("conflict","commit\t"+base+"\nQ\tQuality\tWeather\t0\n"));assert(completed("conflict").rfind("ERROR\t",0)==0&&store.read()==committed);

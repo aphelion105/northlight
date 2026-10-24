@@ -20,6 +20,7 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <type_traits>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -106,6 +107,15 @@ inline bool classifyTriangleSequence(VertexAt vertexAt,std::size_t count,
     const float infinity=std::numeric_limits<float>::infinity();
     Bounds result;for(unsigned j=0;j<3;++j){result.low[j]=infinity;result.high[j]=-infinity;}
     std::unordered_set<unsigned> seen;
+    std::array<unsigned,8> smallSeen{};size_t smallSeenCount=0;bool largeSeen=false;
+    const auto rememberChunk=[&](unsigned chunk){
+        if(!largeSeen){
+            for(size_t i=0;i<smallSeenCount;++i)if(smallSeen[i]==chunk)return false;
+            if(smallSeenCount<smallSeen.size()){smallSeen[smallSeenCount++]=chunk;return true;}
+            seen.reserve(smallSeen.size()+1);seen.insert(smallSeen.begin(),smallSeen.end());largeSeen=true;
+        }
+        return seen.insert(chunk).second;
+    };
     unsigned previousChunk=std::numeric_limits<unsigned>::max();
     double previousMinX=0,previousMaxX=0,previousMinY=0,previousMaxY=0;
     const std::size_t triangles=topology==D3DPT_TRIANGLELIST?count/3:count-2;
@@ -145,7 +155,7 @@ inline bool classifyTriangleSequence(VertexAt vertexAt,std::size_t count,
         const unsigned chunk=unsigned(y)*1024+unsigned(x);
         // Chunk-local triangles are contiguous in normal terrain draws. Avoid
         // a hash lookup for every triangle without changing disjoint coverage.
-        if(chunk!=previousChunk&&seen.insert(chunk).second)
+        if(chunk!=previousChunk&&rememberChunk(chunk))
             result.chunks.push_back({x,y,float(minX),float(minY),float(maxX),float(maxY)});
         previousChunk=chunk;
         previousMinX=minX;previousMaxX=maxX;previousMinY=minY;previousMaxY=maxY;
@@ -234,9 +244,10 @@ private:
     }
     struct SourceIndices {
         const std::vector<unsigned char> bytes;size_t entries=0;
-        explicit SourceIndices(const std::vector<unsigned char>& input):bytes(input){}
+        const NorthlightTerrainIndices::Indices sourceOffsets;
+        SourceIndices(const std::vector<unsigned char>& input,NorthlightTerrainIndices::Indices&& offsets):bytes(input),sourceOffsets(std::move(offsets)){}
     };
-    static std::uint64_t sourceIndexBytes(const SourceIndices& source){return sizeof(SourceIndices)+32+source.bytes.capacity();}
+    static std::uint64_t sourceIndexBytes(const SourceIndices& source){return sizeof(SourceIndices)+32+source.bytes.capacity()+source.sourceOffsets.ownedBytes();}
     struct DecodedIndices {NorthlightTerrainIndices::Indices values;size_t entries=0;};
     static size_t decodedBytes(const DecodedIndices& block){return NorthlightSourceIdentity::allocationBytes<DecodedIndices>(block.values.ownedBytes());}
     struct DecodedMemo {
@@ -302,8 +313,9 @@ private:
     std::weak_ptr<SourceIndices> lastSourceIndices;
     // An expired weak memo can keep one make_shared control/object allocation until reassignment.
     static constexpr size_t ContentBaseBytes=sizeof(content)+sizeof(freeContent)+sizeof(lastSourceIndices)+sizeof(SourceIndices)+32+
-        sizeof(decoded_)+sizeof(NorthlightSourceIdentity::Ledger)+32+64*(sizeof(NorthlightSourceIdentity::Retained<DecodedIndices>)+sizeof(NorthlightSourceIdentity::Retained<MeshSnapshot>)+64);
+        sizeof(decoded_)+sizeof(NorthlightSourceIdentity::Ledger)+32+64*(sizeof(NorthlightSourceIdentity::Retained<DecodedIndices>)+sizeof(NorthlightSourceIdentity::Retained<MeshSnapshot>)+64)+sizeof(std::uint64_t);
     size_t sourceIndexBlocks_=0;std::uint64_t sourceIndexDataBytes_=0,sourceIndexLogicalBytes_=0;
+    std::uint64_t sourceOffsetDataBytes_=0;
     std::uint64_t contentBytes=ContentBaseBytes,contentHits=0,trackedHits_=0,avoidedReadBytes_=0;
     std::shared_ptr<NorthlightSourceIdentity::Ledger> live_=std::make_shared<NorthlightSourceIdentity::Ledger>();
     size_t retainedPayloadBytes_=0,retainedIdentityBytes_=0;
@@ -334,7 +346,7 @@ private:
         for(auto it=range.first;it!=range.second;++it)if(it->second==&entry){contentLookup.erase(it);break;}
         const auto slot=entry.slot;contentBytes-=entry.bytes;retainedPayloadBytes_-=entry.payloadBytes;retainedIdentityBytes_-=entry.identityBytes;contentLRU.remove(entry);
         sourceIndexLogicalBytes_-=entry.indices->bytes.capacity();
-        if(!--entry.indices->entries){contentBytes-=sourceIndexBytes(*entry.indices);sourceIndexDataBytes_-=entry.indices->bytes.capacity();--sourceIndexBlocks_;}
+        if(!--entry.indices->entries){contentBytes-=sourceIndexBytes(*entry.indices);sourceIndexDataBytes_-=entry.indices->bytes.capacity();sourceOffsetDataBytes_-=entry.indices->sourceOffsets.ownedBytes();--sourceIndexBlocks_;}
         if(entry.decoded&&!--entry.decoded->entries){const auto bytes=decodedBytes(*entry.decoded);contentBytes-=bytes;decoded_.bytes-=bytes;decoded_.dataBytes-=entry.decoded->values.ownedBytes();--decoded_.blocks;}
         content[slot].reset();freeContent[freeContentCount++]=slot;
     }
@@ -350,10 +362,23 @@ private:
         const unsigned offsetBytes=maximumOffset<=UINT16_MAX?2:4;
         auto sharedIndices=lastSourceIndices.lock();
         if(sharedIndices&&sharedIndices->bytes!=rawIndices)sharedIndices.reset();
-        std::uint64_t sourceBytes=sharedIndices?sourceIndexBytes(*sharedIndices):sizeof(SourceIndices)+32+rawIndices.size();
+        const bool storeOffsets=!keepRaw&&!sharedIndices;
+        const bool reuseOffsets=!keepRaw&&sharedIndices&&sharedIndices->sourceOffsets.visit([&](const auto* stored,size_t count){
+            if(count!=sourceOffsets.size()||sizeof(*stored)!=offsetBytes)return false;
+            using Value=std::remove_cv_t<std::remove_reference_t<decltype(*stored)>>;
+            for(size_t i=0;i<count;++i){
+                const std::uint64_t byte=std::uint64_t(sourceOffsets[i])*key.draw.stride;
+                if(byte>std::numeric_limits<Value>::max()||byte+sizeof(Position)>rawVertices.size())return false;
+                const Value value=Value(byte);if(std::memcmp(stored+i,&value,sizeof value))return false;
+            }
+            return true;
+        });
+        // Reuse only the entire exact typed offset sequence. Raw indices alone
+        // do not prove layout across stride, format or topology changes.
+        std::uint64_t sourceBytes=sharedIndices?sourceIndexBytes(*sharedIndices):sizeof(SourceIndices)+32+rawIndices.size()+(storeOffsets?sourceOffsets.size()*offsetBytes:0);
         const auto required=[&](std::uint64_t bytes){return bytes+(!sharedIndices||!sharedIndices->entries?sourceBytes:0)+(decoded.block&&!decoded.block->entries?decodedBytes(*decoded.block):0);};
         const std::uint64_t estimate=sizeof(ContentEntry)+sizeof(MeshSnapshot)+256+
-            (keepRaw?rawVertices.size():sourceOffsets.size()*offsetBytes)+
+            (keepRaw?rawVertices.size():storeOffsets||reuseOffsets?0:sourceOffsets.size()*offsetBytes)+
             snapshot->positions.capacity()*sizeof(Position)+snapshot->indices.ownedBytes()+snapshot->bounds.chunks.capacity()*sizeof(ChunkBounds);
         if(required(estimate)>contentLimit-ContentBaseBytes)return;
         const auto range=contentLookup.equal_range(hash);
@@ -371,12 +396,11 @@ private:
         // Evict before allocation, so replacement does not transiently double
         // the retained cache. Accounting includes object/capacity/node allowance.
         if(!makeRoom(estimate))return;
-        if(!sharedIndices){sharedIndices=std::make_shared<SourceIndices>(rawIndices);sourceBytes=sourceIndexBytes(*sharedIndices);}
         auto next=std::make_unique<ContentEntry>();next->key=key;next->stamp=verified;next->hash=hash;next->smallest=smallest;next->largest=largest;
         next->charged=rawIndices.size()+rawVertices.size();
-        next->indices=sharedIndices;
         next->decoded=decoded.block;
         if(keepRaw)next->vertices=rawVertices;
+        else if(reuseOffsets)next->sourceOffsets.share(std::shared_ptr<const NorthlightTerrainIndices::Indices>(sharedIndices,&sharedIndices->sourceOffsets));
         else{
             next->sourceOffsets.reserve(sourceOffsets.size(),UINT(maximumOffset));
             for(UINT offset:sourceOffsets){
@@ -385,11 +409,16 @@ private:
                 next->sourceOffsets.push_back(UINT(byte));
             }
         }
+        if(!sharedIndices){
+            sharedIndices=std::make_shared<SourceIndices>(rawIndices,std::move(next->sourceOffsets));sourceBytes=sourceIndexBytes(*sharedIndices);
+            if(!keepRaw)next->sourceOffsets.share(std::shared_ptr<const NorthlightTerrainIndices::Indices>(sharedIndices,&sharedIndices->sourceOffsets));
+        }
+        next->indices=sharedIndices;
         next->snapshot=snapshot;
         std::memcpy(next->low,detail.low,sizeof next->low);std::memcpy(next->high,detail.high,sizeof next->high);
         next->payloadBytes=NorthlightSourceIdentity::allocationBytes<MeshSnapshot>(snapshot->positions.capacity()*sizeof(Position)+snapshot->indices.ownedBytes()+snapshot->bounds.chunks.capacity()*sizeof(ChunkBounds));
         next->identityBytes=snapshot->sourceIdentity?snapshot->sourceIdentity->bytes():0;
-        next->bytes=sizeof(ContentEntry)+256+next->payloadBytes+next->identityBytes+next->vertices.capacity()+next->sourceOffsets.allocatedBytes();
+        next->bytes=sizeof(ContentEntry)+256+next->payloadBytes+next->identityBytes+next->vertices.capacity()+next->sourceOffsets.ownedBytes();
         if(required(next->bytes)>contentLimit-ContentBaseBytes||!makeRoom(next->bytes))return;
         // Insert the optional hash node before publishing ownership/links. An
         // allocation failure must leave the computed snapshot valid and the
@@ -398,7 +427,7 @@ private:
         const auto slot=freeContent[freeContentCount-1];next->slot=slot;
         contentLookup.emplace(hash,next.get());--freeContentCount;
         sourceIndexLogicalBytes_+=sharedIndices->bytes.capacity();
-        if(!sharedIndices->entries++){contentBytes+=sourceBytes;sourceIndexDataBytes_+=sharedIndices->bytes.capacity();++sourceIndexBlocks_;}
+        if(!sharedIndices->entries++){contentBytes+=sourceBytes;sourceIndexDataBytes_+=sharedIndices->bytes.capacity();sourceOffsetDataBytes_+=sharedIndices->sourceOffsets.ownedBytes();++sourceIndexBlocks_;}
         if(decoded.block){if(!decoded.block->entries++){const auto bytes=decodedBytes(*decoded.block);contentBytes+=bytes;decoded_.bytes+=bytes;decoded_.dataBytes+=decoded.block->values.ownedBytes();++decoded_.blocks;}
         }
         if(decoded.memo){decoded_.slots[decoded.slot]=decoded.block;decoded_.snapshots[decoded.slot]=snapshot;decoded_.last=decoded.slot;}
@@ -432,7 +461,7 @@ public:
     // or COM resource reference. Shared snapshots are immutable and remain valid
     // if callers retain them across eviction/reset. The cache budget accounts
     // for cache-owned storage; callers must separately bound retained outputs.
-    void clearPersistent(){contentLookup.clear();contentLRU.clear();lastSourceIndices.reset();for(auto& slot:decoded_.slots)slot.reset();for(auto& slot:decoded_.snapshots)slot.reset();decoded_.last=0;for(auto& entry:content){if(entry&&entry->decoded)--entry->decoded->entries;entry.reset();}decoded_.blocks=decoded_.dataBytes=decoded_.bytes=0;sourceIndexBlocks_=0;sourceIndexDataBytes_=sourceIndexLogicalBytes_=0;retainedPayloadBytes_=retainedIdentityBytes_=0;contentBytes=ContentBaseBytes;contentHits=trackedHits_=avoidedReadBytes_=0;freeContentCount=ContentEntries;for(size_t i=0;i<freeContent.size();++i)freeContent[i]=i;maintenance_={};}
+    void clearPersistent(){contentLookup.clear();contentLRU.clear();lastSourceIndices.reset();for(auto& slot:decoded_.slots)slot.reset();for(auto& slot:decoded_.snapshots)slot.reset();decoded_.last=0;for(auto& entry:content){if(entry&&entry->decoded)--entry->decoded->entries;entry.reset();}decoded_.blocks=decoded_.dataBytes=decoded_.bytes=0;sourceIndexBlocks_=0;sourceIndexDataBytes_=sourceIndexLogicalBytes_=sourceOffsetDataBytes_=0;retainedPayloadBytes_=retainedIdentityBytes_=0;contentBytes=ContentBaseBytes;contentHits=trackedHits_=avoidedReadBytes_=0;freeContentCount=ContentEntries;for(size_t i=0;i<freeContent.size();++i)freeContent[i]=i;maintenance_={};}
     // Memory guard: cap in [ContentBaseBytes+1 MiB, 32 MiB]; evicts oldest down to it now.
     void setPersistentByteLimit(std::uint64_t bytes){
         contentLimit=std::max<std::uint64_t>(ContentBaseBytes+1024u*1024u,std::min<std::uint64_t>(bytes,ContentLimit));
@@ -447,10 +476,10 @@ public:
     size_t sourceLiveObjects()const{return live_->objects.load(std::memory_order_relaxed);}
     size_t sourceMetadataBytes()const{return size_t(contentBytes)-retainedPayloadBytes_-retainedIdentityBytes_-decoded_.bytes;}
     std::shared_ptr<const MeshSnapshot> retain(MeshSnapshot&& snapshot){const size_t bytes=NorthlightSourceIdentity::allocationBytes<MeshSnapshot>(snapshot.positions.capacity()*sizeof(Position)+snapshot.indices.ownedBytes()+snapshot.bounds.chunks.capacity()*sizeof(ChunkBounds));auto owned=NorthlightSourceIdentity::allocate<MeshSnapshot>(live_,bytes);*owned=std::move(snapshot);return owned;}
-    struct IndexStorage {size_t compact=0,wide=0,sourceBlocks=0,offsetCompact=0,offsetWide=0,sharedBlocks=0,weakOwners=0,expiredWeakOwners=0;std::uint64_t bytes=0,avoided=0,sourceBytes=0,sourceAvoided=0,offsetBytes=0,offsetAvoided=0,physicalBytes=0,sharedAllocationBytes=0,liveBlockBytes=0,positionBytes=0,positionCapacityBytes=0;};
+    struct IndexStorage {size_t compact=0,wide=0,sourceBlocks=0,offsetCompact=0,offsetWide=0,sharedBlocks=0,weakOwners=0,expiredWeakOwners=0,offsetSharedReferences=0;std::uint64_t bytes=0,avoided=0,sourceBytes=0,sourceAvoided=0,offsetBytes=0,offsetAvoided=0,physicalBytes=0,sharedAllocationBytes=0,liveBlockBytes=0,positionBytes=0,positionCapacityBytes=0,offsetPhysicalBytes=0;};
     // Sampled diagnostics only; never walk the persistent cache in a draw hook.
     IndexStorage indexStorage()const{
-        IndexStorage stats;stats.sourceBlocks=sourceIndexBlocks_;stats.sourceBytes=sourceIndexDataBytes_;stats.sourceAvoided=sourceIndexLogicalBytes_-sourceIndexDataBytes_;stats.sharedBlocks=decoded_.blocks;stats.physicalBytes=decoded_.dataBytes;stats.sharedAllocationBytes=decoded_.bytes;
+        IndexStorage stats;stats.offsetPhysicalBytes=sourceOffsetDataBytes_;stats.sourceBlocks=sourceIndexBlocks_;stats.sourceBytes=sourceIndexDataBytes_;stats.sourceAvoided=sourceIndexLogicalBytes_-sourceIndexDataBytes_;stats.sharedBlocks=decoded_.blocks;stats.physicalBytes=decoded_.dataBytes;stats.sharedAllocationBytes=decoded_.bytes;
         stats.liveBlockBytes=decoded_.live->bytes.load(std::memory_order_relaxed);const std::weak_ptr<DecodedIndices> empty;
         const std::weak_ptr<const MeshSnapshot> emptySnapshot;
         for(size_t i=0;i<decoded_.slots.size();++i){const auto& slot=decoded_.slots[i];const auto& prior=decoded_.snapshots[i];
@@ -461,6 +490,7 @@ public:
             stats.compact+=compact;stats.wide+=!compact;stats.bytes+=bytes;stats.avoided+=compact?bytes:0;
             stats.physicalBytes+=indices.ownedBytes();stats.positionBytes+=entry->snapshot->positions.size()*sizeof(Position);stats.positionCapacityBytes+=entry->snapshot->positions.capacity()*sizeof(Position);
             const auto& offsets=entry->sourceOffsets;if(!offsets.empty()){
+                stats.offsetPhysicalBytes+=offsets.ownedBytes();stats.offsetSharedReferences+=!offsets.ownedBytes();
                 const bool small=offsets.visit([](const auto* p,size_t){return sizeof(*p)==2;});
                 const auto allocated=offsets.allocatedBytes();stats.offsetCompact+=small;stats.offsetWide+=!small;stats.offsetBytes+=allocated;stats.offsetAvoided+=small?allocated:0;}}
         return stats;

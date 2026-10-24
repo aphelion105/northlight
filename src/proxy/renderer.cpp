@@ -626,6 +626,11 @@ private:
         if (!failed) logf("DISABLED: %s failed HRESULT=0x%08lx", stage, (unsigned long)hr);
         failed = true; return true;
     }
+    void selectAO(unsigned method,unsigned quality){
+        if(aoMethod!=method){drop(aoPS);drop(aoContactBloomPS);}
+        else if(method&&aoQuality!=quality)drop(aoContactBloomPS);
+        aoMethod=method;aoQuality=quality;
+    }
     bool resources(UINT w, UINT h, D3DFORMAT format, bool colorOnly=false) {
         // DXVK 3's 1x depth+stencil RESZ copy can leave INTZ unchanged (proved
         // with a nonzero sentinel). DF24 copies depth alone, which is all our
@@ -640,9 +645,12 @@ private:
             :NorthlightBackend::isPackagedDxvk(selectedBackend)&&!df24Refused&&worldDepthDescKnown&&worldDepthDesc.MultiSampleType==D3DMULTISAMPLE_NONE?df24:intz;
         if(!colorOnly){
             // Method switches replace shaders while keeping the existing scene/depth targets.
-            const DWORD* aoContactShaders[]={kAoContactBloomShader,kHdaoContactBloomShader,kHbaoPlusContactBloomShader,kGtaoContactBloomShader};
+            const DWORD* aoContactShaders[3][4]={
+                {kAoContactBloomShader,kHdaoContactBloomShader,kHbaoPlusContactBloomShader,kGtaoContactBloomShader},
+                {kAoContactBloomShader,kHdaoContactBloomMediumShader,kHbaoPlusContactBloomMediumShader,kGtaoContactBloomMediumShader},
+                {kAoContactBloomShader,kHdaoContactBloomLowShader,kHbaoPlusContactBloomLowShader,kGtaoContactBloomLowShader}};
             if (!aoPS && error(ext->CreatePixelShader(kAoShader, &aoPS), "AO shader")) return false;
-            if (!aoContactBloomPS && error(ext->CreatePixelShader(aoContactShaders[aoMethod], &aoContactBloomPS), "AO contact bloom shader")) return false;
+            if (!aoContactBloomPS && error(ext->CreatePixelShader(aoContactShaders[aoQuality][aoMethod], &aoContactBloomPS), "AO contact bloom shader")) return false;
             if (!aoBlurPS && error(ext->CreatePixelShader(kAoBlurShader, &aoBlurPS), "AO blur shader")) return false;
             if (!contactBloomPS && error(ext->CreatePixelShader(kContactBloomShader, &contactBloomPS), "contact bloom shader")) return false;
             if (!compositePS && error(ext->CreatePixelShader(kCompositeShader, &compositePS), "composite shader")) return false;
@@ -1369,7 +1377,7 @@ private:
     // retry's failed=false; clearFrame runs before that retry, so it is not the place), in Reset
     // (failed=false) and at device creation. Off: every gate open, the 0.3.184 per-draw work.
     NorthlightDrawGates::Frame drawGates;bool frameDrawGates=true;bool contactAO=true;
-    unsigned aoMethod=0;float aoStrength=.6f,aoRadius=2.f;
+    unsigned aoMethod=0,aoQuality=0;float aoStrength=.6f,aoRadius=2.f;
     LONGLONG cpuDrawHooks=0; /* RenderProfile sample frames: per-draw work outside prepareDraw (CPU profile drawHooks=) */
     LONGLONG* hookTimer=nullptr; /* &cpuDrawHooks on a timed RenderProfile sample frame (frame, gateUntimed: set before the latch) */
     void latchDrawGates(){
@@ -2384,8 +2392,8 @@ public:
         NorthlightParticleUploads::enabled.store(particleOn,std::memory_order_relaxed);
         NorthlightParticleTextures::enabled.store(particleOn,std::memory_order_relaxed);
         contactAO=world->contactAO(); /* 0.3.201 (task 18) */
-        aoMethod=world->aoMethod();aoStrength=world->aoStrength();aoRadius=world->aoRadius();
-        logf("AO method=%s enabled=%u strength=%.3f radiusYards=%.2f",NorthlightQuality::aoName(aoMethod),unsigned(contactAO),aoStrength,aoRadius);
+        aoMethod=world->aoMethod();aoQuality=world->aoQuality();aoStrength=world->aoStrength();aoRadius=world->aoRadius();
+        logf("AO method=%s quality=%s enabled=%u strength=%.3f radiusYards=%.2f",NorthlightQuality::aoName(aoMethod),NorthlightQuality::aoQualityName(aoQuality),unsigned(contactAO),aoStrength,aoRadius);
         spellConfigure(); /* task 34: SpellLayer, SpellLayerClasses, SpellTrace (creation-time keys) */
         // Resource proxies and the command-stream writer serialize Lock/Unlock
         // and device-copy hazards. Without that contract retain immediate alpha capture.
@@ -2725,8 +2733,8 @@ public:
         if(settingsService)if(auto update=settingsService->after(settingsRevision)){
             world->applyLiveSettings(update->config);dropBlobFaint();shadowBlobs->setStrength(world->blobShadowStrength());
             if(autoBump)autoBump->configure(world->surfaceSettings());
-            const auto nextMethod=world->aoMethod();if(aoMethod!=nextMethod){drop(aoPS);drop(aoContactBloomPS);}
-            contactAO=world->contactAO();aoMethod=nextMethod;aoStrength=world->aoStrength();aoRadius=world->aoRadius();
+            selectAO(world->aoMethod(),world->aoQuality());
+            contactAO=world->contactAO();aoStrength=world->aoStrength();aoRadius=world->aoRadius();
             frameDrawGates=world->frameDrawGates();zFuncAware=world->depthFuncAware();nameMask.debug=world->nameMaskDebug();
             spell.liveOptions(world->spellLayerClassesSetting(),world->spellFogSetting()!=0);spellClasses=world->spellLayerClassesSetting();
             if(spellTraceSetting!=world->spellTraceSetting()){spellTraceSetting=world->spellTraceSetting();spellTraceLeft=spellTraceSetting;}
@@ -2739,7 +2747,7 @@ public:
             const unsigned method=preview<0?world->aoMethod():unsigned(preview)&3u;
             const bool nextContact=preview<0?world->contactAO():(preview&4)!=0;
             if(aoMethod!=method||contactAO!=nextContact){
-                if(aoMethod!=method){drop(aoPS);drop(aoContactBloomPS);aoMethod=method;}
+                selectAO(method,aoQuality);
                 contactAO=nextContact;
                 logf("AO live method=%s enabled=%u preview=%u",NorthlightQuality::aoName(aoMethod),unsigned(contactAO),unsigned(preview>=0));}
         }
