@@ -46,7 +46,7 @@ with tempfile.TemporaryDirectory(prefix='stream-idle-attribution-') as directory
         result = subprocess.run([str(binary)], text=True, capture_output=True, timeout=120)
         print(name, result.stdout, result.stderr, flush=True)
         result.check_returncode()
-        assert 'STREAM_IDLE_ATTRIBUTION_PASS groups=9' in result.stdout
+        assert 'STREAM_IDLE_ATTRIBUTION_PASS groups=15' in result.stdout
         assert not any(message in result.stderr for message in ('ThreadSanitizer', 'AddressSanitizer', 'runtime error'))
         records.append({'mode': name, 'command': command, 'exe_sha256': sha(binary), 'stdout': result.stdout, 'stderr': result.stderr})
 assert all(sha(Path(path)) == expected for path, expected in before.items()), 'Source/helper changed during final validation'

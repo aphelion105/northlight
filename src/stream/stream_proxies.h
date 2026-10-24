@@ -264,6 +264,20 @@ struct StreamCore {
     // timingN counts the generated calls for the 1-in-16 sampling. Both are game-thread only: the replay thread never runs a game-facing method or a Lock/Unlock path.
     bool timing=false;unsigned timingN=0;
     TexReadbackDiag texDiag;   // 0.3.206 (task 31): per-level texture readback report (game thread; recorded only while timing)
+    IdleImageLocks idleImages; // bounded RenderProfile-only Lock entry/return/fill provenance; atomic replay observations
+    const std::function<void(const char*)>* idleLog=nullptr; // existing Replayer sink, producer-only use; cleared after join
+    std::uint64_t idleLogWindow=0;unsigned idleLogCount=0;
+    void reportIdleImage(const IdleImageLock& p){
+        if(!idleImages.enabled()||!p.id||!idleLog||!*idleLog||!callerModule)return;
+        const auto window=frameNo/120;if(window!=idleLogWindow){idleLogWindow=window;idleLogCount=0;}
+        if(idleLogCount>=4)return;++idleLogCount;
+        // The module formatter has a game-thread-only static buffer. Resolve
+        // only long completed locks here, never from replay or every Lock.
+        try{char line[800];std::snprintf(line,sizeof line,"CSTREAM IMAGE_LOCK_LONG id=%llu entryNs=%llu returnedNs=%llu unlockEntryNs=%llu caller=%s rawCaller=0x%llx gameFrame=%llu epoch=%u fmt=%u size=%ux%ux%u level=%u face=%u pool=%u usage=0x%x flags=0x%x route=%u mode=%u lockApiNs=%lld fillNs=%lld scope=observed-lock-interval-not-cpu-work",
+            (unsigned long long)p.id,(unsigned long long)p.entryNs,(unsigned long long)p.returnedNs,(unsigned long long)p.unlockNs,callerModule(reinterpret_cast<void*>(std::uintptr_t(p.caller))),
+            (unsigned long long)p.caller,(unsigned long long)p.frame,p.epoch,p.fmt,p.w,p.h,p.d,p.level,p.face,p.pool,p.usage,p.flags,p.route,p.mode,
+            IdleGapProfile::delta(p.entryNs,p.returnedNs),IdleGapProfile::delta(p.returnedNs,p.unlockNs));(*idleLog)(line);}catch(...){}
+    }
     // Game-thread counters; reuse runTask's wait clock, without timing each GetData again.
     using QueryWait=QueryWaitProfile;
     QueryWait queryWait[21]{},queryFrame[21]{};unsigned queryWaitFrames=0; // 20 includes unknown query types
@@ -444,7 +458,7 @@ inline void takeTexSpare(StreamCore& c,std::vector<unsigned char>& out,std::size
 }
 inline void trimTexSpares(StreamCore& c){std::lock_guard<std::mutex> l(c.texMutex);for(auto& x:c.texSpare)std::vector<unsigned char>().swap(x);}   // game thread (pressure)
 inline void dropSubShadow(StreamCore& c,SubRes& s){std::lock_guard<std::mutex> l(c.texMutex);dropShadowLocked(c,s);}
-inline void dropSubStage(StreamCore& c,SubRes& s){if(s.stage){c.q.freeBlock(s.stage);s.stage=nullptr;}}   // destroyed while a level is still locked: the staged Block goes back (freeBlock takes the pool mutex)
+inline void dropSubStage(StreamCore& c,SubRes& s){if(c.idleImages.enabled())c.idleImages.retire(std::uint64_t(reinterpret_cast<std::uintptr_t>(&s)));if(s.stage){c.q.freeBlock(s.stage);s.stage=nullptr;}}   // destroyed while a level is still locked: the staged Block goes back (freeBlock takes the pool mutex)
 // Game thread: makes `bytes` fit the texture-shadow cap by evicting least-recently-locked shadows, never-re-locked ones (fresh keeps) first,
 // never one that is locked now or `keep`. mayEvictRelocked=false leaves the re-locked ones alone (no caller: 0.3.196 (task 12): a fresh keep no longer evicts anything,
 // it is taken only into free room, see lockImage). false = still no room.
@@ -594,6 +608,17 @@ inline HRESULT lockImage(ProxyBase& self,ProxyBase& root,SubRes& sub,UINT route,
         if(box->Right>lw||box->Bottom>lh||box->Back>ld||box->Left>=box->Right||box->Top>=box->Bottom||box->Front>=box->Back)return D3DERR_INVALIDCALL;
         l=box->Left;t=box->Top;r=box->Right;b=box->Bottom;f=box->Front;k=box->Back;
     }
+    // Use the same actual Lock caller/metadata as TexReadbackDiag. The interval
+    // after a successful return belongs to the caller, not LockRect's API cost.
+    struct ImageProbe {
+        StreamCore& core;SubRes& sub;std::uint64_t id=0;
+        ImageProbe(StreamCore& c,SubRes& s,UINT route,UINT level,UINT face,UINT w,UINT h,UINT d,const Info& info,DWORD flags,void* caller):core(c),sub(s){
+            if(!core.idleImages.enabled())return;
+            IdleImageLock p;p.key=std::uint64_t(reinterpret_cast<std::uintptr_t>(&sub));p.entryNs=nowNs();p.caller=std::uint64_t(reinterpret_cast<std::uintptr_t>(caller));p.frame=core.frameNo;
+            p.fmt=info.fmt;p.w=w;p.h=h;p.d=d;p.level=level;p.face=face;p.pool=info.pool;p.usage=info.usage;p.flags=flags;p.route=route;p.epoch=core.queryEpoch.load(std::memory_order_acquire);id=core.idleImages.begin(p);
+        }
+        ~ImageProbe(){if(id)core.idleImages.returned(id,nowNs(),unsigned(sub.mode));}
+    } probe(*self.core,sub,route,level,face,lw,lh,ld,root.info,flags,caller);
     const DWORD eff=effectiveLockFlags(flags,root.info.pool);
     const auto fi=D3::formatInfo(root.info.fmt);
     const bool rtLike=(root.info.usage&(D3::kUsageRT|D3::kUsageDS))!=0,volume=route==RouteVolume||route==RouteVolumeTexture;
@@ -715,6 +740,7 @@ inline HRESULT lockImage(ProxyBase& self,ProxyBase& root,SubRes& sub,UINT route,
 inline HRESULT unlockImage(ProxyBase& self,SubRes& sub,UINT route,UINT level,UINT face){
     LockScope _ts(*self.core);Queue& q=self.core->q;
     if(sub.mode==SubRes::Free)return D3DERR_INVALIDCALL;
+    if(self.core->idleImages.enabled())self.core->reportIdleImage(self.core->idleImages.unlock(std::uint64_t(reinterpret_cast<std::uintptr_t>(&sub)),nowNs()));
     const bool volume=route==RouteVolume||route==RouteVolumeTexture;
     const std::uint16_t cmd=(std::uint16_t)(volume?Cmd::UnlockBox:Cmd::UnlockRect);
     if(sub.mode==SubRes::Staged){

@@ -2679,8 +2679,12 @@ public:
         std::memcpy(inverseView,context.inverseView,64);std::memcpy(camera,context.camera,12);std::memcpy(projectionOut,projection,12);return true;
     }
     void registerEquipmentShader(IDirect3DVertexShader9* shader,const DWORD* words,size_t count){
-        if(equipmentLightsOn()){const unsigned lights=NorthlightEquipmentLightProof::analyze(reinterpret_cast<const uint32_t*>(words),count);equipmentShaders[shader]=lights;
-            if(lights&&NorthlightDiagnostics::enabled())logf("EQUIPMENT shader proven nativePointCount=%u shader=%p",lights,static_cast<void*>(shader));}
+        // EquipmentLights can be enabled live after these shaders were created.
+        // Keep only its small proven layout, never shader bytecode or a COM owner.
+        const unsigned lights=NorthlightEquipmentLightProof::analyze(reinterpret_cast<const uint32_t*>(words),count);
+        if(!shader||!lights){equipmentShaders.erase(shader);return;}
+        equipmentShaders[shader]=lights;
+        if(equipmentLightsOn()&&NorthlightDiagnostics::enabled())logf("EQUIPMENT shader proven nativePointCount=%u shader=%p",lights,static_cast<void*>(shader));
     }
     void captureEquipmentLights(IDirect3DVertexShader9* shader,IDirect3DSurface9* mainDepth){
         if(!equipmentLightsOn()||!hasContext()||!active)return;

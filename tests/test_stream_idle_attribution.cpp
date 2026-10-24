@@ -99,8 +99,101 @@ static void concurrentPublication(){
         if(const auto* h=q.next(false)){const auto* data=reinterpret_cast<const unsigned*>(h+1);CHECK(data[63]==(data[0]^0xA5A5A5A5u));sum+=data[0];q.retire(h);++consumed;}else std::this_thread::yield();}
     producer.join();CHECK(done.load()&&sum==std::uint64_t(Count)*(Count+1)/2&&q.idlePoint().consistent&&get(q.stats.chunkAllocs)>=3);++groups;
 }
+struct CpuApiFixture {
+    static inline unsigned opens=0,reads=0,closes=0;static inline bool openOk=true,readOk=true;
+    static const IdleProducerCpu::Api& api(){static const IdleProducerCpu::Api a{
+        []()->void*{++opens;return openOk?reinterpret_cast<void*>(std::uintptr_t(1)):nullptr;},
+        [](void* h,IdleCpuSample& p){CHECK(h==reinterpret_cast<void*>(std::uintptr_t(1)));++reads;p.kernelNs=reads*100;p.userNs=reads*200;return readOk;},
+        [](void* h){CHECK(h==reinterpret_cast<void*>(std::uintptr_t(1)));++closes;}};return a;}
+};
+static void cpuLifetime(){
+    using F=CpuApiFixture;F::opens=F::reads=F::closes=0;F::openOk=F::readOk=true;
+    {IdleProducerCpu clock;clock.start(false,&F::api());CHECK(!clock.sample().known&&F::opens==0&&F::reads==0);
+     F::openOk=false;clock.start(true,&F::api());CHECK(!clock.sample().known&&F::opens==1&&F::reads==0&&F::closes==0);
+     F::openOk=true;clock.start(true,&F::api());const auto a=clock.sample();CHECK(a.known&&a.kernelNs==100&&a.userNs==200);
+     F::readOk=false;CHECK(!clock.sample().known);F::readOk=true;const auto b=clock.sample();CHECK(b.known&&b.kernelNs==300);
+     clock.start(true,&F::api());CHECK(F::closes==1);clock.reset();clock.reset();CHECK(F::closes==2&&!clock.sample().known);}
+    CHECK(F::closes==2&&F::reads==3);
+    IdleGapProfile profile;profile.enable(true);IdlePoint point;IdleCpuSample first,last;
+    first.known=last.known=true;first.kernelNs=100;last.kernelNs=500;
+    profile.wait(100,10000000,point,point,1,first);profile.wait(10000000,30000100,point,point,1,{});
+    profile.finish(30000100,point,2,false,last);const auto gap=profile.take().worst[0];
+    CHECK(gap.cpuFirst.known&&gap.cpuFirst.kernelNs==100&&gap.cpuLast.kernelNs==500&&gap.startNs==100&&gap.endNs==30000100);++groups;
+}
+static IdleImageLock imageRecord(std::uint64_t key=1,std::uint64_t entry=1){
+    IdleImageLock p;p.key=key;p.entryNs=entry;p.caller=0x123456;p.w=64;p.h=32;p.d=1;p.fmt=22;p.flags=0x2000;p.pool=1;p.usage=0x200;p.level=2;p.face=3;p.route=2;p.frame=99;p.epoch=7;return p;
+}
+static void imageLifecycle(){
+    IdleImageLocks locks;const auto p=imageRecord();CHECK(locks.begin(p)==0&&locks.select(1,40000000).lock.id==0);
+    locks.enable(true);const auto id=locks.begin(p);CHECK(id);
+    auto selected=locks.select(1,30000001);CHECK(selected.stable&&selected.lock.id==id&&selected.lock.mode==0&&selected.lock.returnedNs==0);
+    locks.returned(id,1001,3);selected=locks.select(1,30000001);
+    CHECK(selected.lock.mode==3&&selected.lock.caller==p.caller&&selected.lock.fmt==22&&selected.lock.w==64&&selected.lock.flags==p.flags&&selected.lock.epoch==7);
+    locks.unlock(p.key,30000001);selected=locks.select(1001,30000001);
+    CHECK(selected.stable&&selected.lock.id==id&&selected.lock.returnedNs==1001&&selected.lock.unlockNs==30000001&&selected.overlapNs==30000001u-1001u);
+    CHECK(locks.select(1,30000001).overlapNs==30000000); // The full API+fill span is longer than the clipped fill span.
+    CHECK(locks.select(30000001,60000001).lock.id==0); // A completed lock cannot explain a later gap.
+    const auto failed=locks.begin(imageRecord(2,40000001));locks.returned(failed,70000001,0);
+    selected=locks.select(40000001,70000001);CHECK(selected.lock.id==failed&&selected.lock.mode==4&&selected.lock.returnedNs==selected.lock.unlockNs);
+    const auto retired=locks.begin(imageRecord(3,80000001));locks.returned(retired,80000101,1);locks.retire(3);
+    selected=locks.select(80000001,110000001);CHECK(selected.lock.id==0&&!selected.stable);
+    const auto reused=locks.begin(imageRecord(3,120000001));CHECK(reused!=retired);locks.returned(reused,120000101,2);
+    selected=locks.select(120000001,150000001);CHECK(selected.stable&&selected.lock.id==reused&&selected.lock.mode==2);
+    locks.enable(false);locks.enable(true);CHECK(locks.select(1,200000000).lock.id==0);++groups;
+}
+static void imageBounds(){
+    IdleImageLocks locks;locks.enable(true);std::array<std::uint64_t,IdleImageLocks::Active> ids{};
+    for(unsigned i=0;i<ids.size();++i){ids[i]=locks.begin(imageRecord(i+1));CHECK(ids[i]);}
+    CHECK(locks.begin(imageRecord(99))==0&&locks.select(1,30000001).overflow==1);
+    for(unsigned i=0;i<ids.size();++i){locks.returned(ids[i],1001,1);locks.unlock(i+1,30000001);}
+    for(unsigned i=0;i<IdleImageLocks::Completed+2;++i){const auto key=100+i;const auto entry=std::uint64_t(i+2)*40000000;const auto id=locks.begin(imageRecord(key,entry));CHECK(id);locks.returned(id,entry+100,3);locks.unlock(key,entry+30000000);}
+    const auto selected=locks.select(240000000,270000000);CHECK(selected.lock.key==104&&selected.overlapNs==30000000);
+    CHECK(locks.select(1,30000001).lock.id==0); // Bounded history is not a completeness guarantee.
+    ++groups;
+}
+static void imagePublicationRace(){
+    IdleImageLocks locks;locks.enable(true);std::atomic<bool> done{false};constexpr unsigned Count=10000;
+    std::thread producer([&]{for(unsigned i=1;i<=Count;++i){auto p=imageRecord(i,std::uint64_t(i)*40000000);p.w=i;p.caller=i;p.fmt=i^0x1234;
+        const auto id=locks.begin(p);CHECK(id);locks.returned(id,p.entryNs+100,3);locks.unlock(i,p.entryNs+30000000);}done.store(true);});
+    while(!done.load()){const auto s=locks.select(1,std::uint64_t(Count+1)*40000000);if(s.stable&&s.lock.id){CHECK(s.lock.w==s.lock.caller&&s.lock.fmt==(s.lock.w^0x1234));CHECK(s.lock.returnedNs==0||s.lock.returnedNs==s.lock.entryNs+100);}}
+    producer.join();CHECK(locks.select(1,std::uint64_t(Count+1)*40000000).stable);++groups;
+}
+static void actualImageLocks(){
+    for(bool profile:{false,true}){
+        gTrace.clear();StreamDevice::Options options;options.diagnostics=&always;options.idleProfiling=profile?&always:&never;Rig rig(true,options);rig.sync();
+        IDirect3DTexture9* texture=nullptr;CHECK(rig.dev->CreateTexture(64,32,1,0,(D3DFORMAT)22,(D3DPOOL)1,&texture,nullptr)==D3D_OK);rig.sync();
+        auto* proxy=static_cast<StreamTexture*>(ProxyBase::of(texture));D3DLOCKED_RECT locked{};void* caller=reinterpret_cast<void*>(std::uintptr_t(0xABCDEF));
+        const auto start=nowNs();CHECK(lockImage(*proxy,*proxy,proxy->subs[0],RouteTexture,0,0,64,32,1,&locked,nullptr,nullptr,nullptr,0,caller)==D3D_OK);
+        std::memset(locked.pBits,0x57,std::size_t(locked.Pitch)*32);auto selected=rig.core().idleImages.select(start,nowNs());
+        if(profile){CHECK(selected.stable&&selected.lock.id&&selected.lock.returnedNs>=selected.lock.entryNs&&selected.lock.caller==0xABCDEF&&selected.lock.w==64&&selected.lock.h==32);}
+        else CHECK(!selected.lock.id);
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));CHECK(texture->UnlockRect(0)==D3D_OK);rig.sync();
+        selected=rig.core().idleImages.select(start,nowNs());if(profile)CHECK(selected.lock.id&&selected.lock.unlockNs>selected.lock.returnedNs);
+        CHECK(texture->LockRect(0,&locked,nullptr,D3::kLockReadOnly)==D3D_OK);CHECK(static_cast<unsigned char*>(locked.pBits)[7]==0x57);CHECK(texture->UnlockRect(0)==D3D_OK);
+        const auto invalid=nowNs();CHECK(texture->LockRect(0,nullptr,nullptr,0)==D3DERR_INVALIDCALL);CHECK(!rig.core().idleImages.select(invalid,nowNs()).lock.id);
+        texture->Release();rig.sync();
+        IDirect3DTexture9* abandoned=nullptr;CHECK(rig.dev->CreateTexture(8,8,1,0,(D3DFORMAT)22,(D3DPOOL)1,&abandoned,nullptr)==D3D_OK);rig.sync();
+        const auto abandonedStart=nowNs();CHECK(abandoned->LockRect(0,&locked,nullptr,0)==D3D_OK);abandoned->Release();rig.sync();
+        selected=rig.core().idleImages.select(abandonedStart,nowNs());if(profile)CHECK(!selected.lock.id&&!selected.stable);
+        rig.finish();checkClean();
+    }
+    ++groups;
+}
+static unsigned callerFormats=0;
+static const char* imageCaller(void* p){CHECK(reinterpret_cast<std::uintptr_t>(p)==0x123456);++callerFormats;return "fixture-module+0x123456";}
+static void boundedProducerLog(){
+    StreamCore core;std::vector<std::string> lines;std::function<void(const char*)> sink=[&](const char* line){lines.emplace_back(line);};
+    core.idleLog=&sink;core.callerModule=&imageCaller;auto p=imageRecord();p.id=1;p.returnedNs=100;p.unlockNs=30000001;
+    callerFormats=0;core.reportIdleImage(p);CHECK(lines.empty()&&callerFormats==0);
+    core.idleImages.enable(true);for(unsigned i=0;i<7;++i)core.reportIdleImage(p);
+    CHECK(lines.size()==4&&callerFormats==4);for(const auto& line:lines)CHECK(line.find("caller=fixture-module+0x123456")!=std::string::npos&&line.find("scope=observed-lock-interval-not-cpu-work")!=std::string::npos);
+    core.frameNo=120;core.reportIdleImage(p);CHECK(lines.size()==5&&callerFormats==5);
+    core.idleLog=nullptr;core.reportIdleImage(p);CHECK(lines.size()==5&&callerFormats==5);
+    core.idleLog=&sink;core.callerModule=nullptr;core.reportIdleImage(p);CHECK(lines.size()==5&&callerFormats==5);++groups;
+}
 int main(){
     views();publicationABA();producerWaits();boundedTracker();concurrentPublication();
     replayerGap(false,false,false);replayerGap(true,false,false);replayerGap(true,true,false);replayerGap(true,false,true);
+    cpuLifetime();imageLifecycle();imageBounds();imagePublicationRace();actualImageLocks();boundedProducerLog();
     std::printf("STREAM_IDLE_ATTRIBUTION_PASS groups=%u actualQueue=1 actualReplayer=1 noGame=1 noGPU=1\n",groups);
 }

@@ -182,18 +182,22 @@ public:
         const float bary[4][3]={{1.f/3,1.f/3,1.f/3},{.6f,.2f,.2f},{.2f,.6f,.2f},{.2f,.2f,.6f}};
         // Place the draw by its first loadable triangle before it takes a sampling slot:
         // beyond the lights' reach, or with no loadable bytes, it can add no light.
-        bool placed=false;
+        bool placed=false;unsigned placedSample=samples;Point probe[3];
         for(unsigned sample=0;sample<samples&&!placed;++sample){
             std::uint64_t references[3];if(!NorthlightParticleLights::triangleIndices(unsigned(args.prim),std::uint64_t(sample)*args.primCount/samples,references))continue;
             Point points[3];if(!load(references[0],points[0])||!load(references[1],points[1])||!load(references[2],points[2]))continue;
             float world[3];for(unsigned j=0;j<3;++j){world[j]=inverseView[12+j];for(unsigned k=0;k<3;++k)world[j]+=(points[0].position[k]+points[1].position[k]+points[2].position[k])/3*inverseView[k*4+j];}
             if(!(NorthlightEquipmentLights::distance2(world,camera)<=NorthlightParticleLights::MaxDistance*NorthlightParticleLights::MaxDistance)){++frame.distant;return result;}
-            placed=true;
+            // No draw or upload occurs inside prepare(). Keep this exact probe's
+            // already evaluated vertices for its subsequent sampling iteration.
+            std::copy(points,points+3,probe);placedSample=sample;placed=true;
         }
         if(!placed||!frame.takeDraw(particle))return result;
         for(unsigned sample=0;sample<samples;++sample){
             std::uint64_t references[3];if(!NorthlightParticleLights::triangleIndices(unsigned(args.prim),std::uint64_t(sample)*args.primCount/samples,references))continue;
-            Point points[3];if(!load(references[0],points[0])||!load(references[1],points[1])||!load(references[2],points[2]))continue;
+            Point points[3];
+            if(sample==placedSample)std::copy(probe,probe+3,points);
+            else if(!load(references[0],points[0])||!load(references[1],points[1])||!load(references[2],points[2]))continue;
             ++frame.triangles;Four center{};for(unsigned j=0;j<4;++j)center[j]=(points[0].position[j]+points[1].position[j]+points[2].position[j])/3;
             float clip[4]{};for(unsigned j=0;j<4;++j)for(unsigned k=0;k<4;++k)clip[j]+=q[j*4+k]*center[k];
             if(!std::isfinite(clip[3])||clip[3]<=0||std::fabs(clip[0])>clip[3]*1.2f||std::fabs(clip[1])>clip[3]*1.2f)continue;

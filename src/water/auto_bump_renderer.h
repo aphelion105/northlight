@@ -8,6 +8,7 @@
 #include "auto_displacement_renderer.h"
 #include "native_material_capture_patch.h"
 #include "replay_gpu_cache.h"
+#include "render_thread_probe.h"
 
 // Prototype: one material-height replay per recognised draw; source textures remain intact.
 // Included after drop and logf. Original resources stay intact; displacement draws use private subdivided buffers.
@@ -353,12 +354,22 @@ public:
     }
     void setProfiler(NorthlightMaterialProfile* p){profile=p;normals.setProfiler(p);parallax.setProfiler(p);displacement.setProfiler(p);}
     void setMemoryPressure(bool on){
-        if(memoryPressure==on)return;memoryPressure=on;deferredSnapshots.setSnapshotCacheLimit(on?4u<<20:24u<<20);
+        if(memoryPressure==on)return;memoryPressure=on;
+        using Clock=std::chrono::steady_clock;const bool timed=NorthlightRenderThreadProbe::profiling();
+        auto started=timed?Clock::now():Clock::time_point{};
+        auto phase=[&]{if(!timed)return 0.;const auto ended=Clock::now();const double ms=std::chrono::duration<double,std::milli>(ended-started).count();started=ended;return ms;};
+        const size_t sourceBefore=deferredSnapshots.sharedSourceBytes();
+        // This frame-boundary clear is required for pressure relief. Do it before
+        // lowering the shared cap, avoiding an LRU shrink of entries just discarded.
+        if(on)deferredSnapshots.clearIndexCache();const double sourceClearMs=phase();
+        deferredSnapshots.setSnapshotCacheLimit(on?4u<<20:24u<<20);const double sourceLimitMs=phase();
         if(on&&!deferred.empty()){deferredDiscarded+=unsigned(deferred.size());clearDeferred();drawn=occlusionDrawn=false;}
-        deferredGPU.setLimit(on?0:32u<<20);
-        if(on){deferredSnapshots.clearIndexCache();deferredDeclarations.clear();}
-        normals.setMemoryPressure(on);displacement.setMemoryPressure(on);sharedPOM.setMemoryPressure(on);
-        logf("MATERIAL_MEMORY pressure=%u normalBudgetMiB=%u geometryBudgetMiB=%u relief=active",unsigned(on),on?32:96,on?32:128);
+        const double packetClearMs=phase();deferredGPU.setLimit(on?0:32u<<20);const double replayGpuMs=phase();
+        if(on)deferredDeclarations.clear();const double declarationClearMs=phase();
+        normals.setMemoryPressure(on);const double normalMs=phase();
+        displacement.setMemoryPressure(on);const double geometryMs=phase();
+        sharedPOM.setMemoryPressure(on);const double sharedPomMs=phase();
+        logf("MATERIAL_MEMORY pressure=%u normalBudgetMiB=%u geometryBudgetMiB=%u relief=active transitionProfiled=%u sourceBeforeMiB=%.3f sourceAfterMiB=%.3f sourceClearMs=%.3f sourceLimitMs=%.3f packetClearMs=%.3f replayGpuMs=%.3f declarationClearMs=%.3f normalMs=%.3f geometryMs=%.3f sharedPomMs=%.3f",unsigned(on),on?32:96,on?32:128,unsigned(timed),double(sourceBefore)/(1u<<20),double(deferredSnapshots.sharedSourceBytes())/(1u<<20),sourceClearMs,sourceLimitMs,packetClearMs,replayGpuMs,declarationClearMs,normalMs,geometryMs,sharedPomMs);
     }
     void trimMemory(){if(!deferred.empty()){deferredDiscarded+=unsigned(deferred.size());clearDeferred();drawn=occlusionDrawn=false;}sharedMaps[0]={};sharedMaps[1]={};sharedPOM.reset();normals.trimMemory();displacement.trimMemory();deferredSnapshots.clearIndexCache();deferredGPU.clear();}
     bool geometryPrepared()const{return displacement.prepared();}

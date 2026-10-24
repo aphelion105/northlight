@@ -2634,6 +2634,13 @@ public:
                 logf("CPUBUDGET level %u -> %u smoothed=%.3f budget=%u radius=%u changes=%u",before,cpuBudget.level,double(cpuBudget.smoothed),budget,world->effectiveActorShadowRadius(),cpuBudget.changes);}
         if(sampled()&&NorthlightRenderThreadProbe::profiling())logf("CPUBUDGET ms=%.3f smoothed=%.3f budget=%.1f level=%u radius=%u gpuBound=%d replayWait=%.2f replayBound=%d",cpuBudgetLastMs,double(cpuBudget.smoothed),double(budget),cpuBudget.level,world->effectiveActorShadowRadius(),boundKnown?int(gpuBound.bound()):-1,double(replayWait.smoothed),replayKnown?int(replayWait.bound()):-1);
     }
+    void flushFrameIntervals(const char* reason,bool mode,const NorthlightEffectSwitches::Settings& effects){
+        NorthlightFrameIntervals::Report r;const bool focused=intervalFocus;
+        const bool have=frameIntervals.takePartial(r);intervalFocus=true;
+        if(!diagnostics()||!have)return;
+        logf("FRAME interval device=%ld frame=%u tick=%lu enabled=%d samples=%u meanMs=%.3f p50Ms=%.3f p95Ms=%.3f maxMs=%.3f fps=%.2f gi=%u shadows=%u fog=%u focus=%d complete=0 reason=%s monotonicNs=%llu",
+             diagnosticId,frame,(unsigned long)GetTickCount(),int(mode),r.count,r.meanMs,r.p50Ms,r.p95Ms,r.maxMs,1000.0/r.meanMs,unsigned(effects.gi),unsigned(effects.shadows),unsigned(effects.fog),int(focused),reason,(unsigned long long)NorthlightStream::nowNs());
+    }
     void finishFrameImpl() {
         nameMaskRunEnd(); /* 0.3.212 (task 32) */
         const auto frameEffects=effectKeys.settings;const bool frameEnabled=enabled;
@@ -2655,14 +2662,16 @@ public:
             ((GetAsyncKeyState(VK_F8)&0x8000)?NorthlightEffectSwitches::GI:0u)|
             ((GetAsyncKeyState(VK_F9)&0x8000)?NorthlightEffectSwitches::Shadows:0u);
         if(effectKeys.poll(focus,modifiers,componentKeys)){
+            flushFrameIntervals("component-change",frameEnabled,frameEffects);
             const auto& settings=effectKeys.settings;
             if(world)world->setEffects(settings);
             frameIntervals.reset();frameCost.reset();stallFrames.reset();mirrorResources.queryProfile={};
-            logf("Effects components tick=%lu master=%u GI=%s shadows=%s fog=%s giCache=warm",
-                (unsigned long)GetTickCount(),unsigned(enabled),settings.gi?"ON":"OFF",settings.shadows?"ON":"OFF",settings.fog?"ON":"OFF");
+            logf("Effects components tick=%lu master=%u GI=%s shadows=%s fog=%s giCache=warm device=%llu rendererFrame=%u monotonicNs=%llu",
+                (unsigned long)GetTickCount(),unsigned(enabled),settings.gi?"ON":"OFF",settings.shadows?"ON":"OFF",settings.fog?"ON":"OFF",
+                (unsigned long long)diagnosticId,frame,(unsigned long long)NorthlightStream::nowNs());
         }
         bool retry=k10&&!key10&&!enabled;
-        if(k10&&!key10){enabled=!enabled;frameIntervals.reset();frameCost.reset();stallFrames.reset();mirrorResources.queryProfile={};logf("Effects %s tick=%lu",enabled?"ON":"OFF",(unsigned long)GetTickCount());}
+        if(k10&&!key10){flushFrameIntervals("master-change",frameEnabled,frameEffects);enabled=!enabled;frameIntervals.reset();frameCost.reset();stallFrames.reset();mirrorResources.queryProfile={};logf("Effects %s tick=%lu device=%llu rendererFrame=%u monotonicNs=%llu",enabled?"ON":"OFF",(unsigned long)GetTickCount(),(unsigned long long)diagnosticId,frame,(unsigned long long)NorthlightStream::nowNs());}
         bool k12=focus&&modifiers&&(GetAsyncKeyState(VK_F12)&0x8000);
         if(k12&&!key12){worldDebug=(worldDebug+1)%4;logf("World debug %d tick=%lu (0 normal,1 shadows,2 GI,3 volume)",worldDebug,(unsigned long)GetTickCount());}
         key12=k12;key10=k10;
@@ -2732,6 +2741,8 @@ public:
         traceWorld=-1;
         {CpuScope cpu(sampledFrame?&cleanup:nullptr);clearFrame();}
         if(settingsService)if(auto update=settingsService->after(settingsRevision)){
+            flushFrameIntervals("settings-change",frameEnabled,frameEffects);
+            const auto previousQuality=world->surfaceSettings();const bool reportSettings=diagnostics();
             world->applyLiveSettings(update->config);dropBlobFaint();shadowBlobs->setStrength(world->blobShadowStrength());
             if(autoBump)autoBump->configure(world->surfaceSettings());
             selectAO(world->aoMethod(),world->aoQuality());
@@ -2742,15 +2753,24 @@ public:
             particleOn=world->equipmentLightsOn();NorthlightParticleUploads::enabled.store(particleOn,std::memory_order_relaxed);NorthlightParticleTextures::enabled.store(particleOn,std::memory_order_relaxed);
             hdr.settings.paperWhite=update->runtime->hdr[1];hdr.settings.uiWhite=update->runtime->hdr[2];hdr.settings.maxNits=update->runtime->hdr[3];hdr.settings.contrast=update->runtime->hdr[4];hdr.settings.exposure=update->runtime->hdr[5];
             settingsRevision=update->revision;settingsService->acknowledge(*update);
-            logf("SETTINGS frame revision=%s (creation-time changes require restart)",settingsRevision.c_str());}
+            logf("SETTINGS frame revision=%s (creation-time changes require restart)",settingsRevision.c_str());
+            if(reportSettings||diagnostics()){
+                const auto boundaryNs=NorthlightStream::nowNs();const auto tick=GetTickCount();
+                const auto& currentQuality=world->surfaceSettings();
+                // Report the effective delta; restart-only requests remain unapplied.
+                for(const auto& key:NorthlightQuality::Keys)if(previousQuality.*key.field!=currentQuality.*key.field)
+                    logf("SETTINGS applied device=%llu rendererFrame=%u monotonicNs=%llu tick=%lu revision=%s key=%s previous=%u value=%u boundary=after-frame-cleanup",
+                         (unsigned long long)diagnosticId,frame,(unsigned long long)boundaryNs,(unsigned long)tick,settingsRevision.c_str(),key.name,previousQuality.*key.field,currentQuality.*key.field);
+            }}
         if(settingsService&&world){
             const int preview=settingsService->aoPreview();
             const unsigned method=preview<0?world->aoMethod():unsigned(preview)&3u;
             const bool nextContact=preview<0?world->contactAO():(preview&4)!=0;
             if(aoMethod!=method||contactAO!=nextContact){
+                flushFrameIntervals("ao-preview-change",frameEnabled,frameEffects);
                 selectAO(method,aoQuality);
                 contactAO=nextContact;
-                logf("AO live method=%s enabled=%u preview=%u",NorthlightQuality::aoName(aoMethod),unsigned(contactAO),unsigned(preview>=0));}
+                logf("AO live method=%s enabled=%u preview=%u device=%llu rendererFrame=%u monotonicNs=%llu",NorthlightQuality::aoName(aoMethod),unsigned(contactAO),unsigned(preview>=0),(unsigned long long)diagnosticId,frame,(unsigned long long)NorthlightStream::nowNs());}
         }
         if(memoryWorld>=0||memoryCaps>=0||memoryTrim){
             LARGE_INTEGER workStart={},worldEnd={},materialEnd={},replayEnd={},streamEnd={},workEnd={};QueryPerformanceCounter(&workStart);

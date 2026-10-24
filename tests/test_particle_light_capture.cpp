@@ -4,7 +4,6 @@
 #include "forwarders.h"
 #include "particle_light_capture.h"
 #include <cassert>
-#include <chrono>
 #include <cstdio>
 
 // The real SDK interfaces, backed only by CPU bytes. Any accidental device or
@@ -152,15 +151,35 @@ int main(int argc,char** argv){
     frame.nextFrame();upload();textures.invalidate(&device.texture);assert(!prepare(vertex).count&&frame.textureMiss==1);
     textures.upload(&device.texture,&device.texture,image[0],image[1],0,image[2],payload.data(),payload.size(),image[3],true,true);
     for(auto& v:vertices)v.color=packed(nativeTint);upload();
-    std::array<std::uint16_t,49> repeated{};for(unsigned i=1;i<repeated.size();++i)repeated[i]=std::uint16_t(1+(i-1)%3);
-    uploads.write(&device.indices,1,0,repeated.data(),sizeof(repeated),false);
-    for(unsigned triangles:{1u,16u}){
-        args.primCount=triangles;std::array<double,7> elapsed{};unsigned checksum=0;
-        for(auto& time:elapsed){const auto start=std::chrono::steady_clock::now();
-            for(unsigned n=0;n<1000;++n){frame.nextFrame();checksum+=prepare(vertex).count;}
-            time=std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-start).count()/1000;}
-        std::sort(elapsed.begin(),elapsed.end());assert(checksum==7000);
-        std::printf("warm Capture::prepare triangles=%u: median %.3f us/draw, 32 draws %.3f ms (1000 draws x7, CPU-only SDK backend)\n",triangles,elapsed[3],elapsed[3]*.032);
+    for(unsigned scenario=0;scenario<9;++scenario)for(unsigned up=0;up<2;++up){
+        if(scenario==4&&up)continue; // A raw UP pointer has no bounded upload-miss case.
+        frame.reset();selection.reset();uploads.clear();
+        vertices[0]={{-.2f,-.2f,2},packed(nativeTint),{.5f,.5f}};
+        vertices[1]={{.2f,-.2f,2},packed(nativeTint),{.5f,.5f}};
+        vertices[2]={{0,.4f,2},packed(nativeTint),{.5f,.5f}};
+        if(scenario==6)for(auto& v:vertices)v.position[2]=60;
+        if(scenario==7)for(auto& v:vertices)v.position[0]+=30;
+        if(scenario==8)for(auto& v:vertices){v.position[2]=3;v.color=D3DCOLOR_ARGB(192,64,128,255);}
+        const unsigned triangles=scenario==1?16:scenario==2||scenario==4?2:scenario==3?3:1;
+        std::array<std::uint16_t,49> references{};references[0]=99;
+        for(unsigned i=0;i<48;++i)references[i+1]=std::uint16_t((up?0:1)+i%3);
+        if(scenario==2||scenario==3||scenario==5)references[1]=99;
+        if(scenario==3)references[4]=99;
+        if(scenario==4)references[1]=10;
+        args=indexed;args.primCount=triangles;if(scenario==4)args.numVertices=12;
+        if(up){args.type=NorthlightSpellLayer::DrawType::IndexedUP;args.baseVertex=0;args.minIndex=0;args.first=0;args.vertexData=vertices.data();args.stride=sizeof(Vertex);args.indexData=references.data()+1;}
+        uploads.write(&device.vertices,1,device.streamOffset,vertices.data(),unsigned(sizeof vertices),false);
+        uploads.write(&device.indices,1,0,references.data(),unsigned(sizeof references),false);
+        const auto before=uploads.stats();const auto result=prepare(vertex);const auto after=uploads.stats();
+        const bool empty=scenario==5||scenario==6||scenario==7;assert(bool(result.count)==!empty);
+        const unsigned expectedTriangles=scenario==5||scenario==6?0:scenario==2||scenario==3||scenario==4?1:triangles;
+        if(frame.triangles!=expectedTriangles){std::fputs("PARTICLE_PROBE_TRIANGLE_MISMATCH\n",stderr);std::abort();}
+        capture.submit(result,true,false,frame);const auto shownCase=publish();assert(bool(shownCase.count)==!empty);
+        uint64_t hash=1469598103934665603ull;const auto addHash=[&](const void* data,size_t size){const auto* p=static_cast<const unsigned char*>(data);for(size_t i=0;i<size;++i)hash=(hash^p[i])*1099511628211ull;};
+        addHash(result.camera,sizeof result.camera);
+        for(unsigned i=0;i<result.count;++i){const auto& c=result.clusters[i];addHash(c.sample.position,sizeof c.sample.position);addHash(c.sample.rgb,sizeof c.sample.rgb);addHash(&c.sample.brightest,sizeof c.sample.brightest);addHash(&c.count,sizeof c.count);}
+        for(unsigned i=0;i<shownCase.count;++i){addHash(shownCase.position[i].data(),sizeof shownCase.position[i]);addHash(shownCase.color[i].data(),sizeof shownCase.color[i]);}
+        std::printf("PARTICLE_PROBE_CASE scenario=%u up=%u prepared=%u selected=%u hash=%llu triangles=%u draws=%u probes=%u distant=%u bufferMiss=%u uploadHits=%llu uploadMisses=%llu\n",scenario,up,result.count,shownCase.count,(unsigned long long)hash,frame.triangles,frame.draws,frame.probes,frame.distant,frame.bufferMiss,(unsigned long long)(after.hits-before.hits),(unsigned long long)(after.misses-before.misses));
     }
     assert(device.vertices.refs==1&&device.indices.refs==1&&device.texture.refs==1&&device.declaration.refs==1);
     std::puts("PASS actual SDK Capture::prepare: native Particle and white ParticleUnlit VS, native fog PS, Cold Blood texture/tint, indexed offsets, failed/deferred/immediate submits, frame expiry, additive alpha and dark upload misses");

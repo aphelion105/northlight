@@ -313,9 +313,14 @@ public:
     unsigned preparedPrimitives()const{return current?current->primitives:0;}
     void beginDraw(){current=nullptr;lastDepthLower=0;}
     void setMemoryPressure(bool on){
-        current=nullptr;memoryPressure=on;snapshots.setSnapshotCacheLimit(on?6u<<20:24u<<20);rangeSnapshots.setSnapshotCacheLimit(on?1u<<20:4u<<20);skinRangeSnapshots.setSnapshotCacheLimit(on?1u<<20:4u<<20);
-        MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;GlobalMemoryStatusEx(&memory);refreshBudget(memory);
-        if(on){boundsLRU.clear();bounds.clear();boundsBytes=0;poseEnvelopes.clear();snapshots.clearIndexCache();rangeSnapshots.clearIndexCache();skinRangeSnapshots.clearIndexCache();}
+        current=nullptr;memoryPressure=on;
+        // All three pools are discarded in pressure mode; do not first evict
+        // part of each pool just to reach a cap that its clear already satisfies.
+        if(on){snapshots.clearIndexCache();rangeSnapshots.clearIndexCache();skinRangeSnapshots.clearIndexCache();}
+        snapshots.setSnapshotCacheLimit(on?6u<<20:24u<<20);rangeSnapshots.setSnapshotCacheLimit(on?1u<<20:4u<<20);skinRangeSnapshots.setSnapshotCacheLimit(on?1u<<20:4u<<20);
+        // Pressure selects the fixed 32 MiB budget without reading OS values.
+        MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;if(!on)GlobalMemoryStatusEx(&memory);refreshBudget(memory);
+        if(on){boundsLRU.clear();bounds.clear();boundsBytes=0;poseEnvelopes.clear();}
     }
     void trimMemory(){setMemoryPressure(memoryPressure);}
     void reset(){current=nullptr;constantStamp={};rangeConstantStamp={};sourceLookup.clear();contentLookup.clear();materialLookup.clear();indexedEntries=true;entries.clear();boundsLRU.clear();bounds.clear();poseEnvelopes.clear();poseBindings={};envelopeBudget.reset();boundsBytes=resident=0;for(auto& t:textures){drop(t.gpu);drop(t.source);}textures.clear();snapshots.clearIndexCache();rangeSnapshots.clearIndexCache();skinRangeSnapshots.clearIndexCache();declarations.clear();}
