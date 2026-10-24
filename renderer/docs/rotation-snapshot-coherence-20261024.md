@@ -120,3 +120,31 @@ context-dependent WorldRenderer activation and matching quality/MSAA. None of
 the component checks above substitutes for that gate or proves stable 120 FPS.
 Detailed immutable logs, commands, source guards and failed attempts are kept
 under `northlight-diagnostics/rotation-scene-followup-20261024`.
+
+## Build and focused acceptance record
+
+Both x86 DLLs build from renderer source commit
+`e1b642e9d3c455d45741e33c21e89a6c5912d058`, BUILD identity
+`b34e68b47d1d5934b04f9a87c296d037dd59782599668b76be74e28d72df9200`.
+Production inputs remain unchanged through each build, and both PE/PDB GUIDs
+and ages match. The six actual-DLL CPU-host C ABI cases pass. Two pre-existing
+compiler warnings remain; no new format warnings remain. The first integration
+build failed on an incorrectly scoped diagnostics call; its corrected rerun
+and the original failure are preserved. The helper's subsequent format-argument
+casts change no pixel/state operation; its GPU acceptance predates those casts.
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| Normal `frd9.dll` | 5,774,336 | `b0e46244d4009b2f84cbf12e059dcf321a794666a40e76ff43ad4c265d109908` |
+| Stand `frd9-stand-replay.dll` | 5,776,896 | `54578873561e1c4352c417a08cb43b6f4f694953ed056a19b88551e2783df843` |
+
+The separate manual package is
+`northlight-builds/northlight-rotation-coherence-e1b642e-20261024`.
+Its `d3d9.dll` is the normal artifact; the replay DLL is excluded. Nothing is
+installed automatically. The installed DLL, optimizer DLL/symbols, log, personal
+INI files and Config.wtf still match the previous recorded SHA-256 values.
+The focused evidence locations are `shadows/snapshot-client-range-final`,
+`native-chain/worker-import`, `native-chain/lighting-capture`,
+`native-chain/coherence-dll-api`, `coherence-build-normal-final` and
+`coherence-build-stand`. No full suite, old 69-test selection, game launch,
+publication or FPS benchmark was run for this slice.
