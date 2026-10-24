@@ -77,12 +77,37 @@ def pe32(path):
         raise ValueError(f'The D3D9 scene stand requires x86 PE32 inputs: {path}')
 
 
+def tool_runtime(root):
+    """Keep the official CLI/retracer's bundled DLLs, including D3Dcompiler_47.
+
+    PE32 checks identify architecture only. The acceptance runner separately
+    records actual tool parsing, loaded modules and output; this is no readiness
+    shortcut and does not assume that copying d3dretrace.exe alone is enough.
+    """
+    root = Path(root).resolve()
+    required = [root / 'bin/apitrace.exe', root / 'bin/d3dretrace.exe',
+                root / 'bin/D3Dcompiler_47.dll', root / 'lib/wrappers/d3d9.dll']
+    dependencies = sorted((root / 'bin').glob('*.dll'), key=lambda p: p.name)
+    for path in dict.fromkeys(required + dependencies):
+        if not path.is_file():
+            raise ValueError(f'Missing official x86 tool artifact: {path}')
+        pe32(path)
+    return {'root': str(root), 'files': {str(p): digest(p) for p in dict.fromkeys(required + dependencies)},
+            'retrace_dependencies': [str(p) for p in dependencies],
+            'runtime_dependency_loading_validated': False}
+
+
 def prepare(args):
     output = args.output.resolve()
     if output.exists():
         raise ValueError('Output must be new; existing evidence is immutable')
+    tools = tool_runtime(args.tool_root) if getattr(args, 'tool_root', None) else None
+    if tools and args.retracer and args.retracer.resolve() != Path(tools['root']) / 'bin/d3dretrace.exe':
+        raise ValueError('The retracer must belong to the identified official tool bundle')
     inputs = [p.resolve() for p in (args.scene_manifest, args.trace, args.snapshot_index,
                                   args.retracer, args.backend_dll, args.northlight_dll, args.quality_ini) if p]
+    if tools:
+        inputs += [Path(p) for p in tools['files']]
     if any(p == output or p.is_relative_to(output) for p in inputs):
         raise ValueError('Output must not contain/replace source inputs')
     before = {str(p): digest(p) for p in inputs}
@@ -154,6 +179,9 @@ def prepare(args):
         target = output / mode
         target.mkdir()
         copy_input(args.retracer, target / 'd3dretrace.exe')
+        if tools:
+            for dependency in tools['retrace_dependencies']:
+                copy_input(dependency, target / Path(dependency).name)
         if mode != 'northlight':
             copy_input(args.backend_dll, target / 'd3d9.dll')
         else:
@@ -175,7 +203,7 @@ def prepare(args):
     manifest = {
         'format': 1, 'capture_layer': args.capture_layer, 'input_sha256': before,
         'trace': str(trace_path) if trace_path else None, 'trace_sha256': trace_hash,
-        'staged_sha256': staged_hashes,
+        'staged_sha256': staged_hashes, 'official_tool_bundle': tools,
         'trace_parsed_by_official_tool': False, 'snapshots': snapshots, 'replay_plans': plans,
         'static_scene': scene, 'full_scene_replay_ready': False, 'fps_acceptance_proven': False,
         'game_launched': False, 'replay_executed': False, 'installed_files_modified': False,
@@ -206,6 +234,7 @@ if __name__ == '__main__':
     parser.add_argument('--trace', type=Path)
     parser.add_argument('--snapshot-index', type=Path)
     parser.add_argument('--retracer', type=Path)
+    parser.add_argument('--tool-root', type=Path, help='Extracted official x86 bundle; preserves bundled retracer DLL dependencies')
     parser.add_argument('--backend-dll', type=Path)
     parser.add_argument('--backend-kind', choices=('native', 'dxvk', 'dxvk2'))
     parser.add_argument('--northlight-dll', type=Path)

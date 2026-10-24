@@ -52,6 +52,23 @@ def main():
         manifest['checks'] = []
     if args.compile_only:
         return
+    constants = Path(args.prefix + 'constants.f32').read_bytes()
+    if len(constants) not in (68 * 16, 79 * 16):
+        raise ValueError('Invalid constants length: expected 68 or 79 float4 registers')
+    # Existing cases use captured images with an authored fog environment, not
+    # the original source banks and complete material inputs of a game frame.
+    manifest['input_provenance'] = {
+        'constant_register_count': len(constants) // 16,
+        'constant_bank_sha256': hashlib.sha256(constants).hexdigest(),
+        'constant_bank_stage': 'unversioned',
+        'depth_reconstructed': not Path(args.prefix + 'depth.fgr').is_file(),
+        'invented_fog_environment': True,
+        'per_source_bank_missing': True,
+        'material_inputs_complete': False,
+        'authentic_source_replay': False,
+        'whole_scene_replay': False,
+    }
+    (output / 'validation.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')
     for entry in ('WorldFog', 'FogClouds'):
         for scenario in args.cases:
             for reverse in (False, True):

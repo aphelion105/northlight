@@ -13,6 +13,7 @@ import check_layout  # noqa: E402  (scripts/ is this script's directory)
 SHADERS = northlight_paths.SHADERS                         # *.hlsl and their *-shader-build.json manifests
 DLL = northlight_paths.RENDERER / 'frd9.dll'
 DEV_DLL = northlight_paths.RENDERER / 'frd9-dev-tuning.dll'  # the dev variant never overwrites frd9.dll
+STAND_DLL = northlight_paths.RENDERER / 'frd9-stand-replay.dll'
 
 def source_identity(repo=northlight_paths.REPO):
     digest = hashlib.sha256()
@@ -28,7 +29,11 @@ def source_identity(repo=northlight_paths.REPO):
     return digest.hexdigest()
 
 def main(argv=None):
-    dev_tuning = '--dev-tuning' in (sys.argv[1:] if argv is None else argv)
+    arguments = sys.argv[1:] if argv is None else argv
+    dev_tuning = '--dev-tuning' in arguments
+    stand_replay = '--stand-replay' in arguments
+    if dev_tuning and stand_replay:
+        raise SystemExit('Choose either dev tuning or the imported-input stand variant.')
     # A source recreated at its old renderer/ path would silently fork.
     problems = check_layout.layout_problems()
     if problems:
@@ -82,13 +87,16 @@ def main(argv=None):
                '-std=c++17', '-fno-rtti', '-Wall', '-Wextra', '-Wno-microsoft-exception-spec',
                *northlight_paths.include_flags(),
                *[str(northlight_paths.src(n)) for n in ('renderer.cpp', 'world_gi.cpp', 'world_mesh_plan.cpp', 'static_shadow_scene.cpp', 'frd9.def')],
-               '-luser32', '-luuid', '-o', str(DEV_DLL if dev_tuning else DLL)]
+               '-luser32', '-luuid', '-o', str(STAND_DLL if stand_replay else DEV_DLL if dev_tuning else DLL)]
     if dev_tuning:
         # Developer-only zone tuning (scripts/dev_tuning/). The DLL carries a marker that renderer/build_packages.py refuses.
         command.insert(command.index('-luser32'), '-DNORTHLIGHT_DEV_TUNING=1')
         print('Building the DEV TUNING variant (NORTHLIGHT DEV TUNING BUILD): not for release packages.')
+    if stand_replay:
+        command.insert(command.index('-luser32'), '-DNORTHLIGHT_REPLAY_STAND=1')
+        print('Building the STAND REPLAY variant: imported context only, CVar bridge disabled, not for game installation.')
     subprocess.run(command, env=env, check=True)
-    print('Built', DEV_DLL if dev_tuning else DLL)
+    print('Built', STAND_DLL if stand_replay else DEV_DLL if dev_tuning else DLL)
 
 if __name__ == '__main__':
     main()

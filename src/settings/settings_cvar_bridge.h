@@ -6,7 +6,7 @@
 
 namespace NorthlightSettings {
 inline void (*bridgeLog)(const char*)=nullptr;
-#if defined(_WIN32) && (defined(__i386__) || defined(_M_IX86))
+#if defined(_WIN32) && (defined(__i386__) || defined(_M_IX86)) && !defined(NORTHLIGHT_REPLAY_STAND)
 inline bool clientBytes(std::uintptr_t address,const void* expected,size_t count){unsigned char actual[32];SIZE_T got=0;return count<=sizeof actual&&ReadProcessMemory(GetCurrentProcess(),reinterpret_cast<void*>(address),actual,count,&got)&&got==count&&!std::memcmp(expected,actual,count);}
 inline bool cvarSetterSupported(std::uintptr_t address,const unsigned char* expected,size_t count){
     if(clientBytes(address,expected,count))return true;

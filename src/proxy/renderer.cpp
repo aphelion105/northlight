@@ -227,6 +227,9 @@ template<class T> static uint64_t shaderHash(T* shader, std::vector<DWORD>& word
 #include "gpu_budget.h"
 #include "water_renderer.h"
 #include "world_renderer.h"
+#ifdef NORTHLIGHT_REPLAY_STAND
+#include "stand_api.h"
+#endif
 #include "surface_renderer.h"
 #include "auto_bump_renderer.h"
 #include "client_latency_diagnostics.h"
@@ -3335,6 +3338,12 @@ template<class T> static T procedure(const char* name) {
 #define NORTHLIGHT_EXPORT NorthlightBackendLoader::ExportScope exportScope
 extern "C" IDirect3D9* WINAPI Direct3DCreate9(UINT sdk) {
     NORTHLIGHT_EXPORT;
+#ifdef NORTHLIGHT_REPLAY_STAND
+    if(!NorthlightStandApi::beforeApi()){
+        logf("NORTHLIGHT STAND REPLAY BUILD: imported PE and first snapshot must be installed before Direct3DCreate9; refused");
+        return nullptr;
+    }
+#endif
     auto fn=procedure<IDirect3D9*(WINAPI*)(UINT)>("Direct3DCreate9");
     if(!fn)return nullptr;
     // The outer (game) call wraps once; a re-entered call returns the raw runtime.
@@ -3343,6 +3352,11 @@ extern "C" IDirect3D9* WINAPI Direct3DCreate9(UINT sdk) {
 }
 extern "C" HRESULT WINAPI Direct3DCreate9Ex(UINT sdk,IDirect3D9Ex** out) {
     NORTHLIGHT_EXPORT;
+#ifdef NORTHLIGHT_REPLAY_STAND
+    if(out)*out=nullptr;
+    logf("NORTHLIGHT STAND REPLAY BUILD: D3D9Ex passthrough is outside the validated imported-device protocol; refused");
+    return D3DERR_INVALIDCALL;
+#endif
     auto fn=procedure<HRESULT(WINAPI*)(UINT,IDirect3D9Ex**)>("Direct3DCreate9Ex");
     logf("Direct3D9Ex requested: forwarding without effects (use this client's normal D3D9 path).");
     if(!fn)return D3DERR_NOTAVAILABLE;

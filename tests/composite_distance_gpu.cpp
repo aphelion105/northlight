@@ -9,8 +9,10 @@
 #include <fstream>
 #include <string>
 #include <vector>
+#define NORTHLIGHT_FGR_CONSTANT_BANK_ONLY
+#include "removal_distance_gpu.cpp"
+#undef NORTHLIGHT_FGR_CONSTANT_BANK_ONLY
 static void ok(HRESULT hr){if(FAILED(hr)){std::fprintf(stderr,"HRESULT=%08lx\n",(unsigned long)hr);std::abort();}}
-static std::vector<unsigned char> read(const std::string& path){std::ifstream f(path,std::ios::binary);assert(f);return {std::istreambuf_iterator<char>(f),{}};}
 struct Image {std::uint32_t width,height,format,bytes;std::vector<unsigned char> pixels;};
 static Image image(const std::string& path){auto b=read(path);std::uint32_t h[5];assert(b.size()>=sizeof h);std::memcpy(h,b.data(),sizeof h);assert(h[0]==0x31524746&&b.size()==20+std::size_t(h[1])*h[2]*h[4]);return {h[1],h[2],h[3],h[4],{b.begin()+20,b.end()}};}
 static IDirect3DTexture9* texture(IDirect3DDevice9* dev,const Image& im){IDirect3DTexture9* tex=nullptr;ok(dev->CreateTexture(im.width,im.height,1,0,(D3DFORMAT)im.format,D3DPOOL_MANAGED,&tex,nullptr));D3DLOCKED_RECT lock{};ok(tex->LockRect(0,&lock,nullptr,0));for(unsigned y=0;y<im.height;++y)std::memcpy((char*)lock.pBits+y*lock.Pitch,im.pixels.data()+std::size_t(y)*im.width*im.bytes,im.width*im.bytes);ok(tex->UnlockRect(0));return tex;}
@@ -19,7 +21,7 @@ static float half(std::uint16_t h){const unsigned e=(h>>10)&31, m=h&1023;const f
 struct Vertex{float x,y,z,w,u,v;};
 int main(int argc,char** argv){
     assert(argc==7);const std::string prefix=argv[1];
-    auto constants=read(prefix+"constants.f32");assert(constants.size()==68*16);float c[68][4];std::memcpy(c,constants.data(),sizeof c);
+    auto bank=constantBank(read(prefix+"constants.f32"));auto& c=bank.values;
     auto light=image(prefix+"light.fgr"),dist=image(prefix+"distance.fgr"),scene=image(prefix+"scene.fgr"),base=image(prefix+"baseline.fgr"),normals=image(prefix+"normals.fgr");
     assert(light.format==D3DFMT_A16B16G16R16F&&dist.format==D3DFMT_R32F&&dist.width==light.width&&dist.height==light.height);
     const bool composite=std::strstr(argv[4],"composite")!=nullptr;const bool bounds=std::strstr(argv[4],"bounds")!=nullptr;
@@ -47,7 +49,7 @@ int main(int argc,char** argv){
     if(std::ifstream(prefix+"water.fgr").good()){water=texture(dev,image(prefix+"water.fgr"));ok(dev->SetTexture(11,water));}
     IDirect3DPixelShader9* shaders[2]{};for(unsigned i=0;i<2;++i){auto b=read(argv[i+2]);ok(dev->CreatePixelShader((const DWORD*)b.data(),&shaders[i]));}
     IDirect3DSurface9 *target=nullptr,*staging=nullptr;ok(dev->CreateRenderTarget(W,H,bounds?D3DFMT_G32R32F:D3DFMT_A16B16G16R16F,D3DMULTISAMPLE_NONE,0,FALSE,&target,nullptr));ok(dev->CreateOffscreenPlainSurface(W,H,bounds?D3DFMT_G32R32F:D3DFMT_A16B16G16R16F,D3DPOOL_SYSTEMMEM,&staging,nullptr));
-    ok(dev->SetRenderTarget(0,target));ok(dev->SetDepthStencilSurface(nullptr));ok(dev->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1));ok(dev->SetRenderState(D3DRS_ZENABLE,FALSE));ok(dev->SetRenderState(D3DRS_CULLMODE,D3DCULL_NONE));ok(dev->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE));ok(dev->SetPixelShaderConstantF(0,c[0],68));D3DVIEWPORT9 vp={0,0,W,H,0,1};ok(dev->SetViewport(&vp));
+    ok(dev->SetRenderTarget(0,target));ok(dev->SetDepthStencilSurface(nullptr));ok(dev->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1));ok(dev->SetRenderState(D3DRS_ZENABLE,FALSE));ok(dev->SetRenderState(D3DRS_CULLMODE,D3DCULL_NONE));ok(dev->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE));ok(dev->SetPixelShaderConstantF(0,c[0],bank.count));D3DVIEWPORT9 vp={0,0,W,H,0,1};ok(dev->SetViewport(&vp));
     const Vertex vertices[]={{-.5f,-.5f,0,1,0,0},{float(W)-.5f,-.5f,0,1,1,0},{-.5f,float(H)-.5f,0,1,0,1},{float(W)-.5f,float(H)-.5f,0,1,1,1}};
     // Generate this frame's exact half-grid distances on the GPU, with the
     // production normal MRT pass. Both composites consume identical inputs.
@@ -71,7 +73,7 @@ int main(int argc,char** argv){
     }
     for(unsigned i=0;i<2;++i){assert(timing[i].size()==8);std::sort(timing[i].begin(),timing[i].end());means[i]=(timing[i][3]+timing[i][4])*.5;}
     std::size_t changed=0,big=0,alpha=0,nonfinite=0;double maxAbs=0,sumSq=0;for(std::size_t i=0;i<std::size_t(W)*H*(bounds?2:4);++i){double error;bool different;if(bounds){float a,b;std::memcpy(&a,output[0].data()+i*4,4);std::memcpy(&b,output[1].data()+i*4,4);error=std::fabs(double(a)-b);different=a!=b;}else{std::uint16_t a,b;std::memcpy(&a,output[0].data()+i*2,2);std::memcpy(&b,output[1].data()+i*2,2);error=std::fabs(double(half(a))-half(b));different=a!=b;alpha+=i%4==3&&different;}nonfinite+=!std::isfinite(error);changed+=different;big+=error>1.0/1024;maxAbs=std::max(maxAbs,error);sumSq+=error*error;}
-    std::printf("{\"capture\":\"%s\",\"old_ms\":%.6f,\"native_ms\":%.6f,\"ratio\":%.4f,\"components\":%llu,\"changed\":%llu,\"over_1_1024\":%llu,\"alpha_changes\":%llu,\"nonfinite\":%llu,\"max_abs\":%.9g,\"rmse\":%.9g,\"depth_reconstructed\":%s,\"AO_neutral\":%s}\n",argv[4],means[0],means[1],means[1]/means[0],(unsigned long long)std::size_t(W)*H*(bounds?2:4),(unsigned long long)changed,(unsigned long long)big,(unsigned long long)alpha,(unsigned long long)nonfinite,maxAbs,std::sqrt(sumSq/(std::size_t(W)*H*(bounds?2:4))),std::ifstream(prefix+"depth.fgr").good()?"false":"true",ao?"false":"true");std::fflush(stdout);
+    std::printf("{\"capture\":\"%s\",\"old_ms\":%.6f,\"native_ms\":%.6f,\"ratio\":%.4f,\"components\":%llu,\"changed\":%llu,\"over_1_1024\":%llu,\"alpha_changes\":%llu,\"nonfinite\":%llu,\"max_abs\":%.9g,\"rmse\":%.9g,\"depth_reconstructed\":%s,\"AO_neutral\":%s,\"constant_register_count\":%u,\"constant_bank_stage\":\"unversioned\",\"invented_fog_environment\":false,\"neutral_composite_auxiliary_textures\":%s,\"per_source_bank_missing\":true,\"material_inputs_complete\":false,\"authentic_source_replay\":false,\"whole_scene_replay\":false}\n",argv[4],means[0],means[1],means[1]/means[0],(unsigned long long)std::size_t(W)*H*(bounds?2:4),(unsigned long long)changed,(unsigned long long)big,(unsigned long long)alpha,(unsigned long long)nonfinite,maxAbs,std::sqrt(sumSq/(std::size_t(W)*H*(bounds?2:4))),std::ifstream(prefix+"depth.fgr").good()?"false":"true",ao?"false":"true",bank.count,composite?"true":"false");std::fflush(stdout);
     assert(!nonfinite&&!alpha&&!big);normalShader->Release();distanceSurface->Release();distance->Release();normalSurface->Release();if(water)water->Release();if(ao)ao->Release();if(fog)fog->Release();if(zero)zero->Release();for(auto* shader:shaders)shader->Release();for(auto* tex:textures)tex->Release();for(auto* query:{event,start,end,freq,disjoint})query->Release();staging->Release();target->Release();dev->Release();api->Release();FreeLibrary(module);DestroyWindow(window);UnregisterClassW(wc.lpszClassName,wc.hInstance);
     return 0;
 }
