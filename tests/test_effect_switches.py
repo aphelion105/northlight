@@ -59,7 +59,7 @@ struct Device {
     }
 };
 struct Fixture {
-    NorthlightEffectSwitches::Settings effects;
+    NorthlightEffectSwitches::Settings effects,requestedEffects;
     NorthlightQuality::Settings quality; // 0.3.138 northlight-quality.ini; defaults: giPass is a pass-through
     bool temporalValid=true,sourceVisValid=true,shadowsComposited=true;
     bool shadowFrameReady=true,pointReady=true,neutralShadowMaps=false;

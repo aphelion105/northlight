@@ -1,5 +1,5 @@
-#include "settings_schema.h"
 #pragma once
+#include "settings_schema.h"
 #include "stream_hooks.h"
 #include "weather_memory.h"
 #include "dither_noise.h"
@@ -229,6 +229,9 @@ public:
         // Frame cleanup has joined D3D-free jobs. Worker solver keys stay immutable;
         // GI enable and bounce count travel in each Request.
         auto profiles=next.celestial;
+#if NORTHLIGHT_DEV_TUNING
+        celestialShipped=profiles;profiles=NorthlightZoneTuning::applyCelestial(celestialShipped,*devSnapshot()); /* the saved table is the new shipped base; the developer overrides stay on top */
+#endif
         const auto effective=NorthlightSettings::liveQualityUpdate(quality,next.quality);
         const bool giRequest=NorthlightSettings::giRequestChanged(quality,effective,celestialProfiles,profiles);
         const bool actorResources=quality.actorShadows!=effective.actorShadows||quality.actorShadowDetail!=effective.actorShadowDetail;
@@ -236,7 +239,7 @@ public:
         const bool giToggle=quality.gi!=effective.gi;
         for(const auto& k:NorthlightQuality::Keys)if(NorthlightSettings::liveQuality(k.name))quality.*k.field=effective.*k.field;
         quality.preset=effective.preset;settingsRequestDirty=settingsRequestDirty||giRequest;
-        if(giToggle)effects.gi=quality.gi!=0;
+        if(giToggle)setEffects(requestedEffects); /* the user's F8 state through giPass, with setEffects' temporal reset */
         minSkinnedShadowTriangles=quality.minSkinnedTriangles;captureBudgetMiB=quality.captureBudgetMiB;actorShadowBudgetMiB=quality.actorShadowBudgetMiB;setNearReserve();
         replaySnapshots.configureBudget(size_t(captureBudgetMiB)*1048576,size_t(captureBudgetMiB)*524288);
         shadowFateDiagnostics=NorthlightQuality::shadowFate(quality);
@@ -404,7 +407,7 @@ private:
     bool celestialValid=false,shadowFrameReady=false;float authoredFill=1;
     // 0.3.200: the last good celestial read (see updateWorldContext), held across single rejected reads.
     static constexpr DWORD CelestialHoldMs=500;NorthlightCelestial::Context celestialHeld;std::string celestialHeldMap;DWORD celestialHeldAt=0;bool celestialHeldOk=false;unsigned long celestialHolds=0;
-    NorthlightEffectSwitches::Settings effects;
+    NorthlightEffectSwitches::Settings effects,requestedEffects; /* requestedEffects: the hotkey state before the GI setting masks it */
     bool neutralShadowMaps=false;
     V sourceDirections[2],sourceColors[2],sourceGlowColors[2]; // sourceGlowColors: the same sources for the fog volume pass (glow_strength / glow hue instead of light_strength)
     float sourceWeights[2]={1,0};
@@ -2366,7 +2369,7 @@ public:
     void recover(){meshRetry.clear();if(!failed)return;releaseGPU(true);failed=false;valid=false;streamingReports=0;logf("WORLD explicit recovery requested");}
     void releaseStateCache(){stateBlocks.clear();invalidateShadowCache();}
     void setEffects(const NorthlightEffectSwitches::Settings& requested){
-        auto next=requested;next.gi=NorthlightQuality::giPass(quality,next.gi); /* GI=0: F8 cannot enable a GI that is never solved */
+        requestedEffects=requested;auto next=requested;next.gi=NorthlightQuality::giPass(quality,next.gi); /* GI=0: F8 cannot enable a GI that is never solved */
         if(effects==next)return;
         // Called at the frame boundary; never reuse lighting from a different
         // effect combination. The shared geometry and GI cache stay warm.

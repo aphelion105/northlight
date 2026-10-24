@@ -71,8 +71,6 @@ PAYLOAD_COMMON = {'celestial-profiles.ini': 'client-config/celestial-profiles.in
                   'shadow-range-profiles.ini': 'client-config/shadow-range-profiles.ini',
                   'northlight-quality.ini': 'renderer/windows-package/northlight-quality.ini'}
 PRESERVE = set(PAYLOAD_COMMON)
-for addon_file in ('NorthlightSettings.toc', 'NorthlightAPI.lua', 'NorthlightMenu.lua'):
-    PAYLOAD_COMMON['Interface/AddOns/NorthlightSettings/' + addon_file] = 'renderer/addons/NorthlightSettings/' + addon_file
 DXVK_BACKEND = 'renderer-backends/dxvk/dxvk_d3d9.dll'
 DXVK2_BACKEND = 'renderer-backends/dxvk2/dxvk2_d3d9.dll'
 
@@ -384,6 +382,7 @@ def build(platform, version, dll, variants, out, stormlib_dir):
             'app_files': {n: sha(fp.REPO / n) for n in APP_FILES}}
     tree.add('BUILD-INFO.json', (json.dumps(info, indent=2) + '\n').encode())
     tree.add('LICENSES/AO-methods.txt', fp.REPO / 'licenses/ao-methods.txt')
+    tree.add('LICENSES/Dear-ImGui.txt', fp.REPO / 'licenses/imgui.txt')   # src/imgui/ (settings overlay)
     path = out / f'{top}.zip'
     tree.write_zip(path, stamp)
     return {'platform': platform, 'file': path.name, 'sha256': sha(path), 'bytes': path.stat().st_size,

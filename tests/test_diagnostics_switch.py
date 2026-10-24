@@ -19,7 +19,8 @@ GATES=('NorthlightDiagnostics::enabled()','diagnostics()','sampled()','captureSa
 # Ungated lines that stay with Diagnostics=0: format prefix -> label.
 KEEP={
  'SETTINGS unavailable:':'one-off initialization error',
- 'SETTINGS frame revision=':'settings event: committed frame revision',
+ 'SETTINGS startup recovery incomplete:':'one-off: a crash-interrupted settings commit could not be finished at start-up',
+ 'SETTINGS frame %s revision=':'settings event: a preview or saved config reached the frame boundary (user action)',
  'CELESTIAL cloudOrder=':'one-off: first phase composition',
  'CELESTIAL skybox signatures unverified':'one-off: the skybox field signatures failed, once per renderer; late discs for the session',
  'AO method=':'start-up: loaded AO settings',

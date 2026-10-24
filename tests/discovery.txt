@@ -6,7 +6,6 @@ test_actor_shadow_radius_wiring.py
 test_actor_shadow_selection.py
 test_actor_shadows_wiring.py
 test_actor_texture_worker.py
-test_addon_delivery.py
 test_affected_tests.py
 test_ao_blur.py
 test_ao_fog_capture.py
@@ -123,7 +122,6 @@ test_near_reserve.py
 test_night_floor.py
 test_night_floor_wiring.py
 test_northlight_install.py
-test_northlight_menu.py
 test_outdoor_light_profiles.py
 test_particle_light_capture.py
 test_particle_light_proof.py
@@ -166,8 +164,7 @@ test_replay_priority_safety.py
 test_replay_skin_safety.py
 test_replay_upload.py
 test_rigid_memory.py
-test_settings_client_abi.py
-test_settings_cvar_hook.py
+test_settings_overlay.py
 test_settings_service.py
 test_shader_read_set.py
 test_shader_read_set_client.py

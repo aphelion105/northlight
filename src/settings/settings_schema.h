@@ -16,7 +16,7 @@ inline Documents documents(const Images& a){Documents d;for(unsigned i=0;i<4;++i
 inline Documents factoryDocuments(){return {Document("[Quality]\nPreset=Quality\n"),Document("[Renderer]\nBackend=dxvk\n"),Document(kSettingsFactoryCelestial),Document(kSettingsFactoryShadowRange)};}
 inline std::string number(float f){std::ostringstream s;s<<std::setprecision(6)<<f;return s.str();}
 inline bool liveQuality(const std::string& key){
-    static const std::set<std::string> restart={"CommandStream","StreamFramesAhead","StreamFrameSkip","StreamOcclusionLocal","GIThreads","GIFastBVH","GIRays","GIDistance","NameMask","SpellLayer"};
+    static const std::set<std::string> restart={"CommandStream","StreamFramesAhead","StreamFrameSkip","StreamOcclusionLocal","GIThreads","GIFastBVH","GIRays","GIDistance","NameMask","SpellLayer","EquipmentLights"};
     return restart.count(key)==0;
 }
 inline NorthlightQuality::Settings liveQualityUpdate(NorthlightQuality::Settings current,const NorthlightQuality::Settings& next){for(const auto& k:NorthlightQuality::Keys)if(liveQuality(k.name))current.*k.field=next.*k.field;current.preset=next.preset;return NorthlightQuality::effective(current);}
@@ -76,7 +76,7 @@ inline std::vector<Field> schema(const Documents& docs,const Documents& initial,
         if(f.key=="AOMethod"){const char* names[]={"SSAO","HDAO","HBAOPlus","GTAO"};f.kind="enum";f.saved=names[std::min(3u,unsigned(std::stoul(f.saved)))];f.active=names[std::min(3u,unsigned(std::stoul(f.active)))];f.factory=f.inherited="SSAO";f.options="SSAO,HDAO,HBAOPlus,GTAO";}
         add(f);out.back().origin=std::string(1,saved.quality.origin[index++]);}
     Field b;b.file=1;b.section="Renderer";b.key="Backend";b.kind="enum";b.saved=lower(explicitValue(savedValues[1],b.section,b.key));if(b.saved=="~")b.saved="legacy";b.active=lower(explicitValue(initialValues[1],b.section,b.key));if(b.active=="~")b.active="legacy";b.factory=factoryBackend;b.inherited="legacy";b.options=backendOptions;add(b);
-    unsigned hdrIndex=0;for(const auto& key:NorthlightHdrSettingsContract::Keys){Field f;f.file=1;f.section="Renderer";f.key=key.name;f.kind=key.low==0&&key.high==1?"check":"slider";f.low=number(key.low);f.high=number(key.high);f.step=number(key.step);f.factory=f.inherited=number(key.value);f.apply=hdrIndex?"F":"R";
+    unsigned hdrIndex=0;for(const auto& key:NorthlightHdrSettingsContract::Keys){Field f;f.file=1;f.section="Renderer";f.key=key.name;f.kind=key.low==0&&key.high==1?"check":"slider";f.low=number(key.low);f.high=number(key.high);f.step=number(key.step);f.factory=f.inherited=number(key.value);f.apply=hdrIndex?"F":"R";f.available=false; /* no HDR consumer in this build: kept in the snapshot so the files are preserved, shown disabled, never writable */
         f.saved=number(NorthlightHdrSettingsContract::read(key,explicitValue(savedValues[1],f.section,f.key)));
         f.active=number(hdrIndex?active.hdr[hdrIndex]:NorthlightHdrSettingsContract::read(key,explicitValue(initialValues[1],f.section,f.key)));++hdrIndex;add(f);}
     for(unsigned file=2;file<4;++file){std::set<std::string> sections;if(file==2)sections.insert("default");
@@ -104,6 +104,7 @@ inline Documents applyChanges(Documents docs,const std::vector<Field>& fields,co
     std::set<std::string> changed;std::istringstream in(changes);std::string line;unsigned count=0;
     while(std::getline(in,line)){if(line.empty())continue;if(++count>1024)throw std::runtime_error("Too many settings changes");auto at=line.rfind('\t');if(at==line.npos)throw std::runtime_error("Malformed settings change");
         auto id=line.substr(0,at),value=line.substr(at+1);if(!known.count(id)||!changed.insert(id).second)throw std::runtime_error("Unknown or duplicate setting");const auto& f=*known.at(id);
+        if(!f.available)throw std::runtime_error(f.key+" is not supported by this renderer build");
         if(value=="@factory")value=f.factoryOverride;validateValue(f,value);docs[f.file].set(f.section,f.key,value=="~"?nullptr:&value);
         if(f.file==3&&value=="~"){
             auto values=docs[3].values();if(values[lower(f.section)].empty())for(auto i=docs[3].lines.begin();i!=docs[3].lines.end();++i)if(lower(Document::content(i->text))=="["+lower(f.section)+"]"){i->text.clear();break;}}

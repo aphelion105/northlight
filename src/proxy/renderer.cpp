@@ -23,7 +23,8 @@
 #include "signatures.h"
 #include "shader_tags.h"
 #include "stream_hooks.h"
-#include "settings_cvar_bridge.h"
+#include "settings_service.h"
+#include "settings_overlay.h"
 #include "stream_device.h"
 #include "compiled_shaders.h"
 #include "projection.h"
@@ -61,6 +62,7 @@ extern "C" __attribute__((no_builtin("memcmp"),no_builtin("bcmp"))) int memcmp(c
 
 static HMODULE selfModule;
 static wchar_t rootPath[MAX_PATH];
+static std::string settingsRecovery; // failure text of the startup journal recovery ("" = fine), logged by the first Device
 // Game folder = directory of the host exe, resolved on first use (never in
 // DllMain: the macOS proxy is preloaded under the loader lock from dlls.txt).
 // backend() calls it first; every export reaches backend() before it logs.
@@ -70,6 +72,8 @@ static void ensureRootPath(){
         const DWORD n=GetModuleFileNameW(nullptr,exe,MAX_PATH),m=GetModuleFileNameW(selfModule,self,MAX_PATH);
         const std::wstring root=NorthlightBackend::gameRoot(n&&n<MAX_PATH?exe:L"",m&&m<MAX_PATH?self:L"");
         if(root.size()<MAX_PATH)wcscpy(rootPath,root.c_str());
+        // Before backend selection, MemorySwitches or any loader reads an INI: finish a settings commit a crash interrupted (one stat when none).
+        if(rootPath[0])settingsRecovery=NorthlightSettings::Store::recoverAtStartup(std::filesystem::path(rootPath));
         return true;
     }();
     (void)resolved;
@@ -247,14 +251,15 @@ struct PresentTicks {
     void finish(){if(on)QueryPerformanceCounter(&finished);}
     void present(){if(on)QueryPerformanceCounter(&done);}
 };
-static void finishDeviceFrame(IDirect3DDevice9* owner);
+static void finishDeviceFrame(IDirect3DDevice9* owner,bool implicitChain);
 static void presentedDeviceFrame(IDirect3DDevice9* owner,const PresentTicks& ticks);
 class SwapChain final : public ForwardIDirect3DSwapChain9 {
     LONG refs=1;
     IDirect3DDevice9* owner;
     NorthlightMirrorResources::Registry* resources;
 public:
-    SwapChain(IDirect3DSwapChain9* r,IDirect3DDevice9* d,NorthlightMirrorResources::Registry* registry):ForwardIDirect3DSwapChain9(r),owner(d),resources(registry){owner->AddRef();}
+    bool implicitChain; /* swap chain 0 (GetSwapChain(0)): the settings overlay draws only for its Present */
+    SwapChain(IDirect3DSwapChain9* r,IDirect3DDevice9* d,NorthlightMirrorResources::Registry* registry,bool implicit):ForwardIDirect3DSwapChain9(r),owner(d),resources(registry),implicitChain(implicit){owner->AddRef();}
     ~SwapChain(){real->Release();owner->Release();}
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id,void** out) override {
         if(!out)return E_POINTER;
@@ -271,7 +276,7 @@ public:
         MirrorGuard lock(resources->gate(),MirrorSite::SwapChain);return real->GetFrontBufferData(resources->unwrap(surface));
     }
     HRESULT STDMETHODCALLTYPE Present(const RECT* src,const RECT* dst,HWND window,const RGNDATA* dirty,DWORD flags) override{
-        MirrorGuard lock(resources->gate(),MirrorSite::SwapChain);resources->gate().noteFirst(resources->gate().swapPresentTid);PresentTicks ticks;finishDeviceFrame(owner);ticks.finish();
+        MirrorGuard lock(resources->gate(),MirrorSite::SwapChain);resources->gate().noteFirst(resources->gate().swapPresentTid);PresentTicks ticks;finishDeviceFrame(owner,implicitChain);ticks.finish();
         const HRESULT hr=real->Present(src,dst,window,dirty,flags);ticks.present();presentedDeviceFrame(owner,ticks);return hr;
     }
 };
@@ -318,6 +323,7 @@ class Device final : public GuardedMirrorDevice {
     }
 
     std::shared_ptr<NorthlightSettings::Service> settingsService;
+    std::unique_ptr<NorthlightOverlay::Overlay> overlay; /* Ctrl+Shift+F11 settings window (settings_overlay.h; [Renderer] SettingsOverlayKey); null with [Renderer] SettingsOverlay=0 */
     std::string settingsRevision;
     std::unique_ptr<WorldRenderer> world;
     std::unique_ptr<NorthlightCelestialDiscRenderer> celestialDiscs;
@@ -1508,6 +1514,7 @@ private:
     void* spellTexKey=nullptr;IDirect3DSurface9* spellTexFor=nullptr; /* the layer target's container texture (null: T is not a texture level), computed once per target */
     void* spellQuery[8]={};unsigned spellQueryFrame[8]={},spellQueryN=0,spellQueryUnknownFrame=0;bool spellQueryUnknown=false; /* open D3DQUERYTYPE_OCCLUSION brackets (raw queries), by Issue(BEGIN) frame; spellQueryUnknown: a bracket was lost to a full table (its frame in spellQueryUnknownFrame) */
     // SpellTrace: spellTraceLeft frames of SPELLTRACE lines, from the first world frame at or after frame 300 (Diagnostics only); spellTraceWindow: the next frame is traced.
+    bool spellOptionsPending=false;
     unsigned spellTraceLeft=0,spellTraceSetting=0,spellDrawIndex=0;bool spellTraceWindow=false,spellTraceFrame=false,spellTraceSeen=false;
     LONGLONG spellReplayTicks=0,spellRecordTicks=0,spellGateTicks=0,spellFlushTicks=0;void* spellGlowTex=nullptr;unsigned spellGlowPassN=0,spellGlowLogs=0; /* spellGlowTex: the destination container of this frame's allowed glow copy (identity only; valid when spellGlowFrame==frame+1); spellGlowPassN: passes let through since that copy */ unsigned spellCopiesAllowed=0,spellGlowPasses=0,spellGlowFrame=0,spellGateDraws=0,spellGateTimed=0,spellGateSeq=0,spellRecords=0,spellFlushes=0; /* spellFlushTicks/spellFlushes: the hazard flushes of gate draws, every one timed and kept out of the gate time */ /* sampled frames: spellGateDraws world-draw gate calls, every 8th timed (spellGateTimed, spellGateTicks = their time minus the record time inside them); spellRecordTicks/spellRecords: every Layer::defer() */NorthlightSpellLayer::Mode spellFrameMode=NorthlightSpellLayer::Mode::Off;
     // Hazard diagnostics (Diagnostics=1): the layer's latest event is consumed after each layer call that can raise one; the first 64 of the session are
@@ -2162,11 +2169,15 @@ public:
         mirrorState.gate.ownerTid=MirrorGuard::threadId(); /* 0.3.180 (D0): the CreateDevice caller */
         mirrorState.gate.reportContext=this;mirrorState.gate.report=&gateForeignReport;
         parent->AddRef(); QueryPerformanceFrequency(&cpuFrequency);
-        try{NorthlightSettings::bridgeLog=[](const char* line){logf("%s",line);};settingsService=NorthlightSettings::acquire(std::filesystem::path(rootPath));NorthlightStream::settingsPump=&NorthlightSettings::gameThreadPump;}
+        try{settingsService=NorthlightSettings::acquire(std::filesystem::path(rootPath));settingsRevision=settingsService->revision();if(!settingsRecovery.empty())logf("SETTINGS startup recovery incomplete: %s",settingsRecovery.c_str());}
         catch(const std::exception& e){logf("SETTINGS unavailable: %s",e.what());}
         gpuProfile=std::make_unique<NorthlightGpuProfile>(ext);gpuSceneProfile=std::make_unique<NorthlightGpuProfile>(ext,"GPU frame",2);gpuTimer=std::make_unique<NorthlightGpuFrameTimer>(ext); world=std::make_unique<WorldRenderer>(ext);world->setEffectsBuckets(&effectsBuckets);
         world->setConstantEpochSource({&mirrorState.constantEpoch,&mirrorState}); /* 0.3.180 (C1): read in place under the draw's gate */
-        char skyRoot[MAX_PATH*3];WideCharToMultiByte(CP_UTF8,0,rootPath,-1,skyRoot,sizeof skyRoot,nullptr,nullptr);celestialDiscs=std::make_unique<NorthlightCelestialDiscRenderer>(ext,std::string(skyRoot)+"world-cache/celestial");celestialDiscs->setTerrainSource([this]{return world->celestialTerrainGeneration();},[this](unsigned body,const float* matrix){return world->drawCelestialTerrain(body,matrix);},[this](unsigned body){world->noteCelestialTerrainReuse(body);});celestialDiscs->setIdentityMap([this](std::uintptr_t exposed){return mirrorResources.rawOf(exposed,!mirrorState.enabled);});shadowBlobs=std::make_unique<NorthlightShadowBlobFilter>(ext,world->blobShadowStrength());shadowBlobs->setTexturePeek([](void* e,DWORD stage,IDirect3DBaseTexture9*& out){return static_cast<ExtensionDevice*>(e)->peekTexture(stage,out);},ext); /* 0.3.196 (task 12): borrowed stage-0 identity */water=std::make_unique<NorthlightWaterRenderer>(ext); logf("D3D9 device wrapped. Ctrl+Shift+F7 fog; F8 GI; F9 shadows; F10 all effects; F12 world debug (all with Ctrl+Shift). F11 unassigned. Components start ON; GI cache stays warm.");
+        char skyRoot[MAX_PATH*3];WideCharToMultiByte(CP_UTF8,0,rootPath,-1,skyRoot,sizeof skyRoot,nullptr,nullptr);celestialDiscs=std::make_unique<NorthlightCelestialDiscRenderer>(ext,std::string(skyRoot)+"world-cache/celestial");celestialDiscs->setTerrainSource([this]{return world->celestialTerrainGeneration();},[this](unsigned body,const float* matrix){return world->drawCelestialTerrain(body,matrix);},[this](unsigned body){world->noteCelestialTerrainReuse(body);});celestialDiscs->setIdentityMap([this](std::uintptr_t exposed){return mirrorResources.rawOf(exposed,!mirrorState.enabled);});shadowBlobs=std::make_unique<NorthlightShadowBlobFilter>(ext,world->blobShadowStrength());shadowBlobs->setTexturePeek([](void* e,DWORD stage,IDirect3DBaseTexture9*& out){return static_cast<ExtensionDevice*>(e)->peekTexture(stage,out);},ext); /* 0.3.196 (task 12): borrowed stage-0 identity */water=std::make_unique<NorthlightWaterRenderer>(ext); logf("D3D9 device wrapped. Ctrl+Shift+F7 fog; F8 GI; F9 shadows; F10 all effects; F12 world debug (all with Ctrl+Shift); Ctrl+Shift+F11 settings. Components start ON; GI cache stays warm.");
+        {wchar_t config[MAX_PATH],key[64]={};char hotkey[64]={};const bool named=swprintf(config,MAX_PATH,L"%lsnorthlight-renderer.ini",rootPath)>=0; /* read once, here */
+         const bool on=!named||GetPrivateProfileIntW(L"Renderer",L"SettingsOverlay",1,config)!=0; /* 0 = no window hook at all */
+         if(named&&GetPrivateProfileStringW(L"Renderer",L"SettingsOverlayKey",L"",key,64,config))WideCharToMultiByte(CP_UTF8,0,key,-1,hotkey,sizeof hotkey,nullptr,nullptr); /* empty = Ctrl+Shift+F11 */
+         overlay=NorthlightOverlay::create(ext,on,hotkey,settingsService,[](const char* line){logf("%s",line);});}
         particleOn=world->equipmentLightsOn();
         NorthlightParticleUploads::enabled.store(particleOn,std::memory_order_relaxed);
         NorthlightParticleTextures::enabled.store(particleOn,std::memory_order_relaxed);
@@ -2193,6 +2204,7 @@ public:
         logf("DEVICE lifetime event=destroy-begin id=%ld tick=%lu",diagnosticId,(unsigned long)GetTickCount());
         memmap("destroy-begin");
         logGateThreads("destroy");
+        overlay.reset(); /* unhooks the window procedure (if still ours) and releases its device objects, before ext goes */
         memoryDiagnostics.reset();
         spellTeardown();
         dropBlobFaint();shadowBlobs.reset();celestialDiscs.reset();gpuProfile.reset();gpuSceneProfile.reset();gpuTimer.reset();drop(latencyQuery);water.reset();world.reset();releaseResources();
@@ -2217,6 +2229,7 @@ public:
         frameIntervals.reset();frameCost.reset();stallFrames.reset();mirrorResources.queryProfile={};backDescKnown=false;backSurface=nullptr;
         NorthlightParticleTextures::cache().clear();NorthlightTrackedBuffers::invalidateAll();gpuProfile->reset();gpuSceneProfile->reset();gpuFrameStarted=gpuSceneSplit=gpuEffectsSplit=false;gpuTimer->reset();gpuBudgetQpc=0;boundQpc=0;cpuBudgetQpc=0;cpuEffectsQpc=0;gpuBound.reset();replayWait.reset();replaySkipPrev=0;replayWaitPrevNs=0;drop(latencyQuery);latencyPending=false;latencyFailed=false; releaseResources(); if(world)world->reset();if(water)water->reset();if(celestialDiscs)celestialDiscs->reset();if(shadowBlobs)shadowBlobs->reset(); weatherDetect.reset();weatherSample={}; /* 0.3.198 (rain) */failed=false;latchDrawGates();
         if(pp&&world&&world->nameMask()){D3DDEVICE_CREATION_PARAMETERS cp={};if(SUCCEEDED(ext->GetCreationParameters(&cp)))upgradeAutoDepth(parent,cp.AdapterOrdinal,cp.DeviceType,pp,true,"Reset");} /* 0.3.212 (task 32) */
+        if(overlay)overlay->invalidate(); /* its D3DPOOL_DEFAULT buffers and font texture; recreated by its next draw */
         HRESULT hr=ext->Reset(pp); logf("Reset HRESULT=0x%08lx",(unsigned long)hr); return hr;
     }
     // Frame boundary only (after clearFrame()): no draw of the finished frame
@@ -2294,13 +2307,22 @@ public:
             n.blobCalls,n.blobTextures,n.blobClaimed,gameCalls,perf,generations,n.bufferCreates,n.processVertices,GateBenchIters,b.lockNs,b.findNs,b.findHits,b.getVsNs,b.qpcNs,
             b.ownerNs,acqDevice,acqRegistry,acqResource,acqOther,vsCacheHits-gateStart.vsHits,vsCacheMisses-gateStart.vsMisses,weatherSample.draws,weatherSample.primitives,b.weatherNs); /* 0.3.198 (rain): derived from the sample, no per-draw counter */
     }
-    void finishFrame() {
+    // The settings window over the finished frame (game UI included): once per presented frame of the implicit swap chain, on both
+    // Present paths (Device and SwapChain reach finishFrame), last before the real Present. Closed with nothing pending: atomic loads
+    // only. Its own failures turn only the overlay off.
+    void drawOverlay(bool implicitChain){
+        if(!implicitChain||!overlay||!overlay->visible())return;
+        ExtensionDevice::RawScope raw(*ext);SavedState saved(ext,&stateBlocks);
+        if(saved.ok)overlay->draw();
+    }
+    void finishFrame(bool implicitChain=true) {
         Guard mirrorLock(mirrorState.gate);
         rainMrtUnbind(); /* 0.3.202 (rain mask MRT): Present, both paths (Device and SwapChain) */
         if(spellOn)spellFlush(NorthlightSpellLayer::Reason::Frame,false,NorthlightSpellLayer::InPlaceKind::None,"present"); /* task 34: Present before the boundary */
         struct InvalidateOnReturn {DeviceMirror& state;~InvalidateOnReturn(){state.invalidate();}} invalidate{mirrorState};
-        if(extensionFault){clearFrame();return;}
+        if(extensionFault){clearFrame();drawOverlay(implicitChain);return;}
         extensionWork("frame finish",[&]{finishFrameImpl();});
+        drawOverlay(implicitChain);
     }
     // 0.3.198 (rain): frame end, on the finishing thread, under the gate: the frame's sample into the tracker, the state to the
     // world, the hot candidate rotated on every frame it counted no draws, and the WEATHER lines.
@@ -2475,12 +2497,13 @@ public:
         {CpuScope cpu(sampledFrame?&cleanup:nullptr);clearFrame();}
         if(settingsService)if(auto update=settingsService->after(settingsRevision)){
             world->applyLiveSettings(update->config);dropBlobFaint();shadowBlobs->setStrength(world->blobShadowStrength());
-            contactAO=world->contactAO();
+            contactAO=world->contactAO();aoStrength=world->aoStrength();aoRadius=world->aoRadius();
+            if(aoMethod!=world->aoMethod()){aoMethod=world->aoMethod();drop(aoContactBloomPS);} /* the contact-bloom kernel is per method; resources() recreates it before the next AO pass */
             frameDrawGates=world->frameDrawGates();zFuncAware=world->depthFuncAware();nameMask.debug=world->nameMaskDebug();
-            spell.liveOptions(world->spellLayerClassesSetting(),world->spellFogSetting()!=0);spellClasses=world->spellLayerClassesSetting();
-            if(spellTraceSetting!=world->spellTraceSetting()){spellTraceSetting=world->spellTraceSetting();spellTraceLeft=spellTraceSetting;}
+            if(spellOn){spellOptionsPending=true;if(spellTraceSetting!=world->spellTraceSetting()){spellTraceSetting=world->spellTraceSetting();spellTraceLeft=spellTraceSetting;}}
             settingsRevision=update->revision;settingsService->acknowledge(*update);
-            logf("SETTINGS frame revision=%s (creation-time changes require restart)",settingsRevision.c_str());}
+            logf("SETTINGS frame %s revision=%s (creation-time changes require restart)",update->preview?"preview":"saved",settingsRevision.c_str());}
+        if(spellOptionsPending&&world&&spell.liveOptions(world->spellLayerClassesSetting(),world->spellFogSetting()!=0)){spellClasses=world->spellLayerClassesSetting();spellOptionsPending=false;} /* declined while work is pending: retried each frame boundary */
         if(memoryWorld>=0&&world)world->setMemoryPressure(memoryWorld==1);
         if(memoryCaps>=0&&NorthlightReplayCopies::enabled.load(std::memory_order_relaxed))NorthlightReplayCopies::setPressure(memoryCaps==1); /* 0.3.192 (CS): replay thread: halves the CPU copies' cap and evicts down to it */
         if(memoryCaps>=0)NorthlightStream::memoryPressure.store(memoryCaps==1,std::memory_order_relaxed); /* 0.3.192 (CS): the stream's game side halves its queue budget at its next Present */
@@ -2569,7 +2592,6 @@ public:
     }
     HRESULT STDMETHODCALLTYPE EndScene() override { Guard mirrorLock(mirrorState.gate);nameMaskRunEnd();rainMrtUnbind(); /* 0.3.202 (rain mask MRT) */if(spellOn)spellFlush(NorthlightSpellLayer::Reason::Frame,false,NorthlightSpellLayer::InPlaceKind::None,"endscene");return GuardedMirrorDevice::EndScene(); }
     HRESULT STDMETHODCALLTYPE Present(const RECT* src,const RECT* dst,HWND wnd,const RGNDATA* dirty) override { Guard mirrorLock(mirrorState.gate);mirrorState.gate.noteFirst(mirrorState.gate.presentTid);rainMrtUnbind(); /* 0.3.202 (rain mask MRT) */
-        if(!streamStats)NorthlightSettings::gameThreadPump();
         PresentTicks ticks;const unsigned markerFrame=frame;finishFrame();ticks.finish();
         if(frameMarkers)frameMarker(1,markerFrame);
         if(limitGpuLatency)waitPreviousFrameGpu();
@@ -2596,12 +2618,12 @@ public:
     }
     HRESULT STDMETHODCALLTYPE GetSwapChain(UINT index,IDirect3DSwapChain9** out) override { Guard mirrorLock(mirrorState.gate);
         HRESULT hr=ext->GetSwapChain(index,out);
-        if(SUCCEEDED(hr)&&out&&*out)*out=new SwapChain(*out,this,&mirrorResources);
+        if(SUCCEEDED(hr)&&out&&*out)*out=new SwapChain(*out,this,&mirrorResources,index==0);
         return hr;
     }
     HRESULT STDMETHODCALLTYPE CreateAdditionalSwapChain(D3DPRESENT_PARAMETERS* pp,IDirect3DSwapChain9** out) override { Guard mirrorLock(mirrorState.gate);
         HRESULT hr=ext->CreateAdditionalSwapChain(pp,out);
-        if(SUCCEEDED(hr)&&out&&*out)*out=new SwapChain(*out,this,&mirrorResources);
+        if(SUCCEEDED(hr)&&out&&*out)*out=new SwapChain(*out,this,&mirrorResources,false);
         return hr;
     }
     HRESULT STDMETHODCALLTYPE Clear(DWORD n,const D3DRECT* rects,DWORD flags,D3DCOLOR color,float z,DWORD stencil) override { Guard mirrorLock(mirrorState.gate);
@@ -2692,7 +2714,7 @@ public:
         return drawHook(t,count,[&](IDirect3DVertexShader9* vs){world->captureUP(t,min,vertices,count,indices,fmt,data,stride,true,vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame));captureWater(vs,NorthlightWaterRenderer::UserVerticesAndIndices,draw);},draw);}
 };
 
-static void finishDeviceFrame(IDirect3DDevice9* owner) {static_cast<Device*>(owner)->finishFrame();}
+static void finishDeviceFrame(IDirect3DDevice9* owner,bool implicitChain) {static_cast<Device*>(owner)->finishFrame(implicitChain);}
 static void presentedDeviceFrame(IDirect3DDevice9* owner,const PresentTicks& ticks) {static_cast<Device*>(owner)->presented(ticks);}
 
 static const char* tclCallerModule(void* address); /* 0.3.204 (task 21): defined below */
