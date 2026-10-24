@@ -212,3 +212,14 @@ Only fixture/command repairs were needed; no assertion tolerance was widened.
 The full-frame 120 FPS and visual requirements remain unverified. These focused
 checks establish the stated local invariants, not elimination of the native
 249 ms stalls or complete resolution of the listed visual issues.
+
+## Private build
+
+Source commit `af006785b77acde7859687e9ea9f9af6a506c902` builds successfully with
+Zig 0.15.2. The resulting DLL is 5,733,888 bytes, SHA-256
+`488b906f9d6ae119926c8786c7cab070bf061430d096dc52923af3df5b0250e7`.
+DLL/PDB GUID and age match without loading the renderer. The build leaves
+production sources unchanged and retains the two pre-existing misleading-
+indentation warnings in displacement code. The separate package is for manual
+use; it is not automatically installed. This report-only follow-up does not
+change the built renderer source.
