@@ -128,6 +128,16 @@ int main(int argc,char** argv){
      // after the user resolves it (restore the INI, drop the leftovers) the menu recovers by itself
      writeImage(ini,base[0].raw);std::filesystem::remove(root/"northlight-settings.journal");std::filesystem::remove(root/(std::string(FileNames[0])+".northlight.bak"));
      assert(waitFor([&]{return svc.requestSnapshot();}));assert(waitFor([&]{return svc.status().state!=Status::State::Busy;}));assert(svc.status().state==Status::State::Idle);}
+    // Enum values are normalized to the canonical option spelling in the snapshot; the INI text is untouched.
+    {Document q("[Quality]\nPreset=performance\nAOMethod=gtao\nNoSuchKey=1\n"),r("[Renderer]\nBackend=DXVK\n");Documents d={q,r,Document(""),Document("")};
+     auto f=schema(d,d,configOf(d,""),"","native,dxvk,legacy");unsigned seen=0;
+     for(const auto& x:f){auto is=[&](const char* key,const char* value){return x.key==key&&x.overrideValue==value;};
+      if(x.key=="Preset"){assert(is("Preset","Performance")&&x.saved=="Performance");++seen;}
+      if(x.key=="AOMethod"){assert(is("AOMethod","GTAO")&&x.saved=="GTAO");++seen;}
+      if(x.key=="Backend"){assert(is("Backend","dxvk")&&x.saved=="dxvk");++seen;}}
+     assert(seen==3);assert(d[0].text().find("Preset=performance")!=std::string::npos);
+     Documents bad={Document("[Quality]\nPreset=Turbo\n"),Document("[Renderer]\nBackend=nope\n"),Document(""),Document("")};
+     for(const auto& x:schema(bad,bad,configOf(bad,""),"","native,dxvk,legacy"))if(x.key=="Preset")assert(x.overrideValue=="Turbo");else if(x.key=="Backend")assert(x.overrideValue=="nope");}
     // The startup baseline: a new Service (or attach) sees the files as they are now.
     {Service again(root);auto s=again.revision();assert(s==Store::revision(store.read()));}
     std::cout<<"Settings: encoding (incl. astral and invalid input), comments, inheritance, bounded schema, rollback, read-only, journal recovery, snapshot, preview coalescing, commit and conflict checks passed\n";

@@ -72,7 +72,7 @@ static void routing(){
         CHECK(route(In::Msg::ActivateApp,s,0).queue&&!route(In::Msg::ActivateApp,s,1).queue);
     }
     {   // Stuck release: a press goes to the panel, focus is lost, the panel closes; the game's next press and release both reach it.
-        In::State s;s.open=true;s.captureMouse=true;
+        In::State s;s.open=true;s.captureMouse=true;s.self=0x1234;
         CHECK(route(In::Msg::LButtonDown,s).swallow&&s.heldButtons==1u);
         const auto lost=route(In::Msg::KillFocus,s);CHECK(lost.lost&&lost.queue&&!lost.swallow&&s.heldButtons==0);
         s.open=false;s.captureMouse=false;
@@ -86,6 +86,49 @@ static void routing(){
         // A press that reaches the game clears a stale mark, so its release reaches the game too.
         s.open=true;s.captureMouse=false;s.heldButtons=1u;
         CHECK(!route(In::Msg::LButtonDown,s).swallow&&s.heldButtons==0&&!route(In::Msg::LButtonUp,s).swallow);
+    }
+    {   // Mouse capture: taken for the first overlay press, kept while overlay buttons are held, given back with the last release.
+        In::State s;s.open=true;s.captureMouse=true;s.self=0x1234;
+        auto d=route(In::Msg::LButtonDown,s);CHECK(d.swallow&&d.capture&&s.captured);
+        // Our own SetCapture re-enters with WM_CAPTURECHANGED naming this window: nothing changes.
+        d=route(In::Msg::CaptureChanged,s,0,0x1234);CHECK(!d.lost&&!d.queue&&s.captured&&s.heldButtons==1u);
+        d=route(In::Msg::RButtonDown,s);CHECK(d.swallow&&!d.capture&&s.heldButtons==3u);
+        s.captureMouse=false;   // the cursor left the window mid-drag: the releases still belong to the overlay
+        d=route(In::Msg::LButtonUp,s);CHECK(d.swallow&&!d.release&&s.captured);
+        d=route(In::Msg::RButtonUp,s);CHECK(d.swallow&&d.release&&!s.captured&&s.heldButtons==0);
+        // Our own ReleaseCapture re-enters with WM_CAPTURECHANGED (to nobody): nothing is held, nothing changes.
+        d=route(In::Msg::CaptureChanged,s,0,0);CHECK(!d.lost&&!d.queue&&!d.release);
+        // The game's presses are never captured by us.
+        d=route(In::Msg::LButtonDown,s);CHECK(!d.swallow&&!d.capture&&!s.captured);
+        CHECK(!route(In::Msg::LButtonUp,s).swallow);
+        // Another window takes the capture mid-drag: held state cleared, ImGui told, no ReleaseCapture of a capture we lost.
+        s.captureMouse=true;route(In::Msg::LButtonDown,s);
+        d=route(In::Msg::CaptureChanged,s,0,0x9999);CHECK(d.lost&&d.queue&&!d.release&&!s.captured&&s.heldButtons==0);
+        CHECK(!route(In::Msg::LButtonUp,s).swallow);
+        // Focus loss and the hotkey give a capture back.
+        route(In::Msg::LButtonDown,s);CHECK(s.captured);
+        d=route(In::Msg::KillFocus,s);CHECK(d.lost&&d.release&&!s.captured);
+        route(In::Msg::LButtonDown,s);In::Modifiers h;h.ctrl=h.shift=true;
+        d=route(In::Msg::KeyDown,s,In::VkF11,0,h);CHECK(d.toggle&&d.release&&!s.captured&&s.heldButtons==0);
+        // A press that could not be queued goes to the game instead: no mark, no capture.
+        s.open=true;s.captureMouse=true;d=route(In::Msg::LButtonDown,s);In::dropped(In::Msg::LButtonDown,0,d,s);
+        CHECK(!d.swallow&&!d.capture&&!s.captured&&s.heldButtons==0);
+    }
+    {   // Queue overflow: moves coalesce, releasing events survive a full queue, anything dropped raises the flag once.
+        In::Queue q;In::Event move;move.msg=In::Msg::MouseMove;
+        for(int i=0;i<1000;++i){move.lparam=i;CHECK(q.push(move));}
+        CHECK(q.size()==1);
+        In::Event up;up.msg=In::Msg::LButtonUp;CHECK(q.push(up));
+        std::vector<In::Event> out;CHECK(!q.drain(out));
+        CHECK(out.size()==2&&out[0].msg==In::Msg::MouseMove&&out[0].lparam==999&&out[1].msg==In::Msg::LButtonUp);
+        In::Event down;down.msg=In::Msg::LButtonDown;
+        for(std::size_t i=0;i<In::Queue::Capacity;++i)CHECK(q.push(down));
+        CHECK(!q.push(down));                               // a press is dropped when full
+        In::Event key;key.msg=In::Msg::KeyUp;CHECK(q.push(up)&&q.push(key));   // releases still fit
+        for(std::size_t i=0;i<In::Queue::Reserve;++i){if(!q.push(up))break;}
+        CHECK(!q.push(up));                                 // the reserve is bounded too
+        CHECK(q.drain(out)&&out.size()==In::Queue::Capacity+In::Queue::Reserve&&out[In::Queue::Capacity].msg==In::Msg::LButtonUp);
+        CHECK(q.push(down)&&!q.drain(out));                 // the flag is consumed by the drain that reports it
     }
     {   // SettingsOverlayKey.
         In::Hotkey k;
@@ -106,7 +149,7 @@ static void routing(){
     {   // The queue is bounded.
         In::Queue q;In::Event e;std::size_t accepted=0;
         for(std::size_t i=0;i<In::Queue::Capacity+10;++i)accepted+=q.push(e)?1:0;
-        CHECK(accepted==In::Queue::Capacity);std::vector<In::Event> out;q.drain(out);CHECK(out.size()==In::Queue::Capacity&&q.size()==0);
+        CHECK(accepted==In::Queue::Capacity);std::vector<In::Event> out;CHECK(q.drain(out));CHECK(out.size()==In::Queue::Capacity&&q.size()==0);
     }
 }
 

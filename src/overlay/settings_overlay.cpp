@@ -52,6 +52,7 @@ struct WindowHook {
     std::atomic<unsigned> opens{0};   // every show: the render thread refreshes the panel and resets ImGui's key state
     std::atomic<unsigned> heldButtons{0};   // written by the window thread; others ask through forgetButtons
     std::atomic<bool> forgetButtons{false};   // the render thread closed the window: the next message clears heldButtons
+    std::atomic<bool> captured{false};   // the overlay holds the mouse capture for heldButtons (window thread)
     std::atomic<unsigned> hotkey{0};   // packed In::Hotkey (vk | ctrl<<8 | shift<<9 | alt<<10), set before install()
     In::Queue queue;
 };
@@ -81,27 +82,32 @@ LRESULT CALLBACK windowProcedure(HWND window,UINT msg,WPARAM wparam,LPARAM lpara
     if(msg>=WM_KEYFIRST&&msg<=WM_KEYLAST){mods.ctrl=GetKeyState(VK_CONTROL)<0;mods.shift=GetKeyState(VK_SHIFT)<0;mods.alt=GetKeyState(VK_MENU)<0;}
     In::State state;state.open=hook.open.load(std::memory_order_relaxed);state.captureMouse=hook.captureMouse.load(std::memory_order_relaxed);
     state.captureText=hook.captureText.load(std::memory_order_relaxed);state.hotkey=unpack(hook.hotkey.load(std::memory_order_relaxed));
-    if(hook.forgetButtons.exchange(false,std::memory_order_relaxed))hook.heldButtons.store(0,std::memory_order_relaxed);
-    state.heldButtons=hook.heldButtons.load(std::memory_order_relaxed);
-    const In::Decision d=In::route(msg,wparam,lparam,mods,state);
-    hook.heldButtons.store(state.heldButtons,std::memory_order_relaxed);
+    state.self=reinterpret_cast<std::intptr_t>(window);
+    bool releaseNow=false;
+    if(hook.forgetButtons.exchange(false,std::memory_order_relaxed)){hook.heldButtons.store(0,std::memory_order_relaxed);releaseNow=hook.captured.exchange(false);}
+    state.heldButtons=hook.heldButtons.load(std::memory_order_relaxed);state.captured=hook.captured.load(std::memory_order_relaxed);
+    In::Decision d=In::route(msg,wparam,lparam,mods,state);
     RECT client={};
-    auto queue=[&](unsigned m,std::uintptr_t w,std::intptr_t l){
+    auto queue=[&](unsigned m,std::uintptr_t w,std::intptr_t l)->bool{
         In::Event e;e.msg=m;e.wparam=w;e.lparam=l;e.mods=mods;
         if(client.right==0&&client.bottom==0)GetClientRect(window,&client);
-        e.clientWidth=client.right-client.left;e.clientHeight=client.bottom-client.top;hook.queue.push(e);
+        e.clientWidth=client.right-client.left;e.clientHeight=client.bottom-client.top;return hook.queue.push(e);
     };
     if(d.toggle){
         const bool open=!hook.open.load(std::memory_order_relaxed);
         if(open){
             // The render thread learns the cursor position before the first move.
             hook.queue.clear();POINT p={};
-            if(GetCursorPos(&p)&&ScreenToClient(window,&p))queue(WM_MOUSEMOVE,0,std::intptr_t(MAKELPARAM(short(p.x),short(p.y))));
+            if(GetCursorPos(&p)&&ScreenToClient(window,&p))queue(WM_MOUSEMOVE,0,std::intptr_t(MAKELPARAM(short(p.x),short(p.y))));   // the emptied queue takes it
         }else{hook.captureMouse.store(false);hook.captureText.store(false);}
         if(open)hook.opens.fetch_add(1,std::memory_order_relaxed);
         hook.open.store(open,std::memory_order_release);
     }
-    if(d.queue)queue(msg,wparam,lparam);
+    if(d.queue&&!queue(msg,wparam,lparam))In::dropped(msg,wparam,d,state);   // ImGui will not see it: a press goes to the game
+    // Publish before SetCapture/ReleaseCapture: both re-enter this procedure with WM_CAPTURECHANGED.
+    hook.heldButtons.store(state.heldButtons,std::memory_order_relaxed);hook.captured.store(state.captured,std::memory_order_relaxed);
+    if(d.capture)SetCapture(window);
+    if((d.release||releaseNow)&&GetCapture()==window)ReleaseCapture();
     return d.swallow?0:forward();
 }
 
@@ -129,6 +135,7 @@ bool install(HWND window,const char*& why){
 // another module subclassed after us and we stay in its chain as a pass-through (never break its chain).
 void uninstall(){
     hook.active.store(false);hook.open.store(false);hook.captureMouse.store(false);hook.captureText.store(false);hook.queue.clear();
+    hook.heldButtons.store(0);hook.captured.store(false);   // a capture we hold ends with the button's release (pass-through from now on)
     if(!hook.installed.load())return;
     const HWND window=hook.window.load();const bool unicode=hook.unicode.load();
     if(!IsWindow(window)){hook.installed.store(false);return;}
@@ -275,7 +282,7 @@ class Impl final : public Overlay {
     }
     void feed(const D3DSURFACE_DESC& desc){
         ImGuiIO& io=ImGui::GetIO();
-        hook.queue.drain(events);
+        if(hook.queue.drain(events))lose(io);   // input was dropped: release everything ImGui may hold, then replay what arrived
         for(const auto& e:events){
             auto position=[&]{
                 const short x=short(LOWORD(e.lparam)),y=short(HIWORD(e.lparam));

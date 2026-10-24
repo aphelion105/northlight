@@ -60,6 +60,10 @@ struct Field {
     bool available=true;
     std::string id()const{return std::string(1,"QRCS"[file])+"\t"+section+"\t"+key;}
 };
+// Case-insensitive match against a comma list of options; unknown values (and "~") stay as written so validation still reports them.
+inline std::string canonicalOption(const std::string& value,const std::string& options){
+    std::istringstream s(options);std::string o;while(std::getline(s,o,','))if(lower(o)==lower(value))return o;return value;
+}
 inline std::vector<Field> schema(const Documents& docs,const Documents& initial,const Config& active,const std::string& legacy,const std::string& backendOptions="native,dxvk,dxvk2,legacy"){
     auto factory=factoryDocuments();const auto available=","+backendOptions+",";
     const std::string factoryBackend=available.find(",dxvk,")!=available.npos?"dxvk":available.find(",dxvk2,")!=available.npos?"dxvk2":"native";factory[1].set("Renderer","Backend",&factoryBackend);
@@ -67,7 +71,8 @@ inline std::vector<Field> schema(const Documents& docs,const Documents& initial,
     std::array<Values,4> savedValues,factoryValues,initialValues;
     for(unsigned i=0;i<4;++i){savedValues[i]=docs[i].values();factoryValues[i]=factory[i].values();initialValues[i]=initial[i].values();}
     const auto legacyQuality=qualityOf(Document("[Quality]\nPreset=Quality\n"),legacy);
-    auto add=[&](Field f){f.overrideValue=explicitValue(savedValues[f.file],f.section,f.key);f.factoryOverride=explicitValue(factoryValues[f.file],f.section,f.key);f.origin=f.overrideValue=="~"?"inherited":"override";out.push_back(std::move(f));};
+    auto add=[&](Field f){f.overrideValue=explicitValue(savedValues[f.file],f.section,f.key);f.factoryOverride=explicitValue(factoryValues[f.file],f.section,f.key);if(f.kind=="enum")for(auto* v:{&f.overrideValue,&f.factoryOverride,&f.saved,&f.active})*v=canonicalOption(*v,f.options); // readers accept any case; the menu compares exact spellings
+        f.origin=f.overrideValue=="~"?"inherited":"override";out.push_back(std::move(f));};
     Field p;p.section="Quality";p.key="Preset";p.kind="enum";p.saved=NorthlightQuality::name(saved.quality.preset);p.active=NorthlightQuality::name(active.quality.preset);p.factory=p.inherited="Quality";p.options="Quality,Balanced,Performance";p.apply="F";add(p);
     unsigned index=0;
     for(const auto& k:NorthlightQuality::Keys){Field f;f.section="Quality";f.key=k.name;f.kind=k.low==0&&k.high==1?"check":"slider";f.low=std::to_string(k.low);f.high=std::to_string(k.high);
