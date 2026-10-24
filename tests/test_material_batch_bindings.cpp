@@ -26,6 +26,10 @@ struct MaterialBindingDevice:CaptureBackend {
     MaterialBindingState state;CaptureSurface capture,auxiliary,privateDepth;
     bool resetAuxViewport=false,perturbUP=false,faultUsed=false;unsigned fault=0,viewportCalls=0,frequencyCalls=0,auxiliaryCalls=0;
     std::vector<uint64_t> draws;
+    struct FloatCall {bool vertex;UINT first,count;size_t draw;bool failed;};
+    struct FloatBanks {std::array<float,1024> vertex;std::array<float,896> pixel;};
+    std::vector<FloatCall> floatCalls;
+    std::vector<FloatBanks> expectedFloatBanks;
     struct Block:IDirect3DStateBlock9 {
         MaterialBindingDevice& d;MaterialBindingState captured;unsigned refs=1;
         explicit Block(MaterialBindingDevice& device):d(device),captured(device.state){}
@@ -56,8 +60,15 @@ struct MaterialBindingDevice:CaptureBackend {
     HRESULT STDMETHODCALLTYPE SetPixelShader(IDirect3DPixelShader9* value)override{state.pixel=value;return D3D_OK;}
     HRESULT STDMETHODCALLTYPE GetVertexShaderConstantF(UINT first,float* out,UINT count)override{std::memcpy(out,state.vf.data()+first*4,count*16);return D3D_OK;}
     HRESULT STDMETHODCALLTYPE GetPixelShaderConstantF(UINT first,float* out,UINT count)override{std::memcpy(out,state.pf.data()+first*4,count*16);return D3D_OK;}
-    HRESULT STDMETHODCALLTYPE SetVertexShaderConstantF(UINT first,const float* in,UINT count)override{std::memcpy(state.vf.data()+first*4,in,count*16);return D3D_OK;}
-    HRESULT STDMETHODCALLTYPE SetPixelShaderConstantF(UINT first,const float* in,UINT count)override{std::memcpy(state.pf.data()+first*4,in,count*16);return D3D_OK;}
+    HRESULT floatConstants(bool vertex,UINT first,const float* in,UINT count){
+        assert(first<=UINT(vertex?256:224)&&count<=UINT(vertex?256:224)-first);
+        const bool failed=!faultUsed&&draws.size()==1&&fault==unsigned(vertex?10:11);
+        floatCalls.push_back({vertex,first,count,draws.size(),failed});
+        if(failed){faultUsed=true;return E_FAIL;}
+        if(count)std::memcpy((vertex?state.vf.data():state.pf.data())+first*4,in,count*16);return D3D_OK;
+    }
+    HRESULT STDMETHODCALLTYPE SetVertexShaderConstantF(UINT first,const float* in,UINT count)override{return floatConstants(true,first,in,count);}
+    HRESULT STDMETHODCALLTYPE SetPixelShaderConstantF(UINT first,const float* in,UINT count)override{return floatConstants(false,first,in,count);}
     HRESULT STDMETHODCALLTYPE SetVertexShaderConstantI(UINT first,const int* in,UINT count)override{std::memcpy(state.vi.data()+first*4,in,count*16);return D3D_OK;}
     HRESULT STDMETHODCALLTYPE SetPixelShaderConstantI(UINT first,const int* in,UINT count)override{std::memcpy(state.pi.data()+first*4,in,count*16);return D3D_OK;}
     HRESULT STDMETHODCALLTYPE SetVertexShaderConstantB(UINT first,const BOOL* in,UINT count)override{std::memcpy(state.vb.data()+first,in,count*sizeof(BOOL));return D3D_OK;}
@@ -72,6 +83,12 @@ struct MaterialBindingDevice:CaptureBackend {
     HRESULT record(bool up){
         if(state.frequency[0]!=1){std::fputs("MATERIAL_BINDING_FREQUENCY_MISMATCH\n",stderr);std::abort();}
         assert(state.vertex==&vs&&state.pixel==&ps&&state.declaration==&decl);
+        if(!expectedFloatBanks.empty()){
+            assert(draws.size()<expectedFloatBanks.size());const auto& expected=expectedFloatBanks[draws.size()];
+            if(std::memcmp(state.vf.data(),expected.vertex.data(),sizeof state.vf)||std::memcmp(state.pf.data(),expected.pixel.data(),sizeof state.pf)){
+                std::fputs("MATERIAL_CONSTANT_BANK_MISMATCH\n",stderr);std::abort();
+            }
+        }
         uint64_t h=1469598103934665603ull;auto hash=[&](const void* data,size_t bytes){const auto* p=static_cast<const unsigned char*>(data);for(size_t i=0;i<bytes;++i)h=(h^p[i])*1099511628211ull;};
         hash(&state.viewport,sizeof state.viewport);hash(state.frequency.data(),sizeof state.frequency);hash(state.vf.data(),sizeof state.vf);hash(state.pf.data(),sizeof state.pf);hash(state.vi.data(),sizeof state.vi);hash(state.pi.data(),sizeof state.pi);hash(state.vb.data(),sizeof state.vb);hash(state.pb.data(),sizeof state.pb);hash(state.render.data(),sizeof state.render);hash(state.samplers.data(),sizeof state.samplers);hash(&state.scissor,sizeof state.scissor);
         const bool auxiliaryBound=state.targets[1]==&auxiliary;hash(&auxiliaryBound,sizeof auxiliaryBound);hash(&up,sizeof up);draws.push_back(h);
@@ -108,4 +125,55 @@ void MaterialCaptureStateTestAccess::replayBindings(){
     }
     std::printf("MATERIAL_BINDINGS_PASS cases=%u actualProductionFlush=1 mixedResidentUP=1 viewportReset=1 partialViewport=1 failures=1 restoration=1\n",cases);
 }
-int main(){MaterialCaptureStateTestAccess::replayBindings();}
+void MaterialCaptureStateTestAccess::replayConstantRanges(){
+    unsigned cases=0;
+    for(unsigned shape=0;shape<10;++shape)for(unsigned mixed=0;mixed<2;++mixed)for(unsigned failure=0;failure<(shape==0||shape==9?1u:3u);++failure){
+        MaterialBindingDevice d;d.perturbUP=true;const auto initial=d.state;
+        bool success=false;unsigned resident=0,up=0;
+        {
+            NorthlightAutoBump b(&d);b.width=b.heightPixels=64;b.target=&d.capture;b.target->AddRef();b.captureDepth=&d.privateDepth;b.captureDepth->AddRef();b.occlusionTarget=&d.auxiliary;b.occlusionTarget->AddRef();
+            auto mesh=std::make_shared<NorthlightDrawSnapshot::Mesh>();mesh->vertexCount=3;mesh->primitiveCount=1;mesh->topology=D3DPT_TRIANGLELIST;mesh->streams[0].stride=12;mesh->streams[0].bytes.resize(36);
+            std::shared_ptr<const NorthlightDrawSnapshot::Mesh> residentMesh=mesh;
+            auto upMesh=std::make_shared<NorthlightDrawSnapshot::Mesh>(*mesh);
+            NorthlightReplayGPU::createBudgetMs()=1e9;
+            for(unsigned phase=0;phase<2;++phase){b.deferredGPU.beginFrame();IDirect3DVertexBuffer9* vb[4]={};IDirect3DIndexBuffer9* ib=nullptr;assert(b.deferredGPU.bind(&d,residentMesh,vb,ib,[](size_t){return true;})==bool(phase));for(auto*& p:vb)drop(p);drop(ib);}
+            std::array<float,1024> vertex{};std::vector<float> pixel(shape==9?0:20,0.f);UINT first=20;
+            MaterialBindingDevice::FloatBanks expected{initial.vf,initial.pf};
+            auto setBits=[](float& value,uint32_t bits){std::memcpy(&value,&bits,sizeof bits);};
+            for(unsigned i=0;i<5;++i){
+                if(i==1){
+                    if(shape==1){vertex[0]=1;pixel[0]=2;}
+                    if(shape==2){vertex[1023]=1;pixel[19]=2;}
+                    if(shape==3){vertex[401]=1;pixel[9]=2;}
+                    if(shape==4){vertex[12]=1;vertex[1007]=2;pixel[4]=1;pixel[19]=2;}
+                    if(shape==5){setBits(vertex[401],0x7fc00001u);setBits(pixel[9],0x7fc00002u);}
+                    if(shape==6){setBits(vertex[2],0x80000000u);setBits(pixel[19],0x80000000u);}
+                    if(shape==7){vertex.fill(1);std::fill(pixel.begin(),pixel.end(),2);}
+                    if(shape==8){vertex[501]=1;first=18;pixel.assign(24,2);}
+                }
+                if(i==3){first=21;pixel.assign(16,3);}
+                if(i==4){first=20;pixel.assign(24,4);}
+                auto packet=std::make_unique<NorthlightAutoBump::Deferred>();packet->mesh=mixed&&i%2?std::shared_ptr<const NorthlightDrawSnapshot::Mesh>(upMesh):residentMesh;
+                packet->vertex=&d.vs;packet->vertex->AddRef();packet->pixel=&d.ps;packet->pixel->AddRef();packet->declaration=&d.decl;packet->declaration->AddRef();packet->viewport={0,0,64,64,0,1};packet->occlusion=true;packet->tag=19;packet->first=first;packet->pixelConstants=pixel;
+                std::memcpy(packet->vertexConstants,vertex.data(),sizeof packet->vertexConstants);std::fill(packet->vertexInt,packet->vertexInt+64,0);std::fill(packet->pixelInt,packet->pixelInt+64,0);std::fill(packet->vertexBool,packet->vertexBool+16,FALSE);std::fill(packet->pixelBool,packet->pixelBool+16,FALSE);std::fill(packet->states,packet->states+14,0);std::fill(packet->raster,packet->raster+NorthlightAutoBump::DeferredRasterCount,0);
+                expected.vertex=vertex;if(!pixel.empty())std::memcpy(expected.pixel.data()+first*4,pixel.data(),pixel.size()*sizeof(float));d.expectedFloatBanks.push_back(expected);
+                b.deferred.push_back(std::move(packet));
+            }
+            d.fault=failure?failure+9:0;success=b.finishCaptures();resident=b.residentDraws;up=b.uploadDraws;assert(b.deferred.empty());
+            if(failure)assert(!success&&d.faultUsed&&b.failed&&d.draws.size()==1);else assert(success&&d.draws.size()==5&&b.flushed==5);
+            assert(d.floatCalls.size()>=4&&d.floatCalls[0].vertex&&d.floatCalls[0].first==0&&d.floatCalls[0].count==256);
+            assert(!d.floatCalls[1].vertex&&d.floatCalls[1].first==20&&d.floatCalls[1].count==(shape==9?0u:5u));
+            const auto& restoreVertex=d.floatCalls[d.floatCalls.size()-2];const auto& restorePixel=d.floatCalls.back();
+            assert(restoreVertex.vertex&&restoreVertex.first==0&&restoreVertex.count==256&&!restoreVertex.failed);
+            assert(!restorePixel.vertex&&restorePixel.first==0&&restorePixel.count==224&&!restorePixel.failed);
+            assert(d.state==initial);
+        }
+        assert(d.state==initial&&d.vs.refs==1&&d.ps.refs==1&&d.decl.refs==1&&d.surface.refs==1&&d.capture.refs==1&&d.auxiliary.refs==1&&d.privateDepth.refs==1);
+        unsigned vertexCalls=0,pixelCalls=0,vertexRegisters=0,pixelRegisters=0;uint64_t hash=1469598103934665603ull;std::string order;
+        for(const auto& call:d.floatCalls){if(call.vertex){++vertexCalls;vertexRegisters+=call.count;}else{++pixelCalls;pixelRegisters+=call.count;}order+=call.vertex?'V':'P';order+=std::to_string(call.draw);order+=call.failed?'!':'.';}
+        for(auto draw:d.draws)hash=(hash^draw)*1099511628211ull;
+        std::printf("MATERIAL_CONSTANTS_CASE shape=%u mixed=%u failure=%u success=%u draws=%zu hash=%llu resident=%u up=%u vertexCalls=%u pixelCalls=%u vertexRegisters=%u pixelRegisters=%u callOrder=%s restored=1\n",shape,mixed,failure,unsigned(success),d.draws.size(),(unsigned long long)hash,resident,up,vertexCalls,pixelCalls,vertexRegisters,pixelRegisters,order.c_str());++cases;
+    }
+    std::printf("MATERIAL_CONSTANTS_PASS cases=%u actualProductionFlush=1 fullBankOracle=1 bitwiseFloat4=1 oneCallPerBank=1 zeroCount=1 shiftedPixelRange=1 mixedResidentUP=1 failures=1 restoration=1\n",cases);
+}
+int main(){MaterialCaptureStateTestAccess::replayBindings();MaterialCaptureStateTestAccess::replayConstantRanges();}

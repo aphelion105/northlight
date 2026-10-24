@@ -317,8 +317,21 @@ public:
             texture(packet->normalStage,packet->normal.get());const DWORD sampler[]={D3DTEXF_LINEAR,D3DTEXF_LINEAR,D3DTEXF_LINEAR,packet->addressU,packet->addressV,FALSE,0,0};
             for(unsigned i=0;i<8;++i)samplerState(packet->normalStage,keys.samplerKeys[i],sampler[i]);
             for(const auto& t:packet->textures){texture(t->stage,t->texture);for(unsigned i=0;i<13;++i)samplerState(t->stage,D3DSAMPLERSTATETYPE(i+1),t->sampler[i]);}
-            if(needed(previous&&!std::memcmp(previous->vertexConstants,packet->vertexConstants,sizeof(packet->vertexConstants))))step(d->SetVertexShaderConstantF(0,packet->vertexConstants,256));
-            if(needed(previous&&previous->first==packet->first&&previous->pixelConstants.size()==packet->pixelConstants.size()&&!std::memcmp(previous->pixelConstants.data(),packet->pixelConstants.data(),packet->pixelConstants.size()*sizeof(float))))step(d->SetPixelShaderConstantF(packet->first,packet->pixelConstants.data(),UINT(packet->pixelConstants.size()/4)));
+            auto floatConstants=[&](bool vertex,UINT first,const float* values,const float* before,UINT count,bool comparable){
+                if(!needed(comparable&&(!count||!std::memcmp(before,values,size_t(count)*4*sizeof(float)))))return;
+                UINT begin=0,end=count;
+                // Keep one call in the original bank order. Only byte-identical
+                // outer float4 registers are already proven by the previous draw.
+                if(comparable){
+                    while(begin<end&&!std::memcmp(before+begin*4,values+begin*4,4*sizeof(float)))++begin;
+                    while(end>begin&&!std::memcmp(before+(end-1)*4,values+(end-1)*4,4*sizeof(float)))--end;
+                }
+                const float* data=begin?values+begin*4:values;
+                step(vertex?d->SetVertexShaderConstantF(first+begin,data,end-begin):d->SetPixelShaderConstantF(first+begin,data,end-begin));
+            };
+            floatConstants(true,0,packet->vertexConstants,previous?previous->vertexConstants:nullptr,256,previous!=nullptr);
+            const bool comparablePixel=previous&&previous->first==packet->first&&previous->pixelConstants.size()==packet->pixelConstants.size();
+            floatConstants(false,packet->first,packet->pixelConstants.data(),comparablePixel?previous->pixelConstants.data():nullptr,UINT(packet->pixelConstants.size()/4),comparablePixel);
             if(needed(previous&&!std::memcmp(previous->vertexInt,packet->vertexInt,sizeof(packet->vertexInt))))step(d->SetVertexShaderConstantI(0,packet->vertexInt,16));
             if(needed(previous&&!std::memcmp(previous->pixelInt,packet->pixelInt,sizeof(packet->pixelInt))))step(d->SetPixelShaderConstantI(0,packet->pixelInt,16));
             if(needed(previous&&!std::memcmp(previous->vertexBool,packet->vertexBool,sizeof(packet->vertexBool))))step(d->SetVertexShaderConstantB(0,packet->vertexBool,16));

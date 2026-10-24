@@ -238,6 +238,7 @@ test_static_shadow_grouping.py
 test_static_shadow_selection.py
 test_storm_bands.py
 test_stormlib_build.py
+test_stream_idle_attribution.py
 test_sun_hue.py
 test_sun_rim.py
 test_surface_memory_admission.py

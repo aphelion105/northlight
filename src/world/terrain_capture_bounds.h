@@ -313,7 +313,7 @@ private:
     std::weak_ptr<SourceIndices> lastSourceIndices;
     // An expired weak memo can keep one make_shared control/object allocation until reassignment.
     static constexpr size_t ContentBaseBytes=sizeof(content)+sizeof(freeContent)+sizeof(lastSourceIndices)+sizeof(SourceIndices)+32+
-        sizeof(decoded_)+sizeof(NorthlightSourceIdentity::Ledger)+32+64*(sizeof(NorthlightSourceIdentity::Retained<DecodedIndices>)+sizeof(NorthlightSourceIdentity::Retained<MeshSnapshot>)+64)+sizeof(std::uint64_t);
+        sizeof(decoded_)+sizeof(NorthlightSourceIdentity::Ledger)+32+64*(sizeof(NorthlightSourceIdentity::Retained<DecodedIndices>)+sizeof(NorthlightSourceIdentity::Retained<MeshSnapshot>)+64)+4*sizeof(std::uint64_t)+2*sizeof(unsigned);
     size_t sourceIndexBlocks_=0;std::uint64_t sourceIndexDataBytes_=0,sourceIndexLogicalBytes_=0;
     std::uint64_t sourceOffsetDataBytes_=0;
     std::uint64_t contentBytes=ContentBaseBytes,contentHits=0,trackedHits_=0,avoidedReadBytes_=0;
@@ -325,6 +325,8 @@ public:
         unsigned lookupMisses=0,evictions=0,countPressure=0,bytePressure=0;
         unsigned trackedHits=0,unproven=0,lifetimeChanged=0,vertexChanged=0,indexChanged=0,unstable=0,exactReuses=0,rebuilds=0,indexTokenHits=0;
         unsigned metadataBatches=0,metadataHits=0,metadataFallbacks=0;
+        std::uint64_t vertexSpanBytes=0,rawVertexCopyBytes=0,xyzCopyBytes=0;
+        unsigned directColdMisses=0,directUnstable=0;
     };
 private:
     Maintenance maintenance_;
@@ -353,7 +355,7 @@ private:
     void rememberContent(const ContentKey& key,std::uint64_t hash,UINT smallest,UINT largest,
                          const std::vector<unsigned char>& rawIndices,const std::vector<unsigned char>& rawVertices,
                          const std::vector<UINT>& sourceOffsets,
-                          const std::shared_ptr<const MeshSnapshot>& snapshot,const Diagnostics& detail,Stamp verified,const DecodedChoice& decoded){
+                          const std::shared_ptr<const MeshSnapshot>& snapshot,const Diagnostics& detail,Stamp verified,const DecodedChoice& decoded,std::uint64_t vertexSpan){
       try {
         // Keep exact indices and a mapping to the captured XYZ for revalidation
         // after buffer writes. The other vertex attributes are not used here.
@@ -368,7 +370,7 @@ private:
             using Value=std::remove_cv_t<std::remove_reference_t<decltype(*stored)>>;
             for(size_t i=0;i<count;++i){
                 const std::uint64_t byte=std::uint64_t(sourceOffsets[i])*key.draw.stride;
-                if(byte>std::numeric_limits<Value>::max()||byte+sizeof(Position)>rawVertices.size())return false;
+                if(byte>std::numeric_limits<Value>::max()||byte+sizeof(Position)>vertexSpan)return false;
                 const Value value=Value(byte);if(std::memcmp(stored+i,&value,sizeof value))return false;
             }
             return true;
@@ -397,7 +399,7 @@ private:
         // the retained cache. Accounting includes object/capacity/node allowance.
         if(!makeRoom(estimate))return;
         auto next=std::make_unique<ContentEntry>();next->key=key;next->stamp=verified;next->hash=hash;next->smallest=smallest;next->largest=largest;
-        next->charged=rawIndices.size()+rawVertices.size();
+        next->charged=rawIndices.size()+vertexSpan;
         next->decoded=decoded.block;
         if(keepRaw)next->vertices=rawVertices;
         else if(reuseOffsets)next->sourceOffsets.share(std::shared_ptr<const NorthlightTerrainIndices::Indices>(sharedIndices,&sharedIndices->sourceOffsets));
@@ -405,7 +407,7 @@ private:
             next->sourceOffsets.reserve(sourceOffsets.size(),UINT(maximumOffset));
             for(UINT offset:sourceOffsets){
                 const std::uint64_t byte=std::uint64_t(offset)*key.draw.stride;
-                if(byte+sizeof(Position)>rawVertices.size())return;
+                if(byte+sizeof(Position)>vertexSpan)return;
                 next->sourceOffsets.push_back(UINT(byte));
             }
         }
@@ -755,11 +757,42 @@ public:
         const std::uint64_t span=lastByte-firstByte;
         if(lastByte>vd.Size||!span)return reject(RejectReason::VertexRange);
         if(chargedBytes+span>limits.maxReadBytesPerFrame)return reject(RejectReason::ByteBudget);
-        scratchRawVertices.reserve(size_t(span)); // resize below cannot allocate while locked
+        // Only a proven cold miss can avoid copying unused vertex attributes.
+        // Prepare every destination before Lock; revalidation/unproven paths
+        // keep their complete raw-byte fallback unchanged.
+        const bool directCold=!cached&&before.valid();
+        MeshSnapshot result;auto& remap=scratchRemap;
+        const UINT unused=std::numeric_limits<UINT>::max();
+        const auto preparePositions=[&](){
+            remap.assign(std::size_t(largest)-smallest+1,unused);
+            result.positions.resize(std::min(indices.size(),remap.size()));
+            scratchSourceOffsets.clear();scratchSourceOffsets.reserve(result.positions.size());
+        };
+        const auto copyPositions=[&](const unsigned char* source){
+            UINT unique=0;const float infinity=std::numeric_limits<float>::infinity();
+            for(unsigned j=0;j<3;++j){detail.low[j]=infinity;detail.high[j]=-infinity;}
+            for(auto& index:indices){
+                UINT& mapped=remap[index-smallest];
+                if(mapped==unused){
+                    mapped=unique++;Position& p=result.positions[mapped];
+                    scratchSourceOffsets.push_back(index-smallest);
+                    std::memcpy(&p,source+std::size_t(index-smallest)*detail.stride,sizeof(Position));
+                    const float values[]={p.x,p.y,p.z};
+                    for(unsigned j=0;j<3;++j){
+                        if(!std::isfinite(values[j]))valid=false;
+                        detail.low[j]=std::min(detail.low[j],values[j]);detail.high[j]=std::max(detail.high[j],values[j]);
+                    }
+                }
+                index=mapped;
+            }
+            result.positions.resize(unique);maintenance_.xyzCopyBytes+=std::uint64_t(unique)*sizeof(Position);
+        };
+        if(directCold)preparePositions();
+        else scratchRawVertices.reserve(size_t(span)); // resize below cannot allocate while locked
         raw=nullptr;NorthlightReplayCopies::Reader<IDirect3DVertexBuffer9> readVertices(vb.p);hr=readVertices.lock(UINT(firstByte),UINT(span),&raw);
         if(FAILED(hr))return reject(RejectReason::VertexLock,hr);
         if(!raw){readVertices.unlock();return reject(RejectReason::VertexLock,E_POINTER);}
-        chargedBytes+=span;readBytes+=span;
+        chargedBytes+=span;readBytes+=span;maintenance_.vertexSpanBytes+=span;
         bool sameVertices=sameIndices&&cached->vertices.size()==span&&!std::memcmp(raw,cached->vertices.data(),size_t(span));
         if(sameIndices&&!sameVertices&&!cached->sourceOffsets.empty()&&cached->sourceOffsets.size()==cached->snapshot->positions.size()){
             sameVertices=cached->sourceOffsets.visit([&](const auto* offsets,size_t count){
@@ -767,7 +800,10 @@ public:
                 return true;
             });
         }
-        if(!sameVertices){scratchRawVertices.resize(size_t(span));std::memcpy(scratchRawVertices.data(),raw,size_t(span));}
+        if(!sameVertices){
+            if(directCold){copyPositions(static_cast<const unsigned char*>(raw));++maintenance_.directColdMisses;}
+            else{scratchRawVertices.resize(size_t(span));std::memcpy(scratchRawVertices.data(),raw,size_t(span));maintenance_.rawVertexCopyBytes+=span;}
+        }
         hr=readVertices.unlock();if(FAILED(hr))return reject(RejectReason::VertexUnlock,hr);
         if(sameVertices){
             // Exact live indices and every referenced XYZ matched; locks released.
@@ -780,28 +816,9 @@ public:
             if(diagnostics)*diagnostics=detail;return true;
         }
         if(sameIndices){scratchRawIndices.resize(size_t(indexBytes));std::memcpy(scratchRawIndices.data(),cached->indices->bytes.data(),size_t(indexBytes));decodeIndices();}
-        const UINT unused=std::numeric_limits<UINT>::max();
-        auto& remap=scratchRemap;remap.assign(std::size_t(largest)-smallest+1,unused);
-        MeshSnapshot result;result.positions.resize(std::min(indices.size(),remap.size()));UINT unique=0;
-        scratchSourceOffsets.clear();scratchSourceOffsets.reserve(result.positions.size());
-        const float infinity=std::numeric_limits<float>::infinity();
-        for(unsigned j=0;j<3;++j){detail.low[j]=infinity;detail.high[j]=-infinity;}
-        for(auto& index:indices){
-            UINT& mapped=remap[index-smallest];
-            if(mapped==unused){
-                mapped=unique++;Position& p=result.positions[mapped];
-                scratchSourceOffsets.push_back(index-smallest);
-                std::memcpy(&p,scratchRawVertices.data()+std::size_t(index-smallest)*detail.stride,12);
-                const float values[]={p.x,p.y,p.z};
-                for(unsigned j=0;j<3;++j){
-                    if(!std::isfinite(values[j]))valid=false;
-                    detail.low[j]=std::min(detail.low[j],values[j]);detail.high[j]=std::max(detail.high[j],values[j]);
-                }
-            }
-            index=mapped;
-        }
+        if(!directCold){preparePositions();copyPositions(scratchRawVertices.data());}
         if(!valid)return reject(RejectReason::VertexNonfinite);
-        result.positions.resize(unique);result.indices.reserve(std::size_t(primitiveCount)*3,unique?unique-1:0);
+        const auto unique=result.positions.size();result.indices.reserve(std::size_t(primitiveCount)*3,unique?UINT(unique-1):0);
         for(UINT primitive=0;primitive<primitiveCount;++primitive){
             const std::size_t first=topology==D3DPT_TRIANGLELIST?std::size_t(primitive)*3:primitive;
             UINT a=indices[first],b=indices[first+1],c=indices[first+2];
@@ -812,11 +829,15 @@ public:
         // The remap above already validates every source index and finite XYZ.
         if(!result.indices.visit([&](const auto* data,std::size_t count){return classifyTriangleSequence<true>([&](std::size_t i){return result.positions[data[i]];},count,D3DPT_TRIANGLELIST,result.bounds);}))return reject(RejectReason::ChunkCoverage);
         const Stamp after=stamp(vb.p,ib.p);
-        if(before.valid()&&after==before)result.sourceIdentity=sourceIdentity(contentKey,before);
+        const bool verified=before.valid()&&after==before;
+        if(verified)result.sourceIdentity=sourceIdentity(contentKey,before);
         const auto decoded=shareDecoded(result);
         std::shared_ptr<const MeshSnapshot> shared=retain(std::move(result));
         ++maintenance_.rebuilds;
-        rememberContent(contentKey,hash,smallest,largest,scratchRawIndices,scratchRawVertices,scratchSourceOffsets,shared,detail,before.valid()&&after==before?before:Stamp{},decoded);
+        // A racing write removes the optional cache proof. The exact copied
+        // snapshot remains usable, but no absent raw fallback is published.
+        if(!directCold||verified)rememberContent(contentKey,hash,smallest,largest,scratchRawIndices,scratchRawVertices,scratchSourceOffsets,shared,detail,verified?before:Stamp{},decoded,span);
+        else ++maintenance_.directUnstable;
         ++snapshots;output=std::move(shared);if(diagnostics)*diagnostics=detail;return true;
     }
 

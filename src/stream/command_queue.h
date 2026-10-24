@@ -26,6 +26,7 @@
 #include <vector>
 #include "stream_stats.h"
 #include "stream_wait.h"
+#include "stream_idle_profile.h"
 
 namespace NorthlightStream {
 struct CommandHeader {std::uint16_t id;std::uint16_t flags;std::uint32_t size;};   // size includes the header; a multiple of 8
@@ -118,12 +119,15 @@ class Queue {
 #endif
     // Written by the producer at every commit.
     alignas(kLine) std::atomic<std::uint64_t> recorded_{0};
+    std::atomic<std::uint64_t> diagnosticPublished_{0},diagnosticPublishSerial_{0};
+    bool idleTracking_=false;   // configured by the producer before the consumer starts; immutable during replay
     // Consumer-private.
     alignas(kLine) Chunk* rchunk_;
     std::uint32_t rpos_=0;
     std::uint64_t lastSignalledSeq_=0,bpSignalledRec_=~std::uint64_t(0);   // 0.3.196 (task 12): wakeWaiters' memory (consumer only)
 #ifdef NORTHLIGHT_STREAM_CHECK_WAIT
     std::atomic<unsigned> backstopSignals_{0};
+    void (*idleSnapshotHook_)(void*)=nullptr;void* idleSnapshotContext_=nullptr;
 #endif
     // Written by the consumer at every retire.
     alignas(kLine) std::atomic<std::uint64_t> replayed_{0};
@@ -175,8 +179,10 @@ class Queue {
     }
     void nextChunk(){
         Chunk* n=acquireChunk();Chunk* c=wchunk_;
+        beginDiagnosticPublish();
         c->next.store(n,std::memory_order_relaxed);
         c->published.store(wpos_);c->end.store(wpos_);   // closing publishes everything committed so far
+        endDiagnosticPublish();
         std::atomic_thread_fence(std::memory_order_seq_cst);
         wchunk_=n;wpos_=0;pubPos_=0;sinceCmds_=0;sinceBytes_=0;
         add(stats.publishes);wake();
@@ -194,13 +200,17 @@ class Queue {
     // commit()'s automatic publish: the same publication, but a sleeping consumer is woken only past kLazyWakeCommands/kLazyWakeBytes (see there).
     void publishLazy(){
         const std::uint32_t c=sinceCmds_,b=sinceBytes_;
+        beginDiagnosticPublish();
         wchunk_->published.store(wpos_);pubPos_=wpos_;sinceCmds_=0;sinceBytes_=0;
+        endDiagnosticPublish();
         std::atomic_thread_fence(std::memory_order_seq_cst);   // as in publish()
         own(stats.publishes);raiseMax(stats.highWaterDepth,recorded_.load(std::memory_order_relaxed)-replayed_.load(std::memory_order_relaxed));
         lazyCmds_+=c;lazyBytes_+=b;
         if(lazyCmds_<kLazyWakeCommands&&lazyBytes_<kLazyWakeBytes){lazyWake_=true;return;}
         wake();
     }
+    void beginDiagnosticPublish(){if(idleTracking_)diagnosticPublishSerial_.store(diagnosticPublishSerial_.load(std::memory_order_relaxed)+1,std::memory_order_release);}
+    void endDiagnosticPublish(){if(idleTracking_){diagnosticPublished_.store(recorded_.load(std::memory_order_relaxed),std::memory_order_release);diagnosticPublishSerial_.store(diagnosticPublishSerial_.load(std::memory_order_relaxed)+1,std::memory_order_release);}}
     void recycle(Chunk* c){
         c->next.store(nullptr,std::memory_order_relaxed);c->published.store(0,std::memory_order_relaxed);c->end.store(0,std::memory_order_relaxed);
         bool kept=false;
@@ -312,12 +322,30 @@ public:
     // Makes everything committed visible to the consumer and wakes it if it sleeps.
     void publish(){
         if(wpos_==pubPos_){if(lazyWake_)wake();return;}   // 0.3.200 (pipeline): an automatic publish held its wake back: this explicit one delivers it
+        beginDiagnosticPublish();
         wchunk_->published.store(wpos_);pubPos_=wpos_;sinceCmds_=0;sinceBytes_=0;
+        endDiagnosticPublish();
         std::atomic_thread_fence(std::memory_order_seq_cst);   // pairs with the fence in next(): the store above or the sleeper flag is seen
         own(stats.publishes);raiseMax(stats.highWaterDepth,recorded_.load(std::memory_order_relaxed)-replayed_.load(std::memory_order_relaxed));
         wake();
     }
     std::uint64_t recordedSeq()const{return recorded_.load(std::memory_order_acquire);}
+    // Producer only, before start/restart of the consumer. No producer-private
+    // queue cursor is read by the consumer or written by this diagnostic.
+    void trackIdlePublications(bool on){idleTracking_=on;if(on){diagnosticPublished_.store(recorded_.load(std::memory_order_relaxed)-sinceCmds_,std::memory_order_relaxed);diagnosticPublishSerial_.store(0,std::memory_order_relaxed);}}
+    IdlePoint idlePoint()const{
+        IdlePoint p;if(!idleTracking_)return p;p.known=true;
+        const auto serial=diagnosticPublishSerial_.load(std::memory_order_acquire);
+        p.recorded=recorded_.load(std::memory_order_acquire);p.published=diagnosticPublished_.load(std::memory_order_acquire);p.replayed=replayed_.load(std::memory_order_acquire);
+#ifdef NORTHLIGHT_STREAM_CHECK_WAIT
+        if(idleSnapshotHook_)idleSnapshotHook_(idleSnapshotContext_);
+#endif
+        p.waitSeq=waitSeq_.load(std::memory_order_relaxed);p.backpressure=bpWaiting_.load(std::memory_order_relaxed);p.express=express_.load(std::memory_order_acquire)!=nullptr;
+        p.consistent=!(serial&1)&&serial==diagnosticPublishSerial_.load(std::memory_order_acquire)&&p.recorded==recorded_.load(std::memory_order_acquire)&&p.replayed==replayed_.load(std::memory_order_acquire)&&p.replayed<=p.published&&p.published<=p.recorded;
+        p.syncNs=get(stats.syncNs);p.presentNs=get(stats.presentNs);p.backpressureNs=get(stats.backpressureNs);
+        p.recordNs=get(stats.recordSampledNs);p.lockNs=get(stats.lockNs);p.snapshotNs=get(stats.snapNs);p.publishes=get(stats.publishes);
+        return p;
+    }
     // Waits (pumped) until command number seq (a recordedSeq() value) has been retired. Publishes first. seq must be a command recorded with
     // kFlagWaitTarget (see there); builds with NORTHLIGHT_STREAM_CHECK_WAIT count a wait on an unflagged seq (unflaggedWaits(), the wait itself still completes).
     void waitReplayed(std::uint64_t seq,WaitKind kind=WaitKind::Sync){
@@ -362,6 +390,7 @@ public:
     unsigned unflaggedWaits()const{return badWaits_;}   // producer thread
     unsigned backstopSignals()const{return backstopSignals_.load();}   // progress_ signals made by the idle backstop (wakeWaiters)
     unsigned wakeSignals()const{return wakeSignals_;}   // 0.3.200 (pipeline): consumer wakes signalled by the producer (producer thread)
+    void testIdleSnapshotHook(void (*fn)(void*),void* context){idleSnapshotHook_=fn;idleSnapshotContext_=context;}
     void testArmWait(std::uint64_t w){waitSeq_.store(w);}   // test seam: a producer 'waiting' on seq w that never wakes
 #endif
     // A pooled Block of at least bytes (capacity is the power of two above), budgeted. nullptr when the request alone

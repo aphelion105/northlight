@@ -2,8 +2,11 @@
 #include <new>
 #include <cstdlib>
 #include <cstddef>
+#include <cstdio>
+static bool vertexReadLocked=false,directNullLock=false,directUnlockFailure=false;
+static unsigned directUnlockAction=0;static void vertexUnlocked();
 static std::atomic<long> allocations{0};static std::atomic<unsigned> allocationCalls{0};static long failAfter=-1;static bool (*failPredicate)()=nullptr;
-void* operator new(std::size_t n){if(failPredicate&&failPredicate()){failPredicate=nullptr;throw std::bad_alloc();}if(failAfter==0){failAfter=-1;throw std::bad_alloc();}if(failAfter>0)--failAfter;void* p=std::malloc(n?n:1);if(!p)throw std::bad_alloc();++allocations;++allocationCalls;return p;}
+void* operator new(std::size_t n){if(vertexReadLocked){std::fputs("TERRAIN_ALLOCATION_DURING_VERTEX_LOCK\n",stderr);std::abort();}if(failPredicate&&failPredicate()){failPredicate=nullptr;throw std::bad_alloc();}if(failAfter==0){failAfter=-1;throw std::bad_alloc();}if(failAfter>0)--failAfter;void* p=std::malloc(n?n:1);if(!p)throw std::bad_alloc();++allocations;++allocationCalls;return p;}
 void* operator new[](std::size_t n){return ::operator new(n);}
 void operator delete(void* p)noexcept{if(p){--allocations;std::free(p);}}
 void operator delete[](void* p)noexcept{::operator delete(p);}
@@ -14,16 +17,23 @@ void operator delete[](void* p,std::size_t)noexcept{::operator delete(p);}
 #include <chrono>
 #include <string>
 static uint64_t revisions[]={21,22};
-static uint64_t identity(void*,bool index){return index?12:11;}
+static uint64_t lifetimes[]={11,12};
+static uint64_t identity(void*,bool index){return lifetimes[index];}
 static uint64_t version(void*,bool index){return revisions[index];}
+static void vertexUnlocked(){
+    if(directUnlockAction==1)++revisions[0];else if(directUnlockAction==2)revisions[0]=0;
+    else if(directUnlockAction==3)++revisions[1];else if(directUnlockAction==4)revisions[1]=0;
+    else if(directUnlockAction==5)++lifetimes[0];
+}
 static std::vector<uint16_t> pattern(){std::vector<uint16_t> p(192);for(unsigned i=0;i<p.size();++i)p[i]=uint16_t(i%96);return p;}
 static void setup(Device& d,const std::vector<std::vector<uint16_t>>& patterns){
     d.vb.bytes.resize(16+256*size_t(d.stride));for(unsigned i=0;i<256;++i)d.put(i,{-10200.f+float(i%3==1)*2,-1180.f+float(i%3==2)*2,float(i)});
     d.ib.desc.Format=D3DFMT_INDEX16;d.ib.bytes.clear();for(const auto& p:patterns){const size_t begin=d.ib.bytes.size();d.ib.bytes.resize(begin+p.size()*2);std::memcpy(d.ib.bytes.data()+begin,p.data(),p.size()*2);}
 }
 static void exact(const MeshSnapshot& mesh,const Device& d,unsigned start,unsigned count,D3DPRIMITIVETYPE topology=D3DPT_TRIANGLELIST,INT base=0,UINT streamOffset=16){
-    std::vector<Position> expected;const auto index=[&](size_t i){uint16_t n;std::memcpy(&n,d.ib.bytes.data()+2*(start+i),2);return n;};
-    const auto position=[&](uint16_t i){Position p;std::memcpy(&p,d.vb.bytes.data()+streamOffset+4+size_t(base+INT(i))*d.stride,12);return p;};
+    const unsigned indexBytes=d.ib.desc.Format==D3DFMT_INDEX16?2:4;
+    std::vector<Position> expected;const auto index=[&](size_t i){uint32_t n=0;std::memcpy(&n,d.ib.bytes.data()+indexBytes*(start+i),indexBytes);return n;};
+    const auto position=[&](uint32_t i){Position p;std::memcpy(&p,d.vb.bytes.data()+streamOffset+4+size_t(base+INT(i))*d.stride,12);return p;};
     const unsigned triangles=topology==D3DPT_TRIANGLELIST?count/3:count-2;
     for(unsigned t=0;t<triangles;++t){const unsigned first=topology==D3DPT_TRIANGLELIST?t*3:t;auto a=index(first),b=index(first+1),c=index(first+2);if(a==b||b==c||a==c)continue;if(topology==D3DPT_TRIANGLESTRIP&&(t&1))std::swap(a,b);for(auto i:{a,b,c})expected.push_back(position(i));}
     assert(mesh.indices.size()==expected.size()&&"DECODED_XYZ_MISMATCH");for(size_t i=0;i<expected.size();++i){assert(mesh.indices[i]<mesh.positions.size());const auto& actual=mesh.positions[mesh.indices[i]];assert(!std::memcmp(&actual,&expected[i],sizeof actual)&&"DECODED_XYZ_MISMATCH");}
@@ -34,6 +44,38 @@ static void exact(const MeshSnapshot& mesh,const Device& d,unsigned start,unsign
 static bool read(FrameCache& cache,Device& d,unsigned start,unsigned count,std::shared_ptr<const MeshSnapshot>& mesh,D3DPRIMITIVETYPE topology=D3DPT_TRIANGLELIST){cache.clearFrame();return cache.readMeshShared(&d,topology,0,0,256,start,topology==D3DPT_TRIANGLELIST?count/3:count-2,d.view,mesh);}
 [[maybe_unused]] static std::shared_ptr<const MeshSnapshot> capture(FrameCache& cache,Device& d,unsigned start,unsigned count=192,D3DPRIMITIVETYPE topology=D3DPT_TRIANGLELIST){std::shared_ptr<const MeshSnapshot> mesh;assert(read(cache,d,start,count,mesh,topology));exact(*mesh,d,start,count,topology);assert(cache.persistentBytes()<=cache.persistentByteLimit());assert(d.vb.refs==1&&d.ib.refs==1&&d.declaration.refs==1&&d.vb.locks==d.vb.unlocks&&d.ib.locks==d.ib.unlocks);return mesh;}
 static void tracked(FrameCache& cache){cache.setIdentityProvider(identity);cache.setVersionProvider(version);}
+static void directColdCapture(){
+    for(bool wide:{false,true})for(auto topology:{D3DPT_TRIANGLELIST,D3DPT_TRIANGLESTRIP}){
+        Device d;auto p=pattern();for(size_t i=0;i<p.size();++i)p[i]=uint16_t(i%3==0?7:i%3==1?129:251);p[4]=p[3];setup(d,{p});
+        if(wide){d.ib.desc.Format=D3DFMT_INDEX32;d.ib.bytes.resize(p.size()*4);for(size_t i=0;i<p.size();++i){const uint32_t n=p[i];std::memcpy(d.ib.bytes.data()+4*i,&n,4);}}
+        auto cache=std::make_unique<FrameCache>();tracked(*cache);const uint64_t span=uint64_t(251-7)*d.stride+sizeof(Position);
+        auto first=capture(*cache,d,0,192,topology);const auto m=cache->maintenance();
+        assert(first->sourceIdentity&&cache->persistentEntries()==1&&m.directColdMisses==1&&!m.rawVertexCopyBytes&&m.xyzCopyBytes==3*sizeof(Position)&&m.vertexSpanBytes==span);
+        assert(cache->bytesRead()==span+p.size()*(wide?4:2));
+        auto again=capture(*cache,d,0,192,topology);assert(again==first&&cache->maintenance().trackedHits==1&&!cache->bytesRead()&&!cache->maintenance().vertexSpanBytes);
+        ++revisions[0];again=capture(*cache,d,0,192,topology);assert(again==first&&cache->maintenance().exactReuses==1&&!cache->maintenance().directColdMisses&&!cache->maintenance().rawVertexCopyBytes);
+        d.put(129,{-10200,-1180,999});++revisions[0];auto changed=capture(*cache,d,0,192,topology);
+        assert(changed!=first&&first->positions[1].z==129&&changed->positions[1].z==999&&cache->maintenance().rawVertexCopyBytes==span&&!cache->maintenance().directColdMisses);
+        cache->clearPersistent();const auto known=revisions[0];revisions[0]=0;capture(*cache,d,0,192,topology);
+        assert(!cache->maintenance().directColdMisses&&cache->maintenance().rawVertexCopyBytes==span);revisions[0]=known;
+        first.reset();again.reset();changed.reset();cache->clearPersistent();assert(!cache->sourceLiveBytes()&&!vertexReadLocked);
+    }
+    for(unsigned action=1;action<=5;++action){Device d;setup(d,{pattern()});auto cache=std::make_unique<FrameCache>();tracked(*cache);
+        const auto vertex=revisions[0],index=revisions[1],lifetime=lifetimes[0];directUnlockAction=action;
+        auto mesh=capture(*cache,d,0);directUnlockAction=0;
+        assert(!mesh->sourceIdentity&&!cache->persistentEntries()&&"DIRECT_UNSTABLE_CACHE_PUBLISHED");assert(cache->maintenance().directColdMisses==1&&cache->maintenance().directUnstable==1&&!cache->maintenance().rawVertexCopyBytes);
+        revisions[0]=vertex;revisions[1]=index;lifetimes[0]=lifetime;mesh.reset();assert(!cache->sourceLiveBytes()&&!vertexReadLocked);
+    }
+    for(unsigned failure=0;failure<4;++failure){Device d;setup(d,{pattern()});auto cache=std::make_unique<FrameCache>();tracked(*cache);
+        d.vb.failLock=failure==0;directNullLock=failure==1;directUnlockFailure=failure==2;if(failure==3)d.put(0,{NAN,-1180,0});
+        cache->clearFrame();std::shared_ptr<const MeshSnapshot> mesh;Diagnostics detail;
+        assert(!cache->readMeshShared(&d,D3DPT_TRIANGLELIST,0,0,256,0,64,d.view,mesh,&detail));
+        const auto expected=failure<2?RejectReason::VertexLock:failure==2?RejectReason::VertexUnlock:RejectReason::VertexNonfinite;
+        assert(detail.reason==expected&&!mesh&&!cache->persistentEntries()&&!vertexReadLocked&&d.vb.locks==d.vb.unlocks&&d.ib.locks==d.ib.unlocks);
+        directNullLock=directUnlockFailure=false;assert(d.vb.refs==1&&d.ib.refs==1);
+    }
+    std::puts("PASS direct tracked cold capture: sparse/duplicate/degenerate indices, both widths, list/strip, requested/copy bytes, warm/unknown/revalidation fallback, racing generations, failures and no allocation under vertex lock");
+}
 static void collision(){Device d;auto a=pattern(),b=a;b[100]=8;setup(d,{a,a,b,b});auto cache=std::make_unique<FrameCache>();tracked(*cache);auto first=capture(*cache,d,0),promoted=capture(*cache,d,192),other=capture(*cache,d,384),otherPromoted=capture(*cache,d,576);assert(first->indices.ownedBytes()&&other->indices.ownedBytes()&&!promoted->indices.ownedBytes()&&!otherPromoted->indices.ownedBytes());assert(promoted->indices.storageIdentity()!=other->indices.storageIdentity()&&cache->indexStorage().sharedBlocks==2);}
 static void sharing(){
     Device d;const auto a=pattern();auto b=a;for(auto& i:b)i+=128;setup(d,{a,b,a});auto cache=std::make_unique<FrameCache>();tracked(*cache);const auto empty=cache->persistentBytes();
@@ -168,6 +210,6 @@ static void sharedWide(){
 }
 
 int main(int argc,char** argv){if(argc==2){assert(std::string(argv[1])=="--unique");unique();return 0;}
-    collision();sharing();escaped();expired();failures();offsetSharing();coverageAllocations();offsetPressure();sharedWide();
+    directColdCapture();collision();sharing();escaped();expired();failures();offsetSharing();coverageAllocations();offsetPressure();sharedWide();
     unique();assert(!allocations.load());std::puts("PASS decoded-index exact bytes, own provenance/XYZ, deep mutable values, holes/strip, retained blocks, expired weak overhead, allocation/retain failures and unchanged caps");
 }

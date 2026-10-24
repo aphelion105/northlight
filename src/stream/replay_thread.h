@@ -137,6 +137,7 @@ public:
     std::function<void()> threadStart;                  // runs on the replay thread before the first command (owner handoff)
     std::function<void(const char*)> log;               // diagnostics line sink; may be empty
     bool (*diagnostics)()=nullptr;                      // Diagnostics on: per-call timers and the sync-only audit (asked per frame)
+    bool (*idleProfiling)()=nullptr;                    // RenderProfile: latched before the replay thread starts
     unsigned sampleEvery=600;
     // 0.3.200 (frame skip): StreamFrameSkip (set before start()). A frame is replayed in SKIP MODE when, at its first command, it and at least one later frame are
     // completely recorded (presentsRecorded >= ordinal+2: the replay is two frames behind and the game would soon wait for it), the game marked it hazard-free
@@ -166,12 +167,13 @@ public:
     // state is copied: DXVK sets single precision on the CreateDevice thread, and hook float math must match.
     bool start(){
         try{
+            idleTracking_=idleProfiling&&idleProfiling();core.q.trackIdlePublications(idleTracking_);
             unsigned short cw=0;unsigned csr=0;captureFpu(cw,csr);
             std::atomic<int> ready{0};
             startNs_.store(nowNs(),std::memory_order_relaxed);lastWall_=startNs_.load(std::memory_order_relaxed);
             th_=std::thread([this,cw,csr,&ready]{
                 applyFpu(cw,csr);if(threadStart)threadStart();replayTid.store(currentTid());
-                raisePriority();diag_=diagnostics&&diagnostics();
+                raisePriority();diag_=diagnostics&&diagnostics();idleProfile_.enable(idleTracking_&&diag_);
                 ready.store(1);loop();
                 // 0.3.192 (CS): the playback scope writes this thread's thread_local activeSnapshot and reads current_'s counters: it ends here, on the thread that began it,
                 // before stop() releases current_ to the pool (the destructor, on the game thread, must find nothing to run)
@@ -222,6 +224,7 @@ private:
     bool frameOpen_=false,skipping_=false;unsigned skipRun_=0;   // 0.3.200 (frame skip): replay thread only, see frameSkip
     bool diag_=false;Counter auditSets_{0};   // diag_: diagnostics() as of the last frame boundary (asked once per frame, not per command)
     ReplayFrameProfile replayProfile_;
+    bool idleTracking_=false;IdleGapProfile idleProfile_;
     // audit: the values the game last set this frame, replay side
     DWORD auditRS_[StreamState::kRS]={},auditSamp_[StreamState::kSamplers][StreamState::kSampTypes]={},auditTss_[StreamState::kTSStages][StreamState::kTSTypes]={};
     std::vector<unsigned> touched_;std::vector<bool> touchedFlag_=std::vector<bool>(StreamState::kBits,false);
@@ -396,6 +399,7 @@ private:
         avg_.depth+=double(depth);avg_.bytes+=double(bytes);++avg_.n;if(depth>avg_.maxDepth)avg_.maxDepth=depth;if(bytes>avg_.maxBytes)avg_.maxBytes=bytes;
         const bool diag=diagnostics&&diagnostics();
         const bool audit=diag_;diag_=diag;   // the next frame records the audit state iff diagnostics are on now; switched on mid-frame: starts clean next frame
+        if(idleTracking_){if(idleProfile_.presented())logIdleGaps();idleProfile_.enable(diag);}
         if(audit&&diag&&frames%sampleEvery==1)runAudit();
         if(diag&&log&&frames%sampleEvery==0)cstreamLine(frames);
         if(log&&diag&&frames%sampleEvery==0){
@@ -406,6 +410,22 @@ private:
                 (unsigned long long)t.large,(unsigned long long)t.invalidations,(unsigned long long)t.evictions,(unsigned long long)t.releases);log(line);
         }
         touched_.clear();std::fill(touchedFlag_.begin(),touchedFlag_.end(),false);
+    }
+    IdlePoint idlePoint()const{
+        const auto epoch=core.queryEpoch.load(std::memory_order_acquire);const auto cooperative=core.coopState.load(std::memory_order_acquire);
+        auto p=core.q.idlePoint();p.frame=core.framesReplayed.load(std::memory_order_relaxed);p.presents=core.presentsRecorded.load(std::memory_order_acquire);
+        p.epoch=epoch;p.cooperative=cooperative;p.contextKnown=epoch==core.queryEpoch.load(std::memory_order_acquire)&&cooperative==core.coopState.load(std::memory_order_acquire);return p;
+    }
+    void logIdleGaps(){
+        const auto report=idleProfile_.take();if(!log||!diag_)return;
+        for(unsigned i=0;i<report.count;++i){
+            const auto& g=report.worst[i];const auto& a=g.first;const auto& b=g.last;char line[1600];
+            std::snprintf(line,sizeof line,"CSTREAM IDLE_GAP frameStart=%llu frameEnd=%llu windowFrames=%u longGaps=%u wallMs=%.6f queueWaitMs=%.6f segments=%u before=%s after=%s interrupted=%u queueStart=%s queueEnd=%s recorded=%llu/%llu published=%llu/%llu replayed=%llu/%llu waitSeq=%llu/%llu backpressure=%u/%u express=%u/%u waitsSeen=%u producerDeltaNonexclusiveNs[sync=%lld,present=%lld,backpressure=%lld,recordSampled=%lld,lock=%lld,snapshot=%lld] publishesDelta=%lld presents=%llu/%llu epoch=%u/%u cooperative=%08lx/%08lx contextKnown=%u/%u frameDomain=stream-replayed producerCpuMs=unknown applicationPhase=unknown",
+                (unsigned long long)a.frame,(unsigned long long)b.frame,report.frames,report.gaps,double(g.wallNs())/1e6,double(g.waitNs)/1e6,g.segments,g.before==kExpressIdle?"idle":cmdName((Cmd)g.before),g.after==kExpressIdle?"none":cmdName((Cmd)g.after),unsigned(g.interrupted),a.queueState(),b.queueState(),
+                (unsigned long long)a.recorded,(unsigned long long)b.recorded,(unsigned long long)a.published,(unsigned long long)b.published,(unsigned long long)a.replayed,(unsigned long long)b.replayed,(unsigned long long)a.waitSeq,(unsigned long long)b.waitSeq,unsigned(a.backpressure),unsigned(b.backpressure),unsigned(a.express),unsigned(b.express),g.waitsSeen,
+                IdleGapProfile::delta(a.syncNs,b.syncNs),IdleGapProfile::delta(a.presentNs,b.presentNs),IdleGapProfile::delta(a.backpressureNs,b.backpressureNs),IdleGapProfile::delta(a.recordNs,b.recordNs),IdleGapProfile::delta(a.lockNs,b.lockNs),IdleGapProfile::delta(a.snapshotNs,b.snapshotNs),IdleGapProfile::delta(a.publishes,b.publishes),
+                (unsigned long long)a.presents,(unsigned long long)b.presents,a.epoch,b.epoch,(unsigned long)std::uint32_t(a.cooperative),(unsigned long)std::uint32_t(b.cooperative),unsigned(a.contextKnown),unsigned(b.contextKnown));log(line);
+        }
     }
     // Scalar slots set this frame must read back from the Target as set; a mismatch (a backend that normalizes) makes the slot sync-only for good.
     void runAudit(){
@@ -620,17 +640,26 @@ private:
         for(;;){
             const CommandHeader* h=q.next(false);
             if(!h){
+                const auto before=lastCmd;
                 lastCmd=kExpressIdle;
                 q.serveExpress(lastCmd);
-                // Idle: the only clock reads of the replay thread. Pending queries are polled every ms; publish() wakes the wait at once.
-                if(!pending_.empty()){pollQueries();const auto t0=nowNs();h=q.nextTimed(1);own(idleNs,nowNs()-t0);}
-                else{const auto t0=nowNs();h=q.next(true);own(idleNs,nowNs()-t0);}
+                // Pending queries keep the original 1 ms wait; publication wakes
+                // either path. Profiling reuses this wait's existing clock pair.
+                const bool profile=idleTracking_&&diag_;
+                const bool timedWait=!pending_.empty();if(timedWait)pollQueries();
+                if(profile){
+                    const auto first=idlePoint();const auto t0=nowNs();h=timedWait?q.nextTimed(1):q.next(true);
+                    const auto waitEnd=nowNs();own(idleNs,waitEnd-t0);const auto last=idlePoint();
+                    idleProfile_.wait(t0,waitEnd,first,last,before);if(h)idleProfile_.finish(waitEnd,last,h->id);
+                    else if(stopNow_.load()){idleProfile_.finish(waitEnd,last,kExpressIdle,true);logIdleGaps();return;}
+                }else{const auto t0=nowNs();h=timedWait?q.nextTimed(1):q.next(true);own(idleNs,nowNs()-t0);}
                 if(!h){if(stopNow_.load())return;continue;}
             }
+            else if(idleTracking_&&diag_&&idleProfile_.open())idleProfile_.finish(nowNs(),idlePoint(),h->id);
             // Selecting a command acquires its publication before the mailbox
             // check, so a future END cannot pass an earlier posted query task.
             q.serveExpress(lastCmd);
-            if(h->id==(std::uint16_t)Cmd::Stop){q.retire(h);return;}
+            if(h->id==(std::uint16_t)Cmd::Stop){q.retire(h);if(idleTracking_)logIdleGaps();return;}
             if(!frameOpen_)beginFrame();   // 0.3.200 (frame skip)
             const unsigned id=h->id;const bool timed=replayProfile_.enabled;
             const auto started=timed?nowNs():0;

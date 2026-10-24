@@ -55,6 +55,8 @@ body = r'''
 #include <cstdio>
 using namespace NorthlightMemoryGuard;
 static bool frameCleared=false;
+struct LARGE_INTEGER {};
+static void QueryPerformanceCounter(LARGE_INTEGER*){}
 namespace NorthlightDrawSnapshot {struct Frame {static constexpr std::uint64_t SnapshotCacheLimit=64*MiB;};}
 namespace NorthlightReplayCopies {
     std::atomic<bool> enabled{true};bool pressure=false;
@@ -91,6 +93,7 @@ struct Controller {
         const bool memoryTrim=decision.trim;int memoryCaps=-1,memoryWorld=-1;const int memorySample=0;
         @ASSIGNMENTS@
         clearFrame();
+        LARGE_INTEGER worldEnd,materialEnd,replayEnd,streamEnd;
         @WIRING@
         return decision;
     }

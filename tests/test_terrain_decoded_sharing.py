@@ -43,6 +43,12 @@ def main():
                                 'Declaration declaration;float view[16]={};UINT stride=24;')
         device = device.replace('16+actualIndex*24+4', '16+actualIndex*stride+4')
         device = device.replace('*offset=16;*stride=24;', '*offset=16;*stride=this->stride;')
+        original = '++locks;*out=bytes.data()+offset;return D3D_OK;'
+        assert device.count(original) == 1
+        device = device.replace(original, '++locks;*out=bytes.data()+offset;if constexpr(std::is_same_v<Interface,IDirect3DVertexBuffer9>){vertexReadLocked=true;if(directNullLock)*out=nullptr;}return D3D_OK;')
+        original = 'HRESULT Unlock()override{++unlocks;assert(unlocks<=locks);return D3D_OK;}'
+        assert device.count(original) == 1
+        device = device.replace(original, 'HRESULT Unlock()override{++unlocks;assert(unlocks<=locks);if constexpr(std::is_same_v<Interface,IDirect3DVertexBuffer9>){vertexReadLocked=false;vertexUnlocked();if(directUnlockFailure)return HRESULT(0x80004005u);}return D3D_OK;}')
         (out / 'decoded-device.h').write_bytes(device.encode())
         generated = {str(path.resolve()): sha(path) for path in out.iterdir() if path.is_file()}
         commands, results = [], []
@@ -78,12 +84,23 @@ def main():
             ('decoded', '&&!std::memcmp(a,b,count*sizeof(*a))', '&&true', 'DECODED_XYZ_MISMATCH'),
             ('offsets', 'if(std::memcmp(stored+i,&value,sizeof value))return false;',
              '(void)value;', 'OFFSET_LAYOUT_REVALIDATION_MISMATCH'),
+            ('direct-xyz', 'std::memcpy(&p,source+std::size_t(index-smallest)*detail.stride,sizeof(Position));',
+             'std::memcpy(&p,source+std::size_t(index-smallest)*detail.stride,sizeof(Position));p.z+=0.5f;', 'DECODED_XYZ_MISMATCH'),
+            ('direct-revision', 'if(!directCold||verified)rememberContent',
+             'if(true)rememberContent', 'DIRECT_UNSTABLE_CACHE_PUBLISHED'),
+            ('direct-lock', 'if(directCold)preparePositions();',
+             'if(false)preparePositions();', 'TERRAIN_ALLOCATION_DURING_VERTEX_LOCK'),
         ]
         for label, original, replacement, marker in controls:
             mutant = out / ('negative-' + label);mutant.mkdir()
             text = fp.src('terrain_capture_bounds.h').read_text()
             assert text.count(original) == 1
-            (mutant / 'terrain_capture_bounds.h').write_bytes(text.replace(original, replacement).encode())
+            text = text.replace(original, replacement)
+            if label == 'direct-lock':
+                original = 'if(directCold){copyPositions'
+                assert text.count(original) == 1
+                text = text.replace(original, 'if(directCold){preparePositions();copyPositions')
+            (mutant / 'terrain_capture_bounds.h').write_bytes(text.encode())
             exe = mutant / 'wrong'
             compiled = run(['clang++', '-std=c++17', '-O2', '-UNDEBUG', '-I', str(mutant), '-I', str(out),
                             *fp.test_include_flags(), str(source), '-o', str(exe)])
@@ -98,6 +115,7 @@ def main():
             'inputs_unchanged': True, 'helper_inputs_before_import': helper_before, 'results': results, 'commands': commands,
             'compiler_version': subprocess.check_output(['clang++', '--version'], text=True),
             'unsafe_equality_control_rejected': True, 'unsafe_offset_layout_control_rejected': True,
+            'unsafe_direct_xyz_revision_lock_controls_rejected': True,
             'game_launched': False}, indent=2) + '\n')
         print('PASS unsafe decoded and offset equality controls fail their independent geometry/revalidation oracles')
 

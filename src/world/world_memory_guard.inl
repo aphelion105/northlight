@@ -4,7 +4,9 @@
     // here is optional and keyed by identity/version/contents, so a later lookup
     // misses and rebuilds from the live buffers. Shared immutable snapshots stay
     // valid for any holder; mesh-keyed caches use weak owners (no ABA reuse).
-    struct MemoryTrim {size_t terrain=0,snapshots=0,indices=0,pool=0,gpu=0;size_t total()const{return terrain+snapshots+indices+pool+gpu;}};
+    struct MemoryTrim {size_t terrain=0,snapshots=0,indices=0,pool=0,gpu=0;
+        double quiesceMs=0,terrainMs=0,snapshotsMs=0,poolMs=0,replayGpuMs=0,meshPoolsMs=0,rigidMs=0;
+        size_t total()const{return terrain+snapshots+indices+pool+gpu;}};
     bool memoryPressure=false;
     std::atomic<bool> workerMemoryTrim{false}; /* 0.3.153: the geometry builder thread drops its incremental local-geometry cache on its next request */
     std::atomic<bool> giMemoryTrim{false}; /* the GI worker frees its relight cache (ProbeRelightCache) on its next request */
@@ -25,14 +27,21 @@
     static constexpr size_t ReplayPoolBytes=48u*1024u*1024u;
     size_t replayPoolLimit()const{return memoryPressure?ReplayPoolBytes/2:ReplayPoolBytes;}
     MemoryTrim trimMemory(){
-        MemoryTrim t;prepareQuiesce();stateBlocks.clear(); /* 0.3.177 */
+        MemoryTrim t;auto phaseStart=std::chrono::steady_clock::now();
+        const auto elapsed=[&](){const auto now=std::chrono::steady_clock::now();const double ms=std::chrono::duration<double,std::milli>(now-phaseStart).count();phaseStart=now;return ms;};
+        prepareQuiesce();stateBlocks.clear();t.quiesceMs=elapsed(); /* 0.3.177 */
         {const auto before=terrainBoundsCache.sourceLiveBytes()+terrainBoundsCache.sourceMetadataBytes();terrainBoundsCache.clearPersistent();const auto after=terrainBoundsCache.sourceLiveBytes()+terrainBoundsCache.sourceMetadataBytes();t.terrain=size_t(before-std::min(before,after));}
+        t.terrainMs=elapsed();
         const auto sourceBefore=replaySnapshots.sourceLiveBytes()+replaySnapshots.sharedSourceMetadataBytes();
         {const auto before=replaySnapshots.indexCacheBytes();replaySnapshots.clearIndexCache();t.indices=before-std::min(before,replaySnapshots.indexCacheBytes());} /* clears snapshots too */
         const auto sourceAfter=replaySnapshots.sourceLiveBytes()+replaySnapshots.sharedSourceMetadataBytes();t.snapshots=sourceBefore-std::min(sourceBefore,sourceAfter);
+        t.snapshotsMs=elapsed();
         t.pool=pooledSnapshotBytes+freeReplays.size()*sizeof(Replay);freeReplays.clear();freeReplays.shrink_to_fit();pooledSnapshotBytes=0;
-        t.gpu=replayGpuCache.bytes();replayGpuCache.clear();t.gpu+=trimMeshPools(); /* 0.3.216: idle page buffers (never the active table), unless a staged upload is in progress */
+        t.poolMs=elapsed();
+        t.gpu=replayGpuCache.bytes();replayGpuCache.clear();t.replayGpuMs=elapsed();
+        t.gpu+=trimMeshPools();t.meshPoolsMs=elapsed(); /* 0.3.216: idle page buffers (never the active table), unless a staged upload is in progress */
         rigidMemoryClear(); /* 0.3.172: remembered rigid replays (their shared meshes and COM references) */
+        t.rigidMs=elapsed();
         workerMemoryTrim.store(true,std::memory_order_relaxed);giMemoryTrim.store(true,std::memory_order_relaxed);
         return t;
     }
