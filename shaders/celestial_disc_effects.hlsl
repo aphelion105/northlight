@@ -11,7 +11,7 @@ sampler2D DiscWater : register(s2);
 sampler2D DiscHaloVisibility : register(s3); // current halo, previous 1x1 value in visibility pass
 sampler2D DiscTerrain : register(s4); // viewer-ray coverage of already loaded terrain
 sampler2D DiscRingVisibility : register(s5); // 1x1 visibility of the 2-4R ring (sun), else the halo value
-float4 DiscTerrainPolicy : register(c46); // ready, mask extent in body radii, body texture LOD, sky-phase compact glare
+float4 DiscTerrainPolicy : register(c46); // ready, mask extent in body radii, body texture LOD, glare mode (0 late tail, 1 sky-phase compact core, 2 late full glare in a skybox frame)
 float4 DiscImage : register(c0); // inv fullWidth/Height, world depthMin, inverse depthRange
 float4 DiscProjection : register(c1); // signed X,Y,Zsign, waterReady
 row_major float4x4 DiscInverseView : register(c2);
@@ -76,8 +76,9 @@ float glareProfile(float radius){
     float edge=1-smoothstep(.35*DiscEmission.y,DiscEmission.y,radius);
     // The sky-phase core precedes opaque geometry and cloud blending. Later
     // geometry covers it; no previous-frame visibility texture is needed.
-    float disc=DiscTerrainPolicy.w>.5?1:saturate(tex2Dlod(DiscHaloVisibility,float4(.5,.5,0,0)).r);
-    float ring=DiscTerrainPolicy.w>.5?0:DiscGlowCore.w*saturate(tex2Dlod(DiscRingVisibility,float4(.5,.5,0,0)).r);
+    bool skyCore=abs(DiscTerrainPolicy.w-1)<.5; // mode 2 (skybox frame) is the pre-sky-phase late glare: halo-visibility taps and ring
+    float disc=skyCore?1:saturate(tex2Dlod(DiscHaloVisibility,float4(.5,.5,0,0)).r);
+    float ring=skyCore?0:DiscGlowCore.w*saturate(tex2Dlod(DiscRingVisibility,float4(.5,.5,0,0)).r);
     float3 tail=float3(exp2(-.12*r2),exp2(-.025*r2),exp2(-.008*r2));
     // tail(sqrt(r^2+9)) = sum w_i*2^(-k_i*9)*2^(-k_i*r^2): the same three terms.
     float tailed=max(disc*dot(tail,float3(.25,.35,.40)),ring*dot(tail,float3(.118257,.299458,.380527)));

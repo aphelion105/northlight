@@ -1,15 +1,15 @@
 {
-  "source_sha256": "2d516d772cc6007662be236e5550d8079aafc2b7c1506049bd90caee4b4b4d05",
+  "source_sha256": "1fe5235709f1c8dd57f5e20d4f8c1e3772db37acc7861e3a4154b60ffb632d6b",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
-  "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+  "compiler_sha256": "3c5f066a121a446e55db9c699b392da5d3aca6ad9019437b722360d09698e3c3",
   "game_launched": false,
   "device_created": false,
   "shader": {
     "target": "ps_3_0",
-    "bytes": 4436,
-    "sha256": "126c7f277628001717e569d4cfe81e7dc189bb8aa2d6439112201286c852c093",
-    "static_instruction_slots": 258,
-    "temporary_registers": 7,
+    "bytes": 4468,
+    "sha256": "277d7779e35b901b3dbfd0afb3fbdfa2dc91225a82d939b8683e550bb0e5da03",
+    "static_instruction_slots": 260,
+    "temporary_registers": 6,
     "samplers": [
       0,
       1,
@@ -20,7 +20,7 @@
     ],
     "instructions": {
       "rcp": 10,
-      "add": 50,
+      "add": 52,
       "frc": 2,
       "mul": 66,
       "max": 4,
@@ -42,10 +42,10 @@
   "shaders": {
     "CelestialDiscPS": {
       "target": "ps_3_0",
-      "bytes": 4436,
-      "sha256": "126c7f277628001717e569d4cfe81e7dc189bb8aa2d6439112201286c852c093",
-      "static_instruction_slots": 258,
-      "temporary_registers": 7,
+      "bytes": 4468,
+      "sha256": "277d7779e35b901b3dbfd0afb3fbdfa2dc91225a82d939b8683e550bb0e5da03",
+      "static_instruction_slots": 260,
+      "temporary_registers": 6,
       "samplers": [
         0,
         1,
@@ -56,7 +56,7 @@
       ],
       "instructions": {
         "rcp": 10,
-        "add": 50,
+        "add": 52,
         "frc": 2,
         "mul": 66,
         "max": 4,
@@ -105,9 +105,9 @@
     },
     "CelestialVeilPS": {
       "target": "ps_3_0",
-      "bytes": 3280,
-      "sha256": "74ec2ecd049f772af3ecd0a24b88a68dba12841e8e75932b2d39b482bca8a502",
-      "static_instruction_slots": 171,
+      "bytes": 3312,
+      "sha256": "1d4b27659d199f266d5a263af38bb7c98778566a02c4429ade9cb55efaaf31f3",
+      "static_instruction_slots": 173,
       "temporary_registers": 5,
       "samplers": [
         0,
@@ -118,9 +118,9 @@
       ],
       "instructions": {
         "rcp": 8,
-        "add": 33,
+        "add": 34,
         "frc": 2,
-        "mul": 40,
+        "mul": 41,
         "max": 3,
         "min": 1,
         "mov": 15,
