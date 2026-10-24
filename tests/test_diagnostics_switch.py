@@ -18,6 +18,8 @@ FILES=['renderer.cpp','world_renderer.h','world_shadow_experiment.inl','world_po
 GATES=('NorthlightDiagnostics::enabled()','diagnostics()','sampled()','captureSampled','if(diagnostics)','shadowFate.active()','sampledFrame','profiling()','profileSampled()','if(lightingClock)')
 # Ungated lines that stay with Diagnostics=0: format prefix -> label.
 KEEP={
+ 'CELESTIAL cloudOrder=':'one-off: first phase composition',
+ 'CELESTIAL skybox signatures unverified':'one-off: the skybox field signatures failed, once per renderer; late discs for the session',
  'AO method=':'start-up: loaded AO settings',
  'TERRAIN SHADOW farCoverage':'capped: first eight shader-patch registrations',
 
