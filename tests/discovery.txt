@@ -69,6 +69,8 @@ test_dxvk_engine_name.py
 test_effect_switches.py
 test_effects_buckets.py
 test_effects_cost_report.py
+test_emitter_fixture_policy.py
+test_emitter_fixture_scene.py
 test_emitter_patch.py
 test_emitter_pin_report.py
 test_entrypoints_isolated.py
@@ -116,6 +118,7 @@ test_local_fog_profile.py
 test_local_ini.py
 test_local_light_batches.py
 test_local_light_selection.py
+test_local_light_trace.py
 test_local_source_shadows.py
 test_log_format_literals.py
 test_log_rotation.py
@@ -125,6 +128,7 @@ test_m2_shader_families_client.py
 test_m2_visibility.py
 test_material_batch_bindings.py
 test_material_geometry.py
+test_material_pressure_transition.py
 test_material_profile.py
 test_material_ray_work.py
 test_material_replay_content.py
@@ -144,6 +148,7 @@ test_moon_cascade_weight.py
 test_mount_emitter_patch.py
 test_name_mask.py
 test_native_model_install.py
+test_native_shadow_observation.py
 test_near_reserve.py
 test_night_floor.py
 test_night_floor_wiring.py
@@ -222,6 +227,7 @@ test_shared_scene_ties.py
 test_shared_source_lifecycle.py
 test_shared_static_preparation.py
 test_snapshot_allocation.py
+test_snapshot_archive.py
 test_snapshot_lookup_identity.py
 test_snapshot_prediction.py
 test_solar_volume.py

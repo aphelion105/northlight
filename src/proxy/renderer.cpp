@@ -54,6 +54,7 @@
 #include "memory_switches.h"
 #include "northlight_mem.h"
 #include "m2_shader_families.h"
+#include "native_shadow_observation.h"
 
 // 0.3.181 (r90): the DLL's one memcmp. This strong definition overrides zig compiler_rt's weak byte
 // loop for every call site in all four TUs (libc++ included) and returns the same value for every
@@ -364,7 +365,7 @@ class Device final : public GuardedMirrorDevice {
     // for it (set at registration, where the water map changes), so non-water
     // draws need no second hash lookup.
     // Task 34: bits 3..5 hold the M2 shader family (m2_shader_families.h, NorthlightSpellLayer::Family) of the vertex shader, set at registration.
-    static constexpr int kTagMask=3,kWaterTag=4,kFamilyShift=3;
+    static constexpr int kTagMask=3,kWaterTag=4,kFamilyShift=3,kNativeShadowTag=64;
     std::unordered_map<IDirect3DVertexShader9*, int> vsTags;
     bool drawWaterVS=false,drawUiHashVS=false; // current draw's registered VS verdict
     std::unordered_map<IDirect3DPixelShader9*, int> psTags;
@@ -372,11 +373,21 @@ class Device final : public GuardedMirrorDevice {
     std::unordered_map<IDirect3DVertexShader9*, unsigned> vsMajor; // 0.3.202 (rain mask MRT): the shader model major version from the version token (0 unknown)
     // 0.3.196 (task 12): one-entry per-draw vertex shader classification. vsTags, vsHashes and the world's shader maps change only in
     // CreateVertexShader registration, which bumps vsGeneration first (nothing is ever erased, but a freed address can be registered again).
-    struct VsClass {IDirect3DVertexShader9* vs=nullptr;std::uint32_t gen=~0u;int entry=0;bool wmo=false,world=false,skinned=false;unsigned family=0;};
+    std::unordered_map<IDirect3DVertexShader9*,NorthlightNativeShadow::Proof> nativeShadowProofs;
+    NorthlightNativeShadow::Limiter nativeShadowLimiter;
+    struct VsClass {IDirect3DVertexShader9* vs=nullptr;std::uint32_t gen=~0u;int entry=0;bool wmo=false,world=false,skinned=false;unsigned family=0;const NorthlightNativeShadow::Proof* nativeShadow=nullptr;};
     std::uint32_t vsGeneration=0;VsClass lastVs;unsigned long long vsCacheHits=0,vsCacheMisses=0;
+    int registerNativeShadow(IDirect3DVertexShader9* vs,const std::vector<DWORD>& words){
+        NorthlightNativeShadow::Proof proof;
+        if(NorthlightNativeShadow::analyze(reinterpret_cast<const uint32_t*>(words.data()),words.size(),proof)){
+            nativeShadowProofs[vs]=proof;return kNativeShadowTag;
+        }
+        nativeShadowProofs.erase(vs);return 0;
+    }
     const VsClass& classifyVs(IDirect3DVertexShader9* vs){
         if(lastVs.vs==vs&&lastVs.gen==vsGeneration){++vsCacheHits;return lastVs;}
         ++vsCacheMisses;auto it=vsTags.find(vs);lastVs.vs=vs;lastVs.gen=vsGeneration;lastVs.entry=it==vsTags.end()?0:it->second;
+        lastVs.nativeShadow=nullptr;if(lastVs.entry&kNativeShadowTag){auto proof=nativeShadowProofs.find(vs);if(proof!=nativeShadowProofs.end())lastVs.nativeShadow=&proof->second;}
         lastVs.wmo=world&&world->recognizesWmo(vs);lastVs.world=world&&world->isWorldShader(vs);lastVs.skinned=world&&world->isSkinnedShader(vs);lastVs.family=unsigned(lastVs.entry>>kFamilyShift)&7u;return lastVs;
     }
     std::unordered_map<IDirect3DPixelShader9*, uint64_t> psHashes;
@@ -2145,8 +2156,26 @@ private:
     // (Lexara, TweakWoW2 with HD Font on) swap the one UI VS the game draws its screen UI and its 3D text with, so the learned VS is the one their names are drawn with; their VS still takes the game's
     // projection in c0..c3, so the c3 test of nameMaskDecide holds as with the stock VS. Before the fallback arms (about 2 s of world frames) their names are not marked, as their effects have not started either.
     bool uiTextVs(IDirect3DVertexShader9* vs,int tag)const{return tag==2||(vs&&uiFallback.armed()&&reinterpret_cast<std::uintptr_t>(vs)==uiFallback.learnedVs());}
+    void observeNativeShadow(IDirect3DVertexShader9* vs,const VsClass& vc){
+        if(!vc.nativeShadow||!nativeShadowLimiter.take(diagnostics(),NorthlightRenderThreadProbe::profiling(),frame,*vc.nativeShadow))return;
+        const auto hash=vsHashes.find(vs);const bool active=mirrorState.active();
+        const auto sample=NorthlightNativeShadow::sample(*vc.nativeShadow,mirrorState.vsFloat,mirrorState.vsFloatKnown,active,
+            frame,drawCalls-frameStartDrawCalls,hash==vsHashes.end()?0:hash->second);
+        unsigned char bytes[NorthlightNativeShadow::SerializedBytes];size_t written=0;
+        if(!NorthlightNativeShadow::serialize(sample,bytes,sizeof bytes,written))return;
+        char hex[2*sizeof bytes+1];static constexpr char digits[]="0123456789abcdef";
+        for(size_t i=0;i<written;++i){hex[2*i]=digits[bytes[i]>>4];hex[2*i+1]=digits[bytes[i]&15];}hex[2*written]=0;
+        // Pre-capture observation is not proof of submission or a world-space pose.
+        const bool rt=active&&mirrorState.targetKnown[0],ds=active&&mirrorState.depthKnown,vp=active&&mirrorState.viewportKnown;
+        logf("NATIVE_SHADOW observe device=%ld frame=%u frameDomain=renderer draw=%u event=pre-capture tickNs=%llu sm=%u skin=%u mirror=%u knownRows=%03x finiteRows=%03x rtKnown=%u rt=%p depthKnown=%u depth=%p viewportKnown=%u viewport=%lu,%lu,%lu,%lu,%.9g,%.9g projectionValid=%u terrainSeen=%u applied=%u worldSpace=unknown poseComplete=0 sampleNSH1=%s",
+            diagnosticId,frame,sample.draw,(unsigned long long)NorthlightStream::nowNs(),sample.proof.major,unsigned(sample.proof.skin),unsigned(active),sample.knownRows,sample.finiteRows,
+            unsigned(rt),rt?static_cast<void*>(mirrorState.targets[0]):nullptr,unsigned(ds),ds?static_cast<void*>(mirrorState.depth):nullptr,unsigned(vp),
+            vp?mirrorState.viewport.X:0ul,vp?mirrorState.viewport.Y:0ul,vp?mirrorState.viewport.Width:0ul,vp?mirrorState.viewport.Height:0ul,
+            vp?mirrorState.viewport.MinZ:0.f,vp?mirrorState.viewport.MaxZ:0.f,unsigned(projectionValid),unsigned(terrain),unsigned(applied),hex);
+    }
     void beforeDraw(IDirect3DVertexShader9* vs) {
         const VsClass& vc=classifyVs(vs); const int entry=vc.entry; int tag=entry&kTagMask;
+        observeNativeShadow(vs,vc);
         drawWaterVS=(entry&kWaterTag)!=0;drawUiHashVS=uiTextVs(vs,tag);
         bool wmo=tag!=1&&vc.wmo;if(gateFrame&&wmo)++gateCounts.wmo;
         if(wmo&&projectionValid&&world->hasContext()&&world->hasOriginalFog())return;
@@ -2981,7 +3010,7 @@ public:
     }
     HRESULT STDMETHODCALLTYPE CreateVertexShader(const DWORD* code,IDirect3DVertexShader9** out) override { Guard mirrorLock(mirrorState.gate);
         HRESULT hr=ext->CreateVertexShader(code,out);
-        if(SUCCEEDED(hr)&&out&&*out)extensionWork("vertex shader registration",[&]{++vsGeneration;std::vector<DWORD> words;auto h=shaderHash(*out,words);int tag=NorthlightShaderTags::deviceTag(h);vsHashes[*out]=h;if(spellOn){shaderReads[static_cast<void*>(*out)]=NorthlightShaderReads::scan(reinterpret_cast<const uint32_t*>(words.data()),words.size());{bool bare=false;const bool ok=NorthlightSpellFog::vsFogProven(reinterpret_cast<const uint32_t*>(words.data()),words.size(),&bare);vsFogProven[*out]=uint8_t(ok?(bare?2:1):0);}}uiFallbackForget(*out);vsMajor[*out]=!words.empty()&&(words[0]>>16)==0xFFFEu?unsigned((words[0]>>8)&0xFFu):0u;if(world){world->registerShader(*out,h);world->registerEquipmentShader(*out,m2ShaderFamily(h)==3?words.data():nullptr,m2ShaderFamily(h)==3?words.size():0);particleCapture.registerVertex(*out,m2ShaderFamily(h));}if(autoBump)autoBump->registerVertex(*out,h,words.data(),words.size(),m2ShaderFamily(h));if(water)water->registerVertex(*out,h,words.data(),words.size());vsTags[*out]=tag|(water&&water->hasVertex(*out)?kWaterTag:0)|int(m2ShaderFamily(h)<<kFamilyShift);if(tag==1)++matchedTerrain;else if(tag==2)++matchedUI;});
+        if(SUCCEEDED(hr)&&out&&*out)extensionWork("vertex shader registration",[&]{++vsGeneration;std::vector<DWORD> words;auto h=shaderHash(*out,words);int tag=NorthlightShaderTags::deviceTag(h);tag|=registerNativeShadow(*out,words);vsHashes[*out]=h;if(spellOn){shaderReads[static_cast<void*>(*out)]=NorthlightShaderReads::scan(reinterpret_cast<const uint32_t*>(words.data()),words.size());{bool bare=false;const bool ok=NorthlightSpellFog::vsFogProven(reinterpret_cast<const uint32_t*>(words.data()),words.size(),&bare);vsFogProven[*out]=uint8_t(ok?(bare?2:1):0);}}uiFallbackForget(*out);vsMajor[*out]=!words.empty()&&(words[0]>>16)==0xFFFEu?unsigned((words[0]>>8)&0xFFu):0u;if(world){world->registerShader(*out,h);world->registerEquipmentShader(*out,m2ShaderFamily(h)==3?words.data():nullptr,m2ShaderFamily(h)==3?words.size():0);particleCapture.registerVertex(*out,m2ShaderFamily(h));}if(autoBump)autoBump->registerVertex(*out,h,words.data(),words.size(),m2ShaderFamily(h));if(water)water->registerVertex(*out,h,words.data(),words.size());vsTags[*out]=tag|(water&&water->hasVertex(*out)?kWaterTag:0)|int(m2ShaderFamily(h)<<kFamilyShift);if(tag==1)++matchedTerrain;else if(tag==2)++matchedUI;});
         if(SUCCEEDED(hr))mirrorResources.wrap(out);return hr;
     }
     HRESULT STDMETHODCALLTYPE CreatePixelShader(const DWORD* code,IDirect3DPixelShader9** out) override { Guard mirrorLock(mirrorState.gate);

@@ -19,7 +19,7 @@ sys.path[:0] = [str(Path(__file__).resolve().parents[1]), str(Path(__file__).res
 from world_scene_builder import Assets, array, string, unpack
 from world_lights_builder import constant_track, extract_m2, static_bone_offset
 from emitter_pin_report import batches, texture_colour
-from outdoor_light_profiles import load, pinned
+from outdoor_light_profiles import load, pinned, fixture_emitters
 from m2_emitter_patch import append_lights, verify_preserved
 from mpq import Archive
 
@@ -125,7 +125,10 @@ def profile(assets, path, blob, catalog):
         value = pinned(catalog[path]).get(sha)
         if value:
             pin = catalog[path] if sha == catalog[path]['asset_sha256'] else catalog[path]['variants'][sha]
-            return {**value, 'family': catalog[path]['family'], 'position_basis': pin['position_basis']}
+            result = {**value, 'family': catalog[path]['family'], 'position_basis': pin['position_basis']}
+            if 'emitters' in result:
+                result['emitters'] = fixture_emitters(result)
+            return result
     fire = particle_points(assets, blob)
     points = glow_points(assets, path, blob) if LIGHT_WORDS.search(path.rsplit('\\', 1)[-1]) else []
     # A flame's own colour includes its lifetime tint and actual texture.

@@ -105,6 +105,20 @@ public:
         if(!copy.ok)return Serve::Failed;
         std::memcpy(out,arena_+copy.offset,size);return Serve::Ok;
     }
+    // Explicit archive/stand readers require a recorded FIFO entry. Production
+    // serve() deliberately retains its existing last-copy/live fallback policy.
+    Serve serveRecorded(std::uintptr_t address,void* out,std::size_t size){
+        if(!out&&size)return Serve::Miss;
+        const Key* key=find(address,size);if(!key||key->cursor==None)return Serve::Miss;
+        unsigned char empty=0;return serve(address,size?out:&empty,size);
+    }
+    template<class Visitor> bool visitRecorded(Visitor&& visit)const{
+        if(!usable())return false;
+        for(std::size_t i=0;i<keyCount_;++i){const Key& key=keys_[i];
+            for(auto index=key.head;index!=None;index=copies_[index].next){const Copy& copy=copies_[index];
+                if(!visit(key.address,key.size,copy.ok,copy.ok?arena_+copy.offset:nullptr))return false;}}
+        return true;
+    }
     bool has(std::uintptr_t address,std::size_t size)const{for(std::size_t i=0;i<keyCount_;++i)if(keys_[i].address==address&&keys_[i].size==size)return true;return false;}
 private:
     static constexpr std::uint16_t None=0xffff;

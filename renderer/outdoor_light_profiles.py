@@ -55,6 +55,19 @@ def pinned(p):
         if 'emitters' in v or 'emitters' in p:result[sha]['emitters']=v.get('emitters',p.get('emitters'))
     return result
 
+def fixture_emitters(p):
+    """One bounded light for a compact authored fixture, never across models."""
+    emitters=p.get('emitters',[p])
+    if len(emitters)<2:return emitters
+    shadow=emitters[0].get('casts_shadows',p.get('casts_shadows',False))
+    if any(e.get('casts_shadows',p.get('casts_shadows',False))!=shadow for e in emitters):return emitters
+    if any(math.dist(a['position'],b['position'])>3 for i,a in enumerate(emitters) for b in emitters[:i]):return emitters
+    strongest=max(emitters,key=lambda e:e['intensity']*max(e['rgb']))
+    return [{**strongest,
+             'position':tuple(math.fsum(e['position'][k] for e in emitters)/len(emitters) for k in range(3)),
+             'start':max(e['start'] for e in emitters),'end':max(e['end'] for e in emitters),
+             'casts_shadows':shadow}]
+
 def fallback(catalog,path,blob,native):
     # A supported native light always wins. Profiles never add a second emitter
     # to it, nor silently replace an updated model with the old bulb position.
@@ -66,7 +79,7 @@ def fallback(catalog,path,blob,native):
     p=pinned(catalog[path]).get(sha)
     if p is None:raise ValueError('Emitter profile asset changed: '+path)
     return [(tuple(e['position']),tuple(c*e['intensity'] for c in e['rgb']),e['start'],e['end'],0x80000000+i,3,2 if e.get('casts_shadows',p.get('casts_shadows',False)) else 0)
-            for i,e in enumerate(p.get('emitters',[p]))]
+            for i,e in enumerate(fixture_emitters(p))]
 
 def deduplicate_parent_lights(records,owners):
     # Only compare a WMO child against native lights from ITS OWN parent.
