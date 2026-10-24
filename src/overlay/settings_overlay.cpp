@@ -15,6 +15,7 @@
 #include <vector>
 #include "imgui.h"
 #include "imgui_impl_dx9.h"
+#include "overlay_font_roboto.h"
 #include "overlay_input.h"
 #include "settings_panel.h"
 
@@ -252,11 +253,17 @@ class Impl final : public Overlay {
         io.Fonts->Clear();
         static const ImWchar ranges[]={0x0020,0x00FF,0};
         const float pixels=std::round(16.f*next);
-        const char* font="segoeui.ttf";
-        if(!loadSystemFont(L"segoeui.ttf",pixels,ranges)){
-            font="tahoma.ttf";
-            if(!loadSystemFont(L"tahoma.ttf",pixels-1,ranges)){
-                font="ImGui default";ImFontConfig config;config.SizePixels=13.f*std::max(1.f,std::round(next));io.Fonts->AddFontDefault(&config);
+        // The embedded Roboto first (the same text on Windows and under Wine, whose font folder may be empty); system fonts
+        // only if it cannot be added; ImGui's bitmap font last.
+        const char* font="Roboto-Medium (embedded)";
+        ImFontConfig embedded;embedded.OversampleH=2;embedded.OversampleV=1;std::snprintf(embedded.Name,sizeof embedded.Name,"Roboto-Medium");
+        if(!io.Fonts->AddFontFromMemoryCompressedTTF(NorthlightOverlayFont::RobotoMediumCompressed,int(NorthlightOverlayFont::RobotoMediumCompressedSize),pixels,&embedded,ranges)){
+            font="segoeui.ttf";
+            if(!loadSystemFont(L"segoeui.ttf",pixels,ranges)){
+                font="tahoma.ttf";
+                if(!loadSystemFont(L"tahoma.ttf",pixels-1,ranges)){
+                    font="ImGui default";ImFontConfig config;config.SizePixels=13.f*std::max(1.f,std::round(next));io.Fonts->AddFontDefault(&config);
+                }
             }
         }
         baseStyle(next);

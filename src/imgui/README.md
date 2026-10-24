@@ -13,6 +13,12 @@ Copied: `imgui.cpp`, `imgui_draw.cpp`, `imgui_tables.cpp`, `imgui_widgets.cpp`, 
 `backends/imgui_impl_dx9.{h,cpp}` (flattened into this directory). No demo, no platform backend:
 the overlay feeds input itself (`src/overlay/settings_overlay.cpp`).
 
+Font: the overlay embeds `misc/fonts/Roboto-Medium.ttf` of the same tag
+(`https://raw.githubusercontent.com/ocornut/imgui/97428e8ac99e339ce05eee531cf55b77b29ea709/misc/fonts/Roboto-Medium.ttf`,
+sha256 `8559132c89ad51d8a2ba5b171887a44a7ba93776e205f553573de228e64b45f8`, Apache-2.0: `licenses/roboto.txt`, shipped as
+`LICENSES/Roboto.txt`). The TTF is not kept here: `scripts/generate_overlay_font.py <Roboto-Medium.ttf>` writes it,
+compressed, to `src/generated/overlay_font_roboto.h`.
+
 Configuration lives outside these files, in `src/overlay/northlight_imconfig.h`, which
 `scripts/build_renderer.py` passes as `IMGUI_USER_CONFIG` to every translation unit (no Win32
 helpers, no file functions, no demo or debug windows; a failed assertion throws).

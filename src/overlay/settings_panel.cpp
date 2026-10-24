@@ -110,7 +110,28 @@ const std::vector<Group> CelestialGroups={
     {"sun","Sun",nullptr,"sun_disc sun_disc_gain sun_light sun_light_strength","sun_light_mix sun_fog_gain sun_fog_height_scale sun_horizon_haze sun_glow_strength sun_glow sun_glow_mix"},
     {"moon","Moon",nullptr,"moon_disc moon_disc_gain moon_light moon_light_strength","moon_light_mix moon_fog_gain moon_fog_height_scale moon_horizon_haze moon_glow_strength moon_glow moon_glow_mix"},
 };
-const char* const PresetText[3]={"Maximum effect detail.","Quality with a moderate effect budget.","Less work spent on effects."};
+std::vector<std::string> words(const char* text);
+// The old menu's preset page.
+struct Preset { const char* key; const char* text; };
+const Preset Presets[3]={{"Quality","Maximum effect detail."},{"Balanced","Quality with a moderate effect budget."},{"Performance","Less work spent on effects."}};
+const char* const QuickKeys="GI ActorShadows ContactAO Weather FogClouds";   // the old menu's Quality page toggles
+// Sidebar pages, in order. quality: the QualitySections id a Quality page draws.
+enum class Page { Overview, Lighting, Materials, Shadows, Atmosphere, Celestial, ShadowRange, Spells, Renderer, Performance, Diagnostics, Count };
+struct PageInfo { Page page; const char* title; const char* quality; };
+const PageInfo Pages[]={
+    {Page::Overview,"Overview",nullptr},{Page::Lighting,"Lighting & AO","lighting"},{Page::Materials,"Materials & parallax","materials"},
+    {Page::Shadows,"Shadows","shadows"},{Page::Atmosphere,"Atmosphere & weather","atmosphere"},{Page::Celestial,"Sun & moon",nullptr},
+    {Page::ShadowRange,"Shadow range",nullptr},{Page::Spells,"Spells & names","spells"},{Page::Renderer,"Renderer & HDR",nullptr},
+    {Page::Performance,"Performance","performance"},{Page::Diagnostics,"Diagnostics","diagnostics"},
+};
+static_assert(sizeof(Pages)/sizeof(Pages[0])==std::size_t(Page::Count),"one entry per page");
+const Section* qualitySection(const char* id){if(id)for(const auto& s:QualitySections)if(std::string(s.id)==id)return &s;return nullptr;}
+// Every key a Quality section names (its key list and its groups).
+std::vector<std::string> sectionKeys(const Section& s){
+    std::vector<std::string> out=words(s.keys);
+    for(const auto& g:s.groups)for(const char* list:{g.master,g.fields,g.advanced})for(auto& k:words(list))if(std::find(out.begin(),out.end(),k)==out.end())out.push_back(k);
+    return out;
+}
 // AreaTable zone ids of the shipped profile regions (3.3.5a); other ids show as Map:id.
 const std::map<std::string,const char*> Zones={
     {"Azeroth:1","Dun Morogh"},{"Azeroth:3","Badlands"},{"Azeroth:4","Blasted Lands"},{"Azeroth:8","Swamp of Sorrows"},{"Azeroth:10","Duskwood"},{"Azeroth:11","Wetlands"},
@@ -195,7 +216,6 @@ float buttonWidth(const char* label){return ImGui::CalcTextSize(label).x+ImGui::
 
 struct SettingsPanel::State {
     using Service=NorthlightSettings::Service;
-    enum class Tab { Quality, Renderer, Celestial, ShadowRange };
     enum class Confirm { None, Preset, Factory };
     std::shared_ptr<Service> service;
     std::string hotkey;
@@ -206,7 +226,8 @@ struct SettingsPanel::State {
     bool wantSnapshot=false,wantPreview=false,wantClear=false,previewing=false,saving=false,awaitingSnapshot=false;
     std::uint64_t commitSerial=0;
     std::string region="default",note;                 // note: a local message (a refused request), cleared by the next action
-    Tab tab=Tab::Quality;
+    Page page=Page::Overview;                             // kept for the session
+    std::string presetChoice;bool presetCelestial=true,presetRange=true;   // the preset dialog
     Confirm confirm=Confirm::None;
     float scale=1;
 
@@ -396,47 +417,102 @@ struct SettingsPanel::State {
         if(beginRows(id)){for(const Field* f:rest)row(*f);ImGui::EndTable();}
     }
 
-    // ---- Tabs ----
-    void qualityTab(){
-        const Field* preset=draft.quality("Preset");
-        if(preset&&beginRows("preset")){row(*preset);ImGui::EndTable();}
-        if(preset){
-            const auto p=draft.effective(*preset);const unsigned i=p=="Performance"?2:p=="Balanced"?1:0;
-            ImGui::TextColored(Color::Muted,"%s Keys you have not set follow the preset.",PresetText[i]);
-            ImGui::BeginDisabled(locked());
-            if(ImGui::Button("Use preset values..."))confirm=Confirm::Preset;
-            ImGui::EndDisabled();
-            if(ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip|ImGuiHoveredFlags_AllowWhenDisabled))ImGui::SetTooltip("Clear every quality override so all quality settings follow the selected preset.");
-        }
-        std::map<std::string,const Field*> byKey;for(const Field* f:fields(D::Quality))if(f->key!="Preset")byKey[f->key]=f;
-        std::map<std::string,bool> used;
-        for(const auto& s:QualitySections){
-            std::map<std::string,const Field*> mine;for(const auto& k:words(s.keys)){auto i=byKey.find(k);if(i!=byKey.end())mine[k]=i->second;}
-            for(const auto& g:s.groups)for(const char* list:{g.master,g.fields,g.advanced})for(const auto& k:words(list)){auto i=byKey.find(k);if(i!=byKey.end())mine[k]=i->second;}
-            bool any=false;for(auto& m:mine)if(!used[m.first])any=true;
-            if(!any)continue;
-            ImGui::Spacing();
-            if(!ImGui::CollapsingHeader(s.title,s.open?ImGuiTreeNodeFlags_DefaultOpen:0)){for(auto& m:mine)used[m.first]=true;continue;}
-            ImGui::PushID(s.id);ImGui::Indent(ImGui::GetStyle().IndentSpacing*0.5f);
-            for(const auto& g:s.groups)group(g,mine,used);
-            std::vector<const Field*> rest;for(const auto& k:words(s.keys))if(mine.count(k)&&!used[k]){rest.push_back(mine[k]);used[k]=true;}
-            loose("rest",rest);
-            ImGui::Unindent(ImGui::GetStyle().IndentSpacing*0.5f);ImGui::PopID();
-        }
-        std::vector<const Field*> other;for(auto& k:byKey)if(!used[k.first])other.push_back(k.second);
-        if(!other.empty()&&ImGui::CollapsingHeader("Other")){ImGui::PushID("other");loose("rows",other);ImGui::PopID();}
+    // ---- Pages ----
+    // Quality keys no section names (a newer schema): shown on the Performance page.
+    std::vector<const Field*> unsortedQuality()const{
+        std::vector<std::string> known{"Preset"};for(const auto& s:QualitySections)for(auto& k:sectionKeys(s))known.push_back(k);
+        std::vector<const Field*> out;for(const Field* f:fields(D::Quality))if(std::find(known.begin(),known.end(),f->key)==known.end())out.push_back(f);
+        return out;
     }
-    void rendererTab(){
+    // The fields a page shows (Sun & moon: every region), for its sidebar markers and Defaults.
+    std::vector<const Field*> pageFields(Page p)const{
+        std::vector<const Field*> out;
+        if(p==Page::Overview){if(const Field* f=draft.quality("Preset"))out.push_back(f);for(auto& k:words(QuickKeys))if(const Field* f=draft.quality(k))out.push_back(f);return out;}
+        if(p==Page::Celestial)return fields(D::Celestial);
+        if(p==Page::ShadowRange)return fields(D::ShadowRange);
+        if(p==Page::Renderer)return fields(D::Renderer);
+        if(const Section* s=qualitySection(Pages[unsigned(p)].quality))for(auto& k:sectionKeys(*s))if(const Field* f=draft.quality(k))out.push_back(f);
+        if(p==Page::Performance){auto extra=unsortedQuality();out.insert(out.end(),extra.begin(),extra.end());}
+        return out;
+    }
+    void titled(const char* title,const std::vector<const Field*>& rows){
+        if(rows.empty())return;
+        ImGui::Spacing();ImGui::AlignTextToFramePadding();ImGui::TextColored(Color::Heading,"%s",title);ImGui::Separator();
+        ImGui::PushID(title);if(beginRows("rows")){for(const Field* f:rows)row(*f);ImGui::EndTable();}ImGui::PopID();
+    }
+    void qualityPage(const Section& sec,bool withUnsorted){
+        std::map<std::string,const Field*> mine;for(const auto& k:sectionKeys(sec))if(const Field* f=draft.quality(k))mine[k]=f;
+        std::map<std::string,bool> used;
+        for(const auto& g:sec.groups)group(g,mine,used);
+        std::vector<const Field*> rest;for(const auto& k:words(sec.keys))if(mine.count(k)&&!used[k]){rest.push_back(mine[k]);used[k]=true;}
+        titled(sec.title,rest);
+        if(withUnsorted)titled("Other",unsortedQuality());
+    }
+    void overviewPage(){
+        ImGui::PushTextWrapPos(0);
+        ImGui::TextColored(Color::Muted,"Choose starting settings, then adjust effects in the categories on the left.");
+        ImGui::PopTextWrapPos();
+        ImGui::Spacing();ImGui::TextColored(Color::Heading,"Quality preset");ImGui::Separator();
+        const Field* preset=draft.quality("Preset");
+        const std::string current=preset?draft.effective(*preset):"";
+        for(const auto& p:Presets){
+            ImGui::PushID(p.key);
+            const bool here=current==p.key;
+            ImGui::BeginGroup();
+            ImGui::AlignTextToFramePadding();
+            if(here)ImGui::TextColored(Color::Accent,"%s  (current)",p.key);else ImGui::TextUnformatted(p.key);
+            ImGui::TextColored(Color::Muted,"%s",p.text);
+            ImGui::EndGroup();
+            ImGui::SameLine();alignRight(buttonWidth("Choose..."));
+            ImGui::BeginDisabled(here||!preset||locked());
+            if(ImGui::Button("Choose...")){presetChoice=p.key;confirm=Confirm::Preset;}
+            ImGui::EndDisabled();
+            ImGui::PopID();
+            ImGui::Separator();
+        }
+        ImGui::PushTextWrapPos(0);
+        ImGui::TextColored(Color::Muted,"Choosing a preset resets your quality changes to the preset's values. You will be asked to confirm.");
+        ImGui::PopTextWrapPos();
+        std::vector<const Field*> quick;for(auto& k:words(QuickKeys))if(const Field* f=draft.quality(k))quick.push_back(f);
+        titled("Quick toggles",quick);
+        ImGui::Spacing();ImGui::TextColored(Color::Heading,"Summary");ImGui::Separator();
+        unsigned set=0;if(snapshot)for(const auto& f:snapshot->fields)if(f.overrideValue!="~")++set;
+        ImGui::Text("%u setting%s set in the INI files, %u unsaved change%s.",set,set==1?"":"s",unsigned(draft.size()),draft.size()==1?"":"s");
+        if(const auto n=restartPending())ImGui::TextColored(Color::Restart,"%u change%s apply after a game restart.",unsigned(n),n==1?"":"s");
+    }
+    void rendererPage(){
         std::map<std::string,const Field*> byKey;for(const Field* f:fields(D::Renderer))byKey[f->key]=f;
         std::map<std::string,bool> used;
-        if(auto b=byKey.find("Backend");b!=byKey.end()){used["Backend"]=true;if(beginRows("backend")){row(*b->second);ImGui::EndTable();}}
+        if(auto b=byKey.find("Backend");b!=byKey.end()){used["Backend"]=true;titled("Renderer",{b->second});}
         for(const auto& g:HdrGroups)group(g,byKey,used);
         ImGui::Spacing();
         ImGui::PushTextWrapPos(0);
         ImGui::TextColored(Color::Muted,"HDR needs DXVK 2 or 3, the separate render thread, windowed mode and HDR output from the system or Wine. Restart after switching HDR on or off; its sliders apply live.");
         ImGui::PopTextWrapPos();
         std::vector<const Field*> rest;for(auto& k:byKey)if(!used[k.first])rest.push_back(k.second);
-        loose("rest",rest);
+        titled("Other",rest);
+    }
+    void drawPage(){
+        switch(page){
+        case Page::Overview:overviewPage();break;
+        case Page::Celestial:celestialTab();break;
+        case Page::ShadowRange:shadowRangeTab();break;
+        case Page::Renderer:rendererPage();break;
+        default:if(const Section* s=qualitySection(Pages[unsigned(page)].quality))qualityPage(*s,page==Page::Performance);break;
+        }
+    }
+    // Left column: the pages; amber dot = unsaved edits there, R = a restart-only change pending there.
+    void sidebar(){
+        const float h=ImGui::GetFrameHeight(),r=std::max(2.5f,h*0.14f);
+        for(const auto& info:Pages){
+            bool edited=false,restart=false;
+            for(const Field* f:pageFields(info.page)){edited|=draft.edited(*f);restart|=draft.restartPending(*f);}
+            if(ImGui::Selectable(info.title,page==info.page,0,ImVec2(0,h)))page=info.page;
+            const ImVec2 a=ImGui::GetItemRectMin(),b=ImGui::GetItemRectMax();
+            ImDrawList* dl=ImGui::GetWindowDrawList();float x=b.x-ImGui::GetStyle().ItemInnerSpacing.x-r;
+            if(edited){dl->AddCircleFilled(ImVec2(x,(a.y+b.y)*0.5f),r,u32(Color::Edited));x-=2*r+ImGui::GetStyle().ItemInnerSpacing.x;}
+            if(restart){const ImVec2 t=ImGui::CalcTextSize("R");dl->AddText(ImVec2(x-t.x*0.5f-r,(a.y+b.y-t.y)*0.5f),u32(Color::Restart),"R");}
+        }
     }
     std::vector<std::string> sections(unsigned file)const{
         std::vector<std::string> out;if(!snapshot)return out;
@@ -530,30 +606,28 @@ struct SettingsPanel::State {
         ImGui::BeginDisabled(locked());
         if(ImGui::Button("Defaults..."))confirm=Confirm::Factory;
         ImGui::EndDisabled();
-        if(ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip|ImGuiHoveredFlags_AllowWhenDisabled))ImGui::SetTooltip("%s",factoryScope());
+        if(ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip|ImGuiHoveredFlags_AllowWhenDisabled))ImGui::SetTooltip("%s",factoryScope().c_str());
         ImGui::SameLine();legend();
     }
-    const char* factoryScope()const{
-        switch(tab){
-        case Tab::Quality:return "Restore the factory quality settings (the Quality preset, no overrides).";
-        case Tab::Renderer:return "Restore the factory renderer settings (backend and HDR).";
-        case Tab::Celestial:return "Restore the factory sun and moon values of the selected region.";
-        default:return "Restore the factory shadow reach of every region.";
-        }
+    std::string factoryScope()const{
+        if(page==Page::Celestial)return "Restore the factory sun and moon values of the selected region ("+regionLabel(region)+").";
+        if(page==Page::ShadowRange)return "Restore the factory shadow reach of every region.";
+        return std::string("Restore the factory values of every setting on the ")+Pages[unsigned(page)].title+" page.";
     }
     void factoryDefaults(){
-        std::vector<const Field*> targets;
-        if(tab==Tab::Quality)targets=fields(D::Quality);
-        else if(tab==Tab::Renderer)targets=fields(D::Renderer);
-        else if(tab==Tab::Celestial)targets=fields(D::Celestial,&region);
-        else targets=fields(D::ShadowRange);
+        const auto targets=page==Page::Celestial?fields(D::Celestial,&region):pageFields(page);
         for(const Field* f:targets)if(f->available){draft.factory(*f);live.erase(f->id());edited(*f);}
     }
-    void presetValues(){
+    // The old menu's preset choice: quality overrides back to inherit, optionally Sun & moon and Shadow range to factory.
+    void choosePreset(){
+        const Field* preset=draft.quality("Preset");if(!preset)return;
         for(const Field* f:fields(D::Quality))if(f->key!="Preset"&&D::canInherit(*f)){draft.inherit(*f);live.erase(f->id());edited(*f);}
+        if(presetCelestial)for(const Field* f:fields(D::Celestial))if(f->available){draft.factory(*f);live.erase(f->id());edited(*f);}
+        if(presetRange)for(const Field* f:fields(D::ShadowRange))if(f->available){draft.factory(*f);live.erase(f->id());edited(*f);}
+        set(*preset,presetChoice);
     }
     void modals(){
-        if(confirm==Confirm::Preset)ImGui::OpenPopup("Use preset values?");
+        if(confirm==Confirm::Preset)ImGui::OpenPopup("Choose preset?");
         if(confirm==Confirm::Factory)ImGui::OpenPopup("Restore defaults?");
         confirm=Confirm::None;
         const ImVec2 centre=ImGui::GetMainViewport()->GetCenter();
@@ -568,8 +642,22 @@ struct SettingsPanel::State {
             if(ImGui::Button("Cancel")||ImGui::IsKeyPressed(ImGuiKey_Escape))ImGui::CloseCurrentPopup();
             ImGui::EndPopup();
         };
-        ask("Use preset values?","Every quality setting you have changed returns to the selected preset's value. Renderer, sun and moon and shadow range settings are not affected.","Use preset values",[&]{presetValues();});
-        ask("Restore defaults?",factoryScope(),"Restore",[&]{factoryDefaults();});
+        ImGui::SetNextWindowPos(centre,ImGuiCond_Appearing,ImVec2(0.5f,0.5f));
+        if(ImGui::BeginPopupModal("Choose preset?",nullptr,ImGuiWindowFlags_AlwaysAutoResize|ImGuiWindowFlags_NoSavedSettings)){
+            ImGui::PushTextWrapPos(ImGui::GetFontSize()*26);
+            ImGui::TextWrapped("Preset: %s. Every quality setting you have changed returns to the preset's value.",presetChoice.c_str());
+            ImGui::PopTextWrapPos();
+            ImGui::Checkbox("Also reset Sun & moon to factory values",&presetCelestial);
+            ImGui::Checkbox("Also reset Shadow range to factory values",&presetRange);
+            ImGui::TextColored(Color::Muted,"Renderer & HDR settings are kept. Nothing is written until you press Save.");
+            ImGui::Spacing();
+            if(ImGui::Button("Choose preset")){choosePreset();ImGui::CloseCurrentPopup();}
+            ImGui::SameLine();
+            if(ImGui::Button("Cancel")||ImGui::IsKeyPressed(ImGuiKey_Escape))ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+        }
+        const std::string scope=factoryScope();
+        ask("Restore defaults?",scope.c_str(),"Restore",[&]{factoryDefaults();});
     }
 };
 
@@ -595,25 +683,19 @@ bool SettingsPanel::draw(float scale){
     st.poll();
     bool open=true;
     ImGui::SetNextWindowPos(ImVec2(48*scale,96*scale),ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(560*scale,680*scale),ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSizeConstraints(ImVec2(420*scale,320*scale),ImVec2(FLT_MAX,FLT_MAX));
+    ImGui::SetNextWindowSize(ImVec2(760*scale,680*scale),ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(560*scale,360*scale),ImVec2(FLT_MAX,FLT_MAX));
     if(!ImGui::Begin("Northlight settings###NorthlightSettings",&open,ImGuiWindowFlags_NoCollapse)){ImGui::End();return open;}
     const auto& style=ImGui::GetStyle();
     const float footer=ImGui::GetTextLineHeightWithSpacing()+ImGui::GetFrameHeightWithSpacing()+style.ItemSpacing.y*2+style.SeparatorTextBorderSize+2;
-    if(ImGui::BeginTabBar("tabs")){
-        const std::pair<const char*,State::Tab> tabs[]={{"Quality",State::Tab::Quality},{"Renderer",State::Tab::Renderer},{"Sun & moon",State::Tab::Celestial},{"Shadow range",State::Tab::ShadowRange}};
-        for(const auto& t:tabs)if(ImGui::BeginTabItem(t.first)){st.tab=t.second;ImGui::EndTabItem();}
-        ImGui::EndTabBar();
-    }
-    ImGui::PushID(int(st.tab));
-    if(ImGui::BeginChild("body",ImVec2(0,-footer))){
+    // Sidebar (fixed width, scaled) and the selected page; the footer below stays put on every page.
+    if(ImGui::BeginChild("nav",ImVec2(180*scale,-footer),ImGuiChildFlags_Borders))st.sidebar();
+    ImGui::EndChild();
+    ImGui::SameLine();
+    ImGui::PushID(int(st.page));
+    if(ImGui::BeginChild("page",ImVec2(0,-footer))){
         if(!st.snapshot)ImGui::TextDisabled(st.service?"Loading settings...":"The settings service is not running.");
-        else switch(st.tab){
-        case State::Tab::Quality:st.qualityTab();break;
-        case State::Tab::Renderer:st.rendererTab();break;
-        case State::Tab::Celestial:st.celestialTab();break;
-        case State::Tab::ShadowRange:st.shadowRangeTab();break;
-        }
+        else st.drawPage();
     }
     ImGui::EndChild();
     ImGui::PopID();

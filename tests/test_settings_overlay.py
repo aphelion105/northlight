@@ -19,6 +19,7 @@ import tempfile
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
+HERE = Path(__file__).resolve().parent
 
 problems = []
 def check(ok, what):
@@ -106,6 +107,20 @@ check((fp.REPO / 'licenses/imgui.txt').is_file() and 'Omar Cornut' in (fp.REPO /
 check("tree.add('LICENSES/Dear-ImGui.txt', fp.REPO / 'licenses/imgui.txt')" in (fp.RENDERER / 'build_packages.py').read_text(), 'build_packages.py ships the ImGui licence')
 check('97428e8ac99e339ce05eee531cf55b77b29ea709' in (fp.SRC / 'imgui' / 'README.md').read_text(), 'src/imgui/README.md records the upstream commit')
 
+# Sidebar pages in the old menu's order (renaming or reordering one is a deliberate UI change: update this pin).
+panel = uncomment(fp.src('settings_panel.cpp').read_text())
+titles = re.findall(r'\{Page::\w+,"([^"]+)"', panel)
+check(titles == ['Overview', 'Lighting & AO', 'Materials & parallax', 'Shadows', 'Atmosphere & weather', 'Sun & moon', 'Shadow range',
+                 'Spells & names', 'Renderer & HDR', 'Performance', 'Diagnostics'], f'settings_panel.cpp: sidebar pages {titles}')
+
+# The embedded font: generated header present and loaded first; its licence ships.
+font_header = fp.GENERATED / 'overlay_font_roboto.h'
+check(font_header.is_file() and 'RobotoMediumCompressed' in font_header.read_text()[:2000], 'src/generated/overlay_font_roboto.h (scripts/generate_overlay_font.py)')
+check(overlay.index('AddFontFromMemoryCompressedTTF(NorthlightOverlayFont::RobotoMediumCompressed') < overlay.index('loadSystemFont(L"segoeui.ttf"') < overlay.index('AddFontDefault('),
+      'rescale(): embedded Roboto first, system fonts as fallback, ImGui default last')
+check((fp.REPO / 'licenses/roboto.txt').is_file() and 'Apache License' in (fp.REPO / 'licenses/roboto.txt').read_text(), 'licenses/roboto.txt')
+check("tree.add('LICENSES/Roboto.txt', fp.REPO / 'licenses/roboto.txt')" in (fp.RENDERER / 'build_packages.py').read_text(), 'build_packages.py ships the Roboto licence')
+
 with tempfile.TemporaryDirectory(prefix='northlight-overlay-') as tmp:
     exe = Path(tmp) / 'overlay.exe'
     built = subprocess.run(['clang++', '-std=c++17', '-O1', '-Wall', '-Wextra', '-Werror', *fp.test_include_flags(),
@@ -113,6 +128,14 @@ with tempfile.TemporaryDirectory(prefix='northlight-overlay-') as tmp:
     check(built.returncode == 0, 'test_settings_overlay.cpp did not build')
     if built.returncode == 0:
         check(subprocess.run([str(exe)]).returncode == 0, 'test_settings_overlay.cpp failed')
+    # ImGui built natively with the overlay's config decodes and rasterizes the embedded font.
+    font_exe = Path(tmp) / 'overlay_font.exe'
+    built = subprocess.run(['clang++', '-std=c++17', '-O1', '-w', *fp.test_include_flags(), '-DIMGUI_USER_CONFIG="northlight_imconfig.h"',
+                            str(HERE / 'test_settings_overlay_font.cpp'), *[str(fp.src(n)) for n in ('imgui.cpp', 'imgui_draw.cpp', 'imgui_tables.cpp', 'imgui_widgets.cpp')],
+                            '-o', str(font_exe)])
+    check(built.returncode == 0, 'test_settings_overlay_font.cpp did not build')
+    if built.returncode == 0:
+        check(subprocess.run([str(font_exe)]).returncode == 0, 'test_settings_overlay_font.cpp: the embedded font did not load')
 
 if problems:
     print('\n'.join('FAIL ' + p for p in problems))
