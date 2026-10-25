@@ -299,7 +299,7 @@ r=fp.src('renderer.cpp').read_text();w=fp.src('world_renderer.h').read_text();in
 reset_start=w.index('auto resetPreparation=[&]{')
 preparation_reset=w[reset_start:w.index('};',reset_start)]
 finish=r[r.index('    void finishFrameImpl() {'):r.index('    HRESULT STDMETHODCALLTYPE Present(const RECT* src,const RECT* dst,HWND wnd')]
-trim=r[r.index('    void trimMemory(const NorthlightMemoryDiagnostics::Sample& trigger,'):r.index('    void finishFrame() {')]
+trim=r[r.index('    void trimMemory(const NorthlightMemoryDiagnostics::Sample& trigger,'):r.index('    void finishFrame(bool implicitChain=true) {')]
 boundary=finish[finish.index('        if(memoryWorld>=0||memoryCaps>=0||memoryTrim){'):finish.index('        if(NorthlightRenderThreadProbe::profiling()',finish.index('        if(memoryWorld>=0||memoryCaps>=0||memoryTrim){'))]
 ordered_pressure=['if(memoryTrim&&world){worldTrim=world->trimMemory();QueryPerformanceCounter(&worldTrimEnd);}',
                   'if((memoryWorld>=0||memoryCaps>=0)&&world)world->setMemoryPressure(memoryGuard.pressure(),memoryGuard.capsHalved());',

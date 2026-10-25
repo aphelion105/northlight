@@ -14,6 +14,7 @@ p.add_argument('--vertex-alpha-zero',action='store_true')
 p.add_argument('--wall-diffuse',action='store_true',help='Exercise an opaque draw using the diffuse-alpha WMO pixel program')
 p.add_argument('--alpha-test',action='store_true',help='Preserve native alpha coverage and exercise guarded texture-dependent captures')
 p.add_argument('--texture-guard',action='store_true',help='Simulate the serialized production texture-write contract')
+p.add_argument('--pressure',action='store_true',help='Exercise bounded capture batches with the production low-memory cache limits')
 p.add_argument('--lazy-registration',action='store_true',help='Register the original VS with master materials Off, then enable before its first material draw')
 p.add_argument('--baseline-ref',help='Compare the coverage defect / far admission with a previous commit')
 p.add_argument('--occlusion-off',action='store_true',help='Match a normal-only capture without the auxiliary MRT')
@@ -55,6 +56,7 @@ def run(exe,source,label,on,samples=2,**flags):
     if a.vertex_alpha_zero:env['NORTHLIGHT_TEST_VERTEX_ALPHA_ZERO']='1'
     if a.alpha_test:env['NORTHLIGHT_TEST_MATERIAL_ALPHA_TEST']='1'
     if a.texture_guard:env['NORTHLIGHT_TEST_TEXTURE_GUARD']='1'
+    if a.pressure and not flags.get('DEFERRED_PRESSURE'):env['NORTHLIGHT_TEST_PRESSURE']='1'
     if a.lazy_registration:env['NORTHLIGHT_TEST_LAZY_VERTEX']='1'
     if flags.get('TEXTURE_GUARD_OFF'):env.pop('NORTHLIGHT_TEST_TEXTURE_GUARD',None)
     if on:env['NORTHLIGHT_TEST_DEFERRED_CAPTURE']='1'
@@ -165,6 +167,6 @@ if a.benchmark or a.reuse_exe:
     if old_bench:result['baseline_deferred']={key:statistics.median(r[key] for r in timings if r['deferred']==2) for key in ['gpu_ms','cpu_ms']}
     result['gpu_reduction_percent']=100*(1-result['deferred']['gpu_ms']/result['immediate']['gpu_ms'])
 else:result=dict(backend=backend,checks=records)
-result.update(family=a.family,vertex_alpha_zero=a.vertex_alpha_zero,wall_diffuse=a.wall_diffuse,baseline_ref=a.baseline_ref,alpha_test=a.alpha_test,texture_guard=a.texture_guard,lazy_registration=a.lazy_registration,mesh_grid=a.mesh_grid,capture_draws=a.capture_draws,vary_pose=a.vary_pose,benchmark_resolution=a.benchmark_resolution)
+result.update(family=a.family,vertex_alpha_zero=a.vertex_alpha_zero,wall_diffuse=a.wall_diffuse,baseline_ref=a.baseline_ref,alpha_test=a.alpha_test,texture_guard=a.texture_guard,pressure=a.pressure,lazy_registration=a.lazy_registration,mesh_grid=a.mesh_grid,capture_draws=a.capture_draws,vary_pose=a.vary_pose,benchmark_resolution=a.benchmark_resolution)
 (out/'validation.json').write_text(json.dumps(result,indent=2)+'\n',encoding='utf-8')
 print('MATERIAL_DEFERRED_PASS',json.dumps(result),flush=True)

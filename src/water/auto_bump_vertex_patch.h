@@ -21,8 +21,8 @@ inline bool terrainNormal(const std::uint32_t* code,size_t count,std::vector<std
     std::vector<Word> out=patched;if(out.empty()||out.back()!=65535)return false;
     if(a.major==3){const Word decl[]={0x0200001f,0x80050005u,dst(6,output,7)};out.insert(out.begin()+a.declEnd,decl,decl+3);}
     out.pop_back();
-    const Word suffix[]={0x03000005,dst(0,a.spare,7),src(1,normal,0),src(2,0),
-        0x04000004,dst(0,a.spare,7),src(1,normal,0x55),src(2,1),src(0,a.spare),
+    const Word suffix[]={0x03000005,dst(0,a.spare,7),src(1,normal,0x55),src(2,1),
+        0x04000004,dst(0,a.spare,7),src(1,normal,0),src(2,0),src(0,a.spare),
         0x04000004,dst(6,output,7),src(1,normal,0xaa),src(2,2),src(0,a.spare),65535};
     out.insert(out.end(),std::begin(suffix),std::end(suffix));patched.swap(out);return true;
 }

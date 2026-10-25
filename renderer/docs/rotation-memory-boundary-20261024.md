@@ -1,18 +1,33 @@
 # Rotation stalls: coalescing required world-cache retirement
 
 Private follow-up to [angle corrections](rotation-angle-corrections-20261024.md).
-The game log is unchanged at October 24, 03:28:59, SHA-256
-`b71ba562267c13188f24219df83bd71bdf7273e9bd914210833227343d886443`.
-It measures the earlier installed renderer, not the proposed boundary change.
+The closed user session ended October 24 at 11:41:11. Its preserved log is
+11,757,128 bytes, SHA-256
+`648056d0c12fd7dc7aa28bf844518c87c0fffa7c0b5b204f95a8b850c5c22bb5`.
+It measures the installed a6d6e9f source build, before this boundary correction.
 The game and optimizer are not launched or modified. Nothing is published.
 
 ## What still costs time
 
-The largest sampled frame includes a 249.4252 ms interval with no producer
-commands available to replay. Partial Lua/client samples corroborate work on
-the game thread; they do not identify a script or attribute the entire gap.
-That separate problem requires the newer producer CPU telemetry and genuine
-input/stack evidence. Cache enlargement is not a demonstrated cure.
+The full closed-session log contains 518 idle-gap records and 618 retained slow
+frames. Sixty-three same-frame gaps join focused, applied slow-frame records.
+Frame 23355 has a 212.1473 ms empty-queue gap and 203.125 ms producer-thread CPU;
+frame 21795 has a 210.8705 ms gap and 218.75 ms CPU. Their effects stages take
+1.065 and 0.300 ms, with GetData API time only 0.018 and 0.009 ms respectively.
+The CPU counter has coarse accounting granularity and can exceed wall time;
+these values do not identify a particular game routine or an exact percentage.
+They show substantial producer CPU while the replay queue has no commands.
+There is no exact rotation-event join or current native-only comparison, so
+these observations are not proof of a particular input handler or optimizer defect.
+
+Frame 9394 separately attributes 42.291 ms to memory relief: world-cap work
+8.927 ms, material-cap work 20.218 ms and late trim 13.146 ms. The world trim
+includes 7.377 ms terrain and 5.428 ms snapshot retirement. Removing redundant
+world eviction is worthwhile, but cannot explain away the producer CPU gaps.
+Cache enlargement is not a demonstrated cure.
+
+The following table retains earlier-run stage observations for context; they
+are not new measurements of this correction.
 
 There is also directly attributed Northlight work worth removing:
 
@@ -81,8 +96,20 @@ scene's static/rotation/native-only comparison and stable 120 FPS remain open.
 
 ## Implementation acceptance
 
-Production changes and focused measurements are pending the source freeze.
-Only affected boundary/cache checks will run. No full test suite is planned
-for this slice. Adoption requires exact final limits/ownership/output and
-meaningful old-order rejection, with complete component timing controls
-reported separately from game FPS.
+The coalesced boundary is implemented and retained after the upstream merge.
+Focused memory-guard, terrain-pressure-policy and world-pressure-transition
+checks pass, including O0/O2, sanitizer coverage, ownership/limits checks and
+an exact old-order negative control. The merged-source repetitions pass too.
+
+Three alternating component pairs, with five populated boundaries per sample,
+measured median old/new 0.378240/0.219899 ms (about 0.158 ms or 42% of that
+component). Fitting-cache, empty-cache, cap-only and recovery medians were
+0.008133/0.009357, 0.003795/0.004177, 0.014002/0.013813 and
+0.008586/0.009023 ms respectively. These are authored cache workloads, not
+whole-frame timings and not a promise to recover the runtime's 8.927 ms.
+
+Evidence: `world-pressure-final-3/validation.json`, the merged CPU check reports,
+and `runtime-user-a6d6e9f-final/producer-summary.json` under the private
+`rotation-scene-followup-20261024` diagnostic root. No full suite or game
+was run. Stable rotation FPS and attribution of the remaining producer CPU
+stalls remain open.

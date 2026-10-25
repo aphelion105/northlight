@@ -37,8 +37,9 @@
           def c2, 0.150000006, -4, 4, 0.5
           def c3, 9.99999975e-006, -100000, 255, 0.00787401572
           def c4, 0.0399999991, -0.0799999982, 12.5, -6
-          def c5, 16, -0.0120000001, 1.5, -9.99999997e-007
-          def c6, 1, -1, -9.99999996e-013, 1000000
+          def c5, 16, -0.0120000001, 1.5, -9.99999975e-005
+          def c6, 1, -1, -1e-030, 9.99999987e+014
+          def c7, 10000, -9.99999997e-007, 500000, 0
           defi i0, 32, 0, 0, 0
           defi i1, 16, 0, 0, 0
           dcl_texcoord v0.xy
@@ -413,8 +414,8 @@
  425:             mul r2.z, r0.w, r2.y
  426:             mul r5.zw, r1.xyyz, r2.z
  427:             add r5.zw, r5, r5.xyxy
- 428:             texldd r6, r5.zwzw, s3, r4, r4.zwzw
- 430:             add r2.w, -r10.z, r6.z
+ 428:             texldd r7, r5.zwzw, s3, r4, r4.zwzw
+ 430:             add r2.w, -r10.z, r7.z
  431:             mul r2.z, r1.x, r2.z
  432:             add r2.z, -r2.z, r2.w
  433:             add r2.z, r2.z, c5.y
@@ -438,33 +439,34 @@
  452:     else
  453:       mov r0.xyz, c6.x
  454:     endif
- 455:     texldd r1, r5, s1, r4, r4.zwzw
- 457:     texldd r2, r9, s0, r3, r3.zwzw
- 459:     add r0.w, -r1.w, r2.w
- 460:     mul r0.w, r0.w, v3.w
- 461:     add r0.w, r0.w, r1.w
- 462:     mad r0.w, r0.w, v2.w, c20.w
- 463:     mov_sat r1.x, v3.w
- 464:     add r1.yzw, r11.xxyz, -r13.xxyz
- 465:     mul r1.yzw, r1, r1.x
- 466:     add r1.yzw, r1, r13.xxyz
- 467:     nrm r2.xyz, r1.yzww
- 470:     add r1.yzw, -r0.xxyz, r12.xxyz
- 471:     mul r1.xyz, r1.yzww, r1.x
- 472:     add oC1.xyz, r0, r1
- 473:     add r1, r0.w, -c20.z
- 474:     texkill r1
- 475:     dp3 r0.x, r2_abs, c6.x
- 476:     add r0.y, r0.x, c5.w
- 477:     rcp r0.x, r0.x
- 478:     cmp r0.x, r0.y, r0.x, c6.w
- 479:     mul r0.xyz, r0.x, r2
- 480:     add r1.xy, -r0_abs.yxzw, c6.x
- 481:     cmp r1.zw, r0.xyxy, c6.x, c6.y
- 482:     mul r1.xy, r1.zwzw, r1
- 483:     cmp r0.xy, r0.z, r0, r1
- 484:     mul r0.xy, r0, c2.w
- 485:     add oC0.xy, r0, c2.w
+ 455:     texldd r1, r9, s0, r3, r3.zwzw
+ 457:     texldd r2, r5, s1, r4, r4.zwzw
+ 459:     add r0.w, r1.w, -r2.w
+ 460:     mad r0.w, r0.w, v3.w, r2.w
+ 461:     mad r0.w, r0.w, v2.w, c20.w
+ 462:     add r1.xyz, r11, -r13
+ 463:     mov_sat r1.w, v3.w
+ 464:     mad r1.xyz, r1, r1.w, r13
+ 465:     add r2.xyz, -r0, r12
+ 466:     mad oC1.xyz, r2, r1.w, r0
+ 467:     add r2, r0.w, -c20.z
+ 468:     texkill r2
+ 469:     add r0.xyz, -r6, r1
+ 470:     dp2add r1.w, r6, r0, c0.y
+ 472:     add r2.x, r6.z, c6.x
+ 473:     add r2.y, r2.x, c5.w
+ 474:     rcp r2.x, r2.x
+ 475:     cmp r2.x, r2.y, r2.x, c7.x
+ 476:     mad r0.z, r1.w, r2.x, r0.z
+ 477:     mad r0.xy, -r6, r0.z, r0
+ 478:     dp3 r1.x, r6, r1
+ 479:     max r0.z, r1.x, c0.y
+ 480:     dp3 r0.z, r0_abs, c6.x
+ 481:     add r1.x, r0.z, c7.y
+ 482:     rcp r0.z, r0.z
+ 483:     mul r0.z, r0.z, c2.w
+ 484:     cmp r0.z, r1.x, r0.z, c7.z
+ 485:     mad oC0.xy, r0, r0.z, c2.w
  486:     mov_sat r0.w, r0.w
  487:     add r0.x, c2.w, v5.x
  488:     frc r0.y, r0.x
