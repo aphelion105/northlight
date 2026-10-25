@@ -34,7 +34,7 @@ assert cpu.index('localScissorView=NorthlightLocalLightScissor::view(')<cpu.inde
 assert 'selectContinuous,debug==0?&localScissorView:nullptr,' in cpu  # debug views keep the plain order
 assert cpu.index('NorthlightLocalLightBatches::arrange(localLights,localScissorView)')<cpu.index('a.directRects[first/NorthlightLocalLightSelection::DirectBatchSize]=')
 assert cpu.index('NorthlightLocalLightBatches::arrange(localLights,localScissorView)')<cpu.index('localLights.fog[i][0]=sigmaAt(')
-loop=cpu[cpu.index('profileSplit(profile,lightSurface); /* sample frames'):cpu.index('if(profile)profile->mark("LocalLights");')]
+loop=cpu[cpu.index('profileSplit(profile,lightSurface); /* terminate the preceding render pass'):cpu.index('if(profile)profile->mark("LocalLights");')]
 assert 'NorthlightLocalLightBatches::wide(a,b)' in loop and 'localLights.batch<2*N>(firstLight)' in loop
 assert 'd->SetPixelShaderConstantF(84,batch.position[0].data(),2*N);d->SetPixelShaderConstantF(100,batch.color[0].data(),2*N);' in loop
 assert loop.count('profileSplit(profile,lightSurface);')==2

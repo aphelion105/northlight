@@ -1,0 +1,18 @@
+Private context patch against the already-applied initial caller patch.
+Apply the first hunk in WorldLighting, LocalDirect and LocalDirect16.
+Apply the second hunk in MaterialComposite and MaterialAudit.
+
+--- shaders/world_effects.hlsl
++++ shaders/world_effects.hlsl
+@@
+-    float3 materialView=viewPosition(uv,d);
+-    float3 materialReference=autoBumpReference(materialView.x*InverseView[0].xyz+materialView.y*InverseView[1].xyz+materialView.z*InverseView[2].xyz);
++    float3 materialReference=autoBumpReference(Depth,uv,viewDistance(d),ImageClip,Projection,DepthParams.x,InverseView[0].xyz,InverseView[1].xyz,InverseView[2].xyz);
+@@
+-    float3 materialReference=autoBumpReference(relative);
++    float3 materialReference=autoBumpReference(Depth,q,z,ImageClip,Projection,DepthParams.x,InverseView[0].xyz,InverseView[1].xyz,InverseView[2].xyz);
+--- shaders/local_light_effects.hlsl
++++ shaders/local_light_effects.hlsl
+@@
+-    float3 materialReference=autoBumpReference(v.x*LocalInverseView[0].xyz+v.y*LocalInverseView[1].xyz+v.z*LocalInverseView[2].xyz);
++    float3 materialReference=autoBumpReference(LocalDepth,uv,localDistance(depth),LocalImage,LocalProjection,LocalDepthInfo.x,LocalInverseView[0].xyz,LocalInverseView[1].xyz,LocalInverseView[2].xyz);

@@ -44,9 +44,9 @@ test_celestial_terrain.py
 test_celestial_veil.py
 test_client_archive_order.py
 test_client_archives.py
+test_client_code_observation.py
 test_client_config.py
 test_client_identity.py
-test_client_code_observation.py
 test_client_image.py
 test_client_latency_diagnostics.py
 test_colour_tent_2d.py
@@ -122,6 +122,7 @@ test_local_ini.py
 test_local_light_batches.py
 test_local_light_selection.py
 test_local_light_trace.py
+test_local_overlap_gpu.py
 test_local_source_shadows.py
 test_log_format_literals.py
 test_log_rotation.py
@@ -234,8 +235,8 @@ test_shared_source_lifecycle.py
 test_shared_static_preparation.py
 test_snapshot_allocation.py
 test_snapshot_archive.py
-test_snapshot_client_range.py
 test_snapshot_capture_sink.py
+test_snapshot_client_range.py
 test_snapshot_lookup_identity.py
 test_snapshot_prediction.py
 test_solar_volume.py
@@ -273,6 +274,7 @@ test_terrain_content_cache.py
 test_terrain_decoded_sharing.py
 test_terrain_indices.py
 test_terrain_metadata.py
+test_terrain_neutral_frame_gpu.py
 test_terrain_pressure_policy.py
 test_terrain_reach_fallback.py
 test_terrain_reach_fallback_wiring.py
@@ -320,6 +322,7 @@ test_world_local_lights.py
 test_world_mesh_pages.py
 test_world_mesh_pages_real.py
 test_world_mesh_plan.py
+test_world_pressure_transition.py
 test_world_probe_coverage.py
 test_zone_tuner.py
 test_zone_tuning.py

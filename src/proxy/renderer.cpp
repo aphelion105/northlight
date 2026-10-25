@@ -2517,19 +2517,19 @@ public:
     }
     // Frame boundary only (after clearFrame()): no draw of the finished frame
     // still references a trimmed cache. Warnings are logged with Diagnostics=0.
-    void trimMemory(const NorthlightMemoryDiagnostics::Sample& trigger){
+    void trimMemory(const NorthlightMemoryDiagnostics::Sample& trigger,const WorldRenderer::MemoryTrim& worldTrim,double worldTrimMs){
         LARGE_INTEGER start={},surfaceEnd={},materialEnd={},stateEnd={},waterEnd={},end={};QueryPerformanceCounter(&start);
         if(surface)surface->reset();QueryPerformanceCounter(&surfaceEnd);
         if(autoBump)autoBump->trimMemory();QueryPerformanceCounter(&materialEnd);
         stateBlocks.clear();QueryPerformanceCounter(&stateEnd);
         if(water)water->releaseStateCache();QueryPerformanceCounter(&waterEnd);
-        WorldRenderer::MemoryTrim t;if(world)t=world->trimMemory();
+        const auto& t=worldTrim;
         QueryPerformanceCounter(&end);const DWORD now=GetTickCount();memoryGuard.trimCompleted(now);
         const auto elapsed=[&](LARGE_INTEGER a,LARGE_INTEGER b){return cpuFrequency.QuadPart>0?1000.0*double(b.QuadPart-a.QuadPart)/double(cpuFrequency.QuadPart):0.0;};
         logf("MEMORY guard trim frame=%u exactWalk=1 beforeAvailableVirtualMiB=%llu beforeLargestFreeMiB=%llu regions=%llu freedEstimateMiB=%.1f terrainMiB=%.1f snapshotMiB=%.1f indexMiB=%.1f poolMiB=%.1f gpuCacheMiB=%.1f workerLocalGeometry=1 ms=%.3f surfaceMs=%.3f materialMs=%.3f stateBlocksMs=%.3f waterStateMs=%.3f worldMs=%.3f trims=%u tick=%lu worldQuiesceMs=%.3f terrainClearMs=%.3f snapshotClearMs=%.3f poolClearMs=%.3f replayGpuClearMs=%.3f meshPoolsMs=%.3f rigidClearMs=%.3f",frame,
             (unsigned long long)(trigger.availableVirtual>>20),(unsigned long long)(trigger.largestFree>>20),(unsigned long long)trigger.regions,
             double(t.total())/1048576,double(t.terrain)/1048576,double(t.snapshots)/1048576,double(t.indices)/1048576,double(t.pool)/1048576,double(t.gpu)/1048576,
-            elapsed(start,end),elapsed(start,surfaceEnd),elapsed(surfaceEnd,materialEnd),elapsed(materialEnd,stateEnd),elapsed(stateEnd,waterEnd),elapsed(waterEnd,end),memoryGuard.trims(),(unsigned long)now,
+            worldTrimMs+elapsed(start,end),elapsed(start,surfaceEnd),elapsed(surfaceEnd,materialEnd),elapsed(materialEnd,stateEnd),elapsed(stateEnd,waterEnd),worldTrimMs,memoryGuard.trims(),(unsigned long)now,
             t.quiesceMs,t.terrainMs,t.snapshotsMs,t.poolMs,t.replayGpuMs,t.meshPoolsMs,t.rigidMs);
         try{if(memoryDiagnostics)memoryDiagnostics->request();}catch(...){} /* after-trim sample */
     }
@@ -2835,7 +2835,13 @@ public:
                 logf("AO live method=%s enabled=%u preview=%u device=%llu rendererFrame=%u monotonicNs=%llu",NorthlightQuality::aoName(aoMethod),unsigned(contactAO),unsigned(preview>=0),(unsigned long long)diagnosticId,frame,(unsigned long long)NorthlightStream::nowNs());}
         }
         if(memoryWorld>=0||memoryCaps>=0||memoryTrim){
-            LARGE_INTEGER workStart={},worldEnd={},materialEnd={},replayEnd={},streamEnd={},workEnd={};QueryPerformanceCounter(&workStart);
+            LARGE_INTEGER workStart={},worldTrimEnd={},worldEnd={},materialEnd={},replayEnd={},streamEnd={},workEnd={};
+            const double ms=cpuFrequency.QuadPart>0?1000.0/double(cpuFrequency.QuadPart):0.0;
+            QueryPerformanceCounter(&workStart);worldTrimEnd=workStart;
+            // A mandatory full clear makes cap-driven LRU eviction redundant.
+            // Quiesce and release world caches once, before lowering their caps.
+            WorldRenderer::MemoryTrim worldTrim;
+            if(memoryTrim&&world){worldTrim=world->trimMemory();QueryPerformanceCounter(&worldTrimEnd);}
             if((memoryWorld>=0||memoryCaps>=0)&&world)world->setMemoryPressure(memoryGuard.pressure(),memoryGuard.capsHalved());
             QueryPerformanceCounter(&worldEnd);
             if(memoryWorld>=0&&autoBump)autoBump->setMemoryPressure(memoryWorld==1);
@@ -2844,13 +2850,12 @@ public:
             QueryPerformanceCounter(&replayEnd);
             if(memoryCaps>=0)NorthlightStream::memoryPressure.store(memoryCaps==1,std::memory_order_relaxed); /* 0.3.192 (CS): the stream's game side halves its queue budget at its next Present */
             QueryPerformanceCounter(&streamEnd);
-            if(memoryTrim)trimMemory(memorySample);
+            if(memoryTrim)trimMemory(memorySample,worldTrim,double(worldTrimEnd.QuadPart-workStart.QuadPart)*ms);
             QueryPerformanceCounter(&workEnd);
-            const double ms=cpuFrequency.QuadPart>0?1000.0/double(cpuFrequency.QuadPart):0.0;
-            // Cap reductions can destroy populated caches before trimMemory;
-            // report those intervals separately from the existing trim split.
-            logf("MEMORY guard work frame=%u totalMs=%.3f episodeChange=%u capsChange=%u trimRequested=%u tick=%lu worldCapsMs=%.3f materialCapsMs=%.3f replayCapsMs=%.3f streamPolicyMs=%.3f trimMs=%.3f",frame,double(workEnd.QuadPart-workStart.QuadPart)*ms,unsigned(memoryWorld>=0),unsigned(memoryCaps>=0),unsigned(memoryTrim),(unsigned long)GetTickCount(),
-                double(worldEnd.QuadPart-workStart.QuadPart)*ms,double(materialEnd.QuadPart-worldEnd.QuadPart)*ms,double(replayEnd.QuadPart-materialEnd.QuadPart)*ms,double(streamEnd.QuadPart-replayEnd.QuadPart)*ms,double(workEnd.QuadPart-streamEnd.QuadPart)*ms);
+            // Exclusive phases partition this boundary; the trim line also
+            // includes worldPreclearMs in its complete trim/world totals.
+            logf("MEMORY guard work frame=%u totalMs=%.3f episodeChange=%u capsChange=%u trimRequested=%u tick=%lu worldPreclearMs=%.3f worldCapsMs=%.3f materialCapsMs=%.3f replayCapsMs=%.3f streamPolicyMs=%.3f trimMs=%.3f",frame,double(workEnd.QuadPart-workStart.QuadPart)*ms,unsigned(memoryWorld>=0),unsigned(memoryCaps>=0),unsigned(memoryTrim),(unsigned long)GetTickCount(),
+                double(worldTrimEnd.QuadPart-workStart.QuadPart)*ms,double(worldEnd.QuadPart-worldTrimEnd.QuadPart)*ms,double(materialEnd.QuadPart-worldEnd.QuadPart)*ms,double(replayEnd.QuadPart-materialEnd.QuadPart)*ms,double(streamEnd.QuadPart-replayEnd.QuadPart)*ms,double(workEnd.QuadPart-streamEnd.QuadPart)*ms);
         }
         if(NorthlightRenderThreadProbe::profiling()&&cpuFrequency.QuadPart>0){namespace P=NorthlightRenderThreadProbe;
             // Windows: the probe's (flushed when it changes), else 600 kept frames. Sample frames are excluded.

@@ -4679,12 +4679,72 @@ public:
         if(effects.gi&&!check(quad(w/2,h/2),"world GI pass"))return false;
         d->SetTexture(8,textures[8]); /* 0.3.197: restore the frame-start binding */
         if(profile)profile->mark("GI"); /* task 43: the GI pass alone; the lamp batches are LocalLights */
+        {   // Temporal stabilization: light + history -> temporalLight[cur] (MRT with view distance).
+            const unsigned cur=temporalIndex,prev=1-temporalIndex;
+            d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE);d->SetRenderState(D3DRS_COLORWRITEENABLE,15);
+            // 0.3.174: s10 switches from ProbeMetadata (WorldGI, done) to the AO/bloom target for the
+            // removal smoothing and WorldComposite; the frame-start loop rebinds probe[4] POINT.
+            d->SetTexture(10,foldAO?foldAO:neutralAO);d->SetSamplerState(10,D3DSAMP_MINFILTER,D3DTEXF_LINEAR);d->SetSamplerState(10,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);
+            // 0.3.185: the removal smoothing is its own half-res pass, light -> smoothLight (a copy where nothing is
+            // removed; skipped without a drawn source, c30.y=0, where s9 is the raw light). It reads s0 Scene, s1 Depth, s8 light,
+            // s10 AO, s12 baseline, s14 normals and s15 current distance (POINT; histories are read later).
+            d->SetTexture(8,light);d->SetTexture(12,baselineLight);d->SetTexture(14,normalBuffer);d->SetTexture(15,c[30][1]>0?temporalDepth[temporalIndex]:nullptr); /* s12 stays bound for the temporal pass and the composite */
+            d->SetSamplerState(14,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(14,D3DSAMP_MAGFILTER,D3DTEXF_POINT);
+            d->SetSamplerState(15,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(15,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);
+            d->SetSamplerState(15,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(15,D3DSAMP_MAGFILTER,D3DTEXF_POINT);d->SetSamplerState(15,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(15,D3DSAMP_SRGBTEXTURE,FALSE);
+            if(!check(d->SetRenderTarget(0,smoothSurface),"removal smoothing target"))return false;
+            const bool removalDrawn=c[30][1]>0; // no drawn source: smoothRemoval would be a pure copy, TemporalLight reads the raw light
+            if(removalDrawn){d->SetPixelShader(removalPS);if(!check(quad(w/2,h/2),"removal smoothing pass"))return false;}
+            if(profile)profile->mark("RemovalSmooth");
+            d->SetTexture(15,nullptr); // Current distance becomes TemporalLight's MRT again; history reads the other index.
+            if(!check(d->SetRenderTarget(0,temporalLightSurface[cur]),"temporal light target")||!check(d->SetRenderTarget(1,temporalDepthSurface[cur]),"temporal depth target"))return false;
+            d->SetRenderState(D3DRS_COLORWRITEENABLE1,15);
+            // 0.3.171: LightHistory (s14) is read bilinearly at the unrounded reprojection; the depth history
+            // (s15, R32F) stays POINT. The normals setup rebinds s14 POINT every frame.
+            // 0.3.185: SmoothedLighting is s9 (FogBuffer's slot: idle until the blur, which binds it, and the composite
+            // rebinds it; s9 is POINT here, LINEAR again afterwards), s8 stays the raw buffer for the neighbourhood clamp.
+            d->SetTexture(9,removalDrawn?smoothLight:light);d->SetSamplerState(9,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(9,D3DSAMP_MAGFILTER,D3DTEXF_POINT);
+            d->SetTexture(14,temporalLight[prev]);d->SetTexture(15,temporalDepth[prev]);
+            for(unsigned sampler=14;sampler<16;++sampler){d->SetSamplerState(sampler,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(sampler,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);d->SetSamplerState(sampler,D3DSAMP_MINFILTER,sampler==14?D3DTEXF_LINEAR:D3DTEXF_POINT);d->SetSamplerState(sampler,D3DSAMP_MAGFILTER,sampler==14?D3DTEXF_LINEAR:D3DTEXF_POINT);d->SetSamplerState(sampler,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(sampler,D3DSAMP_SRGBTEXTURE,FALSE);}
+            d->SetPixelShader(temporalPS);if(!check(quad(w/2,h/2),"temporal light pass"))return false;
+            d->SetRenderTarget(1,nullptr);d->SetTexture(14,nullptr);d->SetTexture(15,nullptr);d->SetTexture(9,nullptr);d->SetSamplerState(9,D3DSAMP_MINFILTER,D3DTEXF_LINEAR);d->SetSamplerState(9,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);
+            temporalIndex=prev;temporalValid=true;memcpy(previousView,context.view,64);previousCamera=vec(context.camera);temporalMap=active->map;
+        }
+        if(profile)profile->mark("TemporalLight");
+        // Preserve diagnostic inputs before recycling the raw directional target.
+        if(diagnosticFiles){
+            const unsigned capture=diagnosticCapture;const std::string& directory=gpuDiagnosticDirectory;
+            using NorthlightWorldDiagnostics::dump;
+            dump(d,lightSurface,directory,"light",capture);
+            dump(d,c[30][1]>0?smoothSurface:lightSurface,directory,"smoothed-light",capture);
+        }
+        bucket(NorthlightEffectsBuckets::PointLighting);
+        // The raw directional target is no longer read after temporal resolve.
+        // Reuse it for current local light, independent of shadow-removal history.
+        const bool currentLocalLighting=debug==0&&(localDirectCount||pointReady);
+        d->SetTexture(8,nullptr);
+        if(currentLocalLighting){
+            d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);
+            if(!check(d->SetRenderTarget(0,lightSurface),"current local light target")||
+               !check(d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0),"current local light clear"))return false;
+            d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE);d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_ONE);d->SetRenderState(D3DRS_BLENDOP,D3DBLENDOP_ADD);
+            d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE);d->SetRenderState(D3DRS_COLORWRITEENABLE,7);
+        }
+        // Temporal shaders own material and history bindings/constants.
+        d->SetPixelShaderConstantF(0,&c[0][0],68);
+        d->SetPixelShaderConstantF(73,bumpControl,1);d->SetPixelShaderConstantF(74,materialLight[0],4);d->SetPixelShaderConstantF(78,occlusionInfo,1);
+        d->SetTexture(9,materialDetail);d->SetTexture(12,baselineLight);d->SetTexture(14,normalBuffer);
+        for(unsigned sampler:{9u,14u}){
+            d->SetSamplerState(sampler,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(sampler,D3DSAMP_MAGFILTER,D3DTEXF_POINT);
+            d->SetSamplerState(sampler,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(sampler,D3DSAMP_SRGBTEXTURE,FALSE);
+            d->SetSamplerState(sampler,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(sampler,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);
+        }
         constexpr unsigned directInputs=(1u<<1)|(1u<<9)|(1u<<11)|(1u<<12)|(1u<<14),fogInputs=(1u<<1)|(1u<<11);
         if(lightingCapture){lightingCapture->sources(localLights,effects.fog);lightingCapture->image("lighting-before-local",lightSurface);}
         if(localDirectCount&&debug==0){
-            profileSplit(profile,lightSurface); /* sample frames: GI's timestamp ends here, LocalLights' below */
+            profileSplit(profile,lightSurface); /* terminate the preceding render pass before timing local batches */
             d->SetPixelShader(localDirectPS);d->SetRenderState(D3DRS_SCISSORTESTENABLE,NorthlightLocalLightScissor::Enabled);
-            d->SetTexture(12,baselineLight); /* sun visibility (baseline alpha); the temporal pass rebinds it anyway */
+            d->SetTexture(12,baselineLight); /* current sun visibility (baseline alpha) */
             if(lightingCapture)lightingCapture->inputs(0,directInputs,directInputs);
             // Two neighbouring 8-lamp batches whose joint rect costs less than both (local_light_batches.h wide()) draw as one LocalDirect16
             // pass (its lamps in c84..c115, preserving material c73..c78; c52 as for LocalDirect). Without a proven view every rect is the whole target, so pairs merge.
@@ -4738,41 +4798,8 @@ public:
             }
             d->SetRenderState(D3DRS_COLORWRITEENABLE,15);
         }
-        // Task 43: the old PointLighting interval in three marks: PointLight (the shadowed point lamp), RemovalSmooth, TemporalLight.
         if(profile)profile->mark("PointLight");
-        {   // Temporal stabilization: light + history -> temporalLight[cur] (MRT with view distance).
-            const unsigned cur=temporalIndex,prev=1-temporalIndex;
-            d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE);d->SetRenderState(D3DRS_COLORWRITEENABLE,15);
-            // 0.3.174: s10 switches from ProbeMetadata (WorldGI, done) to the AO/bloom target for the
-            // removal smoothing and WorldComposite; the frame-start loop rebinds probe[4] POINT.
-            d->SetTexture(10,foldAO?foldAO:neutralAO);d->SetSamplerState(10,D3DSAMP_MINFILTER,D3DTEXF_LINEAR);d->SetSamplerState(10,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);
-            // 0.3.185: the removal smoothing is its own half-res pass, light -> smoothLight (a copy where nothing is
-            // removed; skipped without a drawn source, c30.y=0, where s9 is the raw light). It reads s0 Scene, s1 Depth, s8 light,
-            // s10 AO, s12 baseline, s14 normals and s15 current distance (POINT; histories are read later).
-            d->SetTexture(8,light);d->SetTexture(12,baselineLight);d->SetTexture(14,normalBuffer);d->SetTexture(15,c[30][1]>0?temporalDepth[temporalIndex]:nullptr); /* s12 stays bound for the temporal pass and the composite */
-            d->SetSamplerState(14,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(14,D3DSAMP_MAGFILTER,D3DTEXF_POINT);
-            d->SetSamplerState(15,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(15,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);
-            d->SetSamplerState(15,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(15,D3DSAMP_MAGFILTER,D3DTEXF_POINT);d->SetSamplerState(15,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(15,D3DSAMP_SRGBTEXTURE,FALSE);
-            if(!check(d->SetRenderTarget(0,smoothSurface),"removal smoothing target"))return false;
-            const bool removalDrawn=c[30][1]>0; // no drawn source: smoothRemoval would be a pure copy, TemporalLight reads the raw light
-            if(removalDrawn){d->SetPixelShader(removalPS);if(!check(quad(w/2,h/2),"removal smoothing pass"))return false;}
-            if(profile)profile->mark("RemovalSmooth");
-            d->SetTexture(15,nullptr); // Current distance becomes TemporalLight's MRT again; history reads the other index.
-            if(!check(d->SetRenderTarget(0,temporalLightSurface[cur]),"temporal light target")||!check(d->SetRenderTarget(1,temporalDepthSurface[cur]),"temporal depth target"))return false;
-            d->SetRenderState(D3DRS_COLORWRITEENABLE1,15);
-            // 0.3.171: LightHistory (s14) is read bilinearly at the unrounded reprojection; the depth history
-            // (s15, R32F) stays POINT. The normals setup rebinds s14 POINT every frame.
-            // 0.3.185: SmoothedLighting is s9 (FogBuffer's slot: idle until the blur, which binds it, and the composite
-            // rebinds it; s9 is POINT here, LINEAR again afterwards), s8 stays the raw buffer for the neighbourhood clamp.
-            d->SetTexture(9,removalDrawn?smoothLight:light);d->SetSamplerState(9,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(9,D3DSAMP_MAGFILTER,D3DTEXF_POINT);
-            d->SetTexture(14,temporalLight[prev]);d->SetTexture(15,temporalDepth[prev]);
-            for(unsigned sampler=14;sampler<16;++sampler){d->SetSamplerState(sampler,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(sampler,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);d->SetSamplerState(sampler,D3DSAMP_MINFILTER,sampler==14?D3DTEXF_LINEAR:D3DTEXF_POINT);d->SetSamplerState(sampler,D3DSAMP_MAGFILTER,sampler==14?D3DTEXF_LINEAR:D3DTEXF_POINT);d->SetSamplerState(sampler,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(sampler,D3DSAMP_SRGBTEXTURE,FALSE);}
-            d->SetPixelShader(temporalPS);if(!check(quad(w/2,h/2),"temporal light pass"))return false;
-            d->SetRenderTarget(1,nullptr);d->SetTexture(14,nullptr);d->SetTexture(15,nullptr);d->SetTexture(9,nullptr);d->SetSamplerState(9,D3DSAMP_MINFILTER,D3DTEXF_LINEAR);d->SetSamplerState(9,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);
-            temporalIndex=prev;temporalValid=true;memcpy(previousView,context.view,64);previousCamera=vec(context.camera);temporalMap=active->map;
-        }
-        if(profile)profile->mark("TemporalLight");
-        bucket(NorthlightEffectsBuckets::PointLighting);
+        d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE);
         // Source visibility (1x1 per source, temporally smoothed): drives the
         // fog aureole when the body is behind geometry; broad scattering uses
         // world shadow visibility independently of the body's screen position.
@@ -4921,6 +4948,7 @@ public:
         d->SetSamplerState(15,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(15,D3DSAMP_MAGFILTER,D3DTEXF_POINT);
         d->SetSamplerState(15,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(15,D3DSAMP_SRGBTEXTURE,FALSE);
         d->SetSamplerState(15,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(15,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);
+        d->SetTexture(3,currentLocalLighting?light:neutralZero); // CurrentLocalLighting in WorldComposite only.
         d->SetRenderTarget(0,fullMaterial?colorSurface:targetSurface);d->SetTexture(8,temporalLight[1-temporalIndex]);d->SetTexture(9,fogResolved?fogBlurred:fog);d->SetPixelShader(finalPS);
         /* 0.3.212 (task 32): with this frame's name marks the quad draws with the world depth-stencil bound and a stencil test that rejects marked pixels (they keep the game's colour in the target); no marks: the quad as before. */
         bool compositeOk=false;
@@ -4946,6 +4974,7 @@ public:
         if(compositeOk&&fullMaterial){
             if(materialProfile&&materialProfile->recording())logf("MATERIAL_APPLY frame=%llu gain=%.3f normalRange=%.1f occlusion=%u occlusionRange=%.1f sunRGB=%.4f,%.4f,%.4f moonRGB=%.4f,%.4f,%.4f ambientRGB=%.4f,%.4f,%.4f",(unsigned long long)materialProfile->frameNumber(),materialBumpGain,materialBumpDistance,unsigned(materialOcclusion!=nullptr),materialOcclusionDistance,sourceColors[0].x,sourceColors[0].y,sourceColors[0].z,sourceColors[1].x,sourceColors[1].y,sourceColors[1].z,context.ambient[0],context.ambient[1],context.ambient[2]);
             materialPixelAudit.sample(materialProfile,&stateBlocks,[&](UINT x,UINT y){return quad(x,y);});}
+        d->SetTexture(3,textures[3]);
         d->SetTexture(15,nullptr);d->SetTexture(2,nullptr);d->SetSamplerState(2,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(2,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);
         if(!compositeOk)return false;composited=true;d->SetTexture(13,regionalFogTexture);
         reportLocalSources(sourceTrace,diagnosticCapture,c[52][1],lampSunlitCut,c[58][2]);
@@ -4965,8 +4994,11 @@ public:
             if(materialDetail){IDirect3DSurface9* detail=nullptr;if(SUCCEEDED(materialDetail->GetSurfaceLevel(0,&detail))){dump(d,detail,directory,"material-height",capture);detail->Release();}}
             if(materialOcclusion){IDirect3DSurface9* detail=nullptr;if(SUCCEEDED(materialOcclusion->GetSurfaceLevel(0,&detail))){dump(d,detail,directory,"material-occlusion",capture);detail->Release();}}
             dump(d,baselineSurface,directory,"baseline",capture);
-            dump(d,lightSurface,directory,"light",capture);
-            dump(d,c[30][1]>0?smoothSurface:lightSurface,directory,"smoothed-light",capture); // what TemporalLight read: the raw light when no source is drawn
+            char layout[96];std::snprintf(layout,sizeof layout,"/capture-%u-lighting-layout.txt",capture);
+            if(FILE* f=std::fopen((directory+layout).c_str(),"wb")){
+                std::fprintf(f,"separate-current-local-v1\ncurrentLocalLighting=%u\n",unsigned(currentLocalLighting));std::fclose(f);
+            }
+            if(currentLocalLighting)dump(d,lightSurface,directory,"current-local-light",capture);
             dump(d,temporalLightSurface[1-temporalIndex],directory,"temporal-light",capture);
             dump(d,temporalDepthSurface[1-temporalIndex],directory,"distance",capture);
             dump(d,fogResolved?fogBlurredSurface:fogSurface,directory,"fog",capture);

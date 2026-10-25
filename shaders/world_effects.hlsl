@@ -1182,7 +1182,7 @@ float4 WorldComposite(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {
     float legacyT=mad(LegacyFog.w,saturate(pow(max(mad(viewZ*Projection.z,LegacyFog.x,LegacyFog.y),0),LegacyFog.z))-1,1);
     bool relight=d<.99999&&liquid<=0;
         float3 baseline=0;
-        float3 bounce=0;float shadow=0,total=0,closest=1e20;
+        float3 bounce=0,local=0;float shadow=0,total=0,closest=1e20;
         float2 fallbackUV=0,fogFallbackUV=0;
         float ao=0; // 0.3.174: contact AO on the lighting grid (s10)
         // Fog uses the same four half-resolution texel centres, but DIFFERENT
@@ -1214,7 +1214,7 @@ float4 WorldComposite(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {
             float4 light=tex2Dlod(LightingBuffer,float4(q,0,0));
             float3 lit=tex2Dlod(BaselineLighting,float4(q,0,0)).rgb;
             float occlusion=tex2Dlod(AmbientOcclusion,float4(q,0,0)).a;
-            bounce=mad(light.rgb,weight,bounce);shadow=mad(light.a,weight,shadow);baseline=mad(lit,weight,baseline);ao=mad(occlusion,weight,ao);total+=weight;
+            bounce=mad(light.rgb,weight,bounce);local=mad(tex2Dlod(CurrentLocalLighting,float4(q,0,0)).rgb,weight,local);shadow=mad(light.a,weight,shadow);baseline=mad(lit,weight,baseline);ao=mad(occlusion,weight,ao);total+=weight;
             if(score<closest){closest=score;fallbackUV=q;}
             }
             float receiverZ=sampleZ;
@@ -1250,7 +1250,7 @@ float4 WorldComposite(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {
     if(relight){
         // Thin receivers whose depth matches none of the four texels keep the
         // nearest-depth texel instead of losing their shadow and GI entirely.
-        if(total<.02){bounce=fallbackLight.rgb;shadow=fallbackLight.a;baseline=fallbackBase;total=1;}
+        if(total<.02){bounce=fallbackLight.rgb;local=tex2Dlod(CurrentLocalLighting,float4(fallbackUV,0,0)).rgb;shadow=fallbackLight.a;baseline=fallbackBase;total=1;}
         float inverseWeight=1/max(total,.0001);
         bounce*=inverseWeight;shadow*=inverseWeight;
 
@@ -1263,6 +1263,9 @@ float4 WorldComposite(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {
         // Bound combined GI/shadow darkening relative to the existing surface;
         // this preserves black and does not introduce an absolute exposure floor.
         color=max(color,mad(-.45,transported,original.rgb));
+        // Bound shadow/GI removal before adding current local radiance, so a
+        // darkening floor cannot swallow a weaker overlapping lamp channel.
+        color=mad(albedoT,local*inverseWeight,color);
         // NightBrightness: gives back a share of the art layer's darker night ambient (x .82 x cool tint) as light: albedoT times
         // share x ambient x (1/factor-1), the per-frame product computed on the CPU (night_floor.h nightAmbient). Added like
         // light, so shadows, GI and lamps keep their contrast. 0 = off (bit-identical).

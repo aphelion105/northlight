@@ -41,8 +41,9 @@ assignments = '\n'.join(statement(prefix) for prefix in [
     'if(decision.entered||decision.recovered)memoryWorld=',
     'if(decision.capsChanged)memoryCaps=',
 ])
-start = renderer.index('        if((memoryWorld>=0||memoryCaps>=0)&&world)')
-last = 'if(memoryTrim)trimMemory(memorySample);'
+event = renderer.index('        if(memoryWorld>=0||memoryCaps>=0||memoryTrim){')
+start = renderer.index('            LARGE_INTEGER workStart=', event)
+last = 'QueryPerformanceCounter(&workEnd);'
 end = renderer.index(last, start) + len(last)
 wiring = renderer[start:end]
 setter = method(world, 'void setMemoryPressure(')
@@ -55,7 +56,7 @@ body = r'''
 #include <cstdio>
 using namespace NorthlightMemoryGuard;
 static bool frameCleared=false;
-struct LARGE_INTEGER {};
+struct LARGE_INTEGER {long long QuadPart=1;};
 static void QueryPerformanceCounter(LARGE_INTEGER*){}
 namespace NorthlightDrawSnapshot {struct Frame {static constexpr std::uint64_t SnapshotCacheLimit=64*MiB;};}
 namespace NorthlightReplayCopies {
@@ -69,11 +70,14 @@ struct CacheLimit {
     void setPersistentByteLimit(std::uint64_t n){assert(frameCleared);bytes=n;}
     void setLimit(std::uint64_t n){assert(frameCleared);bytes=n;}
 };
-struct WorldCaps {
+struct WorldRenderer {
+    struct MemoryTrim {};
     bool memoryPressure=false,nearReserve=true;unsigned updates=0;
+    unsigned trims=0;
     CacheLimit replaySnapshots{NorthlightDrawSnapshot::Frame::SnapshotCacheLimit};
     CacheLimit terrainBoundsCache{32*MiB},replayGpuCache{64*MiB};
     void setNearReserve(){assert(frameCleared);nearReserve=!memoryPressure;++updates;}
+    MemoryTrim trimMemory(){assert(frameCleared);++trims;return {};}
     @SETTER@
 };
 struct AutoBumpCaps {
@@ -81,19 +85,18 @@ struct AutoBumpCaps {
     void setMemoryPressure(bool on){assert(frameCleared);pressure=on;++updates;}
 };
 struct Controller {
-    Guard memoryGuard;WorldCaps worldState;AutoBumpCaps bumpState;
-    WorldCaps* world=&worldState;AutoBumpCaps* autoBump=&bumpState;
+    Guard memoryGuard;WorldRenderer worldState;AutoBumpCaps bumpState;LARGE_INTEGER cpuFrequency;
+    WorldRenderer* world=&worldState;AutoBumpCaps* autoBump=&bumpState;
     unsigned trims=0;
     Controller(){NorthlightReplayCopies::pressure=false;NorthlightStream::memoryPressure=false;}
     void clearFrame(){frameCleared=true;}
-    void trimMemory(int){assert(frameCleared);++trims;}
+    void trimMemory(int,const WorldRenderer::MemoryTrim&,double){assert(frameCleared);assert(worldState.trims==trims+1);++trims;}
     Decision sample(std::uint64_t available,std::uint64_t largest,std::uint32_t tick,std::uint64_t demand=0){
         frameCleared=false;
         const auto decision=memoryGuard.update(available,largest,tick,demand);
         const bool memoryTrim=decision.trim;int memoryCaps=-1,memoryWorld=-1;const int memorySample=0;
         @ASSIGNMENTS@
         clearFrame();
-        LARGE_INTEGER worldEnd,materialEnd,replayEnd,streamEnd;
         @WIRING@
         return decision;
     }

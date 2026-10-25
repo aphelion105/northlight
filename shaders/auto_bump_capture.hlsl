@@ -27,13 +27,17 @@ struct CaptureResult {float4 normal:COLOR0;float4 occlusion:COLOR1;
 #endif
 };
 float2 octEncode(float3 n){n/=max(dot(abs(n),1),1e-6);return (n.z>=0?n.xy:(1-abs(n.yx))*float2(n.x>=0?1:-1,n.y>=0?1:-1))*.5+.5;}
-MaterialValue materialValue(sampler2D map,float2 uv,float4 p) {
+MaterialValue materialValue(sampler2D map,float2 uv,float4 p,float3 smoothNormal) {
     MaterialFrame f=materialFrame(uv,p,CaptureProjection);
     MaterialValue v;v.uv=parallaxUVFrame(map,uv,p.w,ParallaxControl,f);v.uv1=0;
     float4 data=tex2Dgrad(map,v.uv,f.tx,f.ty);
     float2 xy=(data.rg*255-128)/127;
     float3 local=float3(xy,sqrt(saturate(1-dot(xy,xy))));
-    v.normal=normalize(f.tangent*local.x+f.bitangent*local.y+f.normal*local.z);
+    float3 n=f.normal,t=f.tangent,b=f.bitangent;
+    if(dot(smoothNormal,smoothNormal)>.5){
+        n=normalize(smoothNormal);t=normalize(t-n*dot(t,n));b=normalize(b-n*dot(b,n));
+    }
+    v.normal=normalize(t*local.x+b*local.y+n*local.z);
     v.occlusion=1;
     [branch]if(p.w<OcclusionControl.w){
         v.occlusion.b=lerp(1,data.a,OcclusionControl.z);
@@ -44,6 +48,7 @@ MaterialValue materialValue(sampler2D map,float2 uv,float4 p) {
     }
     return v;
 }
+MaterialValue materialValue(sampler2D map,float2 uv,float4 p){return materialValue(map,uv,p,0);}
 CaptureResult captureValue(MaterialValue v,float4 p,float alpha POM_ID_PARAMETER) {
     clip(alpha-BumpCapture.z);
     CaptureResult o;o.normal=float4(octEncode(v.normal),p.w,saturate(alpha));o.occlusion=float4(v.occlusion,saturate(alpha));
@@ -54,6 +59,8 @@ CaptureResult captureValue(MaterialValue v,float4 p,float alpha POM_ID_PARAMETER
 }
 CaptureResult BumpOpaque(float2 uv:TEXCOORD0,float4 p:TEXCOORD7 POM_ID_INPUT){clip(BumpCapture.y-p.w);return captureValue(materialValue(GeneratedNormal,uv,p),p,1 POM_ID_ARGUMENT);}
 CaptureResult BumpLayer(float2 uv:TEXCOORD0,float2 maskUV:TEXCOORD1,float4 p:TEXCOORD7 POM_ID_INPUT){clip(BumpCapture.y-p.w);return captureValue(materialValue(GeneratedNormal,uv,p),p,saturate(dot(tex2D(LayerMask,maskUV),NativeLayerMask)) POM_ID_ARGUMENT);}
+CaptureResult BumpTerrainOpaque(float2 uv:TEXCOORD0,float3 normal:TEXCOORD5,float4 p:TEXCOORD7 POM_ID_INPUT){clip(BumpCapture.y-p.w);return captureValue(materialValue(GeneratedNormal,uv,p,normal),p,1 POM_ID_ARGUMENT);}
+CaptureResult BumpTerrainLayer(float2 uv:TEXCOORD0,float2 maskUV:TEXCOORD1,float3 normal:TEXCOORD5,float4 p:TEXCOORD7 POM_ID_INPUT){clip(BumpCapture.y-p.w);return captureValue(materialValue(GeneratedNormal,uv,p,normal),p,saturate(dot(tex2D(LayerMask,maskUV),NativeLayerMask)) POM_ID_ARGUMENT);}
 CaptureResult BumpWall(float2 uv:TEXCOORD0,float4 color:COLOR0,float4 p:TEXCOORD7 POM_ID_INPUT){clip(BumpCapture.y-p.w);
     MaterialValue v=materialValue(GeneratedNormal,uv,p);return captureValue(v,p,tex2Dgrad(Diffuse,v.uv,ddx(uv),ddy(uv)).a*color.a+BumpCapture.w POM_ID_ARGUMENT);
 }

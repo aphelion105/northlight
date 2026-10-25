@@ -2,6 +2,7 @@
 #include "auto_bump_compiled_shaders.h"
 #include "auto_bump_identities.h"
 #include "water_shader_patch.h"
+#include "auto_bump_vertex_patch.h"
 #include "quality_settings.h"
 #include "auto_normal_cache.h"
 #include "auto_parallax_renderer.h"
@@ -109,14 +110,14 @@ class NorthlightAutoBump {
         }
         void apply(){changed=true;for(unsigned i=0;i<stateCount;++i){auto& s=states[i];if(s.value!=s.replay)d->SetRenderState(s.key,s.replay);}}
     };
-    struct Vertex {IDirect3DVertexShader9* patched=nullptr;unsigned kind=0;IDirect3DVertexShader9* shared=nullptr;bool sharedChecked=false,deferredSafe=false,failed=false;IDirect3DVertexShader9* pending=nullptr;uint64_t pendingHash=0;};
+    struct Vertex {IDirect3DVertexShader9* patched=nullptr;unsigned kind=0;IDirect3DVertexShader9* shared=nullptr;bool sharedChecked=false,deferredSafe=false,failed=false,smoothTerrain=false;IDirect3DVertexShader9* pending=nullptr;uint64_t pendingHash=0;};
     bool sharedVertex(Vertex& vertex){if(!vertex.sharedChecked){vertex.sharedChecked=true;vertex.shared=NorthlightSharedPOM::vertexShader(d,vertex.patched);}return vertex.shared!=nullptr;}
     std::unordered_map<IDirect3DVertexShader9*,Vertex> vertices;
     unsigned pendingVertices=0;
     using VertexIdentity=bool(*)(void*,IDirect3DVertexShader9*,uint64_t&,unsigned&);
     VertexIdentity vertexIdentity=nullptr;void* vertexIdentityContext=nullptr;bool vertexOverflow=false;
     std::unordered_map<IDirect3DPixelShader9*,unsigned> pixels;
-    IDirect3DPixelShader9* shaders[6]={},*sharedShaders[6]={};
+    IDirect3DPixelShader9* shaders[8]={},*sharedShaders[8]={};
     struct NativeCapture {IDirect3DPixelShader9* source=nullptr,*shader=nullptr;unsigned constant=128,first=256,last=0,samplers=0;bool deferredSafe=false;};
     // Rare CPU creation work can happen outside sampled draw scopes, including
     // recognized vertex registration while materials are disabled.
@@ -129,6 +130,7 @@ class NorthlightAutoBump {
     bool compileVertex(IDirect3DVertexShader9* original,Vertex& vertex,const DWORD* code,size_t count){
         std::vector<std::uint32_t> patched;
         if(NorthlightWaterShaderPatch::patch(reinterpret_cast<const std::uint32_t*>(code),count,patched))return false;
+        if(vertex.kind==1)vertex.smoothTerrain=NorthlightAutoBumpVertex::terrainNormal(reinterpret_cast<const uint32_t*>(code),count,patched);
         NorthlightDrawSnapshot::Ref<IDirect3DVertexShader9> shader;
         if(FAILED(d->CreateVertexShader(reinterpret_cast<const DWORD*>(patched.data()),shader.out()))||!shader.p)return false;
         NorthlightWaterShaderPatch::Analysis analysis;if(!NorthlightWaterShaderPatch::analyse(reinterpret_cast<const uint32_t*>(code),count,analysis))vertex.deferredSafe=analysis.used[10]==0;
@@ -532,13 +534,15 @@ public:
         const bool needsOcclusion=occlusionInRange&&(occlusionControl[2]>0||
             (modes[domain-1]==2&&pomControl[0]>0&&pomInRange&&occlusionControl[0]>0&&occlusionLight[3]>0));
         if(!occlusionInRange&&profile)profile->count(P::OcclusionFarSkipped);
-        const DWORD* codes[]={kBumpOpaqueShader,kBumpLayerShader,kBumpWallShader,kBumpGrassShader,kBumpWallOpaqueShader,kBumpCompositeShader};
-        const DWORD* sharedCodes[]={kBumpSharedOpaqueShader,kBumpSharedLayerShader,kBumpSharedWallShader,kBumpSharedGrassShader,kBumpSharedWallOpaqueShader,kBumpSharedCompositeShader};
+        const DWORD* codes[]={kBumpOpaqueShader,kBumpLayerShader,kBumpWallShader,kBumpGrassShader,kBumpWallOpaqueShader,kBumpCompositeShader,kBumpTerrainOpaqueShader,kBumpTerrainLayerShader};
+        const DWORD* sharedCodes[]={kBumpSharedOpaqueShader,kBumpSharedLayerShader,kBumpSharedWallShader,kBumpSharedGrassShader,kBumpSharedWallOpaqueShader,kBumpSharedCompositeShader,kBumpSharedTerrainOpaqueShader,kBumpSharedTerrainLayerShader};
+        const bool smoothTerrain=domain==1&&material<=2&&v->second.smoothTerrain;
+        const unsigned terrainIndex=smoothTerrain?5+material:material-1;
         bool sharing=false;
         if(geometry&&modes[domain-1]==2&&pomInRange&&pomControl[0]>0&&sharedPOM.canTry()&&!(domain==4&&material==6)){
             P::Scope shared(profile,P::SharedPOM);sharing=parallax.supportsShared(native,material)&&sharedVertex(v->second)&&
                 sharedPOM.prepare(geometry->draw,geometry->indices,geometry->format,geometry->vertices,geometry->stride,width,heightPixels,material==6);}
-        if(sharing&&domain!=4&&!sharedShaders[material-1]&&FAILED(createCaptureShader(sharedCodes[material-1],&sharedShaders[material-1])))sharing=false;
+        if(sharing&&domain!=4&&!sharedShaders[terrainIndex]&&FAILED(createCaptureShader(sharedCodes[terrainIndex],&sharedShaders[terrainIndex])))sharing=false;
         if(sharing&&!sharedBinding.bind(sharedPOM,false))sharing=false;
         if(domain==4){model=modelCapture(native,alpha,sharing);if(!model&&sharing){sharedBinding.restore();sharing=false;model=modelCapture(native,alpha);}if(!model)return;saved.constantBase=model->constant;saved.normalStage=14;}
         if(sharing){saved.constantCount=6;saved.stateCount=16;for(unsigned i=14;i<16;++i)if(FAILED(d->GetRenderState(saved.states[i].key,&saved.states[i].value)))return;}
@@ -568,7 +572,7 @@ public:
             if(available)available=SUCCEEDED(d->CreateTexture(width,heightPixels,1,D3DUSAGE_RENDERTARGET,D3DFMT_A8R8G8B8,D3DPOOL_DEFAULT,&occlusionMap,nullptr))&&SUCCEEDED(occlusionMap->GetSurfaceLevel(0,&occlusionTarget));
             if(!available){drop(occlusionTarget);drop(occlusionMap);occlusionUnavailable=!supported;occlusionRetry=supported?60:0;logf("MATERIAL_OCCLUSION allocation retry=%u unsupported=%u; settings retained",occlusionRetry,unsigned(!supported));}
         }
-        const unsigned captureIndex=model?0:opaqueWall?4:material-1;auto& captureShader=sharing?sharedShaders[captureIndex]:shaders[captureIndex];
+        const unsigned captureIndex=model?0:opaqueWall?4:terrainIndex;auto& captureShader=sharing?sharedShaders[captureIndex]:shaders[captureIndex];
         if(!model&&!captureShader&&!check(createCaptureShader(sharing?sharedCodes[captureIndex]:codes[captureIndex],&captureShader),"capture shader"))return;
         IDirect3DBaseTexture9* diffuse=nullptr;if(FAILED(d->GetTexture(0,&diffuse)))return;
         auto normal=normals.acquire(diffuse,domain==4);drop(diffuse);if(!normal)return;

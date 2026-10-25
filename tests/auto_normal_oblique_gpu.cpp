@@ -147,7 +147,7 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
         drawDepth=nullptr;
         if(resolveMSDepth){drop(depth);ok(d->CreateTexture(W,H,1,D3DUSAGE_DEPTHSTENCIL,static_cast<D3DFORMAT>(MAKEFOURCC('I','N','T','Z')),D3DPOOL_DEFAULT,&depth,nullptr));}
     }
-    const auto alphaPattern=[](Image& im){if(std::getenv("NORTHLIGHT_TEST_MATERIAL_ALPHA_TEST"))for(unsigned y=0;y<im.height;++y)for(unsigned x=0;x<im.width;++x)im.pixels[(size_t(y)*im.width+x)*4+3]=((x/std::max(1u,im.width/8)+y/std::max(1u,im.height/8))&1)?255:0;};
+    const auto alphaPattern=[](Image& im){if(std::getenv("NORTHLIGHT_TEST_TERRAIN_NEUTRAL"))for(size_t i=0;i<im.pixels.size();i+=4)im.pixels[i]=im.pixels[i+1]=im.pixels[i+2]=128;if(std::getenv("NORTHLIGHT_TEST_MATERIAL_ALPHA_TEST"))for(unsigned y=0;y<im.height;++y)for(unsigned x=0;x<im.width;++x)im.pixels[(size_t(y)*im.width+x)*4+3]=((x/std::max(1u,im.width/8)+y/std::max(1u,im.height/8))&1)?255:0;};
     auto first=image(folder+"source.fgr");alphaPattern(first);IDirect3DTexture9* diffuse=nullptr;ok(d->CreateTexture(first.width,first.height,0,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&diffuse,nullptr));
     for(unsigned level=0;level<diffuse->GetLevelCount();++level){auto im=image(folder+"source.fgr."+std::to_string(level));alphaPattern(im);D3DLOCKED_RECT lock{};ok(diffuse->LockRect(level,&lock,nullptr,0));for(unsigned y=0;y<im.height;++y)std::memcpy((char*)lock.pBits+y*lock.Pitch,im.pixels.data()+y*im.width*4,im.width*4);diffuse->UnlockRect(level);}
     auto vsBytes=read(folder+"terrain-vs.bin"),psBytes=read(folder+"terrain-ps.bin");std::vector<std::uint32_t> patched;assert(!NorthlightWaterShaderPatch::patch((std::uint32_t*)vsBytes.data(),vsBytes.size()/4,patched));
@@ -182,10 +182,12 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
     ok(d->CreateVertexBuffer(sizeof floor,deferredMutation?D3DUSAGE_DYNAMIC|D3DUSAGE_WRITEONLY:0,0,deferredMutation?D3DPOOL_DEFAULT:D3DPOOL_MANAGED,&sourceVB,nullptr));ok(sourceVB->Lock(0,sizeof floor,&upload,0));std::memcpy(upload,floor,sizeof floor);ok(sourceVB->Unlock());
     const WORD sourceIndices[]={0,1,2,2,1,3};ok(d->CreateIndexBuffer(sizeof sourceIndices,0,D3DFMT_INDEX16,D3DPOOL_MANAGED,&sourceIB,nullptr));ok(sourceIB->Lock(0,sizeof sourceIndices,&upload,0));std::memcpy(upload,sourceIndices,sizeof sourceIndices);ok(sourceIB->Unlock());
     const unsigned meshGrid=std::getenv("NORTHLIGHT_TEST_MESH_GRID")?std::atoi(std::getenv("NORTHLIGHT_TEST_MESH_GRID")):0;
+    const float terrainFold=std::getenv("NORTHLIGHT_TEST_TERRAIN_FOLD")?std::atof(std::getenv("NORTHLIGHT_TEST_TERRAIN_FOLD")):0;
+    if(terrainFold)assert(meshGrid&&!model&&!grass&&argc<=5);
     unsigned sourceVertices=4,sourcePrimitives=2;
     if(meshGrid){assert(meshGrid<=128&&!deferredMutation);std::vector<V> vertices;
         for(unsigned y=0;y<=meshGrid;++y)for(unsigned x=0;x<=meshGrid;++x){V v=floor[0];const float u=float(x)/meshGrid,w=float(y)/meshGrid;
-            v.x+=(floor[1].x-floor[0].x)*u;v.y+=(floor[2].y-floor[0].y)*w;v.u+=(floor[1].u-floor[0].u)*u;v.v+=(floor[2].v-floor[0].v)*w;vertices.push_back(v);}
+            v.x+=(floor[1].x-floor[0].x)*u;v.y+=(floor[2].y-floor[0].y)*w;v.z+=std::fabs(v.x)*terrainFold;v.u+=(floor[1].u-floor[0].u)*u;v.v+=(floor[2].v-floor[0].v)*w;vertices.push_back(v);}
         std::vector<WORD> indices;for(unsigned y=0;y<meshGrid;++y)for(unsigned x=0;x<meshGrid;++x){const WORD a=WORD(y*(meshGrid+1)+x),b=a+1,c=WORD(a+meshGrid+1),e=c+1;for(WORD i:{a,b,c,c,b,e})indices.push_back(i);}
         drop(sourceVB);drop(sourceIB);const UINT vbBytes=UINT(vertices.size()*sizeof(V)),ibBytes=UINT(indices.size()*2);
         ok(d->CreateVertexBuffer(vbBytes,0,0,D3DPOOL_MANAGED,&sourceVB,nullptr));ok(sourceVB->Lock(0,vbBytes,&upload,0));std::memcpy(upload,vertices.data(),vbBytes);ok(sourceVB->Unlock());
@@ -204,7 +206,9 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
     d->SetRenderState(D3DRS_ZFUNC,D3DCMP_LESSEQUAL);d->SetRenderState(D3DRS_CULLMODE,D3DCULL_NONE);d->SetRenderState(D3DRS_COLORWRITEENABLE,15);d->SetRenderState(D3DRS_COLORWRITEENABLE1,15);
     d->SetTexture(0,diffuse);d->SetTexture(1,argc>5&&std::strcmp(argv[5],"composite")==0?diffuse:white);d->SetSamplerState(0,D3DSAMP_MIPFILTER,D3DTEXF_LINEAR);d->SetSamplerState(0,D3DSAMP_MINFILTER,D3DTEXF_LINEAR);d->SetSamplerState(0,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);d->SetSamplerState(0,D3DSAMP_ADDRESSU,D3DTADDRESS_WRAP);d->SetSamplerState(0,D3DSAMP_ADDRESSV,D3DTADDRESS_WRAP);
     d->SetVertexDeclaration(decl);d->SetVertexShader(forwardVS);d->SetPixelShader(beauty);d->SetVertexShaderConstantF(0,bank[0],43);d->SetPixelShaderConstantF(78,bank[78],1);
-    ok(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0xff18212d,1,0));ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,floor,sizeof(V)));ok(d->EndScene());d->SetRenderTarget(1,nullptr);
+    // The reference depth must describe the same folded indexed mesh as capture.
+    auto initialDraw=[&]{if(terrainFold){ok(d->SetStreamSource(0,sourceVB,0,sizeof(V)));ok(d->SetIndices(sourceIB));return d->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,0,sourceVertices,0,sourcePrimitives);}return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,floor,sizeof(V));};
+    ok(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0xff18212d,1,0));ok(d->BeginScene());ok(initialDraw());ok(d->EndScene());d->SetRenderTarget(1,nullptr);
     // Packaged DXVK uses production RESZ on real MSAA depth. The native material
     // oracle supplies rasterized depth (RESZ support depends on the physical GPU).
     auto referenceDepth=[&](auto draw){
@@ -215,7 +219,7 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
         ok(d->SetVertexShader(forwardVS));ok(d->SetPixelShader(beauty));ok(d->BeginScene());ok(draw());ok(d->EndScene());}
         ok(d->SetVertexShaderConstantF(0,constants,256));
     };
-    if(samples){ok(d->SetDepthStencilSurface(nullptr));ok(d->SetRenderTarget(0,output));ok(d->StretchRect(drawSurface,nullptr,baseSurface,nullptr,D3DTEXF_NONE));ok(d->SetRenderTarget(0,drawSurface));ok(d->SetDepthStencilSurface(zbuffer));referenceDepth([&]{return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,floor,sizeof(V));});}
+    if(samples){ok(d->SetDepthStencilSurface(nullptr));ok(d->SetRenderTarget(0,output));ok(d->StretchRect(drawSurface,nullptr,baseSurface,nullptr,D3DTEXF_NONE));ok(d->SetRenderTarget(0,drawSurface));ok(d->SetDepthStencilSurface(zbuffer));referenceDepth(initialDraw);}
     MaterialDepthMeter captureDevice(d);NorthlightAutoBump bump(&captureDevice);bump.setDeferredCapture(std::getenv("NORTHLIGHT_TEST_DEFERRED_CAPTURE")!=nullptr);bump.setTextureWriteGuard(std::getenv("NORTHLIGHT_TEST_TEXTURE_GUARD")!=nullptr);NorthlightQuality::Settings settings;settings.autoBump=1;settings.autoBumpStrength=100;bump.configure(settings);bump.setProjection(xs,ys,-1);
     MirrorGate textureGate;
     NorthlightMirrorResources::ForwardIDirect3DTexture9 gameTexture(diffuse,textureGate,[](void*,const char*){},nullptr);
@@ -339,6 +343,7 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
     // Compare the same native diffuse draw used by the game, with and without POM.
     bank[12][1]=bank[12][2]=1;std::memcpy(bank[25],macro,12);
     for(unsigned mode=1;mode<=(model?9u:8u);++mode){
+        if(mode!=1&&std::getenv("NORTHLIGHT_TEST_TERRAIN_FOLD_ONLY"))continue;
         if(mode>=5&&std::getenv("NORTHLIGHT_TEST_WMO_BLEND"))continue; // Translucent displacement is intentionally unsupported.
         if(std::getenv("NORTHLIGHT_TEST_MATERIAL_DEPTH")&&mode>=5)continue;
         if(pomOnly&&mode!=2)continue;
@@ -541,6 +546,15 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
         f[73][0]=pomOnly?0:.75f;f[78][0]=bump.occlusionTexture()?1.f:0.f;f[78][1]=bump.occlusionDistance();f[18][0]=.2f;f[18][1]=.22f;f[18][2]=.26f;f[18][3]=1;
         if(mode==1){f[73][0]=0;d->SetPixelShaderConstantF(0,f[0],79);ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(Vertex)));ok(d->EndScene());save(d,output,folder+"native-normal-off.fgr");f[73][0]=.75f;}
         d->SetPixelShaderConstantF(0,f[0],79);ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(Vertex)));ok(d->EndScene());const char* names[]={"normal-on.fgr","pom-on.fgr","pom-shadow.fgr","pom-shadow-cavity.fgr","displacement-on.fgr","displacement-indexed.fgr","displacement-coverage.fgr","displacement-zero.fgr","displacement-animated.fgr"};save(d,output,folder+names[mode-1]);
+        if(mode==1&&terrainFold){
+            save(d,depthSurface,folder+"fold-depth.fgr");
+            IDirect3DSurface9* captured=nullptr;ok(bump.texture()->GetSurfaceLevel(0,&captured));save(d,captured,folder+"fold-captured-normal.fgr");drop(captured);
+            const auto off=image(folder+"native-normal-off.fgr"),on=image(folder+"normal-on.fgr");assert(off.bytes==16&&on.bytes==16&&off.pixels.size()==on.pixels.size());
+            float maximum=0;for(size_t i=0;i<off.pixels.size();i+=4){float a,b;std::memcpy(&a,off.pixels.data()+i,4);std::memcpy(&b,on.pixels.data()+i,4);assert(std::isfinite(a)&&std::isfinite(b));maximum=std::max(maximum,std::fabs(a-b));}
+            const bool neutral=std::getenv("NORTHLIGHT_TEST_TERRAIN_NEUTRAL")!=nullptr;
+            std::printf("TERRAIN_FULL_CAPTURE_FOLD neutral=%u slope=%.6f maximumRGBADelta=%.9g\n",unsigned(neutral),terrainFold,maximum);
+            if(neutral)assert(maximum<.002f);else assert(maximum>.002f);
+        }
         if(mode==1||mode==5){IDirect3DSurface9* map=nullptr;ok(bump.texture()->GetSurfaceLevel(0,&map));save(d,map,folder+(mode==1?"geometry-off-depth.fgr":"geometry-on-depth.fgr"));drop(map);}
         if(mode==4&&std::getenv("NORTHLIGHT_TEST_MATERIAL_DEMO")){IDirect3DSurface9* map=nullptr;if(bump.occlusionTexture()){ok(bump.occlusionTexture()->GetSurfaceLevel(0,&map));save(d,map,folder+"occlusion-factors.fgr");drop(map);}}
         if(materialProfiling&&mode<=4){ok(d->BeginScene());pixelAudit.sample(&materialProfile,nullptr,[&](UINT x,UINT y){
