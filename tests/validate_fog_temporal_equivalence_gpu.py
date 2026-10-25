@@ -6,7 +6,9 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
+import struct
 import subprocess
 import sys
 
@@ -18,7 +20,9 @@ from shader_compiler import DLL, DLL_SHA256, COMPATIBLE_DLL_SHA256, validate_ass
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--baseline-ref', required=True)
+    baseline = parser.add_mutually_exclusive_group(required=True)
+    baseline.add_argument('--baseline-ref', help='Git revision containing the reference shader sources')
+    baseline.add_argument('--baseline-dir', type=Path, help='Frozen shaders directory containing world_effects.hlsl and auto_bump_normal.hlsl')
     parser.add_argument('--backend', type=Path, required=True)
     parser.add_argument('--source', type=Path, default=ROOT / 'shaders/world_effects.hlsl')
     parser.add_argument('--output', type=Path, required=True)
@@ -27,10 +31,26 @@ def main():
     parser.add_argument('--reuse-compiled', action='store_true')
     args = parser.parse_args()
     assert os.name == 'nt', 'Windows D3D9 is required'
+    baseline_info = {'baseline_ref': args.baseline_ref,
+                     'baseline_dir': str(args.baseline_dir.resolve()) if args.baseline_dir else None}
+    if args.baseline_dir:
+        for filename in ('world_effects.hlsl', 'auto_bump_normal.hlsl'):
+            if not (args.baseline_dir / filename).is_file():
+                parser.error(f'Baseline directory is missing {filename}: {args.baseline_dir}')
     folder = args.output.resolve()
     folder.mkdir(parents=True, exist_ok=True)
     compiler, executable = folder / 'compile_shaders.exe', folder / 'fog-temporal-equivalence.exe'
     metadata = {}
+    distance_producer = None
+    if args.entry == 'FogBlur':
+        header = (ROOT / 'src/generated/world_compiled_shaders.h').read_bytes()
+        array = re.search(rb'static const DWORD kTemporalLightShader\[\]\s*=\s*\{([^}]+)\}', header)
+        assert array, 'Production TemporalLight bytecode is missing from the generated header'
+        code = b''.join(struct.pack('<I', int(word, 16)) for word in re.findall(rb'0x[0-9a-fA-F]+', array[1]))
+        assert code == (fp.COMPILED / 'TemporalLight.bin').read_bytes(), 'Production TemporalLight header/bin mismatch'
+        distance_producer = {'entry': 'TemporalLight', 'history_weight': 0, 'target': 'COLOR1/R32F',
+                             'shader_sha256': hashlib.sha256(code).hexdigest(),
+                             'generated_header_sha256': hashlib.sha256(header).hexdigest()}
     if not args.reuse_compiled:
         assert hashlib.sha256(DLL.read_bytes()).hexdigest() in (DLL_SHA256, COMPATIBLE_DLL_SHA256)
         subprocess.run([str(fp.zig()), 'c++', '-target', 'x86-windows-gnu', '-std=c++17', '-O2', '-UNDEBUG',
@@ -43,17 +63,23 @@ def main():
             source_folder = folder / name
             source_folder.mkdir(exist_ok=True)
             for filename in ('world_effects.hlsl', 'auto_bump_normal.hlsl'):
-                data = (subprocess.check_output(['git', 'show', f'{args.baseline_ref}:shaders/{filename}'], cwd=ROOT)
-                        if name == 'old' else (args.source if filename == 'world_effects.hlsl' else ROOT / 'shaders' / filename).read_bytes())
+                if name == 'old':
+                    data = ((args.baseline_dir / filename).read_bytes() if args.baseline_dir else
+                            subprocess.check_output(['git', 'show', f'{args.baseline_ref}:shaders/{filename}'], cwd=ROOT))
+                else:
+                    data = (args.source if filename == 'world_effects.hlsl' else ROOT / 'shaders' / filename).read_bytes()
                 (source_folder / filename).write_bytes(data)
             binary = source_folder / f'{args.entry}.bin'
             subprocess.run([str(compiler), str(source_folder / 'world_effects.hlsl'), args.entry, 'ps_3_0', str(binary)], check=True)
             metadata[name] = {'shader_sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
                               'source_sha256': hashlib.sha256((source_folder / 'world_effects.hlsl').read_bytes()).hexdigest(),
+                              'bump_include_sha256': hashlib.sha256((source_folder / 'auto_bump_normal.hlsl').read_bytes()).hexdigest(),
                               **validate_assembly(Path(str(binary) + '.asm'), 'ps_3_0')}
     else:
         previous = json.loads((folder / 'validation.json').read_text(encoding='utf-8'))
         assert previous.get('entry', 'FogTemporal') == args.entry
+        assert all(previous.get(key) == value for key, value in baseline_info.items()), 'Reused baseline differs from the requested baseline'
+        assert previous.get('distance_producer') == distance_producer, 'Reused executable has different production distance bytecode'
         metadata = previous['metadata']
     cases, failures = [], []
     configs = [(w, h, ib, ob) for w, h in ((256, 192), (137, 79)) for ib in (16, 32) for ob in (16, 32)]
@@ -65,8 +91,8 @@ def main():
                                 cwd=folder, capture_output=True, text=True, timeout=180)
         print(result.stdout, end='', flush=True)
         cases.extend(json.loads(line) for line in result.stdout.splitlines() if line.startswith('{'))
-        (folder / 'validation.json').write_bytes((json.dumps({'baseline_ref': args.baseline_ref, 'entry': args.entry, 'game_launched': False,
-            'metadata': metadata, 'cases': cases}, indent=2) + '\n').encode('utf-8'))
+        (folder / 'validation.json').write_bytes((json.dumps({**baseline_info, 'entry': args.entry, 'game_launched': False,
+            'distance_producer': distance_producer, 'metadata': metadata, 'cases': cases}, indent=2) + '\n').encode('utf-8'))
         if result.returncode:
             print(result.stderr, file=sys.stderr)
             failures.append((width, height, input_bits, output_bits, result.returncode))

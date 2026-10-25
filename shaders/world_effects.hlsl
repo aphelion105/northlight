@@ -4,6 +4,7 @@ sampler2D Scene : register(s0);
 sampler2D Depth : register(s1);
 sampler2D ShadowNear : register(s2);
 sampler2D ShadowFar : register(s3);
+sampler2D CurrentLocalLighting : register(s3); // WorldComposite: current local radiance after directional/GI filtering.
 sampler2D ProbeR : register(s4);
 sampler2D ProbeG : register(s5);
 sampler2D ProbeB : register(s6);
@@ -414,15 +415,16 @@ NormalDistanceOutput WorldNormals(float2 uv:TEXCOORD0) {
 
 struct LightingOutput {float4 correction:COLOR0;float4 baseline:COLOR1;};
 LightingOutput WorldLighting(float2 uv:TEXCOORD0) {
-    float4 smoothNormal=tex2Dlod(NormalBuffer,float4(uv,0,0));float2 halfUV=uv;
+    float2 halfUV=uv;
     uv=depthUV(uv);float d=normalizedDepth(uv);
     LightingOutput o;o.correction=float4(0,0,0,SourcePolicy.y);o.baseline=float4(max(AmbientLight.rgb,.15),1);
+    if(d>=.99999||waterDistance(uv,d)>0)return o;
+    float4 smoothNormal=tex2Dlod(NormalBuffer,float4(halfUV,0,0));
     float3 p=worldPosition(uv,d);float3 n=smoothNormal.xyz;
     // Fine material light is applied after the half-res spatial/temporal filters.
     // The legacy route remains available when there is no independent scene copy.
     float3 detailNormal=n;
     if(BumpControl.z<.5)detailNormal=autoBumpNormal(uv,p,n,viewDistance(d),InverseView[0].xyz,InverseView[1].xyz,InverseView[2].xyz);
-    if(d>=.99999||waterDistance(uv,d)>0)return o;
     float shadow=1;
     // 0.3.209 (task 29): the moving casters near the player shadow from the actor map (ActorShadow, written per source at this
     // pass's half-res grid; white when off); the near cascade skips those, so take the darker of both.
@@ -594,16 +596,17 @@ float4 regionalFogAt(float2 uv,out float coverage) {
 // lights the ground and walls around it. The separate point passes subtract
 // exactly the occluded contribution of each selected shadow-casting source.
 float4 LocalDirect(float2 uv:TEXCOORD0):COLOR0 {
-    float3 smoothNormal=tex2Dlod(NormalBuffer,float4(uv,0,0)).xyz;
+    float2 halfUV=uv;
+    uv=depthUV(uv);
+    float d=normalizedDepth(uv);
+    if(d>=.99999||waterDistance(uv,d)>0)return 0;
+    float3 smoothNormal=tex2Dlod(NormalBuffer,float4(halfUV,0,0)).xyz;
     // r47 K4: lamps read weaker in direct sun (30%). The first lighting pass (the sun, by day) left
     // its visibility in the baseline alpha (s12); LocalLightInfo.z is the share removed in full sun,
     // faded with the sun's elevation (0 at night, with shadows off or without an active sun).
     // Sun shadow and interiors keep 1.
-    float sunlit=saturate((tex2Dlod(BaselineLighting,float4(uv,0,0)).a-(1-GridInfo.z))/max(GridInfo.z,.001));
-    uv=depthUV(uv);
-    float d=normalizedDepth(uv);
+    float sunlit=saturate((tex2Dlod(BaselineLighting,float4(halfUV,0,0)).a-(1-GridInfo.z))/max(GridInfo.z,.001));
     float3 p=worldPosition(uv,d);float3 n=autoBumpNormal(uv,p,smoothNormal,viewDistance(d),InverseView[0].xyz,InverseView[1].xyz,InverseView[2].xyz);
-    if(d>=.99999||waterDistance(uv,d)>0)return 0;
     float3 result=0;
     // Unused slots are zero constants (reach 0), so no per-light branch is needed.
     // LocalLightColor.w is the precomputed 1/(end-start).
@@ -620,10 +623,11 @@ float4 LocalDirect(float2 uv:TEXCOORD0):COLOR0 {
 // both): the same term as LocalDirect per lamp, the lamps in entry uniforms c84..c99 (position, w attenuation end) and
 // c100..c115 (colour, w 1/(end-start)); c73..c78 retain material controls; unused slots are zero. c52 (LocalLightInfo.yz) and s12 as for LocalDirect.
 float4 LocalDirect16(float2 uv:TEXCOORD0,uniform float4 LampPos[16]:register(c84),uniform float4 LampColor[16]:register(c100)):COLOR0 {
-    float3 smoothNormal=tex2Dlod(NormalBuffer,float4(uv,0,0)).xyz;
-    float sunlit=saturate((tex2Dlod(BaselineLighting,float4(uv,0,0)).a-(1-GridInfo.z))/max(GridInfo.z,.001));
+    float2 halfUV=uv;
     uv=depthUV(uv);
     float d=normalizedDepth(uv);if(d>=.99999||waterDistance(uv,d)>0)return 0;
+    float3 smoothNormal=tex2Dlod(NormalBuffer,float4(halfUV,0,0)).xyz;
+    float sunlit=saturate((tex2Dlod(BaselineLighting,float4(halfUV,0,0)).a-(1-GridInfo.z))/max(GridInfo.z,.001));
     float3 p=worldPosition(uv,d);float3 n=autoBumpNormal(uv,p,smoothNormal,viewDistance(d),InverseView[0].xyz,InverseView[1].xyz,InverseView[2].xyz);
     float3 result=0;
     [unroll]for(int i=0;i<16;++i){
@@ -992,15 +996,25 @@ float4 upsampleFog(float2 uv,float centerDepth) {
 // gaps in the 0.09-unit shadow texels produce shafts one texel wide, which read
 // as rain; two 5-tap passes with a 2-texel stride turn them into soft beams.
 // Receiver depth keeps a near trunk's short path from bleeding into the sky.
+float blurReceiverDistance(float2 uv) {
+    // TemporalLight wrote this exact half-resolution centre's dry distance.
+    // Water still validates against the original scene distance, not a sky cap.
+    float z=tex2Dlod(CurrentDistance,float4(uv,0,0)).r;
+    if(WaterInfo.x>=.5){
+        float2 water=tex2Dlod(WaterMask,float4(depthUV(uv),0,0)).rg;
+        if(water.x>ImageClip.z&&water.x<=z+max(.012,water.x*.0007)&&water.y>.003)return water.x;
+    }
+    return z;
+}
 float4 FogBlur(float2 uv:TEXCOORD0):COLOR0 {
     float2 dimensions=ScreenSize.zw;
     float2 base=floor(uv*dimensions);
     float2 centerUV=(base+.5)/dimensions;
-    float center=receiverDistance(depthUV(centerUV),normalizedDepth(depthUV(centerUV)));
+    float center=blurReceiverDistance(centerUV);
     float4 sum=0;float total=0;
     [unroll]for(int i=-2;i<=2;++i){
         float2 q=(clamp(base+BlurInfo.xy*i,0,dimensions-1)+.5)/dimensions;
-        float z=receiverDistance(depthUV(q),normalizedDepth(depthUV(q)));
+        float z=i==0?center:blurReceiverDistance(q);
         float w=(i==0?6:(abs(i)==1?4:1))*exp(-abs(z-center)/max(.5,center*.06));
         sum+=tex2Dlod(FogBuffer,float4(q,0,0))*w;total+=w;
     }
@@ -1298,16 +1312,18 @@ float4 MaterialComposite(float2 uv:TEXCOORD0):COLOR0 {
     float4 color=tex2D(Scene,uv);
     float2 q=depthUV(uv);float d=normalizedDepth(q);float z=viewDistance(d);
     if(d>=.99999||waterDistance(q,d)>0||(BumpControl.x<=0&&MaterialOcclusionInfo.x<=0))return color;
+    float occlusionRange=MaterialOcclusionInfo.y>0?MaterialOcclusionInfo.y:BumpControl.y;
+    // Outside both effects' support the relighting delta is exactly zero.
+    [branch]if((BumpControl.x<=0||z>=BumpControl.y)&&(MaterialOcclusionInfo.x<=0||z>=occlusionRange))return float4(max(color.rgb,0),color.a);
     float3 v=viewPositionDistance(q,z);
     // Camera-relative derivatives avoid losing sub-centimetre detail at large map coordinates.
     float3 relative=v.x*InverseView[0].xyz+v.y*InverseView[1].xyz+v.z*InverseView[2].xyz;
     float3 normal=tex2Dlod(NormalBuffer,float4(uv,0,0)).xyz;
     float3 detail=autoBumpNormal(q,relative,normal,z,InverseView[0].xyz,InverseView[1].xyz,InverseView[2].xyz);
     float3 occlusion=1;
-    float occlusionRange=MaterialOcclusionInfo.y>0?MaterialOcclusionInfo.y:BumpControl.y;
     [branch]if(MaterialOcclusionInfo.x>0&&z<occlusionRange){
         float4 material=tex2Dlod(BumpMaterial,float4(q,0,0)),occ=tex2Dlod(MaterialOcclusion,float4(q,0,0));
-        float capturedZ=material.b/max(material.a,.001);
+        float capturedZ=abs(material.b)/max(material.a,.001);
         float valid=material.a>.02&&occ.a>.02&&abs(capturedZ-z)<max(.025,z*.0015);
         float fade=saturate((occlusionRange-z)/max(occlusionRange*.25,1));
         occlusion=lerp(1,saturate(occ.rgb/max(occ.a,.001)),valid*fade);
@@ -1336,7 +1352,7 @@ float4 MaterialAudit(float2 uv:TEXCOORD0):COLOR0 {
         clip(z<limit?1:-1);return 0;
     }
     float4 material=tex2Dlod(BumpMaterial,float4(q,0,0));
-    float valid=material.a>.02&&abs(material.b/max(material.a,.001)-z)<max(.025,z*.0015);
+    float valid=material.a>.02&&abs(abs(material.b)/max(material.a,.001)-z)<max(.025,z*.0015);
     if(BumpControl.w>3.5){
         clip(material.a>.02?1:-1);
         if(BumpControl.w>4.5)clip(valid?-1:1);

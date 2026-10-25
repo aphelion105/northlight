@@ -18,7 +18,9 @@ from shader_compiler import DLL, DLL_SHA256, COMPATIBLE_DLL_SHA256, validate_ass
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--baseline-ref', required=True)
+    baseline = parser.add_mutually_exclusive_group(required=True)
+    baseline.add_argument('--baseline-ref', help='Git revision containing shaders/effects.hlsl')
+    baseline.add_argument('--baseline-dir', type=Path, help='Frozen shader source directory containing effects.hlsl')
     parser.add_argument('--backend', type=Path, required=True)
     parser.add_argument('--source', type=Path, default=ROOT / 'shaders/effects.hlsl')
     parser.add_argument('--output', type=Path, default=fp.out() / 'nonm2-ao/validation')
@@ -40,8 +42,11 @@ def main():
                     str(ROOT / 'scripts/shaders/compile_shaders.cpp'), '-o', str(compiler)],
                    env=fp.zig_env(), check=True)
     shutil.copyfile(DLL, folder / DLL.name)
-    old = subprocess.run(['git', 'show', f'{args.baseline_ref}:shaders/effects.hlsl'],
-                         cwd=ROOT, capture_output=True, check=True).stdout
+    if args.baseline_dir:
+        old = (args.baseline_dir / 'effects.hlsl').read_bytes()
+    else:
+        old = subprocess.run(['git', 'show', f'{args.baseline_ref}:shaders/effects.hlsl'],
+                             cwd=ROOT, capture_output=True, check=True).stdout
     sources = {'old': old, 'new': args.source.read_bytes()}
     metadata = {}
     for name, source in sources.items():
@@ -64,7 +69,9 @@ def main():
                 assert 'AO_SPLIT_PROFILE_PASS' in result.stdout
             cases.extend(json.loads(line) for line in result.stdout.splitlines() if line.startswith('{'))
     assert all(row['changed_bytes'] == 0 for row in cases)
-    report = {'baseline_ref': args.baseline_ref, 'game_launched': False, 'profile_split': args.profile_split, 'metadata': metadata, 'cases': cases}
+    report = {'baseline_ref': args.baseline_ref,
+              'baseline_dir': str(args.baseline_dir.resolve()) if args.baseline_dir else None,
+              'game_launched': False, 'profile_split': args.profile_split, 'metadata': metadata, 'cases': cases}
     (folder / 'validation.json').write_bytes((json.dumps(report, indent=2) + '\n').encode('utf-8'))
     print(f'PASS {len(cases)} genuine old/new AOBlur comparisons; all FP16 components bit exact')
 

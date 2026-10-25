@@ -2,6 +2,7 @@
 #define main northlight_unused_composite_main
 #include "composite_distance_gpu.cpp"
 #undef main
+#include "../src/generated/world_compiled_shaders.h"
 
 static Image field(unsigned w,unsigned h,unsigned bits) {
     return {w,h,bits==16?D3DFMT_A16B16G16R16F:D3DFMT_A32B32G32R32F,bits/2,std::vector<unsigned char>(std::size_t(w)*h*bits/2)};
@@ -26,6 +27,15 @@ int main(int argc,char** argv) {
     D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=window;pp.BackBufferWidth=pp.BackBufferHeight=64;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;pp.PresentationInterval=D3DPRESENT_INTERVAL_IMMEDIATE;
     IDirect3DDevice9* d=nullptr;ok(api->CreateDevice(0,D3DDEVTYPE_HAL,window,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_FPU_PRESERVE,&pp,&d));
     IDirect3DPixelShader9* shaders[2]{};for(unsigned i=0;i<2;++i){auto code=read(argv[i+1]);ok(d->CreatePixelShader(reinterpret_cast<const DWORD*>(code.data()),&shaders[i]));}
+    IDirect3DPixelShader9* distanceShader=nullptr;
+    IDirect3DTexture9* currentDistance=nullptr;
+    IDirect3DSurface9 *distanceSurface=nullptr,*distanceColor=nullptr;
+    if(spatial){
+        ok(d->CreatePixelShader(kTemporalLightShader,&distanceShader));
+        ok(d->CreateTexture(W,H,1,D3DUSAGE_RENDERTARGET,D3DFMT_R32F,D3DPOOL_DEFAULT,&currentDistance,nullptr));
+        ok(currentDistance->GetSurfaceLevel(0,&distanceSurface));
+        ok(d->CreateRenderTarget(W,H,D3DFMT_A16B16G16R16F,D3DMULTISAMPLE_NONE,0,FALSE,&distanceColor,nullptr));
+    }
     IDirect3DTexture9* resolved=nullptr;IDirect3DSurface9 *resolveSurface=nullptr,*staging=nullptr;
     ok(d->CreateTexture(W,H,1,D3DUSAGE_RENDERTARGET,format,D3DPOOL_DEFAULT,&resolved,nullptr));ok(resolved->GetSurfaceLevel(0,&resolveSurface));
     ok(d->CreateOffscreenPlainSurface(W,H,format,D3DPOOL_SYSTEMMEM,&staging,nullptr));
@@ -71,10 +81,21 @@ int main(int argc,char** argv) {
         c[33][0]=float(fullW);c[33][1]=float(fullH);c[33][2]=float(W);c[33][3]=float(H);
         if(spatial){c[30][0]=shape%3!=0;c[34][shape%2]=2;}
         c[64][1]=shape==5?0:shape==15?1:shape==16?.12345f:.85f;
+        c[57][0]=0; // Production TemporalLight writes current distance before its history-disabled return.
         if(shape==7)c[56][0]=1000;
         if(shape==8)c[56][2]=-100;
         if(shape==9||shape==10){const float yaw=.045f;c[53][0]=c[55][2]=std::cos(yaw);c[53][2]=-std::sin(yaw);c[55][0]=std::sin(yaw);}
         ok(d->SetPixelShaderConstantF(0,c[0],68));
+        if(spatial){
+            // Generate the cache with production bytecode, preserving its exact
+            // full-depth -> half-grid center mapping. Its COLOR0 input is ct at
+            // s9; only COLOR1/R32F is consumed by FogBlur. No CPU linearization.
+            ok(d->SetTexture(15,nullptr));
+            ok(d->SetRenderTarget(0,distanceColor));ok(d->SetRenderTarget(1,distanceSurface));
+            ok(d->SetRenderState(D3DRS_COLORWRITEENABLE1,15));ok(d->SetViewport(&vp));
+            ok(d->SetPixelShader(distanceShader));draw(1);wait(event);
+            ok(d->SetRenderTarget(1,nullptr));ok(d->SetTexture(15,currentDistance));
+        }
         for(unsigned samples:{0u,2u,4u,8u}){
             if(fullW>256&&samples)continue;
             DWORD qualities=0;if(samples&&FAILED(api->CheckDeviceMultiSampleType(0,D3DDEVTYPE_HAL,format,TRUE,D3DMULTISAMPLE_TYPE(samples),&qualities)))continue;
@@ -98,6 +119,6 @@ int main(int argc,char** argv) {
         for(unsigned slot:{1u,9u,11u,14u,15u})ok(d->SetTexture(slot,nullptr));ct->Release();ht->Release();dt->Release();pt->Release();if(wt)wt->Release();
     }
     std::printf("FOG_TEMPORAL_EQUIVALENCE cases=%u failures=%u game_launched=false\n",cases,failures);
-    d->SetPixelShader(nullptr);for(auto shader:shaders)shader->Release();for(auto query:{event,start,end,frequency,disjoint})query->Release();staging->Release();resolveSurface->Release();resolved->Release();d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);UnregisterClassW(wc.lpszClassName,wc.hInstance);
+    d->SetPixelShader(nullptr);for(auto shader:shaders)shader->Release();if(distanceShader)distanceShader->Release();if(distanceSurface)distanceSurface->Release();if(currentDistance)currentDistance->Release();if(distanceColor)distanceColor->Release();for(auto query:{event,start,end,frequency,disjoint})query->Release();staging->Release();resolveSurface->Release();resolved->Release();d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);UnregisterClassW(wc.lpszClassName,wc.hInstance);
     return failures?1:0;
 }

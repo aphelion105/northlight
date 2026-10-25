@@ -94,16 +94,18 @@ float localVisibility(float3 delta,float3 normal) {
     return visibility*.25;
 }
 float4 LocalLighting(float2 uv:TEXCOORD0):COLOR0 {
-    float3 n=tex2Dlod(LocalNormals,float4(uv,0,0)).xyz;
-    float sunlit=saturate((tex2Dlod(LocalBaseline,float4(uv,0,0)).a-(1-LocalGain.z))/max(LocalGain.z,.001));
+    float2 screen=uv;
     uv=localDepthUV(uv);float depth=localDepth(uv);
-    float3 v=localView(uv,depth),p=localWorld(v);
-    float3 geometricNormal=n;n=autoBumpNormal(uv,p,n,localDistance(depth),LocalInverseView[0].xyz,LocalInverseView[1].xyz,LocalInverseView[2].xyz);
     if(depth>=.99999)return 0;
     if(LocalDepthInfo.y>.5){float2 w=tex2Dlod(LocalWater,float4(uv,0,0)).rg;
         if(w.x>LocalImage.z&&w.x<=localDistance(depth)+max(.012,w.x*.0007)&&w.y>.003)return 0;}
+    float3 v=localView(uv,depth),p=localWorld(v);
     float3 delta=p-LocalPosition.xyz;
     float distance=length(delta);if(distance>=LocalColor.w||distance<=.0001)return 0;
+    // Rejected receivers need neither material decoding nor lamp shading inputs.
+    float3 n=tex2Dlod(LocalNormals,float4(screen,0,0)).xyz;
+    float3 geometricNormal=n;n=autoBumpNormal(uv,p,n,localDistance(depth),LocalInverseView[0].xyz,LocalInverseView[1].xyz,LocalInverseView[2].xyz);
+    float sunlit=saturate((tex2Dlod(LocalBaseline,float4(screen,0,0)).a-(1-LocalGain.z))/max(LocalGain.z,.001));
     float inv=rsqrt(max(dot(delta,delta),.0025));
     float facing=saturate(dot(n,-delta)*inv);
     float atten=saturate((LocalColor.w-1/inv)*LocalPosition.w);

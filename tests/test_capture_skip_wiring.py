@@ -46,6 +46,6 @@ once(w,'captureSkipped=%u','sampled capture log marks skipped frames');assert 'c
 fin=w[w.index('    void finishActorScene(){'):w.index('    std::shared_ptr<const NorthlightActorGeometry::ActorJob> completedActorJob()')]
 assert fin.index('if(!actorCaptureEnabled())return;')<fin.index('lastActorCapture='),'no GI stamp without a capture'
 dec=w[w.index('    bool modelCaptureSkipped(){'):w.index('    void captureModel(')]
-assert 'in.actorDue=actorCaptureEnabled();' in dec and 'const bool shadows=NorthlightQuality::actorShadowWork(quality,effects.shadows);' in dec
+assert 'in.actorDue=actorCaptureEnabled();' in dec and 'const bool shadows=ready()&&NorthlightQuality::actorShadowWork(quality,effects.shadows);' in dec
 assert 'captureSkipPossible(quality,shadows)' in dec and 'in.shadows=shadows;' in dec and 'in.pointDue=in.shadows&&!in.actorDue&&!in.demand&&pointRefreshPredicted();' in dec
 print('capture-skip wiring: model-only skip inside WorldRenderer; selection/fate, GPU cache, proofs, bounds, point schedule, snapshot frame gated; commits only from capture frames')

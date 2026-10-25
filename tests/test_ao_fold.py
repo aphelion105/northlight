@@ -133,9 +133,9 @@ checks[f'equal depth: the dark side reaches at most 1 half-res px across (from x
 
 # 4. wiring
 effects_cpp = renderer[renderer.index('    void renderEffects() {'):renderer.index('template<class Capture> void prepareDraw(')]
-fold_line = 'const bool fold=world&&debugMode==0&&world->ready();'
+fold_line = 'const bool fold=world&&debugMode==0&&world->screenReady();'
 legacy_before = 'if(!fold&&!legacyComposite())return;'
-render_call = 'world->render(saved.targets[0],depthTex,width,height,sceneFormat,nearZ,farZ,worldMinDepth,worldMaxDepth,worldDebug,gpuProfile.get(),waterMask,fold?scene:nullptr,fold?ao:nullptr)'
+render_call = 'world->render(saved.targets[0],depthTex,width,height,sceneFormat,nearZ,farZ,worldMinDepth,worldMaxDepth,worldDebug,gpuProfile.get(),waterMask,fold?scene:nullptr,fold?ao:nullptr,frame)'
 legacy_after = 'if(fold&&!world->composited){effectState();bindEffects(ao);if(!legacyComposite())return;}'
 checks['proxy: FOLD condition, legacy composite before render only when not folding, after it only if not composited'] = (
     all(effects_cpp.count(s) == 1 for s in (fold_line, legacy_before, render_call, legacy_after))
@@ -181,7 +181,7 @@ checks['smoothRemoval: both Scene reads times the AO alpha; removalScale without
 wm = json.loads(fp.src('world-shader-build.json').read_text())['shaders']
 # 0.3.185: the removal smoothing (Scene, AO, baseline reads) moved to RemovalSmooth; TemporalLight keeps no s0/s10/s12 read and gains s9.
 checks[f"world manifest: WorldComposite {wm['WorldComposite']['static_instruction_slots']} <= 512 with s10; RemovalSmooth {wm['RemovalSmooth']['static_instruction_slots']} (s10 AO) <= 512; TemporalLight {wm['TemporalLight']['static_instruction_slots']} == 210"] = (
-    wm['WorldComposite']['static_instruction_slots'] <= 512 and wm['WorldComposite']['samplers'] == [0, 1, 2, 8, 9, 10, 11, 12, 13, 15]  # 0.3.202: the SM3 limit (512) replaces the old 500 headroom guard; the rain mask adds s13, the dither s2; gh#80 CurrentDistance s15
+    wm['WorldComposite']['static_instruction_slots'] <= 512 and wm['WorldComposite']['samplers'] == [0, 1, 2, 3, 8, 9, 10, 11, 12, 13, 15]  # 0.3.202: the SM3 limit (512) replaces the old 500 headroom guard; the rain mask adds s13, the dither s2; gh#80 CurrentDistance s15
     and wm['RemovalSmooth']['static_instruction_slots'] <= 512 and wm['RemovalSmooth']['samplers'] == [0, 1, 8, 10, 12, 14, 15]
     and wm['TemporalLight']['static_instruction_slots'] == 210 and  # Microsoft d3dcompiler_47 (Wine's builtin: 293)
     wm['TemporalLight']['samplers'] == [1, 8, 9, 14, 15])
