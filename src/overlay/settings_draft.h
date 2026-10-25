@@ -31,9 +31,9 @@ inline bool same(const Field& f,const std::string& a,const std::string& b){
     for(std::size_t i=0;i<x.size();++i){double p=0,q=0;if(!numeric(x[i],p)||!numeric(y[i],q)||std::fabs(p-q)>1e-6*std::max(1.0,std::fabs(q)))return false;}
     return true;
 }
-// AutoBumpTerrain/Walls/Grass are 0..2 integers in the schema but read as three named modes.
-inline bool modeField(const Field& f){return f.file==Quality&&(f.key=="AutoBumpTerrain"||f.key=="AutoBumpWalls"||f.key=="AutoBumpGrass");}
-inline std::vector<std::string> modeOptions(const Field& f){return std::atoi(f.high.c_str())>=2?std::vector<std::string>{"0","1","2"}:std::vector<std::string>{"0","1"};}
+// Material domains use named modes; grass exposes only its supported range.
+inline bool modeField(const Field& f){return f.file==Quality&&(f.key=="AutoBumpTerrain"||f.key=="AutoBumpWalls"||f.key=="AutoBumpGrass"||f.key=="AutoBumpModels");}
+inline std::vector<std::string> modeOptions(const Field& f){std::vector<std::string> out;for(int i=0;i<=std::atoi(f.high.c_str());++i)out.push_back(std::to_string(i));return out;}
 // Quality keys other than Preset and the named enums carry their per-preset values in options ("quality,balanced,performance").
 inline bool presetValued(const Field& f){return f.file==Quality&&f.key!="Preset"&&f.kind!="enum";}
 
@@ -100,11 +100,11 @@ inline bool canInherit(const Field& f){return f.available&&!(f.file==Renderer&&f
 // Keys a Quality field needs switched on (the old menu's dependencies; every GI* key needs GI).
 inline std::vector<std::string> dependencies(const Field& f){
     static const std::map<std::string,std::vector<std::string>> table={
-        {"AutoBumpStrength",{"AutoBump"}},{"AutoBumpDistance",{"AutoBump"}},{"AutoBumpTerrain",{"AutoBump"}},{"AutoBumpWalls",{"AutoBump"}},{"AutoBumpGrass",{"AutoBump"}},
+        {"AutoBumpStrength",{"AutoBump"}},{"AutoBumpDistance",{"AutoBump"}},{"AutoBumpTerrain",{"AutoBump"}},{"AutoBumpWalls",{"AutoBump"}},{"AutoBumpGrass",{"AutoBump"}},{"AutoBumpModels",{"AutoBump"}},{"AutoMaterialOcclusionDistance",{"AutoBump"}},
         {"AutoParallaxDepth",{"AutoBump"}},{"AutoParallaxDistance",{"AutoBump"}},{"AutoParallaxSteps",{"AutoBump"}},
         {"AutoParallaxShadows",{"AutoBump"}},{"AutoParallaxShadowStrength",{"AutoBump","AutoParallaxShadows"}},{"AutoParallaxShadowSteps",{"AutoBump","AutoParallaxShadows"}},
         {"AutoCavity",{"AutoBump"}},{"AutoCavityStrength",{"AutoBump","AutoCavity"}},
-        {"AOMethod",{"ContactAO"}},{"AOStrength",{"ContactAO"}},{"AORadius",{"ContactAO"}},
+        {"AOMethod",{"ContactAO"}},{"AOQuality",{"ContactAO"}},{"AOStrength",{"ContactAO"}},{"AORadius",{"ContactAO"}},
         {"ActorShadowBudgetMiB",{"ActorShadows"}},{"ActorShadowRadius",{"ActorShadows"}},{"ActorShadowCpuMs",{"ActorShadows"}},{"ActorShadowDetail",{"ActorShadows"}},
         {"PointShadowLimit",{"PointShadows"}},{"PointShadowRefreshMs",{"PointShadows"}},{"PointShadowFacesPerFrame",{"PointShadows"}},
         {"FogCloudDensity",{"FogClouds"}},{"RainFog",{"Weather"}},{"RenderProfile",{"Diagnostics"}},
