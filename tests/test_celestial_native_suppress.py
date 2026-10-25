@@ -45,15 +45,15 @@ assert 'EarlyDisc' not in host
 assert 'drawnEarly|=1u<<i;' in claim
 assert '{D3DRS_ZWRITEENABLE,FALSE}' in host
 late=host[host.index('    bool render(IDirect3DSurface9*'):host.index('    bool renderRing(')]
-assert late.count('drawDisc(')==1 and 'legacyFog,true,emission,true,skyBand.depth(maxZ)' in late
+assert late.count('drawDisc(')==3 and 'legacyFog,true,emission,true,skyBand.depth(maxZ)' in late  # + the two skybox-frame late draws (test_celestial_skybox.py)
 assert 'if(i==1)continue;' in late  # never repaint an unattenuated lunar halo after clouds
 assert 'MoonGlareSupport:4.f' in claim and 'surfaceVisible' in claim and 'glareVisible' in claim
 assert 'disc,glareBounds,nullptr,nullptr,0,earlyWorldMaxDepth,1,2,nullptr,false,bodies[i]->emission,true)' in claim
-assert '(occlude?0.f:NorthlightCelestialGlow::SunCoreWeight)' in host
-assert host.count('ownFrame=frames;')==2 and 'observer.finishObservations();ownFrame=frames;' in host
+assert '(occlude&&!fullGlare?0.f:NorthlightCelestialGlow::SunCoreWeight)' in host
+assert host.count('ownFrame=frames;')==2 and 'observer.finishObservations();ownFrame=renderFrame=frames;' in host
 assert 'bool owning()const{return ownFrame==frames||ownFrame+1==frames;}' in host
 glare=host[host.index('    bool claimNativeGlare('):host.index('    bool drawDisc(')]
-assert 'const unsigned owned=drawnEarly|drawnLate|offscreenOwned|suppressed|suppressedPrevious;' in glare
+assert 'const unsigned owned=drawnEarly|drawnLate|offscreenOwned|suppressed|suppressedPrevious|lateOwnedPrevious;' in glare
 assert '!owning()' in glare and 'NorthlightCelestialGlare::claim(glareIdentities,current,bound,owned)' in glare
 assert 'claimNoBody=%u' in host and 'suppressedDraws=%u suppressedGlares=%u' in host
 native_h=fp.src('celestial_disc_native.h').read_text()

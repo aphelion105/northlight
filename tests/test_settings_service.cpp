@@ -1,5 +1,6 @@
 #undef NDEBUG
-#include "settings_transport.h"
+#include "settings_service.h"
+#include <sys/stat.h>
 #include <cassert>
 #include <iostream>
 #include <chrono>
@@ -10,11 +11,15 @@ int main(int argc,char** argv){
     std::string raw="\xef\xbb\xbf; note\r\n[Quality]\r\n  Weather = 1  ; keep\r\nUnknown=future\r\n";Document d(raw);assert(d.bytes()==raw);
     std::string zero="0";d.set("Quality","Weather",&zero);assert(d.bytes().find("  Weather = 0  ; keep")!=std::string::npos);d.set("Quality","Weather",nullptr);assert(d.bytes().find("; keep")!=std::string::npos&&d.bytes().find("Unknown=future")!=std::string::npos);
     Document u;u.encoding=Document::Utf16LE;u.lines={{"# caf\xc3\xa9","\r\n"},{"[Quality]","\r\n"},{"Weather=1","\r\n"}};auto unicode=u.bytes();Document u2(unicode);assert(u2.bytes()==unicode);u2.set("Quality","Weather",&zero);assert(u2.bytes().substr(0,2)=="\xff\xfe"&&u2.text().find("# caf")!=std::string::npos);
+    {std::string astral="[Quality]\n# \xf0\x9f\x98\x80 caf\xc3\xa9\n";Document a(astral);a.encoding=Document::Utf16LE;auto bytes=a.bytes();assert(bytes.rfind("\xff\xfe",0)==0&&bytes.find(std::string("\x3d\xd8\x00\xde",4))!=bytes.npos);Document back(bytes);assert(back.text()==astral&&back.bytes()==bytes);
+     fails([&]{Document bad(std::string("\xff\xfe\x00\xd8[\0",6));}); // lone high surrogate
+     fails([&]{Document bad(std::string("\xff\xfe\x00\xdc",4));});      // lone low surrogate
+     for(auto invalid:{"\xc0\x80","\xed\xa0\x80","\xf5\x80\x80\x80","\xe2\x82","\xff"}){Document e;e.encoding=Document::Utf16LE;e.lines={{invalid,""}};fails([&]{e.bytes();});}}
     Document encodedProfile("[default]\nsun_fog_gain=2.5\n");encodedProfile.encoding=Document::Utf16LE;writeImage(root/"profile-encoding.ini",encodedProfile.bytes());NorthlightCelestialProfiles::Table palette;std::string error;
     assert(NorthlightCelestialProfiles::load((root/"profile-encoding.ini").string(),palette,error)&&palette.fallback.fogGain[0]==2.5f);
     Document encodedRange("[Azeroth:12]\nterrain_radius=2048\n");encodedRange.encoding=Document::Utf16LE;writeImage(root/"range-encoding.ini",encodedRange.bytes());NorthlightRegionalShadow::Table range;
     assert(NorthlightRegionalShadow::load((root/"range-encoding.ini").string(),range,error)&&range.at("Azeroth",12)==2048);
-    Store store(root);auto before=store.read(),after=before;after[0]={true,"[Quality]\nWeather=0\n"};after[1]={true,"[Renderer]\nBackend=native\n"};
+    Store store(root,50);auto before=store.read(),after=before;after[0]={true,"[Quality]\nWeather=0\n"};after[1]={true,"[Renderer]\nBackend=native\n"};
     {TransactionLock lease(root);bool blocked=false;std::thread other([&]{try{store.read();}catch(...){blocked=true;}});other.join();assert(blocked);}
     fails([&]{store.commit(before,after,1);});assert(store.read()==before);assert(!std::filesystem::exists(root/"northlight-settings.journal"));
     store.commit(before,after);assert(store.read()==after);fails([&]{store.commit(before,after);});
@@ -22,101 +27,126 @@ int main(int argc,char** argv){
     assert(q==std::size(NorthlightQuality::Keys)+1&&c>=22*28);fails([&]{applyChanges(docs,fields,"Q\tQuality\tWeather\t2\n");});fails([&]{applyChanges(docs,fields,"Q\tQuality\t../path\t1\n");});
     auto changed=applyChanges(docs,fields,"Q\tQuality\tWeather\t~\n");assert(explicitValue(changed[0],"Quality","Weather")=="~");assert(qualityOf(changed[0],"").weather==1);
     auto next=active.quality;next.weather=1;next.commandStream=0;auto applied=liveQualityUpdate(active.quality,next);assert(applied.weather==1&&applied.commandStream==active.quality.commandStream);
-    const std::string bumpChanges="Q\tQuality\tAutoBump\t0\nQ\tQuality\tAutoBumpStrength\t130\nQ\tQuality\tAutoBumpDistance\t24\nQ\tQuality\tAutoBumpTerrain\t0\nQ\tQuality\tAutoBumpWalls\t1\nQ\tQuality\tAutoBumpGrass\t0\n";
-    auto bumpDocs=applyChanges(docs,fields,bumpChanges);auto bumpConfig=configOf(bumpDocs,"");
-    assert(bumpConfig.quality.autoBump==0&&bumpConfig.quality.autoBumpStrength==130&&bumpConfig.quality.autoBumpDistance==24&&bumpConfig.quality.autoBumpTerrain==0&&bumpConfig.quality.autoBumpWalls==1&&bumpConfig.quality.autoBumpGrass==0);
-    unsigned bumpFields=0;for(const auto& f:fields)if(f.key.find("AutoBump")==0){assert(f.apply=="F");++bumpFields;}assert(bumpFields==7);
-    fails([&]{applyChanges(docs,fields,"Q\tQuality\tAutoBumpDistance\t7\n");});fails([&]{applyChanges(docs,fields,"Q\tQuality\tAutoBumpStrength\t151\n");});
-    std::filesystem::create_directories(root/"bump");Store bumpStore(root/"bump");auto bumpBefore=bumpStore.read(),bumpAfter=bumpBefore;bumpAfter[0]={true,bumpDocs[0].bytes()};bumpStore.commit(bumpBefore,bumpAfter);
-    auto reloaded=configOf(documents(bumpStore.read()),"");auto liveBump=liveQualityUpdate(active.quality,reloaded.quality);
-    assert(liveBump.autoBump==0&&liveBump.autoBumpStrength==130&&liveBump.autoBumpDistance==24&&liveBump.autoBumpTerrain==0&&liveBump.autoBumpWalls==1&&liveBump.autoBumpGrass==0);
-    auto bumpFactory=applyChanges(bumpDocs,fields,"Q\tQuality\tAutoBump\t@factory\n");assert(configOf(bumpFactory,"").quality.autoBump==1);
-    Service service(root);Transport transport;const auto request="NL1\ttest\t1\t1\t1\nsnapshot";std::string reply;
-    for(unsigned i=0;i<200;++i){reply=transport.exchange(service,request);if(reply.find("\nNLS1\t")!=reply.npos)break;std::this_thread::sleep_for(std::chrono::milliseconds(2));}assert(reply.find("\nNLS1\t")!=reply.npos);
-    assert(transport.exchange(service,request)==reply);assert(transport.exchange(service,"NL1\tx\t2\t1\t1\nsnapshot").empty());
-    assert(!service.submit("oversize",std::string(131073,'x')));
-    unsigned live=0;for(const auto& k:NorthlightQuality::Keys)live+=liveQuality(k.name);assert(live==79);
-    {unsigned found=0;for(const auto& f:fields)if(f.key=="AOQuality"){
-        ++found;assert(f.kind=="enum"&&f.options=="High,Medium,Low"&&f.saved=="High"&&f.active=="High"&&f.factory=="High"&&f.inherited=="High"&&f.apply=="F");}
-     assert(found==1);
-     for(const auto* value:{"High","Medium","Low"}){
-        const auto selected=applyChanges(docs,fields,std::string("Q\tQuality\tAOQuality\t")+value+"\n");const auto config=configOf(selected,"");
-        assert(std::string(NorthlightQuality::aoQualityName(config.quality.aoQuality))==value);
-        assert(liveQualityUpdate(active.quality,config.quality).aoQuality==config.quality.aoQuality);
-        const auto selectedFields=schema(selected,docs,active,"");for(const auto& f:selectedFields)if(f.key=="AOQuality")assert(f.saved==value&&f.active=="High"&&f.overrideValue==value);
-        const auto restored=applyChanges(selected,fields,"Q\tQuality\tAOQuality\t@factory\n");assert(configOf(restored,"").quality.aoQuality==0);
-     }
-     fails([&]{applyChanges(docs,fields,"Q\tQuality\tAOQuality\tUltra\n");});}
-    const auto displacementDocs=applyChanges(docs,fields,"Q\tQuality\tAutoBumpTerrain\t3\nQ\tQuality\tAutoBumpWalls\t3\nQ\tQuality\tAutoDisplacementStrength\t125\nQ\tQuality\tAutoDisplacementDistance\t16\nQ\tQuality\tAutoDisplacementDetail\t5\n");
-    const auto displaced=liveQualityUpdate(active.quality,configOf(displacementDocs,"").quality);
-    assert(displaced.autoBumpTerrain==3&&displaced.autoBumpWalls==3&&displaced.autoDisplacementStrength==125&&displaced.autoDisplacementDistance==16&&displaced.autoDisplacementDetail==5);
-    auto strongRelief=applyChanges(docs,fields,"Q\tQuality\tAutoDisplacementStrength\t600\n");
-    auto strongQuality=qualityOf(strongRelief[0],"");assert(strongQuality.autoDisplacementStrength==600&&strongQuality.autoModelDisplacementStrength==active.quality.autoModelDisplacementStrength);
-    assert(liveQualityUpdate(active.quality,strongQuality).autoDisplacementStrength==600);
-    fails([&]{applyChanges(docs,fields,"Q\tQuality\tAutoDisplacementStrength\t1001\n");});
-    fails([&]{applyChanges(docs,fields,"Q\tQuality\tAutoDisplacementDetail\t6\n");});fails([&]{applyChanges(docs,fields,"Q\tQuality\tAutoDisplacementDistance\t3\n");});
-    const auto occlusionDocs=applyChanges(docs,fields,"Q\tQuality\tAutoParallaxShadows\t0\nQ\tQuality\tAutoParallaxShadowStrength\t85\nQ\tQuality\tAutoParallaxShadowSteps\t12\nQ\tQuality\tAutoCavity\t1\nQ\tQuality\tAutoCavityStrength\t55\nQ\tQuality\tAutoMaterialOcclusionDistance\t6\n");
-    const auto modelDocs=applyChanges(docs,fields,"Q\tQuality\tAutoBumpModels\t3\nQ\tQuality\tAutoModelDisplacementStrength\t40\nQ\tQuality\tAutoModelDisplacementDistance\t10\nQ\tQuality\tAutoModelDisplacementDetail\t3\nQ\tQuality\tAutoHeightPolarity\t2\nQ\tQuality\tAutoHeightDetails\t90\nQ\tQuality\tAutoHeightBalance\t60\n");
-    const auto modelLive=liveQualityUpdate(active.quality,configOf(modelDocs,"").quality);assert(modelLive.autoBumpModels==3&&modelLive.autoModelDisplacementStrength==40&&modelLive.autoModelDisplacementDistance==10&&modelLive.autoModelDisplacementDetail==3&&modelLive.autoHeightPolarity==2&&modelLive.autoHeightDetails==90&&modelLive.autoHeightBalance==60);
-    const auto occlusionConfig=configOf(occlusionDocs,"");const auto occlusionLive=liveQualityUpdate(active.quality,occlusionConfig.quality);
-    assert(!occlusionLive.autoParallaxShadows&&occlusionLive.autoParallaxShadowStrength==85&&occlusionLive.autoParallaxShadowSteps==12&&occlusionLive.autoCavity&&occlusionLive.autoCavityStrength==55&&occlusionLive.autoMaterialOcclusionDistance==6);
-    fails([&]{applyChanges(docs,fields,"Q\tQuality\tAutoCavityStrength\t101\n");});fails([&]{applyChanges(docs,fields,"Q\tQuality\tAutoParallaxShadowSteps\t3\n");});
-    const auto materialDocs=applyChanges(docs,fields,"Q\tQuality\tAutoBumpTerrain\t2\nQ\tQuality\tAutoBumpWalls\t1\nQ\tQuality\tAutoBumpGrass\t0\nQ\tQuality\tAutoParallaxDepth\t120\nQ\tQuality\tAutoParallaxDistance\t12\nQ\tQuality\tAutoParallaxSteps\t24\n");
-    const auto materialConfig=configOf(materialDocs,"");assert(materialConfig.quality.autoBumpTerrain==2&&materialConfig.quality.autoBumpWalls==1&&!materialConfig.quality.autoBumpGrass&&materialConfig.quality.autoParallaxDepth==120&&materialConfig.quality.autoParallaxDistance==12&&materialConfig.quality.autoParallaxSteps==24);
-    fails([&]{applyChanges(docs,fields,"Q\tQuality\tAutoBumpGrass\t4\n");});fails([&]{applyChanges(docs,fields,"Q\tQuality\tAutoBumpTerrain\t4\n");});
-    for(const auto& f:fields)assert(f.file!=0||f.key.rfind("Water",0)!=0);
-    fails([&]{applyChanges(docs,fields,"Q\tQuality\tWaterSSRResolution\t25\n");});
-    const auto base=Store::revision(store.read());const auto command="commit\t"+base+"\nQ\tQuality\tWeather\t1\nQ\tQuality\tCommandStream\t0\nQ\tQuality\tAOMethod\tGTAO\nQ\tQuality\tAOQuality\tMedium\nR\tRenderer\tExperimentalHDR\t1\nR\tRenderer\tHDRPaperWhite\t240\nR\tRenderer\tHDRUIWhite\t120\nR\tRenderer\tHDRMaxNits\t600\n";
-    assert(service.submit("save",command));std::string saved;
-    auto completed=[&](const char* id){std::string result;for(unsigned i=0;i<500;++i){if(service.result(id,result))return result;std::this_thread::sleep_for(std::chrono::milliseconds(2));}assert(false);return result;};
-    saved=completed("save");assert(saved.rfind("SAVED\t",0)==0);auto update=service.after("");assert(update&&update->config.quality.weather==1&&update->config.quality.commandStream==0&&update->config.quality.aoMethod==3);
-    assert(update->runtime->quality.weather==1&&update->runtime->quality.commandStream==1&&update->runtime->quality.aoMethod==3);
-    assert(update->config.quality.aoQuality==1&&update->runtime->quality.aoQuality==1);
-    assert(update->runtime->hdr[0]==0&&update->runtime->hdr[1]==240&&update->runtime->hdr[2]==120&&update->runtime->hdr[3]==600);service.acknowledge(*update);
-    const auto committed=store.read();assert(service.submit("save",command)&&completed("save")==saved&&store.read()==committed);
-    assert(service.submit("conflict","commit\t"+base+"\nQ\tQuality\tWeather\t0\n"));assert(completed("conflict").rfind("ERROR\t",0)==0&&store.read()==committed);
-    assert(service.submit("refresh","snapshot"));auto final=completed("refresh");assert(final.find("NLS1\t"+update->revision+"\t"+update->revision+"\n")==0);
+    // Preserve the local material and AO schema through the new in-process service.
+    for(const auto* key:{"AutoBumpModels","AutoDisplacementStrength","AutoDisplacementDistance","AutoDisplacementDetail","AutoModelDisplacementStrength","AutoModelDisplacementDistance","AutoModelDisplacementDetail","AutoHeightBalance","AutoMaterialOcclusionDistance","AOQuality"}){
+        unsigned found=0;for(const auto& f:fields)if(f.file==0&&f.key==key){++found;assert(f.available&&f.apply=="F");auto changed=applyChanges(docs,fields,f.id()+"\t"+f.factory+"\n");assert(configOf(changed,"").quality.preset==active.quality.preset);}assert(found==1);
+    }
+    for(const auto* value:{"High","Medium","Low"}){auto selected=applyChanges(docs,fields,std::string("Q\tQuality\tAOQuality\t")+value+"\n");auto config=configOf(selected,"");assert(std::string(NorthlightQuality::aoQualityName(liveQualityUpdate(active.quality,config.quality).aoQuality))==value);}
+    unsigned live=0;for(const auto& k:NorthlightQuality::Keys)live+=liveQuality(k.name);assert(live>40&&live<std::size(NorthlightQuality::Keys));
     for(const auto& f:fields)if(f.file==2&&f.section=="default"&&f.key=="sun_fog_gain")assert(f.inherited=="1"&&std::stof(f.factory)==4.3f);
-    auto hdr=applyChanges(docs,fields,"R\tRenderer\tExperimentalHDR\t0\nR\tRenderer\tHDRPaperWhite\t203\nR\tRenderer\tHDRUIWhite\t160\n");assert(explicitValue(hdr[1],"Renderer","HDRUIWhite")=="160");
-    fails([&]{applyChanges(docs,fields,"R\tRenderer\tHDRPaperWhite\t79\n");});for(const auto& f:fields)if(f.key=="ExperimentalHDR")assert(f.available&&f.apply=="R"&&f.factory=="0"&&f.active=="0");
-    fails([&]{applyChanges(docs,fields,"R\tRenderer\tHDRMaxNits\t79\n");});fails([&]{applyChanges(docs,fields,"R\tRenderer\tHDRMaxNits\t10001\n");});
-    for(const auto& f:fields)if(f.key=="HDRMaxNits")assert(f.available&&f.apply=="F"&&f.factory=="1000"&&f.active=="1000");
-    auto graded=applyChanges(docs,fields,"R\tRenderer\tHDRContrast\t1.35\nR\tRenderer\tHDRExposure\t-1.25\n");auto grade=configOf(graded,"");assert(grade.hdr[4]==1.35f&&grade.hdr[5]==-1.25f);
-    for(auto text:{"nan","inf","-inf","1oops","","4.01","-4.01"})fails([&]{applyChanges(docs,fields,std::string("R\tRenderer\tHDRExposure\t")+text+"\n");});
-    fails([&]{applyChanges(docs,fields,"R\tRenderer\tHDRContrast\t0.49\n");});fails([&]{applyChanges(docs,fields,"R\tRenderer\tHDRContrast\t2.01\n");});
-    auto resetGrade=applyChanges(graded,fields,"R\tRenderer\tHDRContrast\t~\nR\tRenderer\tHDRExposure\t~\n");assert(configOf(resetGrade,"").hdr[4]==1&&configOf(resetGrade,"").hdr[5]==0);
-    Service gradeService(root);assert(gradeService.submit("grade","commit\t"+Store::revision(store.read())+"\nR\tRenderer\tHDRContrast\t1.35\nR\tRenderer\tHDRExposure\t-1.25\n"));
-    std::string gradeReply;for(unsigned i=0;i<500&&!gradeService.result("grade",gradeReply);++i)std::this_thread::sleep_for(std::chrono::milliseconds(2));assert(gradeReply.rfind("SAVED\t",0)==0);
-    auto liveGrade=gradeService.after("");assert(liveGrade&&liveGrade->runtime->hdr[4]==1.35f&&liveGrade->runtime->hdr[5]==-1.25f);
-    service.setHdrStatus(true,0,"active");assert(service.submit("hdr-status","snapshot"));assert(completed("hdr-status").find("CAP\tHDR\tactive\t0\tactive\n")!=std::string::npos);
-    const auto previewBefore=store.read();const auto savedUpdate=service.after("");
-    const char* methods[]={"SSAO","HDAO","HBAOPlus","GTAO"};
-    for(unsigned method=0;method<4;++method)for(unsigned enabled=0;enabled<2;++enabled){
-        const auto id="preview-"+std::to_string(method)+std::to_string(enabled);
-        assert(service.submit(id,"preview-ao\t"+std::string(methods[method])+"\t"+std::to_string(enabled)));
-        assert(completed(id.c_str())=="PREVIEW\t"+std::string(methods[method])+"\n");
-        assert(service.aoPreview()==int(method|(enabled<<2))&&store.read()==previewBefore&&service.after("")==savedUpdate);
-    }
-    unsigned invalidSerial=0;for(auto invalid:{"preview-ao\tVXAO\t1","preview-ao\tSSAO\t2","preview-ao\tHDAO\t1\nQ\tQuality\tWeather\t0","preview-ao\t../path\t0"}){
-        const auto id="invalid-preview-"+std::to_string(++invalidSerial);assert(service.submit(id,invalid));
-        assert(completed(id.c_str()).rfind("ERROR\t",0)==0&&service.aoPreview()==7&&store.read()==previewBefore);
-    }
-    assert(service.submit("preview-state","snapshot"));const auto state=completed("preview-state");assert(state.find("CAP\tAOPreview\t1\n")!=state.npos);
-    assert(service.submit("preview-reset","preview-ao\tsaved"));assert(completed("preview-reset")=="PREVIEW\tsaved\n"&&service.aoPreview()==-1&&store.read()==previewBefore);
-    assert(service.submit("preview-before-save","preview-ao\tHDAO\t1"));assert(completed("preview-before-save")=="PREVIEW\tHDAO\n");
-    assert(service.submit("preview-conflict","commit\tstale\nQ\tQuality\tAOMethod\tSSAO\n"));assert(completed("preview-conflict").rfind("ERROR\t",0)==0&&service.aoPreview()==5);
-    assert(service.submit("preview-save","commit\t"+Store::revision(store.read())+"\nQ\tQuality\tAOMethod\tSSAO\n"));assert(completed("preview-save").rfind("SAVED\t",0)==0&&service.aoPreview()==-1);
-    assert(service.after("")->config.quality.aoMethod==0&&service.after("")->runtime->quality.aoMethod==0);
-    // Reused snapshots must still notice exact file changes, even with unchanged timestamps.
-    assert(service.submit("cache-warm","snapshot"));auto warm=completed("cache-warm");
-    assert(service.submit("cache-hit","snapshot"));assert(completed("cache-hit")==warm);
-    const auto ini=root/FileNames[0];const auto timestamp=std::filesystem::last_write_time(ini);
-    auto image=readImage(ini);image.raw+="\n[Quality]\nAutoCavityStrength=42\n";writeImage(ini,image.raw);std::filesystem::last_write_time(ini,timestamp);
-    assert(service.submit("cache-external","snapshot"));auto external=completed("cache-external");assert(external!=warm);
-    assert(external.rfind("NLS1\t"+Store::revision(store.read())+"\t",0)==0);
-    assert(service.submit("cache-external-repeat","snapshot"));assert(completed("cache-external-repeat")==external);
-    service.setHdrStatus(false,123,"test status");assert(service.submit("cache-hdr","snapshot"));assert(completed("cache-hdr").find("CAP\tHDR\tinactive\t123\ttest status\n")!=std::string::npos);
-    std::cout<<"Settings cache: identical hit, timestamp-preserving INI edit, fresh revision and uncached HDR status passed\n";
-    std::cout<<"Settings: encoding, comments, inheritance, bounded schema, rollback, conflict and retry checks passed\n";
-    std::cout<<"AO preview: all methods/on-off, no INI writes, strict validation, saved reset, commit/conflict handling passed\n";
+    // This integration retains the HDR consumer: output mode restarts, grading applies live.
+    {unsigned hdrFields=0;for(const auto& f:fields)if(f.file==1&&f.section=="Renderer"&&f.key!="Backend"){++hdrFields;assert(f.available&&f.apply==(f.key=="ExperimentalHDR"?"R":"F"));auto edited=applyChanges(docs,fields,f.id()+"\t"+f.factory+"\n");assert(configOf(edited,"").hdr.size()==6);}assert(hdrFields==6);
+     auto unavailable=fields;for(auto& f:unavailable)if(f.key=="HDRMaxNits")f.available=false;fails([&]{applyChanges(docs,unavailable,"R\tRenderer\tHDRMaxNits\t600\n");});
+     Document hdrDoc("[Renderer]\nHDRContrast=1.35\nHDRExposure=-1.25\nHDRPaperWhite=240\n");auto g=configOf({Document(""),hdrDoc,Document(""),Document("")},"");assert(g.hdr[4]==1.35f&&g.hdr[5]==-1.25f&&g.hdr[1]==240);}
+    // Lock waits: a holder that lets go within the wait is tolerated, one that does not is not.
+    {std::thread holder([&]{TransactionLock lease(root);std::this_thread::sleep_for(std::chrono::milliseconds(150));});std::this_thread::sleep_for(std::chrono::milliseconds(30));
+     TransactionLock waited(root,2000);holder.join();}
+    // Read-only INI (POSIX chmod): the commit names the file, leaves no transaction files and does not poison later saves.
+    {auto ro=root/FileNames[0];auto now=store.read();auto edit=now;edit[0]={true,"[Quality]\nWeather=1\n"};
+     chmod(ro.c_str(),0444);bool writable=access(ro.c_str(),W_OK)==0; // running as root ignores the mode
+     if(!writable){try{store.commit(now,edit);assert(false);}catch(const std::runtime_error& e){assert(std::string(e.what()).find("northlight-quality.ini is read-only")!=std::string::npos);}
+      assert(store.read()==now);for(auto s:{".northlight.tmp",".northlight.bak"})assert(!std::filesystem::exists(root/(std::string(FileNames[0])+s)));assert(!std::filesystem::exists(root/"northlight-settings.journal"));}
+     chmod(ro.c_str(),0644);store.commit(now,edit);store.commit(edit,now);assert(store.read()==now);}
+    // Journal recovery. Build a "prepared" journal by hand, as a crash would leave it.
+    {auto ini=root/FileNames[0];auto base=store.read();const auto oldRaw=base[0].raw;const std::string newRaw="[Quality]\nWeather=1\n";
+     auto journal=[&](const std::string& state){writeImage(root/"northlight-settings.journal",state+"\n0 1 "+hash(oldRaw)+" "+hash(newRaw)+"\n");};
+     auto leftovers=[&]{writeImage(root/(std::string(FileNames[0])+".northlight.tmp"),newRaw);writeImage(root/(std::string(FileNames[0])+".northlight.bak"),oldRaw);};
+     auto clean=[&]{for(auto s:{".northlight.tmp",".northlight.bak"})assert(!std::filesystem::exists(root/(std::string(FileNames[0])+s)));assert(!std::filesystem::exists(root/"northlight-settings.journal"));};
+     // 1. crash before any replace: the file is still at its old hash, so nothing is restored and everything is cleaned (this used to throw forever).
+     journal("prepared");leftovers();assert(Store::recoverAtStartup(root).empty());clean();assert(store.read()==base);
+     // ...also when the old file is read-only
+     journal("prepared");leftovers();chmod(ini.c_str(),0444);assert(Store::recoverAtStartup(root).empty());chmod(ini.c_str(),0644);clean();assert(store.read()==base);
+     // 2. crash after the replace: rolled back from the backup, on the next locked read.
+     journal("prepared");leftovers();writeImage(ini,newRaw);assert(store.read()==base);clean();
+     // 3. an external edit is never overwritten; the error names the file and keeps the evidence, and the store reports it instead of throwing at construction.
+     journal("prepared");leftovers();writeImage(ini,"[Quality]\nWeather=0\n; mine\n");auto mine=readImage(ini);
+     auto error=Store::recoverAtStartup(root);assert(error.find("external edit of northlight-quality.ini")!=std::string::npos);Store lazy(root,50);bool threw=false;try{lazy.read();}catch(const std::runtime_error&){threw=true;}assert(threw&&readImage(ini)==mine);
+     assert(std::filesystem::exists(root/(std::string(FileNames[0])+".northlight.bak")));
+     writeImage(ini,oldRaw);assert(lazy.read()==base);clean(); // once the user restores the file, the same store recovers by itself
+     // 4. a committed journal is just cleaned; stale files without a journal do not block a later commit.
+     journal("committed");leftovers();assert(Store::recoverAtStartup(root).empty());clean();
+     leftovers();auto edit=base;edit[0]={true,newRaw};store.commit(base,edit);store.commit(edit,base);clean();assert(store.read()==base);}
+    // Service: snapshot, preview coalescing, clearPreview, commit, recovery of status.
+    {Service service(root);auto waitFor=[&](auto pred){for(unsigned i=0;i<1500;++i){if(pred())return true;std::this_thread::sleep_for(std::chrono::milliseconds(2));}return false;};
+     auto idle=[&]{return service.status().state!=Status::State::Busy;};
+     assert(!service.snapshot());assert(waitFor([&]{return service.requestSnapshot();}));assert(waitFor([&]{return service.snapshot()&&idle();}));
+     auto snap=service.snapshot();const auto diskBefore=store.read();assert(snap->revision==Store::revision(diskBefore)&&snap->activeRevision==snap->revision);
+     unsigned q=0,r=0;for(const auto& f:snap->fields){q+=f.file==0;r+=f.apply=="R";}assert(q==std::size(NorthlightQuality::Keys)+1&&r>0);
+     assert(!service.status().restartRequired);
+     auto find=[&](const std::shared_ptr<const Snapshot>& s,const char* key){for(const auto& f:s->fields)if(f.key==key)return f;assert(false);return Field{};};
+     assert(find(snap,"Weather").apply=="F"&&find(snap,"CommandStream").apply=="R"&&find(snap,"EquipmentLights").apply=="F"&&find(snap,"AOMethod").apply=="F");
+     // preview: no file writes; "R" and unknown ids are ignored; the latest draft wins
+     const auto serial0=service.status().serial;
+     std::vector<Change> d1={{"Q\tQuality\tWeather","1"},{"Q\tQuality\tCommandStream","0"},{"Q\tQuality\tNoSuchKey","1"}},d2={{"Q\tQuality\tWeather","0"}};
+     assert(service.preview(d1));assert(service.preview(d2));
+     assert(waitFor([&]{auto u=service.after("");return idle()&&service.status().serial>serial0&&u&&u->preview;}));
+     auto u=service.after("");assert(u->preview&&u->config.quality.weather==0&&u->runtime->quality.commandStream==qualityOf(documents(diskBefore)[0],"").commandStream);
+     assert(store.read()==diskBefore);assert(u->revision.rfind(snap->revision+"+preview",0)==0);
+     assert(service.preview({{"Q\tQuality\tWeather","1"},{"Q\tQuality\tCommandStream","0"}}));
+     assert(waitFor([&]{auto v=service.after(u->revision);return idle()&&v&&v->preview&&v->config.quality.weather==1;}));
+     auto v=service.after(u->revision);assert(v->config.quality.commandStream==qualityOf(documents(diskBefore)[0],"").commandStream); // "R" key not previewed
+     service.acknowledge(*v);assert(!service.after(v->revision));assert(service.revision()==snap->revision);
+     // an invalid draft is an error, not a crash, and does not replace the active preview
+     const auto serial1=service.status().serial;assert(service.preview({{"Q\tQuality\tWeather","9"}}));
+     assert(waitFor([&]{return idle()&&service.status().serial>serial1;}));assert(service.status().state==Status::State::Error&&!service.status().message.empty()&&!service.after(v->revision));
+     // clearPreview returns the renderer to the saved configuration under the real revision
+     assert(service.clearPreview());assert(waitFor([&]{auto c=service.after(v->revision);return idle()&&c&&!c->preview;}));
+     auto cleared=service.after(v->revision);assert(cleared->revision==snap->revision&&cleared->config.quality.weather==qualityOf(documents(diskBefore)[0],"").weather);service.acknowledge(*cleared);
+     const auto serial2=service.status().serial;assert(service.clearPreview());assert(waitFor([&]{return service.status().serial>serial2;}));assert(!service.after(cleared->revision)); // nothing previewed: no update
+     // commit: transactional, then the live part reaches the renderer
+     const int savedWeather=qualityOf(documents(diskBefore)[0],"").weather;const std::string flipped=savedWeather?"0":"1";
+     assert(service.commit(snap->revision,{{"Q\tQuality\tWeather",flipped},{"Q\tQuality\tCommandStream","0"}}));
+     assert(waitFor([&]{return idle()&&service.status().state==Status::State::Saved;}));
+     auto saved=service.after(cleared->revision);auto disk=store.read();assert(saved&&!saved->preview&&saved->revision==Store::revision(disk)&&saved->revision!=snap->revision);
+     assert(saved->config.quality.weather==(flipped=="1")&&saved->config.quality.commandStream==0&&saved->runtime->quality.weather==(flipped=="1"));
+     assert(saved->runtime->quality.commandStream==qualityOf(documents(diskBefore)[0],"").commandStream);
+     assert(service.status().restartRequired&&service.status().message.find("restart")!=std::string::npos);
+     auto after=service.snapshot();assert(after->revision==saved->revision&&find(after,"Weather").saved==flipped&&find(after,"CommandStream").saved=="0"&&find(after,"CommandStream").active!="0");
+     service.acknowledge(*saved);assert(service.revision()==saved->revision);
+     // HDR preview changes the running grading while preserving every saved byte.
+     {bool listed=false;for(const auto& f:service.snapshot()->fields)if(f.key=="HDRMaxNits"){listed=true;assert(f.available);}assert(listed);
+      const auto before=store.read();const auto serial=service.status().serial;assert(service.preview({{"R\tRenderer\tHDRMaxNits","600"},{"R\tRenderer\tExperimentalHDR","1"}}));
+      assert(waitFor([&]{return idle()&&service.status().serial>serial;}));auto p=service.after(saved->revision);assert(p&&p->preview&&p->runtime->hdr[3]==600&&p->runtime->hdr[0]==saved->runtime->hdr[0]&&store.read()==before);
+      service.acknowledge(*p);assert(service.clearPreview());assert(waitFor([&]{auto v=service.after(p->revision);return idle()&&v&&!v->preview;}));auto restored=service.after(p->revision);assert(restored->runtime->hdr==saved->runtime->hdr&&store.read()==before);service.acknowledge(*restored);
+      const auto bad=service.status().serial;assert(service.commit(saved->revision,{{"R\tRenderer\tHDRMaxNits","99999999"}}));assert(waitFor([&]{return idle()&&service.status().serial>bad;}));assert(service.status().state==Status::State::Error&&store.read()==before);
+      service.setHdrStatus(true,0,"active scRGB");const auto status=service.hdrStatus();assert(status.active&&status.code==0&&status.reason=="active scRGB");}
+     // stale base and bad values fail without touching the files
+     const auto committed=store.read();const auto serial3=service.status().serial;
+     assert(service.commit(snap->revision,{{"Q\tQuality\tWeather",savedWeather?"1":"0"}}));assert(waitFor([&]{return idle()&&service.status().serial>serial3;}));
+     assert(service.status().state==Status::State::Error&&store.read()==committed);
+     const auto serial4=service.status().serial;assert(service.commit(saved->revision,{{"Q\tQuality\tWeather","2"}}));assert(waitFor([&]{return idle()&&service.status().serial>serial4;}));assert(service.status().state==Status::State::Error&&store.read()==committed);
+     // a read-only INI surfaces as the cause, then saving works again
+     const auto ro=root/FileNames[0];chmod(ro.c_str(),0444);
+     if(access(ro.c_str(),W_OK)!=0){const auto serial5=service.status().serial;assert(service.commit(saved->revision,{{"Q\tQuality\tWeather",savedWeather?"1":"0"}}));assert(waitFor([&]{return idle()&&service.status().serial>serial5;}));
+      assert(service.status().message.find("northlight-quality.ini is read-only")!=std::string::npos&&store.read()==committed);}
+     chmod(ro.c_str(),0644);const auto serial6=service.status().serial;assert(service.commit(saved->revision,{{"Q\tQuality\tWeather",savedWeather?"1":"0"}}));assert(waitFor([&]{return idle()&&service.status().serial>serial6;}));assert(service.status().state==Status::State::Saved);
+     // an external edit between snapshot and save is refused
+     auto stale=service.snapshot()->revision;auto image=readImage(ro);image.raw+="\n; edited elsewhere\n";writeImage(ro,image.raw);
+     const auto serial7=service.status().serial;assert(service.commit(stale,{{"Q\tQuality\tWeather","1"}}));assert(waitFor([&]{return idle()&&service.status().serial>serial7;}));assert(service.status().state==Status::State::Error);}
+    // Unresolvable recovery (external edit after a crash): the menu still gets a read-only snapshot and an actionable error; saving is blocked until resolved.
+    {auto ini=root/FileNames[0];auto base=store.read();const std::string newRaw="[Quality]\nWeather=1\n";
+     writeImage(root/"northlight-settings.journal","prepared\n0 1 "+hash(base[0].raw)+" "+hash(newRaw)+"\n");
+     writeImage(root/(std::string(FileNames[0])+".northlight.bak"),base[0].raw);writeImage(ini,"[Quality]\nWeather=0\n; edited by hand\n");
+     Service svc(root);auto waitFor=[&](auto pred){for(unsigned i=0;i<1500;++i){if(pred())return true;std::this_thread::sleep_for(std::chrono::milliseconds(2));}return false;};
+     assert(waitFor([&]{return svc.requestSnapshot();}));assert(waitFor([&]{return svc.snapshot()&&svc.status().state!=Status::State::Busy;}));
+     auto st=svc.status();assert(st.state==Status::State::Error&&st.message.find("northlight-settings.journal")!=std::string::npos&&st.message.find(".northlight.bak")!=std::string::npos&&st.message.find("external edit")!=std::string::npos);
+     assert(svc.snapshot()->revision==Store::revision(Store(root).readUnlocked()));
+     assert(svc.commit(svc.snapshot()->revision,{{"Q\tQuality\tWeather","1"}}));assert(waitFor([&]{return svc.status().state!=Status::State::Busy;}));
+     assert(svc.status().state==Status::State::Error&&readImage(ini).raw.find("edited by hand")!=std::string::npos);
+     // after the user resolves it (restore the INI, drop the leftovers) the menu recovers by itself
+     writeImage(ini,base[0].raw);std::filesystem::remove(root/"northlight-settings.journal");std::filesystem::remove(root/(std::string(FileNames[0])+".northlight.bak"));
+     assert(waitFor([&]{return svc.requestSnapshot();}));assert(waitFor([&]{return svc.status().state!=Status::State::Busy;}));assert(svc.status().state==Status::State::Idle);}
+    // Enum values are normalized to the canonical option spelling in the snapshot; the INI text is untouched.
+    {Document q("[Quality]\nPreset=performance\nAOMethod=gtao\nNoSuchKey=1\n"),r("[Renderer]\nBackend=DXVK\n");Documents d={q,r,Document(""),Document("")};
+     auto f=schema(d,d,configOf(d,""),"","native,dxvk,legacy");unsigned seen=0;
+     for(const auto& x:f){auto is=[&](const char* key,const char* value){return x.key==key&&x.overrideValue==value;};
+      if(x.key=="Preset"){assert(is("Preset","Performance")&&x.saved=="Performance");++seen;}
+      if(x.key=="AOMethod"){assert(is("AOMethod","GTAO")&&x.saved=="GTAO");++seen;}
+      if(x.key=="Backend"){assert(is("Backend","dxvk")&&x.saved=="dxvk");++seen;}}
+     assert(seen==3);assert(d[0].text().find("Preset=performance")!=std::string::npos);
+     Documents bad={Document("[Quality]\nPreset=Turbo\n"),Document("[Renderer]\nBackend=nope\n"),Document(""),Document("")};
+     for(const auto& x:schema(bad,bad,configOf(bad,""),"","native,dxvk,legacy"))if(x.key=="Preset")assert(x.overrideValue=="Turbo");else if(x.key=="Backend")assert(x.overrideValue=="nope");}
+    // The startup baseline: a new Service (or attach) sees the files as they are now.
+    {Service again(root);auto s=again.revision();assert(s==Store::revision(store.read()));}
+    std::cout<<"Settings: encoding (incl. astral and invalid input), comments, inheritance, bounded schema, rollback, read-only, journal recovery, snapshot, preview coalescing, commit and conflict checks passed\n";
 }

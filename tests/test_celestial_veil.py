@@ -62,8 +62,8 @@ assert 'overEdge' not in veil_ps  # no far-edge cut: it drew a line across near 
 # the core only by the disc taps' visibility; the ring (x wrap) only for the
 # core-free tail shifted out by 3R, so the profile is monotonic (no dark ring).
 profile=shader[shader.index('float glareProfile(float radius){'):shader.index('float3 glowColor(')]
-assert 'float ring=DiscTerrainPolicy.w>.5?0:DiscGlowCore.w*saturate(tex2Dlod(DiscRingVisibility,float4(.5,.5,0,0)).r);' in profile
-assert 'float disc=DiscTerrainPolicy.w>.5?1:saturate(tex2Dlod(DiscHaloVisibility,float4(.5,.5,0,0)).r);' in profile
+assert 'float ring=skyCore?0:DiscGlowCore.w*saturate(tex2Dlod(DiscRingVisibility,float4(.5,.5,0,0)).r);' in profile
+assert 'float disc=skyCore?1:saturate(tex2Dlod(DiscHaloVisibility,float4(.5,.5,0,0)).r);' in profile
 assert 'float tailed=max(disc*dot(tail,float3(.25,.35,.40)),ring*dot(tail,float3(.118257,.299458,.380527)));' in profile
 assert 'return (DiscEmission.z*exp2(-DiscEmission.x*r2)*disc+DiscGlowHue.w*tailed)*edge;' in profile
 assert 'smoothstep(1.5,3' not in profile

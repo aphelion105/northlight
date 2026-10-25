@@ -78,8 +78,11 @@ Every effect below is on by default and is drawn on top of the game's own frame.
 - **Settings.** `northlight-quality.ini` has three presets (Quality, the default, Balanced and
   Performance) and about 30 keys for shadows, GI, lamps and haze; `celestial-profiles.ini` sets the
   sun and moon look per zone.
-- **Hotkeys** (with Ctrl+Shift): F7 fog and haze, F8 GI, F9 shadows, F10 all effects, F12 debug views
-  (shadows, GI, fog volume). On a Mac, first remove macOS's own Control+F7 shortcut.
+- **Hotkeys** (with Ctrl+Shift): F7 fog and haze, F8 GI, F9 shadows, F10 all effects, F11 the settings window, F12 debug views
+  (shadows, GI, fog volume). On a Mac, first remove macOS's own Control+F7 shortcut. The settings window (Ctrl+Shift+F11) is
+  drawn by the renderer over the game; it takes the mouse only over the window and the keyboard only while one of its text
+  fields is active. `[Renderer] SettingsOverlay=0` in `northlight-renderer.ini` turns it off; `[Renderer] SettingsOverlayKey`
+  (default `Ctrl+Shift+F11`, F1-F12 with Ctrl/Shift/Alt) changes its key.
 - **Night brightness.** `NightBrightness` (0..100, default 50; 0 = Northlight's full night darkness) gives back the night ambient light the art layer takes away: 100 restores the original game's night ambient (the art layer scales it by .82 with a cool tint). It is added like light, so moon shadows, lamps and colours keep their contrast, and it assumes the Northlight art layer is installed. It ramps in at dusk and out at dawn; daytime, the sky, water and places without a sky of their own (dungeons, raids) are unchanged.
 - **Font mods.** Lexara, TweakWoW2 (HD Font on) and the AwesomeWotLK MSDF fork replace the game's UI shaders,
   which Northlight uses to find where the world ends and the UI begins. Northlight then learns the mod's UI draws

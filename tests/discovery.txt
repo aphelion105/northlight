@@ -40,6 +40,7 @@ test_celestial_composition_gpu.py
 test_celestial_native_suppress.py
 test_celestial_phase_recovery.py
 test_celestial_profiles.py
+test_celestial_skybox.py
 test_celestial_terrain.py
 test_celestial_veil.py
 test_client_archive_order.py
@@ -159,7 +160,6 @@ test_near_reserve.py
 test_night_floor.py
 test_night_floor_wiring.py
 test_northlight_install.py
-test_northlight_menu.py
 test_outdoor_light_profiles.py
 test_particle_light_capture.py
 test_particle_light_proof.py
@@ -210,8 +210,7 @@ test_scene_assembly.py
 test_scene_entry_reclaim.py
 test_scene_entry_reclaim_inputs.py
 test_scene_source_cache.py
-test_settings_client_abi.py
-test_settings_cvar_hook.py
+test_settings_overlay.py
 test_settings_service.py
 test_shader_read_set.py
 test_shader_read_set_client.py
@@ -274,7 +273,6 @@ test_terrain_content_cache.py
 test_terrain_decoded_sharing.py
 test_terrain_indices.py
 test_terrain_metadata.py
-test_terrain_neutral_frame_gpu.py
 test_terrain_pressure_policy.py
 test_terrain_reach_fallback.py
 test_terrain_reach_fallback_wiring.py

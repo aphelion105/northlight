@@ -1421,7 +1421,8 @@ public:
     // Not owned; the device must outlive the layer or reset()/attach(nullptr) runs first. Drops everything pending without drawing.
     void attach(IDirect3DDevice9* dev){reset();dev_=dev;}
     // Only while nothing is pending (else pending entries are dropped). Allocates the held-object table once; entries, deltas and the arena follow on demand.
-    void liveOptions(unsigned classes,bool fog){if(!pending()){cfg_.classMask=classes;cfg_.fogOn=fog;}}
+    // Returns whether the options were taken; the caller retries at its next frame boundary when work was pending.
+    bool liveOptions(unsigned classes,bool fog){if(pending())return false;cfg_.classMask=classes;cfg_.fogOn=fog;return true;}
     void configure(const Config& c){
         reset();cfg_=c;if(cfg_.synced)cfg_.synced->clearAll();cfg_.deltaChunkWords=std::min(65535u,std::max(1024u,cfg_.deltaChunkWords));
         if(cfg_.on){
