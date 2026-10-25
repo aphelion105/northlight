@@ -85,7 +85,7 @@ check(finish.count('drawOverlay(implicitChain);') == 2 and finish.index('extensi
 check(renderer.count('drawOverlay(') == 3, 'drawOverlay(): finishFrame is the only caller (one draw per presented frame)')
 # Only the implicit swap chain (index 0) draws it; additional swap chains never do.
 check('new SwapChain(*out,this,&mirrorResources,index==0)' in renderer and 'new SwapChain(*out,this,&mirrorResources,false)' in renderer
-      and 'finishDeviceFrame(owner,implicitChain)' in renderer, 'SwapChain: the overlay draws only for the implicit swap chain')
+      and 'finishDeviceFrame(owner,primary)' in renderer, 'SwapChain: the overlay draws only for the implicit swap chain')
 # Outside the game's scene, in its own BeginScene/EndScene; a failed BeginScene draws nothing.
 render = overlay[overlay.index('void render(IDirect3DSurface9* back'):]
 render = render[:render.index('\n    }\n')]

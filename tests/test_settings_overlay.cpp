@@ -186,6 +186,9 @@ static void draft(){
     d.set(preset,"Quality");CHECK(!d.edited(preset)&&d.empty());
     // Mode fields read as Off / Normal maps / Normal maps + POM.
     CHECK(D::modeField(bump)&&D::modeOptions(bump).size()==3&&!D::modeField(strength));
+    {auto model=bump;model.key="AutoBumpModels";model.high="3";CHECK(D::modeField(model)&&D::modeOptions(model)==std::vector<std::string>({"0","1","2","3"}));
+     auto terrain=bump;terrain.high="3";CHECK(D::modeOptions(terrain).size()==4);
+     auto grass=bump;grass.key="AutoBumpGrass";grass.high="1";CHECK(D::modeOptions(grass)==std::vector<std::string>({"0","1"}));}
     // Regional Sun/Moon keys inherit the default profile, including its draft.
     CHECK(d.effective(sunRegion)=="1,0.9,0.8"&&!d.overrides(sunRegion)&&d.overrides(sunDefault));
     d.set(sunDefault,"0.5,0.5,0.5");CHECK(d.effective(sunRegion)=="0.5,0.5,0.5");

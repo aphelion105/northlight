@@ -98,7 +98,7 @@ def main(argv=None):
         print('Building the DEV TUNING variant (NORTHLIGHT DEV TUNING BUILD): not for release packages.')
     if stand_replay:
         command.insert(command.index('-luser32'), '-DNORTHLIGHT_REPLAY_STAND=1')
-        print('Building the STAND REPLAY variant: imported context only, CVar bridge disabled, not for game installation.')
+        print('Building the STAND REPLAY variant: imported context only, not for game installation.')
     subprocess.run(command, env=env, check=True)
     print('Built', STAND_DLL if stand_replay else DEV_DLL if dev_tuning else DLL)
 
