@@ -149,6 +149,28 @@ void DisplacementStateTestAccess::cache(){
     // Pressure uses the same eviction path, including every candidate index.
     g.entries[0]->bytes=40u<<20;g.resident+=40u<<20;g.resident-=110;g.refreshBudget(memory);assert(g.resident==100+another->byteSize()&&g.entries.size()==1);
     assert(!find(shared,false)&&find(another,false));g.reset();assert(g.resident==0&&g.sourceLookup.empty()&&g.contentLookup.empty());
+    // Rewritten tracked terrain keeps a new source identity even when its full
+    // payload is unchanged. Private subdivision may reuse the older geometry.
+    auto stable=std::make_shared<Mesh>(*mesh(17));stable->streams[0].stride=16;
+    stable->sourceIdentity=NorthlightSourceIdentity::make({1,1});
+    auto stableEntry=entry(stable,100,1);stableEntry->program=1;g.retain(std::move(stableEntry));
+    for(unsigned revision=2;revision<1002;++revision){auto rewritten=std::make_shared<Mesh>(*stable);
+        rewritten->sourceIdentity=NorthlightSourceIdentity::make({1,revision});rewritten->replayIdentity=stable->sourceIdentity;
+        const auto identity=rewritten->sourceIdentity;
+        assert(g.geometrySource(rewritten,nullptr,1,1)==stable&&rewritten->sourceIdentity==identity);
+    }
+    assert(g.sourceAliases==1000&&g.entries.size()==1);
+    for(unsigned change=0;change<14;++change){auto changed=std::make_shared<Mesh>(*stable);changed->replayIdentity=stable->sourceIdentity;
+        auto* declaration=static_cast<IDirect3DVertexDeclaration9*>(nullptr);unsigned program=1,domain=1;
+        switch(change){case 0:changed->replayIdentity.reset();break;case 1:++changed->vertexCount;break;case 2:++changed->primitiveCount;break;
+        case 3:changed->topology=D3DPT_TRIANGLESTRIP;break;case 4:changed->indexed=false;break;case 5:changed->indices[0]=2;break;
+        case 6:changed->streams[0].bytes[128]^=1;break;case 7:++changed->streams[0].stride;break;case 8:changed->streams[1].bytes={1};break;
+        case 9:++changed->streams[1].stride;break;case 10:declaration=reinterpret_cast<IDirect3DVertexDeclaration9*>(uintptr_t(1));break;
+        case 11:program=2;break;case 12:domain=2;break;case 13:changed->streams[3].bytes={1};break;}
+        assert(g.geometrySource(changed,declaration,program,domain)==changed);
+    }
+    g.reset();assert(g.geometrySource(stable,nullptr,1,1)==stable);
+    std::puts("DISPLACEMENT_REWRITTEN_SOURCE_PASS revisions=1000 aliases=1000 full_payload_layout_program_controls=14 current_write_identity_preserved");
     // Both partial index-population failures must leave the ordered fallback usable.
     for(int failure=0;failure<3;++failure){g.entries.reserve(4);g.sourceLookup.reserve(4);g.materialLookup.reserve(4);auto next=entry(shared,100,1);failAllocationAfter=failure;g.retain(std::move(next));assert(failAllocationAfter==-1&&!g.indexedEntries&&g.sourceLookup.empty()&&g.contentLookup.empty()&&g.materialLookup.empty());assert(find(shared,false)&&g.firstMaterial(0,[](const E&){return true;}));g.reset();}
     {G empty(nullptr);auto next=entry(shared,100,1);failAllocationAfter=0;bool failed=false;try{empty.retain(std::move(next));}catch(const std::bad_alloc&){failed=true;}assert(failed&&empty.resident==0&&empty.entries.empty()&&empty.sourceLookup.empty());}

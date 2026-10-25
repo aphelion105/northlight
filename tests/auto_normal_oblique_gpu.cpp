@@ -36,6 +36,8 @@ struct MaterialDepthMeter:ForwardIDirect3DDevice9 {
     HRESULT STDMETHODCALLTYPE DrawPrimitive(D3DPRIMITIVETYPE type,UINT first,UINT n)override{++gpuDraws;return real->DrawPrimitive(type,first,n);}
 };
 struct MaterialCaptureStateTestAccess {
+    static NorthlightAutoDisplacement& geometry(NorthlightAutoBump& b){return b.displacement;}
+    static void readBudget(NorthlightAutoBump& b,size_t bytes){assert(b.deferredSnapshots.configureBudget(bytes,0));}
     static bool smoothTerrain(const NorthlightAutoBump& b,IDirect3DVertexShader9* source){const auto i=b.vertices.find(source);return i!=b.vertices.end()&&i->second.smoothTerrain;}
     static unsigned queued(const NorthlightAutoBump& b){return b.queued;}
     static unsigned flushed(const NorthlightAutoBump& b){return b.flushed;}
@@ -84,11 +86,15 @@ struct MaterialCaptureStateTestAccess {
     }
 };
 struct DisplacementStateTestAccess {
+    static uint64_t builds(const NorthlightAutoDisplacement& g){return g.builds;}
 #ifdef NORTHLIGHT_TEST_LAZY_VARIANT_CURRENT
     static bool ensure(NorthlightAutoDisplacement& g,IDirect3DVertexShader9* vs){auto i=g.shaders.find(vs);return i!=g.shaders.end()&&g.ensureVariant(i->second);}
 #endif
     static unsigned rangeHits(const NorthlightAutoDisplacement& g){return g.rangeSnapshots.trackedHits();}
     static size_t rangeBytes(const NorthlightAutoDisplacement& g){return g.rangeSnapshots.bytesRead();}
+#ifdef NORTHLIGHT_TEST_POSITION_BOUNDS_CURRENT
+    static unsigned positionHits(const NorthlightAutoDisplacement& g){return g.positionBounds.cacheHits();}
+#endif
     static void fullRangeLayout(NorthlightAutoDisplacement& g){g.rangeSnapshots.setLayoutProvider(&g.declarations,[](void* c,IDirect3DVertexDeclaration9* decl,UINT* extent){return static_cast<NorthlightVertexDeclarations::Cache*>(c)->captureLayout(decl,extent);});}
     static void fullColor(NorthlightAutoDisplacement& g,IDirect3DDevice9* d,IDirect3DVertexDeclaration9* decl,const NorthlightAutoDisplacement::Args& args,DWORD expected){
         NorthlightDrawSnapshot::Mesh mesh;std::shared_ptr<const NorthlightDrawSnapshot::Mesh> shared;assert(g.snapshots.read(d,decl,args.draw,mesh,nullptr,false,&shared));
@@ -187,6 +193,9 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
     IDirect3DVertexBuffer9* sourceVB=nullptr;IDirect3DIndexBuffer9* sourceIB=nullptr;void* upload=nullptr;
     const bool deferredMutation=std::getenv("NORTHLIGHT_TEST_DEFERRED_MUTATION")!=nullptr;
     const bool identicalRewrite=std::getenv("NORTHLIGHT_TEST_IDENTICAL_REWRITE")!=nullptr;
+    const bool drawRewrite=std::getenv("NORTHLIGHT_TEST_DRAW_REWRITE")!=nullptr;
+    if(drawRewrite)assert(identicalRewrite);
+    const bool geometryRewrite=std::getenv("NORTHLIGHT_TEST_GEOMETRY_REWRITE")!=nullptr;
     const bool deferredPose=std::getenv("NORTHLIGHT_TEST_DEFERRED_POSE")!=nullptr;
     ok(d->CreateVertexBuffer(sizeof floor,deferredMutation?D3DUSAGE_DYNAMIC|D3DUSAGE_WRITEONLY:0,0,deferredMutation?D3DPOOL_DEFAULT:D3DPOOL_MANAGED,&sourceVB,nullptr));ok(sourceVB->Lock(0,sizeof floor,&upload,0));std::memcpy(upload,floor,sizeof floor);ok(sourceVB->Unlock());
     const WORD sourceIndices[]={0,1,2,2,1,3};ok(d->CreateIndexBuffer(sizeof sourceIndices,0,D3DFMT_INDEX16,D3DPOOL_MANAGED,&sourceIB,nullptr));ok(sourceIB->Lock(0,sizeof sourceIndices,&upload,0));std::memcpy(upload,sourceIndices,sizeof sourceIndices);ok(sourceIB->Unlock());
@@ -204,7 +213,7 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
         sourceVertices=UINT(vertices.size());sourcePrimitives=UINT(indices.size()/3);
     }
     std::vector<unsigned char> rewriteVertices,rewriteIndices;
-    if(identicalRewrite){assert(!deferredMutation);D3DVERTEXBUFFER_DESC v{};D3DINDEXBUFFER_DESC i{};ok(sourceVB->GetDesc(&v));ok(sourceIB->GetDesc(&i));rewriteVertices.resize(v.Size);rewriteIndices.resize(i.Size);
+    if(identicalRewrite||geometryRewrite){assert(!deferredMutation);D3DVERTEXBUFFER_DESC v{};D3DINDEXBUFFER_DESC i{};ok(sourceVB->GetDesc(&v));ok(sourceIB->GetDesc(&i));rewriteVertices.resize(v.Size);rewriteIndices.resize(i.Size);
         ok(sourceVB->Lock(0,v.Size,&upload,D3DLOCK_READONLY));std::memcpy(rewriteVertices.data(),upload,v.Size);ok(sourceVB->Unlock());
         ok(sourceIB->Lock(0,i.Size,&upload,D3DLOCK_READONLY));std::memcpy(rewriteIndices.data(),upload,i.Size);ok(sourceIB->Unlock());}
     IDirect3DVertexShader9* coverageVS=nullptr;if(argc<=5&&reinterpret_cast<DWORD*>(vsBytes.data())[0]==0xfffe0300u){std::vector<uint32_t> words;assert(NorthlightTerrainCoverage::vertex(reinterpret_cast<uint32_t*>(vsBytes.data()),vsBytes.size()/4,words));ok(d->CreateVertexShader(reinterpret_cast<DWORD*>(words.data()),&coverageVS));}
@@ -240,7 +249,7 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
     }
     static void* mutationSource=nullptr;static void* rewriteIndex=nullptr;static uint64_t mutationRevision=1;
     if(deferredMutation)mutationSource=sourceVB;
-    if(identicalRewrite){mutationSource=sourceVB;rewriteIndex=sourceIB;}
+    if(identicalRewrite||geometryRewrite){mutationSource=sourceVB;rewriteIndex=sourceIB;}
     NorthlightMaterialProfile materialProfile(&captureDevice);NorthlightMaterialPixelAudit pixelAudit(&captureDevice);const bool materialProfiling=std::getenv("NORTHLIGHT_TEST_MATERIAL_PROFILE")!=nullptr;
     if(materialProfiling){bump.setProfiler(&materialProfile);materialProfile.beginFrame(127,true);}
 #ifdef NORTHLIGHT_MATERIAL_MIRROR
@@ -293,12 +302,22 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
             range.registerMaterial(vs,reinterpret_cast<const DWORD*>(vsBytes.data()),vsBytes.size()/4,1);unsigned hits=0;size_t readBytes=0;
             for(unsigned frame=0;frame<32;++frame){const DWORD color=0xff000000|frame;ok(colors->Lock(0,0,&upload,D3DLOCK_DISCARD));for(unsigned i=0;i<4;++i)static_cast<DWORD*>(upload)[i]=color;ok(colors->Unlock());++revisions[colors];
                 float nearest=0;assert(range.nearestMaterialDepth(vs,geometry,nearest)&&nearest>48);hits+=DisplacementStateTestAccess::rangeHits(range);readBytes+=DisplacementStateTestAccess::rangeBytes(range);
+#ifdef NORTHLIGHT_TEST_POSITION_BOUNDS_CURRENT
+                float conservative=0;assert(range.nearestMaterialDepth(vs,geometry,conservative,true)&&conservative>48&&conservative<=nearest+.001f);
+                assert(DisplacementStateTestAccess::positionHits(range)==unsigned(frame!=0));
+#endif
                 DisplacementStateTestAccess::fullColor(range,d,splitDecl,geometry,color);range.endFrame();}
             assert(hits==(positionOnly?31u:0u));
             V moved[4];std::memcpy(moved,initial,sizeof moved);for(auto& v:moved)v.y-=200.f/c;
             ok(sourceVB->Lock(0,sizeof moved,&upload,0));std::memcpy(upload,moved,sizeof moved);ok(sourceVB->Unlock());++revisions[sourceVB];
             float nearest=0;assert(range.nearestMaterialDepth(vs,geometry,nearest)&&nearest<48&&DisplacementStateTestAccess::rangeHits(range)==0);range.endFrame();
+#ifdef NORTHLIGHT_TEST_POSITION_BOUNDS_CURRENT
+            assert(range.nearestMaterialDepth(vs,geometry,nearest,true)&&nearest<48&&!DisplacementStateTestAccess::positionHits(range));range.endFrame();
+#endif
             moved[0].x=NAN;ok(sourceVB->Lock(0,sizeof moved,&upload,0));std::memcpy(upload,moved,sizeof moved);ok(sourceVB->Unlock());++revisions[sourceVB];assert(!range.nearestMaterialDepth(vs,geometry,nearest));
+#ifdef NORTHLIGHT_TEST_POSITION_BOUNDS_CURRENT
+            assert(!range.nearestMaterialDepth(vs,geometry,nearest,true));
+#endif
             std::printf("RANGE_STREAM_TRACKING positionOnly=%u frames=32 trackedHits=%u readBytes=%zu positionMutation=observed nonfinite=unknown\n",unsigned(positionOnly),hits,readBytes);
         }
         d->SetStreamSource(1,nullptr,0,0);d->SetVertexDeclaration(decl);drop(splitDecl);drop(colors);std::puts("RANGE_STREAM_TRACKING_PASS mutable_color stable_position changed_position nonfinite full_capture");return 0;
@@ -366,6 +385,7 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
     // Compare the same native diffuse draw used by the game, with and without POM.
     bank[12][1]=bank[12][2]=1;std::memcpy(bank[25],macro,12);
     for(unsigned mode=1;mode<=(model?9u:8u);++mode){
+        if(geometryRewrite&&mode!=6)continue;
         if(mode!=1&&std::getenv("NORTHLIGHT_TEST_TERRAIN_FOLD_ONLY"))continue;
         if(mode>=5&&std::getenv("NORTHLIGHT_TEST_WMO_BLEND"))continue; // Translucent displacement is intentionally unsupported.
         if(std::getenv("NORTHLIGHT_TEST_MATERIAL_DEPTH")&&mode>=5)continue;
@@ -375,6 +395,7 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
 #endif
         bump.endFrame();settings.autoBumpTerrain=mode>=5?3:mode==1?1:2;settings.autoBumpWalls=settings.autoBumpTerrain;settings.autoBumpModels=settings.autoBumpTerrain;if(grass)settings.autoBumpGrass=settings.autoBumpTerrain;settings.autoBumpStrength=75;settings.autoParallaxShadows=mode==3||mode==4;settings.autoCavity=mode==4;settings.autoDisplacementStrength=mode==8?0:100;settings.autoModelDisplacementStrength=mode==8?0:100;settings.autoModelDisplacementDistance=16;if(argc>5&&std::strcmp(argv[5],"minimum")==0){settings.autoDisplacementDetail=1;settings.autoHeightBalance=100;}bump.configure(settings);
         const bool batchTiming=mode==1&&std::getenv("NORTHLIGHT_TEST_MATERIAL_BATCH_TIMING");
+        if(batchTiming)if(const char* budget=std::getenv("NORTHLIGHT_TEST_CAPTURE_READ_MIB"))MaterialCaptureStateTestAccess::readBudget(bump,size_t(std::atoi(budget))<<20);
         if(std::getenv("NORTHLIGHT_TEST_MATERIAL_DEMO")){settings.autoParallaxDepth=200;settings.autoParallaxShadowStrength=100;settings.autoCavityStrength=100;settings.autoParallaxSteps=32;settings.autoParallaxShadowSteps=16;bump.configure(settings);}
         if(batchTiming){settings.autoCavity=std::getenv("NORTHLIGHT_TEST_MATERIAL_BATCH_NO_OCCLUSION")?0:1;bump.configure(settings);}
         if(pomOnly){settings.autoBumpStrength=0;settings.autoParallaxShadows=settings.autoCavity=0;if(std::getenv("NORTHLIGHT_TEST_POM_ONLY_DISABLED"))settings.autoParallaxDepth=0;bump.configure(settings);}
@@ -438,6 +459,23 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
         }
         {IDirect3DSurface9 *rt=nullptr,*ds=nullptr;ok(d->GetRenderTarget(0,&rt));ok(d->GetDepthStencilSurface(&ds));assert(rt==drawSurface&&ds==zbuffer);drop(rt);drop(ds);
          if(pomOnly){assert(!bump.texture()&&!bump.occlusionTexture()&&captureDevice.allocations==allocations);assert(bump.active()==(std::getenv("NORTHLIGHT_TEST_POM_ONLY_DISABLED")==nullptr));}else assert(bump.active()&&bump.texture());}
+        if(geometryRewrite){
+            auto& geometryCache=MaterialCaptureStateTestAccess::geometry(bump);
+            const auto before=DisplacementStateTestAccess::builds(geometryCache);assert(before==1&&bump.geometryPrepared());
+            const auto start=std::chrono::steady_clock::now();
+            for(unsigned repeat=0;repeat<32;++repeat){bump.endFrame();
+                ok(sourceVB->Lock(0,UINT(rewriteVertices.size()),&upload,0));std::memcpy(upload,rewriteVertices.data(),rewriteVertices.size());ok(sourceVB->Unlock());
+                ok(sourceIB->Lock(0,UINT(rewriteIndices.size()),&upload,0));std::memcpy(upload,rewriteIndices.data(),rewriteIndices.size());ok(sourceIB->Unlock());++mutationRevision;
+                bump.beginDraw();bump.capture(vs,native,false,&geometry);assert(bump.geometryPrepared());
+            }
+            const auto builds=DisplacementStateTestAccess::builds(geometryCache)-before;
+#ifdef NORTHLIGHT_TEST_GEOMETRY_REWRITE_CURRENT
+            assert(builds==0);
+#else
+            assert(builds==32);
+#endif
+            std::printf("DISPLACEMENT_REWRITE_GPU_PASS rewrites=32 rebuilds=%llu cpuMs=%.6f msaa=%u pressure=%u\n",(unsigned long long)builds,std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count(),unsigned(samples),unsigned(pressure));
+        }
         if((mode>=5&&mode<8||mode==9)){assert(bump.geometryPrepared());if(!unsafeSkin)assert(bump.geometryPrimitives()>2);std::printf("DISPLACEMENT_PREPARED mode=%u triangles=%u heightGPU=%u\n",mode,bump.geometryPrimitives(),unsigned(bump.geometryHeightGPU()));}
         if(mode==8)assert(!bump.geometryPrepared());
         if(mode==7&&coverageVS)d->SetVertexShader(coverageVS);
@@ -495,13 +533,15 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
                 std::puts("MATERIAL_DEFERRED_UNUSED_PASS zero_draws zero_clears leases_released");
             }
             unsigned long long rewriteResident=0,rewriteUP=0,rewriteReads=0,rewriteHits=0;unsigned rewriteFrame=0;
-            const auto render=[&]{bump.endFrame();ok(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0xff18212d,1,0));
-                if(identicalRewrite){auto bytes=rewriteVertices;
+            const auto rewriteBuffers=[&]{auto bytes=rewriteVertices;
                     if(std::getenv("NORTHLIGHT_TEST_REWRITE_CHANGED")){float uv=0;const auto offset=bytes.size()-sizeof(V)+offsetof(V,u);std::memcpy(&uv,bytes.data()+offset,sizeof uv);uv+=float(++rewriteFrame)/128;std::memcpy(bytes.data()+offset,&uv,sizeof uv);}
                     ok(sourceVB->Lock(0,UINT(bytes.size()),&upload,0));std::memcpy(upload,bytes.data(),bytes.size());ok(sourceVB->Unlock());
-                    ok(sourceIB->Lock(0,UINT(rewriteIndices.size()),&upload,0));std::memcpy(upload,rewriteIndices.data(),rewriteIndices.size());ok(sourceIB->Unlock());++mutationRevision;}
+                    ok(sourceIB->Lock(0,UINT(rewriteIndices.size()),&upload,0));std::memcpy(upload,rewriteIndices.data(),rewriteIndices.size());ok(sourceIB->Unlock());++mutationRevision;};
+            const auto render=[&]{bump.endFrame();ok(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0xff18212d,1,0));
+                if(identicalRewrite&&!drawRewrite)rewriteBuffers();
                 if(batched){for(unsigned i=0;i<draws;++i){bump.beginDraw();ok(bump.nativeDraw(native));}for(unsigned i=0;i<draws;++i){bump.beginDraw();bump.capture(vs,native,!indexed,&geometry);}}
                 else for(unsigned i=0;i<draws;++i){
+                    if(drawRewrite)rewriteBuffers();
                     if(textureWrite){writeAlpha(true);ok(d->SetSamplerState(0,D3DSAMP_MIPFILTER,D3DTEXF_NONE));}
                     if(deferredMutation){V moved[4];std::memcpy(moved,floor,sizeof moved);for(auto& v:moved)v.x+=float(i%7)*.025f;
                         ok(sourceVB->Lock(0,sizeof moved,&upload,D3DLOCK_DISCARD));std::memcpy(upload,moved,sizeof moved);ok(sourceVB->Unlock());++mutationRevision;
@@ -542,7 +582,7 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
             UINT64 hz=0,a=0,b=0;BOOL invalid=TRUE;wait(finish,&b,sizeof b);wait(start,&a,sizeof a);wait(frequency,&hz,sizeof hz);wait(disjoint,&invalid,sizeof invalid);assert(!invalid&&hz&&b>=a);
             std::printf("%s width=%u height=%u msaa=%u gpuMs=%.6f submitMs=%.6f repeats=%u draws=%u batched=%u\n",batchTiming?"MATERIAL_BATCH_TIMING":"SHARED_POM_TIMING",W,H,unsigned(samples),double(b-a)*1000/double(hz)/repeats,double(cpuEnd.QuadPart-cpuStart.QuadPart)*1000/double(cpuHz.QuadPart)/repeats,repeats,draws,unsigned(batched));
             if(identicalRewrite)std::printf("MATERIAL_IDENTICAL_REWRITE frames=%u draws=%u resident=%llu up=%llu readBytes=%llu verifiedHits=%llu changed=%u\n",4+repeats,draws,rewriteResident,rewriteUP,rewriteReads,rewriteHits,unsigned(std::getenv("NORTHLIGHT_TEST_REWRITE_CHANGED")!=nullptr));
-            if(batchTiming&&deferredEnabled){std::printf("MATERIAL_DEFERRED_BENCH queued=%u flushed=%u mutation=%u barrier=%u\n",MaterialCaptureStateTestAccess::queued(bump),MaterialCaptureStateTestAccess::flushed(bump),unsigned(deferredMutation),unsigned(barrier));assert(MaterialCaptureStateTestAccess::queued(bump)==(multiStream||!samples?0:draws-(barrier?draws/8:0))&&MaterialCaptureStateTestAccess::flushed(bump)==MaterialCaptureStateTestAccess::queued(bump));
+            if(batchTiming&&deferredEnabled){std::printf("MATERIAL_DEFERRED_BENCH queued=%u flushed=%u mutation=%u barrier=%u\n",MaterialCaptureStateTestAccess::queued(bump),MaterialCaptureStateTestAccess::flushed(bump),unsigned(deferredMutation),unsigned(barrier));assert((drawRewrite?MaterialCaptureStateTestAccess::queued(bump)<=draws:MaterialCaptureStateTestAccess::queued(bump)==(multiStream||!samples?0:draws-(barrier?draws/8:0)))&&MaterialCaptureStateTestAccess::flushed(bump)==MaterialCaptureStateTestAccess::queued(bump));
                 if(samples&&!multiStream&&!textureWrite)MaterialCaptureStateTestAccess::stateReuse(bump);
                 if(!identicalRewrite&&samples&&(meshGrid||bufferedStrip||std::getenv("NORTHLIGHT_TEST_DEFERRED_RESIDENT")))MaterialCaptureStateTestAccess::residency(bump,!pressure&&!captureDevice.failResident);
                 if(multiStream){assert(!MaterialCaptureStateTestAccess::sourceReadBytes(bump));std::puts("MATERIAL_MULTISTREAM_PREFLIGHT_PASS zero_source_reads immediate_retained");}}
@@ -589,7 +629,7 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
             std::printf("TERRAIN_FULL_CAPTURE_FOLD neutral=%u slope=%.6f maximumRGBADelta=%.9g sceneNormals=%u\n",unsigned(neutral),terrainFold,maximum,unsigned(terrainSceneNormals));
             if(neutral)assert(maximum<.002f);else assert(maximum>.002f);
         }
-        if(mode==1||mode==5){IDirect3DSurface9* map=nullptr;ok(bump.texture()->GetSurfaceLevel(0,&map));save(d,map,folder+(mode==1?"geometry-off-depth.fgr":"geometry-on-depth.fgr"));drop(map);}
+        if(mode==1||mode==5||geometryRewrite){IDirect3DSurface9* map=nullptr;ok(bump.texture()->GetSurfaceLevel(0,&map));save(d,map,folder+(mode==1?"geometry-off-depth.fgr":"geometry-on-depth.fgr"));drop(map);}
         if(mode==4&&std::getenv("NORTHLIGHT_TEST_MATERIAL_DEMO")){IDirect3DSurface9* map=nullptr;if(bump.occlusionTexture()){ok(bump.occlusionTexture()->GetSurfaceLevel(0,&map));save(d,map,folder+"occlusion-factors.fgr");drop(map);}}
         if(materialProfiling&&mode<=4){ok(d->BeginScene());pixelAudit.sample(&materialProfile,nullptr,[&](UINT x,UINT y){
             Vertex small[]={{-.5f,-.5f,0,1,0,0},{float(x)-.5f,-.5f,0,1,1,0},{-.5f,float(y)-.5f,0,1,0,1},{float(x)-.5f,float(y)-.5f,0,1,1,1}};
