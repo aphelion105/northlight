@@ -330,6 +330,14 @@ struct DrawArgs{
     static DrawArgs indexedUP(D3DPRIMITIVETYPE p,UINT minIdx,UINT num,UINT count,const void* idx,D3DFORMAT fmt,const void* data,UINT stride){
         DrawArgs a;a.type=DrawType::IndexedUP;a.prim=p;a.minIndex=minIdx;a.numVertices=num;a.primCount=count;a.indexData=idx;a.indexFormat=fmt;a.vertexData=data;a.stride=stride;return a;
     }
+    HRESULT submit(IDirect3DDevice9* d)const{
+        switch(type){
+        case DrawType::Primitive:return d->DrawPrimitive(prim,first,primCount);
+        case DrawType::Indexed:return d->DrawIndexedPrimitive(prim,baseVertex,minIndex,numVertices,first,primCount);
+        case DrawType::PrimitiveUP:return d->DrawPrimitiveUP(prim,primCount,vertexData,stride);
+        case DrawType::IndexedUP:return d->DrawIndexedPrimitiveUP(prim,minIndex,numVertices,primCount,indexData,indexFormat,vertexData,stride);
+        }return D3DERR_INVALIDCALL;
+    }
 };
 // The device state cache (DeviceMirror, device_mirror.h) as the layer reads it in bulk: pointers to its arrays and known flags (same layout and names),
 // valid only between enter() and leave(). enter() takes the cache's guard and returns false when the cache cannot be used right now (disabled,
@@ -351,6 +359,7 @@ struct MirrorView{
     bool (*enter)(void* ctx)=nullptr;void (*leave)(void* ctx)=nullptr;void* ctx=nullptr;
 };
 struct Config{
+    HRESULT (*auditDraw)(void*,IDirect3DDevice9*,const DrawArgs&,bool)=nullptr;void* auditContext=nullptr;
     bool on=false;unsigned classMask=SubAdditive|SubAlpha|SubModulate|SubOther;
     unsigned maxEntries=4096,maxFixed=512; // maxFixed: fixed-function entries (each carries a 2.2 KB FfRec, allocated in chunks of 8)
     size_t arenaBytes=3u<<20,arenaStartBytes=512u<<10,uploadVbBytes=3u<<20,uploadIbBytes=768u<<10,deltaBytes=2u<<20; // uploadVbBytes matches arenaBytes: every copied vertex byte is uploaded once (a 1 MiB VB overflowed before the 3 MiB arena with ~1300 entries); the caps (entries, delta bytes, arena bytes, upload bytes) bound the layer's memory; deltaBytes: cap of the state delta storage, allocated on demand in chunks of deltaChunkWords words (an entry's delta never spans two)
@@ -910,14 +919,14 @@ private:
         }
         const bool nativeFog=!afterEffects&&e.fog.ps>=0;
         if(nativeFog){count([](Counters& c){++c.fogEarly;});dev_->SetVertexShaderConstantF(30,e.fog.nativeVs,1);dev_->SetPixelShaderConstantF(unsigned(e.fog.ps),e.fog.nativePs,1);sets_+=2;}
+        DrawArgs actual;
         switch(e.type){
-        case DrawType::Primitive:dev_->DrawPrimitive(e.prim,start,e.primCount);break;
-        case DrawType::Indexed:dev_->DrawIndexedPrimitive(e.prim,base,e.minIndex,e.numVertices,start,e.primCount);break;
-        case DrawType::PrimitiveUP:dev_->DrawPrimitiveUP(e.prim,e.primCount,arena_.get()+e.upVtx,e.upStride);break;
-        case DrawType::IndexedUP:
-            dev_->DrawIndexedPrimitiveUP(e.prim,e.minIndex,e.numVertices,e.primCount,arena_.get()+e.upIdx,e.upFmt,
-                arena_.get()+e.upVtx,e.upStride);break;
+        case DrawType::Primitive:actual=DrawArgs::primitive(e.prim,start,e.primCount);break;
+        case DrawType::Indexed:actual=DrawArgs::indexed(e.prim,base,e.minIndex,e.numVertices,start,e.primCount);break;
+        case DrawType::PrimitiveUP:actual=DrawArgs::primitiveUP(e.prim,e.primCount,arena_.get()+e.upVtx,e.upStride);break;
+        case DrawType::IndexedUP:actual=DrawArgs::indexedUP(e.prim,e.minIndex,e.numVertices,e.primCount,arena_.get()+e.upIdx,e.upFmt,arena_.get()+e.upVtx,e.upStride);break;
         }
+        if(cfg_.auditDraw)cfg_.auditDraw(cfg_.auditContext,dev_,actual,afterEffects);else actual.submit(dev_);
         // Restore the delta model's folded values before the next entry or the minimal state restore.
         if(nativeFog){dev_->SetVertexShaderConstantF(30,e.fog.foldedVs,1);dev_->SetPixelShaderConstantF(unsigned(e.fog.ps),e.fog.foldedPs,1);sets_+=2;}
         if(up){ // the API side effects of the UP call: stream 0 (and the indices) are unbound afterwards

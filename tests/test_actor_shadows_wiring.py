@@ -33,7 +33,7 @@ ctor=w[w.index('        loadQuality();effects.gi='):w.index('        (void)North
 checks['constructor reads quality only after loadQuality']='shadowFate(quality)' in ctor
 # Capture decision: ActorShadows=0 is "shadows off" for capture (GI actor frames only).
 dec=w[w.index('    bool modelCaptureSkipped(){'):w.index('    void captureModel(')]
-checks['capture decision uses actorShadowWork']=('const bool shadows=NorthlightQuality::actorShadowWork(quality,effects.shadows);' in dec and 'captureSkipPossible(quality,shadows)' in dec
+checks['capture decision uses actorShadowWork']=('const bool shadows=ready()&&NorthlightQuality::actorShadowWork(quality,effects.shadows);' in dec and 'captureSkipPossible(quality,shadows)' in dec
     and 'in.shadows=shadows;' in dec and 'effects.shadows' not in dec.replace('NorthlightQuality::actorShadowWork(quality,effects.shadows)',''))
 # render(): the three predicates, defined once, and their ActorShadows=1 reductions.
 render=w[w.index('    bool render(IDirect3DSurface9* targetSurface'):] # the last member of WorldRenderer
@@ -42,15 +42,16 @@ defs={}
 for name in ('freshReplays','actorShadows','replayShadows','replaysComplete'):
     m=re.findall(r'const bool '+name+r'=([^;]*);',body);assert len(m)==1,name;defs[name]=m[0]
 checks['predicate definitions']=defs=={'freshReplays':'captureMode!=CaptureSkipped','actorShadows':'quality.actorShadows!=0',
-    'replayShadows':'freshReplays&&actorShadows','replaysComplete':'freshReplays||!actorShadows'}
-def value(expr,fresh,actor):return eval(expr.replace('&&',' and ').replace('||',' or ').replace('!',' not '),{},{'freshReplays':fresh,'actorShadows':actor})
+    'replayShadows':'freshReplays&&actorShadows&&ready()','replaysComplete':'freshReplays||!actorShadows'}
+def value(expr,fresh,actor,geometry=True):return eval(expr.replace('ready()','geometryReady').replace('&&',' and ').replace('||',' or ').replace('!',' not '),{},{'freshReplays':fresh,'actorShadows':actor,'geometryReady':geometry})
 checks['ActorShadows=1 reduces both to freshReplays; 0: consumers off, schedules complete']=all(
     value(defs['replayShadows'],f,True)==f and value(defs['replaysComplete'],f,True)==f and value(defs['replayShadows'],f,False) is False and value(defs['replaysComplete'],f,False) is True
     for f in (False,True))
+checks['unavailable geometry never consumes shadow replays']=all(value(defs['replayShadows'],f,a,False) is False for f in (False,True) for a in (False,True))
 # Consumers (replayShadows) and schedules/commits (replaysComplete, actorShadows).
 consumers=['if(replayShadows)selectShadowReplays();','if(effects.shadows&&replayShadows)replayBoundsKick();','(replayShadows&&!timedReplay())',
            'if(effects.shadows&&replayShadows){auto proofs','if(effects.shadows&&replayShadows)pointCalculateReplayBounds();']
-schedules=['!reason&&key.valid&&!pull&&!actorLost,diagnosticCapture!=0,replaysComplete);','if(cascade==0)nearRendered=captureMode==CaptureFresh&&interval>1&&actorShadows;',
+schedules=['!reason&&key.valid&&!pull&&!actorLost,shadowDiagnosticCapture!=0,replaysComplete);','if(cascade==0)nearRendered=captureMode==CaptureFresh&&interval>1&&actorShadows;',
            'if(captureMode==CaptureFresh||!actorShadows)reuse.commit(interval,shadowPasses,matrices[cascade]);else captureDemand=true;',
            'renderPointShadows(atmosphere.lights,replaysComplete,actorShadows);else pointReady=false;']
 for needle in consumers+schedules:once(body,needle,'render()')
@@ -67,7 +68,7 @@ checks['cascade replay block gated, terrain before, union after']=(render.count(
     and render.count('submitReplay(')==2 and all(start<m.start()<end for m in re.finditer(r'submitReplay\(',render)) and # 0.3.209 (task 29): the actor map's loop is the second
     render.count('replayLoop(')==2 and all(start<m.start()<end for m in re.finditer(r'replayLoop\(',render)))
 # The probe moved before the live dump: legal because it never runs on a diagnostic capture frame.
-checks['probe never on a diagnostic capture frame']='probeRecord=replayProbeActive()&&slot==0&&captureMode==CaptureFresh&&!diagnosticCapture;' in block
+checks['probe never on a diagnostic capture frame']='probeRecord=replayProbeActive()&&slot==0&&captureMode==CaptureFresh&&!shadowDiagnosticCapture;' in block
 # Point cube: withReplays gates both replay loops and the schedule's replay count.
 pb=pt[pt.index('    bool renderPointShadow(const NorthlightLocalLights::Light& light,bool fresh=true,bool withReplays=true){'):pt.index('    bool renderPointLighting(')]
 gs,ge=pb.index('            if(withReplays){\n'),pb.index('            } /* withReplays */')
@@ -79,7 +80,8 @@ checks['point: both replay loops and the count gated on withReplays']=(pb.count(
     and code(pb[gs:ge]).count('{')==code(pb[gs:ge]).count('}')+1
     and re.search(r'\breplays(\[|\.size\(\))',code(outside)) is None)
 # Blob filter: one helper for all four draw entry points, off with ActorShadows=0 (F9 keeps its meaning).
-helper='bool blobFilterActive()const{return shadowBlobs&&shadowBlobs->active()&&enabled&&effectKeys.settings.shadows&&!applied&&terrain&&!failed&&world&&world->hasContext()&&world->ready()&&world->actorShadowsEnabled();}'
+helper='bool blobFilterActive()const{return shadowBlobs&&shadowBlobs->active()&&enabled&&effectKeys.settings.shadows&&!applied&&terrain&&!failed&&world&&world->hasContext()&&world->terrainShadowActive()&&world->actorShadowsEnabled();}'
+checks['native blob stays when no replacement shadow was composited']=('bool terrainShadowActive()const{return effects.shadows&&ready()&&shadowsComposited;}' in w and 'shadowsComposited=geometryReady&&effects.shadows&&(sourceActive[0]||sourceActive[1])&&debug==0;' in w)
 # 0.3.187: the four draw entry points share drawHook(); FrameDrawGates=0 and =1 both test the helper.
 checks['blob filter: one helper, every draw through drawHook']=(r.count(helper)==1 and r.count('if(!claimed&&blobFilterActive())extensionWork("blob shadow filter",[&]{blobFilter(count,claimed);});')==1
     and r.count('if(!claimed&&drawGates.blob){stage="blob shadow filter";if(blobFilterActive())blobFilter(count,claimed);}')==1 and r.count('return drawHook(t,count,')==4

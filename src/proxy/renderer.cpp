@@ -256,6 +256,7 @@ static void logClientLatency(std::uint64_t frame,const char* reason){
 }
 #include "celestial_disc_renderer.h"
 #include "shadow_blob_filter.h"
+#include "projected_draw_audit.h"
 #include "spell_layer.h"
 #include "particle_light_capture.h"
 #include "shader_read_set.h"
@@ -606,6 +607,27 @@ private:
         else if(hdrFailuresLogged++<8)logf("HDR conversion failed frame=%u HRESULT=0x%08lx",frame,(unsigned long)hr);
         return hr;
     }
+    NorthlightProjectedDrawAudit projectedAudit;
+    template<class Draw> HRESULT projectedDraw(unsigned count,unsigned phase,Draw draw){
+        if(count>256||!diagnostics()||!world||!NorthlightQuality::renderProfile(world->surfaceSettings())||
+           !NorthlightRenderThreadProbe::sampleFrame(frame)||!projectedAudit.canSample(frame)||
+           !spellOn||spellQueryN||spellQueryUnknown||
+           (enabled&&(!terrain||!projectionValid||!worldDepthBound())))return draw();
+        // phase: 0 native scene, 1 native after composition, 2 early spell drain,
+        // 3 spell replay after composition; bit 2 marks disabled Northlight effects.
+        return projectedAudit.draw(ext,frame,phase|(enabled?0u:4u),count,draw);
+    }
+    static HRESULT spellProjectedDraw(void* context,IDirect3DDevice9* device,const NorthlightSpellLayer::DrawArgs& args,bool afterEffects){
+        return static_cast<Device*>(context)->projectedDraw(args.primCount,afterEffects?3u:2u,[&]{return args.submit(device);});
+    }
+    void pollProjectedAudit(){
+        projectedAudit.poll([&](const NorthlightProjectedDrawAudit::Result& r){
+            logf("PROJECTED_VISIBILITY frame=%u phase=%u effects=%u primitives=%u visibleSamples=%lu potentialSamples=%lu src=%lu dst=%lu zfunc=%lu depthBias=%08lx slopeBias=%08lx alphaTest=%lu fvf=%08lx vs=%p ps=%p texture=%p status=%08lx queryFlush=0 colourWritesInProbe=0",
+                r.frame,r.phase&3,unsigned(!(r.phase&4)),r.primitives,(unsigned long)r.visible,(unsigned long)r.potential,(unsigned long)r.source,(unsigned long)r.destination,(unsigned long)r.depthFunction,(unsigned long)r.depthBias,(unsigned long)r.slopeBias,(unsigned long)r.alphaTest,(unsigned long)r.fvf,reinterpret_cast<void*>(r.vertex),reinterpret_cast<void*>(r.pixel),reinterpret_cast<void*>(r.texture),(unsigned long)r.status);
+        });
+        if(diagnostics()&&world&&NorthlightQuality::renderProfile(world->surfaceSettings())&&NorthlightRenderThreadProbe::sampleFrame(frame))
+            logf("PROJECTED_AUDIT frame=%u probes=%u pending=%u disabled=%u maxPerFrame=16 maxPending=32 queryFlush=0",frame,projectedAudit.probes(frame),projectedAudit.pending(),unsigned(projectedAudit.disabled()));
+    }
     template<class Draw> HRESULT hdrDraw(Draw draw){
         if(!hdr.active)return draw();
         bool linear=false;
@@ -648,6 +670,7 @@ private:
         drop(worldDepth);worldDepthDescKnown=false; rainMrtUnbind();terrain = captured = applied = projectionValid = false;rainMaskCleared=rainMaskDrawn=rainMaskFrame=rainMaskOk=rainDepthOk=false; /* 0.3.202 (rain mask MRT): RT1 never outlives a frame */earlyDepth.reset();resetTranslucentCensus(); /* the TRANSLUCENT line is logged before clearFrame */
     }
     void releaseResources() {
+        projectedAudit.reset();
         if(surface)surface->reset();if(autoBump)autoBump->reset();
         rainMrtUnbind();stateBlocks.clear();clearFrame();maskFormatFor=nullptr;maskFormatValue=0;maskStencil=false;maskDsId=nullptr; /* 0.3.212 (task 32): the depth may change with the device */
         drop(sceneSurface); drop(aoSurface); drop(aoRawSurface); drop(scene); drop(depthTex); drop(ao); drop(aoRaw);drop(rainMaskMS);drop(rainMaskSurface);drop(rainMask);drop(rainDepth);rainMaskFailed=false; /* 0.3.202 (rain) */
@@ -941,7 +964,7 @@ private:
         effectsBuckets.mark(Bucket::Celestial); /* discs, glare, the terrain mask prepare, the ring */
         if (error(ext->StretchRect(saved.targets[0], nullptr, sceneSurface, nullptr, D3DTEXF_NONE), "copy scene")) return;
         effectState();
-        float constants[]={1.f/width,1.f/height,nearZ,farZ,scaleX,scaleY,aoStrength,(world&&world->ready()?0.f:.12f),.08f,aoRadius,float(debugMode),0,worldMinDepth,1.f/(worldMaxDepth-worldMinDepth),worldMaxDepth,0};
+        float constants[]={1.f/width,1.f/height,nearZ,farZ,scaleX,scaleY,aoStrength,(world&&world->screenReady()?0.f:.12f),.08f,aoRadius,float(debugMode),0,worldMinDepth,1.f/(worldMaxDepth-worldMinDepth),worldMaxDepth,0};
 
         float waterFlags[]={waterMask?1.f:0.f,0,0,0};
         auto bindEffects=[&](IDirect3DTexture9* ambient){
@@ -1005,7 +1028,7 @@ private:
         // AO and bloom (AOContactBloom: bloom rgb, AO alpha) to the scene copy itself, so the
         // full-resolution composite and the world's colour copy are skipped. LEGACY (any other
         // frame) keeps the composite before the world, exactly as before.
-        const bool fold=world&&debugMode==0&&world->ready();
+        const bool fold=world&&debugMode==0&&world->screenReady();
         /* 0.3.212 (task 32): this frame's name marks: the composite quads draw with the world depth-stencil bound and reject marked pixels; no marks, or the feature off: exactly the old calls */
         const bool maskOn=nameMask.armed()&&nameMask.hasMarks()&&maskStencil&&worldDepth&&worldDebug==0;nameMask.composited=maskOn;
         auto legacyComposite=[&]{
@@ -1018,7 +1041,7 @@ private:
         if(!fold&&!legacyComposite())return;
         if(world&&debugMode==0){
             traceWorld=0;
-            world->setMaterialDetail(autoBump?autoBump->texture():nullptr,autoBump?autoBump->gain():0.f,autoBump?autoBump->distance():48.f,autoBump?autoBump->occlusionTexture():nullptr,autoBump?autoBump->occlusionDistance():8.f);
+            world->setMaterialDetail(autoBump?autoBump->texture():nullptr,autoBump?autoBump->gain():0.f,autoBump?autoBump->distance():48.f,autoBump?autoBump->occlusionTexture():nullptr,autoBump?autoBump->occlusionDistance():8.f,autoBump&&autoBump->active()&&autoBump->hasCaptureResources());
             world->setNameMask(maskOn?worldDepth:nullptr); /* 0.3.212 (task 32) */
             world->setRainMask(rainMaskTex); /* 0.3.202 (rain): RainMask for this frame's composite only (resolved and scrubbed at the top of renderEffects) */
             const bool rendered=world->render(saved.targets[0],depthTex,width,height,sceneFormat,nearZ,farZ,worldMinDepth,worldMaxDepth,worldDebug,gpuProfile.get(),waterMask,fold?scene:nullptr,fold?ao:nullptr,frame);
@@ -1372,9 +1395,9 @@ private:
     // 0.3.193 BlobShadowStrength (held by the filter, read once at device creation): 100 = the filter is off and the
     // game's blobs are drawn as they are; 0 = they are skipped (0.3.154..0.3.192); 1..99 = drawn with a lighter
     // texture (skipped when the game's blend cannot be lightened). Applies only while the mod draws actor shadows: effects (F10) and shadows (F9) on, a world
-    // context, and 0.3.158 ActorShadows=1 (with 0 the game's blobs are the actor shadows). The world must also be ready:
-    // in maps without a world cache (dungeons, raids, battlegrounds) it draws no actor shadows, so the blobs stay as they are.
-    bool blobFilterActive()const{return shadowBlobs&&shadowBlobs->active()&&enabled&&effectKeys.settings.shadows&&!applied&&terrain&&!failed&&world&&world->hasContext()&&world->ready()&&world->actorShadowsEnabled();}
+    // context, and ActorShadows=1. Keep the native shadow when no replacement was composited
+    // (for example, neither sun nor moon is an active shadow source).
+    bool blobFilterActive()const{return shadowBlobs&&shadowBlobs->active()&&enabled&&effectKeys.settings.shadows&&!applied&&terrain&&!failed&&world&&world->hasContext()&&world->terrainShadowActive()&&world->actorShadowsEnabled();}
     // 0.3.198 (rain): weather detection. weatherDetect.hot is the one candidate texture the draw hook compares
     // stage 0 with (weather_detect.h); the sample is what that comparison counted this frame. Both are touched
     // under the gate only, on whichever thread makes the draw (stream: replay thread; fallback: game thread).
@@ -1771,7 +1794,7 @@ private:
         spellOn=world&&world->spellLayerSetting()!=0;
         if(!spellOn){logf("SPELLLAYER config on=0");return;}
         spellClasses=world->spellLayerClassesSetting();spellTraceLeft=spellTraceSetting=world->spellTraceSetting();
-        NorthlightSpellLayer::Config cfg;cfg.on=true;cfg.classMask=spellClasses;
+        NorthlightSpellLayer::Config cfg;cfg.on=true;cfg.classMask=spellClasses;cfg.auditDraw=&Device::spellProjectedDraw;cfg.auditContext=this;
         cfg.conflictCopy=selectedBackend!=NorthlightBackend::Kind::Native; /* the copy-out read-back needs DXVK's direct-mapped dynamic buffers */
         cfg.readBackLockFlags=NorthlightUpload::readBackLock(); /* fixed before CreateDevice (backend()) */
         cfg.markGuard=&Device::spellMarkGuard;cfg.markCtx=this;cfg.savedPool=&stateBlocks;cfg.fogOn=world->spellFogSetting()!=0;cfg.fog=&world->spellFogFrame();cfg.fogLog=true; /* SpellFog: Northlight's fog folded into the recorded fog constants; the first samples per sub-class are kept for SPELLFOG (a bounded buffer) */
@@ -2729,7 +2752,7 @@ public:
         if(!diagnosticFrame&&diagnostics()&&QueryPerformanceCounter(&intervalTick)&&frameIntervals.sample(intervalTick.QuadPart,cpuFrequency.QuadPart,intervalReport)){
             logf("FRAME interval device=%ld frame=%u tick=%lu enabled=%d samples=%u meanMs=%.3f p50Ms=%.3f p95Ms=%.3f maxMs=%.3f fps=%.2f gi=%u shadows=%u fog=%u focus=%d",diagnosticId,frame,(unsigned long)GetTickCount(),enabled,intervalReport.count,intervalReport.meanMs,intervalReport.p50Ms,intervalReport.p95Ms,intervalReport.maxMs,1000.0/intervalReport.meanMs,unsigned(frameEffects.gi),unsigned(frameEffects.shadows),unsigned(frameEffects.fog),int(intervalFocus));intervalFocus=true;}
         if(diagnostics()){gpuProfile->poll();if(gpuSceneProfile)gpuSceneProfile->poll();}
-        if(materialProfile)materialProfile->poll();if(world)world->pollMaterialProfile();
+        if(materialProfile)materialProfile->poll();if(world)world->pollMaterialProfile();pollProjectedAudit();
         if(diagnostics()&&frame%600==0)logClientLatency(frame,"periodic");
         gpuBudgetFrame();cpuBudgetFrame(); /* task 45 */
         // Poll only while this game owns foreground focus.
@@ -3070,22 +3093,22 @@ public:
     // 0.3.187: the four draw entry points share drawHook(); each passes its capture and its real draw.
     HRESULT STDMETHODCALLTYPE DrawPrimitive(D3DPRIMITIVETYPE t,UINT start,UINT count) override { Guard mirrorLock(mirrorState.gate);
         NorthlightAutoDisplacement::Args geometry{{t,0,0,0,start,count,false}};
-        auto draw=[&]{return hdrDraw([&]{auto raw=[&]{return ext->DrawPrimitive(t,start,count);};return autoBump?autoBump->geometryDraw(raw,true):raw();});};
+        auto draw=[&]{return hdrDraw([&]{auto raw=[&]{return ext->DrawPrimitive(t,start,count);};return projectedDraw(count,applied?1u:0u,[&]{return autoBump?autoBump->geometryDraw(raw,true):raw();});});};
         if(spellOn||particleOn)spellArgs=NorthlightSpellLayer::DrawArgs::primitive(t,start,count);
         return drawHook(t,count,[&](IDirect3DVertexShader9* vs){if(autoBump&&enabled&&!applied&&!failed){autoBump->capture(vs,[&]{return ext->DrawPrimitive(t,start,count);},false,&geometry);}world->capture(t,0,0,0,start,count,false,vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame));captureWater(vs,NorthlightWaterRenderer::NoUserPointer,draw);},draw);}
     HRESULT STDMETHODCALLTYPE DrawIndexedPrimitive(D3DPRIMITIVETYPE t,INT base,UINT min,UINT vertices,UINT start,UINT count) override { Guard mirrorLock(mirrorState.gate);
         NorthlightAutoDisplacement::Args geometry{{t,base,min,vertices,start,count,true}};
-        auto draw=[&]{return hdrDraw([&]{auto raw=[&]{return ext->DrawIndexedPrimitive(t,base,min,vertices,start,count);};return autoBump?autoBump->geometryDraw(raw,true):raw();});};
+        auto draw=[&]{return hdrDraw([&]{auto raw=[&]{return ext->DrawIndexedPrimitive(t,base,min,vertices,start,count);};return projectedDraw(count,applied?1u:0u,[&]{return autoBump?autoBump->geometryDraw(raw,true):raw();});});};
         if(spellOn||particleOn)spellArgs=NorthlightSpellLayer::DrawArgs::indexed(t,base,min,vertices,start,count);
         return drawHook(t,count,[&](IDirect3DVertexShader9* vs){if(autoBump&&enabled&&!applied&&!failed){autoBump->capture(vs,[&]{return ext->DrawIndexedPrimitive(t,base,min,vertices,start,count);},false,&geometry);}world->capture(t,base,min,vertices,start,count,true,vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame));captureWater(vs,NorthlightWaterRenderer::NoUserPointer,draw);},draw);}
     HRESULT STDMETHODCALLTYPE DrawPrimitiveUP(D3DPRIMITIVETYPE t,UINT count,const void* data,UINT stride) override { Guard mirrorLock(mirrorState.gate);
         NorthlightAutoDisplacement::Args geometry{{t,0,0,0,0,count,false},nullptr,D3DFMT_UNKNOWN,data,stride};
-        auto draw=[&]{return hdrDraw([&]{auto raw=[&]{return ext->DrawPrimitiveUP(t,count,data,stride);};return autoBump?autoBump->geometryDraw(raw,true):raw();});};
+        auto draw=[&]{return hdrDraw([&]{auto raw=[&]{return ext->DrawPrimitiveUP(t,count,data,stride);};return projectedDraw(count,applied?1u:0u,[&]{return autoBump?autoBump->geometryDraw(raw,true):raw();});});};
         if(spellOn||particleOn)spellArgs=NorthlightSpellLayer::DrawArgs::primitiveUP(t,count,data,stride);
         return drawHook(t,count,[&](IDirect3DVertexShader9* vs){if(autoBump&&enabled&&!applied&&!failed){autoBump->capture(vs,[&]{return ext->DrawPrimitiveUP(t,count,data,stride);},true,&geometry);}world->captureUP(t,0,0,count,nullptr,D3DFMT_UNKNOWN,data,stride,false,vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame));captureWater(vs,NorthlightWaterRenderer::UserVertices,draw);},draw);}
     HRESULT STDMETHODCALLTYPE DrawIndexedPrimitiveUP(D3DPRIMITIVETYPE t,UINT min,UINT vertices,UINT count,const void* indices,D3DFORMAT fmt,const void* data,UINT stride) override { Guard mirrorLock(mirrorState.gate);
         NorthlightAutoDisplacement::Args geometry{{t,0,min,vertices,0,count,true},indices,fmt,data,stride};
-        auto draw=[&]{return hdrDraw([&]{auto raw=[&]{return ext->DrawIndexedPrimitiveUP(t,min,vertices,count,indices,fmt,data,stride);};return autoBump?autoBump->geometryDraw(raw,true):raw();});};
+        auto draw=[&]{return hdrDraw([&]{auto raw=[&]{return ext->DrawIndexedPrimitiveUP(t,min,vertices,count,indices,fmt,data,stride);};return projectedDraw(count,applied?1u:0u,[&]{return autoBump?autoBump->geometryDraw(raw,true):raw();});});};
         if(spellOn||particleOn)spellArgs=NorthlightSpellLayer::DrawArgs::indexedUP(t,min,vertices,count,indices,fmt,data,stride);
         return drawHook(t,count,[&](IDirect3DVertexShader9* vs){if(autoBump&&enabled&&!applied&&!failed){autoBump->capture(vs,[&]{return ext->DrawIndexedPrimitiveUP(t,min,vertices,count,indices,fmt,data,stride);},true,&geometry);}world->captureUP(t,min,vertices,count,indices,fmt,data,stride,true,vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame));captureWater(vs,NorthlightWaterRenderer::UserVerticesAndIndices,draw);},draw);}
 };

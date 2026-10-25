@@ -18,6 +18,14 @@ FILES=['renderer.cpp','world_renderer.h','world_shadow_experiment.inl','world_po
 GATES=('NorthlightDiagnostics::enabled()','diagnostics()','sampled()','captureSampled','if(diagnostics)','shadowFate.active()','sampledFrame','profiling()','profileSampled()','if(lightingClock)','materialProfile->recording()')
 # Ungated lines that stay with Diagnostics=0: format prefix -> label.
 KEEP={
+ 'WORLD GPU_DIAGNOSTIC_FRAME':'explicit diagnostic capture only; excluded from FPS',
+ 'NATIVE_SHADOW observe':'bounded diagnostic/profiling limiter',
+ 'FRAME interval':'helper exits unless diagnostics() and a partial interval exist',
+ 'WORLD normal GPU capture request':'explicit Alt+Ctrl+Shift+F12 request',
+ 'NATIVE capture active=':'explicit process capture request at device creation',
+ 'NORTHLIGHT STAND REPLAY BUILD:':'private stand variant startup/refusal',
+ 'LOCAL_SOURCE ':'bounded source trace or explicit diagnostic capture',
+ 'WORLD GPU_CAPTURE_ATTEMPT':'explicit diagnostic request, capped at four captures',
  'MEMORY policy terrain=':'start-up: identifies the terrain pressure policy once per backend initialization',
  'WORLD entry reclaim':'warning: optional cache reclaim only when the unchanged geometry entry budget refuses admission',
  'BUILD identity':'start-up: exact renderer source fingerprint',
@@ -42,13 +50,9 @@ KEEP={
  'HDR legacy target ':'one-off per legacy target creation/reset',
  'HDR experimental requested=':'start-up: experimental HDR configuration',
  'HDR experimental device creation refused:':'start-up: command-stream creation failure',
- 'SETTINGS unavailable:':'one-off initialization error',
  'SETTINGS startup recovery incomplete:':'one-off: a crash-interrupted settings commit could not be finished at start-up',
  'SETTINGS frame %s revision=':'settings event: a preview or saved config reached the frame boundary (user action)',
- 'CELESTIAL cloudOrder=':'one-off: first phase composition',
  'CELESTIAL skybox signatures unverified':'one-off: the skybox field signatures failed, once per renderer; late discs for the session',
- 'AO method=':'start-up: loaded AO settings',
- 'TERRAIN SHADOW farCoverage':'capped: first eight shader-patch registrations',
 
  'Depth snapshot DF24 refused':'one-off: depth format changes to INTZ for the rest of the session',
  'GAME thread priority':'start-up: successful device creation',
@@ -130,6 +134,11 @@ assert not unknown,'ungated, unlabelled log sites:\n'+'\n'.join(f'{w} {f}' for w
 r=fp.src('renderer.cpp').read_text();w=fp.src('world_renderer.h').read_text();mp=fp.src('material_profile.h').read_text()
 constructor=r[r.index('Device(IDirect3DDevice9* d,'):r.index('~Device() {')]
 checks={
+ 'partial interval helper exits with diagnostics disabled':'if(!diagnostics()||!have)return;' in r[r.index('void flushFrameIntervals('):r.index('void finishFrameImpl()')],
+ 'native shadow observations require the diagnostic/profiling limiter':'if(!vc.nativeShadow||!nativeShadowLimiter.take(diagnostics(),NorthlightRenderThreadProbe::profiling(),frame,*vc.nativeShadow))return;' in r,
+ 'source logs require admission and a bounded budget':'if(!trace.enabled)return;' in w[w.index('void reportLocalSources('):w.index('void profileSplit(')] and 'localSourceTraces<32&&frames%127==0' in w and 'sourceTrace.begin(NorthlightDiagnostics::enabled()&&NorthlightQuality::renderProfile(quality)&&' in w,
+ 'GPU diagnostics remain user requested and capped at four':'gpuDiagnosticCaptures>=4||gpuNormalDiagnosticRequested' in w and 'debug==0&&gpuNormalDiagnosticRequested&&gpuDiagnosticCaptures<4' in w and 'if(world->diagnosticCaptureInLastRender()){' in r,
+ 'capture activation is creation-only':r.count('logf("NATIVE capture active=')==1 and 'if(captureReason){\n            target->setNativeCaptureDiagnostic(true);' in r,
  'shared source join warning occurs only once in the device constructor':r.count('logf("CAPTURE shared sources: join failed; using private caches")')==1 and 'logf("CAPTURE shared sources: join failed; using private caches")' in constructor,
  'material recording requires the sampled Diagnostics-dependent RenderProfile gate':r.count('materialProfile->beginFrame(')==1
    and 'if(materialProfile)materialProfile->beginFrame(frame,world&&NorthlightQuality::renderProfile(world->surfaceSettings())&&NorthlightRenderThreadProbe::sampleFrame(frame));' in r
@@ -145,7 +154,7 @@ checks={
  'constant self-check keeps its 0.3.140 cadence (0.3.180 C0: its own flag and serial; the profile Stats only on diagnostic samples)':'},sample?&constantEpochProfile:nullptr,constantSelfCheck,constantSelfCheckState))return;' in w,
  'GPU timestamp queries only when on':'if(diagnostics())gpuProfile->beginFrame(frame,NorthlightRenderThreadProbe::sampleFrame(frame))' in r and 'if(diagnostics()){gpuProfile->poll();if(gpuSceneProfile)gpuSceneProfile->poll();}' in r and 'if(gpuSceneProfile&&diagnostics())gpuSceneProfile->beginFrame(frame,' in r,
  'async memory sampler always on (memory guard), periodic line only when on':'try{memoryDiagnostics=std::make_unique<NorthlightMemoryDiagnostics::Sampler>(&queryAddressSpace);}' in r and 'if(diagnostics())try{memoryDiagnostics=' not in r and 'if(decision.report&&diagnostics())logf("MEMORY frame=' in r and 'else if(diagnostics())logf("MEMORY sample failed' in r,
- 'frame interval sampling only when on':'if(diagnostics()&&QueryPerformanceCounter(&intervalTick)&&frameIntervals.sample(' in r,
+ 'frame interval sampling only when on; diagnostic frames excluded':'if(!diagnosticFrame&&diagnostics()&&QueryPerformanceCounter(&intervalTick)&&frameIntervals.sample(' in r,
  'mirror audit stays functional (ungated)':'mirrorAuditSchedule.afterWorldCapture(frame,' in r and not re.search(r'diagnostics\(\)[^;]*mirrorAuditSchedule',r),
  'command stream: the periodic CSTREAM line and the state audit only when on; the other CSTREAM lines are capped errors (via the options.log lambda, whose logf is labelled %s)':(lambda t:
     'if(audit&&diag&&frames%sampleEvery==1)runAudit();' in t and 'if(diag&&log&&frames%sampleEvery==0)cstreamLine(frames);' in t and t.count('cstreamLine(')==2
