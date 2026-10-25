@@ -261,9 +261,13 @@ static bool gDirty=true; // Config::dirtyRecord of every Rig (the whole suite al
 static bool gMinimal=true; // Config::minimalRestore of every Rig (main runs the whole suite with it on and off: the end state must be identical)
 static unsigned gTexGeneration=0;static unsigned texGeneration(void*){return gTexGeneration;}
 static uint64_t gTicks=0;static uint64_t fakeClock(void*){return ++gTicks;}static bool fakeTiming(void*){return true;} // every read advances one tick: a timed phase costs exactly 1
-struct Opts{bool fogFresh=true;unsigned maxFogFits=16;bool fogOn=false;const NorthlightSpellFog::Frame* fog=nullptr;unsigned maxOrderSplits=8;bool allowMismatch=false,failSafe=false;bool dirty=gDirty;unsigned maxTexSplits=8;bool minimal=gMinimal;bool timed=false;size_t deltaBytes=2u<<20;unsigned deltaChunk=16384;bool verdictCache=false;bool on=true;unsigned maxEntries=512;bool conflictCopy=true;unsigned mask=15;size_t arena=1u<<20,upVb=1u<<16,upIb=1u<<14;};
+struct Opts{bool audit=false;bool fogFresh=true;unsigned maxFogFits=16;bool fogOn=false;const NorthlightSpellFog::Frame* fog=nullptr;unsigned maxOrderSplits=8;bool allowMismatch=false,failSafe=false;bool dirty=gDirty;unsigned maxTexSplits=8;bool minimal=gMinimal;bool timed=false;size_t deltaBytes=2u<<20;unsigned deltaChunk=16384;bool verdictCache=false;bool on=true;unsigned maxEntries=512;bool conflictCopy=true;unsigned mask=15;size_t arena=1u<<20,upVb=1u<<16,upIb=1u<<14;};
 struct Rig{
     Fake::FakeDevice dev;Layer layer;Opts o;
+    unsigned auditCalls[2]={};
+    static HRESULT auditDraw(void* context,IDirect3DDevice9* device,const DrawArgs& args,bool afterEffects){
+        ++static_cast<Rig*>(context)->auditCalls[afterEffects];return args.submit(device);
+    }
     Fake::Surface *T,*D,*Other;
     Fake::VB *ring,*stat,*extra,*ring2;Fake::IB *ringIb,*ringIb32,*stIb;
     Fake::Decl *declP,*declTwo;Fake::VShader *vs,*vsEff;Fake::PShader *ps,*psEff;Fake::Texture *texA,*texB;unsigned psMajor=3;int psFogReg=-1;unsigned vsFog=1; /* what the integration passes as DrawArgs::psMajor and psFogReg */
@@ -322,6 +326,7 @@ struct Rig{
         }
         if(o.timed){c2.clock=&fakeClock;c2.timing=&fakeTiming;}
         if(o.verdictCache){c2.generation=&texGeneration;c2.genCtx=nullptr;}c2.markGuard=&Rig::markCb;c2.markCtx=this;
+        if(o.audit){c2.auditDraw=&Rig::auditDraw;c2.auditContext=this;}
         layer.attach(&dev);layer.configure(c2);layer.fogFresh(o.fogFresh);layer.beginFrame(false);
     }
     ~Rig(){
@@ -844,6 +849,15 @@ static void testRtMismatch(){
     checkEquivalent(p);CHECK(p.lay->order()==p.ref->order());
 }
 static void sCapacity(Rig& r){for(int i=1;i<=6;++i)deferQuad(r,i);r.boundary();}
+static void testAuditReplay(){
+    for(auto scenario:{sEquivalence,sCapacity}){
+        Opts o;o.audit=true;if(scenario==sCapacity)o.maxEntries=4;
+        Pair p=runBoth(scenario,o);checkEquivalent(p);
+        CHECK(p.ref->auditCalls[0]+p.ref->auditCalls[1]==0);
+        CHECK(p.lay->auditCalls[0]+p.lay->auditCalls[1]==p.lay->layer.totalCounters().replayedDraws);
+        CHECK(p.lay->auditCalls[scenario==sCapacity?0:1]>0);
+    }
+}
 static void testCapacity(){
     Opts o;o.maxEntries=4;Pair p=runBoth(sCapacity,o);const Counters& c=p.lay->layer.totalCounters();
     CHECK(p.lay->deferredTags==std::vector<int>({1,2,3,4}));
@@ -2371,7 +2385,7 @@ int main(int argc,char** argv){
     const char* only=argc>1?argv[1]:nullptr; // a test name (substring) to run alone, and an optional cache mode
     const bool fixedMode=argc>2;if(fixedMode)gMirrorMode=std::atoi(argv[2]);
     struct T{const char* name;void(*fn)();};
-    const T tests[]={{"classify",testClassify},{"lazy classify",testLazyClassify},{"glow verdict",testGlowVerdict},{"spell fog fit",testSpellFogFit},{"spell glow copy",testSpellGlowCopy},{"spell fog early drain",testSpellFogEarlyDrain},{"spell fog record",testSpellFogRecord},{"spell fog toggle",testSpellFogToggle},{"spell fog march",testSpellFogMarch},{"vs fog proof",testVsFogProof},{"spell fog fresh",testSpellFogFresh},{"spell fog cache and blend",testSpellFogCacheAndBlend},{"spell fog flat",testSpellFogFlat},{"spell fog colour",testSpellFogColour},{"spell fog precomputed",testSpellFogPrecomputed},{"spell fog review",testSpellFogReview},{"order split cap",testOrderSplitCap},{"stride 0 stream",testStride0},{"fvf vertex size",testFvfVertexSize},{"allocation failures",testAllocFailures},{"stride 0 fvf",testStride0Fvf},{"upload cursor",testUploadCursor},{"depth stencil texture",testDepthStencilTexture},{"trim and reuse",testTrimReuse},{"dirty record random",testDirtyRandom},{"record slots",testRecordSlots},{"dirty fail safe",testDirtyFailSafe},{"frame state",testFrameState},{"guard table",testGuardTable},{"equivalence",testEquivalence},
+    const T tests[]={{"classify",testClassify},{"lazy classify",testLazyClassify},{"glow verdict",testGlowVerdict},{"spell fog fit",testSpellFogFit},{"spell glow copy",testSpellGlowCopy},{"spell fog early drain",testSpellFogEarlyDrain},{"spell fog record",testSpellFogRecord},{"spell fog toggle",testSpellFogToggle},{"spell fog march",testSpellFogMarch},{"vs fog proof",testVsFogProof},{"spell fog fresh",testSpellFogFresh},{"spell fog cache and blend",testSpellFogCacheAndBlend},{"spell fog flat",testSpellFogFlat},{"spell fog colour",testSpellFogColour},{"spell fog precomputed",testSpellFogPrecomputed},{"spell fog review",testSpellFogReview},{"order split cap",testOrderSplitCap},{"stride 0 stream",testStride0},{"fvf vertex size",testFvfVertexSize},{"allocation failures",testAllocFailures},{"stride 0 fvf",testStride0Fvf},{"upload cursor",testUploadCursor},{"depth stencil texture",testDepthStencilTexture},{"trim and reuse",testTrimReuse},{"dirty record random",testDirtyRandom},{"record slots",testRecordSlots},{"dirty fail safe",testDirtyFailSafe},{"frame state",testFrameState},{"guard table",testGuardTable},{"equivalence",testEquivalence},{"projected draw audit",testAuditReplay},
         {"discard copy",testDiscard},{"partial overlap",testPartialOverlap},{"two entries",testTwoEntries},{"count-based marks",testMarkIsCountBased},
         {"rebase negative base",testRebaseNegativeBase},{"rebase kept base",testRebasePositiveBase},{"index buffer copy",testIbMaterialized},
         {"mixed streams",testMixedStreams},{"32-bit UP",test32bitUP},{"non-dynamic buffer",testNonDynamic},{"copy disabled",testConflictCopyDisabled},

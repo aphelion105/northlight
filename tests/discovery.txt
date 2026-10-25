@@ -7,7 +7,6 @@ test_actor_shadow_radius_wiring.py
 test_actor_shadow_selection.py
 test_actor_shadows_wiring.py
 test_actor_texture_worker.py
-test_addon_delivery.py
 test_affected_tests.py
 test_ao_blur.py
 test_ao_fog_capture.py
@@ -132,7 +131,9 @@ test_m2_shader_families.py
 test_m2_shader_families_client.py
 test_m2_visibility.py
 test_material_batch_bindings.py
+test_material_frame_rotation_gpu.py
 test_material_geometry.py
+test_material_normal_variants.py
 test_material_pressure_transition.py
 test_material_profile.py
 test_material_ray_work.py
@@ -177,6 +178,7 @@ test_probe_relight_cache.py
 test_probe_texture_upload.py
 test_production_draw_timers.py
 test_progressive_gi_worker.py
+test_projected_draw_audit_gpu.py
 test_quality_docs.py
 test_quality_settings.py
 test_quality_upgrade.py
@@ -211,7 +213,9 @@ test_scene_entry_reclaim.py
 test_scene_entry_reclaim_inputs.py
 test_scene_source_cache.py
 test_settings_overlay.py
+test_settings_overlay_gpu.py
 test_settings_service.py
+test_shader_optimization_cpu.py
 test_shader_read_set.py
 test_shader_read_set_client.py
 test_shadow_alpha.py
@@ -322,6 +326,7 @@ test_world_mesh_pages_real.py
 test_world_mesh_plan.py
 test_world_pressure_transition.py
 test_world_probe_coverage.py
+test_world_screen_effects_gpu.py
 test_zone_tuner.py
 test_zone_tuning.py
 test_zone_tuning_wiring.py
