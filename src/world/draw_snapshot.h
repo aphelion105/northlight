@@ -17,6 +17,7 @@
 #include "capture_buffer_metadata.h"
 #include "northlight_mem.h"
 #include "source_identity.h"
+#include "cpu_retirement.h"
 // Test-only counterfactuals of the 0.3.181 snapshot lookup (tests/test_snapshot_prediction.py); 0 in the
 // DLL. 1-4: no prediction reset in evictOldest / the revalidation erase / the same-hash replacement /
 // clearSnapshotCache; 5: prediction accepted on the key bytes before the draw arguments; 6: prediction
@@ -223,6 +224,11 @@ private:
         NorthlightIntrusiveLRU::List<CacheEntry> lru;
         std::vector<Frame*> members;size_t bytes=0,limit=0;unsigned serial=0;std::uint64_t generation=0;
         std::shared_ptr<NorthlightSourceIdentity::Ledger> live=std::make_shared<NorthlightSourceIdentity::Ledger>();size_t metadataBytes=0;
+    };
+    struct RetiredSources {
+        decltype(SourcePool::entries) entries;
+        decltype(SourcePool::identities) identities;
+        decltype(SourcePool::replayCandidates) replayCandidates;
     };
     // A weak slot can keep a make_shared allocation after its Mesh dies.
     // Reserve the entire possible control/object allocation for every slot.
@@ -495,8 +501,20 @@ public:
     void setMetadataProvider(NorthlightCaptureMetadata::Read f){clearSnapshotCache();metadata_=f;}
     void setDeclarationProvider(void* context,DeclarationFn f){declarationContext_=context;declaration_=f;}
     void setLayoutProvider(void* context,LayoutFn f){layoutContext_=context;captureLayout_=f;}
-    void clearSnapshotCache(){sources_->replayCandidates.reset();sources_->lru.clear();sources_->identities.clear();sources_->entries.clear();sources_->bytes=sources_->metadataBytes=0;++sources_->generation;for(auto& h:history_)h={};
-        dropPrediction(Erase::Clear);} /* every entry is gone */
+    size_t clearSnapshotCache(NorthlightStreaming::CpuRetirement* retirement=nullptr){
+        size_t deferred=0;
+        if(retirement&&!sources_->entries.empty())try{
+            auto retired=std::make_shared<RetiredSources>();
+            // D3D ownership ends on this device thread before the worker can
+            // receive immutable CPU meshes, index plans and map allocations.
+            for(auto& item:sources_->entries){auto*& declaration=item.second->declaration.p;if(declaration){declaration->Release();declaration=nullptr;}}
+            retired->entries.swap(sources_->entries);retired->identities.swap(sources_->identities);
+            retired->replayCandidates.swap(sources_->replayCandidates);sources_->lru.clear();
+            if(retirement->retire(retired,sources_->bytes))deferred=sources_->bytes;
+            // Queue contention/cap/allocation failure keeps synchronous release.
+        }catch(...){}
+        sources_->replayCandidates.reset();sources_->lru.clear();sources_->identities.clear();sources_->entries.clear();sources_->bytes=sources_->metadataBytes=0;++sources_->generation;for(auto& h:history_)h={};
+        dropPrediction(Erase::Clear);return deferred;} /* every entry is gone */
     // Memory guard: at most SnapshotCacheLimit; evicts oldest down to the new cap now.
     // Entries are shared immutable meshes, so holders of an evicted mesh keep it valid.
     void setSnapshotCacheLimit(size_t bytes){cacheLimit_=std::min(bytes,SnapshotCacheLimit);refreshSourceLimit();}
@@ -691,7 +709,7 @@ public:
     void clearFrame(){maintenance_={};sampleMaintenance_=false;used_=regularUsed_=0;draws_=regularDraws_=0;sourceSpanVertices_=uniqueVertices_=savedVertexBytes_=0;compactedDraws_=0;indexHits_=indexMisses_=0;cacheHits_=cacheMisses_=revalidated_=revalidationMismatches_=trackedHits_=peerHits_=sharedSourceHits_=0;replayContentTests_=replayContentHits_=0;replayContentComparedBytes_=0;avoidedReadBytes_=0;metadataBatches_=metadataHits_=metadataFallbacks_=fastCacheHits_=0;predictTried_=predictHits_=predictMisses_=0;++frame_;}
     // Cache lifetime never establishes validity: reads still lock/compare current
     // IB contents and copy current VB data. Reset/destruction may drop plans.
-    void clearIndexCache(){activeRuns_=&copyRuns_;recent_=nullptr;decodedLookup_.clear();decodedLRU_.clear();for(auto& entry:decoded_)entry.reset();decodedBytes_=sizeof(decoded_);decodedFreeCount_=decodedFree_.size();for(size_t i=0;i<decodedFree_.size();++i)decodedFree_[i]=i;clearSnapshotCache();}
+    size_t clearIndexCache(NorthlightStreaming::CpuRetirement* retirement=nullptr){activeRuns_=&copyRuns_;recent_=nullptr;decodedLookup_.clear();decodedLRU_.clear();for(auto& entry:decoded_)entry.reset();decodedBytes_=sizeof(decoded_);decodedFreeCount_=decodedFree_.size();for(size_t i=0;i<decodedFree_.size();++i)decodedFree_[i]=i;return clearSnapshotCache(retirement);}
     size_t indexCacheBytes()const{return decodedBytes_;}
     unsigned indexCacheEntries()const{return unsigned(decoded_.size()-decodedFreeCount_);}
     unsigned indexCacheHits()const{return indexHits_;}

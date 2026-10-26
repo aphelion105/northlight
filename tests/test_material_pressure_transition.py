@@ -18,8 +18,8 @@ helper=helper.replace('struct MaterialCaptureStateTestAccess {','struct Material
 helper=helper.replace('struct DisplacementStateTestAccess {','struct DisplacementStateTestAccess {\n    static size_t pressureLimit(const NorthlightAutoDisplacement& g){return g.snapshots.snapshotCacheLimit();}\n    static NorthlightDrawSnapshot::Frame& pressureSources(NorthlightAutoDisplacement& g,unsigned i){return i==0?g.snapshots:i==1?g.rangeSnapshots:g.skinRangeSnapshots;}')
 (out/'material_pressure_reference.h').write_bytes(helper.encode())
 header=fp.src('auto_bump_renderer.h').read_text();geometry=fp.src('auto_displacement_renderer.h').read_text()
-begin=header.index('    void setMemoryPressure(bool on){');end=header.index('    void trimMemory()',begin)
-original='''    void setMemoryPressure(bool on){
+begin=header.index('    void setMemoryPressure(bool on,');end=header.index('    void trimMemory(',begin)
+original='''    void setMemoryPressure(bool on,size_t=0){
         if(memoryPressure==on)return;memoryPressure=on;deferredSnapshots.setSnapshotCacheLimit(on?4u<<20:24u<<20);
         if(on&&!deferred.empty()){deferredDiscarded+=unsigned(deferred.size());clearDeferred();drawn=occlusionDrawn=false;}
         deferredGPU.setLimit(on?0:32u<<20);
@@ -43,6 +43,7 @@ for optimization in ['-O2','-O0']:
     for name,folder in [('control',control),('current',out)]:
         exe=out/f'fixture-{name}-{optimization[1:]}.exe'
         command=[str(fp.zig()),'c++','-target','x86-windows-gnu',optimization,'-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec','-I',str(folder),'-I',str(out),*fp.test_include_flags(),str(source),'-luser32','-luuid','-o',str(exe)]
+        if name=='current':command.insert(2,'-DNORTHLIGHT_TEST_MATERIAL_PRESSURE_POLICY=1')
         subprocess.run(command,env=fp.zig_env(),check=True);result=subprocess.run([str(exe)],capture_output=True,text=True)
         (out/f'{name}-{optimization[1:]}.log').write_text(result.stdout+result.stderr,encoding='utf-8');assert result.returncode==0,result.stdout+result.stderr
         line=next(line for line in result.stdout.splitlines() if line.startswith('MATERIAL_PRESSURE_PASS '));row=dict(re.findall(r'(\w+)=([^\s]+)',line));cells[name]=row

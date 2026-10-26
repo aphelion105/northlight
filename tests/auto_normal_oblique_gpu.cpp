@@ -42,9 +42,19 @@ struct MaterialCaptureStateTestAccess {
     static unsigned queued(const NorthlightAutoBump& b){return b.queued;}
     static unsigned flushed(const NorthlightAutoBump& b){return b.flushed;}
     static void pressureBounds(const NorthlightAutoBump& b){if(b.memoryPressure){
+#ifdef NORTHLIGHT_TEST_MATERIAL_PRESSURE_POLICY
+        const bool demand=std::getenv("NORTHLIGHT_TEST_DEMAND_PRESSURE")&&!std::getenv("NORTHLIGHT_TEST_SMALL_PACKETS");
+        assert(b.deferredPacketLimit==(demand?512u:64u)&&b.deferredByteLimit==(demand?8u<<20:1u<<20));
+        assert(b.deferred.size()<=b.deferredPacketLimit&&b.deferredBytes<=b.deferredByteLimit&&b.deferredTextureBytes<=(8ull<<20));
+#else
         assert(b.deferred.size()<=64&&b.deferredBytes<=(1u<<20)&&b.deferredTextureBytes<=(8ull<<20));
+#endif
         assert(b.deferredSnapshots.snapshotCacheLimit()==(4u<<20));
 #ifndef NORTHLIGHT_TEST_CAPTURE_BASELINE
+#ifdef NORTHLIGHT_TEST_MATERIAL_PRESSURE_POLICY
+        if(std::getenv("NORTHLIGHT_TEST_DEMAND_PRESSURE"))assert(b.deferredGPU.limit()==(32u<<20)&&b.deferredGPU.chargedBytes()<=(32u<<20));
+        else
+#endif
         assert(!b.deferredGPU.bytes());
 #endif
     }}
@@ -62,6 +72,30 @@ struct MaterialCaptureStateTestAccess {
         else assert(!b.residentDraws&&b.uploadDraws&&!b.deferredGPU.bytes());
 #endif
     }
+#ifdef NORTHLIGHT_TEST_MATERIAL_PRESSURE_POLICY
+    static void batchLimits(const NorthlightAutoBump& b){
+        std::printf("MATERIAL_BATCH_LIMIT_PASS rejected=%u packetLimit=%u packetBytes=%zu\n",b.batchLimit,b.deferredPacketLimit,b.deferredByteLimit);
+    }
+    static void smallPackets(NorthlightAutoBump& b){b.deferredPacketLimit=64;b.deferredByteLimit=1u<<20;}
+    static void demandRetention(NorthlightAutoBump& b){
+        const auto bytes=b.deferredGPU.chargedBytes(),entries=b.deferredGPU.population().entries;
+        assert(bytes&&entries);
+        b.setMemoryPressurePolicy(false,false);
+        b.setMemoryPressurePolicy(true,false);
+        assert(b.deferredGPU.chargedBytes()==bytes&&b.deferredGPU.population().entries==entries&&"MATERIAL_DEMAND_ENTRY_RETAIN");
+        b.trimMemory(false);
+        assert(b.deferredGPU.chargedBytes()==bytes&&b.deferredGPU.population().entries==entries&&"MATERIAL_DEMAND_TRIM_RETAIN");
+        std::puts("MATERIAL_DEMAND_RETENTION_PASS populated_cache_survives_reentry_and_trim reduced_cpu_pools_retained");
+    }
+    static void criticalRelease(NorthlightAutoBump& b){
+        assert(b.deferredGPU.bytes()&&b.deferredGPU.limit()==(32u<<20));
+        b.setMemoryPressurePolicy(true,true);
+        assert(!b.deferredGPU.limit()&&!b.deferredGPU.chargedBytes()&&!b.deferredGPU.population().entries);
+        assert(b.memoryPressure&&b.deferredSnapshots.snapshotCacheLimit()==(4u<<20));
+        assert(b.deferredPacketLimit==64&&b.deferredByteLimit==(1u<<20));
+        std::puts("MATERIAL_CRITICAL_RELEASE_PASS populated_gpu_cache_released reduced_cpu_pools_retained");
+    }
+#endif
     static void stateReuse(const NorthlightAutoBump& b){
 #ifndef NORTHLIGHT_TEST_CAPTURE_BASELINE
         std::printf("MATERIAL_STATE_REUSE_PASS issued=%u skipped=%u\n",b.replaySetters,b.replaySkipped);assert(b.replaySetters&&b.replaySkipped);
@@ -256,6 +290,12 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
     bump.setConstantEpochSource(&extension,[](void* context,NorthlightConstantEpoch::Stamp& stamp){return static_cast<ExtensionDevice*>(context)->constantStamp(stamp);});
 #endif
     bump.setMemoryPressure(pressure);assert(bump.active());
+#ifdef NORTHLIGHT_TEST_MATERIAL_PRESSURE_POLICY
+    const bool demandPressure=pressure&&std::getenv("NORTHLIGHT_TEST_DEMAND_PRESSURE")!=nullptr;
+    if(demandPressure){bump.setMemoryPressurePolicy(true,false);if(std::getenv("NORTHLIGHT_TEST_SMALL_PACKETS"))MaterialCaptureStateTestAccess::smallPackets(bump);}
+#else
+    const bool demandPressure=false;
+#endif
     bump.setGeometryTracking([](void* p,bool){return uint64_t(reinterpret_cast<uintptr_t>(p));},[](void* p,bool){return p==mutationSource||p==rewriteIndex?mutationRevision:1;},nullptr);
     const bool lazyVertex=std::getenv("NORTHLIGHT_TEST_LAZY_VERTEX")!=nullptr;
     if(lazyVertex){auto disabled=settings;disabled.autoBump=0;bump.configure(disabled);assert(!bump.active());}
@@ -584,7 +624,11 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
             if(identicalRewrite)std::printf("MATERIAL_IDENTICAL_REWRITE frames=%u draws=%u resident=%llu up=%llu readBytes=%llu verifiedHits=%llu changed=%u\n",4+repeats,draws,rewriteResident,rewriteUP,rewriteReads,rewriteHits,unsigned(std::getenv("NORTHLIGHT_TEST_REWRITE_CHANGED")!=nullptr));
             if(batchTiming&&deferredEnabled){std::printf("MATERIAL_DEFERRED_BENCH queued=%u flushed=%u mutation=%u barrier=%u\n",MaterialCaptureStateTestAccess::queued(bump),MaterialCaptureStateTestAccess::flushed(bump),unsigned(deferredMutation),unsigned(barrier));assert((drawRewrite?MaterialCaptureStateTestAccess::queued(bump)<=draws:MaterialCaptureStateTestAccess::queued(bump)==(multiStream||!samples?0:draws-(barrier?draws/8:0)))&&MaterialCaptureStateTestAccess::flushed(bump)==MaterialCaptureStateTestAccess::queued(bump));
                 if(samples&&!multiStream&&!textureWrite)MaterialCaptureStateTestAccess::stateReuse(bump);
-                if(!identicalRewrite&&samples&&(meshGrid||bufferedStrip||std::getenv("NORTHLIGHT_TEST_DEFERRED_RESIDENT")))MaterialCaptureStateTestAccess::residency(bump,!pressure&&!captureDevice.failResident);
+                if(!identicalRewrite&&samples&&(meshGrid||bufferedStrip||std::getenv("NORTHLIGHT_TEST_DEFERRED_RESIDENT")))MaterialCaptureStateTestAccess::residency(bump,(!pressure||demandPressure)&&!captureDevice.failResident);
+#ifdef NORTHLIGHT_TEST_MATERIAL_PRESSURE_POLICY
+                MaterialCaptureStateTestAccess::batchLimits(bump);
+                if(demandPressure&&samples&&!captureDevice.failResident){MaterialCaptureStateTestAccess::demandRetention(bump);MaterialCaptureStateTestAccess::criticalRelease(bump);}
+#endif
                 if(multiStream){assert(!MaterialCaptureStateTestAccess::sourceReadBytes(bump));std::puts("MATERIAL_MULTISTREAM_PREFLIGHT_PASS zero_source_reads immediate_retained");}}
             if(batchTiming&&std::getenv("NORTHLIGHT_TEST_MATERIAL_BATCH_VALIDATE")){
                 if(samples){ok(d->SetDepthStencilSurface(nullptr));ok(d->SetRenderTarget(0,output));ok(d->StretchRect(drawSurface,nullptr,baseSurface,nullptr,D3DTEXF_NONE));}

@@ -77,10 +77,11 @@ struct WorldRenderer {
 };
 struct MaterialConsumer {
     // Other consumers record order; their shared source pool is production code.
-    NorthlightDrawSnapshot::Frame sources,geometry;bool pressure=false;unsigned updates=0,trims=0;
+    NorthlightDrawSnapshot::Frame sources,geometry;bool pressure=false,critical=false;unsigned updates=0,trims=0;
     explicit MaterialConsumer(WorldRenderer& world){sources.setSnapshotCacheLimit(24u<<20);geometry.setSnapshotCacheLimit(24u<<20);assert(sources.shareSnapshotPool(world.replaySnapshots)&&geometry.shareSnapshotPool(world.replaySnapshots));}
     void setMemoryPressure(bool on){assert(frameCleared);pressure=on;++updates;if(on)sources.clearIndexCache();sources.setSnapshotCacheLimit(on?4u<<20:24u<<20);geometry.setSnapshotCacheLimit(on?6u<<20:24u<<20);}
-    void trimMemory(){assert(frameCleared&&pressure);++trims;}
+    void setMemoryPressurePolicy(bool on,bool low){critical=low;if(pressure!=on)setMemoryPressure(on);}
+    void trimMemory(bool releaseReplay=true){assert(frameCleared&&pressure&&releaseReplay==critical);++trims;}
 };
 struct Surface {unsigned resets=0;void reset(){assert(frameCleared);++resets;}};
 struct Water {unsigned releases=0;void releaseStateCache(){assert(frameCleared);++releases;}};
@@ -120,8 +121,10 @@ static void one(const char* name,unsigned count,size_t payloadBytes,bool trim,in
     unsigned evictions=0,releasesAtBoundary=0;size_t after=0,cap=0,live=0;long long elapsed=0;
     {
         frameCleared=false;Controller c;
+        const bool capOnly=episode<0;
+        if(capOnly){c.materials.pressure=true;c.materials.sources.setSnapshotCacheLimit(4u<<20);c.materials.geometry.setSnapshotCacheLimit(6u<<20);}
         auto held=NorthlightDrawSnapshot::SnapshotTestAccess::seed(c.materials.sources,&declaration,count,payloadBytes);
-        assert(c.state.replaySnapshots.sharedSourceParticipants()==3&&c.state.replaySnapshots.sharedSourceLimit()==(112u<<20));
+        assert(c.state.replaySnapshots.sharedSourceParticipants()==3&&c.state.replaySnapshots.sharedSourceLimit()==((capOnly?74u:112u)<<20));
         c.state.rigidHeld=held;c.clearFrame();
         const bool recovery=episode==0;c.memoryGuard.on=!recovery;c.memoryGuard.half=!recovery;
         trimLine[0]=workLine[0]=0;refuseAllocations=true;
@@ -146,7 +149,7 @@ static void one(const char* name,unsigned count,size_t payloadBytes,bool trim,in
             assert(c.state.replaySnapshots.snapshotCacheLimit()==(recovery?64u<<20:32u<<20));
             assert(c.state.terrainBoundsCache.limit==(recovery?32u<<20:16u<<20)&&c.state.replayGpuCache.limit==(recovery?64u<<20:32u<<20));
             if(recovery)assert(!evictions&&declaration.releases==0&&after&&cap==(112u<<20));
-            else assert(evictions>0&&after&&after<=(80u<<20)&&cap==(80u<<20)&&!c.materials.updates);
+            else assert(evictions>0&&after&&after<=(42u<<20)&&cap==(42u<<20)&&!c.materials.updates);
         }
         if(held){assert(held->streams[0].bytes.size()==payloadBytes&&std::all_of(held->streams[0].bytes.begin(),held->streams[0].bytes.end(),[](unsigned char x){return x==1;}));assert(live>=NorthlightSourceIdentity::allocationBytes<NorthlightDrawSnapshot::Mesh>(held->capacityBytes()));}
         if(!oldAllowed)telemetry(trim);
@@ -163,7 +166,7 @@ int main(int argc,char** argv){
         one("populated",26,4u<<20,true,1,1,oldAllowed,measure);
         one("fitting",6,1u<<20,true,1,1,oldAllowed,measure);
         one("empty",0,0,true,1,1,oldAllowed,measure);
-        one("cap-only",26,4u<<20,false,-1,1,oldAllowed,measure);
+        one("cap-only",26,2u<<20,false,-1,1,oldAllowed,measure);
         one("recovery",26,4u<<20,false,0,0,oldAllowed,measure);
     }
     std::puts("WORLD_PRESSURE_PASS actual_shared_pool escaped_payload live_charge declaration_owner_thread clear_once pressure_before_material_trim sampler_last unchanged_caps");

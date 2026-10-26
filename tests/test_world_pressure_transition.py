@@ -61,12 +61,12 @@ renderer = fp.src('renderer.cpp').read_text(encoding='utf-8')
 world = fp.src('world_memory_guard.inl').read_text(encoding='utf-8')
 stub = next(ast.literal_eval(node.value) for node in ast.parse(stub_source.read_text()).body
             if isinstance(node, ast.Assign) and any(getattr(target, 'id', '') == 'stub' for target in node.targets))
-methods = '\n'.join([method(world, 'struct MemoryTrim') + ';', method(world, 'MemoryTrim trimMemory()'),
+methods = '\n'.join([method(world, 'struct MemoryTrim') + ';', method(world, 'MemoryTrim trimMemory('),
                      method(world, 'void setMemoryPressure(')])
 trim = method(renderer, 'void trimMemory(const NorthlightMemoryDiagnostics::Sample& trigger,')
 boundary = method(renderer, 'if(memoryWorld>=0||memoryCaps>=0||memoryTrim)')
 generated = trim + '\nvoid boundary(bool memoryTrim,int memoryWorld,int memoryCaps){const NorthlightMemoryDiagnostics::Sample memorySample{};\n' + boundary + '\n}\n'
-preclear = 'if(memoryTrim&&world){worldTrim=world->trimMemory();QueryPerformanceCounter(&worldTrimEnd);}'
+preclear = 'if(memoryTrim&&world){worldTrim=world->trimMemory(memoryGuard.capsHalved());QueryPerformanceCounter(&worldTrimEnd);}'
 assert generated.count(preclear) == 1 and generated.count('const auto& t=worldTrim;') == 1
 # The old order performs its real world clear after the other late consumers.
 # Only that ordering is changed: same methods, limits, shared payloads and holds.

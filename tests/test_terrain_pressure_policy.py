@@ -81,8 +81,9 @@ struct WorldRenderer {
     @SETTER@
 };
 struct AutoBumpCaps {
-    bool pressure=false;unsigned updates=0;
+    bool pressure=false,critical=false;unsigned updates=0;
     void setMemoryPressure(bool on){assert(frameCleared);pressure=on;++updates;}
+    void setMemoryPressurePolicy(bool on,bool low){critical=low;if(pressure!=on)setMemoryPressure(on);}
 };
 struct Controller {
     Guard memoryGuard;WorldRenderer worldState;AutoBumpCaps bumpState;LARGE_INTEGER cpuFrequency;
@@ -109,6 +110,7 @@ int main(){
     assert(d.entered&&d.demand&&d.trim&&c.trims==1&&!d.capsChanged);
     assert(c.worldState.terrainBoundsCache.bytes==32*MiB&&"DEMAND_TERRAIN_CAP");
     assert(c.worldState.memoryPressure&&!c.worldState.nearReserve&&c.bumpState.pressure);
+    assert(!c.bumpState.critical);
     assert(c.worldState.replaySnapshots.bytes==32*MiB&&c.worldState.replayGpuCache.bytes==32*MiB);
     assert(!NorthlightReplayCopies::pressure&&!NorthlightStream::memoryPressure.load());
     for(std::uint32_t tick=2000;tick<=200000;tick+=1000){
@@ -129,6 +131,7 @@ int main(){
     assert(!d.entered&&d.capsChanged&&d.halfCaps&&d.trim&&c.trims==2);
     assert(c.worldState.terrainBoundsCache.bytes==16*MiB&&"TRUE_LOW_TERRAIN_CAP");
     assert(c.worldState.updates==2&&c.bumpState.updates==1);
+    assert(c.bumpState.critical);
     assert(c.worldState.replaySnapshots.bytes==32*MiB&&c.worldState.replayGpuCache.bytes==32*MiB);
     assert(NorthlightReplayCopies::pressure&&NorthlightStream::memoryPressure.load());
     assert(!G::admits({900*MiB,159*MiB,true},G::buildBudget(128*MiB)));
