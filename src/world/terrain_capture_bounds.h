@@ -43,6 +43,14 @@ struct MeshSnapshot {
     // Always triangle-list indices into positions; detached from game buffers.
     NorthlightTerrainIndices::Indices indices;
 };
+
+inline bool samePositionBytes(const void* raw,const Position& position){
+    static_assert(sizeof(Position)==3*sizeof(std::uint32_t));
+    // Fixed-width copies allow unaligned input without aliasing or overreading.
+    // Compare bits: float equality would accept a changed signed zero or reject NaNs.
+    std::uint32_t a[3],b[3];std::memcpy(a,raw,sizeof a);std::memcpy(b,&position,sizeof b);
+    return a[0]==b[0]&&a[1]==b[1]&&a[2]==b[2];
+}
 enum class RejectReason {
     None,Arguments,PrimitiveLimit,CaptureLimit,ByteBudget,ViewRead,ViewMismatch,
     DeclarationRead,DeclarationBounds,PositionFormat,StreamFrequency,
@@ -796,7 +804,7 @@ public:
         bool sameVertices=sameIndices&&cached->vertices.size()==span&&!std::memcmp(raw,cached->vertices.data(),size_t(span));
         if(sameIndices&&!sameVertices&&!cached->sourceOffsets.empty()&&cached->sourceOffsets.size()==cached->snapshot->positions.size()){
             sameVertices=cached->sourceOffsets.visit([&](const auto* offsets,size_t count){
-                for(size_t i=0;i<count;++i)if(std::memcmp(static_cast<const unsigned char*>(raw)+offsets[i],&cached->snapshot->positions[i],sizeof(Position)))return false;
+                for(size_t i=0;i<count;++i)if(!samePositionBytes(static_cast<const unsigned char*>(raw)+offsets[i],cached->snapshot->positions[i]))return false;
                 return true;
             });
         }
