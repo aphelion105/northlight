@@ -12,7 +12,7 @@ out = fp.out()/'material-cpu'
 out.mkdir(parents=True, exist_ok=True)
 for name, source, extra in (
     ('geometry', 'test_displacement_geometry.cpp', []),
-    ('snapshot', 'displacement-snapshot/test.cpp', ['-I'+str(fp.TESTS/'displacement-snapshot')]),
+    ('snapshot', 'displacement-snapshot/test.cpp', ['-DNL_STUB','-I'+str(fp.TESTS/'displacement-snapshot')]),
     ('uploads', 'test_material_texture_uploads.cpp', []),
 ):
     exe = out/(name+'.exe')

@@ -214,6 +214,7 @@ test_temporal_history.py
 test_terrain_cache_capacity.py
 test_terrain_capture_bounds.py
 test_terrain_capture_optimization.py
+test_terrain_capture_phases.py
 test_terrain_content_cache.py
 test_terrain_metadata.py
 test_terrain_reach_fallback.py

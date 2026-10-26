@@ -183,11 +183,12 @@ int main(int argc,char** argv){
             if(mode==6)policy.autoBumpStrength=0;
             float light[4]={.98f,0,.2f,mode==3?2.f:1.f};bump.configure(policy);bump.setLight(light);
             ok(d->Clear(0,nullptr,D3DCLEAR_ZBUFFER,0,1,0));ok(d->BeginScene());capture(vs,[&]{return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,mesh,sizeof(V));},true);ok(d->EndScene());
-            if(mode==0||mode==5)assert(!bump.occlusionTexture());else{
+            // No auxiliary pass when neither cavity nor eligible POM self-shadow contributes.
+            if(mode==0||mode==4||mode==5||(grass&&mode!=1&&mode!=6))assert(!bump.occlusionTexture());else{
                 auto counts=occludedPixels(d,bump.occlusionTexture());
                 std::printf("OCCLUSION %s mode=%u sun=%u moon=%u cavity=%u\n",family,mode,counts[0],counts[1],counts[2]);std::fflush(stdout);
                 if(mode==1||mode==6){assert(counts[2]>100&&counts[0]==0&&counts[1]==0);if(mode==6)assert(bump.gain()==0&&bump.texture());}
-                else if(grass||mode==4)assert(counts[0]==0&&counts[1]==0&&counts[2]==0);
+                else if(grass)assert(counts[0]==0&&counts[1]==0&&counts[2]==0);
                 else if(mode==2)assert(counts[0]>0&&counts[1]==0&&counts[2]==0);
                 else if(mode==3)assert(counts[1]>0&&counts[0]==0&&counts[2]==0);
             }
@@ -234,8 +235,8 @@ int main(int argc,char** argv){
         auto* blockedSun=texture(d,solid(0,1,1,1));auto* blockedMoon=texture(d,solid(1,0,1,1));auto* cavity=texture(d,solid(1,1,.4f,1));
         float occFull[79][4]={};std::memcpy(occFull,full,sizeof full);occFull[0][2]=.1f;occFull[6][0]=occFull[6][1]=0;occFull[73][0]=0;occFull[73][1]=48;occFull[74][0]=0;occFull[74][2]=1;occFull[75][0]=0;occFull[75][2]=1;occFull[76][0]=occFull[76][1]=occFull[76][2]=.2f;occFull[77][0]=occFull[77][1]=occFull[77][2]=0;
         for(unsigned sampler:{6u}){d->SetSamplerState(sampler,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(sampler,D3DSAMP_MAGFILTER,D3DTEXF_POINT);d->SetSamplerState(sampler,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(sampler,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(sampler,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);}
-        for(unsigned mode=0;mode<8;++mode){occFull[78][0]=mode==0?0.f:1.f;occFull[0][2]=mode==4?.2f:.1f;occFull[18][0]=occFull[18][1]=occFull[18][2]=mode==6||mode==7?.2f:0;occFull[18][3]=1;
-            d->SetTexture(6,mode==1?blockedSun:mode==2?blockedMoon:mode==3?zero:mode==6||mode==7?cavity:blockedSun);d->SetTexture(4,mode==5?zero:white);d->SetTexture(8,mode==7?zero:white);d->SetTexture(9,bump.texture());d->SetTexture(14,normals);
+        for(unsigned mode=0;mode<10;++mode){occFull[78][0]=mode==0?0.f:1.f;occFull[78][1]=mode>=8?.5f:float(settings.autoMaterialOcclusionDistance);occFull[0][2]=mode==4?.2f:.1f;occFull[18][0]=occFull[18][1]=occFull[18][2]=mode==6||mode==7||mode==9?.2f:0;occFull[18][3]=1;
+            d->SetTexture(6,mode==1?blockedSun:mode==2?blockedMoon:mode==3?zero:mode==6||mode==7||mode==9?cavity:blockedSun);d->SetTexture(4,mode==5?zero:white);d->SetTexture(8,mode==7?zero:white);d->SetTexture(9,bump.texture());d->SetTexture(14,normals);
             d->SetPixelShaderConstantF(0,occFull[0],79);ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(Vertex)));ok(d->EndScene());auto out=pixels(d,target);unsigned changed=0;
             for(unsigned at=0;at<out.size();++at){assert(std::isfinite(out[at]));if(at%4!=3){assert(out[at]<=.30001f);changed+=std::fabs(out[at]-.3f)>.00001f;}else assert(out[at]==1);}
             if(mode==1||mode==6||mode==7)assert(changed>100);else assert(changed==0);++cases;
