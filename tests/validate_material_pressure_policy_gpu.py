@@ -35,7 +35,7 @@ for samples in [0,2]:
     if samples:
         critical,small,demand=results[-3:]
         assert demand['forced_batches']<small['forced_batches']==critical['forced_batches'],(critical,small,demand)
-(out/'validation.json').write_text(json.dumps(dict(pass_=True,exact_color_normal_occlusion=True,cases=results),indent=2)+'\n');print(json.dumps(results,indent=2))
+(out/'validation.json').write_text(json.dumps(dict(pass_=False,exact_color_normal_occlusion=True,cases=results,negative_controls_pending=True),indent=2)+'\n');print(json.dumps(results,indent=2))
 
 # Counterfactuals retain the same fixture/API and restore each destructive path
 # separately. A populated cache, rather than its configured cap, must survive.
