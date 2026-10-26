@@ -60,6 +60,31 @@ struct Blocker {
     std::atomic<bool>& entered;std::atomic<bool>& proceed;
     ~Blocker(){entered=true;while(!proceed)std::this_thread::yield();}
 };
+static void batchLimits(){
+    NorthlightStreaming::CpuRetirement queue(false);auto held=std::make_shared<int>(42);
+    std::atomic<bool> entered{false},proceed{false};auto blocker=std::shared_ptr<Blocker>(new Blocker{entered,proceed});
+    while(!queue.retire(blocker,0))std::this_thread::yield();while(!entered)std::this_thread::yield();
+    {
+        NorthlightStreaming::CpuRetirementBatch batch(&queue);
+        for(unsigned i=0;i<16;++i){auto owner=held;assert(batch.retire(owner,1)&&!owner);}
+        auto extra=held;assert(!batch.retire(extra,1)&&extra==held&&batch.count()==16&&batch.bytes()==16);
+        assert(batch.finish());assert(!batch.retire(extra,1)&&extra==held&&!batch.finish());proceed=true;assert(queue.waitIdle(10000));
+    }
+    {
+        NorthlightStreaming::CpuRetirementBatch batch(&queue);auto owner=held;
+        assert(batch.retire(owner,size_t(-1)));owner=held;assert(!batch.retire(owner,1)&&owner==held);
+        const auto refused=queue.stats().refused;assert(!batch.finish()&&queue.stats().refused==refused+2&&!batch.queuedBytes()); // Bulk and individual attempts retain byte caps.
+    }
+#if !__has_feature(thread_sanitizer)
+    {
+        refuseAllocation=true;NorthlightStreaming::CpuRetirementBatch batch(&queue);refuseAllocation=false;
+        auto owner=held;assert(!batch.retire(owner,1)&&owner==held&&!batch.finish()&&!batch.count());
+    }
+#endif
+    {NorthlightStreaming::CpuRetirementBatch critical;auto owner=held;assert(!critical.retire(owner,1)&&owner==held&&!critical.finish());}
+    assert(held.use_count()==1);
+    std::puts("CPU_RETIRE_BATCH_PASS fixed_16_owners byte_overflow repeated_finish allocation_failure disabled_sync unchanged_queue_caps");
+}
 static void one(const char* name,bool defer,bool full,bool allocationFailure,bool indicesOnly=false,bool sourcePriority=false){
     const auto initial=NorthlightSourceIdentity::cpuLiveBytes.load();Declaration declaration;
     std::atomic<bool> entered{false},proceed{false};NorthlightStreaming::CpuRetirement queue(false);
@@ -104,6 +129,7 @@ static void one(const char* name,bool defer,bool full,bool allocationFailure,boo
     assert(NorthlightSourceIdentity::cpuLiveBytes.load()==initial);
 }
 int main(){
+    batchLimits();
     one("demand",true,false,false);
     one("critical",false,false,false);
     one("queue-full",true,true,false);

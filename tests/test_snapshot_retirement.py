@@ -22,8 +22,8 @@ sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
 inputs={str(p):sha(p) for p in watched};report=dict(pass_=False,inputs=inputs,runs=[],game_or_gpu_launched=False)
 original=header.read_text()
 modes=[('O2',['-O2']),('O0',['-O0']),('ASan-UBSan',['-O1','-g','-fsanitize=address,undefined','-fno-sanitize-recover=all','-fno-omit-frame-pointer']),('TSan',['-O1','-g','-fsanitize=thread'])]
-controls=[('no-retirement','if(retirement&&!sources_->entries.empty())try{','if(false&&retirement&&!sources_->entries.empty())try{','RETIREMENT_NOT_QUEUED'),
-          ('no-index-retirement','if(retirement&&indexCacheEntries())try{','if(false&&retirement&&indexCacheEntries())try{','INDEX_RETIREMENT_NOT_QUEUED'),
+controls=[('no-retirement','if((retirement||batch)&&!sources_->entries.empty())try{','if(false&&(retirement||batch)&&!sources_->entries.empty())try{','RETIREMENT_NOT_QUEUED'),
+          ('no-index-retirement','if((retirement||batch)&&indexCacheEntries())try{','if(false&&(retirement||batch)&&indexCacheEntries())try{','INDEX_RETIREMENT_NOT_QUEUED'),
           ('worker-COM','declaration->Release();declaration=nullptr;','/* counterfactual: COM ownership reaches the worker */','COM_RELEASE_BEFORE_ENQUEUE')]
 try:
     for name,body,rejection in [('current',original,None),*[(n,original.replace(a,b),r) for n,a,b,r in controls]]:

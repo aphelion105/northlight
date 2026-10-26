@@ -66,7 +66,7 @@ methods = '\n'.join([method(world, 'struct MemoryTrim') + ';', method(world, 'Me
 trim = method(renderer, 'void trimMemory(const NorthlightMemoryDiagnostics::Sample& trigger,')
 boundary = method(renderer, 'if(memoryWorld>=0||memoryCaps>=0||memoryTrim)')
 generated = trim + '\nvoid boundary(bool memoryTrim,int memoryWorld,int memoryCaps){const NorthlightMemoryDiagnostics::Sample memorySample{};\n' + boundary + '\n}\n'
-preclear = 'if(memoryTrim&&world){worldTrim=world->trimMemory(memoryGuard.capsHalved());QueryPerformanceCounter(&worldTrimEnd);}'
+preclear = 'if(memoryTrim&&world){worldTrim=world->trimMemory(memoryGuard.capsHalved(),retirementBatch);QueryPerformanceCounter(&worldTrimEnd);}'
 assert generated.count(preclear) == 1 and generated.count('const auto& t=worldTrim;') == 1
 # The old order performs its real world clear after the other late consumers.
 # Only that ordering is changed: same methods, limits, shared payloads and holds.

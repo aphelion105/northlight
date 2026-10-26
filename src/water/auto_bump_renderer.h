@@ -362,7 +362,7 @@ public:
         if(success){clearDeferred();result.ok=true;}return success;
     }
     void setProfiler(NorthlightMaterialProfile* p){profile=p;normals.setProfiler(p);parallax.setProfiler(p);displacement.setProfiler(p);}
-    void setMemoryPressure(bool on,size_t pressureReplayLimit=0,NorthlightStreaming::CpuRetirement* retirement=nullptr){
+    void setMemoryPressure(bool on,size_t pressureReplayLimit=0,NorthlightStreaming::CpuRetirement* retirement=nullptr,NorthlightStreaming::CpuRetirementBatch* batch=nullptr){
         if(memoryPressure==on)return;memoryPressure=on;
         deferredPacketLimit=on?64:512;deferredByteLimit=on?1u<<20:8u<<20;
         using Clock=std::chrono::steady_clock;const bool timed=NorthlightRenderThreadProbe::profiling();
@@ -371,19 +371,19 @@ public:
         const size_t sourceBefore=deferredSnapshots.sharedSourceBytes();
         // This frame-boundary clear is required for pressure relief. Do it before
         // lowering the shared cap, avoiding an LRU shrink of entries just discarded.
-        const size_t sourceDeferred=on?deferredSnapshots.clearIndexCache(retirement):0;const double sourceClearMs=phase();
+        const size_t sourceDeferred=on?deferredSnapshots.clearIndexCache(retirement,batch):0;const double sourceClearMs=phase();
         deferredSnapshots.setSnapshotCacheLimit(on?4u<<20:24u<<20);const double sourceLimitMs=phase();
         if(on&&!deferred.empty()){deferredDiscarded+=unsigned(deferred.size());clearDeferred();drawn=occlusionDrawn=false;}
         const double packetClearMs=phase();deferredGPU.setLimit(on?pressureReplayLimit:32u<<20);const double replayGpuMs=phase();
         if(on)deferredDeclarations.clear();const double declarationClearMs=phase();
         normals.setMemoryPressure(on);const double normalMs=phase();
-        displacement.setMemoryPressure(on,retirement);const double geometryMs=phase();
+        displacement.setMemoryPressure(on,retirement,batch);const double geometryMs=phase();
         sharedPOM.setMemoryPressure(on);const double sharedPomMs=phase();
         logf("MATERIAL_MEMORY pressure=%u normalBudgetMiB=%u geometryBudgetMiB=%u relief=active transitionProfiled=%u sourceBeforeMiB=%.3f sourceAfterMiB=%.3f sourceClearMs=%.3f sourceLimitMs=%.3f packetClearMs=%.3f replayGpuMs=%.3f declarationClearMs=%.3f normalMs=%.3f geometryMs=%.3f sharedPomMs=%.3f sourceDeferredMiB=%.3f",unsigned(on),on?32:96,on?32:128,unsigned(timed),double(sourceBefore)/(1u<<20),double(deferredSnapshots.sharedSourceBytes())/(1u<<20),sourceClearMs,sourceLimitMs,packetClearMs,replayGpuMs,declarationClearMs,normalMs,geometryMs,sharedPomMs,double(sourceDeferred)/(1u<<20));
     }
-    void trimMemory(bool releaseReplay=true){auto* retirement=releaseReplay?nullptr:&NorthlightStreaming::cpuRetirement();if(!deferred.empty()){deferredDiscarded+=unsigned(deferred.size());clearDeferred();drawn=occlusionDrawn=false;}sharedMaps[0]={};sharedMaps[1]={};sharedPOM.reset();normals.trimMemory();displacement.trimMemory(retirement);deferredSnapshots.clearIndexCache(retirement);if(releaseReplay)deferredGPU.clear();}
-    void setMemoryPressurePolicy(bool episode,bool critical){
-        setMemoryPressure(episode,critical?0:32u<<20,episode&&!critical?&NorthlightStreaming::cpuRetirement():nullptr);
+    void trimMemory(bool releaseReplay=true,NorthlightStreaming::CpuRetirementBatch* batch=nullptr){auto* retirement=releaseReplay?nullptr:&NorthlightStreaming::cpuRetirement();if(!deferred.empty()){deferredDiscarded+=unsigned(deferred.size());clearDeferred();drawn=occlusionDrawn=false;}sharedMaps[0]={};sharedMaps[1]={};sharedPOM.reset();normals.trimMemory();displacement.trimMemory(retirement,releaseReplay?nullptr:batch);deferredSnapshots.clearIndexCache(retirement,releaseReplay?nullptr:batch);if(releaseReplay)deferredGPU.clear();}
+    void setMemoryPressurePolicy(bool episode,bool critical,NorthlightStreaming::CpuRetirementBatch* batch=nullptr){
+        setMemoryPressure(episode,critical?0:32u<<20,episode&&!critical?&NorthlightStreaming::cpuRetirement():nullptr,episode&&!critical?batch:nullptr);
         // Builder demand keeps the reduced CPU pools, but need not turn every
         // immutable replay into DrawUP. Real VA pressure still releases all GPU
         // residents. Promotion/time limits and allocation-failure fallback stay.

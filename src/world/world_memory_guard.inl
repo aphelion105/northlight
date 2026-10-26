@@ -26,14 +26,14 @@
     }
     static constexpr size_t ReplayPoolBytes=48u*1024u*1024u;
     size_t replayPoolLimit()const{return memoryPressure?ReplayPoolBytes/2:ReplayPoolBytes;}
-    MemoryTrim trimMemory(bool critical=true){
+    MemoryTrim trimMemory(bool critical=true,NorthlightStreaming::CpuRetirementBatch* batch=nullptr){
         MemoryTrim t;auto phaseStart=std::chrono::steady_clock::now();
         const auto elapsed=[&](){const auto now=std::chrono::steady_clock::now();const double ms=std::chrono::duration<double,std::milli>(now-phaseStart).count();phaseStart=now;return ms;};
         prepareQuiesce();stateBlocks.clear();t.quiesceMs=elapsed(); /* 0.3.177 */
         {const auto before=terrainBoundsCache.sourceLiveBytes()+terrainBoundsCache.sourceMetadataBytes();terrainBoundsCache.clearPersistent();const auto after=terrainBoundsCache.sourceLiveBytes()+terrainBoundsCache.sourceMetadataBytes();t.terrain=size_t(before-std::min(before,after));}
         t.terrainMs=elapsed();
         const auto sourceBefore=replaySnapshots.sourceLiveBytes()+replaySnapshots.sharedSourceMetadataBytes();
-        {const auto before=replaySnapshots.indexCacheBytes();t.snapshotDeferred=replaySnapshots.clearIndexCache(critical?nullptr:&NorthlightStreaming::cpuRetirement());t.indices=before-std::min(before,replaySnapshots.indexCacheBytes());} /* clears snapshots too */
+        {const auto before=replaySnapshots.indexCacheBytes();t.snapshotDeferred=replaySnapshots.clearIndexCache(critical?nullptr:&NorthlightStreaming::cpuRetirement(),critical?nullptr:batch);t.indices=before-std::min(before,replaySnapshots.indexCacheBytes());} /* clears snapshots too */
         const auto sourceAfter=replaySnapshots.sourceLiveBytes()+replaySnapshots.sharedSourceMetadataBytes();t.snapshots=sourceBefore-std::min(sourceBefore,sourceAfter);
         t.snapshotsMs=elapsed();
         t.pool=pooledSnapshotBytes+freeReplays.size()*sizeof(Replay);freeReplays.clear();freeReplays.shrink_to_fit();pooledSnapshotBytes=0;
