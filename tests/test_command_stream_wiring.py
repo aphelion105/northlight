@@ -51,7 +51,8 @@ checks['the stream\'s buffer read-backs use NorthlightUpload::readBackLock (NOOV
 checks['StreamFramesAhead: key 1..3 2/2/2, read with CommandStream, passed with budgetForFramesAhead']=(
     re.search(r'\{\s*"StreamFramesAhead"\s*,\s*&Settings::streamFramesAhead\s*,\s*1\s*,\s*3\s*,\s*\{\s*2\s*,\s*2\s*,\s*2\s*\}\s*\}',q) is not None and 'unsigned streamFramesAhead=2;' in q
     and 'if(framesAhead)*framesAhead=s.streamFramesAhead;' in hooks and hooks.count('if(framesAhead)*framesAhead=1;')==2
-    and 'options.framesAhead=framesAhead;options.budget=NorthlightStream::budgetForFramesAhead(framesAhead);' in r and 'device=*out;*out=startStream(device,pp,framesAhead,frameSkip,occlusionLocal);' in create)
+    and 'options.framesAhead=framesAhead;options.budget=NorthlightStream::budgetForFramesAhead(framesAhead);' in r
+    and re.search(r'device=\*out;\*out=startStream\(device,pp,framesAhead,frameSkip,occlusionLocal\s*#ifndef NORTHLIGHT_REPLAY_STAND\s*,nativeCapture,captureReason\s*#endif\s*\);',create) is not None)
 # 0.3.200 (frame skip): StreamFrameSkip: 0..1, presets 1/1/1, read by the early reader with CommandStream (0 when unreadable), handed to the
 # stream (Options::frameSkip, whose own default stays 0) and logged on the CSTREAM active line.
 sd=fp.src('stream_device.h').read_text();rt=fp.src('replay_thread.h').read_text()
@@ -67,7 +68,7 @@ checks['StreamOcclusionLocal: key 0..1 1/1/1, read with CommandStream, passed to
     and 'options.occlusionLocal=occlusionLocal;' in r and 'bool occlusionLocal=true;' in sd and 'core.occlusionLocal=opt.occlusionLocal;' in sd)
 sp=fp.src('stream_proxies.h').read_text()
 checks['image proxies free a still-staged lock Block at destruction (surface, 3 texture kinds)']=(
-    'inline void dropSubStage(StreamCore& c,SubRes& s){if(s.stage){c.q.freeBlock(s.stage);s.stage=nullptr;}}' in sp
+    'inline void dropSubStage(StreamCore& c,SubRes& s){if(c.idleImages.enabled())c.idleImages.retire(std::uint64_t(reinterpret_cast<std::uintptr_t>(&s)));if(s.stage){c.q.freeBlock(s.stage);s.stage=nullptr;}}' in sp
     and 'dropSubShadow(*core,own);dropSubStage(*core,own);' in sp and sp.count('for(auto& s:subs){dropSubShadow(*core,s);dropSubStage(*core,s);}')==3)
 for name,ok in checks.items():print(('PASS ' if ok else 'FAIL ')+name)
 assert all(checks.values())

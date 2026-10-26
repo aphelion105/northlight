@@ -33,7 +33,7 @@ inline HRESULT pollEventQueryBriefly(Poll&& poll,Clock&& now,unsigned& calls){
     }
     return hr;
 }
-// The pumped round trip of an EVENT that stayed pending past the local window (stream_proxies.h): D3D9 has no blocking
+// The pumped round trip of a pending EVENT/FLUSH (stream_proxies.h): D3D9 has no blocking
 // query wait, so the replay thread holds the trip until the event completes or budgetNs passes, polling at a growing gap
 // (20, 40, then at most 50 us between polls) and yielding the core in between. The game thread sleeps in
 // its pumped wait meanwhile; a long GPU frame takes a few trips instead of one per driver call.

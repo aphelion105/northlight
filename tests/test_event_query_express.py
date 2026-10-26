@@ -20,6 +20,7 @@ with tempfile.TemporaryDirectory(prefix='event-boundary-') as directory:
         ('ordered-control', ['-O2'], 'baseline'),
         ('immediate-mailbox-control', ['-O2'], 'ungated'),
         ('current', ['-O2'], ''),
+        ('local-pending-negative', ['-O2'], 'local-pending'),
         ('asan', ['-O1', '-g', '-fsanitize=address,undefined', '-fno-sanitize=vptr', '-fno-omit-frame-pointer'], ''),
         ('tsan', ['-O1', '-g', '-fsanitize=thread'], ''),
     ]:
@@ -43,6 +44,12 @@ with tempfile.TemporaryDirectory(prefix='event-boundary-') as directory:
             readiness = '[](void* p){return (*static_cast<Work*>(p)->canRun)();}'
             assert text.count(readiness) == 1
             header.write_text(text.replace(readiness, 'nullptr'))
+        elif mode == 'local-pending':
+            header = overlay / 'stream_proxies.h'
+            text = header.read_text()
+            guard = 'if(!done&&flags==D3::kGetDataFlush){'
+            assert text.count(guard) == 1
+            header.write_text(text.replace(guard, 'if(false&&!done&&flags==D3::kGetDataFlush){'))
         binary = root / (name + '.exe')
         command = ['clang++', '-std=c++17', '-Wall', '-Wextra', '-Werror', '-pthread', '-DNL_STUB',
                    *flags, '-I', str(overlay), '-I', str(root), *fp.test_include_flags(),
@@ -51,6 +58,9 @@ with tempfile.TemporaryDirectory(prefix='event-boundary-') as directory:
         subprocess.run(command, check=True)
         result = subprocess.run([str(binary), *([mode] if mode else [])], text=True, capture_output=True, timeout=120)
         print(name, result.stdout, result.stderr, flush=True)
+        if mode == 'local-pending':
+            assert result.returncode != 0 and 'pumpedOnce' in result.stderr
+            continue
         result.check_returncode()
         assert not any(message in result.stderr for message in ['ThreadSanitizer', 'AddressSanitizer', 'runtime error'])
 print('PASS production EVENT boundary wait and ordered negative control; native O2, ASan/UBSan and TSan; no game/GPU.')

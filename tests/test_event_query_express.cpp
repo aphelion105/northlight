@@ -90,7 +90,7 @@ static void scenario(bool baseline,bool gated,const char* name,bool endSeen,bool
     futureBeforeDraw=nested&&!endSeen;
     if(!futureBeforeDraw)rig.draw();
     core.q.publish();
-    core.timing=true;proxy->eventLocalSince=nowNs()-3000000;
+    core.timing=true;
     if(nested&&!dropFinal)query->AddRef();
     pumping=&rig;pumpingQuery=query;nestedActions=nested;finalRelease=dropFinal;pumpedOnce=false;nestedResult=0;nestedReset=0;
     pumpHook=&queryPump;
@@ -132,7 +132,7 @@ static void scenario(bool baseline,bool gated,const char* name,bool endSeen,bool
     if(fault==BoundaryFault::Dead)proxy->dead.store(false);
     t->releaseSecond.store(true);rig.sync();
     if(nested&&!dropFinal){
-        proxy->eventLocalSince=nowNs()-3000000;value=0;
+        value=0;
         CHECK(query->GetData(&value,4,D3::kGetDataFlush)==D3D_OK&&value==0xABCD0002u);
     }
     if(!dropFinal)query->Release();rig.sync();rig.device->Release();checkClean();
@@ -149,7 +149,7 @@ static void idleScenario(bool baseline,bool noPending){
     CHECK(waitFor([&]{return get(core.q.stats.consumerSleeps)>=sleeps+(noPending?2u:1u);}));
     CHECK(core.q.depth()==0);
     if(noPending)proxy->eventDoneGen.store(0,std::memory_order_release); // Exercise the cold-cache pumped path after background removal.
-    core.timing=true;proxy->eventLocalSince=nowNs()-3000000;
+    core.timing=true;
     const auto posts=get(core.q.stats.expressQueries),hits=get(core.q.stats.expressQueryHits),fallbacks=get(core.q.stats.expressQueryFallbacks);
     std::atomic<bool> done{false};
     std::thread watchdog([&]{for(unsigned i=0;i<10000&&!done.load();++i)std::this_thread::sleep_for(std::chrono::milliseconds(1));CHECK(done.load());});
