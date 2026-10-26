@@ -1,7 +1,6 @@
 #pragma once
 #include "draw_snapshot.h"
-#include <cmath>
-#include <cfloat>
+#include "position_bounds_scan.h"
 
 // Bounds of the declared vertex range contain every legal indexed draw, even
 // when some vertices are unused. No IB, UV, normal or mesh copy is needed.
@@ -61,12 +60,9 @@ public:
         if(bytes+count*12>(2u<<20))return false;
         bytes+=size_t(count*12);++reads;
         Entry value;value.key=key;value.revision=before.revision;value.size=before.size;
-        for(unsigned k=0;k<3;++k){value.low[k]=FLT_MAX;value.high[k]=-FLT_MAX;}
         NorthlightReplayCopies::Reader<IDirect3DVertexBuffer9> reader(vb.p);void* data=nullptr;
         if(FAILED(reader.lock(UINT(begin),UINT(span),&data)))return false;
-        bool valid=data!=nullptr;
-        for(unsigned i=0;valid&&i<count;++i){float p[3];std::memcpy(p,static_cast<const unsigned char*>(data)+size_t(i)*stride,12);
-            for(unsigned k=0;k<3;++k){if(!std::isfinite(p[k])){valid=false;break;}value.low[k]=std::min(value.low[k],p[k]);value.high[k]=std::max(value.high[k],p[k]);}}
+        const bool valid=data&&scanPositions(data,size_t(count),stride,value.low,value.high);
         if(FAILED(reader.unlock())||!valid)return false;
         const auto after=stamp(vb.p);
         if(!after.known||after.identity!=before.identity||after.revision!=before.revision||after.size!=before.size){++unknown;return false;}
