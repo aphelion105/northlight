@@ -263,6 +263,45 @@ float fogShadowProjected(float3 q) {
     }
     return visibility;
 }
+// Reuse the already-rendered fine actor map; never replay geometry for fog.
+// The far map continues to provide terrain, WMO and static-prop silhouettes.
+sampler2D FogActorMap : register(s4);
+row_major float4x4 FogActorMatrix : register(c68);
+float4 FogActorBounds : register(c66); // current map's conservative caster coverage
+float4 FogActorInfo : register(c72); // x: current source owns a valid actor map
+// Exact line integral of point-sampled actor depth over this fog interval.
+float fogActorShadow(float3 q,float3 delta){
+    float3 inverse=(delta<0?-1:1)/max(abs(delta),1e-12);
+    float3 a=(float3(FogActorBounds.xy,0)-q)*inverse;
+    float3 b=(float3(FogActorBounds.zw,1)-q)*inverse;
+    float3 enter=min(a,b),exit=max(a,b);
+    float t=max(0,max(max(enter.x,enter.y),enter.z));
+    float end=min(1,min(min(exit.x,exit.y),exit.z));
+    if(t>=end)return 1;
+    float2 origin=(q.xy*float2(.5,-.5)+.5)*1024+.5;
+    float2 direction=delta.xy*float2(512,-512);
+    float2 inv=(direction<0?-1:1)/max(abs(direction),1e-12);
+    float2 cell=floor(origin+direction*t);
+    float2 next=(cell+(direction>0?1:0)-origin)*inv;
+    float covered=0;
+    // SM3 loop counters execute at most 255 iterations. Nine bounded
+    // blocks cover both 1024-texel axes plus entry/corner ties.
+    [loop]for(int block=0;block<9&&t<end;++block)
+    [loop]for(int i=0;i<228&&t<end;++i){
+        float last=max(t,min(end,min(next.x,next.y)));
+        float z=tex2Dlod(FogActorMap,float4((cell+.5)/1024,0,0)).r+PassInfo.x*4;
+        float2 depth=q.z+delta.z*float2(t,last)-z;
+        covered+=(last-t)*saturate(max(depth.x,depth.y)/max(abs(depth.y-depth.x),1e-20));
+        float2 crossed=next<=last?1:0;
+        cell+=sign(direction)*crossed;next+=abs(inv)*crossed;t=last;
+    }
+    return saturate(1-covered);
+}
+
+// Cascades can contain the same caster. Compose visibility by union rather
+// than multiplying the caster twice; an empty actor map preserves world bits.
+float fogCombineActor(float world,float actor){return actor<1?min(world,actor):world;}
+
 float2 probeUV(float3 cell) {
     return (float2(cell.x+cell.z*GridInfo.x,cell.y)+.5)/float2(GridInfo.x*GridInfo.x,GridInfo.x);
 }
@@ -810,7 +849,7 @@ float4 SourceVisibilityPS(float2 uv:TEXCOORD0):COLOR0 {
 }
 sampler2D FogHeightBounds : register(s12); // footprint min/max ground, max layer height, validity
 float4 FogHeightControl : register(c65); // w: uploaded bounds match the regional texture
-float4 WorldFog(float2 uv:TEXCOORD0):COLOR0 {
+float4 worldFog(float2 uv,bool actorIntegration) {
     if(FogInfo.x<.5)return float4(0,0,0,1);
     uv=depthUV(uv);
     float depth=normalizedDepth(uv);float3 view=viewPositionDistance(uv,fogReceiverDistance(uv,depth));
@@ -823,6 +862,8 @@ float4 WorldFog(float2 uv:TEXCOORD0):COLOR0 {
     ray*=rsqrt(max(dot(ray,ray),1e-12));
     float3 shadowOrigin=affinePoint(Camera.xyz,FarMatrix);
     float3 shadowRay=ray.x*FarMatrix[0].xyz+ray.y*FarMatrix[1].xyz+ray.z*FarMatrix[2].xyz;
+    float3 actorOrigin=affinePoint(Camera.xyz,FogActorMatrix);
+    float3 actorRay=ray.x*FogActorMatrix[0].xyz+ray.y*FogActorMatrix[1].xyz+ray.z*FogActorMatrix[2].xyz;
     float transmittance=1,directWeight=0;
     float cosine=dot(ray,SunDirection.xyz); // both directions are normalized
     // Normalized HG(g=.85) + isotropic mixture: most energy is broad enough
@@ -909,7 +950,11 @@ float4 WorldFog(float2 uv:TEXCOORD0):COLOR0 {
                 // A zero source has no valid shadow pass/maps to sample. Its air
                 // still contributes environment scattering and extinction.
                 float heightFade=saturate(altitude*(1.0/12));heightFade*=heightFade*(3-2*heightFade);
-                if(dot(sunSource,1)>0)directWeight+=transmittance*absorb*(fogShadowProjected(shadowOrigin+shadowRay*((start+end)*.5))*heightFade);
+                if(dot(sunSource,1)>0){
+                    float visibility=fogShadowProjected(shadowOrigin+shadowRay*((start+end)*.5));
+                    [branch]if(actorIntegration&&FogActorInfo.x>0)visibility=fogCombineActor(visibility,fogActorShadow(actorOrigin+actorRay*start,actorRay*stepSize));
+                    directWeight+=transmittance*absorb*(visibility*heightFade);
+                }
                 transmittance*=1-absorb;
             }
         }
@@ -1039,7 +1084,7 @@ float4 FogBlur(float2 uv:TEXCOORD0):COLOR0 {
 // scattering (rgb) and the cloud transmittance (a); drawn with ONE, SRCALPHA so it adds to the fog buffer and attenuates what is there.
 // Exactly (0,0,0,1) where no cloud is met. The base fog only attenuates the cloud light (Tbase, never written to alpha); its density is a cut-down
 // copy of WorldFog's (the full lines do not fit the 512-slot budget next to the field fetch and the shadow filter), see the comments below.
-float4 FogClouds(float2 uv:TEXCOORD0):COLOR0 {
+float4 fogClouds(float2 uv,bool actorIntegration) {
     // (no FogInfo.x test: the host draws this pass only when c21.x >= .5)
     uv=depthUV(uv);
     float depth=normalizedDepth(uv);float3 view=viewPositionDistance(uv,fogReceiverDistance(uv,depth));
@@ -1049,6 +1094,8 @@ float4 FogClouds(float2 uv:TEXCOORD0):COLOR0 {
     ray*=rsqrt(max(dot(ray,ray),1e-12));
     float3 shadowOrigin=affinePoint(Camera.xyz,FarMatrix);
     float3 shadowRay=ray.x*FarMatrix[0].xyz+ray.y*FarMatrix[1].xyz+ray.z*FarMatrix[2].xyz;
+    float3 actorOrigin=affinePoint(Camera.xyz,FogActorMatrix);
+    float3 actorRay=ray.x*FogActorMatrix[0].xyz+ray.y*FogActorMatrix[1].xyz+ray.z*FogActorMatrix[2].xyz;
     float tauBase=0,tCloud=1,directWeight=0,ambientWeight=0; // scalar sums: the sun and sky colours multiply once after the loop; the base fog as optical depth (exp only inside a cloud)
     float3 axis=abs(ray);
     float2 major=axis.x>=axis.y?float2(ray.x,Camera.x):float2(ray.y,Camera.y);
@@ -1110,7 +1157,11 @@ float4 FogClouds(float2 uv:TEXCOORD0):COLOR0 {
                 float heightFade=saturate(altitude*(1.0/12));heightFade*=heightFade*(3-2*heightFade);
                 float weight=tCloud*absorb; // the ambient: the pass blend already multiplies the base fog by tCloud, tBase must not enter twice (S*(1-Tb*Tc) in either order)
                 // With no direct source/gain the shadowed term is exactly zero; ambient extinction still accumulates.
-                [branch]if(dot(max(DirectLight.rgb,0),1)>0&&FogInfo.y>0)directWeight+=exp(-tauBase)*weight*fogShadowProjected(shadowOrigin+shadowRay*((start+end)*.5))*heightFade; // the sun light is dimmed by the base fog in front of the cloud
+                [branch]if(dot(max(DirectLight.rgb,0),1)>0&&FogInfo.y>0){
+                    float visibility=fogShadowProjected(shadowOrigin+shadowRay*((start+end)*.5));
+                    [branch]if(actorIntegration&&FogActorInfo.x>0)visibility=fogCombineActor(visibility,fogActorShadow(actorOrigin+actorRay*start,actorRay*stepSize));
+                    directWeight+=exp(-tauBase)*weight*visibility*heightFade;
+                } // the sun light is dimmed by the base fog in front of the cloud
                 ambientWeight+=weight;
                 tCloud*=1-absorb;
             }
@@ -1434,3 +1485,10 @@ float4 ShadowUnion(float2 uv:TEXCOORD0):COLOR0 {
     }
     return min(own,cached).xxxx;
 }
+
+// Exact actor interval integration needs extended SM3 instruction capacity.
+// Baseline entries retain the far-map path on minimum-capability hardware.
+float4 WorldFog(float2 uv:TEXCOORD0):COLOR0{return worldFog(uv,false);}
+float4 WorldFogActor(float2 uv:TEXCOORD0):COLOR0{return worldFog(uv,true);}
+float4 FogClouds(float2 uv:TEXCOORD0):COLOR0{return fogClouds(uv,false);}
+float4 FogCloudsActor(float2 uv:TEXCOORD0):COLOR0{return fogClouds(uv,true);}
