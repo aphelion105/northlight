@@ -22,6 +22,9 @@ import northlight_paths as fp
 # vs_3_0 Diffuse_T1_Env #20: a four-bone palette skin (variants 20-28 are the same program).
 FOUR_BONE_VS3 = ('shaders\\vertex\\vs_3_0\\diffuse_t1_env.bls', 20,
                  '34890b73162b07089f337cf1b4197ffe8fb8c6b0e1b1c2765b1e4c10b77e451c')
+# Body layout observed in the live bounds-budget diagnostic (sliced hash 5267e7a8cb988451).
+FOUR_BONE_BODY_VS3 = ('shaders\\vertex\\vs_3_0\\cdiffuse_t1.bls', 29,
+                      '634f2d5cbf41431f82736de9edc3eee87d0242aabe6ed4edc7f1b69b9f19a371')
 # The one-influence palette program every boneInfluences=1 M2 skin section uses (signs, barrels,
 # lamps, weapons), its active 3.3.5a variants, and the zero-influence program.
 PROGRAMS = {
@@ -73,6 +76,20 @@ def four_bone_vs3():
     if target.is_file() and hashlib.sha256(target.read_bytes()).hexdigest() == sha:
         return target
     code = _read([FOUR_BONE_VS3])[path, variant]
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(f'{target.name}.{os.getpid()}.tmp')   # tests run in parallel: replace atomically
+    tmp.write_bytes(code)
+    os.replace(tmp, target)
+    return target
+
+
+def four_bone_body_vs3():
+    """Path of the four-bone body vs_3_0 program (raw D3D9 bytecode), cached in out/client-shaders/."""
+    path, variant, sha = FOUR_BONE_BODY_VS3
+    target = fp.out() / 'client-shaders' / 'actor_four_bone_body_vs3.bin'
+    if target.is_file() and hashlib.sha256(target.read_bytes()).hexdigest() == sha:
+        return target
+    code = _read([FOUR_BONE_BODY_VS3])[path, variant]
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_name(f'{target.name}.{os.getpid()}.tmp')   # tests run in parallel: replace atomically
     tmp.write_bytes(code)
