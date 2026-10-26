@@ -68,6 +68,7 @@ test_draw_gates.py
 test_draw_snapshot.py
 test_dxvk3_lock_flags.py
 test_dxvk_engine_name.py
+test_effect_diagnostic_wiring.py
 test_effect_switches.py
 test_effects_buckets.py
 test_effects_cost_report.py

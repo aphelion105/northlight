@@ -11,6 +11,7 @@
 #include <vector>
 #include "imgui.h"
 #include "settings_service.h"
+#include "diagnostic_capture_request.h"
 #include "settings_draft.h"
 #include "memory_profile_snapshot.h"
 
@@ -500,6 +501,12 @@ struct SettingsPanel::State {
         titled("Other",rest);
     }
     void memoryDiagnostics(){
+        using namespace NorthlightDiagnosticCapture;
+        if(ImGui::Button("Capture world lighting"))request(World);
+        ImGui::SameLine();if(ImGui::Button("Capture AO"))request(AO);
+        if(ImGui::Button("Capture materials"))request(Materials);
+        ImGui::SameLine();if(ImGui::Button("Capture fog"))request(Fog);
+        ImGui::TextWrapped("Saves the current frame in northlight-diagnostics. Skipped passes produce empty images. Capture frames are excluded from FPS statistics.");
         namespace M=NorthlightMemoryProfile;
         const uint64_t now=M::nowMs();
         if(!memoryReadAt||now-memoryReadAt>=1000){if(M::store().tryRead(memorySnapshot))memoryReadAt=now;}

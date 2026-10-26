@@ -241,11 +241,15 @@ class NorthlightAutoDisplacement {
         }return nullptr;
     }
     bool viewRows(const Program& program,const float* constants){
-        using Four=NorthlightActorDeformation::Four;Four input[16]={};unsigned position=16;
+        // Unit-point differences in float quantize matrix coefficients when
+        // translation is large. Multiplying those errors by world coordinates
+        // makes the distance fade crawl as the camera rotates. Extract in double;
+        // native deformation and the final GPU constants remain float.
+        using Four=std::array<double,4>;Four input[16]={};unsigned position=16;
         for(auto i:program.inputs){if(i.usage==D3DDECLUSAGE_POSITION&&!i.index)position=i.reg;else return false;}
-        if(position==16)return false;input[position]={0,0,0,1};Four origin;if(!NorthlightActorDeformation::evaluateFast(program,input,constants,origin))return false;
+        if(position==16)return false;input[position]={0,0,0,1};Four origin;if(!NorthlightActorDeformation::evaluate<true>(program,input,constants,origin))return false;
         for(unsigned r=0;r<3;++r)controls[r][3]=origin[r];
-        for(unsigned k=0;k<3;++k){input[position]={0,0,0,1};input[position][k]=1;Four v;if(!NorthlightActorDeformation::evaluateFast(program,input,constants,v))return false;for(unsigned r=0;r<3;++r)controls[r][k]=v[r]-origin[r];}
+        for(unsigned k=0;k<3;++k){input[position]={0,0,0,1};input[position][k]=1;Four v;if(!NorthlightActorDeformation::evaluate<true>(program,input,constants,v))return false;for(unsigned r=0;r<3;++r)controls[r][k]=float(v[r]-origin[r]);}
         const float a=range*range,b=a*.5625f;controls[3][0]=strength;controls[3][1]=-1/(a-b);controls[3][2]=a/(a-b);controls[3][3]=0;return true;
     }
 public:

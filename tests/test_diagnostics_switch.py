@@ -18,6 +18,8 @@ FILES=['renderer.cpp','world_renderer.h','world_shadow_experiment.inl','world_po
 GATES=('NorthlightDiagnostics::enabled()','diagnostics()','sampled()','captureSampled','if(diagnostics)','shadowFate.active()','sampledFrame','profiling()','profileSampled()','if(lightingClock)','materialProfile->recording()','if(profileThisBuild)','if(resetProfile)')
 # Ungated lines that stay with Diagnostics=0: format prefix -> label.
 KEEP={
+ 'EFFECT_GPU_CAPTURE ':'explicit menu request only: captureEffectDiagnostics returns before device/file access without a request',
+ 'WORLD GPU skipped ':'explicit capture fallback only: effects remain disabled, empty images are exported',
  'PROJECTED_VISIBILITY ':'indirect: results of Diagnostics/RenderProfile sampled queries only; pending queries drain after toggling diagnostics',
  'WORLD MEMORY scope=':'indirect: the only callers are gated builder and GI worker footprint samplers',
  'WORLD MEMORY admission ':'indirect: the builder sampler returns unless its Diagnostics-dependent 10-second gate is active',
@@ -143,6 +145,8 @@ assert not unknown,'ungated, unlabelled log sites:\n'+'\n'.join(f'{w} {f}' for w
 r=fp.src('renderer.cpp').read_text();w=fp.src('world_renderer.h').read_text();mp=fp.src('material_profile.h').read_text()
 constructor=r[r.index('Device(IDirect3DDevice9* d,'):r.index('~Device() {')]
 checks={
+ 'effect captures require an explicit request and exclude the captured frame':'if(!scopes&&!fallback)return;' in r[r.index('void captureEffectDiagnostics()'):r.index('void releaseResources()')]
+   and 'captureEffectDiagnostics();' in r[r.index('void finishFrameImpl()'):r.index('const bool diagnosticFrame=')],
  'reset clock and stage lines require Diagnostics':'const bool resetProfile=diagnostics()&&cpuFrequency.QuadPart>0;' in r,
  'projected visibility queries require Diagnostics and sampled RenderProfile':'if(count>256||!diagnostics()||!world||!NorthlightQuality::renderProfile(world->surfaceSettings())||' in r
    and '!NorthlightRenderThreadProbe::sampleFrame(frame)||!projectedAudit.canSample(frame)||' in r,
@@ -254,7 +258,7 @@ span_checks={
  'U0/S0: no logf( reachable between the selection/upload bucket marks except errors and one-off events':not bad,
  'U0/S0 counterfactual: the sampled lines are reachable there when not deferred':not missed and {'selectShadowReplays','uploadReplay','rigidMemoryInject','finishActorScene','uploadLiveTerrain'}<=reached,
  'U0/S0: the proxy has no log line from the AO mark to world->render()':'logf(' not in ra[ao:ra.index('world->render(',ao)],
- 'U0/S0: deferred lines follow only bounded equipment frame bookkeeping':'void endFrame(bool retainPool=true,unsigned rendererFrame=0){\n        if(equipmentLightsOn()){equipmentLights.nextFrame();equipmentCapture.nextFrame();particleLights.nextFrame();NorthlightParticleUploads::cache().nextFrame();}\n        flushDeferredLogs();' in fp.src('world_renderer.h').read_text(),
+ 'U0/S0: deferred lines follow only bounded equipment frame bookkeeping':'void endFrame(bool retainPool=true,unsigned rendererFrame=0){\n        gpuDiagnosticFrame=false;\n        if(equipmentLightsOn()){equipmentLights.nextFrame();equipmentCapture.nextFrame();particleLights.nextFrame();NorthlightParticleUploads::cache().nextFrame();}\n        flushDeferredLogs();' in fp.src('world_renderer.h').read_text(),
 }
 for name,ok in span_checks.items():print(('PASS ' if ok else 'FAIL ')+name)
 assert all(span_checks.values()),(bad,missed)

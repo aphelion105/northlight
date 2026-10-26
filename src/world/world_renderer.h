@@ -336,6 +336,7 @@ private:
     bool coverageHold=false;DWORD holdStart=0;unsigned holdEpisodes=0;
     const char* skipReason="";
     bool gpuDiagnosticArmed=true,gpuNormalDiagnosticRequested=false,gpuDiagnosticFrame=false;unsigned gpuDiagnosticCaptures=0;
+    bool diagnosticFogResolved=false,diagnosticLocalLighting=false;
     std::string gpuDiagnosticDirectory;
     IDirect3DTexture9* regionalFogTexture=nullptr;
     IDirect3DTexture9* fogHeightTexture=nullptr;bool fogHeightReady=false;
@@ -2638,6 +2639,7 @@ public:
         logf("REPLAY COPIES refused budget=%llu tooLarge=%llu backoff=%llu unsafe=%llu locked=%llu pressure=%llu allocation=%llu largestBufferKiB=%.0f largeCapMiB=%.0f maxLargeMiB=%.0f",(unsigned long long)r.budget,(unsigned long long)r.tooLarge,(unsigned long long)r.backoff,(unsigned long long)r.unsafe,(unsigned long long)r.locked,(unsigned long long)r.pressure,(unsigned long long)r.allocation,double(r.largestBuffer)/kib,double(NorthlightReplayCopies::kLargeCapBytes)/1048576,double(NorthlightReplayCopies::kLargeCopyBytes)/1048576);
     }
     void endFrame(bool retainPool=true,unsigned rendererFrame=0){
+        gpuDiagnosticFrame=false;
         if(equipmentLightsOn()){equipmentLights.nextFrame();equipmentCapture.nextFrame();particleLights.nextFrame();NorthlightParticleUploads::cache().nextFrame();}
         flushDeferredLogs(); /* 0.3.176 (U0/S0): after every bucketed span of the frame */
         frameFence.endFrame(); /* 0.3.192 (DXVK3): the one Issue of the frame's fence, after every replay/terrain draw, before any early return; reset() calls endFrame() too */
@@ -2822,6 +2824,47 @@ public:
     // setting, debug mode, shadow refresh or temporal-history decision.
     bool requestNormalGpuDiagnosticCapture(){if(gpuDiagnosticCaptures>=4||gpuNormalDiagnosticRequested)return false;gpuNormalDiagnosticRequested=true;return true;}
     bool diagnosticCaptureInLastRender()const{return gpuDiagnosticFrame;}
+    bool emptyDiagnosticView(IDirect3DSurface9* target,UINT w,UINT h,int debug){
+        SavedState saved(d,&stateBlocks);if(!saved.ok)return false;
+        if(FAILED(d->SetDepthStencilSurface(nullptr)))return false;
+        for(unsigned i=1;i<4;++i)if(FAILED(d->SetRenderTarget(i,nullptr)))return false;
+        D3DVIEWPORT9 viewport{0,0,w,h,0,1};
+        if(FAILED(d->SetRenderTarget(0,target))||FAILED(d->SetViewport(&viewport))||FAILED(d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE)))return false;
+        if(FAILED(d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0)))return false;
+        composited=true;lastRenderDebug=debug;shadowsComposited=false;fogGeometryReady=false;return true;
+    }
+    bool needsDiagnosticFallback()const{return gpuNormalDiagnosticRequested||(gpuDiagnosticFrame&&!composited);}
+    void captureProducts(const std::string& directory,unsigned capture,unsigned rendererFrame,UINT w,UINT h,bool current,bool fogOnly=false){
+        const bool ready=current&&composited&&lastRenderDebug==0;
+        auto image=[&](const char* name,IDirect3DSurface9* surface,bool valid,UINT x,UINT y,D3DFORMAT format){NorthlightWorldDiagnostics::product(d,surface,directory,name,capture,valid,std::max(1u,x),std::max(1u,y),format,rendererFrame);};
+        if(!fogOnly){
+            const unsigned source=NorthlightGI::dot(sourceColors[0],sourceColors[0])>1e-10f?0:1;
+            const bool shadowCurrent=ready&&fogGeometryReady&&effects.shadows&&NorthlightGI::dot(sourceColors[source],sourceColors[source])>1e-10f;
+            image("shadow-near",shadowSurface[source*2],shadowCurrent,1024,1024,D3DFMT_R32F);
+            image("shadow-far",shadowSurface[source*2+1],shadowCurrent,1024,1024,D3DFMT_R32F);
+            image("normals",normalSurface,ready,w/2,h/2,D3DFMT_A16B16G16R16F);
+            image("baseline",baselineSurface,ready,w/2,h/2,D3DFMT_A16B16G16R16F);
+            image("current-local-light",lightSurface,ready&&diagnosticLocalLighting,w/2,h/2,D3DFMT_A16B16G16R16F);
+            image("temporal-light",temporalLightSurface[1-temporalIndex],ready,w/2,h/2,D3DFMT_A16B16G16R16F);
+            image("distance",temporalDepthSurface[1-temporalIndex],ready,w/2,h/2,D3DFMT_R32F);
+            NorthlightWorldDiagnostics::textureProduct(d,materialDetail,directory,"material-height",capture,ready&&materialDetail,w,h,D3DFMT_A16B16G16R16F,rendererFrame);
+            NorthlightWorldDiagnostics::textureProduct(d,materialOcclusion,directory,"material-occlusion",capture,ready&&materialOcclusion,w,h,D3DFMT_A16B16G16R16F,rendererFrame);
+        }
+        image("fog",diagnosticFogResolved?fogBlurredSurface:fogSurface,ready&&effects.fog&&uploadedFogField,w/2,h/2,D3DFMT_A16B16G16R16F);
+    }
+    bool captureSkippedDiagnostic(unsigned rendererFrame,UINT w,UINT h){
+        if(!needsDiagnosticFallback())return false;
+        if(gpuNormalDiagnosticRequested){if(gpuDiagnosticCaptures>=4){gpuNormalDiagnosticRequested=false;return false;}++gpuDiagnosticCaptures;gpuNormalDiagnosticRequested=false;}
+        gpuDiagnosticFrame=true;
+        try{if(gpuDiagnosticDirectory.empty())gpuDiagnosticDirectory=NorthlightWorldDiagnostics::directory(root);
+            if(!gpuDiagnosticDirectory.empty()){captureProducts(gpuDiagnosticDirectory,gpuDiagnosticCaptures,rendererFrame,w,h,false);
+                NorthlightWorldDiagnostics::product(d,nullptr,gpuDiagnosticDirectory,"scene",gpuDiagnosticCaptures,false,w,h,D3DFMT_A8R8G8B8,rendererFrame);
+                NorthlightLightingCapture::Capture record(d,gpuDiagnosticDirectory,gpuDiagnosticCaptures,frames,rendererFrame,w,h);
+                record.skipped("world",0,0,"effect-pass-not-rendered");record.finish(true);}}
+        catch(...){/* Diagnostics must never fault or enable an effect. */}
+        logf("WORLD GPU skipped capture=%u rendererFrame=%u empty=1 diagnostic=1 fpsEligible=0",gpuDiagnosticCaptures,rendererFrame);
+        return true;
+    }
     void pollMaterialProfile(){materialPixelAudit.poll();}
     void setMaterialDetail(IDirect3DTexture9* texture,float gain,float distance,IDirect3DTexture9* occlusion=nullptr,float occlusionDistance=8,bool captureResident=false){materialDetail=texture;materialBumpGain=gain;materialBumpDistance=distance;materialOcclusion=occlusion;materialOcclusionDistance=occlusionDistance;materialCaptureResident=captureResident||texture!=nullptr;}
     void materialLight(float* light)const{
@@ -4082,6 +4125,7 @@ public:
     // removal smoothing and WorldComposite. Null: the proxy composited already (neutral s10).
     bool render(IDirect3DSurface9* targetSurface,IDirect3DTexture9* depth,UINT w,UINT h,D3DFORMAT fmt,float nearZ,float farZ,float minZ,float maxZ,int debug,NorthlightGpuProfile* profile,IDirect3DTexture9* waterMask,IDirect3DTexture9* foldScene=nullptr,IDirect3DTexture9* foldAO=nullptr,unsigned rendererFrame=0){
         shadowsComposited=false;composited=false;lastRenderDebug=debug;gpuDiagnosticFrame=false;fogGeometryReady=false;
+        if((debug==1&&!effects.shadows)||(debug==2&&!effects.gi)||(debug==3&&!effects.fog))return emptyDiagnosticView(targetSurface,w,h,debug);
         if(debug!=1)gpuDiagnosticArmed=true;
         // 0.3.169 lastSkipReason(): why this call returned false. Untagged returns below the
         // upload gate are failed device calls in the draw stages ("draw").
@@ -4123,7 +4167,8 @@ public:
             // Screen-space effects consume current scene/depth, not the BVH.
             // Keep them alive while the geometry builder is deferred by memory.
             updateStaticCasters(false,&streamBudget);
-            if(!screenReady()||debug!=0||!resources(w,h,fmt))return false;
+            if(debug==1||debug==2)return emptyDiagnosticView(targetSurface,w,h,debug);
+            if(!screenReady()||!resources(w,h,fmt))return false;
         }
         const char* geometrySkip=geometryReady?"ready":skipReason;
         const bool fullMaterial=materialDetail&&(materialBumpGain>0||materialOcclusion)&&foldScene&&materialPS&&debug==0;
@@ -4154,13 +4199,7 @@ public:
             logf("WORLD GPU_CAPTURE_ATTEMPT capture=%u worldFrame=%u rendererFrame=%u rendererFrameKnown=%u normalView=%u diagnostic=1 fpsEligible=0",diagnosticCapture,frames,rendererFrame,unsigned(rendererFrame!=0),unsigned(normalDiagnosticCapture));}
         if(diagnosticCapture&&gpuDiagnosticDirectory.empty()){
             try{
-                const std::string parent=root+"northlight-diagnostics";   /* beside northlight-renderer.log */
-                CreateDirectoryA(parent.c_str(),nullptr);
-                const std::string prefix=parent+"/session-"+std::to_string(GetCurrentProcessId())+"-"+std::to_string(GetTickCount());
-                for(unsigned attempt=0;attempt<64;++attempt){const std::string candidate=prefix+"-"+std::to_string(attempt);
-                    if(CreateDirectoryA(candidate.c_str(),nullptr)){gpuDiagnosticDirectory=candidate;break;}
-                    if(GetLastError()!=ERROR_ALREADY_EXISTS)break;
-                }
+                gpuDiagnosticDirectory=NorthlightWorldDiagnostics::directory(root);
             }catch(...){/* An explicit diagnostic allocation failure cannot disable rendering. */}
             logf("WORLD GPU diagnostic directory=%s exclusive=%u",gpuDiagnosticDirectory.empty()?"unavailable":gpuDiagnosticDirectory.c_str(),unsigned(!gpuDiagnosticDirectory.empty()));
         }
@@ -5216,7 +5255,7 @@ public:
             materialPixelAudit.sample(materialProfile,&stateBlocks,[&](UINT x,UINT y){return quad(x,y);});}
         d->SetTexture(3,textures[3]);
         d->SetTexture(15,nullptr);d->SetTexture(2,nullptr);d->SetSamplerState(2,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(2,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);
-        if(!compositeOk)return false;composited=true;d->SetTexture(13,regionalFogTexture);
+        if(!compositeOk)return false;composited=true;diagnosticFogResolved=fogResolved;diagnosticLocalLighting=currentLocalLighting;d->SetTexture(13,regionalFogTexture);
         reportLocalSources(sourceTrace,diagnosticCapture,c[52][1],lampSunlitCut,c[58][2]);
         if(diagnosticFiles){
             const unsigned capture=diagnosticCapture;
@@ -5228,20 +5267,11 @@ public:
             }
             logf("WORLD GPU diagnostic capture=%u map=\"%s\" eye=(%.3f %.3f %.3f) moon=(%.6f %.6f %.6f) constantsHRESULT=%08lx",capture,frameMap.c_str(),context.camera[0],context.camera[1],context.camera[2],sourceDirections[1].x,sourceDirections[1].y,sourceDirections[1].z,(unsigned long)read);
             using NorthlightWorldDiagnostics::dump;
-            dump(d,shadowSurface[firstSource*2],directory,"shadow-near",capture);
-            dump(d,shadowSurface[firstSource*2+1],directory,"shadow-far",capture);
-            dump(d,normalSurface,directory,"normals",capture);
-            if(materialDetail){IDirect3DSurface9* detail=nullptr;if(SUCCEEDED(materialDetail->GetSurfaceLevel(0,&detail))){dump(d,detail,directory,"material-height",capture);detail->Release();}}
-            if(materialOcclusion){IDirect3DSurface9* detail=nullptr;if(SUCCEEDED(materialOcclusion->GetSurfaceLevel(0,&detail))){dump(d,detail,directory,"material-occlusion",capture);detail->Release();}}
-            dump(d,baselineSurface,directory,"baseline",capture);
+            captureProducts(directory,capture,rendererFrame,w,h,true);
             char layout[96];std::snprintf(layout,sizeof layout,"/capture-%u-lighting-layout.txt",capture);
             if(FILE* f=std::fopen((directory+layout).c_str(),"wb")){
                 std::fprintf(f,"separate-current-local-v1\ncurrentLocalLighting=%u\n",unsigned(currentLocalLighting));std::fclose(f);
             }
-            if(currentLocalLighting)dump(d,lightSurface,directory,"current-local-light",capture);
-            dump(d,temporalLightSurface[1-temporalIndex],directory,"temporal-light",capture);
-            dump(d,temporalDepthSurface[1-temporalIndex],directory,"distance",capture);
-            dump(d,fogResolved?fogBlurredSurface:fogSurface,directory,"fog",capture);
             // 0.3.174 FOLD: the proxy's scene copy, before AO and bloom (the colour copy was skipped).
             if(foldScene){IDirect3DSurface9* folded=nullptr;if(SUCCEEDED(foldScene->GetSurfaceLevel(0,&folded))){dump(d,folded,directory,"scene",capture);folded->Release();}}
             else dump(d,colorSurface,directory,"scene",capture);

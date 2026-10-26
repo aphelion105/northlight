@@ -40,6 +40,7 @@
 #include "frame_intervals.h"
 #include "effect_switches.h"
 #include "diagnostics_switch.h"
+#include "diagnostic_capture_request.h"
 #include "render_thread_probe.h"
 #include "effects_buckets.h"
 #include "draw_gates.h"
@@ -536,6 +537,7 @@ private:
     std::recursive_mutex gateBenchLock; /* private, uncontended: the microbenchmark's lock */
     MirrorGate gateBenchGate; /* 0.3.180: private, for ownerNs (0.3.182: the real owner entry and exit on it) */
     const int debugMode = 0;int worldDebug=0;bool gpuDiagnosticFrame=false,nativeCaptureDiagnostic=false;
+    bool diagnosticAoRaw=false,diagnosticAo=false,diagnosticWorld=false;
     NorthlightEffectSwitches::Hotkeys effectKeys;
     float nearZ = .1f, farZ = 1000.f, scaleX = 1.f, scaleY = 1.f, fogForward = 1.f;
     float worldMinDepth=0.f,worldMaxDepth=1.f;
@@ -659,6 +661,7 @@ private:
         });
     }
     void clearFrame() {
+        diagnosticAoRaw=diagnosticAo=diagnosticWorld=false;
         waterAfterEffects=0;
         if(surfaceTimerOpen){if(gpuTimer)gpuTimer->end();surfaceTimerOpen=false;}
         if(gpuSceneProfile)gpuSceneProfile->endFrame();
@@ -668,6 +671,40 @@ private:
         if(!enabled||extensionFault){stateBlocks.clear();if(world)world->releaseStateCache();if(water)water->releaseStateCache();}
         if(world)world->endFrame(!extensionFault,frame);if(water)water->endFrame();if(surface)surface->endFrame();if(autoBump)autoBump->endFrame();if(celestialDiscs)celestialDiscs->endFrame();if(shadowBlobs)shadowBlobs->endFrame();
         drop(worldDepth);worldDepthDescKnown=false; rainMrtUnbind();terrain = captured = applied = projectionValid = false;rainMaskCleared=rainMaskDrawn=rainMaskFrame=rainMaskOk=rainDepthOk=false; /* 0.3.202 (rain mask MRT): RT1 never outlives a frame */earlyDepth.reset();resetTranslucentCensus(); /* the TRANSLUCENT line is logged before clearFrame */
+    }
+    void captureEffectDiagnostics(){
+        using namespace NorthlightDiagnosticCapture;
+        const unsigned scopes=take();const bool fallback=world&&world->needsDiagnosticFallback();
+        if(!scopes&&!fallback)return;
+        ExtensionDevice::RawScope raw(*ext);
+        UINT w=std::max(1u,width),h=std::max(1u,height);
+        IDirect3DSurface9* back=nullptr;D3DSURFACE_DESC desc{};
+        if(SUCCEEDED(ext->GetBackBuffer(0,0,D3DBACKBUFFER_TYPE_MONO,&back))&&back){if(SUCCEEDED(back->GetDesc(&desc))){w=desc.Width;h=desc.Height;}back->Release();}
+        if(fallback&&world->captureSkippedDiagnostic(frame,w,h))gpuDiagnosticFrame=true;
+        if(!scopes)return;
+        gpuDiagnosticFrame=true;
+        try{
+            const auto directory=NorthlightWorldDiagnostics::directory(std::filesystem::path(rootPath).u8string());
+            if(directory.empty())return;
+            if(FILE* f=std::fopen((directory+"/capture-1-frame.json").c_str(),"wb")){
+                auto finite=[](float value){return std::isfinite(value)?value:0.f;};
+                std::fprintf(f,"{\"renderer_frame\":%u,\"scopes\":%u,\"effects_enabled\":%s,\"projection_valid\":%s,\"ao_enabled\":%s,\"ao_method\":%u,\"ao_strength\":%.9g,\"ao_radius\":%.9g,\"near\":%.9g,\"far\":%.9g,\"projection_scale\":[%.9g,%.9g],\"depth_range\":[%.9g,%.9g],\"fps_eligible\":false}\n",frame,scopes,enabled?"true":"false",projectionValid?"true":"false",contactAO?"true":"false",aoMethod,finite(aoStrength),finite(aoRadius),finite(nearZ),finite(farZ),finite(scaleX),finite(scaleY),finite(worldMinDepth),finite(worldMaxDepth));
+                std::fclose(f);
+            }
+            if((scopes&World)&&world)world->captureProducts(directory,1,frame,w,h,diagnosticWorld);
+            if((scopes&Fog)&&!(scopes&World)&&world)world->captureProducts(directory,1,frame,w,h,diagnosticWorld,true);
+            if(scopes&AO){
+                NorthlightWorldDiagnostics::product(ext,aoRawSurface,directory,"ao-raw",1,diagnosticAoRaw,w/2,h/2,D3DFMT_A16B16G16R16F,frame);
+                NorthlightWorldDiagnostics::product(ext,aoSurface,directory,"ao-denoised",1,diagnosticAo,w/2,h/2,D3DFMT_A16B16G16R16F,frame);
+            }
+            if(scopes&Materials){
+                auto* normal=enabled&&autoBump&&autoBump->capturedThisFrame()?autoBump->texture():nullptr;
+                auto* occlusion=normal?autoBump->occlusionTexture():nullptr;
+                NorthlightWorldDiagnostics::textureProduct(ext,normal,directory,"materials-normal-height",1,normal!=nullptr,w,h,D3DFMT_A16B16G16R16F,frame);
+                NorthlightWorldDiagnostics::textureProduct(ext,occlusion,directory,"materials-cavity-self-shadow",1,occlusion!=nullptr,w,h,D3DFMT_A16B16G16R16F,frame);
+            }
+            logf("EFFECT_GPU_CAPTURE rendererFrame=%u scopes=%u directory=%s aoRaw=%u aoDenoised=%u world=%u diagnostic=1 fpsEligible=0",frame,scopes,directory.c_str(),unsigned(diagnosticAoRaw),unsigned(diagnosticAo),unsigned(diagnosticWorld));
+        }catch(...){logf("EFFECT_GPU_CAPTURE failed rendererFrame=%u diagnostic=1 fpsEligible=0",frame);}
     }
     void releaseResources() {
         projectedAudit.reset();
@@ -926,6 +963,11 @@ private:
         using NorthlightEffectsBuckets::Bucket;
         // 0.3.154: sceneMs end = the last entry before effects apply; the read is billed to cpuEffects.
         if((gateFrame||NorthlightRenderThreadProbe::profiling())&&!applied){QueryPerformanceCounter(&gateSceneEnd);stallSceneIdle=streamStats?NorthlightStream::get(streamStats->replayIdleNs):0;gateSceneDraws=drawCalls;gateSceneReads=CpuScope::reads;}
+        if(!applied&&worldDebug&&terrain&&world&&(!enabled||failed||!projectionValid)){
+            ExtensionDevice::RawScope raw(*ext);D3DSURFACE_DESC desc{};IDirect3DSurface9* target=nullptr;
+            if(fullViewport(desc,nullptr,true)&&SUCCEEDED(ext->GetRenderTarget(0,&target))&&target){applied=world->emptyDiagnosticView(target,desc.Width,desc.Height,worldDebug);target->Release();}
+            return;
+        }
         if (applied || !enabled || failed || !projectionValid) return;
         // task 45: the always-on effects span for the CPU budget (applying frames only; every return path below ends it).
         struct EffectsSpan { std::int64_t& out; std::int64_t start; ~EffectsSpan(){out=qpcNow()-start;} } effectsSpan{cpuEffectsQpc,qpcNow()};
@@ -935,6 +977,17 @@ private:
         // Game captures remain outside; the device gate stays held throughout.
         rainMrtUnbind(); /* 0.3.202 (rain mask MRT) */
         ExtensionDevice::RawScope rawEffects(*ext);
+        // Every early return must leave a blank diagnostic view, including
+        // missing depth/context and device-call failures. Never clear an
+        // intermediate effect target: retain the original frame target here.
+        struct DebugViewEnd {
+            Device& owner;IDirect3DSurface9* target=nullptr;D3DSURFACE_DESC desc{};
+            explicit DebugViewEnd(Device& device):owner(device){
+                if(owner.worldDebug&&owner.world&&SUCCEEDED(owner.ext->GetRenderTarget(0,&target))&&target)
+                    if(FAILED(target->GetDesc(&desc))){target->Release();target=nullptr;}
+            }
+            ~DebugViewEnd(){if(target){if(!owner.diagnosticWorld)owner.world->emptyDiagnosticView(target,desc.Width,desc.Height,owner.worldDebug);target->Release();}}
+        } debugViewEnd(*this);
         D3DSURFACE_DESC desc;
         if (!fullViewport(desc) || !resources(desc.Width, desc.Height, desc.Format) || !resolveDepth()) return;
         SavedState saved(ext,&stateBlocks);
@@ -1004,6 +1057,7 @@ private:
                 if (error(aoResult,"fallback AO alpha pass")) return;
             }
             gpuProfile->mark("AO");
+            diagnosticAoRaw=true;
             // 0.3.201 (task 18): the raw IGN-rotated AO is denoised by a half-resolution bilateral pass into `ao`,
             // which every consumer (legacy composite, world fold) keeps reading. s2 is released afterwards.
             // Task 43: s0 (LINEAR) carries the raw AO too for the blur's 9-read bilinear early-out (AOBlur never reads Scene); the scene copy is rebound after.
@@ -1019,6 +1073,7 @@ private:
             HRESULT aoBlurResult;
             {CpuScope timing(timeAOBlur?&aoBlurSubmit:nullptr);aoBlurResult=quad(width/2,height/2);}
             if (error(aoBlurResult,"AO blur pass")) return;
+            diagnosticAo=true;
             ext->SetTexture(2,nullptr);ext->SetTexture(0,scene);
             gpuProfile->mark("AOBlur");effectsBuckets.mark(Bucket::AO);
             if(timeAOBlur){cpuAOBlurSetup=aoBlurSetup;cpuAOBlurSubmit=aoBlurSubmit;cpuAOBlurFrame=aoBlurFrame;
@@ -1045,6 +1100,7 @@ private:
             world->setNameMask(maskOn?worldDepth:nullptr); /* 0.3.212 (task 32) */
             world->setRainMask(rainMaskTex); /* 0.3.202 (rain): RainMask for this frame's composite only (resolved and scrubbed at the top of renderEffects) */
             const bool rendered=world->render(saved.targets[0],depthTex,width,height,sceneFormat,nearZ,farZ,worldMinDepth,worldMaxDepth,worldDebug,gpuProfile.get(),waterMask,fold?scene:nullptr,fold?ao:nullptr,frame);
+            diagnosticWorld=rendered;
             if(world->diagnosticCaptureInLastRender()){
                 gpuDiagnosticFrame=true;
                 logf("WORLD GPU_DIAGNOSTIC_FRAME rendererFrame=%u device=%ld worldRendered=%u excludeFromFps=1",frame,diagnosticId,unsigned(rendered));
@@ -2751,6 +2807,7 @@ public:
     }
     void finishFrameImpl() {
         nameMaskRunEnd(); /* 0.3.212 (task 32) */
+        captureEffectDiagnostics();
         const auto frameEffects=effectKeys.settings;const bool frameEnabled=enabled;
         const bool diagnosticFrame=gpuDiagnosticFrame||nativeCaptureDiagnostic;gpuDiagnosticFrame=false;
         if(diagnosticFrame){flushFrameIntervals(nativeCaptureDiagnostic?"native-trace-capture":"gpu-diagnostic-capture",frameEnabled,frameEffects);frameIntervals.reset();intervalFocus=true;}
@@ -2785,7 +2842,7 @@ public:
         bool k12=focus&&modifiers&&(GetAsyncKeyState(VK_F12)&0x8000);
         if(k12&&!key12){
             if(GetAsyncKeyState(VK_MENU)&0x8000){
-                const char* reason=!enabled?"effects-off":worldDebug?"debug-view":!world?"renderer-unavailable":nullptr;
+                const char* reason=worldDebug?"debug-view":!world?"renderer-unavailable":nullptr;
                 const bool accepted=!reason&&world->requestNormalGpuDiagnosticCapture();
                 logf("WORLD normal GPU capture request rendererFrame=%u accepted=%u reason=%s",frame,unsigned(accepted),reason?reason:accepted?"queued":"budget-or-pending");
             }else{worldDebug=(worldDebug+1)%4;logf("World debug %d tick=%lu (0 normal,1 shadows,2 GI,3 volume)",worldDebug,(unsigned long)GetTickCount());}

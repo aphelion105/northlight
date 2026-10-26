@@ -3,6 +3,7 @@
 #define NORTHLIGHT_REPLAY_STAND 1
 #include "../src/proxy/renderer.cpp"
 #include <cassert>
+#include <fstream>
 struct WorldScreenEffectsTest {
     static void setup(WorldRenderer& w,unsigned width,unsigned height){
         assert(w.resources(width,height,D3DFMT_A16B16G16R16F));
@@ -42,6 +43,41 @@ struct WorldScreenEffectsTest {
     static void scratch(const WorldRenderer& w,bool expected){assert(bool(w.color)==expected&&bool(w.colorSurface)==expected);}
     static void direct(WorldRenderer& w,bool on){w.sourceColors[0]=on?WorldRenderer::V(.6f,.5f,.4f):WorldRenderer::V();w.sourceColors[1]={};}
     static void resetResources(WorldRenderer& w){w.releaseGPU(true);assert(w.publishedFogRegion&&!w.uploadedFogField&&!w.active);}
+    static void diagnosticFrames(WorldRenderer& w,unsigned width,unsigned height){
+        const auto directory=NorthlightWorldDiagnostics::directory(w.root);assert(!directory.empty());
+        auto pixels=[&](const std::string& folder,const char* name,unsigned capture,bool zero){
+            std::ifstream f(folder+"/capture-"+std::to_string(capture)+"-"+name+".fgr",std::ios::binary);assert(f);
+            uint32_t header[5];f.read(reinterpret_cast<char*>(header),sizeof header);assert(header[0]==0x31524746&&header[1]&&header[2]);
+            std::vector<unsigned char> bytes(size_t(header[1])*header[2]*header[4]);f.read(reinterpret_cast<char*>(bytes.data()),bytes.size());assert(f&&f.peek()==EOF);
+            const bool empty=std::all_of(bytes.begin(),bytes.end(),[](auto byte){return byte==0;});assert(empty==zero);
+        };
+        w.captureProducts(directory,1,900,width,height,true,true);pixels(directory,"fog",1,false);
+        const auto before=fogImage(w);
+        // Populated targets are deliberately retained, but the next frame has
+        // no producer. Export zeros without any device access or target clear.
+        assert(NorthlightWorldDiagnostics::product(nullptr,w.fogSurface,directory,"ao-raw",2,false,width/2,height/2,D3DFMT_A16B16G16R16F,901));
+        assert(NorthlightWorldDiagnostics::textureProduct(nullptr,nullptr,directory,"materials-normal-height",2,false,width,height,D3DFMT_A16B16G16R16F,901));
+        pixels(directory,"ao-raw",2,true);pixels(directory,"materials-normal-height",2,true);assert(before==fogImage(w));
+        w.captureProducts(directory,2,901,width,height,false);pixels(directory,"fog",2,true);pixels(directory,"normals",2,true);
+        w.composited=false;assert(w.requestNormalGpuDiagnosticCapture());assert(w.captureSkippedDiagnostic(902,width,height));
+        assert(w.diagnosticCaptureInLastRender()&&!w.gpuNormalDiagnosticRequested);pixels(w.gpuDiagnosticDirectory,"fog",1,true);pixels(w.gpuDiagnosticDirectory,"scene",1,true);
+        NorthlightDiagnosticCapture::request(NorthlightDiagnosticCapture::AO);NorthlightDiagnosticCapture::request(NorthlightDiagnosticCapture::Materials);
+        assert(NorthlightDiagnosticCapture::take()==(NorthlightDiagnosticCapture::AO|NorthlightDiagnosticCapture::Materials)&&!NorthlightDiagnosticCapture::take());
+        std::puts("DIAGNOSTIC_FRAME_PASS staleTargetsRetained=1 skippedImagesZero=1 noDeviceAccessForEmpty=1 worldSkippedCapture=1 scopeQueue=1");
+    }
+    static void emptyDebugViews(WorldRenderer& world,IDirect3DSurface9* out,IDirect3DSurface9* resolved,IDirect3DSurface9* read,IDirect3DTexture9* depth,unsigned width,unsigned height){
+        for(unsigned debug:{1u,2u,3u,1u,2u}){
+            world.effects.shadows=world.effects.gi=debug<3?false:true;world.effects.fog=false;
+            if(debug<3&&resolved==nullptr)world.effects.shadows=world.effects.gi=true; // also exercise missing geometry with enabled components
+            assert(SUCCEEDED(world.d->ColorFill(out,nullptr,0xffffffff)));
+            assert(world.render(out,depth,width,height,D3DFMT_A16B16G16R16F,1,1000,0,1,debug,nullptr,nullptr));
+            if(resolved)assert(SUCCEEDED(world.d->StretchRect(out,nullptr,resolved,nullptr,D3DTEXF_NONE)));
+            assert(SUCCEEDED(world.d->GetRenderTargetData(resolved?resolved:out,read)));D3DLOCKED_RECT lock{};assert(SUCCEEDED(read->LockRect(&lock,nullptr,D3DLOCK_READONLY)));
+            for(unsigned y=0;y<height;++y)for(unsigned x=0;x<width*8;++x)assert(static_cast<const unsigned char*>(lock.pBits)[y*lock.Pitch+x]==0);
+            assert(SUCCEEDED(read->UnlockRect()));
+        }
+        std::puts("DIAGNOSTIC_VIEW_PASS disabledComponentsAndMissingGeometryBlack=1 noStaleImage=1");
+    }
     static std::vector<unsigned char> fogImage(WorldRenderer& w){
         assert(w.uploadedFogField==w.publishedFogRegion->field&&!w.active&&!w.fogGeometryReady);
         D3DSURFACE_DESC desc{};assert(SUCCEEDED(w.fogSurface->GetDesc(&desc)));
@@ -121,6 +157,8 @@ int main(int argc,char** argv){
         for(size_t pixel=0;pixel<ambientOnly[0].size()/8;++pixel)for(unsigned channel=0;channel<4;++channel){unsigned short bits;std::memcpy(&bits,ambientOnly[0].data()+pixel*8+channel*2,2);const float value=screenHalf(bits);assert(std::isfinite(value)&&value>=0);if(channel<3)maximumScatter=std::max(maximumScatter,value);else minimumTransmission=std::min(minimumTransmission,value);}
         assert(maximumScatter>.00001f&&minimumTransmission<.999f);
         std::printf("WORLD_AMBIENT_FOG_PASS noBvh=1 independentUpload=1 resetRestored=1 sunZero=1 moonZero=1 scatter=%g transmission=%g unshadowedDirectDisabled=1 msaa=%u\n",maximumScatter,minimumTransmission,msaa);
+        WorldScreenEffectsTest::diagnosticFrames(*world,W,H);
+        WorldScreenEffectsTest::emptyDebugViews(*world,out,resolved,readback,depth,W,H);
     }
     float bump=0,fog=0;for(unsigned i=0;i<W*H*3;++i){bump=std::max(bump,std::abs(images[1][i]-images[0][i]));fog=std::max(fog,std::abs(images[2][i]-images[0][i]));}
     std::printf("WORLD_SCREEN_GPU bumpDelta=%g fogDelta=%g noGeometry=1 noStaleShadows=1 stateRestored=1 msaa=%u\n",bump,fog,msaa);std::fflush(stdout);assert(bump>.002f&&fog>.002f);

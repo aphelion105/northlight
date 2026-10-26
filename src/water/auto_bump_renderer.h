@@ -461,6 +461,7 @@ public:
         ((modes[0]==3||modes[1]==3||modes[2]==3||modes[3]==3)&&displacement.hasDisplacement()))&&!failed;}
     IDirect3DTexture9* texture()const{return active()&&drawn?height:nullptr;}
     bool hasCaptureResources()const{return height!=nullptr;}
+    bool capturedThisFrame()const{return active()&&drawn&&deferred.empty();}
     IDirect3DTexture9* occlusionTexture()const{return active()&&drawn&&occlusionDrawn?occlusionMap:nullptr;}
     float occlusionDistance()const{return std::min(range,projection[3]);}
     float gain()const{return texture()?strength:0;}
