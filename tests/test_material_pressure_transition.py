@@ -19,7 +19,7 @@ helper=helper.replace('struct DisplacementStateTestAccess {','struct Displacemen
 (out/'material_pressure_reference.h').write_bytes(helper.encode())
 header=fp.src('auto_bump_renderer.h').read_text();geometry=fp.src('auto_displacement_renderer.h').read_text()
 begin=header.index('    void setMemoryPressure(bool on,');end=header.index('    void trimMemory(',begin)
-original='''    void setMemoryPressure(bool on,size_t=0){
+original='''    void setMemoryPressure(bool on,size_t=0,NorthlightStreaming::CpuRetirement* =nullptr){
         if(memoryPressure==on)return;memoryPressure=on;deferredSnapshots.setSnapshotCacheLimit(on?4u<<20:24u<<20);
         if(on&&!deferred.empty()){deferredDiscarded+=unsigned(deferred.size());clearDeferred();drawn=occlusionDrawn=false;}
         deferredGPU.setLimit(on?0:32u<<20);
@@ -29,8 +29,8 @@ original='''    void setMemoryPressure(bool on,size_t=0){
     }
 '''
 control=out/'control';control.mkdir(exist_ok=True);(control/'auto_bump_renderer.h').write_bytes((header[:begin]+original+header[end:]).encode())
-geometry_begin=geometry.index('    void setMemoryPressure(bool on){');geometry_end=geometry.index('    void trimMemory()',geometry_begin)
-original_geometry='''    void setMemoryPressure(bool on){
+geometry_begin=geometry.index('    void setMemoryPressure(bool on,');geometry_end=geometry.index('    void trimMemory(',geometry_begin)
+original_geometry='''    void setMemoryPressure(bool on,NorthlightStreaming::CpuRetirement* =nullptr){
         current=nullptr;memoryPressure=on;snapshots.setSnapshotCacheLimit(on?6u<<20:24u<<20);rangeSnapshots.setSnapshotCacheLimit(on?1u<<20:4u<<20);skinRangeSnapshots.setSnapshotCacheLimit(on?1u<<20:4u<<20);
         MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;GlobalMemoryStatusEx(&memory);refreshBudget(memory);
         if(on){boundsLRU.clear();bounds.clear();boundsBytes=0;poseEnvelopes.clear();snapshots.clearIndexCache();rangeSnapshots.clearIndexCache();skinRangeSnapshots.clearIndexCache();}

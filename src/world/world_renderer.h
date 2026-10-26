@@ -1402,11 +1402,12 @@ private:
             auto currentGeometry=[&](){std::lock_guard<std::mutex> lock(mutex);return !stopping&&NorthlightWorldStreaming::applicable(r.map,r.geometryCenter,request.map,request.camera);};
             auto deferBuild=[&](const char* stage,NorthlightGeometryMemory::Sample sample,unsigned delay,const NorthlightGeometryMemory::Budget* budget=nullptr){
                 DWORD now=GetTickCount();if(!memoryReportAt||now-memoryReportAt>=1000){memoryReportAt=now;logGeometryMemory(stage,sample,generations.live(),workerMemoryExact,budget);}
-                // The consumed request must survive a stationary camera. Never
-                // replace a newer request with r; next loop reads latest state.
+                // GI retargets inside this region cannot make a failed memory
+                // admission succeed. Keep its backoff; next loop reads latest
+                // state. Stop or a spatially invalid request still wakes now.
                 bool abandoned=false;
                 {std::unique_lock<std::mutex> lock(mutex);retry=true;
-                 buildWake.wait_for(lock,std::chrono::milliseconds(delay),[&]{return stopping||builderExit||request.id!=r.id;});
+                 buildWake.wait_for(lock,std::chrono::milliseconds(delay),[&]{return stopping||builderExit||!NorthlightWorldStreaming::applicable(r.map,r.geometryCenter,request.map,request.camera);});
                  // The request moved on and this region no longer applies: the stalled build is dropped.
                  abandoned=stopping||builderExit||!NorthlightWorldStreaming::applicable(r.map,r.geometryCenter,request.map,request.camera);}
                 if(abandoned)abandonGeometry();

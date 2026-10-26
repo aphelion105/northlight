@@ -11,6 +11,15 @@ static BOOL WINAPI pressureMemoryStatus(MEMORYSTATUSEX* memory){
 
 namespace NorthlightDrawSnapshot {
 struct SnapshotTestAccess {
+    static void seedIndices(Frame& frame){
+        for(size_t i=0;i<frame.decoded_.size();++i){
+            auto entry=std::make_unique<Frame::DecodedEntry>();entry->slot=i;entry->fingerprint=i;
+            entry->raw.assign(2048,static_cast<uint8_t>(i));entry->indices.assign(512,UINT(i));entry->runs.assign(32,{0,0,3});
+            entry->bytes=sizeof(Frame::DecodedEntry)+128+entry->raw.capacity()+entry->indices.capacity()*sizeof(UINT)+entry->runs.capacity()*sizeof(Frame::CopyRun);
+            frame.decodedBytes_+=entry->bytes;frame.decodedLookup_.emplace(i,entry.get());frame.decodedLRU_.append(*entry);frame.recent_=entry.get();frame.decoded_[i]=std::move(entry);
+        }
+        frame.decodedFreeCount_=0;assert(frame.indexCacheEntries()==1024&&frame.indexCacheBytes()<=Frame::IndexCacheLimit);
+    }
     static std::shared_ptr<const Mesh> seed(Frame& frame,IDirect3DVertexDeclaration9* declaration,unsigned count=26,size_t payloadBytes=4u<<20){
         std::shared_ptr<const Mesh> held;
         for(unsigned i=0;i<count;++i){
@@ -35,6 +44,12 @@ struct PressureDeclaration:Declaration {
     DWORD thread=GetCurrentThreadId();unsigned releases=0;
     ULONG STDMETHODCALLTYPE Release()override{assert(GetCurrentThreadId()==thread);++releases;return Declaration::Release();}
 };
+#ifdef NORTHLIGHT_TEST_MATERIAL_PRESSURE_POLICY
+struct PressureBlocker {
+    std::atomic<bool>& entered;std::atomic<bool>& proceed;
+    ~PressureBlocker(){entered=true;while(!proceed)std::this_thread::yield();}
+};
+#endif
 void MaterialCaptureStateTestAccess::pressureTransition(){
     CaptureBackend device;PressureDeclaration declaration;
     const auto initialCpu=NorthlightSourceIdentity::cpuLiveBytes.load();
@@ -79,6 +94,32 @@ void MaterialCaptureStateTestAccess::pressureTransition(){
     }
     assert(NorthlightSourceIdentity::cpuLiveBytes.load()==initialCpu);
 #ifdef NORTHLIGHT_TEST_MATERIAL_PRESSURE_POLICY
+    for(bool critical:{false,true}){
+        auto& retirement=NorthlightStreaming::cpuRetirement();assert(retirement.waitIdle(10000));
+        std::atomic<bool> entered{false},proceed{false};auto blocker=std::shared_ptr<PressureBlocker>(new PressureBlocker{entered,proceed});
+        assert(retirement.retire(blocker,1));while(!entered)std::this_thread::yield();
+        {
+            NorthlightAutoBump bump(&device);PressureDeclaration ownDeclaration;
+            std::shared_ptr<const NorthlightDrawSnapshot::Mesh> held[3];
+            NorthlightDrawSnapshot::Frame* pools[]={&bump.deferredSnapshots,&DisplacementStateTestAccess::pressureSources(bump.displacement,0),&DisplacementStateTestAccess::pressureSources(bump.displacement,1),&DisplacementStateTestAccess::pressureSources(bump.displacement,2)};
+            for(unsigned i=0;i<4;++i){NorthlightDrawSnapshot::SnapshotTestAccess::seedIndices(*pools[i]);
+                if(i!=1)held[i?i-1:0]=NorthlightDrawSnapshot::SnapshotTestAccess::seed(*pools[i],&ownDeclaration,3,1u<<20);}
+            const auto accepted=retirement.stats().accepted;
+            const auto start=std::chrono::steady_clock::now();
+            bump.setMemoryPressurePolicy(true,critical);
+            const auto boundaryNs=std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-start).count();
+            std::printf("MATERIAL_PRESSURE_BOUNDARY critical=%u ns=%lld\n",unsigned(critical),static_cast<long long>(boundaryNs));
+            for(unsigned i=0;i<4;++i)assert(!pools[i]->snapshotCacheEntries()&&!pools[i]->indexCacheEntries()&&NorthlightDrawSnapshot::SnapshotTestAccess::predictionCleared(*pools[i]));
+            assert(ownDeclaration.refs==1&&ownDeclaration.releases==9);
+            for(unsigned i=0;i<3;++i){auto* pool=pools[i?i+1:0];assert(pool->sourceLiveObjects()==(critical?1u:3u));assert(held[i]->streams[0].bytes.front()==1&&held[i]->streams[0].bytes.back()==1);}
+            assert(retirement.stats().accepted==accepted+(critical?0u:7u));
+            proceed=true;assert(retirement.waitIdle(10000));
+            for(unsigned i=0;i<3;++i){auto* pool=pools[i?i+1:0];assert(pool->sourceLiveObjects()==1);held[i].reset();assert(!pool->sourceLiveObjects());}
+            bump.setMemoryPressurePolicy(false,false);
+        }
+        assert(NorthlightSourceIdentity::cpuLiveBytes.load()==initialCpu);
+        std::printf("MATERIAL_PRESSURE_RETIRE_PASS critical=%u decodedPools=4 sourcePools=3 ownerCOM=1 boundedCPU=1 heldBytesExact=1 ledgerDrained=1\n",unsigned(critical));
+    }
     {
         NorthlightAutoBump bump(&device);
         bump.setMemoryPressurePolicy(true,false);

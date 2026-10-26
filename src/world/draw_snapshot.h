@@ -153,6 +153,10 @@ class Frame {
     static constexpr size_t IndexCacheLimit=16u*1024u*1024u;
     std::array<std::unique_ptr<DecodedEntry>,1024> decoded_;
     std::unordered_multimap<std::uint64_t,DecodedEntry*> decodedLookup_;
+    struct RetiredIndices {
+        decltype(decoded_) entries;
+        decltype(decodedLookup_) lookup;
+    };
     size_t decodedBytes_=sizeof(decoded_);
     NorthlightIntrusiveLRU::List<DecodedEntry> decodedLRU_;
     std::array<size_t,1024> decodedFree_{};size_t decodedFreeCount_=1024;
@@ -709,7 +713,21 @@ public:
     void clearFrame(){maintenance_={};sampleMaintenance_=false;used_=regularUsed_=0;draws_=regularDraws_=0;sourceSpanVertices_=uniqueVertices_=savedVertexBytes_=0;compactedDraws_=0;indexHits_=indexMisses_=0;cacheHits_=cacheMisses_=revalidated_=revalidationMismatches_=trackedHits_=peerHits_=sharedSourceHits_=0;replayContentTests_=replayContentHits_=0;replayContentComparedBytes_=0;avoidedReadBytes_=0;metadataBatches_=metadataHits_=metadataFallbacks_=fastCacheHits_=0;predictTried_=predictHits_=predictMisses_=0;++frame_;}
     // Cache lifetime never establishes validity: reads still lock/compare current
     // IB contents and copy current VB data. Reset/destruction may drop plans.
-    size_t clearIndexCache(NorthlightStreaming::CpuRetirement* retirement=nullptr){activeRuns_=&copyRuns_;recent_=nullptr;decodedLookup_.clear();decodedLRU_.clear();for(auto& entry:decoded_)entry.reset();decodedBytes_=sizeof(decoded_);decodedFreeCount_=decodedFree_.size();for(size_t i=0;i<decodedFree_.size();++i)decodedFree_[i]=i;return clearSnapshotCache(retirement);}
+    size_t clearIndexCache(NorthlightStreaming::CpuRetirement* retirement=nullptr){
+        activeRuns_=&copyRuns_;recent_=nullptr;decodedLRU_.clear();
+        // Preserve the existing source retirement's priority under the byte cap.
+        size_t deferred=clearSnapshotCache(retirement);
+        // These immutable plans own no COM objects. Detach their allocations
+        // before reset so a noncritical trim need not destroy them in-frame.
+        if(retirement&&indexCacheEntries())try{
+            auto retired=std::make_shared<RetiredIndices>();
+            retired->entries.swap(decoded_);retired->lookup.swap(decodedLookup_);
+            if(retirement->retire(retired,decodedBytes_))deferred+=decodedBytes_;
+        }catch(...){} // Full queue or allocation failure frees synchronously.
+        decodedLookup_.clear();for(auto& entry:decoded_)entry.reset();decodedBytes_=sizeof(decoded_);decodedFreeCount_=decodedFree_.size();
+        for(size_t i=0;i<decodedFree_.size();++i)decodedFree_[i]=i;
+        return deferred;
+    }
     size_t indexCacheBytes()const{return decodedBytes_;}
     unsigned indexCacheEntries()const{return unsigned(decoded_.size()-decodedFreeCount_);}
     unsigned indexCacheHits()const{return indexHits_;}

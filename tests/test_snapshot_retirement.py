@@ -23,6 +23,7 @@ inputs={str(p):sha(p) for p in watched};report=dict(pass_=False,inputs=inputs,ru
 original=header.read_text()
 modes=[('O2',['-O2']),('O0',['-O0']),('ASan-UBSan',['-O1','-g','-fsanitize=address,undefined','-fno-sanitize-recover=all','-fno-omit-frame-pointer']),('TSan',['-O1','-g','-fsanitize=thread'])]
 controls=[('no-retirement','if(retirement&&!sources_->entries.empty())try{','if(false&&retirement&&!sources_->entries.empty())try{','RETIREMENT_NOT_QUEUED'),
+          ('no-index-retirement','if(retirement&&indexCacheEntries())try{','if(false&&retirement&&indexCacheEntries())try{','INDEX_RETIREMENT_NOT_QUEUED'),
           ('worker-COM','declaration->Release();declaration=nullptr;','/* counterfactual: COM ownership reaches the worker */','COM_RELEASE_BEFORE_ENQUEUE')]
 try:
     for name,body,rejection in [('current',original,None),*[(n,original.replace(a,b),r) for n,a,b,r in controls]]:
@@ -37,7 +38,7 @@ try:
             if rejection:assert result.returncode!=0 and rejection in log,(name,mode,log)
             else:
                 assert result.returncode==0 and 'SNAPSHOT_RETIRE_PASS ' in log,(name,mode,log)
-                for case in ['demand','critical','queue-full',*(['allocation-failure'] if mode!='TSan' else [])]:assert 'case='+case+' ' in log,(name,mode,case)
+                for case in ['demand','critical','queue-full','indices-only','source-priority',*(['allocation-failure'] if mode!='TSan' else [])]:assert 'case='+case+' ' in log,(name,mode,case)
             print(name,mode,result.returncode,log[-800:],flush=True)
     report['pass_']=True
 finally:
