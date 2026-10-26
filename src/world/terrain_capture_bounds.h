@@ -370,17 +370,17 @@ private:
     void rememberContent(const ContentKey& key,std::uint64_t hash,UINT smallest,UINT largest,
                          const std::vector<unsigned char>& rawIndices,const std::vector<unsigned char>& rawVertices,
                          const std::vector<UINT>& sourceOffsets,
-                          const std::shared_ptr<const MeshSnapshot>& snapshot,const Diagnostics& detail,Stamp verified,const DecodedChoice& decoded,std::uint64_t vertexSpan){
+                          const std::shared_ptr<const MeshSnapshot>& snapshot,const Diagnostics& detail,Stamp verified,const DecodedChoice& decoded,std::uint64_t vertexSpan,const std::shared_ptr<SourceIndices>& indexPlan={}){
       try {
         // Keep exact indices and a mapping to the captured XYZ for revalidation
         // after buffer writes. The other vertex attributes are not used here.
         const bool keepRaw=!verified.valid();
         const std::uint64_t maximumOffset=std::uint64_t(largest-smallest)*key.draw.stride;
         const unsigned offsetBytes=maximumOffset<=UINT16_MAX?2:4;
-        auto sharedIndices=lastSourceIndices.lock();
+        auto sharedIndices=indexPlan?indexPlan:lastSourceIndices.lock();
         if(sharedIndices&&sharedIndices->bytes!=rawIndices)sharedIndices.reset();
         const bool storeOffsets=!keepRaw&&!sharedIndices;
-        const bool reuseOffsets=!keepRaw&&sharedIndices&&sharedIndices->sourceOffsets.visit([&](const auto* stored,size_t count){
+        const bool reuseOffsets=!keepRaw&&sharedIndices&&(indexPlan==sharedIndices||sharedIndices->sourceOffsets.visit([&](const auto* stored,size_t count){
             if(count!=sourceOffsets.size()||sizeof(*stored)!=offsetBytes)return false;
             using Value=std::remove_cv_t<std::remove_reference_t<decltype(*stored)>>;
             for(size_t i=0;i<count;++i){
@@ -389,7 +389,7 @@ private:
                 const Value value=Value(byte);if(std::memcmp(stored+i,&value,sizeof value))return false;
             }
             return true;
-        });
+        }));
         // Reuse only the entire exact typed offset sequence. Raw indices alone
         // do not prove layout across stride, format or topology changes.
         std::uint64_t sourceBytes=sharedIndices?sourceIndexBytes(*sharedIndices):sourceIndexOverhead()+rawIndices.size()+(storeOffsets?sourceOffsets.size()*offsetBytes:0);
@@ -795,7 +795,7 @@ public:
         MeshSnapshot result;auto& remap=scratchRemap;
         const UINT unused=std::numeric_limits<UINT>::max();
         const auto preparePositions=[&](){
-            if(indexPlan){result.positions.resize(indexPlan->sourceOffsets.size());scratchSourceOffsets.clear();scratchSourceOffsets.reserve(result.positions.size());return;}
+            if(indexPlan){result.positions.resize(indexPlan->sourceOffsets.size());scratchSourceOffsets.clear();return;}
             remap.assign(std::size_t(largest)-smallest+1,unused);
             result.positions.resize(std::min(indices.size(),remap.size()));
             scratchSourceOffsets.clear();scratchSourceOffsets.reserve(result.positions.size());
@@ -807,7 +807,6 @@ public:
                 indexPlan->sourceOffsets.visit([&](const auto* offsets,size_t count){
                     for(size_t i=0;i<count;++i){
                         Position& p=result.positions[i];std::memcpy(&p,source+offsets[i],sizeof p);
-                        scratchSourceOffsets.push_back(UINT(offsets[i]/detail.stride));
                         const float values[]={p.x,p.y,p.z};
                         for(unsigned j=0;j<3;++j){if(!std::isfinite(values[j]))valid=false;detail.low[j]=std::min(detail.low[j],values[j]);detail.high[j]=std::max(detail.high[j],values[j]);}
                     }
@@ -881,7 +880,7 @@ public:
         ++maintenance_.rebuilds;
         // A racing write removes the optional cache proof. The exact copied
         // snapshot remains usable, but no absent raw fallback is published.
-        if(!directCold||verified)rememberContent(contentKey,hash,smallest,largest,scratchRawIndices,scratchRawVertices,scratchSourceOffsets,shared,detail,verified?before:Stamp{},decoded,span);
+        if(!directCold||verified)rememberContent(contentKey,hash,smallest,largest,scratchRawIndices,scratchRawVertices,scratchSourceOffsets,shared,detail,verified?before:Stamp{},decoded,span,indexPlan);
         else ++maintenance_.directUnstable;
         ++snapshots;output=std::move(shared);if(diagnostics)*diagnostics=detail;return true;
     }
