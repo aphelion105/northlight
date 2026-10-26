@@ -154,12 +154,12 @@ inline bool classifyTriangleSequence(VertexAt vertexAt,std::size_t count,
             minX=origin-(y+1)*step;maxX=origin-y*step;
             minY=origin-(x+1)*step;maxY=origin-x*step;
         }
-        for(unsigned i=0;i<3;++i){
-            if(p[i].x<minX-tolerance||p[i].x>maxX+tolerance||
-               p[i].y<minY-tolerance||p[i].y>maxY+tolerance)return false;
-            const float values[]={p[i].x,p[i].y,p[i].z};
-            for(unsigned j=0;j<3;++j){result.low[j]=std::min(result.low[j],values[j]);result.high[j]=std::max(result.high[j],values[j]);}
-        }
+        // Finite triangle extrema prove the same per-vertex containment with
+        // four double comparisons. Preserve vertex order on equal extrema.
+        const float low[]={std::min(p[0].x,std::min(p[1].x,p[2].x)),std::min(p[0].y,std::min(p[1].y,p[2].y)),std::min(p[0].z,std::min(p[1].z,p[2].z))};
+        const float high[]={std::max(p[0].x,std::max(p[1].x,p[2].x)),std::max(p[0].y,std::max(p[1].y,p[2].y)),std::max(p[0].z,std::max(p[1].z,p[2].z))};
+        if(low[0]<minX-tolerance||high[0]>maxX+tolerance||low[1]<minY-tolerance||high[1]>maxY+tolerance)return false;
+        for(unsigned j=0;j<3;++j){result.low[j]=std::min(result.low[j],low[j]);result.high[j]=std::max(result.high[j],high[j]);}
         const unsigned chunk=unsigned(y)*1024+unsigned(x);
         // Chunk-local triangles are contiguous in normal terrain draws. Avoid
         // a hash lookup for every triangle without changing disjoint coverage.
@@ -250,13 +250,19 @@ private:
             proof.vb,proof.ib,proof.vertexVersion,proof.indexVersion,pair(d.streamOffset,d.stride),pair(d.positionOffset,d.positionType),pair(std::uint32_t(d.base),d.minimum),pair(d.vertices,d.start),pair(d.primitives,unsigned(d.topology)),pair(key.stream,unsigned(key.format)),pair(key.vertexBytes,key.indexBytes)});
       }catch(...){return {};}
     }
+    struct DecodedIndices {NorthlightTerrainIndices::Indices values;size_t entries=0;};
     struct SourceIndices {
         const std::vector<unsigned char> bytes;size_t entries=0;
         const NorthlightTerrainIndices::Indices sourceOffsets;
-        SourceIndices(const std::vector<unsigned char>& input,NorthlightTerrainIndices::Indices&& offsets):bytes(input),sourceOffsets(std::move(offsets)){}
+        const UINT stride,smallest,largest;
+        const D3DFORMAT format;const D3DPRIMITIVETYPE topology;
+        std::weak_ptr<DecodedIndices> plan;
+        SourceIndices(const std::vector<unsigned char>& input,NorthlightTerrainIndices::Indices&& offsets,const ContentKey& key,UINT first,UINT last):
+            bytes(input),sourceOffsets(std::move(offsets)),stride(key.draw.stride),smallest(first),largest(last),format(key.format),topology(key.draw.topology){}
     };
-    static std::uint64_t sourceIndexBytes(const SourceIndices& source){return sizeof(SourceIndices)+32+source.bytes.capacity()+source.sourceOffsets.ownedBytes();}
-    struct DecodedIndices {NorthlightTerrainIndices::Indices values;size_t entries=0;};
+    // An expired weak plan can retain its make_shared control/object allocation.
+    static constexpr size_t sourceIndexOverhead(){return sizeof(SourceIndices)+32+sizeof(NorthlightSourceIdentity::Retained<DecodedIndices>)+32;}
+    static std::uint64_t sourceIndexBytes(const SourceIndices& source){return sourceIndexOverhead()+source.bytes.capacity()+source.sourceOffsets.ownedBytes();}
     static size_t decodedBytes(const DecodedIndices& block){return NorthlightSourceIdentity::allocationBytes<DecodedIndices>(block.values.ownedBytes());}
     struct DecodedMemo {
         std::array<std::weak_ptr<DecodedIndices>,64> slots;
@@ -335,6 +341,7 @@ public:
         unsigned metadataBatches=0,metadataHits=0,metadataFallbacks=0;
         std::uint64_t vertexSpanBytes=0,rawVertexCopyBytes=0,xyzCopyBytes=0;
         unsigned directColdMisses=0,directUnstable=0;
+        unsigned indexPlanHits=0;std::uint64_t indexPlanVertices=0,indexPlanIndices=0;
     };
 private:
     Maintenance maintenance_;
@@ -363,17 +370,17 @@ private:
     void rememberContent(const ContentKey& key,std::uint64_t hash,UINT smallest,UINT largest,
                          const std::vector<unsigned char>& rawIndices,const std::vector<unsigned char>& rawVertices,
                          const std::vector<UINT>& sourceOffsets,
-                          const std::shared_ptr<const MeshSnapshot>& snapshot,const Diagnostics& detail,Stamp verified,const DecodedChoice& decoded,std::uint64_t vertexSpan){
+                          const std::shared_ptr<const MeshSnapshot>& snapshot,const Diagnostics& detail,Stamp verified,const DecodedChoice& decoded,std::uint64_t vertexSpan,const std::shared_ptr<SourceIndices>& indexPlan={}){
       try {
         // Keep exact indices and a mapping to the captured XYZ for revalidation
         // after buffer writes. The other vertex attributes are not used here.
         const bool keepRaw=!verified.valid();
         const std::uint64_t maximumOffset=std::uint64_t(largest-smallest)*key.draw.stride;
         const unsigned offsetBytes=maximumOffset<=UINT16_MAX?2:4;
-        auto sharedIndices=lastSourceIndices.lock();
+        auto sharedIndices=indexPlan?indexPlan:lastSourceIndices.lock();
         if(sharedIndices&&sharedIndices->bytes!=rawIndices)sharedIndices.reset();
         const bool storeOffsets=!keepRaw&&!sharedIndices;
-        const bool reuseOffsets=!keepRaw&&sharedIndices&&sharedIndices->sourceOffsets.visit([&](const auto* stored,size_t count){
+        const bool reuseOffsets=!keepRaw&&sharedIndices&&(indexPlan==sharedIndices||sharedIndices->sourceOffsets.visit([&](const auto* stored,size_t count){
             if(count!=sourceOffsets.size()||sizeof(*stored)!=offsetBytes)return false;
             using Value=std::remove_cv_t<std::remove_reference_t<decltype(*stored)>>;
             for(size_t i=0;i<count;++i){
@@ -382,10 +389,10 @@ private:
                 const Value value=Value(byte);if(std::memcmp(stored+i,&value,sizeof value))return false;
             }
             return true;
-        });
+        }));
         // Reuse only the entire exact typed offset sequence. Raw indices alone
         // do not prove layout across stride, format or topology changes.
-        std::uint64_t sourceBytes=sharedIndices?sourceIndexBytes(*sharedIndices):sizeof(SourceIndices)+32+rawIndices.size()+(storeOffsets?sourceOffsets.size()*offsetBytes:0);
+        std::uint64_t sourceBytes=sharedIndices?sourceIndexBytes(*sharedIndices):sourceIndexOverhead()+rawIndices.size()+(storeOffsets?sourceOffsets.size()*offsetBytes:0);
         const auto required=[&](std::uint64_t bytes){return bytes+(!sharedIndices||!sharedIndices->entries?sourceBytes:0)+(decoded.block&&!decoded.block->entries?decodedBytes(*decoded.block):0);};
         const std::uint64_t estimate=sizeof(ContentEntry)+sizeof(MeshSnapshot)+256+
             (keepRaw?rawVertices.size():storeOffsets||reuseOffsets?0:sourceOffsets.size()*offsetBytes)+
@@ -420,7 +427,7 @@ private:
             }
         }
         if(!sharedIndices){
-            sharedIndices=std::make_shared<SourceIndices>(rawIndices,std::move(next->sourceOffsets));sourceBytes=sourceIndexBytes(*sharedIndices);
+            sharedIndices=std::make_shared<SourceIndices>(rawIndices,std::move(next->sourceOffsets),key,smallest,largest);sourceBytes=sourceIndexBytes(*sharedIndices);
             if(!keepRaw)next->sourceOffsets.share(std::shared_ptr<const NorthlightTerrainIndices::Indices>(sharedIndices,&sharedIndices->sourceOffsets));
         }
         next->indices=sharedIndices;
@@ -441,6 +448,10 @@ private:
         if(decoded.block){if(!decoded.block->entries++){const auto bytes=decodedBytes(*decoded.block);contentBytes+=bytes;decoded_.bytes+=bytes;decoded_.dataBytes+=decoded.block->values.ownedBytes();++decoded_.blocks;}
         }
         if(decoded.memo){decoded_.slots[decoded.slot]=decoded.block;decoded_.snapshots[decoded.slot]=snapshot;decoded_.last=decoded.slot;}
+        // A plan owns no geometry. It is usable only with the exact original
+        // index bytes, format, topology and byte-offset layout.
+        if(decoded.block&&!keepRaw&&sharedIndices->stride==key.draw.stride&&sharedIndices->format==key.format&&
+           sharedIndices->topology==key.draw.topology&&(storeOffsets||reuseOffsets))sharedIndices->plan=decoded.block;
         lastSourceIndices=sharedIndices;
         contentLRU.append(*next);contentBytes+=next->bytes;retainedPayloadBytes_+=next->payloadBytes;retainedIdentityBytes_+=next->identityBytes;content[slot]=std::move(next);
       }catch(...){return;} // Cache allocation is optional; snapshot remains valid.
@@ -745,6 +756,14 @@ public:
             hr=readIndices.unlock();
             if(FAILED(hr))return reject(RejectReason::IndexUnlock,hr);
         }
+        std::shared_ptr<SourceIndices> indexPlan;
+        std::shared_ptr<DecodedIndices> plannedIndices;
+        if(!cached&&before.valid()){
+            indexPlan=lastSourceIndices.lock();
+            if(indexPlan&&indexPlan->format==id.Format&&indexPlan->topology==topology&&indexPlan->stride==detail.stride&&
+               !indexPlan->sourceOffsets.empty()&&indexPlan->bytes==scratchRawIndices)plannedIndices=indexPlan->plan.lock();
+            if(!plannedIndices)indexPlan.reset();
+        }
         UINT smallest=std::numeric_limits<UINT>::max(),largest=0;bool valid=true;
         const auto decodeIndices=[&](){
             indices.resize(static_cast<std::size_t>(indexCount));
@@ -755,7 +774,11 @@ public:
                 smallest=std::min(smallest,indices[i]);largest=std::max(largest,indices[i]);
             }
         };
-        if(sameIndices){smallest=cached->smallest;largest=cached->largest;}else decodeIndices();
+        if(sameIndices){smallest=cached->smallest;largest=cached->largest;}
+        else if(indexPlan){
+            smallest=indexPlan->smallest;largest=indexPlan->largest;
+            valid=smallest>=minimum&&std::uint64_t(largest)<std::uint64_t(minimum)+vertexCount;
+        }else decodeIndices();
         detail.firstIndex=smallest;detail.lastIndex=largest;
         if(!valid)return reject(RejectReason::IndexRange);
         const std::int64_t firstVertex=std::int64_t(base)+smallest,lastVertex=std::int64_t(base)+largest;
@@ -772,6 +795,7 @@ public:
         MeshSnapshot result;auto& remap=scratchRemap;
         const UINT unused=std::numeric_limits<UINT>::max();
         const auto preparePositions=[&](){
+            if(indexPlan){result.positions.resize(indexPlan->sourceOffsets.size());scratchSourceOffsets.clear();return;}
             remap.assign(std::size_t(largest)-smallest+1,unused);
             result.positions.resize(std::min(indices.size(),remap.size()));
             scratchSourceOffsets.clear();scratchSourceOffsets.reserve(result.positions.size());
@@ -779,6 +803,18 @@ public:
         const auto copyPositions=[&](const unsigned char* source){
             UINT unique=0;const float infinity=std::numeric_limits<float>::infinity();
             for(unsigned j=0;j<3;++j){detail.low[j]=infinity;detail.high[j]=-infinity;}
+            if(indexPlan){
+                indexPlan->sourceOffsets.visit([&](const auto* offsets,size_t count){
+                    for(size_t i=0;i<count;++i){
+                        Position& p=result.positions[i];std::memcpy(&p,source+offsets[i],sizeof p);
+                        const float values[]={p.x,p.y,p.z};
+                        for(unsigned j=0;j<3;++j){if(!std::isfinite(values[j]))valid=false;detail.low[j]=std::min(detail.low[j],values[j]);detail.high[j]=std::max(detail.high[j],values[j]);}
+                    }
+                });
+                result.indices.share(std::shared_ptr<const NorthlightTerrainIndices::Indices>(plannedIndices,&plannedIndices->values));
+                ++maintenance_.indexPlanHits;maintenance_.indexPlanVertices+=result.positions.size();maintenance_.indexPlanIndices+=indexCount;
+                maintenance_.xyzCopyBytes+=result.positions.size()*sizeof(Position);return;
+            }
             for(auto& index:indices){
                 UINT& mapped=remap[index-smallest];
                 if(mapped==unused){
@@ -826,8 +862,8 @@ public:
         if(sameIndices){scratchRawIndices.resize(size_t(indexBytes));std::memcpy(scratchRawIndices.data(),cached->indices->bytes.data(),size_t(indexBytes));decodeIndices();}
         if(!directCold){preparePositions();copyPositions(scratchRawVertices.data());}
         if(!valid)return reject(RejectReason::VertexNonfinite);
-        const auto unique=result.positions.size();result.indices.reserve(std::size_t(primitiveCount)*3,unique?UINT(unique-1):0);
-        for(UINT primitive=0;primitive<primitiveCount;++primitive){
+        const auto unique=result.positions.size();if(!indexPlan)result.indices.reserve(std::size_t(primitiveCount)*3,unique?UINT(unique-1):0);
+        for(UINT primitive=0;!indexPlan&&primitive<primitiveCount;++primitive){
             const std::size_t first=topology==D3DPT_TRIANGLELIST?std::size_t(primitive)*3:primitive;
             UINT a=indices[first],b=indices[first+1],c=indices[first+2];
             if(a==b||b==c||c==a)continue;
@@ -839,12 +875,12 @@ public:
         const Stamp after=stamp(vb.p,ib.p);
         const bool verified=before.valid()&&after==before;
         if(verified)result.sourceIdentity=sourceIdentity(contentKey,before);
-        const auto decoded=shareDecoded(result);
+        const auto decoded=indexPlan?DecodedChoice{plannedIndices,0,false}:shareDecoded(result);
         std::shared_ptr<const MeshSnapshot> shared=retain(std::move(result));
         ++maintenance_.rebuilds;
         // A racing write removes the optional cache proof. The exact copied
         // snapshot remains usable, but no absent raw fallback is published.
-        if(!directCold||verified)rememberContent(contentKey,hash,smallest,largest,scratchRawIndices,scratchRawVertices,scratchSourceOffsets,shared,detail,verified?before:Stamp{},decoded,span);
+        if(!directCold||verified)rememberContent(contentKey,hash,smallest,largest,scratchRawIndices,scratchRawVertices,scratchSourceOffsets,shared,detail,verified?before:Stamp{},decoded,span,indexPlan);
         else ++maintenance_.directUnstable;
         ++snapshots;output=std::move(shared);if(diagnostics)*diagnostics=detail;return true;
     }

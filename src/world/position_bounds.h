@@ -7,6 +7,9 @@
 // Only completely write-tracked buffers can supply this optional early proof.
 namespace NorthlightPositionBounds {
 class Cache {
+public:
+    struct Maintenance {unsigned coldScans=0,revisionScans=0,evictions=0,budgetRejected=0;};
+private:
     struct Key {
         uint64_t identity=0;UINT begin=0,stride=0,count=0;
         bool operator==(const Key& b)const{return identity==b.identity&&begin==b.begin&&stride==b.stride&&count==b.count;}
@@ -21,6 +24,7 @@ class Cache {
     uint64_t(*identity)(void*,bool)=nullptr;uint64_t(*version)(void*,bool)=nullptr;
     NorthlightCaptureMetadata::Read metadata=nullptr;
     size_t bytes=0;unsigned hits=0,reads=0,unknown=0;
+    Maintenance maintenance_;
     NorthlightCaptureMetadata::Info stamp(IDirect3DVertexBuffer9* vb)const{
         NorthlightCaptureMetadata::Info info;
         if(metadata){const NorthlightCaptureMetadata::Request request{vb,false};metadata(&request,&info,1);return info;}
@@ -31,7 +35,8 @@ class Cache {
 public:
     void tracking(uint64_t(*i)(void*,bool),uint64_t(*v)(void*,bool),NorthlightCaptureMetadata::Read m){clear();identity=i;version=v;metadata=m;}
     void clear(){lru.clear();entries.clear();beginFrame();}
-    void beginFrame(){bytes=0;hits=reads=unknown=0;}
+    void beginFrame(){bytes=0;hits=reads=unknown=0;maintenance_={};}
+    const Maintenance& maintenance()const{return maintenance_;}
     size_t bytesRead()const{return bytes;}
     unsigned cacheHits()const{return hits;}
     unsigned scans()const{return reads;}
@@ -57,7 +62,8 @@ public:
             auto& e=found->second;std::copy(e.low,e.low+3,low);std::copy(e.high,e.high+3,high);lru.touch(e);++hits;return true;
         }
         // This budgets actual position reads, independently of full geometry.
-        if(bytes+count*12>(2u<<20))return false;
+        if(bytes+count*12>(2u<<20)){++maintenance_.budgetRejected;return false;}
+        if(found==entries.end())++maintenance_.coldScans;else ++maintenance_.revisionScans;
         bytes+=size_t(count*12);++reads;
         Entry value;value.key=key;value.revision=before.revision;value.size=before.size;
         NorthlightReplayCopies::Reader<IDirect3DVertexBuffer9> reader(vb.p);void* data=nullptr;
@@ -67,7 +73,7 @@ public:
         const auto after=stamp(vb.p);
         if(!after.known||after.identity!=before.identity||after.revision!=before.revision||after.size!=before.size){++unknown;return false;}
         if(found==entries.end()){
-            if(entries.size()>=4096){auto* old=lru.oldest();const auto oldKey=old->key;lru.remove(*old);entries.erase(oldKey);}
+            if(entries.size()>=4096){auto* old=lru.oldest();const auto oldKey=old->key;lru.remove(*old);entries.erase(oldKey);++maintenance_.evictions;}
             found=entries.emplace(key,std::move(value)).first;lru.append(found->second);
         }else{auto& e=found->second;e.revision=value.revision;e.size=value.size;std::copy(value.low,value.low+3,e.low);std::copy(value.high,value.high+3,e.high);lru.touch(e);}
         std::copy(found->second.low,found->second.low+3,low);std::copy(found->second.high,found->second.high+3,high);return true;

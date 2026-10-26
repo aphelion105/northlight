@@ -74,6 +74,9 @@ int main(){
     for(float bad:{NAN,INFINITY,-INFINITY,FLT_MAX,-FLT_MAX})for(unsigned axis=0;axis<3;++axis){
         std::vector<Position> p;append(p,-2,-2);append(p,-3,-3);if(axis==0)p.back().x=bad;else if(axis==1)p.back().y=bad;else p.back().z=bad;check(p);}
     std::vector<Position> strip={{-2,-2,1},{-1,-2,2},{-2,-1,3},{-2,-1,3},{-1,-1,4},{-1,-2,5}};check(strip,D3DPT_TRIANGLESTRIP);
+    for(float a:{0.f,-0.f,std::numeric_limits<float>::denorm_min(),-std::numeric_limits<float>::denorm_min()})
+        for(float b:{0.f,-0.f,std::numeric_limits<float>::denorm_min(),-std::numeric_limits<float>::denorm_min()})
+            check({{-2,-2,a},{-1,-2,b},{-2,-1,-a},{-3,-3,b},{-2,-3,a},{-3,-2,-b}});
     for(unsigned i=0;i<1000;++i){std::vector<Position> p;append(p,-2,-2);append(p,-2-float(i%20)*33.333333f,-2-float(i%7)*33.333333f);append(p,-2,-2);check(p);}
     std::printf("PASS exact frozen coverage checks=%u accepted=%u rejected=%u, list/strip/degenerate/disjoint/grid/interior/tolerance/NaN/extreme/separate-call controls\n",checks,accepted,rejected);
 }
