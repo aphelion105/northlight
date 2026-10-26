@@ -205,6 +205,29 @@ struct RangeBackend:Backend {
     Declaration decl;
     HRESULT STDMETHODCALLTYPE GetVertexDeclaration(IDirect3DVertexDeclaration9** out)override{*out=&decl;decl.AddRef();return D3D_OK;}
 };
+static void capturedPositionBounds(){
+    struct Buffered:RangeBackend {
+        unsigned bufferQueries=0;
+        HRESULT STDMETHODCALLTYPE GetStreamSource(UINT,IDirect3DVertexBuffer9**,UINT*,UINT*)override{++bufferQueries;return D3DERR_INVALIDCALL;}
+    } backend;
+    NorthlightAutoDisplacement g(&backend);auto* shader=reinterpret_cast<IDirect3DVertexShader9*>(uintptr_t(1));
+    DisplacementStateTestAccess::rangeProgram(g,shader);
+    float vertices[]={0,0,50000,1,0,50001,0,1,50002};
+    NorthlightAutoDisplacement::Args up{{D3DPT_TRIANGLELIST,0,0,3,0,1,false},nullptr,D3DFMT_UNKNOWN,vertices,12},buffered=up;buffered.vertices=nullptr;
+    NorthlightCaptureMetadata::PositionBounds bounds;bounds.owner=&buffered;bounds.shader=shader;bounds.known=true;
+    bounds.low[2]=50000;bounds.high[0]=bounds.high[1]=1;bounds.high[2]=50002;
+    for(bool geometry:{false,true})for(float distance:{0.f,7.99f,8.f,8.01f,15.99f,16.f,16.01f,47.99f,48.f,48.01f,60.f,150.f}){
+        backend.bank[2]=distance-50000;float expected=0,actual=0;
+        assert(g.nearestMaterialDepth(shader,up,expected,geometry));
+        assert(g.nearestMaterialDepth(shader,buffered,actual,geometry,&bounds)&&!std::memcmp(&actual,&expected,sizeof actual)&&!backend.bufferQueries);
+    }
+    for(unsigned invalid=0;invalid<5;++invalid){auto bad=bounds;float nearest=0;const auto before=backend.bufferQueries;
+        if(invalid==0)bad.owner=&up;if(invalid==1)bad.shader=nullptr;if(invalid==2)bad.known=false;if(invalid==3)bad.low[2]=NAN;if(invalid==4)bad.high[2]=bad.low[2]-1;
+        assert(!g.nearestMaterialDepth(shader,buffered,nearest,true,&bad)&&backend.bufferQueries>before);
+    }
+    DisplacementStateTestAccess::rangeProgram(g,shader,true);float nearest=0;assert(!g.nearestMaterialDepth(shader,buffered,nearest,true,&bounds));
+    std::puts("CAPTURED_POSITION_BOUNDS_PASS exact_current_transform thresholds_8_16_48 no_buffer_queries current_draw_shader_validity finite_bounds skin_fallback");
+}
 struct SplitDeclaration:Declaration {
     HRESULT STDMETHODCALLTYPE GetDeclaration(D3DVERTEXELEMENT9* out,UINT* count)override{
         if(*count<3)return D3DERR_INVALIDCALL;const D3DVERTEXELEMENT9 e[]={{0,0,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_POSITION,0},{1,0,D3DDECLTYPE_D3DCOLOR,0,D3DDECLUSAGE_COLOR,0},D3DDECL_END()};std::memcpy(out,e,sizeof e);*count=3;return D3D_OK;
@@ -530,6 +553,7 @@ int main(){
     DisplacementStateTestAccess::primitiveLimit();
     DisplacementStateTestAccess::posed();
     DisplacementStateTestAccess::kernels();
+    capturedPositionBounds();
     {SplitDeclaration decl;DisplacementStateTestAccess::positionOnly(&decl);}
     {RangeBackend backend;NorthlightAutoDisplacement g(&backend);auto* shader=reinterpret_cast<IDirect3DVertexShader9*>(uintptr_t(1));
      DisplacementStateTestAccess::rangeProgram(g,shader);
