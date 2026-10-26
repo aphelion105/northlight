@@ -808,6 +808,8 @@ float4 SourceVisibilityPS(float2 uv:TEXCOORD0):COLOR0 {
     }
     return lerp(current,previous,SourceInfo.y).xxxx;
 }
+sampler2D FogHeightBounds : register(s12); // footprint min/max ground, max layer height, validity
+float4 FogHeightControl : register(c65); // w: uploaded bounds match the regional texture
 float4 WorldFog(float2 uv:TEXCOORD0):COLOR0 {
     if(FogInfo.x<.5)return float4(0,0,0,1);
     uv=depthUV(uv);
@@ -858,6 +860,15 @@ float4 WorldFog(float2 uv:TEXCOORD0):COLOR0 {
         float stepSize=end-start;
         float3 p=Camera.xyz+ray*((start+end)*.5);
         float2 fieldUV=(p.xy-RegionalFogInfo.xy)*RegionalFogInfo.z+.5/64;
+        float heightValid=1;
+        [branch]if(FogHeightControl.w>0){
+            float2 node=(floor(fieldUV*64-.5)+.5)/64;
+            float4 extent=tex2Dlod(FogHeightBounds,float4(node,0,0));
+            float top=extent.y+max(extent.z,max(6,max(VolumeAir.z,VolumeAir.w)));
+            // Unknown metadata fails open; the margin retains float rounding at the boundary.
+            heightValid=extent.w<0||(extent.w>0&&p.z>=extent.x-.25&&p.z<=top+.25)?1:0;
+        }
+        [branch]if(heightValid>0){
         float coverage;
         float4 field=regionalFogAt(fieldUV,coverage);
         float altitude=p.z-field.x;
@@ -899,6 +910,7 @@ float4 WorldFog(float2 uv:TEXCOORD0):COLOR0 {
                 if(dot(sunSource,1)>0)directWeight+=transmittance*absorb*(fogShadowProjected(shadowOrigin+shadowRay*((start+end)*.5))*heightFade);
                 transmittance*=1-absorb;
             }
+        }
         }
     }
     float3 directScatter=sunSource*directWeight;

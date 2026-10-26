@@ -250,12 +250,12 @@ def main():
             if args.phase == 'benchmark':
                 quality = [row for row in report['checks']
                            if row['backend']['sha256'] == backend_info['sha256'] and row['shader'] == entry]
-                require(report.get('check_complete') and len(quality) == 40 + 10*report['fixture']['camera_count'],
+                require(report.get('check_complete') and len(quality) == 40 + 14*report['fixture']['camera_count'],
                         'Run the complete quality check for each benchmark entry/backend first')
             if args.phase == 'check':
                 cases = [(0, scenario, bits, 0, 0, 1, False) for scenario in range(20) for bits in (16, 32)]
                 cases += [(pose, scenario, bits, 0, 0, 1, False) for pose in range(report['fixture']['camera_count'])
-                          for scenario in range(20, 25) for bits in (16, 32)]
+                          for scenario in range(20, 27) for bits in (16, 32)]
             else:
                 poses = sorted(set((0, report['fixture']['camera_count']//3, 2*report['fixture']['camera_count']//3, report['fixture']['camera_count']-1)))
                 cases = [(pose, 20, 16, 1920, 1080, 8, reverse) for pose in poses for reverse in (False, True)]
