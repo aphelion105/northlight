@@ -41,7 +41,7 @@ for field in ('pages=%zu', 'reusedPages=%zu', 'uploadedPages=%zu', 'reusedMiB=%.
 assert 'stagingMs=%lu releasedPayloadMiB=%.2f pages=%zu' in commit  # existing fields keep their order, new ones append
 # Every path that drops a pending staging cancels its claims (partial content: idle, key invalid).
 orphan = w[w.index('void releaseOrphanedPending('):w.index('void requestPayloadRebuild()')]
-failure = w[w.index('bool streamingFailure('):w.index('bool uploadRegionalFog()')]
+failure = w[w.index('bool streamingFailure('):w.index('bool uploadRegionalFog(')]
 for body in (orphan, failure):
     assert 'meshStore.cancel();' in body and body.index('meshStore.cancel();') < body.index('pendingMesh.reset();')
 release = w[w.index('void releaseGPU(bool keepMesh=false){'):]

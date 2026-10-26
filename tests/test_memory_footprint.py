@@ -20,7 +20,7 @@ assert 'M::store().tryRead(memorySnapshot)' in panel and 'now-memoryReadAt>=1000
 for forbidden in ['GetLevelDesc','GetRenderTargetData','VirtualQuery','GlobalMemoryStatusEx','accountMemory(']:assert forbidden not in panel,forbidden
 # Admission policy is not modified by diagnostic counters.
 policy=fp.src('geometry_memory.h').read_text()
-for setting in ['ProcessReserve=512*MiB','EntryHeadroom=256*MiB','InBuildHeadroom=128*MiB']:
+for setting in ['ProcessReserve=256*MiB','EntryHeadroom=256*MiB','InBuildHeadroom=128*MiB']:
     assert setting in policy
 with tempfile.TemporaryDirectory(prefix='memory-footprint-') as folder:
     exe=Path(folder)/'test.exe'

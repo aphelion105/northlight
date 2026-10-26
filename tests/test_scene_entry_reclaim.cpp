@@ -14,7 +14,7 @@ struct FakeSources {
 struct FakeLocal {unsigned resets=0;void reset(){++resets;}};
 struct FakePreparation {struct Stats{uint64_t bytes;};unsigned resets=0;void reset(){++resets;}Stats stats()const{return {resets?0u:8u*1024u*1024u};}};
 static void policy(){
-    using namespace NorthlightGeometryMemory;const auto plainEntry=buildBudget(64*MiB);assert(plainEntry.available==768*MiB&&plainEntry.largest==96*MiB);
+    using namespace NorthlightGeometryMemory;const auto plainEntry=buildBudget(64*MiB);assert(plainEntry.available==512*MiB&&plainEntry.largest==96*MiB);
     struct Request {uint64_t id=17;}r;
     for(unsigned outcome=0;outcome<7;++outcome){
         FakeSources sceneSources;FakeLocal localGeometry;FakePreparation meshPreparation;

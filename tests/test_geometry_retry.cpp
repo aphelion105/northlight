@@ -38,7 +38,7 @@ struct Stand {
         const auto r=request;
 #include "geometry_retry.inl"
         const auto budget=NorthlightGeometryMemory::buildBudget(64*NorthlightGeometryMemory::MiB);
-        NorthlightGeometryMemory::Sample memory;memory.valid=true;memory.available=723*NorthlightGeometryMemory::MiB;memory.largest=580*NorthlightGeometryMemory::MiB;
+        NorthlightGeometryMemory::Sample memory;memory.valid=true;memory.available=budget.available-45*NorthlightGeometryMemory::MiB;memory.largest=580*NorthlightGeometryMemory::MiB;
         assert(!NorthlightGeometryMemory::admits(memory,budget));
         deferBuild("build-deferred",memory,delay,&budget);assert(retry);
     }

@@ -18,11 +18,9 @@ struct WorldScreenEffectsTest {
         w.effects.gi=true;w.effects.shadows=true;
         auto field=std::make_shared<NorthlightRegionalFog::Field>();field->originX=field->originY=-256;field->fogCells=field->airCells=4096;
         for(auto& t:field->texels){t.ground=-2;t.day=.015f;t.height=2.5f;}
-        w.uploadedFogField=field;w.uploadedFogMap=w.lastRequest.map;
-        assert(SUCCEEDED(w.d->CreateTexture(64,64,1,0,D3DFMT_A32B32G32R32F,D3DPOOL_MANAGED,&w.regionalFogTexture,nullptr)));
-        D3DLOCKED_RECT lock{};assert(SUCCEEDED(w.regionalFogTexture->LockRect(0,&lock,nullptr,0)));
-        for(unsigned y=0;y<64;++y)std::memcpy(static_cast<char*>(lock.pBits)+y*lock.Pitch,field->texels.data()+y*64,64*sizeof(NorthlightRegionalFog::Texel));
-        assert(SUCCEEDED(w.regionalFogTexture->UnlockRect(0)));
+        auto region=std::make_shared<WorldRenderer::FogRegion>();region->map=w.lastRequest.map;region->center={0,0,0};region->field=field;
+        {std::lock_guard<std::mutex> lock(w.mutex);w.publishedFogRegion=std::move(region);}
+        assert(!w.uploadedFogField&&!w.regionalFogTexture); // render() must upload without an active BVH
         assert(!w.ready()&&w.screenReady()&&!w.active&&!w.vertices&&!w.indices);
     }
     static void consumers(WorldRenderer& w){
@@ -42,6 +40,17 @@ struct WorldScreenEffectsTest {
     static void fog(WorldRenderer& w,bool on){w.effects.fog=on;w.fogHistoryValid=false;}
     static bool composed(const WorldRenderer& w){return w.composited&&!w.shadowsComposited&&!w.shadowFrameReady;}
     static void scratch(const WorldRenderer& w,bool expected){assert(bool(w.color)==expected&&bool(w.colorSurface)==expected);}
+    static void direct(WorldRenderer& w,bool on){w.sourceColors[0]=on?WorldRenderer::V(.6f,.5f,.4f):WorldRenderer::V();w.sourceColors[1]={};}
+    static void resetResources(WorldRenderer& w){w.releaseGPU(true);assert(w.publishedFogRegion&&!w.uploadedFogField&&!w.active);}
+    static std::vector<unsigned char> fogImage(WorldRenderer& w){
+        assert(w.uploadedFogField==w.publishedFogRegion->field&&!w.active&&!w.fogGeometryReady);
+        D3DSURFACE_DESC desc{};assert(SUCCEEDED(w.fogSurface->GetDesc(&desc)));
+        IDirect3DSurface9* read=nullptr;assert(SUCCEEDED(w.d->CreateOffscreenPlainSurface(desc.Width,desc.Height,desc.Format,D3DPOOL_SYSTEMMEM,&read,nullptr)));
+        assert(SUCCEEDED(w.d->GetRenderTargetData(w.fogSurface,read)));D3DLOCKED_RECT lock{};assert(SUCCEEDED(read->LockRect(&lock,nullptr,D3DLOCK_READONLY)));
+        std::vector<unsigned char> image(size_t(desc.Width)*desc.Height*8);
+        for(unsigned y=0;y<desc.Height;++y)std::memcpy(image.data()+size_t(y)*desc.Width*8,static_cast<const char*>(lock.pBits)+y*lock.Pitch,desc.Width*8);
+        assert(SUCCEEDED(read->UnlockRect()));read->Release();return image;
+    }
 };
 struct WorldScratchMeter:ForwardIDirect3DDevice9 {
     unsigned width,height,creates=0;
@@ -99,6 +108,19 @@ int main(int argc,char** argv){
             WorldScreenEffectsTest::scratch(*world,!folded);assert(meter.creates==2);
         }
         std::puts("WORLD_SCRATCH_PASS folded_off=0 materials_on=1 invisible_reused=1 legacy_on=1 retired_on_disable=1");
+        std::vector<unsigned char> ambientOnly[2];
+        for(unsigned direct=0;direct<2;++direct){
+            if(direct)WorldScreenEffectsTest::resetResources(*world);
+            WorldScreenEffectsTest::direct(*world,direct!=0);WorldScreenEffectsTest::fog(*world,true);
+            screenOk(d->SetRenderTarget(0,out));
+            assert(world->render(out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao));
+            ambientOnly[direct]=WorldScreenEffectsTest::fogImage(*world);
+        }
+        assert(ambientOnly[0]==ambientOnly[1]); // missing shadow geometry disables direct shafts, never ambient extinction
+        float maximumScatter=0,minimumTransmission=1;
+        for(size_t pixel=0;pixel<ambientOnly[0].size()/8;++pixel)for(unsigned channel=0;channel<4;++channel){unsigned short bits;std::memcpy(&bits,ambientOnly[0].data()+pixel*8+channel*2,2);const float value=screenHalf(bits);assert(std::isfinite(value)&&value>=0);if(channel<3)maximumScatter=std::max(maximumScatter,value);else minimumTransmission=std::min(minimumTransmission,value);}
+        assert(maximumScatter>.00001f&&minimumTransmission<.999f);
+        std::printf("WORLD_AMBIENT_FOG_PASS noBvh=1 independentUpload=1 resetRestored=1 sunZero=1 moonZero=1 scatter=%g transmission=%g unshadowedDirectDisabled=1 msaa=%u\n",maximumScatter,minimumTransmission,msaa);
     }
     float bump=0,fog=0;for(unsigned i=0;i<W*H*3;++i){bump=std::max(bump,std::abs(images[1][i]-images[0][i]));fog=std::max(fog,std::abs(images[2][i]-images[0][i]));}
     std::printf("WORLD_SCREEN_GPU bumpDelta=%g fogDelta=%g noGeometry=1 noStaleShadows=1 stateRestored=1 msaa=%u\n",bump,fog,msaa);std::fflush(stdout);assert(bump>.002f&&fog>.002f);

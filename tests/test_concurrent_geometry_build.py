@@ -43,6 +43,7 @@ request=source[source.index('    struct Request {'):]
 request=request[:request.index('\n')]
 palette=source[source.index('    struct PaletteRegion {'):]
 palette=palette[:palette.index('\n')]
+fog_region=source[source.index('    struct FogRegion {'):];fog_region=fog_region[:fog_region.index('\n')]
 orphaned=source[source.index('    template<class Pending,class Active> static bool pendingOrphaned('):]
 orphaned=orphaned[:orphaned.index('\n')] # 0.3.156 production release rule
 fixture=r'''
@@ -88,8 +89,10 @@ static bool SetThreadPriority(int,int){return true;}
 #endif
 static std::mutex logMutex;static std::vector<std::string> logLines;
 template<class... T> static void logf(const char* format,T... values){char line[2048];std::snprintf(line,sizeof line,format,values...);std::lock_guard<std::mutex> lock(logMutex);logLines.emplace_back(line);}
-namespace NorthlightRegionalFog {struct Field {};struct Tile {std::vector<int> water,indoors;};struct Region {std::vector<Tile> tiles;};constexpr double WorldZero=17066.6666667,TileSize=533.3333333;
- inline Region loadRegion(const std::string&,const std::string&,float,float){return {};}}
+namespace NorthlightRegionalFog {struct Field {unsigned groundCells=0,airCells=0,fogCells=0;};struct Tile {std::vector<int> water,indoors;};struct Region {std::vector<Tile> tiles;};constexpr double WorldZero=17066.6666667,TileSize=533.3333333;constexpr float RefreshDistance=64;
+ using ZoneScale=std::function<void(uint32_t,float&,float&)>;
+ inline Region loadRegion(const std::string&,const std::string&,float,float){return {};}
+ inline bool buildCachedField(const std::string&,const std::string&,V,const Region&,Field&,std::string&,const NorthlightGI::AllocationAdmission&,const NorthlightGI::SceneSourceProvider&,const ZoneScale*){return false;}}
 namespace NorthlightMemMap {inline std::atomic<bool> deferredRequest{false};}
 namespace NorthlightLocalLights {struct Light {};struct Cache {explicit Cache(const std::string&){}};}
 namespace NorthlightActorGeometry {struct Result {std::shared_ptr<const NorthlightGI::WorldScene> scene;uint64_t hash=0;unsigned texturesDecoded=0;size_t textureEncodedBytes=0;double decodeMs=0,geometryMs=0,hashMs=0;};
@@ -109,6 +112,7 @@ struct Fixture {
 SNAPSHOT
 REQUEST
 PALETTE
+FOG_REGION
 ORPHANED
  NorthlightGeometryMemory::StallWatch generationStall;
  NorthlightQuality::Settings quality;std::string root="fixture/";
@@ -116,6 +120,7 @@ ORPHANED
  std::mutex mutex;std::condition_variable wake;Request request;bool stopping=false,pending=false,geometryRebuild=false;
  std::atomic<bool> workerBusy{false},workerMemoryTrim{false},giMemoryTrim{false};std::atomic<unsigned> workerFaultCode{0},geometryBuildEstimateMs{1000};std::atomic<uint64_t> geometryMemoryDemand{0};
  std::shared_ptr<Snapshot> published;std::shared_ptr<const PaletteRegion> publishedPaletteRegion;
+ std::shared_ptr<const FogRegion> publishedFogRegion;
  // Fixture build controls and observations (guarded by mutex unless atomic).
  std::atomic<unsigned> fixtureBuildMs{60},fixtureDefers{0};std::atomic<bool> fixtureThrow{false},fixtureFail{false};
  // Issue #40: maps without world-cache tiles; cacheChecks counts the builder's per-entry probes.
@@ -348,7 +353,7 @@ int main(){
   assert(entries==2&&ends==2); /* the end line is logged when the map changes back */std::puts("uncached map: one probe and one error snapshot per entry, camera moves start no build, continent builds again");}
  std::puts("PASS concurrent geometry build: moves solved on the previous generation during builds; settled atlas bit-identical to a sequential final-generation solve; still-camera deferral; stop mid-build; builder and worker faults join; map change, build failure and stale adoption during builds; orphaned staged upload released (0.3.156); same-map teleports recover with a still camera; 0.3.169 120/150 hold adopts without a stall; lead region idles without spinning");
 }
-'''.replace('SNAPSHOT',snapshot).replace('REQUEST',request).replace('PALETTE',palette).replace('ORPHANED',orphaned).replace('WORK',work)
+'''.replace('SNAPSHOT',snapshot).replace('REQUEST',request).replace('PALETTE',palette).replace('FOG_REGION',fog_region).replace('ORPHANED',orphaned).replace('WORK',work)
 windows=os.name=='nt'
 report={'status':'pass','game_launched':False,'platform':sys.platform,'sanitizers':not windows,'runs':[],'sha256':{n:hashlib.sha256(fp.tracked(n).read_bytes()).hexdigest() for n in ['world_renderer.h','world_probe_progress.h','world_probe_cache.h','gi_solve_pool.h','world_gi.h','world_gi.cpp','world_mesh_plan.h','world_mesh_plan.cpp','scene_source_cache.h','test_concurrent_geometry_build.py']}}
 modes=([('O2',['-O2']),('debug',['-O0','-g'])] if windows else

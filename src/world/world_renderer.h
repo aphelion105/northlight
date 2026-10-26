@@ -20,6 +20,7 @@
 #include "twilight_fill.h"
 #include "night_floor.h"
 #include "regional_fog.h"
+#include "regional_fog_cache.h"
 #include "regional_shadow_range.h"
 #include "celestial_profiles.h"
 #if NORTHLIGHT_DEV_TUNING
@@ -211,7 +212,7 @@ class WorldRenderer {
     };
     // probeCenter (0.3.153 GIProbeAhead): probe window origin, solve order and move trigger; geometryCenter (0.3.169 lead):
     // the region build centre and its refresh trigger; camera (eye) for everything else, including every coverage check.
-    struct Request { std::shared_ptr<const NorthlightActorGeometry::ActorJob> actorJob;uint64_t actorSerial=0; V camera,probeCenter,geometryCenter; NorthlightGI::Lighting light; std::string map; uint64_t id=0,baseId=0;DWORD queuedAt=0;unsigned reason=0;bool giEnabled=true; };
+    struct Request { std::shared_ptr<const NorthlightActorGeometry::ActorJob> actorJob;uint64_t actorSerial=0; V camera,probeCenter,geometryCenter; NorthlightGI::Lighting light; std::string map; uint64_t id=0,baseId=0;DWORD queuedAt=0;unsigned reason=0;bool giEnabled=true,fogEnabled=true; };
     IDirect3DDevice9* d;
     NorthlightMaterialPixelAudit materialPixelAudit{d};
     std::string root;
@@ -345,6 +346,7 @@ private:
     IDirect3DTexture9* rainMask=nullptr; // 0.3.202 (rain): the proxy's rain streak alpha mask (non-owning, set per frame, cleared after the composite)
     IDirect3DTexture9* neutralAO=nullptr; // 0.3.174: 1x1 (0,0,0,1) on s10 when the proxy does not fold its AO/bloom
     std::shared_ptr<const NorthlightRegionalFog::Field> uploadedFogField;std::string uploadedFogMap;
+    bool fogGeometryReady=false;
     NorthlightWorldContext::TerrainContext context;
     NorthlightCelestial::Context celestial,celestialLight;
     unsigned celestialOrbitReports=0;
@@ -423,6 +425,8 @@ private:
 #endif
     struct PaletteRegion {std::string map;NorthlightRegionalFog::Region region;int tx=0,ty=0;};
     std::shared_ptr<const PaletteRegion> publishedPaletteRegion; // guarded by mutex
+    struct FogRegion {std::string map;V center;std::shared_ptr<const NorthlightRegionalFog::Field> field;uint64_t requestId=0;};
+    std::shared_ptr<const FogRegion> publishedFogRegion; // guarded by mutex; no BVH/upload ownership
     bool celestialValid=false,shadowFrameReady=false;float authoredFill=1;
     // 0.3.200: the last good celestial read (see updateWorldContext), held across single rejected reads.
     static constexpr DWORD CelestialHoldMs=500;NorthlightCelestial::Context celestialHeld;std::string celestialHeldMap;DWORD celestialHeldAt=0;bool celestialHeldOk=false;unsigned long celestialHolds=0;
@@ -1347,6 +1351,10 @@ private:
               return result;
           };
           DWORD memoryReportAt=0,memoryFootprintReportAt=0;
+          DWORD fogAttemptAt=0;std::string fogAttemptMap;
+#if NORTHLIGHT_DEV_TUNING
+          std::shared_ptr<const NorthlightZoneTuning::Overrides> fogTuning;
+#endif
           NorthlightTerrainReach::State reachState;NorthlightGI::SceneSizeHint terrainSizeHint; /* terrain scene counts of the last build; keyed by reach, reset per map */NorthlightTerrainReach::Episode memoryStall;
           NorthlightGeometryMemory::EntryLift entryLift;
           std::string entryLiftMap;V entryLiftCenter;
@@ -1382,6 +1390,7 @@ private:
             Request r;
             {std::unique_lock<std::mutex> lock(mutex);buildWake.wait(lock,[&]{return stopping||builderExit||retry||geometryWanted||request.id!=seen;});
              if(stopping||builderExit)return;r=request;seen=r.id;retry=false;wanted=wanted||geometryWanted;geometryWanted=false;}
+            profileBuildActive=false;
             if(workerMemoryTrim.exchange(false,std::memory_order_relaxed))resetPreparation(); /* the entry lift stays: it is a floor on measured free memory, so what a trim freed already counts */
             if(preparationMap!=r.map){resetPreparation();preparationMap=r.map;}
             // Publish small authored zone data before expensive geometry work.
@@ -1396,6 +1405,48 @@ private:
                 paletteRegion=next;
                 {std::lock_guard<std::mutex> lock(mutex);publishedPaletteRegion=next;}
             }
+            std::shared_ptr<const FogRegion> fogRegion;
+            {std::lock_guard<std::mutex> lock(mutex);fogRegion=publishedFogRegion;}
+#if NORTHLIGHT_DEV_TUNING
+            const auto requestedFogTuning=devSnapshot();
+            const bool fogTuningChanged=requestedFogTuning!=fogTuning;
+#else
+            const bool fogTuningChanged=false;
+#endif
+            // BEGIN FOG FIELD BUILD: independent of GI/shadow entry admission.
+            const bool fogNeeded=r.fogEnabled&&!paletteRegion->region.tiles.empty()&&
+                (!fogRegion||fogRegion->map!=r.map||fogTuningChanged||!NorthlightWorldStreaming::within(fogRegion->center,r.camera,NorthlightRegionalFog::RefreshDistance));
+            const DWORD fogNow=GetTickCount();
+            if(fogNeeded&&(fogAttemptMap!=r.map||!fogAttemptAt||fogNow-fogAttemptAt>=1000)){
+                fogAttemptMap=r.map;fogAttemptAt=fogNow;
+                const auto fogStart=std::chrono::steady_clock::now();
+                bool fogDeferred=false;const auto fogBudget=NorthlightGeometryMemory::inBuildBudget();
+                auto fogMemory=workerMemory(fogBudget);
+                NorthlightGI::AllocationAdmission fogAdmission=[&](uint64_t bytes){
+                    if(bytes<NorthlightGeometryMemory::MiB)return true;
+                    const auto budget=NorthlightGeometryMemory::inBuildBudget(bytes);fogMemory=workerMemory(budget);
+                    if(NorthlightGeometryMemory::admits(fogMemory,budget))return true;fogDeferred=true;return false;
+                };
+                std::string fogError;
+                try{
+                    auto field=std::make_shared<NorthlightRegionalFog::Field>();
+                    const NorthlightRegionalFog::ZoneScale* scale=nullptr;
+#if NORTHLIGHT_DEV_TUNING
+                    const NorthlightRegionalFog::ZoneScale zoneScale=[&](uint32_t zone,float& day,float& nightExtra){NorthlightZoneTuning::fogScale(*requestedFogTuning,r.map,zone,day,nightExtra);};scale=&zoneScale;
+#endif
+                    if(NorthlightGeometryMemory::admits(fogMemory,fogBudget)&&NorthlightRegionalFog::buildCachedField(root+"world-cache",r.map,r.camera,paletteRegion->region,*field,fogError,fogAdmission,sceneSource,scale)){
+                        auto next=std::make_shared<FogRegion>();next->map=r.map;next->center=r.camera;next->field=std::move(field);next->requestId=r.id;
+                        bool accepted=false;
+                        {std::lock_guard<std::mutex> lock(mutex);if(request.map==r.map&&NorthlightWorldStreaming::within(next->center,request.camera,NorthlightRegionalFog::RefreshDistance)){publishedFogRegion=next;fogRegion=std::move(next);accepted=true;}}
+#if NORTHLIGHT_DEV_TUNING
+                        if(accepted)fogTuning=requestedFogTuning;
+#endif
+                        if(!accepted)fogAttemptAt=0;
+                        if(accepted&&NorthlightDiagnostics::enabled())logf("FOG FIELD ready map=\"%s\" request=%llu ground=%u air=%u fog=%u cpuKiB=%zu buildMs=%.3f bvhRequired=0 meshRequired=0",r.map.c_str(),(unsigned long long)r.id,fogRegion->field->groundCells,fogRegion->field->airCells,fogRegion->field->fogCells,sizeof(NorthlightRegionalFog::Field)/1024,std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-fogStart).count());
+                    }else if(NorthlightDiagnostics::enabled())logf("FOG FIELD deferred map=\"%s\" request=%llu memory=%u availableMiB=%llu requiredMiB=%llu reason=%s",r.map.c_str(),(unsigned long long)r.id,unsigned(fogDeferred||!NorthlightGeometryMemory::admits(fogMemory,fogBudget)),(unsigned long long)(fogMemory.available>>20),(unsigned long long)(fogBudget.available>>20),fogError.c_str());
+                }catch(const std::bad_alloc&){logf("FOG FIELD deferred map=\"%s\" reason=allocation; previous field retained",r.map.c_str());}
+            }
+            // END FOG FIELD BUILD
             if(!wanted&&builtValid&&!NorthlightWorldStreaming::needsGeometry(builtMap,builtCenter,r.map,r.geometryCenter))continue;
             builtValid=false;
             auto result=std::make_shared<Snapshot>();result->map=r.map;result->center=r.geometryCenter;
@@ -1419,6 +1470,7 @@ private:
                 if(pendingPlan)pendingPlan->accountMemory(memory);
                 if(plan)plan->accountMemory(memory);if(scratch)scratch->accountMemory(memory);if(pages)pages->accountMemory(memory);
                 if(paletteRegion){memory.vector(Fog,paletteRegion->region.tiles);for(const auto& tile:paletteRegion->region.tiles){memory.vector(Fog,tile.water);memory.vector(Fog,tile.indoors);}}
+                if(fogRegion&&fogRegion->field)memory.allocation(Fog,fogRegion->field.get(),sizeof(*fogRegion->field));
                 maximumObservedCapacity=std::max(maximumObservedCapacity,memory.total());
                 logCpuFootprint("builder-reachable",stage,r.id,memory);
                 const auto entryBudget=entryLift.apply(NorthlightGeometryMemory::buildBudget(64*NorthlightGeometryMemory::MiB),GetTickCount());
@@ -1564,7 +1616,7 @@ private:
                 if(!currentGeometry()){++superseded;abandonGeometry();continue;}
                 // The local BVH and its cache are this build's own memory: entry reserved their headroom,
                 // so this gate keeps the in-build floor. The entry floor here refused every attempt that
-                // entered within one BVH of 768 MiB and rebuilt it each second (0.3.212 player log).
+                // entered within one BVH of the configured entry floor and rebuilt it each second (0.3.212 player log).
                 const auto planBudget=NorthlightGeometryMemory::inBuildBudget();
                 memory=workerMemory(planBudget);if(NorthlightDiagnostics::enabled())logGeometryMemory("after-bvh",memory,generations.live(),workerMemoryExact,&planBudget);
                 profileMemory("after-bvh");
@@ -1582,7 +1634,7 @@ private:
                 bool terrainDeferred=false;NorthlightGeometryMemory::Sample terrainSample;uint64_t terrainLargest=0,terrainRequired=0,terrainRequiredLargest=0;unsigned terrainChecks=0;
                 NorthlightGI::AllocationAdmission terrainAdmission=[&](uint64_t bytes){
                     terrainLargest=std::max(terrainLargest,bytes);
-                    // Small metadata cannot fragment a large block. Stage entry passed buildBudget (768 MiB);
+                    // Small metadata cannot fragment a large block. Stage entry passed buildBudget (512 MiB);
                     // every large growth inside the stage is checked against inBuildBudget.
                     if(bytes<NorthlightGeometryMemory::MiB)return true;
                     ++terrainChecks;
@@ -1697,14 +1749,7 @@ private:
                 if(lightCache.loadLights(r.map,eye,520,built->rawLights))for(auto& light:built->rawLights)
                     built->lights.push_back({vec(light.position),vec(light.diffuse)*3.14159265f,light.attenuationStart,light.attenuationEnd});
                 if(NorthlightDiagnostics::enabled())logf("GI local lights map=\"%s\" count=%zu (indirect only; authored direct light retained)",r.map.c_str(),built->lights.size());
-                const auto& region=paletteRegion->region;
-                const NorthlightRegionalFog::ZoneScale* fogScale=nullptr;
-#if NORTHLIGHT_DEV_TUNING
-                const NorthlightRegionalFog::ZoneScale devFogScale=[&](uint32_t zone,float& day,float& nightExtra){NorthlightZoneTuning::fogScale(*tuning,r.map,zone,day,nightExtra);};
-                fogScale=&devFogScale;
-#endif
-                built->fog=std::make_shared<NorthlightRegionalFog::Field>(NorthlightRegionalFog::buildField(replacement->scene(),region,center.x,center.y,fogScale));
-                if(NorthlightDiagnostics::enabled())logf("REGIONAL FOG map=\"%s\" tiles=%zu missing=%u groundCells=%u fogCells=%u airCells=%u indoorCells=%u citySurfaceCells=%u",r.map.c_str(),region.tiles.size(),region.missing,built->fog->groundCells,built->fog->fogCells,built->fog->airCells,built->fog->indoorCells,built->fog->citySurfaceCells);
+                built->fog=fogRegion&&fogRegion->map==r.map?fogRegion->field:nullptr;
                 const double environmentMs=phaseElapsed();const auto& memoryAfter=workerAdmissionProbe.stats();
                 if(NorthlightDiagnostics::enabled()){
                     const auto& sources=sceneSources.stats();const auto& preparation=meshPreparation.stats();
@@ -2158,17 +2203,17 @@ private:
         retirePendingCpu();pendingMesh.reset();meshRetry.fail(GetTickCount());
         return vertices&&indices&&active&&uploadedMap==active->map;
     }
-    bool uploadRegionalFog(){
-        if(uploadedFogField==active->fogField)return true;
+    bool uploadRegionalFog(const std::shared_ptr<const NorthlightRegionalFog::Field>& field,const std::string& map){
+        if(uploadedFogField==field&&uploadedFogMap==map)return true;
         fogHeightReady=false;
-        if(!active->fogField){uploadedFogField.reset();return true;}
+        if(!field){uploadedFogField.reset();uploadedFogMap=map;return true;}
         constexpr unsigned n=NorthlightRegionalFog::N;
         if(!regionalFogTexture&&!check(d->CreateTexture(n,n,1,0,D3DFMT_A32B32G32R32F,D3DPOOL_MANAGED,&regionalFogTexture,nullptr),"regional fog field"))return false;
         D3DLOCKED_RECT lock={};if(!check(regionalFogTexture->LockRect(0,&lock,nullptr,0),"regional fog lock"))return false;
         if(!lock.pBits||lock.Pitch<INT(n*sizeof(NorthlightRegionalFog::Texel))){regionalFogTexture->UnlockRect(0);return check(E_FAIL,"regional fog layout");}
-        for(unsigned y=0;y<n;++y)memcpy(static_cast<char*>(lock.pBits)+y*lock.Pitch,active->fogField->texels.data()+y*n,n*sizeof(NorthlightRegionalFog::Texel));
+        for(unsigned y=0;y<n;++y)memcpy(static_cast<char*>(lock.pBits)+y*lock.Pitch,field->texels.data()+y*n,n*sizeof(NorthlightRegionalFog::Texel));
         if(!check(regionalFogTexture->UnlockRect(0),"regional fog unlock"))return false;
-        uploadedFogField=active->fogField;uploadedFogMap=active->map;
+        uploadedFogField=field;uploadedFogMap=map;
         // Optional acceleration metadata: allocation/lock failure keeps the full march.
         if(!fogHeightTexture&&FAILED(d->CreateTexture(n,n,1,0,D3DFMT_A32B32G32R32F,D3DPOOL_MANAGED,&fogHeightTexture,nullptr))){drop(fogHeightTexture);return true;}
         D3DLOCKED_RECT bounds={};
@@ -2182,7 +2227,6 @@ private:
     bool frameStaging=false,frameProbeUpload=false; /* 0.3.176 (D3): this frame staged world mesh pages / uploaded the probe atlas */
     bool upload(NorthlightStreaming::Budget& streamBudget){
         retiredMaterials.drain(streamBudget);
-        if(!uploadRegionalFog())return false;
         static_assert(sizeof(NorthlightGI::WorldVertex)==32,"FGS vertex layout");
         releaseOrphanedPending("upload");
         if(uploaded.lock()!=active->bvh&&!pendingMesh&&streamBudget.available()){
@@ -2565,6 +2609,7 @@ public:
             shadowsComposited=false;shadowFrameReady=false;pointReady=false;
             neutralShadowMaps=false;invalidateShadowCache();
         }
+        settingsRequestDirty=settingsRequestDirty||effects.fog!=next.fog;
         effects=next;
     }
     void reset(){weatherShelter.reset();weatherShelterUnavailable=false;equipmentLights.reset();equipmentMap.clear();particleLights.reset();particleMap.clear();shadowsComposited=false;pivotValid=false;pivotDistance=12.f;pivotCorrection.reset();pivotSelfCaptured=false;cascadeAnchor.reset();endFrame();replaySnapshots.clearIndexCache();actorJobComplete.reset();actorJobSerial_=0;actorSceneMap_.clear();lastActorCapture=0;terrainBoundsCache.clearPersistent();previousCacheHits=0;freeReplays.clear();pooledSnapshotBytes=0;valid=false;failed=false;releaseGPU(true); /* task 42: the committed MANAGED mesh survives any Reset, failed or not */}
@@ -2742,6 +2787,12 @@ public:
         sample.captureCpu=NorthlightSourceIdentity::cpuLiveBytes.load(std::memory_order_relaxed);sample.captureIdentity=NorthlightSourceIdentity::identityLiveBytes.load(std::memory_order_relaxed);NorthlightMemoryProfile::store().gpu(sample);
         logf("WORLD MEMORY cache-ledgers staticManagedMiB=%.3f replayDefaultMiB=%.3f liveTerrainDefaultMiB=%.3f captureCpuUniqueMiB=%.3f captureIdentityUniqueMiB=%.3f extraGpuPoolsExcludedFromWorldInventory=1 backingAndResidencyNotMeasured=1",
              double(sample.staticManagedLedger)/1048576,double(sample.replayDefaultLedger)/1048576,double(sample.liveTerrainDefault)/1048576,double(sample.captureCpu)/1048576,double(sample.captureIdentity)/1048576);
+        float layer=0,aboveGround=0;bool inside=false;
+        if(uploadedFogField){const auto& field=*uploadedFogField;const float x=(context.camera[0]-field.originX)/NorthlightRegionalFog::Spacing,y=(context.camera[1]-field.originY)/NorthlightRegionalFog::Spacing;
+            inside=x>=0&&y>=0&&x<NorthlightRegionalFog::N-1&&y<NorthlightRegionalFog::N-1;
+            if(inside){const auto& cell=field.texels[unsigned(y)*NorthlightRegionalFog::N+unsigned(x)];layer=cell.height;aboveGround=context.camera[2]-cell.ground;}}
+        logf("FOG STATE enabled=%u field=%u cameraInField=%u layerTag=%.4f aboveGround=%.2f groundCells=%u airCells=%u geometry=%u sunSource=%u moonSource=%u ambient=%.4f,%.4f,%.4f map=\"%s\" fieldMap=\"%s\" independentField=1",
+             unsigned(effects.fog),unsigned(uploadedFogField!=nullptr),unsigned(inside),layer,aboveGround,uploadedFogField?uploadedFogField->groundCells:0,uploadedFogField?uploadedFogField->airCells:0,unsigned(fogGeometryReady),unsigned(NorthlightGI::dot(sourceColors[0],sourceColors[0])>1e-10f),unsigned(NorthlightGI::dot(sourceColors[1],sourceColors[1])>1e-10f),context.ambient[0],context.ambient[1],context.ambient[2],lastRequest.map.c_str(),uploadedFogMap.c_str());
         logf("WORLD MEMORY resources scope=world-owned knownManagedLogicalMiB=%.3f knownDefaultLogicalMiB=%.3f knownSystemLogicalMiB=%.3f geometryMiB=%.3f probeTextureMiB=%.3f shadowMapMiB=%.3f postTargetMiB=%.3f noiseMiB=%.3f dynamicMiB=%.3f retiredMaterialLedgerMiB=%.3f materialReuseCpuMiB=%.3f complete=%u unknown=%u inventoryMs=%.3f basis=logical-resource-size residentVramMeasured=0 managedSystemBackingMeasured=0 driverPaddingAndRenameCopiesExcluded=1 staticAndReplayCachesReportedSeparately=1",
              double(inventory.pools[D3DPOOL_MANAGED])/1048576,double(inventory.pools[D3DPOOL_DEFAULT])/1048576,double(inventory.pools[D3DPOOL_SYSTEMMEM])/1048576,
              double(inventory.groups[Geometry])/1048576,double(inventory.groups[ProbeTextures])/1048576,double(inventory.groups[ShadowMaps])/1048576,double(inventory.groups[PostTargets])/1048576,double(inventory.groups[Noise])/1048576,double(inventory.groups[Dynamic])/1048576,
@@ -3058,7 +3109,7 @@ public:
         for(unsigned source=0;source<2;++source){rawSourceDirections[source]=resolvedSources.sources[source].direction;sourceDirections[source]=continuousCelestialShadows?resolvedSources.sources[source].direction:NorthlightWorldMath::quantizeDirection(resolvedSources.sources[source].direction,float(quality.shadowDirectionSteps));sourceColors[source]=resolvedSources.sources[source].color;sourceGlowColors[source]=sourceColors[source];sourceWeights[source]=resolvedSources.sources[source].weight;}
         if(celestialValid){sourceGlowColors[0]=vec(celestialLight.sunGlowColor);sourceGlowColors[1]=vec(celestialLight.moonGlowColor);}
         requestStaticCasters(map);
-        Request r;r.map=map;r.camera=vec(camera);r.light.sunDirection=sourceDirections[0];r.light.sunIrradiance=sourceColors[0]*3.14159265f;r.light.skyRadiance=vec(context.ambient);r.light.maxBounces=quality.giBounces;r.giEnabled=quality.gi!=0;
+        Request r;r.map=map;r.camera=vec(camera);r.light.sunDirection=sourceDirections[0];r.light.sunIrradiance=sourceColors[0]*3.14159265f;r.light.skyRadiance=vec(context.ambient);r.light.maxBounces=quality.giBounces;r.giEnabled=quality.gi!=0;r.fogEnabled=effects.fog;
         r.light.additionalDirections.push_back({sourceDirections[1],sourceColors[1]*3.14159265f});
         // 0.3.153 GIProbeAhead: centre the probe window ahead of the eye along the horizontal
         // view direction (the third-person camera sits behind the character). 0 = the eye.
@@ -3904,7 +3955,7 @@ public:
         const bool cloudCandidate=cf.active&&effects.fog&&debug==0&&fogCloudsPS;
         const uint8_t* cloudData=cloudCandidate?fogCloudNoise().data.data():nullptr;
         a.veil[0]=a.veil[1]=1;a.spellValid=false;
-        if(effects.fog&&active&&uploadedFogField){
+        if(effects.fog&&uploadedFogField){
             const auto& field=*uploadedFogField;const float night=c[31][3];
             // cloudy: the same sigma plus the clouds' term (the old sigma+= on an active pass), else the same sigma.
             auto sigmaAt=[&](float lx,float ly,float lz,bool clouds,float& cloudy){
@@ -4030,7 +4081,7 @@ public:
     // copy, and its AOContactBloom target (bloom rgb, AO alpha) is applied by TemporalLight's
     // removal smoothing and WorldComposite. Null: the proxy composited already (neutral s10).
     bool render(IDirect3DSurface9* targetSurface,IDirect3DTexture9* depth,UINT w,UINT h,D3DFORMAT fmt,float nearZ,float farZ,float minZ,float maxZ,int debug,NorthlightGpuProfile* profile,IDirect3DTexture9* waterMask,IDirect3DTexture9* foldScene=nullptr,IDirect3DTexture9* foldAO=nullptr,unsigned rendererFrame=0){
-        shadowsComposited=false;composited=false;lastRenderDebug=debug;gpuDiagnosticFrame=false;
+        shadowsComposited=false;composited=false;lastRenderDebug=debug;gpuDiagnosticFrame=false;fogGeometryReady=false;
         if(debug!=1)gpuDiagnosticArmed=true;
         // 0.3.169 lastSkipReason(): why this call returned false. Untagged returns below the
         // upload gate are failed device calls in the draw stages ("draw").
@@ -4065,6 +4116,7 @@ public:
         NorthlightStreaming::Budget streamBudget;
         releaseOrphanedPending("render"); /* 0.3.156: also while !ready(), when upload() never runs */
         const bool geometryReady=ready()&&resources(w,h,fmt)&&upload(streamBudget);
+        fogGeometryReady=geometryReady;
         if(!geometryReady){
             skipReason=!valid?"context":failed?"failed":workerFault()?"fault":!active?"inactive":!active->bvh?"nobvh":
                 !vertices||!indices||uploadedMap!=active->map?"mesh":"upload";
@@ -4082,7 +4134,12 @@ public:
         }else if(color&&!materialCaptureResident){stateBlocks.clear();drop(colorSurface);drop(color);}
         skipReason="state";SavedState save(d,&stateBlocks);if(!save.ok)return false;
         const std::string& frameMap=lastRequest.map;
-        if(uploadedFogField&&uploadedFogMap!=frameMap){uploadedFogField.reset();drop(regionalFogTexture);drop(fogHeightTexture);fogHeightReady=false;}
+        std::shared_ptr<const FogRegion> fogRegion;
+        {std::lock_guard<std::mutex> lock(mutex);fogRegion=publishedFogRegion;}
+        auto field=fogRegion&&fogRegion->map==frameMap?fogRegion->field:
+            active&&active->map==frameMap?active->fogField:std::shared_ptr<const NorthlightRegionalFog::Field>{};
+        if(!field&&uploadedFogMap==frameMap)field=uploadedFogField;
+        if(!uploadRegionalFog(field,frameMap))return false;
         bool sourceActive[2]={NorthlightGI::dot(sourceColors[0],sourceColors[0])>1e-10f,NorthlightGI::dot(sourceColors[1],sourceColors[1])>1e-10f};
         int firstSource=sourceActive[0]||!sourceActive[1]?0:1;
         unsigned culledBatches[2]={},drawnBatches[2]={};
@@ -4671,7 +4728,7 @@ public:
         }
         if(profileSampled())logf("WORLD fog clouds active=%d coverage=%.3f threshold=%.3f height=%.1f speed=%.2f dir=(%.2f %.2f) sigmaMax=%.4f lush=%.2f noiseReady=%d",cf.active?1:0,cf.coverage,cf.threshold,cf.height,cloudWind.speed,cloudWind.dir[0],cloudWind.dir[1],cf.sigmaMax,cloudLush,fogCloudNoise().ready.load(std::memory_order_acquire)?1:0);
         {   // SpellFog: the smoothed estimate for the next frame's records (identity when SpellFog is off, the fog effect is off or has no field, or a debug view is on)
-            NorthlightSpellFog::Frame raw;const bool wanted=quality.spellFog&&effects.fog&&active&&uploadedFogField&&debug==0&&atmosphere.spellValid;
+            NorthlightSpellFog::Frame raw;const bool wanted=quality.spellFog&&effects.fog&&uploadedFogField&&debug==0&&atmosphere.spellValid;
             if(wanted){raw.active=true;for(unsigned i=0;i<NorthlightSpellFog::kSamples;++i)raw.tau[i]=atmosphere.spellTau[cf.active?1:0][i];for(unsigned k=0;k<3;++k)raw.scatter[k]=std::max(context.ambient[k],0.f)*.35f;}
             const DWORD tick=GetTickCount();const float dt=spellFogTick?float(DWORD(tick-spellFogTick))*.001f:0.f;spellFogTick=tick;
             const int64_t fitStart=lightingClock?QpcClock::now():0;
@@ -4760,6 +4817,7 @@ public:
             if(volume){const float keep=underwaterFade.scale();rgb[0]*=keep;rgb[1]*=keep;rgb[2]*=keep;} /* underwater: the fog/volume pass (shafts) fades with the sun; the lighting and actor passes keep the real colour (their shadow test and alpha read it) */
             // fog passes only: the sun's direct scatter takes the glow hue; the forward soft cap
             // rises so the aureole brightens toward the sun. c17/c18 are restored after the fog loop.
+            if(volume&&!geometryReady)rgb[0]=rgb[1]=rgb[2]=0; // no unoccluded celestial shafts while shadow geometry is unavailable
             if(volume&&source==0)NorthlightSunHue::fogDirect(rgb,glowHueFrame,rgb);
             d->SetPixelShaderConstantF(16,dir,1);d->SetPixelShaderConstantF(17,rgb,1);
             if(volume){

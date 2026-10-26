@@ -121,12 +121,15 @@ int main(){
         assert(c.worldState.terrainBoundsCache.bytes==32*MiB&&"DEMAND_TERRAIN_CAP");
     }
     assert(c.trims==1&&c.worldState.updates==1&&c.bumpState.updates==1);
-    // Keeping terrain does not admit the still-unsafe 768 MiB geometry build.
+    // This historical 768 MiB demand still exercises the guard above. The
+    // geometry policy now admits it, while retaining its new exact boundary.
     namespace G=NorthlightGeometryMemory;
-    assert(G::buildBudget().available==768*MiB&&G::ProcessReserve==512*MiB&&G::ContiguousMargin==32*MiB);
-    assert(!G::admits({755*MiB,237*MiB,true},G::buildBudget()));
-    assert(!G::admits({767*MiB,237*MiB,true},G::buildBudget()));
+    assert(G::buildBudget().available==512*MiB&&G::ProcessReserve==256*MiB&&G::ContiguousMargin==32*MiB);
+    assert(G::admits({755*MiB,237*MiB,true},G::buildBudget()));
+    assert(G::admits({767*MiB,237*MiB,true},G::buildBudget()));
     assert(G::admits({768*MiB,237*MiB,true},G::buildBudget()));
+    assert(!G::admits({511*MiB,237*MiB,true},G::buildBudget()));
+    assert(G::admits({512*MiB,237*MiB,true},G::buildBudget()));
     // Crossing a genuine low threshold inside the same episode must change
     // terrain immediately even though there is no new entered edge.
     d=c.sample(800*MiB,159*MiB,201000);
