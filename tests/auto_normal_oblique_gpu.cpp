@@ -42,7 +42,13 @@ struct MaterialCaptureStateTestAccess {
     static unsigned queued(const NorthlightAutoBump& b){return b.queued;}
     static unsigned flushed(const NorthlightAutoBump& b){return b.flushed;}
     static void pressureBounds(const NorthlightAutoBump& b){if(b.memoryPressure){
+#ifdef NORTHLIGHT_TEST_MATERIAL_PRESSURE_POLICY
+        const bool demand=std::getenv("NORTHLIGHT_TEST_DEMAND_PRESSURE")&&!std::getenv("NORTHLIGHT_TEST_SMALL_PACKETS");
+        assert(b.deferredPacketLimit==(demand?512u:64u)&&b.deferredByteLimit==(demand?8u<<20:1u<<20));
+        assert(b.deferred.size()<=b.deferredPacketLimit&&b.deferredBytes<=b.deferredByteLimit&&b.deferredTextureBytes<=(8ull<<20));
+#else
         assert(b.deferred.size()<=64&&b.deferredBytes<=(1u<<20)&&b.deferredTextureBytes<=(8ull<<20));
+#endif
         assert(b.deferredSnapshots.snapshotCacheLimit()==(4u<<20));
 #ifndef NORTHLIGHT_TEST_CAPTURE_BASELINE
 #ifdef NORTHLIGHT_TEST_MATERIAL_PRESSURE_POLICY
@@ -67,11 +73,16 @@ struct MaterialCaptureStateTestAccess {
 #endif
     }
 #ifdef NORTHLIGHT_TEST_MATERIAL_PRESSURE_POLICY
+    static void batchLimits(const NorthlightAutoBump& b){
+        std::printf("MATERIAL_BATCH_LIMIT_PASS rejected=%u packetLimit=%u packetBytes=%zu\n",b.batchLimit,b.deferredPacketLimit,b.deferredByteLimit);
+    }
+    static void smallPackets(NorthlightAutoBump& b){b.deferredPacketLimit=64;b.deferredByteLimit=1u<<20;}
     static void criticalRelease(NorthlightAutoBump& b){
         assert(b.deferredGPU.bytes()&&b.deferredGPU.limit()==(32u<<20));
         b.setMemoryPressurePolicy(true,true);
         assert(!b.deferredGPU.limit()&&!b.deferredGPU.chargedBytes()&&!b.deferredGPU.population().entries);
         assert(b.memoryPressure&&b.deferredSnapshots.snapshotCacheLimit()==(4u<<20));
+        assert(b.deferredPacketLimit==64&&b.deferredByteLimit==(1u<<20));
         std::puts("MATERIAL_CRITICAL_RELEASE_PASS populated_gpu_cache_released reduced_cpu_pools_retained");
     }
 #endif
@@ -271,7 +282,7 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
     bump.setMemoryPressure(pressure);assert(bump.active());
 #ifdef NORTHLIGHT_TEST_MATERIAL_PRESSURE_POLICY
     const bool demandPressure=pressure&&std::getenv("NORTHLIGHT_TEST_DEMAND_PRESSURE")!=nullptr;
-    if(demandPressure)bump.setMemoryPressurePolicy(true,false);
+    if(demandPressure){bump.setMemoryPressurePolicy(true,false);if(std::getenv("NORTHLIGHT_TEST_SMALL_PACKETS"))MaterialCaptureStateTestAccess::smallPackets(bump);}
 #else
     const bool demandPressure=false;
 #endif
@@ -605,6 +616,7 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
                 if(samples&&!multiStream&&!textureWrite)MaterialCaptureStateTestAccess::stateReuse(bump);
                 if(!identicalRewrite&&samples&&(meshGrid||bufferedStrip||std::getenv("NORTHLIGHT_TEST_DEFERRED_RESIDENT")))MaterialCaptureStateTestAccess::residency(bump,(!pressure||demandPressure)&&!captureDevice.failResident);
 #ifdef NORTHLIGHT_TEST_MATERIAL_PRESSURE_POLICY
+                MaterialCaptureStateTestAccess::batchLimits(bump);
                 if(demandPressure&&samples&&!captureDevice.failResident)MaterialCaptureStateTestAccess::criticalRelease(bump);
 #endif
                 if(multiStream){assert(!MaterialCaptureStateTestAccess::sourceReadBytes(bump));std::puts("MATERIAL_MULTISTREAM_PREFLIGHT_PASS zero_source_reads immediate_retained");}}

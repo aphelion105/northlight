@@ -18,15 +18,21 @@ run('compile',[fp.zig(),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std
 files=[*a.fixture.glob('source.fgr*'),*(a.fixture/n for n in ['terrain-vs.bin','terrain-ps.bin','PreviewBase.bin'])];results=[]
 for samples in [0,2]:
     folders={}
-    for policy in ['critical','demand']:
+    for policy in ['critical','demand-small','demand']:
         label=f'msaa{samples}-{policy}';folder=out/label;folder.mkdir();folders[policy]=folder
         for f in files:shutil.copyfile(f,folder/f.name)
         flags={'NORTHLIGHT_TEST_MSAA':str(samples)}
-        if policy=='demand':flags['NORTHLIGHT_TEST_DEMAND_PRESSURE']='1'
+        if policy!='critical':flags['NORTHLIGHT_TEST_DEMAND_PRESSURE']='1'
+        if policy=='demand-small':flags['NORTHLIGHT_TEST_SMALL_PACKETS']='1'
         text=run(label,[exe,a.backend.resolve(),str(folder)+'/',12,.7],flags)
-        if policy=='demand' and samples:assert 'MATERIAL_CRITICAL_RELEASE_PASS' in text
+        if policy!='critical' and samples:assert 'MATERIAL_CRITICAL_RELEASE_PASS' in text
         timing=re.search(r'MATERIAL_BATCH_TIMING .*gpuMs=([\d.]+) submitMs=([\d.]+)',text);assert timing
-        results.append(dict(msaa=samples,policy=policy,gpu_ms=float(timing[1]),submit_ms=float(timing[2])))
+        limits=re.search(r'MATERIAL_BATCH_LIMIT_PASS rejected=(\d+) packetLimit=(\d+) packetBytes=(\d+)',text);assert limits
+        results.append(dict(msaa=samples,policy=policy,gpu_ms=float(timing[1]),submit_ms=float(timing[2]),forced_batches=int(limits[1]),packet_limit=int(limits[2]),packet_bytes=int(limits[3])))
     names=[f.name for f in folders['critical'].glob('batch-*.fgr')];assert len(names)>=2
-    for name in names:assert (folders['critical']/name).read_bytes()==(folders['demand']/name).read_bytes(),(samples,name)
+    for name in names:
+        for policy in ['demand-small','demand']:assert (folders['critical']/name).read_bytes()==(folders[policy]/name).read_bytes(),(samples,policy,name)
+    if samples:
+        critical,small,demand=results[-3:]
+        assert demand['forced_batches']<small['forced_batches']==critical['forced_batches'],(critical,small,demand)
 (out/'validation.json').write_text(json.dumps(dict(pass_=True,exact_color_normal_occlusion=True,cases=results),indent=2)+'\n');print(json.dumps(results,indent=2))

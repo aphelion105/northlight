@@ -45,6 +45,7 @@ class NorthlightAutoBump {
     unsigned residentDraws=0,uploadDraws=0;uint64_t uploadDrawBytes=0;
     unsigned replaySetters=0,replaySkipped=0;
     std::vector<std::unique_ptr<Deferred>> deferred;size_t deferredBytes=0;bool deferredAllowed=false;
+    unsigned deferredPacketLimit=512;size_t deferredByteLimit=8u<<20;
     std::unordered_map<void*,uint64_t> deferredTextures;uint64_t deferredTextureBytes=0;
     bool textureWriteGuarded=false;void(*pendingChanged)(void*)=nullptr;void* pendingContext=nullptr;
     void clearDeferred(){deferred.clear();deferredBytes=deferredTextureBytes=0;deferredTextures.clear();if(pendingChanged)pendingChanged(pendingContext);}
@@ -216,7 +217,7 @@ class NorthlightAutoBump {
         using P=NorthlightMaterialProfile;P::Scope timing(profile,P::DeferredRecord,profileTag);
         // Pressure keeps a small batch to avoid a target switch for every draw;
         // source/replay caches retain their separate, lower pressure limits.
-        if(deferred.size()>=(memoryPressure?64u:512u)){++batchLimit;return false;}
+        if(deferred.size()>=deferredPacketLimit){++batchLimit;return false;}
         if(d->GetNPatchMode()!=0||(args.draw.topology!=D3DPT_TRIANGLELIST&&args.draw.topology!=D3DPT_TRIANGLESTRIP&&args.draw.topology!=D3DPT_TRIANGLEFAN))return false;
         try{
             NorthlightDrawSnapshot::Ref<IDirect3DVertexDeclaration9> decl;if(FAILED(d->GetVertexDeclaration(decl.out()))||!decl.p)return false;
@@ -244,7 +245,7 @@ class NorthlightAutoBump {
             if(!mesh)mesh=deferredSnapshots.retain(std::move(local));
             if(mesh->streams[0].bytes.empty())return false;for(unsigned i=1;i<4;++i)if(!mesh->streams[i].bytes.empty()){++snapshotStreams;return false;}
             DWORD planes=0;if(FAILED(d->GetRenderState(D3DRS_CLIPPLANEENABLE,&planes))||planes)return false;
-            const size_t cost=sizeof(Deferred)+mesh->byteSize()+(model.last-model.first+1)*16+textures.size()*(sizeof(DeferredTexture)+sizeof(void*));if(cost>(memoryPressure?1u<<20:8u<<20)-deferredBytes){++batchLimit;return false;}
+            const size_t cost=sizeof(Deferred)+mesh->byteSize()+(model.last-model.first+1)*16+textures.size()*(sizeof(DeferredTexture)+sizeof(void*));if(deferredBytes>=deferredByteLimit||cost>deferredByteLimit-deferredBytes){++batchLimit;return false;}
             auto packet=std::make_unique<Deferred>();packet->mesh=mesh;packet->tag=profileTag;packet->occlusion=auxiliary;
             packet->declaration=decl.p;decl.p=nullptr;packet->pixel=model.shader;packet->pixel->AddRef();packet->vertex=vertex;vertex->AddRef();
             packet->first=model.first;packet->pixelConstants.resize((model.last-model.first+1)*4);packet->viewport=saved.viewport;packet->addressU=addressU;packet->addressV=addressV;packet->normalStage=saved.normalStage;
@@ -363,6 +364,7 @@ public:
     void setProfiler(NorthlightMaterialProfile* p){profile=p;normals.setProfiler(p);parallax.setProfiler(p);displacement.setProfiler(p);}
     void setMemoryPressure(bool on){
         if(memoryPressure==on)return;memoryPressure=on;
+        deferredPacketLimit=on?64:512;deferredByteLimit=on?1u<<20:8u<<20;
         using Clock=std::chrono::steady_clock;const bool timed=NorthlightRenderThreadProbe::profiling();
         auto started=timed?Clock::now():Clock::time_point{};
         auto phase=[&]{if(!timed)return 0.;const auto ended=Clock::now();const double ms=std::chrono::duration<double,std::milli>(ended-started).count();started=ended;return ms;};
@@ -386,8 +388,10 @@ public:
         // immutable replay into DrawUP. Real VA pressure still releases all GPU
         // residents. Promotion/time limits and allocation-failure fallback stay.
         const size_t limit=episode&&critical?0:32u<<20;
-        if(deferredGPU.limit()!=limit){deferredGPU.setLimit(limit);
-            logf("MATERIAL_MEMORY_POLICY episode=%u critical=%u replayLimitMiB=%zu",unsigned(episode),unsigned(critical),limit>>20);}
+        const unsigned packets=episode&&critical?64:512;const size_t bytes=episode&&critical?1u<<20:8u<<20;
+        if(deferredGPU.limit()!=limit||deferredPacketLimit!=packets||deferredByteLimit!=bytes){deferredGPU.setLimit(limit);
+            deferredPacketLimit=packets;deferredByteLimit=bytes;
+            logf("MATERIAL_MEMORY_POLICY episode=%u critical=%u replayLimitMiB=%zu packetLimit=%u packetMiB=%zu",unsigned(episode),unsigned(critical),limit>>20,packets,bytes>>20);}
     }
     bool geometryPrepared()const{return displacement.prepared();}
     unsigned geometryPrimitives()const{return displacement.preparedPrimitives();}
@@ -425,7 +429,7 @@ public:
         deferredDiscarded+=unsigned(deferred.size());clearDeferred();
         if(deferredReport||cold.vertexSources||cold.vertexQueued||cold.modelMisses||cold.staticCreates)logf("MATERIAL_COLD frame=%llu sampled=%u enabled=%u vertexSources=%u vertexQueued=%u pendingVertices=%u vertexCpuMs=%.6f modelMisses=%u modelBuilt=%u modelCpuMs=%.6f staticCreates=%u staticBuilt=%u staticCpuMs=%.6f sourceBytes=%llu",(unsigned long long)(deferredReport?deferredReportFrame:frames),unsigned(deferredReport),unsigned(enabled),cold.vertexSources,cold.vertexQueued,pendingVertices,cold.vertexMs,cold.modelMisses,cold.modelBuilt,cold.modelMs,cold.staticCreates,cold.staticBuilt,cold.staticMs,(unsigned long long)cold.sourceBytes);
         cold={};
-        if(deferredReport||((queued||flushed||deferredFallback||deferredDiscarded)&&frames%600==0))logf("MATERIAL_DEFERRED frame=%llu sampled=%u enabled=%u queued=%u flushed=%u snapshotFallback=%u liveState=%u preparedGeometry=%u discardedUnused=%u terrain=%u walls=%u grass=%u models=%u earlyRangeRejected=%u opaqueCoverage=%u packetLimit=%u packetMiB=%u sourceMiB=%zu",(unsigned long long)(deferredReport?deferredReportFrame:frames),unsigned(deferredReport),unsigned(deferredAllowed),queued,flushed,deferredFallback,deferredUnsafe,deferredGeometry,deferredDiscarded,queuedDomain[0],queuedDomain[1],queuedDomain[2],queuedDomain[3],earlyRangeRejected,opaqueCoverage,memoryPressure?64u:512u,memoryPressure?1u:8u,deferredSnapshots.snapshotCacheLimit()>>20);
+        if(deferredReport||((queued||flushed||deferredFallback||deferredDiscarded)&&frames%600==0))logf("MATERIAL_DEFERRED frame=%llu sampled=%u enabled=%u queued=%u flushed=%u snapshotFallback=%u liveState=%u preparedGeometry=%u discardedUnused=%u terrain=%u walls=%u grass=%u models=%u earlyRangeRejected=%u opaqueCoverage=%u packetLimit=%u packetMiB=%u sourceMiB=%zu",(unsigned long long)(deferredReport?deferredReportFrame:frames),unsigned(deferredReport),unsigned(deferredAllowed),queued,flushed,deferredFallback,deferredUnsafe,deferredGeometry,deferredDiscarded,queuedDomain[0],queuedDomain[1],queuedDomain[2],queuedDomain[3],earlyRangeRejected,opaqueCoverage,deferredPacketLimit,unsigned(deferredByteLimit>>20),deferredSnapshots.snapshotCacheLimit()>>20);
         if(deferredReport||((queued||flushed||deferredFallback)&&frames%600==0)){
             logf("MATERIAL_REPLAY_CONTENT frame=%llu captureTests=%u captureHits=%u captureComparedBytes=%zu",(unsigned long long)(deferredReport?deferredReportFrame:frames),deferredSnapshots.replayContentTests(),deferredSnapshots.replayContentHits(),deferredSnapshots.replayContentComparedBytes());
             logf("MATERIAL_BATCH_SOURCE frame=%llu textureGuard=%u textureDraws=%u writeBarriers=%u refusedTexture=%u snapshotBudget=%u snapshotStreams=%u batchLimit=%u sourceHits=%u sourcePeerHits=%u sourceMisses=%u sourceReadBytes=%zu sourceEntries=%zu sourceBytes=%zu sourceLimitMiB=%zu",(unsigned long long)(deferredReport?deferredReportFrame:frames),unsigned(textureWriteGuarded),deferredTextureDraws,textureBarriers,textureRefused,snapshotBudget,snapshotStreams,batchLimit,deferredSnapshots.snapshotCacheHits(),deferredSnapshots.residentPeerHits(),deferredSnapshots.snapshotCacheMisses(),deferredSnapshots.bytesRead(),deferredSnapshots.snapshotCacheEntries(),deferredSnapshots.snapshotCacheBytes(),deferredSnapshots.snapshotCacheLimit()>>20);

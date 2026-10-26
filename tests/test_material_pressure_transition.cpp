@@ -83,12 +83,17 @@ void MaterialCaptureStateTestAccess::pressureTransition(){
         NorthlightAutoBump bump(&device);
         bump.setMemoryPressurePolicy(true,false);
         assert(bump.memoryPressure&&bump.deferredGPU.limit()==(32u<<20));
+        assert(bump.deferredPacketLimit==512&&bump.deferredByteLimit==(8u<<20));
         assert(bump.deferredSnapshots.snapshotCacheLimit()==(4u<<20)&&DisplacementStateTestAccess::pressureLimit(bump.displacement)==(6u<<20));
         bump.setMemoryPressurePolicy(true,false);assert(bump.deferredGPU.limit()==(32u<<20));
         bump.setMemoryPressurePolicy(true,true);assert(bump.memoryPressure&&!bump.deferredGPU.limit()&&!bump.deferredGPU.chargedBytes());
+        assert(bump.deferredPacketLimit==64&&bump.deferredByteLimit==(1u<<20));
+        bump.setMemoryPressurePolicy(true,true);assert(bump.deferredPacketLimit==64&&bump.deferredByteLimit==(1u<<20));
         bump.setMemoryPressurePolicy(true,false);assert(bump.deferredGPU.limit()==(32u<<20));
+        assert(bump.deferredPacketLimit==512&&bump.deferredByteLimit==(8u<<20));
         bump.trimMemory();assert(!bump.deferredGPU.chargedBytes()&&bump.deferredGPU.limit()==(32u<<20));
         bump.setMemoryPressurePolicy(false,false);assert(!bump.memoryPressure&&bump.deferredGPU.limit()==(32u<<20));
+        assert(bump.deferredPacketLimit==512&&bump.deferredByteLimit==(8u<<20));
         std::puts("MATERIAL_PRESSURE_POLICY_PASS demand_32 critical_0 recovery_32 reduced_cpu_pools repeated trim");
     }
 #endif
