@@ -63,6 +63,8 @@ fixture=r'''
 #include "worker_actor_memo.h"
 #include "diagnostics_switch.h"
 #include "scene_source_cache.h"
+#include "world_mesh_pages.h"
+#include "memory_profile_snapshot.h"
 #include <atomic>
 #include <cassert>
 #include <chrono>
@@ -86,7 +88,7 @@ static bool SetThreadPriority(int,int){return true;}
 #endif
 static std::mutex logMutex;static std::vector<std::string> logLines;
 template<class... T> static void logf(const char* format,T... values){char line[2048];std::snprintf(line,sizeof line,format,values...);std::lock_guard<std::mutex> lock(logMutex);logLines.emplace_back(line);}
-namespace NorthlightRegionalFog {struct Field {};struct Region {};constexpr double WorldZero=17066.6666667,TileSize=533.3333333;
+namespace NorthlightRegionalFog {struct Field {};struct Tile {std::vector<int> water,indoors;};struct Region {std::vector<Tile> tiles;};constexpr double WorldZero=17066.6666667,TileSize=533.3333333;
  inline Region loadRegion(const std::string&,const std::string&,float,float){return {};}}
 namespace NorthlightMemMap {inline std::atomic<bool> deferredRequest{false};}
 namespace NorthlightLocalLights {struct Light {};struct Cache {explicit Cache(const std::string&){}};}
@@ -123,6 +125,7 @@ ORPHANED
  static NorthlightGeometryMemory::Sample geometryAdmissionFor(NorthlightMemoryAdmission::Probe&,NorthlightGeometryMemory::Budget,bool* exact=nullptr){
   if(exact)*exact=true;NorthlightGeometryMemory::Sample s;s.available=s.largest=uint64_t(3)<<30;s.valid=true;return s;}
  static void logGeometryMemory(const char*,NorthlightGeometryMemory::Sample,size_t=0,bool=true,const NorthlightGeometryMemory::Budget* =nullptr){}
+ static void logCpuFootprint(const char*,const char*,uint64_t,const NorthlightMemoryFootprint::Counter& memory){assert(memory.complete());}
 WORK
 };
 struct Harness {

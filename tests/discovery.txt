@@ -142,6 +142,7 @@ test_material_replay_content.py
 test_material_replay_state.py
 test_memmap_diagnostics.py
 test_memory_admission_probe.py
+test_memory_footprint.py
 test_memory_guard.py
 test_mesh_buffer_store.py
 test_mesh_pool_trim.py

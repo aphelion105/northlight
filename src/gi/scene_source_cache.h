@@ -83,6 +83,17 @@ public:
     uint64_t uncachedLeaseBytes()const{const auto all=decodedLiveBytes(),cached=account_->cachedDecoded.load(std::memory_order_relaxed);return all-std::min(all,cached);}
     size_t entries()const{std::lock_guard<std::recursive_mutex> lock(mutex_);return entries_.size();}
     Stats stats()const{std::lock_guard<std::recursive_mutex> lock(mutex_);return stats_;}
+    void accountMemory(NorthlightMemoryFootprint::Counter& memory)const{
+        using namespace NorthlightMemoryFootprint;
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        if(!memory.visit(this))return;
+        memory.add(Metadata,sizeof(*this));
+        for(const auto& entry:entries_){
+            memory.allocation(Metadata,&entry,sizeof(entry));memory.string(entry.path);
+            if(memory.visit(entry.scene.get())){memory.add(Metadata,sizeof(WorldScene));entry.scene->accountMemory(memory);}
+        }
+        for(const auto& identity:identities_){memory.allocation(Metadata,&identity,sizeof(identity));memory.string(identity.path);}
+    }
     // Entry pressure may need only the decoded payloads. Keep validated revision
     // tokens so independently retained BLAS/preparation can still reuse them.
     void trimPayloads(){std::lock_guard<std::recursive_mutex> lock(mutex_);entries_.clear();}

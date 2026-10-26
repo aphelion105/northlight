@@ -87,6 +87,16 @@ int main(int argc,char** argv){
         options.preparation=&preparation;
 #endif
         assert(NorthlightWorldMeshPages::build(plan,pages,error,{},options));double pagesMs=ms(t),pipelineMs=ms(all);
+#if CURRENT_MEMORY_PROFILE
+        NorthlightMemoryFootprint::Counter memory;auto memoryStart=Clock::now();
+        local.accountMemory(memory);cache.accountMemory(memory);sources.accountMemory(memory);preparation.accountMemory(memory);plan.accountMemory(memory);pages.accountMemory(memory);terrain.accountMemory(memory);
+        const auto uniqueBytes=memory.total();
+        pages.accountMemory(memory);plan.accountMemory(memory);preparation.accountMemory(memory);sources.accountMemory(memory);cache.accountMemory(memory);local.accountMemory(memory);terrain.accountMemory(memory);
+        assert(memory.complete()&&memory.total()==uniqueBytes);
+        std::printf("PIPELINE_MEMORY step=%u complete=1 deduplicated=1 knownBytes=%llu vertices=%llu triangles=%llu acceleration=%llu texels=%llu upload=%llu metadata=%llu diagnosticMs=%.4f\n",step,
+            (unsigned long long)uniqueBytes,(unsigned long long)memory.bytes(NorthlightMemoryFootprint::Vertices),(unsigned long long)memory.bytes(NorthlightMemoryFootprint::Triangles),(unsigned long long)memory.bytes(NorthlightMemoryFootprint::Acceleration),
+            (unsigned long long)memory.bytes(NorthlightMemoryFootprint::Texels),(unsigned long long)memory.bytes(NorthlightMemoryFootprint::Upload),(unsigned long long)memory.bytes(NorthlightMemoryFootprint::Metadata),ms(memoryStart));
+#endif
         Hash localHash,planHash,pageHash,rayHash,bakeHash;scene(localHash,local.scene());
         planHash.word(plan.indices.size());planHash.bytes(plan.indices.data(),plan.indices.size()*4);
         for(const auto& b:plan.batches)batch(planHash,b);

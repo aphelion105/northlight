@@ -48,6 +48,7 @@ for name, root, shared in [('baseline', baseline, int(args.shared_baseline)), ('
     subprocess.run([str(fp.zig()), 'c++', '-target', 'x86-windows-gnu', '-std=c++17', '-O2', '-UNDEBUG',
                     '-Wall', '-Wextra', '-Werror', '-DSHARED_SCENE_PIPELINE='+str(shared),
                     '-DCURRENT_TERRAIN_CHUNKS='+str(int(name == 'current')), '-DPIPELINE_RADIUS='+str(args.terrain_radius), *includes,
+                    '-DCURRENT_MEMORY_PROFILE='+str(int(name == 'current')),
                     str(fp.TESTS/'validate_shared_scene_pipeline.cpp'), str(root/'src/gi/world_gi.cpp'),
                     str(root/'src/world/world_mesh_plan.cpp'), '-o', str(exe)], env=fp.zig_env(), check=True)
     binaries[name] = exe
@@ -57,6 +58,10 @@ for round_number in range(args.rounds):
         text = subprocess.check_output([str(binaries[name]), str(fp.world_cache()), args.map, *(['bake'] if args.bake_probes else [])], text=True)
         (out/f'{name}-{round_number}.log').write_text(text, encoding='utf-8')
         rows = [dict(part.split('=', 1) for part in line.split()[1:]) for line in text.splitlines() if line.startswith('PIPELINE ')]
+        if name == 'current':
+            memory = [dict(part.split('=', 1) for part in line.split()[1:]) for line in text.splitlines() if line.startswith('PIPELINE_MEMORY ')]
+            assert len(memory)==7 and all(row['complete']=='1' and row['deduplicated']=='1' for row in memory),memory
+            (out/f'memory-{round_number}.json').write_text(json.dumps(memory,indent=2)+'\n')
         assert len(rows) == 7, text
         results[name].append(rows)
         print(name, round_number, 'pipelineMedianMs', statistics.median(float(row['totalMs']) for row in rows[1:]), flush=True)

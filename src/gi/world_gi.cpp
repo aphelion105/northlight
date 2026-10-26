@@ -763,6 +763,19 @@ size_t BVH::ownBytes()const{
     if(retainedCharge_)bytes+=sizeof(SceneMemoryCharge)+32;
     return bytes;
 }
+void BVH::accountMemory(NorthlightMemoryFootprint::Counter& memory)const{
+    using namespace NorthlightMemoryFootprint;
+    if(!memory.visit(this))return;
+    memory.add(Metadata,sizeof(*this));scene_.accountMemory(memory);
+    memory.vector(Acceleration,nodes_);memory.vector(Acceleration,pairs_);memory.vector(Acceleration,order_);
+    memory.vector(Acceleration,regionOrder_);memory.vector(Acceleration,regionPairs_);memory.vector(Acceleration,centers_);
+    memory.vector(Metadata,opaque_);memory.vector(Metadata,materialSources_);memory.vector(Metadata,pieces_);
+    if(materialBank_&&memory.visit(materialBank_.get())){
+        memory.add(Metadata,sizeof(MaterialBank));memory.vector(Metadata,materialBank_->values);
+        for(const auto& material:materialBank_->values)memory.vector(Texels,material.rgba);
+    }
+    for(const auto& piece:pieces_){memory.vector(Metadata,piece.materialMap);memory.string(piece.placement.modelKey);piece.geometry->accountMemory(memory);}
+}
 size_t BVH::retainedBytes()const{
     std::unordered_set<const BVH*> geometry;std::unordered_set<const MaterialBank*> materials;
     const auto bankBytes=[](const MaterialBank& bank){size_t bytes=sizeof(bank)+sizeof(SceneMemoryCharge)+64+bank.values.capacity()*sizeof(WorldMaterial);for(const auto& m:bank.values)bytes+=m.rgba.capacity();return bytes;};
@@ -903,6 +916,19 @@ LocalSceneCache::LocalSceneCache(Limits limits):impl_(new Impl(limits)){}
 LocalSceneCache::~LocalSceneCache()=default;
 void LocalSceneCache::reset(){auto limits=impl_->limits;auto budget=impl_->budget;impl_.reset(new Impl(limits,std::move(budget)));}
 const LocalSceneCache::Stats& LocalSceneCache::stats()const{return impl_->stats;}
+void LocalSceneCache::accountMemory(NorthlightMemoryFootprint::Counter& memory)const{
+    using namespace NorthlightMemoryFootprint;
+    if(!memory.visit(impl_.get()))return;
+    const auto& cache=*impl_;memory.add(Metadata,sizeof(Impl));memory.string(cache.map);memory.string(cache.directory);
+    const auto account=[&](const auto& entries){for(const auto& entry:entries){
+        memory.allocation(Metadata,&entry,sizeof(entry));memory.string(entry.first);
+        if(!memory.visit(entry.second.get()))continue;
+        const auto& piece=*entry.second;memory.add(Metadata,sizeof(piece));piece.scene.accountMemory(memory);
+        memory.vector(Metadata,piece.materialSources);memory.vector(Metadata,piece.terrainRuns);memory.string(piece.parentKey);
+        if(piece.geometry)piece.geometry->accountMemory(memory);
+    }};
+    account(cache.pieces);account(cache.chunks);
+}
 
 bool LocalSceneCache::build(const std::vector<std::string>& files,const std::string& directory,const std::string& map,Vec3 low,Vec3 high,BVH& output,std::string& error,const AllocationAdmission& admit,bool fast,const SceneSourceProvider& sourceProvider,const SceneSourceRevision& sourceRevision){
     const auto begin=CacheClock::now();error.clear();

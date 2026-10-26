@@ -6,6 +6,7 @@
 #include <vector>
 #include <memory>
 #include <atomic>
+#include "memory_footprint.h"
 
 // Independent, portable world-geometry transport. No D3D or game addresses.
 namespace NorthlightGI {
@@ -65,6 +66,14 @@ struct WorldScene {
     std::vector<WorldMaterial> materials;
     std::vector<WorldPlacementCoverage> completePlacements;
     std::vector<SourcePieceRange> sourcePieces; // Lightweight loader provenance; no raw source ownership.
+    // Dynamic storage only: the containing BVH/cache already counts the object.
+    void accountMemory(NorthlightMemoryFootprint::Counter& memory)const {
+        using namespace NorthlightMemoryFootprint;
+        memory.vector(Vertices,vertices);memory.vector(Triangles,triangles);memory.vector(Metadata,materials);
+        for(const auto& material:materials)memory.vector(Texels,material.rgba);
+        memory.vector(Metadata,completePlacements);for(const auto& p:completePlacements)memory.string(p.modelKey);
+        memory.vector(Metadata,sourcePieces);for(const auto& p:sourcePieces){memory.string(p.placement.modelKey);memory.vector(Metadata,p.materialMap);}
+    }
     size_t retainedBytes()const {
         size_t n=sizeof(*this)+vertices.capacity()*sizeof(WorldVertex)+triangles.capacity()*sizeof(WorldTriangle)+materials.capacity()*sizeof(WorldMaterial)+completePlacements.capacity()*sizeof(WorldPlacementCoverage);
         for(const auto& m:materials)n+=m.rgba.capacity();
@@ -172,6 +181,7 @@ public:
     size_t fallbackTriangleCount()const{return region_?order_.size():0;}
     size_t ownBytes()const;
     size_t retainedBytes()const;
+    void accountMemory(NorthlightMemoryFootprint::Counter&)const;
     static uint64_t buildScratchBytes(size_t triangles);
 private:
     friend class LocalSceneCache;
@@ -225,6 +235,7 @@ private:
 // scene() remains the exact legacy flat transport used by GPU upload and fog.
 class LocalSceneCache {
 public:
+    void accountMemory(NorthlightMemoryFootprint::Counter&)const;
     struct Limits { size_t retainedBytes=32u*1024u*1024u; };
     struct Stats {
         uint64_t modelReads=0,pieceBuilds=0,pieceReuses=0,reusedTriangles=0,builtTriangles=0,hintedBuilds=0;

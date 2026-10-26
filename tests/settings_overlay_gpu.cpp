@@ -6,6 +6,7 @@
 #include "saved_state.h"
 #include "settings_service.h"
 #include "settings_overlay.h"
+#include "memory_profile_snapshot.h"
 #include "imgui.h"
 #include "imgui_internal.h"
 
@@ -39,9 +40,23 @@ int main(int argc,char** argv){
     ImGuiWindow* nav=nullptr;
     for(auto* child:parent->DC.ChildWindows)if(child->ChildId==parent->GetID("nav"))nav=child;
     assert(nav);
-    const char* pages[]={"Materials & parallax","Lighting & AO","Renderer & HDR"};
-    for(unsigned page=0;page<3;++page){
+    const char* pages[]={"Materials & parallax","Lighting & AO","Renderer & HDR","Diagnostics","Diagnostics","Diagnostics"};
+    for(unsigned page=0;page<sizeof(pages)/sizeof(pages[0]);++page){
+      if(page==4){
+        // Synthetic presentation data in the private test process only. The
+        // production menu still consumes actual renderer-owned snapshots.
+        using namespace NorthlightMemoryProfile;constexpr uint64_t MiB=1024*1024;
+        NorthlightMemoryFootprint::Counter builder,solver;builder.add(NorthlightMemoryFootprint::Vertices,8*MiB);builder.add(NorthlightMemoryFootprint::Acceleration,2*MiB);solver.add(NorthlightMemoryFootprint::Probes,4*MiB);
+        store().cpu(true,"offline fixture",123,builder);store().cpu(false,"offline fixture",123,solver);
+        Admission admission;admission.valid=true;admission.available=740*MiB;admission.largest=615*MiB;admission.entryRequired=768*MiB;admission.reserve=512*MiB;admission.entryHeadroom=256*MiB;admission.minimumAvailable=738*MiB;admission.maximumKnownCapacity=10*MiB;std::strcpy(admission.stage,"build-deferred (offline fixture)");store().admission(admission);
+        Gpu gpu;gpu.managed=64*MiB;gpu.defaults=128*MiB;gpu.system=2*MiB;gpu.complete=true;gpu.staticManagedLedger=32*MiB;gpu.replayDefaultLedger=16*MiB;store().gpu(gpu);
+        Sleep(1100); // the menu reads cached snapshots at most once per second
+      }
       ImGui::ActivateItemByID(nav->GetID(pages[page]));draw(0);draw(0);
+      if(page==5){
+        ImGuiWindow* content=nullptr;for(auto* child:parent->DC.ChildWindows)if(child!=nav)content=child;assert(content);
+        content->StateStorage.SetInt(content->GetID("CPU memory breakdown"),1);draw(0);draw(0);assert(content->ScrollMax.y>0);
+      }
       float peaks[3]{};unsigned changed[3]{};
       for(unsigned mode=0;mode<3;++mode){
         const float white=mode==0?0:mode==1?160:320;

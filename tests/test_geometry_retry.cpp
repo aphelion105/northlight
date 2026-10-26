@@ -29,8 +29,9 @@ struct Wake {
 };
 struct Stand {
     std::mutex mutex;bool stopping=false,builderExit=false,retry=false;Request request;
-    Wake buildWake{{},0,request,stopping,builderExit};DWORD memoryReportAt=0;unsigned abandoned=0,reports=0;
+    Wake buildWake{{},0,request,stopping,builderExit};DWORD memoryReportAt=0;unsigned abandoned=0,reports=0,profiles=0;
     void logGeometryMemory(const char*,NorthlightGeometryMemory::Sample,unsigned,bool,const NorthlightGeometryMemory::Budget*){++reports;}
+    void profileMemory(const char*){++profiles;}
     struct Generations {unsigned live()const{return 1;}} generations;bool workerMemoryExact=true;
     void abandonGeometry(){++abandoned;}
     void once(unsigned delay=1000){
@@ -54,6 +55,7 @@ int main(int argc,char** argv){
     assert(attempts==33&&"BACKOFF_BYPASSED_BY_GI_REQUEST");
 #endif
     assert(tick==end&&storm.abandoned==1&&storm.request.id==360);
+    assert(storm.profiles==attempts); // diagnostics cannot bypass or multiply retry attempts
     std::printf("GEOMETRY_RETRY_STORM attempts=%u notifications=359 ms=32063\n",attempts);
     reset();Stand stationary;stationary.once();assert(tick==2000&&!stationary.abandoned);
     for(unsigned reason=0;reason<5;++reason){reset();Stand interrupted;Request r;r.id=2;

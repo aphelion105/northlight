@@ -239,6 +239,51 @@ struct PreparationCache::Impl {
         return NorthlightGI::SceneMemoryCharge::acquire(budget,bytes);
     }
 };
+void WorldMeshUploadPlan::accountMemory(NorthlightMemoryFootprint::Counter& memory,bool includeObject)const{
+    using namespace NorthlightMemoryFootprint;
+    if(includeObject){if(!memory.visit(this))return;memory.add(Metadata,sizeof(*this));}
+    memory.vector(Upload,indices);memory.vector(Metadata,batches);memory.vector(Metadata,materials);
+    for(const auto& material:materials)memory.vector(Texels,material.bgra);
+    memory.vector(Metadata,completePlacements);for(const auto& p:completePlacements)memory.string(p.modelKey);
+    for(const auto& chunk:fixedTerrainChunks)memory.allocation(Metadata,&chunk,sizeof(chunk));
+    if(localShadowRecords){memory.allocation(Metadata,localShadowRecords.get(),sizeof(*localShadowRecords));memory.vector(Metadata,*localShadowRecords);}
+    if(ownedSource&&memory.visit(ownedSource.get())){memory.add(Metadata,sizeof(*ownedSource));ownedSource->accountMemory(memory);}
+    if(pagingVertices){memory.allocation(Metadata,pagingVertices.get(),sizeof(*pagingVertices));memory.vector(Upload,*pagingVertices);}
+    if(preparationLayout&&memory.visit(preparationLayout.get())){
+        memory.add(Metadata,sizeof(*preparationLayout));memory.vector(Metadata,*preparationLayout);
+        for(const auto& part:*preparationLayout)memory.vector(Metadata,part.materials);
+        // Opaque preparation owners are reported by the preparation ledger;
+        // do not add its inclusive charge again to this capacity-based scope.
+    }
+    const auto upload=payload.share();
+    if(upload&&memory.visit(upload.get())){
+        memory.add(Metadata,sizeof(*upload));
+        if(upload->pages&&memory.visit(upload->pages.get())){memory.add(Metadata,upload->pageMetadataBytes);memory.add(Upload,upload->pageStorageBytes);}
+        if(memory.visit(&upload->materials)){memory.add(Metadata,upload->materialMetadataBytes);memory.add(Texels,upload->materialPixelBytes);}
+    }
+}
+void PreparationCache::accountMemory(NorthlightMemoryFootprint::Counter& memory)const{
+    using namespace NorthlightMemoryFootprint;
+    if(!memory.visit(impl_.get()))return;
+    memory.add(Metadata,sizeof(Impl));
+    for(const auto& entry:impl_->pieces){
+        memory.allocation(Metadata,&entry,sizeof(entry));memory.string(entry.first);
+        const auto& value=*entry.second.data;
+        if(!memory.visit(&value))continue;
+        memory.add(Metadata,sizeof(value));value.plan.accountMemory(memory,false);
+        memory.vector(Metadata,value.order16);memory.vector(Metadata,value.order32);memory.vector(Metadata,value.batchCells);
+        memory.vector(Metadata,value.recordCells);memory.vector(Metadata,value.materials);
+    }
+    for(const auto& key:impl_->recent){memory.allocation(Metadata,&key,sizeof(key));memory.string(key);}
+    const auto& memo=impl_->pageMemo;
+    if(memo&&memory.visit(memo.get())){
+        memory.add(Metadata,sizeof(*memo));memo->pages.accountMemory(memory,false);
+        if(memo->layout&&memory.visit(memo->layout.get())){
+            memory.add(Metadata,sizeof(*memo->layout));memory.vector(Metadata,*memo->layout);
+            for(const auto& part:*memo->layout)memory.vector(Metadata,part.materials);
+        }
+    }
+}
 PreparationCache::PreparationCache():impl_(new Impl){}
 PreparationCache::~PreparationCache()=default;
 void PreparationCache::setLimit(uint64_t bytes){impl_->limit=bytes;if(impl_->budget->used.load()>bytes)impl_->pageMemo.reset();impl_->clean();impl_->trim();impl_->stats.bytes=impl_->budget->used.load();impl_->stats.entries=impl_->pieces.size();}

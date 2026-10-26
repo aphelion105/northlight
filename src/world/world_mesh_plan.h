@@ -44,9 +44,14 @@ struct UploadPayload {
     std::shared_ptr<const NorthlightWorldMeshPages::Plan> pages;
     std::vector<MaterialUpload> materials;
     uint64_t bytes=0; // retained capacity, fixed before the payload is shared
+    // Immutable diagnostic summaries. The render thread may move material
+    // vectors at commit; workers must never inspect those mutable containers.
+    uint64_t pageStorageBytes=0,pageMetadataBytes=0,materialPixelBytes=0,materialMetadataBytes=0;
 };
 // Cross-thread rule: only the render thread dereferences the payload (share/take); every other
-// thread sees live()/bytes(), a single atomic. The pointer is touched only through std::atomic_*.
+// thread sees live()/bytes(), a single atomic. Cold memory diagnostics may share
+// the payload briefly to read only immutable summaries and page identity.
+// The pointer is touched only through std::atomic_*.
 // Copies share the (immutable) payload; set() runs on the worker before publication.
 class UploadPayloadHandle {
     std::shared_ptr<UploadPayload> p_;
@@ -79,6 +84,7 @@ using PreparationLayout=std::vector<PreparationIdentity>;
 
 
 struct WorldMeshUploadPlan {
+    void accountMemory(NorthlightMemoryFootprint::Counter&,bool includeObject=true)const;
     // Caller must retain the SAME immutable source scene/BVH until upload and
     // drawing finish. Vertices remain there to avoid a second large CPU copy.
     const NorthlightGI::WorldScene* source=nullptr;
@@ -152,6 +158,7 @@ struct PreparationPiece {
 class PreparationCache {
 public:
     struct Stats {uint64_t hits=0,misses=0,reusedTriangles=0,preparedTriangles=0,bytes=0,entries=0,pageHits=0,reusedPages=0,reusedPageBytes=0;};
+    void accountMemory(NorthlightMemoryFootprint::Counter&)const;
     PreparationCache();~PreparationCache();
     PreparationCache(const PreparationCache&)=delete;PreparationCache& operator=(const PreparationCache&)=delete;
     void setLimit(uint64_t bytes);void reset();const Stats& stats()const;
