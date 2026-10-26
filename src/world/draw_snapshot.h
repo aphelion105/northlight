@@ -153,6 +153,10 @@ class Frame {
     static constexpr size_t IndexCacheLimit=16u*1024u*1024u;
     std::array<std::unique_ptr<DecodedEntry>,1024> decoded_;
     std::unordered_multimap<std::uint64_t,DecodedEntry*> decodedLookup_;
+    struct RetiredIndices {
+        decltype(decoded_) entries;
+        decltype(decodedLookup_) lookup;
+    };
     size_t decodedBytes_=sizeof(decoded_);
     NorthlightIntrusiveLRU::List<DecodedEntry> decodedLRU_;
     std::array<size_t,1024> decodedFree_{};size_t decodedFreeCount_=1024;
@@ -501,16 +505,16 @@ public:
     void setMetadataProvider(NorthlightCaptureMetadata::Read f){clearSnapshotCache();metadata_=f;}
     void setDeclarationProvider(void* context,DeclarationFn f){declarationContext_=context;declaration_=f;}
     void setLayoutProvider(void* context,LayoutFn f){layoutContext_=context;captureLayout_=f;}
-    size_t clearSnapshotCache(NorthlightStreaming::CpuRetirement* retirement=nullptr){
+    size_t clearSnapshotCache(NorthlightStreaming::CpuRetirement* retirement=nullptr,NorthlightStreaming::CpuRetirementBatch* batch=nullptr){
         size_t deferred=0;
-        if(retirement&&!sources_->entries.empty())try{
+        if((retirement||batch)&&!sources_->entries.empty())try{
             auto retired=std::make_shared<RetiredSources>();
             // D3D ownership ends on this device thread before the worker can
             // receive immutable CPU meshes, index plans and map allocations.
             for(auto& item:sources_->entries){auto*& declaration=item.second->declaration.p;if(declaration){declaration->Release();declaration=nullptr;}}
             retired->entries.swap(sources_->entries);retired->identities.swap(sources_->identities);
             retired->replayCandidates.swap(sources_->replayCandidates);sources_->lru.clear();
-            if(retirement->retire(retired,sources_->bytes))deferred=sources_->bytes;
+            if(batch?batch->retire(retired,sources_->bytes):retirement->retire(retired,sources_->bytes))deferred=sources_->bytes;
             // Queue contention/cap/allocation failure keeps synchronous release.
         }catch(...){}
         sources_->replayCandidates.reset();sources_->lru.clear();sources_->identities.clear();sources_->entries.clear();sources_->bytes=sources_->metadataBytes=0;++sources_->generation;for(auto& h:history_)h={};
@@ -709,7 +713,21 @@ public:
     void clearFrame(){maintenance_={};sampleMaintenance_=false;used_=regularUsed_=0;draws_=regularDraws_=0;sourceSpanVertices_=uniqueVertices_=savedVertexBytes_=0;compactedDraws_=0;indexHits_=indexMisses_=0;cacheHits_=cacheMisses_=revalidated_=revalidationMismatches_=trackedHits_=peerHits_=sharedSourceHits_=0;replayContentTests_=replayContentHits_=0;replayContentComparedBytes_=0;avoidedReadBytes_=0;metadataBatches_=metadataHits_=metadataFallbacks_=fastCacheHits_=0;predictTried_=predictHits_=predictMisses_=0;++frame_;}
     // Cache lifetime never establishes validity: reads still lock/compare current
     // IB contents and copy current VB data. Reset/destruction may drop plans.
-    size_t clearIndexCache(NorthlightStreaming::CpuRetirement* retirement=nullptr){activeRuns_=&copyRuns_;recent_=nullptr;decodedLookup_.clear();decodedLRU_.clear();for(auto& entry:decoded_)entry.reset();decodedBytes_=sizeof(decoded_);decodedFreeCount_=decodedFree_.size();for(size_t i=0;i<decodedFree_.size();++i)decodedFree_[i]=i;return clearSnapshotCache(retirement);}
+    size_t clearIndexCache(NorthlightStreaming::CpuRetirement* retirement=nullptr,NorthlightStreaming::CpuRetirementBatch* batch=nullptr){
+        activeRuns_=&copyRuns_;recent_=nullptr;decodedLRU_.clear();
+        // Preserve the existing source retirement's priority under the byte cap.
+        size_t deferred=clearSnapshotCache(retirement,batch);
+        // These immutable plans own no COM objects. Detach their allocations
+        // before reset so a noncritical trim need not destroy them in-frame.
+        if((retirement||batch)&&indexCacheEntries())try{
+            auto retired=std::make_shared<RetiredIndices>();
+            retired->entries.swap(decoded_);retired->lookup.swap(decodedLookup_);
+            if(batch?batch->retire(retired,decodedBytes_):retirement->retire(retired,decodedBytes_))deferred+=decodedBytes_;
+        }catch(...){} // Full queue or allocation failure frees synchronously.
+        decodedLookup_.clear();for(auto& entry:decoded_)entry.reset();decodedBytes_=sizeof(decoded_);decodedFreeCount_=decodedFree_.size();
+        for(size_t i=0;i<decodedFree_.size();++i)decodedFree_[i]=i;
+        return deferred;
+    }
     size_t indexCacheBytes()const{return decodedBytes_;}
     unsigned indexCacheEntries()const{return unsigned(decoded_.size()-decodedFreeCount_);}
     unsigned indexCacheHits()const{return indexHits_;}

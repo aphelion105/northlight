@@ -80,8 +80,8 @@ struct MaterialConsumer {
     NorthlightDrawSnapshot::Frame sources,geometry;bool pressure=false,critical=false;unsigned updates=0,trims=0;
     explicit MaterialConsumer(WorldRenderer& world){sources.setSnapshotCacheLimit(24u<<20);geometry.setSnapshotCacheLimit(24u<<20);assert(sources.shareSnapshotPool(world.replaySnapshots)&&geometry.shareSnapshotPool(world.replaySnapshots));}
     void setMemoryPressure(bool on){assert(frameCleared);pressure=on;++updates;if(on)sources.clearIndexCache();sources.setSnapshotCacheLimit(on?4u<<20:24u<<20);geometry.setSnapshotCacheLimit(on?6u<<20:24u<<20);}
-    void setMemoryPressurePolicy(bool on,bool low){critical=low;if(pressure!=on)setMemoryPressure(on);}
-    void trimMemory(bool releaseReplay=true){assert(frameCleared&&pressure&&releaseReplay==critical);++trims;}
+    void setMemoryPressurePolicy(bool on,bool low,NorthlightStreaming::CpuRetirementBatch* =nullptr){critical=low;if(pressure!=on)setMemoryPressure(on);}
+    void trimMemory(bool releaseReplay=true,NorthlightStreaming::CpuRetirementBatch* =nullptr){assert(frameCleared&&pressure&&releaseReplay==critical);++trims;}
 };
 struct Surface {unsigned resets=0;void reset(){assert(frameCleared);++resets;}};
 struct Water {unsigned releases=0;void releaseStateCache(){assert(frameCleared);++releases;}};

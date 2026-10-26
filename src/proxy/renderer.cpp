@@ -2562,10 +2562,10 @@ public:
     }
     // Frame boundary only (after clearFrame()): no draw of the finished frame
     // still references a trimmed cache. Warnings are logged with Diagnostics=0.
-    void trimMemory(const NorthlightMemoryDiagnostics::Sample& trigger,const WorldRenderer::MemoryTrim& worldTrim,double worldTrimMs){
+    void trimMemory(const NorthlightMemoryDiagnostics::Sample& trigger,const WorldRenderer::MemoryTrim& worldTrim,double worldTrimMs,NorthlightStreaming::CpuRetirementBatch* retirementBatch=nullptr){
         LARGE_INTEGER start={},surfaceEnd={},materialEnd={},stateEnd={},waterEnd={},end={};QueryPerformanceCounter(&start);
         if(surface)surface->reset();QueryPerformanceCounter(&surfaceEnd);
-        if(autoBump)autoBump->trimMemory(memoryGuard.capsHalved());QueryPerformanceCounter(&materialEnd);
+        if(autoBump)autoBump->trimMemory(memoryGuard.capsHalved(),retirementBatch);QueryPerformanceCounter(&materialEnd);
         stateBlocks.clear();QueryPerformanceCounter(&stateEnd);
         if(water)water->releaseStateCache();QueryPerformanceCounter(&waterEnd);
         const auto& t=worldTrim;
@@ -2883,20 +2883,25 @@ public:
             LARGE_INTEGER workStart={},worldTrimEnd={},worldEnd={},materialEnd={},replayEnd={},streamEnd={},workEnd={};
             const double ms=cpuFrequency.QuadPart>0?1000.0/double(cpuFrequency.QuadPart):0.0;
             QueryPerformanceCounter(&workStart);worldTrimEnd=workStart;
+            const bool batchCPU=memoryGuard.pressure()&&!memoryGuard.capsHalved();
+            NorthlightStreaming::CpuRetirementBatch cpuRetirementBatch(batchCPU?&NorthlightStreaming::cpuRetirement():nullptr);
+            auto* retirementBatch=batchCPU?&cpuRetirementBatch:nullptr;
             // A mandatory full clear makes cap-driven LRU eviction redundant.
             // Quiesce and release world caches once, before lowering their caps.
             WorldRenderer::MemoryTrim worldTrim;
-            if(memoryTrim&&world){worldTrim=world->trimMemory(memoryGuard.capsHalved());QueryPerformanceCounter(&worldTrimEnd);}
+            if(memoryTrim&&world){worldTrim=world->trimMemory(memoryGuard.capsHalved(),retirementBatch);QueryPerformanceCounter(&worldTrimEnd);}
             if((memoryWorld>=0||memoryCaps>=0)&&world)world->setMemoryPressure(memoryGuard.pressure(),memoryGuard.capsHalved());
             QueryPerformanceCounter(&worldEnd);
-            if((memoryWorld>=0||memoryCaps>=0)&&autoBump)autoBump->setMemoryPressurePolicy(memoryGuard.pressure(),memoryGuard.capsHalved());
+            if((memoryWorld>=0||memoryCaps>=0)&&autoBump)autoBump->setMemoryPressurePolicy(memoryGuard.pressure(),memoryGuard.capsHalved(),retirementBatch);
             QueryPerformanceCounter(&materialEnd);
             if(memoryCaps>=0&&NorthlightReplayCopies::enabled.load(std::memory_order_relaxed))NorthlightReplayCopies::setPressure(memoryCaps==1); /* 0.3.192 (CS): replay thread: halves the CPU copies' cap and evicts down to it */
             QueryPerformanceCounter(&replayEnd);
             if(memoryCaps>=0)NorthlightStream::memoryPressure.store(memoryCaps==1,std::memory_order_relaxed); /* 0.3.192 (CS): the stream's game side halves its queue budget at its next Present */
             QueryPerformanceCounter(&streamEnd);
-            if(memoryTrim)trimMemory(memorySample,worldTrim,double(worldTrimEnd.QuadPart-workStart.QuadPart)*ms);
+            if(memoryTrim)trimMemory(memorySample,worldTrim,double(worldTrimEnd.QuadPart-workStart.QuadPart)*ms,retirementBatch);
+            const bool retirementQueued=cpuRetirementBatch.finish();
             QueryPerformanceCounter(&workEnd);
+            if(cpuRetirementBatch.count())logf("MEMORY guard retirement frame=%u owners=%zu stagedMiB=%.3f queuedMiB=%.3f synchronousMiB=%.3f queued=%u fallbackSynchronous=%u critical=%u",frame,cpuRetirementBatch.count(),double(cpuRetirementBatch.bytes())/(1u<<20),double(cpuRetirementBatch.queuedBytes())/(1u<<20),double(cpuRetirementBatch.bytes()-cpuRetirementBatch.queuedBytes())/(1u<<20),unsigned(retirementQueued),unsigned(!retirementQueued),unsigned(memoryGuard.capsHalved()));
             // Exclusive phases partition this boundary; the trim line also
             // includes worldPreclearMs in its complete trim/world totals.
             logf("MEMORY guard work frame=%u totalMs=%.3f episodeChange=%u capsChange=%u trimRequested=%u tick=%lu worldPreclearMs=%.3f worldCapsMs=%.3f materialCapsMs=%.3f replayCapsMs=%.3f streamPolicyMs=%.3f trimMs=%.3f",frame,double(workEnd.QuadPart-workStart.QuadPart)*ms,unsigned(memoryWorld>=0),unsigned(memoryCaps>=0),unsigned(memoryTrim),(unsigned long)GetTickCount(),

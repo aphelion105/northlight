@@ -19,7 +19,7 @@ helper=helper.replace('struct DisplacementStateTestAccess {','struct Displacemen
 (out/'material_pressure_reference.h').write_bytes(helper.encode())
 header=fp.src('auto_bump_renderer.h').read_text();geometry=fp.src('auto_displacement_renderer.h').read_text()
 begin=header.index('    void setMemoryPressure(bool on,');end=header.index('    void trimMemory(',begin)
-original='''    void setMemoryPressure(bool on,size_t=0){
+original='''    void setMemoryPressure(bool on,size_t=0,NorthlightStreaming::CpuRetirement* =nullptr,NorthlightStreaming::CpuRetirementBatch* =nullptr){
         if(memoryPressure==on)return;memoryPressure=on;deferredSnapshots.setSnapshotCacheLimit(on?4u<<20:24u<<20);
         if(on&&!deferred.empty()){deferredDiscarded+=unsigned(deferred.size());clearDeferred();drawn=occlusionDrawn=false;}
         deferredGPU.setLimit(on?0:32u<<20);
@@ -29,8 +29,8 @@ original='''    void setMemoryPressure(bool on,size_t=0){
     }
 '''
 control=out/'control';control.mkdir(exist_ok=True);(control/'auto_bump_renderer.h').write_bytes((header[:begin]+original+header[end:]).encode())
-geometry_begin=geometry.index('    void setMemoryPressure(bool on){');geometry_end=geometry.index('    void trimMemory()',geometry_begin)
-original_geometry='''    void setMemoryPressure(bool on){
+geometry_begin=geometry.index('    void setMemoryPressure(bool on,');geometry_end=geometry.index('    void trimMemory(',geometry_begin)
+original_geometry='''    void setMemoryPressure(bool on,NorthlightStreaming::CpuRetirement* =nullptr,NorthlightStreaming::CpuRetirementBatch* =nullptr){
         current=nullptr;memoryPressure=on;snapshots.setSnapshotCacheLimit(on?6u<<20:24u<<20);rangeSnapshots.setSnapshotCacheLimit(on?1u<<20:4u<<20);skinRangeSnapshots.setSnapshotCacheLimit(on?1u<<20:4u<<20);
         MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;GlobalMemoryStatusEx(&memory);refreshBudget(memory);
         if(on){boundsLRU.clear();bounds.clear();boundsBytes=0;poseEnvelopes.clear();snapshots.clearIndexCache();rangeSnapshots.clearIndexCache();skinRangeSnapshots.clearIndexCache();}
@@ -53,6 +53,14 @@ for optimization in ['-O2','-O0']:
     assert int(cells['control']['geometryShrinkEvictions'])>0 and cells['current']['geometryShrinkEvictions']=='0',cells
     for field in ['pressureMemoryReads','trimMemoryReads']:assert cells['control'][field]=='1' and cells['current'][field]=='0',cells
     assert cells['current']['recoveryMemoryReads']=='2',cells
+    if optimization=='-O2':
+        negative=out/'fixture-disabled-batch.exe'
+        negative_command=command[:-1]+[str(negative),'-DNORTHLIGHT_TEST_DISABLE_PRESSURE_BATCH=1']
+        subprocess.run(negative_command,env=fp.zig_env(),check=True)
+        result=subprocess.run([str(negative)],capture_output=True,text=True)
+        (out/'disabled-batch.log').write_text(result.stdout+result.stderr,encoding='utf-8')
+        assert result.returncode!=0 and 'ALL_PRESSURE_POOLS_MUST_SHARE_ONE_BATCH' in result.stderr
+        records.append({'name':'disabled-batch','mode':optimization,'expected_failure':True,'exit_code':result.returncode})
 assert all(sha(Path(p))==h for p,h in inputs.items()),'Source/helper changed during final validation'
 (out/'validation.json').write_text(json.dumps({'inputs':inputs,'inputs_unchanged':True,'records':records,'timings_claimed':False,'gpu_or_game_launched':False},indent=2)+'\n')
 print('PASS exact material pressure caps/ownership/recovery with no shrink-before-clear or unused pressure memory query.')
