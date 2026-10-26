@@ -818,6 +818,8 @@ float4 WorldFog(float2 uv:TEXCOORD0):COLOR0 {
     // translation loses precision as the player moves through world space.
     float3 ray=view.x*InverseView[0].xyz+view.y*InverseView[1].xyz+view.z*InverseView[2].xyz;
     float surface=min(length(ray),FogInfo.w); // host supplies the positive 128-unit range
+    // All interval midpoints are before the authored near fade: no extinction.
+    [branch]if(surface<=max(FogRange.x,0))return float4(0,0,0,1);
     ray*=rsqrt(max(dot(ray,ray),1e-12));
     float3 shadowOrigin=affinePoint(Camera.xyz,FarMatrix);
     float3 shadowRay=ray.x*FarMatrix[0].xyz+ray.y*FarMatrix[1].xyz+ray.z*FarMatrix[2].xyz;
@@ -1043,6 +1045,7 @@ float4 FogClouds(float2 uv:TEXCOORD0):COLOR0 {
     float depth=normalizedDepth(uv);float3 view=viewPositionDistance(uv,fogReceiverDistance(uv,depth));
     float3 ray=view.x*InverseView[0].xyz+view.y*InverseView[1].xyz+view.z*InverseView[2].xyz;
     float surface=min(length(ray),FogInfo.w);
+    [branch]if(surface<=max(FogRange.x,0))return float4(0,0,0,1);
     ray*=rsqrt(max(dot(ray,ray),1e-12));
     float3 shadowOrigin=affinePoint(Camera.xyz,FarMatrix);
     float3 shadowRay=ray.x*FarMatrix[0].xyz+ray.y*FarMatrix[1].xyz+ray.z*FarMatrix[2].xyz;
