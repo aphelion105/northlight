@@ -4,7 +4,7 @@
     // here is optional and keyed by identity/version/contents, so a later lookup
     // misses and rebuilds from the live buffers. Shared immutable snapshots stay
     // valid for any holder; mesh-keyed caches use weak owners (no ABA reuse).
-    struct MemoryTrim {size_t terrain=0,snapshots=0,indices=0,pool=0,gpu=0,snapshotDeferred=0;
+    struct MemoryTrim {size_t terrain=0,snapshots=0,indices=0,pool=0,gpu=0,snapshotDeferred=0,terrainDeferred=0;
         double quiesceMs=0,terrainMs=0,snapshotsMs=0,poolMs=0,replayGpuMs=0,meshPoolsMs=0,rigidMs=0;
         size_t total()const{return terrain+snapshots+indices+pool+gpu;}};
     bool memoryPressure=false;
@@ -30,7 +30,7 @@
         MemoryTrim t;auto phaseStart=std::chrono::steady_clock::now();
         const auto elapsed=[&](){const auto now=std::chrono::steady_clock::now();const double ms=std::chrono::duration<double,std::milli>(now-phaseStart).count();phaseStart=now;return ms;};
         prepareQuiesce();stateBlocks.clear();t.quiesceMs=elapsed(); /* 0.3.177 */
-        {const auto before=terrainBoundsCache.sourceLiveBytes()+terrainBoundsCache.sourceMetadataBytes();terrainBoundsCache.clearPersistent();const auto after=terrainBoundsCache.sourceLiveBytes()+terrainBoundsCache.sourceMetadataBytes();t.terrain=size_t(before-std::min(before,after));}
+        {const auto before=terrainBoundsCache.sourceLiveBytes()+terrainBoundsCache.sourceMetadataBytes();t.terrainDeferred=terrainBoundsCache.clearPersistent(critical?nullptr:&NorthlightStreaming::cpuRetirement(),critical?nullptr:batch);const auto after=terrainBoundsCache.sourceLiveBytes()+terrainBoundsCache.sourceMetadataBytes();t.terrain=size_t(before-std::min(before,after));}
         t.terrainMs=elapsed();
         const auto sourceBefore=replaySnapshots.sourceLiveBytes()+replaySnapshots.sharedSourceMetadataBytes();
         {const auto before=replaySnapshots.indexCacheBytes();t.snapshotDeferred=replaySnapshots.clearIndexCache(critical?nullptr:&NorthlightStreaming::cpuRetirement(),critical?nullptr:batch);t.indices=before-std::min(before,replaySnapshots.indexCacheBytes());} /* clears snapshots too */

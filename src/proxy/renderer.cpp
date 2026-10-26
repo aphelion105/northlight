@@ -2571,11 +2571,11 @@ public:
         const auto& t=worldTrim;
         QueryPerformanceCounter(&end);const DWORD now=GetTickCount();memoryGuard.trimCompleted(now);
         const auto elapsed=[&](LARGE_INTEGER a,LARGE_INTEGER b){return cpuFrequency.QuadPart>0?1000.0*double(b.QuadPart-a.QuadPart)/double(cpuFrequency.QuadPart):0.0;};
-        logf("MEMORY guard trim frame=%u exactWalk=1 beforeAvailableVirtualMiB=%llu beforeLargestFreeMiB=%llu regions=%llu freedEstimateMiB=%.1f terrainMiB=%.1f snapshotMiB=%.1f indexMiB=%.1f poolMiB=%.1f gpuCacheMiB=%.1f workerLocalGeometry=1 ms=%.3f surfaceMs=%.3f materialMs=%.3f stateBlocksMs=%.3f waterStateMs=%.3f worldMs=%.3f trims=%u tick=%lu worldQuiesceMs=%.3f terrainClearMs=%.3f snapshotClearMs=%.3f poolClearMs=%.3f replayGpuClearMs=%.3f meshPoolsMs=%.3f rigidClearMs=%.3f snapshotDeferredMiB=%.1f critical=%u",frame,
+        logf("MEMORY guard trim frame=%u exactWalk=1 beforeAvailableVirtualMiB=%llu beforeLargestFreeMiB=%llu regions=%llu freedEstimateMiB=%.1f terrainMiB=%.1f snapshotMiB=%.1f indexMiB=%.1f poolMiB=%.1f gpuCacheMiB=%.1f workerLocalGeometry=1 ms=%.3f surfaceMs=%.3f materialMs=%.3f stateBlocksMs=%.3f waterStateMs=%.3f worldMs=%.3f trims=%u tick=%lu worldQuiesceMs=%.3f terrainClearMs=%.3f snapshotClearMs=%.3f poolClearMs=%.3f replayGpuClearMs=%.3f meshPoolsMs=%.3f rigidClearMs=%.3f snapshotDeferredMiB=%.1f terrainDeferredMiB=%.1f critical=%u",frame,
             (unsigned long long)(trigger.availableVirtual>>20),(unsigned long long)(trigger.largestFree>>20),(unsigned long long)trigger.regions,
             double(t.total())/1048576,double(t.terrain)/1048576,double(t.snapshots)/1048576,double(t.indices)/1048576,double(t.pool)/1048576,double(t.gpu)/1048576,
             worldTrimMs+elapsed(start,end),elapsed(start,surfaceEnd),elapsed(surfaceEnd,materialEnd),elapsed(materialEnd,stateEnd),elapsed(stateEnd,waterEnd),worldTrimMs,memoryGuard.trims(),(unsigned long)now,
-            t.quiesceMs,t.terrainMs,t.snapshotsMs,t.poolMs,t.replayGpuMs,t.meshPoolsMs,t.rigidMs,double(t.snapshotDeferred)/1048576,unsigned(memoryGuard.capsHalved()));
+            t.quiesceMs,t.terrainMs,t.snapshotsMs,t.poolMs,t.replayGpuMs,t.meshPoolsMs,t.rigidMs,double(t.snapshotDeferred)/1048576,double(t.terrainDeferred)/1048576,unsigned(memoryGuard.capsHalved()));
         try{if(memoryDiagnostics)memoryDiagnostics->request();}catch(...){} /* after-trim sample */
     }
     // RenderProfile: one line per frame kind present in the window, then all frames:
