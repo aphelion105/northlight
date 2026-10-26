@@ -469,7 +469,7 @@ private:
     // 0.3.209 (task 29): per-source actor shadow map (R32F 1024, moving casters only, shadows/actor_shadow_map.h) and the half-res visibility it feeds (A8R8G8B8: r sun, g moon; white = lit).
     // actorMatrices/actorValid are stored with the near map's reuse state: the near map and the actor map of a source always come from the same frame.
     IDirect3DTexture9 *actorShadow[2]={},*actorVisibility=nullptr,*actorTiles[2]={},*actorTilesMid=nullptr;IDirect3DSurface9 *actorShadowSurface[2]={},*actorVisibilitySurface=nullptr,*actorTilesSurface[2]={},*actorTilesMidSurface=nullptr;
-    float actorMatrices[2][16]={};bool actorValid[2]={};
+    float actorMatrices[2][16]={};bool actorValid[2]={};unsigned actorCasterCount[2]={};float actorFogBounds[2][4]={{-1,-1,1,1},{-1,-1,1,1}};
     bool nearActorSkip[2]={}; /* the near map was drawn without the replays its actor map holds: reusable only together with that actor map */
     NorthlightActorSide::Tracker actorSide[2]; /* diagnostics: which map each skinned caster went to, per source */
     NorthlightActorSideHold::Hold actorHold[2]; /* the casters held in the actor map (hysteresis), per source; about 48 KB each */
@@ -4402,17 +4402,21 @@ public:
                 float actorRows[16];NorthlightWorldMath::replayProjection(context.inverseView,am,actorRows);
                 d->SetVertexShaderConstantF(0,am,4);d->SetPixelShader(replayPS);
                 NorthlightReplayPoses::Pass<BOOL> actorPoses;NorthlightReplayDrawState::Cache actorBindings(d);
-                NorthlightRenderThreadProbe::Off actorSplit;unsigned drawnHere=0;
+                NorthlightRenderThreadProbe::Off actorSplit;unsigned drawnHere=0;bool fogBoundsKnown=true;float fogBounds[4]={1,1,-1,-1};
                 // Only the replays the near loop above skipped (static proof already excluded there, all inside the inset): a replay
                 // partly outside it, or without bounds, stays in the near map alone (it was drawn into both before, twice the cost
                 // in crowds and with a low sun, whose long footprint brings many far replays into the map).
                 if(nearSkip)for(const uint32_t index:actorReplays){const auto& p=replays[index];
                     if(!submitReplay(p.get(),actorBindings,actorPoses,actorRows,actorSplit,replayConstantBytes,replayConstantCalls,[&](HRESULT h,const char* s){return check(h,s);}))return false;
                     ++drawnHere;
+                    if(fogBoundsKnown){float bounds[4];fogBoundsKnown=NorthlightActorShadowMap::fogBounds(p->pointBounds.valid,p->pointBounds.low,p->pointBounds.high,am,bounds);
+                        if(fogBoundsKnown)for(unsigned axis=0;axis<2;++axis){fogBounds[axis]=std::min(fogBounds[axis],bounds[axis]);fogBounds[axis+2]=std::max(fogBounds[axis+2],bounds[axis+2]);}}
                 }
+                if(!fogBoundsKnown||!drawnHere){fogBounds[0]=fogBounds[1]=-1;fogBounds[2]=fogBounds[3]=1;}
+                std::memcpy(actorFogBounds[source],fogBounds,sizeof fogBounds);
                 replayPosePrepared+=actorPoses.prepared;replayPoseReused+=actorPoses.reused;
                 if(diagnosticFiles){char name[80];std::snprintf(name,sizeof name,"s%d-actor",source);NorthlightWorldDiagnostics::dump(d,actorShadowSurface[source],gpuDiagnosticDirectory,name,diagnosticCapture);}
-                memcpy(actorMatrices[source],am,64);actorValid[source]=true;
+                memcpy(actorMatrices[source],am,64);actorValid[source]=true;actorCasterCount[source]=drawnHere;
                 if(profile)profile->mark(source==0?"SunActor":"MoonActor");bucket(NorthlightEffectsBuckets::Bucket(NorthlightEffectsBuckets::SunActor+source));
                 actorNearSkipped+=nearSkipped;actorDrawn+=drawnHere;if(sideDiag)actorSide[source].endFrame();
                 const DWORD actorTick=GetTickCount();
@@ -4640,6 +4644,15 @@ public:
             // rises so the aureole brightens toward the sun. c17/c18 are restored after the fog loop.
             if(volume&&source==0)NorthlightSunHue::fogDirect(rgb,glowHueFrame,rgb);
             d->SetPixelShaderConstantF(16,dir,1);d->SetPixelShaderConstantF(17,rgb,1);
+            if(volume){
+                const bool fogActor=geometryReady&&effects.shadows&&quality.actorShadows&&quality.actorShadowDetail&&sourceActive[source]&&actorValid[source]&&actorShadow[source]&&actorCasterCount[source]>0;
+                const float fogActorInfo[4]={fogActor?1.f:0.f,0,0,0};
+                d->SetTexture(4,fogActor?actorShadow[source]:neutralWhite);
+                d->SetPixelShaderConstantF(68,fogActor?actorMatrices[source]:neutralMatrix,4);
+                d->SetPixelShaderConstantF(72,fogActorInfo,1);
+                const float wholeActorMap[4]={-1,-1,1,1};d->SetPixelShaderConstantF(66,fogActor?actorFogBounds[source]:wholeActorMap,1);
+                if(profileSampled())logf("FOG_CASTERS frame=%u source=%d static=%u actor=%u actorDraws=%u extraGeometryDraws=0 mapCoverage=%.4f",unsigned(frames),source,unsigned(geometryReady&&effects.shadows),unsigned(fogActor),fogActor?actorCasterCount[source]:0u,fogActor?(actorFogBounds[source][2]-actorFogBounds[source][0])*(actorFogBounds[source][3]-actorFogBounds[source][1])*.25f:0.f);
+            }
             if(volume){c[21][1]=1.2f*volumePalette.fogGain[source]*wx.shaftGain();c[21][2]=source==0?NorthlightSunHue::SunForwardCap:NorthlightSunHue::MoonForwardCap;d->SetPixelShaderConstantF(21,c[21],1);d->SetTexture(15,sourceVis[source][1-sourceVisIndex]);}
             c[27][0]=first?(volume?1.f:1.f-authoredFill):0.f;c[27][1]=sourceWeights[source];d->SetPixelShaderConstantF(27,c[27],1);
         };
@@ -4902,6 +4915,7 @@ public:
             if(!cloudsDrawn)return false;
             if(profile)profile->mark("FogClouds");
         }
+        d->SetTexture(4,textures[4]);
         d->SetTexture(12,baselineLight);
         d->SetPixelShaderConstantF(17,c[17],2); /* restore the bank's direct/ambient before lamp fog, blur and composite */
         if(localDirectCount&&debug==0){

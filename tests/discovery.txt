@@ -85,6 +85,7 @@ test_expired_world_geometry.py
 test_fast_memcmp.py
 test_fgr_constant_bank.py
 test_five_path_perf.py
+test_fog_casters_wiring.py
 test_fog_clouds.py
 test_fog_clouds_wiring.py
 test_fog_empty_intervals.py

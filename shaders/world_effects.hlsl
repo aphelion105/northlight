@@ -263,6 +263,21 @@ float fogShadowProjected(float3 q) {
     }
     return visibility;
 }
+// Reuse the already-rendered fine actor map; never replay geometry for fog.
+// The far map continues to provide terrain, WMO and static-prop silhouettes.
+sampler2D FogActorMap : register(s4);
+row_major float4x4 FogActorMatrix : register(c68);
+float4 FogActorBounds : register(c66); // current map's conservative caster coverage
+float4 FogActorInfo : register(c72); // x: current source owns a valid actor map
+float fogActorShadow(float3 position){
+    float3 q=affinePoint(position,FogActorMatrix);
+    float2 edge=min(q.xy-FogActorBounds.xy,FogActorBounds.zw-q.xy);
+    [branch]if(min(edge.x,edge.y)>0&&q.z>=0&&q.z<=1){
+        float2 uv=q.xy*float2(.5,-.5)+.5;
+        return q.z-PassInfo.x*4<=tex2Dlod(FogActorMap,float4(uv,0,0)).r?1:0;
+    }
+    return 1;
+}
 float2 probeUV(float3 cell) {
     return (float2(cell.x+cell.z*GridInfo.x,cell.y)+.5)/float2(GridInfo.x*GridInfo.x,GridInfo.x);
 }
@@ -909,7 +924,11 @@ float4 WorldFog(float2 uv:TEXCOORD0):COLOR0 {
                 // A zero source has no valid shadow pass/maps to sample. Its air
                 // still contributes environment scattering and extinction.
                 float heightFade=saturate(altitude*(1.0/12));heightFade*=heightFade*(3-2*heightFade);
-                if(dot(sunSource,1)>0)directWeight+=transmittance*absorb*(fogShadowProjected(shadowOrigin+shadowRay*((start+end)*.5))*heightFade);
+                if(dot(sunSource,1)>0){
+                    float visibility=fogShadowProjected(shadowOrigin+shadowRay*((start+end)*.5));
+                    [branch]if(FogActorInfo.x>0)visibility*=fogActorShadow(p);
+                    directWeight+=transmittance*absorb*(visibility*heightFade);
+                }
                 transmittance*=1-absorb;
             }
         }
@@ -1110,7 +1129,11 @@ float4 FogClouds(float2 uv:TEXCOORD0):COLOR0 {
                 float heightFade=saturate(altitude*(1.0/12));heightFade*=heightFade*(3-2*heightFade);
                 float weight=tCloud*absorb; // the ambient: the pass blend already multiplies the base fog by tCloud, tBase must not enter twice (S*(1-Tb*Tc) in either order)
                 // With no direct source/gain the shadowed term is exactly zero; ambient extinction still accumulates.
-                [branch]if(dot(max(DirectLight.rgb,0),1)>0&&FogInfo.y>0)directWeight+=exp(-tauBase)*weight*fogShadowProjected(shadowOrigin+shadowRay*((start+end)*.5))*heightFade; // the sun light is dimmed by the base fog in front of the cloud
+                [branch]if(dot(max(DirectLight.rgb,0),1)>0&&FogInfo.y>0){
+                    float visibility=fogShadowProjected(shadowOrigin+shadowRay*((start+end)*.5));
+                    [branch]if(FogActorInfo.x>0)visibility*=fogActorShadow(p);
+                    directWeight+=exp(-tauBase)*weight*visibility*heightFade;
+                } // the sun light is dimmed by the base fog in front of the cloud
                 ambientWeight+=weight;
                 tCloud*=1-absorb;
             }
