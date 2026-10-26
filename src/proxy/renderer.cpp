@@ -2879,7 +2879,7 @@ public:
             if(memoryTrim&&world){worldTrim=world->trimMemory();QueryPerformanceCounter(&worldTrimEnd);}
             if((memoryWorld>=0||memoryCaps>=0)&&world)world->setMemoryPressure(memoryGuard.pressure(),memoryGuard.capsHalved());
             QueryPerformanceCounter(&worldEnd);
-            if(memoryWorld>=0&&autoBump)autoBump->setMemoryPressure(memoryWorld==1);
+            if((memoryWorld>=0||memoryCaps>=0)&&autoBump)autoBump->setMemoryPressurePolicy(memoryGuard.pressure(),memoryGuard.capsHalved());
             QueryPerformanceCounter(&materialEnd);
             if(memoryCaps>=0&&NorthlightReplayCopies::enabled.load(std::memory_order_relaxed))NorthlightReplayCopies::setPressure(memoryCaps==1); /* 0.3.192 (CS): replay thread: halves the CPU copies' cap and evicts down to it */
             QueryPerformanceCounter(&replayEnd);

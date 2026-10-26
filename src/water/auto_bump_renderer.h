@@ -380,6 +380,15 @@ public:
         logf("MATERIAL_MEMORY pressure=%u normalBudgetMiB=%u geometryBudgetMiB=%u relief=active transitionProfiled=%u sourceBeforeMiB=%.3f sourceAfterMiB=%.3f sourceClearMs=%.3f sourceLimitMs=%.3f packetClearMs=%.3f replayGpuMs=%.3f declarationClearMs=%.3f normalMs=%.3f geometryMs=%.3f sharedPomMs=%.3f",unsigned(on),on?32:96,on?32:128,unsigned(timed),double(sourceBefore)/(1u<<20),double(deferredSnapshots.sharedSourceBytes())/(1u<<20),sourceClearMs,sourceLimitMs,packetClearMs,replayGpuMs,declarationClearMs,normalMs,geometryMs,sharedPomMs);
     }
     void trimMemory(){if(!deferred.empty()){deferredDiscarded+=unsigned(deferred.size());clearDeferred();drawn=occlusionDrawn=false;}sharedMaps[0]={};sharedMaps[1]={};sharedPOM.reset();normals.trimMemory();displacement.trimMemory();deferredSnapshots.clearIndexCache();deferredGPU.clear();}
+    void setMemoryPressurePolicy(bool episode,bool critical){
+        setMemoryPressure(episode);
+        // Builder demand keeps the reduced CPU pools, but need not turn every
+        // immutable replay into DrawUP. Real VA pressure still releases all GPU
+        // residents. Promotion/time limits and allocation-failure fallback stay.
+        const size_t limit=episode?(critical?0:8u<<20):32u<<20;
+        if(deferredGPU.limit()!=limit){deferredGPU.setLimit(limit);
+            logf("MATERIAL_MEMORY_POLICY episode=%u critical=%u replayLimitMiB=%zu",unsigned(episode),unsigned(critical),limit>>20);}
+    }
     bool geometryPrepared()const{return displacement.prepared();}
     unsigned geometryPrimitives()const{return displacement.preparedPrimitives();}
     bool geometryHeightGPU()const{return displacement.preparedHeightGPU();}

@@ -43,6 +43,7 @@ for optimization in ['-O2','-O0']:
     for name,folder in [('control',control),('current',out)]:
         exe=out/f'fixture-{name}-{optimization[1:]}.exe'
         command=[str(fp.zig()),'c++','-target','x86-windows-gnu',optimization,'-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec','-I',str(folder),'-I',str(out),*fp.test_include_flags(),str(source),'-luser32','-luuid','-o',str(exe)]
+        if name=='current':command.insert(2,'-DNORTHLIGHT_TEST_MATERIAL_PRESSURE_POLICY=1')
         subprocess.run(command,env=fp.zig_env(),check=True);result=subprocess.run([str(exe)],capture_output=True,text=True)
         (out/f'{name}-{optimization[1:]}.log').write_text(result.stdout+result.stderr,encoding='utf-8');assert result.returncode==0,result.stdout+result.stderr
         line=next(line for line in result.stdout.splitlines() if line.startswith('MATERIAL_PRESSURE_PASS '));row=dict(re.findall(r'(\w+)=([^\s]+)',line));cells[name]=row
