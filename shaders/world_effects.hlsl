@@ -1,5 +1,6 @@
 // Geometry-backed directional shadows, world-space probe GI and volumetric scattering.
 // Inputs are independent of the currently visible screen geometry except receiver depth.
+sampler2D CurrentLocalLighting : register(s3); // Current local radiance is independent of directional history.
 sampler2D Scene : register(s0);
 sampler2D Depth : register(s1);
 sampler2D ShadowNear : register(s2);
@@ -1173,7 +1174,7 @@ float4 WorldComposite(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {
     float legacyT=mad(LegacyFog.w,saturate(pow(max(mad(viewZ*Projection.z,LegacyFog.x,LegacyFog.y),0),LegacyFog.z))-1,1);
     bool relight=d<.99999&&liquid<=0;
         float3 baseline=0;
-        float3 bounce=0;float shadow=0,total=0,closest=1e20;
+        float3 bounce=0,local=0;float shadow=0,total=0,closest=1e20;
         float2 fallbackUV=0,fogFallbackUV=0;
         float ao=0; // 0.3.174: contact AO on the lighting grid (s10)
         // Fog uses the same four half-resolution texel centres, but DIFFERENT
@@ -1205,7 +1206,7 @@ float4 WorldComposite(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {
             float4 light=tex2Dlod(LightingBuffer,float4(q,0,0));
             float3 lit=tex2Dlod(BaselineLighting,float4(q,0,0)).rgb;
             float occlusion=tex2Dlod(AmbientOcclusion,float4(q,0,0)).a;
-            bounce=mad(light.rgb,weight,bounce);shadow=mad(light.a,weight,shadow);baseline=mad(lit,weight,baseline);ao=mad(occlusion,weight,ao);total+=weight;
+            bounce=mad(light.rgb,weight,bounce);local=mad(tex2Dlod(CurrentLocalLighting,float4(q,0,0)).rgb,weight,local);shadow=mad(light.a,weight,shadow);baseline=mad(lit,weight,baseline);ao=mad(occlusion,weight,ao);total+=weight;
             if(score<closest){closest=score;fallbackUV=q;}
             }
             float receiverZ=sampleZ;
@@ -1241,7 +1242,7 @@ float4 WorldComposite(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {
     if(relight){
         // Thin receivers whose depth matches none of the four texels keep the
         // nearest-depth texel instead of losing their shadow and GI entirely.
-        if(total<.02){bounce=fallbackLight.rgb;shadow=fallbackLight.a;baseline=fallbackBase;total=1;}
+        if(total<.02){bounce=fallbackLight.rgb;local=tex2Dlod(CurrentLocalLighting,float4(fallbackUV,0,0)).rgb;shadow=fallbackLight.a;baseline=fallbackBase;total=1;}
         float inverseWeight=1/max(total,.0001);
         bounce*=inverseWeight;shadow*=inverseWeight;
 
@@ -1254,6 +1255,9 @@ float4 WorldComposite(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {
         // Bound combined GI/shadow darkening relative to the existing surface;
         // this preserves black and does not introduce an absolute exposure floor.
         color=max(color,mad(-.45,transported,original.rgb));
+        // Bound shadow/GI removal before adding current local radiance, so a
+        // darkening floor cannot swallow a weaker overlapping lamp channel.
+        color=mad(albedoT,local*inverseWeight,color);
         // NightBrightness: gives back a share of the art layer's darker night ambient (x .82 x cool tint) as light: albedoT times
         // share x ambient x (1/factor-1), the per-frame product computed on the CPU (night_floor.h nightAmbient). Added like
         // light, so shadows, GI and lamps keep their contrast. 0 = off (bit-identical).
@@ -1285,18 +1289,21 @@ float4 WorldComposite(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {
 float4 MaterialComposite(float2 uv:TEXCOORD0):COLOR0 {
     float4 color=tex2D(Scene,uv);
     float2 q=depthUV(uv);float d=normalizedDepth(q);float z=viewDistance(d);
+    if(d>=.99999||waterDistance(q,d)>0||(BumpControl.x<=0&&MaterialOcclusionInfo.x<=0))return color;
+    float occlusionRange=MaterialOcclusionInfo.y>0?MaterialOcclusionInfo.y:BumpControl.y;
+    // Outside both effects' support the relighting delta is exactly zero.
+    [branch]if((BumpControl.x<=0||z>=BumpControl.y)&&(MaterialOcclusionInfo.x<=0||z>=occlusionRange))return float4(max(color.rgb,0),color.a);
     float3 v=viewPositionDistance(q,z);
     // Camera-relative derivatives avoid losing sub-centimetre detail at large map coordinates.
     float3 relative=v.x*InverseView[0].xyz+v.y*InverseView[1].xyz+v.z*InverseView[2].xyz;
     float3 normal=tex2Dlod(NormalBuffer,float4(uv,0,0)).xyz;
     float3 detail=autoBumpNormal(q,relative,normal,z,InverseView[0].xyz,InverseView[1].xyz,InverseView[2].xyz);
-    if(d>=.99999||waterDistance(q,d)>0||(BumpControl.x<=0&&MaterialOcclusionInfo.x<=0))return color;
     float3 occlusion=1;
-    if(MaterialOcclusionInfo.x>0){
+    [branch]if(MaterialOcclusionInfo.x>0&&z<occlusionRange){
         float4 material=tex2Dlod(BumpMaterial,float4(q,0,0)),occ=tex2Dlod(MaterialOcclusion,float4(q,0,0));
-        float capturedZ=material.b/max(material.a,.001);
+        float capturedZ=abs(material.b)/max(material.a,.001);
         float valid=material.a>.02&&occ.a>.02&&abs(capturedZ-z)<max(.025,z*.0015);
-        float fade=saturate((BumpControl.y-z)/max(BumpControl.y*.25,1));
+        float fade=saturate((occlusionRange-z)/max(occlusionRange*.25,1));
         occlusion=lerp(1,saturate(occ.rgb/max(occ.a,.001)),valid*fade);
     }
     float3 delta=0;
@@ -1311,6 +1318,7 @@ float4 MaterialComposite(float2 uv:TEXCOORD0):COLOR0 {
     color.rgb=max(color.rgb+albedoT*(delta*visibility+cavity)*tex2D(MaterialFog,uv).a,0);
     return color;
 }
+
 
 // Separate geometry pass: c0..3 contains the light's world->clip matrix.
 row_major float4x4 LightMatrix:register(c0);
@@ -1346,4 +1354,37 @@ float4 ShadowUnion(float2 uv:TEXCOORD0):COLOR0 {
         if(c<1){c+=UnionOffset.z;cached=c<=1?max(c,0):1;}
     }
     return min(own,cached).xxxx;
+}
+
+// Explicit material pixel-coverage profiling.
+float4 MaterialAudit(float2 uv:TEXCOORD0):COLOR0 {
+    float2 q=depthUV(uv);float d=normalizedDepth(q);float z=viewDistance(d);
+    if(BumpControl.w>5.5){
+        clip((d<.99999&&waterDistance(q,d)<=0)?1:-1);
+        float limit=BumpControl.w>7.5?MaterialOcclusionInfo.y:BumpControl.w>6.5?BumpControl.y-max(BumpControl.y*.25,1):BumpControl.y;
+        clip(z<limit?1:-1);return 0;
+    }
+    float4 material=tex2Dlod(BumpMaterial,float4(q,0,0));
+    float valid=material.a>.02&&abs(abs(material.b)/max(material.a,.001)-z)<max(.025,z*.0015);
+    if(BumpControl.w>3.5){
+        clip(material.a>.02?1:-1);
+        if(BumpControl.w>4.5)clip(valid?-1:1);
+        return 0;
+    }
+    clip((valid&&d<.99999&&waterDistance(q,d)<=0)?1:-1);
+    if(BumpControl.w>.5&&BumpControl.w<1.5){
+        float3 v=viewPositionDistance(q,z);
+        float3 relative=v.x*InverseView[0].xyz+v.y*InverseView[1].xyz+v.z*InverseView[2].xyz;
+        float3 normal=tex2Dlod(NormalBuffer,float4(uv,0,0)).xyz;
+        float3 detail=autoBumpNormal(q,relative,normal,z,InverseView[0].xyz,InverseView[1].xyz,InverseView[2].xyz);
+        clip(length(detail-normal)>.001?1:-1);
+    }
+    if(BumpControl.w>1.5){
+        float occlusionRange=MaterialOcclusionInfo.y>0?MaterialOcclusionInfo.y:BumpControl.y;
+        float4 occ=tex2Dlod(MaterialOcclusion,float4(q,0,0));
+        float3 value=saturate(occ.rgb/max(occ.a,.001));
+        clip((MaterialOcclusionInfo.x>0&&z<occlusionRange&&occ.a>.02)?1:-1);
+        clip((BumpControl.w<2.5?value.b:min(value.r,value.g))<.999?1:-1);
+    }
+    return 0;
 }

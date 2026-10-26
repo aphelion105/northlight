@@ -1,4 +1,5 @@
 #pragma once
+#include "material_profile.h"
 #include "settings_schema.h"
 #include "stream_hooks.h"
 #include "weather_memory.h"
@@ -2523,9 +2524,12 @@ public:
     unsigned capturePhaseReadsLastFrame()const{return lastCapturePhaseReads;} /* 0.3.150: clock reads of the capture-phase subset (inside the capture timers), likewise */
     bool hasContext()const{return valid&&!failed&&!workerFault();}
     NorthlightQuality::Preset qualityPreset()const{return quality.preset;}
+    NorthlightMaterialProfile* materialProfile=nullptr;
+    void setMaterialProfiler(NorthlightMaterialProfile* profile){materialProfile=profile;}
+    NorthlightDrawSnapshot::Frame& captureSources(){return replaySnapshots;}
     const NorthlightQuality::Settings& surfaceSettings()const{return quality;}
-    IDirect3DTexture9* materialDetail=nullptr,*materialOcclusion=nullptr;float materialBumpGain=0,materialBumpDistance=48;
-    void setMaterialDetail(IDirect3DTexture9* texture,float gain,float distance,IDirect3DTexture9* occlusion=nullptr){materialDetail=texture;materialBumpGain=gain;materialBumpDistance=distance;materialOcclusion=occlusion;}
+    IDirect3DTexture9* materialDetail=nullptr,*materialOcclusion=nullptr;float materialBumpGain=0,materialBumpDistance=48,materialOcclusionDistance=8;
+    void setMaterialDetail(IDirect3DTexture9* texture,float gain,float distance,IDirect3DTexture9* occlusion=nullptr,float occlusionDistance=8.f){materialDetail=texture;materialBumpGain=gain;materialBumpDistance=distance;materialOcclusion=occlusion;materialOcclusionDistance=occlusionDistance;}
     void materialLight(float* light)const{
         std::fill(light,light+4,0.f);if(!hasContext())return;
         const unsigned body=NorthlightGI::dot(sourceColors[1],sourceColors[1])>NorthlightGI::dot(sourceColors[0],sourceColors[0])?1:0;
@@ -2985,7 +2989,9 @@ public:
         if(!ok){if(terrainFailures++<12)logf("TERRAIN UP snapshot rejected: %s hr=%08lx type=%u stride=%u",NorthlightTerrainCapture::rejectName(why.reason),(unsigned long)why.hr,why.positionType,why.stride);return;}
         appendTerrain(std::make_shared<const NorthlightTerrainCapture::MeshSnapshot>(std::move(snapshot)));
     }
-    void capture(D3DPRIMITIVETYPE type,INT base,UINT min,UINT vertexTotal,UINT start,UINT count,bool indexed,IDirect3DVertexShader9* current,bool selfCheck,bool sample){
+    bool terrainShader(IDirect3DVertexShader9* shader){return lookupShader(shader).terrain;}
+    void capture(D3DPRIMITIVETYPE type,INT base,UINT min,UINT vertexTotal,UINT start,UINT count,bool indexed,IDirect3DVertexShader9* current,bool selfCheck,bool sample,NorthlightCaptureMetadata::PositionBounds* positions=nullptr){
+        if(positions)positions->known=false;
         constantSelfCheck=selfCheck;sample=sample&&NorthlightDiagnostics::enabled();
         if(!ready()||replays.size()>=4096||(type!=D3DPT_TRIANGLELIST&&type!=D3DPT_TRIANGLESTRIP))return;
         captureSampled|=sample;bool isTerrain=lookupShader(current).terrain;
@@ -2998,6 +3004,7 @@ public:
             TerrainSnapshot snapshot;NorthlightTerrainCapture::Diagnostics why;
             if(!terrainBoundsCache.readMeshShared(d,type,base,min,vertexTotal,start,count,context.view,snapshot,&why)){
                 if(terrainFailures++<12)logf("TERRAIN snapshot rejected: %s hr=%08lx vertexUsage=%lx indexUsage=%lx type=%u stride=%u",NorthlightTerrainCapture::rejectName(why.reason),(unsigned long)why.hr,(unsigned long)why.vertexUsage,(unsigned long)why.indexUsage,why.positionType,why.stride);return;}
+            if(positions){std::copy(why.low,why.low+3,positions->low);std::copy(why.high,why.high+3,positions->high);positions->known=true;}
             appendTerrain(snapshot);return;
         }
         captureModel(type,base,min,vertexTotal,start,count,indexed,current,sample,nullptr,D3DFMT_INDEX16,nullptr,0);
@@ -4461,7 +4468,7 @@ public:
         float materialLight[4][4]={{c[28][0],c[28][1],c[28][2],0},{sourceDirections[1].x,sourceDirections[1].y,sourceDirections[1].z,0},{},{}};
         for(unsigned source=0;source<2;++source)if(sourceActive[source]){materialLight[2+source][0]=sourceColors[source].x;materialLight[2+source][1]=sourceColors[source].y;materialLight[2+source][2]=sourceColors[source].z;}
         d->SetPixelShaderConstantF(74,materialLight[0],4);
-        const float occlusionInfo[]={materialOcclusion?1.f:0.f,0,0,0};d->SetPixelShaderConstantF(78,occlusionInfo,1);
+        const float occlusionInfo[]={materialOcclusion?1.f:0.f,materialOcclusionDistance,0,0};d->SetPixelShaderConstantF(78,occlusionInfo,1);
         d->SetPixelShaderConstantF(73,bumpControl,1);d->SetTexture(9,materialDetail);
         for(auto state:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})d->SetSamplerState(9,state,D3DTEXF_POINT);
         d->SetSamplerState(9,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(9,D3DSAMP_SRGBTEXTURE,FALSE);
@@ -4484,6 +4491,53 @@ public:
         if(effects.gi&&!check(quad(w/2,h/2),"world GI pass"))return false;
         d->SetTexture(8,textures[8]); /* 0.3.197: restore the frame-start binding */
         if(profile)profile->mark("GI"); /* task 43: the GI pass alone; the lamp batches are LocalLights */
+        {   // Temporal stabilization: light + history -> temporalLight[cur] (MRT with view distance).
+            const unsigned cur=temporalIndex,prev=1-temporalIndex;
+            d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE);d->SetRenderState(D3DRS_COLORWRITEENABLE,15);
+            // 0.3.174: s10 switches from ProbeMetadata (WorldGI, done) to the AO/bloom target for the
+            // removal smoothing and WorldComposite; the frame-start loop rebinds probe[4] POINT.
+            d->SetTexture(10,foldAO?foldAO:neutralAO);d->SetSamplerState(10,D3DSAMP_MINFILTER,D3DTEXF_LINEAR);d->SetSamplerState(10,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);
+            // 0.3.185: the removal smoothing is its own half-res pass, light -> smoothLight (a copy where nothing is
+            // removed; skipped without a drawn source, c30.y=0, where s9 is the raw light). It reads s0 Scene, s1 Depth, s8 light,
+            // s10 AO, s12 baseline, s14 normals and s15 current distance (POINT; histories are read later).
+            d->SetTexture(8,light);d->SetTexture(12,baselineLight);d->SetTexture(14,normalBuffer);d->SetTexture(15,c[30][1]>0?temporalDepth[temporalIndex]:nullptr); /* s12 stays bound for the temporal pass and the composite */
+            d->SetSamplerState(14,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(14,D3DSAMP_MAGFILTER,D3DTEXF_POINT);
+            d->SetSamplerState(15,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(15,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);
+            d->SetSamplerState(15,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(15,D3DSAMP_MAGFILTER,D3DTEXF_POINT);d->SetSamplerState(15,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(15,D3DSAMP_SRGBTEXTURE,FALSE);
+            if(!check(d->SetRenderTarget(0,smoothSurface),"removal smoothing target"))return false;
+            const bool removalDrawn=c[30][1]>0; // no drawn source: smoothRemoval would be a pure copy, TemporalLight reads the raw light
+            if(removalDrawn){d->SetPixelShader(removalPS);if(!check(quad(w/2,h/2),"removal smoothing pass"))return false;}
+            if(profile)profile->mark("RemovalSmooth");
+            d->SetTexture(15,nullptr); // Current distance becomes TemporalLight's MRT again; history reads the other index.
+            if(!check(d->SetRenderTarget(0,temporalLightSurface[cur]),"temporal light target")||!check(d->SetRenderTarget(1,temporalDepthSurface[cur]),"temporal depth target"))return false;
+            d->SetRenderState(D3DRS_COLORWRITEENABLE1,15);
+            // 0.3.171: LightHistory (s14) is read bilinearly at the unrounded reprojection; the depth history
+            // (s15, R32F) stays POINT. The normals setup rebinds s14 POINT every frame.
+            // 0.3.185: SmoothedLighting is s9 (FogBuffer's slot: idle until the blur, which binds it, and the composite
+            // rebinds it; s9 is POINT here, LINEAR again afterwards), s8 stays the raw buffer for the neighbourhood clamp.
+            d->SetTexture(9,removalDrawn?smoothLight:light);d->SetSamplerState(9,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(9,D3DSAMP_MAGFILTER,D3DTEXF_POINT);
+            d->SetTexture(14,temporalLight[prev]);d->SetTexture(15,temporalDepth[prev]);
+            for(unsigned sampler=14;sampler<16;++sampler){d->SetSamplerState(sampler,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(sampler,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);d->SetSamplerState(sampler,D3DSAMP_MINFILTER,sampler==14?D3DTEXF_LINEAR:D3DTEXF_POINT);d->SetSamplerState(sampler,D3DSAMP_MAGFILTER,sampler==14?D3DTEXF_LINEAR:D3DTEXF_POINT);d->SetSamplerState(sampler,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(sampler,D3DSAMP_SRGBTEXTURE,FALSE);}
+            d->SetPixelShader(temporalPS);if(!check(quad(w/2,h/2),"temporal light pass"))return false;
+            d->SetRenderTarget(1,nullptr);d->SetTexture(14,nullptr);d->SetTexture(15,nullptr);d->SetTexture(9,nullptr);d->SetSamplerState(9,D3DSAMP_MINFILTER,D3DTEXF_LINEAR);d->SetSamplerState(9,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);
+            temporalIndex=prev;temporalValid=true;memcpy(previousView,context.view,64);previousCamera=vec(context.camera);temporalMap=active->map;
+        }
+        if(profile)profile->mark("TemporalLight");
+        const bool currentLocalLighting=debug==0&&(localDirectCount||pointReady);
+        d->SetTexture(8,nullptr);
+        if(currentLocalLighting){
+            d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);
+            if(!check(d->SetRenderTarget(0,lightSurface),"current local light target")||!check(d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0),"current local light clear"))return false;
+            d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE);d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_ONE);d->SetRenderState(D3DRS_BLENDOP,D3DBLENDOP_ADD);
+            d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE);d->SetRenderState(D3DRS_COLORWRITEENABLE,7);
+        }
+        d->SetPixelShaderConstantF(0,&c[0][0],68);d->SetPixelShaderConstantF(73,bumpControl,1);d->SetPixelShaderConstantF(74,materialLight[0],4);d->SetPixelShaderConstantF(78,occlusionInfo,1);
+        d->SetTexture(9,materialDetail);d->SetTexture(12,baselineLight);d->SetTexture(14,normalBuffer);
+        for(unsigned sampler:{9u,14u}){
+            d->SetSamplerState(sampler,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(sampler,D3DSAMP_MAGFILTER,D3DTEXF_POINT);
+            d->SetSamplerState(sampler,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(sampler,D3DSAMP_SRGBTEXTURE,FALSE);
+            d->SetSamplerState(sampler,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(sampler,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);
+        }
         if(localDirectCount&&debug==0){
             profileSplit(profile,lightSurface); /* sample frames: GI's timestamp ends here, LocalLights' below */
             d->SetPixelShader(localDirectPS);d->SetRenderState(D3DRS_SCISSORTESTENABLE,NorthlightLocalLightScissor::Enabled);
@@ -4519,11 +4573,12 @@ public:
         }
         if(profile)profile->mark("LocalLights");bucket(NorthlightEffectsBuckets::GI);d->SetRenderState(D3DRS_COLORWRITEENABLE,15);
         if(debug==0&&pointReady){
-            renderPointLighting(depth,waterMask,w,h,nearZ,farZ,minZ,maxZ);
-            // Optional pass temporarily owns PS c0..9 and s0..2. Restore the
+            const float sunEnergy=sourceActive[0]?std::max({sourceColors[0].x,sourceColors[0].y,sourceColors[0].z}):0.f;
+            renderPointLighting(depth,waterMask,w,h,nearZ,farZ,minZ,maxZ,c[52][1],lampSunlitCut,c[20][2],sunEnergy);
+            // Optional pass temporarily owns PS c0..12 and s0..5. Restore the
             // entire world bank and texture/filter contract before fog/final.
             d->SetPixelShaderConstantF(0,&c[0][0],68);
-            for(unsigned sampler=0;sampler<3;++sampler){
+            for(unsigned sampler=0;sampler<6;++sampler){
                 d->SetTexture(sampler,textures[sampler]);
                 d->SetSamplerState(sampler,D3DSAMP_MINFILTER,sampler==0?D3DTEXF_LINEAR:D3DTEXF_POINT);
                 d->SetSamplerState(sampler,D3DSAMP_MAGFILTER,sampler==0?D3DTEXF_LINEAR:D3DTEXF_POINT);
@@ -4532,38 +4587,7 @@ public:
         }
         // Task 43: the old PointLighting interval in three marks: PointLight (the shadowed point lamp), RemovalSmooth, TemporalLight.
         if(profile)profile->mark("PointLight");
-        {   // Temporal stabilization: light + history -> temporalLight[cur] (MRT with view distance).
-            const unsigned cur=temporalIndex,prev=1-temporalIndex;
-            d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE);d->SetRenderState(D3DRS_COLORWRITEENABLE,15);
-            // 0.3.174: s10 switches from ProbeMetadata (WorldGI, done) to the AO/bloom target for the
-            // removal smoothing and WorldComposite; the frame-start loop rebinds probe[4] POINT.
-            d->SetTexture(10,foldAO?foldAO:neutralAO);d->SetSamplerState(10,D3DSAMP_MINFILTER,D3DTEXF_LINEAR);d->SetSamplerState(10,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);
-            // 0.3.185: the removal smoothing is its own half-res pass, light -> smoothLight (a copy where nothing is
-            // removed; skipped without a drawn source, c30.y=0, where s9 is the raw light). It reads s0 Scene, s1 Depth, s8 light,
-            // s10 AO, s12 baseline, s14 normals and s15 current distance (POINT; histories are read later).
-            d->SetTexture(8,light);d->SetTexture(12,baselineLight);d->SetTexture(14,normalBuffer);d->SetTexture(15,c[30][1]>0?temporalDepth[temporalIndex]:nullptr); /* s12 stays bound for the temporal pass and the composite */
-            d->SetSamplerState(14,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(14,D3DSAMP_MAGFILTER,D3DTEXF_POINT);
-            d->SetSamplerState(15,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(15,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);
-            d->SetSamplerState(15,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(15,D3DSAMP_MAGFILTER,D3DTEXF_POINT);d->SetSamplerState(15,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(15,D3DSAMP_SRGBTEXTURE,FALSE);
-            if(!check(d->SetRenderTarget(0,smoothSurface),"removal smoothing target"))return false;
-            const bool removalDrawn=c[30][1]>0; // no drawn source: smoothRemoval would be a pure copy, TemporalLight reads the raw light
-            if(removalDrawn){d->SetPixelShader(removalPS);if(!check(quad(w/2,h/2),"removal smoothing pass"))return false;}
-            if(profile)profile->mark("RemovalSmooth");
-            d->SetTexture(15,nullptr); // Current distance becomes TemporalLight's MRT again; history reads the other index.
-            if(!check(d->SetRenderTarget(0,temporalLightSurface[cur]),"temporal light target")||!check(d->SetRenderTarget(1,temporalDepthSurface[cur]),"temporal depth target"))return false;
-            d->SetRenderState(D3DRS_COLORWRITEENABLE1,15);
-            // 0.3.171: LightHistory (s14) is read bilinearly at the unrounded reprojection; the depth history
-            // (s15, R32F) stays POINT. The normals setup rebinds s14 POINT every frame.
-            // 0.3.185: SmoothedLighting is s9 (FogBuffer's slot: idle until the blur, which binds it, and the composite
-            // rebinds it; s9 is POINT here, LINEAR again afterwards), s8 stays the raw buffer for the neighbourhood clamp.
-            d->SetTexture(9,removalDrawn?smoothLight:light);d->SetSamplerState(9,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(9,D3DSAMP_MAGFILTER,D3DTEXF_POINT);
-            d->SetTexture(14,temporalLight[prev]);d->SetTexture(15,temporalDepth[prev]);
-            for(unsigned sampler=14;sampler<16;++sampler){d->SetSamplerState(sampler,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(sampler,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);d->SetSamplerState(sampler,D3DSAMP_MINFILTER,sampler==14?D3DTEXF_LINEAR:D3DTEXF_POINT);d->SetSamplerState(sampler,D3DSAMP_MAGFILTER,sampler==14?D3DTEXF_LINEAR:D3DTEXF_POINT);d->SetSamplerState(sampler,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(sampler,D3DSAMP_SRGBTEXTURE,FALSE);}
-            d->SetPixelShader(temporalPS);if(!check(quad(w/2,h/2),"temporal light pass"))return false;
-            d->SetRenderTarget(1,nullptr);d->SetTexture(14,nullptr);d->SetTexture(15,nullptr);d->SetTexture(9,nullptr);d->SetSamplerState(9,D3DSAMP_MINFILTER,D3DTEXF_LINEAR);d->SetSamplerState(9,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);
-            temporalIndex=prev;temporalValid=true;memcpy(previousView,context.view,64);previousCamera=vec(context.camera);temporalMap=active->map;
-        }
-        if(profile)profile->mark("TemporalLight");
+
         bucket(NorthlightEffectsBuckets::PointLighting);
         // Source visibility (1x1 per source, temporally smoothed): drives the
         // fog aureole when the body is behind geometry; broad scattering uses
@@ -4701,6 +4725,7 @@ public:
         d->SetSamplerState(15,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(15,D3DSAMP_MAGFILTER,D3DTEXF_POINT);
         d->SetSamplerState(15,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(15,D3DSAMP_SRGBTEXTURE,FALSE);
         d->SetSamplerState(15,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(15,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);
+        d->SetTexture(3,currentLocalLighting?light:neutralZero);
         d->SetRenderTarget(0,fullMaterial?colorSurface:targetSurface);d->SetTexture(8,temporalLight[1-temporalIndex]);d->SetTexture(9,fogResolved?fogBlurred:fog);d->SetPixelShader(finalPS);
         /* 0.3.212 (task 32): with this frame's name marks the quad draws with the world depth-stencil bound and a stencil test that rejects marked pixels (they keep the game's colour in the target); no marks: the quad as before. */
         bool compositeOk=false;
@@ -4718,6 +4743,7 @@ public:
             d->SetPixelShader(materialPS);compositeOk=check(quad(w,h),"full-resolution material light");
          }
          if(profile)profile->mark("MaterialDetail");}
+        d->SetTexture(3,textures[3]);
         d->SetTexture(15,nullptr);d->SetTexture(2,nullptr);d->SetSamplerState(2,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(2,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);
         if(!compositeOk)return false;composited=true;d->SetTexture(13,regionalFogTexture);if(profile)profile->mark("WorldComposite");
         if(diagnosticCapture){

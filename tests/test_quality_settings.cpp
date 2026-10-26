@@ -63,13 +63,13 @@ int main(){
        and the 0.3.176 PointShadows 0 (off in every preset). */
     const Settings d{};
     // EquipmentLights is appended by upstream; material key order remains stable.
-    assert(sizeof(d.origin)==85&&std::string(Keys[81].name)=="EquipmentLights");
+    assert(sizeof(d.origin)==86&&std::string(Keys[81].name)=="EquipmentLights");
     assert(parse("[Quality]\nAOMethod=GTAO\nAOStrength=150\nAORadius=300\n").aoMethod==3);
     assert(parse("[Quality]\nAOMethod=VXAO\n").aoMethod==0);
     assert(std::string(Keys[81].name)=="EquipmentLights"&&std::string(Keys[82].name)=="AOMethod"&&std::string(Keys[84].name)=="AORadius");
     {const auto combined=parse("[Quality]\nEquipmentLights=0\nAOMethod=GTAO\nAOStrength=150\nAORadius=300\n");
      assert(combined.equipmentLights==0&&combined.aoMethod==3&&combined.aoStrength==150&&combined.aoRadius==300);
-     for(unsigned i=0;i<85;++i)assert(combined.origin[i]==(i>=81?'f':'d'));}
+     for(unsigned i=0;i<85;++i)assert(combined.origin[i]==(i>=81?'f':'d'));assert(combined.origin[85]=='d');}
     assert(d.minSkinnedTriangles==100&&d.captureBudgetMiB==32&&d.actorShadowBudgetMiB==0&&d.farShadowInterval==4);
     assert(d.localLightLimit==48&&d.pointShadows==0&&d.pointShadowRefreshMs==0&&d.shadowDirectionSteps==2048);
     assert(parse(nullptr)==d&&parse("")==d&&parse("[Quality]\nPreset=Quality\n")==d&&preset(Preset::Quality)==d);
