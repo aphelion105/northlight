@@ -67,7 +67,24 @@ struct Presentation {
         return FAILED(rollback)?rollback:S_FALSE;
     }
     HRESULT reset(IDirect3DDevice9* realDevice,IDirect3DDevice9* calls,D3DPRESENT_PARAMETERS* game){
+        if(!game)return D3DERR_INVALIDCALL;
         const bool wasActive=active;active=false;
+        Presentation requested=*this;requested.logical=*game;
+        if(wasActive&&requested.eligible()&&game->BackBufferWidth&&game->BackBufferHeight){
+            // An active HDR swapchain already has the required format support.
+            // Reset it once in HDR rather than creating an intermediate SDR chain.
+            const auto legacy=*game;auto actual=legacy;actual.BackBufferFormat=D3DFMT_A16B16G16R16F;
+            HRESULT status=calls->Reset(&actual);
+            if(SUCCEEDED(status)){
+                *game=actual;game->BackBufferFormat=legacy.BackBufferFormat;logical=*game;
+                status=colorSpace(realDevice,ScRgb);
+                if(SUCCEEDED(status)){active=true;reason="active";return lastStatus=S_OK;}
+            }
+            reason="dxvk-hdr-reset-failed";lastStatus=status;
+            *game=legacy;const HRESULT rollback=calls->Reset(game);
+            if(SUCCEEDED(rollback)){logical=*game;colorSpace(realDevice,0);}
+            return FAILED(rollback)?rollback:S_OK;
+        }
         HRESULT hr=calls->Reset(game);if(FAILED(hr))return hr;
         logical=*game;if(wasActive)colorSpace(realDevice,0);
         if(!settings.requested)return hr;
