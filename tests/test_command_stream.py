@@ -89,7 +89,7 @@ BODIES = {
     'RECT': 'LONG left;LONG top;LONG right;LONG bottom;', 'POINT': 'LONG x;LONG y;', 'D3DRECT': 'LONG x1;LONG y1;LONG x2;LONG y2;',
     'D3DVIEWPORT9': 'DWORD X;DWORD Y;DWORD Width;DWORD Height;float MinZ;float MaxZ;',
     'D3DVERTEXELEMENT9': 'WORD Stream;WORD Offset;BYTE Type;BYTE Method;BYTE Usage;BYTE UsageIndex;',
-    'D3DPRESENT_PARAMETERS': 'UINT BackBufferWidth;UINT BackBufferHeight;D3DFORMAT BackBufferFormat;UINT BackBufferCount;D3DMULTISAMPLE_TYPE MultiSampleType;DWORD MultiSampleQuality;BOOL Windowed;DWORD pad[8];',
+    'D3DPRESENT_PARAMETERS': 'UINT BackBufferWidth;UINT BackBufferHeight;D3DFORMAT BackBufferFormat;UINT BackBufferCount;D3DMULTISAMPLE_TYPE MultiSampleType;DWORD MultiSampleQuality;BOOL Windowed;DWORD Flags;UINT FullScreen_RefreshRateInHz;DWORD PresentationInterval;DWORD pad[5];',
     'D3DDEVICE_CREATION_PARAMETERS': 'UINT AdapterOrdinal;unsigned DeviceType;HWND hFocusWindow;DWORD BehaviorFlags;',
     'RGNDATAHEADER': 'DWORD dwSize;DWORD iType;DWORD nCount;DWORD nRgnSize;RECT rcBound;', 'RGNDATA': 'RGNDATAHEADER rdh;char Buffer[1];',
 }
