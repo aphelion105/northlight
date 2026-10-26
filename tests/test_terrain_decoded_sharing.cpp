@@ -42,8 +42,53 @@ static void exact(const MeshSnapshot& mesh,const Device& d,unsigned start,unsign
     for(size_t i=0;i<reference.chunks.size();++i){const auto& a=reference.chunks[i];const auto& b=mesh.bounds.chunks[i];assert(a.x==b.x&&a.y==b.y&&a.minX==b.minX&&a.maxX==b.maxX&&a.minY==b.minY&&a.maxY==b.maxY);}
 }
 static bool read(FrameCache& cache,Device& d,unsigned start,unsigned count,std::shared_ptr<const MeshSnapshot>& mesh,D3DPRIMITIVETYPE topology=D3DPT_TRIANGLELIST){cache.clearFrame();return cache.readMeshShared(&d,topology,0,0,256,start,topology==D3DPT_TRIANGLELIST?count/3:count-2,d.view,mesh);}
-[[maybe_unused]] static std::shared_ptr<const MeshSnapshot> capture(FrameCache& cache,Device& d,unsigned start,unsigned count=192,D3DPRIMITIVETYPE topology=D3DPT_TRIANGLELIST){std::shared_ptr<const MeshSnapshot> mesh;assert(read(cache,d,start,count,mesh,topology));exact(*mesh,d,start,count,topology);assert(cache.persistentBytes()<=cache.persistentByteLimit());assert(d.vb.refs==1&&d.ib.refs==1&&d.declaration.refs==1&&d.vb.locks==d.vb.unlocks&&d.ib.locks==d.ib.unlocks);return mesh;}
+[[maybe_unused]] static std::shared_ptr<const MeshSnapshot> capture(FrameCache& cache,Device& d,unsigned start,unsigned count=192,D3DPRIMITIVETYPE topology=D3DPT_TRIANGLELIST){std::shared_ptr<const MeshSnapshot> mesh;assert(read(cache,d,start,count,mesh,topology)&&"DECODED_XYZ_MISMATCH");exact(*mesh,d,start,count,topology);assert(cache.persistentBytes()<=cache.persistentByteLimit());assert(d.vb.refs==1&&d.ib.refs==1&&d.declaration.refs==1&&d.vb.locks==d.vb.unlocks&&d.ib.locks==d.ib.unlocks);return mesh;}
 static void tracked(FrameCache& cache){cache.setIdentityProvider(identity);cache.setVersionProvider(version);}
+static void indexPlans(){
+    for(bool wide:{false,true})for(auto topology:{D3DPT_TRIANGLELIST,D3DPT_TRIANGLESTRIP}){
+        Device d;auto p=pattern();p[4]=p[3];setup(d,{p,p,p,p});
+        if(wide){d.ib.desc.Format=D3DFMT_INDEX32;d.ib.bytes.resize(p.size()*4*4);for(size_t i=0;i<p.size()*4;++i){const uint32_t n=p[i%p.size()];std::memcpy(d.ib.bytes.data()+4*i,&n,4);}}
+        auto cache=std::make_unique<FrameCache>();tracked(*cache);auto a=capture(*cache,d,0,192,topology),b=capture(*cache,d,192,192,topology);
+        d.put(1,{-10198,-1180,777});++revisions[0];auto c=capture(*cache,d,384,192,topology);
+        assert(cache->maintenance().indexPlanHits==1&&cache->maintenance().indexPlanIndices==192&&cache->maintenance().indexPlanVertices==96);
+        assert(c->positions[1].z==777&&a->positions[1].z==1&&c!=a&&c!=b&&"INDEX_PLAN_REUSED_OLD_XYZ");
+        const auto entries=cache->persistentEntries();const auto vertex=revisions[0];directUnlockAction=1;
+        auto raced=capture(*cache,d,576,192,topology);directUnlockAction=0;revisions[0]=vertex;
+        assert(cache->maintenance().indexPlanHits==1&&cache->maintenance().directUnstable==1&&!raced->sourceIdentity&&cache->persistentEntries()==entries&&"DIRECT_UNSTABLE_CACHE_PUBLISHED");
+        a.reset();b.reset();c.reset();raced.reset();cache->clearPersistent();assert(!cache->sourceLiveBytes());
+    }
+    for(unsigned change=0;change<4;++change){
+        Device d;setup(d,{pattern(),pattern(),pattern()});auto cache=std::make_unique<FrameCache>();tracked(*cache);
+        capture(*cache,d,0);capture(*cache,d,192);
+        auto topology=D3DPT_TRIANGLELIST;
+        if(change==0){uint16_t n=8;std::memcpy(d.ib.bytes.data()+2*(384+100),&n,2);++revisions[1];}
+        if(change==1)topology=D3DPT_TRIANGLESTRIP;
+        if(change==2){d.stride=32;setup(d,{pattern(),pattern(),pattern()});++revisions[0];++revisions[1];}
+        const auto known=revisions[0];if(change==3)revisions[0]=0;
+        capture(*cache,d,384,192,topology);assert(!cache->maintenance().indexPlanHits);revisions[0]=known;
+    }
+    {Device d;std::vector<uint16_t> p={1,0,2,0,3,0};setup(d,{p,p,p});auto cache=std::make_unique<FrameCache>();tracked(*cache);
+        capture(*cache,d,0,6);capture(*cache,d,6,6);d.ib.desc.Format=D3DFMT_INDEX32;++revisions[1];
+        capture(*cache,d,6,3);assert(!cache->maintenance().indexPlanHits);
+    }
+    // A plan proves the old index sequence, never a new caller's admitted range.
+    for(unsigned invalid=0;invalid<3;++invalid){Device d;setup(d,{pattern(),pattern(),pattern()});auto cache=std::make_unique<FrameCache>();tracked(*cache);capture(*cache,d,0);capture(*cache,d,192);
+        cache->clearFrame();std::shared_ptr<const MeshSnapshot> mesh;Diagnostics why;
+        assert(!cache->readMeshShared(&d,D3DPT_TRIANGLELIST,invalid==2?-1:0,invalid==0?1:0,invalid==1?95:256,384,64,d.view,mesh,&why));
+        assert(why.reason==(invalid==2?RejectReason::VertexRange:RejectReason::IndexRange)&&!mesh);
+    }
+    for(unsigned failure=0;failure<4;++failure){Device d;setup(d,{pattern(),pattern(),pattern()});auto cache=std::make_unique<FrameCache>();tracked(*cache);capture(*cache,d,0);capture(*cache,d,192);const auto entries=cache->persistentEntries();
+        d.vb.failLock=failure==0;directNullLock=failure==1;directUnlockFailure=failure==2;if(failure==3){d.put(1,{NAN,-1180,0});++revisions[0];}
+        cache->clearFrame();std::shared_ptr<const MeshSnapshot> mesh;Diagnostics why;assert(!cache->readMeshShared(&d,D3DPT_TRIANGLELIST,0,0,256,384,64,d.view,mesh,&why));
+        assert(!mesh&&cache->persistentEntries()==entries&&!vertexReadLocked&&d.vb.locks==d.vb.unlocks&&d.ib.locks==d.ib.unlocks);directNullLock=directUnlockFailure=false;
+    }
+    for(long failure=0;failure<30;++failure){const auto before=allocations.load();{Device d;setup(d,{pattern(),pattern(),pattern()});auto cache=std::make_unique<FrameCache>();tracked(*cache);capture(*cache,d,0);capture(*cache,d,192);
+        std::shared_ptr<const MeshSnapshot> mesh;failAfter=failure;bool ok=false;try{ok=read(*cache,d,384,192,mesh);}catch(const std::bad_alloc&){}failAfter=-1;
+        if(ok)exact(*mesh,d,384,192);assert(cache->persistentBytes()<=cache->persistentByteLimit()&&!vertexReadLocked&&d.vb.locks==d.vb.unlocks&&d.ib.locks==d.ib.unlocks);
+        mesh.reset();cache->clearPersistent();assert(!cache->sourceLiveBytes());}assert(allocations.load()==before);
+    }
+    std::puts("PASS exact cold index plans: fresh XYZ, both widths/list/strip/holes, byte/format/topology/stride/unknown fallback, current ranges, racing revisions, lock/finite failures and bounded immutable ownership");
+}
 static void directColdCapture(){
     for(bool wide:{false,true})for(auto topology:{D3DPT_TRIANGLELIST,D3DPT_TRIANGLESTRIP}){
         Device d;auto p=pattern();for(size_t i=0;i<p.size();++i)p[i]=uint16_t(i%3==0?7:i%3==1?129:251);p[4]=p[3];setup(d,{p});
@@ -210,6 +255,6 @@ static void sharedWide(){
 }
 
 int main(int argc,char** argv){if(argc==2){assert(std::string(argv[1])=="--unique");unique();return 0;}
-    directColdCapture();collision();sharing();escaped();expired();failures();offsetSharing();coverageAllocations();offsetPressure();sharedWide();
+    indexPlans();directColdCapture();collision();sharing();escaped();expired();failures();offsetSharing();coverageAllocations();offsetPressure();sharedWide();
     unique();assert(!allocations.load());std::puts("PASS decoded-index exact bytes, own provenance/XYZ, deep mutable values, holes/strip, retained blocks, expired weak overhead, allocation/retain failures and unchanged caps");
 }

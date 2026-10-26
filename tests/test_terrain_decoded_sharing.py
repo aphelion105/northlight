@@ -81,6 +81,10 @@ def main():
             print(label, result.stdout, end='', flush=True)
 
         controls = [
+            ('plan-bytes', 'indexPlan->bytes==scratchRawIndices', 'true', 'DECODED_XYZ_MISMATCH'),
+            ('plan-topology', 'indexPlan->topology==topology', 'true', 'DECODED_XYZ_MISMATCH'),
+            ('plan-stride', 'indexPlan->stride==detail.stride', 'true', 'DECODED_XYZ_MISMATCH'),
+            ('plan-format', 'indexPlan->format==id.Format', 'true', 'DECODED_XYZ_MISMATCH'),
             ('decoded', '&&!std::memcmp(a,b,count*sizeof(*a))', '&&true', 'DECODED_XYZ_MISMATCH'),
             ('offsets', 'if(std::memcmp(stored+i,&value,sizeof value))return false;',
              '(void)value;', 'OFFSET_LAYOUT_REVALIDATION_MISMATCH'),

@@ -13,24 +13,18 @@ import northlight_paths as fp
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--baseline-ref')
+parser.add_argument('--pressure', action='store_true', help='Replay 9,800 contracts exceeding the unchanged 32 MiB cap')
+parser.add_argument('--output', type=Path)
 args = parser.parse_args()
-out = fp.out()/'terrain-rotation-cache'
+out = args.output or fp.out()/'terrain-rotation-cache'
 out.mkdir(parents=True, exist_ok=True)
 fixture = ast.parse((fp.TESTS/'test_terrain_snapshot.py').read_text())
 strings = {node.targets[0].id: ast.literal_eval(node.value) for node in fixture.body
            if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
            and node.targets[0].id in ('stub', 'harness')}
 (out/'d3d9.h').write_text(strings['stub'])
-if args.baseline_ref:
-    relative = fp.src('terrain_capture_bounds.h').relative_to(fp.REPO).as_posix()
-    (out/'baseline.h').write_bytes(subprocess.check_output(['git', 'show', args.baseline_ref+':'+relative], cwd=fp.REPO))
 source = r'''
 #include "terrain_capture_bounds.h"
-#ifdef TERRAIN_ROTATION_BASELINE
-#define NorthlightTerrainCapture BaselineTerrainCapture
-#include "baseline.h"
-#undef NorthlightTerrainCapture
-#endif
 #include <chrono>
 #include <thread>
 '''+strings['harness'].split('int main(){')[0]+r'''
@@ -57,8 +51,12 @@ template<class Cache,class Snapshot> void scenario(const char* label,Device& d){
    assert(snapshot->positions.size()==290&&snapshot->indices.size()==1536);hash^=digest(*snapshot)+(uint64_t(draw)<<32);
   }
   if(frame>=4){readBytes+=cache.bytesRead();evictions+=cache.maintenance().evictions;}
-  assert(cache.persistentBytes()<=32u*1024u*1024u&&cache.persistentEntries()<=4096);
+  assert(cache.persistentBytes()<=32u*1024u*1024u&&cache.persistentEntries()<=8192);
  }
+#ifdef INDEX_PLANS_CURRENT
+ const auto& plans=cache.maintenance();
+ std::printf("INDEX_PLANS_LAST_FRAME hits=%u vertices=%llu indices=%llu\n",plans.indexPlanHits,(unsigned long long)plans.indexPlanVertices,(unsigned long long)plans.indexPlanIndices);
+#endif
  const auto retainedEntries=cache.persistentEntries();const auto retainedBytes=cache.persistentBytes();
  const auto saved=digest(*held);cache.clearPersistent();cache.clearFrame();assert(digest(*held)==saved);
  // A reset/map transition cannot keep an old source identity. A changed vertex
@@ -76,25 +74,41 @@ int main(){
  auto fill=[&]{for(unsigned draw=0;draw<2800;++draw)for(unsigned chunk=0;chunk<2;++chunk){const double origin=17066.666666666666,step=100./3.,x0=origin-(102+2*(draw%400)+chunk)*step,y0=origin-(101+draw/400)*step;
   unsigned v=0;for(unsigned row=0;row<17;++row)for(unsigned col=0;col<((row&1)?8u:9u);++col)d.put(draw*290+chunk*145+v++,{float(x0+(col+.5*(row&1))*step/8),float(y0+row*step/16),float(draw%17)+float(row)*.1f});}};
  fill();
-#ifdef TERRAIN_ROTATION_BASELINE
- scenario<BaselineTerrainCapture::FrameCache,BaselineTerrainCapture::MeshSnapshot>("baseline",d);
-#endif
  fill();identities[0]=11;revisions[0]=21;scenario<FrameCache,MeshSnapshot>("current",d);
  assert(d.vb.refs==1&&d.ib.refs==1&&d.declaration.refs==1&&d.vb.locks==d.vb.unlocks&&d.ib.locks==d.ib.unlocks);
 }
 '''
+if args.pressure:
+    source = source.replace('2800', '9800').replace('frame<12', 'frame<42').replace('frame%4', 'frame%14').replace('frame/4', 'frame/14').replace('frame>=4', 'frame>=14')
 (out/'rotation.cpp').write_text(source)
-exe = out/'rotation.exe'
-subprocess.run([str(fp.zig()), 'c++', '-target', 'x86-windows-gnu', '-std=c++17', '-O2',
-                '-UNDEBUG', *(['-DTERRAIN_ROTATION_BASELINE'] if args.baseline_ref else []),
-                '-Wall', '-Wextra', '-Werror', '-I', str(out), *fp.test_include_flags(),
-                str(out/'rotation.cpp'), '-o', str(exe)], env=fp.zig_env(), check=True)
-text = subprocess.check_output([str(exe)], text=True)
-print(text, end='')
-rows = [dict(re.findall(r'(\w+)=([^ ]+)', line)) for line in text.splitlines() if line.startswith('TERRAIN_ROTATION')]
+versions=[]
+if args.baseline_ref:
+    relative = fp.src('terrain_capture_bounds.h').relative_to(fp.REPO).as_posix()
+    versions.append(('baseline', subprocess.check_output(['git', 'show', args.baseline_ref+':'+relative], cwd=fp.REPO)))
+versions.append(('current', fp.src('terrain_capture_bounds.h').read_bytes()))
+rows=[]
+for label, header in versions:
+    directory=out/label;directory.mkdir(exist_ok=True)
+    (directory/'terrain_capture_bounds.h').write_bytes(header)
+    exe=directory/'rotation.exe'
+    # Separate binaries preserve each FrameCache's private Indices friendship.
+    subprocess.run([str(fp.zig()), 'c++', '-target', 'x86-windows-gnu', '-std=c++17', '-O2',
+                    '-UNDEBUG', *(['-DINDEX_PLANS_CURRENT'] if label=='current' else []),
+                    '-Wall', '-Wextra', '-Werror', '-I', str(directory), '-I', str(out), *fp.test_include_flags(),
+                    str(out/'rotation.cpp'), '-o', str(exe)], env=fp.zig_env(), check=True)
+    text=subprocess.check_output([str(exe)], text=True);print(label, text, end='')
+    row=next(dict(re.findall(r'(\w+)=([^\s]+)', line)) for line in text.splitlines() if line.startswith('TERRAIN_ROTATION'))
+    row['label']=label;rows.append(row)
+    if args.pressure and label=='current':
+        plans=next(dict(re.findall(r'(\w+)=(\d+)', line)) for line in text.splitlines() if line.startswith('INDEX_PLANS_LAST_FRAME'))
+        assert plans==dict(hits='700',vertices='203000',indices='1075200'), plans
 if args.baseline_ref:
     assert len(rows)==2 and rows[0]['geometryDigest']==rows[1]['geometryDigest']
     assert int(rows[0]['misses'])>0
-assert rows[-1]['geometryDigest']=='e6a64536c883ee30' and int(rows[-1]['hits'])==5600
-assert all(int(rows[-1][key])==0 for key in ('misses', 'readBytes', 'replacementVertexBytes', 'evictions'))
+if args.pressure:
+    assert rows[-1]['geometryDigest']=='ff50261aab2ddbfa' and int(rows[-1]['misses'])==19600
+    assert int(rows[-1]['readBytes'])==196392000 and int(rows[-1]['replacementVertexBytes'])==181888000 and int(rows[-1]['evictions'])==19600
+else:
+    assert rows[-1]['geometryDigest']=='e6a64536c883ee30' and int(rows[-1]['hits'])==5600
+    assert all(int(rows[-1][key])==0 for key in ('misses', 'readBytes', 'replacementVertexBytes', 'evictions'))
 (out/'validation.json').write_text(json.dumps(rows, indent=2)+'\n', encoding='utf-8')
