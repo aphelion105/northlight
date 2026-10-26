@@ -54,7 +54,7 @@ struct EmptyState {unsigned clears=0;void clear(){assert(frameCleared);++clears;
 struct EmptyTerrain {
     size_t limit=32u<<20;unsigned clears=0;
     size_t sourceLiveBytes()const{return 0;}size_t sourceMetadataBytes()const{return 0;}
-    void clearPersistent(){assert(frameCleared);++clears;}
+    size_t clearPersistent(NorthlightStreaming::CpuRetirement* =nullptr,NorthlightStreaming::CpuRetirementBatch* =nullptr){assert(frameCleared);++clears;return 0;}
     void setPersistentByteLimit(size_t bytes){assert(frameCleared);limit=bytes;}
 };
 struct EmptyGPU {

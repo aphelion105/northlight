@@ -51,6 +51,7 @@ setter = method(world, 'void setMemoryPressure(')
 body = r'''
 #include "memory_guard.h"
 #include "geometry_memory.h"
+#include "cpu_retirement.h"
 #include <atomic>
 #include <cassert>
 #include <cstdio>
@@ -77,13 +78,13 @@ struct WorldRenderer {
     CacheLimit replaySnapshots{NorthlightDrawSnapshot::Frame::SnapshotCacheLimit};
     CacheLimit terrainBoundsCache{32*MiB},replayGpuCache{64*MiB};
     void setNearReserve(){assert(frameCleared);nearReserve=!memoryPressure;++updates;}
-    MemoryTrim trimMemory(){assert(frameCleared);++trims;return {};}
+    MemoryTrim trimMemory(bool,NorthlightStreaming::CpuRetirementBatch*){assert(frameCleared);++trims;return {};}
     @SETTER@
 };
 struct AutoBumpCaps {
     bool pressure=false,critical=false;unsigned updates=0;
     void setMemoryPressure(bool on){assert(frameCleared);pressure=on;++updates;}
-    void setMemoryPressurePolicy(bool on,bool low){critical=low;if(pressure!=on)setMemoryPressure(on);}
+    void setMemoryPressurePolicy(bool on,bool low,NorthlightStreaming::CpuRetirementBatch*){critical=low;if(pressure!=on)setMemoryPressure(on);}
 };
 struct Controller {
     Guard memoryGuard;WorldRenderer worldState;AutoBumpCaps bumpState;LARGE_INTEGER cpuFrequency;
@@ -91,7 +92,7 @@ struct Controller {
     unsigned trims=0;
     Controller(){NorthlightReplayCopies::pressure=false;NorthlightStream::memoryPressure=false;}
     void clearFrame(){frameCleared=true;}
-    void trimMemory(int,const WorldRenderer::MemoryTrim&,double){assert(frameCleared);assert(worldState.trims==trims+1);++trims;}
+    void trimMemory(int,const WorldRenderer::MemoryTrim&,double,NorthlightStreaming::CpuRetirementBatch*){assert(frameCleared);assert(worldState.trims==trims+1);++trims;}
     Decision sample(std::uint64_t available,std::uint64_t largest,std::uint32_t tick,std::uint64_t demand=0){
         frameCleared=false;
         const auto decision=memoryGuard.update(available,largest,tick,demand);
@@ -99,6 +100,7 @@ struct Controller {
         @ASSIGNMENTS@
         clearFrame();
         @WIRING@
+        assert(!retirementQueued); // Recording consumers own no retirement payloads.
         return decision;
     }
 };

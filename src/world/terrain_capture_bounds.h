@@ -1,5 +1,6 @@
 #pragma once
 #include "intrusive_lru.h"
+#include "cpu_retirement.h"
 #include <unordered_map>
 // Exact chunk coverage of the terrain triangles actually submitted this frame.
 // This snapshots buffers or reuses a fully write-tracked immutable snapshot.
@@ -318,6 +319,7 @@ private:
     static constexpr std::uint64_t ContentLimit=32u*1024u*1024u;
     // Entry slots share the existing byte budget; small draws need not evict at 4096.
     static constexpr size_t ContentEntries=8192;
+    struct RetiredContent {std::array<std::unique_ptr<ContentEntry>,ContentEntries> entries;};
     std::array<std::unique_ptr<ContentEntry>,ContentEntries> content;
     std::array<size_t,ContentEntries> freeContent{};size_t freeContentCount=ContentEntries;
     std::unordered_multimap<std::uint64_t,ContentEntry*> contentLookup;
@@ -482,7 +484,18 @@ public:
     // or COM resource reference. Shared snapshots are immutable and remain valid
     // if callers retain them across eviction/reset. The cache budget accounts
     // for cache-owned storage; callers must separately bound retained outputs.
-    void clearPersistent(){contentLookup.clear();contentLRU.clear();lastSourceIndices.reset();for(auto& slot:decoded_.slots)slot.reset();for(auto& slot:decoded_.snapshots)slot.reset();decoded_.last=0;for(auto& entry:content){if(entry&&entry->decoded)--entry->decoded->entries;entry.reset();}decoded_.blocks=decoded_.dataBytes=decoded_.bytes=0;sourceIndexBlocks_=0;sourceIndexDataBytes_=sourceIndexLogicalBytes_=sourceOffsetDataBytes_=0;retainedPayloadBytes_=retainedIdentityBytes_=0;contentBytes=ContentBaseBytes;contentHits=trackedHits_=avoidedReadBytes_=0;freeContentCount=ContentEntries;for(size_t i=0;i<freeContent.size();++i)freeContent[i]=i;maintenance_={};}
+    size_t clearPersistent(NorthlightStreaming::CpuRetirement* retirement=nullptr,NorthlightStreaming::CpuRetirementBatch* batch=nullptr){
+        size_t deferred=0;
+        // Only detached CPU entries escape; no buffer, declaration or D3D owner is retained.
+        // Keep reset/critical clears synchronous, and preserve that fallback on refusal.
+        if((retirement||batch)&&persistentEntries())try{
+            auto retired=std::make_shared<RetiredContent>();
+            for(auto& entry:content)if(entry&&entry->decoded)--entry->decoded->entries;
+            retired->entries.swap(content);
+            const auto bytes=size_t(contentBytes)+sizeof(RetiredContent);
+            if(batch?batch->retire(retired,bytes):retirement->retire(retired,bytes))deferred=bytes;
+        }catch(...){}
+        contentLookup.clear();contentLRU.clear();lastSourceIndices.reset();for(auto& slot:decoded_.slots)slot.reset();for(auto& slot:decoded_.snapshots)slot.reset();decoded_.last=0;for(auto& entry:content){if(entry&&entry->decoded)--entry->decoded->entries;entry.reset();}decoded_.blocks=decoded_.dataBytes=decoded_.bytes=0;sourceIndexBlocks_=0;sourceIndexDataBytes_=sourceIndexLogicalBytes_=sourceOffsetDataBytes_=0;retainedPayloadBytes_=retainedIdentityBytes_=0;contentBytes=ContentBaseBytes;contentHits=trackedHits_=avoidedReadBytes_=0;freeContentCount=ContentEntries;for(size_t i=0;i<freeContent.size();++i)freeContent[i]=i;maintenance_={};return deferred;}
     // Memory guard: cap in [ContentBaseBytes+1 MiB, 32 MiB]; evicts oldest down to it now.
     void setPersistentByteLimit(std::uint64_t bytes){
         contentLimit=std::max<std::uint64_t>(ContentBaseBytes+1024u*1024u,std::min<std::uint64_t>(bytes,ContentLimit));

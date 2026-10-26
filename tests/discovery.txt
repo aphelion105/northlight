@@ -284,6 +284,7 @@ test_terrain_pressure_policy.py
 test_terrain_reach_fallback.py
 test_terrain_reach_fallback_wiring.py
 test_terrain_retention_budget.py
+test_terrain_retirement.py
 test_terrain_rotation_cache.py
 test_terrain_shadow_candidates.py
 test_terrain_shadow_coverage.py
