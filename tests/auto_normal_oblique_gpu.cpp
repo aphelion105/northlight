@@ -18,6 +18,9 @@ static void logf(const char* f,...){va_list a;va_start(a,f);std::vprintf(f,a);st
 // Match the renderer's strong memcmp implementation in submission benchmarks.
 extern "C" __attribute__((no_builtin("memcmp"),no_builtin("bcmp"))) int memcmp(const void* a,const void* b,size_t n){return NorthlightMem::compare(a,b,n);}
 struct MaterialDepthMeter:ForwardIDirect3DDevice9 {
+    uint64_t vertexRegistersRead=0,vertexRegistersWritten=0;
+    HRESULT STDMETHODCALLTYPE GetVertexShaderConstantF(UINT first,float* values,UINT count)override{vertexRegistersRead+=count;return real->GetVertexShaderConstantF(first,values,count);}
+    HRESULT STDMETHODCALLTYPE SetVertexShaderConstantF(UINT first,const float* values,UINT count)override{vertexRegistersWritten+=count;return real->SetVertexShaderConstantF(first,values,count);}
     unsigned reads=0,allocations=0,gpuDraws=0,clears=0,pixelQueries=0,vertexCreates=0;bool failDeferred=false,failResident=false;explicit MaterialDepthMeter(IDirect3DDevice9* d):ForwardIDirect3DDevice9(d){}
     HRESULT STDMETHODCALLTYPE CreateVertexShader(const DWORD* code,IDirect3DVertexShader9** shader)override{++vertexCreates;return real->CreateVertexShader(code,shader);}
     HRESULT STDMETHODCALLTYPE CreateVertexBuffer(UINT bytes,DWORD usage,DWORD fvf,D3DPOOL pool,IDirect3DVertexBuffer9** out,HANDLE* shared)override{if(failResident){*out=nullptr;return E_OUTOFMEMORY;}return real->CreateVertexBuffer(bytes,usage,fvf,pool,out,shared);}
@@ -102,7 +105,13 @@ struct MaterialCaptureStateTestAccess {
         std::printf("MATERIAL_STATE_REUSE_PASS issued=%u skipped=%u\n",b.replaySetters,b.replaySkipped);assert(b.replaySetters&&b.replaySkipped);
 #endif
     }
-    static void mutation(const NorthlightAutoBump& b,const void* vertices,size_t bytes){if(b.deferred.empty())return;const auto& p=*b.deferred.back();assert(p.mesh->streams[0].bytes.size()==bytes&&!std::memcmp(p.mesh->streams[0].bytes.data(),vertices,bytes));float bank[1024];ok(b.d->GetVertexShaderConstantF(0,bank,256));assert(!std::memcmp(bank,p.vertexConstants,sizeof bank));}
+    static void mutation(const NorthlightAutoBump& b,const void* vertices,size_t bytes){if(b.deferred.empty())return;const auto& p=*b.deferred.back();assert(p.mesh->streams[0].bytes.size()==bytes&&!std::memcmp(p.mesh->streams[0].bytes.data(),vertices,bytes));float bank[1024];ok(b.d->GetVertexShaderConstantF(0,bank,256));
+#ifdef NORTHLIGHT_TEST_CAPTURE_BASELINE
+        assert(!std::memcmp(bank,p.vertexConstants,sizeof bank));
+#else
+        assert(p.vertexCount&&p.vertexFirst+p.vertexCount<=256&&!std::memcmp(bank+p.vertexFirst*4,p.vertexConstants,p.vertexCount*16));
+#endif
+    }
     static void replayContent(const NorthlightAutoBump& b,unsigned long long& resident,unsigned long long& up,unsigned long long& reads,unsigned long long& hits){resident+=b.residentDraws;up+=b.uploadDraws;reads+=b.deferredSnapshots.bytesRead();
 #ifdef NORTHLIGHT_TEST_REPLAY_CONTENT_CURRENT
         hits+=b.deferredSnapshots.replayContentHits();
@@ -647,6 +656,7 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
                 save(d,baseSurface,folder+"batch-color.fgr");IDirect3DSurface9* target=nullptr;ok(bump.texture()->GetSurfaceLevel(0,&target));save(d,target,folder+"batch-normal.fgr");drop(target);
                 if(bump.occlusionTexture()){ok(bump.occlusionTexture()->GetSurfaceLevel(0,&target));save(d,target,folder+"batch-occlusion.fgr");drop(target);}
             }
+            std::printf("MATERIAL_CONSTANT_CAPTURE readRegisters=%llu writtenRegisters=%llu\n",(unsigned long long)captureDevice.vertexRegistersRead,(unsigned long long)captureDevice.vertexRegistersWritten);
             drop(frequency);drop(start);drop(finish);drop(disjoint);return 0;
         }
         ok(d->EndScene());drop(hitMask);
@@ -700,6 +710,7 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
             std::printf("MATERIAL_AUDIT_PASS mode=%u valid=%u normal=%u cavity=%u shadow=%u\n",mode,pixelAudit.last[0],pixelAudit.last[1],pixelAudit.last[2],pixelAudit.last[3]);}
     }
     std::printf("MATERIAL_MSAA_PASS samples=%u pressure=%u actual_draws=1 depth_and_state_restored=1\n",unsigned(samples),unsigned(pressure));
+    std::printf("MATERIAL_CONSTANT_CAPTURE readRegisters=%llu writtenRegisters=%llu\n",(unsigned long long)captureDevice.vertexRegistersRead,(unsigned long long)captureDevice.vertexRegistersWritten);
     if(materialProfiling){materialProfile.endFrame();save(d,output,folder+"profile-sync.fgr");materialProfile.poll();}
     std::printf("POM_SHARED_TEST produced=%llu native=%llu clears=%llu\n",(unsigned long long)MaterialCaptureStateTestAccess::produced(bump),(unsigned long long)MaterialCaptureStateTestAccess::consumed(bump),(unsigned long long)MaterialCaptureStateTestAccess::clears(bump));
     std::puts("OBLIQUE_NATIVE_POM_PASS camera_height=.7 pitch_degrees=12 native_diffuse_normal_cache_capture_and_composite");std::puts("OBLIQUE_OCCLUSION_PASS");return 0;

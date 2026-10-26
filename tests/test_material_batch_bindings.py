@@ -21,7 +21,7 @@ span_begin=header.index('            auto floatConstants=[&]')
 span_end=header.index('            if(needed(previous&&!std::memcmp(previous->vertexInt',span_begin)
 span=header[span_begin:span_end]
 assert 'const bool comparablePixel=' in span and span.count('floatConstants(')==2
-full_constants='''            if(needed(previous&&!std::memcmp(previous->vertexConstants,packet->vertexConstants,sizeof(packet->vertexConstants))))step(d->SetVertexShaderConstantF(0,packet->vertexConstants,256));
+full_constants='''            if(needed(previous&&previous->vertexFirst==packet->vertexFirst&&previous->vertexCount==packet->vertexCount&&!std::memcmp(previous->vertexConstants,packet->vertexConstants,packet->vertexCount*16)))step(d->SetVertexShaderConstantF(packet->vertexFirst,packet->vertexConstants,packet->vertexCount));
             if(needed(previous&&previous->first==packet->first&&previous->pixelConstants.size()==packet->pixelConstants.size()&&!std::memcmp(previous->pixelConstants.data(),packet->pixelConstants.data(),packet->pixelConstants.size()*sizeof(float))))step(d->SetPixelShaderConstantF(packet->first,packet->pixelConstants.data(),UINT(packet->pixelConstants.size()/4)));
 '''
 old=old.replace(span,full_constants)
@@ -50,10 +50,10 @@ for optimization in ['-O2','-O0']:
         (out/f'{name}-{optimization[1:]}.log').write_text(result.stdout+result.stderr,encoding='utf-8')
         assert result.returncode==0,result.stdout+result.stderr
         assert 'MATERIAL_BINDINGS_PASS cases=24' in result.stdout
-        assert 'MATERIAL_CONSTANTS_PASS cases=52' in result.stdout
+        assert 'MATERIAL_CONSTANTS_PASS cases=76' in result.stdout
         rows=[dict(re.findall(r'(\w+)=([^\s]+)',line)) for line in result.stdout.splitlines() if line.startswith('MATERIAL_BINDINGS_CASE ')]
         constants=[dict(re.findall(r'(\w+)=([^\s]+)',line)) for line in result.stdout.splitlines() if line.startswith('MATERIAL_CONSTANTS_CASE ')]
-        assert len(rows)==24 and len(constants)==52;cells[name]=rows;constant_cells[name]=constants;records.append({'mode':optimization,'name':name,'command':command,'exe_sha256':sha(exe),'rows':rows,'constant_rows':constants})
+        assert len(rows)==24 and len(constants)==76;cells[name]=rows;constant_cells[name]=constants;records.append({'mode':optimization,'name':name,'command':command,'exe_sha256':sha(exe),'rows':rows,'constant_rows':constants})
     for a,b in zip(cells['control'],cells['current']):
         for field in ['reset','shape','failure','success','draws','hash','resident','up','restored']:assert a[field]==b[field],(field,a,b)
         for field in ['viewportCalls','frequencyCalls','auxiliaryCalls']:assert int(b[field])<=int(a[field]),(field,a,b)

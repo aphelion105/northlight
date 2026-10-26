@@ -2,6 +2,21 @@
 #include "water_shader_patch.h"
 
 namespace NorthlightAutoBumpVertex {
+// Capture the complete referenced bank. Relative and matrix operands retain
+// the full bank because their register reach is not explicit in every token.
+inline void constantRange(const std::uint32_t* code,size_t size,unsigned& first,unsigned& count){
+    using namespace NorthlightWaterShaderPatch;
+    first=0;count=256;Analysis a;if(analyse(code,size,a)||!a.vertex||a.relative)return;
+    unsigned low=256,high=0;
+    for(size_t p=1;p<size;){const unsigned op=code[p]&65535;if(op==65535)break;
+        const unsigned n=op==65534?(code[p]>>16)&32767:(code[p]>>24)&15;
+        if(op>=20&&op<=24)return;
+        if(op!=65534&&op!=31&&op!=81&&op!=48&&op!=47)for(unsigned i=1;i<=n;++i)if(regType(code[p+i])==2){
+            const unsigned index=regIndex(code[p+i]);if(index>=256)return;low=std::min(low,index);high=std::max(high,index);}
+        p+=n+1;
+    }
+    first=low<256?low:0;count=low<256?high-low+1:1;
+}
 // Terrain's native c0..c2 rows transform world vectors into view space.
 // Forward the authored smooth normal, without touching position or native colour.
 inline bool terrainNormal(const std::uint32_t* code,size_t count,std::vector<std::uint32_t>& patched){
