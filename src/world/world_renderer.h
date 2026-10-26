@@ -333,6 +333,7 @@ private:
     bool gpuDiagnosticArmed=true,gpuNormalDiagnosticRequested=false,gpuDiagnosticFrame=false;unsigned gpuDiagnosticCaptures=0;
     std::string gpuDiagnosticDirectory;
     IDirect3DTexture9* regionalFogTexture=nullptr;
+    IDirect3DTexture9* fogHeightTexture=nullptr;bool fogHeightReady=false;
     IDirect3DTexture9* neutralWhite=nullptr; // 0.3.209 (task 29): 1x1 white on s12 (ActorVisibility) for WorldLighting on frames without an ActorShadow pass
     IDirect3DTexture9* neutralZero=nullptr; // 0.3.202 (rain): 1x1 (0,0,0,0) on s13 (RainMask) when no mask was drawn this frame
     IDirect3DTexture9* ditherNoise=nullptr; // WorldComposite s2: 64x64 signed blue-noise offsets (dither_noise.h); neutralZero when missing
@@ -2081,6 +2082,7 @@ private:
     }
     bool uploadRegionalFog(){
         if(uploadedFogField==active->fogField)return true;
+        fogHeightReady=false;
         if(!active->fogField){uploadedFogField.reset();return true;}
         constexpr unsigned n=NorthlightRegionalFog::N;
         if(!regionalFogTexture&&!check(d->CreateTexture(n,n,1,0,D3DFMT_A32B32G32R32F,D3DPOOL_MANAGED,&regionalFogTexture,nullptr),"regional fog field"))return false;
@@ -2088,7 +2090,16 @@ private:
         if(!lock.pBits||lock.Pitch<INT(n*sizeof(NorthlightRegionalFog::Texel))){regionalFogTexture->UnlockRect(0);return check(E_FAIL,"regional fog layout");}
         for(unsigned y=0;y<n;++y)memcpy(static_cast<char*>(lock.pBits)+y*lock.Pitch,active->fogField->texels.data()+y*n,n*sizeof(NorthlightRegionalFog::Texel));
         if(!check(regionalFogTexture->UnlockRect(0),"regional fog unlock"))return false;
-        uploadedFogField=active->fogField;uploadedFogMap=active->map;return true;
+        uploadedFogField=active->fogField;uploadedFogMap=active->map;
+        // Optional acceleration metadata: allocation/lock failure keeps the full march.
+        if(!fogHeightTexture&&FAILED(d->CreateTexture(n,n,1,0,D3DFMT_A32B32G32R32F,D3DPOOL_MANAGED,&fogHeightTexture,nullptr))){drop(fogHeightTexture);return true;}
+        D3DLOCKED_RECT bounds={};
+        if(!fogHeightTexture||FAILED(fogHeightTexture->LockRect(0,&bounds,nullptr,0)))return true;
+        if(bounds.pBits&&bounds.Pitch>=INT(n*16)){
+            for(unsigned y=0;y<n;++y)for(unsigned x=0;x<n;++x){const auto b=NorthlightRegionalFog::heightBounds(*uploadedFogField,x,y);memcpy(static_cast<char*>(bounds.pBits)+y*bounds.Pitch+x*16,b.data(),16);}
+            fogHeightReady=SUCCEEDED(fogHeightTexture->UnlockRect(0));
+        }else fogHeightTexture->UnlockRect(0);
+        return true;
     }
     bool frameStaging=false,frameProbeUpload=false; /* 0.3.176 (D3): this frame staged world mesh pages / uploaded the probe atlas */
     bool upload(NorthlightStreaming::Budget& streamBudget){
@@ -2461,7 +2472,7 @@ public:
     // too; its cursor continues). Everything else (DEFAULT targets, dynamic rings, queries, state blocks, caches derived from
     // them) is released as before. recover() and the destructor release the mesh as well; the CPU payload is gone by then, so
     // upload() asks the builder for a fresh generation.
-    void releaseGPU(bool keepMesh=false){materialPixelAudit.reset();replayBoundsAbandon();releaseReplayProbe();staticCasters.settle();rigidMemoryClear();admission.reset();admissionOn=false;gatedBodies.clear();prepareQuiesce();neutralShadowMaps=false;prepareCaches->sampled.clear();prepareCaches->bones.clear();prepareCachesStale=false;if(replays.empty()&&heldShadowReplays.empty())prepareFrameRelease(); /* 0.3.179: no replay left to point at them */actorShadowHistory.clear();actorShadowOriginValid=false;replayBoundsMetadata.clear();replayBoundsCache.clear();declarationCache.clear();if(!keepMesh)uploadedStaticOwners.reset();staticOwnerGeneration=UINT64_MAX;staticCasters.reset();staticMatcher.clear();staticM2Memory.clear();staticScene.reset();staticRetryTick=0;stateBlocks.clear();uploadedTerrain.clear();liveTerrainIndexCount=liveDirectionalIndexCount=0;if(!keepMesh){fixedTerrain.reset();fixedTerrainBits.reset();}liveTerrainGeneration=0;drop(regionalFogTexture);drop(neutralAO);drop(neutralZero);drop(ditherNoise);rainMask=nullptr;uploadedFogField.reset();releasePointGPU();probeActivation.reset();probeBlend.reset();drop(baselineSurface);drop(baselineLight);releaseReplayGPU();liveTerrainGPU.clear();{auto& queries=fence();NorthlightDynamicRing::reset(liveIndexRing,0,queries);queries.drop();}drop(liveIndicesGPU);liveIndexBytes=0;liveIndexBase=0;if(!keepMesh){pendingMesh.reset();clearMesh();}retiredMaterials.clear();if(!keepMesh){releaseMeshPool();uploadedMap.clear();}for(auto& t:shadow)drop(t);for(auto& s:shadowSurface)drop(s);for(auto& t:shadowCache)drop(t);for(auto& s:shadowCacheSurface)drop(s);drop(shadowCacheDepth);drop(shadowVerifySurface);drop(shadowVerify);for(auto& r:shadowVerifyRead)drop(r);drop(shadowScratch);drop(shadowScratchSurface);releaseActorTargets();drop(neutralWhite);actorValid[0]=actorValid[1]=false;actorCenterValid[0]=actorCenterValid[1]=false;drop(unionPS);invalidateShadowCache();for(auto& t:probe)drop(t);drop(probePrev);drop(shadowDepth);drop(lightSurface);drop(smoothSurface);drop(fogSurface);drop(fogBlurredSurface);drop(fogHistorySurface);drop(fogHistory);drop(fogTemporalPS);fogHistoryValid=false;drop(colorSurface);drop(light);drop(smoothLight);drop(fog);drop(fogBlurred);drop(color);drop(lightingPS);drop(giPS);drop(fogPS);drop(fogBlurPS);drop(fogCloudsPS);drop(cloudNoise);drop(localDirectPS);drop(localDirect16PS);drop(profileSplitSurface);profileSplitFailed=false;drop(removalPS);drop(temporalPS);drop(localFogPS);drop(localFogCombinePS);drop(localFogAccumSurface);drop(localFogAccum);drop(normalsPS);drop(normalBuffer);drop(normalSurface);drop(sourceVisPS);for(int a=0;a<2;++a)for(int b=0;b<2;++b){drop(sourceVis[a][b]);drop(sourceVisSurface[a][b]);}sourceVisValid=false;for(int i=0;i<2;++i){drop(temporalLight[i]);drop(temporalLightSurface[i]);drop(temporalDepth[i]);drop(temporalDepthSurface[i]);}temporalValid=false;drop(finalPS);drop(materialPS);drop(shadowPS);drop(replayPS);drop(shadowVS);drop(cachedShadowVS);drop(cachedShadowPS);drop(cachedFastPS);drop(cachedOpaqueFastPS);drop(cachedOpaquePS);drop(shadowDecl);drop(liveTerrainDecl);width=height=0;uploadedSerial=0;}
+    void releaseGPU(bool keepMesh=false){materialPixelAudit.reset();replayBoundsAbandon();releaseReplayProbe();staticCasters.settle();rigidMemoryClear();admission.reset();admissionOn=false;gatedBodies.clear();prepareQuiesce();neutralShadowMaps=false;prepareCaches->sampled.clear();prepareCaches->bones.clear();prepareCachesStale=false;if(replays.empty()&&heldShadowReplays.empty())prepareFrameRelease(); /* 0.3.179: no replay left to point at them */actorShadowHistory.clear();actorShadowOriginValid=false;replayBoundsMetadata.clear();replayBoundsCache.clear();declarationCache.clear();if(!keepMesh)uploadedStaticOwners.reset();staticOwnerGeneration=UINT64_MAX;staticCasters.reset();staticMatcher.clear();staticM2Memory.clear();staticScene.reset();staticRetryTick=0;stateBlocks.clear();uploadedTerrain.clear();liveTerrainIndexCount=liveDirectionalIndexCount=0;if(!keepMesh){fixedTerrain.reset();fixedTerrainBits.reset();}liveTerrainGeneration=0;drop(regionalFogTexture);drop(fogHeightTexture);fogHeightReady=false;drop(neutralAO);drop(neutralZero);drop(ditherNoise);rainMask=nullptr;uploadedFogField.reset();releasePointGPU();probeActivation.reset();probeBlend.reset();drop(baselineSurface);drop(baselineLight);releaseReplayGPU();liveTerrainGPU.clear();{auto& queries=fence();NorthlightDynamicRing::reset(liveIndexRing,0,queries);queries.drop();}drop(liveIndicesGPU);liveIndexBytes=0;liveIndexBase=0;if(!keepMesh){pendingMesh.reset();clearMesh();}retiredMaterials.clear();if(!keepMesh){releaseMeshPool();uploadedMap.clear();}for(auto& t:shadow)drop(t);for(auto& s:shadowSurface)drop(s);for(auto& t:shadowCache)drop(t);for(auto& s:shadowCacheSurface)drop(s);drop(shadowCacheDepth);drop(shadowVerifySurface);drop(shadowVerify);for(auto& r:shadowVerifyRead)drop(r);drop(shadowScratch);drop(shadowScratchSurface);releaseActorTargets();drop(neutralWhite);actorValid[0]=actorValid[1]=false;actorCenterValid[0]=actorCenterValid[1]=false;drop(unionPS);invalidateShadowCache();for(auto& t:probe)drop(t);drop(probePrev);drop(shadowDepth);drop(lightSurface);drop(smoothSurface);drop(fogSurface);drop(fogBlurredSurface);drop(fogHistorySurface);drop(fogHistory);drop(fogTemporalPS);fogHistoryValid=false;drop(colorSurface);drop(light);drop(smoothLight);drop(fog);drop(fogBlurred);drop(color);drop(lightingPS);drop(giPS);drop(fogPS);drop(fogBlurPS);drop(fogCloudsPS);drop(cloudNoise);drop(localDirectPS);drop(localDirect16PS);drop(profileSplitSurface);profileSplitFailed=false;drop(removalPS);drop(temporalPS);drop(localFogPS);drop(localFogCombinePS);drop(localFogAccumSurface);drop(localFogAccum);drop(normalsPS);drop(normalBuffer);drop(normalSurface);drop(sourceVisPS);for(int a=0;a<2;++a)for(int b=0;b<2;++b){drop(sourceVis[a][b]);drop(sourceVisSurface[a][b]);}sourceVisValid=false;for(int i=0;i<2;++i){drop(temporalLight[i]);drop(temporalLightSurface[i]);drop(temporalDepth[i]);drop(temporalDepthSurface[i]);}temporalValid=false;drop(finalPS);drop(materialPS);drop(shadowPS);drop(replayPS);drop(shadowVS);drop(cachedShadowVS);drop(cachedShadowPS);drop(cachedFastPS);drop(cachedOpaqueFastPS);drop(cachedOpaquePS);drop(shadowDecl);drop(liveTerrainDecl);width=height=0;uploadedSerial=0;}
     // Explicit enable/retry only, called after the wrapper's clearFrame(). This
     // never calls endFrame(), so packet capture and cleanup run exactly once.
     void recover(){meshRetry.clear();if(!failed)return;releaseGPU(true);failed=false;valid=false;streamingReports=0;logf("WORLD explicit recovery requested");}
@@ -3946,7 +3957,7 @@ public:
         }else if(color&&!materialCaptureResident){stateBlocks.clear();drop(colorSurface);drop(color);}
         skipReason="state";SavedState save(d,&stateBlocks);if(!save.ok)return false;
         const std::string& frameMap=lastRequest.map;
-        if(uploadedFogField&&uploadedFogMap!=frameMap){uploadedFogField.reset();drop(regionalFogTexture);}
+        if(uploadedFogField&&uploadedFogMap!=frameMap){uploadedFogField.reset();drop(regionalFogTexture);drop(fogHeightTexture);fogHeightReady=false;}
         bool sourceActive[2]={NorthlightGI::dot(sourceColors[0],sourceColors[0])>1e-10f,NorthlightGI::dot(sourceColors[1],sourceColors[1])>1e-10f};
         int firstSource=sourceActive[0]||!sourceActive[1]?0:1;
         unsigned culledBatches[2]={},drawnBatches[2]={};
@@ -4450,7 +4461,7 @@ public:
         }else{
             shadowFrameReady=pointReady=sourceVisValid=temporalValid=false;
             actorValid[0]=actorValid[1]=false;
-            if(quality.fogClouds&&quality.fogCloudDensity&&effects.fog&&!fogCloudNoise().ready.load(std::memory_order_acquire))fogCloudNoise().request();
+            if(quality.fogClouds&&quality.fogCloudDensity&&effects.fog&&debug==0&&!fogCloudNoise().ready.load(std::memory_order_acquire))fogCloudNoise().request();
         }
         skipReason="draw";
         // Point shadows use this frame's selected/faded direct-light sources, in daylight too.
@@ -4521,6 +4532,7 @@ public:
         c[31][3]=atmosphere.c[31][3]; /* nightFactor, atmosphereWork */
         // Neutral scattering albedo preserves the zone/source palette (c22.w and c32: atmosphereWork, the same expressions).
         c[22][0]=c[22][1]=c[22][2]=1;c[22][3]=atmosphere.c[22][3];memcpy(c[32],atmosphere.c[32],16);
+        c[65][3]=uploadedFogField&&fogHeightReady?1.f:0.f;
         const auto& volumePalette=paletteFrameValid?framePalette:celestialProfiles.fallback;
         // 0.3.199 (fog clouds): the frame derived in atmosphereWork; the device part of its activity (the noise volume) is decided here.
         auto& cf=atmosphere.cf;
@@ -4678,7 +4690,7 @@ public:
         if(profile)profile->mark("ActorShadow");bucket(NorthlightEffectsBuckets::ActorShadow);
         d->SetTexture(12,anyActorPass?actorVisibility:neutralWhite);
         d->SetRenderTarget(0,lightSurface);d->SetPixelShader(lightingPS);
-        if(profileSampled())logf("WORLD screen geometry=%u meshReason=%s material=%u fog=%u regional=%u colorScratch=%u map=\"%s\"",unsigned(geometryReady),geometrySkip,unsigned(fullMaterial),unsigned(effects.fog),unsigned(uploadedFogField!=nullptr),unsigned(color!=nullptr),frameMap.c_str());
+        if(profileSampled())logf("WORLD screen geometry=%u meshReason=%s material=%u fog=%u regional=%u heightBounds=%u colorScratch=%u map=\"%s\"",unsigned(geometryReady),geometrySkip,unsigned(fullMaterial),unsigned(effects.fog),unsigned(uploadedFogField!=nullptr),unsigned(uploadedFogField&&fogHeightReady),unsigned(color!=nullptr),frameMap.c_str());
         const float bumpControl[]={materialDetail?materialBumpGain:0.f,materialBumpDistance,fullMaterial?1.f:0.f,0};
         float materialLight[4][4]={{c[28][0],c[28][1],c[28][2],0},{sourceDirections[1].x,sourceDirections[1].y,sourceDirections[1].z,0},{},{}};
         for(unsigned source=0;source<2;++source)if(sourceActive[source]){materialLight[2+source][0]=sourceColors[source].x;materialLight[2+source][1]=sourceColors[source].y;materialLight[2+source][2]=sourceColors[source].z;}
@@ -4832,6 +4844,7 @@ public:
         // world shadow visibility independently of the body's screen position.
         bool fogResolved=false; // 0.3.199 (fog temporal): the final fog is fogBlurred (the pass ran and the pointers rotated), else fog
         if(effects.fog){
+        d->SetTexture(12,fogHeightReady?fogHeightTexture:nullptr); // s12 is idle in the fog shaders; POINT/CLAMP from setup.
         {const unsigned cur=sourceVisIndex,prev=1-sourceVisIndex;
          d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE);d->SetRenderState(D3DRS_COLORWRITEENABLE,15);d->SetPixelShader(sourceVisPS);
          for(int source=0;source<2;++source){if(!sourceActive[source]&&source!=firstSource)continue;
@@ -4881,6 +4894,7 @@ public:
             if(!cloudsDrawn)return false;
             if(profile)profile->mark("FogClouds");
         }
+        d->SetTexture(12,baselineLight);
         d->SetPixelShaderConstantF(17,c[17],2); /* restore the bank's direct/ambient before lamp fog, blur and composite */
         if(localDirectCount&&debug==0){
             if(lightingCapture){lightingCapture->image("fog-before-local",fogSurface);lightingCapture->inputs(1,fogInputs,fogInputs);}

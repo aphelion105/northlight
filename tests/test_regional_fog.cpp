@@ -9,6 +9,20 @@ static NorthlightGI::WorldScene plane(float cx,float cy,bool terrain=true){North
  for(auto p:std::array<std::array<float,2>,4>{{{{-400,-400}},{{400,-400}},{{400,400}},{{-400,400}}}})s.vertices.push_back({{cx+p[0],cy+p[1],100+p[0]*.02f},{0,0,1},0,0});
  s.triangles.push_back({0,1,2,0});s.triangles.push_back({0,2,3,0});return s;}
 int main(int argc,char** argv){
+ // Bounds enclose the shader's normalized bilinear ground and finite layer.
+ // Include tiny valid weights: its 1e-6 reciprocal floor tends toward zero.
+ {Field f;for(unsigned mask=0;mask<16;++mask){
+   for(unsigned k=0;k<4;++k)f.texels[(k/2)*N+k%2]={k%2?90000.f:-90000.f,.01f,.02f,mask&(1u<<k)?float(k+1):0.f};
+   const auto b=heightBounds(f,0,0);assert(b[3]==(mask?1:0));
+   for(float x:{0.f,1e-9f,1e-6f,.01f,.25f,.5f,.99f,1.f})for(float y:{0.f,1e-9f,1e-6f,.01f,.25f,.5f,.99f,1.f}){
+     float total=0,ground=0,height=0;const float weights[4]={(1-x)*(1-y),x*(1-y),(1-x)*y,x*y};
+     for(unsigned k=0;k<4;++k){const auto& t=f.texels[(k/2)*N+k%2];float v=t.height>0?weights[k]:0;total+=v;ground+=v*t.ground;height+=v*t.height;}
+     if(total>0){ground/=std::max(total,1e-6f);height/=std::max(total,1e-6f);assert(ground>=b[0]-.25f&&ground<=b[1]+.25f&&height<=b[2]+.25f);}
+   }
+  }
+  f.texels.back()={123,0,0,2};const auto edge=heightBounds(f,N-1,N-1);assert(edge[0]==123&&edge[1]==123&&edge[2]==2&&edge[3]==1);
+  f.texels.back().ground=NAN;assert(heightBounds(f,N-1,N-1)[3]==-1);
+ }
  // 0.3.199 (fog clouds): lush zones (forests, grass, Duskwood, STV, Mulgore, Stormwind) get dry-weather fog banks; deserts and Orgrimmar do not
  for(uint32_t z:{10u,33u,215u,1519u,12u,40u,44u,45u,267u,38u,28u,139u,36u,3518u,3537u,394u})assert(lushZone(z));
  for(uint32_t z:{14u,440u,17u,3u,4u,1637u,0u,1377u,405u,400u})assert(!lushZone(z));

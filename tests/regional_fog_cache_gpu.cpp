@@ -5,12 +5,13 @@
 #pragma clang diagnostic ignored "-Wreturn-type"
 #define main northlight_removal_replay_unused
 #include "removal_distance_gpu.cpp"
+#include "regional_fog.h"
 #undef main
 #pragma clang diagnostic pop
 int main(int argc,char** argv){
  assert(argc==11);const std::string prefix=argv[1],mode=argv[4];
  // Scenarios 0..19 are controls; 20..24 preserve the production-built MPQ field/depth.
- const int scenario=std::atoi(argv[6]);assert(scenario>=0&&scenario<=24);const bool authentic=scenario>=20;const unsigned bits=std::atoi(argv[7]),renderW=std::atoi(argv[8]),renderH=std::atoi(argv[9]),iterations=std::atoi(argv[10]);assert((bits==16||bits==32)&&iterations>0&&iterations<=64);
+ const int scenario=std::atoi(argv[6]);assert(scenario>=0&&scenario<=26);const bool authentic=scenario>=20;const unsigned bits=std::atoi(argv[7]),renderW=std::atoi(argv[8]),renderH=std::atoi(argv[9]),iterations=std::atoi(argv[10]);assert((bits==16||bits==32)&&iterations>0&&iterations<=64);
  assert(mode=="WorldFog"||mode=="FogClouds");const bool cloud=mode=="FogClouds";
  auto bank=constantBank(read(prefix+"constants.f32"));auto& c=bank.values;
  auto scene=image(prefix+"scene.fgr");const unsigned fw=scene.width,fh=scene.height,W=renderW?renderW:fw/2,H=renderH?renderH:fh/2;
@@ -30,6 +31,10 @@ int main(int argc,char** argv){
  {
   Image field{64,64,D3DFMT_A32B32G32R32F,16,std::vector<unsigned char>(64*64*16)};
   for(unsigned y=0;y<64;++y)for(unsigned x=0;x<64;++x){float v[4]={0,.012f,.004f,(x/7+y/9)%5?5.f:0.f};if(scenario==10)v[0]=float(int((x*11+y*7)%29)-14);std::memcpy(field.pixels.data()+16*(y*64+x),v,16);}if(scenario==3)std::fill(field.pixels.begin(),field.pixels.end(),0);if(authentic){field=image(prefix+"regional.fgr");assert(field.width==64&&field.height==64&&field.format==D3DFMT_A32B32G32R32F);}bind(13,field);
+  NorthlightRegionalFog::Field rawField;std::memcpy(rawField.texels.data(),field.pixels.data(),field.pixels.size());
+  Image bounds=field;
+  for(unsigned y=0;y<64;++y)for(unsigned x=0;x<64;++x){auto extent=NorthlightRegionalFog::heightBounds(rawField,x,y);if(scenario==26)extent={0,0,0,-1};std::memcpy(bounds.pixels.data()+16*(y*64+x),extent.data(),16);}
+  bind(12,bounds);c[65][3]=scenario==25?0.f:1.f;
   Image shadow{64,64,D3DFMT_R32F,4,std::vector<unsigned char>(64*64*4)};for(unsigned y=0;y<64;++y)for(unsigned x=0;x<64;++x){float v=(x/3+y/5)%2?.72f:.21f;std::memcpy(shadow.pixels.data()+4*(y*64+x),&v,4);}bind(3,shadow);
   float visible=.65f;Image source{1,1,D3DFMT_R32F,4,std::vector<unsigned char>(4)};std::memcpy(source.pixels.data(),&visible,4);bind(15,source);
   if(!authentic){for(unsigned i=3;i<7;++i){std::fill(c[i],c[i]+4,0);c[i][i-3]=1;}

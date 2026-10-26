@@ -22,6 +22,20 @@ struct Region {std::vector<Tile> tiles;unsigned missing=0,invalid=0;};
 struct Texel {float ground=0,day=0,nightExtra=0,height=0;};
 static_assert(sizeof(Texel)==16,"Fog texture float4");
 struct Field {float originX=0,originY=0;std::array<Texel,N*N> texels{};std::array<uint8_t,N*N> lush{}; /* 0.3.199 (fog clouds): 1 = outdoor forest/grass zone (lushZone), CPU only */unsigned groundCells=0,fogCells=0,airCells=0,indoorCells=0,citySurfaceCells=0;};
+// Bounds of regionalFogAt's clamped bilinear footprint. w: empty 0, bounded 1,
+// unknown -1. The reciprocal floor can pull sparse ground heights toward zero.
+inline std::array<float,4> heightBounds(const Field& field,unsigned x,unsigned y){
+    std::array<float,4> out={INFINITY,-INFINITY,0,0};bool sparse=false;
+    for(unsigned dy=0;dy<2;++dy)for(unsigned dx=0;dx<2;++dx){
+        const auto& t=field.texels[std::min(y+dy,N-1)*N+std::min(x+dx,N-1)];
+        if(!std::isfinite(t.ground)||!std::isfinite(t.day)||!std::isfinite(t.nightExtra)||!std::isfinite(t.height))return {0,0,0,-1};
+        if(t.height<=0){sparse=true;continue;}
+        out[0]=std::min(out[0],t.ground);out[1]=std::max(out[1],t.ground);out[2]=std::max(out[2],t.height);out[3]=1;
+    }
+    if(!out[3])return {};
+    if(sparse){out[0]=std::min(out[0],0.f);out[1]=std::max(out[1],0.f);}
+    return out;
+}
 inline float smooth(float x){x=std::clamp(x,0.f,1.f);return x*x*(3-2*x);}
 // Artist policy transitions, applied to the VERIFIED game's normalized render
 // time (minute-of-day / 1440, including fixed-time map override). Unknown clock

@@ -99,8 +99,10 @@ stream=[fp.src('stream_device.h'),fp.src('stream_proxies.h'),fp.src('game_snapsh
 checks['game thread untouched: no FogClouds / fog_clouds in stream_device.h, stream_proxies.h, game_snapshot.h']=all(('FogClouds' not in t.read_text() and 'fog_clouds' not in t.read_text() and 'fogClouds' not in t.read_text()) for t in stream)
 # review fix: derive() is inactive until the quantile table exists, so the generation request must not depend on cf.active (it never started)
 req=[l for l in w.splitlines() if 'fogCloudNoise().request()' in l]
-checks['noise request: gated by the settings only (never by cf.active), before derive']=(len(req)==1 and 'cf.active' not in req[0] and 'quality.fogClouds&&quality.fogCloudDensity&&effects.fog&&debug==0' in req[0]
-    and w.index('fogCloudNoise().request()')<w.index('if(jobs)replayJobs_.kick(atmosphereDone,atmosphereJob);')<w.index('if(jobs)replayJobs_.wait(atmosphereDone);else atmosphereWork(')) # 0.3.200 (jobs): derive() runs in atmosphereWork, kicked or called after the request
+requests=[m.start() for m in re.finditer(re.escape('fogCloudNoise().request()'),w)]
+checks['noise request: geometry and fallback paths request before derive, settings/debug gated, never cf.active']=(len(req)==2
+    and all('cf.active' not in line and 'quality.fogClouds&&quality.fogCloudDensity&&effects.fog&&debug==0' in line for line in req)
+    and requests[0]<w.index('if(jobs)replayJobs_.kick(atmosphereDone,atmosphereJob);')<requests[1]<w.index('if(jobs)replayJobs_.wait(atmosphereDone);else atmosphereWork('))
 # game test fix: the banks take the game's fog colour (c26) when it is validated (c25.w), not the near-black ambient*.35 air radiance
 checks['colour: cloud ambient is the brighter of the air radiance and the validated game fog colour (never darker than the fog it hides)']=('max(max(AmbientLight.rgb,0)*.35,LegacyFogColor.rgb*LegacyFog.w)*ambientWeight' in h.split('float4 FogClouds(',1)[1].split('\n}\n',1)[0])
 # night game test: the banks' colour goes in c25.w/c26 for the cloud pass only and the bank's values come back before the lamp fog
