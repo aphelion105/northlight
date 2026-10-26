@@ -3138,7 +3138,9 @@ public:
         if(!ok){if(terrainFailures++<12)logf("TERRAIN UP snapshot rejected: %s hr=%08lx type=%u stride=%u",NorthlightTerrainCapture::rejectName(why.reason),(unsigned long)why.hr,why.positionType,why.stride);return;}
         appendTerrain(std::make_shared<const NorthlightTerrainCapture::MeshSnapshot>(std::move(snapshot)));
     }
-    void capture(D3DPRIMITIVETYPE type,INT base,UINT min,UINT vertexTotal,UINT start,UINT count,bool indexed,IDirect3DVertexShader9* current,bool selfCheck,bool sample){
+    bool terrainShader(IDirect3DVertexShader9* shader){return lookupShader(shader).terrain;}
+    void capture(D3DPRIMITIVETYPE type,INT base,UINT min,UINT vertexTotal,UINT start,UINT count,bool indexed,IDirect3DVertexShader9* current,bool selfCheck,bool sample,NorthlightCaptureMetadata::PositionBounds* positions=nullptr){
+        if(positions)positions->known=false;
         constantSelfCheck=selfCheck;sample=sample&&NorthlightDiagnostics::enabled();
         if(!ready()||replays.size()>=4096||(type!=D3DPT_TRIANGLELIST&&type!=D3DPT_TRIANGLESTRIP))return;
         captureSampled|=sample;bool isTerrain=lookupShader(current).terrain;
@@ -3151,6 +3153,7 @@ public:
             TerrainSnapshot snapshot;NorthlightTerrainCapture::Diagnostics why;
             if(!terrainBoundsCache.readMeshShared(d,type,base,min,vertexTotal,start,count,context.view,snapshot,&why)){
                 if(terrainFailures++<12)logf("TERRAIN snapshot rejected: %s hr=%08lx vertexUsage=%lx indexUsage=%lx type=%u stride=%u",NorthlightTerrainCapture::rejectName(why.reason),(unsigned long)why.hr,(unsigned long)why.vertexUsage,(unsigned long)why.indexUsage,why.positionType,why.stride);return;}
+            if(positions){std::copy(why.low,why.low+3,positions->low);std::copy(why.high,why.high+3,positions->high);positions->known=true;}
             appendTerrain(snapshot);return;
         }
         captureModel(type,base,min,vertexTotal,start,count,indexed,current,sample,nullptr,D3DFMT_INDEX16,nullptr,0);

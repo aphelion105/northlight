@@ -237,6 +237,8 @@ test_shared_scene_memory.py
 test_shared_scene_ties.py
 test_shared_source_lifecycle.py
 test_shared_static_preparation.py
+test_shared_terrain_bounds.py
+test_shared_terrain_bounds_gpu.py
 test_snapshot_allocation.py
 test_snapshot_archive.py
 test_snapshot_capture_sink.py

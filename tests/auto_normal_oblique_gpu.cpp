@@ -8,6 +8,7 @@ template<class T>static void drop(T*& p){if(p)p->Release();p=nullptr;}
 static void logf(const char* f,...){va_list a;va_start(a,f);std::vprintf(f,a);std::puts("");va_end(a);}
 #include "saved_state.h"
 #include "auto_bump_renderer.h"
+#include "terrain_capture_bounds.h"
 #include "world_compiled_shaders.h"
 #include "material_pixel_audit.h"
 #include "patch_terrain_shadow_coverage.h"
@@ -120,6 +121,7 @@ struct MaterialCaptureStateTestAccess {
     }
 };
 struct DisplacementStateTestAccess {
+    static unsigned capturedHits(const NorthlightAutoDisplacement& g){return g.capturedBoundsHits;}
     static uint64_t builds(const NorthlightAutoDisplacement& g){return g.builds;}
 #ifdef NORTHLIGHT_TEST_LAZY_VARIANT_CURRENT
     static bool ensure(NorthlightAutoDisplacement& g,IDirect3DVertexShader9* vs){auto i=g.shaders.find(vs);return i!=g.shaders.end()&&g.ensureVariant(i->second);}
@@ -218,6 +220,8 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
     if(grass){bank[9][0]=0;bank[9][1]=1;}
     const float macro[]={bank[78][0],bank[78][1],bank[78][2]};auto* baseline=solid(d,macro[0],macro[1],macro[2],1);auto* normal=argc<=5?solid(d,0,0,1,1):solid(d,0,c,s,1);IDirect3DTexture9* white=nullptr;ok(d->CreateTexture(1,1,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&white,nullptr));D3DLOCKED_RECT wl{};ok(white->LockRect(0,&wl,nullptr,0));*static_cast<DWORD*>(wl.pBits)=0xffffffff;ok(white->UnlockRect(0));
     struct V{float x,y,z,nx,ny,nz,u,v;DWORD color,blend,weights=255,bones=0;};V floor[]={{-4,-3.4f,0,0,0,1,-1,-.85f,0xffffffff,0xffffffff},{4,-3.4f,0,0,0,1,1,-.85f,0xffffffff,0xffffffff},{-4,4.6f,0,0,0,1,-1,1.15f,0xffffffff,0xffffffff},{4,4.6f,0,0,0,1,1,1.15f,0xffffffff,0xffffffff}};
+    // Keep the synthetic plane inside one real ADT cell for the world-capture oracle.
+    if(std::getenv("NORTHLIGHT_TEST_TERRAIN_ORIGIN")){for(auto& v:floor){v.x-=16;v.y-=16;}for(unsigned i=0;i<3;++i)bank[3][i]+=16*(bank[0][i]+bank[1][i]);}
     if(std::getenv("NORTHLIGHT_TEST_VERTEX_ALPHA_ZERO"))for(auto& vertex:floor)vertex.color&=0x00ffffff;
     if(model){for(unsigned i=0;i<4;++i){floor[i].weights=std::strcmp(argv[5],"model4")==0?0x3f404040:255;floor[i].bones=0x100;}bank[6][0]=1;bank[6][1]=bank[6][2]=bank[6][3]=0;bank[7][1]=1;bank[7][0]=bank[7][2]=bank[7][3]=0;bank[10][0]=bank[10][1]=bank[10][2]=.7f;bank[11][0]=bank[11][1]=bank[11][2]=.3f;bank[12][0]=.4f;bank[12][1]=-.3f;bank[12][2]=-.8660254f;for(unsigned j=0;j<4;++j)bank[28][j]=1;bank[30][0]=0;bank[30][1]=bank[30][2]=1;for(unsigned r=0;r<3;++r)std::memcpy(bank[34+r],bank[31+r],16);bank[34][3]+=.15f;if(std::strcmp(argv[5],"model4")==0){for(auto& v:floor){v.weights=0x3f404040;v.bones=0x03020100;}for(unsigned bone=2;bone<4;++bone){for(unsigned r=0;r<3;++r)std::memcpy(bank[31+bone*3+r],bank[31+r],16);bank[31+bone*3][3]+=.05f*bone;}}}
     if(model&&std::getenv("NORTHLIGHT_TEST_MATERIAL_ALPHA_TEST"))bank[10][3]=bank[11][3]=1;
@@ -486,9 +490,17 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
             ok(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0xff18212d,1,0));
         }
 #endif
+        NorthlightCaptureMetadata::PositionBounds captured;captured.owner=&geometry;captured.shader=vs;
+        if(std::getenv("NORTHLIGHT_TEST_CAPTURED_BOUNDS")&&indexed&&!model&&!grass){
+            NorthlightTerrainCapture::FrameCache world;NorthlightTerrainCapture::Diagnostics why;
+            std::shared_ptr<const NorthlightTerrainCapture::MeshSnapshot> snapshot;
+            const bool valid=world.readMeshShared(d,geometry.draw.topology,geometry.draw.base,geometry.draw.minimum,geometry.draw.vertices,geometry.draw.start,geometry.draw.primitives,nullptr,snapshot,&why);if(!valid)std::printf("CAPTURED_GPU_REJECT reason=%s hr=%08lx\n",NorthlightTerrainCapture::rejectName(why.reason),(unsigned long)why.hr);assert(valid);
+            std::copy(why.low,why.low+3,captured.low);std::copy(why.high,why.high+3,captured.high);captured.known=true;
+        }
         const auto modeCreates=captureDevice.vertexCreates;LARGE_INTEGER variantStart{},variantEnd{},variantHz{};
         if(std::getenv("NORTHLIGHT_TEST_VARIANT_AUDIT")){QueryPerformanceFrequency(&variantHz);QueryPerformanceCounter(&variantStart);}
-        const auto depthReads=captureDevice.reads,allocations=captureDevice.allocations;const auto clears=MaterialCaptureStateTestAccess::clears(bump);bump.beginDraw();if(mode==3&&std::getenv("NORTHLIGHT_TEST_SHARED_WRAP"))MaterialCaptureStateTestAccess::wrap(bump);bump.capture(vs,native,!indexed,&geometry);
+        const auto depthReads=captureDevice.reads,allocations=captureDevice.allocations;const auto clears=MaterialCaptureStateTestAccess::clears(bump);bump.beginDraw();if(mode==3&&std::getenv("NORTHLIGHT_TEST_SHARED_WRAP"))MaterialCaptureStateTestAccess::wrap(bump);bump.capture(vs,native,!indexed,&geometry,&captured);
+        if(captured.known){assert(DisplacementStateTestAccess::capturedHits(MaterialCaptureStateTestAccess::geometry(bump))>0);std::printf("CAPTURED_BOUNDS_GPU mode=%u shared=1\n",mode);}
         if(mode==2){
 #ifdef NORTHLIGHT_MATERIAL_STATE_BASELINE
             assert(captureDevice.reads-depthReads==1+unsigned(samples!=0));

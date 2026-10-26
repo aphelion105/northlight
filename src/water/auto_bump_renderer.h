@@ -490,7 +490,7 @@ public:
         pixels.erase(original);const unsigned k=kind(kAutoBumpPixel,hash);
         if(k&&pixels.size()<4096)pixels[original]=k;
     }
-    template<class Draw> void capture(IDirect3DVertexShader9* original,Draw draw,bool userMemory=false,const NorthlightAutoDisplacement::Args* geometry=nullptr){
+    template<class Draw> void capture(IDirect3DVertexShader9* original,Draw draw,bool userMemory=false,const NorthlightAutoDisplacement::Args* geometry=nullptr,const NorthlightCaptureMetadata::PositionBounds* positions=nullptr){
         pomInRange=true;
         if(!active()&&(!profile||!profile->recording()))return;
         auto v=vertices.find(original);if(v==vertices.end()&&active())v=recoverVertex(original);if(v==vertices.end())return;
@@ -506,7 +506,7 @@ public:
         if(!ensureVertex(original,v->second))return;
         const bool geometryMode=modes[domain-1]==3;bool skipGeometry=false;
         if(geometry&&(!geometryMode||!displacement.skinned(original))){float nearest=0;
-            if(displacement.nearestMaterialDepth(original,*geometry,nearest,geometryMode)){++rangeTests;
+            if(displacement.nearestMaterialDepth(original,*geometry,nearest,geometryMode,positions)){++rangeTests;
                 nearestDepth=nearest;
                 if(nearest>=pomControl[1]){pomInRange=false;++pomRangeRejected;}
                 skipGeometry=geometryMode&&nearest>displacement.geometryRange(domain);
