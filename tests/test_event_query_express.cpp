@@ -13,7 +13,7 @@ struct BoundaryQuery:TQuery {
 struct QueryDrawTarget:TargetDevice {
     std::atomic<bool> firstEntered{false},releaseFirst{false},secondEntered{false},releaseSecond{false},secondRetired{false};
     std::atomic<bool> backgroundReady{false};
-    unsigned draws=0,driverFlushCalls=0;bool driverAfterSecond=false,falseValue=false;
+    unsigned draws=0,driverFlushCalls=0,pendingFlushCalls=0;bool driverAfterSecond=false,falseValue=false;
     HRESULT status=D3D_OK,publishStatus=D3D_OK;bool publishOnExit=false;BoundaryFault fault=BoundaryFault::None;StreamCore* core=nullptr;
     StreamQuery* proxy=nullptr;BoundaryQuery* query=nullptr;
     HRESULT CreateQuery(D3DQUERYTYPE type,IDirect3DQuery9** out) override{
@@ -45,6 +45,7 @@ HRESULT BoundaryQuery::GetData(void* data,DWORD size,DWORD flags){
     }
     ++owner->driverFlushCalls;owner->driverAfterSecond=owner->secondRetired.load();
     if(flags!=D3::kGetDataFlush||(!data&&size)||(data&&size!=4))return D3DERR_INVALIDCALL;
+    if(owner->driverFlushCalls<=owner->pendingFlushCalls)return S_FALSE;
     if(owner->status==D3D_OK&&data){const DWORD value=owner->falseValue?0:0xABCD0000u+issued;std::memcpy(data,&value,4);}
     return owner->status;
 }
@@ -76,10 +77,10 @@ static void queryPump(){
         pumping->target->releaseFirst.store(true);
     }else if(pumping->target->secondEntered.load())pumping->target->releaseSecond.store(true);
 }
-static void scenario(bool baseline,bool gated,const char* name,bool endSeen,bool reset,bool cached,HRESULT status,bool nested,bool nullPayload=false,bool invalidPayload=false,bool falsePayload=false,bool dropFinal=false,BoundaryFault fault=BoundaryFault::None,bool noIssue=false,DWORD flags=D3::kGetDataFlush){
+static void scenario(bool baseline,bool gated,const char* name,bool endSeen,bool reset,bool cached,HRESULT status,bool nested,bool nullPayload=false,bool invalidPayload=false,bool falsePayload=false,bool dropFinal=false,BoundaryFault fault=BoundaryFault::None,bool noIssue=false,DWORD flags=D3::kGetDataFlush,unsigned pendingFlushCalls=0){
     gTrace.clear();QueryRig rig;auto* t=rig.target;auto& core=rig.device->streamCore();
     IDirect3DQuery9* query=nullptr;CHECK(rig.device->CreateQuery(8,&query)==D3D_OK);rig.sync();
-    auto* proxy=static_cast<StreamQuery*>(query);t->proxy=proxy;t->status=status;t->publishStatus=status;t->publishOnExit=cached;t->falseValue=falsePayload;t->fault=fault;t->core=&core;
+    auto* proxy=static_cast<StreamQuery*>(query);t->proxy=proxy;t->status=status;t->publishStatus=status;t->publishOnExit=cached;t->falseValue=falsePayload;t->fault=fault;t->core=&core;t->pendingFlushCalls=pendingFlushCalls;
     if(endSeen&&!noIssue){CHECK(query->Issue(D3::kIssueEnd)==D3D_OK);rig.sync();}
     if(reset){D3DPRESENT_PARAMETERS pp{};CHECK(rig.device->Reset(&pp)==D3D_OK);}
     rig.draw();core.q.publish();CHECK(waitFor([&]{return t->firstEntered.load();}));
@@ -117,6 +118,7 @@ static void scenario(bool baseline,bool gated,const char* name,bool endSeen,bool
     CHECK(get(core.q.stats.expressNs)==get(core.q.stats.readbackExpressNs)+get(core.q.stats.queryExpressNs));
     const HRESULT expected=invalidPayload||fault==BoundaryFault::MissingInner||flags!=D3::kGetDataFlush?D3DERR_INVALIDCALL:status;
     CHECK(result==expected);
+    if(pendingFlushCalls)CHECK(t->driverFlushCalls==pendingFlushCalls+1);
     const unsigned returnedGeneration=fault==BoundaryFault::MissingEnd||fault==BoundaryFault::Dead||noIssue?0u:!baseline&&!gated&&nested&&!endSeen?2u:1u;
     if(result==D3D_OK&&!nullPayload)CHECK(value==(falsePayload?0:0xABCD0000u+returnedGeneration));
     else CHECK(value==0x87654321u);
@@ -171,6 +173,7 @@ int main(int argc,char** argv){
     scenario(baseline,gated,"coop-loss-at-boundary",true,false,false,D3DERR_DEVICELOST,false,false,false,false,false,BoundaryFault::Lost);
     scenario(baseline,gated,"cached-error",true,false,true,D3DERR_DEVICELOST,false);
     scenario(baseline,gated,"pending-budget",true,false,false,S_FALSE,false);
+    scenario(baseline,gated,"complete-after-old-deadline",true,false,false,D3D_OK,false,false,false,false,false,BoundaryFault::None,false,D3::kGetDataFlush,80);
     scenario(baseline,gated,"reset-epoch",true,true,false,D3D_OK,false);
     scenario(baseline,gated,"nested-reissue-reset-release",true,false,false,D3D_OK,true);
     scenario(baseline,gated,"nested-final-release",true,false,false,D3D_OK,true,false,false,false,true);

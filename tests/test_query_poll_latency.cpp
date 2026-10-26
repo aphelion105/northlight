@@ -53,4 +53,24 @@ int main(){
     assert(NorthlightStream::waitEventQuery([]{return E_FAIL;},[]{return std::uint64_t(0);},[]{},calls)==E_FAIL&&calls==1);
     assert(NorthlightStream::waitEventQuery([]{return S_FALSE;},[]{return std::uint64_t(0);},[]{},calls)==S_FALSE&&calls==1);
     std::printf("QUERY_POLL_PASS readySweep=1700 worstDetectionNs=%llu maxDriverPolls=%u pendingBudgetMs=2 error=preserved stalledClock=bounded\n",static_cast<unsigned long long>(worst),maxCalls);
+    // Normal GPU completion after the old 2 ms deadline must not escape into
+    // the game's Sleep(0) loop. Exercise the production FLUSH budget separately.
+    worst=0;maxCalls=0;
+    for(std::uint64_t ready=0;ready<15900000;ready+=1000){
+        clock=0;
+        const auto hr=NorthlightStream::waitEventQuery([&]{return clock>=ready?S_OK:S_FALSE;},[&]{clock+=1000;return clock;},[]{},calls,NorthlightStream::kEventFlushWaitNs);
+        assert(hr==S_OK&&clock>=ready);worst=std::max(worst,clock-ready);maxCalls=std::max(maxCalls,calls);
+    }
+    assert(worst<=52000&&maxCalls<=322);
+    clock=0;
+    assert(NorthlightStream::waitEventQuery([&]{return clock>=12000000?S_OK:S_FALSE;},[&]{clock+=100;return clock;},[]{},calls,NorthlightStream::kEventFlushWaitNs)==S_OK);
+    assert(clock>=12000000&&clock<12050200&&calls<=245); // More than 65,536 live clock checks must not expire the wait.
+    clock=0;
+    assert(NorthlightStream::waitEventQuery([]{return S_FALSE;},[&]{clock+=1000;return clock;},[]{},calls,NorthlightStream::kEventFlushWaitNs)==S_FALSE);
+    assert(clock>=16000000&&clock<16002000&&calls<=325);
+    assert(NorthlightStream::waitEventQuery([]{return S_FALSE;},[]{return std::uint64_t(0);},[]{},calls,NorthlightStream::kEventFlushWaitNs)==S_FALSE&&calls==1);
+    clock=0;
+    assert(NorthlightStream::waitEventQuery([&]{return clock>=6000000?E_FAIL:S_FALSE;},[&]{clock+=1000;return clock;},[]{},calls,NorthlightStream::kEventFlushWaitNs)==E_FAIL);
+    assert(clock>=6000000&&clock<6052000);
+    std::printf("QUERY_FLUSH_PASS readySweep=15900 worstDetectionNs=%llu maxDriverPolls=%u pendingBudgetMs=16 delayedError=preserved stalledClock=bounded\n",static_cast<unsigned long long>(worst),maxCalls);
 }

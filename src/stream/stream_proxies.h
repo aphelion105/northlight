@@ -1574,8 +1574,8 @@ struct StreamQuery final:IDirect3DQuery9,ProxyBase {
             HRESULT hr=D3DERR_INVALIDCALL;
             const bool measure=core->timing;const auto waitBefore=measure?get(q.stats.syncNs):0;
             const bool unissued=measure&&!gen.load();
-            // An EVENT FLUSH: the replay thread holds this trip until the GPU is done or 2 ms pass (waitEventQuery), so the game
-            // thread sleeps in its pumped wait instead of starting a new trip for every driver call.
+            // Keep an ordinary GPU frame inside the pumped wait. The deadline
+            // bounds an unresponsive query; completion returns immediately.
             const bool event=type==8&&flags==D3::kGetDataFlush&&gen.load();
             const auto tripStart=measure?nowNs():0;std::uint64_t replayStart=0,replayEnd=0;
             auto body=[&](bool cached){if(measure)replayStart=nowNs();if(inner){
@@ -1584,7 +1584,7 @@ struct StreamQuery final:IDirect3DQuery9,ProxyBase {
                     if(hr==S_OK&&data){const BOOL value=eventValue.load(std::memory_order_relaxed);std::memcpy(data,&value,sizeof value);}
                 }else{
                     auto poll=[&]{return static_cast<IDirect3DQuery9*>(inner)->GetData(data,size,flags);};
-                    if(event){unsigned calls=0;hr=waitEventQuery(poll,nowNs,[]{std::this_thread::yield();},calls);own(q.stats.eventPollCalls,calls);own(q.stats.eventWaitTrips);}
+                    if(event){unsigned calls=0;hr=waitEventQuery(poll,nowNs,[]{std::this_thread::yield();},calls,kEventFlushWaitNs);own(q.stats.eventPollCalls,calls);own(q.stats.eventWaitTrips);}
                     else hr=poll();
                 }
             }if(measure)replayEnd=nowNs();};
