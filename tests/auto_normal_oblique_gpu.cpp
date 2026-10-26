@@ -77,6 +77,16 @@ struct MaterialCaptureStateTestAccess {
         std::printf("MATERIAL_BATCH_LIMIT_PASS rejected=%u packetLimit=%u packetBytes=%zu\n",b.batchLimit,b.deferredPacketLimit,b.deferredByteLimit);
     }
     static void smallPackets(NorthlightAutoBump& b){b.deferredPacketLimit=64;b.deferredByteLimit=1u<<20;}
+    static void demandRetention(NorthlightAutoBump& b){
+        const auto bytes=b.deferredGPU.chargedBytes(),entries=b.deferredGPU.population().entries;
+        assert(bytes&&entries);
+        b.setMemoryPressurePolicy(false,false);
+        b.setMemoryPressurePolicy(true,false);
+        assert(b.deferredGPU.chargedBytes()==bytes&&b.deferredGPU.population().entries==entries&&"MATERIAL_DEMAND_ENTRY_RETAIN");
+        b.trimMemory(false);
+        assert(b.deferredGPU.chargedBytes()==bytes&&b.deferredGPU.population().entries==entries&&"MATERIAL_DEMAND_TRIM_RETAIN");
+        std::puts("MATERIAL_DEMAND_RETENTION_PASS populated_cache_survives_reentry_and_trim reduced_cpu_pools_retained");
+    }
     static void criticalRelease(NorthlightAutoBump& b){
         assert(b.deferredGPU.bytes()&&b.deferredGPU.limit()==(32u<<20));
         b.setMemoryPressurePolicy(true,true);
@@ -617,7 +627,7 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
                 if(!identicalRewrite&&samples&&(meshGrid||bufferedStrip||std::getenv("NORTHLIGHT_TEST_DEFERRED_RESIDENT")))MaterialCaptureStateTestAccess::residency(bump,(!pressure||demandPressure)&&!captureDevice.failResident);
 #ifdef NORTHLIGHT_TEST_MATERIAL_PRESSURE_POLICY
                 MaterialCaptureStateTestAccess::batchLimits(bump);
-                if(demandPressure&&samples&&!captureDevice.failResident)MaterialCaptureStateTestAccess::criticalRelease(bump);
+                if(demandPressure&&samples&&!captureDevice.failResident){MaterialCaptureStateTestAccess::demandRetention(bump);MaterialCaptureStateTestAccess::criticalRelease(bump);}
 #endif
                 if(multiStream){assert(!MaterialCaptureStateTestAccess::sourceReadBytes(bump));std::puts("MATERIAL_MULTISTREAM_PREFLIGHT_PASS zero_source_reads immediate_retained");}}
             if(batchTiming&&std::getenv("NORTHLIGHT_TEST_MATERIAL_BATCH_VALIDATE")){

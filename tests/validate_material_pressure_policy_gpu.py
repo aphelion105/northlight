@@ -25,7 +25,7 @@ for samples in [0,2]:
         if policy!='critical':flags['NORTHLIGHT_TEST_DEMAND_PRESSURE']='1'
         if policy=='demand-small':flags['NORTHLIGHT_TEST_SMALL_PACKETS']='1'
         text=run(label,[exe,a.backend.resolve(),str(folder)+'/',12,.7],flags)
-        if policy!='critical' and samples:assert 'MATERIAL_CRITICAL_RELEASE_PASS' in text
+        if policy!='critical' and samples:assert 'MATERIAL_DEMAND_RETENTION_PASS' in text and 'MATERIAL_CRITICAL_RELEASE_PASS' in text
         timing=re.search(r'MATERIAL_BATCH_TIMING .*gpuMs=([\d.]+) submitMs=([\d.]+)',text);assert timing
         limits=re.search(r'MATERIAL_BATCH_LIMIT_PASS rejected=(\d+) packetLimit=(\d+) packetBytes=(\d+)',text);assert limits
         results.append(dict(msaa=samples,policy=policy,gpu_ms=float(timing[1]),submit_ms=float(timing[2]),forced_batches=int(limits[1]),packet_limit=int(limits[2]),packet_bytes=int(limits[3])))
@@ -36,3 +36,19 @@ for samples in [0,2]:
         critical,small,demand=results[-3:]
         assert demand['forced_batches']<small['forced_batches']==critical['forced_batches'],(critical,small,demand)
 (out/'validation.json').write_text(json.dumps(dict(pass_=True,exact_color_normal_occlusion=True,cases=results),indent=2)+'\n');print(json.dumps(results,indent=2))
+
+# Counterfactuals retain the same fixture/API and restore each destructive path
+# separately. A populated cache, rather than its configured cap, must survive.
+header=fp.src('auto_bump_renderer.h').read_text()
+controls=[('entry','deferredGPU.setLimit(on?pressureReplayLimit:32u<<20);','deferredGPU.setLimit(on?0:32u<<20);','MATERIAL_DEMAND_ENTRY_RETAIN'),
+          ('trim','if(releaseReplay)deferredGPU.clear();','deferredGPU.clear();','MATERIAL_DEMAND_TRIM_RETAIN')]
+for label,before,after,rejection in controls:
+    assert header.count(before)==1
+    folder=out/('control-'+label);folder.mkdir();(folder/'auto_bump_renderer.h').write_text(header.replace(before,after))
+    control=folder/'pressure-policy.exe'
+    run('compile-control-'+label,[fp.zig(),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec','-DNORTHLIGHT_TEST_MATERIAL_PRESSURE_POLICY=1','-DNORTHLIGHT_OBLIQUE_WIDTH=320','-DNORTHLIGHT_OBLIQUE_HEIGHT=200','-I',folder,*fp.test_include_flags(),fp.TESTS/'auto_normal_oblique_gpu.cpp','-luser32','-o',control])
+    flags={'NORTHLIGHT_TEST_MSAA':'2','NORTHLIGHT_TEST_DEMAND_PRESSURE':'1'}
+    result=subprocess.run(list(map(str,[control,a.backend.resolve(),str(folders['demand'])+'/',12,.7])),cwd=out,env={**env,**flags},capture_output=True,text=True,timeout=180)
+    text=result.stdout+result.stderr;(out/('control-'+label+'.log')).write_text(text)
+    assert result.returncode!=0 and rejection in text,(label,result.returncode,text[-4000:])
+(out/'validation.json').write_text(json.dumps(dict(pass_=True,exact_color_normal_occlusion=True,cases=results,negative_controls=[c[0] for c in controls]),indent=2)+'\n')

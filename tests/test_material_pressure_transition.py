@@ -18,8 +18,8 @@ helper=helper.replace('struct MaterialCaptureStateTestAccess {','struct Material
 helper=helper.replace('struct DisplacementStateTestAccess {','struct DisplacementStateTestAccess {\n    static size_t pressureLimit(const NorthlightAutoDisplacement& g){return g.snapshots.snapshotCacheLimit();}\n    static NorthlightDrawSnapshot::Frame& pressureSources(NorthlightAutoDisplacement& g,unsigned i){return i==0?g.snapshots:i==1?g.rangeSnapshots:g.skinRangeSnapshots;}')
 (out/'material_pressure_reference.h').write_bytes(helper.encode())
 header=fp.src('auto_bump_renderer.h').read_text();geometry=fp.src('auto_displacement_renderer.h').read_text()
-begin=header.index('    void setMemoryPressure(bool on){');end=header.index('    void trimMemory()',begin)
-original='''    void setMemoryPressure(bool on){
+begin=header.index('    void setMemoryPressure(bool on,');end=header.index('    void trimMemory(',begin)
+original='''    void setMemoryPressure(bool on,size_t=0){
         if(memoryPressure==on)return;memoryPressure=on;deferredSnapshots.setSnapshotCacheLimit(on?4u<<20:24u<<20);
         if(on&&!deferred.empty()){deferredDiscarded+=unsigned(deferred.size());clearDeferred();drawn=occlusionDrawn=false;}
         deferredGPU.setLimit(on?0:32u<<20);

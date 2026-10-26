@@ -2555,7 +2555,7 @@ public:
     void trimMemory(const NorthlightMemoryDiagnostics::Sample& trigger,const WorldRenderer::MemoryTrim& worldTrim,double worldTrimMs){
         LARGE_INTEGER start={},surfaceEnd={},materialEnd={},stateEnd={},waterEnd={},end={};QueryPerformanceCounter(&start);
         if(surface)surface->reset();QueryPerformanceCounter(&surfaceEnd);
-        if(autoBump)autoBump->trimMemory();QueryPerformanceCounter(&materialEnd);
+        if(autoBump)autoBump->trimMemory(memoryGuard.capsHalved());QueryPerformanceCounter(&materialEnd);
         stateBlocks.clear();QueryPerformanceCounter(&stateEnd);
         if(water)water->releaseStateCache();QueryPerformanceCounter(&waterEnd);
         const auto& t=worldTrim;
