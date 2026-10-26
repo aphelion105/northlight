@@ -99,6 +99,7 @@ struct Settings {
     unsigned autoBump=1,autoBumpStrength=75,autoBumpDistance=48,autoBumpTerrain=3,autoBumpWalls=3,autoBumpGrass=1;
     unsigned autoParallaxDepth=100,autoParallaxDistance=16,autoParallaxSteps=16;
     unsigned autoParallaxShadows=1,autoParallaxShadowStrength=70,autoParallaxShadowSteps=8,autoCavity=1,autoCavityStrength=35;
+    unsigned aoMethod=0,aoStrength=100,aoRadius=200; // Live AO method, percent, hundredths of a yard.
     unsigned nightBrightness=50;
     // 0.3.209 (task 29) ActorShadowDetail: 1 = a dedicated 4x finer shadow map around the player holds the moving casters (characters, mounts) and a
     // contact-hardening soft filter pass reads it (sharp at the feet, softer further from the caster); 0 = the 0.3.207 shadows (near cascade, 5x5 tent). ActorShadows=0 disables it too.
@@ -131,7 +132,7 @@ struct Settings {
     unsigned autoDisplacementStrength=100,autoDisplacementDistance=12,autoDisplacementDetail=4;
     unsigned autoBumpModels=3,autoModelDisplacementStrength=25,autoModelDisplacementDistance=8,autoModelDisplacementDetail=2;
     unsigned autoHeightPolarity=0,autoHeightDetails=75,autoHeightBalance=50;
-    char origin[82]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
+    char origin[85]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
 };
 struct Key { const char* name; unsigned Settings::*field; unsigned low,high; unsigned preset[3]; };
 // preset[] = Quality, Balanced, Performance. Quality must equal Settings{}.
@@ -218,6 +219,9 @@ inline const Key Keys[]={
     {"AutoHeightDetails",&Settings::autoHeightDetails,0,100,{75,75,75}},
     {"AutoHeightBalance",&Settings::autoHeightBalance,0,100,{50,50,50}},
     {"EquipmentLights",&Settings::equipmentLights,0,1,{1,0,0}},
+    {"AOMethod",&Settings::aoMethod,0,3,{0,0,0}},
+    {"AOStrength",&Settings::aoStrength,0,200,{100,100,100}},
+    {"AORadius",&Settings::aoRadius,10,1000,{200,200,200}},
 };
 inline bool operator==(const Settings& a,const Settings& b){for(const auto& k:Keys)if(a.*k.field!=b.*k.field)return false;return true;}
 inline bool operator!=(const Settings& a,const Settings& b){return !(a==b);}
@@ -273,6 +277,13 @@ inline bool number(const std::string& text,unsigned& out){
     if(text.empty()||text.size()>6||text.find_first_not_of("0123456789")!=std::string::npos)return false;
     out=unsigned(std::strtoul(text.c_str(),nullptr,10));return true;
 }
+inline const char* aoName(unsigned method){const char* names[]={"SSAO","HDAO","HBAOPlus-D3D9","GTAO"};return names[method<4?method:0];}
+inline bool aoNumber(const std::string& text,unsigned& out){
+    const auto value=lower(text);
+    if(value=="ssao")out=0;else if(value=="hdao")out=1;
+    else if(value=="hbaoplus"||value=="hbao+")out=2;else if(value=="gtao")out=3;
+    else return number(text,out);return true;
+}
 // Explicit key values of one INI section, in file order. Unrecognised
 // sections are skipped; comments start with ';' or '#', also after a value.
 struct Entry { std::string key,value;unsigned line=0; };
@@ -303,7 +314,7 @@ inline void apply(const std::vector<Entry>& entries,Settings& s,const char* sour
         if(retired){problems.push_back(where+retired->name+" retired in "+retired->version+" (ignored)");continue;}
         if(!match){problems.push_back(where+"unknown key "+e.key+" ignored");continue;}
         unsigned v=0;
-        if(!number(e.value,v)||v<match->low||v>match->high){
+        if(!(match->field==&Settings::aoMethod?aoNumber(e.value,v):number(e.value,v))||v<match->low||v>match->high){
             problems.push_back(where+e.key+"="+e.value+" invalid (allowed "+std::to_string(match->low)+".."+std::to_string(match->high)+"); kept "+std::to_string(s.*match->field));continue;}
         s.*match->field=v;s.origin[index]=origin;
     }

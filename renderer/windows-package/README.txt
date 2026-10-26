@@ -223,6 +223,9 @@ Individual settings (Quality / Balanced / Performance):
   AutoHeightPolarity 0 / 0 / 0   See the quality INI for the allowed range.
   AutoHeightDetails 75 / 75 / 75   See the quality INI for the allowed range.
   AutoHeightBalance 50 / 50 / 50   See the quality INI for the allowed range.
+  AOMethod 0 / 0 / 0   See the quality INI for the allowed range.
+  AOStrength 100 / 100 / 100   See the quality INI for the allowed range.
+  AORadius 200 / 200 / 200   See the quality INI for the allowed range.
 When both NearShadowInterval and FarShadowInterval are at least 2, frames that
 draw neither shadow also skip copying the character geometry (about 1–1.5 ms
 of CPU per skipped frame). Light and normal frames alternate: the average FPS

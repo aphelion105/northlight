@@ -169,31 +169,32 @@ inline bool decodeElement(const std::uint8_t* bytes,unsigned type,Four& v){
 #else
 #define NO_FUSED_MULTIPLY_ADD
 #endif
-template<bool Strict=false> inline bool evaluate(const Program& p,const Four inputs[16],const float* constants,Four& viewPosition){
+template<bool Strict=false,class Float=float> inline bool evaluate(const Program& p,const std::array<Float,4> inputs[16],const float* constants,std::array<Float,4>& viewPosition){
     NO_FUSED_MULTIPLY_ADD
+    using Four=std::array<Float,4>;
     using namespace NorthlightShadowShader;Four temp[33]={},address={};
     auto source=[&](const Source& s,Four& result)->bool{
         Word t=s.token;unsigned type=regType(t);int index=int(regIndex(t));Four value={};
-        if(t&0x2000){unsigned channel=p.major>=2?((s.address>>16)&3):0;float a=address[channel];if(!std::isfinite(a)||a<-4096||a>4096)return false;index+=int(a);}
+        if(t&0x2000){unsigned channel=p.major>=2?((s.address>>16)&3):0;Float a=address[channel];if(!std::isfinite(a)||a<-4096||a>4096)return false;index+=int(a);}
         if(type==0)value=temp[index];else if(type==1)value=inputs[index];else if(type==3)value=address;
-        else{if(index<0||index>=256)return false;std::memcpy(value.data(),constants+4*index,16);for(auto& d:p.definitions)if(d.reg==unsigned(index))value=d.value;}
+        else{if(index<0||index>=256)return false;std::copy_n(constants+4*index,4,value.begin());for(auto& d:p.definitions)if(d.reg==unsigned(index))std::copy(d.value.begin(),d.value.end(),value.begin());}
         for(unsigned j=0;j<4;++j){result[j]=value[(t>>(16+2*j))&3];unsigned modifier=(t>>24)&15;if(modifier==11||modifier==12)result[j]=std::fabs(result[j]);if(modifier==1||modifier==12)result[j]=-result[j];if constexpr(Strict)if(!std::isfinite(result[j]))return false;}return true;
     };
     for(auto& o:p.operations){Four a={},b={},c={},result={};if(!source(o.source[0],a))return false;
         int n=arithmeticOperands(o.code,p.major)-1;if(n>1&&!source(o.source[1],b))return false;if(n>2&&!source(o.source[2],c))return false;
-        if(o.code==8||o.code==9){float sum=0;for(unsigned j=0;j<(o.code==8?3u:4u);++j)sum+=a[j]*b[j];result.fill(sum);}
+        if(o.code==8||o.code==9){Float sum=0;for(unsigned j=0;j<(o.code==8?3u:4u);++j)sum+=a[j]*b[j];result.fill(sum);}
         else if(o.code==6){result.fill(1/a[0]);}
-        else if(o.code==7){float s=1/std::sqrt(std::fabs(a[0]));result.fill(s);}
-        else if(o.code==36){float s=1/std::sqrt(a[0]*a[0]+a[1]*a[1]+a[2]*a[2]);for(unsigned j=0;j<4;++j)result[j]=a[j]*s;}
+        else if(o.code==7){Float s=1/std::sqrt(std::fabs(a[0]));result.fill(s);}
+        else if(o.code==36){Float s=1/std::sqrt(a[0]*a[0]+a[1]*a[1]+a[2]*a[2]);for(unsigned j=0;j<4;++j)result[j]=a[j]*s;}
         else if(o.code==14){result.fill(std::exp2(a[0]));}
         else if(o.code==15){result.fill(std::log2(std::fabs(a[0])));}
         else if(o.code==32){result.fill(std::pow(std::fabs(a[0]),b[0]));}
-        else if(o.code==16){result={1,std::max(a[0],0.f),a[0]>0?std::pow(std::max(a[1],0.f),std::max(-128.f,std::min(128.f,a[3]))):0,1};}
+        else if(o.code==16){result={1,std::max(a[0],Float(0)),a[0]>0?std::pow(std::max(a[1],Float(0)),std::max(Float(-128),std::min(Float(128),a[3]))):0,1};}
         else if(o.code==17){result={1,a[1]*b[1],a[2],b[3]};}
         else if(o.code==33){result={a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0],0};}
         else for(unsigned j=0;j<4;++j){switch(o.code){case 1:case 46:result[j]=a[j];break;case 2:result[j]=a[j]+b[j];break;case 3:result[j]=a[j]-b[j];break;case 12:result[j]=a[j]<b[j]?1:0;break;case 13:result[j]=a[j]>=b[j]?1:0;break;case 18:result[j]=a[j]*b[j]+(1-a[j])*c[j];break;case 19:result[j]=a[j]-std::floor(a[j]);break;case 35:result[j]=std::fabs(a[j]);break;case 4:result[j]=a[j]*b[j]+c[j];break;case 5:result[j]=a[j]*b[j];break;case 10:result[j]=std::min(a[j],b[j]);break;case 11:result[j]=std::max(a[j],b[j]);break;default:return false;}}
         unsigned mask=(o.destination>>16)&15,type=regType(o.destination);Four& target=type==3?address:temp[regIndex(o.destination)];
-        for(unsigned j=0;j<4;++j)if(mask&(1u<<j)){float value=result[j];if constexpr(Strict)if(!std::isfinite(value))return false;if(o.destination&(1u<<20))value=std::max(0.f,std::min(1.f,value));
+        for(unsigned j=0;j<4;++j)if(mask&(1u<<j)){Float value=result[j];if constexpr(Strict)if(!std::isfinite(value))return false;if(o.destination&(1u<<20))value=std::max(Float(0),std::min(Float(1),value));
             // The client's D9VK dxso_compiler::emitMov floors VS1.1 address
             // writes, rounds VS2/3 MOV/MOVA. Nonfinite addresses fail source().
             if(type==3){if(!std::isfinite(value))return false;

@@ -18,6 +18,34 @@ static void logf(const char*,...){}
 #include "device_mirror.h"
 
 struct DisplacementStateTestAccess {
+    static void rotation(){
+        using namespace NorthlightActorDeformation;
+        Program p;p.major=3;p.positionRegister=0;p.inputs={{0,D3DDECLUSAGE_POSITION,0}};
+        for(unsigned row=0;row<3;++row)p.operations.push_back({9,0x80000000u|((1u<<row)<<16),{{0x90e40000u,0},{0xa0e40000u|row,0},{}}});
+        p.operations.push_back({1,0x80080000u,{{0xa0000003u,0},{},{}}});buildKernel(p);
+        NorthlightAutoDisplacement renderer(nullptr);renderer.range=12;renderer.strength=.36f;
+        float worstOld=0,worstNew=0,oldOffsetError=0,newOffsetError=0;
+        for(float x:{5947.7f,30000.f})for(unsigned step=0;step<1440;++step){
+            const float angle=float(step)*.00436332313f,c=std::cos(angle),s=std::sin(angle),y=854.14f,z=148.87f;
+            float constants[1024]={};const float rows[12]={c,s,0,-c*x-s*y,-s,c,0,s*x-c*y,0,0,1,-z};
+            std::copy(rows,rows+12,constants);constants[12]=1;
+            assert(renderer.viewRows(p,constants));
+            Four input[16]={},origin;input[0]={0,0,0,1};assert(evaluateFast(p,input,constants,origin));
+            float old[3][4];for(unsigned r=0;r<3;++r)old[r][3]=origin[r];
+            for(unsigned k=0;k<3;++k){input[0]={0,0,0,1};input[0][k]=1;Four unit;assert(evaluateFast(p,input,constants,unit));for(unsigned r=0;r<3;++r)old[r][k]=unit[r]-origin[r];}
+            input[0]={x+10,y,z,1};Four native;assert(evaluateFast(p,input,constants,native));
+            float oldSquared=0,newSquared=0,nativeSquared=0;
+            for(unsigned r=0;r<3;++r){float before=0,after=0;for(unsigned k=0;k<4;++k){before+=old[r][k]*input[0][k];after+=renderer.controls[r][k]*input[0][k];assert(std::abs(renderer.controls[r][k]-constants[r*4+k])<=2e-10f);}
+                oldSquared+=before*before;newSquared+=after*after;nativeSquared+=native[r]*native[r];
+                worstOld=std::max(worstOld,std::abs(before-native[r]));worstNew=std::max(worstNew,std::abs(after-native[r]));}
+            auto offset=[&](float squared){return .4f*renderer.controls[3][0]*std::clamp(squared*renderer.controls[3][1]+renderer.controls[3][2],0.f,1.f);};
+            oldOffsetError=std::max(oldOffsetError,std::abs(offset(oldSquared)-offset(nativeSquared)));
+            newOffsetError=std::max(newOffsetError,std::abs(offset(newSquared)-offset(nativeSquared)));
+        }
+        assert(worstOld>.1f&&worstNew<.004f&&worstNew<worstOld*.01f);
+        assert(oldOffsetError>.01f&&newOffsetError<.0001f);
+        std::printf("DISPLACEMENT_ROTATION_PASS rotations=2880 strengthPercent=300 oldViewError=%g newViewError=%g oldOffsetError=%g newOffsetError=%g nativeFloatPathUnchanged=1\n",worstOld,worstNew,oldOffsetError,newOffsetError);
+    }
     static void cache();
     static bool read(NorthlightAutoDisplacement& g,bool skinned=true){return g.readConstants(skinned?0:20,skinned?256:4,skinned);}
     static const float* values(const NorthlightAutoDisplacement& g){return g.constants;}
@@ -103,6 +131,7 @@ struct Declaration:IDirect3DVertexDeclaration9 {
     HRESULT STDMETHODCALLTYPE GetDeclaration(D3DVERTEXELEMENT9* out,UINT* count)override{++reads;if(fail||*count<2)return D3DERR_INVALIDCALL;std::memcpy(out,elements,sizeof elements);*count=2;return D3D_OK;}
 };
 int main(){
+    DisplacementStateTestAccess::rotation();
     DisplacementStateTestAccess::cache();
     Backend backend;DeviceMirror mirror;ExtensionDevice extension(&backend,&mirror);Meter meter(&extension);
     NorthlightAutoDisplacement g(&meter);

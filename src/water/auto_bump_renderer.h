@@ -1,4 +1,5 @@
 #pragma once
+#define NORTHLIGHT_HAS_AUTO_MATERIALS 1
 #include "auto_bump_compiled_shaders.h"
 #include "auto_bump_identities.h"
 #include "water_shader_patch.h"
@@ -150,6 +151,7 @@ public:
         for(auto& n:draws)n=0;rejected=0;cleared=drawn=false;
     }
     bool active()const{return enabled&&(strength>0||occlusionControl[0]>0||occlusionControl[2]>0||((modes[0]==3||modes[1]==3||modes[2]==3||modes[3]==3)&&displacement.hasDisplacement()))&&!failed;}
+    bool capturedThisFrame()const{return texture()!=nullptr;}
     IDirect3DTexture9* texture()const{return active()&&drawn?height:nullptr;}
     IDirect3DTexture9* occlusionTexture()const{return active()&&drawn?occlusionMap:nullptr;}
     float gain()const{return texture()?strength:0;}
