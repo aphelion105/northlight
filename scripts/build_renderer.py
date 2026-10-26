@@ -13,6 +13,7 @@ import check_layout  # noqa: E402  (scripts/ is this script's directory)
 SHADERS = northlight_paths.SHADERS                         # *.hlsl and their *-shader-build.json manifests
 DLL = northlight_paths.RENDERER / 'frd9.dll'
 DEV_DLL = northlight_paths.RENDERER / 'frd9-dev-tuning.dll'  # the dev variant never overwrites frd9.dll
+OVERLAY_SOURCES = ('settings_overlay.cpp', 'settings_panel.cpp', 'imgui.cpp', 'imgui_draw.cpp', 'imgui_tables.cpp', 'imgui_widgets.cpp', 'imgui_impl_dx9.cpp')
 
 def main(argv=None):
     dev_tuning = '--dev-tuning' in (sys.argv[1:] if argv is None else argv)
@@ -53,6 +54,9 @@ def main(argv=None):
                '-std=c++17', '-fno-rtti', '-Wall', '-Wextra', '-Wno-microsoft-exception-spec',
                *northlight_paths.include_flags(),
                *[str(northlight_paths.src(n)) for n in ('renderer.cpp', 'world_gi.cpp', 'world_mesh_plan.cpp', 'static_shadow_scene.cpp', 'frd9.def')],
+               # Settings overlay (src/overlay/) and the vendored Dear ImGui it draws with (src/imgui/, configured by northlight_imconfig.h).
+               '-DIMGUI_USER_CONFIG="northlight_imconfig.h"',
+               *[str(northlight_paths.src(n)) for n in OVERLAY_SOURCES],
                '-luser32', '-luuid', '-o', str(DEV_DLL if dev_tuning else DLL)]
     if dev_tuning:
         # Developer-only zone tuning (scripts/dev_tuning/). The DLL carries a marker that renderer/build_packages.py refuses.

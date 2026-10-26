@@ -18,6 +18,13 @@ FILES=['renderer.cpp','world_renderer.h','world_shadow_experiment.inl','world_po
 GATES=('NorthlightDiagnostics::enabled()','diagnostics()','sampled()','captureSampled','if(diagnostics)','shadowFate.active()','sampledFrame','profiling()','profileSampled()','if(lightingClock)')
 # Ungated lines that stay with Diagnostics=0: format prefix -> label.
 KEEP={
+ 'RESET stages ':'gated: Reset event only, resetProfile requires Diagnostics and a valid performance-counter frequency',
+ 'SETTINGS unavailable:':'one-off initialization error',
+ 'SETTINGS startup recovery incomplete:':'one-off: a crash-interrupted settings commit could not be finished at start-up',
+ 'SETTINGS frame %s revision=':'settings event: a preview or saved config reached the frame boundary (user action)',
+ 'CELESTIAL cloudOrder=':'one-off: first phase composition',
+ 'CELESTIAL skybox signatures unverified':'one-off: the skybox field signatures failed, once per renderer; late discs for the session',
+ 'AO method=':'start-up: loaded AO settings',
  'TERRAIN SHADOW farCoverage':'capped: first eight shader-patch registrations',
  'HDR boundary deferred':'capped: first eight boundary deferrals',
  'HDR boundary frame=':'capped: first verified boundaries',

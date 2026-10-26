@@ -54,7 +54,7 @@ struct Device {
 };
 struct Renderer {
     Device* ext;
-    unsigned width=0,height=0,selectedBackend=0;
+    unsigned width=0,height=0,selectedBackend=0,aoMethod=0;
     unsigned sceneFormat=0,depthSnapshotFormat=0;
     bool worldDepthDescKnown=false,df24Refused=false,rainDepthOk=false,rainMaskCleared=false,rainMaskDrawn=false,rainMaskFailed=false,captured=false,contactAO=true,failed=false;
     struct {unsigned MultiSampleType=0;}worldDepthDesc;
@@ -82,6 +82,9 @@ int main(){
         assert(r.depthSnapshotFormat==MAKEFOURCC('D','F','2','4'));
         assert(d.allocations[1].usage==D3DUSAGE_DEPTHSTENCIL&&d.allocations[1].w==3840&&d.allocations[1].h==2160);
         for(unsigned i=2;i<4;++i)assert(d.allocations[i].w==1920&&d.allocations[i].h==1080&&d.allocations[i].format==D3DFMT_A16B16G16R16F);
+        const auto aoColor=r.ao;const auto aoDepth=r.depthTex;
+        for(unsigned method=1;method<=3;++method){drop(r.aoContactBloomPS);r.aoMethod=method;assert(r.resources(3840,2160,10));assert(r.ao==aoColor&&r.depthTex==aoDepth&&d.textures==4);}
+        assert(d.shaders==8);
         const auto depthId=r.depthTex->id;
         r.worldDepthDesc.MultiSampleType=2;r.captured=r.rainDepthOk=r.rainMaskCleared=r.rainMaskDrawn=true;
         r.rainDepth=new Texture(0,3840,2160,10,&d.failSurface);r.rainMaskMS=new Surface;
@@ -95,7 +98,7 @@ int main(){
         r.worldDepthDescKnown=false;
         assert(r.resources(3840,2160,20)&&d.textures==8&&r.depthTex==retainedDepth);
         assert(r.resources(800,600,20,true)&&d.textures==9&&!r.depthTex&&!r.ao&&!r.aoRaw&&textureBytes==1920000);
-        assert(r.resources(800,600,20)&&d.textures==12&&d.shaders==5&&textureBytes==5760000);
+        assert(r.resources(800,600,20)&&d.textures==12&&d.shaders==8&&textureBytes==5760000);
     }
     assert(alive==0&&textureBytes==0);
     {
