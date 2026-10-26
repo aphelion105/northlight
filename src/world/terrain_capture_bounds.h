@@ -1,6 +1,7 @@
 #pragma once
 #include "intrusive_lru.h"
 #include "cpu_retirement.h"
+#include "capture_phase_profile.h"
 #include <unordered_map>
 // Exact chunk coverage of the terrain triangles actually submitted this frame.
 // This snapshots buffers or reuses a fully write-tracked immutable snapshot.
@@ -288,8 +289,9 @@ private:
         DecodedChoice choice;choice.slot=decoded_.last;choice.memo=true;
         const auto matches=[&](size_t slot){
             choice.block=decoded_.slots[slot].lock();
-            if(choice.block){if(sameDecoded(choice.block->values,mesh.indices))return true;choice.block.reset();}
+            if(choice.block){if(profileCapture_)maintenance_.decodedComparedBytes+=std::min(choice.block->values.allocatedBytes(),mesh.indices.allocatedBytes());if(sameDecoded(choice.block->values,mesh.indices))return true;choice.block.reset();}
             const auto prior=decoded_.snapshots[slot].lock();
+            if(profileCapture_&&prior)maintenance_.decodedComparedBytes+=std::min(prior->indices.allocatedBytes(),mesh.indices.allocatedBytes());
             return prior&&sameDecoded(prior->indices,mesh.indices);
         };
         bool repeated=matches(choice.slot);
@@ -338,6 +340,8 @@ private:
     std::uint64_t contentLimit=ContentLimit; /* lowered under address-space pressure */
 public:
     struct Maintenance {
+        unsigned lookupProbes=0,eraseProbes=0,roomChecks=0;
+        uint64_t sourceComparedBytes=0,decodedComparedBytes=0,offsetCompared=0;
         unsigned lookupMisses=0,evictions=0,countPressure=0,bytePressure=0;
         unsigned trackedHits=0,unproven=0,lifetimeChanged=0,vertexChanged=0,indexChanged=0,unstable=0,exactReuses=0,rebuilds=0,indexTokenHits=0;
         unsigned metadataBatches=0,metadataHits=0,metadataFallbacks=0;
@@ -347,6 +351,12 @@ public:
     };
 private:
     Maintenance maintenance_;
+public:
+    enum CapturePhase {StatePhase,LookupPhase,IndexPhase,VertexPhase,BuildPhase,RetainPhase,PhaseCount};
+    using CapturePhases=NorthlightCapturePhases::Stats<PhaseCount>;
+private:
+    CapturePhases capturePhases_;
+    bool profileCapture_=false;
     static std::uint64_t contentHash(const ContentKey& k){
         std::uint64_t h=1469598103934665603ull;
         const auto mix=[&](std::uint64_t v){h^=v;h*=1099511628211ull;};
@@ -357,12 +367,12 @@ private:
     }
     ContentEntry* findContent(const ContentKey& key,std::uint64_t hash){
         const auto range=contentLookup.equal_range(hash);
-        for(auto it=range.first;it!=range.second;++it)if(it->second->key==key)return it->second;
+        for(auto it=range.first;it!=range.second;++it){if(profileCapture_)++maintenance_.lookupProbes;if(it->second->key==key)return it->second;}
         ++maintenance_.lookupMisses;return nullptr;
     }
     void eraseContent(ContentEntry& entry){
         const auto range=contentLookup.equal_range(entry.hash);
-        for(auto it=range.first;it!=range.second;++it)if(it->second==&entry){contentLookup.erase(it);break;}
+        for(auto it=range.first;it!=range.second;++it){if(profileCapture_)++maintenance_.eraseProbes;if(it->second==&entry){contentLookup.erase(it);break;}}
         const auto slot=entry.slot;contentBytes-=entry.bytes;retainedPayloadBytes_-=entry.payloadBytes;retainedIdentityBytes_-=entry.identityBytes;contentLRU.remove(entry);
         sourceIndexLogicalBytes_-=entry.indices->bytes.capacity();
         if(!--entry.indices->entries){contentBytes-=sourceIndexBytes(*entry.indices);sourceIndexDataBytes_-=entry.indices->bytes.capacity();sourceOffsetDataBytes_-=entry.indices->sourceOffsets.ownedBytes();--sourceIndexBlocks_;}
@@ -380,12 +390,14 @@ private:
         const std::uint64_t maximumOffset=std::uint64_t(largest-smallest)*key.draw.stride;
         const unsigned offsetBytes=maximumOffset<=UINT16_MAX?2:4;
         auto sharedIndices=indexPlan?indexPlan:lastSourceIndices.lock();
+        if(profileCapture_&&sharedIndices)maintenance_.sourceComparedBytes+=std::min(sharedIndices->bytes.size(),rawIndices.size());
         if(sharedIndices&&sharedIndices->bytes!=rawIndices)sharedIndices.reset();
         const bool storeOffsets=!keepRaw&&!sharedIndices;
         const bool reuseOffsets=!keepRaw&&sharedIndices&&(indexPlan==sharedIndices||sharedIndices->sourceOffsets.visit([&](const auto* stored,size_t count){
             if(count!=sourceOffsets.size()||sizeof(*stored)!=offsetBytes)return false;
             using Value=std::remove_cv_t<std::remove_reference_t<decltype(*stored)>>;
             for(size_t i=0;i<count;++i){
+                if(profileCapture_)++maintenance_.offsetCompared;
                 const std::uint64_t byte=std::uint64_t(sourceOffsets[i])*key.draw.stride;
                 if(byte>std::numeric_limits<Value>::max()||byte+sizeof(Position)>vertexSpan)return false;
                 const Value value=Value(byte);if(std::memcmp(stored+i,&value,sizeof value))return false;
@@ -403,6 +415,7 @@ private:
         const auto range=contentLookup.equal_range(hash);
         for(auto it=range.first;it!=range.second;++it)if(it->second->key==key){eraseContent(*it->second);break;}
         const auto makeRoom=[&](std::uint64_t bytes){
+            if(profileCapture_)++maintenance_.roomChecks;
             // Evicting the last entry may turn a shared block into a newly charged block.
             // Recompute on every iteration; a temporary owner is not a retained cache entry.
             while(contentBytes+required(bytes)>contentLimit||!freeContentCount){
@@ -475,8 +488,10 @@ public:
     // Tracked lifetimes/revisions prove fast hits; all other
     // entries require full live-byte verification next frame.
     void clearFrame(){
-        readBytes=chargedBytes=0;snapshots=0;maintenance_={};
+        readBytes=chargedBytes=0;snapshots=0;maintenance_={};capturePhases_.clear();profileCapture_=false;
     }
+    void profileCapture(bool enabled){profileCapture_=enabled;}
+    const CapturePhases& capturePhases()const{return capturePhases_;}
     std::size_t entryCount()const{return snapshots;}
     std::uint64_t bytesRead()const{return readBytes;}
     // Call at device Reset; Present clears only per-frame budgets. Every cache
@@ -666,6 +681,7 @@ public:
                   UINT minimum,UINT vertexCount,UINT start,UINT primitiveCount,
                   const float* expectedWorldToView,std::shared_ptr<const MeshSnapshot>& output,
                   Diagnostics* diagnostics=nullptr){
+        NorthlightCapturePhases::Scope<PhaseCount> phase(profileCapture_?&capturePhases_:nullptr,StatePhase);
         output.reset();Diagnostics detail;
         auto reject=[&](RejectReason reason,HRESULT hr=D3DERR_INVALIDCALL){
             detail.reason=reason;detail.hr=hr;if(diagnostics)*diagnostics=detail;return false;
@@ -723,6 +739,7 @@ public:
         const std::uint64_t indexOffset=std::uint64_t(start)*indexSize,indexBytes=indexCount*indexSize;
         if(indexOffset+indexBytes>id.Size)return reject(RejectReason::IndexRange);
         ContentKey contentKey{{vb.p,ib.p,streamOffset,detail.stride,position->Offset,position->Type,base,minimum,vertexCount,start,primitiveCount,topology},position->Stream,id.Format,vd.Size,id.Size};
+        phase.next(LookupPhase);
         const auto hash=contentHash(contentKey);ContentEntry* cached=findContent(contentKey,hash);
         const Stamp before=stamp(vb.p,ib.p,info);
         if(cached){
@@ -749,6 +766,7 @@ public:
             }
             ++maintenance_.unstable;
         }
+        phase.next(IndexPhase);
         if(chargedBytes+indexBytes>limits.maxReadBytesPerFrame)return reject(RejectReason::ByteBudget);
         auto& indices=scratchIndices;
         // A vertex write does not invalidate the independently tracked index buffer.
@@ -846,6 +864,7 @@ public:
         };
         if(directCold)preparePositions();
         else scratchRawVertices.reserve(size_t(span)); // resize below cannot allocate while locked
+        phase.next(VertexPhase);
         raw=nullptr;NorthlightReplayCopies::Reader<IDirect3DVertexBuffer9> readVertices(vb.p);hr=readVertices.lock(UINT(firstByte),UINT(span),&raw);
         if(FAILED(hr))return reject(RejectReason::VertexLock,hr);
         if(!raw){readVertices.unlock();return reject(RejectReason::VertexLock,E_POINTER);}
@@ -872,6 +891,7 @@ public:
             contentLRU.touch(*cached);++contentHits;++snapshots;
             if(diagnostics)*diagnostics=detail;return true;
         }
+        phase.next(BuildPhase);
         if(sameIndices){scratchRawIndices.resize(size_t(indexBytes));std::memcpy(scratchRawIndices.data(),cached->indices->bytes.data(),size_t(indexBytes));decodeIndices();}
         if(!directCold){preparePositions();copyPositions(scratchRawVertices.data());}
         if(!valid)return reject(RejectReason::VertexNonfinite);
@@ -887,6 +907,7 @@ public:
         if(!result.indices.visit([&](const auto* data,std::size_t count){return classifyTriangleSequence<true>([&](std::size_t i){return result.positions[data[i]];},count,D3DPT_TRIANGLELIST,result.bounds);}))return reject(RejectReason::ChunkCoverage);
         const Stamp after=stamp(vb.p,ib.p);
         const bool verified=before.valid()&&after==before;
+        phase.next(RetainPhase);
         if(verified)result.sourceIdentity=sourceIdentity(contentKey,before);
         const auto decoded=indexPlan?DecodedChoice{plannedIndices,0,false}:shareDecoded(result);
         std::shared_ptr<const MeshSnapshot> shared=retain(std::move(result));
