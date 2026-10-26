@@ -666,7 +666,7 @@ private:
         for(unsigned k=0;k<3;++k)hue.moon[k]=published.moon[k];hue.moonStrength=published.moonStrength;
         if(!published.valid)return hue;
         for(unsigned k=0;k<3;++k){hue.sun[k]=published.sun[k];hue.sunCore[k]=published.sunCore[k];}
-        hue.strength=published.strength;return hue;
+        hue.strength=published.strength;hue.nativeSun=published.nativeColors;return hue;
     }
     // Fixed-function, render and sampler state of the effect passes (AO, legacy composite).
     // 0.3.174: also re-established before a legacy composite after a world render.
