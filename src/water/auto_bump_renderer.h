@@ -385,7 +385,7 @@ public:
         // Builder demand keeps the reduced CPU pools, but need not turn every
         // immutable replay into DrawUP. Real VA pressure still releases all GPU
         // residents. Promotion/time limits and allocation-failure fallback stay.
-        const size_t limit=episode?(critical?0:8u<<20):32u<<20;
+        const size_t limit=episode&&critical?0:32u<<20;
         if(deferredGPU.limit()!=limit){deferredGPU.setLimit(limit);
             logf("MATERIAL_MEMORY_POLICY episode=%u critical=%u replayLimitMiB=%zu",unsigned(episode),unsigned(critical),limit>>20);}
     }

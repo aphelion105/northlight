@@ -46,7 +46,7 @@ struct MaterialCaptureStateTestAccess {
         assert(b.deferredSnapshots.snapshotCacheLimit()==(4u<<20));
 #ifndef NORTHLIGHT_TEST_CAPTURE_BASELINE
 #ifdef NORTHLIGHT_TEST_MATERIAL_PRESSURE_POLICY
-        if(std::getenv("NORTHLIGHT_TEST_DEMAND_PRESSURE"))assert(b.deferredGPU.limit()==(8u<<20)&&b.deferredGPU.chargedBytes()<=(8u<<20));
+        if(std::getenv("NORTHLIGHT_TEST_DEMAND_PRESSURE"))assert(b.deferredGPU.limit()==(32u<<20)&&b.deferredGPU.chargedBytes()<=(32u<<20));
         else
 #endif
         assert(!b.deferredGPU.bytes());
@@ -68,7 +68,7 @@ struct MaterialCaptureStateTestAccess {
     }
 #ifdef NORTHLIGHT_TEST_MATERIAL_PRESSURE_POLICY
     static void criticalRelease(NorthlightAutoBump& b){
-        assert(b.deferredGPU.bytes()&&b.deferredGPU.limit()==(8u<<20));
+        assert(b.deferredGPU.bytes()&&b.deferredGPU.limit()==(32u<<20));
         b.setMemoryPressurePolicy(true,true);
         assert(!b.deferredGPU.limit()&&!b.deferredGPU.chargedBytes()&&!b.deferredGPU.population().entries);
         assert(b.memoryPressure&&b.deferredSnapshots.snapshotCacheLimit()==(4u<<20));
