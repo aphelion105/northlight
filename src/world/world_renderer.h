@@ -2667,6 +2667,9 @@ public:
             (unsigned long long)replayBoundsCache.hits(),(unsigned long long)replayBoundsCache.misses(),(unsigned long long)replayBoundsCache.avoidedVertices(),replayBoundsCache.lookupMilliseconds(),
             (unsigned long long)staticCasters.stats().maintenanceVisits,(unsigned long long)staticCasters.stats().publications);
         if(captureSampled){const auto& t=terrainBoundsCache.maintenance();
+            const auto& p=terrainBoundsCache.capturePhases();const double ms=captureFrequency.QuadPart>0?1000.0/double(captureFrequency.QuadPart):0;
+            logf("TERRAIN cpuPhases stateMs=%.6f lookupMs=%.6f indexMs=%.6f vertexMs=%.6f buildMs=%.6f retainMs=%.6f clockReads=%u lookupProbes=%u eraseProbes=%u roomChecks=%u sourceCompareVolume=%llu decodedCompareVolume=%llu offsetComparisons=%llu rendererFrame=%u scope=exclusive-sampled-buffered-capture",
+                p.ticks[0]*ms,p.ticks[1]*ms,p.ticks[2]*ms,p.ticks[3]*ms,p.ticks[4]*ms,p.ticks[5]*ms,p.clockReads,t.lookupProbes,t.eraseProbes,t.roomChecks,(unsigned long long)t.sourceComparedBytes,(unsigned long long)t.decodedComparedBytes,(unsigned long long)t.offsetCompared,rendererFrame);
             logf("TERRAIN content cache entryLimit=%zu byteLimit=%llu entries=%zu bytes=%llu lookupMisses=%u evictions=%u countPressure=%u bytePressure=%u readBytes=%llu rendererFrame=%u",
                 terrainBoundsCache.persistentEntryLimit(),(unsigned long long)terrainBoundsCache.persistentByteLimit(),terrainBoundsCache.persistentEntries(),(unsigned long long)terrainBoundsCache.persistentBytes(),
                 t.lookupMisses,t.evictions,t.countPressure,t.bytePressure,(unsigned long long)terrainBoundsCache.bytesRead(),rendererFrame);
@@ -3365,6 +3368,7 @@ public:
             float projectionRows[16];if(FAILED(d->GetVertexShaderConstantF(4,projectionRows,4))){if(terrainFailures++<12)logf("TERRAIN projection constants unavailable");return;}
             if(std::fabs(projectionRows[0]-projection[0])>.005f||std::fabs(projectionRows[5]-projection[1])>.005f||std::fabs(projectionRows[11]-projection[2])>.005f){if(terrainFailures++<12)logf("TERRAIN projection mismatch");return;}
             TerrainSnapshot snapshot;NorthlightTerrainCapture::Diagnostics why;
+            terrainBoundsCache.profileCapture(sample);
             if(!terrainBoundsCache.readMeshShared(d,type,base,min,vertexTotal,start,count,context.view,snapshot,&why)){
                 if(terrainFailures++<12)logf("TERRAIN snapshot rejected: %s hr=%08lx vertexUsage=%lx indexUsage=%lx type=%u stride=%u",NorthlightTerrainCapture::rejectName(why.reason),(unsigned long)why.hr,(unsigned long)why.vertexUsage,(unsigned long)why.indexUsage,why.positionType,why.stride);return;}
             if(positions){std::copy(why.low,why.low+3,positions->low);std::copy(why.high,why.high+3,positions->high);positions->known=true;}
