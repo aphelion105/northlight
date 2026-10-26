@@ -1,4 +1,5 @@
 #pragma once
+#include "settings_schema.h"
 #include "stream_hooks.h"
 #include "weather_memory.h"
 #include "dither_noise.h"
@@ -39,6 +40,7 @@
 #include <atomic>
 #include <optional>
 #include "world_math.h"
+#include "patch_terrain_shadow_coverage.h"
 #include "world_mesh_plan.h"
 #include "world_streaming.h"
 #include "world_mesh_pages.h"
@@ -195,7 +197,7 @@ class WorldRenderer {
     };
     // probeCenter (0.3.153 GIProbeAhead): probe window origin, solve order and move trigger; geometryCenter (0.3.169 lead):
     // the region build centre and its refresh trigger; camera (eye) for everything else, including every coverage check.
-    struct Request { std::shared_ptr<const NorthlightActorGeometry::ActorJob> actorJob;uint64_t actorSerial=0; V camera,probeCenter,geometryCenter; NorthlightGI::Lighting light; std::string map; uint64_t id=0,baseId=0;DWORD queuedAt=0;unsigned reason=0; };
+    struct Request { std::shared_ptr<const NorthlightActorGeometry::ActorJob> actorJob;uint64_t actorSerial=0; V camera,probeCenter,geometryCenter; NorthlightGI::Lighting light; std::string map; uint64_t id=0,baseId=0;DWORD queuedAt=0;unsigned reason=0;bool giEnabled=true; };
     IDirect3DDevice9* d;
     std::string root;
     std::unique_ptr<StaticShadow::Streamer> staticStream;
@@ -221,7 +223,33 @@ class WorldRenderer {
     std::atomic<bool> workerBusy{false};DWORD actorRequestTick=0;
     std::atomic<unsigned> workerFaultCode{0};
     std::atomic<unsigned> geometryBuildEstimateMs{1000}; /* 0.3.169: builder's smoothed build time, read by the render thread's lead */
+    bool settingsRequestDirty=false;
 public:
+    void applyLiveSettings(const NorthlightSettings::Config& next){
+        // Frame cleanup has joined D3D-free jobs. Worker solver keys stay immutable;
+        // GI enable and bounce count travel in each Request.
+        auto profiles=next.celestial;
+#if NORTHLIGHT_DEV_TUNING
+        celestialShipped=profiles;profiles=NorthlightZoneTuning::applyCelestial(celestialShipped,*devSnapshot()); /* the saved table is the new shipped base; the developer overrides stay on top */
+#endif
+        const auto effective=NorthlightSettings::liveQualityUpdate(quality,next.quality);
+        const bool giRequest=NorthlightSettings::giRequestChanged(quality,effective,celestialProfiles,profiles);
+        const bool actorResources=quality.actorShadows!=effective.actorShadows||quality.actorShadowDetail!=effective.actorShadowDetail;
+        const bool directions=quality.shadowDirectionSteps!=effective.shadowDirectionSteps;
+        const bool giToggle=quality.gi!=effective.gi;
+        for(const auto& k:NorthlightQuality::Keys)if(NorthlightSettings::liveQuality(k.name))quality.*k.field=effective.*k.field;
+        quality.preset=effective.preset;settingsRequestDirty=settingsRequestDirty||giRequest;
+        if(giToggle)setEffects(requestedEffects); /* the user's F8 state through giPass, with setEffects' temporal reset */
+        minSkinnedShadowTriangles=quality.minSkinnedTriangles;captureBudgetMiB=quality.captureBudgetMiB;actorShadowBudgetMiB=quality.actorShadowBudgetMiB;setNearReserve();
+        replaySnapshots.configureBudget(size_t(captureBudgetMiB)*1048576,size_t(captureBudgetMiB)*524288);
+        shadowFateDiagnostics=NorthlightQuality::shadowFate(quality);
+        NorthlightDiagnostics::configure(quality.diagnostics!=0);NorthlightWeatherMemory::configure(quality.weatherMemory!=0);NorthlightMemorySwitches::configure(quality.memMap!=0);
+        NorthlightRenderThreadProbe::configure(NorthlightQuality::renderProfile(quality),NorthlightQuality::replayProbe(quality));
+        NorthlightWorldContext::SelfReadStats::timed.store(NorthlightQuality::renderProfile(quality),std::memory_order_relaxed);
+        if(actorResources)releaseGPU(true);else if(directions)invalidateShadowCache();
+        staticPrebuild.steps=float(quality.shadowDirectionSteps);
+        celestialProfiles=std::move(profiles);paletteFrameValid=false;
+    }
     // Read-only access to the COMMITTED terrain pages. Never start uploads,
     // loads, shadow updates or mesh publication from the native sky draw hook.
     uint64_t celestialTerrainGeneration()const{
@@ -379,7 +407,7 @@ private:
     bool celestialValid=false,shadowFrameReady=false;float authoredFill=1;
     // 0.3.200: the last good celestial read (see updateWorldContext), held across single rejected reads.
     static constexpr DWORD CelestialHoldMs=500;NorthlightCelestial::Context celestialHeld;std::string celestialHeldMap;DWORD celestialHeldAt=0;bool celestialHeldOk=false;unsigned long celestialHolds=0;
-    NorthlightEffectSwitches::Settings effects;
+    NorthlightEffectSwitches::Settings effects,requestedEffects; /* requestedEffects: the hotkey state before the GI setting masks it */
     bool neutralShadowMaps=false;
     V sourceDirections[2],sourceColors[2],sourceGlowColors[2]; // sourceGlowColors: the same sources for the fog volume pass (glow_strength / glow hue instead of light_strength)
     float sourceWeights[2]={1,0};
@@ -996,7 +1024,7 @@ private:
         IDirect3DVertexShader9* replacement=nullptr;
         unsigned projectionKind=0;
         NorthlightShaderConstants::Usage usage;
-        bool skinned=false,sm1=false;
+        bool skinned=false,sm1=false,fog=false;
         std::shared_ptr<const NorthlightActorDeformation::Program> program; /* 0.3.179 (T1): actorPrograms' object (null: none) */
     };
     std::unordered_map<IDirect3DVertexShader9*,CaptureShader> captureShaders;
@@ -1027,6 +1055,13 @@ private:
     // (patch_terrain_shadow.h); nullptr records a shader the patch rejected.
     // Bound only for terrain draws while the extension's shadows are active.
     std::unordered_map<IDirect3DPixelShader9*,IDirect3DPixelShader9*> terrainShadowShaders;
+    std::unordered_map<IDirect3DVertexShader9*,IDirect3DVertexShader9*> terrainCoverageVertices;
+    struct TerrainCoveragePixel {IDirect3DPixelShader9* shader=nullptr;unsigned constants=0;bool known=false;};
+    std::unordered_map<IDirect3DPixelShader9*,std::array<TerrainCoveragePixel,2>> terrainCoveragePixels;
+    float terrainCoverageMatrices[2][16]={},terrainCoverageView[16]={},terrainCoverageRows[24]={};
+    bool terrainCoverageRowsValid=false;
+    unsigned terrainCoverageSources=1;
+    unsigned terrainCoverageReports=0;
     unsigned terrainShadowPatched=0,terrainShadowRejected=0,terrainShadowReports=0;
     // True only after a render() that drew at least one shadow source and
     // ran the lighting composite; terrain draws of the next frame consult it.
@@ -1219,7 +1254,8 @@ private:
       try {
         // GIThreads>1: helpers at the same below-normal priority; probe values are scheduling-independent.
         std::unique_ptr<NorthlightGI::SolvePool> solvePool;
-        const unsigned solverThreads=NorthlightQuality::giSolverThreads(quality,NorthlightStream::cores());
+        NorthlightQuality::Settings solverQuality;solverQuality.giThreads=quality.giThreads;
+        const unsigned solverThreads=NorthlightQuality::giSolverThreads(solverQuality,NorthlightStream::cores());
         if(solverThreads>1)solvePool=std::make_unique<NorthlightGI::SolvePool>(solverThreads-1,[]{SetThreadPriority(GetCurrentThread(),THREAD_PRIORITY_BELOW_NORMAL);});
         if(quality.giThreads>1)logf("QUALITY GI solver threads requested=%u effective=%u cores=%u priority=below-normal",quality.giThreads,solverThreads,NorthlightStream::cores());
         // 0.3.153: geometry regions are built on their own below-normal thread
@@ -1676,7 +1712,7 @@ private:
              result->map=sceneMap;result->center=sceneCenter;result->requestId=r.id;result->requestedAt=r.queuedAt;
             }
             // END GEOMETRY HANDOFF
-            if(!quality.gi)continue; /* GI=0: geometry for shadows only; no actor, probe or atlas work */
+            if(!r.giEnabled)continue; /* GI=0: geometry for shadows only; no actor, probe or atlas work */
             DWORD actorStarted=GetTickCount();
             bool actorsChanged=false;
             if(!actorMemo.matches(r.actorJob)){
@@ -2319,7 +2355,7 @@ public:
         worker=std::thread([this]{work();});}
     ~WorldRenderer(){prepareWorker.join(); /* 0.3.179: first: an abandoned worker may still be inside a record */
         logSnapshotAb(); /* 0.3.181: the SNAPSHOT ab window at device destroy */
-        {std::lock_guard<std::mutex> lock(mutex);stopping=true;}wake.notify_one();if(worker.joinable())worker.join();releaseGPU();for(auto& p:captureShaders)drop(p.second.replacement);for(auto& p:terrainShadowShaders)drop(p.second);}
+        {std::lock_guard<std::mutex> lock(mutex);stopping=true;}wake.notify_one();if(worker.joinable())worker.join();releaseGPU();for(auto& p:captureShaders)drop(p.second.replacement);for(auto& p:terrainShadowShaders)drop(p.second);for(auto& p:terrainCoverageVertices)drop(p.second);for(auto& p:terrainCoveragePixels)for(auto& variant:p.second)drop(variant.shader);}
     void releaseActorTargets(){for(auto& t:actorShadow)drop(t);for(auto& t:actorShadowSurface)drop(t);for(auto& t:actorTiles)drop(t);for(auto& t:actorTilesSurface)drop(t);drop(actorTilesMid);drop(actorTilesMidSurface);drop(actorVisibility);drop(actorVisibilitySurface);drop(actorShadowPS);drop(actorTilesPS);}
     // 0.3.214 (task 42): keepMesh (device Reset, resolution change) keeps what describes the UPLOADED mesh: the MANAGED
     // page pool + material textures (they survive Reset in D3D9 and DXVK), the vertices/indices aliases, batches, terrain
@@ -2333,7 +2369,7 @@ public:
     void recover(){meshRetry.clear();if(!failed)return;releaseGPU(true);failed=false;valid=false;streamingReports=0;logf("WORLD explicit recovery requested");}
     void releaseStateCache(){stateBlocks.clear();invalidateShadowCache();}
     void setEffects(const NorthlightEffectSwitches::Settings& requested){
-        auto next=requested;next.gi=NorthlightQuality::giPass(quality,next.gi); /* GI=0: F8 cannot enable a GI that is never solved */
+        requestedEffects=requested;auto next=requested;next.gi=NorthlightQuality::giPass(quality,next.gi); /* GI=0: F8 cannot enable a GI that is never solved */
         if(effects==next)return;
         // Called at the frame boundary; never reuse lighting from a different
         // effect combination. The shared geometry and GI cache stay warm.
@@ -2512,7 +2548,10 @@ public:
     bool rainBlendSetting()const{return quality.weather!=0;} /* 0.3.199 (rain): the draw hook's alpha-blended rain streaks and rain-only mist skip, with Weather=1 */
     NorthlightWeatherEffects::Frame weatherEffects()const{return NorthlightWeatherEffects::derive(weatherState,quality.weather,quality.rainFog);}
     bool nameMask()const{return quality.nameMask!=0;} bool nameMaskDebug()const{return quality.nameMaskDebug!=0;} /* 0.3.212 (task 32): read once at device creation */
-    bool contactAO()const{return quality.contactAO!=0;} /* 0.3.201 (task 18): read once at device creation */
+    bool contactAO()const{return quality.contactAO!=0;}
+    unsigned aoMethod()const{return quality.aoMethod;}
+    float aoStrength()const{return .6f*float(quality.aoStrength)/100.f;}
+    float aoRadius()const{return float(quality.aoRadius)/100.f;}
     bool equipmentLightsOn()const{return quality.equipmentLights!=0;}
     NorthlightParticleLights::Frame& particleFrame(){return particleLights;}
     bool particleContext(float* inverseView,float* camera,float* projectionOut){
@@ -2548,7 +2587,12 @@ public:
     const NorthlightSpellFog::Frame& spellFogFrame()const{return spellFogHold.out;} /* Northlight's fog toward the view axis (previous frame's estimate while the next frame's records are made): the spell layer folds it into the recorded fog constants */
     bool frameDrawGates()const{return quality.frameDrawGates!=0;} /* 0.3.187: read once at device creation */ /* 0.3.158: ActorShadows=0 leaves actor shadows to the game's blobs */
     const float* legacyFogParameters()const{return legacyFog.parameters;}
-    const NorthlightLegacyFog::Constants& legacyFogConstants()const{return legacyFog;}
+    const NorthlightLegacyFog::Constants& legacyFogConstants()const{
+        if(!legacyFogKnown&&active&&legacyFogHold.has&&legacyFogHold.map==active->map&&
+           DWORD(GetTickCount()-legacyFogHold.lastUpdate)<=NorthlightLegacyFog::Hold::HoldMs)return legacyFogHold.held;
+        return legacyFog;
+    }
+    bool hasOriginalFog()const{return legacyFogKnown;}
     const NorthlightCelestialProfiles::Profile& celestialPalette(const char* map,const float* camera){
         // Freeze once per frame: early disc, late halo, direct/GI and fog cannot
         // observe different worker publications or temporal transition states.
@@ -2585,9 +2629,34 @@ public:
     bool recognizesWmo(IDirect3DVertexShader9* shader)const{return wmoShaders.count(shader)!=0;}
     bool isWorldShader(IDirect3DVertexShader9* shader)const{return terrainShaders.count(shader)||captureShaders.count(shader)||wmoShaders.count(shader);}
     bool isSkinnedShader(IDirect3DVertexShader9* shader)const{auto it=actorPrograms.find(shader);return it!=actorPrograms.end()&&it->second->skinned;}
-    bool wmoContext(IDirect3DVertexShader9* shader){
+    // A main-world actor can be the only visible geometry while looking up.
+    // Read this frame's camera/light; never carry the last terrain view forward.
+    bool modelContext(IDirect3DVertexShader9* shader){
         if(failed)return false;if(valid)return true;
+        auto it=captureShaders.find(shader);
+        if(it==captureShaders.end()||!it->second.skinned||it->second.projectionKind!=2)return false;
+        float columns[16],rows[16];Projection q;
+        if(FAILED(d->GetVertexShaderConstantF(2,columns,4))||!decodeColumnProjection(columns,q,rows))return false;
+        char map[64]={};NorthlightWorldCamera::Camera camera;NorthlightWorldCamera::Diagnostics why;
+        NorthlightWmoContext::Lighting light;
+        if(!NorthlightWorldCamera::read(map,rows[11],camera,&why)||!NorthlightWmoContext::readGlobalLighting(camera.camera,light))return false;
+        auto lightHold=globalLightHold;lightHold.filter(light,map,GetTickCount());
+        if(!NorthlightWmoContext::context(camera.view,light,context))return false;
+        globalLightHold=std::move(lightHold);
+        valid=true;traceContext=4;projection[0]=rows[0];projection[1]=rows[5];projection[2]=rows[11];
+        readOriginalFog(30,it->second.fog);if(legacyFogKnown)traceFog=1;
+        updateWorldContext(map,camera.camera,&light);
+        if(!modelContexts++||(modelContexts%600==0&&NorthlightDiagnostics::enabled()))logf("WORLD model context accepted map=\"%s\" count=%u fogProof=%d",map,modelContexts,it->second.fog);
+        return hasContext();
+    }
+    unsigned modelContexts=0;
+    bool wmoContext(IDirect3DVertexShader9* shader){
+        if(failed)return false;
         auto it=wmoShaders.find(shader);if(it==wmoShaders.end())return false;
+        if(valid){
+            if(!legacyFogKnown&&it->second->fog){readOriginalFog(30,true);if(legacyFogKnown)traceFog=1;}
+            return true;
+        }
         float columns[16],rows[16];Projection q;
         if(FAILED(d->GetVertexShaderConstantF(2,columns,4))||!decodeColumnProjection(columns,q,rows))return false;
         char map[64]={};NorthlightWorldCamera::Camera camera;NorthlightWorldCamera::Diagnostics why;
@@ -2612,7 +2681,11 @@ public:
         return true;
     }
     void terrainContext(){
-        if(valid||failed)return;float view[16]={},lighting[12]={},p[16]={},camera[3]={};char map[64]={};
+        if(failed)return;
+        // Camera context may already come from an actor whose shader has no fog.
+        // A later terrain draw must still supply this frame's native atmosphere.
+        if(valid){if(!legacyFogKnown){readOriginalFog(12,true);if(legacyFogKnown)traceFog=1;}return;}
+        float view[16]={},lighting[12]={},p[16]={},camera[3]={};char map[64]={};
         bool registers=SUCCEEDED(d->GetVertexShaderConstantF(0,view,4))&&SUCCEEDED(d->GetVertexShaderConstantF(4,p,4));
         bool nativeRead=SUCCEEDED(d->GetVertexShaderConstantF(24,lighting,3));
         bool gameContext=NorthlightWorldContext::readMapAndCamera(map,camera);
@@ -2644,7 +2717,9 @@ public:
         bool fogRegisters=known&&SUCCEEDED(d->GetVertexShaderConstantF(fogRegister,fogParameters,1));
         if(fogShader.major==3)fogRegisters=fogRegisters&&SUCCEEDED((fogShader.colorRegister>=0?d->GetPixelShaderConstantF(UINT(fogShader.colorRegister),fogColor,1):D3DERR_INVALIDCALL));
         else fogRegisters=fogRegisters&&SUCCEEDED(d->GetRenderState(D3DRS_FOGENABLE,&fogEnabled))&&SUCCEEDED(d->GetRenderState(D3DRS_FOGTABLEMODE,&fogTable))&&SUCCEEDED(d->GetRenderState(D3DRS_FOGCOLOR,&fogARGB));
-        bool fogKnown=fogRegisters&&NorthlightLegacyFog::decode(fogShader.major,fogShader.verified,fogEnabled!=0,fogTable,fogParameters,fogColor,fogARGB,projection[2],legacyFog);legacyFogKnown=fogKnown;
+        NorthlightLegacyFog::Constants measured;
+        bool fogKnown=fogRegisters&&NorthlightLegacyFog::decode(fogShader.major,fogShader.verified,fogEnabled!=0,fogTable,fogParameters,fogColor,fogARGB,projection[2],measured);
+        if(fogKnown){legacyFog=measured;legacyFogKnown=true;}
         if(++fogReports==1||(fogReports%600==0&&NorthlightDiagnostics::enabled()))logf("WORLD legacy fog known=%d ps=%u verified=%d colorRegister=%d enabled=%.0f params=(%.7g %.7g %.7g) color=(%.5f %.5f %.5f)",fogKnown,fogShader.major,fogShader.verified,fogShader.colorRegister,legacyFog.parameters[3],legacyFog.parameters[0],legacyFog.parameters[1],legacyFog.parameters[2],legacyFog.color[0],legacyFog.color[1],legacyFog.color[2]);
     }
     void updateWorldContext(const char* map,const float* camera,const NorthlightWmoContext::Lighting* global=nullptr){
@@ -2703,7 +2778,7 @@ public:
         for(unsigned source=0;source<2;++source){rawSourceDirections[source]=resolvedSources.sources[source].direction;sourceDirections[source]=continuousCelestialShadows?resolvedSources.sources[source].direction:NorthlightWorldMath::quantizeDirection(resolvedSources.sources[source].direction,float(quality.shadowDirectionSteps));sourceColors[source]=resolvedSources.sources[source].color;sourceGlowColors[source]=sourceColors[source];sourceWeights[source]=resolvedSources.sources[source].weight;}
         if(celestialValid){sourceGlowColors[0]=vec(celestialLight.sunGlowColor);sourceGlowColors[1]=vec(celestialLight.moonGlowColor);}
         requestStaticCasters(map);
-        Request r;r.map=map;r.camera=vec(camera);r.light.sunDirection=sourceDirections[0];r.light.sunIrradiance=sourceColors[0]*3.14159265f;r.light.skyRadiance=vec(context.ambient);r.light.maxBounces=quality.giBounces;
+        Request r;r.map=map;r.camera=vec(camera);r.light.sunDirection=sourceDirections[0];r.light.sunIrradiance=sourceColors[0]*3.14159265f;r.light.skyRadiance=vec(context.ambient);r.light.maxBounces=quality.giBounces;r.giEnabled=quality.gi!=0;
         r.light.additionalDirections.push_back({sourceDirections[1],sourceColors[1]*3.14159265f});
         // 0.3.153 GIProbeAhead: centre the probe window ahead of the eye along the horizontal
         // view direction (the third-person camera sits behind the character). 0 = the eye.
@@ -2715,7 +2790,7 @@ public:
          geometryMotion.update(r.map,r.camera,length>1e-6f?r.camera+forward*(pivotDistance/length):r.camera,GetTickCount());
          r.geometryCenter=NorthlightWorldStreaming::leadCenter(r.camera,geometryMotion.velocity(),float(geometryBuildEstimateMs.load(std::memory_order_relaxed))*.001f);
          geometryLead=std::sqrt(NorthlightGI::dot(r.geometryCenter-r.camera,r.geometryCenter-r.camera));}
-        if(lastRequest.map==r.map&&completedActorSceneMap()==r.map){r.actorJob=completedActorJob();r.actorSerial=actorJobSerial();}
+        if(NorthlightQuality::giActorCapture(quality)&&lastRequest.map==r.map&&completedActorSceneMap()==r.map){r.actorJob=completedActorJob();r.actorSerial=actorJobSerial();}
         std::shared_ptr<Snapshot> retiredSnapshot,expiredPublication;
         {std::lock_guard<std::mutex> lock(mutex);
             // The publication is another owner of the old BVH/plan. Retiring only
@@ -2731,11 +2806,11 @@ public:
                 bool newGI=published->serial&&(!active||active->serial!=published->serial);retiredSnapshot=std::move(active);active=published;
                 if(newGI&&NorthlightDiagnostics::enabled())logf("GI activated tick=%lu id=%llu ageMs=%lu queueMs=%lu geometryMs=%lu actorMs=%lu solveMs=%lu reused=%u solved=%u cancelled=%u origin=(%.1f %.1f %.1f) dynamicReused=%u dynamicSolved=%u staticOnly=%u partial=%u processed=%u generation=%llu retargeted=%u actorTextureDecode=worker actorTextures=%u actorTextureBytes=%zu pathRecorded=%llu pathReplayedRays=%llu pathRetracedRays=%llu pathRecordKB=%zu",(unsigned long)GetTickCount(),(unsigned long long)active->requestId,(unsigned long)(GetTickCount()-active->requestedAt),(unsigned long)active->queueMs,(unsigned long)active->geometryMs,(unsigned long)active->actorMs,(unsigned long)active->solveMs,active->reusedProbes,active->solvedProbes,active->superseded,active->origin.x,active->origin.y,active->origin.z,active->dynamicReused,active->dynamicSolved,unsigned(active->staticOnly),unsigned(active->partial),active->processedProbes,(unsigned long long)active->lightingGeneration,active->retargeted,active->actorTexturesDecoded,active->actorTextureEncodedBytes,(unsigned long long)active->movingStats.recorded,(unsigned long long)active->movingStats.replayed,(unsigned long long)active->movingStats.retraced,active->pathRecordBytes/1024);
             }
-            r.reason=(lastRequest.map!=r.map?1u:0u)|(different(quantize(lastRequest.probeCenter,float(quality.giProbeMoveStep)),quantize(r.probeCenter,float(quality.giProbeMoveStep)),.1f)?2u:0u)|
+            r.reason=(settingsRequestDirty?256u:0u)|(lastRequest.map!=r.map?1u:0u)|(different(quantize(lastRequest.probeCenter,float(quality.giProbeMoveStep)),quantize(r.probeCenter,float(quality.giProbeMoveStep)),.1f)?2u:0u)|
                 (different(lastRequest.light.sunDirection,r.light.sunDirection,.02f)?4u:0u)|(different(lastRequest.light.sunIrradiance,r.light.sunIrradiance,.03f)?8u:0u)|(different(lastRequest.light.skyRadiance,r.light.skyRadiance,.01f)?16u:0u)|
                 (lastRequest.light.additionalDirections.empty()||different(lastRequest.light.additionalDirections[0].direction,r.light.additionalDirections[0].direction,.02f)||different(lastRequest.light.additionalDirections[0].irradiance,r.light.additionalDirections[0].irradiance,.03f)?32u:0u)|
                 (NorthlightWorldStreaming::leadMoved(lastRequest.camera,lastRequest.geometryCenter,r.camera,r.geometryCenter)?128u:0u);
-            if(r.reason){r.id=request.id+1;r.baseId=r.id;r.queuedAt=GetTickCount();request=r;lastRequest=r;pending=true;wake.notify_one();
+            if(r.reason){r.id=request.id+1;r.baseId=r.id;r.queuedAt=GetTickCount();request=r;lastRequest=r;settingsRequestDirty=false;pending=true;wake.notify_one();
                 if(NorthlightDiagnostics::enabled())logf("GI request tick=%lu id=%llu reason=%u camera=(%.2f %.2f %.2f) sun=(%.5f %.5f %.5f)",(unsigned long)r.queuedAt,(unsigned long long)r.id,r.reason,r.camera.x,r.camera.y,r.camera.z,r.light.sunDirection.x,r.light.sunDirection.y,r.light.sunDirection.z);
             }
             // 0.3.156 watchdog (log only): the builder waited for a free geometry generation
@@ -2795,17 +2870,54 @@ public:
         if(replacement)++terrainShadowPatched;else ++terrainShadowRejected;
         terrainShadowShaders[shader]=replacement;return replacement;
     }
+    bool terrainShadowCoverage(IDirect3DVertexShader9* vertex,IDirect3DPixelShader9* pixel,
+                               IDirect3DVertexShader9*& patchedVertex,IDirect3DPixelShader9*& patchedPixel,
+                               unsigned& constants,unsigned& constantCount,float* rows){
+        auto v=terrainCoverageVertices.find(vertex);
+        if(v==terrainCoverageVertices.end()){
+            IDirect3DVertexShader9* shader=nullptr;UINT size=0;std::vector<uint32_t> code,output;
+            if(vertex&&SUCCEEDED(vertex->GetFunction(nullptr,&size))&&size>=8&&size<=65536&&size%4==0){
+                code.resize(size/4);
+                if(SUCCEEDED(vertex->GetFunction(code.data(),&size))&&NorthlightTerrainCoverage::vertex(code.data(),code.size(),output))
+                    if(FAILED(d->CreateVertexShader(reinterpret_cast<const DWORD*>(output.data()),&shader)))shader=nullptr;
+            }
+            v=terrainCoverageVertices.emplace(vertex,shader).first;
+        }
+        if(!v->second)return false;
+        auto& result=terrainCoveragePixels[pixel][terrainCoverageSources-1];
+        if(!result.known){
+            result.known=true;UINT size=0;std::vector<uint32_t> code,output;
+            NorthlightTerrainCoverage::PixelInfo proof;
+            if(pixel&&SUCCEEDED(pixel->GetFunction(nullptr,&size))&&size>=8&&size<=65536&&size%4==0){
+                code.resize(size/4);
+                if(SUCCEEDED(pixel->GetFunction(code.data(),&size))&&NorthlightTerrainCoverage::pixel(code.data(),code.size(),output,proof,terrainCoverageSources)){
+                    if(FAILED(d->CreatePixelShader(reinterpret_cast<const DWORD*>(output.data()),&result.shader)))result.shader=nullptr;
+                    result.constants=proof.constants;
+                }
+            }
+            if(terrainCoverageReports++<8)logf("TERRAIN SHADOW farCoverage=%u sources=%u psConstants=%u addedSlots=%u",unsigned(result.shader!=nullptr),terrainCoverageSources,result.constants,proof.addedSlots);
+        }
+        if(!result.shader)return false;
+        if(!terrainCoverageRowsValid||std::memcmp(terrainCoverageView,context.inverseView,64)){
+            for(unsigned source=0;source<terrainCoverageSources;++source){float projected[16];NorthlightWorldMath::replayProjection(context.inverseView,terrainCoverageMatrices[source],projected);std::memcpy(terrainCoverageRows+source*12,projected,48);}
+            std::memcpy(terrainCoverageView,context.inverseView,64);terrainCoverageRowsValid=true;
+        }
+        patchedVertex=v->second;patchedPixel=result.shader;constants=result.constants;constantCount=terrainCoverageSources*3;
+        std::memcpy(rows,terrainCoverageRows,constantCount*16);return true;
+    }
     bool terrainShadowActive()const{return effects.shadows&&ready()&&shadowsComposited;}
     bool shadowsRequested()const{return effects.shadows;} /* 0.3.187: changes only in setEffects (frame boundary) */
     void registerPixelShader(IDirect3DPixelShader9* shader){
         fogShaders.erase(shader);UINT size=0;
         {auto old=terrainShadowShaders.find(shader);if(old!=terrainShadowShaders.end()){drop(old->second);terrainShadowShaders.erase(old);}}
+        {auto old=terrainCoveragePixels.find(shader);if(old!=terrainCoveragePixels.end()){for(auto& variant:old->second)drop(variant.shader);terrainCoveragePixels.erase(old);}}
         if(!shader||FAILED(shader->GetFunction(nullptr,&size))||size<8||size>65536||size%4)return;
         std::vector<uint32_t> code(size/4);if(FAILED(shader->GetFunction(code.data(),&size)))return;
         FogShader info;info.major=(code[0]>>8)&255;
         info.colorRegister=NorthlightLegacyFog::ps3FogColorRegister(code.data(),code.size());info.verified=info.colorRegister>=0;fogShaders[shader]=info;
     }
     void registerShader(IDirect3DVertexShader9* shader,uint64_t hash){
+        {auto old=terrainCoverageVertices.find(shader);if(old!=terrainCoverageVertices.end()){drop(old->second);terrainCoverageVertices.erase(old);}}
         ++worldShaderGen; /* 0.3.196 (task 12): before any map changes */
         replayBoundsMetadata.invalidateShader(shader);
         wmoShaders.erase(shader);if(auto* info=NorthlightWmoContext::signature(hash))wmoShaders[shader]=info;
@@ -2828,6 +2940,7 @@ public:
         if(SUCCEEDED(d->CreateVertexShader(reinterpret_cast<const DWORD*>(output.data()),replacement.out()))&&replacement.p){
             CaptureShader metadata;metadata.replacement=replacement.p;metadata.projectionKind=kind;
             metadata.usage=NorthlightShaderConstants::analyze(words.data(),words.size(),kind);
+            metadata.fog=NorthlightSpellFog::vsFogProven(words.data(),words.size());
             NorthlightActorDeformation::Program program;
             if(NorthlightActorDeformation::compile(words.data(),words.size(),program)){
                 metadata.skinned=program.skinned;metadata.sm1=program.major==1;
@@ -3373,6 +3486,7 @@ public:
             else logf("JOBS unavailable: no worker thread; the per-frame work stays on the renderer thread");}
         return jobsOn();
     }
+    void takeCullEarly(unsigned& kicked,unsigned& skipped){kicked=replayCullEarly;skipped=replayCullEarlySkipped;replayCullEarly=replayCullEarlySkipped=0;} /* 0.3.217: renderer.cpp's JOBS line */
     NorthlightJobs::Stats takeJobStats(){return replayJobs_.take();} /* renderer.cpp's JOBS line, RenderProfile sample frames */
     static constexpr float LampFogNear=3.5f; /* c58.x: the lamp glow's near fade start, the scissor view's fog near */
     // The frame's D3D-free light and fog work. Its inputs are final once upload() has run (the snapshot and its lights, the fog field,
@@ -3526,6 +3640,8 @@ public:
     // The later cascades' replay culling (per packet: the static proof's containment in the slot's cached matrix, bit 0; the pose
     // bounds' clip test against the slot's matrix, bit 1). Kicked after the frame's first bounds join for every later active slot and
     // read at that slot's replay loop when both matrices still match (else the loop tests inline, as before). Reads the packets only.
+    // 0.3.217 (jobs): the first rendering slot's own job may be kicked earlier, before its static and terrain draws, but only when the
+    // bounds worker has already finished (replayCullKickOwn): the join then does not wait, and the later slots still go at the old join.
     struct ReplayCull {WorldRenderer* r=nullptr;int slot=0;bool kicked=false;float matrix[16]={},cached[16]={};std::vector<uint8_t> flags;NorthlightJobs::Counter done;
         void operator()(){r->replayCullWork(*this);}};
     ReplayCull replayCulls[4];
@@ -3536,10 +3652,19 @@ public:
             if(affine&&p.pointBounds.valid&&NorthlightShadowBounds::clipRejectAffine(V(p.pointBounds.low[0],p.pointBounds.low[1],p.pointBounds.low[2]),V(p.pointBounds.high[0],p.pointBounds.high[1],p.pointBounds.high[2]),job.matrix))f|=2;
             job.flags[index]=f;}
     }
+    void replayCullKickSlot(int slot){
+        auto& job=replayCulls[slot];
+        job.r=this;job.slot=slot;std::memcpy(job.matrix,sourceMatrices[slot/2][slot%2],sizeof job.matrix);std::memcpy(job.cached,staticSlotMatrix[slot],sizeof job.cached);
+        job.kicked=true;replayJobs_.kick(job.done,job);
+    }
     void replayCullKick(int fromSlot,const bool* sourceActive){
-        for(int slot=fromSlot+1;slot<4;++slot){if(!sourceActive[slot/2])continue;auto& job=replayCulls[slot];
-            job.r=this;job.slot=slot;std::memcpy(job.matrix,sourceMatrices[slot/2][slot%2],sizeof job.matrix);std::memcpy(job.cached,staticSlotMatrix[slot],sizeof job.cached);
-            job.kicked=true;replayJobs_.kick(job.done,job);}
+        for(int slot=fromSlot+1;slot<4;++slot)if(sourceActive[slot/2])replayCullKickSlot(slot);
+    }
+    unsigned replayCullEarly=0,replayCullEarlySkipped=0; /* 0.3.217 (jobs): first-slot kicks before / without the static draws, per JOBS window */
+    // 0.3.217 (jobs): the current slot's own job, only when the bounds job already finished: the join (apply) then never waits. Else nothing.
+    void replayCullKickOwn(int slot){
+        if(!replayBoundsWorker.finished()){++replayCullEarlySkipped;return;}
+        replayBoundsJoin();++replayCullEarly;replayCullKickSlot(slot);
     }
     // Null: test inline (no job for the slot, or its inputs differ). The job is joined either way.
     const uint8_t* replayCullFor(int slot,const float* cached,const float* matrix){
@@ -3599,7 +3724,7 @@ public:
         // ready/resources/upload, live terrain) up to the replay upload; logged with WORLD profile frame.
         uploadWindowTicks=-1;const int64_t uploadWindowStart=profileSampled()?QpcClock::now():0;
         {std::lock_guard<std::mutex> lock(mutex);
-         if(valid&&completedActorSceneMap()==lastRequest.map&&!pending&&!workerBusy&&actorJobSerial()!=lastRequest.actorSerial&&submissionStart-actorRequestTick>=250){
+         if(valid&&NorthlightQuality::giActorCapture(quality)&&completedActorSceneMap()==lastRequest.map&&!pending&&!workerBusy&&actorJobSerial()!=lastRequest.actorSerial&&submissionStart-actorRequestTick>=250){
              Request r=lastRequest;r.actorJob=completedActorJob();r.actorSerial=actorJobSerial();r.reason=64;
              r.id=request.id+1;r.queuedAt=submissionStart;request=r;lastRequest=r;pending=true;actorRequestTick=submissionStart;wake.notify_one();
          }}
@@ -3738,7 +3863,7 @@ public:
         bucket(NorthlightEffectsBuckets::ShadowSetup);
         if(!jobs)terrainJob(); /* 0.3.200 (jobs): ReplayJobs=0 prepares here, as before; ReplayJobs=1 joins at the first terrain draw below */
         bucket(NorthlightEffectsBuckets::TerrainSelection);
-        // 0.3.200 (jobs): the later slots' replay culling is kicked at the frame's first bounds join (replayCullKick), joined per slot and here.
+        // 0.3.200 (jobs): the replay culling is kicked once (replayCullKick; 0.3.217: from the first rendering slot, before its static and terrain draws), joined per slot and here.
         bool replayCullsKicked=false;struct CullSettle {WorldRenderer& r;~CullSettle(){r.replayCullSettle();}} cullSettle{*this};
         bool anyShadowCacheRender=false;
         ++shadowPasses;
@@ -3867,6 +3992,9 @@ public:
             reuse.begin(interval); /* nothing written yet; a failure below stays unusable */
             if(cascade==0)actorValid[source]=nearActorSkip[source]=false; /* 0.3.209 (task 29): redrawn with this near map below; a reused near map (above) keeps the actor map and matrix it was made with */
             if(cascade==0)nearRendered=captureMode==CaptureFresh&&interval>1&&actorShadows;
+            // 0.3.217 (jobs): this slot's matrices (set before the loop), the packets and the static proofs are final here; with the bounds job already finished
+            // its own cull runs on a worker while the slot draws its static cache and terrain. Not finished: nothing here, the old order (inline test) holds.
+            if(jobs&&actorShadows&&!replayCullsKicked)replayCullKickOwn(slot);
             if(NorthlightStaticPrebuild::Scheduler::Enabled&&reason)staticPrebuild.rerender(source,cascade,cachedMatrix,!std::strcmp(reason,"direction"),staticCasters.planReady(cachedMatrix),[&](const float* m){staticCasters.discardPlan(m);});
             if(reason){
                 // Static batches only, over the margin extent, keyed for reuse.
@@ -3921,7 +4049,7 @@ public:
             }
             if(actorShadows){ /* 0.3.158: ActorShadows=0 draws no replays; terrain above and the union below stay */
             replayBoundsJoin(); /* 0.3.143: first pointBounds reader */
-            if(jobs&&!replayCullsKicked){replayCullsKicked=true;replayCullKick(slot,sourceActive);} /* 0.3.200 (jobs): the bounds are final; this slot tests inline */
+            if(jobs&&!replayCullsKicked){replayCullsKicked=true;replayCullKick(slot,sourceActive);} /* 0.3.200 (jobs): the bounds are final; the later slots; this slot tests inline unless 0.3.217 kicked its own job early */
             const uint8_t* cull=replayCullFor(slot,cachedMatrix,matrices[cascade]); /* null: tested inline below, as before */
             float rows[16];NorthlightWorldMath::replayProjection(context.inverseView,matrices[cascade],rows);
             d->SetPixelShader(replayPS);
@@ -4639,6 +4767,11 @@ public:
         DWORD elapsed=GetTickCount()-submissionStart;
         if(elapsed>40&&slowReports++<12)logf("WORLD slow submission: %lu ms; replay=%zu liveTerrainChunks=%zu",(unsigned long)elapsed,replays.size(),liveTerrainChunks.size());
         shadowsComposited=effects.shadows&&(sourceActive[0]||sourceActive[1])&&debug==0;
+        if(shadowsComposited){
+            terrainCoverageSources=0;
+            for(unsigned source=0;source<2;++source)if(sourceActive[source])std::memcpy(terrainCoverageMatrices[terrainCoverageSources++],sourceMatrices[source][1],64);
+            terrainCoverageRowsValid=false;
+        }
         bucket(NorthlightEffectsBuckets::Composite); /* the world composite, temporal and the frame's logs */
         return true;
     }

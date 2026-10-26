@@ -21,6 +21,13 @@ KEEP={
  'DXVK3 engine-name FSE':'start-up: optional process compatibility configuration',
  'DXVK3 engine-name requested':'start-up: backend and Wine eligibility decision',
  'DXVK3 engine-name import':'start-up: import patch result',
+ 'SETTINGS unavailable:':'one-off initialization error',
+ 'SETTINGS startup recovery incomplete:':'one-off: a crash-interrupted settings commit could not be finished at start-up',
+ 'SETTINGS frame %s revision=':'settings event: a preview or saved config reached the frame boundary (user action)',
+ 'CELESTIAL cloudOrder=':'one-off: first phase composition',
+ 'CELESTIAL skybox signatures unverified':'one-off: the skybox field signatures failed, once per renderer; late discs for the session',
+ 'AO method=':'start-up: loaded AO settings',
+ 'TERRAIN SHADOW farCoverage':'capped: first eight shader-patch registrations',
 
  'Depth snapshot DF24 refused':'one-off: depth format changes to INTZ for the rest of the session',
  'GAME thread priority':'start-up: successful device creation',
@@ -180,7 +187,7 @@ span_checks={
  'U0/S0: no logf( reachable between the selection/upload bucket marks except errors and one-off events':not bad,
  'U0/S0 counterfactual: the sampled lines are reachable there when not deferred':not missed and {'selectShadowReplays','uploadReplay','rigidMemoryInject','finishActorScene','uploadLiveTerrain'}<=reached,
  'U0/S0: the proxy has no log line from the AO mark to world->render()':'logf(' not in ra[ao:ra.index('world->render(',ao)],
- 'U0/S0: deferred lines are written from endFrame() after equipment counters advance':'NorthlightParticleUploads::cache().nextFrame();}\n        flushDeferredLogs();' in fp.src('world_renderer.h').read_text(),
+ 'U0/S0: deferred lines follow only bounded equipment frame bookkeeping':'void endFrame(bool retainPool=true){\n        if(equipmentLightsOn()){equipmentLights.nextFrame();equipmentCapture.nextFrame();particleLights.nextFrame();NorthlightParticleUploads::cache().nextFrame();}\n        flushDeferredLogs();' in fp.src('world_renderer.h').read_text(),
 }
 for name,ok in span_checks.items():print(('PASS ' if ok else 'FAIL ')+name)
 assert all(span_checks.values()),(bad,missed)

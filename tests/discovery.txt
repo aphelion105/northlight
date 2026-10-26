@@ -8,7 +8,9 @@ test_actor_shadows_wiring.py
 test_actor_texture_worker.py
 test_affected_tests.py
 test_ao_blur.py
+test_ao_fog_capture.py
 test_ao_fold.py
+test_ao_methods.py
 test_ao_rotation_stripes.py
 test_ao_texel_snap.py
 test_art_layer.py
@@ -22,8 +24,11 @@ test_capture_admission.py
 test_capture_skip_revalidation.py
 test_capture_skip_wiring.py
 test_cascade_anchor.py
+test_celestial_composition_gpu.py
 test_celestial_native_suppress.py
+test_celestial_phase_recovery.py
 test_celestial_profiles.py
+test_celestial_skybox.py
 test_celestial_terrain.py
 test_celestial_veil.py
 test_client_archive_order.py
@@ -58,8 +63,10 @@ test_equipment_light_proof_client.py
 test_equipment_lights.py
 test_expired_world_geometry.py
 test_fast_memcmp.py
+test_five_path_perf.py
 test_fog_clouds.py
 test_fog_clouds_wiring.py
+test_fog_empty_intervals.py
 test_fog_locale.py
 test_fog_motion.py
 test_fog_temporal_wiring.py
@@ -67,8 +74,10 @@ test_frame_stall_profile.py
 test_game_snapshot.py
 test_geometry_handoff.py
 test_gi_quality.py
+test_gi_settings_dependencies.py
 test_gpu_budget.py
 test_gpu_budget_wiring.py
+test_gtao_grazing.py
 test_horizon_haze.py
 test_index_working_set.py
 test_install_delivery.py
@@ -82,6 +91,7 @@ test_lamp_daylight.py
 test_legacy_fog_hold.py
 test_legacy_fog_wmo.py
 test_linux_package.py
+test_live_settings.py
 test_live_terrain_gpu.py
 test_local_fog_batching.py
 test_local_fog_profile.py
@@ -104,6 +114,7 @@ test_mirror_resources.py
 test_model_index_cache.py
 test_model_replay_pool.py
 test_model_snapshot_cache.py
+test_model_world_context.py
 test_moon_cascade_weight.py
 test_mount_emitter_patch.py
 test_name_mask.py
@@ -126,6 +137,7 @@ test_probe_blend.py
 test_probe_blend_equivalence.py
 test_probe_relight_cache.py
 test_probe_texture_upload.py
+test_production_draw_timers.py
 test_progressive_gi_worker.py
 test_quality_docs.py
 test_quality_settings.py
@@ -153,6 +165,8 @@ test_replay_priority_safety.py
 test_replay_skin_safety.py
 test_replay_upload.py
 test_rigid_memory.py
+test_settings_overlay.py
+test_settings_service.py
 test_shader_read_set.py
 test_shader_read_set_client.py
 test_shadow_blob_client.py
@@ -190,6 +204,7 @@ test_terrain_metadata.py
 test_terrain_reach_fallback.py
 test_terrain_reach_fallback_wiring.py
 test_terrain_shadow_candidates.py
+test_terrain_shadow_coverage.py
 test_terrain_shared_snapshot.py
 test_terrain_snapshot.py
 test_terrain_tracked_cache.py
