@@ -1,6 +1,6 @@
 {
   "bump_include_sha256": "03f90009cf23e93260c70a31d78999b3bd60aebf8bbcf0d5d6e5e02bf5ef3ec1",
-  "source_sha256": "78022db81585060eb1c1533ad6aacc118647c4073dc25de7c4a16531ad503c8e",
+  "source_sha256": "f12c9f4cf6b3104ee74bf6f880978988c665b43fba4cf46170bdea8fb9d31dff",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
   "game_launched": false,
@@ -240,9 +240,9 @@
     },
     "FogClouds": {
       "target": "ps_3_0",
-      "bytes": 7732,
-      "sha256": "8f896bade5f7d5df7960e942a19cc04caeaa5a18c4c84c072ebdc2c67e6daffb",
-      "static_instruction_slots": 452,
+      "bytes": 7752,
+      "sha256": "146597c7761b66722a0560a65e5d21be2740195a7c7dc7872920a2fcb0a68da6",
+      "static_instruction_slots": 457,
       "temporary_registers": 22,
       "samplers": [
         1,
@@ -259,11 +259,11 @@
         "mov": 47,
         "min": 11,
         "texldl": 12,
-        "if": 8,
-        "else": 5,
+        "if": 9,
+        "else": 6,
         "rcp": 16,
         "cmp": 40,
-        "endif": 8,
+        "endif": 9,
         "dp3": 3,
         "rsq": 1,
         "mad": 7,
@@ -275,7 +275,7 @@
         "endrep": 1
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "4c148c39d8df8ca61dace28c14edfe3e2112554d4559277f4d60104cd4e68262"
+      "source_sha256": "f12c9f4cf6b3104ee74bf6f880978988c665b43fba4cf46170bdea8fb9d31dff"
     },
     "FogTemporal": {
       "target": "ps_3_0",
