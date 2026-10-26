@@ -33,7 +33,7 @@ class NorthlightAutoBump {
     struct Deferred {
         IDirect3DVertexShader9* vertex=nullptr;IDirect3DPixelShader9* pixel=nullptr;IDirect3DVertexDeclaration9* declaration=nullptr;
         std::shared_ptr<const NorthlightDrawSnapshot::Mesh> mesh;NorthlightAutoNormalCache::Lease normal;
-        float vertexConstants[256*4];std::vector<float> pixelConstants;int vertexInt[64],pixelInt[64];BOOL vertexBool[16],pixelBool[16];
+        float vertexConstants[256*4];unsigned vertexFirst=0,vertexCount=256;std::vector<float> pixelConstants;int vertexInt[64],pixelInt[64];BOOL vertexBool[16],pixelBool[16];
         DWORD states[14],raster[DeferredRasterCount],addressU=0,addressV=0;RECT scissor{};D3DVIEWPORT9 viewport{};unsigned first=0,tag=0,normalStage=14;bool occlusion=false;
         std::vector<std::unique_ptr<DeferredTexture>> textures;
         ~Deferred(){drop(vertex);drop(pixel);drop(declaration);}
@@ -112,7 +112,7 @@ class NorthlightAutoBump {
         }
         void apply(){changed=true;for(unsigned i=0;i<stateCount;++i){auto& s=states[i];if(s.value!=s.replay)d->SetRenderState(s.key,s.replay);}}
     };
-    struct Vertex {IDirect3DVertexShader9* patched=nullptr;unsigned kind=0;IDirect3DVertexShader9* shared=nullptr;bool sharedChecked=false,deferredSafe=false,failed=false,smoothTerrain=false;IDirect3DVertexShader9* pending=nullptr;uint64_t pendingHash=0;};
+    struct Vertex {IDirect3DVertexShader9* patched=nullptr;unsigned kind=0;IDirect3DVertexShader9* shared=nullptr;bool sharedChecked=false,deferredSafe=false,failed=false,smoothTerrain=false;IDirect3DVertexShader9* pending=nullptr;uint64_t pendingHash=0;unsigned constantFirst=0,constantCount=256;};
     bool sharedVertex(Vertex& vertex){if(!vertex.sharedChecked){vertex.sharedChecked=true;vertex.shared=NorthlightSharedPOM::vertexShader(d,vertex.patched);}return vertex.shared!=nullptr;}
     std::unordered_map<IDirect3DVertexShader9*,Vertex> vertices;
     unsigned pendingVertices=0;
@@ -133,6 +133,8 @@ class NorthlightAutoBump {
         std::vector<std::uint32_t> patched;
         if(NorthlightWaterShaderPatch::patch(reinterpret_cast<const std::uint32_t*>(code),count,patched))return false;
         if(vertex.kind==1)vertex.smoothTerrain=NorthlightAutoBumpVertex::terrainNormal(reinterpret_cast<const uint32_t*>(code),count,patched);
+        NorthlightAutoBumpVertex::constantRange(reinterpret_cast<const uint32_t*>(code),count,vertex.constantFirst,vertex.constantCount);
+        if(vertex.smoothTerrain){vertex.constantCount=std::max(3u,vertex.constantFirst+vertex.constantCount);vertex.constantFirst=0;}
         NorthlightDrawSnapshot::Ref<IDirect3DVertexShader9> shader;
         if(FAILED(d->CreateVertexShader(reinterpret_cast<const DWORD*>(patched.data()),shader.out()))||!shader.p)return false;
         NorthlightWaterShaderPatch::Analysis analysis;if(!NorthlightWaterShaderPatch::analyse(reinterpret_cast<const uint32_t*>(code),count,analysis))vertex.deferredSafe=analysis.used[10]==0;
@@ -213,7 +215,7 @@ class NorthlightAutoBump {
         if(!failed)logf("AUTOBUMP failed stage=%s hr=%08lx; native rendering retained",stage,(unsigned long)hr);
         failed=true;return false;
     }
-    bool recordCapture(const NorthlightAutoDisplacement::Args& args,NorthlightAutoNormalCache::Lease& normal,bool auxiliary,const ReplayState& saved,const NativeCapture& model,IDirect3DVertexShader9* vertex,const float* captureConstants,DWORD addressU,DWORD addressV){
+    bool recordCapture(const NorthlightAutoDisplacement::Args& args,NorthlightAutoNormalCache::Lease& normal,bool auxiliary,const ReplayState& saved,const NativeCapture& model,const Vertex& vertex,const float* captureConstants,DWORD addressU,DWORD addressV){
         using P=NorthlightMaterialProfile;P::Scope timing(profile,P::DeferredRecord,profileTag);
         // Pressure keeps a small batch to avoid a target switch for every draw;
         // source/replay caches retain their separate, lower pressure limits.
@@ -247,11 +249,11 @@ class NorthlightAutoBump {
             DWORD planes=0;if(FAILED(d->GetRenderState(D3DRS_CLIPPLANEENABLE,&planes))||planes)return false;
             const size_t cost=sizeof(Deferred)+mesh->byteSize()+(model.last-model.first+1)*16+textures.size()*(sizeof(DeferredTexture)+sizeof(void*));if(deferredBytes>=deferredByteLimit||cost>deferredByteLimit-deferredBytes){++batchLimit;return false;}
             auto packet=std::make_unique<Deferred>();packet->mesh=mesh;packet->tag=profileTag;packet->occlusion=auxiliary;
-            packet->declaration=decl.p;decl.p=nullptr;packet->pixel=model.shader;packet->pixel->AddRef();packet->vertex=vertex;vertex->AddRef();
+            packet->declaration=decl.p;decl.p=nullptr;packet->pixel=model.shader;packet->pixel->AddRef();packet->vertex=vertex.patched;packet->vertex->AddRef();packet->vertexFirst=vertex.constantFirst;packet->vertexCount=vertex.constantCount;
             packet->first=model.first;packet->pixelConstants.resize((model.last-model.first+1)*4);packet->viewport=saved.viewport;packet->addressU=addressU;packet->addressV=addressV;packet->normalStage=saved.normalStage;
             for(unsigned i=0;i<14;++i)packet->states[i]=saved.states[i].replay;
             for(unsigned i=0;i<DeferredRasterCount;++i)if(FAILED(d->GetRenderState(deferredRasterKeys[i],packet->raster+i)))return false;
-            if(FAILED(d->GetScissorRect(&packet->scissor))||FAILED(d->GetVertexShaderConstantF(0,packet->vertexConstants,256))||FAILED(d->GetPixelShaderConstantF(packet->first,packet->pixelConstants.data(),UINT(packet->pixelConstants.size()/4)))||
+            if(FAILED(d->GetScissorRect(&packet->scissor))||FAILED(d->GetVertexShaderConstantF(packet->vertexFirst,packet->vertexConstants,packet->vertexCount))||FAILED(d->GetPixelShaderConstantF(packet->first,packet->pixelConstants.data(),UINT(packet->pixelConstants.size()/4)))||
                FAILED(d->GetVertexShaderConstantI(0,packet->vertexInt,16))||FAILED(d->GetPixelShaderConstantI(0,packet->pixelInt,16))||FAILED(d->GetVertexShaderConstantB(0,packet->vertexBool,16))||FAILED(d->GetPixelShaderConstantB(0,packet->pixelBool,16)))return false;
             std::copy(captureConstants,captureConstants+saved.constantCount*4,packet->pixelConstants.begin()+(model.constant-packet->first)*4);
             packet->textures=std::move(textures);void* inserted[16]={};unsigned insertedCount=0;
@@ -339,7 +341,8 @@ public:
                 const float* data=begin?values+begin*4:values;
                 step(vertex?d->SetVertexShaderConstantF(first+begin,data,end-begin):d->SetPixelShaderConstantF(first+begin,data,end-begin));
             };
-            floatConstants(true,0,packet->vertexConstants,previous?previous->vertexConstants:nullptr,256,previous!=nullptr);
+            const bool comparableVertex=previous&&previous->vertexFirst==packet->vertexFirst&&previous->vertexCount==packet->vertexCount;
+            floatConstants(true,packet->vertexFirst,packet->vertexConstants,comparableVertex?previous->vertexConstants:nullptr,packet->vertexCount,comparableVertex);
             const bool comparablePixel=previous&&previous->first==packet->first&&previous->pixelConstants.size()==packet->pixelConstants.size();
             floatConstants(false,packet->first,packet->pixelConstants.data(),comparablePixel?previous->pixelConstants.data():nullptr,UINT(packet->pixelConstants.size()/4),comparablePixel);
             if(needed(previous&&!std::memcmp(previous->vertexInt,packet->vertexInt,sizeof(packet->vertexInt))))step(d->SetVertexShaderConstantI(0,packet->vertexInt,16));
@@ -620,10 +623,10 @@ public:
             const bool auxiliary=needsOcclusion&&occlusionTarget;
             NativeCapture world;world.shader=captureShader;world.constant=world.first=20;world.last=20+saved.constantCount-1;
             const auto limits=batchLimit;
-            if(recordCapture(*geometry,normal,auxiliary,saved,model?*model:world,v->second.patched,bank,addressU,addressV)){drawn=true;return;}++deferredFallback;
+            if(recordCapture(*geometry,normal,auxiliary,saved,model?*model:world,v->second,bank,addressU,addressV)){drawn=true;return;}++deferredFallback;
             if(batchLimit!=limits&&!deferred.empty()){
                 if(!finishCaptures())return;
-                if(recordCapture(*geometry,normal,auxiliary,saved,model?*model:world,v->second.patched,bank,addressU,addressV)){--deferredFallback;drawn=true;return;}
+                if(recordCapture(*geometry,normal,auxiliary,saved,model?*model:world,v->second,bank,addressU,addressV)){--deferredFallback;drawn=true;return;}
             }
         }
         if(!finishCaptures())return;
