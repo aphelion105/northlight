@@ -19,7 +19,7 @@ struct Device {
  void SetPixelShaderConstantF(unsigned first,const float* p,unsigned count){assert((first==68&&count==4)||((first==72||first==66)&&count==1));std::memcpy(first==68?matrix:first==72?info:bounds,p,count*16);++binds;}
 };
 struct Renderer {
- Device device;Device* d=&device;bool geometryReady=true;struct {bool shadows=true;}effects;struct{bool actorShadows=true,actorShadowDetail=true;}quality;
+ Device device;Device* d=&device;int extended=3;int* fogActorPS=&extended;int* fogCloudsActorPS=&extended;bool fogActorCurrent=false;bool geometryReady=true;struct {bool shadows=true;}effects;struct{bool actorShadows=true,actorShadowDetail=true;}quality;
  bool sourceActive[2]={true,true},actorValid[2]={true,true};unsigned actorCasterCount[2]={1,1},frames=17;
  int white=0,source0=1,source1=2;int* neutralWhite=&white;int* actorShadow[2]={&source0,&source1};float actorMatrices[2][16];float actorFogBounds[2][4]={{-.1f,-.2f,.3f,.4f},{-.5f,-.6f,.7f,.8f}};
  bool profileSampled(){return true;}
@@ -42,10 +42,11 @@ static void boundsCases(){
  }
 }
 int main(){boundsCases();unsigned cases=0;
- for(unsigned flags=0;flags<256;++flags)for(int source=0;source<2;++source){Renderer r;
+ for(unsigned flags=0;flags<1024;++flags)for(int source=0;source<2;++source){Renderer r;
   r.geometryReady=flags&1;r.effects.shadows=flags&2;r.quality.actorShadows=flags&4;r.quality.actorShadowDetail=flags&8;
   r.sourceActive[source]=flags&16;r.actorValid[source]=flags&32;if(!(flags&64))r.actorShadow[source]=nullptr;r.actorCasterCount[source]=(flags&128)?7:0;
-  const bool expected=flags==255;r.run(source,true);assert(r.device.binds==4);
+  if(!(flags&256))r.fogActorPS=nullptr;if(!(flags&512))r.fogCloudsActorPS=nullptr;
+  const bool expected=flags==1023;r.run(source,true);assert(r.device.binds==4&&r.fogActorCurrent==expected&&"STALE_FOG_ACTOR_MAP");
   assert(r.device.info[0]==float(expected)&&r.device.info[1]==0&&"STALE_FOG_ACTOR_MAP");
   assert(r.device.texture==(expected?r.actorShadow[source]:r.neutralWhite));
   if(expected)assert(!std::memcmp(r.device.matrix,r.actorMatrices[source],64)&&"WRONG_FOG_LIGHT_SOURCE");

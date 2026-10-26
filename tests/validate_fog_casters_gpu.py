@@ -6,7 +6,7 @@ from pathlib import Path
 sys.path[:0]=[str(Path(__file__).resolve().parents[1]),str(Path(__file__).resolve().parents[1]/'scripts/shaders')]
 import northlight_paths as fp
 from shader_compiler import Compiler
-p=argparse.ArgumentParser(description=__doc__);p.add_argument('--prefix',required=True);p.add_argument('--source',type=Path,required=True);p.add_argument('--benchmark',action='store_true');p.add_argument('--baseline-source',type=Path);p.add_argument('--same-output',action='store_true');p.add_argument('--output',type=Path,required=True);a=p.parse_args();a.output.mkdir(parents=True,exist_ok=True)
+p=argparse.ArgumentParser(description=__doc__);p.add_argument('--prefix',required=True);p.add_argument('--source',type=Path,required=True);p.add_argument('--benchmark',action='store_true');p.add_argument('--actor-entry',action='store_true');p.add_argument('--baseline-source',type=Path);p.add_argument('--same-output',action='store_true');p.add_argument('--output',type=Path,required=True);a=p.parse_args();a.output.mkdir(parents=True,exist_ok=True)
 spec=importlib.util.spec_from_file_location('guard',fp.TESTS/'validate_native_scene_trace.py');guard=importlib.util.module_from_spec(spec);spec.loader.exec_module(guard)
 guard.processes()
 os.environ['NORTHLIGHT_OUT']=str(a.output/'compiler');compiler=Compiler(allow_compatible_binary=True)
@@ -19,7 +19,9 @@ for name,stage in [('CasterVS','vs_3_0'),('CasterPS','ps_3_0')]:compiler.compile
 old=a.baseline_source.read_bytes() if a.baseline_source else subprocess.check_output(['git','show','c9a89ea:shaders/world_effects.hlsl'],cwd=fp.REPO)
 for label,source in [('old',old),('new',a.source.read_bytes())]:
  folder=a.output/label;folder.mkdir(exist_ok=True);(folder/'world_effects.hlsl').write_bytes(source);(folder/'auto_bump_normal.hlsl').write_bytes((fp.SHADERS/'auto_bump_normal.hlsl').read_bytes())
- for entry in ['WorldFog','FogClouds']:compiler.compile(folder/'world_effects.hlsl',entry,'ps_3_0',folder/(entry+'.bin'))
+ for entry in ['WorldFog','FogClouds']:compiler.compile(folder/'world_effects.hlsl',entry+'Actor' if a.actor_entry and label=='new' else entry,'ps_3_0',folder/(entry+'.bin'))
+if a.benchmark and a.actor_entry:
+ for entry in ['WorldFog','FogClouds']:compiler.compile(a.output/'new/world_effects.hlsl',entry,'ps_3_0',a.output/'new'/(entry+'Baseline.bin'))
 source=(fp.TESTS/'regional_fog_cache_gpu.cpp').read_text().replace('#include "regional_fog.h"','#include "regional_fog.h"\n#include "actor_shadow_map.h"')
 needle=' IDirect3DVolumeTexture9* noise=nullptr;'
 code=r'''
@@ -76,10 +78,11 @@ for backend in [Path(os.environ['SystemRoot'])/'SysWOW64/d3d9.dll',fp.client_roo
    for case in ([0,2,4,6] if a.benchmark else range(9)):
     folder=a.output/(('native' if 'SysWOW64' in str(backend) else 'dxvk')+f'-{entry}-{bits}-{case}');folder.mkdir(exist_ok=True)
     env=fp.zig_env();env.update(NORTHLIGHT_FOG_CASTER_CASE=str(case),NORTHLIGHT_FOG_CASTER_SHADER=str(a.output)+'/')
-    command=[str(exe),a.prefix,str(a.output/'old'/(entry+'.bin')),str(a.output/'new'/(entry+'.bin')),entry,str(backend),'7',str(bits),*(['1920','1080','8'] if a.benchmark else ['0','0','1'])]
+    new_entry=entry+'Baseline' if a.benchmark and a.actor_entry and case in [0,6] else entry
+    command=[str(exe),a.prefix,str(a.output/'old'/(entry+'.bin')),str(a.output/'new'/(new_entry+'.bin')),entry,str(backend),'7',str(bits),*(['1920','1080','8'] if a.benchmark else ['0','0','1'])]
     guard.processes()
     run=subprocess.run(command,cwd=folder,env=env,capture_output=True,text=True,timeout=120);(folder/'gpu.log').write_text(run.stdout+run.stderr);assert run.returncode==0,(folder,run.stderr[-1000:])
-    row=json.loads(next(s for s in run.stdout.splitlines() if s.startswith('{')));row.update(caster_case=case,backend=str(backend));assert row['alpha_changes']==0 and row['nonfinite']==0
+    row=json.loads(next(s for s in run.stdout.splitlines() if s.startswith('{')));row.update(caster_case=case,backend=str(backend),new_entry=new_entry);assert row['alpha_changes']==0 and row['nonfinite']==0
     old=(folder/'caster-old.fgr').read_bytes();new=(folder/'caster-new.fgr').read_bytes()
     if a.same_output or case in [0,1,5,6,7]:assert old==new,(folder,row)
     else:assert row['changed']>0,(folder,row)
