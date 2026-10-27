@@ -139,6 +139,7 @@ public:
     Worker()=default;Worker(const Worker&)=delete;Worker& operator=(const Worker&)=delete;
     ~Worker(){finish(true);{std::lock_guard<std::mutex> lock(mutex_);stop_=true;}wake_.notify_all();if(thread_.joinable())thread_.join();}
     bool pending()const{return inFlight_;}
+    bool finished(){if(!inFlight_)return false;std::lock_guard<std::mutex> lock(mutex_);return state_==State::Done;} /* 0.3.217 (jobs): non-blocking; true only for a kicked job whose result waits for finish() */
     // Filled by the render thread before start(); read back after finish().
     std::vector<Item>& items(){return items_;}
     NorthlightReplayBoundsNear::List& nearList(){return priority_;} /* filled by gather() with the items, before start() */
