@@ -1484,10 +1484,9 @@ private:
     }
     // 0.3.193 BlobShadowStrength (held by the filter, read once at device creation): 100 = the filter is off and the
     // game's blobs are drawn as they are; 0 = they are skipped (0.3.154..0.3.192); 1..99 = drawn with a lighter
-    // texture (skipped when the game's blend cannot be lightened). Applies only while the mod draws actor shadows: effects (F10) and shadows (F9) on, a world
-    // context, and ActorShadows=1. Keep the native shadow when no replacement was composited
-    // (for example, neither sun nor moon is an active shadow source).
-    bool blobFilterActive()const{return shadowBlobs&&shadowBlobs->active()&&enabled&&effectKeys.settings.shadows&&!applied&&terrain&&!failed&&world&&world->hasContext()&&world->terrainShadowActive()&&world->actorShadowsEnabled();}
+    // texture (skipped when the game's blend cannot be lightened). Strength adjustment requires a
+    // composited actor shadow. BlobShadows=0 independently hides the native decal while effects are on.
+    bool blobFilterActive()const{return shadowBlobs&&shadowBlobs->active()&&enabled&&!applied&&terrain&&!failed&&world&&world->hasContext()&&(!world->blobShadowsEnabled()||(effectKeys.settings.shadows&&world->terrainShadowActive()&&world->actorShadowsEnabled()));}
     // 0.3.198 (rain): weather detection. weatherDetect.hot is the one candidate texture the draw hook compares
     // stage 0 with (weather_detect.h); the sample is what that comparison counted this frame. Both are touched
     // under the gate only, on whichever thread makes the draw (stream: replay thread; fallback: game thread).
@@ -1534,6 +1533,7 @@ private:
         NorthlightDrawGates::Inputs in;
         in.sky=celestialDiscs!=nullptr;in.blobs=shadowBlobs!=nullptr&&shadowBlobs->active();in.world=world!=nullptr;in.enabled=enabled;in.failed=failed;
         in.shadowsKey=effectKeys.settings.shadows;in.actorShadows=world&&world->actorShadowsEnabled();
+        in.hideBlobs=world&&!world->blobShadowsEnabled();
         in.worldShadows=world&&world->shadowsRequested();in.debugOff=debugMode==0&&worldDebug==0;
         drawGates=NorthlightDrawGates::latch(frameDrawGates,in);
         hookTimer=sampledDrawTimers()&&NorthlightRenderThreadProbe::profiling()?&cpuDrawHooks:nullptr;

@@ -79,13 +79,13 @@ checks['point: both replay loops and the count gated on withReplays']=(pb.count(
     and gs<pb.index('for(size_t index:pointReplayCandidates[face]){const auto& p=replays[index];')<pb.index('"cube animated draw"')<ge<pb.index('// Union: min(scratch, cached static face) into the cube face.')
     and code(pb[gs:ge]).count('{')==code(pb[gs:ge]).count('}')+1
     and re.search(r'\breplays(\[|\.size\(\))',code(outside)) is None)
-# Blob filter: one helper for all four draw entry points, off with ActorShadows=0 (F9 keeps its meaning).
-helper='bool blobFilterActive()const{return shadowBlobs&&shadowBlobs->active()&&enabled&&effectKeys.settings.shadows&&!applied&&terrain&&!failed&&world&&world->hasContext()&&world->terrainShadowActive()&&world->actorShadowsEnabled();}'
+# Blob filter: the default strength policy follows actor shadows; explicit hiding is independent.
+helper='bool blobFilterActive()const{return shadowBlobs&&shadowBlobs->active()&&enabled&&!applied&&terrain&&!failed&&world&&world->hasContext()&&(!world->blobShadowsEnabled()||(effectKeys.settings.shadows&&world->terrainShadowActive()&&world->actorShadowsEnabled()));}'
 checks['native blob stays when no replacement shadow was composited']=('bool terrainShadowActive()const{return effects.shadows&&ready()&&shadowsComposited;}' in w and 'shadowsComposited=geometryReady&&effects.shadows&&(sourceActive[0]||sourceActive[1])&&debug==0;' in w)
 # 0.3.187: the four draw entry points share drawHook(); FrameDrawGates=0 and =1 both test the helper.
 checks['blob filter: one helper, every draw through drawHook']=(r.count(helper)==1 and r.count('if(!claimed&&blobFilterActive())extensionWork("blob shadow filter",[&]{blobFilter(count,claimed);});')==1
     and r.count('if(!claimed&&drawGates.blob){stage="blob shadow filter";if(blobFilterActive())blobFilter(count,claimed);}')==1 and r.count('return drawHook(t,count,')==4
-    and r.count('effectKeys.settings.shadows&&!applied&&terrain')==1 and r.count('blobClaim(count)')==1
+    and r.count('!world->blobShadowsEnabled()||(effectKeys.settings.shadows&&world->terrainShadowActive()&&world->actorShadowsEnabled())')==1 and r.count('blobClaim(count)')==1
     and 'bool actorShadowsEnabled()const{return quality.actorShadows!=0;}' in w)
 # Documentation: the shipped ini keeps the key commented (the file must still parse as Quality).
 ini=fp.src('windows-package/northlight-quality.ini').read_text();readme=fp.src('windows-package/README.txt').read_text(encoding='utf-8')
@@ -97,7 +97,7 @@ bq=fp.src('quality_settings.h').read_text()
 checks['0.3.193 BlobShadowStrength: read once at device creation, gates blobFilterActive and the latched gate; no compile-time switch']=('HidesNativeBlobs' not in bf and 'HidesNativeBlobs' not in r
     and 'unsigned blobShadowStrength=50;' in bq and 'shadowBlobs=std::make_unique<NorthlightShadowBlobFilter>(ext,world->blobShadowStrength());' in r and 'blobStrength' not in r
     and 'in.blobs=shadowBlobs!=nullptr&&shadowBlobs->active();' in r and 'bool blobFilterActive()const{return shadowBlobs&&shadowBlobs->active()&&' in r
-    and 'unsigned blobShadowStrength()const{return quality.blobShadowStrength;}' in w and 'blobShadowStrength=0)' not in bf and 'strength(blobShadowStrength)' in bf)
+    and 'unsigned blobShadowStrength()const{return quality.blobShadows?quality.blobShadowStrength:0;}' in w and 'blobShadowStrength=0)' not in bf and 'strength(blobShadowStrength)' in bf)
 checks['0.3.193 filter: Skip at 0, Faint only under a modulate blend, faint texture A8R8G8B8 MANAGED, released in the destructor']=(
     'enum class Claim {None,Skip,Faint};' in bf and 'if(strength>=100||' in bf and 'op==D3DBLENDOP_ADD&&((src==D3DBLEND_DESTCOLOR&&dst==D3DBLEND_ZERO)||(src==D3DBLEND_ZERO&&dst==D3DBLEND_SRCCOLOR))' in bf
     and 'D3DFMT_A8R8G8B8,D3DPOOL_MANAGED' in bf and '~NorthlightShadowBlobFilter(){release(faint);}' in bf and 'faintMipChain(strength)' in bf and 'return {Claim::Skip};}   // 0.3.193: cannot lighten it' in bf and 'faintFailures++<3' in bf and 'frame-faintFailedFrame<600' in bf and 'guard.p=nullptr;return {Claim::Faint,bound};' in bf and 'blob shadow draws follow BlobShadowStrength' in bf)

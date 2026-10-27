@@ -231,6 +231,7 @@ struct MockWorld{
     bool ready()const{return context;} /* the old code has no ready(); following the context keeps the runs equivalent */
     bool rainBlendSetting()const{return false;}
     bool actorShadowsEnabled()const{return actorShadows;}
+    bool blobShadowsEnabled()const{return true;} // Historical trace oracle keeps the default visibility policy.
     bool shadowsRequested()const{return shadows;}
     bool terrainShadowActive()const{return shadows&&composited;}
     bool frameDrawGates()const{return true;}

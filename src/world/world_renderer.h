@@ -2917,7 +2917,8 @@ public:
     unsigned frameTraceContext()const{return traceContext;} /* 0.3.200 (frame trace) */
     bool actorShadowsEnabled()const{return quality.actorShadows!=0;}
     bool commandStream()const{return quality.commandStream!=0;} /* 0.3.192 (CS): the replay-thread stream was requested; creation-time key, see stream_hooks.h */
-    unsigned blobShadowStrength()const{return quality.blobShadowStrength;} /* 0.3.193: read once at device creation */
+    unsigned blobShadowStrength()const{return quality.blobShadows?quality.blobShadowStrength:0;}
+    bool blobShadowsEnabled()const{return quality.blobShadows!=0;}
     // 0.3.198 (rain): the smoothed weather state, set once per frame at the frame boundary (Device::finishFrameImpl); no effect reads it yet.
     NorthlightWeather::State weatherState{};
     void setWeather(const NorthlightWeather::State& s){weatherState=s;}
