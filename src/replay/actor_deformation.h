@@ -229,7 +229,8 @@ template<bool Strict=false,class Float=float> inline bool evaluate(const Program
 // The skinning template written out: evaluate()'s reads, expressions and order.
 template<bool Commuted=false> inline bool evaluateSkin(const Program& p,const Four inputs[16],const float* constants,Four& viewPosition){
 NO_FUSED_MULTIPLY_ADD
-    auto constant=[&](int index,Four& value){if(index<0||index>=256)return false;std::memcpy(value.data(),constants+4*index,16);for(auto& d:p.definitions)if(d.reg==unsigned(index))value=d.value;return true;};
+    const bool onlyControl=p.definitions.size()==1&&p.definitions[0].reg==0;
+    auto constant=[&](int index,Four& value){if(index<0||index>=256)return false;std::memcpy(value.data(),constants+4*index,16);if(!onlyControl||index==0)for(auto& d:p.definitions)if(d.reg==unsigned(index))value=d.value;return true;};
     const Four& v0=inputs[0];const Four& v1=inputs[1];const Four& v2=inputs[2];Four c0,address;constant(0,c0);
     for(unsigned j=0;j<4;++j){const float value=Commuted?v2[j]*c0[0]:c0[0]*v2[j];if(!std::isfinite(value)||std::fabs(value-std::floor(value)-.5f)<1e-6f)return false;address[j]=std::round(value);}
     auto row=[&](int base,unsigned channel,Four& m){const float a=address[channel];if(!std::isfinite(a)||a<-4096||a>4096)return false;return constant(base+int(a),m);};
@@ -300,12 +301,14 @@ template<bool Strict=false> inline bool evaluateFast(const Program& p,const Four
 // Immutable declaration bindings contain only offsets/types and input metadata.
 // They never cache vertex bytes, constants, bone poses, or game/D3D pointers.
 struct Binding {Input input;D3DVERTEXELEMENT9 element;};
-template<class Bindings>inline bool clearVertexInputs(const Program& program,const Bindings& bindings){
+inline bool clearVertexInputsMask(const Program& program,unsigned provided){
     if(!program.kernel.valid||program.kernel.ops.size()!=program.operations.size())return true;
-    unsigned provided=0;for(const auto& b:bindings){if(b.input.reg>=16)return true;provided|=1u<<b.input.reg;}
     for(const auto& op:program.kernel.ops){if(op.operands<0||op.operands>3)return true;
         for(int i=0;i<op.operands;++i){const auto& source=op.source[i];if(source.kind==1&&(source.index>=16||!(provided&(1u<<source.index))))return true;}}
     return false;
+}
+template<class Bindings>inline bool clearVertexInputs(const Program& program,const Bindings& bindings){
+    unsigned provided=0;for(const auto& b:bindings){if(b.input.reg>=16)return true;provided|=1u<<b.input.reg;}return clearVertexInputsMask(program,provided);
 }
 struct PreparedBindings {
     std::vector<Binding> bindings;
@@ -355,8 +358,8 @@ public:
 };
 // The complete audited single-bone kernel reads only v0/v1. Both are fully
 // decoded each vertex; the draw-local c0 never outlives its current pose bank.
-inline bool singleSkinBoundsPrepared(const Program& program,const NorthlightDrawSnapshot::Mesh& mesh,const PreparedBindings& prepared,const float* constants,float* low,float* high){
-    if(!program.kernel.singleSkin()||!constants||!prepared.validFor(program,mesh)||prepared.bindings.size()!=2||prepared.bindings[0].input.reg>=2||prepared.bindings[1].input.reg>=2||prepared.bindings[0].input.reg==prepared.bindings[1].input.reg)return false;
+template<bool Validated=false> inline bool singleSkinBoundsPrepared(const Program& program,const NorthlightDrawSnapshot::Mesh& mesh,const PreparedBindings& prepared,const float* constants,float* low,float* high){
+    if(!program.kernel.singleSkin()||!constants||(!Validated&&!prepared.validFor(program,mesh))||prepared.bindings.size()!=2||prepared.bindings[0].input.reg>=2||prepared.bindings[1].input.reg>=2||prepared.bindings[0].input.reg==prepared.bindings[1].input.reg)return false;
     const Four control=singleSkinControl(program,constants);Four inputs[2];
     for(UINT vertex=0;vertex<mesh.vertexCount;++vertex){for(const auto& b:prepared.bindings){const auto& s=mesh.streams[b.element.Stream];if(!decodeElement(s.bytes.data()+size_t(vertex)*s.stride+b.element.Offset,b.element.Type,inputs[b.input.reg]))return false;}
         Four view;if(!evaluateSingleSkin<true>(program,inputs,constants,view,&control))return false;

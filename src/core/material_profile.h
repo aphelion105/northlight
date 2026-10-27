@@ -49,7 +49,7 @@ public:
         Scope(NorthlightMaterialProfile* profile,Stage s,unsigned context=0,bool onGPU=false):stage(s){
             if(!profile||!profile->active)return;owner=profile;previous=owner->parent;tag=context?context:previous?previous->tag:0;
             if(tag>=Tags)tag=0;epoch=owner->epoch;start=owner->tick();owner->parent=this;
-            if(onGPU){uint64_t began=owner->tick();span=owner->beginGPU(s,tag);owner->queryNs+=owner->tick()-began;}
+            if(onGPU&&owner->gpu>=0&&!owner->gpuDisabled){uint64_t began=owner->tick();span=owner->beginGPU(s,tag);owner->queryNs+=owner->tick()-began;}
         }
         Scope(const Scope&)=delete;Scope& operator=(const Scope&)=delete;
         void work(uint64_t count,uint64_t size=0){items+=count;bytes+=size;}

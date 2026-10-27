@@ -90,6 +90,13 @@ private:
     void calibrate(){typename Clock::time_point t[33];for(auto& x:t)x=Clock::now();double d[32];
         for(unsigned i=0;i<32;++i)d[i]=ns(t[i+1]-t[i]);std::nth_element(d,d+16,d+32);pairNs_=d[16];}
     static double rank(std::vector<double>& v,unsigned quarter){return v.empty()?-1:v[(v.size()-1)*quarter/4];}
+    static void quartiles(std::vector<double>& v){
+        if(v.empty())return;
+        const auto low=v.begin()+(v.size()-1)/4,middle=v.begin()+(v.size()-1)/2,high=v.begin()+(v.size()-1)*3/4;
+        std::nth_element(v.begin(),middle,v.end());
+        if(low<middle)std::nth_element(v.begin(),low,middle);
+        if(high>middle)std::nth_element(middle+1,high,v.end());
+    }
 public:
     SnapshotMeter(){for(auto& mode:perSpan_)for(auto& v:mode)v.reserve(Capacity);for(auto& v:pairs_)v.reserve(Capacity);}
     void beginFrame(bool on,unsigned phase){on_=on;phase_=phase%Stride;count_=spans_=0;pairNs_=-1;correctedNs_=0;}
@@ -111,9 +118,9 @@ public:
     // One Summary per class with a bucketed frame; then empty (the capacity stays).
     template<class Visit> void report(Visit&& visit){
         for(unsigned c=0;c<Classes;++c){Summary s;bool any=false;
-            for(unsigned m=0;m<Modes;++m){auto& v=perSpan_[m][c];std::sort(v.begin(),v.end());s.frames[m]=unsigned(v.size());any|=!v.empty();
+            for(unsigned m=0;m<Modes;++m){auto& v=perSpan_[m][c];quartiles(v);s.frames[m]=unsigned(v.size());any|=!v.empty();
                 s.median[m]=rank(v,2);s.p25[m]=rank(v,1);s.p75[m]=rank(v,3);v.clear();}
-            std::sort(pairs_[c].begin(),pairs_[c].end());s.pairNs=rank(pairs_[c],2);pairs_[c].clear();
+            auto& pairs=pairs_[c];if(!pairs.empty())std::nth_element(pairs.begin(),pairs.begin()+(pairs.size()-1)/2,pairs.end());s.pairNs=rank(pairs,2);pairs.clear();
             const auto& t=totals_[c];s.spans=t.spans;s.predictTried=t.predictTried;s.predictHits=t.predictHits;s.predictMisses=t.predictMisses;s.fastHits=t.fastHits;totals_[c]={};
             if(any)visit(c,s);}
     }
@@ -206,13 +213,17 @@ private:
         // plus per-stream read spans), so accept/reject decisions never differ.
         std::size_t charged=0;
     };
-    static std::uint64_t hashKey(const CacheKey& k){
-        const auto* b=reinterpret_cast<const std::uint8_t*>(&k);std::uint64_t h=1469598103934665603ull;
+    template<bool Logical=false> static std::uint64_t hashKey(const CacheKey& k){
+        constexpr auto seed=[](){std::uint64_t value=1469598103934665603ull;
+            if constexpr(Logical)for(size_t i=0;i<sizeof(k.version)/8;++i)value*=1099511628211ull;return value;}();
+        const auto* b=reinterpret_cast<const std::uint8_t*>(&k);std::uint64_t h=seed;
         // The key is fully zero-initialized, including padding. Hash whole words
         // without alignment/aliasing assumptions; the exact key comparison in
         // serve() remains mandatory. A hash collision can only cause a miss.
-        size_t i=0;for(;i+sizeof(std::uint64_t)<=sizeof k;i+=sizeof(std::uint64_t)){
-            std::uint64_t word;std::memcpy(&word,b+i,sizeof word);h^=word;h*=1099511628211ull;}
+        size_t i=Logical?sizeof(k.version):0;for(;i+sizeof(std::uint64_t)<=sizeof k;i+=sizeof(std::uint64_t)){
+            std::uint64_t word;std::memcpy(&word,b+i,sizeof word);
+            if constexpr(Logical){static_assert(offsetof(CacheKey,tracked)==sizeof(k.version)&&sizeof(k.tracked)==4,"logical key prefix");if(i==offsetof(CacheKey,tracked))word&=0xffffffff00000000ull;}
+            h^=word;h*=1099511628211ull;}
         for(;i<sizeof k;++i){h^=b[i];h*=1099511628211ull;}
         h^=h>>33;h*=0xff51afd7ed558ccdULL;h^=h>>33;h*=0xc4ceb9fe1a85ec53ULL;h^=h>>33;
         return NORTHLIGHT_SNAPSHOT_HASH_BITS?h&((std::uint64_t(1)<<NORTHLIGHT_SNAPSHOT_HASH_BITS)-1):h;
@@ -246,7 +257,7 @@ private:
     void refreshSourceLimit(){sources_->limit=0;for(const auto* member:sources_->members)sources_->limit+=std::min(member->cacheLimit_,std::numeric_limits<size_t>::max()-sources_->limit);
         if(sources_->replayCandidates&&sources_->limit<ReplayCandidateBytes){sources_->replayCandidates.reset();sources_->bytes-=ReplayCandidateBytes;sources_->metadataBytes-=ReplayCandidateBytes;}
         while(sources_->bytes>sources_->limit&&!sources_->entries.empty())evictOldest();}
-    struct History {std::uint64_t logical=0,full=0;bool valid=false,evicted=false;};
+    struct History {std::uint64_t logical=0,full=0;bool valid=false,evicted=false;std::uint16_t epoch=0;};
     // Diagnostic history is bounded and never authorizes a cache hit. Collisions
     // are reported as unknown, never guessed to be a new resource or a write.
     std::array<History,2048> history_{};
@@ -254,23 +265,23 @@ public:
     struct Maintenance {unsigned snapshotEvictions=0,indexEvictions=0,missEvicted=0,missRevision=0,missUnknown=0,missCollision=0;
         size_t snapshotEvictedBytes=0,indexEvictedBytes=0;double snapshotMs=0,indexMs=0;};
 private:
-    Maintenance maintenance_;bool sampleMaintenance_=false;
+    Maintenance maintenance_;bool sampleMaintenance_=false;std::uint16_t historyEpoch_=1;
     struct MaintenanceTimer {
         double* out;std::chrono::steady_clock::time_point start;
         explicit MaintenanceTimer(double* value):out(value){if(out)start=std::chrono::steady_clock::now();}
         ~MaintenanceTimer(){if(out)*out+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();}
     };
-    static std::uint64_t logicalHash(CacheKey key){for(auto& v:key.version)v=0;key.tracked=0;return hashKey(key);}
+    static std::uint64_t logicalHash(const CacheKey& key){return hashKey<true>(key);}
     void noteMiss(const CacheKey& key,std::uint64_t full,bool collision){
         if(!sampleMaintenance_)return;
         const auto logical=logicalHash(key);const auto& h=history_[logical%history_.size()];
         if(collision)++maintenance_.missCollision;
-        else if(h.valid&&h.logical==logical&&h.full!=full)++maintenance_.missRevision;
-        else if(h.valid&&h.logical==logical&&h.full==full&&h.evicted)++maintenance_.missEvicted;
+        else if(h.valid&&h.epoch==historyEpoch_&&h.logical==logical&&h.full!=full)++maintenance_.missRevision;
+        else if(h.valid&&h.epoch==historyEpoch_&&h.logical==logical&&h.full==full&&h.evicted)++maintenance_.missEvicted;
         else ++maintenance_.missUnknown;
     }
-    void noteStored(const CacheKey& key){const auto logical=logicalHash(key);history_[logical%history_.size()]={logical,hashKey(key),true,false};}
-    void noteEvicted(const CacheKey& key){const auto logical=logicalHash(key);auto& h=history_[logical%history_.size()];if(h.valid&&h.logical==logical&&h.full==hashKey(key))h.evicted=true;}
+    void noteStored(const CacheKey& key,std::uint64_t hash){const auto logical=logicalHash(key);history_[logical%history_.size()]={logical,hash,true,false,historyEpoch_};}
+    void noteEvicted(const CacheKey& key,std::uint64_t hash){const auto logical=logicalHash(key);auto& h=history_[logical%history_.size()];if(h.valid&&h.epoch==historyEpoch_&&h.logical==logical&&h.full==hash)h.evicted=true;}
 
     unsigned cacheHits_=0,cacheMisses_=0,revalidated_=0,revalidationMismatches_=0,trackedHits_=0;
     bool replayContentReuse_=false;
@@ -300,7 +311,7 @@ private:
     }
     void evictOldest(){
         auto* oldest=sources_->lru.oldest();if(!oldest)return;
-        const auto hash=hashKey(oldest->key);noteEvicted(oldest->key);
+        const auto hash=hashKey(oldest->key);noteEvicted(oldest->key,hash);
         ++maintenance_.snapshotEvictions;maintenance_.snapshotEvictedBytes+=oldest->bytes;
         eraseIdentity(*oldest);sources_->bytes-=oldest->bytes;sources_->metadataBytes-=oldest->metadataBytes;sources_->lru.remove(*oldest);sources_->entries.erase(hash);++sources_->generation;
         dropPrediction(Erase::Evict); /* the evicted entry may be the predicted one */
@@ -478,7 +489,7 @@ private:
             entry->serial=sources_->serial++;
             const auto hash=hashKey(key);auto existing=sources_->entries.find(hash);if(existing!=sources_->entries.end()){eraseIdentity(*existing->second);sources_->bytes-=existing->second->bytes;sources_->metadataBytes-=existing->second->metadataBytes;sources_->lru.remove(*existing->second);sources_->entries.erase(existing);++sources_->generation;
                 dropPrediction(Erase::Replacement);} /* the replaced entry may be the predicted one */
-            const auto bytes=entry->bytes,metadataBytes=entry->metadataBytes;auto inserted=sources_->entries.emplace(hash,std::move(entry));sources_->lru.append(*inserted.first->second);sources_->bytes+=bytes;sources_->metadataBytes+=metadataBytes;noteStored(key);
+            const auto bytes=entry->bytes,metadataBytes=entry->metadataBytes;auto inserted=sources_->entries.emplace(hash,std::move(entry));sources_->lru.append(*inserted.first->second);sources_->bytes+=bytes;sources_->metadataBytes+=metadataBytes;noteStored(key,hash);
             *owned=std::move(mesh);*shared=owned;if(owned->sourceIdentity)try{sources_->identities.emplace(owned->sourceIdentity->hash,inserted.first->second.get());}catch(...){}
             if(replayContentReuse_&&sources_->replayCandidates&&key.tracked&&owned->sourceIdentity)(*sources_->replayCandidates)[logicalHash(key)%sources_->replayCandidates->size()]=owned;
             return true;
@@ -523,7 +534,8 @@ public:
             if(batch?batch->retire(retired,sources_->bytes):retirement->retire(retired,sources_->bytes))deferred=sources_->bytes;
             // Queue contention/cap/allocation failure keeps synchronous release.
         }catch(...){}
-        sources_->replayCandidates.reset();sources_->lru.clear();sources_->identities.clear();sources_->entries.clear();sources_->bytes=sources_->metadataBytes=0;++sources_->generation;for(auto& h:history_)h={};
+        sources_->replayCandidates.reset();sources_->lru.clear();sources_->identities.clear();sources_->entries.clear();sources_->bytes=sources_->metadataBytes=0;++sources_->generation;
+        if(++historyEpoch_==0){for(auto& h:history_)h={};historyEpoch_=1;}
         dropPrediction(Erase::Clear);return deferred;} /* every entry is gone */
     // Memory guard: at most SnapshotCacheLimit; evicts oldest down to the new cap now.
     // Entries are shared immutable meshes, so holders of an evicted mesh keep it valid.
@@ -643,11 +655,14 @@ private:
     }
     bool decode(const void* data,UINT count,D3DFORMAT format,const Draw& draw,Mesh& mesh,UINT& low,UINT& high,Diagnostics* why) {
         const size_t rawBytes=size_t(count)*(format==D3DFMT_INDEX16?2:4);
-        activeRuns_=&copyRuns_;const auto hash=fingerprint(data,rawBytes);
-        const auto matches=[&](const DecodedEntry* entry){return entry&&entry->fingerprint==hash&&entry->minimum==draw.minimum&&entry->vertices==draw.vertices&&entry->format==format&&entry->raw.size()==rawBytes&&
+        activeRuns_=&copyRuns_;
+        const auto matches=[&](const DecodedEntry* entry){return entry&&entry->minimum==draw.minimum&&entry->vertices==draw.vertices&&entry->format==format&&entry->raw.size()==rawBytes&&
             !std::memcmp(entry->raw.data(),data,rawBytes);};
-        DecodedEntry* cached=matches(recent_)?recent_:nullptr;
-        if(!cached){auto range=decodedLookup_.equal_range(hash);for(auto it=range.first;it!=range.second;++it)if(it->second!=recent_&&matches(it->second)){cached=it->second;break;}}
+        DecodedEntry* cached=rawBytes<=512&&matches(recent_)?recent_:nullptr;
+        std::uint64_t hash=0;
+        if(!cached){hash=fingerprint(data,rawBytes);
+            if(rawBytes>512&&recent_&&recent_->fingerprint==hash&&matches(recent_))cached=recent_;
+            else {auto range=decodedLookup_.equal_range(hash);for(auto it=range.first;it!=range.second;++it)if(it->second!=recent_&&matches(it->second)){cached=it->second;break;}}}
         if(cached){
             mesh.indices.assign(cached->indices.begin(),cached->indices.end());
             low=cached->low;high=cached->high;compacted_=cached->compacted;mesh.vertexCount=cached->count;
@@ -674,7 +689,9 @@ private:
             size_t unique=0;for(auto word:indexMaskScratch_)unique+=size_t(__builtin_popcountll(word));
             if(unique==span){for(auto& index:mesh.indices)index-=low;mesh.vertexCount=UINT(span);remember();return true;}
             uniqueSourceScratch_.reserve(unique);remapScratch_.resize(size_t(span));
-            for(UINT relative=0;relative<span;++relative)if(indexMaskScratch_[relative/64]&(uint64_t(1)<<(relative%64))){remapScratch_[relative]=UINT(uniqueSourceScratch_.size());uniqueSourceScratch_.push_back(low+relative);}
+            for(size_t wordIndex=0;wordIndex<indexMaskScratch_.size();++wordIndex){auto word=indexMaskScratch_[wordIndex];
+                while(word){const UINT relative=UINT(wordIndex*64+__builtin_ctzll(word));word&=word-1;
+                    remapScratch_[relative]=UINT(uniqueSourceScratch_.size());uniqueSourceScratch_.push_back(low+relative);}}
             for(auto& index:mesh.indices)index=remapScratch_[index-low];
         }else{
             uniqueSourceScratch_.assign(mesh.indices.begin(),mesh.indices.end());std::sort(uniqueSourceScratch_.begin(),uniqueSourceScratch_.end());

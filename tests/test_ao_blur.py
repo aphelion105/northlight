@@ -535,17 +535,17 @@ def audit_wiring():
     text = fp.src('renderer.cpp').read_text()
     fn = text[text.index('SetRenderTarget(0,aoRawSurface)')-400:]
     a = fn.index('SetRenderTarget(0,aoRawSurface)')
-    seq = [fn.index(s, a) for s in ('quad(width/2,height/2),"AO pass"', 'SetRenderTarget(0,aoSurface)', 'bindEffects(aoRaw)',
+    seq = [fn.index(s, a) for s in ('quad(width/2,height/2,false),"AO pass"', 'SetRenderTarget(0,aoSurface)', 'SetTexture(2,aoRaw)',
                                     'SetTexture(0,aoRaw)', 'SetPixelShader(aoBlurPS)', 'gpuProfile->mark("AOBlurSetup")',
-                                    'aoBlurResult=quad(width/2,height/2)', 'error(aoBlurResult,"AO blur pass")',
+                                    'aoBlurResult=quad(width/2,height/2,false)', 'error(aoBlurResult,"AO blur pass")',
                                     'ext->SetTexture(2,nullptr);ext->SetTexture(0,scene);',
                                     'auto legacyComposite', 'world->render(')]
     assert seq == sorted(seq), seq
     assert 'SetPixelShader(constants[7]==0.f?aoContactBloomPS:aoPS)' in fn[a:seq[0]]
     assert 'ext->SetTexture(2,ao); ext->SetPixelShader(compositePS)' in fn
-    assert re.search(r'fold\?scene:nullptr,fold\?ao:nullptr\)', fn), 'the world fold reads the blurred ao'
+    assert re.search(r'fold\?scene:nullptr,fold\?ao:nullptr,frame\)', fn), 'the world fold reads the blurred ao'
     assert re.search(r'if\(fold&&!world->composited\)\{effectState\(\);bindEffects\(ao\);', fn), 'fold fallback binds ao'
-    assert 'aoRaw' not in fn[seq[2]+len('bindEffects(aoRaw)'):].split('legacyComposite')[0].split('SetTexture(2,nullptr)')[1]
+    assert 'aoRaw' not in fn[seq[2]+len('SetTexture(2,aoRaw)'):].split('legacyComposite')[0].split('SetTexture(2,nullptr)')[1]
     for fmt in (r'!ao && error\(ext->CreateTexture\(w/2, h/2, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A16B16G16R16F, D3DPOOL_DEFAULT, &ao,',
                 r'!aoRaw && error\(ext->CreateTexture\(w/2, h/2, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A16B16G16R16F, D3DPOOL_DEFAULT, &aoRaw,'):
         assert re.search(fmt, text), fmt
@@ -564,7 +564,7 @@ def audit_contact_ao():
     on = '            if (error(ext->SetRenderTarget(0,aoRawSurface)' + on
     assert 'constants[7]==0.f' in off
     ready, legacy = off.split('} else {', 1)
-    assert 'SetRenderTarget(0,aoSurface)' in ready and 'SetPixelShader(contactBloomPS)' in ready and 'quad(width/2,height/2)' in ready
+    assert 'SetRenderTarget(0,aoSurface)' in ready and 'SetPixelShader(contactBloomPS)' in ready and 'quad(width/2,height/2,false)' in ready
     assert 'aoRaw' not in off and 'aoPS' not in off and 'aoBlurPS' not in off and 'aoContactBloomPS' not in off, 'off path runs neither AO nor AOBlur'
     assert 'SetRenderTarget(0,aoSurface)' in legacy and 'ext->Clear(0,nullptr,D3DCLEAR_TARGET,D3DCOLOR_ARGB(255,0,0,0),1.f,0)' in legacy
     assert 'quad(' not in legacy and 'D3DCLEAR_ZBUFFER' not in legacy and 'D3DCLEAR_STENCIL' not in legacy

@@ -453,6 +453,9 @@ NormalDistanceOutput WorldNormals(float2 uv:TEXCOORD0) {
     return o;
 }
 
+// No distance MRT is bound when no light source is drawn.
+float4 WorldNormalsNoDistance(float2 uv:TEXCOORD0):COLOR0 { return worldNormalValue(uv); }
+
 struct LightingOutput {float4 correction:COLOR0;float4 baseline:COLOR1;};
 LightingOutput WorldLighting(float2 uv:TEXCOORD0) {
     float2 halfUV=uv;

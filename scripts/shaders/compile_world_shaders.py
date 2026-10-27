@@ -13,7 +13,7 @@ sys.path[:0] = [str(Path(__file__).resolve().parents[2]), str(Path(__file__).res
 import northlight_paths as fp  # noqa: E402
 from shader_compiler import Compiler, DLL_SHA256, COMPATIBLE_DLL_SHA256, bytecode, rows, validate_assembly
 
-ENTRIES = (("WorldNormals", "ps_3_0"), ("WorldLighting", "ps_3_0"), ("ActorShadow", "ps_3_0"), ("ActorTiles", "ps_3_0"), ("WorldGI", "ps_3_0"), ("WorldFog", "ps_3_0"), ("WorldFogActor", "ps_3_0"), ("FogBlur", "ps_3_0"), ("FogClouds", "ps_3_0"), ("FogCloudsActor", "ps_3_0"), ("FogTemporal", "ps_3_0"), ("LocalDirect", "ps_3_0"), ("LocalDirect16", "ps_3_0"), ("RemovalSmooth", "ps_3_0"), ("TemporalLight", "ps_3_0"), ("LocalFog", "ps_3_0"), ("LocalFogCombine", "ps_3_0"), ("SourceVisibilityPS", "ps_3_0"),
+ENTRIES = (("WorldNormals", "ps_3_0"), ("WorldNormalsNoDistance", "ps_3_0"), ("WorldLighting", "ps_3_0"), ("ActorShadow", "ps_3_0"), ("ActorTiles", "ps_3_0"), ("WorldGI", "ps_3_0"), ("WorldFog", "ps_3_0"), ("WorldFogActor", "ps_3_0"), ("FogBlur", "ps_3_0"), ("FogClouds", "ps_3_0"), ("FogCloudsActor", "ps_3_0"), ("FogTemporal", "ps_3_0"), ("LocalDirect", "ps_3_0"), ("LocalDirect16", "ps_3_0"), ("RemovalSmooth", "ps_3_0"), ("TemporalLight", "ps_3_0"), ("LocalFog", "ps_3_0"), ("LocalFogCombine", "ps_3_0"), ("SourceVisibilityPS", "ps_3_0"),
            ("WorldComposite", "ps_3_0"), ("MaterialComposite", "ps_3_0"), ("MaterialAudit", "ps_3_0"), ("ShadowVS", "vs_3_0"), ("ShadowCacheVS", "vs_3_0"),
            ("ShadowPS", "ps_3_0"), ("ShadowReplayPS", "ps_3_0"), ("ShadowUnion", "ps_3_0"))
 

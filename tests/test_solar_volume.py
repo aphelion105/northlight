@@ -155,7 +155,7 @@ def main():
                    'float3 directScatter=sunSource*directWeight;', 'directScatter*=cap/(cap+peak)', 'skySource*(1-transmittance)+directScatter'):
         assert anchor in shader, anchor
     assert 'if(dot(sunSource,1)>0){' in shader and 'float visibility=fogShadowProjected(shadowOrigin+shadowRay*((start+end)*.5));' in shader
-    assert '[branch]if(actorIntegration&&FogActorInfo.x>0)visibility=fogCombineActor(visibility,fogActorShadow(actorOrigin+actorRay*start,actorRay*stepSize));' in shader
+    assert '[branch]if(actorIntegration&&FogActorInfo.x>0&&visibility>0)visibility=fogCombineActor(visibility,fogActorShadow(actorOrigin+actorRay*start,actorRay*stepSize));' in shader
     assert 'c[32][0]=.0055f+.0089f*c[31][3];c[32][1]=.0037f+.00705f*c[31][3]' in cpu
     assert 'c[32][2]=64.f*volumeHeightScale;c[32][3]=48.f*volumeHeightScale' in cpu
     assert 'c[22][3]=.0035f+.0031f*c[31][3]' in cpu

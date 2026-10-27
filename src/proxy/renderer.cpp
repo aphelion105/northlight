@@ -124,6 +124,26 @@ static LogCost logCost;
 static LONGLONG logFrequency=0,logIntervalStart=0;
 // Lines written by the calling thread (RenderProfile: frames that logged are left out of FRAME cost).
 static thread_local unsigned long long threadLogLines=0;
+static thread_local unsigned logFlushBatchDepth=0;
+static thread_local bool logFlushPending=false;
+// Frame-boundary diagnostics become visible together, including on exceptions.
+// Other threads may still flush this stream while the batch is being assembled.
+struct LogFlushBatch {
+    LogFlushBatch(){++logFlushBatchDepth;}
+    ~LogFlushBatch(){
+        if(--logFlushBatchDepth||!logFlushPending)return;
+        logFlushPending=false;
+        LARGE_INTEGER start={};const bool timed=QueryPerformanceCounter(&start)!=0;
+        AcquireSRWLockExclusive(&logLock);
+        if(logFile&&fflush(logFile)!=0)++logCost.ioErrors;
+        LARGE_INTEGER end={};if(timed&&QueryPerformanceCounter(&end)&&end.QuadPart>=start.QuadPart){
+            const auto ticks=end.QuadPart-start.QuadPart;logCost.wallTicks+=ticks;
+            if(ticks>logCost.maxTicks)logCost.maxTicks=ticks;
+        }
+        ReleaseSRWLockExclusive(&logLock);
+    }
+    LogFlushBatch(const LogFlushBatch&)=delete;
+};
 static void logf(const char* fmt, ...) {
 #ifdef NORTHLIGHT_REPLAY_STAND
     ensureRootPath();
@@ -143,10 +163,18 @@ static void logf(const char* fmt, ...) {
     }
     ++logCost.calls;++threadLogLines;
     if(logFile){
-        va_list args;va_start(args,fmt);const int bytes=vfprintf(logFile,fmt,args);va_end(args);
+        va_list args;va_start(args,fmt);int bytes;
+        if(fmt[0]=='%'&&fmt[1]=='s'&&!fmt[2]){
+            va_list probe;va_copy(probe,args);const char* line=va_arg(probe,const char*);va_end(probe);
+            const size_t length=line?std::strlen(line):size_t(-1);
+            if(length<=0x7fffffffU)bytes=std::fputs(line,logFile)==EOF?-1:int(length);
+            else bytes=vfprintf(logFile,fmt,args);
+        }else bytes=vfprintf(logFile,fmt,args);
+        va_end(args);
         if(bytes>=0)logCost.formattedBytes+=unsigned(bytes);else ++logCost.ioErrors;
         if(fputc('\n',logFile)!=EOF)++logCost.formattedBytes;else ++logCost.ioErrors;
-        if(fflush(logFile)!=0)++logCost.ioErrors;
+        if(logFlushBatchDepth)logFlushPending=true;
+        else if(fflush(logFile)!=0)++logCost.ioErrors;
     }else ++logCost.ioErrors;
     LARGE_INTEGER end={};
     if(timed&&QueryPerformanceCounter(&end)&&end.QuadPart>=start.QuadPart){
@@ -664,6 +692,7 @@ private:
         });
     }
     void clearFrame() {
+        LogFlushBatch logBatch;
         diagnosticAoRaw=diagnosticAo=diagnosticWorld=false;
         waterAfterEffects=0;
         if(surfaceTimerOpen){if(gpuTimer)gpuTimer->end();surfaceTimerOpen=false;}
@@ -722,7 +751,7 @@ private:
         failed = true; return true;
     }
     void selectAO(unsigned method,unsigned quality){
-        if(aoMethod!=method){drop(aoPS);drop(aoContactBloomPS);}
+        if(aoMethod!=method)drop(aoContactBloomPS);
         else if(method&&aoQuality!=quality)drop(aoContactBloomPS);
         aoMethod=method;aoQuality=quality;
     }
@@ -868,12 +897,11 @@ private:
         if (step(ext->SetRenderState(D3DRS_POINTSIZE, 0x7fa05000), "RESZ")) return false;
         return true;
     }
-    HRESULT quad(UINT w, UINT h) {
+    HRESULT quad(UINT w, UINT h, bool setViewport=true) {
         struct Vertex { float x,y,z,rhw,u,v; };
         Vertex v[]={{-.5f,-.5f,0,1,0,0},{float(w)-.5f,-.5f,0,1,1,0},
                     {-.5f,float(h)-.5f,0,1,0,1},{float(w)-.5f,float(h)-.5f,0,1,1,1}};
-        D3DVIEWPORT9 vp={0,0,w,h,0,1};
-        HRESULT hr=ext->SetViewport(&vp); if (FAILED(hr)) return hr;
+        if(setViewport){D3DVIEWPORT9 vp={0,0,w,h,0,1};HRESULT hr=ext->SetViewport(&vp);if(FAILED(hr))return hr;}
         return ext->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(Vertex));
     }
     // the zone/time glow hue the world renderer publishes (sun_hue.h), in the disc renderer's terms.
@@ -1023,12 +1051,15 @@ private:
         float constants[]={1.f/width,1.f/height,nearZ,farZ,scaleX,scaleY,aoStrength,(world&&world->screenReady()?0.f:.12f),.08f,aoRadius,float(debugMode),0,worldMinDepth,1.f/(worldMaxDepth-worldMinDepth),worldMaxDepth,0};
 
         float waterFlags[]={waterMask?1.f:0.f,0,0,0};
-        auto bindEffects=[&](IDirect3DTexture9* ambient){
-            ext->SetPixelShaderConstantF(4,waterFlags,1);ext->SetTexture(3,waterMask);
-            ext->SetPixelShaderConstantF(0,constants,4);
+        auto bindLegacyFog=[&]{
             auto nativeFog=world?world->legacyFogConstants():NorthlightLegacyFog::Constants{};
             nativeFog.parameters[0]*=fogForward; // Position() reconstructs positive view distance.
             ext->SetPixelShaderConstantF(5,nativeFog.parameters,1);ext->SetPixelShaderConstantF(6,nativeFog.color,1);
+        };
+        auto bindEffects=[&](IDirect3DTexture9* ambient){
+            ext->SetPixelShaderConstantF(4,waterFlags,1);ext->SetTexture(3,waterMask);
+            ext->SetPixelShaderConstantF(0,constants,4);
+            bindLegacyFog();
             ext->SetTexture(0,scene); ext->SetTexture(1,depthTex); ext->SetTexture(2,ambient);
         };
         bindEffects(nullptr);
@@ -1038,7 +1069,7 @@ private:
             if (constants[7]==0.f) {
                 if (error(ext->SetRenderTarget(0,aoSurface),"contact bloom render target")) return;
                 ext->SetPixelShader(contactBloomPS);
-                if (error(quad(width/2,height/2),"contact bloom pass")) return;
+                if (error(quad(width/2,height/2,false),"contact bloom pass")) return;
                 gpuProfile->mark("ContactBloom");
             } else {
                 if (error(ext->SetRenderTarget(0,aoSurface),"neutral AO render target")) return;
@@ -1049,13 +1080,13 @@ private:
         } else {
             if (error(ext->SetRenderTarget(0,aoRawSurface),"AO render target")) return;
             ext->SetPixelShader(constants[7]==0.f?aoContactBloomPS:aoPS);
-            if (error(quad(width/2,height/2),"AO pass")) return;
+            if (error(quad(width/2,height/2,false),"AO pass")) return;
             if (constants[7]!=0.f && aoMethod) {
                 // Keep the original fallback colour bounce in RGB; replace only AO.
                 // Splitting these kernels keeps GTAO below the ps_3_0 slot limit.
                 ext->SetRenderState(D3DRS_COLORWRITEENABLE,D3DCOLORWRITEENABLE_ALPHA);
                 ext->SetPixelShader(aoContactBloomPS);
-                const HRESULT aoResult=quad(width/2,height/2);
+                const HRESULT aoResult=quad(width/2,height/2,false);
                 ext->SetRenderState(D3DRS_COLORWRITEENABLE,15);
                 if (error(aoResult,"fallback AO alpha pass")) return;
             }
@@ -1069,12 +1100,12 @@ private:
             LONGLONG aoBlurSetup=0,aoBlurSubmit=0;
             {CpuScope timing(timeAOBlur?&aoBlurSetup:nullptr);
              if (error(ext->SetRenderTarget(0,aoSurface),"AO blur render target")) return;
-             bindEffects(aoRaw);ext->SetTexture(0,aoRaw);ext->SetPixelShader(aoBlurPS);}
+             bindLegacyFog();ext->SetTexture(2,aoRaw);ext->SetTexture(0,aoRaw);ext->SetPixelShader(aoBlurPS);}
             // Separate state/resource preparation from the draw interval. Both
             // timestamps still include command-stream gaps and dependencies.
             gpuProfile->mark("AOBlurSetup");
             HRESULT aoBlurResult;
-            {CpuScope timing(timeAOBlur?&aoBlurSubmit:nullptr);aoBlurResult=quad(width/2,height/2);}
+            {CpuScope timing(timeAOBlur?&aoBlurSubmit:nullptr);aoBlurResult=quad(width/2,height/2,false);}
             if (error(aoBlurResult,"AO blur pass")) return;
             diagnosticAo=true;
             ext->SetTexture(2,nullptr);ext->SetTexture(0,scene);

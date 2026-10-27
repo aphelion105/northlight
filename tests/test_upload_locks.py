@@ -29,6 +29,9 @@ Fresh,Managed,Dynamic,Read,Forward='fresh DEFAULT|WRITEONLY','MANAGED','DEFAULT|
 expected={
  ('imgui_impl_dx9.cpp','bd->pVB'):('D3DLOCK_DISCARD',Dynamic,'D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY, D3DFVF_CUSTOMVERTEX, D3DPOOL_DEFAULT, &bd->pVB'),
  ('imgui_impl_dx9.cpp','bd->pIB'):('D3DLOCK_DISCARD',Dynamic,'D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY, sizeof(ImDrawIdx) == 2 ? D3DFMT_INDEX16 : D3DFMT_INDEX32, D3DPOOL_DEFAULT, &bd->pIB'),
+ ('scene_native_store.h','b'):(F,Fresh,'D3DUSAGE_WRITEONLY,0,D3DPOOL_DEFAULT,&built.vb[s]'),
+ ('scene_native_store.h','batch->vb'):(F,Fresh,'D3DUSAGE_WRITEONLY,0,D3DPOOL_DEFAULT,&batch->vb'),
+ ('scene_native_store.h','batch->ib'):(F,Fresh,'D3DUSAGE_WRITEONLY,D3DFMT_INDEX32,D3DPOOL_DEFAULT,&batch->ib'),
  ('replay_gpu_batches.h','b'):(F,Fresh,'D3DUSAGE_WRITEONLY,0,D3DPOOL_DEFAULT,&built->vertices[s]'),
  ('replay_gpu_batches.h','batch->vertices'):(F,Fresh,'D3DUSAGE_WRITEONLY,0,D3DPOOL_DEFAULT,&batch->vertices'),
  ('replay_gpu_batches.h','batch->indices'):(F,Fresh,'D3DUSAGE_WRITEONLY,D3DFMT_INDEX32,D3DPOOL_DEFAULT,&batch->indices'),
@@ -64,7 +67,7 @@ for name,text in sources.items():
 assert seen==set(expected),f'stale entries: {sorted(set(expected)-seen)}'
 if 'ui_draw_diagnostic.h' in sources:
     assert 'out.flags=NorthlightUpload::readBackLock();' in sources['ui_draw_diagnostic.h']
-assert fresh==8
+assert fresh==11
 # spell_layer.h upload(): DISCARD only while *Fresh_ (first of the frame, or after a wrap), NOOVERWRITE otherwise; beginFrame and the wrap re-arm Fresh_, so an append never overlaps submitted draws' bytes
 sl=sources['spell_layer.h']
 assert 'const DWORD flags=fresh?D3DLOCK_DISCARD:D3DLOCK_NOOVERWRITE;' in sl and 'cursor-=base;base=0;fresh=true;' in sl
@@ -75,18 +78,18 @@ creates=[]
 for name,text in sources.items():
     for m in re.finditer(r'(?:->|\.)(Create(?:Vertex|Index)Buffer)\(',text):
         a=arguments(text,m.end()-1)
-        if len(a)!=6 or a[0]in('size','Length','v[0]'):continue # the device wrappers and the stream's replay forward the game's own arguments
+        if len(a)!=6 or (a[0] in ('size','Length','v[0]') and name!='scene_native_store.h'):continue # the device wrappers and the stream's replay forward the game's own arguments
         pool,usage=a[3],a[1]
         if 'D3DPOOL_DEFAULT' in pool and 'D3DUSAGE_DYNAMIC' not in usage:creates.append((name,a[4]))
         else:assert 'D3DPOOL_MANAGED' in pool or 'D3DUSAGE_DYNAMIC' in usage,(name,a)
-assert sorted(creates)==sorted([('replay_gpu_batches.h','&built->vertices[s]'),('replay_gpu_batches.h','&built->indices'),('replay_gpu_batches.h','&batch->vertices'),
+assert sorted(creates)==sorted([('scene_native_store.h','&built.vb[s]'),('scene_native_store.h','&built.ib'),('scene_native_store.h','&batch->vb'),('scene_native_store.h','&batch->ib'),('replay_gpu_batches.h','&built->vertices[s]'),('replay_gpu_batches.h','&built->indices'),('replay_gpu_batches.h','&batch->vertices'),
     ('replay_gpu_batches.h','&batch->indices'),('replay_gpu_cache.h','&built->vertices[s]'),('replay_gpu_cache.h','&built->indices'),('auto_displacement_renderer.h','&entry->vb'),('auto_displacement_renderer.h','&entry->ib'),('shared_pom.h','&e->vb')]),creates
 print(f'PASS DEFAULT|WRITEONLY creations: {len(creates)}, all fresh write-once sites')
 # The constant and its kill switch; FreshBufferLock appears nowhere else.
 upload=fp.src('upload_lock.h').read_text()
 assert 'inline constexpr bool NoOverwriteFreshBuffers=true;' in upload
 assert 'inline constexpr DWORD FreshBufferLock=NoOverwriteFreshBuffers?DWORD(D3DLOCK_NOOVERWRITE):DWORD(0);' in upload
-assert {n for n,t in sources.items() if 'FreshBufferLock' in t}=={'upload_lock.h','replay_gpu_batches.h','replay_gpu_cache.h','auto_displacement_renderer.h','shared_pom.h'}
+assert {n for n,t in sources.items() if 'FreshBufferLock' in t}=={'upload_lock.h','replay_gpu_batches.h','replay_gpu_cache.h','scene_native_store.h','auto_displacement_renderer.h','shared_pom.h'}
 assert '#include "upload_lock.h"' in sources['replay_gpu_cache.h'] # world_renderer.h (and its .inl) include replay_gpu_cache.h
 # Publication strictly after the last Unlock of each fresh buffer; nothing else reaches an unpublished one.
 def body(text,start,end):i=text.index(start);return text[i:text.index(end,i)]
@@ -96,6 +99,13 @@ separate=body(sources['replay_gpu_batches.h'],'    bool storeSeparate(','    // 
 assert separate.rindex('write(')<separate.index('std::swap(e.vertices[s],built->vertices[s]);')
 cache=body(sources['replay_gpu_cache.h'],'auto built=std::make_unique<Entry>();','}else{reused_+=e.bytes;++hits_;}')
 assert cache.count('->Lock(')==2 and cache.rindex('->Unlock()')<cache.index('std::swap(e.vertices[s],built->vertices[s]);')
+native=sources['scene_native_store.h']
+write=body(native,' template<class Buffer>static bool write(', ' static bool batchable(')
+separateNative=body(native,' bool separate(', ' void commitPrepared(')
+commitNative=body(native,' void commitPrepared(', ' void commit(')
+assert write.index('b->Unlock()') < write.index('return out&&SUCCEEDED(hr);')
+assert separateNative.rindex('write(') < separateNative.index('std::swap(e.vb[s],built.vb[s])')
+assert commitNative.rindex('->Unlock()') < commitNative.index('batches_.push_back(std::move(batch))')
 print('PASS fresh buffers: replay batches/meshes are published only after their last Unlock and never re-locked')
 # POM entries allocate and fill privately once; cache hits bind their immutable buffer.
 pom=sources['shared_pom.h'];prepare=body(pom,'    bool prepare(','    IDirect3DSurface9* target(')

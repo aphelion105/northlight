@@ -22,21 +22,27 @@ struct View {
         if(!rgba||!width||!height||!out||!std::isfinite(u)||!std::isfinite(v)||addressU<1||addressU>3||addressV<1||addressV>3)return false;
         auto coord=[](float f,unsigned mode){
             if(mode==3)return std::max(0.f,std::min(1.f,f));
-            if(mode==2){f=std::fmod(f,2.f);if(f<0)f+=2;return f<=1?f:2-f;}
-            return f-std::floor(f);
+            if(mode==2){if(f>=0&&f<=1)return f;f=std::fmod(f,2.f);if(f<0)f+=2;return f<=1?f:2-f;}
+            return f>0&&f<1?f:f-std::floor(f);
         };
         const float x=coord(u,addressU)*width-.5f,y=coord(v,addressV)*height-.5f;
-        const int ix=int(std::floor(x)),iy=int(std::floor(y));
         auto texel=[](int i,unsigned n,unsigned mode){
+            if(i>=0&&unsigned(i)<n)return unsigned(i);
             if(mode==3)return unsigned(std::max(0,std::min(int(n)-1,i)));
             if(mode==2){const int period=int(n)*2;i%=period;if(i<0)i+=period;return unsigned(i<int(n)?i:period-1-i);}
             i%=int(n);if(i<0)i+=int(n);return unsigned(i);
         };
         static const std::array<float,256> linearRGB=[](){std::array<float,256> a{};for(unsigned i=0;i<256;++i){const float s=float(i)/255;a[i]=s<=.04045f?s/12.92f:std::pow((s+.055f)/1.055f,2.4f);}return a;}();
+        if(!linear){const auto* p=rgba+(std::size_t(texel(int(std::floor(y+.5f)),height,addressV))*width+texel(int(std::floor(x+.5f)),width,addressU))*4;
+            for(unsigned c=0;c<4;++c)out[c]=srgb&&c<3?linearRGB[p[c]]:float(p[c])/255;return true;}
+        const int ix=int(std::floor(x)),iy=int(std::floor(y));
+        const unsigned x0=texel(ix,width,addressU),y0=texel(iy,height,addressV);
+        const unsigned x1=texel(ix+1,width,addressU),y1=texel(iy+1,height,addressV);
+        const auto* p00=rgba+(std::size_t(y0)*width+x0)*4;const auto* p10=rgba+(std::size_t(y0)*width+x1)*4;
+        const auto* p01=rgba+(std::size_t(y1)*width+x0)*4;const auto* p11=rgba+(std::size_t(y1)*width+x1)*4;
         for(unsigned c=0;c<4;++c){
-            auto read=[&](int a,int b){const auto value=rgba[(std::size_t(texel(b,height,addressV))*width+texel(a,width,addressU))*4+c];return srgb&&c<3?linearRGB[value]:float(value)/255;};
-            if(!linear)out[c]=read(int(std::floor(x+.5f)),int(std::floor(y+.5f)));
-            else{const float fx=x-ix,fy=y-iy;out[c]=(read(ix,iy)*(1-fx)+read(ix+1,iy)*fx)*(1-fy)+(read(ix,iy+1)*(1-fx)+read(ix+1,iy+1)*fx)*fy;}
+            auto read=[&](const std::uint8_t* p){const auto value=p[c];return srgb&&c<3?linearRGB[value]:float(value)/255;};
+            const float fx=x-ix,fy=y-iy;out[c]=(read(p00)*(1-fx)+read(p10)*fx)*(1-fy)+(read(p01)*(1-fx)+read(p11)*fx)*fy;
         }
         return true;
     }
@@ -68,13 +74,14 @@ private:
         bool held()const{return !pixels.empty()||!source.empty();}
     };
     std::unordered_map<const void*,Entry> entries_;
+    Entry* recent_=nullptr;
     // Diagnostics only (PTEX misses=...): the last event per texture key, bounded.
     std::unordered_map<const void*,Seen> history_;Seen lastMiss_=Never;
     void note(const void* raw,Seen seen){if(!raw)return;if(history_.size()>=65536)history_.clear();history_[raw]=seen;}
     void evicted(const Entry& e){note(e.raw,Evicted);}
     std::size_t bytes_=0;
     std::uint64_t serial_=0,clock_=0;
-    Entry* find(const void* raw){if(!raw)return nullptr;const auto it=entries_.find(raw);return it!=entries_.end()?&it->second:nullptr;}
+    Entry* find(const void* raw){if(!raw)return nullptr;if(recent_&&recent_->raw==raw)return recent_;const auto it=entries_.find(raw);return it!=entries_.end()?(recent_=&it->second):nullptr;}
     void drop(Entry& e){bytes_-=e.pixels.size()+e.source.size();std::vector<std::uint8_t>().swap(e.pixels);std::vector<std::uint8_t>().swap(e.source);e.width=e.height=0;}
     // Over a limit: evict the least recently used down to 7/8 of it, so a load burst scans the entries once, not per upload.
     void evict(std::size_t incoming,const Entry* keep){
@@ -84,7 +91,7 @@ private:
         std::sort(order.begin(),order.end());
         for(const auto& [used,raw]:order){
             if(bytes_+incoming<=PixelBudget-PixelBudget/8&&entries_.size()<=MaxEntries-MaxEntries/8)break;
-            auto it=entries_.find(raw);evicted(it->second);drop(it->second);entries_.erase(it);++counts.evictions;
+            auto it=entries_.find(raw);evicted(it->second);if(recent_==&it->second)recent_=nullptr;drop(it->second);entries_.erase(it);++counts.evictions;
         }
     }
     Entry& slot(const void* raw,const void* owner){
@@ -99,11 +106,14 @@ private:
     }
 public:
     Counters counts;
+    Cache()=default;
+    Cache(const Cache&)=delete;
+    Cache& operator=(const Cache&)=delete;
     Seen lastMiss()const{return lastMiss_;}
     std::size_t bytes()const{return bytes_;}
     unsigned size()const{unsigned n=0;for(const auto& [raw,e]:entries_)n+=e.held();return n;}
-    void clear(){entries_.clear();bytes_=0;history_.clear();}
-    void erase(const void* raw,const void* owner=nullptr){if(auto* e=find(raw))if(!owner||e->owner==owner){drop(*e);entries_.erase(raw);++counts.releases;note(raw,Released);}}
+    void clear(){recent_=nullptr;entries_.clear();bytes_=0;history_.clear();}
+    void erase(const void* raw,const void* owner=nullptr){if(auto* e=find(raw))if(!owner||e->owner==owner){recent_=nullptr;drop(*e);entries_.erase(raw);++counts.releases;note(raw,Released);}}
     void invalidate(const void* raw){note(raw,Invalidated);if(auto* e=find(raw)){drop(*e);++e->revision;++counts.invalidations;}}
     // Other full mips do not change this mip. Partial/failed writes invalidate
     // the texture conservatively. Only a later complete CPU upload can restore it.
@@ -114,11 +124,10 @@ public:
         try{
         if(!success){++counts.failed;invalidate(raw);note(raw,Failed);return;}
         if(!whole){++counts.partial;invalidate(raw);note(raw,Partial);return;}
-        if(auto* old=find(raw))if(old->owner!=owner)erase(raw);
+        auto* previous=find(raw);if(previous&&previous->owner!=owner){erase(raw);previous=nullptr;}
         NorthlightActorTexture::Format decodedFormat;
         if(!raw||!owner||!format(d3dFormat,decodedFormat)){++counts.unsupported;invalidate(raw);note(raw,Unsupported);return;}
-        if(!width||!height||width>MaxDimension||height>MaxDimension){++counts.large;if(!find(raw))note(raw,Large);return;}
-        auto* previous=find(raw);
+        if(!width||!height||width>MaxDimension||height>MaxDimension){++counts.large;if(!previous)note(raw,Large);return;}
         if(previous&&previous->owner==owner&&previous->held()&&mip>previous->mip){++previous->revision;return;}
         if(!source||!sourceBytes||sourceBytes>std::size_t(MaxDimension)*MaxDimension*16){++counts.failed;invalidate(raw);note(raw,Failed);return;}
         Entry& e=slot(raw,owner);drop(e);evict(sourceBytes,&e);
@@ -190,8 +199,11 @@ private:
         const size_t rowBytes=size_t(width)*pixelBytes;
         if(pitch<rowBytes||bytes<rowBytes||height-1>(bytes-rowBytes)/pitch)return false;
         const unsigned tw=std::min(width,MaxDimension),th=std::min(height,MaxDimension);output.resize(size_t(tw)*th*4);
-        for(unsigned y=0;y<th;++y)for(unsigned x=0;x<tw;++x){unsigned sum[4]={},n=0;
-            for(unsigned sy=y*height/th;sy<(y+1)*height/th;++sy)for(unsigned sx=x*width/tw;sx<(x+1)*width/tw;++sx){
+        const bool evenX=width%tw==0,evenY=height%th==0;const unsigned scaleX=width/tw,scaleY=height/th;
+        for(unsigned y=0;y<th;++y){const unsigned y0=evenY?y*scaleY:y*height/th,y1=evenY?(y+1)*scaleY:(y+1)*height/th;
+        for(unsigned x=0;x<tw;++x){unsigned sum[4]={},n=0;
+            const unsigned x0=evenX?x*scaleX:x*width/tw,x1=evenX?(x+1)*scaleX:(x+1)*width/tw;
+            for(unsigned sy=y0;sy<y1;++sy)for(unsigned sx=x0;sx<x1;++sx){
                 const auto* pixel=static_cast<const unsigned char*>(source)+size_t(sy)*pitch+sx*pixelBytes;
                 if constexpr(wide){for(unsigned c=0;c<4;++c)sum[c]+=pixel[c];}
                 else{std::uint16_t value;std::memcpy(&value,pixel,2);
@@ -202,7 +214,7 @@ private:
             auto* pixel=output.data()+(size_t(y)*tw+x)*4;
             pixel[0]=std::uint8_t((sum[wide?2:0]+n/2)/n);pixel[1]=std::uint8_t((sum[1]+n/2)/n);pixel[2]=std::uint8_t((sum[wide?0:2]+n/2)/n);
             pixel[3]=Format==F::BGRX8?255:std::uint8_t((sum[3]+n/2)/n);
-        }
+        }}
         return true;
     }
     static bool decodeImage(const void* source,std::size_t bytes,unsigned width,unsigned height,std::size_t pitch,NorthlightActorTexture::Format format,std::vector<std::uint8_t>& output,bool reduce=false){
@@ -293,9 +305,20 @@ public:
         const unsigned sx=width/e->width,sy=height/e->height;
         // Atlas rectangles aligned to the retained mip are exact. An unaligned
         // edit invalidates it instead of inventing the missing old subpixels.
-        if(left%sx||right%sx||top%sy||bottom%sy)return fail();std::vector<std::uint8_t> patch;
+        if(left%sx||right%sx||top%sy||bottom%sy)return fail();
+        using F=NorthlightActorTexture::Format;const auto fromAddress=reinterpret_cast<std::uintptr_t>(source),toAddress=reinterpret_cast<std::uintptr_t>(e->pixels.data());
+        const bool overlap=fromAddress<=toAddress?toAddress-fromAddress<sourceBytes:fromAddress-toAddress<e->pixels.size();
+        const bool direct=(sx!=1||sy!=1)&&!overlap&&(decodedFormat==F::BGRA8||decodedFormat==F::BGRX8)&&NorthlightActorTexture::readable(source,sourceBytes,right-left,bottom-top,pitch,decodedFormat);
+        bool changed=false;std::vector<std::uint8_t> patch;
+        if(direct){const auto* bytes=static_cast<const std::uint8_t*>(source);const unsigned n=sx*sy;
+            for(unsigned y=top/sy;y<bottom/sy;++y)for(unsigned x=left/sx;x<right/sx;++x){unsigned sum[4]={};
+                for(unsigned j=0;j<sy;++j)for(unsigned i=0;i<sx;++i){const auto* pixel=bytes+size_t(y*sy-top+j)*pitch+size_t(x*sx-left+i)*4;sum[0]+=pixel[2];sum[1]+=pixel[1];sum[2]+=pixel[0];sum[3]+=decodedFormat==F::BGRX8?255:pixel[3];}
+                for(unsigned c=0;c<4;++c){auto& old=e->pixels[(size_t(y)*e->width+x)*4+c];const auto value=std::uint8_t((sum[c]+n/2)/n);changed|=old!=value;old=value;}}
+        }else{
         if(!decodeImage(source,sourceBytes,right-left,bottom-top,pitch,decodedFormat,patch))return fail();
-        bool changed=false;for(unsigned y=top/sy;y<bottom/sy;++y)for(unsigned x=left/sx;x<right/sx;++x){unsigned sum[4]={};for(unsigned j=0;j<sy;++j)for(unsigned i=0;i<sx;++i)for(unsigned c=0;c<4;++c)sum[c]+=patch[((size_t(y*sy-top+j))*(right-left)+x*sx-left+i)*4+c];for(unsigned c=0;c<4;++c){auto& old=e->pixels[(size_t(y)*e->width+x)*4+c];auto value=std::uint8_t((sum[c]+sx*sy/2)/(sx*sy));changed|=old!=value;old=value;}}
+        if(sx==1&&sy==1){const size_t rowBytes=size_t(right-left)*4;for(unsigned y=top;y<bottom;++y){auto* dest=e->pixels.data()+(size_t(y)*e->width+left)*4;const auto* from=patch.data()+size_t(y-top)*rowBytes;if(std::memcmp(dest,from,rowBytes)){std::memcpy(dest,from,rowBytes);changed=true;}}}
+        else for(unsigned y=top/sy;y<bottom/sy;++y)for(unsigned x=left/sx;x<right/sx;++x){unsigned sum[4]={};for(unsigned j=0;j<sy;++j)for(unsigned i=0;i<sx;++i)for(unsigned c=0;c<4;++c)sum[c]+=patch[((size_t(y*sy-top+j))*(right-left)+x*sx-left+i)*4+c];for(unsigned c=0;c<4;++c){auto& old=e->pixels[(size_t(y)*e->width+x)*4+c];auto value=std::uint8_t((sum[c]+sx*sy/2)/(sx*sy));changed|=old!=value;old=value;}}
+        }
         e->owner=owner;if(!changed){e->used=++clock_;return true;}e->rgbaHash=14695981039346656037ull;for(auto b:e->pixels)e->rgbaHash=(e->rgbaHash^b)*1099511628211ull;++e->revision;e->used=++clock_;return true;
     }catch(...){invalidate(raw);++counts.failed;return false;}}
     // Other full mips do not change this mip. Partial/failed writes invalidate

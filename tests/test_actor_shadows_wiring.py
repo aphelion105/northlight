@@ -24,7 +24,7 @@ checks['effective() forces exactly the two replay keys']=('inline Settings effec
     and '{"ShadowFateDiagnostics",&Settings::shadowFateDiagnostics},{"DiagReplayProbe",&Settings::diagReplayProbe}};' in q)
 checks['actorShadowWork']='inline bool actorShadowWork(const Settings& s,bool shadows){return shadows&&s.actorShadows;}' in q
 # loadQuality: effective() right after the QUALITY/warning lines, before anything reads the settings.
-lq=w[w.index('    void loadQuality(){'):w.index('    HRESULT quad(UINT w,UINT h)')]
+lq=w[w.index('    void loadQuality(){'):w.index('    HRESULT quad(UINT w,UINT h,')]
 eff='quality=NorthlightQuality::effective(quality);'
 checks['effective() applied once in loadQuality, after the QUALITY line, before configure()']=(w.count('NorthlightQuality::effective(')==1 and eff in lq
     and lq.index('logf("QUALITY %s file=%s')<lq.index('logf("QUALITY warning')<lq.index(eff)<lq.index('NorthlightDiagnostics::configure(')<lq.index('NorthlightRenderThreadProbe::configure(')

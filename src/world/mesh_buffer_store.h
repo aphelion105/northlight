@@ -54,6 +54,17 @@ class Store {
     Staging staging_;
     uint64_t clock_=0;
     size_t elidedMisses_=0;
+    struct CapacityCache {const Entry* data=nullptr;size_t count=0;uint64_t pool=0,active=0,idle=0;bool valid=false;};
+    mutable CapacityCache capacity_; // Renderer thread only, like the buffer metadata.
+    const CapacityCache& capacities()const{
+        if(!capacity_.valid||capacity_.data!=entries_.data()||capacity_.count!=entries_.size()){
+            capacity_={};capacity_.data=entries_.data();capacity_.count=entries_.size();
+            for(const auto& e:entries_){const auto bytes=e.capacity();capacity_.pool+=bytes;
+                if(e.use==Use::Active)capacity_.active+=bytes;else if(e.use==Use::Idle)capacity_.idle+=bytes;}
+            capacity_.valid=true;
+        }
+        return capacity_;
+    }
 public:
     size_t elidedMisses()const{return elidedMisses_;}
     // Keys of the buffers the ACTIVE table references (they cannot be released while active): what the worker may elide.
@@ -75,17 +86,16 @@ public:
     // Records a created resource's capacity (claimed buffers only).
     bool setCapacity(uint32_t id,bool vertex,uint32_t bytes){
         if(!writable(id))return false;
+        capacity_.valid=false;
         (vertex?entries_[id].vbCapacity:entries_[id].ibCapacity)=bytes;return true;
     }
-    uint64_t poolBytes()const{uint64_t b=0;for(const auto& e:entries_)b+=e.capacity();return b;}
-    uint64_t idleBytes()const{uint64_t b=0;for(const auto& e:entries_)if(e.use==Use::Idle)b+=e.capacity();return b;}
+    uint64_t poolBytes()const{return capacities().pool;}
+    uint64_t idleBytes()const{return capacities().idle;}
     // Capacity of the distinct buffers the active table references.
     uint64_t activeBytes()const{
-        std::vector<uint8_t> seen(entries_.size());uint64_t b=0;
-        for(uint32_t id:active_)if(id<entries_.size()&&!seen[id]){seen[id]=1;b+=entries_[id].capacity();}
-        return b;
+        return capacities().active;
     }
-    void reset(){entries_.clear();active_.clear();staging_=Staging();clock_=0;}
+    void reset(){entries_.clear();active_.clear();staging_=Staging();clock_=0;capacity_.valid=false;}
 
     // Plans the upload of a new page list: hits reuse a buffer holding exactly that page (active or idle), misses
     // claim the cheapest idle buffer (tiers below; missing or too small resources are (re)created by the renderer) or, last,
@@ -144,7 +154,7 @@ public:
             }
             if(pick==None){pick=uint32_t(entries_.size());entries_.emplace_back();reserved.push_back(0);}
             Entry& e=entries_[pick];
-            e.use=Use::Claimed;reserved[pick]=1; // the key stays valid until markWriting() (a staging cancelled before any write loses nothing)
+            capacity_.valid=false;e.use=Use::Claimed;reserved[pick]=1; // the key stays valid until markWriting() (a staging cancelled before any write loses nothing)
             s.table[i]=pick;claimed.emplace(keys[i],pick);
             s.upload.push_back(i);s.uploadBuffer.push_back(pick);
             ++s.stats.uploadedPages;s.stats.uploadedBytes+=payload;
@@ -157,20 +167,23 @@ public:
     Stats commit(){
         Stats stats=staging_.stats;
         if(!staging_.open)return stats;
-        std::vector<uint8_t> next(entries_.size());
-        for(uint32_t id:staging_.table)next[id]=1;
+        capacity_.valid=false;
+        // Claimed marks the new table during this non-callback commit. Old
+        // active entries left unmarked become idle; no capacity-sized bitmap.
+        for(uint32_t id:staging_.table)entries_[id].use=Use::Claimed;
         for(size_t u=0;u<staging_.upload.size();++u){
             Entry& e=entries_[staging_.uploadBuffer[u]];
             e.key=staging_.keys[staging_.upload[u]];e.keyValid=true;stats.uploadedCapacity+=e.capacity();
         }
         ++clock_;
-        for(uint32_t id:active_)if(id<next.size()&&!next[id]&&entries_[id].use==Use::Active){entries_[id].use=Use::Idle;entries_[id].stamp=clock_;}
-        for(uint32_t id=0;id<next.size();++id)if(next[id])entries_[id].use=Use::Active;
+        for(uint32_t id:active_)if(id<entries_.size()&&entries_[id].use==Use::Active){entries_[id].use=Use::Idle;entries_[id].stamp=clock_;}
+        for(uint32_t id:staging_.table)entries_[id].use=Use::Active;
         active_=std::move(staging_.table);staging_=Staging();return stats;
     }
     // Failure or orphaned staging: written claims hold partial content (key already invalid); untouched ones keep theirs.
     void cancel(){
         if(!staging_.open)return;
+        capacity_.valid=false;
         for(uint32_t id:staging_.uploadBuffer)if(id<entries_.size()&&entries_[id].use==Use::Claimed)entries_[id].use=Use::Idle;
         staging_=Staging();
     }
@@ -192,7 +205,7 @@ public:
         for(uint32_t id:order){
             const uint64_t bytes=entries_[id].capacity();
             if(freed&&freed+bytes>maxBytes)break;
-            drop(id);entries_[id]=Entry();freed+=bytes;
+            drop(id);capacity_.valid=false;entries_[id]=Entry();freed+=bytes;
         }
         while(!entries_.empty()&&entries_.back().use==Use::Idle&&entries_.back().empty())entries_.pop_back(); // ids of the rest stay
         return freed;

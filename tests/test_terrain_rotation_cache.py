@@ -22,7 +22,10 @@ fixture = ast.parse((fp.TESTS/'test_terrain_snapshot.py').read_text())
 strings = {node.targets[0].id: ast.literal_eval(node.value) for node in fixture.body
            if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
            and node.targets[0].id in ('stub', 'harness')}
-(out/'d3d9.h').write_text(strings['stub'])
+stub=strings['stub']
+if sys.platform == 'win32':
+    stub = stub[:stub.index('using UINT')] + '#include <windows.h>\nconstexpr HRESULT D3D_OK=0,D3DERR_INVALIDCALL=HRESULT(0x8876086cu);\n' + stub[stub.index('constexpr unsigned D3DUSAGE'):]
+(out/'d3d9.h').write_text(stub)
 source = r'''
 #include "terrain_capture_bounds.h"
 #include <chrono>

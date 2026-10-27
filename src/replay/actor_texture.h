@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <type_traits>
 #include <vector>
 
 namespace NorthlightActorTexture {
@@ -74,10 +75,14 @@ inline bool decode(const void* source,std::size_t sourceBytes,unsigned width,uns
     if(!alias)rgba.swap(output);
     output.clear();rgba.resize(std::size_t(width)*height*4);
     auto* bytes=static_cast<const std::uint8_t*>(source);
-    if(!compressed(format)){for(unsigned y=0;y<height;++y)for(unsigned x=0;x<width;++x){auto* dst=rgba.data()+(y*width+x)*4;
-        if(format!=Format::BGRA8&&format!=Format::BGRX8){std::uint16_t v;std::memcpy(&v,bytes+y*pitch+x*2,2);
-            auto c=format==Format::RGB565?rgb565(v):format==Format::ARGB4444?argb4444(v):argb1555(v,format==Format::ARGB1555);std::memcpy(dst,c.data(),4);}
-        else{auto* src=bytes+y*pitch+x*4;dst[0]=src[2];dst[1]=src[1];dst[2]=src[0];dst[3]=format==Format::BGRA8?src[3]:255;}}
+    if(!compressed(format)){
+        auto decodeColor=[&](auto tag){constexpr Format f=decltype(tag)::value;for(unsigned y=0;y<height;++y)for(unsigned x=0;x<width;++x){auto* dst=rgba.data()+(y*width+x)*4;
+            if constexpr(f!=Format::BGRA8&&f!=Format::BGRX8){std::uint16_t v;std::memcpy(&v,bytes+y*pitch+x*2,2);
+                auto c=f==Format::RGB565?rgb565(v):f==Format::ARGB4444?argb4444(v):argb1555(v,f==Format::ARGB1555);std::memcpy(dst,c.data(),4);}
+            else{auto* src=bytes+y*pitch+x*4;dst[0]=src[2];dst[1]=src[1];dst[2]=src[0];dst[3]=f==Format::BGRA8?src[3]:255;}}};
+        switch(format){case Format::BGRA8:decodeColor(std::integral_constant<Format,Format::BGRA8>{});break;case Format::BGRX8:decodeColor(std::integral_constant<Format,Format::BGRX8>{});break;
+        case Format::RGB565:decodeColor(std::integral_constant<Format,Format::RGB565>{});break;case Format::ARGB4444:decodeColor(std::integral_constant<Format,Format::ARGB4444>{});break;
+        case Format::ARGB1555:decodeColor(std::integral_constant<Format,Format::ARGB1555>{});break;default:decodeColor(std::integral_constant<Format,Format::XRGB1555>{});break;}
     }else{auto write=[&](unsigned x,unsigned y,const std::array<std::uint8_t,4>& value){std::memcpy(rgba.data()+(size_t(y)*width+x)*4,value.data(),4);};
         if(format==Format::BC1)decodeCompressed<Format::BC1>(bytes,width,height,pitch,write);
         else if(format==Format::BC2)decodeCompressed<Format::BC2>(bytes,width,height,pitch,write);

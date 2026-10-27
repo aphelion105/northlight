@@ -53,8 +53,8 @@ public:
         if(!desired||used.first>=Count||used.count>Count-used.first)return {};
         std::size_t first=used.first,last=first+used.count;
         if(knownRange(first,last)&&std::memcmp(values_.data()+first*Width,desired+first*Width,(last-first)*RegisterBytes)==0)return {};
-        while(first<last&&known(first)&&std::memcmp(values_.data()+first*Width,desired+first*Width,RegisterBytes)==0)++first;
-        while(last>first&&known(last-1)&&std::memcmp(values_.data()+(last-1)*Width,desired+(last-1)*Width,RegisterBytes)==0)--last;
+        while(first<last&&known(first)&&Detail::equalRegister<RegisterBytes>(values_.data()+first*Width,desired+first*Width))++first;
+        while(last>first&&known(last-1)&&Detail::equalRegister<RegisterBytes>(values_.data()+(last-1)*Width,desired+(last-1)*Width))--last;
         if(first==last)return {};
         std::memcpy(values_.data()+first*Width,desired+first*Width,(last-first)*RegisterBytes);
         mark(first,last);
@@ -82,8 +82,9 @@ public:
             const std::size_t origin=a;const bool allKnown=knownRange(a,b);
             if(allKnown&&!std::memcmp(values_.data()+a*Width,source,(b-a)*RegisterBytes))return;
             const auto same=[&](std::size_t lo,std::size_t hi){
-                return (allKnown||knownRange(lo,hi))&&
-                    !std::memcmp(values_.data()+lo*Width,source+(lo-origin)*Width,(hi-lo)*RegisterBytes);
+                return (allKnown||knownRange(lo,hi))&&(hi-lo==1?
+                    Detail::equalRegister<RegisterBytes>(values_.data()+lo*Width,source+(lo-origin)*Width):
+                    !std::memcmp(values_.data()+lo*Width,source+(lo-origin)*Width,(hi-lo)*RegisterBytes));
             };
             constexpr std::size_t Chunk=16;
             while(b-a>=Chunk&&same(a,a+Chunk))a+=Chunk;

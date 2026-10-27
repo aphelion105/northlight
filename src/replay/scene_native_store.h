@@ -22,7 +22,7 @@ private:
   ~Batch(){if(vb)vb->Release();if(ib)ib->Release();}
  };
  struct Entry {
-  std::weak_ptr<const Mesh> source;NorthlightSourceIdentity::Handle identity;
+  std::weak_ptr<const Mesh> source;NorthlightSourceIdentity::Handle identity;const Mesh* sourceAddress=nullptr;
   std::uint64_t hash=0,first=0,touched=0;unsigned owner=0,users=0;
   size_t metadata=0,bytes=0,reserved=0;Batch* batch=nullptr;bool pending=false;
   IDirect3DVertexBuffer9* vb[4]={};IDirect3DIndexBuffer9* ib=nullptr;Placement at;
@@ -33,7 +33,7 @@ private:
  Table entries_;std::vector<std::unique_ptr<Batch>> batches_;
  std::array<std::vector<Entry*>,2> pending_;
  Entry* oldest_=nullptr;Entry* newest_=nullptr;IDirect3DDevice9* device_=nullptr;
- std::uint64_t frame_=0;bool explicitClock_=false;
+ std::uint64_t frame_=0;bool explicitClock_=false;std::uint16_t untrackedEntries_=0;
  size_t limit_[2]={32u<<20,64u<<20},gpu_[2]={},metadata_[2]={},reserved_[2]={},attempted_[2]={};
  size_t retain_[2]={32u<<20,64u<<20};
  unsigned attempts_[2]={};bool ignoreTime_[2]={},timeDeferred_[2]={};
@@ -42,10 +42,13 @@ private:
  static unsigned index(Consumer c){return unsigned(c);}
  static const auto& identity(const Mesh& mesh){return mesh.replayIdentity?mesh.replayIdentity:mesh.sourceIdentity;}
  static std::uint64_t hash(const Owner& mesh){const auto& id=identity(*mesh);return id?id->hash:std::uint64_t(reinterpret_cast<std::uintptr_t>(mesh.get()));}
+ static bool sameSource(const Entry& entry,const Owner& mesh){
+  return entry.sourceAddress==mesh.get()&&!entry.source.owner_before(mesh)&&!mesh.owner_before(entry.source);
+ }
  auto find(const Owner& mesh){
   auto range=entries_.equal_range(hash(mesh));const auto& id=identity(*mesh);
   for(auto it=range.first;it!=range.second;++it){const auto& e=*it->second;
-   if(id?NorthlightSourceIdentity::same(id,e.identity):!e.identity&&e.source.lock()==mesh)return it;
+   if(id?NorthlightSourceIdentity::same(id,e.identity):!e.identity&&(sameSource(e,mesh)||e.source.lock()==mesh))return it;
   }return entries_.end();
  }
  void unlink(Entry& e){if(e.previous)e.previous->next=e.next;else oldest_=e.next;if(e.next)e.next->previous=e.previous;else newest_=e.previous;e.previous=e.next=nullptr;}
@@ -61,7 +64,7 @@ private:
  }
  void erase(Entry& e){
   release(e);metadata_[e.owner]-=e.metadata;unlink(e);auto range=entries_.equal_range(e.hash);
-  for(auto it=range.first;it!=range.second;++it)if(it->second.get()==&e){entries_.erase(it);return;}assert(false);
+  for(auto it=range.first;it!=range.second;++it)if(it->second.get()==&e){untrackedEntries_-=!e.identity;entries_.erase(it);return;}assert(false);
  }
  void evict(Entry& e,unsigned cause,bool current=false){
   auto* batch=e.batch;const unsigned siblings=batch?batch->live-1:0;
@@ -151,7 +154,7 @@ public:
  ~NativeStore(){clearAll();}
  void advance(std::uint64_t frame){
   if(frame_==frame)return;frame_=frame;for(unsigned i=0;i<2;++i){stats_[i]={};counters_[i]={};attempted_[i]=attempts_[i]=0;timeDeferred_[i]=false;}
-  for(auto it=entries_.begin();it!=entries_.end();){auto& e=*it->second;++it;if(!e.identity&&e.source.expired()){++stats_[e.owner].expiredEntries;stats_[e.owner].expiredBytes+=e.bytes;erase(e);}}
+  if(untrackedEntries_)for(auto it=entries_.begin();it!=entries_.end();){auto& e=*it->second;++it;if(!e.identity&&e.source.expired()){++stats_[e.owner].expiredEntries;stats_[e.owner].expiredBytes+=e.bytes;erase(e);}}
   commit(0);commit(1);
  }
  void setFrame(std::uint64_t frame){explicitClock_=true;advance(frame);}
@@ -162,13 +165,14 @@ public:
   const auto lane=index(consumer);at={};timeDeferred_[lane]=false;if(!mesh||!mesh->byteSize())return false;if(device_&&device_!=device)return false;device_=device;retain_[lane]=limit_[lane];
   try{auto it=find(mesh);
    if(it==entries_.end()){
-    auto e=std::make_unique<Entry>();e->source=mesh;e->identity=identity(*mesh);e->hash=hash(mesh);e->first=e->touched=frame_;e->owner=lane;e->users=1u<<lane;
+    auto e=std::make_unique<Entry>();e->source=mesh;e->sourceAddress=mesh.get();e->identity=identity(*mesh);e->hash=hash(mesh);e->first=e->touched=frame_;e->owner=lane;e->users=1u<<lane;
     e->metadata=sizeof(Entry)+64+(e->identity?e->identity->bytes():0);
     if(e->metadata>limit_[lane]||!room(lane,e->metadata,false))return false;
-    auto inserted=entries_.emplace(e->hash,std::move(e));metadata_[lane]+=inserted->second->metadata;append(*inserted->second);++stats_[lane].warmup;return false;
+    auto inserted=entries_.emplace(e->hash,std::move(e));untrackedEntries_+=!inserted->second->identity;metadata_[lane]+=inserted->second->metadata;append(*inserted->second);++stats_[lane].warmup;return false;
    }
    auto& e=*it->second;const bool wasResident=e.bytes!=0;e.users|=1u<<lane;touch(e);
-   if(e.identity){++stats_[lane].identityHits;if(e.source.lock()!=mesh){++stats_[lane].reconstructedHits;++counters_[lane].reconstructed;}e.source=mesh;}
+   if(e.identity){++stats_[lane].identityHits;if(!sameSource(e,mesh)){
+    if(e.source.lock()!=mesh){++stats_[lane].reconstructedHits;++counters_[lane].reconstructed;}e.source=mesh;e.sourceAddress=mesh.get();}}
    if(e.pending)return false;
    if(!e.bytes){
     const auto bytes=mesh->byteSize();if(e.first==frame_){++stats_[lane].warmup;return false;}
@@ -201,7 +205,7 @@ public:
  template<class Visit>void buffers(Visit visit)const{for(const auto& batch:batches_){visit(batch->vb);visit(batch->ib);}for(const auto& item:entries_)if(!item.second->batch){for(auto* vb:item.second->vb)visit(vb);visit(item.second->ib);}}
  size_t bytes()const{return gpu_[0]+gpu_[1];}size_t chargedBytes()const{return charged(0)+charged(1);}
  static constexpr size_t entryLimit(){return EntryLimit;}
- void clearAll(){oldest_=newest_=nullptr;for(auto& p:pending_)p.clear();entries_.clear();batches_.clear();device_=nullptr;for(unsigned i=0;i<2;++i)gpu_[i]=metadata_[i]=reserved_[i]=0;}
+ void clearAll(){oldest_=newest_=nullptr;for(auto& p:pending_)p.clear();entries_.clear();untrackedEntries_=0;batches_.clear();device_=nullptr;for(unsigned i=0;i<2;++i)gpu_[i]=metadata_[i]=reserved_[i]=0;}
  void trim(Consumer consumer,size_t bytes){const auto lane=index(consumer);retain_[lane]=std::min(limit_[lane],bytes);while(charged(lane)>bytes){Entry* victim=oldest_;while(victim&&victim->owner!=lane)victim=victim->next;if(!victim)break;if(!preserve(*victim,1-lane))evict(*victim,lane,true);}}
  void setLimit(Consumer consumer,size_t bytes){const auto lane=index(consumer);limit_[lane]=std::min(bytes,size_t(lane?64u<<20:32u<<20));trim(consumer,limit_[lane]);}
  void clear(Consumer consumer){const auto lane=index(consumer);++clears_[lane].calls;clears_[lane].entries+=population(consumer).entries;clears_[lane].bytes+=gpu_[lane];for(auto& item:entries_)item.second->users&=~(1u<<lane);trim(consumer,0);}

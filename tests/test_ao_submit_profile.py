@@ -51,10 +51,10 @@ struct Device {
     unsigned width=137,height=79,aoMethod=2,draws=0,bindings=0;bool failDraw=false;
     int aoSurface=3,aoRaw=4,aoBlurPS=5,scene=6;
     LONGLONG cpuAOBlurSetup=0,cpuAOBlurSubmit=0;std::uint64_t cpuAOBlurFrame=0;
-    unsigned cpuAOBlurMethod=0,cpuAOBlurWidth=0,cpuAOBlurHeight=0;bool cpuAOBlurPending=false;
+    unsigned cpuAOBlurMethod=0,cpuAOBlurWidth=0,cpuAOBlurHeight=0;bool cpuAOBlurPending=false,diagnosticAo=false;
     bool error(HRESULT hr,const char*){return hr<0;}
-    void bindEffects(int raw){assert(raw==aoRaw);++bindings;}
-    HRESULT quad(unsigned w,unsigned h){assert(w==68&&h==39);++draws;return failDraw?-1:0;}
+    void bindLegacyFog(){++bindings;}
+    HRESULT quad(unsigned w,unsigned h,bool viewport){assert(w==68&&h==39&&!viewport);++draws;return failDraw?-1:0;}
     void run(){
 ''' + region + '''
     }
@@ -66,9 +66,9 @@ int main(){
         const bool timed=recording&&frequency;
         assert(clocks==(timed?(targetFailure?2u:4u):0u)&&CpuScope::reads==clocks);
         assert(d.draws==(targetFailure?0u:1u)&&d.bindings==(targetFailure?0u:1u));
-        assert(d.cpuAOBlurPending==(timed&&!targetFailure&&!drawFailure));
+        assert(d.cpuAOBlurPending==(timed&&!targetFailure&&!drawFailure));assert(d.diagnosticAo==(!targetFailure&&!drawFailure));
         if(d.cpuAOBlurPending){assert(d.cpuAOBlurFrame==9876&&d.cpuAOBlurMethod==2&&d.cpuAOBlurWidth==68&&d.cpuAOBlurHeight==39);assert(d.cpuAOBlurSetup==1&&d.cpuAOBlurSubmit==1);}
-        const std::vector<int> states=targetFailure?std::vector<int>{300}:drawFailure?std::vector<int>{300,1400,2005}:std::vector<int>{300,1400,2005,1002,1600};
+        const std::vector<int> states=targetFailure?std::vector<int>{300}:drawFailure?std::vector<int>{300,1402,1400,2005}:std::vector<int>{300,1402,1400,2005,1002,1600};
         assert(d.extension.calls==states);
         const auto count=recording?(targetFailure?0u:drawFailure?1u:2u):0u;assert(d.gpu.labels.size()==count);
         if(count)assert(d.gpu.labels[0]=="AOBlurSetup");if(count==2)assert(d.gpu.labels[1]=="AOBlur");

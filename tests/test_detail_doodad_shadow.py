@@ -60,7 +60,10 @@ def pixel_alpha(code):
 
 with tempfile.TemporaryDirectory(prefix='northlight-detail-shadow-') as tmp:
     out = Path(tmp)
-    (out / 'd3d9.h').write_text(stub)
+    local_stub=stub
+    if sys.platform == 'win32':
+        local_stub = stub[:stub.index('using UINT')] + '#include <windows.h>\nconstexpr HRESULT D3D_OK=0,D3DERR_INVALIDCALL=HRESULT(0x8876086cu);\n' + stub[stub.index('constexpr unsigned D3DUSAGE'):]
+    (out / 'd3d9.h').write_text(local_stub)
     fixtures = []
     if client_fixtures.shaders_available():
         fp.use_source_modules()

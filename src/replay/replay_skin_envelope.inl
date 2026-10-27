@@ -61,7 +61,7 @@ struct SkinEnvelope {
             float largestF[12]={};std::uint32_t bad=0;double lo[3]={low[0],low[1],low[2]},hi[3]={high[0],high[1],high[2]};
             for(unsigned n=0;n<usedBones;++n){const unsigned bone=order[n];const auto& b=bones[bone];
                 if(n&&(n&31u)==0&&shouldStop&&shouldStop(stopContext))return false;any=true;
-                float rows[12];std::memcpy(rows,constants+4*(31+3*bone),48);std::uint32_t bits[12];std::memcpy(bits,rows,48);
+                const float* rows=constants+4*(31+3*bone);std::uint32_t bits[12];std::memcpy(bits,rows,48);
                 for(unsigned k=0;k<12;++k){const std::uint32_t u=bits[k]&0x7fffffffu;bad|=std::uint32_t(u>=0x7f800000u)|std::uint32_t(u-1u<0x007fffffu);largestF[k]=std::max(largestF[k],std::fabs(rows[k]));}
                 const double l0=b.low[0],l1=b.low[1],l2=b.low[2],h0=b.high[0],h1=b.high[1],h2=b.high[2];
                 for(unsigned axis=0;axis<3;++axis){const float* row=rows+4*axis;const double r0=row[0],r1=row[1],r2=row[2];

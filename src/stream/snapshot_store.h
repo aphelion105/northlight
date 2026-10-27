@@ -88,6 +88,8 @@ public:
     // Which trigger took it and the draw ordinal of that draw; the consumer's age is its own draw ordinal minus this.
     std::uint32_t triggerKind=0;std::uint64_t triggerDraw=0;
     unsigned long hits=0,misses=0; // this activation, flushed by ScopedPlayback
+    // Only record() writes payloads; reads require a fully initialized FIFO.
+    GameSnapshot()noexcept{}
     void clear(){keyCount_=copyCount_=0;used_=0;overflowed_=false;mode=Mode::Idle;triggerKind=0;triggerDraw=0;hits=misses=0;
 #ifdef NORTHLIGHT_REPLAY_STAND
         aliases_={};

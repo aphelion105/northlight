@@ -62,21 +62,21 @@ tb=w[w.index('{   // Temporal stabilization: light + history'):w.index('temporal
 # same current baseline, and the optional point pass restores the world bank.
 between=w[w.index('temporalIndex=prev;temporalValid=true;'):w.index('d->SetPixelShader(finalPS);\n        /* 0.3.212 (task 32)')]
 local=w[w.index('d->SetPixelShader(localDirectPS);'):w.index('if(profile)profile->mark("LocalLights");')]
-checks['BaselineLighting (s12): temporal/current-local/composite bindings retained']=(w.count('SetTexture(12,')==8
+checks['BaselineLighting (s12): temporal/current-local/composite bindings retained']=(w.count('SetTexture(12,')==10
     and w.count('d->SetTexture(12,actorShadow[source]);')==2 and w.count('d->SetTexture(12,anyActorPass?actorVisibility:neutralWhite);')==1 and w.count('d->SetTexture(12,textures[12]);')==1
-    and 'd->SetTexture(12,baselineLight);' in tb and between.count('d->SetTexture(12,baselineLight);')==2 and local.count('d->SetTexture(12,baselineLight);')==1)
+    and 'd->SetTexture(12,baselineLight);' in tb and between.count('d->SetTexture(12,baselineLight);')==3 and local.count('d->SetTexture(12,baselineLight);')==1)
 # 0.3.185 host: the pass is created, drawn right before the temporal pass with the samplers smoothRemoval reads, released and dumped.
-smoothdraw='if(removalDrawn){d->SetPixelShader(removalPS);if(!check(quad(w/2,h/2),"removal smoothing pass"))return false;}'
+smoothdraw='if(removalDrawn){if(!check(d->SetRenderTarget(0,smoothSurface),"removal smoothing target"))return false;d->SetPixelShader(removalPS);if(!check(quad(w/2,h/2,false),"removal smoothing pass"))return false;}'
 checks['RemovalSmooth host: shader, half-res fp16 target, release, F12 dump, drawn before the temporal pass; s9 (idle, rebound later) carries it']=(
     'kRemovalSmoothShader,&removalPS' in w and '&smoothLight,&smoothSurface' in w and 'drop(smoothSurface)' in w and 'drop(smoothLight)' in w and 'drop(removalPS)' in w
     and w.count('dump(d,c[30][1]>0?smoothSurface:lightSurface,directory,"smoothed-light",capture);')==1 and tb.count('const bool removalDrawn=c[30][1]>0;')==1
-    and tb.index('const bool removalDrawn')<tb.index(smoothdraw) and tb.count('d->SetTexture(9,removalDrawn?smoothLight:light);')==1 and tb.count(smoothdraw)==1 and tb.index('SetRenderTarget(0,smoothSurface)')<tb.index(smoothdraw)<tb.index('SetRenderTarget(0,temporalLightSurface[cur])')
-    and 'd->SetTexture(14,normalBuffer);' in tb[:tb.index(smoothdraw)] and tb.index('SetTexture(10,')<tb.index(smoothdraw) 
+    and tb.index('const bool removalDrawn')<tb.index(smoothdraw) and tb.count('d->SetTexture(9,removalDrawn?smoothLight:light);')==1 and tb.count(smoothdraw)==1 and tb.index(smoothdraw)<tb.index('SetRenderTarget(0,temporalLightSurface[cur])')
+    and w.index('d->SetTexture(14,normalBuffer);')<w.index('{   // Temporal stabilization: light + history') and tb.index('SetTexture(10,')<tb.index(smoothdraw)
     and 'd->SetTexture(8,light);' in tb[:tb.index(smoothdraw)])
 # task 43: GPU profile marks split the old GI and PointLighting intervals: GI (the GI pass), LocalLights (the lamp batches),
 # PointLight (the shadowed point lamp), RemovalSmooth (its pass, or nothing without a drawn source) and TemporalLight.
 order=[w.index(n) for n in ('quad(w/2,h/2),"world GI pass"','if(profile)profile->mark("GI");',smoothdraw,'if(profile)profile->mark("RemovalSmooth");',
-    'quad(w/2,h/2),"temporal light pass"','if(profile)profile->mark("TemporalLight");','bucket(NorthlightEffectsBuckets::PointLighting);',
+    'quad(w/2,h/2,false),"temporal light pass"','if(profile)profile->mark("TemporalLight");','bucket(NorthlightEffectsBuckets::PointLighting);',
     'd->SetPixelShader(localDirectPS);','if(profile)profile->mark("LocalLights");',
     'renderPointLighting(depth,waterMask,w,h,nearZ,farZ,minZ,maxZ,c[52][1],lampSunlitCut,c[20][2],sunEnergy);','if(profile)profile->mark("PointLight");')]
 checks['GPU marks: directional/GI filters precede current local and point passes, each once']=(order==sorted(order)

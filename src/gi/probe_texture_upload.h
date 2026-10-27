@@ -3,17 +3,22 @@
 #include "probe_blend.h"
 #include <cstddef>
 #include <cstring>
+#include <limits>
 
 namespace NorthlightProbeUpload {
 // Match the shader's x+z*n, y atlas layout. Specialize outside the texel loop
 // so every texel writes just its own channel, with no runtime channel tests.
-template<unsigned Channel>
+template<unsigned Channel,bool KnownValid=false>
 void write(void* bits,std::size_t pitch,unsigned n,
            const std::vector<NorthlightGI::ProbeAtlasEntry>& atlas,
            const NorthlightProbeBlend::Mirror& blend,NorthlightProbeActivation& activation,
            float now,bool hasPrevious){
     static_assert(Channel<5);
-    for(unsigned y=0;y<n;++y)for(unsigned z=0;z<n;++z){
+    // The validated activation path reads atlas entries in their contiguous order.
+    // The checked fallback keeps its original order if it throws partway through.
+    for(unsigned major=0;major<n;++major)for(unsigned minor=0;minor<n;++minor){
+        const unsigned y=Channel==4&&KnownValid?minor:major;
+        const unsigned z=Channel==4&&KnownValid?major:minor;
         auto* row=reinterpret_cast<float*>(static_cast<char*>(bits)+y*pitch)+z*n*4;
         const std::size_t base=(std::size_t(z)*n+y)*n;
         for(unsigned x=0;x<n;++x){
@@ -34,7 +39,7 @@ void write(void* bits,std::size_t pitch,unsigned n,
                 }
             }else{
                 dst[0]=float(entry.key.x);dst[1]=float(entry.key.y);dst[2]=float(entry.key.z);
-                dst[3]=activation.update(base+x,entry,now);
+                dst[3]=KnownValid?activation.updateKnownValid(base+x,entry,now):activation.update(base+x,entry,now);
             }
         }
     }
@@ -48,7 +53,7 @@ inline void write(unsigned channel,void* bits,std::size_t pitch,unsigned n,
     case 1:write<1>(bits,pitch,n,atlas,blend,activation,now,hasPrevious);break;
     case 2:write<2>(bits,pitch,n,atlas,blend,activation,now,hasPrevious);break;
     case 3:write<3>(bits,pitch,n,atlas,blend,activation,now,hasPrevious);break;
-    case 4:write<4>(bits,pitch,n,atlas,blend,activation,now,hasPrevious);break;
+    case 4:if(n&&std::size_t(n)<=std::numeric_limits<std::size_t>::max()/n/n&&activation.covers(std::size_t(n)*n*n))write<4,true>(bits,pitch,n,atlas,blend,activation,now,hasPrevious);else write<4,false>(bits,pitch,n,atlas,blend,activation,now,hasPrevious);break;
     }
 }
 inline void previous(void* bits,std::size_t pitch,unsigned n,const NorthlightProbeBlend::Mirror& blend){

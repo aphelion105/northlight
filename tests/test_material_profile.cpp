@@ -18,7 +18,7 @@ int main(){
      findLog("stage=captureDraw domain=4 mode=1 spans=1 ms=1.000000 items=100");findLog("attempted=2 measured=2 complete=1 sumIntervalsMs=2.000000");
      p.reset();assert(!d.live);d.ready=false;
      for(unsigned i=0;i<3;++i){p.beginFrame(1000+i,true);{P::Scope a(&p,P::CaptureDraw,17,true);}p.endFrame();}
-     before=d.creates;p.beginFrame(1003,true);{P::Scope a(&p,P::NativeDraw,17,true);}p.endFrame();assert(d.creates==before);before=d.reads;p.poll();assert(d.reads-before==3);
+     before=d.creates;p.beginFrame(1003,true);logs.clear();nanos=1000;const auto beforeClock=clockReads;{P::Scope a(&p,P::NativeDraw,17,true);nanos=1250;}assert(clockReads-beforeClock==2);p.endFrame();findLog("stage=nativeDraw domain=4 mode=1 calls=1 exclusiveMs=0.000250");assert(d.creates==before);before=d.reads;p.poll();assert(d.reads-before==3);
      d.ready=true;p.poll();p.reset();assert(!d.live);
      logs.clear();p.beginFrame(2000,true);for(unsigned i=0;i<4100;++i){P::Scope a(&p,P::CaptureDraw,17,true);}p.endFrame();p.poll();findLog("attempted=4100 measured=4096 complete=0");
      p.reset();d.failCreate=true;logs.clear();p.beginFrame(3000,true);{P::Scope a(&p,P::Admission);}p.endFrame();findLog("MATERIAL_CPU");assert(!d.live);d.failCreate=false;p.reset();

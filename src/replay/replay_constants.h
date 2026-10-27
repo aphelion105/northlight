@@ -5,12 +5,26 @@
 #include <cstring>
 #include <limits>
 #include <type_traits>
+#if defined(__SSE2__)
+#include <emmintrin.h>
+#endif
 
 // Portable register differencing for sequential replay draws. No D3D calls,
 // heap allocation or floating-point comparison; NaN payloads and signed zero
 // are preserved exactly as supplied by the application.
 namespace NorthlightReplayConstants {
 struct DirtySpan { uint32_t first=0,count=0; };
+namespace Detail {
+template<std::size_t Bytes> inline bool equalRegister(const void* a,const void* b)noexcept{
+#if defined(__SSE2__)
+    if constexpr(Bytes==16){
+        __m128i x,y;std::memcpy(&x,a,16);std::memcpy(&y,b,16);
+        return _mm_movemask_epi8(_mm_cmpeq_epi8(x,y))==0xffff;
+    }
+#endif
+    return std::memcmp(a,b,Bytes)==0;
+}
+}
 
 template<class T,std::size_t Count,std::size_t Width>
 class DirtyRegisters {
@@ -35,10 +49,14 @@ public:
             std::memcpy(values_.data(),desired,BankBytes);valid_=true;
             return {0,static_cast<uint32_t>(Count)};
         }
-        if(std::memcmp(values_.data(),desired,BankBytes)==0)return {};
+#if defined(__SSE2__)
+        if constexpr(RegisterBytes!=16)
+#endif
+            if(std::memcmp(values_.data(),desired,BankBytes)==0)return {};
         std::size_t first=0,last=Count;
-        while(first<Count&&std::memcmp(values_.data()+first*Width,desired+first*Width,RegisterBytes)==0)++first;
-        while(last>first&&std::memcmp(values_.data()+(last-1)*Width,desired+(last-1)*Width,RegisterBytes)==0)--last;
+        while(first<Count&&Detail::equalRegister<RegisterBytes>(values_.data()+first*Width,desired+first*Width))++first;
+        if(first==Count)return {};
+        while(last>first&&Detail::equalRegister<RegisterBytes>(values_.data()+(last-1)*Width,desired+(last-1)*Width))--last;
         std::memcpy(values_.data()+first*Width,desired+first*Width,(last-first)*RegisterBytes);
         return {static_cast<uint32_t>(first),static_cast<uint32_t>(last-first)};
     }
