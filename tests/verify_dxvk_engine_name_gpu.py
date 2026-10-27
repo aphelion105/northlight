@@ -23,14 +23,15 @@ subprocess.run([str(fp.zig()),'c++','-target','x86-windows-gnu','-std=c++17','-O
 sha=lambda path:hashlib.sha256(path.read_bytes()).hexdigest()
 report={'renderer_sha256':sha(fp.RENDERER/'frd9.dll'),'client_modified':False,'game_launched':False,
         'monitor_colours_verified':False,'alt_tab_verified':False,'magnifier_verified':False,'runs':[]}
-cases=[('dxvk',0,0),('dxvk',1,0),('dxvk2',1,0)]
-if args.with_hdr:cases += [('dxvk',0,1),('dxvk',1,1),('dxvk2',1,1)]
-for backend,switch,hdr in cases:
-    name=f'{backend}-workaround{switch}-hdr{hdr}';folder=output/name;folder.mkdir(exist_ok=True)
+cases=[('dxvk',0,0,0),('dxvk',0,0,1),('dxvk',1,0,1),('dxvk2',1,0,1)]
+if args.with_hdr:cases += [('dxvk',0,1,1),('dxvk',1,1,1),('dxvk2',1,1,1)]
+baseline_wait=False
+for backend,switch,hdr,wait in cases:
+    name=f'{backend}-workaround{switch}-hdr{hdr}-wait{wait}';folder=output/name;folder.mkdir(exist_ok=True)
     shutil.copy2(exe,folder/exe.name);shutil.copy2(fp.RENDERER/'frd9.dll',folder/'d3d9.dll')
     runtime=folder/'renderer-backends'/backend/(backend+'_d3d9.dll');runtime.parent.mkdir(parents=True,exist_ok=True)
     shutil.copy2(args.client/'renderer-backends'/backend/runtime.name,runtime)
-    (folder/'northlight-renderer.ini').write_text(f'[Renderer]\nBackend={backend}\nExperimentalHDR={hdr}\nDxvkEngineNameWorkaround={switch}\nHDRPaperWhite=203\nHDRUIWhite=160\n')
+    (folder/'northlight-renderer.ini').write_text(f'[Renderer]\nBackend={backend}\nExperimentalHDR={hdr}\nDxvkEngineNameWorkaround={switch}\nDxvkPresentWaitWorkaround={wait}\nHDRPaperWhite=203\nHDRUIWhite=160\n')
     (folder/'northlight-quality.ini').write_text('[Quality]\nPreset=Performance\nCommandStream=1\nStreamFramesAhead=1\nStreamFrameSkip=0\nDiagnostics=0\nRenderProfile=0\nSpellLayer=0\nEquipmentLights=0\nGI=0\nActorShadows=0\nContactAO=0\nNameMask=0\nWeather=0\n')
     (folder/'dxvk.conf').write_text('dxvk.allowFse = False\n')
     env=dict(os.environ,DXVK_CONFIG_FILE=str(folder/'dxvk.conf'),DXVK_LOG_PATH=str(folder))
@@ -52,6 +53,13 @@ for backend,switch,hdr in cases:
     assert evidence['fse_false'],evidence
     changed='instance original=DXVK replacement=Northlight result=0' in northlight
     assert changed==bool(switch and backend=='dxvk'),evidence
+    if backend=='dxvk' and 'info:  NVIDIA ' in dxvk:
+        disabled='DXVK3 NVIDIA present-wait feature disabled type=1000248000' in northlight
+        assert not disabled or wait,evidence
+        enabled_section=dxvk.split('info:  Enabled extensions:',1)[1].split('info:  Enabled features:',1)[0]
+        if not wait:baseline_wait='VK_KHR_present_wait\n' in enabled_section
+        if wait and baseline_wait:assert disabled,evidence
+        if wait:assert 'VK_KHR_present_wait\n' not in enabled_section,evidence
     assert (evidence['scRGB_presented'] or evidence['hdr10_presented'])==bool(hdr),evidence
     if hdr:assert 'requested=1 active=1' in northlight,evidence
 print('PASS: '+str(output/'validation.json'))

@@ -20,8 +20,14 @@ static int32_t WINAPI fakeCreate(const E::InstanceCreateInfo* info,const void* a
     *instance=reinterpret_cast<void*>(42);return 0;
 }
 static void WINAPI sentinel(){}
+static void WINAPI fakeProperties(void* device,void* data){static_cast<uint32_t*>(data)[2]=device==reinterpret_cast<void*>(1)?0x10de:0x1002;}
+static void WINAPI fakeFeatures(void*,E::FeatureHeader* root){
+    for(auto* p=root->next;p;p=p->next)if(p->type==1000248000u||p->type==1000480001u)reinterpret_cast<E::PresentWaitFeature*>(p)->supported=1;
+}
 static E::VulkanFunction WINAPI fakeInstanceProc(void*,const char* name){
     if(!std::strcmp(name,"vkCreateInstance"))return E::pointer<E::VulkanFunction>(&fakeCreate);
+    if(!std::strcmp(name,"vkGetPhysicalDeviceProperties"))return E::pointer<E::VulkanFunction>(&fakeProperties);
+    if(!std::strcmp(name,"vkGetPhysicalDeviceFeatures2")||!std::strcmp(name,"vkGetPhysicalDeviceFeatures2KHR"))return E::pointer<E::VulkanFunction>(&fakeFeatures);
     if(!std::strcmp(name,"missing"))return nullptr;
     return &sentinel;
 }
@@ -67,6 +73,16 @@ int main(){
     app.engine="DXVK";app.engineVersion=2u<<22;create(&info,reinterpret_cast<void*>(33),&instance);assert(observed.engine==app.engine&&logs==1);
     info.application=nullptr;create(&info,reinterpret_cast<void*>(33),&instance);
     create(nullptr,reinterpret_cast<void*>(33),&instance);assert(creates==5&&logs==1);
+    E::presentWaitEnabled=true;
+    E::PresentWaitFeature wait2{1000480001u,nullptr,0},wait1{1000248000u,reinterpret_cast<E::FeatureHeader*>(&wait2),0};
+    E::FeatureHeader unrelated{123,reinterpret_cast<E::FeatureHeader*>(&wait1)},root{1000059000u,&unrelated};
+    auto query=E::pointer<E::GetFeatures>(getInstance(nullptr,"vkGetPhysicalDeviceFeatures2"));
+    query(reinterpret_cast<void*>(1),&root);assert(!wait1.supported&&!wait2.supported&&unrelated.type==123);
+    query(reinterpret_cast<void*>(2),&root);assert(wait1.supported&&wait2.supported);
+    auto queryKhr=E::pointer<E::GetFeatures>(getInstance(nullptr,"vkGetPhysicalDeviceFeatures2KHR"));
+    queryKhr(reinterpret_cast<void*>(1),&root);assert(!wait1.supported&&!wait2.supported);
+    E::presentWaitEnabled=false;query(reinterpret_cast<void*>(1),&root);assert(wait1.supported&&wait2.supported);
+    E::engineNameEnabled=false;app.engineVersion=3u<<22;info.application=&app;create(&info,reinterpret_cast<void*>(33),&instance);assert(observed.engine==app.engine);
     E::systemGetProc=realGetProc;
     const std::string existing="dxvk.allowFse = True; d3d9.maxFrameRate = 120;";
     assert(NorthlightDxvkCompatibility::config(existing).find(existing)!=std::string::npos);
