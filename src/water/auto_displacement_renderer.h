@@ -159,6 +159,18 @@ class NorthlightAutoDisplacement {
         std::copy(result.low,result.low+3,low);std::copy(result.high,result.high+3,high);
         lastDepthLower=std::max(0.f,std::nextafter(low[2]>0?low[2]:high[2]<0?-high[2]:0,-INFINITY)-.001f);return true;
     }
+    // The rare palette-DEF path uses the same current register overrides as
+    // the vertex evaluator. Keep its 4 KiB temporary off the ordinary path.
+    __attribute__((noinline)) static bool evaluateSkinWithDefinitions(const NorthlightReplayBounds::SkinEnvelope& skin,const Program& program,const float* constants,const float* inverse,NorthlightReplayBounds::Bounds& result){
+        float palette[256*4];std::memcpy(palette+31*4,constants+31*4,(256-31)*4*sizeof(float));
+        for(const auto& definition:program.definitions)if(definition.reg>=31&&definition.reg<256)std::memcpy(palette+4*definition.reg,definition.value.data(),4*sizeof(float));
+        return skin.evaluate(palette,inverse,result);
+    }
+    static bool evaluateLocalSkin(const NorthlightReplayBounds::SkinEnvelope& skin,const Program& program,const float* constants,const float* inverse,NorthlightReplayBounds::Bounds& result){
+        if(!constants||!inverse){result={};return false;}
+        for(const auto& definition:program.definitions)if(definition.reg>=31&&definition.reg<256)return evaluateSkinWithDefinitions(skin,program,constants,inverse,result);
+        return skin.evaluate(constants,inverse,result);
+    }
     static unsigned rangeInput(const Program& program){
         unsigned input=16;for(const auto& i:program.inputs){if(i.usage!=D3DDECLUSAGE_POSITION||i.index||i.reg>=16)return 16;input=i.reg;}
         if(!NorthlightReplayBounds::detail::linear(program))return 16;
@@ -475,7 +487,7 @@ m.layered=NorthlightActorDeformation::compile(words,count,m.uv1,true,2,5,1)&&Nor
             foundBounds=retainBounds(source,std::move(b));
         }
         const float identity[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};NorthlightReplayBounds::Bounds skinBounds;
-        const auto exactEnvelope=[&]{if(!exactSkin||!foundBounds->second.skin)return false;P::Scope envelope(profile,P::PoseEnvelope);return foundBounds->second.skin->evaluate(constants,identity,skinBounds);};
+        const auto exactEnvelope=[&]{if(!exactSkin||!foundBounds->second.skin)return false;P::Scope envelope(profile,P::PoseEnvelope);return evaluateLocalSkin(*foundBounds->second.skin,shader->second.view,constants,identity,skinBounds);};
         if(exactEnvelope()){touchBounds(foundBounds->second);std::copy(skinBounds.low,skinBounds.low+3,low);std::copy(skinBounds.high,skinBounds.high+3,high);
             // Reuse the audited, outward-rounded skin envelope for normal capture.
             lastDepthLower=std::max(0.f,std::nextafter(low[2]>0?low[2]:high[2]<0?-high[2]:0,-INFINITY)-.001f);}
