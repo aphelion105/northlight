@@ -16,8 +16,38 @@ ARCHIVE_PATH = 'northlight\\world-emitters-v1.json'
 CAST_SHADOW, FIRE, CANDLE = 2, 4, 8
 
 
+def validate(document):
+    if not isinstance(document,dict) or type(document.get('version')) is not int or document['version']!=1 or document.get('owner')!='northlight-local-direct':
+        raise ValueError('Unsupported world emitter index owner/version')
+    models=document.get('models')
+    if not isinstance(models,dict) or len(models)>20000:
+        raise ValueError('World emitter model count')
+    for path,value in models.items():
+        if not isinstance(path,str) or not path.startswith(('world\\','spells\\')) or not path.endswith('.m2') or any(c in path for c in ('/','\0',':')) or any(p in ('','.','..','.m2') for p in path.split('\\')):
+            raise ValueError('World emitter model path')
+        if not isinstance(value,dict):raise ValueError('World emitter model record')
+        digest=value.get('asset_sha256')
+        if not isinstance(digest,str) or len(digest)!=64 or any(c not in '0123456789abcdef' for c in digest):
+            raise ValueError('World emitter model hash')
+        emitters=value.get('emitters')
+        if not isinstance(emitters,list) or not 1<=len(emitters)<=64:
+            raise ValueError('World emitter source count')
+        for s in emitters:
+            if not isinstance(s,dict) or not all(k in s for k in ('position','rgb','intensity','start','end','emission')):
+                raise ValueError('World emitter source record')
+            if not all(isinstance(s[k],(list,tuple)) and len(s[k])==3 for k in ('position','rgb')) or s['emission'] not in ('fire','candle','energy'):
+                raise ValueError('World emitter vectors/type')
+            if not all(type(x) in (int,float) and math.isfinite(x) for x in (*s['position'],*s['rgb'],s['intensity'],s['start'],s['end'])):
+                raise ValueError('World emitter nonfinite/nonnumeric value')
+            if max(map(abs,s['position']))>1024 or not all(0<=x<=1 for x in s['rgb']) or max(s['rgb'])<=0:
+                raise ValueError('World emitter position/colour bounds')
+            if not 0<s['intensity']<=4 or not 0<=s['start']<s['end']<=32:
+                raise ValueError('World emitter energy/range bounds')
+    return models
+
+
 def profile(assets, path, blob, catalog, cache=None):
-    if not path.startswith('world\\') or not path.endswith('.m2') or len(blob) < 304:
+    if not path.startswith(('world\\','spells\\')) or not path.endswith('.m2') or len(blob) < 304:
         return None
     if blob[:4] != b'MD20' or struct.unpack_from('<I', blob, 4)[0] != 264 or struct.unpack_from('<I', blob, 264)[0]:
         return None
@@ -35,7 +65,7 @@ def profile(assets, path, blob, catalog, cache=None):
         # Reuse reviewed energy/ranges; only compact multi-region fixtures merge.
         if len(regions) > 1:
             try:
-                emitters = consolidate(regions)
+                emitters = consolidate(regions,max_regions=64,position_limit=1024)
                 for emitter in emitters:
                     emitter['end'] = max(s['end'] for s in sources)
                     emitter['start'] = min(s['start'] for s in sources)
@@ -44,7 +74,7 @@ def profile(assets, path, blob, catalog, cache=None):
         else:
             emitters = [{**sources[0], 'emission': kind}]
         return {'asset_sha256': digest, 'basis': 'reviewed', 'emitters': emitters}
-    measured = inspect_model(assets, path, blob, cache)
+    measured = inspect_model(assets, path, blob, cache,max_regions=64,position_limit=1024)
     if measured['status'] != 'addable':
         return None
     return {'asset_sha256': digest, 'basis': 'measured', 'partial': measured.get('partial', False),
@@ -60,9 +90,11 @@ def records(value):
              0x80000000+i, 3, flags(s)) for i,s in enumerate(value['emitters'])]
 
 
-def build(assets):
+def build(assets, extra_paths=()):
     catalog, cache, models, stats = load(), {}, {}, collections.Counter()
-    for path in sorted(n for n in assets.providers if n.startswith('world\\') and n.endswith('.m2')):
+    candidates={n for n in assets.providers if n.startswith('world\\') and n.endswith('.m2')}
+    candidates.update(p for p in extra_paths if p.startswith('spells\\') and p.endswith('.m2') and not any(v in ('.','..') for v in p.split('\\')))
+    for path in sorted(candidates):
         stats['scanned'] += 1
         try:
             value = profile(assets, path, assets.read(path), catalog, cache)
@@ -82,6 +114,7 @@ def build(assets):
 
 class Index:
     def __init__(self, assets):
+        self.assets,self.catalog=assets,load()
         try:
             payload = assets.read(ARCHIVE_PATH)
             self.origin = 'mpq'
@@ -92,33 +125,25 @@ class Index:
             raise ValueError('World emitter index exceeds bounded metadata size')
         self.digest = hashlib.sha256(payload).hexdigest()
         document = json.loads(payload)
-        if document.get('version') != 1 or document.get('owner') != 'northlight-local-direct':
-            raise ValueError('Unsupported world emitter index owner/version')
-        self.models = document['models']
-        if not isinstance(self.models, dict) or len(self.models) > 20000:
-            raise ValueError('World emitter model count')
-        for path,value in self.models.items():
-            if not path.startswith('world\\') or not path.endswith('.m2') or any(p in ('.','..') for p in path.split('\\')):
-                raise ValueError('World emitter model path')
-            digest = value['asset_sha256']
-            if not isinstance(digest,str) or len(digest)!=64 or any(c not in '0123456789abcdef' for c in digest):
-                raise ValueError('World emitter model hash')
-            if not 1 <= len(value['emitters']) <= 16:
-                raise ValueError('World emitter source count')
-            for s in value['emitters']:
-                if len(s['position'])!=3 or len(s['rgb'])!=3 or s['emission'] not in ('fire','candle','energy'):
-                    raise ValueError('World emitter vectors/type')
-                if not all(math.isfinite(x) for x in (*s['position'],*s['rgb'],s['intensity'],s['start'],s['end'])):
-                    raise ValueError('World emitter nonfinite value')
-                if max(map(abs,s['position']))>100 or not all(0<=x<=1 for x in s['rgb']) or max(s['rgb'])<=0:
-                    raise ValueError('World emitter position/colour bounds')
-                if not 0<s['intensity']<=4 or not 0<=s['start']<s['end']<=32:
-                    raise ValueError('World emitter energy/range bounds')
+        self.models = validate(document)
 
     def get(self, path, blob):
         value = self.models.get(path)
+        if value is None and path.startswith('spells\\'):
+            value=profile(self.assets,path,blob,self.catalog)
+            if value is not None:self.models[path]=value
         if value is None:
             return None
         if hashlib.sha256(blob).hexdigest() != value['asset_sha256']:
             raise ValueError('World emitter MPQ source hash changed: '+path)
         return value
+
+    def payload(self):
+        models={path:{**{k:v for k,v in value.items() if k!='emitters'},
+                      'emitters':[{k:s[k] for k in ('position','rgb','intensity','start','end','emission')} for s in value['emitters']]}
+                for path,value in self.models.items()}
+        document={'version':1,'owner':'northlight-local-direct','models':models}
+        payload=json.dumps(document,sort_keys=True,separators=(',',':'),allow_nan=False).encode('utf-8')
+        if len(payload)>32*1024*1024:raise ValueError('World emitter metadata size')
+        self.digest=hashlib.sha256(payload).hexdigest()
+        return payload

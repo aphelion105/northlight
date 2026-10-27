@@ -6,7 +6,52 @@
 #undef main
 #pragma clang diagnostic pop
 #include "point_light_shadow.h"
+#include "point_transmission_filter.h"
 #include <array>
+
+static void transmissionCoverage(IDirect3DDevice9* d,IDirect3DVertexShader9* vs,IDirect3DPixelShader9* ps){
+    constexpr unsigned size=128,texels=8;
+    Image mask{texels,texels,D3DFMT_A8R8G8B8,4,std::vector<unsigned char>(texels*texels*4,255)};
+    for(unsigned i=0;i<64;++i)mask.pixels[i*4+3]=(i*13%64)<20?255:0;
+    auto* alpha=texture(d,mask);
+    IDirect3DSurface9 *target=nullptr,*staging=nullptr,*previous=nullptr;
+    ok(d->GetRenderTarget(0,&previous));ok(d->SetDepthStencilSurface(nullptr));
+    ok(d->CreateRenderTarget(size,size,D3DFMT_R32F,D3DMULTISAMPLE_NONE,0,FALSE,&target,nullptr));
+    ok(d->CreateOffscreenPlainSurface(size,size,D3DFMT_R32F,D3DPOOL_SYSTEMMEM,&staging,nullptr));
+    ok(d->SetRenderTarget(0,target));D3DVIEWPORT9 vp={0,0,size,size,0,1};ok(d->SetViewport(&vp));
+    for(auto state:{D3DRS_ZENABLE,D3DRS_ZWRITEENABLE,D3DRS_ALPHABLENDENABLE})ok(d->SetRenderState(state,FALSE));
+    ok(d->SetRenderState(D3DRS_CULLMODE,D3DCULL_NONE));ok(d->SetTexture(0,alpha));
+    for(auto state:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})ok(d->SetSamplerState(0,state,D3DTEXF_LINEAR));
+    ok(d->SetSamplerState(0,D3DSAMP_MIPFILTER,D3DTEXF_NONE));
+    for(auto state:{D3DSAMP_ADDRESSU,D3DSAMP_ADDRESSV})ok(d->SetSamplerState(0,state,D3DTADDRESS_WRAP));
+    ok(d->SetFVF(D3DFVF_XYZ|D3DFVF_TEX1));ok(d->SetVertexShader(vs));ok(d->SetPixelShader(ps));
+    float matrix[16]={1,0,0,0,0,1,0,0,0,0,1,0,-1.f/size,1.f/size,0,1};
+    const float material[]={1,1,1,.5f},sphere[]={100,0,0,0};
+    ok(d->SetVertexShaderConstantF(0,matrix,4));ok(d->SetPixelShaderConstantF(0,material,1));ok(d->SetPixelShaderConstantF(1,sphere,1));
+    unsigned checks=0,negativeErrors=0;
+    struct Caster{float x,y,z,u,v;};
+    for(float phase:{.03125f,.078125f,.109375f})for(bool pointOnly:{false,true}){
+        const Caster quad[]={{-1,1,.5f,phase,phase},{1,1,.5f,1+phase,phase},{-1,-1,.5f,phase,1+phase},{1,-1,.5f,1+phase,1+phase}};
+        ok(d->Clear(0,nullptr,D3DCLEAR_TARGET,0xffffffff,1,0));
+        {NorthlightPointTransmissionFilter filter;ok(filter.begin(d,pointOnly));
+            ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(Caster)));ok(d->EndScene());ok(filter.restore());}
+        for(auto state:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER}){DWORD value=0;ok(d->GetSamplerState(0,state,&value));assert(value==D3DTEXF_LINEAR);}
+        ok(d->GetRenderTargetData(target,staging));D3DLOCKED_RECT lock{};ok(staging->LockRect(&lock,nullptr,D3DLOCK_READONLY));
+        unsigned covered=0;
+        for(unsigned y=0;y<size;++y)for(unsigned x=0;x<size;++x){
+            const unsigned u=unsigned(std::floor(((x+.5f)/size+phase)*texels))%texels;
+            const unsigned v=unsigned(std::floor(((y+.5f)/size+phase)*texels))%texels;
+            const bool expected=mask.pixels[(v*texels+u)*4+3]!=0;
+            float depth;std::memcpy(&depth,static_cast<const char*>(lock.pBits)+y*lock.Pitch+x*4,4);
+            assert(std::isfinite(depth));const bool actual=depth<.75f;covered+=actual;
+            if(pointOnly){assert(actual==expected);++checks;}else negativeErrors+=actual!=expected;
+        }
+        ok(staging->UnlockRect());if(pointOnly)assert(covered==size*size*20/64);
+    }
+    assert(negativeErrors); // Linear thresholding is a deliberately wrong coverage control.
+    std::printf("transmission GPU checkedPixels=%u negativeLinearErrors=%u exactCoverage=20/64 samplerRestored=1\n",checks,negativeErrors);
+    ok(d->SetTexture(0,nullptr));ok(d->SetRenderTarget(0,previous));previous->Release();staging->Release();target->Release();alpha->Release();
+}
 
 static Image rgba(float r,float g,float b,float a){Image v{1,1,D3DFMT_A32B32G32R32F,16,std::vector<unsigned char>(16)};const float f[]={r,g,b,a};std::memcpy(v.pixels.data(),f,16);return v;}
 static Image red(float value){Image v{1,1,D3DFMT_R32F,4,std::vector<unsigned char>(4)};std::memcpy(v.pixels.data(),&value,4);return v;}
@@ -23,6 +68,7 @@ int main(int argc,char** argv){
     code=read((dir+"/LocalLighting.bin").c_str());ok(d->CreatePixelShader(reinterpret_cast<const DWORD*>(code.data()),&lighting));
     code=read((dir+"/LocalShadowPS.bin").c_str());ok(d->CreatePixelShader(reinterpret_cast<const DWORD*>(code.data()),&casterPS));
     code=read((dir+"/LocalShadowVS.bin").c_str());ok(d->CreateVertexShader(reinterpret_cast<const DWORD*>(code.data()),&casterVS));
+    transmissionCoverage(d,casterVS,casterPS);
     constexpr unsigned maximumLights=NorthlightPointShadow::MaxLights;IDirect3DCubeTexture9* cubes[maximumLights]{};IDirect3DSurface9* depth=nullptr;ok(d->CreateDepthStencilSurface(cubeSize,cubeSize,D3DFMT_D24S8,D3DMULTISAMPLE_NONE,0,TRUE,&depth,nullptr));
     float positions[maximumLights][3]={};const float basePositions[4][3]={{-2,0,5},{2,0,5},{0,-3,5},{0,3,5}};
     float colors[maximumLights][3]={};const float baseColors[4][3]={{1,.2f,.1f},{.1f,.4f,1},{.2f,1,.1f},{.7f,.2f,1}};

@@ -24,6 +24,7 @@ struct Batch {
     // Invalid empty defaults fail open in the conservative clip rejection test.
     NorthlightGI::Vec3 boundsLow={std::numeric_limits<float>::infinity(),std::numeric_limits<float>::infinity(),std::numeric_limits<float>::infinity()};
     NorthlightGI::Vec3 boundsHigh={-std::numeric_limits<float>::infinity(),-std::numeric_limits<float>::infinity(),-std::numeric_limits<float>::infinity()};
+    bool pointOnly=false;
 };
 struct MaterialUpload {
     uint32_t width=1,height=1;

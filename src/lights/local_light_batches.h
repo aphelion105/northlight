@@ -70,7 +70,7 @@ inline Result arrange(NorthlightLocalLightSelection::Selection& s,const Northlig
     std::sort(after.begin(),after.begin()+count,[&](unsigned a,unsigned b){return key[a]<key[b];});
     out.before=cost(rects.data(),before.data(),count);out.after=cost(rects.data(),after.data(),count);
     if(!(out.after<out.before)){out.after=out.before;return out;}
-    const auto position=s.position,color=s.color,fog=s.fog;
-    for(unsigned i=0;i<count;++i){s.position[i]=position[after[i]];s.color[i]=color[after[i]];s.fog[i]=fog[after[i]];}
+    const auto position=s.position,color=s.color,fog=s.fog;const auto sources=s.sources;
+    for(unsigned i=0;i<count;++i){s.position[i]=position[after[i]];s.color[i]=color[after[i]];s.fog[i]=fog[after[i]];s.sources[i]=sources[after[i]];}
     out.arranged=true;return out;}
 } // namespace NorthlightLocalLightBatches

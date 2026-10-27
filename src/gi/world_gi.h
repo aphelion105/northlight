@@ -41,6 +41,7 @@ struct WorldMaterial {
     // Runtime-only FGS3 category 2. Needed to distinguish city streets/roofs
     // from trees, actors and doodads when constructing the outdoor fog floor.
     bool wmo = false;
+    bool pointOnly = false; // Runtime auxiliary transmission geometry; never part of the GI BVH.
 };
 struct WorldTriangle { uint32_t v0 = 0, v1 = 0, v2 = 0, material = 0; };
 // Exact placements whose entire model triangle set survived the local crop.

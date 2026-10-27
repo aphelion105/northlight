@@ -7,7 +7,7 @@ position XYZ, diffuse RGB*intensity, attenuation start/end, source ID, kind,flag
 Kind 1=WMO MOLT (potential baked contribution), 2=M2 default constant light, 3=authored fallback.
 """
 from __future__ import annotations
-import argparse,collections,hashlib,json,math,os,struct,time
+import argparse,collections,hashlib,json,math,os,struct,time,tempfile
 import sys
 from pathlib import Path
 sys.path[:0]=[str(Path(__file__).resolve().parents[1]),str(Path(__file__).resolve().parent)]  # repo root, renderer/
@@ -138,9 +138,12 @@ def instance_lights(lights,record,path):
     return result
 
 def build(cache,output,maps,assets=None,manifest='manifest.json'):
+    import world_emitter_index
+    import point_transmission_builder
     catalog=outdoor_light_profiles.load()
     started=time.time();assets=assets or Assets();stats=collections.Counter();extracted={};provenance={};errors=[];reports=[]
     placement_cache={};placement_provenance={};unsupported_assets={}
+    emitter_index=world_emitter_index.Index(assets)
     def read_placement_wmo(path):
         if path not in placement_cache:
             blob=assets.read(path);placement_cache[path]=wmo_doodads(blob,group_refs(group_blobs(assets.read,path,blob)))
@@ -166,7 +169,11 @@ def build(cache,output,maps,assets=None,manifest='manifest.json'):
                     try:
                         blob=assets.read(path);before=stats.copy()
                         extracted[path]=extract_wmo(blob,stats) if path.endswith('.wmo') else extract_m2(blob,stats)
-                        extracted[path]=outdoor_light_profiles.fallback(catalog,path,blob,extracted[path])
+                        authored=emitter_index.get(path,blob) if path.endswith('.m2') and not unpack('<I',blob,264)[0] else None
+                        if authored is not None:
+                            extracted[path]=world_emitter_index.records(authored)
+                        else:
+                            extracted[path]=outdoor_light_profiles.fallback(catalog,path,blob,extracted[path])
                         rejected={k:v for k,v in (stats-before).items() if k.startswith('unsupported_')}
                         if rejected:unsupported_assets[path]=rejected
                         if extracted[path]:
@@ -245,6 +252,19 @@ def build(cache,output,maps,assets=None,manifest='manifest.json'):
                     'Unsupported native M2 tracks remain excluded. Reviewed exact models may supply a separate steady artistic emitter; no frame-zero animation freeze.',
                     'M2 ambient light tracks excluded; only supported diffuse point emitters exported.',
                     'No invented inverse-square attenuation: start/end are authored ranges; transport chooses documented attenuation policy.']}
+        (output/'world-emitters-v1.json').write_bytes(emitter_index.payload())
+        result['world_emitter_index']={'sha256':emitter_index.digest,'source':emitter_index.origin,'owner':'northlight-local-direct'}
+        with tempfile.TemporaryDirectory(prefix='.point-transmission-',dir=output) as work:
+            staged=Path(work)
+            result['point_transmission']=point_transmission_builder.build(cache,staged,maps,assets)['counts']
+            fresh=staged/'point-transmission';fresh.mkdir(exist_ok=True)
+            destination=output/'point-transmission';previous=staged/'previous'
+            if destination.exists():retry(destination.rename,previous)
+            try:retry(fresh.rename,destination)
+            except Exception:
+                if previous.exists():retry(previous.rename,destination)
+                raise
+            retry(os.replace,staged/'point-transmission-report.json',output/'point-transmission-report.json')
         (output/manifest).write_text(json.dumps(result,indent=2)+'\n')
         return result
     finally:assets.close()

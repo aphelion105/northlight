@@ -22,6 +22,9 @@ class NativeInstall(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.assets = SimpleNamespace(client=self.root, locale='enUS')
         self.work = self.root / 'work'
+        absent_creatures = patch.object(native.build_mount_emitters, 'build_creatures', side_effect=ValueError('No supported creature emitters'))
+        absent_creatures.start()
+        self.addCleanup(absent_creatures.stop)
 
     def test_fresh_client_stages_equipment_and_safe_spells_without_wdb(self):
         equipment = 'spells\\enchant.m2'
@@ -43,7 +46,16 @@ class NativeInstall(unittest.TestCase):
              patch.object(native.build_spell_emitters, 'build', side_effect=ValueError('No supported spell emitters')):
             payload, steps = native.build(self.assets, self.work, lambda _: self.fail('No archive expected'))
         self.assertEqual(payload, {})
-        self.assertEqual(len(steps), 3)
+        self.assertEqual(len(steps), 4)
+
+    def test_creature_sources_need_no_server_cache_and_keep_model_ownership(self):
+        with patch.object(native.build_equipment_emitters, 'build', side_effect=ValueError('No supported equipment emitters')), \
+             patch.object(native.build_spell_emitters, 'build', side_effect=ValueError('No supported spell emitters')), \
+             patch.object(native.build_mount_emitters, 'build_creatures', return_value={'counts': {'patched': 1}}) as creatures:
+            payload, steps = native.build(self.assets, self.work, lambda _: {'creature\\deathknightmount.m2': b'hoof-lights'})
+        self.assertEqual(payload, {'creature\\deathknightmount.m2': b'hoof-lights'})
+        self.assertEqual(creatures.call_args.kwargs, {'excluded': set()})
+        self.assertEqual(next(s['models'] for s in steps if s['step']=='creature_model_lights'), 1)
 
     def test_dbc_payload_and_conflicting_model_owners_are_refused(self):
         for spell in ({'dbfilesclient\\spell.dbc': b'bad'}, {'spells\\same.m2': b'different'}):

@@ -5,7 +5,7 @@ import build_spell_emitters
 import build_mount_emitters
 
 
-def build(assets, work, read_archive):
+def build(assets, work, read_archive, excluded=()):
     payload, steps = {}, []
 
     def stage(name, archive, generate, empty, prefixes):
@@ -18,14 +18,17 @@ def build(assets, work, read_archive):
             steps.append({'step': name, 'skipped': str(error)})
             return
         models = read_archive(output / archive)
+        suppressed=0
         for path, blob in models.items():
             key = path.lower().replace('/', '\\')
             if not key.startswith(prefixes) or not key.endswith('.m2') or any(p in ('.', '..') for p in key.split('\\')):
                 raise ValueError('Dynamic emitter archive contains a non-model entry: ' + path)
+            if key in excluded:
+                suppressed+=1;continue
             if key in payload and payload[key] != blob:
                 raise ValueError('Conflicting dynamic emitter models: ' + path)
             payload[key] = blob
-        steps.append({'step': name, 'models': len(models), 'counts': report['counts']})
+        steps.append({'step': name, 'models': len(models)-suppressed, 'world_owned_suppressed':suppressed, 'counts': report['counts']})
 
     stage('equipment_model_lights', 'equipment-lights-staged.mpq',
           lambda out: build_equipment_emitters.build(assets, out),
