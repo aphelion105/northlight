@@ -5,6 +5,12 @@ experimental native-Windows workaround for NVIDIA presentation/colour issues.
 The default is 0. Restart WoW after changing it. This key is independent of
 `ExperimentalHDR`; test SDR and HDR separately.
 
+Separately, the native-Windows DXVK 3.1.1 path disables `VK_KHR_present_wait`
+and `VK_KHR_present_wait2` features on NVIDIA adapters by default. This avoids
+an observed indefinitely blocked driver present wait while the game is in the
+background, at the cost of changing frame pacing. Set
+`DxvkPresentWaitWorkaround=0` in `[Renderer]` and restart to opt out.
+
 The configuration example is `dxvk3-engine-name.ini.example`. Merge its keys
 into the existing `[Renderer]` section; keep other renderer/HDR settings.
 To ship this workaround, build Northlight's `d3d9.dll` with these source changes
@@ -32,7 +38,8 @@ Expected log entries in `northlight-renderer.log`:
 ```
 DXVK3 engine-name requested=1 eligible=1 wine=0 backend=dxvk version=v3.1.1
 DXVK3 engine-name FSE forced=False process-config-applied=1
-DXVK3 engine-name import status=active-module-pinned
+DXVK3 compatibility import status=active-module-pinned engine-name=1 present-wait=1
+DXVK3 NVIDIA present-wait feature disabled type=1000248000
 DXVK3 engine-name instance original=DXVK replacement=Northlight result=0
 ```
 

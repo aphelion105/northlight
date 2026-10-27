@@ -3416,7 +3416,7 @@ static void configureDxvkCompatibility(const NorthlightBackendLoader::Inspection
 struct Win32BackendSys {
     using Module=HMODULE;
     NorthlightBackend::Kind kind;std::wstring selfPath;BY_HANDLE_FILE_INFORMATION selfId={};bool haveSelfId=false;
-    bool engineNameWorkaround=false;
+    bool engineNameWorkaround=false,presentWaitWorkaround=false;
     static bool fileId(const std::wstring& path,BY_HANDLE_FILE_INFORMATION& info,unsigned long& error){
         HANDLE h=CreateFileW(path.c_str(),FILE_READ_ATTRIBUTES,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
         if(h==INVALID_HANDLE_VALUE){error=GetLastError();return false;}
@@ -3455,12 +3455,14 @@ struct Win32BackendSys {
         const HMODULE ntdll=GetModuleHandleW(L"ntdll.dll");
         const bool wine=ntdll&&GetProcAddress(ntdll,"wine_get_version");
         engineNameWorkaround=requested&&NorthlightBackend::isPackagedDxvk(kind)&&info.dxvk&&NorthlightBackend::dxvkMajor(info.dxvkVersion)==3&&!wine;
+        const bool presentWaitRequested=GetPrivateProfileIntW(L"Renderer",L"DxvkPresentWaitWorkaround",1,(std::wstring(rootPath)+L"northlight-renderer.ini").c_str())!=0;
+        presentWaitWorkaround=presentWaitRequested&&NorthlightBackend::isPackagedDxvk(kind)&&info.dxvk&&info.dxvkVersion=="v3.1.1"&&!wine;
         if(requested)logf("DXVK3 engine-name requested=1 eligible=%u wine=%u backend=%s version=%s",unsigned(engineNameWorkaround),unsigned(wine),NorthlightBackend::name(kind),info.dxvkVersion.c_str());
         if(NorthlightBackend::isPackagedDxvk(kind))configureDxvkCompatibility(info,engineNameWorkaround);
     }
     HMODULE load(const std::wstring& path,unsigned long& error){
         HMODULE m=LoadLibraryW(path.c_str());error=m?0:GetLastError();
-        if(m&&engineNameWorkaround)logf("DXVK3 engine-name import status=%s",NorthlightDxvkEngineName::install(m,&logf));
+        if(m&&(engineNameWorkaround||presentWaitWorkaround))logf("DXVK3 compatibility import status=%s engine-name=%u present-wait=%u",NorthlightDxvkEngineName::install(m,&logf,engineNameWorkaround,presentWaitWorkaround),unsigned(engineNameWorkaround),unsigned(presentWaitWorkaround));
         return m;
     }
     bool isSelf(HMODULE m){return m==selfModule;}
