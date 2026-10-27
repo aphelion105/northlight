@@ -867,9 +867,10 @@ static void initFailureFallback(){
 }
 // The periodic stats line: >600 presents with Diagnostics on give exactly one line, and it carries the CSTREAM tag the log is searched by.
 static std::vector<std::string> gStatLines;
-static void statsLine(){
+static void statsLine(bool idle=false){
     gTrace.clear();gStatLines.clear();StreamDevice::Options opt;
     opt.log=[](const char* l){gStatLines.push_back(l);};opt.diagnostics=[]{return true;};
+    if(idle)opt.idleProfiling=[]{return true;};
     Rig rig(true,opt);
     for(int i=0;i<610;++i){rig.dev->DrawPrimitive((D3DPRIMITIVETYPE)4,0,2);rig.dev->Present(nullptr,nullptr,nullptr,nullptr);}
     rig.sync();
@@ -878,6 +879,11 @@ static void statsLine(){
     for(const char* field:{"game[per frame]: ms=","coop=","split[per frame]: lockMs=","recordMs~=","snapMs=","presentMs=","syncMs=","presentWaitMs=","bpMs=","sleeps=","publishes=","replayBusyMs/frame=","recorded=","answered=","texShadow=","readbacks=","bufShadow=","readbacks/frame=","evicted/frame=","(hot ","refused/frame=","grows=","large=","memMB=","texFreshSkipped=","texReadbackCause[freshDrop=","relockedEvict=","neverShadowed=","freshSkip="," skipped="})CHECK(lines[0].find(field)!=std::string::npos);   // per-window numbers
     CHECK(lines[0].size()<2000);
     {bool top=false;for(auto& l:gStatLines)if(l.rfind("CSTREAM top[per frame]: Device::DrawPrimitive=",0)==0)top=true;CHECK(top);}   // 0.3.204 (task 21): the sampled per-command split, the draws first
+    {unsigned wakeLines=0;for(const auto& line:gStatLines)if(line.rfind("CSTREAM WAKE_PUBLICATIONS ",0)==0){
+        ++wakeLines;unsigned long long frame=0,batches=0,commands=0,bytes=0,signals=0;
+        CHECK(std::sscanf(line.c_str(),"CSTREAM WAKE_PUBLICATIONS streamFrame=%llu heldBatches=%llu heldCommands=%llu heldBytes=%llu wakeSignals=%llu",&frame,&batches,&commands,&bytes,&signals)==5);
+        CHECK(frame==600&&line.find("scope=cumulative-independent-counters duration=unmeasured")!=std::string::npos&&line.size()<384);
+    }CHECK(wakeLines==unsigned(idle));}
     rig.finish();checkClean();
 }
 // Redundant-state filtering: a repeated Set of the value the game last set is not recorded; anything else is.
@@ -2119,7 +2125,7 @@ static void textureReadbackTable(){
 }
 static void streamTests(bool threadsOnly){
     layoutIsolation();replayTimingAccounting();diagnosticsOffSkipsAudit();idlePollWakes();effectHookReplay();
-    lifetimeAndIdentity();pressureKeepsShadows();syncStormDetector();stateKnownUnknown();locksPreserveBytes();staticBufferShadows();dynamicBufferShadows();largeBufferAllowance();twoLargeBuffers();adaptiveShadowCap();shadowCap();queriesAndSyncCensus();eventQueryBatch();occlusionFlushLocal(true);occlusionFlushLocal(false);resetAndShutdown();directReplayRaw();redundantFiltering();renderTargetResetsViewport();textureShadows();textureExpressReadback();textureReadbackDiagnostics();textureExpressBehind();textureReadbackTable();statsLine();childrenOutliveTheDevice();queryProbeAndDeadQuery();initFailureFallback();cursorHandling();nestedSyncInPump();testCooperativeLevelLocal(1);testCooperativeLevelLocal(3);upDrawsAndBackpressure();snapshotTriggers();snapshotPoolNotExhausted();memoryPressureRelease();impossibleBlockIsRefusedAtOnce();smallStagedLocksUseScratch();
+    lifetimeAndIdentity();pressureKeepsShadows();syncStormDetector();stateKnownUnknown();locksPreserveBytes();staticBufferShadows();dynamicBufferShadows();largeBufferAllowance();twoLargeBuffers();adaptiveShadowCap();shadowCap();queriesAndSyncCensus();eventQueryBatch();occlusionFlushLocal(true);occlusionFlushLocal(false);resetAndShutdown();directReplayRaw();redundantFiltering();renderTargetResetsViewport();textureShadows();textureExpressReadback();textureReadbackDiagnostics();textureExpressBehind();textureReadbackTable();statsLine();statsLine(true);childrenOutliveTheDevice();queryProbeAndDeadQuery();initFailureFallback();cursorHandling();nestedSyncInPump();testCooperativeLevelLocal(1);testCooperativeLevelLocal(3);upDrawsAndBackpressure();snapshotTriggers();snapshotPoolNotExhausted();memoryPressureRelease();impossibleBlockIsRefusedAtOnce();smallStagedLocksUseScratch();
     framesAheadPacing();textureShadowSpares();frameSkipping();frameSkipReleasesPresentWait();   // 0.3.200 (frame skip)
     zeroCopyRenames();zeroCopyRingBudget();zeroCopyAdaptiveRing();zeroCopyRetire();zeroCopyPumpedLock(0);zeroCopyPumpedLock(1);
     for(UINT len:{512u<<10,2u<<20}){zeroCopyRenames(len);zeroCopyRetire(len);zeroCopyPumpedLock(0,len);zeroCopyPumpedLock(1,len);}   // 0.3.204 (task 21): the same for DYNAMIC buffers in the regular shadow cap

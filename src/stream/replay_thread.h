@@ -556,6 +556,12 @@ private:
         for(std::size_t i=0;i<top.size()&&i<8;++i)put(buf,n,"%s%s=%llu",i?",":"",cmdName((Cmd)top[i].second),(unsigned long long)top[i].first);
         put(buf,n,"]");
         log(buf);avg_=Avg();
+        if(idleTracking_&&diag_){
+            const auto wake=core.q.wakePublicationDiagnostics();char line[384];
+            std::snprintf(line,sizeof line,"CSTREAM WAKE_PUBLICATIONS streamFrame=%llu heldBatches=%llu heldCommands=%llu heldBytes=%llu wakeSignals=%llu scope=cumulative-independent-counters duration=unmeasured",
+                (unsigned long long)frames,(unsigned long long)wake.heldBatches,(unsigned long long)wake.heldCommands,(unsigned long long)wake.heldBytes,(unsigned long long)wake.wakeSignals);
+            log(line);
+        }
         logZeroCopy();
         logCallTop();
     }
