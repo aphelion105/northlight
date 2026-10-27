@@ -126,6 +126,7 @@ test_job_system.py
 test_lamp_daylight.py
 test_legacy_fog_hold.py
 test_legacy_fog_wmo.py
+test_lens_wiring.py
 test_linux_package.py
 test_live_settings.py
 test_live_terrain_gpu.py
@@ -154,6 +155,7 @@ test_material_geometry.py
 test_material_normal_capabilities_gpu.py
 test_material_normal_variants.py
 test_material_packet_auxiliary.py
+test_material_palette_override.py
 test_material_pipeline_cpu_micro.py
 test_material_pose_metadata.py
 test_material_pressure_transition.py
