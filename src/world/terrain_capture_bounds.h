@@ -329,8 +329,11 @@ private:
     // A weak one-block memo shares exact consecutive index patterns without retaining buffers
     // or an unbounded interning table. Entry references, not temporary shared_ptrs, own its charge.
     std::weak_ptr<SourceIndices> lastSourceIndices;
+    // Only this weak memo's last verified IB generation and exact byte range.
+    // Count the fixed proof inside the unchanged persistent byte budget.
+    struct IndexReadProof {std::uint64_t identity=0,revision=0;UINT offset=0,bytes=0;} lastIndexRead;
     // An expired weak memo can keep one make_shared control/object allocation until reassignment.
-    static constexpr size_t ContentBaseBytes=sizeof(content)+sizeof(freeContent)+sizeof(lastSourceIndices)+sizeof(SourceIndices)+32+
+    static constexpr size_t ContentBaseBytes=sizeof(content)+sizeof(freeContent)+sizeof(lastSourceIndices)+sizeof(lastIndexRead)+sizeof(SourceIndices)+32+
         sizeof(decoded_)+sizeof(NorthlightSourceIdentity::Ledger)+32+64*(sizeof(NorthlightSourceIdentity::Retained<DecodedIndices>)+sizeof(NorthlightSourceIdentity::Retained<MeshSnapshot>)+64)+4*sizeof(std::uint64_t)+2*sizeof(unsigned);
     size_t sourceIndexBlocks_=0;std::uint64_t sourceIndexDataBytes_=0,sourceIndexLogicalBytes_=0;
     std::uint64_t sourceOffsetDataBytes_=0;
@@ -347,7 +350,7 @@ public:
         unsigned metadataBatches=0,metadataHits=0,metadataFallbacks=0;
         std::uint64_t vertexSpanBytes=0,rawVertexCopyBytes=0,xyzCopyBytes=0;
         unsigned directColdMisses=0,directUnstable=0;
-        unsigned indexPlanHits=0;std::uint64_t indexPlanVertices=0,indexPlanIndices=0;
+        unsigned indexPlanHits=0,indexPlanTokenHits=0;std::uint64_t indexPlanVertices=0,indexPlanIndices=0;
     };
 private:
     Maintenance maintenance_;
@@ -390,8 +393,10 @@ private:
         const std::uint64_t maximumOffset=std::uint64_t(largest-smallest)*key.draw.stride;
         const unsigned offsetBytes=maximumOffset<=UINT16_MAX?2:4;
         auto sharedIndices=indexPlan?indexPlan:lastSourceIndices.lock();
-        if(profileCapture_&&sharedIndices)maintenance_.sourceComparedBytes+=std::min(sharedIndices->bytes.size(),rawIndices.size());
-        if(sharedIndices&&sharedIndices->bytes!=rawIndices)sharedIndices.reset();
+        if(sharedIndices&&!indexPlan){
+            if(profileCapture_)maintenance_.sourceComparedBytes+=std::min(sharedIndices->bytes.size(),rawIndices.size());
+            if(sharedIndices->bytes!=rawIndices)sharedIndices.reset();
+        }
         const bool storeOffsets=!keepRaw&&!sharedIndices;
         const bool reuseOffsets=!keepRaw&&sharedIndices&&(indexPlan==sharedIndices||sharedIndices->sourceOffsets.visit([&](const auto* stored,size_t count){
             if(count!=sourceOffsets.size()||sizeof(*stored)!=offsetBytes)return false;
@@ -468,6 +473,7 @@ private:
         if(decoded.block&&!keepRaw&&sharedIndices->stride==key.draw.stride&&sharedIndices->format==key.format&&
            sharedIndices->topology==key.draw.topology&&(storeOffsets||reuseOffsets))sharedIndices->plan=decoded.block;
         lastSourceIndices=sharedIndices;
+        lastIndexRead=verified.valid()?IndexReadProof{verified.ib,verified.indexVersion,UINT(std::uint64_t(key.draw.start)*(key.format==D3DFMT_INDEX16?2:4)),UINT(rawIndices.size())}:IndexReadProof{};
         contentLRU.append(*next);contentBytes+=next->bytes;retainedPayloadBytes_+=next->payloadBytes;retainedIdentityBytes_+=next->identityBytes;content[slot]=std::move(next);
       }catch(...){return;} // Cache allocation is optional; snapshot remains valid.
     }
@@ -510,7 +516,7 @@ public:
             const auto bytes=size_t(contentBytes)+sizeof(RetiredContent);
             if(batch?batch->retire(retired,bytes):retirement->retire(retired,bytes))deferred=bytes;
         }catch(...){}
-        contentLookup.clear();contentLRU.clear();lastSourceIndices.reset();for(auto& slot:decoded_.slots)slot.reset();for(auto& slot:decoded_.snapshots)slot.reset();decoded_.last=0;for(auto& entry:content){if(entry&&entry->decoded)--entry->decoded->entries;entry.reset();}decoded_.blocks=decoded_.dataBytes=decoded_.bytes=0;sourceIndexBlocks_=0;sourceIndexDataBytes_=sourceIndexLogicalBytes_=sourceOffsetDataBytes_=0;retainedPayloadBytes_=retainedIdentityBytes_=0;contentBytes=ContentBaseBytes;contentHits=trackedHits_=avoidedReadBytes_=0;freeContentCount=ContentEntries;for(size_t i=0;i<freeContent.size();++i)freeContent[i]=i;maintenance_={};return deferred;}
+        contentLookup.clear();contentLRU.clear();lastSourceIndices.reset();lastIndexRead={};for(auto& slot:decoded_.slots)slot.reset();for(auto& slot:decoded_.snapshots)slot.reset();decoded_.last=0;for(auto& entry:content){if(entry&&entry->decoded)--entry->decoded->entries;entry.reset();}decoded_.blocks=decoded_.dataBytes=decoded_.bytes=0;sourceIndexBlocks_=0;sourceIndexDataBytes_=sourceIndexLogicalBytes_=sourceOffsetDataBytes_=0;retainedPayloadBytes_=retainedIdentityBytes_=0;contentBytes=ContentBaseBytes;contentHits=trackedHits_=avoidedReadBytes_=0;freeContentCount=ContentEntries;for(size_t i=0;i<freeContent.size();++i)freeContent[i]=i;maintenance_={};return deferred;}
     // Memory guard: cap in [ContentBaseBytes+1 MiB, 32 MiB]; evicts oldest down to it now.
     void setPersistentByteLimit(std::uint64_t bytes){
         contentLimit=std::max<std::uint64_t>(ContentBaseBytes+1024u*1024u,std::min<std::uint64_t>(bytes,ContentLimit));
@@ -773,8 +779,20 @@ public:
         // Unknown/pending revisions still require the complete byte verification.
         bool sameIndices=cached&&before.valid()&&cached->stamp.valid()&&
             before.ib==cached->stamp.ib&&before.indexVersion==cached->stamp.indexVersion;
+        std::shared_ptr<SourceIndices> indexPlan;
+        std::shared_ptr<DecodedIndices> plannedIndices;
+        // Cold vertex/base contracts can use the same unchanged index range.
+        // A live plan owns immutable bytes; unknown or changed tokens still
+        // read the driver. The existing post-copy stamp remains mandatory.
+        if(!cached&&before.valid()&&lastIndexRead.identity==before.ib&&lastIndexRead.revision==before.indexVersion&&
+           lastIndexRead.offset==indexOffset&&lastIndexRead.bytes==indexBytes){
+            indexPlan=lastSourceIndices.lock();
+            if(indexPlan&&indexPlan->format==id.Format&&indexPlan->topology==topology&&indexPlan->stride==detail.stride&&
+               !indexPlan->sourceOffsets.empty())plannedIndices=indexPlan->plan.lock();
+            if(!plannedIndices)indexPlan.reset();
+        }
         void* raw=nullptr;
-        if(sameIndices){chargedBytes+=indexBytes;avoidedReadBytes_+=indexBytes;++maintenance_.indexTokenHits;}
+        if(sameIndices||indexPlan){chargedBytes+=indexBytes;avoidedReadBytes_+=indexBytes;++maintenance_.indexTokenHits;maintenance_.indexPlanTokenHits+=bool(indexPlan);}
         else{
             // Capacity may allocate; do it before acquiring a real D3D lock.
             scratchRawIndices.reserve(size_t(indexBytes));
@@ -787,9 +805,7 @@ public:
             hr=readIndices.unlock();
             if(FAILED(hr))return reject(RejectReason::IndexUnlock,hr);
         }
-        std::shared_ptr<SourceIndices> indexPlan;
-        std::shared_ptr<DecodedIndices> plannedIndices;
-        if(!cached&&before.valid()){
+        if(!indexPlan&&!cached&&before.valid()){
             indexPlan=lastSourceIndices.lock();
             if(indexPlan&&indexPlan->format==id.Format&&indexPlan->topology==topology&&indexPlan->stride==detail.stride&&
                !indexPlan->sourceOffsets.empty()&&indexPlan->bytes==scratchRawIndices)plannedIndices=indexPlan->plan.lock();
@@ -914,7 +930,7 @@ public:
         ++maintenance_.rebuilds;
         // A racing write removes the optional cache proof. The exact copied
         // snapshot remains usable, but no absent raw fallback is published.
-        if(!directCold||verified)rememberContent(contentKey,hash,smallest,largest,scratchRawIndices,scratchRawVertices,scratchSourceOffsets,shared,detail,verified?before:Stamp{},decoded,span,indexPlan);
+        if(!directCold||verified)rememberContent(contentKey,hash,smallest,largest,indexPlan?indexPlan->bytes:scratchRawIndices,scratchRawVertices,scratchSourceOffsets,shared,detail,verified?before:Stamp{},decoded,span,indexPlan);
         else ++maintenance_.directUnstable;
         ++snapshots;output=std::move(shared);if(diagnostics)*diagnostics=detail;return true;
     }
