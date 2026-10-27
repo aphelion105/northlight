@@ -18,6 +18,7 @@ FILES=['renderer.cpp','world_renderer.h','world_shadow_experiment.inl','world_po
 GATES=('NorthlightDiagnostics::enabled()','diagnostics()','sampled()','captureSampled','if(diagnostics)','shadowFate.active()','sampledFrame','profiling()','profileSampled()','if(lightingClock)')
 # Ungated lines that stay with Diagnostics=0: format prefix -> label.
 KEEP={
+ 'DXVK3 compatibility import':'start-up: optional Vulkan compatibility hook',
  'DXVK3 engine-name FSE':'start-up: optional process compatibility configuration',
  'DXVK3 engine-name requested':'start-up: backend and Wine eligibility decision',
  'DXVK3 engine-name import':'start-up: import patch result',

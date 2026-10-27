@@ -4,8 +4,8 @@
 #include <cstdint>
 #include <cstring>
 
-// Experimental Windows/NVIDIA colour workaround. Only the selected DXVK module's
-// GetProcAddress import is redirected; the system Vulkan loader stays untouched.
+// DXVK compatibility workarounds. Only the selected DXVK module's GetProcAddress
+// import is redirected; the system Vulkan loader stays untouched.
 // These two Vulkan 1.0 structures retain their ABI through Vulkan 1.4.
 namespace NorthlightDxvkEngineName {
 struct ApplicationInfo {
@@ -19,11 +19,18 @@ struct InstanceCreateInfo {
 using VulkanFunction=void(WINAPI*)();
 using GetInstanceProc=VulkanFunction(WINAPI*)(void*,const char*);
 using CreateInstance=int32_t(WINAPI*)(const InstanceCreateInfo*,const void*,void**);
+struct FeatureHeader { uint32_t type; FeatureHeader* next; };
+struct PresentWaitFeature { uint32_t type; FeatureHeader* next; uint32_t supported; };
+using GetFeatures=void(WINAPI*)(void*,FeatureHeader*);
+using GetProperties=void(WINAPI*)(void*,void*);
 using GetProc=FARPROC(WINAPI*)(HMODULE,LPCSTR);
 using Log=void(*)(const char*,...);
 inline GetProc systemGetProc=&::GetProcAddress;
 inline std::atomic<GetInstanceProc> nextInstanceProc{nullptr};
 inline std::atomic<CreateInstance> nextCreateInstance{nullptr};
+inline std::atomic<GetFeatures> nextFeatures{nullptr},nextFeaturesKhr{nullptr};
+inline std::atomic<GetProperties> nextProperties{nullptr};
+inline bool engineNameEnabled=true,presentWaitEnabled=false;
 inline Log log=nullptr;
 inline constexpr char Engine[]="Northlight";
 template<class To,class From> To pointer(From value){
@@ -31,7 +38,7 @@ template<class To,class From> To pointer(From value){
 }
 inline int32_t WINAPI createInstance(const InstanceCreateInfo* info,const void* allocator,void** instance){
     const auto next=nextCreateInstance.load();if(!next)return -3; // VK_ERROR_INITIALIZATION_FAILED
-    const bool change=info&&info->application&&info->application->engine&&
+    const bool change=engineNameEnabled&&info&&info->application&&info->application->engine&&
         !std::strcmp(info->application->engine,"DXVK")&&((info->application->engineVersion>>22)&127u)==3;
     if(!change)return next(info,allocator,instance);
     ApplicationInfo app=*info->application;app.engine=Engine;
@@ -40,11 +47,36 @@ inline int32_t WINAPI createInstance(const InstanceCreateInfo* info,const void* 
     if(log)log("DXVK3 engine-name instance original=DXVK replacement=%s result=%ld",Engine,long(result));
     return result;
 }
+inline void filterPresentWait(void* physical,FeatureHeader* features,GetFeatures next){
+    if(!next)return;
+    next(physical,features);
+    const auto properties=nextProperties.load();
+    if(!presentWaitEnabled||!properties||!physical||!features)return;
+    // VkPhysicalDeviceProperties starts with apiVersion, driverVersion, vendorID.
+    // The complete Vulkan 1.x structure is written by the loader.
+    alignas(8) uint32_t props[1024]={};properties(physical,props);
+    if(props[2]!=0x10de)return;
+    for(auto* node=features->next;node;node=node->next){
+        if(node->type==1000248000u||node->type==1000480001u){
+            auto* wait=reinterpret_cast<PresentWaitFeature*>(node);
+            if(wait->supported){wait->supported=0;if(log)log("DXVK3 NVIDIA present-wait feature disabled type=%u",node->type);}
+        }
+    }
+}
+inline void WINAPI features(void* physical,FeatureHeader* out){filterPresentWait(physical,out,nextFeatures.load());}
+inline void WINAPI featuresKhr(void* physical,FeatureHeader* out){filterPresentWait(physical,out,nextFeaturesKhr.load());}
 inline VulkanFunction WINAPI instanceProc(void* instance,const char* name){
     const auto next=nextInstanceProc.load();if(!next)return nullptr;
     const auto result=next(instance,name);
     if(result&&name&&!std::strcmp(name,"vkCreateInstance")){
         nextCreateInstance.store(pointer<CreateInstance>(result));return pointer<VulkanFunction>(&createInstance);
+    }
+    if(result&&name&&presentWaitEnabled&&(!std::strcmp(name,"vkGetPhysicalDeviceFeatures2")||!std::strcmp(name,"vkGetPhysicalDeviceFeatures2KHR"))){
+        const auto props=next(instance,"vkGetPhysicalDeviceProperties");
+        if(!props)return result;
+        nextProperties.store(pointer<GetProperties>(props));
+        if(!std::strcmp(name,"vkGetPhysicalDeviceFeatures2")){nextFeatures.store(pointer<GetFeatures>(result));return pointer<VulkanFunction>(&features);}
+        nextFeaturesKhr.store(pointer<GetFeatures>(result));return pointer<VulkanFunction>(&featuresKhr);
     }
     if(result&&name&&!std::strcmp(name,"vkGetInstanceProcAddr"))return pointer<VulkanFunction>(&instanceProc);
     return result;
@@ -57,7 +89,7 @@ inline FARPROC WINAPI getProc(HMODULE module,LPCSTR name){
     }
     return result;
 }
-inline const char* install(HMODULE module,Log callback){
+inline const char* install(HMODULE module,Log callback,bool engine=true,bool presentWait=false){
     auto* base=reinterpret_cast<unsigned char*>(module);if(!base)return "missing-module";
     const auto* dos=reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
     if(dos->e_magic!=IMAGE_DOS_SIGNATURE||dos->e_lfanew<0||dos->e_lfanew>1048576)return "invalid-dos-header";
@@ -87,7 +119,7 @@ inline const char* install(HMODULE module,Log callback){
             if(!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_PIN,
                                   pointer<LPCWSTR>(&getProc),&owner))return "callback-module-pin-failed";
             DWORD old=0;if(!VirtualProtect(slot,sizeof(*slot),PAGE_READWRITE,&old))return "import-protection-failed";
-            log=callback;
+            log=callback;engineNameEnabled=engine;presentWaitEnabled=presentWait;
             const auto previous=InterlockedCompareExchangePointer(slot,pointer<void*>(&getProc),pointer<void*>(systemGetProc));
             DWORD ignored=0;const bool restored=VirtualProtect(slot,sizeof(*slot),old,&ignored)!=FALSE;
             if(previous!=pointer<void*>(systemGetProc))return "import-changed-concurrently";
