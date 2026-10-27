@@ -229,7 +229,8 @@ template<bool Strict=false,class Float=float> inline bool evaluate(const Program
 // The skinning template written out: evaluate()'s reads, expressions and order.
 template<bool Commuted=false> inline bool evaluateSkin(const Program& p,const Four inputs[16],const float* constants,Four& viewPosition){
 NO_FUSED_MULTIPLY_ADD
-    auto constant=[&](int index,Four& value){if(index<0||index>=256)return false;std::memcpy(value.data(),constants+4*index,16);for(auto& d:p.definitions)if(d.reg==unsigned(index))value=d.value;return true;};
+    const bool onlyControl=p.definitions.size()==1&&p.definitions[0].reg==0;
+    auto constant=[&](int index,Four& value){if(index<0||index>=256)return false;std::memcpy(value.data(),constants+4*index,16);if(!onlyControl||index==0)for(auto& d:p.definitions)if(d.reg==unsigned(index))value=d.value;return true;};
     const Four& v0=inputs[0];const Four& v1=inputs[1];const Four& v2=inputs[2];Four c0,address;constant(0,c0);
     for(unsigned j=0;j<4;++j){const float value=Commuted?v2[j]*c0[0]:c0[0]*v2[j];if(!std::isfinite(value)||std::fabs(value-std::floor(value)-.5f)<1e-6f)return false;address[j]=std::round(value);}
     auto row=[&](int base,unsigned channel,Four& m){const float a=address[channel];if(!std::isfinite(a)||a<-4096||a>4096)return false;return constant(base+int(a),m);};
@@ -300,6 +301,15 @@ template<bool Strict=false> inline bool evaluateFast(const Program& p,const Four
 // Immutable declaration bindings contain only offsets/types and input metadata.
 // They never cache vertex bytes, constants, bone poses, or game/D3D pointers.
 struct Binding {Input input;D3DVERTEXELEMENT9 element;};
+inline bool clearVertexInputsMask(const Program& program,unsigned provided){
+    if(!program.kernel.valid||program.kernel.ops.size()!=program.operations.size())return true;
+    for(const auto& op:program.kernel.ops){if(op.operands<0||op.operands>3)return true;
+        for(int i=0;i<op.operands;++i){const auto& source=op.source[i];if(source.kind==1&&(source.index>=16||!(provided&(1u<<source.index))))return true;}}
+    return false;
+}
+template<class Bindings>inline bool clearVertexInputs(const Program& program,const Bindings& bindings){
+    unsigned provided=0;for(const auto& b:bindings){if(b.input.reg>=16)return true;provided|=1u<<b.input.reg;}return clearVertexInputsMask(program,provided);
+}
 struct PreparedBindings {
     std::vector<Binding> bindings;
     std::vector<Input> inputs;
@@ -328,25 +338,28 @@ inline bool prepareBindings(const Program& program,const NorthlightDrawSnapshot:
 }
 class PreparedBindingCache {
     struct Entry {std::shared_ptr<const PreparedBindings> prepared;uint64_t key=0,touched=0;};
-    std::array<Entry,64> entries_{};uint64_t stamp_=0;
+    std::array<Entry,64> entries_{};uint64_t stamp_=0;unsigned recent_=64;
 public:
     uint64_t hits=0,preparations=0;
     std::shared_ptr<const PreparedBindings> acquire(const Program& program,const NorthlightDrawSnapshot::Mesh& mesh,const D3DVERTEXELEMENT9* elements,size_t count){
         if(!elements||!count||count>MAXD3DDECLLENGTH+1)return {};
+        ++stamp_;
+        if(recent_<entries_.size()){auto& entry=entries_[recent_];
+            if(entry.prepared&&entry.prepared->declarationMatches(elements,count)&&entry.prepared->validFor(program,mesh)){entry.touched=stamp_;++hits;return entry.prepared;}}
         uint64_t key=14695981039346656037ull;auto mix=[&](uint64_t n){key=(key^n)*1099511628211ull;};
         for(const auto& input:program.inputs){mix(input.reg);mix(input.usage);mix(input.index);}mix(program.inputs.size());
         for(size_t i=0;i<count;++i){const auto& e=elements[i];mix(e.Stream);mix(e.Offset);mix(e.Type);mix(e.Method);mix(e.Usage);mix(e.UsageIndex);}mix(count);for(const auto& stream:mesh.streams)mix(stream.stride);
-        ++stamp_;Entry* oldest=&entries_[0];
+        Entry* oldest=&entries_[0];
         for(auto& entry:entries_){if(entry.touched<oldest->touched)oldest=&entry;
-            if(entry.prepared&&entry.key==key&&entry.prepared->declarationMatches(elements,count)&&entry.prepared->validFor(program,mesh)){entry.touched=stamp_;++hits;return entry.prepared;}}
+            if(entry.prepared&&entry.key==key&&entry.prepared->declarationMatches(elements,count)&&entry.prepared->validFor(program,mesh)){entry.touched=stamp_;recent_=unsigned(&entry-entries_.data());++hits;return entry.prepared;}}
         auto prepared=std::make_shared<PreparedBindings>();if(!prepareBindings(program,mesh,elements,count,*prepared))return {};
-        ++preparations;*oldest={prepared,key,stamp_};return prepared;
+        ++preparations;*oldest={prepared,key,stamp_};recent_=unsigned(oldest-entries_.data());return prepared;
     }
 };
 // The complete audited single-bone kernel reads only v0/v1. Both are fully
 // decoded each vertex; the draw-local c0 never outlives its current pose bank.
-inline bool singleSkinBoundsPrepared(const Program& program,const NorthlightDrawSnapshot::Mesh& mesh,const PreparedBindings& prepared,const float* constants,float* low,float* high){
-    if(!program.kernel.singleSkin()||!constants||!prepared.validFor(program,mesh)||prepared.bindings.size()!=2||prepared.bindings[0].input.reg>=2||prepared.bindings[1].input.reg>=2||prepared.bindings[0].input.reg==prepared.bindings[1].input.reg)return false;
+template<bool Validated=false> inline bool singleSkinBoundsPrepared(const Program& program,const NorthlightDrawSnapshot::Mesh& mesh,const PreparedBindings& prepared,const float* constants,float* low,float* high){
+    if(!program.kernel.singleSkin()||!constants||(!Validated&&!prepared.validFor(program,mesh))||prepared.bindings.size()!=2||prepared.bindings[0].input.reg>=2||prepared.bindings[1].input.reg>=2||prepared.bindings[0].input.reg==prepared.bindings[1].input.reg)return false;
     const Four control=singleSkinControl(program,constants);Four inputs[2];
     for(UINT vertex=0;vertex<mesh.vertexCount;++vertex){for(const auto& b:prepared.bindings){const auto& s=mesh.streams[b.element.Stream];if(!decodeElement(s.bytes.data()+size_t(vertex)*s.stride+b.element.Offset,b.element.Type,inputs[b.input.reg]))return false;}
         Four view;if(!evaluateSingleSkin<true>(program,inputs,constants,view,&control))return false;
@@ -356,9 +369,10 @@ inline bool singleSkinBoundsPrepared(const Program& program,const NorthlightDraw
 inline bool worldPositionsPrepared(const Program& program,const NorthlightDrawSnapshot::Mesh& mesh,const PreparedBindings& prepared,const float* constants,const float* inverseView,std::vector<Position>& output){
     output.clear();if(!constants||!inverseView||!prepared.validFor(program,mesh))return false;
     const auto& bindings=prepared.bindings;
-    std::vector<Position> positions;positions.reserve(mesh.vertexCount);
-    for(UINT vertex=0;vertex<mesh.vertexCount;++vertex){Four inputs[16]={};for(auto& b:bindings){auto& s=mesh.streams[b.element.Stream];if(!decodeElement(s.bytes.data()+std::size_t(vertex)*s.stride+b.element.Offset,b.element.Type,inputs[b.input.reg]))return false;}
-        Four v;if(!evaluate(program,inputs,constants,v))return false;Position out;
+    std::vector<Position> positions;positions.swap(output);positions.reserve(mesh.vertexCount);
+    const bool clearInputs=clearVertexInputs(program,bindings);
+    for(UINT vertex=0;vertex<mesh.vertexCount;++vertex){Four inputs[16];if(clearInputs)std::fill(std::begin(inputs),std::end(inputs),Four{});for(auto& b:bindings){auto& s=mesh.streams[b.element.Stream];if(!decodeElement(s.bytes.data()+std::size_t(vertex)*s.stride+b.element.Offset,b.element.Type,inputs[b.input.reg]))return false;}
+        Four v;if(!evaluateFast(program,inputs,constants,v))return false;Position out;
         out.x=v[0]*inverseView[0]+v[1]*inverseView[4]+v[2]*inverseView[8]+inverseView[12];
         out.y=v[0]*inverseView[1]+v[1]*inverseView[5]+v[2]*inverseView[9]+inverseView[13];
         out.z=v[0]*inverseView[2]+v[1]*inverseView[6]+v[2]*inverseView[10]+inverseView[14];
@@ -368,9 +382,10 @@ inline bool worldPositionsPrepared(const Program& program,const NorthlightDrawSn
 inline bool textureUVsPrepared(const Program& program,const NorthlightDrawSnapshot::Mesh& mesh,const PreparedBindings& prepared,const float* constants,std::vector<std::array<float,2>>& output){
     output.clear();if(!program.textureCoordinates||!constants||!prepared.validFor(program,mesh))return false;
     const auto& bindings=prepared.bindings;
-    std::vector<std::array<float,2>> positions;positions.reserve(mesh.vertexCount);
-    for(UINT vertex=0;vertex<mesh.vertexCount;++vertex){Four inputs[16]={};for(auto& b:bindings){auto& s=mesh.streams[b.element.Stream];if(!decodeElement(s.bytes.data()+std::size_t(vertex)*s.stride+b.element.Offset,b.element.Type,inputs[b.input.reg]))return false;}
-        Four v;if(!evaluate(program,inputs,constants,v))return false;positions.push_back({v[0],v[1]});}
+    std::vector<std::array<float,2>> positions;positions.swap(output);positions.reserve(mesh.vertexCount);
+    const bool clearInputs=clearVertexInputs(program,bindings);
+    for(UINT vertex=0;vertex<mesh.vertexCount;++vertex){Four inputs[16];if(clearInputs)std::fill(std::begin(inputs),std::end(inputs),Four{});for(auto& b:bindings){auto& s=mesh.streams[b.element.Stream];if(!decodeElement(s.bytes.data()+std::size_t(vertex)*s.stride+b.element.Offset,b.element.Type,inputs[b.input.reg]))return false;}
+        Four v;if(!evaluateFast(program,inputs,constants,v))return false;positions.push_back({v[0],v[1]});}
     output=std::move(positions);return true;
 }
 // Original transient-call path: avoid adding cache metadata copies for callers
@@ -381,9 +396,10 @@ inline bool worldPositions(const Program& program,const NorthlightDrawSnapshot::
     for(auto input:program.inputs){bool found=false;for(std::size_t j=0;j<elementCount;++j){auto e=elements[j];if(e.Stream==0xff)break;if(e.Usage!=input.usage||e.UsageIndex!=input.index)continue;
         if(found||e.Stream>=4||e.Method!=D3DDECLMETHOD_DEFAULT)return false;auto& s=mesh.streams[e.Stream];unsigned size=NorthlightDrawSnapshot::declarationBytes(e.Type);
         if(!size||UINT(e.Offset)+size>s.stride||std::uint64_t(mesh.vertexCount)*s.stride>s.bytes.size())return false;bindings.push_back({input,e});found=true;}if(!found)return false;}
-    std::vector<Position> positions;positions.reserve(mesh.vertexCount);
-    for(UINT vertex=0;vertex<mesh.vertexCount;++vertex){Four inputs[16]={};for(auto& b:bindings){auto& s=mesh.streams[b.element.Stream];if(!decodeElement(s.bytes.data()+std::size_t(vertex)*s.stride+b.element.Offset,b.element.Type,inputs[b.input.reg]))return false;}
-        Four v;if(!evaluate(program,inputs,constants,v))return false;Position out;
+    std::vector<Position> positions;positions.swap(output);positions.reserve(mesh.vertexCount);
+    const bool clearInputs=clearVertexInputs(program,bindings);
+    for(UINT vertex=0;vertex<mesh.vertexCount;++vertex){Four inputs[16];if(clearInputs)std::fill(std::begin(inputs),std::end(inputs),Four{});for(auto& b:bindings){auto& s=mesh.streams[b.element.Stream];if(!decodeElement(s.bytes.data()+std::size_t(vertex)*s.stride+b.element.Offset,b.element.Type,inputs[b.input.reg]))return false;}
+        Four v;if(!evaluateFast(program,inputs,constants,v))return false;Position out;
         out.x=v[0]*inverseView[0]+v[1]*inverseView[4]+v[2]*inverseView[8]+inverseView[12];
         out.y=v[0]*inverseView[1]+v[1]*inverseView[5]+v[2]*inverseView[9]+inverseView[13];
         out.z=v[0]*inverseView[2]+v[1]*inverseView[6]+v[2]*inverseView[10]+inverseView[14];
@@ -396,9 +412,10 @@ inline bool textureUVs(const Program& program,const NorthlightDrawSnapshot::Mesh
     for(auto input:program.inputs){bool found=false;for(std::size_t j=0;j<elementCount;++j){auto e=elements[j];if(e.Stream==0xff)break;if(e.Usage!=input.usage||e.UsageIndex!=input.index)continue;
         if(found||e.Stream>=4||e.Method!=D3DDECLMETHOD_DEFAULT)return false;auto& s=mesh.streams[e.Stream];unsigned size=NorthlightDrawSnapshot::declarationBytes(e.Type);
         if(!size||UINT(e.Offset)+size>s.stride||std::uint64_t(mesh.vertexCount)*s.stride>s.bytes.size())return false;bindings.push_back({input,e});found=true;}if(!found)return false;}
-    std::vector<std::array<float,2>> positions;positions.reserve(mesh.vertexCount);
-    for(UINT vertex=0;vertex<mesh.vertexCount;++vertex){Four inputs[16]={};for(auto& b:bindings){auto& s=mesh.streams[b.element.Stream];if(!decodeElement(s.bytes.data()+std::size_t(vertex)*s.stride+b.element.Offset,b.element.Type,inputs[b.input.reg]))return false;}
-        Four v;if(!evaluate(program,inputs,constants,v))return false;positions.push_back({v[0],v[1]});}
+    std::vector<std::array<float,2>> positions;positions.swap(output);positions.reserve(mesh.vertexCount);
+    const bool clearInputs=clearVertexInputs(program,bindings);
+    for(UINT vertex=0;vertex<mesh.vertexCount;++vertex){Four inputs[16];if(clearInputs)std::fill(std::begin(inputs),std::end(inputs),Four{});for(auto& b:bindings){auto& s=mesh.streams[b.element.Stream];if(!decodeElement(s.bytes.data()+std::size_t(vertex)*s.stride+b.element.Offset,b.element.Type,inputs[b.input.reg]))return false;}
+        Four v;if(!evaluateFast(program,inputs,constants,v))return false;positions.push_back({v[0],v[1]});}
     output=std::move(positions);return true;
 }
 // One currently referenced vertex, used ONLY for experimental distance ranking.
