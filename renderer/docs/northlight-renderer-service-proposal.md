@@ -1,6 +1,8 @@
 # Northlight rendering replacement: a twelve-month proposal
 
-Status: architecture proposal, not an implemented backend or an FPS forecast.
+Status: rejected direction. The selected architecture investigation stays in the
+existing x86 process; see [the x86 plan](northlight-x86-rendering-plan.md). This
+document retains the alternative and its costs, not an implementation commitment.
 Constraint: leave `wow.exe`, game logic and wow_optimize unchanged. Preserve actual
 effect coverage, HD assets, MSAA and the current aggregate memory budgets.
 
@@ -23,6 +25,27 @@ External GPU memory and synchronization are supported mechanisms, not proof that
 the current DXVK interface can simply be moved across processes. Resource format,
 handle ownership, backend interoperability and presentation must be proven first.
 There must be no per-frame GPU-to-CPU-to-GPU image copy.
+
+## One execution owner, not two renderers drawing the same scene
+
+The frontend must replace execution of migrated commands, rather than forwarding
+them to the current x86 backend and asking the service to draw them again. WoW
+still performs its own CPU preparation and calls D3D9; the shim records/encodes
+those calls. The service executes the corresponding GPU work once. Initially,
+that can be compatible D3D9 replay in x64; semantic replacements follow later.
+
+During incremental migration, each pass/resource version has exactly one
+execution owner. A compatible fallback replaces the migrated pass rather than
+adding a second full-scene render. Native API queries, locks and completion must
+refer to that real owner. Presentation of a shared completed image is not a
+second scene render, although transfer and synchronization overhead still count.
+
+CPU duplication remains a real risk: WoW builds its native draw stream and the
+service must consume it. A retained scene should make that consumption incremental
+instead of rebuilding geometry/materials each frame. Moving the existing repeated
+work to another process without removing it is not an optimization. The x64 split
+is conditional on measurements; an in-process modern renderer remains preferable
+if IPC or compatibility costs erase the memory/preparation benefit.
 
 ## Work that should disappear
 
