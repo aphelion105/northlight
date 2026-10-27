@@ -3,6 +3,7 @@
 // belong on the worker. No game pointers, weather guesses, or camera-floor ray.
 #include "world_gi.h"
 #include <array>
+#include <climits>
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -22,6 +23,32 @@ struct Region {std::vector<Tile> tiles;unsigned missing=0,invalid=0;};
 struct Texel {float ground=0,day=0,nightExtra=0,height=0;};
 static_assert(sizeof(Texel)==16,"Fog texture float4");
 struct Field {float originX=0,originY=0;std::array<Texel,N*N> texels{};std::array<uint8_t,N*N> lush{}; /* 0.3.199 (fog clouds): 1 = outdoor forest/grass zone (lushZone), CPU only */unsigned groundCells=0,fogCells=0,airCells=0,indoorCells=0,citySurfaceCells=0;};
+// Bounds of regionalFogAt's clamped bilinear footprint. w: empty 0, bounded 1,
+// unknown -1. The reciprocal floor can pull sparse ground heights toward zero.
+inline std::array<float,4> heightBounds(const Field& field,unsigned x,unsigned y){
+    std::array<float,4> out={INFINITY,-INFINITY,0,0};bool sparse=false;
+    for(unsigned dy=0;dy<2;++dy)for(unsigned dx=0;dx<2;++dx){
+        const auto& t=field.texels[std::min(y+dy,N-1)*N+std::min(x+dx,N-1)];
+        if(!std::isfinite(t.ground)||!std::isfinite(t.day)||!std::isfinite(t.nightExtra)||!std::isfinite(t.height))return {0,0,0,-1};
+        if(t.height<=0){sparse=true;continue;}
+        out[0]=std::min(out[0],t.ground);out[1]=std::max(out[1],t.ground);out[2]=std::max(out[2],t.height);out[3]=1;
+    }
+    if(!out[3])return {};
+    if(sparse){out[0]=std::min(out[0],0.f);out[1]=std::max(out[1],0.f);}
+    return out;
+}
+// Global support of the same sparse bilinear field. Include zero because the
+// reciprocal floor can pull a very lightly weighted valid node toward zero.
+// A nonpositive tag disables clipping for unknown or empty metadata.
+inline std::array<float,3> globalHeightBounds(const Field& field){
+    std::array<float,3> out{};
+    for(const auto& t:field.texels){
+        if(!std::isfinite(t.ground)||!std::isfinite(t.day)||!std::isfinite(t.nightExtra)||!std::isfinite(t.height))return {};
+        if(t.height<=0)continue;
+        out[0]=std::min(out[0],t.ground);out[1]=std::max(out[1],t.ground);out[2]=std::max(out[2],t.height);
+    }
+    return out;
+}
 inline float smooth(float x){x=std::clamp(x,0.f,1.f);return x*x*(3-2*x);}
 // Artist policy transitions, applied to the VERIFIED game's normalized render
 // time (minute-of-day / 1440, including fixed-time map override). Unknown clock
@@ -78,13 +105,13 @@ inline bool indoorColumn(const Region& region,float x,float y,float ground){
 inline float wetness(const Region& region,float x,float y,float ground,float& surface){
     float best=24.f*24.f;surface=ground;
     for(const auto& tile:region.tiles)for(const auto& w:tile.water){
-        if(std::fabs(ground-w.height)>8)continue;
+        if(!w.mask||std::fabs(ground-w.height)>8)continue;
         float dx=std::max({float(w.x-ChunkSize)-x,0.f,x-w.x}),dy=std::max({float(w.y-ChunkSize)-y,0.f,y-w.y});
         if(dx*dx+dy*dy>=best)continue;
-        for(unsigned row=0;row<8;++row)for(unsigned col=0;col<8;++col)if(w.mask&(uint64_t(1)<<(row*8+col))){
+        for(unsigned row=0;row<8;++row)if((w.mask>>(row*8))&0xff)for(unsigned col=0;col<8;++col)if(w.mask&(uint64_t(1)<<(row*8+col))){
             float highX=float(w.x-row*Unit),lowX=float(w.x-(row+1)*Unit),highY=float(w.y-col*Unit),lowY=float(w.y-(col+1)*Unit);
             float a=std::max({lowX-x,0.f,x-highX}),b=std::max({lowY-y,0.f,y-highY});float distance=a*a+b*b;
-            if(distance<best){best=distance;if(distance==0)surface=std::max(ground,w.height);}
+            if(distance<best){best=distance;if(distance==0){surface=std::max(ground,w.height);return 1;}}
         }
     }
     return 1-smooth(std::sqrt(best)/24.f);
@@ -171,19 +198,36 @@ inline Field buildField(const NorthlightGI::WorldScene& scene,const Region& regi
     out.originX=std::floor(centerX/Spacing)*Spacing-float(N/2)*Spacing;
     out.originY=std::floor(centerY/Spacing)*Spacing-float(N/2)*Spacing;
     std::array<bool,N*N> city{};bool hasCity=false,hasWmo=false;
-    for(unsigned y=0;y<N;++y)for(unsigned x=0;x<N;++x){city[y*N+x]=cityZone(zoneAt(region,out.originX+x*Spacing,out.originY+y*Spacing));hasCity|=city[y*N+x];}
-    if(hasCity)for(const auto& material:scene.materials)hasWmo|=material.wmo;
+    // Reuse the not-yet-populated output ground slots to avoid a second zone lookup without allocating another grid.
+    int previousRow=INT_MIN;
+    if(!region.tiles.empty())for(unsigned y=0;y<N;++y){
+        int previous=INT_MIN;uint32_t zone=0;const float py=out.originY+y*Spacing;
+        const int row=std::fabs(py)>100000?INT_MIN:int(std::floor((WorldZero-py)/ChunkSize));
+        if(y&&row!=INT_MIN&&row==previousRow){
+            for(unsigned x=0;x<N;++x){std::memcpy(&out.texels[y*N+x].ground,&out.texels[(y-1)*N+x].ground,sizeof(uint32_t));city[y*N+x]=city[(y-1)*N+x];}
+            continue;
+        }
+        previousRow=row;
+        for(unsigned x=0;x<N;++x){
+            const float px=out.originX+x*Spacing;
+            const int chunk=std::fabs(px)>100000||std::fabs(py)>100000?INT_MIN:int(std::floor((WorldZero-px)/ChunkSize));
+            if(chunk==INT_MIN||chunk!=previous){zone=zoneAt(region,px,py);previous=chunk;}
+            std::memcpy(&out.texels[y*N+x].ground,&zone,sizeof zone);city[y*N+x]=cityZone(zone);hasCity|=city[y*N+x];
+        }
+    }
+    if(hasCity)for(const auto& material:scene.materials)if(material.wmo){hasWmo=true;break;}
+    bool hasWater=false,hasIndoors=false;for(const auto& tile:region.tiles){hasWater|=!tile.water.empty();hasIndoors|=!tile.indoors.empty();if(hasWater&&hasIndoors)break;}
     std::array<float,N*N> ground;ground.fill(-std::numeric_limits<float>::infinity());
     for(const auto& tri:scene.triangles){
-        if(tri.material>=scene.materials.size()||tri.v0>=scene.vertices.size()||tri.v1>=scene.vertices.size()||tri.v2>=scene.vertices.size())continue;
+        if(tri.material>=scene.materials.size())continue;
         const auto& material=scene.materials[tri.material];
         const bool cityWmo=hasCity&&material.wmo&&!material.terrain;
-        if(!material.terrain&&!cityWmo)continue;
+        if((!material.terrain&&!cityWmo)||tri.v0>=scene.vertices.size()||tri.v1>=scene.vertices.size()||tri.v2>=scene.vertices.size())continue;
         const auto a=scene.vertices[tri.v0].position,b=scene.vertices[tri.v1].position,c=scene.vertices[tri.v2].position;
-        double denominator=double(b.y-c.y)*(a.x-c.x)+double(c.x-b.x)*(a.y-c.y);
-        if(!std::isfinite(denominator)||std::fabs(denominator)<1e-10)continue;
         float loX=std::min({a.x,b.x,c.x}),hiX=std::max({a.x,b.x,c.x}),loY=std::min({a.y,b.y,c.y}),hiY=std::max({a.y,b.y,c.y});
         if(hiX<out.originX||hiY<out.originY||loX>out.originX+(N-1)*Spacing||loY>out.originY+(N-1)*Spacing)continue;
+        double denominator=double(b.y-c.y)*(a.x-c.x)+double(c.x-b.x)*(a.y-c.y);
+        if(!std::isfinite(denominator)||std::fabs(denominator)<1e-10)continue;
         int x0=int(std::max(0.,std::ceil((double(loX)-out.originX)/Spacing))),x1=int(std::min(double(N-1),std::floor((double(hiX)-out.originX)/Spacing)));
         int y0=int(std::max(0.,std::ceil((double(loY)-out.originY)/Spacing))),y1=int(std::min(double(N-1),std::floor((double(hiY)-out.originY)/Spacing)));
         for(int y=y0;y<=y1;++y)for(int x=x0;x<=x1;++x){
@@ -200,18 +244,20 @@ inline Field buildField(const NorthlightGI::WorldScene& scene,const Region& regi
         }
     }
     for(unsigned y=0;y<N;++y)for(unsigned x=0;x<N;++x){
-        unsigned i=y*N+x;if(!std::isfinite(ground[i]))continue;++out.groundCells;
+        unsigned i=y*N+x;uint32_t zone;std::memcpy(&zone,&out.texels[i].ground,sizeof zone);out.texels[i].ground=0;if(!std::isfinite(ground[i]))continue;++out.groundCells;
         // City WMOs enclose whole open streets in their indoor AABBs. The top
         // opaque terrain/WMO envelope instead starts air at the street or roof.
         // Below a roof the shader's altitude test is negative, so rooms stay dry.
         // M2 trees/doodads never define this envelope. No camera-height test.
         bool citySurface=city[i]&&hasWmo;if(citySurface)++out.citySurfaceCells;
-        float px=out.originX+x*Spacing,py=out.originY+y*Spacing;bool indoors=!citySurface&&indoorColumn(region,px,py,ground[i]);if(indoors)++out.indoorCells;
-        float surrounding=0;unsigned count=0;
-        for(int dy=-1;dy<=1;++dy)for(int dx=-1;dx<=1;++dx){int xx=int(x)+dx,yy=int(y)+dy;if((dx||dy)&&xx>=0&&xx<int(N)&&yy>=0&&yy<int(N)&&std::isfinite(ground[yy*N+xx])){surrounding+=ground[yy*N+xx];++count;}}
-        float basin=count?smooth((surrounding/count-ground[i]-.25f)/2.f):0;
-        float surface=ground[i],wet=wetness(region,px,py,ground[i],surface);
-        const uint32_t zone=zoneAt(region,px,py);
+        float px=out.originX+x*Spacing,py=out.originY+y*Spacing;bool indoors=!citySurface&&hasIndoors&&indoorColumn(region,px,py,ground[i]);if(indoors)++out.indoorCells;
+        float basin=0;
+        if(!indoors&&(zone==10||zone==33||forestZone(zone))){
+            float surrounding=0;unsigned count=0;
+            for(int dy=-1;dy<=1;++dy)for(int dx=-1;dx<=1;++dx){int xx=int(x)+dx,yy=int(y)+dy;if((dx||dy)&&xx>=0&&xx<int(N)&&yy>=0&&yy<int(N)&&std::isfinite(ground[yy*N+xx])){surrounding+=ground[yy*N+xx];++count;}}
+            basin=count?smooth((surrounding/count-ground[i]-.25f)/2.f):0;
+        }
+        float surface=ground[i],wet=hasWater?wetness(region,px,py,ground[i],surface):0;
         auto cell=policy(zone,surface,wet,basin,indoors);if(zoneScale&&*zoneScale&&!indoors&&cell.height>0)(*zoneScale)(zone,cell.day,cell.nightExtra); /* outdoor cells of a known zone only (finite ground is guaranteed above) */out.lush[i]=!indoors&&lushZone(zone);
         float edge=smooth(float(std::min({x,y,N-1-x,N-1-y}))/2.f);cell.day*=edge;cell.nightExtra*=edge;
         out.texels[i]=cell;if(cell.day>0||cell.nightExtra>0)++out.fogCells;

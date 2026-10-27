@@ -68,6 +68,8 @@ test_fog_clouds_wiring.py
 test_fog_empty_intervals.py
 test_fog_locale.py
 test_fog_motion.py
+test_fog_optimization_proofs.py
+test_fog_source_visibility.py
 test_fog_temporal_wiring.py
 test_frame_stall_profile.py
 test_game_snapshot.py

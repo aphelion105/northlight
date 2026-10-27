@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <vector>
 
 namespace NorthlightFogClouds {
@@ -28,46 +29,51 @@ inline float unit(uint32_t h){return float(h>>8)*(1.f/16777216.f);}
 inline float fade(float t){return t*t*t*(t*(t*6-15)+10);}
 inline float lerp(float a,float b,float t){return a+(b-a)*t;}
 // periodic gradient noise, P cells per tile, evaluated at voxel (x,y,z); about -1..1
-inline float perlin(unsigned P,uint32_t seed,unsigned oct,float x,float y,float z){
+inline float perlin(unsigned P,uint32_t seed,unsigned oct,float x,float y,float z,const uint8_t* gradients=nullptr){
     static const int G[12][3]={{1,1,0},{-1,1,0},{1,-1,0},{-1,-1,0},{1,0,1},{-1,0,1},{1,0,-1},{-1,0,-1},{0,1,1},{0,-1,1},{0,1,-1},{0,-1,-1}};
     const float s=float(P)/float(N);x*=s;y*=s;z*=s;
     const int ix=int(std::floor(x)),iy=int(std::floor(y)),iz=int(std::floor(z));
     const float fx=x-float(ix),fy=y-float(iy),fz=z-float(iz);
-    float v[8];
+    float v[8];const bool powerOfTwo=P&&(P&(P-1))==0;
     for(int k=0;k<8;++k){
         const int dx=k&1,dy=(k>>1)&1,dz=(k>>2)&1;
-        const uint32_t cx=uint32_t(ix+dx)%P,cy=uint32_t(iy+dy)%P,cz=uint32_t(iz+dz)%P;
-        const int* g=G[hash(cx,cy,cz,seed+oct*0x9e37u)%12];
+        const uint32_t cx=powerOfTwo?(uint32_t(ix+dx)&(P-1)):uint32_t(ix+dx)%P,cy=powerOfTwo?(uint32_t(iy+dy)&(P-1)):uint32_t(iy+dy)%P,cz=powerOfTwo?(uint32_t(iz+dz)&(P-1)):uint32_t(iz+dz)%P;
+        const int* g=G[gradients?gradients[(oct==0?0:oct==1?64:576)+cx+P*(cy+P*cz)]:hash(cx,cy,cz,seed+oct*0x9e37u)%12];
         v[k]=float(g[0])*(fx-float(dx))+float(g[1])*(fy-float(dy))+float(g[2])*(fz-float(dz));}
     const float u=fade(fx),vv=fade(fy),w=fade(fz);
     return lerp(lerp(lerp(v[0],v[1],u),lerp(v[2],v[3],u),vv),lerp(lerp(v[4],v[5],u),lerp(v[6],v[7],u),vv),w);}
 // periodic cellular F1 distance in cell units, P cells per tile
-inline float worley(unsigned P,uint32_t seed,float x,float y,float z){
+inline float worley(unsigned P,uint32_t seed,float x,float y,float z,const uint8_t* features=nullptr){
     const float s=float(P)/float(N);x*=s;y*=s;z*=s;
     const int ix=int(std::floor(x)),iy=int(std::floor(y)),iz=int(std::floor(z));
-    float best=4.f;
-    for(int dz=-1;dz<=1;++dz)for(int dy=-1;dy<=1;++dy)for(int dx=-1;dx<=1;++dx){
-        const int cx=ix+dx,cy=iy+dy,cz=iz+dz;
-        const uint32_t hx=uint32_t((cx%int(P)+int(P))%int(P)),hy=uint32_t((cy%int(P)+int(P))%int(P)),hz=uint32_t((cz%int(P)+int(P))%int(P));
-        const uint32_t h=hash(hx,hy,hz,seed^0xabcdu);
-        const float px=float(cx)+unit(h),py=float(cy)+unit(h*0x2545f491u+1),pz=float(cz)+unit(h*0x9e3779b1u+7);
-        const float ex=px-x,ey=py-y,ez=pz-z;best=std::min(best,ex*ex+ey*ey+ez*ez);}
+    float best=4.f;const bool powerOfTwo=P&&(P&(P-1))==0;
+    for(int dz=-1;dz<=1;++dz){const int cz=iz+dz;const uint32_t hz=powerOfTwo?(uint32_t(cz)&(P-1)):uint32_t((cz%int(P)+int(P))%int(P));
+      for(int dy=-1;dy<=1;++dy){const int cy=iy+dy;const uint32_t hy=powerOfTwo?(uint32_t(cy)&(P-1)):uint32_t((cy%int(P)+int(P))%int(P));
+       for(int dx=-1;dx<=1;++dx){const int cx=ix+dx;const uint32_t hx=powerOfTwo?(uint32_t(cx)&(P-1)):uint32_t((cx%int(P)+int(P))%int(P));
+        float u[3];
+        if(features)std::memcpy(u,features+12*(hx+8*(hy+8*hz)),12);
+        else{const uint32_t h=hash(hx,hy,hz,seed^0xabcdu);u[0]=unit(h);u[1]=unit(h*0x2545f491u+1);u[2]=unit(h*0x9e3779b1u+7);}
+        const float px=float(cx)+u[0],py=float(cy)+u[1],pz=float(cz)+u[2];
+        const float ex=px-x,ey=py-y,ez=pz-z;best=std::min(best,ex*ex+ey*ey+ez*ez);}}}
     return std::sqrt(best);}
 }
 
 // N*N*N bytes, deterministic, tileable (periodic in all axes): 3-octave Perlin FBM (4, 8, 16 cells over the tile) blended with an
 // inverted Worley term (8 cells) for a billowy look, normalised min..max to 0..255.
 inline std::vector<uint8_t> generate(uint32_t seed=Seed){
-    std::vector<float> f(size_t(N)*N*N);float lo=1e9f,hi=-1e9f;
+    // Reuse the output bytes as fixed-period gradient and feature tables until the final conversion; peak allocation is unchanged.
+    std::vector<float> f(size_t(N)*N*N);std::vector<uint8_t> out(f.size());float lo=1e9f,hi=-1e9f;
+    for(unsigned o=0,P=4;o<3;++o,P*=2)for(unsigned z=0;z<P;++z)for(unsigned y=0;y<P;++y)for(unsigned x=0;x<P;++x)out[(o==0?0:o==1?64:576)+x+P*(y+P*z)]=uint8_t(detail::hash(x,y,z,seed+o*0x9e37u)%12);
+    for(uint32_t z=0;z<8;++z)for(uint32_t y=0;y<8;++y)for(uint32_t x=0;x<8;++x){const uint32_t h=detail::hash(x,y,z,seed^0xabcdu);const float v[3]={detail::unit(h),detail::unit(h*0x2545f491u+1),detail::unit(h*0x9e3779b1u+7)};std::memcpy(out.data()+4672+12*(x+8*(y+8*z)),v,12);}
     for(unsigned z=0;z<N;++z)for(unsigned y=0;y<N;++y)for(unsigned x=0;x<N;++x){
         const float fx=float(x),fy=float(y),fz=float(z);
         float p=0,a=1,sum=0;unsigned P=4;
-        for(unsigned o=0;o<3;++o,P*=2,a*=.5f){p+=a*detail::perlin(P,seed,o,fx,fy,fz);sum+=a;}
+        for(unsigned o=0;o<3;++o,P*=2,a*=.5f){p+=a*detail::perlin(P,seed,o,fx,fy,fz,out.data());sum+=a;}
         const float pn=std::clamp(.5f+.5f*(p/sum)*1.4f,0.f,1.f);
-        const float w=1.f-std::min(detail::worley(8,seed,fx,fy,fz),1.f);
+        const float w=1.f-std::min(detail::worley(8,seed,fx,fy,fz,out.data()+4672),1.f);
         const float v=.6f*pn+.4f*w;
         f[x+N*(y+size_t(N)*z)]=v;lo=std::min(lo,v);hi=std::max(hi,v);}
-    std::vector<uint8_t> out(f.size());const float k=hi>lo?255.f/(hi-lo):0.f;
+    const float k=hi>lo?255.f/(hi-lo):0.f;
     for(size_t i=0;i<f.size();++i)out[i]=uint8_t(std::clamp(std::floor((f[i]-lo)*k+.5f),0.f,255.f));
     return out;}
 
@@ -93,11 +99,11 @@ struct Wind {
         const double f=std::isfinite(fog)?std::clamp(double(fog),0.0,1.0):0.0;
         const double sp=kWindDry+(kWindRain-kWindDry)*f,a=0.35+0.436*std::sin(2*3.14159265358979323846*clock/600.0); /* slow +-25 degree veer over ~10 min */
         const double sa=a+0.35,ss=sp*1.6;
-        speed=float(sp);dir[0]=float(std::cos(a));dir[1]=float(std::sin(a));
-        large[0]+=sp*std::cos(a)*d;large[1]+=sp*std::sin(a)*d;
+        const double ca=std::cos(a),sa0=std::sin(a);speed=float(sp);dir[0]=float(ca);dir[1]=float(sa0);
+        large[0]+=sp*ca*d;large[1]+=sp*sa0*d;
         small[0]+=ss*std::cos(sa)*d;small[1]+=ss*std::sin(sa)*d;small[2]+=0.21*d;
-        for(int i=0;i<3;++i){large[i]=std::fmod(large[i],double(LargePeriod));if(large[i]<0)large[i]+=LargePeriod;
-                             small[i]=std::fmod(small[i],double(SmallPeriod));if(small[i]<0)small[i]+=SmallPeriod;}
+        for(int i=0;i<3;++i){if(!(large[i]>=0&&large[i]<LargePeriod))large[i]=std::fmod(large[i],double(LargePeriod));if(large[i]<0)large[i]+=LargePeriod;
+                             if(!(small[i]>=0&&small[i]<SmallPeriod))small[i]=std::fmod(small[i],double(SmallPeriod));if(small[i]<0)small[i]+=SmallPeriod;}
         clock+=d;}
 };
 // 257 quantiles of the mixed two-scale noise value (.65 nL + .35 nS at world points spread over the tiles as the GPU sees them: the small scale
@@ -184,6 +190,7 @@ inline float sigma(float nL,float nS,float altitude,float threshold,float sharpn
 // CPU mirror of one GPU sample at world point p (ground = regional field ground height at p, tag = field .w, fieldCoverage = 0..1 valid weight)
 inline float sigmaAt(const uint8_t* volume,const Frame& f,const float camera[3],const float p[3],float ground,float tag,float fieldCoverage){
     if(!f.active)return 0.f;
+    if(!(p[2]-ground>=0&&tag>0))return 0.f*fieldCoverage;
     float l[3],s[3];
     for(int i=0;i<3;++i){const float d=p[i]-camera[i];l[i]=d*f.invLarge+f.largeOrigin[i];s[i]=d*f.invSmall+f.smallOrigin[i];}
     const float nL=sample(volume,l[0],l[1],l[2]),nS=sample(volume,s[0],s[1],s[2]);

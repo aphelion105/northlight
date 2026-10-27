@@ -1,0 +1,1 @@
+These headers are the unmodified fog sources from commit 88841bd517f1a57b9917ba61c372e23a92f2d707, kept solely as independent differential-test references. The tests compare the optimized implementation against the prior behavior; the application does not include these headers.
