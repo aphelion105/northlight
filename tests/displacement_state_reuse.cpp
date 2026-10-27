@@ -543,7 +543,11 @@ void DisplacementStateTestAccess::capture(){
                 if(domain==1)assert(d.pixelConstants==constants+1); // Near/unknown proof reaches capture, even when its state save fails.
                 b.endFrame();for(unsigned i=0;i<3;++i)d.bank[4*i+2]=NAN;capture();assert(!MaterialCaptureStateTestAccess::rejected(b));
                 b.endFrame();for(unsigned i=0;i<3;++i)d.bank[4*i+2]=100;
-                auto& op=g.materials[&d.vs].view.operations.back();const auto code=op.code;op.code=6;capture();assert(!MaterialCaptureStateTestAccess::rejected(b));op.code=code;
+                // This test edits the compiled program in place. Real shader
+                // replacement goes through registerMaterial's invalidation.
+                auto& op=g.materials[&d.vs].view.operations.back();const auto code=op.code;
+                g.poseMetadata.invalidateShader(&d.vs);op.code=6;capture();assert(!MaterialCaptureStateTestAccess::rejected(b));
+                op.code=code;g.poseMetadata.invalidateShader(&d.vs);
             }
             if(skinned){g.reset();g.endFrame();std::vector<V> large(9000);for(auto& v:large)v={0,0,0,0};for(unsigned i=0;i<3;++i)d.bank[4*i+2]=0;
                 const auto posed=g.poseFallbackVertices,scanned=g.objectBoundsVertices,rejected=g.poseBudgetRejected;
