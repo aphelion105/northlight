@@ -1,6 +1,6 @@
 {
   "bump_include_sha256": "03f90009cf23e93260c70a31d78999b3bd60aebf8bbcf0d5d6e5e02bf5ef3ec1",
-  "source_sha256": "ee4f6bed73d54ae6b723000e7b9e2b9bf5fa802fffbceee5c773fea882ee3e8e",
+  "source_sha256": "666d620b4c3f15160813968e44947be89b350e274615b002aa1544b2636cdd04",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
   "game_launched": false,
@@ -207,13 +207,13 @@
         "endrep": 1
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "ee4f6bed73d54ae6b723000e7b9e2b9bf5fa802fffbceee5c773fea882ee3e8e"
+      "source_sha256": "666d620b4c3f15160813968e44947be89b350e274615b002aa1544b2636cdd04"
     },
     "WorldFogActor": {
       "target": "ps_3_0",
-      "bytes": 9944,
-      "sha256": "43c20f21ca70e75ce0d49c13457854101ae1b0666818113f4acca7a81bc0f2bf",
-      "static_instruction_slots": 598,
+      "bytes": 9984,
+      "sha256": "a95eb684fd9e86bc44061be69f9086cb22c8e3b310407d230204d770e5e06b18",
+      "static_instruction_slots": 600,
       "temporary_registers": 23,
       "samplers": [
         1,
@@ -234,7 +234,7 @@
         "min": 17,
         "texldl": 12,
         "rcp": 22,
-        "cmp": 51,
+        "cmp": 53,
         "endif": 12,
         "dp3": 3,
         "rsq": 1,
@@ -248,7 +248,7 @@
         "endrep": 3
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "ee4f6bed73d54ae6b723000e7b9e2b9bf5fa802fffbceee5c773fea882ee3e8e"
+      "source_sha256": "666d620b4c3f15160813968e44947be89b350e274615b002aa1544b2636cdd04"
     },
     "FogBlur": {
       "target": "ps_3_0",
@@ -316,13 +316,13 @@
         "endrep": 1
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "ee4f6bed73d54ae6b723000e7b9e2b9bf5fa802fffbceee5c773fea882ee3e8e"
+      "source_sha256": "666d620b4c3f15160813968e44947be89b350e274615b002aa1544b2636cdd04"
     },
     "FogCloudsActor": {
       "target": "ps_3_0",
-      "bytes": 9700,
-      "sha256": "188d0f0f7e80ef546c74c0f15df03d0a5e54da466ac6be5c39214cbf176f1e85",
-      "static_instruction_slots": 590,
+      "bytes": 9740,
+      "sha256": "8f33159f6eb9827ee6ae7711fb248d6591ac4fd0a2a0778409b1b1b61965215c",
+      "static_instruction_slots": 592,
       "temporary_registers": 25,
       "samplers": [
         1,
@@ -343,7 +343,7 @@
         "if": 12,
         "else": 8,
         "rcp": 22,
-        "cmp": 47,
+        "cmp": 49,
         "endif": 12,
         "dp3": 3,
         "rsq": 1,
@@ -356,7 +356,7 @@
         "endrep": 3
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "ee4f6bed73d54ae6b723000e7b9e2b9bf5fa802fffbceee5c773fea882ee3e8e"
+      "source_sha256": "666d620b4c3f15160813968e44947be89b350e274615b002aa1544b2636cdd04"
     },
     "FogTemporal": {
       "target": "ps_3_0",

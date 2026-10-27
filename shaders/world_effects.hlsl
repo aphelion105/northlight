@@ -952,7 +952,7 @@ float4 worldFog(float2 uv,bool actorIntegration) {
                 float heightFade=saturate(altitude*(1.0/12));heightFade*=heightFade*(3-2*heightFade);
                 if(dot(sunSource,1)>0){
                     float visibility=fogShadowProjected(shadowOrigin+shadowRay*((start+end)*.5));
-                    [branch]if(actorIntegration&&FogActorInfo.x>0)visibility=fogCombineActor(visibility,fogActorShadow(actorOrigin+actorRay*start,actorRay*stepSize));
+                    [branch]if(actorIntegration&&FogActorInfo.x>0&&visibility>0)visibility=fogCombineActor(visibility,fogActorShadow(actorOrigin+actorRay*start,actorRay*stepSize));
                     directWeight+=transmittance*absorb*(visibility*heightFade);
                 }
                 transmittance*=1-absorb;
@@ -1159,7 +1159,7 @@ float4 fogClouds(float2 uv,bool actorIntegration) {
                 // With no direct source/gain the shadowed term is exactly zero; ambient extinction still accumulates.
                 [branch]if(dot(max(DirectLight.rgb,0),1)>0&&FogInfo.y>0){
                     float visibility=fogShadowProjected(shadowOrigin+shadowRay*((start+end)*.5));
-                    [branch]if(actorIntegration&&FogActorInfo.x>0)visibility=fogCombineActor(visibility,fogActorShadow(actorOrigin+actorRay*start,actorRay*stepSize));
+                    [branch]if(actorIntegration&&FogActorInfo.x>0&&visibility>0)visibility=fogCombineActor(visibility,fogActorShadow(actorOrigin+actorRay*start,actorRay*stepSize));
                     directWeight+=exp(-tauBase)*weight*visibility*heightFade;
                 } // the sun light is dimmed by the base fog in front of the cloud
                 ambientWeight+=weight;
