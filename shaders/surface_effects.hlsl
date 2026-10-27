@@ -52,17 +52,18 @@ sampler2D LensScene : register(s0);
 float4 Lens : register(c10); // elapsed seconds, visibility, aspect, unused
 float lensRandom(float2 p){return frac(sin(dot(p,float2(41.7,289.3)))*19417.318);}
 float4 RainLens(float2 uv:TEXCOORD0):COLOR0 {
-    float2 scale=float2(6*Lens.z,6),grid=uv*scale,cell=floor(grid),local=frac(grid)-.5;
-    float seed=lensRandom(cell),phase=frac(Lens.x*(.16+.14*seed)+seed);
-    float life=smoothstep(0,.10,phase)*(1-smoothstep(.90,1,phase))*step(.25,lensRandom(cell+29));
-    float2 center=float2((lensRandom(cell+3.7)-.5)*.35,(phase-.5)*.48);
-    float2 d=local-center;float radius=.11+.05*seed;float distance=length(d*float2(1,.72));
+    float2 scale=float2(13*Lens.z,13),grid=uv*scale,cell=floor(grid),local=frac(grid)-.5;
+    float seed=lensRandom(cell),phase=frac(Lens.x*.22+seed);
+    float life=smoothstep(0,.10,phase)*(1-smoothstep(.90,1,phase));
+    float2 center=float2((lensRandom(cell+3.7)-.5)*.55,.8*phase*phase-.4);
+    float2 d=local-center;float radius=.06+.03*seed;float distance=length(d);
     float body=(1-smoothstep(radius*.82,radius,distance))*life;
-    float trail=(1-smoothstep(.008,.022,abs(d.x)))*(1-smoothstep(.02,.18,-d.y))*step(d.y,0)*life;
-    // Bend rays toward the droplet center, magnifying the finished scene inside it.
-    float4 base=tex2D(LensScene,uv),bent=tex2D(LensScene,uv-(d/scale)*(.44*body*Lens.y));
+    float trail=(1-smoothstep(.005,.012,abs(d.x)))*(1-smoothstep(.02,.16,-d.y))*step(d.y,0)*life;
+    // Bend rays toward the droplet center; the lens strength fades with weather.
+    float2 normal=d/(distance+.0001);float4 base=tex2D(LensScene,uv),bent=tex2D(LensScene,uv-normal*(.022*body*Lens.y));
     float rim=(smoothstep(radius*.45,radius*.76,distance)-smoothstep(radius*.76,radius,distance))*life;
-    base.rgb=lerp(base.rgb,bent.rgb,body*Lens.y);base.rgb+=(rim*.025+trail*.018)*Lens.y;return base;
+    float highlight=pow(saturate(normal.x*.35-normal.y*.65),5)*body*.36;
+    base.rgb=lerp(base.rgb,bent.rgb,body);base.rgb+=(rim*.025+trail*.018+highlight)*Lens.y;return base;
 }
 float4 SnowLens(float2 uv:TEXCOORD0):COLOR0 {
     float2 grid=uv*float2(6*Lens.z,6),cell=floor(grid),local=frac(grid)-.5;

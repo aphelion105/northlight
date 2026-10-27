@@ -1,5 +1,5 @@
 {
-  "source_sha256": "e6bdacb444503431ea66653f3ceacaa18bda5e55f0442d31fa4630f220e55c52",
+  "source_sha256": "d4be9838d7730af0284446afd03b0954ea8eaed66b01f35e9b8910f5864bff91",
   "target": "ps_3_0",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
@@ -91,22 +91,22 @@
     },
     "RainLens": {
       "bytes": 2292,
-      "sha256": "74f60106dc90cd80938e6f4aef8a735e2136cdc38d0241d62c468dc970acac8f",
-      "static_instruction_slots": 142,
+      "sha256": "8e8601188bdb085c949e53c73ca02540fd61ce79e2c9a1824eed11d51a96e898",
+      "static_instruction_slots": 137,
       "temporary_registers": 4,
       "samplers": [
         0
       ],
       "instructions": {
         "mov": 4,
-        "mul": 55,
-        "rcp": 5,
-        "frc": 6,
-        "add": 34,
-        "dp2add": 4,
-        "sincos": 3,
-        "cmp": 2,
+        "mul": 59,
+        "frc": 5,
+        "add": 37,
+        "dp2add": 3,
+        "sincos": 2,
         "max": 1,
+        "cmp": 1,
+        "rcp": 5,
         "rsq": 1,
         "texld": 2
       }

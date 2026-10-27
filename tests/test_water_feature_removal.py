@@ -20,7 +20,7 @@ assert 'void surfaceWeather()' in r and replay.count('surfaceWeather();')==2
 assert replay.index('surfaceWeather();')<replay.index('gpuProfile->endFrame();')
 assert 'NorthlightUiBoundary::accepts(zw!=0,c,zf==D3DCMP_ALWAYS,z!=0)' in r
 manifest=json.loads((fp.SHADERS/'surface-shader-build.json').read_text())
-expected={'RainQuality': 'b4114756ac7a2436c43ca3569aaaa7643f65956fd196ada4d0080eee84d1263b', 'SnowQuality': '266a9c1284a7bb113ba62afc14134091421fa0f1819f3126aff1cfa79952b1c4', 'RainPerformance': '9840fc871916dcabaef3476481994aaa536005a49b5025e52e55cdc42ec23160', 'SnowPerformance': 'b9f653ca3cee66d8a592ca5dbd4490a5ff78bd223392ba3cce7c80afc30a028b', 'RainLens': '74f60106dc90cd80938e6f4aef8a735e2136cdc38d0241d62c468dc970acac8f', 'SnowLens': '53ef91a5657cd43cd01d10c5b5b73a6261a766f125d435843e3806ceb63b7b59'}
+expected={'RainQuality': 'b4114756ac7a2436c43ca3569aaaa7643f65956fd196ada4d0080eee84d1263b', 'SnowQuality': '266a9c1284a7bb113ba62afc14134091421fa0f1819f3126aff1cfa79952b1c4', 'RainPerformance': '9840fc871916dcabaef3476481994aaa536005a49b5025e52e55cdc42ec23160', 'SnowPerformance': 'b9f653ca3cee66d8a592ca5dbd4490a5ff78bd223392ba3cce7c80afc30a028b', 'RainLens': '8e8601188bdb085c949e53c73ca02540fd61ce79e2c9a1824eed11d51a96e898', 'SnowLens': '53ef91a5657cd43cd01d10c5b5b73a6261a766f125d435843e3806ceb63b7b59'}
 assert set(manifest['shaders'])==set(expected)
 for entry,digest in expected.items():
     assert hashlib.sha256((fp.COMPILED/(entry+'.bin')).read_bytes()).hexdigest()==digest,entry
