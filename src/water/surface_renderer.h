@@ -6,7 +6,7 @@
 // Included after SavedState, drop, logf and NameMaskCompositeBind.
 class NorthlightSurfaceRenderer {
     IDirect3DDevice9* d;NorthlightStateBlockPool stateBlocks;
-    IDirect3DPixelShader9* weatherPS[2]={};bool failed=false,weatherUsed=false;
+    IDirect3DPixelShader9* weatherPS[4]={};bool failed=false,weatherUsed=false;
     bool check(HRESULT hr,const char* stage){if(SUCCEEDED(hr))return true;if(!failed)logf("SURFACE disabled: %s hr=0x%08lx (native weather retained)",stage,(unsigned long)hr);failed=true;return false;}
     HRESULT quad(UINT w,UINT h){struct V{float x,y,z,w,u,v;} v[]={{-.5f,-.5f,0,1,0,0},{float(w)-.5f,-.5f,0,1,1,0},{-.5f,float(h)-.5f,0,1,0,1},{float(w)-.5f,float(h)-.5f,0,1,1,1}};D3DVIEWPORT9 vp={0,0,w,h,0,1};d->SetViewport(&vp);return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,v,sizeof(V));}
     void state(){
@@ -24,9 +24,10 @@ public:
     void reset(){stateBlocks.clear();failed=weatherUsed=false;}
     void endFrame(){if(!weatherUsed||failed)stateBlocks.clear();weatherUsed=false;}
     void precipitation(IDirect3DSurface9* targetSurface,IDirect3DTexture9* finalDepth,UINT w,UINT h,const NorthlightSurfaceFrame& context,NorthlightQuality::Preset preset,IDirect3DSurface9* nameDepth){
-        if(failed||!finalDepth||context.c[3][0]<=0)return;SavedState saved(d,&stateBlocks);if(!saved.ok)return;state();unsigned i=preset==NorthlightQuality::Preset::Performance?1:0;
+        if(failed||!finalDepth||context.c[3][0]<=0)return;SavedState saved(d,&stateBlocks);if(!saved.ok)return;state();unsigned i=(preset==NorthlightQuality::Preset::Performance?2:0)+(context.c[3][1]>.5f?1:0);
         weatherUsed=true;
-        if(!weatherPS[i]&&!check(d->CreatePixelShader(i?kPrecipitationPerformanceShader:kPrecipitationQualityShader,&weatherPS[i]),"precipitation shader"))return;
+        const DWORD* shaders[]={kRainQualityShader,kSnowQualityShader,kRainPerformanceShader,kSnowPerformanceShader};
+        if(!weatherPS[i]&&!check(d->CreatePixelShader(shaders[i],&weatherPS[i]),"precipitation shader"))return;
         if(!check(d->SetRenderTarget(0,targetSurface),"precipitation target"))return;blend();d->SetRenderState(D3DRS_COLORWRITEENABLE,7);d->SetPixelShader(weatherPS[i]);d->SetTexture(3,finalDepth);d->SetPixelShaderConstantF(0,&context.c[0][0],10);
         NameMaskCompositeBind protect(d,nameDepth);check(quad(w,h),"supplemental precipitation");
     }

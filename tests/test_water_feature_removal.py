@@ -20,7 +20,7 @@ assert 'void surfaceWeather()' in r and replay.count('surfaceWeather();')==2
 assert replay.index('surfaceWeather();')<replay.index('gpuProfile->endFrame();')
 assert 'NorthlightUiBoundary::accepts(zw!=0,c,zf==D3DCMP_ALWAYS,z!=0)' in r
 manifest=json.loads((fp.SHADERS/'surface-shader-build.json').read_text())
-expected={'PrecipitationQuality': '09dc5ddac9346c9b5d7aba438c579461572090170ec3310922e0c4467a3d09ab', 'PrecipitationPerformance': '63d280b89a5f2ac18d7ece6c93aca0d933794dbde701f597159b2f7da9a8f4b5'}
+expected={'RainQuality': 'b4114756ac7a2436c43ca3569aaaa7643f65956fd196ada4d0080eee84d1263b', 'SnowQuality': '266a9c1284a7bb113ba62afc14134091421fa0f1819f3126aff1cfa79952b1c4', 'RainPerformance': '9840fc871916dcabaef3476481994aaa536005a49b5025e52e55cdc42ec23160', 'SnowPerformance': 'b9f653ca3cee66d8a592ca5dbd4490a5ff78bd223392ba3cce7c80afc30a028b'}
 assert set(manifest['shaders'])==set(expected)
 for entry,digest in expected.items():
     assert hashlib.sha256((fp.COMPILED/(entry+'.bin')).read_bytes()).hexdigest()==digest,entry
@@ -29,4 +29,4 @@ for entry,digest in expected.items():
 for entry in ('WaterQuality','WaterBalanced','WaterPerformance','WaterPointLights','WaterSSR','LateWaterSSR','SSRDepthBounds','SurfaceDepthCopy','WaterMaterialMaskVS','WaterMaterialMaskPS'):
     assert not (fp.COMPILED/(entry+'.bin')).exists(),entry
 assert 'sampler2D FinalDepth : register(s3);' in (fp.SHADERS/'surface_effects.hlsl').read_text()
-print('PASS water/SSR withdrawal: no feature calls/resources; exact upstream native mask; unchanged precipitation bytecode; weather/UI/material closure')
+print('PASS water/SSR withdrawal: no feature calls/resources; exact upstream native mask; specialized precipitation bytecode; weather/UI/material closure')

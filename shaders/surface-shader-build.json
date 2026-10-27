@@ -1,52 +1,92 @@
 {
-  "source_sha256": "f76e8f78911a23efb31ad0fd71d629822423328c68933e824460440ed8e3c579",
+  "source_sha256": "8a2db5e1fc64f1cbb0948fce94c1290ea173f01f84ad66fd9baeb850e1edb1a2",
   "target": "ps_3_0",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
   "game_launched": false,
   "shaders": {
-    "PrecipitationQuality": {
-      "bytes": 5048,
-      "sha256": "09dc5ddac9346c9b5d7aba438c579461572090170ec3310922e0c4467a3d09ab",
-      "static_instruction_slots": 276,
-      "temporary_registers": 8,
+    "RainQuality": {
+      "bytes": 3488,
+      "sha256": "b4114756ac7a2436c43ca3569aaaa7643f65956fd196ada4d0080eee84d1263b",
+      "static_instruction_slots": 181,
+      "temporary_registers": 6,
       "samplers": [
         3
       ],
       "instructions": {
-        "mov": 7,
-        "mul": 108,
-        "add": 94,
-        "rcp": 9,
-        "cmp": 12,
-        "frc": 12,
-        "dp3": 12,
+        "mov": 6,
+        "mul": 72,
+        "add": 59,
+        "rcp": 6,
+        "frc": 9,
+        "dp3": 9,
         "dp2add": 3,
-        "rsq": 6,
-        "max": 9,
-        "texld": 1
+        "max": 6,
+        "rsq": 3,
+        "texld": 1,
+        "cmp": 4
       }
     },
-    "PrecipitationPerformance": {
-      "bytes": 3848,
-      "sha256": "63d280b89a5f2ac18d7ece6c93aca0d933794dbde701f597159b2f7da9a8f4b5",
-      "static_instruction_slots": 199,
-      "temporary_registers": 7,
+    "SnowQuality": {
+      "bytes": 4384,
+      "sha256": "266a9c1284a7bb113ba62afc14134091421fa0f1819f3126aff1cfa79952b1c4",
+      "static_instruction_slots": 233,
+      "temporary_registers": 6,
       "samplers": [
         3
       ],
       "instructions": {
-        "mov": 7,
-        "mul": 78,
-        "add": 67,
-        "rcp": 7,
-        "cmp": 9,
+        "mov": 5,
+        "mul": 98,
+        "add": 89,
+        "rcp": 6,
+        "frc": 12,
+        "dp3": 12,
+        "rsq": 3,
+        "texld": 1,
+        "cmp": 7
+      }
+    },
+    "RainPerformance": {
+      "bytes": 2720,
+      "sha256": "9840fc871916dcabaef3476481994aaa536005a49b5025e52e55cdc42ec23160",
+      "static_instruction_slots": 131,
+      "temporary_registers": 5,
+      "samplers": [
+        3
+      ],
+      "instructions": {
+        "mov": 5,
+        "mul": 53,
+        "add": 42,
+        "rcp": 5,
+        "frc": 6,
+        "dp3": 6,
+        "dp2add": 2,
+        "max": 4,
+        "rsq": 2,
+        "texld": 1,
+        "cmp": 3
+      }
+    },
+    "SnowPerformance": {
+      "bytes": 3344,
+      "sha256": "b9f653ca3cee66d8a592ca5dbd4490a5ff78bd223392ba3cce7c80afc30a028b",
+      "static_instruction_slots": 167,
+      "temporary_registers": 5,
+      "samplers": [
+        3
+      ],
+      "instructions": {
+        "mov": 5,
+        "mul": 70,
+        "add": 63,
+        "rcp": 5,
         "frc": 8,
         "dp3": 8,
-        "dp2add": 2,
-        "rsq": 4,
-        "max": 6,
-        "texld": 1
+        "rsq": 2,
+        "texld": 1,
+        "cmp": 5
       }
     }
   }

@@ -3,21 +3,36 @@
 #include "composite_distance_gpu.cpp"
 #undef main
 #include "surface_compiled_shaders.h"
+// Baseline is the Northlight shader at f770155, not upstream code.
+#include "fixtures/surface_baseline_shaders.h"
 #include <array>
+#include <tlhelp32.h>
+#include "saved_state.h"
+template<class T> static void drop(T*& p){if(p){p->Release();p=nullptr;}}
+static void logf(const char*,...){}
+struct NameMaskCompositeBind{NameMaskCompositeBind(IDirect3DDevice9*,IDirect3DSurface9* depth){assert(!depth);}};
+#include "surface_renderer.h"
+static void requireNoGame(){
+ HANDLE snap=CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS,0);if(snap==INVALID_HANDLE_VALUE)std::abort();PROCESSENTRY32W p{};p.dwSize=sizeof p;BOOL more=Process32FirstW(snap,&p);if(!more){CloseHandle(snap);std::abort();}
+ do{if(!_wcsicmp(p.szExeFile,L"Wow.exe")||!_wcsicmp(p.szExeFile,L"WowClient64.exe")){std::fprintf(stderr,"Game process detected; GPU test stopped\n");CloseHandle(snap);std::exit(3);}}while(Process32NextW(snap,&p));CloseHandle(snap);
+}
+#ifndef NORTHLIGHT_SURFACE_HELPERS_ONLY
 static std::vector<unsigned char> pixels(IDirect3DSurface9* staging,unsigned w,unsigned h,unsigned bytes){
  D3DLOCKED_RECT lock{};ok(staging->LockRect(&lock,nullptr,D3DLOCK_READONLY));std::vector<unsigned char> out(w*h*bytes);
  for(unsigned y=0;y<h;++y)std::memcpy(out.data()+y*w*bytes,static_cast<char*>(lock.pBits)+y*lock.Pitch,w*bytes);ok(staging->UnlockRect());return out;
 }
 int main(int argc,char** argv){
- assert(argc==2);WNDCLASSW wc{};wc.lpfnWndProc=DefWindowProcW;wc.lpszClassName=L"NorthlightPrecipitationOracle";wc.hInstance=GetModuleHandleW(nullptr);assert(RegisterClassW(&wc));
+ assert(argc==2);requireNoGame();WNDCLASSW wc{};wc.lpfnWndProc=DefWindowProcW;wc.lpszClassName=L"NorthlightPrecipitationOracle";wc.hInstance=GetModuleHandleW(nullptr);assert(RegisterClassW(&wc));
  HWND window=CreateWindowExW(0,wc.lpszClassName,L"",WS_OVERLAPPED,0,0,64,64,nullptr,nullptr,wc.hInstance,nullptr);assert(window);
  auto module=LoadLibraryA(argv[1]);assert(module);auto create=reinterpret_cast<IDirect3D9*(WINAPI*)(UINT)>(reinterpret_cast<void*>(GetProcAddress(module,"Direct3DCreate9")));assert(create);auto api=create(D3D_SDK_VERSION);assert(api);
  D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=window;pp.BackBufferWidth=pp.BackBufferHeight=64;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;pp.PresentationInterval=D3DPRESENT_INTERVAL_IMMEDIATE;
  IDirect3DDevice9* d=nullptr;ok(api->CreateDevice(0,D3DDEVTYPE_HAL,window,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_FPU_PRESERVE,&pp,&d));
- IDirect3DPixelShader9* shaders[2]{};ok(d->CreatePixelShader(kPrecipitationQualityShader,&shaders[0]));ok(d->CreatePixelShader(kPrecipitationPerformanceShader,&shaders[1]));
+ IDirect3DPixelShader9* shaders[4]{};const DWORD* binaries[]={kRainQualityShader,kSnowQualityShader,kRainPerformanceShader,kSnowPerformanceShader};for(unsigned i=0;i<4;++i)ok(d->CreatePixelShader(binaries[i],&shaders[i]));
+ IDirect3DPixelShader9* baseline[2]{};ok(d->CreatePixelShader(kPrecipitationQualityShader,&baseline[0]));ok(d->CreatePixelShader(kPrecipitationPerformanceShader,&baseline[1]));
+ { NorthlightSurfaceRenderer surface(d);
  unsigned cases=0,targets=0,unsupported=0;
  for(unsigned odd:{0u,1u})for(D3DFORMAT format:{D3DFMT_A8R8G8B8,D3DFMT_A16B16G16R16F,D3DFMT_A32B32G32R32F})for(unsigned samples:{0u,2u,4u,8u}){
-  const unsigned W=160+odd,H=128+odd,bytes=format==D3DFMT_A8R8G8B8?4:format==D3DFMT_A16B16G16R16F?8:16;
+  requireNoGame();const unsigned W=160+odd,H=128+odd,bytes=format==D3DFMT_A8R8G8B8?4:format==D3DFMT_A16B16G16R16F?8:16;
   IDirect3DSurface9 *target=nullptr,*resolved=nullptr,*staging=nullptr;
   if(FAILED(d->CreateRenderTarget(W,H,format,D3DMULTISAMPLE_TYPE(samples),0,FALSE,&target,nullptr))){++unsupported;continue;}
   ++targets;ok(d->CreateRenderTarget(W,H,format,D3DMULTISAMPLE_NONE,0,FALSE,&resolved,nullptr));ok(d->CreateOffscreenPlainSurface(W,H,format,D3DPOOL_SYSTEMMEM,&staging,nullptr));
@@ -30,9 +45,13 @@ int main(int argc,char** argv){
   const Vertex v[]={{-.5f,-.5f,0,1,0,0},{W-.5f,-.5f,0,1,1,0},{-.5f,H-.5f,0,1,0,1},{W-.5f,H-.5f,0,1,1,1}};
   ok(d->Clear(0,nullptr,D3DCLEAR_TARGET,0x00143250,1,0));const auto clear=read();
   for(unsigned entry=0;entry<2;++entry)for(unsigned snow=0;snow<2;++snow){unsigned changed=0;
-   for(unsigned mode=0;mode<3;++mode)for(unsigned phase=0;phase<8;++phase){
-    Image depth{W,H,D3DFMT_R32F,4,std::vector<unsigned char>(W*H*4)};const float raw=mode==1?1000.f/(1000.f-.1f)*(1-.1f):1.f;for(unsigned at=0;at<W*H;++at)std::memcpy(depth.pixels.data()+at*4,&raw,4);auto input=texture(d,depth);d->SetTexture(3,input);
-    c[1][3]=phase*.31f;c[3][0]=mode==0?0.f:1.f;c[3][1]=float(snow);ok(d->SetPixelShaderConstantF(0,c[0],10));ok(d->SetPixelShader(shaders[entry]));ok(d->Clear(0,nullptr,D3DCLEAR_TARGET,0x00143250,1,0));ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,v,sizeof(Vertex)));ok(d->EndScene());const auto result=read();
+   for(unsigned mode=0;mode<4;++mode)for(unsigned phase=0;phase<8;++phase){
+    requireNoGame();Image depth{W,H,D3DFMT_R32F,4,std::vector<unsigned char>(W*H*4)};const float raw=mode==1?1000.f/(1000.f-.1f)*(1-.1f):1.f;for(unsigned at=0;at<W*H;++at)std::memcpy(depth.pixels.data()+at*4,&raw,4);auto input=texture(d,depth);d->SetTexture(3,input);
+    c[1][3]=phase*.31f;c[3][0]=mode==0?0.f:mode==3?.35f:1.f;c[3][1]=float(snow);c[7][0]=phase*.73f;c[7][1]=-phase*.19f;c[8][0]=phase%2?.1f:1.f;c[9][1]=phase%2?.7f:.1f;ok(d->SetPixelShaderConstantF(0,c[0],10));ok(d->SetPixelShader(shaders[entry*2+snow]));ok(d->Clear(0,nullptr,D3DCLEAR_TARGET,0x00143250,1,0));ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,v,sizeof(Vertex)));ok(d->EndScene());const auto result=read();
+    ok(d->SetPixelShader(baseline[entry]));ok(d->Clear(0,nullptr,D3DCLEAR_TARGET,0x00143250,1,0));ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,v,sizeof(Vertex)));ok(d->EndScene());const auto original=read();
+    assert(result==original); // Same pixels and target alpha as the unspecialized Northlight shader.
+    NorthlightSurfaceFrame context{};std::memcpy(context.c,c,sizeof c);ok(d->Clear(0,nullptr,D3DCLEAR_TARGET,0x00143250,1,0));ok(d->BeginScene());surface.precipitation(target,input,W,H,context,entry?NorthlightQuality::Preset::Performance:NorthlightQuality::Preset::Quality,nullptr);ok(d->EndScene());const auto production=read();
+    assert(production==result);
     if(mode<2)assert(result==clear);else changed+=result!=clear;
     if(bytes==8)for(unsigned at=0;at<result.size();at+=2){unsigned short bits;std::memcpy(&bits,result.data()+at,2);assert((bits&0x7c00)!=0x7c00);}
     if(bytes==16)for(unsigned at=0;at<result.size();at+=4){float value;std::memcpy(&value,result.data()+at,4);assert(std::isfinite(value));}
@@ -41,6 +60,7 @@ int main(int argc,char** argv){
   }
   d->SetRenderTarget(0,nullptr);staging->Release();resolved->Release();target->Release();
  }
- std::printf("PASS precipitation: cases=%u targets=%u unsupportedTargets=%u; zero weather, foreground occlusion, rain/snow, odd grids, UNORM/FP16/FP32 HDR, MSAA0/2/4/8\n",cases,targets,unsupported);
- d->SetPixelShader(nullptr);for(auto* s:shaders)s->Release();d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);UnregisterClassW(wc.lpszClassName,wc.hInstance);
+ std::printf("PASS precipitation: cases=%u targets=%u unsupportedTargets=%u; zero weather, transition, dense, camera motion, foreground occlusion, rain/snow, odd grids, UNORM/FP16/FP32 HDR, MSAA0/2/4/8\n",cases,targets,unsupported);
+ surface.reset();d->SetPixelShader(nullptr);for(auto* s:shaders)s->Release();for(auto* s:baseline)s->Release(); } d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);UnregisterClassW(wc.lpszClassName,wc.hInstance);
 }
+#endif
