@@ -13,8 +13,8 @@ class NorthlightAutoNormalCache {
     NorthlightMaterialProfile* profile=nullptr;
     NorthlightStateBlockPool states;
     std::vector<Entry> entries;
-    std::unordered_map<IDirect3DTexture9*,size_t> lookup[2];
-    IDirect3DTexture9* leased[8]={};unsigned leaseOverflow=0;
+    std::unordered_map<IDirect3DBaseTexture9*,size_t> lookup[2];
+    IDirect3DTexture9* leased[8]={};unsigned leaseCounts[8]={},leaseOverflow=0;
     size_t recent=0;
     IDirect3DPixelShader9* shader=nullptr,*modelShader=nullptr;
     std::uint64_t bytes=0,sourceBytes=0,clock=0,budget=32ull<<20;
@@ -45,9 +45,12 @@ public:
         friend class NorthlightAutoNormalCache;
         NorthlightAutoNormalCache* owner=nullptr;IDirect3DTexture9* texture=nullptr;unsigned slot=8;
         Lease(NorthlightAutoNormalCache& cache,IDirect3DTexture9* normal):owner(&cache),texture(normal){
-            if(!texture)return;texture->AddRef();for(unsigned i=0;i<8;++i)if(!owner->leased[i]){owner->leased[i]=texture;slot=i;return;}++owner->leaseOverflow;
+            if(!texture)return;
+            for(unsigned i=0;i<8;++i)if(owner->leased[i]==texture){++owner->leaseCounts[i];slot=i;return;}
+            texture->AddRef();
+            for(unsigned i=0;i<8;++i)if(!owner->leased[i]){owner->leased[i]=texture;owner->leaseCounts[i]=1;slot=i;return;}++owner->leaseOverflow;
         }
-        void release(){if(texture){if(slot<8)owner->leased[slot]=nullptr;else --owner->leaseOverflow;drop(texture);}}
+        void release(){if(texture){if(slot<8){if(--owner->leaseCounts[slot]){texture=nullptr;return;}owner->leased[slot]=nullptr;}else --owner->leaseOverflow;drop(texture);}}
     public:
         Lease()=default;Lease(const Lease&)=delete;Lease& operator=(const Lease&)=delete;
         Lease(Lease&& other)noexcept{std::swap(owner,other.owner);std::swap(texture,other.texture);std::swap(slot,other.slot);}
@@ -73,11 +76,16 @@ public:
     Lease acquire(IDirect3DBaseTexture9* source,bool model=false){return Lease(*this,resolve(source,model));}
     IDirect3DTexture9* resolve(IDirect3DBaseTexture9* base,bool model=false){
         using P=NorthlightMaterialProfile;P::Scope timing(profile,P::NormalCache);
-        if(!base||base->GetType()!=D3DRTYPE_TEXTURE)return nullptr;
-        auto* source=static_cast<IDirect3DTexture9*>(base);++clock;const auto revision=NorthlightMaterialHeight::version(source);
+        if(!base)return nullptr;
         auto it=entries.end();
-        if(recent<entries.size()&&entries[recent].source==source&&entries[recent].model==model)it=entries.begin()+recent;
-        else {auto found=lookup[model].find(source);if(found!=lookup[model].end())it=entries.begin()+found->second;}
+        if(recent<entries.size()&&entries[recent].source==base&&entries[recent].model==model)it=entries.begin()+recent;
+        else {auto found=lookup[model].find(base);if(found!=lookup[model].end())it=entries.begin()+found->second;}
+        // Entries retain the proven 2D source. Only a new resource needs a
+        // type query; version and mutable-source checks still run on every hit.
+        IDirect3DTexture9* source=nullptr;
+        if(it!=entries.end())source=it->source;
+        else{if(base->GetType()!=D3DRTYPE_TEXTURE)return nullptr;source=static_cast<IDirect3DTexture9*>(base);}
+        ++clock;const auto revision=NorthlightMaterialHeight::version(source);
         if(it!=entries.end()){
             if(revision!=it->version||(it->mutableSource&&!it->version&&frame-it->frame>=30))erase(size_t(it-entries.begin()));
             else{recent=size_t(it-entries.begin());it->used=clock;++hits;if(profile)profile->count(P::NormalHit);return it->normal;}
@@ -120,7 +128,7 @@ public:
         d->SetSamplerState(0,D3DSAMP_ADDRESSU,model?D3DTADDRESS_CLAMP:D3DTADDRESS_WRAP);d->SetSamplerState(0,D3DSAMP_ADDRESSV,model?D3DTADDRESS_CLAMP:D3DTADDRESS_WRAP);
         // Model relief uses only profile.z (polarity); its shader derives local detail from the source.
         NorthlightMaterialHeight::Image image;std::array<float,4> heightProfile;
-        {P::Scope read(profile,P::HeightRead);if(!model)NorthlightMaterialHeight::read(source,image);heightProfile=NorthlightMaterialHeight::profile(image,polarity,details,balance);}
+        {P::Scope read(profile,P::HeightRead);heightProfile=model?NorthlightMaterialHeight::profile(image,polarity,details,balance):NorthlightMaterialHeight::textureProfile(source,polarity,details,balance);}
         const float texel[]={1.f/width,1.f/height,5.f,0};d->SetPixelShaderConstantF(0,texel,1);d->SetPixelShaderConstantF(1,heightProfile.data(),1);
         struct V {float x,y,z,w,u,v;};const V quad[]={{-.5f,-.5f,0,1,0,0},{width-.5f,-.5f,0,1,1,0},{-.5f,height-.5f,0,1,0,1},{width-.5f,height-.5f,0,1,1,1}};
         {P::Scope draw(profile,P::NormalBuild,0,true);draw.work(uint64_t(width)*height);if(FAILED(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(V)))){drop(normal);return nullptr;}}

@@ -22,10 +22,13 @@ unsafe=header.replace(assignment,'packet->vertexFloatOnly=true;')
 assert unsafe!=header
 unsafe_previous=header.replace('previous&&!previous->vertexFloatOnly&&','previous&&')
 assert unsafe_previous!=header
+unsafe_pixel=header.replace('packet->pixelFloatOnly=model.pixelFloatOnly;','packet->pixelFloatOnly=true;')
+unsafe_previous_pixel=header.replace('previous&&!previous->pixelFloatOnly&&','previous&&')
+assert unsafe_pixel!=header and unsafe_previous_pixel!=header
 records=[]
 for mode in ['-O2','-O0']:
     cells={}
-    for name,source in [('control',control),('current',header),*([('negative-used-bank',unsafe),('negative-previous-bank',unsafe_previous)] if mode=='-O2' else [])]:
+    for name,source in [('control',control),('current',header),*([('negative-used-bank',unsafe),('negative-previous-bank',unsafe_previous),('negative-used-pixel-bank',unsafe_pixel),('negative-previous-pixel-bank',unsafe_previous_pixel)] if mode=='-O2' else [])]:
         folder=out/(name+mode[1:]);folder.mkdir(exist_ok=True);(folder/'auto_bump_renderer.h').write_text(source)
         exe=folder/'fixture.exe'
         command=[str(fp.zig()),'c++','-target','x86-windows-gnu',mode,'-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec','-I',str(folder),'-I',str(out),*fp.test_include_flags(),str(fp.TESTS/'test_material_packet_auxiliary.cpp'),'-luser32','-luuid','-o',str(exe)]

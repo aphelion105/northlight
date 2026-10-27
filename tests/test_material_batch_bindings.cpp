@@ -113,7 +113,7 @@ void MaterialCaptureStateTestAccess::replayBindings(){
             for(unsigned phase=0;phase<2;++phase){b.deferredGPU.beginFrame();for(unsigned i=0;i<2;++i){IDirect3DVertexBuffer9* vb[4]={};IDirect3DIndexBuffer9* ib=nullptr;const bool bound=([&]{NorthlightReplayGPU::Placement at;const bool ready=b.deferredGPU.bind(&d,meshes[i],vb,ib,[](size_t){return true;},at);b.deferredGPU.commitPending();return ready||(b.deferredGPU.resident(meshes[i])&&b.deferredGPU.bind(&d,meshes[i],vb,ib,[](size_t){return true;},at));}());assert(bound==bool(phase));for(auto*& p:vb)drop(p);drop(ib);}}
             const unsigned mixed[]={0,0,2,1,3,1};
             for(unsigned i=0;i<6;++i){auto packet=std::make_unique<NorthlightAutoBump::Deferred>();packet->mesh=meshes[shape==1?mixed[i]:i%2];packet->vertex=&d.vs;packet->vertex->AddRef();packet->pixel=&d.ps;packet->pixel->AddRef();packet->declaration=&d.decl;packet->declaration->AddRef();packet->viewport={0,0,64,64,0,1};packet->occlusion=shape==0?true:((i/2)%2==0);packet->tag=19;packet->first=20;packet->pixelConstants.assign(20,float(i));std::fill(packet->vertexConstants,packet->vertexConstants+1024,float(i));std::fill(packet->vertexInt,packet->vertexInt+64,int(i));std::fill(packet->pixelInt,packet->pixelInt+64,int(i));std::fill(packet->vertexBool,packet->vertexBool+16,BOOL(i&1));std::fill(packet->pixelBool,packet->pixelBool+16,BOOL(i&1));std::fill(packet->states,packet->states+14,DWORD(i));std::fill(packet->raster,packet->raster+NorthlightAutoBump::DeferredRasterCount,DWORD(i));
-                if(shape==2){if(i==2||i==3)packet->viewport={0,0,64,64,.2f,.8f};if(i==4)packet->viewport={3,5,32,48,0,1};}
+                if(shape==2){packet->occlusion=(i&1)!=0;if(i==2||i==3)packet->viewport={0,0,64,64,.2f,.8f};if(i==4)packet->viewport={3,5,32,48,0,1};}
                 b.deferred.push_back(std::move(packet));
             }
             d.fault=failure;success=b.finishCaptures();resident=b.residentDraws;up=b.uploadDraws;assert(b.deferred.empty());if(success)assert(d.draws.size()==6&&b.flushed==6);else assert(d.faultUsed&&b.failed);
@@ -149,6 +149,7 @@ void MaterialCaptureStateTestAccess::replayConstantRanges(){
             std::array<float,1024> vertex{};std::vector<float> pixel(shape==9?0:20,0.f);UINT first=20;
             unsigned vertexFirst=shape==10||shape==13?31:shape==11?255:0,vertexCount=shape==10||shape==13?3:shape>=11?1:256;
             const auto initialFirst=vertexFirst,initialCount=vertexCount;
+            UINT restoreFirst=256,restoreEnd=0,restorePixelFirst=224,restorePixelEnd=0;
             MaterialBindingDevice::FloatBanks expected{initial.vf,initial.pf};
             auto setBits=[](float& value,uint32_t bits){std::memcpy(&value,&bits,sizeof bits);};
             for(unsigned i=0;i<5;++i){
@@ -169,6 +170,8 @@ void MaterialCaptureStateTestAccess::replayConstantRanges(){
                 auto packet=std::make_unique<NorthlightAutoBump::Deferred>();packet->mesh=mixed&&i%2?std::shared_ptr<const NorthlightDrawSnapshot::Mesh>(upMesh):residentMesh;
                 packet->vertex=&d.vs;packet->vertex->AddRef();packet->pixel=&d.ps;packet->pixel->AddRef();packet->declaration=&d.decl;packet->declaration->AddRef();packet->viewport={0,0,64,64,0,1};packet->occlusion=true;packet->tag=19;packet->first=first;packet->pixelConstants=pixel;
                 packet->vertexFirst=vertexFirst;packet->vertexCount=vertexCount;
+                restoreFirst=std::min(restoreFirst,vertexFirst);restoreEnd=std::max(restoreEnd,vertexFirst+vertexCount);
+                if(!pixel.empty()){restorePixelFirst=std::min(restorePixelFirst,first);restorePixelEnd=std::max(restorePixelEnd,first+UINT(pixel.size()/4));}
                 std::memcpy(packet->vertexConstants,vertex.data()+vertexFirst*4,vertexCount*16);std::fill(packet->vertexInt,packet->vertexInt+64,0);std::fill(packet->pixelInt,packet->pixelInt+64,0);std::fill(packet->vertexBool,packet->vertexBool+16,FALSE);std::fill(packet->pixelBool,packet->pixelBool+16,FALSE);std::fill(packet->states,packet->states+14,0);std::fill(packet->raster,packet->raster+NorthlightAutoBump::DeferredRasterCount,0);
                 std::memcpy(expected.vertex.data()+vertexFirst*4,vertex.data()+vertexFirst*4,vertexCount*16);if(!pixel.empty())std::memcpy(expected.pixel.data()+first*4,pixel.data(),pixel.size()*sizeof(float));d.expectedFloatBanks.push_back(expected);
                 b.deferred.push_back(std::move(packet));
@@ -178,8 +181,8 @@ void MaterialCaptureStateTestAccess::replayConstantRanges(){
             assert(d.floatCalls.size()>=4&&d.floatCalls[0].vertex&&d.floatCalls[0].first==initialFirst&&d.floatCalls[0].count==initialCount);
             assert(!d.floatCalls[1].vertex&&d.floatCalls[1].first==20&&d.floatCalls[1].count==(shape==9?0u:5u));
             const auto& restoreVertex=d.floatCalls[d.floatCalls.size()-2];const auto& restorePixel=d.floatCalls.back();
-            assert(restoreVertex.vertex&&restoreVertex.first==0&&restoreVertex.count==256&&!restoreVertex.failed);
-            assert(!restorePixel.vertex&&restorePixel.first==0&&restorePixel.count==224&&!restorePixel.failed);
+            assert(restoreVertex.vertex&&restoreVertex.first==restoreFirst&&restoreVertex.count==restoreEnd-restoreFirst&&!restoreVertex.failed);
+            assert(!restorePixel.vertex&&restorePixel.first==restorePixelFirst&&restorePixel.count==restorePixelEnd-restorePixelFirst&&!restorePixel.failed);
             assert(d.state==initial);
         }
         assert(d.state==initial&&d.vs.refs==1&&d.ps.refs==1&&d.decl.refs==1&&d.surface.refs==1&&d.capture.refs==1&&d.auxiliary.refs==1&&d.privateDepth.refs==1);

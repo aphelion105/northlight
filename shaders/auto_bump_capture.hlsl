@@ -54,8 +54,8 @@ MaterialValue materialValue(sampler2D map,float2 uv,float4 p,float3 smoothNormal
 MaterialValue materialValue(sampler2D map,float2 uv,float4 p){return materialValue(map,uv,p,0);}
 MaterialValue normalMaterialValue(sampler2D map,float2 uv,float4 p,float3 smoothNormal){return materialValue(map,uv,p,smoothNormal,float4(0,ParallaxControl.yzw));}
 MaterialValue normalMaterialValue(sampler2D map,float2 uv,float4 p){return normalMaterialValue(map,uv,p,0);}
-CaptureResult captureValue(MaterialValue v,float4 p,float alpha POM_ID_PARAMETER) {
-    clip(alpha-BumpCapture.z);
+CaptureResult captureValue(MaterialValue v,float4 p,float alpha POM_ID_PARAMETER,bool alphaChecked=false) {
+    if(!alphaChecked)clip(alpha-BumpCapture.z);
     // Store the perturbation relative to the capture's smooth reference.
     // A neutral map is (0,0,1), even when scene-depth normals differ from it.
     float3 delta=v.normal-v.reference;
@@ -69,39 +69,39 @@ CaptureResult captureValue(MaterialValue v,float4 p,float alpha POM_ID_PARAMETER
     return o;
 }
 CaptureResult BumpOpaque(float2 uv:TEXCOORD0,float4 p:TEXCOORD7 POM_ID_INPUT){clip(BumpCapture.y-p.w);return captureValue(materialValue(GeneratedNormal,uv,p),p,1 POM_ID_ARGUMENT);}
-CaptureResult BumpLayer(float2 uv:TEXCOORD0,float2 maskUV:TEXCOORD1,float4 p:TEXCOORD7 POM_ID_INPUT){clip(BumpCapture.y-p.w);return captureValue(materialValue(GeneratedNormal,uv,p),p,saturate(dot(tex2D(LayerMask,maskUV),NativeLayerMask)) POM_ID_ARGUMENT);}
-CaptureResult captureTerrainValue(MaterialValue v,float4 p,float alpha POM_ID_PARAMETER){
+CaptureResult BumpLayer(float2 uv:TEXCOORD0,float2 maskUV:TEXCOORD1,float4 p:TEXCOORD7 POM_ID_INPUT){clip(BumpCapture.y-p.w);float alpha=saturate(dot(tex2D(LayerMask,maskUV),NativeLayerMask));clip(alpha-BumpCapture.z);return captureValue(materialValue(GeneratedNormal,uv,p),p,alpha POM_ID_ARGUMENT,true);}
+CaptureResult captureTerrainValue(MaterialValue v,float4 p,float alpha POM_ID_PARAMETER,bool alphaChecked=false){
     v.normal=v.normal.x*TerrainToWorld[0].xyz+v.normal.y*TerrainToWorld[1].xyz+v.normal.z*TerrainToWorld[2].xyz;
     v.reference=v.reference.x*TerrainToWorld[0].xyz+v.reference.y*TerrainToWorld[1].xyz+v.reference.z*TerrainToWorld[2].xyz;
-    CaptureResult o=captureValue(v,p,alpha POM_ID_ARGUMENT);
+    CaptureResult o=captureValue(v,p,alpha POM_ID_ARGUMENT,alphaChecked);
     // Signed depth identifies world-frame detail without another render target.
     // Terrain is a height field: its authored normal has no -Z pole.
     o.normal.b=-p.w;return o;
 }
 CaptureResult BumpTerrainOpaque(float2 uv:TEXCOORD0,float3 normal:TEXCOORD5,float4 p:TEXCOORD7 POM_ID_INPUT){clip(BumpCapture.y-p.w);return captureTerrainValue(materialValue(GeneratedNormal,uv,p,normal),p,1 POM_ID_ARGUMENT);}
-CaptureResult BumpTerrainLayer(float2 uv:TEXCOORD0,float2 maskUV:TEXCOORD1,float3 normal:TEXCOORD5,float4 p:TEXCOORD7 POM_ID_INPUT){clip(BumpCapture.y-p.w);return captureTerrainValue(materialValue(GeneratedNormal,uv,p,normal),p,saturate(dot(tex2D(LayerMask,maskUV),NativeLayerMask)) POM_ID_ARGUMENT);}
+CaptureResult BumpTerrainLayer(float2 uv:TEXCOORD0,float2 maskUV:TEXCOORD1,float3 normal:TEXCOORD5,float4 p:TEXCOORD7 POM_ID_INPUT){clip(BumpCapture.y-p.w);float alpha=saturate(dot(tex2D(LayerMask,maskUV),NativeLayerMask));clip(alpha-BumpCapture.z);return captureTerrainValue(materialValue(GeneratedNormal,uv,p,normal),p,alpha POM_ID_ARGUMENT,true);}
 CaptureResult BumpWall(float2 uv:TEXCOORD0,float4 color:COLOR0,float4 p:TEXCOORD7 POM_ID_INPUT){clip(BumpCapture.y-p.w);
     MaterialValue v=materialValue(GeneratedNormal,uv,p);return captureValue(v,p,tex2Dgrad(Diffuse,v.uv,ddx(uv),ddy(uv)).a*color.a+BumpCapture.w POM_ID_ARGUMENT);
 }
-CaptureResult BumpGrass(float2 uv:TEXCOORD0,float4 fade:COLOR1,float4 p:TEXCOORD7 POM_ID_INPUT){clip(BumpCapture.y-p.w);return captureValue(materialValue(GeneratedNormal,uv,p),p,tex2D(Diffuse,uv).a*fade.x POM_ID_ARGUMENT);}
-CaptureResult BumpWallOpaque(float2 uv:TEXCOORD0,float4 color:COLOR0,float4 p:TEXCOORD7 POM_ID_INPUT){clip(BumpCapture.y-p.w);return captureValue(materialValue(GeneratedNormal,uv,p),p,color.a+BumpCapture.w POM_ID_ARGUMENT);}
+CaptureResult BumpGrass(float2 uv:TEXCOORD0,float4 fade:COLOR1,float4 p:TEXCOORD7 POM_ID_INPUT){clip(BumpCapture.y-p.w);float alpha=tex2D(Diffuse,uv).a*fade.x;clip(alpha-BumpCapture.z);return captureValue(materialValue(GeneratedNormal,uv,p),p,alpha POM_ID_ARGUMENT,true);}
+CaptureResult BumpWallOpaque(float2 uv:TEXCOORD0,float4 color:COLOR0,float4 p:TEXCOORD7 POM_ID_INPUT){clip(BumpCapture.y-p.w);float alpha=color.a+BumpCapture.w;clip(alpha-BumpCapture.z);return captureValue(materialValue(GeneratedNormal,uv,p),p,alpha POM_ID_ARGUMENT,true);}
 CaptureResult BumpComposite(float2 uv:TEXCOORD0,float2 uv1:TEXCOORD1,float4 color:COLOR0,float4 blend:COLOR1,float4 p:TEXCOORD7 POM_ID_INPUT){clip(BumpCapture.y-p.w);
     MaterialValue first=materialValue(GeneratedNormal,uv,p),second=materialValue(GeneratedNormal1,uv1,p);
     // Add the solid-coverage offset before the existing saturation. Folding it
     // into MAD keeps the shared composite within the 512-slot SM3 limit.
     float alpha=mad(mad(tex2Dgrad(Diffuse,first.uv,ddx(uv),ddy(uv)).a-tex2Dgrad(LayerMask,second.uv,ddx(uv1),ddy(uv1)).a,blend.w,tex2Dgrad(LayerMask,second.uv,ddx(uv1),ddy(uv1)).a),color.a,BumpCapture.w);
-    first.uv1=second.uv;first.normal=mad(first.normal-second.normal,saturate(blend.w),second.normal);first.occlusion=mad(first.occlusion-second.occlusion,saturate(blend.w),second.occlusion);return captureValue(first,p,alpha POM_ID_ARGUMENT);
+    first.uv1=second.uv;first.normal=mad(first.normal-second.normal,saturate(blend.w),second.normal);first.occlusion=mad(first.occlusion-second.occlusion,saturate(blend.w),second.occlusion);return captureValue(first,p,alpha POM_ID_ARGUMENT,true);
 }
 
 // Native alpha is computed by the original material program in BumpNativePatch.
-CaptureResult BumpNative(float2 uv:TEXCOORD0,float4 nativeColor:COLOR0,float4 p:TEXCOORD7 POM_ID_INPUT){clip(BumpCapture.y-p.w);return captureValue(materialValue(GeneratedNormal,uv,p),p,lerp(1,nativeColor.a,BumpCapture.w) POM_ID_ARGUMENT);}
+CaptureResult BumpNative(float2 uv:TEXCOORD0,float4 nativeColor:COLOR0,float4 p:TEXCOORD7 POM_ID_INPUT){clip(BumpCapture.y-p.w);float alpha=lerp(1,nativeColor.a,BumpCapture.w);clip(alpha-BumpCapture.z);return captureValue(materialValue(GeneratedNormal,uv,p),p,alpha POM_ID_ARGUMENT,true);}
 
 // These entries are selected only when the host already disables POM. They
 // preserve the same frame, coverage, cavity and relative-normal encoding.
 #ifndef NORTHLIGHT_SHARED_POM
 CaptureResult BumpNormalOpaque(float2 uv:TEXCOORD0,float4 p:TEXCOORD7){clip(BumpCapture.y-p.w);return captureValue(normalMaterialValue(GeneratedNormal,uv,p),p,1);}
-CaptureResult BumpNormalLayer(float2 uv:TEXCOORD0,float2 maskUV:TEXCOORD1,float4 p:TEXCOORD7){clip(BumpCapture.y-p.w);return captureValue(normalMaterialValue(GeneratedNormal,uv,p),p,saturate(dot(tex2D(LayerMask,maskUV),NativeLayerMask)));}
+CaptureResult BumpNormalLayer(float2 uv:TEXCOORD0,float2 maskUV:TEXCOORD1,float4 p:TEXCOORD7){clip(BumpCapture.y-p.w);float alpha=saturate(dot(tex2D(LayerMask,maskUV),NativeLayerMask));clip(alpha-BumpCapture.z);return captureValue(normalMaterialValue(GeneratedNormal,uv,p),p,alpha,true);}
 CaptureResult BumpNormalTerrainOpaque(float2 uv:TEXCOORD0,float3 normal:TEXCOORD5,float4 p:TEXCOORD7){clip(BumpCapture.y-p.w);return captureTerrainValue(normalMaterialValue(GeneratedNormal,uv,p,normal),p,1);}
-CaptureResult BumpNormalTerrainLayer(float2 uv:TEXCOORD0,float2 maskUV:TEXCOORD1,float3 normal:TEXCOORD5,float4 p:TEXCOORD7){clip(BumpCapture.y-p.w);return captureTerrainValue(normalMaterialValue(GeneratedNormal,uv,p,normal),p,saturate(dot(tex2D(LayerMask,maskUV),NativeLayerMask)));}
-CaptureResult BumpNormalGrass(float2 uv:TEXCOORD0,float4 fade:COLOR1,float4 p:TEXCOORD7){clip(BumpCapture.y-p.w);return captureValue(normalMaterialValue(GeneratedNormal,uv,p),p,tex2D(Diffuse,uv).a*fade.x);}
+CaptureResult BumpNormalTerrainLayer(float2 uv:TEXCOORD0,float2 maskUV:TEXCOORD1,float3 normal:TEXCOORD5,float4 p:TEXCOORD7){clip(BumpCapture.y-p.w);float alpha=saturate(dot(tex2D(LayerMask,maskUV),NativeLayerMask));clip(alpha-BumpCapture.z);return captureTerrainValue(normalMaterialValue(GeneratedNormal,uv,p,normal),p,alpha,true);}
+CaptureResult BumpNormalGrass(float2 uv:TEXCOORD0,float4 fade:COLOR1,float4 p:TEXCOORD7){clip(BumpCapture.y-p.w);float alpha=tex2D(Diffuse,uv).a*fade.x;clip(alpha-BumpCapture.z);return captureValue(normalMaterialValue(GeneratedNormal,uv,p),p,alpha,true);}
 #endif

@@ -83,12 +83,13 @@ struct Image {};
 static std::uint64_t version(IDirect3DTexture9* p){return p->version;}
 static void read(IDirect3DTexture9*,Image&){}
 static std::array<float,4> profile(const Image&,unsigned polarity,unsigned details,unsigned balance){return {{float(details),float(balance),float(polarity),0}};}
+static std::array<float,4> textureProfile(IDirect3DTexture9*,unsigned polarity,unsigned details,unsigned balance){return profile({},polarity,details,balance);}
 }
 struct NorthlightMaterialProfile {
     enum Stage {NormalCache,NormalHit,NormalMiss,HeightRead,NormalBuild,Mips};
     struct Scope {Scope(NorthlightMaterialProfile*,Stage,unsigned=0,bool=false){}void work(std::uint64_t){}void next(Stage){}};void count(Stage){}
 };
-struct ZeroHash {size_t operator()(IDirect3DTexture9*)const{return 0;}};
+struct ZeroHash {size_t operator()(IDirect3DBaseTexture9*)const{return 0;}};
 #include "auto_normal_memory.h"
 #include "cache_linear.h"
 #include "cache_integrated.h"

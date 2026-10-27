@@ -24,7 +24,9 @@ with tempfile.TemporaryDirectory(prefix='northlight-normal-index-') as work:
             assert text.count('class NorthlightAutoNormalCache {')==1
             text=text.replace('class NorthlightAutoNormalCache {','class NorthlightAutoNormalCache {public:',1)
             text=text.replace('NorthlightAutoNormalCache','Cache'+key.capitalize())
-            if collisions:text=text.replace('std::unordered_map<IDirect3DTexture9*,size_t>','std::unordered_map<IDirect3DTexture9*,size_t,ZeroHash>')
+            if collisions:
+                for key_type in ['IDirect3DTexture9','IDirect3DBaseTexture9']:
+                    text=text.replace('std::unordered_map<'+key_type+'*,size_t>','std::unordered_map<'+key_type+'*,size_t,ZeroHash>')
             (tmp/('cache_'+key+'.h')).write_text(text)
         for label,flags in [('O2',['-O2']),('san',['-O1','-g','-fsanitize=address,undefined','-fno-sanitize-recover=all'])]:
             binary=tmp/('index-'+str(int(collisions))+'-'+label)

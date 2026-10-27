@@ -22,6 +22,7 @@ test_async_memory_diagnostics.py
 test_atlas_low_memory.py
 test_atlas_upload_proof.py
 test_auto_normal_index.py
+test_auto_normal_index_windows.py
 test_auto_normal_memory.py
 test_auto_normal_profile_gpu.py
 test_auto_normal_reuse_gpu.py
@@ -139,10 +140,14 @@ test_m2_shader_families.py
 test_m2_shader_families_client.py
 test_m2_visibility.py
 test_material_batch_bindings.py
+test_material_capture_targets.py
+test_material_capture_targets_gpu.py
+test_material_early_alpha_gpu.py
 test_material_frame_rotation_gpu.py
 test_material_geometry.py
 test_material_normal_variants.py
 test_material_packet_auxiliary.py
+test_material_pipeline_cpu_micro.py
 test_material_pose_metadata.py
 test_material_pressure_transition.py
 test_material_profile.py

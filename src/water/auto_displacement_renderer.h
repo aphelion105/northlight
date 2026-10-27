@@ -57,19 +57,21 @@ class NorthlightAutoDisplacement {
     NorthlightVertexDeclarations::Cache declarations;
     void* constantContext=nullptr;NorthlightConstantEpoch::Reader constantReader=nullptr;
     NorthlightConstantEpoch::Stamp constantStamp,rangeConstantStamp;float constants[256*4]={};
+    unsigned constantFirst=0,constantCount=0,rangeConstantFirst=0,rangeConstantCount=0;
     float rangeConstants[256*4]={}; // Range admission must not invalidate the cached model pose bank.
-    bool readConstantBank(unsigned first,unsigned count,bool skinned,float* bank,NorthlightConstantEpoch::Stamp& stamp){
+    bool readConstantBank(unsigned first,unsigned count,bool skinned,float* bank,NorthlightConstantEpoch::Stamp& stamp,unsigned& capturedFirst,unsigned& capturedCount){
         namespace E=NorthlightConstantEpoch;
-        E::Stamp before;const bool valid=skinned&&constantReader&&constantReader(constantContext,before)&&before.valid;
+        E::Stamp before;const bool valid=constantReader&&constantReader(constantContext,before)&&before.valid;
         unsigned lo=first,hi=first+count;
-        if(valid&&E::banks(stamp,before,false,false))E::dirtySpan(stamp,before,lo,hi,lo,hi);
+        const bool reusable=valid&&first==capturedFirst&&count==capturedCount&&E::banks(stamp,before,false,false);
+        if(reusable)E::dirtySpan(stamp,before,lo,hi,lo,hi);
         stamp={};
-        if(!skinned)std::fill(bank,bank+256*4,0.f);
+        if(!skinned&&!reusable)std::fill(bank,bank+256*4,0.f);
         if(lo!=hi&&FAILED(d->GetVertexShaderConstantF(lo,bank+lo*4,hi-lo)))return false;
-        E::Stamp after;if(valid&&constantReader(constantContext,after)&&E::exact(before,after))stamp=after;
+        E::Stamp after;if(valid&&constantReader(constantContext,after)&&E::exact(before,after)){stamp=after;capturedFirst=first;capturedCount=count;}
         return true;
     }
-    bool readConstants(unsigned first,unsigned count,bool skinned){return readConstantBank(first,count,skinned,constants,constantStamp);}
+    bool readConstants(unsigned first,unsigned count,bool skinned){return readConstantBank(first,count,skinned,constants,constantStamp,constantFirst,constantCount);}
     std::unordered_map<IDirect3DVertexShader9*,Shader> shaders;
     std::unordered_map<IDirect3DVertexShader9*,Material> materials;
     std::vector<Texture>& textures=geometry.textures;
@@ -251,11 +253,13 @@ class NorthlightAutoDisplacement {
         for(auto it=textures.begin();it!=textures.end();++it)if(it->source==source&&it->model==model){if(it->version!=revision){drop(it->gpu);drop(it->source);textures.erase(it);break;}it->used=++clock;return it->height.width?&it->height:nullptr;}
         if(readsThisFrame>=2)return nullptr;++readsThisFrame;
         auto reject=[&]()->const Height*{if(textures.size()>=32){auto old=std::min_element(textures.begin(),textures.end(),[](const Texture& a,const Texture& b){return a.used<b.used;});drop(old->gpu);drop(old->source);textures.erase(old);}Texture failed;failed.source=source;source->AddRef();failed.used=++clock;failed.version=revision;failed.model=model;textures.push_back(std::move(failed));return nullptr;};
-        NorthlightMaterialHeight::Image image;if(!NorthlightMaterialHeight::read(source,image))return reject();
+        NorthlightMaterialHeight::Image image;if(!NorthlightMaterialHeight::read(source,image,!model,polarity==0&&heightDetails!=0))return reject();
         if(textures.size()>=32){auto oldest=std::min_element(textures.begin(),textures.end(),[](const Texture& a,const Texture& b){return a.used<b.used;});drop(oldest->gpu);drop(oldest->source);textures.erase(oldest);}
         Texture item;item.source=source;source->AddRef();item.used=++clock;item.version=revision;item.model=model;item.height.width=image.width;item.height.height=image.height;item.height.values.resize(size_t(image.width)*image.height);
         const auto profile=NorthlightMaterialHeight::profile(image,polarity,heightDetails,heightBalance);
-        for(size_t i=0;i<item.height.values.size();++i)item.height.values[i]=model?NorthlightMaterialHeight::modelValue(image,unsigned(i%image.width),unsigned(i/image.width),polarity):NorthlightMaterialHeight::value(image.rgba[i*4]/255.f,image.rgba[i*4+1]/255.f,image.rgba[i*4+2]/255.f,profile);
+        if(model)NorthlightMaterialHeight::modelValues(image,polarity,item.height.values);
+        else if(profile[1]==0)for(size_t i=0;i<item.height.values.size();++i)item.height.values[i]=NorthlightMaterialHeight::valueWithoutAccent(image.rgba[i*4]/255.f,image.rgba[i*4+1]/255.f,image.rgba[i*4+2]/255.f,profile);
+        else for(size_t i=0;i<item.height.values.size();++i)item.height.values[i]=NorthlightMaterialHeight::value(image.rgba[i*4]/255.f,image.rgba[i*4+1]/255.f,image.rgba[i*4+2]/255.f,profile);
         textures.push_back(std::move(item));return &textures.back().height;
     }
     IDirect3DTexture9* heightTexture(IDirect3DTexture9* source,bool model){
@@ -335,7 +339,7 @@ public:
         const bool skin=shader->second.skinned;
         if(skin&&(args.vertices||!program.skinned))return false;
         const unsigned input=skin?16:rangeInput(program);if(!skin&&input==16)return false;
-        {P::Scope read(profile,P::Constants);if(!readConstantBank(shader->second.first,shader->second.count,skin,rangeConstants,rangeConstantStamp))return false;}
+        {P::Scope read(profile,P::Constants);if(!readConstantBank(shader->second.first,shader->second.count,skin,rangeConstants,rangeConstantStamp,rangeConstantFirst,rangeConstantCount))return false;}
         NorthlightDrawSnapshot::Ref<IDirect3DVertexDeclaration9> decl;if(FAILED(d->GetVertexDeclaration(decl.out()))||!decl.p)return false;
         const D3DVERTEXELEMENT9* elements=nullptr;UINT count=0;if(!declarations.get(decl.p,elements,count))return false;
         const auto position=std::find_if(elements,elements+count,[](const D3DVERTEXELEMENT9& e){return e.Stream==0&&e.Usage==D3DDECLUSAGE_POSITION&&e.UsageIndex==0&&e.Type==D3DDECLTYPE_FLOAT3;});

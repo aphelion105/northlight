@@ -439,34 +439,31 @@
  456:     texldd r2, r5, s1, r4, r4.zwzw
  458:     add r0.w, r1.w, -r2.w
  459:     mad r0.w, r0.w, v3.w, r2.w
- 460:     mad r0.w, r0.w, v2.w, c20.w
+ 460:     mad_sat r0.w, r0.w, v2.w, c20.w
  461:     add r1.xyz, r11, -r12
  462:     mov_sat r1.w, v3.w
  463:     mad r1.xyz, r1, r1.w, r12
  464:     add r2.xyz, -r0, r10
  465:     mad oC1.xyz, r2, r1.w, r0
- 466:     add r2, r0.w, -c20.z
- 467:     texkill r2
- 468:     add r0.xyz, -r6, r1
- 469:     dp2add r1.w, r6, r0, c0.y
- 471:     add r2.x, r6.z, c6.x
- 472:     add r2.y, r2.x, c5.w
- 473:     rcp r2.x, r2.x
- 474:     cmp r2.x, r2.y, r2.x, c7.x
- 475:     mad r0.z, r1.w, r2.x, r0.z
- 476:     mad r0.xy, -r6, r0.z, r0
- 477:     dp3 r1.x, r6, r1
- 478:     max r0.z, r1.x, c0.y
- 479:     dp3 r0.z, r0_abs, c6.x
- 480:     add r1.x, r0.z, c7.y
- 481:     rcp r0.z, r0.z
- 482:     mul r0.z, r0.z, c2.w
- 483:     cmp r0.z, r1.x, r0.z, c7.z
- 484:     mad oC0.xy, r0, r0.z, c2.w
- 485:     mov_sat r0.w, r0.w
- 486:     mov oC0.z, v4.w
- 487:     mov oC0.w, r0.w
- 488:     mov oC1.w, r0.w
+ 466:     add r0.xyz, -r6, r1
+ 467:     dp2add r1.w, r6, r0, c0.y
+ 469:     add r2.x, r6.z, c6.x
+ 470:     add r2.y, r2.x, c5.w
+ 471:     rcp r2.x, r2.x
+ 472:     cmp r2.x, r2.y, r2.x, c7.x
+ 473:     mad r0.z, r1.w, r2.x, r0.z
+ 474:     mad r0.xy, -r6, r0.z, r0
+ 475:     dp3 r1.x, r6, r1
+ 476:     max r0.z, r1.x, c0.y
+ 477:     dp3 r0.z, r0_abs, c6.x
+ 478:     add r1.x, r0.z, c7.y
+ 479:     rcp r0.z, r0.z
+ 480:     mul r0.z, r0.z, c2.w
+ 481:     cmp r0.z, r1.x, r0.z, c7.z
+ 482:     mad oC0.xy, r0, r0.z, c2.w
+ 483:     mov oC0.z, v4.w
+ 484:     mov oC0.w, r0.w
+ 485:     mov oC1.w, r0.w
 
-// approximately 501 instruction slots used (12 texture, 489 arithmetic)
+// approximately 498 instruction slots used (12 texture, 486 arithmetic)
  

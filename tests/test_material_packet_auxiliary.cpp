@@ -1,7 +1,7 @@
 #include "material_packet_bindings.h"
 
 struct PacketDevice:MaterialBindingDevice {
-    struct Expected {bool integer=false,boolean=false;std::array<int,64> vi,pi;std::array<BOOL,16> vb,pb;};
+    struct Expected {bool integer=false,boolean=false,pixelUsed=true;std::array<int,64> vi,pi;std::array<BOOL,16> vb,pb;};
     std::vector<Expected> expected;
     unsigned getInt=0,getBool=0,setInt=0,setBool=0,pixelGetInt=0,pixelGetBool=0,pixelSetInt=0,pixelSetBool=0;
     unsigned failedGetter=0,failedSetter=0;
@@ -20,10 +20,10 @@ struct PacketDevice:MaterialBindingDevice {
     HRESULT STDMETHODCALLTYPE SetPixelShaderConstantB(UINT first,const BOOL* in,UINT count)override{++pixelSetBool;return MaterialBindingDevice::SetPixelShaderConstantB(first,in,count);}
     HRESULT submit(bool up){
         assert(draws.size()<expected.size());const auto& e=expected[draws.size()];
-        if((e.integer&&state.vi!=e.vi)||(e.boolean&&state.vb!=e.vb)||state.pi!=e.pi||state.pb!=e.pb){std::fputs("MATERIAL_AUXILIARY_BANK_MISMATCH\n",stderr);std::abort();}
+        if((e.integer&&state.vi!=e.vi)||(e.boolean&&state.vb!=e.vb)||(e.pixelUsed&&(state.pi!=e.pi||state.pb!=e.pb))){std::fputs("MATERIAL_AUXILIARY_BANK_MISMATCH\n",stderr);std::abort();}
         assert(state.vertex==&vs&&state.pixel==&ps&&state.declaration==&decl&&state.frequency[0]==1);
         uint64_t hash=1469598103934665603ull;auto bank=[&](const auto& values){for(auto value:values)hash=(hash^uint64_t(value))*1099511628211ull;};
-        if(e.integer)bank(state.vi);if(e.boolean)bank(state.vb);bank(state.pi);bank(state.pb);draws.push_back(hash);
+        if(e.integer)bank(state.vi);if(e.boolean)bank(state.vb);if(e.pixelUsed){bank(state.pi);bank(state.pb);}draws.push_back(hash);
         if(up){state.streams[0]=nullptr;state.indices=nullptr;state.frequency[0]=7;}return D3D_OK;
     }
     HRESULT STDMETHODCALLTYPE DrawPrimitive(D3DPRIMITIVETYPE,UINT,UINT)override{return submit(false);}
@@ -57,17 +57,17 @@ void MaterialCaptureStateTestAccess::packetAuxiliary(){
                 else{assert(b.compileVertex(&d.vs,vertex,reinterpret_cast<const DWORD*>(code.data()),code.size()));assert(vertex.floatOnly==(shape==0||shape==3||shape==4));}
                 for(unsigned j=0;j<64;++j){d.state.vi[j]=int(i*100+j);d.state.pi[j]=-int(i*100+j);}
                 for(unsigned j=0;j<16;++j){d.state.vb[j]=BOOL((i+j)&1);d.state.pb[j]=BOOL((i+j+1)&1);}
-                PacketDevice::Expected expected{shape==1||shape==5,shape==2||shape==5,d.state.vi,d.state.pi,d.state.vb,d.state.pb};
+                PacketDevice::Expected expected{shape==1||shape==5,shape==2||shape==5,shape==1||shape==2||shape==4||shape==5,d.state.vi,d.state.pi,d.state.vb,d.state.pb};
                 const float vertices[12]={0,0,0,0,1,0,0,0,0,1,0,0};
                 NorthlightAutoDisplacement::Args args{{D3DPT_TRIANGLELIST,0,0,3,0,1,false},nullptr,D3DFMT_UNKNOWN,vertices,16};
-                NorthlightAutoBump::NativeCapture model;model.shader=&d.ps;model.first=model.constant=20;model.last=24;
+                NorthlightAutoBump::NativeCapture model;model.shader=&d.ps;model.first=model.constant=20;model.last=24;auto pixelCode=code;pixelCode[0]=0xffff0300;model.pixelFloatOnly=NorthlightNativeMaterialCapture::floatOnlyConstants(pixelCode.data(),pixelCode.size());assert(model.pixelFloatOnly==(shape==0||shape==3));
                 NorthlightAutoBump::ReplayState saved(&d,&d.vs,d.state.viewport);NorthlightAutoNormalCache::Lease normal;float constants[20]={};
                 const bool fail=(failure==1||failure==2)&&i==1;
                 if(fail)d.failedGetter=failure;
                 const bool recorded=b.recordCapture(args,normal,false,saved,model,vertex,constants,D3DTADDRESS_WRAP,D3DTADDRESS_WRAP);drop(vertex.patched);
                 assert(recorded!=fail);if(recorded){++queued;d.expected.push_back(expected);
                     // Omitted storage must never certify a later used bank, even if its bytes match.
-                    auto& packet=*b.deferred.back();if(packet.vertexFloatOnly){for(unsigned j=0;j<64;++j)packet.vertexInt[j]=int((i+1)*100+j);for(unsigned j=0;j<16;++j)packet.vertexBool[j]=BOOL((i+1+j)&1);}}
+                    auto& packet=*b.deferred.back();if(packet.pixelFloatOnly){for(unsigned j=0;j<64;++j)packet.pixelInt[j]=-int((i+1)*100+j);for(unsigned j=0;j<16;++j)packet.pixelBool[j]=BOOL((i+1+j+1)&1);}if(packet.vertexFloatOnly){for(unsigned j=0;j<64;++j)packet.vertexInt[j]=int((i+1)*100+j);for(unsigned j=0;j<16;++j)packet.vertexBool[j]=BOOL((i+1+j)&1);}}
                 assert(!d.failedGetter);
             }
             // Alternate actual resident and UP packets to invalidate replay assumptions.

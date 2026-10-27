@@ -5,6 +5,18 @@
 
 namespace NorthlightNativeMaterialCapture {
 using namespace NorthlightWaterShaderPatch;
+inline bool floatOnlyConstants(const Word* code,size_t count){
+    NorthlightTerrainCoverage::Program p;if(!NorthlightTerrainCoverage::analyse(code,count,p)||p.vertex)return false;
+    bool integers[16]={},booleans[16]={};
+    for(const auto& op:p.ops)if(op.code==48||op.code==47){const unsigned r=regIndex(code[op.at+1]);if(r>=16)return false;(op.code==48?integers:booleans)[r]=true;}
+    for(const auto& op:p.ops){if(op.code==31||op.code==81||op.code==48||op.code==47||op.code==65534)continue;
+        int operands=NorthlightShadowShader::arithmeticOperands(op.code,p.major);
+        if(operands<0)switch(op.code){case 0:case 29:case 39:case 42:case 43:case 44:operands=0;break;case 38:case 40:case 65:case 96:operands=1;break;case 27:case 41:case 45:operands=2;break;case 66:case 95:operands=3;break;case 88:case 90:operands=4;break;case 93:operands=5;break;default:return false;}
+        if(op.size!=unsigned(operands))return false;
+        for(unsigned i=1;i<=op.size;++i){const auto t=code[op.at+i];const unsigned type=regType(t),r=regIndex(t);
+            if((type==7||type==14)&&((t&0x2000u)||r>=16||!(type==7?integers:booleans)[r]))return false;}}
+    return true;
+}
 // Keep only the original alpha/kill dependencies. Unknown instructions retain
 // the complete native program; coverage must never depend on this optimization.
 inline bool alphaSlice(const Word* code,const NorthlightTerrainCoverage::Program& p,bool alpha,std::vector<Word>& out){

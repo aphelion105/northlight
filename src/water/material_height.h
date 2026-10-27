@@ -26,25 +26,37 @@ inline void copiedSurface(IDirect3DSurface9* source,const RECT* rect,IDirect3DSu
     if(success&&source&&(!point||(!point->x&&!point->y))&&SUCCEEDED(source->GetDesc(&a))&&SUCCEEDED(destination->GetDesc(&b))&&a.Width==b.Width&&a.Height==b.Height&&(!rect||(!rect->left&&!rect->top&&rect->right==LONG(a.Width)&&rect->bottom==LONG(a.Height)))&&SUCCEEDED(source->GetContainer(IID_IDirect3DTexture9,reinterpret_cast<void**>(&from)))&&from&&SUCCEEDED(from->GetLevelDesc(0,&level))&&a.Width==level.Width&&a.Height==level.Height&&SUCCEEDED(to->GetLevelDesc(0,&level))&&b.Width==level.Width&&b.Height==level.Height)copiedTexture(from,to,true);else cache.invalidate(to);
     if(from)from->Release();to->Release();
 }
-inline void means(Image& out){out.mean=out.accentMean=0;for(size_t i=0;i<out.rgba.size();i+=4){float r=out.rgba[i]/255.f,g=out.rgba[i+1]/255.f,b=out.rgba[i+2]/255.f;out.mean+=r*.299f+g*.587f+b*.114f;out.accentMean+=accent(r,g,b);}out.mean/=out.width*out.height;out.accentMean/=out.width*out.height;}
-inline bool read(IDirect3DTexture9* source,Image& out){
+inline void means(Image& out,const unsigned char* rgba,size_t bytes,bool accents=true){out.mean=out.accentMean=0;for(size_t i=0;i<bytes;i+=4){float r=rgba[i]/255.f,g=rgba[i+1]/255.f,b=rgba[i+2]/255.f;out.mean+=r*.299f+g*.587f+b*.114f;if(accents)out.accentMean+=accent(r,g,b);}out.mean/=out.width*out.height;out.accentMean/=out.width*out.height;}
+inline void means(Image& out,bool accents=true){means(out,out.rgba.data(),out.rgba.size(),accents);}
+inline bool read(IDirect3DTexture9* source,Image& out,bool statistics=true,bool accents=true){
     out={};if(!source)return false;NorthlightParticleTextures::View uploaded;
-    if(NorthlightMaterialTextures::cache().lookup(source,uploaded)){out.width=uploaded.width;out.height=uploaded.height;out.rgba.assign(uploaded.rgba,uploaded.rgba+size_t(uploaded.width)*uploaded.height*4);means(out);return true;}
-    D3DSURFACE_DESC desc{};UINT level=0;
-    for(;level<source->GetLevelCount();++level){if(FAILED(source->GetLevelDesc(level,&desc)))return false;if(desc.Width<=128&&desc.Height<=128)break;}
-    if(level==source->GetLevelCount()||!desc.Width||!desc.Height||(desc.Usage&(D3DUSAGE_RENDERTARGET|D3DUSAGE_DEPTHSTENCIL|D3DUSAGE_DYNAMIC)))return false;
+    if(NorthlightMaterialTextures::cache().lookup(source,uploaded)){out.width=uploaded.width;out.height=uploaded.height;out.rgba.assign(uploaded.rgba,uploaded.rgba+size_t(uploaded.width)*uploaded.height*4);if(statistics)means(out,accents);return true;}
+    D3DSURFACE_DESC desc{};UINT level=0;const UINT levels=source->GetLevelCount();
+    for(;level<levels;++level){if(FAILED(source->GetLevelDesc(level,&desc)))return false;if(desc.Width<=128&&desc.Height<=128)break;}
+    if(level==levels||!desc.Width||!desc.Height||(desc.Usage&(D3DUSAGE_RENDERTARGET|D3DUSAGE_DEPTHSTENCIL|D3DUSAGE_DYNAMIC)))return false;
     using F=NorthlightActorTexture::Format;F format;
     switch(desc.Format){case D3DFMT_A8R8G8B8:format=F::BGRA8;break;case D3DFMT_X8R8G8B8:format=F::BGRX8;break;case D3DFMT_DXT1:format=F::BC1;break;case D3DFMT_DXT3:format=F::BC2;break;case D3DFMT_DXT5:format=F::BC3;break;case D3DFMT_R5G6B5:format=F::RGB565;break;default:return false;}
     const auto pitch=NorthlightActorTexture::rowBytes(desc.Width,format);const auto rows=NorthlightActorTexture::rowCount(desc.Height,format);std::vector<unsigned char> bytes(pitch*rows);
     D3DLOCKED_RECT lock{};if(FAILED(source->LockRect(level,&lock,nullptr,D3DLOCK_READONLY)))return false;
     const bool valid=lock.pBits&&lock.Pitch>=INT(pitch);if(valid)for(unsigned i=0;i<rows;++i)std::memcpy(bytes.data()+i*pitch,static_cast<unsigned char*>(lock.pBits)+size_t(i)*lock.Pitch,pitch);const auto hr=source->UnlockRect(level);
     if(!valid||FAILED(hr)||!NorthlightActorTexture::decode(bytes.data(),bytes.size(),desc.Width,desc.Height,pitch,format,out.rgba))return false;
-    out.width=desc.Width;out.height=desc.Height;means(out);return true;
+    out.width=desc.Width;out.height=desc.Height;if(statistics)means(out,accents);return true;
 }
 inline std::array<float,4> profile(const Image& im,unsigned polarity,unsigned details,unsigned balance){return {im.width?im.mean:.5f,polarity?0.f:details*.01f*sat((.45f-im.accentMean)*4),polarity==2?-1.f:1.f,(float(balance)-50)*.005f};}
+inline std::array<float,4> textureProfile(IDirect3DTexture9* source,unsigned polarity,unsigned details,unsigned balance){
+    Image image;NorthlightParticleTextures::View uploaded;
+    const bool accents=polarity==0&&details!=0;
+    if(NorthlightMaterialTextures::cache().lookup(source,uploaded)){image.width=uploaded.width;image.height=uploaded.height;means(image,uploaded.rgba,size_t(uploaded.width)*uploaded.height*4,accents);}
+    else read(source,image,true,accents);
+    return profile(image,polarity,details,balance);
+}
 inline float value(float r,float g,float b,const std::array<float,4>& p){
     const float base=.5f+(r*.299f+g*.587f+b*.114f-p[0])*.7f*p[2];
     const float a=accent(r,g,b)*p[1];return std::clamp(std::max(base,base+(.5f+.35f*a-base)*a)+p[3],.02f,.98f);
+}
+inline float valueWithoutAccent(float r,float g,float b,const std::array<float,4>& p){
+    const float base=.5f+(r*.299f+g*.587f+b*.114f-p[0])*.7f*p[2];
+    return std::clamp(base+p[3],.02f,.98f);
 }
 // Model albedo contains painted anatomy and skin colour. Only local detail may
 // become model relief; broad lighting/colour regions must not inflate a body.
@@ -53,5 +65,23 @@ inline float modelValue(const Image& im,unsigned x,unsigned y,unsigned polarity)
     const int rx=std::max(1u,im.width/32),ry=std::max(1u,im.height/32);
     const float around=(luma(int(x)-rx,y)+luma(int(x)+rx,y)+luma(x,int(y)-ry)+luma(x,int(y)+ry))*.25f;
     return .5f+std::clamp((luma(x,y)-around)*.7f*(polarity==2?-1.f:1.f),-.12f,.12f);
+}
+inline void modelValues(const Image& im,unsigned polarity,std::vector<float>& out){
+    out.resize(size_t(im.width)*im.height);if(out.empty())return;
+    const unsigned rx=std::max(1u,im.width/32),ry=std::max(1u,im.height/32);
+    std::vector<float> rows;
+    try{rows.resize(size_t(ry+1)*im.width);}catch(...){
+        for(unsigned y=0;y<im.height;++y)for(unsigned x=0;x<im.width;++x)out[size_t(y)*im.width+x]=modelValue(im,x,y,polarity);return;}
+    // Decode each texel once. Retain overwritten luminance rows in a small
+    // ring; below rows are still unmodified in the destination height field.
+    for(size_t i=0;i<out.size();++i){const auto* p=im.rgba.data()+i*4;out[i]=(p[0]*.299f+p[1]*.587f+p[2]*.114f)/255;}
+    for(unsigned y=0;y<im.height;++y){
+        auto* center=rows.data()+size_t(y%(ry+1))*im.width;
+        std::copy_n(out.data()+size_t(y)*im.width,im.width,center);
+        const auto* above=rows.data()+size_t((y>ry?y-ry:0)%(ry+1))*im.width;
+        const auto* below=out.data()+size_t(std::min(y+ry,im.height-1))*im.width;
+        for(unsigned x=0;x<im.width;++x){
+            const float around=(center[x>rx?x-rx:0]+center[std::min(x+rx,im.width-1)]+above[x]+below[x])*.25f;
+            out[size_t(y)*im.width+x]=.5f+std::clamp((center[x]-around)*.7f*(polarity==2?-1.f:1.f),-.12f,.12f);}}
 }
 }

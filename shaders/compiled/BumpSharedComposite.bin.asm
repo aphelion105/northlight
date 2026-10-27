@@ -443,42 +443,39 @@
  457:     texldd r2, r5, s1, r4, r4.zwzw
  459:     add r0.w, r1.w, -r2.w
  460:     mad r0.w, r0.w, v3.w, r2.w
- 461:     mad r0.w, r0.w, v2.w, c20.w
+ 461:     mad_sat r0.w, r0.w, v2.w, c20.w
  462:     add r1.xyz, r11, -r13
  463:     mov_sat r1.w, v3.w
  464:     mad r1.xyz, r1, r1.w, r13
  465:     add r2.xyz, -r0, r12
  466:     mad oC1.xyz, r2, r1.w, r0
- 467:     add r2, r0.w, -c20.z
- 468:     texkill r2
- 469:     add r0.xyz, -r6, r1
- 470:     dp2add r1.w, r6, r0, c0.y
- 472:     add r2.x, r6.z, c6.x
- 473:     add r2.y, r2.x, c5.w
- 474:     rcp r2.x, r2.x
- 475:     cmp r2.x, r2.y, r2.x, c7.x
- 476:     mad r0.z, r1.w, r2.x, r0.z
- 477:     mad r0.xy, -r6, r0.z, r0
- 478:     dp3 r1.x, r6, r1
- 479:     max r0.z, r1.x, c0.y
- 480:     dp3 r0.z, r0_abs, c6.x
- 481:     add r1.x, r0.z, c7.y
- 482:     rcp r0.z, r0.z
- 483:     mul r0.z, r0.z, c2.w
- 484:     cmp r0.z, r1.x, r0.z, c7.z
- 485:     mad oC0.xy, r0, r0.z, c2.w
- 486:     mov_sat r0.w, r0.w
- 487:     add r0.x, c2.w, v5.x
- 488:     frc r0.y, r0.x
- 489:     add r0.x, -r0.y, r0.x
- 490:     add r9.z, r0.x, c25.z
- 491:     mov oC0.z, v4.w
- 492:     mov oC0.w, r0.w
- 493:     mov oC1.w, r0.w
- 494:     mov r9.w, c6.x
- 495:     mov oC2, r9
- 496:     mov oC3.xy, r5
- 497:     mov oC3.zw, c1.xyyx
+ 467:     add r0.xyz, -r6, r1
+ 468:     dp2add r1.w, r6, r0, c0.y
+ 470:     add r2.x, r6.z, c6.x
+ 471:     add r2.y, r2.x, c5.w
+ 472:     rcp r2.x, r2.x
+ 473:     cmp r2.x, r2.y, r2.x, c7.x
+ 474:     mad r0.z, r1.w, r2.x, r0.z
+ 475:     mad r0.xy, -r6, r0.z, r0
+ 476:     dp3 r1.x, r6, r1
+ 477:     max r0.z, r1.x, c0.y
+ 478:     dp3 r0.z, r0_abs, c6.x
+ 479:     add r1.x, r0.z, c7.y
+ 480:     rcp r0.z, r0.z
+ 481:     mul r0.z, r0.z, c2.w
+ 482:     cmp r0.z, r1.x, r0.z, c7.z
+ 483:     mad oC0.xy, r0, r0.z, c2.w
+ 484:     add r0.x, c2.w, v5.x
+ 485:     frc r0.y, r0.x
+ 486:     add r0.x, -r0.y, r0.x
+ 487:     add r9.z, r0.x, c25.z
+ 488:     mov oC0.z, v4.w
+ 489:     mov oC0.w, r0.w
+ 490:     mov oC1.w, r0.w
+ 491:     mov r9.w, c6.x
+ 492:     mov oC2, r9
+ 493:     mov oC3.xy, r5
+ 494:     mov oC3.zw, c1.xyyx
 
-// approximately 510 instruction slots used (12 texture, 498 arithmetic)
+// approximately 507 instruction slots used (12 texture, 495 arithmetic)
  

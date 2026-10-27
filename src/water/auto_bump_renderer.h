@@ -19,6 +19,7 @@ class NorthlightAutoBump {
     friend struct ShaderOptMaterialVariantTestAccess;
     std::shared_ptr<NorthlightGpuScene::Scene> gpuScene;
     IDirect3DDevice9* d;
+    NorthlightStateBlockPool captureStates;
     NorthlightMaterialProfile* profile=nullptr;unsigned profileTag=0,profilePrimitives=0;uint64_t profileConfigFrame=~uint64_t(0);
     NorthlightAutoNormalCache& normals;
     NorthlightSharedPOM sharedPOM;
@@ -29,6 +30,9 @@ class NorthlightAutoBump {
     // never relies on game buffers/textures staying unchanged until the flush.
     static constexpr unsigned DeferredRasterCount=30;
     struct DeferredTexture {
+        // Only PS sampler2D resources are admitted: W addressing and the
+        // vertex displacement sampler offset cannot affect their samples.
+        static constexpr unsigned SamplerMask=((1u<<13)-1)^(1u<<(D3DSAMP_ADDRESSW-1))^(1u<<(D3DSAMP_DMAPOFFSET-1));
         IDirect3DBaseTexture9* texture=nullptr;unsigned stage=0;DWORD sampler[13]={};uint64_t bytes=0;
         ~DeferredTexture(){drop(texture);}
     };
@@ -36,7 +40,7 @@ class NorthlightAutoBump {
         IDirect3DVertexShader9* vertex=nullptr;IDirect3DPixelShader9* pixel=nullptr;IDirect3DVertexDeclaration9* declaration=nullptr;
         std::shared_ptr<const NorthlightDrawSnapshot::Mesh> mesh;NorthlightAutoNormalCache::Lease normal;
         float vertexConstants[256*4];unsigned vertexFirst=0,vertexCount=256;std::vector<float> pixelConstants;int vertexInt[64],pixelInt[64];BOOL vertexBool[16],pixelBool[16];
-        DWORD states[14],raster[DeferredRasterCount],addressU=0,addressV=0;RECT scissor{};D3DVIEWPORT9 viewport{};unsigned first=0,tag=0,normalStage=14;bool occlusion=false,vertexFloatOnly=false;
+        DWORD states[14],raster[DeferredRasterCount],addressU=0,addressV=0;RECT scissor{};D3DVIEWPORT9 viewport{};unsigned first=0,tag=0,normalStage=14;bool occlusion=false,vertexFloatOnly=false,pixelFloatOnly=false;
         std::vector<std::unique_ptr<DeferredTexture>> textures;
         IDirect3DVertexBuffer9* gpuVertex[4]={};IDirect3DIndexBuffer9* gpuIndex=nullptr;NorthlightReplayGPU::Placement placement;bool resident=false;
         ~Deferred(){for(auto& vb:gpuVertex)drop(vb);drop(gpuIndex);drop(vertex);drop(pixel);drop(declaration);}
@@ -47,6 +51,7 @@ class NorthlightAutoBump {
     NorthlightGpuScene::NativeClient& deferredGPU=gpuScene->materials;
     unsigned residentDraws=0,uploadDraws=0;uint64_t uploadDrawBytes=0;
     unsigned replaySetters=0,replaySkipped=0;
+    unsigned captureTargetBinds=0,captureMaskSets=0,stableCaptureFlushes=0,switchedCaptureFlushes=0,nearCapturePackets=0,farCapturePackets=0;
     std::vector<std::unique_ptr<Deferred>> deferred;size_t deferredBytes=0;bool deferredAllowed=false;
     unsigned deferredPacketLimit=512;size_t deferredByteLimit=8u<<20;
     std::unordered_map<void*,uint64_t> deferredTextures;uint64_t deferredTextureBytes=0;
@@ -123,7 +128,7 @@ class NorthlightAutoBump {
     VertexIdentity vertexIdentity=nullptr;void* vertexIdentityContext=nullptr;bool vertexOverflow=false;
     std::unordered_map<IDirect3DPixelShader9*,unsigned> pixels;
     IDirect3DPixelShader9* shaders[8]={},*sharedShaders[8]={},*normalShaders[8]={};
-    struct NativeCapture {IDirect3DPixelShader9* source=nullptr,*shader=nullptr;unsigned constant=128,first=256,last=0,samplers=0;bool deferredSafe=false;};
+    struct NativeCapture {IDirect3DPixelShader9* source=nullptr,*shader=nullptr;unsigned constant=128,first=256,last=0,samplers=0;bool deferredSafe=false,pixelFloatOnly=false;};
     // Rare CPU creation work can happen outside sampled draw scopes, including
     // recognized vertex registration while materials are disabled.
     struct ColdWork {unsigned vertexSources=0,vertexQueued=0,modelMisses=0,modelBuilt=0,staticCreates=0,staticBuilt=0;uint64_t sourceBytes=0;double vertexMs=0,modelMs=0,staticMs=0;} cold;
@@ -173,6 +178,7 @@ class NorthlightAutoBump {
             cold.sourceBytes+=bytes;
             if(SUCCEEDED(source->GetFunction(code.data(),&bytes))&&NorthlightNativeMaterialCapture::patch(reinterpret_cast<const uint32_t*>(code.data()),code.size(),patched,entry.constant,alpha,shared)){
                 d->CreatePixelShader(reinterpret_cast<const DWORD*>(patched.data()),&entry.shader);
+                entry.pixelFloatOnly=NorthlightNativeMaterialCapture::floatOnlyConstants(patched.data(),patched.size());
                 NorthlightTerrainCoverage::Program program;
                 if(!shared&&NorthlightTerrainCoverage::analyse(patched.data(),patched.size(),program)){
                     bool defined[256]={};for(const auto& op:program.ops)if(op.code==81)defined[NorthlightWaterShaderPatch::regIndex(patched[op.at+1])]=true;
@@ -191,6 +197,7 @@ class NorthlightAutoBump {
     // of the full-screen normal/occlusion targets or a resolve after every draw.
     IDirect3DSurface9*& captureDepth=gpuScene->materialTargets.depth;
     IDirect3DTexture9*& occlusionMap=gpuScene->materialTargets.occlusion;IDirect3DSurface9*& occlusionTarget=gpuScene->materialTargets.occlusionTarget;
+    bool independentCaptureWrites=false;
     bool occlusionUnavailable=false;unsigned occlusionRetry=0;
     float occlusionControl[4]={.7f,8,.35f,0},occlusionLight[4]={};
     UINT width=0,heightPixels=0;
@@ -235,12 +242,17 @@ class NorthlightAutoBump {
                 auto binding=std::make_unique<DeferredTexture>();binding->stage=stage;
                 if(!textureWriteGuarded||FAILED(d->GetTexture(stage,&binding->texture))){++textureRefused;return false;}
                 if(binding->texture){
-                    D3DSURFACE_DESC desc{};
-                    if(binding->texture->GetType()!=D3DRTYPE_TEXTURE||FAILED(static_cast<IDirect3DTexture9*>(binding->texture)->GetLevelDesc(0,&desc))||(desc.Pool!=D3DPOOL_MANAGED&&desc.Pool!=D3DPOOL_DEFAULT)||(desc.Usage&(D3DUSAGE_RENDERTARGET|D3DUSAGE_DEPTHSTENCIL))){++textureRefused;return false;}
-                    binding->bytes=NorthlightAutoNormalMemory::mipBytes(desc.Format,desc.Width,desc.Height,binding->texture->GetLevelCount());
-                    if(!deferredTextures.count(binding->texture))textureBytes+=binding->bytes;
+                    const auto known=deferredTextures.find(binding->texture);
+                    const auto local=std::find_if(textures.begin(),textures.end(),[&](const auto& t){return t->texture==binding->texture;});
+                    // Descriptor and mip count cannot change during a texture's
+                    // lifetime. Every memoized entry has a queued strong lease.
+                    if(known!=deferredTextures.end())binding->bytes=known->second;
+                    else if(local!=textures.end())binding->bytes=(*local)->bytes;
+                    else{D3DSURFACE_DESC desc{};
+                        if(binding->texture->GetType()!=D3DRTYPE_TEXTURE||FAILED(static_cast<IDirect3DTexture9*>(binding->texture)->GetLevelDesc(0,&desc))||(desc.Pool!=D3DPOOL_MANAGED&&desc.Pool!=D3DPOOL_DEFAULT)||(desc.Usage&(D3DUSAGE_RENDERTARGET|D3DUSAGE_DEPTHSTENCIL))){++textureRefused;return false;}
+                        binding->bytes=NorthlightAutoNormalMemory::mipBytes(desc.Format,desc.Width,desc.Height,binding->texture->GetLevelCount());textureBytes+=binding->bytes;}
                 }
-                for(unsigned i=0;i<13;++i)if(FAILED(d->GetSamplerState(stage,D3DSAMPLERSTATETYPE(i+1),binding->sampler+i)))return false;
+                for(unsigned i=0;i<13;++i)if((DeferredTexture::SamplerMask&(1u<<i))&&FAILED(d->GetSamplerState(stage,D3DSAMPLERSTATETYPE(i+1),binding->sampler+i)))return false;
                 textures.push_back(std::move(binding));
             }
             const uint64_t textureLimit=memoryPressure?8ull<<20:128ull<<20;
@@ -254,12 +266,12 @@ class NorthlightAutoBump {
             DWORD planes=0;if(FAILED(d->GetRenderState(D3DRS_CLIPPLANEENABLE,&planes))||planes)return false;
             const size_t cost=sizeof(Deferred)+mesh->byteSize()+(model.last-model.first+1)*16+textures.size()*(sizeof(DeferredTexture)+sizeof(void*));if(deferredBytes>=deferredByteLimit||cost>deferredByteLimit-deferredBytes){++batchLimit;return false;}
             auto packet=std::make_unique<Deferred>();packet->mesh=mesh;packet->tag=profileTag;packet->occlusion=auxiliary;
-            packet->declaration=decl.p;decl.p=nullptr;packet->pixel=model.shader;packet->pixel->AddRef();packet->vertex=vertex.patched;packet->vertex->AddRef();packet->vertexFirst=vertex.constantFirst;packet->vertexCount=vertex.constantCount;packet->vertexFloatOnly=vertex.floatOnly;
+            packet->declaration=decl.p;decl.p=nullptr;packet->pixel=model.shader;packet->pixel->AddRef();packet->vertex=vertex.patched;packet->vertex->AddRef();packet->vertexFirst=vertex.constantFirst;packet->vertexCount=vertex.constantCount;packet->vertexFloatOnly=vertex.floatOnly;packet->pixelFloatOnly=model.pixelFloatOnly;
             packet->first=model.first;packet->pixelConstants.resize((model.last-model.first+1)*4);packet->viewport=saved.viewport;packet->addressU=addressU;packet->addressV=addressV;packet->normalStage=saved.normalStage;
             for(unsigned i=0;i<14;++i)packet->states[i]=saved.states[i].replay;
             for(unsigned i=0;i<DeferredRasterCount;++i)if(FAILED(d->GetRenderState(deferredRasterKeys[i],packet->raster+i)))return false;
             if(FAILED(d->GetScissorRect(&packet->scissor))||FAILED(d->GetVertexShaderConstantF(packet->vertexFirst,packet->vertexConstants,packet->vertexCount))||FAILED(d->GetPixelShaderConstantF(packet->first,packet->pixelConstants.data(),UINT(packet->pixelConstants.size()/4)))||
-               (!packet->vertexFloatOnly&&FAILED(d->GetVertexShaderConstantI(0,packet->vertexInt,16)))||FAILED(d->GetPixelShaderConstantI(0,packet->pixelInt,16))||(!packet->vertexFloatOnly&&FAILED(d->GetVertexShaderConstantB(0,packet->vertexBool,16)))||FAILED(d->GetPixelShaderConstantB(0,packet->pixelBool,16)))return false;
+               (!packet->vertexFloatOnly&&FAILED(d->GetVertexShaderConstantI(0,packet->vertexInt,16)))||(!packet->pixelFloatOnly&&FAILED(d->GetPixelShaderConstantI(0,packet->pixelInt,16)))||(!packet->vertexFloatOnly&&FAILED(d->GetVertexShaderConstantB(0,packet->vertexBool,16)))||(!packet->pixelFloatOnly&&FAILED(d->GetPixelShaderConstantB(0,packet->pixelBool,16))))return false;
             std::copy(captureConstants,captureConstants+saved.constantCount*4,packet->pixelConstants.begin()+(model.constant-packet->first)*4);
             packet->textures=std::move(textures);void* inserted[16]={};unsigned insertedCount=0;
             try{
@@ -271,7 +283,7 @@ class NorthlightAutoBump {
     }
 public:
     NorthlightDrawSnapshot::Frame& captureSources(){return deferredSnapshots;}
-    explicit NorthlightAutoBump(IDirect3DDevice9* device,std::shared_ptr<NorthlightGpuScene::Scene> scene={}):gpuScene(NorthlightGpuScene::forDevice(device,std::move(scene))),d(device),normals(*(gpuScene->normalMaps?gpuScene->normalMaps:(gpuScene->normalMaps=std::make_shared<NorthlightAutoNormalCache>(device)))),sharedPOM(device),parallax(device,normals),displacement(device,gpuScene){
+    explicit NorthlightAutoBump(IDirect3DDevice9* device,std::shared_ptr<NorthlightGpuScene::Scene> scene={}):gpuScene(NorthlightGpuScene::forDevice(device,std::move(scene))),d(device),captureStates(device),normals(*(gpuScene->normalMaps?gpuScene->normalMaps:(gpuScene->normalMaps=std::make_shared<NorthlightAutoNormalCache>(device)))),sharedPOM(device),parallax(device,normals),displacement(device,gpuScene){
         if(!gpuScene->attach(deferredSnapshots))throw std::runtime_error("Cannot join material capture sources");
         deferredGPU.setLimit(32u<<20);
         deferredSnapshots.setSnapshotCacheLimit(24u<<20);deferredSnapshots.setChargeResidentHits(false);deferredSnapshots.setReplayContentReuse(true);
@@ -290,9 +302,16 @@ public:
     bool finishCaptures(){
         if(deferred.empty())return true;using P=NorthlightMaterialProfile;P::Scope timing(profile,P::DeferredFlush,deferred.front()->tag,true);timing.work(deferred.size(),deferredBytes);
         struct Result {NorthlightAutoBump& owner;bool ok=false;~Result(){if(!ok){owner.deferredDiscarded+=unsigned(owner.deferred.size());owner.clearDeferred();owner.drawn=owner.occlusionDrawn=false;owner.check(E_FAIL,"deferred material replay");}}} result{*this};
-        struct Constants {IDirect3DDevice9* d;float bank[256*4],pixel[224*4];bool valid=false;explicit Constants(IDirect3DDevice9* device):d(device){}~Constants(){if(valid){d->SetVertexShaderConstantF(0,bank,256);d->SetPixelShaderConstantF(0,pixel,224);}}} constants(d);
-        constants.valid=SUCCEEDED(d->GetVertexShaderConstantF(0,constants.bank,256))&&SUCCEEDED(d->GetPixelShaderConstantF(0,constants.pixel,224));
-        SavedState saved(d);if(!saved.ok||!constants.valid)return false;
+        UINT vertexFirst=256,vertexEnd=0,pixelFirst=224,pixelEnd=0;
+        for(const auto& packet:deferred){
+            if(packet->vertexCount){vertexFirst=std::min(vertexFirst,packet->vertexFirst);vertexEnd=std::max(vertexEnd,packet->vertexFirst+packet->vertexCount);}
+            if(!packet->pixelConstants.empty()){pixelFirst=std::min(pixelFirst,packet->first);pixelEnd=std::max(pixelEnd,packet->first+UINT(packet->pixelConstants.size()/4));}}
+        struct Constants {IDirect3DDevice9* d;UINT vf,vc,pf,pc;float bank[256*4],pixel[224*4];bool valid=false;
+            Constants(IDirect3DDevice9* device,UINT first,UINT count,UINT pixelFirst,UINT pixelCount):d(device),vf(first),vc(count),pf(pixelFirst),pc(pixelCount){}
+            ~Constants(){if(valid){if(vc)d->SetVertexShaderConstantF(vf,bank,vc);if(pc)d->SetPixelShaderConstantF(pf,pixel,pc);}}}
+            constants{d,vertexFirst,vertexEnd?vertexEnd-vertexFirst:0,pixelFirst,pixelEnd?pixelEnd-pixelFirst:0};
+        constants.valid=(!constants.vc||SUCCEEDED(d->GetVertexShaderConstantF(constants.vf,constants.bank,constants.vc)))&&(!constants.pc||SUCCEEDED(d->GetPixelShaderConstantF(constants.pf,constants.pixel,constants.pc)));
+        SavedState saved(d,&captureStates);if(!saved.ok||!constants.valid)return false;
         for(unsigned i=1;i<4;++i)if(FAILED(d->SetRenderTarget(i,nullptr)))return false;
         if(FAILED(d->SetDepthStencilSurface(nullptr))||FAILED(d->SetRenderTarget(0,target))||FAILED(d->SetDepthStencilSurface(captureDepth)))return false;
         if(FAILED(d->SetRenderState(D3DRS_STENCILENABLE,FALSE))||FAILED(d->SetRenderState(D3DRS_CLIPPLANEENABLE,0))||FAILED(d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE)))return false;
@@ -307,10 +326,15 @@ public:
         for(auto& packet:deferred)packet->resident=deferredGPU.bind(d,packet->mesh,packet->gpuVertex,packet->gpuIndex,[](size_t){return true;},packet->placement);
         deferredGPU.commitPending();
         for(auto& packet:deferred)if(!packet->resident&&deferredGPU.resident(packet->mesh))packet->resident=deferredGPU.bind(d,packet->mesh,packet->gpuVertex,packet->gpuIndex,[](size_t){return true;},packet->placement);
+        const bool stableAuxiliary=auxiliary&&occlusionTarget&&independentCaptureWrites;
+        stableAuxiliary?++stableCaptureFlushes:++switchedCaptureFlushes;
         bool success=true;const Deferred* previous=nullptr;
         IDirect3DBaseTexture9* boundTextures[16]={};bool knownTextures[16]={};
         DWORD samplerValues[16][13]={};unsigned knownSamplers[16]={};
         bool frequencyKnown=false,viewportKnown=false,auxiliaryKnown=false,boundAuxiliary=false;
+        bool auxiliaryWritesKnown=false,boundAuxiliaryWrites=false;
+        IDirect3DVertexBuffer9* boundVertex=nullptr;IDirect3DIndexBuffer9* boundIndex=nullptr;
+        UINT boundStride=0;bool vertexKnown=false,indexKnown=false;
         D3DVIEWPORT9 boundViewport{};
         for(auto& packet:deferred){
             auto& mesh=*packet->mesh;ReplayState keys(d,nullptr,{});HRESULT hr=D3D_OK;
@@ -323,19 +347,37 @@ public:
             auto samplerState=[&](unsigned stage,D3DSAMPLERSTATETYPE key,DWORD value){const unsigned index=unsigned(key)-1,mask=1u<<index;
                 if(needed((knownSamplers[stage]&mask)&&samplerValues[stage][index]==value)){const HRESULT result=d->SetSamplerState(stage,key,value);step(result);if(SUCCEEDED(result)){samplerValues[stage][index]=value;knownSamplers[stage]|=mask;}}};
             const auto& placement=packet->placement;const bool resident=packet->resident;
-            if(resident){step(d->SetStreamSource(0,packet->gpuVertex[0],0,mesh.streams[0].stride));step(d->SetIndices(packet->gpuIndex));}
+            if(resident){
+                if(needed(vertexKnown&&boundVertex==packet->gpuVertex[0]&&boundStride==mesh.streams[0].stride)){
+                    const HRESULT result=d->SetStreamSource(0,packet->gpuVertex[0],0,mesh.streams[0].stride);step(result);
+                    if(SUCCEEDED(result)){boundVertex=packet->gpuVertex[0];boundStride=mesh.streams[0].stride;vertexKnown=true;}}
+                if(needed(indexKnown&&boundIndex==packet->gpuIndex)){
+                    const HRESULT result=d->SetIndices(packet->gpuIndex);step(result);if(SUCCEEDED(result)){boundIndex=packet->gpuIndex;indexKnown=true;}}}
             if(needed(previous&&previous->declaration==packet->declaration))step(d->SetVertexDeclaration(packet->declaration));
             if(needed(frequencyKnown)){const HRESULT result=d->SetStreamSourceFreq(0,1);step(result);frequencyKnown=SUCCEEDED(result);}
             if(needed(previous&&previous->vertex==packet->vertex))step(d->SetVertexShader(packet->vertex));
             if(needed(previous&&previous->pixel==packet->pixel))step(d->SetPixelShader(packet->pixel));
+            // Keep MRT1 attached across mixed near/far draws. A disabled write
+            // mask preserves earlier cavity/shadow pixels without ending the
+            // render pass. Devices without independent masks retain RT switches.
+            packet->occlusion?++nearCapturePackets:++farCapturePackets;
+            const bool attachAuxiliary=stableAuxiliary||packet->occlusion;
+            if(needed(auxiliaryKnown&&boundAuxiliary==attachAuxiliary)){
+                ++captureTargetBinds;const HRESULT result=d->SetRenderTarget(1,attachAuxiliary?occlusionTarget:nullptr);step(result);
+                if(SUCCEEDED(result)){auxiliaryKnown=true;boundAuxiliary=attachAuxiliary;viewportKnown=false;}}
+            if(stableAuxiliary&&needed(auxiliaryWritesKnown&&boundAuxiliaryWrites==packet->occlusion)){
+                ++captureMaskSets;const HRESULT result=d->SetRenderState(D3DRS_COLORWRITEENABLE1,packet->occlusion?15:0);step(result);
+                if(SUCCEEDED(result)){auxiliaryWritesKnown=true;boundAuxiliaryWrites=packet->occlusion;}}
+            // Every target transition precedes the captured viewport, including
+            // partial viewports and a non-default depth range.
             if(needed(viewportKnown&&!std::memcmp(&boundViewport,&packet->viewport,sizeof boundViewport))){
                 const HRESULT result=d->SetViewport(&packet->viewport);step(result);if(SUCCEEDED(result)){boundViewport=packet->viewport;viewportKnown=true;}}
             if(needed(previous&&!std::memcmp(&previous->scissor,&packet->scissor,sizeof(RECT))))step(d->SetScissorRect(&packet->scissor));
-            for(unsigned i=0;i<14;++i)if(needed(previous&&previous->states[i]==packet->states[i]))step(d->SetRenderState(keys.states[i].key,packet->states[i]));
+            for(unsigned i=0;i<14;++i)if(!(stableAuxiliary&&keys.states[i].key==D3DRS_COLORWRITEENABLE1)&&needed(previous&&previous->states[i]==packet->states[i]))step(d->SetRenderState(keys.states[i].key,packet->states[i]));
             for(unsigned i=0;i<DeferredRasterCount;++i)if(needed(previous&&previous->raster[i]==packet->raster[i]))step(d->SetRenderState(deferredRasterKeys[i],packet->raster[i]));
             texture(packet->normalStage,packet->normal.get());const DWORD sampler[]={D3DTEXF_LINEAR,D3DTEXF_LINEAR,D3DTEXF_LINEAR,packet->addressU,packet->addressV,FALSE,0,0};
             for(unsigned i=0;i<8;++i)samplerState(packet->normalStage,keys.samplerKeys[i],sampler[i]);
-            for(const auto& t:packet->textures){texture(t->stage,t->texture);for(unsigned i=0;i<13;++i)samplerState(t->stage,D3DSAMPLERSTATETYPE(i+1),t->sampler[i]);}
+            for(const auto& t:packet->textures){texture(t->stage,t->texture);for(unsigned i=0;i<13;++i)if(DeferredTexture::SamplerMask&(1u<<i))samplerState(t->stage,D3DSAMPLERSTATETYPE(i+1),t->sampler[i]);}
             auto floatConstants=[&](bool vertex,UINT first,const float* values,const float* before,UINT count,bool comparable){
                 if(!needed(comparable&&(!count||!std::memcmp(before,values,size_t(count)*4*sizeof(float)))))return;
                 UINT begin=0,end=count;
@@ -354,20 +396,14 @@ public:
             floatConstants(false,packet->first,packet->pixelConstants.data(),comparablePixel?previous->pixelConstants.data():nullptr,UINT(packet->pixelConstants.size()/4),comparablePixel);
             // An omitted bank has no captured bytes and cannot certify the next packet.
             if(!packet->vertexFloatOnly&&needed(previous&&!previous->vertexFloatOnly&&!std::memcmp(previous->vertexInt,packet->vertexInt,sizeof(packet->vertexInt))))step(d->SetVertexShaderConstantI(0,packet->vertexInt,16));
-            if(needed(previous&&!std::memcmp(previous->pixelInt,packet->pixelInt,sizeof(packet->pixelInt))))step(d->SetPixelShaderConstantI(0,packet->pixelInt,16));
+            if(!packet->pixelFloatOnly&&needed(previous&&!previous->pixelFloatOnly&&!std::memcmp(previous->pixelInt,packet->pixelInt,sizeof(packet->pixelInt))))step(d->SetPixelShaderConstantI(0,packet->pixelInt,16));
             if(!packet->vertexFloatOnly&&needed(previous&&!previous->vertexFloatOnly&&!std::memcmp(previous->vertexBool,packet->vertexBool,sizeof(packet->vertexBool))))step(d->SetVertexShaderConstantB(0,packet->vertexBool,16));
-            if(needed(previous&&!std::memcmp(previous->pixelBool,packet->pixelBool,sizeof(packet->pixelBool))))step(d->SetPixelShaderConstantB(0,packet->pixelBool,16));
-            // A render-target bind may reset the viewport. Elide MRT1 only
-            // when that reset is equivalent to the captured full-size viewport.
-            const bool defaultViewport=!packet->viewport.X&&!packet->viewport.Y&&packet->viewport.Width==width&&packet->viewport.Height==heightPixels&&packet->viewport.MinZ==0.f&&packet->viewport.MaxZ==1.f;
-            if(SUCCEEDED(hr)&&needed(auxiliaryKnown&&boundAuxiliary==packet->occlusion&&defaultViewport)){
-                hr=d->SetRenderTarget(1,packet->occlusion?occlusionTarget:nullptr);
-                if(SUCCEEDED(hr)){auxiliaryKnown=true;boundAuxiliary=packet->occlusion;viewportKnown=false;}}
+            if(!packet->pixelFloatOnly&&needed(previous&&!previous->pixelFloatOnly&&!std::memcmp(previous->pixelBool,packet->pixelBool,sizeof(packet->pixelBool))))step(d->SetPixelShaderConstantB(0,packet->pixelBool,16));
             if(SUCCEEDED(hr)){P::Scope draw(profile,P::CaptureDraw,packet->tag);draw.work(mesh.primitiveCount);
                 if(resident){++residentDraws;hr=mesh.indexed?d->DrawIndexedPrimitive(mesh.topology,INT(placement.vertexBase),0,mesh.vertexCount,placement.indexStart,mesh.primitiveCount):d->DrawPrimitive(mesh.topology,placement.vertexBase,mesh.primitiveCount);}
                 else {++uploadDraws;uploadDrawBytes+=mesh.byteSize();hr=mesh.indexed?d->DrawIndexedPrimitiveUP(mesh.topology,0,mesh.vertexCount,mesh.primitiveCount,mesh.indices.data(),D3DFMT_INDEX32,mesh.streams[0].bytes.data(),mesh.streams[0].stride):d->DrawPrimitiveUP(mesh.topology,mesh.primitiveCount,mesh.streams[0].bytes.data(),mesh.streams[0].stride);
                     // Keep no binding assumptions across the UP fallback.
-                    frequencyKnown=viewportKnown=auxiliaryKnown=false;}}
+                    frequencyKnown=viewportKnown=auxiliaryKnown=false;vertexKnown=indexKnown=false;auxiliaryWritesKnown=false;}}
             if(FAILED(hr)){success=false;break;}previous=packet.get();++flushed;++draws[packet->tag/4-1];if(packet->occlusion){occlusionDrawn=true;if(profile)profile->count(P::OcclusionDraw);}
         }
         if(success){clearDeferred();result.ok=true;}return success;
@@ -392,7 +428,7 @@ public:
         sharedPOM.setMemoryPressure(on);const double sharedPomMs=phase();
         logf("MATERIAL_MEMORY pressure=%u normalBudgetMiB=%u geometryBudgetMiB=%u relief=active transitionProfiled=%u sourceBeforeMiB=%.3f sourceAfterMiB=%.3f sourceClearMs=%.3f sourceLimitMs=%.3f packetClearMs=%.3f replayGpuMs=%.3f declarationClearMs=%.3f normalMs=%.3f geometryMs=%.3f sharedPomMs=%.3f sourceDeferredMiB=%.3f",unsigned(on),on?32:96,on?32:128,unsigned(timed),double(sourceBefore)/(1u<<20),double(deferredSnapshots.sharedSourceBytes())/(1u<<20),sourceClearMs,sourceLimitMs,packetClearMs,replayGpuMs,declarationClearMs,normalMs,geometryMs,sharedPomMs,double(sourceDeferred)/(1u<<20));
     }
-    void trimMemory(bool releaseReplay=true,NorthlightStreaming::CpuRetirementBatch* batch=nullptr){auto* retirement=releaseReplay?nullptr:&NorthlightStreaming::cpuRetirement();if(!deferred.empty()){deferredDiscarded+=unsigned(deferred.size());clearDeferred();drawn=occlusionDrawn=false;}sharedMaps[0]={};sharedMaps[1]={};sharedPOM.reset();normals.trimMemory();displacement.trimMemory(retirement,releaseReplay?nullptr:batch);deferredSnapshots.clearIndexCache(retirement,releaseReplay?nullptr:batch);if(releaseReplay)deferredGPU.clear();}
+    void trimMemory(bool releaseReplay=true,NorthlightStreaming::CpuRetirementBatch* batch=nullptr){captureStates.clear();auto* retirement=releaseReplay?nullptr:&NorthlightStreaming::cpuRetirement();if(!deferred.empty()){deferredDiscarded+=unsigned(deferred.size());clearDeferred();drawn=occlusionDrawn=false;}sharedMaps[0]={};sharedMaps[1]={};sharedPOM.reset();normals.trimMemory();displacement.trimMemory(retirement,releaseReplay?nullptr:batch);deferredSnapshots.clearIndexCache(retirement,releaseReplay?nullptr:batch);if(releaseReplay)deferredGPU.clear();}
     void setMemoryPressurePolicy(bool episode,bool critical,NorthlightStreaming::CpuRetirementBatch* batch=nullptr){
         setMemoryPressure(episode,critical?0:32u<<20,episode&&!critical?&NorthlightStreaming::cpuRetirement():nullptr,episode&&!critical?batch:nullptr);
         // Builder demand keeps the reduced CPU pools, but need not turn every
@@ -435,9 +471,12 @@ public:
         if(!captureRequired){deferredDiscarded+=unsigned(deferred.size());clearDeferred();sharedMaps[0]={};sharedMaps[1]={};sharedPOM.reset();drop(captureDepth);drop(target);drop(height);drop(occlusionTarget);drop(occlusionMap);drawn=cleared=false;occlusionUnavailable=false;occlusionRetry=0;}
     }
     ~NorthlightAutoBump(){reset();for(auto& v:vertices){drop(v.second.patched);drop(v.second.shared);drop(v.second.pending);}for(auto*& p:shaders)drop(p);for(auto*& p:sharedShaders)drop(p);for(auto*& p:normalShaders)drop(p);for(auto& groups:nativeCaptures)for(auto& variants:groups)for(auto& n:variants){drop(n.second.shader);drop(n.second.source);}}
-    void reset(){clearDeferred();deferredSnapshots.clearIndexCache();deferredDeclarations.clear();deferredGPU.clear();sharedMaps[0]={};sharedMaps[1]={};sharedPOM.reset();displacement.reset();normals.reset();drop(captureDepth);drop(target);drop(height);drop(occlusionTarget);drop(occlusionMap);occlusionUnavailable=false;occlusionRetry=0;width=heightPixels=0;cleared=drawn=failed=occlusionCleared=occlusionDrawn=false;}
+    void reset(){captureStates.clear();clearDeferred();deferredSnapshots.clearIndexCache();deferredDeclarations.clear();deferredGPU.clear();sharedMaps[0]={};sharedMaps[1]={};sharedPOM.reset();displacement.reset();normals.reset();drop(captureDepth);drop(target);drop(height);drop(occlusionTarget);drop(occlusionMap);occlusionUnavailable=false;occlusionRetry=0;width=heightPixels=0;cleared=drawn=failed=occlusionCleared=occlusionDrawn=false;}
     void endFrame(){
         deferredDiscarded+=unsigned(deferred.size());clearDeferred();
+        // Reuse within a frame, without retaining captured game resources
+        // across frame boundaries or device resets.
+        captureStates.clear();
         if(deferredReport||cold.vertexSources||cold.vertexQueued||cold.modelMisses||cold.staticCreates)logf("MATERIAL_COLD frame=%llu sampled=%u enabled=%u vertexSources=%u vertexQueued=%u pendingVertices=%u vertexCpuMs=%.6f modelMisses=%u modelBuilt=%u modelCpuMs=%.6f staticCreates=%u staticBuilt=%u staticCpuMs=%.6f sourceBytes=%llu",(unsigned long long)(deferredReport?deferredReportFrame:frames),unsigned(deferredReport),unsigned(enabled),cold.vertexSources,cold.vertexQueued,pendingVertices,cold.vertexMs,cold.modelMisses,cold.modelBuilt,cold.modelMs,cold.staticCreates,cold.staticBuilt,cold.staticMs,(unsigned long long)cold.sourceBytes);
         cold={};
         if(deferredReport||((queued||flushed||deferredFallback||deferredDiscarded)&&frames%600==0))logf("MATERIAL_DEFERRED frame=%llu sampled=%u enabled=%u queued=%u flushed=%u snapshotFallback=%u liveState=%u preparedGeometry=%u discardedUnused=%u terrain=%u walls=%u grass=%u models=%u earlyRangeRejected=%u opaqueCoverage=%u packetLimit=%u packetMiB=%u sourceMiB=%zu",(unsigned long long)(deferredReport?deferredReportFrame:frames),unsigned(deferredReport),unsigned(deferredAllowed),queued,flushed,deferredFallback,deferredUnsafe,deferredGeometry,deferredDiscarded,queuedDomain[0],queuedDomain[1],queuedDomain[2],queuedDomain[3],earlyRangeRejected,opaqueCoverage,deferredPacketLimit,unsigned(deferredByteLimit>>20),deferredSnapshots.snapshotCacheLimit()>>20);
@@ -449,10 +488,12 @@ public:
         }
         if(deferredReport||((queued||flushed||deferredFallback)&&frames%600==0)){
             logf("MATERIAL_BATCH_STATE frame=%llu issued=%u skippedIdentical=%u",(unsigned long long)(deferredReport?deferredReportFrame:frames),replaySetters,replaySkipped);
+            logf("MATERIAL_TARGETS frame=%llu independentMasks=%u stableFlushes=%u switchedFlushes=%u nearPackets=%u farPackets=%u targetBinds=%u maskSets=%u cavityRange=%.1f farOcclusionWrites=0",(unsigned long long)(deferredReport?deferredReportFrame:frames),unsigned(independentCaptureWrites),stableCaptureFlushes,switchedCaptureFlushes,nearCapturePackets,farCapturePackets,captureTargetBinds,captureMaskSets,occlusionDistance());
             logf("GPU_SCENE consumer=materials frame=%llu residentHits=%u crossConsumerHits=%u reusedDrawBytes=%zu ownedBytes=%zu ownedLimitMiB=%zu",(unsigned long long)(deferredReport?deferredReportFrame:frames),deferredGPU.counters().hits,deferredGPU.counters().crossOwner,deferredGPU.reused(),deferredGPU.bytes(),deferredGPU.limit()>>20);
             const auto& g=deferredGPU.stats();const auto population=deferredGPU.population();
             logf("MATERIAL_BATCH_GPU frame=%llu residentDraws=%u upDraws=%u upBytes=%llu uploadedBytes=%zu reusedBytes=%zu cacheBytes=%zu cacheLimitMiB=%zu residentMeshes=%zu probationMeshes=%zu created=%u createCpuMs=%.4f warmup=%u attemptDeferred=%u byteDeferred=%u timeDeferred=%u evicted=%u expired=%u countPressure=%u bytePressure=%u probationEvictions=%u residentEvictions=%u countOnlyProbationEvictions=%u",(unsigned long long)(deferredReport?deferredReportFrame:frames),residentDraws,uploadDraws,(unsigned long long)uploadDrawBytes,deferredGPU.uploaded(),deferredGPU.reused(),deferredGPU.bytes(),deferredGPU.limit()>>20,population.resident,population.probation,g.created,g.createMs,g.warmup,g.attemptDeferred,g.uploadByteDeferred,g.timeDeferred,g.evictions,g.expiredEntries,g.countPressure,g.bytePressure,g.probationEvictions,g.residentEvictions,g.countOnlyProbationEvictions);
         }
+        captureTargetBinds=captureMaskSets=stableCaptureFlushes=switchedCaptureFlushes=nearCapturePackets=farCapturePackets=0;
         residentDraws=uploadDraws=replaySetters=replaySkipped=0;uploadDrawBytes=0;deferredGPU.beginFrame();deferredReport=false;
 
         queued=flushed=deferredFallback=deferredDiscarded=deferredUnsafe=deferredGeometry=0;
@@ -605,6 +646,7 @@ public:
         if(needsOcclusion&&!occlusionMap&&!occlusionUnavailable&&!occlusionRetry){
             D3DCAPS9 caps{};MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;const auto bytes=std::uint64_t(width)*heightPixels*4;
             const bool supported=SUCCEEDED(d->GetDeviceCaps(&caps))&&caps.NumSimultaneousRTs>=2&&(caps.PrimitiveMiscCaps&D3DPMISCCAPS_MRTINDEPENDENTBITDEPTHS);
+            independentCaptureWrites=supported&&(caps.PrimitiveMiscCaps&D3DPMISCCAPS_INDEPENDENTWRITEMASKS);
             bool available=supported&&GlobalMemoryStatusEx(&memory)&&memory.ullAvailVirtual>bytes+(128ull<<20);
             if(available)available=SUCCEEDED(d->CreateTexture(width,heightPixels,1,D3DUSAGE_RENDERTARGET,D3DFMT_A8R8G8B8,D3DPOOL_DEFAULT,&occlusionMap,nullptr))&&SUCCEEDED(occlusionMap->GetSurfaceLevel(0,&occlusionTarget));
             if(!available){drop(occlusionTarget);drop(occlusionMap);occlusionUnavailable=!supported;occlusionRetry=supported?60:0;logf("MATERIAL_OCCLUSION allocation retry=%u unsupported=%u; settings retained",occlusionRetry,unsigned(!supported));}
@@ -659,6 +701,7 @@ public:
             saved.auxiliary=true;if(FAILED(d->SetRenderTarget(1,occlusionTarget))){drop(occlusionTarget);drop(occlusionMap);occlusionUnavailable=true;d->SetRenderTarget(1,nullptr);}}
         if(!cleared){if(!check(d->Clear(0,nullptr,D3DCLEAR_TARGET|(multisampled?D3DCLEAR_ZBUFFER:0),0,1,0),"height clear"))return;cleared=true;}
         if(sharing){saved.sharedTargets=true;cacheBound=SUCCEEDED(d->SetRenderTarget(2,sharedPOM.target(0)))&&SUCCEEDED(d->SetRenderTarget(3,material==6?sharedPOM.target(1):nullptr));if(!cacheBound){d->SetRenderTarget(2,nullptr);d->SetRenderTarget(3,nullptr);}}
+        if(!check(d->SetViewport(&saved.viewport),"capture viewport"))return;
         bank[15]=saved.auxiliary?occlusionDistance():0.f;
         if(!check(d->SetScissorRect(&saved.scissor),"capture scissor")||!check(d->SetRenderState(D3DRS_SCISSORTESTENABLE,saved.scissorEnabled),"capture scissor enable"))return;
         if(!check(d->SetVertexShader(sharing?v->second.shared:v->second.patched),"capture VS")||!check(d->SetPixelShader(model?model->shader:captureShader),"capture PS")||
