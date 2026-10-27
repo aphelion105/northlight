@@ -625,6 +625,9 @@ int main(){
       assert(describe(on).find("GrassShadows=1(file)")!=std::string::npos);
       for(const char* value:{"-1","2","bad"}){std::vector<std::string> problems;
         assert(parse(("[Quality]\nGrassShadows="+std::string(value)+"\n").c_str(),nullptr,problems)==d&&problems.size()==1);}}
+    {for(Preset p:{Preset::Quality,Preset::Balanced,Preset::Performance}){const auto q=preset(p);assert(q.rainLens==1&&q.snowLens==1&&q.rainLensStrength==60&&q.snowLensStrength==60);}
+     auto q=parse("[Quality]\nRainLens=0\nSnowLens=1\nRainLensStrength=25\nSnowLensStrength=75\n");assert(!q.rainLens&&q.snowLens&&q.rainLensStrength==25&&q.snowLensStrength==75);
+     std::vector<std::string> problems;assert(parse("[Quality]\nSnowLensStrength=101\n",nullptr,problems)==d&&problems.size()==1);}
     // Strong world relief must not change the independent animated-model strength.
     {auto strong=parse("[Quality]\nAutoDisplacementStrength=600\n");
      assert(strong.autoDisplacementStrength==600&&strong.autoModelDisplacementStrength==d.autoModelDisplacementStrength);

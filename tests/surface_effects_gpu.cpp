@@ -10,7 +10,11 @@
 #include "saved_state.h"
 template<class T> static void drop(T*& p){if(p){p->Release();p=nullptr;}}
 static void logf(const char*,...){}
+#ifdef NORTHLIGHT_TEST_REAL_NAME_MASK
+#include "lens_name_mask.h"
+#else
 struct NameMaskCompositeBind{NameMaskCompositeBind(IDirect3DDevice9*,IDirect3DSurface9* depth){assert(!depth);}};
+#endif
 #include "surface_renderer.h"
 static void requireNoGame(){
  HANDLE snap=CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS,0);if(snap==INVALID_HANDLE_VALUE)std::abort();PROCESSENTRY32W p{};p.dwSize=sizeof p;BOOL more=Process32FirstW(snap,&p);if(!more){CloseHandle(snap);std::abort();}

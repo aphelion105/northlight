@@ -135,7 +135,7 @@ rst=dmethod('Reset');pre=dmethod('Present');es=dmethod('EndScene')
 checks['rain mask MRT: Reset, Present and EndScene unbind first; finishFrame (also SwapChain::Present) unbinds before the extension work']=(
     'rainMrtUnbind();' in rst and rst.index('rainMrtUnbind();')<rst.index('releaseResources();')<rst.index('ext->Reset(')  # RT1 unbound before the resources and the real Reset go
     and 'rainMrtUnbind();' in pre and pre.index('rainMrtUnbind();')<pre.index('finishFrame()') and 'rainMrtUnbind();' in es and es.index('rainMrtUnbind();')<es.index('GuardedMirrorDevice::EndScene()')
-    and 'void finishFrame() {\n        Guard mirrorLock(mirrorState.gate);\n        rainMrtUnbind();' in r and 'finishDeviceFrame(owner);' in r)
+    and 'void finishFrame(bool implicitChain=true) {\n        Guard mirrorLock(mirrorState.gate);\n        rainMrtUnbind();' in r and 'finishDeviceFrame(owner,primary);' in r)
 checks['rain mask MRT: renderEffects unbinds before its first device work; drawHook unbinds for every draw that is not a rain draw, before any capture or effect work']=(
     'rainMrtUnbind(); /* 0.3.202 (rain mask MRT) */\n        ExtensionDevice::RawScope rawEffects(*ext);' in r and 'if(rainMrtBound&&!rainBlend)rainMrtUnbind();' in hook and hook.index('if(rainMrtBound&&!rainBlend)rainMrtUnbind();')<hook.index('if(!frameDrawGates){')<hook.index('prepareDraw(capture,count)'))
 checks['rain mask MRT: logical HDR target mapping stays on the Device; depth target remains a pure forward']=(
@@ -143,7 +143,7 @@ checks['rain mask MRT: logical HDR target mapping stays on the Device; depth tar
     and 'return ext->SetDepthStencilSurface(mirrorResources.unwrap(pNewZStencil));' in r)
 pdi_=r[r.index('template<class Capture> void prepareDrawImpl('):r.index('    // Terrain draws run with the game')]
 checks['rain mask: no scrub left in prepareDrawImpl or the hook']=('rainScrubDraw' not in pdi_ and 'rainScrubDraw' not in hook)
-checks['rain mask: WEATHER line carries the counters; world binds RainMask on s13 for the composite only']=('rainMask=%u rainMrtRuns=%u rainMaskSkips=%u' in r and 'rainMaskScrub' not in r and 'd->SetTexture(13,rainMask?rainMask:neutralZero);rainMask=nullptr;' in w and 'composited=true;d->SetTexture(13,regionalFogTexture);' in w and 'void setRainMask(IDirect3DTexture9* t){rainMask=t;}' in w)
+checks['rain mask: WEATHER line carries the counters; world binds RainMask on s13 for the composite only']=('rainMask=%u rainMrtRuns=%u rainMaskSkips=%u' in r and 'rainMaskScrub' not in r and 'd->SetTexture(13,rainMask?rainMask:neutralZero);rainMask=nullptr;' in w and 'composited=true;diagnosticFogResolved=fogResolved;diagnosticLocalLighting=currentLocalLighting;d->SetTexture(13,regionalFogTexture);' in w and 'void setRainMask(IDirect3DTexture9* t){rainMask=t;}' in w)
 st=r[r.index('bool rainMaskStart(IDirect3DSurface9* maskTarget){'):r.index('bool rainMrtBegin(){')]
 checks['rain mask: after the depth snapshot the mirror relearns stage 0 from the device, so the frame\'s later rain draws still match the rain texture']=(
     'snapped=resolveDepthInto(rainDepth,false);}' in st and st.index('resolveDepthInto(rainDepth,false)')<st.index('{IDirect3DBaseTexture9* stage0=nullptr;if(SUCCEEDED(ext->GetTexture(0,&stage0)))drop(stage0);}')<st.index('if(!snapped)return false;'))

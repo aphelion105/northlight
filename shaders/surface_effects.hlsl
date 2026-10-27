@@ -46,3 +46,33 @@ float4 RainQuality(float2 uv:TEXCOORD0):COLOR0{return precipitation(uv,3,false);
 float4 SnowQuality(float2 uv:TEXCOORD0):COLOR0{return precipitation(uv,3,true);}
 float4 RainPerformance(float2 uv:TEXCOORD0):COLOR0{return precipitation(uv,2,false);}
 float4 SnowPerformance(float2 uv:TEXCOORD0):COLOR0{return precipitation(uv,2,true);}
+
+// Screen-bound optics are independently generated; no weather textures are required.
+sampler2D LensScene : register(s0);
+float4 Lens : register(c10); // elapsed seconds, visibility, aspect, unused
+float lensRandom(float2 p){return frac(sin(dot(p,float2(41.7,289.3)))*19417.318);}
+float4 RainLens(float2 uv:TEXCOORD0):COLOR0 {
+    float2 scale=float2(6*Lens.z,6),grid=uv*scale,cell=floor(grid),local=frac(grid)-.5;
+    float seed=lensRandom(cell),phase=frac(Lens.x*(.16+.14*seed)+seed);
+    float life=smoothstep(0,.10,phase)*(1-smoothstep(.90,1,phase))*step(.25,lensRandom(cell+29));
+    float2 center=float2((lensRandom(cell+3.7)-.5)*.35,(phase-.5)*.48);
+    float2 d=local-center;float radius=.11+.05*seed;float distance=length(d*float2(1,.72));
+    float body=(1-smoothstep(radius*.82,radius,distance))*life;
+    float trail=(1-smoothstep(.008,.022,abs(d.x)))*(1-smoothstep(.02,.18,-d.y))*step(d.y,0)*life;
+    // Bend rays toward the droplet center, magnifying the finished scene inside it.
+    float4 base=tex2D(LensScene,uv),bent=tex2D(LensScene,uv-(d/scale)*(.44*body*Lens.y));
+    float rim=(smoothstep(radius*.45,radius*.76,distance)-smoothstep(radius*.76,radius,distance))*life;
+    base.rgb=lerp(base.rgb,bent.rgb,body*Lens.y);base.rgb+=(rim*.025+trail*.018)*Lens.y;return base;
+}
+float4 SnowLens(float2 uv:TEXCOORD0):COLOR0 {
+    float2 grid=uv*float2(6*Lens.z,6),cell=floor(grid),local=frac(grid)-.5;
+    float seed=lensRandom(cell+17.0),phase=frac(Lens.x*.035+seed);
+    float life=smoothstep(0,.12,phase)*(1-smoothstep(.62,1,phase))*step(.68,lensRandom(cell+43.0));
+    float2 center=(float2(lensRandom(cell+1.9),lensRandom(cell+7.3))-.5)*.48;
+    float2 d=local-center;float size=.08+.07*seed;float r=length(d*float2(1,.82));
+    float soft=1-smoothstep(size*.25,size*1.4,r);
+    float chip1=1-smoothstep(size*.25,size*.75,length(d-float2(size*.48,size*.22)));
+    float chip2=1-smoothstep(size*.18,size*.65,length(d+float2(size*.28,size*.44)));
+    float alpha=saturate((soft*.30+chip1*.24+chip2*.20)*life*Lens.y);
+    float4 color=tex2D(LensScene,uv);color.rgb=lerp(color.rgb,float3(.68,.72,.76),alpha);return color;
+}

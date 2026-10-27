@@ -979,8 +979,12 @@ private:
         NorthlightSurfaceFrame context;if(!surfaceContext(context))return;
         context.c[3][0]=weatherLayerGate*weather.blend*(.35f+.65f*weather.intensity);context.c[3][1]=weather.kind==NorthlightWeather::Kind::Snow?1.f:0.f;
         ExtensionDevice::RawScope raw(*ext);SavedState saved(ext,&stateBlocks);if(!saved.ok)return;
-        surface->precipitation(saved.targets[0],depthTex,width,height,context,world->qualityPreset(),nameMask.armed()&&nameMask.hasMarks()&&maskStencil?worldDepth:nullptr);
+        IDirect3DSurface9* nameDepth=nameMask.armed()&&nameMask.hasMarks()&&maskStencil?worldDepth:nullptr;
+        surface->precipitation(saved.targets[0],depthTex,width,height,context,world->qualityPreset(),nameDepth);
         gpuProfile->mark("Precipitation");
+        const auto& q=world->surfaceSettings();const bool snow=weather.kind==NorthlightWeather::Kind::Snow;
+        const unsigned lensOn=snow?q.snowLens:q.rainLens,strength=snow?q.snowLensStrength:q.rainLensStrength;
+        if(lensOn&&strength&&scene&&sceneSurface){surface->lens(saved.targets[0],scene,sceneSurface,width,height,snow,surfaceTime,context.c[3][0]*float(strength)*.01f,nameDepth);gpuProfile->mark("WeatherLens");}
     }
     void renderEffects() {
         nameMaskRunEnd(); /* 0.3.212 (task 32): the effect passes and SavedState meet the game's stencil states */

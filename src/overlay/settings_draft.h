@@ -108,7 +108,7 @@ inline std::vector<std::string> dependencies(const Field& f){
         {"ActorShadowBudgetMiB",{"ActorShadows"}},{"ActorShadowRadius",{"ActorShadows"}},{"ActorShadowCpuMs",{"ActorShadows"}},{"ActorShadowDetail",{"ActorShadows"}},
         {"BlobShadowStrength",{"BlobShadows"}},
         {"PointShadowLimit",{"PointShadows"}},{"PointShadowRefreshMs",{"PointShadows"}},{"PointShadowFacesPerFrame",{"PointShadows"}},
-        {"FogCloudDensity",{"FogClouds"}},{"RainFog",{"Weather"}},{"RenderProfile",{"Diagnostics"}},
+        {"FogCloudDensity",{"FogClouds"}},{"RainFog",{"Weather"}},{"RainLens",{"Weather"}},{"SnowLens",{"Weather"}},{"RainLensStrength",{"Weather","RainLens"}},{"SnowLensStrength",{"Weather","SnowLens"}},{"RenderProfile",{"Diagnostics"}},
         {"ShadowFateDiagnostics",{"Diagnostics","ActorShadows"}},{"DiagReplayProbe",{"Diagnostics","RenderProfile","ActorShadows"}},
         {"SpellLayerClasses",{"SpellLayer"}},{"SpellTrace",{"SpellLayer"}},{"SpellFog",{"SpellLayer"}},{"NameMaskDebug",{"NameMask"}},
         {"StreamFramesAhead",{"CommandStream"}},{"StreamFrameSkip",{"CommandStream"}},{"StreamOcclusionLocal",{"CommandStream"}},

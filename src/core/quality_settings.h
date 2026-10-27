@@ -75,6 +75,7 @@ struct Settings {
     // 0.3.198 (rain): Weather 1 = Northlight's own effects follow detected rain or snow (sky/weather_effects.h); 0 = nothing reacts.
     // RainFog 0..2 scales the haze/fog/shafts/sun/shadow/GI/lamp couplings (1 = the tuned look).
     unsigned weather=1,rainFog=1;
+    unsigned rainLens=1,snowLens=1,rainLensStrength=60,snowLensStrength=60;
     // 0.3.199 (fog clouds): FogClouds 1 = low fog banks that drift with the wind (own half-resolution raymarch pass, sky/fog_clouds.h);
     // 0 = none. FogCloudDensity 0..200 percent scales how much of the ground they cover (100 = the tuned look; thicker and faster in rain).
     unsigned fogClouds=1,fogCloudDensity=100;
@@ -138,7 +139,7 @@ struct Settings {
     unsigned autoDisplacementStrength=100,autoDisplacementDistance=12,autoDisplacementDetail=4;
     unsigned autoBumpModels=3,autoModelDisplacementStrength=25,autoModelDisplacementDistance=8,autoModelDisplacementDetail=2;
     unsigned autoHeightPolarity=0,autoHeightDetails=75,autoHeightBalance=50;
-    char origin[90]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
+    char origin[94]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
 };
 struct Key { const char* name; unsigned Settings::*field; unsigned low,high; unsigned preset[3]; };
 // preset[] = Quality, Balanced, Performance. Quality must equal Settings{}.
@@ -233,6 +234,10 @@ inline const Key Keys[]={
     {"AutoMaterialOcclusionDistance",&Settings::autoMaterialOcclusionDistance,2,16,{8,6,4}},
     {"AOQuality",&Settings::aoQuality,0,2,{0,0,0}}, // Explicit opt-in; all presets retain High.
     {"BlobShadows",&Settings::blobShadows,0,1,{1,1,1}},
+    {"RainLens",&Settings::rainLens,0,1,{1,1,1}},
+    {"SnowLens",&Settings::snowLens,0,1,{1,1,1}},
+    {"RainLensStrength",&Settings::rainLensStrength,0,100,{60,60,60}},
+    {"SnowLensStrength",&Settings::snowLensStrength,0,100,{60,60,60}},
 };
 inline bool operator==(const Settings& a,const Settings& b){for(const auto& k:Keys)if(a.*k.field!=b.*k.field)return false;return true;}
 inline bool operator!=(const Settings& a,const Settings& b){return !(a==b);}

@@ -35,7 +35,7 @@ const std::map<std::string,const char*> Labels={
     {"Preset","Quality preset"},{"GI","Global illumination"},{"GIStrength","Indirect light strength (%)"},
     {"ActorShadows","Character shadows"},{"ActorShadowDetail","Detailed character shadows"},{"GrassShadows","Grass shadows"},{"ActorShadowRadius","Character shadow distance"},
     {"ContactAO","Ambient occlusion"},{"AOMethod","AO method"},{"AOQuality","AO quality"},{"AutoBumpModels","M2 models (all types)"},{"AutoMaterialOcclusionDistance","Cavity and self-shadow distance (yards)"},{"AutoModelDisplacementDistance","Model geometry distance (yards)"},{"AutoModelDisplacementDetail","Model subdivision"},{"AutoModelDisplacementStrength","Model height (%)"},{"AutoDisplacementDistance","Terrain and object geometry distance (yards)"},{"AutoDisplacementStrength","Terrain and object height (%)"},{"AutoDisplacementDetail","Terrain and object subdivision"},{"AutoHeightBalance","Height balance (%)"},{"AOStrength","AO strength (%)"},{"AORadius","AO radius (0.01 yd)"},
-    {"Weather","Enhanced rain and snow"},{"WeatherMemory","Read native weather state"},{"RainFog","Weather fog strength"},{"FogClouds","Drifting fog banks"},{"FogCloudDensity","Fog density (%)"},
+    {"Weather","Enhanced rain and snow"},{"WeatherMemory","Read native weather state"},{"RainFog","Weather fog strength"},{"RainLens","Rain on camera"},{"RainLensStrength","Rain on camera strength (%)"},{"SnowLens","Snow on camera"},{"SnowLensStrength","Snow on camera strength (%)"},{"FogClouds","Drifting fog banks"},{"FogCloudDensity","Fog density (%)"},
     {"HorizonHaze","Horizon haze (%)"},{"HorizonHazeStart","Haze start (%)"},{"HorizonHazeBand","Haze height (degrees)"},{"HorizonHazeTerrain","Haze over terrain"},
     {"Backend","Graphics backend"},{"ExperimentalHDR","Enable HDR"},{"HDRPaperWhite","White point (nits)"},{"HDRUIWhite","UI brightness (nits)"},{"HDRMaxNits","HDR peak brightness (nits)"},{"HDRContrast","Contrast"},{"HDRExposure","Exposure (EV)"},
     {"NightBrightness","Night brightness (%)"},{"EquipmentLights","Equipment and effect lights"},
@@ -69,6 +69,8 @@ const std::map<std::string,std::vector<const char*>> Help={
     {"PointShadows",{"Torches, candles, lamps and compact fires cast shadows. Diffuse glows and short-lived effects do not.","Only nearby eligible sources allocate maps (about 3.5 MiB each). More sources increase rendering cost."}},
     {"BlobShadows",{"Shows the game's round shadow directly below characters, creatures and mounts. Off removes only this decal; detailed sun, moon and local light shadows remain enabled. Takes effect immediately while Northlight effects are on."}},
     {"BlobShadowStrength",{"Adjusts the native round shadow when detailed character shadows are composited. Turning Round ground shadows off hides it independently and preserves this strength for later."}},
+    {"RainLens",{"Shows sliding refractive droplets and trails on the camera during outdoor rain. Requires Enhanced rain and snow; the effect disappears under shelter."}},
+    {"SnowLens",{"Shows snowflakes briefly adhering to the camera and melting during outdoor snow. Requires Enhanced rain and snow; the effect disappears under shelter."}},
     {"PointShadowLimit",{"4 by default; adjustable from 4 to 128. Only nearby eligible sources allocate maps (about 3.5 MiB each, up to 448 MiB).",
         "For a shadow-only comparison, set Maximum local lights to 128 and GPU effect budget to 0 first; then compare 4 / 8 / 16 / 32 / 64 / 128 in the same scene."}},
     {"HDRContrast",{"1.00 is neutral. Adjusts world contrast around middle grey; UI brightness is unchanged."}},
@@ -99,9 +101,11 @@ const std::vector<Section> QualitySections={
         {"blobs","Round ground shadows","BlobShadows","BlobShadowStrength",""},
         {"point","Local light shadows","PointShadows","PointShadowLimit","PointShadowRefreshMs PointShadowFacesPerFrame"},
         {"cache","Shadow updates",nullptr,"","FarShadowInterval NearShadowInterval ShadowDirectionSteps StaticCacheSlices ShadowPivotCorrection"}},false},
-    {"atmosphere","Atmosphere & weather","Weather WeatherMemory RainFog FogClouds FogCloudDensity HorizonHaze HorizonHazeStart HorizonHazeBand HorizonHazeTerrain",{
+    {"atmosphere","Atmosphere & weather","Weather WeatherMemory RainFog RainLens RainLensStrength SnowLens SnowLensStrength FogClouds FogCloudDensity HorizonHaze HorizonHazeStart HorizonHazeBand HorizonHazeTerrain",{
         {"fog","Fog banks","FogClouds","FogCloudDensity",""},
         {"weather","Rain and snow","Weather","RainFog","WeatherMemory"},
+        {"rainlens","Rain on camera","RainLens","RainLensStrength",""},
+        {"snowlens","Snow on camera","SnowLens","SnowLensStrength",""},
         {"haze","Horizon haze",nullptr,"HorizonHaze HorizonHazeStart HorizonHazeTerrain","HorizonHazeBand"}},false},
     {"spells","Spells & names","SpellLayer SpellLayerClasses SpellFog NameMask DepthFuncAware",{
         {"spells","Spell effects","SpellLayer","SpellFog","SpellLayerClasses DepthFuncAware"},
