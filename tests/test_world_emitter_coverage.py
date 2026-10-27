@@ -9,7 +9,7 @@ import tempfile
 import unittest
 
 sys.path[:0] = [str(Path(__file__).resolve().parents[1]), str(Path(__file__).resolve().parents[1] / 'renderer')]
-from world_emitter_coverage import inspect_model, consolidate, map_records, census
+from world_emitter_coverage import inspect_model, consolidate, calibrated_intensity, map_records, census
 from m2_emitter_patch import append_lights
 from northlight_paths import output_dir
 
@@ -120,7 +120,10 @@ class Discovery(unittest.TestCase):
                     'area': .5, 'position_basis': 'actual candle flame'}
         one, = consolidate([source(0), source(.5), source(1.)])
         self.assertEqual(one['position'], (.5,0.,2.))
-        self.assertAlmostEqual(one['intensity'], 1.05)
+        self.assertAlmostEqual(one['raw_intensity'], 1.05)
+        for actual,expected in zip(one['relative_flux'],(3.,1.5,.3)):
+            self.assertAlmostEqual(actual,expected)
+        self.assertAlmostEqual(one['intensity'], calibrated_intensity(1.05))
         separate = consolidate([source(0),source(7)])
         self.assertEqual([e['position'][0] for e in separate], [0,7])
         self.assertAlmostEqual(sum(e['intensity'] for e in separate), .7)
@@ -153,8 +156,62 @@ class Discovery(unittest.TestCase):
         self.assertEqual(light['position'], (0.,0.,3.))
         self.assertAlmostEqual(light['evidence'][0]['area'],2.)
         self.assertAlmostEqual(light['intensity'],.7)
-        self.assertAlmostEqual(high['emitters'][0]['intensity'],1.4)
+        self.assertAlmostEqual(high['emitters'][0]['raw_intensity'],1.4)
+        self.assertAlmostEqual(high['emitters'][0]['intensity'],calibrated_intensity(1.4))
         self.assertEqual(inspect_model(particle_fixture(enabled=0),'world\\anonymous.m2')['status'],'not_emissive')
+
+    def test_soft_knee_is_monotonic_continuous_and_preserves_weak_response(self):
+        for value in (0.,1e-12,.01,.175,.7,1.):
+            self.assertEqual(calibrated_intensity(value),value)
+        values = [calibrated_intensity(i/100) for i in range(10001)]
+        self.assertEqual(values,sorted(values))
+        self.assertTrue(all(0 <= value <= 4 for value in values))
+        self.assertAlmostEqual(calibrated_intensity(1+1e-8),1+1e-8,places=14)
+        self.assertGreater(calibrated_intensity(51.60051776361073),3.99)
+        self.assertEqual(calibrated_intensity(1e300),4.)
+        for bad in (float('nan'),float('inf'),-1.):
+            with self.assertRaises(ValueError):calibrated_intensity(bad)
+        source = {'position':(0.,0.,2.),'flux':(200.,100.,10.),'emission':'fire','position_basis':'real additive particle'}
+        emitter, = consolidate([source])
+        self.assertEqual(emitter['raw_intensity'],70.)
+        self.assertEqual(emitter['relative_flux'],source['flux'])
+        self.assertTrue(0 < emitter['intensity'] <= 4)
+
+    def test_metadata_region_policy_keeps_real_separated_sources_and_native_limit(self):
+        sources = [{'position':(float(i%8)*3,float(i//8)*3,2.),'flux':(.01,.005,.001),
+                    'emission':'energy','position_basis':f'actual star {i}'} for i in range(63)]
+        with self.assertRaisesRegex(ValueError,'16 independent'):
+            consolidate(sources)
+        emitters = consolidate(sources,max_regions=64)
+        self.assertEqual(len(emitters),63)
+        self.assertEqual({tuple(e['position']) for e in emitters},{s['position'] for s in sources})
+        self.assertAlmostEqual(sum(e['raw_intensity'] for e in emitters),63*.0035)
+        with self.assertRaises(ValueError):
+            append_lights(fixture().read('world\\anonymous.m2'),emitters)
+        for bad in (0,65,True):
+            with self.assertRaises(ValueError):consolidate(sources,max_regions=bad)
+
+    def test_large_anchor_requires_explicit_policy_and_actual_static_particle_evidence(self):
+        assets = particle_fixture(); blob = bytearray(assets.read('world\\anonymous.m2'))
+        offset = struct.unpack_from('<I',blob,300)[0]
+        struct.pack_into('<3f',blob,offset+8,670.5,-235.,266.)
+        assets.files['world\\anonymous.m2'] = bytes(blob)
+        self.assertEqual(inspect_model(assets,'world\\anonymous.m2')['status'],'unsupported')
+        result = inspect_model(assets,'world\\anonymous.m2',max_regions=64,position_limit=1024)
+        self.assertEqual(result['status'],'addable')
+        emitter, = result['emitters']
+        self.assertEqual(emitter['position'],(670.5,-235.,266.))
+        self.assertEqual(emitter['evidence'][0]['local_position'],(670.5,-235.,266.))
+        self.assertEqual(emitter['evidence'][0]['bones'],[0])
+        for value in (1025.,float('nan'),float('inf')):
+            broken = bytearray(blob); struct.pack_into('<f',broken,offset+8,value)
+            assets.files['world\\anonymous.m2'] = bytes(broken)
+            self.assertEqual(inspect_model(assets,'world\\anonymous.m2',max_regions=64,position_limit=1024)['status'],'unsupported')
+        for bad in (float('nan'),float('inf'),1025.,0.,True):
+            with self.assertRaises(ValueError):consolidate([],position_limit=bad)
+        for bad in (float('nan'),float('inf'),-1.):
+            with self.assertRaises(ValueError):
+                consolidate([{'position':(0,0,0),'flux':(bad,1.,1.),'emission':'fire','position_basis':'bad flux'}])
 
     def test_census_denominator_is_every_world_model(self):
         assets = fixture(); assets.files['world\\dark.m2'] = fixture(opacity=0).read('world\\anonymous.m2')

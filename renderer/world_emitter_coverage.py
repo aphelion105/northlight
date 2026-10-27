@@ -229,8 +229,28 @@ def particle_sources(assets, path, blob, cache, refusals):
     return result
 
 
-def consolidate(sources):
+def calibrated_intensity(raw):
+    """Relative calibration: exact weak response, smooth bounded strong response.
+
+    This is an artistic energy mapping, not a claim of lux or lumen matching.
+    Original RGB flux and precompression intensity remain in emitter evidence.
+    """
+    if not math.isfinite(raw) or raw < 0:
+        raise ValueError('Nonfinite or negative source energy')
+    return raw if raw <= 1 else 1-3*math.expm1(-(raw-1)/3)
+
+
+def consolidate(sources, max_regions=16, position_limit=100):
     """Compact fixture groups sum RGB energy; separated flames remain independent."""
+    if type(max_regions) is not int or not 1 <= max_regions <= 64:
+        raise ValueError('Emitter region policy must stay within 1..64')
+    if type(position_limit) not in (int,float) or not math.isfinite(position_limit) or not 0 < position_limit <= 1024:
+        raise ValueError('Emitter local position policy must stay within 1024')
+    for source in sources:
+        if len(source['position']) != 3 or not all(math.isfinite(v) and abs(v) <= position_limit for v in source['position']):
+            raise ValueError('Source outside bounded M2 position policy')
+        if len(source['flux']) != 3 or not all(math.isfinite(v) and v >= 0 for v in source['flux']) or max(source['flux']) <= 0:
+            raise ValueError('Nonfinite, negative or empty source flux')
     groups = []
     for source in sorted(sources, key=lambda s: (*s['position'], s['position_basis'])):
         radius = 1.5 if source['emission'] == 'candle' else 1.
@@ -240,31 +260,34 @@ def consolidate(sources):
             groups.append([source])
         else:
             group.append(source)
-    if len(groups) > 16:
-        raise ValueError('More than sixteen independent luminous regions')
+    if len(groups) > max_regions:
+        raise ValueError(f'More than {max_regions} independent luminous regions')
     emitters = []
     for group in groups:
         flux = tuple(sum(s['flux'][k] for s in group) for k in range(3))
         power = max(flux)
-        # One global calibration preserves relative radiance, opacity and emitting area.
-        intensity = power * .35
-        if not 0 < intensity <= 4:
-            raise ValueError('Source energy exceeds bounded M2 policy; requires calibration')
+        raw_intensity = power * .35
+        intensity = calibrated_intensity(raw_intensity)
         weights = [max(s['flux']) for s in group]
         position = tuple(sum(s['position'][k]*w for s,w in zip(group, weights))/sum(weights) for k in range(3))
-        if not all(math.isfinite(v) and abs(v) <= 100 for v in position):
+        if not all(math.isfinite(v) and abs(v) <= position_limit for v in position):
             raise ValueError('Source outside bounded M2 position policy')
         kind = group[0]['emission']
         radius = min(5. if kind == 'candle' else 24., max(2., 10.*math.sqrt(intensity)))
         emitters.append({'position': position, 'rgb': tuple(v/power for v in flux), 'intensity': intensity,
                          'start': min(1., radius/4), 'end': radius, 'emission': kind,
                          'position_basis': '; '.join(sorted({s['position_basis'] for s in group})),
-                         'evidence': group, 'relative_flux': flux})
+                         'evidence': group, 'relative_flux': flux, 'raw_intensity': raw_intensity})
     return emitters
 
 
-def inspect_model(assets, path, blob=None, cache=None):
-    """Return a status for every model, including native lights we must not replace."""
+def inspect_model(assets, path, blob=None, cache=None, max_regions=16, position_limit=100):
+    """Inspect genuine M2 geometry/particle anchors under an explicit local policy.
+
+    Defaults match standalone native append. Metadata owners may opt into
+    64 regions/1024 local units; source fields and static bones still provide
+    every position. Unsupported bone animation never becomes a bind-pose light.
+    """
     record = {'status': 'unsupported'}
     try:
         blob = assets.read(path) if blob is None else blob
@@ -295,7 +318,7 @@ def inspect_model(assets, path, blob=None, cache=None):
         if not sources:
             return {**record, 'status': 'unsupported' if refusals else 'not_emissive',
                     'reason': 'Unsupported luminous evidence' if refusals else 'No supported additive luminous evidence'}
-        emitters = consolidate(sources)
+        emitters = consolidate(sources,max_regions=max_regions,position_limit=position_limit)
         return {**record, 'status': 'addable', 'emitters': emitters,
                 'partial': bool(refusals), 'source_regions': len(sources)}
     except FileNotFoundError as exc:
@@ -322,7 +345,7 @@ def map_records(assets):
     return records
 
 
-def census(assets, catalog=None, with_placements=True, progress=None):
+def census(assets, catalog=None, with_placements=True, progress=None, max_regions=16, position_limit=100):
     """Complete listed-asset denominator plus actual placements in all target DBC maps."""
     models, maps, placements = {}, {}, collections.defaultdict(collections.Counter)
     wmos, read_cache = {}, {}
@@ -386,7 +409,8 @@ def census(assets, catalog=None, with_placements=True, progress=None):
     candidates.update(catalog or {})
     cache = {}
     for i, path in enumerate(sorted(candidates)):
-        models[path] = {**inspect_model(assets, path, cache=cache), 'placements': dict(placements[path])}
+        models[path] = {**inspect_model(assets, path, cache=cache, max_regions=max_regions, position_limit=position_limit),
+                        'placements': dict(placements[path])}
         if progress and i % 500 == 0:
             progress(f'models {i}/{len(candidates)}')
     for name, entry in maps.items():
@@ -403,6 +427,8 @@ def census(assets, catalog=None, with_placements=True, progress=None):
         native_stats.update(model.get('native_track_statistics', {}))
     return {'schema': 1, 'scope': 'All listed WORLD M2 plus referenced M2 and reviewed paths; four continents and every Map.dbc party/raid map',
             'archive_fingerprint': assets.fingerprint(), 'archive_warnings': assets.warnings(),
+            'emitter_policy': {'max_regions':max_regions,'local_position_limit':position_limit,
+                               'relative_energy':'x=.35*peak_flux; x<=1 unchanged; otherwise 1+3*(1-exp(-(x-1)/3)); maximum4'},
             'counts': {'model_denominator': len(models), **{s: counts[s] for s in STATUSES},
                        'maps': len(maps), 'maps_complete': sum(m['status'] == 'complete' for m in maps.values()),
                        'partial_addable_models': sum(v.get('partial', False) for v in models.values()),
@@ -433,9 +459,13 @@ if __name__ == '__main__':
     client_archives.add_arguments(parser)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--without-placements', action='store_true')
+    parser.add_argument('--max-regions',type=int,choices=(16,64),default=16,help='64 is for renderer metadata; native standalone append stays at 16')
+    parser.add_argument('--position-limit',type=int,choices=(100,1024),default=100,help='1024 requires metadata validators matching the proven local-source policy')
     args = parser.parse_args(); assets = Assets.from_args(args)
     try:
-        result = census(assets, with_placements=not args.without_placements, progress=lambda s: print(s, file=sys.stderr, flush=True))
+        result = census(assets, with_placements=not args.without_placements,
+                        progress=lambda s: print(s, file=sys.stderr, flush=True),
+                        max_regions=args.max_regions,position_limit=args.position_limit)
     finally:
         assets.close()
     args.output.parent.mkdir(parents=True, exist_ok=True)
