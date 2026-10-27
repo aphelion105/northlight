@@ -1001,6 +1001,7 @@ private:
     float actorShadowOrigin[3]={};bool actorShadowOriginValid=false,actorShadowOver=false;unsigned actorShadowTransitions=0,actorShadowCapBinds=0;double actorShadowPrepareMs=0,actorShadowChooseMs=0; /* last frame's shadow pivot ranks the actor quota */
     size_t actorShadowRadiusToggles=0,actorShadowRadiusFlicker=0,actorShadowRadiusRekeyed=0,actorShadowRadiusRekeyFlips=0,actorShadowAttachToFree=0,actorShadowFreeToAttach=0,actorShadowAttachToFreeBeyond=0,actorShadowFreeToAttachBeyond=0; /* ActorShadowRadius per log window: inside<->outside changes, changes within RadiusDwell of the last one, identities kept across a key change */
     NorthlightReplayGPU::SelectedCache replayGpuCache;
+    NorthlightReplayGPU::ResidentSource sharedReplayGeometry;
     NorthlightReplayBulk::Layout replayBulkLayout;
     IDirect3DVertexBuffer9* replayVerticesGPU[4]={};
     IDirect3DIndexBuffer9* replayIndicesGPU=nullptr;
@@ -2564,6 +2565,8 @@ public:
         constantEpochSource=source;
     }
     NorthlightDrawSnapshot::Frame& captureSources(){return replaySnapshots;}
+    NorthlightReplayGPU::ResidentSource residentGeometry(){return NorthlightReplayGPU::residentSource(replayGpuCache);}
+    void setSharedGeometry(NorthlightReplayGPU::ResidentSource source){sharedReplayGeometry=source;}
     explicit WorldRenderer(IDirect3DDevice9* device):d(device),stateBlocks(device){terrainBoundsCache.setIdentityProvider(&bufferIdentity);terrainBoundsCache.setVersionProvider(&NorthlightTrackedBuffers::version);terrainBoundsCache.setMetadataProvider(&NorthlightTrackedBuffers::captureMetadata);terrainBoundsCache.setDeclarationCache(&declarationCache);replaySnapshots.setDeclarationProvider(&declarationCache,[](void* c,IDirect3DVertexDeclaration9* decl,const D3DVERTEXELEMENT9*& e,UINT& n){return static_cast<NorthlightVertexDeclarations::Cache*>(c)->get(decl,e,n);});replaySnapshots.setLayoutProvider(&declarationCache,[](void* c,IDirect3DVertexDeclaration9* decl,UINT* extent){return static_cast<NorthlightVertexDeclarations::Cache*>(c)->captureLayout(decl,extent);});replaySnapshots.setIdentityProvider(&bufferIdentity);replaySnapshots.setVersionProvider(&NorthlightTrackedBuffers::version);replaySnapshots.setMetadataProvider(&NorthlightTrackedBuffers::captureMetadata);QueryPerformanceFrequency(&captureFrequency);char path[MAX_PATH*3];WideCharToMultiByte(CP_UTF8,0,rootPath,-1,path,sizeof path,nullptr,nullptr);root=path;std::string paletteError;
         loadQuality();effects.gi=NorthlightQuality::giPass(quality,effects.gi);
         staticPrebuild.steps=float(quality.shadowDirectionSteps); /* prebuild targets the same direction lattice */
@@ -3383,7 +3386,16 @@ public:
         if(!allowCache){replayGpuCache.clear();for(auto& p:replays)if(p->gpuCached){for(auto& stream:p->stream)drop(stream);drop(p->index);}}
         {auto expire=streamingPhases.measure(NorthlightStreaming::PhaseProfile::ReplayExpire);replayGpuCache.beginFrame();}bool memoryChecked=false,memoryAllowed=false;
         auto growthAdmission=[&](size_t){if(!memoryChecked){memoryChecked=true;memoryAllowed=admitsGrowth("replay-cache",64*NorthlightGeometryMemory::MiB);}return memoryAllowed;};
-        auto bindReplay=[&](Replay& p){NorthlightReplayGPU::bindResident(replayGpuCache,d,p,allowCache,growthAdmission);};
+        unsigned sharedCandidates=0,sharedDraws=0;size_t sharedBytes=0;
+        auto bindReplay=[&](Replay& p){
+            if(allowCache){NorthlightReplayGPU::Placement at;sharedCandidates+=p.shared&&p.shared->sharedCapture;
+                if(sharedReplayGeometry.borrow(p.shared,p.stream,p.index,at)){
+                    p.gpuCached=true;for(unsigned s=0;s<4;++s){p.offset[s]=0;p.stride[s]=p.mesh().streams[s].stride;}
+                    p.start=p.indexed?at.indexStart:at.vertexBase;p.base=p.indexed?INT(at.vertexBase):0;
+                    ++sharedDraws;sharedBytes+=p.mesh().byteSize();return;
+                }}
+            NorthlightReplayGPU::bindResident(replayGpuCache,d,p,allowCache,growthAdmission);
+        };
         replayTimeDeferredIndices.clear();
         {auto bind=streamingPhases.measure(NorthlightStreaming::PhaseProfile::ReplayBind);
         for(size_t i=0;i<replays.size();++i){bindReplay(*replays[i]);
@@ -3497,6 +3509,7 @@ public:
         phase.stop(); // Report I/O is not part of cache/bulk timing.
         if(captureSampled){size_t bulk=indexBytes;for(auto total:totals)bulk+=total;
             const auto residency=NorthlightReplayGPU::batchStats(replayGpuCache);
+            deferLogf("SHARED_GPU_SCENE consumer=shadows worldFrame=%u candidates=%u hits=%u borrowedDrawBytes=%zu ownedBytes=%zu ownedLimitMiB=%zu",frames,sharedCandidates,sharedDraws,sharedBytes,replayGpuCache.bytes(),replayGpuCache.limit()>>20);
             deferLogf("MODEL GPU cache hits=%u reusedBytes=%zu newBytes=%zu residentBytes=%zu bulkUploadBytes=%zu batches=%zu batchBytes=%zu liveBytes=%zu separateBytes=%zu batchedUploads=%u separateUploads=%u compactions=%u compactedBytes=%zu batchFailures=%u",replayGpuCache.hits(),replayGpuCache.reused(),replayGpuCache.uploaded(),replayGpuCache.bytes(),bulk,
                 residency.batches,residency.batchBytes,residency.liveBytes,residency.separateBytes,residency.batchedUploads,residency.separateUploads,residency.compactions,residency.compactedBytes,residency.batchFailures);
             deferLogf("MODEL bulk sharing duplicateDraws=%zu avoidedBytes=%zu actualBytes=%zu multiStreamDraws=%zu",sharedBulkDraws,sharedBulkBytes,bulk,multiStreamDraws);

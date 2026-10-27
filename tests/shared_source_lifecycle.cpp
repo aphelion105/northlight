@@ -17,7 +17,9 @@ int main(){
         assert(geometry.shareSnapshotPool(capture)&&world.shareSnapshotPool(geometry));assert(capture.sharedSourceParticipants()==3&&world.sharedSourceLimit()==12288);
         Draw draw{D3DPT_TRIANGLELIST,-3,7,3,1,1,true};Mesh scratch;std::shared_ptr<const Mesh> a,b,c;Diagnostics why;
         assert(capture.read(&d,&d.decl,draw,scratch,&why,false,&a)&&a&&a->sourceIdentity);const auto firstLocks=locks(d),charge=capture.bytesRead();
+        assert(!a->sharedCapture); // One producer alone cannot trigger a peer GPU lookup.
         assert(geometry.read(&d,&d.decl,draw,scratch,&why,false,&b)&&b==a&&locks(d)==firstLocks&&geometry.bytesRead()==0&&geometry.sharedSourceHits()==1);
+        assert(a->sharedCapture&&b->sharedCapture);
         assert(world.read(&d,&d.decl,draw,scratch,&why,false,&c)&&c==a&&locks(d)==firstLocks&&world.bytesRead()==charge); // requesting consumer charges its original policy
         assert(capture.snapshotCacheBytes()+geometry.snapshotCacheBytes()+world.snapshotCacheBytes()==capture.sharedSourceBytes());
         assert(capture.uniqueSourceBytes()+geometry.uniqueSourceBytes()+world.uniqueSourceBytes()==capture.sourceLiveBytes()+capture.sharedSourceMetadataBytes());
@@ -25,6 +27,7 @@ int main(){
         Declaration changed;changed.e[0].Usage=5;assert(geometry.read(&d,&changed,draw,scratch,&why,false,&b)&&b!=a&&!NorthlightSourceIdentity::same(a->sourceIdentity,b->sourceIdentity));
         auto immutable=a->streams[0].bytes;auto oldIdentity=a->sourceIdentity;const auto oldPointer=a.get();assert(capture.read(&d,&d.decl,draw,scratch,&why,false,&c)&&SnapshotTestAccess::predicted(capture));geometry.clearSnapshotCache();assert(capture.sourceLiveObjects()>=2&&capture.sourceLiveBytes()>0&&!capture.sharedSourceBytes());
         assert(capture.read(&d,&d.decl,draw,scratch,&why,false,&b)&&b.get()!=oldPointer&&NorthlightSourceIdentity::same(oldIdentity,b->sourceIdentity));equal(*a,*b);
+        assert(a->sharedCapture&&!b->sharedCapture); // Old eligibility cannot leak into a reconstructed source.
         {Frame transient;track(transient);transient.setSnapshotCacheLimit(512);assert(transient.shareSnapshotPool(world)&&capture.sharedSourceParticipants()==4&&capture.sharedSourceLimit()==12800);}
         assert(capture.sharedSourceParticipants()==3&&capture.sharedSourceLimit()==12288&&!capture.sharedSourceBytes()&&a->streams[0].bytes==immutable); // member destruction invalidates other predictions and transfers accounting safely
         d.vb[0].bytes[8+4*24+4]^=42;++revisions[&d.vb[0]];assert(capture.read(&d,&d.decl,draw,scratch,&why,false,&b)&&!NorthlightSourceIdentity::same(oldIdentity,b->sourceIdentity)&&a->streams[0].bytes==immutable);

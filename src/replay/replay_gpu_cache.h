@@ -1,5 +1,5 @@
 #pragma once
-#include "draw_snapshot.h"
+#include "replay_gpu_binding.h"
 #include "upload_lock.h"
 #include "lock_meter.h"
 
@@ -141,6 +141,12 @@ public:
     const Stats& stats()const{return stats_;}
     const ClearStats& clearStats()const{return clearStats_;}
     Population population()const{Population p;p.entries=entries.size();for(const auto& item:entries)p.resident+=item.second->bytes!=0;p.probation=p.entries-p.resident;return p;}
+    bool borrow(const std::shared_ptr<const Mesh>& mesh,IDirect3DVertexBuffer9* (&vb)[4],IDirect3DIndexBuffer9*& ib,Placement& at){
+        at={};if(!mesh)return false;auto it=find(mesh);if(it==entries.end()||!it->second->bytes)return false;
+        Entry& e=*it->second;touch(e);++hits_;reused_+=e.bytes;
+        for(unsigned s=0;s<4;++s)if(vb[s]!=e.vertices[s]){if(vb[s])vb[s]->Release();vb[s]=e.vertices[s];if(vb[s])vb[s]->AddRef();}
+        if(ib!=e.indices){if(ib)ib->Release();ib=e.indices;if(ib)ib->AddRef();}return true;
+    }
     // Allocation/driver failures are optional-cache misses. Caller retains its
     // original bulk upload path and all casters. Partial allocations are freed.
     template<class Admission> bool bind(IDirect3DDevice9* device,

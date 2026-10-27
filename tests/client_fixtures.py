@@ -69,6 +69,39 @@ def shaders_available():
         return False
 
 
+def shared_gpu_models(directory):
+    """Exact stock 48-byte M2 vertices and skin subsets for cross-pass residency."""
+    fp.use_source_modules()
+    from world_scene_builder import Assets
+    assets=Assets(archives='stock');sources=[];meshes=[]
+    try:
+        for model,expected_model,expected_skin in (
+            ('character\\scourge\\male\\scourgemale.m2','a40783df61b12b0e053bd21fc5a930ae37cc649423b79e2f4b076e048fe2a220','ad6cc380ec007257a2ffdbbca5600c1c8f0d647ef81f70af058091d14e6a2349'),
+            ('character\\human\\male\\humanmale.m2','b22478c1ab8d1e9bb7542f686e60e4e665a510d11b5360109a3e9e46d5bf91d2','cfc65fba893f05335bbd054b083b910455ef852c57ca8094ff4549741596ed0e'),
+            ('character\\orc\\male\\orcmale.m2','76097ce5227249cf02064686f146721211a0a08864ff1e97a92424fd9775d703','a382a53f35469aba1854d7c941544ace29145b2c1fddec02f41529ba7c290caa')):
+            data=assets.read(model);skin=assets.read(model[:-3]+'00.skin')
+            assert hashlib.sha256(data).hexdigest()==expected_model and hashlib.sha256(skin).hexdigest()==expected_skin,model
+            assert data[:4]==b'MD20' and skin[:4]==b'SKIN'
+            sources.append({'path':model,'model_sha256':expected_model,'skin_sha256':expected_skin,'archive':assets.origin(model)})
+            vertex_count,vertex_at=struct.unpack_from('<II',data,60)
+            count,at=struct.unpack_from('<II',skin,4);lookup=struct.unpack_from('<%dH'%count,skin,at)
+            count,at=struct.unpack_from('<II',skin,12);indices=[lookup[x] for x in struct.unpack_from('<%dH'%count,skin,at)]
+            count,at=struct.unpack_from('<II',skin,28)
+            for subset in struct.iter_unpack('<10H7f',skin[at:at+count*48]):
+                first=subset[4]+(subset[1]<<16);n=subset[5]
+                assert first+n<=len(indices) and n%3==0
+                if not n:continue
+                used=indices[first:first+n];lo,hi=min(used),max(used);assert hi<vertex_count
+                vertices=data[vertex_at+lo*48:vertex_at+(hi+1)*48];assert len(vertices)==(hi-lo+1)*48
+                meshes.append((vertices,[i-lo for i in used]))
+    finally:
+        assets.close()
+    fixture=struct.pack('<I',len(meshes))+b''.join(struct.pack('<II',len(v),len(i))+v+struct.pack('<%dI'%len(i),*i) for v,i in meshes)
+    assert len(meshes)==177 and hashlib.sha256(fixture).hexdigest()=='cb99fccf5cb39f54e485c66042e7c2dbb616a87cec0d0b306dac8f3d53c76183'
+    target=Path(directory)/'stock-m2.bin';target.write_bytes(fixture)
+    return target,sources,len(meshes)
+
+
 def four_bone_vs3():
     """Path of the four-bone vs_3_0 program (raw D3D9 bytecode), cached in out/client-shaders/."""
     path, variant, sha = FOUR_BONE_VS3

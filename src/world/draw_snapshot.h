@@ -44,11 +44,14 @@ struct Mesh {
     UINT vertexCount=0,primitiveCount=0; D3DPRIMITIVETYPE topology=D3DPT_TRIANGLELIST;
     // Replay indexed with base=0,min=0,start=0,INDEX32. Nonindexed start=0.
     bool indexed=false,dynamic=false;
+    // Device-thread eligibility hint only; exact owner/identity proof is still required.
+    // Workers never read/write this metadata. It occupies existing Mesh tail padding.
+    mutable bool sharedCapture=false;
     std::size_t byteSize() const {std::size_t n=indices.size()*4;for(auto& s:streams)n+=s.bytes.size();return n;}
     std::size_t capacityBytes()const{std::size_t n=indices.capacity()*4;for(auto& s:streams)n+=s.bytes.capacity();return n;}
     // Only metadata is reset. Every observed byte/index is overwritten below;
     // retaining vector sizes avoids zero-filling the complete mesh each frame.
-    void prepare(){sourceIdentity.reset();replayIdentity.reset();vertexCount=primitiveCount=0;indexed=dynamic=false;topology=D3DPT_TRIANGLELIST;for(auto& s:streams)s.stride=0;}
+    void prepare(){sourceIdentity.reset();replayIdentity.reset();vertexCount=primitiveCount=0;indexed=dynamic=sharedCapture=false;topology=D3DPT_TRIANGLELIST;for(auto& s:streams)s.stride=0;}
 };
 struct Draw { D3DPRIMITIVETYPE topology=D3DPT_TRIANGLELIST; INT base=0; UINT minimum=0,vertices=0,start=0,primitives=0; bool indexed=true; };
 enum class Error { None, Arguments, Declaration, Stream, Instancing, IndexBuffer, IndexRange, VertexRange, Budget, Lock, Unlock };
@@ -399,7 +402,7 @@ private:
                 // change admission accounting, or follow a second peer link.
                 if(allowPeer&&residentPeer_&&key.tracked&&!chargeResidentHits_&&!residentPeer_->chargeResidentHits_&&
                    identity_==residentPeer_->identity_&&version_==residentPeer_->version_&&metadata_==residentPeer_->metadata_){
-                    const bool ok=residentPeer_->serve(key,vertices,ib,extent,shared,why,served,false);peerHits_+=served;return ok;}
+                    const bool ok=residentPeer_->serve(key,vertices,ib,extent,shared,why,served,false);peerHits_+=served;if(ok&&served&&shared&&*shared)(*shared)->sharedCapture=true;return ok;}
                 return true;}}
             if(!found){CacheEntry& e=*it->second;
             if(!key.tracked&&(version_||(e.serial&15u)==(frame_&15u))&&!revalidate(e,vertices,ib,extent)){++revalidationMismatches_;eraseIdentity(e);sources_->bytes-=e.bytes;sources_->metadataBytes-=e.metadataBytes;sources_->lru.remove(e);sources_->entries.erase(it);++sources_->generation;
@@ -419,7 +422,7 @@ private:
             for(std::size_t offset=0;offset<sizeof(CacheKey);offset+=64)prefetch(reinterpret_cast<const char*>(&s1->key)+offset);
             if(s2){prefetch(&s2->mesh);prefetch(&s2->lru);}
         }
-        sources_->lru.touch(e);++cacheHits_;if(key.tracked){++trackedHits_;avoidedReadBytes_+=e.charged;}if(charge)accepted();*shared=e.mesh;served=true;
+        sources_->lru.touch(e);++cacheHits_;if(key.tracked){++trackedHits_;avoidedReadBytes_+=e.charged;}if(charge)accepted();if(e.producer!=this)e.mesh->sharedCapture=true;*shared=e.mesh;served=true;
         if(why){why->error=Error::None;why->hr=D3D_OK;}return true;
     }
     static bool replayContract(const NorthlightSourceIdentity::Handle& a,const NorthlightSourceIdentity::Handle& b){

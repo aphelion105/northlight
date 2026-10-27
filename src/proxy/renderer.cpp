@@ -2538,6 +2538,7 @@ public:
         autoBump=std::make_unique<NorthlightAutoBump>(ext);autoBump->setGeometryTracking(&NorthlightTrackedBuffers::identity,&NorthlightTrackedBuffers::version,&NorthlightTrackedBuffers::captureMetadata);autoBump->configure(world->surfaceSettings());
         world->captureSources().setIdentityProvider(&NorthlightTrackedBuffers::identity);
         if(!world->captureSources().shareSnapshotPool(autoBump->captureSources()))logf("CAPTURE shared sources: join failed; using private caches");
+        world->setSharedGeometry(autoBump->residentGeometry());autoBump->setSharedGeometry(world->residentGeometry());
         autoBump->setVertexIdentity(this,[](void* context,IDirect3DVertexShader9* source,uint64_t& hash,unsigned& family){auto* self=static_cast<Device*>(context);const auto found=self->vsHashes.find(source);if(found==self->vsHashes.end())return false;hash=found->second;family=m2ShaderFamily(hash);return true;});
         autoBump->setProfiler(materialProfile.get());
         // ReadBackNoOverwrite is enabled only for an actually loaded DXVK >= 3,
@@ -2585,6 +2586,7 @@ public:
         memoryDiagnostics.reset();
         spellTeardown();
         mirrorState.beforeDisable=nullptr;mirrorState.disableContext=nullptr;
+        if(world)world->setSharedGeometry({});if(autoBump)autoBump->setSharedGeometry({});
         surface.reset();autoBump.reset();
         dropBlobFaint();shadowBlobs.reset();celestialDiscs.reset();gpuProfile.reset();gpuSceneProfile.reset();materialProfile.reset();gpuTimer.reset();drop(latencyQuery);water.reset();world.reset();releaseResources();
         hdrColor.reset();releaseHdrTargets();stateBlocks.clear();ext->Release();ext=nullptr;

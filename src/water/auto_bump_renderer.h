@@ -43,6 +43,8 @@ class NorthlightAutoBump {
     NorthlightDrawSnapshot::Frame deferredSnapshots{2u<<20,0};
     NorthlightVertexDeclarations::Cache deferredDeclarations;
     NorthlightReplayGPU::Cache deferredGPU;
+    NorthlightReplayGPU::ResidentSource sharedGeometry;
+    unsigned sharedGeometryCandidates=0,sharedGeometryHits=0;size_t sharedGeometryBytes=0;
     unsigned residentDraws=0,uploadDraws=0;uint64_t uploadDrawBytes=0;
     unsigned replaySetters=0,replaySkipped=0;
     std::vector<std::unique_ptr<Deferred>> deferred;size_t deferredBytes=0;bool deferredAllowed=false;
@@ -269,6 +271,8 @@ class NorthlightAutoBump {
     }
 public:
     NorthlightDrawSnapshot::Frame& captureSources(){return deferredSnapshots;}
+    NorthlightReplayGPU::ResidentSource residentGeometry(){return NorthlightReplayGPU::residentSource(deferredGPU);}
+    void setSharedGeometry(NorthlightReplayGPU::ResidentSource source){sharedGeometry=source;}
     explicit NorthlightAutoBump(IDirect3DDevice9* device):d(device),normals(device),sharedPOM(device),parallax(device,normals),displacement(device){
         deferredGPU.setLimit(32u<<20);
         deferredSnapshots.setSnapshotCacheLimit(24u<<20);deferredSnapshots.setChargeResidentHits(false);deferredSnapshots.setReplayContentReuse(true);
@@ -318,7 +322,11 @@ public:
                 if(needed((knownSamplers[stage]&mask)&&samplerValues[stage][index]==value)){const HRESULT result=d->SetSamplerState(stage,key,value);step(result);if(SUCCEEDED(result)){samplerValues[stage][index]=value;knownSamplers[stage]|=mask;}}};
             // Immutable snapshots already have revision-aware ownership. Reuse
             // the replay cache's bounded promotion, weak lifetime and fallback.
-            const bool resident=deferredGPU.bind(d,packet->mesh,bindings.vertex,bindings.index,[](size_t){return true;});
+            NorthlightReplayGPU::Placement placement;
+            sharedGeometryCandidates+=mesh.sharedCapture;
+            const bool borrowed=sharedGeometry.borrow(packet->mesh,bindings.vertex,bindings.index,placement);
+            if(borrowed){++sharedGeometryHits;sharedGeometryBytes+=mesh.byteSize();}
+            const bool resident=borrowed||deferredGPU.bind(d,packet->mesh,bindings.vertex,bindings.index,[](size_t){return true;});
             if(resident){step(d->SetStreamSource(0,bindings.vertex[0],0,mesh.streams[0].stride));step(d->SetIndices(bindings.index));}
             if(needed(previous&&previous->declaration==packet->declaration))step(d->SetVertexDeclaration(packet->declaration));
             if(needed(frequencyKnown)){const HRESULT result=d->SetStreamSourceFreq(0,1);step(result);frequencyKnown=SUCCEEDED(result);}
@@ -360,7 +368,7 @@ public:
                 hr=d->SetRenderTarget(1,packet->occlusion?occlusionTarget:nullptr);
                 if(SUCCEEDED(hr)){auxiliaryKnown=true;boundAuxiliary=packet->occlusion;viewportKnown=false;}}
             if(SUCCEEDED(hr)){P::Scope draw(profile,P::CaptureDraw,packet->tag);draw.work(mesh.primitiveCount);
-                if(resident){++residentDraws;hr=mesh.indexed?d->DrawIndexedPrimitive(mesh.topology,0,0,mesh.vertexCount,0,mesh.primitiveCount):d->DrawPrimitive(mesh.topology,0,mesh.primitiveCount);}
+                if(resident){++residentDraws;hr=mesh.indexed?d->DrawIndexedPrimitive(mesh.topology,INT(placement.vertexBase),0,mesh.vertexCount,placement.indexStart,mesh.primitiveCount):d->DrawPrimitive(mesh.topology,placement.vertexBase,mesh.primitiveCount);}
                 else {++uploadDraws;uploadDrawBytes+=mesh.byteSize();hr=mesh.indexed?d->DrawIndexedPrimitiveUP(mesh.topology,0,mesh.vertexCount,mesh.primitiveCount,mesh.indices.data(),D3DFMT_INDEX32,mesh.streams[0].bytes.data(),mesh.streams[0].stride):d->DrawPrimitiveUP(mesh.topology,mesh.primitiveCount,mesh.streams[0].bytes.data(),mesh.streams[0].stride);
                     // Keep no binding assumptions across the UP fallback.
                     frequencyKnown=viewportKnown=auxiliaryKnown=false;}}
@@ -445,10 +453,12 @@ public:
         }
         if(deferredReport||((queued||flushed||deferredFallback)&&frames%600==0)){
             logf("MATERIAL_BATCH_STATE frame=%llu issued=%u skippedIdentical=%u",(unsigned long long)(deferredReport?deferredReportFrame:frames),replaySetters,replaySkipped);
+            logf("SHARED_GPU_SCENE consumer=materials frame=%llu candidates=%u hits=%u borrowedDrawBytes=%zu ownedBytes=%zu ownedLimitMiB=%zu",(unsigned long long)(deferredReport?deferredReportFrame:frames),sharedGeometryCandidates,sharedGeometryHits,sharedGeometryBytes,deferredGPU.bytes(),deferredGPU.limit()>>20);
             const auto& g=deferredGPU.stats();const auto population=deferredGPU.population();
             logf("MATERIAL_BATCH_GPU frame=%llu residentDraws=%u upDraws=%u upBytes=%llu uploadedBytes=%zu reusedBytes=%zu cacheBytes=%zu cacheLimitMiB=%zu residentMeshes=%zu probationMeshes=%zu created=%u createCpuMs=%.4f warmup=%u attemptDeferred=%u byteDeferred=%u timeDeferred=%u evicted=%u expired=%u countPressure=%u bytePressure=%u probationEvictions=%u residentEvictions=%u countOnlyProbationEvictions=%u",(unsigned long long)(deferredReport?deferredReportFrame:frames),residentDraws,uploadDraws,(unsigned long long)uploadDrawBytes,deferredGPU.uploaded(),deferredGPU.reused(),deferredGPU.bytes(),deferredGPU.limit()>>20,population.resident,population.probation,g.created,g.createMs,g.warmup,g.attemptDeferred,g.uploadByteDeferred,g.timeDeferred,g.evictions,g.expiredEntries,g.countPressure,g.bytePressure,g.probationEvictions,g.residentEvictions,g.countOnlyProbationEvictions);
         }
         residentDraws=uploadDraws=replaySetters=replaySkipped=0;uploadDrawBytes=0;deferredGPU.beginFrame();deferredReport=false;
+        sharedGeometryCandidates=sharedGeometryHits=0;sharedGeometryBytes=0;
         queued=flushed=deferredFallback=deferredDiscarded=deferredUnsafe=deferredGeometry=0;
         std::fill(std::begin(queuedDomain),std::end(queuedDomain),0);earlyRangeRejected=opaqueCoverage=0;
         deferredTextureDraws=textureBarriers=snapshotBudget=snapshotStreams=textureRefused=batchLimit=0;deferredSnapshots.clearFrame();

@@ -40,6 +40,52 @@ These workloads need different fixes, rather than a general cache-size increase.
 
 ## Main changes
 
+### First validated increment: shared replay residency (2026-10-27)
+
+Materials and model shadows now borrow an already resident immutable GPU view from
+each other before admitting another copy. The existing material and batched shadow
+stores remain the allocation owners, with their original 32/64 MiB limits and
+admission/fallback policies. Borrowing creates no resources, performs no readback,
+wait or shader/state change, and retains COM references through the consuming draw.
+All existing actor-shadow consumers use the same world replay bindings.
+
+The lookup preserves full source identity or exact immutable owner identity plus
+the batch's vertex/index placement. It never caches a pose or lighting state.
+A device-thread-only hint records actual cross-consumer CPU capture use and avoids
+peer searches for private meshes; the hint is not a validity proof. It fits existing
+Mesh padding, and reset/reconstruction clears it. Unsupported or unavailable views
+use the original local residency/UP/bulk path.
+
+The prototype was tested before production integration on 177 stock M2 skin
+subsets from three client models. Exact byte/ownership controls cover zero, partial
+and full overlap, pressure, changed sources, multiple streams, nonindexed draws,
+held references and reset. Actual source-lifecycle tests establish hint admission.
+Native DXVK comparisons check 1,327,104 identical MRT pixels across MSAA 0/4/8,
+changing camera/deformation, alpha clipping, depth and residency loss.
+
+Seven alternating native timing pairs with a fully overlapping authored workload
+measured 15.5686 -> 11.7248 ms CPU submission/preparation over 48 frames (about
+0.0801 ms per test frame). Uploaded bytes fell 7,078,320 -> 4,056,192 and peak owned
+geometry 1,672,056 -> 879,816 bytes. These are component results, not game FPS or
+whole-scene visual acceptance. The no-overlap CPU fixture retains exact allocation,
+fallback and memory counts, with timing within noise after the eligibility guard.
+
+Reproduce with `tests/test_shared_gpu_residency.py`,
+`tests/test_shared_gpu_residency_gpu.py`, `tests/test_shared_gpu_wiring.py` and
+`tests/test_shared_source_lifecycle.py`. Client-dependent inputs are SHA-pinned and
+read from the tester's own MPQs; generated assets and private measurements are not
+distributed.
+
+Remaining representations need independent experiments. Static FGS/compact caster
+meshes and live terrain use different layouts and subset memberships; they cannot
+be reinterpreted as native material vertices. GI currently consumes CPU acceleration
+data, so GPU buffer sharing alone does not replace its bake. The next steps are
+canonical object/source handles with compatible resident views, followed by shared
+deformation and eligible native/material pass fusion. A complete common GPU scene
+for every effect is not claimed by this first increment.
+
+### Remaining architecture work
+
 1. **One immutable draw description.** Freeze current geometry ownership, source
    spans, declaration/program identity, consumed constants, viewport and raster
    state once. Every eligible consumer reads the same facts. Preserve the second
