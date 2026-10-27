@@ -7,7 +7,7 @@ from pathlib import Path
 import hashlib,json,os,re,subprocess,tempfile
 HERE=Path(__file__).resolve().parent
 OUT=fp.output_dir()
-FILES=['extension_raw_methods.inl','mirror_guard.h','generate_extension_raw_methods.py','forwarders.h','device_mirror.h','captured_constant_epoch.h','mirror_audit_schedule.h','saved_state.h','test_device_mirror.cpp','test_device_mirror_api.h','test_device_mirror.py',
+FILES=['extension_raw_methods.inl','mirror_guard.h','generate_extension_raw_methods.py','forwarders.h','device_mirror.h','native_local_light_probe.h','captured_constant_epoch.h','mirror_audit_schedule.h','saved_state.h','test_device_mirror.cpp','test_device_mirror_api.h','test_device_mirror.py',
        'mirror_guarded_device.h','generate_mirror_guarded_device.py','mirror_resources.h','mirror_resource_forwarders.h','tracked_buffers.h','renderer.cpp']
 report={'command':'python3 tests/test_device_mirror.py','scope':'Actual production device_mirror.h and saved_state.h with a native independent mock backend and minimal API declarations. Not a real D3D driver, Wine, or game execution. Native timings are informational; expected backend query elimination is the measured structural result.','source_sha256':{str(fp.tracked(n)):hashlib.sha256(fp.tracked(n).read_bytes()).hexdigest() for n in FILES},'runs':[]}
 import generate_extension_raw_methods

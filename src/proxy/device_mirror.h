@@ -54,6 +54,12 @@ struct DeviceMirror {
     IDirect3DSurface9* targets[Targets]={};bool targetKnown[Targets]={};
     IDirect3DSurface9* depth=nullptr;bool depthKnown=false;
     float vsFloat[VsFloat][4]={};bool vsFloatKnown[VsFloat]={};
+    // Diagnostic setter evidence is independent of successful Get* support.
+    bool vsFloatWriteObservation=false,vsFloatWritten[VsFloat]={};
+    void setVsFloatWriteObservation(bool on){
+        if(vsFloatWriteObservation==on)return;
+        vsFloatWriteObservation=on;std::memset(vsFloatWritten,0,sizeof vsFloatWritten);
+    }
     int vsInt[Ints][4]={};bool vsIntKnown[Ints]={};
     BOOL vsBool[Bools]={};bool vsBoolKnown[Bools]={};
     float psFloat[PsFloat][4]={};bool psFloatKnown[PsFloat]={};
@@ -124,13 +130,13 @@ struct DeviceMirror {
         for(auto& s:streams)s.known=false;
         std::memset(frequencyKnown,0,sizeof frequencyKnown);std::memset(textureKnown,0,sizeof textureKnown);
         std::memset(samplerKnown,0,sizeof samplerKnown);std::memset(renderStateKnown,0,sizeof renderStateKnown);
-        std::memset(targetKnown,0,sizeof targetKnown);std::memset(vsFloatKnown,0,sizeof vsFloatKnown);
+        std::memset(targetKnown,0,sizeof targetKnown);std::memset(vsFloatKnown,0,sizeof vsFloatKnown);std::memset(vsFloatWritten,0,sizeof vsFloatWritten);
         std::memset(vsIntKnown,0,sizeof vsIntKnown);std::memset(vsBoolKnown,0,sizeof vsBoolKnown);std::memset(psFloatKnown,0,sizeof psFloatKnown);
         std::memset(pending,0,sizeof pending);++mutations;++invalidations;
     }
     void disable(const char* reason){MirrorGuard lock(gate);if(enabled){auto callback=beforeDisable;beforeDisable=nullptr;if(callback)callback(disableContext);enabled=false;disableReason=reason;}invalidate();}
     // Fixed-function processing may overwrite the programmable constant banks.
-    void afterDraw(bool fixed=false){if(fixed||!programmableVS){constantEpoch.invalidate();if(synced)synced->clearAll();std::memset(vsFloatKnown,0,sizeof vsFloatKnown);std::memset(vsIntKnown,0,sizeof vsIntKnown);std::memset(vsBoolKnown,0,sizeof vsBoolKnown);}}
+    void afterDraw(bool fixed=false){if(fixed||!programmableVS){constantEpoch.invalidate();if(synced)synced->clearAll();std::memset(vsFloatKnown,0,sizeof vsFloatKnown);std::memset(vsFloatWritten,0,sizeof vsFloatWritten);std::memset(vsIntKnown,0,sizeof vsIntKnown);std::memset(vsBoolKnown,0,sizeof vsBoolKnown);}}
 };
 
 class MirrorStateBlock final : public IDirect3DStateBlock9 {
@@ -338,9 +344,19 @@ public:
     // Writes refresh previously observed registers. They never establish Get*
     // support: pure-device/unsupported getter errors must still reach backend.
     HRESULT STDMETHODCALLTYPE SetVertexShaderConstantF(UINT start,const float* data,UINT count) override{
-        Guard lock(m->gate);if(m->synced)m->synced->vsFloat(start,count);HRESULT hr=real->SetVertexShaderConstantF(start,data,count);
+        Guard lock(m->gate);const auto serial=m->mutations+1;if(m->synced)m->synced->vsFloat(start,count);HRESULT hr=real->SetVertexShaderConstantF(start,data,count);
         if(SUCCEEDED(hr)&&m->active())m->constantEpoch.writeFloat(start,count);
-        if(accepted(hr)&&data&&start<DeviceMirror::VsFloat){const UINT copied=count<DeviceMirror::VsFloat-start?count:DeviceMirror::VsFloat-start;std::memcpy(m->vsFloat[start],data,size_t(copied)*4*sizeof(float));}return hr;
+        const bool store=accepted(hr),unchanged=m->mutations==serial;
+        if(store&&!unchanged)std::memset(m->vsFloatWritten,0,sizeof m->vsFloatWritten);
+        if(store&&data&&start<DeviceMirror::VsFloat){
+            const UINT copied=count<DeviceMirror::VsFloat-start?count:DeviceMirror::VsFloat-start;
+            if(unchanged){std::memcpy(m->vsFloat[start],data,size_t(copied)*4*sizeof(float));
+                if(m->vsFloatWriteObservation)std::memset(m->vsFloatWritten+start,1,copied);
+            }else{
+                // An inner call may have changed the bank after the outer write.
+                std::memset(m->vsFloatKnown+start,0,copied);
+            }
+        }return hr;
     }
     HRESULT STDMETHODCALLTYPE GetVertexShaderConstantF(UINT start,float* out,UINT count) override{
         Guard lock(m->gate);bool valid=out&&count&&start<DeviceMirror::VsFloat&&count<=DeviceMirror::VsFloat-start;
