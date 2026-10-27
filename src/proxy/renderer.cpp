@@ -1956,18 +1956,20 @@ private:
     // projection in c0..c3, so the c3 test of nameMaskDecide holds as with the stock VS. Before the fallback arms (about 2 s of world frames) their names are not marked, as their effects have not started either.
     bool uiTextVs(IDirect3DVertexShader9* vs,int tag)const{return tag==2||(vs&&uiFallback.armed()&&reinterpret_cast<std::uintptr_t>(vs)==uiFallback.learnedVs());}
     void observeNativeLocalLights(IDirect3DVertexShader9* vs,const VsClass& vc){
+        if(mirrorState.vsFloatWriteObservation&&world&&world->hasContext())mirrorState.setVsFloatWriteObservation(false);
         if(!sampled()||(!vc.skinned&&vc.family!=3)||!world||world->hasContext())return;
         const auto hash=vsHashes.find(vs);const auto reads=shaderReads.find(static_cast<void*>(vs));
         const bool exact=reads!=shaderReads.end()&&reads->second.exact&&reads->second.vertex;
         const uint16_t used=exact?uint16_t((reads->second.f[0]>>17)&0x7ff):0;
         NorthlightNativeLocalLight::Sample sample;
         if(!nativeLocalLightProbe.sample(true,false,true,mirrorState.active(),frame,hash==vsHashes.end()?0:hash->second,
-                mirrorState.vsFloat,mirrorState.vsFloatKnown,used,exact,sample))return;
+                mirrorState.vsFloat,mirrorState.vsFloatKnown,mirrorState.vsFloatWritten,used,exact,sample))return;
+        if(nativeLocalLightProbe.full())mirrorState.setVsFloatWriteObservation(false);
         char bank[353];static constexpr char digits[]="0123456789abcdef";
         for(unsigned i=0;i<44;++i){uint32_t bits;std::memcpy(&bits,&sample.rows[i/4][i%4],4);
             for(unsigned n=0;n<8;++n)bank[8*i+n]=digits[(bits>>(28-4*n))&15];}bank[352]=0;
-        logf("NATIVE_LOCAL_LIGHT frame=%u draw=%u event=pre-capture contextKnown=0 terrainSeen=%u vs=%016llx shaderReadsExact=%u readRows=%03x knownRows=%03x finiteRows=%03x bank=c17..27 encoding=44-f32-u32hex slotLimit=4 submission=unproven modelIdentity=unknown values=%s",
-            frame,drawCalls-frameStartDrawCalls,unsigned(terrain),(unsigned long long)(hash==vsHashes.end()?0:hash->second),unsigned(exact),unsigned(used),unsigned(sample.known),unsigned(sample.finite),bank);
+        logf("NATIVE_LOCAL_LIGHT frame=%u draw=%u event=pre-capture contextKnown=0 terrainSeen=%u vs=%016llx shaderReadsExact=%u readRows=%03x knownRows=%03x getRows=%03x writtenRows=%03x finiteRows=%03x bank=c17..27 encoding=44-f32-u32hex slotLimit=4 submission=unproven modelIdentity=unknown values=%s",
+            frame,drawCalls-frameStartDrawCalls,unsigned(terrain),(unsigned long long)(hash==vsHashes.end()?0:hash->second),unsigned(exact),unsigned(used),unsigned(sample.known),unsigned(sample.fromGet),unsigned(sample.fromWrite),unsigned(sample.finite),bank);
     }
     void beforeDraw(IDirect3DVertexShader9* vs) {
         const VsClass& vc=classifyVs(vs); const int entry=vc.entry; int tag=entry&kTagMask;
@@ -2205,6 +2207,7 @@ public:
         zFuncAware=world->depthFuncAware();
         nameMask.setting=world->nameMask();nameMask.debug=world->nameMaskDebug(); /* 0.3.212 (task 32) */
         frameDrawGates=world->frameDrawGates();latchDrawGates(); /* 0.3.187: after the renderers exist */
+        mirrorState.setVsFloatWriteObservation(diagnostics());
         {wchar_t markers[MAX_PATH];if(swprintf(markers,MAX_PATH,L"%lsnorthlight-frame-markers.txt",rootPath)>0&&GetFileAttributesW(markers)!=INVALID_FILE_ATTRIBUTES){frameMarkers=true;logf("FRAMEMARKERS on: E after the world effects, P before Present");}}
         weatherDetect.sink=&weatherLog; /* 0.3.198 (rain) */
         // The async sweep feeds the memory guard (always) and the periodic MEMORY line
@@ -2593,6 +2596,7 @@ public:
         weatherFrame(sampleFrame);
         cpuPrep=cpuCapture=cpuWaterCapture=cpuEffects=0;cpuCaptureReads=0;cpuDrawHooks=0;
         ++frame;mirrorState.gate.frame.store(frame,std::memory_order_relaxed); /* 0.3.180: the census' frame */
+        mirrorState.setVsFloatWriteObservation(diagnostics()&&world&&!world->hasContext()&&!nativeLocalLightProbe.full());
         if(frame==300)memmap(diagnosticId==1?"baseline-frame300":"frame300"); /* 0.3.192 (MEMMAP): allocations settled; device 1 is the baseline */
         memmapSchedule(); /* task 42: world-entry / memory-deferred / periodic, queued to the sampler thread */
         // Per-type call counts run only through a RenderProfile sample frame.
