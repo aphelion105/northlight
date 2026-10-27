@@ -14,6 +14,7 @@
 #include "forwarders.h"
 #include "device_mirror.h"
 #include "mirror_audit_schedule.h"
+#include "native_local_light_probe.h"
 #include "async_memory_diagnostics.h"
 #include "geometry_memory.h"
 #include "mirror_guarded_device.h"
@@ -398,6 +399,7 @@ class Device final : public GuardedMirrorDevice {
     // CreateVertexShader registration, which bumps vsGeneration first (nothing is ever erased, but a freed address can be registered again).
     std::unordered_map<IDirect3DVertexShader9*,NorthlightNativeShadow::Proof> nativeShadowProofs;
     NorthlightNativeShadow::Limiter nativeShadowLimiter;
+    NorthlightNativeLocalLight::Probe nativeLocalLightProbe;
     struct VsClass {IDirect3DVertexShader9* vs=nullptr;std::uint32_t gen=~0u;int entry=0;bool wmo=false,world=false,skinned=false;unsigned family=0;const NorthlightNativeShadow::Proof* nativeShadow=nullptr;};
     std::uint32_t vsGeneration=0;VsClass lastVs;unsigned long long vsCacheHits=0,vsCacheMisses=0;
     int registerNativeShadow(IDirect3DVertexShader9* vs,const std::vector<DWORD>& words){
@@ -2279,9 +2281,24 @@ private:
             vp?mirrorState.viewport.X:0ul,vp?mirrorState.viewport.Y:0ul,vp?mirrorState.viewport.Width:0ul,vp?mirrorState.viewport.Height:0ul,
             vp?mirrorState.viewport.MinZ:0.f,vp?mirrorState.viewport.MaxZ:0.f,unsigned(projectionValid),unsigned(terrain),unsigned(applied),hex);
     }
+    void observeNativeLocalLights(IDirect3DVertexShader9* vs,const VsClass& vc){
+        if(!sampled()||(!vc.skinned&&vc.family!=3)||!world||world->hasContext())return;
+        const auto hash=vsHashes.find(vs);const auto reads=shaderReads.find(static_cast<void*>(vs));
+        const bool exact=reads!=shaderReads.end()&&reads->second.exact&&reads->second.vertex;
+        const uint16_t used=exact?uint16_t((reads->second.f[0]>>17)&0x7ff):0;
+        NorthlightNativeLocalLight::Sample sample;
+        if(!nativeLocalLightProbe.sample(true,false,true,mirrorState.active(),frame,hash==vsHashes.end()?0:hash->second,
+                mirrorState.vsFloat,mirrorState.vsFloatKnown,used,exact,sample))return;
+        char bank[353];static constexpr char digits[]="0123456789abcdef";
+        for(unsigned i=0;i<44;++i){uint32_t bits;std::memcpy(&bits,&sample.rows[i/4][i%4],4);
+            for(unsigned n=0;n<8;++n)bank[8*i+n]=digits[(bits>>(28-4*n))&15];}bank[352]=0;
+        logf("NATIVE_LOCAL_LIGHT frame=%u draw=%u event=pre-capture contextKnown=0 terrainSeen=%u vs=%016llx shaderReadsExact=%u readRows=%03x knownRows=%03x finiteRows=%03x bank=c17..27 encoding=44-f32-u32hex slotLimit=4 submission=unproven modelIdentity=unknown values=%s",
+            frame,drawCalls-frameStartDrawCalls,unsigned(terrain),(unsigned long long)(hash==vsHashes.end()?0:hash->second),unsigned(exact),unsigned(used),unsigned(sample.known),unsigned(sample.finite),bank);
+    }
     void beforeDraw(IDirect3DVertexShader9* vs) {
         const VsClass& vc=classifyVs(vs); const int entry=vc.entry; int tag=entry&kTagMask;
         observeNativeShadow(vs,vc);
+        observeNativeLocalLights(vs,vc);
         drawWaterVS=(entry&kWaterTag)!=0;drawUiHashVS=uiTextVs(vs,tag);
         bool wmo=tag!=1&&vc.wmo;if(gateFrame&&wmo)++gateCounts.wmo;
         if(wmo&&projectionValid&&world->hasContext()&&world->hasOriginalFog())return;
