@@ -34,6 +34,10 @@ class NorthlightAutoBump {
         // vertex displacement sampler offset cannot affect their samples.
         static constexpr unsigned SamplerMask=((1u<<13)-1)^(1u<<(D3DSAMP_ADDRESSW-1))^(1u<<(D3DSAMP_DMAPOFFSET-1));
         IDirect3DBaseTexture9* texture=nullptr;unsigned stage=0;DWORD sampler[13]={};uint64_t bytes=0;
+        DeferredTexture()=default;
+        DeferredTexture(const DeferredTexture&)=delete;
+        DeferredTexture& operator=(const DeferredTexture&)=delete;
+        DeferredTexture(DeferredTexture&& other)noexcept:texture(std::exchange(other.texture,nullptr)),stage(other.stage),bytes(other.bytes){std::copy(std::begin(other.sampler),std::end(other.sampler),sampler);}
         ~DeferredTexture(){drop(texture);}
     };
     struct Deferred {
@@ -41,7 +45,7 @@ class NorthlightAutoBump {
         std::shared_ptr<const NorthlightDrawSnapshot::Mesh> mesh;NorthlightAutoNormalCache::Lease normal;
         float vertexConstants[256*4];unsigned vertexFirst=0,vertexCount=256;std::vector<float> pixelConstants;int vertexInt[64],pixelInt[64];BOOL vertexBool[16],pixelBool[16];
         DWORD states[14],raster[DeferredRasterCount],addressU=0,addressV=0;RECT scissor{};D3DVIEWPORT9 viewport{};unsigned first=0,tag=0,normalStage=14;bool occlusion=false,vertexFloatOnly=false,pixelFloatOnly=false;
-        std::vector<std::unique_ptr<DeferredTexture>> textures;
+        std::vector<DeferredTexture> textures;
         IDirect3DVertexBuffer9* gpuVertex[4]={};IDirect3DIndexBuffer9* gpuIndex=nullptr;NorthlightReplayGPU::Placement placement;bool resident=false;
         ~Deferred(){for(auto& vb:gpuVertex)drop(vb);drop(gpuIndex);drop(vertex);drop(pixel);drop(declaration);}
     };
@@ -237,22 +241,23 @@ class NorthlightAutoBump {
             NorthlightDrawSnapshot::Ref<IDirect3DVertexDeclaration9> decl;if(FAILED(d->GetVertexDeclaration(decl.out()))||!decl.p)return false;
             UINT extent[4]={};if(!deferredDeclarations.captureLayout(decl.p,extent))return false;
             for(unsigned i=1;i<4;++i)if(extent[i]){++snapshotStreams;return false;}
-            std::vector<std::unique_ptr<DeferredTexture>> textures;uint64_t textureBytes=0;
+            std::vector<DeferredTexture> textures;uint64_t textureBytes=0;
+            textures.reserve(__builtin_popcount(unsigned(model.samplers)&65535));
             for(unsigned stage=0;stage<16;++stage)if(model.samplers&(1u<<stage)){
-                auto binding=std::make_unique<DeferredTexture>();binding->stage=stage;
-                if(!textureWriteGuarded||FAILED(d->GetTexture(stage,&binding->texture))){++textureRefused;return false;}
-                if(binding->texture){
-                    const auto known=deferredTextures.find(binding->texture);
-                    const auto local=std::find_if(textures.begin(),textures.end(),[&](const auto& t){return t->texture==binding->texture;});
+                DeferredTexture binding;binding.stage=stage;
+                if(!textureWriteGuarded||FAILED(d->GetTexture(stage,&binding.texture))){++textureRefused;return false;}
+                if(binding.texture){
+                    const auto known=deferredTextures.find(binding.texture);
+                    const auto local=std::find_if(textures.begin(),textures.end(),[&](const auto& t){return t.texture==binding.texture;});
                     // Descriptor and mip count cannot change during a texture's
                     // lifetime. Every memoized entry has a queued strong lease.
-                    if(known!=deferredTextures.end())binding->bytes=known->second;
-                    else if(local!=textures.end())binding->bytes=(*local)->bytes;
+                    if(known!=deferredTextures.end())binding.bytes=known->second;
+                    else if(local!=textures.end())binding.bytes=local->bytes;
                     else{D3DSURFACE_DESC desc{};
-                        if(binding->texture->GetType()!=D3DRTYPE_TEXTURE||FAILED(static_cast<IDirect3DTexture9*>(binding->texture)->GetLevelDesc(0,&desc))||(desc.Pool!=D3DPOOL_MANAGED&&desc.Pool!=D3DPOOL_DEFAULT)||(desc.Usage&(D3DUSAGE_RENDERTARGET|D3DUSAGE_DEPTHSTENCIL))){++textureRefused;return false;}
-                        binding->bytes=NorthlightAutoNormalMemory::mipBytes(desc.Format,desc.Width,desc.Height,binding->texture->GetLevelCount());textureBytes+=binding->bytes;}
+                        if(binding.texture->GetType()!=D3DRTYPE_TEXTURE||FAILED(static_cast<IDirect3DTexture9*>(binding.texture)->GetLevelDesc(0,&desc))||(desc.Pool!=D3DPOOL_MANAGED&&desc.Pool!=D3DPOOL_DEFAULT)||(desc.Usage&(D3DUSAGE_RENDERTARGET|D3DUSAGE_DEPTHSTENCIL))){++textureRefused;return false;}
+                        binding.bytes=NorthlightAutoNormalMemory::mipBytes(desc.Format,desc.Width,desc.Height,binding.texture->GetLevelCount());textureBytes+=binding.bytes;}
                 }
-                for(unsigned i=0;i<13;++i)if((DeferredTexture::SamplerMask&(1u<<i))&&FAILED(d->GetSamplerState(stage,D3DSAMPLERSTATETYPE(i+1),binding->sampler+i)))return false;
+                for(unsigned i=0;i<13;++i)if((DeferredTexture::SamplerMask&(1u<<i))&&FAILED(d->GetSamplerState(stage,D3DSAMPLERSTATETYPE(i+1),binding.sampler+i)))return false;
                 textures.push_back(std::move(binding));
             }
             const uint64_t textureLimit=memoryPressure?8ull<<20:128ull<<20;
@@ -275,7 +280,7 @@ class NorthlightAutoBump {
             std::copy(captureConstants,captureConstants+saved.constantCount*4,packet->pixelConstants.begin()+(model.constant-packet->first)*4);
             packet->textures=std::move(textures);void* inserted[16]={};unsigned insertedCount=0;
             try{
-                for(const auto& t:packet->textures)if(t->texture&&deferredTextures.emplace(t->texture,t->bytes).second){inserted[insertedCount++]=t->texture;deferredTextureBytes+=t->bytes;}
+                for(const auto& t:packet->textures)if(t.texture&&deferredTextures.emplace(t.texture,t.bytes).second){inserted[insertedCount++]=t.texture;deferredTextureBytes+=t.bytes;}
                 deferred.push_back(std::move(packet));
             }catch(...){for(unsigned i=0;i<insertedCount;++i){auto entry=deferredTextures.find(inserted[i]);deferredTextureBytes-=entry->second;deferredTextures.erase(entry);}throw;}
             deferred.back()->normal=std::move(normal);deferredBytes+=cost;++queued;++queuedDomain[profileTag/4-1];deferredTextureDraws+=model.samplers!=0;if(pendingChanged)pendingChanged(pendingContext);timing.work(mesh->vertexCount,mesh->byteSize());return true;
@@ -377,7 +382,7 @@ public:
             for(unsigned i=0;i<DeferredRasterCount;++i)if(needed(previous&&previous->raster[i]==packet->raster[i]))step(d->SetRenderState(deferredRasterKeys[i],packet->raster[i]));
             texture(packet->normalStage,packet->normal.get());const DWORD sampler[]={D3DTEXF_LINEAR,D3DTEXF_LINEAR,D3DTEXF_LINEAR,packet->addressU,packet->addressV,FALSE,0,0};
             for(unsigned i=0;i<8;++i)samplerState(packet->normalStage,keys.samplerKeys[i],sampler[i]);
-            for(const auto& t:packet->textures){texture(t->stage,t->texture);for(unsigned i=0;i<13;++i)if(DeferredTexture::SamplerMask&(1u<<i))samplerState(t->stage,D3DSAMPLERSTATETYPE(i+1),t->sampler[i]);}
+            for(const auto& t:packet->textures){texture(t.stage,t.texture);for(unsigned i=0;i<13;++i)if(DeferredTexture::SamplerMask&(1u<<i))samplerState(t.stage,D3DSAMPLERSTATETYPE(i+1),t.sampler[i]);}
             auto floatConstants=[&](bool vertex,UINT first,const float* values,const float* before,UINT count,bool comparable){
                 if(!needed(comparable&&(!count||!std::memcmp(before,values,size_t(count)*4*sizeof(float)))))return;
                 UINT begin=0,end=count;

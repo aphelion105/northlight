@@ -62,7 +62,13 @@ checks['host: FogBlur closes both quads inside the fog guard, before c34/composi
     bl.count('profile->mark("FogBlur")')==1 and bl.count('quad(w/2,h/2)')==2
     and bl.index('if(effects.fog){')<bl.index('"volume blur vertical"')<bl.index('profile->mark("FogBlur")')<bl.rindex('}')
     and maxMarks==42 and len(set(re.findall(r'profile->mark\("(\w+)"\)',w)))+8+8<=maxMarks)
-checks['host: composite and the diagnostic dump read the final buffer']=('SetTexture(9,fogResolved?fogBlurred:fog);d->SetPixelShader(finalPS)' in g and 'dump(d,fogResolved?fogBlurredSurface:fogSurface,directory,"fog",capture)' in g)
+products=w[w.index('void captureProducts('):w.index('bool captureSkippedDiagnostic(')]
+checks['host: composite and current-frame diagnostic product read the final buffer']=(
+    'SetTexture(9,fogResolved?fogBlurred:fog);d->SetPixelShader(finalPS)' in g
+    and 'diagnosticFogResolved=fogResolved;' in g and 'captureProducts(directory,capture,rendererFrame,w,h,true);' in g
+    and 'ready=current&&composited&&lastRenderDebug==0;' in products
+    and 'image("fog",diagnosticFogResolved?fogBlurredSurface:fogSurface,ready&&effects.fog&&uploadedFogField,w/2,h/2,D3DFMT_A16B16G16R16F);' in products
+    and 'NorthlightWorldDiagnostics::product(' in products)
 checks['host: history target created with the others, dropped and invalidated in releaseGPU; shader optional']=(
     '&fogHistory,&fogHistorySurface)' in w and 'drop(fogHistorySurface);drop(fogHistory);drop(fogTemporalPS);fogHistoryValid=false;' in w and 'fogTemporalPS=nullptr;logf("WORLD fog temporal disabled' in w)
 checks['host: no per-draw work (nothing in src/stream or src/proxy mentions it)']=all(

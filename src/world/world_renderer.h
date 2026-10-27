@@ -342,6 +342,7 @@ private:
     std::string gpuDiagnosticDirectory;
     IDirect3DTexture9* regionalFogTexture=nullptr;
     IDirect3DTexture9* fogHeightTexture=nullptr;bool fogHeightReady=false;
+    std::array<float,3> fogGlobalHeights{};
     IDirect3DTexture9* neutralWhite=nullptr; // 0.3.209 (task 29): 1x1 white on s12 (ActorVisibility) for WorldLighting on frames without an ActorShadow pass
     IDirect3DTexture9* neutralZero=nullptr; // 0.3.202 (rain): 1x1 (0,0,0,0) on s13 (RainMask) when no mask was drawn this frame
     IDirect3DTexture9* ditherNoise=nullptr; // WorldComposite s2: 64x64 signed blue-noise offsets (dither_noise.h); neutralZero when missing
@@ -2225,7 +2226,7 @@ private:
     }
     bool uploadRegionalFog(const std::shared_ptr<const NorthlightRegionalFog::Field>& field,const std::string& map){
         if(uploadedFogField==field&&uploadedFogMap==map)return true;
-        fogHeightReady=false;
+        fogHeightReady=false;fogGlobalHeights={};
         if(!field){uploadedFogField.reset();uploadedFogMap=map;return true;}
         constexpr unsigned n=NorthlightRegionalFog::N;
         if(!regionalFogTexture&&!check(d->CreateTexture(n,n,1,0,D3DFMT_A32B32G32R32F,D3DPOOL_MANAGED,&regionalFogTexture,nullptr),"regional fog field"))return false;
@@ -2233,7 +2234,7 @@ private:
         if(!lock.pBits||lock.Pitch<INT(n*sizeof(NorthlightRegionalFog::Texel))){regionalFogTexture->UnlockRect(0);return check(E_FAIL,"regional fog layout");}
         for(unsigned y=0;y<n;++y)memcpy(static_cast<char*>(lock.pBits)+y*lock.Pitch,field->texels.data()+y*n,n*sizeof(NorthlightRegionalFog::Texel));
         if(!check(regionalFogTexture->UnlockRect(0),"regional fog unlock"))return false;
-        uploadedFogField=field;uploadedFogMap=map;
+        uploadedFogField=field;uploadedFogMap=map;fogGlobalHeights=NorthlightRegionalFog::globalHeightBounds(*field);
         // Optional acceleration metadata: allocation/lock failure keeps the full march.
         if(!fogHeightTexture&&FAILED(d->CreateTexture(n,n,1,0,D3DFMT_A32B32G32R32F,D3DPOOL_MANAGED,&fogHeightTexture,nullptr))){drop(fogHeightTexture);return true;}
         D3DLOCKED_RECT bounds={};
@@ -4794,6 +4795,9 @@ public:
         if(cf.active){
             NorthlightFogClouds::shaderConstants(cf,&c[59]); /* c59.y, c60..c63 (host-folded for the shader's early outs) */
         }
+        c[65][0]=fogGlobalHeights[0]-.25f;
+        c[65][1]=fogGlobalHeights[1]+std::max({fogGlobalHeights[2],6.f,c[32][2],c[32][3],cf.active?c[62][0]:0.f})+.25f;
+        c[65][2]=uploadedFogField&&fogGlobalHeights[2]>0?1.f:0.f;
         if(profileSampled())logf("WORLD fog clouds active=%d coverage=%.3f threshold=%.3f height=%.1f speed=%.2f dir=(%.2f %.2f) sigmaMax=%.4f lush=%.2f noiseReady=%d",cf.active?1:0,cf.coverage,cf.threshold,cf.height,cloudWind.speed,cloudWind.dir[0],cloudWind.dir[1],cf.sigmaMax,cloudLush,fogCloudNoise().ready.load(std::memory_order_acquire)?1:0);
         {   // SpellFog: the smoothed estimate for the next frame's records (identity when SpellFog is off, the fog effect is off or has no field, or a debug view is on)
             NorthlightSpellFog::Frame raw;const bool wanted=quality.spellFog&&effects.fog&&uploadedFogField&&debug==0&&atmosphere.spellValid;

@@ -93,6 +93,7 @@ test_fog_casters_wiring.py
 test_fog_clouds.py
 test_fog_clouds_wiring.py
 test_fog_empty_intervals.py
+test_fog_global_support_gpu.py
 test_fog_locale.py
 test_fog_motion.py
 test_fog_temporal_wiring.py
@@ -143,8 +144,10 @@ test_material_batch_bindings.py
 test_material_capture_targets.py
 test_material_capture_targets_gpu.py
 test_material_early_alpha_gpu.py
+test_material_followup_cpu.py
 test_material_frame_rotation_gpu.py
 test_material_geometry.py
+test_material_normal_capabilities_gpu.py
 test_material_normal_variants.py
 test_material_packet_auxiliary.py
 test_material_pipeline_cpu_micro.py

@@ -20,6 +20,7 @@ class NorthlightAutoNormalCache {
     std::uint64_t bytes=0,sourceBytes=0,clock=0,budget=32ull<<20;
     unsigned generated=0,builds=0,hits=0,evictions=0,allocations=0,reuses=0;
     unsigned polarity=0,details=75,balance=50,frame=0;bool memoryPressure=false;
+    UINT vertexConstantCapacity=0; // Immutable for this device, including Reset.
     void erase(size_t index){
         auto& e=entries[index];lookup[e.model].erase(e.source);bytes-=e.bytes;sourceBytes-=e.sourceBytes;drop(e.source);drop(e.normal);
         if(index+1<entries.size()){e=entries.back();lookup[e.model].find(e.source)->second=index;}
@@ -108,8 +109,8 @@ public:
         // Native D3D9's fixed-function draw can clear programmable VS constants
         // beyond those restored by an ALL state block. Preserve the bank on builds.
         struct VertexConstants {IDirect3DDevice9* device;float values[256*4]={};UINT count=0;~VertexConstants(){if(count)device->SetVertexShaderConstantF(0,values,count);}} vertex{d};
-        D3DCAPS9 caps{};if(FAILED(d->GetDeviceCaps(&caps)))return nullptr;
-        const UINT count=std::min<UINT>(caps.MaxVertexShaderConst,256u);if(!count||FAILED(d->GetVertexShaderConstantF(0,vertex.values,count)))return nullptr;vertex.count=count;
+        if(!vertexConstantCapacity){D3DCAPS9 caps{};if(FAILED(d->GetDeviceCaps(&caps)))return nullptr;vertexConstantCapacity=std::min<UINT>(caps.MaxVertexShaderConst,256u);}
+        const UINT count=vertexConstantCapacity;if(!count||FAILED(d->GetVertexShaderConstantF(0,vertex.values,count)))return nullptr;vertex.count=count;
         SavedState saved(d,&states);if(!saved.ok)return nullptr;
         auto*& selected=model?modelShader:shader;if(!selected&&FAILED(d->CreatePixelShader(model?kAutoNormalModelShader:kAutoNormalShader,&selected)))return nullptr;
         IDirect3DTexture9* normal=recycled.texture;recycled.texture=nullptr;IDirect3DSurface9* target=nullptr;

@@ -36,6 +36,18 @@ inline std::array<float,4> heightBounds(const Field& field,unsigned x,unsigned y
     if(sparse){out[0]=std::min(out[0],0.f);out[1]=std::max(out[1],0.f);}
     return out;
 }
+// Global support of the same sparse bilinear field. Include zero because the
+// reciprocal floor can pull a very lightly weighted valid node toward zero.
+// A nonpositive tag disables clipping for unknown or empty metadata.
+inline std::array<float,3> globalHeightBounds(const Field& field){
+    std::array<float,3> out{};
+    for(const auto& t:field.texels){
+        if(!std::isfinite(t.ground)||!std::isfinite(t.day)||!std::isfinite(t.nightExtra)||!std::isfinite(t.height))return {};
+        if(t.height<=0)continue;
+        out[0]=std::min(out[0],t.ground);out[1]=std::max(out[1],t.ground);out[2]=std::max(out[2],t.height);
+    }
+    return out;
+}
 inline float smooth(float x){x=std::clamp(x,0.f,1.f);return x*x*(3-2*x);}
 // Artist policy transitions, applied to the VERIFIED game's normalized render
 // time (minute-of-day / 1440, including fixed-time map override). Unknown clock

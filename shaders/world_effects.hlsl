@@ -246,7 +246,8 @@ float fogShadowProjected(float3 q) {
     // switching cascade resolution around the moving player changes thin
     // foliage visibility even at an otherwise stationary world sample.
     float2 uv=float2(q.x*.5+.5,.5-q.y*.5)+.5*DepthParams.w;
-    if(any(uv<0)||any(uv>1)||q.z<0||q.z>1)return 1;
+    float2 edge=min(uv,1-uv);
+    if(min(min(edge.x,edge.y),min(q.z,1-q.z))<0)return 1;
     // Filter on a 1.5-world-unit light-plane lattice, independent of the shadow
     // camera/pivot. Fine leaf silhouettes otherwise alias into falling streaks
     // when the view-ray samples move. Interpolate comparisons, never depths.
@@ -848,7 +849,7 @@ float4 SourceVisibilityPS(float2 uv:TEXCOORD0):COLOR0 {
     return lerp(current,previous,SourceInfo.y).xxxx;
 }
 sampler2D FogHeightBounds : register(s12); // footprint min/max ground, max layer height, validity
-float4 FogHeightControl : register(c65); // w: uploaded bounds match the regional texture
+float4 FogHeightControl : register(c65); // xy: global vertical support, z: global validity, w: matching per-cell bounds
 float4 worldFog(float2 uv,bool actorIntegration) {
     if(FogInfo.x<.5)return float4(0,0,0,1);
     uv=depthUV(uv);
@@ -889,11 +890,12 @@ float4 worldFog(float2 uv,bool actorIntegration) {
     // bare break emitted break_ne with identical operands, marching past surface.
     // Intervals ending before the near fade have exactly zero extinction.
     // Skip whole world-grid intervals beyond the regional field support.
-    float2 invRay=(ray.xy<0?-1:1)/max(abs(ray.xy),1e-8);
-    float2 fieldA=(RegionalFogInfo.xy-Camera.xy)*invRay;
-    float2 fieldB=(RegionalFogInfo.xy+63.0/(64*max(RegionalFogInfo.z,1e-8))-Camera.xy)*invRay;
-    float2 entry=min(fieldA,fieldB),exit=max(fieldA,fieldB);
-    float fieldEntry=max(0,max(entry.x,entry.y)),fieldExit=min(exit.x,exit.y);
+    float2 heights=FogHeightControl.z>0?FogHeightControl.xy:float2(-1e20,1e20);
+    float3 invRay=(ray<0?-1:1)/max(abs(ray),1e-8);
+    float3 fieldA=(float3(RegionalFogInfo.xy,heights.x)-Camera.xyz)*invRay;
+    float3 fieldB=(float3(RegionalFogInfo.xy+63.0/(64*max(RegionalFogInfo.z,1e-8)),heights.y)-Camera.xyz)*invRay;
+    float3 entry=min(fieldA,fieldB),exit=max(fieldA,fieldB);
+    float fieldEntry=max(0,max(entry.x,max(entry.y,entry.z))),fieldExit=min(exit.x,min(exit.y,exit.z));
     if(fieldExit<fieldEntry)return float4(0,0,0,1);
     float marchEnd=min(surface,fieldExit+stepLength);
     int first=max(0,(int)floor(max(max(FogRange.x,0),fieldEntry-stepLength)/stepLength+offset));
@@ -1092,6 +1094,10 @@ float4 fogClouds(float2 uv,bool actorIntegration) {
     float surface=min(length(ray),FogInfo.w);
     [branch]if(surface<=max(FogRange.x,0))return float4(0,0,0,1);
     ray*=rsqrt(max(dot(ray,ray),1e-12));
+    // A ray wholly outside every possible bank emits no cloud scattering.
+    // Do not shorten crossing rays: their base-fog optical depth still matters.
+    float lastHeight=Camera.z+ray.z*surface;
+    [branch]if(FogHeightControl.z>0&&(min(Camera.z,lastHeight)>FogHeightControl.y||max(Camera.z,lastHeight)<FogHeightControl.x))return float4(0,0,0,1);
     float3 shadowOrigin=affinePoint(Camera.xyz,FarMatrix);
     float3 shadowRay=ray.x*FarMatrix[0].xyz+ray.y*FarMatrix[1].xyz+ray.z*FarMatrix[2].xyz;
     float3 actorOrigin=affinePoint(Camera.xyz,FogActorMatrix);

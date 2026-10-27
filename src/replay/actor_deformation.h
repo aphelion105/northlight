@@ -366,7 +366,7 @@ inline bool singleSkinBoundsPrepared(const Program& program,const NorthlightDraw
 inline bool worldPositionsPrepared(const Program& program,const NorthlightDrawSnapshot::Mesh& mesh,const PreparedBindings& prepared,const float* constants,const float* inverseView,std::vector<Position>& output){
     output.clear();if(!constants||!inverseView||!prepared.validFor(program,mesh))return false;
     const auto& bindings=prepared.bindings;
-    std::vector<Position> positions;positions.reserve(mesh.vertexCount);
+    std::vector<Position> positions;positions.swap(output);positions.reserve(mesh.vertexCount);
     const bool clearInputs=clearVertexInputs(program,bindings);
     for(UINT vertex=0;vertex<mesh.vertexCount;++vertex){Four inputs[16];if(clearInputs)std::fill(std::begin(inputs),std::end(inputs),Four{});for(auto& b:bindings){auto& s=mesh.streams[b.element.Stream];if(!decodeElement(s.bytes.data()+std::size_t(vertex)*s.stride+b.element.Offset,b.element.Type,inputs[b.input.reg]))return false;}
         Four v;if(!evaluateFast(program,inputs,constants,v))return false;Position out;
@@ -379,7 +379,7 @@ inline bool worldPositionsPrepared(const Program& program,const NorthlightDrawSn
 inline bool textureUVsPrepared(const Program& program,const NorthlightDrawSnapshot::Mesh& mesh,const PreparedBindings& prepared,const float* constants,std::vector<std::array<float,2>>& output){
     output.clear();if(!program.textureCoordinates||!constants||!prepared.validFor(program,mesh))return false;
     const auto& bindings=prepared.bindings;
-    std::vector<std::array<float,2>> positions;positions.reserve(mesh.vertexCount);
+    std::vector<std::array<float,2>> positions;positions.swap(output);positions.reserve(mesh.vertexCount);
     const bool clearInputs=clearVertexInputs(program,bindings);
     for(UINT vertex=0;vertex<mesh.vertexCount;++vertex){Four inputs[16];if(clearInputs)std::fill(std::begin(inputs),std::end(inputs),Four{});for(auto& b:bindings){auto& s=mesh.streams[b.element.Stream];if(!decodeElement(s.bytes.data()+std::size_t(vertex)*s.stride+b.element.Offset,b.element.Type,inputs[b.input.reg]))return false;}
         Four v;if(!evaluateFast(program,inputs,constants,v))return false;positions.push_back({v[0],v[1]});}
@@ -393,7 +393,7 @@ inline bool worldPositions(const Program& program,const NorthlightDrawSnapshot::
     for(auto input:program.inputs){bool found=false;for(std::size_t j=0;j<elementCount;++j){auto e=elements[j];if(e.Stream==0xff)break;if(e.Usage!=input.usage||e.UsageIndex!=input.index)continue;
         if(found||e.Stream>=4||e.Method!=D3DDECLMETHOD_DEFAULT)return false;auto& s=mesh.streams[e.Stream];unsigned size=NorthlightDrawSnapshot::declarationBytes(e.Type);
         if(!size||UINT(e.Offset)+size>s.stride||std::uint64_t(mesh.vertexCount)*s.stride>s.bytes.size())return false;bindings.push_back({input,e});found=true;}if(!found)return false;}
-    std::vector<Position> positions;positions.reserve(mesh.vertexCount);
+    std::vector<Position> positions;positions.swap(output);positions.reserve(mesh.vertexCount);
     const bool clearInputs=clearVertexInputs(program,bindings);
     for(UINT vertex=0;vertex<mesh.vertexCount;++vertex){Four inputs[16];if(clearInputs)std::fill(std::begin(inputs),std::end(inputs),Four{});for(auto& b:bindings){auto& s=mesh.streams[b.element.Stream];if(!decodeElement(s.bytes.data()+std::size_t(vertex)*s.stride+b.element.Offset,b.element.Type,inputs[b.input.reg]))return false;}
         Four v;if(!evaluateFast(program,inputs,constants,v))return false;Position out;
@@ -409,7 +409,7 @@ inline bool textureUVs(const Program& program,const NorthlightDrawSnapshot::Mesh
     for(auto input:program.inputs){bool found=false;for(std::size_t j=0;j<elementCount;++j){auto e=elements[j];if(e.Stream==0xff)break;if(e.Usage!=input.usage||e.UsageIndex!=input.index)continue;
         if(found||e.Stream>=4||e.Method!=D3DDECLMETHOD_DEFAULT)return false;auto& s=mesh.streams[e.Stream];unsigned size=NorthlightDrawSnapshot::declarationBytes(e.Type);
         if(!size||UINT(e.Offset)+size>s.stride||std::uint64_t(mesh.vertexCount)*s.stride>s.bytes.size())return false;bindings.push_back({input,e});found=true;}if(!found)return false;}
-    std::vector<std::array<float,2>> positions;positions.reserve(mesh.vertexCount);
+    std::vector<std::array<float,2>> positions;positions.swap(output);positions.reserve(mesh.vertexCount);
     const bool clearInputs=clearVertexInputs(program,bindings);
     for(UINT vertex=0;vertex<mesh.vertexCount;++vertex){Four inputs[16];if(clearInputs)std::fill(std::begin(inputs),std::end(inputs),Four{});for(auto& b:bindings){auto& s=mesh.streams[b.element.Stream];if(!decodeElement(s.bytes.data()+std::size_t(vertex)*s.stride+b.element.Offset,b.element.Type,inputs[b.input.reg]))return false;}
         Four v;if(!evaluateFast(program,inputs,constants,v))return false;positions.push_back({v[0],v[1]});}

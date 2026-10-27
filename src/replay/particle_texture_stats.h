@@ -165,9 +165,10 @@ private:
         std::vector<std::uint8_t> pixels;
     };
     std::array<Entry,MaxEntries> entries_{};
+    Entry* recent_=nullptr;
     std::size_t bytes_=0;
     std::uint64_t serial_=0,clock_=0;
-    Entry* find(const void* raw){if(raw)for(auto& e:entries_)if(e.raw==raw)return &e;return nullptr;}
+    Entry* find(const void* raw){if(raw){if(recent_&&recent_->raw==raw)return recent_;for(auto& e:entries_)if(e.raw==raw){recent_=&e;return &e;}}return nullptr;}
     void drop(Entry& e){bytes_-=e.pixels.size();std::vector<std::uint8_t>().swap(e.pixels);e.width=e.height=0;}
     Entry* oldest(const Entry* except=nullptr){Entry* result=nullptr;for(auto& e:entries_)if(e.raw && &e!=except&&(!result||e.used<result->used))result=&e;return result;}
     Entry& slot(const void* raw,const void* owner){
@@ -182,14 +183,90 @@ private:
         case 24:out=F::XRGB1555;break;case 25:out=F::ARGB1555;break;case 26:out=F::ARGB4444;break;
         case 0x31545844:out=F::BC1;break;case 0x33545844:out=F::BC2;break;case 0x35545844:out=F::BC3;break;default:return false;}return true;
     }
-    static bool decodeImage(const void* source,std::size_t bytes,unsigned width,unsigned height,std::size_t pitch,NorthlightActorTexture::Format format,std::vector<std::uint8_t>& output){
+    template<NorthlightActorTexture::Format Format>static bool reduceColor(const void* source,std::size_t bytes,unsigned width,unsigned height,std::size_t pitch,std::vector<std::uint8_t>& output){
+        using F=NorthlightActorTexture::Format;
+        constexpr bool wide=Format==F::BGRA8||Format==F::BGRX8;
+        constexpr unsigned pixelBytes=wide?4:2;
+        const size_t rowBytes=size_t(width)*pixelBytes;
+        if(pitch<rowBytes||bytes<rowBytes||height-1>(bytes-rowBytes)/pitch)return false;
+        const unsigned tw=std::min(width,MaxDimension),th=std::min(height,MaxDimension);output.resize(size_t(tw)*th*4);
+        for(unsigned y=0;y<th;++y)for(unsigned x=0;x<tw;++x){unsigned sum[4]={},n=0;
+            for(unsigned sy=y*height/th;sy<(y+1)*height/th;++sy)for(unsigned sx=x*width/tw;sx<(x+1)*width/tw;++sx){
+                const auto* pixel=static_cast<const unsigned char*>(source)+size_t(sy)*pitch+sx*pixelBytes;
+                if constexpr(wide){for(unsigned c=0;c<4;++c)sum[c]+=pixel[c];}
+                else{std::uint16_t value;std::memcpy(&value,pixel,2);
+                    const auto rgba=Format==F::RGB565?NorthlightActorTexture::rgb565(value):Format==F::ARGB4444?NorthlightActorTexture::argb4444(value):NorthlightActorTexture::argb1555(value,Format==F::ARGB1555);
+                    for(unsigned c=0;c<4;++c)sum[c]+=rgba[c];}
+                ++n;
+            }
+            auto* pixel=output.data()+(size_t(y)*tw+x)*4;
+            pixel[0]=std::uint8_t((sum[wide?2:0]+n/2)/n);pixel[1]=std::uint8_t((sum[1]+n/2)/n);pixel[2]=std::uint8_t((sum[wide?0:2]+n/2)/n);
+            pixel[3]=Format==F::BGRX8?255:std::uint8_t((sum[3]+n/2)/n);
+        }
+        return true;
+    }
+    static bool decodeImage(const void* source,std::size_t bytes,unsigned width,unsigned height,std::size_t pitch,NorthlightActorTexture::Format format,std::vector<std::uint8_t>& output,bool reduce=false){
         if(width<=128&&height<=128)return NorthlightActorTexture::decode(source,bytes,width,height,pitch,format,output);
-        if(!source)return false;output.resize(size_t(width)*height*4);std::vector<std::uint8_t> tile,packed;
+        if(!source)return false;
+        const unsigned targetWidth=reduce?std::min(width,MaxDimension):width,targetHeight=reduce?std::min(height,MaxDimension):height;
+        using F=NorthlightActorTexture::Format;
+        if(reduce)switch(format){
+        case F::BGRA8:return reduceColor<F::BGRA8>(source,bytes,width,height,pitch,output);
+        case F::BGRX8:return reduceColor<F::BGRX8>(source,bytes,width,height,pitch,output);
+        case F::RGB565:return reduceColor<F::RGB565>(source,bytes,width,height,pitch,output);
+        case F::XRGB1555:return reduceColor<F::XRGB1555>(source,bytes,width,height,pitch,output);
+        case F::ARGB1555:return reduceColor<F::ARGB1555>(source,bytes,width,height,pitch,output);
+        case F::ARGB4444:return reduceColor<F::ARGB4444>(source,bytes,width,height,pitch,output);
+        default:break;
+        }
+        output.resize(size_t(targetWidth)*targetHeight*4);std::vector<std::uint8_t> tile,packed;
+        std::vector<unsigned> sums(reduce?size_t(targetWidth)*targetHeight*4:0),columns(reduce?width:0),rowOffsets(reduce?height:0);
+        if(reduce)for(unsigned x=0;x<width;++x)columns[x]=((x+1)*targetWidth-1)/width;
+        if(reduce)for(unsigned y=0;y<height;++y)rowOffsets[y]=(((y+1)*targetHeight-1)/height)*targetWidth*4;
+        if(reduce&&NorthlightActorTexture::compressed(format)){
+            const auto rowBytes=NorthlightActorTexture::rowBytes(width,format),rows=NorthlightActorTexture::rowCount(height,format);
+            if(pitch<rowBytes||bytes<rowBytes||rows-1>(bytes-rowBytes)/pitch)return false;
+            auto write=[&](unsigned x,unsigned y,const std::array<std::uint8_t,4>& rgba){
+                const auto at=rowOffsets[y]+columns[x]*4;
+                for(unsigned c=0;c<4;++c)sums[at+c]+=rgba[c];
+            };
+            const auto* data=static_cast<const std::uint8_t*>(source);
+            // A complete BC block belongs to one box only for these exact
+            // integer scales. Other dimensions keep the per-texel path.
+            const bool wholeBlocks=width%targetWidth==0&&height%targetHeight==0&&(width/targetWidth)%4==0&&(height/targetHeight)%4==0;
+            if(wholeBlocks){
+                auto block=[&](unsigned x,unsigned y,const std::array<unsigned,4>& rgba){const auto at=rowOffsets[y]+columns[x]*4;for(unsigned c=0;c<4;++c)sums[at+c]+=rgba[c];};
+                if(format==F::BC1)NorthlightActorTexture::decodeCompressed<F::BC1,true>(data,width,height,pitch,block);
+                else if(format==F::BC2)NorthlightActorTexture::decodeCompressed<F::BC2,true>(data,width,height,pitch,block);
+                else NorthlightActorTexture::decodeCompressed<F::BC3,true>(data,width,height,pitch,block);
+            }
+            else if(format==F::BC1)NorthlightActorTexture::decodeCompressed<F::BC1>(data,width,height,pitch,write);
+            else if(format==F::BC2)NorthlightActorTexture::decodeCompressed<F::BC2>(data,width,height,pitch,write);
+            else NorthlightActorTexture::decodeCompressed<F::BC3>(data,width,height,pitch,write);
+        }else{
         for(unsigned y=0;y<height;y+=128)for(unsigned x=0;x<width;x+=128){const unsigned w=std::min(128u,width-x),h=std::min(128u,height-y);const auto offset=NorthlightActorTexture::rowCount(y,format)*pitch+NorthlightActorTexture::rowBytes(x,format);
-            const auto rowBytes=NorthlightActorTexture::rowBytes(w,format);const auto rows=NorthlightActorTexture::rowCount(h,format);packed.resize(rowBytes*rows);
-            for(unsigned r=0;r<rows;++r){const auto start=offset+size_t(r)*pitch;if(start>bytes||rowBytes>bytes-start)return false;std::copy_n(static_cast<const unsigned char*>(source)+start,rowBytes,packed.data()+size_t(r)*rowBytes);}
-            if(!NorthlightActorTexture::decode(packed.data(),packed.size(),w,h,rowBytes,format,tile))return false;
-            for(unsigned r=0;r<h;++r)std::copy_n(tile.data()+size_t(r)*w*4,w*4,output.data()+(size_t(y+r)*width+x)*4);}
+            const auto rowBytes=NorthlightActorTexture::rowBytes(w,format);const auto rows=NorthlightActorTexture::rowCount(h,format);
+            // Reuse the upload's row stride when the existing decoder's full
+            // footprint is available. Edge tiles retain the packed fallback.
+            if(offset<=bytes&&pitch&&rows<=(bytes-offset)/pitch){
+                if(!NorthlightActorTexture::decode(static_cast<const unsigned char*>(source)+offset,bytes-offset,w,h,pitch,format,tile))return false;
+            }else{
+                packed.resize(rowBytes*rows);
+                for(unsigned r=0;r<rows;++r){const auto start=offset+size_t(r)*pitch;if(start>bytes||rowBytes>bytes-start)return false;std::copy_n(static_cast<const unsigned char*>(source)+start,rowBytes,packed.data()+size_t(r)*rowBytes);}
+                if(!NorthlightActorTexture::decode(packed.data(),packed.size(),w,h,rowBytes,format,tile))return false;
+            }
+            if(reduce){
+                // Integer box sums commute across tiles. This is the original
+                // box filter without an intermediate full-size RGBA image.
+                for(unsigned r=0;r<h;++r){const auto row=size_t(((y+r+1)*targetHeight-1)/height)*targetWidth;
+                    for(unsigned col=0;col<w;++col){const auto target=(row+columns[x+col])*4,from=(size_t(r)*w+col)*4;
+                        for(unsigned c=0;c<4;++c)sums[target+c]+=tile[from+c];}}
+            }else for(unsigned r=0;r<h;++r)std::copy_n(tile.data()+size_t(r)*w*4,w*4,output.data()+(size_t(y+r)*width+x)*4);}
+        }
+        if(reduce)for(unsigned y=0;y<targetHeight;++y)for(unsigned x=0;x<targetWidth;++x){
+            const unsigned n=((x+1)*width/targetWidth-x*width/targetWidth)*((y+1)*height/targetHeight-y*height/targetHeight);
+            const auto at=(size_t(y)*targetWidth+x)*4;for(unsigned c=0;c<4;++c)output[at+c]=std::uint8_t((sums[at+c]+n/2)/n);
+        }
         return true;
     }
 public:
@@ -203,8 +280,9 @@ public:
     bool copy(const void* source,const void* destination,const void* owner)noexcept{try{
         if(source==destination)return false;auto* original=find(source);if(!original||original->pixels.empty()){invalidate(destination);return false;}
         // Copy before slot/eviction can invalidate the borrowed source.
-        auto pixels=original->pixels;const auto w=original->width,h=original->height,mip=original->mip,fmt=original->format;const auto hash=original->rgbaHash;
-        if(auto* same=find(destination))if(same->width==w&&same->height==h&&same->mip==mip&&same->format==fmt&&same->rgbaHash==hash&&same->pixels==pixels){same->used=++clock_;return true;}
+        const auto w=original->width,h=original->height,mip=original->mip,fmt=original->format;const auto hash=original->rgbaHash;
+        if(auto* same=find(destination))if(same->width==w&&same->height==h&&same->mip==mip&&same->format==fmt&&same->rgbaHash==hash&&same->pixels==original->pixels){same->used=++clock_;return true;}
+        auto pixels=original->pixels;
         Entry& e=slot(destination,owner);drop(e);while(bytes_+pixels.size()>PixelBudget){auto* victim=oldest(&e);if(!victim)break;drop(*victim);*victim={};++counts.evictions;}
         e.pixels=std::move(pixels);e.width=w;e.height=h;e.mip=mip;e.format=fmt;e.rgbaHash=hash;++e.revision;e.used=++clock_;bytes_+=e.pixels.size();return true;
     }catch(...){invalidate(destination);++counts.failed;return false;}}
@@ -235,10 +313,19 @@ public:
         if(!width||!height||width>DecodeDimension||height>DecodeDimension){++counts.large;return;}
         auto* previous=find(raw);
         if(previous&&previous->owner==owner&&!previous->pixels.empty()&&mip>previous->mip){++previous->revision;return;}
+        // Prove byte equality before allocating/decoding/hashing a repeated
+        // compact colour upload. XRGB's unused alpha is deliberately ignored.
+        using F=NorthlightActorTexture::Format;
+        if(previous&&previous->owner==owner&&width<=MaxDimension&&height<=MaxDimension&&previous->width==width&&previous->height==height&&previous->mip==mip&&previous->format==d3dFormat&&
+           (decodedFormat==F::BGRA8||decodedFormat==F::BGRX8)&&NorthlightActorTexture::readable(source,sourceBytes,width,height,pitch,decodedFormat)){
+            bool same=true;
+            for(unsigned y=0;y<height&&same;++y)for(unsigned x=0;x<width;++x){const auto* from=static_cast<const unsigned char*>(source)+size_t(y)*pitch+x*4;const auto* to=previous->pixels.data()+(size_t(y)*width+x)*4;
+                if(to[0]!=from[2]||to[1]!=from[1]||to[2]!=from[0]||to[3]!=(decodedFormat==F::BGRX8?255:from[3])){same=false;break;}}
+            if(same){previous->used=++clock_;return;}
+        }
         std::vector<std::uint8_t> decoded;
-        if(!decodeImage(source,sourceBytes,width,height,pitch,decodedFormat,decoded)){++counts.failed;invalidate(raw);return;}
-        if constexpr(DecodeDimension>MaxDimension){if(width>MaxDimension||height>MaxDimension){const unsigned w=std::min(width,MaxDimension),h=std::min(height,MaxDimension);std::vector<std::uint8_t> small(size_t(w)*h*4);
-            for(unsigned y=0;y<h;++y)for(unsigned x=0;x<w;++x){unsigned sum[4]={},n=0;for(unsigned sy=y*height/h;sy<(y+1)*height/h;++sy)for(unsigned sx=x*width/w;sx<(x+1)*width/w;++sx){for(unsigned c=0;c<4;++c)sum[c]+=decoded[(size_t(sy)*width+sx)*4+c];++n;}for(unsigned c=0;c<4;++c)small[(size_t(y)*w+x)*4+c]=std::uint8_t((sum[c]+n/2)/n);}decoded=std::move(small);width=w;height=h;}}
+        if(!decodeImage(source,sourceBytes,width,height,pitch,decodedFormat,decoded,true)){++counts.failed;invalidate(raw);return;}
+        width=std::min(width,MaxDimension);height=std::min(height,MaxDimension);
         std::uint64_t hash=14695981039346656037ull;for(auto byte:decoded)hash=(hash^byte)*1099511628211ull;
         if constexpr(DecodeDimension>MaxDimension){if(previous&&previous->owner==owner&&previous->width==width&&previous->height==height&&previous->mip==mip&&previous->format==d3dFormat&&previous->rgbaHash==hash&&previous->pixels==decoded){previous->used=++clock_;return;}}
         Entry& e=slot(raw,owner);drop(e);
