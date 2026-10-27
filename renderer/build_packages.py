@@ -65,6 +65,7 @@ APP_FILES = [
     'renderer/regional_fog_builder.py', 'renderer/build_celestial_disc_assets.py',
     'renderer/native_model_lights.py', 'renderer/build_equipment_emitters.py',
     'renderer/build_spell_emitters.py', 'renderer/build_mount_emitters.py',
+    'renderer/build_glue_emitters.py',
     'renderer/equipment_emitter_patch.py',
     'renderer/point_transmission_builder.py',
     'renderer/attached_emitter_sources.py',

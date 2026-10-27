@@ -1,8 +1,10 @@
 """Stage model-only dynamic emitters inside the installer's existing art transaction."""
+import json
 import struct
 import build_equipment_emitters
 import build_spell_emitters
 import build_mount_emitters
+import build_glue_emitters
 
 
 def build(assets, work, read_archive, excluded=()):
@@ -15,7 +17,12 @@ def build(assets, work, read_archive, excluded=()):
         except ValueError as error:
             if str(error) != empty:
                 raise
-            steps.append({'step': name, 'skipped': str(error)})
+            details={}
+            audit=output/archive.replace('-staged.mpq','-report.json')
+            if audit.is_file():
+                value=json.loads(audit.read_text(encoding='utf-8'))
+                details={'counts':value['counts']}
+            steps.append({'step': name, 'skipped': str(error), **details})
             return
         models = read_archive(output / archive)
         suppressed=0
@@ -39,6 +46,9 @@ def build(assets, work, read_archive, excluded=()):
     stage('creature_model_lights', 'creature-lights-staged.mpq',
           lambda out: build_mount_emitters.build_creatures(assets, out, excluded=set(payload)),
           'No supported creature emitters', ('creature\\',))
+    stage('glue_model_lights', 'glue-lights-staged.mpq',
+          lambda out: build_glue_emitters.build(assets, out, excluded=set(payload)),
+          build_glue_emitters.EMPTY, ('interface\\',))
     # Creature entries are server-owned. A fresh client may have no WDB yet;
     # the renderer's live-particle path still handles visible mount effects.
     cache = assets.client / 'Cache' / 'WDB' / assets.locale / 'creaturecache.wdb'

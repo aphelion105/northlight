@@ -43,7 +43,7 @@ assert set(build_weather_textures.MIST) <= set(blps), 'the client has both mist 
 files = tables | set(blps)
 report = {}
 model_steps = {'world_model_lights', 'equipment_model_lights', 'spell_model_lights',
-               'creature_model_lights', 'mount_model_lights'}
+               'creature_model_lights', 'glue_model_lights', 'mount_model_lights'}
 metadata = {world_emitter_index.ARCHIVE_PATH}
 
 
@@ -52,9 +52,10 @@ def model_checks(view, folder, result):
     models = set(result['files']) - files - metadata
     assert metadata <= set(result['files']), result['files']
     assert not any(n.lower().startswith('world\\') for n in models), sorted(models)
-    assert all(n.lower().startswith(('item\\', 'spells\\', 'creature\\')) and n.lower().endswith('.m2')
+    assert all(n.lower().startswith(('item\\', 'spells\\', 'creature\\', 'interface\\')) and n.lower().endswith('.m2')
                for n in models), sorted(models)
     assert 'creature_model_lights' in {s['step'] for s in result['steps']}
+    assert 'glue_model_lights' in {s['step'] for s in result['steps']}
     assert sum(s.get('models', 0) for s in result['steps'] if s['step'] in model_steps) == len(models)
     step, = [s for s in result['steps'] if s['step'] == 'world_emitter_index']
     assets = Assets(client, view, result['locale'], without='z')

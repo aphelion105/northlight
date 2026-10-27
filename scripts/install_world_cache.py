@@ -84,7 +84,7 @@ STEP_SOURCES = {
     'scene': ['world_scene_builder.py', 'm2_visibility.py', 'mpq.py', 'client_archives.py'],
     'lights': ['world_lights_builder.py', 'world_light_placements.py', 'outdoor_light_profiles.py',
                'world_emitter_coverage.py', 'world_emitter_index.py', 'build_equipment_emitters.py', 'emitter_pin_report.py',
-               'attached_emitter_sources.py', 'emitter_tracks.py', 'equipment_emitter_patch.py', 'point_transmission_builder.py',
+                 'attached_emitter_sources.py', 'emitter_tracks.py', 'equipment_emitter_patch.py', 'point_transmission_builder.py', 'build_glue_emitters.py',
                'outdoor-light-profiles.json', 'wotlk-emitter-profiles.json'],
     'fog': ['regional_fog_builder.py', 'world_light_placements.py', 'forest_regions.inc'],
     'celestial': ['build_celestial_disc_assets.py', 'world_scene_builder.py', 'mpq.py', 'client_archives.py'],

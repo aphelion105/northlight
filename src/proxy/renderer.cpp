@@ -14,6 +14,7 @@
 #include "forwarders.h"
 #include "device_mirror.h"
 #include "mirror_audit_schedule.h"
+#include "native_local_light_probe.h"
 #include "async_memory_diagnostics.h"
 #include "geometry_memory.h"
 #include "mirror_guarded_device.h"
@@ -355,6 +356,7 @@ class Device final : public GuardedMirrorDevice {
     bool drawWaterVS=false,drawUiHashVS=false; // beforeDraw() results for the current draw (drawUiHashVS: uiTextVs, the UI hash or the font mod's learned UI VS)
     std::unordered_map<IDirect3DPixelShader9*, int> psTags;
     std::unordered_map<IDirect3DVertexShader9*, uint64_t> vsHashes;
+    NorthlightNativeLocalLight::Probe nativeLocalLightProbe;
     std::unordered_map<IDirect3DVertexShader9*, unsigned> vsMajor; // 0.3.202 (rain mask MRT): the shader model major version from the version token (0 unknown)
     // 0.3.196 (task 12): one-entry per-draw vertex shader classification. vsTags, vsHashes and the world's shader maps change only in
     // CreateVertexShader registration, which bumps vsGeneration first (nothing is ever erased, but a freed address can be registered again).
@@ -1953,8 +1955,23 @@ private:
     // (Lexara, TweakWoW2 with HD Font on) swap the one UI VS the game draws its screen UI and its 3D text with, so the learned VS is the one their names are drawn with; their VS still takes the game's
     // projection in c0..c3, so the c3 test of nameMaskDecide holds as with the stock VS. Before the fallback arms (about 2 s of world frames) their names are not marked, as their effects have not started either.
     bool uiTextVs(IDirect3DVertexShader9* vs,int tag)const{return tag==2||(vs&&uiFallback.armed()&&reinterpret_cast<std::uintptr_t>(vs)==uiFallback.learnedVs());}
+    void observeNativeLocalLights(IDirect3DVertexShader9* vs,const VsClass& vc){
+        if(!sampled()||(!vc.skinned&&vc.family!=3)||!world||world->hasContext())return;
+        const auto hash=vsHashes.find(vs);const auto reads=shaderReads.find(static_cast<void*>(vs));
+        const bool exact=reads!=shaderReads.end()&&reads->second.exact&&reads->second.vertex;
+        const uint16_t used=exact?uint16_t((reads->second.f[0]>>17)&0x7ff):0;
+        NorthlightNativeLocalLight::Sample sample;
+        if(!nativeLocalLightProbe.sample(true,false,true,mirrorState.active(),frame,hash==vsHashes.end()?0:hash->second,
+                mirrorState.vsFloat,mirrorState.vsFloatKnown,used,exact,sample))return;
+        char bank[353];static constexpr char digits[]="0123456789abcdef";
+        for(unsigned i=0;i<44;++i){uint32_t bits;std::memcpy(&bits,&sample.rows[i/4][i%4],4);
+            for(unsigned n=0;n<8;++n)bank[8*i+n]=digits[(bits>>(28-4*n))&15];}bank[352]=0;
+        logf("NATIVE_LOCAL_LIGHT frame=%u draw=%u event=pre-capture contextKnown=0 terrainSeen=%u vs=%016llx shaderReadsExact=%u readRows=%03x knownRows=%03x finiteRows=%03x bank=c17..27 encoding=44-f32-u32hex slotLimit=4 submission=unproven modelIdentity=unknown values=%s",
+            frame,drawCalls-frameStartDrawCalls,unsigned(terrain),(unsigned long long)(hash==vsHashes.end()?0:hash->second),unsigned(exact),unsigned(used),unsigned(sample.known),unsigned(sample.finite),bank);
+    }
     void beforeDraw(IDirect3DVertexShader9* vs) {
         const VsClass& vc=classifyVs(vs); const int entry=vc.entry; int tag=entry&kTagMask;
+        observeNativeLocalLights(vs,vc);
         drawWaterVS=(entry&kWaterTag)!=0;drawUiHashVS=uiTextVs(vs,tag);
         bool wmo=tag!=1&&vc.wmo;if(gateFrame&&wmo)++gateCounts.wmo;
         if(wmo&&projectionValid&&world->hasContext()&&world->hasOriginalFog())return;
