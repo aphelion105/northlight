@@ -18,7 +18,7 @@ helper=helper.replace('struct MaterialCaptureStateTestAccess {','struct Material
 header=fp.src('auto_bump_renderer.h').read_text()
 old=header
 span_begin=header.index('            auto floatConstants=[&]')
-span_end=header.index('            if(needed(previous&&!std::memcmp(previous->vertexInt',span_begin)
+span_end=header.index('            // An omitted bank',span_begin)
 span=header[span_begin:span_end]
 assert 'const bool comparablePixel=' in span and span.count('floatConstants(')==2
 full_constants='''            if(needed(previous&&previous->vertexFirst==packet->vertexFirst&&previous->vertexCount==packet->vertexCount&&!std::memcmp(previous->vertexConstants,packet->vertexConstants,packet->vertexCount*16)))step(d->SetVertexShaderConstantF(packet->vertexFirst,packet->vertexConstants,packet->vertexCount));

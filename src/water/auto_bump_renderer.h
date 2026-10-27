@@ -10,6 +10,7 @@
 #include "native_material_capture_patch.h"
 #include "replay_gpu_cache.h"
 #include "render_thread_probe.h"
+#include "shader_constant_usage.h"
 
 // Prototype: one material-height replay per recognised draw; source textures remain intact.
 // Included after drop and logf. Original resources stay intact; displacement draws use private subdivided buffers.
@@ -34,7 +35,7 @@ class NorthlightAutoBump {
         IDirect3DVertexShader9* vertex=nullptr;IDirect3DPixelShader9* pixel=nullptr;IDirect3DVertexDeclaration9* declaration=nullptr;
         std::shared_ptr<const NorthlightDrawSnapshot::Mesh> mesh;NorthlightAutoNormalCache::Lease normal;
         float vertexConstants[256*4];unsigned vertexFirst=0,vertexCount=256;std::vector<float> pixelConstants;int vertexInt[64],pixelInt[64];BOOL vertexBool[16],pixelBool[16];
-        DWORD states[14],raster[DeferredRasterCount],addressU=0,addressV=0;RECT scissor{};D3DVIEWPORT9 viewport{};unsigned first=0,tag=0,normalStage=14;bool occlusion=false;
+        DWORD states[14],raster[DeferredRasterCount],addressU=0,addressV=0;RECT scissor{};D3DVIEWPORT9 viewport{};unsigned first=0,tag=0,normalStage=14;bool occlusion=false,vertexFloatOnly=false;
         std::vector<std::unique_ptr<DeferredTexture>> textures;
         ~Deferred(){drop(vertex);drop(pixel);drop(declaration);}
     };
@@ -112,7 +113,7 @@ class NorthlightAutoBump {
         }
         void apply(){changed=true;for(unsigned i=0;i<stateCount;++i){auto& s=states[i];if(s.value!=s.replay)d->SetRenderState(s.key,s.replay);}}
     };
-    struct Vertex {IDirect3DVertexShader9* patched=nullptr;unsigned kind=0;IDirect3DVertexShader9* shared=nullptr;bool sharedChecked=false,deferredSafe=false,failed=false,smoothTerrain=false;IDirect3DVertexShader9* pending=nullptr;uint64_t pendingHash=0;unsigned constantFirst=0,constantCount=256;};
+    struct Vertex {IDirect3DVertexShader9* patched=nullptr;unsigned kind=0;IDirect3DVertexShader9* shared=nullptr;bool sharedChecked=false,deferredSafe=false,failed=false,smoothTerrain=false,floatOnly=false;IDirect3DVertexShader9* pending=nullptr;uint64_t pendingHash=0;unsigned constantFirst=0,constantCount=256;};
     bool sharedVertex(Vertex& vertex){if(!vertex.sharedChecked){vertex.sharedChecked=true;vertex.shared=NorthlightSharedPOM::vertexShader(d,vertex.patched);}return vertex.shared!=nullptr;}
     std::unordered_map<IDirect3DVertexShader9*,Vertex> vertices;
     unsigned pendingVertices=0;
@@ -137,6 +138,8 @@ class NorthlightAutoBump {
         if(vertex.smoothTerrain){vertex.constantCount=std::max(3u,vertex.constantFirst+vertex.constantCount);vertex.constantFirst=0;}
         NorthlightDrawSnapshot::Ref<IDirect3DVertexShader9> shader;
         if(FAILED(d->CreateVertexShader(reinterpret_cast<const DWORD*>(patched.data()),shader.out()))||!shader.p)return false;
+        const auto usage=NorthlightShaderConstants::analyze(patched.data(),patched.size(),vertex.kind==1||vertex.kind==3?1:2);
+        vertex.floatOnly=usage.analyzed&&!usage.integers.count&&!usage.booleans.count;
         NorthlightWaterShaderPatch::Analysis analysis;if(!NorthlightWaterShaderPatch::analyse(reinterpret_cast<const uint32_t*>(code),count,analysis))vertex.deferredSafe=analysis.used[10]==0;
         displacement.registerMaterial(original,code,count,vertex.kind);displacement.registerVariant(shader.p,reinterpret_cast<const DWORD*>(patched.data()),patched.size(),displacement.skinned(original));
         vertex.patched=shader.p;shader.p=nullptr;return true;
@@ -249,12 +252,12 @@ class NorthlightAutoBump {
             DWORD planes=0;if(FAILED(d->GetRenderState(D3DRS_CLIPPLANEENABLE,&planes))||planes)return false;
             const size_t cost=sizeof(Deferred)+mesh->byteSize()+(model.last-model.first+1)*16+textures.size()*(sizeof(DeferredTexture)+sizeof(void*));if(deferredBytes>=deferredByteLimit||cost>deferredByteLimit-deferredBytes){++batchLimit;return false;}
             auto packet=std::make_unique<Deferred>();packet->mesh=mesh;packet->tag=profileTag;packet->occlusion=auxiliary;
-            packet->declaration=decl.p;decl.p=nullptr;packet->pixel=model.shader;packet->pixel->AddRef();packet->vertex=vertex.patched;packet->vertex->AddRef();packet->vertexFirst=vertex.constantFirst;packet->vertexCount=vertex.constantCount;
+            packet->declaration=decl.p;decl.p=nullptr;packet->pixel=model.shader;packet->pixel->AddRef();packet->vertex=vertex.patched;packet->vertex->AddRef();packet->vertexFirst=vertex.constantFirst;packet->vertexCount=vertex.constantCount;packet->vertexFloatOnly=vertex.floatOnly;
             packet->first=model.first;packet->pixelConstants.resize((model.last-model.first+1)*4);packet->viewport=saved.viewport;packet->addressU=addressU;packet->addressV=addressV;packet->normalStage=saved.normalStage;
             for(unsigned i=0;i<14;++i)packet->states[i]=saved.states[i].replay;
             for(unsigned i=0;i<DeferredRasterCount;++i)if(FAILED(d->GetRenderState(deferredRasterKeys[i],packet->raster+i)))return false;
             if(FAILED(d->GetScissorRect(&packet->scissor))||FAILED(d->GetVertexShaderConstantF(packet->vertexFirst,packet->vertexConstants,packet->vertexCount))||FAILED(d->GetPixelShaderConstantF(packet->first,packet->pixelConstants.data(),UINT(packet->pixelConstants.size()/4)))||
-               FAILED(d->GetVertexShaderConstantI(0,packet->vertexInt,16))||FAILED(d->GetPixelShaderConstantI(0,packet->pixelInt,16))||FAILED(d->GetVertexShaderConstantB(0,packet->vertexBool,16))||FAILED(d->GetPixelShaderConstantB(0,packet->pixelBool,16)))return false;
+               (!packet->vertexFloatOnly&&FAILED(d->GetVertexShaderConstantI(0,packet->vertexInt,16)))||FAILED(d->GetPixelShaderConstantI(0,packet->pixelInt,16))||(!packet->vertexFloatOnly&&FAILED(d->GetVertexShaderConstantB(0,packet->vertexBool,16)))||FAILED(d->GetPixelShaderConstantB(0,packet->pixelBool,16)))return false;
             std::copy(captureConstants,captureConstants+saved.constantCount*4,packet->pixelConstants.begin()+(model.constant-packet->first)*4);
             packet->textures=std::move(textures);void* inserted[16]={};unsigned insertedCount=0;
             try{
@@ -345,9 +348,10 @@ public:
             floatConstants(true,packet->vertexFirst,packet->vertexConstants,comparableVertex?previous->vertexConstants:nullptr,packet->vertexCount,comparableVertex);
             const bool comparablePixel=previous&&previous->first==packet->first&&previous->pixelConstants.size()==packet->pixelConstants.size();
             floatConstants(false,packet->first,packet->pixelConstants.data(),comparablePixel?previous->pixelConstants.data():nullptr,UINT(packet->pixelConstants.size()/4),comparablePixel);
-            if(needed(previous&&!std::memcmp(previous->vertexInt,packet->vertexInt,sizeof(packet->vertexInt))))step(d->SetVertexShaderConstantI(0,packet->vertexInt,16));
+            // An omitted bank has no captured bytes and cannot certify the next packet.
+            if(!packet->vertexFloatOnly&&needed(previous&&!previous->vertexFloatOnly&&!std::memcmp(previous->vertexInt,packet->vertexInt,sizeof(packet->vertexInt))))step(d->SetVertexShaderConstantI(0,packet->vertexInt,16));
             if(needed(previous&&!std::memcmp(previous->pixelInt,packet->pixelInt,sizeof(packet->pixelInt))))step(d->SetPixelShaderConstantI(0,packet->pixelInt,16));
-            if(needed(previous&&!std::memcmp(previous->vertexBool,packet->vertexBool,sizeof(packet->vertexBool))))step(d->SetVertexShaderConstantB(0,packet->vertexBool,16));
+            if(!packet->vertexFloatOnly&&needed(previous&&!previous->vertexFloatOnly&&!std::memcmp(previous->vertexBool,packet->vertexBool,sizeof(packet->vertexBool))))step(d->SetVertexShaderConstantB(0,packet->vertexBool,16));
             if(needed(previous&&!std::memcmp(previous->pixelBool,packet->pixelBool,sizeof(packet->pixelBool))))step(d->SetPixelShaderConstantB(0,packet->pixelBool,16));
             // A render-target bind may reset the viewport. Elide MRT1 only
             // when that reset is equivalent to the captured full-size viewport.

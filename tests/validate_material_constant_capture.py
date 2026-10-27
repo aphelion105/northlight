@@ -18,6 +18,9 @@ p.add_argument('--fixture-root', required=True, type=Path, help='Prepared terrai
 p.add_argument('--backend', required=True, type=Path)
 p.add_argument('--output', required=True, type=Path)
 p.add_argument('--pairs', type=int, default=3)
+p.add_argument('--fixture', choices=('terrain', 'wall', 'model-3-weighted4'))
+p.add_argument('--msaa', type=int, choices=(0, 2))
+p.add_argument('--scenario', choices=('stable', 'pose', 'mutation'))
 a = p.parse_args()
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
@@ -60,8 +63,10 @@ input_hashes = {str(f.relative_to(inputs)): sha(f) for f in inputs.rglob('*') if
 records = []
 comparisons = 0
 for name, family in (('terrain', None), ('wall', 'wall'), ('model-3-weighted4', 'model4')):
-    for msaa in (0, 2):
-        for scenario in ('stable', 'pose', 'mutation'):
+    if a.fixture and name != a.fixture:
+        continue
+    for msaa in ((a.msaa,) if a.msaa is not None else (0, 2)):
+        for scenario in ((a.scenario,) if a.scenario else ('stable', 'pose', 'mutation')):
             for pair in range(a.pairs):
                 folders = {}
                 for label in (('old', 'new') if pair % 2 == 0 else ('new', 'old')):
@@ -79,8 +84,11 @@ for name, family in (('terrain', None), ('wall', 'wall'), ('model-3-weighted4', 
                     assert 'MATERIAL_DEFERRED_BENCH' in result.stdout
                     timing = re.search(r'MATERIAL_BATCH_TIMING .*gpuMs=([\d.]+) submitMs=([\d.]+)', result.stdout)
                     counts = re.search(r'MATERIAL_CONSTANT_CAPTURE readRegisters=(\d+) writtenRegisters=(\d+)', result.stdout)
+                    auxiliary = re.search(r'readInt=(\d+) readBool=(\d+) writtenInt=(\d+) writtenBool=(\d+)', result.stdout)
                     assert timing and counts
                     record = dict(fixture=name, msaa=msaa, scenario=scenario, pair=pair, label=label, gpu_ms=float(timing[1]), cpu_ms=float(timing[2]), read_registers=int(counts[1]), written_registers=int(counts[2]))
+                    if auxiliary:
+                        record.update(zip(('read_int', 'read_bool', 'written_int', 'written_bool'), map(int, auxiliary.groups())))
                     records.append(record)
                     print(json.dumps(record), flush=True)
                 old = {f.name: f for f in folders['old'].glob('*.fgr') if not f.name.startswith('source.')}
