@@ -75,5 +75,5 @@ int main(int argc,char** argv){
   const size_t framePixels=96*96*4;assert(!std::equal(old.pixels.begin(),old.pixels.begin()+framePixels,old.pixels.begin()+framePixels));
   std::printf("SHARED_GPU_NATIVE_EXACT msaa=%u pixels=%zu uploads=%zu->%zu peak=%zu->%zu sharedDraws=%zu\n",samples,next.pixels.size(),old.uploads,next.uploads,old.peak,next.peak,next.shared);
  }
- ok(d->SetVertexShader(nullptr));ok(d->SetPixelShader(nullptr));ok(d->SetVertexDeclaration(nullptr));drop(vs);drop(ps);drop(decl);drop(d);drop(api);FreeLibrary(module);DestroyWindow(window);std::puts("SHARED_GPU_NATIVE_PASS");
+ ok(d->SetVertexShader(nullptr));ok(d->SetPixelShader(nullptr));ok(d->SetVertexDeclaration(nullptr));drop(vs);drop(ps);drop(decl);drop(d);drop(api);FreeLibrary(module);DestroyWindow(window);std::puts("SHARED_GPU_NATIVE_PASS");return 0;
 }

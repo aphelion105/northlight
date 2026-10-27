@@ -5,6 +5,31 @@
 #include <cassert>
 #include <fstream>
 struct WorldScreenEffectsTest {
+    static void sceneOwnership(WorldRenderer& w,IDirect3DDevice9* d){
+        auto scene=w.gpuScene;const auto originalLimit=w.captureSources().sharedSourceLimit();
+        assert(scene->device==d&&scene->decodedSources&&scene->captureSources==w.captureSources().sharedSources());
+        assert(&w.staticCasters==&scene->staticCasters&&&w.meshStore==&scene->meshStore&&&w.meshBuffers==&scene->meshBuffers&&&w.liveTerrainGPU==&scene->terrain&&&w.terrainBoundsCache==&scene->terrainSources);
+        struct Views {IDirect3DVertexBuffer9* vb[4]={};IDirect3DIndexBuffer9* ib=nullptr;NorthlightReplayGPU::Placement at;~Views(){for(auto& p:vb)drop(p);drop(ib);}} material,shadow;
+        auto mesh=std::make_shared<NorthlightDrawSnapshot::Mesh>();mesh->streams[0].stride=12;mesh->streams[0].bytes.resize(36);mesh->indices={0,1,2};mesh->vertexCount=3;mesh->primitiveCount=1;
+        mesh->sourceIdentity=NorthlightSourceIdentity::make({0x7363656e65,1});const auto bytes=mesh->byteSize();
+        auto admit=[](size_t){return true;};
+        {
+            NorthlightAutoBump materials(d,scene);
+            assert(scene->normalMaps&&scene->displacement&&materials.captureSources().sharedSources()==scene->captureSources);
+            assert(materials.captureSources().sharedSourceParticipants()==3&&materials.captureSources().sharedSourceLimit()==originalLimit+(48u<<20));
+            scene->setFrame(20);assert(!scene->materials.bind(d,mesh,material.vb,material.ib,admit,material.at));
+            scene->setFrame(21);assert(!scene->materials.bind(d,mesh,material.vb,material.ib,admit,material.at));assert(scene->materials.commitPending());
+            assert(scene->materials.bind(d,mesh,material.vb,material.ib,admit,material.at)&&scene->shadows.bind(d,mesh,shadow.vb,shadow.ib,admit,shadow.at));
+            assert(scene->native.bytes()==bytes&&material.vb[0]==shadow.vb[0]&&material.ib==shadow.ib);
+            materials.reset();assert(!scene->materials.bytes()&&scene->shadows.bytes()==bytes&&scene->native.bytes()==bytes);
+            auto reconstructed=std::make_shared<NorthlightDrawSnapshot::Mesh>(*mesh);mesh.reset();
+            assert(scene->shadows.bind(d,reconstructed,shadow.vb,shadow.ib,admit,shadow.at)&&shadow.vb[0]==material.vb[0]);
+        }
+        assert(w.captureSources().sharedSourceLimit()==originalLimit&&w.captureSources().sharedSourceParticipants()==1);
+        assert(scene->native.bytes()==bytes);scene->shadows.clear();assert(!scene->native.bytes()&&!scene->native.chargedBytes());
+        bool rejected=false;try{NorthlightGpuScene::forDevice(reinterpret_cast<IDirect3DDevice9*>(uintptr_t(1)),scene);}catch(const std::invalid_argument&){rejected=true;}assert(rejected);
+        std::puts("GPU_SCENE_OWNERSHIP_PASS actual_world_materials_displacement one_source_bank unchanged_caps one_upload consumer_reset reconstructed_source typed_views foreign_device_rejected");
+    }
     static void setup(WorldRenderer& w,unsigned width,unsigned height){
         assert(w.resources(width,height,D3DFMT_A16B16G16R16F));
         assert(!w.color&&!w.colorSurface); // No consumer has requested full-size scratch.
@@ -118,7 +143,7 @@ int main(int argc,char** argv){
     std::vector<float> images[4];
     {
         WorldScratchMeter meter(d,W,H);
-        auto world=std::make_unique<WorldRenderer>(&meter);WorldScreenEffectsTest::setup(*world,W,H);WorldScreenEffectsTest::consumers(*world);
+        auto world=std::make_unique<WorldRenderer>(&meter);WorldScreenEffectsTest::sceneOwnership(*world,&meter);WorldScreenEffectsTest::setup(*world,W,H);WorldScreenEffectsTest::consumers(*world);
         for(unsigned mode=0;mode<4;++mode){
             WorldScreenEffectsTest::fog(*world,mode>=2);world->setMaterialDetail(mode&1?detail:nullptr,1,48,nullptr,8);
             screenOk(d->SetRenderTarget(0,out));screenOk(d->SetDepthStencilSurface(nullptr));screenOk(d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE));

@@ -46,7 +46,7 @@ def body(name):
     for k in range(i,len(s)):
         depth+=(s[k]=='{')-(s[k]=='}')
         if depth==0:return s[i:k+1]
-functions={n:body(n) for n in ('evictOldest','serve','store','clearSnapshotCache','dropPrediction','shareSnapshotPool')}
+functions={n:body(n) for n in ('evictOldest','serve','store','clearSnapshotCache','dropPrediction','joinSnapshotPool')}
 def enclosing(pos):
     return next((n for n,b in functions.items() if b and s.find(b)<=pos<s.find(b)+len(b)),None)
 erasers=[enclosing(m.start()) for m in re.finditer(r'sources_->entries\.(erase|clear)\(',s)]
@@ -56,7 +56,7 @@ checks={
  'every source-pool erase/clear is in evictOldest, serve, store or clearSnapshotCache, and each resets local prediction':
    sorted(set(erasers))==['clearSnapshotCache','evictOldest','serve','store'] and all('dropPrediction(Erase::' in functions[n] for n in set(erasers))
    and s.count('dropPrediction(Erase::')==4,
- 'predicted_ is assigned only in serve, dropPrediction and empty-group joining':all(enclosing(m.start()) in ('serve','dropPrediction','shareSnapshotPool') for m in re.finditer(r'(?<!CacheEntry\* )\bpredicted_=',s)) and s.count('CacheEntry* predicted_=nullptr;')==1,
+ 'predicted_ is assigned only in serve, dropPrediction and empty-group joining':all(enclosing(m.start()) in ('serve','dropPrediction','joinSnapshotPool') for m in re.finditer(r'(?<!CacheEntry\* )\bpredicted_=',s)) and s.count('CacheEntry* predicted_=nullptr;')==1,
  'cross-consumer invalidation checks group generation before predicted dereference':'if(!NORTHLIGHT_SNAPSHOT_COUNTERFACTUAL&&predictionGeneration_!=sources_->generation){predicted_=nullptr;predictionGeneration_=sources_->generation;}' in functions['serve'],
  'prediction on tracked keys only (the revalidation branch stays on the map path)':'if(lookup_!=Lookup::Map&&(key.tracked||NORTHLIGHT_SNAPSHOT_COUNTERFACTUAL==6)&&predicted_)' in functions['serve'],
  'CacheKey == has no memcmp':'memcmp' not in key and 'diff|=x^y' in key,

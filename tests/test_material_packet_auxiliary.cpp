@@ -71,7 +71,7 @@ void MaterialCaptureStateTestAccess::packetAuxiliary(){
                 assert(!d.failedGetter);
             }
             // Alternate actual resident and UP packets to invalidate replay assumptions.
-            if(mixed){for(unsigned phase=0;phase<2;++phase){b.deferredGPU.beginFrame();for(size_t i=0;i<b.deferred.size();i+=2){IDirect3DVertexBuffer9* vb[4]={};IDirect3DIndexBuffer9* ib=nullptr;NorthlightReplayGPU::createBudgetMs()=1e9;(void)b.deferredGPU.bind(&d,b.deferred[i]->mesh,vb,ib,[](size_t){return true;});for(auto*& v:vb)drop(v);drop(ib);}}}
+            if(mixed){for(unsigned phase=0;phase<2;++phase){b.deferredGPU.beginFrame();for(size_t i=0;i<b.deferred.size();i+=2){IDirect3DVertexBuffer9* vb[4]={};IDirect3DIndexBuffer9* ib=nullptr;NorthlightReplayGPU::createBudgetMs()=1e9;(void)([&]{NorthlightReplayGPU::Placement at;const bool ready=b.deferredGPU.bind(&d,b.deferred[i]->mesh,vb,ib,[](size_t){return true;},at);b.deferredGPU.commitPending();return ready||(b.deferredGPU.resident(b.deferred[i]->mesh)&&b.deferredGPU.bind(&d,b.deferred[i]->mesh,vb,ib,[](size_t){return true;},at));}());for(auto*& v:vb)drop(v);drop(ib);}}}
             const auto initial=d.state;d.failedSetter=failure==3?1:failure==4?2:0;success=b.finishCaptures();
             assert(success==(failure<3)&&!d.failedSetter&&b.deferred.empty()&&d.state==initial);
             if(success){assert(d.draws.size()==queued);if(mixed)assert(b.residentDraws&&b.uploadDraws);}else assert(b.failed&&b.deferredDiscarded==queued);

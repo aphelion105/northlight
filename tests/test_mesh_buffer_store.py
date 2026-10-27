@@ -22,7 +22,8 @@ with tempfile.TemporaryDirectory(prefix='mesh-buffer-store-') as temp:
 w = fp.src('world_renderer.h').read_text()
 for gone in ('meshPool[', 'activeMesh', 'stagingSlot', 'vbCapacity=0,ibCapacity=0;};'):
     assert gone not in w, gone
-assert '#include "mesh_buffer_store.h"' in w and 'NorthlightMeshBufferStore::Store meshStore;' in w
+assert '#include "mesh_buffer_store.h"' in w and 'NorthlightMeshBufferStore::Store& meshStore=gpuScene->meshStore;' in w
+assert 'NorthlightMeshBufferStore::Store meshStore;' in fp.src('gpu_scene.h').read_text()
 acquire = w[w.index('bool acquireMeshPage(uint32_t id'):w.index('void releaseMeshPool()')]
 assert 'if(!meshStore.writable(id)||id>=meshBuffers.size())return false;' in acquire and acquire.index('writable(id)') < acquire.index('Create')
 bind = w[w.index('bool bindMeshPage('):w.index('std::vector<Batch> batches;')]

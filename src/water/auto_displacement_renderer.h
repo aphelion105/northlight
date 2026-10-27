@@ -1,5 +1,6 @@
 #pragma once
 #include "material_profile.h"
+#include "gpu_scene.h"
 #include "render_thread_probe.h"
 #include "draw_snapshot.h"
 #include "displacement_geometry.h"
@@ -17,6 +18,24 @@
 #include <map>
 #include <cfloat>
 
+struct NorthlightDisplacementStorage {
+    using Mesh=NorthlightDrawSnapshot::Mesh;using Height=NorthlightDisplacementGeometry::Height;
+    struct Texture {IDirect3DTexture9* source=nullptr,*gpu=nullptr;Height height;uint64_t used=0,version=0;bool model=false;};
+    struct Entry {
+        std::shared_ptr<const Mesh> source;IDirect3DTexture9* texture=nullptr,*texture1=nullptr,*height=nullptr;
+        IDirect3DVertexBuffer9* vb=nullptr;IDirect3DIndexBuffer9* ib=nullptr;IDirect3DVertexDeclaration9* decl=nullptr,*sourceDecl=nullptr;
+        std::vector<float> uvConstants;unsigned vertices=0,primitives=0,stride=0,detail=0,address=0,domain=0,material=0;size_t bytes=0;uint64_t used=0,program=0,baseFrame=0,heightVersion=0,heightVersion1=0,order=0,fingerprint=0,materialFingerprint=0;
+        ~Entry(){drop(texture);drop(texture1);drop(height);drop(vb);drop(ib);drop(decl);drop(sourceDecl);}
+    };
+    std::vector<Texture> textures;
+    std::vector<std::unique_ptr<Entry>> entries;
+    std::unordered_multimap<const Mesh*,Entry*> sourceLookup;
+    std::multimap<uint64_t,Entry*> contentLookup;
+    std::unordered_multimap<uint64_t,Entry*> materialLookup;
+    bool indexedEntries=true;uint64_t entrySerial=0;size_t resident=0;
+    ~NorthlightDisplacementStorage(){for(auto& t:textures){drop(t.gpu);drop(t.source);}}
+};
+
 class NorthlightAutoDisplacement {
     NorthlightMaterialProfile* profile=nullptr;
     friend struct DisplacementStateTestAccess;
@@ -27,13 +46,9 @@ class NorthlightAutoDisplacement {
     struct Material {Program uv,view,uv1,blend;std::vector<unsigned> uvRegisters[2];bool layered=false,skinned=false;uint64_t id=0;unsigned first=0,count=0,influences=0;};
     struct Bounds {std::weak_ptr<const Mesh> source;float low[3],high[3];uint64_t used=0;size_t bytes=0;std::unique_ptr<NorthlightReplayBounds::SkinEnvelope> skin;
         const Mesh* key=nullptr;NorthlightIntrusiveLRU::Links<Bounds> lru;};
-    struct Texture {IDirect3DTexture9* source=nullptr,*gpu=nullptr;Height height;uint64_t used=0,version=0;bool model=false;};
-    struct Entry {
-        std::shared_ptr<const Mesh> source;IDirect3DTexture9* texture=nullptr,*texture1=nullptr,*height=nullptr;
-        IDirect3DVertexBuffer9* vb=nullptr;IDirect3DIndexBuffer9* ib=nullptr;IDirect3DVertexDeclaration9* decl=nullptr,*sourceDecl=nullptr;
-        std::vector<float> uvConstants;unsigned vertices=0,primitives=0,stride=0,detail=0,address=0,domain=0,material=0;size_t bytes=0;uint64_t used=0,program=0,baseFrame=0,heightVersion=0,heightVersion1=0,order=0,fingerprint=0,materialFingerprint=0;
-        ~Entry(){drop(texture);drop(texture1);drop(height);drop(vb);drop(ib);drop(decl);drop(sourceDecl);}
-    };
+    using Texture=NorthlightDisplacementStorage::Texture;using Entry=NorthlightDisplacementStorage::Entry;
+    std::shared_ptr<NorthlightGpuScene::Scene> gpuScene;
+    NorthlightDisplacementStorage& geometry;
     IDirect3DDevice9* d;
     NorthlightDrawSnapshot::Frame snapshots{2u<<20,0};
     NorthlightDrawSnapshot::Frame rangeSnapshots{512u<<10,0},skinRangeSnapshots{256u<<10,0};
@@ -57,18 +72,18 @@ class NorthlightAutoDisplacement {
     bool readConstants(unsigned first,unsigned count,bool skinned){return readConstantBank(first,count,skinned,constants,constantStamp);}
     std::unordered_map<IDirect3DVertexShader9*,Shader> shaders;
     std::unordered_map<IDirect3DVertexShader9*,Material> materials;
-    std::vector<Texture> textures;
+    std::vector<Texture>& textures=geometry.textures;
     std::unordered_map<const Mesh*,Bounds> bounds;
     NorthlightIntrusiveLRU::List<Bounds> boundsLRU;
     NorthlightReplayBounds::EnvelopeCache poseEnvelopes;
     NorthlightReplayMetadata::Cache<NorthlightReplayBounds::Prepared,IDirect3DVertexShader9,IDirect3DVertexDeclaration9> poseMetadata;
     NorthlightReplayBounds::Budget envelopeBudget;
     NorthlightActorDeformation::PreparedBindingCache poseBindings;
-    std::vector<std::unique_ptr<Entry>> entries;
-    std::unordered_multimap<const Mesh*,Entry*> sourceLookup;
-    std::multimap<uint64_t,Entry*> contentLookup;
-    std::unordered_multimap<uint64_t,Entry*> materialLookup;
-    bool indexedEntries=true;uint64_t entrySerial=0;
+    std::vector<std::unique_ptr<Entry>>& entries=geometry.entries;
+    std::unordered_multimap<const Mesh*,Entry*>& sourceLookup=geometry.sourceLookup;
+    std::multimap<uint64_t,Entry*>& contentLookup=geometry.contentLookup;
+    std::unordered_multimap<uint64_t,Entry*>& materialLookup=geometry.materialLookup;
+    bool& indexedEntries=geometry.indexedEntries;uint64_t& entrySerial=geometry.entrySerial;
     std::vector<float> uvScratch;
     Entry* current=nullptr;float controls[5][4]={},lastDepthLower=0;
     bool gpuHeightChecked=false,gpuHeightSupported=false;uint64_t gpuDraws=0;
@@ -98,7 +113,7 @@ class NorthlightAutoDisplacement {
         return shader.patched!=nullptr;
     }
     float strength=.12f,range=12,worldStrength=.12f,worldRange=12,modelStrength=.03f,modelRange=8;unsigned worldDetail=4,modelDetail=2,polarity=0,heightDetails=75,heightBalance=50;unsigned detail=4,buildsThisFrame=0,readsThisFrame=0,poseVerticesThisFrame=0;
-    size_t resident=0,boundsBytes=0,cacheBudget=64u<<20;uint64_t clock=0,materialClock=0,builds=0,hits=0,draws=0,triangles=0,refused=0;unsigned frames=0,domainDraws[4]={},stateRejected=0,heightRejected=0,shaderRejected=0,meshRejected=0,snapshotRejected=0;bool userDraw=false,indexedUserDraw=false;
+    size_t& resident=geometry.resident;size_t boundsBytes=0,cacheBudget=64u<<20;uint64_t clock=0,materialClock=0,builds=0,hits=0,draws=0,triangles=0,refused=0;unsigned frames=0,domainDraws[4]={},stateRejected=0,heightRejected=0,shaderRejected=0,meshRejected=0,snapshotRejected=0;bool userDraw=false,indexedUserDraw=false;
     uint64_t snapshotAttempts=0,snapshotUP=0;std::array<uint64_t,size_t(NorthlightDrawSnapshot::Error::Unlock)+1> snapshotReasons{};
     uint64_t distanceRejected=0,poseBudgetRejected=0,poseEnvelopeHits=0,poseFallbackVertices=0,objectBoundsVertices=0,boundsHits=0,boundsMisses=0,primitiveRejected=0,sourceAliases=0;
     unsigned poseKernelVertices[4]={}; // Completed fallback vertices, by evaluator (not budget refusals).
@@ -271,7 +286,7 @@ class NorthlightAutoDisplacement {
 public:
     void setProfiler(NorthlightMaterialProfile* p){profile=p;}
     struct Args {NorthlightDrawSnapshot::Draw draw;const void* indices=nullptr;D3DFORMAT format=D3DFMT_UNKNOWN;const void* vertices=nullptr;UINT stride=0;};
-    explicit NorthlightAutoDisplacement(IDirect3DDevice9* device):d(device){textures.reserve(32);snapshots.setSnapshotCacheLimit(24u<<20);rangeSnapshots.setSnapshotCacheLimit(4u<<20);skinRangeSnapshots.setSnapshotCacheLimit(4u<<20);
+    explicit NorthlightAutoDisplacement(IDirect3DDevice9* device,std::shared_ptr<NorthlightGpuScene::Scene> scene={}):gpuScene(NorthlightGpuScene::forDevice(device,std::move(scene))),geometry(*(gpuScene->displacement?gpuScene->displacement:(gpuScene->displacement=std::make_shared<NorthlightDisplacementStorage>()))),d(device){if(!gpuScene->attach(snapshots))throw std::runtime_error("Cannot join displacement capture sources");textures.reserve(32);snapshots.setSnapshotCacheLimit(24u<<20);rangeSnapshots.setSnapshotCacheLimit(4u<<20);skinRangeSnapshots.setSnapshotCacheLimit(4u<<20);
         // Optional range admission must never consume displacement's read budget.
         for(auto* frame:{&snapshots,&rangeSnapshots,&skinRangeSnapshots}){frame->setChargeResidentHits(false);
             frame->setDeclarationProvider(&declarations,[](void* c,IDirect3DVertexDeclaration9* decl,const D3DVERTEXELEMENT9*& e,UINT& n){return static_cast<NorthlightVertexDeclarations::Cache*>(c)->get(decl,e,n);});

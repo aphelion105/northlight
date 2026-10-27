@@ -19,7 +19,8 @@ frame_start=w.index('void endFrame(')
 frame_prefix=w[frame_start:w.index('frameFence.endFrame();',frame_start)]
 checks={
  'live terrain uses lossless20B caster vertices and a dedicated declaration in both consumers':
-    'NorthlightLiveTerrainGPU::Cache<NorthlightTerrainCapture::MeshSnapshot,StaticShadow::Vertex> liveTerrainGPU;' in w
+    'NorthlightLiveTerrainGPU::Cache<NorthlightTerrainCapture::MeshSnapshot,StaticShadow::Vertex>& liveTerrainGPU=gpuScene->terrain;' in w
+    and 'NorthlightLiveTerrainGPU::Cache<NorthlightTerrainCapture::MeshSnapshot,StaticShadow::Vertex> terrain;' in fp.src('gpu_scene.h').read_text()
     and 'return StaticShadow::Vertex{p.x,p.y,p.z,0,0};' in up
     and 'CreateVertexDeclaration(liveElements,&liveTerrainDecl)' in w
     and 'drop(liveTerrainDecl);' in release

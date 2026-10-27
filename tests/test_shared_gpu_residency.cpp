@@ -113,4 +113,5 @@ int main(int argc,char** argv){
   else assert(!next.borrowed&&next.uploaded==old.uploaded&&next.peak==old.peak&&next.creates==old.creates&&next.up==old.up);
   std::printf("SHARED_GPU_EXACT_PASS overlap=%u meshes=%zu uploads=%zu->%zu fallback=%zu->%zu peak=%zu->%zu creates=%u->%u shared=%zu digest=%llu\n",overlap,meshes.size(),old.uploaded,next.uploaded,old.up,next.up,old.peak,next.peak,old.creates,next.creates,next.borrowed,(unsigned long long)next.digest);
  }
+ return 0;
 }

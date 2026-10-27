@@ -8,7 +8,7 @@
 #include "auto_parallax_renderer.h"
 #include "auto_displacement_renderer.h"
 #include "native_material_capture_patch.h"
-#include "replay_gpu_cache.h"
+#include "gpu_scene.h"
 #include "render_thread_probe.h"
 #include "shader_constant_usage.h"
 
@@ -17,9 +17,10 @@
 class NorthlightAutoBump {
     friend struct MaterialCaptureStateTestAccess;
     friend struct ShaderOptMaterialVariantTestAccess;
+    std::shared_ptr<NorthlightGpuScene::Scene> gpuScene;
     IDirect3DDevice9* d;
     NorthlightMaterialProfile* profile=nullptr;unsigned profileTag=0,profilePrimitives=0;uint64_t profileConfigFrame=~uint64_t(0);
-    NorthlightAutoNormalCache normals;
+    NorthlightAutoNormalCache& normals;
     NorthlightSharedPOM sharedPOM;
     NorthlightAutoNormalCache::Lease sharedMaps[2];
     NorthlightAutoParallax parallax;
@@ -37,14 +38,13 @@ class NorthlightAutoBump {
         float vertexConstants[256*4];unsigned vertexFirst=0,vertexCount=256;std::vector<float> pixelConstants;int vertexInt[64],pixelInt[64];BOOL vertexBool[16],pixelBool[16];
         DWORD states[14],raster[DeferredRasterCount],addressU=0,addressV=0;RECT scissor{};D3DVIEWPORT9 viewport{};unsigned first=0,tag=0,normalStage=14;bool occlusion=false,vertexFloatOnly=false;
         std::vector<std::unique_ptr<DeferredTexture>> textures;
-        ~Deferred(){drop(vertex);drop(pixel);drop(declaration);}
+        IDirect3DVertexBuffer9* gpuVertex[4]={};IDirect3DIndexBuffer9* gpuIndex=nullptr;NorthlightReplayGPU::Placement placement;bool resident=false;
+        ~Deferred(){for(auto& vb:gpuVertex)drop(vb);drop(gpuIndex);drop(vertex);drop(pixel);drop(declaration);}
     };
     const D3DRENDERSTATETYPE deferredRasterKeys[DeferredRasterCount]={D3DRS_CULLMODE,D3DRS_ZENABLE,D3DRS_ZFUNC,D3DRS_DEPTHBIAS,D3DRS_SLOPESCALEDEPTHBIAS,D3DRS_SCISSORTESTENABLE,D3DRS_MULTISAMPLEANTIALIAS,D3DRS_MULTISAMPLEMASK,D3DRS_CLIPPING,D3DRS_DITHERENABLE,D3DRS_WRAP0,D3DRS_WRAP7,D3DRS_SHADEMODE,D3DRS_FILLMODE,D3DRS_LASTPIXEL,D3DRS_ANTIALIASEDLINEENABLE,D3DRS_WRAP1,D3DRS_WRAP2,D3DRS_WRAP3,D3DRS_WRAP4,D3DRS_WRAP5,D3DRS_WRAP6,D3DRS_WRAP8,D3DRS_WRAP9,D3DRS_WRAP10,D3DRS_WRAP11,D3DRS_WRAP12,D3DRS_WRAP13,D3DRS_WRAP14,D3DRS_WRAP15};
     NorthlightDrawSnapshot::Frame deferredSnapshots{2u<<20,0};
     NorthlightVertexDeclarations::Cache deferredDeclarations;
-    NorthlightReplayGPU::Cache deferredGPU;
-    NorthlightReplayGPU::ResidentSource sharedGeometry;
-    unsigned sharedGeometryCandidates=0,sharedGeometryHits=0;size_t sharedGeometryBytes=0;
+    NorthlightGpuScene::NativeClient& deferredGPU=gpuScene->materials;
     unsigned residentDraws=0,uploadDraws=0;uint64_t uploadDrawBytes=0;
     unsigned replaySetters=0,replaySkipped=0;
     std::vector<std::unique_ptr<Deferred>> deferred;size_t deferredBytes=0;bool deferredAllowed=false;
@@ -184,13 +184,13 @@ class NorthlightAutoBump {
             }}
         auto added=variants.emplace(source,entry).first;cold.modelBuilt+=entry.shader!=nullptr;if(!entry.shader)logf("MATERIAL_MODEL capture unavailable; native material retained");return entry.shader?&added->second:nullptr;
     }
-    IDirect3DTexture9* height=nullptr;
-    IDirect3DSurface9* target=nullptr;
+    IDirect3DTexture9*& height=gpuScene->materialTargets.height;
+    IDirect3DSurface9*& target=gpuScene->materialTargets.target;
     // The composite validates the captured linear depth against final scene depth.
     // A private 1x depth lets the replay shade MSAA scenes without 2/4/8 copies
     // of the full-screen normal/occlusion targets or a resolve after every draw.
-    IDirect3DSurface9* captureDepth=nullptr;
-    IDirect3DTexture9* occlusionMap=nullptr;IDirect3DSurface9* occlusionTarget=nullptr;
+    IDirect3DSurface9*& captureDepth=gpuScene->materialTargets.depth;
+    IDirect3DTexture9*& occlusionMap=gpuScene->materialTargets.occlusion;IDirect3DSurface9*& occlusionTarget=gpuScene->materialTargets.occlusionTarget;
     bool occlusionUnavailable=false;unsigned occlusionRetry=0;
     float occlusionControl[4]={.7f,8,.35f,0},occlusionLight[4]={};
     UINT width=0,heightPixels=0;
@@ -271,9 +271,8 @@ class NorthlightAutoBump {
     }
 public:
     NorthlightDrawSnapshot::Frame& captureSources(){return deferredSnapshots;}
-    NorthlightReplayGPU::ResidentSource residentGeometry(){return NorthlightReplayGPU::residentSource(deferredGPU);}
-    void setSharedGeometry(NorthlightReplayGPU::ResidentSource source){sharedGeometry=source;}
-    explicit NorthlightAutoBump(IDirect3DDevice9* device):d(device),normals(device),sharedPOM(device),parallax(device,normals),displacement(device){
+    explicit NorthlightAutoBump(IDirect3DDevice9* device,std::shared_ptr<NorthlightGpuScene::Scene> scene={}):gpuScene(NorthlightGpuScene::forDevice(device,std::move(scene))),d(device),normals(*(gpuScene->normalMaps?gpuScene->normalMaps:(gpuScene->normalMaps=std::make_shared<NorthlightAutoNormalCache>(device)))),sharedPOM(device),parallax(device,normals),displacement(device,gpuScene){
+        if(!gpuScene->attach(deferredSnapshots))throw std::runtime_error("Cannot join material capture sources");
         deferredGPU.setLimit(32u<<20);
         deferredSnapshots.setSnapshotCacheLimit(24u<<20);deferredSnapshots.setChargeResidentHits(false);deferredSnapshots.setReplayContentReuse(true);
         displacement.shareCaptureSources(deferredSnapshots);
@@ -303,8 +302,11 @@ public:
             if(FAILED(d->SetRenderTarget(0,occlusionTarget))||FAILED(d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0))||FAILED(d->SetRenderTarget(0,target)))return false;
             occlusionCleared=true;
         }
-        struct Bindings {IDirect3DVertexBuffer9* vertex[4]={};IDirect3DIndexBuffer9* index=nullptr;
-            ~Bindings(){for(auto& v:vertex)drop(v);drop(index);}} bindings;
+        // One ordered admission phase creates immutable pages for this flush.
+        // Packet views own their references across trims and UP fallbacks.
+        for(auto& packet:deferred)packet->resident=deferredGPU.bind(d,packet->mesh,packet->gpuVertex,packet->gpuIndex,[](size_t){return true;},packet->placement);
+        deferredGPU.commitPending();
+        for(auto& packet:deferred)if(!packet->resident&&deferredGPU.resident(packet->mesh))packet->resident=deferredGPU.bind(d,packet->mesh,packet->gpuVertex,packet->gpuIndex,[](size_t){return true;},packet->placement);
         bool success=true;const Deferred* previous=nullptr;
         IDirect3DBaseTexture9* boundTextures[16]={};bool knownTextures[16]={};
         DWORD samplerValues[16][13]={};unsigned knownSamplers[16]={};
@@ -320,14 +322,8 @@ public:
                 if(needed(knownTextures[stage]&&boundTextures[stage]==value)){const HRESULT result=d->SetTexture(stage,value);step(result);if(SUCCEEDED(result)){boundTextures[stage]=value;knownTextures[stage]=true;}}};
             auto samplerState=[&](unsigned stage,D3DSAMPLERSTATETYPE key,DWORD value){const unsigned index=unsigned(key)-1,mask=1u<<index;
                 if(needed((knownSamplers[stage]&mask)&&samplerValues[stage][index]==value)){const HRESULT result=d->SetSamplerState(stage,key,value);step(result);if(SUCCEEDED(result)){samplerValues[stage][index]=value;knownSamplers[stage]|=mask;}}};
-            // Immutable snapshots already have revision-aware ownership. Reuse
-            // the replay cache's bounded promotion, weak lifetime and fallback.
-            NorthlightReplayGPU::Placement placement;
-            sharedGeometryCandidates+=mesh.sharedCapture;
-            const bool borrowed=sharedGeometry.borrow(packet->mesh,bindings.vertex,bindings.index,placement);
-            if(borrowed){++sharedGeometryHits;sharedGeometryBytes+=mesh.byteSize();}
-            const bool resident=borrowed||deferredGPU.bind(d,packet->mesh,bindings.vertex,bindings.index,[](size_t){return true;});
-            if(resident){step(d->SetStreamSource(0,bindings.vertex[0],0,mesh.streams[0].stride));step(d->SetIndices(bindings.index));}
+            const auto& placement=packet->placement;const bool resident=packet->resident;
+            if(resident){step(d->SetStreamSource(0,packet->gpuVertex[0],0,mesh.streams[0].stride));step(d->SetIndices(packet->gpuIndex));}
             if(needed(previous&&previous->declaration==packet->declaration))step(d->SetVertexDeclaration(packet->declaration));
             if(needed(frequencyKnown)){const HRESULT result=d->SetStreamSourceFreq(0,1);step(result);frequencyKnown=SUCCEEDED(result);}
             if(needed(previous&&previous->vertex==packet->vertex))step(d->SetVertexShader(packet->vertex));
@@ -453,12 +449,12 @@ public:
         }
         if(deferredReport||((queued||flushed||deferredFallback)&&frames%600==0)){
             logf("MATERIAL_BATCH_STATE frame=%llu issued=%u skippedIdentical=%u",(unsigned long long)(deferredReport?deferredReportFrame:frames),replaySetters,replaySkipped);
-            logf("SHARED_GPU_SCENE consumer=materials frame=%llu candidates=%u hits=%u borrowedDrawBytes=%zu ownedBytes=%zu ownedLimitMiB=%zu",(unsigned long long)(deferredReport?deferredReportFrame:frames),sharedGeometryCandidates,sharedGeometryHits,sharedGeometryBytes,deferredGPU.bytes(),deferredGPU.limit()>>20);
+            logf("GPU_SCENE consumer=materials frame=%llu residentHits=%u crossConsumerHits=%u reusedDrawBytes=%zu ownedBytes=%zu ownedLimitMiB=%zu",(unsigned long long)(deferredReport?deferredReportFrame:frames),deferredGPU.counters().hits,deferredGPU.counters().crossOwner,deferredGPU.reused(),deferredGPU.bytes(),deferredGPU.limit()>>20);
             const auto& g=deferredGPU.stats();const auto population=deferredGPU.population();
             logf("MATERIAL_BATCH_GPU frame=%llu residentDraws=%u upDraws=%u upBytes=%llu uploadedBytes=%zu reusedBytes=%zu cacheBytes=%zu cacheLimitMiB=%zu residentMeshes=%zu probationMeshes=%zu created=%u createCpuMs=%.4f warmup=%u attemptDeferred=%u byteDeferred=%u timeDeferred=%u evicted=%u expired=%u countPressure=%u bytePressure=%u probationEvictions=%u residentEvictions=%u countOnlyProbationEvictions=%u",(unsigned long long)(deferredReport?deferredReportFrame:frames),residentDraws,uploadDraws,(unsigned long long)uploadDrawBytes,deferredGPU.uploaded(),deferredGPU.reused(),deferredGPU.bytes(),deferredGPU.limit()>>20,population.resident,population.probation,g.created,g.createMs,g.warmup,g.attemptDeferred,g.uploadByteDeferred,g.timeDeferred,g.evictions,g.expiredEntries,g.countPressure,g.bytePressure,g.probationEvictions,g.residentEvictions,g.countOnlyProbationEvictions);
         }
         residentDraws=uploadDraws=replaySetters=replaySkipped=0;uploadDrawBytes=0;deferredGPU.beginFrame();deferredReport=false;
-        sharedGeometryCandidates=sharedGeometryHits=0;sharedGeometryBytes=0;
+
         queued=flushed=deferredFallback=deferredDiscarded=deferredUnsafe=deferredGeometry=0;
         std::fill(std::begin(queuedDomain),std::end(queuedDomain),0);earlyRangeRejected=opaqueCoverage=0;
         deferredTextureDraws=textureBarriers=snapshotBudget=snapshotStreams=textureRefused=batchLimit=0;deferredSnapshots.clearFrame();

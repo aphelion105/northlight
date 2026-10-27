@@ -496,11 +496,14 @@ public:
     // Non-owning; the peer must outlive reads. Both caches retain their own
     // limits, and a borrowed mesh is not inserted or copied into this cache.
     void setResidentPeer(Frame* peer){residentPeer_=peer==this?nullptr:peer;}
-    bool shareSnapshotPool(Frame& peer){
-        if(sources_==peer.sources_)return true;
+    using SharedSources=std::shared_ptr<SourcePool>;
+    SharedSources sharedSources()const{return sources_;}
+    bool shareSnapshotPool(Frame& peer){return joinSnapshotPool(peer.sources_);}
+    bool joinSnapshotPool(const std::shared_ptr<SourcePool>& pool){
+        if(!pool)return false;if(sources_==pool)return true;
         if(!sources_->entries.empty()||sources_->live->objects.load(std::memory_order_relaxed))return false;
-        auto old=sources_;try{peer.sources_->members.insert(peer.sources_->members.end(),old->members.begin(),old->members.end());}catch(...){return false;}
-        for(auto* member:old->members){member->sources_=peer.sources_;member->predicted_=nullptr;}old->members.clear();old->limit=0;refreshSourceLimit();return true;
+        auto old=sources_;try{pool->members.insert(pool->members.end(),old->members.begin(),old->members.end());}catch(...){return false;}
+        for(auto* member:old->members){member->sources_=pool;member->predicted_=nullptr;}old->members.clear();old->limit=0;refreshSourceLimit();return true;
     }
     void setVersionProvider(VersionFn f){clearSnapshotCache();version_=f;}
     // Metadata providers must share the identity/version domain of the legacy

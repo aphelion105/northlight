@@ -355,6 +355,7 @@ class Device final : public GuardedMirrorDevice {
             first?(unsigned long)g.firstTid:0ul,mirrorSiteName(first?g.firstSite:MirrorGate::Sites),first?unsigned(g.firstFrame):0u,unsigned(g.frame.load(std::memory_order_relaxed)),NorthlightStream::gameTid.load(std::memory_order_relaxed),NorthlightStream::replayTid.load(std::memory_order_relaxed),event); /* 0.3.192 (CS): 0/0 on the direct path */
     }
 
+    std::shared_ptr<NorthlightGpuScene::Scene> gpuScene;
     std::unique_ptr<WorldRenderer> world;
     std::unique_ptr<NorthlightSurfaceRenderer> surface;
     std::unique_ptr<NorthlightAutoBump> autoBump;
@@ -1753,6 +1754,7 @@ private:
         if(particleOn&&world)NorthlightParticleCapture::Capture::submit(prepared,accepted,deferred,world->particleFrame());
     }
     template<class Capture,class Draw> HRESULT drawHook(D3DPRIMITIVETYPE t,UINT count,Capture capture,Draw draw){
+        if(gpuScene&&!gpuScene->native.currentFrame(frame)){ExtensionDevice::RawScope raw(*ext);gpuScene->setFrame(frame);}
         if(autoBump)autoBump->beginDraw();
         bool claimed=false,rainBlend=false,mist=false;
         // 0.3.198 (rain): the whole per-draw cost of weather detection, before any other work and in both gate paths: one pointer comparison.
@@ -2294,7 +2296,7 @@ private:
         char bank[353];static constexpr char digits[]="0123456789abcdef";
         for(unsigned i=0;i<44;++i){uint32_t bits;std::memcpy(&bits,&sample.rows[i/4][i%4],4);
             for(unsigned n=0;n<8;++n)bank[8*i+n]=digits[(bits>>(28-4*n))&15];}bank[352]=0;
-        logf("NATIVE_LOCAL_LIGHT frame=%u draw=%u event=pre-capture contextKnown=0 terrainSeen=%u vs=%016llx shaderReadsExact=%u readRows=%03x knownRows=%03x getRows=%03x writtenRows=%03x finiteRows=%03x bank=c17..27 encoding=44-f32-u32hex slotLimit=4 submission=unproven modelIdentity=unknown values=%s",
+        if(sampled())logf("NATIVE_LOCAL_LIGHT frame=%u draw=%u event=pre-capture contextKnown=0 terrainSeen=%u vs=%016llx shaderReadsExact=%u readRows=%03x knownRows=%03x getRows=%03x writtenRows=%03x finiteRows=%03x bank=c17..27 encoding=44-f32-u32hex slotLimit=4 submission=unproven modelIdentity=unknown values=%s",
             frame,drawCalls-frameStartDrawCalls,unsigned(terrain),(unsigned long long)(hash==vsHashes.end()?0:hash->second),unsigned(exact),unsigned(used),unsigned(sample.known),unsigned(sample.fromGet),unsigned(sample.fromWrite),unsigned(sample.finite),bank);
     }
     void beforeDraw(IDirect3DVertexShader9* vs) {
@@ -2533,12 +2535,10 @@ public:
         parent->AddRef(); QueryPerformanceFrequency(&cpuFrequency);
         try{settingsService=NorthlightSettings::acquire(std::filesystem::path(rootPath));settingsRevision=settingsService->revision();if(!settingsRecovery.empty())logf("SETTINGS startup recovery incomplete: %s",settingsRecovery.c_str());}
         catch(const std::exception& e){logf("SETTINGS unavailable: %s",e.what());}
-        gpuProfile=std::make_unique<NorthlightGpuProfile>(ext);gpuSceneProfile=std::make_unique<NorthlightGpuProfile>(ext,"GPU frame",2);materialProfile=std::make_unique<NorthlightMaterialProfile>(ext);gpuTimer=std::make_unique<NorthlightGpuFrameTimer>(ext); world=std::make_unique<WorldRenderer>(ext);world->setEffectsBuckets(&effectsBuckets);world->setMaterialProfiler(materialProfile.get());
+        gpuProfile=std::make_unique<NorthlightGpuProfile>(ext);gpuSceneProfile=std::make_unique<NorthlightGpuProfile>(ext,"GPU frame",2);materialProfile=std::make_unique<NorthlightMaterialProfile>(ext);gpuTimer=std::make_unique<NorthlightGpuFrameTimer>(ext); gpuScene=std::make_shared<NorthlightGpuScene::Scene>(ext);world=std::make_unique<WorldRenderer>(ext,gpuScene);world->setEffectsBuckets(&effectsBuckets);world->setMaterialProfiler(materialProfile.get());
         surface=std::make_unique<NorthlightSurfaceRenderer>(ext);
-        autoBump=std::make_unique<NorthlightAutoBump>(ext);autoBump->setGeometryTracking(&NorthlightTrackedBuffers::identity,&NorthlightTrackedBuffers::version,&NorthlightTrackedBuffers::captureMetadata);autoBump->configure(world->surfaceSettings());
+        autoBump=std::make_unique<NorthlightAutoBump>(ext,gpuScene);autoBump->setGeometryTracking(&NorthlightTrackedBuffers::identity,&NorthlightTrackedBuffers::version,&NorthlightTrackedBuffers::captureMetadata);autoBump->configure(world->surfaceSettings());
         world->captureSources().setIdentityProvider(&NorthlightTrackedBuffers::identity);
-        if(!world->captureSources().shareSnapshotPool(autoBump->captureSources()))logf("CAPTURE shared sources: join failed; using private caches");
-        world->setSharedGeometry(autoBump->residentGeometry());autoBump->setSharedGeometry(world->residentGeometry());
         autoBump->setVertexIdentity(this,[](void* context,IDirect3DVertexShader9* source,uint64_t& hash,unsigned& family){auto* self=static_cast<Device*>(context);const auto found=self->vsHashes.find(source);if(found==self->vsHashes.end())return false;hash=found->second;family=m2ShaderFamily(hash);return true;});
         autoBump->setProfiler(materialProfile.get());
         // ReadBackNoOverwrite is enabled only for an actually loaded DXVK >= 3,
@@ -2586,9 +2586,8 @@ public:
         memoryDiagnostics.reset();
         spellTeardown();
         mirrorState.beforeDisable=nullptr;mirrorState.disableContext=nullptr;
-        if(world)world->setSharedGeometry({});if(autoBump)autoBump->setSharedGeometry({});
         surface.reset();autoBump.reset();
-        dropBlobFaint();shadowBlobs.reset();celestialDiscs.reset();gpuProfile.reset();gpuSceneProfile.reset();materialProfile.reset();gpuTimer.reset();drop(latencyQuery);water.reset();world.reset();releaseResources();
+        dropBlobFaint();shadowBlobs.reset();celestialDiscs.reset();gpuProfile.reset();gpuSceneProfile.reset();materialProfile.reset();gpuTimer.reset();drop(latencyQuery);water.reset();world.reset();gpuScene.reset();releaseResources();
         hdrColor.reset();releaseHdrTargets();stateBlocks.clear();ext->Release();ext=nullptr;
         const ULONG backendReferences=real->Release();parent->Release();
         logf("DEVICE lifetime event=destroy-end id=%ld live=%ld backendReleaseCount=%lu tick=%lu",diagnosticId,InterlockedDecrement(&liveDevices),(unsigned long)backendReferences,(unsigned long)GetTickCount());

@@ -31,6 +31,8 @@ test_build_source_identity.py
 test_cache_shadow_optimizations.py
 test_cache_variant.py
 test_camera_upstream_capture.py
+test_canonical_gpu_scene.py
+test_canonical_gpu_scene_gpu.py
 test_capture_admission.py
 test_capture_skip_revalidation.py
 test_capture_skip_wiring.py
@@ -97,12 +99,14 @@ test_frame_stall_profile.py
 test_game_snapshot.py
 test_geometry_handoff.py
 test_geometry_memory.py
+test_geometry_retry.py
 test_gi_quality.py
 test_gi_settings_dependencies.py
 test_gpu_budget.py
 test_gpu_budget_wiring.py
 test_grass_receiving_order.py
 test_gtao_grazing.py
+test_hdr_reset.py
 test_horizon_haze.py
 test_independent_fog.py
 test_index_working_set.py
@@ -138,6 +142,8 @@ test_material_batch_bindings.py
 test_material_frame_rotation_gpu.py
 test_material_geometry.py
 test_material_normal_variants.py
+test_material_packet_auxiliary.py
+test_material_pose_metadata.py
 test_material_pressure_transition.py
 test_material_profile.py
 test_material_ray_work.py
@@ -158,6 +164,7 @@ test_model_world_context.py
 test_moon_cascade_weight.py
 test_mount_emitter_patch.py
 test_name_mask.py
+test_native_local_light_probe.py
 test_native_model_install.py
 test_native_replay_plan.py
 test_native_shadow_observation.py
@@ -176,6 +183,7 @@ test_pending_release_wiring.py
 test_point_light_shadow.py
 test_point_shadow_schedule.py
 test_position_bounds.py
+test_position_bounds_scan.py
 test_prepare_native_scene.py
 test_prepare_worker.py
 test_probe_blend.py
@@ -214,6 +222,7 @@ test_replay_priority_safety.py
 test_replay_skin_safety.py
 test_replay_upload.py
 test_rigid_memory.py
+test_rotation_wake.py
 test_scene_assembly.py
 test_scene_entry_reclaim.py
 test_scene_entry_reclaim_inputs.py
@@ -234,6 +243,9 @@ test_shadow_paging_memory.py
 test_shadow_pivot.py
 test_shadow_removal_smoothing.py
 test_shadow_shimmer.py
+test_shared_gpu_residency.py
+test_shared_gpu_residency_gpu.py
+test_shared_gpu_wiring.py
 test_shared_mesh_preparation.py
 test_shared_preparation_lifetime.py
 test_shared_scene.py
@@ -250,6 +262,7 @@ test_snapshot_capture_sink.py
 test_snapshot_client_range.py
 test_snapshot_lookup_identity.py
 test_snapshot_prediction.py
+test_snapshot_retirement.py
 test_solar_volume.py
 test_spell_asset_manifest.py
 test_spell_asset_manifest_client.py
@@ -279,12 +292,15 @@ test_temporal_history.py
 test_terrain_cache_capacity.py
 test_terrain_capture_bounds.py
 test_terrain_capture_optimization.py
+test_terrain_capture_phases.py
 test_terrain_capture_validation.py
 test_terrain_classification.py
 test_terrain_content_cache.py
 test_terrain_decoded_sharing.py
+test_terrain_index_read_proofs.py
 test_terrain_indices.py
 test_terrain_metadata.py
+test_terrain_position_bytes.py
 test_terrain_pressure_policy.py
 test_terrain_reach_fallback.py
 test_terrain_reach_fallback_wiring.py

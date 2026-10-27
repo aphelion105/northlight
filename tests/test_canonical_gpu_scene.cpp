@@ -1,0 +1,98 @@
+#define main previous_gpu_scene_main
+#include "test_shared_gpu_residency.cpp"
+#undef main
+#include "scene_native_store.h"
+
+static void sceneControls(){
+ using namespace NorthlightGpuScene;NativeStore scene;NativeClient mat(scene,Consumer::Material),shadow(scene,Consumer::Shadow);Device d;auto m=authored(11);Binding first,second;
+ scene.setFrame(1);assert(!mat.bind(&d,m,first.vb,first.ib,admit,first.at));assert(!shadow.bind(&d,m,second.vb,second.ib,admit,second.at));
+ assert(mat.population().entries+shadow.population().entries==1&&!d.calls);
+ scene.setFrame(2);assert(!mat.bind(&d,m,first.vb,first.ib,admit,first.at));assert(mat.commitPending());assert(mat.bind(&d,m,first.vb,first.ib,admit,first.at)&&exact(*m,first));
+ auto rebuilt=std::make_shared<Mesh>(*m);m.reset();const auto calls=d.calls;
+ scene.setFrame(3);assert(shadow.bind(&d,rebuilt,second.vb,second.ib,admit,second.at)&&exact(*rebuilt,second)&&d.calls==calls&&shadow.stats().reconstructedHits==1);
+ mat.clear();assert(!mat.bytes()&&shadow.bytes()&&scene.resident(rebuilt));assert(shadow.bind(&d,rebuilt,second.vb,second.ib,admit,second.at)&&d.calls==calls);
+ mat.setLimit(32u<<20);assert(mat.bind(&d,rebuilt,first.vb,first.ib,admit,first.at));shadow.clear();assert(!shadow.bytes()&&mat.bytes()&&scene.resident(rebuilt));
+ // An independent device cannot consume this scene's buffers.
+ Device other;assert(!mat.bind(&other,rebuilt,first.vb,first.ib,admit,first.at));assert(exact(*rebuilt,first));
+ scene.clearAll();assert(exact(*rebuilt,first)&&exact(*rebuilt,second));
+ std::puts("CANONICAL_SCENE_CONTROLS_PASS one_identity one_upload reconstructed_source cross_pass source_release consumer_off ownership_transfer held_views device_isolation");
+}
+static void faultsAndCollisions(){
+ using namespace NorthlightGpuScene;
+ for(unsigned failure=0;failure<4;++failure){NativeStore scene;NativeClient c(scene,Consumer::Material);Device d;auto m=authored(90);Binding b;
+  scene.setFrame(1);assert(!c.bind(&d,m,b.vb,b.ib,admit,b.at));scene.setFrame(2);assert(!c.bind(&d,m,b.vb,b.ib,admit,b.at));
+  if(failure<2)d.failAt=d.calls+failure+1;else if(failure==2)d.lockFail=true;else d.failUnlockAt=d.calls+1;
+  c.commitPending();assert(!c.bytes()&&!alive&&c.population().probation==1&&c.chargedBytes()<=c.limit());
+  d.failAt=d.failUnlockAt=0;d.lockFail=false;scene.setFrame(3);assert(!c.bind(&d,m,b.vb,b.ib,admit,b.at));assert(c.commitPending());assert(c.bind(&d,m,b.vb,b.ib,admit,b.at)&&exact(*m,b));
+ }
+ assert(!alive);
+ NativeStore scene;NativeClient c(scene,Consumer::Material);Device d;auto a=std::const_pointer_cast<Mesh>(authored(201)),b=std::const_pointer_cast<Mesh>(authored(202));
+ constexpr uint64_t prime=1099511628211ull,offset=1469598103934665603ull;uint64_t inverse=1;for(unsigned i=0;i<6;++i)inverse*=2-prime*inverse;
+ a->sourceIdentity=NorthlightSourceIdentity::make({0x111,0x222});uint64_t prefix=(offset^0x333)*prime;
+ b->sourceIdentity=NorthlightSourceIdentity::make({0x333,(a->sourceIdentity->hash*inverse)^prefix});
+ assert(a->sourceIdentity->hash==b->sourceIdentity->hash&&!NorthlightSourceIdentity::same(a->sourceIdentity,b->sourceIdentity));
+ Binding x,y;scene.setFrame(1);assert(!c.bind(&d,a,x.vb,x.ib,admit,x.at)&&!c.bind(&d,b,y.vb,y.ib,admit,y.at)&&c.population().entries==2);
+ scene.setFrame(2);c.bind(&d,a,x.vb,x.ib,admit,x.at);c.bind(&d,b,y.vb,y.ib,admit,y.at);c.commitPending();
+ assert(c.bind(&d,a,x.vb,x.ib,admit,x.at)&&c.bind(&d,b,y.vb,y.ib,admit,y.at)&&exact(*a,x)&&exact(*b,y));
+ std::puts("CANONICAL_SCENE_FAULTS_PASS partial_create lock unlock retry full_64bit_hash_collision exact_words");
+}
+static void limitsAndClock(){
+ using namespace NorthlightGpuScene;Device d;Binding b;
+ {
+  NativeStore scene;NativeClient m(scene,Consumer::Material),s(scene,Consumer::Shadow);scene.setFrame(1);
+  auto unknown=std::const_pointer_cast<Mesh>(authored(60));unknown->sourceIdentity.reset();unknown->replayIdentity.reset();
+  assert(!m.bind(&d,unknown,b.vb,b.ib,admit,b.at));unknown.reset();scene.setFrame(2);assert(!m.population().entries);
+  m.setLimit(16384);s.setLimit(32768);std::vector<Owner> meshes;
+  for(unsigned i=0;i<80;++i)meshes.push_back(authored(1000+i));
+  for(unsigned frame=3;frame<20;++frame){scene.setFrame(frame);
+   for(auto& mesh:meshes){m.bind(&d,mesh,b.vb,b.ib,admit,b.at);s.bind(&d,mesh,b.vb,b.ib,admit,b.at);}
+   m.commitPending();s.commitPending();assert(m.chargedBytes()<=16384&&s.chargedBytes()<=32768);
+  }
+  m.trimTo(0);s.trimTo(0);assert(!scene.chargedBytes()&&!scene.bytes());
+ }
+ {
+  NativeStore scene;NativeClient m(scene,Consumer::Material);scene.setFrame(1);std::vector<Owner> meshes;
+  for(unsigned i=0;i<8300;++i){auto mesh=authored(10000+i);meshes.push_back(mesh);m.bind(&d,mesh,b.vb,b.ib,admit,b.at);}
+  assert(m.population().entries==NativeStore::entryLimit()&&m.stats().roomRejected);
+  scene.setFrame(2);m.bind(&d,meshes.back(),b.vb,b.ib,admit,b.at);assert(m.population().entries==NativeStore::entryLimit()&&m.stats().probationEvictions);
+ }
+ std::puts("CANONICAL_SCENE_LIMITS_PASS private_lifetime count_cap current_frame_protection exact_lane_caps simultaneous_trim no_budget_pingpong");
+}
+static Result unified(const std::vector<Owner>& meshes,bool audit,unsigned overlap,unsigned frames=96,bool reconstruct=false){
+ using namespace NorthlightGpuScene;NativeStore scene;NativeClient mat(scene,Consumer::Material),world(scene,Consumer::Shadow);Device device;Result result;
+ std::vector<Owner> material,actors;
+ for(size_t i=0;i<meshes.size();++i){auto a=std::make_shared<Mesh>(*meshes[i]);actors.push_back(a);
+  if(i*100/meshes.size()<overlap)material.push_back(a);else{auto b=std::make_shared<Mesh>(*a);b->sourceIdentity=NorthlightSourceIdentity::make({0x6975aa3,2000+i});material.push_back(b);}}
+ auto clear=[](Binding& b){for(auto& p:b.vb){if(p)p->Release();p=nullptr;}if(b.ib)b.ib->Release();b.ib=nullptr;b.at={};};
+ std::vector<std::unique_ptr<Binding>> materials,shadows;for(size_t i=0;i<meshes.size();++i){materials.push_back(std::make_unique<Binding>());shadows.push_back(std::make_unique<Binding>());}
+ std::vector<bool> ready(meshes.size());const auto begin=std::chrono::steady_clock::now();
+ for(unsigned frame=0;frame<frames;++frame){scene.setFrame(frame+1);
+  if(reconstruct&&frame%5==4){for(auto& m:actors)m=std::make_shared<Mesh>(*m);for(size_t i=0;i<material.size();++i)material[i]=i*100/meshes.size()<overlap?actors[i]:std::make_shared<Mesh>(*material[i]);}
+  for(size_t j=0;j<meshes.size();++j){const size_t i=(j+(frame/24)*13)%meshes.size();auto& b=*materials[i];clear(b);ready[i]=mat.bind(&device,material[i],b.vb,b.ib,admit,b.at);}
+  mat.commitPending();
+  for(size_t j=0;j<meshes.size();++j){size_t i=(j+(frame/24)*13)%meshes.size();auto& m=material[i];auto& b=*materials[i];
+   if(!ready[i]&&mat.resident(m))ready[i]=mat.bind(&device,m,b.vb,b.ib,admit,b.at);
+   if(ready[i]){if(audit)assert(exact(*m,b));}else result.up+=m->byteSize();result.digest=result.digest*33+uint64_t(m->vertexCount)*7+m->primitiveCount;}
+  for(size_t i=0;i<meshes.size();++i){auto& b=*shadows[i];clear(b);ready[i]=world.bind(&device,actors[i],b.vb,b.ib,admit,b.at);}
+  world.commitPending();
+  for(size_t i=0;i<meshes.size();++i){auto& b=*shadows[i];if(!ready[i]&&world.resident(actors[i]))ready[i]=world.bind(&device,actors[i],b.vb,b.ib,admit,b.at);
+   if(ready[i]){if(audit)assert(exact(*actors[i],b));}else result.up+=actors[i]->byteSize();}
+  result.uploaded+=mat.uploaded()+world.uploaded();result.peak=std::max(result.peak,mat.bytes()+world.bytes());
+  assert(mat.chargedBytes()<=mat.limit()&&world.chargedBytes()<=world.limit());
+  if(frame%47==46){mat.trimTo(0);world.trimTo(0);}
+ }
+ result.ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();result.creates=device.calls;scene.clearAll();materials.clear();shadows.clear();assert(!alive);return result;
+}
+int main(int argc,char** argv){
+ std::setvbuf(stdout,nullptr,_IONBF,0);assert(argc>=2);NorthlightReplayGPU::createBudgetMs()=1e6;auto meshes=load(argv[1]);
+ if(argc>2){const auto overlap=argc>3?unsigned(std::stoul(argv[3])):100;const bool canonical=std::string(argv[2])=="canonical";
+  auto r=canonical?unified(meshes,false,overlap):run(meshes,true,false,96,overlap);
+  std::printf("CANONICAL_SCENE_TIMING canonical=%u overlap=%u cpuMs=%.6f uploads=%zu fallbackBytes=%zu peak=%zu creates=%u digest=%llu\n",canonical,overlap,r.ms,r.uploaded,r.up,r.peak,r.creates,(unsigned long long)r.digest);return 0;}
+ sceneControls();assert(!alive);faultsAndCollisions();assert(!alive);limitsAndClock();assert(!alive);
+ for(unsigned overlap:{0u,50u,100u}){auto reference=run(meshes,true,true,96,overlap),current=unified(meshes,true,overlap),rebuilt=unified(meshes,true,overlap,96,true);
+  std::printf("CANONICAL_SCENE_CHECK overlap=%u reference=%llu current=%llu reconstructed=%llu uploads=%zu/%zu fallback=%zu/%zu\n",overlap,(unsigned long long)reference.digest,(unsigned long long)current.digest,(unsigned long long)rebuilt.digest,reference.uploaded,current.uploaded,reference.up,current.up);
+  assert(current.digest==reference.digest&&rebuilt.digest==reference.digest&&current.up<=reference.up&&current.uploaded<=reference.uploaded);
+  assert(rebuilt.uploaded==current.uploaded&&rebuilt.peak==current.peak);
+  std::printf("CANONICAL_SCENE_EXACT_PASS overlap=%u uploads=%zu->%zu fallback=%zu->%zu peak=%zu->%zu creates=%u->%u reconstructedUploads=%zu digest=%llu\n",overlap,reference.uploaded,current.uploaded,reference.up,current.up,reference.peak,current.peak,reference.creates,current.creates,rebuilt.uploaded,(unsigned long long)current.digest);
+ }
+}
