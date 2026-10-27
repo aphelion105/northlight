@@ -680,16 +680,30 @@ private:
     unsigned localScissorBatches=0,localScissorClipped=0,localScissorSkipped=0;double localScissorCoverage=0;
     unsigned localOffscreenSum=0,localArranged=0,localWidePasses=0;double localArrangeBefore=0,localArrangeAfter=0; /* LOCAL direct window: off-screen candidates, arranged frames, LocalDirect16 passes, cost model before/after */
     unsigned localSourceTraces=0;NorthlightLocalLightTrace::Frame sourceTrace;
-    void reportLocalSources(const NorthlightLocalLightTrace::Frame& trace,unsigned capture,float directGain,float sunlitCut,float fogGain){
+    void localSourceBatch(bool volume,unsigned first,unsigned count,const NorthlightLocalLightScissor::Rect& rect,bool drawn,HRESULT result){
+        if(!sourceTrace.wants(first,count))return;
+        NorthlightLocalLightTrace::Row::DrawState state;
+        // State getters are CPU-only and run only for a sampled, tracked batch.
+        // Refused getters remain unknown; successful submission is not a pixel proof.
+        if(drawn){D3DVIEWPORT9 viewport{};DWORD enabled=0;RECT scissor{};
+            if(SUCCEEDED(d->GetViewport(&viewport))){state.known|=1;state.viewport[0]=viewport.X;state.viewport[1]=viewport.Y;state.viewport[2]=viewport.Width;state.viewport[3]=viewport.Height;state.minZ=viewport.MinZ;state.maxZ=viewport.MaxZ;}
+            if(SUCCEEDED(d->GetRenderState(D3DRS_SCISSORTESTENABLE,&enabled))){state.known|=2;state.scissorEnabled=enabled;}
+            if(SUCCEEDED(d->GetScissorRect(&scissor))){state.known|=4;state.scissor={scissor.left,scissor.top,scissor.right,scissor.bottom};}}
+        sourceTrace.batch(volume,first,count,rect,drawn,result,state);
+    }
+    void reportLocalSources(const NorthlightLocalLightTrace::Frame& trace,unsigned capture,unsigned rendererFrame,float directGain,float sunlitCut,float fogGain,UINT w,UINT h,float nearZ,float farZ,float minZ,float maxZ,bool waterReady,int debug){
         if(!trace.enabled)return;
-        logf("LOCAL_SOURCE frame=%u frameDomain=world monotonicNs=%llu capture=%u rows=%u omitted=%u nativeTracked=%u nativePublished=%u dynamicPublished=%u nativeSuppressed=%u nativeDuplicateCounter=%u viewKnown=%u directGain=%.6f sunlitCut=%.6f fogGain=%.6f combine=%s upstreamParticleClusters=unmeasured pixelContribution=unmeasured",
-            frames,(unsigned long long)NorthlightStream::nowNs(),capture,trace.count,trace.omitted,equipmentLights.count,equipmentLights.outputCount,particleLights.outputCount,equipmentLights.suppressedCount,equipmentLights.duplicates,unsigned(localScissorView.valid),directGain,sunlitCut,fogGain,NorthlightLocalLightTrace::name(trace.combine));
+        logf("LOCAL_SOURCE frame=%u frameDomain=world monotonicNs=%llu capture=%u rows=%u omitted=%u nativeTracked=%u nativePublished=%u dynamicPublished=%u nativeSuppressed=%u nativeDuplicateCounter=%u viewKnown=%u directGain=%.6f sunlitCut=%.6f fogGain=%.6f combine=%s upstreamParticleClusters=unmeasured pixelContribution=unmeasured rendererFrame=%u particleProbes=%u particleDraws=%u particleAccepted=%u particlePoints=%u particlePublished=%u selected=%u fullSize=%u,%u depthRange=%.9g,%.9g sceneDepthViewport=%.9g,%.9g camera=%.6f,%.6f,%.6f projection=%.9g,%.9g,%.9g fogEnabled=%u fogField=%u waterReady=%u debug=%d",
+            frames,(unsigned long long)NorthlightStream::nowNs(),capture,trace.count,trace.omitted,equipmentLights.count,equipmentLights.outputCount,particleLights.outputCount,equipmentLights.suppressedCount,equipmentLights.duplicates,unsigned(localScissorView.valid),directGain,sunlitCut,fogGain,NorthlightLocalLightTrace::name(trace.combine),rendererFrame,particleLights.probes,particleLights.draws,particleLights.accepted,particleLights.points,particleLights.immediateCount,localDirectCount,w,h,nearZ,farZ,minZ,maxZ,context.camera[0],context.camera[1],context.camera[2],projection[0],projection[1],projection[2],unsigned(effects.fog),unsigned(bool(uploadedFogField)),unsigned(waterReady),debug);
         for(unsigned i=0;i<trace.count;++i){const auto& r=trace.rows[i];
             logf("LOCAL_SOURCE draw frame=%u sourceId=%llu publishedXYZ=%.6f,%.6f,%.6f publishedRGB=%.6f,%.6f,%.6f range=%.6f,%.6f selected=%u slot=%u selectedXYZR=%.6f,%.6f,%.6f,%.6f selectedRGB=%.6f,%.6f,%.6f sigma=%.9g direct=%s directHRESULT=%08x directRect=%ld,%ld,%ld,%ld fog=%s fogHRESULT=%08x fogRect=%ld,%ld,%ld,%ld",
                 frames,(unsigned long long)r.published.sourceId,r.published.position[0],r.published.position[1],r.published.position[2],r.published.diffuse[0],r.published.diffuse[1],r.published.diffuse[2],r.published.attenuationStart,r.published.attenuationEnd,unsigned(r.slot!=~0u),r.slot,
                 r.position[0],r.position[1],r.position[2],r.position[3],r.color[0],r.color[1],r.color[2],r.fog[0],
                 NorthlightLocalLightTrace::name(r.direct),unsigned(r.directResult),r.directRect.left,r.directRect.top,r.directRect.right,r.directRect.bottom,
                 NorthlightLocalLightTrace::name(r.volume),unsigned(r.fogResult),r.fogRect.left,r.fogRect.top,r.fogRect.right,r.fogRect.bottom);
+            for(bool volume:{false,true}){const auto& state=volume?r.fogState:r.directState;
+                logf("LOCAL_SOURCE state frame=%u sourceId=%llu pass=%s reason=%s known=%u viewport=%u,%u,%u,%u viewportDepth=%.9g,%.9g scissorEnabled=%u scissor=%ld,%ld,%ld,%ld",
+                    frames,(unsigned long long)r.published.sourceId,volume?"fog":"direct",NorthlightLocalLightTrace::reason(r,volume),state.known,state.viewport[0],state.viewport[1],state.viewport[2],state.viewport[3],state.minZ,state.maxZ,state.scissorEnabled,state.scissor.left,state.scissor.top,state.scissor.right,state.scissor.bottom);}
         }
     }
     // 0.3.200 (jobs): known = the batch's rect from atmosphereWork (the same batchRect of the same view and positions), else computed here.
@@ -4741,7 +4755,7 @@ public:
         lightingMark(1);
         auto& localLights=atmosphere.lights;
         sourceTrace.begin(NorthlightDiagnostics::enabled()&&NorthlightQuality::renderProfile(quality)&&
-            (diagnosticCapture||(equipmentLightsOn()&&localSourceTraces<32&&frames%127==0)),
+            (diagnosticCapture||(equipmentLightsOn()&&((localSourceTraces<32&&frames%127==0)||captureSampled))),
             equipmentLightsOn()?particleLights.output.data():nullptr,equipmentLightsOn()?particleLights.outputCount:0,localLights);
         if(sourceTrace.enabled)++localSourceTraces;
         localDirectCount=localLights.count;localDirectNearest=localLights.nearest;
@@ -5052,7 +5066,7 @@ public:
                     d->SetPixelShaderConstantF(84,batch.position[0].data(),2*N);d->SetPixelShaderConstantF(100,batch.color[0].data(),2*N);
                     d->SetPixelShaderConstantF(52,info,1);++localWidePasses;
                     const bool drawn=localScissor(batch.position,batch.count,&joint);const HRESULT hr=drawn?quad(w/2,h/2):S_OK;
-                    sourceTrace.batch(false,firstLight,batch.count,joint,drawn,hr);
+                    localSourceBatch(false,firstLight,batch.count,joint,drawn,hr);
                     if(lightingCapture)lightingCapture->pass("LocalDirect16",0,directInputs,firstLight,batch.count,drawn,hr);
                     if(drawn&&!check(hr,"local direct 16-light batch")){d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);return false;}
                     firstLight+=2*N;continue;
@@ -5064,7 +5078,7 @@ public:
                 d->SetPixelShaderConstantF(44,batch.color[0].data(),N);
                 d->SetPixelShaderConstantF(52,info,1);
                 const bool drawn=localScissor(batch.position,batch.count,&atmosphere.directRects[index]);const HRESULT hr=drawn?quad(w/2,h/2):S_OK;
-                sourceTrace.batch(false,firstLight,batch.count,a,drawn,hr);
+                localSourceBatch(false,firstLight,batch.count,a,drawn,hr);
                 if(lightingCapture)lightingCapture->pass("LocalDirect",0,directInputs,firstLight,batch.count,drawn,hr);
                 if(drawn&&!check(hr,"local direct light batch")){d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);return false;}
                 firstLight+=N;
@@ -5160,7 +5174,7 @@ public:
             if(!whole)for(unsigned b=0;b<fogBatches;++b){const auto& r=atmosphere.fogRects[b];if(!r.area())continue;
                 if(any){area.left=std::min(area.left,r.left);area.top=std::min(area.top,r.top);area.right=std::max(area.right,r.right);area.bottom=std::max(area.bottom,r.bottom);}else area=r;
                 any=true;}
-            if(!any){localScissorBatches+=fogBatches;localScissorSkipped+=fogBatches;sourceTrace.batch(true,0,localDirectCount,area,false,0);sourceTrace.combine=NorthlightLocalLightTrace::Stage::Clipped;
+            if(!any){localScissorBatches+=fogBatches;localScissorSkipped+=fogBatches;localSourceBatch(true,0,localDirectCount,area,false,0);sourceTrace.combine=NorthlightLocalLightTrace::Stage::Clipped;
                 if(lightingCapture)lightingCapture->skipped("LocalFog",0,localDirectCount,"all-batches-clipped");} // what localScissor counts for the batches it skips
             else{
             const RECT clip={area.left,area.top,area.right,area.bottom};const D3DRECT cleared={area.left,area.top,area.right,area.bottom};
@@ -5179,7 +5193,7 @@ public:
                 d->SetPixelShaderConstantF(59,batch.fog[0].data(),NorthlightLocalLightSelection::FogBatchSize);
                 const auto& rect=atmosphere.fogRects[firstLight/NorthlightLocalLightSelection::FogBatchSize];
                 const bool drawn=localScissor(batch.position,batch.count,&rect);const HRESULT hr=drawn?quad(w/2,h/2):S_OK;
-                sourceTrace.batch(true,firstLight,batch.count,whole?NorthlightLocalLightScissor::Rect{0,0,long(w/2),long(h/2)}:rect,drawn,hr);
+                localSourceBatch(true,firstLight,batch.count,whole?NorthlightLocalLightScissor::Rect{0,0,long(w/2),long(h/2)}:rect,drawn,hr);
                 if(lightingCapture)lightingCapture->pass("LocalFog",1,fogInputs,firstLight,batch.count,drawn,hr);
                 if(drawn&&!check(hr,"local fog glow batch")){d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);return false;}
             }
@@ -5271,7 +5285,7 @@ public:
         d->SetTexture(3,textures[3]);
         d->SetTexture(15,nullptr);d->SetTexture(2,nullptr);d->SetSamplerState(2,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(2,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);
         if(!compositeOk)return false;composited=true;diagnosticFogResolved=fogResolved;diagnosticLocalLighting=currentLocalLighting;d->SetTexture(13,regionalFogTexture);
-        reportLocalSources(sourceTrace,diagnosticCapture,c[52][1],lampSunlitCut,c[58][2]);
+        reportLocalSources(sourceTrace,diagnosticCapture,rendererFrame,c[52][1],lampSunlitCut,c[58][2],w,h,nearZ,farZ,minZ,maxZ,waterMask!=nullptr,debug);
         if(diagnosticFiles){
             const unsigned capture=diagnosticCapture;
             const std::string& directory=gpuDiagnosticDirectory;

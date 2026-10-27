@@ -15,7 +15,20 @@ struct Row {
     NorthlightLocalLightSelection::Constant position{},color{},fog{};
     Rect directRect{},fogRect{};Stage direct=Stage::NotSelected,volume=Stage::NotSelected;
     std::int32_t directResult=0,fogResult=0;
+    struct DrawState {
+        unsigned known=0,viewport[4]={},scissorEnabled=0;float minZ=0,maxZ=0;
+        Rect scissor{};
+    } directState{},fogState{}; // known bits: viewport=1, scissor enable=2, scissor rect=4
 };
+inline const char* reason(const Row& r,bool volume){
+    const Stage stage=volume?r.volume:r.direct;
+    if(stage!=Stage::Submitted)return name(stage);
+    for(unsigned k=0;k<3;++k)if(!std::isfinite(r.color[k]))return "non-finite-selected-rgb";
+    if(!(std::max({r.color[0],r.color[1],r.color[2]})>0))return "zero-selected-rgb";
+    if(volume&&!std::isfinite(r.fog[0]))return "non-finite-extinction";
+    if(volume&&!(r.fog[0]>0))return "zero-extinction";
+    return "pixel-contribution-unmeasured";
+}
 struct Frame {
     static constexpr unsigned Capacity=8;
     std::array<Row,Capacity> rows{};unsigned count=0,omitted=0;
@@ -28,11 +41,17 @@ struct Frame {
                 r.slot=j;r.position=selection.position[j];r.color=selection.color[j];r.fog=selection.fog[j];
                 r.direct=r.volume=Stage::NotReached;break;}}
     }
-    void batch(bool volume,unsigned first,unsigned size,const Rect& rect,bool drawn,std::int32_t result){
+    bool wants(unsigned first,unsigned size)const{
+        if(!enabled)return false;
+        for(unsigned i=0;i<count;++i)if(rows[i].slot!=~0u&&rows[i].slot>=first&&rows[i].slot-first<size)return true;
+        return false;
+    }
+    void batch(bool volume,unsigned first,unsigned size,const Rect& rect,bool drawn,std::int32_t result,const Row::DrawState& state={}){
         if(!enabled)return;
         for(unsigned i=0;i<count;++i){auto& r=rows[i];if(r.slot==~0u||r.slot<first||r.slot-first>=size)continue;
             const Stage stage=!drawn?Stage::Clipped:result<0?Stage::Failed:Stage::Submitted;
-            if(volume){r.fogRect=rect;r.volume=stage;r.fogResult=result;}else{r.directRect=rect;r.direct=stage;r.directResult=result;}}
+            if(volume){r.fogRect=rect;r.volume=stage;r.fogResult=result;r.fogState=state;}
+            else{r.directRect=rect;r.direct=stage;r.directResult=result;r.directState=state;}}
     }
 };
 }

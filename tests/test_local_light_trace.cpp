@@ -24,9 +24,23 @@ int main(){
     assert(trace.rows[0].volume==Stage::Clipped&&trace.rows[3].volume==Stage::NotReached&&trace.rows[0].fogRect.right==60);
     assert(trace.rows[0].directRect.left==0&&trace.rows[0].directRect.top==2);
     trace.batch(true,0,4,fog,true,0);assert(trace.rows[3].volume==Stage::Submitted);
+    assert(trace.wants(8,4)&&!trace.wants(12,4)&&!trace.wants(0,0));
+    Row::DrawState state;state.known=7;state.viewport[2]=864;state.viewport[3]=558;state.maxZ=1;state.scissorEnabled=1;state.scissor=direct;
+    trace.batch(false,8,8,direct,true,0,state);
+    assert(trace.rows[0].directState.known==7&&trace.rows[0].directState.viewport[2]==864&&trace.rows[0].directState.scissor.right==30);
+    assert(trace.rows[0].fogState.known==0); // Per-pass observations cannot overwrite one another.
+    assert(!std::strcmp(reason(trace.rows[0],false),"pixel-contribution-unmeasured"));
+    trace.batch(true,8,4,fog,true,0);trace.rows[0].fog[0]=0;
+    assert(!std::strcmp(reason(trace.rows[0],true),"zero-extinction"));
+    trace.rows[0].color={};assert(!std::strcmp(reason(trace.rows[0],false),"zero-selected-rgb"));
+    trace.rows[0].color[0]=NAN;assert(!std::strcmp(reason(trace.rows[0],false),"non-finite-selected-rgb"));
+    trace.rows[0].color[0]=.1f;trace.rows[0].fog[0]=NAN;assert(!std::strcmp(reason(trace.rows[0],true),"non-finite-extinction"));
+    trace.batch(false,8,8,direct,true,-1,state);assert(!std::strcmp(reason(trace.rows[0],false),"failed"));
+    trace.batch(false,8,8,direct,false,0);assert(!std::strcmp(reason(trace.rows[0],false),"clipped")&&trace.rows[0].directState.known==0);
     assert(!std::memcmp(&before,&selection,sizeof selection)&&!std::memcmp(sources.data(),published.data(),sizeof published));
     trace.begin(false,published.data(),11,selection);trace.batch(false,0,16,direct,true,0);
     assert(!trace.enabled&&trace.count==0&&trace.omitted==0);
+    assert(!trace.wants(0,136));
     trace.begin(true,nullptr,11,selection);assert(trace.count==0);
     trace.begin(true,published.data(),0,selection);assert(trace.count==0);
     std::puts("Bounded source identity, reordered slots, submit/clip/failure, exact inputs and disabled path pass");

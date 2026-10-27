@@ -175,8 +175,10 @@ test_night_floor_wiring.py
 test_northlight_install.py
 test_outdoor_light_profiles.py
 test_particle_light_capture.py
+test_particle_light_diagnostics.py
 test_particle_light_proof.py
 test_particle_light_proof_client.py
+test_particle_lighting_gpu.py
 test_particle_lights.py
 test_particle_texture_stats.py
 test_pending_release_wiring.py
