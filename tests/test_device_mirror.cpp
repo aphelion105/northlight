@@ -376,6 +376,15 @@ static void diagnosticConstantWrites(){
  }
  auto* shader=new Object<IDirect3DVertexShader9>();assert(SUCCEEDED(game.SetVertexShader(shader)));write();
  assert(SUCCEEDED(game.DrawPrimitive(D3DPT_TRIANGLELIST,0,1)));bank();
+ // Static positions/attenuation are uploaded once, before later sampled frames.
+ const auto staticReads=b.gets;
+ for(unsigned frame=1;frame<127;++frame){
+  m.setVsFloatWriteObservation(true); // Ordinary diagnostic frontend frames keep evidence.
+  values[0]+=.001f;assert(SUCCEEDED(game.SetVertexShaderConstantF(17,values,4)));
+  assert(SUCCEEDED(game.DrawPrimitive(D3DPT_TRIANGLELIST,0,1)));
+ }
+ assert(probe.sample(true,false,true,m.active(),127,1,m.vsFloat,m.vsFloatKnown,m.vsFloatWritten,0x7ff,true,sample));
+ assert(sample.fromWrite==0x7ff&&!sample.fromGet&&!std::memcmp(sample.rows+4,values+16,28*sizeof(float))&&b.gets==staticReads);
  b.failNext=true;assert(FAILED(game.DrawPrimitive(D3DPT_TRIANGLELIST,0,1)));empty();
  assert(SUCCEEDED(game.SetVertexShader(nullptr)));shader->Release();
  // Successful overlapping SWVP writes prove only the stored prefix; empty/invalid writes add nothing.
