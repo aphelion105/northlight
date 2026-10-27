@@ -96,6 +96,9 @@ constexpr std::uint16_t kExpressIdle=0xFFFF;   // ExpressTask::behindCmd: the re
 // behindCmd / startNs are written by the replay thread before it clears the mailbox (the poster reads them after that handshake): the last command executed, and nowNs() at serve start (only when `timed`).
 struct ExpressTask {void (*fn)(void*);void* arg;bool (*ready)(void*);bool timed;std::uint16_t behindCmd;std::uint64_t startNs;};
 struct ExpressTimes {std::uint16_t behindCmd=kExpressIdle;std::uint64_t startNs=0;};   // what a timed runExpress hands back
+// Counts observations, not elapsed time: a held publication proves work existed
+// while replay was asleep; it does not make the whole queue-idle span avoidable.
+struct WakePublicationDiagnostics {std::uint64_t heldBatches=0,heldCommands=0,heldBytes=0,wakeSignals=0;};
 class Queue {
     struct Chunk {
         std::atomic<Chunk*> next{nullptr};
@@ -120,6 +123,7 @@ class Queue {
     // Written by the producer at every commit.
     alignas(kLine) std::atomic<std::uint64_t> recorded_{0};
     std::atomic<std::uint64_t> diagnosticPublished_{0},diagnosticPublishSerial_{0};
+    Counter diagnosticHeldBatches_{0},diagnosticHeldCommands_{0},diagnosticHeldBytes_{0},diagnosticWakeSignals_{0};
     bool idleTracking_=false;   // configured by the producer before the consumer starts; immutable during replay
     // Consumer-private.
     alignas(kLine) Chunk* rchunk_;
@@ -192,6 +196,7 @@ class Queue {
     void wake(){
         lazyWake_=false;lazyCmds_=lazyBytes_=0;
         if(sleeping_.load()&&sleeping_.exchange(false)){
+            if(idleTracking_)own(diagnosticWakeSignals_);
 #ifdef NORTHLIGHT_STREAM_CHECK_WAIT
             ++wakeSignals_;
 #endif
@@ -206,7 +211,13 @@ class Queue {
         std::atomic_thread_fence(std::memory_order_seq_cst);   // as in publish()
         own(stats.publishes);raiseMax(stats.highWaterDepth,recorded_.load(std::memory_order_relaxed)-replayed_.load(std::memory_order_relaxed));
         lazyCmds_+=c;lazyBytes_+=b;
-        if(lazyCmds_<kLazyWakeCommands&&lazyBytes_<kLazyWakeBytes){lazyWake_=true;return;}
+        if(lazyCmds_<kLazyWakeCommands&&lazyBytes_<kLazyWakeBytes){
+            lazyWake_=true;
+            if(idleTracking_&&sleeping_.load()){
+                own(diagnosticHeldBatches_);own(diagnosticHeldCommands_,c);own(diagnosticHeldBytes_,b);
+            }
+            return;
+        }
         wake();
     }
     void beginDiagnosticPublish(){if(idleTracking_)diagnosticPublishSerial_.store(diagnosticPublishSerial_.load(std::memory_order_relaxed)+1,std::memory_order_release);}
@@ -330,6 +341,9 @@ public:
         wake();
     }
     std::uint64_t recordedSeq()const{return recorded_.load(std::memory_order_acquire);}
+    WakePublicationDiagnostics wakePublicationDiagnostics()const{
+        return {get(diagnosticHeldBatches_),get(diagnosticHeldCommands_),get(diagnosticHeldBytes_),get(diagnosticWakeSignals_)};
+    }
     // Producer only, before start/restart of the consumer. No producer-private
     // queue cursor is read by the consumer or written by this diagnostic.
     void trackIdlePublications(bool on){idleTracking_=on;if(on){diagnosticPublished_.store(recorded_.load(std::memory_order_relaxed)-sinceCmds_,std::memory_order_relaxed);diagnosticPublishSerial_.store(0,std::memory_order_relaxed);}}
