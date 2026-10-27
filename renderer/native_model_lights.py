@@ -29,10 +29,13 @@ def build(assets, work, read_archive):
 
     stage('equipment_model_lights', 'equipment-lights-staged.mpq',
           lambda out: build_equipment_emitters.build(assets, out),
-          'No supported equipment emitters', ('item\\objectcomponents\\', 'spells\\'))
+          'No supported equipment emitters', ('item\\', 'spells\\'))
     stage('spell_model_lights', 'spell-lights-staged.mpq',
           lambda out: build_spell_emitters.build(assets, out, excluded=set(payload)),
           'No supported spell emitters', ('spells\\',))
+    stage('creature_model_lights', 'creature-lights-staged.mpq',
+          lambda out: build_mount_emitters.build_creatures(assets, out, excluded=set(payload)),
+          'No supported creature emitters', ('creature\\',))
     # Creature entries are server-owned. A fresh client may have no WDB yet;
     # the renderer's live-particle path still handles visible mount effects.
     cache = assets.client / 'Cache' / 'WDB' / assets.locale / 'creaturecache.wdb'
@@ -44,7 +47,7 @@ def build(assets, work, read_archive):
             steps.append({'step': 'mount_model_lights', 'skipped': 'Unavailable supported server cache: ' + str(error)})
         else:
             stage('mount_model_lights', 'mount-lights-staged.mpq',
-                  lambda out: build_mount_emitters.build(assets, blob, out),
+                  lambda out: build_mount_emitters.build(assets, blob, out, excluded=set(payload)),
                   'No proven mount emitters in the resolved client/server models', ('creature\\',))
     else:
         steps.append({'step': 'mount_model_lights', 'skipped': 'No server creature cache; live particle lighting remains available'})
