@@ -66,6 +66,16 @@ float3 localNormal(float2 uv,float3 p) {
     float3 n=cross(tx,ty);n*=rsqrt(max(dot(n,n),1e-12));n=dot(n,-p)<0?-n:n;
     return n.x*LocalInverseView[0].xyz+n.y*LocalInverseView[1].xyz+n.z*LocalInverseView[2].xyz;
 }
+float3 localCubeTexelRay(float3 ray) {
+    float3 a=abs(ray);float major=max(a.x,max(a.y,a.z));float3 direction=ray/major;
+    // POINT cube lookup returns the nearest texel's depth, not the depth on
+    // the original continuous ray. Use that texel's centre for both the lookup
+    // and the receiver plane, including at face boundaries.
+    float3 center=(floor((direction+1)*(.5/LocalShadow.z))+.5)*(2*LocalShadow.z)-1;
+    center=clamp(center,-1+LocalShadow.z,1-LocalShadow.z);
+    return (a.x>=a.y&&a.x>=a.z)?float3(direction.x,center.yz):
+        (a.y>=a.z?float3(center.x,direction.y,center.z):float3(center.xy,direction.z));
+}
 float localVisibility(float3 delta,float3 normal) {
     float distance=length(delta);
     // Task 43: dot(normal,delta)>=0 is a face turned from the lamp (facing 0, estimate 0): the correction is 0 whatever
@@ -77,19 +87,21 @@ float localVisibility(float3 delta,float3 normal) {
     float3 biased=delta+normal*LocalDepthInfo.w*(1+grazing*2);
     float3 axis=abs(direction.z)<.9?float3(0,0,1):float3(0,1,0);
     float3 tangent=normalize(cross(direction,axis)),bitangent=cross(direction,tangent);
+    float plane=dot(normal,biased);
+    if(plane>=-.0001)return 1; // The normal offset has passed the light's plane.
+    float depthA=LocalShadow.y/(LocalShadow.y-LocalShadow.x);
+    float3 depthPlane=normal*(depthA*LocalShadow.x/plane);
     float angular=2*LocalShadow.z*LocalShadow.w;
     float visibility=0;
     [unroll]for(int i=0;i<4;++i) {
         float2 offset=float2((i==0||i==2)?-.5:.5,(i<2)?-.5:.5);
-        float3 ray=biased+distance*angular*(tangent*offset.x+bitangent*offset.y);
-        // Receiver plane intersection for each perturbed ray prevents PCF
-        // self-shadow on sloping surfaces; avoid unbounded grazing corrections.
-        float denom=dot(normal,ray);float numerator=dot(normal,biased);
-        float scale=abs(denom)>.1*distance?clamp(numerator/denom,.8,1.2):1;
-        float major=max(abs(ray.x),max(abs(ray.y),abs(ray.z)))*scale;
-        float receiver=LocalShadow.y/(LocalShadow.y-LocalShadow.x)*(1-LocalShadow.x/max(major,LocalShadow.x));
+        float3 ray=localCubeTexelRay(biased+distance*angular*(tangent*offset.x+bitangent*offset.y));
+        // Projected depth is affine in this face ray. No per-tap division or
+        // grazing-angle fallback: both previously made a plane shadow itself.
+        float deltaDepth=dot(depthPlane,ray);
+        float receiver=saturate(depthA-deltaDepth);
         float stored=texCUBElod(LocalCube,float4(ray,0)).r;
-        visibility+=receiver<=stored+.000002?1:0;
+        visibility+=(deltaDepth<=0||receiver<=stored+.000002)?1:0;
     }
     return visibility*.25;
 }
