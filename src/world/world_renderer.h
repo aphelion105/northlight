@@ -1780,6 +1780,12 @@ private:
                     pointTransmission=NorthlightGI::WorldScene{};terrainDeferred=false;error.clear();
                     shadowPlanBuilt=NorthlightShadowTerrain::build(replacement->scene(),shadowTerrain,center,*plan,error,terrainAdmission,reach,{},true,replacement.get(),&meshPreparation);
                 }
+                if(shadowPlanBuilt){terrainDeferred=false; // an oversized reservation may have been refused before a successful fallback
+                    if(plan->pagingChunks)logf("WORLD shadow geometry prepared in bounded chunks after contiguous allocation refusal");
+                }else if(!terrainDeferred&&error=="Geometry allocation deferred"){
+                    const auto budget=NorthlightGeometryMemory::inBuildBudget();terrainSample=workerMemory(budget);
+                    terrainDeferred=true;terrainRequired=budget.available;terrainRequiredLargest=budget.largest;
+                }
                 if(!terrainLoaded||!shadowPlanBuilt){
                     if(terrainDeferred){
                         meshPreparation.reset();
@@ -1801,6 +1807,10 @@ private:
                 {std::lock_guard<std::mutex> lock(mutex);if(residentPages&&residentMap==r.map)resident=residentPages;}
                 NorthlightWorldMeshPages::Options pagingOptions;pagingOptions.resident=resident.get();pagingOptions.preparation=&meshPreparation;
                 if(!NorthlightWorldMeshPages::build(*plan,*pages,error,terrainAdmission,pagingOptions)){
+                    if(!terrainDeferred&&error=="Paged mesh worker allocation failed"){
+                        const auto budget=NorthlightGeometryMemory::inBuildBudget();terrainSample=workerMemory(budget);
+                        terrainDeferred=true;terrainRequired=budget.available;terrainRequiredLargest=budget.largest;
+                    }
                     if(terrainDeferred){
                         meshPreparation.reset();
                         stallBegin("mesh-page",terrainSample,terrainRequired,terrainRequiredLargest);
@@ -1812,6 +1822,10 @@ private:
                 profileMemory("after-pages",plan.get(),nullptr,pages.get());
                 for(const auto& page:pages->pages)if(page.elided){++elided.pages;elided.bytes+=uint64_t(page.key.vertexBytes)+page.key.indexBytes;}
                 if(!NorthlightWorldMeshPages::seal(*plan,pages,error,terrainAdmission)){
+                    if(!terrainDeferred&&error=="paged ownership allocation failed"){
+                        const auto budget=NorthlightGeometryMemory::inBuildBudget();terrainSample=workerMemory(budget);
+                        terrainDeferred=true;terrainRequired=budget.available;terrainRequiredLargest=budget.largest;
+                    }
                     if(terrainDeferred){
                         meshPreparation.reset();
                         stallBegin("mesh-page-seal",terrainSample,terrainRequired,terrainRequiredLargest);

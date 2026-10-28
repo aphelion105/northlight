@@ -8,6 +8,7 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 namespace NorthlightWorldMeshPages { struct Plan; }
@@ -15,6 +16,38 @@ namespace NorthlightWorldMesh { struct PreparationIdentity; }
 
 // Worker-thread preparation only. No D3D, game callbacks or mutable global data.
 namespace NorthlightWorldMesh {
+// Temporary shadow geometry, addressed in fixed-size blocks when a contiguous
+// scene cannot be admitted. A block never exceeds 512 KiB.
+template<class T> class ChunkedBuffer {
+    static_assert(std::is_trivially_copyable_v<T>,"chunked shadow elements must not throw during copy");
+    static constexpr size_t BlockSize=512u*1024u/sizeof(T);
+    std::vector<std::unique_ptr<T[]>> blocks_;size_t size_=0;
+    const NorthlightGI::AllocationAdmission* admit_=nullptr;
+public:
+    explicit ChunkedBuffer(const NorthlightGI::AllocationAdmission* admit=nullptr):admit_(admit){}
+    size_t size()const{return size_;}bool empty()const{return !size_;}
+    const T& operator[](size_t i)const{return blocks_[i/BlockSize][i%BlockSize];}
+    T& operator[](size_t i){return blocks_[i/BlockSize][i%BlockSize];}
+    void reserve(size_t){}
+    void push_back(const T& value){
+        if(size_%BlockSize==0){if(admit_&&*admit_&&!(*admit_)(1024u*1024u))throw std::bad_alloc();blocks_.push_back(std::make_unique<T[]>(BlockSize));}
+        (*this)[size_++]=value;
+    }
+    void resize(size_t count){while(size_<count)push_back(T{});}
+    struct Iterator {const ChunkedBuffer* owner;size_t i;const T& operator*()const{return (*owner)[i];}Iterator& operator++(){++i;return *this;}bool operator!=(const Iterator& b)const{return i!=b.i;}};
+    Iterator begin()const{return {this,0};}Iterator end()const{return {this,size_};}
+    template<class It> void insert(Iterator,It first,It last){for(;first!=last;++first)push_back(*first);}
+    void detachAdmission(){admit_=nullptr;}
+    uint64_t bytes()const{return blocks_.capacity()*sizeof(blocks_[0])+blocks_.size()*BlockSize*sizeof(T);}
+    void accountMemory(NorthlightMemoryFootprint::Counter& memory,NorthlightMemoryFootprint::Kind kind)const{memory.vector(NorthlightMemoryFootprint::Metadata,blocks_);for(const auto& block:blocks_)memory.allocation(kind,block.get(),BlockSize*sizeof(T));}
+};
+struct ChunkedShadowScene {
+    explicit ChunkedShadowScene(const NorthlightGI::AllocationAdmission* admit):vertices(admit),triangles(admit){}
+    ChunkedBuffer<NorthlightGI::WorldVertex> vertices;
+    ChunkedBuffer<NorthlightGI::WorldTriangle> triangles;
+    std::vector<NorthlightGI::WorldMaterial> materials;
+    std::vector<NorthlightGI::WorldPlacementCoverage> completePlacements;
+};
 struct Batch {
     // start is an index-buffer element offset; count is a triangle count.
     uint32_t start=0,count=0,material=0;
@@ -96,9 +129,16 @@ struct WorldMeshUploadPlan {
     // Shadow-only builders may move their vertices here before page allocation.
     // GI and borrowed scenes remain immutable and use source as before.
     std::shared_ptr<const std::vector<NorthlightGI::WorldVertex>> pagingVertices;
+    std::shared_ptr<const ChunkedBuffer<NorthlightGI::WorldVertex>> pagingChunks;
+    std::shared_ptr<const ChunkedBuffer<uint32_t>> pagingIndices;
     const std::vector<NorthlightGI::WorldVertex>* verticesForPaging()const{
         return pagingVertices?pagingVertices.get():(source?&source->vertices:nullptr);
     }
+    bool hasPagingVertices()const{return pagingChunks||verticesForPaging();}
+    size_t pagingVertexCount()const{return pagingChunks?pagingChunks->size():(verticesForPaging()?verticesForPaging()->size():0);}
+    const NorthlightGI::WorldVertex& pagingVertex(size_t i)const{return pagingChunks?(*pagingChunks)[i]:(*verticesForPaging())[i];}
+    size_t pagingIndexCount()const{return pagingIndices?pagingIndices->size():indices.size();}
+    uint32_t pagingIndex(size_t i)const{return pagingIndices?(*pagingIndices)[i]:indices[i];}
     std::shared_ptr<const std::vector<PreparationIdentity>> preparationLayout;
     std::set<std::pair<int,int>> fixedTerrainChunks;
     uint32_t vertexCount=0,triangleCount=0;
@@ -126,6 +166,8 @@ struct WorldMeshUploadPlan {
         if(preparationLayout){bytes+=sizeof(*preparationLayout)+preparationLayout->capacity()*sizeof(PreparationIdentity)+64;for(size_t i=0;i<preparationLayout->size();++i){const auto& piece=(*preparationLayout)[i];bytes+=piece.materials.capacity()*4;
             bool seen=false;for(size_t j=0;j<i;++j)if((*preparationLayout)[j].owner==piece.owner){seen=true;break;}if(!seen)bytes+=piece.retainedBytes;}}
         if(pagingVertices)bytes+=sizeof(*pagingVertices)+pagingVertices->capacity()*sizeof(NorthlightGI::WorldVertex)+64;
+        if(pagingChunks)bytes+=sizeof(*pagingChunks)+pagingChunks->bytes()+64;
+        if(pagingIndices)bytes+=sizeof(*pagingIndices)+pagingIndices->bytes()+64;
         for(const auto& owner:completePlacements)bytes+=owner.modelKey.capacity();
         for(const auto& material:materials)bytes+=material.bgra.capacity();
         bytes+=fixedTerrainChunks.size()*(sizeof(std::pair<int,int>)+4*sizeof(void*));
@@ -188,4 +230,6 @@ bool buildUploadPlan(const NorthlightGI::WorldScene& source,
                      const PlanOrder& order = {},
                      const std::vector<PreparationPiece>* sharedPieces = nullptr,
                      PreparationCache* preparation = nullptr);
+bool buildChunkedUploadPlan(const ChunkedShadowScene& source,WorldMeshUploadPlan& output,std::string& error,
+                            const NorthlightGI::AllocationAdmission& admit,const std::vector<NorthlightGI::WorldMaterial>* textures,const PlanOrder& order);
 } // namespace NorthlightWorldMesh

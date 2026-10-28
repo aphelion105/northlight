@@ -68,7 +68,7 @@ uint32_t spatialCell(Vec3 a,Vec3 b,Vec3 c,unsigned cellChunks){
 }
 }
 
-static bool buildCore(const NorthlightGI::WorldScene& scene,WorldMeshUploadPlan& output,std::string& error,const NorthlightGI::AllocationAdmission& admit,const std::vector<NorthlightGI::WorldMaterial>* textures,const PlanOrder& order,
+template<class Scene> static bool buildCore(const Scene& scene,WorldMeshUploadPlan& output,std::string& error,const NorthlightGI::AllocationAdmission& admit,const std::vector<NorthlightGI::WorldMaterial>* textures,const PlanOrder& order,
     size_t first=0,size_t count=SIZE_MAX,bool geometryOnly=false,const std::vector<uint32_t>* textureMap=nullptr,
     const std::vector<NorthlightLocalShadowSignature::Digest>* preparedIdentities=nullptr,std::vector<uint32_t>* batchCells=nullptr,std::vector<ContentCell>* recordCells=nullptr,std::vector<uint32_t>* triangleOrder=nullptr,bool validateVertices=true){
     const size_t triangleCount=count==SIZE_MAX?scene.triangles.size():count;
@@ -107,8 +107,8 @@ static bool buildCore(const NorthlightGI::WorldScene& scene,WorldMeshUploadPlan&
         // Group counts first, then prefix allocation and stable linear scatter.
         // This avoids one temporary vector/allocation chain for every batch and
         // moves all sorting/packing away from the game's render thread.
-        if(!allowed(triangleCount*sizeof(uint64_t)))return false;
-        std::vector<uint64_t> keys;keys.reserve(triangleCount);
+        auto keys=[&](){if constexpr(std::is_same_v<Scene,NorthlightGI::WorldScene>)return std::vector<uint64_t>{};else return ChunkedBuffer<uint64_t>{&admit};}();
+        if constexpr(std::is_same_v<Scene,NorthlightGI::WorldScene>){if(!allowed(triangleCount*sizeof(uint64_t)))return false;keys.reserve(triangleCount);}
         std::unordered_map<uint64_t,uint32_t> counts;
         counts.reserve(std::min<size_t>(scene.materials.size()+512,16384));
         uint64_t previousKey=0;uint32_t* previousCount=nullptr;
@@ -130,8 +130,10 @@ static bool buildCore(const NorthlightGI::WorldScene& scene,WorldMeshUploadPlan&
         for(const auto& pair:counts)groups.push_back({pair.first,pair.second,0});
         std::sort(groups.begin(),groups.end(),[](const Group&a,const Group&b){return a.key<b.key;});
         std::unordered_map<uint64_t,uint32_t> lookup;lookup.reserve(groups.size());
-        if(!allowed(triangleCount*3*sizeof(uint32_t)))return false;
-        next.indices.resize(triangleCount*3);if(triangleOrder)triangleOrder->resize(triangleCount);
+        std::shared_ptr<ChunkedBuffer<uint32_t>> chunkIndices;
+        if constexpr(std::is_same_v<Scene,NorthlightGI::WorldScene>){if(!allowed(triangleCount*3*sizeof(uint32_t)))return false;next.indices.resize(triangleCount*3);}
+        else{chunkIndices=std::make_shared<ChunkedBuffer<uint32_t>>(&admit);chunkIndices->resize(triangleCount*3);}
+        if(triangleOrder)triangleOrder->resize(triangleCount);
         if(!allowed(groups.size()*sizeof(Batch)))return false;next.batches.reserve(groups.size());
         uint32_t offset=0;
         for(uint32_t i=0;i<groups.size();++i){
@@ -146,7 +148,9 @@ static bool buildCore(const NorthlightGI::WorldScene& scene,WorldMeshUploadPlan&
         for(size_t i=0;i<triangleCount;++i){
             if(!i||keys[i]!=previousKey){groupIndex=lookup.at(keys[i]);previousKey=keys[i];}
             auto& group=groups[groupIndex];auto& batch=next.batches[groupIndex];const auto& t=scene.triangles[first+i];
-            if(triangleOrder)(*triangleOrder)[group.cursor/3]=uint32_t(i);next.indices[group.cursor++]=t.v0;next.indices[group.cursor++]=t.v1;next.indices[group.cursor++]=t.v2;
+            if(triangleOrder)(*triangleOrder)[group.cursor/3]=uint32_t(i);
+            if constexpr(std::is_same_v<Scene,NorthlightGI::WorldScene>){next.indices[group.cursor++]=t.v0;next.indices[group.cursor++]=t.v1;next.indices[group.cursor++]=t.v2;}
+            else{(*chunkIndices)[group.cursor++]=t.v0;(*chunkIndices)[group.cursor++]=t.v1;(*chunkIndices)[group.cursor++]=t.v2;}
             NorthlightLocalShadowSignature::Record* record=nullptr;
             if(records){
                 const auto a=scene.vertices[t.v0].position,b=scene.vertices[t.v1].position,c=scene.vertices[t.v2].position;
@@ -187,7 +191,7 @@ static bool buildCore(const NorthlightGI::WorldScene& scene,WorldMeshUploadPlan&
         next.localShadowRecords=std::move(records);
         // Per-triangle sort keys are dead after scatter. In a city they can
         // otherwise overlap another ~16 MiB of cutout upload textures.
-        std::vector<uint64_t>().swap(keys);
+        if constexpr(std::is_same_v<Scene,NorthlightGI::WorldScene>)std::vector<uint64_t>().swap(keys);else keys=ChunkedBuffer<uint64_t>{};
         if(!geometryOnly){next.materials.resize(scene.materials.size());
         for(size_t i=0;i<scene.materials.size();++i){
             const auto& meta=scene.materials[i];const auto& source=texel(i);auto& dest=next.materials[i];
@@ -203,8 +207,11 @@ static bool buildCore(const NorthlightGI::WorldScene& scene,WorldMeshUploadPlan&
             dest.textureIdentity=textureHash.finish();
             next.textureBytes+=dest.bgra.size();
         }}
-    }catch(...){error="Cannot allocate world mesh upload plan";return false;}
-    next.source=&scene;next.vertexCount=uint32_t(scene.vertices.size());next.triangleCount=uint32_t(triangleCount);
+        if(chunkIndices){chunkIndices->detachAdmission();next.pagingIndices=std::move(chunkIndices);}
+    }catch(const std::bad_alloc&){error="Geometry allocation deferred";return false;}
+     catch(...){error="Cannot allocate world mesh upload plan";return false;}
+    if constexpr(std::is_same_v<Scene,NorthlightGI::WorldScene>)next.source=&scene;
+    next.vertexCount=uint32_t(scene.vertices.size());next.triangleCount=uint32_t(triangleCount);
     next.vertexBytes=vertexBytes;next.indexBytes=indexBytes;
     output=std::move(next);return true;
 }
@@ -253,6 +260,8 @@ void WorldMeshUploadPlan::accountMemory(NorthlightMemoryFootprint::Counter& memo
     if(localShadowRecords){memory.allocation(Metadata,localShadowRecords.get(),sizeof(*localShadowRecords));memory.vector(Metadata,*localShadowRecords);}
     if(ownedSource&&memory.visit(ownedSource.get())){memory.add(Metadata,sizeof(*ownedSource));ownedSource->accountMemory(memory);}
     if(pagingVertices){memory.allocation(Metadata,pagingVertices.get(),sizeof(*pagingVertices));memory.vector(Upload,*pagingVertices);}
+    if(pagingChunks&&memory.visit(pagingChunks.get())){memory.add(Metadata,sizeof(*pagingChunks));pagingChunks->accountMemory(memory,Upload);}
+    if(pagingIndices&&memory.visit(pagingIndices.get())){memory.add(Metadata,sizeof(*pagingIndices));pagingIndices->accountMemory(memory,Upload);}
     if(preparationLayout&&memory.visit(preparationLayout.get())){
         memory.add(Metadata,sizeof(*preparationLayout));memory.vector(Metadata,*preparationLayout);
         for(const auto& part:*preparationLayout)memory.vector(Metadata,part.materials);
@@ -320,6 +329,7 @@ void PreparationCache::rememberPages(const WorldMeshUploadPlan& input,const Nort
     }catch(const std::bad_alloc&){/* Optional acceleration never refuses a prepared upload. */}
 }
 
+bool buildChunkedUploadPlan(const ChunkedShadowScene& scene,WorldMeshUploadPlan& output,std::string& error,const NorthlightGI::AllocationAdmission& admit,const std::vector<NorthlightGI::WorldMaterial>* textures,const PlanOrder& order){return buildCore(scene,output,error,admit,textures,order);}
 bool buildUploadPlan(const NorthlightGI::WorldScene& scene,WorldMeshUploadPlan& output,std::string& error,const NorthlightGI::AllocationAdmission& admit,const std::vector<NorthlightGI::WorldMaterial>* textures,const PlanOrder& order,const std::vector<PreparationPiece>* sources,PreparationCache* preparation){
     if(!preparation||!sources||sources->empty()||!preparation->impl_->limit)return buildCore(scene,output,error,admit,textures,order);
     const auto buildShared=[&]()->bool {

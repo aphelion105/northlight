@@ -56,6 +56,11 @@ assert 'entryLift.clear();reachState={};' in w  # a map change forgets both
 # Entry admitted: the build's own allocations are not a demand on the guard.
 assert 'geometryMemoryDemand.store(0,' in body('const uint64_t entryAvailable=', 'auto liftEntry')
 assert 'localSample=sample' in w and 'plan-deferred' in w
+# A real allocator failure must reach the same bounded retry as an admission refusal.
+for error in ('Geometry allocation deferred', 'Paged mesh worker allocation failed', 'paged ownership allocation failed'):
+    block=body('error=="'+error+'"', '}')
+    assert 'NorthlightGeometryMemory::inBuildBudget()' in block and 'terrainSample=workerMemory(budget)' in block
+    assert 'terrainDeferred=true' in block and 'terrainRequired=budget.available' in block and 'terrainRequiredLargest=budget.largest' in block
 assert 'BaseReach=928.f' in f and 'BackoffMs=30000' in f and '#include <windows.h>' not in f
 st = fp.src('shadow_terrain.h').read_text()
 assert 'constexpr float Radius=928.f;' in st
