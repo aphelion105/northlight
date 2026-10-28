@@ -23,15 +23,19 @@ class BoundedDirtyRegisters {
     // Unknown slots are never compared. Only the validity mask is initialized.
     std::array<T,Count*Width> values_;
     std::array<uint64_t,(Count+63)/64> valid_{};
-    bool known(std::size_t index) const noexcept {return (valid_[index/64]&(uint64_t(1)<<(index%64)))!=0;}
+    bool allKnown_=false;
+    bool known(std::size_t index) const noexcept {return allKnown_||(valid_[index/64]&(uint64_t(1)<<(index%64)))!=0;}
     void mark(std::size_t first,std::size_t last) noexcept {
+        if(allKnown_)return;
         for(std::size_t i=first;i<last;){
             const std::size_t boundary=std::min(last,(i/64+1)*64),length=boundary-i;
             const uint64_t mask=length==64?~uint64_t(0):((uint64_t(1)<<length)-1)<<(i%64);
             valid_[i/64]|=mask;i=boundary;
         }
+        if(first==0&&last==Count)allKnown_=true;
     }
     bool knownRange(std::size_t first,std::size_t last) const noexcept {
+        if(allKnown_)return true;
         for(std::size_t i=first;i<last;){
             const std::size_t boundary=std::min(last,(i/64+1)*64),length=boundary-i;
             const uint64_t mask=length==64?~uint64_t(0):((uint64_t(1)<<length)-1)<<(i%64);
@@ -110,7 +114,7 @@ public:
     }
     // Read only known registers, normally the latest used range or dirty span.
     const T* data()const noexcept {return values_.data();}
-    void reset() noexcept {valid_.fill(0);}
+    void reset() noexcept {valid_.fill(0);allKnown_=false;}
 };
 
 // The projection is the only difference between captured and desired floats.

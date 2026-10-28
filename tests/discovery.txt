@@ -153,6 +153,7 @@ test_m2_shader_families_client.py
 test_m2_visibility.py
 test_material_batch_bindings.py
 test_material_constant_spans.py
+test_replay_validity_fastpath.py
 test_material_capture_targets.py
 test_material_capture_targets_gpu.py
 test_material_early_alpha_gpu.py
