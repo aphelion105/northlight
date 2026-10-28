@@ -11,6 +11,7 @@
 #include "gpu_scene.h"
 #include "render_thread_probe.h"
 #include "shader_constant_usage.h"
+#include "replay_constants.h"
 
 // Prototype: one material-height replay per recognised draw; source textures remain intact.
 // Included after drop and logf. Original resources stay intact; displacement draws use private subdivided buffers.
@@ -394,6 +395,11 @@ public:
             for(unsigned i=0;i<8;++i)samplerState(packet->normalStage,keys.samplerKeys[i],sampler[i]);
             for(const auto& t:packet->textures){texture(t.stage,t.texture);for(unsigned i=0;i<13;++i)if(DeferredTexture::SamplerMask&(1u<<i))samplerState(t.stage,D3DSAMPLERSTATETYPE(i+1),t.sampler[i]);}
             auto floatConstants=[&](bool vertex,UINT first,const float* values,const float* before,UINT count,bool comparable){
+                if(comparable&&count>=192){
+                    const auto dirty=NorthlightReplayConstants::Detail::knownFloatSpan(before,values,count);
+                    if(needed(!dirty.count))step(vertex?d->SetVertexShaderConstantF(first+dirty.first,values+dirty.first*4,dirty.count):d->SetPixelShaderConstantF(first+dirty.first,values+dirty.first*4,dirty.count));
+                    return;
+                }
                 if(!needed(comparable&&(!count||!std::memcmp(before,values,size_t(count)*4*sizeof(float)))))return;
                 UINT begin=0,end=count;
                 // Keep one call in the original bank order. Only byte-identical
