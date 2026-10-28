@@ -187,6 +187,9 @@ public:
     if(bytes>UploadLimit-attempted_[lane]){++stats_[lane].uploadDeferred;++stats_[lane].uploadByteDeferred;return false;}
     if(NorthlightReplayGPU::CreateTimeBudget&&!ignoreTime_[lane]&&attempts_[lane]&&stats_[lane].createMs>=NorthlightReplayGPU::createBudgetMs()){++stats_[lane].uploadDeferred;++stats_[lane].timeDeferred;timeDeferred_[lane]=true;return false;}
     if(!admit(bytes)){++stats_[lane].admissionRejected;return false;}
+    // Admission may submit other work; keep the pending-array and byte bounds valid afterwards.
+    if(attempts_[lane]>=AttemptLimit){++stats_[lane].uploadDeferred;++stats_[lane].attemptDeferred;return false;}
+    if(bytes>UploadLimit-attempted_[lane]){++stats_[lane].uploadDeferred;++stats_[lane].uploadByteDeferred;return false;}
     const bool batched=batchable(*mesh);const size_t reserve=bytes+(batched?mesh->streams[0].stride:0);
     if(!transferMetadata(e,lane)||!room(lane,reserve,true))return false;
     ++attempts_[lane];attempted_[lane]+=bytes;
