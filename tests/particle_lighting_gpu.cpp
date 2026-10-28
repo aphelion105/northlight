@@ -6,13 +6,14 @@
 #include "particle_lights.h"
 static Image solid(float r,float g=0,float b=0,float a=0){Image im{1,1,D3DFMT_A32B32G32R32F,16,std::vector<unsigned char>(16)};const float p[]={r,g,b,a};std::memcpy(im.pixels.data(),p,16);return im;}
 int main(int argc,char** argv){
- assert(argc==3);constexpr unsigned W=66,H=50,N=W/2,M=H/2;
+ assert(argc==3||argc==4);constexpr unsigned W=66,H=50,N=W/2,M=H/2;
  WNDCLASSW wc{};wc.lpfnWndProc=DefWindowProcW;wc.lpszClassName=L"NorthlightParticleDrawProbe";wc.hInstance=GetModuleHandleW(nullptr);assert(RegisterClassW(&wc));
  auto window=CreateWindowExW(0,wc.lpszClassName,L"",WS_OVERLAPPED,0,0,W,H,nullptr,nullptr,wc.hInstance,nullptr);assert(window);
  auto module=LoadLibraryA(argv[2]);assert(module);auto create=reinterpret_cast<IDirect3D9*(WINAPI*)(UINT)>(GetProcAddress(module,"Direct3DCreate9"));assert(create);auto api=create(D3D_SDK_VERSION);assert(api);
  D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=window;pp.BackBufferWidth=W;pp.BackBufferHeight=H;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;
  IDirect3DDevice9* d=nullptr;ok(api->CreateDevice(0,D3DDEVTYPE_HAL,window,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_FPU_PRESERVE,&pp,&d));
  IDirect3DPixelShader9* ps[2]{};for(unsigned i=0;i<2;++i){auto code=read(std::string(argv[1])+"/"+(i?"LocalFog.bin":"LocalDirect.bin"));ok(d->CreatePixelShader(reinterpret_cast<const DWORD*>(code.data()),&ps[i]));}
+ IDirect3DPixelShader9* single=nullptr;if(argc==4){auto code=read(argv[3]);ok(d->CreatePixelShader(reinterpret_cast<const DWORD*>(code.data()),&single));}
  IDirect3DSurface9 *target=nullptr,*staging=nullptr;ok(d->CreateRenderTarget(N,M,D3DFMT_A32B32G32R32F,D3DMULTISAMPLE_NONE,0,FALSE,&target,nullptr));ok(d->CreateOffscreenPlainSurface(N,M,D3DFMT_A32B32G32R32F,D3DPOOL_SYSTEMMEM,&staging,nullptr));
  for(unsigned s=0;s<16;++s){for(auto k:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})ok(d->SetSamplerState(s,k,D3DTEXF_POINT));ok(d->SetSamplerState(s,D3DSAMP_MIPFILTER,D3DTEXF_NONE));for(auto k:{D3DSAMP_ADDRESSU,D3DSAMP_ADDRESSV})ok(d->SetSamplerState(s,k,D3DTADDRESS_CLAMP));ok(d->SetSamplerState(s,D3DSAMP_SRGBTEXTURE,FALSE));}
  ok(d->SetDepthStencilSurface(nullptr));ok(d->SetVertexShader(nullptr));ok(d->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1));
@@ -28,7 +29,8 @@ int main(int argc,char** argv){
  const Vertex quad[]={{-.5f,-.5f,0,1,0,0},{N-.5f,-.5f,0,1,1,0},{-.5f,M-.5f,0,1,0,1},{N-.5f,M-.5f,0,1,1,1}};
  auto pixels=[&]{ok(d->GetRenderTargetData(target,staging));D3DLOCKED_RECT l{};ok(staging->LockRect(&l,nullptr,D3DLOCK_READONLY));std::vector<float> out(N*M*4);for(unsigned y=0;y<M;++y)std::memcpy(out.data()+y*N*4,static_cast<char*>(l.pBits)+y*l.Pitch,N*16);ok(staging->UnlockRect());return out;};
  unsigned cases=0,hits=0,failures=0;
- for(unsigned count:{1u,4u,8u,9u,12u,14u,16u,17u,24u,32u,128u,136u})for(unsigned slot:{0u,count-1})for(unsigned kind=0;kind<2;++kind)for(float x:{-18.f,0.f,18.f}){
+ std::vector<unsigned> counts={1,4,8,9,12,14,16,17,24,32,128,136};if(single)counts.insert(counts.end(),{2,3,5,6});
+ for(unsigned count:counts)for(unsigned slot:{0u,count-1})for(unsigned kind=0;kind<2;++kind)for(float x:{-18.f,0.f,18.f}){
   NorthlightParticleLights::Frame frame;NorthlightLocalLightSelection::Tracker tracker;
   NorthlightLocalLightSelection::Selection published;std::vector<NorthlightLocalLights::Light> fixed;
   const NorthlightParticleLights::Sample sample{{c[6][0]+x,c[6][1],c[6][2]+26},{.04f,.12f,.7f}};
@@ -48,6 +50,8 @@ int main(int argc,char** argv){
    for(unsigned first=0;first<count;first+=batchSize){
     float pos[8][4]{},color[8][4]{},fog[8][4]{};for(unsigned i=0;i<batchSize&&first+i<count;++i){std::memcpy(pos[i],lights.position[first+i].data(),16);std::memcpy(color[i],lights.color[first+i].data(),16);std::memcpy(fog[i],lights.fog[first+i].data(),16);}
     ok(d->SetPixelShaderConstantF(36,pos[0],batchSize));ok(d->SetPixelShaderConstantF(44,color[0],batchSize));if(kind)ok(d->SetPixelShaderConstantF(59,fog[0],batchSize));
+    // Only the candidate side selects the optional one-light shader. All fog and multi-light controls retain their original shader.
+    ok(d->SetPixelShader(single&&scissor&&!kind&&count-first==1?single:ps[kind]));
     NorthlightLocalLightScissor::Bounds bounds;for(unsigned i=0;i<batchSize&&first+i<count;++i)NorthlightLocalLightScissor::add(view,pos[i],bounds);const auto r=NorthlightLocalLightScissor::rect(view,bounds);
     ok(d->SetRenderState(D3DRS_SCISSORTESTENABLE,scissor));if(scissor){if(!r.area())continue;const RECT rr{r.left,r.top,r.right,r.bottom};ok(d->SetScissorRect(&rr));}
     D3DVIEWPORT9 vp{0,0,N,M,0,1};ok(d->SetViewport(&vp));ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(Vertex)));ok(d->EndScene());
@@ -58,5 +62,5 @@ int main(int argc,char** argv){
   hits+=hit;++cases;
  }
  std::printf("particle direct/fog GPU cases=%u lit=%u failures=%u stationaryFrames=64 actualItemGeometry=0\n",cases,hits,failures);assert(hits==cases);
- for(unsigned sampler=0;sampler<16;++sampler)ok(d->SetTexture(sampler,nullptr));ok(d->SetPixelShader(nullptr));for(auto t:owned)t->Release();for(auto shader:ps)shader->Release();staging->Release();target->Release();d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);UnregisterClassW(wc.lpszClassName,wc.hInstance);return failures?1:0;
+ for(unsigned sampler=0;sampler<16;++sampler)ok(d->SetTexture(sampler,nullptr));ok(d->SetPixelShader(nullptr));for(auto t:owned)t->Release();for(auto shader:ps)shader->Release();if(single)single->Release();staging->Release();target->Release();d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);UnregisterClassW(wc.lpszClassName,wc.hInstance);return failures?1:0;
 }

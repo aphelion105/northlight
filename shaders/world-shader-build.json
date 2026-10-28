@@ -1,6 +1,6 @@
 {
   "bump_include_sha256": "03f90009cf23e93260c70a31d78999b3bd60aebf8bbcf0d5d6e5e02bf5ef3ec1",
-  "source_sha256": "151a173c80256948fd5ab2a5248f4bad6346fbe6b662c8068d6426635ac86abc",
+  "source_sha256": "67225aa61bb1d2e231730bd5a2f98ab13323c90761b75826291bbf35080a9c24",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
   "game_launched": false,
@@ -484,7 +484,40 @@
         "dp2add": 2
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "7c6f7c951bf77c97e036ec1601c17228fa2bef36e6910e6ac074fcdc9a6d1a1d"
+      "source_sha256": "67225aa61bb1d2e231730bd5a2f98ab13323c90761b75826291bbf35080a9c24"
+    },
+    "LocalDirect1": {
+      "target": "ps_3_0",
+      "bytes": 3684,
+      "sha256": "5a704607eace94d0f11503d0da201e3faafd90839f5fc197c8f9822363ea5597",
+      "static_instruction_slots": 190,
+      "temporary_registers": 8,
+      "samplers": [
+        1,
+        9,
+        11,
+        12,
+        14
+      ],
+      "instructions": {
+        "mul": 48,
+        "frc": 1,
+        "add": 49,
+        "max": 2,
+        "mov": 9,
+        "min": 2,
+        "texldl": 5,
+        "if": 4,
+        "else": 4,
+        "rcp": 10,
+        "cmp": 21,
+        "endif": 4,
+        "dp3": 9,
+        "rsq": 5,
+        "dp2add": 2
+      },
+      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "source_sha256": "67225aa61bb1d2e231730bd5a2f98ab13323c90761b75826291bbf35080a9c24"
     },
     "LocalDirect16": {
       "target": "ps_3_0",

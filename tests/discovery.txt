@@ -142,6 +142,7 @@ test_local_fog_profile.py
 test_local_ini.py
 test_local_light_batches.py
 test_local_light_selection.py
+test_local_single_selection.py
 test_local_light_trace.py
 test_local_overlap_gpu.py
 test_local_source_shadows.py

@@ -81,6 +81,12 @@ struct WorldScreenEffectsTest {
         assert(w.fogVolumeShader(true,false)==w.fogPS&&!w.fogAmbientPS);
         w.fogAmbientRefused=false;assert(w.fogVolumeShader(true,false)==w.fogAmbientPS&&w.fogAmbientPS);
         std::puts("WORLD_FOG_AMBIENT_VARIANT_PASS zeroSource=1 residentReuse=1 optionalFallback=1");
+        assert(w.localDirectShader(2)==w.localDirectPS&&!w.localDirectSinglePS);
+        auto* single=w.localDirectShader(1);assert(single&&single!=w.localDirectPS&&w.localDirectShader(1)==single);
+        drop(w.localDirectSinglePS);w.localDirectSingleRefused=true;
+        assert(w.localDirectShader(1)==w.localDirectPS&&!w.localDirectSinglePS);
+        w.localDirectSingleRefused=false;assert(w.localDirectShader(1)==w.localDirectSinglePS&&w.localDirectSinglePS);
+        std::puts("WORLD_LOCAL_SINGLE_VARIANT_PASS exactCount=1 residentReuse=1 optionalFallback=1");
     }
     static void noSceneTargets(const WorldRenderer& w){
         assert(!w.geometryTargetsReady&&!w.shadowDepth&&!w.shadowCacheDepth&&!w.shadowScratch&&!w.probePrev&&!w.actorVisibility);
