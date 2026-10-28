@@ -24,7 +24,9 @@ struct Kernel {
     struct Src {std::uint8_t kind=0,relative=0,channel=0,modifier=0,swizzle[4]={};std::uint16_t index=0;std::int16_t definition=-1;};
     struct Op {unsigned code=0;int operands=0;std::uint8_t target=0,mask=0;bool address=false,saturate=false;Src source[3];};
     enum Evaluator:std::uint8_t {Generic,SingleFirst,SingleIndexFirst,WeightedCommuted,Weighted};
-    std::vector<Op> ops;std::vector<std::uint8_t> cleared;unsigned inputMask=0x10000u;bool valid=false,skin=false;Evaluator evaluator=Generic; /* skin alone also authorizes the existing envelope. */
+    std::vector<Op> ops;std::vector<std::uint8_t> cleared;
+    unsigned inputMask:17,valid:1,skin:1,evaluator:3; /* skin alone also authorizes the existing envelope. */
+    Kernel():inputMask(0x10000u),valid(false),skin(false),evaluator(Generic){}
     bool singleSkin()const{return evaluator==SingleFirst||evaluator==SingleIndexFirst;}
     bool commutedSkin()const{return evaluator==WeightedCommuted;}
 };
