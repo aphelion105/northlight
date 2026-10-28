@@ -307,6 +307,7 @@ public:
         return true;}
     // Diagnostics: who calls it. The first locally answered call with Diagnostics on, and once more 600 frames later; with Diagnostics off it looks again every 600 frames.
     unsigned callerLogs=0;std::uint64_t callerNextFrame=0;std::function<void(const char*)> callerLog;bool (*callerDiag)()=nullptr;
+    unsigned resetTraceCount=0;
     void logCaller(void* address){
         callerNextFrame=core.frameNo+600;if(!callerLog||!callerDiag||!callerDiag())return;
         ++callerLogs;char b[300];std::snprintf(b,sizeof b,"CSTREAM TestCooperativeLevel caller=%s",core.callerModule(address));callerLog(b);}
@@ -489,6 +490,15 @@ public:
         const bool profile=callerLog&&callerDiag&&callerDiag();
         const auto start=profile?nowNs():0;
         if(profile){
+#ifdef _WIN32
+            if(resetTraceCount<32){
+                ++resetTraceCount;
+                void* stack[12]={};const USHORT count=CaptureStackBackTrace(0,12,stack,nullptr);
+                char detail[768];std::snprintf(detail,sizeof detail,"CSTREAM RESET_DETAIL frame=%llu tick=%lu sequence=%u focus=%p active=%p foreground=%p oldWindow=%p newWindow=%p oldSwap=%u newSwap=%u oldAutoDepth=%u newAutoDepth=%u oldDepthFormat=%u newDepthFormat=%u oldFlags=0x%08lx newFlags=0x%08lx oldRefresh=%u newRefresh=%u oldInterval=%u newInterval=%u stackCount=%u",
+                    (unsigned long long)core.frameNo,(unsigned long)GetTickCount(),resetTraceCount,GetFocus(),GetActiveWindow(),GetForegroundWindow(),pp.hDeviceWindow,p->hDeviceWindow,unsigned(pp.SwapEffect),unsigned(p->SwapEffect),unsigned(pp.EnableAutoDepthStencil),unsigned(p->EnableAutoDepthStencil),unsigned(pp.AutoDepthStencilFormat),unsigned(p->AutoDepthStencilFormat),(unsigned long)pp.Flags,(unsigned long)p->Flags,pp.FullScreen_RefreshRateInHz,p->FullScreen_RefreshRateInHz,pp.PresentationInterval,p->PresentationInterval,unsigned(count));callerLog(detail);
+                for(unsigned i=0;i<count;++i){char entry[384];std::snprintf(entry,sizeof entry,"CSTREAM RESET_STACK frame=%llu sequence=%u index=%u address=%p module=%s",(unsigned long long)core.frameNo,resetTraceCount,i,stack[i],core.callerModule?core.callerModule(stack[i]):"unknown");callerLog(entry);}
+            }else if(resetTraceCount==32){++resetTraceCount;callerLog("CSTREAM RESET_STACK suppressed after=32 reason=limit");}
+#endif
             // Capture the client caller before crossing to the replay thread.
             char line[768];std::snprintf(line,sizeof line,"CSTREAM RESET begin frame=%llu caller=%s coop=0x%08lx previous=%ux%u/%u windowed=%u msaa=%u/%lu buffers=%u interval=%u requested=%ux%u/%u windowed=%u msaa=%u/%lu buffers=%u interval=%u refresh=%u flags=0x%08lx",
                 (unsigned long long)core.frameNo,core.callerModule?core.callerModule(__builtin_return_address(0)):"unknown",(unsigned long)std::uint32_t(core.coopState.load()),
