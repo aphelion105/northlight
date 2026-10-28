@@ -84,6 +84,11 @@ struct Hold{
     }
     unsigned resets=0;                            // non-finite input or state: the hold was reset and went on (the world renderer logs the first)
     void update(const Frame& raw,bool wanted,float dt){
+        // An untouched, inactive hold only advances its publication stamp.
+        if(!wanted&&!out.active&&!fitActive&&!hintsNew&&std::isfinite(dt)){
+            static const float zero[kSamples]={};
+            if(!std::memcmp(out.tau,zero,sizeof out.tau)&&!std::memcmp(fitTau,zero,sizeof fitTau)&&!std::memcmp(out.scatter,zero,sizeof out.scatter)&&!std::memcmp(fitScatter,zero,sizeof fitScatter)){++out.stamp;return;}
+        }
         bool bad=!std::isfinite(dt);
         if(wanted&&raw.active){for(unsigned i=0;i<kSamples;++i)bad|=!std::isfinite(raw.tau[i]);for(unsigned c=0;c<3;++c)bad|=!std::isfinite(raw.scatter[c]);}
         for(unsigned i=0;i<kSamples;++i)bad|=!std::isfinite(out.tau[i]);for(unsigned c=0;c<3;++c)bad|=!std::isfinite(out.scatter[c]);

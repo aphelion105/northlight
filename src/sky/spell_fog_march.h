@@ -26,10 +26,9 @@ inline FieldSample fieldAt(const NorthlightRegionalFog::Field& f,float x,float y
     const float w[4]={(1-fx)*(1-fy),fx*(1-fy),(1-fx)*fy,fx*fy};
     const NorthlightRegionalFog::Texel* t[4]={&f.texels[size_t(by)*N+size_t(bx)],&f.texels[size_t(by)*N+size_t(bx)+1],&f.texels[size_t(by+1)*N+size_t(bx)],&f.texels[size_t(by+1)*N+size_t(bx)+1]};
     float total=0,ground=0,height=0;
-    for(int i=0;i<4;++i){
-        s.day+=w[i]*t[i]->day;s.nightExtra+=w[i]*t[i]->nightExtra;
-        if(t[i]->height>0){total+=w[i];ground+=w[i]*t[i]->ground;height+=w[i]*t[i]->height;}
-    }
+    auto accumulate=[&](int i){s.day+=w[i]*t[i]->day;s.nightExtra+=w[i]*t[i]->nightExtra;
+        if(t[i]->height>0){total+=w[i];ground+=w[i]*t[i]->ground;height+=w[i]*t[i]->height;}};
+    accumulate(0);accumulate(1);accumulate(2);accumulate(3);
     const float inv=1.f/std::max(total,1e-6f);
     s.ground=ground*inv;s.height=height*inv;
     const float edge=saturate(std::min(std::min(gx,gy),std::min(float(N-1)-gx,float(N-1)-gy))*.5f);
