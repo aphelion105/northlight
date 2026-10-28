@@ -40,6 +40,38 @@ struct WorldScreenEffectsTest {
         bool rejected=false;try{NorthlightGpuScene::forDevice(reinterpret_cast<IDirect3DDevice9*>(uintptr_t(1)),scene);}catch(const std::invalid_argument&){rejected=true;}assert(rejected);
         std::puts("GPU_SCENE_OWNERSHIP_PASS actual_world_materials_displacement one_source_bank unchanged_caps one_upload consumer_reset reconstructed_source typed_views foreign_device_rejected");
     }
+    static void reuseAtAddressPressure(WorldRenderer& w){
+        using namespace NorthlightGeometryMemory;
+        using NorthlightMeshPageKey::Key;
+        auto key=[](unsigned n){Key k;k.lo=n+1;k.hi=~uint64_t(n);k.vertexBytes=300000;k.indexBytes=100000;return k;};
+        std::vector<Key> first,next;for(unsigned n=0;n<64;++n){first.push_back(key(n));next.push_back(key(n+1000));}
+        auto create=[&](const std::vector<Key>& keys){
+            assert(w.meshStore.beginStaging(keys));w.syncMeshBuffers();Sample ample{2048*MiB,1024*MiB,true};
+            for(size_t i=0;i<w.meshStore.staging().upload.size();++i){const auto id=w.meshStore.staging().uploadBuffer[i];const auto& k=w.meshStore.staging().keys[w.meshStore.staging().upload[i]];
+                assert(w.meshStore.markWriting(id));assert(w.acquireMeshPage(id,true,k.vertexBytes,ample));assert(w.acquireMeshPage(id,false,k.indexBytes,ample));}
+            w.meshStore.commit();
+        };
+        create(first);create({key(999)});assert(w.meshStore.beginStaging(next));w.syncMeshBuffers();
+        uint64_t vb=0,ib=0;auto has=[&](uint32_t id,bool vertex){return id<w.meshBuffers.size()&&(vertex?w.meshBuffers[id].vb!=nullptr:w.meshBuffers[id].ib!=nullptr);};
+        assert(w.meshStore.stagingGrowth(has,vb,ib)&&vb==0&&ib==0);
+        struct Ballast {std::vector<void*> blocks;~Ballast(){for(auto p:blocks)assert(VirtualFree(p,0,MEM_RELEASE));}} ballast;
+        MEMORYSTATUSEX status{};status.dwLength=sizeof status;assert(GlobalMemoryStatusEx(&status));
+        while(status.ullAvailVirtual>343*MiB+65536){uint64_t bytes=std::min<uint64_t>(16*MiB,(status.ullAvailVirtual-343*MiB)&~uint64_t(65535));assert(bytes);auto p=VirtualAlloc(nullptr,size_t(bytes),MEM_RESERVE,PAGE_NOACCESS);assert(p);ballast.blocks.push_back(p);status.dwLength=sizeof status;assert(GlobalMemoryStatusEx(&status));}
+        auto oldBudget=uploadBudget(64ull*300000,64ull*100000,MiB,MiB);oldBudget.largest=18*MiB;
+        auto newBudget=uploadBudget(vb,ib,MiB,MiB);newBudget.largest=18*MiB;
+        bool exact=false;auto sample=w.geometryAdmission(newBudget,&exact);assert(sample.valid&&!admits(sample,oldBudget)&&admits(sample,newBudget));
+        auto original=w.meshStore.table();Sample frame=sample;uint64_t minimum=sample.available;
+        for(size_t i=0;i<w.meshStore.staging().upload.size();++i){const auto id=w.meshStore.staging().uploadBuffer[i];const auto& k=w.meshStore.staging().keys[w.meshStore.staging().upload[i]];
+            auto* v=w.meshBuffers[id].vb;auto* index=w.meshBuffers[id].ib;assert(v&&index&&w.meshStore.markWriting(id));
+            assert(w.acquireMeshPage(id,true,k.vertexBytes,frame)&&w.acquireMeshPage(id,false,k.indexBytes,frame));assert(v==w.meshBuffers[id].vb&&index==w.meshBuffers[id].ib);
+            void* bytes=nullptr;assert(SUCCEEDED(v->Lock(0,k.vertexBytes,&bytes,0))&&bytes);std::memset(bytes,int(i),k.vertexBytes);assert(SUCCEEDED(v->Unlock()));
+            bytes=nullptr;assert(SUCCEEDED(index->Lock(0,k.indexBytes,&bytes,0))&&bytes);std::memset(bytes,int(i),k.indexBytes);assert(SUCCEEDED(index->Unlock()));v->PreLoad();index->PreLoad();
+            status.dwLength=sizeof status;assert(GlobalMemoryStatusEx(&status));minimum=std::min<uint64_t>(minimum,status.ullAvailVirtual);assert(minimum>=ProcessReserve+16*MiB);
+        }
+        assert(w.meshStore.table()==original);w.meshStore.cancel();assert(w.meshStore.table()==original);
+        std::printf("WORLD_REUSED_PAGES_PRESSURE_PASS availableMiB=%llu minimumMiB=%llu pages=64 newBytes=0 oldBudgetMiB=%llu newBudgetMiB=%llu activePreserved=1\n",(unsigned long long)(sample.available>>20),(unsigned long long)(minimum>>20),(unsigned long long)(oldBudget.available>>20),(unsigned long long)(newBudget.available>>20));
+        w.releaseMeshPool();
+    }
     static void setup(WorldRenderer& w,unsigned width,unsigned height){
         assert(w.resources(width,height,D3DFMT_A16B16G16R16F));
         assert(!w.color&&!w.colorSurface); // No consumer has requested full-size scratch.
@@ -225,7 +257,7 @@ int main(int argc,char** argv){
         const auto targetAttempts=meter.screenCreates;assert(!WorldScreenEffectsTest::resources(*world,W,H)&&meter.screenCreates==targetAttempts);WorldScreenEffectsTest::screenRetry(*world);
         const unsigned beforeRetry=meter.screenCreates;assert(WorldScreenEffectsTest::resources(*world,W,H));assert(meter.screenCreates>beforeRetry);
         std::puts("WORLD_SCREEN_RESOURCE_RETRY_PASS shaderOom=1 targetOom=1 partialReleased=1 recovered=1");
-        WorldScreenEffectsTest::sceneOwnership(*world,&meter);WorldScreenEffectsTest::setup(*world,W,H);
+        WorldScreenEffectsTest::sceneOwnership(*world,&meter);WorldScreenEffectsTest::reuseAtAddressPressure(*world);WorldScreenEffectsTest::setup(*world,W,H);
         meter.fogCreates=0;meter.failFogAt=1;assert(!WorldScreenEffectsTest::uploadFog(*world));
         const auto fogAttempts=meter.fogCreates;assert(!WorldScreenEffectsTest::uploadFog(*world)&&meter.fogCreates==fogAttempts);WorldScreenEffectsTest::fogRetry(*world);
         meter.failFogAt=0;assert(WorldScreenEffectsTest::uploadFog(*world));WorldScreenEffectsTest::fogUploaded(*world);

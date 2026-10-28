@@ -2,6 +2,7 @@
 #include "mesh_page_key.h"
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <unordered_map>
 #include <vector>
 
@@ -77,6 +78,22 @@ public:
     const std::vector<uint32_t>& table()const{return active_;}
     const Staging& staging()const{return staging_;}
     bool stagingOpen()const{return staging_.open;}
+    // Account only resources that acquireMeshPage must create. Existing idle
+    // buffers already consume address space; do not count them a second time.
+    template<class HasResource> bool stagingGrowth(HasResource&& has,uint64_t& vertices,uint64_t& indices)const{
+        if(!staging_.open||staging_.upload.size()!=staging_.uploadBuffer.size())return false;
+        uint64_t v=0,i=0;
+        for(size_t n=0;n<staging_.upload.size();++n){
+            const auto page=staging_.upload[n],id=staging_.uploadBuffer[n];
+            if(page>=staging_.keys.size()||!writable(id))return false;
+            const auto& key=staging_.keys[page];const auto& entry=entries_[id];
+            const uint64_t addV=has(id,true)&&entry.vbCapacity>=key.vertexBytes?0:roundBuffer(key.vertexBytes);
+            const uint64_t addI=has(id,false)&&entry.ibCapacity>=key.indexBytes?0:roundBuffer(key.indexBytes);
+            if(addV>std::numeric_limits<uint64_t>::max()-v||addI>std::numeric_limits<uint64_t>::max()-i)return false;
+            v+=addV;i+=addI;
+        }
+        vertices=v;indices=i;return true;
+    }
     // Active table lookup for drawing; None when the page does not exist.
     uint32_t bufferOf(uint32_t page)const{return page<active_.size()?active_[page]:None;}
     // The renderer may create, resize or write a buffer only when this is true.

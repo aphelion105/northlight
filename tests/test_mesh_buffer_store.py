@@ -34,6 +34,8 @@ assert 'if(!meshStore.markWriting(id)||id>=meshBuffers.size())return false;' in 
 assert 'staging.upload[cursor]' in perform and 'staging.uploadBuffer[cursor]' in perform  # the cursor runs over the miss list
 assert upload.count('meshStore.beginStaging(pageKeys,') == 1 and upload.index('meshStore.beginStaging(pageKeys,') < upload.index('NorthlightGeometryMemory::admits(memory,budget)')
 assert 'uploadBudget(missVertexBytes,missIndexBytes,plan.textureBytes,largestTexture)' in upload and 'for(uint32_t pageIndex:staged.upload)' in upload
+assert 'meshStore.stagingGrowth(' in upload and 'meshBuffers[id].vb!=nullptr' in upload and 'meshBuffers[id].ib!=nullptr' in upload
+assert 'missVertexBytes||missIndexBytes?NorthlightWorldMeshPages::PageVertexByteLimit:0' in upload
 commit = upload[upload.index('Keep the previous complete geometry drawable'):]
 assert commit.count('meshStore.commit()') == 1 and commit.index('retiredMaterials.enqueue(materials,uploadedTextureBytes)') < commit.index('meshStore.commit()') < commit.index('plan.payload.discard()')
 assert 'meshStore.bufferOf(0)' in commit and commit.index('meshStore.commit()') > commit.index('clearMesh();')

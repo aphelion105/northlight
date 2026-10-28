@@ -2429,9 +2429,11 @@ private:
             }
             syncMeshBuffers();
             const auto& staged=meshStore.staging();
-            uint64_t missVertexBytes=0,missIndexBytes=0;for(uint32_t page:staged.upload){missVertexBytes+=pageKeys[page].vertexBytes;missIndexBytes+=pageKeys[page].indexBytes;}
+            uint64_t missVertexBytes=0,missIndexBytes=0;
+            if(!meshStore.stagingGrowth([&](uint32_t id,bool vertex){return id<meshBuffers.size()&&(vertex?meshBuffers[id].vb!=nullptr:meshBuffers[id].ib!=nullptr);},missVertexBytes,missIndexBytes))
+                return streamingFailure(D3DERR_INVALIDCALL,"page staging","invalid growth accounting");
             auto budget=NorthlightGeometryMemory::uploadBudget(missVertexBytes,missIndexBytes,plan.textureBytes,largestTexture);
-            budget.largest=2*std::max<uint64_t>(staged.upload.empty()?0:NorthlightWorldMeshPages::PageVertexByteLimit,largestTexture)+NorthlightGeometryMemory::ChunkMargin;
+            budget.largest=2*std::max<uint64_t>(missVertexBytes||missIndexBytes?NorthlightWorldMeshPages::PageVertexByteLimit:0,largestTexture)+NorthlightGeometryMemory::ChunkMargin;
             NorthlightGeometryMemory::Sample memory;bool exact=true;
             {auto phase=streamingPhases.measure(NorthlightStreaming::PhaseProfile::Admission);memory=geometryAdmission(budget,&exact);}
             if(NorthlightDiagnostics::enabled())logGeometryMemory("before-upload",memory,0,exact,&budget);
