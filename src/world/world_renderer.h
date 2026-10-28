@@ -631,15 +631,17 @@ private:
     // generated once per process on a worker thread (first active frame, never DllMain) and shared by every device; the holder is leaked on
     // purpose and the worker detached, so neither DLL unload nor process exit waits on a thread under the loader lock.
     struct FogCloudNoise{
-        std::vector<uint8_t> data;NorthlightFogClouds::Quantiles quantiles{};std::atomic<bool> ready{false},started{false};
+        std::vector<uint8_t> data;NorthlightFogClouds::Quantiles quantiles{};std::atomic<bool> ready{false},started{false},retryPending{false};std::atomic<DWORD> retryAt{0};
         void request(){
+            if(ready.load(std::memory_order_acquire)||(retryPending.load()&&DWORD(GetTickCount()-retryAt.load())<1000))return;
             if(started.exchange(true))return;
+            const auto retry=[this]{retryAt.store(GetTickCount());retryPending.store(true);started.store(false);};
             try{std::thread([this]{
                 const auto t0=std::chrono::steady_clock::now();
-                try{data=NorthlightFogClouds::generate();quantiles=NorthlightFogClouds::quantiles(data.data());}catch(...){return;} /* allocation failure: never ready, no retry */
+                try{data=NorthlightFogClouds::generate();quantiles=NorthlightFogClouds::quantiles(data.data());}catch(...){retryAt.store(GetTickCount());retryPending.store(true);started.store(false);return;}
                 const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t0).count();
                 ready.store(true,std::memory_order_release);logf("WORLD fog clouds noise ms=%.1f",ms);
-            }).detach();}catch(...){}
+            }).detach();}catch(...){retry();}
         }
     };
     static FogCloudNoise& fogCloudNoise(){static FogCloudNoise* noise=new FogCloudNoise;return *noise;}
@@ -2141,10 +2143,11 @@ private:
       // allocation-failure handler. The render thread reports workerFault().
       workerBusy=false;
     }
-    bool check(HRESULT h,const char* s){if(SUCCEEDED(h))return true;if(!failed)logf("WORLD DISABLED: %s HRESULT=%08lx",s,(unsigned long)h);failed=true;return false;}
+    bool buildingScreenResources=false,screenResourceOom=false,screenResourceRetry=false;DWORD screenResourceRetryAt=0;
+    bool check(HRESULT h,const char* s){if(SUCCEEDED(h))return true;if(buildingScreenResources&&(h==E_OUTOFMEMORY||h==D3DERR_OUTOFVIDEOMEMORY)){screenResourceOom=true;return false;}if(!failed)logf("WORLD DISABLED: %s HRESULT=%08lx",s,(unsigned long)h);failed=true;return false;}
     void clearMesh(){staticCasters.settle();dropStaticDirtyJobs();vertices=nullptr;indices=nullptr;for(auto& m:materials)drop(m);materials.clear();uploadedTextureBytes=0;uploadedMaterialPixels.reset();materialReuseBytes=0;batches.clear();terrainBatchList.clear();shadowTerrainList.clear();terrainBatchListGeneration=UINT64_MAX;uploadedAlphaCutoffs.clear();uploadedLocalShadowRecords.reset();uploaded.reset();}
     bool target(UINT w,UINT h,D3DFORMAT fmt,IDirect3DTexture9** t,IDirect3DSurface9** s){return check(d->CreateTexture(w,h,1,D3DUSAGE_RENDERTARGET,fmt,D3DPOOL_DEFAULT,t,nullptr),"world render texture")&&check((*t)->GetSurfaceLevel(0,s),"world render surface");}
-    bool resources(UINT w,UINT h,D3DFORMAT fmt){
+    bool createResources(UINT w,UINT h,D3DFORMAT fmt){
         if(width==w&&height==h&&liveTerrainDecl)return true;
         releaseGPU(true);width=w;height=h; /* 0.3.214 (task 42): the uploaded MANAGED mesh survives a resolution change */
         if(!check(d->CreatePixelShader(kWorldGIShader,&giPS),"world GI shader")||!check(d->CreatePixelShader(kWorldLightingShader,&lightingPS),"world lighting shader")||!check(d->CreatePixelShader(kWorldFogShader,&fogPS),"volume shader")||!check(d->CreatePixelShader(kFogBlurShader,&fogBlurPS),"volume blur shader")||!check(d->CreatePixelShader(kLocalDirectShader,&localDirectPS),"local direct light shader")||!check(d->CreatePixelShader(kLocalDirect16Shader,&localDirect16PS),"local direct 16-light shader")||!check(d->CreatePixelShader(kRemovalSmoothShader,&removalPS),"removal smoothing shader")||!check(d->CreatePixelShader(kTemporalLightShader,&temporalPS),"temporal light shader")||!check(d->CreatePixelShader(kLocalFogShader,&localFogPS),"local fog glow shader")||!check(d->CreatePixelShader(kLocalFogCombineShader,&localFogCombinePS),"local fog combine shader")||!check(d->CreatePixelShader(kWorldNormalsShader,&normalsPS),"world normals shader")||!check(d->CreatePixelShader(kWorldCompositeShader,&finalPS),"world composite shader")||!check(d->CreatePixelShader(kMaterialCompositeShader,&materialPS),"full-resolution material shader")||!check(d->CreatePixelShader(kShadowPSShader,&shadowPS),"shadow shader")||!check(d->CreatePixelShader(kShadowReplayPSShader,&replayPS),"replay shader")||!check(d->CreateVertexShader(kShadowVSShader,&shadowVS),"shadow vertex shader")||!check(d->CreateVertexShader(kShadowCacheVSShader,&cachedShadowVS),"cached shadow vertex shader")||!check(d->CreatePixelShader(kStaticCasterPSShader,&cachedShadowPS),"cached shadow depth shader"))return false;
@@ -2179,6 +2182,16 @@ private:
         static_assert(sizeof(StaticShadow::Vertex)==20,"live terrain shadow vertex stride");
         const D3DVERTEXELEMENT9 liveElements[]={{0,0,D3DDECLTYPE_FLOAT3,D3DDECLMETHOD_DEFAULT,D3DDECLUSAGE_POSITION,0},{0,12,D3DDECLTYPE_FLOAT2,D3DDECLMETHOD_DEFAULT,D3DDECLUSAGE_TEXCOORD,0},D3DDECL_END()};
         return check(d->CreateVertexDeclaration(elements,&shadowDecl),"shadow declaration")&&check(d->CreateVertexDeclaration(liveElements,&liveTerrainDecl),"live terrain declaration");
+    }
+    bool resources(UINT w,UINT h,D3DFORMAT fmt){
+        if(width==w&&height==h&&liveTerrainDecl)return true;
+        const DWORD now=GetTickCount();if(screenResourceRetry&&DWORD(now-screenResourceRetryAt)<1000)return false;
+        screenResourceOom=false;
+        struct ScreenResourceScope {bool& building;explicit ScreenResourceScope(bool& flag):building(flag){building=true;}~ScreenResourceScope(){building=false;}};
+        bool ok;{ScreenResourceScope scope(buildingScreenResources);ok=createResources(w,h,fmt);}
+        if(!ok&&screenResourceOom){releaseGPU(true);screenResourceRetry=true;screenResourceRetryAt=now;logf("WORLD screen resources deferred: out of memory retryMs=1000");}
+        else if(ok)screenResourceRetry=false;
+        return ok;
     }
     bool geometryTargetsReady=false,geometryTargetsRetry=false;DWORD geometryTargetsRetryAt=0,geometryTargetsReportAt=0;bool geometryTargetsReported=false;
     void releaseGeometryTargets(){
@@ -2323,17 +2336,25 @@ private:
         retirePendingCpu();pendingMesh.reset();meshRetry.fail(GetTickCount());
         return vertices&&indices&&active&&uploadedMap==active->map;
     }
+    bool fogUploadRetry=false;DWORD fogUploadRetryAt=0;
     bool uploadRegionalFog(const std::shared_ptr<const NorthlightRegionalFog::Field>& field,const std::string& map){
         if(uploadedFogField==field&&uploadedFogMap==map)return true;
         fogHeightReady=false;fogGlobalHeights={};
-        if(!field){uploadedFogField.reset();uploadedFogMap=map;return true;}
+        if(!field){fogUploadRetry=false;uploadedFogField.reset();uploadedFogMap=map;return true;}
+        const DWORD now=GetTickCount();if(fogUploadRetry&&DWORD(now-fogUploadRetryAt)<1000)return false;
         constexpr unsigned n=NorthlightRegionalFog::N;
-        if(!regionalFogTexture&&!check(d->CreateTexture(n,n,1,0,D3DFMT_A32B32G32R32F,D3DPOOL_MANAGED,&regionalFogTexture,nullptr),"regional fog field"))return false;
-        D3DLOCKED_RECT lock={};if(!check(regionalFogTexture->LockRect(0,&lock,nullptr,0),"regional fog lock"))return false;
+        auto uploadCheck=[&](HRESULT hr,const char* stage){
+            if(SUCCEEDED(hr))return true;
+            if(hr!=E_OUTOFMEMORY&&hr!=D3DERR_OUTOFVIDEOMEMORY)return check(hr,stage);
+            drop(regionalFogTexture);drop(fogHeightTexture);uploadedFogField.reset();fogHeightReady=false;fogUploadRetry=true;fogUploadRetryAt=now;
+            logf("WORLD regional fog deferred: %s HRESULT=%08lx retryMs=1000",stage,(unsigned long)hr);return false;
+        };
+        if(!regionalFogTexture&&!uploadCheck(d->CreateTexture(n,n,1,0,D3DFMT_A32B32G32R32F,D3DPOOL_MANAGED,&regionalFogTexture,nullptr),"regional fog field"))return false;
+        D3DLOCKED_RECT lock={};if(!uploadCheck(regionalFogTexture->LockRect(0,&lock,nullptr,0),"regional fog lock"))return false;
         if(!lock.pBits||lock.Pitch<INT(n*sizeof(NorthlightRegionalFog::Texel))){regionalFogTexture->UnlockRect(0);return check(E_FAIL,"regional fog layout");}
         for(unsigned y=0;y<n;++y)memcpy(static_cast<char*>(lock.pBits)+y*lock.Pitch,field->texels.data()+y*n,n*sizeof(NorthlightRegionalFog::Texel));
-        if(!check(regionalFogTexture->UnlockRect(0),"regional fog unlock"))return false;
-        uploadedFogField=field;uploadedFogMap=map;fogGlobalHeights=NorthlightRegionalFog::globalHeightBounds(*field);
+        if(!uploadCheck(regionalFogTexture->UnlockRect(0),"regional fog unlock"))return false;
+        fogUploadRetry=false;uploadedFogField=field;uploadedFogMap=map;fogGlobalHeights=NorthlightRegionalFog::globalHeightBounds(*field);
         // Optional acceleration metadata: allocation/lock failure keeps the full march.
         if(!fogHeightTexture&&FAILED(d->CreateTexture(n,n,1,0,D3DFMT_A32B32G32R32F,D3DPOOL_MANAGED,&fogHeightTexture,nullptr))){drop(fogHeightTexture);return true;}
         D3DLOCKED_RECT bounds={};
@@ -2717,7 +2738,7 @@ public:
     // too; its cursor continues). Everything else (DEFAULT targets, dynamic rings, queries, state blocks, caches derived from
     // them) is released as before. recover() and the destructor release the mesh as well; the CPU payload is gone by then, so
     // upload() asks the builder for a fresh generation.
-    void releaseGPU(bool keepMesh=false){NorthlightMemoryProfile::store().invalidateGpu();resourceMemoryProfileAt=0;materialPixelAudit.reset();replayBoundsAbandon();releaseReplayProbe();staticCasters.settle();rigidMemoryClear();admission.reset();admissionOn=false;gatedBodies.clear();prepareQuiesce();neutralShadowMaps=false;prepareCaches->sampled.clear();prepareCaches->bones.clear();prepareCachesStale=false;if(replays.empty()&&heldShadowReplays.empty())prepareFrameRelease(); /* 0.3.179: no replay left to point at them */actorShadowHistory.clear();actorShadowOriginValid=false;replayBoundsMetadata.clear();replayBoundsCache.clear();declarationCache.clear();if(!keepMesh)uploadedStaticOwners.reset();staticOwnerGeneration=UINT64_MAX;staticCasters.reset();staticMatcher.clear();staticM2Memory.clear();staticScene.reset();staticRetryTick=0;stateBlocks.clear();uploadedTerrain.clear();liveTerrainIndexCount=liveDirectionalIndexCount=0;if(!keepMesh){fixedTerrain.reset();fixedTerrainBits.reset();}liveTerrainGeneration=0;drop(regionalFogTexture);drop(fogHeightTexture);fogHeightReady=false;drop(neutralAO);drop(neutralZero);drop(ditherNoise);rainMask=nullptr;uploadedFogField.reset();releasePointGPU();probeActivation.reset();probeBlend.reset();drop(baselineSurface);drop(baselineLight);releaseReplayGPU();liveTerrainGPU.clear();{auto& queries=fence();NorthlightDynamicRing::reset(liveIndexRing,0,queries);queries.drop();}drop(liveIndicesGPU);liveIndexBytes=0;liveIndexBase=0;if(!keepMesh){pendingMesh.reset();clearMesh();}retiredMaterials.clear();if(!keepMesh){releaseMeshPool();uploadedMap.clear();}for(auto& t:shadow)drop(t);for(auto& s:shadowSurface)drop(s);for(auto& t:shadowCache)drop(t);for(auto& s:shadowCacheSurface)drop(s);drop(shadowCacheDepth);drop(shadowVerifySurface);drop(shadowVerify);for(auto& r:shadowVerifyRead)drop(r);drop(shadowScratch);drop(shadowScratchSurface);releaseActorTargets();drop(neutralWhite);actorValid[0]=actorValid[1]=false;actorCenterValid[0]=actorCenterValid[1]=false;drop(unionPS);invalidateShadowCache();for(auto& t:probe)drop(t);drop(probePrev);drop(shadowDepth);drop(lightSurface);drop(smoothSurface);drop(fogSurface);drop(fogBlurredSurface);drop(fogHistorySurface);drop(fogHistory);drop(fogTemporalPS);fogHistoryValid=false;drop(colorSurface);drop(light);drop(smoothLight);drop(fog);drop(fogBlurred);drop(color);drop(lightingPS);drop(giPS);drop(fogPS);drop(fogAmbientPS);fogAmbientRefused=false;drop(fogActorPS);drop(fogCloudsActorPS);drop(fogBlurPS);drop(fogCloudsPS);drop(cloudNoise);drop(localDirectPS);drop(localDirect16PS);drop(localDirectSinglePS);localDirectSingleRefused=false;drop(profileSplitSurface);profileSplitFailed=false;drop(removalPS);drop(temporalPS);drop(localFogPS);drop(localFogCombinePS);drop(localFogAccumSurface);drop(localFogAccum);drop(normalsPS);drop(normalsNoDistancePS);normalsNoDistanceRefused=false;drop(normalBuffer);drop(normalSurface);for(int i=0;i<2;++i){drop(temporalLight[i]);drop(temporalLightSurface[i]);drop(temporalDepth[i]);drop(temporalDepthSurface[i]);}temporalValid=false;drop(finalPS);drop(materialPS);drop(shadowPS);drop(replayPS);drop(shadowVS);drop(cachedShadowVS);drop(cachedShadowPS);drop(cachedFastPS);drop(cachedOpaqueFastPS);drop(cachedOpaquePS);drop(shadowDecl);drop(liveTerrainDecl);geometryTargetsReady=false;geometryTargetsRetry=false;width=height=0;uploadedSerial=0;}
+    void releaseGPU(bool keepMesh=false){screenResourceRetry=false;fogUploadRetry=false;NorthlightMemoryProfile::store().invalidateGpu();resourceMemoryProfileAt=0;materialPixelAudit.reset();replayBoundsAbandon();releaseReplayProbe();staticCasters.settle();rigidMemoryClear();admission.reset();admissionOn=false;gatedBodies.clear();prepareQuiesce();neutralShadowMaps=false;prepareCaches->sampled.clear();prepareCaches->bones.clear();prepareCachesStale=false;if(replays.empty()&&heldShadowReplays.empty())prepareFrameRelease(); /* 0.3.179: no replay left to point at them */actorShadowHistory.clear();actorShadowOriginValid=false;replayBoundsMetadata.clear();replayBoundsCache.clear();declarationCache.clear();if(!keepMesh)uploadedStaticOwners.reset();staticOwnerGeneration=UINT64_MAX;staticCasters.reset();staticMatcher.clear();staticM2Memory.clear();staticScene.reset();staticRetryTick=0;stateBlocks.clear();uploadedTerrain.clear();liveTerrainIndexCount=liveDirectionalIndexCount=0;if(!keepMesh){fixedTerrain.reset();fixedTerrainBits.reset();}liveTerrainGeneration=0;drop(regionalFogTexture);drop(fogHeightTexture);fogHeightReady=false;drop(neutralAO);drop(neutralZero);drop(ditherNoise);rainMask=nullptr;uploadedFogField.reset();releasePointGPU();probeActivation.reset();probeBlend.reset();drop(baselineSurface);drop(baselineLight);releaseReplayGPU();liveTerrainGPU.clear();{auto& queries=fence();NorthlightDynamicRing::reset(liveIndexRing,0,queries);queries.drop();}drop(liveIndicesGPU);liveIndexBytes=0;liveIndexBase=0;if(!keepMesh){pendingMesh.reset();clearMesh();}retiredMaterials.clear();if(!keepMesh){releaseMeshPool();uploadedMap.clear();}for(auto& t:shadow)drop(t);for(auto& s:shadowSurface)drop(s);for(auto& t:shadowCache)drop(t);for(auto& s:shadowCacheSurface)drop(s);drop(shadowCacheDepth);drop(shadowVerifySurface);drop(shadowVerify);for(auto& r:shadowVerifyRead)drop(r);drop(shadowScratch);drop(shadowScratchSurface);releaseActorTargets();drop(neutralWhite);actorValid[0]=actorValid[1]=false;actorCenterValid[0]=actorCenterValid[1]=false;drop(unionPS);invalidateShadowCache();for(auto& t:probe)drop(t);drop(probePrev);drop(shadowDepth);drop(lightSurface);drop(smoothSurface);drop(fogSurface);drop(fogBlurredSurface);drop(fogHistorySurface);drop(fogHistory);drop(fogTemporalPS);fogHistoryValid=false;drop(colorSurface);drop(light);drop(smoothLight);drop(fog);drop(fogBlurred);drop(color);drop(lightingPS);drop(giPS);drop(fogPS);drop(fogAmbientPS);fogAmbientRefused=false;drop(fogActorPS);drop(fogCloudsActorPS);drop(fogBlurPS);drop(fogCloudsPS);drop(cloudNoise);drop(localDirectPS);drop(localDirect16PS);drop(localDirectSinglePS);localDirectSingleRefused=false;drop(profileSplitSurface);profileSplitFailed=false;drop(removalPS);drop(temporalPS);drop(localFogPS);drop(localFogCombinePS);drop(localFogAccumSurface);drop(localFogAccum);drop(normalsPS);drop(normalsNoDistancePS);normalsNoDistanceRefused=false;drop(normalBuffer);drop(normalSurface);for(int i=0;i<2;++i){drop(temporalLight[i]);drop(temporalLightSurface[i]);drop(temporalDepth[i]);drop(temporalDepthSurface[i]);}temporalValid=false;drop(finalPS);drop(materialPS);drop(shadowPS);drop(replayPS);drop(shadowVS);drop(cachedShadowVS);drop(cachedShadowPS);drop(cachedFastPS);drop(cachedOpaqueFastPS);drop(cachedOpaquePS);drop(shadowDecl);drop(liveTerrainDecl);geometryTargetsReady=false;geometryTargetsRetry=false;width=height=0;uploadedSerial=0;}
     // Explicit enable/retry only, called after the wrapper's clearFrame(). This
     // never calls endFrame(), so packet capture and cleanup run exactly once.
     void recover(){meshRetry.clear();if(!failed)return;releaseGPU(true);failed=false;valid=false;streamingReports=0;logf("WORLD explicit recovery requested");}

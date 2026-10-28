@@ -53,6 +53,11 @@ struct WorldScreenEffectsTest {
         assert(!w.uploadedFogField&&!w.regionalFogTexture); // render() must upload without an active BVH
         assert(!w.ready()&&w.screenReady()&&!w.active&&!w.vertices&&!w.indices);
     }
+    static bool resources(WorldRenderer& w,unsigned width,unsigned height){return w.resources(width,height,D3DFMT_A16B16G16R16F);}
+    static void screenRetry(WorldRenderer& w){assert(w.screenResourceRetry&&!w.failed&&!w.width&&!w.height&&!w.fogPS&&!w.fog&&!w.liveTerrainDecl);w.screenResourceRetryAt-=1000;}
+    static bool uploadFog(WorldRenderer& w){return w.uploadRegionalFog(w.publishedFogRegion->field,w.lastRequest.map);}
+    static void fogRetry(WorldRenderer& w){assert(w.fogUploadRetry&&!w.failed&&!w.regionalFogTexture&&!w.uploadedFogField&&w.screenReady());w.fogUploadRetryAt-=1000;}
+    static void fogUploaded(WorldRenderer& w){assert(!w.fogUploadRetry&&w.uploadedFogField==w.publishedFogRegion->field&&w.regionalFogTexture);D3DLOCKED_RECT l{};assert(SUCCEEDED(w.regionalFogTexture->LockRect(0,&l,nullptr,D3DLOCK_READONLY)));for(unsigned y=0;y<NorthlightRegionalFog::N;++y)assert(!std::memcmp(static_cast<const char*>(l.pBits)+y*l.Pitch,w.uploadedFogField->texels.data()+y*NorthlightRegionalFog::N,NorthlightRegionalFog::N*sizeof(NorthlightRegionalFog::Texel)));assert(SUCCEEDED(w.regionalFogTexture->UnlockRect(0)));}
     static void consumers(WorldRenderer& w){
         w.quality.nearShadowInterval=w.quality.farShadowInterval=1;
         w.captureDemand=false;w.actorCaptureDecided=true;w.lastRenderDebug=0;
@@ -169,12 +174,17 @@ struct WorldScreenEffectsTest {
     }
 };
 struct WorldScratchMeter:ForwardIDirect3DDevice9 {
-    unsigned width,height,creates=0,sceneCreates=0,failSceneAt=0;float fogWeight=-1;
+    unsigned width,height,creates=0,sceneCreates=0,failSceneAt=0,screenCreates=0,failScreenAt=0,shaderCreates=0,failShaderAt=0,fogCreates=0,failFogAt=0;float fogWeight=-1;
     WorldScratchMeter(IDirect3DDevice9* d,unsigned w,unsigned h):ForwardIDirect3DDevice9(d),width(w),height(h){}
     HRESULT STDMETHODCALLTYPE CreateTexture(UINT w,UINT h,UINT levels,DWORD usage,D3DFORMAT format,D3DPOOL pool,IDirect3DTexture9** t,HANDLE* shared)override{
         if(w==width&&h==height&&(usage&D3DUSAGE_RENDERTARGET)&&format==D3DFMT_A16B16G16R16F)++creates;
+        if(w==width/2&&h==height/2&&(usage&D3DUSAGE_RENDERTARGET)&&format==D3DFMT_A16B16G16R16F&&++screenCreates==failScreenAt)return E_OUTOFMEMORY;
+        if(w==NorthlightRegionalFog::N&&h==NorthlightRegionalFog::N&&format==D3DFMT_A32B32G32R32F&&++fogCreates==failFogAt)return E_OUTOFMEMORY;
         if(w==1024&&h==1024&&format==D3DFMT_R32F&&(usage&D3DUSAGE_RENDERTARGET)&&++sceneCreates==failSceneAt)return E_OUTOFMEMORY;
         return real->CreateTexture(w,h,levels,usage,format,pool,t,shared);
+    }
+    HRESULT STDMETHODCALLTYPE CreatePixelShader(const DWORD* code,IDirect3DPixelShader9** shader)override{
+        if(++shaderCreates==failShaderAt)return E_OUTOFMEMORY;return real->CreatePixelShader(code,shader);
     }
     HRESULT STDMETHODCALLTYPE SetPixelShaderConstantF(UINT start,const float* values,UINT count)override{
         if(start==64&&count==1)fogWeight=values[1];return real->SetPixelShaderConstantF(start,values,count);
@@ -208,7 +218,19 @@ int main(int argc,char** argv){
     std::vector<float> images[4];
     {
         WorldScratchMeter meter(d,W,H);
-        auto world=std::make_unique<WorldRenderer>(&meter);WorldScreenEffectsTest::sceneOwnership(*world,&meter);WorldScreenEffectsTest::setup(*world,W,H);WorldScreenEffectsTest::consumers(*world);WorldScreenEffectsTest::cloudPressure(*world);
+        auto world=std::make_unique<WorldRenderer>(&meter);
+        meter.failShaderAt=3;assert(!WorldScreenEffectsTest::resources(*world,W,H));
+        const auto shaderAttempts=meter.shaderCreates;assert(!WorldScreenEffectsTest::resources(*world,W,H)&&meter.shaderCreates==shaderAttempts);WorldScreenEffectsTest::screenRetry(*world);
+        meter.failShaderAt=0;meter.failScreenAt=3;assert(!WorldScreenEffectsTest::resources(*world,W,H));
+        const auto targetAttempts=meter.screenCreates;assert(!WorldScreenEffectsTest::resources(*world,W,H)&&meter.screenCreates==targetAttempts);WorldScreenEffectsTest::screenRetry(*world);
+        const unsigned beforeRetry=meter.screenCreates;assert(WorldScreenEffectsTest::resources(*world,W,H));assert(meter.screenCreates>beforeRetry);
+        std::puts("WORLD_SCREEN_RESOURCE_RETRY_PASS shaderOom=1 targetOom=1 partialReleased=1 recovered=1");
+        WorldScreenEffectsTest::sceneOwnership(*world,&meter);WorldScreenEffectsTest::setup(*world,W,H);
+        meter.fogCreates=0;meter.failFogAt=1;assert(!WorldScreenEffectsTest::uploadFog(*world));
+        const auto fogAttempts=meter.fogCreates;assert(!WorldScreenEffectsTest::uploadFog(*world)&&meter.fogCreates==fogAttempts);WorldScreenEffectsTest::fogRetry(*world);
+        meter.failFogAt=0;assert(WorldScreenEffectsTest::uploadFog(*world));WorldScreenEffectsTest::fogUploaded(*world);
+        std::puts("WORLD_FOG_UPLOAD_RETRY_PASS allocationOom=1 throttled=1 recoveredFieldExact=1");
+        WorldScreenEffectsTest::consumers(*world);WorldScreenEffectsTest::cloudPressure(*world);
         WorldScreenEffectsTest::noSceneTargets(*world);assert(WorldScreenEffectsTest::sceneBytes(*world)==0&&meter.sceneCreates==0);
         for(unsigned mode=0;mode<4;++mode){
             WorldScreenEffectsTest::fog(*world,mode>=2);world->setMaterialDetail(mode&1?detail:nullptr,1,48,nullptr,8);

@@ -5,7 +5,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <cmath>
+#include <atomic>
 namespace NorthlightUiBoundary {
+// Only a previously learned shader may bypass the next device's learning period.
+inline std::atomic<std::uint64_t> rememberedVsHash{0};
 inline bool clipWOne(const float c3[4]){return std::fabs(c3[0])+std::fabs(c3[1])+std::fabs(c3[2])<.001f&&std::fabs(c3[3]-1.f)<.001f;}
 // c = VS constants c0..c3 (16 floats): finite, c3 = (0,0,0,1), and the x/y rows carry a scale (not all zero).
 inline bool screenSpaceRows(const float c[16]){
@@ -59,6 +62,10 @@ public:
         return tryArm()?Result::Armed:Result::None;
     }
     bool isBoundary(std::uintptr_t vs,std::uintptr_t /*ps*/)const{return armedNow&&vs==lVs;}
+    bool restore(std::uintptr_t vs,std::uintptr_t ps){
+        if(disarmedForever||armedNow||!vs)return false;
+        lVs=vs;lPsCount=ps?1:0;if(ps)lPs[0]=ps;armedNow=true;streak=lostStreak=0;clearCounts();return true;
+    }
     void forget(std::uintptr_t obj){
         if(disarmedForever)return;
         if(armedNow){

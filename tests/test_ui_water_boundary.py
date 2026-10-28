@@ -81,6 +81,7 @@ template<class Arming>struct Common {
  struct {bool active=false;struct{float uiWhite=160;}settings;}hdr;
  struct {unsigned rejected=0;template<class Draw>HRESULT draw(FakeDevice*,float,Draw submit){return submit();}}hdrColor;
  std::unordered_map<IDirect3DPixelShader9*,int>psTags;
+ std::unordered_map<IDirect3DVertexShader9*,uint64_t>vsHashes;
  bool terrain=true,applied=false,enabled=true,failed=false,drawWaterVS=false;
  bool hashBoundaryThisFrame=false,fallbackBoundaryThisFrame=false,zFuncAware=true;
  bool hdrUiPhase=false,full=true,back=true,stock=false;
@@ -93,6 +94,7 @@ template<class Arming>struct Common {
  bool fullViewport(D3DSURFACE_DESC&,void*,bool,bool=true){return full;}
  bool hdrBackTarget(){return back;}
  bool sampled()const{return false;}
+ void uiFallbackPublish(){}
  template<class Work>void extensionWork(const char*,Work work){work();}
  void renderEffects(){
   if(applied||!enabled||failed)return;
@@ -228,6 +230,25 @@ int main(){
  stockOff.device.vs=&uiVS;draw(stockOff,true);assert(stockOff.conversions==1&&stockOff.submitted==2);++cases;
  Fixed login;login.hdr.active=true;login.terrain=false;login.device.vs=&otherVS;draw(login,true);
  assert(login.conversions==1&&login.submitted==1);++cases;
+ // A proven shader can be restored on a recreated device, but still must pass
+ // every projection, depth and target guard before affecting the frame.
+ NorthlightUiBoundary::rememberedVsHash.store(0x1234);
+ Fixed recovered;recovered.vsHashes[&uiVS]=0x1234;frame(recovered);
+ assert(recovered.effects==1&&recovered.uiFallback.armed()&&!recovered.effectsOverwroteFPS&&!recovered.effectsCopiedFPS);++cases;
+ Fixed disabled;disabled.vsHashes[&uiVS]=0x1234;disabled.enabled=false;draw(disabled,true);assert(!disabled.effects&&!disabled.uiFallback.armed());
+ disabled.enabled=true;draw(disabled,true);assert(disabled.effects==1&&disabled.uiFallback.armed());++cases;
+ for(unsigned reject=0;reject<7;++reject){
+  Fixed guarded;guarded.vsHashes[&uiVS]=0x1234;
+  if(reject==0)guarded.vsHashes[&uiVS]=0x1235;
+  else if(reject==1)guarded.full=false;
+  else if(reject==2)guarded.device.rows[15]=0;
+  else if(reject==3)guarded.device.zwrite=1;
+  else if(reject==4)guarded.device.zfunc=D3DCMP_LESS;
+  else if(reject==5)guarded.device.stateResult=E_FAIL;
+  else guarded.uiFallback.onHashBoundary();
+  draw(guarded,true);assert(!guarded.effects&&!guarded.uiFallback.armed());++cases;
+ }
+ NorthlightUiBoundary::rememberedVsHash.store(0);
  std::printf("PASS UI/effects boundary host extraction cases=%u: old FPS boundary order reproduced; fixed EffectsBegin->WorldComposite->EffectsEnd->FPS->RestUI; stock/learned VS, rare/PS0, HDR/SDR and query guards preserved\n",cases);
 }
 '''

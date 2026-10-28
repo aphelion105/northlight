@@ -2393,9 +2393,12 @@ private:
     // including infrequent FPS text. UI can disable Z or use ZFUNC ALWAYS.
     // On stock the whole step is one bool test per draw: collecting() needs two world frames in a row without the hash boundary, and the first one disarms it for good.
     void uiFallbackDraw(const VsClass& vc,IDirect3DVertexShader9* vs){
-        if(!uiFallback.collecting()||!terrain||applied||hashBoundaryThisFrame||fallbackBoundaryThisFrame||vc.wmo)return;
+        const auto remembered=NorthlightUiBoundary::rememberedVsHash.load(std::memory_order_relaxed);
+        if((!uiFallback.collecting()&&(!remembered||uiFallback.disarmed()))||!terrain||applied||hashBoundaryThisFrame||fallbackBoundaryThisFrame||vc.wmo)return;
         if(vc.world||drawWaterVS)return;
         const bool armed=uiFallback.armed();
+        bool restore=false;if(!armed&&remembered){const auto known=vsHashes.find(vs);restore=known!=vsHashes.end()&&known->second==remembered;}
+        if(!armed&&!restore&&!uiFallback.collecting())return;
         if(!armed&&(!enabled||failed))return; /* learning counts only frames that would draw effects (endFrame: Neutral) */
         IDirect3DPixelShader9* ps=nullptr;
         const bool borrowed=ext->peekPixelShader(ps); // identity lookup only
@@ -2409,7 +2412,8 @@ private:
         if(!NorthlightUiBoundary::accepts(zw!=0,c,zf==D3DCMP_ALWAYS,z!=0)){if(!armed){triageVs=vs;triagePs=ps;triageZw=zw;for(int i=0;i<4;++i)triageC3[i]=c[12+i];++triageDraws;}return;}
         D3DSURFACE_DESC desc={};
         if(!fullViewport(desc,nullptr,true))return; // last, and quiet: minimap and portrait targets are expected here
-        if(!armed){uiFallback.noteCandidate(vsId,psId);return;}
+        if(!armed&&!restore){uiFallback.noteCandidate(vsId,psId);return;}
+        if(!armed){if(!uiFallback.restore(vsId,psId))return;uiFallbackPublish();logf("EFFECT boundary fallback restored from previously learned shader");}
         fallbackBoundaryThisFrame=true;++uiFallbackBoundaries;
         if(sampled()){DWORD z=0,blend=0;ext->GetRenderState(D3DRS_ZENABLE,&z);ext->GetRenderState(D3DRS_ALPHABLENDENABLE,&blend);
             logf("EFFECT boundary frame=%u draw=%u kind=ui-fallback z=%lu zwrite=%lu blend=%lu",frame,drawCalls,(unsigned long)z,(unsigned long)zw,(unsigned long)blend);}
@@ -2420,6 +2424,7 @@ private:
     // Called after every change of uiFallback's state.
     void uiFallbackPublish(){
         const std::uint64_t want=uiFallback.armed()?uiFallbackVsHash(uiFallback.learnedVs()):0;
+        if(want)NorthlightUiBoundary::rememberedVsHash.store(want,std::memory_order_relaxed);
         if(want!=uiFallbackPublished){uiFallbackPublished=want;NorthlightStream::learnedUiVsHash.store(want,std::memory_order_relaxed);}
     }
     template<class T> void uiFallbackForget(T* obj){uiFallback.forget(reinterpret_cast<std::uintptr_t>(obj));uiFallbackPublish();}
