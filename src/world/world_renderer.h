@@ -32,6 +32,7 @@
 #include "local_light_scissor.h"
 #include "local_light_batches.h"
 #include "point_light_shadow.h"
+#include "wmo_lamp_shadow.h"
 #include "point_transmission_filter.h"
 #include "local_light_compiled_shaders.h"
 #include "replay_bounds.h"

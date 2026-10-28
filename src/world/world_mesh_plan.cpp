@@ -28,6 +28,7 @@ int cellCoordinate(float a,float b,float c){
 NorthlightLocalShadowSignature::Digest materialIdentity(const NorthlightGI::WorldMaterial& meta,const NorthlightGI::WorldMaterial& m){
     NorthlightLocalShadowSignature::Hasher hash;
     hash.scalar(meta.alphaCutoff);hash.word(meta.addressU);hash.word(meta.addressV);
+    if(meta.lampSourceId){hash.word(uint32_t(meta.lampSourceId));hash.word(uint32_t(meta.lampSourceId>>32));}
     if(meta.pointOnly)hash.word(0x504f494e); // Nearest-sampled transmission has distinct coverage semantics.
     // This is the upload's actual coverage texture, including implicit white.
     const bool cutout=meta.alphaCutoff>0&&!m.rgba.empty();
@@ -111,7 +112,9 @@ bool buildUploadPlan(const NorthlightGI::WorldScene& scene,WorldMeshUploadPlan& 
             int x=-1,y=-1;
             if(scene.materials[t.material].terrain&&!terrainChunk(scene.vertices[t.v0].position,scene.vertices[t.v1].position,scene.vertices[t.v2].position,x,y))
                 ++next.unmaskableTerrainTriangles;
-            const uint32_t cell=spatialCell(scene.vertices[t.v0].position,scene.vertices[t.v1].position,scene.vertices[t.v2].position,order.cellChunks);
+            // Keep a proven lamp enclosure together even across cell edges.
+            // Multiple instances then share a larger batch and fail closed.
+            const uint32_t cell=scene.materials[t.material].lampSourceId?0:spatialCell(scene.vertices[t.v0].position,scene.vertices[t.v1].position,scene.vertices[t.v2].position,order.cellChunks);
             uint64_t k=key(cell,t.material,x,y,order.chunkMajor);keys.push_back(k);
             if(!previousCount||k!=previousKey){previousCount=&counts[k];previousKey=k;}
             ++*previousCount; // unordered_map references survive a rehash
@@ -130,7 +133,7 @@ bool buildUploadPlan(const NorthlightGI::WorldScene& scene,WorldMeshUploadPlan& 
             const uint32_t material=order.chunkMajor?uint32_t(low&((1u<<MaterialBits)-1)):uint32_t(low>>22);
             const uint64_t chunk=order.chunkMajor?low>>MaterialBits:low&((1u<<22)-1);
             int x=int(chunk&2047)-1,y=int((chunk>>11)&2047)-1;
-            next.batches.push_back({offset,g.count,material,x,y,scene.materials[material].terrain});next.batches.back().pointOnly=scene.materials[material].pointOnly;offset+=g.count*3;
+            next.batches.push_back({offset,g.count,material,x,y,scene.materials[material].terrain});next.batches.back().pointOnly=scene.materials[material].pointOnly;next.batches.back().lampSourceId=scene.materials[material].lampSourceId;offset+=g.count*3;
         }
         uint32_t groupIndex=0;
         for(size_t i=0;i<scene.triangles.size();++i){

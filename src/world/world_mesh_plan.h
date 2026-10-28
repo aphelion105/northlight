@@ -25,6 +25,7 @@ struct Batch {
     NorthlightGI::Vec3 boundsLow={std::numeric_limits<float>::infinity(),std::numeric_limits<float>::infinity(),std::numeric_limits<float>::infinity()};
     NorthlightGI::Vec3 boundsHigh={-std::numeric_limits<float>::infinity(),-std::numeric_limits<float>::infinity(),-std::numeric_limits<float>::infinity()};
     bool pointOnly=false;
+    uint64_t lampSourceId=0; // Exact owning FGL source, zero for ordinary geometry.
 };
 struct MaterialUpload {
     uint32_t width=1,height=1;

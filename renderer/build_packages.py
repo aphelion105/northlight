@@ -57,7 +57,7 @@ APP_FILES = [
     'build_outdoor_single_sun.py', 'build_outdoor_single_moon.py', 'build_weather_textures.py',  # 0.3.198 (rain): the art layer's procedural weather textures
     'scripts/install_world_cache.py', 'scripts/client_identity.py',
     'renderer/northlight_install.py', 'renderer/migrate_mac_proxy.py', 'renderer/windows-package/install.py',
-    'renderer/world_scene_builder.py', 'renderer/m2_visibility.py', 'renderer/world_lights_builder.py',
+    'renderer/world_scene_builder.py', 'renderer/wmo_lamp_emission.py', 'renderer/m2_visibility.py', 'renderer/world_lights_builder.py',
     'renderer/instance_maps.py', 'renderer/world_light_placements.py', 'renderer/outdoor_light_profiles.py', 'renderer/outdoor-light-profiles.json',
     'renderer/wotlk-emitter-profiles.json', 'renderer/m2_emitter_patch.py',
     'renderer/build_emitter_patch.py', 'renderer/emitter_pin_report.py',

@@ -17,6 +17,7 @@ import client_archives
 from world_light_placements import discover as discover_placements,discover_global,wmo_doodads,group_refs,group_blobs
 
 import outdoor_light_profiles
+import wmo_lamp_emission
 
 RECORD=struct.Struct('<8fQII')
 INSTANCE=struct.Struct('<32sQI18f')
@@ -169,6 +170,28 @@ def build(cache,output,maps,assets=None,manifest='manifest.json'):
                     try:
                         blob=assets.read(path);before=stats.copy()
                         extracted[path]=extract_wmo(blob,stats) if path.endswith('.wmo') else extract_m2(blob,stats)
+                        if path.endswith('.wmo'):
+                            try:material_names=wmo_lamp_emission.candidates(blob)
+                            except (ValueError,IndexError,KeyError,struct.error) as exc:
+                                material_names={};errors.append({'asset':path,'lamp_evidence_error':str(exc)})
+                            if material_names:
+                                try:
+                                    group_count=unpack('<I',dict(chunks(blob))['MOHD'],4)[0]
+                                    if group_count>4096:raise ValueError('WMO group count')
+                                except (ValueError,IndexError,KeyError,struct.error) as exc:
+                                    group_count=0;errors.append({'asset':path,'lamp_evidence_error':str(exc)})
+                                enclosed=[]
+                                for group in range(group_count):
+                                    group_path=path[:-4]+f'_{group:03d}.wmo'
+                                    try:
+                                        group_blob=assets.read(group_path)
+                                        lamps,_=wmo_lamp_emission.analyze(blob,group_blob,assets.read,group,material_names)
+                                        enclosed.extend(lamps)
+                                    except FileNotFoundError:continue
+                                    except (ValueError,IndexError,KeyError,struct.error) as exc:
+                                        errors.append({'asset':group_path,'error':str(exc)})
+                                extracted[path]=wmo_lamp_emission.merge_native(extracted[path],enclosed)
+                                stats['wmo_glass_lamps']+=sum(bool(s[6]&wmo_lamp_emission.GLASS_EMITTER) for s in extracted[path])
                         authored=emitter_index.get(path,blob) if path.endswith('.m2') and not unpack('<I',blob,264)[0] else None
                         if authored is not None:
                             extracted[path]=world_emitter_index.records(authored)
@@ -179,7 +202,7 @@ def build(cache,output,maps,assets=None,manifest='manifest.json'):
                         if extracted[path]:
                             provenance[path]={'archive':assets.origin(path),
                                 'asset_sha256':hashlib.sha256(blob).hexdigest(),'light_records':[x[4] for x in extracted[path]],
-                                'kind':'WMO MOLT' if path.endswith('.wmo') else ('Authored model emitter' if extracted[path][0][5]==3 else 'M2 constant default tracks')}
+                                'kind':('WMO MOLT and/or enclosed lamp' if path.endswith('.wmo') else ('Authored model emitter' if extracted[path][0][5]==3 else 'M2 constant default tracks'))}
                     except (ValueError,FileNotFoundError,IndexError,KeyError,struct.error) as exc:
                         extracted[path]=[];errors.append({'asset':path,'error':str(exc)})
                 try:
