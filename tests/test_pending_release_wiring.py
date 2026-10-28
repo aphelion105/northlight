@@ -22,7 +22,8 @@ def method(signature,text=w):
     start=text.index(signature);end=text.index('\n    }\n',start);return text[start:end]
 render=method('    bool render(IDirect3DSurface9* targetSurface');upload=method('    bool upload(NorthlightStreaming::Budget& streamBudget){')
 context=method('    void updateWorldContext(const char* map,const float* camera,const NorthlightWmoContext::Lighting* global=nullptr){');helper=method('    void releaseOrphanedPending(const char* site){')
-gate='const bool geometryReady=ready()&&resources(w,h,fmt)&&upload(streamBudget);'
+gate='const bool sceneTargetsReady=ready()&&resources(w,h,fmt)&&geometryResources(w,h);'
+upload_gate='const bool geometryReady=sceneTargetsReady&&upload(streamBudget);'
 reset='active.reset();expiredMeshPending|=heldDrawable;}'
 retire='const char* retired=active&&!NorthlightWorldStreaming::retained(active->map,active->center,r.map,r.camera)?(active->map!=r.map?"map":"retired"):nullptr;'
 adopt='if(published&&published!=active&&NorthlightWorldStreaming::adopts(published->map,published->center,bool(published->bvh),active&&active->bvh,r.map,r.camera)){'
@@ -37,7 +38,7 @@ checks={
   'if(!pendingOrphaned(pendingMesh.get(),active.get()))return;' in helper and 'retirePendingCpu();pendingMesh.reset();meshRetry.clear();' in helper
   and helper.count('logf("WORLD pending mesh released orphan=')==1,
  'upload() uses the helper before staging':upload.count('releaseOrphanedPending("upload");')==1 and upload.index('releaseOrphanedPending("upload");')<upload.index('if(uploaded.lock()!=active->bvh&&!pendingMesh'),
- 'render(): release before the ready() gate':render.count('releaseOrphanedPending("render");')==1 and render.count(gate)==1 and render.index('releaseOrphanedPending("render");')<render.index(gate),
+ 'render(): release before the ready() and upload gates':render.count('releaseOrphanedPending("render");')==1 and render.count(gate)==1 and render.count(upload_gate)==1 and render.index('releaseOrphanedPending("render");')<render.index(gate)<render.index(upload_gate),
  'updateWorldContext(): release right after the out-of-range active.reset()':
   context.count(reset)==1 and context.count('releaseOrphanedPending("range");')==1 and context.index(reset)<context.index('releaseOrphanedPending("range");')<context.index('logf("WORLD camera tick='), # 0.3.200 added an earlier GetTickCount() local; anchor on the camera line
  '0.3.169 retire on the hard limit or a map change, then the release rule (A2, A5)':

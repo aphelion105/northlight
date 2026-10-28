@@ -5,6 +5,16 @@
 #include <cassert>
 #include <fstream>
 struct WorldScreenEffectsTest {
+    static void fixtureContext(WorldRenderer& w){
+        // A real frame reacquires the camera and lighting from a world draw after endFrame().
+        w.valid=true;w.traceContext=2;
+        for(unsigned i=0;i<16;++i)w.context.view[i]=w.context.inverseView[i]=(i%5==0)?1.f:0.f;
+        for(unsigned i=0;i<3;++i){w.context.camera[i]=0;w.context.direct[i]=.6f;w.context.ambient[i]=.25f;}
+        w.context.lightDirection[0]=.4f;w.context.lightDirection[1]=.2f;w.context.lightDirection[2]=-.8944272f;
+        w.projection[0]=w.projection[1]=w.projection[2]=1;
+        w.sourceDirections[0]={.4f,.2f,-.8944272f};w.sourceDirections[1]={0,0,1};
+        w.sourceColors[0]=w.sourceGlowColors[0]={.6f,.5f,.4f};w.sourceColors[1]=w.sourceGlowColors[1]={0,0,0};w.sourceWeights[0]=1;w.sourceWeights[1]=0;
+    }
     static void sceneOwnership(WorldRenderer& w,IDirect3DDevice9* d){
         auto scene=w.gpuScene;const auto originalLimit=w.captureSources().sharedSourceLimit();
         assert(scene->device==d&&scene->decodedSources&&scene->captureSources==w.captureSources().sharedSources());
@@ -33,13 +43,7 @@ struct WorldScreenEffectsTest {
     static void setup(WorldRenderer& w,unsigned width,unsigned height){
         assert(w.resources(width,height,D3DFMT_A16B16G16R16F));
         assert(!w.color&&!w.colorSurface); // No consumer has requested full-size scratch.
-        w.valid=true;w.frames=599;NorthlightDiagnostics::configure(true);w.lastRequest.map="Northrend";
-        for(unsigned i=0;i<16;++i)w.context.view[i]=w.context.inverseView[i]=(i%5==0)?1.f:0.f;
-        for(unsigned i=0;i<3;++i){w.context.camera[i]=0;w.context.direct[i]=.6f;w.context.ambient[i]=.25f;}
-        w.context.lightDirection[0]=.4f;w.context.lightDirection[1]=.2f;w.context.lightDirection[2]=-.8944272f;
-        w.projection[0]=w.projection[1]=w.projection[2]=1;
-        w.sourceDirections[0]={.4f,.2f,-.8944272f};w.sourceDirections[1]={0,0,1};
-        w.sourceColors[0]=w.sourceGlowColors[0]={.6f,.5f,.4f};w.sourceColors[1]=w.sourceGlowColors[1]={0,0,0};w.sourceWeights[0]=1;w.sourceWeights[1]=0;
+        fixtureContext(w);w.frames=599;NorthlightDiagnostics::configure(true);w.lastRequest.map="Northrend";
         w.quality.equipmentLights=0;w.quality.horizonHaze=0;w.quality.fogClouds=0;
         w.effects.gi=true;w.effects.shadows=true;
         auto field=std::make_shared<NorthlightRegionalFog::Field>();field->originX=field->originY=-256;field->fogCells=field->airCells=4096;
@@ -64,6 +68,42 @@ struct WorldScreenEffectsTest {
         std::puts("WORLD_SCREEN_CONSUMERS_PASS frames=1000 GI=50 unusedShadowCaptures=0 demand=preserved diagnostic=preserved readyGeometry=preserved");
     }
     static void fog(WorldRenderer& w,bool on){w.effects.fog=on;w.fogHistoryValid=false;}
+    static void cloudPressure(WorldRenderer& w){
+        auto& noise=w.fogCloudNoise();noise.data=NorthlightFogClouds::generate();noise.quantiles=NorthlightFogClouds::quantiles(noise.data.data());noise.ready.store(true,std::memory_order_release);
+        w.memoryPressure=true;assert(w.ensureCloudNoise()&&w.cloudNoise);w.memoryPressure=false;
+        std::puts("WORLD_CLOUD_PRESSURE_PASS demandPressure=1 fullNoiseTexture=1");
+    }
+    static void noSceneTargets(const WorldRenderer& w){
+        assert(!w.geometryTargetsReady&&!w.shadowDepth&&!w.shadowCacheDepth&&!w.shadowScratch&&!w.probePrev&&!w.actorVisibility);
+        for(auto* t:w.shadow)assert(!t);for(auto* t:w.shadowCache)assert(!t);for(auto* t:w.probe)assert(!t);for(auto* t:w.actorShadow)assert(!t);for(auto* t:w.actorTiles)assert(!t);assert(!w.actorTilesMid);
+    }
+    static uint64_t sceneBytes(const WorldRenderer& w){
+        using namespace NorthlightResourceMemory;Inventory i;
+        for(auto* t:w.shadow)i.texture(t,ShadowMaps);for(auto* t:w.shadowCache)i.texture(t,ShadowMaps);i.texture(w.shadowScratch,ShadowMaps);
+        for(auto* t:w.actorShadow)i.texture(t,ShadowMaps);for(auto* t:w.actorTiles)i.texture(t,ShadowMaps);i.texture(w.actorTilesMid,ShadowMaps);i.texture(w.actorVisibility,ShadowMaps);
+        i.surface(w.shadowDepth,ShadowMaps);i.surface(w.shadowCacheDepth,ShadowMaps);for(auto* t:w.probe)i.texture(t,ProbeTextures);i.texture(w.probePrev,ProbeTextures);
+        assert(i.complete());return i.groups[ShadowMaps]+i.groups[ProbeTextures];
+    }
+    static void fakeScene(WorldRenderer& w,IDirect3DVertexBuffer9* vb,IDirect3DIndexBuffer9* ib){
+        w.active=std::make_shared<WorldRenderer::Snapshot>();w.active->map=w.lastRequest.map;w.active->bvh=std::make_shared<NorthlightGI::BVH>();
+        w.active->serial=1;w.active->atlas.resize(NorthlightGI::probeLayout().atlasSize());auto& entry=w.active->atlas[0];entry.occupied=true;entry.probe.valid=true;entry.probe.sh[0]={.3f,.4f,.5f};
+        w.uploaded=w.active->bvh;w.uploadedMap=w.active->map;w.vertices=vb;w.indices=ib;w.effects.shadows=w.effects.gi=false;
+    }
+    static void retryScene(WorldRenderer& w){w.geometryTargetsRetryAt-=1000;}
+    static bool sceneDrawn(const WorldRenderer& w){return w.fogGeometryReady;}
+    static IDirect3DTexture9* screenFog(const WorldRenderer& w){return w.fog;}
+    static void pressure(WorldRenderer& w,bool on){w.memoryPressure=on;}
+    static void expireFakeScene(WorldRenderer& w){w.active.reset();w.expiredMeshPending=true;}
+    static std::vector<unsigned char> probeImage(WorldRenderer& w){
+        assert(w.uploadedSerial==1&&w.probe[0]);D3DSURFACE_DESC desc{};assert(SUCCEEDED(w.probe[0]->GetLevelDesc(0,&desc)));D3DLOCKED_RECT lock{};
+        assert(SUCCEEDED(w.probe[0]->LockRect(0,&lock,nullptr,D3DLOCK_READONLY)));std::vector<unsigned char> image(size_t(desc.Width)*desc.Height*16);
+        for(unsigned y=0;y<desc.Height;++y)std::memcpy(image.data()+size_t(y)*desc.Width*16,static_cast<const char*>(lock.pBits)+size_t(y)*lock.Pitch,size_t(desc.Width)*16);
+        assert(SUCCEEDED(w.probe[0]->UnlockRect(0)));return image;
+    }
+    static void probeRetired(const WorldRenderer& w){assert(!w.uploadedSerial);}
+    static void removeFakeScene(WorldRenderer& w){
+        w.vertices=nullptr;w.indices=nullptr;w.uploaded.reset();w.uploadedMap.clear();w.active.reset();w.releaseGeometryTargets();w.effects.shadows=w.effects.gi=true;
+    }
     static bool composed(const WorldRenderer& w){return w.composited&&!w.shadowsComposited&&!w.shadowFrameReady;}
     static void scratch(const WorldRenderer& w,bool expected){assert(bool(w.color)==expected&&bool(w.colorSurface)==expected);}
     static void direct(WorldRenderer& w,bool on){w.sourceColors[0]=on?WorldRenderer::V(.6f,.5f,.4f):WorldRenderer::V();w.sourceColors[1]={};}
@@ -95,7 +135,7 @@ struct WorldScreenEffectsTest {
             world.effects.shadows=world.effects.gi=debug<3?false:true;world.effects.fog=false;
             if(debug<3&&resolved==nullptr)world.effects.shadows=world.effects.gi=true; // also exercise missing geometry with enabled components
             assert(SUCCEEDED(world.d->ColorFill(out,nullptr,0xffffffff)));
-            assert(world.render(out,depth,width,height,D3DFMT_A16B16G16R16F,1,1000,0,1,debug,nullptr,nullptr));
+            assert(SUCCEEDED(world.d->BeginScene()));const bool rendered=world.render(out,depth,width,height,D3DFMT_A16B16G16R16F,1,1000,0,1,debug,nullptr,nullptr);assert(SUCCEEDED(world.d->EndScene()));assert(rendered);
             if(resolved)assert(SUCCEEDED(world.d->StretchRect(out,nullptr,resolved,nullptr,D3DTEXF_NONE)));
             assert(SUCCEEDED(world.d->GetRenderTargetData(resolved?resolved:out,read)));D3DLOCKED_RECT lock{};assert(SUCCEEDED(read->LockRect(&lock,nullptr,D3DLOCK_READONLY)));
             for(unsigned y=0;y<height;++y)for(unsigned x=0;x<width*8;++x)assert(static_cast<const unsigned char*>(lock.pBits)[y*lock.Pitch+x]==0);
@@ -114,14 +154,23 @@ struct WorldScreenEffectsTest {
     }
 };
 struct WorldScratchMeter:ForwardIDirect3DDevice9 {
-    unsigned width,height,creates=0;
+    unsigned width,height,creates=0,sceneCreates=0,failSceneAt=0;float fogWeight=-1;
     WorldScratchMeter(IDirect3DDevice9* d,unsigned w,unsigned h):ForwardIDirect3DDevice9(d),width(w),height(h){}
     HRESULT STDMETHODCALLTYPE CreateTexture(UINT w,UINT h,UINT levels,DWORD usage,D3DFORMAT format,D3DPOOL pool,IDirect3DTexture9** t,HANDLE* shared)override{
         if(w==width&&h==height&&(usage&D3DUSAGE_RENDERTARGET)&&format==D3DFMT_A16B16G16R16F)++creates;
+        if(w==1024&&h==1024&&format==D3DFMT_R32F&&(usage&D3DUSAGE_RENDERTARGET)&&++sceneCreates==failSceneAt)return E_OUTOFMEMORY;
         return real->CreateTexture(w,h,levels,usage,format,pool,t,shared);
+    }
+    HRESULT STDMETHODCALLTYPE SetPixelShaderConstantF(UINT start,const float* values,UINT count)override{
+        if(start==64&&count==1)fogWeight=values[1];return real->SetPixelShaderConstantF(start,values,count);
     }
 };
 static void screenOk(HRESULT h){if(FAILED(h)){std::fprintf(stderr,"screen HRESULT=%08lx\n",(unsigned long)h);std::abort();}}
+static bool renderChecked(WorldRenderer& world,IDirect3DDevice9* device,IDirect3DSurface9* out,IDirect3DTexture9* depth,UINT w,UINT h,D3DFORMAT format,float nearZ,float farZ,float minZ,float maxZ,int debug,NorthlightGpuProfile* profile,IDirect3DTexture9* water,IDirect3DTexture9* scene=nullptr,IDirect3DTexture9* ao=nullptr,unsigned frame=0){
+    screenOk(device->BeginScene());const bool result=world.render(out,depth,w,h,format,nearZ,farZ,minZ,maxZ,debug,profile,water,scene,ao,frame);screenOk(device->EndScene());
+    if(!result)std::fprintf(stderr,"WORLD_SCREEN_RENDER_FAILED reason=%s screenReady=%u geometryReady=%u debug=%d frame=%u\n",world.lastSkipReason(),unsigned(world.screenReady()),unsigned(world.ready()),debug,frame);
+    return result;
+}
 static float screenHalf(unsigned short h){unsigned e=h>>10&31,m=h&1023;float v=e==0?std::ldexp(float(m),-24):e==31?(m?NAN:INFINITY):std::ldexp(float(1024+m),int(e)-25);return h&32768?-v:v;}
 static IDirect3DTexture9* screenTexture(IDirect3DDevice9* d,unsigned w,unsigned h,const float* value,unsigned channels=4){
     IDirect3DTexture9* t=nullptr;screenOk(d->CreateTexture(w,h,1,0,channels==4?D3DFMT_A32B32G32R32F:D3DFMT_R32F,D3DPOOL_MANAGED,&t,nullptr));D3DLOCKED_RECT l{};screenOk(t->LockRect(0,&l,nullptr,0));
@@ -129,6 +178,7 @@ static IDirect3DTexture9* screenTexture(IDirect3DDevice9* d,unsigned w,unsigned 
 }
 int main(int argc,char** argv){
     assert(argc==3);constexpr unsigned W=256,H=160;const unsigned msaa=std::getenv("NORTHLIGHT_TEST_MSAA")?unsigned(std::atoi(std::getenv("NORTHLIGHT_TEST_MSAA"))):0;assert(msaa==0||msaa==2);
+    std::setvbuf(stdout,nullptr,_IONBF,0);logFile=stdout;
     std::string root=std::string(argv[2])+"/";assert(MultiByteToWideChar(CP_UTF8,0,root.c_str(),-1,rootPath,MAX_PATH));
     WNDCLASSW wc{};wc.lpfnWndProc=DefWindowProcW;wc.lpszClassName=L"NorthlightScreenEffectsOracle";wc.hInstance=GetModuleHandleW(nullptr);assert(RegisterClassW(&wc));
     HWND window=CreateWindowExW(0,wc.lpszClassName,L"",WS_OVERLAPPED,0,0,W,H,nullptr,nullptr,wc.hInstance,nullptr);assert(window);
@@ -143,11 +193,12 @@ int main(int argc,char** argv){
     std::vector<float> images[4];
     {
         WorldScratchMeter meter(d,W,H);
-        auto world=std::make_unique<WorldRenderer>(&meter);WorldScreenEffectsTest::sceneOwnership(*world,&meter);WorldScreenEffectsTest::setup(*world,W,H);WorldScreenEffectsTest::consumers(*world);
+        auto world=std::make_unique<WorldRenderer>(&meter);WorldScreenEffectsTest::sceneOwnership(*world,&meter);WorldScreenEffectsTest::setup(*world,W,H);WorldScreenEffectsTest::consumers(*world);WorldScreenEffectsTest::cloudPressure(*world);
+        WorldScreenEffectsTest::noSceneTargets(*world);assert(WorldScreenEffectsTest::sceneBytes(*world)==0&&meter.sceneCreates==0);
         for(unsigned mode=0;mode<4;++mode){
             WorldScreenEffectsTest::fog(*world,mode>=2);world->setMaterialDetail(mode&1?detail:nullptr,1,48,nullptr,8);
             screenOk(d->SetRenderTarget(0,out));screenOk(d->SetDepthStencilSurface(nullptr));screenOk(d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE));
-            assert(world->render(out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao,mode));assert(WorldScreenEffectsTest::composed(*world));
+            assert(renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao,mode));assert(WorldScreenEffectsTest::composed(*world));
             WorldScreenEffectsTest::scratch(*world,bool(mode&1));assert(meter.creates==(mode+1)/2);
             if(msaa)screenOk(d->StretchRect(out,nullptr,resolved,nullptr,D3DTEXF_NONE));screenOk(d->GetRenderTargetData(msaa?resolved:out,readback));D3DLOCKED_RECT l{};screenOk(readback->LockRect(&l,nullptr,D3DLOCK_READONLY));
             auto& image=images[mode];image.resize(W*H*3);
@@ -157,15 +208,43 @@ int main(int argc,char** argv){
             if(mode==1){
                 // A camera turn may hide all captures without disabling materials.
                 world->setMaterialDetail(nullptr,1,48,nullptr,8,true);
-                assert(world->render(out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao));
+                assert(renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao));
                 WorldScreenEffectsTest::scratch(*world,true);assert(meter.creates==1);
             }
         }
+        WorldScreenEffectsTest::fog(*world,true);
+        for(unsigned frame=0;frame<2;++frame){
+            meter.fogWeight=-1;assert(renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao));
+            assert(meter.fogWeight==(frame?.85f:0.f));
+        }
+        std::puts("WORLD_FOG_HISTORY_PASS noGeometry=1 firstWeight=0 nextWeight=0.85");
+        IDirect3DVertexBuffer9* vb=nullptr;IDirect3DIndexBuffer9* ib=nullptr;
+        screenOk(d->CreateVertexBuffer(32,0,0,D3DPOOL_MANAGED,&vb,nullptr));screenOk(d->CreateIndexBuffer(12,0,D3DFMT_INDEX32,D3DPOOL_MANAGED,&ib,nullptr));
+        auto* screenFog=WorldScreenEffectsTest::screenFog(*world);WorldScreenEffectsTest::fakeScene(*world,vb,ib);meter.failSceneAt=3;
+        meter.fogWeight=-1;
+        assert(renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao));
+        assert(!WorldScreenEffectsTest::sceneDrawn(*world)&&meter.fogWeight==.85f&&WorldScreenEffectsTest::screenFog(*world)==screenFog);WorldScreenEffectsTest::noSceneTargets(*world);assert(world->screenReady());
+        WorldScreenEffectsTest::retryScene(*world);meter.failSceneAt=0;
+        meter.fogWeight=-1;
+        assert(renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao));
+        const auto sceneBytes=WorldScreenEffectsTest::sceneBytes(*world);assert(sceneBytes>0&&world->ready()&&WorldScreenEffectsTest::sceneDrawn(*world)&&meter.fogWeight==0&&WorldScreenEffectsTest::screenFog(*world)==screenFog);
+        const auto creates=meter.sceneCreates;assert(renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao));assert(meter.sceneCreates==creates);
+        const auto probeBefore=WorldScreenEffectsTest::probeImage(*world);
+        WorldScreenEffectsTest::pressure(*world,true);world->endFrame();assert(WorldScreenEffectsTest::sceneBytes(*world)==sceneBytes); // Active BVH still owns these targets.
+        WorldScreenEffectsTest::expireFakeScene(*world);world->endFrame();WorldScreenEffectsTest::noSceneTargets(*world);WorldScreenEffectsTest::probeRetired(*world);
+        assert(WorldScreenEffectsTest::sceneBytes(*world)==0&&WorldScreenEffectsTest::screenFog(*world)==screenFog);
+        WorldScreenEffectsTest::fixtureContext(*world);
+        assert(renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao));
+        WorldScreenEffectsTest::pressure(*world,false);WorldScreenEffectsTest::fakeScene(*world,vb,ib);
+        assert(renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao));
+        assert(WorldScreenEffectsTest::sceneBytes(*world)==sceneBytes&&WorldScreenEffectsTest::screenFog(*world)==screenFog&&WorldScreenEffectsTest::probeImage(*world)==probeBefore);
+        WorldScreenEffectsTest::removeFakeScene(*world);vb->Release();ib->Release();
+        std::printf("WORLD_SCENE_LAZY_PASS noBvhBytes=0 partialFailureKeptScreen=1 retryWithoutReset=1 pressuredExpiryReclaimed=1 probesRestored=1 sceneBytes=%llu\n",(unsigned long long)sceneBytes);
         // The unfurled legacy path still gets scratch; the next folded frame retires it.
         WorldScreenEffectsTest::fog(*world,false);world->setMaterialDetail(nullptr,0,48);
         for(bool folded:{false,true}){
             screenOk(d->SetRenderTarget(0,out));screenOk(d->Clear(0,nullptr,D3DCLEAR_TARGET,0xff666666,1,0));
-            assert(world->render(out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,folded?scene:nullptr,ao));
+            assert(renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,folded?scene:nullptr,ao));
             WorldScreenEffectsTest::scratch(*world,!folded);assert(meter.creates==2);
         }
         std::puts("WORLD_SCRATCH_PASS folded_off=0 materials_on=1 invisible_reused=1 legacy_on=1 retired_on_disable=1");
@@ -174,7 +253,7 @@ int main(int argc,char** argv){
             if(direct)WorldScreenEffectsTest::resetResources(*world);
             WorldScreenEffectsTest::direct(*world,direct!=0);WorldScreenEffectsTest::fog(*world,true);
             screenOk(d->SetRenderTarget(0,out));
-            assert(world->render(out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao));
+            assert(renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao));
             ambientOnly[direct]=WorldScreenEffectsTest::fogImage(*world);
         }
         assert(ambientOnly[0]==ambientOnly[1]); // missing shadow geometry disables direct shafts, never ambient extinction

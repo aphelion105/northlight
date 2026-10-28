@@ -75,7 +75,7 @@ checks['every ActorTiles pass (own 64x64 target per source, own mark) before the
     and light.index('d->SetRenderTarget(0,actorTilesMidSurface)')<light.index('if(!check(quad(mid,mid),"actor shadow tile pass"))return false;')<light.index('d->SetRenderTarget(0,actorTilesSurface[source])')
     <light.index('d->SetTexture(12,actorTilesMid);d->SetPixelShaderConstantF(72,midInfo,1);')<light.index('if(!check(quad(tiles,tiles),"actor shadow tile pass"))return false;') # two 4x4 steps: 1024 -> 256 -> 64
     and light.count('SetRenderTarget(0,actorVisibilitySurface)')==1
-    and '!optional(tiles,tiles,D3DFMT_R32F,&actorTiles[0],&actorTilesSurface[0])||!optional(tiles,tiles,D3DFMT_R32F,&actorTiles[1],&actorTilesSurface[1])' in w
+    and '!makeTarget(count,count,D3DFMT_R32F,&actorTiles[0],&actorTilesSurface[0])||!makeTarget(count,count,D3DFMT_R32F,&actorTiles[1],&actorTilesSurface[1])' in w
     and 'if(anyActorPass)d->SetTexture(10,textures[10]);' in light and light.index('d->SetPixelShader(actorShadowPS);')<light.index('if(anyActorPass)d->SetTexture(10,textures[10]);'))
 checks['ActorShadow pass: c68..c71 matrix, c72 info, actor map on s12, RED sun / GREEN moon, mask restored']=(
     'SetPixelShaderConstantF(68,actorMatrices[source],4)' in light and 'SetPixelShaderConstantF(72,actorInfo,1)' in light and 'const float actorInfo[4]={1.f,1.f/float(NorthlightActorShadowMap::Size),NorthlightActorShadowMap::Radius,0.f};' in light
@@ -84,12 +84,13 @@ checks['s12: visibility for the WorldLighting loop only, then the frame-start (n
     light.index('d->SetTexture(12,anyActorPass?actorVisibility:neutralWhite);')<light.index('d->SetPixelShader(lightingPS);')
     and light.rstrip().endswith('d->SetTexture(12,textures[12]); /* 0.3.209 (task 29): the frame-start binding (null) again; the visibility was WorldLighting\'s only */')
     and 'textures[]={foldScene?foldScene:color,depth,shadow[0],shadow[1],probe[0],probe[1],probe[2],probe[3],nullptr,nullptr,probe[4],waterMask,nullptr,' in render
-    and render.count('d->SetTexture(12,baselineLight)')==2)
+    and render.count('d->SetTexture(12,baselineLight)')==4)
 checks['resources: maps, tiles and visibility only with the shaders (ActorShadowDetail=1) and optional (a failure turns the map off, not the renderer); neutral white mandatory 1x1; released with the rest']=(
     "releaseActorTargets();logf(\"WORLD actor shadow map disabled: render targets unavailable\");" in w and 'actorVisibility,&actorVisibilitySurface))return false;' not in w
-    and '||!optional(w/2,h/2,D3DFMT_A8R8G8B8,&actorVisibility,&actorVisibilitySurface)' in w
+    and '||!makeTarget(w/2,h/2,D3DFMT_A8R8G8B8,&actorVisibility,&actorVisibilitySurface)' in w
     and 'if(quality.actorShadows&&quality.actorShadowDetail&&(FAILED(d->CreatePixelShader(kActorShadowShader,&actorShadowPS))||FAILED(d->CreatePixelShader(kActorTilesShader,&actorTilesPS))))' in w
-    and 'void releaseActorTargets(){for(auto& t:actorShadow)drop(t);for(auto& t:actorShadowSurface)drop(t);for(auto& t:actorTiles)drop(t);for(auto& t:actorTilesSurface)drop(t);drop(actorTilesMid);drop(actorTilesMidSurface);drop(actorVisibility);drop(actorVisibilitySurface);drop(actorShadowPS);drop(actorTilesPS);}' in w
+    and 'void releaseActorTargetTextures(){for(auto& t:actorShadow)drop(t);for(auto& t:actorShadowSurface)drop(t);for(auto& t:actorTiles)drop(t);for(auto& t:actorTilesSurface)drop(t);drop(actorTilesMid);drop(actorTilesMidSurface);drop(actorVisibility);drop(actorVisibilitySurface);}' in w
+    and 'void releaseActorTargets(){releaseActorTargetTextures();drop(actorShadowPS);drop(actorTilesPS);}' in w
     and 'releaseActorTargets();drop(neutralWhite);' in w and '*static_cast<DWORD*>(lock.pBits)=0xffffffffu;neutralWhite->UnlockRect(0);' in w
     and 'nearShadow[s].invalidate();actorValid[s]=false;' in w)
 # Hysteresis hold and the near-first bounds order: wired once, gated diagnostics, shown on the actor map log line.
