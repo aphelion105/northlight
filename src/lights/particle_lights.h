@@ -131,10 +131,13 @@ public:
             if(!duplicate)candidates[count++]=native[i];
         }
         const auto score=[&](const Light& l){return std::sqrt(NorthlightEquipmentLights::distance2(l.position,camera))-l.attenuationEnd;};
-        std::sort(candidates.begin(),candidates.begin()+count,[&](const Light& a,const Light& b){
-            const float as=score(a),bs=score(b);return as!=bs?as<bs:a.sourceId<b.sourceId;});
+        std::array<unsigned char,Tracks+Capacity> order;order[0]=0;
+        if(count>1){std::array<float,Tracks+Capacity> scores;
+            for(unsigned i=0;i<count;++i){order[i]=static_cast<unsigned char>(i);scores[i]=score(candidates[i]);}
+            std::sort(order.begin(),order.begin()+count,[&](unsigned char a,unsigned char b){
+                return scores[a]!=scores[b]?scores[a]<scores[b]:candidates[a].sourceId<candidates[b].sourceId;});}
         outputCount=std::min(count,Capacity);immediateCount=0;
-        for(unsigned i=0;i<outputCount;++i){output[i]=candidates[i];
+        for(unsigned i=0;i<outputCount;++i){output[i]=candidates[order[i]];
             if((output[i].sourceId&0xfff0000000000000ull)==0xfed0000000000000ull)immediate[immediateCount++]=output[i].sourceId;}
         for(unsigned i=0;i<previousCount_;++i)
             if(std::find(immediate.begin(),immediate.begin()+immediateCount,previous_[i].sourceId)==immediate.begin()+immediateCount)selection.forget(previous_[i].sourceId);
