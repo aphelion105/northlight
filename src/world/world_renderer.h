@@ -3674,11 +3674,11 @@ public:
         const D3DVERTEXELEMENT9* elements=nullptr;UINT n=0;if(!declarationCache.get(replay.decl,elements,n))return;
         // Evaluate one vertex first to avoid skinning distant crowds. 96 units
         // allows large models intersecting the exact 48-unit triangle region.
-        NorthlightDrawSnapshot::Mesh first;first.vertexCount=1;
-        for(unsigned s=0;s<4;++s){first.streams[s].stride=replay.mesh().streams[s].stride;if(!replay.mesh().streams[s].bytes.empty())first.streams[s].bytes.assign(replay.mesh().streams[s].bytes.begin(),replay.mesh().streams[s].bytes.begin()+first.streams[s].stride);}
-        std::vector<NorthlightActorDeformation::Position> positions;
-        if(!NorthlightActorDeformation::worldPositions(program,first,elements,n,replay.constants,context.inverseView,positions))return;
-        V firstPosition(positions[0].x,positions[0].y,positions[0].z);V distance=firstPosition-vec(context.camera);if(NorthlightGI::dot(distance,distance)>96*96)return;
+        NorthlightActorDeformation::Four inputs[16];
+        if(!NorthlightActorDeformation::sampledVertexInputsAt(program,replay.mesh(),elements,n,0,inputs))return;
+        const float origin[3]={};float unusedSquared=0,firstWorld[3];
+        if(!NorthlightActorDeformation::sampledDistanceFromInputs(program,inputs,replay.constants,context.inverseView,origin,unusedSquared,firstWorld))return;
+        V firstPosition=vec(firstWorld);V distance=firstPosition-vec(context.camera);if(NorthlightGI::dot(distance,distance)>96*96)return;
         actorVerticesEvaluated+=replay.mesh().vertexCount;
         phase.next(1); // Copy current game texture; pure decode runs on the GI worker.
         NorthlightGI::WorldMaterial material;material.albedo=V(.35f,.35f,.35f);material.alphaCutoff=replay.alphaMode==2?0.f:std::max(0.f,replay.cutoff);
