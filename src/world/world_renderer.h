@@ -40,6 +40,7 @@
 #include "point_light_shadow.h"
 #include "wmo_lamp_shadow.h"
 #include "point_transmission_filter.h"
+#include "weather_lens_heat.h"
 #include "local_light_compiled_shaders.h"
 #include "replay_bounds.h"
 #include "replay_bounds_schedule.h"
@@ -2934,6 +2935,17 @@ public:
         std::memcpy(frame.c[8],context.ambient,12);std::memcpy(frame.c[9],context.direct,12);
         const unsigned body=NorthlightGI::dot(sourceColors[1],sourceColors[1])>NorthlightGI::dot(sourceColors[0],sourceColors[0])?1:0;
         if(NorthlightGI::dot(rawSourceDirections[body],rawSourceDirections[body])>.5f){std::memcpy(frame.c[9],&sourceColors[body].x,12);}return true;
+    }
+    float weatherLensHeat()const{
+        if(!hasContext()||!active||!active->bvh||active->map!=lastRequest.map)return 0;
+        float player[3]={};const float* self=nullptr;
+        if(pivotSelfCaptured&&frames-pivotSelfFrame<=4&&actorShadowHistory.selfHold()>0){
+            const auto* p=actorShadowHistory.selfAt();player[0]=p[0];player[1]=p[1];player[2]=p[2]+1.5f;self=player;
+        }
+        return NorthlightWeatherLensHeat::sample(atmosphere.lights.sources,context.camera,self,[&](const float* origin,const float* source){
+            const V start=vec(origin),delta=vec(source)-start;const float distance=std::sqrt(NorthlightGI::dot(delta,delta));
+            return distance>.1f&&active->bvh->occluded(start,delta*(1.f/distance),distance-.1f);
+        });
     }
     bool supplementalWeatherOutdoors(){
         if(!hasContext()||!active||!active->bvh||active->map!=lastRequest.map)return false;

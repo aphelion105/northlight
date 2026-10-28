@@ -388,7 +388,7 @@ class Device final : public GuardedMirrorDevice {
     std::unique_ptr<NorthlightSurfaceRenderer> surface;
     std::unique_ptr<NorthlightAutoBump> autoBump;
     unsigned waterAfterEffects=0; // native liquid draws after the effects boundary (diagnostic only)
-    float surfaceTime=0,weatherLayerGate=0;
+    double surfaceTime=0;float weatherLayerGate=0;
     bool surfaceTimerOpen=false;
     std::shared_ptr<NorthlightSettings::Service> settingsService;
     std::unique_ptr<NorthlightOverlay::Overlay> overlay; /* Ctrl+Shift+F11 settings window (settings_overlay.h; [Renderer] SettingsOverlayKey); null with [Renderer] SettingsOverlay=0 */
@@ -984,7 +984,7 @@ private:
         gpuProfile->mark("Precipitation");
         const auto& q=world->surfaceSettings();const bool snow=weather.kind==NorthlightWeather::Kind::Snow;
         const unsigned lensOn=snow?q.snowLens:q.rainLens,strength=snow?q.snowLensStrength:q.rainLensStrength;
-        if(lensOn&&strength&&scene&&sceneSurface){surface->lens(saved.targets[0],scene,sceneSurface,width,height,snow,surfaceTime,context.c[3][0]*float(strength)*.01f,nameDepth);gpuProfile->mark("WeatherLens");}
+        if(lensOn&&strength&&scene&&sceneSurface){surface->lens(saved.targets[0],scene,sceneSurface,width,height,snow,surfaceTime,context.c[3][0]*float(strength)*.01f,nameDepth,weather.intensity,snow?world->weatherLensHeat():0.f);gpuProfile->mark("WeatherLens");}
     }
     void renderEffects() {
         nameMaskRunEnd(); /* 0.3.212 (task 32): the effect passes and SavedState meet the game's stencil states */
@@ -2780,7 +2780,7 @@ public:
         if(gateFrame){logWeatherProbe(sampleFrame);weatherProbe={};}
         LARGE_INTEGER now={};double dt=0;
         if(cpuFrequency.QuadPart>0&&QueryPerformanceCounter(&now)){if(weatherTick)dt=double(now.QuadPart-weatherTick)/double(cpuFrequency.QuadPart);weatherTick=now.QuadPart;}
-        surfaceTime+=float(std::clamp(dt,0.,.1));
+        surfaceTime+=std::clamp(dt,0.,.1);
         if(!mirrorState.enabled){weatherDetect.setOff(true);if(!weatherOffReported){weatherOffReported=true;logf("WEATHER detect=off (mirror inactive)");}}
         weatherSample.kind=weatherSample.draws?weatherDetect.hotKind:W::Kind::None;
         { // the game's own weather state is the primary source when its proofs and reads succeed; the detector is the fallback and the cross-check

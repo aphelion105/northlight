@@ -353,6 +353,8 @@ test_water_shaders.py
 test_weather_detect.py
 test_weather_effects.py
 test_weather_effects_wiring.py
+test_weather_lens_clock.py
+test_weather_lens.py
 test_weather_memory.py
 test_weather_shelter.py
 test_weather_state.py

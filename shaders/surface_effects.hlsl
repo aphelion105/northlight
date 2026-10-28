@@ -49,14 +49,33 @@ float4 SnowPerformance(float2 uv:TEXCOORD0):COLOR0{return precipitation(uv,2,tru
 
 // Screen-bound optics are independently generated; no weather textures are required.
 sampler2D LensScene : register(s0);
-float4 Lens : register(c10); // elapsed seconds, visibility, aspect, unused
-float lensRandom(float2 p){return frac(sin(dot(p,float2(41.7,289.3)))*19417.318);}
+float4 Lens : register(c10); // integrated animation seconds, visibility, aspect, weather intensity
+float3 lensRandom3(float2 cell,float cycle) {
+    float3 p=frac(float3(cell,cycle)*float3(.1031,.11369,.13787));
+    p+=dot(p.zxy,p.yzx+19.19);
+    return frac((p.xxy+p.yzz)*p.zyx);
+}
+float4 lensPattern(float2 cell,bool snow) {
+    float3 seed=lensRandom3(cell,0);
+    float age=Lens.x*(snow?.035:.22)*(.65+.7*seed.y)+seed.z;
+    float phase=frac(age),cycle=floor(age);
+    // Every invisible birth changes the position and occupancy of this cell.
+    // Independent rates and empty cells prevent rows of equally spaced marks.
+    float3 random=lensRandom3(cell,cycle+1);
+    float chance=(snow?.16:.28)+(snow?.50:.55)*saturate(Lens.w);
+    float life=smoothstep(0,snow?.12:.08,phase)*(1-smoothstep(snow?.62:.82,1,phase));
+    life*=1-smoothstep(chance-.08,chance+.08,random.z);
+    float2 center;
+    center.x=(random.x-.5)*(snow?.56:.64);
+    center.y=snow?(random.y-.5)*.32+.15*phase*phase-.075:
+                     -.28+(random.y-.5)*.12+(.52+.10*random.z)*phase*phase;
+    float radius=snow?.07+.075*random.z:.045+.04*random.y;
+    return float4(center,radius,life);
+}
 float4 RainLens(float2 uv:TEXCOORD0):COLOR0 {
     float2 scale=float2(13*Lens.z,13),grid=uv*scale,cell=floor(grid),local=frac(grid)-.5;
-    float seed=lensRandom(cell),phase=frac(Lens.x*.22+seed);
-    float life=smoothstep(0,.10,phase)*(1-smoothstep(.90,1,phase));
-    float2 center=float2((lensRandom(cell+3.7)-.5)*.55,.8*phase*phase-.4);
-    float2 d=local-center;float radius=.06+.03*seed;float distance=length(d);
+    float4 pattern=lensPattern(cell,false);float life=pattern.w;
+    float2 d=local-pattern.xy;float radius=pattern.z;float distance=length(d);
     float body=(1-smoothstep(radius*.82,radius,distance))*life;
     float trail=(1-smoothstep(.005,.012,abs(d.x)))*(1-smoothstep(.02,.16,-d.y))*step(d.y,0)*life;
     // Bend rays toward the droplet center; the lens strength fades with weather.
@@ -67,13 +86,38 @@ float4 RainLens(float2 uv:TEXCOORD0):COLOR0 {
 }
 float4 SnowLens(float2 uv:TEXCOORD0):COLOR0 {
     float2 grid=uv*float2(6*Lens.z,6),cell=floor(grid),local=frac(grid)-.5;
-    float seed=lensRandom(cell+17.0),phase=frac(Lens.x*.035+seed);
-    float life=smoothstep(0,.12,phase)*(1-smoothstep(.62,1,phase))*step(.68,lensRandom(cell+43.0));
-    float2 center=(float2(lensRandom(cell+1.9),lensRandom(cell+7.3))-.5)*.48;
-    float2 d=local-center;float size=.08+.07*seed;float r=length(d*float2(1,.82));
+    float4 pattern=lensPattern(cell,true);float life=pattern.w;
+    float2 d=local-pattern.xy;float size=pattern.z;float r=length(d*float2(1,.82));
     float soft=1-smoothstep(size*.25,size*1.4,r);
     float chip1=1-smoothstep(size*.25,size*.75,length(d-float2(size*.48,size*.22)));
     float chip2=1-smoothstep(size*.18,size*.65,length(d+float2(size*.28,size*.44)));
     float alpha=saturate((soft*.30+chip1*.24+chip2*.20)*life*Lens.y);
     float4 color=tex2D(LensScene,uv);color.rgb=lerp(color.rgb,float3(.68,.72,.76),alpha);return color;
+}
+
+// Sparse, persistent beads and snow clumps. The CPU conserves their masses;
+// TEXCOORD2 describes the merged head and its curved, gravity-driven rivulet.
+float4 WeatherLensParticle(float2 uv:TEXCOORD0,float2 d:TEXCOORD1,float4 flow:TEXCOORD2,float4 state:TEXCOORD3):COLOR0 {
+    float radius=flow.x,tail=flow.y,bend=flow.z,snow=flow.w;
+    float distance=length(d),body=1-smoothstep(radius*.75,radius,distance);
+    float t=saturate(-d.y/max(tail,.00001));
+    float streamX=d.x-bend*t*t;
+    float width=radius*lerp(.32,.10,t);
+    float stream=(1-smoothstep(width*.5,width,abs(streamX)))*step(d.y,0)*(1-smoothstep(tail*.85,tail+.00001,-d.y));
+    float water=max(body,stream*.75)*(1-snow);
+    float2 flake=d*float2(state.y<.5?-1:1,.74+.16*state.y);
+    float r=length(flake);
+    float flakes=(1-smoothstep(radius*.25,radius*1.4,r))*.50;
+    flakes+=(1-smoothstep(radius*.25,radius*.75,length(flake-float2(radius*.48,radius*.22))))*.25;
+    flakes+=(1-smoothstep(radius*.18,radius*.65,length(flake+float2(radius*.28,radius*.44))))*.25;
+    float frost=flakes*snow;
+    float2 normal=d/max(distance,.0001);
+    normal=lerp(float2(streamX/max(width,.0001),0),normal,body);
+    float3 refracted=tex2D(LensScene,uv-normal*float2(.012/Lens.z,.012)*water).rgb;
+    float rim=(smoothstep(radius*.45,radius*.76,distance)-smoothstep(radius*.76,radius,distance));
+    float shine=pow(saturate(normal.x*.35-normal.y*.65),5)*body;
+    refracted+=(rim*.035+shine*.18)*(1-snow);
+    float opacity=saturate((water*.92+frost*.78)*state.x*Lens.y);
+    float3 color=lerp(refracted,float3(.78,.83,.88),saturate(frost/max(water+frost,.0001)));
+    return float4(color,opacity);
 }

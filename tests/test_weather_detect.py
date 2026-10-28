@@ -53,7 +53,7 @@ static const DWORD kRainMaskMrtShader[]={1},kRainScrubShader[]={2};
 static std::vector<std::string> lines;
 static void sink(const char* l){lines.push_back(l);}
 static int A=21,X8=22,A1=25,A4=26,R5G6B5=23,DXT5=0x35545844;
-static int cell[64];static const void* P(int i){return &cell[i];}
+static int cell[128];static const void* P(int i){assert(i>=0&&i<int(sizeof(cell)/sizeof(cell[0])));return &cell[i];}
 static unsigned count(const char* prefix){unsigned n=0;for(auto& l:lines)if(l.rfind(prefix,0)==0)++n;return n;}
 // The hook: the line extracted from Device::drawHook over a mock mirror.
 struct Mirror{bool textureKnown[16]={};void* textures[16]={};};

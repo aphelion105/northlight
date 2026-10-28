@@ -1,5 +1,5 @@
 {
-  "source_sha256": "d4be9838d7730af0284446afd03b0954ea8eaed66b01f35e9b8910f5864bff91",
+  "source_sha256": "954f23cd108a31e101128aaf495fbd5baf8aa9b9a9917c09feb68dc53adc6069",
   "target": "ps_3_0",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
@@ -90,46 +90,66 @@
       }
     },
     "RainLens": {
-      "bytes": 2292,
-      "sha256": "8e8601188bdb085c949e53c73ca02540fd61ce79e2c9a1824eed11d51a96e898",
-      "static_instruction_slots": 137,
+      "bytes": 2604,
+      "sha256": "fccc18bb213b0e7cff13952f87f5b4dbbe9fbc0d8c4caae1e1e4fd19aa54f20d",
+      "static_instruction_slots": 139,
       "temporary_registers": 4,
       "samplers": [
         0
       ],
       "instructions": {
-        "mov": 4,
-        "mul": 59,
-        "frc": 5,
-        "add": 37,
-        "dp2add": 3,
-        "sincos": 2,
+        "mov": 5,
+        "mul": 64,
+        "frc": 6,
+        "add": 48,
+        "dp2add": 2,
+        "dp3": 1,
+        "rcp": 6,
         "max": 1,
         "cmp": 1,
-        "rcp": 5,
         "rsq": 1,
         "texld": 2
       }
     },
     "SnowLens": {
-      "bytes": 2284,
-      "sha256": "53ef91a5657cd43cd01d10c5b5b73a6261a766f125d435843e3806ceb63b7b59",
-      "static_instruction_slots": 153,
+      "bytes": 2360,
+      "sha256": "139ebb74b075120060a237d438c7f4c75d0369476bb8b93d7280126a826e3204",
+      "static_instruction_slots": 127,
       "temporary_registers": 5,
       "samplers": [
         0
       ],
       "instructions": {
-        "mov": 5,
-        "mul": 45,
-        "frc": 9,
-        "add": 36,
-        "dp2add": 7,
-        "sincos": 4,
-        "rsq": 3,
-        "rcp": 6,
-        "cmp": 1,
+        "mov": 8,
+        "mul": 48,
+        "frc": 6,
+        "add": 44,
+        "dp2add": 4,
+        "dp3": 1,
         "max": 1,
+        "rsq": 3,
+        "rcp": 7,
+        "texld": 1
+      }
+    },
+    "WeatherLensParticle": {
+      "bytes": 2908,
+      "sha256": "541807725d3b39f54ea99b200a484a86d5ecb9a578287b28b4c6a40272f25e0c",
+      "static_instruction_slots": 159,
+      "temporary_registers": 5,
+      "samplers": [
+        0
+      ],
+      "instructions": {
+        "add": 51,
+        "cmp": 6,
+        "mul": 69,
+        "dp2add": 4,
+        "rsq": 4,
+        "rcp": 16,
+        "max": 1,
+        "lrp": 1,
+        "mov": 1,
         "texld": 1
       }
     }
