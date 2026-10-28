@@ -149,8 +149,11 @@ private:
   if(entry.batch){auto* batch=entry.batch;size_t meta=0;for(auto& item:entries_)if(item.second->batch==batch)meta+=item.second->metadata;
    if(batch->capacity+meta>retain_[other]||!room(other,batch->capacity+meta,true,true,retain_[other]))return false;
    gpu_[source]-=batch->capacity;gpu_[other]+=batch->capacity;batch->owner=other;
-   for(auto& item:entries_)if(item.second->batch==batch){auto& e=*item.second;metadata_[source]-=e.metadata;metadata_[other]+=e.metadata;e.owner=other;}
-   for(auto it=entries_.begin();it!=entries_.end();){auto& e=*it->second;++it;if(e.batch==batch&&!e.users)erase(e);}return true;
+   for(auto it=entries_.begin();it!=entries_.end();){auto& e=*it->second;++it;
+    if(e.batch!=batch)continue;
+    metadata_[source]-=e.metadata;metadata_[other]+=e.metadata;e.owner=other;
+    if(!e.users)erase(e);
+   }return true;
   }
   if(entry.pending)release(entry);
   const auto need=entry.bytes+entry.metadata;if(need>retain_[other]||!room(other,need,true,true,retain_[other]))return false;

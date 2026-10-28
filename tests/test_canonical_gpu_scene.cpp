@@ -87,6 +87,27 @@ static void reentrantAdmission(){
  }
  assert(!alive);std::puts("CANONICAL_SCENE_ADMISSION_REENTRY_PASS attempt_and_byte_limits rechecked_after_nested_submissions");
 }
+static void batchPreservation(){
+ using namespace NorthlightGpuScene;
+ for(unsigned lane=0;lane<2;++lane)for(unsigned count:{1u,17u,64u,512u}){
+  NativeStore scene;NativeClient source(scene,Consumer(lane)),other(scene,Consumer(1-lane));Device device;Binding binding;
+  std::vector<Owner> meshes;for(unsigned i=0;i<count;++i)meshes.push_back(authored(123000+i));
+  scene.setFrame(1);for(auto& mesh:meshes)assert(!source.bind(&device,mesh,binding.vb,binding.ib,admit,binding.at));
+  for(unsigned at=0;at<count;at+=16){scene.setFrame(2+at/16);
+   for(unsigned i=at;i<std::min(at+16,count);++i)assert(!source.bind(&device,meshes[i],binding.vb,binding.ib,admit,binding.at));
+   assert(source.commitPending());
+  }
+  for(unsigned i=0;i<count;++i)if(i%16==0||i%3==1)assert(other.bind(&device,meshes[i],binding.vb,binding.ib,admit,binding.at));
+  // Put a shared entry first in each batch's LRU order, with unused siblings.
+  scene.setFrame(1000);for(auto& mesh:meshes)assert(source.bind(&device,mesh,binding.vb,binding.ib,admit,binding.at));
+  const auto creates=device.calls;source.clear();assert(!source.chargedBytes()&&!source.bytes());unsigned retained=0;
+  for(unsigned i=0;i<count;++i){const bool keep=i%16==0||i%3==1;assert(scene.resident(meshes[i])==keep);retained+=keep;
+   if(keep)assert(other.bind(&device,meshes[i],binding.vb,binding.ib,admit,binding.at)&&exact(*meshes[i],binding));
+  }
+  assert(other.population().entries==retained&&other.chargedBytes()<=other.limit()&&device.calls==creates);
+ }
+ assert(!alive);std::puts("CANONICAL_SCENE_PRESERVATION_PASS both_consumers sparse_shared_batches unused_siblings exact_bytes no_reupload");
+}
 static Result unified(const std::vector<Owner>& meshes,bool audit,unsigned overlap,unsigned frames=96,bool reconstruct=false){
  using namespace NorthlightGpuScene;NativeStore scene;NativeClient mat(scene,Consumer::Material),world(scene,Consumer::Shadow);Device device;Result result;
  std::vector<Owner> material,actors;
@@ -117,7 +138,7 @@ int main(int argc,char** argv){
  if(argc>2){const auto overlap=argc>3?unsigned(std::stoul(argv[3])):100;const bool canonical=std::string(argv[2])=="canonical";
   auto r=canonical?unified(meshes,false,overlap):run(meshes,true,false,96,overlap);
   std::printf("CANONICAL_SCENE_TIMING canonical=%u overlap=%u cpuMs=%.6f uploads=%zu fallbackBytes=%zu peak=%zu creates=%u digest=%llu\n",canonical,overlap,r.ms,r.uploaded,r.up,r.peak,r.creates,(unsigned long long)r.digest);return 0;}
- sceneControls();assert(!alive);faultsAndCollisions();assert(!alive);limitsAndClock();assert(!alive);boundedCommits();reentrantAdmission();
+ sceneControls();assert(!alive);faultsAndCollisions();assert(!alive);limitsAndClock();assert(!alive);boundedCommits();reentrantAdmission();batchPreservation();
  for(unsigned overlap:{0u,50u,100u}){auto reference=run(meshes,true,true,96,overlap),current=unified(meshes,true,overlap),rebuilt=unified(meshes,true,overlap,96,true);
   std::printf("CANONICAL_SCENE_CHECK overlap=%u reference=%llu current=%llu reconstructed=%llu uploads=%zu/%zu fallback=%zu/%zu\n",overlap,(unsigned long long)reference.digest,(unsigned long long)current.digest,(unsigned long long)rebuilt.digest,reference.uploaded,current.uploaded,reference.up,current.up);
   assert(current.digest==reference.digest&&rebuilt.digest==reference.digest&&current.up<=reference.up&&current.uploaded<=reference.uploaded);
