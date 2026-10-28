@@ -22,8 +22,8 @@ def method(signature,text=w):
     start=text.index(signature);end=text.index('\n    }\n',start);return text[start:end]
 render=method('    bool render(IDirect3DSurface9* targetSurface');upload=method('    bool upload(NorthlightStreaming::Budget& streamBudget){')
 context=method('    void updateWorldContext(const char* map,const float* camera,const NorthlightWmoContext::Lighting* global=nullptr){');helper=method('    void releaseOrphanedPending(const char* site){')
-gate='const bool sceneTargetsReady=ready()&&resources(w,h,fmt)&&geometryResources(w,h);'
-upload_gate='const bool geometryReady=sceneTargetsReady&&upload(streamBudget);'
+gate='const bool screenResourcesReady=ready()&&resources(w,h,fmt);'
+upload_gate='const bool geometryReady=sceneTargetsReady&&(hadTargets||upload(streamBudget));'
 reset='active.reset();expiredMeshPending|=heldDrawable;}'
 retire='const char* retired=active&&!NorthlightWorldStreaming::retained(active->map,active->center,r.map,r.camera)?(active->map!=r.map?"map":"retired"):nullptr;'
 adopt='if(published&&published!=active&&NorthlightWorldStreaming::adopts(published->map,published->center,bool(published->bvh),active&&active->bvh,r.map,r.camera)){'
@@ -31,6 +31,9 @@ builder=w[w.index('    void work() {'):w.index('\n    bool check(HRESULT h,const
 error=builder[builder.index('auto publishError='):builder.index('// Geometry validity is spatial')]
 admission='if(!generations.canAdmit()){++generationDeferrals;'
 checks={
+ 'cold recovery cannot displace a live geometry generation':
+  'if(!NorthlightGeometryMemory::admits(memory,entryBudget)&&generations.live()==0)' in builder
+  and 'coldRecovery?NorthlightGeometryMemory::coldInBuildBudget(bytes):NorthlightGeometryMemory::inBuildBudget(bytes)' in builder,
  'one release rule: the upload() predicate as a static helper, shared by the fixture':
   w.count('static bool pendingOrphaned(')==1 and 'return pending&&(!active||pending->map!=active->map||pending->bvh!=active->bvh);' in w
   and 'pendingMesh->map!=active->map||pendingMesh->bvh!=active->bvh' not in w and 'Fixture::pendingOrphaned(' in t and "static bool pendingOrphaned('" in t,

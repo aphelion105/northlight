@@ -18,6 +18,7 @@ constexpr uint32_t PageIndexByteLimit=512u*1024u;
 constexpr uint32_t PageVertexLimit=PageVertexByteLimit/sizeof(NorthlightGI::WorldVertex);
 constexpr uint32_t PageIndexLimit=PageIndexByteLimit/sizeof(uint32_t);
 static_assert(sizeof(NorthlightGI::WorldVertex)==32,"Paging preserves the full world vertex");
+static_assert(PageVertexLimit<=65536,"Page-local indices must fit in 16 bits");
 static_assert(sizeof(NorthlightGI::Vec3)==12,"Content anchors hash three packed floats");
 // 0.3.216 (issue #66): content-defined page boundaries. After a triangle whose position hash is 0 mod anchorModulus,
 // and once the page holds minFillVertices, the page closes (at the end of the batch when the batch fits an empty page,
@@ -32,13 +33,14 @@ constexpr uint32_t AnchorModulus=6144;
 struct Options {uint32_t anchorModulus=AnchorModulus,minFillVertices=MinFillVertices;const NorthlightMeshPageKey::KeySet* resident=nullptr;uint64_t* peakLiveBytes=nullptr;NorthlightWorldMesh::PreparationCache* preparation=nullptr;};
 struct Page {
     std::vector<NorthlightGI::WorldVertex> vertices;
-    std::vector<uint32_t> indices;
+    // Page-local indices fit losslessly in 16 bits; source indices stay 32-bit.
+    std::vector<uint16_t> indices;
     NorthlightMeshPageKey::Key key; // 0.3.216: content key of vertices+indices, set by build() on the worker
     // 0.3.216: the GPU already holds exactly this page (its key was resident when the plan was built): vertices/indices
     // were freed on the worker, key and exact byte sizes remain. The render thread must find it in the buffer store.
     bool elided=false;
     size_t vertexCount()const{return key.vertexBytes/sizeof(NorthlightGI::WorldVertex);}
-    size_t indexCount()const{return key.indexBytes/sizeof(uint32_t);}
+    size_t indexCount()const{return key.indexBytes/sizeof(uint16_t);}
 };
 struct Batch : NorthlightWorldMesh::Batch {
     uint32_t page=0,minVertex=0,vertexCount=0;
@@ -55,7 +57,7 @@ struct Plan {
     }
     uint64_t cpuBytes() const {
         uint64_t bytes=sizeof(*this)+pages.capacity()*sizeof(Page)+batches.capacity()*sizeof(Batch);
-        for(const auto& p:pages)bytes+=p.vertices.capacity()*sizeof(NorthlightGI::WorldVertex)+p.indices.capacity()*sizeof(uint32_t);
+        for(const auto& p:pages)bytes+=p.vertices.capacity()*sizeof(NorthlightGI::WorldVertex)+p.indices.capacity()*sizeof(uint16_t);
         return bytes;
     }
 };
@@ -123,12 +125,12 @@ template<bool Segmented> inline bool buildImpl(const NorthlightWorldMesh::WorldM
         uint64_t liveKept=0,peakLive=0;
         // A finished page gets its content key; a resident one is freed right here (elided), keeping key and sizes.
         auto finishPage=[&](Page& p){
-            p.key=NorthlightMeshPageKey::keyOf(p.vertices.data(),p.vertices.size()*sizeof(NorthlightGI::WorldVertex),p.indices.data(),p.indices.size()*sizeof(uint32_t));
+            p.key=NorthlightMeshPageKey::keyOf(p.vertices.data(),p.vertices.size()*sizeof(NorthlightGI::WorldVertex),p.indices.data(),p.indices.size()*sizeof(uint16_t));
             next.vertexBytes+=p.key.vertexBytes;next.indexBytes+=p.key.indexBytes;
-            uint64_t capacity=p.vertices.capacity()*sizeof(NorthlightGI::WorldVertex)+p.indices.capacity()*sizeof(uint32_t);
+            uint64_t capacity=p.vertices.capacity()*sizeof(NorthlightGI::WorldVertex)+p.indices.capacity()*sizeof(uint16_t);
             peakLive=std::max(peakLive,liveKept+capacity);
             if(options.resident&&options.resident->count(p.key)){
-                std::vector<NorthlightGI::WorldVertex>().swap(p.vertices);std::vector<uint32_t>().swap(p.indices);p.elided=true;
+                std::vector<NorthlightGI::WorldVertex>().swap(p.vertices);std::vector<uint16_t>().swap(p.indices);p.elided=true;
             }else{
                 // Content anchors often close city pages half full. Keep the
                 // exact bytes, not a full 512 KiB vertex capacity per page.
@@ -234,7 +236,7 @@ template<bool Segmented> inline bool buildImpl(const NorthlightWorldMesh::WorldM
                             page.vertices.push_back(vertex);
                         }
                     }
-                    page.indices.push_back(local);
+                    page.indices.push_back(uint16_t(local));
                     batch.minVertex=std::min(batch.minVertex,local);maxVertex=std::max(maxVertex,local);
                     const auto& p=page.vertices[local].position;
                     batch.boundsLow.x=std::min(batch.boundsLow.x,p.x);batch.boundsLow.y=std::min(batch.boundsLow.y,p.y);batch.boundsLow.z=std::min(batch.boundsLow.z,p.z);
@@ -270,8 +272,8 @@ inline ElisionStats elide(Plan& plan,const NorthlightMeshPageKey::KeySet& reside
     if(resident.empty())return stats;
     for(auto& page:plan.pages) {
         if(page.elided||!resident.count(page.key))continue;
-        stats.bytes+=page.vertices.capacity()*sizeof(NorthlightGI::WorldVertex)+page.indices.capacity()*sizeof(uint32_t);
-        std::vector<NorthlightGI::WorldVertex>().swap(page.vertices);std::vector<uint32_t>().swap(page.indices);
+        stats.bytes+=page.vertices.capacity()*sizeof(NorthlightGI::WorldVertex)+page.indices.capacity()*sizeof(uint16_t);
+        std::vector<NorthlightGI::WorldVertex>().swap(page.vertices);std::vector<uint16_t>().swap(page.indices);
         page.elided=true;++stats.pages;
     }
     return stats;
@@ -287,11 +289,11 @@ inline const char* validatePages(const NorthlightWorldMesh::WorldMeshUploadPlan&
     uint64_t vertexBytes=0,indexBytes=0;
     for(const auto& page:pages.pages) {
         // An elided page has no data; its key carries the exact sizes. Every other page must match its key.
-        if(page.elided?!page.vertices.empty()||!page.indices.empty():page.key.vertexBytes!=page.vertices.size()*sizeof(NorthlightGI::WorldVertex)||page.key.indexBytes!=page.indices.size()*sizeof(uint32_t))return "mesh page key size mismatch";
-        if(!page.vertexCount()||!page.indexCount()||page.key.vertexBytes%sizeof(NorthlightGI::WorldVertex)||page.key.indexBytes%sizeof(uint32_t)||page.vertexCount()>PageVertexLimit||page.indexCount()>PageIndexLimit||page.indexCount()%3)return "invalid mesh page size";
+        if(page.elided?!page.vertices.empty()||!page.indices.empty():page.key.vertexBytes!=page.vertices.size()*sizeof(NorthlightGI::WorldVertex)||page.key.indexBytes!=page.indices.size()*sizeof(uint16_t))return "mesh page key size mismatch";
+        if(!page.vertexCount()||!page.indexCount()||page.key.vertexBytes%sizeof(NorthlightGI::WorldVertex)||page.key.indexBytes%sizeof(uint16_t)||page.vertexCount()>PageVertexLimit||page.indexCount()>PageIndexLimit||page.indexCount()%3)return "invalid mesh page size";
         vertexBytes+=page.key.vertexBytes;indexBytes+=page.key.indexBytes;
     }
-    if(vertexBytes!=pages.vertexBytes||indexBytes!=pages.indexBytes||indexBytes!=input.indexBytes)return "paged aggregate sizes mismatch";
+    if(vertexBytes!=pages.vertexBytes||indexBytes!=pages.indexBytes||indexBytes*2!=input.indexBytes)return "paged aggregate sizes mismatch";
     size_t pageIndex=0;uint64_t nextIndex=0;
     for(const auto& batch:pages.batches) {
         if(pageIndex>=pages.pages.size()||batch.page!=pageIndex||batch.start!=nextIndex||!batch.count||batch.material>=materials.size())return "invalid paged batch range/material";
@@ -338,7 +340,7 @@ inline bool seal(NorthlightWorldMesh::WorldMeshUploadPlan& input,std::shared_ptr
         // 0.3.214 (task 42): pages and cutout textures move into the separately owned payload.
         auto payload=std::make_shared<NorthlightWorldMesh::UploadPayload>();
         payload->pageMetadataBytes=sizeof(*pages)+pages->pages.capacity()*sizeof(Page)+pages->batches.capacity()*sizeof(Batch);
-        for(const auto& page:pages->pages)payload->pageStorageBytes+=page.vertices.capacity()*sizeof(NorthlightGI::WorldVertex)+page.indices.capacity()*sizeof(uint32_t);
+        for(const auto& page:pages->pages)payload->pageStorageBytes+=page.vertices.capacity()*sizeof(NorthlightGI::WorldVertex)+page.indices.capacity()*sizeof(uint16_t);
         payload->materialMetadataBytes=input.materials.capacity()*sizeof(NorthlightWorldMesh::MaterialUpload);
         for(const auto& material:input.materials)payload->materialPixelBytes+=material.bgra.capacity();
         payload->bytes=cpuBytes+sizeof(NorthlightWorldMesh::UploadPayload)+input.materials.capacity()*sizeof(NorthlightWorldMesh::MaterialUpload)+64;

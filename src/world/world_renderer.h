@@ -816,7 +816,7 @@ private:
             meshStore.setCapacity(id,true,capacity);
         }else{
             drop(slot.ib);meshStore.setCapacity(id,false,0);
-            if(FAILED(d->CreateIndexBuffer(capacity,D3DUSAGE_WRITEONLY,D3DFMT_INDEX32,D3DPOOL_MANAGED,&slot.ib,nullptr))||!slot.ib){drop(slot.ib);return false;}
+            if(FAILED(d->CreateIndexBuffer(capacity,D3DUSAGE_WRITEONLY,D3DFMT_INDEX16,D3DPOOL_MANAGED,&slot.ib,nullptr))||!slot.ib){drop(slot.ib);return false;}
             meshStore.setCapacity(id,false,capacity);
         }
         NorthlightGeometryMemory::debitGrowth(memory,capacity);return true;
@@ -1513,7 +1513,7 @@ private:
             const bool profileThisBuild=NorthlightDiagnostics::enabled()&&(!memoryFootprintReportAt||started-memoryFootprintReportAt>=10000);
             profileBuildActive=profileThisBuild;
             if(profileThisBuild)memoryFootprintReportAt=started;
-            bool chunkedLocal=false;
+            bool chunkedLocal=false,coldRecovery=false;
             auto profileMemory=[&](const char* stage,const NorthlightWorldMesh::WorldMeshUploadPlan* plan=nullptr,const NorthlightGI::WorldScene* scratch=nullptr,const NorthlightWorldMeshPages::Plan* pages=nullptr){
                 if(!profileThisBuild)return;
                 const auto profileStart=std::chrono::steady_clock::now();
@@ -1532,15 +1532,15 @@ private:
                 if(fogRegion&&fogRegion->field)memory.allocation(Fog,fogRegion->field.get(),sizeof(*fogRegion->field));
                 maximumObservedCapacity=std::max(maximumObservedCapacity,memory.total());
                 logCpuFootprint("builder-reachable",stage,r.id,memory);
-                const auto entryBudget=chunkedLocal?chunkLift.apply(NorthlightGeometryMemory::chunkBuildBudget(),GetTickCount()):entryLift.apply(NorthlightGeometryMemory::buildBudget(64*NorthlightGeometryMemory::MiB),GetTickCount());
+                const auto entryBudget=chunkedLocal?chunkLift.apply(coldRecovery?NorthlightGeometryMemory::coldChunkBuildBudget():NorthlightGeometryMemory::chunkBuildBudget(),GetTickCount()):entryLift.apply(NorthlightGeometryMemory::buildBudget(64*NorthlightGeometryMemory::MiB),GetTickCount());
                 NorthlightMemoryProfile::Admission admission;
                 admission.available=lastWorkerMemory.available;admission.largest=lastWorkerMemory.largest;admission.valid=lastWorkerMemory.valid;admission.largestExact=workerMemoryExact;
                 admission.entryRequired=entryBudget.available;admission.largestRequired=entryBudget.largest;
-                admission.reserve=NorthlightGeometryMemory::ProcessReserve;admission.entryHeadroom=chunkedLocal?NorthlightGeometryMemory::EntryHeadroom-32*NorthlightGeometryMemory::MiB:NorthlightGeometryMemory::EntryHeadroom;admission.interiorHeadroom=NorthlightGeometryMemory::InBuildHeadroom;
+                admission.reserve=NorthlightGeometryMemory::ProcessReserve;admission.entryHeadroom=coldRecovery?NorthlightGeometryMemory::ColdEntryHeadroom:chunkedLocal?NorthlightGeometryMemory::EntryHeadroom-32*NorthlightGeometryMemory::MiB:NorthlightGeometryMemory::EntryHeadroom;admission.interiorHeadroom=coldRecovery?NorthlightGeometryMemory::ColdInBuildHeadroom:NorthlightGeometryMemory::InBuildHeadroom;
                 admission.minimumAvailable=minimumBuildAvailable==UINT64_MAX?0:minimumBuildAvailable;admission.maximumKnownCapacity=maximumObservedCapacity;
                 std::strncpy(admission.stage,stage,sizeof(admission.stage)-1);NorthlightMemoryProfile::store().admission(admission);
                 logf("WORLD MEMORY admission stage=%s buildId=%llu processReserveMiB=%llu entryHeadroomMiB=%llu interiorHeadroomMiB=%llu entryRequiredMiB=%llu availableMiB=%llu minObservedAvailableMiB=%llu maxObservedCapacityMiB=%.3f sampleAgeMs=%lu sampleValid=%u sourceChargedInclusiveMiB=%.3f sourceDecodedInclusiveMiB=%.3f sourceUncachedLeaseMiB=%.3f preparationChargedInclusiveMiB=%.3f ledgersNotAdditive=1 peaksAreSampled=1",
-                     stage,(unsigned long long)r.id,(unsigned long long)(NorthlightGeometryMemory::ProcessReserve>>20),(unsigned long long)(admission.entryHeadroom>>20),(unsigned long long)(NorthlightGeometryMemory::InBuildHeadroom>>20),
+                     stage,(unsigned long long)r.id,(unsigned long long)(NorthlightGeometryMemory::ProcessReserve>>20),(unsigned long long)(admission.entryHeadroom>>20),(unsigned long long)(admission.interiorHeadroom>>20),
                      (unsigned long long)(entryBudget.available>>20),(unsigned long long)(lastWorkerMemory.available>>20),(unsigned long long)(minimumBuildAvailable==UINT64_MAX?0:minimumBuildAvailable>>20),double(maximumObservedCapacity)/1048576,
                      (unsigned long)(GetTickCount()-lastWorkerMemoryAt),unsigned(lastWorkerMemory.valid),double(sceneSources.liveBytes())/1048576,double(sceneSources.decodedLiveBytes())/1048576,double(sceneSources.uncachedLeaseBytes())/1048576,double(meshPreparation.stats().bytes)/1048576);
                 memoryProfileMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-profileStart).count();
@@ -1634,8 +1634,15 @@ private:
                     const auto chunkBudget=chunkLift.apply(NorthlightGeometryMemory::chunkBuildBudget(),GetTickCount());
                     memory=workerMemory(chunkBudget);entryBudget=chunkBudget;chunkedLocal=true;
                 }
+                if(!NorthlightGeometryMemory::admits(memory,entryBudget)&&generations.live()==0){
+                    // No scene exists to preserve: try a bounded cold build
+                    // with a 64 MiB working guard above the process reserve.
+                    const auto cold=chunkLift.apply(NorthlightGeometryMemory::coldChunkBuildBudget(),GetTickCount());
+                    memory=workerMemory(cold);entryBudget=cold;coldRecovery=true;
+                }
                 // END CHUNKED ENTRY SELECTION
                 if(!NorthlightGeometryMemory::admits(memory,entryBudget)){stallBegin("build-deferred",memory,entryBudget.available,entryBudget.largest);deferBuild("build-deferred",memory,1000,&entryBudget);continue;}
+                const auto geometryBudget=[&](uint64_t bytes=0){return coldRecovery?NorthlightGeometryMemory::coldInBuildBudget(bytes):NorthlightGeometryMemory::inBuildBudget(bytes);};
                 const uint64_t entryAvailable=memory.available,entryLargest=memory.largest;
                 geometryMemoryDemand.store(0,std::memory_order_relaxed); // admitted: the build's own use is not a demand (the episode stays open)
                 // A memory refusal after entry: the next entry waits for what this attempt lacked.
@@ -1661,7 +1668,7 @@ private:
                 // Interior checks use inBuildBudget (stage entry already reserved the build headroom).
                 NorthlightGI::AllocationAdmission localAdmission=[&](uint64_t bytes){
                     if(bytes<NorthlightGeometryMemory::MiB)return true;
-                    const auto budget=NorthlightGeometryMemory::inBuildBudget(bytes);auto sample=workerMemory(budget);
+                    const auto budget=geometryBudget(bytes);auto sample=workerMemory(budget);
                     if(NorthlightGeometryMemory::admits(sample,budget))return true;
                     localDeferred=true;localSample=sample;localRequired=budget.available;localLargest=budget.largest;logGeometryMemory("local-geometry-allocation-deferred",sample,generations.live(),workerMemoryExact,&budget);return false;
                 };
@@ -1670,7 +1677,7 @@ private:
                 const auto sourceBefore=sceneSources.stats();const auto preparationBefore=meshPreparation.stats();
                 auto buildLocal=[&]{return !tiles.empty()&&localGeometry.build(tiles,root+"world-cache/models",r.map,center-V(288,288,320),center+V(288,288,320),*replacement,error,localAdmission,quality.giFastBVH!=0,sceneSource,sceneRevision,chunkedLocal);};
                 bool localBuilt=buildLocal();
-                auto noteLocalAllocationFailure=[&]{if(!localBuilt&&!localDeferred&&(error.find("Geometry allocation deferred")!=std::string::npos||error.find("Cannot allocate")!=std::string::npos)){const auto budget=NorthlightGeometryMemory::inBuildBudget();localSample=workerMemory(budget);localRequired=budget.available;localLargest=budget.largest;localDeferred=true;}};
+                auto noteLocalAllocationFailure=[&]{if(!localBuilt&&!localDeferred&&(error.find("Geometry allocation deferred")!=std::string::npos||error.find("Cannot allocate")!=std::string::npos)){const auto budget=geometryBudget();localSample=workerMemory(budget);localRequired=budget.available;localLargest=budget.largest;localDeferred=true;}};
                 noteLocalAllocationFailure();
                 if(!localBuilt&&localDeferred&&!chunkedLocal){
                     resetPreparation();chunkedLocal=true;localDeferred=false;const auto budget=chunkLift.apply(NorthlightGeometryMemory::chunkBuildBudget(),GetTickCount());
@@ -1693,7 +1700,7 @@ private:
                 // The local BVH and its cache are this build's own memory: entry reserved their headroom,
                 // so this gate keeps the in-build floor. The entry floor here refused every attempt that
                 // entered within one BVH of the configured entry floor and rebuilt it each second (0.3.212 player log).
-                const auto planBudget=NorthlightGeometryMemory::inBuildBudget();
+                const auto planBudget=geometryBudget();
                 memory=workerMemory(planBudget);if(NorthlightDiagnostics::enabled())logGeometryMemory("after-bvh",memory,generations.live(),workerMemoryExact,&planBudget);
                 profileMemory("after-bvh");
                 if(!NorthlightGeometryMemory::admits(memory,planBudget)){
@@ -1710,11 +1717,11 @@ private:
                 bool terrainDeferred=false;NorthlightGeometryMemory::Sample terrainSample;uint64_t terrainLargest=0,terrainRequired=0,terrainRequiredLargest=0;unsigned terrainChecks=0;
                 NorthlightGI::AllocationAdmission terrainAdmission=[&](uint64_t bytes){
                     terrainLargest=std::max(terrainLargest,bytes);
-                    // Small metadata cannot fragment a large block. Stage entry passed buildBudget (512 MiB);
-                    // every large growth inside the stage is checked against inBuildBudget.
+                    // Small metadata cannot fragment a large block. Recheck the applicable
+                    // in-build budget before each large allocation.
                     if(bytes<NorthlightGeometryMemory::MiB)return true;
                     ++terrainChecks;
-                    const auto budget=NorthlightGeometryMemory::inBuildBudget(bytes);auto sample=workerMemory(budget);
+                    const auto budget=geometryBudget(bytes);auto sample=workerMemory(budget);
                     if(!NorthlightGeometryMemory::admits(sample,budget)){
                         // Published BVHs retain their shared pieces. Drop the
                         // optional owners, then measure what actually became free.
@@ -1743,7 +1750,7 @@ private:
                 if(reachChoice.tierChanged)logf("WORLD shadow terrain reach tier from=%.0f to=%.0f reason=headroom availableMiB=%llu largestMiB=%llu",reachChoice.tierFrom,reach,(unsigned long long)(entryAvailable>>20),(unsigned long long)(entryLargest>>20));
                 if(reachChoice.restored)logf("WORLD shadow terrain reach restored to=%.0f",reach);
                 // Memory refusal of an extended build: rebuild the terrain stages at the base reach now.
-                // Interior allocations use inBuildBudget (640 MiB floor, more for requests >128 MiB), so the extended
+                // Interior allocations use the applicable working guard, so the extended
                 // build falls back only when an interior allocation is refused under that floor. terrainAdmission
                 // re-samples on every call and the refused attempt's allocations are freed (goto destroys them) first.
                 auto reduceReach=[&]{
@@ -1804,9 +1811,9 @@ private:
                     shadowPlanBuilt=NorthlightShadowTerrain::build(replacement->scene(),shadowTerrain,center,*plan,error,terrainAdmission,reach,{},true,replacement.get(),&meshPreparation);
                 }
                 if(shadowPlanBuilt){terrainDeferred=false; // an oversized reservation may have been refused before a successful fallback
-                    if(plan->pagingChunks)logf("WORLD shadow geometry prepared in bounded chunks");
+                    if(plan->pagingChunks&&NorthlightDiagnostics::enabled())logf("WORLD shadow geometry prepared in bounded chunks");
                 }else if(!terrainDeferred&&error=="Geometry allocation deferred"){
-                    const auto budget=NorthlightGeometryMemory::inBuildBudget();terrainSample=workerMemory(budget);
+                    const auto budget=geometryBudget();terrainSample=workerMemory(budget);
                     terrainDeferred=true;terrainRequired=budget.available;terrainRequiredLargest=budget.largest;
                 }
                 if(!terrainLoaded||!shadowPlanBuilt){
@@ -1831,7 +1838,7 @@ private:
                 NorthlightWorldMeshPages::Options pagingOptions;pagingOptions.resident=resident.get();pagingOptions.preparation=&meshPreparation;
                 if(!NorthlightWorldMeshPages::build(*plan,*pages,error,terrainAdmission,pagingOptions)){
                     if(!terrainDeferred&&error=="Paged mesh worker allocation failed"){
-                        const auto budget=NorthlightGeometryMemory::inBuildBudget();terrainSample=workerMemory(budget);
+                        const auto budget=geometryBudget();terrainSample=workerMemory(budget);
                         terrainDeferred=true;terrainRequired=budget.available;terrainRequiredLargest=budget.largest;
                     }
                     if(terrainDeferred){
@@ -1846,7 +1853,7 @@ private:
                 for(const auto& page:pages->pages)if(page.elided){++elided.pages;elided.bytes+=uint64_t(page.key.vertexBytes)+page.key.indexBytes;}
                 if(!NorthlightWorldMeshPages::seal(*plan,pages,error,terrainAdmission)){
                     if(!terrainDeferred&&error=="paged ownership allocation failed"){
-                        const auto budget=NorthlightGeometryMemory::inBuildBudget();terrainSample=workerMemory(budget);
+                        const auto budget=geometryBudget();terrainSample=workerMemory(budget);
                         terrainDeferred=true;terrainRequired=budget.available;terrainRequiredLargest=budget.largest;
                     }
                     if(terrainDeferred){
@@ -2448,7 +2455,7 @@ private:
             auto& next=*pendingMesh;next.textures.reserve(payload->materials.size());
             // The upload cursor runs over the miss list only; its page index maps to a payload page and a claimed buffer in perform().
             std::vector<NorthlightWorldMeshPages::PageBytes> sizes;sizes.reserve(staged.upload.size());
-            for(uint32_t pageIndex:staged.upload){const auto& page=payload->pages->pages[pageIndex];sizes.push_back({page.vertices.size()*sizeof(NorthlightGI::WorldVertex),page.indices.size()*sizeof(uint32_t)});}
+            for(uint32_t pageIndex:staged.upload){const auto& page=payload->pages->pages[pageIndex];sizes.push_back({page.vertices.size()*sizeof(NorthlightGI::WorldVertex),page.indices.size()*sizeof(uint16_t)});}
             if(!next.upload.begin(std::move(sizes)))return streamingFailure(D3DERR_INVALIDCALL,"page sizes");
         }
         if(pendingMesh){frameStaging=true; /* 0.3.176 (D3) */
@@ -2456,11 +2463,11 @@ private:
             ++next.frames;
             // Each bounded driver operation yields back to the shared deadline.
             struct PageBudget {
-                NorthlightStreaming::Budget& parent;
-                bool available()const{return parent.available()&&parent.elapsedMs()<.5;}
+                NorthlightStreaming::Budget& parent;double limitMs;
+                bool available()const{return parent.available()&&parent.elapsedMs()<limitMs;}
                 size_t chunk(size_t n)const{return available()?parent.chunk(n):0;}
                 void consume(size_t n){parent.consume(n);}
-            } pageBudget{streamBudget};
+            } pageBudget{streamBudget,meshStore.table().empty()?1.5:.5};
             NorthlightGeometryMemory::Sample pageMemory;bool sampled=false;
             auto perform=[&](NorthlightWorldMeshPages::Step step,size_t cursor,size_t offset,size_t bytes){
                 using S=NorthlightWorldMeshPages::Step;
@@ -2587,6 +2594,8 @@ private:
             }
         }
         if(!vertices||!indices||uploadedMap!=active->map)return false;
+        // Mesh staging can precede the scene targets; probe upload waits for them.
+        if(!geometryTargetsReady)return true;
         // Geometry can be ready before a new map's first GI solve. Shadows
         // may render immediately; GridInfo.w prevents reading the old atlas.
         if(active->serial==0)uploadedSerial=0;
@@ -4363,15 +4372,19 @@ public:
              Request r=lastRequest;r.actorJob=completedActorJob();r.actorSerial=actorJobSerial();r.reason=64;
              r.id=request.id+1;r.queuedAt=submissionStart;request=r;lastRequest=r;pending=true;actorRequestTick=submissionStart;wake.notify_one();
          }}
-        NorthlightStreaming::Budget streamBudget;
+        const bool coldMesh=meshStore.table().empty();
+        NorthlightStreaming::Budget streamBudget(coldMesh?4u<<20:2u<<20,coldMesh?2.0:1.0);
         releaseOrphanedPending("render"); /* 0.3.156: also while !ready(), when upload() never runs */
-        const bool sceneTargetsReady=ready()&&resources(w,h,fmt)&&geometryResources(w,h);
-        const bool geometryReady=sceneTargetsReady&&upload(streamBudget);
+        const bool screenResourcesReady=ready()&&resources(w,h,fmt);
+        const bool hadTargets=geometryTargetsReady;
+        const bool meshReady=screenResourcesReady&&upload(streamBudget);
+        const bool sceneTargetsReady=meshReady&&geometryResources(w,h);
+        const bool geometryReady=sceneTargetsReady&&(hadTargets||upload(streamBudget));
         if(geometryReady!=temporalGeometryReady){temporalValid=fogHistoryValid=false;temporalGeometryReady=geometryReady;}
         fogGeometryReady=geometryReady;
         if(!geometryReady){
             skipReason=!valid?"context":failed?"failed":workerFault()?"fault":!active?"inactive":!active->bvh?"nobvh":
-                !sceneTargetsReady?"scene-targets":!vertices||!indices||uploadedMap!=active->map?"mesh":"upload";
+                !screenResourcesReady?"scene-targets":!meshReady?"mesh":!sceneTargetsReady?"scene-targets":"upload";
             // Screen-space effects consume current scene/depth, not the BVH.
             // Keep them alive while the geometry builder is deferred by memory.
             updateStaticCasters(false,&streamBudget);

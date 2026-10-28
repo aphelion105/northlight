@@ -58,6 +58,12 @@ inline Budget budgetWith(uint64_t headroom,uint64_t largestAllocation){
 inline Budget buildBudget(uint64_t largestAllocation=0){return budgetWith(EntryHeadroom,largestAllocation);}
 // Chunked local builds avoid large contiguous buffers; keep the process and interior reserves unchanged.
 inline Budget chunkBuildBudget(){return budgetWith(EntryHeadroom-32*MiB,MiB);}
+// Cold recovery only: retain the 256 MiB process reserve and a separate
+// 64 MiB in-build guard. Every large request is still checked and failures
+// discard the candidate without publishing it.
+constexpr uint64_t ColdInBuildHeadroom=64*MiB,ColdEntryHeadroom=136*MiB;
+inline Budget coldChunkBuildBudget(){return budgetWith(ColdEntryHeadroom,MiB);}
+inline Budget coldInBuildBudget(uint64_t request=0){return budgetWith(request>ColdInBuildHeadroom?request:ColdInBuildHeadroom,request);}
 // Interior allocation: the process reserve must survive the request itself, so a request above the guard raises the floor.
 inline Budget inBuildBudget(uint64_t largestAllocation=0){
     return budgetWith(largestAllocation>InBuildHeadroom?largestAllocation:InBuildHeadroom,largestAllocation);

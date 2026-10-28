@@ -40,6 +40,48 @@ struct WorldScreenEffectsTest {
         bool rejected=false;try{NorthlightGpuScene::forDevice(reinterpret_cast<IDirect3DDevice9*>(uintptr_t(1)),scene);}catch(const std::invalid_argument&){rejected=true;}assert(rejected);
         std::puts("GPU_SCENE_OWNERSHIP_PASS actual_world_materials_displacement one_source_bank unchanged_caps one_upload consumer_reset reconstructed_source typed_views foreign_device_rejected");
     }
+    static void pageIndexImage(WorldRenderer& w,IDirect3DDevice9* d){
+        struct Vertex {float x,y,z,rhw;DWORD color;};
+        const Vertex v[]={{5,5,.5f,1,0xffff0000},{58,5,.5f,1,0xff00ff00},{58,58,.5f,1,0xff0000ff},{5,58,.5f,1,0xffffffff}};
+        const uint16_t narrow[]={0,1,2,0,2,3};const uint32_t wide[]={0,1,2,0,2,3};
+        NorthlightMeshPageKey::Key key;key.lo=123;key.hi=456;key.vertexBytes=sizeof(v);key.indexBytes=sizeof(narrow);
+        assert(w.meshStore.beginStaging({key}));w.syncMeshBuffers();const auto id=w.meshStore.staging().uploadBuffer[0];assert(w.meshStore.markWriting(id));
+        NorthlightGeometryMemory::Sample memory{2048ull<<20,1024ull<<20,true};assert(w.acquireMeshPage(id,false,sizeof(narrow),memory));auto* ib16=w.meshBuffers[id].ib;D3DINDEXBUFFER_DESC desc{};assert(SUCCEEDED(ib16->GetDesc(&desc))&&desc.Format==D3DFMT_INDEX16);
+        void* ptr=nullptr;assert(SUCCEEDED(ib16->Lock(0,sizeof(narrow),&ptr,0))&&ptr);std::memcpy(ptr,narrow,sizeof(narrow));assert(SUCCEEDED(ib16->Unlock()));
+        IDirect3DIndexBuffer9* ib32=nullptr;IDirect3DVertexBuffer9* vb=nullptr;IDirect3DSurface9 *target=nullptr,*read=nullptr,*old=nullptr,*oldDepth=nullptr;IDirect3DStateBlock9* state=nullptr;
+        assert(SUCCEEDED(d->CreateStateBlock(D3DSBT_ALL,&state))&&SUCCEEDED(state->Capture()));assert(SUCCEEDED(d->GetRenderTarget(0,&old)));d->GetDepthStencilSurface(&oldDepth);
+        assert(SUCCEEDED(d->CreateIndexBuffer(sizeof(wide),0,D3DFMT_INDEX32,D3DPOOL_MANAGED,&ib32,nullptr)));assert(SUCCEEDED(ib32->Lock(0,sizeof(wide),&ptr,0))&&ptr);std::memcpy(ptr,wide,sizeof(wide));assert(SUCCEEDED(ib32->Unlock()));
+        assert(SUCCEEDED(d->CreateVertexBuffer(sizeof(v),0,0,D3DPOOL_MANAGED,&vb,nullptr)));assert(SUCCEEDED(vb->Lock(0,sizeof(v),&ptr,0))&&ptr);std::memcpy(ptr,v,sizeof(v));assert(SUCCEEDED(vb->Unlock()));
+        assert(SUCCEEDED(d->CreateRenderTarget(64,64,D3DFMT_A8R8G8B8,D3DMULTISAMPLE_NONE,0,FALSE,&target,nullptr)));assert(SUCCEEDED(d->CreateOffscreenPlainSurface(64,64,D3DFMT_A8R8G8B8,D3DPOOL_SYSTEMMEM,&read,nullptr)));
+        assert(SUCCEEDED(d->SetRenderTarget(0,target))&&SUCCEEDED(d->SetDepthStencilSurface(nullptr)));assert(SUCCEEDED(d->SetVertexShader(nullptr))&&SUCCEEDED(d->SetPixelShader(nullptr))&&SUCCEEDED(d->SetFVF(D3DFVF_XYZRHW|D3DFVF_DIFFUSE)));
+        assert(SUCCEEDED(d->SetRenderState(D3DRS_ZENABLE,FALSE))&&SUCCEEDED(d->SetRenderState(D3DRS_CULLMODE,D3DCULL_NONE))&&SUCCEEDED(d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE))&&SUCCEEDED(d->SetRenderState(D3DRS_LIGHTING,FALSE)));
+        assert(SUCCEEDED(d->SetTexture(0,nullptr))&&SUCCEEDED(d->SetTextureStageState(0,D3DTSS_COLOROP,D3DTOP_SELECTARG1))&&SUCCEEDED(d->SetTextureStageState(0,D3DTSS_COLORARG1,D3DTA_DIFFUSE)));assert(SUCCEEDED(d->SetStreamSource(0,vb,0,sizeof(Vertex))));
+        std::vector<unsigned char> images[2];for(unsigned mode=0;mode<2;++mode){assert(SUCCEEDED(d->SetIndices(mode?ib16:ib32)));assert(SUCCEEDED(d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0)));assert(SUCCEEDED(d->BeginScene()));assert(SUCCEEDED(d->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,0,4,0,2)));assert(SUCCEEDED(d->EndScene()));assert(SUCCEEDED(d->GetRenderTargetData(target,read)));D3DLOCKED_RECT locked{};assert(SUCCEEDED(read->LockRect(&locked,nullptr,D3DLOCK_READONLY)));images[mode].resize(64*64*4);for(unsigned y=0;y<64;++y)std::memcpy(images[mode].data()+y*64*4,static_cast<const char*>(locked.pBits)+y*locked.Pitch,64*4);assert(SUCCEEDED(read->UnlockRect()));}
+        assert(images[0]==images[1]&&std::any_of(images[0].begin(),images[0].end(),[](unsigned char x){return x!=0;}));assert(SUCCEEDED(d->SetRenderTarget(0,old)));assert(SUCCEEDED(d->SetDepthStencilSurface(oldDepth)));assert(SUCCEEDED(state->Apply()));drop(oldDepth);drop(old);drop(target);drop(read);drop(vb);drop(ib32);drop(state);w.meshStore.cancel();w.releaseMeshPool();
+        std::puts("WORLD_PAGE_INDEX16_IMAGE_PASS equal32=1 productionBuffer=1 activeUnchanged=1");
+    }
+    static void coldGpuAtAddressPressure(WorldRenderer& w,bool legacyBudget,bool inject,unsigned& indexCreates,unsigned& failIndexAt){
+        using namespace NorthlightGeometryMemory;namespace P=NorthlightWorldMeshPages;using NorthlightGI::WorldVertex;
+        auto pages=std::make_shared<P::Plan>();constexpr unsigned count=60,vertices=10000,indices=30000;
+        for(unsigned n=0;n<count;++n){P::Page page;page.vertices.resize(vertices);page.indices.resize(indices);for(unsigned i=0;i<vertices;++i){page.vertices[i].position={float(i),float(n),0};page.vertices[i].normal={0,0,1};}for(unsigned i=0;i<indices;++i)page.indices[i]=uint16_t((i*7+n)%vertices);
+            page.key=NorthlightMeshPageKey::keyOf(page.vertices.data(),page.vertices.size()*sizeof(WorldVertex),page.indices.data(),page.indices.size()*sizeof(uint16_t));pages->vertexBytes+=page.key.vertexBytes;pages->indexBytes+=page.key.indexBytes;pages->pages.push_back(std::move(page));
+            P::Batch batch;batch.page=n;batch.start=0;batch.count=indices/3;batch.material=0;batch.minVertex=0;batch.vertexCount=vertices;pages->batches.push_back(batch);}
+        auto plan=std::make_shared<NorthlightWorldMesh::WorldMeshUploadPlan>();plan->vertexCount=count*vertices;plan->triangleCount=count*indices/3;plan->vertexBytes=uint64_t(plan->vertexCount)*sizeof(WorldVertex);plan->indexBytes=uint64_t(plan->triangleCount)*3*sizeof(uint32_t);plan->textureBytes=4;plan->pagesSealed=true;
+        auto payload=std::make_shared<NorthlightWorldMesh::UploadPayload>();payload->pages=pages;payload->materials.resize(1);payload->materials[0].bgra={255,255,255,255};payload->bytes=pages->cpuBytes()+4;plan->payload.set(payload);assert(!P::validateSealed(*plan));
+        w.active=std::make_shared<WorldRenderer::Snapshot>();w.active->bvh=std::make_shared<NorthlightGI::BVH>();w.active->meshPlan=plan;w.active->map="pressure-test";w.active->serial=0;assert(!w.geometryTargetsReady&&w.meshStore.table().empty());payload.reset();pages.reset();
+        struct Ballast {std::vector<void*> blocks;~Ballast(){for(auto p:blocks)assert(VirtualFree(p,0,MEM_RELEASE));}} ballast;MEMORYSTATUSEX status{};status.dwLength=sizeof status;assert(GlobalMemoryStatusEx(&status));
+        while(status.ullAvailVirtual>395*MiB+65536){uint64_t amount=std::min<uint64_t>(16*MiB,(status.ullAvailVirtual-395*MiB)&~uint64_t(65535));assert(amount);auto p=VirtualAlloc(nullptr,size_t(amount),MEM_RESERVE,PAGE_NOACCESS);assert(p);ballast.blocks.push_back(p);status.dwLength=sizeof status;assert(GlobalMemoryStatusEx(&status));}
+        uint64_t minimum=status.ullAvailVirtual;unsigned frames=0;bool completed=false,sawFailure=false;
+        if(inject)failIndexAt=indexCreates+3;
+        for(;frames<1000&&!completed;++frames){NorthlightStreaming::Budget budget(legacyBudget?2u<<20:4u<<20,legacyBudget?.5:2.0);completed=w.upload(budget);status.dwLength=sizeof status;assert(GlobalMemoryStatusEx(&status));minimum=std::min<uint64_t>(minimum,status.ullAvailVirtual);assert(minimum>=ProcessReserve+16*MiB);
+            if(w.meshRetry.waiting&&!w.pendingMesh){assert(inject&&!sawFailure&&!completed&&w.meshStore.table().empty()&&plan->payload.live());sawFailure=true;failIndexAt=0;w.meshRetry.failedAt-=1000;}}
+        assert(sawFailure==inject&&completed&&w.meshStore.table().size()==count&&!plan->payload.live()&&!w.geometryTargetsReady);
+        for(auto id:w.meshStore.table()){D3DINDEXBUFFER_DESC desc{};assert(SUCCEEDED(w.meshBuffers[id].ib->GetDesc(&desc))&&desc.Format==D3DFMT_INDEX16);}
+        assert(w.geometryResources(256,160));status.dwLength=sizeof status;assert(GlobalMemoryStatusEx(&status));minimum=std::min<uint64_t>(minimum,status.ullAvailVirtual);assert(minimum>=ProcessReserve+16*MiB);
+        NorthlightStreaming::Budget finalBudget;assert(w.upload(finalBudget));
+        std::printf("WORLD_COLD_GPU_PRESSURE_PASS entryMiB=395 minimumMiB=%llu pages=%u frames=%u budget=%s injectedFailure=%u recovered=1 sceneTargetsAfterMesh=1 reserveIntact=1\n",(unsigned long long)(minimum>>20),count,frames,legacyBudget?"previous":"cold",unsigned(inject));
+        w.active.reset();w.clearMesh();w.releaseMeshPool();w.releaseGeometryTargets();w.meshRetry.clear();
+    }
     static void reuseAtAddressPressure(WorldRenderer& w){
         using namespace NorthlightGeometryMemory;
         using NorthlightMeshPageKey::Key;
@@ -207,7 +249,11 @@ struct WorldScreenEffectsTest {
 };
 struct WorldScratchMeter:ForwardIDirect3DDevice9 {
     unsigned width,height,creates=0,sceneCreates=0,failSceneAt=0,screenCreates=0,failScreenAt=0,shaderCreates=0,failShaderAt=0,fogCreates=0,failFogAt=0;float fogWeight=-1;
+    unsigned indexCreates=0,failIndexAt=0;
     WorldScratchMeter(IDirect3DDevice9* d,unsigned w,unsigned h):ForwardIDirect3DDevice9(d),width(w),height(h){}
+    HRESULT STDMETHODCALLTYPE CreateIndexBuffer(UINT length,DWORD usage,D3DFORMAT format,D3DPOOL pool,IDirect3DIndexBuffer9** out,HANDLE* shared)override{
+        if(++indexCreates==failIndexAt){if(out)*out=nullptr;return E_OUTOFMEMORY;}return real->CreateIndexBuffer(length,usage,format,pool,out,shared);
+    }
     HRESULT STDMETHODCALLTYPE CreateTexture(UINT w,UINT h,UINT levels,DWORD usage,D3DFORMAT format,D3DPOOL pool,IDirect3DTexture9** t,HANDLE* shared)override{
         if(w==width&&h==height&&(usage&D3DUSAGE_RENDERTARGET)&&format==D3DFMT_A16B16G16R16F)++creates;
         if(w==width/2&&h==height/2&&(usage&D3DUSAGE_RENDERTARGET)&&format==D3DFMT_A16B16G16R16F&&++screenCreates==failScreenAt)return E_OUTOFMEMORY;
@@ -257,7 +303,7 @@ int main(int argc,char** argv){
         const auto targetAttempts=meter.screenCreates;assert(!WorldScreenEffectsTest::resources(*world,W,H)&&meter.screenCreates==targetAttempts);WorldScreenEffectsTest::screenRetry(*world);
         const unsigned beforeRetry=meter.screenCreates;assert(WorldScreenEffectsTest::resources(*world,W,H));assert(meter.screenCreates>beforeRetry);
         std::puts("WORLD_SCREEN_RESOURCE_RETRY_PASS shaderOom=1 targetOom=1 partialReleased=1 recovered=1");
-        WorldScreenEffectsTest::sceneOwnership(*world,&meter);WorldScreenEffectsTest::reuseAtAddressPressure(*world);WorldScreenEffectsTest::setup(*world,W,H);
+        WorldScreenEffectsTest::sceneOwnership(*world,&meter);WorldScreenEffectsTest::reuseAtAddressPressure(*world);WorldScreenEffectsTest::pageIndexImage(*world,d);WorldScreenEffectsTest::coldGpuAtAddressPressure(*world,true,false,meter.indexCreates,meter.failIndexAt);WorldScreenEffectsTest::coldGpuAtAddressPressure(*world,false,false,meter.indexCreates,meter.failIndexAt);WorldScreenEffectsTest::coldGpuAtAddressPressure(*world,false,true,meter.indexCreates,meter.failIndexAt);meter.sceneCreates=0;WorldScreenEffectsTest::setup(*world,W,H);
         meter.fogCreates=0;meter.failFogAt=1;assert(!WorldScreenEffectsTest::uploadFog(*world));
         const auto fogAttempts=meter.fogCreates;assert(!WorldScreenEffectsTest::uploadFog(*world)&&meter.fogCreates==fogAttempts);WorldScreenEffectsTest::fogRetry(*world);
         meter.failFogAt=0;assert(WorldScreenEffectsTest::uploadFog(*world));WorldScreenEffectsTest::fogUploaded(*world);

@@ -9,6 +9,8 @@ parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--output',type=Path,required=True)
 parser.add_argument('--available-mib',type=int,default=0,help='Reserve free virtual address space until this approximate amount remains')
 parser.add_argument('--gap-mib',type=int,default=40,help='Maximum spacing between reserved gaps')
+parser.add_argument('--cold-recovery',action='store_true',help='Exercise bounded cold-recovery admission with its retained guard')
+parser.add_argument('--expect-defer',action='store_true',help='Expect a safe refusal during the cold shadow plan')
 parser.add_argument('--center',type=float,nargs=3,default=[5834,680,646])
 args=parser.parse_args()
 assert args.available_mib>=0 and 34<=args.gap_mib<=512
@@ -51,11 +53,20 @@ s=s.replace('        Hash localHash,planHash,pageHash,rayHash,bakeHash;',r'''   
         if(plan.localShadowRecords)for(const auto& r:*plan.localShadowRecords){vec(recordDebug,r.low);vec(recordDebug,r.high);recordDebug.word(r.content.words[0]);recordDebug.word(r.content.words[1]);recordDebug.word(r.content.triangles);recordDebug.word(uint32_t(r.chunkX));recordDebug.word(uint32_t(r.chunkY));recordDebug.word(r.terrain);}
         std::printf("DETAIL records=%zu",plan.localShadowRecords?plan.localShadowRecords->size():0);printHash("indices",indexDebug);printHash("batches",batchDebug);printHash("materials",materialDebug);printHash("chunks",chunkDebug);printHash("records",recordDebug);std::puts("");
         Hash localHash,planHash,pageHash,rayHash,bakeHash;''')
+if args.cold_recovery:
+ s=s.replace('admits(initial,chunkBuildBudget())','admits(initial,coldChunkBuildBudget())').replace('auto budget=inBuildBudget(n);','auto budget=coldInBuildBudget(n);').replace('assert(minimum>=ProcessReserve);','assert(minimum>=ProcessReserve+ColdInBuildHeadroom-MiB);')
+if args.expect_defer:
+ old='assert(fragmented?NorthlightShadowTerrain::buildConsuming(local.scene(),terrain,c,plan,error,admission,radius,{},&local):NorthlightShadowTerrain::build(local.scene(),terrain,c,plan,error,admission,radius,{},true,&local,&preparation));'
+ assert old in s
+ s=s.replace(old,'if(!(fragmented?NorthlightShadowTerrain::buildConsuming(local.scene(),terrain,c,plan,error,admission,radius,{},&local):NorthlightShadowTerrain::build(local.scene(),terrain,c,plan,error,admission,radius,{},true,&local,&preparation))){auto now=physicalSample();std::printf("SAFE_DEFER freeMiB=%.3f refusals=%u\\n",double(now.available)/MiB,refusals);assert(refusals&&now.available>=ProcessReserve+ColdInBuildHeadroom-MiB);return 17;}')
 (out/'probe.cpp').write_text(s);exe=out/'test.exe'
 subprocess.run([str(fp.zig()),'c++','-target','x86-windows-gnu','-std=c++17','-O2','-UNDEBUG','-Wall','-Wextra','-Werror','-DSHARED_SCENE_PIPELINE=1','-DCURRENT_TERRAIN_CHUNKS=1','-DPIPELINE_RADIUS=928',*fp.test_include_flags(),str(out/'probe.cpp'),str(fp.src('world_gi.cpp')),str(fp.src('world_mesh_plan.cpp')),'-o',str(exe)],env=fp.zig_env(),check=True)
 results={}
 for mode in ['normal','fragmented']:
- p=subprocess.run([str(exe),str(fp.world_cache()),'Northrend',*(['fragmented'] if mode=='fragmented' else [])],text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT);text=p.stdout.replace('\\n','\n');(out/(mode+'.log')).write_text(text);print(mode,text,flush=True);p.check_returncode()
+ p=subprocess.run([str(exe),str(fp.world_cache()),'Northrend',*(['fragmented'] if mode=='fragmented' else [])],text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT);text=p.stdout.replace('\\n','\n');(out/(mode+'.log')).write_text(text);print(mode,text,flush=True)
+ if mode=='fragmented' and args.expect_defer:
+  assert p.returncode==17 and 'SAFE_DEFER' in text;print('PASS safe cold recovery refusal retains process reserve');sys.exit(0)
+ p.check_returncode()
  results[mode]=text
 for prefix in ['DETAIL ']:
  a=[line for line in results['normal'].splitlines() if line.startswith(prefix)];b=[line for line in results['fragmented'].splitlines() if line.startswith(prefix)];assert len(a)==7 and a==b,(a,b)
