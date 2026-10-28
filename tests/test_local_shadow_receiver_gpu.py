@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # northlight-test: requires=windows-gpu,zig manual
 """Self-shadow stripes, grazing receivers and real blockers on all cube faces."""
-import argparse,ctypes,hashlib,importlib.util,json,subprocess,sys
+import argparse,ctypes,hashlib,importlib.util,json,subprocess,sys,time
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
@@ -16,7 +16,7 @@ try:
     def check_game():
         processes=guard.processes()
         if any(p['name'].lower().startswith('wow') and p['name'].lower().endswith('.exe') for p in processes):raise RuntimeError('Game process exists; defer GPU tests')
-    check_game();out=fp.output_dir()/'local-shadow-receiver';out.mkdir(parents=True,exist_ok=False)
+    check_game();out=fp.output_dir()/f'local-shadow-receiver-{time.time_ns()}';out.mkdir(parents=True,exist_ok=False)
     source=out/'receiver.hlsl';source.write_text((fp.SHADERS/'local_light_effects.hlsl').read_text().replace('#include "auto_bump_normal.hlsl"',(fp.SHADERS/'auto_bump_normal.hlsl').read_text())+'''
 float4 Origin:register(c80);float4 AxisU:register(c81);float4 AxisV:register(c82);float4 SurfaceNormal:register(c83);
 float4 Receiver(float2 uv:TEXCOORD0):COLOR0{float3 p=Origin.xyz+(uv.x-.5)*AxisU.xyz+(uv.y-.5)*AxisV.xyz;return localVisibility(p-LocalPosition.xyz,SurfaceNormal.xyz).xxxx;}
