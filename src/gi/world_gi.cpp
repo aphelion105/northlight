@@ -399,6 +399,13 @@ bool loadInstancedScenes(const std::vector<std::string>& files,const std::string
             }
         }
     }catch(...){error="Cannot allocate FGS3 local world region";return false;}
+    // Cold terrain assembly can leave both geometry vectors oversized while
+    // later page preparation holds them. Compaction is optional under pressure.
+    const uint64_t slack=uint64_t(result.vertices.capacity()-result.vertices.size())*sizeof(WorldVertex)+uint64_t(result.triangles.capacity()-result.triangles.size())*sizeof(WorldTriangle);
+    if(slack>=4u*1024u*1024u){
+        auto compact=[&](auto& values){using Buffer=std::decay_t<decltype(values)>;using T=typename Buffer::value_type;const uint64_t bytes=uint64_t(values.size())*sizeof(T);try{if(values.capacity()==values.size()||(admit&&!admit(bytes)))return;Buffer exact(values.begin(),values.end());values.swap(exact);}catch(...) {}};
+        compact(result.triangles);compact(result.vertices);
+    }
     if(sizeHint){sizeHint->hinted=hinted;sizeHint->sized=true;sizeHint->sizedKey=sizeHint->key;sizeHint->vertices=result.vertices.size();sizeHint->triangles=result.triangles.size();sizeHint->low=low;sizeHint->high=high;}
     output=std::move(result);return true;
 }
