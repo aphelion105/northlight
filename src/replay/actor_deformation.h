@@ -247,13 +247,18 @@ NO_FUSED_MULTIPLY_ADD
 inline Four singleSkinControl(const Program& p,const float* constants){
     Four value;std::memcpy(value.data(),constants,16);for(const auto& d:p.definitions)if(!d.reg)value=d.value;return value;
 }
-template<bool Prepared=false> inline bool evaluateSingleSkin(const Program& p,const Four inputs[16],const float* constants,Four& viewPosition,const Four* control=nullptr){
+template<bool Prepared=false,bool ByteIndex=false> inline bool evaluateSingleSkin(const Program& p,const Four inputs[16],const float* constants,Four& viewPosition,const Four* control=nullptr){
     NO_FUSED_MULTIPLY_ADD
+    static_assert(!ByteIndex||Prepared,"Byte-index path requires a proven draw-local control");
     auto constant=[&](unsigned index){Four value;std::memcpy(value.data(),constants+4*index,16);for(const auto& d:p.definitions)if(d.reg==index)value=d.value;return value;};
-    const Four c0=Prepared?*control:constant(0);const float value=p.kernel.evaluator==Kernel::SingleIndexFirst?inputs[1][0]*c0[0]:c0[0]*inputs[1][0];
-    if(!std::isfinite(value)||(p.major>=2&&std::fabs(value-std::floor(value)-.5f)<1e-6f))return false;
-    const float address=p.major==1?std::floor(value):std::round(value);if(address<-4096||address>4096)return false;
-    const int first=31+int(address);if(first<0||first+2>=256)return false;
+    const Four c0=Prepared?*control:constant(0);int first;
+    // ByteIndex is selected only for a decoded UBYTE4 lane and c0.x == 3:
+    // the product is an exact nonnegative integer, so no rounding is needed.
+    if constexpr(ByteIndex){first=31+3*int(inputs[1][0]);if(first+2>=256)return false;}
+    else{const float value=p.kernel.evaluator==Kernel::SingleIndexFirst?inputs[1][0]*c0[0]:c0[0]*inputs[1][0];
+        if(!std::isfinite(value)||(p.major>=2&&std::fabs(value-std::floor(value)-.5f)<1e-6f))return false;
+        const float address=p.major==1?std::floor(value):std::round(value);if(address<-4096||address>4096)return false;
+        first=31+int(address);if(first<0||first+2>=256)return false;}
     Four result;for(unsigned axis=0;axis<3;++axis){const Four row=constant(unsigned(first)+axis);float sum=0;for(unsigned j=0;j<4;++j)sum+=row[j]*inputs[0][j];result[axis]=sum;}
     result[3]=c0[1];viewPosition=result;for(float f:viewPosition)if(!std::isfinite(f))return false;return std::fabs(viewPosition[3]-1.f)<.0001f;
 }
@@ -361,7 +366,23 @@ public:
 template<bool Validated=false> inline bool singleSkinBoundsPrepared(const Program& program,const NorthlightDrawSnapshot::Mesh& mesh,const PreparedBindings& prepared,const float* constants,float* low,float* high){
     if(!program.kernel.singleSkin()||!constants||(!Validated&&!prepared.validFor(program,mesh))||prepared.bindings.size()!=2||prepared.bindings[0].input.reg>=2||prepared.bindings[1].input.reg>=2||prepared.bindings[0].input.reg==prepared.bindings[1].input.reg)return false;
     const Four control=singleSkinControl(program,constants);Four inputs[2];
-    for(UINT vertex=0;vertex<mesh.vertexCount;++vertex){for(const auto& b:prepared.bindings){const auto& s=mesh.streams[b.element.Stream];if(!decodeElement(s.bytes.data()+size_t(vertex)*s.stride+b.element.Offset,b.element.Type,inputs[b.input.reg]))return false;}
+    if(!mesh.vertexCount)return true;
+    const auto& first=prepared.bindings[0];const auto& second=prepared.bindings[1];
+    const auto& firstStream=mesh.streams[first.element.Stream];const auto& secondStream=mesh.streams[second.element.Stream];
+    const auto& position=first.input.reg==0?first:second;const auto& index=first.input.reg==1?first:second;
+    // This audited kernel consumes only the first blend-index lane.
+    if(position.element.Type==D3DDECLTYPE_FLOAT3&&index.element.Type==D3DDECLTYPE_UBYTE4){
+        const auto& positions=mesh.streams[position.element.Stream];const auto& indices=mesh.streams[index.element.Stream];inputs[0][3]=1;
+        for(UINT vertex=0;vertex<mesh.vertexCount;++vertex){
+            std::memcpy(inputs[0].data(),positions.bytes.data()+size_t(vertex)*positions.stride+position.element.Offset,12);
+            inputs[1][0]=float(indices.bytes[size_t(vertex)*indices.stride+index.element.Offset]);
+            Four view;if(control[0]==3.f?!evaluateSingleSkin<true,true>(program,inputs,constants,view,&control):!evaluateSingleSkin<true>(program,inputs,constants,view,&control))return false;
+            for(unsigned k=0;k<3;++k){if(!std::isfinite(view[k]))return false;low[k]=std::min(low[k],view[k]);high[k]=std::max(high[k],view[k]);}}
+        return true;
+    }
+    for(UINT vertex=0;vertex<mesh.vertexCount;++vertex){
+        if(!decodeElement(firstStream.bytes.data()+size_t(vertex)*firstStream.stride+first.element.Offset,first.element.Type,inputs[first.input.reg])||
+           !decodeElement(secondStream.bytes.data()+size_t(vertex)*secondStream.stride+second.element.Offset,second.element.Type,inputs[second.input.reg]))return false;
         Four view;if(!evaluateSingleSkin<true>(program,inputs,constants,view,&control))return false;
         for(unsigned k=0;k<3;++k){if(!std::isfinite(view[k]))return false;low[k]=std::min(low[k],view[k]);high[k]=std::max(high[k],view[k]);}}
     return true;

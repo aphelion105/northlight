@@ -20,6 +20,7 @@ class NorthlightAutoBump {
     std::shared_ptr<NorthlightGpuScene::Scene> gpuScene;
     IDirect3DDevice9* d;
     NorthlightStateBlockPool captureStates;
+    void* rasterContext=nullptr;bool(*rasterReader)(void*,const D3DRENDERSTATETYPE*,unsigned,DWORD*)=nullptr;
     NorthlightMaterialProfile* profile=nullptr;unsigned profileTag=0,profilePrimitives=0;uint64_t profileConfigFrame=~uint64_t(0);
     NorthlightAutoNormalCache& normals;
     NorthlightSharedPOM sharedPOM;
@@ -231,6 +232,14 @@ class NorthlightAutoBump {
         if(!failed)logf("AUTOBUMP failed stage=%s hr=%08lx; native rendering retained",stage,(unsigned long)hr);
         failed=true;return false;
     }
+    bool readAdmissionStates(ReplayState& saved){
+        if(rasterReader){D3DRENDERSTATETYPE keys[14];DWORD values[14];unsigned count=0;
+            for(unsigned i=0;i<saved.stateCount;++i)if(i!=0&&i!=4)keys[count++]=saved.states[i].key;
+            if(rasterReader(rasterContext,keys,count,values)){
+                unsigned at=0;for(unsigned i=0;i<saved.stateCount;++i)if(i!=0&&i!=4)saved.states[i].value=values[at++];return true;}}
+        for(unsigned i=0;i<saved.stateCount;++i){if(i==0||i==4)continue;auto& state=saved.states[i];if(FAILED(d->GetRenderState(state.key,&state.value)))return false;}
+        return true;
+    }
     bool recordCapture(const NorthlightAutoDisplacement::Args& args,NorthlightAutoNormalCache::Lease& normal,bool auxiliary,const ReplayState& saved,const NativeCapture& model,const Vertex& vertex,const float* captureConstants,DWORD addressU,DWORD addressV){
         using P=NorthlightMaterialProfile;P::Scope timing(profile,P::DeferredRecord,profileTag);
         // Pressure keeps a small batch to avoid a target switch for every draw;
@@ -274,7 +283,8 @@ class NorthlightAutoBump {
             packet->declaration=decl.p;decl.p=nullptr;packet->pixel=model.shader;packet->pixel->AddRef();packet->vertex=vertex.patched;packet->vertex->AddRef();packet->vertexFirst=vertex.constantFirst;packet->vertexCount=vertex.constantCount;packet->vertexFloatOnly=vertex.floatOnly;packet->pixelFloatOnly=model.pixelFloatOnly;
             packet->first=model.first;packet->pixelConstants.resize((model.last-model.first+1)*4);packet->viewport=saved.viewport;packet->addressU=addressU;packet->addressV=addressV;packet->normalStage=saved.normalStage;
             for(unsigned i=0;i<14;++i)packet->states[i]=saved.states[i].replay;
-            for(unsigned i=0;i<DeferredRasterCount;++i)if(FAILED(d->GetRenderState(deferredRasterKeys[i],packet->raster+i)))return false;
+            if(!rasterReader||!rasterReader(rasterContext,deferredRasterKeys,DeferredRasterCount,packet->raster))
+                for(unsigned i=0;i<DeferredRasterCount;++i)if(FAILED(d->GetRenderState(deferredRasterKeys[i],packet->raster+i)))return false;
             if(FAILED(d->GetScissorRect(&packet->scissor))||FAILED(d->GetVertexShaderConstantF(packet->vertexFirst,packet->vertexConstants,packet->vertexCount))||FAILED(d->GetPixelShaderConstantF(packet->first,packet->pixelConstants.data(),UINT(packet->pixelConstants.size()/4)))||
                (!packet->vertexFloatOnly&&FAILED(d->GetVertexShaderConstantI(0,packet->vertexInt,16)))||(!packet->pixelFloatOnly&&FAILED(d->GetPixelShaderConstantI(0,packet->pixelInt,16)))||(!packet->vertexFloatOnly&&FAILED(d->GetVertexShaderConstantB(0,packet->vertexBool,16)))||(!packet->pixelFloatOnly&&FAILED(d->GetPixelShaderConstantB(0,packet->pixelBool,16))))return false;
             std::copy(captureConstants,captureConstants+saved.constantCount*4,packet->pixelConstants.begin()+(model.constant-packet->first)*4);
@@ -454,6 +464,8 @@ public:
             profileConfigFrame=profile->frameNumber();logf("MATERIAL_CONFIG frame=%llu enabled=%u modes=%u/%u/%u/%u normalGain=%.3f normalRange=%.1f pomDepth=%.6f pomRange=%.1f pomSteps=%.0f occlusionRange=%.1f cavity=%.3f selfShadow=%.3f shadowSteps=%.0f lightActive=%.3f sharedPOM=%u nativeGpuEnabled=%u",(unsigned long long)profileConfigFrame,unsigned(enabled),modes[0],modes[1],modes[2],modes[3],strength,range,pomControl[0],pomControl[1],pomControl[2],occlusionDistance(),occlusionControl[2],occlusionControl[0],occlusionControl[1],occlusionLight[3],unsigned(sharedPOM.canTry()),unsigned(active()));}}
     void setGeometryTracking(uint64_t(*identity)(void*,bool),uint64_t(*version)(void*,bool),NorthlightCaptureMetadata::Read metadata){displacement.tracking(identity,version,metadata);sharedPOM.tracking(identity,version,metadata);deferredSnapshots.setIdentityProvider(identity);deferredSnapshots.setVersionProvider(version);deferredSnapshots.setMetadataProvider(metadata);}
     void setConstantEpochSource(void* context,NorthlightConstantEpoch::Reader reader){displacement.setConstantEpochSource(context,reader);}
+    void setTrustedConstantEpochSource(NorthlightConstantEpoch::TrustedSource source){displacement.setTrustedConstantEpochSource(source);}
+    void setRasterStateSource(void* context,bool(*reader)(void*,const D3DRENDERSTATETYPE*,unsigned,DWORD*)){rasterContext=context;rasterReader=context==d?reader:nullptr;}
     void setVertexIdentity(void* context,VertexIdentity reader){vertexIdentityContext=context;vertexIdentity=reader;}
     template<class Draw> HRESULT geometryDraw(Draw draw,bool native=false){return parallax.shared()?sharedPOM.drawBound(true):displacement.draw(draw,native);}
     void setProjection(float x,float y,float z){projection[0]=x;projection[1]=y;projection[2]=z;}
@@ -590,7 +602,7 @@ public:
         for(unsigned i=1;i<4;++i){IDirect3DSurface9* extra=nullptr;d->GetRenderTarget(i,&extra);if(extra){drop(extra);return;}}
         if(FAILED(d->GetDepthStencilSurface(&saved.depth))||!saved.depth)return;
         saved.states[0].value=depthWrite;saved.states[4].value=colorWrite;
-        for(unsigned i=0;i<saved.stateCount;++i){if(i==0||i==4)continue;auto& state=saved.states[i];if(FAILED(d->GetRenderState(state.key,&state.value)))return;}
+        if(!readAdmissionStates(saved))return;
         const auto& s=saved.states;
         const bool alpha=s[1].value!=0;
         const bool coverageAlpha=domain==4?alpha:alpha||s[5].value!=0;

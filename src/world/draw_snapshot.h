@@ -14,6 +14,9 @@
 #include <limits>
 #include <unordered_map>
 #include <vector>
+#if defined(__SSE2__)
+#include <emmintrin.h>
+#endif
 #include "capture_buffer_metadata.h"
 #include "northlight_mem.h"
 #include "source_identity.h"
@@ -676,7 +679,29 @@ private:
                 else copyRuns_.push_back({source,i,1});}
             rememberPlan(data,rawBytes,hash,format,draw,mesh,low,high);
         };
-        for(UINT i=0;i<count;++i){UINT index=0;if(format==D3DFMT_INDEX16){std::uint16_t v;std::memcpy(&v,static_cast<const std::uint8_t*>(data)+i*2,2);index=v;}else std::memcpy(&index,static_cast<const std::uint8_t*>(data)+i*4,4);
+        UINT i=0;
+#if defined(__SSE2__)
+        // Sixteen-bit bounds fit the vector comparison only in this case.
+        // Other ranges, including UINT_MAX endpoints, retain scalar validation.
+        const std::uint64_t end=std::uint64_t(draw.minimum)+draw.vertices;
+        if(format==D3DFMT_INDEX16&&draw.minimum<=65535&&end<=65536&&end>draw.minimum){
+            const auto bias=_mm_set1_epi16(short(0x8000));
+            const auto lo=_mm_set1_epi16(short(std::uint16_t(draw.minimum)^0x8000));
+            const auto hi=_mm_set1_epi16(short(std::uint16_t(end-1)^0x8000));
+            const auto zero=_mm_setzero_si128();auto mins=_mm_set1_epi16(short(0x7fff)),maxs=_mm_set1_epi16(short(0x8000));
+            for(;count-i>=8;i+=8){
+                const auto values=_mm_loadu_si128(reinterpret_cast<const __m128i*>(static_cast<const std::uint8_t*>(data)+size_t(i)*2));
+                const auto signedValues=_mm_xor_si128(values,bias);
+                if(_mm_movemask_epi8(_mm_or_si128(_mm_cmpgt_epi16(lo,signedValues),_mm_cmpgt_epi16(signedValues,hi))))return fail(why,Error::IndexRange);
+                mins=_mm_min_epi16(mins,signedValues);maxs=_mm_max_epi16(maxs,signedValues);
+                _mm_storeu_si128(reinterpret_cast<__m128i*>(mesh.indices.data()+i),_mm_unpacklo_epi16(values,zero));
+                _mm_storeu_si128(reinterpret_cast<__m128i*>(mesh.indices.data()+i+4),_mm_unpackhi_epi16(values,zero));
+            }
+            if(i){alignas(16) std::uint16_t lanesMin[8],lanesMax[8];_mm_store_si128(reinterpret_cast<__m128i*>(lanesMin),_mm_xor_si128(mins,bias));_mm_store_si128(reinterpret_cast<__m128i*>(lanesMax),_mm_xor_si128(maxs,bias));
+                for(unsigned lane=0;lane<8;++lane){low=std::min(low,UINT(lanesMin[lane]));high=std::max(high,UINT(lanesMax[lane]));}}
+        }
+#endif
+        for(;i<count;++i){UINT index=0;if(format==D3DFMT_INDEX16){std::uint16_t v;std::memcpy(&v,static_cast<const std::uint8_t*>(data)+i*2,2);index=v;}else std::memcpy(&index,static_cast<const std::uint8_t*>(data)+i*4,4);
             if(index<draw.minimum||std::uint64_t(index)>=std::uint64_t(draw.minimum)+draw.vertices)return fail(why,Error::IndexRange);
             low=std::min(low,index);high=std::max(high,index);mesh.indices[i]=index;}
         const uint64_t span=uint64_t(high)-low+1;

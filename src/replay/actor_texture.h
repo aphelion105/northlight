@@ -6,6 +6,9 @@
 #include <cstring>
 #include <type_traits>
 #include <vector>
+#if defined(__SSE2__)
+#include <emmintrin.h>
+#endif
 
 namespace NorthlightActorTexture {
 // ARGB1555/XRGB1555/ARGB4444 (0.3.171): 16-bit uploads such as the game's 1-bit
@@ -65,6 +68,17 @@ template<Format FormatValue,bool BlockSums=false,class Write>inline void decodeC
         if constexpr(BlockSums)write(bx*4,by*4,sums);
     }
 }
+#if defined(__SSE2__)
+template<Format F> __attribute__((noinline)) inline void decodeWide(const std::uint8_t* bytes,unsigned width,unsigned height,std::size_t pitch,std::uint8_t* rgba){
+    const auto keep=_mm_set1_epi32(F==Format::BGRA8?int(0xff00ff00u):0x0000ff00),red=_mm_set1_epi32(0x00ff0000),blue=_mm_set1_epi32(0x000000ff),alpha=_mm_set1_epi32(int(0xff000000u));
+    for(unsigned y=0;y<height;++y){unsigned x=0;
+        for(;width-x>=4;x+=4){const auto pixels=_mm_loadu_si128(reinterpret_cast<const __m128i*>(bytes+size_t(y)*pitch+x*4));
+            auto converted=_mm_or_si128(_mm_and_si128(pixels,keep),_mm_or_si128(_mm_srli_epi32(_mm_and_si128(pixels,red),16),_mm_slli_epi32(_mm_and_si128(pixels,blue),16)));
+            if constexpr(F==Format::BGRX8)converted=_mm_or_si128(converted,alpha);
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(rgba+(size_t(y)*width+x)*4),converted);}
+        for(;x<width;++x){const auto* src=bytes+size_t(y)*pitch+x*4;auto* dst=rgba+(size_t(y)*width+x)*4;dst[0]=src[2];dst[1]=src[1];dst[2]=src[0];dst[3]=F==Format::BGRA8?src[3]:255;}}
+}
+#endif
 inline bool decode(const void* source,std::size_t sourceBytes,unsigned width,unsigned height,std::size_t pitch,Format format,std::vector<std::uint8_t>& output){
     if(!readable(source,sourceBytes,width,height,pitch,format)){output.clear();return false;}
     std::vector<std::uint8_t> rgba;
@@ -75,6 +89,9 @@ inline bool decode(const void* source,std::size_t sourceBytes,unsigned width,uns
     if(!alias)rgba.swap(output);
     output.clear();rgba.resize(std::size_t(width)*height*4);
     auto* bytes=static_cast<const std::uint8_t*>(source);
+#if defined(__SSE2__)
+    if(width>=4&&(format==Format::BGRA8||format==Format::BGRX8)){if(format==Format::BGRA8)decodeWide<Format::BGRA8>(bytes,width,height,pitch,rgba.data());else decodeWide<Format::BGRX8>(bytes,width,height,pitch,rgba.data());output=std::move(rgba);return true;}
+#endif
     if(!compressed(format)){
         auto decodeColor=[&](auto tag){constexpr Format f=decltype(tag)::value;for(unsigned y=0;y<height;++y)for(unsigned x=0;x<width;++x){auto* dst=rgba.data()+(y*width+x)*4;
             if constexpr(f!=Format::BGRA8&&f!=Format::BGRX8){std::uint16_t v;std::memcpy(&v,bytes+y*pitch+x*2,2);

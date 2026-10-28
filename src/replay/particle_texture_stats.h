@@ -9,6 +9,9 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#if defined(__SSE2__)
+#include <emmintrin.h>
+#endif
 
 namespace NorthlightParticleTextures {
 inline std::atomic<bool> enabled{false}; // Set by the device's EquipmentLights quality setting.
@@ -192,6 +195,19 @@ private:
         case 24:out=F::XRGB1555;break;case 25:out=F::ARGB1555;break;case 26:out=F::ARGB4444;break;
         case 0x31545844:out=F::BC1;break;case 0x33545844:out=F::BC2;break;case 0x35545844:out=F::BC3;break;default:return false;}return true;
     }
+#if defined(__SSE2__)
+    // For n<=64, (255*n+n/2)*n is below 2^32, so the ceiling
+    // reciprocal produces the same integer quotient for every channel sum.
+    // Keep the two-texel loop separate so larger box paths stay compact.
+    template<NorthlightActorTexture::Format Format>__attribute__((noinline)) static void reduceTwo(const void* source,std::size_t pitch,unsigned tw,unsigned th,unsigned scaleY,std::vector<std::uint8_t>& output){
+        const auto* data=static_cast<const unsigned char*>(source);const auto zero=_mm_setzero_si128();const unsigned n=scaleY*2;const auto reciprocal=std::uint32_t(((UINT64_C(1)<<32)+n-1)/n);
+        for(unsigned y=0;y<th;++y)for(unsigned x=0;x<tw;++x){__m128i sum=zero;
+            for(unsigned dy=0;dy<scaleY;++dy){const auto* row=data+size_t(y*scaleY+dy)*pitch+size_t(x)*8;const auto bytes=_mm_loadl_epi64(reinterpret_cast<const __m128i*>(row));const auto lo=_mm_unpacklo_epi8(bytes,zero);sum=_mm_add_epi16(sum,_mm_add_epi16(lo,_mm_srli_si128(lo,8)));}
+            alignas(16) std::uint16_t channels[8];_mm_store_si128(reinterpret_cast<__m128i*>(channels),sum);auto* dst=output.data()+(size_t(y)*tw+x)*4;
+            dst[0]=std::uint8_t((std::uint64_t(channels[2]+n/2)*reciprocal)>>32);dst[1]=std::uint8_t((std::uint64_t(channels[1]+n/2)*reciprocal)>>32);dst[2]=std::uint8_t((std::uint64_t(channels[0]+n/2)*reciprocal)>>32);dst[3]=Format==NorthlightActorTexture::Format::BGRX8?255:std::uint8_t((std::uint64_t(channels[3]+n/2)*reciprocal)>>32);
+        }
+    }
+#endif
     template<NorthlightActorTexture::Format Format>static bool reduceColor(const void* source,std::size_t bytes,unsigned width,unsigned height,std::size_t pitch,std::vector<std::uint8_t>& output){
         using F=NorthlightActorTexture::Format;
         constexpr bool wide=Format==F::BGRA8||Format==F::BGRX8;
@@ -200,6 +216,20 @@ private:
         if(pitch<rowBytes||bytes<rowBytes||height-1>(bytes-rowBytes)/pitch)return false;
         const unsigned tw=std::min(width,MaxDimension),th=std::min(height,MaxDimension);output.resize(size_t(tw)*th*4);
         const bool evenX=width%tw==0,evenY=height%th==0;const unsigned scaleX=width/tw,scaleY=height/th;
+#if defined(__SSE2__)
+        if constexpr(wide){if(evenX&&evenY&&scaleX==2&&scaleY<=8){reduceTwo<Format>(source,pitch,tw,th,scaleY,output);return true;}}
+        // At most 64 texels per box: each 16-bit channel sum stays below 16321.
+        if constexpr(wide){if(evenX&&evenY&&(scaleX%4)==0&&scaleX<=8&&scaleY<=8){
+            const auto* data=static_cast<const unsigned char*>(source);const auto zero=_mm_setzero_si128();const unsigned n=scaleX*scaleY;const auto reciprocal=std::uint32_t(((UINT64_C(1)<<32)+n-1)/n);
+            for(unsigned y=0;y<th;++y)for(unsigned x=0;x<tw;++x){__m128i sum=zero;
+                for(unsigned dy=0;dy<scaleY;++dy){const auto* row=data+size_t(y*scaleY+dy)*pitch+size_t(x*scaleX)*4;
+                    for(unsigned dx=0;dx<scaleX;dx+=4){const auto bytes=_mm_loadu_si128(reinterpret_cast<const __m128i*>(row+dx*4));const auto lo=_mm_unpacklo_epi8(bytes,zero),hi=_mm_unpackhi_epi8(bytes,zero);const auto pair=_mm_add_epi16(lo,hi);sum=_mm_add_epi16(sum,_mm_add_epi16(pair,_mm_srli_si128(pair,8)));}}
+                alignas(16) std::uint16_t channels[8];_mm_store_si128(reinterpret_cast<__m128i*>(channels),sum);auto* dst=output.data()+(size_t(y)*tw+x)*4;
+                dst[0]=std::uint8_t((std::uint64_t(channels[2]+n/2)*reciprocal)>>32);dst[1]=std::uint8_t((std::uint64_t(channels[1]+n/2)*reciprocal)>>32);dst[2]=std::uint8_t((std::uint64_t(channels[0]+n/2)*reciprocal)>>32);dst[3]=Format==F::BGRX8?255:std::uint8_t((std::uint64_t(channels[3]+n/2)*reciprocal)>>32);
+            }return true;
+        }}
+#endif
+
         for(unsigned y=0;y<th;++y){const unsigned y0=evenY?y*scaleY:y*height/th,y1=evenY?(y+1)*scaleY:(y+1)*height/th;
         for(unsigned x=0;x<tw;++x){unsigned sum[4]={},n=0;
             const unsigned x0=evenX?x*scaleX:x*width/tw,x1=evenX?(x+1)*scaleX:(x+1)*width/tw;

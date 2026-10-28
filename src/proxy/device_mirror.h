@@ -420,7 +420,15 @@ public:
         if(valid&&SUCCEEDED(hr)&&m->active()){std::memcpy(m->psFloat[start],out,size_t(count)*4*sizeof(float));for(UINT i=0;i<count;++i)m->psFloatKnown[start+i]=true;}return hr;
     }
     bool constantStamp(NorthlightConstantEpoch::Stamp& out){
-        Guard lock(m->gate);out=m->constantEpoch.stamp(m->active());return out.valid;
+        // Only the typed first read requests the existing-gate certificate.
+        const bool held=out.requestHeld&&MirrorGuard::heldByThisThread(m->gate);Guard lock(m->gate);out=m->constantEpoch.stamp(m->active());out.held=held;return out.valid;
+    }
+    // Only a caller already holding this gate can retain the returned epoch.
+    // Unknown slots fail without copying or invoking the backend.
+    bool knownVertexConstantSpan(unsigned start,unsigned count,float* out,NorthlightConstantEpoch::Stamp& stamp){
+        if(!MirrorGuard::heldByThisThread(m->gate))return false;
+        Guard lock(m->gate);if(!m->active()||!out||!count||start>=DeviceMirror::VsFloat||count>DeviceMirror::VsFloat-start||!allKnown(m->vsFloatKnown+start,count))return false;
+        std::memcpy(out,m->vsFloat[start],size_t(count)*4*sizeof(float));stamp=m->constantEpoch.stamp(true);++m->answered;return true;
     }
     // Diagnostic reads use the backend directly and do not warm the cache.
     // Called at a bounded cadence under the same gate as all intercepted writes.
@@ -535,6 +543,17 @@ public:
 #include "extension_raw_methods.inl"
 
     ExtensionDevice(IDirect3DDevice9* device,DeviceMirror* mirror):MirrorDevice(device,mirror){}
+    NorthlightConstantEpoch::TrustedSource trustedConstantSource(){
+        return NorthlightConstantEpoch::TrustedSource(static_cast<IDirect3DDevice9*>(this),[](void* context,NorthlightConstantEpoch::Stamp& stamp){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(context))->constantStamp(stamp);},[](void* context,unsigned first,unsigned count,float* out,NorthlightConstantEpoch::Stamp& stamp){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(context))->knownVertexConstantSpan(first,count,out,stamp);});
+    }
+    // A complete known-only snapshot; unknown slots retain the normal Get path.
+    bool knownRenderStates(const D3DRENDERSTATETYPE* keys,unsigned count,DWORD* out){
+        if(!keys||!out)return false;MirrorGuard lock(m->gate,MirrorSite::Device);
+        if(!m->active())return false;
+        for(unsigned i=0;i<count;++i)if(unsigned(keys[i])>=DeviceMirror::RenderStates||!m->renderStateKnown[keys[i]])return false;
+        for(unsigned i=0;i<count;++i)out[i]=m->renderStates[keys[i]];
+        m->answered+=count;return true;
+    }
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id,void** out) override{
         if(!out)return E_POINTER;
         if(id==__uuidof(IUnknown)||id==__uuidof(IDirect3DDevice9)){*out=this;AddRef();return S_OK;}

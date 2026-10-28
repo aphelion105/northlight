@@ -43,7 +43,7 @@ class NorthlightAutoDisplacement {
     using Mesh=NorthlightDrawSnapshot::Mesh;
     using Height=NorthlightDisplacementGeometry::Height;
     struct Shader {IDirect3DVertexShader9* patched=nullptr,*source=nullptr,*gpu=nullptr;NorthlightDisplacementPatch::Binding binding,gpuBinding;bool pending=false,skinned=false;};
-    struct Material {Program uv,view,uv1,blend;std::vector<unsigned> uvRegisters[2];bool layered=false,skinned=false,clearPoseInputs=true;unsigned rangeRegister=17;uint64_t id=0;unsigned first=0,count=0,influences=0;};
+    struct Material {Program uv,view,uv1,blend;std::vector<unsigned> uvRegisters[2];bool layered=false,skinned=false,clearPoseInputs=true;std::uint8_t terrainDepthEligible=0;unsigned rangeRegister=17;uint64_t id=0;unsigned first=0,count=0,influences=0;};
     struct Bounds {std::weak_ptr<const Mesh> source;float low[3],high[3];uint64_t used=0;size_t bytes=0;std::unique_ptr<NorthlightReplayBounds::SkinEnvelope> skin;
         const Mesh* key=nullptr;NorthlightIntrusiveLRU::Links<Bounds> lru;};
     using Texture=NorthlightDisplacementStorage::Texture;using Entry=NorthlightDisplacementStorage::Entry;
@@ -55,16 +55,23 @@ class NorthlightAutoDisplacement {
     NorthlightPositionBounds::Cache positionBounds;
     unsigned capturedBoundsHits=0;
     NorthlightVertexDeclarations::Cache declarations;
-    void* constantContext=nullptr;NorthlightConstantEpoch::Reader constantReader=nullptr;
+    void* constantContext=nullptr;NorthlightConstantEpoch::Reader constantReader=nullptr;NorthlightConstantEpoch::KnownSpan constantSpan=nullptr;bool trustedConstants=false;
     NorthlightConstantEpoch::Stamp constantStamp,rangeConstantStamp;float constants[256*4]={};
     unsigned constantFirst=0,constantCount=0,rangeConstantFirst=0,rangeConstantCount=0;
     float rangeConstants[256*4]={}; // Range admission must not invalidate the cached model pose bank.
     bool readConstantBank(unsigned first,unsigned count,bool skinned,float* bank,NorthlightConstantEpoch::Stamp& stamp,unsigned& capturedFirst,unsigned& capturedCount){
         namespace E=NorthlightConstantEpoch;
-        E::Stamp before;const bool valid=constantReader&&constantReader(constantContext,before)&&before.valid;
+        E::Stamp before;before.requestHeld=trustedConstants;const bool valid=constantReader&&constantReader(constantContext,before)&&before.valid;
         unsigned lo=first,hi=first+count;
         const bool reusable=valid&&first==capturedFirst&&count==capturedCount&&E::banks(stamp,before,false,false);
         if(reusable)E::dirtySpan(stamp,before,lo,hi,lo,hi);
+        // The pure mirror reader is protected by the enclosing draw gate, and
+        // no device call occurs when the captured span is already current.
+        if(trustedConstants&&before.held&&reusable&&lo==hi){stamp=before;return true;}
+        // A known-only copy cannot reenter the backend; unknown spans keep the
+        // original getter and second epoch validation below.
+        if(trustedConstants&&before.held&&reusable&&lo!=hi&&constantSpan){E::Stamp copied;
+            if(constantSpan(constantContext,lo,hi-lo,bank+lo*4,copied)&&E::exact(before,copied)){stamp=copied;capturedFirst=first;capturedCount=count;return true;}}
         stamp={};
         if(!skinned&&!reusable)std::fill(bank,bank+256*4,0.f);
         if(lo!=hi&&FAILED(d->GetVertexShaderConstantF(lo,bank+lo*4,hi-lo)))return false;
@@ -177,8 +184,40 @@ class NorthlightAutoDisplacement {
         for(const auto& op:program.operations)for(const auto& source:op.source)if(source.token&0x2000)return 16;
         return input;
     }
-    static bool nearestViewDepth(const Program& program,unsigned input,const float* low,const float* high,const float* bank,float& nearest){
-        if(input>=16)return false;
+    // The stock terrain transform has four fixed operations; match every token
+    // before using the same interval arithmetic without interpreter dispatch.
+    static bool terrainDepthProgram(const Program& p){
+        if(p.major!=3||p.textureCoordinates||p.positionRegister!=0||p.inputs.size()!=1||p.inputs[0].reg!=0||p.inputs[0].usage!=D3DDECLUSAGE_POSITION||p.inputs[0].index||p.operations.size()!=4)return false;
+        constexpr unsigned code[4]={5,4,4,2};constexpr std::uint32_t a[4]={0xa0e40001,0x90000000,0x90aa0000,0x80e40000},b[4]={0x90550000,0xa0e40000,0xa0e40002,0xa0e40003},c[4]={0,0x80e40000,0x80e40000,0};
+        for(unsigned i=0;i<4;++i){const auto& o=p.operations[i];if(o.code!=code[i]||o.destination!=0x800f0000||o.source[0].token!=a[i]||o.source[1].token!=b[i]||o.source[2].token!=c[i]||o.source[0].address||o.source[1].address||o.source[2].address)return false;}return true;
+    }
+    static bool readTerrain(NorthlightReplayBounds::detail::Value& v){if(!std::isfinite(v.value)||!std::isfinite(v.error))return false;if(v.value!=0&&std::fabs(v.value)<std::numeric_limits<float>::min())v.error+=std::fabs(v.value);return true;}
+    static bool validTerrain(NorthlightReplayBounds::detail::Value v){return std::isfinite(v.value)&&std::isfinite(v.error)&&v.error>=0;}
+    static bool terrainDepth(const Program& p,const float* low,const float* high,const float* bank,float& nearest){
+ using namespace NorthlightReplayBounds::detail;Vector pos={};for(unsigned k=0;k<3;++k){float mid=float((double(low[k])+high[k])*.5);pos[k]={mid,std::max(double(mid)-low[k],double(high[k])-mid)};}pos[3]={1,0};
+ Vector c[4];for(unsigned i=0;i<4;++i){for(unsigned k=0;k<4;++k)c[i][k]={bank[4*i+k],0};for(const auto& def:p.definitions)if(def.reg==i)for(unsigned k=0;k<4;++k)c[i][k].value=def.value[k];}
+ Vector tmp;for(unsigned k=0;k<4;++k){Value a=c[1][k],b=pos[1];if(!readTerrain(a)||!readTerrain(b))return false;tmp[k]=mul(a,b);if(!validTerrain(tmp[k]))return false;}
+ for(unsigned op=0;op<2;++op)for(unsigned k=0;k<4;++k){Value a=pos[op==0?0:2],b=c[op==0?0:2][k],v=tmp[k];if(!readTerrain(a)||!readTerrain(b)||!readTerrain(v))return false;Value product=mul(a,b),r;if(product.value==0&&product.error==0)r=v;else{r=add(product,v);r.error+=roundError(std::fabs(double(a.value)*b.value)+std::fabs(v.value));}if(!validTerrain(r))return false;tmp[k]=r;}
+ for(unsigned k=0;k<4;++k){Value a=tmp[k],b=c[3][k];if(!readTerrain(a)||!readTerrain(b))return false;tmp[k]=add(a,b);if(!validTerrain(tmp[k]))return false;}
+ if(tmp[3].value!=1.f||tmp[3].error!=0)return false;double lo=double(tmp[2].value)-tmp[2].error,hi=double(tmp[2].value)+tmp[2].error;if(!std::isfinite(lo)||!std::isfinite(hi))return false;nearest=std::max(0.f,std::nextafter(float(lo>0?lo:hi<0?-hi:0),-INFINITY)-.001f);return true;
+}
+
+    static bool wallDepthProgram(const Program& p){
+        if((p.major!=2&&p.major!=3)||p.textureCoordinates||p.positionRegister!=0||p.inputs.size()!=1||p.inputs[0].reg!=0||p.inputs[0].usage!=D3DDECLUSAGE_POSITION||p.inputs[0].index||p.operations.size()!=4)return false;
+        constexpr unsigned code[4]={9,9,1,9};constexpr std::uint32_t dest[4]={0x80010000,0x80020000,0x80080000,0x80040000},a[4]={0xa0e4001f,0xa0e40020,0xa0000000,0xa0e40021},b[4]={0x90e40000,0x90e40000,0,0x90e40000};
+        for(unsigned i=0;i<4;++i){const auto& o=p.operations[i];if(o.code!=code[i]||o.destination!=dest[i]||o.source[0].token!=a[i]||o.source[1].token!=b[i]||o.source[2].token||o.source[0].address||o.source[1].address||o.source[2].address)return false;}return true;
+    }
+    static bool wallDepth(const Program& p,const float* low,const float* high,const float* bank,float& nearest){
+        using namespace NorthlightReplayBounds::detail;Vector pos={};for(unsigned k=0;k<3;++k){const float mid=float((double(low[k])+high[k])*.5);pos[k]={mid,std::max(double(mid)-low[k],double(high[k])-mid)};}pos[3]={1,0};
+        Vector view={};for(unsigned op=0;op<4;++op){const unsigned reg=op==2?0:op==3?33:31+op;Vector constant={};for(unsigned k=0;k<4;++k)constant[k].value=bank[reg*4+k];for(const auto& d:p.definitions)if(d.reg==reg)for(unsigned k=0;k<4;++k)constant[k].value=d.value[k];
+            if(op==2){Value w=constant[0];if(!readTerrain(w)||!validTerrain(w))return false;view[3]=w;continue;}
+            Vector a={},b={};for(unsigned k=0;k<4;++k){a[k]=constant[k];b[k]=pos[k];if(!readTerrain(a[k])||!readTerrain(b[k]))return false;}
+            Value sum;double magnitude=0;for(unsigned k=0;k<4;++k){Value term=mul(a[k],b[k]);magnitude+=std::fabs(term.value)+term.error;sum=add(sum,term);}sum.error+=roundError(magnitude)*8;if(!validTerrain(sum))return false;view[op==3?2:op]=sum;
+        }
+        if(view[3].value!=1.f||view[3].error!=0)return false;const double lo=double(view[2].value)-view[2].error,hi=double(view[2].value)+view[2].error;if(!std::isfinite(lo)||!std::isfinite(hi))return false;nearest=std::max(0.f,std::nextafter(float(lo>0?lo:hi<0?-hi:0),-INFINITY)-.001f);return true;
+    }
+    static bool nearestViewDepth(const Program& program,unsigned input,const float* low,const float* high,const float* bank,float& nearest,unsigned terrainEligible=0){
+        if(input>=16||!bank)return false;if(terrainEligible&&input==0)return terrainEligible==2?wallDepth(program,low,high,bank,nearest):terrainDepth(program,low,high,bank,nearest);
         using namespace NorthlightReplayBounds::detail;Vector view;
         auto fill=[&](Vector& position){for(unsigned k=0;k<3;++k){const float middle=float((double(low[k])+high[k])*.5);position[k]={middle,std::max(double(middle)-low[k],double(high[k])-middle)};}position[3]={1,0};};
         if(program.inputs.size()==1&&program.inputs[0].reg==input){Vector position={};fill(position);if(!evaluateIntervals<true>(program,&position,bank,view,false,input))return false;}
@@ -221,7 +260,10 @@ class NorthlightAutoDisplacement {
         if(!source->replayIdentity)return source;
         auto* hit=firstCandidate(source,sourceFingerprint(*source),true,[&](const Entry& e){
             if(e.sourceDecl!=declaration||e.program!=program||e.domain!=domain||!sameSource(e,source,true))return false;
-            for(unsigned s=0;s<4;++s)if(e.source->streams[s].stride!=source->streams[s].stride||e.source->streams[s].bytes!=source->streams[s].bytes)return false;
+            // sameSource already compared stream zero bytes; only its stride
+            // and the remaining streams still need the full layout proof.
+            if(e.source->streams[0].stride!=source->streams[0].stride)return false;
+            for(unsigned s=1;s<4;++s)if(e.source->streams[s].stride!=source->streams[s].stride||e.source->streams[s].bytes!=source->streams[s].bytes)return false;
             return true;
         });
         if(!hit||hit->source==source)return source;
@@ -325,7 +367,8 @@ public:
             return found;});}
     ~NorthlightAutoDisplacement(){reset();for(auto& s:shaders){drop(s.second.patched);drop(s.second.gpu);drop(s.second.source);}}
     void tracking(uint64_t(*identity)(void*,bool),uint64_t(*version)(void*,bool),NorthlightCaptureMetadata::Read metadata){positionBounds.tracking(identity,version,metadata);for(auto* frame:{&snapshots,&rangeSnapshots,&skinRangeSnapshots}){frame->setIdentityProvider(identity);frame->setVersionProvider(version);frame->setMetadataProvider(metadata);}}
-    void setConstantEpochSource(void* context,NorthlightConstantEpoch::Reader reader){constantStamp={};rangeConstantStamp={};constantContext=context;constantReader=reader;}
+    void setConstantEpochSource(void* context,NorthlightConstantEpoch::Reader reader){constantStamp={};rangeConstantStamp={};constantContext=context;constantReader=reader;constantSpan=nullptr;trustedConstants=false;}
+    void setTrustedConstantEpochSource(NorthlightConstantEpoch::TrustedSource source){constantStamp={};rangeConstantStamp={};trustedConstants=bool(source)&&source.context()==d;constantContext=trustedConstants?source.context():nullptr;constantReader=trustedConstants?source.reader():nullptr;constantSpan=trustedConstants?source.span():nullptr;}
     void shareCaptureSources(NorthlightDrawSnapshot::Frame& capture){snapshots.shareSnapshotPool(capture);snapshots.setReplayContentReuse(true);snapshots.setResidentPeer(&capture);capture.setResidentPeer(&snapshots);skinRangeSnapshots.setResidentPeer(&capture);}
     void reportSources(uint64_t frame)const{
         const auto& boundsWork=positionBounds.maintenance();
@@ -366,12 +409,12 @@ public:
         if(position==elements+count)return false;
         if(!skin&&!args.vertices&&position->Method==D3DDECLMETHOD_DEFAULT&&captured&&captured->known&&captured->owner==&args&&captured->shader==original&&
            captured->low[0]<=captured->high[0]&&captured->low[1]<=captured->high[1]&&captured->low[2]<=captured->high[2]&&
-           nearestViewDepth(program,input,captured->low,captured->high,rangeConstants,nearest)){++capturedBoundsHits;return true;}
+           nearestViewDepth(program,input,captured->low,captured->high,rangeConstants,nearest,shader->second.terrainDepthEligible)){++capturedBoundsHits;return true;}
         if(geometrySource&&!skin&&!args.vertices&&position->Method==D3DDECLMETHOD_DEFAULT){
             float low[3],high[3];P::Scope scan(profile,P::Snapshot);const auto before=positionBounds.bytesRead();
             const bool known=positionBounds.read(d,args.draw,position->Offset,low,high);
             const auto bytes=positionBounds.bytesRead()-before;scan.work(bytes/12,bytes);scan.next(P::BoundsPose);
-            if(known)return nearestViewDepth(program,input,low,high,rangeConstants,nearest);
+            if(known)return nearestViewDepth(program,input,low,high,rangeConstants,nearest,shader->second.terrainDepthEligible);
         }
         Mesh local;std::shared_ptr<const Mesh> source;
         P::Scope read(profile,P::Snapshot);
@@ -397,7 +440,7 @@ public:
             found=retainBounds(source,std::move(b));
         }
         auto& b=found->second;touchBounds(b);
-        return nearestViewDepth(program,input,b.low,b.high,rangeConstants,nearest);
+        return nearestViewDepth(program,input,b.low,b.high,rangeConstants,nearest,shader->second.terrainDepthEligible);
     }
     unsigned preparedPrimitives()const{return current?current->primitives:0;}
     void beginDraw(){current=nullptr;lastDepthLower=0;}
@@ -434,7 +477,7 @@ public:
     void registerMaterial(IDirect3DVertexShader9* original,const DWORD* code,size_t count,unsigned domain){
         poseMetadata.invalidateShader(original);materials.erase(original);if(domain>4)return;Material m;const auto* words=reinterpret_cast<const uint32_t*>(code);
         if(!NorthlightActorDeformation::compile(words,count,m.uv,true)||!NorthlightActorDeformation::compile(words,count,m.view,false,(domain==1||domain==3)?1:2))return;
-        m.skinned=m.view.skinned;m.rangeRegister=m.skinned?16:rangeInput(m.view);m.influences=m.skinned?1:0;
+        m.terrainDepthEligible=terrainDepthProgram(m.view)?1:wallDepthProgram(m.view)?2:0;m.skinned=m.view.skinned;m.rangeRegister=m.skinned?16:rangeInput(m.view);m.influences=m.skinned?1:0;
         unsigned provided=0;bool inputsValid=true;for(const auto& input:m.view.inputs)if(input.reg<16)provided|=1u<<input.reg;else{inputsValid=false;break;}
         m.clearPoseInputs=!inputsValid||NorthlightActorDeformation::clearVertexInputsMask(m.view,provided);
         for(const auto& input:m.view.inputs)if(input.usage==D3DDECLUSAGE_BLENDWEIGHT){unsigned channels=0;for(const auto& op:m.view.operations)for(const auto& source:op.source)if(NorthlightShadowShader::regType(source.token)==1&&NorthlightShadowShader::regIndex(source.token)==input.reg){unsigned mask=op.code==9?15:op.code==8?7:(op.destination>>16)&15;for(unsigned c=0;c<4;++c)if(mask&(1u<<c))channels=std::max(channels,1u+((source.token>>(16+2*c))&3));}m.influences=std::clamp(channels,1u,4u);}
@@ -501,7 +544,7 @@ m.layered=NorthlightActorDeformation::compile(words,count,m.uv1,true,2,5,1)&&Nor
                 for(unsigned k=0;k<3;++k){if(!std::isfinite(view[k]))return false;low[k]=std::min(low[k],view[k]);high[k]=std::max(high[k],view[k]);}}}
             const auto& kernel=shader->second.view.kernel;poseKernelVertices[kernel.singleSkin()?1:kernel.commutedSkin()?2:kernel.skin?3:0]+=source->vertexCount;
         }else{touchBounds(foundBounds->second);const auto& b=foundBounds->second;
-            nearestViewDepth(shader->second.view,shader->second.rangeRegister==17?rangeInput(shader->second.view):shader->second.rangeRegister,b.low,b.high,constants,lastDepthLower);
+            nearestViewDepth(shader->second.view,shader->second.rangeRegister==17?rangeInput(shader->second.view):shader->second.rangeRegister,b.low,b.high,constants,lastDepthLower,shader->second.terrainDepthEligible);
             for(unsigned r=0;r<3;++r){low[r]=high[r]=controls[r][3];for(unsigned k=0;k<3;++k){const float a=controls[r][k]*b.low[k],z=controls[r][k]*b.high[k];low[r]+=std::min(a,z);high[r]+=std::max(a,z);}}}
         float closestSquared=0;for(unsigned r=0;r<3;++r){float v=low[r]>0?low[r]:high[r]<0?high[r]:0;closestSquared+=v*v;}if(closestSquared>=range*range){++distanceRejected;return false;}
         if(shader->second.skinned){const float a=range*range,b=a*.5625f;controls[0][0]=strength*std::clamp((a-closestSquared)/(a-b),0.f,1.f);controls[0][1]=controls[0][2]=controls[0][3]=0;}
