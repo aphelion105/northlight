@@ -66,6 +66,11 @@ public:
     }
     // SH [R0..R3,G0..G3,B0..B3] that was on screen when the slot's current value was published.
     const float* previous(size_t index)const{return slots.at(index).prev;}
+    // Call only after covers(index+1) is established.
+    const float* previousKnownValid(size_t index)const{return slots[index].prev;}
     float start(size_t index)const{return slots.at(index).start;}
+    bool covers(size_t count)const{return slots.size()>=count;}
+    // Call only after covers(index+1) is established.
+    float startKnownValid(size_t index)const{return slots[index].start;}
 };
 }

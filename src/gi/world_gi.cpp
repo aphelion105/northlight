@@ -387,6 +387,7 @@ bool loadInstancedScenes(const std::vector<std::string>& files,const std::string
 // margin keeps the skip strictly inside that bound; NaN alpha never culls.
 static bool alphaNeverCut(const WorldMaterial& m){
     if(m.rgba.empty())return true; /* materialSample returns alpha 1 >= cutoff (validated <= 1) */
+    if(m.alphaCutoff==0.f)return true; // Every texel alpha is nonnegative.
     uint8_t low=255;for(size_t i=3;i<m.rgba.size();i+=4)low=std::min(low,m.rgba[i]);
     return double(low)/255.0*(1.0-1e-5)>=double(m.alphaCutoff);
 }
@@ -443,6 +444,7 @@ bool BVH::buildImpl(WorldScene&& s,std::string& error,bool fast,std::shared_ptr<
 }
 
 void BVH::buildSahTree(){
+    if(order_.empty())return;
     centers_.resize(scene_.triangles.size());
     for(uint32_t i:order_){const auto&t=scene_.triangles[i];centers_[i]=(scene_.vertices[t.v0].position+scene_.vertices[t.v1].position+scene_.vertices[t.v2].position)/3.f;}
     pairs_.reserve(size_t(double(order_.size())*TraceSahPairsPerTriangle));
@@ -500,7 +502,8 @@ uint32_t BVH::sahSplit(uint32_t start,uint32_t count,const BuildBox& box,BuildBo
     float bestCost=inf;unsigned bestAxis=0,bestSplit=0;
     struct Bin {Vec3 low,high;unsigned count;};Bin bins[3][B];
     if(depth_<48&&(scale[0]>0||scale[1]>0||scale[2]>0)){
-        for(unsigned ax=0;ax<3;++ax)for(unsigned k=0;k<B;++k)bins[ax][k]={{inf,inf,inf},{-inf,-inf,-inf},0};
+        // Only axes considered below can be read by binning or cost evaluation.
+        for(unsigned ax=0;ax<3;++ax)if(scale[ax]>0&&(allAxes||ax==widest))for(unsigned k=0;k<B;++k)bins[ax][k]={{inf,inf,inf},{-inf,-inf,-inf},0};
         for(uint32_t i=start;i<start+count;++i){
             const uint32_t index=order_[i];const auto&t=scene_.triangles[index];
             Vec3 a=scene_.vertices[t.v0].position,b=scene_.vertices[t.v1].position,c=scene_.vertices[t.v2].position;
@@ -525,7 +528,7 @@ uint32_t BVH::sahSplit(uint32_t start,uint32_t count,const BuildBox& box,BuildBo
     if(bestSplit){
         // Partition in place; child triangle bounds come from the bins and
         // centroid bounds are gathered while moving.
-        child[0]=child[1]=empty;for(unsigned k=0;k<B;++k){auto& c=child[k<bestSplit?0:1];c.low=minimum(c.low,bins[bestAxis][k].low);c.high=maximum(c.high,bins[bestAxis][k].high);}
+        child[0]=child[1]=empty;for(unsigned k=0;k<B;++k)if(bins[bestAxis][k].count){auto& c=child[k<bestSplit?0:1];c.low=minimum(c.low,bins[bestAxis][k].low);c.high=maximum(c.high,bins[bestAxis][k].high);}
         uint32_t* first=order_.data()+start;uint32_t* last=first+count;
         while(first<last){
             if(bin(*first,bestAxis)<bestSplit){child[0].cl=minimum(child[0].cl,centers_[*first]);child[0].ch=maximum(child[0].ch,centers_[*first]);++first;}
@@ -681,6 +684,8 @@ void BVH::shadeHit(RayHit& hit,Vec3 origin,Vec3 direction,uint32_t ti,float u,fl
 template<bool AnyHit,bool Sah>
 RayHit BVH::traceImpl(Vec3 origin,Vec3 direction,float minT,float maxT,bool normalizedRay,float checkedEntry,float* barycentricOut,const detail::PairRay<Sah>* preparedRay) const {
     RayHit hit;hit.distance=maxT;
+    // An empty tree cannot hit, so it needs no ray normalization.
+    if(TracePairNodes?order_.empty():nodes_.empty())return hit;
     if(!normalizedRay)direction=normalized(direction);
     if((TracePairNodes?order_.empty():nodes_.empty())||!finite(origin)||dot(direction,direction)<.5f||!std::isfinite(minT)||!std::isfinite(maxT)||minT<0||maxT<=minT)return hit;
     float boxUpper=0;if constexpr(Sah)boxUpper=traversalUpper(maxT);

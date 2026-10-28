@@ -7,6 +7,7 @@
 #include <list>
 #include <memory>
 #include <mutex>
+#include <new>
 
 namespace NorthlightGI {
 // Synchronized cache of immutable, asset-keyed FGS2 sources. Both the
@@ -29,8 +30,16 @@ class SceneSourceCache {
     uint64_t limit_;
     mutable std::recursive_mutex mutex_;
     static Stamp stamp(const std::string& path){
-        std::error_code ec;Stamp s;s.bytes=std::filesystem::file_size(path,ec);if(ec)return s;
-        s.modified=std::filesystem::last_write_time(path,ec);s.valid=!ec;return s;
+        // A coherent entry snapshot supplies both fields with one metadata query.
+        // If its extra path copy cannot be allocated, keep the original queries.
+        const std::filesystem::path native(path);
+        try{
+            std::error_code ec;Stamp s;std::filesystem::directory_entry entry(native,ec);if(ec)return s;
+            s.bytes=entry.file_size(ec);if(ec)return s;s.modified=entry.last_write_time(ec);s.valid=!ec;return s;
+        }catch(const std::bad_alloc&){
+            std::error_code ec;Stamp s;s.bytes=std::filesystem::file_size(native,ec);if(ec)return s;
+            s.modified=std::filesystem::last_write_time(native,ec);s.valid=!ec;return s;
+        }
     }
     static uint64_t nextIdentity(){
         static std::atomic<uint64_t> next{1};auto value=next.load(std::memory_order_relaxed);

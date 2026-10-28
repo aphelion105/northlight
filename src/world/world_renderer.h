@@ -2040,10 +2040,10 @@ private:
                 V p=NorthlightGI::probeWindowPosition(result->origin,order[cursor]);
                 NorthlightGI::ProbeGridKey key;
                 if(!NorthlightGI::probeGridKey(p,key))throw std::runtime_error("Invalid world probe coordinate");
-                NorthlightGI::Probe probe;
-                if(probeCache.get(key,probe))++result->reusedProbes;
-                else{probe=prefetchedMask&(1u<<(cursor%8))?prefetched[cursor%8]:relightCache.solve(*bvh,key,p,preparedLight,quality.giRays,NorthlightGI::probeSeed(key));probeCache.put(key,probe);++result->solvedProbes;publicationCadence.solved();}
-                ++result->processedProbes;if(probe.valid)++result->validProbes;
+                bool valid=false;
+                if(probeCache.touchValidity(key,valid))++result->reusedProbes;
+                else{const auto probe=prefetchedMask&(1u<<(cursor%8))?prefetched[cursor%8]:relightCache.solve(*bvh,key,p,preparedLight,quality.giRays,NorthlightGI::probeSeed(key));probeCache.putMissing(key,probe);valid=probe.valid;++result->solvedProbes;publicationCadence.solved();}
+                ++result->processedProbes;if(valid)++result->validProbes;
             }
             if(obsolete||replaced){
                 if(obsolete)noteSuperseded();publishProgress();
@@ -2439,7 +2439,7 @@ private:
             probeBlend.begin(active->map);const unsigned blendedSlots=probePrev?probeBlend.publish(active->atlas,activationNow):0; // 0.3.197
             const unsigned n=NorthlightGI::probeLayout().atlas;
             for(int channel=0;channel<5;++channel){D3DLOCKED_RECT lock;if(!check(probe[channel]->LockRect(0,&lock,nullptr,0),"probe upload"))return false;
-                NorthlightProbeUpload::write(unsigned(channel),lock.pBits,size_t(lock.Pitch),n,active->atlas,probeBlend,probeActivation,activationNow,probePrev!=nullptr);
+                NorthlightProbeUpload::write(unsigned(channel),lock.pBits,size_t(lock.Pitch),n,active->atlas,probeBlend,probeActivation,activationNow,probePrev!=nullptr,true); // Locked texture does not alias the CPU atlas.
                 probe[channel]->UnlockRect(0);
             }
             if(probePrev){D3DLOCKED_RECT lock; /* 0.3.197: what was on screen before each slot's latest SH, R|G|B in three horizontal thirds */
