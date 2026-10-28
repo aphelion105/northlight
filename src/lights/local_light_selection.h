@@ -88,14 +88,14 @@ inline Selection select(const std::vector<NorthlightLocalLights::Light>& lights,
 // light in view.
 inline constexpr float OffscreenPenalty=2*VisibilityEnd;
 inline constexpr float ViewMarginSin=.34f,IncumbentMarginSin=.5f; // about 20 and 30 degrees
-inline bool inView(const NorthlightLocalLightScissor::View& v,const NorthlightLocalLights::Light& l,float marginSin){
+inline bool inView(const NorthlightLocalLightScissor::View& v,const NorthlightLocalLights::Light& l,float marginSin,const double* planes=nullptr){
     if(!v.valid)return true;
     double d[3],c[3]={};
     for(int i=0;i<3;++i){if(!std::isfinite(l.position[i]))return true;d[i]=double(l.position[i])-v.eye[i];}
     for(int i=0;i<3;++i)for(int k=0;k<3;++k)c[i]+=v.inverse[i][k]*d[k];  // (x, y, forward) as the scissor reconstructs them
     const double len=std::sqrt(c[0]*c[0]+c[1]*c[1]+c[2]*c[2]),r=double(l.attenuationEnd)*v.stretch+len*marginSin;
     if(!std::isfinite(r))return true;
-    const double px=1/std::fabs(v.projX),py=1/std::fabs(v.projY),nx=1/std::sqrt(1+px*px),ny=1/std::sqrt(1+py*py);
+    const double px=planes?planes[0]:1/std::fabs(v.projX),py=planes?planes[1]:1/std::fabs(v.projY),nx=planes?planes[2]:1/std::sqrt(1+px*px),ny=planes?planes[3]:1/std::sqrt(1+py*py);
     return (c[0]-px*c[2])*nx<=r&&(-c[0]-px*c[2])*nx<=r&&(c[1]-py*c[2])*ny<=r&&(-c[1]-py*c[2])*ny<=r;
 }
 // 0.3.197: stateful layer over the same scoring as select(). Under the cap every light's factor is exactly
@@ -126,11 +126,12 @@ struct Tracker {
         offscreen=0;
         limit=std::min(limit,Capacity);
         if(!limit)reset();
-        Selection out;fading=0;if(!limit)return out;
+        Selection out;fading=0;if(!limit||(!count&&lights.empty()&&(!additional||!additionalCount)))return out;
         const float dt=dtSeconds>0.f?std::min(dtSeconds,MaxGapSeconds):0.f,step=dt/FadeSeconds;
         struct Pick {float score,biased;const NorthlightLocalLights::Light* light;};
         const auto better=[](const Pick& a,const Pick& b){return a.biased!=b.biased?a.biased<b.biased:a.light->sourceId<b.light->sourceId;};
         std::array<Pick,Capacity+1> heap;unsigned n=0;const unsigned cap=limit+1; // best limit+1 by (biased,id); heap[0] is the worst
+        double planes[4];bool planesReady=false;
         const auto consider=[&](const NorthlightLocalLights::Light& l){
             float d2=0;for(unsigned i=0;i<3;++i){const float d=l.position[i]-camera[i];d2+=d*d;}
             const float reach=VisibilityEnd+l.attenuationEnd;
@@ -140,8 +141,14 @@ struct Tracker {
             if(n==cap&&!better(Pick{score,score-StickyBias,&l},heap[0]))return; // not even as an incumbent in view
             const bool inc=count&&incumbent(l.sourceId);
             float biased=score-(inc?StickyBias:0.f);
-            if(view&&!inView(*view,l,inc?IncumbentMarginSin:ViewMarginSin)){biased+=OffscreenPenalty;++offscreen;
+            if(view&&view->valid){
+              if(!planesReady){
+                planes[0]=1/std::fabs(view->projX);planes[1]=1/std::fabs(view->projY);
+                planes[2]=1/std::sqrt(1+planes[0]*planes[0]);planes[3]=1/std::sqrt(1+planes[1]*planes[1]);planesReady=true;
+              }
+              if(!inView(*view,l,inc?IncumbentMarginSin:ViewMarginSin,planes)){biased+=OffscreenPenalty;++offscreen;
                 if(n==cap&&!better(Pick{score,biased,&l},heap[0]))return;}
+            }
             const Pick p{score,biased,&l};
             if(n<cap){heap[n++]=p;std::push_heap(heap.begin(),heap.begin()+n,better);}
             else if(better(p,heap[0])){std::pop_heap(heap.begin(),heap.begin()+cap,better);heap[cap-1]=p;std::push_heap(heap.begin(),heap.begin()+cap,better);}
