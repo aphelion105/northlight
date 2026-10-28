@@ -2143,7 +2143,7 @@ private:
       // allocation-failure handler. The render thread reports workerFault().
       workerBusy=false;
     }
-    bool buildingScreenResources=false,screenResourceOom=false,screenResourceRetry=false;DWORD screenResourceRetryAt=0;
+    bool buildingScreenResources=false,screenResourceOom=false,screenResourceRetry=false,screenResourceReported=false;DWORD screenResourceRetryAt=0,screenResourceReportAt=0;
     bool check(HRESULT h,const char* s){if(SUCCEEDED(h))return true;if(buildingScreenResources&&(h==E_OUTOFMEMORY||h==D3DERR_OUTOFVIDEOMEMORY)){screenResourceOom=true;return false;}if(!failed)logf("WORLD DISABLED: %s HRESULT=%08lx",s,(unsigned long)h);failed=true;return false;}
     void clearMesh(){staticCasters.settle();dropStaticDirtyJobs();vertices=nullptr;indices=nullptr;for(auto& m:materials)drop(m);materials.clear();uploadedTextureBytes=0;uploadedMaterialPixels.reset();materialReuseBytes=0;batches.clear();terrainBatchList.clear();shadowTerrainList.clear();terrainBatchListGeneration=UINT64_MAX;uploadedAlphaCutoffs.clear();uploadedLocalShadowRecords.reset();uploaded.reset();}
     bool target(UINT w,UINT h,D3DFORMAT fmt,IDirect3DTexture9** t,IDirect3DSurface9** s){return check(d->CreateTexture(w,h,1,D3DUSAGE_RENDERTARGET,fmt,D3DPOOL_DEFAULT,t,nullptr),"world render texture")&&check((*t)->GetSurfaceLevel(0,s),"world render surface");}
@@ -2189,7 +2189,7 @@ private:
         screenResourceOom=false;
         struct ScreenResourceScope {bool& building;explicit ScreenResourceScope(bool& flag):building(flag){building=true;}~ScreenResourceScope(){building=false;}};
         bool ok;{ScreenResourceScope scope(buildingScreenResources);ok=createResources(w,h,fmt);}
-        if(!ok&&screenResourceOom){releaseGPU(true);screenResourceRetry=true;screenResourceRetryAt=now;logf("WORLD screen resources deferred: out of memory retryMs=1000");}
+        if(!ok&&screenResourceOom){releaseGPU(true);screenResourceRetry=true;screenResourceRetryAt=now;if(!screenResourceReported||DWORD(now-screenResourceReportAt)>=60000){screenResourceReported=true;screenResourceReportAt=now;logf("WORLD screen resources deferred: out of memory retryMs=1000");}}
         else if(ok)screenResourceRetry=false;
         return ok;
     }
@@ -2336,7 +2336,7 @@ private:
         retirePendingCpu();pendingMesh.reset();meshRetry.fail(GetTickCount());
         return vertices&&indices&&active&&uploadedMap==active->map;
     }
-    bool fogUploadRetry=false;DWORD fogUploadRetryAt=0;
+    bool fogUploadRetry=false,fogUploadReported=false;DWORD fogUploadRetryAt=0,fogUploadReportAt=0;
     bool uploadRegionalFog(const std::shared_ptr<const NorthlightRegionalFog::Field>& field,const std::string& map){
         if(uploadedFogField==field&&uploadedFogMap==map)return true;
         fogHeightReady=false;fogGlobalHeights={};
@@ -2347,7 +2347,7 @@ private:
             if(SUCCEEDED(hr))return true;
             if(hr!=E_OUTOFMEMORY&&hr!=D3DERR_OUTOFVIDEOMEMORY)return check(hr,stage);
             drop(regionalFogTexture);drop(fogHeightTexture);uploadedFogField.reset();fogHeightReady=false;fogUploadRetry=true;fogUploadRetryAt=now;
-            logf("WORLD regional fog deferred: %s HRESULT=%08lx retryMs=1000",stage,(unsigned long)hr);return false;
+            if(!fogUploadReported||DWORD(now-fogUploadReportAt)>=60000){fogUploadReported=true;fogUploadReportAt=now;logf("WORLD regional fog deferred: %s HRESULT=%08lx retryMs=1000",stage,(unsigned long)hr);}return false;
         };
         if(!regionalFogTexture&&!uploadCheck(d->CreateTexture(n,n,1,0,D3DFMT_A32B32G32R32F,D3DPOOL_MANAGED,&regionalFogTexture,nullptr),"regional fog field"))return false;
         D3DLOCKED_RECT lock={};if(!uploadCheck(regionalFogTexture->LockRect(0,&lock,nullptr,0),"regional fog lock"))return false;

@@ -31,6 +31,8 @@ KEEP={
  'FOG FIELD deferred ':'warning: bounded worker retry after admission or allocation failure; prior field is retained',
  'WORLD fog clouds %s:':'warning/error: OOM retries at most once per second and logs at most once per minute; unsupported volume disables once',
  'WORLD scene targets deferred:':'warning: partial scene resources released and retried once per second, logged at most once per minute',
+ 'WORLD screen resources deferred:':'warning: partial screen resources released and retried once per second, logged at most once per minute',
+ 'WORLD regional fog deferred:':'warning: fog upload retried once per second, logged at most once per minute',
  'WORLD actor fog integration ':'one-off: resource creation reports the supported shader variant',
  'WORLD GPU_DIAGNOSTIC_FRAME':'explicit diagnostic capture only; excluded from FPS',
  'NATIVE_SHADOW observe':'bounded diagnostic/profiling limiter',
@@ -225,6 +227,8 @@ print('PASS Diagnostics=0 audit: every periodic line gated, only start-up/settin
 SPAN_FILES=['world_renderer.h','world_shadow_experiment.inl','world_point_rendering.inl','world_replay_probe.inl','world_rigid_memory.inl','world_diagnostics.h']
 SPAN_ALLOWED={'WORLD elided page missed':'capped error: first 12 staging misses per session, rebuild without page elision','PREPARE worker':'0.3.177: watchdog (at most 5 a session) / record exception (first 4)','WORLD DISABLED':'error (check())','GEOMETRY MEMORY':'warning: allocation deferral','WORLD pending mesh released':'event (0.3.156)',
  'WORLD scene targets deferred:':'warning: partial scene allocation rolled back, logged at most once per minute',
+ 'WORLD screen resources deferred:':'warning: partial screen allocation rolled back, logged at most once per minute',
+ 'WORLD regional fog deferred:':'warning: fog upload rolled back, logged at most once per minute',
  'WORLD actor fog integration ':'one-off per resource creation: supported fog shader variant',
  'WORLD GPU diagnostic directory=':'explicit diagnostic capture only; excluded from FPS and capped at four',
  'WORLD GPU_CAPTURE_ATTEMPT ':'explicit diagnostic capture only; excluded from FPS and capped at four',
