@@ -319,6 +319,7 @@ struct DrawArgs{
     uint8_t vsFog=0;        // the bound vertex shader's fog output: 0 not proven, 1 provably min(pow(max(ramp, 0), c30.z), 1), 2 the same with the bare ramp in the pow (spell_fog_proof.h, at registration): only then is c30 replaced
     int psFogReg=-1;     // the bound pixel shader's proven fog colour register (legacy_fog.h ps3FogColorRegister; -1: not a proven ps_3_0 combiner): the alpha sub-class folds Northlight's in-scatter into it
     const void* vsFor=nullptr;const void* psFor=nullptr; // the shaders vsReads/psReads were looked up for: defer() uses a read set only when the shader it records is the same one
+    bool deviceStateOnly=false; // temporarily bound geometry bypasses the device mirror
     unsigned psMajor=0;  // shader model major version of the bound pixel shader (from its version token at registration; 0 = unknown): defer() admits only >= kMinPsMajor
     static DrawArgs primitive(D3DPRIMITIVETYPE p,UINT start,UINT count){DrawArgs a;a.type=DrawType::Primitive;a.prim=p;a.first=start;a.primCount=count;return a;}
     static DrawArgs indexed(D3DPRIMITIVETYPE p,INT base,UINT minIdx,UINT num,UINT startIndex,UINT count){
@@ -1418,7 +1419,7 @@ private:
     // Holds the state cache's guard for the reads of one record.
     struct Hold{
         Layer& l;bool on=false;
-        explicit Hold(Layer& layer):l(layer){const MirrorView* v=l.cfg_.source;if(v&&v->enter&&v->enter(v->ctx)){l.mv_=v;on=true;}}
+        explicit Hold(Layer& layer,bool deviceStateOnly=false):l(layer){const MirrorView* v=deviceStateOnly?nullptr:l.cfg_.source;if(v&&v->enter&&v->enter(v->ctx)){l.mv_=v;on=true;}}
         ~Hold(){if(on){const MirrorView* v=l.mv_;l.mv_=nullptr;v->leave(v->ctx);}}
         Hold(const Hold&)=delete;Hold& operator=(const Hold&)=delete;
     };
@@ -1513,7 +1514,8 @@ public:
         if(held_.empty()&&!allocHeld())return capFail(3); // no memory for the held table: the capacity failure path (flush, fallback)
         if(!ensureEntry(count_))return capFail(0);
         const bool up=a.type==DrawType::PrimitiveUP||a.type==DrawType::IndexedUP,idx=a.type==DrawType::Indexed||a.type==DrawType::IndexedUP;
-        Hold hold(*this); // the state cache's guard for all the reads below (Get calls nest in it)
+        if(a.deviceStateOnly&&cfg_.synced)cfg_.synced->clearAll();
+        Hold hold(*this,a.deviceStateOnly); // the state cache's guard for all the reads below (Get calls nest in it)
         SyncedSlots* const sy=(cfg_.dirtyRecord&&cfg_.synced&&mv_)?cfg_.synced:nullptr; // only with the state cache usable: its setters keep the bits (an unusable cache means no bits are trusted)
         const uint32_t epoch0=sy?sy->epoch:0;
         Entry& e=entryAt(count_);e=Entry{};
