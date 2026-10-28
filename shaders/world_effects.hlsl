@@ -853,7 +853,7 @@ float4 SourceVisibilityPS(float2 uv:TEXCOORD0):COLOR0 {
 }
 sampler2D FogHeightBounds : register(s12); // footprint min/max ground, max layer height, validity
 float4 FogHeightControl : register(c65); // xy: global vertical support, z: global validity, w: matching per-cell bounds
-float4 worldFog(float2 uv,bool actorIntegration) {
+float4 worldFog(float2 uv,bool actorIntegration,bool directIntegration=true) {
     if(FogInfo.x<.5)return float4(0,0,0,1);
     uv=depthUV(uv);
     float depth=normalizedDepth(uv);float3 view=viewPositionDistance(uv,fogReceiverDistance(uv,depth));
@@ -879,7 +879,7 @@ float4 worldFog(float2 uv,bool actorIntegration) {
     // 0.3.145: the broad part leans gently toward the source (x1.15 facing it,
     // x1 at 90 degrees, x.85 facing away); its sphere integral is unchanged.
     float phasePi=mad(.03,narrow,mad(.033,cosine,.22));
-    float3 sunSource=max(DirectLight.rgb,0)*phasePi*saturate(FogColor.rgb)*max(FogInfo.y,0);
+    float3 sunSource=directIntegration?max(DirectLight.rgb,0)*phasePi*saturate(FogColor.rgb)*max(FogInfo.y,0):0;
     // Intervals are cut by fixed world-axis planes, not concentric shells
     // travelling with the camera. Use the dominant ray axis to avoid grazing
     // steps; clip both end intervals so their optical path length stays exact.
@@ -1498,6 +1498,7 @@ float4 ShadowUnion(float2 uv:TEXCOORD0):COLOR0 {
 // Exact actor interval integration needs extended SM3 instruction capacity.
 // Baseline entries retain the far-map path on minimum-capability hardware.
 float4 WorldFog(float2 uv:TEXCOORD0):COLOR0{return worldFog(uv,false);}
+float4 WorldFogAmbient(float2 uv:TEXCOORD0):COLOR0{return worldFog(uv,false,false);}
 float4 WorldFogActor(float2 uv:TEXCOORD0):COLOR0{return worldFog(uv,true);}
 float4 FogClouds(float2 uv:TEXCOORD0):COLOR0{return fogClouds(uv,false);}
 float4 FogCloudsActor(float2 uv:TEXCOORD0):COLOR0{return fogClouds(uv,true);}

@@ -1,6 +1,6 @@
 {
   "bump_include_sha256": "03f90009cf23e93260c70a31d78999b3bd60aebf8bbcf0d5d6e5e02bf5ef3ec1",
-  "source_sha256": "7c6f7c951bf77c97e036ec1601c17228fa2bef36e6910e6ac074fcdc9a6d1a1d",
+  "source_sha256": "151a173c80256948fd5ab2a5248f4bad6346fbe6b662c8068d6426635ac86abc",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
   "game_launched": false,
@@ -237,7 +237,44 @@
         "endrep": 1
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "7c6f7c951bf77c97e036ec1601c17228fa2bef36e6910e6ac074fcdc9a6d1a1d"
+      "source_sha256": "151a173c80256948fd5ab2a5248f4bad6346fbe6b662c8068d6426635ac86abc"
+    },
+    "WorldFogAmbient": {
+      "target": "ps_3_0",
+      "bytes": 5932,
+      "sha256": "aef57497b6dfed0200a3bd36cca0f824a7e24cdc2070aef3b8263461713e7414",
+      "static_instruction_slots": 340,
+      "temporary_registers": 14,
+      "samplers": [
+        1,
+        11,
+        12,
+        13
+      ],
+      "instructions": {
+        "mov": 38,
+        "if": 7,
+        "else": 5,
+        "mul": 79,
+        "frc": 5,
+        "add": 78,
+        "max": 16,
+        "min": 11,
+        "texldl": 7,
+        "rcp": 15,
+        "cmp": 33,
+        "endif": 7,
+        "dp3": 1,
+        "rsq": 1,
+        "mad": 2,
+        "rep": 1,
+        "break": 1,
+        "dp4": 5,
+        "exp": 1,
+        "endrep": 1
+      },
+      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "source_sha256": "151a173c80256948fd5ab2a5248f4bad6346fbe6b662c8068d6426635ac86abc"
     },
     "WorldFogActor": {
       "target": "ps_3_0",
@@ -277,7 +314,7 @@
         "endrep": 3
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "7c6f7c951bf77c97e036ec1601c17228fa2bef36e6910e6ac074fcdc9a6d1a1d"
+      "source_sha256": "151a173c80256948fd5ab2a5248f4bad6346fbe6b662c8068d6426635ac86abc"
     },
     "FogBlur": {
       "target": "ps_3_0",

@@ -94,6 +94,8 @@ test_fog_casters_wiring.py
 test_fog_clouds.py
 test_fog_clouds_wiring.py
 test_cloud_noise_admission.py
+test_fog_ambient.py
+validate_fog_ambient_gpu.py
 test_fog_empty_intervals.py
 test_fog_global_support_gpu.py
 test_fog_locale.py
@@ -147,6 +149,7 @@ test_m2_shader_families.py
 test_m2_shader_families_client.py
 test_m2_visibility.py
 test_material_batch_bindings.py
+test_material_constant_spans.py
 test_material_capture_targets.py
 test_material_capture_targets_gpu.py
 test_material_early_alpha_gpu.py

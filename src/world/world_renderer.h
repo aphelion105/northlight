@@ -41,6 +41,7 @@
 #include "wmo_lamp_shadow.h"
 #include "point_transmission_filter.h"
 #include "weather_lens_heat.h"
+#include "fog_ambient.h"
 #include "local_light_compiled_shaders.h"
 #include "replay_bounds.h"
 #include "replay_bounds_schedule.h"
@@ -643,6 +644,14 @@ private:
     };
     static FogCloudNoise& fogCloudNoise(){static FogCloudNoise* noise=new FogCloudNoise;return *noise;}
     IDirect3DPixelShader9* fogCloudsPS=nullptr;IDirect3DVolumeTexture9* cloudNoise=nullptr;bool cloudNoiseFailed=false,cloudNoiseRetry=false,cloudNoiseReported=false;DWORD cloudNoiseRetryAt=0,cloudNoiseReportAt=0;
+    IDirect3DPixelShader9* fogAmbientPS=nullptr;bool fogAmbientRefused=false;
+    IDirect3DPixelShader9* fogVolumeShader(bool ambientOnly,bool actor){
+        if(!ambientOnly)return actor?fogActorPS:fogPS;
+        if(!fogAmbientPS&&!fogAmbientRefused){
+            if(FAILED(d->CreatePixelShader(kWorldFogAmbientShader,&fogAmbientPS))||!fogAmbientPS){drop(fogAmbientPS);fogAmbientRefused=true;}
+        }
+        return fogAmbientPS?fogAmbientPS:fogPS;
+    }
     // 0.3.199 (fog temporal): last frame's resolved half-resolution fog (swapped with fogBlurred after the pass, so one extra target is enough), valid only after a frame that ran the pass.
     IDirect3DPixelShader9* fogTemporalPS=nullptr;IDirect3DTexture9* fogHistory=nullptr;IDirect3DSurface9* fogHistorySurface=nullptr;bool fogHistoryValid=false;
     static constexpr float FogTemporalWeight=.85f; /* history weight in c64.y (0 = pass through) */
@@ -2700,7 +2709,7 @@ public:
     // too; its cursor continues). Everything else (DEFAULT targets, dynamic rings, queries, state blocks, caches derived from
     // them) is released as before. recover() and the destructor release the mesh as well; the CPU payload is gone by then, so
     // upload() asks the builder for a fresh generation.
-    void releaseGPU(bool keepMesh=false){NorthlightMemoryProfile::store().invalidateGpu();resourceMemoryProfileAt=0;materialPixelAudit.reset();replayBoundsAbandon();releaseReplayProbe();staticCasters.settle();rigidMemoryClear();admission.reset();admissionOn=false;gatedBodies.clear();prepareQuiesce();neutralShadowMaps=false;prepareCaches->sampled.clear();prepareCaches->bones.clear();prepareCachesStale=false;if(replays.empty()&&heldShadowReplays.empty())prepareFrameRelease(); /* 0.3.179: no replay left to point at them */actorShadowHistory.clear();actorShadowOriginValid=false;replayBoundsMetadata.clear();replayBoundsCache.clear();declarationCache.clear();if(!keepMesh)uploadedStaticOwners.reset();staticOwnerGeneration=UINT64_MAX;staticCasters.reset();staticMatcher.clear();staticM2Memory.clear();staticScene.reset();staticRetryTick=0;stateBlocks.clear();uploadedTerrain.clear();liveTerrainIndexCount=liveDirectionalIndexCount=0;if(!keepMesh){fixedTerrain.reset();fixedTerrainBits.reset();}liveTerrainGeneration=0;drop(regionalFogTexture);drop(fogHeightTexture);fogHeightReady=false;drop(neutralAO);drop(neutralZero);drop(ditherNoise);rainMask=nullptr;uploadedFogField.reset();releasePointGPU();probeActivation.reset();probeBlend.reset();drop(baselineSurface);drop(baselineLight);releaseReplayGPU();liveTerrainGPU.clear();{auto& queries=fence();NorthlightDynamicRing::reset(liveIndexRing,0,queries);queries.drop();}drop(liveIndicesGPU);liveIndexBytes=0;liveIndexBase=0;if(!keepMesh){pendingMesh.reset();clearMesh();}retiredMaterials.clear();if(!keepMesh){releaseMeshPool();uploadedMap.clear();}for(auto& t:shadow)drop(t);for(auto& s:shadowSurface)drop(s);for(auto& t:shadowCache)drop(t);for(auto& s:shadowCacheSurface)drop(s);drop(shadowCacheDepth);drop(shadowVerifySurface);drop(shadowVerify);for(auto& r:shadowVerifyRead)drop(r);drop(shadowScratch);drop(shadowScratchSurface);releaseActorTargets();drop(neutralWhite);actorValid[0]=actorValid[1]=false;actorCenterValid[0]=actorCenterValid[1]=false;drop(unionPS);invalidateShadowCache();for(auto& t:probe)drop(t);drop(probePrev);drop(shadowDepth);drop(lightSurface);drop(smoothSurface);drop(fogSurface);drop(fogBlurredSurface);drop(fogHistorySurface);drop(fogHistory);drop(fogTemporalPS);fogHistoryValid=false;drop(colorSurface);drop(light);drop(smoothLight);drop(fog);drop(fogBlurred);drop(color);drop(lightingPS);drop(giPS);drop(fogPS);drop(fogActorPS);drop(fogCloudsActorPS);drop(fogBlurPS);drop(fogCloudsPS);drop(cloudNoise);drop(localDirectPS);drop(localDirect16PS);drop(profileSplitSurface);profileSplitFailed=false;drop(removalPS);drop(temporalPS);drop(localFogPS);drop(localFogCombinePS);drop(localFogAccumSurface);drop(localFogAccum);drop(normalsPS);drop(normalsNoDistancePS);normalsNoDistanceRefused=false;drop(normalBuffer);drop(normalSurface);for(int i=0;i<2;++i){drop(temporalLight[i]);drop(temporalLightSurface[i]);drop(temporalDepth[i]);drop(temporalDepthSurface[i]);}temporalValid=false;drop(finalPS);drop(materialPS);drop(shadowPS);drop(replayPS);drop(shadowVS);drop(cachedShadowVS);drop(cachedShadowPS);drop(cachedFastPS);drop(cachedOpaqueFastPS);drop(cachedOpaquePS);drop(shadowDecl);drop(liveTerrainDecl);geometryTargetsReady=false;geometryTargetsRetry=false;width=height=0;uploadedSerial=0;}
+    void releaseGPU(bool keepMesh=false){NorthlightMemoryProfile::store().invalidateGpu();resourceMemoryProfileAt=0;materialPixelAudit.reset();replayBoundsAbandon();releaseReplayProbe();staticCasters.settle();rigidMemoryClear();admission.reset();admissionOn=false;gatedBodies.clear();prepareQuiesce();neutralShadowMaps=false;prepareCaches->sampled.clear();prepareCaches->bones.clear();prepareCachesStale=false;if(replays.empty()&&heldShadowReplays.empty())prepareFrameRelease(); /* 0.3.179: no replay left to point at them */actorShadowHistory.clear();actorShadowOriginValid=false;replayBoundsMetadata.clear();replayBoundsCache.clear();declarationCache.clear();if(!keepMesh)uploadedStaticOwners.reset();staticOwnerGeneration=UINT64_MAX;staticCasters.reset();staticMatcher.clear();staticM2Memory.clear();staticScene.reset();staticRetryTick=0;stateBlocks.clear();uploadedTerrain.clear();liveTerrainIndexCount=liveDirectionalIndexCount=0;if(!keepMesh){fixedTerrain.reset();fixedTerrainBits.reset();}liveTerrainGeneration=0;drop(regionalFogTexture);drop(fogHeightTexture);fogHeightReady=false;drop(neutralAO);drop(neutralZero);drop(ditherNoise);rainMask=nullptr;uploadedFogField.reset();releasePointGPU();probeActivation.reset();probeBlend.reset();drop(baselineSurface);drop(baselineLight);releaseReplayGPU();liveTerrainGPU.clear();{auto& queries=fence();NorthlightDynamicRing::reset(liveIndexRing,0,queries);queries.drop();}drop(liveIndicesGPU);liveIndexBytes=0;liveIndexBase=0;if(!keepMesh){pendingMesh.reset();clearMesh();}retiredMaterials.clear();if(!keepMesh){releaseMeshPool();uploadedMap.clear();}for(auto& t:shadow)drop(t);for(auto& s:shadowSurface)drop(s);for(auto& t:shadowCache)drop(t);for(auto& s:shadowCacheSurface)drop(s);drop(shadowCacheDepth);drop(shadowVerifySurface);drop(shadowVerify);for(auto& r:shadowVerifyRead)drop(r);drop(shadowScratch);drop(shadowScratchSurface);releaseActorTargets();drop(neutralWhite);actorValid[0]=actorValid[1]=false;actorCenterValid[0]=actorCenterValid[1]=false;drop(unionPS);invalidateShadowCache();for(auto& t:probe)drop(t);drop(probePrev);drop(shadowDepth);drop(lightSurface);drop(smoothSurface);drop(fogSurface);drop(fogBlurredSurface);drop(fogHistorySurface);drop(fogHistory);drop(fogTemporalPS);fogHistoryValid=false;drop(colorSurface);drop(light);drop(smoothLight);drop(fog);drop(fogBlurred);drop(color);drop(lightingPS);drop(giPS);drop(fogPS);drop(fogAmbientPS);fogAmbientRefused=false;drop(fogActorPS);drop(fogCloudsActorPS);drop(fogBlurPS);drop(fogCloudsPS);drop(cloudNoise);drop(localDirectPS);drop(localDirect16PS);drop(profileSplitSurface);profileSplitFailed=false;drop(removalPS);drop(temporalPS);drop(localFogPS);drop(localFogCombinePS);drop(localFogAccumSurface);drop(localFogAccum);drop(normalsPS);drop(normalsNoDistancePS);normalsNoDistanceRefused=false;drop(normalBuffer);drop(normalSurface);for(int i=0;i<2;++i){drop(temporalLight[i]);drop(temporalLightSurface[i]);drop(temporalDepth[i]);drop(temporalDepthSurface[i]);}temporalValid=false;drop(finalPS);drop(materialPS);drop(shadowPS);drop(replayPS);drop(shadowVS);drop(cachedShadowVS);drop(cachedShadowPS);drop(cachedFastPS);drop(cachedOpaqueFastPS);drop(cachedOpaquePS);drop(shadowDecl);drop(liveTerrainDecl);geometryTargetsReady=false;geometryTargetsRetry=false;width=height=0;uploadedSerial=0;}
     // Explicit enable/retry only, called after the wrapper's clearFrame(). This
     // never calls endFrame(), so packet capture and cleanup run exactly once.
     void recover(){meshRetry.clear();if(!failed)return;releaseGPU(true);failed=false;valid=false;streamingReports=0;logf("WORLD explicit recovery requested");}
@@ -4973,7 +4982,7 @@ public:
         IDirect3DTexture9* textures[]={foldScene?foldScene:color,depth,shadow[0],shadow[1],probe[0],probe[1],probe[2],probe[3],nullptr,nullptr,probe[4],waterMask,nullptr,regionalFogTexture};
         for(int i=0;i<14;++i){d->SetTexture(i,textures[i]);d->SetSamplerState(i,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(i,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);d->SetSamplerState(i,D3DSAMP_MINFILTER,(i==0||i==9)?D3DTEXF_LINEAR:D3DTEXF_POINT);d->SetSamplerState(i,D3DSAMP_MAGFILTER,(i==0||i==9)?D3DTEXF_LINEAR:D3DTEXF_POINT);d->SetSamplerState(i,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(i,D3DSAMP_SRGBTEXTURE,FALSE);}
         if(lightingCapture)lightingCapture->inputs(0,1u<<1,1u<<1); // Actual full-resolution sampled depth, before any post-process reuses its slot.
-        bool fogActorCurrent=false;
+        bool fogActorCurrent=false,fogAmbientOnlyCurrent=false;
         auto setSource=[&](int source,bool first,bool volume=false){
             d->SetTexture(2,geometryReady?shadow[source*2]:neutralWhite);d->SetTexture(3,geometryReady?shadow[source*2+1]:neutralWhite);
             // Collapse only shadow queries to the centre at depth .5. With a
@@ -5003,7 +5012,7 @@ public:
                 const float wholeActorMap[4]={-1,-1,1,1};d->SetPixelShaderConstantF(66,fogActor?actorFogBounds[source]:wholeActorMap,1);
                 if(profileSampled())logf("FOG_CASTERS frame=%u source=%d static=%u actor=%u actorDraws=%u extraGeometryDraws=0 mapCoverage=%.4f",unsigned(frames),source,unsigned(geometryReady&&effects.shadows),unsigned(fogActor),fogActor?actorCasterCount[source]:0u,fogActor?(actorFogBounds[source][2]-actorFogBounds[source][0])*(actorFogBounds[source][3]-actorFogBounds[source][1])*.25f:0.f);
             }
-            if(volume){c[21][1]=1.2f*volumePalette.fogGain[source]*wx.shaftGain();c[21][2]=source==0?NorthlightSunHue::SunForwardCap:NorthlightSunHue::MoonForwardCap;d->SetPixelShaderConstantF(21,c[21],1);}
+            if(volume){c[21][1]=1.2f*volumePalette.fogGain[source]*wx.shaftGain();c[21][2]=source==0?NorthlightSunHue::SunForwardCap:NorthlightSunHue::MoonForwardCap;d->SetPixelShaderConstantF(21,c[21],1);fogAmbientOnlyCurrent=NorthlightFogAmbient::eligible(rgb,c[21][1]);}
             c[27][0]=first?(volume?1.f:1.f-authoredFill):0.f;c[27][1]=sourceWeights[source];d->SetPixelShaderConstantF(27,c[27],1);
         };
         lightingMark(3);
@@ -5227,7 +5236,7 @@ public:
         d->SetPixelShaderConstantF(18,fogAmbient,1); /* cooler environment scatter while the sun is up (w kept) */
         int lastFogSource=firstSource;bool lastFogFirst=true;
         for(int source=0;source<2;++source){if(!sourceActive[source]&&source!=firstSource)continue;
-            setSource(source,first,true);d->SetPixelShader(fogActorCurrent?fogActorPS:fogPS);d->SetRenderState(D3DRS_ALPHABLENDENABLE,!first);d->SetRenderState(D3DRS_COLORWRITEENABLE,first?15:7);
+            setSource(source,first,true);d->SetPixelShader(fogVolumeShader(fogAmbientOnlyCurrent,fogActorCurrent));d->SetRenderState(D3DRS_ALPHABLENDENABLE,!first);d->SetRenderState(D3DRS_COLORWRITEENABLE,first?15:7);
             if(!check(quad(w/2,h/2),"celestial volumetric raymarch"))return false;lastFogSource=source;lastFogFirst=first;first=false;
         }
         if(profile)profile->mark("FogMarch");
@@ -5257,7 +5266,7 @@ public:
             d->SetPixelShaderConstantF(25,c[25],2); /* 0.3.199 (fog clouds): the bank's game fog parameters and colour back for the lamp fog, blur and composite */
             d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE);d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_ONE);d->SetRenderState(D3DRS_BLENDOP,D3DBLENDOP_ADD);
             d->SetRenderState(D3DRS_SEPARATEALPHABLENDENABLE,FALSE);
-            d->SetRenderState(D3DRS_ALPHABLENDENABLE,!lastFogFirst);d->SetRenderState(D3DRS_COLORWRITEENABLE,lastFogFirst?15:7);d->SetPixelShader(fogActorCurrent?fogActorPS:fogPS);
+            d->SetRenderState(D3DRS_ALPHABLENDENABLE,!lastFogFirst);d->SetRenderState(D3DRS_COLORWRITEENABLE,lastFogFirst?15:7);d->SetPixelShader(fogVolumeShader(fogAmbientOnlyCurrent,fogActorCurrent));
             d->SetTexture(14,nullptr);d->SetSamplerState(14,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(14,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);d->SetSamplerState(14,D3DSAMP_ADDRESSW,D3DTADDRESS_CLAMP);
             d->SetSamplerState(14,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(14,D3DSAMP_MAGFILTER,D3DTEXF_POINT);
             if(!cloudsDrawn)return false;

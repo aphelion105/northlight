@@ -73,6 +73,15 @@ struct WorldScreenEffectsTest {
         w.memoryPressure=true;assert(w.ensureCloudNoise()&&w.cloudNoise);w.memoryPressure=false;
         std::puts("WORLD_CLOUD_PRESSURE_PASS demandPressure=1 fullNoiseTexture=1");
     }
+    static void ambientVariant(WorldRenderer& w){
+        assert(w.fogAmbientPS&&w.fogVolumeShader(true,true)==w.fogAmbientPS);
+        assert(w.fogVolumeShader(false,false)==w.fogPS);
+        // Optional variant refusal must retain the complete shader and avoid retries.
+        drop(w.fogAmbientPS);w.fogAmbientRefused=true;
+        assert(w.fogVolumeShader(true,false)==w.fogPS&&!w.fogAmbientPS);
+        w.fogAmbientRefused=false;assert(w.fogVolumeShader(true,false)==w.fogAmbientPS&&w.fogAmbientPS);
+        std::puts("WORLD_FOG_AMBIENT_VARIANT_PASS zeroSource=1 residentReuse=1 optionalFallback=1");
+    }
     static void noSceneTargets(const WorldRenderer& w){
         assert(!w.geometryTargetsReady&&!w.shadowDepth&&!w.shadowCacheDepth&&!w.shadowScratch&&!w.probePrev&&!w.actorVisibility);
         for(auto* t:w.shadow)assert(!t);for(auto* t:w.shadowCache)assert(!t);for(auto* t:w.probe)assert(!t);for(auto* t:w.actorShadow)assert(!t);for(auto* t:w.actorTiles)assert(!t);assert(!w.actorTilesMid);
@@ -218,6 +227,7 @@ int main(int argc,char** argv){
             assert(meter.fogWeight==(frame?.85f:0.f));
         }
         std::puts("WORLD_FOG_HISTORY_PASS noGeometry=1 firstWeight=0 nextWeight=0.85");
+        WorldScreenEffectsTest::ambientVariant(*world);
         IDirect3DVertexBuffer9* vb=nullptr;IDirect3DIndexBuffer9* ib=nullptr;
         screenOk(d->CreateVertexBuffer(32,0,0,D3DPOOL_MANAGED,&vb,nullptr));screenOk(d->CreateIndexBuffer(12,0,D3DFMT_INDEX32,D3DPOOL_MANAGED,&ib,nullptr));
         auto* screenFog=WorldScreenEffectsTest::screenFog(*world);WorldScreenEffectsTest::fakeScene(*world,vb,ib);meter.failSceneAt=3;
