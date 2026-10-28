@@ -4,6 +4,7 @@ test_actor_transient_bindings.py
 test_actor_fade_capture.py
 test_actor_pose_kernels.py
 test_actor_scene_job.py
+test_actor_job_efficiency.py
 test_actor_shadow_map.py
 test_actor_shadow_radius_wiring.py
 test_actor_shadow_selection.py

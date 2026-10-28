@@ -45,20 +45,21 @@ struct ActorJob {
         // mutable resources alive and does not memoize any evaluated pose.
         thread_local NorthlightActorDeformation::PreparedBindingCache bindingCache;
         unsigned evaluated=0,texturesDecoded=0;std::size_t textureEncodedBytes=0;
+        std::vector<NorthlightActorDeformation::Position> positions;
+        std::vector<std::array<float,2>> uvs;
+        std::vector<WorldTriangle> triangles;
         for(auto& packet:packets){
             const auto& mesh=packet.meshView();if(mesh.primitiveCount==0||mesh.primitiveCount>87380||mesh.vertexCount>16384-evaluated)continue;
             if(mesh.topology!=D3DPT_TRIANGLELIST&&mesh.topology!=D3DPT_TRIANGLESTRIP)continue;
             unsigned required=mesh.topology==D3DPT_TRIANGLELIST?mesh.primitiveCount*3:mesh.primitiveCount+2;
             if(mesh.indexed?mesh.indices.size()<required:mesh.vertexCount<required)continue;
             evaluated+=mesh.vertexCount;
-            std::vector<NorthlightActorDeformation::Position> positions;
             auto positionBindings=bindingCache.acquire(packet.position,mesh,packet.elements.data(),packet.elements.size());
             if(!positionBindings||!NorthlightActorDeformation::worldPositionsPrepared(packet.position,mesh,*positionBindings,packet.constants.data(),packet.inverseView.data(),positions))continue;
-            std::vector<std::array<float,2>> uvs;
             auto uvBindings=packet.hasUV?bindingCache.acquire(packet.uv,mesh,packet.elements.data(),packet.elements.size()):nullptr;
             bool exactUV=uvBindings&&NorthlightActorDeformation::textureUVsPrepared(packet.uv,mesh,*uvBindings,packet.constants.data(),uvs);
             if(packet.alphaTest&&!exactUV)continue;
-            std::vector<WorldTriangle> triangles;triangles.reserve(mesh.primitiveCount);
+            triangles.clear();triangles.reserve(mesh.primitiveCount);
             auto index=[&](UINT i){return mesh.indexed?mesh.indices[i]:i;};
             for(UINT triangle=0;triangle<mesh.primitiveCount;++triangle){UINT a,b,c;
                 if(mesh.topology==D3DPT_TRIANGLELIST){a=index(triangle*3);b=index(triangle*3+1);c=index(triangle*3+2);}
