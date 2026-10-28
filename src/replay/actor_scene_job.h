@@ -27,6 +27,9 @@ struct Packet {
     std::shared_ptr<const NorthlightDrawSnapshot::Mesh> sharedMesh;
     const NorthlightDrawSnapshot::Mesh& meshView()const{return sharedMesh?*sharedMesh:mesh;}
     NorthlightActorDeformation::Program position,uv;
+    std::shared_ptr<const NorthlightActorDeformation::Program> sharedPosition,sharedUV;
+    const NorthlightActorDeformation::Program& positionView()const{return sharedPosition?*sharedPosition:position;}
+    const NorthlightActorDeformation::Program& uvView()const{return sharedUV?*sharedUV:uv;}
     std::vector<D3DVERTEXELEMENT9> elements;
     std::array<float,1024> constants{};
     std::array<float,16> inverseView{};
@@ -54,10 +57,11 @@ struct ActorJob {
             unsigned required=mesh.topology==D3DPT_TRIANGLELIST?mesh.primitiveCount*3:mesh.primitiveCount+2;
             if(mesh.indexed?mesh.indices.size()<required:mesh.vertexCount<required)continue;
             evaluated+=mesh.vertexCount;
-            auto positionBindings=bindingCache.acquire(packet.position,mesh,packet.elements.data(),packet.elements.size());
-            if(!positionBindings||!NorthlightActorDeformation::worldPositionsPrepared(packet.position,mesh,*positionBindings,packet.constants.data(),packet.inverseView.data(),positions))continue;
-            auto uvBindings=packet.hasUV?bindingCache.acquire(packet.uv,mesh,packet.elements.data(),packet.elements.size()):nullptr;
-            bool exactUV=uvBindings&&NorthlightActorDeformation::textureUVsPrepared(packet.uv,mesh,*uvBindings,packet.constants.data(),uvs);
+            const auto& position=packet.positionView();const auto& uv=packet.uvView();
+            auto positionBindings=bindingCache.acquire(position,mesh,packet.elements.data(),packet.elements.size());
+            if(!positionBindings||!NorthlightActorDeformation::worldPositionsPrepared(position,mesh,*positionBindings,packet.constants.data(),packet.inverseView.data(),positions))continue;
+            auto uvBindings=packet.hasUV?bindingCache.acquire(uv,mesh,packet.elements.data(),packet.elements.size()):nullptr;
+            bool exactUV=uvBindings&&NorthlightActorDeformation::textureUVsPrepared(uv,mesh,*uvBindings,packet.constants.data(),uvs);
             if(packet.alphaTest&&!exactUV)continue;
             triangles.clear();triangles.reserve(mesh.primitiveCount);
             auto index=[&](UINT i){return mesh.indexed?mesh.indices[i]:i;};

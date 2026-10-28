@@ -1053,7 +1053,7 @@ private:
     // 0.3.177 (r83): shared handles: a replay captured with a program keeps it for the frame even if
     // registerShader() erases the entry (the prepare worker reads it without the map).
     std::unordered_map<IDirect3DVertexShader9*,std::shared_ptr<const NorthlightActorDeformation::Program>> actorPrograms;
-    std::unordered_map<IDirect3DVertexShader9*,NorthlightActorDeformation::Program> actorUVPrograms;
+    std::unordered_map<IDirect3DVertexShader9*,std::shared_ptr<const NorthlightActorDeformation::Program>> actorUVPrograms;
     std::shared_ptr<NorthlightActorGeometry::ActorJob> actorJob=std::make_shared<NorthlightActorGeometry::ActorJob>();
     std::shared_ptr<const NorthlightActorGeometry::ActorJob> actorJobComplete;
     uint64_t actorJobSerial_=0;DWORD lastActorCapture=0;bool actorCaptureDecided=false,actorCaptureDue=false;std::string actorSceneMap_;
@@ -3459,7 +3459,7 @@ public:
                 actorPrograms.emplace(shader,metadata.program);
             }
             if(detail&&(!metadata.program||metadata.skinned||!metadata.color0W))return;
-            if(NorthlightActorDeformation::compile(words.data(),words.size(),program,true))actorUVPrograms.emplace(shader,std::move(program));
+            if(NorthlightActorDeformation::compile(words.data(),words.size(),program,true))actorUVPrograms.emplace(shader,std::make_shared<const NorthlightActorDeformation::Program>(std::move(program)));
             // Publish only complete metadata. RAII retains ownership on any
             // compiler/map allocation exception before this transfer.
             captureShaders.emplace(shader,metadata);replacement.p=nullptr;
@@ -3689,8 +3689,8 @@ public:
         if(replay.cutoff>=0&&!textureRead){++actorSkippedAlpha;return;}
         material.addressU=replay.addressU;material.addressV=replay.addressV;
         phase.next(2); // Immutable packet construction and queueing.
-        NorthlightActorGeometry::Packet packet;packet.sharedMesh=replay.shared;if(!packet.sharedMesh)packet.mesh=replay.mesh();packet.position=program;
-        if(hasUV)packet.uv=uvProgram->second;packet.hasUV=hasUV;packet.alphaTest=replay.cutoff>=0&&replay.alphaMode!=2;
+        NorthlightActorGeometry::Packet packet;packet.sharedMesh=replay.shared;if(!packet.sharedMesh)packet.mesh=replay.mesh();packet.sharedPosition=it->second;
+        if(hasUV)packet.sharedUV=uvProgram->second;packet.hasUV=hasUV;packet.alphaTest=replay.cutoff>=0&&replay.alphaMode!=2;
         packet.elements.assign(elements,elements+n);std::memcpy(packet.constants.data(),replay.constants,sizeof replay.constantStorage);std::memcpy(packet.inverseView.data(),context.inverseView,64);
         packet.material=std::move(material);packet.texture=std::move(texture);actorJob->packets.push_back(std::move(packet));++actorDraws;
         if(sample&&NorthlightRenderThreadProbe::profiling())try{replayGiPacked.push_back(&replay);}catch(...){} /* capture waste (RenderProfile) */

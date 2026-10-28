@@ -34,9 +34,22 @@ int main(){
         ActorJobReference::Packet q;q.mesh=p.mesh;q.sharedMesh=p.sharedMesh;q.position=p.position;q.uv=p.uv;q.elements=p.elements;q.constants=p.constants;q.inverseView=p.inverseView;q.material=p.material;q.texture=p.texture;q.hasUV=p.hasUV;q.alphaTest=p.alphaTest;
         job.packets.push_back(std::move(p));before.packets.push_back(std::move(q));}
     auto expected=before.resolve();auto result=job.resolve();equal(*expected.scene,*result.scene);assert(expected.hash==result.hash&&expected.texturesDecoded==result.texturesDecoded&&expected.textureEncodedBytes==result.textureEncodedBytes);
+    auto sourcePosition=std::make_shared<const Program>(job.packets[0].position),sourceUV=std::make_shared<const Program>(job.packets[0].uv);
+    std::weak_ptr<const Program> weakPosition=sourcePosition,weakUV=sourceUV;
+    unsigned copyAllocations=0,sharedAllocations=0;double captureNs[2]={};
+    for(unsigned round=0;round<20;++round)for(unsigned mode=0;mode<2;++mode){auto start=std::chrono::steady_clock::now();unsigned count=allocations;
+        for(unsigned i=0;i<128;++i){NorthlightActorGeometry::Packet p;if(mode){p.sharedPosition=sourcePosition;p.sharedUV=sourceUV;assert(&p.positionView()==sourcePosition.get()&&&p.uvView()==sourceUV.get());}
+            else{p.position=*sourcePosition;p.uv=*sourceUV;assert(p.position.operations.size()==sourcePosition->operations.size()&&p.uv.operations.size()==sourceUV->operations.size());}}
+        (mode?sharedAllocations:copyAllocations)+=allocations-count;captureNs[mode]+=std::chrono::duration<double,std::nano>(std::chrono::steady_clock::now()-start).count()/128;}
+    assert(copyAllocations>0&&!sharedAllocations);
+    for(auto& p:job.packets){p.sharedPosition=sourcePosition;p.sharedUV=sourceUV;p.position={};p.uv={};}
+    sourcePosition.reset();sourceUV.reset();assert(!weakPosition.expired()&&!weakUV.expired());
+    auto sharedResult=job.resolve();equal(*result.scene,*sharedResult.scene);assert(result.hash==sharedResult.hash);
+    std::printf("PASS actor immutable program capture: oldAllocations=%u newAllocations=%u oldNs=%.3f newNs=%.3f sourceLifetime=1 exactSharedOutput=1\n",copyAllocations,sharedAllocations,captureNs[0]/20,captureNs[1]/20);
     double time[2]={};unsigned alloc[2]={};
     for(unsigned round=0;round<20;++round)for(unsigned turn=0;turn<2;++turn){unsigned mode=(round+turn)&1,startAlloc=allocations;auto start=std::chrono::steady_clock::now();
         if(mode){auto x=job.resolve();assert(x.hash==result.hash);}else{auto x=before.resolve();assert(x.hash==result.hash);}
         time[mode]+=std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-start).count();alloc[mode]+=allocations-startAlloc;}
     assert(alloc[1]<alloc[0]);std::printf("PASS actor worker: packets=128 exactVertices=%zu exactTriangles=%zu oldAllocations=%u newAllocations=%u oldUs=%.3f newUs=%.3f ratio=%.4f\n",result.scene->vertices.size(),result.scene->triangles.size(),alloc[0]/20,alloc[1]/20,time[0]/20,time[1]/20,time[1]/time[0]);
+    job.packets.clear();assert(weakPosition.expired()&&weakUV.expired());
 }
