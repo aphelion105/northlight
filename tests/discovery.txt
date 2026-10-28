@@ -1,5 +1,6 @@
 test_actor_deformation.py
 test_actor_probe_vertex.py
+test_actor_transient_bindings.py
 test_actor_fade_capture.py
 test_actor_pose_kernels.py
 test_actor_scene_job.py

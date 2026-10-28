@@ -411,15 +411,21 @@ inline bool textureUVsPrepared(const Program& program,const NorthlightDrawSnapsh
 }
 // Original transient-call path: avoid adding cache metadata copies for callers
 // that do not reuse prepared bindings. Math and validation remain unchanged.
+inline bool transientBindings(const Program& program,const NorthlightDrawSnapshot::Mesh& mesh,const D3DVERTEXELEMENT9* elements,size_t count,Binding (&bindings)[16],size_t& size,unsigned& provided){
+    size=0;provided=0;
+    if(!elements||!count||count>MAXD3DDECLLENGTH+1||mesh.vertexCount>262144||program.inputs.size()>16)return false;
+    for(auto input:program.inputs){if(input.reg>=16)return false;bool found=false;for(size_t j=0;j<count;++j){auto e=elements[j];if(e.Stream==0xff)break;if(e.Usage!=input.usage||e.UsageIndex!=input.index)continue;
+        if(found||e.Stream>=4||e.Method!=D3DDECLMETHOD_DEFAULT)return false;const auto& s=mesh.streams[e.Stream];const unsigned bytes=NorthlightDrawSnapshot::declarationBytes(e.Type);
+        if(!bytes||UINT(e.Offset)+bytes>s.stride||std::uint64_t(mesh.vertexCount)*s.stride>s.bytes.size())return false;bindings[size++]={input,e};provided|=1u<<input.reg;found=true;}if(!found)return false;}
+    return true;
+}
 inline bool worldPositions(const Program& program,const NorthlightDrawSnapshot::Mesh& mesh,const D3DVERTEXELEMENT9* elements,std::size_t elementCount,const float* constants,const float* inverseView,std::vector<Position>& output){
-    output.clear();if(!constants||!inverseView||!elements||!elementCount||elementCount>MAXD3DDECLLENGTH+1||mesh.vertexCount>262144)return false;
-    struct Binding{Input input;D3DVERTEXELEMENT9 element;};std::vector<Binding> bindings;
-    for(auto input:program.inputs){bool found=false;for(std::size_t j=0;j<elementCount;++j){auto e=elements[j];if(e.Stream==0xff)break;if(e.Usage!=input.usage||e.UsageIndex!=input.index)continue;
-        if(found||e.Stream>=4||e.Method!=D3DDECLMETHOD_DEFAULT)return false;auto& s=mesh.streams[e.Stream];unsigned size=NorthlightDrawSnapshot::declarationBytes(e.Type);
-        if(!size||UINT(e.Offset)+size>s.stride||std::uint64_t(mesh.vertexCount)*s.stride>s.bytes.size())return false;bindings.push_back({input,e});found=true;}if(!found)return false;}
+    output.clear();if(!constants||!inverseView)return false;
+    Binding bindings[16];size_t count=0;unsigned provided=0;
+    if(!transientBindings(program,mesh,elements,elementCount,bindings,count,provided))return false;
     std::vector<Position> positions;positions.swap(output);positions.reserve(mesh.vertexCount);
-    const bool clearInputs=clearVertexInputs(program,bindings);
-    for(UINT vertex=0;vertex<mesh.vertexCount;++vertex){Four inputs[16];if(clearInputs)std::fill(std::begin(inputs),std::end(inputs),Four{});for(auto& b:bindings){auto& s=mesh.streams[b.element.Stream];if(!decodeElement(s.bytes.data()+std::size_t(vertex)*s.stride+b.element.Offset,b.element.Type,inputs[b.input.reg]))return false;}
+    const bool clearInputs=clearVertexInputsMask(program,provided);
+    for(UINT vertex=0;vertex<mesh.vertexCount;++vertex){Four inputs[16];if(clearInputs)std::fill(std::begin(inputs),std::end(inputs),Four{});for(size_t i=0;i<count;++i){const auto& b=bindings[i];const auto& s=mesh.streams[b.element.Stream];if(!decodeElement(s.bytes.data()+std::size_t(vertex)*s.stride+b.element.Offset,b.element.Type,inputs[b.input.reg]))return false;}
         Four v;if(!evaluateFast(program,inputs,constants,v))return false;Position out;
         out.x=v[0]*inverseView[0]+v[1]*inverseView[4]+v[2]*inverseView[8]+inverseView[12];
         out.y=v[0]*inverseView[1]+v[1]*inverseView[5]+v[2]*inverseView[9]+inverseView[13];
@@ -428,14 +434,12 @@ inline bool worldPositions(const Program& program,const NorthlightDrawSnapshot::
     output=std::move(positions);return true;
 }
 inline bool textureUVs(const Program& program,const NorthlightDrawSnapshot::Mesh& mesh,const D3DVERTEXELEMENT9* elements,std::size_t elementCount,const float* constants,std::vector<std::array<float,2>>& output){
-    output.clear();if(!program.textureCoordinates||!constants||!elements||!elementCount||elementCount>MAXD3DDECLLENGTH+1||mesh.vertexCount>262144)return false;
-    struct Binding{Input input;D3DVERTEXELEMENT9 element;};std::vector<Binding> bindings;
-    for(auto input:program.inputs){bool found=false;for(std::size_t j=0;j<elementCount;++j){auto e=elements[j];if(e.Stream==0xff)break;if(e.Usage!=input.usage||e.UsageIndex!=input.index)continue;
-        if(found||e.Stream>=4||e.Method!=D3DDECLMETHOD_DEFAULT)return false;auto& s=mesh.streams[e.Stream];unsigned size=NorthlightDrawSnapshot::declarationBytes(e.Type);
-        if(!size||UINT(e.Offset)+size>s.stride||std::uint64_t(mesh.vertexCount)*s.stride>s.bytes.size())return false;bindings.push_back({input,e});found=true;}if(!found)return false;}
+    output.clear();if(!program.textureCoordinates||!constants)return false;
+    Binding bindings[16];size_t count=0;unsigned provided=0;
+    if(!transientBindings(program,mesh,elements,elementCount,bindings,count,provided))return false;
     std::vector<std::array<float,2>> positions;positions.swap(output);positions.reserve(mesh.vertexCount);
-    const bool clearInputs=clearVertexInputs(program,bindings);
-    for(UINT vertex=0;vertex<mesh.vertexCount;++vertex){Four inputs[16];if(clearInputs)std::fill(std::begin(inputs),std::end(inputs),Four{});for(auto& b:bindings){auto& s=mesh.streams[b.element.Stream];if(!decodeElement(s.bytes.data()+std::size_t(vertex)*s.stride+b.element.Offset,b.element.Type,inputs[b.input.reg]))return false;}
+    const bool clearInputs=clearVertexInputsMask(program,provided);
+    for(UINT vertex=0;vertex<mesh.vertexCount;++vertex){Four inputs[16];if(clearInputs)std::fill(std::begin(inputs),std::end(inputs),Four{});for(size_t i=0;i<count;++i){const auto& b=bindings[i];const auto& s=mesh.streams[b.element.Stream];if(!decodeElement(s.bytes.data()+std::size_t(vertex)*s.stride+b.element.Offset,b.element.Type,inputs[b.input.reg]))return false;}
         Four v;if(!evaluateFast(program,inputs,constants,v))return false;positions.push_back({v[0],v[1]});}
     output=std::move(positions);return true;
 }
