@@ -58,6 +58,21 @@ static void limitsAndClock(){
  }
  std::puts("CANONICAL_SCENE_LIMITS_PASS private_lifetime count_cap current_frame_protection exact_lane_caps simultaneous_trim no_budget_pingpong");
 }
+static void boundedCommits(){
+ using namespace NorthlightGpuScene;
+ for(unsigned lane=0;lane<2;++lane){
+  NativeStore scene;NativeClient client(scene,Consumer(lane));Device device;Binding binding;std::vector<Owner> meshes;
+  for(unsigned i=0;i<17;++i)meshes.push_back(authored(88000+i));
+  scene.setFrame(1);for(auto& mesh:meshes)assert(!client.bind(&device,mesh,binding.vb,binding.ib,admit,binding.at));
+  scene.setFrame(2);for(auto& mesh:meshes)assert(!client.bind(&device,mesh,binding.vb,binding.ib,admit,binding.at));
+  assert(client.stats().attemptDeferred==1);assert(client.commitPending());
+  for(unsigned i=0;i<16;++i)assert(scene.resident(meshes[i]));assert(!scene.resident(meshes.back()));
+  assert(!client.commitPending());scene.setFrame(3);
+  assert(!client.bind(&device,meshes.back(),binding.vb,binding.ib,admit,binding.at));assert(client.commitPending());
+  for(auto& mesh:meshes)assert(client.bind(&device,mesh,binding.vb,binding.ib,admit,binding.at)&&exact(*mesh,binding));
+ }
+ assert(!alive);std::puts("CANONICAL_SCENE_BATCH_LIMIT_PASS both_consumers sixteen_pending seventeenth_deferred next_frame_retry repeated_commit exact_bytes");
+}
 static Result unified(const std::vector<Owner>& meshes,bool audit,unsigned overlap,unsigned frames=96,bool reconstruct=false){
  using namespace NorthlightGpuScene;NativeStore scene;NativeClient mat(scene,Consumer::Material),world(scene,Consumer::Shadow);Device device;Result result;
  std::vector<Owner> material,actors;
@@ -88,7 +103,7 @@ int main(int argc,char** argv){
  if(argc>2){const auto overlap=argc>3?unsigned(std::stoul(argv[3])):100;const bool canonical=std::string(argv[2])=="canonical";
   auto r=canonical?unified(meshes,false,overlap):run(meshes,true,false,96,overlap);
   std::printf("CANONICAL_SCENE_TIMING canonical=%u overlap=%u cpuMs=%.6f uploads=%zu fallbackBytes=%zu peak=%zu creates=%u digest=%llu\n",canonical,overlap,r.ms,r.uploaded,r.up,r.peak,r.creates,(unsigned long long)r.digest);return 0;}
- sceneControls();assert(!alive);faultsAndCollisions();assert(!alive);limitsAndClock();assert(!alive);
+ sceneControls();assert(!alive);faultsAndCollisions();assert(!alive);limitsAndClock();assert(!alive);boundedCommits();
  for(unsigned overlap:{0u,50u,100u}){auto reference=run(meshes,true,true,96,overlap),current=unified(meshes,true,overlap),rebuilt=unified(meshes,true,overlap,96,true);
   std::printf("CANONICAL_SCENE_CHECK overlap=%u reference=%llu current=%llu reconstructed=%llu uploads=%zu/%zu fallback=%zu/%zu\n",overlap,(unsigned long long)reference.digest,(unsigned long long)current.digest,(unsigned long long)rebuilt.digest,reference.uploaded,current.uploaded,reference.up,current.up);
   assert(current.digest==reference.digest&&rebuilt.digest==reference.digest&&current.up<=reference.up&&current.uploaded<=reference.uploaded);

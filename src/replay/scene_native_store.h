@@ -29,7 +29,13 @@ private:
   Entry* previous=nullptr;Entry* next=nullptr;
   ~Entry(){for(auto p:vb)if(p)p->Release();if(ib)ib->Release();}
  };
- using Table=std::unordered_multimap<std::uint64_t,std::unique_ptr<Entry>>;
+ struct Prehashed {
+  size_t operator()(std::uint64_t value)const noexcept{
+   if constexpr(sizeof(size_t)<sizeof(value))return size_t(value)^size_t(value>>32);
+   else return size_t(value);
+  }
+ };
+ using Table=std::unordered_multimap<std::uint64_t,std::unique_ptr<Entry>,Prehashed>;
  Table entries_;std::vector<std::unique_ptr<Batch>> batches_;
  std::array<std::vector<Entry*>,2> pending_;
  Entry* oldest_=nullptr;Entry* newest_=nullptr;IDirect3DDevice9* device_=nullptr;
@@ -39,6 +45,7 @@ private:
  unsigned attempts_[2]={};bool ignoreTime_[2]={},timeDeferred_[2]={};
  Stats stats_[2];Counters counters_[2];ClearStats clears_[2];BatchStats batchStats_[2];
  static constexpr size_t EntryLimit=8192,UploadLimit=4u<<20;
+ static constexpr unsigned AttemptLimit=16;
  static unsigned index(Consumer c){return unsigned(c);}
  static const auto& identity(const Mesh& mesh){return mesh.replayIdentity?mesh.replayIdentity:mesh.sourceIdentity;}
  static std::uint64_t hash(const Owner& mesh){const auto& id=identity(*mesh);return id?id->hash:std::uint64_t(reinterpret_cast<std::uintptr_t>(mesh.get()));}
@@ -106,27 +113,27 @@ private:
  }
  void commitPrepared(unsigned lane){
   auto& list=pending_[lane];if(list.empty())return;
-  std::vector<Entry*> members;std::vector<Owner> meshes;size_t vertices=0,indices=0;
-  try{members.reserve(list.size());meshes.reserve(list.size());batches_.reserve(batches_.size()+1);
+  assert(list.size()<=AttemptLimit);std::array<Entry*,AttemptLimit> members;std::array<Owner,AttemptLimit> meshes;size_t memberCount=0,vertices=0,indices=0;
+  try{batches_.reserve(batches_.size()+1);
    for(auto* e:list){auto m=e->source.lock();if(!m)continue;auto stride=m->streams[0].stride;
     e->at.vertexBase=UINT((vertices+stride-1)/stride);vertices=size_t(e->at.vertexBase)*stride+m->streams[0].bytes.size();
-    e->at.indexStart=UINT(indices/4);indices+=m->indices.size()*4;members.push_back(e);meshes.push_back(std::move(m));}
+    e->at.indexStart=UINT(indices/4);indices+=m->indices.size()*4;members[memberCount]=e;meshes[memberCount++]=std::move(m);}
   }catch(...){while(!list.empty())release(*list.back());return;}
   // Ending reservations must preserve the layout just calculated.
-  for(auto* e:list){reserved_[lane]-=e->reserved;e->reserved=0;e->pending=false;}list.clear();if(members.empty())return;
+  for(auto* e:list){reserved_[lane]-=e->reserved;e->reserved=0;e->pending=false;}list.clear();if(!memberCount)return;
   struct Timer {double& target;std::chrono::steady_clock::time_point begin=std::chrono::steady_clock::now();~Timer(){target+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();}} timer{stats_[lane].createMs};
   auto batch=std::make_unique<Batch>();batch->capacity=vertices+indices;batch->owner=lane;
-  auto fail=[&]{++batchStats_[lane].batchFailures;for(auto* e:members)e->at={};};
+  auto fail=[&]{++batchStats_[lane].batchFailures;for(size_t i=0;i<memberCount;++i)members[i]->at={};};
   if(FAILED(device_->CreateVertexBuffer(UINT(vertices),D3DUSAGE_WRITEONLY,0,D3DPOOL_DEFAULT,&batch->vb,nullptr))||!batch->vb||
     (indices&&(FAILED(device_->CreateIndexBuffer(UINT(indices),D3DUSAGE_WRITEONLY,D3DFMT_INDEX32,D3DPOOL_DEFAULT,&batch->ib,nullptr))||!batch->ib))){fail();return;}
   void* out=nullptr;if(FAILED(batch->vb->Lock(0,UINT(vertices),&out,NorthlightUpload::FreshBufferLock))){fail();return;}
-  if(out)for(size_t i=0;i<members.size();++i){const auto& v=meshes[i]->streams[0];std::memcpy(static_cast<uint8_t*>(out)+size_t(members[i]->at.vertexBase)*v.stride,v.bytes.data(),v.bytes.size());}
+  if(out)for(size_t i=0;i<memberCount;++i){const auto& v=meshes[i]->streams[0];std::memcpy(static_cast<uint8_t*>(out)+size_t(members[i]->at.vertexBase)*v.stride,v.bytes.data(),v.bytes.size());}
   NorthlightLockMeter::staging(vertices);auto hr=batch->vb->Unlock();if(!out||FAILED(hr)){fail();return;}
   if(indices){out=nullptr;if(FAILED(batch->ib->Lock(0,UINT(indices),&out,NorthlightUpload::FreshBufferLock))){fail();return;}
-   if(out)for(size_t i=0;i<members.size();++i)if(!meshes[i]->indices.empty())std::memcpy(static_cast<uint8_t*>(out)+size_t(members[i]->at.indexStart)*4,meshes[i]->indices.data(),meshes[i]->indices.size()*4);
+   if(out)for(size_t i=0;i<memberCount;++i)if(!meshes[i]->indices.empty())std::memcpy(static_cast<uint8_t*>(out)+size_t(members[i]->at.indexStart)*4,meshes[i]->indices.data(),meshes[i]->indices.size()*4);
    NorthlightLockMeter::staging(indices);hr=batch->ib->Unlock();if(!out||FAILED(hr)){fail();return;}}
   auto* b=batch.get();batches_.push_back(std::move(batch));gpu_[lane]+=b->capacity;
-  for(size_t i=0;i<members.size();++i){auto& e=*members[i];e.batch=b;e.bytes=meshes[i]->byteSize();++b->live;b->liveBytes+=e.bytes;counters_[lane].uploaded+=e.bytes;++stats_[lane].created;++batchStats_[lane].batchedUploads;}
+  for(size_t i=0;i<memberCount;++i){auto& e=*members[i];e.batch=b;e.bytes=meshes[i]->byteSize();++b->live;b->liveBytes+=e.bytes;counters_[lane].uploaded+=e.bytes;++stats_[lane].created;++batchStats_[lane].batchedUploads;}
  }
  void commit(unsigned lane)noexcept{
   try{commitPrepared(lane);}catch(...){++batchStats_[lane].batchFailures;while(!pending_[lane].empty())release(*pending_[lane].back());for(auto& item:entries_)if(!item.second->bytes)item.second->at={};}
@@ -176,7 +183,7 @@ public:
    if(e.pending)return false;
    if(!e.bytes){
     const auto bytes=mesh->byteSize();if(e.first==frame_){++stats_[lane].warmup;return false;}
-    if(attempts_[lane]>=16){++stats_[lane].uploadDeferred;++stats_[lane].attemptDeferred;return false;}
+    if(attempts_[lane]>=AttemptLimit){++stats_[lane].uploadDeferred;++stats_[lane].attemptDeferred;return false;}
     if(bytes>UploadLimit-attempted_[lane]){++stats_[lane].uploadDeferred;++stats_[lane].uploadByteDeferred;return false;}
     if(NorthlightReplayGPU::CreateTimeBudget&&!ignoreTime_[lane]&&attempts_[lane]&&stats_[lane].createMs>=NorthlightReplayGPU::createBudgetMs()){++stats_[lane].uploadDeferred;++stats_[lane].timeDeferred;timeDeferred_[lane]=true;return false;}
     if(!admit(bytes)){++stats_[lane].admissionRejected;return false;}
