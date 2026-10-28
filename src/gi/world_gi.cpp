@@ -987,7 +987,7 @@ bool LocalSceneCache::build(const std::vector<std::string>& files,const std::str
         WorldScene next;std::vector<BVH::PieceReference> references;if(sourceProvider){if(!allowed(uint64_t(wanted.size())*sizeof(SourcePieceRange)))return false;next.sourcePieces.reserve(wanted.size());}if(accelerate){if(!allowed(uint64_t(wanted.size())*sizeof(BVH::PieceReference)))return false;references.reserve(wanted.size());}
         uint64_t textureBytes=0;
         // Previous build's counts (+1/16) as the one up-front block when the regions overlap (IoU >= 1/2);
-        // beyond that, growth is +1/4 rather than x2. A denied hint falls back to normal growth, error unset.
+        // beyond that, growth is +1/4 rather than +1/2. A denied hint falls back to normal growth, error unset.
         bool hinted=false;
         if(cache.sized){
             if(regionsOverlapHalf(low,high,cache.sizedLow,cache.sizedHigh)){
@@ -995,7 +995,7 @@ bool LocalSceneCache::build(const std::vector<std::string>& files,const std::str
                 if(v&&t&&(!admit||(admit(v*sizeof(WorldVertex))&&admit(t*sizeof(WorldTriangle))))){next.vertices.reserve(v);next.triangles.reserve(t);hinted=true;++stats.hintedBuilds;}
             }
         }
-        auto reserve=[&](auto& values,size_t count){if(values.capacity()>=count)return true;using T=typename std::decay_t<decltype(values)>::value_type;size_t capacity=std::max(count,std::max<size_t>(64,hinted?values.capacity()+values.capacity()/4:values.capacity()*2));if(!allowed(uint64_t(capacity)*sizeof(T)))return false;values.reserve(capacity);return true;};
+        auto reserve=[&](auto& values,size_t count){if(values.capacity()>=count)return true;using T=typename std::decay_t<decltype(values)>::value_type;size_t capacity=std::max(count,std::max<size_t>(64,hinted?values.capacity()+values.capacity()/4:values.capacity()+values.capacity()/2));if(!allowed(uint64_t(capacity)*sizeof(T)))return false;values.reserve(capacity);return true;};
         for(const auto& group:groups){
             WorldScene loaded;std::shared_ptr<const WorldScene> sharedSource;auto stamp=CacheClock::now();std::string path=directory;if(!path.empty()&&path.back()!='/'&&path.back()!='\\')path+='/';path+=group.first+".fgs";
             bool geometryNeeded=false;

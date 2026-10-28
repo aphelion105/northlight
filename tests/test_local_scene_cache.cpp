@@ -58,8 +58,19 @@ static void fixtures(const fs::path& root){
     f=fopen((root/"tile.fg3").string().c_str(),"wb");assert(f);fwrite("FGS3",1,4,f);u32(f,3);u32(f,20);
     for(uint32_t i=0;i<20;++i){uint8_t hash[32]={};fwrite(hash,1,32,f);u32(f,i);u32(f,0);u32(f,i%4);Vec3 offset(float((i%5)*90)-180,float((i/5)*100)-150,float(i%2)*3);if(i==19)offset={0,0,0};vec(f,offset-Vec3(160,120,8));vec(f,offset+Vec3(160,120,8));const float matrix[9]={0,-1.2f,0,2,0,0,0,0,1};for(auto value:matrix)f32(f,value);vec(f,offset);}fclose(f);
 }
+[[maybe_unused]] static void fragmentedRegion(const fs::path& root){
+    FILE* f=fopen((root/"tile.fg3").string().c_str(),"wb");assert(f);fwrite("FGS3",1,4,f);u32(f,3);u32(f,1036);
+    for(uint32_t i=0;i<1036;++i){uint8_t hash[32]={};fwrite(hash,1,32,f);u32(f,i);u32(f,0);u32(f,2);vec(f,{-100,-100,-10});vec(f,{100,100,10});for(float v:{1.f,0.f,0.f,0.f,1.f,0.f,0.f,0.f,1.f})f32(f,v);vec(f,{});}fclose(f);
+    const std::vector<std::string> files={(root/"tile.fg3").string()};const auto models=(root/"models").string();std::string error;WorldScene expected;
+    assert(loadInstancedScenes(files,models,{-288,-288,-320},{288,288,320},expected,error));assert(expected.vertices.size()==8288);
+    LocalSceneCache cache;BVH result;unsigned refused=0;
+    assert(cache.build(files,models,"fragmented",{-288,-288,-320},{288,288,320},result,error,[&](uint64_t n){if(n>300000){++refused;return false;}return true;},false));
+    sceneEqual(expected,result.scene());assert(!refused);
+    LocalSceneCache stricter;assert(!stricter.build(files,models,"fragmented",{-288,-288,-320},{288,288,320},result,error,[](uint64_t n){return n<=250000;},false));sceneEqual(expected,result.scene());
+    std::puts("PASS fragmented local scene: bounded allocation preserves geometry and refuses safely below the required size");
+}
 int main(int argc,char** argv){
-    auto root=fs::temp_directory_path()/("fr-local-cache-"+std::to_string(Clock::now().time_since_epoch().count()));fixtures(root);std::vector<std::string> files={(root/"tile.fg3").string(),(root/"tile.fg3").string()};LocalSceneCache cache;
+    auto root=fs::temp_directory_path()/("fr-local-cache-"+std::to_string(Clock::now().time_since_epoch().count()));fixtures(root);fragmentedRegion(root);fixtures(root);std::vector<std::string> files={(root/"tile.fg3").string(),(root/"tile.fg3").string()};LocalSceneCache cache;
     for(unsigned step=0;step<5;++step){char name[32];snprintf(name,sizeof name,"synthetic%u",step);run(cache,files,(root/"models").string(),"test",{float(step)*64,0,0},name,2000);if(step)assert(cache.stats().pieceReuses>0);}
     run(cache,files,(root/"models").string(),"different-map",{0,0,0},"map reset",200);assert(cache.stats().pieceReuses==0);
     BVH previous;std::string error;assert(cache.build(files,(root/"models").string(),"test",{-288,-288,-320},{288,288,320},previous,error));size_t count=previous.triangleCount();assert(!cache.build(files,(root/"models").string(),"test",{-100,-100,-100},{100,100,100},previous,error,[](uint64_t){return false;}));assert(previous.triangleCount()==count);
