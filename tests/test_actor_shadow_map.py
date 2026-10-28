@@ -21,11 +21,11 @@ checks['constants: Radius 12, Inset .80, Size 1024; unsnapped centre (XY from th
 checks['quality: ActorShadowDetail 0..1, presets 1/1/0, actorShadowMap needs ActorShadows']=(re.search(r'\{\s*"ActorShadowDetail"\s*,\s*&Settings::actorShadowDetail\s*,\s*0\s*,\s*1\s*,\s*\{\s*1\s*,\s*1\s*,\s*0\s*\}\s*\}',q) is not None
     and 'inline bool actorShadowMap(const Settings& s,bool shadows){return actorShadowWork(s,shadows)&&s.actorShadowDetail;}' in q and 'unsigned actorShadowDetail=1;' in q)
 # Frame matrices from the raw pivot, before the cascade anchor (the anchor test keeps every later `pivot` out).
-raw=render.index('NorthlightActorShadowMap::leash(actorCenter[source],actorCenterValid[source],pivot,sourceDirections[source])')
+raw=render.index('NorthlightActorShadowMap::leash(actorCenter[source],actorCenterValid[source],pivot,rawSourceDirections[source])')
 checks['matrix from the raw pivot, before the anchored cascade pivot; off = nothing computed']=(raw<render.index('cascadeAnchor.update(')
     and 'const bool actorMapOn=NorthlightQuality::actorShadowMap(quality,effects.shadows)&&actorShadowPS&&actorTilesPS&&actorShadow[0]&&actorShadow[1]&&actorTiles[0]&&actorTiles[1]&&actorTilesMid&&actorVisibility;' in render
     and 'actorFrameOn[source]=NorthlightActorShadowMap::finiteMatrix(actorFrameMatrix[source]);if(!actorFrameOn[source])actorCenterValid[source]=false;' in render
-    and 'NorthlightActorShadowMap::matrix(actorCenter[source],pivot,sourceDirections[source],actorFrameMatrix[source]);' in render
+    and 'NorthlightActorShadowMap::matrix(actorCenter[source],pivot,rawSourceDirections[source],actorFrameMatrix[source]);' in render
     and 'if(anchorNewMap)actorCenterValid[source]=false;' in render and render.index('if(anchorNewMap)actorCenterValid[source]=false;')<raw
     and 'actorCenterValid[s]=false;' in w and 'actorCenterValid[0]=actorCenterValid[1]=false;' in w and w.count('actorCenterValid[0]=actorCenterValid[1]=false;')==1) # releaseGPU (reset() calls it)
 checks['leash: 1.5 yd, 40 yd jump re-centre; diagnostic dump s%d-actor']=('inline constexpr float Leash=1.5f;' in h and 'inline constexpr float JumpDistance=40.f;' in h

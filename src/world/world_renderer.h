@@ -474,6 +474,7 @@ private:
     bool normalsNoDistanceRefused=false;
     IDirect3DTexture9 *temporalLight[2]={},*temporalDepth[2]={};IDirect3DSurface9 *temporalLightSurface[2]={},*temporalDepthSurface[2]={};
     unsigned temporalIndex=0;bool temporalValid=false,temporalGeometryReady=false;float previousView[16]={};V previousCamera;std::string temporalMap;
+    bool traceHistory=false;DWORD traceHistoryTick=0,traceGeometryTick=0;unsigned traceHistoryCount=0,traceGeometryCount=0;
     IDirect3DSurface9 *shadowSurface[4]={},*shadowDepth=nullptr,*lightSurface=nullptr,*smoothSurface=nullptr,*fogSurface=nullptr,*fogBlurredSurface=nullptr,*colorSurface=nullptr,*baselineSurface=nullptr;
     // Static shadow cache: per (source,cascade) an R32F map with a 128-texel
     // margin holding static batches only, re-rendered when the snapped light
@@ -4380,7 +4381,12 @@ public:
         const bool meshReady=screenResourcesReady&&upload(streamBudget);
         const bool sceneTargetsReady=meshReady&&geometryResources(w,h);
         const bool geometryReady=sceneTargetsReady&&(hadTargets||upload(streamBudget));
-        if(geometryReady!=temporalGeometryReady){temporalValid=fogHistoryValid=false;temporalGeometryReady=geometryReady;}
+        if(geometryReady!=temporalGeometryReady){
+            const DWORD now=GetTickCount();
+            if(DWORD(now-traceGeometryTick)>=1000){traceGeometryTick=now;traceGeometryCount=0;}
+            if(NorthlightDiagnostics::enabled()&&traceGeometryCount++<16)deferLogf("WORLD geometry transition frame=%u rendererFrame=%u tick=%lu ready=%u screen=%u mesh=%u targets=%u",unsigned(frames),rendererFrame,(unsigned long)now,unsigned(geometryReady),unsigned(screenResourcesReady),unsigned(meshReady),unsigned(sceneTargetsReady));
+            temporalValid=fogHistoryValid=false;temporalGeometryReady=geometryReady;
+        }
         fogGeometryReady=geometryReady;
         if(!geometryReady){
             skipReason=!valid?"context":failed?"failed":workerFault()?"fault":!active?"inactive":!active->bvh?"nobvh":
@@ -4501,8 +4507,9 @@ public:
         for(int source=0;source<2;++source){
             if(anchorNewMap)actorCenterValid[source]=false;
             if(!actorMapOn){actorCenterValid[source]=false;memset(actorFrameMatrix[source],0,64);continue;}
-            actorCenter[source]=NorthlightActorShadowMap::leash(actorCenter[source],actorCenterValid[source],pivot,sourceDirections[source]);actorCenterValid[source]=true;
-            NorthlightActorShadowMap::matrix(actorCenter[source],pivot,sourceDirections[source],actorFrameMatrix[source]);
+            // The high-detail actor map is redrawn with the near cascade; it need not share the static cache's direction lattice.
+            actorCenter[source]=NorthlightActorShadowMap::leash(actorCenter[source],actorCenterValid[source],pivot,rawSourceDirections[source]);actorCenterValid[source]=true;
+            NorthlightActorShadowMap::matrix(actorCenter[source],pivot,rawSourceDirections[source],actorFrameMatrix[source]);
             actorFrameOn[source]=NorthlightActorShadowMap::finiteMatrix(actorFrameMatrix[source]);if(!actorFrameOn[source])actorCenterValid[source]=false;
         }
         const V cascadePivot=cascadeAnchor.update(pivot,vec(context.camera),uint32_t(GetTickCount()),anchorNewMap);
@@ -4687,7 +4694,7 @@ public:
                 if(recordable){try {staticCasters.record(cachedMatrix,key.staticContent);}catch(...){key.staticContent.valid=false;}}else key.staticContent.valid=false;
                 if(StaticCacheDirtyRectVerify&&partialStatic&&staticOK&&!verifyStaticCache(slot,[&](IDirect3DSurface9* t){return renderCache(t,false,false);}))return false;
                 key.valid=staticOK&&(recordable||!StaticCacheDirtyRects);key.frame=placement.frame;key.direction=sourceDirections[source];key.serial=meshGeneration;key.chunkHash=chunkHash;key.staticSignature=staticSignature(cachedMatrix);key.localContent=localShadowSignature(key,cachedMatrix);key.localContentKnown=bool(uploadedLocalShadowRecords);++shadowCacheRenders;
-                DWORD tick=GetTickCount();if(NorthlightDiagnostics::enabled()&&(!shadowCacheLogAt||tick-shadowCacheLogAt>=1000)){shadowCacheLogAt=tick;logf("WORLD shadow cache rerender source=%d cascade=%d reason=%s anchorRetained=%u prebuilds=%u prebuildHits=%u prebuildMisses=%u prebuildDiscards=%u",source,cascade,reason,unsigned(!placement.reason),staticPrebuild.stats.built,staticPrebuild.stats.hits,staticPrebuild.stats.misses,staticPrebuild.stats.discarded);}
+                DWORD tick=GetTickCount();if(NorthlightDiagnostics::enabled()&&(!shadowCacheLogAt||tick-shadowCacheLogAt>=1000)){shadowCacheLogAt=tick;logf("WORLD shadow cache rerender source=%d cascade=%d reason=%s anchorRetained=%u prebuilds=%u prebuildHits=%u prebuildMisses=%u prebuildDiscards=%u rendererFrame=%u tick=%lu",source,cascade,reason,unsigned(!placement.reason),staticPrebuild.stats.built,staticPrebuild.stats.hits,staticPrebuild.stats.misses,staticPrebuild.stats.discarded,rendererFrame,(unsigned long)tick);}
             } else {key.serial=meshGeneration;++shadowCacheReuses;}
             if(diagnosticFiles){
                 char name[80];std::snprintf(name,sizeof name,"s%d-c%d-static",source,cascade);
@@ -4933,6 +4940,12 @@ public:
         // Temporal history is valid only for the same map, a continuous camera
         // and normal rendering; teleports, F10 and diagnostics restart it.
         const bool useHistory=temporalValid&&temporalMap==frameMap&&!different(vec(context.camera),previousCamera,40)&&debug==0;
+        if(useHistory!=traceHistory){
+            const DWORD now=GetTickCount();
+            if(DWORD(now-traceHistoryTick)>=1000){traceHistoryTick=now;traceHistoryCount=0;}
+            if(NorthlightDiagnostics::enabled()&&traceHistoryCount++<16)logf("WORLD history transition frame=%u rendererFrame=%u tick=%lu used=%u valid=%u sameMap=%u cameraContinuous=%u debug=%d geometry=%u",unsigned(frames),rendererFrame,(unsigned long)now,unsigned(useHistory),unsigned(temporalValid),unsigned(temporalMap==frameMap),unsigned(!different(vec(context.camera),previousCamera,40)),debug,unsigned(geometryReady));
+            traceHistory=useHistory;
+        }
         memcpy(c[53],previousView,64);c[57][0]=useHistory?.75f:0.f;
         // Up to 16 authored lamps, sent through existing SM3-safe 8-light
         // direct / 4-light fog batches. Never expand the shader register bank.
