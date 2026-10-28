@@ -20,7 +20,9 @@ int main(){
     assert(NorthlightPointShadow::selectMany(lights.data(),lights.size(),camera,100).count==4);
     assert(!NorthlightPointShadow::selectMany(lights.data(),lights.size(),camera,0).count);
     assert(!NorthlightPointShadow::selectMany(nullptr,7,camera,2).count);
-    auto invalid=lights[0];invalid.flags|=8;assert(!valid(invalid));invalid.flags=CastShadow|Baked;assert(!valid(invalid));
+    auto invalid=lights[0];invalid.flags|=32;assert(!valid(invalid));invalid.flags=CastShadow|Baked;assert(!valid(invalid));
+    auto glass=lights[0];glass.flags|=GlassEmitter;assert(valid(glass));
+    glass.kind=2;assert(!valid(glass));glass.kind=3;glass.flags=GlassEmitter;assert(!valid(glass));
     std::vector<Light> fixed(lights.begin(),lights.begin()+4);
     NorthlightLocalLightSelection::Tracker tracker;
     auto selected=tracker.update(fixed,camera,32,.1f,false);

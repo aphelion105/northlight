@@ -340,6 +340,9 @@ static void diagnosticConstantWrites(){
  const auto write=[&]{assert(SUCCEEDED(game.SetVertexShaderConstantF(17,values,11)));};
  const auto bank=[&]{for(unsigned i=0;i<256;++i)assert(m.vsFloatWritten[i]==(i>=17&&i<28));};
  assert(!m.vsFloatWriteObservation);write();empty();
+ b.pureDevice=false;assert(SUCCEEDED(ext.GetVertexShaderConstantF(17,out,1)));b.pureDevice=true;
+ const auto ordinary=m.mutations;assert(SUCCEEDED(game.DrawPrimitive(D3DPT_TRIANGLELIST,0,1))&&!m.vsFloatKnown[17]&&m.mutations==ordinary+1);
+ m.invalidate();
  m.setVsFloatWriteObservation(true);write();bank();
  const auto reads=b.gets;std::fill(std::begin(out),std::end(out),-123.f);
  assert(ext.GetVertexShaderConstantF(17,out,11)==D3DERR_INVALIDCALL&&b.gets==reads+1&&out[0]==-123.f);
@@ -368,11 +371,13 @@ static void diagnosticConstantWrites(){
   empty();for(bool flag:m.vsFloatKnown)assert(!flag);
  }
  // All fixed-function draw variants and explicit vertex processing invalidate evidence.
- for(unsigned mode=0;mode<5;++mode){
+ for(unsigned route=0;route<2;++route)for(unsigned mode=0;mode<5;++mode){
+  MirrorDevice& device=route?ext:game;
   write();
-  HRESULT hr=mode==0?game.DrawPrimitive(D3DPT_TRIANGLELIST,0,1):mode==1?game.DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,0,3,0,1):
-    mode==2?game.DrawPrimitiveUP(D3DPT_TRIANGLELIST,1,nullptr,12):mode==3?game.DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST,0,3,1,nullptr,D3DFMT_INDEX16,nullptr,12):game.ProcessVertices(0,0,3,nullptr,nullptr,0);
-  assert(SUCCEEDED(hr));empty();
+  b.pureDevice=false;assert(SUCCEEDED(ext.GetVertexShaderConstantF(17,out,1)));b.pureDevice=true;
+  HRESULT hr=mode==0?device.DrawPrimitive(D3DPT_TRIANGLELIST,0,1):mode==1?device.DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,0,3,0,1):
+    mode==2?device.DrawPrimitiveUP(D3DPT_TRIANGLELIST,1,nullptr,12):mode==3?device.DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST,0,3,1,nullptr,D3DFMT_INDEX16,nullptr,12):device.ProcessVertices(0,0,3,nullptr,nullptr,0);
+  assert(SUCCEEDED(hr));empty();assert(!m.vsFloatKnown[17]);
  }
  auto* shader=new Object<IDirect3DVertexShader9>();assert(SUCCEEDED(game.SetVertexShader(shader)));write();
  assert(SUCCEEDED(game.DrawPrimitive(D3DPT_TRIANGLELIST,0,1)));bank();

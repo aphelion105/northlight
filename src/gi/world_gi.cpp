@@ -1,5 +1,6 @@
 #include "world_gi.h"
 #include "mesh_page_key.h"
+#include "backend_loader.h" // shared SHA-256 implementation for FGL source identity
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -127,9 +128,15 @@ static bool readScene(const char* path,WorldScene& output,std::string& error,con
         uint32_t bytes=0;
         if(!r.vec(m.albedo)||!r.u32(m.width)||!r.u32(m.height)||!r.f32(m.alphaCutoff)||!r.u32(bytes)||
            m.width>4096||m.height>4096||uint64_t(m.width)*m.height*4!=bytes||bytes>r.remaining||
-           ((m.width==0)!=(m.height==0))||m.alphaCutoff<0||m.alphaCutoff>1){
+           ((m.width==0)!=(m.height==0))){
             error="Invalid/truncated FGS2 material";return false;
         }
+        if(m.alphaCutoff<=-1.f&&m.alphaCutoff>=-8388607.f){
+            const uint32_t tag=uint32_t(-m.alphaCutoff);
+            if(float(tag)==-m.alphaCutoff){m.lampLocalId=tag;m.alphaCutoff=0.f;}
+        }
+        uint32_t cutoffBits;std::memcpy(&cutoffBits,&m.alphaCutoff,4);
+        if(((cutoffBits&0x80000000u)&&(cutoffBits&0x7fffffffu))||m.alphaCutoff>1){error="Invalid/truncated FGS2 material";return false;}
         if(admit&&!admit(bytes)){error="Geometry allocation deferred";return false;}
         try {m.rgba.resize(bytes);}catch(...){error="Cannot allocate FGS2 texture";return false;}
         if(!r.bytes(m.rgba.data(),bytes)){error="Truncated FGS2 texture";return false;}
@@ -169,6 +176,17 @@ bool cropScene(WorldScene& s,Vec3 low,Vec3 high,std::string& error){
 
 namespace {
 struct Instance {uint64_t uid=0;uint32_t category=0;Vec3 low,high;float matrix[9];Vec3 translation;bool terrain=false,wmo=false;};
+uint64_t lampIdentity(const std::string& key,const Instance& instance,uint32_t localId){
+    if(key.size()!=64||!localId||instance.category!=2)return 0;
+    unsigned char bytes[48]={};auto digit=[](char c)->int{return c>='0'&&c<='9'?c-'0':c>='a'&&c<='f'?c-'a'+10:-1;};
+    for(unsigned i=0;i<32;++i){const int a=digit(key[2*i]),b=digit(key[2*i+1]);if(a<0||b<0)return 0;bytes[i]=static_cast<unsigned char>((a<<4)|b);}
+    const uint32_t index=0x90000000u+(localId-1);
+    for(unsigned i=0;i<8;++i)bytes[32+i]=static_cast<unsigned char>(instance.uid>>(8*i));
+    for(unsigned i=0;i<4;++i){bytes[40+i]=static_cast<unsigned char>(instance.category>>(8*i));bytes[44+i]=static_cast<unsigned char>(index>>(8*i));}
+    NorthlightBackendLoader::Sha256 hash;hash.update(bytes,sizeof bytes);const std::string digest=hash.hex();uint64_t value=0;
+    for(unsigned i=0;i<8;++i)value|=uint64_t((digit(digest[2*i])<<4)|digit(digest[2*i+1]))<<(8*i);
+    return value;
+}
 bool boundsOverlap(Vec3 al,Vec3 ah,Vec3 bl,Vec3 bh){return ah.x>=bl.x&&ah.y>=bl.y&&ah.z>=bl.z&&al.x<=bh.x&&al.y<=bh.y&&al.z<=bh.z;}
 Vec3 transform(const float* m,Vec3 v){return {m[0]*v.x+m[1]*v.y+m[2]*v.z,m[3]*v.x+m[4]*v.y+m[5]*v.z,m[6]*v.x+m[7]*v.y+m[8]*v.z};}
 bool normalMatrix(const float* m,float* n){
@@ -200,7 +218,7 @@ std::pair<int,int> terrainChunk(Vec3 a,Vec3 b,Vec3 c){
 struct TerrainRun {int x=-1,y=-1;uint32_t first=0,count=0;uint64_t membership[2]={};bool complete=false;NorthlightMeshPageKey::Hasher hash;};
 // hintVertices/hintTriangles (0 = not hinted): result was pre-reserved to these counts; only the first overflow past that reserve grows +1/4, then x2.
 bool appendInstance(const WorldScene& model,const Instance& instance,Vec3 low,Vec3 high,WorldScene& result,
-                    std::vector<uint32_t>& materialRemap,uint64_t& textureBytes,std::string& error,const AllocationAdmission& admit,const std::function<bool(Vec3,Vec3)>& terrainChunkFilter = {},size_t hintVertices = 0,size_t hintTriangles = 0,bool copyTextures=true,uint64_t* membership=nullptr,std::vector<TerrainRun>* terrainRuns=nullptr,bool completeTerrainRuns=true){
+                    std::vector<uint32_t>& materialRemap,uint64_t& textureBytes,std::string& error,const AllocationAdmission& admit,const std::function<bool(Vec3,Vec3)>& terrainChunkFilter = {},size_t hintVertices = 0,size_t hintTriangles = 0,bool copyTextures=true,uint64_t* membership=nullptr,std::vector<TerrainRun>* terrainRuns=nullptr,bool completeTerrainRuns=true,const std::string* modelKey=nullptr){
     float normal[9];if(!normalMatrix(instance.matrix,normal)){error="FGS3 singular instance transform";return false;}
     if(admit&&!admit(model.vertices.size()*sizeof(uint32_t))){error="Geometry allocation deferred";return false;}
     std::vector<uint32_t> remap(model.vertices.size(),UINT32_MAX);
@@ -253,6 +271,8 @@ bool appendInstance(const WorldScene& model,const Instance& instance,Vec3 low,Ve
             if(copyTextures)result.materials.push_back(m);
             else{WorldMaterial metadata;metadata.albedo=m.albedo;metadata.alphaCutoff=m.alphaCutoff;metadata.addressU=m.addressU;metadata.addressV=m.addressV;result.materials.push_back(std::move(metadata));}
             result.materials.back().terrain=instance.terrain;result.materials.back().wmo=instance.wmo;textureBytes+=copyTextures?m.rgba.size():0;
+            auto& ownerMaterial=result.materials.back();ownerMaterial.pointOnly=m.pointOnly;ownerMaterial.lampLocalId=m.lampLocalId;ownerMaterial.lampSourceId=m.lampSourceId;
+            if(modelKey&&m.lampLocalId)ownerMaterial.lampSourceId=lampIdentity(*modelKey,instance,m.lampLocalId);
         }
         if(terrainRuns){try{if(terrainRuns->empty()||terrainRuns->back().x!=chunk.first||terrainRuns->back().y!=chunk.second){if(terrainRuns->size()==terrainRuns->capacity()){const auto capacity=std::min<size_t>(4096,std::max<size_t>(16,terrainRuns->capacity()*2));if(terrainRuns->size()>=4096||(admit&&!admit(capacity*sizeof(TerrainRun))))disableRuns();else terrainRuns->reserve(capacity);}if(terrainRuns){TerrainRun run;run.x=chunk.first;run.y=chunk.second;run.first=uint32_t(result.triangles.size()-triangleBase);terrainRuns->push_back(std::move(run));}}if(terrainRuns){auto& run=terrainRuns->back();++run.count;run.hash.word(sourceOrdinal);}}catch(const std::bad_alloc&){disableRuns();}}
         out.material=materialRemap[t.material];result.triangles.push_back(out);
@@ -329,8 +349,9 @@ bool loadInstancedScenes(const std::vector<std::string>& files,const std::string
                 std::vector<TerrainRun> terrainRuns;
                 // One preparation entry per contiguous 4x4-cell run avoids per-MCNK metadata dominating the existing 8 MiB memo.
                 const bool chunks=terrainChunkProvenance&&instance.terrain&&model.sourceIdentity;
-                const auto& materials=materialRemap[instance.terrain?1:instance.wmo?2:0];
-                if(!appendInstance(model,instance,low,high,result,materialRemap[instance.terrain?1:instance.wmo?2:0],textureBytes,error,admit,terrainChunkFilter,hintV,hintT,true,model.sourceIdentity?membership:nullptr,chunks?&terrainRuns:nullptr,false))return false;
+                auto& materials=materialRemap[instance.terrain?1:instance.wmo?2:0];
+                for(size_t m=0;m<model.materials.size();++m)if(model.materials[m].lampLocalId)materials[m]=UINT32_MAX;
+                if(!appendInstance(model,instance,low,high,result,materialRemap[instance.terrain?1:instance.wmo?2:0],textureBytes,error,admit,terrainChunkFilter,hintV,hintT,true,model.sourceIdentity?membership:nullptr,chunks?&terrainRuns:nullptr,false,&group.first))return false;
                 if(model.sourceIdentity&&result.triangles.size()>before){
                     // Provenance is optional: refusal must retain every accepted triangle.
                     const auto publish=[&](bool chunkRanges){
@@ -1008,7 +1029,7 @@ bool LocalSceneCache::build(const std::vector<std::string>& files,const std::str
                 if(!piece){
                     stamp=CacheClock::now();piece=std::make_shared<Impl::Piece>();piece->cropLow=low;piece->cropHigh=high;piece->sourceIdentity=sourceIdentity;
                     WorldScene cropped;std::vector<uint32_t> remap(source.materials.size(),UINT32_MAX);uint64_t bytes=0;
-                    if(!appendInstance(source,instance,low,high,cropped,remap,bytes,error,admit,{},0,0,false,piece->membership,accelerate&&instance.terrain?&piece->terrainRuns:nullptr))return false;
+                    if(!appendInstance(source,instance,low,high,cropped,remap,bytes,error,admit,{},0,0,false,piece->membership,accelerate&&instance.terrain?&piece->terrainRuns:nullptr,true,&group.first))return false;
                     piece->complete=!source.triangles.empty()&&cropped.triangles.size()==source.triangles.size();
                     piece->materialSources.resize(cropped.materials.size());for(uint32_t i=0;i<remap.size();++i)if(remap[i]!=UINT32_MAX)piece->materialSources[remap[i]]=i;
                     const float inf=std::numeric_limits<float>::infinity();piece->low={inf,inf,inf};piece->high={-inf,-inf,-inf};
@@ -1033,11 +1054,12 @@ bool LocalSceneCache::build(const std::vector<std::string>& files,const std::str
                 }
                 stamp=CacheClock::now();const auto& p=*piece;const auto& scene=p.transport();
                 auto& remap=materialRemap[instance.terrain?1:instance.wmo?2:0];uint32_t vertexBase=uint32_t(next.vertices.size()),triangleBase=uint32_t(next.triangles.size());
+                for(size_t i=0;i<materials.size();++i)if(materials[i].lampLocalId)remap[i]=UINT32_MAX;
                 if(uint64_t(vertexBase)+scene.vertices.size()>4000000||uint64_t(triangleBase)+scene.triangles.size()>6000000){error="FGS3 local region geometry limit exceeded";return false;}
                 if(!reserve(next.vertices,vertexBase+scene.vertices.size())||!reserve(next.triangles,triangleBase+scene.triangles.size()))return false;
                 next.vertices.insert(next.vertices.end(),scene.vertices.begin(),scene.vertices.end());
                 for(const auto& triangle:scene.triangles){auto t=triangle;uint32_t original=p.materialSources[t.material];
-                    if(remap[original]==UINT32_MAX){const auto& m=materials[original];if(next.materials.size()>=65536||textureBytes+m.rgba.size()>256ull*1024*1024){error="FGS3 local region material limit exceeded";return false;}if(!reserve(next.materials,next.materials.size()+1)||!allowed(m.rgba.size()))return false;remap[original]=uint32_t(next.materials.size());next.materials.push_back(m);auto& dest=next.materials.back();dest.terrain=instance.terrain;dest.wmo=instance.wmo;textureBytes+=m.rgba.size();}
+                    if(remap[original]==UINT32_MAX){const auto& m=materials[original];if(next.materials.size()>=65536||textureBytes+m.rgba.size()>256ull*1024*1024){error="FGS3 local region material limit exceeded";return false;}if(!reserve(next.materials,next.materials.size()+1)||!allowed(m.rgba.size()))return false;remap[original]=uint32_t(next.materials.size());next.materials.push_back(m);auto& dest=next.materials.back();dest.terrain=instance.terrain;dest.wmo=instance.wmo;dest.lampSourceId=m.lampLocalId?lampIdentity(group.first,instance,m.lampLocalId):scene.materials[t.material].lampSourceId;textureBytes+=m.rgba.size();}
                     t.v0+=vertexBase;t.v1+=vertexBase;t.v2+=vertexBase;t.material=remap[original];next.triangles.push_back(t);
                 }
                 if(p.sourceIdentity&&!scene.triangles.empty()){

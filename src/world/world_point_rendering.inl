@@ -337,7 +337,7 @@
         if(!pointResources())return false;
         const uint64_t chunkHash=liveChunkHash();
         // Terrain is never cached (its live set follows the view), so the cache key ignores it.
-        bool lightChanged=pointSlot().schedule.light.sourceId!=pointSlot().selected.sourceId||pointSlot().schedule.light.attenuationEnd!=pointSlot().selected.attenuationEnd;
+        bool lightChanged=pointSlot().schedule.light.sourceId!=pointSlot().selected.sourceId||pointSlot().schedule.light.attenuationEnd!=pointSlot().selected.attenuationEnd||pointSlot().schedule.light.attenuationStart!=pointSlot().selected.attenuationStart||pointSlot().schedule.light.flags!=pointSlot().selected.flags;
         for(unsigned i=0;i<3;++i)lightChanged=lightChanged||pointSlot().schedule.light.position[i]!=pointSlot().selected.position[i];
         const unsigned rebuildMask=pointStaticRebuild(pointSlot().selected,lightChanged);const bool rebuild=rebuildMask!=0;
         const DWORD updateAt=GetTickCount();if(fresh)pointReplayCount=withReplays?replays.size():0;
@@ -359,9 +359,13 @@
         float faceMatrices[6][16];
         for(unsigned face=0;face<6;++face)
             if(!NorthlightPointShadow::faceMatrix(pointSlot().selected.position,.1f,pointSlot().selected.attenuationEnd,face,faceMatrices[face],PointResolution))return pointCheck(E_FAIL,"cube projection");
+        // Only one complete, uniquely matched enclosure can be omitted, and
+        // only from this source's point-shadow cube. Shared geometry is intact.
+        const size_t ownGlass=NorthlightWmoLampShadow::unique(light,batches);
         try {
             for(auto* lists:{&pointStaticCandidates,&pointTerrainCandidates,&pointLiveCandidates,&pointReplayCandidates})for(auto& list:*lists)list.clear();
             for(size_t i=0;i<batches.size();++i){const auto& batch=batches[i];
+                if(i==ownGlass)continue;
                 if(batch.terrain){if(!liveTerrainChunks.count({batch.chunkX,batch.chunkY}))
                     pointAppendCandidates(pointTerrainCandidates,i,pointMask(batch.boundsLow,batch.boundsHigh,faceMatrices),faces);}
                 else if(rebuildMask&faces)pointAppendCandidates(pointStaticCandidates,i,pointMask(batch.boundsLow,batch.boundsHigh,faceMatrices),rebuildMask&faces);
@@ -399,10 +403,14 @@
             UINT boundPage=UINT_MAX;
             for(size_t index:pointStaticCandidates[face]){const auto& batch=batches[index];
                 if(batch.material>=materials.size()||batch.material>=uploadedAlphaCutoffs.size())return pointCheck(E_FAIL,"cube material range");
+                NorthlightPointTransmissionFilter filter;
+                if(!pointCheck(filter.begin(d,batch.pointOnly),"cube transmission filter"))return false;
+                // The static VS has no COLOR output; coverage comes from the texture alone.
                 float material[]={0,0,0,uploadedAlphaCutoffs[batch.material]};
                 if(!pointCheck(d->SetTexture(0,materials[batch.material]),"cube static alpha")||
                    !pointCheck(d->SetPixelShaderConstantF(0,material,1),"cube material")||
                    !bindMeshPage(batch,boundPage)||!pointCheck(d->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,batch.minVertex,batch.vertexCount,batch.start,batch.count),"cube static draw"))return false;
+                if(!pointCheck(filter.restore(),"restore cube alpha filter"))return false;
                 ++pointDraws;
             }
             const auto* digests=pointFaceDigests(pointSlot().selected);

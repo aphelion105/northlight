@@ -122,7 +122,7 @@ struct Tracker {
         return lo<count&&entries[lo].id==id&&entries[lo].selected;
     }
     unsigned offscreen=0;                               // lights in the last update's candidates ranked off-screen (view given)
-    Selection update(const std::vector<NorthlightLocalLights::Light>& lights,const float* camera,unsigned limit,float dtSeconds,bool continuous,const NorthlightLocalLightScissor::View* view=nullptr,const NorthlightLocalLights::Light* additional=nullptr,unsigned additionalCount=0,const std::uint64_t* immediate=nullptr,unsigned immediateCount=0){
+    Selection update(const std::vector<NorthlightLocalLights::Light>& lights,const float* camera,unsigned limit,float dtSeconds,bool continuous,const NorthlightLocalLightScissor::View* view=nullptr,const NorthlightLocalLights::Light* additional=nullptr,unsigned additionalCount=0,const std::uint64_t* immediate=nullptr,unsigned immediateCount=0,uint32_t sourceTime=0){
         offscreen=0;
         limit=std::min(limit,Capacity);
         if(!limit)reset();
@@ -198,6 +198,7 @@ struct Tracker {
         std::sort(tail.begin(),tail.begin()+fades,[&](unsigned char a,unsigned char b){return fade[a].score!=fade[b].score?fade[a].score<fade[b].score:entries[fade[a].index].id<entries[fade[b].index].id;});
         out.count=selected+fades;
         const auto emit=[&](unsigned slot,const NorthlightLocalLights::Light& l,float score,float gain){
+            gain*=NorthlightLocalLights::pulseGain(l,sourceTime);
             out.position[slot]={l.position[0],l.position[1],l.position[2],l.attenuationEnd};
             out.fogDistance=std::max(out.fogDistance,score+2*l.attenuationEnd);
             out.color[slot]={l.diffuse[0]*gain,l.diffuse[1]*gain,l.diffuse[2]*gain,1.f/std::max(l.attenuationEnd-std::min(l.attenuationStart,l.attenuationEnd*.9f),.05f)};

@@ -38,6 +38,8 @@
 #include "local_light_batches.h"
 #include "local_light_trace.h"
 #include "point_light_shadow.h"
+#include "wmo_lamp_shadow.h"
+#include "point_transmission_filter.h"
 #include "local_light_compiled_shaders.h"
 #include "replay_bounds.h"
 #include "replay_bounds_schedule.h"
@@ -561,7 +563,7 @@ private:
         const auto& fixedSet=fixedTerrainChunks();const bool fixedBits=fixedTerrainBits.source()==&fixedSet;
         const bool affine=NorthlightShadowBounds::affineLightMatrix(matrix);
         for(const auto& b:batches){
-            if(b.terrain&&!(fixedBits?fixedTerrainBits.contains({b.chunkX,b.chunkY}):fixedSet.count({b.chunkX,b.chunkY})!=0))continue;
+            if(b.pointOnly)continue;if(b.terrain&&!(fixedBits?fixedTerrainBits.contains({b.chunkX,b.chunkY}):fixedSet.count({b.chunkX,b.chunkY})!=0))continue;
             if(affine&&NorthlightShadowBounds::directionalClipRejectAffine(b.boundsLow,b.boundsHigh,matrix))continue;
             NorthlightShadowBounds::TexelRect footprint;const bool known=NorthlightShadowBounds::texelFootprint(b.boundsLow,b.boundsHigh,matrix,long(ShadowCacheSize),StaticCacheDirtyMargin,footprint);
             ++w.costs[0];for(size_t k=1;k<candidates.size();++k)for(const auto& r:*candidates[k])if(!known||NorthlightShadowBounds::intersects(footprint,r))++w.costs[k];
@@ -1715,9 +1717,35 @@ private:
                 { uint32_t reachBits;std::memcpy(&reachBits,&reach,sizeof reachBits);terrainSizeHint.key=reachBits; } // same map (reset above) and same reach only
                 const bool terrainLoaded=NorthlightGI::loadInstancedScenes(shadowTiles,root+"world-cache/models",center-V(reach,reach,reach),center+V(reach,reach,reach),shadowTerrain,error,1,terrainAdmission,terrainFilter,terrainChunkFilter,&terrainSizeHint,sceneSource,true);
                 if(terrainLoaded)terrainDeferred=false; // Optional reserve/provenance refusals preserve all accepted geometry.
+                NorthlightGI::WorldScene pointTransmission;
+                bool pointLoaded=true;uint64_t pointAllocated=0;
+                if(terrainLoaded){
+                    std::vector<std::string> pointTiles;
+                    for(int py=ty-1;py<=ty+1;++py)for(int px=tx-1;px<=tx+1;++px){
+                        char file[512];std::snprintf(file,sizeof file,"%sworld-cache/lights/point-transmission/%s/%d_%d.fg3",root.c_str(),r.map.c_str(),px,py);
+                        FILE* available=std::fopen(file,"rb");if(available){std::fclose(available);pointTiles.emplace_back(file);}
+                    }
+                    NorthlightGI::AllocationAdmission pointAdmission=[&](uint64_t bytes){
+                        if(bytes>(8ull<<20)-std::min<uint64_t>(pointAllocated,8ull<<20))return false;
+                        pointAllocated+=bytes;return terrainAdmission(bytes);
+                    };
+                    if(!pointTiles.empty())pointLoaded=NorthlightGI::loadInstancedScenes(pointTiles,root+"world-cache/lights/point-transmission/models",
+                        center-V(NorthlightShadowTerrain::LocalHorizontal,NorthlightShadowTerrain::LocalHorizontal,NorthlightShadowTerrain::LocalVertical),
+                        center+V(NorthlightShadowTerrain::LocalHorizontal,NorthlightShadowTerrain::LocalHorizontal,NorthlightShadowTerrain::LocalVertical),pointTransmission,error,10,pointAdmission);
+                    if(NorthlightDiagnostics::enabled())logf("POINT_TRANSMISSION worker tiles=%zu triangles=%zu retainedKiB=%zu admissionKiB=%llu loaded=%u",
+                        pointTiles.size(),pointTransmission.triangles.size(),pointTransmission.retainedBytes()/1024,(unsigned long long)(pointAllocated/1024),unsigned(pointLoaded));
+                    // Optional transmission cannot discard an otherwise valid GI/shadow generation.
+                    if(!pointLoaded){pointTransmission=NorthlightGI::WorldScene{};if(NorthlightDiagnostics::enabled())logf("POINT_TRANSMISSION unavailable: %s",error.c_str());error.clear();}
+                }
                 const double terrainLoadMs=phaseElapsed();
                 profileMemory("after-terrain-load",plan.get(),&shadowTerrain);
-                if(!terrainLoaded||!NorthlightShadowTerrain::build(replacement->scene(),shadowTerrain,center,*plan,error,terrainAdmission,reach,{},true,replacement.get(),&meshPreparation)){
+                bool shadowPlanBuilt=terrainLoaded&&NorthlightShadowTerrain::build(replacement->scene(),shadowTerrain,center,*plan,error,terrainAdmission,reach,{},true,replacement.get(),&meshPreparation,&pointTransmission);
+                if(!shadowPlanBuilt&&!pointTransmission.triangles.empty()){
+                    if(NorthlightDiagnostics::enabled())logf("POINT_TRANSMISSION assembly refused; retaining base geometry: %s",error.c_str());
+                    pointTransmission=NorthlightGI::WorldScene{};terrainDeferred=false;error.clear();
+                    shadowPlanBuilt=NorthlightShadowTerrain::build(replacement->scene(),shadowTerrain,center,*plan,error,terrainAdmission,reach,{},true,replacement.get(),&meshPreparation);
+                }
+                if(!terrainLoaded||!shadowPlanBuilt){
                     if(terrainDeferred){
                         meshPreparation.reset();
                         stallBegin("shadow-terrain",terrainSample,terrainRequired,terrainRequiredLargest);
@@ -1730,7 +1758,7 @@ private:
                 if(NorthlightDiagnostics::enabled())logf("WORLD terrain allocation largestMiB=%.2f checks=%u hinted=%u",double(terrainLargest)/1048576,terrainChecks,terrainSizeHint.hinted?1u:0u);
                 if(NorthlightDiagnostics::enabled())logf("WORLD shadow terrain: localTriangles=%zu shadowTriangles=%u fixedChunks=%zu reach=%.0f tiles=%zu",replacement->triangleCount(),plan->triangleCount,plan->fixedTerrainChunks.size(),reach,shadowTiles.size());
                 if(!currentGeometry()){++superseded;abandonGeometry();continue;}
-                shadowTerrain=NorthlightGI::WorldScene{}; // merged shadow plan already owns its data
+                shadowTerrain=NorthlightGI::WorldScene{};pointTransmission=NorthlightGI::WorldScene{}; // merged shadow plan already owns its data
                 auto pages=std::make_shared<NorthlightWorldMeshPages::Plan>();
                 // 0.3.216 (issue #66): pages the GPU already holds (same map, keys published at the last commit) are freed inside
                 // build() the moment they are finished, so the worker's peak holds only the pages that must be uploaded.
@@ -3975,7 +4003,7 @@ public:
         // Same camera, projection, near plane and glow start as c0..c6/c58: the selection prefers lights in view (debug views keep the old order), and
         // each batch's rect of the direct (8) and fog (4) passes.
         localScissorView=NorthlightLocalLightScissor::view(context.inverseView,projection,nearZ,LampFogNear,w,h);
-        a.lights=active?localLightTracker.update(active->localLights,context.camera,NorthlightGpuBudget::lightLimit(quality.localLightLimit,gpuBudgetLevel,effects.shadows&&quality.pointShadows?quality.pointShadowLimit:0),float(selectDt),selectContinuous,debug==0?&localScissorView:nullptr,equipmentLightsOn()?particleLights.output.data():nullptr,equipmentLightsOn()?particleLights.outputCount:0,equipmentLightsOn()?particleLights.immediate.data():nullptr,equipmentLightsOn()?particleLights.immediateCount:0) /* one shared dynamic cap; particles carry current-frame alpha */:NorthlightLocalLightSelection::Selection{};
+        a.lights=active?localLightTracker.update(active->localLights,context.camera,NorthlightGpuBudget::lightLimit(quality.localLightLimit,gpuBudgetLevel,effects.shadows&&quality.pointShadows?quality.pointShadowLimit:0),float(selectDt),selectContinuous,debug==0?&localScissorView:nullptr,equipmentLightsOn()?particleLights.output.data():nullptr,equipmentLightsOn()?particleLights.outputCount:0,equipmentLightsOn()?particleLights.immediate.data():nullptr,equipmentLightsOn()?particleLights.immediateCount:0,GetTickCount()) /* one shared dynamic cap; particles carry current-frame alpha */:NorthlightLocalLightSelection::Selection{};
         auto& localLights=a.lights;
         {const auto arranged=NorthlightLocalLightBatches::arrange(localLights,localScissorView); /* screen-coherent batches (the passes are sums) */
          if(NorthlightDiagnostics::enabled()){localOffscreenSum+=localLightTracker.offscreen;localArranged+=arranged.arranged;localArrangeBefore+=arranged.before;localArrangeAfter+=arranged.after;}} /* counted with selectUs */
@@ -4429,7 +4457,7 @@ public:
                 const auto& fixedSet=fixedTerrainChunks();const bool fixedBits=fixedTerrainBits.source()==&fixedSet;
                 const bool affine=NorthlightShadowBounds::affineLightMatrix(cachedMatrix);
                 for(auto& b:batches){
-                    if(b.terrain&&!(fixedBits?fixedTerrainBits.contains({b.chunkX,b.chunkY}):fixedSet.count({b.chunkX,b.chunkY})!=0))continue;
+                    if(b.pointOnly)continue;if(b.terrain&&!(fixedBits?fixedTerrainBits.contains({b.chunkX,b.chunkY}):fixedSet.count({b.chunkX,b.chunkY})!=0))continue;
                     if(affine&&NorthlightShadowBounds::directionalClipRejectAffine(b.boundsLow,b.boundsHigh,cachedMatrix)){if(real)++culledBatches[cascade];continue;}
                     size_t passes=1;
                     if(partial){NorthlightShadowBounds::TexelRect footprint;const bool known=NorthlightShadowBounds::texelFootprint(b.boundsLow,b.boundsHigh,cachedMatrix,long(ShadowCacheSize),StaticCacheDirtyMargin,footprint);

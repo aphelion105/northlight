@@ -24,7 +24,7 @@ struct RefreshSchedule {
     bool due(uint32_t now,const NorthlightLocalLights::Light& current,uint64_t meshGeneration,
              size_t replayCount,bool invalidated,uint32_t minimumMs=0)const{
         if(invalidated||!complete||generation!=meshGeneration||light.sourceId!=current.sourceId||
-           light.attenuationEnd!=current.attenuationEnd)return true;
+           light.attenuationEnd!=current.attenuationEnd||light.attenuationStart!=current.attenuationStart||light.flags!=current.flags)return true;
         for(unsigned i=0;i<3;++i)if(light.position[i]!=current.position[i])return true;
         // minimumMs (PointShadowRefreshMs) extends the crowd reuse to every scene; 0 is 0.3.136.
         if(minimumMs)return uint32_t(now-updatedAt)>=minimumMs;

@@ -263,6 +263,7 @@ test_shadow_shimmer.py
 test_shared_gpu_residency.py
 test_shared_gpu_residency_gpu.py
 test_shared_gpu_wiring.py
+test_scourge_emission.py
 test_shared_mesh_preparation.py
 test_shared_preparation_lifetime.py
 test_shared_scene.py
@@ -359,6 +360,8 @@ test_weather_textures.py
 test_weather_wiring.py
 test_windows_installer.py
 test_wmo_group_tolerance.py
+test_wmo_lamp_emission.py
+test_wmo_lamp_runtime.py
 test_world_cache_diff.py
 test_world_light_placements.py
 test_world_lighting_capture.py
