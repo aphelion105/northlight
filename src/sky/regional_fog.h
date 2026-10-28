@@ -4,6 +4,7 @@
 #include "world_gi.h"
 #include <array>
 #include <climits>
+#include <cstddef>
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -11,17 +12,31 @@
 #include <functional>
 #include <limits>
 #include <string>
+#include <type_traits>
 #include <vector>
+#if defined(__SSE2__)
+#include <emmintrin.h>
+#endif
 namespace NorthlightRegionalFog {
 constexpr unsigned N=64;
 constexpr float Spacing=8.f;
 constexpr double WorldZero=17066.666666666668,TileSize=533.3333333333334,ChunkSize=TileSize/16,Unit=ChunkSize/8;
+// Caller has already checked that p is finite and within +/-100000.
+inline int chunkIndex(float p){return int(std::floor((WorldZero-p)*(1.0/ChunkSize)));}
 struct Water {float x=0,y=0,height=0;uint64_t mask=0;};
 struct Indoor {float low[3]={},high[3]={};};
 struct Tile {int x=0,y=0;std::array<uint32_t,256> zones{};std::vector<Water> water;std::vector<Indoor> indoors;};
 struct Region {std::vector<Tile> tiles;unsigned missing=0,invalid=0;};
 struct Texel {float ground=0,day=0,nightExtra=0,height=0;};
 static_assert(sizeof(Texel)==16,"Fog texture float4");
+inline bool texelFinite(const Texel& t){
+#if defined(__SSE2__)
+    __m128i v;std::memcpy(&v,&t,16);const __m128i exponent=_mm_set1_epi32(0x7f800000);
+    return _mm_movemask_epi8(_mm_cmpeq_epi32(_mm_and_si128(v,exponent),exponent))==0;
+#else
+    return std::isfinite(t.ground)&&std::isfinite(t.day)&&std::isfinite(t.nightExtra)&&std::isfinite(t.height);
+#endif
+}
 struct Field {float originX=0,originY=0;std::array<Texel,N*N> texels{};std::array<uint8_t,N*N> lush{}; /* 0.3.199 (fog clouds): 1 = outdoor forest/grass zone (lushZone), CPU only */unsigned groundCells=0,fogCells=0,airCells=0,indoorCells=0,citySurfaceCells=0;};
 // Bounds of regionalFogAt's clamped bilinear footprint. w: empty 0, bounded 1,
 // unknown -1. The reciprocal floor can pull sparse ground heights toward zero.
@@ -29,7 +44,7 @@ inline std::array<float,4> heightBounds(const Field& field,unsigned x,unsigned y
     std::array<float,4> out={INFINITY,-INFINITY,0,0};bool sparse=false;
     for(unsigned dy=0;dy<2;++dy)for(unsigned dx=0;dx<2;++dx){
         const auto& t=field.texels[std::min(y+dy,N-1)*N+std::min(x+dx,N-1)];
-        if(!std::isfinite(t.ground)||!std::isfinite(t.day)||!std::isfinite(t.nightExtra)||!std::isfinite(t.height))return {0,0,0,-1};
+        if(!texelFinite(t))return {0,0,0,-1};
         if(t.height<=0){sparse=true;continue;}
         out[0]=std::min(out[0],t.ground);out[1]=std::max(out[1],t.ground);out[2]=std::max(out[2],t.height);out[3]=1;
     }
@@ -43,7 +58,7 @@ inline std::array<float,4> heightBounds(const Field& field,unsigned x,unsigned y
 inline std::array<float,3> globalHeightBounds(const Field& field){
     std::array<float,3> out{};
     for(const auto& t:field.texels){
-        if(!std::isfinite(t.ground)||!std::isfinite(t.day)||!std::isfinite(t.nightExtra)||!std::isfinite(t.height))return {};
+        if(!texelFinite(t))return {};
         if(t.height<=0)continue;
         out[0]=std::min(out[0],t.ground);out[1]=std::max(out[1],t.ground);out[2]=std::max(out[2],t.height);
     }
@@ -66,11 +81,19 @@ inline bool loadTile(const std::string& path,int x,int y,Tile& out){
     if(bytes<1048||bytes>2*1024*1024||std::fseek(file,0,SEEK_SET))return false;
     uint32_t h[6]={};if(std::fread(h,4,6,file)!=6||h[0]!=0x31465246u||h[1]!=1||h[2]!=unsigned(x)||h[3]!=unsigned(y)||h[4]>4096||h[5]>8192||uint64_t(bytes)!=1048ull+20ull*h[4]+24ull*h[5])return false;
     Tile t;t.x=x;t.y=y;if(std::fread(t.zones.data(),4,256,file)!=256)return false;
-    t.water.resize(h[4]);t.indoors.resize(h[5]);
-    for(auto& w:t.water){if(std::fread(&w.x,4,3,file)!=3||std::fread(&w.mask,8,1,file)!=1)return false;
+    t.water.resize(h[4]);
+    static_assert(std::is_trivially_copyable<Water>::value&&sizeof(Water)>=20,"Water records fit in vector storage");
+    if(!t.water.empty()&&std::fread(t.water.data(),20,t.water.size(),file)!=t.water.size())return false;
+    // Expand packed file records backwards so padding cannot overwrite unread records.
+    for(size_t i=t.water.size();i-- > 0;){const auto* bytes=reinterpret_cast<const unsigned char*>(t.water.data())+20*i;float values[3];uint64_t mask;
+        std::memcpy(values,bytes,12);std::memcpy(&mask,bytes+12,8);auto& w=t.water[i];w.x=values[0];w.y=values[1];w.height=values[2];w.mask=mask;}
+    for(const auto& w:t.water){
         if(!std::isfinite(w.x)||!std::isfinite(w.y)||!std::isfinite(w.height)||std::fabs(w.x)>100000||std::fabs(w.y)>100000||std::fabs(w.height)>100000)return false;}
-    for(auto& b:t.indoors){if(std::fread(b.low,4,3,file)!=3||std::fread(b.high,4,3,file)!=3)return false;
-        for(unsigned k=0;k<3;++k)if(!std::isfinite(b.low[k])||!std::isfinite(b.high[k])||b.low[k]>b.high[k]||std::fabs(b.low[k])>100000||std::fabs(b.high[k])>100000)return false;}
+    t.indoors.resize(h[5]);
+    static_assert(sizeof(Indoor)==24&&offsetof(Indoor,low)==0&&offsetof(Indoor,high)==12,"Indoor file record layout");
+    if(!t.indoors.empty()&&std::fread(t.indoors.data(),sizeof(Indoor),t.indoors.size(),file)!=t.indoors.size())return false;
+    for(const auto& b:t.indoors)for(unsigned k=0;k<3;++k)
+        if(!std::isfinite(b.low[k])||!std::isfinite(b.high[k])||b.low[k]>b.high[k]||std::fabs(b.low[k])>100000||std::fabs(b.high[k])>100000)return false;
     out=std::move(t);return true;
 }
 // cacheDirectory is CLIENT/world-cache/fog. Unknown maps return an empty region
@@ -80,16 +103,19 @@ inline Region loadRegion(const std::string& cacheDirectory,const std::string& ma
     int tx=int(std::floor((WorldZero-y)/TileSize)),ty=int(std::floor((WorldZero-x)/TileSize));
     for(int yy=ty-1;yy<=ty+1;++yy)for(int xx=tx-1;xx<=tx+1;++xx){
         std::string path=cacheDirectory+"/"+map+"/"+std::to_string(xx)+"_"+std::to_string(yy)+".frf";Tile tile;
-        if(loadTile(path,xx,yy,tile))r.tiles.push_back(std::move(tile));else ++r.missing;
+        if(loadTile(path,xx,yy,tile)){if(r.tiles.size()==8)r.tiles.reserve(9);r.tiles.push_back(std::move(tile));}else ++r.missing;
     }
     return r;
 }
-inline uint32_t zoneAt(const Region& region,float x,float y){
-    if(!std::isfinite(x)||!std::isfinite(y)||std::fabs(x)>100000||std::fabs(y)>100000)return 0;
-    int gx=int(std::floor((WorldZero-y)/ChunkSize)),gy=int(std::floor((WorldZero-x)/ChunkSize));
-    int tx=int(std::floor(double(gx)/16)),ty=int(std::floor(double(gy)/16));
+inline uint32_t zoneAtChunk(const Region& region,int gx,int gy){
+    // Chunk indices are bounded by the input guard; division rounds toward zero.
+    int tx=(gx-(gx<0?15:0))/16,ty=(gy-(gy<0?15:0))/16;
     unsigned ix=unsigned(gx-tx*16),iy=unsigned(gy-ty*16);
     for(const auto& tile:region.tiles)if(tile.x==tx&&tile.y==ty)return tile.zones[iy*16+ix];return 0;
+}
+inline uint32_t zoneAt(const Region& region,float x,float y){
+    if(!std::isfinite(x)||!std::isfinite(y)||std::fabs(x)>100000||std::fabs(y)>100000)return 0;
+    return zoneAtChunk(region,chunkIndex(y),chunkIndex(x));
 }
 inline bool indoorColumn(const Region& region,float x,float y,float ground){
     // Inflate each authored indoor GROUP footprint by one sample spacing. This
@@ -108,7 +134,7 @@ inline float wetness(const Region& region,float x,float y,float ground,float& su
         if(!w.mask||std::fabs(ground-w.height)>8)continue;
         float dx=std::max({float(w.x-ChunkSize)-x,0.f,x-w.x}),dy=std::max({float(w.y-ChunkSize)-y,0.f,y-w.y});
         if(dx*dx+dy*dy>=best)continue;
-        for(unsigned row=0;row<8;++row)if((w.mask>>(row*8))&0xff)for(unsigned col=0;col<8;++col)if(w.mask&(uint64_t(1)<<(row*8+col))){
+        for(unsigned row=0;row<8;++row)if(const unsigned bits=unsigned(w.mask>>(row*8))&0xff)for(unsigned col=0;col<8;++col)if(bits&(1u<<col)){
             float highX=float(w.x-row*Unit),lowX=float(w.x-(row+1)*Unit),highY=float(w.y-col*Unit),lowY=float(w.y-(col+1)*Unit);
             float a=std::max({lowX-x,0.f,x-highX}),b=std::max({lowY-y,0.f,y-highY});float distance=a*a+b*b;
             if(distance<best){best=distance;if(distance==0){surface=std::max(ground,w.height);return 1;}}
@@ -179,15 +205,22 @@ inline Texel policy(uint32_t zone,float ground,float wet,float basin,bool indoor
 inline bool cityZone(uint32_t zone){return zone==1519||zone==1637;}
 // Match the geometry sampler's bilinear alpha test. A cutout in a city roof
 // must not raise the fog floor into empty space. Runtime FGS3 defaults wrap.
-inline bool cityOpaqueAt(const NorthlightGI::WorldMaterial& m,float u,float v){
-    if(m.rgba.empty()||m.alphaCutoff<=0)return true;
+__attribute__((noinline)) inline bool cityOpaqueTexturedAt(const NorthlightGI::WorldMaterial& m,float u,float v){
     if(!m.width||!m.height||m.rgba.size()!=size_t(m.width)*m.height*4||!std::isfinite(u)||!std::isfinite(v))return false;
-    auto coord=[](float p,uint32_t mode){if(mode==3)return std::clamp(p,0.f,1.f);if(mode==2){float q=p-2*std::floor(p*.5f);return q<=1?q:2-q;}return p-std::floor(p);};
+    auto coord=[](float p,uint32_t mode){if(mode==3)return std::clamp(p,0.f,1.f);auto floorFast=[](float x){if(x>=-32768.f&&x<=32768.f){int i=int(x);return float(i-(x<float(i)));}return std::floor(x);};if(mode==2){float q=p-2*floorFast(p*.5f);return q<=1?q:2-q;}return p-floorFast(p);};
     auto texel=[](int i,unsigned size,uint32_t mode){return mode==1?unsigned((i+int(size))%int(size)):unsigned(std::clamp(i,0,int(size)-1));};
     float x=coord(u,m.addressU)*m.width-.5f,y=coord(v,m.addressV)*m.height-.5f;
-    int ix=int(std::floor(x)),iy=int(std::floor(y));float fx=x-std::floor(x),fy=y-std::floor(y),alpha=0;
-    for(int j=0;j<2;++j)for(int i=0;i<2;++i)alpha+=m.rgba[(size_t(texel(iy+j,m.height,m.addressV))*m.width+texel(ix+i,m.width,m.addressU))*4+3]/255.f*(i?fx:1-fx)*(j?fy:1-fy);
+    // Normal-size textures have coordinates in [-.5, 65535), so truncation plus the negative correction is floor.
+    const bool small=m.width<=65535&&m.height<=65535;
+    const float flx=small?float(int(x)-(x<0)):std::floor(x),fly=small?float(int(y)-(y<0)):std::floor(y);
+    int ix=int(flx),iy=int(fly);float fx=x-flx,fy=y-fly,alpha=0;
+    const unsigned xs[2]={texel(ix,m.width,m.addressU),texel(ix+1,m.width,m.addressU)},ys[2]={texel(iy,m.height,m.addressV),texel(iy+1,m.height,m.addressV)};
+    for(int j=0;j<2;++j)for(int i=0;i<2;++i)alpha+=m.rgba[(size_t(ys[j])*m.width+xs[i])*4+3]/255.f*(i?fx:1-fx)*(j?fy:1-fy);
     return alpha>=m.alphaCutoff;
+}
+inline bool cityOpaqueAt(const NorthlightGI::WorldMaterial& m,float u,float v){
+    if(m.rgba.empty()||m.alphaCutoff<=0)return true;
+    return cityOpaqueTexturedAt(m,u,v);
 }
 // originX/Y are the WORLD POSITION OF TEXEL(0,0)'S CENTER. Shader UV is
 // (worldXY-originXY)/(N*Spacing)+0.5/N. Two outer sample rows fade to zero.
@@ -202,7 +235,7 @@ inline Field buildField(const NorthlightGI::WorldScene& scene,const Region& regi
     int previousRow=INT_MIN;
     if(!region.tiles.empty())for(unsigned y=0;y<N;++y){
         int previous=INT_MIN;uint32_t zone=0;const float py=out.originY+y*Spacing;
-        const int row=std::fabs(py)>100000?INT_MIN:int(std::floor((WorldZero-py)/ChunkSize));
+        const int row=std::fabs(py)>100000?INT_MIN:chunkIndex(py);
         if(y&&row!=INT_MIN&&row==previousRow){
             for(unsigned x=0;x<N;++x){std::memcpy(&out.texels[y*N+x].ground,&out.texels[(y-1)*N+x].ground,sizeof(uint32_t));city[y*N+x]=city[(y-1)*N+x];}
             continue;
@@ -210,7 +243,7 @@ inline Field buildField(const NorthlightGI::WorldScene& scene,const Region& regi
         previousRow=row;
         for(unsigned x=0;x<N;++x){
             const float px=out.originX+x*Spacing;
-            const int chunk=std::fabs(px)>100000||std::fabs(py)>100000?INT_MIN:int(std::floor((WorldZero-px)/ChunkSize));
+            const int chunk=std::fabs(px)>100000||std::fabs(py)>100000?INT_MIN:chunkIndex(px);
             if(chunk==INT_MIN||chunk!=previous){zone=zoneAt(region,px,py);previous=chunk;}
             std::memcpy(&out.texels[y*N+x].ground,&zone,sizeof zone);city[y*N+x]=cityZone(zone);hasCity|=city[y*N+x];
         }

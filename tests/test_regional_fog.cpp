@@ -1,4 +1,4 @@
-#include "regional_fog.h"
+#include "regional_fog_cache.h"
 #include <cassert>
 #include <chrono>
 #include <cstdio>
@@ -9,6 +9,24 @@ static NorthlightGI::WorldScene plane(float cx,float cy,bool terrain=true){North
  for(auto p:std::array<std::array<float,2>,4>{{{{-400,-400}},{{400,-400}},{{400,400}},{{-400,400}}}})s.vertices.push_back({{cx+p[0],cy+p[1],100+p[0]*.02f},{0,0,1},0,0});
  s.triangles.push_back({0,1,2,0});s.triangles.push_back({0,2,3,0});return s;}
 int main(int argc,char** argv){
+ // Floor division at negative tile and chunk boundaries matches the original lookup.
+ auto referenceZone=[](const Region& r,float x,float y){if(!std::isfinite(x)||!std::isfinite(y)||std::fabs(x)>100000||std::fabs(y)>100000)return uint32_t(0);
+   int gx=int(std::floor((WorldZero-y)/ChunkSize)),gy=int(std::floor((WorldZero-x)/ChunkSize));int tx=int(std::floor(double(gx)/16)),ty=int(std::floor(double(gy)/16));
+   unsigned ix=unsigned(gx-tx*16),iy=unsigned(gy-ty*16);for(const auto& t:r.tiles)if(t.x==tx&&t.y==ty)return t.zones[iy*16+ix];return uint32_t(0);};
+ for(int gx:{-2480,-17,-16,-15,-1,0,1,15,16,17,512,3500})for(int gy:{-2480,-17,-16,-1,0,1,15,16,17,3500}){
+   float x=float(WorldZero-gy*ChunkSize),y=float(WorldZero-gx*ChunkSize);auto r=region(x,y,0);
+   for(unsigned t=0;t<r.tiles.size();++t)for(unsigned z=0;z<256;++z)r.tiles[t].zones[z]=1+t*256+z;
+   for(float dx:{-.01f,0.f,.01f})for(float dy:{-.01f,0.f,.01f})assert(zoneAt(r,x+dx,y+dy)==referenceZone(r,x+dx,y+dy));}
+ // City preflight visits each relevant zone chunk without changing its result.
+ auto naiveCity=[](const Region& r,float x,float y){const float ox=std::floor(x/Spacing)*Spacing-float(N/2)*Spacing,oy=std::floor(y/Spacing)*Spacing-float(N/2)*Spacing;
+   for(unsigned row=0;row<N;++row)for(unsigned col=0;col<N;++col)if(cityZone(zoneAt(r,ox+col*Spacing,oy+row*Spacing)))return true;return false;};
+ uint32_t seed=0x732981;auto next=[&](){seed^=seed<<13;seed^=seed>>17;seed^=seed<<5;return seed;};
+ for(unsigned k=0;k<500;++k){float x=float(int(next()%199999)-99999),y=float(int(next()%199999)-99999);auto r=region(x,y,12);
+   for(auto& tile:r.tiles)for(auto& zone:tile.zones){unsigned n=next()%2048;zone=n==0?1519:n==1?1637:12;}
+   assert(cityInField(r,x,y)==naiveCity(r,x,y));}
+ for(float x:{-100001.f,-100000.f,0.f,100000.f,100001.f,std::numeric_limits<float>::infinity(),std::numeric_limits<float>::quiet_NaN()})
+   for(float y:{-100001.f,-100000.f,0.f,100000.f,100001.f,std::numeric_limits<float>::quiet_NaN()}){auto r=region(0,0,1519);assert(cityInField(r,x,y)==naiveCity(r,x,y));}
+ {Region empty;for(float x:{-100000.f,0.f,100000.f,std::numeric_limits<float>::quiet_NaN()})for(float y:{-100000.f,0.f,100000.f,std::numeric_limits<float>::infinity()})assert(!cityInField(empty,x,y));}
  // Bounds enclose the shader's normalized bilinear ground and finite layer.
  // Include tiny valid weights: its 1e-6 reciprocal floor tends toward zero.
  {Field f;for(unsigned mask=0;mask<16;++mask){

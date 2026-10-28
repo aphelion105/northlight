@@ -8,10 +8,24 @@
 namespace NorthlightRegionalFog {
 constexpr float RefreshDistance=64.f;
 inline bool cityInField(const Region& region,float x,float y){
+    if(region.tiles.empty())return false;
     const float originX=std::floor(x/Spacing)*Spacing-float(N/2)*Spacing;
     const float originY=std::floor(y/Spacing)*Spacing-float(N/2)*Spacing;
-    for(unsigned row=0;row<N;++row)for(unsigned column=0;column<N;++column)
-        if(cityZone(zoneAt(region,originX+column*Spacing,originY+row*Spacing)))return true;
+    if(cityZone(zoneAt(region,originX,originY)))return true;
+    int previousRow=INT_MIN;int columns[N];unsigned count=0;bool columnsReady=false;
+    for(unsigned row=0;row<N;++row){
+        const float py=originY+row*Spacing;if(!std::isfinite(py)||std::fabs(py)>100000)continue;
+        const int rowChunk=chunkIndex(py);if(rowChunk==previousRow)continue;previousRow=rowChunk;
+        if(columnsReady){for(unsigned i=0;i<count;++i)if(cityZone(zoneAtChunk(region,rowChunk,columns[i])))return true;}
+        else{int previousColumn=INT_MIN;
+            for(unsigned column=0;column<N;++column){
+                const float px=originX+column*Spacing;if(!std::isfinite(px)||std::fabs(px)>100000)continue;
+                const int chunk=chunkIndex(px);if(chunk==previousColumn)continue;previousColumn=chunk;
+                columns[count++]=chunk;if(cityZone(zoneAtChunk(region,rowChunk,chunk)))return true;
+            }
+            columnsReady=true;
+        }
+    }
     return false;
 }
 inline bool buildCachedField(const std::string& cache,const std::string& map,NorthlightGI::Vec3 center,const Region& region,
