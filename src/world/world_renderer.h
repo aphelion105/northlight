@@ -1679,7 +1679,7 @@ private:
                 }
                 noteLocalAllocationFailure();
                 if(localBuilt)localDeferred=false;
-                if(!localBuilt||!replacement->triangleCount()){
+                if(!localBuilt){
                     replacement.reset();
                     if(localDeferred){resetPreparation();liftEntry("local-geometry",localRequired,localSample.available,localLargest);stallBegin("local-geometry",localSample,localRequired,localLargest);deferBuild("local-geometry-retry",workerMemory(),1000);continue;}
                     result->message=error.empty()?"No cached geometry for "+r.map:error;publishError();continue;

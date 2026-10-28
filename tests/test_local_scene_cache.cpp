@@ -72,6 +72,14 @@ static void fixtures(const fs::path& root){
     assert(paged.scene().vertices.chunked()&&paged.scene().triangles.chunked()&&!paged.scene().vertices.data());sceneEqual(expected,paged.scene());
     for(unsigned i=0;i<200;++i){const Vec3 origin(float(i%20)*8-80,float(i/20)*8-40,100);hitEqual(result.trace(origin,{0,0,-1},0,700),paged.trace(origin,{0,0,-1},0,700));assert(result.occluded(origin,{0,0,-1},700,0)==paged.occluded(origin,{0,0,-1},700,0));}
     assert(!pagedCache.build(files,models,"fragmented",{-288,-288,-320},{288,288,320},paged,error,[](uint64_t n){return n<1024u*1024u;},false,{}, {},true));sceneEqual(expected,paged.scene());
+    // Valid tiles can have no geometry in a high-altitude local box. An empty BVH
+    // must trace safely while the separate terrain shadow scene remains available.
+    LocalSceneCache skyCache;BVH sky;assert(skyCache.build(files,models,"fragmented",{-288,-288,680},{288,288,1320},sky,error,{},true,{}, {},true));
+    assert(!sky.triangleCount()&&sky.scene().triangles.empty());
+    assert(!sky.trace({0,0,1000},{0,0,-1},0,700).hit&&!sky.occluded({0,0,1000},{0,0,-1},700,0));
+    BVH empty;assert(empty.build(WorldScene{},error));hitEqual(empty.trace({0,0,1000},{0,0,-1},0,700),sky.trace({0,0,1000},{0,0,-1},0,700));
+    Lighting light;const auto expectedSky=solveProbe(empty,{0,0,1000},light,32,1),actualSky=solveProbe(sky,{0,0,1000},light,32,1);
+    assert(expectedSky.valid==actualSky.valid);for(unsigned i=0;i<4;++i)assert(exact(expectedSky.sh[i],actualSky.sh[i]));
     std::puts("PASS fragmented local scene: bounded allocation preserves geometry and refuses safely below the required size");
 }
 int main(int argc,char** argv){

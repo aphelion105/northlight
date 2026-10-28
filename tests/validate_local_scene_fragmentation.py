@@ -39,6 +39,8 @@ s=s.replace('plan,error,{},radius,{},true,&local,&preparation','plan,error,admis
 s=s.replace('terrain,error,1,{},terrainFilter','terrain,error,1,admission,terrainFilter')
 s=s.replace('pages,error,{},options','pages,error,admission,options')
 s=s.replace('        double localMs=ms(t);t=Clock::now();','        std::printf("LOCAL_CHUNKED mode=%u vertices=%zu triangles=%zu refusals=%u\\n",unsigned(fragmented),local.scene().vertices.size(),local.scene().triangles.size(),refusals);\n        double localMs=ms(t);t=Clock::now();')
+# The worker drops the temporary source terrain after the shadow plan owns its data.
+s=s.replace('        double planMs=ms(t);t=Clock::now();NorthlightWorldMeshPages::Plan pages;', '        terrain=WorldScene{};double planMs=ms(t);t=Clock::now();NorthlightWorldMeshPages::Plan pages;')
 s=s.replace('        Hash localHash,planHash,pageHash,rayHash,bakeHash;',r'''        {auto current=physicalSample();minimum=std::min(minimum,current.available);std::printf("SAMPLED_MINIMUM freeMiB=%.3f\n",double(minimum)/MiB);assert(minimum>=ProcessReserve);}
         Hash indexDebug,batchDebug,materialDebug,chunkDebug,recordDebug;
         indexDebug.word(plan.pagingIndexCount());for(size_t n=0;n<plan.pagingIndexCount();++n)indexDebug.word(plan.pagingIndex(n));

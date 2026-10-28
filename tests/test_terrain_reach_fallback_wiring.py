@@ -88,3 +88,6 @@ print('terrain reach fallback wiring PASS')
 assert 'formatLargestMiB(largest,sizeof largest,sample.largest,exactLargest)' in w and 'largestFreeMiB=%s' in w and 'largestFreeMiB=%llu' not in w
 assert 'refused=%s need=%llu' in w and w.count('refused=%s need=%llu') == 2
 assert 'inline Refusal refusal(Sample sample,Budget budget)' in g and '">=%llu"' in g
+
+# A valid empty local region (for example high above terrain) still reaches the distant shadow build.
+assert "if(!localBuilt){" in w and "!replacement->triangleCount()" not in w
