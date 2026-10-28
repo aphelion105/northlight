@@ -108,6 +108,8 @@ static NorthlightGI::WorldScene fixtureScene(V c){
 static NorthlightGI::Lighting fixtureLight(){NorthlightGI::Lighting l;l.sunDirection=V(.3f,.2f,.93f);l.sunIrradiance=V(3,2.9f,2.7f);l.skyRadiance=V(.4f,.5f,.7f);l.maxBounces=3;
  l.additionalDirections.push_back({V(0,0,1),V()});return l;}
 struct Fixture {
+ struct GpuScene {std::shared_ptr<void> workerPreparation;};
+ std::shared_ptr<GpuScene> gpuScene=std::make_shared<GpuScene>();
  struct PreparedCommit {int tag=0;};
 SNAPSHOT
 REQUEST

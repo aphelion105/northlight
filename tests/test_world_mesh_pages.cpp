@@ -295,7 +295,7 @@ static void testCompactSource(){
     input.vertexBytes=96;input.indexBytes=12;for(auto& m:input.materials)m.bgra={255,255,255,255};
     std::string error;P::Plan reference;assert(P::build(input,reference,error));
     const auto* vertices=scene->vertices.data();
-    input.pagingVertices=std::make_shared<const std::vector<WorldVertex>>(std::move(scene->vertices));
+    input.pagingVertices=std::make_shared<const std::vector<WorldVertex>>(std::move(*scene->vertices.flat()));
     input.completePlacements=std::move(scene->completePlacements);input.source=nullptr;scene.reset();
     assert(input.verticesForPaging()->data()==vertices);
     auto pages=std::make_shared<P::Plan>();assert(P::build(input,*pages,error));

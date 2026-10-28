@@ -57,6 +57,7 @@ test_client_config.py
 test_client_identity.py
 test_client_image.py
 test_client_latency_diagnostics.py
+test_chunked_local_entry.py
 test_cloud_noise_admission.py
 test_cloud_noise_worker.py
 test_colour_tent_2d.py

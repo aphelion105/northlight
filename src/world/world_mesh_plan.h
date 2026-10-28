@@ -132,7 +132,7 @@ struct WorldMeshUploadPlan {
     std::shared_ptr<const ChunkedBuffer<NorthlightGI::WorldVertex>> pagingChunks;
     std::shared_ptr<const ChunkedBuffer<uint32_t>> pagingIndices;
     const std::vector<NorthlightGI::WorldVertex>* verticesForPaging()const{
-        return pagingVertices?pagingVertices.get():(source?&source->vertices:nullptr);
+        return pagingVertices?pagingVertices.get():(source?source->vertices.flat():nullptr);
     }
     bool hasPagingVertices()const{return pagingChunks||verticesForPaging();}
     size_t pagingVertexCount()const{return pagingChunks?pagingChunks->size():(verticesForPaging()?verticesForPaging()->size():0);}

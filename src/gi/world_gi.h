@@ -1,4 +1,5 @@
 #pragma once
+#include "adaptive_geometry_array.h"
 
 #include <cstdint>
 #include <functional>
@@ -64,21 +65,21 @@ struct SourcePieceRange {
 };
 struct WorldScene {
     uint64_t sourceIdentity=0; // Validated decoded-source revision; 0 means unknown.
-    std::vector<WorldVertex> vertices;
-    std::vector<WorldTriangle> triangles;
+    AdaptiveGeometryArray<WorldVertex> vertices;
+    AdaptiveGeometryArray<WorldTriangle> triangles;
     std::vector<WorldMaterial> materials;
     std::vector<WorldPlacementCoverage> completePlacements;
     std::vector<SourcePieceRange> sourcePieces; // Lightweight loader provenance; no raw source ownership.
     // Dynamic storage only: the containing BVH/cache already counts the object.
     void accountMemory(NorthlightMemoryFootprint::Counter& memory)const {
         using namespace NorthlightMemoryFootprint;
-        memory.vector(Vertices,vertices);memory.vector(Triangles,triangles);memory.vector(Metadata,materials);
+        vertices.accountMemory(memory,Vertices);triangles.accountMemory(memory,Triangles);memory.vector(Metadata,materials);
         for(const auto& material:materials)memory.vector(Texels,material.rgba);
         memory.vector(Metadata,completePlacements);for(const auto& p:completePlacements)memory.string(p.modelKey);
         memory.vector(Metadata,sourcePieces);for(const auto& p:sourcePieces){memory.string(p.placement.modelKey);memory.vector(Metadata,p.materialMap);}
     }
     size_t retainedBytes()const {
-        size_t n=sizeof(*this)+vertices.capacity()*sizeof(WorldVertex)+triangles.capacity()*sizeof(WorldTriangle)+materials.capacity()*sizeof(WorldMaterial)+completePlacements.capacity()*sizeof(WorldPlacementCoverage);
+        size_t n=sizeof(*this)+vertices.capacity()*sizeof(WorldVertex)+vertices.overhead()+triangles.capacity()*sizeof(WorldTriangle)+triangles.overhead()+materials.capacity()*sizeof(WorldMaterial)+completePlacements.capacity()*sizeof(WorldPlacementCoverage);
         for(const auto& m:materials)n+=m.rgba.capacity();
         for(const auto& p:completePlacements)n+=p.modelKey.capacity();
         n+=sourcePieces.capacity()*sizeof(SourcePieceRange);
@@ -170,7 +171,7 @@ public:
     // fast=false (northlight-quality GIFastBVH=0) builds the 0.3.137 median tree;
     // every RayHit and Probe is then bit-identical to 0.3.137. fast=true builds
     // the SAH tree: equal-distance ties go to the lowest triangle index.
-    bool build(WorldScene&& scene, std::string& error, bool fast = true);
+    bool build(WorldScene&& scene, std::string& error, bool fast = true,const AllocationAdmission& admit = {});
     // Direction is normalized internally, so distances are in world units.
     // Surfaces are double-sided; texture alpha cutouts apply to every ray type.
     RayHit trace(Vec3 origin, Vec3 direction, float minDistance = .001f,
@@ -198,7 +199,7 @@ private:
     std::vector<PieceReference> pieces_;
     std::vector<uint32_t> regionOrder_;
     bool region_=false;size_t regionTriangles_=0;
-    bool buildImpl(WorldScene&&,std::string&,bool,std::shared_ptr<const MaterialBank>,std::vector<uint32_t>);
+    bool buildImpl(WorldScene&&,std::string&,bool,std::shared_ptr<const MaterialBank>,std::vector<uint32_t>,const AllocationAdmission& admit={});
     bool buildRegion(WorldScene&&,std::vector<PieceReference>&&,std::string&,const AllocationAdmission&,const std::shared_ptr<SceneMemoryBudget>&);
     void buildSahTree();
     void shadeHit(RayHit&,Vec3 origin,Vec3 direction,uint32_t triangle,float u,float v,float distance)const;
@@ -211,17 +212,17 @@ private:
     struct Pair { float axis[3][4]; uint32_t child[2]; uint32_t pad[2]; };
     static constexpr uint32_t LeafBit = 0x80000000u;
     WorldScene scene_;
-    std::vector<Node> nodes_;
-    std::vector<Pair> pairs_;
-    std::vector<Pair> regionPairs_;
+    AdaptiveGeometryArray<Node> nodes_;
+    AdaptiveGeometryArray<Pair> pairs_;
+    AdaptiveGeometryArray<Pair> regionPairs_;
     Vec3 regionLow_,regionHigh_;uint32_t regionRoot_=0;
     Vec3 rootLow_, rootHigh_;
     uint32_t root_ = 0, depth_ = 0;
     bool sah_ = false;
-    std::vector<uint32_t> order_;
+    AdaptiveGeometryArray<uint32_t> order_;
     // Per material: no bilinear alpha sample can be below alphaCutoff.
     std::vector<uint8_t> opaque_;
-    std::vector<Vec3> centers_; // build-time only
+    AdaptiveGeometryArray<Vec3> centers_; // build-time only
     uint32_t partition(uint32_t start, uint32_t count, Vec3& low, Vec3& high);
     struct BuildBox { Vec3 low, high, cl, ch; };
     BuildBox bounds(uint32_t start, uint32_t count) const;
@@ -258,7 +259,7 @@ public:
     bool build(const std::vector<std::string>& tiles,const std::string& modelDirectory,
                const std::string& map,Vec3 low,Vec3 high,BVH& output,
                std::string& error,const AllocationAdmission& admit={},bool fast=true,
-               const SceneSourceProvider& sourceProvider={},const SceneSourceRevision& sourceRevision={});
+               const SceneSourceProvider& sourceProvider={},const SceneSourceRevision& sourceRevision={},bool chunked=false);
     void reset();
     const Stats& stats() const;
 private:

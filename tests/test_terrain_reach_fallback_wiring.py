@@ -28,7 +28,7 @@ assert 'logGeometryMemory("after-bvh"' in plan and 'liftEntry("plan",planBudget.
 # Stage entry keeps the full entry budget, raised by entryLift after a refusal that followed entry.
 entry = body('auto memory=workerMemory(entryLift.apply(NorthlightGeometryMemory::buildBudget(64', 'stallBegin("build-deferred"')
 assert entry.count('NorthlightGeometryMemory::buildBudget(') >= 2 and 'inBuildBudget(' not in entry
-assert 'const auto entryBudget=entryLift.apply(plainEntry,GetTickCount());' in entry
+assert 'auto entryBudget=entryLift.apply(plainEntry,GetTickCount());' in entry
 # Small shortfalls may reclaim raw payloads first. Every step resamples the same
 # admission floor, including any lift; complete reset remains the final fallback.
 assert 'if(!NorthlightGeometryMemory::admits(memory,entryBudget)){' in entry
@@ -52,13 +52,13 @@ assert 'geometryMemoryDemand.store(0,' in body('auto stallEnd=', '};')
 # Extended reach is restored only when an entry sample covers what the refused attempt lacked.
 assert 'NorthlightTerrainReach::choose(reachState,profileReach,GetTickCount(),entryAvailable,entryLargest)' in w
 assert 'memoryRefused(reachState,reach,GetTickCount(),restore,terrainRequiredLargest)' in w
-assert 'entryLift.clear();reachState={};' in w  # a map change forgets both
+assert 'entryLift.clear();chunkLift.clear();reachState={};' in w  # a map change forgets both
 # Entry admitted: the build's own allocations are not a demand on the guard.
 assert 'geometryMemoryDemand.store(0,' in body('const uint64_t entryAvailable=', 'auto liftEntry')
 assert 'localSample=sample' in w and 'plan-deferred' in w
 # A real allocator failure must reach the same bounded retry as an admission refusal.
 for error in ('Geometry allocation deferred', 'Paged mesh worker allocation failed', 'paged ownership allocation failed'):
-    block=body('error=="'+error+'"', '}')
+    block=body('!terrainDeferred&&error=="'+error+'"', '}')
     assert 'NorthlightGeometryMemory::inBuildBudget()' in block and 'terrainSample=workerMemory(budget)' in block
     assert 'terrainDeferred=true' in block and 'terrainRequired=budget.available' in block and 'terrainRequiredLargest=budget.largest' in block
 assert 'BaseReach=928.f' in f and 'BackoffMs=30000' in f and '#include <windows.h>' not in f

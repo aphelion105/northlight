@@ -67,6 +67,11 @@ static void fixtures(const fs::path& root){
     assert(cache.build(files,models,"fragmented",{-288,-288,-320},{288,288,320},result,error,[&](uint64_t n){if(n>300000){++refused;return false;}return true;},false));
     sceneEqual(expected,result.scene());assert(!refused);
     LocalSceneCache stricter;assert(!stricter.build(files,models,"fragmented",{-288,-288,-320},{288,288,320},result,error,[](uint64_t n){return n<=250000;},false));sceneEqual(expected,result.scene());
+    LocalSceneCache pagedCache;BVH paged;
+    assert(pagedCache.build(files,models,"fragmented",{-288,-288,-320},{288,288,320},paged,error,[](uint64_t n){return n<=2u*1024u*1024u;},false,{}, {},true));
+    assert(paged.scene().vertices.chunked()&&paged.scene().triangles.chunked()&&!paged.scene().vertices.data());sceneEqual(expected,paged.scene());
+    for(unsigned i=0;i<200;++i){const Vec3 origin(float(i%20)*8-80,float(i/20)*8-40,100);hitEqual(result.trace(origin,{0,0,-1},0,700),paged.trace(origin,{0,0,-1},0,700));assert(result.occluded(origin,{0,0,-1},700,0)==paged.occluded(origin,{0,0,-1},700,0));}
+    assert(!pagedCache.build(files,models,"fragmented",{-288,-288,-320},{288,288,320},paged,error,[](uint64_t n){return n<1024u*1024u;},false,{}, {},true));sceneEqual(expected,paged.scene());
     std::puts("PASS fragmented local scene: bounded allocation preserves geometry and refuses safely below the required size");
 }
 int main(int argc,char** argv){

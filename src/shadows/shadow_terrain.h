@@ -186,7 +186,7 @@ template<class Scene> inline bool buildImpl(const NorthlightGI::WorldScene& loca
         // The unique merged scene is temporary. Its triangles are now packed
         // in plan.indices; retaining both through paging costs tens of MiB in
         // cities. Move vertices/proofs, then destroy the unused scene here.
-        plan.pagingVertices=std::make_shared<const std::vector<NorthlightGI::WorldVertex>>(std::move(merged->vertices));
+        plan.pagingVertices=std::make_shared<const std::vector<NorthlightGI::WorldVertex>>(std::move(*merged->vertices.flat()));
         plan.completePlacements=std::move(merged->completePlacements);plan.source=nullptr;
     }else plan.ownedSource=merged;
     }else{

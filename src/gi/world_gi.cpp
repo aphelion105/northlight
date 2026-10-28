@@ -97,8 +97,12 @@ static bool readScene(const char* path,WorldScene& output,std::string& error,con
     try {
         auto allowed=[&](uint64_t bytes){if(!admit||admit(bytes))return true;error="Geometry allocation deferred";return false;};
         if(!materialsOnly){
-            if(!allowed(uint64_t(nv)*sizeof(WorldVertex)))return false;s.vertices.resize(nv);
-            if(!allowed(uint64_t(nt)*sizeof(WorldTriangle)))return false;s.triangles.resize(nt);
+            auto resizeGeometry=[&](auto& values,size_t count){
+                using T=typename std::decay_t<decltype(values)>::value_type;
+                if(!allowed(uint64_t(count)*sizeof(T))){values.chunks(&admit);error.clear();}
+                try{values.resize(count);}catch(const std::bad_alloc&){if(values.chunked())throw;values.chunks(&admit);values.resize(count);}
+            };
+            resizeGeometry(s.vertices,nv);resizeGeometry(s.triangles,nt);
         }
         if(!allowed(uint64_t(nm)*sizeof(WorldMaterial)))return false;s.materials.resize(nm);
     }
@@ -113,7 +117,12 @@ static bool readScene(const char* path,WorldScene& output,std::string& error,con
         // FGS2 matches these plain little-endian records. Read once, then retain
         // every validation performed by the scalar portable decoder below.
         static_assert(std::is_trivially_copyable<WorldVertex>::value&&std::is_trivially_copyable<WorldTriangle>::value,"FGS2 bulk records must be plain values");
-        if(!r.bytes(s.vertices.data(),s.vertices.size()*sizeof(WorldVertex))||!r.bytes(s.triangles.data(),s.triangles.size()*sizeof(WorldTriangle))){error="Invalid/truncated FGS2 geometry";return false;}
+        if(!s.vertices.chunked()&&!s.triangles.chunked()){
+            if(!r.bytes(s.vertices.data(),s.vertices.size()*sizeof(WorldVertex))||!r.bytes(s.triangles.data(),s.triangles.size()*sizeof(WorldTriangle))){error="Invalid/truncated FGS2 geometry";return false;}
+        }else{
+            for(auto& v:s.vertices)if(!r.bytes(&v,sizeof v)){error="Invalid/truncated FGS2 geometry";return false;}
+            for(auto& t:s.triangles)if(!r.bytes(&t,sizeof t)){error="Invalid/truncated FGS2 geometry";return false;}
+        }
         for(const auto& v:s.vertices)if(!finite(v.position)||!finite(v.normal)||!std::isfinite(v.u)||!std::isfinite(v.v)){error="Invalid/truncated FGS2 vertex";return false;}
         for(const auto& t:s.triangles)if(t.v0>=nv||t.v1>=nv||t.v2>=nv||t.material>=nm){error="Invalid/truncated FGS2 triangle";return false;}
     }else{
@@ -143,7 +152,7 @@ static bool readScene(const char* path,WorldScene& output,std::string& error,con
         m.albedo=reflectance(m.albedo);
     }
     if(r.remaining){error="Unexpected trailing FGS2 data";return false;}
-    output=std::move(s);return true;
+    s.vertices.detachAdmission();s.triangles.detachAdmission();output=std::move(s);return true;
 }
 
 bool loadScene(const char* path,WorldScene& output,std::string& error,const AllocationAdmission& admit){return readScene(path,output,error,admit,false);}
@@ -220,14 +229,22 @@ struct TerrainRun {int x=-1,y=-1;uint32_t first=0,count=0;uint64_t membership[2]
 bool appendInstance(const WorldScene& model,const Instance& instance,Vec3 low,Vec3 high,WorldScene& result,
                     std::vector<uint32_t>& materialRemap,uint64_t& textureBytes,std::string& error,const AllocationAdmission& admit,const std::function<bool(Vec3,Vec3)>& terrainChunkFilter = {},size_t hintVertices = 0,size_t hintTriangles = 0,bool copyTextures=true,uint64_t* membership=nullptr,std::vector<TerrainRun>* terrainRuns=nullptr,bool completeTerrainRuns=true,const std::string* modelKey=nullptr){
     float normal[9];if(!normalMatrix(instance.matrix,normal)){error="FGS3 singular instance transform";return false;}
-    if(admit&&!admit(model.vertices.size()*sizeof(uint32_t))){error="Geometry allocation deferred";return false;}
-    std::vector<uint32_t> remap(model.vertices.size(),UINT32_MAX);
+    AdaptiveGeometryArray<uint32_t> remap;
+    if(model.vertices.chunked()||result.vertices.chunked()||(admit&&!admit(model.vertices.size()*sizeof(uint32_t))))remap.chunks(&admit);
+    remap.assign(model.vertices.size(),UINT32_MAX);
     auto reserve=[&](auto& values,size_t count,size_t hint=0){
         if(!admit||values.capacity()>=count)return true;
-        using T=typename std::decay_t<decltype(values)>::value_type;
+        using Buffer=std::decay_t<decltype(values)>;using T=typename Buffer::value_type;
+        if constexpr(std::is_same_v<Buffer,AdaptiveGeometryArray<WorldVertex>>||std::is_same_v<Buffer,AdaptiveGeometryArray<WorldTriangle>>)if(values.chunked())return true;
         const size_t capacity=std::max(count,std::max<size_t>(64,hint&&values.capacity()<=hint?values.capacity()+values.capacity()/4:values.capacity()*2));
-        if(!admit(uint64_t(capacity)*sizeof(T))){error="Geometry allocation deferred";return false;}
-        values.reserve(capacity);return true;
+        if(!admit(uint64_t(capacity)*sizeof(T))){
+            if constexpr(std::is_same_v<Buffer,AdaptiveGeometryArray<WorldVertex>>||std::is_same_v<Buffer,AdaptiveGeometryArray<WorldTriangle>>){values.chunks(&admit);error.clear();return true;}
+            error="Geometry allocation deferred";return false;
+        }
+        try{values.reserve(capacity);}catch(const std::bad_alloc&){
+            if constexpr(std::is_same_v<Buffer,AdaptiveGeometryArray<WorldVertex>>||std::is_same_v<Buffer,AdaptiveGeometryArray<WorldTriangle>>){values.chunks(&admit);error.clear();return true;}
+            throw;
+        }return true;
     };
     NorthlightMeshPageKey::Hasher accepted;uint32_t ordinal=0,acceptedCount=0;std::map<std::pair<int,int>,uint32_t> chunkTotals;const auto triangleBase=result.triangles.size();
     const auto disableRuns=[&](){if(terrainRuns){std::vector<TerrainRun>().swap(*terrainRuns);terrainRuns=nullptr;}chunkTotals.clear();};
@@ -403,11 +420,11 @@ bool loadInstancedScenes(const std::vector<std::string>& files,const std::string
     // later page preparation holds them. Compaction is optional under pressure.
     const uint64_t slack=uint64_t(result.vertices.capacity()-result.vertices.size())*sizeof(WorldVertex)+uint64_t(result.triangles.capacity()-result.triangles.size())*sizeof(WorldTriangle);
     if(slack>=4u*1024u*1024u){
-        auto compact=[&](auto& values){using Buffer=std::decay_t<decltype(values)>;using T=typename Buffer::value_type;const uint64_t bytes=uint64_t(values.size())*sizeof(T);try{if(values.capacity()==values.size()||(admit&&!admit(bytes)))return;Buffer exact(values.begin(),values.end());values.swap(exact);}catch(...) {}};
+        auto compact=[&](auto& values){using Buffer=std::decay_t<decltype(values)>;using T=typename Buffer::value_type;const uint64_t bytes=uint64_t(values.size())*sizeof(T);try{if(values.chunked()||values.capacity()==values.size()||(admit&&!admit(bytes)))return;Buffer exact(values.begin(),values.end());values.swap(exact);}catch(...) {}};
         compact(result.triangles);compact(result.vertices);
     }
     if(sizeHint){sizeHint->hinted=hinted;sizeHint->sized=true;sizeHint->sizedKey=sizeHint->key;sizeHint->vertices=result.vertices.size();sizeHint->triangles=result.triangles.size();sizeHint->low=low;sizeHint->high=high;}
-    output=std::move(result);return true;
+    result.vertices.detachAdmission();result.triangles.detachAdmission();output=std::move(result);return true;
 }
 
 // Bilinear alpha is sum(texel/255*weight) over four texels whose float weights
@@ -435,8 +452,8 @@ static bool validateBVHScene(WorldScene& s,std::string& error){
     }
     return true;
 }
-bool BVH::build(WorldScene&& s,std::string& error,bool fast) {return buildImpl(std::move(s),error,fast,{},{});}
-bool BVH::buildImpl(WorldScene&& s,std::string& error,bool fast,std::shared_ptr<const MaterialBank> bank,std::vector<uint32_t> sources) {
+bool BVH::build(WorldScene&& s,std::string& error,bool fast,const AllocationAdmission& admit) {return buildImpl(std::move(s),error,fast,{},{},admit);}
+bool BVH::buildImpl(WorldScene&& s,std::string& error,bool fast,std::shared_ptr<const MaterialBank> bank,std::vector<uint32_t> sources,const AllocationAdmission& admit) {
     if(!validateBVHScene(s,error))return false;
     // Build into a temporary so even allocation failure preserves the old scene.
     if(bank){
@@ -445,6 +462,7 @@ bool BVH::buildImpl(WorldScene&& s,std::string& error,bool fast,std::shared_ptr<
     }
     BVH next;next.scene_=std::move(s);next.sah_=TraceSah&&fast;next.materialBank_=std::move(bank);next.materialSources_=std::move(sources);
     try {
+        if(next.scene_.vertices.chunked()||next.scene_.triangles.chunked()){next.order_.chunks(&admit);next.pairs_.chunks(&admit);next.nodes_.chunks(&admit);next.centers_.chunks(&admit);}
         next.order_.reserve(next.scene_.triangles.size());
         for(uint32_t i=0;i<next.scene_.triangles.size();++i){
             const auto& t=next.scene_.triangles[i];
@@ -468,7 +486,7 @@ bool BVH::buildImpl(WorldScene&& s,std::string& error,bool fast,std::shared_ptr<
         next.opaque_.resize(next.scene_.materials.size());
         for(size_t i=0;i<next.opaque_.size();++i)next.opaque_[i]=alphaNeverCut(next.material(i));
     } catch(...) {error="Cannot allocate geometry BVH";return false;}
-    *this=std::move(next);return true;
+    next.scene_.vertices.detachAdmission();next.scene_.triangles.detachAdmission();next.order_.detachAdmission();next.pairs_.detachAdmission();next.nodes_.detachAdmission();next.centers_.detachAdmission();*this=std::move(next);return true;
 }
 
 void BVH::buildSahTree(){
@@ -477,7 +495,7 @@ void BVH::buildSahTree(){
     for(uint32_t i:order_){const auto&t=scene_.triangles[i];centers_[i]=(scene_.vertices[t.v0].position+scene_.vertices[t.v1].position+scene_.vertices[t.v2].position)/3.f;}
     pairs_.reserve(size_t(double(order_.size())*TraceSahPairsPerTriangle));
     if(!order_.empty()){BuildBox box=bounds(0,uint32_t(order_.size()));root_=makeSah(0,uint32_t(order_.size()),box);rootLow_=box.low;rootHigh_=box.high;inflate(rootLow_,rootHigh_);}
-    std::vector<Vec3>().swap(centers_);
+    centers_.free();
     if(pairs_.capacity()>pairs_.size()+pairs_.size()/8)pairs_.shrink_to_fit();
 }
 
@@ -557,12 +575,12 @@ uint32_t BVH::sahSplit(uint32_t start,uint32_t count,const BuildBox& box,BuildBo
         // Partition in place; child triangle bounds come from the bins and
         // centroid bounds are gathered while moving.
         child[0]=child[1]=empty;for(unsigned k=0;k<B;++k)if(bins[bestAxis][k].count){auto& c=child[k<bestSplit?0:1];c.low=minimum(c.low,bins[bestAxis][k].low);c.high=maximum(c.high,bins[bestAxis][k].high);}
-        uint32_t* first=order_.data()+start;uint32_t* last=first+count;
+        uint32_t first=start,last=start+count;
         while(first<last){
-            if(bin(*first,bestAxis)<bestSplit){child[0].cl=minimum(child[0].cl,centers_[*first]);child[0].ch=maximum(child[0].ch,centers_[*first]);++first;}
-            else{--last;std::swap(*first,*last);child[1].cl=minimum(child[1].cl,centers_[*last]);child[1].ch=maximum(child[1].ch,centers_[*last]);}
+            if(bin(order_[first],bestAxis)<bestSplit){child[0].cl=minimum(child[0].cl,centers_[order_[first]]);child[0].ch=maximum(child[0].ch,centers_[order_[first]]);++first;}
+            else{--last;std::swap(order_[first],order_[last]);child[1].cl=minimum(child[1].cl,centers_[order_[last]]);child[1].ch=maximum(child[1].ch,centers_[order_[last]]);}
         }
-        return uint32_t(first-order_.data());
+        return first;
     }
     if(count<=6)return 0;
     unsigned axis=extent.y>extent.x?1:0;if(extent.z>component(extent,axis))axis=2;
@@ -791,7 +809,7 @@ const WorldMaterial& BVH::material(size_t index)const{return materialBank_?mater
 uint64_t BVH::buildScratchBytes(size_t triangles){return uint64_t(triangles)*sizeof(Vec3);}
 size_t BVH::ownBytes()const{
     size_t bytes=sizeof(*this)+scene_.retainedBytes()+nodes_.capacity()*sizeof(Node)+pairs_.capacity()*sizeof(Pair)+order_.capacity()*sizeof(uint32_t)+opaque_.capacity()+
-        materialSources_.capacity()*sizeof(uint32_t)+regionOrder_.capacity()*sizeof(uint32_t)+regionPairs_.capacity()*sizeof(Pair)+pieces_.capacity()*sizeof(PieceReference);
+        materialSources_.capacity()*sizeof(uint32_t)+regionOrder_.capacity()*sizeof(uint32_t)+regionPairs_.capacity()*sizeof(Pair)+pieces_.capacity()*sizeof(PieceReference)+nodes_.overhead()+pairs_.overhead()+order_.overhead()+regionPairs_.overhead();
     for(const auto& p:pieces_)bytes+=p.materialMap.capacity()*sizeof(uint32_t)+p.placement.modelKey.capacity();
     if(retainedCharge_)bytes+=sizeof(SceneMemoryCharge)+32;
     return bytes;
@@ -800,8 +818,8 @@ void BVH::accountMemory(NorthlightMemoryFootprint::Counter& memory)const{
     using namespace NorthlightMemoryFootprint;
     if(!memory.visit(this))return;
     memory.add(Metadata,sizeof(*this));scene_.accountMemory(memory);
-    memory.vector(Acceleration,nodes_);memory.vector(Acceleration,pairs_);memory.vector(Acceleration,order_);
-    memory.vector(Acceleration,regionOrder_);memory.vector(Acceleration,regionPairs_);memory.vector(Acceleration,centers_);
+    nodes_.accountMemory(memory,Acceleration);pairs_.accountMemory(memory,Acceleration);order_.accountMemory(memory,Acceleration);
+    memory.vector(Acceleration,regionOrder_);regionPairs_.accountMemory(memory,Acceleration);centers_.accountMemory(memory,Acceleration);
     memory.vector(Metadata,opaque_);memory.vector(Metadata,materialSources_);memory.vector(Metadata,pieces_);
     if(materialBank_&&memory.visit(materialBank_.get())){
         memory.add(Metadata,sizeof(MaterialBank));memory.vector(Metadata,materialBank_->values);
@@ -851,6 +869,7 @@ bool BVH::buildRegion(WorldScene&& scene,std::vector<PieceReference>&& pieces,st
     if(admit&&!admit(metadata)){error="Shared region allocation deferred";return false;}
     BVH next;next.scene_=std::move(scene);next.pieces_=std::move(pieces);next.region_=next.sah_=true;
     try{
+        if(next.scene_.vertices.chunked()||next.scene_.triangles.chunked()){next.order_.chunks(&admit);next.pairs_.chunks(&admit);next.nodes_.chunks(&admit);next.regionPairs_.chunks(&admit);next.centers_.chunks(&admit);}
         next.regionOrder_.reserve(next.pieces_.size());next.nodes_.reserve(next.pieces_.size()*2);
         for(uint32_t i=0;i<next.pieces_.size();++i){const auto& p=next.pieces_[i];
             if(!p.geometry||!p.geometry->sah_||p.geometry->region_||uint64_t(p.triangleBase)+p.geometry->scene().triangles.size()>next.scene_.triangles.size()){
@@ -864,25 +883,25 @@ bool BVH::buildRegion(WorldScene&& scene,std::vector<PieceReference>&& pieces,st
             const auto pack=[&](auto&& self,uint32_t index)->uint32_t{const auto& n=next.nodes_[index];if(n.count)return LeafBit|(n.start<<3)|n.count;
                 const auto pair=uint32_t(next.regionPairs_.size());next.regionPairs_.push_back(Pair{});const auto l=self(self,n.left),r=self(self,n.right);auto& p=next.regionPairs_[pair];p.child[0]=l;p.child[1]=r;
                 const auto& a=next.nodes_[n.left];const auto& b=next.nodes_[n.right];for(unsigned axis=0;axis<3;++axis){p.axis[axis][0]=component(a.low,axis);p.axis[axis][1]=component(b.low,axis);p.axis[axis][2]=component(a.high,axis);p.axis[axis][3]=component(b.high,axis);}return pair;};
-            next.regionRoot_=pack(pack,0);std::vector<Node>().swap(next.nodes_);
+            next.regionRoot_=pack(pack,0);next.nodes_.free();
         }
         // The compatibility scene already owns every triangle. Unadmitted
         // ranges use its original global IDs and one mandatory pair tree;
         // neither geometry nor textures are copied into another fallback scene.
-        uint64_t fallbackCount=next.scene_.triangles.size();for(const auto& p:next.pieces_)fallbackCount-=p.geometry->scene().triangles.size();uint32_t first=0;if(admit&&!admit(fallbackCount*sizeof(uint32_t))){error="Hybrid index allocation deferred";return false;}next.order_.reserve(fallbackCount);
+        uint64_t fallbackCount=next.scene_.triangles.size();for(const auto& p:next.pieces_)fallbackCount-=p.geometry->scene().triangles.size();uint32_t first=0;if(!next.order_.chunked()&&admit&&!admit(fallbackCount*sizeof(uint32_t))){error="Hybrid index allocation deferred";return false;}next.order_.reserve(fallbackCount);
         const auto append=[&](uint32_t end){for(;first<end;++first){const auto& t=next.scene_.triangles[first];const Vec3 n=cross(next.scene_.vertices[t.v1].position-next.scene_.vertices[t.v0].position,next.scene_.vertices[t.v2].position-next.scene_.vertices[t.v0].position);if(dot(n,n)>1e-16f)next.order_.push_back(first);}};
         for(const auto& p:next.pieces_){if(p.triangleBase<first){error="Unordered shared region pieces";return false;}append(p.triangleBase);first=p.triangleBase+uint32_t(p.geometry->scene().triangles.size());}
         append(uint32_t(next.scene_.triangles.size()));next.regionTriangles_+=next.order_.size();
         if(!next.order_.empty()){
             const uint64_t tree=next.order_.capacity()*sizeof(uint32_t)+uint64_t(double(next.order_.size())*TraceSahPairsPerTriangle)*sizeof(Pair);
-            if(admit&&(!admit(tree)||!admit(buildScratchBytes(next.scene_.triangles.size())))){error="Hybrid fallback allocation deferred";return false;}
+            if(!next.order_.chunked()&&admit&&(!admit(tree)||!admit(buildScratchBytes(next.scene_.triangles.size())))){error="Hybrid fallback allocation deferred";return false;}
             next.buildSahTree();next.opaque_.resize(next.scene_.materials.size());for(size_t i=0;i<next.opaque_.size();++i)next.opaque_[i]=alphaNeverCut(next.material(i));
-        }else std::vector<uint32_t>().swap(next.order_);
+        }else next.order_.free();
         // Region acceleration replaces the mandatory full-scene tree. Its
         // actual storage is admitted and retirement-accounted, not retained in
         // the optional piece cache; a full cache cannot force a region restart.
     }catch(...){error="Cannot allocate shared region TLAS";return false;}
-    *this=std::move(next);return true;
+    next.scene_.vertices.detachAdmission();next.scene_.triangles.detachAdmission();next.order_.detachAdmission();next.pairs_.detachAdmission();next.nodes_.detachAdmission();next.regionPairs_.detachAdmission();next.centers_.detachAdmission();*this=std::move(next);return true;
 }
 template<bool AnyHit> RayHit BVH::traceRegion(Vec3 origin,Vec3 direction,float minT,float maxT)const{
     RayHit best;best.distance=maxT;direction=normalized(direction);
@@ -963,7 +982,7 @@ void LocalSceneCache::accountMemory(NorthlightMemoryFootprint::Counter& memory)c
     account(cache.pieces);account(cache.chunks);
 }
 
-bool LocalSceneCache::build(const std::vector<std::string>& files,const std::string& directory,const std::string& map,Vec3 low,Vec3 high,BVH& output,std::string& error,const AllocationAdmission& admit,bool fast,const SceneSourceProvider& sourceProvider,const SceneSourceRevision& sourceRevision){
+bool LocalSceneCache::build(const std::vector<std::string>& files,const std::string& directory,const std::string& map,Vec3 low,Vec3 high,BVH& output,std::string& error,const AllocationAdmission& admit,bool fast,const SceneSourceProvider& sourceProvider,const SceneSourceRevision& sourceRevision,bool chunked){
     const auto begin=CacheClock::now();error.clear();
     if(files.size()>64||!finite(low)||!finite(high)||low.x>high.x||low.y>high.y||low.z>high.z){error="Invalid incremental FGS3 region or tile count";return false;}
     try{
@@ -984,18 +1003,18 @@ bool LocalSceneCache::build(const std::vector<std::string>& files,const std::str
         for(auto it=cache.pieces.begin();it!=cache.pieces.end();)if(!wanted.count(it->first))it=cache.pieces.erase(it);else++it;
         for(auto it=cache.chunks.begin();it!=cache.chunks.end();)if(!wanted.count(it->second->parentKey))it=cache.chunks.erase(it);else++it;
         stats.retainedBytes=cacheBytes();trimCache();
-        WorldScene next;std::vector<BVH::PieceReference> references;if(sourceProvider){if(!allowed(uint64_t(wanted.size())*sizeof(SourcePieceRange)))return false;next.sourcePieces.reserve(wanted.size());}if(accelerate){if(!allowed(uint64_t(wanted.size())*sizeof(BVH::PieceReference)))return false;references.reserve(wanted.size());}
+        WorldScene next;if(chunked){next.vertices.chunks(&admit);next.triangles.chunks(&admit);}std::vector<BVH::PieceReference> references;if(sourceProvider){if(!allowed(uint64_t(wanted.size())*sizeof(SourcePieceRange)))return false;next.sourcePieces.reserve(wanted.size());}if(accelerate){if(!allowed(uint64_t(wanted.size())*sizeof(BVH::PieceReference)))return false;references.reserve(wanted.size());}
         uint64_t textureBytes=0;
         // Previous build's counts (+1/16) as the one up-front block when the regions overlap (IoU >= 1/2);
         // beyond that, growth is +1/4 rather than +1/2. A denied hint falls back to normal growth, error unset.
         bool hinted=false;
-        if(cache.sized){
+        if(!chunked&&cache.sized){
             if(regionsOverlapHalf(low,high,cache.sizedLow,cache.sizedHigh)){
                 const uint64_t v=std::min<uint64_t>(4000000,cache.sizedVertices+cache.sizedVertices/16),t=std::min<uint64_t>(6000000,cache.sizedTriangles+cache.sizedTriangles/16);
                 if(v&&t&&(!admit||(admit(v*sizeof(WorldVertex))&&admit(t*sizeof(WorldTriangle))))){next.vertices.reserve(v);next.triangles.reserve(t);hinted=true;++stats.hintedBuilds;}
             }
         }
-        auto reserve=[&](auto& values,size_t count){if(values.capacity()>=count)return true;using T=typename std::decay_t<decltype(values)>::value_type;size_t capacity=std::max(count,std::max<size_t>(64,hinted?values.capacity()+values.capacity()/4:values.capacity()+values.capacity()/2));if(!allowed(uint64_t(capacity)*sizeof(T)))return false;values.reserve(capacity);return true;};
+        auto reserve=[&](auto& values,size_t count){if(values.capacity()>=count)return true;using Buffer=std::decay_t<decltype(values)>;using T=typename Buffer::value_type;if constexpr(std::is_same_v<Buffer,AdaptiveGeometryArray<WorldVertex>>||std::is_same_v<Buffer,AdaptiveGeometryArray<WorldTriangle>>)if(values.chunked())return true;size_t capacity=std::max(count,std::max<size_t>(64,hinted?values.capacity()+values.capacity()/4:values.capacity()+values.capacity()/2));if(!allowed(uint64_t(capacity)*sizeof(T)))return false;values.reserve(capacity);return true;};
         for(const auto& group:groups){
             WorldScene loaded;std::shared_ptr<const WorldScene> sharedSource;auto stamp=CacheClock::now();std::string path=directory;if(!path.empty()&&path.back()!='/'&&path.back()!='\\')path+='/';path+=group.first+".fgs";
             bool geometryNeeded=false;
@@ -1035,7 +1054,7 @@ bool LocalSceneCache::build(const std::vector<std::string>& files,const std::str
                 }
                 if(!piece){
                     stamp=CacheClock::now();piece=std::make_shared<Impl::Piece>();piece->cropLow=low;piece->cropHigh=high;piece->sourceIdentity=sourceIdentity;
-                    WorldScene cropped;std::vector<uint32_t> remap(source.materials.size(),UINT32_MAX);uint64_t bytes=0;
+                    WorldScene cropped;if(chunked&&source.vertices.size()*sizeof(WorldVertex)>4u*1024u*1024u)cropped.vertices.chunks(&admit);if(chunked&&source.triangles.size()*sizeof(WorldTriangle)>4u*1024u*1024u)cropped.triangles.chunks(&admit);std::vector<uint32_t> remap(source.materials.size(),UINT32_MAX);uint64_t bytes=0;
                     if(!appendInstance(source,instance,low,high,cropped,remap,bytes,error,admit,{},0,0,false,piece->membership,accelerate&&instance.terrain?&piece->terrainRuns:nullptr,true,&group.first))return false;
                     piece->complete=!source.triangles.empty()&&cropped.triangles.size()==source.triangles.size();
                     piece->materialSources.resize(cropped.materials.size());for(uint32_t i=0;i<remap.size();++i)if(remap[i]!=UINT32_MAX)piece->materialSources[remap[i]]=i;
@@ -1046,14 +1065,14 @@ bool LocalSceneCache::build(const std::vector<std::string>& files,const std::str
                         const uint64_t tree=triangles*sizeof(uint32_t)+uint64_t(double(triangles)*TraceSahPairsPerTriangle)*sizeof(BVH::Pair);
                         const uint64_t estimate=cropped.retainedBytes()+sizeof(BVH)+tree+sizeof(Impl::Piece)+piece->materialSources.capacity()*4+key.capacity()+192;
                         if(estimate<=cache.budget->limit-cache.budget->used.load(std::memory_order_relaxed)&&allowed(tree)&&allowed(BVH::buildScratchBytes(triangles))){
-                            auto geometry=std::make_shared<BVH>();if(!geometry->buildImpl(std::move(cropped),error,true,bank,piece->materialSources))return false;
+                            auto geometry=std::make_shared<BVH>();if(!geometry->buildImpl(std::move(cropped),error,true,bank,piece->materialSources,admit))return false;
                             const auto charge=geometry->ownBytes()+sizeof(SceneMemoryCharge)+32+sizeof(Impl::Piece)+piece->materialSources.capacity()*4+key.capacity()+96;
                             geometry->retainedCharge_=SceneMemoryCharge::acquire(cache.budget,charge);
                             if(geometry->retainedCharge_){piece->geometry=std::move(geometry);piece->sourceIdentity=sourceIdentity;++stats.blasBuilds;stats.blasTrianglesBuilt+=piece->geometry->triangleCount();}
                             else cropped=std::move(geometry->scene_);
                         }else error.clear();
                     }
-                    if(!piece->geometry)piece->scene=std::move(cropped);
+                    if(!piece->geometry){cropped.vertices.detachAdmission();cropped.triangles.detachAdmission();piece->scene=std::move(cropped);}
                     ++stats.pieceBuilds;stats.builtTriangles+=piece->transport().triangles.size();stats.pieceMs+=milliseconds(stamp);
                     // Cropped boundary pieces change on the next movement; keep
                     // the complete interior pieces that can actually be reused.
@@ -1088,7 +1107,7 @@ bool LocalSceneCache::build(const std::vector<std::string>& files,const std::str
                         auto found=cache.chunks.find(id);if(found!=cache.chunks.end()){chunk=found->second;++stats.chunkReuses;stats.chunkTrianglesReused+=chunk->geometry->triangleCount();}
                         if(!chunk){
                             const uint64_t temporary=uint64_t(run.count)*(3*sizeof(WorldVertex)+sizeof(WorldTriangle))+uint64_t(scene.materials.size())*sizeof(uint32_t)+uint64_t(std::min<size_t>(scene.materials.size(),run.count))*(sizeof(WorldMaterial)+sizeof(uint32_t));if(!allowed(temporary)){error.clear();continue;}
-                            auto candidate=std::make_shared<Impl::Piece>();candidate->parentKey=key;candidate->sourceIdentity=sourceIdentity;candidate->complete=true;WorldScene transport;transport.vertices.reserve(std::min<size_t>(scene.vertices.size(),size_t(run.count)*3));transport.triangles.reserve(run.count);std::vector<uint32_t> materialRemap(scene.materials.size(),UINT32_MAX);
+                            auto candidate=std::make_shared<Impl::Piece>();candidate->parentKey=key;candidate->sourceIdentity=sourceIdentity;candidate->complete=true;WorldScene transport;if(chunked&&uint64_t(run.count)*3*sizeof(WorldVertex)>4u*1024u*1024u)transport.vertices.chunks(&admit);if(chunked&&uint64_t(run.count)*sizeof(WorldTriangle)>4u*1024u*1024u)transport.triangles.chunks(&admit);transport.vertices.reserve(std::min<size_t>(scene.vertices.size(),size_t(run.count)*3));transport.triangles.reserve(run.count);std::vector<uint32_t> materialRemap(scene.materials.size(),UINT32_MAX);
                             for(uint32_t i=run.first;i<run.first+run.count;++i){auto t=scene.triangles[i];uint32_t* ids[]={&t.v0,&t.v1,&t.v2};for(auto index:ids){const auto original=*index;if(vertexRemap[original]==UINT32_MAX){vertexRemap[original]=uint32_t(transport.vertices.size());transport.vertices.push_back(scene.vertices[original]);touched.push_back(original);}*index=vertexRemap[original];}
                                 if(materialRemap[t.material]==UINT32_MAX){materialRemap[t.material]=uint32_t(transport.materials.size());candidate->materialSources.push_back(p.materialSources[t.material]);transport.materials.push_back(scene.materials[t.material]);}t.material=materialRemap[t.material];transport.triangles.push_back(t);
                             }
@@ -1096,7 +1115,7 @@ bool LocalSceneCache::build(const std::vector<std::string>& files,const std::str
                             const auto tree=uint64_t(run.count)*sizeof(uint32_t)+uint64_t(double(run.count)*TraceSahPairsPerTriangle)*sizeof(BVH::Pair);
                             const auto estimate=transport.retainedBytes()+sizeof(BVH)+tree+pieceBytes(*candidate)+id.capacity()+192;
                             if(estimate>cache.budget->limit-cache.budget->used.load(std::memory_order_relaxed)||!allowed(tree)||!allowed(BVH::buildScratchBytes(run.count))){error.clear();continue;}
-                            auto geometry=std::make_shared<BVH>();if(!geometry->buildImpl(std::move(transport),error,true,bank,candidate->materialSources)){error.clear();continue;}
+                            auto geometry=std::make_shared<BVH>();if(!geometry->buildImpl(std::move(transport),error,true,bank,candidate->materialSources,admit)){error.clear();continue;}
                             const auto charge=geometry->ownBytes()+sizeof(SceneMemoryCharge)+32+pieceBytes(*candidate)+id.capacity()+96;
                             geometry->retainedCharge_=SceneMemoryCharge::acquire(cache.budget,charge);if(!geometry->retainedCharge_)continue;candidate->geometry=std::move(geometry);chunk=std::move(candidate);cache.chunks[id]=chunk;++stats.chunkBuilds;stats.chunkTrianglesBuilt+=chunk->geometry->triangleCount();
                         }
@@ -1122,7 +1141,7 @@ bool LocalSceneCache::build(const std::vector<std::string>& files,const std::str
         auto compact=[&](auto& values){
             using Buffer=std::decay_t<decltype(values)>;using T=typename Buffer::value_type;
             const uint64_t bytes=values.size()*sizeof(T),slack=(values.capacity()-values.size())*sizeof(T);
-            if(slack<4u*1024u*1024u||values.capacity()<=values.size()+values.size()/4||(admit&&!admit(bytes)))return;
+            if(values.chunked()||slack<4u*1024u*1024u||values.capacity()<=values.size()+values.size()/4||(admit&&!admit(bytes)))return;
             try{Buffer exact(values.begin(),values.end());values.swap(exact);}
             catch(const std::bad_alloc&){/* optional compaction: keep the complete scene */}
         };
@@ -1134,11 +1153,11 @@ bool LocalSceneCache::build(const std::vector<std::string>& files,const std::str
         const uint64_t triangles=next.triangles.size(),nodeBytes=!TracePairNodes?2*(triangles/2+1)*sizeof(BVH::Node):
             sah?uint64_t(double(triangles)*TraceSahPairsPerTriangle)*sizeof(BVH::Pair):(triangles/2+1)*sizeof(BVH::Pair);
         stats.bvhBytes=triangles*sizeof(uint32_t)+nodeBytes;
-        if(!accelerate&&(!allowed(triangles*sizeof(uint32_t))||!allowed(nodeBytes)||(sah&&!allowed(triangles*sizeof(Vec3)))))return false;
+        if(!chunked&&!accelerate&&(!allowed(triangles*sizeof(uint32_t))||!allowed(nodeBytes)||(sah&&!allowed(triangles*sizeof(Vec3)))))return false;
         if(accelerate){stats.tlasPieces=references.size();
-            if(!output.buildRegion(std::move(next),std::move(references),error,admit,cache.budget))throw AccelerationUnavailable{};
+            if(!output.buildRegion(std::move(next),std::move(references),error,admit,cache.budget)){if(chunked)return false;throw AccelerationUnavailable{};}
             stats.fallbackTriangles=output.fallbackTriangleCount();stats.mandatoryTreeBytes=output.ownBytes()-sizeof(BVH)-output.scene().retainedBytes();stats.tlasBytes=stats.mandatoryTreeBytes-output.order_.capacity()*sizeof(uint32_t)-output.pairs_.capacity()*sizeof(BVH::Pair)-output.opaque_.capacity();stats.compatibilityBytes=output.scene().retainedBytes();stats.sharedLiveBytes=cache.budget->used.load(std::memory_order_relaxed);
-        }else if(!output.build(std::move(next),error,fast))return false;
+        }else if(!output.build(std::move(next),error,fast,admit))return false;
         stats.retainedBytes=cache.budget->used.load(std::memory_order_relaxed);if(!accelerate)stats.retainedBytes=cacheBytes();
         stats.bvhMs=milliseconds(stamp);stats.peakBytes=std::max(stats.peakBytes,stats.retainedBytes+stats.flatBytes+stats.bvhBytes);stats.totalMs=milliseconds(begin);return true;
     }catch(const AccelerationUnavailable&){
