@@ -154,7 +154,7 @@ for row in selection:
 
 start='''
         const auto entrySetupStart=Clock::now();
-        Ballast ballast;const auto plainEntry=NorthlightGeometryMemory::buildBudget(64*NorthlightGeometryMemory::MiB);
+        Ballast ballast;const auto plainEntry=NorthlightGeometryMemory::buildBudget(64*NorthlightGeometryMemory::MiB);[[maybe_unused]] const auto entryBudget=plainEntry;
         const unsigned deficit=ENTRY_NO_PRESSURE?0:step==2||step==6?2:step==4?12:0;
         if(deficit)ballast.leave(plainEntry.available-uint64_t(deficit)*NorthlightGeometryMemory::MiB);
         auto memory=geometryAdmissionFor(probe,plainEntry);const auto entryBefore=actualMemory();

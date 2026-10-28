@@ -1610,22 +1610,22 @@ private:
                 }
                 if(!generations.canAdmit()){++generationDeferrals;{std::lock_guard<std::mutex> lock(mutex);generationStall.deferred(GetTickCount());}deferBuild("generation-deferred",memory,100);continue;}
                 {std::lock_guard<std::mutex> lock(mutex);generationStall.admitted();}
-                // The incremental cache is dropped only when the plain entry budget fails; a raised
-                // entry floor (entryLift) alone keeps it for the attempt that eventually runs.
+                // Reclaim optional caches against the same budget used to admit the build,
+                // including any temporary increase after a previous allocation refusal.
                 const auto plainEntry=NorthlightGeometryMemory::buildBudget(64*NorthlightGeometryMemory::MiB);
                 profileMemory("before-entry-reclaim");
                 const auto entryBudget=entryLift.apply(plainEntry,GetTickCount());
                 // BEGIN STAGED ENTRY RECLAIM: the offline MPQ episode test uses this exact block.
-                if(!NorthlightGeometryMemory::admits(memory,plainEntry)){
+                if(!NorthlightGeometryMemory::admits(memory,entryBudget)){
                     const auto before=memory;const auto sourceBefore=sceneSources.liveBytes(),preparationBefore=meshPreparation.stats().bytes;
-                    unsigned reclaimed=1;sceneSources.trimPayloads();memory=workerMemory(plainEntry);
-                    if(!NorthlightGeometryMemory::admits(memory,plainEntry)){reclaimed=2;localGeometry.reset();memory=workerMemory(plainEntry);}
-                    if(!NorthlightGeometryMemory::admits(memory,plainEntry)){reclaimed=3;resetPreparation();memory=workerMemory(plainEntry);}
+                    unsigned reclaimed=1;sceneSources.trimPayloads();memory=workerMemory(entryBudget);
+                    if(!NorthlightGeometryMemory::admits(memory,entryBudget)){reclaimed=2;localGeometry.reset();memory=workerMemory(entryBudget);}
+                    if(!NorthlightGeometryMemory::admits(memory,entryBudget)){reclaimed=3;resetPreparation();memory=workerMemory(entryBudget);}
                     if(NorthlightDiagnostics::enabled())logf("WORLD entry reclaim buildId=%llu stage=%u admitted=%u beforeAvailableMiB=%llu afterAvailableMiB=%llu beforeLargestLowerMiB=%llu afterLargestLowerMiB=%llu beforeValid=%u afterValid=%u sourceBeforeMiB=%.3f sourceAfterMiB=%.3f preparationBeforeMiB=%.3f preparationAfterMiB=%.3f requiredAvailableMiB=%llu requiredLargestMiB=%llu",
-                        (unsigned long long)r.id,reclaimed,unsigned(NorthlightGeometryMemory::admits(memory,plainEntry)),
+                        (unsigned long long)r.id,reclaimed,unsigned(NorthlightGeometryMemory::admits(memory,entryBudget)),
                         (unsigned long long)(before.available>>20),(unsigned long long)(memory.available>>20),(unsigned long long)(before.largest>>20),(unsigned long long)(memory.largest>>20),unsigned(before.valid),unsigned(memory.valid),
                         double(sourceBefore)/1048576,double(sceneSources.liveBytes())/1048576,double(preparationBefore)/1048576,double(meshPreparation.stats().bytes)/1048576,
-                        (unsigned long long)(plainEntry.available>>20),(unsigned long long)(plainEntry.largest>>20));
+                        (unsigned long long)(entryBudget.available>>20),(unsigned long long)(entryBudget.largest>>20));
                 }
                 // END STAGED ENTRY RECLAIM
                 if(!NorthlightGeometryMemory::admits(memory,entryBudget)){stallBegin("build-deferred",memory,entryBudget.available,entryBudget.largest);deferBuild("build-deferred",memory,1000,&entryBudget);continue;}

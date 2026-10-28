@@ -16,13 +16,15 @@ struct FakePreparation {struct Stats{uint64_t bytes;};unsigned resets=0;void res
 static void policy(){
     using namespace NorthlightGeometryMemory;const auto plainEntry=buildBudget(64*MiB);assert(plainEntry.available==512*MiB&&plainEntry.largest==96*MiB);
     struct Request {uint64_t id=17;}r;
-    for(unsigned outcome=0;outcome<7;++outcome){
+    for(unsigned raised=0;raised<2;++raised)for(unsigned outcome=0;outcome<7;++outcome){
+        auto entryBudget=plainEntry;if(raised){entryBudget.available+=64*MiB;entryBudget.largest+=16*MiB;}
         FakeSources sceneSources;FakeLocal localGeometry;FakePreparation meshPreparation;
-        Sample memory={plainEntry.available-(outcome?MiB:0),plainEntry.largest,true};
-        if(outcome==5)memory={plainEntry.available,plainEntry.largest,false};
-        if(outcome==6)memory={plainEntry.available,plainEntry.largest-1,true};
+        Sample memory={entryBudget.available-(outcome?MiB:0),entryBudget.largest,true};
+        if(outcome==5)memory={entryBudget.available,entryBudget.largest,false};
+        if(outcome==6)memory={entryBudget.available,entryBudget.largest-1,true};
+        if(raised&&outcome>0&&outcome<5)assert(admits(memory,plainEntry));
         unsigned samples=0;
-        auto workerMemory=[&](Budget budget){assert(budget.available==plainEntry.available&&budget.largest==plainEntry.largest);++samples;
+        auto workerMemory=[&](Budget budget){assert(budget.available==entryBudget.available&&budget.largest==entryBudget.largest);++samples;
             if(outcome<=3&&samples>=outcome)return Sample{budget.available,budget.largest,true};
             return memory;};
         auto resetPreparation=[&]{meshPreparation.reset();sceneSources.reset();localGeometry.reset();};
@@ -31,8 +33,7 @@ static void policy(){
         else if(outcome==1){assert(samples==1&&sceneSources.trims==1&&!localGeometry.resets&&!meshPreparation.resets&&!sceneSources.resets);}
         else if(outcome==2){assert(samples==2&&sceneSources.trims==1&&localGeometry.resets==1&&!meshPreparation.resets&&!sceneSources.resets);}
         else {assert(samples==3&&sceneSources.trims==1&&localGeometry.resets==2&&meshPreparation.resets==1&&sceneSources.resets==1);}
-        assert(admits(memory,plainEntry)==(outcome<=3));
-        auto lifted=plainEntry;lifted.available+=64*MiB;assert(!admits(memory,lifted)); // a raised entry floor is still checked after reclaim
+        assert(admits(memory,entryBudget)==(outcome<=3));
     }
 }
 static void write(const std::filesystem::path& path,float x){
@@ -56,5 +57,5 @@ int main(int argc,char** argv){
     returned.reset();cache.trimPayloads();assert(!cache.get(path.string(),error,[](uint64_t){return false;})&&!error.empty());
     cache.reset();assert(!cache.liveBytes()&&!cache.decodedLiveBytes());auto reset=cache.get(path.string(),error);assert(reset&&reset->sourceIdentity!=token);
     cache.trimPayloads();cache.setLimit(0);assert(!cache.findIdentity(path.string())&&cache.entries()==0);reset.reset();assert(!cache.liveBytes()&&!cache.decodedLiveBytes());
-    std::puts("PASS scene entry reclaim: exact production policy, all unchanged floors, raw/local/full actions, invalid/largest refusal, pinned lease, stable revision, ABA, failure, reset/lowered cap");
+    std::puts("PASS scene entry reclaim: plain and raised floors, raw/local/full actions, invalid/largest refusal, pinned lease, stable revision, ABA, failure, reset/lowered cap");
 }
