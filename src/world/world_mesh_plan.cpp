@@ -382,7 +382,7 @@ bool buildUploadPlan(const NorthlightGI::WorldScene& scene,WorldMeshUploadPlan& 
         WorldMeshUploadPlan next;
         if(!allowed(scene.triangles.size()*12)||!allowed(groups.size()*sizeof(Batch)))return false;
         next.indices.reserve(scene.triangles.size()*3);next.batches.reserve(groups.size());
-        for(const auto& group:groups){Batch batch;batch.start=uint32_t(next.indices.size());const auto& head=parts[group.second[0].part];const auto& original=head.data->plan.batches[group.second[0].batch];batch.material=head.materials[original.material];batch.chunkX=original.chunkX;batch.chunkY=original.chunkY;batch.terrain=original.terrain;
+        for(const auto& group:groups){Batch batch;batch.start=uint32_t(next.indices.size());const auto& head=parts[group.second[0].part];const auto& original=head.data->plan.batches[group.second[0].batch];batch.material=head.materials[original.material];batch.chunkX=original.chunkX;batch.chunkY=original.chunkY;batch.terrain=original.terrain;batch.pointOnly=original.pointOnly;batch.lampSourceId=original.lampSourceId;
             for(const auto& span:group.second){const auto& p=parts[span.part];const auto& b=p.data->plan.batches[span.batch];batch.count+=b.count;
                 for(uint32_t j=b.start/3;j<b.start/3+b.count;++j){const auto& t=scene.triangles[p.first+p.data->triangleAt(j)];next.indices.insert(next.indices.end(),{t.v0,t.v1,t.v2});}
                 batch.boundsLow.x=std::min(batch.boundsLow.x,b.boundsLow.x);batch.boundsLow.y=std::min(batch.boundsLow.y,b.boundsLow.y);batch.boundsLow.z=std::min(batch.boundsLow.z,b.boundsLow.z);
