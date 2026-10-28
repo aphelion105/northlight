@@ -24,7 +24,7 @@ struct Kernel {
     struct Src {std::uint8_t kind=0,relative=0,channel=0,modifier=0,swizzle[4]={};std::uint16_t index=0;std::int16_t definition=-1;};
     struct Op {unsigned code=0;int operands=0;std::uint8_t target=0,mask=0;bool address=false,saturate=false;Src source[3];};
     enum Evaluator:std::uint8_t {Generic,SingleFirst,SingleIndexFirst,WeightedCommuted,Weighted};
-    std::vector<Op> ops;std::vector<std::uint8_t> cleared;bool valid=false,skin=false;Evaluator evaluator=Generic; /* skin alone also authorizes the existing envelope. */
+    std::vector<Op> ops;std::vector<std::uint8_t> cleared;unsigned inputMask=0x10000u;bool valid=false,skin=false;Evaluator evaluator=Generic; /* skin alone also authorizes the existing envelope. */
     bool singleSkin()const{return evaluator==SingleFirst||evaluator==SingleIndexFirst;}
     bool commutedSkin()const{return evaluator==WeightedCommuted;}
 };
@@ -37,14 +37,15 @@ struct Program {
     Kernel kernel; /* built by slice(); empty for hand-made programs (evaluate) */
 };
 inline void buildKernel(Program& p){
-    using namespace NorthlightShadowShader;Kernel k;bool read[33]={};read[p.positionRegister<33?p.positionRegister:0]=true;
+    using namespace NorthlightShadowShader;Kernel k;k.inputMask=0;bool read[33]={};read[p.positionRegister<33?p.positionRegister:0]=true;
     for(const auto& o:p.operations){Kernel::Op op;op.code=o.code;op.operands=arithmeticOperands(o.code,p.major)-1;
+        if(op.operands<0||op.operands>3)k.inputMask|=0x10000u;
         const unsigned type=regType(o.destination),index=regIndex(o.destination);op.address=type==3;if(!op.address&&index>=33)return;
         op.target=std::uint8_t(index);op.mask=std::uint8_t((o.destination>>16)&15);op.saturate=(o.destination&(1u<<20))!=0;
         for(unsigned i=0;i<3;++i){const Word t=o.source[i].token;auto& s=op.source[i];s.kind=std::uint8_t(regType(t));s.index=std::uint16_t(regIndex(t));
             s.relative=(t&0x2000)!=0;s.channel=std::uint8_t(p.major>=2?((o.source[i].address>>16)&3):0);s.modifier=std::uint8_t((t>>24)&15);
             for(unsigned j=0;j<4;++j)s.swizzle[j]=std::uint8_t((t>>(16+2*j))&3);
-            if(int(i)<op.operands){if(s.kind>3)return;if(s.kind==0){if(s.index>=33)return;read[s.index]=true;}
+            if(int(i)<op.operands){if(s.kind>3)return;if(s.kind==1)k.inputMask|=s.index<16?1u<<s.index:0x10000u;if(s.kind==0){if(s.index>=33)return;read[s.index]=true;}
                 if(s.kind==2&&!s.relative)for(std::size_t d=0;d<p.definitions.size();++d)if(p.definitions[d].reg==s.index)s.definition=std::int16_t(d);}}
         k.ops.push_back(op);}
     for(unsigned r=0;r<33;++r)if(read[r])k.cleared.push_back(std::uint8_t(r));
@@ -308,9 +309,7 @@ template<bool Strict=false> inline bool evaluateFast(const Program& p,const Four
 struct Binding {Input input;D3DVERTEXELEMENT9 element;};
 inline bool clearVertexInputsMask(const Program& program,unsigned provided){
     if(!program.kernel.valid||program.kernel.ops.size()!=program.operations.size())return true;
-    for(const auto& op:program.kernel.ops){if(op.operands<0||op.operands>3)return true;
-        for(int i=0;i<op.operands;++i){const auto& source=op.source[i];if(source.kind==1&&(source.index>=16||!(provided&(1u<<source.index))))return true;}}
-    return false;
+    return (program.kernel.inputMask&0x10000u)||(program.kernel.inputMask&~provided);
 }
 template<class Bindings>inline bool clearVertexInputs(const Program& program,const Bindings& bindings){
     unsigned provided=0;for(const auto& b:bindings){if(b.input.reg>=16)return true;provided|=1u<<b.input.reg;}return clearVertexInputsMask(program,provided);

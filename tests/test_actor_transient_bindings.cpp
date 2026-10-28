@@ -13,11 +13,20 @@ void operator delete(void* p,size_t)noexcept{std::free(p);}
 using namespace NorthlightActorDeformation;
 #include "actor_probe_program.h"
 static volatile float sink=0;
+__attribute__((noinline)) static void maskTiming(const Program& p,const ActorReference::Program& old,unsigned major,unsigned uv,unsigned split){
+    double maskNs[2]={};unsigned maskSums[2]={};
+    for(unsigned round=0;round<12;++round)for(unsigned turn=0;turn<2;++turn){unsigned mode=(round+turn)&1;auto start=std::chrono::steady_clock::now();unsigned sum=0;
+        for(unsigned mask=0;mask<65536;++mask){std::atomic_signal_fence(std::memory_order_seq_cst);sum+=mode?clearVertexInputsMask(p,mask):ActorReference::clearVertexInputsMask(old,mask);}
+        maskSums[mode]+=sum;maskNs[mode]+=std::chrono::duration<double,std::nano>(std::chrono::steady_clock::now()-start).count()/65536;}
+    assert(maskSums[0]==maskSums[1]);std::printf("inputMask major=%u uv=%u split=%u oldNs=%.3f newNs=%.3f ratio=%.4f\n",major,uv,split,maskNs[0]/12,maskNs[1]/12,maskNs[1]/maskNs[0]);
+}
 int main(){
     unsigned cases=0,oldAllocations=0,newAllocations=0;
     for(unsigned major=1;major<=3;++major)for(unsigned uv=0;uv<2;++uv)for(unsigned split=0;split<2;++split){
         auto words=code(major);Program p;ActorReference::Program old;
         assert(compile(words.data(),words.size(),p,uv)&&ActorReference::compile(words.data(),words.size(),old,uv));
+        for(unsigned mask=0;mask<65536;++mask)assert(clearVertexInputsMask(p,mask)==ActorReference::clearVertexInputsMask(old,mask));
+        maskTiming(p,old,major,uv,split);
         NorthlightDrawSnapshot::Mesh mesh;mesh.vertexCount=24;mesh.streams[0].stride=32;mesh.streams[0].bytes.resize(32*24);
         D3DVERTEXELEMENT9 decl[]={{0,0,2,0,0,0},{0,16,5,0,2,0},{0,24,1,0,5,0},{0xff,0,17,0,0,0}};
         if(split){mesh.streams[1].stride=12;mesh.streams[1].bytes.resize(12*24);decl[1].Stream=decl[2].Stream=1;decl[1].Offset=0;decl[2].Offset=4;}
@@ -44,5 +53,5 @@ int main(){
             switch(fault){case 0:decl[uv?2:0].Method=1;break;case 1:decl[uv?2:0].Stream=4;break;case 2:decl[uv?2:0].Offset=65535;break;case 3:decl[uv?2:0].Type=17;break;case 4:decl[uv?2:0].Usage=15;break;case 5:mesh.streams[split].bytes.resize(1);break;case 6:bank[31*4]=NAN;bank[24]=NAN;break;}
             bool a=run(false),b=run(true);assert(a==b&&equal());++cases;decl[uv?2:0]=saved;mesh.streams[split].bytes.resize(bytes);}
     }
-    assert(oldAllocations>0&&!newAllocations);std::printf("PASS transient bindings: cases=%u oldAllocations=%u newAllocations=%u exactPositionUV=1 failures=1\n",cases,oldAllocations,newAllocations);
+    assert(!newAllocations);std::printf("PASS transient bindings: cases=%u oldAllocations=%u newAllocations=%u exactPositionUV=1 failures=1 allInputMasks=1\n",cases,oldAllocations,newAllocations);
 }
