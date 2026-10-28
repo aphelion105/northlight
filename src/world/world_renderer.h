@@ -1532,16 +1532,16 @@ private:
                 if(fogRegion&&fogRegion->field)memory.allocation(Fog,fogRegion->field.get(),sizeof(*fogRegion->field));
                 maximumObservedCapacity=std::max(maximumObservedCapacity,memory.total());
                 logCpuFootprint("builder-reachable",stage,r.id,memory);
-                const auto entryBudget=chunkedLocal?chunkLift.apply(NorthlightGeometryMemory::buildBudget(NorthlightGeometryMemory::MiB),GetTickCount()):entryLift.apply(NorthlightGeometryMemory::buildBudget(64*NorthlightGeometryMemory::MiB),GetTickCount());
+                const auto entryBudget=chunkedLocal?chunkLift.apply(NorthlightGeometryMemory::chunkBuildBudget(),GetTickCount()):entryLift.apply(NorthlightGeometryMemory::buildBudget(64*NorthlightGeometryMemory::MiB),GetTickCount());
                 NorthlightMemoryProfile::Admission admission;
                 admission.available=lastWorkerMemory.available;admission.largest=lastWorkerMemory.largest;admission.valid=lastWorkerMemory.valid;admission.largestExact=workerMemoryExact;
                 admission.entryRequired=entryBudget.available;admission.largestRequired=entryBudget.largest;
-                admission.reserve=NorthlightGeometryMemory::ProcessReserve;admission.entryHeadroom=NorthlightGeometryMemory::EntryHeadroom;admission.interiorHeadroom=NorthlightGeometryMemory::InBuildHeadroom;
+                admission.reserve=NorthlightGeometryMemory::ProcessReserve;admission.entryHeadroom=chunkedLocal?NorthlightGeometryMemory::EntryHeadroom-32*NorthlightGeometryMemory::MiB:NorthlightGeometryMemory::EntryHeadroom;admission.interiorHeadroom=NorthlightGeometryMemory::InBuildHeadroom;
                 admission.minimumAvailable=minimumBuildAvailable==UINT64_MAX?0:minimumBuildAvailable;admission.maximumKnownCapacity=maximumObservedCapacity;
                 std::strncpy(admission.stage,stage,sizeof(admission.stage)-1);NorthlightMemoryProfile::store().admission(admission);
                 logf("WORLD MEMORY admission stage=%s buildId=%llu processReserveMiB=%llu entryHeadroomMiB=%llu interiorHeadroomMiB=%llu entryRequiredMiB=%llu availableMiB=%llu minObservedAvailableMiB=%llu maxObservedCapacityMiB=%.3f sampleAgeMs=%lu sampleValid=%u sourceChargedInclusiveMiB=%.3f sourceDecodedInclusiveMiB=%.3f sourceUncachedLeaseMiB=%.3f preparationChargedInclusiveMiB=%.3f ledgersNotAdditive=1 peaksAreSampled=1",
-                     stage,(unsigned long long)r.id,(unsigned long long)(NorthlightGeometryMemory::ProcessReserve>>20),(unsigned long long)(NorthlightGeometryMemory::EntryHeadroom>>20),(unsigned long long)(NorthlightGeometryMemory::InBuildHeadroom>>20),
-                     (unsigned long long)(NorthlightGeometryMemory::buildBudget().available>>20),(unsigned long long)(lastWorkerMemory.available>>20),(unsigned long long)(minimumBuildAvailable==UINT64_MAX?0:minimumBuildAvailable>>20),double(maximumObservedCapacity)/1048576,
+                     stage,(unsigned long long)r.id,(unsigned long long)(NorthlightGeometryMemory::ProcessReserve>>20),(unsigned long long)(admission.entryHeadroom>>20),(unsigned long long)(NorthlightGeometryMemory::InBuildHeadroom>>20),
+                     (unsigned long long)(entryBudget.available>>20),(unsigned long long)(lastWorkerMemory.available>>20),(unsigned long long)(minimumBuildAvailable==UINT64_MAX?0:minimumBuildAvailable>>20),double(maximumObservedCapacity)/1048576,
                      (unsigned long)(GetTickCount()-lastWorkerMemoryAt),unsigned(lastWorkerMemory.valid),double(sceneSources.liveBytes())/1048576,double(sceneSources.decodedLiveBytes())/1048576,double(sceneSources.uncachedLeaseBytes())/1048576,double(meshPreparation.stats().bytes)/1048576);
                 memoryProfileMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-profileStart).count();
             };
@@ -1631,7 +1631,7 @@ private:
                 // END STAGED ENTRY RECLAIM
                 // BEGIN CHUNKED ENTRY SELECTION
                 if(!NorthlightGeometryMemory::admits(memory,entryBudget)){
-                    const auto chunkBudget=chunkLift.apply(NorthlightGeometryMemory::buildBudget(NorthlightGeometryMemory::MiB),GetTickCount());
+                    const auto chunkBudget=chunkLift.apply(NorthlightGeometryMemory::chunkBuildBudget(),GetTickCount());
                     memory=workerMemory(chunkBudget);entryBudget=chunkBudget;chunkedLocal=true;
                 }
                 // END CHUNKED ENTRY SELECTION
@@ -1673,7 +1673,7 @@ private:
                 auto noteLocalAllocationFailure=[&]{if(!localBuilt&&!localDeferred&&(error.find("Geometry allocation deferred")!=std::string::npos||error.find("Cannot allocate")!=std::string::npos)){const auto budget=NorthlightGeometryMemory::inBuildBudget();localSample=workerMemory(budget);localRequired=budget.available;localLargest=budget.largest;localDeferred=true;}};
                 noteLocalAllocationFailure();
                 if(!localBuilt&&localDeferred&&!chunkedLocal){
-                    resetPreparation();chunkedLocal=true;localDeferred=false;const auto budget=chunkLift.apply(NorthlightGeometryMemory::buildBudget(NorthlightGeometryMemory::MiB),GetTickCount());
+                    resetPreparation();chunkedLocal=true;localDeferred=false;const auto budget=chunkLift.apply(NorthlightGeometryMemory::chunkBuildBudget(),GetTickCount());
                     const auto retryMemory=workerMemory(budget);if(NorthlightGeometryMemory::admits(retryMemory,budget))localBuilt=buildLocal();
                     else{localDeferred=true;localSample=retryMemory;localRequired=budget.available;localLargest=budget.largest;}
                 }

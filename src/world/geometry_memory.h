@@ -56,6 +56,8 @@ inline Budget budgetWith(uint64_t headroom,uint64_t largestAllocation){
     b.valid=true;return b;
 }
 inline Budget buildBudget(uint64_t largestAllocation=0){return budgetWith(EntryHeadroom,largestAllocation);}
+// Chunked local builds avoid large contiguous buffers; keep the process and interior reserves unchanged.
+inline Budget chunkBuildBudget(){return budgetWith(EntryHeadroom-32*MiB,MiB);}
 // Interior allocation: the process reserve must survive the request itself, so a request above the guard raises the floor.
 inline Budget inBuildBudget(uint64_t largestAllocation=0){
     return budgetWith(largestAllocation>InBuildHeadroom?largestAllocation:InBuildHeadroom,largestAllocation);

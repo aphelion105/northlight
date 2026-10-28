@@ -8,6 +8,9 @@ using namespace NorthlightGeometryMemory;
 int main(){
     static_assert(ProcessReserve==256*MiB&&EntryHeadroom==256*MiB);
     auto build=buildBudget();
+    const auto chunk=chunkBuildBudget();assert(chunk.valid&&chunk.available==480*MiB&&chunk.largest==33*MiB);
+    assert(admits({500*MiB,120*MiB,true},chunk)&&!admits({479*MiB,120*MiB,true},chunk));
+    assert(!admits({480*MiB,33*MiB-1,true},chunk));
     // Replay the original measured-shortfall scenario at the proposed reserve:
     // 515 entry + (384-362) shortfall = 537 MiB. Discarding that estimate
     // admits 516 MiB in a different region, while 492 MiB or a 95 MiB block
