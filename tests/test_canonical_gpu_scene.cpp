@@ -89,7 +89,7 @@ static void reentrantAdmission(){
 }
 static void batchPreservation(){
  using namespace NorthlightGpuScene;
- for(unsigned lane=0;lane<2;++lane)for(unsigned count:{1u,17u,64u,512u}){
+ for(unsigned lane=0;lane<2;++lane)for(bool ordered:{false,true})for(bool deny:{false,true})for(unsigned count:{1u,17u,64u,512u}){
   NativeStore scene;NativeClient source(scene,Consumer(lane)),other(scene,Consumer(1-lane));Device device;Binding binding;
   std::vector<Owner> meshes;for(unsigned i=0;i<count;++i)meshes.push_back(authored(123000+i));
   scene.setFrame(1);for(auto& mesh:meshes)assert(!source.bind(&device,mesh,binding.vb,binding.ib,admit,binding.at));
@@ -99,9 +99,10 @@ static void batchPreservation(){
   }
   for(unsigned i=0;i<count;++i)if(i%16==0||i%3==1)assert(other.bind(&device,meshes[i],binding.vb,binding.ib,admit,binding.at));
   // Put a shared entry first in each batch's LRU order, with unused siblings.
-  scene.setFrame(1000);for(auto& mesh:meshes)assert(source.bind(&device,mesh,binding.vb,binding.ib,admit,binding.at));
+  if(ordered){scene.setFrame(1000);for(auto& mesh:meshes)assert(source.bind(&device,mesh,binding.vb,binding.ib,admit,binding.at));}
+  if(deny)other.trimTo(0); // Preservation must still obey the other consumer's retained budget.
   const auto creates=device.calls;source.clear();assert(!source.chargedBytes()&&!source.bytes());unsigned retained=0;
-  for(unsigned i=0;i<count;++i){const bool keep=i%16==0||i%3==1;assert(scene.resident(meshes[i])==keep);retained+=keep;
+  for(unsigned i=0;i<count;++i){const bool keep=!deny&&(i%16==0||i%3==1);assert(scene.resident(meshes[i])==keep);retained+=keep;
    if(keep)assert(other.bind(&device,meshes[i],binding.vb,binding.ib,admit,binding.at)&&exact(*meshes[i],binding));
   }
   assert(other.population().entries==retained&&other.chargedBytes()<=other.limit()&&device.calls==creates);

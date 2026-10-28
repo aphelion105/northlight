@@ -145,7 +145,13 @@ private:
   if(ib!=index){if(ib)ib->Release();ib=index;if(ib)ib->AddRef();}at=e.at;
  }
  bool preserve(Entry& entry,unsigned other){
-  if(!(entry.users&(1u<<other)))return false;const auto source=entry.owner;
+  if(!(entry.users&(1u<<other))){
+   if(!entry.batch)return false;
+   // An unused oldest entry must not evict siblings still used by another pass.
+   const bool shared=std::any_of(entries_.begin(),entries_.end(),[&](const auto& item){return item.second->batch==entry.batch&&(item.second->users&(1u<<other));});
+   if(!shared)return false;
+  }
+  const auto source=entry.owner;
   if(entry.batch){auto* batch=entry.batch;size_t meta=0;for(auto& item:entries_)if(item.second->batch==batch)meta+=item.second->metadata;
    if(batch->capacity+meta>retain_[other]||!room(other,batch->capacity+meta,true,true,retain_[other]))return false;
    gpu_[source]-=batch->capacity;gpu_[other]+=batch->capacity;batch->owner=other;
