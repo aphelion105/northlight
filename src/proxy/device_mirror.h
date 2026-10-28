@@ -13,21 +13,39 @@
 #include <mutex>
 #include <cstdint>
 #include <new>
+#if defined(__SSE2__)
+#include <emmintrin.h>
+#endif
 #include "captured_constant_epoch.h"
 #include "synced_slots.h"
 #include "mirror_guard.h"
 
 static constexpr bool kMirrorWriteThrough=true,kMirrorBorrowedPeek=true;
 
-// 0.3.180 (C3): known[0..count) all set. The flags hold only 0/1 (=true/false, memset 0), so a 4-byte
-// word is all known iff it equals 0x01010101. Inline: a CRT memchr is an import-thunk byte loop under Wine.
+// known[0..count) all set. Flags hold only 0/1; scan bounded SSE2 groups
+// or four-byte words, with an immediate first-unknown exit and no overread.
 static_assert(sizeof(bool)==1,"known flags are scanned as bytes");
 inline bool allKnown(const bool* known,unsigned count){
+#if defined(__SSE2__)
+    if(!count)return true;if(!known[0])return false;
+    unsigned i=0;
+    if(count>=16){
+        const auto ones=_mm_set1_epi8(1);
+        for(;count-i>=16;i+=16)if(_mm_movemask_epi8(_mm_cmpeq_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i*>(known+i)),ones))!=0xffff)return false;
+        if(i<count&&_mm_movemask_epi8(_mm_cmpeq_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i*>(known+count-16)),ones))!=0xffff)return false;
+        return true;
+    }
+    for(;count-i>=4;i+=4){std::uint32_t word;std::memcpy(&word,known+i,4);if(word!=0x01010101u)return false;}
+    if(i<count&&count>=4){std::uint32_t word;std::memcpy(&word,known+count-4,4);return word==0x01010101u;}
+    for(;i<count;++i)if(!known[i])return false;
+    return true;
+#else
     unsigned i=0;
     for(;i<count&&(reinterpret_cast<std::uintptr_t>(known+i)&3);++i)if(!known[i])return false;
     for(;count-i>=4;i+=4){std::uint32_t word;std::memcpy(&word,known+i,4);if(word!=0x01010101u)return false;}
     for(;i<count;++i)if(!known[i])return false;
     return true;
+#endif
 }
 
 struct DeviceMirror {

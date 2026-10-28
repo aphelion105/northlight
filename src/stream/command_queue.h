@@ -263,7 +263,11 @@ class Queue {
 #endif
         progress_.set();
     }
-    static unsigned blockClass(std::size_t bytes){unsigned s=kMinBlockShift;while(s<=kMaxBlockShift&&(std::size_t(1)<<s)<bytes)++s;return s>kMaxBlockShift?kBlockClasses:s-kMinBlockShift;}
+    static unsigned blockClass(std::size_t bytes){
+        if(bytes<=(std::size_t(1)<<kMinBlockShift))return 0;
+        if(bytes>(std::size_t(1)<<kMaxBlockShift))return kBlockClasses;
+        return unsigned(sizeof(unsigned)*8)-__builtin_clz(static_cast<unsigned>(bytes-1))-kMinBlockShift;
+    }
 
 public:
     // Layout check (static_assert below): the producer-private, consumer-private, recorded_, replayed_, waitSeq_ and flag groups each
