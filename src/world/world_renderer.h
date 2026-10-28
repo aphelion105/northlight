@@ -1768,7 +1768,7 @@ private:
                 }
                 NorthlightGI::WorldScene shadowTerrain;
                 { uint32_t reachBits;std::memcpy(&reachBits,&reach,sizeof reachBits);terrainSizeHint.key=reachBits; } // same map (reset above) and same reach only
-                const bool terrainLoaded=NorthlightGI::loadInstancedScenes(shadowTiles,root+"world-cache/models",center-V(reach,reach,reach),center+V(reach,reach,reach),shadowTerrain,error,1,terrainAdmission,terrainFilter,terrainChunkFilter,&terrainSizeHint,sceneSource,true);
+                const bool terrainLoaded=NorthlightGI::loadInstancedScenes(shadowTiles,root+"world-cache/models",center-V(reach,reach,reach),center+V(reach,reach,reach),shadowTerrain,error,1,terrainAdmission,terrainFilter,terrainChunkFilter,&terrainSizeHint,sceneSource,true,chunkedLocal);
                 if(terrainLoaded)terrainDeferred=false; // Optional reserve/provenance refusals preserve all accepted geometry.
                 NorthlightGI::WorldScene pointTransmission;
                 bool pointLoaded=true;uint64_t pointAllocated=0;
@@ -1792,14 +1792,19 @@ private:
                 }
                 const double terrainLoadMs=phaseElapsed();
                 profileMemory("after-terrain-load",plan.get(),&shadowTerrain);
-                bool shadowPlanBuilt=terrainLoaded&&NorthlightShadowTerrain::build(replacement->scene(),shadowTerrain,center,*plan,error,terrainAdmission,reach,{},true,replacement.get(),&meshPreparation,&pointTransmission);
+                // In the bounded path, release scratch terrain as its last triangle is read.
+                // Point transmission retains the existing retryable path.
+                const bool consumeTerrain=chunkedLocal&&pointTransmission.triangles.empty();
+                bool shadowPlanBuilt=terrainLoaded&&(consumeTerrain
+                    ?NorthlightShadowTerrain::buildConsuming(replacement->scene(),shadowTerrain,center,*plan,error,terrainAdmission,reach,{},replacement.get())
+                    :NorthlightShadowTerrain::build(replacement->scene(),shadowTerrain,center,*plan,error,terrainAdmission,reach,{},true,replacement.get(),&meshPreparation,&pointTransmission));
                 if(!shadowPlanBuilt&&!pointTransmission.triangles.empty()){
                     if(NorthlightDiagnostics::enabled())logf("POINT_TRANSMISSION assembly refused; retaining base geometry: %s",error.c_str());
                     pointTransmission=NorthlightGI::WorldScene{};terrainDeferred=false;error.clear();
                     shadowPlanBuilt=NorthlightShadowTerrain::build(replacement->scene(),shadowTerrain,center,*plan,error,terrainAdmission,reach,{},true,replacement.get(),&meshPreparation);
                 }
                 if(shadowPlanBuilt){terrainDeferred=false; // an oversized reservation may have been refused before a successful fallback
-                    if(plan->pagingChunks)logf("WORLD shadow geometry prepared in bounded chunks after contiguous allocation refusal");
+                    if(plan->pagingChunks)logf("WORLD shadow geometry prepared in bounded chunks");
                 }else if(!terrainDeferred&&error=="Geometry allocation deferred"){
                     const auto budget=NorthlightGeometryMemory::inBuildBudget();terrainSample=workerMemory(budget);
                     terrainDeferred=true;terrainRequired=budget.available;terrainRequiredLargest=budget.largest;

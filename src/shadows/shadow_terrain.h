@@ -83,7 +83,7 @@ template<class Scene> inline bool buildImpl(const NorthlightGI::WorldScene& loca
                   Vec3 center,NorthlightWorldMesh::WorldMeshUploadPlan& output,std::string& error,
                   const NorthlightGI::AllocationAdmission& admit,float radius,
                   const NorthlightWorldMesh::PlanOrder& order,bool pagingOnly,
-                  const NorthlightGI::BVH* sharedLocal,NorthlightWorldMesh::PreparationCache* preparation,const NorthlightGI::WorldScene* pointOnly,bool& reserveRefused){
+                  const NorthlightGI::BVH* sharedLocal,NorthlightWorldMesh::PreparationCache* preparation,const NorthlightGI::WorldScene* pointOnly,bool& reserveRefused,NorthlightGI::WorldScene* consume=nullptr){
     try {
     const Vec3 low=center-Vec3(LocalHorizontal,LocalHorizontal,LocalVertical),high=center+Vec3(LocalHorizontal,LocalHorizontal,LocalVertical);
     auto allowed=[&](uint64_t bytes){if(!admit||admit(bytes))return true;error="Geometry allocation deferred";return false;};
@@ -133,7 +133,28 @@ template<class Scene> inline bool buildImpl(const NorthlightGI::WorldScene& loca
     NorthlightGI::WorldMaterial opaque;opaque.terrain=true;
     merged->materials.push_back(opaque);
     size_t rangeIndex=0;
-    for(size_t triangle=0;triangle<terrain.triangles.size();++triangle){const auto& t=terrain.triangles[triangle];
+    // The consuming path owns its scratch scene exclusively. A failed build
+    // discards it; only the completed plan is ever published.
+    std::vector<std::pair<size_t,size_t>> releaseVertices;
+    if(consume){
+        const size_t block=terrain.vertices.blockSize();
+        const size_t blocks=(terrain.vertices.size()+block-1)/block;
+        if(!allowed(blocks*(sizeof(size_t)+sizeof(std::pair<size_t,size_t>))))return false;
+        std::vector<size_t> last(blocks,0);releaseVertices.reserve(blocks);
+        for(size_t i=0;i<terrain.triangles.size();++i){const auto& t=terrain.triangles[i];
+            if(t.v0>=terrain.vertices.size()||t.v1>=terrain.vertices.size()||t.v2>=terrain.vertices.size()){error="Invalid shadow terrain";return false;}
+            last[t.v0/block]=last[t.v1/block]=last[t.v2/block]=i;
+        }
+        for(size_t i=0;i<last.size();++i)releaseVertices.emplace_back(last[i],i);
+        std::sort(releaseVertices.begin(),releaseVertices.end());
+    }
+    size_t released=0;
+    for(size_t triangle=0;triangle<terrain.triangles.size();++triangle){
+        if(consume){
+            while(released<releaseVertices.size()&&releaseVertices[released].first<triangle)consume->vertices.releaseBlock(releaseVertices[released++].second);
+            if(triangle&&triangle%terrain.triangles.blockSize()==0)consume->triangles.releaseBlock(triangle/terrain.triangles.blockSize()-1);
+        }
+        const auto& t=terrain.triangles[triangle];
         if(preparation)while(rangeIndex<terrain.sourcePieces.size()&&uint64_t(terrain.sourcePieces[rangeIndex].triangleBase)+terrain.sourcePieces[rangeIndex].triangleCount<=triangle)++rangeIndex;
         if(t.v0>=terrain.vertices.size()||t.v1>=terrain.vertices.size()||t.v2>=terrain.vertices.size()||
            t.material>=terrain.materials.size()||!terrain.materials[t.material].terrain){error="Invalid shadow terrain";return false;}
@@ -159,6 +180,7 @@ template<class Scene> inline bool buildImpl(const NorthlightGI::WorldScene& loca
         if(outside(cl,ch,low,high)&&cl.x>=center.x-radius&&ch.x<=center.x+radius&&
            cl.y>=center.y-radius&&ch.y<=center.y+radius)fixed.insert(key);
     }
+    if(consume){consume->vertices.free();consume->triangles.free();}
     try{for(size_t i=0;i<kept.size();++i)if(kept[i].count){const auto& range=terrain.sourcePieces[i];const auto& keptRange=kept[i];NorthlightWorldMesh::PreparationPiece piece;piece.identity=identity(range,'T');const auto membership=keptRange.membership.finish(range.triangleCount,keptRange.count);appendBytes(piece.identity,membership.lo);appendBytes(piece.identity,membership.hi);piece.firstTriangle=keptRange.first;piece.triangleCount=keptRange.count;piece.materials={material};prepared.push_back(std::move(piece));}}catch(const std::bad_alloc&){preparation=nullptr;decltype(prepared)().swap(prepared);}
     // The terrain vertex remap is dead after assembly; do not carry it into
     // the packed-index/signature allocations.
@@ -210,5 +232,13 @@ inline bool build(const NorthlightGI::WorldScene& local,const NorthlightGI::Worl
     if(!pagingOnly||!refused)return false;
     if(preparation)preparation->reset();
     return buildImpl<NorthlightWorldMesh::ChunkedShadowScene>(local,terrain,center,output,error,admit,radius,order,pagingOnly,sharedLocal,nullptr,pointOnly,refused);
+}
+inline bool buildConsuming(const NorthlightGI::WorldScene& local,NorthlightGI::WorldScene& terrain,
+                  Vec3 center,NorthlightWorldMesh::WorldMeshUploadPlan& output,std::string& error,
+                  const NorthlightGI::AllocationAdmission& admit,float radius,
+                  const NorthlightWorldMesh::PlanOrder& order,const NorthlightGI::BVH* sharedLocal){
+    if(!terrain.vertices.chunked()||!terrain.triangles.chunked()){error="Consuming shadow terrain requires chunked geometry";return false;}
+    bool refused=false;
+    return buildImpl<NorthlightWorldMesh::ChunkedShadowScene>(local,terrain,center,output,error,admit,radius,order,true,sharedLocal,nullptr,nullptr,refused,&terrain);
 }
 } // namespace NorthlightShadowTerrain

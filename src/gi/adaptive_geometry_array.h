@@ -32,6 +32,8 @@ public:
     void chunks(const std::function<bool(uint64_t)>* a){if(chunked_)return;AdaptiveGeometryArray next;next.chunked_=true;next.admit_=a;for(const auto& v:flat_)next.push_back(v);swap(next);}
     void detachAdmission(){admit_=nullptr;}
     bool chunked()const{return chunked_;}
+    static constexpr size_t blockSize(){return BlockSize;}
+    void releaseBlock(size_t index){chunks_[index].reset();}
     size_t size()const{return chunked_?size_:flat_.size();}bool empty()const{return size()==0;}
     size_t capacity()const{return chunked_?chunks_.size()*BlockSize:flat_.capacity();}
     size_t overhead()const{return chunks_.capacity()*sizeof(chunks_[0]);}

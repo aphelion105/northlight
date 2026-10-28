@@ -38,6 +38,8 @@ s=s.replace('assert(cache.build(nearFiles,root+"/models",map,c-Vec3(288,288,320)
 s=s.replace('plan,error,{},radius,{},true,&local,&preparation','plan,error,admission,radius,{},true,&local,&preparation')
 s=s.replace('terrain,error,1,{},terrainFilter','terrain,error,1,admission,terrainFilter')
 s=s.replace('pages,error,{},options','pages,error,admission,options')
+s=s.replace(',true\n#endif\n        ));',',true,fragmented\n#endif\n        ));')
+s=s.replace('assert(NorthlightShadowTerrain::build(local.scene(),terrain,c,plan,error,admission,radius,{},true,&local,&preparation));','assert(fragmented?NorthlightShadowTerrain::buildConsuming(local.scene(),terrain,c,plan,error,admission,radius,{},&local):NorthlightShadowTerrain::build(local.scene(),terrain,c,plan,error,admission,radius,{},true,&local,&preparation));')
 s=s.replace('        double localMs=ms(t);t=Clock::now();','        std::printf("LOCAL_CHUNKED mode=%u vertices=%zu triangles=%zu refusals=%u\\n",unsigned(fragmented),local.scene().vertices.size(),local.scene().triangles.size(),refusals);\n        double localMs=ms(t);t=Clock::now();')
 # The worker drops the temporary source terrain after the shadow plan owns its data.
 s=s.replace('        double planMs=ms(t);t=Clock::now();NorthlightWorldMeshPages::Plan pages;', '        terrain=WorldScene{};double planMs=ms(t);t=Clock::now();NorthlightWorldMeshPages::Plan pages;')
