@@ -496,7 +496,7 @@ inline bool sampledExtraWorld(const Program& program,const NorthlightDrawSnapsho
     if(!mesh.vertexCount||!constants||!inverseView)return false;
     const unsigned vertex=mesh.indexed?(mesh.indices.empty()?mesh.vertexCount:mesh.indices[slot?mesh.indices.size()-1:mesh.indices.size()/2]):(slot?mesh.vertexCount-1:mesh.vertexCount/2);
     Four inputs[16];if(!sampledVertexInputsAt(program,mesh,elements,count,vertex,inputs))return false;
-    Four v;if(!evaluate(program,inputs,constants,v))return false;
+    Four v;if(!evaluateFast(program,inputs,constants,v))return false;
     for(unsigned axis=0;axis<3;++axis){world[axis]=v[0]*inverseView[axis]+v[1]*inverseView[4+axis]+v[2]*inverseView[8+axis]+inverseView[12+axis];if(!std::isfinite(world[axis]))return false;}
     return true;
 }
