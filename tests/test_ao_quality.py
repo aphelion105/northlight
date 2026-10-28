@@ -49,7 +49,7 @@ def main():
         result = json.loads(grazing.read_text())
         assert result['case_count'] == 48 and result['failures'] == 0, result
         assert all(case['min'] < .99 and case['dark'] > 0 for case in result['cases'] if case['shape'] == 3), 'Real concave contact was lost'
-    print('PASS Medium/Low: original 99 AO assertions each; High/Medium/Low: original 48 grazing assertions each; exact compiled loop counts and unchanged High bytecode')
+    print('PASS Medium/Low: original 99 AO assertions each; High/Medium/Low: original 48 grazing assertions each; exact compiled loop counts and approved High bytecode')
 
 
 if __name__ == '__main__':

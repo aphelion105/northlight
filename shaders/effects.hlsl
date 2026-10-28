@@ -222,7 +222,7 @@ float4 AOSample(float2 uv)
     return float4(Position(uv, d), valid);
 }
 
-// Preserve the released High program verbatim; its bytecode is hash-pinned.
+// High sample counts are fixed; approved bytecode is pinned by the AO tests.
 float NewAO(float2 uv, int method)
 {
     uv = DepthTexelUV(uv, 1 / ImageAndClip.xy);
@@ -299,7 +299,7 @@ float NewAO(float2 uv, int method)
         float cosine = saturate(dot(projected, view) * inverseProjectedLength);
         float sine = (dot(tangent, projected) >= 0 ? 1 : -1) * sqrt(max(1 - cosine * cosine, 0));
         float2 low = float2(-sine, sine);
-        float2 horizon = low;
+        float2 horizon = low, solidHorizon = low, coverage = 0;
         [loop] for (int step = 0; step < 4; ++step)
         {
             float sampleRadius = (step + 1) * .2;
@@ -308,7 +308,13 @@ float NewAO(float2 uv, int method)
             float3 da = a.xyz - p, db = b.xyz - p;
             float2 inverseDistance = rsqrt(max(float2(dot(da, da), dot(db, db)), 1e-12));
             float2 distance = 1/inverseDistance;
-            float2 weight = saturate((radius - distance) / (radius * .5)) * float2(a.w, b.w);
+            float2 solidFalloff = saturate((radius - distance) / (radius * .5));
+            // A single depth layer overstates thin foreground silhouettes.
+            // Stronger depth-separation falloff handles isolated hits; multiple
+            // occluder samples retain the original solid-surface horizon.
+            float2 thinDistance = sqrt(float2(dot(da, da), dot(db, db)) + 3 * float2(da.z * da.z, db.z * db.z));
+            float2 thinFalloff = saturate((radius - thinDistance) / (radius * .5));
+            float2 weight = float2(a.w, b.w);
             weight *= float2(distance.x > .00001, distance.y > .00001);
             // Both inner taps can resolve to the receiver texel at distance.
             // Reject by footprint, not a nearly-zero reconstructed 3D delta.
@@ -316,8 +322,12 @@ float NewAO(float2 uv, int method)
             // Match the SSAO coplanar tolerance for grazing D24 derivatives.
             weight *= float2(dot(normal, da) > .08 * distance.x, dot(normal, db) > .08 * distance.y);
             float2 candidate = float2(dot(da, view), dot(db, view)) * inverseDistance;
-            horizon = max(horizon, lerp(low, candidate, weight));
+            float2 solidCandidate = lerp(low, candidate, weight * solidFalloff);
+            coverage += float2(solidCandidate.x > low.x + .00001, solidCandidate.y > low.y + .00001);
+            solidHorizon = max(solidHorizon, solidCandidate);
+            horizon = max(horizon, lerp(low, candidate, weight * thinFalloff));
         }
+        horizon = lerp(horizon, solidHorizon, saturate(coverage - 1));
         float open = projectedLength * (cosine + AOAcos(cosine) * abs(sine));
         [branch] if (max(horizon.x-low.x,horizon.y-low.y)>.00001)
         {
@@ -420,7 +430,7 @@ float NewAOQuality(float2 uv, int method, int quality)
         float cosine = saturate(dot(projected, view) * inverseProjectedLength);
         float sine = (dot(tangent, projected) >= 0 ? 1 : -1) * sqrt(max(1 - cosine * cosine, 0));
         float2 low = float2(-sine, sine);
-        float2 horizon = low;
+        float2 horizon = low, solidHorizon = low, coverage = 0;
         [loop] for (int step = 0; step < 4; ++step)
         {
             float sampleRadius = (step + 1) * .2;
@@ -429,7 +439,10 @@ float NewAOQuality(float2 uv, int method, int quality)
             float3 da = a.xyz - p, db = b.xyz - p;
             float2 inverseDistance = rsqrt(max(float2(dot(da, da), dot(db, db)), 1e-12));
             float2 distance = 1/inverseDistance;
-            float2 weight = saturate((radius - distance) / (radius * .5)) * float2(a.w, b.w);
+            float2 solidFalloff = saturate((radius - distance) / (radius * .5));
+            float2 thinDistance = sqrt(float2(dot(da, da), dot(db, db)) + 3 * float2(da.z * da.z, db.z * db.z));
+            float2 thinFalloff = saturate((radius - thinDistance) / (radius * .5));
+            float2 weight = float2(a.w, b.w);
             weight *= float2(distance.x > .00001, distance.y > .00001);
             // Both inner taps can resolve to the receiver texel at distance.
             // Reject by footprint, not a nearly-zero reconstructed 3D delta.
@@ -437,8 +450,12 @@ float NewAOQuality(float2 uv, int method, int quality)
             // Match the SSAO coplanar tolerance for grazing D24 derivatives.
             weight *= float2(dot(normal, da) > .08 * distance.x, dot(normal, db) > .08 * distance.y);
             float2 candidate = float2(dot(da, view), dot(db, view)) * inverseDistance;
-            horizon = max(horizon, lerp(low, candidate, weight));
+            float2 solidCandidate = lerp(low, candidate, weight * solidFalloff);
+            coverage += float2(solidCandidate.x > low.x + .00001, solidCandidate.y > low.y + .00001);
+            solidHorizon = max(solidHorizon, solidCandidate);
+            horizon = max(horizon, lerp(low, candidate, weight * thinFalloff));
         }
+        horizon = lerp(horizon, solidHorizon, saturate(coverage - 1));
         float open = projectedLength * (cosine + AOAcos(cosine) * abs(sine));
         [branch] if (max(horizon.x-low.x,horizon.y-low.y)>.00001)
         {
