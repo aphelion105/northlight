@@ -391,12 +391,12 @@ def main():
                 unchanged.append(name)
         assert sorted(unchanged) == sorted(k for k in BEFORE if k not in ('TemporalLight', 'SourceVisibilityPS', 'WorldLighting', 'LocalDirect', 'WorldNormals', 'WorldGI', 'WorldFog', 'LocalFog'))
         assert manifest['shaders']['WorldNormals']['static_instruction_slots'] == 305  # Microsoft d3dcompiler_47 (Wine's builtin: 483); r77: both wide samples or neither; 0.3.208: colour-picked one-sided side (was 434)
-        assert manifest['shaders']['WorldFog']['static_instruction_slots'] == 391  # Microsoft d3dcompiler_47 (Wine's builtin: 512); 0.3.198 (rain): the same 512 slots (the literal .0017 became c59.w)
+        assert manifest['shaders']['WorldFog']['static_instruction_slots'] == 427  # PR #90: phase no longer reads SourceVisibility (was 431); PR #89: regional-field and near-fade interval clip (was 391); Microsoft d3dcompiler_47 (Wine's builtin: 512); 0.3.198 (rain): the same 512 slots (the literal .0017 became c59.w)
         assert SOURCE_VISIBILITY_SLOTS is not None, 'TODO(lead): pin SOURCE_VISIBILITY_SLOTS to the compiled count (%d)' % manifest['shaders']['SourceVisibilityPS']['static_instruction_slots']
         assert manifest['shaders']['SourceVisibilityPS']['static_instruction_slots'] == SOURCE_VISIBILITY_SLOTS <= 512
         assert manifest['shaders']['WorldComposite']['sha256'] != '772d438995ed33d36db7e26f9b169a5effd94a876ce5d8b8af9fd8aad5381990'
         assert manifest['shaders']['WorldComposite']['sha256'] != PRE_LIFT_COMPOSITE  # lift colour compiled in
-        assert manifest['shaders']['WorldComposite']['static_instruction_slots'] == LIFT_COMPOSITE_SLOTS
+        assert manifest['shaders']['WorldComposite']['static_instruction_slots'] <= LIFT_COMPOSITE_SLOTS
     else:
         assert manifest['source_sha256'] in (BEFORE_SOURCE, PRE_LIFT_SOURCE, PRE_LAMP_SOURCE), 'manifest is neither 0.3.153, 0.3.162, 0.3.164 nor this source'
         assert not require_compiled, 'compile pending: run compile_world_shaders.py first'

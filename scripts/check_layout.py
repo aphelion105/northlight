@@ -6,8 +6,9 @@
 2. Every source sits in a src/<group>/ directory, not in src/ itself.
 3. Basenames are unique across src/, shaders/, scripts/, renderer/ and tests/ (they are the
    include namespace).
-4. No machine paths in code. Docs and records keep historical paths as evidence and are not
-   checked; a code line may opt out with the marker `layout: allow-machine-path`.
+4. No machine paths in code. Docs, records and vendored third-party sources (src/imgui/) are not
+   checked (docs and records keep historical paths as evidence); a code line may opt out with the
+   marker `layout: allow-machine-path`.
 """
 import re
 import subprocess
@@ -21,7 +22,8 @@ import northlight_paths as fp  # noqa: E402
 MACHINE = re.compile(r'/Users/[^/\s]+|/home/[^/\s]+|/private/|/var/folders/|/tmp/|/Applications/|'  # layout: allow-machine-path
                      r'[A-Za-z]:\\+(?:Users|Documents and Settings)\\+[^\\\s]+', re.I)
 CODE_SUFFIXES = {'.py', '.cpp', '.h', '.inl', '.hlsl', '.inc', '.def', '.sh', '.ini', '.bat', '.ps1'}
-NOT_CODE = ('renderer/records/', 'renderer/docs/', 'docs/', 'releases/')
+NOT_CODE = ('renderer/records/', 'renderer/docs/', 'docs/', 'releases/',
+            'src/imgui/')   # vendored, unmodified Dear ImGui (src/imgui/README.md): its comments are not ours to edit
 ALLOW = 'layout: allow-machine-path'
 # Sources, shaders and build scripts live in src/, shaders/ and scripts/, never in renderer/.
 LEGACY_SOURCE = re.compile(r'.*\.(h|inl|inc|def|hlsl|bin|asm|cpp)$|.*-shader-build\.json$|'
