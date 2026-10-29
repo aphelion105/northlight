@@ -194,7 +194,7 @@ template<class Scene> inline bool buildImpl(const NorthlightGI::WorldScene& loca
             merged->triangles.push_back({triangle.v0+vertexBase,triangle.v1+vertexBase,triangle.v2+vertexBase,triangle.material+materialBase});
         }
         for(const auto& source:pointOnly->materials){
-            if(!allowed(source.rgba.size()))return false;
+            if(!allowed(source.texels().size()))return false;
             auto material=source;material.terrain=false;material.pointOnly=true;merged->materials.push_back(std::move(material));
         }
     }

@@ -527,7 +527,7 @@ private:
         // Add resource before material admission so all allocated bytes count.
         const std::string identity=resourceKey(*model);resources_[identity]=std::move(r);Resource& dest=*resources_.at(identity);
         dest.textures.resize(model->materials.size());
-        for(const auto& mat:model->materials)dest.opaque.push_back(mat.alphaCutoff<=0||((!mat.width||!mat.height||(!model->uploadPrepared&&mat.rgba.empty()))&&mat.alphaCutoff<=1));
+        for(const auto& mat:model->materials)dest.opaque.push_back(mat.alphaCutoff<=0||((!mat.width||!mat.height||(!model->uploadPrepared&&mat.texels().empty()))&&mat.alphaCutoff<=1));
         staging_=identity;return true;
     }
     bool advance(IDirect3DDevice9* d,Resource& r,size_t& budget,const std::chrono::steady_clock::time_point& start){
@@ -554,7 +554,7 @@ private:
                 RECT rect{0,LONG(t.nextRow),LONG(t.width),LONG(t.nextRow+rows)};D3DLOCKED_RECT lock{};if(FAILED(t.gpu->LockRect(0,&lock,&rect,0))||!lock.pBits)return false;const auto& mat=m.materials[i];
                 for(unsigned y=0;y<rows;++y){auto* dst=reinterpret_cast<uint32_t*>(static_cast<char*>(lock.pBits)+y*lock.Pitch);const size_t offset=size_t(t.nextRow+y)*rowBytes;
                     if(m.uploadPrepared){const auto& alpha=*m.uploadAlpha[i];const size_t first=size_t(t.nextRow+y)*t.width;for(unsigned x=0;x<t.width;++x)dst[x]=(uint32_t(alpha[first+x])<<24)|0x00ffffffu;}
-                    else for(unsigned x=0;x<t.width;++x){const size_t j=offset+x*4;const unsigned a=j+3<mat.rgba.size()?mat.rgba[j+3]:255;dst[x]=(a<<24)|0x00ffffff;t.alpha[size_t(t.nextRow+y)*t.width+x]=uint8_t(a);}}
+                    else for(unsigned x=0;x<t.width;++x){const size_t j=offset+x*4;const unsigned a=j+3<mat.texels().size()?mat.texels()[j+3]:255;dst[x]=(a<<24)|0x00ffffff;t.alpha[size_t(t.nextRow+y)*t.width+x]=uint8_t(a);}}
                 if(FAILED(t.gpu->UnlockRect(0)))return false;t.nextRow+=rows;t.ready=t.nextRow==t.height;if(t.ready)t.owner.reset();budget-=rows*rowBytes;if(sharedBudget_)sharedBudget_->consume(rows*rowBytes);break;
             }
             if(all){

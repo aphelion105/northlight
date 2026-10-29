@@ -68,6 +68,8 @@ struct MaterialUpload {
     uint32_t width=1,height=1;
     // Tightly packed D3DFMT_A8R8G8B8 memory bytes: B,G,R,A.
     std::vector<uint8_t> bgra;
+    bool spooled=false;uint64_t fileOffset=0;
+    uint64_t pixelBytes()const{return spooled?uint64_t(width)*height*4:bgra.size();}
     // Full BGRA identity, prepared on the worker. A hash match is only a
     // lookup shortcut; reuse also requires equal dimensions and exact bytes.
     NorthlightLocalShadowSignature::Digest textureIdentity;
@@ -121,6 +123,8 @@ using PreparationLayout=std::vector<PreparationIdentity>;
 
 
 struct WorldMeshUploadPlan {
+    // Private pressure preparation spool; ownership moves into sealed pages.
+    std::shared_ptr<NorthlightGI::TemporaryGeometryFile> temporary;
     void accountMemory(NorthlightMemoryFootprint::Counter&,bool includeObject=true)const;
     // Caller must retain the SAME immutable source scene/BVH until upload and
     // drawing finish. Vertices remain there to avoid a second large CPU copy.

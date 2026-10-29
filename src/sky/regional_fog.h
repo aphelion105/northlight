@@ -206,7 +206,7 @@ inline bool cityZone(uint32_t zone){return zone==1519||zone==1637;}
 // Match the geometry sampler's bilinear alpha test. A cutout in a city roof
 // must not raise the fog floor into empty space. Runtime FGS3 defaults wrap.
 __attribute__((noinline)) inline bool cityOpaqueTexturedAt(const NorthlightGI::WorldMaterial& m,float u,float v){
-    if(!m.width||!m.height||m.rgba.size()!=size_t(m.width)*m.height*4||!std::isfinite(u)||!std::isfinite(v))return false;
+    if(!m.width||!m.height||m.texels().size()!=size_t(m.width)*m.height*4||!std::isfinite(u)||!std::isfinite(v))return false;
     auto coord=[](float p,uint32_t mode){if(mode==3)return std::clamp(p,0.f,1.f);auto floorFast=[](float x){if(x>=-32768.f&&x<=32768.f){int i=int(x);return float(i-(x<float(i)));}return std::floor(x);};if(mode==2){float q=p-2*floorFast(p*.5f);return q<=1?q:2-q;}return p-floorFast(p);};
     auto texel=[](int i,unsigned size,uint32_t mode){return mode==1?unsigned((i+int(size))%int(size)):unsigned(std::clamp(i,0,int(size)-1));};
     float x=coord(u,m.addressU)*m.width-.5f,y=coord(v,m.addressV)*m.height-.5f;
@@ -215,11 +215,11 @@ __attribute__((noinline)) inline bool cityOpaqueTexturedAt(const NorthlightGI::W
     const float flx=small?float(int(x)-(x<0)):std::floor(x),fly=small?float(int(y)-(y<0)):std::floor(y);
     int ix=int(flx),iy=int(fly);float fx=x-flx,fy=y-fly,alpha=0;
     const unsigned xs[2]={texel(ix,m.width,m.addressU),texel(ix+1,m.width,m.addressU)},ys[2]={texel(iy,m.height,m.addressV),texel(iy+1,m.height,m.addressV)};
-    for(int j=0;j<2;++j)for(int i=0;i<2;++i)alpha+=m.rgba[(size_t(ys[j])*m.width+xs[i])*4+3]/255.f*(i?fx:1-fx)*(j?fy:1-fy);
+    for(int j=0;j<2;++j)for(int i=0;i<2;++i)alpha+=m.texels()[(size_t(ys[j])*m.width+xs[i])*4+3]/255.f*(i?fx:1-fx)*(j?fy:1-fy);
     return alpha>=m.alphaCutoff;
 }
 inline bool cityOpaqueAt(const NorthlightGI::WorldMaterial& m,float u,float v){
-    if(m.rgba.empty()||m.alphaCutoff<=0)return true;
+    if(m.texels().empty()||m.alphaCutoff<=0)return true;
     return cityOpaqueTexturedAt(m,u,v);
 }
 // originX/Y are the WORLD POSITION OF TEXEL(0,0)'S CENTER. Shader UV is

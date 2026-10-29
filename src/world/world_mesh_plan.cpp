@@ -34,9 +34,9 @@ NorthlightLocalShadowSignature::Digest materialIdentity(const NorthlightGI::Worl
     if(meta.lampSourceId){hash.word(uint32_t(meta.lampSourceId));hash.word(uint32_t(meta.lampSourceId>>32));}
     if(meta.pointOnly)hash.word(0x504f494e); // Nearest-sampled transmission has distinct coverage semantics.
     // This is the upload's actual coverage texture, including implicit white.
-    const bool cutout=meta.alphaCutoff>0&&!m.rgba.empty();
+    const bool cutout=meta.alphaCutoff>0&&!m.texels().empty();
     hash.word(cutout?m.width:1);hash.word(cutout?m.height:1);
-    if(cutout)for(size_t i=3;i<m.rgba.size();i+=4)hash.word(m.rgba[i]);else hash.word(255);
+    if(cutout)for(size_t i=3;i<m.texels().size();i+=4)hash.word(m.texels()[i]);else hash.word(255);
     return hash.finish();
 }
 
@@ -89,7 +89,7 @@ template<class Scene> static bool buildCore(const Scene& scene,WorldMeshUploadPl
     for(size_t i=0;i<scene.materials.size();++i){
         const auto& m=scene.materials[i];const auto& x=texel(i);
         if(x.width>4096||x.height>4096||((x.width==0)!=(x.height==0))||
-           uint64_t(x.width)*x.height*4!=x.rgba.size()||!std::isfinite(m.alphaCutoff)||m.alphaCutoff<0||m.alphaCutoff>1){
+           uint64_t(x.width)*x.height*4!=x.texels().size()||!std::isfinite(m.alphaCutoff)||m.alphaCutoff<0||m.alphaCutoff>1){
             error="Invalid upload material";return false;
         }
     }
@@ -198,10 +198,22 @@ template<class Scene> static bool buildCore(const Scene& scene,WorldMeshUploadPl
         for(size_t i=0;i<scene.materials.size();++i){
             const auto& meta=scene.materials[i];const auto& source=texel(i);auto& dest=next.materials[i];
             dest.alphaCutoff=meta.alphaCutoff;dest.terrain=meta.terrain;
-            if(meta.alphaCutoff<=0||source.rgba.empty())dest.bgra={255,255,255,255};
+            if(meta.alphaCutoff<=0||source.texels().empty())dest.bgra={255,255,255,255};
             else{
-                dest.width=source.width;dest.height=source.height;if(!allowed(source.rgba.size()))return false;dest.bgra.resize(source.rgba.size());
-                for(size_t p=0;p<source.rgba.size();p+=4){dest.bgra[p]=source.rgba[p+2];dest.bgra[p+1]=source.rgba[p+1];dest.bgra[p+2]=source.rgba[p];dest.bgra[p+3]=source.rgba[p+3];}
+                dest.width=source.width;dest.height=source.height;
+                if(scene.vertices.spooled()){
+                    if(!next.temporary)next.temporary=std::make_shared<NorthlightGI::TemporaryGeometryFile>();
+                    dest.spooled=true;dest.fileOffset=next.temporary->size();
+                    NorthlightLocalShadowSignature::Hasher hash;hash.word(dest.width);hash.word(dest.height);
+                    std::array<uint8_t,65536> converted;
+                    for(size_t offset=0;offset<source.texels().size();){const auto bytes=std::min(converted.size(),source.texels().size()-offset);
+                        for(size_t p=0;p<bytes;p+=4){converted[p]=source.texels()[offset+p+2];converted[p+1]=source.texels()[offset+p+1];converted[p+2]=source.texels()[offset+p];converted[p+3]=source.texels()[offset+p+3];uint32_t pixel;std::memcpy(&pixel,converted.data()+p,4);hash.word(pixel);}
+                        next.temporary->append(converted.data(),bytes);offset+=bytes;
+                    }
+                    dest.textureIdentity=hash.finish();next.textureBytes+=dest.pixelBytes();continue;
+                }
+                if(!allowed(source.texels().size()))return false;dest.bgra.resize(source.texels().size());
+                for(size_t p=0;p<source.texels().size();p+=4){dest.bgra[p]=source.texels()[p+2];dest.bgra[p+1]=source.texels()[p+1];dest.bgra[p+2]=source.texels()[p];dest.bgra[p+3]=source.texels()[p+3];}
             }
             NorthlightLocalShadowSignature::Hasher textureHash;
             textureHash.word(dest.width);textureHash.word(dest.height);
@@ -209,6 +221,7 @@ template<class Scene> static bool buildCore(const Scene& scene,WorldMeshUploadPl
             dest.textureIdentity=textureHash.finish();
             next.textureBytes+=dest.bgra.size();
         }}
+        if(next.temporary)next.temporary->flush();
         if(chunkIndices){chunkIndices->detachAdmission();next.pagingIndices=std::move(chunkIndices);}
     }catch(const std::bad_alloc&){error="Geometry allocation deferred";return false;}
      catch(const NorthlightGI::TemporaryGeometryError& failure){error=failure.what();return false;}
@@ -348,7 +361,7 @@ bool buildUploadPlan(const NorthlightGI::WorldScene& scene,WorldMeshUploadPlan& 
         std::vector<NorthlightLocalShadowSignature::Digest> identities;
         identities.reserve(scene.materials.size());
         for(size_t i=0;i<scene.materials.size();++i){const auto& m=scene.materials[i];const auto& x=textures&&i<textures->size()?(*textures)[i]:m;
-            if(x.width>4096||x.height>4096||((x.width==0)!=(x.height==0))||uint64_t(x.width)*x.height*4!=x.rgba.size()||!std::isfinite(m.alphaCutoff)||m.alphaCutoff<0||m.alphaCutoff>1){error="Invalid upload material";return false;}
+            if(x.width>4096||x.height>4096||((x.width==0)!=(x.height==0))||uint64_t(x.width)*x.height*4!=x.texels().size()||!std::isfinite(m.alphaCutoff)||m.alphaCutoff<0||m.alphaCutoff>1){error="Invalid upload material";return false;}
             identities.push_back(materialIdentity(m,x));}
         uint64_t end=0;
         for(const auto& p:*sources){if(!p.triangleCount||p.firstTriangle<end||uint64_t(p.firstTriangle)+p.triangleCount>scene.triangles.size())return buildCore(scene,output,error,admit,textures,order);end=uint64_t(p.firstTriangle)+p.triangleCount;
@@ -415,7 +428,7 @@ bool buildUploadPlan(const NorthlightGI::WorldScene& scene,WorldMeshUploadPlan& 
         // Texture upload remains one global operation; range caches retain no RGBA/BGRA.
         next.materials.resize(scene.materials.size());
         for(size_t i=0;i<scene.materials.size();++i){const auto& meta=scene.materials[i];const auto& source=textures&&i<textures->size()?(*textures)[i]:meta;auto& dest=next.materials[i];dest.alphaCutoff=meta.alphaCutoff;dest.terrain=meta.terrain;
-            if(meta.alphaCutoff<=0||source.rgba.empty())dest.bgra={255,255,255,255};else{dest.width=source.width;dest.height=source.height;if(!allowed(source.rgba.size()))return false;dest.bgra.resize(source.rgba.size());for(size_t p=0;p<source.rgba.size();p+=4){dest.bgra[p]=source.rgba[p+2];dest.bgra[p+1]=source.rgba[p+1];dest.bgra[p+2]=source.rgba[p];dest.bgra[p+3]=source.rgba[p+3];}}
+            if(meta.alphaCutoff<=0||source.texels().empty())dest.bgra={255,255,255,255};else{dest.width=source.width;dest.height=source.height;if(!allowed(source.texels().size()))return false;dest.bgra.resize(source.texels().size());for(size_t p=0;p<source.texels().size();p+=4){dest.bgra[p]=source.texels()[p+2];dest.bgra[p+1]=source.texels()[p+1];dest.bgra[p+2]=source.texels()[p];dest.bgra[p+3]=source.texels()[p+3];}}
             NorthlightLocalShadowSignature::Hasher textureHash;textureHash.word(dest.width);textureHash.word(dest.height);for(size_t p=0;p<dest.bgra.size();p+=4){uint32_t pixel;std::memcpy(&pixel,dest.bgra.data()+p,4);textureHash.word(pixel);}dest.textureIdentity=textureHash.finish();next.textureBytes+=dest.bgra.size();}
         if(allProven){auto layout=std::make_shared<PreparationLayout>();for(const auto& p:parts)layout->push_back({p.data,p.first,p.data->plan.triangleCount,p.data->charge->bytes,p.materials});next.preparationLayout=std::move(layout);}
         next.source=&scene;next.vertexCount=uint32_t(scene.vertices.size());next.triangleCount=uint32_t(scene.triangles.size());next.vertexBytes=scene.vertices.size()*sizeof(NorthlightGI::WorldVertex);next.indexBytes=scene.triangles.size()*12;

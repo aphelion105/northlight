@@ -1,4 +1,10 @@
 #pragma once
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 #include "memory_footprint.h"
 #include "temporary_geometry.h"
 #include <algorithm>
@@ -15,13 +21,35 @@
 #include <vector>
 
 namespace NorthlightGI {
+template<class T> struct GeometryBlockDelete {
+    void operator()(T* data)const{
+#ifdef _WIN32
+        if(data)VirtualFree(data,0,MEM_RELEASE);
+#else
+        delete[] data;
+#endif
+    }
+};
+template<class T> using GeometryBlock=std::unique_ptr<T[],GeometryBlockDelete<T>>;
+template<class T> GeometryBlock<T> geometryBlock(size_t count){
+    static_assert(std::is_trivially_destructible_v<T>);
+    if(count>SIZE_MAX/sizeof(T))throw std::bad_alloc();
+#ifdef _WIN32
+    // Exact OS blocks avoid CRT arena/granularity overhead for 512 KiB chunks
+    // and return scratch VA immediately when its owner retires.
+    T* data=static_cast<T*>(VirtualAlloc(nullptr,count*sizeof(T),MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE));
+    if(!data)throw std::bad_alloc();GeometryBlock<T> owner(data);std::uninitialized_value_construct_n(data,count);return owner;
+#else
+    return GeometryBlock<T>(new T[count]());
+#endif
+}
 template<class T> class AdaptiveGeometryArray {
     static_assert(std::is_trivially_copyable_v<T>);
     static constexpr size_t BlockSize=512u*1024u/sizeof(T);
-    std::vector<T> flat_;std::vector<std::unique_ptr<T[]>> chunks_;size_t size_=0;
+    std::vector<T> flat_;std::vector<GeometryBlock<T>> chunks_;size_t size_=0;
     std::unique_ptr<TemporaryGeometryArray<T>> temporary_;
     bool chunked_=false;const std::function<bool(uint64_t)>* admit_=nullptr;
-    void block(){if(admit_&&*admit_&&!(*admit_)(1024u*1024u))throw std::bad_alloc();chunks_.push_back(std::make_unique<T[]>(BlockSize));}
+    void block(){if(admit_&&*admit_&&!(*admit_)(1024u*1024u))throw std::bad_alloc();chunks_.push_back(geometryBlock<T>(BlockSize));}
 public:
     using value_type=T;
     AdaptiveGeometryArray()=default;
@@ -54,7 +82,7 @@ public:
     template<class... A> T& emplace_back(A&&... a){T v{std::forward<A>(a)...};push_back(v);return (*this)[size()-1];}
     void clear(){if(temporary_)temporary_->clear();else if(chunked_)size_=0;else flat_.clear();}
     void shrink_to_fit(){if(!chunked_)flat_.shrink_to_fit();}
-    void free(){temporary_.reset();std::vector<T>().swap(flat_);std::vector<std::unique_ptr<T[]>>().swap(chunks_);size_=0;chunked_=false;admit_=nullptr;}
+    void free(){temporary_.reset();std::vector<T>().swap(flat_);std::vector<GeometryBlock<T>>().swap(chunks_);size_=0;chunked_=false;admit_=nullptr;}
     void swap(AdaptiveGeometryArray& b){temporary_.swap(b.temporary_);flat_.swap(b.flat_);chunks_.swap(b.chunks_);std::swap(size_,b.size_);std::swap(chunked_,b.chunked_);std::swap(admit_,b.admit_);}
     template<bool Const> class It {
         using Owner=std::conditional_t<Const,const AdaptiveGeometryArray,AdaptiveGeometryArray>;Owner* owner_;size_t i_;

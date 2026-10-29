@@ -79,7 +79,7 @@ struct Reader {
 };
 }
 
-static bool readScene(const char* path,WorldScene& output,std::string& error,const AllocationAdmission& admit,bool materialsOnly) {
+static bool readScene(const char* path,WorldScene& output,std::string& error,const AllocationAdmission& admit,bool materialsOnly,bool immutableTexels=false) {
     error.clear(); Reader r; r.file=std::fopen(path,"rb");
     if(!r.file){error="Cannot open FGS2 scene";return false;}
     if(std::fseek(r.file,0,SEEK_END)!=0){error="Cannot seek FGS2 scene";return false;}
@@ -147,8 +147,12 @@ static bool readScene(const char* path,WorldScene& output,std::string& error,con
         uint32_t cutoffBits;std::memcpy(&cutoffBits,&m.alphaCutoff,4);
         if(((cutoffBits&0x80000000u)&&(cutoffBits&0x7fffffffu))||m.alphaCutoff>1){error="Invalid/truncated FGS2 material";return false;}
         if(admit&&!admit(bytes)){error="Geometry allocation deferred";return false;}
-        try {m.rgba.resize(bytes);}catch(...){error="Cannot allocate FGS2 texture";return false;}
-        if(!r.bytes(m.rgba.data(),bytes)){error="Truncated FGS2 texture";return false;}
+        try {
+            if(immutableTexels&&bytes){auto pixels=geometryBlock<uint8_t>(bytes);
+                if(!r.bytes(pixels.get(),bytes)){error="Truncated FGS2 texture";return false;}
+                m.sharedTexels=std::shared_ptr<const uint8_t>(pixels.release(),GeometryBlockDelete<uint8_t>{});m.sharedTexelBytes=bytes;
+            }else{m.rgba.resize(bytes);if(!r.bytes(m.rgba.data(),bytes)){error="Truncated FGS2 texture";return false;}}
+        }catch(...){error="Cannot allocate FGS2 texture";return false;}
         m.albedo=reflectance(m.albedo);
     }
     if(r.remaining){error="Unexpected trailing FGS2 data";return false;}
@@ -282,12 +286,12 @@ bool appendInstance(const WorldScene& model,const Instance& instance,Vec3 low,Ve
         }
         if(materialRemap[t.material]==UINT32_MAX){
             const auto& m=model.materials[t.material];
-            if(result.materials.size()>=65536||textureBytes+(copyTextures?m.rgba.size():0)>256ull*1024*1024){error="FGS3 local region material limit exceeded";return false;}
-            if(!reserve(result.materials,result.materials.size()+1)||(admit&&!admit(copyTextures?m.rgba.size():0))){error="Geometry allocation deferred";return false;}
+            if(result.materials.size()>=65536||textureBytes+(copyTextures?m.texels().size():0)>256ull*1024*1024){error="FGS3 local region material limit exceeded";return false;}
+            if(!reserve(result.materials,result.materials.size()+1)||(admit&&!admit(copyTextures?m.texels().size():0))){error="Geometry allocation deferred";return false;}
             materialRemap[t.material]=uint32_t(result.materials.size());
             if(copyTextures)result.materials.push_back(m);
             else{WorldMaterial metadata;metadata.albedo=m.albedo;metadata.alphaCutoff=m.alphaCutoff;metadata.addressU=m.addressU;metadata.addressV=m.addressV;result.materials.push_back(std::move(metadata));}
-            result.materials.back().terrain=instance.terrain;result.materials.back().wmo=instance.wmo;textureBytes+=copyTextures?m.rgba.size():0;
+            result.materials.back().terrain=instance.terrain;result.materials.back().wmo=instance.wmo;textureBytes+=copyTextures?m.texels().size():0;
             auto& ownerMaterial=result.materials.back();ownerMaterial.pointOnly=m.pointOnly;ownerMaterial.lampLocalId=m.lampLocalId;ownerMaterial.lampSourceId=m.lampSourceId;
             if(modelKey&&m.lampLocalId)ownerMaterial.lampSourceId=lampIdentity(*modelKey,instance,m.lampLocalId);
         }
@@ -432,9 +436,9 @@ bool loadInstancedScenes(const std::vector<std::string>& files,const std::string
 // sum to 1 within a few ulps, so it is >= minTexel/255*(1-8*2^-24). The 1e-5
 // margin keeps the skip strictly inside that bound; NaN alpha never culls.
 static bool alphaNeverCut(const WorldMaterial& m){
-    if(m.rgba.empty())return true; /* materialSample returns alpha 1 >= cutoff (validated <= 1) */
+    if(m.texels().empty())return true; /* materialSample returns alpha 1 >= cutoff (validated <= 1) */
     if(m.alphaCutoff==0.f)return true; // Every texel alpha is nonnegative.
-    uint8_t low=255;for(size_t i=3;i<m.rgba.size();i+=4)low=std::min(low,m.rgba[i]);
+    uint8_t low=255;for(size_t i=3;i<m.texels().size();i+=4)low=std::min(low,m.texels()[i]);
     return double(low)/255.0*(1.0-1e-5)>=double(m.alphaCutoff);
 }
 static bool validateBVHScene(WorldScene& s,std::string& error){
@@ -446,7 +450,7 @@ static bool validateBVHScene(WorldScene& s,std::string& error){
     }
     for(auto& m:s.materials){
         if(!finite(m.albedo)||!std::isfinite(m.alphaCutoff)||m.alphaCutoff<0||m.alphaCutoff>1||m.width>4096||m.height>4096||m.addressU<1||m.addressU>3||m.addressV<1||m.addressV>3||
-           uint64_t(m.width)*m.height*4!=m.rgba.size()||((m.width==0)!=(m.height==0))){error="Scene contains invalid material";return false;}
+           uint64_t(m.width)*m.height*4!=m.texels().size()||((m.width==0)!=(m.height==0))){error="Scene contains invalid material";return false;}
         m.albedo=reflectance(m.albedo);
     }
     for(const auto& t:s.triangles)if(t.v0>=s.vertices.size()||t.v1>=s.vertices.size()||t.v2>=s.vertices.size()||t.material>=s.materials.size()){
@@ -693,7 +697,7 @@ unsigned addressTexel(int index,uint32_t size,uint32_t mode){
     return unsigned(std::max(0,std::min(int(size)-1,index)));
 }
 template<bool Color=true> Sample materialSample(const WorldMaterial& m,float u,float v){
-    if(m.rgba.empty())return {m.albedo,1.f};
+    if(m.texels().empty())return {m.albedo,1.f};
     // Address normalized coordinates before integer conversion. Mirror/clamp
     // repeat the edge texel at bilinear footprints; wrap crosses the seam.
     float x=addressCoordinate(u,m.addressU)*m.width-.5f,y=addressCoordinate(v,m.addressV)*m.height-.5f;
@@ -701,7 +705,7 @@ template<bool Color=true> Sample materialSample(const WorldMaterial& m,float u,f
     Sample result{{0,0,0},0};
     for(int j=0;j<2;++j)for(int i=0;i<2;++i){
         unsigned tx=addressTexel(ix+i,m.width,m.addressU),ty=addressTexel(iy+j,m.height,m.addressV);
-        const uint8_t* p=&m.rgba[(size_t(ty)*m.width+tx)*4];float w=(i?fx:1-fx)*(j?fy:1-fy);
+        const uint8_t* p=&m.texels()[(size_t(ty)*m.width+tx)*4];float w=(i?fx:1-fx)*(j?fy:1-fy);
         if constexpr(Color){const auto& lut=srgbTable();result.color=result.color+Vec3(lut[p[0]],lut[p[1]],lut[p[2]])*w;}
         result.alpha+=float(p[3])/255.f*w;
     }
@@ -816,6 +820,24 @@ size_t BVH::ownBytes()const{
     if(retainedCharge_)bytes+=sizeof(SceneMemoryCharge)+32;
     return bytes;
 }
+void BVH::shareMaterialTexels(){
+    if(materialBank_||region_)return;
+    // ponytail: local material counts are small; compare hashes then exact bytes
+    // instead of maintaining another retained texture cache.
+    try{
+        std::vector<NorthlightMeshPageKey::Key> keys;keys.reserve(scene_.materials.size());
+        for(size_t i=0;i<scene_.materials.size();++i){auto& m=scene_.materials[i];const auto& bytes=m.texels();
+            keys.push_back(NorthlightMeshPageKey::keyOf(bytes.data(),bytes.size(),nullptr,0));
+            if(bytes.empty())continue;
+            for(size_t j=0;j<i;++j){auto& previous=scene_.materials[j];
+                if(keys[i]!=keys[j]||m.texels()!=previous.texels())continue;
+                if(!previous.sharedTexels){auto pixels=geometryBlock<uint8_t>(previous.rgba.size());std::memcpy(pixels.get(),previous.rgba.data(),previous.rgba.size());
+                    previous.sharedTexels=std::shared_ptr<const uint8_t>(pixels.release(),GeometryBlockDelete<uint8_t>{});previous.sharedTexelBytes=previous.rgba.size();std::vector<uint8_t>().swap(previous.rgba);}
+                m.sharedTexels=previous.sharedTexels;m.sharedTexelBytes=previous.sharedTexelBytes;std::vector<uint8_t>().swap(m.rgba);break;
+            }
+        }
+    }catch(const std::bad_alloc&){/* Optional compaction: every texel remains readable. */}
+}
 void BVH::accountMemory(NorthlightMemoryFootprint::Counter& memory)const{
     using namespace NorthlightMemoryFootprint;
     if(!memory.visit(this))return;
@@ -825,13 +847,13 @@ void BVH::accountMemory(NorthlightMemoryFootprint::Counter& memory)const{
     memory.vector(Metadata,opaque_);memory.vector(Metadata,materialSources_);memory.vector(Metadata,pieces_);
     if(materialBank_&&memory.visit(materialBank_.get())){
         memory.add(Metadata,sizeof(MaterialBank));memory.vector(Metadata,materialBank_->values);
-        for(const auto& material:materialBank_->values)memory.vector(Texels,material.rgba);
+        for(const auto& material:materialBank_->values){if(material.sharedTexels){if(memory.visit(material.sharedTexels.get())){memory.add(Texels,material.texelCapacity());memory.add(Metadata,64);}}else memory.vector(Texels,material.rgba);}
     }
     for(const auto& piece:pieces_){memory.vector(Metadata,piece.materialMap);memory.string(piece.placement.modelKey);piece.geometry->accountMemory(memory);}
 }
 size_t BVH::retainedBytes()const{
     std::unordered_set<const BVH*> geometry;std::unordered_set<const MaterialBank*> materials;
-    const auto bankBytes=[](const MaterialBank& bank){size_t bytes=sizeof(bank)+sizeof(SceneMemoryCharge)+64+bank.values.capacity()*sizeof(WorldMaterial);for(const auto& m:bank.values)bytes+=m.rgba.capacity();return bytes;};
+    const auto bankBytes=[](const MaterialBank& bank){size_t bytes=sizeof(bank)+sizeof(SceneMemoryCharge)+64+bank.values.capacity()*sizeof(WorldMaterial);for(const auto& m:bank.values)bytes+=m.texelCapacity();return bytes;};
     try{
         const auto visit=[&](auto&& self,const BVH& b)->size_t{
             if(!geometry.insert(&b).second)return 0;size_t bytes=b.ownBytes();
@@ -1027,8 +1049,19 @@ bool LocalSceneCache::build(const std::vector<std::string>& files,const std::str
             if(!geometryNeeded&&accelerate&&sourceRevision){sourceIdentity=sourceRevision(path);if(sourceIdentity){for(const auto& instance:group.second){const auto& p=*cache.pieces.find(pieceKey(group.first,instance))->second;if(p.sourceIdentity!=sourceIdentity||!p.geometry){warmBank.reset();break;}warmBank=p.geometry->materialBank_;}}}
             if(!warmBank){
                 if(sourceProvider){sharedSource=sourceProvider(path,error,admit);if(!sharedSource&&!error.empty())return false;}
-                if(!sharedSource&&!readScene(path.c_str(),loaded,error,admit,!geometryNeeded&&!sourceProvider)){error="Incremental FGS3 model "+group.first+": "+error;return false;}
+                if(!sharedSource&&!readScene(path.c_str(),loaded,error,admit,!geometryNeeded&&!sourceProvider,chunked&&!cache.limits.retainedBytes&&!sourceProvider)){error="Incremental FGS3 model "+group.first+": "+error;return false;}
                 sourceIdentity=(sharedSource?*sharedSource:loaded).sourceIdentity;++stats.modelReads;
+            }
+            // Pressure candidates have no retained piece/source cache. Share
+            // decoded texels before copying placement materials, so duplicates
+            // never raise the allocator's address-space high-water mark.
+            if(chunked&&!cache.limits.retainedBytes&&!sharedSource){
+                for(size_t i=0;i<loaded.materials.size();++i){auto& m=loaded.materials[i];if(m.texels().empty())continue;
+                    const WorldMaterial* identical=nullptr;
+                    for(const auto& previous:next.materials)if(previous.sharedTexels&&m.texels()==previous.texels()){identical=&previous;break;}
+                    if(!identical)for(size_t j=0;j<i;++j)if(loaded.materials[j].sharedTexels&&m.texels()==loaded.materials[j].texels()){identical=&loaded.materials[j];break;}
+                    if(identical){m.sharedTexels=identical->sharedTexels;m.sharedTexelBytes=identical->sharedTexelBytes;std::vector<uint8_t>().swap(m.rgba);}
+                }
             }
             const WorldScene& source=sharedSource?*sharedSource:loaded;const auto& materials=warmBank?warmBank->values:source.materials;
             stats.loadMs+=milliseconds(stamp);
@@ -1039,15 +1072,15 @@ bool LocalSceneCache::build(const std::vector<std::string>& files,const std::str
             if(accelerate&&sourceIdentity&&!bank){
                 for(auto it=cache.chunks.begin();it!=cache.chunks.end();){const auto& p=*it->second;if(p.parentKey.compare(0,group.first.size(),group.first)==0){if(p.sourceIdentity!=sourceIdentity){it=cache.chunks.erase(it);continue;}if(!bank)bank=p.geometry->materialBank_;}++it;}
                 for(const auto& instance:group.second){auto old=cache.pieces.find(pieceKey(group.first,instance));if(old!=cache.pieces.end()&&old->second->sourceIdentity==sourceIdentity&&old->second->geometry){bank=old->second->geometry->materialBank_;break;}}
-                if(!bank){uint64_t required=uint64_t(materials.size())*sizeof(WorldMaterial);for(const auto& material:materials)required+=material.rgba.size();if(allowed(required)&&required<=cache.budget->limit-cache.budget->used.load(std::memory_order_relaxed)){
+                if(!bank){uint64_t required=uint64_t(materials.size())*sizeof(WorldMaterial);for(const auto& material:materials)required+=material.texels().size();if(allowed(required)&&required<=cache.budget->limit-cache.budget->used.load(std::memory_order_relaxed)){
                     auto nextBank=std::make_shared<BVH::MaterialBank>();nextBank->values=materials;uint64_t bytes=sizeof(BVH::MaterialBank)+sizeof(SceneMemoryCharge)+64+nextBank->values.capacity()*sizeof(WorldMaterial);
-                    for(auto& material:nextBank->values){material.albedo=reflectance(material.albedo);bytes+=material.rgba.capacity();}
+                    for(auto& material:nextBank->values){material.albedo=reflectance(material.albedo);bytes+=material.texelCapacity();}
                     nextBank->charge=SceneMemoryCharge::acquire(cache.budget,bytes);if(nextBank->charge)bank=std::move(nextBank);
                     }else error.clear();
                 }
             }
             std::vector<uint32_t> materialRemap[3];for(auto& remap:materialRemap)remap.assign(materials.size(),UINT32_MAX);
-            uint64_t decodedBytes=sceneBytes(source),largestPiece=0;for(const auto& material:materials)decodedBytes+=sizeof(WorldMaterial)+material.rgba.capacity();
+            uint64_t decodedBytes=sceneBytes(source),largestPiece=0;for(const auto& material:materials)decodedBytes+=sizeof(WorldMaterial)+material.texelCapacity();
             for(const auto& instance:group.second){
                 auto key=pieceKey(group.first,instance);auto old=cache.pieces.find(key);std::shared_ptr<Impl::Piece> piece;
                 if(old!=cache.pieces.end()){
@@ -1087,7 +1120,7 @@ bool LocalSceneCache::build(const std::vector<std::string>& files,const std::str
                 if(!reserve(next.vertices,vertexBase+scene.vertices.size())||!reserve(next.triangles,triangleBase+scene.triangles.size()))return false;
                 next.vertices.insert(next.vertices.end(),scene.vertices.begin(),scene.vertices.end());
                 for(const auto& triangle:scene.triangles){auto t=triangle;uint32_t original=p.materialSources[t.material];
-                    if(remap[original]==UINT32_MAX){const auto& m=materials[original];if(next.materials.size()>=65536||textureBytes+m.rgba.size()>256ull*1024*1024){error="FGS3 local region material limit exceeded";return false;}if(!reserve(next.materials,next.materials.size()+1)||!allowed(m.rgba.size()))return false;remap[original]=uint32_t(next.materials.size());next.materials.push_back(m);auto& dest=next.materials.back();dest.terrain=instance.terrain;dest.wmo=instance.wmo;dest.lampSourceId=m.lampLocalId?lampIdentity(group.first,instance,m.lampLocalId):scene.materials[t.material].lampSourceId;textureBytes+=m.rgba.size();}
+                    if(remap[original]==UINT32_MAX){const auto& m=materials[original];if(next.materials.size()>=65536||textureBytes+m.texels().size()>256ull*1024*1024){error="FGS3 local region material limit exceeded";return false;}if(!reserve(next.materials,next.materials.size()+1)||!allowed(m.texels().size()))return false;remap[original]=uint32_t(next.materials.size());next.materials.push_back(m);auto& dest=next.materials.back();dest.terrain=instance.terrain;dest.wmo=instance.wmo;dest.lampSourceId=m.lampLocalId?lampIdentity(group.first,instance,m.lampLocalId):scene.materials[t.material].lampSourceId;textureBytes+=m.texels().size();}
                     t.v0+=vertexBase;t.v1+=vertexBase;t.v2+=vertexBase;t.material=remap[original];next.triangles.push_back(t);
                 }
                 if(p.sourceIdentity&&!scene.triangles.empty()){

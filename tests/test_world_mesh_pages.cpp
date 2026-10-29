@@ -328,7 +328,7 @@ static void testSpooledPointTransmission(){
     assert(regular.vertexCount==spooled.vertexCount&&regular.triangleCount==spooled.triangleCount);
     for(size_t i=0;i<regular.pagingIndexCount();++i)assert(regular.pagingIndex(i)==spooled.pagingIndex(i));
     assert(regular.materials.size()==spooled.materials.size());
-    for(size_t i=0;i<regular.materials.size();++i)assert(regular.materials[i].bgra==spooled.materials[i].bgra&&regular.materials[i].alphaCutoff==spooled.materials[i].alphaCutoff);
+    for(size_t i=0;i<regular.materials.size();++i){const auto& a=regular.materials[i];const auto& b=spooled.materials[i];std::vector<uint8_t> bytes(b.pixelBytes());if(b.spooled)spooled.temporary->read(b.fileOffset,bytes.data(),bytes.size());else bytes=b.bgra;assert(a.bgra==bytes&&a.alphaCutoff==b.alphaCutoff&&a.textureIdentity==b.textureIdentity);}
     auto a=std::make_shared<P::Plan>(),b=std::make_shared<P::Plan>();P::Options options;options.spooled=true;
     assert(P::build(regular,*a,error)&&P::build(spooled,*b,error,{},options));assert(a->pages.size()==b->pages.size());
     for(size_t i=0;i<a->pages.size();++i){const auto& before=a->pages[i];const auto& after=b->pages[i];assert(before.key==after.key&&after.spooled);std::vector<WorldVertex> vertices(before.vertices.size());std::vector<uint16_t> indices(before.indices.size());
@@ -337,6 +337,12 @@ static void testSpooledPointTransmission(){
     }
     assert(P::seal(spooled,b,error)&&!P::validateSealed(spooled));
     assert(spooled.payload.live()&&spooled.payload.share()->pages->temporary);
+    const auto payload=spooled.payload.share();
+    for(size_t i=0;i<regular.materials.size();++i){const auto& material=payload->materials[i];std::vector<uint8_t> bytes(material.pixelBytes());
+        assert(payload->pages->copyMaterial(material,0,bytes.size(),bytes.data())&&bytes==regular.materials[i].bgra);
+        assert(material.spooled==(bytes.size()>4)&&material.textureIdentity==regular.materials[i].textureIdentity);
+        assert(!payload->pages->copyMaterial(material,bytes.size(),1,bytes.data()));
+    }
     std::puts("PASS spooled point transmission: exact geometry, UVs, cutout texels, packed order, page bytes and retained recovery ownership");
 }
 int main(){testSpooledPointTransmission();testIndexMap();testVertexLimits();testIndexLimits();testKeepBatches();testDegenerateAndExactBoundary();testAnchors();testElision();testTransactionalFailure();testSeal();testCompactSource();std::puts("All world mesh page tests passed");}

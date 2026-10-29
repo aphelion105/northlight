@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <cstring>
 #include <vector>
 #include <memory>
 #include <atomic>
@@ -30,11 +31,23 @@ Vec3 cross(Vec3 a, Vec3 b);
 Vec3 normalized(Vec3 a);
 
 struct WorldVertex { Vec3 position, normal; float u = 0, v = 0; };
+struct TexelView {
+    const uint8_t* pointer=nullptr;size_t count=0;
+    const uint8_t* data()const{return pointer;}size_t size()const{return count;}bool empty()const{return !count;}
+    const uint8_t* begin()const{return pointer;}const uint8_t* end()const{return count?pointer+count:pointer;}
+    const uint8_t& operator[](size_t i)const{return pointer[i];}
+    bool operator==(TexelView other)const{return count==other.count&&(!count||!std::memcmp(pointer,other.pointer,count));}
+    bool operator!=(TexelView other)const{return !(*this==other);}
+};
 struct WorldMaterial {
     // Linear diffuse reflectance multiplied by decoded sRGB texture color.
     Vec3 albedo = Vec3(.5f, .5f, .5f);
     uint32_t width = 0, height = 0;
     std::vector<uint8_t> rgba;
+    // Pressure builds share only completed, byte-identical immutable texels.
+    std::shared_ptr<const uint8_t> sharedTexels;size_t sharedTexelBytes=0;
+    TexelView texels()const{return {sharedTexels?sharedTexels.get():rgba.data(),sharedTexels?sharedTexelBytes:rgba.size()};}
+    size_t texelCapacity()const{return sharedTexels?sharedTexelBytes:rgba.capacity();}
     float alphaCutoff = .5f;
     // Runtime sampler modes, matching D3DTEXTUREADDRESS: wrap=1, mirror=2, clamp=3.
     // Not serialized; cached FGS2/FGS3 materials retain the wrap default.
@@ -74,13 +87,13 @@ struct WorldScene {
     void accountMemory(NorthlightMemoryFootprint::Counter& memory)const {
         using namespace NorthlightMemoryFootprint;
         vertices.accountMemory(memory,Vertices);triangles.accountMemory(memory,Triangles);memory.vector(Metadata,materials);
-        for(const auto& material:materials)memory.vector(Texels,material.rgba);
+        for(const auto& material:materials){if(material.sharedTexels){if(memory.visit(material.sharedTexels.get())){memory.add(Texels,material.texelCapacity());memory.add(Metadata,64);}}else memory.vector(Texels,material.rgba);}
         memory.vector(Metadata,completePlacements);for(const auto& p:completePlacements)memory.string(p.modelKey);
         memory.vector(Metadata,sourcePieces);for(const auto& p:sourcePieces){memory.string(p.placement.modelKey);memory.vector(Metadata,p.materialMap);}
     }
     size_t retainedBytes()const {
         size_t n=sizeof(*this)+vertices.capacity()*sizeof(WorldVertex)+vertices.overhead()+triangles.capacity()*sizeof(WorldTriangle)+triangles.overhead()+materials.capacity()*sizeof(WorldMaterial)+completePlacements.capacity()*sizeof(WorldPlacementCoverage);
-        for(const auto& m:materials)n+=m.rgba.capacity();
+        for(size_t i=0;i<materials.size();++i){const auto& m=materials[i];bool seen=false;if(m.sharedTexels)for(size_t j=0;j<i;++j)if(materials[j].sharedTexels==m.sharedTexels){seen=true;break;}if(!seen)n+=m.texelCapacity()+(m.sharedTexels?64:0);}
         for(const auto& p:completePlacements)n+=p.modelKey.capacity();
         n+=sourcePieces.capacity()*sizeof(SourcePieceRange);
         for(const auto& p:sourcePieces)n+=p.placement.modelKey.capacity()+p.materialMap.capacity()*sizeof(uint32_t);
@@ -183,6 +196,8 @@ public:
     const WorldMaterial& material(size_t index)const;
     size_t triangleCount() const { return region_?regionTriangles_:order_.size(); }
     size_t fallbackTriangleCount()const{return region_?order_.size():0;}
+    // Call only on a completed pressure candidate before publication.
+    void shareMaterialTexels();
     size_t ownBytes()const;
     size_t retainedBytes()const;
     void accountMemory(NorthlightMemoryFootprint::Counter&)const;

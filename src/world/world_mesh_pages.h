@@ -57,6 +57,12 @@ struct Plan {
         if(!temporary||page.fileOffset>temporary->size()||uint64_t(page.key.vertexBytes)+page.key.indexBytes>temporary->size()-page.fileOffset)return false;
         try{temporary->read(page.fileOffset+(vertices?0:page.key.vertexBytes)+offset,target,bytes);return true;}catch(const std::exception&){return false;}
     }
+    bool copyMaterial(const NorthlightWorldMesh::MaterialUpload& material,size_t offset,size_t bytes,void* target)const{
+        const auto size=material.pixelBytes();if(!target||offset>size||bytes>size-offset)return false;
+        if(!material.spooled){std::memcpy(target,material.bgra.data()+offset,bytes);return true;}
+        if(!temporary||material.fileOffset>temporary->size()||size>temporary->size()-material.fileOffset)return false;
+        try{temporary->read(material.fileOffset+offset,target,bytes);return true;}catch(const std::exception&){return false;}
+    }
     void accountMemory(NorthlightMemoryFootprint::Counter& memory,bool includeObject=true)const{
         using namespace NorthlightMemoryFootprint;
         if(includeObject){if(!memory.visit(this))return;memory.add(Metadata,sizeof(*this));}
@@ -111,7 +117,7 @@ template<bool Segmented> inline bool buildImpl(const NorthlightWorldMesh::WorldM
             return fail("Paged mesh source ownership mismatch");
         if(input.pagingIndexCount()&&(!input.hasPagingVertices()||input.pagingVertexCount()!=input.vertexCount))
             return fail("Paged mesh source/vertex count mismatch");
-        Plan next;
+        Plan next;if(options.spooled)next.temporary=input.temporary;
         if(!input.pagingIndexCount()){
             if(!input.batches.empty())return fail("Paged mesh empty indices with batches");
             output=std::move(next);error.clear();return true;
@@ -131,6 +137,7 @@ template<bool Segmented> inline bool buildImpl(const NorthlightWorldMesh::WorldM
         uint64_t expectedStart=0;
         bool closeAfter=false; // an anchor closed the current page: the next triangle/batch opens a new one
         uint64_t liveKept=0,peakLive=0;
+        std::vector<NorthlightGI::WorldVertex> reusableVertices;std::vector<uint16_t> reusableIndices;
         // A finished page gets its content key; a resident one is freed right here (elided), keeping key and sizes.
         auto finishPage=[&](Page& p){
             p.key=NorthlightMeshPageKey::keyOf(p.vertices.data(),p.vertices.size()*sizeof(NorthlightGI::WorldVertex),p.indices.data(),p.indices.size()*sizeof(uint16_t));
@@ -143,7 +150,7 @@ template<bool Segmented> inline bool buildImpl(const NorthlightWorldMesh::WorldM
                 if(!next.temporary)next.temporary=std::make_shared<NorthlightGI::TemporaryGeometryFile>();
                 p.fileOffset=next.temporary->append(p.vertices.data(),p.key.vertexBytes);
                 next.temporary->append(p.indices.data(),p.key.indexBytes);p.spooled=true;
-                std::vector<NorthlightGI::WorldVertex>().swap(p.vertices);std::vector<uint16_t>().swap(p.indices);
+                reusableVertices.swap(p.vertices);reusableIndices.swap(p.indices);reusableVertices.clear();reusableIndices.clear();
             }else{
                 // Content anchors often close city pages half full. Keep the
                 // exact bytes, not a full 512 KiB vertex capacity per page.
@@ -181,6 +188,7 @@ template<bool Segmented> inline bool buildImpl(const NorthlightWorldMesh::WorldM
             next.pages.emplace_back();
             // Vertices fill ~95% of a page on real data, so doubling would end at the limit anyway: reserve it once
             // (no realloc chain). Indices fill ~40-55% and keep growing on demand; a full reserve costs ~20% CPU.
+            if(options.spooled){next.pages.back().vertices.swap(reusableVertices);next.pages.back().indices.swap(reusableIndices);next.pages.back().indices.reserve(PageIndexLimit);}
             next.pages.back().vertices.reserve(PageVertexLimit);
             remap.clear();return true;
         };
@@ -320,8 +328,10 @@ inline const char* validatePages(const NorthlightWorldMesh::WorldMeshUploadPlan&
         if(nextIndex==page.indexCount()){++pageIndex;nextIndex=0;}
     }
     if(pageIndex!=pages.pages.size()||nextIndex)return "incomplete paged batch coverage";
-    for(const auto& material:materials)
-        if(!material.width||!material.height||material.width>4096||material.height>4096||uint64_t(material.width)*material.height*4!=material.bgra.size())return "invalid paged texture size";
+    for(const auto& material:materials){
+        if(!material.width||!material.height||material.width>4096||material.height>4096||uint64_t(material.width)*material.height*4!=material.pixelBytes())return "invalid paged texture size";
+        if(material.spooled&&(!material.bgra.empty()||!pages.temporary||material.fileOffset>pages.temporary->size()||material.pixelBytes()>pages.temporary->size()-material.fileOffset))return "invalid paged texture temporary range";
+    }
     return nullptr;
 }
 inline const char* validatePages(const NorthlightWorldMesh::WorldMeshUploadPlan& input,const Plan& pages) {return validatePages(input,pages,input.materials);}
@@ -353,19 +363,29 @@ inline bool seal(NorthlightWorldMesh::WorldMeshUploadPlan& input,std::shared_ptr
         if(admit&&!admit(ownerBytes))return fail("paged ownership allocation deferred");
         auto owners=sourceOwners;
         const uint64_t cpuBytes=pages->cpuBytes();
+        std::vector<uint64_t> pixelOffsets;
+        if(pages->temporary){
+            pixelOffsets.resize(input.materials.size());
+            for(size_t i=0;i<input.materials.size();++i){const auto& material=input.materials[i];
+                if(material.bgra.size()>4)pixelOffsets[i]=pages->temporary->append(material.bgra.data(),material.bgra.size());
+            }
+            pages->temporary->flush();
+        }
         // 0.3.214 (task 42): pages and cutout textures move into the separately owned payload.
         auto payload=std::make_shared<NorthlightWorldMesh::UploadPayload>();
         payload->pageMetadataBytes=sizeof(*pages)+pages->pages.capacity()*sizeof(Page)+pages->batches.capacity()*sizeof(Batch);
         for(const auto& page:pages->pages)payload->pageStorageBytes+=page.vertices.capacity()*sizeof(NorthlightGI::WorldVertex)+page.indices.capacity()*sizeof(uint16_t);
         payload->materialMetadataBytes=input.materials.capacity()*sizeof(NorthlightWorldMesh::MaterialUpload);
-        for(const auto& material:input.materials)payload->materialPixelBytes+=material.bgra.capacity();
+        for(const auto& material:input.materials)if(!pages->temporary||material.bgra.size()<=4)payload->materialPixelBytes+=material.bgra.capacity();
         payload->bytes=cpuBytes+sizeof(NorthlightWorldMesh::UploadPayload)+input.materials.capacity()*sizeof(NorthlightWorldMesh::MaterialUpload)+64;
-        for(const auto& material:input.materials)payload->bytes+=material.bgra.capacity();
+        payload->bytes+=payload->materialPixelBytes;
+        if(pages->temporary)for(size_t i=0;i<input.materials.size();++i){auto& material=input.materials[i];if(material.bgra.size()>4){material.fileOffset=pixelOffsets[i];material.spooled=true;std::vector<uint8_t>().swap(material.bgra);}}
         payload->pages=std::move(pages);payload->materials.swap(input.materials);
         input.completePlacements=std::move(owners);input.payload.set(std::move(payload));input.pagedCpuBytes=cpuBytes;
-        input.source=nullptr;input.ownedSource.reset();input.pagingVertices.reset();input.pagingChunks.reset();input.pagingIndices.reset();input.preparationLayout.reset();std::vector<uint32_t>().swap(input.indices);
+        input.source=nullptr;input.ownedSource.reset();input.pagingVertices.reset();input.pagingChunks.reset();input.pagingIndices.reset();input.temporary.reset();input.preparationLayout.reset();std::vector<uint32_t>().swap(input.indices);
         input.pagesSealed=true;error.clear();return true;
-    } catch(const std::bad_alloc&) {return fail("paged ownership allocation failed");}
+    } catch(const NorthlightGI::TemporaryGeometryError&) {return fail("paged ownership temporary storage failed");}
+      catch(const std::bad_alloc&) {return fail("paged ownership allocation failed");}
       catch(const std::length_error&) {return fail("paged ownership size overflow");}
 }
 } // namespace NorthlightWorldMeshPages

@@ -34,7 +34,7 @@ struct Model {
         if(uploadPrepared&&material<uploadAlpha.size()&&uploadAlpha[material]){
             const auto& alpha=*uploadAlpha[material];return pixel<alpha.size()?alpha[pixel]:255;
         }
-        const auto& rgba=materials[material].rgba;
+        const auto& rgba=materials[material].texels();
         return pixel<rgba.size()/4?rgba[pixel*4+3]:255;
     }
 };

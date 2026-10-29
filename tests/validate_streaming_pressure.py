@@ -7,6 +7,9 @@ and 8192 rays per region. Reserve address space only in the private test process
 """
 import argparse
 import io
+import hashlib
+import re
+import importlib.util
 import json
 import subprocess
 import struct
@@ -21,11 +24,38 @@ parser.add_argument('--output', type=Path, required=True)
 parser.add_argument('--baseline-ref', default='c03fec873602463265ada22c63990701514b445c')
 args = parser.parse_args()
 args.output.mkdir(parents=True, exist_ok=True)
+def sha(path):
+    digest=hashlib.sha256()
+    with path.open('rb') as file:
+        for block in iter(lambda:file.read(1024*1024),b''):digest.update(block)
+    return digest.hexdigest()
+def source_inputs():
+    pending=[fp.src('world_gi.cpp'),fp.src('world_mesh_plan.cpp'),fp.TESTS/'validate_shared_scene_pipeline.cpp']
+    seen=set()
+    while pending:
+        path=pending.pop().resolve()
+        if path in seen:continue
+        seen.add(path)
+        for name in re.findall(r'^\s*#include\s+"([^"\n]+)"',path.read_text(encoding='utf-8'),re.M):
+            candidate=path.parent/name
+            if not candidate.is_file():candidate=fp.src(name)
+            pending.append(candidate)
+    seen.update([Path(__file__).resolve(),fp.REPO/'northlight_paths.py'])
+    return {p.relative_to(fp.REPO).as_posix():sha(p) for p in sorted(seen)}
+initial_inputs=source_inputs()
+spec=importlib.util.spec_from_file_location('cold_upload_provenance',fp.TESTS/'validate_world_cold_upload_gpu.py')
+cache_module=importlib.util.module_from_spec(spec);spec.loader.exec_module(cache_module)
+cache_manifest=cache_module.cache_inputs(fp.world_cache())
+compiled={}
 source = (fp.TESTS/'validate_shared_scene_pipeline.cpp').read_text()
 source = '#include <windows.h>\n#include "geometry_memory.h"\n'+source
 source = source.replace('Vec3(5248,10,508)', 'Vec3(5139.84f,-56.93f,380.31f)')
 source = source.replace('h.bytes(s.vertices.data(),s.vertices.size()*sizeof(WorldVertex));h.bytes(s.triangles.data(),s.triangles.size()*sizeof(WorldTriangle));',
                         'for(const auto& v:s.vertices)h.bytes(&v,sizeof v);for(const auto& t:s.triangles)h.bytes(&t,sizeof t);')
+source = source.replace('h.word(m.addressU);h.word(m.addressV);h.word(m.terrain);h.word(m.wmo);',
+                        'h.word(m.addressU);h.word(m.addressV);h.word(m.terrain);h.word(m.wmo);h.word(m.pointOnly);h.word(m.lampLocalId);h.bytes(&m.lampSourceId,sizeof m.lampSourceId);')
+source = source.replace('h.word(b.material);h.word(b.start);h.word(b.count);h.word(b.terrain);',
+                        'h.word(b.material);h.word(b.start);h.word(b.count);h.word(b.terrain);h.word(b.pointOnly);h.bytes(&b.lampSourceId,sizeof b.lampSourceId);')
 source = source.replace('int main(', r'''
 static const char* stage="entry";
 static LONG WINAPI fault(EXCEPTION_POINTERS* e){
@@ -83,7 +113,7 @@ source = source.replace('        std::puts("");', r'''
         held=std::make_unique<BVH>(std::move(local));
         std::puts("");''')
 cpp = args.output/'streaming_pressure.cpp'
-cpp.write_text(source)
+cpp.write_text(source, encoding='utf-8', newline='\n')
 results = {}
 baseline = args.output/'baseline-source'
 archive = subprocess.check_output(['git', 'archive', '--format=zip', args.baseline_ref, 'src'], cwd=fp.REPO)
@@ -98,7 +128,13 @@ with zipfile.ZipFile(io.BytesIO(archive)) as zipped:
             target.write_bytes(zipped.read(entry))
 for label, bounded, pressure in [('flat', 0, 0), ('bounded434', 1, 434), ('bounded395', 1, 395), ('spooled307', 1, 307)]:
     variant = source
+    if label != 'flat':
+        variant = variant.replace('h.word(m.rgba.size());h.bytes(m.rgba.data(),m.rgba.size());',
+                                  'h.word(m.texels().size());h.bytes(m.texels().data(),m.texels().size());')
+        variant = variant.replace('planHash.word(m.bgra.size());planHash.bytes(m.bgra.data(),m.bgra.size());',
+                                  'planHash.word(m.pixelBytes());std::array<unsigned char,65536> pixels;for(uint64_t offset=0;offset<m.pixelBytes();){const auto bytes=std::min<uint64_t>(pixels.size(),m.pixelBytes()-offset);assert(pages.copyMaterial(m,offset,bytes,pixels.data()));planHash.bytes(pixels.data(),bytes);offset+=bytes;}')
     if label == 'spooled307':
+        variant = variant.replace('double localMs=ms(t);', 'local.shareMaterialTexels();double localMs=ms(t);')
         variant = variant.replace('LocalSceneCache cache({16u*1024u*1024u})', 'LocalSceneCache cache({0})').replace('SceneSourceCache sources(8u*1024u*1024u)', 'SceneSourceCache sources(0)')
         variant = variant.replace('true,provider,revision,BOUNDED_LOCAL)', 'true,{},revision,BOUNDED_LOCAL)').replace('&hint,provider', '&hint,{}')
         variant = variant.replace(',true,BOUNDED_LOCAL', ',true,BOUNDED_LOCAL,true').replace('radius,{},&local)', 'radius,{},&local,true)')
@@ -117,7 +153,7 @@ for label, bounded, pressure in [('flat', 0, 0), ('bounded434', 1, 434), ('bound
         variant = variant.replace('held=std::make_unique<BVH>(std::move(local));', 'auto sealedPages=std::make_shared<NorthlightWorldMeshPages::Plan>(std::move(pages));assert(NorthlightWorldMeshPages::seal(plan,sealedPages,error,admit));assert(!NorthlightWorldMeshPages::validateSealed(plan));held=std::make_unique<BVH>(std::move(local));')
 
     variant_cpp = args.output/(label+'.cpp')
-    variant_cpp.write_text(variant)
+    variant_cpp.write_text(variant, encoding='utf-8', newline='\n')
     exe = args.output/(label+'.exe')
     tree = baseline if label == 'flat' else fp.REPO
     includes = [flag for folder in sorted((tree/'src').iterdir()) if folder.is_dir() for flag in ['-I', str(folder)]]
@@ -130,6 +166,7 @@ for label, bounded, pressure in [('flat', 0, 0), ('bounded434', 1, 434), ('bound
     flags = struct.unpack_from('<I', data, 0x3c)[0]+22
     struct.pack_into('<H', data, flags, struct.unpack_from('<H', data, flags)[0] | 0x20)
     exe.write_bytes(data)
+    compiled[label]={'binary_sha256':sha(exe),'generated_source_sha256':sha(variant_cpp)}
     run = subprocess.run([str(exe), str(fp.world_cache()), 'Northrend'], text=True, capture_output=True)
     (args.output/(label+'.log')).write_text(run.stdout+run.stderr)
     assert run.returncode == 0, (label, run.returncode, run.stderr[-1500:])
@@ -138,7 +175,9 @@ for label, bounded, pressure in [('flat', 0, 0), ('bounded434', 1, 434), ('bound
     print(label, 'complete', flush=True)
 for label in ['bounded434', 'bounded395', 'spooled307']:
     for old, new in zip(results['flat'], results[label]):
-        for key in ['plan', 'pagesHash', 'rays', 'localTriangles', 'planTriangles', 'pages', 'batches']:
+        for key in ['scene', 'plan', 'pagesHash', 'rays', 'localTriangles', 'planTriangles', 'pages', 'batches']:
             assert old[key] == new[key], (label, new['step'], key, old[key], new[key])
-(args.output/'validation.json').write_text(json.dumps({'all_equal': True, 'baseline_ref': args.baseline_ref, 'game_launched': False, 'gpu_used': False, 'screenshot_eye': [5139.84,-56.93,380.31], 'minimum_process_reserve_MiB': 256, 'results': results}, indent=2)+'\n')
+assert source_inputs()==initial_inputs,'Compiled CPU source changed during validation'
+assert cache_module.cache_inputs(fp.world_cache())==cache_manifest,'Real-scene cache changed during validation'
+(args.output/'validation.json').write_text(json.dumps({'inputs':initial_inputs,'inputs_unchanged':True,'cache_inputs':cache_manifest,'cache_unchanged':True,'binaries':compiled,'baseline_archive_sha256':hashlib.sha256(archive).hexdigest(),'all_equal': True, 'baseline_ref': args.baseline_ref, 'game_launched': False, 'gpu_used': False, 'screenshot_eye': [5139.84,-56.93,380.31], 'minimum_process_reserve_MiB': 256, 'results': results}, indent=2)+'\n')
 print('PASS retained scene replacement at 434/395/307 MiB, unchanged page/ray results and process reserve')

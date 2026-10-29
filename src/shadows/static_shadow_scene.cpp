@@ -29,9 +29,10 @@ constexpr uint64_t HashSeed=14695981039346656037ull;
 void discardOpaqueTexture(NorthlightGI::WorldMaterial& material){
     // Shadow shaders only sample alpha. A fully opaque color texture has the
     // same coverage as the implicit white texel; keep cutoff/address rules.
-    for(size_t i=3;i<material.rgba.size();i+=4)if(material.rgba[i]!=255)return;
+    const auto& rgba=material.texels();
+    for(size_t i=3;i<rgba.size();i+=4)if(rgba[i]!=255)return;
     material.width=material.height=0;
-    std::vector<uint8_t>().swap(material.rgba);
+    std::vector<uint8_t>().swap(material.rgba);material.sharedTexels.reset();material.sharedTexelBytes=0;
 }
 
 // Run only on the loading thread. Keep original content hashes unchanged: RGB
@@ -39,12 +40,12 @@ void discardOpaqueTexture(NorthlightGI::WorldMaterial& material){
 void prepareUpload(Model& model,const std::vector<NorthlightGI::WorldMaterial>* sources=nullptr){
     if(model.index16){model.uploadIndices16.reserve(model.indices.size());for(uint32_t i:model.indices)model.uploadIndices16.push_back(uint16_t(i));model.bytes+=model.uploadIndices16.capacity()*sizeof(uint16_t);model.bytes-=model.indices.capacity()*sizeof(uint32_t);std::vector<uint32_t>().swap(model.indices);}
     auto compact=std::make_shared<Model>();compact->key=model.key;compact->contentRevision=model.contentRevision;compact->batches=model.batches;compact->index16=model.index16;
-    for(size_t materialIndex=0;materialIndex<model.materials.size();++materialIndex){auto& material=model.materials[materialIndex];const auto& rgba=sources?(*sources)[materialIndex].rgba:material.rgba;
+    for(size_t materialIndex=0;materialIndex<model.materials.size();++materialIndex){auto& material=model.materials[materialIndex];const auto& rgba=sources?(*sources)[materialIndex].texels():material.texels();
         auto alpha=std::make_shared<std::vector<uint8_t>>(size_t(std::max(1u,material.width))*std::max(1u,material.height),255);
         for(size_t i=0;i<alpha->size();++i){size_t j=i*4;if(j+3<rgba.size())(*alpha)[i]=rgba[j+3];}
         // Only alpha reaches the shadow target. Expand to white RGB during the
         // bounded upload instead of retaining a second four-byte texel array.
-        model.bytes-=material.rgba.capacity();std::vector<uint8_t>().swap(material.rgba);
+        model.bytes-=material.texelCapacity();std::vector<uint8_t>().swap(material.rgba);material.sharedTexels.reset();material.sharedTexelBytes=0;
         model.bytes+=alpha->capacity();model.uploadAlpha.push_back(std::move(alpha));
         NorthlightGI::WorldMaterial mat;mat.alphaCutoff=material.alphaCutoff;mat.addressU=material.addressU;mat.addressV=material.addressV;compact->materials.push_back(std::move(mat));
     }
@@ -176,17 +177,17 @@ static bool packModelImpl(const NorthlightGI::WorldScene& scene,NorthlightGI::Wo
         }
         if(owned){model.materials=std::move(owned->materials);for(auto& material:model.materials)discardOpaqueTexture(material);}
         else {model.materials.resize(scene.materials.size());for(size_t i=0;i<scene.materials.size();++i){const auto& source=scene.materials[i];auto& m=model.materials[i];
-            if(source.width>4096||source.height>4096||uint64_t(source.width)*source.height*4!=source.rgba.size()||((source.width==0)!=(source.height==0))||!std::isfinite(source.alphaCutoff)||source.alphaCutoff<0||source.alphaCutoff>1){error="Invalid shared model material";return false;}
+            if(source.width>4096||source.height>4096||uint64_t(source.width)*source.height*4!=source.texels().size()||((source.width==0)!=(source.height==0))||!std::isfinite(source.alphaCutoff)||source.alphaCutoff<0||source.alphaCutoff>1){error="Invalid shared model material";return false;}
             m.albedo=source.albedo;m.width=source.width;m.height=source.height;m.alphaCutoff=source.alphaCutoff;m.addressU=source.addressU;m.addressV=source.addressV;m.terrain=source.terrain;m.wmo=source.wmo;
-            bool opaque=true;for(size_t p=3;p<source.rgba.size();p+=4)if(source.rgba[p]!=255){opaque=false;break;}if(opaque)m.width=m.height=0;
+            bool opaque=true;for(size_t p=3;p<source.texels().size();p+=4)if(source.texels()[p]!=255){opaque=false;break;}if(opaque)m.width=m.height=0;
         }}
         uint64_t revision=hashBytes(HashSeed,model.vertices.data(),model.vertices.size()*sizeof(Vertex));
         revision=hashBytes(revision,model.indices.data(),model.indices.size()*sizeof(uint32_t));
         model.bytes=model.vertices.capacity()*sizeof(Vertex)+model.indices.capacity()*sizeof(uint32_t)+model.batches.capacity()*sizeof(Batch)+model.materials.capacity()*sizeof(NorthlightGI::WorldMaterial);
-        for(size_t materialIndex=0;materialIndex<model.materials.size();++materialIndex){auto& material=model.materials[materialIndex];const auto& rgba=owned?material.rgba:scene.materials[materialIndex].rgba;uint64_t h=HashSeed;h=hashBytes(h,&material.width,sizeof(material.width));h=hashBytes(h,&material.height,sizeof(material.height));h=hashBytes(h,&material.alphaCutoff,sizeof(material.alphaCutoff));h=hashBytes(h,&material.addressU,sizeof(material.addressU));h=hashBytes(h,&material.addressV,sizeof(material.addressV));
+        for(size_t materialIndex=0;materialIndex<model.materials.size();++materialIndex){auto& material=model.materials[materialIndex];const auto& rgba=owned?material.texels():scene.materials[materialIndex].texels();uint64_t h=HashSeed;h=hashBytes(h,&material.width,sizeof(material.width));h=hashBytes(h,&material.height,sizeof(material.height));h=hashBytes(h,&material.alphaCutoff,sizeof(material.alphaCutoff));h=hashBytes(h,&material.addressU,sizeof(material.addressU));h=hashBytes(h,&material.addressV,sizeof(material.addressV));
             // Only alpha participates in a shadow texture's shared identity.
             if(owned||(material.width&&material.height))for(size_t i=3;i<rgba.size();i+=4)h=hashBytes(h,&rgba[i],1);
-            model.materialKeys.push_back(h);revision=hashBytes(revision,&h,sizeof h);model.bytes+=material.rgba.capacity();}
+            model.materialKeys.push_back(h);revision=hashBytes(revision,&h,sizeof h);model.bytes+=material.texelCapacity();}
         // Material assignments also define content identity, not just triangles.
         for(const auto& b:model.batches){revision=hashBytes(revision,&b.firstIndex,4);revision=hashBytes(revision,&b.indexCount,4);revision=hashBytes(revision,&b.material,4);}
         model.contentRevision=revision;prepareUpload(model,owned?nullptr:&scene.materials);output=std::move(model);return true;
@@ -232,7 +233,7 @@ bool loadCompact(const std::string& path,const std::string& key,size_t cap,Model
     for(auto& material:model.materials)discardOpaqueTexture(material);
     uint64_t revision=hashBytes(HashSeed,model.vertices.data(),model.vertices.size()*sizeof(Vertex));revision=hashBytes(revision,model.indices.data(),model.indices.size()*sizeof(uint32_t));
     model.bytes=model.vertices.capacity()*sizeof(Vertex)+model.indices.capacity()*sizeof(uint32_t)+model.batches.capacity()*sizeof(Batch)+model.materials.capacity()*sizeof(NorthlightGI::WorldMaterial);
-    for(const auto& m:model.materials){uint64_t h=HashSeed;h=hashBytes(h,&m.width,4);h=hashBytes(h,&m.height,4);h=hashBytes(h,&m.alphaCutoff,4);h=hashBytes(h,&m.addressU,4);h=hashBytes(h,&m.addressV,4);for(size_t i=3;i<m.rgba.size();i+=4)h=hashBytes(h,&m.rgba[i],1);model.materialKeys.push_back(h);revision=hashBytes(revision,&h,sizeof h);model.bytes+=m.rgba.capacity();}
+    for(const auto& m:model.materials){uint64_t h=HashSeed;h=hashBytes(h,&m.width,4);h=hashBytes(h,&m.height,4);h=hashBytes(h,&m.alphaCutoff,4);h=hashBytes(h,&m.addressU,4);h=hashBytes(h,&m.addressV,4);for(size_t i=3;i<m.texels().size();i+=4)h=hashBytes(h,&m.texels()[i],1);model.materialKeys.push_back(h);revision=hashBytes(revision,&h,sizeof h);model.bytes+=m.texelCapacity();}
     for(const auto& b:model.batches){revision=hashBytes(revision,&b.firstIndex,4);revision=hashBytes(revision,&b.indexCount,4);revision=hashBytes(revision,&b.material,4);}model.contentRevision=revision;prepareUpload(model);return true;
 }
 }
