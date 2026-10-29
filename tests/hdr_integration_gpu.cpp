@@ -173,6 +173,20 @@ int main(int argc,char** argv){
         float offscreenColor[]={1,1,1,1};UiVertex offscreenQuad[4];vertices(offscreenQuad,offscreenColor);ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,offscreenQuad,sizeof(UiVertex)));ok(d->EndScene());
         float unchanged[4];pixel8(d,back,referenceRead,unchanged);assert(std::fabs(unchanged[0]-.2)<.0001);
         ok(d->SetRenderTarget(0,back));offscreenUi->Release();
+        // A native death/glow scene quad may use the same ortho VS as UI.
+        // Keep its render-target input in the legacy domain until atlas UI:
+        // the game's following scene copy must observe this draw, not the old clear.
+        IDirect3DTexture9* sceneInput=nullptr;IDirect3DSurface9* sceneInputSurface=nullptr;
+        ok(d->CreateTexture(size,size,1,D3DUSAGE_RENDERTARGET,D3DFMT_X8R8G8B8,D3DPOOL_DEFAULT,&sceneInput,nullptr));
+        ok(sceneInput->GetSurfaceLevel(0,&sceneInputSurface));ok(d->ColorFill(sceneInputSurface,nullptr,D3DCOLOR_XRGB(204,51,102)));
+        ok(d->SetTexture(0,sceneInput));ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE));
+        float sceneWhite[]={1,1,1,1};UiVertex sceneQuad[4];vertices(sceneQuad,sceneWhite);
+        ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,sceneQuad,sizeof(UiVertex)));ok(d->EndScene());
+        ok(d->StretchRect(back,nullptr,reference,nullptr,D3DTEXF_NONE));
+        float copiedScene[4];pixel8(d,reference,referenceRead,copiedScene);
+        for(unsigned c=0;c<3;++c){const double expected=c==0?.8:c==1?.2:.4,error=std::fabs(copiedScene[c]-expected);maximum=std::max(maximum,error);
+            if(!std::isfinite(copiedScene[c])||error>.004){if(failures++<4)std::printf("FAIL native scene copy before HDR UI channel=%u got=%.8f want=%.8f\n",c,copiedScene[c],expected);}}
+        ++cases;ok(d->SetTexture(0,tex));sceneInputSurface->Release();sceneInput->Release();
         for(unsigned program:{1u,2u}){
             ok(d->SetRenderTarget(0,back));D3DVIEWPORT9 viewport={0,0,backWidth,backHeight,0,1};ok(d->SetViewport(&viewport));ok(d->SetVertexShader(vs[1]));ok(d->SetPixelShader(ps[program]));ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));ok(d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_SRCALPHA));ok(d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_INVSRCALPHA));
             ok(d->Clear(0,nullptr,D3DCLEAR_TARGET,D3DCOLOR_ARGB(255,51,102,153),1,0));

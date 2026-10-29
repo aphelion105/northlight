@@ -77,6 +77,7 @@ test_gi_settings_dependencies.py
 test_gpu_budget.py
 test_gpu_budget_wiring.py
 test_gtao_grazing.py
+test_hdr_boundary.py
 test_hdr_color_resources.py
 test_hdr_reset.py
 test_horizon_haze.py
