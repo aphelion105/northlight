@@ -345,7 +345,7 @@ def main():
     # 8. Source integration.
     shader = fp.src('world_effects.hlsl').read_text()
     cpu = fp.src('world_renderer.h').read_text()
-    composite_src = shader.split('float4 WorldComposite(', 1)[1].split('// Separate geometry pass:', 1)[0]
+    composite_src = shader.split('float4 worldComposite(', 1)[1].split('// Separate geometry pass:', 1)[0]
     helper = block(shader, 'float3 horizonHaze(')
     # 0.3.202 (rain mask): haze, then the fog mad, in one lerp expression back toward the unfogged colour on rain-mask pixels.
     assert composite_src.index('horizonHaze(color,centerUV,viewZ,d>=.99999&&liquid<=0)') < composite_src.index('fog.a,fog.rgb)')

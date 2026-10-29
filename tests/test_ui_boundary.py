@@ -36,7 +36,7 @@ checks['end frame runs before clearFrame and the periodic frame line']=r.index('
 checks['shader creation forgets the identity']=r.count('uiFallbackForget(*out);')==2
 checks['ui_boundary.h is pure']=not any(x in h for x in ('windows.h','d3d9','Windows.h','<vector>','new '))
 hb2=r[r.index('} else if (tag==2) {'):r.index('++uiAfterTerrain;')]
-checks['pre-world stock UI cannot disarm the fallback: only a world hash boundary does']=('if(!terrain)return;' in hb2
+checks['pre-world stock UI cannot disarm the fallback: only a world hash boundary does']=('if(!terrain&&!skySeen)return;' in hb2
     and 'stockPairNoWorld' not in r and 'stockUiPair' not in r and '.onHashBoundary(' not in r
     and 'auto result=uiFallback.endFrame(kind);' in ef)
 checks['periodic frame line shows the fallback state (d disarmed, a armed, l learning), no new line on stock']="uiFallback=%u uiFallbackState=%c" in r and "uiFallback.disarmed()?'d':uiFallback.armed()?'a':'l'" in r

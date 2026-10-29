@@ -215,6 +215,7 @@ test_night_floor.py
 test_night_floor_wiring.py
 test_northlight_install.py
 test_outdoor_light_profiles.py
+test_output_scan_safety.py
 test_particle_light_capture.py
 test_particle_light_diagnostics.py
 test_particle_light_proof.py
@@ -236,6 +237,7 @@ test_prepare_worker.py
 test_probe_blend.py
 test_probe_blend_equivalence.py
 test_probe_relight_cache.py
+test_probe_sphere.py
 test_probe_texture_upload.py
 test_production_draw_timers.py
 test_progressive_gi_worker.py
@@ -307,6 +309,7 @@ test_shared_source_lifecycle.py
 test_shared_static_preparation.py
 test_shared_terrain_bounds.py
 test_shared_terrain_bounds_gpu.py
+test_sky_only_context.py
 test_sky_restore.py
 test_snapshot_allocation.py
 test_snapshot_archive.py
@@ -375,6 +378,7 @@ test_ui_water_boundary.py
 test_uncached_map_skip_wiring.py
 test_underwater_fade.py
 test_unlisted_archive.py
+test_unlit_receiver.py
 test_upload_locks.py
 test_upload_payload_release.py
 test_vs_class_cache.py

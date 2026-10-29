@@ -107,11 +107,11 @@ template<class Scene> static bool buildCore(const Scene& scene,WorldMeshUploadPl
         // Group counts first, then prefix allocation and stable linear scatter.
         // This avoids one temporary vector/allocation chain for every batch and
         // moves all sorting/packing away from the game's render thread.
-        auto keys=[&](){if constexpr(std::is_same_v<Scene,NorthlightGI::WorldScene>)return std::vector<uint64_t>{};else return ChunkedBuffer<uint64_t>{&admit};}();
-        if constexpr(std::is_same_v<Scene,NorthlightGI::WorldScene>){if(!allowed(triangleCount*sizeof(uint64_t)))return false;keys.reserve(triangleCount);}
-        std::unordered_map<uint64_t,uint32_t> counts;
+        auto keys=[&](){if constexpr(std::is_same_v<Scene,NorthlightGI::WorldScene>)return std::vector<uint32_t>{};else return ChunkedBuffer<uint32_t>{&admit};}();
+        if constexpr(std::is_same_v<Scene,NorthlightGI::WorldScene>){if(!allowed(triangleCount*sizeof(uint32_t)))return false;keys.reserve(triangleCount);}
+        std::unordered_map<uint64_t,Group> counts;
         counts.reserve(std::min<size_t>(scene.materials.size()+512,16384));
-        uint64_t previousKey=0;uint32_t* previousCount=nullptr;
+        uint64_t previousKey=0;Group* previousCount=nullptr;
         for(size_t triangle=first;triangle<first+triangleCount;++triangle){const auto& t=scene.triangles[triangle];
             if(t.v0>=scene.vertices.size()||t.v1>=scene.vertices.size()||t.v2>=scene.vertices.size()||t.material>=scene.materials.size()){
                 error="Invalid upload triangle index";return false;
@@ -122,14 +122,16 @@ template<class Scene> static bool buildCore(const Scene& scene,WorldMeshUploadPl
             // Keep a proven lamp enclosure together even across cell edges.
             // Multiple instances then share a larger batch and fail closed.
             const uint32_t cell=scene.materials[t.material].lampSourceId?0:spatialCell(scene.vertices[t.v0].position,scene.vertices[t.v1].position,scene.vertices[t.v2].position,order.cellChunks);
-            uint64_t k=key(cell,t.material,x,y,order.chunkMajor);keys.push_back(k);
+            uint64_t k=key(cell,t.material,x,y,order.chunkMajor);
             if(!previousCount||k!=previousKey){previousCount=&counts[k];previousKey=k;}
-            ++*previousCount; // unordered_map references survive a rehash
+            if(!previousCount->count){previousCount->key=k;previousCount->cursor=uint32_t(counts.size()-1);}
+            keys.push_back(previousCount->cursor);++previousCount->count; // references survive a rehash
         }
         std::vector<Group> groups;groups.reserve(counts.size());
-        for(const auto& pair:counts)groups.push_back({pair.first,pair.second,0});
+        for(const auto& pair:counts)groups.push_back(pair.second);
         std::sort(groups.begin(),groups.end(),[](const Group&a,const Group&b){return a.key<b.key;});
-        std::unordered_map<uint64_t,uint32_t> lookup;lookup.reserve(groups.size());
+        if(!allowed(groups.size()*sizeof(uint32_t)))return false;
+        std::vector<uint32_t> lookup(groups.size());
         std::shared_ptr<ChunkedBuffer<uint32_t>> chunkIndices;
         if constexpr(std::is_same_v<Scene,NorthlightGI::WorldScene>){if(!allowed(triangleCount*3*sizeof(uint32_t)))return false;next.indices.resize(triangleCount*3);}
         else{chunkIndices=std::make_shared<ChunkedBuffer<uint32_t>>(&admit);chunkIndices->resize(triangleCount*3);}
@@ -137,7 +139,7 @@ template<class Scene> static bool buildCore(const Scene& scene,WorldMeshUploadPl
         if(!allowed(groups.size()*sizeof(Batch)))return false;next.batches.reserve(groups.size());
         uint32_t offset=0;
         for(uint32_t i=0;i<groups.size();++i){
-            auto& g=groups[i];g.cursor=offset;lookup.emplace(g.key,i);
+            auto& g=groups[i];lookup[g.cursor]=i;g.cursor=offset;
             const uint64_t low=g.key&((1ull<<42)-1);
             const uint32_t material=order.chunkMajor?uint32_t(low&((1u<<MaterialBits)-1)):uint32_t(low>>22);
             const uint64_t chunk=order.chunkMajor?low>>MaterialBits:low&((1u<<22)-1);
@@ -146,7 +148,7 @@ template<class Scene> static bool buildCore(const Scene& scene,WorldMeshUploadPl
         }
         uint32_t groupIndex=0;
         for(size_t i=0;i<triangleCount;++i){
-            if(!i||keys[i]!=previousKey){groupIndex=lookup.at(keys[i]);previousKey=keys[i];}
+            if(!i||keys[i]!=previousKey){groupIndex=lookup[keys[i]];previousKey=keys[i];}
             auto& group=groups[groupIndex];auto& batch=next.batches[groupIndex];const auto& t=scene.triangles[first+i];
             if(triangleOrder)(*triangleOrder)[group.cursor/3]=uint32_t(i);
             if constexpr(std::is_same_v<Scene,NorthlightGI::WorldScene>){next.indices[group.cursor++]=t.v0;next.indices[group.cursor++]=t.v1;next.indices[group.cursor++]=t.v2;}
@@ -191,7 +193,7 @@ template<class Scene> static bool buildCore(const Scene& scene,WorldMeshUploadPl
         next.localShadowRecords=std::move(records);
         // Per-triangle sort keys are dead after scatter. In a city they can
         // otherwise overlap another ~16 MiB of cutout upload textures.
-        if constexpr(std::is_same_v<Scene,NorthlightGI::WorldScene>)std::vector<uint64_t>().swap(keys);else keys=ChunkedBuffer<uint64_t>{};
+        if constexpr(std::is_same_v<Scene,NorthlightGI::WorldScene>)std::vector<uint32_t>().swap(keys);else keys=ChunkedBuffer<uint32_t>{};
         if(!geometryOnly){next.materials.resize(scene.materials.size());
         for(size_t i=0;i<scene.materials.size();++i){
             const auto& meta=scene.materials[i];const auto& source=texel(i);auto& dest=next.materials[i];

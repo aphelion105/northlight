@@ -69,7 +69,7 @@ int main(int argc,char**argv){
     for(size_t i=0;i<reference.pages.size();++i){const auto&a=reference.pages[i];const auto&b=chunkPages->pages[i];assert(a.key==b.key&&a.indices==b.indices&&a.vertices.size()==b.vertices.size());assert(!std::memcmp(a.vertices.data(),b.vertices.data(),a.vertices.size()*sizeof(WorldVertex)));}
     for(size_t i=0;i<reference.batches.size();++i){const auto&a=reference.batches[i];const auto&b=chunkPages->batches[i];assert(a.pointOnly==b.pointOnly&&a.lampSourceId==b.lampSourceId&&a.material==b.material&&a.start==b.start&&a.count==b.count);}
 #ifndef FRAGMENTED_STAND
-    NorthlightWorldMesh::WorldMeshUploadPlan late;bool deniedKeys=false;const uint64_t keysBytes=uint64_t(legacy.triangleCount)*sizeof(uint64_t);
+    NorthlightWorldMesh::WorldMeshUploadPlan late;bool deniedKeys=false;const uint64_t keysBytes=uint64_t(legacy.triangleCount)*sizeof(uint32_t);
     auto lateLimit=[&](uint64_t n){if(n==keysBytes&&!deniedKeys){deniedKeys=true;return false;}return true;};
     assert(NorthlightShadowTerrain::build(local,far,center,late,error,lateLimit,radius,{},true,nullptr,nullptr,&point));
     assert(deniedKeys&&late.pagingChunks&&late.pagingIndices&&late.pagingIndexCount()==legacy.indices.size());

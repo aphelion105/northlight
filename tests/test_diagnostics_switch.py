@@ -18,6 +18,7 @@ FILES=['renderer.cpp','world_renderer.h','world_shadow_experiment.inl','world_po
 GATES=('NorthlightDiagnostics::enabled()','diagnostics()','sampled()','captureSampled','if(diagnostics)','shadowFate.active()','sampledFrame','profiling()','profileSampled()','if(lightingClock)','materialProfile->recording()','if(profileThisBuild)','if(resetProfile)')
 # Ungated lines that stay with Diagnostics=0: format prefix -> label.
 KEEP={
+ 'UNLIT receiver shader unavailable':'one-off per device: optional shader refusal is latched until GPU resources reset',
  'DXVK3 compatibility import':'start-up: optional Vulkan compatibility hook',
  'EFFECT_GPU_CAPTURE ':'explicit menu request only: captureEffectDiagnostics returns before device/file access without a request',
  'WORLD GPU skipped ':'explicit capture fallback only: effects remain disabled, empty images are exported',

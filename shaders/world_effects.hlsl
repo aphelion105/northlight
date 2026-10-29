@@ -1265,7 +1265,7 @@ float3 horizonHaze(float3 color,float2 uv,float viewZ,bool sky) {
     return lerp(color,haze,amount);
 }
 // 512 of the 512 ps_3_0 slots (shaders/world-shader-build.json): free slots before adding to this pass.
-float4 WorldComposite(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {
+float4 worldComposite(float2 uv,float2 pixel,bool surfaceLighting) {
     // Fetches before any flow control use texld (1 slot; tex2Dlod costs 3-4): Scene and Depth have one level and no mip filter, so texld reads what tex2Dlod(.,0) does.
     float4 original=tex2D(Scene,uv);
     float2 centerUV=depthUV(uv);
@@ -1274,7 +1274,7 @@ float4 WorldComposite(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {
     // Original Terrain VS uses SIGNED view Z, including right-handed cameras.
     // Unknown fog uploads the safe identity (0,1,1,0), giving T=1 exactly.
     float legacyT=mad(LegacyFog.w,saturate(pow(max(mad(viewZ*Projection.z,LegacyFog.x,LegacyFog.y),0),LegacyFog.z))-1,1);
-    bool relight=d<.99999&&liquid<=0;
+    bool relight=surfaceLighting&&d<.99999&&liquid<=0;
         float3 baseline=0;
         float3 bounce=0,local=0;float shadow=0,total=0,closest=1e20;
         float2 fallbackUV=0,fogFallbackUV=0;
@@ -1384,6 +1384,11 @@ float4 WorldComposite(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {
     // horizontal lines. VPOS is the integer pixel; +.5 texel hits the POINT texel centre.
     return float4(max(color+tex2D(DitherNoise,mad(pixel,1.0/64,.5/64)).rgb,0),original.a);
 }
+
+float4 WorldComposite(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {return worldComposite(uv,pixel,true);}
+// Self-lit M2 receivers keep their native radiance under the same atmosphere.
+// Selected with the existing depth-stencil; no additional image or geometry replay.
+float4 WorldUnlitComposite(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {return worldComposite(uv,pixel,false);}
 
 // Full-resolution material relighting. The base composition has already handled
 // shadows, GI, AO and fog; only the normal-dependent directional difference is

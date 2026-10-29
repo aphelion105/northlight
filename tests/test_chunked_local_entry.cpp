@@ -5,7 +5,7 @@
 using namespace NorthlightGeometryMemory;
 static unsigned GetTickCount(){return 1000;}
 int main(){
- for(unsigned i=0;i<12;++i){
+ for(unsigned i=0;i<14;++i){
     EntryLift chunkLift;auto entryBudget=buildBudget(64*MiB);Sample memory{600*MiB,120*MiB,true};
     if(i==1)memory.largest=40*MiB;
     if(i==2)memory.available=500*MiB;
@@ -18,12 +18,13 @@ int main(){
     if(i==9){memory.available=395*MiB;memory.largest=183*MiB;}
     if(i==10){memory.available=391*MiB;memory.largest=183*MiB;}
     if(i==11){memory.available=395*MiB;memory.largest=32*MiB;}
-    struct {size_t count;size_t live()const{return count;}} generations{i<9?1u:0u};
+    if(i==12){memory.available=395*MiB;memory.largest=183*MiB;}
+    if(i==13){memory.available=391*MiB;memory.largest=183*MiB;}
     bool chunkedLocal=false,coldRecovery=false;unsigned samples=0;auto workerMemory=[&](Budget budget){++samples;assert(budget.valid);return memory;};
 #include "chunked_entry.inl"
     if(i==0){assert(!chunkedLocal&&!samples&&admits(memory,entryBudget));}
-    else if(i<9){assert(chunkedLocal&&!coldRecovery&&samples==1);assert(admits(memory,entryBudget)==(i==1||i==2||i==8));assert(entryBudget.available>=480*MiB);}
-    else{assert(chunkedLocal&&coldRecovery&&samples==2);assert(entryBudget.available==392*MiB);assert(admits(memory,entryBudget)==(i==9));}
+    else if(i<9){assert(chunkedLocal&&samples>=1);assert(admits(memory,entryBudget)==(i==1||i==2||i==3||i==8));assert(entryBudget.available>=(coldRecovery?392:480)*MiB);}
+    else{assert(chunkedLocal&&coldRecovery&&samples==2);assert(entryBudget.available==392*MiB);assert(admits(memory,entryBudget)==(i==9||i==12));}
     assert(entryBudget.largest>=33*MiB);
  }
  for(unsigned i=0;i<5;++i){
@@ -37,5 +38,5 @@ int main(){
 #include "chunked_failure.inl"
     noteLocalAllocationFailure();assert(localDeferred==(i<2||i==3));if(i<2)assert(localSample.valid&&localRequired&&localLargest);
  }
- std::puts("PASS chunked entry: normal 480 MiB, cold-only 392 MiB, 256 MiB reserve, invalid and lifted samples refused");
+ std::puts("PASS chunked entry: normal 480 MiB, bounded cold/replacement 392 MiB, 256 MiB reserve, invalid and lifted samples refused");
 }

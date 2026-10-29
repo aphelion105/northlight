@@ -11,9 +11,9 @@ int main(){
     const auto chunk=chunkBuildBudget();assert(chunk.valid&&chunk.available==480*MiB&&chunk.largest==33*MiB);
     assert(admits({500*MiB,120*MiB,true},chunk)&&!admits({479*MiB,120*MiB,true},chunk));
     const auto cold=coldChunkBuildBudget(),inside=coldInBuildBudget();
-    assert(cold.available==392*MiB&&cold.largest==33*MiB&&inside.available==320*MiB);
+    assert(cold.available==392*MiB&&cold.largest==33*MiB&&inside.available==288*MiB);
     assert(admits({395*MiB,183*MiB,true},cold)&&!admits({391*MiB,183*MiB,true},cold));
-    assert(admits({320*MiB,33*MiB,true},coldInBuildBudget(MiB))&&!admits({319*MiB,33*MiB,true},coldInBuildBudget(MiB)));
+    assert(admits({288*MiB,33*MiB,true},coldInBuildBudget(MiB))&&!admits({287*MiB,33*MiB,true},coldInBuildBudget(MiB)));
     assert(coldInBuildBudget(70*MiB).available==326*MiB&&coldInBuildBudget(70*MiB).largest==102*MiB);
     assert(!admits({480*MiB,33*MiB-1,true},chunk));
     // Replay the original measured-shortfall scenario at the proposed reserve:

@@ -26,7 +26,7 @@ BEFORE={'WorldNormals':'e647de5f5ba48db3fa790f329731d066a47fa965fdf474dcc568c337
 
 # HLSL
 checks['source: RainMask declared on s13 (aliasing RegionalFog, as s8/s10 do)']=('sampler2D RainMask : register(s13);' in h)
-comp=h.split('float4 WorldComposite(',1)[1].split('// Separate geometry pass:',1)[0]
+comp=h.split('float4 worldComposite(',1)[1].split('// Separate geometry pass:',1)[0]
 m=re.search(r'if\(PassInfo\.z<\.5\)\{(.*?)\n    \}',comp,re.S)
 body=m.group(1) if m else ''
 checks['source: WorldComposite reads the mask once, only inside the PassInfo.z<.5 branch']=(bool(m) and comp.count('RainMask')==1 and body.count('tex2Dlod(RainMask,float4(uv,0,0)).r')==1)

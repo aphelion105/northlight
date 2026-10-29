@@ -1256,27 +1256,47 @@ Probe solveProbe(const BVH& bvh,Vec3 position,const Lighting& input,unsigned ray
     return solveProbePrepared(bvh,position,prepareLighting(input),rays,seed,input.movingGeometry);
 }
 namespace {
+// Quality presets use at most 64 rays. Reuse their latitude and azimuth lattice
+// on each solver thread; a probe only rotates it by its seeded global azimuth.
+struct ProbeSphere {
+    unsigned count=0;std::array<Vec3,64> directions;
+    void prepare(unsigned rays){
+        if(count==rays)return;
+        for(unsigned i=0;i<rays;++i){
+            const float z=1.f-2.f*(float(i)+.5f)/float(rays),radius=std::sqrt(std::max(0.f,1-z*z));
+            const float phi=float(i)*2.39996322972865332f;
+            directions[i]={radius*std::cos(phi),radius*std::sin(phi),z};
+        }
+        count=rays;
+    }
+};
 // Shared by the direct and replayed moving solves so ray directions, RNG
 // streams and accumulation order are the same code. Ray(i,direction,rng,
 // distance,backFace) returns the path radiance of ray i.
 template<class Ray>
 Probe accumulateProbe(Vec3 position,const Lighting& l,unsigned rays,uint32_t seed,Ray&& ray){
     Probe out;out.position=position;out.maxDistance=l.maxDistance;
-    const Vec3 axes[6]={{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
     double weights[6]={},sums[6]={},squares[6]={};float closest=l.maxDistance;
     RNG orientation(seed^0xa511e9b3u);float azimuth=orientation.uniform()*2*PI;
+    thread_local ProbeSphere sphere;
+    const bool cached=rays<=sphere.directions.size();
+    if(cached)sphere.prepare(rays);
+    const float rotateCos=cached?std::cos(azimuth):0,rotateSin=cached?std::sin(azimuth):0;
     const float golden=2.39996322972865332f;
     for(unsigned i=0;i<rays;++i){
         // Equal-area Fibonacci sphere, randomized global azimuth. Path random
         // numbers are independent per ray, stable across scheduling order.
-        float z=1.f-2.f*(float(i)+.5f)/float(rays),radius=std::sqrt(std::max(0.f,1-z*z));
-        float phi=azimuth+float(i)*golden;Vec3 direction(radius*std::cos(phi),radius*std::sin(phi),z);
+        Vec3 direction;
+        if(cached){const auto p=sphere.directions[i];direction={p.x*rotateCos-p.y*rotateSin,p.x*rotateSin+p.y*rotateCos,p.z};}
+        else{const float z=1.f-2.f*(float(i)+.5f)/float(rays),radius=std::sqrt(std::max(0.f,1-z*z));
+            const float phi=azimuth+float(i)*golden;direction={radius*std::cos(phi),radius*std::sin(phi),z};}
         RNG rng(seed^((i+1u)*0x9e3779b9u));float distance;bool backFace;
         Vec3 color=ray(i,direction,rng,distance,backFace);
         if(backFace)++out.backFaceSamples;closest=std::min(closest,distance);
         const float sh[4]={.2820947918f,.4886025119f*direction.x,.4886025119f*direction.y,.4886025119f*direction.z};
         for(unsigned j=0;j<4;++j)out.sh[j]=out.sh[j]+color*(sh[j]*(4*PI/float(rays)));
-        for(unsigned j=0;j<6;++j){float w=std::max(0.f,dot(direction,axes[j]));w*=w;w*=w;w*=w;
+        const float components[3]={direction.x,direction.y,direction.z};
+        for(unsigned axis=0;axis<3;++axis){const unsigned j=2*axis+(components[axis]<0);float w=std::abs(components[axis]);w*=w;w*=w;w*=w;
             weights[j]+=w;sums[j]+=double(w)*distance;squares[j]+=double(w)*distance*distance;}
     }
     for(unsigned j=0;j<6;++j){

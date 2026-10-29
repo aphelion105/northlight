@@ -54,6 +54,7 @@
 #include "weather_memory.h"
 #include "translucent_depth.h"
 #include "name_stencil.h"
+#include "unlit_receiver.h"
 #include "log_rotation.h"
 #include "memory_guard.h"
 #include "address_space_snapshot.h"
@@ -422,7 +423,7 @@ class Device final : public GuardedMirrorDevice {
     // for it (set at registration, where the water map changes), so non-water
     // draws need no second hash lookup.
     // Task 34: bits 3..5 hold the M2 shader family (m2_shader_families.h, NorthlightSpellLayer::Family) of the vertex shader, set at registration.
-    static constexpr int kTagMask=3,kWaterTag=4,kFamilyShift=3,kNativeShadowTag=64;
+    static constexpr int kTagMask=3,kWaterTag=4,kFamilyShift=3,kNativeShadowTag=64,kUnlitTag=128;
     std::unordered_map<IDirect3DVertexShader9*, int> vsTags;
     bool drawWaterVS=false,drawUiHashVS=false; // current draw's registered VS verdict
     std::unordered_map<IDirect3DPixelShader9*, int> psTags;
@@ -470,7 +471,7 @@ class Device final : public GuardedMirrorDevice {
     /* 0.3.203 (task 17): fallback effect boundary when the UI shaders are replaced by another module (font mods); learned from draw state, see uiFallbackDraw. */
     NorthlightUiBoundary::Arming uiFallback;bool hashBoundaryThisFrame=false,fallbackBoundaryThisFrame=false,uiFallbackNoCandidateLogged=false;unsigned uiFallbackBoundaries=0;std::uint64_t uiFallbackPublished=0; /* the value last stored in NorthlightStream::learnedUiVsHash */
     IDirect3DVertexShader9* triageVs=nullptr;IDirect3DPixelShader9* triagePs=nullptr;DWORD triageZw=0;float triageC3[4]={};unsigned triageDraws=0; /* most recent post-terrain draw rejected by zwrite or the c3/rows test while learning (identities only, never dereferenced) */
-    bool failed = false, projectionValid = false, key10 = false, key12=false;
+    bool failed = false, projectionValid = false, skySeen = false, key10 = false, key12=false;
     // 0.3.200 (frame markers): diagnostics only, while northlight-frame-markers.txt exists in the game folder at device creation: two 40x40
     // squares at the left edge whose colour cycles with the frame number. E (upper) is filled right after the world effects, P (lower) right
     // before the real Present, so a screen recording shows which presented images went through the effects and the replay's Present, in order.
@@ -544,6 +545,7 @@ private:
     /* Cost of the mask on sample frames only (sampledDrawTimers), CpuScopes like the other per-draw costs: the decision (every 8th world-domain call timed, scaled by calls/timed, so the timer does not dominate a
        cheap test), the name runs (begin, alpha guard, end) and the unmark state wraps. Gross: each scope includes its two clock reads (qpcNs on the CPU timers line). The composite bind is once per frame and not timed. */
     LONGLONG cpuNameDecide=0,cpuNameMark=0,cpuNameUnmark=0;unsigned nameDecideCalls=0,nameDecideTimed=0;bool nameRun=false; /* a run of consecutive name draws keeps STENCILENABLE on (the other stencil states of kMark stay set) */
+    unsigned unlitMarks=0;
     NorthlightNameStencil::Mask nameMask;int maskKind=0; /* maskKind: this draw is 1 a name that gets marked, 2 a depth-final draw that unmarks (set by prepareDrawImpl, consumed by nameMaskDraw) */
     IDirect3DSurface9* maskFormatFor=nullptr;unsigned long maskFormatValue=0;unsigned maskFormatLogs=0;bool maskStencil=false;const void* maskDsId=nullptr; /* identities only: the world depth the format verdict is for, and the one whose Clear(Z) also clears stencil */
     void resetTranslucentCensus(){censusDraws=lastOpaqueZAt=clearResolveAt=earlyResolves=earlyResolveAt=earlyResolveUndone=0;}
@@ -707,7 +709,7 @@ private:
         if(!applied||failed)stateBlocks.clear();
         if(!enabled||extensionFault){stateBlocks.clear();if(world)world->releaseStateCache();if(water)water->releaseStateCache();}
         if(world)world->endFrame(!extensionFault,frame);if(water)water->endFrame();if(surface)surface->endFrame();if(autoBump)autoBump->endFrame();if(celestialDiscs)celestialDiscs->endFrame();if(shadowBlobs)shadowBlobs->endFrame();
-        drop(worldDepth);worldDepthDescKnown=false; rainMrtUnbind();terrain = captured = applied = projectionValid = false;rainMaskCleared=rainMaskDrawn=rainMaskFrame=rainMaskOk=rainDepthOk=false; /* 0.3.202 (rain mask MRT): RT1 never outlives a frame */earlyDepth.reset();resetTranslucentCensus(); /* the TRANSLUCENT line is logged before clearFrame */
+        drop(worldDepth);worldDepthDescKnown=false; rainMrtUnbind();terrain = captured = applied = projectionValid = skySeen = false;rainMaskCleared=rainMaskDrawn=rainMaskFrame=rainMaskOk=rainDepthOk=false; /* 0.3.202 (rain mask MRT): RT1 never outlives a frame */earlyDepth.reset();resetTranslucentCensus(); /* the TRANSLUCENT line is logged before clearFrame */
     }
     void captureEffectDiagnostics(){
         using namespace NorthlightDiagnosticCapture;
@@ -1008,6 +1010,7 @@ private:
             if(fullViewport(desc,nullptr,true)&&SUCCEEDED(ext->GetRenderTarget(0,&target))&&target){applied=world->emptyDiagnosticView(target,desc.Width,desc.Height,worldDebug);target->Release();}
             return;
         }
+        if(!applied&&enabled&&!failed&&!projectionValid&&skySeen){D3DSURFACE_DESC desc{};if(fullViewport(desc,nullptr,true))recoverSkyContext(desc);}
         if (applied || !enabled || failed || !projectionValid) return;
         // task 45: the always-on effects span for the CPU budget (applying frames only; every return path below ends it).
         struct EffectsSpan { std::int64_t& out; std::int64_t start; ~EffectsSpan(){out=qpcNow()-start;} } effectsSpan{cpuEffectsQpc,qpcNow()};
@@ -1140,7 +1143,8 @@ private:
         if(world&&debugMode==0){
             traceWorld=0;
             world->setMaterialDetail(autoBump?autoBump->texture():nullptr,autoBump?autoBump->gain():0.f,autoBump?autoBump->distance():48.f,autoBump?autoBump->occlusionTexture():nullptr,autoBump?autoBump->occlusionDistance():8.f,autoBump&&autoBump->active()&&autoBump->hasCaptureResources());
-            world->setNameMask(maskOn?worldDepth:nullptr); /* 0.3.212 (task 32) */
+            world->setNameMask(maskOn?worldDepth:nullptr);
+            world->setUnlitMask(unlitMarks&&maskStencil&&!nameMask.disabled&&worldDebug==0?worldDepth:nullptr); /* 0.3.212 (task 32) */
             world->setRainMask(rainMaskTex); /* 0.3.202 (rain): RainMask for this frame's composite only (resolved and scrubbed at the top of renderEffects) */
             const bool rendered=world->render(saved.targets[0],depthTex,width,height,sceneFormat,nearZ,farZ,worldMinDepth,worldMaxDepth,worldDebug,gpuProfile.get(),waterMask,fold?scene:nullptr,fold?ao:nullptr,frame);
             diagnosticWorld=rendered;
@@ -1193,7 +1197,7 @@ private:
     template<class Z,class B,class S,class D,class C> void nameMaskDecide(bool water,Z&& zw,B&& ab,S&& sb,D&& db,C&& cw,const D3DVIEWPORT9& viewport){
         if(!nameMaskReady())return;
         if(water||!drawUiHashVS){ /* the cheapest test first (beforeDraw's tag): all but the names stop at it */
-            if(nameMask.hasMarks()&&NorthlightTranslucentDepth::isUndo(water,zw,ab,sb,db,cw)){maskKind=2;++nameMask.unmarkDraws;}
+            if((nameMask.hasMarks()||unlitMarks)&&NorthlightTranslucentDepth::isUndo(water,zw,ab,sb,db,cw)){maskKind=2;++nameMask.unmarkDraws;}
             return;
         }
         if(!NorthlightNameStencil::nameBlend(ab,sb,db,cw))return;
@@ -1260,11 +1264,20 @@ private:
         const int kind=maskKind;maskKind=0;
         if(kind!=1)nameMaskRunEnd();
         if(!kind)return rainBlendDraw(rain,claimed,draw);
-        if(kind==2){
-            DWORD previous[sizeof NorthlightNameStencil::kUnmark/sizeof NorthlightNameStencil::kUnmark[0]];bool set=false;
-            extensionWork("name mask",[&]{CpuScope c(sampledDrawTimers()?&cpuNameUnmark:nullptr);set=maskApply(NorthlightNameStencil::kUnmark,previous);});
+        if(kind==3){
+            DWORD previous[sizeof NorthlightUnlitReceiver::Mark/sizeof NorthlightUnlitReceiver::Mark[0]];bool set=false;
+            extensionWork("unlit receiver mask",[&]{
+                if((nameMask.cleared||nameMaskClear())&&!claimed)set=maskApply(NorthlightUnlitReceiver::Mark,previous);
+            });
             const HRESULT hr=rainBlendDraw(rain,claimed,draw);
-            if(set)extensionWork("name mask",[&]{CpuScope c(sampledDrawTimers()?&cpuNameUnmark:nullptr);maskRestore(NorthlightNameStencil::kUnmark,previous);});
+            if(set){maskRestore(NorthlightUnlitReceiver::Mark,previous);if(SUCCEEDED(hr))++unlitMarks;}
+            return hr;
+        }
+        if(kind==2){
+            DWORD previous[sizeof NorthlightUnlitReceiver::Unmark/sizeof NorthlightUnlitReceiver::Unmark[0]];bool set=false;
+            extensionWork("name mask",[&]{CpuScope c(sampledDrawTimers()?&cpuNameUnmark:nullptr);set=maskApply(NorthlightUnlitReceiver::Unmark,previous);});
+            const HRESULT hr=rainBlendDraw(rain,claimed,draw);
+            if(set)extensionWork("name mask",[&]{CpuScope c(sampledDrawTimers()?&cpuNameUnmark:nullptr);maskRestore(NorthlightUnlitReceiver::Unmark,previous);});
             return hr;
         }
         DWORD alphaPrevious[sizeof NorthlightNameStencil::kAlphaGuard/sizeof NorthlightNameStencil::kAlphaGuard[0]];bool guard=false;
@@ -1340,9 +1353,12 @@ private:
                 /* 0.3.188 (task 3): lazy state reads for the early resolve, its undo and the census, each read at most once per draw */
                 auto rs=[&](D3DRENDERSTATETYPE t){return [this,t,v=DWORD(0),known=false]()mutable{if(!known){v=drawRenderState(t);known=true;}return v;};};
                 auto zw=rs(D3DRS_ZWRITEENABLE);auto ab=rs(D3DRS_ALPHABLENDENABLE);auto sb=rs(D3DRS_SRCBLEND);auto db=rs(D3DRS_DESTBLEND);auto cw=rs(D3DRS_COLORWRITEENABLE);
-                if(terrain&&nameMask.armed()&&worldDebug==0&&(drawUiHashVS||nameMask.hasMarks())){ /* 0.3.212 (task 32): only a UI-hash draw can be a name, only a frame with marks can unmark */
+                if(terrain&&!nameMask.disabled&&worldDebug==0&&((nameMask.armed()&&drawUiHashVS)||nameMask.hasMarks()||unlitMarks||(classifyVs(vs).entry&kUnlitTag))){ /* 0.3.212 (task 32): only a UI-hash draw can be a name, only a frame with marks can unmark */
                     const bool sampledTimed=sampledDrawTimers()&&(++nameDecideCalls&7)==1;if(sampledTimed)++nameDecideTimed;
-                    CpuScope decision(sampledTimed?&cpuNameDecide:nullptr);nameMaskDecide(drawWaterVS,zw,ab,sb,db,cw,viewport);}
+                    CpuScope decision(sampledTimed?&cpuNameDecide:nullptr);nameMaskDecide(drawWaterVS,zw,ab,sb,db,cw,viewport);
+                    if((classifyVs(vs).entry&kUnlitTag)&&zw()&&(cw()&7)&&(!ab()||db()==D3DBLEND_ZERO)&&
+                       nameMaskReady()&&NorthlightUnlitReceiver::stencilFormat(worldDepthDesc.Format,MAKEFOURCC('I','N','T','Z'))&&nameMaskFullViewport(viewport)&&worldDepthBound())maskKind=3;
+                    if(maskKind==1&&!nameMask.armed())maskKind=0;}
                 if(captured&&earlyDepth.earlyCaptured&&NorthlightTranslucentDepth::isUndo(drawWaterVS,zw,ab,sb,db,cw)){captured=false;earlyDepth.undo();++earlyResolveUndone;++earlyResolveUndoneTotal;} /* undo: later opaque or water Z draw after the early resolve */
                 if(terrain&&!captured&&earlyDepth.armed()&&NorthlightTranslucentDepth::shouldResolve(drawWaterVS,zw,ab,sb,db,cw,[&]{return classifyVs(vs).skinned;})&&earlyDepth.attempt()){ /* 0.3.188 (2A): early depth for translucent actors, every frame, minimum state reads */
                     ExtensionDevice::RawScope raw(*ext);
@@ -1551,8 +1567,16 @@ private:
     // Native sky claim: glare, then the native disc draw, for full-viewport sky draws of 1..4 primitives.
     void skyClaim(D3DPRIMITIVETYPE t,UINT count,bool& claimed){
         if(count<=4&&celestialDiscs&&enabled&&debugMode==0&&worldDebug==0&&!applied&&celestialDiscs->nativeClaimPossible(t,count)){D3DSURFACE_DESC desc;D3DVIEWPORT9 vp={};if(fullViewport(desc,&vp)&&NorthlightWorldDrawDomain::skyClaimPossible(worldMinDepth,worldMaxDepth,vp.MinZ,vp.MaxZ)){ /* viewport band pre-filter: no texture-identity read for a draw outside the sky band */
+            skySeen=true;
             claimed=celestialDiscs->claimNativeGlare(t,count);
             if(!claimed)claimed=celestialDiscs->claimNativeDraw(t,count,true,[&](const char* map,const float* camera){return world->celestialPalette(map,camera);});}}
+    }
+    void recoverSkyContext(const D3DSURFACE_DESC& desc){
+        if(projectionValid||!skySeen||!world||!celestialDiscs->earlyValid||
+           desc.Width!=celestialDiscs->earlyWidth||desc.Height!=celestialDiscs->earlyHeight)return;
+        const float p[]={scaleX,scaleY,fogForward};
+        if(!world->skyContext(p)||!bindWorldDepth(desc))return;
+        projectionValid=terrain=true;captured=false;
     }
     void skyObserve(HRESULT hr,D3DPRIMITIVETYPE t,UINT count){
         if(count<=4&&celestialDiscs&&enabled&&!applied&&celestialDiscs->nativeObservePossible(hr,t,count)){D3DSURFACE_DESC desc;if(fullViewport(desc))celestialDiscs->observeNativeDraw(hr,t,count,true);}
@@ -2411,7 +2435,7 @@ private:
             if(gateFrame)++gateCounts.fullPasses;
         } else if (tag==2) {
             ++uiDraws;
-            if(!terrain)return; // Login/loading UI can use stock shaders even when the in-world UI is replaced by a font mod.
+            if(!terrain&&!skySeen)return; // Login/loading UI can use stock shaders even when the in-world UI is replaced by a font mod.
             ++uiAfterTerrain;
             // Fonts can use a rare PS on the stock UI VS. Confirm screen-space
             // state and the main target instead of filtering the text shader.
@@ -2435,7 +2459,7 @@ private:
     // On stock the whole step is one bool test per draw: collecting() needs two world frames in a row without the hash boundary, and the first one disarms it for good.
     void uiFallbackDraw(const VsClass& vc,IDirect3DVertexShader9* vs){
         const auto remembered=NorthlightUiBoundary::rememberedVsHash.load(std::memory_order_relaxed);
-        if((!uiFallback.collecting()&&(!remembered||uiFallback.disarmed()))||!terrain||applied||hashBoundaryThisFrame||fallbackBoundaryThisFrame||vc.wmo)return;
+        if((!uiFallback.collecting()&&(!remembered||uiFallback.disarmed()))||(!terrain&&!skySeen)||applied||hashBoundaryThisFrame||fallbackBoundaryThisFrame||vc.wmo)return;
         if(vc.world||drawWaterVS)return;
         const bool armed=uiFallback.armed();
         bool restore=false;if(!armed&&remembered){const auto known=vsHashes.find(vs);restore=known!=vsHashes.end()&&known->second==remembered;}
@@ -3008,7 +3032,7 @@ public:
             logf("NAMEMASK frame=%u marked=%u runs=%u unmarked=%u composite=%d depthFormat=%lu stencil=%d decisions=%u decisionsTimed=%u decideUs=%.1f markUs=%.1f unmarkUs=%.1f cpuUs=%.1f",frame,nameMask.marks,nameMask.runs,nameMask.unmarkDraws,int(nameMask.composited),(unsigned long)(worldDepthDescKnown?worldDepthDesc.Format:D3DFMT_UNKNOWN),int(maskStencil),nameDecideCalls,nameDecideTimed,decide,mark,unmark,decide+mark+unmark);
         }
         cpuNameDecide=cpuNameMark=cpuNameUnmark=0;nameDecideCalls=nameDecideTimed=0;
-        nameMask.endFrame(); /* 0.3.212 (task 32): marks never outlive the frame (the next frame's first Clear(Z) clears the stencil) */
+        nameMask.endFrame();unlitMarks=0; /* 0.3.212 (task 32): marks never outlive the frame (the next frame's first Clear(Z) clears the stencil) */
         if(sampled())logf("TRANSLUCENT frame=%u draws=%u lastOpaqueZ=%u clearResolve=%u earlyResolve=%u earlyResolveAt=%u earlyResolveTotal=%u earlyResolveUndone=%u earlyResolveUndoneTotal=%u",frame,censusDraws,lastOpaqueZAt,clearResolveAt,earlyResolves,earlyResolveAt,earlyResolveTotal,earlyResolveUndone,earlyResolveUndoneTotal);
         postEffectWorldDraws=postEffectSkinnedDraws=postEffectDepthWrites=postEffectDepthStateFailures=0;
         spellFrameEnd(); /* task 34: after the frame's diagnostics lines */
@@ -3211,9 +3235,9 @@ public:
         rainMrtUnbind(); /* 0.3.202 (rain mask MRT): a Clear would clear the mask target too */
         /* 0.3.212 (task 32): the game's Clear(Z) of the world depth clears the name marks with it (the stencil flag is added to the same call) while the frame has none; with marks, a stencil clear in a later Clear(Z) is dropped (the game
            does not use stencil) so the marks reach the composite. A game clear that sets the mask bit disables the feature. */
-        if((flags&D3DCLEAR_ZBUFFER)&&nameMask.armed()&&maskDsId&&boundDepthIs(maskDsId)){
-            if((flags&D3DCLEAR_STENCIL)&&(stencil&NorthlightNameStencil::kBit)){nameMask.disable("the game clears stencil with the mask bit");logf("NAMEMASK disabled: the game clears stencil with the mask bit set");}
-            else if(nameMask.hasMarks())flags&=~DWORD(D3DCLEAR_STENCIL);
+        if((flags&D3DCLEAR_ZBUFFER)&&!nameMask.disabled&&(nameMask.armed()||unlitMarks)&&maskDsId&&boundDepthIs(maskDsId)){
+            if((flags&D3DCLEAR_STENCIL)&&(stencil&(NorthlightNameStencil::kBit|NorthlightUnlitReceiver::Bit))){nameMask.disable("the game clears stencil with the mask bit");logf("NAMEMASK disabled: the game clears stencil with the mask bit set");}
+            else if(nameMask.hasMarks()||unlitMarks)flags&=~DWORD(D3DCLEAR_STENCIL);
             else{ /* only a full clear (no rects) with the scissor test off clears all of the stencil; any other clear is left alone and the first mark brings its own */
                 DWORD scissor=TRUE;D3DVIEWPORT9 viewport={}; /* Clear is clipped to the viewport: only a full-size viewport makes it the full clear */
                 if(n==0&&SUCCEEDED(ext->GetRenderState(D3DRS_SCISSORTESTENABLE,&scissor))&&!scissor&&SUCCEEDED(ext->GetViewport(&viewport))&&nameMaskFullViewport(viewport)){if(!(flags&D3DCLEAR_STENCIL)){flags|=D3DCLEAR_STENCIL;stencil=0;}nameMask.noteClear(false);}
@@ -3269,7 +3293,7 @@ public:
     }
     HRESULT STDMETHODCALLTYPE CreateVertexShader(const DWORD* code,IDirect3DVertexShader9** out) override { Guard mirrorLock(mirrorState.gate);
         HRESULT hr=ext->CreateVertexShader(code,out);
-        if(SUCCEEDED(hr)&&out&&*out)extensionWork("vertex shader registration",[&]{++vsGeneration;std::vector<DWORD> words;auto h=shaderHash(*out,words);int tag=NorthlightShaderTags::deviceTag(h);tag|=registerNativeShadow(*out,words);vsHashes[*out]=h;if(spellOn){shaderReads[static_cast<void*>(*out)]=NorthlightShaderReads::scan(reinterpret_cast<const uint32_t*>(words.data()),words.size());{bool bare=false;const bool ok=NorthlightSpellFog::vsFogProven(reinterpret_cast<const uint32_t*>(words.data()),words.size(),&bare);vsFogProven[*out]=uint8_t(ok?(bare?2:1):0);}}uiFallbackForget(*out);vsMajor[*out]=!words.empty()&&(words[0]>>16)==0xFFFEu?unsigned((words[0]>>8)&0xFFu):0u;if(world){world->registerShader(*out,h);world->registerEquipmentShader(*out,m2ShaderFamily(h)==3?words.data():nullptr,m2ShaderFamily(h)==3?words.size():0);particleCapture.registerVertex(*out,m2ShaderFamily(h));}if(autoBump)autoBump->registerVertex(*out,h,words.data(),words.size(),m2ShaderFamily(h));if(water)water->registerVertex(*out,h,words.data(),words.size());vsTags[*out]=tag|(water&&water->hasVertex(*out)?kWaterTag:0)|int(m2ShaderFamily(h)<<kFamilyShift);if(tag==1)++matchedTerrain;else if(tag==2)++matchedUI;});
+        if(SUCCEEDED(hr)&&out&&*out)extensionWork("vertex shader registration",[&]{++vsGeneration;std::vector<DWORD> words;auto h=shaderHash(*out,words);int tag=NorthlightShaderTags::deviceTag(h);tag|=registerNativeShadow(*out,words);if(NorthlightUnlitReceiver::shader(reinterpret_cast<const uint32_t*>(words.data()),words.size(),m2ShaderFamily(h)==3))tag|=kUnlitTag;vsHashes[*out]=h;if(spellOn){shaderReads[static_cast<void*>(*out)]=NorthlightShaderReads::scan(reinterpret_cast<const uint32_t*>(words.data()),words.size());{bool bare=false;const bool ok=NorthlightSpellFog::vsFogProven(reinterpret_cast<const uint32_t*>(words.data()),words.size(),&bare);vsFogProven[*out]=uint8_t(ok?(bare?2:1):0);}}uiFallbackForget(*out);vsMajor[*out]=!words.empty()&&(words[0]>>16)==0xFFFEu?unsigned((words[0]>>8)&0xFFu):0u;if(world){world->registerShader(*out,h);world->registerEquipmentShader(*out,m2ShaderFamily(h)==3?words.data():nullptr,m2ShaderFamily(h)==3?words.size():0);particleCapture.registerVertex(*out,m2ShaderFamily(h));}if(autoBump)autoBump->registerVertex(*out,h,words.data(),words.size(),m2ShaderFamily(h));if(water)water->registerVertex(*out,h,words.data(),words.size());vsTags[*out]=tag|(water&&water->hasVertex(*out)?kWaterTag:0)|int(m2ShaderFamily(h)<<kFamilyShift);if(tag==1)++matchedTerrain;else if(tag==2)++matchedUI;});
         if(SUCCEEDED(hr))mirrorResources.wrap(out);return hr;
     }
     HRESULT STDMETHODCALLTYPE CreatePixelShader(const DWORD* code,IDirect3DPixelShader9** out) override { Guard mirrorLock(mirrorState.gate);

@@ -53,7 +53,7 @@ checks['hlsl WorldGI: no weather code (it is at 31 temps)']='WeatherInfo' not in
 checks['hlsl: no WorldWet shader; WeatherInfo.y only the fog clouds\' folded bank top (0.3.199 optimisation)']='WorldWet' not in h and h.count('WeatherInfo.y')==1 and 'mad(nL,CloudInfo[2].z,WeatherInfo.y)' in h
 # Exact integrated baseline: combined light passes removed a quad site; the
 # actor-aware fog and cached caster variants added shader creation sites.
-checks['render: unchanged draw budget, optional ambient/single-light shaders (22 quad sites, 31 pixel shaders)']=(w.count('quad(')==22 and w.count('CreatePixelShader')==31) and 'wetPS' not in w
+checks['render: unchanged draw budget, optional ambient/single-light/unlit shaders (23 quad sites, 32 pixel shaders)']=(w.count('quad(')==23 and w.count('CreatePixelShader')==32 and 'if(compositeOk&&unlitMask)' in w) and 'wetPS' not in w
 # disc and veil
 checks['discs: gain atomic, default 1, opacity and glare weights only, veil inherits']=(
     'std::atomic<float> weatherGain{1.f};' in dr and 'c[9][3]=glare?disc.opacity:disc.opacity*weatherGain.load(std::memory_order_relaxed);' in dr

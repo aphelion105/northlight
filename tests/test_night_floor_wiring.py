@@ -10,7 +10,7 @@ checks = {}
 hlsl = (fp.SHADERS/'world_effects.hlsl').read_text()
 checks['hlsl: one c19 declaration (GridOrigin), no NightFloor alias']=(len(re.findall(r'register\(c19\)', hlsl))==1 and
     'float4 GridOrigin : register(c19);' in hlsl and 'NightFloor' not in hlsl)
-comp = hlsl[hlsl.index('float4 WorldComposite('):].split('float4 MaterialComposite(', 1)[0]
+comp = hlsl[hlsl.index('float4 worldComposite('):].split('float4 MaterialComposite(', 1)[0]
 a = comp.find('color=max(color,mad(-.45,transported,original.rgb));')
 b = comp.find('color=mad(albedoT,GridOrigin.rgb,color);')
 c = comp.find('if(PassInfo.z==1)')

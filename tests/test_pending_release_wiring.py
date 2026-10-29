@@ -31,8 +31,8 @@ builder=w[w.index('    void work() {'):w.index('\n    bool check(HRESULT h,const
 error=builder[builder.index('auto publishError='):builder.index('// Geometry validity is spatial')]
 admission='if(!generations.canAdmit()){++generationDeferrals;'
 checks={
- 'cold recovery cannot displace a live geometry generation':
-  'if(!NorthlightGeometryMemory::admits(memory,entryBudget)&&generations.live()==0)' in builder
+ 'bounded replacement can retain a live geometry generation under the same hard limit':
+  'if(!NorthlightGeometryMemory::admits(memory,entryBudget))' in builder and 'if(!generations.canAdmit())' in builder
   and 'coldRecovery?NorthlightGeometryMemory::coldInBuildBudget(bytes):NorthlightGeometryMemory::inBuildBudget(bytes)' in builder,
  'one release rule: the upload() predicate as a static helper, shared by the fixture':
   w.count('static bool pendingOrphaned(')==1 and 'return pending&&(!active||pending->map!=active->map||pending->bvh!=active->bvh);' in w
@@ -67,8 +67,8 @@ checks={
   and 'GeometryLeadMoveStep)?128u' not in context
   and builder.count('static_assert(64-NorthlightWorldStreaming::GeometryRefreshDistance>NorthlightWorldStreaming::GeometryLeadMoveStep,')==1,
  'no other pendingMesh release path changed':w.count('retirePendingCpu();pendingMesh.reset();')==3,
- 'updateWorldContext runs only from the terrain, WMO and model draw-hook context readers (D3D thread, like render())':
-  w.count('updateWorldContext(map,')==3 and 'updateWorldContext(map,camera.camera,globalRead?&light:nullptr);' in method('    bool wmoContext(IDirect3DVertexShader9* shader){') and 'updateWorldContext(map,camera,globalRead?&global:nullptr);' in method('    void terrainContext(){')
+ 'updateWorldContext runs only from terrain, WMO, model and validated sky context readers (D3D thread, like render())':
+  w.count('updateWorldContext(map,')==4 and 'traceContext=5' in method('    bool skyContext(') and 'updateWorldContext(map,camera.camera,globalRead?&light:nullptr);' in method('    bool wmoContext(IDirect3DVertexShader9* shader){') and 'updateWorldContext(map,camera,globalRead?&global:nullptr);' in method('    void terrainContext(){')
   and 'world->wmoContext(vs)' in r and 'world->terrainContext();' in r,
  'builder marks each generation deferral and clears on admission, under the mutex':
   w.count(admission)==1 and re.search(r'if\(!generations\.canAdmit\(\)\)\{\+\+generationDeferrals;\{std::lock_guard<std::mutex> lock\(mutex\);generationStall\.deferred\(GetTickCount\(\)\);\}deferBuild\("generation-deferred",memory,100\);continue;\}\n\s*\{std::lock_guard<std::mutex> lock\(mutex\);generationStall\.admitted\(\);\}',w) is not None,

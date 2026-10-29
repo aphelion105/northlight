@@ -1,6 +1,6 @@
 {
   "bump_include_sha256": "03f90009cf23e93260c70a31d78999b3bd60aebf8bbcf0d5d6e5e02bf5ef3ec1",
-  "source_sha256": "67225aa61bb1d2e231730bd5a2f98ab13323c90761b75826291bbf35080a9c24",
+  "source_sha256": "f4837ac21d75eaf78f1175d738235411cc4ba3b27874d65e2444a11a861d56a8",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
   "game_launched": false,
@@ -744,7 +744,50 @@
         "rsq": 3
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "7c6f7c951bf77c97e036ec1601c17228fa2bef36e6910e6ac074fcdc9a6d1a1d"
+      "source_sha256": "f4837ac21d75eaf78f1175d738235411cc4ba3b27874d65e2444a11a861d56a8"
+    },
+    "WorldUnlitComposite": {
+      "target": "ps_3_0",
+      "bytes": 4672,
+      "sha256": "7741303c6d9d1228457de1fd01770f8022f48e127e5b64c9aa4d8da6102b1e38",
+      "static_instruction_slots": 247,
+      "temporary_registers": 13,
+      "samplers": [
+        0,
+        1,
+        2,
+        9,
+        10,
+        11,
+        13,
+        15
+      ],
+      "instructions": {
+        "mul": 47,
+        "frc": 4,
+        "add": 57,
+        "max": 7,
+        "mov": 18,
+        "min": 5,
+        "texld": 4,
+        "if": 5,
+        "else": 3,
+        "rcp": 9,
+        "cmp": 25,
+        "texldl": 6,
+        "endif": 5,
+        "rep": 1,
+        "abs": 1,
+        "exp": 3,
+        "mad": 9,
+        "endrep": 1,
+        "pow": 2,
+        "dp3": 1,
+        "dp2add": 4,
+        "rsq": 3
+      },
+      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "source_sha256": "f4837ac21d75eaf78f1175d738235411cc4ba3b27874d65e2444a11a861d56a8"
     },
     "MaterialComposite": {
       "target": "ps_3_0",

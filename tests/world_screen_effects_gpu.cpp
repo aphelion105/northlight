@@ -327,6 +327,7 @@ int main(int argc,char** argv){
                 WorldScreenEffectsTest::scratch(*world,true);assert(meter.creates==1);
             }
         }
+
         WorldScreenEffectsTest::fog(*world,true);
         for(unsigned frame=0;frame<2;++frame){
             meter.fogWeight=-1;assert(renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao));
@@ -379,6 +380,48 @@ int main(int argc,char** argv){
         std::printf("WORLD_AMBIENT_FOG_PASS noBvh=1 independentUpload=1 resetRestored=1 sunZero=1 moonZero=1 scatter=%g transmission=%g unshadowedDirectDisabled=1 msaa=%u\n",maximumScatter,minimumTransmission,msaa);
         WorldScreenEffectsTest::diagnosticFrames(*world,W,H);
         WorldScreenEffectsTest::emptyDebugViews(*world,out,resolved,readback,depth,W,H);
+        {
+            auto world=std::make_unique<WorldRenderer>(&meter);WorldScreenEffectsTest::setup(*world,W,H);
+        // Three adjacent receiver classes share the existing native stencil:
+        // name (keep native target), self-lit M2 (atmosphere only), ordinary.
+        IDirect3DSurface9* receiverDepth=nullptr;
+        screenOk(d->CreateDepthStencilSurface(W,H,D3DFMT_D24S8,D3DMULTISAMPLE_TYPE(msaa),0,FALSE,&receiverDepth,nullptr));
+        float unlitPixels[4][3]={};
+        for(unsigned mode=0;mode<4;++mode){
+            WorldScreenEffectsTest::fixtureContext(*world);WorldScreenEffectsTest::fog(*world,mode>=2);
+            world->setMaterialDetail(mode&1?detail:nullptr,1,48,nullptr,8);
+            // Establish the same material configuration before measuring mask cost.
+            assert(renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao));
+            screenOk(d->SetRenderTarget(0,out));screenOk(d->SetDepthStencilSurface(receiverDepth));
+            D3DVIEWPORT9 viewport{0,0,W,H,0,1};screenOk(d->SetViewport(&viewport));
+            screenOk(d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE));
+            screenOk(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_STENCIL,0xff00ff00,1,0));
+            D3DRECT name{0,0,LONG(W/3),H},unlit{LONG(W/3),0,LONG(W*2/3),H};
+            screenOk(d->Clear(1,&name,D3DCLEAR_STENCIL,0,1,NorthlightNameStencil::kBit));
+            screenOk(d->Clear(1,&unlit,D3DCLEAR_STENCIL,0,1,NorthlightUnlitReceiver::Bit));
+            screenOk(d->SetDepthStencilSurface(nullptr));
+            world->setNameMask(receiverDepth);world->setUnlitMask(receiverDepth);
+            const unsigned targets=meter.creates;
+            assert(renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao));
+            assert(meter.creates==targets); // no additional full-size texture
+            if(msaa)screenOk(d->StretchRect(out,nullptr,resolved,nullptr,D3DTEXF_NONE));
+            screenOk(d->GetRenderTargetData(msaa?resolved:out,readback));D3DLOCKED_RECT lock{};screenOk(readback->LockRect(&lock,nullptr,D3DLOCK_READONLY));
+            for(unsigned channel=0;channel<3;++channel){
+                unsigned short nameValue,unlitValue;
+                const auto* row=static_cast<char*>(lock.pBits)+(H/2)*lock.Pitch;
+                std::memcpy(&nameValue,row+(W/6)*8+channel*2,2);std::memcpy(&unlitValue,row+(W/2)*8+channel*2,2);
+                assert(std::abs(screenHalf(nameValue)-(channel==1?1.f:0.f))<.002f);
+                unlitPixels[mode][channel]=screenHalf(unlitValue);
+                if(mode<2)assert(std::abs(unlitPixels[mode][channel]-.4f)<.003f);
+            }
+            screenOk(readback->UnlockRect());
+        }
+        float fogDelta=0;
+        for(unsigned k=0;k<3;++k){assert(std::abs(unlitPixels[0][k]-unlitPixels[1][k])<.001f);assert(std::abs(unlitPixels[2][k]-unlitPixels[3][k])<.001f);fogDelta=std::max(fogDelta,std::abs(unlitPixels[2][k]-unlitPixels[0][k]));}
+        assert(fogDelta>.002f);receiverDepth->Release();
+        std::printf("UNLIT_RECEIVER_GPU_PASS nativeRadiance=1 atmosphereRetained=1 materialInvariant=1 namesRetained=1 extraFullSizeTextures=0 msaa=%u\n",msaa);
+        }
+
     }
     float bump=0,fog=0;for(unsigned i=0;i<W*H*3;++i){bump=std::max(bump,std::abs(images[1][i]-images[0][i]));fog=std::max(fog,std::abs(images[2][i]-images[0][i]));}
     std::printf("WORLD_SCREEN_GPU bumpDelta=%g fogDelta=%g noGeometry=1 noStaleShadows=1 stateRestored=1 msaa=%u\n",bump,fog,msaa);std::fflush(stdout);assert(bump>.002f&&fog>.002f);

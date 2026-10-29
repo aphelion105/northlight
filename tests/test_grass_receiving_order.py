@@ -24,7 +24,7 @@ world = fp.src('world_renderer.h').read_text()
 assert 'if(kind==1&&!detail)return;' in world
 assert 'terrainShaders.count(shader)||captureShaders.count(shader)||wmoShaders.count(shader)' in world
 assert 'if(vc.world||drawWaterVS)return;' in renderer  # native grass is not a fallback UI candidate
-composite = fp.tracked('world_effects.hlsl').read_text().split('float4 WorldComposite(')[1].split('// Separate geometry pass')[0]
+composite = fp.tracked('world_effects.hlsl').read_text().split('float4 worldComposite(')[1].split('// Separate geometry pass')[0]
 assert 'bool relight=d<.99999&&liquid<=0;' in composite and 'if(relight)' in composite
 assert 'GrassShadows' not in composite and 'DetailDoodad' not in composite  # receiving is independent of caster opt-in
 
