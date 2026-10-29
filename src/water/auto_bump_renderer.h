@@ -96,7 +96,7 @@ class NorthlightAutoBump {
             {D3DRS_BLENDOPALPHA,0,D3DBLENDOP_ADD},{D3DRS_SRCBLENDALPHA,0,D3DBLEND_ONE},
             {D3DRS_DESTBLENDALPHA,0,D3DBLEND_INVSRCALPHA},{D3DRS_COLORWRITEENABLE1,0,15},
             {D3DRS_COLORWRITEENABLE2,0,15},{D3DRS_COLORWRITEENABLE3,0,15}};
-        bool changed=false,userMemory=false,auxiliary=false,sharedTargets=false;
+        bool changed=false,userMemory=false,auxiliary=false,sharedTargets=false,privateEqual=false;
         ReplayState(IDirect3DDevice9* device,IDirect3DVertexShader9* vs,const D3DVIEWPORT9& vp,NorthlightMaterialProfile* p=nullptr):d(device),profile(p),vertex(vs),viewport(vp){}
         bool save(bool up,bool twoLayers=false){
             composite=twoLayers;
@@ -119,12 +119,13 @@ class NorthlightAutoBump {
                 d->SetTexture(normalStage,texture2);for(unsigned i=0;i<8;++i)if(samplerChanged&(1u<<i))d->SetSamplerState(normalStage,samplerKeys[i],samplerValues[i]);
                 if(composite){d->SetTexture(3,texture3);for(unsigned i=0;i<8;++i)if(samplerChanged3&(1u<<i))d->SetSamplerState(3,samplerKeys[i],samplerValues3[i]);}
                 for(unsigned i=0;i<stateCount;++i){auto& s=states[i];if(s.value!=s.replay)d->SetRenderState(s.key,s.value);}
+                if(privateEqual)d->SetRenderState(D3DRS_ZFUNC,D3DCMP_EQUAL);
                 // UP draws reset stream 0 and (for indexed UP) the index binding.
                 if(userMemory){d->SetStreamSource(0,stream,offset,stride);d->SetIndices(indices);}
             }
             drop(pixel);drop(target);drop(depth);drop(stream);drop(indices);drop(texture2);drop(texture3);
         }
-        void apply(){changed=true;for(unsigned i=0;i<stateCount;++i){auto& s=states[i];if(s.value!=s.replay)d->SetRenderState(s.key,s.replay);}}
+        HRESULT apply(){changed=true;for(unsigned i=0;i<stateCount;++i){auto& s=states[i];if(s.value!=s.replay)d->SetRenderState(s.key,s.replay);}return privateEqual?d->SetRenderState(D3DRS_ZFUNC,D3DCMP_LESSEQUAL):D3D_OK;}
     };
     struct Vertex {IDirect3DVertexShader9* patched=nullptr;unsigned kind=0;IDirect3DVertexShader9* shared=nullptr;bool sharedChecked=false,deferredSafe=false,failed=false,smoothTerrain=false,floatOnly=false;IDirect3DVertexShader9* pending=nullptr;uint64_t pendingHash=0;unsigned constantFirst=0,constantCount=256;};
     bool sharedVertex(Vertex& vertex){if(!vertex.sharedChecked){vertex.sharedChecked=true;vertex.shared=NorthlightSharedPOM::vertexShader(d,vertex.patched);}return vertex.shared!=nullptr;}
@@ -204,6 +205,7 @@ class NorthlightAutoBump {
     IDirect3DSurface9*& captureDepth=gpuScene->materialTargets.depth;
     IDirect3DTexture9*& occlusionMap=gpuScene->materialTargets.occlusion;IDirect3DSurface9*& occlusionTarget=gpuScene->materialTargets.occlusionTarget;
     bool independentCaptureWrites=false;
+    static bool privateDepthSupported(DWORD op){return op==D3DCMP_LESS||op==D3DCMP_LESSEQUAL||op==D3DCMP_EQUAL;}
     bool occlusionUnavailable=false;unsigned occlusionRetry=0;
     float occlusionControl[4]={.7f,8,.35f,0},occlusionLight[4]={};
     UINT width=0,heightPixels=0;
@@ -353,6 +355,7 @@ public:
         UINT boundStride=0;bool vertexKnown=false,indexKnown=false;
         D3DVIEWPORT9 boundViewport{};
         for(auto& packet:deferred){
+            if(packet->raster[2]==D3DCMP_EQUAL)packet->raster[2]=D3DCMP_LESSEQUAL;
             auto& mesh=*packet->mesh;ReplayState keys(d,nullptr,{});HRESULT hr=D3D_OK;
             auto step=[&](HRESULT result){if(FAILED(result))hr=result;};
             // This cache lives only inside this uninterrupted replay. Creation,
@@ -626,6 +629,10 @@ public:
         if(FAILED(d->GetRenderTarget(0,&saved.target))||!saved.target)return;
         D3DSURFACE_DESC desc{};if(FAILED(saved.target->GetDesc(&desc)))return;
         if(desc.Width!=viewport.Width||desc.Height!=viewport.Height){++rejected;return;}
+        const bool multisampled=desc.MultiSampleType!=D3DMULTISAMPLE_NONE;
+        // The private depth starts at 1 and represents nearest visible material.
+        // Special comparisons need their native prepass; keep the native draw.
+        if(multisampled&&!privateDepthSupported(zfunc))return;
         if(width!=desc.Width||heightPixels!=desc.Height){reset();width=desc.Width;heightPixels=desc.Height;}
         // A distant proof needs no capture constants, samplers or private depth.
         // Resolve the target size first: reset() would discard prepared geometry.
@@ -652,7 +659,6 @@ public:
         if(domain==4){model=modelCapture(native,alpha,sharing);if(!model&&sharing){sharedBinding.restore();sharing=false;model=modelCapture(native,alpha);}if(!model)return;saved.constantBase=model->constant;saved.normalStage=14;}
         if(sharing){saved.constantCount=6;saved.stateCount=16;for(unsigned i=14;i<16;++i)if(FAILED(d->GetRenderState(saved.states[i].key,&saved.states[i].value)))return;}
         if(domain==1)saved.constantCount=9;
-        const bool multisampled=desc.MultiSampleType!=D3DMULTISAMPLE_NONE;
         // An opaque native wall does not consume diffuse/vertex alpha. Use
         // the existing map-only capture, avoiding a live diffuse dependency.
         const bool opaqueWall=domain==2&&material==3&&!coverageAlpha&&!sharing;
@@ -660,6 +666,9 @@ public:
         const bool canDefer=deferredAllowed&&multisampled&&!sharing&&!displacement.prepared()&&geometry&&independent&&v->second.deferredSafe;
         if(deferredAllowed&&multisampled){if(displacement.prepared())++deferredGeometry;else if(sharing||!independent||!v->second.deferredSafe)++deferredUnsafe;}
         saved.viewport=viewport;if(!canDefer&&!saved.save(userMemory&&!sharing,material==6&&domain!=4))return;
+        // The private depth starts empty, so native EQUAL cannot match its prepass.
+        // Final composition still validates captured depth against the scene.
+        saved.privateEqual=multisampled&&zfunc==D3DCMP_EQUAL;
         if(multisampled){
             if(!captureDepth&&!check(d->CreateDepthStencilSurface(width,heightPixels,D3DFMT_D24S8,D3DMULTISAMPLE_NONE,0,FALSE,&captureDepth,nullptr),"material depth"))return;
             saved.states[0].replay=saved.states[0].value;
@@ -713,7 +722,7 @@ public:
         if(canDefer&&!saved.save(userMemory&&!sharing,material==6&&domain!=4))return;
         bool cacheBound=false;
         {P::Scope setup(profile,P::CaptureSetup,0,true);
-        saved.apply();d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);d->SetTexture(saved.normalStage,normal.get());
+        if(!check(saved.apply(),"material private depth compare"))return;d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);d->SetTexture(saved.normalStage,normal.get());
         const DWORD normalSampler[]={D3DTEXF_LINEAR,D3DTEXF_LINEAR,D3DTEXF_LINEAR,addressU,addressV,FALSE,0,0};
         for(unsigned i=0;i<8;++i)if(saved.samplerValues[i]!=normalSampler[i]){saved.samplerChanged|=1u<<i;d->SetSamplerState(saved.normalStage,saved.samplerKeys[i],normalSampler[i]);}
         if(normal1){d->SetTexture(3,normal1.get());for(unsigned i=0;i<8;++i)if(saved.samplerValues3[i]!=normalSampler[i]){saved.samplerChanged3|=1u<<i;d->SetSamplerState(3,saved.samplerKeys[i],normalSampler[i]);}}

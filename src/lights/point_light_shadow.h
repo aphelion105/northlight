@@ -187,7 +187,10 @@ inline Picks selectMany(const NorthlightLocalLights::Light* lights,size_t count,
         const auto& l=lights[i];if(!eligible(l))continue;
         if(!NorthlightLocalLights::valid(l)||l.attenuationEnd<=.11f)continue;
         double distance2=0;for(int k=0;k<3;++k){double d=l.position[k]-camera[k];distance2+=d*d;}
-        if(distance2>double(maxCameraDistance)*maxCameraDistance)continue;
+        // The shadow budget covers receivers near the camera, including wide lights
+        // whose centre is farther away but whose influence sphere reaches them.
+        const double reach=double(maxCameraDistance)+l.attenuationEnd;
+        if(distance2>reach*reach)continue;
         // Apparent influence weighted by brightness, bounded at the source.
         const double color=std::min(16.f,std::max(l.diffuse[0],std::max(l.diffuse[1],l.diffuse[2])));
         if(color<.005f)continue;

@@ -73,7 +73,8 @@ inline bool suppressNative(unsigned renderFrame,unsigned frames){return renderFr
 // A native billboard that did draw makes lateDisc false, so the two never double up.
 // The planet-phase fallback also needs positive skybox evidence in the render-time context (skyboxCover > 0: an interior SetBlendSky is
 // set before RenderSky): RenderSky is skipped underwater, with m_showSky 0 or a negative view depth, and those frames show no sky at all.
-inline bool lateBody(bool skyboxMode,bool drawnEarly,bool offscreenOwned,bool lateDisc,bool skyboxEvidence){return lateDisc&&(skyboxMode||(skyboxEvidence&&!(drawnEarly||offscreenOwned)));}
+// Only a confirmed insertion inside the skybox suppresses its late fallback; the ordinary planet snapshot can precede a changing skybox.
+inline bool lateBody(bool skyboxMode,bool drawnEarly,bool offscreenOwned,bool lateDisc,bool skyboxEvidence,bool skyboxLayerEarly=false){return !skyboxLayerEarly&&lateDisc&&(skyboxMode||(skyboxEvidence&&!(drawnEarly||offscreenOwned)));}
 inline float smooth(float x) { x=std::max(0.f,std::min(1.f,x));return x*x*(3-2*x); }
 inline bool decodeBody(const BodyRecord& r,const float* camera,Body& out) {
     Body candidate;float length2=0;
