@@ -14,7 +14,7 @@ body=pt[pt.index('    bool renderPointShadow(const NorthlightLocalLights::Light&
 pred=pt[pt.index('    bool pointRefreshPredicted()const{'):pt.index('    bool renderPointShadow(const NorthlightLocalLights::Light& light,bool fresh=true,bool withReplays=true){')]
 # 3a: static faces keyed on content; the generation only through the unknown-records fallback.
 assert 'pointCacheSerial' not in pt and pt.count('pointStaticRebuild(')==2
-assert 'NorthlightPointShadow::selectMany(active->localLights.data(),active->localLights.size(),context.camera,quality.pointShadowLimit).count!=0;' in pred and 'const unsigned rebuildMask=pointStaticRebuild(pointSlot().selected,lightChanged);' in body
+assert 'NorthlightPointShadow::selectMany(active->localLights.data(),active->localLights.size(),context.camera,quality.pointShadowLimit,{},48,true).count!=0;' in pred and 'const unsigned rebuildMask=pointStaticRebuild(pointSlot().selected,lightChanged);' in body
 assert 'if(!pointSlot().cacheValid||lightChanged||pointSlot().cacheSource!=light.sourceId)return 63;' in pt
 assert 'if(rebuildMask&(1u<<face)){if(!bindFace(pointSlot().cacheSurface[face],"cube cache target"))return false;' in body
 assert body.index('pointSlot().faceContent[face]=digests?digests[face]')>body.index('"cube static draw"'),'a face key is recorded only after its static draws'

@@ -41,9 +41,11 @@ struct RefreshSchedule {
 // the horizontal faces. n>=6 is one group of all six faces: the 0.3.150 path.
 inline unsigned partitionFaces(unsigned perFrame,const unsigned (&weights)[6],unsigned (&masks)[6]){
     perFrame=perFrame<1?1:perFrame>6?6:perFrame;const unsigned groups=(6+perFrame-1)/perFrame;
+    if(groups==1){masks[0]=63;for(unsigned i=1;i<6;++i)masks[i]=0;return 1;}
     unsigned order[6]={0,1,2,3,4,5},sizes[6]={},load[6]={};
     for(unsigned i=1;i<6;++i)for(unsigned j=i;j>0&&weights[order[j]]>weights[order[j-1]];--j)std::swap(order[j],order[j-1]);
     for(auto& m:masks)m=0;
+    if(perFrame==1){for(unsigned i=0;i<6;++i)masks[i]=1u<<order[i];return 6;}
     for(unsigned face:order){unsigned best=groups;
         for(unsigned g=0;g<groups;++g)if(sizes[g]<perFrame&&(best==groups||load[g]<load[best]))best=g;
         masks[best]|=1u<<face;++sizes[best];load[best]+=weights[face]+1;}
@@ -65,16 +67,16 @@ struct FaceCycle {
 // plane. Perspective w is retained; no corner division or positive-w guess.
 // Unknown/invalid inputs fail open. Double CPU arithmetic plus a conservative
 // float dot-product cancellation bound covers the GPU's float clip transform.
-inline bool clipReject(const float* lo,const float* hi,const float* matrix) {
-    if(!lo||!hi||!matrix)return false;
-    for(int i=0;i<3;++i)if(!std::isfinite(lo[i])||!std::isfinite(hi[i])||lo[i]>hi[i])return false;
+namespace detail {
+inline __attribute__((always_inline)) bool clipRejectBounds(const float* lo,const float* hi,const double* extent,const float* matrix) {
+    if(!matrix)return false;
     for(int i=0;i<16;++i)if(!std::isfinite(matrix[i]))return false;
     // Check every clip component before an early rejection, so a different
     // plane cannot hide an overflowing GPU transform component.
     for(int column=0;column<4;++column){
         double bound=std::fabs(double(matrix[12+column]));
         for(int row=0;row<3;++row)bound+=std::fabs(double(matrix[row*4+column]))*
-            std::max(std::fabs(double(lo[row])),std::fabs(double(hi[row])));
+            extent[row];
         if(bound>std::numeric_limits<float>::max()/32.)return false;
     }
     for(int plane=0;plane<6;++plane){
@@ -87,7 +89,7 @@ inline bool clipReject(const float* lo,const float* hi,const float* matrix) {
             const double a=matrix[row*4+column],w=addW?matrix[row*4+3]:0.;
             const double coefficient=sign*a+w;
             const double coord=row==3?1.:coefficient>=0?hi[row]:lo[row];
-            const double maxCoord=row==3?1.:std::max(std::fabs(double(lo[row])),std::fabs(double(hi[row])));
+            const double maxCoord=row==3?1.:extent[row];
             maximum+=coefficient*coord;magnitude+=(std::fabs(a)+std::fabs(w))*maxCoord;
         }
         // Extreme finite inputs that could overflow GPU intermediates remain
@@ -97,6 +99,16 @@ inline bool clipReject(const float* lo,const float* hi,const float* matrix) {
         if(maximum < -margin)return true;
     }
     return false;
+}
+inline bool bounds(const float* lo,const float* hi,double (&extent)[3]){
+    if(!lo||!hi)return false;
+    for(unsigned i=0;i<3;++i){if(!std::isfinite(lo[i])||!std::isfinite(hi[i])||lo[i]>hi[i])return false;
+        extent[i]=std::max(std::fabs(double(lo[i])),std::fabs(double(hi[i])));}
+    return true;
+}
+}
+inline bool clipReject(const float* lo,const float* hi,const float* matrix){
+    double extent[3];return detail::bounds(lo,hi,extent)&&detail::clipRejectBounds(lo,hi,extent,matrix);
 }
 inline bool faceMatrix(const float* p,float nearZ,float farZ,unsigned face,float* out,unsigned resolution=256) {
     if(!p||!out||face>=6||resolution<2||!std::isfinite(nearZ)||!std::isfinite(farZ)||nearZ<=0||farZ<=nearZ)return false;
@@ -120,9 +132,9 @@ inline bool faceMatrix(const float* p,float nearZ,float farZ,unsigned face,float
 // bounds retain all six faces; projection uses the same conservative predicate
 // as the previous per-face draw loop.
 inline unsigned faceMask(const float* lo,const float* hi,bool valid,const float (&matrices)[6][16]){
-    if(!valid)return 63;
+    double extent[3];if(!valid||!detail::bounds(lo,hi,extent))return 63;
     unsigned mask=0;
-    for(unsigned face=0;face<6;++face)if(!clipReject(lo,hi,matrices[face]))mask|=1u<<face;
+    for(unsigned face=0;face<6;++face)if(!detail::clipRejectBounds(lo,hi,extent,matrices[face]))mask|=1u<<face;
     return mask;
 }
 // 0.3.151 static cube faces keyed on content (world_mesh_plan.cpp records), not
@@ -179,10 +191,11 @@ inline bool eligible(const NorthlightLocalLights::Light& l){
     return (l.flags&NorthlightLocalLights::CastShadow)||l.kind==1;
 }
 inline Picks selectMany(const NorthlightLocalLights::Light* lights,size_t count,const float* camera,unsigned limit,
-                        const std::array<uint64_t,MaxLights>& previous={},float maxCameraDistance=48){
+                        const std::array<uint64_t,MaxLights>& previous={},float maxCameraDistance=48,bool firstOnly=false){
     Picks out;limit=std::min(limit,MaxLights);std::array<double,MaxLights> scores{};
-    if(!lights||!camera||!std::isfinite(maxCameraDistance)||maxCameraDistance<=0)return out;
+    if(!limit||!lights||!camera||!std::isfinite(maxCameraDistance)||maxCameraDistance<=0)return out;
     for(int i=0;i<3;++i)if(!std::isfinite(camera[i]))return out;
+    auto historyEnd=previous.end();while(historyEnd!=previous.begin()&&historyEnd[-1]==0)--historyEnd;
     for(size_t i=0;i<count;++i){
         const auto& l=lights[i];if(!eligible(l))continue;
         if(!NorthlightLocalLights::valid(l)||l.attenuationEnd<=.11f)continue;
@@ -194,12 +207,17 @@ inline Picks selectMany(const NorthlightLocalLights::Light* lights,size_t count,
         // Apparent influence weighted by brightness, bounded at the source.
         const double color=std::min(16.f,std::max(l.diffuse[0],std::max(l.diffuse[1],l.diffuse[2])));
         if(color<.005f)continue;
-        const bool incumbent=std::find(previous.begin(),previous.end(),l.sourceId)!=previous.end();
+        // Zero is a valid authored ID; trailing empty slots historically made it an incumbent.
+        const bool incumbent=(!l.sourceId&&historyEnd!=previous.end())||std::find(previous.begin(),historyEnd,l.sourceId)!=historyEnd;
         const double score=color*double(l.attenuationEnd)*l.attenuationEnd/(1+distance2)*(incumbent?1.25:1.);
-        unsigned at=0;while(at<out.count&&(scores[at]>score||(scores[at]==score&&lights[out.index[at]].sourceId<l.sourceId)))++at;
+        unsigned at=0,end=out.count;
+        while(at<end){const unsigned mid=at+(end-at)/2;
+            if(scores[mid]>score||(scores[mid]==score&&lights[out.index[mid]].sourceId<l.sourceId))at=mid+1;else end=mid;}
         if(at>=limit)continue;
         for(unsigned j=std::min(out.count,limit-1);j>at;--j){out.index[j]=out.index[j-1];scores[j]=scores[j-1];}
         out.index[at]=int(i);scores[at]=score;out.count=std::min(out.count+1,limit);
+        // Capture prediction consumes existence only; it never uses a ranked list.
+        if(firstOnly)return out;
     }
     return out;
 }

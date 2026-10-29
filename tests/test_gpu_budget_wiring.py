@@ -28,7 +28,9 @@ checks['timer: every GetData with flags 0, no D3DGETDATA_FLUSH, no wait loop, sl
     and 'D3DGETDATA_FLUSH' not in tc and 'while' not in tc and 'for(;;)' not in tc and 'Sleep' not in tc and 'SwitchToThread' not in tc)
 checks['timer: S_FALSE leaves the slot pending (continue), never retried in the same poll']=tc.count('if(hr==S_FALSE)continue;')==4
 checks['timer: a full ring skips the frame (begin returns false), disjoint / zero frequency / nonmonotonic dropped']=(
-    'if(s.pending)continue;' in tc and 'if(disjoint){s.pending=false;continue;}' in tc and 'if(!frequency||t1<t0)continue;' in tc)
+    'if(s.pending)continue;' in tc and 'if(disjoint){s.pending=false;continue;}' in tc and 'if(!s.frequencyValue||t1<s.startValue)continue;' in tc)
+checks['timer: completed components are read once per issue, progress resets at end']=(
+    all(f'if(s.readStage=={stage})' in tc for stage in range(3)) and 's.readStage=0;s.pending=true;' in tc)
 
 # renderer.cpp: timer bracket, poll, controller, logs
 rc=code(r)

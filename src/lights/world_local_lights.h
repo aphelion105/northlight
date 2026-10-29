@@ -82,9 +82,12 @@ public:
             lights_.swap(candidate);map_=map;
         }
         for(const auto& l:lights_) {
-            double d2=0;
-            for(int i=0;i<3;++i){double d=l.position[i]-camera[i];d2+=d*d;}
             const double radius=double(maxDistance)+l.attenuationEnd;
+            const double dx=l.position[0]-camera[0];
+            if(std::fabs(dx)>radius)continue;
+            double d2=0;
+            d2+=dx*dx;
+            for(int i=1;i<3;++i){double d=l.position[i]-camera[i];d2+=d*d;}
             if(d2<=radius*radius)output.push_back(l);
         }
         // Source IDs retain deterministic order when camera moves; do not churn

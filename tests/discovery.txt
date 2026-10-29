@@ -50,6 +50,7 @@ test_celestial_profiles.py
 test_celestial_skybox.py
 test_celestial_terrain.py
 test_celestial_veil.py
+test_chunked_local_entry.py
 test_client_archive_order.py
 test_client_archives.py
 test_client_code_observation.py
@@ -57,7 +58,6 @@ test_client_config.py
 test_client_identity.py
 test_client_image.py
 test_client_latency_diagnostics.py
-test_chunked_local_entry.py
 test_cloud_noise_admission.py
 test_cloud_noise_worker.py
 test_colour_tent_2d.py
@@ -110,6 +110,7 @@ test_fog_motion.py
 test_fog_optimization_proofs.py
 test_fog_source_visibility.py
 test_fog_temporal_wiring.py
+test_frame_focus_cache.py
 test_frame_logging_batch.py
 test_frame_stall_profile.py
 test_game_snapshot.py
@@ -125,6 +126,7 @@ test_grass_receiving_order.py
 test_gtao_grazing.py
 test_hdr_reset.py
 test_horizon_haze.py
+test_hotpath_equivalence.py
 test_independent_fog.py
 test_index_working_set.py
 test_install_delivery.py
@@ -146,6 +148,7 @@ test_local_fog_batching.py
 test_local_fog_profile.py
 test_local_ini.py
 test_local_light_batches.py
+test_local_light_cache_query.py
 test_local_light_selection.py
 test_local_light_trace.py
 test_local_overlap_gpu.py
@@ -178,6 +181,7 @@ test_material_pipeline_cpu_micro.py
 test_material_pose_metadata.py
 test_material_pose_wave2.py
 test_material_pressure_transition.py
+test_material_private_depth.py
 test_material_profile.py
 test_material_raster_batch.py
 test_material_ray_work.py
@@ -265,6 +269,7 @@ test_replay_priority_safety.py
 test_replay_skin_safety.py
 test_replay_upload.py
 test_replay_validity_fastpath.py
+test_reset_stack_wiring.py
 test_rigid_memory.py
 test_rotation_wake.py
 test_scene_assembly.py
@@ -302,6 +307,7 @@ test_shared_source_lifecycle.py
 test_shared_static_preparation.py
 test_shared_terrain_bounds.py
 test_shared_terrain_bounds_gpu.py
+test_sky_restore.py
 test_snapshot_allocation.py
 test_snapshot_archive.py
 test_snapshot_capture_sink.py
@@ -407,5 +413,3 @@ test_world_screen_effects_gpu.py
 test_zone_tuner.py
 test_zone_tuning.py
 test_zone_tuning_wiring.py
-test_sky_restore.py
-test_material_private_depth.py

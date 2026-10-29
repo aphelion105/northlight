@@ -322,7 +322,7 @@
     bool pointRefreshPredicted()const{
         if(!effects.shadows||lastRenderDebug!=0||!quality.pointShadows||!active)return false;
         // Conservative: a new lamp or changing selection also needs current-frame casters.
-        return NorthlightPointShadow::selectMany(active->localLights.data(),active->localLights.size(),context.camera,quality.pointShadowLimit).count!=0;
+        return NorthlightPointShadow::selectMany(active->localLights.data(),active->localLights.size(),context.camera,quality.pointShadowLimit,{},48,true).count!=0;
     }
     // fresh=false: this frame's model capture was skipped (no replays). A due refresh
     // then keeps a complete cube of the same light one more frame, or draws a cube

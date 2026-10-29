@@ -16,14 +16,16 @@
 namespace NorthlightLocalLightBatches {
 // Per-pixel cost of one pass in shader slots (shaders/world-shader-build.json static_instruction_slots) plus Blend, the
 // blended FP16 read-modify-write and shared screen fetches every pass repeats.
-inline constexpr double DirectSlots=285,Direct16Slots=397,FogSlots=397,Blend=40;
+inline constexpr double DirectSlots=288,Direct16Slots=400,FogSlots=397,Blend=40;
 using Rect=NorthlightLocalLightScissor::Rect;
 inline Rect unite(const Rect& a,const Rect& b){
     if(!a.area())return b;if(!b.area())return a;
     return Rect{std::min(a.left,b.left),std::min(a.top,b.top),std::max(a.right,b.right),std::max(a.bottom,b.bottom)};}
 // True when one LocalDirect16 pass over unite(a,b) costs less than the two 8-lamp passes.
 inline bool wide(const Rect& a,const Rect& b){
-    const double split=double(a.area())*(DirectSlots+Blend)+double(b.area())*(DirectSlots+Blend);
+    const long areaA=a.area(),areaB=b.area();
+    if(!areaA||!areaB)return false; // one 8-lamp pass already covers every non-zero pixel
+    const double split=double(areaA)*(DirectSlots+Blend)+double(areaB)*(DirectSlots+Blend);
     return split>0&&double(unite(a,b).area())*(Direct16Slots+Blend)<split;}
 // Hilbert index of (x, y) on a 2^order grid.
 // Each nibble records its rank and the swap/flip applied to the next nibble.
@@ -85,19 +87,30 @@ struct Result {bool arranged=false;double before=0,after=0;};
 inline Result arrange(NorthlightLocalLightSelection::Selection& s,const NorthlightLocalLightScissor::View& v){
     Result out;const unsigned count=std::min<unsigned>(s.count,NorthlightLocalLightSelection::Slots);
     if(!v.valid||count<2)return out;
+    // One fog group is also one direct group: permuting it cannot save a pixel.
+    if(count<=NorthlightLocalLightSelection::FogBatchSize){Rect group{};
+        for(unsigned i=0;i<count;++i){NorthlightLocalLightScissor::Bounds b;NorthlightLocalLightScissor::add(v,s.position[i].data(),b);
+            group=unite(group,NorthlightLocalLightScissor::rect(v,b));}
+        out.before=out.after=double(group.area())*(DirectSlots+Blend)+double(group.area())*(FogSlots+Blend);return out;
+    }
     std::array<Rect,NorthlightLocalLightSelection::Slots> rects;
     std::array<std::uint64_t,NorthlightLocalLightSelection::Slots> key;
     std::array<unsigned,NorthlightLocalLightSelection::Slots> before,after;
     const long all=long(v.halfW)*long(v.halfH);
     for(unsigned i=0;i<count;++i){
         NorthlightLocalLightScissor::Bounds b;NorthlightLocalLightScissor::add(v,s.position[i].data(),b);rects[i]=NorthlightLocalLightScissor::rect(v,b);
+        before[i]=after[i]=i;
         const long area=rects[i].area();
         // Class in the top bits (whole target, partial, unseen), then the Hilbert index of the rect centre, then the old slot.
         const std::uint64_t cls=area>=all?0u:area?1u:2u;
-        const std::uint32_t cx=std::uint32_t(std::clamp((rects[i].left+rects[i].right)*128L/std::max(1L,long(v.halfW)),0L,255L));
-        const std::uint32_t cy=std::uint32_t(std::clamp((rects[i].top+rects[i].bottom)*128L/std::max(1L,long(v.halfH)),0L,255L));
-        key[i]=cls<<40|std::uint64_t(cls==1?hilbert(cx,cy):0u)<<8|i;
-        before[i]=after[i]=i;}
+        std::uint32_t rank=0;
+        if(cls==1){
+            const auto cx=std::uint32_t(std::clamp((rects[i].left+rects[i].right)*128L/std::max(1L,long(v.halfW)),0L,255L));
+            const auto cy=std::uint32_t(std::clamp((rects[i].top+rects[i].bottom)*128L/std::max(1L,long(v.halfH)),0L,255L));
+            rank=hilbert(cx,cy);
+        }
+        key[i]=cls<<40|std::uint64_t(rank)<<8|i;}
+    if(std::is_sorted(key.begin(),key.begin()+count)){out.after=out.before=cost(rects.data(),before.data(),count);return out;}
     std::sort(after.begin(),after.begin()+count,[&](unsigned a,unsigned b){return key[a]<key[b];});
     out.before=cost(rects.data(),before.data(),count);out.after=cost(rects.data(),after.data(),count);
     if(!(out.after<out.before)){out.after=out.before;return out;}

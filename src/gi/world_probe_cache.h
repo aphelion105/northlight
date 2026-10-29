@@ -47,10 +47,12 @@ struct ProbeAtlasEntry {
     Probe probe;
     bool occupied=false;
 };
-inline size_t probeAtlasIndex(ProbeGridKey key) {
+inline __attribute__((always_inline)) size_t probeAtlasIndex(ProbeGridKey key) {
     // Signed remainder must be corrected for negative world coordinates. This
     // also handles INT_MIN without negation or signed multiplication overflow.
     const int32_t n=int32_t(probeLayout().atlas);
+    if(n>0&&(n&(n-1))==0){const auto mask=uint32_t(n-1);
+        return size_t(uint32_t(key.x)&mask)+size_t(uint32_t(key.y)&mask)*size_t(n)+size_t(uint32_t(key.z)&mask)*size_t(n)*size_t(n);}
     const auto wrap=[n](int32_t cell)->size_t {
         const int32_t remainder=cell%n;
         return size_t(remainder<0?remainder+n:remainder);

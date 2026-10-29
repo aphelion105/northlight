@@ -172,9 +172,11 @@ struct Tracker {
         struct Fade {unsigned index;float score,shown;};
         std::array<Fade,Slots> fade;unsigned fades=0;
         const auto leaving=[&](unsigned index){const Entry& e=entries[index];
+            const float shown=e.shown-step;
+            if(!continuous||!(shown>1e-6f))return;
             float d2=0;for(unsigned i=0;i<3;++i){const float d=e.light.position[i]-camera[i];d2+=d*d;}
-            const float score=std::sqrt(d2)-e.light.attenuationEnd,shown=e.shown-step;
-            if(continuous&&score<VisibilityEnd&&shown>1e-6f)fade[fades++]={index,score,shown};}; // 1e-6: float residue of 1-k*step is gone, not fading
+            const float score=std::sqrt(d2)-e.light.attenuationEnd;
+            if(score<VisibilityEnd)fade[fades++]={index,score,shown};}; // 1e-6: float residue of 1-k*step is gone, not fading
         unsigned old=0;
         for(unsigned i=0;i<selected;++i){
             while(old<count&&entries[old].id<sel[i].id)leaving(old++);

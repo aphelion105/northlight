@@ -87,7 +87,10 @@ struct ActorJob {
             if(packet.alphaTest&&m.rgba.empty())continue;
             if(!exactUV){m.rgba.clear();m.width=m.height=0;m.albedo=Vec3(.35f,.35f,.35f);}
             scene->materials.push_back(std::move(m));
-            for(unsigned j=0;j<positions.size();++j){auto& p=positions[j];WorldVertex v;v.position=Vec3(p.x,p.y,p.z);if(exactUV){v.u=uvs[j][0];v.v=uvs[j][1];}scene->vertices.push_back(v);}
+            const size_t vertexCount=offset+positions.size();
+            if(vertexCount>scene->vertices.capacity())scene->vertices.reserve(std::min<size_t>(16384,std::max(vertexCount,scene->vertices.capacity()*2)));
+            scene->vertices.resize(vertexCount);
+            for(unsigned j=0;j<positions.size();++j){auto& p=positions[j];auto& v=scene->vertices[offset+j];v.position=Vec3(p.x,p.y,p.z);if(exactUV){v.u=uvs[j][0];v.v=uvs[j][1];}}
             for(auto t:triangles){t.v0+=offset;t.v1+=offset;t.v2+=offset;t.material=material;
                 auto& a=scene->vertices[t.v0];auto& b=scene->vertices[t.v1];auto& c=scene->vertices[t.v2];Vec3 normal=cross(b.position-a.position,c.position-a.position);
                 a.normal=a.normal+normal;b.normal=b.normal+normal;c.normal=c.normal+normal;scene->triangles.push_back(t);}

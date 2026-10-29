@@ -37,7 +37,7 @@ struct WaitSignal {
         if(!std::isfinite(waitMs)||waitMs<0)waitMs=0;
         if(waitMs>MaxWaitMs)waitMs=MaxWaitMs;
         dt=std::isfinite(dt)&&dt>0?(dt<MaxDt?dt:MaxDt):0.f;
-        if(!primed){smoothed=waitMs;primed=true;}else smoothed+=(waitMs-smoothed)*(1.f-std::exp(-dt/SmoothSeconds));}
+        if(!primed){smoothed=waitMs;primed=true;}else if(waitMs!=smoothed)smoothed+=(waitMs-smoothed)*(1.f-std::exp(-dt/SmoothSeconds));}
     bool bound()const{return smoothed>BoundWaitMs;}
 };
 

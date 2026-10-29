@@ -100,7 +100,7 @@ inline Rect rect(const View& v,const Bounds& b){
     return r;
 }
 template<std::size_t N> Rect batchRect(const View& v,const std::array<std::array<float,4>,N>& position,unsigned count){
-    Bounds b;for(unsigned i=0;i<count&&i<N;++i)add(v,position[i].data(),b);
+    Bounds b;for(unsigned i=0;i<count&&i<N&&!b.full;++i)add(v,position[i].data(),b);
     return rect(v,b);
 }
 } // namespace NorthlightLocalLightScissor

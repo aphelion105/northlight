@@ -361,6 +361,7 @@ class Device final : public GuardedMirrorDevice {
     LONG diagnosticId=0;
     NorthlightFrameIntervals::Window frameIntervals;bool intervalFocus=true; /* every frame since the last FRAME interval line had focus */
     bool extensionFault=false;
+    HWND focusWindow=nullptr;bool focusWindowKnown=false;
     IDirect3D9* parent;
     DeviceMirror mirrorState;
     NorthlightMirrorResources::Registry mirrorResources;
@@ -2916,7 +2917,9 @@ public:
         if(diagnosticFrame){flushFrameIntervals(nativeCaptureDiagnostic?"native-trace-capture":"gpu-diagnostic-capture",frameEnabled,frameEffects);frameIntervals.reset();intervalFocus=true;}
         // Focus also goes on the FRAME interval line (0 if any frame since the last line lacked it): a background
         // window runs at the client's own frame cap (maxFPSBk), which is not renderer cost.
-        D3DDEVICE_CREATION_PARAMETERS cp={}; ext->GetCreationParameters(&cp);
+        D3DDEVICE_CREATION_PARAMETERS cp={};
+        if(focusWindowKnown)cp.hFocusWindow=focusWindow;
+        else if(SUCCEEDED(ext->GetCreationParameters(&cp))){focusWindow=cp.hFocusWindow;focusWindowKnown=true;}
         const bool focus=GetForegroundWindow()==cp.hFocusWindow;intervalFocus&=focus;
         LARGE_INTEGER intervalTick={};NorthlightFrameIntervals::Report intervalReport;
         if(!diagnosticFrame&&diagnostics()&&QueryPerformanceCounter(&intervalTick)&&frameIntervals.sample(intervalTick.QuadPart,cpuFrequency.QuadPart,intervalReport)){
