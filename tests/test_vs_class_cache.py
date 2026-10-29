@@ -28,6 +28,9 @@ HARNESS=r'''
 #include <cstdio>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
+#include "native_shadow_observation.h"
+using DWORD=std::uint32_t;
 using uint64_t=std::uint64_t;
 struct IDirect3DVertexShader9{};
 struct World{unsigned wmoCalls=0;std::unordered_map<IDirect3DVertexShader9*,int> wmo;
@@ -35,8 +38,9 @@ struct World{unsigned wmoCalls=0;std::unordered_map<IDirect3DVertexShader9*,int>
     bool isWorldShader(IDirect3DVertexShader9* s){return wmo.count(s)!=0;}
     bool isSkinnedShader(IDirect3DVertexShader9*){return false;}};
 struct Cls{
-    static constexpr int kFamilyShift=3;
+    static constexpr int kFamilyShift=3,kNativeShadowTag=64;
     std::unordered_map<IDirect3DVertexShader9*,int> vsTags;std::unordered_map<IDirect3DVertexShader9*,uint64_t> vsHashes;
+    std::unordered_map<IDirect3DVertexShader9*,NorthlightNativeShadow::Proof> nativeShadowProofs;
     World* world=nullptr;
 @CLS@
     void registerVS(IDirect3DVertexShader9* s,int tag){++vsGeneration;vsTags[s]=tag;}
@@ -87,6 +91,12 @@ int main(){
         assert(c.classifyVs(&a).entry==2&&c.vsCacheMisses==4);
         c.world=nullptr;c.registerVS(&b,1);const auto& v=c.classifyVs(&b);assert(v.entry==1&&!v.wmo&&!v.world&&!v.skinned);   // no world: all false
         IDirect3DVertexShader9 unknown;assert(c.classifyVs(&unknown).entry==0);
+        c.nativeShadowProofs[&a].major=3;c.registerVS(&a,Cls::kNativeShadowTag);
+        auto* proof=c.classifyVs(&a).nativeShadow;assert(proof&&proof->major==3);
+        for(int i=0;i<100;++i)c.nativeShadowProofs[reinterpret_cast<IDirect3DVertexShader9*>(std::uintptr_t(0x1000+i*16))]={};
+        assert(c.classifyVs(&a).nativeShadow==proof); // node pointers survive rehash
+        assert(c.registerNativeShadow(&a,{})==0);c.registerVS(&a,0);
+        assert(!c.classifyVs(&a).nativeShadow&&!c.nativeShadowProofs.count(&a));
     }
     {   // lookupShader
         IDirect3DVertexShader9 a,b;Look l;l.registerShader(&a,true,false,0);l.registerShader(&b,false,true,7);
@@ -121,7 +131,7 @@ with tempfile.TemporaryDirectory(prefix='northlight-vs-cache-') as tmp:
     (Path(tmp)/'t.cpp').write_text(src)
     for label,flags in [('O2',['-O2']),('asan',['-O1','-g','-fsanitize=address,undefined','-fno-sanitize-recover=all'])]:
         exe=Path(tmp)/('test-'+label)
-        subprocess.run(['clang++','-std=c++17','-Wall','-Wextra','-Werror','-Wno-unused-parameter','-Wno-unused-private-field',*flags,str(Path(tmp)/'t.cpp'),'-o',str(exe)],check=True)
+        subprocess.run(['clang++','-std=c++17','-Wall','-Wextra','-Werror','-Wno-unused-parameter','-Wno-unused-private-field',*flags,*fp.test_include_flags(),str(Path(tmp)/'t.cpp'),'-o',str(exe)],check=True)
         print(label,subprocess.check_output([str(exe)],text=True),end='',flush=True)
 
 

@@ -18,6 +18,7 @@ assert classifier_start>=0
 classifier=header[classifier_start:header.index('class FrameCache')]
 source=r'''
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <limits>

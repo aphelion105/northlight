@@ -98,7 +98,9 @@ def run():
             assert not extract_m2(blob, collections.Counter()), name
             expected = reference(ref)
             close(profiles.fallback(catalog, name, blob, []), expected)
-            generated = profile(assets, name, blob, catalog)
+            # This stand validates the authored hash pins against independent
+            # fixture references, rather than automatic source-emission discovery.
+            generated = profile(assets, name, blob, catalog, reviewed_only=True)
             assert len(generated['emitters']) == 1
             patched = append_lights(blob, generated['emitters'])
             verify_preserved(blob, patched, 1)

@@ -2,7 +2,8 @@
 # northlight-test:
 """Static wiring audit: the geometry worker falls back to the base terrain reach on a memory
 refusal, logs the stall episodes; stage entry uses buildBudget (512 MiB, raised by entryLift after a refusal that
-followed entry), interior allocations and the after-bvh gate inBuildBudget; stalls publish the guard's demand."""
+followed entry), then bounded chunked/cold entry if needed. Interior allocations and the after-bvh gate
+use the matching in-build budget while preserving the process reserve; stalls publish the guard's demand."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
 import re
@@ -17,17 +18,21 @@ assert 'constexpr uint64_t EntryHeadroom=256*MiB;' in g and 'budgetWith(EntryHea
 assert 'constexpr uint64_t InBuildHeadroom=128*MiB;' in g and 'budgetWith(largestAllocation>InBuildHeadroom?largestAllocation:InBuildHeadroom,largestAllocation)' in g
 def body(start, end='};'):
     i = w.index(start); return w[i:w.index(end, i)]
+assert 'const auto geometryBudget=[&](uint64_t bytes=0){return coldRecovery?NorthlightGeometryMemory::coldInBuildBudget(bytes):NorthlightGeometryMemory::inBuildBudget(bytes);};' in w
+assert 'constexpr uint64_t ColdInBuildHeadroom=32*MiB,ColdEntryHeadroom=136*MiB;' in g
 for lam in ('NorthlightGI::AllocationAdmission localAdmission=', 'NorthlightGI::AllocationAdmission terrainAdmission='):
-    assert 'NorthlightGeometryMemory::inBuildBudget(' in body(lam), lam
+    assert 'const auto budget=geometryBudget(bytes);auto sample=workerMemory(budget);' in body(lam), lam
     assert 'NorthlightGeometryMemory::buildBudget(' not in body(lam), lam
 # The after-bvh gate keeps the in-build floor (the build's own BVH and cache are live there); with the
 # entry floor every attempt that entered within one BVH of 768 MiB was refused and rebuilt each second.
 plan = body('const auto planBudget=', 'continue;')
-assert 'planBudget=NorthlightGeometryMemory::inBuildBudget();' in plan and 'NorthlightGeometryMemory::buildBudget(' not in plan
+assert 'planBudget=geometryBudget();' in plan and 'NorthlightGeometryMemory::buildBudget(' not in plan
 assert 'logGeometryMemory("after-bvh"' in plan and 'liftEntry("plan",planBudget.available,memory.available,planBudget.largest)' in plan
 # Stage entry keeps the full entry budget, raised by entryLift after a refusal that followed entry.
 entry = body('auto memory=workerMemory(entryLift.apply(NorthlightGeometryMemory::buildBudget(64', 'stallBegin("build-deferred"')
 assert entry.count('NorthlightGeometryMemory::buildBudget(') >= 2 and 'inBuildBudget(' not in entry
+assert 'entryBudget=chunkBudget;chunkedLocal=true;' in entry and 'entryBudget=cold;coldRecovery=true;' in entry
+assert 'chunkLift.apply(NorthlightGeometryMemory::coldChunkBuildBudget(),GetTickCount())' in entry
 assert 'auto entryBudget=entryLift.apply(plainEntry,GetTickCount());' in entry
 # Small shortfalls may reclaim raw payloads first. Every step resamples the same
 # admission floor, including any lift; complete reset remains the final fallback.
@@ -59,7 +64,7 @@ assert 'localSample=sample' in w and 'plan-deferred' in w
 # A real allocator failure must reach the same bounded retry as an admission refusal.
 for error in ('Geometry allocation deferred', 'Paged mesh worker allocation failed', 'paged ownership allocation failed'):
     block=body('!terrainDeferred&&error=="'+error+'"', '}')
-    assert 'NorthlightGeometryMemory::inBuildBudget()' in block and 'terrainSample=workerMemory(budget)' in block
+    assert 'const auto budget=geometryBudget()' in block and 'terrainSample=workerMemory(budget)' in block
     assert 'terrainDeferred=true' in block and 'terrainRequired=budget.available' in block and 'terrainRequiredLargest=budget.largest' in block
 assert 'BaseReach=928.f' in f and 'BackoffMs=30000' in f and '#include <windows.h>' not in f
 st = fp.src('shadow_terrain.h').read_text()

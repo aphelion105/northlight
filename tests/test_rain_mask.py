@@ -45,8 +45,10 @@ checks['manifest: WorldComposite bytecode changed']=(wc['sha256']!=BEFORE['World
 # task 43: RemovalSmooth branches around a zero-weight tap's reads on purpose (the same output)
 # 7c5c699 adds diagnostic-only MaterialAudit; 11f79a8 adds the bit-exact FogTemporal history-equality guard.
 REVIEWED_AFTER={'FogTemporal':'492128b1154ec3e10f526b12c5bdf56946b405f79fa9d3d3fdbbb82761891d8b',
-                'MaterialAudit':'26b986f3a05c04918a82f1f44a1e434fe9aef1e3459c14a163daf21b78cf952d'}
-checks['manifest: shaders outside the reviewed feature changes retain their historical hashes']=(set(manifest)==set(BEFORE)|{'LocalFogCombine', 'ActorTiles', 'MaterialComposite', 'LocalDirect16', 'ActorShadow', 'MaterialAudit'} and all(manifest[n]['sha256']==REVIEWED_AFTER.get(n,s) for n,s in BEFORE.items() if n not in ('FogClouds', 'LocalDirect', 'LocalFog', 'RemovalSmooth', 'ShadowReplayPS', 'WorldComposite', 'WorldFog', 'WorldLighting', 'WorldNormals'))
+                # 00be1da: shared receiver-depth helper and tighter material depth validity.
+                'FogBlur':'3566e684517a7bc8348ac407c6b56d7300a9551b1212f12c70671aa050c7f472',
+                'MaterialAudit':'24bcbfa00628222ab4023044315204a72d7755f0578794d5caa883e2c5419b46'}
+checks['manifest: shaders outside the reviewed feature changes retain their historical hashes']=(set(manifest)==set(BEFORE)|{'LocalFogCombine', 'ActorTiles', 'MaterialComposite', 'LocalDirect16', 'ActorShadow', 'MaterialAudit', 'WorldNormalsNoDistance', 'WorldFogAmbient', 'WorldFogActor', 'FogCloudsActor', 'LocalDirect1', 'WorldUnlitComposite', 'ActorTilesWide', 'WorldFogActorTiled', 'FogCloudsActorTiled'} and all(manifest[n]['sha256']==REVIEWED_AFTER.get(n,s) for n,s in BEFORE.items() if n not in ('FogClouds', 'LocalDirect', 'LocalFog', 'RemovalSmooth', 'ShadowReplayPS', 'WorldComposite', 'WorldFog', 'WorldLighting', 'WorldNormals'))
     and manifest['LocalFog']['sha256']!=BEFORE['LocalFog'] and manifest['MaterialAudit']['sha256']==REVIEWED_AFTER['MaterialAudit'])
 checks['compiled: WorldComposite.bin exists']=(fp.COMPILED/'WorldComposite.bin').exists()
 

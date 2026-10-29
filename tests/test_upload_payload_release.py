@@ -73,11 +73,11 @@ builder=w[w.index('    void work() {'):w.index('\n    bool check(HRESULT h,const
 plan=fp.src('world_mesh_plan.h').read_text();pagesH=fp.src('world_mesh_pages.h').read_text()
 commit=upload[upload.index('auto phase=streamingPhases.measure(NorthlightStreaming::PhaseProfile::Commit);'):]
 release=w[w.index('    void releaseGPU(bool keepMesh=false){'):w.index('\n',w.index('    void releaseGPU(bool keepMesh=false){'))]
-resetFn=method('    void reset(){');recoverFn=method('    void recover(){');resources=method('    bool resources(UINT w,UINT h,D3DFORMAT fmt){')
+resetFn=method('    void reset(){');recoverFn=method('    void recover(){');resources=method('    bool createResources(UINT w,UINT h,D3DFORMAT fmt){')
 checks={
  'Reset (failed or not) and resolution change keep the uploaded MANAGED mesh':
-  'failed=false;releaseGPU(true);' in resetFn and 'releaseGPU(true);width=w;height=h;' in resources,
- 'recover() keeps the MANAGED mesh; only the destructor releases it':'releaseGPU(true);' in recoverFn and 'worker.join();releaseGPU();' in w,
+  resetFn.index('failed=false;') < resetFn.index('releaseGPU(true);') and 'releaseGPU(true);width=w;height=h;' in resources,
+ 'recover() keeps the MANAGED mesh; only the destructor releases it':'releaseGPU(true);' in recoverFn and w.index('worker.join();',w.index('~WorldRenderer()')) < w.index('releaseGPU();',w.index('~WorldRenderer()')),
  'releaseGPU(keepMesh) guards exactly the mesh state: pool, pending packet, clearMesh, map, fixed set + bits, covered owners':
   'if(!keepMesh){pendingMesh.reset();clearMesh();}' in release and 'if(!keepMesh){releaseMeshPool();uploadedMap.clear();}' in release
   and 'if(!keepMesh){fixedTerrain.reset();fixedTerrainBits.reset();}' in release and 'if(!keepMesh)uploadedStaticOwners.reset();' in release

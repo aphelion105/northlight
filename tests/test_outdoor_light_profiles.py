@@ -7,6 +7,22 @@ import outdoor_light_profiles as p
 import world_lights_builder as builder
 
 class Profiles(unittest.TestCase):
+    def test_compact_fixture_boundaries(self):
+        a=dict(position=[0.,0.,0.],rgb=[1.,.5,.25],intensity=1.,start=1.,end=8.,casts_shadows=True)
+        b=dict(a,position=[2.,0.,0.],intensity=2.,start=2.,end=10.)
+        pin=dict(a,emitters=[a,b])
+        result=p.fixture_emitters(pin)
+        self.assertEqual(result,[dict(b,position=(1.,0.,0.))])
+        self.assertEqual(a['position'],[0.,0.,0.])
+        # Equality at the 3-yard boundary is compact; larger or mixed-shadow
+        # fixtures and a transitive chain must keep their distinct lights.
+        edge=dict(b,position=[3.,0.,0.])
+        self.assertEqual(len(p.fixture_emitters(dict(a,emitters=[a,edge]))),1)
+        for separate in ([a,dict(b,position=[3.01,0.,0.])],
+                         [a,dict(b,casts_shadows=False)],
+                         [a,b,dict(b,position=[4.,0.,0.])]):
+            self.assertIs(p.fixture_emitters(dict(a,emitters=separate)),separate)
+        self.assertEqual(p.fixture_emitters(a),[a])
     def test_catalog_and_no_guessing(self):
         catalog=p.load();self.assertGreaterEqual(len(catalog),75)
         self.assertIn("world\\generic\\passivedoodads\\lights\\torch.m2",catalog)

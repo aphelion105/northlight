@@ -46,7 +46,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))   # the repo root, also
 import northlight_paths as fp  # noqa: E402
 fp.use_source_modules()
 import client_archives  # noqa: E402
-from mpq import Archive  # noqa: E402
+from mpq import Archive, ReadError  # noqa: E402
 import native_model_lights  # noqa: E402
 import world_emitter_index  # noqa: E402
 from world_scene_builder import Assets, decode_blp  # noqa: E402
@@ -60,6 +60,21 @@ from build_lighting import DBC, Skip  # noqa: E402
 
 DBC_NAME = 'DBFilesClient\\{}.dbc'
 SKYBOX = DBC_NAME.format('LightSkybox')
+
+
+def unchanged_files(payload, assets):
+    """Omit a replacement only after successfully proving identical source bytes."""
+    unchanged = []
+    for name, data in payload.items():
+        if name.lower() not in assets.providers:
+            continue
+        try:
+            original = assets.read(name)
+        except (FileNotFoundError, ReadError):
+            continue  # The generated replacement is still valid and must be kept.
+        if original == data:
+            unchanged.append(name)
+    return sorted(unchanged)
 
 
 def write_archive(path, payload):
@@ -150,7 +165,7 @@ def build(client, output, world_cache, locale=None, letter='z', archives='all'):
         report['steps'].append({'step': 'weather_textures', 'files': sorted(textures)})
         report['steps'].append({'step': 'world_model_lights', 'skipped': 'Rendered from world-cache/lights'})
         last = None   # the payload is no longer a step's archive
-        unchanged = sorted(n for n, data in payload.items() if n.lower() in assets.providers and assets.read(n) == data)
+        unchanged = unchanged_files(payload, assets)
         payload = {n: data for n, data in payload.items() if n not in unchanged}
         data = client_archives.data_dir(client).name
         local = client_archives.locale_dir(client, locale).name

@@ -78,7 +78,8 @@ static void batchLimits(){
 #if !__has_feature(thread_sanitizer)
     {
         refuseAllocation=true;NorthlightStreaming::CpuRetirementBatch batch(&queue);refuseAllocation=false;
-        auto owner=held;assert(!batch.retire(owner,1)&&owner==held&&!batch.finish()&&!batch.count());
+        auto owner=held;refuseAllocation=true;const bool retired=batch.retire(owner,1);refuseAllocation=false;
+        assert(!retired&&owner==held&&!batch.finish()&&!batch.count());
     }
 #endif
     {NorthlightStreaming::CpuRetirementBatch critical;auto owner=held;assert(!critical.retire(owner,1)&&owner==held&&!critical.finish());}

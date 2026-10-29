@@ -98,7 +98,8 @@ def main():
         for label, original, replacement, marker in controls:
             mutant = out / ('negative-' + label);mutant.mkdir()
             text = fp.src('terrain_capture_bounds.h').read_text()
-            assert text.count(original) == 1
+            expected = 2 if label in ('plan-topology', 'plan-stride', 'plan-format') else 1
+            assert text.count(original) == expected, (label, text.count(original))
             text = text.replace(original, replacement)
             if label == 'direct-lock':
                 original = 'if(directCold){copyPositions'

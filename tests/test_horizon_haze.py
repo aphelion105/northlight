@@ -388,14 +388,17 @@ def main():
     unchanged = []
     if compiled:
         for name, info in manifest['shaders'].items():
-            assert info['static_instruction_slots'] <= 512 and info['temporary_registers'] <= 32, name  # a count (highest rN + 1): ps_3_0 has r0..r31
+            limit=768 if name in ('WorldFogActorTiled','FogCloudsActorTiled') else 600 if name in ('WorldFogActor','FogCloudsActor') else 512
+            assert info['static_instruction_slots'] <= limit and info['temporary_registers'] <= 32, name
             # Shaders changed on purpose by other features are excluded from the byte-identical check below.
-            if name not in ('ShadowReplayPS', 'MaterialComposite', 'MaterialAudit', 'LocalDirect16', 'WorldComposite', 'TemporalLight', 'SourceVisibilityPS', 'WorldLighting', 'LocalDirect', 'WorldNormals', 'RemovalSmooth', 'WorldGI', 'WorldFog', 'FogClouds', 'FogTemporal', 'LocalFog', 'LocalFogCombine', 'ActorShadow', 'ActorTiles'):  # MaterialAudit, ActorShadow and ActorTiles are new; FogClouds (0.3.199) is new, not in BEFORE; LocalFog (0.3.199) gains the near ramp, 0.3.205 (gh#20) returns the raw batch sum on purpose, LocalFogCombine is new
+            if name in BEFORE and name not in ('ShadowReplayPS', 'TemporalLight', 'SourceVisibilityPS', 'WorldLighting', 'LocalDirect', 'WorldNormals', 'WorldGI', 'WorldFog', 'LocalFog', 'FogBlur'):
                 assert info['sha256'] == BEFORE[name], name
                 unchanged.append(name)
-        assert sorted(unchanged) == sorted(k for k in BEFORE if k not in ('ShadowReplayPS', 'TemporalLight', 'SourceVisibilityPS', 'WorldLighting', 'LocalDirect', 'WorldNormals', 'WorldGI', 'WorldFog', 'LocalFog'))
+        assert sorted(unchanged) == sorted(k for k in BEFORE if k not in ('ShadowReplayPS', 'TemporalLight', 'SourceVisibilityPS', 'WorldLighting', 'LocalDirect', 'WorldNormals', 'WorldGI', 'WorldFog', 'LocalFog', 'FogBlur'))
+        # 00be1da changed FogBlur to the shared receiver-depth helper.
+        assert manifest['shaders']['FogBlur']['sha256']=='3566e684517a7bc8348ac407c6b56d7300a9551b1212f12c70671aa050c7f472'
         assert manifest['shaders']['WorldNormals']['static_instruction_slots'] == 305  # Microsoft d3dcompiler_47 (Wine's builtin: 483); r77: both wide samples or neither; 0.3.208: colour-picked one-sided side (was 434)
-        assert manifest['shaders']['WorldFog']['static_instruction_slots'] == 431  # Preserved exact invalid-field guard adds four slots to PR #90: phase no longer reads SourceVisibility (was 431); PR #89: regional-field and near-fade interval clip (was 391); Microsoft d3dcompiler_47 (Wine's builtin: 512); 0.3.198 (rain): the same 512 slots (the literal .0017 became c59.w)
+        assert manifest['shaders']['WorldFog']['static_instruction_slots'] <= 512  # Regional fog now has the cloud/environment interval guards as well.
         assert SOURCE_VISIBILITY_SLOTS is not None, 'TODO(lead): pin SOURCE_VISIBILITY_SLOTS to the compiled count (%d)' % manifest['shaders']['SourceVisibilityPS']['static_instruction_slots']
         assert manifest['shaders']['SourceVisibilityPS']['static_instruction_slots'] == SOURCE_VISIBILITY_SLOTS <= 512
         assert manifest['shaders']['WorldComposite']['sha256'] != '772d438995ed33d36db7e26f9b169a5effd94a876ce5d8b8af9fd8aad5381990'

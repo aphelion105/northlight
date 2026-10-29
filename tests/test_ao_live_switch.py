@@ -21,6 +21,9 @@ def extract(marker):
 
 # HDR must request only the resources that its color conversion consumes.
 assert 'resources(desc.Width,desc.Height,desc.Format,true)' in re.sub(r'\s+', '', extract('    HRESULT hdrBegin('))
+live_settings = extract('if(settingsService)if(auto update=settingsService->after(settingsRevision))')
+ao_update = re.search(r'selectAO\(world->aoMethod\(\),world->aoQuality\(\)\);\s*contactAO=world->contactAO\(\);aoStrength=world->aoStrength\(\);aoRadius=world->aoRadius\(\);', live_settings)[0]
+assert live_settings.index('world->applyLiveSettings(update->config)') < live_settings.index(ao_update) < live_settings.index('settingsRevision=update->revision')
 
 harness = r'''
 #include "quality_settings.h"
@@ -54,11 +57,12 @@ struct Device {
         *out=new Texture(textures,w,h,format,&failSurface);return 0;
     }
 };
-struct Service {int preview=-1;int aoPreview()const{return preview;}};
-struct World {unsigned method=0;bool enabled=true;unsigned aoMethod()const{return method;}bool contactAO()const{return enabled;}};
+struct Service {};
+struct World {unsigned method=0,quality=0;bool enabled=true;unsigned aoMethod()const{return method;}unsigned aoQuality()const{return quality;}bool contactAO()const{return enabled;}float aoStrength()const{return 1.f;}float aoRadius()const{return 2.f;}};
 struct Renderer {
     Device* ext;Service* settingsService;World* world;
     unsigned width=0,height=0,aoMethod=0,aoQuality=0,selectedBackend=0;
+    float aoStrength=0,aoRadius=0;
     unsigned sceneFormat=0,depthSnapshotFormat=0;
     bool worldDepthDescKnown=false,df24Refused=false,rainDepthOk=false,rainMaskCleared=false,rainMaskDrawn=false,rainMaskFailed=false,captured=false,contactAO=true,failed=false;
     struct {unsigned MultiSampleType=0;}worldDepthDesc;
@@ -134,12 +138,13 @@ int main(){
         const auto scene=r.scene;const auto depth=r.depthTex;const auto ao=r.ao;const auto raw=r.aoRaw;
         const DWORD* expected[]={kAoContactBloomShader,kHdaoContactBloomShader,kHbaoPlusContactBloomShader,kGtaoContactBloomShader};
         for(unsigned pass=0;pass<200;++pass){
-            service.preview=int(pass%8);r.nextFrame();assert(r.aoMethod==pass%4&&r.contactAO==bool(pass&4));
+            world.method=pass%4;world.enabled=bool(pass&4);r.nextFrame();assert(r.aoMethod==pass%4&&r.contactAO==bool(pass&4));
+            assert(r.aoStrength==1.f&&r.aoRadius==2.f);
             assert(r.resources(800,600,10));assert(r.aoPS&&r.aoContactBloomPS&&r.aoContactBloomPS->code==expected[pass%4]);
             assert(r.scene==scene&&r.depthTex==depth&&r.ao==ao&&r.aoRaw==raw&&device.textures==4);
             auto count=device.shaders;r.nextFrame();assert(r.resources(800,600,10)&&device.shaders==count);
         }
-        world.method=2;world.enabled=false;service.preview=-1;r.nextFrame();assert(r.aoMethod==2&&!r.contactAO);assert(r.resources(800,600,10));
+        world.method=2;world.enabled=false;r.nextFrame();assert(r.aoMethod==2&&!r.contactAO);assert(r.resources(800,600,10));
         assert(r.aoContactBloomPS->code==kHbaoPlusContactBloomShader&&device.textures==4);
         const DWORD* qualityShaders[3][4]={
             {kAoContactBloomShader,kHdaoContactBloomShader,kHbaoPlusContactBloomShader,kGtaoContactBloomShader},
@@ -156,13 +161,13 @@ int main(){
         const auto ssao=r.aoContactBloomPS;const auto ssaoCount=device.shaders;
         r.selectAO(0,2);assert(r.resources(800,600,10)&&r.aoContactBloomPS==ssao&&device.shaders==ssaoCount);
         r.selectAO(2,0);assert(r.resources(800,600,10));
-        service.preview=7;r.nextFrame();device.failShader=true;assert(!r.resources(800,600,10)&&r.failed);
+        world.method=3;world.enabled=true;r.nextFrame();device.failShader=true;assert(!r.resources(800,600,10)&&r.failed);
         device.failShader=false;r.failed=false;assert(r.resources(800,600,10)&&r.aoContactBloomPS->code==kGtaoContactBloomShader&&device.textures==4);
     }
     assert(alive==0);
     std::cout<<"AO live switch and lazy HDR: 200 frame transitions, exact allocation bytes, retained targets, depth-format changes, failure/retry and lifetimes passed\n";
 }
-'''.replace('__SELECT__', extract('    void selectAO(')).replace('__RESOURCES__', extract('    bool resources(UINT w, UINT h, D3DFORMAT format,')).replace('__FRAME__', extract('        if(settingsService&&world){'))
+'''.replace('__SELECT__', extract('    void selectAO(')).replace('__RESOURCES__', extract('    bool resources(UINT w, UINT h, D3DFORMAT format,')).replace('__FRAME__', ao_update)
 with tempfile.TemporaryDirectory(prefix='northlight-ao-live-') as tmp:
     cpp = Path(tmp) / 'ao_live.cpp'
     exe = Path(tmp) / 'ao_live.exe'

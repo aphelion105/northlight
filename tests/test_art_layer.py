@@ -49,7 +49,11 @@ metadata = {world_emitter_index.ARCHIVE_PATH}
 
 def model_checks(view, folder, result):
     """MPQ metadata owns World/selected Spells; native patches own disjoint attached models."""
-    models = set(result['files']) - files - metadata
+    assets = Assets(client, view, result['locale'], without='z')
+    view_textures = build_weather_textures.weather_textures()
+    view_textures.update(build_weather_textures.mist_textures(assets.read, decode_blp))
+    view_files = tables | set(view_textures)
+    models = set(result['files']) - view_files - metadata
     assert metadata <= set(result['files']), result['files']
     assert not any(n.lower().startswith('world\\') for n in models), sorted(models)
     assert all(n.lower().startswith(('item\\', 'spells\\', 'creature\\', 'interface\\')) and n.lower().endswith('.m2')
@@ -58,12 +62,14 @@ def model_checks(view, folder, result):
     assert 'glue_model_lights' in {s['step'] for s in result['steps']}
     assert sum(s.get('models', 0) for s in result['steps'] if s['step'] in model_steps) == len(models)
     step, = [s for s in result['steps'] if s['step'] == 'world_emitter_index']
-    assets = Assets(client, view, result['locale'], without='z')
     try:
         payloads = []
         for target in result['targets']:
             with Archive(folder / target) as archive:
-                assert {n for n in archive.names() if not n.startswith('(')} == files | models | metadata
+                dropped=set(result['dropped_unchanged'])
+                assert {n for n in archive.names() if not n.startswith('(')} == (view_files | models | metadata)-dropped
+                for name, data in view_textures.items():
+                    assert (assets.read(name) if name in dropped else archive.read(name)) == data
                 payload = archive.read(world_emitter_index.ARCHIVE_PATH)
                 value = world_emitter_index.Index(SimpleNamespace(read=lambda _: payload))
                 assert value.payload() == payload, 'Metadata must use canonical JSON'
