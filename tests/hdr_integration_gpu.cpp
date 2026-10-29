@@ -45,16 +45,17 @@ static void patchChecks(const std::vector<unsigned char>& bytes){
 static LONG WINAPI crash(EXCEPTION_POINTERS* e){HMODULE module=nullptr;char name[MAX_PATH*4]={};GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,reinterpret_cast<const char*>(e->ExceptionRecord->ExceptionAddress),&module);GetModuleFileNameA(module,name,sizeof name);std::fprintf(stderr,"CRASH exception=%08lx module=%s RVA=%llx address=%p\n",e->ExceptionRecord->ExceptionCode,name,(unsigned long long)(reinterpret_cast<std::uintptr_t>(e->ExceptionRecord->ExceptionAddress)-reinterpret_cast<std::uintptr_t>(module)),e->ExceptionRecord->ExceptionAddress);std::fflush(stderr);return EXCEPTION_EXECUTE_HANDLER;}
 int main(int argc,char** argv){
     SetUnhandledExceptionFilter(&crash);
-    assert(argc==4||argc==5);const bool proxy=argc==5;
+    assert(argc==4||argc==5);const bool native=argc==5&&!std::strcmp(argv[4],"--native");const bool proxy=argc==5&&!native;
+    const bool performance=proxy&&!std::strcmp(argv[4],"--perf-proxy");
     const bool small=proxy&&!std::strcmp(argv[4],"--small-proxy");
     const bool full4k=proxy&&!std::strcmp(argv[4],"--msaa2-4k-proxy");
     const bool msaa2=full4k||(proxy&&(!std::strcmp(argv[4],"--msaa2-proxy")||!std::strcmp(argv[4],"--msaa2-triple-proxy")));
     const bool msaa4=proxy&&(!std::strcmp(argv[4],"--msaa4-proxy")||!std::strcmp(argv[4],"--msaa4-graded-proxy"));
-    const bool msaa8=proxy&&!std::strcmp(argv[4],"--msaa8-proxy");
+    const bool msaa8=proxy&&(!std::strcmp(argv[4],"--msaa8-proxy")||!std::strcmp(argv[4],"--msaa8-triple-proxy"));
     const bool graded=proxy&&(!std::strcmp(argv[4],"--graded-proxy")||!std::strcmp(argv[4],"--msaa4-graded-proxy"));
-    const bool triple=full4k||graded||(proxy&&(!std::strcmp(argv[4],"--triple-proxy")||!std::strcmp(argv[4],"--msaa2-triple-proxy")));
+    const bool triple=full4k||graded||(proxy&&(!std::strcmp(argv[4],"--triple-proxy")||!std::strcmp(argv[4],"--msaa2-triple-proxy")||!std::strcmp(argv[4],"--msaa8-triple-proxy")));
     const auto samples=msaa2?D3DMULTISAMPLE_2_SAMPLES:msaa4?D3DMULTISAMPLE_4_SAMPLES:msaa8?D3DMULTISAMPLE_8_SAMPLES:D3DMULTISAMPLE_NONE;
-    const bool hdrExpected=!proxy||small||triple||msaa2||msaa4||msaa8||!std::strcmp(argv[4],"--proxy");
+    const bool hdrExpected=!native&&(!proxy||small||triple||msaa2||msaa4||msaa8||performance||!std::strcmp(argv[4],"--proxy"));
     assert(!proxy||hdrExpected||!std::strcmp(argv[4],"--sdr-proxy"));
     std::vector<std::vector<unsigned char>> programs={read(std::string(argv[2])+"/HdrFixturePS-2.bin"),read(std::string(argv[2])+"/HdrFixturePS-3.bin"),read(argv[3])};
     for(const auto& code:programs)patchChecks(code);
@@ -66,11 +67,11 @@ int main(int argc,char** argv){
     if(triple)pp.BackBufferCount=2;
     pp.MultiSampleType=samples;pp.EnableAutoDepthStencil=samples!=D3DMULTISAMPLE_NONE;pp.AutoDepthStencilFormat=D3DFMT_D24S8;
     NorthlightHdr::Presentation presentation;
-    if(!proxy)presentation.formatsPrepared=NorthlightHdr::unlockFormats(api);
+    if(!proxy&&!native)presentation.formatsPrepared=NorthlightHdr::unlockFormats(api);
     IDirect3DDevice9* d=nullptr;ok(api->CreateDevice(0,D3DDEVTYPE_HAL,window,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_FPU_PRESERVE|D3DCREATE_MULTITHREADED,&pp,&d));assert(pp.BackBufferFormat==D3DFMT_X8R8G8B8);
-    if(!proxy){presentation.settings.requested=true;presentation.logical=pp;presentation.stream=presentation.dxvk=true;assert(presentation.activate(d,d)==S_OK&&presentation.active);}
+    if(!proxy&&!native){presentation.settings.requested=true;presentation.logical=pp;presentation.stream=presentation.dxvk=true;assert(presentation.activate(d,d)==S_OK&&presentation.active);}
     IDirect3DSwapChain9* swap=nullptr;ok(d->GetSwapChain(0,&swap));D3DPRESENT_PARAMETERS exposed{};ok(swap->GetPresentParameters(&exposed));
-    assert(exposed.BackBufferFormat==(proxy?D3DFMT_X8R8G8B8:D3DFMT_A16B16G16R16F));swap->Release();
+    assert(exposed.BackBufferFormat==(!proxy&&hdrExpected?D3DFMT_A16B16G16R16F:D3DFMT_X8R8G8B8));swap->Release();
     assert(exposed.MultiSampleType==samples);
     if(triple){assert(exposed.BackBufferCount==2);IDirect3DSurface9* second=nullptr;ok(d->GetBackBuffer(0,1,D3DBACKBUFFER_TYPE_MONO,&second));D3DSURFACE_DESC desc{};ok(second->GetDesc(&desc));assert(desc.Format==D3DFMT_X8R8G8B8&&desc.MultiSampleType==samples);second->Release();}
     IDirect3DSurface9* initialBack=nullptr;ok(d->GetBackBuffer(0,0,D3DBACKBUFFER_TYPE_MONO,&initialBack));D3DSURFACE_DESC physical{};ok(initialBack->GetDesc(&physical));initialBack->Release();
@@ -173,20 +174,22 @@ int main(int argc,char** argv){
         float offscreenColor[]={1,1,1,1};UiVertex offscreenQuad[4];vertices(offscreenQuad,offscreenColor);ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,offscreenQuad,sizeof(UiVertex)));ok(d->EndScene());
         float unchanged[4];pixel8(d,back,referenceRead,unchanged);assert(std::fabs(unchanged[0]-.2)<.0001);
         ok(d->SetRenderTarget(0,back));offscreenUi->Release();
-        // A native death/glow scene quad may use the same ortho VS as UI.
-        // Keep its render-target input in the legacy domain until atlas UI:
-        // the game's following scene copy must observe this draw, not the old clear.
-        IDirect3DTexture9* sceneInput=nullptr;IDirect3DSurface9* sceneInputSurface=nullptr;
-        ok(d->CreateTexture(size,size,1,D3DUSAGE_RENDERTARGET,D3DFMT_X8R8G8B8,D3DPOOL_DEFAULT,&sceneInput,nullptr));
-        ok(sceneInput->GetSurfaceLevel(0,&sceneInputSurface));ok(d->ColorFill(sceneInputSurface,nullptr,D3DCOLOR_XRGB(204,51,102)));
-        ok(d->SetTexture(0,sceneInput));ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE));
-        float sceneWhite[]={1,1,1,1};UiVertex sceneQuad[4];vertices(sceneQuad,sceneWhite);
-        ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,sceneQuad,sizeof(UiVertex)));ok(d->EndScene());
-        ok(d->StretchRect(back,nullptr,reference,nullptr,D3DTEXF_NONE));
-        float copiedScene[4];pixel8(d,reference,referenceRead,copiedScene);
-        for(unsigned c=0;c<3;++c){const double expected=c==0?.8:c==1?.2:.4,error=std::fabs(copiedScene[c]-expected);maximum=std::max(maximum,error);
-            if(!std::isfinite(copiedScene[c])||error>.004){if(failures++<4)std::printf("FAIL native scene copy before HDR UI channel=%u got=%.8f want=%.8f\n",c,copiedScene[c],expected);}}
-        ++cases;ok(d->SetTexture(0,tex));sceneInputSurface->Release();sceneInput->Release();
+        if(!performance){
+            // A native death/glow scene quad may use the same ortho VS as UI.
+            // Keep its render-target input in the legacy domain until atlas UI:
+            // the game's following scene copy must observe this draw, not the old clear.
+            IDirect3DTexture9* sceneInput=nullptr;IDirect3DSurface9* sceneInputSurface=nullptr;
+            ok(d->CreateTexture(size,size,1,D3DUSAGE_RENDERTARGET,D3DFMT_X8R8G8B8,D3DPOOL_DEFAULT,&sceneInput,nullptr));
+            ok(sceneInput->GetSurfaceLevel(0,&sceneInputSurface));ok(d->ColorFill(sceneInputSurface,nullptr,D3DCOLOR_XRGB(204,51,102)));
+            ok(d->SetTexture(0,sceneInput));ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE));
+            float sceneWhite[]={1,1,1,1};UiVertex sceneQuad[4];vertices(sceneQuad,sceneWhite);
+            ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,sceneQuad,sizeof(UiVertex)));ok(d->EndScene());
+            ok(d->StretchRect(back,nullptr,reference,nullptr,D3DTEXF_NONE));
+            float copiedScene[4];pixel8(d,reference,referenceRead,copiedScene);
+            for(unsigned c=0;c<3;++c){const double expected=c==0?.8:c==1?.2:.4,error=std::fabs(copiedScene[c]-expected);maximum=std::max(maximum,error);
+                if(!std::isfinite(copiedScene[c])||error>.004){if(failures++<4)std::printf("FAIL native scene copy before HDR UI channel=%u got=%.8f want=%.8f\n",c,copiedScene[c],expected);}}
+            ++cases;ok(d->SetTexture(0,tex));sceneInputSurface->Release();sceneInput->Release();
+        }
         for(unsigned program:{1u,2u}){
             ok(d->SetRenderTarget(0,back));D3DVIEWPORT9 viewport={0,0,backWidth,backHeight,0,1};ok(d->SetViewport(&viewport));ok(d->SetVertexShader(vs[1]));ok(d->SetPixelShader(ps[program]));ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));ok(d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_SRCALPHA));ok(d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_INVSRCALPHA));
             ok(d->Clear(0,nullptr,D3DCLEAR_TARGET,D3DCOLOR_ARGB(255,51,102,153),1,0));
@@ -253,6 +256,33 @@ int main(int argc,char** argv){
             if(frame%2){IDirect3DSwapChain9* primary=nullptr;ok(d->GetSwapChain(0,&primary));ok(primary->Present(nullptr,nullptr,nullptr,nullptr,0));primary->Release();}
             else ok(d->Present(nullptr,nullptr,nullptr,nullptr));
             ++cases;
+        }
+        // Common atlas-only picture in both revisions; one admitted boundary per frame.
+        // CPU submission is command recording; completion includes replay and GPU work.
+        if(performance){
+            IDirect3DQuery9 *event=nullptr,*start=nullptr,*end=nullptr,*frequency=nullptr,*disjoint=nullptr;
+            ok(d->CreateQuery(D3DQUERYTYPE_EVENT,&event));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&start));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&end));
+            ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPFREQ,&frequency));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPDISJOINT,&disjoint));
+            ok(d->SetRenderTarget(0,back));ok(d->SetViewport(&offscreenVp));ok(d->SetVertexShader(vs[1]));ok(d->SetPixelShader(ps[1]));ok(d->SetTexture(0,tex));
+            float input[]={.5f,.35f,.15f,.5f};UiVertex quad[4];vertices(quad,input);
+            std::vector<double> submitTimes,gpuTimes,wallTimes;LARGE_INTEGER ticks{};QueryPerformanceFrequency(&ticks);
+            constexpr unsigned warmFrames=32,measuredFrames=96,uiDraws=128;unsigned discarded=0;
+            for(unsigned frame=0;frame<warmFrames+measuredFrames;++frame){
+                wait(event);LARGE_INTEGER before{},submitted{},finished{};QueryPerformanceCounter(&before);
+                ok(disjoint->Issue(D3DISSUE_BEGIN));ok(start->Issue(D3DISSUE_END));
+                ok(d->Clear(0,nullptr,D3DCLEAR_TARGET,D3DCOLOR_XRGB(51+frame%2,102,153),1,0));
+                ok(d->BeginScene());for(unsigned draw=0;draw<uiDraws;++draw)ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(UiVertex)));ok(d->EndScene());
+                QueryPerformanceCounter(&submitted);ok(end->Issue(D3DISSUE_END));ok(frequency->Issue(D3DISSUE_END));ok(disjoint->Issue(D3DISSUE_END));
+                ok(d->Present(nullptr,nullptr,nullptr,nullptr));wait(event);QueryPerformanceCounter(&finished);
+                UINT64 a=0,b=0,hz=0;BOOL bad=FALSE;
+                const bool ready=start->GetData(&a,sizeof a,0)==S_OK&&end->GetData(&b,sizeof b,0)==S_OK&&frequency->GetData(&hz,sizeof hz,0)==S_OK&&disjoint->GetData(&bad,sizeof bad,0)==S_OK;
+                if(!ready||bad||b<a||!hz){if(frame>=warmFrames)++discarded;continue;}
+                if(frame>=warmFrames){submitTimes.push_back(double(submitted.QuadPart-before.QuadPart)*1e6/ticks.QuadPart);gpuTimes.push_back(double(b-a)*1e6/hz);wallTimes.push_back(double(finished.QuadPart-before.QuadPart)*1e6/ticks.QuadPart);}
+            }
+            assert(gpuTimes.size()>=measuredFrames*5/6);
+            auto median=[](std::vector<double> values){std::sort(values.begin(),values.end());const auto middle=values.size()/2;return values.size()%2?values[middle]:(values[middle-1]+values[middle])*.5;};
+            std::printf("HDR_GUARD_PERF frames=%u discarded=%u uiDraws=%u width=%u height=%u submitMedianUs=%.6f gpuMedianUs=%.6f completionMedianUs=%.6f\n",unsigned(gpuTimes.size()),discarded,uiDraws,backWidth,backHeight,median(submitTimes),median(gpuTimes),median(wallTimes));
+            for(auto* query:{event,start,end,frequency,disjoint})query->Release();
         }
         referenceRead->Release();reference->Release();readback->Release();back->Release();
     }
