@@ -450,7 +450,7 @@ class Device final : public GuardedMirrorDevice {
         lastVs.wmo=world&&world->recognizesWmo(vs);lastVs.world=world&&world->isWorldShader(vs);lastVs.skinned=world&&world->isSkinnedShader(vs);lastVs.family=unsigned(lastVs.entry>>kFamilyShift)&7u;return lastVs;
     }
     std::unordered_map<IDirect3DPixelShader9*, uint64_t> psHashes;
-    std::unordered_map<void*, NorthlightShaderReads::ReadSet> shaderReads; // vertex and pixel shaders by raw pointer: what each can read of the API state (scanned at creation, only with SpellLayer=1 (spellOn is fixed at device creation and only ever drops to false, so no shader is missed); a re-created shader at a freed address overwrites its entry, like vsHashes; the spell layer records only that)
+    std::unordered_map<void*, NorthlightShaderReads::ReadSet> shaderReads; // Exact API reads for spell replay and HDR boundary admission; creation overwrites reused shader addresses.
     std::unordered_map<IDirect3DVertexShader9*, uint8_t> vsFogProven; // vertex shaders whose fog output is provably the c30 ramp (spell_fog_proof.h, scanned at creation; SpellLayer=1 only)
     NorthlightSpellFog::Freshness spellFogFreshness; // has the world render published a new fog estimate since the last frame end?
     std::unordered_map<IDirect3DPixelShader9*, int> psFogReg; // ps_3_0 shaders: the proven fog colour constant of the combiner epilogue (legacy_fog.h ps3FogColorRegister), -1 unknown (SpellLayer=1 only)
@@ -668,6 +668,30 @@ private:
         if(diagnostics()&&world&&NorthlightQuality::renderProfile(world->surfaceSettings())&&NorthlightRenderThreadProbe::sampleFrame(frame))
             logf("PROJECTED_AUDIT frame=%u probes=%u pending=%u disabled=%u maxPerFrame=16 maxPending=32 queryFlush=0",frame,projectedAudit.probes(frame),projectedAudit.pending(),unsigned(projectedAudit.disabled()));
     }
+    bool hdrUiInputs(){
+        // Death/glow screen passes can share the UI vertex shader and ortho rows.
+        // A sampled scene target is still scene work: migrate only at atlas UI.
+        auto safe=[&](void* shader,bool vertex){
+            const auto found=shaderReads.find(shader);
+            if(found==shaderReads.end()||!found->second.exact||found->second.vertex!=vertex)return false;
+            const unsigned samplers=found->second.samplers;
+            for(unsigned i=0;i<(vertex?4u:16u);++i)if(samplers&(1u<<i)){
+                const DWORD stage=vertex?D3DVERTEXTEXTURESAMPLER0+i:i;
+                IDirect3DBaseTexture9* texture=nullptr;
+                const HRESULT read=ext->GetTexture(stage,&texture);
+                const bool sceneInput=texture&&NorthlightSpellLayer::isRenderTargetTexture(texture);
+                drop(texture);
+                if(sceneInput&&hdrDeferredLogs<8&&hdrDeferredFrame!=frame){hdrDeferredFrame=frame;++hdrDeferredLogs;
+                    logf("HDR boundary deferred frame=%u reason=scene-texture stage=%s sampler=%u",frame,vertex?"vs":"ps",i);}
+                if(FAILED(read)||sceneInput)return false;
+            }
+            return true;
+        };
+        IDirect3DVertexShader9* vs=nullptr;IDirect3DPixelShader9* ps=nullptr;
+        const bool known=SUCCEEDED(ext->GetVertexShader(&vs))&&SUCCEEDED(ext->GetPixelShader(&ps));
+        const bool ui=known&&safe(vs,true)&&safe(ps,false);
+        drop(vs);drop(ps);return ui;
+    }
     template<class Draw> HRESULT hdrDraw(Draw draw){
         if(!hdr.active)return draw();
         bool linear=false;
@@ -675,7 +699,7 @@ private:
             if(!hdrUiPhase)if(const char* boundary=hdrBoundarySource()){
                 D3DSURFACE_DESC desc{};float rows[16];DWORD zwrite=1,zfunc=0,z=1;
                 if(SUCCEEDED(ext->GetRenderState(D3DRS_ZWRITEENABLE,&zwrite))&&SUCCEEDED(ext->GetRenderState(D3DRS_ZFUNC,&zfunc))&&
-                   SUCCEEDED(ext->GetRenderState(D3DRS_ZENABLE,&z))&&SUCCEEDED(ext->GetVertexShaderConstantF(0,rows,4))&&NorthlightUiBoundary::accepts(zwrite!=0,rows,zfunc==D3DCMP_ALWAYS,z!=0)&&fullViewport(desc,nullptr,true,false)&&hdrBackTarget()){
+                   SUCCEEDED(ext->GetRenderState(D3DRS_ZENABLE,&z))&&SUCCEEDED(ext->GetVertexShaderConstantF(0,rows,4))&&NorthlightUiBoundary::accepts(zwrite!=0,rows,zfunc==D3DCMP_ALWAYS,z!=0)&&fullViewport(desc,nullptr,true,false)&&hdrBackTarget()&&hdrUiInputs()){
                     if(!applied){renderEffects();spellReplay();}hdrBegin(false,boundary);
                 }
             }
@@ -3293,12 +3317,12 @@ public:
     }
     HRESULT STDMETHODCALLTYPE CreateVertexShader(const DWORD* code,IDirect3DVertexShader9** out) override { Guard mirrorLock(mirrorState.gate);
         HRESULT hr=ext->CreateVertexShader(code,out);
-        if(SUCCEEDED(hr)&&out&&*out)extensionWork("vertex shader registration",[&]{++vsGeneration;std::vector<DWORD> words;auto h=shaderHash(*out,words);int tag=NorthlightShaderTags::deviceTag(h);tag|=registerNativeShadow(*out,words);if(NorthlightUnlitReceiver::shader(reinterpret_cast<const uint32_t*>(words.data()),words.size(),m2ShaderFamily(h)==3))tag|=kUnlitTag;vsHashes[*out]=h;if(spellOn){shaderReads[static_cast<void*>(*out)]=NorthlightShaderReads::scan(reinterpret_cast<const uint32_t*>(words.data()),words.size());{bool bare=false;const bool ok=NorthlightSpellFog::vsFogProven(reinterpret_cast<const uint32_t*>(words.data()),words.size(),&bare);vsFogProven[*out]=uint8_t(ok?(bare?2:1):0);}}uiFallbackForget(*out);vsMajor[*out]=!words.empty()&&(words[0]>>16)==0xFFFEu?unsigned((words[0]>>8)&0xFFu):0u;if(world){world->registerShader(*out,h);world->registerEquipmentShader(*out,m2ShaderFamily(h)==3?words.data():nullptr,m2ShaderFamily(h)==3?words.size():0);particleCapture.registerVertex(*out,m2ShaderFamily(h));}if(autoBump)autoBump->registerVertex(*out,h,words.data(),words.size(),m2ShaderFamily(h));if(water)water->registerVertex(*out,h,words.data(),words.size());vsTags[*out]=tag|(water&&water->hasVertex(*out)?kWaterTag:0)|int(m2ShaderFamily(h)<<kFamilyShift);if(tag==1)++matchedTerrain;else if(tag==2)++matchedUI;});
+        if(SUCCEEDED(hr)&&out&&*out)extensionWork("vertex shader registration",[&]{++vsGeneration;std::vector<DWORD> words;auto h=shaderHash(*out,words);int tag=NorthlightShaderTags::deviceTag(h);tag|=registerNativeShadow(*out,words);if(NorthlightUnlitReceiver::shader(reinterpret_cast<const uint32_t*>(words.data()),words.size(),m2ShaderFamily(h)==3))tag|=kUnlitTag;vsHashes[*out]=h;if(spellOn||hdr.active)shaderReads[static_cast<void*>(*out)]=NorthlightShaderReads::scan(reinterpret_cast<const uint32_t*>(words.data()),words.size());if(spellOn){bool bare=false;const bool ok=NorthlightSpellFog::vsFogProven(reinterpret_cast<const uint32_t*>(words.data()),words.size(),&bare);vsFogProven[*out]=uint8_t(ok?(bare?2:1):0);}uiFallbackForget(*out);vsMajor[*out]=!words.empty()&&(words[0]>>16)==0xFFFEu?unsigned((words[0]>>8)&0xFFu):0u;if(world){world->registerShader(*out,h);world->registerEquipmentShader(*out,m2ShaderFamily(h)==3?words.data():nullptr,m2ShaderFamily(h)==3?words.size():0);particleCapture.registerVertex(*out,m2ShaderFamily(h));}if(autoBump)autoBump->registerVertex(*out,h,words.data(),words.size(),m2ShaderFamily(h));if(water)water->registerVertex(*out,h,words.data(),words.size());vsTags[*out]=tag|(water&&water->hasVertex(*out)?kWaterTag:0)|int(m2ShaderFamily(h)<<kFamilyShift);if(tag==1)++matchedTerrain;else if(tag==2)++matchedUI;});
         if(SUCCEEDED(hr))mirrorResources.wrap(out);return hr;
     }
     HRESULT STDMETHODCALLTYPE CreatePixelShader(const DWORD* code,IDirect3DPixelShader9** out) override { Guard mirrorLock(mirrorState.gate);
         HRESULT hr=ext->CreatePixelShader(code,out);
-        if(SUCCEEDED(hr)&&out&&*out)extensionWork("pixel shader registration",[&]{std::vector<DWORD> words;auto h=shaderHash(*out,words);uiFallbackForget(*out);if(hdr.active)hdrColor.forget(*out);psTags[*out]=contains(kUiPS,h)?2:0;psHashes[*out]=h;if(spellOn)shaderReads[static_cast<void*>(*out)]=NorthlightShaderReads::scan(reinterpret_cast<const uint32_t*>(words.data()),words.size());psMajor[*out]=!words.empty()&&(words[0]>>16)==0xFFFFu?unsigned((words[0]>>8)&0xFFu):0u;if(spellOn)psFogReg[*out]=psMajor[*out]==3?NorthlightLegacyFog::ps3FogColorRegister(reinterpret_cast<const uint32_t*>(words.data()),words.size()):-1;if(autoBump)autoBump->registerPixel(*out,h);if(water)water->registerPixel(*out,h,words.data(),words.size());if(world)world->registerPixelShader(*out);particleCapture.registerPixel(*out,words.data(),words.size());});
+        if(SUCCEEDED(hr)&&out&&*out)extensionWork("pixel shader registration",[&]{std::vector<DWORD> words;auto h=shaderHash(*out,words);uiFallbackForget(*out);if(hdr.active)hdrColor.forget(*out);psTags[*out]=contains(kUiPS,h)?2:0;psHashes[*out]=h;if(spellOn||hdr.active)shaderReads[static_cast<void*>(*out)]=NorthlightShaderReads::scan(reinterpret_cast<const uint32_t*>(words.data()),words.size());psMajor[*out]=!words.empty()&&(words[0]>>16)==0xFFFFu?unsigned((words[0]>>8)&0xFFu):0u;if(spellOn)psFogReg[*out]=psMajor[*out]==3?NorthlightLegacyFog::ps3FogColorRegister(reinterpret_cast<const uint32_t*>(words.data()),words.size()):-1;if(autoBump)autoBump->registerPixel(*out,h);if(water)water->registerPixel(*out,h,words.data(),words.size());if(world)world->registerPixelShader(*out);particleCapture.registerPixel(*out,words.data(),words.size());});
         if(SUCCEEDED(hr))mirrorResources.wrap(out);return hr;
     }
     // 0.3.187: the four draw entry points share drawHook(); each passes its capture and its real draw.
