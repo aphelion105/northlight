@@ -2650,6 +2650,23 @@ public:
         return hasContext();
     }
     unsigned modelContexts=0;
+    // A sky-only frame has no terrain/model draw to supply the camera. The
+    // projection was validated by the last world frame, but the basis and
+    // lighting must be read anew at the effects boundary. World draws retain
+    // their usual context path, including current projection/FOV and fog.
+    bool skyContext(const float* currentProjection){
+        if(failed)return false;if(valid)return true;
+        char map[64]={};NorthlightWorldCamera::Camera camera;NorthlightWorldCamera::Diagnostics why;
+        NorthlightWmoContext::Lighting light;
+        if(!NorthlightWorldCamera::readSkyPhase(map,currentProjection[2],camera,&why)||lastRequest.map!=map||
+           !NorthlightWmoContext::readGlobalLighting(camera.camera,light))return false;
+        auto lightHold=globalLightHold;lightHold.filter(light,map,GetTickCount());
+        if(!NorthlightWmoContext::context(camera.view,light,context))return false;
+        globalLightHold=std::move(lightHold);valid=true;traceContext=5;
+        std::memcpy(projection,currentProjection,sizeof projection);
+        updateWorldContext(map,camera.camera,&light);
+        return hasContext();
+    }
     bool wmoContext(IDirect3DVertexShader9* shader){
         if(failed)return false;
         auto it=wmoShaders.find(shader);if(it==wmoShaders.end())return false;
