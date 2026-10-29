@@ -192,6 +192,7 @@ test_material_ray_work.py
 test_material_replay_content.py
 test_material_replay_state.py
 test_material_terrain_bounds.py
+test_material_texel_sharing.py
 test_material_texture_simd.py
 test_material_wall_bounds.py
 test_memmap_diagnostics.py
@@ -348,6 +349,7 @@ test_sun_rim.py
 test_surface_memory_admission.py
 test_synced_slots_wiring.py
 test_temporal_history.py
+test_temporary_geometry.py
 test_terrain_cache_capacity.py
 test_terrain_capture_bounds.py
 test_terrain_capture_optimization.py
