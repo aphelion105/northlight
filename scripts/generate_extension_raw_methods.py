@@ -43,4 +43,4 @@ def generated():
     return '\n'.join(lines) + '\n'
 
 if __name__ == '__main__':
-    (northlight_paths.GENERATED / 'extension_raw_methods.inl').write_text(generated())
+    (northlight_paths.GENERATED / 'extension_raw_methods.inl').write_text(generated(), encoding='utf-8', newline='\n')

@@ -488,8 +488,8 @@ def forwarders_text(text):
 
 def generate():
     text = SDK.read_text()
-    (northlight_paths.GENERATED / 'forwarders.h').write_text(forwarders_text(text))
-    (northlight_paths.GENERATED / 'command_stream.inl').write_text(stream_text(text))
+    (northlight_paths.GENERATED / 'forwarders.h').write_text(forwarders_text(text), encoding='utf-8', newline='\n')
+    (northlight_paths.GENERATED / 'command_stream.inl').write_text(stream_text(text), encoding='utf-8', newline='\n')
 
 if __name__ == '__main__':
     generate()

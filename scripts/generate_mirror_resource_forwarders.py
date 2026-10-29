@@ -38,5 +38,5 @@ def generate():
             out.append(f'    {ret} STDMETHODCALLTYPE {name}({", ".join(decl)}) override {{{prefix}return real->{name}({", ".join(args)});}}')
         out.append('};')
     out.append('}')
-    (northlight_paths.GENERATED/'mirror_resource_forwarders.h').write_text('\n'.join(out)+'\n')
+    (northlight_paths.GENERATED/'mirror_resource_forwarders.h').write_text('\n'.join(out)+'\n', encoding='utf-8', newline='\n')
 if __name__=='__main__':generate()
