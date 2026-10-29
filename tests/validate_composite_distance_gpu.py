@@ -12,6 +12,7 @@ from validate_removal_distance_gpu import fixture, image
 def main():
  ap=argparse.ArgumentParser(description=__doc__)
  ap.add_argument('--capture-prefix');ap.add_argument('--output',type=Path)
+ ap.add_argument('--reference-shader',type=Path,default=fp.TESTS/'support/composite_distance/WorldComposite.bin')
  args=ap.parse_args()
  backend=os.environ['NORTHLIGHT_DXVK_D3D9']
  with tempfile.TemporaryDirectory(prefix='composite-distance-') as temp:
@@ -39,7 +40,8 @@ def main():
   if args.capture_prefix:prefixes.append(args.capture_prefix)
   rows=[]
   for prefix in prefixes:
-   result=subprocess.run([str(binary),prefix,str(fp.TESTS/'support/composite_distance/WorldComposite.bin'),str(fp.COMPILED/'WorldComposite.bin'),'composite-'+Path(prefix).name,str(fp.COMPILED/'WorldNormals.bin'),backend],cwd=folder,capture_output=True,text=True,check=True,timeout=60)
+   result=subprocess.run([str(binary),prefix,str(args.reference_shader),str(fp.COMPILED/'WorldComposite.bin'),'composite-'+Path(prefix).name,str(fp.COMPILED/'WorldNormals.bin'),backend],cwd=folder,capture_output=True,text=True,timeout=60)
+   if result.returncode:raise RuntimeError(result.stdout+result.stderr)
    print(result.stdout,end='',flush=True)
    rows.extend(json.loads(line) for line in result.stdout.splitlines() if line.startswith('{'))
   if args.output:args.output.write_text(json.dumps(rows,indent=2)+'\n')
