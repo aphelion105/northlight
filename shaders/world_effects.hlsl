@@ -580,7 +580,7 @@ float4 regionalFogAt(float2 uv,out float coverage) {
 // fires) on nearby surfaces. The game only glows the lamp model itself; this
 // lights the ground and walls around it. Unshadowed; the separate point pass
 // still subtracts the baked estimate of the one selected shadowed lamp.
-float4 LocalDirect(float2 uv:TEXCOORD0):COLOR0 {
+float4 localDirectValue(float2 uv,int lightCount) {
     float3 smoothNormal=tex2Dlod(NormalBuffer,float4(uv,0,0)).xyz;
     // r47 K4: lamps read weaker in direct sun (30%). The first lighting pass (the sun, by day) left
     // its visibility in the baseline alpha (s12); LocalLightInfo.z is the share removed in full sun,
@@ -593,7 +593,7 @@ float4 LocalDirect(float2 uv:TEXCOORD0):COLOR0 {
     float3 result=0;
     // Unused slots are zero constants (reach 0), so no per-light branch is needed.
     // LocalLightColor.w is the precomputed 1/(end-start).
-    [unroll]for(int i=0;i<8;++i){
+    [unroll]for(int i=0;i<lightCount;++i){
         float3 toLight=LocalLightPos[i].xyz-p;
         float inv=rsqrt(max(dot(toLight,toLight),.0025));
         float reach=saturate((LocalLightPos[i].w-1/inv)*LocalLightColor[i].w);
@@ -602,6 +602,8 @@ float4 LocalDirect(float2 uv:TEXCOORD0):COLOR0 {
     }
     return float4(result*(LocalLightInfo.y*(1-LocalLightInfo.z*sunlit)),0);
 }
+float4 LocalDirect(float2 uv:TEXCOORD0):COLOR0{return localDirectValue(uv,8);}
+float4 LocalDirect1(float2 uv:TEXCOORD0):COLOR0{return localDirectValue(uv,1);}
 // Sixteen lamps in one pass (local_light_batches.h wide(): two neighbouring 8-lamp batches whose joint rect costs less than
 // both): the same term as LocalDirect per lamp, the lamps in entry uniforms c68..c83 (position, w attenuation end) and
 // c84..c99 (colour, w 1/(end-start)); unused slots are zero. c52 (LocalLightInfo.yz) and s12 as for LocalDirect.

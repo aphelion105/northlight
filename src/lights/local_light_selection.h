@@ -41,6 +41,7 @@ template<unsigned N> struct Batch {
     unsigned count=0;
 };
 struct Selection {
+    std::array<NorthlightLocalLights::Light,Slots> sources{}; // Same source, colour and fade as the direct-light pass.
     std::array<Constant,Slots> position{},color{},fog{}; // 0.3.197: Slots, select() fills at most Capacity
     unsigned count=0;float nearest=0,fogDistance=128.f;
     template<unsigned N> Batch<N> batch(unsigned first)const{
@@ -74,6 +75,7 @@ inline Selection select(const std::vector<NorthlightLocalLights::Light>& lights,
         // Complete the selected influence sphere even for scaled bonfires.
         out.fogDistance=std::max(out.fogDistance,picks[i].score+2*l.attenuationEnd);
         out.color[i]={l.diffuse[0]*gain,l.diffuse[1]*gain,l.diffuse[2]*gain,1.f/std::max(l.attenuationEnd-std::min(l.attenuationStart,l.attenuationEnd*.9f),.05f)};
+        out.sources[i]=l;for(unsigned k=0;k<3;++k)out.sources[i].diffuse[k]=out.color[i][k];
     }
     return out;
 }
@@ -86,14 +88,14 @@ inline Selection select(const std::vector<NorthlightLocalLights::Light>& lights,
 // light in view.
 inline constexpr float OffscreenPenalty=2*VisibilityEnd;
 inline constexpr float ViewMarginSin=.34f,IncumbentMarginSin=.5f; // about 20 and 30 degrees
-inline bool inView(const NorthlightLocalLightScissor::View& v,const NorthlightLocalLights::Light& l,float marginSin){
+inline bool inView(const NorthlightLocalLightScissor::View& v,const NorthlightLocalLights::Light& l,float marginSin,const double* planes=nullptr){
     if(!v.valid)return true;
     double d[3],c[3]={};
     for(int i=0;i<3;++i){if(!std::isfinite(l.position[i]))return true;d[i]=double(l.position[i])-v.eye[i];}
     for(int i=0;i<3;++i)for(int k=0;k<3;++k)c[i]+=v.inverse[i][k]*d[k];  // (x, y, forward) as the scissor reconstructs them
     const double len=std::sqrt(c[0]*c[0]+c[1]*c[1]+c[2]*c[2]),r=double(l.attenuationEnd)*v.stretch+len*marginSin;
     if(!std::isfinite(r))return true;
-    const double px=1/std::fabs(v.projX),py=1/std::fabs(v.projY),nx=1/std::sqrt(1+px*px),ny=1/std::sqrt(1+py*py);
+    const double px=planes?planes[0]:1/std::fabs(v.projX),py=planes?planes[1]:1/std::fabs(v.projY),nx=planes?planes[2]:1/std::sqrt(1+px*px),ny=planes?planes[3]:1/std::sqrt(1+py*py);
     return (c[0]-px*c[2])*nx<=r&&(-c[0]-px*c[2])*nx<=r&&(c[1]-py*c[2])*ny<=r&&(-c[1]-py*c[2])*ny<=r;
 }
 // 0.3.197: stateful layer over the same scoring as select(). Under the cap every light's factor is exactly
@@ -120,15 +122,16 @@ struct Tracker {
         return lo<count&&entries[lo].id==id&&entries[lo].selected;
     }
     unsigned offscreen=0;                               // lights in the last update's candidates ranked off-screen (view given)
-    Selection update(const std::vector<NorthlightLocalLights::Light>& lights,const float* camera,unsigned limit,float dtSeconds,bool continuous,const NorthlightLocalLightScissor::View* view=nullptr,const NorthlightLocalLights::Light* additional=nullptr,unsigned additionalCount=0,const std::uint64_t* immediate=nullptr,unsigned immediateCount=0){
+    Selection update(const std::vector<NorthlightLocalLights::Light>& lights,const float* camera,unsigned limit,float dtSeconds,bool continuous,const NorthlightLocalLightScissor::View* view=nullptr,const NorthlightLocalLights::Light* additional=nullptr,unsigned additionalCount=0,const std::uint64_t* immediate=nullptr,unsigned immediateCount=0,uint32_t sourceTime=0){
         offscreen=0;
         limit=std::min(limit,Capacity);
         if(!limit)reset();
-        Selection out;fading=0;if(!limit)return out;
+        Selection out;fading=0;if(!limit||(!count&&lights.empty()&&(!additional||!additionalCount)))return out;
         const float dt=dtSeconds>0.f?std::min(dtSeconds,MaxGapSeconds):0.f,step=dt/FadeSeconds;
         struct Pick {float score,biased;const NorthlightLocalLights::Light* light;};
         const auto better=[](const Pick& a,const Pick& b){return a.biased!=b.biased?a.biased<b.biased:a.light->sourceId<b.light->sourceId;};
         std::array<Pick,Capacity+1> heap;unsigned n=0;const unsigned cap=limit+1; // best limit+1 by (biased,id); heap[0] is the worst
+        double planes[4];bool planesReady=false;
         const auto consider=[&](const NorthlightLocalLights::Light& l){
             float d2=0;for(unsigned i=0;i<3;++i){const float d=l.position[i]-camera[i];d2+=d*d;}
             const float reach=VisibilityEnd+l.attenuationEnd;
@@ -138,8 +141,14 @@ struct Tracker {
             if(n==cap&&!better(Pick{score,score-StickyBias,&l},heap[0]))return; // not even as an incumbent in view
             const bool inc=count&&incumbent(l.sourceId);
             float biased=score-(inc?StickyBias:0.f);
-            if(view&&!inView(*view,l,inc?IncumbentMarginSin:ViewMarginSin)){biased+=OffscreenPenalty;++offscreen;
+            if(view&&view->valid){
+              if(!planesReady){
+                planes[0]=1/std::fabs(view->projX);planes[1]=1/std::fabs(view->projY);
+                planes[2]=1/std::sqrt(1+planes[0]*planes[0]);planes[3]=1/std::sqrt(1+planes[1]*planes[1]);planesReady=true;
+              }
+              if(!inView(*view,l,inc?IncumbentMarginSin:ViewMarginSin,planes)){biased+=OffscreenPenalty;++offscreen;
                 if(n==cap&&!better(Pick{score,biased,&l},heap[0]))return;}
+            }
             const Pick p{score,biased,&l};
             if(n<cap){heap[n++]=p;std::push_heap(heap.begin(),heap.begin()+n,better);}
             else if(better(p,heap[0])){std::pop_heap(heap.begin(),heap.begin()+cap,better);heap[cap-1]=p;std::push_heap(heap.begin(),heap.begin()+cap,better);}
@@ -163,9 +172,11 @@ struct Tracker {
         struct Fade {unsigned index;float score,shown;};
         std::array<Fade,Slots> fade;unsigned fades=0;
         const auto leaving=[&](unsigned index){const Entry& e=entries[index];
+            const float shown=e.shown-step;
+            if(!continuous||!(shown>1e-6f))return;
             float d2=0;for(unsigned i=0;i<3;++i){const float d=e.light.position[i]-camera[i];d2+=d*d;}
-            const float score=std::sqrt(d2)-e.light.attenuationEnd,shown=e.shown-step;
-            if(continuous&&score<VisibilityEnd&&shown>1e-6f)fade[fades++]={index,score,shown};}; // 1e-6: float residue of 1-k*step is gone, not fading
+            const float score=std::sqrt(d2)-e.light.attenuationEnd;
+            if(score<VisibilityEnd)fade[fades++]={index,score,shown};}; // 1e-6: float residue of 1-k*step is gone, not fading
         unsigned old=0;
         for(unsigned i=0;i<selected;++i){
             while(old<count&&entries[old].id<sel[i].id)leaving(old++);
@@ -189,9 +200,11 @@ struct Tracker {
         std::sort(tail.begin(),tail.begin()+fades,[&](unsigned char a,unsigned char b){return fade[a].score!=fade[b].score?fade[a].score<fade[b].score:entries[fade[a].index].id<entries[fade[b].index].id;});
         out.count=selected+fades;
         const auto emit=[&](unsigned slot,const NorthlightLocalLights::Light& l,float score,float gain){
+            gain*=NorthlightLocalLights::pulseGain(l,sourceTime);
             out.position[slot]={l.position[0],l.position[1],l.position[2],l.attenuationEnd};
             out.fogDistance=std::max(out.fogDistance,score+2*l.attenuationEnd);
-            out.color[slot]={l.diffuse[0]*gain,l.diffuse[1]*gain,l.diffuse[2]*gain,1.f/std::max(l.attenuationEnd-std::min(l.attenuationStart,l.attenuationEnd*.9f),.05f)};};
+            out.color[slot]={l.diffuse[0]*gain,l.diffuse[1]*gain,l.diffuse[2]*gain,1.f/std::max(l.attenuationEnd-std::min(l.attenuationStart,l.attenuationEnd*.9f),.05f)};
+            out.sources[slot]=l;for(unsigned k=0;k<3;++k)out.sources[slot].diffuse[k]=out.color[slot][k];};
         for(unsigned i=0;i<selected;++i){const Sel& s=sel[order[i]];emit(i,*s.light,s.score,s.shown);}
         for(unsigned i=0;i<fades;++i){const Fade& f=fade[tail[i]];emit(selected+i,entries[f.index].light,f.score,f.shown);}
         if(out.count)out.nearest=selected?sel[order[0]].score:fade[tail[0]].score;
