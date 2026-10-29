@@ -177,6 +177,30 @@ int main(){
      (void)poolBefore;(void)before;
      // After a reset nothing is resident.
      st.reset();assert(st.activeKeys().empty()&&!st.beginStaging(keys({1}),{1}));assert(st.beginStaging(keys({1}),{0}));st.cancel();}
+    // Same content can have different Reset lifetimes. Filter existing hits,
+    // while cancelled staging and compatible idle reuse keep their old rules.
+    {S::Store st;build(st,keys({71,72}));const auto original=st.table();
+     std::vector<unsigned> pool(st.entries().size(),0);
+     auto managed=[&](uint32_t id){return id<pool.size()&&pool[id]==0;};
+     auto temporary=[&](uint32_t id){return id<pool.size()&&pool[id]==1;};
+     assert(st.activeKeys(managed).size()==2&&st.activeKeys(temporary).empty()&&st.activeKeys().size()==2);
+     const auto bytes=st.poolBytes();
+     assert(!st.beginStaging(keys({71,72}),{1,1},temporary)&&st.elidedMisses()==2&&!st.stagingOpen());
+     assert(st.table()==original&&st.poolBytes()==bytes);verifyInvariants(st);
+     assert(st.beginStaging(keys({71,72}),{},temporary)&&st.staging().stats.uploadedPages==2);
+     for(auto id:st.staging().uploadBuffer)assert(std::find(original.begin(),original.end(),id)==original.end());
+     st.cancel();assert(st.table()==original);verifyInvariants(st);
+     assert(st.beginStaging(keys({71,72}),{},temporary));pool.resize(st.entries().size());
+     for(auto id:st.staging().uploadBuffer)pool[id]=1;
+     createResources(st);st.commit();assert(st.activeKeys(managed).empty()&&st.activeKeys(temporary).size()==2);
+     // Prefer compatible idle originals over incompatible active twins.
+     assert(st.beginStaging(keys({71,72}),{},managed)&&st.staging().upload.empty()&&st.staging().table==original);
+     st.commit();assert(st.activeKeys(managed).size()==2&&st.activeKeys(temporary).empty());verifyInvariants(st);
+     // A mixed generation reuses compatible hits and uploads only the new key.
+     assert(st.beginStaging(keys({71,72,73,73}),{1,1,0,0},managed));
+     assert(st.staging().stats.reusedPages==3&&st.staging().stats.uploadedPages==1&&st.staging().table[2]==st.staging().table[3]);
+     createResources(st);st.commit();verifyInvariants(st);
+    }
     // Randomised: active buffers are never touched, committed tables are consistent, cancels leave no claims.
     {std::mt19937 rng(7);S::Store st;
      for(int round=0;round<4000;++round){

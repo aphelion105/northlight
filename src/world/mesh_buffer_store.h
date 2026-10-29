@@ -68,12 +68,15 @@ class Store {
     }
 public:
     size_t elidedMisses()const{return elidedMisses_;}
+    // Compatibility describes resource lifetime policy; identical bytes alone
+    // cannot prove that an elided page survives the next device Reset.
     // Keys of the buffers the ACTIVE table references (they cannot be released while active): what the worker may elide.
-    NorthlightMeshPageKey::KeySet activeKeys()const{
+    template<class Compatible> NorthlightMeshPageKey::KeySet activeKeys(Compatible&& compatible)const{
         NorthlightMeshPageKey::KeySet set;set.reserve(active_.size());
-        for(uint32_t id:active_)if(id<entries_.size()&&entries_[id].keyValid&&entries_[id].usable())set.insert(entries_[id].key);
+        for(uint32_t id:active_)if(id<entries_.size()&&entries_[id].keyValid&&entries_[id].usable()&&compatible(id))set.insert(entries_[id].key);
         return set;
     }
+    NorthlightMeshPageKey::KeySet activeKeys()const{return activeKeys([](uint32_t){return true;});}
     const std::vector<Entry>& entries()const{return entries_;}
     const std::vector<uint32_t>& table()const{return active_;}
     const Staging& staging()const{return staging_;}
@@ -120,14 +123,14 @@ public:
     // `elided` (optional, parallel to keys): pages whose data the plan no longer holds. Each MUST hit; if any misses (its
     // buffer was released or replaced since the key set was published) nothing is claimed or changed, false is returned
     // and elidedMisses() is the count, so the caller can drop the plan and have a full one rebuilt.
-    bool beginStaging(const std::vector<Key>& keys,const std::vector<uint8_t>& elided={}){
+    template<class Compatible> bool beginStaging(const std::vector<Key>& keys,const std::vector<uint8_t>& elided,Compatible&& compatible){
         elidedMisses_=0;
         if(staging_.open)return false;
         Staging s;s.open=true;s.keys=keys;s.table.assign(keys.size(),None);
         std::unordered_map<Key,uint32_t,NorthlightMeshPageKey::KeyHash> byKey;byKey.reserve(entries_.size());
         for(uint32_t id=0;id<entries_.size();++id){
             const Entry& e=entries_[id];
-            if(!e.keyValid||!e.usable()||e.use==Use::Claimed)continue;
+            if(!e.keyValid||!e.usable()||e.use==Use::Claimed||!compatible(id))continue;
             auto it=byKey.find(e.key);
             if(it==byKey.end())byKey.emplace(e.key,id);
             else if(e.use==Use::Active&&entries_[it->second].use!=Use::Active)it->second=id; // keep idle twins claimable
@@ -179,6 +182,7 @@ public:
         s.stats.pages=keys.size();
         staging_=std::move(s);return true;
     }
+    bool beginStaging(const std::vector<Key>& keys,const std::vector<uint8_t>& elided={}){return beginStaging(keys,elided,[](uint32_t){return true;});}
     // Atomic switch: the uploaded buffers become valid, the new table becomes the active one, buffers it no longer
     // references go idle with their keys.
     Stats commit(){
