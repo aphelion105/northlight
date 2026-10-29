@@ -18,6 +18,16 @@ int main(){
     assert(!coldUploadBudget(UINT64_MAX).valid);
     assert(coldInBuildBudget(70*MiB).available==326*MiB&&coldInBuildBudget(70*MiB).largest==102*MiB);
     assert(!admits({480*MiB,33*MiB-1,true},chunk));
+    // DEFAULT render targets use bounded CPU metadata, not copies of their
+    // logical GPU surface bytes. Managed/dynamic requests keep their old rule.
+    const auto target=defaultTargetBudget();
+    assert(target.valid&&target.available==258*MiB&&target.largest==MiB);
+    assert(admits({258*MiB,MiB,true},target));
+    assert(!admits({258*MiB-1,MiB,true},target)&&!admits({258*MiB,MiB-1,true},target));
+    assert(!admits({UINT64_MAX,UINT64_MAX,false},target));
+    const Sample afterColdGeometry{270*MiB,96*MiB,true};
+    assert(admits(afterColdGeometry,target));
+    assert(!admits(afterColdGeometry,dynamicBudget(1920ull*1080*4)));
     // Replay the original measured-shortfall scenario at the proposed reserve:
     // 515 entry + (384-362) shortfall = 537 MiB. Discarding that estimate
     // admits 516 MiB in a different region, while 492 MiB or a 95 MiB block

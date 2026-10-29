@@ -81,6 +81,13 @@ inline Budget dynamicBudget(uint64_t capacityBytes){
        !add(twice,capacityBytes,b.available)||!add(b.available,ProcessReserve,b.available))return {};
     b.valid=true;return b;
 }
+// The renderer never CPU-locks DEFAULT render/depth targets or renames them
+// like dynamic buffers. Real 4K/MSAA8 creation+use tests on D3D9/DXVK2/3
+// show no additional mapped VA for the target group. Keep bounded CPU metadata
+// headroom; actual HRESULT failure still rolls back the complete target group.
+inline Budget defaultTargetBudget(){
+    Budget b;b.available=ProcessReserve+2*MiB;b.largest=MiB;b.valid=true;return b;
+}
 constexpr uint64_t SmallPageCapacityLimit=512ull*1024ull;
 // After the complete generation passed full upload admission, each bounded
 // MANAGED page may use a fresh GlobalMemoryStatusEx available-VA sample instead
