@@ -115,7 +115,8 @@ def build(target, out_dir, root=None, cache=None):
     if cache:
         env['ZIG_GLOBAL_CACHE_DIR'] = env['ZIG_LOCAL_CACHE_DIR'] = str(cache)
     env.setdefault('ZIG_LOCAL_CACHE_DIR', env['ZIG_GLOBAL_CACHE_DIR'])
-    run = subprocess.run(['nice', '-n', '15', *cmd], cwd=root, env=env, stdout=subprocess.PIPE,
+    priority = ['nice', '-n', '15'] if shutil.which('nice') else []
+    run = subprocess.run([*priority, *cmd], cwd=root, env=env, stdout=subprocess.PIPE,
                          stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace')
     if run.returncode:
         raise RuntimeError(f'zig failed for {target}:\n' + run.stdout[-4000:])
