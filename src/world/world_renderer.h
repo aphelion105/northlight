@@ -3832,8 +3832,9 @@ public:
         for(int source=0;source<2;++source){
             if(anchorNewMap)actorCenterValid[source]=false;
             if(!actorMapOn){actorCenterValid[source]=false;memset(actorFrameMatrix[source],0,64);continue;}
-            actorCenter[source]=NorthlightActorShadowMap::leash(actorCenter[source],actorCenterValid[source],pivot,slotDirections[source*2]);actorCenterValid[source]=true;
-            NorthlightActorShadowMap::matrix(actorCenter[source],pivot,slotDirections[source*2],actorFrameMatrix[source]);
+            // The high-detail actor map is redrawn with the near cascade; it need not share the static cache's direction lattice.
+            actorCenter[source]=NorthlightActorShadowMap::leash(actorCenter[source],actorCenterValid[source],pivot,rawSourceDirections[source]);actorCenterValid[source]=true;
+            NorthlightActorShadowMap::matrix(actorCenter[source],pivot,rawSourceDirections[source],actorFrameMatrix[source]);
             actorFrameOn[source]=NorthlightActorShadowMap::finiteMatrix(actorFrameMatrix[source]);if(!actorFrameOn[source])actorCenterValid[source]=false;
         }
         int firstSource=sourceActive[0]||!sourceActive[1]?0:1;
