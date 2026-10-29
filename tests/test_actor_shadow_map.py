@@ -90,7 +90,7 @@ checks['resources: maps, tiles and visibility only with the shaders (ActorShadow
     and '||!makeTarget(w/2,h/2,D3DFMT_A8R8G8B8,&actorVisibility,&actorVisibilitySurface)' in w
     and 'if(quality.actorShadows&&quality.actorShadowDetail&&(FAILED(d->CreatePixelShader(kActorShadowShader,&actorShadowPS))||FAILED(d->CreatePixelShader(kActorTilesShader,&actorTilesPS))))' in w
     and 'void releaseActorTargetTextures(){for(auto& t:actorShadow)drop(t);for(auto& t:actorShadowSurface)drop(t);for(auto& t:actorTiles)drop(t);for(auto& t:actorTilesSurface)drop(t);drop(actorTilesMid);drop(actorTilesMidSurface);drop(actorVisibility);drop(actorVisibilitySurface);}' in w
-    and 'void releaseActorTargets(){releaseActorTargetTextures();drop(actorShadowPS);drop(actorTilesPS);}' in w
+    and 'void releaseActorTargets(){releaseActorTargetTextures();drop(actorShadowPS);drop(actorTilesPS);drop(actorTilesWidePS);drop(fogActorTiledPS);drop(fogCloudsActorTiledPS);}' in w
     and 'releaseActorTargets();drop(neutralWhite);' in w and '*static_cast<DWORD*>(lock.pBits)=0xffffffffu;neutralWhite->UnlockRect(0);' in w
     and 'nearShadow[s].invalidate();actorValid[s]=false;' in w)
 # Hysteresis hold and the near-first bounds order: wired once, gated diagnostics, shown on the actor map log line.

@@ -267,6 +267,7 @@ float fogShadowProjected(float3 q) {
 // Reuse the already-rendered fine actor map; never replay geometry for fog.
 // The far map continues to provide terrain, WMO and static-prop silhouettes.
 sampler2D FogActorMap : register(s4);
+sampler2D FogActorTiles : register(s5);
 row_major float4x4 FogActorMatrix : register(c68);
 float4 FogActorBounds : register(c66); // current map's conservative caster coverage
 float4 FogActorInfo : register(c72); // x: current source owns a valid actor map
@@ -297,6 +298,34 @@ float fogActorShadow(float3 q,float3 delta){
         cell+=sign(direction)*crossed;next+=abs(inv)*crossed;t=last;
     }
     return saturate(1-covered);
+}
+
+// Wide tile minima include eight fine texels around each block. Reject only
+// intervals proved empty; possible casters keep the original fine integral.
+float fogActorShadowTiled(float3 q,float3 delta){
+    float3 inverse=(delta<0?-1:1)/max(abs(delta),1e-12);
+    float3 a=(float3(FogActorBounds.xy,0)-q)*inverse;
+    float3 b=(float3(FogActorBounds.zw,1)-q)*inverse;
+    float3 enter=min(a,b),exit=max(a,b);
+    float t=max(0,max(max(enter.x,enter.y),enter.z));
+    float end=min(1,min(min(exit.x,exit.y),exit.z));
+    if(t>=end)return 1;
+    float2 origin=(q.xy*float2(.5,-.5)+.5)*1024+.5;
+    float2 direction=delta.xy*float2(512,-512);
+    float2 inv=(direction<0?-1:1)/max(abs(direction),1e-12);
+    float2 cell=floor((origin+direction*t)/16);
+    float2 next=((cell+(direction>0?1:0))*16-origin)*inv;
+    bool possible=false;
+    [loop]for(int i=0;i<132&&!possible&&t<end;++i){
+        float last=max(t,min(end,min(next.x,next.y)));
+        float z=tex2Dlod(FogActorTiles,float4((cell+.5)/64,0,0)).r+PassInfo.x*4;
+        float2 depth=q.z+delta.z*float2(t,last)-z;
+        possible=max(depth.x,depth.y)>=-1e-5;
+        float2 crossed=next<=last?1:0;
+        cell+=sign(direction)*crossed;next+=abs(inv)*16*crossed;t=last;
+    }
+    if(possible||t<end)return fogActorShadow(q,delta);
+    return 1;
 }
 
 // Cascades can contain the same caster. Compose visibility by union rather
@@ -514,6 +543,15 @@ float4 ActorTiles(float2 uv:TEXCOORD0,uniform float4 ActorInfo:register(c72)):CO
     float2 base=floor(uv/(4*ActorInfo.y))*4+.5;
     float z=1;
     [unroll]for(int y=0;y<4;++y)[unroll]for(int x=0;x<4;++x)z=min(z,tex2Dlod(ActorMap,float4((base+float2(x,y))*ActorInfo.y,0,0)).r);
+    return float4(z,z,z,1);
+}
+// Final 256 -> 64 reduction only: the border adds eight fine texels of
+// conservative support. The same targets and point-sampled R32 depth are used.
+float4 ActorTilesWide(float2 uv:TEXCOORD0,uniform float4 ActorInfo:register(c72)):COLOR0 {
+    float2 base=floor(uv/(4*ActorInfo.y))*4+.5;
+    float z=1;
+    [unroll]for(int y=-2;y<6;++y)[unroll]for(int x=-2;x<6;++x)
+        z=min(z,tex2Dlod(ActorMap,float4((base+float2(x,y))*ActorInfo.y,0,0)).r);
     return float4(z,z,z,1);
 }
 // ActorMatrix (c68..c71): this source's actor map matrix (layout as NearMatrix). ActorInfo (c72): x 1 = actor map valid for this
@@ -855,7 +893,7 @@ float4 SourceVisibilityPS(float2 uv:TEXCOORD0):COLOR0 {
 }
 sampler2D FogHeightBounds : register(s12); // footprint min/max ground, max layer height, validity
 float4 FogHeightControl : register(c65); // xy: global vertical support, z: global validity, w: matching per-cell bounds
-float4 worldFog(float2 uv,bool actorIntegration,bool directIntegration=true) {
+float4 worldFog(float2 uv,bool actorIntegration,bool directIntegration=true,bool tiledActor=false) {
     if(FogInfo.x<.5)return float4(0,0,0,1);
     uv=depthUV(uv);
     float depth=normalizedDepth(uv);float3 view=viewPositionDistance(uv,fogReceiverDistance(uv,depth));
@@ -959,7 +997,7 @@ float4 worldFog(float2 uv,bool actorIntegration,bool directIntegration=true) {
                 float heightFade=saturate(altitude*(1.0/12));heightFade*=heightFade*(3-2*heightFade);
                 if(dot(sunSource,1)>0){
                     float visibility=fogShadowProjected(shadowOrigin+shadowRay*((start+end)*.5));
-                    [branch]if(actorIntegration&&FogActorInfo.x>0&&visibility>0)visibility=fogCombineActor(visibility,fogActorShadow(actorOrigin+actorRay*start,actorRay*stepSize));
+                    [branch]if(actorIntegration&&FogActorInfo.x>0&&visibility>0)visibility=fogCombineActor(visibility,tiledActor?fogActorShadowTiled(actorOrigin+actorRay*start,actorRay*stepSize):fogActorShadow(actorOrigin+actorRay*start,actorRay*stepSize));
                     directWeight+=transmittance*absorb*(visibility*heightFade);
                 }
                 transmittance*=1-absorb;
@@ -1091,7 +1129,7 @@ float4 FogBlur(float2 uv:TEXCOORD0):COLOR0 {
 // scattering (rgb) and the cloud transmittance (a); drawn with ONE, SRCALPHA so it adds to the fog buffer and attenuates what is there.
 // Exactly (0,0,0,1) where no cloud is met. The base fog only attenuates the cloud light (Tbase, never written to alpha); its density is a cut-down
 // copy of WorldFog's (the full lines do not fit the 512-slot budget next to the field fetch and the shadow filter), see the comments below.
-float4 fogClouds(float2 uv,bool actorIntegration) {
+float4 fogClouds(float2 uv,bool actorIntegration,bool tiledActor=false) {
     // (no FogInfo.x test: the host draws this pass only when c21.x >= .5)
     uv=depthUV(uv);
     float depth=normalizedDepth(uv);float3 view=viewPositionDistance(uv,fogReceiverDistance(uv,depth));
@@ -1170,7 +1208,7 @@ float4 fogClouds(float2 uv,bool actorIntegration) {
                 // With no direct source/gain the shadowed term is exactly zero; ambient extinction still accumulates.
                 [branch]if(dot(max(DirectLight.rgb,0),1)>0&&FogInfo.y>0){
                     float visibility=fogShadowProjected(shadowOrigin+shadowRay*((start+end)*.5));
-                    [branch]if(actorIntegration&&FogActorInfo.x>0&&visibility>0)visibility=fogCombineActor(visibility,fogActorShadow(actorOrigin+actorRay*start,actorRay*stepSize));
+                    [branch]if(actorIntegration&&FogActorInfo.x>0&&visibility>0)visibility=fogCombineActor(visibility,tiledActor?fogActorShadowTiled(actorOrigin+actorRay*start,actorRay*stepSize):fogActorShadow(actorOrigin+actorRay*start,actorRay*stepSize));
                     directWeight+=exp(-tauBase)*weight*visibility*heightFade;
                 } // the sun light is dimmed by the base fog in front of the cloud
                 ambientWeight+=weight;
@@ -1507,5 +1545,7 @@ float4 ShadowUnion(float2 uv:TEXCOORD0):COLOR0 {
 float4 WorldFog(float2 uv:TEXCOORD0):COLOR0{return worldFog(uv,false);}
 float4 WorldFogAmbient(float2 uv:TEXCOORD0):COLOR0{return worldFog(uv,false,false);}
 float4 WorldFogActor(float2 uv:TEXCOORD0):COLOR0{return worldFog(uv,true);}
+float4 WorldFogActorTiled(float2 uv:TEXCOORD0):COLOR0{return worldFog(uv,true,true,true);}
 float4 FogClouds(float2 uv:TEXCOORD0):COLOR0{return fogClouds(uv,false);}
 float4 FogCloudsActor(float2 uv:TEXCOORD0):COLOR0{return fogClouds(uv,true);}
+float4 FogCloudsActorTiled(float2 uv:TEXCOORD0):COLOR0{return fogClouds(uv,true,true);}

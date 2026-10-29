@@ -1,6 +1,6 @@
 {
   "bump_include_sha256": "03f90009cf23e93260c70a31d78999b3bd60aebf8bbcf0d5d6e5e02bf5ef3ec1",
-  "source_sha256": "f4837ac21d75eaf78f1175d738235411cc4ba3b27874d65e2444a11a861d56a8",
+  "source_sha256": "7034e7d43e506a25dc68d64373a30cbc028a58bb72266a6cabce9a1eee547575",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
   "game_launched": false,
@@ -961,6 +961,108 @@
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
       "source_sha256": "7c6f7c951bf77c97e036ec1601c17228fa2bef36e6910e6ac074fcdc9a6d1a1d"
+    },
+    "ActorTilesWide": {
+      "target": "ps_3_0",
+      "bytes": 4732,
+      "sha256": "e7f9519a8f72c021c2f5490d6e7b62ffdc22a5dee30650771b6eef555e5062ea",
+      "static_instruction_slots": 330,
+      "temporary_registers": 4,
+      "samplers": [
+        12
+      ],
+      "instructions": {
+        "mov": 4,
+        "mul": 98,
+        "rcp": 1,
+        "frc": 1,
+        "add": 34,
+        "texldl": 64,
+        "min": 64
+      },
+      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "source_sha256": "7034e7d43e506a25dc68d64373a30cbc028a58bb72266a6cabce9a1eee547575"
+    },
+    "WorldFogActorTiled": {
+      "target": "ps_3_0",
+      "bytes": 10748,
+      "sha256": "688b1dd699cc910cf5666587db63f46f9cb5b5576b41783dcaae09053e7fc792",
+      "static_instruction_slots": 657,
+      "temporary_registers": 24,
+      "samplers": [
+        1,
+        3,
+        4,
+        5,
+        11,
+        12,
+        13
+      ],
+      "instructions": {
+        "mov": 70,
+        "if": 14,
+        "else": 9,
+        "mul": 154,
+        "frc": 8,
+        "add": 154,
+        "max": 31,
+        "min": 24,
+        "texldl": 13,
+        "rcp": 23,
+        "cmp": 53,
+        "endif": 14,
+        "dp3": 3,
+        "rsq": 1,
+        "pow": 1,
+        "mad": 4,
+        "rep": 4,
+        "break": 4,
+        "dp4": 5,
+        "exp": 1,
+        "endrep": 4
+      },
+      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "source_sha256": "7034e7d43e506a25dc68d64373a30cbc028a58bb72266a6cabce9a1eee547575"
+    },
+    "FogCloudsActorTiled": {
+      "target": "ps_3_0",
+      "bytes": 10712,
+      "sha256": "98729354aeead709d686c6b3e0c7c6dbfc7ba5d848501edefa15c3dbb814466c",
+      "static_instruction_slots": 663,
+      "temporary_registers": 26,
+      "samplers": [
+        1,
+        3,
+        4,
+        5,
+        11,
+        13,
+        14
+      ],
+      "instructions": {
+        "mul": 155,
+        "frc": 7,
+        "add": 147,
+        "mov": 77,
+        "max": 29,
+        "min": 25,
+        "texldl": 14,
+        "if": 15,
+        "else": 11,
+        "rcp": 22,
+        "cmp": 52,
+        "endif": 15,
+        "dp3": 3,
+        "rsq": 1,
+        "mad": 7,
+        "rep": 4,
+        "break": 4,
+        "dp4": 5,
+        "exp": 2,
+        "endrep": 4
+      },
+      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "source_sha256": "7034e7d43e506a25dc68d64373a30cbc028a58bb72266a6cabce9a1eee547575"
     }
   }
 }

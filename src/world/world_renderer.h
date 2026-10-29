@@ -629,6 +629,7 @@ private:
     IDirect3DPixelShader9 *cachedFastPS=nullptr,*cachedOpaqueFastPS=nullptr,*cachedOpaquePS=nullptr;
     IDirect3DPixelShader9 *lightingPS=nullptr,*giPS=nullptr,*fogPS=nullptr,*fogActorPS=nullptr,*fogCloudsActorPS=nullptr,*fogBlurPS=nullptr,*localDirectPS=nullptr,*localDirect16PS=nullptr,*removalPS=nullptr,*temporalPS=nullptr,*localFogPS=nullptr,*normalsPS=nullptr,*normalsNoDistancePS=nullptr,*finalPS=nullptr,*unlitPS=nullptr,*materialPS=nullptr,*shadowPS=nullptr,*cachedShadowPS=nullptr,*replayPS=nullptr;
     IDirect3DPixelShader9 *actorShadowPS=nullptr,*actorTilesPS=nullptr; /* 0.3.209 (task 29): optional (with their targets); without them the actor shadow map stays off */
+    IDirect3DPixelShader9 *actorTilesWidePS=nullptr,*fogActorTiledPS=nullptr,*fogCloudsActorTiledPS=nullptr;
     // 0.3.199 (fog clouds): the moving fog banks' own half-resolution pass (FogClouds), its noise volume and the wind clock. The volume's bytes are
     // generated once per process on a worker thread (first active frame, never DllMain) and shared by every device; the holder is leaked on
     // purpose and the worker detached, so neither DLL unload nor process exit waits on a thread under the loader lock.
@@ -657,8 +658,8 @@ private:
         }
         return localDirectSinglePS?localDirectSinglePS:localDirectPS;
     }
-    IDirect3DPixelShader9* fogVolumeShader(bool ambientOnly,bool actor){
-        if(!ambientOnly)return actor?fogActorPS:fogPS;
+    IDirect3DPixelShader9* fogVolumeShader(bool ambientOnly,bool actor,bool tiled=false){
+        if(!ambientOnly)return actor?(tiled&&fogActorTiledPS?fogActorTiledPS:fogActorPS):fogPS;
         if(!fogAmbientPS&&!fogAmbientRefused){
             if(FAILED(d->CreatePixelShader(kWorldFogAmbientShader,&fogAmbientPS))||!fogAmbientPS){drop(fogAmbientPS);fogAmbientRefused=true;}
         }
@@ -2202,6 +2203,9 @@ private:
         D3DCAPS9 fogCaps={};
         const bool extendedFog=SUCCEEDED(d->GetDeviceCaps(&fogCaps))&&fogCaps.MaxPixelShader30InstructionSlots>=std::max(kWorldFogActorShaderSlots,kFogCloudsActorShaderSlots);
         if(extendedFog&&(FAILED(d->CreatePixelShader(kWorldFogActorShader,&fogActorPS))||FAILED(d->CreatePixelShader(kFogCloudsActorShader,&fogCloudsActorPS)))){drop(fogActorPS);drop(fogCloudsActorPS);}
+        if(actorShadowPS&&actorTilesPS&&fogActorPS&&fogCloudsActorPS&&fogCaps.MaxPixelShader30InstructionSlots>=std::max(kWorldFogActorTiledShaderSlots,kFogCloudsActorTiledShaderSlots)){
+            if(FAILED(d->CreatePixelShader(kActorTilesWideShader,&actorTilesWidePS))||FAILED(d->CreatePixelShader(kWorldFogActorTiledShader,&fogActorTiledPS))||FAILED(d->CreatePixelShader(kFogCloudsActorTiledShader,&fogCloudsActorTiledPS))){drop(actorTilesWidePS);drop(fogActorTiledPS);drop(fogCloudsActorTiledPS);}
+        }
         logf("WORLD actor fog integration enabled=%u deviceSlots=%lu requiredSlots=%u fallback=far-map",unsigned(fogActorPS&&fogCloudsActorPS),fogCaps.MaxPixelShader30InstructionSlots,std::max(kWorldFogActorShaderSlots,kFogCloudsActorShaderSlots));
         if(FAILED(d->CreatePixelShader(kFogCloudsShader,&fogCloudsPS))){fogCloudsPS=nullptr;logf("WORLD fog clouds disabled: shader creation failed");} /* 0.3.199 (fog clouds): optional, the rest of the world never depends on it */
         if(FAILED(d->CreatePixelShader(kFogTemporalShader,&fogTemporalPS))){fogTemporalPS=nullptr;logf("WORLD fog temporal disabled: shader creation failed");} /* 0.3.199 (fog temporal): optional as well, the raw fog is the fallback */
@@ -2782,7 +2786,7 @@ public:
         logSnapshotAb(); /* 0.3.181: the SNAPSHOT ab window at device destroy */
         {std::lock_guard<std::mutex> lock(mutex);stopping=true;}wake.notify_one();if(worker.joinable())worker.join();std::atomic_store(&gpuScene->workerPreparation,std::shared_ptr<void>{});releaseGPU();for(auto& p:captureShaders)drop(p.second.replacement);for(auto& p:terrainShadowShaders)drop(p.second);for(auto& p:terrainCoverageVertices)drop(p.second);for(auto& p:terrainCoveragePixels)for(auto& variant:p.second)drop(variant.shader);}
     void releaseActorTargetTextures(){for(auto& t:actorShadow)drop(t);for(auto& t:actorShadowSurface)drop(t);for(auto& t:actorTiles)drop(t);for(auto& t:actorTilesSurface)drop(t);drop(actorTilesMid);drop(actorTilesMidSurface);drop(actorVisibility);drop(actorVisibilitySurface);}
-    void releaseActorTargets(){releaseActorTargetTextures();drop(actorShadowPS);drop(actorTilesPS);}
+    void releaseActorTargets(){releaseActorTargetTextures();drop(actorShadowPS);drop(actorTilesPS);drop(actorTilesWidePS);drop(fogActorTiledPS);drop(fogCloudsActorTiledPS);}
     // 0.3.214 (task 42): keepMesh (device Reset, resolution change) keeps what describes the UPLOADED mesh: the MANAGED
     // page pool + material textures (they survive Reset in D3D9 and DXVK), the vertices/indices aliases, batches, terrain
     // lists, fixedTerrain(+bits), uploadedStaticOwners, uploaded/uploadedMap/meshGeneration and a staged pendingMesh (MANAGED
@@ -5103,7 +5107,7 @@ public:
         IDirect3DTexture9* textures[]={foldScene?foldScene:color,depth,shadow[0],shadow[1],probe[0],probe[1],probe[2],probe[3],nullptr,nullptr,probe[4],waterMask,nullptr,regionalFogTexture};
         for(int i=0;i<14;++i){d->SetTexture(i,textures[i]);d->SetSamplerState(i,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(i,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);d->SetSamplerState(i,D3DSAMP_MINFILTER,(i==0||i==9)?D3DTEXF_LINEAR:D3DTEXF_POINT);d->SetSamplerState(i,D3DSAMP_MAGFILTER,(i==0||i==9)?D3DTEXF_LINEAR:D3DTEXF_POINT);d->SetSamplerState(i,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(i,D3DSAMP_SRGBTEXTURE,FALSE);}
         if(lightingCapture)lightingCapture->inputs(0,1u<<1,1u<<1); // Actual full-resolution sampled depth, before any post-process reuses its slot.
-        bool fogActorCurrent=false,fogAmbientOnlyCurrent=false;
+        bool fogActorCurrent=false,fogActorTiledCurrent=false,fogAmbientOnlyCurrent=false,actorTilesWideCurrent[2]={};
         auto setSource=[&](int source,bool first,bool volume=false){
             d->SetTexture(2,geometryReady?shadow[source*2]:neutralWhite);d->SetTexture(3,geometryReady?shadow[source*2+1]:neutralWhite);
             // Collapse only shadow queries to the centre at depth .5. With a
@@ -5133,7 +5137,11 @@ public:
                 const float wholeActorMap[4]={-1,-1,1,1};d->SetPixelShaderConstantF(66,fogActor?actorFogBounds[source]:wholeActorMap,1);
                 if(profileSampled())logf("FOG_CASTERS frame=%u source=%d static=%u actor=%u actorDraws=%u extraGeometryDraws=0 mapCoverage=%.4f",unsigned(frames),source,unsigned(geometryReady&&effects.shadows),unsigned(fogActor),fogActor?actorCasterCount[source]:0u,fogActor?(actorFogBounds[source][2]-actorFogBounds[source][0])*(actorFogBounds[source][3]-actorFogBounds[source][1])*.25f:0.f);
             }
-            if(volume){c[21][1]=1.2f*volumePalette.fogGain[source]*wx.shaftGain();c[21][2]=source==0?NorthlightSunHue::SunForwardCap:NorthlightSunHue::MoonForwardCap;d->SetPixelShaderConstantF(21,c[21],1);fogAmbientOnlyCurrent=NorthlightFogAmbient::eligible(rgb,c[21][1]);}
+            if(volume){
+                fogActorTiledCurrent=fogActorCurrent&&actorTilesWideCurrent[source]&&fogActorTiledPS&&fogCloudsActorTiledPS&&NorthlightActorShadowMap::tiledFogRange(actorMatrices[source],c[15],c[24][0]);
+                d->SetTexture(5,fogActorTiledCurrent?actorTiles[source]:textures[5]);
+                if(profileSampled())logf("FOG_ACTOR_TILES frame=%u source=%d enabled=%u wideCurrent=%u",unsigned(frames),source,unsigned(fogActorTiledCurrent),unsigned(actorTilesWideCurrent[source]));
+                c[21][1]=1.2f*volumePalette.fogGain[source]*wx.shaftGain();c[21][2]=source==0?NorthlightSunHue::SunForwardCap:NorthlightSunHue::MoonForwardCap;d->SetPixelShaderConstantF(21,c[21],1);fogAmbientOnlyCurrent=NorthlightFogAmbient::eligible(rgb,c[21][1]);}
             c[27][0]=first?(volume?1.f:1.f-authoredFill):0.f;c[27][1]=sourceWeights[source];d->SetPixelShaderConstantF(27,c[27],1);
         };
         lightingMark(3);
@@ -5177,7 +5185,11 @@ public:
                 if(!check(quad(mid,mid),"actor shadow tile pass"))return false;
                 if(!check(d->SetRenderTarget(0,actorTilesSurface[source]),"actor tile target"))return false;
                 d->SetTexture(12,actorTilesMid);d->SetPixelShaderConstantF(72,midInfo,1);
+                const bool wideFogTiles=effects.fog&&actorTilesWidePS&&fogActorTiledPS&&fogCloudsActorTiledPS&&NorthlightActorShadowMap::tiledFogRange(actorMatrices[source],c[15],c[24][0]);
+                if(wideFogTiles)d->SetPixelShader(actorTilesWidePS);
                 if(!check(quad(tiles,tiles),"actor shadow tile pass"))return false;
+                actorTilesWideCurrent[source]=wideFogTiles;
+                if(wideFogTiles)d->SetPixelShader(actorTilesPS);
             }
             if(profile)profile->mark("ActorTiles");
             if(!check(d->SetRenderTarget(0,actorVisibilitySurface),"actor visibility target")||!check(d->Clear(0,nullptr,D3DCLEAR_TARGET,0xffffffff,1,0),"clear actor visibility"))return false;
@@ -5358,7 +5370,7 @@ public:
         d->SetPixelShaderConstantF(18,fogAmbient,1); /* cooler environment scatter while the sun is up (w kept) */
         int lastFogSource=firstSource;bool lastFogFirst=true;
         for(int source=0;source<2;++source){if(!sourceActive[source]&&source!=firstSource)continue;
-            setSource(source,first,true);d->SetPixelShader(fogVolumeShader(fogAmbientOnlyCurrent,fogActorCurrent));d->SetRenderState(D3DRS_ALPHABLENDENABLE,!first);d->SetRenderState(D3DRS_COLORWRITEENABLE,first?15:7);
+            setSource(source,first,true);d->SetPixelShader(fogVolumeShader(fogAmbientOnlyCurrent,fogActorCurrent,fogActorTiledCurrent));d->SetRenderState(D3DRS_ALPHABLENDENABLE,!first);d->SetRenderState(D3DRS_COLORWRITEENABLE,first?15:7);
             if(!check(quad(w/2,h/2),"celestial volumetric raymarch"))return false;lastFogSource=source;lastFogFirst=first;first=false;
         }
         if(profile)profile->mark("FogMarch");
@@ -5382,19 +5394,20 @@ public:
             const DWORD cloudFilter=D3DTEXF_LINEAR;d->SetSamplerState(14,D3DSAMP_MINFILTER,cloudFilter);d->SetSamplerState(14,D3DSAMP_MAGFILTER,cloudFilter);d->SetSamplerState(14,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(14,D3DSAMP_SRGBTEXTURE,FALSE);
             d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE);d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE);d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_SRCALPHA);d->SetRenderState(D3DRS_BLENDOP,D3DBLENDOP_ADD);
             d->SetRenderState(D3DRS_SEPARATEALPHABLENDENABLE,TRUE);d->SetRenderState(D3DRS_SRCBLENDALPHA,D3DBLEND_ZERO);d->SetRenderState(D3DRS_DESTBLENDALPHA,D3DBLEND_SRCALPHA);d->SetRenderState(D3DRS_BLENDOPALPHA,D3DBLENDOP_ADD);
-            d->SetRenderState(D3DRS_COLORWRITEENABLE,15);d->SetPixelShader(fogActorCurrent?fogCloudsActorPS:fogCloudsPS);
+            d->SetRenderState(D3DRS_COLORWRITEENABLE,15);d->SetPixelShader(fogActorCurrent?(fogActorTiledCurrent?fogCloudsActorTiledPS:fogCloudsActorPS):fogCloudsPS);
             const bool cloudsDrawn=check(quad(w/2,h/2),"fog clouds raymarch");
             if(!sameSource)setSource(lastFogSource,lastFogFirst,true);
             d->SetPixelShaderConstantF(25,c[25],2); /* 0.3.199 (fog clouds): the bank's game fog parameters and colour back for the lamp fog, blur and composite */
             d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE);d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_ONE);d->SetRenderState(D3DRS_BLENDOP,D3DBLENDOP_ADD);
             d->SetRenderState(D3DRS_SEPARATEALPHABLENDENABLE,FALSE);
-            d->SetRenderState(D3DRS_ALPHABLENDENABLE,!lastFogFirst);d->SetRenderState(D3DRS_COLORWRITEENABLE,lastFogFirst?15:7);d->SetPixelShader(fogVolumeShader(fogAmbientOnlyCurrent,fogActorCurrent));
+            d->SetRenderState(D3DRS_ALPHABLENDENABLE,!lastFogFirst);d->SetRenderState(D3DRS_COLORWRITEENABLE,lastFogFirst?15:7);d->SetPixelShader(fogVolumeShader(fogAmbientOnlyCurrent,fogActorCurrent,fogActorTiledCurrent));
             d->SetTexture(14,nullptr);d->SetSamplerState(14,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(14,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);d->SetSamplerState(14,D3DSAMP_ADDRESSW,D3DTADDRESS_CLAMP);
             d->SetSamplerState(14,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(14,D3DSAMP_MAGFILTER,D3DTEXF_POINT);
             if(!cloudsDrawn)return false;
             if(profile)profile->mark("FogClouds");
         }
         d->SetTexture(4,textures[4]);
+        d->SetTexture(5,textures[5]);
         d->SetTexture(12,baselineLight);
         d->SetPixelShaderConstantF(17,c[17],2); /* restore the bank's direct/ambient before lamp fog, blur and composite */
         if(localDirectCount&&debug==0){

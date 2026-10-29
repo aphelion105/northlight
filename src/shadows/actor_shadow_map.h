@@ -58,6 +58,17 @@ inline bool finiteMatrix(const float* m){
     for(unsigned i=0;i<16;++i)if(!std::isfinite(m[i]))return false;
     return true;
 }
+// Keep the tiled fog proof within a bounded float-coordinate range. Larger
+// camera offsets, invalid transforms or a negative bias use the fine path.
+inline bool tiledFogRange(const float* m,const float* camera,float bias){
+    if(!camera||!finiteMatrix(m)||!std::isfinite(bias)||bias<0)return false;
+    for(unsigned axis=0;axis<2;++axis){
+        double origin=m[12+axis],squared=0,magnitude=std::fabs(origin);
+        for(unsigned k=0;k<3;++k){const double term=double(camera[k])*m[4*k+axis];origin+=term;magnitude+=std::fabs(term);squared+=double(m[4*k+axis])*m[4*k+axis];}
+        if(!(std::fabs(origin)+std::ldexp(magnitude,-20)+128*std::sqrt(squared)<=32))return false;
+    }
+    return true;
+}
 // Conservative light-plane bounds for fog sampling. Includes point-texel coverage
 // and float matrix evaluation error; unknown bounds keep the whole actor map.
 inline bool fogBounds(bool valid,const float* low,const float* high,const float* matrix,float* out){
