@@ -56,7 +56,7 @@ checks={
  '0.3.192 frame fence: one member, endFrame() after deferred logs before any early return, drop() in the release paths, touch() on the reuse path and at both live IB draw sites':
     w.count('NorthlightDynamicRing::FrameFence frameFence;')==1 and w.count('DeviceQueries')==0
     and 'flushDeferredLogs();' in frame_prefix and 'return' not in frame_prefix
-    and 'queries.drop();' in release and w.count('queries.drop();')==2
+    and 'queries.drop();' in release and 'NorthlightDynamicRing::reset(replayIndexRing,0,queries);queries.drop();' in w
     and 'if(reuse){terrainUploadReused=true;if(liveTerrainIndexCount||liveDirectionalIndexCount)NorthlightDynamicRing::touch(liveIndexRing,fence());return true;}' in up
     and w.count('NorthlightDynamicRing::touch(')==2 and pr.count('NorthlightDynamicRing::touch(liveIndexRing,fence());')==1
     and 'd->SetIndices(liveIndicesGPU);NorthlightDynamicRing::touch(liveIndexRing,fence());' in w

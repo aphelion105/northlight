@@ -235,6 +235,7 @@ SPAN_ALLOWED={'WORLD elided page missed':'capped error: first 12 staging misses 
  'WORLD GPU_CAPTURE_ATTEMPT ':'explicit diagnostic capture only; excluded from FPS and capped at four',
  'SHADOW experiment selection allocation failed':'error','WORLD streaming retry':'capped error','WORLD staged mesh committed':'event: one per commit','WORLD mesh pool trimmed':'rare event: after 3 consecutive commits with >16 MiB idle pool surplus',
  'WORLD fog clouds disabled':'one-off error per device (0.3.199): optional shader creation failed','WORLD fog temporal disabled':'one-off error per device (0.3.199): optional shader creation failed','WORLD actor shadow map disabled':'one-off error per device (0.3.209): optional shader creation failed',
+ 'WORLD pressure reset replay fence retry':'capped error: diagnostics only, first three Reset fence failures',
  'GI probe blend texture unavailable':'one-off warning (0.3.197: static once flag)'}
 SPAN_DEFERRED=['MODEL GPU cache','MODEL bulk sharing','MODEL GPU policy','MODEL GPU clears','MODEL shadow actors','MODEL shadow selection','RIGID memory','RIGID event','WORLD actor packets']
 KEYWORDS={'if','for','while','switch','return','catch','sizeof','defined','decltype','static_assert','alignof','noexcept','do','else','try','new','delete'}
@@ -277,3 +278,6 @@ span_checks={
 for name,ok in span_checks.items():print(('PASS ' if ok else 'FAIL ')+name)
 assert all(span_checks.values()),(bad,missed)
 
+
+# Recovery errors remain bounded even when the Reset fence never succeeds.
+assert 'NorthlightDiagnostics::enabled()&&resetReplayFailures<=3' in fp.src('world_renderer.h').read_text()
