@@ -116,6 +116,7 @@ test_frame_stall_profile.py
 test_game_snapshot.py
 test_geometry_handoff.py
 test_geometry_memory.py
+test_geometry_orbit.py
 test_geometry_retry.py
 test_gi_quality.py
 test_gi_settings_dependencies.py

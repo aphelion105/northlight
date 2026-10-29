@@ -216,7 +216,7 @@ class WorldRenderer {
         NorthlightGI::ProbeRelightCache::Stats relightStats;
         bool staticOnly=false,partial=false;
     };
-    // probeCenter (0.3.153 GIProbeAhead): probe window origin, solve order and move trigger; geometryCenter (0.3.169 lead):
+    // probeCenter (0.3.153 GIProbeAhead): probe window origin, solve order and move trigger; geometryCenter (orbit pivot + bounded travel lead):
     // the region build centre and its refresh trigger; camera (eye) for everything else, including every coverage check.
     struct Request { std::shared_ptr<const NorthlightActorGeometry::ActorJob> actorJob;uint64_t actorSerial=0; V camera,probeCenter,geometryCenter; NorthlightGI::Lighting light; std::string map; uint64_t id=0,baseId=0;DWORD queuedAt=0;unsigned reason=0;bool giEnabled=true,fogEnabled=true; };
     std::shared_ptr<NorthlightGpuScene::Scene> gpuScene;
@@ -339,7 +339,7 @@ private:
     unsigned resourceMemoryProfileFrames=0;
     // 0.3.169 coverage hold and geometry lead (render thread). coverMax: largest eye-to-active
     // distance since the last WORLD camera line. A hold episode is active beyond 96 units.
-    NorthlightWorldStreaming::Motion geometryMotion;float geometryLead=0,coverMax=0,holdMax=0;
+    NorthlightWorldStreaming::Motion geometryMotion;float geometryLead=0,geometryAnchorOffset=0,coverMax=0,holdMax=0;
     bool coverageHold=false;DWORD holdStart=0;unsigned holdEpisodes=0;
     const char* skipReason="";
     bool gpuDiagnosticArmed=true,gpuNormalDiagnosticRequested=false,gpuDiagnosticFrame=false;unsigned gpuDiagnosticCaptures=0;
@@ -3391,10 +3391,13 @@ public:
         r.probeCenter=r.camera;
         if(quality.giProbeAhead){const V view=V(context.inverseView[8],context.inverseView[9],0)*projection[2];const float length=std::sqrt(NorthlightGI::dot(view,view));
             if(length>1e-3f)r.probeCenter=r.camera+view*(float(quality.giProbeAhead)/length);}
-        // 0.3.169 geometry lead: centre the region build ahead along the travel velocity.
+        // Keep the region stable under camera orbits; the total eye offset,
+        // including travel lead, retains the existing 60-unit safety bound.
         {const V forward=V(context.inverseView[8],context.inverseView[9],context.inverseView[10])*projection[2];const float length=std::sqrt(NorthlightGI::dot(forward,forward));
-         geometryMotion.update(r.map,r.camera,length>1e-6f?r.camera+forward*(pivotDistance/length):r.camera,GetTickCount());
-         r.geometryCenter=NorthlightWorldStreaming::leadCenter(r.camera,geometryMotion.velocity(),float(geometryBuildEstimateMs.load(std::memory_order_relaxed))*.001f);
+         const V pivot=length>1e-6f?r.camera+forward*(pivotDistance/length):r.camera;
+         geometryMotion.update(r.map,r.camera,pivot,GetTickCount());
+         r.geometryCenter=NorthlightWorldStreaming::anchoredCenter(r.camera,pivot,geometryMotion.velocity(),float(geometryBuildEstimateMs.load(std::memory_order_relaxed))*.001f);
+         geometryAnchorOffset=std::sqrt(NorthlightGI::dot(pivot-r.camera,pivot-r.camera));
          geometryLead=std::sqrt(NorthlightGI::dot(r.geometryCenter-r.camera,r.geometryCenter-r.camera));}
         if(NorthlightQuality::giActorCapture(quality)&&lastRequest.map==r.map&&completedActorSceneMap()==r.map){r.actorJob=completedActorJob();r.actorSerial=actorJobSerial();}
         std::shared_ptr<Snapshot> retiredSnapshot,expiredPublication;
@@ -3458,7 +3461,7 @@ public:
                  context.inverseView[8]*projection[2],context.inverseView[9]*projection[2],context.inverseView[10]*projection[2],pivotDistance,geometryLead);
          }else if(coverageHold)holdMax=std::max(holdMax,distance);}
         DWORD now=GetTickCount();if(NorthlightDiagnostics::enabled()&&now-diagnosticTick>=250){diagnosticTick=now;
-            logf("WORLD camera tick=%lu rendered=%u eye=(%.2f %.2f %.2f) forward=(%.4f %.4f %.4f) sun=(%.5f %.5f %.5f) GI=%llu pivotDistance=%.1f pivotUpdates=%u coverMax=%.1f lead=%.1f pivotSource=%s snapCorrections=%u selfDistance=%.1f radiusSelf=%d nearBlendAtSelf=%.2f",(unsigned long)now,frames,context.camera[0],context.camera[1],context.camera[2],context.inverseView[8]*projection[2],context.inverseView[9]*projection[2],context.inverseView[10]*projection[2],context.lightDirection[0],context.lightDirection[1],context.lightDirection[2],(unsigned long long)(active?active->serial:0),pivotDistance,pivotUpdates,coverMax,geometryLead,
+            logf("WORLD camera tick=%lu rendered=%u eye=(%.2f %.2f %.2f) forward=(%.4f %.4f %.4f) sun=(%.5f %.5f %.5f) GI=%llu pivotDistance=%.1f pivotUpdates=%u coverMax=%.1f lead=%.1f anchorOffset=%.1f pivotSource=%s snapCorrections=%u selfDistance=%.1f radiusSelf=%d nearBlendAtSelf=%.2f",(unsigned long)now,frames,context.camera[0],context.camera[1],context.camera[2],context.inverseView[8]*projection[2],context.inverseView[9]*projection[2],context.inverseView[10]*projection[2],context.lightDirection[0],context.lightDirection[1],context.lightDirection[2],(unsigned long long)(active?active->serial:0),pivotDistance,pivotUpdates,coverMax,geometryLead,geometryAnchorOffset,
                 NorthlightShadowPivot::name(pivotCorrection.source),pivotCorrection.snapCorrections,pivotCorrection.selfDistance,int(pivotCorrection.hasSelf),pivotCorrection.nearBlendAtSelf(sourceMatrices[0][0])); /* 0.3.190: the near matrix the shader gets (source 0) */
             coverMax=0;
         }

@@ -50,10 +50,14 @@ int main(){
     space.set(32,36,false);auto tail=space.sample(probe,budget);
     assert(tail.witnessOnly&&tail.regionQueries==2&&tail.memory.largest==budget.largest&&admits(tail.memory,budget));
     assert(tail.memory.largest<space.original().largest);
-    // Escalating a later static transaction must re-probe a lower bound. The
-    // former 144 MiB witness must not falsely refuse a 272 MiB requirement.
+    // A later larger transaction asks farther back from the remembered end.
+    // The previous lower bound cannot authorize it; a fresh region must do so.
     const auto larger=dynamicBudget(128*MiB);assert(!admits(tail.memory,larger));
-    auto escalation=space.sample(probe,larger);assert(escalation.fullScan&&admits(escalation.memory,larger));
+    auto escalation=space.sample(probe,larger);assert(escalation.witnessOnly&&escalation.regionQueries==2&&admits(escalation.memory,larger));
+    // Going beyond the original region is harmless: the fresh query fails
+    // closed and the complete walk still finds the actual process maximum.
+    auto excessive=space.sample(probe,Budget{MiB,3000*MiB,true});
+    assert(excessive.fullScan&&!admits(excessive.memory,Budget{MiB,3000*MiB,true}));
     // A tiny interior split can halve the largest free range. Subtracting its
     // bytes from a frame-old size would be unsafe; fresh queries reject it.
     space.set(1023,1024,false);Budget splitBudget{768*MiB,1500*MiB,true};
