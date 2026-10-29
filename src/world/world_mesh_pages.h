@@ -30,7 +30,7 @@ constexpr uint32_t AnchorModulus=6144;
 // whose key is in it is freed the moment it is finished (key computed first), so the worker never holds more than the pages
 // that must be uploaded plus the one being filled. Anchors and page boundaries never depend on it. peakLiveBytes (optional)
 // receives the largest live page capacity during the build (kept pages + the page just finished), for measurements.
-struct Options {uint32_t anchorModulus=AnchorModulus,minFillVertices=MinFillVertices;const NorthlightMeshPageKey::KeySet* resident=nullptr;uint64_t* peakLiveBytes=nullptr;NorthlightWorldMesh::PreparationCache* preparation=nullptr;};
+struct Options {uint32_t anchorModulus=AnchorModulus,minFillVertices=MinFillVertices;const NorthlightMeshPageKey::KeySet* resident=nullptr;uint64_t* peakLiveBytes=nullptr;NorthlightWorldMesh::PreparationCache* preparation=nullptr;bool spooled=false;};
 struct Page {
     std::vector<NorthlightGI::WorldVertex> vertices;
     // Page-local indices fit losslessly in 16 bits; source indices stay 32-bit.
@@ -38,7 +38,7 @@ struct Page {
     NorthlightMeshPageKey::Key key; // 0.3.216: content key of vertices+indices, set by build() on the worker
     // 0.3.216: the GPU already holds exactly this page (its key was resident when the plan was built): vertices/indices
     // were freed on the worker, key and exact byte sizes remain. The render thread must find it in the buffer store.
-    bool elided=false;
+    bool elided=false,spooled=false;uint64_t fileOffset=0;
     size_t vertexCount()const{return key.vertexBytes/sizeof(NorthlightGI::WorldVertex);}
     size_t indexCount()const{return key.indexBytes/sizeof(uint16_t);}
 };
@@ -46,9 +46,17 @@ struct Batch : NorthlightWorldMesh::Batch {
     uint32_t page=0,minVertex=0,vertexCount=0;
 };
 struct Plan {
+    std::shared_ptr<NorthlightGI::TemporaryGeometryFile> temporary;
     std::vector<Page> pages;
     std::vector<Batch> batches;
     uint64_t vertexBytes=0,indexBytes=0;
+    bool copy(const Page& page,bool vertices,size_t offset,size_t bytes,void* target)const{
+        const uint64_t size=vertices?page.key.vertexBytes:page.key.indexBytes;
+        if(page.elided||!target||offset>size||bytes>size-offset)return false;
+        if(!page.spooled){if(size!=(vertices?page.vertices.size()*sizeof(NorthlightGI::WorldVertex):page.indices.size()*sizeof(uint16_t)))return false;std::memcpy(target,(vertices?reinterpret_cast<const char*>(page.vertices.data()):reinterpret_cast<const char*>(page.indices.data()))+offset,bytes);return true;}
+        if(!temporary||page.fileOffset>temporary->size()||uint64_t(page.key.vertexBytes)+page.key.indexBytes>temporary->size()-page.fileOffset)return false;
+        try{temporary->read(page.fileOffset+(vertices?0:page.key.vertexBytes)+offset,target,bytes);return true;}catch(const std::exception&){return false;}
+    }
     void accountMemory(NorthlightMemoryFootprint::Counter& memory,bool includeObject=true)const{
         using namespace NorthlightMemoryFootprint;
         if(includeObject){if(!memory.visit(this))return;memory.add(Metadata,sizeof(*this));}
@@ -131,6 +139,11 @@ template<bool Segmented> inline bool buildImpl(const NorthlightWorldMesh::WorldM
             peakLive=std::max(peakLive,liveKept+capacity);
             if(options.resident&&options.resident->count(p.key)){
                 std::vector<NorthlightGI::WorldVertex>().swap(p.vertices);std::vector<uint16_t>().swap(p.indices);p.elided=true;
+            }else if(options.spooled){
+                if(!next.temporary)next.temporary=std::make_shared<NorthlightGI::TemporaryGeometryFile>();
+                p.fileOffset=next.temporary->append(p.vertices.data(),p.key.vertexBytes);
+                next.temporary->append(p.indices.data(),p.key.indexBytes);p.spooled=true;
+                std::vector<NorthlightGI::WorldVertex>().swap(p.vertices);std::vector<uint16_t>().swap(p.indices);
             }else{
                 // Content anchors often close city pages half full. Keep the
                 // exact bytes, not a full 512 KiB vertex capacity per page.
@@ -252,11 +265,13 @@ template<bool Segmented> inline bool buildImpl(const NorthlightWorldMesh::WorldM
         }
         if(expectedStart!=input.pagingIndexCount())return fail("Paged mesh batches do not cover all indices");
         if(!next.pages.empty())finishPage(next.pages.back()); // never fails: compaction is optional
+        if(next.temporary)next.temporary->flush();
         if(options.peakLiveBytes)*options.peakLiveBytes=peakLive;
         if(options.preparation&&options.anchorModulus==AnchorModulus&&options.minFillVertices==MinFillVertices)options.preparation->rememberPages(input,next);
         output=std::move(next);error.clear();return true;
     } catch(const std::bad_alloc&) {return fail("Paged mesh worker allocation failed");}
       catch(const std::length_error&) {return fail("Paged mesh worker allocation size overflow");}
+      catch(const std::runtime_error&) {return fail("Paged mesh temporary storage failed");}
 }
 inline bool build(const NorthlightWorldMesh::WorldMeshUploadPlan& input,Plan& output,std::string& error,
                   const NorthlightGI::AllocationAdmission& admit = {},const Options& options = {}) {
@@ -289,7 +304,8 @@ inline const char* validatePages(const NorthlightWorldMesh::WorldMeshUploadPlan&
     uint64_t vertexBytes=0,indexBytes=0;
     for(const auto& page:pages.pages) {
         // An elided page has no data; its key carries the exact sizes. Every other page must match its key.
-        if(page.elided?!page.vertices.empty()||!page.indices.empty():page.key.vertexBytes!=page.vertices.size()*sizeof(NorthlightGI::WorldVertex)||page.key.indexBytes!=page.indices.size()*sizeof(uint16_t))return "mesh page key size mismatch";
+        if(page.spooled&&(!pages.temporary||page.fileOffset>pages.temporary->size()||uint64_t(page.key.vertexBytes)+page.key.indexBytes>pages.temporary->size()-page.fileOffset))return "mesh page temporary range invalid";
+        if((page.elided||page.spooled)?!page.vertices.empty()||!page.indices.empty():page.key.vertexBytes!=page.vertices.size()*sizeof(NorthlightGI::WorldVertex)||page.key.indexBytes!=page.indices.size()*sizeof(uint16_t))return "mesh page key size mismatch";
         if(!page.vertexCount()||!page.indexCount()||page.key.vertexBytes%sizeof(NorthlightGI::WorldVertex)||page.key.indexBytes%sizeof(uint16_t)||page.vertexCount()>PageVertexLimit||page.indexCount()>PageIndexLimit||page.indexCount()%3)return "invalid mesh page size";
         vertexBytes+=page.key.vertexBytes;indexBytes+=page.key.indexBytes;
     }

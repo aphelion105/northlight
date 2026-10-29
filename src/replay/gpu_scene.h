@@ -21,7 +21,7 @@ struct Scene {
  NorthlightDrawSnapshot::Frame::SharedSources captureSources;
  NativeClient materials{native,Consumer::Material},shadows{native,Consumer::Shadow};
  StaticShadow::GpuCache staticCasters;
- struct MeshBuffers {IDirect3DVertexBuffer9* vb=nullptr;IDirect3DIndexBuffer9* ib=nullptr;};
+ struct MeshBuffers {IDirect3DVertexBuffer9* vb=nullptr;IDirect3DIndexBuffer9* ib=nullptr;D3DPOOL vbPool=D3DPOOL_MANAGED,ibPool=D3DPOOL_MANAGED;};
  NorthlightMeshBufferStore::Store meshStore;
  std::vector<MeshBuffers> meshBuffers;
  NorthlightMeshPoolTrim::State meshPoolTrim;

@@ -1,4 +1,5 @@
 #include "world_mesh_pages.h"
+#include "shadow_terrain.h"
 #include <cassert>
 #include <cstdio>
 #include <cstring>
@@ -318,4 +319,24 @@ static void testCompactSource(){
     assert(!input.pagingVertices&&input.completePlacements[0].modelKey=="preserve-owner");
     std::puts("PASS compact paging: zero-copy vertices, exact pages, a refused compaction keeps the page, strict ownership/count checks, transactional sealing");
 }
-int main(){testIndexMap();testVertexLimits();testIndexLimits();testKeepBatches();testDegenerateAndExactBoundary();testAnchors();testElision();testTransactionalFailure();testSeal();testCompactSource();std::puts("All world mesh page tests passed");}
+static void testSpooledPointTransmission(){
+    auto scene=[](float x,bool terrain){WorldScene s;s.vertices={{{x,0,0},{0,0,1},0,0},{{x+1,0,0},{0,0,1},1,0},{{x,1,0},{0,0,1},0,1}};s.triangles={{0,1,2,0}};WorldMaterial m;m.terrain=terrain;m.width=m.height=2;m.alphaCutoff=.5f;m.rgba={11,29,47,255,61,79,97,0,113,131,149,255,167,181,199,127};s.materials.push_back(m);return s;};
+    auto local=scene(0,false),terrain=scene(400,true),point=scene(2,false);point.materials[0].lampSourceId=17;
+    WorldMeshUploadPlan regular,spooled;std::string error;
+    assert(NorthlightShadowTerrain::build(local,terrain,{},regular,error,{},928,{},true,nullptr,nullptr,&point));
+    assert(NorthlightShadowTerrain::build(local,terrain,{},spooled,error,{},928,{},true,nullptr,nullptr,&point,true));
+    assert(regular.vertexCount==spooled.vertexCount&&regular.triangleCount==spooled.triangleCount);
+    for(size_t i=0;i<regular.pagingIndexCount();++i)assert(regular.pagingIndex(i)==spooled.pagingIndex(i));
+    assert(regular.materials.size()==spooled.materials.size());
+    for(size_t i=0;i<regular.materials.size();++i)assert(regular.materials[i].bgra==spooled.materials[i].bgra&&regular.materials[i].alphaCutoff==spooled.materials[i].alphaCutoff);
+    auto a=std::make_shared<P::Plan>(),b=std::make_shared<P::Plan>();P::Options options;options.spooled=true;
+    assert(P::build(regular,*a,error)&&P::build(spooled,*b,error,{},options));assert(a->pages.size()==b->pages.size());
+    for(size_t i=0;i<a->pages.size();++i){const auto& before=a->pages[i];const auto& after=b->pages[i];assert(before.key==after.key&&after.spooled);std::vector<WorldVertex> vertices(before.vertices.size());std::vector<uint16_t> indices(before.indices.size());
+        assert(b->copy(after,true,0,vertices.size()*sizeof(WorldVertex),vertices.data())&&b->copy(after,false,0,indices.size()*2,indices.data()));
+        assert(!std::memcmp(vertices.data(),before.vertices.data(),vertices.size()*sizeof(WorldVertex))&&indices==before.indices);
+    }
+    assert(P::seal(spooled,b,error)&&!P::validateSealed(spooled));
+    assert(spooled.payload.live()&&spooled.payload.share()->pages->temporary);
+    std::puts("PASS spooled point transmission: exact geometry, UVs, cutout texels, packed order, page bytes and retained recovery ownership");
+}
+int main(){testSpooledPointTransmission();testIndexMap();testVertexLimits();testIndexLimits();testKeepBatches();testDegenerateAndExactBoundary();testAnchors();testElision();testTransactionalFailure();testSeal();testCompactSource();std::puts("All world mesh page tests passed");}

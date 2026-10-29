@@ -107,7 +107,7 @@ template<class Scene> static bool buildCore(const Scene& scene,WorldMeshUploadPl
         // Group counts first, then prefix allocation and stable linear scatter.
         // This avoids one temporary vector/allocation chain for every batch and
         // moves all sorting/packing away from the game's render thread.
-        auto keys=[&](){if constexpr(std::is_same_v<Scene,NorthlightGI::WorldScene>)return std::vector<uint32_t>{};else return ChunkedBuffer<uint32_t>{&admit};}();
+        auto keys=[&](){if constexpr(std::is_same_v<Scene,NorthlightGI::WorldScene>)return std::vector<uint32_t>{};else return ChunkedBuffer<uint32_t>{&admit,scene.vertices.spooled()};}();
         if constexpr(std::is_same_v<Scene,NorthlightGI::WorldScene>){if(!allowed(triangleCount*sizeof(uint32_t)))return false;keys.reserve(triangleCount);}
         std::unordered_map<uint64_t,Group> counts;
         counts.reserve(std::min<size_t>(scene.materials.size()+512,16384));
@@ -134,7 +134,7 @@ template<class Scene> static bool buildCore(const Scene& scene,WorldMeshUploadPl
         std::vector<uint32_t> lookup(groups.size());
         std::shared_ptr<ChunkedBuffer<uint32_t>> chunkIndices;
         if constexpr(std::is_same_v<Scene,NorthlightGI::WorldScene>){if(!allowed(triangleCount*3*sizeof(uint32_t)))return false;next.indices.resize(triangleCount*3);}
-        else{chunkIndices=std::make_shared<ChunkedBuffer<uint32_t>>(&admit);chunkIndices->resize(triangleCount*3);}
+        else{chunkIndices=std::make_shared<ChunkedBuffer<uint32_t>>(&admit,scene.vertices.spooled());chunkIndices->resize(triangleCount*3);}
         if(triangleOrder)triangleOrder->resize(triangleCount);
         if(!allowed(groups.size()*sizeof(Batch)))return false;next.batches.reserve(groups.size());
         uint32_t offset=0;
@@ -211,6 +211,7 @@ template<class Scene> static bool buildCore(const Scene& scene,WorldMeshUploadPl
         }}
         if(chunkIndices){chunkIndices->detachAdmission();next.pagingIndices=std::move(chunkIndices);}
     }catch(const std::bad_alloc&){error="Geometry allocation deferred";return false;}
+     catch(const NorthlightGI::TemporaryGeometryError& failure){error=failure.what();return false;}
      catch(...){error="Cannot allocate world mesh upload plan";return false;}
     if constexpr(std::is_same_v<Scene,NorthlightGI::WorldScene>)next.source=&scene;
     next.vertexCount=uint32_t(scene.vertices.size());next.triangleCount=uint32_t(triangleCount);

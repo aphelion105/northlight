@@ -124,7 +124,7 @@ bool loadInstancedScenes(const std::vector<std::string>& tileFiles,
                          const std::function<bool(Vec3,Vec3)>& terrainChunkFilter = {},
                          SceneSizeHint* sizeHint = nullptr,
                          const SceneSourceProvider& sourceProvider = {},
-                         bool terrainChunkProvenance = false, bool chunkedTerrain = false);
+                         bool terrainChunkProvenance = false, bool chunkedTerrain = false, bool spooledTerrain = false);
 
 // Counts actual live optional acceleration storage, including published regions
 // after a cache reset. A refused reservation selects the legacy full-scene path.

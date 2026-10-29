@@ -338,12 +338,13 @@ bool selectInstances(const std::vector<std::string>& files,Vec3 low,Vec3 high,ui
 }
 
 bool loadInstancedScenes(const std::vector<std::string>& files,const std::string& modelDirectory,
-                         Vec3 low,Vec3 high,WorldScene& output,std::string& error,uint32_t categoryMask,const AllocationAdmission& admit,const std::function<bool(Vec3,Vec3)>& instanceFilter,const std::function<bool(Vec3,Vec3)>& terrainChunkFilter,SceneSizeHint* sizeHint,const SceneSourceProvider& sourceProvider,bool terrainChunkProvenance,bool chunkedTerrain){
+                         Vec3 low,Vec3 high,WorldScene& output,std::string& error,uint32_t categoryMask,const AllocationAdmission& admit,const std::function<bool(Vec3,Vec3)>& instanceFilter,const std::function<bool(Vec3,Vec3)>& terrainChunkFilter,SceneSizeHint* sizeHint,const SceneSourceProvider& sourceProvider,bool terrainChunkProvenance,bool chunkedTerrain,bool spooledTerrain){
     error.clear();if(sizeHint)sizeHint->hinted=false;
     if(files.size()>((categoryMask==1&&instanceFilter)?256u:64u)||!finite(low)||!finite(high)||low.x>high.x||low.y>high.y||low.z>high.z){error="Invalid FGS3 region or tile count";return false;}
     std::map<std::string,std::vector<Instance>> groups;
-    WorldScene result;if(chunkedTerrain){result.vertices.chunks(&admit);result.triangles.chunks(&admit);}uint64_t textureBytes=0;bool hinted=false;size_t hintV=0,hintT=0;
+    WorldScene result;uint64_t textureBytes=0;bool hinted=false;size_t hintV=0,hintT=0;
     try{
+        if(spooledTerrain){result.vertices.spool(&admit);result.triangles.spool(&admit);}else if(chunkedTerrain){result.vertices.chunks(&admit);result.triangles.chunks(&admit);}
         if(!selectInstances(files,low,high,categoryMask,groups,error,instanceFilter))return false;
         if(sizeHint&&sizeHint->sized&&sizeHint->sizedKey==sizeHint->key&&regionsOverlapHalf(low,high,sizeHint->low,sizeHint->high)){
             const uint64_t v=std::min<uint64_t>(4000000,sizeHint->vertices+sizeHint->vertices/16),t=std::min<uint64_t>(6000000,sizeHint->triangles+sizeHint->triangles/16);
@@ -415,7 +416,7 @@ bool loadInstancedScenes(const std::vector<std::string>& files,const std::string
                 }
             }
         }
-    }catch(...){error="Cannot allocate FGS3 local world region";return false;}
+    }catch(const TemporaryGeometryError& failure){error=failure.what();return false;}catch(...){error="Cannot allocate FGS3 local world region";return false;}
     // Cold terrain assembly can leave both geometry vectors oversized while
     // later page preparation holds them. Compaction is optional under pressure.
     const uint64_t slack=uint64_t(result.vertices.capacity()-result.vertices.size())*sizeof(WorldVertex)+uint64_t(result.triangles.capacity()-result.triangles.size())*sizeof(WorldTriangle);
@@ -438,6 +439,7 @@ static bool alphaNeverCut(const WorldMaterial& m){
 }
 static bool validateBVHScene(WorldScene& s,std::string& error){
     error.clear();
+    if(s.vertices.spooled()||s.triangles.spooled()){error="Temporary geometry cannot be published in a BVH";return false;}
     if(s.triangles.size()>=(1u<<28)||s.vertices.size()>UINT32_MAX){error="Scene exceeds 32-bit index capacity";return false;}
     for(const auto& v:s.vertices)if(!finite(v.position)||!finite(v.normal)||!std::isfinite(v.u)||!std::isfinite(v.v)){
         error="Scene contains nonfinite vertex data";return false;

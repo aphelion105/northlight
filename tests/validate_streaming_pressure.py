@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # northlight-test: requires=windows-exe,zig,world-cache manual
-"""Real x86 scene replacement with a retained BVH at 434/395 MiB free VA.
+"""Real x86 scene replacement with a retained BVH at 434/395/307 MiB free VA.
 
 Replay the existing seven-region production pipeline, including page creation
 and 8192 rays per region. Reserve address space only in the private test process.
@@ -18,11 +18,12 @@ import northlight_paths as fp
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--output', type=Path, required=True)
-parser.add_argument('--baseline-ref', default='240f7c41d61744e602429df2411e31bd142dc4a9')
+parser.add_argument('--baseline-ref', default='c03fec873602463265ada22c63990701514b445c')
 args = parser.parse_args()
 args.output.mkdir(parents=True, exist_ok=True)
 source = (fp.TESTS/'validate_shared_scene_pipeline.cpp').read_text()
 source = '#include <windows.h>\n#include "geometry_memory.h"\n'+source
+source = source.replace('Vec3(5248,10,508)', 'Vec3(5139.84f,-56.93f,380.31f)')
 source = source.replace('h.bytes(s.vertices.data(),s.vertices.size()*sizeof(WorldVertex));h.bytes(s.triangles.data(),s.triangles.size()*sizeof(WorldTriangle));',
                         'for(const auto& v:s.vertices)h.bytes(&v,sizeof v);for(const auto& t:s.triangles)h.bytes(&t,sizeof t);')
 source = source.replace('int main(', r'''
@@ -61,7 +62,7 @@ source = source.replace('std::vector<std::string> nearFiles,farFiles;', r'''
             if(!ok)std::fprintf(stderr,"ADMISSION refused bytes=%llu availableMiB=%.3f largestMiB=%.3f\n",(unsigned long long)bytes,double(s.available)/1048576,double(s.largest)/1048576);
             return ok;
         };
-        if(PRESSURE_MIB){assert(entry.available<480ull<<20);assert(entry.available>=392ull<<20);}
+        if(PRESSURE_MIB){assert(entry.available<480ull<<20);assert(entry.available>=304ull<<20);}
 ''')
 source = source.replace('assert(argc==3||argc==4);', 'SetUnhandledExceptionFilter(fault);assert(argc==3||argc==4);')
 for before, label in [('double localMs=ms(t);', 'terrain'), ('double terrainMs=ms(t);', 'plan'), ('double planMs=ms(t);', 'pages'), ('Hash localHash', 'hashes')]:
@@ -95,14 +96,35 @@ with zipfile.ZipFile(io.BytesIO(archive)) as zipped:
         else:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(zipped.read(entry))
-for label, bounded, pressure in [('flat', 0, 0), ('bounded434', 1, 434), ('bounded395', 1, 395)]:
+for label, bounded, pressure in [('flat', 0, 0), ('bounded434', 1, 434), ('bounded395', 1, 395), ('spooled307', 1, 307)]:
+    variant = source
+    if label == 'spooled307':
+        variant = variant.replace('LocalSceneCache cache({16u*1024u*1024u})', 'LocalSceneCache cache({0})').replace('SceneSourceCache sources(8u*1024u*1024u)', 'SceneSourceCache sources(0)')
+        variant = variant.replace('true,provider,revision,BOUNDED_LOCAL)', 'true,{},revision,BOUNDED_LOCAL)').replace('&hint,provider', '&hint,{}')
+        variant = variant.replace(',true,BOUNDED_LOCAL', ',true,BOUNDED_LOCAL,true').replace('radius,{},&local)', 'radius,{},&local,true)')
+        variant = variant.replace('options.resident=&resident;', 'options.resident=nullptr;options.spooled=true;').replace('options.preparation=&preparation;', 'options.preparation=nullptr;')
+        checked_copy = r'''auto ioStart=Clock::now();uint64_t readBytes=0;
+        for(const auto& page:pages.pages){
+            assert(page.spooled&&!page.elided);std::vector<unsigned char> bytes(uint64_t(page.key.vertexBytes)+page.key.indexBytes);
+            assert(pages.copy(page,true,0,page.key.vertexBytes,bytes.data()));
+            assert(pages.copy(page,false,0,page.key.indexBytes,bytes.data()+page.key.vertexBytes));
+            assert(NorthlightMeshPageKey::keyOf(bytes.data(),page.key.vertexBytes,bytes.data()+page.key.vertexBytes,page.key.indexBytes)==page.key);
+            readBytes+=bytes.size();
+        }
+        std::printf("PAGE_STORAGE step=%u fileMiB=%.3f readMiB=%.3f checkedCopyMs=%.3f\n",step,double(pages.temporary->size())/1048576,double(readBytes)/1048576,ms(ioStart));
+        Hash localHash'''
+        variant = variant.replace('Hash localHash', checked_copy)
+        variant = variant.replace('held=std::make_unique<BVH>(std::move(local));', 'auto sealedPages=std::make_shared<NorthlightWorldMeshPages::Plan>(std::move(pages));assert(NorthlightWorldMeshPages::seal(plan,sealedPages,error,admit));assert(!NorthlightWorldMeshPages::validateSealed(plan));held=std::make_unique<BVH>(std::move(local));')
+
+    variant_cpp = args.output/(label+'.cpp')
+    variant_cpp.write_text(variant)
     exe = args.output/(label+'.exe')
     tree = baseline if label == 'flat' else fp.REPO
     includes = [flag for folder in sorted((tree/'src').iterdir()) if folder.is_dir() for flag in ['-I', str(folder)]]
     subprocess.run([str(fp.zig()), 'c++', '-target', 'x86-windows-gnu', '-std=c++17', '-g', '-O2', '-UNDEBUG',
                     '-DSHARED_SCENE_PIPELINE=1', '-DCURRENT_TERRAIN_CHUNKS=1',
                     '-DCURRENT_MEMORY_PROFILE=1', '-DBOUNDED_LOCAL='+str(bounded), '-DPRESSURE_MIB='+str(pressure),
-                    *includes, str(cpp), str(tree/'src/gi/world_gi.cpp'), str(tree/'src/world/world_mesh_plan.cpp'),
+                    *includes, str(variant_cpp), str(tree/'src/gi/world_gi.cpp'), str(tree/'src/world/world_mesh_plan.cpp'),
                     '-o', str(exe)], env=fp.zig_env(), check=True)
     data = bytearray(exe.read_bytes())
     flags = struct.unpack_from('<I', data, 0x3c)[0]+22
@@ -114,9 +136,9 @@ for label, bounded, pressure in [('flat', 0, 0), ('bounded434', 1, 434), ('bound
     results[label] = [dict(part.split('=', 1) for part in line.split()[1:]) for line in run.stdout.splitlines() if line.startswith('PIPELINE ')]
     assert len(results[label]) == 7
     print(label, 'complete', flush=True)
-for label in ['bounded434', 'bounded395']:
+for label in ['bounded434', 'bounded395', 'spooled307']:
     for old, new in zip(results['flat'], results[label]):
         for key in ['plan', 'pagesHash', 'rays', 'localTriangles', 'planTriangles', 'pages', 'batches']:
             assert old[key] == new[key], (label, new['step'], key, old[key], new[key])
-(args.output/'validation.json').write_text(json.dumps({'all_equal': True, 'baseline_ref': args.baseline_ref, 'results': results}, indent=2)+'\n')
-print('PASS retained scene replacement at 434/395 MiB, unchanged page/ray results and process reserve')
+(args.output/'validation.json').write_text(json.dumps({'all_equal': True, 'baseline_ref': args.baseline_ref, 'game_launched': False, 'gpu_used': False, 'screenshot_eye': [5139.84,-56.93,380.31], 'minimum_process_reserve_MiB': 256, 'results': results}, indent=2)+'\n')
+print('PASS retained scene replacement at 434/395/307 MiB, unchanged page/ray results and process reserve')

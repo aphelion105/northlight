@@ -21,28 +21,30 @@ namespace NorthlightWorldMesh {
 template<class T> class ChunkedBuffer {
     static_assert(std::is_trivially_copyable_v<T>,"chunked shadow elements must not throw during copy");
     static constexpr size_t BlockSize=512u*1024u/sizeof(T);
-    std::vector<std::unique_ptr<T[]>> blocks_;size_t size_=0;
+    std::unique_ptr<NorthlightGI::TemporaryGeometryArray<T>> temporary_;std::vector<std::unique_ptr<T[]>> blocks_;size_t size_=0;
     const NorthlightGI::AllocationAdmission* admit_=nullptr;
 public:
-    explicit ChunkedBuffer(const NorthlightGI::AllocationAdmission* admit=nullptr):admit_(admit){}
-    size_t size()const{return size_;}bool empty()const{return !size_;}
-    const T& operator[](size_t i)const{return blocks_[i/BlockSize][i%BlockSize];}
-    T& operator[](size_t i){return blocks_[i/BlockSize][i%BlockSize];}
+    explicit ChunkedBuffer(const NorthlightGI::AllocationAdmission* admit=nullptr,bool spooled=false):admit_(admit){if(spooled){if(admit&&*admit&&!(*admit)(1024u*1024u))throw std::bad_alloc();temporary_=std::make_unique<NorthlightGI::TemporaryGeometryArray<T>>();}}
+    bool spooled()const{return bool(temporary_);}
+    size_t size()const{return temporary_?temporary_->size():size_;}bool empty()const{return !size();}
+    const T& operator[](size_t i)const{return temporary_?static_cast<const NorthlightGI::TemporaryGeometryArray<T>&>(*temporary_)[i]:blocks_[i/BlockSize][i%BlockSize];}
+    T& operator[](size_t i){if(temporary_)return (*temporary_)[i];return blocks_[i/BlockSize][i%BlockSize];}
     void reserve(size_t){}
     void push_back(const T& value){
+        if(temporary_){temporary_->push_back(value);return;}
         if(size_%BlockSize==0){if(admit_&&*admit_&&!(*admit_)(1024u*1024u))throw std::bad_alloc();blocks_.push_back(std::make_unique<T[]>(BlockSize));}
         (*this)[size_++]=value;
     }
-    void resize(size_t count){while(size_<count)push_back(T{});}
+    void resize(size_t count){if(temporary_){temporary_->resize(count);return;}while(size_<count)push_back(T{});}
     struct Iterator {const ChunkedBuffer* owner;size_t i;const T& operator*()const{return (*owner)[i];}Iterator& operator++(){++i;return *this;}bool operator!=(const Iterator& b)const{return i!=b.i;}};
-    Iterator begin()const{return {this,0};}Iterator end()const{return {this,size_};}
+    Iterator begin()const{return {this,0};}Iterator end()const{return {this,size()};}
     template<class It> void insert(Iterator,It first,It last){for(;first!=last;++first)push_back(*first);}
     void detachAdmission(){admit_=nullptr;}
-    uint64_t bytes()const{return blocks_.capacity()*sizeof(blocks_[0])+blocks_.size()*BlockSize*sizeof(T);}
-    void accountMemory(NorthlightMemoryFootprint::Counter& memory,NorthlightMemoryFootprint::Kind kind)const{memory.vector(NorthlightMemoryFootprint::Metadata,blocks_);for(const auto& block:blocks_)memory.allocation(kind,block.get(),BlockSize*sizeof(T));}
+    uint64_t bytes()const{if(temporary_)return temporary_->bytes();return blocks_.capacity()*sizeof(blocks_[0])+blocks_.size()*BlockSize*sizeof(T);}
+    void accountMemory(NorthlightMemoryFootprint::Counter& memory,NorthlightMemoryFootprint::Kind kind)const{if(temporary_){temporary_->accountMemory(memory,kind);return;}memory.vector(NorthlightMemoryFootprint::Metadata,blocks_);for(const auto& block:blocks_)memory.allocation(kind,block.get(),BlockSize*sizeof(T));}
 };
 struct ChunkedShadowScene {
-    explicit ChunkedShadowScene(const NorthlightGI::AllocationAdmission* admit):vertices(admit),triangles(admit){}
+    explicit ChunkedShadowScene(const NorthlightGI::AllocationAdmission* admit,bool spooled=false):vertices(admit,spooled),triangles(admit,spooled){}
     ChunkedBuffer<NorthlightGI::WorldVertex> vertices;
     ChunkedBuffer<NorthlightGI::WorldTriangle> triangles;
     std::vector<NorthlightGI::WorldMaterial> materials;

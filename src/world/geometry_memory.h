@@ -59,10 +59,10 @@ inline Budget buildBudget(uint64_t largestAllocation=0){return budgetWith(EntryH
 // Chunked local builds avoid large contiguous buffers; keep the process and interior reserves unchanged.
 inline Budget chunkBuildBudget(){return budgetWith(EntryHeadroom-32*MiB,MiB);}
 // Bounded recovery (including a replacement with one retained generation).
-// Real x86 seven-region replays at 395 MiB leave >=301 MiB free with the old
-// BVH held. Keep the 256 MiB process reserve plus a 32 MiB working guard;
-// every large request is checked and a failed candidate is never published.
-constexpr uint64_t ColdInBuildHeadroom=32*MiB,ColdEntryHeadroom=136*MiB;
+// Pressure staging spills disposable geometry/pages to private temporary files
+// and omits optional source/acceleration caches. Entry reserves a bounded
+// 48 MiB candidate; each large request independently preserves ProcessReserve.
+constexpr uint64_t ColdInBuildHeadroom=2*MiB,ColdEntryHeadroom=48*MiB;
 inline Budget coldChunkBuildBudget(){return budgetWith(ColdEntryHeadroom,MiB);}
 inline Budget coldInBuildBudget(uint64_t request=0){return budgetWith(request>ColdInBuildHeadroom?request:ColdInBuildHeadroom,request);}
 // Interior allocation: the process reserve must survive the request itself, so a request above the guard raises the floor.
@@ -121,6 +121,9 @@ inline Budget uploadBudget(uint64_t vertexBytes,uint64_t indexBytes,
     if(!add(largest,largest,b.largest)||!add(b.largest,ChunkMargin,b.largest))return {};
     b.valid=true;return b;
 }
+// File-backed candidates upload bounded pages into DEFAULT resources; each
+// growth is rechecked, so admission need not reserve a second full CPU copy.
+inline Budget coldUploadBudget(uint64_t largestTexture=0){uint64_t twice=0;if(!add(largestTexture,largestTexture,twice))return {};return budgetWith((ColdInBuildHeadroom>twice?ColdInBuildHeadroom:twice),(MiB>largestTexture?MiB:largestTexture));}
 inline bool admits(Sample sample,Budget budget){
     return sample.valid&&budget.valid&&sample.available>=budget.available&&
            sample.largest>=budget.largest;
