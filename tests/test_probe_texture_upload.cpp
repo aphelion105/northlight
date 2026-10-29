@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <stdexcept>
 #include <vector>
 using namespace NorthlightGI;
 static void reference(unsigned channel,void* bits,size_t pitch,unsigned n,
@@ -44,23 +45,41 @@ int main(){
  for(unsigned n:{16u,22u,24u}){
   assert(configureProbeLayout(probeLayoutFor(n-2)));
   std::vector<ProbeAtlasEntry> atlas(probeLayout().atlasSize());NorthlightProbeBlend::Mirror blend;
-  NorthlightProbeActivation a,b;blend.begin("A");a.begin("A");b.begin("A");
+  NorthlightProbeActivation a,b,c;blend.begin("A");a.begin("A");b.begin("A");c.begin("A");
   for(unsigned round=0;round<12;++round){
-   const char* map=round<6?"A":"Northrend";blend.begin(map);a.begin(map);b.begin(map);
+   const char* map=round<6?"A":"Northrend";blend.begin(map);a.begin(map);b.begin(map);c.begin(map);
    mutate(atlas,round);const float now=10+float(round)*.075f;blend.publish(atlas,now);
    for(unsigned channel=0;channel<6;++channel){
     const size_t pitch=(n*n*(channel==5?3:1)*4+4*(round%5))*sizeof(float);
     const size_t bytes=pitch*n*(channel==3?6:1);
-    std::vector<unsigned char> old(bytes+8,0xa5),current=old;
-    if(channel==5){referencePrevious(old.data()+4,pitch,n,blend);NorthlightProbeUpload::previous(current.data()+4,pitch,n,blend);}
+    std::vector<unsigned char> old(bytes+8,0xa5),current=old,independent=old;
+    if(channel==5){referencePrevious(old.data()+4,pitch,n,blend);NorthlightProbeUpload::previous(current.data()+4,pitch,n,blend);NorthlightProbeUpload::previous(independent.data()+4,pitch,n,blend);}
     else{
      reference(channel,old.data()+4,pitch,n,atlas,blend,a,now,round%2);
      NorthlightProbeUpload::write(channel,current.data()+4,pitch,n,atlas,blend,b,now,round%2);
+     NorthlightProbeUpload::write(channel,independent.data()+4,pitch,n,atlas,blend,c,now,round%2,true);
     }
-    assert(old==current);++cases;checkedBytes+=bytes;
+    assert(old==current&&old==independent);++cases;checkedBytes+=bytes;
    }
    for(size_t i=0;i<atlas.size();++i)assert(a.update(i,atlas[i],now+1)==b.update(i,atlas[i],now+1));
+   for(size_t i=0;i<atlas.size();++i)assert(b.update(i,atlas[i],now+1)==c.update(i,atlas[i],now+1));
   }
+ }
+ // An undersized mirror must throw at the same texel and leave identical partial writes.
+ assert(configureProbeLayout(probeLayoutFor(14)));
+ NorthlightProbeBlend::Mirror shortBlend;shortBlend.begin("A");
+ assert(configureProbeLayout(probeLayoutFor(20)));
+ {
+  const unsigned n=probeLayout().atlas;const size_t pitch=size_t(n)*n*4*sizeof(float);
+  std::vector<ProbeAtlasEntry> atlas(probeLayout().atlasSize());NorthlightProbeActivation a,b;
+  std::vector<unsigned char> old(pitch*n*6,0xa5),current=old;bool oldThrew=false,newThrew=false;
+  try{NorthlightProbeUpload::write<3,false,1,false>(old.data(),pitch,n,atlas,shortBlend,a,0,true);}catch(const std::out_of_range&){oldThrew=true;}
+  try{NorthlightProbeUpload::write(3,current.data(),pitch,n,atlas,shortBlend,b,0,true,true);}catch(const std::out_of_range&){newThrew=true;}
+  assert(oldThrew&&newThrew&&old==current);
+  std::fill(old.begin(),old.end(),0xa5);current=old;oldThrew=newThrew=false;
+  try{NorthlightProbeUpload::previousImpl<false>(old.data(),pitch,n,shortBlend);}catch(const std::out_of_range&){oldThrew=true;}
+  try{NorthlightProbeUpload::previous(current.data(),pitch,n,shortBlend);}catch(const std::out_of_range&){newThrew=true;}
+  assert(oldThrew&&newThrew&&old==current);
  }
  assert(configureProbeLayout(probeLayoutFor(20)));const unsigned n=probeLayout().atlas;
  std::vector<ProbeAtlasEntry> atlas(probeLayout().atlasSize());mutate(atlas,0);

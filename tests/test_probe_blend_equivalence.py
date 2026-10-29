@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# northlight-test: requires=cxx manual  (requires a prior probe_blend.h)
+# northlight-test: requires=cxx
 """Compare the optimized GI publication with a preserved header; no game or GPU.
 
 Usage: python tests/test_probe_blend_equivalence.py path/to/prior/probe_blend.h
@@ -12,7 +12,7 @@ import shutil
 import subprocess
 import tempfile
 
-prior=Path(sys.argv[1]).resolve()
+prior=Path(sys.argv[1]).resolve() if len(sys.argv)>1 else fp.TESTS/'fixtures/probe_blend_reference.h'
 with tempfile.TemporaryDirectory(prefix='northlight-probe-blend-') as tmp:
     folder=Path(tmp)
     shutil.copy2(prior,folder/'probe_blend_reference.h')

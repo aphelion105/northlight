@@ -31,6 +31,7 @@ test_celestial_profiles.py
 test_celestial_skybox.py
 test_celestial_terrain.py
 test_celestial_veil.py
+test_chunked_local_entry.py
 test_client_archive_order.py
 test_client_archives.py
 test_client_config.py
@@ -72,6 +73,7 @@ test_fog_temporal_wiring.py
 test_frame_stall_profile.py
 test_game_snapshot.py
 test_geometry_handoff.py
+test_geometry_memory.py
 test_gi_quality.py
 test_gi_settings_dependencies.py
 test_gpu_budget.py
@@ -164,6 +166,9 @@ test_replay_priority_safety.py
 test_replay_skin_safety.py
 test_replay_upload.py
 test_rigid_memory.py
+test_scene_assembly.py
+test_scene_source_cache.py
+test_scene_source_stamp_fault.py
 test_settings_overlay.py
 test_settings_service.py
 test_shader_read_set.py
@@ -177,6 +182,8 @@ test_shadow_paging_memory.py
 test_shadow_pivot.py
 test_shadow_removal_smoothing.py
 test_shadow_shimmer.py
+test_shared_scene_chunks.py
+test_shared_scene_memory.py
 test_snapshot_allocation.py
 test_snapshot_prediction.py
 test_solar_volume.py
@@ -242,3 +249,4 @@ test_world_probe_coverage.py
 test_zone_tuner.py
 test_zone_tuning.py
 test_zone_tuning_wiring.py
+validate_world_streaming.py

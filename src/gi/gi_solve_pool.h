@@ -67,7 +67,9 @@ unsigned prefetchProbeGroup(SolvePool& pool,const ProbeCache& cache,Vec3 origin,
     unsigned n=0,slots[8];Vec3 points[8];ProbeGridKey keys[8];
     for(unsigned j=0;j<8&&cursor+j<order.size();++j){const Vec3 q=probeWindowPosition(origin,order[cursor+j]);ProbeGridKey k;
         if(probeGridKey(q,k)&&!cache.contains(k)){slots[n]=j;points[n]=q;keys[n]=k;++n;}}
-    pool.run(n,[&](size_t i){out[slots[i]]=solve(keys[i],points[i]);});
+    const std::function<void(size_t)> job=[&](size_t i){out[slots[i]]=solve(keys[i],points[i]);};
+    // A single independent solve needs no helper wake-up or completion wait.
+    if(n==1)job(0);else pool.run(n,job);
     unsigned mask=0;for(unsigned i=0;i<n;++i)mask|=1u<<slots[i];return mask;
 }
 } // namespace NorthlightGI
