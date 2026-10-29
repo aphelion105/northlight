@@ -16,6 +16,13 @@ void operator delete(void* p)noexcept{std::free(p);}
 void operator delete[](void* p)noexcept{std::free(p);}
 void operator delete(void* p,size_t)noexcept{std::free(p);}
 void operator delete[](void* p,size_t)noexcept{std::free(p);}
+// std::stable_sort may request its temporary buffer through nothrow new.
+// Keep that allocation in the same fault-injected malloc/free domain.
+void* operator new(size_t n,const std::nothrow_t&)noexcept{try{return ::operator new(n);}catch(...){return nullptr;}}
+void* operator new[](size_t n,const std::nothrow_t&)noexcept{try{return ::operator new[](n);}catch(...){return nullptr;}}
+void operator delete(void* p,const std::nothrow_t&)noexcept{std::free(p);}
+void operator delete[](void* p,const std::nothrow_t&)noexcept{std::free(p);}
+
 template<class A,class B> static void bits(const A& a,const B& b){static_assert(sizeof(A)==sizeof(B));assert(!std::memcmp(&a,&b,sizeof a));}
 template<class A,class B> static void placement(const A& a,const B& b){assert(a.uid==b.uid&&a.category==b.category&&a.modelKey==b.modelKey);bits(a.matrix,b.matrix);bits(a.translation,b.translation);bits(a.low,b.low);bits(a.high,b.high);}
 template<class A,class B> static void scene(const A& a,const B& b,bool provenance=true){
@@ -26,8 +33,15 @@ template<class A,class B> static void scene(const A& a,const B& b,bool provenanc
  if(provenance){assert(a.sourcePieces.size()==b.sourcePieces.size());for(size_t i=0;i<a.sourcePieces.size();++i){const auto&x=a.sourcePieces[i];const auto&y=b.sourcePieces[i];assert(x.sourceIdentity==y.sourceIdentity&&x.membership[0]==y.membership[0]&&x.membership[1]==y.membership[1]&&x.vertexBase==y.vertexBase&&x.vertexCount==y.vertexCount&&x.triangleBase==y.triangleBase&&x.triangleCount==y.triangleCount&&x.materialMap==y.materialMap&&x.complete==y.complete);placement(x.placement,y.placement);}}
 }
 template<class S> static S model(){S s;for(unsigned y=0;y<=8;++y)for(unsigned x=0;x<=24;++x){typename decltype(s.vertices)::value_type v;v.position={float(x)*8,float(y)*8,float((x+y)%3)*.125f};v.normal={.2f,.3f,1};v.u=float(x)*.17f;v.v=float(y)*.13f;s.vertices.push_back(v);}for(unsigned y=0;y<8;++y)for(unsigned x=0;x<24;++x){uint32_t a=y*25+x;s.triangles.push_back({a,a+1,a+26,(x+y)%4});s.triangles.push_back({a,a+26,a+25,(x+y)%4});}s.materials.resize(4);for(unsigned i=0;i<4;++i){auto&m=s.materials[i];m.albedo={float(i)*.2f,.7f,.1f};m.width=m.height=2;m.alphaCutoff=.5f;m.addressU=i%3;m.addressV=(i+1)%3;m.rgba={1,2,3,255,4,5,6,0,7,8,9,255,10,11,12,255};}return s;}
-// Allocation callback order is an implementation detail. Compare successful output
-// exactly; denied allocations must report failure, and caller rollback is tested below.
+static void decodedEqual(const WorldScene& a,const WorldScene& b){
+ assert(a.sourceIdentity==b.sourceIdentity&&a.vertices.size()==b.vertices.size()&&a.triangles.size()==b.triangles.size()&&a.materials.size()==b.materials.size());
+ for(size_t i=0;i<a.vertices.size();++i)bits(a.vertices[i],b.vertices[i]);
+ for(size_t i=0;i<a.triangles.size();++i)bits(a.triangles[i],b.triangles[i]);
+ for(size_t i=0;i<a.materials.size();++i){const auto& x=a.materials[i];const auto& y=b.materials[i];bits(x.albedo,y.albedo);bits(x.alphaCutoff,y.alphaCutoff);
+  assert(x.width==y.width&&x.height==y.height&&x.texels()==y.texels()&&x.addressU==y.addressU&&x.addressV==y.addressV&&x.terrain==y.terrain&&x.wmo==y.wmo&&x.pointOnly==y.pointOnly&&x.lampLocalId==y.lampLocalId&&x.lampSourceId==y.lampSourceId);}
+ assert(a.completePlacements.size()==b.completePlacements.size());for(size_t i=0;i<a.completePlacements.size();++i)placement(a.completePlacements[i],b.completePlacements[i]);
+}
+// Allocation callback order is not part of the assembly output contract.
 static unsigned assemblyChecks=0;
 static void appendCases(){
  auto a=model<WorldScene>();auto b=model<FrozenGI::WorldScene>();
@@ -50,6 +64,19 @@ static void provenance(const WorldScene&s,bool full){uint32_t end=0;size_t bytes
 static void planEqual(const NorthlightWorldMesh::WorldMeshUploadPlan&a,const NorthlightWorldMesh::WorldMeshUploadPlan&b){assert(a.indices==b.indices&&a.batches.size()==b.batches.size()&&a.triangleCount==b.triangleCount&&a.fixedTerrainChunks==b.fixedTerrainChunks);for(size_t i=0;i<a.batches.size();++i){auto&x=a.batches[i];auto&y=b.batches[i];assert(x.material==y.material&&x.start==y.start&&x.count==y.count&&x.terrain==y.terrain&&x.chunkX==y.chunkX&&x.chunkY==y.chunkY);bits(x.boundsLow,y.boundsLow);bits(x.boundsHigh,y.boundsHigh);}}
 int main(int argc,char**argv){appendCases();auto root=fs::temp_directory_path()/("scene-assembly-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));auto input=model<WorldScene>();files(root,input);std::vector<std::string> list={(root/"tile.fg3").string()};auto directory=(root/"models").string();std::string e;auto source=std::make_shared<WorldScene>();assert(loadScene((root/"models"/(std::string(64,'0')+".fgs")).string().c_str(),*source,e));source->sourceIdentity=17;SceneSourceProvider provider=[&](const std::string&,std::string&,const AllocationAdmission&)->std::shared_ptr<const WorldScene>{return source;};
  WorldScene expected;assert(loadInstancedScenes(list,directory,{-1,-1,-1},{220,80,10},expected,e,1,{}, {}, {},nullptr,provider));WorldScene chunks;assert(loadInstancedScenes(list,directory,{-1,-1,-1},{220,80,10},chunks,e,1,{}, {}, {},nullptr,provider,true));scene(expected,chunks,false);assert(chunks.sourcePieces.size()>expected.sourcePieces.size());provenance(chunks,true);
+ // Exercise the pressure decoder itself: a supplied decoded source would
+ // bypass the file reader that formerly left a large CRT arena behind.
+ {WorldScene raw,pressure;
+  assert(loadInstancedScenes(list,directory,{-1,-1,-1},{220,80,10},raw,e,1));
+  assert(loadInstancedScenes(list,directory,{-1,-1,-1},{220,80,10},pressure,e,1,{}, {}, {},nullptr,{},true,true,true));decodedEqual(raw,pressure);
+  assert(pressure.vertices.spooled()&&pressure.triangles.spooled());for(const auto& material:pressure.materials)if(!material.texels().empty())assert(material.sharedTexels&&material.rgba.empty());
+  unsigned refused=0,recovered=0;
+  for(unsigned deny=1;deny<=64;++deny){WorldScene output=raw;unsigned calls=0;
+   const bool ok=loadInstancedScenes(list,directory,{-1,-1,-1},{220,80,10},output,e,1,[&](uint64_t){return ++calls!=deny;},{},{},nullptr,{},true,true,true);
+   decodedEqual(raw,output);if(ok)++recovered;else ++refused;
+  }
+  assert(refused&&recovered);std::printf("PRESSURE_FILE_DECODE exact=1 immutableTexels=1 admissionRefusals=%u recoveries=%u oldSceneRetained=1\n",refused,recovered);
+ }
  // Cold vector growth leaves over 4 MiB of triangle slack. A denied or failed
  // optional copy must still publish the same complete geometry.
  {auto large=std::make_shared<WorldScene>(input);large->sourceIdentity=0;const auto triangle=large->triangles.front();large->triangles.assign(550000,triangle);SceneSourceProvider supply=[&](const std::string&,std::string&,const AllocationAdmission&)->std::shared_ptr<const WorldScene>{return large;};const uint64_t exactBytes=uint64_t(large->triangles.size())*sizeof(WorldTriangle);WorldScene compacted,denied,failed;
@@ -82,6 +109,6 @@ int main(int argc,char**argv){appendCases();auto root=fs::temp_directory_path()/
  for(unsigned nth=0;nth<500;++nth){prep.reset();NorthlightWorldMesh::WorldMeshUploadPlan out;assert(NorthlightShadowTerrain::build(local,terrain,{-1000,-1000,0},out,e));failAllocation=nth;bool ok=false;try{ok=NorthlightShadowTerrain::build(local,terrain,{-1000,-1000,0},out,e,{},NorthlightShadowTerrain::Radius,{},false,nullptr,&prep);}catch(...){failAllocation=-1;assert(false&&"preparation failure escaped");}failAllocation=-1;planEqual(oracle,out);if(ok)++preparationFaultSuccesses;else ++preparationFaultFailures;assert(prep.stats().bytes<=8*1024*1024);assert(NorthlightShadowTerrain::build(local,terrain,{-1000,-1000,0},out,e,{},NorthlightShadowTerrain::Radius,{},false,nullptr,&prep));planEqual(oracle,out);}
  assert(preparationFaultSuccesses&&preparationFaultFailures);
  for(unsigned deny=1;deny<50;++deny){unsigned calls=0;NorthlightWorldMesh::WorldMeshUploadPlan out;bool ok=NorthlightShadowTerrain::build(local,terrain,{-1000,-1000,0},out,e,[&](uint64_t){return ++calls!=deny;},NorthlightShadowTerrain::Radius,{},false,nullptr,&prep);if(ok)planEqual(oracle,out);}
- unsigned real=0;if(argc>1){const std::string base=argv[1];for(unsigned step=0;step<3;++step){Vec3 c{5248+float(step)*32,10,508};int tx=int(std::floor((17066.666666666666-c.y)/533.3333333333333)),ty=int(std::floor((17066.666666666666-c.x)/533.3333333333333));std::vector<std::string> paths;for(int y=ty-1;y<=ty+1;++y)for(int x=tx-1;x<=tx+1;++x){auto p=base+"/Northrend/"+std::to_string(x)+"_"+std::to_string(y)+".fg3";if(fs::exists(p))paths.push_back(p);}for(unsigned far=0;far<2;++far){float radius=far?928.f:288.f;WorldScene a;FrozenGI::WorldScene b;Vec3 lo=c-Vec3(radius,radius,radius),hi=c+Vec3(radius,radius,radius);assert(loadInstancedScenes(paths,base+"/models",lo,hi,a,e));assert(FrozenGI::loadInstancedScenes(paths,base+"/models",{lo.x,lo.y,lo.z},{hi.x,hi.y,hi.z},b,e));scene(a,b);if(far){SceneSourceProvider rp=[&](const std::string& p,std::string& error,const AllocationAdmission& admit)->std::shared_ptr<const WorldScene>{auto decoded=std::make_shared<WorldScene>();if(!loadScene(p.c_str(),*decoded,error,admit))return {};decoded->sourceIdentity=std::hash<std::string>{}(p)|1;return decoded;};WorldScene proven;assert(loadInstancedScenes(paths,base+"/models",lo,hi,proven,e,1,{},{},{},nullptr,rp,true));WorldScene raw;assert(loadInstancedScenes(paths,base+"/models",lo,hi,raw,e,1));scene(raw,proven,false);provenance(proven,true);real+=1;}++real;}}}
+ unsigned real=0;if(argc>1){const std::string base=argv[1];for(unsigned step=0;step<3;++step){Vec3 c{5248+float(step)*32,10,508};int tx=int(std::floor((17066.666666666666-c.y)/533.3333333333333)),ty=int(std::floor((17066.666666666666-c.x)/533.3333333333333));std::vector<std::string> paths;for(int y=ty-1;y<=ty+1;++y)for(int x=tx-1;x<=tx+1;++x){auto p=base+"/Northrend/"+std::to_string(x)+"_"+std::to_string(y)+".fg3";if(fs::exists(p))paths.push_back(p);}for(unsigned distant=0;distant<2;++distant){float radius=distant?928.f:288.f;WorldScene a;FrozenGI::WorldScene b;Vec3 lo=c-Vec3(radius,radius,radius),hi=c+Vec3(radius,radius,radius);assert(loadInstancedScenes(paths,base+"/models",lo,hi,a,e));assert(FrozenGI::loadInstancedScenes(paths,base+"/models",{lo.x,lo.y,lo.z},{hi.x,hi.y,hi.z},b,e));scene(a,b);if(distant){SceneSourceProvider rp=[&](const std::string& p,std::string& error,const AllocationAdmission& admit)->std::shared_ptr<const WorldScene>{auto decoded=std::make_shared<WorldScene>();if(!loadScene(p.c_str(),*decoded,error,admit))return {};decoded->sourceIdentity=std::hash<std::string>{}(p)|1;return decoded;};WorldScene proven;assert(loadInstancedScenes(paths,base+"/models",lo,hi,proven,e,1,{},{},{},nullptr,rp,true));WorldScene raw;assert(loadInstancedScenes(paths,base+"/models",lo,hi,raw,e,1));scene(raw,proven,false);provenance(proven,true);real+=1;}++real;}}}
  fs::remove_all(root);printf("PASS frozenAssembly=%u realRegions=%u loaderAllocationSites=500 exactSuccesses=%u preservedFailures=%u preparationAllocationSites=500 preparationSuccesses=%u preparationFailures=%u metadataDenials=149 chunkPartialInterleavedUnknown=1 exactMaterialUVAlpha=1 retainedAccounting=1\n",assemblyChecks,real,exactFallbacks,failures,preparationFaultSuccesses,preparationFaultFailures);
 }

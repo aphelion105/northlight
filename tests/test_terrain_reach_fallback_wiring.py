@@ -19,7 +19,7 @@ assert 'constexpr uint64_t InBuildHeadroom=128*MiB;' in g and 'budgetWith(larges
 def body(start, end='};'):
     i = w.index(start); return w[i:w.index(end, i)]
 assert 'const auto geometryBudget=[&](uint64_t bytes=0){return coldRecovery?NorthlightGeometryMemory::coldInBuildBudget(bytes):NorthlightGeometryMemory::inBuildBudget(bytes);};' in w
-assert 'constexpr uint64_t ColdInBuildHeadroom=32*MiB,ColdEntryHeadroom=136*MiB;' in g
+assert 'constexpr uint64_t ColdInBuildHeadroom=2*MiB,ColdEntryHeadroom=48*MiB;' in g
 for lam in ('NorthlightGI::AllocationAdmission localAdmission=', 'NorthlightGI::AllocationAdmission terrainAdmission='):
     assert 'const auto budget=geometryBudget(bytes);auto sample=workerMemory(budget);' in body(lam), lam
     assert 'NorthlightGeometryMemory::buildBudget(' not in body(lam), lam

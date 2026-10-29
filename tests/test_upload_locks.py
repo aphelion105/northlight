@@ -25,7 +25,7 @@ def arguments(text,open_at):
     raise AssertionError('unbalanced call')
 sources={f.name:f.read_text(errors='replace') for f in fp.sources(('.h','.inl','.cpp'))}
 # (file, receiver) -> (flags, class, creation evidence in the same file or None)
-Fresh,Managed,Dynamic,Read,Forward='fresh DEFAULT|WRITEONLY','MANAGED','DEFAULT|DYNAMIC','READONLY','game flags'
+Fresh,Managed,Dynamic,Read,Forward,Pooled='fresh DEFAULT|WRITEONLY','MANAGED','DEFAULT|DYNAMIC','READONLY','game flags','MANAGED or immutable DEFAULT|DYNAMIC pooled pages'
 expected={
  ('imgui_impl_dx9.cpp','bd->pVB'):('D3DLOCK_DISCARD',Dynamic,'D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY, D3DFVF_CUSTOMVERTEX, D3DPOOL_DEFAULT, &bd->pVB'),
  ('imgui_impl_dx9.cpp','bd->pIB'):('D3DLOCK_DISCARD',Dynamic,'D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY, sizeof(ImDrawIdx) == 2 ? D3DFMT_INDEX16 : D3DFMT_INDEX32, D3DPOOL_DEFAULT, &bd->pIB'),
@@ -39,8 +39,8 @@ expected={
  ('replay_gpu_cache.h','built->indices'):(F,Fresh,'D3DUSAGE_WRITEONLY,D3DFMT_INDEX32,D3DPOOL_DEFAULT,&built->indices'),
  ('static_shadow_gpu.h','r.vb'):('0',Managed,'D3DUSAGE_WRITEONLY,0,D3DPOOL_MANAGED,&r->vb'),
  ('static_shadow_gpu.h','r.ib'):('0',Managed,'D3DFMT_INDEX16:D3DFMT_INDEX32,D3DPOOL_MANAGED,&r->ib'),
- ('world_renderer.h','page.vb'):('0',Managed,'D3DUSAGE_WRITEONLY,0,D3DPOOL_MANAGED,&slot.vb'),
- ('world_renderer.h','page.ib'):('0',Managed,'D3DUSAGE_WRITEONLY,D3DFMT_INDEX16,D3DPOOL_MANAGED,&slot.ib'),
+ ('world_renderer.h','page.vb'):('0',Pooled,'CreateVertexBuffer(capacity,usage,0,pool,&slot.vb'),
+ ('world_renderer.h','page.ib'):('0',Pooled,'CreateIndexBuffer(capacity,usage,D3DFMT_INDEX16,pool,&slot.ib'),
  ('live_terrain_gpu.h','vertices_'):('discarding?D3DLOCK_DISCARD:D3DLOCK_NOOVERWRITE',Dynamic,'D3DUSAGE_DYNAMIC|D3DUSAGE_WRITEONLY,0,D3DPOOL_DEFAULT,&vertices_'),
  ('static_shadow_gpu.h','instances_'):('flags',Dynamic,'D3DUSAGE_DYNAMIC|D3DUSAGE_WRITEONLY,0,D3DPOOL_DEFAULT,&instances_'),
  ('world_renderer.h','liveIndicesGPU'):('slot.flags',Dynamic,'D3DUSAGE_DYNAMIC|D3DUSAGE_WRITEONLY,D3DFMT_INDEX32,D3DPOOL_DEFAULT,&liveIndicesGPU'),
@@ -80,6 +80,11 @@ for name,text in sources.items():
         a=arguments(text,m.end()-1)
         if len(a)!=6 or (a[0] in ('size','Length','v[0]') and name!='scene_native_store.h'):continue # the device wrappers and the stream's replay forward the game's own arguments
         pool,usage=a[3],a[1]
+        if name=='world_renderer.h' and a[4] in ('&slot.vb','&slot.ib'):
+            assert pool=='pool' and usage=='usage'
+            assert 'const DWORD usage=D3DUSAGE_WRITEONLY|(pool==D3DPOOL_DEFAULT?D3DUSAGE_DYNAMIC:0);' in text
+            assert 'D3DPOOL pool=D3DPOOL_MANAGED' in text
+            continue # explicitly classified pooled creations; Lock(0) synchronizes reuse
         if 'D3DPOOL_DEFAULT' in pool and 'D3DUSAGE_DYNAMIC' not in usage:creates.append((name,a[4]))
         else:assert 'D3DPOOL_MANAGED' in pool or 'D3DUSAGE_DYNAMIC' in usage,(name,a)
 assert sorted(creates)==sorted([('scene_native_store.h','&built.vb[s]'),('scene_native_store.h','&built.ib'),('scene_native_store.h','&batch->vb'),('scene_native_store.h','&batch->ib'),('replay_gpu_batches.h','&built->vertices[s]'),('replay_gpu_batches.h','&built->indices'),('replay_gpu_batches.h','&batch->vertices'),
@@ -163,3 +168,12 @@ assert sources['world_renderer.h'].count('NorthlightReplayCopies::advanceFrame()
 # R3: a pin holds a COM reference on the wrapper that owns the slot; the last Release happens outside the store mutex
 assert 'c.ref(c.owner,true)' in copies and copies.count('ref(owner,false)')==2
 print('PASS replay copies wiring: gate set before the first buffer, wrapper hooks, ProcessVertices/Reset invalidation, pressure shrink')
+
+# A staged pool entry can have been drawn by an older generation. Lock(0)
+# retains driver synchronization before reuse; NOOVERWRITE would be unsafe.
+page_world=sources['world_renderer.h']
+page_create=body(page_world,'    bool acquireMeshPage(', '    void releaseMeshPool()')
+assert 'pool==D3DPOOL_DEFAULT?D3DUSAGE_DYNAMIC:0' in page_create
+assert 'meshStore.writable(id)' in page_create
+assert 'payload.pages->temporary?D3DPOOL_DEFAULT:D3DPOOL_MANAGED' in page_world
+print('PASS pooled pages: pool-specific creation, staging ownership, synchronized Lock(0) on reuse')

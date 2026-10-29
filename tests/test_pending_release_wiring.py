@@ -30,6 +30,14 @@ adopt='if(published&&published!=active&&NorthlightWorldStreaming::adopts(publish
 builder=w[w.index('    void work() {'):w.index('\n    bool check(HRESULT h,const char* s)')]
 error=builder[builder.index('auto publishError='):builder.index('// Geometry validity is spatial')]
 admission='if(!generations.canAdmit()){++generationDeferrals;'
+# Each fault/reset cancellation retires CPU ownership before dropping its staged
+# owner. A successful commit publishes the complete table before that retirement.
+# Count-free checks permit additional legitimate lifecycle cancellation sites.
+cancel_paths=(helper,method('    bool streamingFailure('),method('    void releaseDefaultMesh(){'))
+retire_pending='retirePendingCpu();';clear_pending='pendingMesh.reset();'
+retirement_order=all(body.index('meshStore.cancel();')<body.index(retire_pending)<body.index(clear_pending) for body in cancel_paths)
+commit_order=upload.index('meshStore.commit()')<upload.index(retire_pending)<upload.index(clear_pending)
+
 checks={
  'bounded replacement can retain a live geometry generation under the same hard limit':
   'if(!NorthlightGeometryMemory::admits(memory,entryBudget))' in builder and 'if(!generations.canAdmit())' in builder
@@ -66,7 +74,7 @@ checks={
   context.count('(NorthlightWorldStreaming::leadMoved(lastRequest.camera,lastRequest.geometryCenter,r.camera,r.geometryCenter)?128u:0u)')==1
   and 'GeometryLeadMoveStep)?128u' not in context
   and builder.count('static_assert(64-NorthlightWorldStreaming::GeometryRefreshDistance>NorthlightWorldStreaming::GeometryLeadMoveStep,')==1,
- 'no other pendingMesh release path changed':w.count('retirePendingCpu();pendingMesh.reset();')==3,
+ 'staged ownership retires after cancellation or complete publication':retirement_order and commit_order,
  'updateWorldContext runs only from terrain, WMO, model and validated sky context readers (D3D thread, like render())':
   w.count('updateWorldContext(map,')==4 and 'traceContext=5' in method('    bool skyContext(') and 'updateWorldContext(map,camera.camera,globalRead?&light:nullptr);' in method('    bool wmoContext(IDirect3DVertexShader9* shader){') and 'updateWorldContext(map,camera,globalRead?&global:nullptr);' in method('    void terrainContext(){')
   and 'world->wmoContext(vs)' in r and 'world->terrainContext();' in r,

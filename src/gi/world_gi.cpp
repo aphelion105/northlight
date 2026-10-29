@@ -95,6 +95,8 @@ static bool readScene(const char* path,WorldScene& output,std::string& error,con
     }
     WorldScene s;
     try {
+        // Pressure decoding must not leave a source-sized CRT arena behind.
+        if(immutableTexels){s.vertices.chunks(&admit);s.triangles.chunks(&admit);}
         auto allowed=[&](uint64_t bytes){if(!admit||admit(bytes))return true;error="Geometry allocation deferred";return false;};
         if(!materialsOnly){
             auto resizeGeometry=[&](auto& values,size_t count){
@@ -117,12 +119,10 @@ static bool readScene(const char* path,WorldScene& output,std::string& error,con
         // FGS2 matches these plain little-endian records. Read once, then retain
         // every validation performed by the scalar portable decoder below.
         static_assert(std::is_trivially_copyable<WorldVertex>::value&&std::is_trivially_copyable<WorldTriangle>::value,"FGS2 bulk records must be plain values");
-        if(!s.vertices.chunked()&&!s.triangles.chunked()){
-            if(!r.bytes(s.vertices.data(),s.vertices.size()*sizeof(WorldVertex))||!r.bytes(s.triangles.data(),s.triangles.size()*sizeof(WorldTriangle))){error="Invalid/truncated FGS2 geometry";return false;}
-        }else{
-            for(auto& v:s.vertices)if(!r.bytes(&v,sizeof v)){error="Invalid/truncated FGS2 geometry";return false;}
-            for(auto& t:s.triangles)if(!r.bytes(&t,sizeof t)){error="Invalid/truncated FGS2 geometry";return false;}
-        }
+        auto readGeometry=[&](auto& values){using Buffer=std::decay_t<decltype(values)>;using T=typename Buffer::value_type;
+            for(size_t offset=0;offset<values.size();){const size_t count=std::min(values.size()-offset,values.chunked()?Buffer::blockSize():values.size());
+                if(!r.bytes(&values[offset],count*sizeof(T)))return false;offset+=count;}return true;};
+        if(!readGeometry(s.vertices)||!readGeometry(s.triangles)){error="Invalid/truncated FGS2 geometry";return false;}
         for(const auto& v:s.vertices)if(!finite(v.position)||!finite(v.normal)||!std::isfinite(v.u)||!std::isfinite(v.v)){error="Invalid/truncated FGS2 vertex";return false;}
         for(const auto& t:s.triangles)if(t.v0>=nv||t.v1>=nv||t.v2>=nv||t.material>=nm){error="Invalid/truncated FGS2 triangle";return false;}
     }else{
@@ -359,7 +359,7 @@ bool loadInstancedScenes(const std::vector<std::string>& files,const std::string
             if(!path.empty()&&path.back()!='/'&&path.back()!='\\')path+='/';
             path+=group.first+".fgs";WorldScene loaded;std::shared_ptr<const WorldScene> shared;
             if(sourceProvider){shared=sourceProvider(path,error,admit);if(!shared&&!error.empty())return false;}
-            if(!shared&&!loadScene(path.c_str(),loaded,error,admit)){error="FGS3 model "+group.first+": "+error;return false;}
+            if(!shared&&!readScene(path.c_str(),loaded,error,admit,false,spooledTerrain&&!sourceProvider)){error="FGS3 model "+group.first+": "+error;return false;}
             const WorldScene& model=shared?*shared:loaded;
             // A shared model hash can legally appear as terrain and as another
             // category. Keep terrain, WMO and other metadata distinct;

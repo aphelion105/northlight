@@ -81,10 +81,14 @@ checks={
  'releaseGPU(keepMesh) guards exactly the mesh state: pool, pending packet, clearMesh, map, fixed set + bits, covered owners':
   'if(!keepMesh){pendingMesh.reset();clearMesh();}' in release and 'if(!keepMesh){releaseMeshPool();uploadedMap.clear();}' in release
   and 'if(!keepMesh){fixedTerrain.reset();fixedTerrainBits.reset();}' in release and 'if(!keepMesh)uploadedStaticOwners.reset();' in release
-  and release.count('keepMesh')==5 and 'staticOwnerGeneration=UINT64_MAX;staticCasters.reset();' in release,
+  and 'staticOwnerGeneration=UINT64_MAX;staticCasters.reset();' in release,
  'DEFAULT-pool state is still released on a keepMesh Reset (targets, live terrain, index ring, queries, caches)':
   all(x in release for x in ('liveTerrainGPU.clear();','drop(liveIndicesGPU);','queries.drop();','stateBlocks.clear();','uploadedTerrain.clear();','drop(color);','invalidateShadowCache();','retiredMaterials.clear();')),
- 'mesh pool pages and material textures are MANAGED':w.count('D3DPOOL_MANAGED,&slot.vb')==1 and w.count('D3DPOOL_MANAGED,&slot.ib')==1 and w.count('D3DPOOL_MANAGED,&next.partialTexture')==1,
+ 'normal pages are MANAGED; pressure DEFAULT pages retain replay payload and release before Reset':
+  'D3DPOOL pool=D3DPOOL_MANAGED' in w and 'payload.pages->temporary?D3DPOOL_DEFAULT:D3DPOOL_MANAGED' in upload
+  and w.count('D3DPOOL_MANAGED,&next.partialTexture')==1
+  and resetFn.index('releaseDefaultMesh();')<resetFn.index('releaseGPU(true);')
+  and 'payload.pages->temporary?0:plan.payload.discard()' in commit,
  'the rebuild request has one caller: the upload() missing-payload fallback':w.count('requestPayloadRebuild()')==2 and upload.count('requestPayloadRebuild()')==1,
  'the plan holds the payload through the handle; no pages/materials read after commit':
   'UploadPayloadHandle payload;' in plan and 'std::shared_ptr<const NorthlightWorldMeshPages::Plan> pages;\n    // Sealed' not in plan

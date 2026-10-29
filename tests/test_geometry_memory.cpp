@@ -16,6 +16,18 @@ int main(){
     assert(admits({258*MiB,33*MiB,true},coldInBuildBudget(MiB))&&!admits({258*MiB-1,33*MiB,true},coldInBuildBudget(MiB)));
     assert(coldUploadBudget().available==258*MiB&&coldUploadBudget().largest==33*MiB);
     assert(!coldUploadBudget(UINT64_MAX).valid);
+    static_assert(ResetReplayAllowance==16*MiB&&ResetReplayReserve==240*MiB);
+    const auto ordinary=coldUploadBudget(),replay=replayBudget(ordinary,true);
+    assert(replay.valid&&replay.available==242*MiB&&replay.largest==ordinary.largest);
+    assert(replayBudget(ordinary,false).available==ordinary.available);
+    assert(admits({242*MiB,33*MiB,true},replay));
+    assert(!admits({242*MiB-1,33*MiB,true},replay));
+    assert(!admits({242*MiB,33*MiB-1,true},replay));
+    assert(!admits({257*MiB,33*MiB,true},ordinary));
+    assert(!replayBudget({},true).valid);
+    assert(!replayBudget({ProcessReserve-1,MiB,true},true).valid);
+    assert(replayBudget({UINT64_MAX,UINT64_MAX,true},true).available==UINT64_MAX-ResetReplayAllowance);
+    assert(replayBudget({UINT64_MAX,UINT64_MAX,true},true).largest==UINT64_MAX);
     assert(coldInBuildBudget(70*MiB).available==326*MiB&&coldInBuildBudget(70*MiB).largest==102*MiB);
     assert(!admits({480*MiB,33*MiB-1,true},chunk));
     // DEFAULT render targets use bounded CPU metadata, not copies of their
@@ -112,6 +124,14 @@ int main(){
     assert(!admitsSmallPageGrowth(true,UINT64_MAX,0));
     assert(!admitsSmallPageGrowth(true,UINT64_MAX,pageCapacity+1));
     assert(!admitsSmallPageGrowth(true,UINT64_MAX,UINT64_MAX));
+    assert(admitsSmallPageGrowth(true,ResetReplayReserve+3*pageCapacity,pageCapacity,ResetReplayReserve));
+    assert(!admitsSmallPageGrowth(true,ResetReplayReserve+3*pageCapacity-1,pageCapacity,ResetReplayReserve));
+    assert(!admitsSmallPageGrowth(true,ResetReplayReserve+3*pageCapacity,pageCapacity));
+    assert(!admitsSmallPageGrowth(true,UINT64_MAX,pageCapacity,ResetReplayReserve-1));
+    assert(!admitsSmallPageGrowth(true,UINT64_MAX,pageCapacity,ProcessReserve+1));
+    assert(!admitsSmallPageGrowth(false,UINT64_MAX,pageCapacity,ResetReplayReserve));
+    assert(!admitsSmallPageGrowth(true,UINT64_MAX,0,ResetReplayReserve));
+    assert(!admitsSmallPageGrowth(true,UINT64_MAX,pageCapacity+1,ResetReplayReserve));
     // The smaller admission deliberately makes no contiguous-block assertion.
     // Every actual allocation still has to succeed before its bytes are debited.
     Sample pageFrame{ProcessReserve+6*pageCapacity,0,true};

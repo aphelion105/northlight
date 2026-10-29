@@ -15,6 +15,12 @@ constexpr uint64_t MiB=1024ull*1024ull;
 // 256 MiB working allowance; interior/upload checks still re-sample current VA
 // and enforce request-sized headroom plus the unchanged contiguous margins.
 constexpr uint64_t ProcessReserve=256*MiB;
+// Recreating the same committed pressure payload after Reset may retain one
+// additional 16 MiB mapped allocator chunk on DXVK. Only that replay may spend
+// this allowance; CPU builds and new scene uploads keep ProcessReserve.
+// These are admission floors, not post-Create guarantees about driver mappings.
+constexpr uint64_t ResetReplayAllowance=16*MiB;
+constexpr uint64_t ResetReplayReserve=ProcessReserve-ResetReplayAllowance;
 // Contiguous headroom above the largest single allocation of a stage. A 32-bit
 // process whose largest free region shrank to ~20 MiB still reported 2.5 GiB
 // free before one silent exit; every large allocation now needs this margin.
@@ -46,6 +52,11 @@ inline uint64_t corrected(uint64_t apiAvailable){
     return apiAvailable>bias?apiAvailable-bias:0;
 }
 struct Budget { uint64_t available=0,largest=0;bool valid=false; };
+inline Budget replayBudget(Budget budget,bool sameCommittedReplay){
+    if(!sameCommittedReplay||!budget.valid)return budget;
+    if(budget.available<ProcessReserve)return {};
+    budget.available-=ResetReplayAllowance;return budget;
+}
 inline bool add(uint64_t a,uint64_t b,uint64_t& out){
     if(b>std::numeric_limits<uint64_t>::max()-a)return false;
     out=a+b;return true;
@@ -96,11 +107,11 @@ constexpr uint64_t SmallPageCapacityLimit=512ull*1024ull;
 // must retain the old complete generation and enter the normal retry path.
 // Reserve three capacities as for other growth, and debit successes from the
 // shared sample before admitting another allocation in the same frame.
-inline bool admitsSmallPageGrowth(bool valid,uint64_t available,uint64_t capacityBytes){
-    if(!valid||!capacityBytes||capacityBytes>SmallPageCapacityLimit)return false;
+inline bool admitsSmallPageGrowth(bool valid,uint64_t available,uint64_t capacityBytes,uint64_t reserve=ProcessReserve){
+    if(!valid||!capacityBytes||capacityBytes>SmallPageCapacityLimit||reserve<ResetReplayReserve||reserve>ProcessReserve)return false;
     uint64_t twice=0,reserved=0,required=0;
     return add(capacityBytes,capacityBytes,twice)&&add(twice,capacityBytes,reserved)&&
-           add(ProcessReserve,reserved,required)&&available>=required;
+           add(reserve,reserved,required)&&available>=required;
 }
 // A fresh sample can cover the consecutive local VB/IB allocation transaction.
 // Reserve the same three-capacity allowance used by dynamicBudget after each
