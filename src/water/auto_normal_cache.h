@@ -8,7 +8,7 @@
 // Generated maps and retained source references have separate bounded budgets.
 // Source references prevent pointer reuse; they are not duplicate GPU copies.
 class NorthlightAutoNormalCache {
-    struct Entry {IDirect3DTexture9* source;IDirect3DTexture9* normal;std::uint64_t bytes,sourceBytes,used,version;unsigned frame;bool mutableSource,model;};
+    struct Entry {IDirect3DTexture9* source;IDirect3DTexture9* normal;std::uint64_t bytes,sourceBytes,used,version;unsigned frame,lastUsedFrame;bool mutableSource,model;};
     IDirect3DDevice9* d;
     NorthlightMaterialProfile* profile=nullptr;
     NorthlightStateBlockPool states;
@@ -80,7 +80,7 @@ public:
         else {auto found=lookup[model].find(source);if(found!=lookup[model].end())it=entries.begin()+found->second;}
         if(it!=entries.end()){
             if(revision!=it->version||(it->mutableSource&&!it->version&&frame-it->frame>=30))erase(size_t(it-entries.begin()));
-            else{recent=size_t(it-entries.begin());it->used=clock;++hits;if(profile)profile->count(P::NormalHit);return it->normal;}
+            else{recent=size_t(it-entries.begin());it->used=clock;it->lastUsedFrame=frame;++hits;if(profile)profile->count(P::NormalHit);return it->normal;}
         }
         if(profile)profile->count(P::NormalMiss);
         if(generated>=2)return nullptr;
@@ -93,6 +93,9 @@ public:
         struct Recycled {IDirect3DTexture9* texture=nullptr;~Recycled(){drop(texture);}} recycled;
         while(!entries.empty()&&(bytes+cost>budget||sourceBytes+sourceCost>sourceBudget||entries.size()>=256)){
             auto oldest=std::min_element(entries.begin(),entries.end(),[](const Entry& a,const Entry& b){return a.used<b.used;});
+            // Keep the visible working set stable when it exceeds the budget.
+            // New maps wait until an LRU entry was unused for a complete frame.
+            if(frame-oldest->lastUsedFrame<=1)return nullptr;
             // Reuse only an evicted, unbound map that no pending draw borrows.
             if(!recycled.texture&&reusable(oldest->normal,width,height)){recycled.texture=oldest->normal;oldest->normal=nullptr;}
             erase(size_t(oldest-entries.begin()));++evictions;
@@ -125,7 +128,7 @@ public:
         struct V {float x,y,z,w,u,v;};const V quad[]={{-.5f,-.5f,0,1,0,0},{width-.5f,-.5f,0,1,1,0},{-.5f,height-.5f,0,1,0,1},{width-.5f,height-.5f,0,1,1,1}};
         {P::Scope draw(profile,P::NormalBuild,0,true);draw.work(uint64_t(width)*height);if(FAILED(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(V)))){drop(normal);return nullptr;}}
         {P::Scope mips(profile,P::Mips,0,true);normal->SetAutoGenFilterType(D3DTEXF_LINEAR);normal->GenerateMipSubLevels();}
-        source->AddRef();try{entries.push_back({source,normal,cost,sourceCost,clock,revision,frame,(desc.Usage&(D3DUSAGE_DYNAMIC|D3DUSAGE_RENDERTARGET))!=0||(desc.Pool==D3DPOOL_DEFAULT&&source->GetLevelCount()==1),model});
+        source->AddRef();try{entries.push_back({source,normal,cost,sourceCost,clock,revision,frame,frame,(desc.Usage&(D3DUSAGE_DYNAMIC|D3DUSAGE_RENDERTARGET))!=0||(desc.Pool==D3DPOOL_DEFAULT&&source->GetLevelCount()==1),model});
             try{lookup[model].emplace(source,entries.size()-1);}catch(...){entries.pop_back();throw;}
         }catch(...){source->Release();drop(normal);return nullptr;}recent=entries.size()-1;bytes+=cost;sourceBytes+=sourceCost;++generated;++builds;return normal;
     }
