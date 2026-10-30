@@ -916,30 +916,8 @@ private:
     unsigned smallShadowEarly=0,smallShadowGI=0;
     size_t pooledSnapshotBytes=0;
     NorthlightDrawSnapshot::Frame replaySnapshots;
-    // 0.3.181 (r89 S2/S3): the snapshot lookup mode, set at a capture frame's first snapshot read:
-    // Prefetch, except on RenderProfile=1 non-sample frames, which rotate Map/Predict/Prefetch and are
-    // metered (SNAPSHOT ab, every 600 such frames and at destruction). All modes are exact.
-    NorthlightDrawSnapshot::SnapshotMeter<std::chrono::steady_clock> snapshotMeter;
-    bool snapshotFrameBegun=false;unsigned snapshotFrameSerial=0,snapshotReportFrames=0;
-    void snapshotBeginFrame(bool sample){
-        using Lookup=NorthlightDrawSnapshot::Frame::Lookup;snapshotFrameBegun=true;
-        const bool metered=NorthlightRenderThreadProbe::profiling()&&!sample;
-        replaySnapshots.setLookup(metered?Lookup(snapshotFrameSerial%3):Lookup::Prefetch);
-        snapshotMeter.beginFrame(metered,snapshotFrameSerial);
-    }
-    void snapshotEndFrame(){ /* before the snapshot frame is cleared (endFrame) */
-        if(!snapshotFrameBegun)return;snapshotFrameBegun=false;
-        const auto& r=replaySnapshots;snapshotMeter.endFrame(unsigned(r.lookup()),r.fastCacheHits(),r.predictTried(),r.predictHits(),r.predictMisses());
-        ++snapshotFrameSerial;if(++snapshotReportFrames>=600){snapshotReportFrames=0;logSnapshotAb();}
-    }
-    void logSnapshotAb(){
-        if(!NorthlightDiagnostics::enabled())return;bool any=false;NorthlightDrawSnapshot::Frame::KeyBench k;
-        snapshotMeter.report([&](unsigned c,const auto& s){
-            if(!any){any=true;k=NorthlightDrawSnapshot::Frame::benchKeys();}
-            if(NorthlightDiagnostics::enabled())logf("SNAPSHOT ab class=%s frames=%u/%u/%u medianNs=%.1f/%.1f/%.1f p25=%.1f/%.1f/%.1f p75=%.1f/%.1f/%.1f pairNs=%.1f spans=%llu predictTried=%llu predictHits=%llu predictMisses=%llu fastHits=%llu keyEqLegacyNs=%.1f keyEqNs=%.1f hashNs=%.1f",
-                NorthlightDrawSnapshot::SnapshotMeter<std::chrono::steady_clock>::className(c),s.frames[0],s.frames[1],s.frames[2],s.median[0],s.median[1],s.median[2],s.p25[0],s.p25[1],s.p25[2],s.p75[0],s.p75[1],s.p75[2],s.pairNs,
-                s.spans,s.predictTried,s.predictHits,s.predictMisses,s.fastHits,k.legacyNs,k.equalNs,k.hashNs);});
-    }
+    // Snapshot lookup stays on Frame's Prefetch default. Profiling must not
+    // rotate production algorithms or run key microbenchmarks on this thread.
     // The next pooled Replay's lines that the capture touches after acquireReplay() (Prefetch mode).
     void prefetchReplay(const Replay& r){
         using NorthlightDrawSnapshot::prefetch;
@@ -2428,7 +2406,6 @@ public:
         staticCasters.setAdmission([this](size_t bytes){return admitStaticAllocation(bytes);});
         worker=std::thread([this]{work();});}
     ~WorldRenderer(){prepareWorker.join(); /* 0.3.179: first: an abandoned worker may still be inside a record */
-        logSnapshotAb(); /* 0.3.181: the SNAPSHOT ab window at device destroy */
         {std::lock_guard<std::mutex> lock(mutex);stopping=true;}wake.notify_one();if(worker.joinable())worker.join();releaseGPU();for(auto& p:captureShaders)drop(p.second.replacement);for(auto& p:terrainShadowShaders)drop(p.second);for(auto& p:terrainCoverageVertices)drop(p.second);for(auto& p:terrainCoveragePixels)for(auto& variant:p.second)drop(variant.shader);}
     void releaseActorTargets(){for(auto& t:actorShadow)drop(t);for(auto& t:actorShadowSurface)drop(t);for(auto& t:actorTiles)drop(t);for(auto& t:actorTilesSurface)drop(t);drop(actorTilesMid);drop(actorTilesMidSurface);drop(actorVisibility);drop(actorVisibilitySurface);drop(actorShadowPS);drop(actorTilesPS);}
     // 0.3.214 (task 42): keepMesh (device Reset, resolution change) keeps what describes the UPLOADED mesh: the MANAGED
@@ -2575,7 +2552,6 @@ public:
         /* The snapshot frame advances on capture frames only. With the version provider set here every
            untracked hit revalidates anyway; without it the serial&15==frame&15 slice, counted in all
            frames, could never reach some serials when captures run every N frames. */
-        snapshotEndFrame(); /* 0.3.181 (S3): reads the frame's snapshot counters */
         if(captureMode!=CaptureSkipped)replaySnapshots.clearFrame();
         lastCaptureSkipped=captureMode==CaptureSkipped;actorCaptureDecided=false;actorJob.reset();captureMode=CaptureUndecided;actorVerticesEvaluated=actorDraws=actorSkippedAlpha=0;
         releaseExpiredMesh();
@@ -3551,8 +3527,6 @@ public:
         // A rejected draw returns its record to the pool as well. Exhausted
         // geometry budgets must not allocate/zero a fresh constant bank per draw.
         phase.next(CaptureSnapshot);fate.reason=NorthlightShadowFate::Snapshot;
-        if(!snapshotFrameBegun)snapshotBeginFrame(sample);
-        NorthlightDrawSnapshot::SnapshotSpan<decltype(snapshotMeter)> snapshotSpan(snapshotMeter); /* 0.3.181 (S3): to the constants phase or a return */
         std::unique_ptr<Replay,ReplayRecycle> p(acquireReplay().release(),ReplayRecycle{this});p->shadowSkinned=priority;p->shadowSelected=!smallShadow;p->shadowSmall=smallShadow;p->boneKnown=false;p->selfShadow=false;p->captureRootValid=rooted;if(rooted)std::memcpy(p->captureRoot,root,sizeof p->captureRoot);p->anchorValid=false;p->fateSlot=-1;p->fateClass=smallShadow?NorthlightShadowFate::Small:NorthlightShadowFate::NotRanked;p->fateDistance=0;p->projectionKind=kind;p->shader=metadata.replacement;p->shader->AddRef();p->originalShader=current;p->originalShader->AddRef();p->pointBounds={};
         if(replaySnapshots.lookup()==NorthlightDrawSnapshot::Frame::Lookup::Prefetch&&!freeReplays.empty())prefetchReplay(*freeReplays.back()); /* 0.3.181 (S2) */
         if(FAILED(d->GetVertexDeclaration(&p->decl))||!p->decl)return;
@@ -3568,7 +3542,7 @@ public:
         if(captured&&admit.rooted)admission.admitted(admit,reinterpret_cast<std::uintptr_t>(current),count,root,replaySnapshots.bytesRead()-readBefore);
         if(!captured){if(why.error==NorthlightDrawSnapshot::Error::Budget){fate.reason=NorthlightShadowFate::CaptureBudget;captureShortfall=true;if(admit.rooted)admission.budgetRefused(admit,root,vertexTotal,count);}
             if(sample){captureRejectedBytes+=replaySnapshots.bytesRead()-readBefore;if(priority){++skinnedSnapshotRejected;skinnedBudgetRejected+=why.error==NorthlightDrawSnapshot::Error::Budget;}else otherBudgetRejected+=why.error==NorthlightDrawSnapshot::Error::Budget;}if(snapshotRejects++<12)logf("MODEL snapshot rejected: %s hr=%08lx stream=%u",NorthlightDrawSnapshot::errorName(why.error),(unsigned long)why.hr,why.stream);return;}
-        snapshotSpan.end();phase.next(CaptureConstants);fate.reason=NorthlightShadowFate::Constants;
+        phase.next(CaptureConstants);fate.reason=NorthlightShadowFate::Constants;
         const auto& usage=metadata.usage;
         p->constantUsage=usage;
         const auto f=usage.floats,b=usage.booleans,i=usage.integers;
