@@ -77,8 +77,8 @@ compatible = begin[begin.index('const auto compatiblePage='):begin.index('if(!me
 assert 'payload->pages->temporary||' in compatible and 'vbPool==D3DPOOL_MANAGED' in compatible and 'ibPool==D3DPOOL_MANAGED' in compatible
 reset_mesh = w[w.index('void releaseDefaultMesh(){'):w.index('void reset(){')]
 assert 'meshStore.table()' in reset_mesh and 'D3DPOOL_DEFAULT' in reset_mesh
-assert 'if(activeLost){' in reset_mesh and 'keepPressureProbes=true;resetReplayPending=true;clearMesh();releaseMeshPool();uploadedMap.clear();' in reset_mesh and 'else trimMeshPools();' in reset_mesh
-assert 'resetReplayScoped=active&&active->bvh==uploaded.lock();' in reset_mesh and 'resetReplayPlan=active->meshPlan;' in reset_mesh
+assert 'if(activeLost){' in reset_mesh and 'keepPressureProbes=true;resetReplayPending=true;clearMesh(resetReplayScoped);releaseMeshPool();uploadedMap.clear();' in reset_mesh and 'else trimMeshPools();' in reset_mesh
+assert 'resetReplayScoped=active&&active->bvh==uploaded.lock()&&active->meshPlan==uploadedMeshPlan.lock();' in reset_mesh and 'resetReplayPlan=active->meshPlan;' in reset_mesh
 assert reset_mesh.index('meshStore.cancel();') < reset_mesh.index('if(activeLost)')
 
 # Pressure Reset waits for retirement with a separate, nonblocking query. The
@@ -101,4 +101,12 @@ assert 'drop(resetReplayQuery);resetReplayFence.drop();resetReplayPending=false;
 assert 'pageMemory' not in perform and 'if(!sampled)' not in perform
 print('fresh page admission and exact Reset recovery source wiring ok')
 
-assert upload.index("reusableMaterial(m)") < upload.index('admitsGrowth("pressure-material"') < upload.index("HRESULT hr=d->CreateTexture(m.width,m.height")
+assert upload.index("reusableMaterial(m,") < upload.index('admitsGrowth("pressure-material"') < upload.index("HRESULT hr=d->CreateTexture(m.width,m.height")
+
+# Reset during an unfinished replay must preserve managed probe ownership and
+# cancel staging even if no DEFAULT page has been allocated yet.
+assert 'const bool continuing=pressureReplayAllocation();' in reset_mesh
+assert 'if(continuing){keepPressureProbes=true;resetReplayPending=true;}' in reset_mesh
+assert 'if(!anyDefault&&!continuing)return;' in reset_mesh
+assert 'uploaded=next.bvh;uploadedMeshPlan=next.plan;' in commit
+assert 'uploaded.reset();uploadedMeshPlan.reset();' in w

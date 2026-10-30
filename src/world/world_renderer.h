@@ -324,6 +324,7 @@ private:
     std::weak_ptr<Snapshot> observedPublication;
     std::string loggedCacheMessage; // last logged "WORLD cache" message: uncached maps republish the same error per GI request, log it once
     std::weak_ptr<NorthlightGI::BVH> uploaded; // GPU commit must not retain the CPU scene.
+    std::weak_ptr<const NorthlightWorldMesh::WorldMeshUploadPlan> uploadedMeshPlan;
     std::vector<float> uploadedAlphaCutoffs;
     uint64_t uploadedSerial=0;
     std::shared_ptr<const StaticShadow::OwnerSet> uploadedStaticOwners;
@@ -831,11 +832,11 @@ private:
         if(vertex){
             drop(slot.vb);meshStore.setCapacity(id,true,0);
             if(FAILED(d->CreateVertexBuffer(capacity,usage,0,pool,&slot.vb,nullptr))||!slot.vb){drop(slot.vb);return false;}
-            slot.vbPool=pool;meshStore.setCapacity(id,true,capacity);
+            slot.vbPool=pool;slot.vbFresh=true;meshStore.setCapacity(id,true,capacity);
         }else{
             drop(slot.ib);meshStore.setCapacity(id,false,0);
             if(FAILED(d->CreateIndexBuffer(capacity,usage,D3DFMT_INDEX16,pool,&slot.ib,nullptr))||!slot.ib){drop(slot.ib);return false;}
-            slot.ibPool=pool;meshStore.setCapacity(id,false,capacity);
+            slot.ibPool=pool;slot.ibFresh=true;meshStore.setCapacity(id,false,capacity);
         }
         return true;
     }
@@ -868,7 +869,15 @@ private:
     std::shared_ptr<MaterialPixels> uploadedMaterialPixels;
     static constexpr size_t MaterialReuseBytes=4u<<20;
     size_t materialReuseBytes=0;
-    IDirect3DTexture9* reusableMaterial(const NorthlightWorldMesh::MaterialUpload& material)const{
+    IDirect3DTexture9* reusableMaterial(const NorthlightWorldMesh::MaterialUpload& material,size_t materialIndex)const{
+        // MANAGED cutouts survive Reset. Exact plan/index identity avoids both
+        // a BGRA duplicate and replay-time texture staging allocations.
+        if(resetReplayScoped&&active&&active->bvh==resetReplaySource.lock()&&active->meshPlan==resetReplayPlan.lock()&&materialIndex<materials.size()&&materials[materialIndex]){
+            auto payload=active->meshPlan->payload.share();D3DSURFACE_DESC desc{};
+            auto* texture=materials[materialIndex];
+            if(payload&&materialIndex<payload->materials.size()&& &payload->materials[materialIndex]==&material&&texture->GetLevelCount()==1&&
+               SUCCEEDED(texture->GetLevelDesc(0,&desc))&&desc.Pool==D3DPOOL_MANAGED&&desc.Format==D3DFMT_A8R8G8B8&&desc.Width==material.width&&desc.Height==material.height)return texture;
+        }
         if(!uploadedMaterialPixels)return nullptr;
         for(size_t i=0;i<uploadedMaterialPixels->size()&&i<materials.size();++i){
             const auto& old=(*uploadedMaterialPixels)[i];
@@ -2223,7 +2232,8 @@ private:
     }
     bool buildingScreenResources=false,screenResourceOom=false,screenResourceRetry=false,screenResourceReported=false;DWORD screenResourceRetryAt=0,screenResourceReportAt=0;
     bool check(HRESULT h,const char* s){if(SUCCEEDED(h))return true;if(buildingScreenResources&&(h==E_OUTOFMEMORY||h==D3DERR_OUTOFVIDEOMEMORY)){screenResourceOom=true;return false;}if(!failed)logf("WORLD DISABLED: %s HRESULT=%08lx",s,(unsigned long)h);failed=true;return false;}
-    void clearMesh(){staticCasters.settle();dropStaticDirtyJobs();vertices=nullptr;indices=nullptr;for(auto& m:materials)drop(m);materials.clear();uploadedTextureBytes=0;uploadedMaterialPixels.reset();materialReuseBytes=0;batches.clear();terrainBatchList.clear();shadowTerrainList.clear();terrainBatchListGeneration=UINT64_MAX;uploadedAlphaCutoffs.clear();uploadedLocalShadowRecords.reset();uploaded.reset();}
+    void clearMaterials(){for(auto& m:materials)drop(m);materials.clear();uploadedTextureBytes=0;uploadedMaterialPixels.reset();materialReuseBytes=0;}
+    void clearMesh(bool keepMaterials=false){staticCasters.settle();dropStaticDirtyJobs();vertices=nullptr;indices=nullptr;if(!keepMaterials)clearMaterials();batches.clear();terrainBatchList.clear();shadowTerrainList.clear();terrainBatchListGeneration=UINT64_MAX;uploadedAlphaCutoffs.clear();uploadedLocalShadowRecords.reset();uploaded.reset();uploadedMeshPlan.reset();}
     bool target(UINT w,UINT h,D3DFORMAT fmt,IDirect3DTexture9** t,IDirect3DSurface9** s){return check(d->CreateTexture(w,h,1,D3DUSAGE_RENDERTARGET,fmt,D3DPOOL_DEFAULT,t,nullptr),"world render texture")&&check((*t)->GetSurfaceLevel(0,s),"world render surface");}
     bool createResources(UINT w,UINT h,D3DFORMAT fmt){
         if(width==w&&height==h&&liveTerrainDecl)return true;
@@ -2291,7 +2301,7 @@ private:
         HRESULT hr=S_OK;const char* stage="scene target";bool admissionRefused=false,exact=true;
         NorthlightGeometryMemory::Budget refusedBudget;NorthlightGeometryMemory::Sample refusedMemory;
         auto admit=[&](uint64_t bytes,bool defaultTarget=false){
-            const auto budget=defaultTarget?NorthlightGeometryMemory::defaultTargetBudget():NorthlightGeometryMemory::dynamicBudget(bytes);bool sampleExact=true;
+            const auto budget=defaultTarget?NorthlightGeometryMemory::replayBudget(NorthlightGeometryMemory::defaultTargetBudget(),pressureReplayAllocation()):NorthlightGeometryMemory::dynamicBudget(bytes);bool sampleExact=true;
             const auto memory=geometryAdmission(budget,&sampleExact);
             if(NorthlightGeometryMemory::admits(memory,budget))return true;
             refusedBudget=budget;refusedMemory=memory;exact=sampleExact;admissionRefused=true;hr=E_OUTOFMEMORY;stage="scene target admission";return false;
@@ -2471,6 +2481,7 @@ private:
         if(!resetReplayScoped)return false;
         if(active&&active->bvh==resetReplaySource.lock()&&active->meshPlan==resetReplayPlan.lock())return true;
         resetReplaySource.reset();resetReplayPlan.reset();resetReplayScoped=false;
+        if(!vertices)clearMaterials();
         drop(resetReplayQuery);resetReplayFence.drop();resetReplayPending=false;return false;
     }
 
@@ -2580,7 +2591,12 @@ private:
                 const bool compact=vb&&page.vbPool==D3DPOOL_DEFAULT;
                 const size_t gpuOffset=compact?offset/sizeof(NorthlightGI::WorldVertex)*sizeof(StaticShadow::Vertex):offset;
                 const size_t gpuBytes=compact?bytes/sizeof(NorthlightGI::WorldVertex)*sizeof(StaticShadow::Vertex):bytes;
-                HRESULT hr=vb?page.vb->Lock(UINT(gpuOffset),UINT(gpuBytes),&data,0):page.ib->Lock(UINT(offset),UINT(bytes),&data,0);
+                // Newly created pages have never been drawn. Avoid DXVK's
+                // flags-0 synchronization until publication; an idle buffer
+                // from any previous drawable table keeps synchronized Lock(0).
+                const DWORD copyFlags=(vb?page.vbFresh:page.ibFresh)&&(vb?page.vbPool:page.ibPool)==D3DPOOL_DEFAULT?NorthlightUpload::FreshBufferLock:DWORD(0);
+                traceUpload(vb?"page-vertex-lock":"page-index-lock",copyFlags);
+                HRESULT hr=vb?page.vb->Lock(UINT(gpuOffset),UINT(gpuBytes),&data,copyFlags):page.ib->Lock(UINT(offset),UINT(bytes),&data,copyFlags);
                 if(FAILED(hr))return false;
                 bool copied=data!=nullptr;
                 if(compact){
@@ -2608,7 +2624,8 @@ private:
                     m.bgra[0]==255&&m.bgra[1]==255&&m.bgra[2]==255&&m.bgra[3]==255;
                 if(white&&next.white){next.white->AddRef();next.textures.push_back(next.white);++next.material;++count;continue;}
                 if(!next.partialTexture){
-                    if(auto* reused=reusableMaterial(m)){
+                    if(auto* reused=reusableMaterial(m,next.material)){
+                        if(resetReplayScoped)reused->PreLoad();
                         reused->AddRef();next.textures.push_back(reused);++next.material;++count;++next.textureReuses;
                         if(white){next.white=reused;reused->AddRef();}
                         continue;
@@ -2664,6 +2681,7 @@ private:
                 auto previousPixels=std::move(uploadedMaterialPixels);
                 const size_t previousPixelBytes=materialReuseBytes;
                 const bool coldStart=meshStore.table().empty();clearMesh();const auto stagedPages=meshStore.commit(); /* 0.3.216: atomic switch of the active page table; replaced buffers go idle */
+                for(auto id:meshStore.table())if(id<meshBuffers.size())meshBuffers[id].vbFresh=meshBuffers[id].ibFresh=false;
                 {const uint32_t first=meshStore.bufferOf(0);vertices=first<meshBuffers.size()?meshBuffers[first].vb:nullptr;indices=first<meshBuffers.size()?meshBuffers[first].ib:nullptr;}
                 materials=std::move(next.textures);uploadedTextureBytes=size_t(plan.textureBytes);vertexCount=plan.vertexCount;
                 uploadedMaterialPixels=std::move(committedPixels);materialReuseBytes=retainedPixels;
@@ -2675,7 +2693,7 @@ private:
                  std::swap(fixedTerrain,committedFixed);std::swap(uploadedStaticOwners,committedOwners);fixedTerrainBits.assign(fixedTerrain.get());
                  if(committedFixed)retirementBacklog.retire(reaper,committedFixed,committedFixed->size()*48);
                  if(committedOwners)retirementBacklog.retire(reaper,committedOwners,committedOwners->placements*(sizeof(StaticShadow::Placement)+64));}
-                uploaded=next.bvh;uploadedMap=std::move(committedMap);
+                uploaded=next.bvh;uploadedMeshPlan=next.plan;uploadedMap=std::move(committedMap);
                 publishResidentPages(uploadedMap);
                 ++meshGeneration;rebuildTerrainLists();
                 // MANAGED generations release the CPU payload. DEFAULT pressure pages
@@ -2900,18 +2918,23 @@ public:
         effects=next;
     }
     void releaseDefaultMesh(){
+        // A second Reset may interrupt replay after targets were recreated but
+        // before any page committed. Keep compatible probes and re-fence the
+        // same committed source even when its active GPU table is empty.
+        const bool continuing=pressureReplayAllocation();
+        if(continuing){keepPressureProbes=true;resetReplayPending=true;}
         const auto hasDefault=[&](uint32_t id){return id<meshBuffers.size()&&((meshBuffers[id].vb&&meshBuffers[id].vbPool==D3DPOOL_DEFAULT)||(meshBuffers[id].ib&&meshBuffers[id].ibPool==D3DPOOL_DEFAULT));};
         bool anyDefault=false;for(uint32_t id=0;id<meshBuffers.size();++id)anyDefault|=hasDefault(id);
-        if(!anyDefault)return;
+        if(!anyDefault&&!continuing)return;
         const bool activeLost=std::any_of(meshStore.table().begin(),meshStore.table().end(),hasDefault);
         // Cancel claims before releasing DEFAULT resources. An active MANAGED
         // generation survives idle DEFAULT cleanup; active DEFAULT pages replay
         // from the complete file-backed payload retained by their plan.
         meshStore.cancel();retirePendingCpu();pendingMesh.reset();
         if(activeLost){
-            resetReplayScoped=active&&active->bvh==uploaded.lock();
+            resetReplayScoped=active&&active->bvh==uploaded.lock()&&active->meshPlan==uploadedMeshPlan.lock();
             if(resetReplayScoped){resetReplaySource=active->bvh;resetReplayPlan=active->meshPlan;}else{resetReplaySource.reset();resetReplayPlan.reset();}
-            keepPressureProbes=true;resetReplayPending=true;clearMesh();releaseMeshPool();uploadedMap.clear();
+            keepPressureProbes=true;resetReplayPending=true;clearMesh(resetReplayScoped);releaseMeshPool();uploadedMap.clear();
         }
         else trimMeshPools();
     }

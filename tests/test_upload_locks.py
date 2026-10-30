@@ -39,8 +39,8 @@ expected={
  ('replay_gpu_cache.h','built->indices'):(F,Fresh,'D3DUSAGE_WRITEONLY,D3DFMT_INDEX32,D3DPOOL_DEFAULT,&built->indices'),
  ('static_shadow_gpu.h','r.vb'):('0',Managed,'D3DUSAGE_WRITEONLY,0,D3DPOOL_MANAGED,&r->vb'),
  ('static_shadow_gpu.h','r.ib'):('0',Managed,'D3DFMT_INDEX16:D3DFMT_INDEX32,D3DPOOL_MANAGED,&r->ib'),
- ('world_renderer.h','page.vb'):('0',Pooled,'CreateVertexBuffer(capacity,usage,0,pool,&slot.vb'),
- ('world_renderer.h','page.ib'):('0',Pooled,'CreateIndexBuffer(capacity,usage,D3DFMT_INDEX16,pool,&slot.ib'),
+ ('world_renderer.h','page.vb'):('copyFlags',Pooled,'CreateVertexBuffer(capacity,usage,0,pool,&slot.vb'),
+ ('world_renderer.h','page.ib'):('copyFlags',Pooled,'CreateIndexBuffer(capacity,usage,D3DFMT_INDEX16,pool,&slot.ib'),
  ('live_terrain_gpu.h','vertices_'):('discarding?D3DLOCK_DISCARD:D3DLOCK_NOOVERWRITE',Dynamic,'D3DUSAGE_DYNAMIC|D3DUSAGE_WRITEONLY,0,D3DPOOL_DEFAULT,&vertices_'),
  ('static_shadow_gpu.h','instances_'):('flags',Dynamic,'D3DUSAGE_DYNAMIC|D3DUSAGE_WRITEONLY,0,D3DPOOL_DEFAULT,&instances_'),
  ('world_renderer.h','liveIndicesGPU'):('slot.flags',Dynamic,'D3DUSAGE_DYNAMIC|D3DUSAGE_WRITEONLY,D3DFMT_INDEX32,D3DPOOL_DEFAULT,&liveIndicesGPU'),
@@ -94,7 +94,7 @@ print(f'PASS DEFAULT|WRITEONLY creations: {len(creates)}, all fresh write-once s
 upload=fp.src('upload_lock.h').read_text()
 assert 'inline constexpr bool NoOverwriteFreshBuffers=true;' in upload
 assert 'inline constexpr DWORD FreshBufferLock=NoOverwriteFreshBuffers?DWORD(D3DLOCK_NOOVERWRITE):DWORD(0);' in upload
-assert {n for n,t in sources.items() if 'FreshBufferLock' in t}=={'upload_lock.h','replay_gpu_batches.h','replay_gpu_cache.h','scene_native_store.h','auto_displacement_renderer.h','shared_pom.h'}
+assert {n for n,t in sources.items() if 'FreshBufferLock' in t}=={'upload_lock.h','replay_gpu_batches.h','replay_gpu_cache.h','scene_native_store.h','auto_displacement_renderer.h','shared_pom.h','world_renderer.h'}
 assert '#include "upload_lock.h"' in sources['replay_gpu_cache.h'] # world_renderer.h (and its .inl) include replay_gpu_cache.h
 # Publication strictly after the last Unlock of each fresh buffer; nothing else reaches an unpublished one.
 def body(text,start,end):i=text.index(start);return text[i:text.index(end,i)]
@@ -176,4 +176,8 @@ page_create=body(page_world,'    bool acquireMeshPage(', '    void releaseMeshPo
 assert 'pool==D3DPOOL_DEFAULT?D3DUSAGE_DYNAMIC:0' in page_create
 assert 'meshStore.writable(id)' in page_create
 assert 'payload.pages->temporary?D3DPOOL_DEFAULT:D3DPOOL_MANAGED' in page_world
-print('PASS pooled pages: pool-specific creation, staging ownership, synchronized Lock(0) on reuse')
+assert 'slot.vbFresh=true;' in page_create and 'slot.ibFresh=true;' in page_create
+assert '(vb?page.vbFresh:page.ibFresh)&&(vb?page.vbPool:page.ibPool)==D3DPOOL_DEFAULT?NorthlightUpload::FreshBufferLock:DWORD(0)' in page_world
+page_commit=page_world[page_world.index('const auto stagedPages=meshStore.commit();'):]
+assert 'for(auto id:meshStore.table())if(id<meshBuffers.size())meshBuffers[id].vbFresh=meshBuffers[id].ibFresh=false;' in page_commit
+print('PASS pooled pages: fresh DEFAULT NOOVERWRITE only before first publication; synchronized Lock(0) for drawable reuse')

@@ -40,7 +40,7 @@ struct UploadFaultDevice:ForwardIDirect3DDevice9 {
         audit(NorthlightGeometryMemory::dynamicBudget(bytes),pool==D3DPOOL_DEFAULT);const auto before=allocationBegin("VB",bytes,1,usage,fvf,pool);return allocationEnd(real->CreateVertexBuffer(bytes,usage,fvf,pool,out,handle),before,"VB",bytes,1,usage,fvf,pool);
     }
     HRESULT STDMETHODCALLTYPE CreateDepthStencilSurface(UINT width,UINT height,D3DFORMAT format,D3DMULTISAMPLE_TYPE samples,DWORD quality,BOOL discard,IDirect3DSurface9** out,HANDLE* handle)override{
-        audit(NorthlightGeometryMemory::defaultTargetBudget());const auto before=allocationBegin("Depth",width,height,samples,format,D3DPOOL_DEFAULT);return allocationEnd(real->CreateDepthStencilSurface(width,height,format,samples,quality,discard,out,handle),before,"Depth",width,height,samples,format,D3DPOOL_DEFAULT);
+        audit(NorthlightGeometryMemory::defaultTargetBudget(),true);const auto before=allocationBegin("Depth",width,height,samples,format,D3DPOOL_DEFAULT);return allocationEnd(real->CreateDepthStencilSurface(width,height,format,samples,quality,discard,out,handle),before,"Depth",width,height,samples,format,D3DPOOL_DEFAULT);
     }
     HRESULT queryCreateResult=S_OK,queryIssueResult=S_OK,queryDataResult=S_FALSE;
     unsigned queryCreates=0,queryIssues=0,queryReads=0,queryAlive=0,queryReferences=0;
@@ -50,7 +50,7 @@ struct UploadFaultDevice:ForwardIDirect3DDevice9 {
     }
     HRESULT STDMETHODCALLTYPE CreateTexture(UINT width,UINT height,UINT levels,DWORD usage,D3DFORMAT format,D3DPOOL pool,IDirect3DTexture9** out,HANDLE* handle)override{
         if(++textures==failTextureAt){if(out)*out=nullptr;return E_OUTOFMEMORY;}if(pool==D3DPOOL_MANAGED){const auto bytes=textureBytes(width,height,levels,format);audit(bytes?NorthlightGeometryMemory::dynamicBudget(bytes):NorthlightGeometryMemory::Budget{},format==D3DFMT_A8R8G8B8);}
-        else if(pool==D3DPOOL_DEFAULT&&(usage&(D3DUSAGE_RENDERTARGET|D3DUSAGE_DEPTHSTENCIL)))audit(NorthlightGeometryMemory::defaultTargetBudget());
+        else if(pool==D3DPOOL_DEFAULT&&(usage&(D3DUSAGE_RENDERTARGET|D3DUSAGE_DEPTHSTENCIL)))audit(NorthlightGeometryMemory::defaultTargetBudget(),true);
         const auto before=allocationBegin("Texture",width,height,usage,format,pool);return allocationEnd(real->CreateTexture(width,height,levels,usage,format,pool,out,handle),before,"Texture",width,height,usage,format,pool);
     }
     HRESULT STDMETHODCALLTYPE CreateQuery(D3DQUERYTYPE type,IDirect3DQuery9** out)override;

@@ -54,7 +54,7 @@ check('renderer: slot matrices once per frame, kick before the loop, RAII join b
 check('renderer: settled before static updates, device release, key invalidation and mesh clears',
       'staticCasters.settle(); /* 0.3.152: no plan job across the static cache update */' in w
       and release.index('releaseReplayProbe();')<release.index('staticCasters.settle();')<min(release.index(x) for x in ('rigidMemoryClear();','staticCasters.reset();','staticMatcher.clear();','staticM2Memory.clear();','staticScene.reset();','clearMesh();'))
-      and 'void invalidateShadowCache(){staticCasters.settle();dropStaticDirtyJobs();' in w and 'void clearMesh(){staticCasters.settle();dropStaticDirtyJobs();' in w)
+      and 'void invalidateShadowCache(){staticCasters.settle();dropStaticDirtyJobs();' in w and 'void clearMesh(bool keepMaterials=false){staticCasters.settle();dropStaticDirtyJobs();' in w)
 check('renderer: worker dirty rects for eligible slots, used only when current',
       'StaticCacheDirtyRects&&staticScissorCaps==1&&!placements[slot].reason&&key.valid&&key.staticContent.valid' in w
       and 'if(job.ready&&job.frame==staticFrame&&staticCasters.kickedModeCurrent()&&' in w and 'dirtyRectsFrom(job.work(),shadowCacheKey[slot],staticSlotMatrix[slot],true,false,Traced{view,threw})' in w)

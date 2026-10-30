@@ -2,7 +2,10 @@
 inline void WorldColdUploadTest::recoveryPolicy(UploadFaultDevice& d,D3DPRESENT_PARAMETERS& parameters){
     (void)parameters;const bool wasSpooling=Spooling;Spooling=true;
     auto renderer=std::make_unique<WorldRenderer>(&d);auto& w=*renderer;w.valid=true;assert(w.resources(128,128,D3DFMT_A16B16G16R16F));
-    auto old=scene(0);complete(w,old);assert(!w.pressureReplayAllocation());w.reset();assert(w.pressureReplayAllocation()&&w.resetReplayScoped&&old->meshPlan->payload.live());
+    auto old=scene(0);complete(w,old);assert(!w.pressureReplayAllocation()&&w.uploadedMeshPlan.lock()==old->meshPlan);
+    auto changedBeforeReset=scene(9);changedBeforeReset->bvh=old->bvh;w.active=changedBeforeReset;w.reset();
+    assert(!w.pressureReplayAllocation()&&!w.resetReplayScoped); // A new plan cannot borrow a previous BVH commit.
+    w.active=old;w.valid=true;assert(w.resources(128,128,D3DFMT_A16B16G16R16F));complete(w,old);w.reset();assert(w.pressureReplayAllocation()&&w.resetReplayScoped&&old->meshPlan->payload.live());
     auto arm=[&]{w.active=old;w.resetReplaySource=old->bvh;w.resetReplayPlan=old->meshPlan;w.resetReplayScoped=true;w.resetReplayPending=true;w.meshRetry.clear();};
     auto cancelled=[&]{assert(!w.pressureReplayAllocation()&&!w.resetReplayScoped&&!w.resetReplayPending&&!w.resetReplayQuery&&!d.queryAlive);};
     d.fakeQueries=true;d.queryCreateResult=d.queryIssueResult=S_OK;d.queryDataResult=S_FALSE;

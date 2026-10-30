@@ -38,11 +38,28 @@ inline void WorldColdUploadTest::probeReuse(UploadFaultDevice& d,D3DPRESENT_PARA
     poison();populate(2);w.reset();assert(w.keepPressureProbes&&w.resetReplayPending&&w.uploadedSerial==0);
     for(unsigned c=0;c<6;++c)assert(texture(c)==retained[c]);assert(SUCCEEDED(d.Reset(&parameters)));w.valid=true;assert(w.resources(128,128,D3DFMT_A16B16G16R16F));
     complete(w,snapshot);assert(!w.keepPressureProbes&&!w.resetReplayPending);for(unsigned c=0;c<6;++c)assert(texture(c)==retained[c]);exact();
+    // A Reset can arrive after targets succeeded, either before page creation
+    // or during a staged page copy. Neither interruption may drop the managed
+    // probes or retain partially written candidate claims.
+    for(unsigned phase=0;phase<2;++phase){
+        poison();populate(3+phase);w.reset();assert(w.pressureReplayAllocation());assert(SUCCEEDED(d.Reset(&parameters)));
+        w.valid=true;assert(w.resources(128,128,D3DFMT_A16B16G16R16F));assert(w.geometryResources(128,128));
+        assert(!w.keepPressureProbes&&w.meshStore.table().empty()&&w.pressureReplayAllocation());
+        if(phase){
+            const auto started=GetTickCount();
+            while(!w.pendingMesh&&DWORD(GetTickCount()-started)<5000){NorthlightStreaming::Budget budget(32,2);w.upload(budget);assert(SUCCEEDED(d.Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0)));assert(SUCCEEDED(d.Present(nullptr,nullptr,nullptr,nullptr)));Sleep(1);}
+            assert(w.pendingMesh&&w.meshStore.staging().open&&w.meshStore.table().empty());
+        }else assert(!w.pendingMesh);
+        w.reset();assert(w.keepPressureProbes&&w.resetReplayPending&&!w.pendingMesh&&!w.meshStore.staging().open);
+        for(unsigned c=0;c<6;++c)assert(texture(c)==retained[c]);assert(SUCCEEDED(d.Reset(&parameters)));
+        w.valid=true;assert(w.resources(128,128,D3DFMT_A16B16G16R16F));complete(w,snapshot);
+        for(unsigned c=0;c<6;++c)assert(texture(c)==retained[c]);exact();
+    }
     // An incompatible retained descriptor must be replaced while compatible
     // channels keep their identity. Hold the old texture to rule out pointer reuse.
-    poison();populate(3);w.reset();assert(w.keepPressureProbes);assert(SUCCEEDED(d.Reset(&parameters)));
+    poison();populate(5);w.reset();assert(w.keepPressureProbes);assert(SUCCEEDED(d.Reset(&parameters)));
     drop(w.probe[0]);IDirect3DTexture9* wrong=nullptr;assert(SUCCEEDED(d.CreateTexture(1,1,1,0,D3DFMT_A32B32G32R32F,D3DPOOL_MANAGED,&wrong,nullptr)));w.probe[0]=wrong;wrong->AddRef();
     w.valid=true;assert(w.resources(128,128,D3DFMT_A16B16G16R16F));complete(w,snapshot);assert(w.probe[0]!=wrong&&w.probe[0]!=retained[0]);
     for(unsigned c=1;c<6;++c)assert(texture(c)==retained[c]);exact();wrong->Release();for(auto* t:retained)t->Release();
-    assert(!w.failed);std::puts("COLD_PROBE_REUSE_PASS realReset=2 managedIdentity=1 fullAtlasRewrite=1 invalidCellsCleared=1 historyCleared=1 incompatibleDescriptorRecreated=1 uploadedSerial=3");Spooling=wasSpooling;
+    assert(!w.failed);std::puts("COLD_PROBE_REUSE_PASS realReset=6 interruptedBeforePage=1 interruptedDuringCopy=1 managedIdentity=1 fullAtlasRewrite=1 invalidCellsCleared=1 historyCleared=1 incompatibleDescriptorRecreated=1 uploadedSerial=5");Spooling=wasSpooling;
 }
