@@ -75,13 +75,13 @@
         // do not rescan hundreds of thousands of terrain vertices each frame.
         if(count)pointLiveBatches.push_back({start,count,vec(bounds.low),vec(bounds.high)});
     }
-    unsigned pointMask(V low,V high,const float (&matrices)[6][16])const{
+    unsigned pointMask(V low,V high,const NorthlightPointShadow::FaceClip& clip)const{
         float lo[]={low.x,low.y,low.z},hi[]={high.x,high.y,high.z};
         // Invalid bounds must draw. The generic sphere helper rejects invalid
         // inputs, so use the replay helper's explicit fail-open semantics.
         NorthlightReplayBounds::Bounds bounds;std::memcpy(bounds.low,lo,12);std::memcpy(bounds.high,hi,12);bounds.valid=true;
         if(NorthlightReplayBounds::outsideSphere(bounds,pointSlot().selected.position,pointSlot().selected.attenuationEnd))return 0;
-        return NorthlightPointShadow::faceMask(lo,hi,true,matrices);
+        return clip.mask(lo,hi,true);
     }
     void pointAppendCandidates(PointCandidates& lists,size_t index,unsigned mask,unsigned faces=63){
         for(unsigned face=0;face<6;++face){if(!(faces&(1u<<face)))continue;if(mask&(1u<<face))lists[face].push_back(index);else ++pointCulled;}
@@ -359,6 +359,7 @@
         float faceMatrices[6][16];
         for(unsigned face=0;face<6;++face)
             if(!NorthlightPointShadow::faceMatrix(pointSlot().selected.position,.1f,pointSlot().selected.attenuationEnd,face,faceMatrices[face],PointResolution))return pointCheck(E_FAIL,"cube projection");
+        const NorthlightPointShadow::FaceClip clip(faceMatrices);
         // Only one complete, uniquely matched enclosure can be omitted, and
         // only from this source's point-shadow cube. Shared geometry is intact.
         const size_t ownGlass=NorthlightWmoLampShadow::unique(light,batches);
@@ -367,15 +368,15 @@
             for(size_t i=0;i<batches.size();++i){const auto& batch=batches[i];
                 if(i==ownGlass)continue;
                 if(batch.terrain){if(!liveTerrainChunks.count({batch.chunkX,batch.chunkY}))
-                    pointAppendCandidates(pointTerrainCandidates,i,pointMask(batch.boundsLow,batch.boundsHigh,faceMatrices),faces);}
-                else if(rebuildMask&faces)pointAppendCandidates(pointStaticCandidates,i,pointMask(batch.boundsLow,batch.boundsHigh,faceMatrices),rebuildMask&faces);
+                    pointAppendCandidates(pointTerrainCandidates,i,pointMask(batch.boundsLow,batch.boundsHigh,clip),faces);}
+                else if(rebuildMask&faces)pointAppendCandidates(pointStaticCandidates,i,pointMask(batch.boundsLow,batch.boundsHigh,clip),rebuildMask&faces);
             }
             for(size_t i=0;i<pointLiveBatches.size();++i){const auto& batch=pointLiveBatches[i];
-                pointAppendCandidates(pointLiveCandidates,i,pointMask(batch.low,batch.high,faceMatrices),faces);}
+                pointAppendCandidates(pointLiveCandidates,i,pointMask(batch.low,batch.high,clip),faces);}
             replayBoundsJoin();
             if(withReplays)for(size_t i=0;i<replays.size();++i){const auto& bounds=replays[i]->pointBounds;
                 const unsigned mask=NorthlightReplayBounds::outsideSphere(bounds,pointSlot().selected.position,pointSlot().selected.attenuationEnd)?0:
-                    NorthlightPointShadow::faceMask(bounds.low,bounds.high,bounds.valid,faceMatrices);
+                    clip.mask(bounds.low,bounds.high,bounds.valid);
                 pointAppendCandidates(pointReplayCandidates,i,mask,faces);
             }
         }catch(...){return pointCheck(E_OUTOFMEMORY,"cube candidate allocation");}

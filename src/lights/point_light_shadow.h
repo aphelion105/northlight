@@ -137,6 +137,54 @@ inline unsigned faceMask(const float* lo,const float* hi,bool valid,const float 
     for(unsigned face=0;face<6;++face)if(!detail::clipRejectBounds(lo,hi,extent,matrices[face]))mask|=1u<<face;
     return mask;
 }
+// The cube matrices do not change between AABBs in one update. Prepare their
+// double planes and conservative float-cancellation bounds once, without a heap allocation.
+class FaceClip {
+    struct Face {
+        bool finite=false;
+        double absolute[4][4]={},coefficient[6][4]={},magnitude[6][4]={};
+        void prepare(const float* matrix){
+            for(unsigned i=0;i<16;++i)if(!std::isfinite(matrix[i]))return;
+            for(unsigned column=0;column<4;++column)for(unsigned row=0;row<4;++row)
+                absolute[column][row]=std::fabs(double(matrix[row*4+column]));
+            for(unsigned plane=0;plane<6;++plane){
+                const unsigned column=plane<4?plane/2:2;
+                const double sign=(plane==1||plane==3||plane==5)?-1.:1.;
+                for(unsigned row=0;row<4;++row){
+                    const double a=matrix[row*4+column],w=plane!=4?matrix[row*4+3]:0.;
+                    coefficient[plane][row]=sign*a+w;magnitude[plane][row]=std::fabs(a)+std::fabs(w);
+                }
+            }
+            finite=true;
+        }
+        bool reject(const float* lo,const float* hi,const double* extent)const{
+            if(!finite)return false;
+            for(unsigned column=0;column<4;++column){
+                double bound=absolute[column][3];
+                for(unsigned row=0;row<3;++row)bound+=absolute[column][row]*extent[row];
+                if(bound>std::numeric_limits<float>::max()/32.)return false;
+            }
+            for(unsigned plane=0;plane<6;++plane){
+                double maximum=0,total=0;
+                for(unsigned row=0;row<4;++row){
+                    const double c=coefficient[plane][row],coord=row==3?1.:c>=0?hi[row]:lo[row];
+                    maximum+=c*coord;total+=magnitude[plane][row]*(row==3?1.:extent[row]);
+                }
+                if(total>std::numeric_limits<float>::max()/16.)return false;
+                if(maximum < -32.*std::numeric_limits<float>::epsilon()*(total+1.))return true;
+            }
+            return false;
+        }
+    };
+    Face faces[6];
+public:
+    explicit FaceClip(const float (&matrices)[6][16]){for(unsigned face=0;face<6;++face)faces[face].prepare(matrices[face]);}
+    unsigned mask(const float* lo,const float* hi,bool valid)const{
+        double extent[3];if(!valid||!detail::bounds(lo,hi,extent))return 63;
+        unsigned mask=0;for(unsigned face=0;face<6;++face)if(!faces[face].reject(lo,hi,extent))mask|=1u<<face;
+        return mask;
+    }
+};
 // 0.3.151 static cube faces keyed on content (world_mesh_plan.cpp records), not
 // on the mesh generation. LocalShadowPS stores no fragment beyond attenuationEnd
 // (a caster out of range can never shadow a lit surface: the attenuation there is
@@ -157,10 +205,11 @@ inline bool recordOutsideSphere(const NorthlightGI::Vec3& lo,const NorthlightGI:
 inline void faceContent(const NorthlightLocalShadowSignature::Records& records,const NorthlightLocalLights::Light& l,
                         const float (&matrices)[6][16],NorthlightLocalShadowSignature::Digest (&out)[6]){
     for(auto& digest:out)digest={};
+    const FaceClip clip(matrices);
     for(const auto& r:records){
         if(r.terrain||recordOutsideSphere(r.low,r.high,l,FaceContentSphereMargin))continue;
         const float lo[]={r.low.x,r.low.y,r.low.z},hi[]={r.high.x,r.high.y,r.high.z};
-        const unsigned mask=faceMask(lo,hi,true,matrices);
+        const unsigned mask=clip.mask(lo,hi,true);
         for(unsigned face=0;face<6;++face)if(mask&(1u<<face))out[face].add(r.content);
     }
 }
