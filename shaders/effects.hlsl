@@ -245,10 +245,10 @@ float NewAO(float2 uv, int method)
         // Paired samples detect concave valleys. Opposite coplanar directions
         // have dot=-1, so a flat/sloping plane contributes no valley occlusion.
         float centerDistance = length(p);
-        [loop] for (int valley = 0; valley < 16; ++valley)
+        [loop] for (int ring = 0; ring < 4; ++ring)
+        [loop] for (int sector = 0; sector < 4; ++sector)
         {
-            float ring = floor(valley * .25);
-            float angle = (valley - ring * 4) * .78539816339;
+            float angle = sector * .78539816339;
             float2 v = float2(cos(angle), sin(angle));
             float2 direction = float2(v.x * rotation.x - v.y * rotation.y, v.x * rotation.y + v.y * rotation.x);
             float2 offset = direction * uvRadius * ((ring + 1) * .2);
@@ -266,18 +266,20 @@ float NewAO(float2 uv, int method)
     {
         // HBAO+ coarse-kernel adaptation: eight directions, four radial steps,
         // normal bias and squared-distance falloff. No DX11 deinterleaving.
-        [loop] for (int tap = 0; tap < 32; ++tap)
+        [loop] for (int directionIndex = 0; directionIndex < 8; ++directionIndex)
         {
-            float directionIndex = floor(tap * .25);
-            float step = tap - directionIndex * 4;
             float angle = directionIndex * .78539816339;
             float2 v = float2(cos(angle), sin(angle));
             float2 direction = float2(v.x * rotation.x - v.y * rotation.y, v.x * rotation.y + v.y * rotation.x);
+            [loop] for (int step = 0; step < 4; ++step) {
             float4 q = AOSample(uv + direction * uvRadius * ((step + 1) * .2));
             float3 delta = q.xyz - p;
+            [branch] if (any(delta != 0)) {
             float distance2 = max(dot(delta, delta), 1e-12);
             float elevation = saturate(dot(normal, delta) * rsqrt(distance2) - .1);
             obscurance += elevation * saturate(1 - distance2 / (radius * radius)) * q.w;
+            }
+            }
         }
         return saturate(1 - Lighting.z * obscurance * (2.0 / (32.0 * .9)));
     }
@@ -370,11 +372,11 @@ float NewAOQuality(float2 uv, int method, int quality)
         // have dot=-1, so a flat/sloping plane contributes no valley occlusion.
         float centerDistance = length(p);
         const int pairs = quality == 0 ? 16 : 8;
-        [loop] for (int valley = 0; valley < pairs; ++valley)
+        [loop] for (int ring = 0; ring < 4; ++ring)
+        [loop] for (int sector = 0; sector < (quality == 0 ? 4 : 2); ++sector)
         {
-            float ring = floor(valley * (quality == 0 ? .25 : .5));
-            float angle = quality == 0 ? (valley - ring * 4) * .78539816339 :
-                (valley - ring * 2) * 1.57079632679 + frac(ring * .5) * 1.57079632679;
+            float angle = quality == 0 ? sector * .78539816339 :
+                sector * 1.57079632679 + frac(ring * .5) * 1.57079632679;
             float2 v = float2(cos(angle), sin(angle));
             float2 direction = float2(v.x * rotation.x - v.y * rotation.y, v.x * rotation.y + v.y * rotation.x);
             // Two directions per ring retain all four radial bands.
@@ -397,18 +399,20 @@ float NewAOQuality(float2 uv, int method, int quality)
         const int directions = quality == 0 ? 8 : quality == 1 ? 6 : 4;
         const int steps = quality == 1 ? 3 : 4;
         const int taps = directions * steps;
-        [loop] for (int tap = 0; tap < taps; ++tap)
+        [loop] for (int directionIndex = 0; directionIndex < directions; ++directionIndex)
         {
-            float directionIndex = floor(tap * (1.0 / steps));
-            float step = tap - directionIndex * steps;
             float angle = directionIndex * (quality == 0 ? .78539816339 : 6.28318530718 / directions);
             float2 v = float2(cos(angle), sin(angle));
             float2 direction = float2(v.x * rotation.x - v.y * rotation.y, v.x * rotation.y + v.y * rotation.x);
+            [loop] for (int step = 0; step < steps; ++step) {
             float4 q = AOSample(uv + direction * uvRadius * ((step + 1) * (quality == 1 ? .25 : .2)));
             float3 delta = q.xyz - p;
+            [branch] if (any(delta != 0)) {
             float distance2 = max(dot(delta, delta), 1e-12);
             float elevation = saturate(dot(normal, delta) * rsqrt(distance2) - .1);
             obscurance += elevation * saturate(1 - distance2 / (radius * radius)) * q.w;
+            }
+            }
         }
         return saturate(1 - Lighting.z * obscurance * (2.0 / (taps * .9)));
     }

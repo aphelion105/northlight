@@ -24,7 +24,7 @@ def main():
         assert hashlib.sha256((fp.COMPILED / (entry + '.bin')).read_bytes()).hexdigest() == digest, entry + ' High bytecode changed'
     # Count the loop trip counts in the actual Microsoft disassembly, rather
     # than checking source labels that could disagree with the compiled kernel.
-    counts = {'HDAO': ([16], [8], [8]), 'HBAOPlus': ([32], [18], [16]), 'GTAO': ([4, 4], [3, 4], [2, 4])}
+    counts = {'HDAO': ([4, 4], [4, 2], [4, 2]), 'HBAOPlus': ([8, 4], [6, 3], [4, 4]), 'GTAO': ([4, 4], [3, 4], [2, 4])}
     for method, expected in counts.items():
         for quality, trips in zip(('', 'Medium', 'Low'), expected):
             assembly = (fp.COMPILED / (method + 'ContactBloom' + quality + '.bin.asm')).read_text()
