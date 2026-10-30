@@ -1,5 +1,5 @@
 {
-  "source_sha256": "7ff9f3ef65872b72ba30562e26ae1293399e6bcbcefc4b873f3e072fb41cc6e1",
+  "source_sha256": "8c1aacd06c9f334b6debfedadb316ac4b1149e238f9afa6214c20771a18b2e43",
   "rain_source_sha256": "10948a355dc52e824d9ae61b5251a5146a20955295070dbe9ce749dec0eac172",
   "target": "ps_3_0",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
@@ -198,10 +198,10 @@
       "source_sha256": "7ff9f3ef65872b72ba30562e26ae1293399e6bcbcefc4b873f3e072fb41cc6e1"
     },
     "AOBlur": {
-      "bytes": 5188,
-      "sha256": "f90638a01cda1c5360231f2b3b3c11bdf7bcc381dd9a9be0cba4d846af57cab8",
+      "bytes": 5452,
+      "sha256": "998590ddf377a98780e2d1a2d8cf1076c838cad91bb4ae3eb7c141b55915f562",
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "static_instruction_slots": 321,
+      "static_instruction_slots": 343,
       "temporary_registers": 16,
       "samplers": [
         0,
@@ -210,26 +210,26 @@
         3
       ],
       "instructions": {
-        "mov": 26,
-        "mul": 88,
-        "texldl": 12,
-        "rep": 3,
+        "mov": 22,
+        "mul": 97,
         "add": 84,
-        "frc": 3,
-        "min": 5,
-        "endrep": 3,
+        "texldl": 20,
+        "min": 12,
         "if": 4,
         "else": 4,
         "rcp": 15,
         "mad": 4,
+        "frc": 2,
         "max": 4,
         "cmp": 27,
         "endif": 4,
         "dp3": 4,
         "rsq": 1,
-        "exp": 1
+        "rep": 2,
+        "exp": 1,
+        "endrep": 2
       },
-      "source_sha256": "32c38f25f42077c1e2df5f27d390dd932fe575e103cd287464b3439a2d38b218"
+      "source_sha256": "8c1aacd06c9f334b6debfedadb316ac4b1149e238f9afa6214c20771a18b2e43"
     },
     "Composite": {
       "bytes": 5428,

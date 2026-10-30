@@ -395,11 +395,12 @@ float4 AOBlur(float2 uv : TEXCOORD0) : COLOR0
     float2 tapStep = 2.0 * ImageAndClip.xy;
     float4 raw = tex2Dlod(Ambient, float4(uv, 0, 0));
     float minAO = 1.0;
-    [loop] for (int k = 0; k < 9; ++k)
+    // Fixed footprints: keep row order and let the compiler fold coordinates.
+    [unroll] for (int y = 0; y < 3; ++y)
+    [unroll] for (int x = 0; x < 3; ++x)
     {
-        float krow = floor((k + 0.5) * (1.0 / 3.0));
-        // footprint k % 3 and k / 3 per axis -> -1.5, .5, 2 AO texels from the centre
-        minAO = min(minAO, tex2Dlod(AmbientLinear, float4(uv + min(float2(k - krow * 3.0, krow) * 2.0 - 1.5, 2.0) * tapStep, 0, 0)).a);
+        float2 footprint = min(float2(x, y) * 2.0 - 1.5, 2.0);
+        minAO = min(minAO, tex2Dlod(AmbientLinear, float4(uv + footprint * tapStep, 0, 0)).a);
     }
     [branch] if (minAO >= 0.9995) return raw;
     float2 size = 1.0 / ImageAndClip.xy;
