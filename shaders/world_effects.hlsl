@@ -1397,7 +1397,15 @@ float4 worldComposite(float2 uv,float2 pixel,bool surfaceLighting) {
         color=max(color,mad(-.45,transported,original.rgb));
         // Bound shadow/GI removal before adding current local radiance, so a
         // darkening floor cannot swallow a weaker overlapping lamp channel.
-        color=mad(albedoT,local*inverseWeight,color);
+        // Native indoor/prelit surfaces already contain lamp illumination.
+        // Compress the final, shadowed lamp sum once, preserving its RGB ratio.
+        // Add at most one stop to the surface and use half its SDR headroom;
+        // bright fixtures retain texture instead of clipping to yellow/white.
+        float3 localAdd=max(albedoT*(local*inverseWeight),0);
+        float3 localRoom=min(transported,.5*max(1-color,0));
+        float3 localRatio=localAdd/max(localRoom,.00001);
+        float localScale=1/(1+max(localRatio.r,max(localRatio.g,localRatio.b)));
+        color+=min(localAdd*localScale,localRoom);
         // NightBrightness: gives back a share of the art layer's darker night ambient (x .82 x cool tint) as light: albedoT times
         // share x ambient x (1/factor-1), the per-frame product computed on the CPU (night_floor.h nightAmbient). Added like
         // light, so shadows, GI and lamps keep their contrast. 0 = off (bit-identical).
