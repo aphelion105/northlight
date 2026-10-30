@@ -12,7 +12,9 @@ import shutil
 import subprocess
 import tempfile
 
-prior=Path(sys.argv[1]).resolve() if len(sys.argv)>1 else fp.TESTS/'fixtures/probe_blend_reference.h'
+args=[a for a in sys.argv[1:] if a!='--benchmark']
+benchmark='--benchmark' in sys.argv[1:]
+prior=Path(args[0]).resolve() if args else fp.TESTS/'fixtures/probe_blend_reference.h'
 with tempfile.TemporaryDirectory(prefix='northlight-probe-blend-') as tmp:
     folder=Path(tmp)
     shutil.copy2(prior,folder/'probe_blend_reference.h')
@@ -20,4 +22,4 @@ with tempfile.TemporaryDirectory(prefix='northlight-probe-blend-') as tmp:
     subprocess.run(['clang++','-std=c++17','-O2','-UNDEBUG','-Wall','-Wextra','-Werror',
                     '-I',str(folder),*fp.test_include_flags(),
                     str(Path(__file__).with_suffix('.cpp')),'-o',str(binary)],check=True)
-    subprocess.run([str(binary)],check=True)
+    subprocess.run([str(binary),*(['--benchmark'] if benchmark else [])],check=True)
