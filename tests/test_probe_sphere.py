@@ -15,6 +15,8 @@ source=r'''
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include "gi_trig.h"
+using NorthlightGI::sincosAngle;
 struct Vec3{float x,y,z;};
 '''+sphere+r'''
 int main(){
@@ -39,5 +41,5 @@ int main(){
 with tempfile.TemporaryDirectory(prefix='probe-sphere-') as t:
     p=Path(t);(p/'test.cpp').write_text(source)
     for flags in [['-O2'],['-O1','-g','-fsanitize=address,undefined']]:
-        subprocess.run(['clang++','-std=c++17','-UNDEBUG','-Wall','-Wextra','-Werror',*flags,str(p/'test.cpp'),'-o',str(p/'test')],check=True)
+        subprocess.run(['clang++','-std=c++17','-UNDEBUG','-Wall','-Wextra','-Werror',*flags,*fp.test_include_flags(),str(p/'test.cpp'),'-o',str(p/'test')],check=True)
         subprocess.run([str(p/'test')],check=True)

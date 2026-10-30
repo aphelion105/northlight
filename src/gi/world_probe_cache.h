@@ -47,10 +47,15 @@ struct ProbeAtlasEntry {
     Probe probe;
     bool occupied=false;
 };
+template<int32_t N> inline size_t fixedProbeAtlasIndex(ProbeGridKey key){
+    const auto wrap=[](int32_t cell){const int32_t r=cell%N;return size_t(r<0?r+N:r);};
+    return wrap(key.x)+wrap(key.y)*N+wrap(key.z)*N*N;
+}
 inline __attribute__((always_inline)) size_t probeAtlasIndex(ProbeGridKey key) {
     // Signed remainder must be corrected for negative world coordinates. This
     // also handles INT_MIN without negation or signed multiplication overflow.
     const int32_t n=int32_t(probeLayout().atlas);
+    switch(n){case 16:return fixedProbeAtlasIndex<16>(key);case 18:return fixedProbeAtlasIndex<18>(key);case 20:return fixedProbeAtlasIndex<20>(key);case 22:return fixedProbeAtlasIndex<22>(key);case 24:return fixedProbeAtlasIndex<24>(key);}
     if(n>0&&(n&(n-1))==0){const auto mask=uint32_t(n-1);
         return size_t(uint32_t(key.x)&mask)+size_t(uint32_t(key.y)&mask)*size_t(n)+size_t(uint32_t(key.z)&mask)*size_t(n)*size_t(n);}
     const auto wrap=[n](int32_t cell)->size_t {
@@ -76,6 +81,9 @@ inline bool probeGridKey(Vec3 position,ProbeGridKey& key) {
     for(unsigned i=0;i<3;++i) {
         const double cell=double(values[i])/8.0;
         if(!std::isfinite(cell))return false;
+        if(cell>=double(std::numeric_limits<int32_t>::min())&&cell<=double(std::numeric_limits<int32_t>::max())){
+            const auto whole=int32_t(cell);if(double(whole)==cell){cells[i]=whole;continue;}
+        }
         const double rounded=std::round(cell);
         if(std::fabs(cell-rounded)>.00001 ||
            rounded<double(std::numeric_limits<int32_t>::min()) ||
