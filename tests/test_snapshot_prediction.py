@@ -8,6 +8,7 @@ Directed liveness cases D1-D5 under ASan+UBSan; CacheKey == against memcmp()==0 
 flip; the SnapshotMeter on a synthetic clock; hits allocate nothing. Counterfactuals must fail: CF1-CF4
 (no prediction reset at an erase site: ASan heap-use-after-free in the directed cases), CF5-CF7 (a prefix
 compare, prediction on untracked keys, equality without the declaration: a differential mismatch).
+The synthetic-clock meter stays offline; production profiling keeps Prefetch and has no benchmark callers.
 Plus source needles. Native code and static analysis only; no Wine, DLL or game is run."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
@@ -63,12 +64,13 @@ checks={
  '__builtin_prefetch only in the one helper':sum(t.count('__builtin_prefetch') for t in sources.values())==1
    and 'inline void prefetch(const void* address){__builtin_prefetch(address);}' in s,
  'the counterfactual and hash macros default to 0':'#define NORTHLIGHT_SNAPSHOT_COUNTERFACTUAL 0' in s and '#define NORTHLIGHT_SNAPSHOT_HASH_BITS 0' in s,
- 'mode: Prefetch unless a RenderProfile=1 non-sample frame (Map/Predict/Prefetch by frame%3), set at the frame\'s first read':
-   'const bool metered=NorthlightRenderThreadProbe::profiling()&&!sample;' in w and 'replaySnapshots.setLookup(metered?Lookup(snapshotFrameSerial%3):Lookup::Prefetch);' in w
-   and 'if(!snapshotFrameBegun)snapshotBeginFrame(sample);' in w,
- 'the snapshot span covers the snapshot phase and ends at the constants phase':'snapshotSpan.end();phase.next(CaptureConstants);' in w,
- 'the SNAPSHOT ab line is Diagnostics-gated, every 600 frames and at destruction':'if(NorthlightDiagnostics::enabled())logf("SNAPSHOT ab class=%s' in w
-   and 'if(++snapshotReportFrames>=600){snapshotReportFrames=0;logSnapshotAb();}' in w and 'logSnapshotAb(); /* 0.3.181: the SNAPSHOT ab window at device destroy */' in w,
+ 'production uses Frame default Prefetch without profiling-dependent algorithm rotation':
+   'Lookup lookup_=Lookup::Prefetch;' in s and '.setLookup(' not in w,
+ 'production capture retains its constants phase without snapshot benchmark spans':
+   'phase.next(CaptureConstants);' in w and 'SnapshotSpan<' not in w,
+ 'offline benchmark helpers have no production users or retained meter state':
+   not any(any(needle in text for needle in ('SnapshotMeter<','SnapshotSpan<','benchKeys('))
+           for name,text in sources.items() if name!='draw_snapshot.h'),
  'keyEqLegacyNs times the byte loop copy, not memcmp':'k.legacyNs=time([&]{return NorthlightMem::byteCompare(&a,&b,sizeof(CacheKey))==0;});' in s,
 }
 for name,ok in checks.items():print(('PASS ' if ok else 'FAIL ')+name)
