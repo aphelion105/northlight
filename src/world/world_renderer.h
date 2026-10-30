@@ -765,16 +765,19 @@ private:
         if(SUCCEEDED(d->SetRenderTarget(0,profileSplitSurface)))d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0);
         d->SetRenderTarget(0,resume);
     }
-    template<std::size_t N> bool localScissor(const std::array<NorthlightLocalLightSelection::Constant,N>& position,unsigned count,const NorthlightLocalLightScissor::Rect* known=nullptr){
+    bool localScissor(const NorthlightLocalLightScissor::Rect& r){
         if(!NorthlightLocalLightScissor::Enabled)return true;
         // Fail open: without a proven view the batch draws unclipped.
         if(!localScissorView.valid){d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);++localScissorBatches;localScissorCoverage+=1;return true;}
-        const auto r=known?*known:NorthlightLocalLightScissor::batchRect(localScissorView,position,count);
         const double all=double(localScissorView.halfW)*localScissorView.halfH;
         ++localScissorBatches;localScissorCoverage+=all>0?double(r.area())/all:1.;
         if(!r.area()){++localScissorSkipped;return false;} // no pixel can change: skip the draw only
         if(r.area()<all)++localScissorClipped;
         const RECT clip={r.left,r.top,r.right,r.bottom};d->SetScissorRect(&clip);return true;
+    }
+    template<std::size_t N> bool localScissor(const std::array<NorthlightLocalLightSelection::Constant,N>& position,unsigned count,const NorthlightLocalLightScissor::Rect* known=nullptr){
+        if(!NorthlightLocalLightScissor::Enabled)return true;
+        return localScissor(known?*known:NorthlightLocalLightScissor::batchRect(localScissorView,position,count));
     }
     IDirect3DVertexShader9 *shadowVS=nullptr,*cachedShadowVS=nullptr;
     IDirect3DVertexDeclaration9 *shadowDecl=nullptr,*liveTerrainDecl=nullptr;
@@ -4298,7 +4301,10 @@ public:
         const bool selectContinuous=active&&localLightQpc&&selectDt<=NorthlightLocalLightSelection::MaxGapSeconds&&active->map==localLightMap&&!different(vec(context.camera),localLightCamera,40)&&debug==0;
         if(equipmentLightsOn()){
             equipmentLights.publish(GetTickCount(),active?&active->localLights:nullptr);
-            for(unsigned i=0;i<equipmentLights.suppressedCount;++i)localLightTracker.forget(equipmentLights.suppressed[i]);
+            if(equipmentLights.suppressedCount){
+                auto ids=equipmentLights.suppressed;std::sort(ids.begin(),ids.begin()+equipmentLights.suppressedCount);
+                localLightTracker.forgetSorted(ids.data(),equipmentLights.suppressedCount);
+            }
             NorthlightEquipmentLights::replaceFadingDuplicates(localLightTracker,equipmentLights.output.data(),equipmentLights.outputCount);
             if(active)particleLights.publish(equipmentLights.output.data(),equipmentLights.outputCount,active->localLights,context.camera,localLightTracker,selectContinuous?float(selectDt):0.f);
             else particleLights.reset();
@@ -4329,10 +4335,8 @@ public:
         const float denseDamp=NorthlightFogClouds::denseZoneDamp(cloudDenseZone);
         const float airFloor=.0017f+wx.airExtinction()*denseDamp; /* the shared outdoor air extinction (the shader's old literal .0017) plus the rain's extra (thinned in dense zones): exactly .0017f when dry */
         a.airFloor=airFloor;
-        for(unsigned first=0;first<localLights.count;first+=NorthlightLocalLightSelection::DirectBatchSize){const auto batch=localLights.batch<NorthlightLocalLightSelection::DirectBatchSize>(first);
-            a.directRects[first/NorthlightLocalLightSelection::DirectBatchSize]=NorthlightLocalLightScissor::batchRect(localScissorView,batch.position,batch.count);}
-        for(unsigned first=0;first<localLights.count;first+=NorthlightLocalLightSelection::FogBatchSize){const auto batch=localLights.batch<NorthlightLocalLightSelection::FogBatchSize>(first);
-            a.fogRects[first/NorthlightLocalLightSelection::FogBatchSize]=NorthlightLocalLightScissor::batchRect(localScissorView,batch.position,batch.count);}
+        static_assert(NorthlightLocalLightSelection::DirectBatchSize==2*NorthlightLocalLightSelection::FogBatchSize,"paired scissor batches");
+        NorthlightLocalLightScissor::pairedBatchRects<NorthlightLocalLightSelection::FogBatchSize>(localScissorView,localLights.position,localLights.count,a.fogRects,a.directRects);
         c[31][3]=NorthlightRegionalFog::nightFactor(celestialValid?celestial.dayFraction:-1.f);
         // Neutral scattering albedo preserves the zone/source palette. Atmospheric
         // style is separate from ground fog and surface irradiance.
@@ -5431,25 +5435,25 @@ public:
                 const NorthlightLocalLightScissor::Rect whole{0,0,long(w/2),long(h/2)};
                 const auto& a=localScissorView.valid?atmosphere.directRects[index]:whole;const auto& b=localScissorView.valid&&pair?atmosphere.directRects[index+1]:whole;
                 if(pair&&NorthlightLocalLightBatches::wide(a,b)){
-                    const auto batch=localLights.batch<2*N>(firstLight);const auto joint=NorthlightLocalLightBatches::unite(a,b);
+                    const auto batch=localLights.directBatch<2*N>(firstLight);const auto joint=NorthlightLocalLightBatches::unite(a,b);
                     const float info[4]={float(batch.count),c[52][1],lampSunlitCut,0};
                     if(bound!=localDirect16PS){d->SetPixelShader(localDirect16PS);bound=localDirect16PS;}
                     d->SetPixelShaderConstantF(84,batch.position[0].data(),2*N);d->SetPixelShaderConstantF(100,batch.color[0].data(),2*N);
                     d->SetPixelShaderConstantF(52,info,1);++localWidePasses;
-                    const bool drawn=localScissor(batch.position,batch.count,&joint);const HRESULT hr=drawn?quad(w/2,h/2):S_OK;
+                    const bool drawn=localScissor(joint);const HRESULT hr=drawn?quad(w/2,h/2):S_OK;
                     localSourceBatch(false,firstLight,batch.count,joint,drawn,hr);
                     if(lightingCapture)lightingCapture->pass("LocalDirect16",0,directInputs,firstLight,batch.count,drawn,hr);
                     if(drawn&&!check(hr,"local direct 16-light batch")){d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);return false;}
                     firstLight+=2*N;continue;
                 }
-                const auto batch=localLights.batch<N>(firstLight);
+                const auto batch=localLights.directBatch<N>(firstLight);
                 const float info[4]={float(batch.count),c[52][1],lampSunlitCut,0};
                 const auto shader=localDirectShader(batch.count);
                 if(bound!=shader){d->SetPixelShader(shader);bound=shader;}
                 d->SetPixelShaderConstantF(36,batch.position[0].data(),N);
                 d->SetPixelShaderConstantF(44,batch.color[0].data(),N);
                 d->SetPixelShaderConstantF(52,info,1);
-                const bool drawn=localScissor(batch.position,batch.count,&atmosphere.directRects[index]);const HRESULT hr=drawn?quad(w/2,h/2):S_OK;
+                const bool drawn=localScissor(atmosphere.directRects[index]);const HRESULT hr=drawn?quad(w/2,h/2):S_OK;
                 localSourceBatch(false,firstLight,batch.count,a,drawn,hr);
                 if(lightingCapture)lightingCapture->pass("LocalDirect",0,directInputs,firstLight,batch.count,drawn,hr);
                 if(drawn&&!check(hr,"local direct light batch")){d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);return false;}
