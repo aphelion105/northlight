@@ -39,8 +39,14 @@ float4 LocalShadowPS(float2 uv:TEXCOORD0,float4 clipPosition:TEXCOORD7,float4 di
     clip(LocalSphere.x-dot(offset,offset));
     [branch]if(LocalMaterial.w>=0){
         float alpha=LocalMaterial.x==2?diffuse.a:tex2D(LocalAlpha,uv).a;
-        if(LocalMaterial.x==1)alpha*=diffuse.a;
-        clip(alpha-LocalMaterial.w);
+        if(LocalMaterial.x==1||LocalMaterial.x==3)alpha*=diffuse.a;
+        if(LocalMaterial.x==3){
+            // UV-anchored 4x4 Bayer coverage: native distance fade survives
+            // shadow-map/camera movement; zero alpha never casts a rectangle.
+            float2 cell=floor(uv*64),bit0=frac(cell*.5)*2,bit1=frac(floor(cell*.5)*.5)*2;
+            float rank=frac((bit0.x*2+bit0.y*3)*.25)*16+frac((bit1.x*2+bit1.y*3)*.25)*4;
+            clip(alpha-(rank+.5)/16);
+        }else clip(alpha-LocalMaterial.w);
     }
     return saturate(clipPosition.z/clipPosition.w);
 }

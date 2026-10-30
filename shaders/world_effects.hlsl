@@ -1517,8 +1517,14 @@ float4 ShadowPS(float2 uv:TEXCOORD0,float depth:TEXCOORD1):COLOR0 {
 float4 ShadowReplayPS(float2 uv:TEXCOORD0,float4 lightClip:TEXCOORD7,float4 diffuse:COLOR0):COLOR0 {
     if(Material.w>=0){
         float alpha=Material.x==2?diffuse.a:tex2D(Scene,uv).a;
-        if(Material.x==1)alpha*=diffuse.a;
-        clip(alpha-Material.w);
+        if(Material.x==1||Material.x==3)alpha*=diffuse.a;
+        if(Material.x==3){
+            // UV-anchored 4x4 Bayer coverage: native distance fade survives
+            // shadow-map/camera movement; zero alpha never casts a rectangle.
+            float2 cell=floor(uv*64),bit0=frac(cell*.5)*2,bit1=frac(floor(cell*.5)*.5)*2;
+            float rank=frac((bit0.x*2+bit0.y*3)*.25)*16+frac((bit1.x*2+bit1.y*3)*.25)*4;
+            clip(alpha-(rank+.5)/16);
+        }else clip(alpha-Material.w);
     }
     return lightClip.zzzz;
 }

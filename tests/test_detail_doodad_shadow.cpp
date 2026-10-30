@@ -4,7 +4,6 @@
 #include "shader_tags.h"
 #include "m2_shader_families.h"
 #include <cassert>
-#include <chrono>
 #include <cstdio>
 #include <limits>
 using Word=std::uint32_t;
@@ -57,6 +56,10 @@ static void policy(){
     using namespace NorthlightDetailShadow;
     assert(shader(0x7f2707e33c6c97beULL)&&shader(0xc8e41181431a84c7ULL));
     assert(!shader(0)&&!shader(kTerrainVS[0]));
+    assert(pixelShader(0x4c4e8c78e53fb551ULL)&&!pixelShader(0)&&!pixelShader(kTerrainVS[0]));
+    for(unsigned source=0;source<18;++source)for(unsigned destination=0;destination<18;++destination)for(unsigned operation=0;operation<6;++operation)
+        assert(blendedMaterial(true,source,destination,operation)==(source==5&&destination==6&&operation==1));
+    assert(!blendedMaterial(false,5,6,1));
     Budget b;assert(!b.reserve(0,0)&&!b.reserve(Budget::MaxVertices+1,1));
     assert(b.reserve(8,256)&&b.take(8,256));
     assert(!b.reserve(8,Budget::MaxBytes)&&b.attempts==1&&b.readVertices==8);
@@ -137,14 +140,13 @@ static void enclosure(const NorthlightActorDeformation::Program& program){
 int main(int argc,char** argv){
     policy();auto code=synthetic();NorthlightActorDeformation::Program program;
     assert(NorthlightActorDeformation::compile(code.data(),code.size(),program,false,1));positions(program);enclosure(program);
-    // Worst admitted vertex count: report the bounded CPU cost, not game FPS.
+    // Validate the worst admitted vertex count without measuring execution time.
     {NorthlightDrawSnapshot::Mesh mesh;mesh.topology=D3DPT_TRIANGLELIST;mesh.vertexCount=8190;mesh.primitiveCount=2730;mesh.indexed=false;mesh.streams[0].stride=36;mesh.streams[0].bytes.resize(8190*36);
      for(unsigned i=0;i<8190;++i){float xyz[]={float(i%31),float(i%13),float(i%7)};std::memcpy(mesh.streams[0].bytes.data()+36*i,xyz,12);}
      D3DVERTEXELEMENT9 declaration[]={{0,0,2,0,0,0},{0xff,0,17,0,0,0}};
      float constants[1024]={},inverse[16]={};constants[0]=constants[5]=constants[10]=constants[15]=1;for(unsigned i=0;i<4;++i)inverse[5*i]=1;
-     auto start=std::chrono::steady_clock::now();
      for(unsigned pass=0;pass<128;++pass){NorthlightReplayBounds::Bounds bounds;assert(NorthlightDetailShadow::bounds(program,mesh,declaration,2,constants,inverse,bounds));}
-     std::printf("grass source-box bounds 8190 vertices ms=%.6f (128 passes)\n",std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()/128);}
+     }
     assert(!NorthlightActorDeformation::compile(code.data(),code.size(),program));
     for(unsigned i=27;i<code.size()-1;++i){auto bad=code;bad[i]^=1;assert(!NorthlightActorDeformation::compile(bad.data(),bad.size(),program,false,1));}
     assert(!NorthlightActorDeformation::compile(code.data(),code.size(),program,false,3));

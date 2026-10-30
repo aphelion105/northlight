@@ -127,6 +127,7 @@ test_glue_emitters.py
 test_gpu_budget.py
 test_gpu_budget_wiring.py
 test_grass_receiving_order.py
+test_grass_shadow_gpu.py
 test_gtao_grazing.py
 test_hdr_boundary.py
 test_hdr_reset.py
