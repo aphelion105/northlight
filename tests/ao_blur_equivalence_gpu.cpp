@@ -21,7 +21,8 @@ static void pixel(Image& image,unsigned x,unsigned y,const float* value) {
 }
 
 int main(int argc,char** argv) {
-    assert(argc==7);
+    assert(argc==7||argc==8);
+    const bool benchmark=argc==8&&!std::strcmp(argv[7],"--benchmark");assert(argc==7||benchmark);
     const unsigned fullW=std::strtoul(argv[4],nullptr,10),fullH=std::strtoul(argv[5],nullptr,10);
     const unsigned W=std::max(1u,fullW/2),H=std::max(1u,fullH/2);
     const bool fp16=std::strtoul(argv[6],nullptr,10)==16;
@@ -46,7 +47,8 @@ int main(int argc,char** argv) {
     D3DVIEWPORT9 vp={0,0,W,H,0,1};ok(d->SetViewport(&vp));
     const Vertex quad[]={{-.5f,-.5f,0,1,0,0},{W-.5f,-.5f,0,1,1,0},{-.5f,H-.5f,0,1,0,1},{W-.5f,H-.5f,0,1,1,1}};
     IDirect3DQuery9 *event=nullptr,*start=nullptr,*end=nullptr,*frequency=nullptr,*disjoint=nullptr;
-    ok(d->CreateQuery(D3DQUERYTYPE_EVENT,&event));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&start));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&end));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPFREQ,&frequency));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPDISJOINT,&disjoint));
+    ok(d->CreateQuery(D3DQUERYTYPE_EVENT,&event));
+    if(benchmark){ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&start));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&end));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPFREQ,&frequency));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPDISJOINT,&disjoint));}
     auto draw=[&](unsigned count){ok(d->BeginScene());for(unsigned i=0;i<count;++i)ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(Vertex)));ok(d->EndScene());};
     unsigned cases=0;
     for(unsigned shape=0;shape<9;++shape){
@@ -90,16 +92,18 @@ int main(int argc,char** argv) {
             DWORD qualities=0;if(samples&&FAILED(api->CheckDeviceMultiSampleType(0,D3DDEVTYPE_HAL,D3DFMT_A16B16G16R16F,TRUE,D3DMULTISAMPLE_TYPE(samples),&qualities)))continue;
             IDirect3DSurface9* target=nullptr;ok(d->CreateRenderTarget(W,H,D3DFMT_A16B16G16R16F,D3DMULTISAMPLE_TYPE(samples),0,FALSE,&target,nullptr));ok(d->SetRenderTarget(0,target));ok(d->SetViewport(&vp));
             std::vector<unsigned char> output[2];std::vector<double> timing[2];
-            const unsigned blocks=fullW>256?16:2,draws=fullW>256?16:1;
+            const unsigned blocks=benchmark?16:2,draws=benchmark?16:1;
             for(unsigned block=0;block<blocks;++block){
                 const unsigned mode=(block/2)%2?1-block%2:block%2;
-                ok(d->SetPixelShader(shaders[mode]));draw(2);wait(event);
+                ok(d->SetPixelShader(shaders[mode]));if(benchmark){draw(2);wait(event);}
 #ifdef NORTHLIGHT_AO_SPLIT_PROFILE
                 if(block==1){assert(splitProfile->beginFrame(++splitSamples,true));ok(d->SetTexture(0,at));ok(d->SetTexture(1,dt));ok(d->SetPixelShader(shaders[mode]));splitProfile->mark("AOBlurSetup");}
 #endif
-                ok(disjoint->Issue(D3DISSUE_BEGIN));ok(start->Issue(D3DISSUE_END));draw(draws);ok(end->Issue(D3DISSUE_END));ok(frequency->Issue(D3DISSUE_END));ok(disjoint->Issue(D3DISSUE_END));wait(event);
-                UINT64 a=0,b=0,f=0;BOOL bad=FALSE;assert(start->GetData(&a,sizeof a,0)==S_OK&&end->GetData(&b,sizeof b,0)==S_OK&&frequency->GetData(&f,sizeof f,0)==S_OK&&disjoint->GetData(&bad,sizeof bad,0)==S_OK&&!bad&&b>=a&&f);
-                if(block>=4)timing[mode].push_back(double(b-a)/double(f)*1000/draws);
+                if(benchmark){
+                    ok(disjoint->Issue(D3DISSUE_BEGIN));ok(start->Issue(D3DISSUE_END));draw(draws);ok(end->Issue(D3DISSUE_END));ok(frequency->Issue(D3DISSUE_END));ok(disjoint->Issue(D3DISSUE_END));wait(event);
+                    UINT64 a=0,b=0,f=0;BOOL bad=FALSE;assert(start->GetData(&a,sizeof a,0)==S_OK&&end->GetData(&b,sizeof b,0)==S_OK&&frequency->GetData(&f,sizeof f,0)==S_OK&&disjoint->GetData(&bad,sizeof bad,0)==S_OK&&!bad&&b>=a&&f);
+                    if(block>=4)timing[mode].push_back(double(b-a)/double(f)*1000/draws);
+                }else{draw(1);wait(event);}
                 if(block<2){ok(d->StretchRect(target,nullptr,resolveSurface,nullptr,D3DTEXF_NONE));ok(d->GetRenderTargetData(resolveSurface,staging));D3DLOCKED_RECT lock{};ok(staging->LockRect(&lock,nullptr,D3DLOCK_READONLY));output[mode].resize(std::size_t(W)*H*8);for(unsigned y=0;y<H;++y)std::memcpy(output[mode].data()+std::size_t(y)*W*8,static_cast<char*>(lock.pBits)+y*lock.Pitch,W*8);ok(staging->UnlockRect());}
 #ifdef NORTHLIGHT_AO_SPLIT_PROFILE
                 if(block==1){splitProfile->mark("AOBlur");splitProfile->endFrame();}splitProfile->poll();
@@ -112,7 +116,7 @@ int main(int argc,char** argv) {
             assert((shape==0||shape==3)?minAO==1:minAO<1);
             if(fp16)for(std::size_t i=0;i<std::size_t(W)*H;++i)assert(!std::memcmp(output[1].data()+i*8,ambient.pixels.data()+i*8,6)); // Bloom RGB passes through, including HDR.
             double median[2]{};for(unsigned mode=0;mode<2;++mode)if(!timing[mode].empty()){std::sort(timing[mode].begin(),timing[mode].end());auto n=timing[mode].size();median[mode]=(timing[mode][n/2]+timing[mode][(n-1)/2])*.5;}
-            std::printf("{\"width\":%u,\"height\":%u,\"input_bits\":%u,\"shape\":%u,\"msaa\":%u,\"changed_bytes\":%llu,\"nonfinite\":%llu,\"min_ao\":%.6f,\"max_ao\":%.6f,\"old_ms\":%.6f,\"new_ms\":%.6f}\n",fullW,fullH,fp16?16:32,shape,samples,static_cast<unsigned long long>(changed),static_cast<unsigned long long>(nonfinite),minAO,maxAO,median[0],median[1]);std::fflush(stdout);assert(!changed);++cases;target->Release();
+            std::printf("{\"width\":%u,\"height\":%u,\"input_bits\":%u,\"shape\":%u,\"msaa\":%u,\"changed_bytes\":%llu,\"nonfinite\":%llu,\"min_ao\":%.6f,\"max_ao\":%.6f,\"timings\":%s,\"old_ms\":%.6f,\"new_ms\":%.6f}\n",fullW,fullH,fp16?16:32,shape,samples,static_cast<unsigned long long>(changed),static_cast<unsigned long long>(nonfinite),minAO,maxAO,benchmark?"true":"false",median[0],median[1]);std::fflush(stdout);assert(!changed);++cases;target->Release();
         }
         for(unsigned slot=0;slot<4;++slot)ok(d->SetTexture(slot,nullptr));dt->Release();at->Release();wt->Release();
     }
@@ -121,5 +125,5 @@ int main(int argc,char** argv) {
     wait(event);splitProfile->poll();assert(splitReports==splitSamples);delete splitProfile;
     std::printf("AO_SPLIT_PROFILE_PASS samples=%u reports=%u\n",splitSamples,splitReports);
 #endif
-    d->SetPixelShader(nullptr);for(auto shader:shaders)shader->Release();for(auto query:{event,start,end,frequency,disjoint})query->Release();staging->Release();resolveSurface->Release();resolved->Release();d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);UnregisterClassW(wc.lpszClassName,wc.hInstance);
+    d->SetPixelShader(nullptr);for(auto shader:shaders)shader->Release();for(auto query:{event,start,end,frequency,disjoint})if(query)query->Release();staging->Release();resolveSurface->Release();resolved->Release();d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);UnregisterClassW(wc.lpszClassName,wc.hInstance);
 }

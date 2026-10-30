@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / 'scripts/shaders')]
 import northlight_paths as fp
 from shader_compiler import DLL, DLL_SHA256, COMPATIBLE_DLL_SHA256, validate_assembly
+from validate_native_scene_trace import processes
 
 
 def main():
@@ -28,6 +29,7 @@ def main():
     parser.add_argument('--profile-split', action='store_true')
     args = parser.parse_args()
     assert os.name == 'nt', 'Windows D3D9 is required'
+    processes()
     folder = args.output.resolve()
     folder.mkdir(parents=True, exist_ok=True)
     assert hashlib.sha256(DLL.read_bytes()).hexdigest() in (DLL_SHA256, COMPATIBLE_DLL_SHA256)
@@ -61,17 +63,19 @@ def main():
     for bits in (16, 32):
         sizes = [(256, 192), (137, 79)] + ([(1920, 1080), (3840, 2160)] if args.benchmark and bits == 16 else [])
         for width, height in sizes:
+            processes()
             result = subprocess.run([str(executable), str(folder / 'old.bin'), str(folder / 'new.bin'),
-                                     str(args.backend.resolve()), str(width), str(height), str(bits)],
+                                     str(args.backend.resolve()), str(width), str(height), str(bits),
+                                     *(['--benchmark'] if args.benchmark else [])],
                                     cwd=folder, check=True, capture_output=True, text=True, timeout=120)
             print(result.stdout, end='', flush=True)
             if args.profile_split:
                 assert 'AO_SPLIT_PROFILE_PASS' in result.stdout
             cases.extend(json.loads(line) for line in result.stdout.splitlines() if line.startswith('{'))
-    assert all(row['changed_bytes'] == 0 for row in cases)
+    assert all(row['changed_bytes'] == 0 and row['timings'] == args.benchmark for row in cases)
     report = {'baseline_ref': args.baseline_ref,
               'baseline_dir': str(args.baseline_dir.resolve()) if args.baseline_dir else None,
-              'game_launched': False, 'profile_split': args.profile_split, 'metadata': metadata, 'cases': cases}
+              'game_launched': False, 'benchmark': args.benchmark, 'profile_split': args.profile_split, 'metadata': metadata, 'cases': cases}
     (folder / 'validation.json').write_bytes((json.dumps(report, indent=2) + '\n').encode('utf-8'))
     print(f'PASS {len(cases)} genuine old/new AOBlur comparisons; all FP16 components bit exact')
 
