@@ -34,16 +34,26 @@ struct GrassShadowTest {
    auto capture=[&]{must(d->SetVertexShader(native));must(d->SetPixelShader(pixel));must(d->SetVertexShaderConstantF(0,constants[0],256));w.captureUP(D3DPT_TRIANGLELIST,0,4,2,indices,D3DFMT_INDEX16,vertices,sizeof(Vertex),true,native,false,false);};
    capture();assert(w.replays.size()==variant+1&&w.detailBudget.draws==variant+1);const auto& p=*w.replays.back();assert(p.alphaMode==3&&p.cutoff==0&&p.texture==texture&&p.mesh().vertexCount==4);
    DWORD blend=0;must(d->GetRenderState(D3DRS_ALPHABLENDENABLE,&blend));assert(blend==TRUE);IDirect3DVertexShader9* after=nullptr;must(d->GetVertexShader(&after));assert(after==native);after->Release();
-   for(auto shader:{shadow,local})for(float fade:{0.f,.5f,1.f}){
+   for(auto shader:{shadow,local})for(unsigned mode:{0u,1u,2u,3u})for(float fade:{0.f,.5f,1.f}){
     float replay[256][4];std::memcpy(replay,constants,sizeof replay);for(unsigned i=4;i<8;++i)for(unsigned j=0;j<4;++j)replay[i][j]=float(i-4==j);replay[9][1]=fade;
-    must(d->SetVertexShader(p.shader));must(d->SetVertexShaderConstantF(0,replay[0],256));must(d->SetPixelShader(shader));float material[]={3,0,0,0};must(d->SetPixelShaderConstantF(0,material,1));float sphere[]={100,0,0,0};must(d->SetPixelShaderConstantF(1,sphere,1));
+    must(d->SetVertexShader(p.shader));must(d->SetVertexShaderConstantF(0,replay[0],256));must(d->SetPixelShader(shader));float material[]={float(mode),0,0,mode==3?0.f:.5f};must(d->SetPixelShaderConstantF(0,material,1));float sphere[]={100,0,0,0};must(d->SetPixelShaderConstantF(1,sphere,1));
     must(d->SetRenderState(D3DRS_ZENABLE,FALSE));must(d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE));must(d->Clear(0,nullptr,D3DCLEAR_TARGET,0xffffffff,1,0));must(d->BeginScene());must(d->DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST,0,4,2,p.mesh().indices.data(),D3DFMT_INDEX32,p.mesh().streams[0].bytes.data(),sizeof(Vertex)));must(d->EndScene());
-    must(d->GetRenderTargetData(target,staging));D3DLOCKED_RECT result{};must(staging->LockRect(&result,nullptr,D3DLOCK_READONLY));unsigned transparent=0,covered=0;for(unsigned y=1;y<63;++y)for(unsigned x=1;x<63;++x){float value;std::memcpy(&value,static_cast<char*>(result.pBits)+y*result.Pitch+x*16,4);if(x<30)transparent+=value<.9f;if(x>34)covered+=value<.9f;}must(staging->UnlockRect());assert(transparent==0);if(fade==0)assert(covered==0);else if(fade==1)assert(covered>1500);else assert(covered>600&&covered<1100);++total;
+    must(d->GetRenderTargetData(target,staging));D3DLOCKED_RECT result{};must(staging->LockRect(&result,nullptr,D3DLOCK_READONLY));unsigned transparent=0,covered=0;for(unsigned y=1;y<63;++y)for(unsigned x=1;x<63;++x){float value;std::memcpy(&value,static_cast<char*>(result.pBits)+y*result.Pitch+x*16,4);if(x<30)transparent+=value<.9f;if(x>34)covered+=value<.9f;}must(staging->UnlockRect());if(mode==3){assert(transparent==0);if(fade==0)assert(covered==0);else if(fade==1)assert(covered>1500);else assert(covered>600&&covered<1100);}
+    else{const bool opaque=mode==0||fade>=.5f;assert(covered==(opaque?1736u:0u));assert(transparent==((mode==2&&opaque)?1798u:0u));}++total;
    }
    must(d->SetRenderState(D3DRS_ZENABLE,TRUE));must(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));must(d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_ONE));capture();assert(w.replays.size()==variant+1);must(d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_INVSRCALPHA));
    native->Release();pixel->Release();
   }
-  assert(w.detailBudget.draws==16&&w.detailBlendRejected==16);std::printf("GRASS_CAPTURE_GPU_PASS nativeVertexVariants=12 nativePixelVariants=16 masks=%u additiveRejected=16 transparentSafe=1 fade=0,.5,1 captureStateUnchanged=1 timings=0\n",total);
+  assert(w.detailBudget.draws==16&&w.detailBlendRejected==16);
+  IDirect3DVertexShader9* native=nullptr;must(d->GetVertexShader(&native));assert(native);
+  must(d->SetRenderState(D3DRS_ALPHATESTENABLE,TRUE));must(d->SetRenderState(D3DRS_ALPHAFUNC,D3DCMP_GREATER));must(d->SetRenderState(D3DRS_ALPHAREF,127));
+  auto captureLast=[&]{w.captureUP(D3DPT_TRIANGLELIST,0,4,2,indices,D3DFMT_INDEX16,vertices,sizeof(Vertex),true,native,false,false);};
+  captureLast();assert(w.replays.size()==17&&w.replays.back()->alphaMode==1&&w.replays.back()->cutoff==.5f);
+  must(d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE));captureLast();assert(w.replays.size()==18&&w.replays.back()->alphaMode==1);
+  must(d->SetRenderState(D3DRS_ALPHATESTENABLE,FALSE));captureLast();assert(w.replays.size()==18&&w.detailMaskRejected==1);
+  must(d->SetPixelShader(shadow));captureLast();assert(w.replays.size()==18&&w.detailMaskRejected==2);
+  w.quality.grassShadows=0;captureLast();assert(w.replays.size()==18&&w.detailBudgetRejected==1);native->Release();
+  std::printf("GRASS_CAPTURE_GPU_PASS nativeVertexVariants=12 nativePixelVariants=16 masks=%u additiveRejected=16 transparentSafe=1 fade=0,.5,1 legacyModes=0,1,2 cutoutCaptured=2 unknownRejected=1 disabledRejected=1 captureStateUnchanged=1 timings=0\n",total);
   must(d->SetTexture(0,nullptr));must(d->SetVertexShader(nullptr));must(d->SetPixelShader(nullptr));must(d->SetVertexDeclaration(nullptr));texture->Release();decl->Release();shadow->Release();local->Release();target->Release();staging->Release();
  }
 };
