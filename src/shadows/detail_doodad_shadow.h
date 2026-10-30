@@ -70,13 +70,15 @@ inline bool blendedMaterial(bool knownPixel,unsigned source,unsigned destination
     return knownPixel&&source==5&&destination==6&&operation==1;
 }
 struct Budget {
-    static constexpr unsigned MaxDraws=32,MaxVertices=8192;
-    static constexpr std::size_t MaxBytes=512u*1024u;
+    // 8,192 is a per-draw safety limit, not a whole visible meadow.
+    // Storage remains split across the ordinary guarded replay snapshots.
+    static constexpr unsigned MaxDraws=128,MaxDrawVertices=8192,MaxVertices=131072;
+    static constexpr std::size_t MaxBytes=8u*1024u*1024u;
     unsigned attempts=0,readVertices=0,draws=0,vertices=0;std::size_t bytes=0,readBytes=0;
-    bool room(unsigned count)const{return count&&attempts<MaxDraws&&count<=MaxVertices-readVertices&&readBytes<MaxBytes;}
+    bool room(unsigned count)const{return count&&count<=MaxDrawVertices&&attempts<MaxDraws&&count<=MaxVertices-readVertices&&readBytes<MaxBytes;}
     bool reserve(unsigned count,std::size_t size){if(!room(count)||size>MaxBytes-readBytes)return false;++attempts;readVertices+=count;readBytes+=size;return true;}
     bool take(unsigned count,std::size_t size){
-        if(count>MaxVertices-vertices||size>MaxBytes-bytes)return false;
+        if(!count||count>MaxDrawVertices||draws>=MaxDraws||count>MaxVertices-vertices||size>MaxBytes-bytes)return false;
         ++draws;vertices+=count;bytes+=size;return true;
     }
 };
@@ -88,7 +90,7 @@ inline bool bounds(const NorthlightActorDeformation::Program& program,const Nort
                    const D3DVERTEXELEMENT9* elements,unsigned count,const float* constants,const float* inverse,
                    NorthlightReplayBounds::Bounds& output){
     output={};
-    if(!elements||!constants||!inverse||!mesh.vertexCount||mesh.vertexCount>Budget::MaxVertices||
+    if(!elements||!constants||!inverse||!mesh.vertexCount||mesh.vertexCount>Budget::MaxDrawVertices||
        program.operations.size()!=4||program.inputs.size()!=1||program.inputs[0].reg!=0||program.inputs[0].usage!=0||program.inputs[0].index)return false;
     const D3DVERTEXELEMENT9* position=nullptr;
     for(unsigned i=0;i<count;++i){const auto& e=elements[i];if(e.Stream==0xff)break;if(e.Usage==0&&e.UsageIndex==0){if(position)return false;position=&e;}}

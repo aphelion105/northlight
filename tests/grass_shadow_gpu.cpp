@@ -6,6 +6,30 @@
 static void must(HRESULT hr){assert(SUCCEEDED(hr));}
 static std::vector<DWORD> code(const std::string& path){std::ifstream f(path,std::ios::binary|std::ios::ate);assert(f);auto n=f.tellg();assert(n>0&&size_t(n)%4==0);std::vector<DWORD> v(size_t(n)/4);f.seekg(0);f.read(reinterpret_cast<char*>(v.data()),n);assert(f);return v;}
 struct GrassShadowTest {
+ static void dense(WorldRenderer& w,IDirect3DDevice9* d,const std::string& prefix,IDirect3DTexture9* texture,IDirect3DVertexDeclaration9* decl,IDirect3DPixelShader9* shadow,IDirect3DPixelShader9* local,IDirect3DSurface9* target,IDirect3DSurface9* staging){
+  struct Vertex {float x,y,z,nx,ny,nz;DWORD color;float u,v;};std::vector<Vertex> vertices(1024);std::vector<WORD> indices;
+  for(unsigned q=0;q<256;++q)for(unsigned i:{0u,1u,2u,2u,1u,3u})indices.push_back(WORD(4*q+i));
+  auto vs=code(prefix+"vs-0.bin"),ps=code(prefix+"ps-0.bin");IDirect3DVertexShader9* native=nullptr;IDirect3DPixelShader9* pixel=nullptr;
+  must(d->CreateVertexShader(vs.data(),&native));must(d->CreatePixelShader(ps.data(),&pixel));w.registerShader(native,NorthlightShaderTags::fnv1a(vs.data(),vs.size()*4));w.registerPixelShader(pixel);
+  float constants[256][4]={};for(unsigned i=0;i<4;++i)constants[i][i]=1;constants[4][0]=constants[5][1]=constants[6][2]=constants[6][3]=1;constants[9][1]=1;
+  std::vector<float> reference;unsigned masks=0;
+  for(unsigned order=0;order<4;++order){
+   w.replays.clear();w.detailBudget={};w.replaySnapshots.clearFrame();w.snapshotFrameBegun=false;w.captureMode=WorldRenderer::CaptureFresh;w.quality.grassShadows=1;
+   must(d->SetRenderState(D3DRS_ALPHATESTENABLE,FALSE));must(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));must(d->SetRenderState(D3DRS_ZENABLE,TRUE));must(d->SetVertexDeclaration(decl));must(d->SetVertexShader(native));must(d->SetPixelShader(pixel));must(d->SetTexture(0,texture));must(d->SetVertexShaderConstantF(0,constants[0],256));
+   for(unsigned draw=0;draw<64;++draw){const unsigned id=order==0?draw:order==1?63-draw:order==2?(draw*17)%64:(draw*23+11)%64;const float x=-.875f+.25f*(id%8),y=-.875f+.25f*(id/8);
+    for(unsigned i=0;i<1024;++i){const unsigned v=i%4;vertices[i]={x+((v&1)?.1f:-.1f),y+((v&2)?-.1f:.1f),.25f,0,0,1,0xffffffff,float(v&1),float((v>>1)&1)};}
+    w.captureUP(D3DPT_TRIANGLELIST,0,1024,512,indices.data(),D3DFMT_INDEX16,vertices.data(),sizeof(Vertex),true,native,false,false);
+   }
+   assert(w.replays.size()==64&&w.detailBudget.draws==64&&w.detailBudget.vertices==65536&&w.detailBudget.bytes<=NorthlightDetailShadow::Budget::MaxBytes);
+   for(auto shader:{shadow,local}){
+    must(d->SetRenderTarget(0,target));must(d->SetDepthStencilSurface(nullptr));D3DVIEWPORT9 viewport{0,0,64,64,0,1};must(d->SetViewport(&viewport));must(d->SetRenderState(D3DRS_ZENABLE,FALSE));must(d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE));must(d->SetPixelShader(shader));must(d->SetTexture(0,texture));float material[]={3,0,0,0},sphere[]={100,0,0,0};must(d->SetPixelShaderConstantF(0,material,1));must(d->SetPixelShaderConstantF(1,sphere,1));must(d->Clear(0,nullptr,D3DCLEAR_TARGET,0xffffffff,1,0));must(d->BeginScene());
+    for(const auto& owned:w.replays){const auto& replay=*owned;float c[256][4];std::memcpy(c,replay.constants,sizeof c);for(unsigned i=4;i<8;++i)for(unsigned j=0;j<4;++j)c[i][j]=float(i-4==j);must(d->SetVertexDeclaration(replay.decl));must(d->SetVertexShader(replay.shader));must(d->SetVertexShaderConstantF(0,c[0],256));must(d->DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST,0,replay.mesh().vertexCount,replay.count,replay.mesh().indices.data(),D3DFMT_INDEX32,replay.mesh().streams[0].bytes.data(),sizeof(Vertex)));}
+    must(d->EndScene());must(d->GetRenderTargetData(target,staging));D3DLOCKED_RECT lock{};must(staging->LockRect(&lock,nullptr,D3DLOCK_READONLY));std::vector<float> image(64*64);for(unsigned y=0;y<64;++y)for(unsigned x=0;x<64;++x)std::memcpy(&image[y*64+x],static_cast<char*>(lock.pBits)+y*lock.Pitch+x*16,4);must(staging->UnlockRect());
+    for(unsigned id=0;id<64;++id){const unsigned x=6+8*(id%8),y=59-8*(id/8);assert(image[y*64+x]<.9f&&image[y*64+x-4]==1.f);}if(reference.empty())reference=image;else assert(image==reference);++masks;
+   }
+  }
+  std::printf("GRASS_DENSE_GPU_PASS batches=64 vertices=65536 snapshotBytes=%zu drawOrders=4 directionalLocalMasks=%u exact=1 bounded=1 timings=0\n",w.detailBudget.bytes,masks);native->Release();pixel->Release();
+ }
  static void run(IDirect3DDevice9* d,const std::string& prefix){
   WorldRenderer w(d);w.valid=true;w.active=std::make_shared<WorldRenderer::Snapshot>();w.active->bvh=std::make_shared<NorthlightGI::BVH>();
   w.quality.actorShadows=w.quality.actorShadowDetail=w.quality.grassShadows=1;w.effects.shadows=true;w.captureMode=WorldRenderer::CaptureFresh;
@@ -54,6 +78,7 @@ struct GrassShadowTest {
   must(d->SetPixelShader(shadow));captureLast();assert(w.replays.size()==18&&w.detailMaskRejected==2);
   w.quality.grassShadows=0;captureLast();assert(w.replays.size()==18&&w.detailBudgetRejected==1);native->Release();
   std::printf("GRASS_CAPTURE_GPU_PASS nativeVertexVariants=12 nativePixelVariants=16 masks=%u additiveRejected=16 transparentSafe=1 fade=0,.5,1 legacyModes=0,1,2 cutoutCaptured=2 unknownRejected=1 disabledRejected=1 captureStateUnchanged=1 timings=0\n",total);
+  dense(w,d,prefix,texture,decl,shadow,local,target,staging);
   must(d->SetTexture(0,nullptr));must(d->SetVertexShader(nullptr));must(d->SetPixelShader(nullptr));must(d->SetVertexDeclaration(nullptr));texture->Release();decl->Release();shadow->Release();local->Release();target->Release();staging->Release();
  }
 };

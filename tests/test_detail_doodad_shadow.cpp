@@ -65,7 +65,16 @@ static void policy(){
     assert(!b.reserve(8,Budget::MaxBytes)&&b.attempts==1&&b.readVertices==8);
     for(unsigned i=1;i<Budget::MaxDraws;++i)assert(b.reserve(8,256));
     assert(!b.reserve(8,256));
-    b={};assert(b.reserve(8192,512*1024)&&!b.room(1));assert(b.take(8192,512*1024));assert(!b.take(1,1));
+    b={};assert(!b.reserve(Budget::MaxDrawVertices+1,1));
+    for(unsigned i=0;i<Budget::MaxVertices/Budget::MaxDrawVertices;++i){assert(b.reserve(8192,512*1024));assert(b.take(8192,512*1024));}
+    assert(!b.room(1)&&!b.take(1,1));
+    // Recorded field: dozens of native batches, not one eight-thousand-vertex draw.
+    // Reordering a full field must not choose a different first handful of casters.
+    for(unsigned phase=0;phase<64;++phase){Budget field;std::uint64_t accepted=0;
+        for(unsigned i=0;i<64;++i){const unsigned id=(i*17+phase)%64,vertices=512+id%4*256;const size_t bytes=size_t(vertices)*44;
+            assert(field.reserve(vertices,bytes)&&field.take(vertices,bytes));accepted|=1ull<<id;}
+        assert(accepted==~std::uint64_t(0)&&field.draws==64&&field.bytes<=Budget::MaxBytes);}
+    b={};assert(b.reserve(1,Budget::MaxBytes)&&!b.room(1)&&!b.reserve(1,1));
     float camera[]={0,0,0};NorthlightReplayBounds::Bounds bounds;bounds.valid=true;
     bounds.low[0]=64;bounds.high[0]=65;assert(!NorthlightReplayBounds::outsideSphere(bounds,camera,64));
     bounds.low[0]=64.01f;assert(NorthlightReplayBounds::outsideSphere(bounds,camera,64));
