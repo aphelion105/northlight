@@ -2223,7 +2223,7 @@ private:
             probeBlend.begin(active->map);const unsigned blendedSlots=probePrev?probeBlend.publish(active->atlas,activationNow):0; // 0.3.197
             const unsigned n=NorthlightGI::probeLayout().atlas;
             for(int channel=0;channel<5;++channel){D3DLOCKED_RECT lock;if(!check(probe[channel]->LockRect(0,&lock,nullptr,0),"probe upload"))return false;
-                NorthlightProbeUpload::write(unsigned(channel),lock.pBits,size_t(lock.Pitch),n,active->atlas,probeBlend,probeActivation,activationNow,probePrev!=nullptr);
+                NorthlightProbeUpload::write(unsigned(channel),lock.pBits,size_t(lock.Pitch),n,active->atlas,probeBlend,probeActivation,activationNow,probePrev!=nullptr,true); // Locked D3D storage cannot alias the CPU atlas.
                 probe[channel]->UnlockRect(0);
             }
             if(probePrev){D3DLOCKED_RECT lock; /* 0.3.197: what was on screen before each slot's latest SH, R|G|B in three horizontal thirds */

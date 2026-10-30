@@ -4,6 +4,9 @@
 #include <cstddef>
 #include <cstring>
 #include <limits>
+#if defined(__SSE2__)
+#include <emmintrin.h>
+#endif
 
 namespace NorthlightProbeUpload {
 // Match the shader's x+z*n, y atlas layout. Specialize outside the texel loop
@@ -14,7 +17,7 @@ void write(void* bits,std::size_t pitch,unsigned n,
            const NorthlightProbeBlend::Mirror& blend,NorthlightProbeActivation& activation,
            float now,bool hasPrevious){
     static_assert(Channel<5);
-    // Independent 16-cell textures and the validated activation path read atlas entries contiguously.
+    // Independent SH targets and the validated activation path read atlas entries contiguously.
     // The checked fallback keeps its original order if it throws partway through.
     for(unsigned major=0;major<n;++major)for(unsigned minor=0;minor<n;++minor){
         const unsigned y=((Channel<3&&Contiguous)||(Channel==4&&KnownValid))?minor:major;
@@ -24,6 +27,14 @@ void write(void* bits,std::size_t pitch,unsigned n,
         for(unsigned x=0;x<n;++x){
             const auto& entry=atlas[base+x];const auto& p=entry.probe;float* dst=row+x*4;
             if constexpr(Channel<3){
+#if defined(__SSE2__)
+                // The independent target cannot alias the atlas: load the complete texel before one unaligned store.
+                if constexpr(Contiguous){
+                    if constexpr(Channel==0)_mm_storeu_ps(dst,_mm_set_ps(p.sh[3].x,p.sh[2].x,p.sh[1].x,p.sh[0].x));
+                    else if constexpr(Channel==1)_mm_storeu_ps(dst,_mm_set_ps(p.sh[3].y,p.sh[2].y,p.sh[1].y,p.sh[0].y));
+                    else _mm_storeu_ps(dst,_mm_set_ps(p.sh[3].z,p.sh[2].z,p.sh[1].z,p.sh[0].z));
+                }else
+#endif
                 for(unsigned k=0;k<4;++k){
                     if constexpr(Channel==0)dst[k]=p.sh[k].x;
                     else if constexpr(Channel==1)dst[k]=p.sh[k].y;
@@ -34,8 +45,10 @@ void write(void* bits,std::size_t pitch,unsigned n,
                 const float start=(PreviousMode<0?hasPrevious:PreviousMode!=0)?(BlendValid?blend.startKnownValid(base+x):blend.start(base+x)):NorthlightProbeBlend::None;
                 for(unsigned axis=0;axis<6;++axis){
                     float* moment=reinterpret_cast<float*>(reinterpret_cast<char*>(dst)+axis*n*pitch);
-                    moment[0]=p.moments[axis].mean;moment[1]=p.moments[axis].meanSquare;
-                    moment[2]=valid;moment[3]=start;
+#if defined(__SSE2__)
+                    if constexpr(Contiguous)_mm_storeu_ps(moment,_mm_set_ps(start,valid,p.moments[axis].meanSquare,p.moments[axis].mean));else
+#endif
+                    {moment[0]=p.moments[axis].mean;moment[1]=p.moments[axis].meanSquare;moment[2]=valid;moment[3]=start;}
                 }
             }else{
                 dst[0]=float(entry.key.x);dst[1]=float(entry.key.y);dst[2]=float(entry.key.z);
@@ -49,13 +62,15 @@ inline void write(unsigned channel,void* bits,std::size_t pitch,unsigned n,
                   const NorthlightProbeBlend::Mirror& blend,NorthlightProbeActivation& activation,
                   float now,bool hasPrevious,bool independentTarget=false){
     switch(channel){
-    case 0:if(independentTarget&&n==16)write<0,false,-1,false,true>(bits,pitch,n,atlas,blend,activation,now,hasPrevious);else write<0>(bits,pitch,n,atlas,blend,activation,now,hasPrevious);break;
-    case 1:if(independentTarget&&n==16)write<1,false,-1,false,true>(bits,pitch,n,atlas,blend,activation,now,hasPrevious);else write<1>(bits,pitch,n,atlas,blend,activation,now,hasPrevious);break;
-    case 2:if(independentTarget&&n==16)write<2,false,-1,false,true>(bits,pitch,n,atlas,blend,activation,now,hasPrevious);else write<2>(bits,pitch,n,atlas,blend,activation,now,hasPrevious);break;
+    case 0:if(independentTarget)write<0,false,-1,false,true>(bits,pitch,n,atlas,blend,activation,now,hasPrevious);else write<0>(bits,pitch,n,atlas,blend,activation,now,hasPrevious);break;
+    case 1:if(independentTarget)write<1,false,-1,false,true>(bits,pitch,n,atlas,blend,activation,now,hasPrevious);else write<1>(bits,pitch,n,atlas,blend,activation,now,hasPrevious);break;
+    case 2:if(independentTarget)write<2,false,-1,false,true>(bits,pitch,n,atlas,blend,activation,now,hasPrevious);else write<2>(bits,pitch,n,atlas,blend,activation,now,hasPrevious);break;
     case 3:
-        if(hasPrevious&&n&&std::size_t(n)<=std::numeric_limits<std::size_t>::max()/n/n&&blend.covers(std::size_t(n)*n*n))
-            write<3,false,1,true>(bits,pitch,n,atlas,blend,activation,now,hasPrevious);
-        else if(hasPrevious)write<3,false,1>(bits,pitch,n,atlas,blend,activation,now,hasPrevious);
+        if(hasPrevious&&n&&std::size_t(n)<=std::numeric_limits<std::size_t>::max()/n/n&&blend.covers(std::size_t(n)*n*n)){
+            if(independentTarget)write<3,false,1,true,true>(bits,pitch,n,atlas,blend,activation,now,hasPrevious);
+            else write<3,false,1,true>(bits,pitch,n,atlas,blend,activation,now,hasPrevious);
+        }else if(hasPrevious)write<3,false,1>(bits,pitch,n,atlas,blend,activation,now,hasPrevious);
+        else if(independentTarget)write<3,false,0,false,true>(bits,pitch,n,atlas,blend,activation,now,hasPrevious);
         else write<3,false,0>(bits,pitch,n,atlas,blend,activation,now,hasPrevious);
         break;
     case 4:if(n&&std::size_t(n)<=std::numeric_limits<std::size_t>::max()/n/n&&activation.covers(std::size_t(n)*n*n))write<4,true>(bits,pitch,n,atlas,blend,activation,now,hasPrevious);else write<4,false>(bits,pitch,n,atlas,blend,activation,now,hasPrevious);break;
