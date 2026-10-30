@@ -243,3 +243,4 @@ test_world_probe_coverage.py
 test_zone_tuner.py
 test_zone_tuning.py
 test_zone_tuning_wiring.py
+test_point_clip_prepared.py
