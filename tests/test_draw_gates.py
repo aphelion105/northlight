@@ -161,7 +161,7 @@ finish=member(renderer,'void finishFrameImpl() {')
 reset=member(renderer,'HRESULT STDMETHODCALLTYPE Reset(D3DPRESENT_PARAMETERS* pp) override')
 ctor=renderer[renderer.index('    Device(IDirect3DDevice9* d,IDirect3D9* p'):renderer.index('    ~Device() {')]
 code=re.sub(r'"(?:[^"\\]|\\.)*"','""',re.sub(r'/\*.*?\*/|//[^\n]*','',renderer))  # no comments, no string literals
-writes=lambda name,text=None:re.findall(r'(?<![.>\w])'+name+r'\s*=(?!=)\s*([^;,]*)',code if text is None else text)
+writes=lambda name,text=None:re.findall(r'(?<![.>:\w])'+name+r'\s*=(?!=)\s*([^;,]*)',code if text is None else text)
 checks['enabled: rises only by retained F10 in finishFrameImpl; else only lowered']=(
     sorted(writes('enabled'))==['!enabled','false','true'] and 'enabled=!enabled;' in member(finish,'if(masterPressed)')
     and 'if(!overlay||!overlay->masterHotkey(focus,masterPressed))masterPressed=k10&&!key10;' in finish
