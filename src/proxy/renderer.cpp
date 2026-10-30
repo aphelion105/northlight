@@ -2991,8 +2991,10 @@ public:
                 (unsigned long)GetTickCount(),unsigned(enabled),settings.gi?"ON":"OFF",settings.shadows?"ON":"OFF",settings.fog?"ON":"OFF",
                 (unsigned long long)diagnosticId,frame,(unsigned long long)NorthlightStream::nowNs());
         }
-        bool retry=k10&&!key10&&!enabled;
-        if(k10&&!key10){flushFrameIntervals("master-change",frameEnabled,frameEffects);enabled=!enabled;frameIntervals.reset();frameCost.reset();stallFrames.reset();mirrorResources.queryProfile={};logf("Effects %s tick=%lu device=%llu rendererFrame=%u monotonicNs=%llu",enabled?"ON":"OFF",(unsigned long)GetTickCount(),(unsigned long long)diagnosticId,frame,(unsigned long long)NorthlightStream::nowNs());}
+        bool masterPressed=false;
+        if(!overlay||!overlay->masterHotkey(focus,masterPressed))masterPressed=k10&&!key10;
+        bool retry=masterPressed&&!enabled;
+        if(masterPressed){flushFrameIntervals("master-change",frameEnabled,frameEffects);enabled=!enabled;frameIntervals.reset();frameCost.reset();stallFrames.reset();mirrorResources.queryProfile={};logf("Effects %s tick=%lu device=%llu rendererFrame=%u monotonicNs=%llu",enabled?"ON":"OFF",(unsigned long)GetTickCount(),(unsigned long long)diagnosticId,frame,(unsigned long long)NorthlightStream::nowNs());}
         bool k12=focus&&modifiers&&(GetAsyncKeyState(VK_F12)&0x8000);
         if(k12&&!key12){
             if(GetAsyncKeyState(VK_MENU)&0x8000){
