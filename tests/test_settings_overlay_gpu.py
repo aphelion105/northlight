@@ -2,9 +2,11 @@
 # northlight-test: requires=windows-gpu,zig,client
 """Actual settings panel rendering on private SDR/scRGB GPU targets, without the game."""
 from pathlib import Path
-import hashlib,importlib.util,json,os,subprocess,sys
+import argparse,hashlib,importlib.util,json,os,subprocess,sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
+parser=argparse.ArgumentParser(__doc__);parser.add_argument('--sdr-only',action='store_true',help='Validate the native SDR path without asserting unsupported native scRGB output')
+args=parser.parse_args()
 repo=fp.REPO
 out=fp.output_dir()/'overlay-gpu';out.mkdir(parents=True,exist_ok=False);(out/'settings').mkdir()
 spec=importlib.util.spec_from_file_location('overlay_guard',repo/'tests/validate_native_scene_trace.py');guard=importlib.util.module_from_spec(spec);spec.loader.exec_module(guard)
@@ -17,14 +19,14 @@ env.update(DISABLE_VULKAN_OBS_CAPTURE='1',DXVK_CONFIG_FILE=str(out/'dxvk.conf'),
 sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
 sources=['settings_overlay.cpp','settings_panel.cpp','imgui.cpp','imgui_draw.cpp','imgui_tables.cpp','imgui_widgets.cpp','imgui_impl_dx9.cpp']
 inputs={str(p):sha(p) for p in [fp.TESTS/'settings_overlay_gpu.cpp',*(fp.src(s) for s in sources),fp.src('hdr_compiled_shaders.h'),fp.src('settings_service.h'),backend]}
-report={'pass':False,'inputs':inputs,'commands':[],'game_launched':False,'actual_menu':True,'private_render_target':True,'windows_hdr_output_tested':False}
+report={'pass':False,'inputs':inputs,'commands':[],'game_launched':False,'actual_menu':True,'private_render_target':True,'windows_hdr_output_tested':False,'sdr_only':args.sdr_only}
 def run(label,command):
     guard.processes();p=subprocess.run(list(map(str,command)),cwd=out,env=env,capture_output=True,text=True,timeout=240)
     (out/(label+'.log')).write_text(p.stdout+p.stderr);report['commands'].append({'label':label,'exit_code':p.returncode});print(label,p.returncode,(p.stdout+p.stderr)[-6000:],flush=True);assert p.returncode==0,label
 try:
     exe=out/'overlay-gpu.exe'
     run('compile',[fp.zig(),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec','-DIMGUI_USER_CONFIG="northlight_imconfig.h"',*fp.test_include_flags(),'-I'+str(fp.TESTS),fp.TESTS/'settings_overlay_gpu.cpp',*(fp.src(s) for s in sources),'-luser32','-luuid','-o',exe])
-    run('gpu',[exe,backend,out/'settings']);report['pass']=True
+    run('gpu',[exe,backend,out/'settings',*(['--sdr-only'] if args.sdr_only else [])]);report['pass']=True
 finally:
     guard.processes();report['inputs_unchanged']=all(sha(Path(p))==v for p,v in inputs.items());report['pass']&=report['inputs_unchanged'];(out/'validation.json').write_text(json.dumps(report,indent=2)+'\n')
 assert report['pass']

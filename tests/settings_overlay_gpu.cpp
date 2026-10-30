@@ -11,7 +11,11 @@
 #include "imgui_internal.h"
 
 struct OverlayDevice:ForwardIDirect3DDevice9{
-    IDirect3DSurface9* target=nullptr;
+    IDirect3DSurface9* target=nullptr;unsigned stateBlockCreates=0;
+    HRESULT STDMETHODCALLTYPE CreateStateBlock(D3DSTATEBLOCKTYPE type,IDirect3DStateBlock9** out)override{
+        if(++stateBlockCreates>1){*out=nullptr;return E_OUTOFMEMORY;}
+        return real->CreateStateBlock(type,out);
+    }
     explicit OverlayDevice(IDirect3DDevice9* d):ForwardIDirect3DDevice9(d){}
     HRESULT STDMETHODCALLTYPE GetBackBuffer(UINT chain,UINT index,D3DBACKBUFFER_TYPE type,IDirect3DSurface9** out)override{
         if(target&&chain==0&&index==0){*out=target;target->AddRef();return S_OK;}
@@ -19,7 +23,7 @@ struct OverlayDevice:ForwardIDirect3DDevice9{
     }
 };
 int main(int argc,char** argv){
-    assert(argc==3);constexpr unsigned W=1280,H=800;
+    assert(argc==3||argc==4);const bool sdrOnly=argc==4&&!std::strcmp(argv[3],"--sdr-only");assert(argc==3||sdrOnly);constexpr unsigned W=1280,H=800;
     WNDCLASSW wc{};wc.lpfnWndProc=DefWindowProcW;wc.lpszClassName=L"NorthlightSettingsOverlayOracle";wc.hInstance=GetModuleHandleW(nullptr);assert(RegisterClassW(&wc));
     HWND window=CreateWindowExW(0,wc.lpszClassName,L"",WS_OVERLAPPED,0,0,W,H,nullptr,nullptr,wc.hInstance,nullptr);assert(window);
     HMODULE module=LoadLibraryA(argv[1]);assert(module);auto create=reinterpret_cast<IDirect3D9*(WINAPI*)(UINT)>(reinterpret_cast<void*>(GetProcAddress(module,"Direct3DCreate9")));assert(create);auto* api=create(D3D_SDK_VERSION);assert(api);
@@ -34,7 +38,15 @@ int main(int argc,char** argv){
     assert(service->snapshot());
     auto overlay=NorthlightOverlay::create(&device,true,"F11",service,[](const char* text){std::puts(text);});assert(overlay&&!overlay->visible());
     SendMessageW(window,WM_KEYDOWN,VK_F11,0);SendMessageW(window,WM_KEYUP,VK_F11,0);assert(overlay->visible());
-    auto draw=[&](float white){ok(real->ColorFill(device.target,nullptr,0xff000000));SavedState saved(&device);assert(saved.ok);overlay->draw(white);};
+    auto draw=[&](float white){
+        ok(real->ColorFill(device.target,nullptr,0xff000000));device.stateBlockCreates=0;
+        ok(real->SetRenderState(D3DRS_CULLMODE,D3DCULL_CW));ok(real->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE));
+        D3DMATRIX transform{};for(unsigned i=0;i<4;++i)transform.m[i][i]=float(i+1);transform.m[3][0]=3.25f;
+        for(auto mode:{D3DTS_WORLD,D3DTS_VIEW,D3DTS_PROJECTION})ok(real->SetTransform(mode,&transform));
+        {SavedState saved(&device);assert(saved.ok);overlay->draw(white);}
+        assert(device.stateBlockCreates==1);DWORD value=0;ok(real->GetRenderState(D3DRS_CULLMODE,&value));assert(value==D3DCULL_CW);ok(real->GetRenderState(D3DRS_ALPHABLENDENABLE,&value));assert(value==FALSE);
+        for(auto mode:{D3DTS_WORLD,D3DTS_VIEW,D3DTS_PROJECTION}){D3DMATRIX restored{};ok(real->GetTransform(mode,&restored));assert(!std::memcmp(&transform,&restored,sizeof transform));}
+    };
     draw(0);draw(0);
     auto* parent=ImGui::FindWindowByName("Northlight settings###NorthlightSettings");assert(parent);
     ImGuiWindow* nav=nullptr;
@@ -58,7 +70,7 @@ int main(int argc,char** argv){
         content->StateStorage.SetInt(content->GetID("CPU memory breakdown"),1);draw(0);draw(0);assert(content->ScrollMax.y>0);
       }
       float peaks[3]{};unsigned changed[3]{};
-      for(unsigned mode=0;mode<3;++mode){
+      for(unsigned mode=0;mode<(sdrOnly?1u:3u);++mode){
         const float white=mode==0?0:mode==1?160:320;
         draw(white);
         ok(real->GetRenderTargetData(device.target,readback));D3DLOCKED_RECT lock{};ok(readback->LockRect(&lock,nullptr,D3DLOCK_READONLY));
@@ -67,7 +79,7 @@ int main(int argc,char** argv){
             for(unsigned x=0;x<W;++x){float peak=0;for(unsigned k=0;k<3;++k){std::uint16_t h;std::memcpy(&h,row+x*8+k*2,2);const float value=half(h);assert(std::isfinite(value)&&value>=0);peak=std::max(peak,value);}peaks[mode]=std::max(peaks[mode],peak);changed[mode]+=peak>0;}
         }ok(readback->UnlockRect());assert(changed[mode]>10000&&changed[mode]<W*H);
     }
-    assert(peaks[0]>.5f&&peaks[0]<=1&&peaks[1]>1.2f&&peaks[1]<=2.01f&&peaks[2]>2.4f&&peaks[2]<=4.01f);
+    assert(peaks[0]>.5f&&peaks[0]<=1);if(!sdrOnly)assert(peaks[1]>1.2f&&peaks[1]<=2.01f&&peaks[2]>2.4f&&peaks[2]<=4.01f);
       std::printf("OVERLAY_GPU_PASS page=%s sdrPeak=%g white160Peak=%g white320Peak=%g pixels=%u/%u/%u actualPanel=1 snapshotLoaded=1 privateTarget=1 windowsHDROutput=0\n",pages[page],peaks[0],peaks[1],peaks[2],changed[0],changed[1],changed[2]);
     }
     overlay.reset();service.reset();readback->Release();device.target->Release();real->Release();api->Release();FreeLibrary(module);DestroyWindow(window);UnregisterClassW(wc.lpszClassName,wc.hInstance);

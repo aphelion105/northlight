@@ -344,7 +344,8 @@ class Impl final : public Overlay {
             for(int i=0;i<data->CmdListsCount;++i){ImDrawCmd command;command.UserCallback=&hdrDrawState;command.UserCallbackData=this;data->CmdLists[i]->CmdBuffer.insert(data->CmdLists[i]->CmdBuffer.begin(),command);}
         }
         if(FAILED(device->BeginScene()))return;
-        ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
+        // Overlay::draw requires the caller's SavedState; keep transform backup in the backend.
+        ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData(),false);
         device->EndScene();
         checkpoint();
     }
