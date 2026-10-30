@@ -1,5 +1,5 @@
 {
-  "source_sha256": "b4d1a85775dc92bd8ba2d0057f1e61f3ba17b5bcfa773d65608e3a6b22b325ca",
+  "source_sha256": "7ff9f3ef65872b72ba30562e26ae1293399e6bcbcefc4b873f3e072fb41cc6e1",
   "rain_source_sha256": "10948a355dc52e824d9ae61b5251a5146a20955295070dbe9ce749dec0eac172",
   "target": "ps_3_0",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
@@ -163,11 +163,11 @@
       "source_sha256": "0cb0ac497fa97b9ae2d3bd3143ff10e28623da9acbed0ffad4f7899e24108426"
     },
     "GTAOContactBloom": {
-      "bytes": 7820,
-      "sha256": "a29c122360ac02c085c06fc570ba7172305771cdecd708a76a7ea674a9447463",
+      "bytes": 7860,
+      "sha256": "186a1f4111dfafa46dddcb17f82b26d3e408e5cda801730885820898492db1f8",
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "static_instruction_slots": 485,
-      "temporary_registers": 19,
+      "static_instruction_slots": 491,
+      "temporary_registers": 18,
       "samplers": [
         0,
         1,
@@ -177,25 +177,25 @@
         "texld": 5,
         "dp3": 20,
         "mad": 12,
-        "mul": 140,
+        "mul": 142,
         "mov": 25,
-        "add": 124,
+        "add": 126,
         "rcp": 27,
         "frc": 6,
         "max": 9,
         "min": 9,
         "texldl": 8,
-        "cmp": 37,
-        "if": 3,
+        "cmp": 35,
+        "if": 4,
         "else": 2,
-        "endif": 3,
+        "endif": 4,
         "rsq": 15,
         "dp2add": 4,
         "rep": 2,
         "sincos": 1,
         "endrep": 2
       },
-      "source_sha256": "b4d1a85775dc92bd8ba2d0057f1e61f3ba17b5bcfa773d65608e3a6b22b325ca"
+      "source_sha256": "7ff9f3ef65872b72ba30562e26ae1293399e6bcbcefc4b873f3e072fb41cc6e1"
     },
     "AOBlur": {
       "bytes": 5188,

@@ -303,6 +303,9 @@ float NewAO(float2 uv, int method)
         {
             float sampleRadius = (step + 1) * .2;
             float2 offset = direction * uvRadius * sampleRadius * sampleRadius;
+            // Sub-texel offsets had zero weight: skip their depth reads and horizon work.
+            [branch] if (any(abs(offset) > .51 * ImageAndClip.xy))
+            {
             float4 a = AOSample(uv + offset), b = AOSample(uv - offset);
             float3 da = a.xyz - p, db = b.xyz - p;
             float2 inverseDistance = rsqrt(max(float2(dot(da, da), dot(db, db)), 1e-12));
@@ -315,9 +318,6 @@ float NewAO(float2 uv, int method)
             float2 thinFalloff = saturate((radius - thinDistance) / (radius * .5));
             float2 weight = float2(a.w, b.w);
             weight *= float2(distance.x > .00001, distance.y > .00001);
-            // Both inner taps can resolve to the receiver texel at distance.
-            // Reject by footprint, not a nearly-zero reconstructed 3D delta.
-            weight *= any(abs(offset) > .51 * ImageAndClip.xy) ? 1 : 0;
             // Match the SSAO coplanar tolerance for grazing D24 derivatives.
             weight *= float2(dot(normal, da) > .08 * distance.x, dot(normal, db) > .08 * distance.y);
             float2 candidate = float2(dot(da, view), dot(db, view)) * inverseDistance;
@@ -325,6 +325,7 @@ float NewAO(float2 uv, int method)
             coverage += float2(solidCandidate.x > low.x + .00001, solidCandidate.y > low.y + .00001);
             solidHorizon = max(solidHorizon, solidCandidate);
             horizon = max(horizon, lerp(low, candidate, weight * thinFalloff));
+            }
         }
         horizon = lerp(horizon, solidHorizon, saturate(coverage - 1));
         float open = projectedLength * (cosine + AOAcos(cosine) * abs(sine));

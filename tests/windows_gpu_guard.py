@@ -35,6 +35,6 @@ def processes():
             more = api.Process32NextW(handle, ctypes.byref(entry))
     finally:
         api.CloseHandle(handle)
-    if any(p['name'].lower() in ('wow.exe', 'wow64.exe') for p in result):
+    if any(p['name'].lower().startswith('wow') and p['name'].lower().endswith('.exe') for p in result):
         raise RuntimeError('Game process exists; defer this stand without changing the game')
     return result
