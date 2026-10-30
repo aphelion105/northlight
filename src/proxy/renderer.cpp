@@ -2513,8 +2513,10 @@ public:
             logf("Effects components tick=%lu master=%u GI=%s shadows=%s fog=%s giCache=warm",
                 (unsigned long)GetTickCount(),unsigned(enabled),settings.gi?"ON":"OFF",settings.shadows?"ON":"OFF",settings.fog?"ON":"OFF");
         }
-        bool retry=k10&&!key10&&!enabled;
-        if(k10&&!key10){enabled=!enabled;frameIntervals.reset();frameCost.reset();stallFrames.reset();mirrorResources.queryProfile={};logf("Effects %s tick=%lu",enabled?"ON":"OFF",(unsigned long)GetTickCount());}
+        bool masterPressed=false;
+        if(!overlay||!overlay->masterHotkey(focus,masterPressed))masterPressed=k10&&!key10;
+        bool retry=masterPressed&&!enabled;
+        if(masterPressed){enabled=!enabled;frameIntervals.reset();frameCost.reset();stallFrames.reset();mirrorResources.queryProfile={};logf("Effects %s tick=%lu",enabled?"ON":"OFF",(unsigned long)GetTickCount());}
         bool k12=focus&&modifiers&&(GetAsyncKeyState(VK_F12)&0x8000);
         if(k12&&!key12){if(GetAsyncKeyState(VK_MENU)&0x8000)NorthlightDiagnosticCapture::request(NorthlightDiagnosticCapture::World);else worldDebug=(worldDebug+1)%4;logf("World debug %d tick=%lu (0 normal,1 shadows,2 GI,3 volume)",worldDebug,(unsigned long)GetTickCount());}
         key12=k12;key10=k10;
