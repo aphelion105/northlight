@@ -235,6 +235,7 @@ test_pipeline_wave_cpu.py
 test_point_clip_prepared.py
 test_point_light_shadow.py
 test_point_shadow_schedule.py
+test_point_terrain_coverage_gpu.py
 test_point_transmission_cache.py
 test_point_transmission_install.py
 test_point_transmission_runtime.py

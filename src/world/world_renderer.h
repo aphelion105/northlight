@@ -188,6 +188,7 @@ class WorldRenderer {
     friend struct WorldColdUploadTest;
 #endif
     friend struct GrassShadowTest;
+    friend struct PointTerrainCoverageTest;
     using V=NorthlightGI::Vec3;
     /* 0.3.137: render-thread commit data built by the GI worker from the same
        immutable plan (see PreparedCommitData). Null fields fall back to the
