@@ -115,6 +115,33 @@ template<class Cache>static void faults(IDirect3DTexture9* source,unsigned& site
         o.cache.reset();assert(source->refs==before);assert(o.cache.entries.empty());state(o.cache);
     }
 }
+// Exercise a visible set larger than the unchanged 32 MiB map budget.
+// Presence is the contract: a cache hit supplies the same relief every frame.
+template<class Cache>static unsigned overBudgetStability(bool stable,unsigned count=32,unsigned width=512){
+    const auto before=liveObjects;unsigned transitions=0;
+    {
+        Owner<Cache> o;o.cache.frame=~0u-16;std::vector<IDirect3DTexture9*> sources;
+        for(unsigned i=0;i<count;++i){auto* t=new IDirect3DTexture9;t->identity=1000+i;t->payload=i*31+7;t->desc.Width=t->desc.Height=width;sources.push_back(t);}
+        std::vector<bool> previous(count);unsigned present=0,builds=0;
+        for(unsigned f=0;f<count+64;++f){
+            std::vector<bool> now(count);
+            for(unsigned j=0;j<count;++j){const unsigned i=f<count?j:(f&1?count-1-j:(j+f)%count);auto* map=o.cache.resolve(sources[i],i%2!=0);now[i]=map!=nullptr;}
+            state(o.cache);assert(o.cache.budget==(32ull<<20));
+            if(f==count-1){present=unsigned(std::count(now.begin(),now.end(),true));builds=o.cache.builds;assert(present>0&&present<count);}
+            if(f>=count)for(unsigned i=0;i<count;++i)transitions+=now[i]!=previous[i];
+            previous=now;o.cache.endFrame();
+        }
+        if(stable){assert(!transitions&&o.cache.builds==builds);assert(o.cache.entries.size()==present);}
+        // Leave the previous set behind: a new view can reclaim its cold entries.
+        o.cache.endFrame();o.cache.endFrame();auto* next=new IDirect3DTexture9;next->identity=9999;next->desc.Width=next->desc.Height=512;
+        assert(o.cache.resolve(next,true));state(o.cache);drop(next);
+        // A real source mutation must still invalidate a hot map.
+        o.cache.endFrame();auto* hot=o.cache.resolve(sources[0],false);
+        if(hot){const auto payload=hot->payload;++sources[0]->version;auto* changed=o.cache.resolve(sources[0],false);assert(changed&&changed->payload!=payload);}
+        o.cache.reset();for(auto*& t:sources){assert(t->refs==1);drop(t);}
+    }
+    assert(liveObjects==before);return transitions;
+}
 int main(int argc,char**){
     std::vector<IDirect3DTexture9*> source;for(unsigned i=0;i<320;++i){auto* t=new IDirect3DTexture9;t->identity=i+1;t->payload=i*17+3;source.push_back(t);}
     unsigned compared=0,sites=0;
@@ -148,6 +175,14 @@ int main(int argc,char**){
         for(unsigned i=9;i<65;++i){assert(o.cache.resolve(source[i],true));o.cache.endFrame();}
         for(unsigned i=0;i<held.size();++i)assert(held[i].get()->payload==payload[i]);
         o.cache.reset();state(o.cache);for(unsigned i=0;i<held.size();++i)assert(held[i].get()->payload==payload[i]);
+    }
+    const auto oldTransitions=overBudgetStability<CacheIntegrated>(false);
+    const auto newTransitions=overBudgetStability<CacheCurrent>(true);assert(oldTransitions>0&&!newTransitions);
+    std::printf("NORMAL_CACHE_STABILITY_PASS visible=32 budgetMiB=32 frames=96 oldTransitions=%u newTransitions=%u mixedModelWorld=1 viewChange=1 revision=1\n",oldTransitions,newTransitions);
+    for(const auto scenario:{std::pair<unsigned,unsigned>{320,32},{32,4096}}){
+        const auto old=overBudgetStability<CacheIntegrated>(false,scenario.first,scenario.second);
+        assert(old>0&&!overBudgetStability<CacheCurrent>(true,scenario.first,scenario.second));
+        std::printf("NORMAL_CACHE_LIMIT_PASS visible=%u width=%u oldTransitions=%u newTransitions=0 frameWrap=1\n",scenario.first,scenario.second,old);
     }
     faults<CacheCurrent>(source[0],sites);assert(sites>=5);
     for(auto*& t:source){assert(t->refs==1);drop(t);}assert(liveObjects==0);

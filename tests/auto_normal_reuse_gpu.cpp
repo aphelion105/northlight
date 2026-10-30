@@ -31,8 +31,31 @@ static std::vector<unsigned char> pixels(IDirect3DDevice9* d,IDirect3DTexture9* 
     for(UINT y=0;y<desc.Height;++y)std::memcpy(out.data()+size_t(y)*desc.Width*4,static_cast<char*>(lock.pBits)+size_t(y)*lock.Pitch,desc.Width*4);
     ok(stage->UnlockRect());drop(stage);drop(surface);return out;
 }
+static void visibleSetStability(IDirect3DDevice9* d,const char* fixture){
+    NorthlightAutoNormalCache cache(d),fresh(d);std::vector<IDirect3DTexture9*> sources;
+    for(unsigned i=0;i<32;++i){
+        Image im{512,512,D3DFMT_A8R8G8B8,4,std::vector<unsigned char>(512*512*4)};
+        if(!i&&fixture)im=image(fixture);
+        else for(unsigned y=0;y<512;++y)for(unsigned x=0;x<512;++x){const DWORD v=0xff000000u|(((x*13+y*7+i*31)&255)<<16)|(((x*3+y*17+i*19)&255)<<8)|((x*23+y*5+i*11)&255);std::memcpy(im.pixels.data()+(y*512+x)*4,&v,4);}
+        sources.push_back(texture(d,im));
+    }
+    std::array<bool,32> admitted{};std::array<IDirect3DTexture9*,32> maps{};unsigned checked=0;
+    for(unsigned f=0;f<96;++f){
+        ok(d->BeginScene());
+        for(unsigned j=0;j<32;++j){const unsigned i=f<48?j:(f&1?31-j:(j+f)%32);auto map=cache.acquire(sources[i],i%2==0);
+            if(f==47){admitted[i]=bool(map);maps[i]=map.get();}
+            if(f>=48){assert(bool(map)==admitted[i]);if(map)assert(map.get()==maps[i]);}
+        }
+        ok(d->EndScene());cache.endFrame();
+    }
+    assert(admitted[0]);const auto count=std::count(admitted.begin(),admitted.end(),true);assert(count>0&&count<32);
+    // Every admitted map still equals a freshly rendered production map.
+    for(unsigned i=0;i<32;++i)if(admitted[i]){ok(d->BeginScene());auto map=cache.acquire(sources[i],i%2==0);auto reference=fresh.acquire(sources[i],i%2==0);assert(map&&reference);ok(d->EndScene());assert(pixels(d,map.get())==pixels(d,reference.get()));++checked;fresh.reset();fresh.endFrame();}
+    cache.reset();for(auto*& source:sources)drop(source);
+    std::printf("NORMAL_VISIBLE_SET_PASS frames=96 visible=32 resident=%u transitions=0 exactMaps=%u honorHold=%u mixedModelWorld=1\n",unsigned(count),checked,unsigned(fixture!=nullptr));
+}
 int main(int argc,char** argv){
-    assert(argc==2);auto module=LoadLibraryA(argv[1]);assert(module);auto create=reinterpret_cast<IDirect3D9*(WINAPI*)(UINT)>(GetProcAddress(module,"Direct3DCreate9"));assert(create);auto api=create(D3D_SDK_VERSION);assert(api);
+    assert(argc==2||argc==3);auto module=LoadLibraryA(argv[1]);assert(module);auto create=reinterpret_cast<IDirect3D9*(WINAPI*)(UINT)>(GetProcAddress(module,"Direct3DCreate9"));assert(create);auto api=create(D3D_SDK_VERSION);assert(api);
     HWND window=CreateWindowExW(0,L"STATIC",L"",WS_OVERLAPPED,0,0,64,64,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);assert(window);
     D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=window;pp.BackBufferWidth=pp.BackBufferHeight=64;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;pp.BackBufferFormat=D3DFMT_X8R8G8B8;
     IDirect3DDevice9* raw=nullptr;ok(api->CreateDevice(0,D3DDEVTYPE_HAL,window,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_FPU_PRESERVE,&pp,&raw));
@@ -80,24 +103,27 @@ int main(int argc,char** argv){
     {
         auto* old=cache.resolve(sources[0],true);auto saved=pixels(raw,old);for(unsigned i=1;i<24;++i)assert(cache.resolve(sources[i],true));
         IDirect3DSurface9 *previous=nullptr,*surface=nullptr;ok(raw->GetRenderTarget(0,&previous));ok(old->GetSurfaceLevel(0,&surface));ok(raw->SetRenderTarget(0,surface));
+        assert(!cache.resolve(sources[24],true));cache.endFrame();cache.endFrame();
         const unsigned before=device.allocations;assert(cache.resolve(sources[24],true));assert(device.allocations==before+1);assert(pixels(raw,old)==saved);ok(raw->SetRenderTarget(0,previous));drop(surface);drop(previous);
     }
     fill();
     {
         auto held=cache.acquire(sources[0],true);auto old=pixels(raw,held.get());
         for(unsigned i=1;i<24;++i)assert(cache.resolve(sources[i],true));
+        assert(!cache.resolve(sources[24],true));cache.endFrame();cache.endFrame();
         const unsigned before=device.allocations;auto next=cache.acquire(sources[24],true);assert(next&&next.get()!=held.get());assert(device.allocations==before+1);assert(pixels(raw,held.get())==old);
         cache.reset();assert(pixels(raw,held.get())==old);
     }
     fill();
     {
         auto* old=cache.resolve(sources[0],true);auto saved=pixels(raw,old);for(unsigned i=1;i<24;++i)assert(cache.resolve(sources[i],true));
-        ok(raw->SetTexture(3,old));const unsigned before=device.allocations;assert(cache.resolve(sources[24],true));assert(device.allocations==before+1);assert(pixels(raw,old)==saved);ok(raw->SetTexture(3,nullptr));
+        ok(raw->SetTexture(3,old));assert(!cache.resolve(sources[24],true));cache.endFrame();cache.endFrame();const unsigned before=device.allocations;assert(cache.resolve(sources[24],true));assert(device.allocations==before+1);assert(pixels(raw,old)==saved);ok(raw->SetTexture(3,nullptr));
     }
     fill();
     {
         NorthlightAutoNormalCache::Lease held[9];for(unsigned i=0;i<8;++i)held[i]=cache.acquire(sources[23],true);held[8]=cache.acquire(sources[22],true);auto old=pixels(raw,held[8].get());
         for(unsigned i=0;i<22;++i)assert(cache.resolve(sources[i],true));assert(cache.resolve(sources[23],true));
+        assert(!cache.resolve(sources[24],true));cache.endFrame();cache.endFrame();
         const unsigned before=device.allocations;auto next=cache.acquire(sources[24],true);assert(next&&device.allocations==before+1);assert(pixels(raw,held[8].get())==old);
     }
     fill();
@@ -105,6 +131,7 @@ int main(int argc,char** argv){
     fill();device.failDraw=true;assert(!cache.resolve(sources[24],true));cache.endFrame();auto* recovered=cache.resolve(sources[24],true);assert(recovered&&pixels(raw,recovered)==expected[24]);ok(raw->EndScene());
     cache.reset();for(auto*& source:sources)drop(source);
     }
+    visibleSetStability(raw,argc==3?argv[2]:nullptr);
     raw->Release();api->Release();FreeLibrary(module);DestroyWindow(window);
     std::printf("NORMAL_REUSE_PASS compared=%u churnAllocations=%u freshAllocations=180 lease=checked bound=checked renderTarget=checked overflow=checked resize=checked failedDraw=checked reset=checked\n",compared,churnAllocations);
 }
