@@ -83,6 +83,9 @@ float ActorGTAO(float2 uv) {
         [loop]for(int side=0;side<2;++side){
             float sign=side==0?1:-1;
             float low=-sign*si,environment=low,front=low;
+#if NORTHLIGHT_GTAO_ISOLATED_HORIZON
+            float solidEnvironment=low,environmentCoverage=0;
+#endif
             float2 chosenUV=uv;float3 chosenQ=p;float chosenWeight=0;
             [loop]for(int step=0;step<4;++step){
                 float sr=(step+1)*.2;
@@ -96,8 +99,22 @@ float ActorGTAO(float2 uv) {
                 bool actor=false;
                 [branch]if(!protectedReceiver && weight>0)actor=ActorAt(tapUV)>254.5/255.;
                 if(actor){if(h>front){front=h;chosenUV=tapUV;chosenQ=q.xyz;chosenWeight=weight;}}
-                else environment=max(environment,h);
+                else {
+#if NORTHLIGHT_GTAO_ISOLATED_HORIZON
+                    float thinDistance=sqrt(dot(delta,delta)+3*delta.z*delta.z);
+                    float thinWeight=saturate((Options.y-thinDistance)/(Options.y*.5))*q.w;
+                    thinWeight*=distance>.00001 && any(abs(offset)>.51*ImageAndClip.xy) && dot(n,delta)>.08*distance?1:0;
+                    solidEnvironment=max(solidEnvironment,h);
+                    environmentCoverage+=h>low+.00001?1:0;
+                    environment=max(environment,lerp(low,dot(delta,view)*id,thinWeight));
+#else
+                    environment=max(environment,h);
+#endif
+                }
             }
+#if NORTHLIGHT_GTAO_ISOLATED_HORIZON
+            environment=lerp(environment,solidEnvironment,saturate(environmentCoverage-1));
+#endif
             float high=max(environment,front),back=environment;
             [branch]if(front>environment+.00001){
                 float thickness=ActorWidth(chosenUV,chosenQ.z);

@@ -30,6 +30,7 @@ def digest(path):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--run-gpu', action='store_true')
+    parser.add_argument('--compiled', type=Path, default=fp.COMPILED, help='Shader directory with a verified adjacent shader-build.json')
     parser.add_argument('--compile-only', action='store_true')
     parser.add_argument('--fixture', type=Path, action='append', default=[])
     parser.add_argument('--backend', type=Path)
@@ -62,11 +63,17 @@ def main():
         client = fp.client_root(required=False)
         assert backend.is_file() and (client is None or backend != (client / 'd3d9.dll').resolve()), backend
         evidence['backend_sha256'] = digest(backend)
-        manifest = json.loads((fp.SHADERS / 'shader-build.json').read_text())
+        import windows_gpu_guard
+        windows_gpu_guard.processes()
+        manifest_path = args.compiled.parent / 'shader-build.json'
+        manifest = json.loads(manifest_path.read_text())
+        evidence['shader_manifest_sha256'] = digest(manifest_path)
+        evidence['compiled_source_sha256'] = manifest['source_sha256']
+        evidence['compatibility_mode'] = manifest.get('compatibility_mode', 'production')
         evidence['compiled_sha256'] = {}
         for entry in ('AO', 'HBAOPlusContactBloom', 'GTAOContactBloom', 'HBAOActorContactBloom',
                       'GTAOActorContactBloom', 'HBAOActorOnly', 'GTAOActorOnly', 'AOActorPrepare', 'AOBlur'):
-            binary = fp.COMPILED / (entry + '.bin')
+            binary = args.compiled / (entry + '.bin')
             actual = digest(binary)
             assert actual == manifest['shaders'][entry]['sha256'], entry
             evidence['compiled_sha256'][entry] = actual
@@ -87,7 +94,7 @@ def main():
         listing = out / 'cases.txt'
         # std::quoted reads native path backslashes literally only when escaped.
         listing.write_text('\n'.join(rows) + '\n', encoding='utf-8')
-        run = [str(executable), str(fp.COMPILED), str(backend), str(listing), str(out / 'renders.tsv')]
+        run = [str(executable), str(args.compiled), str(backend), str(listing), str(out / 'renders.tsv')]
         if args.benchmark:
             run.append('--benchmark')
         subprocess.run(run,
