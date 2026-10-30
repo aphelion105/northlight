@@ -3,11 +3,17 @@
 #undef NorthlightFogClouds
 #include "fog_clouds.h"
 #include <cassert>
+#include <cfenv>
 #include <cstring>
 #include <random>
 #include <vector>
 int main(){
     using namespace NorthlightFogClouds;
+    for(int mode:{FE_TONEAREST,FE_DOWNWARD,FE_UPWARD,FE_TOWARDZERO}){
+        assert(std::fesetround(mode)==0);
+        for(unsigned i=0;i<=256;++i)assert((size_t(i)*8191+128)/256==size_t(std::lround(double(i)/256*8191)));
+    }
+    assert(std::fesetround(FE_TONEAREST)==0);
     std::mt19937 rng(2841);
     for(unsigned v=0;v<12;++v){
         std::vector<uint8_t> data(N*N*N);
