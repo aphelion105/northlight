@@ -46,7 +46,7 @@ struct WorldScreenEffectsTest {
         const uint16_t narrow[]={0,1,2,0,2,3};const uint32_t wide[]={0,1,2,0,2,3};
         NorthlightMeshPageKey::Key key;key.lo=123;key.hi=456;key.vertexBytes=sizeof(v);key.indexBytes=sizeof(narrow);
         assert(w.meshStore.beginStaging({key}));w.syncMeshBuffers();const auto id=w.meshStore.staging().uploadBuffer[0];assert(w.meshStore.markWriting(id));
-        NorthlightGeometryMemory::Sample memory{2048ull<<20,1024ull<<20,true};assert(w.acquireMeshPage(id,false,sizeof(narrow),memory));auto* ib16=w.meshBuffers[id].ib;D3DINDEXBUFFER_DESC desc{};assert(SUCCEEDED(ib16->GetDesc(&desc))&&desc.Format==D3DFMT_INDEX16);
+        assert(w.acquireMeshPage(id,false,sizeof(narrow)));auto* ib16=w.meshBuffers[id].ib;D3DINDEXBUFFER_DESC desc{};assert(SUCCEEDED(ib16->GetDesc(&desc))&&desc.Format==D3DFMT_INDEX16);
         void* ptr=nullptr;assert(SUCCEEDED(ib16->Lock(0,sizeof(narrow),&ptr,0))&&ptr);std::memcpy(ptr,narrow,sizeof(narrow));assert(SUCCEEDED(ib16->Unlock()));
         IDirect3DIndexBuffer9* ib32=nullptr;IDirect3DVertexBuffer9* vb=nullptr;IDirect3DSurface9 *target=nullptr,*read=nullptr,*old=nullptr,*oldDepth=nullptr;IDirect3DStateBlock9* state=nullptr;
         assert(SUCCEEDED(d->CreateStateBlock(D3DSBT_ALL,&state))&&SUCCEEDED(state->Capture()));assert(SUCCEEDED(d->GetRenderTarget(0,&old)));d->GetDepthStencilSurface(&oldDepth);
@@ -88,9 +88,9 @@ struct WorldScreenEffectsTest {
         auto key=[](unsigned n){Key k;k.lo=n+1;k.hi=~uint64_t(n);k.vertexBytes=300000;k.indexBytes=100000;return k;};
         std::vector<Key> first,next;for(unsigned n=0;n<64;++n){first.push_back(key(n));next.push_back(key(n+1000));}
         auto create=[&](const std::vector<Key>& keys){
-            assert(w.meshStore.beginStaging(keys));w.syncMeshBuffers();Sample ample{2048*MiB,1024*MiB,true};
+            assert(w.meshStore.beginStaging(keys));w.syncMeshBuffers();
             for(size_t i=0;i<w.meshStore.staging().upload.size();++i){const auto id=w.meshStore.staging().uploadBuffer[i];const auto& k=w.meshStore.staging().keys[w.meshStore.staging().upload[i]];
-                assert(w.meshStore.markWriting(id));assert(w.acquireMeshPage(id,true,k.vertexBytes,ample));assert(w.acquireMeshPage(id,false,k.indexBytes,ample));}
+                assert(w.meshStore.markWriting(id));assert(w.acquireMeshPage(id,true,k.vertexBytes));assert(w.acquireMeshPage(id,false,k.indexBytes));}
             w.meshStore.commit();
         };
         create(first);create({key(999)});assert(w.meshStore.beginStaging(next));w.syncMeshBuffers();
@@ -102,10 +102,10 @@ struct WorldScreenEffectsTest {
         auto oldBudget=uploadBudget(64ull*300000,64ull*100000,MiB,MiB);oldBudget.largest=18*MiB;
         auto newBudget=uploadBudget(vb,ib,MiB,MiB);newBudget.largest=18*MiB;
         bool exact=false;auto sample=w.geometryAdmission(newBudget,&exact);assert(sample.valid&&!admits(sample,oldBudget)&&admits(sample,newBudget));
-        auto original=w.meshStore.table();Sample frame=sample;uint64_t minimum=sample.available;
+        auto original=w.meshStore.table();uint64_t minimum=sample.available;
         for(size_t i=0;i<w.meshStore.staging().upload.size();++i){const auto id=w.meshStore.staging().uploadBuffer[i];const auto& k=w.meshStore.staging().keys[w.meshStore.staging().upload[i]];
             auto* v=w.meshBuffers[id].vb;auto* index=w.meshBuffers[id].ib;assert(v&&index&&w.meshStore.markWriting(id));
-            assert(w.acquireMeshPage(id,true,k.vertexBytes,frame)&&w.acquireMeshPage(id,false,k.indexBytes,frame));assert(v==w.meshBuffers[id].vb&&index==w.meshBuffers[id].ib);
+            assert(w.acquireMeshPage(id,true,k.vertexBytes)&&w.acquireMeshPage(id,false,k.indexBytes));assert(v==w.meshBuffers[id].vb&&index==w.meshBuffers[id].ib);
             void* bytes=nullptr;assert(SUCCEEDED(v->Lock(0,k.vertexBytes,&bytes,0))&&bytes);std::memset(bytes,int(i),k.vertexBytes);assert(SUCCEEDED(v->Unlock()));
             bytes=nullptr;assert(SUCCEEDED(index->Lock(0,k.indexBytes,&bytes,0))&&bytes);std::memset(bytes,int(i),k.indexBytes);assert(SUCCEEDED(index->Unlock()));v->PreLoad();index->PreLoad();
             status.dwLength=sizeof status;assert(GlobalMemoryStatusEx(&status));minimum=std::min<uint64_t>(minimum,status.ullAvailVirtual);assert(minimum>=ProcessReserve+16*MiB);
