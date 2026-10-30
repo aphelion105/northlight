@@ -363,7 +363,10 @@
         try {
             for(auto* lists:{&pointStaticCandidates,&pointTerrainCandidates,&pointLiveCandidates,&pointReplayCandidates})for(auto& list:*lists)list.clear();
             for(size_t i=0;i<batches.size();++i){const auto& batch=batches[i];
-                if(batch.terrain){if(!liveTerrainChunks.count({batch.chunkX,batch.chunkY}))
+                // A visible native chunk can contain only a camera-culled subset.
+                // Keep its cached terrain in the light's shadow volume; the
+                // depth union with native geometry is order-independent.
+                if(batch.terrain){
                     pointAppendCandidates(pointTerrainCandidates,i,pointMask(batch.boundsLow,batch.boundsHigh,clip),faces);}
                 else if(rebuildMask&faces)pointAppendCandidates(pointStaticCandidates,i,pointMask(batch.boundsLow,batch.boundsHigh,clip),rebuildMask&faces);
             }
@@ -412,7 +415,7 @@
             if(rebuildMask&(1u<<face))++pointFacesRebuilt;
             const unsigned faceDraws=pointDraws;
             // Dynamic casters of this frame into the scratch face, plus cached-mesh
-            // terrain chunks not drawn live (terrain is never part of the cache).
+            // terrain, including parts absent from the camera-culled native draws.
             if(!bindFace(pointSlot().scratchSurface,"cube scratch target"))return false;
             UINT terrainBoundPage=UINT_MAX;
             for(size_t index:pointTerrainCandidates[face]){const auto& batch=batches[index];
