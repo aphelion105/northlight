@@ -57,11 +57,27 @@ inline std::array<float,4> heightBounds(const Field& field,unsigned x,unsigned y
 // A nonpositive tag disables clipping for unknown or empty metadata.
 inline std::array<float,3> globalHeightBounds(const Field& field){
     std::array<float,3> out{};
+#if defined(__SSE2__)
+    static_assert(N*N%4==0,"Fog field fills four-texel batches");
+    __m128 lows=_mm_setzero_ps(),highs=lows,heights=lows;const __m128i exponent=_mm_set1_epi32(0x7f800000);
+    for(unsigned i=0;i<N*N;i+=4){
+        __m128 a,b,c,d;std::memcpy(&a,&field.texels[i],16);std::memcpy(&b,&field.texels[i+1],16);std::memcpy(&c,&field.texels[i+2],16);std::memcpy(&d,&field.texels[i+3],16);
+        const auto invalid=[&](__m128 v){return _mm_cmpeq_epi32(_mm_and_si128(_mm_castps_si128(v),exponent),exponent);};
+        if(_mm_movemask_epi8(_mm_or_si128(_mm_or_si128(invalid(a),invalid(b)),_mm_or_si128(invalid(c),invalid(d)))))return {};
+        _MM_TRANSPOSE4_PS(a,b,c,d);
+        const __m128 valid=_mm_cmpgt_ps(d,_mm_setzero_ps());a=_mm_and_ps(a,valid);d=_mm_and_ps(d,valid);
+        lows=_mm_min_ps(lows,a);highs=_mm_max_ps(highs,a);heights=_mm_max_ps(heights,d);
+    }
+    float low[4],high[4],height[4];_mm_storeu_ps(low,lows);_mm_storeu_ps(high,highs);_mm_storeu_ps(height,heights);
+    // Fold from +0 as before, including the signed-zero tie rule.
+    for(unsigned i=0;i<4;++i){out[0]=std::min(out[0],low[i]);out[1]=std::max(out[1],high[i]);out[2]=std::max(out[2],height[i]);}
+#else
     for(const auto& t:field.texels){
         if(!texelFinite(t))return {};
         if(t.height<=0)continue;
         out[0]=std::min(out[0],t.ground);out[1]=std::max(out[1],t.ground);out[2]=std::max(out[2],t.height);
     }
+#endif
     return out;
 }
 inline float smooth(float x){x=std::clamp(x,0.f,1.f);return x*x*(3-2*x);}

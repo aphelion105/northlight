@@ -36,8 +36,9 @@ inline uint8_t normalizedByte(float v){return uint8_t(std::clamp(v,0.f,255.f));}
 // periodic gradient noise, P cells per tile, evaluated at voxel (x,y,z); about -1..1
 struct PerlinAxis {int cell;float fraction,faded;};
 inline PerlinAxis perlinAxis(float p,float scale){p*=scale;const int cell=int(std::floor(p));const float fraction=p-float(cell);return {cell,fraction,fade(fraction)};}
+inline constexpr float G[12][3]={{1,1,0},{-1,1,0},{1,-1,0},{-1,-1,0},{1,0,1},{-1,0,1},{1,0,-1},{-1,0,-1},{0,1,1},{0,-1,1},{0,1,-1},{0,-1,-1}};
 template<bool Cube=false> inline float perlinPrepared(unsigned P,uint32_t seed,unsigned oct,const PerlinAxis& X,const PerlinAxis& Y,const PerlinAxis& Z,const uint8_t* gradients){
-    static const float G[12][3]={{1,1,0},{-1,1,0},{1,-1,0},{-1,-1,0},{1,0,1},{-1,0,1},{1,0,-1},{-1,0,-1},{0,1,1},{0,-1,1},{0,1,-1},{0,-1,-1}};
+
     const int ix=X.cell,iy=Y.cell,iz=Z.cell;const float fx=X.fraction,fy=Y.fraction,fz=Z.fraction;
     float v[8];const bool powerOfTwo=P&&(P&(P-1))==0;const uint8_t* cube=nullptr;
     if constexpr(Cube){const unsigned cx=uint32_t(ix)&(P-1),cy=uint32_t(iy)&(P-1),cz=uint32_t(iz)&(P-1);cube=gradients+8*((oct==0?0:oct==1?64:576)+cx+P*(cy+P*cz));}
@@ -48,6 +49,22 @@ template<bool Cube=false> inline float perlinPrepared(unsigned P,uint32_t seed,u
         v[k]=float(g[0])*(fx-float(dx))+float(g[1])*(fy-float(dy))+float(g[2])*(fz-float(dz));}
     const float u=X.faded,vv=Y.faded,w=Z.faded;
     return lerp(lerp(lerp(v[0],v[1],u),lerp(v[2],v[3],u),vv),lerp(lerp(v[4],v[5],u),lerp(v[6],v[7],u),vv),w);}
+#if defined(__SSE2__)
+// Four aligned generator voxels share one cube at every authored octave.
+inline __m128 perlinFourPrepared(unsigned P,unsigned oct,const PerlinAxis* X,const PerlinAxis& Y,const PerlinAxis& Z,const uint8_t* gradients){
+    const unsigned cell=(oct==0?0:oct==1?64:576)+unsigned(X[0].cell)+P*(unsigned(Y.cell)+P*unsigned(Z.cell));
+    const uint8_t* cube=gradients+8*cell;
+    const __m128 fx=_mm_set_ps(X[3].fraction,X[2].fraction,X[1].fraction,X[0].fraction),u=_mm_set_ps(X[3].faded,X[2].faded,X[1].faded,X[0].faded);
+    __m128 v[8];
+    for(unsigned k=0;k<8;++k){const float* g=G[cube[k]];
+        const __m128 dx=_mm_sub_ps(fx,_mm_set1_ps(float(k&1)));
+        v[k]=_mm_add_ps(_mm_add_ps(_mm_mul_ps(_mm_set1_ps(g[0]),dx),_mm_set1_ps(g[1]*(Y.fraction-float((k>>1)&1)))),_mm_set1_ps(g[2]*(Z.fraction-float((k>>2)&1))));
+    }
+    const auto mix=[](__m128 a,__m128 b,__m128 f){return _mm_add_ps(a,_mm_mul_ps(_mm_sub_ps(b,a),f));};
+    const __m128 y=_mm_set1_ps(Y.faded),z=_mm_set1_ps(Z.faded);
+    return mix(mix(mix(v[0],v[1],u),mix(v[2],v[3],u),y),mix(mix(v[4],v[5],u),mix(v[6],v[7],u),y),z);
+}
+#endif
 inline float perlin(unsigned P,uint32_t seed,unsigned oct,float x,float y,float z,const uint8_t* gradients=nullptr){
     const float scale=float(P)/float(N);return perlinPrepared(P,seed,oct,perlinAxis(x,scale),perlinAxis(y,scale),perlinAxis(z,scale),gradients);}
 // Cache each cell's eight gradient indices while the output is scratch.
@@ -101,7 +118,7 @@ inline std::vector<uint8_t> generate(uint32_t seed=Seed){
     // Reuse the output bytes as fixed-period gradient and feature tables until the final conversion; peak allocation is unchanged.
     std::vector<float> f(size_t(N)*N*N);std::vector<uint8_t> out(f.size());float lo=1e9f,hi=-1e9f;
 #if defined(__SSE2__)
-    static_assert(N%4==0,"Cloud rows fill SIMD extrema lanes");
+    static_assert(N%64==0,"Four-voxel groups stay inside every authored octave cube");
     __m128 minima=_mm_set1_ps(lo),maxima=_mm_set1_ps(hi);
 #endif
     for(unsigned o=0,P=4;o<3;++o,P*=2)for(unsigned z=0;z<P;++z)for(unsigned y=0;y<P;++y)for(unsigned x=0;x<P;++x)out[(o==0?0:o==1?64:576)+x+P*(y+P*z)]=uint8_t(detail::hash(x,y,z,seed+o*0x9e37u)%12);
@@ -109,11 +126,22 @@ inline std::vector<uint8_t> generate(uint32_t seed=Seed){
     detail::prepareWorleyFeatures(out.data()+4672,seed);
     detail::preparePerlinCubes(out.data());
     detail::PerlinAxis axis[3][N];for(unsigned o=0,P=4;o<3;++o,P*=2)for(unsigned i=0;i<N;++i)axis[o][i]=detail::perlinAxis(float(i),float(P)/float(N));
+#if defined(__SSE2__)
+    float perlinFour[4];
+#endif
     for(unsigned z=0;z<N;++z)for(unsigned y=0;y<N;++y)for(unsigned x=0;x<N;++x){
         // Octave 1 shares Worley's 8-cell grid; its scaled coordinates are exact binary fractions.
         const auto& wx=axis[1][x];const auto& wy=axis[1][y];const auto& wz=axis[1][z];
+#if defined(__SSE2__)
+        if((x&3)==0){__m128 values=_mm_setzero_ps();float a=1;unsigned P=4;
+            for(unsigned o=0;o<3;++o,P*=2,a*=.5f)values=_mm_add_ps(values,_mm_mul_ps(_mm_set1_ps(a),detail::perlinFourPrepared(P,o,&axis[o][x],axis[o][y],axis[o][z],out.data()+19072)));
+            _mm_storeu_ps(perlinFour,values);
+        }
+        const float p=perlinFour[x&3],sum=1.75f;
+#else
         float p=0,a=1,sum=0;unsigned P=4;
         for(unsigned o=0;o<3;++o,P*=2,a*=.5f){p+=a*detail::perlinPrepared<true>(P,seed,o,axis[o][x],axis[o][y],axis[o][z],out.data()+19072);sum+=a;}
+#endif
         const float pn=std::clamp(.5f+.5f*(p/sum)*1.4f,0.f,1.f);
         const float w=1.f-std::min(detail::worleyPrepared<true>(8,seed,float(wx.cell)+wx.fraction,float(wy.cell)+wy.fraction,float(wz.cell)+wz.fraction,wx.cell,wy.cell,wz.cell,out.data()+4672),1.f);
         const float v=.6f*pn+.4f*w;
