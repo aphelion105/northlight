@@ -59,6 +59,7 @@ test_client_config.py
 test_client_identity.py
 test_client_image.py
 test_client_latency_diagnostics.py
+test_cloud_dense_pair.py
 test_cloud_noise_admission.py
 test_cloud_noise_worker.py
 test_colour_tent_2d.py
@@ -123,6 +124,7 @@ test_geometry_orbit.py
 test_geometry_retry.py
 test_gi_quality.py
 test_gi_settings_dependencies.py
+test_gi_trig.py
 test_glue_emitters.py
 test_gpu_budget.py
 test_gpu_budget_wiring.py
@@ -146,6 +148,9 @@ test_lamp_daylight.py
 test_legacy_fog_hold.py
 test_legacy_fog_wmo.py
 test_lens_wiring.py
+test_light_direct_constants.py
+test_light_retirement.py
+test_light_scissor_pairs.py
 test_linux_package.py
 test_live_settings.py
 test_live_terrain_gpu.py
@@ -170,6 +175,7 @@ test_m2_visibility.py
 test_material_actor_decode_wave2.py
 test_material_alias_wave2.py
 test_material_batch_bindings.py
+test_material_byte_ops.py
 test_material_capture_targets.py
 test_material_capture_targets_gpu.py
 test_material_constant_spans.py
@@ -245,7 +251,11 @@ test_prepare_native_scene.py
 test_prepare_worker.py
 test_probe_blend.py
 test_probe_blend_equivalence.py
+test_probe_grid_math.py
+test_probe_moment_pack.py
+test_probe_pool_dispatch.py
 test_probe_relight_cache.py
+test_probe_solve_axes.py
 test_probe_sphere.py
 test_probe_texture_upload.py
 test_production_draw_timers.py
@@ -258,6 +268,7 @@ test_query_poll_latency.py
 test_rain_mask.py
 test_raster_reconstruction.py
 test_regional_fog_runner_guards.py
+test_regional_fog_water_mask.py
 test_regional_surface_shadow.py
 test_render_thread_probe.py
 test_renderer_status.py
@@ -327,6 +338,7 @@ test_snapshot_client_range.py
 test_snapshot_lookup_identity.py
 test_snapshot_prediction.py
 test_snapshot_retirement.py
+test_snapshot_wide_decode.py
 test_solar_volume.py
 test_spell_asset_manifest.py
 test_spell_asset_manifest_client.py

@@ -20,7 +20,10 @@ for source,material in (('world_effects.hlsl','Material'),('local_light_effects.
     text=read(source)
     assert f'if({material}.w>=0)' in text
     assert f'{material}.x==2?diffuse.a:tex2D(' in text
-    assert f'if({material}.x==1)alpha*=diffuse.a;' in text
+    assert (f'if({material}.x==1)alpha*=diffuse.a;' in text or
+            f'if({material}.x==1||{material}.x==3)alpha*=diffuse.a;' in text)
+    if f'if({material}.x==3)' in text:
+        assert 'clip(alpha-(rank+.5)/16);' in text
     assert f'clip(alpha-{material}.w);' in text
 assert 'p->cutoff=alpha?(float(ref)+(alphaFunc==D3DCMP_GREATER?.5f:0.f))/255.f:shaderCutoff;p->alphaMode=alphaMode;' in world
 assert 'if(skip_&&material_&&p.cutoff<=-1.f)' in read('replay_draw_state.h')
