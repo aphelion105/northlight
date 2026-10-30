@@ -1,5 +1,5 @@
 {
-  "source_sha256": "0aaf4fa07c3b14496bc0d044e95f7f3c984111d321f2fbaea2075d0d6bbdc6f7",
+  "source_sha256": "eb9df95c4257d04a4f568d6a0c668f693f1c0d9efc6f4a9213cfb02f320423c2",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
   "game_launched": false,
@@ -609,10 +609,10 @@
     },
     "ShadowReplayPS": {
       "target": "ps_3_0",
-      "bytes": 408,
-      "sha256": "0a2858c45db634d9398df14cf4a7f7b35d1d521b44771e7f3de5eb40a193146f",
-      "static_instruction_slots": 14,
-      "temporary_registers": 2,
+      "bytes": 896,
+      "sha256": "9f256d534759f1a54412f7a9d11f0926a373b184225dbf3b5939dd818e06d1dc",
+      "static_instruction_slots": 44,
+      "temporary_registers": 3,
       "samplers": [
         0
       ],
@@ -620,14 +620,15 @@
         "mov": 2,
         "if": 1,
         "texld": 1,
-        "add": 2,
-        "cmp": 2,
-        "mul": 1,
-        "texkill": 1,
+        "mul": 15,
+        "frc": 5,
+        "add": 10,
+        "cmp": 3,
+        "texkill": 2,
         "endif": 1
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "0aaf4fa07c3b14496bc0d044e95f7f3c984111d321f2fbaea2075d0d6bbdc6f7"
+      "source_sha256": "eb9df95c4257d04a4f568d6a0c668f693f1c0d9efc6f4a9213cfb02f320423c2"
     },
     "ShadowUnion": {
       "target": "ps_3_0",

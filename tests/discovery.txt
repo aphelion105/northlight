@@ -78,6 +78,7 @@ test_gi_settings_dependencies.py
 test_gpu_budget.py
 test_gpu_budget_wiring.py
 test_grass_receiving_order.py
+test_grass_shadow_gpu.py
 test_gtao_grazing.py
 test_horizon_haze.py
 test_index_working_set.py

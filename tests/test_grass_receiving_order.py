@@ -22,6 +22,9 @@ effects = renderer[renderer.index('void renderEffects()'):renderer.index('    /*
 assert effects.index('!resolveDepth()') < effects.index('"copy scene"') < effects.index('world->render(') < effects.index('applied = true')
 world = fp.src('world_renderer.h').read_text()
 assert 'if(kind==1&&!detail)return;' in world
+assert 'NorthlightDetailShadow::blendedMaterial(detailPixel,source,destination,operation)' in world
+assert 'alphaMode=alpha?1:3;if(!alpha)shaderCutoff=0;' in world
+assert '((alpha||alphaMode==1||alphaMode==3)&&!p->texture)' in world
 assert 'terrainShaders.count(shader)||captureShaders.count(shader)||wmoShaders.count(shader)' in world
 assert 'if(vc.world||drawWaterVS)return;' in renderer  # native grass is not a fallback UI candidate
 composite = fp.tracked('world_effects.hlsl').read_text().split('float4 WorldComposite(')[1].split('// Separate geometry pass')[0]

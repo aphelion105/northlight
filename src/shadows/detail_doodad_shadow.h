@@ -56,6 +56,19 @@ inline bool shadowFade(const std::vector<std::uint32_t>& input,std::vector<std::
     result[alpha]=(replaceReg(result[alpha],type,color[1])&~Word(15u<<16))|(1u<<16);
     output.swap(result);return true;
 }
+// Stock DetailDoodad PS2/PS3: texture0 alpha times the VS distance fade.
+inline bool pixelShader(std::uint64_t hash){
+    constexpr std::uint64_t hashes[]={0x4c4e8c78e53fb551ULL,0x57d8def2328eda4fULL,0x6ef54f064e5141ddULL,
+        0xa2a90e82b194e2a9ULL,0xa8a0f298ca161763ULL,0xc98a355a07714c0fULL,0xe56e7f7bd7a96a88ULL,
+        0xf2d7a148799ec7d0ULL,0xf40c49694a66147dULL,0xfa3d15fb0c97ba0cULL};
+    for(auto value:hashes)if(value==hash)return true;
+    return false;
+}
+// Only the native straight-alpha material gets a blended shadow exception.
+// Numeric values are the stable D3DBLEND/D3DBLENDOP wire values.
+inline bool blendedMaterial(bool knownPixel,unsigned source,unsigned destination,unsigned operation){
+    return knownPixel&&source==5&&destination==6&&operation==1;
+}
 struct Budget {
     static constexpr unsigned MaxDraws=32,MaxVertices=8192;
     static constexpr std::size_t MaxBytes=512u*1024u;

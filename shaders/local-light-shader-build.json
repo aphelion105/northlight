@@ -1,5 +1,5 @@
 {
-  "source_sha256": "bf777af508d067beec6720ebe0c89032a704a0314c904a5ae232f6ce185e3c56",
+  "source_sha256": "d284be66888370b4786cb73a0e28a7b2f95c6493cefeb17f41eef37b777f60cb",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
   "game_launched": false,
@@ -21,22 +21,23 @@
     },
     "LocalShadowPS": {
       "target": "ps_3_0",
-      "bytes": 576,
-      "sha256": "8e1b93941800b562a027328d2a03ec59f3e5b0ada0c1a2e81010a7f0c61c5f30",
-      "static_instruction_slots": 24,
-      "temporary_registers": 2,
+      "bytes": 1064,
+      "sha256": "1b820bd571a9e554737b047b41de82cad8041d7249bf6ac989b0b3d2a9038852",
+      "static_instruction_slots": 54,
+      "temporary_registers": 3,
       "samplers": [
         0
       ],
       "instructions": {
-        "mul": 3,
-        "add": 5,
+        "mul": 17,
+        "add": 13,
         "mov": 3,
         "dp3": 1,
-        "texkill": 2,
+        "texkill": 3,
         "if": 1,
         "texld": 1,
-        "cmp": 2,
+        "frc": 5,
+        "cmp": 3,
         "endif": 1,
         "rcp": 1
       },

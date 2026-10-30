@@ -167,6 +167,7 @@ struct NameMaskCompositeBind {
 
 // Included after SavedState. Worker never accesses D3D or game memory.
 class WorldRenderer {
+    friend struct GrassShadowTest;
     using V=NorthlightGI::Vec3;
     /* 0.3.137: render-thread commit data built by the GI worker from the same
        immutable plan (see PreparedCommitData). Null fields fall back to the
@@ -436,7 +437,7 @@ private:
     NorthlightHorizonHaze::Constants hazeFrame; /* last composite haze constants, for the celestial veil */
     NorthlightSpellFog::Hold spellFogHold;DWORD spellFogTick=0;bool spellFogResetLogged=false; /* SpellFog: the smoothed per-frame estimate (spell_fog.h) */
     float skyTransmittanceFrame=1; /* CPU estimate of the fog transmittance toward the sun, for the veil */
-    struct FogShader { unsigned major=0;int colorRegister=-1;bool verified=false;NorthlightShadowAlpha::Info alpha; };
+    struct FogShader { unsigned major=0;int colorRegister=-1;bool verified=false,detailDoodad=false;NorthlightShadowAlpha::Info alpha; };
     std::unordered_map<IDirect3DPixelShader9*,FogShader> fogShaders;
     unsigned fogReports=0;
     float projection[3]={1,1,1};
@@ -980,7 +981,7 @@ private:
     LARGE_INTEGER captureFrequency={};
     unsigned terrainCaptureCalls=0,terrainUPCalls=0,replayCaptureCalls=0,unknownCaptureCalls=0;
     NorthlightDetailShadow::Budget detailBudget;
-    unsigned detailCandidates=0,detailMaskRejected=0,detailRangeRejected=0,detailBudgetRejected=0;
+    unsigned detailCandidates=0,detailMaskRejected=0,detailRangeRejected=0,detailBudgetRejected=0,detailBlendRejected=0;
     unsigned rejSmall=0,rejGate=0,rejCut=0,rejBudget=0,rejOther=0; /* task 43: per frame; WORLD CPU capture line */
     std::uint64_t previousCacheHits=0;
     size_t capturedConstantBytes=0,capturedConstantCalls=0;
@@ -2482,8 +2483,8 @@ public:
             acceptedSkinnedTriangleBins[0],acceptedSkinnedTriangleBins[1],acceptedSkinnedTriangleBins[2],acceptedSkinnedTriangleBins[3],acceptedSkinnedTriangleBins[4],acceptedSkinnedTriangleBins[5],smallShadowEarly,smallShadowGI);
         for(auto& n:replayTriangleBins)n=0;for(auto& n:skinnedTriangleBins)n=0;for(auto& n:acceptedTriangleBins)n=0;for(auto& n:acceptedSkinnedTriangleBins)n=0;
         smallShadowEarly=smallShadowGI=0;shadowSelectionDone=false;captureShortfall=false;
-        if(captureSampled)logf("GRASS shadows candidates=%u attempts=%u captured=%u vertices=%u bytes=%zu maskRejected=%u rangeRejected=%u budgetRejected=%u range=64",detailCandidates,detailBudget.attempts,detailBudget.draws,detailBudget.vertices,detailBudget.bytes,detailMaskRejected,detailRangeRejected,detailBudgetRejected);
-        detailBudget={};detailCandidates=detailMaskRejected=detailRangeRejected=detailBudgetRejected=0;
+        if(captureSampled)logf("GRASS shadows candidates=%u attempts=%u captured=%u vertices=%u bytes=%zu maskRejected=%u rangeRejected=%u budgetRejected=%u blendRejected=%u range=64",detailCandidates,detailBudget.attempts,detailBudget.draws,detailBudget.vertices,detailBudget.bytes,detailMaskRejected,detailRangeRejected,detailBudgetRejected,detailBlendRejected);
+        detailBudget={};detailCandidates=detailMaskRejected=detailRangeRejected=detailBudgetRejected=detailBlendRejected=0;
         lastCapturePhaseReads=capturePhases.clockReads+actorPhases.clockReads;clearCaptureDiagnostics();if(captureSampled)++capturePhaseSerial;
         skinnedCandidates=skinnedBlendRejected=skinnedFadeRejected=skinnedProjectionRejected=skinnedBudgetRejected=skinnedSnapshotRejected=skinnedAccepted=0;otherBlendRejected=otherFadeRejected=otherBudgetRejected=otherProjectionRejected=0;
         captureRejectedBytes=acceptedSkinnedBytes=acceptedOtherBytes=0;nearAdmitted=nearRefused=0;nearBytes=0;nearAnchorReady=false;
@@ -2920,7 +2921,7 @@ public:
         {auto old=terrainCoveragePixels.find(shader);if(old!=terrainCoveragePixels.end()){for(auto& variant:old->second)drop(variant.shader);terrainCoveragePixels.erase(old);}}
         if(!shader||FAILED(shader->GetFunction(nullptr,&size))||size<8||size>65536||size%4)return;
         std::vector<uint32_t> code(size/4);if(FAILED(shader->GetFunction(code.data(),&size)))return;
-        FogShader info;info.major=(code[0]>>8)&255;
+        FogShader info;info.major=(code[0]>>8)&255;info.detailDoodad=NorthlightDetailShadow::pixelShader(NorthlightShaderTags::fnv1a(code.data(),size));
         info.colorRegister=NorthlightLegacyFog::ps3FogColorRegister(code.data(),code.size());info.verified=info.colorRegister>=0;info.alpha=NorthlightShadowAlpha::analyze(code.data(),code.size());fogShaders[shader]=info;
     }
     void registerShader(IDirect3DVertexShader9* shader,uint64_t hash){
@@ -3387,10 +3388,25 @@ public:
         // It looks opaque, so reject it here, before the admission, the budget and the near reserve (its weapons and parts too).
         fate.reason=NorthlightShadowFate::Fade;
         {DWORD colorWrite=15;if(SUCCEEDED(d->GetRenderState(D3DRS_COLORWRITEENABLE,&colorWrite))&&(colorWrite&7)==0){if(sample&&priority)++skinnedFadeRejected;if(sample&&!priority)++otherFadeRejected;return;}}
-        // 0.3.215 (task 47): a blended draw is never captured, so reject it before the admission and the budget too; it no longer
-        // counts as a radius-gated, cut or budget-refused draw, feeds the next cut or marks the frame short.
+        // Stock grass is straight-alpha blended even when it writes a cutout
+        // depth pass. Prove its PS before allowing this exception; actors and
+        // unknown/additive vegetation retain the normal conservative rejection.
+        bool detailPixel=false;DWORD blend=0;
+        if(metadata.detailDoodad){
+            NorthlightDrawSnapshot::Ref<IDirect3DPixelShader9> pixel;
+            if(FAILED(d->GetPixelShader(pixel.out()))){++detailMaskRejected;return;}
+            const auto it=fogShaders.find(pixel.p);detailPixel=it!=fogShaders.end()&&it->second.detailDoodad;
+            if(!detailPixel){++detailMaskRejected;return;}
+        }
         fate.reason=NorthlightShadowFate::Blend;
-        {DWORD blend=0;if(FAILED(d->GetRenderState(D3DRS_ALPHABLENDENABLE,&blend))||blend){if(sample&&priority)++skinnedBlendRejected;if(sample&&!priority)++otherBlendRejected;return;}}
+        bool blendAllowed=SUCCEEDED(d->GetRenderState(D3DRS_ALPHABLENDENABLE,&blend));
+        if(blendAllowed&&blend){
+            DWORD source=0,destination=0,operation=0;
+            blendAllowed=metadata.detailDoodad&&SUCCEEDED(d->GetRenderState(D3DRS_SRCBLEND,&source))&&
+                SUCCEEDED(d->GetRenderState(D3DRS_DESTBLEND,&destination))&&SUCCEEDED(d->GetRenderState(D3DRS_BLENDOP,&operation))&&
+                NorthlightDetailShadow::blendedMaterial(detailPixel,source,destination,operation);
+        }
+        if(!blendAllowed){if(metadata.detailDoodad)++detailBlendRejected;if(sample&&priority)++skinnedBlendRejected;if(sample&&!priority)++otherBlendRejected;return;}
         // 0.3.211 (task 31): the palette root once per skinned draw, then the capture admission (radius gate, distance cut)
         // before any budget is spent; near-reserve hits always pass. A draw without a root is never gated or cut.
         float root[3];bool rooted=false;NorthlightCaptureAdmission::Decision admit;
@@ -3432,11 +3448,11 @@ public:
                 alphaMode=unsigned(mask.mode);if(sample)++shaderAlphaCaptured;
             }
         }
-        // Detail must have a proved cutout. Never replay an unknown/blended
-        // grass material as opaque quads. Its native vertex alpha carries fade.
+        // Preserve native alpha-test cutoffs. Pure blended grass uses stable
+        // UV coverage instead of turning a translucent blade into an opaque quad.
         if(metadata.detailDoodad){
-            if(!alpha&&alphaMode!=1){++detailMaskRejected;return;}
-            alphaMode=1;
+            if(!alpha&&!blend){++detailMaskRejected;return;}
+            alphaMode=alpha?1:3;if(!alpha)shaderCutoff=0;
         }
         // Validate the main camera before touching model buffers. Full constant
         // banks are copied only for snapshots that survive range/budget checks.
@@ -3495,7 +3511,7 @@ public:
         },sample?&constantEpochProfile:nullptr,constantSelfCheck,constantSelfCheckState))return;
         if(sample){capturedSM1Draws+=metadata.sm1;capturedRelativeDraws+=usage.relativeFloat;}
         phase.next(CaptureMaterial);fate.reason=NorthlightShadowFate::Material;
-        if(FAILED(d->GetTexture(0,&p->texture))||((alpha||alphaMode==1)&&!p->texture))return;
+        if(FAILED(d->GetTexture(0,&p->texture))||((alpha||alphaMode==1||alphaMode==3)&&!p->texture))return;
         if(FAILED(d->GetSamplerState(0,D3DSAMP_ADDRESSU,&p->addressU))||FAILED(d->GetSamplerState(0,D3DSAMP_ADDRESSV,&p->addressV)))return;
         if(p->addressU<D3DTADDRESS_WRAP||p->addressU>D3DTADDRESS_CLAMP||p->addressV<D3DTADDRESS_WRAP||p->addressV>D3DTADDRESS_CLAMP)return;
         phase.next(CaptureFinalize);
