@@ -49,7 +49,7 @@ import re
 proxy={q.name:q.read_text() for q in [*fp.src('renderer.cpp').parent.glob('*.h'),fp.src('renderer.cpp'),*fp.GENERATED.glob('mirror_*.h'),fp.GENERATED/'extension_raw_methods.inl']}
 guard=proxy['mirror_guard.h'];ctor=guard[guard.index('explicit MirrorGuard('):guard.index('~MirrorGuard()')]
 import generate_mirror_guarded_device
-generated=fp.GENERATED/'mirror_guarded_device.h';before=generated.read_text();generate_mirror_guarded_device.generate();regenerated=generated.read_text();generated.write_text(before)
+generated=fp.GENERATED/'mirror_guarded_device.h';before=generated.read_text();regenerated=generate_mirror_guarded_device.generated()
 checks={
  'no lock_guard/unique_lock on a recursive mutex in src/proxy or generated':not any(re.search(r'(lock_guard|unique_lock)<std::recursive_mutex>',t) for t in proxy.values()),
  'the only recursive mutexes: MirrorGate::mutex and the private lockNs bench lock':sorted((n,l.strip()) for n,t in proxy.items() for l in t.splitlines() if 'std::recursive_mutex ' in l)==
@@ -67,7 +67,7 @@ checks={
    and proxy['renderer.cpp'].count('MirrorGuard lock(resources->gate(),MirrorSite::SwapChain);')==3,
  'tracked buffers report Lock/Unlock/Release':proxy['tracked_buffers.h'].count('if(census)census->noteBuffer();')==3 and proxy['renderer.cpp'].count('&bufferEscape,&mirrorState.gate)')==4,
 }
-# 0.3.182 (D1, r88 §3.3) needles: the seq_cst Dekker as decided, the exit on the recorded mode, no OS
+# 0.3.182 (D1, r88 В§3.3) needles: the seq_cst Dekker as decided, the exit on the recorded mode, no OS
 # barrier, no per-entry GetCurrentThreadId, a compile-time switch only, the counterfactuals off.
 dtor=guard[guard.index('~MirrorGuard()'):guard.index('MirrorGuard(const MirrorGuard&)=delete;')]
 owner=guard[guard.index('OwnerEntry enterOwner(){'):guard.index('void exitOwner()')];ownerReal=owner[owner.index('#else'):owner.index('#endif')]
