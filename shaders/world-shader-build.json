@@ -1,40 +1,41 @@
 {
   "bump_include_sha256": "1a947edc7a4bc83c56e6adfb05bdb5d7e2a6fca4e4dba83ede009d514c20c3f5",
-  "source_sha256": "359cb046a4d48c4353e029edc5536d01a59edcb2233ae22800981ce5c7840648",
+  "source_sha256": "77a3956a9d2846b8dcde8e1ca4525bee1fa7c57cbb99f7c5b8b9754e173fbe25",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
   "game_launched": false,
   "shaders": {
     "WorldNormals": {
       "target": "ps_3_0",
-      "bytes": 4952,
-      "sha256": "625cd9190b0c3a3abc43b5622a1fe648ca1932298ec1be43466ddb3506292062",
-      "static_instruction_slots": 305,
-      "temporary_registers": 23,
+      "bytes": 5544,
+      "sha256": "fa93ecb62248af773a3b54335a322cccf5818b29ddfc74322898709368285662",
+      "static_instruction_slots": 346,
+      "temporary_registers": 22,
       "samplers": [
         0,
-        1
+        1,
+        13
       ],
       "instructions": {
-        "mul": 70,
+        "mul": 76,
         "frc": 3,
-        "add": 79,
+        "add": 87,
         "max": 8,
-        "mov": 27,
-        "min": 8,
-        "texldl": 7,
+        "mov": 29,
+        "min": 9,
+        "texldl": 8,
         "rcp": 13,
-        "cmp": 34,
-        "if": 3,
-        "else": 3,
+        "cmp": 39,
+        "if": 6,
+        "else": 6,
+        "dp3": 15,
+        "rsq": 6,
+        "endif": 6,
         "rep": 3,
-        "dp3": 14,
-        "rsq": 5,
-        "endrep": 3,
-        "endif": 3
+        "endrep": 3
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "359cb046a4d48c4353e029edc5536d01a59edcb2233ae22800981ce5c7840648"
+      "source_sha256": "77a3956a9d2846b8dcde8e1ca4525bee1fa7c57cbb99f7c5b8b9754e173fbe25"
     },
     "WorldLighting": {
       "target": "ps_3_0",

@@ -2531,7 +2531,8 @@ public:
     void setMaterialProfiler(NorthlightMaterialProfile* profile){materialProfile=profile;}
     NorthlightDrawSnapshot::Frame& captureSources(){return replaySnapshots;}
     const NorthlightQuality::Settings& surfaceSettings()const{return quality;}
-    IDirect3DTexture9* materialDetail=nullptr,*materialOcclusion=nullptr;float materialBumpGain=0,materialBumpDistance=48,materialOcclusionDistance=8;
+    IDirect3DTexture9* materialDetail=nullptr,*materialOcclusion=nullptr,*modelNormals=nullptr;float materialBumpGain=0,materialBumpDistance=48,materialOcclusionDistance=8;
+    void setModelNormals(IDirect3DTexture9* texture){modelNormals=texture;}
     void setMaterialDetail(IDirect3DTexture9* texture,float gain,float distance,IDirect3DTexture9* occlusion=nullptr,float occlusionDistance=8.f){materialDetail=texture;materialBumpGain=gain;materialBumpDistance=distance;materialOcclusion=occlusion;materialOcclusionDistance=occlusionDistance;}
     void materialLight(float* light,float* inverseView=nullptr)const{
         if(inverseView)std::memcpy(inverseView,context.inverseView,48);
@@ -4422,7 +4423,10 @@ public:
         d->SetRenderState(D3DRS_COLORWRITEENABLE1,15);
         if(!check(d->SetRenderTarget(0,normalSurface),"world normals target")||
            !check(d->SetRenderTarget(1,c[30][1]>0?temporalDepthSurface[temporalIndex]:nullptr),"current distance target"))return false;
+        const float modelNormalInfo[]={modelNormals?1.f:0.f,0,0,0};d->SetPixelShaderConstantF(79,modelNormalInfo,1);
+        d->SetTexture(13,modelNormals);d->SetSamplerState(13,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(13,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);d->SetSamplerState(13,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(13,D3DSAMP_MAGFILTER,D3DTEXF_POINT);d->SetSamplerState(13,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(13,D3DSAMP_SRGBTEXTURE,FALSE);
         d->SetPixelShader(normalsPS);if(!check(quad(w/2,h/2),"world normals pass"))return false;
+        d->SetTexture(13,nullptr);
         if(!check(d->SetRenderTarget(1,nullptr),"current distance unbind"))return false;
         d->SetTexture(14,normalBuffer);d->SetSamplerState(14,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(14,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);d->SetSamplerState(14,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(14,D3DSAMP_MAGFILTER,D3DTEXF_POINT);d->SetSamplerState(14,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(14,D3DSAMP_SRGBTEXTURE,FALSE);
         // 0.3.209 (task 29): actor visibility (half res, r sun, g moon). Per drawn source with an actor map, first its 64x64 tile minimum (ActorTiles in

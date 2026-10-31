@@ -372,9 +372,19 @@ float3 tangentAxis(float3 p,float3 a,float3 b,float3 a1,float3 b1,float2 c,float
     float gap=colourGap.x-colourGap.y;
     return (abs(gap)>.05?gap<0:abs(b1.z-p.z)<abs(a1.z-p.z))?db:da;
 }
+sampler2D ModelNormals : register(s13); // skinned view normal.xyz and linear depth.w; WorldNormals only
+float4 ModelNormalInfo : register(c79);
 float4 worldNormalValue(float2 uv) {
     float2 c=depthUV(uv);float d=normalizedDepth(c);float z=viewDistance(d);
     if(d>=.99999)return float4(0,0,1,z);
+    [branch]if(ModelNormalInfo.x>.5){
+        float4 model=tex2Dlod(ModelNormals,float4(c,0,0));
+        float length2=dot(model.xyz,model.xyz);
+        [branch]if(model.w>0&&abs(model.w-z)<max(.006,z*.0015)&&length2>.5&&length2<1.5){
+            float3 n=normalize(model.xyz);
+            return float4(n.x*InverseView[0].xyz+n.y*InverseView[1].xyz+n.z*InverseView[2].xyz,1);
+        }
+    }
     float3 p=viewPositionDistance(c,z);
     // lo/hi (the valid depth texel centre range) are recomputed where used: the pass is at its 32-register limit.
     // Baseline: 1.5 world units projected to pixels at this distance, 2..40 px.

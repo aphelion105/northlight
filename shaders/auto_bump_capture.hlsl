@@ -10,6 +10,12 @@ float4 ParallaxControl:register(c22);
 float4 OcclusionControl:register(c23); // shadow strength, shadow steps, cavity strength, near range (0 disables)
 float4 OcclusionLight:register(c24); // view direction, 1 sun / 2 moon / 0 inactive
 float4 CaptureToWorld[3]:register(c26); // current camera's view vectors to world
+// Independent of material detail: native coverage and the skinned view normal.
+float4 ModelNormalCapture(float3 normal:TEXCOORD5,float4 p:TEXCOORD7,float4 nativeColor:COLOR0):COLOR0 {
+    clip(BumpCapture.y-p.w);
+    clip(lerp(1,nativeColor.a,BumpCapture.w)-BumpCapture.z);
+    return float4(normalize(normal),p.w);
+}
 #ifdef NORTHLIGHT_SHARED_POM
 float4 SharedPomControl:register(c25);
 #define POM_ID_INPUT ,float primitive:TEXCOORD6

@@ -45,34 +45,37 @@ inline bool alphaSlice(const Word* code,const NorthlightTerrainCoverage::Program
 }
 // Append normal/occlusion capture to the coverage slice. Original constants,
 // UVs and samplers keep their ABI; native lighting is not a capture output.
-inline bool patch(const Word* code,size_t count,std::vector<Word>& out,unsigned& control,bool alpha=true,bool shared=false){
-    const auto* prefix=reinterpret_cast<const Word*>(shared?kBumpSharedNativeShader:kBumpNativeShader);const size_t length=shared?sizeof(kBumpSharedNativeShader)/sizeof(DWORD):sizeof(kBumpNativeShader)/sizeof(DWORD);
+inline bool patch(const Word* code,size_t count,std::vector<Word>& out,unsigned& control,bool alpha=true,bool shared=false,bool receiver=false){
+    const auto* prefix=reinterpret_cast<const Word*>(receiver?kModelNormalCaptureShader:shared?kBumpSharedNativeShader:kBumpNativeShader);const size_t length=receiver?sizeof(kModelNormalCaptureShader)/sizeof(DWORD):shared?sizeof(kBumpSharedNativeShader)/sizeof(DWORD):sizeof(kBumpNativeShader)/sizeof(DWORD);
     NorthlightTerrainCoverage::Program native,capture;if(!NorthlightTerrainCoverage::analyse(code,count,native)||native.vertex||!NorthlightTerrainCoverage::analyse(prefix,length,capture)||native.slots+capture.slots>512)return false;
     std::vector<Word> sliced;if(alphaSlice(code,native,alpha,sliced)){code=sliced.data();count=sliced.size();native={};if(!NorthlightTerrainCoverage::analyse(code,count,native))return false;}
     int uv=-1;bool samplers[16]={},integers[16]={};
     for(const auto& op:native.ops){
-        if(op.code==31&&regType(code[op.at+2])==1&&(code[op.at+1]&15)==5){unsigned index=(code[op.at+1]>>16)&15;if(index==7||(shared&&index==6))return false;if(!index)uv=int(regIndex(code[op.at+2]));}
+        if(op.code==31&&regType(code[op.at+2])==1&&(code[op.at+1]&15)==5){unsigned index=(code[op.at+1]>>16)&15;if(index==7||(shared&&index==6)||(receiver&&index==5))return false;if(!index)uv=int(regIndex(code[op.at+2]));}
         for(unsigned i=op.code==31?2:1;i<=op.size;++i){if((op.code==81||op.code==48||op.code==47)&&i>1)break;Word t=code[op.at+i];unsigned type=regType(t),r=regIndex(t);if(type==10&&r<16)samplers[r]=true;if(type==7&&r<16)integers[r]=true;if(type==9||(type==8&&r))return false;}}
-    if(uv<0||samplers[14])return false;
+    if(uv<0||(!receiver&&samplers[14]))return false;
     unsigned varying=0;while(varying<10&&native.inputs[varying])++varying;if(varying==10)return false;
     native.inputs[varying]=true;unsigned primitive=0;if(shared){while(primitive<10&&native.inputs[primitive])++primitive;if(primitive==10)return false;}
+    unsigned normal=0;if(receiver){while(normal<10&&native.inputs[normal])++normal;if(normal==10)return false;}
     auto temp=[&](){unsigned r=0;while(r<32&&native.temps[r])++r;if(r<32)native.temps[r]=true;return r;};
     const unsigned color=temp();if(color==32)return false;
-    const unsigned bankCount=9; // controls, shared UV identity, and view-to-world rows
+    const unsigned bankCount=receiver?1:9; // receiver control, or material controls and view-to-world rows
     control=128;for(;;){bool free=true;for(unsigned i=0;i<bankCount;++i)free&=!native.constants[control+i];if(free)break;if(++control>192-bankCount)return false;}
     for(unsigned i=0;i<bankCount;++i)native.constants[control+i]=true;
     unsigned constants[256],temps[32],inputs[16],integerMap[16];for(unsigned i=0;i<256;++i)constants[i]=i;std::fill(std::begin(temps),std::end(temps),32u);std::fill(std::begin(inputs),std::end(inputs),16u);std::fill(std::begin(integerMap),std::end(integerMap),16u);
     for(unsigned i=0;i<bankCount;++i)constants[20+i]=control+i;
     unsigned nativeColorInput=16;
     for(size_t at=1;at+1<length;){unsigned op=prefix[at]&65535,n=op==65534?(prefix[at]>>16)&32767:(prefix[at]>>24)&15;
-        if(op==31&&regType(prefix[at+2])==1){unsigned semantic=prefix[at+1]&15,index=(prefix[at+1]>>16)&15,r=regIndex(prefix[at+2]);if(semantic==10)nativeColorInput=r;else if(semantic==5)inputs[r]=index==7?varying:index==6?primitive:unsigned(uv);else return false;}
+        if(op==31&&regType(prefix[at+2])==1){unsigned semantic=prefix[at+1]&15,index=(prefix[at+1]>>16)&15,r=regIndex(prefix[at+2]);if(semantic==10)nativeColorInput=r;else if(semantic==5)inputs[r]=index==7?varying:index==6?primitive:receiver&&index==5?normal:unsigned(uv);else return false;}
         if(op==81){unsigned c=192;while(c<256&&native.constants[c])++c;if(c==256)return false;native.constants[c]=true;constants[regIndex(prefix[at+1])]=c;}
         if(op!=65534)for(unsigned i=op==31?2:1;i<=n;++i){if((op==81||op==48||op==47)&&i>1)break;Word t=prefix[at+i];if(regType(t)==0&&temps[regIndex(t)]==32){unsigned r=temp();if(r==32)return false;temps[regIndex(t)]=r;}if(regType(t)==7&&integerMap[regIndex(t)]==16){unsigned r=0;while(r<16&&integers[r])++r;if(r==16)return false;integers[r]=true;integerMap[regIndex(t)]=r;}}at+=n+1;}
     if(nativeColorInput==16)return false;
     auto mapped=[&](Word t){unsigned type=regType(t),r=regIndex(t);if(type==0)return replaceReg(t,0,temps[r]);if(type==1)return replaceReg(t,r==nativeColorInput?0:1,r==nativeColorInput?color:inputs[r]);if(type==2)return replaceReg(t,2,constants[r]);if(type==7)return replaceReg(t,7,integerMap[r]);if(type==10)return replaceReg(t,10,14);return t;};
     out.assign(code,code+count-1);
     for(const auto& op:native.ops)if(op.code!=65534&&op.code!=31&&op.code!=81&&op.code!=48&&op.code!=47)for(unsigned i=1;i<=op.size;++i){Word& t=out[op.at+i];if(regType(t)==8&&regIndex(t)==0)t=replaceReg(t,0,color);}
-    out.insert(out.begin()+native.declEnd,{0x0200001fu,0x80070005u,dst(1,varying),0x0200001fu,0x90000000u,dst(10,14)});
+    out.insert(out.begin()+native.declEnd,{0x0200001fu,0x80070005u,dst(1,varying)});
+    if(receiver)out.insert(out.begin()+native.declEnd,{0x0200001fu,0x80050005u,dst(1,normal,7)});
+    else out.insert(out.begin()+native.declEnd,{0x0200001fu,0x90000000u,dst(10,14)});
     if(shared)out.insert(out.begin()+native.declEnd,{0x0200001fu,0x80060005u,dst(1,primitive,1)});
     // Opaque coverage needs no original alpha; define all lanes even when the
     // native program had no live output. The capture's alpha selector is zero.
