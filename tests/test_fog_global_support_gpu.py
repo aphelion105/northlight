@@ -2,11 +2,14 @@
 # northlight-test: requires=windows-exe,zig,windows-gpu manual
 """Exact old/new fog support clipping at FP16 and FP32; authored standalone inputs."""
 from pathlib import Path
-import sys,os,subprocess,json,struct,argparse,shutil
+import sys,os,subprocess,json,struct,argparse,shutil,hashlib
 repo=Path(__file__).resolve().parents[1];sys.path[:0]=[str(repo),str(repo/'scripts/shaders')]
 import northlight_paths as fp
 from shader_compiler import Compiler,validate_assembly
-p=argparse.ArgumentParser();p.add_argument('name',nargs='?',default='fog-global-support');p.add_argument('--reference',type=Path);p.add_argument('--entries',nargs='+',default=['WorldFog','WorldFogActor','FogClouds','FogCloudsActor']);p.add_argument('--cases',nargs='+',type=int,default=[0,3,4,7,10,12,13,14,15,16]);a=p.parse_args()
+from windows_gpu_guard import processes
+p=argparse.ArgumentParser();p.add_argument('name',nargs='?',default='fog-global-support');p.add_argument('--reference',type=Path);p.add_argument('--baseline-ref',default='51f0107');p.add_argument('--backend',type=Path);p.add_argument('--entries',nargs='+',default=['WorldFog','WorldFogActor','FogClouds','FogCloudsActor']);p.add_argument('--cases',nargs='+',type=int,default=[0,3,4,7,10,12,13,14,15,16]);a=p.parse_args()
+backend=a.backend or fp.client_root()/'renderer-backends/dxvk/dxvk_d3d9.dll'
+processes()
 root=fp.output_dir();out=root/a.name;out.mkdir(exist_ok=True)
 fixture=root/'fixture';fixture.mkdir(exist_ok=True);prefix=str(fixture/'capture-1-')
 def image(name,w,h,fmt,bpp,pixels):Path(prefix+name+'.fgr').write_bytes(struct.pack('<5I',0x31524746,w,h,fmt,bpp)+pixels)
@@ -17,14 +20,14 @@ if not Path(prefix+'constants.f32').exists():
  image('scene',512,512,21,4,bytes([128,128,128,255])*512*512)
  image('depth',512,512,114,4,struct.pack('<f',.999)*512*512)
 current=(repo/'shaders/world_effects.hlsl').read_bytes()
-reference=a.reference.read_bytes() if a.reference else subprocess.check_output(['git','show','51f0107:shaders/world_effects.hlsl'],cwd=repo)
+reference=a.reference.read_bytes() if a.reference else subprocess.check_output(['git','show',a.baseline_ref+':shaders/world_effects.hlsl'],cwd=repo)
 os.environ['NORTHLIGHT_OUT']=str(out/'compiler');compiler=Compiler(allow_compatible_binary=True);stats={}
 for label,data in [('old',reference),('new',current)]:
  folder=out/label;folder.mkdir(exist_ok=True);(folder/'world_effects.hlsl').write_bytes(data);shutil.copyfile(repo/'shaders/auto_bump_normal.hlsl',folder/'auto_bump_normal.hlsl')
  for entry in a.entries:
   binary=folder/(entry+'.bin');compile_entry=entry.replace('Cached','') if label=='old' and entry.endswith('Cached') else entry;compiler.compile(folder/'world_effects.hlsl',compile_entry,'ps_3_0',binary);stats[label+'/'+entry]=validate_assembly(Path(str(binary)+'.asm'),'ps_3_0',slot_limit=800 if entry.endswith('Cached') and label=='new' else 600 if 'Actor' in entry else 512)
 exe=root/'world-mini.exe'
-if not exe.exists():
+if not exe.exists() or exe.stat().st_mtime<max(Path(__file__).stat().st_mtime,(repo/'tests/world_pass_gpu.cpp').stat().st_mtime):
  cpp=(repo/'tests/world_pass_gpu.cpp').read_text();cpp=cpp.replace('#include "removal_distance_gpu.cpp"','#include "'+(repo/'tests/removal_distance_gpu.cpp').as_posix()+'"')
  cpp=cpp.replace('mode=="FogClouds"','(mode.find("FogClouds")==0)')
  cpp=cpp.replace('scenario<=12','scenario<=16')
@@ -44,14 +47,11 @@ if not exe.exists():
  assert before in cpp;cpp=cpp.replace(before,after)
  source=root/'world-mini.cpp';source.write_bytes(cpp.encode());subprocess.run([str(fp.zig()),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std=c++17',*fp.test_include_flags(),str(source),'-luser32','-o',str(exe)],env=fp.zig_env(),check=True)
 rows=[]
-assert not subprocess.run(['powershell','-NoProfile','-Command','Get-Process Wow,WowClient,WowClient64 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id'],capture_output=True,text=True).stdout.strip()
-
-import importlib.util
-spec=importlib.util.spec_from_file_location('guard',fp.TESTS/'validate_native_scene_trace.py');guard=importlib.util.module_from_spec(spec);spec.loader.exec_module(guard)
+processes()
 for entry in a.entries:
  for bits in [16,32]:
   for case in a.cases:
-   guard.processes();env=fp.zig_env();env.update(DXVK_LOG_PATH=str(out),DXVK_STATE_CACHE_PATH=str(out),DXVK_SHADER_CACHE_PATH=str(out),NORTHLIGHT_FOG_TEST_BITS=str(bits))
-   r=subprocess.run([str(exe),prefix,str(out/'old'/(entry+'.bin')),str(out/'new'/(entry+'.bin')),entry,str(fp.client_root()/'renderer-backends/dxvk/dxvk_d3d9.dll'),str(case)],cwd=out,env=env,capture_output=True,text=True,timeout=120)
+   processes();env=fp.zig_env();env.update(DXVK_LOG_PATH=str(out),DXVK_STATE_CACHE_PATH=str(out),DXVK_SHADER_CACHE_PATH=str(out),NORTHLIGHT_FOG_TEST_BITS=str(bits))
+   r=subprocess.run([str(exe),prefix,str(out/'old'/(entry+'.bin')),str(out/'new'/(entry+'.bin')),entry,str(backend.resolve()),str(case)],cwd=out,env=env,capture_output=True,text=True,timeout=120)
    (out/(entry+'-'+str(bits)+'-'+str(case)+'.log')).write_text(r.stdout+r.stderr);r.check_returncode();row=json.loads(next(line for line in r.stdout.splitlines() if line.startswith('{')));assert row['changed']==0 and row['nonfinite']==0;row['bits']=bits;row['scenario']=case;rows.append(row);print(entry,bits,case,'PASS ratio',row['ratio'],flush=True)
-(out/'validation.json').write_text(json.dumps({'pass':True,'stats':stats,'rows':rows,'authored_inputs':True,'game_launched':False},indent=2))
+(out/'validation.json').write_text(json.dumps({'pass':True,'stats':stats,'rows':rows,'authored_inputs':True,'game_launched':False,'reference_source_sha256':hashlib.sha256(reference).hexdigest(),'candidate_source_sha256':hashlib.sha256(current).hexdigest(),'backend_sha256':hashlib.sha256(backend.read_bytes()).hexdigest()},indent=2))
