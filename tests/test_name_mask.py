@@ -221,7 +221,7 @@ fin=r[r.index('NAMEMASK frame=')-300:r.index('NAMEMASK frame=')+1800]
 checks['frame end: one sampled NAMEMASK line (marked, unmarked, composite, depthFormat, stencil), state reset after it']=(
     'marked=%u runs=%u unmarked=%u composite=%d depthFormat=%lu stencil=%d' in fin and fin.index('NAMEMASK frame=')<fin.index('nameMask.endFrame();'))
 checks['one-shot lines: depth upgrade (or why not), stencil in the game, a world depth without stencil (capped), failed clear']=all(x in r for x in ('STENCIL depth upgraded D24X8->D24S8','STENCIL depth upgrade unavailable','NAMEMASK disabled: the game draws with stencil enabled','(no stencil bits: no name mask while this surface is the world depth)','NAMEMASK disabled: stencil clear failed'))
-checks['release forgets the depth identities; the setting is read once at device creation']=('maskFormatFor=nullptr;maskFormatValue=0;maskStencil=false;maskDsId=nullptr;' in r[r.index('void releaseResources()'):][:400]
+checks['release forgets the depth identities; the setting is read once at device creation']=('maskFormatFor=nullptr;maskFormatValue=0;maskStencil=false;maskDsId=nullptr;' in r[r.index('void releaseResources()'):r.index('bool error(HRESULT')]
     and 'nameMask.debug=world->nameMaskDebug();' in r)
 # Each key's own entry (name, member, range, presets) and initialiser; Keys[] order and origin[] length belong to test_quality_docs.py.
 checks['quality keys: NameMask 0..1 presets 1/1/1, NameMaskDebug 0..1 presets 0/0/0']=(

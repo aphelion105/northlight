@@ -100,6 +100,8 @@ static void ensureRootPath(){
 static FILE* logFile;
 static LONG deviceSerial=0,liveDevices=0;
 static NorthlightBackend::Kind selectedBackend=NorthlightBackend::Kind::Legacy;
+static std::string materialCacheBackendIdentity;
+static bool materialCacheAsyncReadback=false;
 // Called once, under logLock, before the first open truncates the log.
 struct WindowsLogFiles {
     DWORD error=0;
@@ -2751,7 +2753,7 @@ public:
         catch(const std::exception& e){logf("SETTINGS unavailable: %s",e.what());}
         gpuProfile=std::make_unique<NorthlightGpuProfile>(ext);gpuSceneProfile=std::make_unique<NorthlightGpuProfile>(ext,"GPU frame",2);materialProfile=std::make_unique<NorthlightMaterialProfile>(ext);gpuTimer=std::make_unique<NorthlightGpuFrameTimer>(ext); gpuScene=std::make_shared<NorthlightGpuScene::Scene>(ext);world=std::make_unique<WorldRenderer>(ext,gpuScene);world->setEffectsBuckets(&effectsBuckets);world->setMaterialProfiler(materialProfile.get());
         surface=std::make_unique<NorthlightSurfaceRenderer>(ext);
-        autoBump=std::make_unique<NorthlightAutoBump>(ext,gpuScene);autoBump->setGeometryTracking(&NorthlightTrackedBuffers::identity,&NorthlightTrackedBuffers::version,&NorthlightTrackedBuffers::captureMetadata);autoBump->configure(world->surfaceSettings());
+        autoBump=std::make_unique<NorthlightAutoBump>(ext,gpuScene);if(rootPath[0])autoBump->setPersistentCache(std::filesystem::path(rootPath)/L"Cache"/L"Northlight"/L"Materials-v1",NorthlightBackend::name(selectedBackend),materialCacheBackendIdentity.c_str(),materialCacheAsyncReadback);autoBump->setGeometryTracking(&NorthlightTrackedBuffers::identity,&NorthlightTrackedBuffers::version,&NorthlightTrackedBuffers::captureMetadata);autoBump->configure(world->surfaceSettings());
         world->captureSources().setIdentityProvider(&NorthlightTrackedBuffers::identity);
         autoBump->setVertexIdentity(this,[](void* context,IDirect3DVertexShader9* source,uint64_t& hash,unsigned& family){auto* self=static_cast<Device*>(context);const auto found=self->vsHashes.find(source);if(found==self->vsHashes.end())return false;hash=found->second;family=m2ShaderFamily(hash);return true;});
         autoBump->setProfiler(materialProfile.get());
@@ -3609,7 +3611,7 @@ static void configureDxvkCompatibility(const NorthlightBackendLoader::Inspection
         const BOOL set=SetEnvironmentVariableA("DXVK_CONFIG",combined.c_str());
         // DXVK 1.10.x reads only dxvk.conf/DXVK_CONFIG_FILE: the variable is then inert.
         // 0.3.189: DXVK 2.x reads cachedDynamicBuffers, >=3.0 cachedWriteOnlyBuffers; each ignores the other's key.
-        logf("DXVK compatibility process defaults applied=%u vendor=1002 cachedDynamicBuffers(2.x)=True cachedWriteOnlyBuffers(>=3.0)=True explicitInlineOverrides=%u dxvk=%s DXVK_CONFIG supported=%u",
+        logf("DXVK compatibility process defaults applied=%u vendor=1002 cachedDynamicBuffers(2.x)=True cachedWriteOnlyBuffers(>=3.0)=True descriptorHeap=False explicitInlineOverrides=%u dxvk=%s DXVK_CONFIG supported=%u",
              unsigned(set!=FALSE),unsigned(!existing.empty()),info.dxvkVersion.empty()?"unknown":info.dxvkVersion.c_str(),unsigned(info.dxvkConfigEnv));
         if(disableFse)logf("DXVK3 engine-name FSE forced=False process-config-applied=%u",unsigned(set!=FALSE));
     }catch(...){logf("DXVK compatibility defaults unavailable: allocation failure");}
@@ -3759,6 +3761,8 @@ static HMODULE backend() {
     logf("BACKEND selected=%ls runtime=%s rules=%s BackendPath=%ls fallback=%u",module?last.path.c_str():L"(none)",
          last.info.dxvk?(last.info.dxvkVersion.empty()?"DXVK (unknown version)":last.info.dxvkVersion.c_str()):"non-DXVK",NorthlightBackend::name(selectedBackend),overridden.empty()?L"(default)":overridden.c_str(),unsigned(result.fallback));
     // 0.3.192 (DXVK3): the NOOVERWRITE read-back flag only for the backend that actually loaded and is DXVK >= 3 (see upload_lock.h).
+    materialCacheBackendIdentity=last.info.sha256;
+    materialCacheAsyncReadback=module&&!result.fallback&&last.info.dxvk&&(last.info.dxvkVersion=="v3.1.1"||last.info.dxvkVersion=="v2.7.1");
     NorthlightUpload::ReadBackNoOverwrite.store(module&&!result.fallback&&last.info.dxvk&&NorthlightBackend::dxvkMajor(last.info.dxvkVersion)>=3,std::memory_order_relaxed);
     logf("LOCK METER read-back lock flags readBackLock=0x%x (NOOVERWRITE only on a loaded DXVK >= 3 backend)",unsigned(NorthlightUpload::readBackLock()));
 #ifndef NORTHLIGHT_SOURCE_ID
