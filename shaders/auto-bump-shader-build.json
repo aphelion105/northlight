@@ -5,7 +5,7 @@
     "auto_parallax_prefix.hlsl": "5a5a6f29c2143e998602e1ae0d2687faf2158bb5db09a61b63345f238cefb6cb",
     "auto_material_height.hlsl": "7f245a9e89025f60ac03b9c5b802f9b6707207a32d3b6e4d2ac94b98e4ef836a"
   },
-  "source_sha256": "87bee7b33f7d5bde4dad7dae8b0cc2681b1dc5c5e43ea9925dae0b6334e8e31d",
+  "source_sha256": "7480e958536c205894873416f16074d05cf19b54352d3db238c9760a0d03804d",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
   "shaders": {
@@ -865,6 +865,20 @@
         "else": 1,
         "endif": 1,
         "mad": 2
+      }
+    },
+    "ModelNormalCapture": {
+      "sha256": "da3ef96c1f5fcc363b30754367fe15f119d893cdda6a69a89d98ecc4692086f0",
+      "static_instruction_slots": 13,
+      "temporary_registers": 1,
+      "samplers": [],
+      "instructions": {
+        "add": 4,
+        "texkill": 2,
+        "mul": 2,
+        "dp3": 1,
+        "rsq": 1,
+        "mov": 1
       }
     }
   },
