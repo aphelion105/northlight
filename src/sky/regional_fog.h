@@ -150,7 +150,8 @@ inline float wetness(const Region& region,float x,float y,float ground,float& su
         if(!w.mask||std::fabs(ground-w.height)>8)continue;
         float dx=std::max({float(w.x-ChunkSize)-x,0.f,x-w.x}),dy=std::max({float(w.y-ChunkSize)-y,0.f,y-w.y});
         if(dx*dx+dy*dy>=best)continue;
-        for(unsigned row=0;row<8;++row)if(const unsigned bits=unsigned(w.mask>>(row*8))&0xff)for(unsigned col=0;col<8;++col)if(bits&(1u<<col)){
+        for(uint64_t bits=w.mask;bits;bits&=bits-1){
+            const unsigned cell=unsigned(__builtin_ctzll(bits)),row=cell/8,col=cell%8;
             float highX=float(w.x-row*Unit),lowX=float(w.x-(row+1)*Unit),highY=float(w.y-col*Unit),lowY=float(w.y-(col+1)*Unit);
             float a=std::max({lowX-x,0.f,x-highX}),b=std::max({lowY-y,0.f,y-highY});float distance=a*a+b*b;
             if(distance<best){best=distance;if(distance==0){surface=std::max(ground,w.height);return 1;}}

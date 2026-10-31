@@ -3585,8 +3585,7 @@ public:
              if(fx>=0&&fy>=0&&fx<NorthlightRegionalFog::N-1&&fy<NorthlightRegionalFog::N-1){const unsigned k=unsigned(fy)*NorthlightRegionalFog::N+unsigned(fx);const auto& t=f.texels[k];
                  if(t.height>0)denseTarget=std::clamp((t.height-2.5f)/2.5f,0.f,1.f);
                  if(t.height>0)lushTarget=f.lush[k]?1.f:0.f;}}
-         cloudDenseZone=NorthlightFogClouds::smoothDense(cloudDenseZone,denseTarget,cloudDt);
-         cloudLush=NorthlightFogClouds::smoothDense(cloudLush,lushTarget,cloudDt);}
+         NorthlightFogClouds::smoothDensePair(cloudDenseZone,denseTarget,cloudLush,lushTarget,cloudDt);}
         const float denseDamp=NorthlightFogClouds::denseZoneDamp(cloudDenseZone);
         const float airFloor=.0017f+wx.airExtinction()*denseDamp; /* the shared outdoor air extinction (the shader's old literal .0017) plus the rain's extra (thinned in dense zones): exactly .0017f when dry */
         a.airFloor=airFloor;

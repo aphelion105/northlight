@@ -69,18 +69,37 @@ inline float perlin(unsigned P,uint32_t seed,unsigned oct,float x,float y,float 
     const float scale=float(P)/float(N);return perlinPrepared(P,seed,oct,perlinAxis(x,scale),perlinAxis(y,scale),perlinAxis(z,scale),gradients);}
 // Cache each cell's eight gradient indices while the output is scratch.
 inline void preparePerlinCubes(uint8_t* out){
+#if defined(__SSE2__)
+    for(unsigned o=0,P=4;o<3;++o,P*=2)for(unsigned z=0;z<P;++z)for(unsigned y=0;y<P;++y)for(unsigned x=0;x<P;x+=4){
+        const unsigned base=o==0?0:o==1?64:576,cell=base+x+P*(y+P*z);__m128i rows[4];
+        for(unsigned row=0;row<4;++row){
+            const unsigned at=base+P*(((y+(row&1))&(P-1))+P*((z+(row>>1))&(P-1)));
+            uint32_t first;std::memcpy(&first,out+at+x,sizeof first);
+            const uint32_t next=(first>>8)|(uint32_t(out[at+((x+4)&(P-1))])<<24);
+            rows[row]=_mm_unpacklo_epi8(_mm_cvtsi32_si128(int32_t(first)),_mm_cvtsi32_si128(int32_t(next)));
+        }
+        const __m128i low=_mm_unpacklo_epi16(rows[0],rows[1]),high=_mm_unpacklo_epi16(rows[2],rows[3]);
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(out+19072+8*cell),_mm_unpacklo_epi32(low,high));
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(out+19072+8*cell+16),_mm_unpackhi_epi32(low,high));
+    }
+#else
     for(unsigned o=0,P=4;o<3;++o,P*=2)for(unsigned z=0;z<P;++z)for(unsigned y=0;y<P;++y)for(unsigned x=0;x<P;++x){
         const unsigned base=o==0?0:o==1?64:576,cell=base+x+P*(y+P*z);
         for(unsigned k=0;k<8;++k){const unsigned xx=(x+(k&1))&(P-1),yy=(y+((k>>1)&1))&(P-1),zz=(z+((k>>2)&1))&(P-1);out[19072+8*cell+k]=out[base+xx+P*(yy+P*zz)];}}
+#endif
 }
 // The generator visits cells -1..8 around the periodic grid; cache the same
 // cell-plus-feature floats in three padded planes in the existing output scratch.
 inline void prepareWorleyFeatures(uint8_t* out,uint32_t seed){
-    std::memset(out,0,14400); // The unused fourth SIMD lane must also be finite.
-    for(int z=-1;z<=8;++z)for(int y=-1;y<=8;++y)for(int x=-1;x<=8;++x){
-        const uint32_t h=hash(uint32_t(x)&7,uint32_t(y)&7,uint32_t(z)&7,seed^0xabcdu);
-        const float v[3]={float(x)+unit(h),float(y)+unit(h*0x2545f491u+1),float(z)+unit(h*0x9e3779b1u+7)};
-        const int at=(x+1)+12*((y+1)+10*(z+1));for(int i=0;i<3;++i)std::memcpy(out+4*(at+i*1200),v+i,4);
+    for(int z=-1;z<=8;++z)for(int y=-1;y<=8;++y){
+        for(int x=-1;x<=8;++x){
+            const uint32_t h=hash(uint32_t(x)&7,uint32_t(y)&7,uint32_t(z)&7,seed^0xabcdu);
+            const float v[3]={float(x)+unit(h),float(y)+unit(h*0x2545f491u+1),float(z)+unit(h*0x9e3779b1u+7)};
+            const int at=(x+1)+12*((y+1)+10*(z+1));for(int i=0;i<3;++i)std::memcpy(out+4*(at+i*1200),v+i,4);
+        }
+        // Features overwrite the first ten cells; zero only SIMD padding.
+        const uint64_t zero=0;const int padding=10+12*((y+1)+10*(z+1));
+        for(int i=0;i<3;++i)std::memcpy(out+4*(padding+i*1200),&zero,sizeof zero);
     }
 }
 // periodic cellular F1 distance in cell units, P cells per tile
@@ -125,7 +144,11 @@ inline std::vector<uint8_t> generate(uint32_t seed=Seed){
     static_assert(size_t(N)*N*N>=4672+14400+8*4672,"Noise tables fit the output scratch");
     detail::prepareWorleyFeatures(out.data()+4672,seed);
     detail::preparePerlinCubes(out.data());
-    detail::PerlinAxis axis[3][N];for(unsigned o=0,P=4;o<3;++o,P*=2)for(unsigned i=0;i<N;++i)axis[o][i]=detail::perlinAxis(float(i),float(P)/float(N));
+    static_assert(N&&(N&(N-1))==0,"Noise-axis fractions are exact binary values");
+    detail::PerlinAxis axis[3][N];for(unsigned o=0,P=4;o<3;++o,P*=2)for(unsigned i=0;i<N;++i){
+        const unsigned scaled=i*P;const float fraction=float(scaled%N)*(1.f/float(N));
+        axis[o][i]={int(scaled/N),fraction,detail::fade(fraction)};
+    }
 #if defined(__SSE2__)
     float perlinFour[4];
 #endif
@@ -156,7 +179,18 @@ inline std::vector<uint8_t> generate(uint32_t seed=Seed){
     float lows[4],highs[4];_mm_storeu_ps(lows,minima);_mm_storeu_ps(highs,maxima);for(int i=0;i<4;++i){lo=std::min(lo,lows[i]);hi=std::max(hi,highs[i]);}
 #endif
     const float k=hi>lo?255.f/(hi-lo):0.f;
+#if defined(__SSE2__)
+    static_assert((size_t(N)*N*N)%4==0,"Four normalized noise bytes per store");
+    const __m128 low=_mm_set1_ps(lo),scale=_mm_set1_ps(k),half=_mm_set1_ps(.5f),zero=_mm_setzero_ps(),cap=_mm_set1_ps(255.f);
+    for(size_t i=0;i<f.size();i+=4){
+        const __m128 value=_mm_add_ps(_mm_mul_ps(_mm_sub_ps(_mm_loadu_ps(f.data()+i),low),scale),half);
+        const __m128i integer=_mm_cvttps_epi32(_mm_min_ps(_mm_max_ps(value,zero),cap));
+        const __m128i words=_mm_packs_epi32(integer,integer),bytes=_mm_packus_epi16(words,words);
+        const uint32_t packed=uint32_t(_mm_cvtsi128_si32(bytes));std::memcpy(out.data()+i,&packed,sizeof packed);
+    }
+#else
     for(size_t i=0;i<f.size();++i)out[i]=detail::normalizedByte((f[i]-lo)*k+.5f);
+#endif
     return out;}
 
 // trilinear with WRAP, matching D3D LINEAR+WRAP: texel coordinate u*N-.5; 0..1
@@ -211,7 +245,7 @@ inline Quantiles quantiles(const uint8_t* volume){
         const float x=detail::unit(detail::hash(i,1,0,Seed)),y=detail::unit(detail::hash(i,2,0,Seed)),z=detail::unit(detail::hash(i,3,0,Seed));
         v[i]=.65f*sample<true>(volume,x,y,z)+.35f*sample<true>(volume,x*4+.37f,y*4+.61f,z*4+.13f);}
     std::sort(v.begin(),v.end());
-    Quantiles t;for(unsigned i=0;i<=256;++i)t.q[i]=v[size_t(std::lround(double(i)/256.0*double(count-1)))];
+    Quantiles t;for(unsigned i=0;i<=256;++i)t.q[i]=v[(size_t(i)*(count-1)+128)/256];
     return t;}
 inline float quantile(const Quantiles& t,float x){
     const float f=std::clamp(x,0.f,1.f)*256.f;const unsigned i=std::min(unsigned(f),255u);const float k=f-float(i);return t.q[i]+(t.q[i+1]-t.q[i])*k;}
@@ -273,9 +307,18 @@ inline void colour(const float game[3],bool gameValid,float night,float out[4]){
 // setting are multiplied by denseZoneDamp: 1 - kDenseDamp at full profile, exactly 1 outside dense zones.
 constexpr float kDenseDamp=0.6f,kDenseSeconds=3.f;
 inline float denseZoneDamp(float profile){return std::isfinite(profile)?1-kDenseDamp*std::clamp(profile,0.f,1.f):1.f;}
-inline float smoothDense(float current,float target,float dt){
+namespace detail {
+inline float denseWeight(float dt){const float d=std::isfinite(dt)?std::clamp(dt,0.f,.1f):0.f;return 1-std::exp(-d/kDenseSeconds);}
+inline float denseBlend(float current,float target,float weight){
     if(!std::isfinite(current))current=0;if(!std::isfinite(target))target=0;
-    const float d=std::isfinite(dt)?std::clamp(dt,0.f,.1f):0.f;return current+(target-current)*(1-std::exp(-d/kDenseSeconds));}
+    return current+(target-current)*weight;
+}
+}
+inline float smoothDense(float current,float target,float dt){return detail::denseBlend(current,target,detail::denseWeight(dt));}
+inline void smoothDensePair(float& first,float firstTarget,float& second,float secondTarget,float dt){
+    const float weight=detail::denseWeight(dt);
+    first=detail::denseBlend(first,firstTarget,weight);second=detail::denseBlend(second,secondTarget,weight);
+}
 // the per-sample density, identical to the shader: nL, nS noise values 0..1; tag = regional field .w (0 indoors/unknown)
 inline float sigma(float nL,float nS,float altitude,float threshold,float sharpness,float height,float tag,float sigmaMax){
     auto sat=[](float x){return std::clamp(x,0.f,1.f);};

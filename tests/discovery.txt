@@ -36,6 +36,8 @@ test_client_archives.py
 test_client_config.py
 test_client_identity.py
 test_client_latency_diagnostics.py
+test_cloud_dense_pair.py
+test_cloud_preparation_exact.py
 test_colour_tent_2d.py
 test_command_stream.py
 test_command_stream_wiring.py
@@ -150,6 +152,7 @@ test_quality_upgrade.py
 test_rain_mask.py
 test_raster_reconstruction.py
 test_regional_fog_recovery_gpu.py
+test_regional_fog_water_mask.py
 test_regional_surface_shadow.py
 test_render_thread_probe.py
 test_renderer_status.py
