@@ -8,6 +8,12 @@
 #include "shader_read_set.h"
 #include "ui_boundary.h"
 using HRESULT=int;using DWORD=unsigned;using UINT=unsigned;
+using LONGLONG=long long;
+struct CpuScope {
+    inline static unsigned reads=0;LONGLONG* elapsed;
+    explicit CpuScope(LONGLONG* value):elapsed(value){if(elapsed)reads+=2;}
+    ~CpuScope(){if(elapsed)++*elapsed;}
+};
 #define FAILED(x) ((x)<0)
 #define SUCCEEDED(x) ((x)>=0)
 constexpr HRESULT S_OK=0,E_FAIL=-1,D3DERR_INVALIDCALL=-2;
@@ -65,6 +71,9 @@ struct Fixture{
     std::unordered_map<void*,NorthlightShaderReads::ReadSet> shaderReads;
     bool hdrUiPhase=false,applied=false,world=false,failResolve=false,failBind=false,hdrAtUiBoundary=false,hdrSkyReplaying=false;
     unsigned begins=0,effects=0,hdrFailuresLogged=0,hdrDeferredLogs=0,hdrDeferredFrame=~0u;
+    bool gateFrame=false,gateUntimed=false;
+    LONGLONG cpuHdrAdmission=0,cpuHdrBoundary=0,cpuHdrTransfer=0;
+    unsigned hdrAdmissionCalls=0,hdrTransferCalls=0;
     Fixture(){shaderReads[&backend.vs]={};shaderReads[&backend.vs].exact=true;shaderReads[&backend.vs].vertex=true;
         shaderReads[&backend.ps]={};shaderReads[&backend.ps].exact=true;shaderReads[&backend.ps].samplers=1;}
     ~Fixture(){assert(backend.vs.refs==1&&backend.ps.refs==1);}
@@ -108,6 +117,16 @@ int main(){
 #endif
     }
 #ifndef NORTHLIGHT_HDR_BOUNDARY_COUNTERFACTUAL
+    // Execute the extracted production timer predicates, with a counting clock:
+    // quiet/untimed/SDR calls retain native submission and open no clock scope.
+    for(bool sample:{false,true})for(bool untimed:{false,true})for(bool active:{false,true}){
+        Fixture f;f.gateFrame=sample;f.gateUntimed=untimed;f.hdr.active=active;CpuScope::reads=0;
+        assert(f.draw(101)==S_OK);const bool timed=sample&&!untimed&&active;
+        assert(CpuScope::reads==(timed?6u:0u));
+        assert(f.hdrAdmissionCalls==unsigned(timed)&&f.hdrTransferCalls==unsigned(timed));
+        assert(f.cpuHdrAdmission==int(timed)&&f.cpuHdrBoundary==int(timed)&&f.cpuHdrTransfer==int(timed));
+        assert(active?f.backend.presentation==101:f.backend.legacy==101);
+    }
     {Fixture f;f.stockUi=false;f.world=true;f.backend.pixelProjection=true;
         assert(std::strcmp(f.hdrBoundarySource(),"pixel-ui")==0);
         assert(f.draw(71)==S_OK&&f.hdrUiPhase&&f.effects==1&&f.backend.presentation==71);}

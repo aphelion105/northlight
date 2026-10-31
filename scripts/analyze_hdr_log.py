@@ -9,16 +9,16 @@ import statistics
 
 
 def summarize(text, windows):
-    intervals, profiles, frame_profiles, cpu_profiles, work = [], [], [], [], []
+    intervals, profiles, frame_profiles, cpu_profiles, hdr_cpu_profiles, work = [], [], [], [], [], []
     for line in text.splitlines():
         if line.startswith('FRAME interval '):
             row = dict(re.findall(r'(\w+)=([^ ]+)', line))
             if row.get('samples') == '120' and row.get('focus') == '1' and row.get('enabled') == '1':
                 intervals.append(row)
-        elif line.startswith(('GPU profile ', 'GPU frame ', 'CPU profile ')):
+        elif line.startswith(('GPU profile ', 'GPU frame ', 'CPU profile ', 'CPU HDR ')):
             frame = re.search(r'frame=(\d+)', line)
             if frame:
-                rows = frame_profiles if line.startswith('GPU frame ') else cpu_profiles if line.startswith('CPU profile ') else profiles
+                rows = hdr_cpu_profiles if line.startswith('CPU HDR ') else frame_profiles if line.startswith('GPU frame ') else cpu_profiles if line.startswith('CPU profile ') else profiles
                 rows.append((int(frame[1]), dict(re.findall(r'(\w+)=([\d.]+)ms', line))))
         elif line.startswith('HDR_WORK '):
             work.append(dict(re.findall(r'(\w+)=(\d+)', line)))
@@ -48,6 +48,7 @@ def summarize(text, windows):
         report['windows'][label] = dict(frames=[first, last], intervals=len(rows), median_interval_mean_ms=med,
                                        equivalent_fps=1000/med, stage_medians_ms=medians(profiles),
                                        frame_gpu_stage_medians_ms=medians(frame_profiles), cpu_profile_medians_ms=medians(cpu_profiles),
+                                       hdr_cpu_profile_medians_ms=medians(hdr_cpu_profiles),
                                        hdr_work_delta=delta)
     return report
 

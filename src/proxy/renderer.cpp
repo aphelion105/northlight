@@ -623,6 +623,8 @@ private:
     IDirect3DSurface9* maskFormatFor=nullptr;unsigned long maskFormatValue=0;unsigned maskFormatLogs=0;bool maskStencil=false;const void* maskDsId=nullptr; /* identities only: the world depth the format verdict is for, and the one whose Clear(Z) also clears stencil */
     void resetTranslucentCensus(){censusDraws=lastOpaqueZAt=clearResolveAt=earlyResolves=earlyResolveAt=earlyResolveUndone=0;}
     LONGLONG cpuPrep=0,cpuCapture=0,cpuWaterCapture=0,cpuEffects=0,cpuMirrorAudit=0;
+    LONGLONG cpuHdrAdmission=0,cpuHdrBoundary=0,cpuHdrTransfer=0,cpuHdrFinish=0;
+    unsigned hdrAdmissionCalls=0,hdrTransferCalls=0;
     LONGLONG cpuAOBlurSetup=0,cpuAOBlurSubmit=0;std::uint64_t cpuAOBlurFrame=0;
     unsigned cpuAOBlurMethod=0,cpuAOBlurWidth=0,cpuAOBlurHeight=0;bool cpuAOBlurPending=false;
     NorthlightEffectsBuckets::Frame effectsBuckets;bool effectsBucketed=false; /* 0.3.175 (S3): this sample frame's effects split */
@@ -719,6 +721,7 @@ private:
     }
     HRESULT hdrBegin(bool present,const char* boundary="present"){
         if(!hdr.active||hdrUiPhase)return S_FALSE;
+        const bool sampledHdr=gateFrame&&!gateUntimed;CpuScope hdrTimer(sampledHdr?&cpuHdrFinish:nullptr);
         if(!hdrLegacyBack||!hdrPresentBack)return E_FAIL;
         D3DSURFACE_DESC desc{};HRESULT hr=hdrLegacyBack->GetDesc(&desc);
         if(SUCCEEDED(hr)&&!resources(desc.Width,desc.Height,desc.Format,true))hr=E_FAIL;
@@ -869,12 +872,14 @@ private:
         if(!hdr.active||hdrSkyReplaying)return draw();
         bool linear=false;
         extensionWork("HDR UI preparation",[&]{
+            const bool sampledHdr=gateFrame&&!gateUntimed;CpuScope hdrTimer(sampledHdr?&cpuHdrAdmission:nullptr);if(sampledHdr)++hdrAdmissionCalls;
             if(!hdrUiPhase)if(const char* boundary=hdrBoundarySource()){
                 D3DSURFACE_DESC desc{};float rows[16];DWORD zwrite=1,zfunc=0,z=1;
                 const bool geometry=std::strcmp(boundary,"fixed-ui")==0?fixedUiGeometry():
                     SUCCEEDED(ext->GetRenderState(D3DRS_ZWRITEENABLE,&zwrite))&&SUCCEEDED(ext->GetRenderState(D3DRS_ZFUNC,&zfunc))&&
                     SUCCEEDED(ext->GetRenderState(D3DRS_ZENABLE,&z))&&SUCCEEDED(ext->GetVertexShaderConstantF(0,rows,4))&&NorthlightUiBoundary::accepts(zwrite!=0,rows,zfunc==D3DCMP_ALWAYS,z!=0);
                 if(geometry&&fullViewport(desc,nullptr,true,false)&&hdrBackTarget()&&hdrUiInputs()){
+                    CpuScope boundaryTimer(sampledHdr?&cpuHdrBoundary:nullptr);
                     hdrAtUiBoundary=true;if(!applied){renderEffects();spellReplay();}hdrBegin(false,boundary);
                 }
             }
@@ -882,7 +887,7 @@ private:
         });
         if(!linear)return draw();
         bool submitted=false;HRESULT hr=E_FAIL;const unsigned rejected=hdrColor.rejected;const auto previousLayers=hdrColor.layers;
-        extensionWork("HDR UI draw",[&]{hr=hdrColor.draw(ext,hdrFrameSettings.uiWhite,[&]{submitted=true;return draw();});});
+        extensionWork("HDR UI draw",[&]{const bool sampledHdr=gateFrame&&!gateUntimed;CpuScope hdrTimer(sampledHdr?&cpuHdrTransfer:nullptr);if(sampledHdr)++hdrTransferCalls;hr=hdrColor.draw(ext,hdrFrameSettings.uiWhite,[&]{submitted=true;return draw();});});
         if(hdrColor.layers!=previousLayers)hdrLayerDiagnostic();
         if(hdrColor.rejected!=rejected&&hdrFailuresLogged++<8)logf("HDR legacy compatibility layer frame=%u shaderPatchFallbacks=%u",frame,hdrColor.rejected);
         return submitted?hr:draw();
@@ -3480,6 +3485,8 @@ public:
                     (unsigned long long)cpuAOBlurFrame,cpuAOBlurMethod,cpuAOBlurWidth,cpuAOBlurHeight,double(cpuAOBlurSetup)*ms,double(cpuAOBlurSubmit)*ms);
                 cpuAOBlurPending=false;}
             const bool drawTimed=NorthlightRenderThreadProbe::profiling(); // the per-draw scopes (prep, capture, water) need RenderProfile: -1 = not measured
+            if(gateFrame&&!gateUntimed&&hdr.active)logf("CPU HDR frame=%u admission=%.6fms boundary=%.6fms finish=%.6fms transferWithNativeDraw=%.6fms admissionCalls=%u transferCalls=%u finishIncludedInBoundary=1 transferIncludesNativeSubmission=1",
+                sampleFrame,std::max(0.0,double(cpuHdrAdmission-cpuHdrBoundary)*ms),cpuHdrBoundary*ms,cpuHdrFinish*ms,cpuHdrTransfer*ms,hdrAdmissionCalls,hdrTransferCalls);
             // 0.3.154: U frames have no per-draw timers; their numbers are on the DRAWGATE ab line.
             if(!gateUntimed)logf("CPU profile frame=%u drawGate=%.3fms capture=%.3fms effects=%.3fms cleanup=%.3fms total=%.3fms enabled=%d gi=%u shadows=%u fog=%u captureSkipped=%u drawHooks=%.3fms frameDrawGates=%u",sampleFrame,drawTimed?std::max(0.0,double(cpuPrep-cpuCapture-cpuEffects)*ms):-1.0,drawTimed?cpuCapture*ms:-1.0,cpuEffects*ms,cleanup*ms,drawTimed?(cpuPrep+cleanup)*ms:-1.0,frameEnabled,unsigned(frameEffects.gi),unsigned(frameEffects.shadows),unsigned(frameEffects.fog),unsigned(world&&world->captureSkippedLastFrame()),
                 NorthlightRenderThreadProbe::profiling()?cpuDrawHooks*ms:-1.0,unsigned(frameDrawGates)); /* 0.3.187: drawHooks -1 = not measured (RenderProfile=0) */
@@ -3537,6 +3544,7 @@ public:
         }
         weatherFrame(sampleFrame);
         cpuPrep=cpuCapture=cpuWaterCapture=cpuEffects=0;cpuCaptureReads=0;cpuDrawHooks=0;
+        cpuHdrAdmission=cpuHdrBoundary=cpuHdrTransfer=cpuHdrFinish=0;hdrAdmissionCalls=hdrTransferCalls=0;
         ++frame;mirrorState.gate.frame.store(frame,std::memory_order_relaxed); /* 0.3.180: the census' frame */
         mirrorState.setVsFloatWriteObservation(diagnostics()&&world&&!world->hasContext()&&!nativeLocalLightProbe.full());
         if(frame==300)memmap(diagnosticId==1?"baseline-frame300":"frame300"); /* 0.3.192 (MEMMAP): allocations settled; device 1 is the baseline */

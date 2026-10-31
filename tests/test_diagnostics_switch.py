@@ -162,6 +162,12 @@ assert not unknown,'ungated, unlabelled log sites:\n'+'\n'.join(f'{w} {f}' for w
 r=fp.src('renderer.cpp').read_text();w=fp.src('world_renderer.h').read_text();mp=fp.src('material_profile.h').read_text()
 constructor=r[r.index('Device(IDirect3DDevice9* d,'):r.index('~Device() {')]
 checks={
+ 'HDR CPU timers require the latched diagnostic sample and exclude untimed frames':
+   'mirrorState.rawCounting=sampled()&&NorthlightRenderThreadProbe::profiling();' in r
+   and 'gateFrame=mirrorState.rawCounting;' in r
+   and r.count('const bool sampledHdr=gateFrame&&!gateUntimed;')==3
+   and 'CpuScope boundaryTimer(sampledHdr?&cpuHdrBoundary:nullptr);' in r
+   and 'if(gateFrame&&!gateUntimed&&hdr.active)logf("CPU HDR frame=' in r,
  'HDR layer-state diagnostics require Diagnostics and stop after twelve reports':
    'void hdrLayerDiagnostic(){\n        if(hdrLayerStateLogs>=12||!diagnostics())return;\n        ++hdrLayerStateLogs;' in r,
  'effect captures require an explicit request and exclude the captured frame':'if(!scopes&&!fallback)return;' in r[r.index('void captureEffectDiagnostics()'):r.index('void releaseResources()')]
