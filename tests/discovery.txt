@@ -155,6 +155,7 @@ test_light_scissor_pairs.py
 test_linux_package.py
 test_live_settings.py
 test_live_terrain_gpu.py
+test_local_brightness_gpu.py
 test_local_direct_batches_gpu.py
 test_local_fog_batching.py
 test_local_fog_profile.py

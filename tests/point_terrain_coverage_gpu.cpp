@@ -22,6 +22,57 @@ struct PointTerrainCoverageTest {
    std::printf("POINT_TERRAIN_FRAME nativeChunkVisible=%u centerDepth=%.9f draws=%u\n",frame&1,image[128*256+128],w.pointDraws);std::fflush(stdout);
    assert(image[128*256+128]<1.f);if(reference.empty())reference=image;else assert(image==reference);
   }
+  // An authored model VS using the client's row projection layout, patched by
+  // the production patcher. Its plane must match the static reference above.
+  const uint32_t original[]={0xfffe0300,
+   0x0200001f,0x80000000,0x900f0000,0x0200001f,0x80000005,0x900f0001,
+   0x0200001f,0x80000000,0xe00f0000,0x0200001f,0x80000005,0xe0030001,
+   0x03000009,0xe0010000,0xa0e40002,0x90e40000,0x03000009,0xe0020000,0xa0e40003,0x90e40000,
+   0x03000009,0xe0040000,0xa0e40004,0x90e40000,0x03000009,0xe0080000,0xa0e40005,0x90e40000,
+   0x02000001,0xe0030001,0x90e40001,0xffff};
+  std::vector<uint32_t> patched;assert(NorthlightShadowShader::patch(original,sizeof(original)/4,patched));
+  auto replay=std::make_unique<WorldRenderer::Replay>();must(d->CreateVertexShader(reinterpret_cast<const DWORD*>(patched.data()),&replay->shader));
+  replay->decl=w.shadowDecl;replay->decl->AddRef();replay->stream[0]=page.vb;page.vb->AddRef();replay->stride[0]=sizeof(NorthlightGI::WorldVertex);
+  replay->index=page.ib;page.ib->AddRef();replay->type=D3DPT_TRIANGLELIST;replay->indexed=true;
+  replay->base=0;replay->min=0;replay->start=0;replay->vertices=4;replay->count=2;
+  replay->projectionKind=2;replay->constantUsage.floats={2,4};replay->constantUsage.booleans={};replay->constantUsage.integers={};
+  for(unsigned i=0;i<16;++i)w.context.inverseView[i]=(i%5)==0?1.f:0.f;
+  auto image=[&](){
+   IDirect3DSurface9* face=nullptr;must(w.pointSlot().cube->GetCubeMapSurface(D3DCUBEMAP_FACE_NEGATIVE_Z,0,&face));must(d->GetRenderTargetData(face,readback));face->Release();
+   D3DLOCKED_RECT lock{};must(readback->LockRect(&lock,nullptr,D3DLOCK_READONLY));std::vector<float> pixels(256*256);
+   for(unsigned y=0;y<256;++y)std::memcpy(pixels.data()+256*y,static_cast<char*>(lock.pBits)+y*lock.Pitch,256*4);must(readback->UnlockRect());return pixels;
+  };
+  auto render=[&](const NorthlightLocalLights::Light& lamp,bool fresh,bool actors){
+   must(d->BeginScene());const bool rendered=w.renderPointShadow(lamp,fresh,actors);must(d->EndScene());return rendered;
+  };
+  unsigned transitions=0;
+  for(float height:{.11f,.2f,.5f,1.f,2.f,4.f}){
+   auto lamp=light;lamp.position[2]=height;w.batches={batch};assert(render(lamp,true,false));const auto expected=image();assert(expected[128*256+128]<1.f);
+   w.batches.clear();w.replays.push_back(std::move(replay));assert(render(lamp,true,true));assert(image()==expected);
+   replay=std::move(w.replays.back());w.replays.clear();
+   w.quality.pointShadowRefreshMs=60000;w.captureDemand=false;
+   assert(render(lamp,false,true)&&w.pointSlot().ready&&!w.captureDemand);assert(image()==expected);++transitions;
+   w.quality.pointShadowRefreshMs=0;
+   auto retained=[&](){w.captureDemand=false;assert(render(lamp,false,true)&&w.pointSlot().ready&&w.captureDemand);const auto actual=image();
+    if(actual!=expected){std::printf("POINT_DYNAMIC_DROPOUT expectedDepth=%.9f actualDepth=%.9f\n",expected[128*256+128],actual[128*256+128]);std::fflush(stdout);}
+    assert(actual==expected);++transitions;};
+   retained();
+   // A usable cube mid-cycle remains valid when capture is skipped, including
+   // a change back to the default six faces per frame.
+   w.pointSlot().schedule.stale();retained();
+   for(unsigned change=0;change<5;++change){auto changed=lamp;
+    if(change==0)++changed.sourceId;else if(change==1)changed.position[2]+=.1f;else if(change==2)changed.attenuationEnd+=1;
+    else if(change==3)changed.attenuationStart+=.1f;else changed.flags^=NorthlightLocalLights::CastShadow;
+    w.captureDemand=false;assert(!render(changed,false,true)&&!w.pointSlot().ready&&w.captureDemand);assert(image()==expected);++transitions;
+   }
+   // Invalidation cannot turn the previous character shadow into an empty
+   // static-only cube, nor publish it as ready. The next capture recovers it.
+   w.pointSlot().schedule.invalidate();w.pointSlot().cacheValid=false;w.captureDemand=false;
+   assert(!render(lamp,false,true)&&!w.pointSlot().ready&&w.captureDemand);assert(image()==expected);++transitions;
+   w.replays.push_back(std::move(replay));assert(render(lamp,true,true)&&w.pointSlot().ready&&w.pointSlot().schedule.complete);assert(image()==expected);
+   replay=std::move(w.replays.back());w.replays.clear();
+  }
+  std::printf("POINT_DYNAMIC_CAPTURE_GPU_PASS distances=6 transitions=%u staticReplayExact=1 incompleteNotPublished=1 timings=0\n",transitions);
   readback->Release();std::printf("POINT_TERRAIN_COVERAGE_GPU_PASS cameraMembershipStates=4 cachedBlockerRetained=1 exactCube=1 sameSource=1 timings=0\n");
  }
  };

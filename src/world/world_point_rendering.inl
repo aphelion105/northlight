@@ -324,9 +324,8 @@
         // Conservative: a new lamp or changing selection also needs current-frame casters.
         return NorthlightPointShadow::selectMany(active->localLights.data(),active->localLights.size(),context.camera,quality.pointShadowLimit,{},48,true).count!=0;
     }
-    // fresh=false: this frame's model capture was skipped (no replays). A due refresh
-    // then keeps a complete cube of the same light one more frame, or draws a cube
-    // without replays that is never committed; either way the next frame captures.
+    // fresh=false: model capture was skipped. Reuse a compatible complete cube
+    // or defer; publishing a static-only cube would erase character shadows.
     // withReplays=false (0.3.158 ActorShadows=0): static cache, terrain and union only; the
     // cube is complete without replays (fresh=true) and the schedule sees none.
     bool renderPointShadow(const NorthlightLocalLights::Light& light,bool fresh=true,bool withReplays=true){
@@ -344,11 +343,14 @@
         if(!pointSlot().schedule.due(updateAt,pointSlot().selected,meshGeneration,pointReplayCount,rebuild,quality.pointShadowRefreshMs)){
             pointSlot().ready=true;++pointReuses;pointLogSchedule(true);return true;
         }
+        if(!fresh){
+            captureDemand=true;++captureDeferrals;
+            if(!pointSlot().schedule.usable||lightChanged)return false;
+            pointSlot().ready=true;++pointReuses;pointLogSchedule(true);return true;
+        }
         // PointShadowFacesPerFrame<6: a refresh of the same light whose six faces are all complete
         // draws only this frame's group; a new, moved or resized light draws all six at once.
         const bool cycling=quality.pointShadowFacesPerFrame<6&&pointSlot().schedule.usable&&!lightChanged&&pointSlot().cacheValid&&pointSlot().cacheSource==pointSlot().selected.sourceId;
-        if(!fresh&&(pointSlot().schedule.complete||cycling)&&!lightChanged&&pointSlot().cacheValid&&pointSlot().cacheSource==pointSlot().selected.sourceId){
-            pointSlot().ready=true;++pointReuses;captureDemand=true;++captureDeferrals;pointLogSchedule(true);return true;} /* a cycle never advances without replays */
         unsigned faces=63;
         if(cycling){if(!pointSlot().faceCycle.active())pointSlot().faceCycle.start(quality.pointShadowFacesPerFrame,pointSlot().faceWeights,updateAt,meshGeneration);
             faces=pointSlot().faceCycle.mask();pointSlot().schedule.stale();} /* a face failure below invalidates the whole cube */
@@ -482,7 +484,6 @@
             d->SetSamplerState(0,D3DSAMP_MINFILTER,D3DTEXF_LINEAR);d->SetSamplerState(0,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);
         }
         if(rebuild){pointSlot().cacheValid=true;pointSlot().cacheSource=pointSlot().selected.sourceId;pointSlot().cacheChunks=chunkHash;} /* cycling: already valid, its remaining faces wait for their frame */
-        if(!fresh){pointSlot().ready=true;captureDemand=true;++captureDeferrals;return true;} /* schedule stays incomplete: redrawn with replays next frame */
         if(cycling&&!pointSlot().faceCycle.advance()){pointSlot().ready=true;++pointUpdates;pointLogSchedule(false);return true;} /* stale until the last group */
         if(cycling)pointSlot().schedule.commit(pointSlot().faceCycle.startedAt,pointSlot().selected,pointSlot().faceCycle.generation);
         else pointSlot().schedule.commit(updateAt,pointSlot().selected,meshGeneration);

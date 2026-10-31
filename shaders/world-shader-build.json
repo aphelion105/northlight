@@ -1,6 +1,6 @@
 {
   "bump_include_sha256": "03f90009cf23e93260c70a31d78999b3bd60aebf8bbcf0d5d6e5e02bf5ef3ec1",
-  "source_sha256": "0b6699e850cbdd59d32cac40722f7d7f94af31f563d6ca3ae9da6f25eab059da",
+  "source_sha256": "97cbf66739cce69725ad9441cbb60ff607872caab52b32ea0f03f56647199a78",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
   "game_launched": false,
@@ -103,7 +103,7 @@
         "endrep": 3
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "0c94887caf17583aff38f019f9bfddd8776a4ea3bfd2cef3c50c9a6f17b983c7"
+      "source_sha256": "97cbf66739cce69725ad9441cbb60ff607872caab52b32ea0f03f56647199a78"
     },
     "ActorShadow": {
       "target": "ps_3_0",
@@ -138,7 +138,7 @@
         "endrep": 5
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "0b6699e850cbdd59d32cac40722f7d7f94af31f563d6ca3ae9da6f25eab059da"
+      "source_sha256": "97cbf66739cce69725ad9441cbb60ff607872caab52b32ea0f03f56647199a78"
     },
     "ActorTiles": {
       "target": "ps_3_0",
@@ -702,9 +702,9 @@
     },
     "WorldComposite": {
       "target": "ps_3_0",
-      "bytes": 6500,
-      "sha256": "122da6abba56862b3e24b95afe7439a1a9eebe00e9585b72acd212376a2dac39",
-      "static_instruction_slots": 363,
+      "bytes": 6756,
+      "sha256": "c95b0c289cac4cdef206c40bb409b66acc5c002cd9196fb206bb012cfb3c1138",
+      "static_instruction_slots": 380,
       "temporary_registers": 19,
       "samplers": [
         0,
@@ -720,20 +720,20 @@
         15
       ],
       "instructions": {
-        "mul": 61,
+        "mul": 65,
         "frc": 4,
-        "add": 71,
-        "max": 11,
+        "add": 74,
+        "max": 15,
         "mov": 36,
-        "min": 6,
+        "min": 8,
         "texld": 4,
         "if": 9,
         "else": 4,
-        "rcp": 16,
-        "cmp": 35,
+        "rcp": 20,
+        "cmp": 36,
         "texldl": 15,
         "endif": 9,
-        "mad": 19,
+        "mad": 18,
         "pow": 2,
         "dp3": 3,
         "rep": 1,
@@ -744,7 +744,7 @@
         "rsq": 3
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "f4837ac21d75eaf78f1175d738235411cc4ba3b27874d65e2444a11a861d56a8"
+      "source_sha256": "97cbf66739cce69725ad9441cbb60ff607872caab52b32ea0f03f56647199a78"
     },
     "WorldUnlitComposite": {
       "target": "ps_3_0",
