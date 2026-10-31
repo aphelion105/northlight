@@ -5713,6 +5713,9 @@ public:
             logf("WORLD GPU diagnostic capture=%u map=\"%s\" eye=(%.3f %.3f %.3f) moon=(%.6f %.6f %.6f) constantsHRESULT=%08lx",capture,frameMap.c_str(),context.camera[0],context.camera[1],context.camera[2],sourceDirections[1].x,sourceDirections[1].y,sourceDirections[1].z,(unsigned long)read);
             using NorthlightWorldDiagnostics::dump;
             captureProducts(directory,capture,rendererFrame,w,h,true);
+            if(hdrBase){IDirect3DSurface9* base=nullptr;
+                if(SUCCEEDED(hdrBase->GetSurfaceLevel(0,&base))){dump(d,base,directory,"hdr-base",capture);base->Release();}
+                logf("WORLD GPU diagnostic capture=%u hdrBaseEncoded=%u",capture,unsigned(hdrBaseEncoded));}
             char layout[96];std::snprintf(layout,sizeof layout,"/capture-%u-lighting-layout.txt",capture);
             if(FILE* f=std::fopen((directory+layout).c_str(),"wb")){
                 std::fprintf(f,"separate-current-local-v1\ncurrentLocalLighting=%u\n",unsigned(currentLocalLighting));std::fclose(f);

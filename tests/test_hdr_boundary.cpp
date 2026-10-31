@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include "shader_read_set.h"
 #include "ui_boundary.h"
+#include "world_draw_domain.h"
 using HRESULT=int;using DWORD=unsigned;using UINT=unsigned;
 using LONGLONG=long long;
 struct CpuScope {
@@ -45,10 +46,10 @@ struct Backend{
     IDirect3DVertexShader9 vs;IDirect3DPixelShader9 ps;IDirect3DVertexDeclaration9 declaration;
     bool fixedVs=false,fixedPs=false,pixelProjection=false,scaledProjection=false;D3DVIEWPORT9 viewport;DWORD fvf=D3DFVF_XYZRHW,z=0,write=0,function=D3DCMP_ALWAYS;
     std::unordered_map<DWORD,IDirect3DBaseTexture9*> textures;
-    bool failVs=false,failPs=false,failTexture=false;unsigned textureReads=0;
+    bool failVs=false,failPs=false,failTexture=false,failViewport=false;unsigned textureReads=0;
     int legacy=11,presentation=7;bool hdrBound=false;
     bool peekVertexShader(IDirect3DVertexShader9*&){return false;}
-    HRESULT GetViewport(D3DVIEWPORT9* out){*out=viewport;return S_OK;}
+    HRESULT GetViewport(D3DVIEWPORT9* out){*out=viewport;return failViewport?E_FAIL:S_OK;}
     HRESULT GetVertexShader(IDirect3DVertexShader9** out){if(failVs)return E_FAIL;*out=fixedVs?nullptr:&vs;if(*out)vs.AddRef();return S_OK;}
     HRESULT GetPixelShader(IDirect3DPixelShader9** out){if(failPs)return E_FAIL;*out=fixedPs?nullptr:&ps;if(*out)ps.AddRef();return S_OK;}
     HRESULT GetTexture(DWORD stage,IDirect3DBaseTexture9** out){++textureReads;if(failTexture)return E_FAIL;*out=textures[stage];if(*out)(*out)->AddRef();return S_OK;}
@@ -72,6 +73,8 @@ struct Fixture{
     bool hdrUiPhase=false,applied=false,world=false,failResolve=false,failBind=false,hdrAtUiBoundary=false,hdrSkyReplaying=false;
     unsigned begins=0,effects=0,hdrFailuresLogged=0,hdrDeferredLogs=0,hdrDeferredFrame=~0u;
     bool gateFrame=false,gateUntimed=false;
+    bool hdrSkyValid=false,backbuffer=true,failSky=false;unsigned skyCaptures=0;
+    float worldMinDepth=0,worldMaxDepth=.94f;
     LONGLONG cpuHdrAdmission=0,cpuHdrBoundary=0,cpuHdrTransfer=0;
     unsigned hdrAdmissionCalls=0,hdrTransferCalls=0;
     Fixture(){shaderReads[&backend.vs]={};shaderReads[&backend.vs].exact=true;shaderReads[&backend.vs].vertex=true;
@@ -85,7 +88,8 @@ struct Fixture{
     struct{bool isBoundary(std::uintptr_t,unsigned){return false;}bool armed(){return false;}bool disarmed(){return false;}}uiFallback;
     const VsClass& classifyVs(IDirect3DVertexShader9* shader){vc.entry=stockUi&&shader?2:0;return vc;}
     bool fullViewport(D3DSURFACE_DESC&,void*,bool,bool){return true;}
-    bool hdrBackTarget(){return true;}
+    bool hdrBackTarget(){return backbuffer;}
+    bool hdrSkyDraw(){++skyCaptures;if(failSky)return false;hdrSkyValid=true;return true;}
     void renderEffects(){++effects;applied=world;}
     void spellReplay(){}
     void hdrLayerDiagnostic(){}
@@ -117,6 +121,24 @@ int main(){
 #endif
     }
 #ifndef NORTHLIGHT_HDR_BOUNDARY_COUNTERFACTUAL
+    // The first main sky layer starts linear capture even before a celestial
+    // source is visible. Subsequent layers reuse it; offscreen targets cannot.
+    {Fixture f;f.backend.viewport.MinZ=.9990234375f;
+        assert(f.hdrSkyAdmission()&&f.hdrSkyValid&&f.skyCaptures==1);
+        assert(f.hdrSkyAdmission()&&f.skyCaptures==1);
+        f.backbuffer=false;assert(!f.hdrSkyAdmission()&&f.skyCaptures==1);}
+    for(unsigned reject=0;reject<7;++reject){
+        Fixture f;f.backend.viewport.MinZ=.9990234375f;
+        switch(reject){case 0:f.hdr.active=false;break;case 1:f.hdrUiPhase=true;break;
+            case 2:f.backbuffer=false;break;case 3:f.backend.failViewport=true;break;
+            case 4:f.backend.viewport.MinZ=0;f.backend.viewport.MaxZ=.94f;break;
+            case 5:f.backend.viewport.MinZ=.998046875f;f.backend.viewport.MaxZ=.9990234375f;break;
+            case 6:f.backend.viewport.MinZ=0;break;}
+        assert(!f.hdrSkyAdmission()&&!f.hdrSkyValid&&f.skyCaptures==0);
+    }
+    {Fixture f;f.backend.viewport.MinZ=.9990234375f;f.failSky=true;
+        assert(!f.hdrSkyAdmission()&&!f.hdrSkyValid&&f.skyCaptures==1);
+        f.failSky=false;assert(f.hdrSkyAdmission()&&f.hdrSkyValid&&f.skyCaptures==2);}
     // Execute the extracted production timer predicates, with a counting clock:
     // quiet/untimed/SDR calls retain native submission and open no clock scope.
     for(bool sample:{false,true})for(bool untimed:{false,true})for(bool active:{false,true}){

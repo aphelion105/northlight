@@ -10,4 +10,4 @@ The complete offline graph passes on DXVK 2.7.1 and 3.1.1: nine composition scen
 
 The subsequent client log identifies the earlier `orthographic-ui` boundary and the account owner confirms that the interface is repaired. Bounded Diagnostics triage records the matrix and sampled-input eligibility; it remains absent with Diagnostics off and stops after 64 unique entries.
 
-Private evidence: `.local/hdr-ui-background-20261031`, including the pre-fix trace, installed-byte identities, offline acceptance and sanitizer output. This is a correctness fix, not an additional accepted performance optimization. The separately reported camera-dependent mountain/background lighting issue remains under investigation.
+Private evidence: `.local/hdr-ui-background-20261031`, including the pre-fix trace, installed-byte identities, offline acceptance and sanitizer output. This is a correctness fix, not an additional accepted performance optimization. The subsequent [camera-dependent background correction](hdr-sky-admission-20261031.md) is separately tested and confirmed by the account owner.

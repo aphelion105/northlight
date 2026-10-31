@@ -1398,7 +1398,7 @@ private:
             diagnosticWorld=rendered;
             if(world->diagnosticCaptureInLastRender()){
                 gpuDiagnosticFrame=true;
-                logf("WORLD GPU_DIAGNOSTIC_FRAME rendererFrame=%u device=%ld worldRendered=%u excludeFromFps=1",frame,diagnosticId,unsigned(rendered));
+                logf("WORLD GPU_DIAGNOSTIC_FRAME rendererFrame=%u device=%ld worldRendered=%u hdrSky=%u hdrInlineBase=%u excludeFromFps=1",frame,diagnosticId,unsigned(rendered),unsigned(hdrSkyValid),unsigned(inlineHdrBase));
             }
             if(!rendered){
                 if(++worldSkippedFrames<=8||(worldSkippedFrames%120==0&&diagnostics()))
@@ -2148,6 +2148,16 @@ private:
         }
         return true;
     }
+    bool hdrSkyAdmission(){
+        if(!hdr.active||hdrUiPhase)return false;
+        D3DVIEWPORT9 viewport{};
+        if(FAILED(ext->GetViewport(&viewport))||
+           NorthlightWorldDrawDomain::classify(worldMinDepth,worldMaxDepth,viewport.MinZ,viewport.MaxZ)!=NorthlightWorldDrawDomain::Band::Sky||
+           !hdrBackTarget())return false;
+        // Start at the first native sky layer, before source visibility/culling
+        // can choose a different transfer path for the whole sky background.
+        return hdrSkyValid||hdrSkyDraw();
+    }
     template<class Draw> void hdrReplaySky(bool sky,bool claimed,Draw draw){
         if(!sky||claimed)return;
         ExtensionDevice::RawScope raw(*ext);SavedState saved(ext,&stateBlocks);if(!saved.ok)return;
@@ -2162,7 +2172,7 @@ private:
         auto nativeDraw=[&]{return aoActorNativeDraw(draw);};
         bool claimed=false,rainBlend=false,mist=false;
         bool linearSky=false;
-        if(hdrSkyValid){D3DVIEWPORT9 vp{};linearSky=SUCCEEDED(ext->GetViewport(&vp))&&NorthlightWorldDrawDomain::classify(worldMinDepth,worldMaxDepth,vp.MinZ,vp.MaxZ)==NorthlightWorldDrawDomain::Band::Sky;}
+        if(hdr.active)extensionWork("HDR sky preparation",[&]{linearSky=hdrSkyAdmission();});
         // 0.3.198 (rain): the whole per-draw cost of weather detection, before any other work and in both gate paths: one pointer comparison.
         if(weatherDetect.hot&&mirrorState.textureKnown[0]&&mirrorState.textures[0]==weatherDetect.hot){weatherSample.primitives+=count;++weatherSample.draws;rainBlend=weatherDetect.hotKind==NorthlightWeather::Kind::Rain&&world&&world->rainBlendSetting();} /* 0.3.199 (rain): counted after applied too (the rest of the rain); 0.3.202: no boundary here, the effects run at the UI again */
         else if(weatherDetect.mistArmed)mist=mistDraw(count); /* 0.3.199 (rain mist): a mist puff in rain is skipped; unarmed, one bool test */

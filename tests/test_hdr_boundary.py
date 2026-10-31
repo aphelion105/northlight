@@ -17,6 +17,9 @@ methods = source[start:end]
 boundary_start = source.index('    const char* hdrBoundarySource(){')
 boundary_end = source.index('    HRESULT hdrLogicalCopy(', boundary_start)
 methods = source[boundary_start:boundary_end] + methods
+sky_start = source.index('    bool hdrSkyAdmission(){')
+sky_end = source.index('    template<class Draw> void hdrReplaySky', sky_start)
+methods += source[sky_start:sky_end]
 spell = fp.src('spell_layer.h').read_text()
 start = spell.index('inline bool isRenderTargetTexture(')
 end = spell.index('\nenum class DrawType:', start)
@@ -31,6 +34,7 @@ with tempfile.TemporaryDirectory(prefix='northlight-hdr-boundary-') as tmp:
         ('optimized', ['-O2'], methods),
         ('sanitizers', ['-O1', '-g', '-fsanitize=address,undefined', '-fno-omit-frame-pointer'], methods),
         ('before-fix', ['-O2', '-DNORTHLIGHT_HDR_BOUNDARY_COUNTERFACTUAL'], methods.replace('&&hdrUiInputs()', '')),
+        ('before-sky-fix', ['-O2'], methods.replace('return hdrSkyValid||hdrSkyDraw();', 'return hdrSkyValid;')),
     ]:
         (root / 'hdr_boundary_methods.h').write_text(production)
         if os.name == 'nt' and label == 'sanitizers':
@@ -41,6 +45,11 @@ with tempfile.TemporaryDirectory(prefix='northlight-hdr-boundary-') as tmp:
                    '-I', str(root), *fp.test_include_flags(), str(fp.TESTS / 'test_hdr_boundary.cpp'), '-o', str(exe)]
         subprocess.run(command, env=fp.zig_env() if os.name == 'nt' else None, check=True)
         run = subprocess.run([str(exe)], capture_output=True, text=True, timeout=30)
+        if label == 'before-sky-fix':
+            assert run.returncode != 0 and 'f.hdrSkyAdmission()' in run.stderr, run.stdout + run.stderr
+            print(label, 'expected first-sky admission assertion failed')
+            runs.append(dict(label=label, expected_failure=True))
+            continue
         assert run.returncode == 0, run.stdout + run.stderr
         print(label, run.stdout.strip())
         runs.append(dict(label=label, output=run.stdout.strip()))
