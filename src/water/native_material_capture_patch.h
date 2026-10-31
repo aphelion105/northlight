@@ -58,7 +58,7 @@ inline bool patch(const Word* code,size_t count,std::vector<Word>& out,unsigned&
     native.inputs[varying]=true;unsigned primitive=0;if(shared){while(primitive<10&&native.inputs[primitive])++primitive;if(primitive==10)return false;}
     auto temp=[&](){unsigned r=0;while(r<32&&native.temps[r])++r;if(r<32)native.temps[r]=true;return r;};
     const unsigned color=temp();if(color==32)return false;
-    const unsigned bankCount=shared?6:5;
+    const unsigned bankCount=9; // controls, shared UV identity, and view-to-world rows
     control=128;for(;;){bool free=true;for(unsigned i=0;i<bankCount;++i)free&=!native.constants[control+i];if(free)break;if(++control>192-bankCount)return false;}
     for(unsigned i=0;i<bankCount;++i)native.constants[control+i]=true;
     unsigned constants[256],temps[32],inputs[16],integerMap[16];for(unsigned i=0;i<256;++i)constants[i]=i;std::fill(std::begin(temps),std::end(temps),32u);std::fill(std::begin(inputs),std::end(inputs),16u);std::fill(std::begin(integerMap),std::end(integerMap),16u);

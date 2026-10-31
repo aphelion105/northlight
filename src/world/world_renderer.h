@@ -2533,7 +2533,8 @@ public:
     const NorthlightQuality::Settings& surfaceSettings()const{return quality;}
     IDirect3DTexture9* materialDetail=nullptr,*materialOcclusion=nullptr;float materialBumpGain=0,materialBumpDistance=48,materialOcclusionDistance=8;
     void setMaterialDetail(IDirect3DTexture9* texture,float gain,float distance,IDirect3DTexture9* occlusion=nullptr,float occlusionDistance=8.f){materialDetail=texture;materialBumpGain=gain;materialBumpDistance=distance;materialOcclusion=occlusion;materialOcclusionDistance=occlusionDistance;}
-    void materialLight(float* light)const{
+    void materialLight(float* light,float* inverseView=nullptr)const{
+        if(inverseView)std::memcpy(inverseView,context.inverseView,48);
         std::fill(light,light+4,0.f);if(!hasContext())return;
         const unsigned body=NorthlightGI::dot(sourceColors[1],sourceColors[1])>NorthlightGI::dot(sourceColors[0],sourceColors[0])?1:0;
         if(NorthlightGI::dot(sourceColors[body],sourceColors[body])<=1e-10f)return;

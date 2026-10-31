@@ -5,7 +5,7 @@
 #include <array>
 using Vec=std::array<float,3>;
 static Vec unit(Vec v){float l=std::sqrt(v[0]*v[0]+v[1]*v[1]+v[2]*v[2]);for(auto& x:v)x/=l;return v;}
-static Vec view(Vec v,float a){return {std::cos(a)*v[0]+std::sin(a)*v[2],v[1],-std::sin(a)*v[0]+std::cos(a)*v[2]};}
+static Vec view(Vec v,float a,float b){Vec w={std::cos(a)*v[0]+std::sin(a)*v[2],v[1],-std::sin(a)*v[0]+std::cos(a)*v[2]};return {w[0],std::cos(b)*w[1]+std::sin(b)*w[2],-std::sin(b)*w[1]+std::cos(b)*w[2]};}
 int main(int argc,char** argv){
     assert(argc==3);const std::string folder=argv[2];
     WNDCLASSW wc{};wc.lpfnWndProc=DefWindowProcW;wc.lpszClassName=L"NorthlightMaterialRotation";wc.hInstance=GetModuleHandleW(nullptr);assert(RegisterClassW(&wc));
@@ -21,13 +21,14 @@ int main(int argc,char** argv){
     ok(d->SetDepthStencilSurface(nullptr));ok(d->SetVertexShader(nullptr));ok(d->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1));ok(d->SetRenderState(D3DRS_ZENABLE,FALSE));ok(d->SetRenderState(D3DRS_CULLMODE,D3DCULL_NONE));
     for(auto key:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})ok(d->SetSamplerState(9,key,D3DTEXF_POINT));ok(d->SetSamplerState(9,D3DSAMP_MIPFILTER,D3DTEXF_NONE));
     float c[96][4]{};c[20][2]=.001f;c[82][0]=.75f;c[82][1]=48;
-    const Vec reference=unit({.7f,.2f,1}),base=unit({.2f,.1f,1}),mapped=unit({reference[0]+.2f,reference[1]-.15f,reference[2]});
     float maximum[2]{},neutralError=0,matchedError=0;unsigned cases=0;
+    for(Vec direction:std::vector<Vec>{{.7f,.2f,1},{1,.2f,0},{0,1,.1f},{.2f,.1f,-1},{0,0,-1},{.001f,0,-1}}){
+    const Vec reference=unit(direction),base=unit({reference[0]-.15f,reference[1]+.1f,reference[2]}),mapped=unit({reference[0]+.2f,reference[1]-.15f,reference[2]});
     for(unsigned kind=0;kind<3;++kind)for(unsigned codec=0;codec<2;++codec){
         Vec first{};for(unsigned angle=0;angle<41;++angle){
-            const float a=-2.f+angle*.1f;const auto ref=view(reference,a),detail=view(kind==1?reference:mapped,a),scene=kind==2?reference:base;
+            const float a=-2.f+angle*.1f,b=.3f*std::sin(a);const auto ref=view(reference,a,b),detail=view(kind==1?reference:mapped,a,b),scene=kind==2?reference:base;
             std::memcpy(c[80],ref.data(),12);std::memcpy(c[81],detail.data(),12);std::memcpy(c[83],scene.data(),12);
-            const float inverse[][4]={{std::cos(a),0,std::sin(a),0},{0,1,0,0},{-std::sin(a),0,std::cos(a),0}};
+            float inverse[3][4]={};for(unsigned j=0;j<3;++j){Vec axis{};axis[j]=1;const auto column=view(axis,a,b);for(unsigned k=0;k<3;++k)inverse[k][j]=column[k];}
             std::memcpy(c[26],inverse,sizeof inverse);std::memcpy(c[84],inverse,sizeof inverse);ok(d->SetPixelShaderConstantF(0,c[0],96));
             ok(d->SetTexture(9,nullptr));ok(d->SetRenderTarget(0,captureSurface));ok(d->SetPixelShader(shaders[codec]));ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(Vertex)));ok(d->EndScene());
             ok(d->SetRenderTarget(0,resultSurface));ok(d->SetTexture(9,capture));ok(d->SetPixelShader(shaders[2]));ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(Vertex)));ok(d->EndScene());ok(d->GetRenderTargetData(resultSurface,stage));
@@ -37,7 +38,9 @@ int main(int argc,char** argv){
             ++cases;
         }
     }
+    }
     std::printf("MATERIAL_FRAME_ROTATION cases=%u legacyCameraDelta=%.9g worldCameraDelta=%.9g neutralError=%.9g matchedError=%.9g\n",cases,maximum[0],maximum[1],neutralError,matchedError);
+    std::fflush(stdout);
     assert(maximum[0]>.02f&&maximum[1]<.0015f&&neutralError<.0015f&&matchedError<.0015f);
     std::puts("MATERIAL_FRAME_ROTATION_PASS");
     for(auto* p:shaders)p->Release();stage->Release();resultSurface->Release();captureSurface->Release();result->Release();capture->Release();d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);

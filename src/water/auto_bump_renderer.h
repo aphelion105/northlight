@@ -55,6 +55,7 @@ class NorthlightAutoBump {
     unsigned deferredTextureDraws=0,textureBarriers=0,snapshotBudget=0,snapshotStreams=0,textureRefused=0,batchLimit=0;
     bool deferredReport=false;uint64_t deferredReportFrame=0;
     float projection[4]={1,1,-1,8};
+    float captureToWorld[12]={1,0,0,0,0,1,0,0,0,0,1,0};
     // Only these states are changed by the replay. A full state block per material
     // copied every shader constant/texture and rebound all MRT/depth surfaces.
     struct ReplayState {
@@ -175,7 +176,7 @@ class NorthlightAutoBump {
                     entry.deferredSafe=true;for(const auto& op:program.ops){if(op.code==31||op.code==81||op.code==48||op.code==47||op.code==65534)continue;
                         for(unsigned i=1;i<=op.size;++i){const auto t=patched[op.at+i];const unsigned type=NorthlightWaterShaderPatch::regType(t),r=NorthlightWaterShaderPatch::regIndex(t);if(t&0x2000u)entry.deferredSafe=false;if(type==10&&r!=14){if(r<16)entry.samplers|=1u<<r;else entry.deferredSafe=false;}
                             if(type==2&&r<256&&!defined[r]){entry.first=std::min(entry.first,r);entry.last=std::max(entry.last,r);}}}
-                    entry.deferredSafe&=entry.first<=entry.constant&&entry.last>=entry.constant+4&&entry.last<224;
+                    entry.deferredSafe&=entry.first<=entry.constant&&entry.last>=entry.constant+8&&entry.last<224;
                 }
             }}
         auto added=variants.emplace(source,entry).first;cold.modelBuilt+=entry.shader!=nullptr;if(!entry.shader)logf("MATERIAL_MODEL capture unavailable; native material retained");return entry.shader?&added->second:nullptr;
@@ -411,6 +412,7 @@ public:
     template<class Draw> HRESULT geometryDraw(Draw draw,bool native=false){return parallax.shared()?sharedPOM.drawBound(true):displacement.draw(draw,native);}
     template<class Submit> bool deferModelOverlay(Submit submit){return displacement.deferModelOverlay(submit);}
     void setProjection(float x,float y,float z){projection[0]=x;projection[1]=y;projection[2]=z;}
+    void setInverseView(const float* rows){std::copy(rows,rows+12,captureToWorld);}
     void setLight(const float* light){std::copy(light,light+4,occlusionLight);}
     void configure(const NorthlightQuality::Settings& settings){
         displacement.configure(settings);normals.configure(settings);
@@ -579,7 +581,7 @@ public:
         if(sharing&&!sharedBinding.bind(sharedPOM,false))sharing=false;
         if(domain==4){model=modelCapture(native,alpha,sharing);if(!model&&sharing){sharedBinding.restore();sharing=false;model=modelCapture(native,alpha);}if(!model)return;saved.constantBase=model->constant;saved.normalStage=14;}
         if(sharing){saved.constantCount=6;saved.stateCount=16;for(unsigned i=14;i<16;++i)if(FAILED(d->GetRenderState(saved.states[i].key,&saved.states[i].value)))return;}
-        if(domain==1)saved.constantCount=9;
+        saved.constantCount=9;
         const bool multisampled=desc.MultiSampleType!=D3DMULTISAMPLE_NONE;
         // An opaque native wall does not consume diffuse/vertex alpha. Use
         // the existing map-only capture, avoiding a live diffuse dependency.
@@ -620,6 +622,7 @@ public:
         float pom[4];std::copy(pomControl,pomControl+4,pom);if(modes[domain-1]!=2||!parallax.supports(saved.pixel,material))pom[0]=0;
         float occult[4];std::copy(occlusionControl,occlusionControl+4,occult);occult[3]=needsOcclusion&&occlusionTarget?occlusionDistance():0.f;if(pom[0]<=0||occlusionLight[3]<=0)occult[0]=0;
         float bank[36]={};for(unsigned i=0;i<4;++i){bank[i]=constants[i];bank[4+i]=projection[i];bank[8+i]=pom[i];bank[12+i]=occult[i];bank[16+i]=occlusionLight[i];bank[20+i]=sharedPOM.control[i];}
+        std::copy(captureToWorld,captureToWorld+12,bank+24);
         if(domain==1){
             // Use this draw's terrain view rotation. World context can still
             // describe the preceding frame when the first ground draw arrives.

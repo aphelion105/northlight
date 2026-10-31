@@ -1,5 +1,5 @@
 {
-  "bump_include_sha256": "03f90009cf23e93260c70a31d78999b3bd60aebf8bbcf0d5d6e5e02bf5ef3ec1",
+  "bump_include_sha256": "1a947edc7a4bc83c56e6adfb05bdb5d7e2a6fca4e4dba83ede009d514c20c3f5",
   "source_sha256": "359cb046a4d48c4353e029edc5536d01a59edcb2233ae22800981ce5c7840648",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
@@ -38,9 +38,9 @@
     },
     "WorldLighting": {
       "target": "ps_3_0",
-      "bytes": 6800,
-      "sha256": "c1162603c598952ebb186cf15da591d872579577ffa1819c1dfd32622793d42b",
-      "static_instruction_slots": 390,
+      "bytes": 6892,
+      "sha256": "17b44acc019d784c3d3e2783f221123a9333b3d94b5629c2c3166462e17a7b21",
+      "static_instruction_slots": 395,
       "temporary_registers": 17,
       "samplers": [
         1,
@@ -52,7 +52,7 @@
         14
       ],
       "instructions": {
-        "mul": 88,
+        "mul": 90,
         "frc": 3,
         "add": 101,
         "max": 10,
@@ -60,7 +60,7 @@
         "min": 4,
         "texldl": 7,
         "rcp": 10,
-        "cmp": 42,
+        "cmp": 45,
         "if": 10,
         "else": 9,
         "endif": 10,
@@ -309,9 +309,9 @@
     },
     "LocalDirect": {
       "target": "ps_3_0",
-      "bytes": 5072,
-      "sha256": "42375250fb13bdc2432f6a0134504b91b7b610825a652800a7b1d2c6838afd4c",
-      "static_instruction_slots": 280,
+      "bytes": 5164,
+      "sha256": "5b16c83831938fec2c2a9b03dc8fbb04815d93e9b71df4e9f5e6ae1926d4e861",
+      "static_instruction_slots": 285,
       "temporary_registers": 8,
       "samplers": [
         1,
@@ -321,7 +321,7 @@
         14
       ],
       "instructions": {
-        "mul": 80,
+        "mul": 82,
         "frc": 1,
         "add": 74,
         "max": 2,
@@ -329,7 +329,7 @@
         "min": 2,
         "texldl": 5,
         "rcp": 16,
-        "cmp": 27,
+        "cmp": 30,
         "if": 4,
         "else": 4,
         "endif": 4,
@@ -342,10 +342,10 @@
     },
     "LocalDirect16": {
       "target": "ps_3_0",
-      "bytes": 6972,
-      "sha256": "be0bd12bef825bf2662559f0649b3208da39a12f4a08c81b488220ed75ff275e",
-      "static_instruction_slots": 400,
-      "temporary_registers": 9,
+      "bytes": 7064,
+      "sha256": "fa2b003f9042e41d0715d651062aa4d64d9bee52aa64a73622f229910de9d607",
+      "static_instruction_slots": 405,
+      "temporary_registers": 8,
       "samplers": [
         1,
         9,
@@ -354,7 +354,7 @@
         14
       ],
       "instructions": {
-        "mul": 123,
+        "mul": 125,
         "frc": 1,
         "add": 109,
         "max": 2,
@@ -364,7 +364,7 @@
         "if": 4,
         "else": 4,
         "rcp": 25,
-        "cmp": 36,
+        "cmp": 39,
         "endif": 4,
         "dp3": 39,
         "rsq": 20,
@@ -569,9 +569,9 @@
     },
     "MaterialComposite": {
       "target": "ps_3_0",
-      "bytes": 5092,
-      "sha256": "aefdf747f483cfa99904f1dc7d93985acb1dcd451cae11081736ed7931232ef8",
-      "static_instruction_slots": 256,
+      "bytes": 5208,
+      "sha256": "394e7fba007096c79b92b502a1534f1e53d4533ea38d9821cfa8452ecf336c04",
+      "static_instruction_slots": 261,
       "temporary_registers": 10,
       "samplers": [
         0,
@@ -587,7 +587,7 @@
         14
       ],
       "instructions": {
-        "mul": 50,
+        "mul": 52,
         "frc": 1,
         "add": 61,
         "max": 6,
@@ -595,7 +595,7 @@
         "min": 5,
         "texldl": 7,
         "rcp": 12,
-        "cmp": 37,
+        "cmp": 40,
         "if": 6,
         "else": 6,
         "endif": 6,
@@ -611,9 +611,9 @@
     },
     "MaterialAudit": {
       "target": "ps_3_0",
-      "bytes": 3980,
-      "sha256": "24bcbfa00628222ab4023044315204a72d7755f0578794d5caa883e2c5419b46",
-      "static_instruction_slots": 235,
+      "bytes": 4072,
+      "sha256": "a6283bd85030a6373d033570260ec2127f6f5938fd4de9638e80c0473c527498",
+      "static_instruction_slots": 240,
       "temporary_registers": 8,
       "samplers": [
         1,
@@ -623,7 +623,7 @@
         14
       ],
       "instructions": {
-        "mul": 33,
+        "mul": 35,
         "frc": 1,
         "add": 51,
         "max": 3,
@@ -631,7 +631,7 @@
         "min": 4,
         "texldl": 6,
         "rcp": 7,
-        "cmp": 44,
+        "cmp": 47,
         "if": 8,
         "else": 6,
         "endif": 8,
