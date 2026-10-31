@@ -409,6 +409,7 @@ public:
     void setConstantEpochSource(void* context,NorthlightConstantEpoch::Reader reader){displacement.setConstantEpochSource(context,reader);}
     void setVertexIdentity(void* context,VertexIdentity reader){vertexIdentityContext=context;vertexIdentity=reader;}
     template<class Draw> HRESULT geometryDraw(Draw draw,bool native=false){return parallax.shared()?sharedPOM.drawBound(true):displacement.draw(draw,native);}
+    template<class Submit> bool deferModelOverlay(Submit submit){return displacement.deferModelOverlay(submit);}
     void setProjection(float x,float y,float z){projection[0]=x;projection[1]=y;projection[2]=z;}
     void setLight(const float* light){std::copy(light,light+4,occlusionLight);}
     void configure(const NorthlightQuality::Settings& settings){
@@ -490,7 +491,7 @@ public:
         const unsigned k=modelFamily==3?4:kind(kAutoBumpVertex,hash);if(!k)return;if(vertices.size()>=4096){vertexOverflow=true;return;}
         if(!active()||!modes[k-1]){auto added=vertices.emplace(original,Vertex{nullptr,k}).first;original->AddRef();added->second.pending=original;added->second.pendingHash=hash;++pendingVertices;++cold.vertexQueued;return;}
         ++cold.vertexSources;cold.sourceBytes+=count*sizeof(DWORD);ColdTimer timer{cold.vertexMs};
-        Vertex vertex;vertex.kind=k;if(compileVertex(original,vertex,code,count))try{vertices.emplace(original,vertex);}catch(...){drop(vertex.patched);throw;}
+        Vertex vertex;vertex.kind=k;vertex.pendingHash=hash;if(compileVertex(original,vertex,code,count))try{vertices.emplace(original,vertex);}catch(...){drop(vertex.patched);throw;}
     }
     void registerPixel(IDirect3DPixelShader9* original,std::uint64_t hash){
         pixels.erase(original);const unsigned k=kind(kAutoBumpPixel,hash);
@@ -508,7 +509,11 @@ public:
         if((domain==1&&!terrain)||(domain==2&&!walls)||(domain==3&&!grass)||(domain==4&&!modes[3]))return;
         DWORD colorWrite=0,depthWrite=0;
         if(FAILED(d->GetRenderState(D3DRS_COLORWRITEENABLE,&colorWrite))||FAILED(d->GetRenderState(D3DRS_ZWRITEENABLE,&depthWrite)))return;
-        if(!(colorWrite&7)||(!depthWrite&&domain!=1)){++invisibleRejected;return;}
+        if(!(colorWrite&7)){++invisibleRejected;return;}
+        if(!depthWrite&&domain!=1){
+            if(domain==4&&modes[3]==3&&geometry&&displacement.modelOverlayShader(v->second.pendingHash)&&ensureVertex(original,v->second))displacement.prepareModelOverlay(original,*geometry);
+            ++invisibleRejected;return;
+        }
         if(!ensureVertex(original,v->second))return;
         const bool geometryMode=modes[domain-1]==3;bool skipGeometry=false;
         if(geometry&&(!geometryMode||!displacement.skinned(original))){float nearest=0;

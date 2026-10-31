@@ -49,6 +49,7 @@ test_concurrent_geometry_build.py
 test_contact_fog.py
 test_contact_lighting.py
 test_contact_normal_endpoints.py
+test_crystal_overlay_gpu.py
 test_dev_tuning_build.py
 test_device_mirror.py
 test_diagnostics_switch.py
