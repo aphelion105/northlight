@@ -65,6 +65,15 @@ float4 HdrReduce(float2 uv:TEXCOORD0):COLOR0 {
         sum+=tex2Dlod(HdrScene,float4(base+float2(x,y)*HdrParams.xy,0,0));
     return sum/64;
 }
+float4 HdrReduceLinear(float2 uv:TEXCOORD0):COLOR0 {
+    // Each linear sample averages an exact 2x2 block. Meter sizes are powers
+    // of two, so these coordinates lie exactly between its four texel centers.
+    float2 base=(floor(uv/(HdrParams.xy*8))*8+1)*HdrParams.xy;
+    float4 sum=0;
+    [unroll]for(int y=0;y<4;++y)[unroll]for(int x=0;x<4;++x)
+        sum+=tex2Dlod(HdrScene,float4(base+float2(x,y)*2*HdrParams.xy,0,0));
+    return sum/16;
+}
 float4 HdrDecodeWorld(float2 uv:TEXCOORD0):COLOR0 {
     // A separately captured linear sky already contains the owned HDR sources.
     // The native horizon uses depth .94..1, beyond the main world band.
@@ -113,13 +122,21 @@ float4 HdrBloom(float2 uv:TEXCOORD0):COLOR0 {
     }
     return float4(sum/16,1);
 }
+float4 HdrBloomVertical(float2 uv:TEXCOORD0):COLOR0 {
+    // Half-texel pairs give exactly 1,4,6,4,1 with four samples. Unlike
+    // 1.2-texel pairs, their weights survive hardware interpolation precision.
+    float2 inner=float2(0,.5*HdrParams.y),outer=inner*3;
+    return float4((tex2D(HdrScene,uv-outer).rgb*2+tex2D(HdrScene,uv-inner).rgb*6+
+                   tex2D(HdrScene,uv+inner).rgb*6+tex2D(HdrScene,uv+outer).rgb*2)/16,1);
+}
 struct HdrPresentationOutput {float4 hdr:COLOR0;float4 legacy:COLOR1;};
 HdrPresentationOutput HdrWorldLinear(float2 uv:TEXCOORD0) {
     float4 source=tex2D(HdrScene,uv);float3 radiance=max(source.rgb,0);
     if(HdrGrade.w>0)radiance+=tex2D(HdrExtra,uv).rgb*HdrGrade.w;
     float luminance=max(dot(radiance,float3(.2126,.7152,.0722)),.000001);
     float automatic=HdrGrade.z>.5?tex2D(HdrAux,float2(.5,.5)).r:0;
-    radiance*=pow(luminance/.18,HdrGrade.x-1)*HdrGrade.y*exp2(automatic)*HdrColor.rgb;
+    [branch]if(HdrGrade.x!=1)radiance*=pow(luminance/.18,HdrGrade.x-1);
+    radiance*=HdrGrade.y*exp2(automatic)*HdrColor.rgb;
     float peak=max(radiance.r,max(radiance.g,radiance.b));
     float span=HdrColor.w-HdrColor.x;
     float mapped=span>.000001?HdrColor.x+span*(1-exp2(-1.44269504089*max(peak-HdrColor.x,0)/span)):min(peak,HdrColor.w);

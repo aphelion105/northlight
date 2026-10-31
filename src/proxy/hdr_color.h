@@ -81,7 +81,7 @@ public:
     }
     template<class Draw> HRESULT fixedDraw(IDirect3DDevice9* d,float uiWhite,Draw submit){
         DWORD fog=0,coordinates=0,transform=0,blend=0,src=0,dst=0;
-        d->GetRenderState(D3DRS_ALPHABLENDENABLE,&blend);d->GetRenderState(D3DRS_SRCBLEND,&src);d->GetRenderState(D3DRS_DESTBLEND,&dst);
+        d->GetRenderState(D3DRS_ALPHABLENDENABLE,&blend);if(blend){d->GetRenderState(D3DRS_SRCBLEND,&src);d->GetRenderState(D3DRS_DESTBLEND,&dst);}
         if(blend&&src==D3DBLEND_ZERO&&dst==D3DBLEND_INVSRCALPHA){
             DWORD op=0,writes=0,srgb=0;
             if(SUCCEEDED(d->GetRenderState(D3DRS_BLENDOP,&op))&&op==D3DBLENDOP_ADD&&
@@ -154,7 +154,9 @@ public:
         IDirect3DPixelShader9* original=nullptr;
         if(FAILED(d->GetPixelShader(&original)))return E_FAIL;
         if(!original)return fixedDraw(d,uiWhite,submit);
-        DWORD src=0,dst=0,srgb=0,blend=0;d->GetRenderState(D3DRS_SRCBLEND,&src);d->GetRenderState(D3DRS_DESTBLEND,&dst);d->GetRenderState(D3DRS_SRGBWRITEENABLE,&srgb);d->GetRenderState(D3DRS_ALPHABLENDENABLE,&blend);
+        DWORD src=0,dst=0,srgb=0,blend=0;d->GetRenderState(D3DRS_ALPHABLENDENABLE,&blend);
+        if(blend){d->GetRenderState(D3DRS_SRCBLEND,&src);d->GetRenderState(D3DRS_DESTBLEND,&dst);}
+        const HRESULT srgbStatus=d->GetRenderState(D3DRS_SRGBWRITEENABLE,&srgb);if(FAILED(srgbStatus)){original->Release();return srgbStatus;}
         const bool screen=blend&&src==D3DBLEND_INVDESTCOLOR&&dst==D3DBLEND_ONE;
         struct Restore {IDirect3DDevice9* d;IDirect3DPixelShader9* ps;DWORD srgb,src;bool screen;~Restore(){d->SetPixelShader(ps);if(srgb)d->SetRenderState(D3DRS_SRGBWRITEENABLE,srgb);if(screen)d->SetRenderState(D3DRS_SRCBLEND,src);ps->Release();}} restore{d,original,srgb,src,screen};
         // The compatibility layer converted screen sources to linear additive
