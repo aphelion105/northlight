@@ -50,6 +50,32 @@ int main(){
     auto isolated=source;isolated.vertexCount=3;isolated.primitiveCount=1;isolated.indices={0,1,2};auto triUV=uv;triUV.resize(3);h.width=h.height=8;h.values.assign(64,.8f);
     assert(build(isolated,decl,4,triUV,h,2,false,false,false,out));assert(out.primitiveCount==3);unsigned raised=0;
     for(unsigned i=0;i<out.vertexCount;++i){float delta[3];std::memcpy(delta,out.streams[0].bytes.data()+size_t(i)*out.streams[0].stride+sizeof(V),12);raised+=delta[2]>.2f;}assert(raised==1);
+    // Thin skinned eye shells and UV-seam triangles must retain their authored
+    // surface. Otherwise the centroid fan creates bumps behind native overlays.
+    for(auto& v:skin){v.weights[0]=255;v.bones[0]=0;}
+    std::memcpy(skinned.streams[0].bytes.data(),skin,sizeof skin);
+    for(bool gpu:{false,true}){
+        assert(build(skinned,skinDecl,6,uv,h,4,false,false,false,out,nullptr,nullptr,nullptr,1,gpu));
+        assert(out.vertexCount==skinned.vertexCount&&out.primitiveCount==skinned.primitiveCount);
+        for(unsigned i=0;i<out.vertexCount;++i){float delta[3];std::memcpy(delta,out.streams[0].bytes.data()+size_t(i)*out.streams[0].stride+sizeof(Skin),12);
+            assert(delta[0]==0&&delta[1]==0&&delta[2]==0);}
+    }
+    // A connected interior still receives relief, tapered toward the seam.
+    // CPU offsets and GPU directions must apply the same continuous mask.
+    Skin fan[5];for(unsigned i=0;i<4;++i){fan[i]=skin[i];fan[i].v.x*=2;fan[i].v.y*=2;}
+    fan[4]=skin[0];fan[4].v.x=fan[4].v.y=1;fan[4].v.u=fan[4].v.v=.5f;
+    Mesh interior=skinned;interior.vertexCount=5;interior.primitiveCount=4;interior.indices={0,1,4,1,3,4,3,2,4,2,0,4};
+    interior.streams[0].bytes.resize(sizeof fan);std::memcpy(interior.streams[0].bytes.data(),fan,sizeof fan);
+    auto fanUV=uv;fanUV.push_back({.5f,.5f});
+    for(bool gpu:{false,true})for(float height:{.2f,.8f}){
+        h.values.assign(64,height);assert(build(interior,skinDecl,6,fanUV,h,8,false,false,false,out,nullptr,nullptr,nullptr,1,gpu));unsigned moved=0;
+        for(unsigned i=0;i<out.vertexCount;++i){const auto* p=out.streams[0].bytes.data()+size_t(i)*out.streams[0].stride;Skin v;float delta[3];std::memcpy(&v,p,sizeof v);std::memcpy(delta,p+sizeof v,12);
+            const float mask=1-std::max(std::fabs(v.v.x-1),std::fabs(v.v.y-1));
+            const bool original=(v.v.x==1&&v.v.y==1)||mask==0;
+            const float offset=delta[2]*(gpu?height-.5f:1);
+            assert(std::fabs(offset-(original?0:mask*(height-.5f)))<1e-6f);moved+=offset!=0;
+        }assert(moved>0);
+    }
     // A rigid shader may share a declaration with unused, all-zero skin weights.
     // Those fields must not reject an otherwise valid rigid surface.
     for(auto& v:skin)for(auto& w:v.weights)w=0;std::memcpy(skinned.streams[0].bytes.data(),skin,sizeof skin);

@@ -53,7 +53,9 @@ for model in (('3',) if args.quick else ('3','2')):
             assert np.max(np.abs(frame(folder/'displacement-animated.fgr')-geometry))>.001
             assert (np.max(np.abs(frame(folder/'pom-on.fgr')-normal))<.0002 if skin=='varying' else np.max(np.abs(frame(folder/'pom-on.fgr')-normal))>.0001)
             before=frame(folder/'geometry-off-depth.fgr');after=frame(folder/'geometry-on-depth.fgr');valid=(before[:,:,3]>.01)&(after[:,:,3]>.01);assert valid.any()
-            delta=np.abs(before[:,:,2]/np.maximum(before[:,:,3],1e-6)-after[:,:,2]/np.maximum(after[:,:,3],1e-6));assert (delta[valid].max()<.0002 if skin=='varying' else delta[valid].max()>.0001)
-            record={'shader_model':model,'skin':skin,'combiner':combiner,'max_view_depth_change':float(delta[valid].max()),'native_animated_surface_preserved':skin=='varying','pose_changed':True,'bindings_and_all_vs_constants_restored':True}
+            # This two-triangle skinned patch has only seam vertices: its native
+            # surface must survive, while normal/POM shading remains active.
+            delta=np.abs(before[:,:,2]/np.maximum(before[:,:,3],1e-6)-after[:,:,2]/np.maximum(after[:,:,3],1e-6));assert (delta[valid].max()>.0001 if skin=='rigid' else delta[valid].max()<.0002)
+            record={'shader_model':model,'skin':skin,'combiner':combiner,'max_view_depth_change':float(delta[valid].max()),'native_seam_surface_preserved':skin!='rigid','native_animated_surface_preserved':skin=='varying','pose_changed':True,'bindings_and_all_vs_constants_restored':True}
             records.append(record);print('MODEL_MATERIAL_PASS',record,flush=True)
 (out/'validation.json').write_text(json.dumps(records,indent=2)+'\n')

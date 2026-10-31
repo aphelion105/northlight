@@ -537,7 +537,10 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
 #endif
             std::printf("DISPLACEMENT_REWRITE_GPU_PASS rewrites=32 rebuilds=%llu cpuMs=%.6f msaa=%u pressure=%u\n",(unsigned long long)builds,std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count(),unsigned(samples),unsigned(pressure));
         }
-        if((mode>=5&&mode<8||mode==9)){assert(bump.geometryPrepared());if(!unsafeSkin)assert(bump.geometryPrimitives()>2);std::printf("DISPLACEMENT_PREPARED mode=%u triangles=%u heightGPU=%u\n",mode,bump.geometryPrimitives(),unsigned(bump.geometryHeightGPU()));}
+        if((mode>=5&&mode<8||mode==9)){assert(bump.geometryPrepared());
+            if(model&&!meshGrid&&MaterialCaptureStateTestAccess::geometry(bump).skinned(vs))assert(bump.geometryPrimitives()==2);
+            else if(!unsafeSkin)assert(bump.geometryPrimitives()>2);
+            std::printf("DISPLACEMENT_PREPARED mode=%u triangles=%u heightGPU=%u\n",mode,bump.geometryPrimitives(),unsigned(bump.geometryHeightGPU()));}
         if(mode==8)assert(!bump.geometryPrepared());
         if(mode==7&&coverageVS)d->SetVertexShader(coverageVS);
         if(std::getenv("NORTHLIGHT_TEST_SHARED_CLEAR_HALF")&&mode>=2&&mode<=4)MaterialCaptureStateTestAccess::clearHalf(bump,d);
