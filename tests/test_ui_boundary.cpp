@@ -33,6 +33,15 @@ int main(){
         assert(!accepts(false,nullptr));
         ortho(p);p[15]=0;assert(!accepts(false,p));
     }
+    { // Observed native Ctrl+R transform, distinct from the scalable UI VS.
+        const float native[16]={2.f/3840,0,0,-.99974f,0,2.f/2160,0,-1.00046f,0,0,.0001f,.5f,0,0,0,1};
+        assert(pixelSpaceRows(native,3840,2160,0,1));
+        assert(!pixelSpaceRows(native,3840,2160,0,.94f));
+        assert(!pixelSpaceRows(native,1920,1080,0,1));
+        assert(!pixelSpaceRows(c,3840,2160,0,1));
+        float invalid[16];for(unsigned i=0;i<16;++i)invalid[i]=native[i];invalid[14]=1;invalid[15]=0;
+        assert(!pixelSpaceRows(invalid,3840,2160,0,1));
+    }
     { // (a) stock: the hash boundary fires in frame 1
         Arming a;unsigned armed=0;assert(a.learning()&&!a.armed()&&!a.disarmed());
         assert(a.endFrame(FK::WorldHash)==R::None);assert(a.disarmed()&&!a.learning());

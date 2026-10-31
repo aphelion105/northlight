@@ -11,9 +11,9 @@
 #include "imgui_internal.h"
 
 struct OverlayDevice:ForwardIDirect3DDevice9{
-    IDirect3DSurface9* target=nullptr;unsigned stateBlockCreates=0;
+    IDirect3DSurface9* target=nullptr;unsigned stateBlockCreates=0;bool allowNested=false;
     HRESULT STDMETHODCALLTYPE CreateStateBlock(D3DSTATEBLOCKTYPE type,IDirect3DStateBlock9** out)override{
-        if(++stateBlockCreates>1){*out=nullptr;return E_OUTOFMEMORY;}
+        if(++stateBlockCreates>1&&!allowNested){*out=nullptr;return E_OUTOFMEMORY;}
         return real->CreateStateBlock(type,out);
     }
     explicit OverlayDevice(IDirect3DDevice9* d):ForwardIDirect3DDevice9(d){}
@@ -38,13 +38,14 @@ int main(int argc,char** argv){
     assert(service->snapshot());
     auto overlay=NorthlightOverlay::create(&device,true,"F11",service,[](const char* text){std::puts(text);});assert(overlay&&!overlay->visible());
     SendMessageW(window,WM_KEYDOWN,VK_F11,0);SendMessageW(window,WM_KEYUP,VK_F11,0);assert(overlay->visible());
+    bool calibrationExpected=false;
     auto draw=[&](float white){
-        ok(real->ColorFill(device.target,nullptr,0xff000000));device.stateBlockCreates=0;
+        ok(real->ColorFill(device.target,nullptr,0xff000000));device.stateBlockCreates=0;device.allowNested=calibrationExpected;
         ok(real->SetRenderState(D3DRS_CULLMODE,D3DCULL_CW));ok(real->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE));
         D3DMATRIX transform{};for(unsigned i=0;i<4;++i)transform.m[i][i]=float(i+1);transform.m[3][0]=3.25f;
         for(auto mode:{D3DTS_WORLD,D3DTS_VIEW,D3DTS_PROJECTION})ok(real->SetTransform(mode,&transform));
         {SavedState saved(&device);assert(saved.ok);overlay->draw(white);}
-        assert(device.stateBlockCreates==1);DWORD value=0;ok(real->GetRenderState(D3DRS_CULLMODE,&value));assert(value==D3DCULL_CW);ok(real->GetRenderState(D3DRS_ALPHABLENDENABLE,&value));assert(value==FALSE);
+        assert(calibrationExpected?device.stateBlockCreates>=1:device.stateBlockCreates==1);DWORD value=0;ok(real->GetRenderState(D3DRS_CULLMODE,&value));assert(value==D3DCULL_CW);ok(real->GetRenderState(D3DRS_ALPHABLENDENABLE,&value));assert(value==FALSE);
         for(auto mode:{D3DTS_WORLD,D3DTS_VIEW,D3DTS_PROJECTION}){D3DMATRIX restored{};ok(real->GetTransform(mode,&restored));assert(!std::memcmp(&transform,&restored,sizeof transform));}
     };
     draw(0);draw(0);
@@ -80,6 +81,20 @@ int main(int argc,char** argv){
         }ok(readback->UnlockRect());assert(changed[mode]>10000&&changed[mode]<W*H);
     }
     assert(peaks[0]>.5f&&peaks[0]<=1);if(!sdrOnly)assert(peaks[1]>1.2f&&peaks[1]<=2.01f&&peaks[2]>2.4f&&peaks[2]<=4.01f);
+      if(page==2&&!sdrOnly){
+        ImGuiWindow* content=nullptr;for(auto* child:parent->DC.ChildWindows)if(child!=nav&&child->Active)content=child;assert(content);
+        ImGui::SetScrollY(content,content->ScrollMax.y);draw(160);draw(160);calibrationExpected=true;
+        ImGui::ActivateItemByID(content->GetID("Show HDR calibration"));draw(160);draw(160);
+        ImGui::SetScrollY(content,content->ScrollMax.y);draw(160);draw(160);
+        float calibrationPeaks[2]{};
+        for(unsigned mode=0;mode<2;++mode){draw(mode?320:160);ok(real->GetRenderTargetData(device.target,readback));D3DLOCKED_RECT lock{};ok(readback->LockRect(&lock,nullptr,D3DLOCK_READONLY));
+          std::ofstream output(std::string(argv[2])+"/calibration-"+std::to_string(mode)+".fgr",std::ios::binary);const uint32_t header[]={0x31524746,W,H,D3DFMT_A16B16G16R16F,8};output.write(reinterpret_cast<const char*>(header),sizeof header);
+          for(unsigned y=0;y<H;++y){const auto* row=static_cast<const unsigned char*>(lock.pBits)+y*lock.Pitch;output.write(reinterpret_cast<const char*>(row),W*8);for(unsigned x=0;x<W;++x){std::uint16_t value;std::memcpy(&value,row+x*8,2);calibrationPeaks[mode]=std::max(calibrationPeaks[mode],half(value));}}
+          ok(readback->UnlockRect());assert(calibrationPeaks[mode]>12.4f);}
+        assert(calibrationPeaks[0]==calibrationPeaks[1]);std::printf("CALIBRATION_GPU_PASS peak=%g uiIndependent=1 stateRestored=1\n",calibrationPeaks[0]);
+        // Return to the checkbox before closing it; invisible ImGui items cannot receive activation.
+        ImGui::SetScrollY(content,0);draw(160);draw(160);ImGui::SetScrollY(content,450);draw(160);draw(160);
+      }
       std::printf("OVERLAY_GPU_PASS page=%s sdrPeak=%g white160Peak=%g white320Peak=%g pixels=%u/%u/%u actualPanel=1 snapshotLoaded=1 privateTarget=1 windowsHDROutput=0\n",pages[page],peaks[0],peaks[1],peaks[2],changed[0],changed[1],changed[2]);
     }
     overlay.reset();service.reset();readback->Release();device.target->Release();real->Release();api->Release();FreeLibrary(module);DestroyWindow(window);UnregisterClassW(wc.lpszClassName,wc.hInstance);

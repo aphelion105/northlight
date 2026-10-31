@@ -102,7 +102,7 @@ int main(int argc,char** argv){
         ok(d->BeginScene());ok(color.draw(d,160,[&]{return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(UiVertex));}));ok(d->EndScene());float actual[4];pixel(d,target,staging,actual);
         for(unsigned c=0;c<4;++c){double a=original[3],expected;
             if(c==3)expected=blend==0?a:(blend==1?a*a+1-a:(blend==2?1:a));
-            else{double background=(c+1)*.2,source=decode(blend==2?original[c]/std::max(a,.000001):original[c])*(blend==3?1:2);
+            else{double background=(c+1)*.2,source=decode(std::min(1.,blend==2?original[c]/std::max(a,.000001):original[c]))*(blend==3?1:2);
                 if(blend==2)source*=a;expected=blend==0?source:(blend==1?source*a+background*(1-a):(blend==2?source+background*(1-a):source*background));}
             double error=std::fabs(actual[c]-expected);maximum=std::max(maximum,error);
             if(!std::isfinite(actual[c])||error>3e-5){if(failures++<4)std::printf("FAIL shader=%u blend=%u alpha=%.2f channel=%u got=%.9g want=%.9g\n",program,blend,alpha,c,actual[c],expected);}
@@ -225,13 +225,22 @@ int main(int argc,char** argv){
                 for(unsigned c=0;c<3;++c){const double expected=decode(original[c])*2,error=std::fabs(rebound[c]-expected);maximum=std::max(maximum,error);if(!std::isfinite(rebound[c])||error>.002){if(failures++<4)std::printf("FAIL HDR UI target rebind channel=%u got=%.8f want=%.8f\n",c,rebound[c],expected);}}
                 ++cases;
             }
+            // A logical SDR copy after HDR UI is a fresh pre-grade scene,
+            // materialized only when requested. It never erases the HDR UI.
+            float copiedLegacy[4];pixel8(d,back,referenceRead,copiedLegacy);
+            for(unsigned c=0;c<3;++c)assert(std::fabs(copiedLegacy[c]-before[c])<.008);
+            float stillUi[4];pixel(d,back,readback,stillUi,true);
+            if(program==2)for(unsigned c=0;c<3;++c)assert(std::fabs(stillUi[c]-actual[c])<.002);
+            RECT partial={0,0,4,4};ok(d->ColorFill(back,&partial,D3DCOLOR_XRGB(26,51,77)));
+            pixel8(d,back,referenceRead,copiedLegacy);
+            assert(std::fabs(copiedLegacy[0]-26.f/255)<.008&&std::fabs(copiedLegacy[1]-.2f)<.008);++cases;
             if(program==1){D3DVIEWPORT9 inset={4,4,backWidth-8,backHeight-8,0,1};RECT clip={4,4,LONG(backWidth-4),LONG(backHeight-4)};ok(d->SetViewport(&inset));ok(d->SetScissorRect(&clip));ok(d->SetRenderState(D3DRS_SCISSORTESTENABLE,TRUE));}
             if(program==1)ok(d->Present(nullptr,nullptr,nullptr,nullptr));
             else{IDirect3DSwapChain9* primary=nullptr;ok(d->GetSwapChain(0,&primary));ok(primary->Present(nullptr,nullptr,nullptr,nullptr,0));primary->Release();}
             if(program==1){
                 ok(d->SetRenderState(D3DRS_ZWRITEENABLE,TRUE));ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE));float white[]={1,1,1,1};vertices(quad,white);
                 ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(UiVertex)));ok(d->EndScene());
-                float outside[4];pixel8(d,back,referenceRead,outside);assert(std::fabs(outside[0]-.2)<.0001);ok(d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE));
+                float outside[4];pixel8(d,back,referenceRead,outside);assert(std::fabs(outside[0]-26.f/255)<.0001);ok(d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE));
             }
             ++cases;
         }

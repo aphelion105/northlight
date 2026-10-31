@@ -1,5 +1,6 @@
 // The settings window's contents. See settings_panel.h; the draft rules are in settings_draft.h.
 #include "settings_panel.h"
+#include <deque>
 #include <algorithm>
 #include <array>
 #include <cfloat>
@@ -37,7 +38,9 @@ const std::map<std::string,const char*> Labels={
     {"ContactAO","Ambient occlusion"},{"AOMethod","AO method"},{"AOQuality","AO quality"},{"AutoBumpModels","M2 models (all types)"},{"AutoMaterialOcclusionDistance","Cavity and self-shadow distance (yards)"},{"AutoModelDisplacementDistance","Model geometry distance (yards)"},{"AutoModelDisplacementDetail","Model subdivision"},{"AutoModelDisplacementStrength","Model height (%)"},{"AutoDisplacementDistance","Terrain and object geometry distance (yards)"},{"AutoDisplacementStrength","Terrain and object height (%)"},{"AutoDisplacementDetail","Terrain and object subdivision"},{"AutoHeightBalance","Height balance (%)"},{"AOStrength","AO strength (%)"},{"AORadius","AO radius (0.01 yd)"},
     {"Weather","Enhanced rain and snow"},{"WeatherMemory","Read native weather state"},{"RainFog","Weather fog strength"},{"RainLens","Rain on camera"},{"RainLensStrength","Rain on camera strength (%)"},{"SnowLens","Snow on camera"},{"SnowLensStrength","Snow on camera strength (%)"},{"FogClouds","Drifting fog banks"},{"FogCloudDensity","Fog density (%)"},
     {"HorizonHaze","Horizon haze (%)"},{"HorizonHazeStart","Haze start (%)"},{"HorizonHazeBand","Haze height (degrees)"},{"HorizonHazeTerrain","Haze over terrain"},
-    {"Backend","Graphics backend"},{"ExperimentalHDR","Enable HDR"},{"HDRPaperWhite","White point (nits)"},{"HDRUIWhite","UI brightness (nits)"},{"HDRMaxNits","HDR peak brightness (nits)"},{"HDRContrast","Contrast"},{"HDRExposure","Exposure (EV)"},
+    {"Backend","Graphics backend"},{"ExperimentalHDR","Enable HDR"},{"HDRPaperWhite","White point (nits)"},{"HDRUIWhite","UI brightness (nits)"},{"HDRMaxNits","Manual peak (nits)"},{"HDRContrast","Contrast"},{"HDRExposure","Exposure / compensation (EV)"},
+    {"HDRExposureMode","Exposure mode"},{"HDRPeakMode","Peak mode"},{"HDRBloomStrength","Bloom strength"},{"HDRLegacyExpansion","Legacy highlight expansion (EV)"},
+    {"HDRAutoMinEV","Auto exposure minimum (EV)"},{"HDRAutoMaxEV","Auto exposure maximum (EV)"},{"HDRLightAdaptation","Bright adaptation T90 (s)"},{"HDRDarkAdaptation","Dark adaptation T90 (s)"},
     {"NightBrightness","Night brightness (%)"},{"EquipmentLights","Equipment and effect lights"},
     {"CaptureBudgetMiB","Capture memory (MiB)"},{"ActorShadowBudgetMiB","Character shadow memory (MiB)"},{"MinSkinnedTriangles","Minimum character triangles"},{"LocalLightLimit","Maximum local lights"},{"GpuBudgetMs","GPU effect budget (ms)"},{"ActorShadowCpuMs","Shadow CPU budget (ms)"},
     {"CommandStream","Separate render thread"},{"StreamFramesAhead","Buffered frames"},{"StreamFrameSkip","Skip delayed frames"},{"StreamOcclusionLocal","Local occlusion results"},{"ReplayJobs","Parallel effect preparation"},{"FrameDrawGates","Skip inactive draw work"},
@@ -51,7 +54,7 @@ const std::map<std::string,const char*> Labels={
 const std::map<std::string,const char*> ShortLabels={
     {"GIStrength","Indirect light (%)"},{"GIDistance","GI distance (yd)"},{"GIBounces","Light bounces"},{"AOStrength","Strength (%)"},{"AORadius","Radius (0.01 yd)"},
     {"ActorShadowRadius","Distance (yd)"},{"ActorShadowDetail","Detailed shadows"},{"EquipmentLights","Equipment lights"},{"FogCloudDensity","Density (%)"},
-    {"HDRMaxNits","Peak brightness (nits)"},{"AutoBumpDistance","Relief distance (yd)"},
+    {"HDRMaxNits","Manual peak (nits)"},{"AutoBumpDistance","Relief distance (yd)"},
 };
 const std::map<std::string,const char*> CelestialLabels={
     {"disc","Disc tint"},{"disc_gain","Disc brightness"},{"light","Light tint"},{"light_mix","Light tint mix"},{"light_strength","Light strength"},{"fog_gain","Fog illumination"},
@@ -76,7 +79,11 @@ const std::map<std::string,std::vector<const char*>> Help={
     {"HDRContrast",{"1.00 is neutral. Adjusts world contrast around middle grey; UI brightness is unchanged."}},
     {"HDRExposure",{"0 EV is neutral. +1 EV doubles world light; -1 EV halves it. UI brightness is unchanged."}},
     {"HDRMaxNits",{"Limits world HDR output. UI brightness remains independent; this does not raise SDR highlights to the chosen peak."}},
-    {"ExperimentalHDR",{"Requires DXVK 2 or 3, the separate render thread, windowed mode and HDR output from the system or Wine. MSAA is supported."}},
+    {"ExperimentalHDR",{"Requires DXVK 2 or 3, the separate render thread, windowed mode and HDR enabled for the current Windows display. MSAA is supported."}},
+    {"HDRLegacyExpansion",{"0 disables expansion. Up to +2 EV selectively lifts bright legacy SDR details. It cannot restore clipped detail or identify every emitter; UI and Northlight HDR sources are excluded."}},
+    {"HDRExposureMode",{"Auto meters the world before bloom and UI. Exposure becomes compensation. Manual uses only the selected EV."}},
+    {"HDRPeakMode",{"Auto follows Windows calibration / display metadata, with a 1000 nit fallback. Manual uses your saved per-display peak."}},
+    {"HDRBloomStrength",{"Bloom reads unclipped HDR radiance. Setting 0 removes its halo while preserving the source's brightness."}},
     {"Backend",{"Which Direct3D 9 implementation the renderer runs on. Takes effect after a game restart."}},
     {"terrain_radius",{"How far terrain casts shadows in this region. Larger values cost more GPU time."}},
 };
@@ -117,7 +124,9 @@ const std::vector<Section> QualitySections={
         {"logging","Diagnostics","Diagnostics","RenderProfile","DiagReplayProbe ShadowFateDiagnostics"},
         {"debug","Additional diagnostics",nullptr,"SpellTrace NameMaskDebug MemMap",""}},false},
 };
-const std::vector<Group> HdrGroups={{"hdr","HDR output","ExperimentalHDR","HDRPaperWhite HDRUIWhite HDRMaxNits HDRContrast HDRExposure",""}};
+const std::vector<Group> HdrGroups={
+    {"hdr","HDR output","ExperimentalHDR","HDRPaperWhite HDRUIWhite HDRPeakMode HDRMaxNits",""},
+    {"hdr-look","World appearance","","HDRExposureMode HDRExposure HDRContrast HDRBloomStrength HDRLegacyExpansion","HDRAutoMinEV HDRAutoMaxEV HDRLightAdaptation HDRDarkAdaptation"}};
 const std::vector<Group> CelestialGroups={
     {"sun","Sun",nullptr,"sun_disc sun_disc_gain sun_light sun_light_strength","sun_light_mix sun_fog_gain sun_fog_height_scale sun_horizon_haze sun_glow_strength sun_glow sun_glow_mix"},
     {"moon","Moon",nullptr,"moon_disc moon_disc_gain moon_light moon_light_strength","moon_light_mix moon_fog_gain moon_fog_height_scale moon_horizon_haze moon_glow_strength moon_glow moon_glow_mix"},
@@ -234,6 +243,10 @@ struct SettingsPanel::State {
     std::shared_ptr<const NorthlightSettings::Snapshot> snapshot;
     NorthlightSettings::Status status;
     D::Draft draft;
+    SettingsPanel::CalibrationDraw calibrationDraw;
+    struct Patch{State* owner;float rect[4],color[4];};std::deque<Patch> calibrationPatches;
+    bool calibrationOpen=false,calibrationLarge=false;float calibrationPeak=1000;
+    std::map<std::string,std::vector<std::pair<std::string,std::string>>> displayDrafts;
     std::map<std::string,std::array<float,3>> live;   // a slider or colour being dragged: committed on release
     bool wantSnapshot=false,wantPreview=false,wantClear=false,previewing=false,saving=false,awaitingSnapshot=false;
     std::uint64_t commitSerial=0;
@@ -251,14 +264,20 @@ struct SettingsPanel::State {
         if(!service)return;
         if(wantSnapshot&&service->requestSnapshot())wantSnapshot=false;
         if(auto latest=service->snapshot();latest&&latest!=snapshot){
+            const bool moved=snapshot&&snapshot->hdrProfile!=latest->hdrProfile;
+            std::vector<std::pair<std::string,std::string>> restore;
+            if(moved){auto& previous=displayDrafts[snapshot->hdrProfile];previous.clear();
+                for(const auto& change:draft.changes())if(change.first.rfind("R\tHDR.",0)==0)previous.push_back(change);else restore.push_back(change);
+                const auto& current=displayDrafts[latest->hdrProfile];restore.insert(restore.end(),current.begin(),current.end());draft.clear();live.clear();}
             snapshot=latest;draft.bind(&snapshot->fields);
+            if(moved){for(const auto& change:restore)for(const auto& field:snapshot->fields)if(field.id()==change.first){draft.set(field,change.second);break;}wantPreview=true;}
             if(awaitingSnapshot){draft.clear();live.clear();awaitingSnapshot=false;}
             if(region!="default"&&!draft.field(D::Celestial,region,"sun_disc"))region="default";
         }
         status=service->status();
         if(saving&&status.serial>commitSerial&&status.state!=NorthlightSettings::Status::State::Busy){
             saving=false;
-            if(status.state==NorthlightSettings::Status::State::Saved){awaitingSnapshot=true;wantSnapshot=true;previewing=false;wantPreview=false;}
+            if(status.state==NorthlightSettings::Status::State::Saved){if(snapshot)displayDrafts.erase(snapshot->hdrProfile);awaitingSnapshot=true;wantSnapshot=true;previewing=false;wantPreview=false;}
         }
         if(wantClear&&!saving&&service->clearPreview()){wantClear=false;previewing=false;}
         if(wantPreview&&!saving&&!wantClear&&service->preview(changes())){wantPreview=false;previewing=!draft.empty();}
@@ -310,6 +329,7 @@ struct SettingsPanel::State {
         else ImGui::TextColored(Color::Good,"Applies live: previewed while you edit, kept when you save.");
         if(block==D::Block::Unavailable)ImGui::TextColored(Color::Bad,"Not available in this installation.");
         else if(block==D::Block::NeedsHdr)ImGui::TextColored(Color::Bad,"Enable HDR first.");
+        else if(block==D::Block::NeedsManual)ImGui::TextColored(Color::Muted,"Choose Manual peak mode to edit this value.");
         else if(block==D::Block::NeedsKey){const char* l=find(Labels,missing);ImGui::TextColored(Color::Bad,"Requires: %s",l?l:missing.c_str());}
         if(D::canInherit(f)&&block==D::Block::None)ImGui::TextColored(Color::Muted,"Right-click: restore the inherited value.");
         ImGui::PopTextWrapPos();
@@ -499,10 +519,34 @@ struct SettingsPanel::State {
         std::map<std::string,bool> used;
         if(auto b=byKey.find("Backend");b!=byKey.end()){used["Backend"]=true;titled("Renderer",{b->second});}
         for(const auto& g:HdrGroups)group(g,byKey,used);
-        if(service){const auto hdr=service->hdrStatus();ImGui::Text("HDR output: %s",hdr.active?"active":"inactive");if(!hdr.reason.empty())ImGui::TextWrapped("%s",hdr.reason.c_str());}
+        if(service){const auto hdr=service->hdrStatus();ImGui::Text("HDR output: %s",hdr.active?"active":"inactive");if(!hdr.reason.empty())ImGui::TextWrapped("%s",hdr.reason.c_str());
+            ImGui::TextWrapped("Display: %s",hdr.display.empty()?"Detecting...":hdr.display.c_str());
+            ImGui::Text("Peak: %.0f nits (%s)",hdr.effectivePeak,hdr.peakSource.c_str());
+            ImGui::Text("Effective white: %.0f nits   UI: %.0f nits",hdr.paperWhite,hdr.uiWhite);
+            if(ImGui::TreeNode("Output details")){ImGui::TextUnformatted(hdr.active?"RGBA16F / linear scRGB, Rec.709 primaries":"SDR output");ImGui::TextWrapped("Display profile: %s",hdr.profile.empty()?"Stable identity unavailable":hdr.profile.c_str());ImGui::Text("Reported peak: %.0f nits",hdr.detectedPeak);ImGui::Text("HDR frame / output payload: %.2f MiB",double(hdr.payloadBytes)/1048576);ImGui::TextWrapped("Payload excludes other renderer resources and driver allocations; it is not residency.");ImGui::TextUnformatted("Values describe application signals, not measured panel brightness.");ImGui::TreePop();}
+            ImGui::BeginDisabled(!hdr.active||!calibrationDraw);ImGui::Checkbox("Show HDR calibration",&calibrationOpen);ImGui::EndDisabled();
+            if(calibrationOpen&&hdr.active&&calibrationDraw){
+                ImGui::TextWrapped("Adjust white and UI brightness for comfortable ordinary content. Then compare the peak gradient. These patches bypass world exposure, contrast, bloom and the scene peak limit.");
+                ImGui::SliderFloat("Test peak (nits)",&calibrationPeak,80,10000,"%.0f",ImGuiSliderFlags_Logarithmic);
+                ImGui::Checkbox("Wide field (panel ABL comparison)",&calibrationLarge);
+                auto patch=[&](float nits,float r,float g,float b,float w,float h){
+                    const auto p=ImGui::GetCursorScreenPos();auto* list=ImGui::GetWindowDrawList();const auto lo=list->GetClipRectMin(),hi=list->GetClipRectMax();
+                    calibrationPatches.push_back({this,{std::max(p.x,lo.x),std::max(p.y,lo.y),std::min(p.x+w,hi.x),std::min(p.y+h,hi.y)},{r*nits/80,g*nits/80,b*nits/80,1}});
+                    list->AddCallback([](const ImDrawList*,const ImDrawCmd* command){auto& item=*static_cast<Patch*>(command->UserCallbackData);if(item.rect[2]>item.rect[0]&&item.rect[3]>item.rect[1])item.owner->calibrationDraw(item.rect,item.color);},&calibrationPatches.back());ImGui::Dummy(ImVec2(w,h));
+                };
+                const float available=ImGui::GetContentRegionAvail().x,side=std::max(12.f,(available-24)/3);
+                ImGui::TextUnformatted("80 nits / 203 nits / test peak");
+                patch(80,1,1,1,side,36);ImGui::SameLine();patch(203,1,1,1,side,36);ImGui::SameLine();patch(calibrationPeak,1,1,1,side,36);
+                ImGui::TextUnformatted("Peak gradient: 50% to 150% of test peak");
+                for(unsigned i=0;i<32;++i){if(i)ImGui::SameLine(0,0);patch(calibrationPeak*(.5f+float(i)/31),1,1,1,available/32,32);}
+                ImGui::TextUnformatted("Color highlights");
+                patch(calibrationPeak,1,.2f,.05f,side,32);ImGui::SameLine();patch(calibrationPeak,.05f,1,.2f,side,32);ImGui::SameLine();patch(calibrationPeak,.2f,.05f,1,side,32);
+                patch(calibrationPeak,1,1,1,calibrationLarge?available:48,calibrationLarge?160:48);
+            }
+        }
         ImGui::Spacing();
         ImGui::PushTextWrapPos(0);
-        ImGui::TextColored(Color::Muted,"HDR needs DXVK 2 or 3, the separate render thread, windowed mode and HDR output from the system or Wine. Restart after switching HDR on or off; its sliders apply live.");
+        ImGui::TextColored(Color::Muted,"HDR needs DXVK 2 or 3, the separate render thread, windowed mode and HDR enabled for the current display in Windows. HDR and its brightness settings apply live.");
         ImGui::PopTextWrapPos();
         std::vector<const Field*> rest;for(auto& k:byKey)if(!used[k.first])rest.push_back(k.second);
         titled("Other",rest);
@@ -753,7 +797,7 @@ struct SettingsPanel::State {
     }
 };
 
-SettingsPanel::SettingsPanel(std::shared_ptr<NorthlightSettings::Service> service,std::string hotkey):s(std::make_unique<State>()){s->service=std::move(service);s->hotkey=std::move(hotkey);}
+SettingsPanel::SettingsPanel(std::shared_ptr<NorthlightSettings::Service> service,std::string hotkey,CalibrationDraw calibration):s(std::make_unique<State>()){s->service=std::move(service);s->hotkey=std::move(hotkey);s->calibrationDraw=std::move(calibration);}
 SettingsPanel::~SettingsPanel()=default;
 void SettingsPanel::opened(){s->wantSnapshot=true;}
 void SettingsPanel::poll(){s->poll();}
@@ -771,6 +815,7 @@ void SettingsPanel::notice(float scale){
 }
 
 bool SettingsPanel::draw(float scale){
+    s->calibrationPatches.clear();
     State& st=*s;st.scale=scale;
     st.poll();
     bool open=true;

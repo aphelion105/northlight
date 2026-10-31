@@ -3,15 +3,24 @@
 #include <cassert>
 #include <cstdio>
 #include <cstdint>
+#include <cstring>
 #include <unordered_map>
 #include "shader_read_set.h"
 #include "ui_boundary.h"
-using HRESULT=int;using DWORD=unsigned;
+using HRESULT=int;using DWORD=unsigned;using UINT=unsigned;
 #define FAILED(x) ((x)<0)
 #define SUCCEEDED(x) ((x)>=0)
 constexpr HRESULT S_OK=0,E_FAIL=-1,D3DERR_INVALIDCALL=-2;
 constexpr unsigned D3DRTYPE_TEXTURE=1,D3DRTYPE_CUBETEXTURE=2,D3DUSAGE_RENDERTARGET=1,D3DUSAGE_DEPTHSTENCIL=2;
 constexpr DWORD D3DRS_ZWRITEENABLE=1,D3DRS_ZFUNC=2,D3DRS_ZENABLE=3,D3DCMP_ALWAYS=8,D3DVERTEXTEXTURESAMPLER0=257;
+constexpr DWORD D3DFVF_POSITION_MASK=0x400e,D3DFVF_XYZRHW=4;
+[[maybe_unused]] constexpr DWORD D3DFVF_XYZ=2;
+constexpr unsigned MAXD3DDECLLENGTH=64,D3DDECLUSAGE_POSITIONT=9,D3DDECLTYPE_FLOAT4=3;
+constexpr DWORD D3DTSS_COLOROP=1,D3DTSS_ALPHAOP=4,D3DTSS_COLORARG1=2,D3DTSS_COLORARG2=3,D3DTSS_ALPHAARG1=5,D3DTSS_ALPHAARG2=6;
+constexpr DWORD D3DTOP_DISABLE=1,D3DTOP_SELECTARG1=2,D3DTOP_SELECTARG2=3,D3DTOP_MODULATE=4,D3DTOP_MODULATE2X=5,D3DTOP_MODULATE4X=6,D3DTOP_ADD=7;
+constexpr DWORD D3DTA_SELECTMASK=15,D3DTA_TEXTURE=2,D3DTA_DIFFUSE=0;
+struct D3DVERTEXELEMENT9{unsigned Stream=0,Usage=0,UsageIndex=0,Type=0;};
+struct D3DVIEWPORT9{unsigned X=0,Y=0,Width=3840,Height=2160;float MinZ=0,MaxZ=1;};
 struct D3DSURFACE_DESC{unsigned Usage=0;};
 struct Ref{int refs=1;~Ref(){assert(refs==1);}void AddRef(){++refs;}void Release(){assert(refs>1);--refs;}};
 struct IDirect3DBaseTexture9:Ref{unsigned kind=D3DRTYPE_TEXTURE;unsigned GetType(){return kind;}};
@@ -20,34 +29,52 @@ struct IDirect3DTexture9:IDirect3DBaseTexture9{
     HRESULT GetLevelDesc(unsigned,D3DSURFACE_DESC* desc){desc->Usage=usage;return fail?E_FAIL:S_OK;}
 };
 struct IDirect3DCubeTexture9:IDirect3DTexture9{IDirect3DCubeTexture9(){kind=D3DRTYPE_CUBETEXTURE;}};
+struct IDirect3DVertexDeclaration9:Ref{
+    bool transformed=true;
+    HRESULT GetDeclaration(D3DVERTEXELEMENT9* out,UINT* count){*count=2;out[0]={0,transformed?D3DDECLUSAGE_POSITIONT:0,0,D3DDECLTYPE_FLOAT4};out[1].Stream=0xff;return S_OK;}
+};
 struct IDirect3DVertexShader9:Ref{};struct IDirect3DPixelShader9:Ref{};
 #include "hdr_boundary_texture.h"
 struct Backend{
-    IDirect3DVertexShader9 vs;IDirect3DPixelShader9 ps;
+    IDirect3DVertexShader9 vs;IDirect3DPixelShader9 ps;IDirect3DVertexDeclaration9 declaration;
+    bool fixedVs=false,fixedPs=false,pixelProjection=false;D3DVIEWPORT9 viewport;DWORD fvf=D3DFVF_XYZRHW,z=0,write=0,function=D3DCMP_ALWAYS;
     std::unordered_map<DWORD,IDirect3DBaseTexture9*> textures;
     bool failVs=false,failPs=false,failTexture=false;unsigned textureReads=0;
     int legacy=11,presentation=7;bool hdrBound=false;
-    HRESULT GetVertexShader(IDirect3DVertexShader9** out){if(failVs)return E_FAIL;*out=&vs;vs.AddRef();return S_OK;}
-    HRESULT GetPixelShader(IDirect3DPixelShader9** out){if(failPs)return E_FAIL;*out=&ps;ps.AddRef();return S_OK;}
+    bool peekVertexShader(IDirect3DVertexShader9*&){return false;}
+    HRESULT GetViewport(D3DVIEWPORT9* out){*out=viewport;return S_OK;}
+    HRESULT GetVertexShader(IDirect3DVertexShader9** out){if(failVs)return E_FAIL;*out=fixedVs?nullptr:&vs;if(*out)vs.AddRef();return S_OK;}
+    HRESULT GetPixelShader(IDirect3DPixelShader9** out){if(failPs)return E_FAIL;*out=fixedPs?nullptr:&ps;if(*out)ps.AddRef();return S_OK;}
     HRESULT GetTexture(DWORD stage,IDirect3DBaseTexture9** out){++textureReads;if(failTexture)return E_FAIL;*out=textures[stage];if(*out)(*out)->AddRef();return S_OK;}
-    HRESULT GetRenderState(DWORD state,DWORD* out){*out=state==D3DRS_ZFUNC?D3DCMP_ALWAYS:0;return S_OK;}
-    HRESULT GetVertexShaderConstantF(unsigned,float* rows,unsigned){for(unsigned i=0;i<16;++i)rows[i]=i%5==0?1.f:0.f;return S_OK;}
+    HRESULT GetRenderState(DWORD state,DWORD* out){*out=state==D3DRS_ZFUNC?function:state==D3DRS_ZENABLE?z:write;return S_OK;}
+    HRESULT GetFVF(DWORD* out){*out=fvf;return S_OK;}
+    HRESULT GetVertexDeclaration(IDirect3DVertexDeclaration9** out){*out=&declaration;declaration.AddRef();return S_OK;}
+    HRESULT GetTextureStageState(unsigned stage,DWORD state,DWORD* out){
+        *out=state==D3DTSS_COLOROP||state==D3DTSS_ALPHAOP?(stage?D3DTOP_DISABLE:D3DTOP_MODULATE):
+            state==D3DTSS_COLORARG1||state==D3DTSS_ALPHAARG1?D3DTA_TEXTURE:D3DTA_DIFFUSE;return S_OK;
+    }
+    HRESULT GetVertexShaderConstantF(unsigned,float* rows,unsigned){for(unsigned i=0;i<16;++i)rows[i]=i%5==0?1.f:0.f;if(pixelProjection){rows[0]=2.f/3840;rows[5]=2.f/2160;rows[3]=-.99974f;rows[7]=-1.00046f;rows[10]=.0001f;rows[11]=.5f;}return S_OK;}
     void nativeWrite(int color){(hdrBound?presentation:legacy)=color;}
     int logicalCopy()const{return legacy;} // Device::StretchRect deliberately uses the logical SDR source.
 };
 struct Fixture{
     Backend backend;Backend* ext=&backend;
     struct{bool active=true;struct{float uiWhite=160;}settings;}hdr;
+    struct{float uiWhite=160;}hdrFrameSettings;
     struct{unsigned rejected=0,draws=0;template<class Draw>HRESULT draw(Backend*,float,Draw work){++draws;return work();}}hdrColor;
     std::unordered_map<void*,NorthlightShaderReads::ReadSet> shaderReads;
-    bool hdrUiPhase=false,applied=false,world=false,failResolve=false,failBind=false;
+    bool hdrUiPhase=false,applied=false,world=false,failResolve=false,failBind=false,hdrAtUiBoundary=false,hdrSkyReplaying=false;
     unsigned begins=0,effects=0,hdrFailuresLogged=0,hdrDeferredLogs=0,hdrDeferredFrame=~0u;
     Fixture(){shaderReads[&backend.vs]={};shaderReads[&backend.vs].exact=true;shaderReads[&backend.vs].vertex=true;
         shaderReads[&backend.ps]={};shaderReads[&backend.ps].exact=true;shaderReads[&backend.ps].samplers=1;}
     ~Fixture(){assert(backend.vs.refs==1&&backend.ps.refs==1);}
     template<class T>static void drop(T*& value){if(value)value->Release();value=nullptr;}
     template<class Work>void extensionWork(const char*,Work work){work();}
-    const char* hdrBoundarySource(){return "learned-ui";}
+    static constexpr int kTagMask=3,kWaterTag=4;
+    struct VsClass{int entry=2;bool world=false,wmo=false,skinned=false;};VsClass vc;
+    bool stockUi=true,hdrWorldSeen=false;bool& terrain=world;
+    struct{bool isBoundary(std::uintptr_t,unsigned){return false;}bool armed(){return false;}bool disarmed(){return false;}}uiFallback;
+    const VsClass& classifyVs(IDirect3DVertexShader9* shader){vc.entry=stockUi&&shader?2:0;return vc;}
     bool fullViewport(D3DSURFACE_DESC&,void*,bool,bool){return true;}
     bool hdrBackTarget(){return true;}
     void renderEffects(){++effects;applied=world;}
@@ -80,6 +107,28 @@ int main(){
 #endif
     }
 #ifndef NORTHLIGHT_HDR_BOUNDARY_COUNTERFACTUAL
+    {Fixture f;f.stockUi=false;f.world=true;f.backend.pixelProjection=true;
+        assert(std::strcmp(f.hdrBoundarySource(),"pixel-ui")==0);
+        assert(f.draw(71)==S_OK&&f.hdrUiPhase&&f.effects==1&&f.backend.presentation==71);}
+    {Fixture f;f.stockUi=false;f.world=true;f.backend.pixelProjection=true;f.backend.viewport.MaxZ=.94f;
+        assert(!f.hdrBoundarySource());assert(f.draw(72)==S_OK&&!f.hdrUiPhase&&f.effects==0);}
+    // Native pretransformed UI has no programmable VS/PS and no VS matrix.
+    for(bool declaration:{false,true}){
+        Fixture f;IDirect3DTexture9 atlas;f.world=true;f.backend.fixedVs=f.backend.fixedPs=true;
+        if(declaration)f.backend.fvf=0;
+        f.backend.textures[0]=&atlas;assert(f.fixedUiGeometry()&&f.hdrUiInputs());
+        assert(f.draw(73)==S_OK&&f.hdrUiPhase&&f.effects==1&&f.backend.presentation==73);
+    }
+    for(unsigned rejected=0;rejected<4;++rejected){
+        Fixture f;IDirect3DTexture9 atlas;f.world=true;f.backend.fixedVs=f.backend.fixedPs=true;f.backend.textures[0]=&atlas;
+        if(rejected==0)f.backend.fvf=D3DFVF_XYZ;
+        if(rejected==1){f.backend.z=1;f.backend.write=1;}
+        if(rejected==2){f.backend.z=1;f.backend.function=4;}
+        if(rejected==3){f.backend.fvf=0;f.backend.declaration.transformed=false;}
+        assert(!f.fixedUiGeometry()&&f.draw(74)==S_OK&&!f.hdrUiPhase);
+    }
+    {Fixture f;IDirect3DTexture9 scene;scene.usage=D3DUSAGE_RENDERTARGET;f.backend.fixedVs=f.backend.fixedPs=true;
+        f.backend.textures[0]=&scene;assert(!f.hdrUiInputs()&&f.draw(75)==S_OK&&!f.hdrUiPhase);}
     // Login/loading atlas UI keeps its immediate HDR boundary; no world required.
     {Fixture f;IDirect3DTexture9 atlas,unused;unused.usage=D3DUSAGE_RENDERTARGET;f.backend.textures[0]=&atlas;f.backend.textures[7]=&unused;
         assert(f.draw(79)==S_OK&&f.hdrUiPhase&&f.backend.presentation==79&&f.backend.textureReads==1);}

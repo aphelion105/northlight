@@ -1,6 +1,8 @@
 // Settings overlay: the device window's subclass, the input queue, the ImGui context and drawing. See settings_overlay.h.
 #include "settings_overlay.h"
 #include "hdr_compiled_shaders.h"
+#include "saved_state.h"
+#include "hdr_quad.h"
 #include <windows.h>
 #include <algorithm>
 #include <atomic>
@@ -217,7 +219,8 @@ bool loadSystemFont(const wchar_t* name,float pixels,const ImWchar* ranges){
 
 class Impl final : public Overlay {
     IDirect3DDevice9* device;
-    IDirect3DPixelShader9* hdrShader=nullptr;float hdrWhite=0;
+    IDirect3DPixelShader9* hdrShader=nullptr;IDirect3DPixelShader9* calibrationShader=nullptr;float hdrWhite=0;
+    IDirect3DSurface9* outputTarget=nullptr;
     std::shared_ptr<NorthlightSettings::Service> service;
     Log log;
     std::string hotkeyName;
@@ -254,7 +257,13 @@ class Impl final : public Overlay {
         io.BackendPlatformName="northlight-overlay";
         backend=ImGui_ImplDX9_Init(device);
         if(!backend)throw std::runtime_error("ImGui_ImplDX9_Init failed");
-        panel=std::make_unique<SettingsPanel>(service,hotkeyName);
+        panel=std::make_unique<SettingsPanel>(service,hotkeyName,[this](const float* rectangle,const float* color){
+            if(!(hdrWhite>0))return;SavedState saved(device);if(!saved.ok)return;D3DSURFACE_DESC desc{};if(FAILED(saved.targets[0]->GetDesc(&desc)))return;
+            if(!calibrationShader&&FAILED(device->CreatePixelShader(reinterpret_cast<const DWORD*>(kHdrCalibration),&calibrationShader)))return;
+            if(FAILED(NorthlightHdr::quadState(device,saved.targets[0],desc.Width,desc.Height)))return;
+            RECT clip={LONG(rectangle[0]),LONG(rectangle[1]),LONG(rectangle[2]),LONG(rectangle[3])};device->SetScissorRect(&clip);device->SetRenderState(D3DRS_SCISSORTESTENABLE,TRUE);
+            device->SetPixelShader(calibrationShader);device->SetPixelShaderConstantF(0,color,1);NorthlightHdr::drawQuad(device,desc.Width,desc.Height);
+        });
         QueryPerformanceFrequency(&frequency);QueryPerformanceCounter(&last);
     }
     // Font atlas and style for a new scale only (first frame, resolution changes).
@@ -363,7 +372,8 @@ class Impl final : public Overlay {
         }
         struct Surface{IDirect3DSurface9* p=nullptr;~Surface(){if(p)p->Release();}} back;
         D3DSURFACE_DESC desc={};
-        if(FAILED(device->GetBackBuffer(0,0,D3DBACKBUFFER_TYPE_MONO,&back.p))||!back.p||FAILED(back.p->GetDesc(&desc))||!desc.Width||!desc.Height)return;
+        if(outputTarget){back.p=outputTarget;back.p->AddRef();}else if(FAILED(device->GetBackBuffer(0,0,D3DBACKBUFFER_TYPE_MONO,&back.p)))return;
+        if(!back.p||FAILED(back.p->GetDesc(&desc))||!desc.Width||!desc.Height)return;
         ensureContext();ImGui::SetCurrentContext(context);
         const float wanted=uiScale(desc.Height);
         if(wanted!=scale)rescale(wanted);
@@ -402,6 +412,7 @@ public:
         }catch(...){}
         context=nullptr;
         if(hdrShader)hdrShader->Release();
+        if(calibrationShader)calibrationShader->Release();
         device->Release();
     }
     bool masterHotkey(bool foreground,bool& pressed) override{
@@ -410,9 +421,10 @@ public:
         return active;
     }
     bool visible()const override{return hook.open.load(std::memory_order_relaxed)||background.load(std::memory_order_relaxed);}
-    void draw(float uiWhite=0) override{
+    void draw(float uiWhite=0,IDirect3DSurface9* output=nullptr) override{
         std::lock_guard<std::mutex> lock(mutex);
         hdrWhite=uiWhite;
+        outputTarget=output;
         if(failed)return;
         try{frame();}
         catch(const std::exception& e){fail(e.what());}

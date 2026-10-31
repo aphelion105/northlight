@@ -1,0 +1,68 @@
+// Measures the post-composition HDR passes, not whole-client frame time.
+#undef NDEBUG
+#pragma clang diagnostic ignored "-Wreturn-type"
+#define main northlight_composite_unused
+#include "composite_distance_gpu.cpp"
+#undef main
+#include "hdr_frame.h"
+#include "hdr_color.h"
+#include <functional>
+
+static double timed(IDirect3DDevice9* device,const std::function<void()>& frame){
+    IDirect3DQuery9 *start=nullptr,*end=nullptr,*frequency=nullptr;
+    ok(device->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&start));ok(device->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&end));ok(device->CreateQuery(D3DQUERYTYPE_TIMESTAMPFREQ,&frequency));
+    for(unsigned i=0;i<16;++i)frame();
+    ok(frequency->Issue(D3DISSUE_END));ok(start->Issue(D3DISSUE_END));for(unsigned i=0;i<48;++i)frame();ok(end->Issue(D3DISSUE_END));
+    UINT64 first=0,last=0,hz=0;
+    while(end->GetData(&last,sizeof last,D3DGETDATA_FLUSH)==S_FALSE)SwitchToThread();ok(start->GetData(&first,sizeof first,0));ok(frequency->GetData(&hz,sizeof hz,0));
+    start->Release();end->Release();frequency->Release();assert(hz&&last>first);return double(last-first)*1000/double(hz)/48;
+}
+int main(int argc,char** argv){
+    assert(argc==2);HWND window=CreateWindowExW(0,L"STATIC",L"",WS_OVERLAPPED,0,0,64,64,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);assert(window);
+    HMODULE module=LoadLibraryA(argv[1]);assert(module);auto create=reinterpret_cast<IDirect3D9*(WINAPI*)(UINT)>(reinterpret_cast<void*>(GetProcAddress(module,"Direct3DCreate9")));assert(create);auto* api=create(D3D_SDK_VERSION);assert(api);
+    D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=window;pp.BackBufferWidth=pp.BackBufferHeight=64;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;pp.PresentationInterval=D3DPRESENT_INTERVAL_IMMEDIATE;
+    IDirect3DDevice9* device=nullptr;ok(api->CreateDevice(0,D3DDEVTYPE_HAL,window,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_FPU_PRESERVE,&pp,&device));
+    IDirect3DPixelShader9* constant=nullptr;ok(device->CreatePixelShader(reinterpret_cast<const DWORD*>(kHdrCalibration),&constant));
+    for(const auto dimensions:{std::pair<unsigned,unsigned>{1920,1080},{2560,1440},{3840,2160}}){
+        const unsigned width=dimensions.first,height=dimensions.second;
+        IDirect3DTexture9 *encoded=nullptr,*copy=nullptr;IDirect3DSurface9 *encodedSurface=nullptr,*copySurface=nullptr,*output=nullptr;
+        ok(device->CreateTexture(width,height,1,D3DUSAGE_RENDERTARGET,D3DFMT_A8R8G8B8,D3DPOOL_DEFAULT,&encoded,nullptr));ok(encoded->GetSurfaceLevel(0,&encodedSurface));
+        ok(device->CreateTexture(width,height,1,D3DUSAGE_RENDERTARGET,D3DFMT_A8R8G8B8,D3DPOOL_DEFAULT,&copy,nullptr));ok(copy->GetSurfaceLevel(0,&copySurface));
+        ok(device->CreateRenderTarget(width,height,D3DFMT_A16B16G16R16F,D3DMULTISAMPLE_NONE,0,FALSE,&output,nullptr));ok(device->ColorFill(encodedSurface,nullptr,0xff808080));
+        NorthlightHdr::Color previous;NorthlightHdr::Frame current;NorthlightHdr::Settings settings;settings.bloom=1;settings.autoExposure=true;
+        const auto old=[&]{ok(device->BeginScene());ok(previous.convertWorld(device,encodedSurface,output,copy,copySurface,width,height,203,1000));ok(device->EndScene());};
+        const auto next=[&]{ok(device->BeginScene());ok(current.prepareLegacy(device,encoded,nullptr,nullptr,width,height,0,1,settings));ok(current.finish(device,nullptr,output,settings,1.f/60,true,false,.18f,nullptr,nullptr,nullptr,nullptr,nullptr,encodedSurface));ok(device->EndScene());};
+        // Interleaving reduces bias from clock changes during an isolated microbenchmark.
+        double oldMs[3],newMs[3];for(unsigned i=0;i<3;++i){oldMs[i]=timed(device,old);newMs[i]=timed(device,next);}
+        std::sort(oldMs,oldMs+3);std::sort(newMs,newMs+3);
+        std::printf("{\"width\":%u,\"height\":%u,\"old_transfer_ms\":%.6f,\"linear_post_ms\":%.6f,\"scope\":\"post_only_no_game_or_world_lighting\"}\n",width,height,oldMs[1],newMs[1]);std::fflush(stdout);
+        if(width==3840){
+            IDirect3DSurface9* msaa=nullptr;
+            ok(device->CreateRenderTarget(width,height,D3DFMT_A16B16G16R16F,D3DMULTISAMPLE_8_SAMPLES,0,FALSE,&msaa,nullptr));
+            IDirect3DSurface9* legacyMsaa=nullptr;
+            ok(device->CreateRenderTarget(width,height,D3DFMT_A8R8G8B8,D3DMULTISAMPLE_8_SAMPLES,0,FALSE,&legacyMsaa,nullptr));
+            auto msaaPost=[&](bool mirror){ok(device->BeginScene());ok(current.prepareLegacy(device,encoded,nullptr,nullptr,width,height,0,1,settings));ok(current.finish(device,nullptr,msaa,settings,1.f/60,true,false,.18f,nullptr,nullptr,nullptr,nullptr,nullptr,mirror?legacyMsaa:nullptr));ok(device->EndScene());};
+            const double mirrored=timed(device,[&]{msaaPost(true);}),withoutMirror=timed(device,[&]{msaaPost(false);});
+            std::printf("{\"width\":%u,\"height\":%u,\"samples\":8,\"hdr_post_mrt_ms\":%.6f,\"hdr_post_without_mirror_ms\":%.6f}\n",width,height,mirrored,withoutMirror);
+            legacyMsaa->Release();
+            NorthlightHdr::Color transfer;const float white[]={1,1,1,1};
+            auto screen=[&](bool before){
+                ok(device->BeginScene());ok(NorthlightHdr::quadState(device,msaa,width,height));
+                device->SetPixelShader(constant);device->SetPixelShaderConstantF(0,white,1);
+                device->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE);device->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_INVDESTCOLOR);device->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_ONE);
+                // The draw covers a small sprite; the old fallback shaded and
+                // resolved the entire 4K target for every sprite regardless.
+                struct V{float x,y,z,w,u,v;};const V q[]={{0,0,0,1,0,0},{64,0,0,1,1,0},{0,64,0,1,0,1},{64,64,0,1,1,1}};
+                for(unsigned n=0;n<32;++n){auto draw=[&]{return device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,q,sizeof(V));};
+                    if(before)ok(transfer.legacyLayer(device,80,draw));else ok(transfer.draw(device,80,draw));}
+                ok(device->EndScene());
+            };
+            double layer[3],direct[3];for(unsigned i=0;i<3;++i){layer[i]=timed(device,[&]{screen(true);});direct[i]=timed(device,[&]{screen(false);});}
+            std::sort(layer,layer+3);std::sort(direct,direct+3);
+            std::printf("{\"width\":%u,\"height\":%u,\"samples\":8,\"sprites\":32,\"legacy_screen_layers_ms\":%.6f,\"direct_screen_ms\":%.6f,\"scope\":\"screen_blend_compatibility_only_not_client_fps\"}\n",width,height,layer[1],direct[1]);
+            transfer.reset();msaa->Release();
+        }
+        current.reset();previous.reset();encodedSurface->Release();encoded->Release();copySurface->Release();copy->Release();output->Release();
+    }
+    constant->Release();device->Release();api->Release();FreeLibrary(module);DestroyWindow(window);
+}
