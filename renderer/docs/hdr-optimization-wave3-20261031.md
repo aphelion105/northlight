@@ -55,3 +55,26 @@ python tests/verify_hdr_frame_gpu.py --benchmark --reference-ref fdb37ace --dxvk
 The fog runner now accepts `--backend` and `--baseline-ref`, records source/backend hashes and checks the actual process inventory before GPU work. Its identical-source FP16/FP32 control passes on DXVK 2. It remains an authored fog replay, not a whole captured game frame.
 
 Private evidence is under `.local/hdr-autonomous-20261031`: `wave3-final`, `wave3-final-benchmark`, `quad-cpu-paired`, `ui-elision-isolation`, the rejected cloud experiment and the preserved complete `.5` client log. Raw account/game logs and captures are not published. The complete installer retains all previously integrated features.
+
+## Complete Windows package
+
+`Northlight-0.3.216-test.20261031.6-Windows.zip` contains the complete feature assembly at `bbd1c9b5`, including the previously integrated material maps, actor AO, vegetation/emission and shadow fixes. Its DLL is the exact offline-validated integration build, not the narrower #94 renderer. Both packaged DXVK backends are retained. The package verifier passes payload/runtime hashes and installer contracts.
+
+* ZIP: 19,734,917 bytes; SHA-256 `9c25eb1ae79ee18cb8da78009b66f407cc6b36b1131f4a0932aead1efe222bf6`.
+* DLL: SHA-256 `9f566edb32f9663d64d43616731106e2d57542f5feb04fa241b4605f8e0b32fb`.
+
+This exact DLL was installed and the requested character entered autonomously. The client reports active HDR on the 1500-nit Philips display, paper white 203 nits and UI 160 nits, without compatible UI layers. The native counter is visible. A stationary HDR/SDR/HDR comparison is recorded separately from the offline component timings.
+
+## Packaged client comparison
+
+The exact `.6` DLL was measured on DXVK 3 at 3840×2160/MSAA8, with the same stationary Crystalsong camera, all normal effects, automatic exposure/peak, white 203 nits, UI 160 nits, bloom one and expansion zero. Explicit frame windows exclude menus, capture frames, switching and warm-up. The complete log and raw captures remain private.
+
+| Window | Renderer frames | Complete 120-frame intervals | Median interval mean |
+| --- | --- | --- | --- |
+| HDR A1 | 22801–26761 | 33 | 9.777 ms |
+| SDR B | 34637–42917 | 69 | 9.016 ms |
+| HDR A2 | 62823–68223 | 45 | 9.794 ms |
+
+This run shows 8.44–8.63% additional frame time, or 7.78–7.94% lower equivalent FPS (about 102 versus 111). It does not demonstrate a whole-frame improvement over the earlier `.5` session, whose sunlight, clocks and background conditions differ. The residual HDR overhead is not solved. FogMarch remains approximately 1.194–1.195 ms in both modes; FogClouds is approximately 0.65–0.68 ms. HDR compatibility layers/pixels remain zero and recurring direct two-texture draws remain two per world frame. No HDR conversion or extension faults were logged. Renderer settings remain byte-identical after restoring the saved HDR configuration.
+
+The marked-log SHA-256 is `7128e9dc5a3bea003bbb3f222589ae11dbd9f550ca41568fff3e2c11494f4877`. A subsequent diagnostic capture records current HDR-linear/exposure products at frame 70715; its capture frames are outside the timing windows. The existing effect-only GPU profile ends before the HDR finish/UI phase. Its totals must not be used to assign the entire client difference to fog or to add independent stage medians together. Further attribution needs coverage of that missing phase and the actual MSAA resolve/presentation path. Live day/night/interior acceptance and physical two-display migration remain open.
