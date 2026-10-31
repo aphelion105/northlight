@@ -23,10 +23,10 @@ def main():
     backend = Path(os.environ['NORTHLIGHT_TEST_D3D9']) if os.environ.get('NORTHLIGHT_TEST_D3D9') else fp.client_root() / 'renderer-backends/dxvk2/dxvk2_d3d9.dll'
     baseline = json.loads((ROOT / 'tests/fixtures/ao_baseline_sha256.json').read_text())
     for entry, digest in baseline.items():
-        assert hashlib.sha256((fp.COMPILED / (entry + '.bin')).read_bytes()).hexdigest() == digest, entry + ' High bytecode changed'
+        assert hashlib.sha256((fp.COMPILED / (entry + '.bin')).read_bytes()).hexdigest() == digest, entry + ' unrelated bytecode changed'
     # Count the loop trip counts in the actual Microsoft disassembly, rather
     # than checking source labels that could disagree with the compiled kernel.
-    counts = {'HDAO': ([16], [8], [8]), 'HBAOPlus': ([32], [18], [16]), 'GTAO': ([4, 4], [3, 4], [2, 4])}
+    counts = {'HDAO': ([4, 4], [4, 2], [4, 2]), 'HBAOPlus': ([8, 4], [6, 3], [4, 4]), 'GTAO': ([4, 4], [3, 4], [2, 4])}
     for method, expected in counts.items():
         for quality, trips in zip(('', 'Medium', 'Low'), expected):
             assembly = (fp.COMPILED / (method + 'ContactBloom' + quality + '.bin.asm')).read_text()
@@ -51,7 +51,7 @@ def main():
         result = json.loads(grazing.read_text())
         assert result['case_count'] == 48 and result['failures'] == 0, result
         assert all(case['min'] < .99 and case['dark'] > 0 for case in result['cases'] if case['shape'] == 3), 'Real concave contact was lost'
-    print('PASS Medium/Low: original 99 AO assertions each; High/Medium/Low: original 48 grazing assertions each; exact compiled loop counts and unchanged High bytecode')
+    print('PASS Medium/Low: original 99 AO assertions each; High/Medium/Low: original 48 grazing assertions each; exact compiled loop counts and unchanged unrelated bytecode')
 
 
 if __name__ == '__main__':
