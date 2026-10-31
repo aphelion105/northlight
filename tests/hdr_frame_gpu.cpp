@@ -7,6 +7,10 @@
 #pragma clang diagnostic pop
 #include "hdr_frame.h"
 #include "hdr_color.h"
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wmicrosoft-exception-spec"
+#include "forwarders.h"
+#pragma clang diagnostic pop
 #include "world_compiled_shaders.h"
 
 static constexpr unsigned W=64,H=64;
@@ -29,6 +33,40 @@ static IDirect3DTexture9* legacy(IDirect3DDevice9* device,bool spot){
 }
 static IDirect3DTexture9* solid(IDirect3DDevice9* device,float r,float g,float b,float a){
     Image image{1,1,D3DFMT_A32B32G32R32F,16,std::vector<unsigned char>(16)};float rgba[]={r,g,b,a};std::memcpy(image.pixels.data(),rgba,16);return texture(device,image);
+}
+static unsigned batchStateOracle(IDirect3DDevice9* raw,IDirect3DSurface9* source,IDirect3DSurface9* destination,IDirect3DTexture9* encoded){
+    struct Meter:ForwardIDirect3DDevice9{
+        unsigned states=0,samplers=0,targets=0,failAt=0;
+        explicit Meter(IDirect3DDevice9* d):ForwardIDirect3DDevice9(d){}
+        HRESULT STDMETHODCALLTYPE SetRenderState(D3DRENDERSTATETYPE s,DWORD v)override{++states;return real->SetRenderState(s,v);}
+        HRESULT STDMETHODCALLTYPE SetSamplerState(DWORD n,D3DSAMPLERSTATETYPE s,DWORD v)override{++samplers;return real->SetSamplerState(n,s,v);}
+        HRESULT STDMETHODCALLTYPE SetRenderTarget(DWORD n,IDirect3DSurface9* p)override{
+            if(n==0&&++targets==failAt)return E_FAIL;return real->SetRenderTarget(n,p);
+        }
+    } d(raw);
+    NorthlightHdr::Frame frame;NorthlightStateBlockPool pool(&d);NorthlightHdr::Settings settings;
+    ok(d.BeginScene());ok(frame.prepareLegacy(&d,encoded,nullptr,nullptr,W,H,0,1,settings,&pool));ok(d.EndScene());
+    unsigned cases=0;
+    for(bool automatic:{false,true})for(bool bloom:{false,true})for(bool valid:{false,true}){
+        settings.autoExposure=automatic;settings.bloom=bloom?1:0;
+        // Start each public entry with hostile game state. Reuse is legal only
+        // inside that entry, never across SavedState or a previous frame.
+        ok(raw->SetRenderState(D3DRS_SCISSORTESTENABLE,TRUE));RECT clip={3,5,9,11};ok(raw->SetScissorRect(&clip));
+        ok(raw->SetSamplerState(0,D3DSAMP_SRGBTEXTURE,TRUE));
+        const unsigned passes=1+(automatic&&valid?4:0)+(bloom?2:0);
+        for(unsigned failure=0;failure<=passes;++failure){
+            d.states=d.samplers=d.targets=0;d.failAt=failure;
+            ok(d.BeginScene());const HRESULT hr=frame.finish(&d,source,destination,settings,1.f/60,valid,true,.18f,&pool);ok(d.EndScene());
+            assert(failure?FAILED(hr):SUCCEEDED(hr));
+            if(!failure){assert(d.states==15&&d.samplers==20);assert(d.targets==passes+1);}
+            DWORD restored=0;ok(raw->GetRenderState(D3DRS_SCISSORTESTENABLE,&restored));assert(restored==TRUE);
+            ok(raw->GetSamplerState(0,D3DSAMP_SRGBTEXTURE,&restored));assert(restored==TRUE);
+            RECT actual{};ok(raw->GetScissorRect(&actual));assert(!std::memcmp(&actual,&clip,sizeof clip));
+            ++cases;
+        }
+    }
+    ok(raw->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE));ok(raw->SetSamplerState(0,D3DSAMP_SRGBTEXTURE,FALSE));
+    std::printf("HDR_BATCH_STATE_ORACLE cases=%u setupPerEntry=1 targetFailureRecovery=true\n",cases);return cases;
 }
 static unsigned fixedUiOracle(IDirect3DDevice9* d,IDirect3DSurface9* destination,IDirect3DSurface9* staging,IDirect3DPixelShader9* constant){
     Image pattern{4,4,D3DFMT_A8R8G8B8,4,std::vector<unsigned char>(64)};
@@ -112,7 +150,7 @@ int main(int argc,char** argv){
     auto prepare=[&](IDirect3DTexture9* input){ok(device->BeginScene());ok(frame.prepareLegacy(device,input,nullptr,nullptr,W,H,0,1,settings));ok(device->EndScene());};
     auto finish=[&](float dt=1.f/60,bool cut=false){ok(device->BeginScene());ok(frame.finish(device,source,destination,settings,dt,true,cut));ok(device->EndScene());};
     auto exposure=[&]{float value[4];sample(device,frame.exposureSurface(),scalar,value);return value[0];};
-    prepare(white);unsigned cases=0;
+    prepare(white);unsigned cases=batchStateOracle(device,source,destination,white);
     float actual[4],reference[4];
     const float ordinary[]={1,1,1,1};fill(device,source,constant,ordinary);finish();sample(device,destination,readback,actual,W/2,H/2);
     assert(std::fabs(actual[0]*80-203)<.406);++cases;

@@ -8,11 +8,14 @@
 #include "hdr_color.h"
 #include <functional>
 
+static double submissionMs=0;
 static double timed(IDirect3DDevice9* device,const std::function<void()>& frame){
     IDirect3DQuery9 *start=nullptr,*end=nullptr,*frequency=nullptr;
     ok(device->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&start));ok(device->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&end));ok(device->CreateQuery(D3DQUERYTYPE_TIMESTAMPFREQ,&frequency));
     for(unsigned i=0;i<16;++i)frame();
-    ok(frequency->Issue(D3DISSUE_END));ok(start->Issue(D3DISSUE_END));for(unsigned i=0;i<48;++i)frame();ok(end->Issue(D3DISSUE_END));
+    LARGE_INTEGER a{},b{},clock{};QueryPerformanceFrequency(&clock);
+    ok(frequency->Issue(D3DISSUE_END));ok(start->Issue(D3DISSUE_END));QueryPerformanceCounter(&a);for(unsigned i=0;i<48;++i)frame();QueryPerformanceCounter(&b);ok(end->Issue(D3DISSUE_END));
+    submissionMs=double(b.QuadPart-a.QuadPart)*1000/clock.QuadPart/48;
     UINT64 first=0,last=0,hz=0;
     while(end->GetData(&last,sizeof last,D3DGETDATA_FLUSH)==S_FALSE)SwitchToThread();ok(start->GetData(&first,sizeof first,0));ok(frequency->GetData(&hz,sizeof hz,0));
     start->Release();end->Release();frequency->Release();assert(hz&&last>first);return double(last-first)*1000/double(hz)/48;
@@ -33,9 +36,10 @@ int main(int argc,char** argv){
         const auto old=[&]{ok(device->BeginScene());ok(previous.convertWorld(device,encodedSurface,output,copy,copySurface,width,height,203,1000));ok(device->EndScene());};
         const auto next=[&]{ok(device->BeginScene());ok(current.prepareLegacy(device,encoded,nullptr,nullptr,width,height,0,1,settings));ok(current.finish(device,nullptr,output,settings,1.f/60,true,false,.18f,nullptr,nullptr,nullptr,nullptr,nullptr,encodedSurface));ok(device->EndScene());};
         // Interleaving reduces bias from clock changes during an isolated microbenchmark.
-        double oldMs[3],newMs[3];for(unsigned i=0;i<3;++i){oldMs[i]=timed(device,old);newMs[i]=timed(device,next);}
+        double oldMs[3],newMs[3],cpuMs[3];for(unsigned i=0;i<3;++i){oldMs[i]=timed(device,old);newMs[i]=timed(device,next);cpuMs[i]=submissionMs;}
         std::sort(oldMs,oldMs+3);std::sort(newMs,newMs+3);
-        std::printf("{\"width\":%u,\"height\":%u,\"old_transfer_ms\":%.6f,\"linear_post_ms\":%.6f,\"scope\":\"post_only_no_game_or_world_lighting\"}\n",width,height,oldMs[1],newMs[1]);std::fflush(stdout);
+        std::sort(cpuMs,cpuMs+3);
+        std::printf("{\"width\":%u,\"height\":%u,\"old_transfer_ms\":%.6f,\"linear_post_ms\":%.6f,\"linear_cpu_submit_ms\":%.6f,\"scope\":\"post_only_no_game_or_world_lighting\"}\n",width,height,oldMs[1],newMs[1],cpuMs[1]);std::fflush(stdout);
         if(width==3840){
             IDirect3DSurface9* msaa=nullptr;
             ok(device->CreateRenderTarget(width,height,D3DFMT_A16B16G16R16F,D3DMULTISAMPLE_8_SAMPLES,0,FALSE,&msaa,nullptr));
