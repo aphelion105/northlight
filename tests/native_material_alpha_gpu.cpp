@@ -40,7 +40,7 @@ int main(int argc,char**argv){std::setvbuf(stdout,nullptr,_IONBF,0);assert(argc>
  for(unsigned i=0;i<224;++i)for(unsigned c=0;c<4;++c)constants[i][c]=pattern?.125f*(1+(i+3*c)%8):0;
  while(std::getline(manifest,file)){d->SetPixelShaderConstantF(0,constants[0],224);auto code=read(std::string(argv[2])+"/"+file);IDirect3DPixelShader9*native=nullptr,*capture=nullptr;ok(d->CreatePixelShader((DWORD*)code.data(),&native));std::vector<uint32_t> patched;unsigned control;
   if(!NorthlightNativeMaterialCapture::patch((uint32_t*)code.data(),code.size()/4,patched,control)){++rejected;drop(native);continue;}HRESULT created=d->CreatePixelShader((DWORD*)patched.data(),&capture);if(FAILED(created)){std::fprintf(stderr,"Rejected patched %s: %08lx\n",file.c_str(),(unsigned long)created);std::abort();}
-  float settings[5][4]={{.06f,48,.001f,1},{1,1,-1,0},{0,16,16,0},{0,8,0,0},{0,0,1,1}};d->SetPixelShaderConstantF(control,settings[0],5);
+  float settings[9][4]={{.06f,48,.001f,1},{1,1,-1,0},{0,16,16,0},{0,8,0,0},{0,0,1,1},{},{1,0,0,0},{0,1,0,0},{0,0,1,0}};d->SetPixelShaderConstantF(control,settings[0],9);
   auto draw=[&](IDirect3DPixelShader9*ps){d->SetPixelShader(ps);ok(d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0));ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,q,sizeof(V)));ok(d->EndScene());return alphaPixels(d,target);};auto a=draw(native),b=draw(capture);
   for(unsigned i=0;i<a.size();++i){assert(std::isfinite(a[i])&&std::isfinite(b[i]));float expected=std::clamp(a[i],0.f,1.f);if(expected<.001f)expected=0;worst=std::max(worst,std::fabs(expected-b[i]));if(std::fabs(expected-b[i])>.0001f){std::fprintf(stderr,"Alpha mismatch %s %u %g %g\n",file.c_str(),i,expected,b[i]);std::abort();}}
   NorthlightTerrainCoverage::Program original;assert(NorthlightTerrainCoverage::analyse(reinterpret_cast<const uint32_t*>(code.data()),code.size()/4,original));nativeSlots+=original.slots;
@@ -53,7 +53,7 @@ int main(int argc,char**argv){std::setvbuf(stdout,nullptr,_IONBF,0);assert(argc>
    std::vector<uint32_t> probe(reinterpret_cast<const uint32_t*>(code.data()),reinterpret_cast<const uint32_t*>(code.data())+code.size()/4-1);
    probe.insert(probe.begin()+1,{0x05000051,dst(2,one),0x3f800000,0x3f800000,0x3f800000,0x3f800000});probe.insert(probe.end(),{0x02000001,dst(8,0,8),src(2,one,0),65535});
    IDirect3DPixelShader9* mask=nullptr;ok(d->CreatePixelShader(reinterpret_cast<const DWORD*>(probe.data()),&mask));coverage=draw(mask);drop(mask);}
-  drop(capture);assert(NorthlightNativeMaterialCapture::patch(reinterpret_cast<const uint32_t*>(code.data()),code.size()/4,patched,control,false));ok(d->CreatePixelShader(reinterpret_cast<const DWORD*>(patched.data()),&capture));settings[0][3]=0;d->SetPixelShaderConstantF(control,settings[0],5);
+  drop(capture);assert(NorthlightNativeMaterialCapture::patch(reinterpret_cast<const uint32_t*>(code.data()),code.size()/4,patched,control,false));ok(d->CreatePixelShader(reinterpret_cast<const DWORD*>(patched.data()),&capture));settings[0][3]=0;d->SetPixelShaderConstantF(control,settings[0],9);
   auto opaque=draw(capture);for(unsigned i=0;i<opaque.size();++i)assert(std::isfinite(opaque[i])&&std::fabs(opaque[i]-coverage[i])<.0001f);++opaqueTested;
   ++tested;drop(native);drop(capture);
  }

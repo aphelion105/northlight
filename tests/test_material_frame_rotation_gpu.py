@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # northlight-test: requires=windows-gpu,zig manual
-"""Production terrain codec: same surface, different camera rotations; no game."""
+"""Production material codec: same surface, different camera rotations; no game."""
 import argparse, importlib.util, os, subprocess, sys
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
@@ -17,8 +17,14 @@ capture=(fp.SHADERS/'auto_bump_capture.hlsl').read_text().replace('#include "aut
 source.write_text(capture+'''
 float4 Reference:register(c80);float4 Mapped:register(c81);
 MaterialValue fixture(){MaterialValue v;v.reference=Reference.xyz;v.normal=Mapped.xyz;v.occlusion=1;v.uv=v.uv1=0;return v;}
-CaptureResult Legacy(float2 uv:TEXCOORD0){return captureValue(fixture(),float4(0,0,0,4),1);}
-CaptureResult World(float2 uv:TEXCOORD0){return captureTerrainValue(fixture(),float4(0,0,0,4),1);}
+CaptureResult Legacy(float2 uv:TEXCOORD0){
+    MaterialValue v=fixture();float3 delta=v.normal-v.reference;
+    float along=mad(dot(v.reference.xy,delta.xy),rcp(max(1+v.reference.z,1e-4)),delta.z);
+    float3 detail=float3(mad(-v.reference.xy,along,delta.xy),max(dot(v.reference,v.normal),0));
+    float2 encoded=mad(detail.xy,rcp(max(dot(abs(detail),1),1e-6))*.5,.5);
+    CaptureResult o;o.normal=float4(encoded,4,1);o.occlusion=1;return o;
+}
+CaptureResult World(float2 uv:TEXCOORD0){return captureValue(fixture(),float4(0,0,0,4),1);}
 sampler2D BumpMaterial:register(s9);float4 BumpControl:register(c82);float4 SceneNormal:register(c83);float4 ViewRows[3]:register(c84);
 '''+(fp.SHADERS/'auto_bump_normal.hlsl').read_text()+'''
 float4 Decode(float2 uv:TEXCOORD0):COLOR0{return float4(autoBumpNormal(uv,0,SceneNormal.xyz,4,ViewRows[0].xyz,ViewRows[1].xyz,ViewRows[2].xyz),1);}
