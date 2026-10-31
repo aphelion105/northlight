@@ -66,6 +66,7 @@ APP_FILES = [
     'renderer/native_model_lights.py', 'renderer/build_equipment_emitters.py',
     'renderer/build_spell_emitters.py', 'renderer/build_mount_emitters.py',
     'renderer/build_glue_emitters.py',
+    'renderer/build_gameobject_emitters.py',
     'renderer/equipment_emitter_patch.py',
     'renderer/point_transmission_builder.py',
     'renderer/attached_emitter_sources.py',

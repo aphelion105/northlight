@@ -26,6 +26,7 @@ def native_fixture():
         data = bytearray()
         for path, index in ((r'shaders\vertex\vs_3_0\CDiffuse_T1.bls', 0),
                             (r'shaders\vertex\vs_3_0\Color_T1.bls', 1),
+                            (r'shaders\vertex\vs_3_0\Diffuse_T1.bls', 0),
                             (r'shaders\pixel\ps_3_0\Combiners_Mod.bls', 0)):
             code = list(variants(assets.read(path)))[index][2]
             data.extend(struct.pack('<I', len(code) // 4))

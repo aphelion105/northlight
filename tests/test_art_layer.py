@@ -8,8 +8,8 @@ the test output):
   skipped with a reason (not a KeyError), and the archive holds the four band tables, no sky clone
   and no moon02, plus weather textures, native attached-model lights and renderer-owned emitter
   metadata. World/selected Spells metadata and native model patches have disjoint owners; source
-  hashes, canonical schema and the index digest match both archives and the manifest. World
-  models stay in the light cache without native injection. Against the relighting plus the retime, exactly
+  hashes, canonical schema and the index digest match both archives and the manifest. Harvestable
+  herbs and other supported gameobjects use native model lifetime, disjoint from world metadata. Against the relighting plus the retime, exactly
   those band rows differ, and every outdoor Light row differs in column 9 only (its private storm
   profile, see build_lighting.stormify; the storm step runs after the sky steps).
 - both views (stock and the client's own chain), against the relighting alone: no band whose key
@@ -43,16 +43,15 @@ assert set(build_weather_textures.MIST) <= set(blps), 'the client has both mist 
 files = tables | set(blps)
 report = {}
 model_steps = {'world_model_lights', 'equipment_model_lights', 'spell_model_lights',
-               'creature_model_lights', 'glue_model_lights', 'mount_model_lights'}
+               'creature_model_lights', 'glue_model_lights', 'mount_model_lights', 'gameobject_model_lights'}
 metadata = {world_emitter_index.ARCHIVE_PATH}
 
 
 def model_checks(view, folder, result):
-    """MPQ metadata owns World/selected Spells; native patches own disjoint attached models."""
+    """MPQ metadata and native gameobject/attached patches have disjoint model owners."""
     models = set(result['files']) - files - metadata
     assert metadata <= set(result['files']), result['files']
-    assert not any(n.lower().startswith('world\\') for n in models), sorted(models)
-    assert all(n.lower().startswith(('item\\', 'spells\\', 'creature\\', 'interface\\')) and n.lower().endswith('.m2')
+    assert all(n.lower().startswith(('item\\', 'spells\\', 'creature\\', 'interface\\', 'world\\')) and n.lower().endswith('.m2')
                for n in models), sorted(models)
     assert 'creature_model_lights' in {s['step'] for s in result['steps']}
     assert 'glue_model_lights' in {s['step'] for s in result['steps']}
@@ -230,7 +229,7 @@ again.mkdir(exist_ok=True)
 r_again = build_art_layer.build(client, again, cache)
 assert model_checks('all', again, r_again) == own_models
 assert r_again['files'] == r_own['files']
-assert not any(n.lower().startswith('world\\') and n.lower().endswith('.m2') for n in r_own['files'])
+assert any(s['step'] == 'gameobject_model_lights' and s.get('models', 0) > 0 for s in r_own['steps'])
 got = [hashlib.sha256((own / t).read_bytes()).hexdigest() for t in r_own['targets']]
 assert got == [r_again['archive_sha256']] * 2
 report['own'] = {'rebuilt_sha256': got, **own_models}

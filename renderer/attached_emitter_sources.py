@@ -167,8 +167,8 @@ def mesh_sources(assets, path, blob):
                 if len(anchors) != 1:
                     raise ValueError('Luminous mesh deforms across multiple bones')
                 bone = anchors.pop()
-                if unpack('<I',blob,bone_offset+bone*88+4)[0] & 0x7f:
-                    raise ValueError('Billboard/inheritance mesh bone')
+                # The appended native light uses this same original bone matrix,
+                # including camera-facing billboard rotation; no bind-pose bake.
                 a,b,c = [v[:3] for v in verts]
                 u,v = [tuple(y-x for x,y in zip(a,p)) for p in (b,c)]
                 area = math.sqrt(sum(x*x for x in (u[1]*v[2]-u[2]*v[1],u[2]*v[0]-u[0]*v[2],u[0]*v[1]-u[1]*v[0])))/2
