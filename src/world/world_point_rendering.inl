@@ -330,7 +330,9 @@
     // cube is complete without replays (fresh=true) and the schedule sees none.
     bool renderPointShadow(const NorthlightLocalLights::Light& light,bool fresh=true,bool withReplays=true){
         pointSlot().ready=false;pointDraws=pointCulled=0;
-        if(!active||!vertices||!indices||uploadedMap!=active->map||uploaded.lock()!=active->bvh)return false;
+        // Publication can lead the bounded upload. Its committed same-map
+        // pages, materials and meshGeneration remain drawable until the swap.
+        if(!active||!vertices||!indices||uploadedMap!=active->map)return false;
         if(pointSlot().map!=active->map){pointSlot().schedule.invalidate();pointSlot().cacheValid=false;}
         pointSlot().selected=light;pointSlot().map=active->map;
         // LocalLighting is zero outside this same conservative sphere scissor.

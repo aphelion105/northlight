@@ -73,6 +73,35 @@ struct PointTerrainCoverageTest {
    replay=std::move(w.replays.back());w.replays.clear();
   }
   std::printf("POINT_DYNAMIC_CAPTURE_GPU_PASS distances=6 transitions=%u staticReplayExact=1 incompleteNotPublished=1 timings=0\n",transitions);
+  // Publication precedes the bounded GPU upload. The old same-map pages,
+  // materials and generation remain committed while active names a new BVH.
+  // Keep rendering them with this frame's casters throughout that handoff.
+  const auto previousScene=w.active;
+  w.active=std::make_shared<WorldRenderer::Snapshot>(*previousScene);
+  w.active->bvh=std::make_shared<NorthlightGI::BVH>();
+  assert(w.uploaded.lock()==previousScene->bvh&&w.uploaded.lock()!=w.active->bvh);
+  w.batches={batch};w.quality.pointShadowRefreshMs=0;
+  const bool handoff=render(light,true,false);
+  std::printf("POINT_UPLOAD_HANDOFF rendered=%u ready=%u\n",unsigned(handoff),unsigned(w.pointSlot().ready));std::fflush(stdout);
+  assert(handoff&&w.pointSlot().ready&&image()==reference);
+  w.batches.clear();w.replays.push_back(std::move(replay));
+  assert(render(light,true,true)&&image()==reference);
+  replay=std::move(w.replays.back());w.replays.clear();
+  assert(render(light,true,true));const auto empty=image();
+  assert(std::all_of(empty.begin(),empty.end(),[](float depth){return depth==1.f;}));
+  w.replays.push_back(std::move(replay));
+  assert(render(light,true,true)&&image()==reference);
+  replay=std::move(w.replays.back());w.replays.clear();
+  w.captureDemand=false;
+  assert(render(light,false,true)&&w.pointSlot().ready&&w.captureDemand&&image()==reference);
+  // Committing the replacement keeps the same result. A different map must
+  // still reject the old pages without overwriting the complete cube.
+  w.uploaded=w.active->bvh;++w.meshGeneration;w.batches={batch};
+  assert(render(light,true,false)&&image()==reference);
+  w.active->map="another-map";
+  assert(!render(light,true,false)&&!w.pointSlot().ready&&image()==reference);
+  w.active->map=w.uploadedMap;
+  std::printf("POINT_UPLOAD_HANDOFF_GPU_PASS staticExact=1 currentCasters=1 skippedCaptureRetained=1 commitExact=1 mapMismatchRejected=1\n");
   // A sphere outside the receiver scissor needs no cube work. Preserve its
   // static resources, then force all dynamic faces current when it returns.
   auto lamp=light;w.batches={batch};w.quality.pointShadowRefreshMs=60000;
