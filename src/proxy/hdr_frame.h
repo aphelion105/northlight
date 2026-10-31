@@ -66,7 +66,7 @@ public:
         if(!w||!h)return D3DERR_INVALIDCALL;
         if(w!=width||h!=height){linear.reset();for(auto& target:bloomTargets)target.reset();width=w;height=h;}
         struct Shader{const std::uint32_t* code;IDirect3DPixelShader9** shader;};
-        const Shader shaders[]={{kHdrDecodeWorld,&decode},{kHdrMeter,&meter},{kHdrReduceLinear,&reduce},{kHdrAdapt,&adapt},{kHdrBloom,&bloom},{kHdrBloomVertical,&bloomVertical},{kHdrWorldLinear,&output},{kHdrWorldLinearOnly,&outputOnly},{kHdrLegacyEncode,&legacyEncode},{kHdrCalibration,&constant},{kHdrCopy,&copy},{kHdrLegacyComposite,&legacyComposite}};
+        const Shader shaders[]={{kHdrDecodeWorld,&decode},{kHdrMeter,&meter},{kHdrReduceLinear,&reduce},{kHdrAdapt,&adapt},{kHdrBloomHorizontal,&bloom},{kHdrBloomVertical,&bloomVertical},{kHdrWorldLinear,&output},{kHdrWorldLinearOnly,&outputOnly},{kHdrLegacyEncode,&legacyEncode},{kHdrCalibration,&constant},{kHdrCopy,&copy},{kHdrLegacyComposite,&legacyComposite}};
         for(const auto& shader:shaders)if(!*shader.shader){HRESULT hr=device->CreatePixelShader(reinterpret_cast<const DWORD*>(shader.code),shader.shader);if(FAILED(hr))return hr;}
         HRESULT hr=linear.create(device,w,h);if(FAILED(hr))return hr;
         for(auto* target:{&meter64,&meter8,&legacyStatistics,&worldStatistics,&history[0],&history[1]}){
@@ -167,6 +167,8 @@ public:
         if(legacyDestination){hr=device->SetRenderTarget(1,legacyDestination);if(FAILED(hr))return hr;device->SetRenderState(D3DRS_COLORWRITEENABLE1,15);}
         const float peak=std::max(settings.maxNits,80.f),white=std::min(settings.paperWhite,peak)/80;
         float scale[]={white,white,white,peak/80},grade[]={settings.contrast,std::exp2(settings.exposure),settings.autoExposure?1.f:0.f,settings.bloom};
+        const float span=scale[3]-white,shoulder[]={span>.000001f?-1.44269504089f/span:0,span,0,0};
+        device->SetPixelShaderConstantF(2,shoulder,1);
         device->SetPixelShaderConstantF(0,scale,1);device->SetPixelShaderConstantF(1,grade,1);
         device->SetPixelShader(legacyDestination?output:outputOnly);device->SetTexture(0,linear.texture);device->SetTexture(1,history[historyIndex].texture);device->SetTexture(2,bloomTexture);
         device->SetSamplerState(2,D3DSAMP_MINFILTER,D3DTEXF_LINEAR);device->SetSamplerState(2,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);

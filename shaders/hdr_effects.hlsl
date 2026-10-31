@@ -122,6 +122,14 @@ float4 HdrBloom(float2 uv:TEXCOORD0):COLOR0 {
     }
     return float4(sum/16,1);
 }
+float4 HdrBloomHorizontal(float2 uv:TEXCOORD0):COLOR0 {
+    float3 sum=0;
+    [unroll]for(int i=-2;i<=2;++i){
+        float3 color=hdrBright(max(tex2D(HdrScene,uv+HdrParams.xy*i).rgb,0));
+        float weight=i==0?6:abs(i)==1?4:1;sum+=color*weight;
+    }
+    return float4(sum/16,1);
+}
 float4 HdrBloomVertical(float2 uv:TEXCOORD0):COLOR0 {
     // Half-texel pairs give exactly 1,4,6,4,1 with four samples. Unlike
     // 1.2-texel pairs, their weights survive hardware interpolation precision.
@@ -138,8 +146,8 @@ HdrPresentationOutput HdrWorldLinear(float2 uv:TEXCOORD0) {
     [branch]if(HdrGrade.x!=1)radiance*=pow(luminance/.18,HdrGrade.x-1);
     radiance*=HdrGrade.y*exp2(automatic)*HdrColor.rgb;
     float peak=max(radiance.r,max(radiance.g,radiance.b));
-    float span=HdrColor.w-HdrColor.x;
-    float mapped=span>.000001?HdrColor.x+span*(1-exp2(-1.44269504089*max(peak-HdrColor.x,0)/span)):min(peak,HdrColor.w);
+    float span=HdrParams.y;
+    float mapped=span>.000001?HdrColor.x+span*(1-exp2(HdrParams.x*max(peak-HdrColor.x,0))):min(peak,HdrColor.w);
     if(peak>HdrColor.x)radiance*=mapped/max(peak,.000001);
     HdrPresentationOutput result;result.hdr=float4(radiance,source.a);
     // Client scene copies remain before display grading, exposure and bloom.

@@ -70,13 +70,14 @@ static unsigned batchStateOracle(IDirect3DDevice9* raw,IDirect3DSurface9* source
 }
 static unsigned filterOracle(IDirect3DDevice9* d){
     unsigned cases=0;float reduceError=0,bloomError=0;
-    for(bool reduction:{false,true})for(unsigned size=0;size<3;++size)for(unsigned pattern=0;pattern<5;++pattern){
+    for(unsigned mode=0;mode<3;++mode)for(unsigned size=0;size<3;++size)for(unsigned pattern=0;pattern<7;++pattern){
+        const bool reduction=mode==1,horizontal=mode==2;
         if(reduction&&size==2)continue;
         const unsigned w=reduction?(size?8:64):(size==0?1:size==1?17:32),h=reduction?w:(size==0?1:size==1?13:32);
         const unsigned ow=reduction?w/8:w,oh=reduction?h/8:h;
         Image input{w,h,D3DFMT_A32B32G32R32F,16,std::vector<unsigned char>(w*h*16)};
         for(unsigned y=0;y<h;++y)for(unsigned x=0;x<w;++x){
-            const float v=pattern==0?.18f:pattern==1?float((x+y)&1)*32:pattern==2?(x==w/2&&y==h/2?64.f:0):pattern==3?float((x*17+y*31)%101)*.07f:float(y)/h;
+            const float v=pattern==0?.18f:pattern==1?float((x+y)&1)*32:pattern==2?(x==w/2&&y==h/2?64.f:0):pattern==3?float((x*17+y*31)%101)*.07f:pattern==4?float(y)/h:pattern==5?float(int(x)-int(y))*.125f:1+float(int(x%7)-3)*.00001f;
             const float pixel[]={v,v*.3f,v*.07f,1};std::memcpy(input.pixels.data()+(y*w+x)*16,pixel,16);
         }
         auto* source=texture(d,input);IDirect3DSurface9 *target=nullptr,*readback=nullptr;
@@ -85,11 +86,11 @@ static unsigned filterOracle(IDirect3DDevice9* d){
         std::vector<float> reference(ow*oh*4);
         for(bool candidate:{false,true}){
             IDirect3DPixelShader9* shader=nullptr;
-            const auto* code=reduction?(candidate?kHdrReduceLinear:kHdrReduce):(candidate?kHdrBloomVertical:kHdrBloom);
+            const auto* code=reduction?(candidate?kHdrReduceLinear:kHdrReduce):(candidate?(horizontal?kHdrBloomHorizontal:kHdrBloomVertical):kHdrBloom);
             ok(d->CreatePixelShader(reinterpret_cast<const DWORD*>(code),&shader));ok(d->BeginScene());ok(NorthlightHdr::quadState(d,target,ow,oh));
-            const float parameters[]={reduction?1.f/w:0,1.f/h,1,0};ok(d->SetPixelShaderConstantF(2,parameters,1));
+            const float parameters[]={reduction||horizontal?1.f/w:0,horizontal?0:1.f/h,horizontal?0.f:1.f,0};ok(d->SetPixelShaderConstantF(2,parameters,1));
             ok(d->SetPixelShader(shader));ok(d->SetTexture(0,source));
-            if(candidate){ok(d->SetSamplerState(0,D3DSAMP_MINFILTER,D3DTEXF_LINEAR));ok(d->SetSamplerState(0,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR));}
+            if(candidate&&!horizontal){ok(d->SetSamplerState(0,D3DSAMP_MINFILTER,D3DTEXF_LINEAR));ok(d->SetSamplerState(0,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR));}
             ok(NorthlightHdr::drawQuad(d,ow,oh));ok(d->EndScene());ok(d->GetRenderTargetData(target,readback));
             D3DLOCKED_RECT lock{};ok(readback->LockRect(&lock,nullptr,D3DLOCK_READONLY));
             for(unsigned y=0;y<oh;++y)for(unsigned x=0;x<ow*4;++x){
@@ -105,7 +106,7 @@ static unsigned filterOracle(IDirect3DDevice9* d){
         }
         ok(d->SetTexture(0,nullptr));source->Release();target->Release();readback->Release();++cases;
     }
-    std::printf("HDR_FILTER_ORACLE cases=%u reductionError=%g bloomError=%g kernels=constant/checker/impulse/noise/ramp edges=clamp\n",cases,reduceError,bloomError);return cases;
+    std::printf("HDR_FILTER_ORACLE cases=%u reductionError=%g bloomError=%g kernels=constant/checker/impulse/noise/ramp/negative/threshold horizontal=1 vertical=1 edges=clamp\n",cases,reduceError,bloomError);return cases;
 }
 static unsigned uiStateOracle(IDirect3DDevice9* raw,IDirect3DSurface9* target,IDirect3DPixelShader9* constant){
     struct Meter:ForwardIDirect3DDevice9{
@@ -137,12 +138,12 @@ static unsigned uiStateOracle(IDirect3DDevice9* raw,IDirect3DSurface9* target,ID
 static unsigned gradeOracle(IDirect3DDevice9* d,IDirect3DSurface9* source,IDirect3DSurface9* target,IDirect3DSurface9* readback,IDirect3DPixelShader9* constant,IDirect3DTexture9* encoded){
     NorthlightHdr::Frame frame;NorthlightHdr::Settings settings;settings.autoExposure=false;settings.bloom=0;
     ok(d->BeginScene());ok(frame.prepareLegacy(d,encoded,nullptr,nullptr,W,H,0,1,settings));ok(d->EndScene());unsigned cases=0;
-    for(float v:{0.f,.125f,.5f,1.f,4.f,32.f})for(float contrast:{.5f,.999f,1.f,1.001f,2.f})for(float ev:{-2.f,0.f,2.f})for(float nits:{80.f,1000.f,2000.f}){
+    for(float paper:{80.f,203.f,400.f})for(float v:{0.f,.125f,.5f,.99951171875f,1.f,1.0009765625f,4.f,32.f})for(float contrast:{.5f,.999f,1.f,1.001f,2.f})for(float ev:{-2.f,0.f,2.f})for(float nits:{80.f,203.f,203.0001f,400.f,1000.f,2000.f,10000.f}){
         const float input[]={v,v*.25f,v*.0625f,.75f};fill(d,source,constant,input);
-        settings.contrast=contrast;settings.exposure=ev;settings.maxNits=nits;
+        settings.paperWhite=paper;settings.contrast=contrast;settings.exposure=ev;settings.maxNits=nits;
         ok(d->BeginScene());ok(frame.finish(d,source,target,settings,0,true,false));ok(d->EndScene());float actual[4];sample(d,target,readback,actual);
         const double luminance=std::max(double(v)*(.2126+.25*.7152+.0625*.0722),.000001);
-        const double white=std::min(203.f,nits)/80.,peak=nits/80.;
+        const double white=std::min(paper,nits)/80.,peak=nits/80.;
         const double scale=std::pow(luminance/.18,contrast-1)*std::exp2(ev)*white;
         const double maximum=v*scale,span=peak-white;
         const double mapped=span>.000001?white+span*(1-std::exp(-std::max(maximum-white,0.)/span)):std::min(maximum,peak);
@@ -150,7 +151,7 @@ static unsigned gradeOracle(IDirect3DDevice9* d,IDirect3DSurface9* source,IDirec
             assert(std::isfinite(actual[c])&&std::fabs(actual[c]-expected)<std::max(.00003,std::fabs(expected)*.001));}
         assert(actual[3]==.75f);++cases;
     }
-    std::printf("HDR_GRADE_ORACLE cases=%u contrast=0.5/0.999/1/1.001/2 peak=80/1000/2000 alpha=exact\n",cases);return cases;
+    std::printf("HDR_GRADE_ORACLE cases=%u contrast=0.5/0.999/1/1.001/2 peak=80/203/203.0001/400/1000/2000/10000 white=80/203/400 alpha=exact\n",cases);return cases;
 }
 static unsigned fixedUiOracle(IDirect3DDevice9* d,IDirect3DSurface9* destination,IDirect3DSurface9* staging,IDirect3DPixelShader9* constant){
     Image pattern{4,4,D3DFMT_A8R8G8B8,4,std::vector<unsigned char>(64)};

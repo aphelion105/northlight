@@ -29,7 +29,7 @@ def main():
                ('HdrFixedUi', 'ps_3_0', 'HdrFixedUi', 'kHdrFixedUi'),
                ('HdrFixedUi2', 'ps_3_0', 'HdrFixedUi2', 'kHdrFixedUi2'),
                *[(name, 'ps_3_0', name, 'k'+name) for name in
-                 ('HdrMeter','HdrReduce','HdrReduceLinear','HdrDecodeWorld','HdrCopy','HdrLegacyComposite','HdrAdapt','HdrBloom','HdrBloomVertical','HdrWorldLinear','HdrWorldLinearOnly','HdrLegacyEncode','HdrCalibration','HdrLayer')]]
+                 ('HdrMeter','HdrReduce','HdrReduceLinear','HdrDecodeWorld','HdrCopy','HdrLegacyComposite','HdrAdapt','HdrBloom','HdrBloomHorizontal','HdrBloomVertical','HdrWorldLinear','HdrWorldLinearOnly','HdrLegacyEncode','HdrCalibration','HdrLayer')]]
     for entry, target, name, symbol in entries:
         binary = fp.COMPILED / (name + '.bin')
         data, words = compiler.compile(source, entry, target, binary)
