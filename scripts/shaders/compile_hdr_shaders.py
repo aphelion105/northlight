@@ -27,6 +27,7 @@ def main():
                ('HdrWorld', 'ps_3_0', 'HdrWorld', 'kHdrWorld'),
                ('HdrOverlay', 'ps_3_0', 'HdrOverlay', 'kHdrOverlay'),
                ('HdrFixedUi', 'ps_3_0', 'HdrFixedUi', 'kHdrFixedUi'),
+               ('HdrFixedUi2', 'ps_3_0', 'HdrFixedUi2', 'kHdrFixedUi2'),
                *[(name, 'ps_3_0', name, 'k'+name) for name in
                  ('HdrMeter','HdrReduce','HdrDecodeWorld','HdrCopy','HdrLegacyComposite','HdrAdapt','HdrBloom','HdrWorldLinear','HdrWorldLinearOnly','HdrLegacyEncode','HdrCalibration','HdrLayer')]]
     for entry, target, name, symbol in entries:

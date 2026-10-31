@@ -60,6 +60,30 @@ int main(int argc,char** argv){
             double layer[3],direct[3];for(unsigned i=0;i<3;++i){layer[i]=timed(device,[&]{screen(true);});direct[i]=timed(device,[&]{screen(false);});}
             std::sort(layer,layer+3);std::sort(direct,direct+3);
             std::printf("{\"width\":%u,\"height\":%u,\"samples\":8,\"sprites\":32,\"legacy_screen_layers_ms\":%.6f,\"direct_screen_ms\":%.6f,\"scope\":\"screen_blend_compatibility_only_not_client_fps\"}\n",width,height,layer[1],direct[1]);
+            for(bool full:{false,true}){
+                auto twoTextures=[&](bool before){
+                    ok(device->BeginScene());ok(NorthlightHdr::quadState(device,msaa,width,height));ok(device->SetPixelShader(nullptr));
+                    ok(device->SetFVF(D3DFVF_XYZRHW|D3DFVF_DIFFUSE|D3DFVF_TEX1));
+                    for(unsigned stage=0;stage<2;++stage){
+                        ok(device->SetTexture(stage,encoded));
+                        for(auto state:{D3DTSS_COLOROP,D3DTSS_ALPHAOP})ok(device->SetTextureStageState(stage,state,D3DTOP_MODULATE));
+                        for(auto state:{D3DTSS_COLORARG1,D3DTSS_ALPHAARG1})ok(device->SetTextureStageState(stage,state,D3DTA_TEXTURE));
+                        for(auto state:{D3DTSS_COLORARG2,D3DTSS_ALPHAARG2})ok(device->SetTextureStageState(stage,state,D3DTA_CURRENT));
+                        ok(device->SetTextureStageState(stage,D3DTSS_TEXCOORDINDEX,0));ok(device->SetTextureStageState(stage,D3DTSS_RESULTARG,D3DTA_CURRENT));
+                        ok(device->SetTextureStageState(stage,D3DTSS_TEXTURETRANSFORMFLAGS,D3DTTFF_DISABLE));
+                    }
+                    ok(device->SetTextureStageState(2,D3DTSS_COLOROP,D3DTOP_DISABLE));
+                    ok(device->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));ok(device->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_SRCALPHA));ok(device->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_INVSRCALPHA));
+                    const float w=full?float(width):64.f,h=full?float(height):64.f;
+                    struct V{float x,y,z,w;DWORD color;float u,v;};const V q[]={{0,0,0,1,0xa0ffffff,0,0},{w,0,0,1,0xa0ffffff,1,0},{0,h,0,1,0xa0ffffff,0,1},{w,h,0,1,0xa0ffffff,1,1}};
+                    for(unsigned n=0;n<2;++n){auto draw=[&]{return device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,q,sizeof(V));};
+                        if(before)ok(transfer.legacyLayer(device,160,draw));else ok(transfer.draw(device,160,draw));}
+                    ok(device->EndScene());
+                };
+                for(unsigned i=0;i<3;++i){layer[i]=timed(device,[&]{twoTextures(true);});direct[i]=timed(device,[&]{twoTextures(false);});}
+                std::sort(layer,layer+3);std::sort(direct,direct+3);
+                std::printf("{\"width\":%u,\"height\":%u,\"samples\":8,\"draws\":2,\"fullCoverage\":%u,\"two_texture_layers_ms\":%.6f,\"two_texture_direct_ms\":%.6f,\"scope\":\"fixed_function_compatibility_only_not_client_fps\"}\n",width,height,unsigned(full),layer[1],direct[1]);
+            }
             transfer.reset();msaa->Release();
         }
         current.reset();previous.reset();encodedSurface->Release();encoded->Release();copySurface->Release();copy->Release();output->Release();

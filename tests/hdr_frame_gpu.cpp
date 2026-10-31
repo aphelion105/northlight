@@ -30,6 +30,70 @@ static IDirect3DTexture9* legacy(IDirect3DDevice9* device,bool spot){
 static IDirect3DTexture9* solid(IDirect3DDevice9* device,float r,float g,float b,float a){
     Image image{1,1,D3DFMT_A32B32G32R32F,16,std::vector<unsigned char>(16)};float rgba[]={r,g,b,a};std::memcpy(image.pixels.data(),rgba,16);return texture(device,image);
 }
+static unsigned fixedUiOracle(IDirect3DDevice9* d,IDirect3DSurface9* destination,IDirect3DSurface9* staging,IDirect3DPixelShader9* constant){
+    Image pattern{4,4,D3DFMT_A8R8G8B8,4,std::vector<unsigned char>(64)};
+    for(unsigned i=0;i<16;++i){const DWORD pixel=D3DCOLOR_ARGB(128+i*8,70+i*10,220-i*8,120+i*5);std::memcpy(pattern.pixels.data()+i*4,&pixel,4);}
+    auto* first=texture(d,pattern);std::reverse(pattern.pixels.begin(),pattern.pixels.end());auto* second=texture(d,pattern);
+    struct V{float x,y,z,w;DWORD color;float u,v,u1,v1;};
+    const DWORD ops[]={D3DTOP_SELECTARG1,D3DTOP_SELECTARG2,D3DTOP_MODULATE};
+    unsigned cases=0;float maxError=0;
+    for(auto samples:{D3DMULTISAMPLE_NONE,D3DMULTISAMPLE_4_SAMPLES}){
+        IDirect3DSurface9* target=nullptr;ok(d->CreateRenderTarget(W,H,D3DFMT_A16B16G16R16F,samples,0,FALSE,&target,nullptr));
+        for(unsigned coordinates=0;coordinates<2;++coordinates)for(DWORD rgb:ops)for(DWORD alpha:ops)for(unsigned opacity:{64u,160u,255u}){
+            const V q[]={{-.5f,-.5f,0,1,D3DCOLOR_ARGB(opacity,200,180,240),0,0,1,0},{W-.5f,-.5f,0,1,D3DCOLOR_ARGB(opacity,200,180,240),1,0,0,0},
+                         {-.5f,H-.5f,0,1,D3DCOLOR_ARGB(opacity,200,180,240),0,1,1,1},{W-.5f,H-.5f,0,1,D3DCOLOR_ARGB(opacity,200,180,240),1,1,0,1}};
+            std::vector<std::uint16_t> reference(W*H*4);NorthlightHdr::Color transfer;
+            for(bool direct:{false,true}){
+                const float background[]={.3f,.7f,1.4f,.8f};fill(d,target,constant,background);
+                ok(d->BeginScene());ok(NorthlightHdr::quadState(d,target,W,H));ok(d->SetPixelShader(nullptr));
+                ok(d->SetFVF(D3DFVF_XYZRHW|D3DFVF_DIFFUSE|D3DFVF_TEX2));
+                for(unsigned stage=0;stage<2;++stage){
+                    ok(d->SetTexture(stage,stage?second:first));
+                    ok(d->SetTextureStageState(stage,D3DTSS_COLOROP,stage?rgb:D3DTOP_MODULATE));
+                    ok(d->SetTextureStageState(stage,D3DTSS_ALPHAOP,stage?alpha:D3DTOP_MODULATE));
+                    for(auto state:{D3DTSS_COLORARG1,D3DTSS_ALPHAARG1})ok(d->SetTextureStageState(stage,state,D3DTA_TEXTURE));
+                    for(auto state:{D3DTSS_COLORARG2,D3DTSS_ALPHAARG2})ok(d->SetTextureStageState(stage,state,D3DTA_CURRENT));
+                    ok(d->SetTextureStageState(stage,D3DTSS_TEXCOORDINDEX,stage?coordinates:0));
+                    ok(d->SetTextureStageState(stage,D3DTSS_TEXTURETRANSFORMFLAGS,D3DTTFF_DISABLE));
+                    ok(d->SetTextureStageState(stage,D3DTSS_RESULTARG,D3DTA_CURRENT));
+                    ok(d->SetSamplerState(stage,D3DSAMP_MINFILTER,D3DTEXF_POINT));ok(d->SetSamplerState(stage,D3DSAMP_MAGFILTER,D3DTEXF_POINT));
+                }
+                ok(d->SetTextureStageState(2,D3DTSS_COLOROP,D3DTOP_DISABLE));
+                ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));ok(d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_SRCALPHA));ok(d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_INVSRCALPHA));
+                float constants[16],restored[16];for(unsigned i=0;i<16;++i)constants[i]=i*.125f;
+                ok(d->SetPixelShaderConstantF(0,constants,4));
+                auto draw=[&]{return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,q,sizeof(V));};
+                if(direct)ok(transfer.draw(d,160,draw));else ok(transfer.legacyLayer(d,160,draw));
+                ok(d->GetPixelShaderConstantF(0,restored,4));assert(!std::memcmp(constants,restored,sizeof constants));
+                IDirect3DPixelShader9* shader=nullptr;ok(d->GetPixelShader(&shader));assert(!shader);
+                ok(d->EndScene());ok(d->StretchRect(target,nullptr,destination,nullptr,D3DTEXF_NONE));ok(d->GetRenderTargetData(destination,staging));
+                D3DLOCKED_RECT lock{};ok(staging->LockRect(&lock,nullptr,D3DLOCK_READONLY));
+                for(unsigned y=0;y<H;++y)for(unsigned x=0;x<W;++x){
+                    const auto* pixel=reinterpret_cast<const std::uint16_t*>(static_cast<const char*>(lock.pBits)+y*lock.Pitch)+x*4;
+                    for(unsigned channel=0;channel<3;++channel){const unsigned i=(y*W+x)*4+channel;if(!direct)reference[i]=pixel[channel];else{
+                        const float error=std::fabs(half(reference[i])-half(pixel[channel]));maxError=std::max(maxError,error);assert(error<.025f);
+                    }}
+                }
+                ok(staging->UnlockRect());
+            }
+            assert(transfer.layers==1&&transfer.multiTextureDirect==1);++cases;
+        }
+        target->Release();
+    }
+    // Unsupported stages must keep the original fixed-function shader path.
+    const D3DTEXTURESTAGESTATETYPE unsupported[]={D3DTSS_COLOROP,D3DTSS_COLORARG1,D3DTSS_RESULTARG,D3DTSS_TEXTURETRANSFORMFLAGS,D3DTSS_TEXCOORDINDEX};
+    const DWORD values[]={D3DTOP_ADD,D3DTA_TEXTURE|D3DTA_COMPLEMENT,D3DTA_TEMP,D3DTTFF_COUNT2,2};
+    const DWORD previous[]={D3DTOP_MODULATE,D3DTA_TEXTURE,D3DTA_CURRENT,D3DTTFF_DISABLE,1};
+    for(unsigned i=0;i<5;++i){
+        NorthlightHdr::Color transfer;const float background[]={.3f,.7f,1.4f,.8f};fill(d,destination,constant,background);
+        ok(d->BeginScene());ok(d->SetPixelShader(nullptr));ok(d->SetTexture(0,first));ok(d->SetTexture(1,second));
+        ok(d->SetTextureStageState(1,D3DTSS_COLOROP,D3DTOP_MODULATE));ok(d->SetTextureStageState(1,unsupported[i],values[i]));
+        unsigned submits=0;ok(transfer.draw(d,160,[&]{++submits;return NorthlightHdr::drawQuad(d,W,H);}));ok(d->EndScene());
+        assert(submits==1&&transfer.layers==1&&transfer.multiTextureDirect==0);ok(d->SetTextureStageState(1,unsupported[i],previous[i]));++cases;
+    }
+    ok(d->SetTexture(0,nullptr));ok(d->SetTexture(1,nullptr));ok(d->SetTextureStageState(1,D3DTSS_COLOROP,D3DTOP_DISABLE));first->Release();second->Release();
+    std::printf("HDR_FIXED_UI_ORACLE cases=%u rgbError=%g tolerance=0.025 reference=UNORM_compatibility_layer samples=1/4 uvSets=0/1\n",cases,maxError);return cases;
+}
 int main(int argc,char** argv){
     assert(argc==2||argc==3);HWND window=CreateWindowExW(0,L"STATIC",L"",WS_OVERLAPPED,0,0,128,128,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);assert(window);
     HMODULE module=LoadLibraryA(argv[1]);assert(module);
@@ -111,6 +175,30 @@ int main(int argc,char** argv){
     unsigned fixedSubmits=0;ok(color.draw(device,160,[&]{++fixedSubmits;return NorthlightHdr::drawQuad(device,W,H);}));
     assert(fixedSubmits==1&&color.payloadBytes()==0);IDirect3DPixelShader9* restored=nullptr;ok(device->GetPixelShader(&restored));assert(!restored);
     ok(device->EndScene());sample(device,destination,readback,actual,W/2,H/2);assert(std::fabs(actual[0]-2)<.005f);++cases;
+    // WoW leaves MODULATE in stage 1 between UI draws. A null TEXTURE
+    // COLORARG1 terminates that stage; bound textures/other arguments do not.
+    for(unsigned scenario=0;scenario<3;++scenario){
+        NorthlightHdr::Color fixedColor;fill(device,destination,constant,black);
+        ok(device->BeginScene());ok(NorthlightHdr::quadState(device,destination,W,H));
+        ok(device->SetPixelShader(nullptr));ok(device->SetTexture(0,white));ok(device->SetTexture(1,scenario==1?white:nullptr));
+        for(unsigned stage=0;stage<2;++stage){
+            ok(device->SetTextureStageState(stage,D3DTSS_COLOROP,D3DTOP_MODULATE));
+            ok(device->SetTextureStageState(stage,D3DTSS_COLORARG1,stage==1&&scenario==2?D3DTA_DIFFUSE:D3DTA_TEXTURE));
+            ok(device->SetTextureStageState(stage,D3DTSS_COLORARG2,D3DTA_CURRENT));
+            ok(device->SetTextureStageState(stage,D3DTSS_ALPHAOP,D3DTOP_MODULATE));
+            ok(device->SetTextureStageState(stage,D3DTSS_ALPHAARG1,D3DTA_TEXTURE));
+            ok(device->SetTextureStageState(stage,D3DTSS_ALPHAARG2,D3DTA_CURRENT));
+            ok(device->SetTextureStageState(stage,D3DTSS_TEXCOORDINDEX,0));
+            ok(device->SetTextureStageState(stage,D3DTSS_TEXTURETRANSFORMFLAGS,D3DTTFF_DISABLE));
+        }
+        ok(device->SetTextureStageState(2,D3DTSS_COLOROP,D3DTOP_DISABLE));
+        ok(fixedColor.draw(device,160,[&]{return NorthlightHdr::drawQuad(device,W,H);}));
+        ok(device->EndScene());sample(device,destination,readback,actual,W/2,H/2);
+        assert(std::fabs(actual[0]-2)<.005f&&fixedColor.layers==(scenario==2?1u:0u));
+        if(!scenario)assert(fixedColor.payloadBytes()==0);++cases;
+    }
+    ok(device->SetTexture(1,nullptr));ok(device->SetTextureStageState(1,D3DTSS_COLOROP,D3DTOP_DISABLE));
+    cases+=fixedUiOracle(device,destination,readback,constant);
     fill(device,destination,constant,hdr);ok(device->BeginScene());ok(NorthlightHdr::quadState(device,destination,W,H));device->SetPixelShader(constant);device->SetPixelShaderConstantF(0,ordinary,1);
     device->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE);device->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_INVDESTCOLOR);device->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_ONE);
     ok(color.draw(device,80,[&]{return NorthlightHdr::drawQuad(device,W,H);}));ok(device->EndScene());sample(device,destination,readback,actual,W/2,H/2);assert(std::fabs(actual[0]-5)<.01f&&actual[1]>2.9f&&color.payloadBytes()==0&&color.layers==0&&color.screenDirect==1);

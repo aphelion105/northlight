@@ -25,10 +25,19 @@ float4 HdrUi(float4 original:COLOR0):COLOR0 {
 float4 HdrOverlay(float4 color:COLOR0,float2 uv:TEXCOORD0):COLOR0 {
     return HdrUi(color*tex2D(HdrScene,uv));
 }
-float4 HdrFixedUi(float4 color:COLOR0,float2 uv:TEXCOORD0):COLOR0 {
+float4 fixedUiSource(float4 color,float2 uv){
     float4 texel=tex2D(HdrScene,uv);
     float3 rgb=lerp(1,texel.rgb,HdrGrade.x)*lerp(1,color.rgb,HdrGrade.y);
     float alpha=lerp(1,texel.a,HdrGrade.z)*lerp(1,color.a,HdrGrade.w);
+    return float4(rgb,alpha);
+}
+float4 HdrFixedUi(float4 color:COLOR0,float2 uv:TEXCOORD0):COLOR0 {return HdrUi(fixedUiSource(color,uv));}
+float4 HdrFixedUi2(float4 color:COLOR0,float2 uv:TEXCOORD0,float2 uv1:TEXCOORD1):COLOR0 {
+    float4 source=fixedUiSource(color,uv);
+    float4 other=1;
+    if(HdrParams.x+HdrAdaptation.x>0)other=tex2D(HdrAux,lerp(uv,uv1,HdrParams.w));
+    float3 rgb=lerp(1,other.rgb,HdrParams.x)*lerp(1,source.rgb,HdrParams.y)*lerp(1,color.rgb,HdrParams.z);
+    float alpha=lerp(1,other.a,HdrAdaptation.x)*lerp(1,source.a,HdrAdaptation.y)*lerp(1,color.a,HdrAdaptation.z);
     return HdrUi(float4(rgb,alpha));
 }
 float4 HdrWorld(float2 uv:TEXCOORD0):COLOR0 {
