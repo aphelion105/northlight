@@ -21,7 +21,7 @@ The independent #96 build intentionally disables HDR fields when the HDR consume
 
 ## Functional compatibility
 
-The combined production source identity is 5e2e721cd61fbe06dc9d8885617122d55efd3a376e291ded37904ed0b756a7d0. The x86 DLL builds from the frozen source, independently of uncommitted HDR development in the canonical checkout.
+The combined production source identity is a0fc947391be2bff0a221d913ebc0f30c3f86201cb645bba737d226255181a11. The x86 DLL builds from the frozen source, independently of uncommitted HDR development in the canonical checkout.
 
 The actual menu passes six SDR cases on native D3D9 and eighteen SDR/scRGB cases on DXVK 3. All requested pages render from a loaded snapshot. Sentinel state and world/view/projection transforms survive rendering, and the caller's existing state block replaces the redundant nested allocation. On private DXVK targets, SDR/UI160/UI320 peaks are 1/2/4. These private-target tests do not certify physical display luminance. Native scRGB remains outside this driver's accepted matrix; the explicit SDR-only gate does not relabel an empty native HDR output as success.
 
@@ -35,4 +35,12 @@ No game or generating cache is used. Functional checks do not establish a whole-
 
 The new HDR pipeline specification and automatic SDR/HDR output migration are being implemented in a separate active chat. Those unfinished working-tree files are not silently added to this candidate or claimed as completed here. The currently published opt-in HDR implementation remains included and tested. Reconcile and validate any later HDR changes as their own follow-up.
 
-The frozen portable functional suite finishes with 233 PASS, zero failures/timeouts and 169 explicit prerequisite/manual omissions. The listed Windows GPU gates above run separately; skips are not treated as passes.
+The optimization-only portable functional suite at 2a1784cd finishes with 233 PASS, zero failures/timeouts and 169 explicit prerequisite/manual omissions. The listed Windows GPU gates above run separately; skips are not treated as passes.
+
+## Completed fixes reconciled before packaging
+
+Integrate the independently published indoor-light bound and complete point-shadow reuse fixes from #98, plus normal-map cache stability and skinned eye/seam preservation from #97. The final source snapshot is 7d87985d before documentation updates. These are correctness follow-ups and are not counted as four additional optimizations.
+
+The final combined source passes focused CPU checks for capture skip, point scheduling, normal-cache state/collisions, settings transactions and shader provenance. Displacement geometry checks pass on actual Windows x86 at O0/O2. Native D3D9 and DXVK 3 each pass 1,512 indoor-brightness cases (including rejected old-clipping controls), 180 exact normal-cache reuse cases, 96 visible-set frames without transitions, 12 CPU/VTF eye/seam cases and six read-only Human/Draenei client geoset fixtures. Point shadows pass 54 dynamic capture transitions at six distances, incomplete-publication rejection and four camera-membership states per backend. No game or live cache is used.
+
+The final DLL repeats and passes all 5,882 HDR checks in 24 DXVK 2/3 modes. The menu, settings and HDR contract sources are unchanged by these four correctness follow-ups. Earlier full-suite results are not relabeled as a second full run after them.
