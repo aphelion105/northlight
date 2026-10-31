@@ -683,6 +683,14 @@ class Install(Base):
         self.installer().uninstall(self.client)
         self.assertEqual(tree(self.client), self.before)
 
+    def test_art_ownership_survives_a_moved_client(self):
+        self.installer().install(self.client)
+        for backup in self.backups():
+            record = json.loads(backup.read_text())
+            record['client'] = str(self.base / 'old-game-location')
+            INSTALL.atomic_json(backup, record)
+        self.assertEqual(self.installer().foreign_z(self.client, 'enUS'), [])
+
     def test_stacked_migrations_leave_one_mac_record(self):
         if self.platform != 'mac':
             self.skipTest('macOS proxy migrations only')

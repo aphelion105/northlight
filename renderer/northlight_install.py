@@ -96,7 +96,8 @@ VARIANT_FILE = 'northlight-cache.json'
 EXTRACTING = '.northlight-extract.json'   # in the staging folder while an extraction is incomplete
 LETTER = 'z'
 # Our art layers so far (dev HD client, older HD, stock 3.3.5a): never treated as foreign.
-KNOWN_OURS = {'a6362b62564d8b0e9bbc71e1e8e8420b4b66557c021ea0656c3c7d34a30ac4a2',
+KNOWN_OURS = {'8d8526ac2e17af6d329e8a3e0c25b5797a8e0a2fb12de2ea4ce0ad9be14b8e9c',   # 0.3.216 generated stock art + emitter metadata
+              'a6362b62564d8b0e9bbc71e1e8e8420b4b66557c021ea0656c3c7d34a30ac4a2',
               '51571ec6380f3cc5a88f50158cc9f857dbe584a48e127de5a01b927aa8242fa8',
               '672163c83848cbb7cb9aff4870557789032b0a1d7987b864d78035dfd08b375f',
               '7169280ab24f38a60ed23f27745c5c2eedeecfb2d04dabb935e0bcbcd6ee600a',   # 0.3.178 dev HD (retimed bands)
@@ -402,6 +403,7 @@ class Installer:
         self.free_bytes = lambda path: shutil.disk_usage(path).free
         self.ram = None   # installed-memory probe; None = install_world_cache.total_memory
         self.search_dirs = [package.root.parent, package.root, Path.home() / 'Downloads']
+        self.art_shas = set()
 
     # ---- output ----
 
@@ -831,17 +833,26 @@ class Installer:
     # ---- art layer ----
 
     def our_shas(self, client, name):
-        """sha256 values this installer ever wrote to <name> in this client (any transaction)."""
+        """Our hashes in this client's backup tree, including a copied or moved installation."""
         found = set()
         for path in (client / 'renderer-backups').glob('*/transaction.json'):
             record = read_json(path) or {}
-            if Path(record.get('client', '')).resolve() == client:
-                found |= {a for e in record.get('files', []) if e['path'].lower() == name.lower() for a in INSTALL.afters(e) if a}
+            found |= {a for e in record.get('files', []) if e['path'].lower() == name.lower() for a in INSTALL.afters(e) if a}
         return found
+
+    def owns_art(self, client, name, digest):
+        if digest in KNOWN_OURS | self.art_shas | self.our_shas(client, name):
+            return True
+        from build_art_layer import owns_archive
+        if owns_archive(client / name):
+            self.art_shas.add(digest)
+            return True
+        return False
 
     def foreign_z(self, client, locale):
         """[(client path, sha256)] of Data/patch-z.mpq and Data/<loc>/patch-<loc>-z.mpq files that are not ours
-        (D11: ours = a known layer or one our transactions wrote). Decided before identification: a foreign
+        (ours = a known hash, a transaction's bytes, or a complete matching ownership manifest).
+        Decided before identification: a foreign
         z is part of the client, so identification and a local build must read it."""
         found = []
         for folder, name in ((client_archives.data_dir(client), f'patch-{LETTER}.mpq'),
@@ -850,7 +861,7 @@ class Installer:
             if path is None or not path.is_file():
                 continue
             rel, current = path.relative_to(client).as_posix(), sha(path)
-            if current not in KNOWN_OURS | self.our_shas(client, rel):
+            if not self.owns_art(client, rel, current):
                 found.append((rel, current))
         return found
 
@@ -884,7 +895,7 @@ class Installer:
                 actions[name] = 'installed'
                 continue
             current = sha(target)
-            if current not in KNOWN_OURS | {new} | self.our_shas(client, name):
+            if current != new and not self.owns_art(client, name, current):
                 return {}, f'{name} belongs to another mod (sha256 {current[:12]}); it is left as it is', {}
             actions[name] = 'kept-identical' if current == new else 'replaced'
         return layer, None, actions
