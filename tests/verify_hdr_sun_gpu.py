@@ -16,8 +16,8 @@ def main():
     out.mkdir(parents=True,exist_ok=True);source=fp.SHADERS/'celestial_disc_effects.hlsl'
     wrong=source.read_text(encoding='utf-8')
     wrong=wrong.replace('rawDepth>=1.0-1.0/16777216.0','saturate((rawDepth-DiscImage.z)*DiscImage.w)>=.99999994').replace('rawDepth<1.0-1.0/16777216.0','saturate((rawDepth-DiscImage.z)*DiscImage.w)<.99999994')
-    expression='1-exp2(-1.442695*max(alpha,0)*discDecode(encoded))'
-    assert expression in wrong;wrong=wrong.replace(expression,'8*alpha*discDecode(encoded)')
+    expression='if(DiscEmission.w>.5){encoded=glowShoulder(alpha,encoded);if(DiscPolicy.x>1.5)encoded=discDecode(encoded);}'
+    assert expression in wrong;wrong=wrong.replace(expression,'if(DiscEmission.w>.5)encoded=DiscPolicy.x>1.5?8*alpha*discDecode(encoded):glowShoulder(alpha,encoded);')
     counter=out/'wrong-celestial.hlsl';counter.write_text(wrong,encoding='utf-8',newline='\n');compiler=Compiler(allow_compatible_binary=True)
     files=[]
     for name in ('CelestialDiscPS','CelestialHaloVisibilityPS'):

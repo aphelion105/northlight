@@ -54,6 +54,22 @@ int main(int argc,char** argv){
     auto* clear=depthTexture(1);const auto halo=render(disc,clear),overbright=render(wrongDisc,clear);
     float haloPeak=0,oldPeak=0;for(unsigned i=0;i<N*N;++i){haloPeak=std::max(haloPeak,halo[i*4]);oldPeak=std::max(oldPeak,overbright[i*4]);}
     assert(haloPeak>.5f&&haloPeak<=1.001f&&oldPeak>20);++cases;
+    // The authored SDR halo is the transfer reference, including faint tails
+    // and saturated tints. A shoulder of decoded tint is not equivalent.
+    float maxTransferError=0;unsigned transferPixels=0;
+    const float tints[][3]={{1,1,1},{1,.45f,.08f},{.15f,.45f,1}};
+    for(const auto& tint:tints)for(float weight:{.02f,.2f,.9f,1.8f}){
+        for(unsigned k=0;k<3;++k)c[47][k]=c[48][k]=tint[k];
+        c[47][3]=weight;c[10][0]=0;const auto encoded=render(disc,clear);
+        c[10][0]=2;const auto linear=render(disc,clear);
+        for(unsigned i=0;i<N*N;++i)for(unsigned k=0;k<3;++k){
+            const float x=encoded[i*4+k],expected=x<=.04045f?x/12.92f:std::pow((x+.055f)/1.055f,2.4f);
+            const float error=std::fabs(linear[i*4+k]-expected);maxTransferError=std::max(maxTransferError,error);
+            assert(error<.0025f);++transferPixels;
+        }
+        ++cases;
+    }
+    c[47][3]=1.8f;for(unsigned k=0;k<3;++k)c[47][k]=c[48][k]=1;
     c[12][3]=0;c[12][0]=1;const auto body=render(disc,clear);
     float bodyPeak=0;for(unsigned i=0;i<N*N;++i)bodyPeak=std::max(bodyPeak,body[i*4]);assert(bodyPeak>7.9f&&bodyPeak<8.01f);++cases;
     NorthlightHdr::Frame frame;NorthlightHdr::Settings settings;settings.autoExposure=false;settings.bloom=0;settings.paperWhite=203;settings.maxNits=1500;
@@ -67,7 +83,7 @@ int main(int argc,char** argv){
         const auto presented=pixels(output);for(unsigned i=0;i<N*N;++i){const float nits=80*presented[i*4];assert(std::isfinite(nits)&&nits<=1501);bright[old]+=nits>203*1.2f;presentedPeak[old]=std::max(presentedPeak[old],nits);}scene->Release();++cases;
     }
     assert(bright[0]>0&&bright[1]>bright[0]*4&&presentedPeak[0]>500);
-    std::printf("HDR_SUN_GPU_PASS cases=%u horizonCounterfactualPixels=%u glarePeak=%g oldGlarePeak=%g compactSourcePeak=%g brightArea=%u/%u presentedPeakNits=%g/%g\n",cases,oldLeaks,haloPeak,oldPeak,bodyPeak,bright[0],bright[1],presentedPeak[0],presentedPeak[1]);
+    std::printf("HDR_SUN_GPU_PASS cases=%u transferPixels=%u transferMaxError=%g horizonCounterfactualPixels=%u glarePeak=%g oldGlarePeak=%g compactSourcePeak=%g brightArea=%u/%u presentedPeakNits=%g/%g\n",cases,transferPixels,maxTransferError,oldLeaks,haloPeak,oldPeak,bodyPeak,bright[0],bright[1],presentedPeak[0],presentedPeak[1]);
     frame.reset();for(unsigned k=0;k<6;++k)d->SetTexture(k,nullptr);d->SetPixelShader(nullptr);
     clear->Release();white->Release();disc->Release();visibility->Release();wrongDisc->Release();wrongVisibility->Release();copy->Release();target->Release();output->Release();staging->Release();d->Release();api->Release();FreeLibrary(library);DestroyWindow(window);
 }

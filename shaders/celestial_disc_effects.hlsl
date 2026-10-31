@@ -188,9 +188,10 @@ float4 CelestialDiscPS(float2 uv:TEXCOORD0):COLOR0 {
     alpha*=terrainVisible;
     // In the early sky pass an invisible quad pixel must not write sky depth.
     clip(alpha-.001);
-    // Glare weights describe optical density, not unbounded source radiance.
-    // The compact disc owns HDR headroom; the halo retains its soft shoulder.
-    if(DiscEmission.w>.5)encoded=DiscPolicy.x>1.5?1-exp2(-1.442695*max(alpha,0)*discDecode(encoded)):glowShoulder(alpha,encoded);
+    // The authored shoulder produces encoded SDR colour. Decode its RESULT
+    // once for additive HDR; decoding the tint before the nonlinear shoulder
+    // lifts faint broad tails by up to 12.92x. Only the disc owns HDR headroom.
+    if(DiscEmission.w>.5){encoded=glowShoulder(alpha,encoded);if(DiscPolicy.x>1.5)encoded=discDecode(encoded);}
     return float4(outputColor(encoded),alpha);
 }
 // Diffuse bloom crosses silhouettes; the compact source core stays occluded.
