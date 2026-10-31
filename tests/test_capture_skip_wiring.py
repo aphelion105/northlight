@@ -32,14 +32,16 @@ assert ex.count('finishShadowFate();')==1 and 'finishShadowFate' not in w,'fate 
 assert render.count('uploadReplay(')==1 and render.count('timedReplay()')==1,'replay upload only via timedReplay'
 # Point: a frame without replays never commits the schedule.
 body=pt[pt.index('    bool renderPointShadow(const NorthlightLocalLights::Light& light,bool fresh=true,bool withReplays=true){'):pt.index('    bool renderPointLighting(')]
-assert body.index('if(!fresh){pointSlot().ready=true;captureDemand=true;')<body.index('pointSlot().schedule.commit('),'no point commit from a skipped frame'
+assert body.index('if(!fresh){')<body.index('pointSlot().schedule.commit('),'no point commit from a skipped frame'
+assert body.index('pointSlot().schedule.due(')<body.index('if(!fresh){')<body.index('for(unsigned face=0;face<6;++face)'), 'retain the refresh interval and return before cube writes'
+assert 'if(!pointSlot().schedule.usable||lightChanged)return false;' in body, 'only a compatible usable cube may be published without capture'
 assert 'pointSlot().schedule.due(updateAt,pointSlot().selected,meshGeneration,pointReplayCount' in body and 'if(fresh)pointReplayCount=withReplays?replays.size():0;' in body
 # 0.3.151 face cycles: an incomplete cycle leaves the schedule stale, so the prediction stays due
 # and the next frame captures; a frame without replays neither advances nor commits it.
 pred=pt[pt.index('    bool pointRefreshPredicted()const{'):pt.index('    bool renderPointShadow(const NorthlightLocalLights::Light& light,bool fresh=true,bool withReplays=true){')]
 assert 'NorthlightPointShadow::selectMany(' in pred and '.count!=0;' in pred
 assert 'void stale(){complete=false;}' in fp.src('point_light_shadow.h').read_text() and 'if(invalidated||!complete||' in fp.src('point_light_shadow.h').read_text()
-assert body.index('if(!fresh){pointSlot().ready=true;captureDemand=true;')<body.index('pointSlot().faceCycle.advance()'),'no cycle progress from a skipped frame'
+assert body.index('if(!fresh){')<body.index('pointSlot().faceCycle.advance()'),'no cycle progress from a skipped frame'
 # Snapshot frame, GI and diagnostics.
 once(w,'if(captureMode!=CaptureSkipped)replaySnapshots.clearFrame();','snapshot frame on capture frames only')
 once(w,'captureSkipped=%u','sampled capture log marks skipped frames');assert 'captureSkipped=%u' in r and 'world->captureSkippedLastFrame()' in r,'CPU profile marks skipped frames'
