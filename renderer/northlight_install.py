@@ -21,7 +21,7 @@ The launchers (Install Northlight.command, Install.cmd, install.sh) run this wit
    or a stock client without the zip, builds the cache locally (scripts/install_world_cache.py,
    20-40 min). A cache that is already current is kept. The dungeon and raid maps are an optional layer on
    top of the continent cache (scripts/install_world_cache.py --instances): the installer asks which of six
-   groups to build (--instances SPEC answers for it; the default is what the client has, else none), and a
+   groups to build on the first install (updates keep the saved choice; --instances SPEC changes it), and a
    prebuilt extract keeps the groups already built. A patch-z that is not ours (D11) is part
    of the client: identification and the local build then read it (without=''), and the art layer
    is skipped.
@@ -657,9 +657,8 @@ class Installer:
         """The instance groups the client is meant to have, in group order: the recorded choice (written before every
         instance build, so a failed or killed run keeps it), else the cache's instances-manifest.json."""
         choice = read_json(client / CHOICE)
-        if choice is not None:
-            groups = choice.get('groups')
-            return [k for k in instance_maps.KEYS if isinstance(groups, list) and k in groups]
+        if choice is not None and isinstance(choice.get('groups'), list):
+            return [k for k in instance_maps.KEYS if k in choice['groups']]
         return self.built_instances(client)
 
     def built_instances(self, client):
@@ -668,9 +667,8 @@ class Installer:
         return [k for k in instance_maps.KEYS if isinstance(groups, dict) and k in groups]
 
     def remember_instances(self, client, keys):
-        """Record the choice beside world-cache/; the next run's default, and uninstall removes it."""
-        if keys or (client / CHOICE).exists():
-            INSTALL.atomic_json(client / CHOICE, {'groups': keys})
+        """Record even 'none' beside world-cache/; updates keep it, and uninstall removes it."""
+        INSTALL.atomic_json(client / CHOICE, {'groups': keys})
 
     def instances_to_build(self, client, locale, without, keys):
         """The selected groups that will be built: those the orchestrator's dry run names, else all selected."""
@@ -687,13 +685,19 @@ class Installer:
         return keys
 
     def choose_instances(self, client, spec):
-        """The instance group keys to have: --instances SPEC (Refusal when invalid), else asked, else the current ones."""
+        """Explicit --instances wins; updates keep the recorded selection, first installs ask."""
         try:
             if spec is not None:
                 return instance_maps.resolve(spec)
         except ValueError as e:
             raise Refusal(f'{e}. --instances takes group numbers 1-6, keys ({", ".join(instance_maps.KEYS)}), all or none.')
         current = self.chosen_instances(client)
+        choice = read_json(client / CHOICE) or {}
+        built = read_json(client / CACHE / INSTANCES) or {}
+        if isinstance(choice.get('groups'), list) or isinstance(built.get('groups'), dict):
+            names = ', '.join(self.instance_labels(current)) or 'none'
+            self.say(f'Keeping instance world cache selection: {names}. Use --instances to change it.')
+            return current
         if self.yes or not sys.stdin or not sys.stdin.isatty():
             return current
         self.say('Dungeon and raid world cache (optional: GI, AO and world shadows inside instances).')
@@ -784,7 +788,8 @@ class Installer:
     def build_cache(self, client, locale, jobs, without=LETTER):
         """Build the cache from this client's own archives (install_world_cache.py; no-op when current)."""
         self.still_closed('building the world cache')
-        self.say('Building the world cache from this client (20-40 minutes; a rerun resumes if interrupted)...')
+        self.say('Checking the world cache from this client; only outdated parts will be built '
+                 '(a full build takes 20-40 minutes; an interrupted build resumes)...')
         args = ['--client', client, '--locale', locale, '--output', client / CACHE, '--without', without,
                 '--progress', 'human'] + (['--jobs', jobs] if jobs else [])
         code, last = self.run(APP / 'scripts/install_world_cache.py', args)
@@ -801,8 +806,8 @@ class Installer:
         """The instance layer (install_world_cache.py --instances): builds the selected groups, removes the others.
         Returns {'built': [...], 'kept': [...], 'removed': [...]} (group keys)."""
         if keys:
-            self.say('Building the instance world cache: ' + ', '.join(self.instance_labels(keys)) +
-                     ' (a few minutes per group; a rerun resumes if interrupted)...')
+            self.say('Checking the instance world cache: ' + ', '.join(self.instance_labels(keys)) +
+                     '; only outdated groups will be built (an interrupted build resumes)...')
         args = ['--client', client, '--locale', locale, '--output', client / CACHE, '--without', without,
                 '--progress', 'human', '--instances', ','.join(keys) or 'none'] + (['--jobs', jobs] if jobs else [])
         code, last = self.run(APP / 'scripts/install_world_cache.py', args)
@@ -1037,9 +1042,21 @@ class Installer:
             raise Refusal(f'Cannot read the game archives: {e}. Check that the client is complete.')
         manifest = self.pkg.variants.get(variant) if variant else None
         owner, current = self.cache_owner(client)
+        local_plan = None
+        if world_cache and owner == 'local' and not old:
+            import install_world_cache as iwc
+            try:
+                inputs = iwc.gather_inputs(client, 'all', locale, iwc.MAPS, None, without)
+                local_plan = iwc.plan(iwc.step_digests(inputs), current, client / CACHE, False, without)
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
         source, action = None, 'skip'
         if world_cache:
-            if manifest and owner == 'variant' and current.get('cache_digest') == manifest['cache_digest'] and \
+            if not cache and local_plan and local_plan[0] == 'up_to_date':
+                action = 'keep-local'
+            elif not cache and local_plan and local_plan[0] == 'partial':
+                action = 'build'
+            elif manifest and owner == 'variant' and current.get('cache_digest') == manifest['cache_digest'] and \
                     self.complete_cache(client, manifest):
                 action = 'keep'
             elif manifest:
@@ -1053,7 +1070,7 @@ class Installer:
             self.say(f'Client: modified archives ({locale}); no prebuilt cache matches:')
             for line in differences[:12]:
                 self.say('  ' + str(line))
-        if action == 'build' and manifest:
+        if action == 'build' and manifest and not local_plan:
             self.say(f'The prebuilt cache Northlight-cache-{variant}-{manifest["cache_digest"][:12]}.zip was not found next to '
                      'the package or in Downloads; the cache is built from this client instead.')
         if action == 'extract' and owner == 'local':
@@ -1062,8 +1079,12 @@ class Installer:
             if not self.ask(f'{client / CACHE} was not made by this installer. Replace it?', False):
                 raise Refusal('The existing world-cache was kept; nothing changed. Move it away or answer yes.')
         keys = self.choose_instances(client, instances) if world_cache else []
+        build_bytes = LOCAL_BUILD_BYTES
+        if local_plan and local_plan[0] == 'partial':
+            build_bytes = int(sum(max(MIN_FREE, INSTALL.tree_size(client / CACHE / step) * 1.2)
+                                  for step in local_plan[1]))
         need = MIN_FREE + (sum(m['bytes'] for m in manifest['files'].values()) if action == 'extract' else
-                           LOCAL_BUILD_BYTES if action == 'build' else 0)
+                           build_bytes if action == 'build' else 0)
         building = self.instances_to_build(client, locale, without, keys)   # kept groups need no space
         need += int(sum(g['est_gb'] for g in instance_maps.GROUPS if g['key'] in building) * INSTANCE_DISK * GIB)
         free = self.free_bytes(client)
@@ -1092,6 +1113,8 @@ class Installer:
                   'instances': {'built': [], 'kept': [], 'removed': []}}
         instance_changed = False
         try:
+            if action != 'skip':
+                self.remember_instances(client, p['instances'])   # before either long cache step
             if action == 'extract':
                 self.extract(client, p['source'], p['manifest'])
                 report['world_cache'] = f'extracted (prebuilt {p["variant"]} cache {p["manifest"]["cache_digest"][:12]})'
@@ -1101,10 +1124,12 @@ class Installer:
                 report['archive_warnings'] = self.archive_warnings(client)
             elif action == 'keep':
                 report['world_cache'] = f'kept (prebuilt {p["variant"]} cache {p["manifest"]["cache_digest"][:12]})'
+            elif action == 'keep-local':
+                report['world_cache'] = 'kept (up to date)'
+                report['archive_warnings'] = self.archive_warnings(client)
             else:
                 report['world_cache'] = 'not installed (--no-world-cache)'
             if action != 'skip':   # nothing selected and nothing built earlier: no process
-                self.remember_instances(client, p['instances'])   # before the long step: a failure keeps the intent
                 if p['instances'] or self.built_instances(client):   # also to remove what is built
                     # The layer is optional: its failure is a warning in the summary, never a reason to skip the renderer.
                     self.still_closed('building the instance world cache')
@@ -1304,7 +1329,7 @@ def main(argv=None):
     ap.add_argument('--no-art-layer', action='store_true', help='do not install the lighting art layer (patch-z)')
     ap.add_argument('--no-world-cache', action='store_true', help='install the renderer without a world cache')
     ap.add_argument('--instances', metavar='SPEC', help='dungeon and raid world cache groups to have: numbers 1-6, keys, all or none '
-                    '(default: asked; the groups the client has, else none)')
+                    '(default: keep the saved choice; asked on first install, initially none)')
     ap.add_argument('--jobs', type=int, help='parallel builders for a local cache build (default: by memory)')
     ap.add_argument('--yes', action='store_true', help='answer the recommended default to every question')
     ap.add_argument('--package', type=Path, help=argparse.SUPPRESS)   # development: a package folder to use
