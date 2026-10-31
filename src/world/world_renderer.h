@@ -3667,7 +3667,7 @@ public:
         if(FAILED(shader->GetFunction(words.data(),&size)))return;
         NorthlightShadowShader::PatchInfo info;
         std::vector<uint32_t> fadeWords;
-        if(detail&&!NorthlightDetailShadow::shadowFade(words,fadeWords))return;
+        if(detail&&!NorthlightDetailShadow::shadowVertex(words,fadeWords))return;
         const auto& shadowInput=detail?fadeWords:words;
         if(!NorthlightShadowShader::patch(shadowInput.data(),shadowInput.size(),output,&info)||!info.texcoord0XY)return;
         NorthlightDrawSnapshot::Ref<IDirect3DVertexShader9> replacement;
@@ -4474,11 +4474,11 @@ public:
         return ok&&job.flags.size()==replays.size()&&!std::memcmp(job.matrix,matrix,sizeof job.matrix)&&!std::memcmp(job.cached,cached,sizeof job.cached)?job.flags.data():nullptr;
     }
     void replayCullSettle(){for(auto& job:replayCulls)if(job.kicked){job.kicked=false;replayJobs_.wait(job.done);job.done.clearFailure();}}
-    template<class Split,class Check> bool submitReplay(const Replay* p,NorthlightReplayDrawState::Cache& replayBindings,NorthlightReplayPoses::Pass<BOOL>& poseConstants,const float* rows,Split& split,size_t& replayConstantBytes,size_t& replayConstantCalls,Check&& ok){
-        if constexpr(!Split::Calls)return poseConstants.prepare(*p,rows); /* DiagReplayProbe logic-only mode: no D3D9 call */
+    template<class Split,class Check> bool submitReplay(const Replay* p,NorthlightReplayDrawState::Cache& replayBindings,NorthlightReplayPoses::Pass<BOOL>& poseConstants,const float* rows,const float* worldMatrix,Split& split,size_t& replayConstantBytes,size_t& replayConstantCalls,Check&& ok){
+        if constexpr(!Split::Calls)return poseConstants.prepare(*p,rows,worldMatrix); /* DiagReplayProbe logic-only mode: no D3D9 call */
         if(!ok(replayBindings.geometry(*p),"replay geometry state"))return false;
         split.mark(NorthlightRenderThreadProbe::State);
-        if(!poseConstants.prepare(*p,rows))return false;
+        if(!poseConstants.prepare(*p,rows,worldMatrix))return false;
         const float* desired=poseConstants.desired();
         auto f=poseConstants.floats;auto b=poseConstants.booleans;auto i=poseConstants.integers;
         split.mark(NorthlightRenderThreadProbe::Own);
@@ -4978,7 +4978,7 @@ public:
                 ++replaySlotTested[slot];replaySlotBounded[slot]+=p->pointBounds.valid;
                 if(p->pointBounds.valid&&(cull?(cull[index]&2)!=0:(replayAffine&&NorthlightShadowBounds::clipRejectAffine(V(p->pointBounds.low[0],p->pointBounds.low[1],p->pointBounds.low[2]),V(p->pointBounds.high[0],p->pointBounds.high[1],p->pointBounds.high[2]),matrices[cascade])))){++culledReplayDraws;++replaySlotCulled[slot];continue;}
                 split.mark(Own);
-                if(!submitReplay(p.get(),replayBindings,poseConstants,rows,split,replayConstantBytes,replayConstantCalls,[&](HRESULT h,const char* s){return check(h,s);}))return false;
+                if(!submitReplay(p.get(),replayBindings,poseConstants,rows,matrices[cascade],split,replayConstantBytes,replayConstantCalls,[&](HRESULT h,const char* s){return check(h,s);}))return false;
                 split.drawn(p.get());
                 ++replayDraws;replayTriangles+=p->count;
                 if(captureSampled)try{replayMeshKeys.push_back({p->index,p->stream[0],p->decl,p->offset[0],p->start,p->count,p->base,p->constantGroup});}catch(...){}
@@ -5009,7 +5009,7 @@ public:
             // unchanged); its GPU time gets its own profile mark in probing windows. Never on a
             // diagnostic capture frame (probeRecord), so it may precede the live dump below.
             if(probeRecord&&!split.recordFailed){const bool marks=profile&&replayProbeMode!=NorthlightRenderThreadProbe::ProbeOff;
-                if(marks)profile->mark("SunNearLoop");replayProbe(rows,realLoopMs);if(marks)profile->mark("ReplayProbe");}
+                if(marks)profile->mark("SunNearLoop");replayProbe(rows,matrices[cascade],realLoopMs);if(marks)profile->mark("ReplayProbe");}
             if(cascade==0&&actorFrameOn[source]){ // 0.3.209 (task 29): this source's actor map, in the same iteration as its near map (same replays, same frame)
                 if(profile)profile->mark(source==0?"SunNearReplays":"MoonNearReplays");bucket(NorthlightEffectsBuckets::Bucket(NorthlightEffectsBuckets::SunNear+source*2)); /* the near terrain and replays so far (own mark name: SunNear/MoonNear follow the union); the actor map is billed on its own below */
                 const float* am=actorFrameMatrix[source];
@@ -5024,7 +5024,7 @@ public:
                 // partly outside it, or without bounds, stays in the near map alone (it was drawn into both before, twice the cost
                 // in crowds and with a low sun, whose long footprint brings many far replays into the map).
                 if(nearSkip)for(const uint32_t index:actorReplays){const auto& p=replays[index];
-                    if(!submitReplay(p.get(),actorBindings,actorPoses,actorRows,actorSplit,replayConstantBytes,replayConstantCalls,[&](HRESULT h,const char* s){return check(h,s);}))return false;
+                    if(!submitReplay(p.get(),actorBindings,actorPoses,actorRows,am,actorSplit,replayConstantBytes,replayConstantCalls,[&](HRESULT h,const char* s){return check(h,s);}))return false;
                     ++drawnHere;
                     if(fogBoundsKnown){float bounds[4];fogBoundsKnown=NorthlightActorShadowMap::fogBounds(p->pointBounds.valid,p->pointBounds.low,p->pointBounds.high,am,bounds);
                         if(fogBoundsKnown)for(unsigned axis=0;axis<2;++axis){fogBounds[axis]=std::min(fogBounds[axis],bounds[axis]);fogBounds[axis+2]=std::max(fogBounds[axis+2],bounds[axis+2]);}}
