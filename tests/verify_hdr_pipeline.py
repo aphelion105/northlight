@@ -77,7 +77,7 @@ def main():
         if not args.no_build:
             run('build', [sys.executable, fp.REPO/'scripts/build_renderer.py'])
         report['renderer_sha256'] = sha(fp.dll())
-        for path in [fp.src('hdr_frame.h'), fp.src('hdr_color.h'), fp.src('renderer.cpp'),
+        for path in [fp.src('hdr_frame.h'), fp.src('hdr_quad.h'), fp.src('hdr_color.h'), fp.src('renderer.cpp'),
                      fp.SHADERS/'hdr_effects.hlsl', fp.SHADERS/'world_effects.hlsl', fp.TESTS/'hdr_pipeline_gpu.cpp']:
             report['source_sha256'][str(path.relative_to(fp.REPO))] = sha(path)
         for test in ['test_hdr_boundary.py', 'test_ui_boundary.py']:

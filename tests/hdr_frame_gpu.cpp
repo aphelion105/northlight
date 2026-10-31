@@ -58,7 +58,7 @@ static unsigned batchStateOracle(IDirect3DDevice9* raw,IDirect3DSurface9* source
             d.states=d.samplers=d.targets=0;d.failAt=failure;
             ok(d.BeginScene());const HRESULT hr=frame.finish(&d,source,destination,settings,1.f/60,valid,true,.18f,&pool);ok(d.EndScene());
             assert(failure?FAILED(hr):SUCCEEDED(hr));
-            if(!failure){assert(d.states==15&&d.samplers==20);assert(d.targets==passes+1);}
+            if(!failure){assert(d.states==15&&d.samplers==20+(automatic&&valid?4:0)+(bloom?4:0));assert(d.targets==passes+1);}
             DWORD restored=0;ok(raw->GetRenderState(D3DRS_SCISSORTESTENABLE,&restored));assert(restored==TRUE);
             ok(raw->GetSamplerState(0,D3DSAMP_SRGBTEXTURE,&restored));assert(restored==TRUE);
             RECT actual{};ok(raw->GetScissorRect(&actual));assert(!std::memcmp(&actual,&clip,sizeof clip));
@@ -67,6 +67,90 @@ static unsigned batchStateOracle(IDirect3DDevice9* raw,IDirect3DSurface9* source
     }
     ok(raw->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE));ok(raw->SetSamplerState(0,D3DSAMP_SRGBTEXTURE,FALSE));
     std::printf("HDR_BATCH_STATE_ORACLE cases=%u setupPerEntry=1 targetFailureRecovery=true\n",cases);return cases;
+}
+static unsigned filterOracle(IDirect3DDevice9* d){
+    unsigned cases=0;float reduceError=0,bloomError=0;
+    for(bool reduction:{false,true})for(unsigned size=0;size<3;++size)for(unsigned pattern=0;pattern<5;++pattern){
+        if(reduction&&size==2)continue;
+        const unsigned w=reduction?(size?8:64):(size==0?1:size==1?17:32),h=reduction?w:(size==0?1:size==1?13:32);
+        const unsigned ow=reduction?w/8:w,oh=reduction?h/8:h;
+        Image input{w,h,D3DFMT_A32B32G32R32F,16,std::vector<unsigned char>(w*h*16)};
+        for(unsigned y=0;y<h;++y)for(unsigned x=0;x<w;++x){
+            const float v=pattern==0?.18f:pattern==1?float((x+y)&1)*32:pattern==2?(x==w/2&&y==h/2?64.f:0):pattern==3?float((x*17+y*31)%101)*.07f:float(y)/h;
+            const float pixel[]={v,v*.3f,v*.07f,1};std::memcpy(input.pixels.data()+(y*w+x)*16,pixel,16);
+        }
+        auto* source=texture(d,input);IDirect3DSurface9 *target=nullptr,*readback=nullptr;
+        ok(d->CreateRenderTarget(ow,oh,D3DFMT_A32B32G32R32F,D3DMULTISAMPLE_NONE,0,FALSE,&target,nullptr));
+        ok(d->CreateOffscreenPlainSurface(ow,oh,D3DFMT_A32B32G32R32F,D3DPOOL_SYSTEMMEM,&readback,nullptr));
+        std::vector<float> reference(ow*oh*4);
+        for(bool candidate:{false,true}){
+            IDirect3DPixelShader9* shader=nullptr;
+            const auto* code=reduction?(candidate?kHdrReduceLinear:kHdrReduce):(candidate?kHdrBloomVertical:kHdrBloom);
+            ok(d->CreatePixelShader(reinterpret_cast<const DWORD*>(code),&shader));ok(d->BeginScene());ok(NorthlightHdr::quadState(d,target,ow,oh));
+            const float parameters[]={reduction?1.f/w:0,1.f/h,1,0};ok(d->SetPixelShaderConstantF(2,parameters,1));
+            ok(d->SetPixelShader(shader));ok(d->SetTexture(0,source));
+            if(candidate){ok(d->SetSamplerState(0,D3DSAMP_MINFILTER,D3DTEXF_LINEAR));ok(d->SetSamplerState(0,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR));}
+            ok(NorthlightHdr::drawQuad(d,ow,oh));ok(d->EndScene());ok(d->GetRenderTargetData(target,readback));
+            D3DLOCKED_RECT lock{};ok(readback->LockRect(&lock,nullptr,D3DLOCK_READONLY));
+            for(unsigned y=0;y<oh;++y)for(unsigned x=0;x<ow*4;++x){
+                const unsigned i=y*ow*4+x;const float value=reinterpret_cast<const float*>(static_cast<const char*>(lock.pBits)+y*lock.Pitch)[x];
+                if(!candidate)reference[i]=value;else{
+                    const float error=std::fabs(value-reference[i]);assert(std::isfinite(value));
+                    if(reduction){reduceError=std::max(reduceError,error);assert(error<.00002f);}
+                    else{bloomError=std::max(bloomError,error);assert(error<.00002f);}
+                    if(x%4==3)assert(value==1);
+                }
+            }
+            ok(readback->UnlockRect());shader->Release();
+        }
+        ok(d->SetTexture(0,nullptr));source->Release();target->Release();readback->Release();++cases;
+    }
+    std::printf("HDR_FILTER_ORACLE cases=%u reductionError=%g bloomError=%g kernels=constant/checker/impulse/noise/ramp edges=clamp\n",cases,reduceError,bloomError);return cases;
+}
+static unsigned uiStateOracle(IDirect3DDevice9* raw,IDirect3DSurface9* target,IDirect3DPixelShader9* constant){
+    struct Meter:ForwardIDirect3DDevice9{
+        unsigned blendReads=0,srgbWrites=0;bool failRead=false;
+        explicit Meter(IDirect3DDevice9* d):ForwardIDirect3DDevice9(d){}
+        HRESULT STDMETHODCALLTYPE GetRenderState(D3DRENDERSTATETYPE s,DWORD* v)override{
+            if(failRead&&s==D3DRS_SRGBWRITEENABLE)return E_FAIL;
+            if(s==D3DRS_SRCBLEND||s==D3DRS_DESTBLEND)++blendReads;return real->GetRenderState(s,v);
+        }
+        HRESULT STDMETHODCALLTYPE SetRenderState(D3DRENDERSTATETYPE s,DWORD v)override{srgbWrites+=s==D3DRS_SRGBWRITEENABLE;return real->SetRenderState(s,v);}
+    } d(raw);
+    NorthlightHdr::Color color;unsigned cases=0;
+    for(bool fixed:{false,true})for(bool blend:{false,true})for(bool srgb:{false,true})for(bool failure:{false,true}){
+        ok(NorthlightHdr::quadState(raw,target,W,H));ok(raw->SetPixelShader(fixed?nullptr:constant));
+        ok(raw->SetRenderState(D3DRS_ALPHABLENDENABLE,blend));ok(raw->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_SRCALPHA));ok(raw->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_INVSRCALPHA));
+        ok(raw->SetTextureStageState(1,D3DTSS_COLOROP,D3DTOP_DISABLE));
+        ok(raw->SetTextureStageState(0,D3DTSS_COLOROP,D3DTOP_SELECTARG1));ok(raw->SetTextureStageState(0,D3DTSS_COLORARG1,D3DTA_DIFFUSE));
+        ok(raw->SetTextureStageState(0,D3DTSS_ALPHAOP,D3DTOP_SELECTARG1));ok(raw->SetTextureStageState(0,D3DTSS_ALPHAARG1,D3DTA_DIFFUSE));
+        ok(raw->SetTextureStageState(0,D3DTSS_TEXCOORDINDEX,0));ok(raw->SetTextureStageState(0,D3DTSS_TEXTURETRANSFORMFLAGS,D3DTTFF_DISABLE));
+        ok(raw->SetRenderState(D3DRS_SRGBWRITEENABLE,srgb));d.blendReads=d.srgbWrites=0;d.failRead=failure;
+        unsigned submits=0;const HRESULT hr=color.draw(&d,160,[&]{++submits;return S_OK;});
+        assert(failure?FAILED(hr):SUCCEEDED(hr));assert(submits==unsigned(!failure));
+        assert(d.blendReads==(blend?2u:0u)&&d.srgbWrites==(failure?0u:srgb||fixed?2u:1u));
+        DWORD restored=0;ok(raw->GetRenderState(D3DRS_SRGBWRITEENABLE,&restored));assert(restored==unsigned(srgb));++cases;
+    }
+    ok(raw->SetPixelShader(nullptr));ok(raw->SetRenderState(D3DRS_SRGBWRITEENABLE,FALSE));
+    std::printf("HDR_UI_STATE_ORACLE cases=%u disabledBlendReads=0 srgbRestored=true failedReadSubmits=0\n",cases);return cases;
+}
+static unsigned gradeOracle(IDirect3DDevice9* d,IDirect3DSurface9* source,IDirect3DSurface9* target,IDirect3DSurface9* readback,IDirect3DPixelShader9* constant,IDirect3DTexture9* encoded){
+    NorthlightHdr::Frame frame;NorthlightHdr::Settings settings;settings.autoExposure=false;settings.bloom=0;
+    ok(d->BeginScene());ok(frame.prepareLegacy(d,encoded,nullptr,nullptr,W,H,0,1,settings));ok(d->EndScene());unsigned cases=0;
+    for(float v:{0.f,.125f,.5f,1.f,4.f,32.f})for(float contrast:{.5f,.999f,1.f,1.001f,2.f})for(float ev:{-2.f,0.f,2.f})for(float nits:{80.f,1000.f,2000.f}){
+        const float input[]={v,v*.25f,v*.0625f,.75f};fill(d,source,constant,input);
+        settings.contrast=contrast;settings.exposure=ev;settings.maxNits=nits;
+        ok(d->BeginScene());ok(frame.finish(d,source,target,settings,0,true,false));ok(d->EndScene());float actual[4];sample(d,target,readback,actual);
+        const double luminance=std::max(double(v)*(.2126+.25*.7152+.0625*.0722),.000001);
+        const double white=std::min(203.f,nits)/80.,peak=nits/80.;
+        const double scale=std::pow(luminance/.18,contrast-1)*std::exp2(ev)*white;
+        const double maximum=v*scale,span=peak-white;
+        const double mapped=span>.000001?white+span*(1-std::exp(-std::max(maximum-white,0.)/span)):std::min(maximum,peak);
+        for(unsigned c=0;c<3;++c){const double expected=input[c]*scale*(maximum>white?mapped/std::max(maximum,.000001):1);
+            assert(std::isfinite(actual[c])&&std::fabs(actual[c]-expected)<std::max(.00003,std::fabs(expected)*.001));}
+        assert(actual[3]==.75f);++cases;
+    }
+    std::printf("HDR_GRADE_ORACLE cases=%u contrast=0.5/0.999/1/1.001/2 peak=80/1000/2000 alpha=exact\n",cases);return cases;
 }
 static unsigned fixedUiOracle(IDirect3DDevice9* d,IDirect3DSurface9* destination,IDirect3DSurface9* staging,IDirect3DPixelShader9* constant){
     Image pattern{4,4,D3DFMT_A8R8G8B8,4,std::vector<unsigned char>(64)};
@@ -150,7 +234,7 @@ int main(int argc,char** argv){
     auto prepare=[&](IDirect3DTexture9* input){ok(device->BeginScene());ok(frame.prepareLegacy(device,input,nullptr,nullptr,W,H,0,1,settings));ok(device->EndScene());};
     auto finish=[&](float dt=1.f/60,bool cut=false){ok(device->BeginScene());ok(frame.finish(device,source,destination,settings,dt,true,cut));ok(device->EndScene());};
     auto exposure=[&]{float value[4];sample(device,frame.exposureSurface(),scalar,value);return value[0];};
-    prepare(white);unsigned cases=batchStateOracle(device,source,destination,white);
+    prepare(white);unsigned cases=batchStateOracle(device,source,destination,white)+filterOracle(device)+uiStateOracle(device,destination,constant)+gradeOracle(device,source,destination,readback,constant,white);
     float actual[4],reference[4];
     const float ordinary[]={1,1,1,1};fill(device,source,constant,ordinary);finish();sample(device,destination,readback,actual,W/2,H/2);
     assert(std::fabs(actual[0]*80-203)<.406);++cases;

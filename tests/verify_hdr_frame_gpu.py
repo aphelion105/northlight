@@ -26,7 +26,7 @@ def main():
     processes();output.mkdir(parents=True,exist_ok=True)
     source='hdr_pipeline_benchmark_gpu.cpp' if args.benchmark else 'hdr_frame_gpu.cpp'
     binaries={}
-    report={'game_launched':False,'client_modified':False,'runs':[],'headers':{}}
+    report={'game_launched':False,'client_modified':False,'runs':[],'headers':{},'harness_sha256':hashlib.sha256((fp.TESTS/source).read_bytes()).hexdigest()}
     reference=None
     if args.reference_ref:
         reference=subprocess.check_output(['git','rev-parse','--verify',args.reference_ref+'^{commit}'],cwd=fp.REPO,text=True).strip()

@@ -88,6 +88,17 @@ int main(int argc,char** argv){
                 std::sort(layer,layer+3);std::sort(direct,direct+3);
                 std::printf("{\"width\":%u,\"height\":%u,\"samples\":8,\"draws\":2,\"fullCoverage\":%u,\"two_texture_layers_ms\":%.6f,\"two_texture_direct_ms\":%.6f,\"scope\":\"fixed_function_compatibility_only_not_client_fps\"}\n",width,height,unsigned(full),layer[1],direct[1]);
             }
+            for(bool blend:{false,true}){
+                ok(device->SetRenderState(D3DRS_ALPHABLENDENABLE,blend));
+                // Isolate state validation/substitution from draw/GPU stalls.
+                // The fixed-function two-texture state above remains active.
+                double cpu[7];LARGE_INTEGER a{},b{},clock{};QueryPerformanceFrequency(&clock);
+                for(unsigned block=0;block<7;++block){
+                    QueryPerformanceCounter(&a);for(unsigned n=0;n<2048;++n)ok(transfer.draw(device,160,[]{return S_OK;}));QueryPerformanceCounter(&b);
+                    cpu[block]=double(b.QuadPart-a.QuadPart)*1000/clock.QuadPart/1024;
+                }
+                std::sort(cpu,cpu+7);std::printf("{\"two_texture_cpu_ms_per_2_draws\":%.9f,\"blend\":%s,\"scope\":\"validation_and_state_only_no_draw_or_game\"}\n",cpu[3],blend?"true":"false");
+            }
             transfer.reset();msaa->Release();
         }
         current.reset();previous.reset();encodedSurface->Release();encoded->Release();copySurface->Release();copy->Release();output->Release();

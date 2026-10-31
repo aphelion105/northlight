@@ -23,7 +23,7 @@ class Frame {
             if(FAILED(hr))reset();return hr;
         }
     } linear,meter64,meter8,legacyStatistics,worldStatistics,history[2],bloomTargets[2];
-    IDirect3DPixelShader9 *decode=nullptr,*meter=nullptr,*reduce=nullptr,*adapt=nullptr,*bloom=nullptr,*output=nullptr,*constant=nullptr,*copy=nullptr,*legacyComposite=nullptr,*outputOnly=nullptr,*legacyEncode=nullptr;
+    IDirect3DPixelShader9 *decode=nullptr,*meter=nullptr,*reduce=nullptr,*adapt=nullptr,*bloom=nullptr,*bloomVertical=nullptr,*output=nullptr,*constant=nullptr,*copy=nullptr,*legacyComposite=nullptr,*outputOnly=nullptr,*legacyEncode=nullptr;
     unsigned width=0,height=0,historyIndex=0;bool historyReady=false,worldWasValid=false;
     float restoredExposure=0;bool restoredReady=false;
 
@@ -38,16 +38,19 @@ class Frame {
         float parameters[]={0,0,encoded?1.f:0.f,0};
         HRESULT hr=pass(device,meter64.surface,meter,64,64,source,nullptr,nullptr,parameters);if(FAILED(hr))return hr;
         parameters[0]=parameters[1]=1.f/64;
+        device->SetSamplerState(0,D3DSAMP_MINFILTER,D3DTEXF_LINEAR);device->SetSamplerState(0,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);
         hr=pass(device,meter8.surface,reduce,8,8,meter64.texture,nullptr,nullptr,parameters,true);if(FAILED(hr))return hr;
         parameters[0]=parameters[1]=1.f/8;
-        return pass(device,result.surface,reduce,1,1,meter8.texture,nullptr,nullptr,parameters,true);
+        hr=pass(device,result.surface,reduce,1,1,meter8.texture,nullptr,nullptr,parameters,true);
+        device->SetSamplerState(0,D3DSAMP_MINFILTER,D3DTEXF_POINT);device->SetSamplerState(0,D3DSAMP_MAGFILTER,D3DTEXF_POINT);
+        return hr;
     }
 public:
     Frame()=default;Frame(const Frame&)=delete;Frame& operator=(const Frame&)=delete;
     ~Frame(){reset();}
     void reset(){
         linear.reset();meter64.reset();meter8.reset();legacyStatistics.reset();worldStatistics.reset();for(auto& target:history)target.reset();for(auto& target:bloomTargets)target.reset();
-        release(decode);release(meter);release(reduce);release(adapt);release(bloom);release(output);release(constant);release(copy);release(legacyComposite);release(outputOnly);release(legacyEncode);
+        release(decode);release(meter);release(reduce);release(adapt);release(bloom);release(bloomVertical);release(output);release(constant);release(copy);release(legacyComposite);release(outputOnly);release(legacyEncode);
         width=height=historyIndex=0;historyReady=worldWasValid=false;
     }
     void invalidateExposure(){historyReady=false;worldWasValid=false;restoredReady=false;}
@@ -63,7 +66,7 @@ public:
         if(!w||!h)return D3DERR_INVALIDCALL;
         if(w!=width||h!=height){linear.reset();for(auto& target:bloomTargets)target.reset();width=w;height=h;}
         struct Shader{const std::uint32_t* code;IDirect3DPixelShader9** shader;};
-        const Shader shaders[]={{kHdrDecodeWorld,&decode},{kHdrMeter,&meter},{kHdrReduce,&reduce},{kHdrAdapt,&adapt},{kHdrBloom,&bloom},{kHdrWorldLinear,&output},{kHdrWorldLinearOnly,&outputOnly},{kHdrLegacyEncode,&legacyEncode},{kHdrCalibration,&constant},{kHdrCopy,&copy},{kHdrLegacyComposite,&legacyComposite}};
+        const Shader shaders[]={{kHdrDecodeWorld,&decode},{kHdrMeter,&meter},{kHdrReduceLinear,&reduce},{kHdrAdapt,&adapt},{kHdrBloom,&bloom},{kHdrBloomVertical,&bloomVertical},{kHdrWorldLinear,&output},{kHdrWorldLinearOnly,&outputOnly},{kHdrLegacyEncode,&legacyEncode},{kHdrCalibration,&constant},{kHdrCopy,&copy},{kHdrLegacyComposite,&legacyComposite}};
         for(const auto& shader:shaders)if(!*shader.shader){HRESULT hr=device->CreatePixelShader(reinterpret_cast<const DWORD*>(shader.code),shader.shader);if(FAILED(hr))return hr;}
         HRESULT hr=linear.create(device,w,h);if(FAILED(hr))return hr;
         for(auto* target:{&meter64,&meter8,&legacyStatistics,&worldStatistics,&history[0],&history[1]}){
@@ -154,7 +157,9 @@ public:
             float parameters[]={2.f/width,0,0,0};
             hr=pass(device,firstBloomSurface,bloom,bw,bh,linear.texture,nullptr,nullptr,parameters,prepared);if(FAILED(hr))return hr;
             parameters[0]=0;parameters[1]=1.f/bh;parameters[2]=1;
-            hr=pass(device,secondBloomSurface,bloom,bw,bh,firstBloom,nullptr,nullptr,parameters,true);if(FAILED(hr))return hr;
+            device->SetSamplerState(0,D3DSAMP_MINFILTER,D3DTEXF_LINEAR);device->SetSamplerState(0,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);
+            hr=pass(device,secondBloomSurface,bloomVertical,bw,bh,firstBloom,nullptr,nullptr,parameters,true);if(FAILED(hr))return hr;
+            device->SetSamplerState(0,D3DSAMP_MINFILTER,D3DTEXF_POINT);device->SetSamplerState(0,D3DSAMP_MAGFILTER,D3DTEXF_POINT);
             prepared=true;
             bloomTexture=secondBloom;
         }
