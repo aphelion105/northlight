@@ -1,5 +1,7 @@
 # Complete Windows test installer - 2026-10-31
 
+Current complete package: [0.3.216-test.20261031.11](complete-installer-20261031.11.md), including the subsequent shadow, material, animated-light and character-normal fixes. The identities and acceptance below describe the earlier `.9` snapshot.
+
 Version: `0.3.216-test.20261031.9`. Production code snapshot: `82a644ae`.
 
 | Artifact | Identity |
