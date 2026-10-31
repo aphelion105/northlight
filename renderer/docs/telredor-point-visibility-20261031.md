@@ -6,7 +6,7 @@ Use that existing scissor before allocating or rendering the cube. Keep static r
 
 ## Measurement inputs
 
-The stand uses the combined #98 head 18329275 plus the separate #112 actor ownership implementation, compiled against the current High AO kernels, and the latest #97 material-persistence and #114 herb/Swamp Gas follow-ups (0d1b15a8, 6a54ec92 and 794fd3b1). The existing integration supplies #76, #86, #92, #96, #109, #110, #111, #113, #116, #117 and #118. These are reconciled implementations, not an ancestry claim for independently ported branches. The frozen measurement assembly is d2152fb7 on codex/telredor-performance in the author's fork.
+The stand uses the combined #98 head 18329275 plus the separate #112 actor ownership implementation, compiled against the current High AO kernels, and the latest #97 material-persistence and #114 herb/Swamp Gas follow-ups (0d1b15a8, 6a54ec92 and 794fd3b1). The existing integration supplies #76, #86, #92, #96, #109, #110, #111, #113, #116, #117 and #118. These are reconciled implementations, not an ancestry claim for independently ported branches. The frozen measurement assembly is local commit d2152fb7 on codex/telredor-performance; the complete assembly branch is not published. Its source/cache identities remain in the private validation report, while #98 supplies the reproducible benchmark source.
 
 The canonical checkout's 73 uncommitted HDR-related paths were inventoried and excluded. Existing HDR presentation is inactive. The game was closed for accepted GPU runs; the separate scene capture requested during the task paused the stand. No game process was launched by this task.
 
