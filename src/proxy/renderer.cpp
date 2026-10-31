@@ -65,6 +65,8 @@
 #ifndef NORTHLIGHT_REPLAY_STAND
 #include "native_capture_windows.h"
 #endif
+#include "ao_actor_stencil.h"
+#include "ao_actor_policy.h"
 
 // 0.3.181 (r90): the DLL's one memcmp. This strong definition overrides zig compiler_rt's weak byte
 // loop for every call site in all four TUs (libc++ included) and returns the same value for every
@@ -354,8 +356,8 @@ static void upgradeAutoDepth(IDirect3D9* d3d,UINT adapter,D3DDEVTYPE type,D3DPRE
     static bool unavailableLogged=false,upgradedLogged=false;
     const bool ok=wanted&&pp&&depthUpgradeSupported(d3d,adapter,type,pp->BackBufferFormat);
     NorthlightStream::depthUpgrade.store(ok,std::memory_order_relaxed);
-    if(wanted&&!ok&&!unavailableLogged){unavailableLogged=true;logf("NAMEMASK depth upgrade unavailable where=%s: D24S8 is not supported for this back buffer format; D24X8 stays",where);}
-    if(ok&&pp->EnableAutoDepthStencil&&pp->AutoDepthStencilFormat==D3DFMT_D24X8){pp->AutoDepthStencilFormat=D3DFMT_D24S8;if(!upgradedLogged){upgradedLogged=true;logf("NAMEMASK depth upgraded D24X8->D24S8 where=%s",where);}}
+    if(wanted&&!ok&&!unavailableLogged){unavailableLogged=true;logf("STENCIL depth upgrade unavailable where=%s: D24S8 is not supported for this back buffer format; D24X8 stays",where);}
+    if(ok&&pp->EnableAutoDepthStencil&&pp->AutoDepthStencilFormat==D3DFMT_D24X8){pp->AutoDepthStencilFormat=D3DFMT_D24S8;if(!upgradedLogged){upgradedLogged=true;logf("STENCIL depth upgraded D24X8->D24S8 where=%s",where);}}
 }
 class Device final : public GuardedMirrorDevice {
     LONG refs = 1;
@@ -419,6 +421,64 @@ class Device final : public GuardedMirrorDevice {
     IDirect3DSurface9 *sceneSurface = nullptr, *aoSurface = nullptr, *aoRawSurface = nullptr, *worldDepth = nullptr;
     D3DSURFACE_DESC worldDepthDesc={};bool worldDepthDescKnown=false; // 0.3.196 (task 12): worldDepth's desc (a held reference, so the object and its desc are fixed); cleared when worldDepth is dropped
     IDirect3DPixelShader9 *aoPS = nullptr, *aoBlurPS = nullptr, *aoContactBloomPS = nullptr, *contactBloomPS = nullptr, *compositePS = nullptr;
+    std::unique_ptr<NorthlightAOActorStencil> aoActorMask;
+    IDirect3DPixelShader9 *aoActorPreparePS=nullptr, *aoActorPS=nullptr, *aoActorAlphaPS=nullptr;
+    unsigned aoActorFrame=~0u;bool aoActorOn=false,aoActorDrawKnown=false,aoActorDrawSkin=false,aoActorDepthWrite=false,aoActorUsed=false;
+    bool aoActorShaderFailed=false,aoActorStencilPrepared=false;
+    LONGLONG cpuAoActorCapture=0;
+    bool aoActorShaders(bool fallback){
+        if(aoActorShaderFailed)return false;
+        HRESULT hr=S_OK;
+        if(!aoActorPreparePS)hr=ext->CreatePixelShader(kAoActorPrepareShader,&aoActorPreparePS);
+        auto& shader=fallback?aoActorAlphaPS:aoActorPS;
+        if(SUCCEEDED(hr)&&!shader)hr=ext->CreatePixelShader(fallback?(aoMethod==3?kGtaoActorOnlyShader:kHbaoActorOnlyShader):
+            (aoMethod==3?kGtaoActorContactBloomShader:kHbaoActorContactBloomShader),&shader);
+        if(SUCCEEDED(hr))return true;
+        aoActorShaderFailed=true;drop(aoActorPreparePS);drop(aoActorPS);drop(aoActorAlphaPS);
+        logf("AO actor shaders unavailable HRESULT=0x%08lx; original AO retained",(unsigned long)hr);return false;
+    }
+    void aoActorBeginFrame(){
+        if(aoActorFrame==frame)return;
+        const bool wasOn=aoActorOn;
+        aoActorFrame=frame;aoActorOn=aoQuality==0&&NorthlightAOActorPolicy::enabled(enabled&&!failed,contactAO,aoMethod,aoStrength,aoRadius);
+        if(wasOn&&!aoActorOn)aoActorMask->reset();
+        aoActorMask->beginFrame(aoActorOn);aoActorUsed=aoActorStencilPrepared=false;
+        cpuAoActorCapture=0;
+    }
+    template<class Draw> HRESULT aoActorNativeDraw(Draw draw){
+        if(!aoActorOn||applied||failed||!enabled)return draw();
+        // Only the native draw is marked. Geometry replays, shadow captures and
+        // material captures have already finished; their stencil is untouched.
+        if(!aoActorDrawKnown){
+            if(!aoActorMask->valid())return draw();
+            // Fixed-function glow/blob draws have no classified VS, but do not
+            // change scene depth. Keep ownership through those draws; an
+            // unknown writer to this depth surface must retain baseline AO.
+            bool skip=false;
+            {CpuScope cost(sampledDrawTimers()?&cpuAoActorCapture:nullptr);
+                DWORD z=TRUE,write=TRUE;
+                if(FAILED(ext->GetRenderState(D3DRS_ZENABLE,&z))||FAILED(ext->GetRenderState(D3DRS_ZWRITEENABLE,&write)))skip=true;
+                else skip=z&&write&&boundDepthIs(worldDepth);
+                if(skip)aoActorMask->invalidate();
+            }
+            if(skip)return draw();
+        }
+        {
+            CpuScope cost(sampledDrawTimers()?&cpuAoActorCapture:nullptr);
+            if(aoActorDrawSkin&&aoActorDepthWrite&&!aoActorStencilPrepared){
+                aoActorStencilPrepared=true;
+                // A later NameMask full-stencil clear would erase ownership. Run
+                // its pending clear before the first actor stamp; both masks then
+                // write only their own bits (actor 0x40, floating names 0x80).
+                if(nameMask.armed()&&nameMask.needsClear()&&worldDepthDescKnown&&worldDepthDesc.Format==D3DFMT_D24S8)
+                    if(!nameMaskReady()||!nameMaskClear())aoActorMask->invalidate();
+            }
+            aoActorMask->beginDraw(aoActorDrawSkin,aoActorDepthWrite,true,backSurface,worldDepth);
+        }
+        const HRESULT result=draw();
+        {CpuScope cost(sampledDrawTimers()?&cpuAoActorCapture:nullptr);aoActorMask->endDraw(result);}
+        return result;
+    }
     // Low bits: 1 terrain, 2 UI. kWaterTag: the water renderer holds a mask shader
     // for it (set at registration, where the water map changes), so non-water
     // draws need no second hash lookup.
@@ -772,6 +832,8 @@ private:
     void releaseResources() {
         projectedAudit.reset();
         if(surface)surface->reset();if(autoBump)autoBump->reset();
+        if(aoActorMask)aoActorMask->reset();aoActorFrame=~0u;aoActorOn=false;
+        drop(aoActorPreparePS);drop(aoActorPS);drop(aoActorAlphaPS);aoActorShaderFailed=false;
         rainMrtUnbind();stateBlocks.clear();clearFrame();maskFormatFor=nullptr;maskFormatValue=0;maskStencil=false;maskDsId=nullptr; /* 0.3.212 (task 32): the depth may change with the device */
         drop(sceneSurface); drop(aoSurface); drop(aoRawSurface); drop(scene); drop(depthTex); drop(ao); drop(aoRaw);drop(rainMaskMS);drop(rainMaskSurface);drop(rainMask);drop(rainDepth);rainMaskFailed=false; /* 0.3.202 (rain) */
         drop(aoPS); drop(aoBlurPS); drop(aoContactBloomPS); drop(contactBloomPS); drop(compositePS);drop(rainMrtPS);drop(rainScrubPS); width = height = 0;
@@ -782,7 +844,7 @@ private:
         failed = true; return true;
     }
     void selectAO(unsigned method,unsigned quality){
-        if(aoMethod!=method)drop(aoContactBloomPS);
+        if(aoMethod!=method){drop(aoContactBloomPS);drop(aoActorPS);drop(aoActorAlphaPS);aoActorShaderFailed=false;}
         else if(method&&aoQuality!=quality)drop(aoContactBloomPS);
         aoMethod=method;aoQuality=quality;
     }
@@ -896,6 +958,7 @@ private:
         if (captured) return true;
         if (!terrain || !worldDepth || !depthTex || !projectionValid) return false;
         if (!resolveDepthInto(depthTex, true)) return false;
+        if(aoActorOn){CpuScope cost(sampledDrawTimers()?&cpuAoActorCapture:nullptr);aoActorMask->freeze(worldDepth);}
         captured = true; return true;
     }
     // 0.3.202 (rain mask MRT): resolveDepth's copy (the RESZ protocol below) into a depth snapshot texture. fatal: a failed step disables the effects (depthTex);
@@ -1114,20 +1177,38 @@ private:
             }
             effectsBuckets.mark(Bucket::AO);
         } else {
+            IDirect3DTexture9* actorTexture=aoActorOn?aoActorMask->textureForDepth(worldDepth):nullptr;
+            aoActorUsed=actorTexture&&aoActorShaders(constants[7]!=0.f);
+            if(aoActorUsed){
+                ext->SetTexture(4,actorTexture);
+                ext->SetSamplerState(4,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);ext->SetSamplerState(4,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);
+                ext->SetSamplerState(4,D3DSAMP_MINFILTER,D3DTEXF_POINT);ext->SetSamplerState(4,D3DSAMP_MAGFILTER,D3DTEXF_POINT);
+                ext->SetSamplerState(4,D3DSAMP_MIPFILTER,D3DTEXF_NONE);ext->SetSamplerState(4,D3DSAMP_SRGBTEXTURE,FALSE);
+                // Reuse the existing ping-pong target for normals/contact;
+                // no extra model replay or intermediate normal texture is needed.
+                if(error(ext->SetRenderTarget(0,aoSurface),"actor AO preparation target"))return;
+                ext->SetPixelShader(aoActorPreparePS);
+                if(error(quad(width/2,height/2,false),"actor AO preparation pass"))return;
+                gpuProfile->mark("AOActorPrepare");
+            }
+            IDirect3DPixelShader9* contactShader=aoActorUsed?(constants[7]==0.f?aoActorPS:aoActorAlphaPS):aoContactBloomPS;
             if (error(ext->SetRenderTarget(0,aoRawSurface),"AO render target")) return;
-            ext->SetPixelShader(constants[7]==0.f?aoContactBloomPS:aoPS);
+            if(aoActorUsed)ext->SetTexture(2,ao);
+            ext->SetPixelShader(constants[7]==0.f?contactShader:aoPS);
             if (error(quad(width/2,height/2,false),"AO pass")) return;
             if (constants[7]!=0.f && aoMethod) {
                 // Keep the original fallback colour bounce in RGB; replace only AO.
                 // Splitting these kernels keeps GTAO below the ps_3_0 slot limit.
                 ext->SetRenderState(D3DRS_COLORWRITEENABLE,D3DCOLORWRITEENABLE_ALPHA);
-                ext->SetPixelShader(aoContactBloomPS);
+                ext->SetPixelShader(contactShader);
                 const HRESULT aoResult=quad(width/2,height/2,false);
                 ext->SetRenderState(D3DRS_COLORWRITEENABLE,15);
                 if (error(aoResult,"fallback AO alpha pass")) return;
             }
             gpuProfile->mark("AO");
             diagnosticAoRaw=true;
+            // The preparation target becomes the blur destination below.
+            if(aoActorUsed){ext->SetTexture(2,nullptr);ext->SetTexture(4,nullptr);}
             // 0.3.201 (task 18): the raw IGN-rotated AO is denoised by a half-resolution bilateral pass into `ao`,
             // which every consumer (legacy composite, world fold) keeps reading. s2 is released afterwards.
             // Task 43: s0 (LINEAR) carries the raw AO too for the blur's 9-read bilinear early-out (AOBlur never reads Scene); the scene copy is rebound after.
@@ -1341,6 +1422,7 @@ private:
             if(gpuSceneProfile&&diagnostics())gpuSceneProfile->beginFrame(frame,NorthlightRenderThreadProbe::sampleFrame(frame));
             if(materialProfile)materialProfile->beginFrame(frame,world&&NorthlightQuality::renderProfile(world->surfaceSettings())&&NorthlightRenderThreadProbe::sampleFrame(frame));
         }
+        aoActorBeginFrame();aoActorDrawKnown=aoActorDrawSkin=aoActorDepthWrite=false;
         ++drawCalls;maskKind=0;if(nameRun)nameMaskRunBreak();
         if(spellOn){spellDomain=false;spellVs=nullptr;} /* task 34: this draw's reads for spellDrawImpl, valid only if this function gets that far */
         if(failed||!enabled)return;
@@ -1377,13 +1459,14 @@ private:
                 /* 0.3.188 (task 3): lazy state reads for the early resolve, its undo and the census, each read at most once per draw */
                 auto rs=[&](D3DRENDERSTATETYPE t){return [this,t,v=DWORD(0),known=false]()mutable{if(!known){v=drawRenderState(t);known=true;}return v;};};
                 auto zw=rs(D3DRS_ZWRITEENABLE);auto ab=rs(D3DRS_ALPHABLENDENABLE);auto sb=rs(D3DRS_SRCBLEND);auto db=rs(D3DRS_DESTBLEND);auto cw=rs(D3DRS_COLORWRITEENABLE);
+                if(aoActorOn){aoActorDrawKnown=true;aoActorDrawSkin=classifyVs(vs).skinned;aoActorDepthWrite=zw()!=FALSE;}
                 if(terrain&&!nameMask.disabled&&worldDebug==0&&((nameMask.armed()&&drawUiHashVS)||nameMask.hasMarks()||unlitMarks||(classifyVs(vs).entry&kUnlitTag))){ /* 0.3.212 (task 32): only a UI-hash draw can be a name, only a frame with marks can unmark */
                     const bool sampledTimed=sampledDrawTimers()&&(++nameDecideCalls&7)==1;if(sampledTimed)++nameDecideTimed;
                     CpuScope decision(sampledTimed?&cpuNameDecide:nullptr);nameMaskDecide(drawWaterVS,zw,ab,sb,db,cw,viewport);
                     if((classifyVs(vs).entry&kUnlitTag)&&zw()&&(cw()&7)&&(!ab()||db()==D3DBLEND_ZERO)&&
                        nameMaskReady()&&NorthlightUnlitReceiver::stencilFormat(worldDepthDesc.Format,MAKEFOURCC('I','N','T','Z'))&&nameMaskFullViewport(viewport)&&worldDepthBound())maskKind=3;
                     if(maskKind==1&&!nameMask.armed())maskKind=0;}
-                if(captured&&earlyDepth.earlyCaptured&&NorthlightTranslucentDepth::isUndo(drawWaterVS,zw,ab,sb,db,cw)){captured=false;earlyDepth.undo();++earlyResolveUndone;++earlyResolveUndoneTotal;} /* undo: later opaque or water Z draw after the early resolve */
+                if(captured&&earlyDepth.earlyCaptured&&NorthlightTranslucentDepth::isUndo(drawWaterVS,zw,ab,sb,db,cw)){captured=false;if(aoActorOn)aoActorMask->resume();earlyDepth.undo();++earlyResolveUndone;++earlyResolveUndoneTotal;} /* undo: later opaque or water Z draw after the early resolve */
                 if(terrain&&!captured&&earlyDepth.armed()&&NorthlightTranslucentDepth::shouldResolve(drawWaterVS,zw,ab,sb,db,cw,[&]{return classifyVs(vs).skinned;})&&earlyDepth.attempt()){ /* 0.3.188 (2A): early depth for translucent actors, every frame, minimum state reads */
                     ExtensionDevice::RawScope raw(*ext);
                     if(resolveDepth()){earlyDepth.success();++earlyResolves;++earlyResolveTotal;if(sampled())earlyResolveAt=censusDraws+1;}}
@@ -1874,6 +1957,7 @@ private:
     template<class Capture,class Draw> HRESULT drawHook(D3DPRIMITIVETYPE t,UINT count,Capture capture,Draw draw){
         if(gpuScene&&!gpuScene->native.currentFrame(frame)){ExtensionDevice::RawScope raw(*ext);gpuScene->setFrame(frame);}
         if(autoBump)autoBump->beginDraw();
+        auto nativeDraw=[&]{return aoActorNativeDraw(draw);};
         bool claimed=false,rainBlend=false,mist=false;
         // 0.3.198 (rain): the whole per-draw cost of weather detection, before any other work and in both gate paths: one pointer comparison.
         if(weatherDetect.hot&&mirrorState.textureKnown[0]&&mirrorState.textures[0]==weatherDetect.hot){weatherSample.primitives+=count;++weatherSample.draws;rainBlend=weatherDetect.hotKind==NorthlightWeather::Kind::Rain&&world&&world->rainBlendSetting();} /* 0.3.199 (rain): counted after applied too (the rest of the rain); 0.3.202: no boundary here, the effects run at the UI again */
@@ -1893,7 +1977,7 @@ private:
             if(spellOn&&spellGate()&&spellDraw(claimed||mist||blobOriginal||shadowSwapOriginal,rainBlend||mist)){
                 submitParticleDraw(particle,true,true);return D3D_OK; /* accepted current-frame record, replayed after effects */
             }
-            const HRESULT hr=waterMrtDraw(draw,[&]{return nameMaskDraw(rainBlend,claimed||mist,draw);});
+            const HRESULT hr=waterMrtDraw(nativeDraw,[&]{return nameMaskDraw(rainBlend,claimed||mist,nativeDraw);});
             skyRestoreState.after(skyRestoreDraw,SUCCEEDED(hr)&&!claimed&&!mist);
             submitParticleDraw(particle,SUCCEEDED(hr)&&!claimed&&!mist&&!blobOriginal&&!shadowSwapOriginal,false); /* 0.3.199 (rain mist): a mist draw is skipped; 0.3.212 (task 32): the name mask wraps the draw; 0.3.214 (water MRT): a water draw writes the mask itself */
             if(!claimed){CpuScope hooks(sampledHookTimer());extensionWork("native sky observation",[&]{skyObserve(hr,t,count);});}
@@ -1915,7 +1999,7 @@ private:
         if(spellOn&&spellGate()&&spellDraw(claimed||mist||blobOriginal||shadowSwapOriginal,rainBlend||mist)){
             submitParticleDraw(particle,true,true);return D3D_OK;
         }
-        const HRESULT hr=waterMrtDraw(draw,[&]{return nameMaskDraw(rainBlend,claimed||mist,draw);});
+        const HRESULT hr=waterMrtDraw(nativeDraw,[&]{return nameMaskDraw(rainBlend,claimed||mist,nativeDraw);});
             skyRestoreState.after(skyRestoreDraw,SUCCEEDED(hr)&&!claimed&&!mist);
             submitParticleDraw(particle,SUCCEEDED(hr)&&!claimed&&!mist&&!blobOriginal&&!shadowSwapOriginal,false); /* 0.3.199 (rain mist): a mist draw is skipped; 0.3.212 (task 32): the name mask wraps the draw; 0.3.214 (water MRT): a water draw writes the mask itself */
         if(sky&&!claimed){CpuScope hooks(sampledHookTimer());extensionWork("native sky observation",[&]{skyObserve(hr,t,count);});}
@@ -2454,6 +2538,7 @@ private:
             projectionValid=true;
             if(!bindWorldDepth(desc))return;
             if(captured&&earlyDepth.earlyCaptured){earlyDepth.undo();++earlyResolveUndone;++earlyResolveUndoneTotal;} /* 0.3.188 (2A): a terrain draw after the early resolve: the UI-time resolve redoes it */
+            if(captured&&aoActorOn)aoActorMask->resume();
             terrain=true; captured=false;
             resources(desc.Width,desc.Height,desc.Format);
             if(gateFrame)++gateCounts.fullPasses;
@@ -2685,6 +2770,7 @@ public:
         NorthlightParticleUploads::enabled.store(particleOn,std::memory_order_relaxed);
         NorthlightParticleTextures::enabled.store(particleOn,std::memory_order_relaxed);
         contactAO=world->contactAO(); /* 0.3.201 (task 18) */
+        aoActorMask=std::make_unique<NorthlightAOActorStencil>(ext,NorthlightBackend::isPackagedDxvk(selectedBackend));
         aoMethod=world->aoMethod();aoQuality=world->aoQuality();aoStrength=world->aoStrength();aoRadius=world->aoRadius();
         logf("AO method=%s quality=%s enabled=%u strength=%.3f radiusYards=%.2f",NorthlightQuality::aoName(aoMethod),NorthlightQuality::aoQualityName(aoQuality),unsigned(contactAO),aoStrength,aoRadius);
         spellConfigure(); /* task 34: SpellLayer, SpellLayerClasses, SpellTrace (creation-time keys) */
@@ -2759,7 +2845,7 @@ public:
         releaseResources();resetMark(3);
         if(world)world->reset();resetMark(4);
         if(water)water->reset();if(celestialDiscs)celestialDiscs->reset();if(shadowBlobs)shadowBlobs->reset(); weatherDetect.reset();weatherSample={}; /* 0.3.198 (rain) */failed=false;latchDrawGates();resetMark(5);
-        if(pp&&world&&world->nameMask()){D3DDEVICE_CREATION_PARAMETERS cp={};if(SUCCEEDED(ext->GetCreationParameters(&cp)))upgradeAutoDepth(parent,cp.AdapterOrdinal,cp.DeviceType,pp,true,"Reset");} /* 0.3.212 (task 32) */
+        if(pp&&world){D3DDEVICE_CREATION_PARAMETERS cp={};if(SUCCEEDED(ext->GetCreationParameters(&cp)))upgradeAutoDepth(parent,cp.AdapterOrdinal,cp.DeviceType,pp,world->nameMask()||world->contactAO(),"Reset");} /* 0.3.212 (task 32) */
         if(overlay)overlay->invalidate(); /* its D3DPOOL_DEFAULT buffers and font texture; recreated by its next draw */
         resetMark(6);hdrColor.reset();hdrUiPhase=false;releaseHdrTargets();resetMark(7);
         HRESULT hr=hdr.settings.requested?hdr.reset(real,ext,pp):ext->Reset(pp);resetMark(8);
@@ -3052,6 +3138,8 @@ public:
             logf("GRASS receive frame=%u beforeComposite=%u afterComposite=%u depthWrites=%u blended=%u alphaCut=%u alreadyResolved=%u worldDepth=%u stateFailures=%u",frame,g.before,g.after,g.depthWrites,g.blended,g.alphaCut,g.alreadyResolved,g.worldDepth,g.stateFailures);
         }
         grassReceiverCensus={};
+        if(sampled()&&aoActorOn&&aoActorFrame==frame)logf("AO_ACTOR frame=%u draws=%u valid=%u used=%u captureCpuUs=%.1f",frame,aoActorMask->capturedDraws(),unsigned(aoActorMask->valid()),unsigned(aoActorUsed),
+            sampledDrawTimers()&&cpuFrequency.QuadPart>0?double(cpuAoActorCapture)*1e6/double(cpuFrequency.QuadPart):-1.0);
         if(sampled()&&nameMask.armed()){
             const double us=cpuFrequency.QuadPart>0?1e6/double(cpuFrequency.QuadPart):0.0;
             const double decide=nameDecideTimed?double(cpuNameDecide)*double(nameDecideCalls)/double(nameDecideTimed)*us:0.0,mark=double(cpuNameMark)*us,unmark=double(cpuNameUnmark)*us;
@@ -3274,6 +3362,8 @@ public:
             /* 0.3.188 (task 3): a Clear(Z) after the early resolve freezes it (no later undo would find the cleared depth useful); census position of either */
             if(ds==worldDepth){if((captured?(earlyDepth.freeze(),true):resolveDepth())&&sampled()&&!clearResolveAt)clearResolveAt=censusDraws+1;}drop(ds);
         }
+        if((flags&D3DCLEAR_STENCIL)&&aoActorOn&&!captured&&aoActorMask->valid()&&boundDepthIs(worldDepth))
+            aoActorMask->invalidate(); // Unknown stencil clears cannot supply a depth-matched ownership mask.
         if(spellOn)spellClear(flags); /* task 34 */
         const HRESULT hr=ext->Clear(n,rects,flags,color,z,stencil);
         if(SUCCEEDED(hr)&&(flags&D3DCLEAR_TARGET))skyRestoreState.invalidate();
@@ -3462,8 +3552,8 @@ public:
                 return D3DERR_NOTAVAILABLE;
             }
         }
-        unsigned framesAhead=1,frameSkip=0;bool nameMaskWanted=false,occlusionLocal=false;const bool stream=NorthlightStream::commandStreamRequested(rootPath,&framesAhead,&frameSkip,&nameMaskWanted,&occlusionLocal); /* 0.3.192 (CS): CommandStream=0 or an unreadable ini is the old path below; 0.3.200 (pipeline): StreamFramesAhead from the same read; 0.3.212 (task 32): NameMask too */
-        upgradeAutoDepth(real,adapter,type,pp,nameMaskWanted,"CreateDevice"); /* 0.3.212 (task 32) */
+        unsigned framesAhead=1,frameSkip=0;bool nameMaskWanted=false,occlusionLocal=false,contactAOWanted=false;const bool stream=NorthlightStream::commandStreamRequested(rootPath,&framesAhead,&frameSkip,&nameMaskWanted,&occlusionLocal,&contactAOWanted); /* 0.3.192 (CS): CommandStream=0 or an unreadable ini is the old path below; 0.3.200 (pipeline): StreamFramesAhead from the same read; 0.3.212 (task 32): NameMask too */
+        upgradeAutoDepth(real,adapter,type,pp,nameMaskWanted||contactAOWanted,"CreateDevice"); // Shared 24-bit depth + reserved stencil; no added bytes over D24X8.
         if(stream)NorthlightStream::streamActive.store(true,std::memory_order_relaxed); /* before the Device exists: worker core budgets read it once */
         if(stream)NorthlightReplayCopies::enabled.store(true,std::memory_order_relaxed); /* 0.3.192 (CS): before the first game buffer is wrapped: the replay-side CPU copies of replay_copies.h; never on with CommandStream=0 */
         if(stream)flags|=D3DCREATE_MULTITHREADED; /* DXVK's window-proc hook may touch the swap chain on the game thread while the replay thread presents */
