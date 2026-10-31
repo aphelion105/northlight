@@ -18,6 +18,16 @@ FILES=['renderer.cpp','world_renderer.h','world_shadow_experiment.inl','world_po
 GATES=('NorthlightDiagnostics::enabled()','diagnostics()','sampled()','captureSampled','if(diagnostics)','shadowFate.active()','sampledFrame','profiling()','profileSampled()','if(lightingClock)','materialProfile->recording()','if(profileThisBuild)','if(resetProfile)')
 # Ungated lines that stay with Diagnostics=0: format prefix -> label.
 KEEP={
+ 'STENCIL depth upgrade unavailable':'one-off per process: unavailableLogged latch',
+ 'STENCIL depth upgraded':'one-off per process: upgradedLogged latch',
+ 'AO actor shaders unavailable':'one-off per resource reset: aoActorShaderFailed latch',
+ 'HDR_LAYER_STATE ':'indirect: hdrLayerDiagnostic exits without Diagnostics and after 12 reports',
+ 'HDR_LAYER_STAGE ':'indirect: same hdrLayerDiagnostic gate and bounded stages',
+ 'HDR legacy compatibility layer ':'capped warning: first eight newly rejected shader patches',
+ 'UI_TRIAGE ':'indirect: traceUiDraw requires diagnostics, a sampled frame, and fewer than 64 entries',
+ 'HDR additional target ':'lifecycle event: additional HDR target initialization or display/settings transition',
+ 'HDR fallback: CommandStream startup failed':'CreateDevice-only fallback warning',
+ 'WORLD HDR material combinedAvailable=':'one-off per world renderer: combined capability report latch',
  'UNLIT receiver shader unavailable':'one-off per device: optional shader refusal is latched until GPU resources reset',
  'DXVK3 compatibility import':'start-up: optional Vulkan compatibility hook',
  'EFFECT_GPU_CAPTURE ':'explicit menu request only: captureEffectDiagnostics returns before device/file access without a request',
@@ -152,6 +162,8 @@ assert not unknown,'ungated, unlabelled log sites:\n'+'\n'.join(f'{w} {f}' for w
 r=fp.src('renderer.cpp').read_text();w=fp.src('world_renderer.h').read_text();mp=fp.src('material_profile.h').read_text()
 constructor=r[r.index('Device(IDirect3DDevice9* d,'):r.index('~Device() {')]
 checks={
+ 'HDR layer-state diagnostics require Diagnostics and stop after twelve reports':
+   'void hdrLayerDiagnostic(){\n        if(hdrLayerStateLogs>=12||!diagnostics())return;\n        ++hdrLayerStateLogs;' in r,
  'effect captures require an explicit request and exclude the captured frame':'if(!scopes&&!fallback)return;' in r[r.index('void captureEffectDiagnostics()'):r.index('void releaseResources()')]
    and 'captureEffectDiagnostics();' in r[r.index('void finishFrameImpl()'):r.index('const bool diagnosticFrame=')],
  'reset clock and stage lines require Diagnostics':'const bool resetProfile=diagnostics()&&cpuFrequency.QuadPart>0;' in r,
@@ -227,6 +239,7 @@ print('PASS Diagnostics=0 audit: every periodic line gated, only start-up/settin
 # turned back into logf the audit must find those lines.
 SPAN_FILES=['world_renderer.h','world_shadow_experiment.inl','world_point_rendering.inl','world_replay_probe.inl','world_rigid_memory.inl','world_diagnostics.h']
 SPAN_ALLOWED={'WORLD elided page missed':'capped error: first 12 staging misses per session, rebuild without page elision','PREPARE worker':'0.3.177: watchdog (at most 5 a session) / record exception (first 4)','WORLD DISABLED':'error (check())','GEOMETRY MEMORY':'warning: allocation deferral','WORLD pending mesh released':'event (0.3.156)',
+ 'WORLD HDR material combinedAvailable=':'one-off capability event: hdrCombineTried is set before shader creation',
  'WORLD scene targets deferred:':'warning: partial scene allocation rolled back, logged at most once per minute',
  'WORLD screen resources deferred:':'warning: partial screen allocation rolled back, logged at most once per minute',
  'WORLD regional fog deferred:':'warning: fog upload rolled back, logged at most once per minute',

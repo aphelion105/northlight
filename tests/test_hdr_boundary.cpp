@@ -61,7 +61,7 @@ struct Fixture{
     Backend backend;Backend* ext=&backend;
     struct{bool active=true;struct{float uiWhite=160;}settings;}hdr;
     struct{float uiWhite=160;}hdrFrameSettings;
-    struct{unsigned rejected=0,draws=0;template<class Draw>HRESULT draw(Backend*,float,Draw work){++draws;return work();}}hdrColor;
+    struct{unsigned rejected=0,draws=0;std::uint64_t layers=0;template<class Draw>HRESULT draw(Backend*,float,Draw work){++draws;return work();}}hdrColor;
     std::unordered_map<void*,NorthlightShaderReads::ReadSet> shaderReads;
     bool hdrUiPhase=false,applied=false,world=false,failResolve=false,failBind=false,hdrAtUiBoundary=false,hdrSkyReplaying=false;
     unsigned begins=0,effects=0,hdrFailuresLogged=0,hdrDeferredLogs=0,hdrDeferredFrame=~0u;
@@ -79,6 +79,7 @@ struct Fixture{
     bool hdrBackTarget(){return true;}
     void renderEffects(){++effects;applied=world;}
     void spellReplay(){}
+    void hdrLayerDiagnostic(){}
     HRESULT hdrBegin(bool,const char*){++begins;if(failResolve)return E_FAIL;backend.presentation=backend.legacy;
         if(failBind)return E_FAIL;backend.hdrBound=hdrUiPhase=true;return S_OK;}
     void logf(const char*,...){}

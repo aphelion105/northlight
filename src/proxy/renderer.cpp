@@ -407,6 +407,7 @@ class Device final : public GuardedMirrorDevice {
     std::unique_ptr<NorthlightSurfaceRenderer> surface;
     std::unique_ptr<NorthlightAutoBump> autoBump;
     unsigned waterAfterEffects=0; // native liquid draws after the effects boundary (diagnostic only)
+    unsigned hdrLayerStateLogs=0; // bounded first-use diagnostics
     double surfaceTime=0;float weatherLayerGate=0;
     bool surfaceTimerOpen=false;
     std::shared_ptr<NorthlightSettings::Service> settingsService;
@@ -783,6 +784,22 @@ private:
         if(diagnostics()&&world&&NorthlightQuality::renderProfile(world->surfaceSettings())&&NorthlightRenderThreadProbe::sampleFrame(frame))
             logf("PROJECTED_AUDIT frame=%u probes=%u pending=%u disabled=%u maxPerFrame=16 maxPending=32 queryFlush=0",frame,projectedAudit.probes(frame),projectedAudit.pending(),unsigned(projectedAudit.disabled()));
     }
+    void hdrLayerDiagnostic(){
+        if(hdrLayerStateLogs>=12||!diagnostics())return;
+        ++hdrLayerStateLogs;DWORD rs[6]={},ts[7]={};
+        const D3DRENDERSTATETYPE states[]={D3DRS_ALPHABLENDENABLE,D3DRS_SRCBLEND,D3DRS_DESTBLEND,D3DRS_BLENDOP,D3DRS_FOGENABLE,D3DRS_COLORWRITEENABLE};
+        const D3DTEXTURESTAGESTATETYPE stages[]={D3DTSS_COLOROP,D3DTSS_COLORARG1,D3DTSS_COLORARG2,D3DTSS_ALPHAOP,D3DTSS_ALPHAARG1,D3DTSS_ALPHAARG2,D3DTSS_TEXCOORDINDEX};
+        for(unsigned i=0;i<6;++i)ext->GetRenderState(states[i],rs+i);
+        for(unsigned i=0;i<7;++i)ext->GetTextureStageState(0,stages[i],ts+i);
+        DWORD next=0,transform=0;ext->GetTextureStageState(1,D3DTSS_COLOROP,&next);ext->GetTextureStageState(0,D3DTSS_TEXTURETRANSFORMFLAGS,&transform);
+        logf("HDR_LAYER_STATE frame=%u blend=%lu src=%lu dst=%lu op=%lu fog=%lu writes=%lu color=%lu,%lu,%lu alpha=%lu,%lu,%lu coordinates=%lu next=%lu transform=%lu",frame,(unsigned long)rs[0],(unsigned long)rs[1],(unsigned long)rs[2],(unsigned long)rs[3],(unsigned long)rs[4],(unsigned long)rs[5],(unsigned long)ts[0],(unsigned long)ts[1],(unsigned long)ts[2],(unsigned long)ts[3],(unsigned long)ts[4],(unsigned long)ts[5],(unsigned long)ts[6],(unsigned long)next,(unsigned long)transform);
+        for(unsigned stage=1;stage<3;++stage){
+            DWORD values[9]{};for(unsigned i=0;i<7;++i)ext->GetTextureStageState(stage,stages[i],values+i);
+            ext->GetTextureStageState(stage,D3DTSS_TEXTURETRANSFORMFLAGS,values+7);ext->GetTextureStageState(stage,D3DTSS_RESULTARG,values+8);
+            IDirect3DBaseTexture9* texture=nullptr;ext->GetTexture(stage,&texture);
+            logf("HDR_LAYER_STAGE frame=%u stage=%u texture=%u color=%lu,%lu,%lu alpha=%lu,%lu,%lu coordinates=%lu transform=%lu result=%lu",frame,stage,unsigned(texture!=nullptr),(unsigned long)values[0],(unsigned long)values[1],(unsigned long)values[2],(unsigned long)values[3],(unsigned long)values[4],(unsigned long)values[5],(unsigned long)values[6],(unsigned long)values[7],(unsigned long)values[8]);drop(texture);
+        }
+    }
     bool pixelUiGeometry(){
         DWORD z=1,zw=1,zf=0;float rows[16];D3DVIEWPORT9 vp{};
         return SUCCEEDED(ext->GetRenderState(D3DRS_ZWRITEENABLE,&zw))&&!zw&&
@@ -864,8 +881,9 @@ private:
             linear=hdrUiPhase&&hdrBackTarget();
         });
         if(!linear)return draw();
-        bool submitted=false;HRESULT hr=E_FAIL;const unsigned rejected=hdrColor.rejected;
+        bool submitted=false;HRESULT hr=E_FAIL;const unsigned rejected=hdrColor.rejected;const auto previousLayers=hdrColor.layers;
         extensionWork("HDR UI draw",[&]{hr=hdrColor.draw(ext,hdrFrameSettings.uiWhite,[&]{submitted=true;return draw();});});
+        if(hdrColor.layers!=previousLayers)hdrLayerDiagnostic();
         if(hdrColor.rejected!=rejected&&hdrFailuresLogged++<8)logf("HDR legacy compatibility layer frame=%u shaderPatchFallbacks=%u",frame,hdrColor.rejected);
         return submitted?hr:draw();
     }
@@ -912,7 +930,13 @@ private:
                 std::fprintf(f,"{\"renderer_frame\":%u,\"scopes\":%u,\"effects_enabled\":%s,\"projection_valid\":%s,\"ao_enabled\":%s,\"ao_method\":%u,\"ao_strength\":%.9g,\"ao_radius\":%.9g,\"near\":%.9g,\"far\":%.9g,\"projection_scale\":[%.9g,%.9g],\"depth_range\":[%.9g,%.9g],\"fps_eligible\":false}\n",frame,scopes,enabled?"true":"false",projectionValid?"true":"false",contactAO?"true":"false",aoMethod,finite(aoStrength),finite(aoRadius),finite(nearZ),finite(farZ),finite(scaleX),finite(scaleY),finite(worldMinDepth),finite(worldMaxDepth));
                 std::fclose(f);
             }
-            if((scopes&World)&&world)world->captureProducts(directory,1,frame,w,h,diagnosticWorld);
+            if(scopes&World){
+                if(world){world->captureProducts(directory,1,frame,w,h,diagnosticWorld);world->requestNormalGpuDiagnosticCapture();}
+                NorthlightWorldDiagnostics::textureProduct(ext,scene,directory,"native-scene",1,applied,w,h,sceneFormat,frame);
+                const bool linearCurrent=hdr.active&&hdrSceneReady&&hdrUiPhase;
+                NorthlightWorldDiagnostics::textureProduct(ext,hdrFrame.texture(),directory,"hdr-linear-scene",1,linearCurrent,w,h,D3DFMT_A16B16G16R16F,frame);
+                NorthlightWorldDiagnostics::product(ext,hdrFrame.exposureSurface(),directory,"hdr-exposure",1,linearCurrent,1,1,D3DFMT_A16B16G16R16F,frame);
+            }
             if((scopes&Fog)&&!(scopes&World)&&world)world->captureProducts(directory,1,frame,w,h,diagnosticWorld,true);
             if(scopes&AO){
                 NorthlightWorldDiagnostics::product(ext,aoRawSurface,directory,"ao-raw",1,diagnosticAoRaw,w/2,h/2,D3DFMT_A16B16G16R16F,frame);
@@ -3314,7 +3338,7 @@ public:
         uiFallbackEndFrame();
         if(frame==1||(frame%600==0&&diagnostics()))logf("frame=%u applied=%u terrainShaders=%u uiShaders=%u projectionRejects=%u terrainThisFrame=%d depth=%d draws=%u missingVS=%u terrainDraws=%u terrainShadowDraws=%u viewportRejects=%u depthRejects=%u uiDraws=%u uiAfterTerrain=%u uiFallback=%u uiFallbackState=%c",frame,appliedFrames,matchedTerrain,matchedUI,projectionRejects,terrain,captured,drawCalls,missingVS,terrainDraws,terrainShadowDraws,viewportRejects,depthRejects,uiDraws,uiAfterTerrain,uiFallbackBoundaries,uiFallback.disarmed()?'d':uiFallback.armed()?'a':'l');
         if(hdr.active&&diagnostics()&&frame%600==0)logf("HDR state frame=%u uiPhase=%u effectsEnabled=%u patched=%u rejected=%u logicalCopiesAfterUI=%u",frame,unsigned(hdrUiPhase),unsigned(enabled),hdrColor.patched,hdrColor.rejected,hdrLogicalCopies);
-        if(hdr.active&&diagnostics()&&frame%600==0)logf("HDR_WORK frame=%u compatibilityLayers=%llu layerPixels=%llu screenDirect=%llu attenuationDirect=%llu",frame,(unsigned long long)hdrColor.layers,(unsigned long long)hdrColor.layerPixels,(unsigned long long)hdrColor.screenDirect,(unsigned long long)hdrColor.attenuationDirect);
+        if(hdr.active&&diagnostics()&&frame%600==0)logf("HDR_WORK frame=%u compatibilityLayers=%llu layerPixels=%llu screenDirect=%llu attenuationDirect=%llu multiTextureDirect=%llu",frame,(unsigned long long)hdrColor.layers,(unsigned long long)hdrColor.layerPixels,(unsigned long long)hdrColor.screenDirect,(unsigned long long)hdrColor.attenuationDirect,(unsigned long long)hdrColor.multiTextureDirect);
         // The address-space sweep is asynchronous; the render thread only compares
         // its result. Trims run below, after clearFrame(), at the frame boundary.
         bool memoryTrim=false;int memoryCaps=-1,memoryWorld=-1; /* -1 unchanged, 0 full, 1 half; memoryWorld follows any pressure episode, terrain follows only memoryCaps */
