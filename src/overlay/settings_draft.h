@@ -119,12 +119,13 @@ inline std::vector<std::string> dependencies(const Field& f){
     return {};
 }
 // Why the field cannot be edited now, or "" (the missing key is named by its id; the panel words it).
-enum class Block { None, Unavailable, NeedsHdr, NeedsKey };
+enum class Block { None, Unavailable, NeedsHdr, NeedsKey, NeedsManual };
 inline Block blocked(const Draft& d,const Field& f,std::string& missing){
     missing.clear();
     if(!f.available)return Block::Unavailable;
     if(f.file==Renderer&&f.key!="Backend"&&f.key!="ExperimentalHDR")
         if(const Field* hdr=d.field(Renderer,"Renderer","ExperimentalHDR"))if(d.effective(*hdr)=="0")return Block::NeedsHdr;
+    if(f.file==Renderer&&f.key=="HDRMaxNits")if(const Field* mode=d.field(Renderer,f.section,"HDRPeakMode"))if(d.effective(*mode)=="Auto")return Block::NeedsManual;
     for(const auto& key:dependencies(f))if(const Field* parent=d.quality(key))if(d.effective(*parent)=="0"){missing=key;return Block::NeedsKey;}
     return Block::None;
 }

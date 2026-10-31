@@ -14,7 +14,9 @@ import northlight_paths as fp  # noqa: E402
 from shader_compiler import Compiler, DLL_SHA256, COMPATIBLE_DLL_SHA256, bytecode, rows, validate_assembly
 
 ENTRIES = (("WorldNormals", "ps_3_0"), ("WorldNormalsNoDistance", "ps_3_0"), ("WorldLighting", "ps_3_0"), ("ActorShadow", "ps_3_0"), ("ActorTiles", "ps_3_0"), ("WorldGI", "ps_3_0"), ("WorldFog", "ps_3_0"), ("WorldFogAmbient", "ps_3_0"), ("WorldFogActor", "ps_3_0"), ("FogBlur", "ps_3_0"), ("FogClouds", "ps_3_0"), ("FogCloudsActor", "ps_3_0"), ("FogTemporal", "ps_3_0"), ("LocalDirect", "ps_3_0"), ("LocalDirect1", "ps_3_0"), ("LocalDirect16", "ps_3_0"), ("RemovalSmooth", "ps_3_0"), ("TemporalLight", "ps_3_0"), ("LocalFog", "ps_3_0"), ("LocalFogCombine", "ps_3_0"), ("SourceVisibilityPS", "ps_3_0"),
-           ("WorldComposite", "ps_3_0"), ("WorldUnlitComposite", "ps_3_0"), ("MaterialComposite", "ps_3_0"), ("MaterialAudit", "ps_3_0"), ("ShadowVS", "vs_3_0"), ("ShadowCacheVS", "vs_3_0"),
+           ("WorldComposite", "ps_3_0"), ("WorldUnlitComposite", "ps_3_0"), ("MaterialComposite", "ps_3_0"),
+           ("WorldCompositeHdr", "ps_3_0"), ("WorldUnlitCompositeHdr", "ps_3_0"), ("MaterialCompositeHdr", "ps_3_0"),
+           ("MaterialAudit", "ps_3_0"), ("ShadowVS", "vs_3_0"), ("ShadowCacheVS", "vs_3_0"),
            ("ShadowPS", "ps_3_0"), ("ShadowReplayPS", "ps_3_0"), ("ShadowUnion", "ps_3_0"),
            ("ActorTilesWide", "ps_3_0"), ("WorldFogActorTiled", "ps_3_0"), ("FogCloudsActorTiled", "ps_3_0"))
 
@@ -51,8 +53,8 @@ def main():
             "source_sha256":before if compile_entry else previous["shaders"][entry].get("source_sha256",previous["source_sha256"])}
         print(f"Validated {entry}: {stats['static_instruction_slots']} slots, {stats['temporary_registers']} temps",flush=True)
     if hashlib.sha256(source.read_bytes()).hexdigest()!=before:raise RuntimeError("HLSL changed while compiling")
-    (fp.GENERATED/"world_compiled_shaders.h").write_text("\n\n".join(header)+"\n")
-    (fp.SHADERS/"world-shader-build.json").write_text(json.dumps(manifest,indent=2)+"\n")
+    (fp.GENERATED/"world_compiled_shaders.h").write_text("\n\n".join(header)+"\n",encoding="utf-8",newline="\n")
+    (fp.SHADERS/"world-shader-build.json").write_text(json.dumps(manifest,indent=2)+"\n",encoding="utf-8",newline="\n")
     print("Published world_compiled_shaders.h and world-shader-build.json")
 
 if __name__=="__main__":main()

@@ -95,12 +95,13 @@ float3 glowColor(float radius){
 // Soft shoulder: 1-exp(-x*colour), written for the INVDESTCOLOR/ONE screen
 // blend: dst' = 1-(1-dst)*exp(-x*colour). Monotonic and smooth; never clips.
 float3 glowShoulder(float x,float3 color){return 1-exp2(-1.442695*x*color);}
+float3 discDecode(float3 color){return color<=.04045?color/12.92:pow((color+.055)/1.055,2.4);}
 float3 outputColor(float3 encoded){
     // Texture sampling is raw (sRGB sampler OFF). The current renderer normally
     // writes encoded framebuffer values directly; if caller enables SRGBWRITE,
     // explicitly decode exactly once before the hardware encoder.
     float3 linearColor=encoded<=.04045?encoded/12.92:pow((encoded+.055)/1.055,2.4);
-    return DiscPolicy.x>.5?linearColor:encoded;
+    return DiscPolicy.x>1.5?encoded:DiscPolicy.x>.5?linearColor:encoded;
 }
 float4 CelestialHaloVisibilityPS(float2 uv:TEXCOORD0):COLOR0 {
     float current=0;
@@ -177,6 +178,7 @@ float4 CelestialDiscPS(float2 uv:TEXCOORD0):COLOR0 {
     // picks it from the disc's size on screen (assets are decoded at <=512 pixels).
     // Limit brightness before tinting so bright cores retain the regional hue.
     encoded=saturate(texel.rgb*DiscEmission.x)*lerp(saturate(DiscColor.rgb),DiscGlowCore.rgb,.5*DiscGlowHue.w);
+    if(DiscPolicy.x>1.5)encoded=discDecode(texel.rgb)*DiscEmission.x*discDecode(lerp(saturate(DiscColor.rgb),DiscGlowCore.rgb,.5*DiscGlowHue.w))*(DiscPolicy.x>2.5?2:8);
     alpha=texel.a*saturate(DiscColor.w);
     // The native billboard's horizon fade (DNPlanet::ClipGeometry): on its plane 12 away, opaque from 0.4 over the
     // camera's height down to 0 there (1.9 deg), nothing below.
@@ -185,7 +187,7 @@ float4 CelestialDiscPS(float2 uv:TEXCOORD0):COLOR0 {
     alpha*=terrainVisible;
     // In the early sky pass an invisible quad pixel must not write sky depth.
     clip(alpha-.001);
-    if(DiscEmission.w>.5)encoded=glowShoulder(alpha,encoded);
+    if(DiscEmission.w>.5)encoded=DiscPolicy.x>1.5?alpha*discDecode(encoded)*(DiscPolicy.x>2.5?2:8):glowShoulder(alpha,encoded);
     return float4(outputColor(encoded),alpha);
 }
 // Diffuse bloom crosses silhouettes; the compact source core stays occluded.
@@ -214,7 +216,7 @@ float4 CelestialVeilPS(float2 uv:TEXCOORD0):COLOR0 {
     // No cut at the camera's far edge: it drew a sharp line across a near hill. The sea under the edge takes no veil (above).
     float alpha=geometry*glareProfile(radius);
     clip(alpha-.001);
-    return float4(outputColor(glowShoulder(alpha,DiscGlowHue.rgb)),alpha);
+    return float4(outputColor(DiscPolicy.x>1.5?8*alpha*discDecode(DiscGlowHue.rgb):glowShoulder(alpha,DiscGlowHue.rgb)),alpha);
 }
 
 row_major float4x4 TerrainMaskMatrix : register(c0);

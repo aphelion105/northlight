@@ -21,6 +21,8 @@ class NorthlightCelestialDiscRenderer {
     static constexpr float SunMaskRadius=NorthlightCelestialGlow::SunMaskRadius,MoonMaskRadius=NorthlightCelestialGlow::MoonMaskRadius;
     static constexpr float SunGlareSupport=NorthlightCelestialGlow::SunGlareSupport,MoonGlareSupport=NorthlightCelestialGlow::MoonGlareSupport;
     IDirect3DDevice9* d;std::string root;NorthlightCelestialDisc::NativeObserver observer;
+    IDirect3DSurface9* hdrSkyTarget=nullptr; // borrowed for this frame
+    std::function<IDirect3DSurface9*()> beginHdrSky;
     IDirect3DTexture9* texture[2]={};unsigned textureWidth[2]={};IDirect3DPixelShader9* ps=nullptr;
     IDirect3DTexture9* terrainMask[2]={};IDirect3DSurface9* terrainSurface[2]={};
     IDirect3DVertexShader9* terrainVS=nullptr;IDirect3DPixelShader9* terrainPS=nullptr;
@@ -195,6 +197,8 @@ private:
 public:
     void setTerrainSource(std::function<uint64_t()> epoch,std::function<bool(unsigned,const float*)> draw,std::function<void(unsigned)> reuse=nullptr){terrainEpoch=std::move(epoch);terrainDraw=std::move(draw);terrainReuse=std::move(reuse);}
     explicit NorthlightCelestialDiscRenderer(IDirect3DDevice9* device,std::string sourceRoot="world-cache/celestial"):d(device),root(std::move(sourceRoot)){}
+    void setHdrSkyTarget(IDirect3DSurface9* target){hdrSkyTarget=target;}
+    void setHdrSkyCapture(std::function<IDirect3DSurface9*()> begin){beginHdrSky=std::move(begin);}
     ~NorthlightCelestialDiscRenderer(){reset();}
     NorthlightCelestialDiscRenderer(const NorthlightCelestialDiscRenderer&)=delete;
     void reset(){earlySkyOk=false;earlySkyMap.clear();for(auto& s:ringSurface)drop(s);for(auto& t:ringVisibility)drop(t);drop(veilPS);ringIndex=0;ringHistory={};ringWritten=false;sunGlare=Glare{};glow=NorthlightCelestialGlow::Hue{};
@@ -271,12 +275,16 @@ public:
             auto halo=disc;halo.tangentRadius*=i?MoonGlareSupport:4.f;
             const bool glareVisible=NorthlightCelestialDisc::screenBounds(halo,camera.inverseView,earlyProjection[0],earlyProjection[1],earlyProjection[2],desc.Width,desc.Height,glareBounds);
             if(i?!glareVisible:!surfaceVisible){offscreenOwned|=1u<<i;++claimOffscreen;continue;}
-            if(!prepareTerrain(i,disc,camera.inverseView)||
-               (surfaceVisible&&!drawDisc(i,target,desc.Width,desc.Height,earlyProjection,camera.inverseView,disc,bounds,nullptr,nullptr,0,earlyWorldMaxDepth,1,2,nullptr,false,bodies[i]->emission)))return (drawnEarly&(1u<<body))!=0;
+            if(!prepareTerrain(i,disc,camera.inverseView))return (drawnEarly&(1u<<body))!=0;
+            // Capture before the SDR body, only for an on-screen owned source.
+            if(!hdrSkyTarget&&beginHdrSky)hdrSkyTarget=beginHdrSky();
+            if(surfaceVisible&&!drawDisc(i,target,desc.Width,desc.Height,earlyProjection,camera.inverseView,disc,bounds,nullptr,nullptr,0,earlyWorldMaxDepth,1,2,nullptr,false,bodies[i]->emission))return (drawnEarly&(1u<<body))!=0;
             if(surfaceVisible){drawnEarly|=1u<<i;if(skyboxTrigger)drawnSkyboxEarly|=1u<<i;++claimDrawn;}
+            if(surfaceVisible&&hdrSkyTarget)drawDisc(i,hdrSkyTarget,desc.Width,desc.Height,earlyProjection,camera.inverseView,disc,bounds,nullptr,nullptr,0,earlyWorldMaxDepth,1,2,nullptr,false,bodies[i]->emission);
             // The lunar surface and its full halo share cloud/weather blending.
             // Solar keeps only its compact core here; its broad tail stays late.
             if(glareVisible){if(!drawDisc(i,target,desc.Width,desc.Height,earlyProjection,camera.inverseView,disc,glareBounds,nullptr,nullptr,0,earlyWorldMaxDepth,1,2,nullptr,false,bodies[i]->emission,true))return (drawnEarly&(1u<<body))!=0;
+                if(hdrSkyTarget)drawDisc(i,hdrSkyTarget,desc.Width,desc.Height,earlyProjection,camera.inverseView,disc,glareBounds,nullptr,nullptr,0,earlyWorldMaxDepth,1,2,nullptr,false,bodies[i]->emission,true);
                 if(!surfaceVisible){drawnEarly|=1u<<i;if(skyboxTrigger)drawnSkyboxEarly|=1u<<i;++claimDrawn;}}
         }
         return true;
@@ -335,6 +343,7 @@ public:
             if(!hasDepth)return false;
         }
         DWORD srgb=0;if(!check(d->GetRenderState(D3DRS_SRGBWRITEENABLE,&srgb),"read color encoding"))return false;
+        D3DSURFACE_DESC targetDesc{};target->GetDesc(&targetDesc);const bool hdr=targetDesc.Format==D3DFMT_A16B16G16R16F;
         if(occlude)d->SetDepthStencilSurface(nullptr);for(unsigned k=1;k<4;++k)d->SetRenderTarget(k,nullptr);
         for(unsigned k=0;k<16;++k)d->SetTexture(k,nullptr);
         if(!check(d->SetRenderTarget(0,target),"target"))return false;
@@ -347,6 +356,7 @@ public:
           {D3DRS_CULLMODE,D3DCULL_NONE},{D3DRS_COLORWRITEENABLE,7},{D3DRS_FOGENABLE,FALSE},{D3DRS_STENCILENABLE,FALSE},{D3DRS_SCISSORTESTENABLE,TRUE},
           {D3DRS_CLIPPLANEENABLE,0},{D3DRS_DEPTHBIAS,0},{D3DRS_SLOPESCALEDEPTHBIAS,0},{D3DRS_FILLMODE,D3DFILL_SOLID},{D3DRS_MULTISAMPLEMASK,0xffffffff},{D3DRS_WRAP0,0}};
         for(auto& s:states)d->SetRenderState(s.s,s.v);
+        if(hdr){d->SetRenderState(D3DRS_SRGBWRITEENABLE,FALSE);if(glare)d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE);}
         d->SetTextureStageState(0,D3DTSS_TEXCOORDINDEX,0);d->SetTextureStageState(0,D3DTSS_TEXTURETRANSFORMFLAGS,D3DTTFF_DISABLE);
         for(unsigned k=0;k<6;++k){d->SetSamplerState(k,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(k,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);
             d->SetSamplerState(k,D3DSAMP_MINFILTER,(k==1||k==4)?D3DTEXF_LINEAR:D3DTEXF_POINT);d->SetSamplerState(k,D3DSAMP_MAGFILTER,(k==1||k==4)?D3DTEXF_LINEAR:D3DTEXF_POINT);
@@ -369,7 +379,7 @@ public:
         c[12][2]*=fade;c[47][3]*=fade;
         if(glare){const float gain=weatherGain.load(std::memory_order_relaxed);c[12][2]*=gain;c[47][3]*=gain;} /* 0.3.198 (rain): x1 when dry */
         (void)legacyFog;c[11][0]=repairDepth;c[11][1]=repairDepth>=0?1.f:0.f;c[11][2]=NorthlightCelestialDisc::RepairDepthTolerance;c[11][3]=i==0?1.f:0.f;
-        std::memcpy(c[1],projection,12);c[1][3]=water?1.f:0.f;std::memcpy(c[2],inverseView,64);c[10][0]=srgb?1.f:0.f;c[10][1]=nearZ;c[10][2]=farZ;c[10][3]=occlude?1.f:0.f;
+        std::memcpy(c[1],projection,12);c[1][3]=water?1.f:0.f;std::memcpy(c[2],inverseView,64);c[10][0]=hdr?(i?3.f:2.f):srgb?1.f:0.f;c[10][1]=nearZ;c[10][2]=farZ;c[10][3]=occlude?1.f:0.f;
         struct V{float x,y,z,w,u,v;} vertices[]={{-.5f,-.5f,spriteDepth,1,0,0},{float(width)-.5f,-.5f,spriteDepth,1,1,0},{-.5f,float(height)-.5f,spriteDepth,1,0,1},{float(width)-.5f,float(height)-.5f,spriteDepth,1,1,1}};
         D3DVIEWPORT9 viewport={0,0,width,height,0,1};d->SetViewport(&viewport);
         std::memcpy(c[6],disc.direction,12);c[6][3]=disc.tangentRadius;std::memcpy(c[7],disc.right,12);std::memcpy(c[8],disc.up,12);
@@ -520,7 +530,7 @@ public:
         // The glare weights already carry the edge fade; scale both by the veil.
         const float veil=NorthlightCelestialGlow::veilStrength(c[9][3],1,hazeAtSun,skyTransmittance);
         c[12][2]=0;c[47][3]*=veil; // diffuse bloom may cross an occluder; the compact core never does
-        c[10][0]=0; // SRGBWRITE off: encoded output, like the composite before it
+        D3DSURFACE_DESC desc{};target->GetDesc(&desc);c[10][0]=desc.Format==D3DFMT_A16B16G16R16F?2.f:0.f;
         const bool ring=ringWritten&&ringFrame==frames;c[48][3]=ring?NorthlightCelestialGlow::ringWrap(g.disc.direction[2],std::sin(std::atan(g.disc.tangentRadius))):0.f;
         if(!(veil>0)||!(c[12][2]+c[47][3]>0)){++veilStats.skipped;return false;}
         if(!veilPS&&!check(d->CreatePixelShader(kCelestialVeilPSShader,&veilPS),"veil shader"))return false;

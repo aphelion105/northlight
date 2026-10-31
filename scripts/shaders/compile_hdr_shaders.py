@@ -25,7 +25,10 @@ def main():
     entries = [('HdrUi', 'ps_2_0', 'HdrUi-ps_2_0', 'kHdrUiPs2'),
                ('HdrUi', 'ps_3_0', 'HdrUi-ps_3_0', 'kHdrUiPs3'),
                ('HdrWorld', 'ps_3_0', 'HdrWorld', 'kHdrWorld'),
-               ('HdrOverlay', 'ps_3_0', 'HdrOverlay', 'kHdrOverlay')]
+               ('HdrOverlay', 'ps_3_0', 'HdrOverlay', 'kHdrOverlay'),
+               ('HdrFixedUi', 'ps_3_0', 'HdrFixedUi', 'kHdrFixedUi'),
+               *[(name, 'ps_3_0', name, 'k'+name) for name in
+                 ('HdrMeter','HdrReduce','HdrDecodeWorld','HdrCopy','HdrLegacyComposite','HdrAdapt','HdrBloom','HdrWorldLinear','HdrWorldLinearOnly','HdrLegacyEncode','HdrCalibration','HdrLayer')]]
     for entry, target, name, symbol in entries:
         binary = fp.COMPILED / (name + '.bin')
         data, words = compiler.compile(source, entry, target, binary)

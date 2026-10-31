@@ -22,6 +22,16 @@ inline bool screenSpaceRows(const float c[16]){
 // UI disables depth testing either with ZENABLE off or ZFUNC ALWAYS. A stale
 // comparison function is irrelevant while Z is disabled.
 inline bool accepts(bool zWrite,const float* c,bool zFuncAlways=true,bool zEnabled=true){return !zWrite&&(!zEnabled||zFuncAlways)&&c&&screenSpaceRows(c);}
+// Native pixel-space text (including Ctrl+R) has a distinct VS from the
+// scalable UI. Its full-window orthographic transform is sufficient proof;
+// world names retain the world depth band and cannot satisfy this predicate.
+inline bool pixelSpaceRows(const float c[16],unsigned width,unsigned height,float minZ,float maxZ){
+    if(!width||!height||minZ!=0||maxZ!=1||!screenSpaceRows(c))return false;
+    const float sx=2.f/width,sy=2.f/height;
+    return std::fabs(c[0]-sx)<sx*.001f&&std::fabs(std::fabs(c[5])-sy)<sy*.001f&&
+        std::fabs(std::fabs(c[3])-1)<=2*sx&&std::fabs(std::fabs(c[7])-1)<=2*sy&&
+        c[1]==0&&c[2]==0&&c[4]==0&&c[6]==0&&c[8]==0&&c[9]==0;
+}
 class Arming{
 public:
     static constexpr unsigned kWarmFrames=2,kArmFrames=120,kLostFrames=120,kMinDrawsPerFrame=8,kSlots=32,kMaxPs=4,kMinSharePercent=10;

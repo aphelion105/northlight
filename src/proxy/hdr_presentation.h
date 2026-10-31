@@ -33,11 +33,18 @@ inline HRESULT colorSpace(IDirect3DDevice9* d,unsigned space){
 }
 struct Settings {
     bool requested=false;float paperWhite=203,uiWhite=160,maxNits=1000,contrast=1,exposure=0;
+    bool autoExposure=true,autoPeak=true;float bloom=1,legacyExpansion=0,minEV=-2,maxEV=1,lightT90=.5f,darkT90=2;
+    void apply(const std::array<float,NorthlightHdrSettingsContract::Count>& values){
+        using namespace NorthlightHdrSettingsContract;
+        requested=values[Enabled]>.5f;paperWhite=values[PaperWhite];uiWhite=values[UIWhite];maxNits=values[MaxNits];contrast=values[Contrast];exposure=values[Exposure];
+        autoExposure=values[ExposureMode]>.5f;autoPeak=values[PeakMode]>.5f;bloom=values[BloomStrength];legacyExpansion=values[LegacyExpansion];
+        minEV=values[AutoMinEV];maxEV=values[AutoMaxEV];lightT90=values[LightAdaptation];darkT90=values[DarkAdaptation];
+    }
     static Settings load(const wchar_t* root){
         const std::wstring ini=std::wstring(root)+L"northlight-renderer.ini";Settings value;
         using namespace NorthlightHdrSettingsContract;
         auto readKey=[&](unsigned i){const auto& key=Keys[i];std::string name=key.name;std::wstring wide(name.begin(),name.end());wchar_t text[64]{};GetPrivateProfileStringW(L"Renderer",wide.c_str(),L"",text,64,ini.c_str());std::wstring w=text;return read(key,std::string(w.begin(),w.end()));};
-        value.requested=readKey(0)==1;value.paperWhite=readKey(1);value.uiWhite=readKey(2);value.maxNits=readKey(3);value.contrast=readKey(4);value.exposure=readKey(5);
+        auto values=defaults();for(unsigned i=0;i<Count;++i)values[i]=readKey(i);value.apply(values);
         return value;
     }
 };

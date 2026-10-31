@@ -1,21 +1,40 @@
-# Experimental HDR presentation
+# HDR pipeline
 
-Set ExperimentalHDR=1 in the Renderer section and restart. HDR requires a supported packaged DXVK backend, CommandStream=1, windowed presentation and a working HDR output. A failed capability check leaves SDR active and records the reason in the renderer log. The default is off.
+Windows HDR requires packaged DXVK 2 or 3, `CommandStream=1` and windowed or borderless presentation. Enable HDR for the current display in Windows. Northlight follows that display and switches SDR/scRGB output live. A missing capability or failed HDR allocation selects SDR and exposes the reason in Renderer & HDR.
 
-The client continues to see its original 8-bit logical backbuffers. Northlight converts the completed legacy world frame to linear scRGB and converts supported UI draws separately. HDRPaperWhite controls scene white, HDRUIWhite controls UI white, and HDRMaxNits, HDRContrast and HDRExposure control the bounded artistic transfer. This is a presentation conversion of the legacy scene; it does not recover highlights already clipped by the original renderer.
+On the first launch of this pipeline, one atomic migration resets all earlier HDR tuning, requests HDR output, and selects Auto exposure and Auto peak. It preserves every non-HDR renderer setting. The migration marker is `HDRPipelineVersion=2`; later launches preserve the new values.
 
-Logical backbuffer counts, readbacks, swapchain queries, cooperative level, Reset/resize, original shader bindings and untouched constants are covered by the isolated integration oracle. The rare-font boundary check uses a recording device to keep world effects before UI; that host check does not rasterize water.
+Renderer & HDR contains:
 
-Run tests/verify_hdr_integration_gpu.py with the two plain DXVK DLL paths, a UI pixel shader captured from your own client, and an output directory. All generated test shaders, DLL copies and logs stay under that output directory. Captured game shaders are never committed. The desktop HDR toggle, Alt-Tab, overlays, Magnifier and visible monitor output still require manual testing.
+- **White point**: ordinary scene white, default 203 nits.
+- **UI brightness**: independent interface white, default 160 nits.
+- **Peak mode**: Auto uses current Windows calibration/display metadata; invalid metadata falls back to 1000 nits. Manual uses the saved peak. Effective scene/UI whites cannot exceed the selected peak.
+- **Exposure mode**: Auto meters world luminance before bloom and UI. Exposure is compensation in Auto and the complete EV adjustment in Manual.
+- **Bloom strength**: 0 removes the halo while preserving HDR source energy; default 1.
+- **Legacy highlight expansion**: optional 0–2 EV, default 0. It selectively expands bright legacy SDR details, with limited gain and bright-area suppression. A uniform white field is unchanged. It cannot reconstruct clipped details or reliably distinguish every bright surface from an emitter.
 
-MSAA follow-up: logical legacy buffers and FP16 presentation preserve sample type and quality. World conversion and explicit FP16 readbacks resolve multisampling first. Stream backbuffer metadata refreshes sample settings across Reset; unsupported HDR allocation falls back to SDR while retaining the requested legacy samples. The oracle includes 2x/4x/8x coverage, sample-changing Reset, full-resolution readback and logical-target rebinding after offscreen rendering. Linux and macOS remain unverified.
+White point, UI white, Manual peak and peak mode belong to the current display's stable Windows identity (`HDR.<id>` INI section). Artistic settings remain global in `[Renderer]`. Unsaved display calibration drafts stay separate; saving the current display does not commit a hidden display's draft.
 
-The learned or stock UI proof remains authoritative with the master effects switch off. Unrelated affine draws must not start HDR conversion merely because effect preparation did not establish a world frame. Shader classification precedes the matrix/state probes; the UI proof uses the vertex shader identity independently of the pixel shader variant.
+Auto exposure defaults to −2…+1 EV, with T90 of 0.5 seconds when reducing exposure and 2 seconds when raising it. Fine tuning exposes these values. Loading or a confirmed camera/map cut starts a fresh evaluation; normal motion adapts smoothly. Display changes and resource recreation preserve adaptation. The authored ambient and NightBrightness contribute to the reference level, so night and interiors are not forced to daylight brightness.
 
-HDR-only frames allocate the color copy lazily. Depth, AO textures and effect shaders are created when effects need them; already-used effect resources remain retained. At 3840x2160 this defers 63.28125 MiB of texture payload before effects start, without changing resolution or samples. This is allocation accounting, not measured process-memory or FPS improvement.
+The calibration mode generates direct scRGB signals for 80/203 nits, a test peak, a peak gradient, colored highlights and a small/wide field comparison. Its test signal bypasses scene exposure, contrast, bloom and the scene peak limit. The displayed nits describe the application's signal, not a physical measurement of the panel.
 
-For intermittent UI trails, diagnostics include the first eight logical-backbuffer copies made after the UI boundary and a periodic HDR state/coverage summary. These observations identify copy ordering; they do not change copy semantics. The GPU oracle alternates frame colors and UI inputs across Device/SwapChain Present without rebinding RT0. Ordinary movement, camera turns, effect toggles, map travel and desktop focus changes still require a representative in-game check.
+## Rendering contract
 
-The frozen-overlay correction rejects a learned UI boundary when its pixel shader actually samples a render/depth target. An orthographic death/glow scene draw can reuse the learned UI vertex shader; migrating to FP16 at that point leaves later native scene copies reading stale SDR contents. Only sampled slots matter: an unused bound render texture cannot reject a valid UI draw. Sampler metadata remains available with HDR enabled and the effects switch off. Ordinary font/UI boundaries, shader restoration and untouched constants remain covered by independent positive and negative controls.
+Legacy scene pixels are decoded once from sRGB. Northlight lighting, atmosphere, celestial sources and composition retain relative linear radiance in FP16; relative scene white is 1. Bloom reads this unclipped input. Exposure and a hue-preserving soft shoulder map the completed world to scRGB, where 1 represents 80 signal nits. Sun/moon assets are decoded before their authored emission; source gains are independent of monitor peak. Native legacy effects remain SDR-origin content. Capturing their original pre-clamp radiance is a later phase.
 
-Combined validation on 2026-10-30 passes all 28 DXVK 2/3 modes with the final DLL SHA256 `300033e02fac396ee0e91dc851ff99dd3bc71aea070228ced31933fe2863ce69`. The modes include SDR, HDR, effects off, multiple backbuffers, graded transfer, MSAA 2/4/8, full-resolution readback, Reset/resize and alternating scene/UI frames without rebinding RT0. The largest measured HDR numeric error is 0.000737205. Evidence is under `.local/review-completion/combined-hdr-replay-verified-20261030/validation.json`. The native runtime is covered by the separate direct-code oracle; its full proxy cannot pass this adapter's RESZ capability check. These checks establish ordering and numerical correctness, not desktop HDR visibility or client FPS.
+Legacy expansion precedes Northlight additions. Material albedo is inferred from the unexpanded legacy input so expansion does not increase Northlight's lighting coefficients. The separate UI transfer follows world presentation. A compatibility MRT keeps the client's 8-bit scene copy before HDR exposure, contrast and bloom. The game's logical formats, buffer count and Reset parameters stay unchanged.
+
+HDR uses an additional FP16 swapchain and never resets the game's device merely to toggle output. Windows output state is queried separately from Vulkan scRGB support. The latter can remain available while Windows HDR is off. Game-initiated Reset still recreates resources normally. HDR shaders, target sizes, samples and ownership are bounded; the diagnostics show HDR frame/output payload separately from driver allocations and residency.
+
+## Verification
+
+See [the agreed specification](hdr-pipeline-spec.md) and [the validation record](hdr-validation-2026-10-31.md).
+
+`tests/verify_hdr_lifecycle_gpu.py --cycle-hdr --proxy renderer/frd9.dll` exercises Windows HDR toggles with live resources and restores the original Windows state. Supply `--dxvk2`, `--dxvk3` and an isolated `--output` directory.
+
+`tests/verify_hdr_integration_gpu.py` checks both Present paths, legacy buffers, captured UI shader/state restoration, graded transfer, MSAA, Reset/resize and alternating scene/UI generations. Supply the two backends, `--captured-ui` from your client, and an isolated output directory. Captured game shaders are never committed.
+
+`tests/verify_hdr_frame_gpu.py` checks actual GPU composition, headroom, legacy expansion, adaptation timing and resource loss. Its `--benchmark` option measures post passes with GPU timestamps at 1080p/1440p/4K; it does not measure full-client FPS.
+
+Two-display movement is deferred because this workstation has one physical display. Representative in-game day/night/interior visual tuning, Alt-Tab/hotplug and full-frame performance acceptance still require a client session. Wine/Linux, macOS and exclusive fullscreen are outside this phase's verified support.

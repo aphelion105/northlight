@@ -73,7 +73,7 @@ def main():
         (folder / 'dxvk.conf').write_text('dxvk.allowFse = False\n')
         for mode in args.modes:
             (folder / 'northlight-renderer.ini').write_text(
-                f'[Renderer]\nBackend={backend}\nExperimentalHDR={int(mode != "sdr")}\nHDRPaperWhite=203\nHDRUIWhite=160\n'
+                f'[Renderer]\nBackend={backend}\nHDRPipelineVersion=2\nHDRExposureMode=Manual\nHDRBloomStrength=0\nExperimentalHDR={int(mode != "sdr")}\nHDRPaperWhite=203\nHDRUIWhite=160\n'
                 + ('HDRContrast=1.35\nHDRExposure=-1.25\n' if mode in ('hdr-graded','hdr-msaa4-graded') else ''))
             (folder / 'northlight-quality.ini').write_text(
                 f'[Quality]\nPreset=Performance\nCommandStream={int(mode != "stream-off")}\nStreamFramesAhead=1\nStreamFrameSkip=0\nDiagnostics=0\nRenderProfile=0\n'
