@@ -193,11 +193,15 @@ public:
             std::copy(points,points+3,probe);placedSample=sample;placed=true;
         }
         if(!placed||!frame.takeDraw(particle))return result;
+        float lo[3]={INFINITY,INFINITY,INFINITY},hi[3]={-INFINITY,-INFINITY,-INFINITY};unsigned loaded=0;
         for(unsigned sample=0;sample<samples;++sample){
             std::uint64_t references[3];if(!NorthlightParticleLights::triangleIndices(unsigned(args.prim),std::uint64_t(sample)*args.primCount/samples,references))continue;
             Point points[3];
             if(sample==placedSample)std::copy(probe,probe+3,points);
             else if(!load(references[0],points[0])||!load(references[1],points[1])||!load(references[2],points[2]))continue;
+            if(!particle){++loaded;for(const auto& point:points)for(unsigned k=0;k<3;++k){
+                if(!std::isfinite(point.position[k]))return Prepared{};
+                lo[k]=std::min(lo[k],point.position[k]);hi[k]=std::max(hi[k],point.position[k]);}}
             ++frame.triangles;Four center{};for(unsigned j=0;j<4;++j)center[j]=(points[0].position[j]+points[1].position[j]+points[2].position[j])/3;
             float clip[4]{};for(unsigned j=0;j<4;++j)for(unsigned k=0;k<4;++k)clip[j]+=q[j*4+k]*center[k];
             // Preserve samples for the final cluster/track: an offscreen or
@@ -220,6 +224,8 @@ public:
             }
             if(known&&NorthlightParticleLights::peak(value.rgb)>=.003f)result.add(value);
         }
+        if(!particle&&NorthlightParticleLights::compactMesh(lo,hi,loaded,args.primCount))
+            for(unsigned i=0;i<result.count;++i)result.clusters[i].sample.castsShadows=true;
         return result;
     }
     static void submit(const Prepared& prepared,bool accepted,bool deferred,NorthlightParticleLights::Frame& frame){

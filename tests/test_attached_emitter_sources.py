@@ -18,6 +18,8 @@ from equipment_emitter_patch import append_bone_lights
 from test_spell_emitter_patch import Assets,append,model,native_sample,raw_track
 from test_mount_emitter_patch import assets as mount_assets,table
 from mpq import Archive
+import build_gameobject_emitters as gameobjects
+import world_emitter_index
 
 
 def mesh_model():
@@ -54,6 +56,42 @@ def mesh_model():
 
 
 class AttachedEmission(unittest.TestCase):
+    def test_billboard_mesh_retains_original_bone_and_position(self):
+        assets, original = mesh_model()
+        billboard = bytearray(original)
+        struct.pack_into('<I', billboard, 392+4, 8)
+        struct.pack_into('<3f', billboard, 392+76, 3, 4, 5)
+        sources, rejected = attached_sources(assets, 'creature\\glow.m2', billboard)
+        self.assertEqual(rejected['mesh_batches'], {})
+        self.assertEqual((sources[0]['bone'], sources[0]['position']), (1, (1/3, 1/3, 0)))
+        patched = append_spell_lights(bytes(billboard), sources)
+        self.assertEqual(patched[304:480], billboard[304:480])
+        light = struct.unpack_from('<I', patched, 268)[0]
+        self.assertEqual(struct.unpack_from('<H', patched, light+2)[0], 1)
+
+    def test_gameobject_dbc_resolution_staging_and_herb_ownership(self):
+        assets, original = mesh_model()
+        herb = 'world\\skillactivated\\tradeskillnodes\\bush_ragveil.m2'
+        prop = 'world\\prop.m2'
+        names = b'\0World\\SkillActivated\\TradeskillNodes\\Bush_Ragveil.mdx\0World\\prop.m2\0Spells\\orb.mdx\0world\\..\\bad.mdx\0world\\house.wmo\0'
+        paths = [v for v in names.split(b'\0') if v]
+        rows = [[i+1, names.index(p), *([0]*17)] for i, p in enumerate(paths)]
+        rows.append([6949, 1, *([0]*17)])
+        assets.extra.update({herb: original, prop: original, 'spells\\orb.m2': original,
+                            herb[:-3]+'00.skin': assets.extra['creature\\glow00.skin'],
+                            prop[:-3]+'00.skin': assets.extra['creature\\glow00.skin'],
+                            'dbfilesclient\\gameobjectdisplayinfo.dbc': table(rows, 19, names)})
+        self.assertEqual(set(gameobjects.models(assets)), {herb, prop, 'spells\\orb.m2'})
+        self.assertEqual(gameobjects.models(assets)[herb]['displays'], [1, 6949])
+        self.assertIsNone(world_emitter_index.profile(assets, herb, original, {}))
+        before = dict(assets.extra)
+        with tempfile.TemporaryDirectory(dir=northlight_paths.output_dir()) as folder:
+            report = gameobjects.build(assets, Path(folder), excluded={prop, 'spells\\orb.m2'})
+            self.assertEqual(set(report['models']), {herb})
+            with Archive(Path(folder)/'gameobject-lights-staged.mpq') as archive:
+                self.assertEqual({n for n in archive.names() if not n.startswith('(')}, {herb})
+        self.assertEqual(assets.extra, before)
+
     def test_mesh_uses_real_skin_bone_and_uv_texture_not_white(self):
         assets,original = mesh_model()
         emitters,rejected = attached_sources(assets,'creature\\glow.m2',original)

@@ -114,13 +114,14 @@ static unsigned family(const Shader& shader){std::uint64_t hash=1469598103934665
 static bool close(float a,float b){return std::fabs(a-b)<.00001f;}
 int main(int argc,char** argv){
     assert(argc==2||argc==3);const bool influenceOnly=argc==3&&std::strcmp(argv[2],"--view-influence-only")==0;assert(argc==2||influenceOnly);
-    FILE* file=std::fopen(argv[1],"rb");assert(file);Shader vertex,white;vertex.code=words(file);white.code=words(file);const auto pixel=words(file);
+    FILE* file=std::fopen(argv[1],"rb");assert(file);Shader vertex,white,mesh;vertex.code=words(file);white.code=words(file);mesh.code=words(file);const auto pixel=words(file);
     unsigned image[5];assert(std::fread(image,4,5,file)==5);std::vector<unsigned char> payload(image[4]);assert(std::fread(payload.data(),1,payload.size(),file)==payload.size());
     float nativeTint[4];assert(std::fread(nativeTint,4,4,file)==4);std::fclose(file);
     NorthlightParticleTextures::enabled=true;Device device;
     auto& textures=NorthlightParticleTextures::cache();textures.upload(&device.texture,&device.texture,image[0],image[1],0,image[2],payload.data(),payload.size(),image[3],true,true);
     NorthlightParticleTextures::View texture;assert(textures.lookup(&device.texture,texture));float texel[4];assert(texture.sample(.5f,.5f,false,3,3,texel,false)&&texel[3]>.1f);
     Pixel ps;NorthlightParticleCapture::Capture capture;capture.registerVertex(&vertex,family(vertex));capture.registerVertex(&white,family(white));capture.registerPixel(&ps,pixel.data(),pixel.size());
+    assert(family(mesh)==3);capture.registerVertex(&mesh,family(mesh));
     const auto packed=[](const float* c){return D3DCOLOR_ARGB(unsigned(std::round(c[3]*255)),unsigned(std::round(c[0]*255)),unsigned(std::round(c[1]*255)),unsigned(std::round(c[2]*255)));};
     std::array<Vertex,3> vertices{{{{-.2f,-.2f,2},packed(nativeTint),{.5f,.5f}},{{.2f,-.2f,2},packed(nativeTint),{.5f,.5f}},{{0,.4f,2},packed(nativeTint),{.5f,.5f}}}};
     const std::uint16_t indices[4]{99,1,2,3};auto& uploads=NorthlightParticleUploads::cache();
@@ -133,6 +134,7 @@ int main(int argc,char** argv){
     const auto publish=[&](){frame.publish(nullptr,0,fixed,camera,selection);return selection.update(fixed,camera,8,1.f/120,true,nullptr,frame.output.data(),frame.outputCount,frame.immediate.data(),frame.immediateCount);};
     if(!influenceOnly){
     auto prepared=prepare(vertex);assert(prepared.count==1&&frame.triangles==1);
+    assert(!prepared.clusters[0].sample.castsShadows);
     const auto& emitted=prepared.clusters[0].sample;assert(close(emitted.position[0],100)&&close(emitted.position[1],200)&&close(emitted.position[2],302));
     assert(emitted.rgb[2]>emitted.rgb[0]&&emitted.rgb[2]>emitted.rgb[1]);
     for(unsigned k=0;k<3;++k)assert(close(emitted.rgb[k],float((vertices[0].color>>(16-8*k))&255)/255*texel[k]*float((vertices[0].color>>24)&255)/255*texel[3]));
@@ -154,6 +156,17 @@ int main(int argc,char** argv){
     frame.nextFrame();upload();textures.invalidate(&device.texture);assert(!prepare(vertex).count&&frame.textureMiss==1);
     textures.upload(&device.texture,&device.texture,image[0],image[1],0,image[2],payload.data(),payload.size(),image[3],true,true);
     for(auto& v:vertices)v.color=packed(nativeTint);upload();
+    // Native unlit model mesh: compact complete draws qualify, large or
+    // partially captured meshes retain illumination without shadow intent.
+    for(unsigned k=0;k<4;++k)device.constants[28*4+k]=1;
+    frame.nextFrame();const auto small=prepare(mesh);assert(small.count==1&&small.clusters[0].sample.castsShadows);
+    capture.submit(small,true,false,frame);publish();assert(frame.outputCount==1&&(frame.output[0].flags&NorthlightLocalLights::CastShadow));
+    vertices[0].position[0]=-4;upload();frame.nextFrame();const auto large=prepare(mesh);
+    assert(large.count==1&&!large.clusters[0].sample.castsShadows);
+    capture.submit(large,true,false,frame);publish();assert(frame.outputCount==1&&!frame.output[0].flags);
+    vertices[0].position[0]=-.2f;upload();
+    args.primCount=2;frame.nextFrame();const auto partial=prepare(mesh);
+    assert(partial.count==1&&!partial.clusters[0].sample.castsShadows);args.primCount=1;
     for(unsigned scenario=0;scenario<9;++scenario)for(unsigned up=0;up<2;++up){
         if(scenario==4&&up)continue; // A raw UP pointer has no bounded upload-miss case.
         frame.reset();selection.reset();uploads.clear();
