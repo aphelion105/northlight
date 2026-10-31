@@ -43,9 +43,10 @@ assert 'pointSlot().faceCycle.reset();pointSlot().schedule.invalidate();}' in bo
 # Candidate lists are rebuilt from this frame's replays every call (indices never cross frames).
 assert body.index('list.clear();')<body.index('pointAppendCandidates(pointReplayCandidates,i,mask,faces);')
 # No progress and no commit without replays; the cycle commits as an update of its first frame.
-i=body.index('if(!fresh){pointSlot().ready=true;captureDemand=true;')
+i=body.index('if(!fresh){')
 assert i<body.index('if(cycling&&!pointSlot().faceCycle.advance())')<body.index('pointSlot().schedule.commit(pointSlot().faceCycle.startedAt,pointSlot().selected,pointSlot().faceCycle.generation);')
-assert 'if(!fresh&&(pointSlot().schedule.complete||cycling)&&!lightChanged&&pointSlot().cacheValid' in body
+assert 'if(!pointSlot().schedule.usable||lightChanged)return false;' in body
+assert body.index('pointSlot().schedule.due(')<i<body.index('for(unsigned face=0;face<6;++face)')
 with tempfile.TemporaryDirectory(prefix='northlight-point-schedule-') as tmp:
     for label,flags in [('O2',['-O2']),('asan',['-O1','-g','-fsanitize=address,undefined'])]:
         exe=Path(tmp)/('test-'+label)
