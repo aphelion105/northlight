@@ -40,10 +40,23 @@ template<unsigned N> struct Batch {
     std::array<Constant,N> position{},color{},fog{};
     unsigned count=0;
 };
+// Full direct-light batches borrow the already contiguous shader columns.
+// A partial batch owns zero-padded columns; no fog payload is copied.
+template<unsigned N> struct DirectBatchView {
+    std::array<Constant,N> paddedPosition,paddedColor;
+    const Constant* position;const Constant* color;unsigned count;
+    DirectBatchView(const std::array<Constant,Slots>& p,const std::array<Constant,Slots>& c,unsigned available,unsigned first){
+        available=std::min(available,Slots);count=first<available?std::min(N,available-first):0;
+        if(count==N){position=p.data()+first;color=c.data()+first;}
+        else{paddedPosition.fill({});paddedColor.fill({});std::copy_n(p.data()+std::min(first,available),count,paddedPosition.begin());std::copy_n(c.data()+std::min(first,available),count,paddedColor.begin());position=paddedPosition.data();color=paddedColor.data();}
+    }
+    DirectBatchView(const DirectBatchView&)=delete;DirectBatchView& operator=(const DirectBatchView&)=delete;
+};
 struct Selection {
     std::array<NorthlightLocalLights::Light,Slots> sources{}; // Same source, colour and fade as the direct-light pass.
     std::array<Constant,Slots> position{},color{},fog{}; // 0.3.197: Slots, select() fills at most Capacity
     unsigned count=0;float nearest=0,fogDistance=128.f;
+    template<unsigned N> DirectBatchView<N> directBatch(unsigned first)const{return DirectBatchView<N>(position,color,count,first);}
     template<unsigned N> Batch<N> batch(unsigned first)const{
         Batch<N> b;
         for(unsigned i=0;i<N&&first+i<count;++i){
@@ -114,7 +127,20 @@ struct Tracker {
     // A newly published static lamp replaces a dynamic observation immediately;
     // retaining its fading tail would add the same physical source twice.
     void forget(std::uint64_t id){
-        for(unsigned i=0;i<count;++i)if(entries[i].id==id){std::move(entries.begin()+i+1,entries.begin()+count,entries.begin()+i);--count;return;}
+        const auto end=entries.begin()+count;
+        const auto at=std::lower_bound(entries.begin(),end,id,[](const Entry& e,std::uint64_t key){return e.id<key;});
+        if(at!=end&&at->id==id){std::move(at+1,end,at);--count;}
+    }
+    // Both lists are id-sorted; consume one entry per id, including duplicates.
+    void forgetSorted(const std::uint64_t* ids,unsigned size){
+        if(!ids||!size||!count)return;
+        unsigned next=0,write=0;
+        for(unsigned read=0;read<count;++read){
+            while(next<size&&ids[next]<entries[read].id)++next;
+            if(next<size&&ids[next]==entries[read].id){++next;continue;}
+            if(write!=read)entries[write]=entries[read];++write;
+        }
+        count=write;
     }
     bool incumbent(std::uint64_t id)const{
         unsigned lo=0,hi=count;

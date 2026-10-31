@@ -124,10 +124,11 @@ public:
             candidates[count++]=l;++t;
         }
         const unsigned particleCount=count;
+        std::array<std::uint64_t,2*Capacity> forgotten;unsigned forgottenCount=0;
         for(unsigned i=0;native&&i<nativeCount&&i<Capacity;++i){
             bool duplicate=false;for(unsigned j=0;j<particleCount;++j)if(
                 NorthlightEquipmentLights::distance2(native[i].position,candidates[j].position)<1.f&&
-                NorthlightEquipmentLights::hueClose(native[i].diffuse,candidates[j].diffuse)){duplicate=true;selection.forget(native[i].sourceId);break;}
+                NorthlightEquipmentLights::hueClose(native[i].diffuse,candidates[j].diffuse)){duplicate=true;forgotten[forgottenCount++]=native[i].sourceId;break;}
             if(!duplicate)candidates[count++]=native[i];
         }
         const auto score=[&](const Light& l){return std::sqrt(NorthlightEquipmentLights::distance2(l.position,camera))-l.attenuationEnd;};
@@ -137,7 +138,8 @@ public:
         for(unsigned i=0;i<outputCount;++i){output[i]=candidates[i];
             if((output[i].sourceId&0xfff0000000000000ull)==0xfed0000000000000ull)immediate[immediateCount++]=output[i].sourceId;}
         for(unsigned i=0;i<previousCount_;++i)
-            if(std::find(immediate.begin(),immediate.begin()+immediateCount,previous_[i].sourceId)==immediate.begin()+immediateCount)selection.forget(previous_[i].sourceId);
+            if(std::find(immediate.begin(),immediate.begin()+immediateCount,previous_[i].sourceId)==immediate.begin()+immediateCount)forgotten[forgottenCount++]=previous_[i].sourceId;
+        if(forgottenCount){std::sort(forgotten.begin(),forgotten.begin()+forgottenCount);selection.forgetSorted(forgotten.data(),forgottenCount);}
         previousCount_=0;for(unsigned i=0;i<outputCount;++i)if(
             std::find(immediate.begin(),immediate.begin()+immediateCount,output[i].sourceId)!=immediate.begin()+immediateCount)previous_[previousCount_++]=output[i];
     }
