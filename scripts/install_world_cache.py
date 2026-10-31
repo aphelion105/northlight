@@ -83,7 +83,7 @@ FORMAT = 'northlight-world-cache-install/1'
 STEP_SOURCES = {
     'scene': ['world_scene_builder.py', 'wmo_lamp_emission.py', 'world_emitter_coverage.py',
               'point_transmission_builder.py', 'm2_visibility.py', 'mpq.py', 'client_archives.py'],
-    'lights': ['world_lights_builder.py', 'wmo_lamp_emission.py', 'world_light_placements.py', 'outdoor_light_profiles.py',
+    'lights': ['world_lights_builder.py', 'light_attachments.py', 'wmo_lamp_emission.py', 'world_light_placements.py', 'outdoor_light_profiles.py',
                'world_emitter_coverage.py', 'world_emitter_index.py', 'build_equipment_emitters.py', 'emitter_pin_report.py',
                  'attached_emitter_sources.py', 'emitter_tracks.py', 'equipment_emitter_patch.py', 'point_transmission_builder.py', 'build_glue_emitters.py',
                'outdoor-light-profiles.json', 'wotlk-emitter-profiles.json'],
@@ -779,7 +779,7 @@ def carry_instances(old_root, new_root):
 
 def carry_instance_lights(old, new):
     """Move the instance .fgl files and their lights manifest from one lights/ folder to another."""
-    for name in [f'{m}.fgl' for m in instance_maps.ALL_MAPS] + [INSTANCE_MANIFEST]:
+    for name in [f'{m}.{extension}' for m in instance_maps.ALL_MAPS for extension in ('fgl','fga')] + [INSTANCE_MANIFEST]:
         if (old / name).is_file() and not (new / name).exists():
             new.mkdir(parents=True, exist_ok=True)
             retry(os.replace, old / name, new / name)
@@ -924,6 +924,7 @@ def apply_instances(staging, output):
         if (output / m).exists():
             retry(shutil.rmtree, output / m)
         (lights / f'{m}.fgl').unlink(missing_ok=True)
+        (lights / f'{m}.fga').unlink(missing_ok=True)
     for m in ready['built_maps']:
         if (staging / m).is_dir():
             if (output / m).exists():
@@ -931,6 +932,8 @@ def apply_instances(staging, output):
             retry((staging / m).rename, output / m)
         if (staging / 'lights' / f'{m}.fgl').is_file():
             retry(os.replace, staging / 'lights' / f'{m}.fgl', lights / f'{m}.fgl')
+        if (staging / 'lights' / f'{m}.fga').is_file():
+            retry(os.replace, staging / 'lights' / f'{m}.fga', lights / f'{m}.fga')
     merge_point_transmission(staging/'lights',lights,[*ready['drop_maps'],*ready['built_maps']],replace=True)
     point_root=lights/'point-transmission'
     point_keys=all_tile_keys(point_root)
