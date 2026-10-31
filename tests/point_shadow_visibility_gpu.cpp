@@ -48,8 +48,8 @@ struct PointTerrainCoverageTest {
     // Prime visibility transitions and driver work before each paired block.
     for(unsigned warm=0;warm<2;++warm){must(d->BeginScene());w.renderPointShadows(w.atmosphere.lights,true,false);must(d->EndScene());}drain(fence);
     double submit=0;const auto start=Clock::now();const unsigned updates=w.pointUpdates;
-    for(unsigned frame=0;frame<16;++frame){const auto cpu=Clock::now();must(d->BeginScene());w.renderPointShadows(w.atmosphere.lights,true,false);must(d->EndScene());submit+=milliseconds(cpu);}
-    drain(fence);rows<<limit<<'\t'<<pose<<'\t'<<optimized<<'\t'<<block<<'\t'<<submit/16<<'\t'<<milliseconds(start)/16<<'\t'<<(w.pointUpdates-updates)/16<<'\n';
+    for(unsigned frame=0;frame<64;++frame){const auto cpu=Clock::now();must(d->BeginScene());w.renderPointShadows(w.atmosphere.lights,true,false);must(d->EndScene());submit+=milliseconds(cpu);}
+    drain(fence);rows<<limit<<'\t'<<pose<<'\t'<<optimized<<'\t'<<block<<'\t'<<submit/64<<'\t'<<milliseconds(start)/64<<'\t'<<(w.pointUpdates-updates)/64<<'\n';
    }
   }
   assert(comparisons>100&&omitted>0&&nonempty>0);readback->Release();fence->Release();
@@ -60,6 +60,7 @@ int main(int argc,char** argv){
  assert(argc==5||argc==6);SetEnvironmentVariableA("NORTHLIGHT_QUALITY_FILE",argv[3]);std::wstring path(argv[3],argv[3]+std::strlen(argv[3]));assert(GetFullPathNameW(path.c_str(),MAX_PATH,rootPath,nullptr));
  WNDCLASSW wc{};wc.lpfnWndProc=DefWindowProcW;wc.hInstance=GetModuleHandleW(nullptr);wc.lpszClassName=L"NorthlightPointVisibility";assert(RegisterClassW(&wc));auto hwnd=CreateWindowW(wc.lpszClassName,L"",WS_OVERLAPPED,0,0,64,64,nullptr,nullptr,wc.hInstance,nullptr);assert(hwnd);
  auto module=LoadLibraryA(argv[1]);assert(module);auto create=reinterpret_cast<IDirect3D9*(WINAPI*)(UINT)>(reinterpret_cast<void*>(GetProcAddress(module,"Direct3DCreate9")));assert(create);auto api=create(D3D_SDK_VERSION);
+ D3DADAPTER_IDENTIFIER9 adapter{};must(api->GetAdapterIdentifier(0,0,&adapter));std::printf("GPU_ADAPTER description=%s vendor=%04lx device=%04lx driver=%s\n",adapter.Description,(unsigned long)adapter.VendorId,(unsigned long)adapter.DeviceId,adapter.Driver);
  D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=hwnd;pp.BackBufferWidth=pp.BackBufferHeight=64;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;pp.PresentationInterval=D3DPRESENT_INTERVAL_IMMEDIATE;
  IDirect3DDevice9* d=nullptr;must(api->CreateDevice(0,D3DDEVTYPE_HAL,hwnd,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_MULTITHREADED|D3DCREATE_FPU_PRESERVE,&pp,&d));PointTerrainCoverageTest::run(d,argv[2],argv[4],argc==6);d->Release();api->Release();FreeLibrary(module);DestroyWindow(hwnd);
 }

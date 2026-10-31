@@ -10,6 +10,7 @@ import re
 import struct
 import subprocess
 import sys
+import tempfile
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
 
@@ -158,7 +159,7 @@ control_dir=root/'control';control_dir.mkdir(exist_ok=True);(control_dir/'partic
 records=[]
 def parse(text,prefix='PARTICLE_PROBE_CASE '):return [dict(re.findall(r'(\w+)=([^\s]+)',line)) for line in text.splitlines() if line.startswith(prefix)]
 def command(architecture,optimization,folder,binary):
-    return [str(fp.zig()),'c++','-target',architecture+'-windows-gnu',optimization,'-UNDEBUG','-std=c++17','-Wall','-Wextra','-Werror','-Wno-microsoft-exception-spec','-I',str(folder),*fp.test_include_flags(),str(source),'-o',str(binary)]
+    return [str(fp.zig()),'c++','-target',architecture+'-windows-gnu',optimization,'-UNDEBUG','-std=c++17','-Wall','-Wextra','-Werror','-Wno-microsoft-exception-spec','-Wno-misleading-indentation','-DNORTHLIGHT_PARTICLE_PROBE_REFERENCE='+str(int(folder==control_dir)),'-I',str(folder),*fp.test_include_flags(),str(source),'-o',str(binary)]
 
 fixture = root / 'native.bin'
 fixture.write_bytes(native_fixture())

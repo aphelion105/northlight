@@ -76,13 +76,13 @@ struct PointTerrainCoverageTest {
   // A sphere outside the receiver scissor needs no cube work. Preserve its
   // static resources, then force all dynamic faces current when it returns.
   auto lamp=light;w.batches={batch};w.quality.pointShadowRefreshMs=60000;
-  w.context.inverseView[12]=1000;
+  w.context.inverseView[14]=1000;
   const float projection[]={1,1,1};
   w.localScissorView=NorthlightLocalLightScissor::view(w.context.inverseView,projection,.1f,3.5f,128,128);
   assert(w.localScissorView.valid);auto* retainedCube=w.pointSlot().cube;const auto updates=w.pointUpdates;
   assert(!render(lamp,true,false)&&!w.pointSlot().ready&&w.pointUpdates==updates);
   assert(w.pointSlot().cube==retainedCube&&!w.pointSlot().schedule.usable);
-  w.context.inverseView[12]=0;
+  w.context.inverseView[14]=0;
   w.localScissorView=NorthlightLocalLightScissor::view(w.context.inverseView,projection,.1f,3.5f,128,128);
   w.quality.pointShadowFacesPerFrame=2;w.captureDemand=false;
   assert(!render(lamp,false,false)&&w.captureDemand&&!w.pointSlot().ready);

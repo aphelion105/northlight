@@ -4,6 +4,9 @@
 #include "forwarders.h"
 #include "particle_light_capture.h"
 #include <cassert>
+#ifndef NORTHLIGHT_PARTICLE_PROBE_REFERENCE
+#define NORTHLIGHT_PARTICLE_PROBE_REFERENCE 0
+#endif
 #include <cstdio>
 #include <limits>
 
@@ -243,7 +246,7 @@ int main(int argc,char** argv){
         const auto readsBefore=uploads.stats();
         const auto result=capture.prepare(&device,&vertex,&ps,args,rotatedInverse,camera,projection,frame);
         const auto readsAfter=uploads.stats();
-        require(readsAfter.hits-readsBefore.hits==(up?0u:6u)&&readsAfter.misses==readsBefore.misses,"INPUT_READS");
+        require(readsAfter.hits-readsBefore.hits==(up?0u:NORTHLIGHT_PARTICLE_PROBE_REFERENCE?12u:6u)&&readsAfter.misses==readsBefore.misses,"INPUT_READS");
         require(frame.triangles==1&&frame.draws==1,"INPUT_REUSE");
         require(result.count==1,"ROTATION_MISMATCH");const auto& source=result.clusters[0].sample;
         require(std::fabs(source.position[0]-102.6f)<.0001f&&std::fabs(source.position[1]-200.f)<.0001f&&std::fabs(source.position[2]-302.f)<.0001f,"WORLD_POSITION");
