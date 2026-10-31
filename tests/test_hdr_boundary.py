@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
 
 source = fp.src('renderer.cpp').read_text()
-start = source.index('    bool pixelUiGeometry(){')
+start = source.index('    bool orthographicUiGeometry(){')
 end = source.index('    // 0.3.154: the per-draw timing scopes;', start)
 methods = source[start:end]
 boundary_start = source.index('    const char* hdrBoundarySource(){')

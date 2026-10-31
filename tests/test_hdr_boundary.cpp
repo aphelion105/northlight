@@ -43,7 +43,7 @@ struct IDirect3DVertexShader9:Ref{};struct IDirect3DPixelShader9:Ref{};
 #include "hdr_boundary_texture.h"
 struct Backend{
     IDirect3DVertexShader9 vs;IDirect3DPixelShader9 ps;IDirect3DVertexDeclaration9 declaration;
-    bool fixedVs=false,fixedPs=false,pixelProjection=false;D3DVIEWPORT9 viewport;DWORD fvf=D3DFVF_XYZRHW,z=0,write=0,function=D3DCMP_ALWAYS;
+    bool fixedVs=false,fixedPs=false,pixelProjection=false,scaledProjection=false;D3DVIEWPORT9 viewport;DWORD fvf=D3DFVF_XYZRHW,z=0,write=0,function=D3DCMP_ALWAYS;
     std::unordered_map<DWORD,IDirect3DBaseTexture9*> textures;
     bool failVs=false,failPs=false,failTexture=false;unsigned textureReads=0;
     int legacy=11,presentation=7;bool hdrBound=false;
@@ -59,7 +59,7 @@ struct Backend{
         *out=state==D3DTSS_COLOROP||state==D3DTSS_ALPHAOP?(stage?D3DTOP_DISABLE:D3DTOP_MODULATE):
             state==D3DTSS_COLORARG1||state==D3DTSS_ALPHAARG1?D3DTA_TEXTURE:D3DTA_DIFFUSE;return S_OK;
     }
-    HRESULT GetVertexShaderConstantF(unsigned,float* rows,unsigned){for(unsigned i=0;i<16;++i)rows[i]=i%5==0?1.f:0.f;if(pixelProjection){rows[0]=2.f/3840;rows[5]=2.f/2160;rows[3]=-.99974f;rows[7]=-1.00046f;rows[10]=.0001f;rows[11]=.5f;}return S_OK;}
+    HRESULT GetVertexShaderConstantF(unsigned,float* rows,unsigned){for(unsigned i=0;i<16;++i)rows[i]=i%5==0?1.f:0.f;if(pixelProjection||scaledProjection){rows[0]=scaledProjection?2.29469f:2.f/3840;rows[5]=scaledProjection?4.07946f:2.f/2160;rows[3]=scaledProjection?-1.00026f:-.99974f;rows[7]=scaledProjection?-.999537f:-1.00046f;rows[10]=scaledProjection?-.001f:.0001f;rows[11]=.5f;}return S_OK;}
     void nativeWrite(int color){(hdrBound?presentation:legacy)=color;}
     int logicalCopy()const{return legacy;} // Device::StretchRect deliberately uses the logical SDR source.
 };
@@ -128,10 +128,19 @@ int main(){
         assert(active?f.backend.presentation==101:f.backend.legacy==101);
     }
     {Fixture f;f.stockUi=false;f.world=true;f.backend.pixelProjection=true;
-        assert(std::strcmp(f.hdrBoundarySource(),"pixel-ui")==0);
+        assert(std::strcmp(f.hdrBoundarySource(),"orthographic-ui")==0);
         assert(f.draw(71)==S_OK&&f.hdrUiPhase&&f.effects==1&&f.backend.presentation==71);}
     {Fixture f;f.stockUi=false;f.world=true;f.backend.pixelProjection=true;f.backend.viewport.MaxZ=.94f;
         assert(!f.hdrBoundarySource());assert(f.draw(72)==S_OK&&!f.hdrUiPhase&&f.effects==0);}
+    for(bool sceneTexture:{false,true})for(bool worldDepth:{false,true}){
+        Fixture f;IDirect3DTexture9 atlas;f.backend.textures[0]=&atlas;atlas.usage=sceneTexture?D3DUSAGE_RENDERTARGET:0;
+        f.stockUi=false;f.world=true;f.backend.scaledProjection=true;f.backend.viewport.MaxZ=worldDepth?.94f:1.f;
+        const bool accepted=!sceneTexture&&!worldDepth;
+        assert(f.draw(201)==S_OK&&f.hdrUiPhase==accepted&&f.effects==unsigned(accepted));
+        assert(accepted?f.backend.presentation==201:f.backend.legacy==201);
+        if(accepted){f.backend.scaledProjection=false;f.backend.pixelProjection=true;
+            assert(f.draw(202)==S_OK&&f.backend.presentation==202&&f.begins==1&&f.effects==1);}
+    }
     // Native pretransformed UI has no programmable VS/PS and no VS matrix.
     for(bool declaration:{false,true}){
         Fixture f;IDirect3DTexture9 atlas;f.world=true;f.backend.fixedVs=f.backend.fixedPs=true;

@@ -697,7 +697,7 @@ private:
         // prepareDraw does not establish terrain while the master switch is off.
         const char* source=(vc.entry&kTagMask)==2?"stock-ui":
             uiFallback.isBoundary(reinterpret_cast<std::uintptr_t>(vs),0)?"learned-ui":
-            vs&&!vc.world&&!vc.wmo&&!vc.skinned&&!(vc.entry&kWaterTag)&&pixelUiGeometry()?"pixel-ui":
+            vs&&!vc.world&&!vc.wmo&&!vc.skinned&&!(vc.entry&kWaterTag)&&orthographicUiGeometry()?"orthographic-ui":
             !terrain&&!uiFallback.armed()&&!uiFallback.disarmed()&&!vc.world&&!vc.wmo&&!vc.skinned&&!(vc.entry&kWaterTag)?"screen-space":nullptr;
         if(!borrowed)drop(vs);return source;
     }
@@ -803,12 +803,12 @@ private:
             logf("HDR_LAYER_STAGE frame=%u stage=%u texture=%u color=%lu,%lu,%lu alpha=%lu,%lu,%lu coordinates=%lu transform=%lu result=%lu",frame,stage,unsigned(texture!=nullptr),(unsigned long)values[0],(unsigned long)values[1],(unsigned long)values[2],(unsigned long)values[3],(unsigned long)values[4],(unsigned long)values[5],(unsigned long)values[6],(unsigned long)values[7],(unsigned long)values[8]);drop(texture);
         }
     }
-    bool pixelUiGeometry(){
+    bool orthographicUiGeometry(){
         DWORD z=1,zw=1,zf=0;float rows[16];D3DVIEWPORT9 vp{};
         return SUCCEEDED(ext->GetRenderState(D3DRS_ZWRITEENABLE,&zw))&&!zw&&
             SUCCEEDED(ext->GetRenderState(D3DRS_ZENABLE,&z))&&SUCCEEDED(ext->GetRenderState(D3DRS_ZFUNC,&zf))&&(!z||zf==D3DCMP_ALWAYS)&&
             SUCCEEDED(ext->GetViewport(&vp))&&vp.X==0&&vp.Y==0&&
-            SUCCEEDED(ext->GetVertexShaderConstantF(0,rows,4))&&NorthlightUiBoundary::pixelSpaceRows(rows,vp.Width,vp.Height,vp.MinZ,vp.MaxZ);
+            SUCCEEDED(ext->GetVertexShaderConstantF(0,rows,4))&&NorthlightUiBoundary::fullWindowOrthoRows(rows,vp.Width,vp.Height,vp.MinZ,vp.MaxZ);
     }
     bool fixedUiGeometry(){
         DWORD z=1,write=1,function=0,fvf=0;
@@ -1568,7 +1568,7 @@ private:
     }
     unsigned uiTraceCount=0;std::vector<std::uint64_t> uiTraceKeys;
     void traceUiDraw(){
-        if(!diagnostics()||!sampled()||!terrain||uiTraceCount>=64||!uiFallback.armed())return;
+        if(!diagnostics()||!sampled()||!terrain||uiTraceCount>=64||(!uiFallback.armed()&&!hdr.active))return;
         IDirect3DVertexShader9* vs=nullptr;if(!ext->peekVertexShader(vs))return;
         const auto& vc=classifyVs(vs);if(vc.world||vc.wmo||vc.skinned||(vc.entry&kWaterTag))return;
         IDirect3DPixelShader9* ps=nullptr;if(!ext->peekPixelShader(ps))return;
@@ -1577,10 +1577,11 @@ private:
         ext->GetFVF(&fvf);ext->GetVertexShaderConstantF(0,rows,4);
         const auto vi=vsHashes.find(vs);const auto pi=psHashes.find(ps);
         const std::uint64_t vh=vi==vsHashes.end()?0:vi->second,ph=pi==psHashes.end()?0:pi->second;
-        const auto key=vh^(ph<<1)^std::uint64_t(fvf<<4)^std::uint64_t(z|zw<<1|zf<<2|unsigned(applied)<<8|unsigned(hdrUiPhase)<<9);
+        auto key=vh^(ph<<1)^std::uint64_t(fvf<<4)^std::uint64_t(z|zw<<1|zf<<2|unsigned(applied)<<8|unsigned(hdrUiPhase)<<9);
+        for(float row:rows){std::uint32_t bits;std::memcpy(&bits,&row,4);key=(key^bits)*1099511628211ull;}
         if(std::find(uiTraceKeys.begin(),uiTraceKeys.end(),key)!=uiTraceKeys.end())return;
         uiTraceKeys.push_back(key);++uiTraceCount;
-        logf("UI_TRIAGE frame=%u draw=%u vs=%016llx ps=%016llx tag=%u fvf=%08lx z=%lu zw=%lu zf=%lu applied=%u hdrUi=%u viewport=%lu,%lu,%lu,%lu,%g,%g rows=[%g,%g,%g,%g;%g,%g,%g,%g;%g,%g,%g,%g;%g,%g,%g,%g]",frame,drawCalls,(unsigned long long)vh,(unsigned long long)ph,unsigned(vc.entry&kTagMask),(unsigned long)fvf,(unsigned long)z,(unsigned long)zw,(unsigned long)zf,unsigned(applied),unsigned(hdrUiPhase),(unsigned long)vp.X,(unsigned long)vp.Y,(unsigned long)vp.Width,(unsigned long)vp.Height,vp.MinZ,vp.MaxZ,rows[0],rows[1],rows[2],rows[3],rows[4],rows[5],rows[6],rows[7],rows[8],rows[9],rows[10],rows[11],rows[12],rows[13],rows[14],rows[15]);
+        logf("UI_TRIAGE frame=%u draw=%u vs=%016llx ps=%016llx tag=%u fvf=%08lx z=%lu zw=%lu zf=%lu applied=%u hdrUi=%u uiInputs=%u viewport=%lu,%lu,%lu,%lu,%g,%g rows=[%g,%g,%g,%g;%g,%g,%g,%g;%g,%g,%g,%g;%g,%g,%g,%g]",frame,drawCalls,(unsigned long long)vh,(unsigned long long)ph,unsigned(vc.entry&kTagMask),(unsigned long)fvf,(unsigned long)z,(unsigned long)zw,(unsigned long)zf,unsigned(applied),unsigned(hdrUiPhase),unsigned(hdrUiInputs()),(unsigned long)vp.X,(unsigned long)vp.Y,(unsigned long)vp.Width,(unsigned long)vp.Height,vp.MinZ,vp.MaxZ,rows[0],rows[1],rows[2],rows[3],rows[4],rows[5],rows[6],rows[7],rows[8],rows[9],rows[10],rows[11],rows[12],rows[13],rows[14],rows[15]);
     }
     template<class Capture> void prepareDrawImpl(Capture capture,UINT count) {
         if(!gpuFrameStarted){
@@ -2766,10 +2767,10 @@ private:
                 renderEffects();spellReplay();
             }
         }
-        if(tag!=1&&tag!=2&&!vc.world&&!vc.wmo&&!vc.skinned&&!(entry&kWaterTag)&&(terrain||skySeen)&&!applied&&pixelUiGeometry()&&hdrUiInputs()){
+        if(tag!=1&&tag!=2&&!vc.world&&!vc.wmo&&!vc.skinned&&!(entry&kWaterTag)&&(terrain||skySeen)&&!applied&&orthographicUiGeometry()&&hdrUiInputs()){
             D3DSURFACE_DESC desc{};if(fullViewport(desc,nullptr,true)){
                 hdrAtUiBoundary=true;
-                if(sampled())logf("EFFECT boundary frame=%u draw=%u kind=pixel-ui",frame,drawCalls);
+                if(sampled())logf("EFFECT boundary frame=%u draw=%u kind=orthographic-ui",frame,drawCalls);
                 renderEffects();spellReplay();
             }
         }
