@@ -100,15 +100,15 @@ def main():
             result = run('graph-'+backend, command, cwd=folder, timeout=180)
             events = [json.loads(line) for line in result.stdout.splitlines() if line.startswith('{')]
             scenarios = [event for event in events if event.get('event') == 'scenario']
-            if len(scenarios) < 8 or 'HDR_PIPELINE_GPU_PASS' not in result.stdout:
+            if len(scenarios) < 9 or 'HDR_PIPELINE_GPU_PASS' not in result.stdout:
                 raise RuntimeError(f'{backend}: incomplete graph result')
             for case in scenarios:
                 limit = case['reference_gpu_ms']*(1+args.max_regression)+.03
                 case['regression_limit_ms'] = limit
-                # Fallback modes execute identical production code. Their timing
-                # difference is noise, not evidence about the optimized path.
-                case['performance_applicable'] = case['inline_base']
-                case['performance_pass'] = case['optimized_gpu_ms'] <= limit if case['inline_base'] else None
+                # Every case contains native alpha-only UI masks; cases with
+                # explicit decode also isolate their compatibility-layer cost.
+                case['performance_applicable'] = True
+                case['performance_pass'] = case['optimized_gpu_ms'] <= limit
                 if case['performance_pass'] is False:
                     report['errors'].append(f'{backend}/{case["name"]}: GPU regression exceeds tolerance')
             report['runs'].append(dict(backend=backend, backend_sha256=sha(runtime), events=events))

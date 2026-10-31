@@ -5,6 +5,8 @@
 #include <cassert>
 #include <fstream>
 struct WorldScreenEffectsTest {
+    static void retryHdrCombined(WorldRenderer& w){drop(w.hdrCombinedPS);w.hdrCombineTried=false;}
+    static bool hdrCombined(const WorldRenderer& w){return w.hdrCombinedPS!=nullptr;}
     static void fixtureContext(WorldRenderer& w){
         // A real frame reacquires the camera and lighting from a world draw after endFrame().
         w.valid=true;w.traceContext=2;
@@ -97,8 +99,13 @@ struct WorldScreenEffectsTest {
         uint64_t vb=0,ib=0;auto has=[&](uint32_t id,bool vertex){return id<w.meshBuffers.size()&&(vertex?w.meshBuffers[id].vb!=nullptr:w.meshBuffers[id].ib!=nullptr);};
         assert(w.meshStore.stagingGrowth(has,vb,ib)&&vb==0&&ib==0);
         struct Ballast {std::vector<void*> blocks;~Ballast(){for(auto p:blocks)assert(VirtualFree(p,0,MEM_RELEASE));}} ballast;
+        // This fixture tests aggregate admission, not accidental driver VA
+        // fragmentation. Preserve the required contiguous witness while the
+        // ballast consumes the other free regions, then return it to the scan.
+        auto* witness=VirtualAlloc(nullptr,18*MiB,MEM_RESERVE,PAGE_NOACCESS);assert(witness);
         MEMORYSTATUSEX status{};status.dwLength=sizeof status;assert(GlobalMemoryStatusEx(&status));
-        while(status.ullAvailVirtual>343*MiB+65536){uint64_t bytes=std::min<uint64_t>(16*MiB,(status.ullAvailVirtual-343*MiB)&~uint64_t(65535));assert(bytes);auto p=VirtualAlloc(nullptr,size_t(bytes),MEM_RESERVE,PAGE_NOACCESS);assert(p);ballast.blocks.push_back(p);status.dwLength=sizeof status;assert(GlobalMemoryStatusEx(&status));}
+        while(status.ullAvailVirtual>325*MiB+65536){uint64_t bytes=std::min<uint64_t>(16*MiB,(status.ullAvailVirtual-325*MiB)&~uint64_t(65535));assert(bytes);auto p=VirtualAlloc(nullptr,size_t(bytes),MEM_RESERVE,PAGE_NOACCESS);assert(p);ballast.blocks.push_back(p);status.dwLength=sizeof status;assert(GlobalMemoryStatusEx(&status));}
+        assert(VirtualFree(witness,0,MEM_RELEASE));
         auto oldBudget=uploadBudget(64ull*300000,64ull*100000,MiB,MiB);oldBudget.largest=18*MiB;
         auto newBudget=uploadBudget(vb,ib,MiB,MiB);newBudget.largest=18*MiB;
         bool exact=false;auto sample=w.geometryAdmission(newBudget,&exact);assert(sample.valid&&!admits(sample,oldBudget)&&admits(sample,newBudget));
@@ -248,9 +255,14 @@ struct WorldScreenEffectsTest {
     }
 };
 struct WorldScratchMeter:ForwardIDirect3DDevice9 {
+    unsigned shaderSlotLimit=0,combinedDraws=0;bool refuseCombined=false,combinedBound=false;
+    IDirect3DPixelShader9* combinedShader=nullptr;
     unsigned width,height,creates=0,sceneCreates=0,failSceneAt=0,screenCreates=0,failScreenAt=0,shaderCreates=0,failShaderAt=0,fogCreates=0,failFogAt=0;float fogWeight=-1;
     unsigned indexCreates=0,failIndexAt=0;
     WorldScratchMeter(IDirect3DDevice9* d,unsigned w,unsigned h):ForwardIDirect3DDevice9(d),width(w),height(h){}
+    HRESULT STDMETHODCALLTYPE GetDeviceCaps(D3DCAPS9* caps)override{const auto hr=real->GetDeviceCaps(caps);if(SUCCEEDED(hr)&&shaderSlotLimit)caps->MaxPixelShader30InstructionSlots=shaderSlotLimit;return hr;}
+    HRESULT STDMETHODCALLTYPE SetPixelShader(IDirect3DPixelShader9* shader)override{combinedBound=shader&&shader==combinedShader;return real->SetPixelShader(shader);}
+    HRESULT STDMETHODCALLTYPE DrawPrimitiveUP(D3DPRIMITIVETYPE type,UINT n,const void* vertices,UINT stride)override{combinedDraws+=combinedBound;return real->DrawPrimitiveUP(type,n,vertices,stride);}
     HRESULT STDMETHODCALLTYPE CreateIndexBuffer(UINT length,DWORD usage,D3DFORMAT format,D3DPOOL pool,IDirect3DIndexBuffer9** out,HANDLE* shared)override{
         if(++indexCreates==failIndexAt){if(out)*out=nullptr;return E_OUTOFMEMORY;}return real->CreateIndexBuffer(length,usage,format,pool,out,shared);
     }
@@ -262,15 +274,17 @@ struct WorldScratchMeter:ForwardIDirect3DDevice9 {
         return real->CreateTexture(w,h,levels,usage,format,pool,t,shared);
     }
     HRESULT STDMETHODCALLTYPE CreatePixelShader(const DWORD* code,IDirect3DPixelShader9** shader)override{
-        if(++shaderCreates==failShaderAt)return E_OUTOFMEMORY;return real->CreatePixelShader(code,shader);
+        if(++shaderCreates==failShaderAt)return E_OUTOFMEMORY;
+        if(code==kWorldMaterialCompositeHdrShader&&refuseCombined){*shader=nullptr;return D3DERR_NOTAVAILABLE;}
+        const auto hr=real->CreatePixelShader(code,shader);if(SUCCEEDED(hr)&&code==kWorldMaterialCompositeHdrShader)combinedShader=*shader;return hr;
     }
     HRESULT STDMETHODCALLTYPE SetPixelShaderConstantF(UINT start,const float* values,UINT count)override{
         if(start==64&&count==1)fogWeight=values[1];return real->SetPixelShaderConstantF(start,values,count);
     }
 };
 static void screenOk(HRESULT h){if(FAILED(h)){std::fprintf(stderr,"screen HRESULT=%08lx\n",(unsigned long)h);std::abort();}}
-static bool renderChecked(WorldRenderer& world,IDirect3DDevice9* device,IDirect3DSurface9* out,IDirect3DTexture9* depth,UINT w,UINT h,D3DFORMAT format,float nearZ,float farZ,float minZ,float maxZ,int debug,NorthlightGpuProfile* profile,IDirect3DTexture9* water,IDirect3DTexture9* scene=nullptr,IDirect3DTexture9* ao=nullptr,unsigned frame=0){
-    screenOk(device->BeginScene());const bool result=world.render(out,depth,w,h,format,nearZ,farZ,minZ,maxZ,debug,profile,water,scene,ao,frame);screenOk(device->EndScene());
+static bool renderChecked(WorldRenderer& world,IDirect3DDevice9* device,IDirect3DSurface9* out,IDirect3DTexture9* depth,UINT w,UINT h,D3DFORMAT format,float nearZ,float farZ,float minZ,float maxZ,int debug,NorthlightGpuProfile* profile,IDirect3DTexture9* water,IDirect3DTexture9* scene=nullptr,IDirect3DTexture9* ao=nullptr,unsigned frame=0,IDirect3DTexture9* hdrBase=nullptr,bool hdrCombineAllowed=true){
+    screenOk(device->BeginScene());const bool result=world.render(out,depth,w,h,format,nearZ,farZ,minZ,maxZ,debug,profile,water,scene,ao,frame,hdrBase,false,hdrCombineAllowed);screenOk(device->EndScene());
     if(!result)std::fprintf(stderr,"WORLD_SCREEN_RENDER_FAILED reason=%s screenReady=%u geometryReady=%u debug=%d frame=%u\n",world.lastSkipReason(),unsigned(world.screenReady()),unsigned(world.ready()),debug,frame);
     return result;
 }
@@ -418,7 +432,31 @@ int main(int argc,char** argv){
         }
         float fogDelta=0;
         for(unsigned k=0;k<3;++k){assert(std::abs(unlitPixels[0][k]-unlitPixels[1][k])<.001f);assert(std::abs(unlitPixels[2][k]-unlitPixels[3][k])<.001f);fogDelta=std::max(fogDelta,std::abs(unlitPixels[2][k]-unlitPixels[0][k]));}
-        assert(fogDelta>.002f);receiverDepth->Release();
+        assert(fogDelta>.002f);
+        // Exercise the actual optional HDR selector, not only its bytecode:
+        // low advertised caps, failed shader creation, combined draw and a
+        // diagnostic capture retaining the original two-pass input ownership.
+        const float linear[]={.132868f,.132868f,.132868f,1};auto* hdrBase=screenTexture(d,W,H,linear);
+        std::vector<unsigned short> hdrReference;WorldScreenEffectsTest::fog(*world,false);
+        world->setMaterialDetail(detail,1,48,nullptr,8);
+        for(unsigned mode=0;mode<5;++mode){
+            WorldScreenEffectsTest::fixtureContext(*world);
+            if(mode<3){WorldScreenEffectsTest::retryHdrCombined(*world);meter.combinedShader=nullptr;}
+            meter.shaderSlotLimit=mode==0?512:0;meter.refuseCombined=mode==1;
+            if(mode==3)assert(world->requestNormalGpuDiagnosticCapture());
+            screenOk(d->ColorFill(out,nullptr,0xff00ff00));world->setNameMask(receiverDepth);world->setUnlitMask(receiverDepth);
+            const auto combinedBefore=meter.combinedDraws;
+            assert(renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao,100+mode,hdrBase,mode!=4));
+            assert(WorldScreenEffectsTest::hdrCombined(*world)==(mode>=2));
+            assert(meter.combinedDraws-combinedBefore==(mode==2?1u:0u));
+            if(msaa)screenOk(d->StretchRect(out,nullptr,resolved,nullptr,D3DTEXF_NONE));screenOk(d->GetRenderTargetData(msaa?resolved:out,readback));
+            D3DLOCKED_RECT lock{};screenOk(readback->LockRect(&lock,nullptr,D3DLOCK_READONLY));
+            std::vector<unsigned short> image(W*H*4);for(unsigned y=0;y<H;++y)std::memcpy(image.data()+y*W*4,static_cast<char*>(lock.pBits)+y*lock.Pitch,W*8);screenOk(readback->UnlockRect());
+            if(!mode)hdrReference=image;
+            for(unsigned i=0;i<image.size();++i){assert(std::isfinite(screenHalf(image[i])));assert(std::abs(screenHalf(image[i])-screenHalf(hdrReference[i]))<.004f);}
+        }
+        meter.shaderSlotLimit=0;meter.refuseCombined=false;hdrBase->Release();receiverDepth->Release();
+        std::printf("HDR_COMBINED_WORLD_GPU_PASS capFallback=1 creationFallback=1 actualCombinedDraw=1 diagnosticFallback=1 expansionFallback=1 namesUnlitPreserved=1 msaa=%u\n",msaa);
         std::printf("UNLIT_RECEIVER_GPU_PASS nativeRadiance=1 atmosphereRetained=1 materialInvariant=1 namesRetained=1 extraFullSizeTextures=0 msaa=%u\n",msaa);
         }
 

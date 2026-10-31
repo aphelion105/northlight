@@ -31,14 +31,14 @@ struct Surface {
         else ok(d->CreateRenderTarget(w,h,format,samples,0,FALSE,&surface,nullptr));
     }
 };
-struct Scenario {const char* name;unsigned w,h,samples,sprites,ui;bool material,sky,expansion,mask,automatic,bloom,mirror;};
+struct Scenario {const char* name;unsigned w,h,samples,sprites,ui;bool material,sky,expansion,mask,automatic,bloom,mirror;bool combinedAllowed=true;};
 struct Graph {
     DeviceMeter* d;Scenario c;NorthlightStateBlockPool pool;
     NorthlightHdr::Frame hdr;NorthlightHdr::Color color;NorthlightHdr::Settings settings;
     Surface native,legacy,output,material,materialSdr,sky;
     IDirect3DTexture9 *source=nullptr,*depth=nullptr,*lighting=nullptr,*baseline=nullptr,*fog=nullptr,*normal=nullptr,*distance=nullptr,*black=nullptr,*white=nullptr,*height=nullptr;
     IDirect3DSurface9* stencil=nullptr;
-    IDirect3DPixelShader9 *copy=nullptr,*constant=nullptr,*world[2]{},*detail[2]{};
+    IDirect3DPixelShader9 *copy=nullptr,*constant=nullptr,*combined=nullptr,*world[2]{},*detail[2]{};
     float bank[79][4]{};bool eligible=false;unsigned decodeDraws=0;
     Graph(DeviceMeter* device,const Scenario& scenario,const std::string& capture):d(device),c(scenario),pool(device){
         const auto ms=D3DMULTISAMPLE_TYPE(c.samples);
@@ -48,7 +48,7 @@ struct Graph {
         if(c.mask)ok(d->CreateDepthStencilSurface(c.w,c.h,D3DFMT_D24S8,ms,0,TRUE,&stencil,nullptr));
         auto solid=[&](float r,float g,float b,float a){Image im{1,1,D3DFMT_A32B32G32R32F,16,std::vector<unsigned char>(16)};float v[]={r,g,b,a};std::memcpy(im.pixels.data(),v,16);return texture(d,im);};
         black=solid(0,0,0,0);white=solid(1,1,1,1);baseline=solid(.5f,.5f,.5f,1);lighting=solid(2,1,.5f,1);
-        fog=solid(.01f,.02f,.04f,.92f);normal=solid(0,0,1,1);height=solid(.5f,.5f,.1998f,1);distance=solid(.1998f,0,0,1);
+        fog=solid(.01f,.02f,.04f,.92f);normal=solid(0,0,1,1);height=solid(.7f,.6f,.1998f,1);distance=solid(.1998f,0,0,1);
         Image im{c.w,c.h,D3DFMT_A8R8G8B8,4,std::vector<unsigned char>(std::size_t(c.w)*c.h*4)};
         Image z{c.w,c.h,D3DFMT_R32F,4,std::vector<unsigned char>(std::size_t(c.w)*c.h*4)};
         for(unsigned y=0;y<c.h;++y)for(unsigned x=0;x<c.w;++x){
@@ -60,6 +60,7 @@ struct Graph {
         ok(d->CreatePixelShader(reinterpret_cast<const DWORD*>(kHdrCopy),&copy));ok(d->CreatePixelShader(reinterpret_cast<const DWORD*>(kHdrCalibration),&constant));
         ok(d->CreatePixelShader(kWorldCompositeShader,&world[0]));ok(d->CreatePixelShader(kWorldCompositeHdrShader,&world[1]));
         ok(d->CreatePixelShader(kMaterialCompositeShader,&detail[0]));ok(d->CreatePixelShader(kMaterialCompositeHdrShader,&detail[1]));
+        D3DCAPS9 caps{};ok(d->GetDeviceCaps(&caps));if(c.combinedAllowed&&!c.expansion&&caps.MaxPixelShader30InstructionSlots>=kWorldMaterialCompositeHdrShaderSlots)ok(d->CreatePixelShader(kWorldMaterialCompositeHdrShader,&combined));
         bank[0][0]=1.f/c.w;bank[0][1]=1.f/c.h;bank[0][2]=.1f;bank[0][3]=100;
         bank[1][0]=bank[1][1]=bank[1][2]=1;bank[2][0]=1/.94f;
         for(unsigned i=0;i<4;++i)bank[3+i][i]=1;
@@ -71,7 +72,7 @@ struct Graph {
     ~Graph(){
         hdr.reset();color.reset();pool.clear();
         for(auto* p:{source,depth,lighting,baseline,fog,normal,distance,black,white,height})if(p)p->Release();
-        for(auto* p:{copy,constant,world[0],world[1],detail[0],detail[1]})if(p)p->Release();dropGraph(stencil);
+        for(auto* p:{copy,constant,combined,world[0],world[1],detail[0],detail[1]})if(p)p->Release();dropGraph(stencil);
     }
     void quad(IDirect3DSurface9* target,IDirect3DPixelShader9* shader,IDirect3DTexture9* input){
         ok(NorthlightHdr::quadState(d,target,c.w,c.h,16));ok(d->SetPixelShader(shader));ok(d->SetTexture(0,input));
@@ -106,13 +107,15 @@ struct Graph {
             if(c.mask)ok(hdr.copyBase(d,output.surface,&pool));
         }
         auto* target=useHdr?output.surface:native.surface;
-        quad(c.material?(useHdr?material.surface:materialSdr.surface):target,world[useHdr],legacy.texture);
+        const bool combinedMaterial=mode==2&&c.material&&combined;
+        quad(c.material&&!combinedMaterial?(useHdr?material.surface:materialSdr.surface):target,combinedMaterial?combined:world[useHdr],legacy.texture);
         for(unsigned i=1;i<16;++i)ok(d->SetTexture(i,black));
         ok(d->SetTexture(1,depth));ok(d->SetTexture(2,useHdr?(inlineBase?legacy.texture:hdr.texture()):black));
         ok(d->SetSamplerState(2,D3DSAMP_SRGBTEXTURE,inlineBase));
         ok(d->SetTexture(8,lighting));ok(d->SetTexture(9,fog));ok(d->SetTexture(10,white));ok(d->SetTexture(12,baseline));ok(d->SetTexture(14,normal));ok(d->SetTexture(15,distance));
-        ok(d->SetPixelShaderConstantF(0,bank[0],79));if(!c.material)maskBind();ok(NorthlightHdr::drawQuad(d,c.w,c.h));
-        if(c.material){
+        if(combinedMaterial){ok(d->SetTexture(4,fog));ok(d->SetTexture(5,legacy.texture));ok(d->SetTexture(6,white));ok(d->SetTexture(9,height));}
+        ok(d->SetPixelShaderConstantF(0,bank[0],79));if(!c.material||combinedMaterial)maskBind();ok(NorthlightHdr::drawQuad(d,c.w,c.h));
+        if(c.material&&!combinedMaterial){
             quad(target,detail[useHdr],useHdr?material.texture:materialSdr.texture);ok(d->SetTexture(1,depth));ok(d->SetTexture(4,fog));ok(d->SetTexture(5,legacy.texture));
             ok(d->SetTexture(6,white));ok(d->SetTexture(8,lighting));ok(d->SetTexture(9,height));ok(d->SetTexture(10,white));ok(d->SetTexture(11,black));ok(d->SetTexture(12,baseline));ok(d->SetTexture(14,normal));
             ok(d->SetPixelShaderConstantF(0,bank[0],79));maskBind();ok(NorthlightHdr::drawQuad(d,c.w,c.h));
@@ -175,11 +178,17 @@ int main(int argc,char** argv){
         {"sky-4k-msaa8",3840,2160,8,32,16,true,true,false,false,true,true,false},
         {"expansion-1080",1920,1080,4,32,16,true,false,true,false,true,true,false},
         {"stencil-1080",1920,1080,8,16,16,true,false,false,true,true,true,false},
-        {"sdr-copy-4k-msaa8",3840,2160,8,32,16,true,false,false,false,true,true,true}};
+        {"sdr-copy-4k-msaa8",3840,2160,8,32,16,true,false,false,false,true,true,true},
+        {"material-fallback-1080",1920,1080,0,0,16,true,false,false,false,true,true,false,false}};
     if(!capture.empty()){const auto im=image(capture+"scene.fgr");scenarios.push_back({"captured-native-input",im.width,im.height,8,96,32,true,false,false,false,true,true,false});}
     for(const auto& scenario:scenarios){
         Graph graph(&meter,scenario,std::strcmp(scenario.name,"captured-native-input")==0?capture:"");
         graph.frame(1,true);auto reference=graph.pixels();graph.frame(2,true);auto candidate=graph.pixels();assert(reference.size()==candidate.size());
+        if(scenario.material){
+            const float gain=graph.bank[73][0];graph.bank[73][0]=0;graph.frame(1,true);const auto withoutMaterial=graph.pixels();graph.bank[73][0]=gain;
+            float contribution=0;for(std::size_t i=0;i<reference.size();++i)if(i%4!=3)contribution=std::max(contribution,std::fabs(half(reference[i])-half(withoutMaterial[i])));
+            assert(contribution>.001f); // Dropping material work cannot pass equality.
+        }
         double error=0;unsigned nonfinite=0,alpha=0;
         for(std::size_t i=0;i<reference.size();++i){const double delta=std::fabs(double(half(reference[i]))-half(candidate[i]));nonfinite+=!std::isfinite(delta);error=std::max(error,delta);alpha+=i%4==3&&reference[i]!=candidate[i];}
         assert(!nonfinite&&!alpha&&error<.012);
@@ -189,7 +198,7 @@ int main(int argc,char** argv){
         graph.frame(2);meter.calls={};graph.frame(2);const Calls work=meter.calls;assert(!work.allocations);
         const unsigned optimizedDecode=graph.decodeDraws;assert(!graph.eligible||optimizedDecode==0);
         meter.calls={};graph.frame(1);const Calls oldWork=meter.calls;
-        assert(oldWork.draws==work.draws+3+(graph.eligible?1:0));if(graph.eligible)assert(graph.decodeDraws==1);
+        assert(oldWork.draws==work.draws+3+(graph.eligible?1:0)+(scenario.material&&graph.combined?1:0));if(graph.eligible)assert(graph.decodeDraws==1);
         std::vector<double> gpu[3],cpu[3];
         for(unsigned block=0;block<6;++block)for(unsigned n=0;n<3;++n){const unsigned mode=block%2?2-n:n;const auto t=timeGraph(raw,[&]{graph.frame(mode);},12);gpu[mode].push_back(t.gpu);cpu[mode].push_back(t.cpu);}
         double medGpu[3],medCpu[3];for(unsigned n=0;n<3;++n){std::sort(gpu[n].begin(),gpu[n].end());std::sort(cpu[n].begin(),cpu[n].end());medGpu[n]=(gpu[n][2]+gpu[n][3])*.5;medCpu[n]=(cpu[n][2]+cpu[n][3])*.5;}
