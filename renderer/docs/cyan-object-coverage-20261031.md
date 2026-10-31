@@ -48,11 +48,12 @@ also pass for the real ripple, with all three colored emitters explicitly refuse
 Synthetic tests preserve the original model and reject actual replacement-colored
 sources while allowing -1/0 alongside shared display palettes.
 
-The full stock, active and repeated-active art-layer tests pass. The integrated
+At `794fd3b1`, the full stock, active and repeated-active art-layer tests pass. The integrated
 gameobject stage remains at 498 models. Both repeated active archives have SHA256
 `130b26981400759e3e1a8d61ceba27c7699e5c647fb8a91d170049bda510a535`.
 Cache installer, native model installer and point-transmission transaction tests
 also pass. No production C++ or shader changed in this follow-up.
+Further world-model coverage is recorded in [the world-prop follow-up](world-native-coverage-20261031.md).
 
 No game session or visual/FPS acceptance was performed. Proprietary model, texture
 and DBC fixtures are generated only in ignored test output, never committed.

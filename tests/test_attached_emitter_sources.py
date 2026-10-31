@@ -81,16 +81,42 @@ class AttachedEmission(unittest.TestCase):
                             herb[:-3]+'00.skin': assets.extra['creature\\glow00.skin'],
                             prop[:-3]+'00.skin': assets.extra['creature\\glow00.skin'],
                             'dbfilesclient\\gameobjectdisplayinfo.dbc': table(rows, 19, names)})
-        self.assertEqual(set(gameobjects.models(assets)), {herb, prop, 'spells\\orb.m2'})
+        ambient = 'world\\unlisted_by_dbc.m2'
+        assets.extra[ambient] = original
+        assets.extra[ambient[:-3]+'00.skin'] = assets.extra['creature\\glow00.skin']
+        assets.providers[ambient] = 0
+        self.assertEqual(set(gameobjects.models(assets)), {herb, prop, 'spells\\orb.m2', ambient})
+        self.assertEqual(gameobjects.models(assets)[ambient]['displays'], [])
         self.assertEqual(gameobjects.models(assets)[herb]['displays'], [1, 6949])
         self.assertIsNone(world_emitter_index.profile(assets, herb, original, {}))
         before = dict(assets.extra)
         with tempfile.TemporaryDirectory(dir=northlight_paths.output_dir()) as folder:
             report = gameobjects.build(assets, Path(folder), excluded={prop, 'spells\\orb.m2'})
-            self.assertEqual(set(report['models']), {herb})
+            self.assertEqual(set(report['models']), {herb, ambient})
             with Archive(Path(folder)/'gameobject-lights-staged.mpq') as archive:
-                self.assertEqual({n for n in archive.names() if not n.startswith('(')}, {herb})
+                self.assertEqual({n for n in archive.names() if not n.startswith('(')}, {herb, ambient})
         self.assertEqual(assets.extra, before)
+
+    def test_world_particle_without_display_row_keeps_original_lifecycle(self):
+        original, particle = model()
+        path = 'world\\ambient\\animated_lamp.m2'
+        source = Assets(original, {'dbfilesclient\\gameobjectdisplayinfo.dbc': table([], 19)})
+        source.providers[path] = 0
+        before = dict(source.extra)
+        with tempfile.TemporaryDirectory(dir=northlight_paths.output_dir()) as folder:
+            report = gameobjects.build(source, Path(folder))
+            self.assertEqual(set(report['models']), {path})
+            self.assertEqual(report['models'][path]['displays'], [])
+            with Archive(Path(folder)/'gameobject-lights-staged.mpq') as archive:
+                patched = archive.read(path)
+            light = struct.unpack_from('<I', patched, 268)[0]
+            for t in (0, 50, 149, 150, 249, 250, 300, 1100):
+                self.assertAlmostEqual(native_sample(patched, light+76, '<f', t),
+                                       native_sample(original, particle+176, '<f', t)/10*.35)
+                self.assertEqual(native_sample(patched, light+136, '<B', t),
+                                 native_sample(original, particle+456, '<B', t))
+        self.assertEqual(source.blob, original)
+        self.assertEqual(source.extra, before)
 
     def test_mesh_uses_real_skin_bone_and_uv_texture_not_white(self):
         assets,original = mesh_model()
