@@ -4405,6 +4405,9 @@ public:
         memcpy(c[25],uploadedFog.parameters,16);memcpy(c[26],uploadedFog.color,16);
         memcpy(c[28],context.lightDirection,12);memcpy(c[29],context.direct,12);
         c[27][2]=float(DWORD(now-animationEpoch))*.001f;
+        const float fogMinHeight=fogGlobalHeights[0]-.25f;
+        const float fogMaxHeight=fogGlobalHeights[1]+std::max({fogGlobalHeights[2],6.f,c[32][2],c[32][3],cf.active?c[62][0]:0.f})+.25f;
+        const bool fogHeightsKnown=uploadedFogField&&fogGlobalHeights[2]>0;
         c[27][3]=c[21][0];
         c[35][0]=NorthlightWorldMath::InverseShadowDepth;
         // Horizon haze: the game's own fog end, smoothed per map and held while
@@ -4621,7 +4624,12 @@ public:
         if(profile)profile->mark("TemporalLight");
         bucket(NorthlightEffectsBuckets::PointLighting);
         bool fogResolved=false; // The final fog is fogBlurred when the temporal pass runs.
-        if(effects.fog){
+        // Every view ray ends within c21.w. Unknown bounds fail open; local
+        // lamps have their own longer range, so retain their path independently.
+        const bool regionalFogActive=c[21][0]>=.5f&&!(fogHeightsKnown&&
+            (c[15][2]-c[21][3]>fogMaxHeight||c[15][2]+c[21][3]<fogMinHeight));
+        const bool fogActive=effects.fog&&(regionalFogActive||(localDirectCount&&debug==0));
+        if(fogActive){
         d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE);d->SetRenderState(D3DRS_COLORWRITEENABLE,15);
         // FogTemporal may read s15, so preserve the previous pass's sampler modes.
         d->SetSamplerState(15,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(15,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);d->SetSamplerState(15,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(15,D3DSAMP_MAGFILTER,D3DTEXF_POINT);d->SetSamplerState(15,D3DSAMP_MIPFILTER,D3DTEXF_NONE);
@@ -4709,7 +4717,7 @@ public:
         }
         }else{
             // Composite is color * fog.a + fog.rgb: transparent fog is (0,0,0,1).
-            // Clear every disabled frame so no fog history/scratch can leak in.
+            // Clear every empty/disabled frame so no fog scratch can leak in.
             d->SetTexture(9,nullptr);D3DVIEWPORT9 vp={0,0,w/2,h/2,0,1};d->SetViewport(&vp);
             if(!check(d->SetRenderTarget(0,fogSurface),"neutral fog target")||
                !check(d->Clear(0,nullptr,D3DCLEAR_TARGET,0xff000000,1,0),"neutral fog clear"))return false;
@@ -4720,7 +4728,14 @@ public:
         // fog (raw, s9) + fogHistory (s14) -> fogBlurred, then fogBlurred<->fogHistory swap (texture and surface): fogHistory holds this frame's resolved fog for
         // the next one. History not usable (first frame, map change, camera jump, debug, fog was off last frame): weight 0, a plain copy that makes it valid.
         // Off (no fog effect, debug, no shader): none of this runs, the sequence and bindings below are the old ones.
-        if(effects.fog&&fogTemporalPS&&fogHistory&&debug==0){
+        if(effects.fog&&fogTemporalPS&&fogHistory&&debug==0&&!fogActive){
+            // A uniform neutral current frame clamps all history to neutral.
+            // Keep that exact history for the next active frame without a draw.
+            d->SetTexture(14,nullptr);
+            if(!check(d->SetRenderTarget(0,fogHistorySurface),"neutral fog history target")||
+               !check(d->Clear(0,nullptr,D3DCLEAR_TARGET,0xff000000,1,0),"neutral fog history clear"))return false;
+            fogHistoryValid=true;
+        }else if(effects.fog&&fogTemporalPS&&fogHistory&&debug==0){
             const float info[4]={0,fogHistoryValid&&useHistory?FogTemporalWeight:0.f,0,0};
             d->SetPixelShaderConstantF(53,c[53],4);d->SetPixelShaderConstantF(64,info,1);
             d->SetRenderTarget(0,fogBlurredSurface);d->SetTexture(9,fog);d->SetTexture(14,fogHistory);d->SetTexture(15,temporalDepth[temporalIndex]);
@@ -4738,7 +4753,7 @@ public:
         d->SetSamplerState(15,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(15,D3DSAMP_SRGBTEXTURE,FALSE);
         d->SetSamplerState(15,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(15,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);
         // Separable depth-aware blur: fog -> fogBlurred (horizontal) -> fog (vertical); with the temporal pass the resolved fogHistory -> fog -> fogBlurred (the final fog).
-        if(effects.fog){float blur[4]={2,0,0,0};d->SetPixelShader(fogBlurPS);
+        if(fogActive){float blur[4]={2,0,0,0};d->SetPixelShader(fogBlurPS);
          d->SetRenderTarget(0,fogResolved?fogSurface:fogBlurredSurface);d->SetTexture(9,fogResolved?fogHistory:fog);d->SetPixelShaderConstantF(34,blur,1);if(!check(quad(w/2,h/2),"volume blur horizontal"))return false;
          blur[0]=0;blur[1]=2;d->SetRenderTarget(0,fogResolved?fogBlurredSurface:fogSurface);d->SetTexture(9,fogResolved?fog:fogBlurred);d->SetPixelShaderConstantF(34,blur,1);if(!check(quad(w/2,h/2),"volume blur vertical"))return false;}
         // c34 belongs to the blur above and to HorizonHaze ONLY in the final pass;

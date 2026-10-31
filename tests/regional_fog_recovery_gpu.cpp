@@ -17,14 +17,21 @@ struct WorldScreenEffectsTest {
         assert(!w.active&&!w.ready()&&w.screenReady());
     }
     static void source(WorldRenderer& w,bool on){w.sourceColors[0]=w.sourceGlowColors[0]=on?WorldRenderer::V(.6f,.5f,.4f):WorldRenderer::V();w.sourceColors[1]=w.sourceGlowColors[1]={};w.effects.fog=true;w.fogHistoryValid=false;}
-    static std::vector<unsigned char> fog(WorldRenderer& w){
+    static std::vector<unsigned char> fog(WorldRenderer& w,bool history=false){
         assert(w.composited&&!w.fogGeometryReady&&!w.shadowFrameReady&&!w.pointReady&&!w.shadowsComposited&&!w.active);
         assert(w.uploadedFogField==w.publishedFogRegion->field);
-        D3DSURFACE_DESC desc{};assert(SUCCEEDED(w.fogSurface->GetDesc(&desc)));IDirect3DSurface9* read=nullptr;
+        auto* surface=history?w.fogHistorySurface:w.fogSurface;if(history)assert(w.fogHistoryValid);D3DSURFACE_DESC desc{};assert(SUCCEEDED(surface->GetDesc(&desc)));IDirect3DSurface9* read=nullptr;
         assert(SUCCEEDED(w.d->CreateOffscreenPlainSurface(desc.Width,desc.Height,desc.Format,D3DPOOL_SYSTEMMEM,&read,nullptr)));
-        assert(SUCCEEDED(w.d->GetRenderTargetData(w.fogSurface,read)));D3DLOCKED_RECT lock{};assert(SUCCEEDED(read->LockRect(&lock,nullptr,D3DLOCK_READONLY)));
+        assert(SUCCEEDED(w.d->GetRenderTargetData(surface,read)));D3DLOCKED_RECT lock{};assert(SUCCEEDED(read->LockRect(&lock,nullptr,D3DLOCK_READONLY)));
         std::vector<unsigned char> bytes(size_t(desc.Width)*desc.Height*8);for(unsigned y=0;y<desc.Height;++y)std::memcpy(bytes.data()+size_t(y)*desc.Width*8,static_cast<const char*>(lock.pBits)+y*lock.Pitch,desc.Width*8);
         assert(SUCCEEDED(read->UnlockRect()));read->Release();return bytes;
+    }
+    static void altitude(WorldRenderer& w,float z,bool bounds){
+        w.context.camera[2]=w.context.inverseView[14]=z;
+        w.fogGlobalHeights=bounds?NorthlightRegionalFog::globalHeightBounds(*w.uploadedFogField):std::array<float,3>{};
+    }
+    static auto field(WorldRenderer& w,std::shared_ptr<const NorthlightRegionalFog::Field> field){
+        auto old=w.publishedFogRegion->field;auto region=std::make_shared<WorldRenderer::FogRegion>(*w.publishedFogRegion);region->field=field;w.publishedFogRegion=region;return old;
     }
     static void reset(WorldRenderer& w){w.releaseGPU(true);assert(w.publishedFogRegion&&!w.uploadedFogField);}
 };
@@ -55,6 +62,27 @@ int main(int argc,char** argv){
         assert(images[0]==images[1]);float scatter=0,transmission=1;
         for(size_t i=0;i<images[0].size()/2;++i){unsigned short bits;std::memcpy(&bits,images[0].data()+i*2,2);const float value=half(bits);assert(std::isfinite(value)&&value>=0);if(i%4==3)transmission=std::min(transmission,value);else scatter=std::max(scatter,value);}
         assert(scatter>.00001f&&transmission<.999f);
+        auto render=[&]{assert(SUCCEEDED(device->BeginScene()));assert(world.render(target,depth,Width,Height,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao));assert(SUCCEEDED(device->EndScene()));};
+        for(float altitude:{300.f,-300.f}){
+            std::vector<unsigned char> empty[2],history[2],reentry[2];
+            for(unsigned clipped=0;clipped<2;++clipped){
+                WorldScreenEffectsTest::source(world,true);WorldScreenEffectsTest::altitude(world,0,true);render();
+                WorldScreenEffectsTest::altitude(world,altitude,clipped!=0);render();render();
+                empty[clipped]=WorldScreenEffectsTest::fog(world);history[clipped]=WorldScreenEffectsTest::fog(world,true);
+                WorldScreenEffectsTest::altitude(world,altitude+1,false);render();
+                WorldScreenEffectsTest::altitude(world,0,true);render();reentry[clipped]=WorldScreenEffectsTest::fog(world,true);
+            }
+            assert(empty[0]==empty[1]&&history[0]==history[1]&&reentry[0]==reentry[1]);
+            for(size_t i=0;i<empty[1].size()/2;++i){unsigned short bits;std::memcpy(&bits,empty[1].data()+i*2,2);assert(bits==(i%4==3?0x3c00:0));}
+        }
+        std::vector<unsigned char> neutral[2],reentry[2];
+        for(unsigned clipped=0;clipped<2;++clipped){
+            auto empty=std::make_shared<NorthlightRegionalFog::Field>();empty->fogCells=clipped?0:1;
+            auto old=WorldScreenEffectsTest::field(world,empty);render();neutral[clipped]=WorldScreenEffectsTest::fog(world,true);
+            WorldScreenEffectsTest::field(world,old);render();reentry[clipped]=WorldScreenEffectsTest::fog(world,true);
+        }
+        assert(neutral[0]==neutral[1]&&reentry[0]==reentry[1]);
+        std::puts("FOG_EMPTY_SUPPORT_PASS aboveBelow=1 unknownBounds=1 emptyField=1 historyExact=1 reentryExact=1");
         std::printf("FOG_RECOVERY_GPU_PASS msaa=%u noBVH=1 pointShadowsRequested=1 geometryConsumersInactive=1 independentUpload=1 resetRestored=1 unshadowedDirectDisabled=1 stateRestored=1 scatter=%g transmission=%g\n",samples,scatter,transmission);
     }
     scene->Release();ao->Release();depth->Release();target->Release();device->Release();api->Release();FreeLibrary(module);DestroyWindow(window);UnregisterClassW(wc.lpszClassName,wc.hInstance);

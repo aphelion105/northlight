@@ -10,7 +10,7 @@ env=fp.zig_env()
 for key,name in [('TEMP','tmp'),('TMP','tmp'),('ZIG_LOCAL_CACHE_DIR','zig-local'),('ZIG_GLOBAL_CACHE_DIR','zig-global'),('DXVK_SHADER_CACHE_PATH','shaders'),('DXVK_STATE_CACHE_PATH','state'),('DXVK_LOG_PATH','logs')]:
     (out/name).mkdir(exist_ok=True);env[key]=str(out/name)
 (out/'dxvk.conf').write_text('dxvk.allowFse = False\nd3d9.presentInterval = 0\n');env['DXVK_CONFIG_FILE']=str(out/'dxvk.conf')
-backend=fp.client_root()/'renderer-backends/dxvk/dxvk_d3d9.dll'
+backend=Path(os.environ['NORTHLIGHT_TEST_D3D9']) if os.environ.get('NORTHLIGHT_TEST_D3D9') else fp.client_root()/'renderer-backends/dxvk/dxvk_d3d9.dll'
 sources=['world_gi.cpp','world_mesh_plan.cpp','static_shadow_scene.cpp','settings_overlay.cpp','settings_panel.cpp','imgui.cpp','imgui_draw.cpp','imgui_tables.cpp','imgui_widgets.cpp','imgui_impl_dx9.cpp']
 paths=[fp.TESTS/'regional_fog_recovery_gpu.cpp',*[fp.src(n) for n in sources],fp.src('world_renderer.h'),fp.src('regional_fog_cache.h'),fp.src('renderer.cpp'),backend]
 sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
