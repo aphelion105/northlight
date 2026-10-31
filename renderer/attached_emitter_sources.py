@@ -167,8 +167,8 @@ def mesh_sources(assets, path, blob):
                 if len(anchors) != 1:
                     raise ValueError('Luminous mesh deforms across multiple bones')
                 bone = anchors.pop()
-                if unpack('<I',blob,bone_offset+bone*88+4)[0] & 0x7f:
-                    raise ValueError('Billboard/inheritance mesh bone')
+                # The appended native light uses this same original bone matrix,
+                # including camera-facing billboard rotation; no bind-pose bake.
                 a,b,c = [v[:3] for v in verts]
                 u,v = [tuple(y-x for x,y in zip(a,p)) for p in (b,c)]
                 area = math.sqrt(sum(x*x for x in (u[1]*v[2]-u[2]*v[1],u[2]*v[0]-u[0]*v[2],u[0]*v[1]-u[1]*v[0])))/2
@@ -263,7 +263,7 @@ def write_stage(assets, output, candidates, report, stem, empty):
             if info.get('replacement_colors'):
                 particle_offset = unpack('<I',original,300)[0]
                 stride = 492 if unpack('<I',original,16)[0]&512 else 476
-                if any(unpack('<h',original,particle_offset+i*stride+42)[0] >= 0 for s in emitters for i in s['particles']):
+                if any(unpack('<h',original,particle_offset+i*stride+42)[0] not in (-1,0) for s in emitters for i in s['particles']):
                     raise ValueError('Shared display variants replace particle colour; no universal M2 light colour')
             patched = append_spell_lights(original,emitters)
             validate_spell_lights(original,patched,emitters)

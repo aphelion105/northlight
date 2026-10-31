@@ -3,14 +3,17 @@
 #include "quality_settings.h"
 #include "material_height.h"
 #include "material_profile.h"
+#include "material_map_persistence.h"
 #include <unordered_map>
 
 // Generated maps and retained source references have separate bounded budgets.
 // Source references prevent pointer reuse; they are not duplicate GPU copies.
 class NorthlightAutoNormalCache {
+    friend struct MaterialDiskGpuTestAccess;
     struct Entry {IDirect3DTexture9* source;IDirect3DTexture9* normal;std::uint64_t bytes,sourceBytes,used,version;unsigned frame,lastUsedFrame;bool mutableSource,model;};
     IDirect3DDevice9* d;
     NorthlightMaterialProfile* profile=nullptr;
+    std::unique_ptr<NorthlightMaterialMapPersistence> disk;
     NorthlightStateBlockPool states;
     std::vector<Entry> entries;
     std::unordered_map<IDirect3DBaseTexture9*,size_t> lookup[2];
@@ -62,8 +65,9 @@ public:
     };
     explicit NorthlightAutoNormalCache(IDirect3DDevice9* device):d(device),states(device){refreshBudget();}
     void setProfiler(NorthlightMaterialProfile* p){profile=p;}
+    void setPersistentCache(const std::filesystem::path& path,const char* backend,const char* identity=nullptr,bool asyncReadback=false){try{disk=std::make_unique<NorthlightMaterialMapPersistence>(d,path,backend,identity,asyncReadback);}catch(...){logf("MATERIAL_DISK unavailable; memory cache retained");}}
     ~NorthlightAutoNormalCache(){reset();drop(shader);drop(modelShader);}
-    void reset(){states.clear();for(auto& e:entries){drop(e.source);drop(e.normal);}entries.clear();for(auto& index:lookup)index.clear();recent=0;bytes=sourceBytes=0;}
+    void reset(){if(disk)disk->reset();states.clear();for(auto& e:entries){drop(e.source);drop(e.normal);}entries.clear();for(auto& index:lookup)index.clear();recent=0;bytes=sourceBytes=0;}
     void configure(const NorthlightQuality::Settings& s){if(polarity!=s.autoHeightPolarity||details!=s.autoHeightDetails||balance!=s.autoHeightBalance){reset();polarity=s.autoHeightPolarity;details=s.autoHeightDetails;balance=s.autoHeightBalance;}}
     void refreshBudget(){
         MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;
@@ -72,8 +76,8 @@ public:
     }
     void setMemoryPressure(bool on){memoryPressure=on;refreshBudget();states.clear();}
     void trimMemory(){refreshBudget();states.clear();}
-    void endFrame(){generated=0;if(memoryPressure)states.clear();if(++frame%60==0)refreshBudget();}
-    void report(){logf("AUTONORMAL cached=%zu bytes=%llu generated=%u hits=%u evicted=%u sourceBytes=%llu budgetMiB=%llu allocations=%u reused=%u",entries.size(),(unsigned long long)bytes,builds,hits,evictions,(unsigned long long)sourceBytes,(unsigned long long)(budget>>20),allocations,reuses);}
+    void endFrame(){if(disk)disk->endFrame();generated=0;if(memoryPressure)states.clear();if(++frame%60==0)refreshBudget();}
+    void report(){if(disk)disk->report();logf("AUTONORMAL cached=%zu bytes=%llu generated=%u hits=%u evicted=%u sourceBytes=%llu budgetMiB=%llu allocations=%u reused=%u",entries.size(),(unsigned long long)bytes,builds,hits,evictions,(unsigned long long)sourceBytes,(unsigned long long)(budget>>20),allocations,reuses);}
     Lease acquire(IDirect3DBaseTexture9* source,bool model=false){return Lease(*this,resolve(source,model));}
     IDirect3DTexture9* resolve(IDirect3DBaseTexture9* base,bool model=false){
         using P=NorthlightMaterialProfile;P::Scope timing(profile,P::NormalCache);
@@ -99,6 +103,9 @@ public:
         timing.work(uint64_t(width)*height);
         const std::uint64_t cost=NorthlightAutoNormalMemory::mipBytes(D3DFMT_A8R8G8B8,width,height,0),sourceCost=NorthlightAutoNormalMemory::mipBytes(desc.Format,desc.Width,desc.Height,source->GetLevelCount());
         constexpr std::uint64_t sourceBudget=128ull<<20;if(cost>budget||sourceCost>sourceBudget)return nullptr;
+        NorthlightMaterialMapPersistence::Probe persisted;
+        if(disk){try{persisted=disk->probe(source,desc,model,polarity,details,balance);}catch(...){}}
+        if(persisted.status==NorthlightMaterialMapPersistence::Status::Pending)return nullptr;
         struct Recycled {IDirect3DTexture9* texture=nullptr;~Recycled(){drop(texture);}} recycled;
         while(!entries.empty()&&(bytes+cost>budget||sourceBytes+sourceCost>sourceBudget||entries.size()>=256)){
             auto oldest=std::min_element(entries.begin(),entries.end(),[](const Entry& a,const Entry& b){return a.used<b.used;});
@@ -115,10 +122,13 @@ public:
         if(!vertexConstantCapacity){D3DCAPS9 caps{};if(FAILED(d->GetDeviceCaps(&caps)))return nullptr;vertexConstantCapacity=std::min<UINT>(caps.MaxVertexShaderConst,256u);}
         const UINT count=vertexConstantCapacity;if(!count||FAILED(d->GetVertexShaderConstantF(0,vertex.values,count)))return nullptr;vertex.count=count;
         SavedState saved(d,&states);if(!saved.ok)return nullptr;
-        auto*& selected=model?modelShader:shader;if(!selected&&FAILED(d->CreatePixelShader(model?kAutoNormalModelShader:kAutoNormalShader,&selected)))return nullptr;
+        const bool restored=persisted.status==NorthlightMaterialMapPersistence::Status::Hit;
+        auto*& selected=model?modelShader:shader;if(!restored&&!selected&&FAILED(d->CreatePixelShader(model?kAutoNormalModelShader:kAutoNormalShader,&selected)))return nullptr;
         IDirect3DTexture9* normal=recycled.texture;recycled.texture=nullptr;IDirect3DSurface9* target=nullptr;
         if(normal)++reuses;
         else{if(FAILED(d->CreateTexture(width,height,0,D3DUSAGE_RENDERTARGET|D3DUSAGE_AUTOGENMIPMAP,D3DFMT_A8R8G8B8,D3DPOOL_DEFAULT,&normal,nullptr)))return nullptr;++allocations;}
+        if(restored){if(!disk->upload(persisted,normal,width,height)){drop(normal);return nullptr;}}
+        else {
         if(FAILED(normal->GetSurfaceLevel(0,&target))){drop(normal);return nullptr;}
         d->SetDepthStencilSurface(nullptr);for(unsigned i=1;i<4;++i)d->SetRenderTarget(i,nullptr);
         const HRESULT bound=d->SetRenderTarget(0,target);drop(target);if(FAILED(bound)){drop(normal);return nullptr;}
@@ -132,13 +142,15 @@ public:
         d->SetSamplerState(0,D3DSAMP_ADDRESSU,model?D3DTADDRESS_CLAMP:D3DTADDRESS_WRAP);d->SetSamplerState(0,D3DSAMP_ADDRESSV,model?D3DTADDRESS_CLAMP:D3DTADDRESS_WRAP);
         // Model relief uses only profile.z (polarity); its shader derives local detail from the source.
         NorthlightMaterialHeight::Image image;std::array<float,4> heightProfile;
-        {P::Scope read(profile,P::HeightRead);heightProfile=model?NorthlightMaterialHeight::profile(image,polarity,details,balance):NorthlightMaterialHeight::textureProfile(source,polarity,details,balance);}
+        {P::Scope read(profile,P::HeightRead);if(persisted.status==NorthlightMaterialMapPersistence::Status::Miss)heightProfile=persisted.profile;else heightProfile=model?NorthlightMaterialHeight::profile(image,polarity,details,balance):NorthlightMaterialHeight::textureProfile(source,polarity,details,balance);}
         const float texel[]={1.f/width,1.f/height,5.f,0};d->SetPixelShaderConstantF(0,texel,1);d->SetPixelShaderConstantF(1,heightProfile.data(),1);
         struct V {float x,y,z,w,u,v;};const V quad[]={{-.5f,-.5f,0,1,0,0},{width-.5f,-.5f,0,1,1,0},{-.5f,height-.5f,0,1,0,1},{width-.5f,height-.5f,0,1,1,1}};
         {P::Scope draw(profile,P::NormalBuild,0,true);draw.work(uint64_t(width)*height);if(FAILED(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(V)))){drop(normal);return nullptr;}}
+        }
         {P::Scope mips(profile,P::Mips,0,true);normal->SetAutoGenFilterType(D3DTEXF_LINEAR);normal->GenerateMipSubLevels();}
+        if(disk&&!restored)try{disk->capture(persisted,normal,width,height);}catch(...){}
         source->AddRef();try{entries.push_back({source,normal,cost,sourceCost,clock,revision,frame,frame,(desc.Usage&(D3DUSAGE_DYNAMIC|D3DUSAGE_RENDERTARGET))!=0||(desc.Pool==D3DPOOL_DEFAULT&&source->GetLevelCount()==1),model});
             try{lookup[model].emplace(source,entries.size()-1);}catch(...){entries.pop_back();throw;}
-        }catch(...){source->Release();drop(normal);return nullptr;}recent=entries.size()-1;bytes+=cost;sourceBytes+=sourceCost;++generated;++builds;return normal;
+        }catch(...){source->Release();drop(normal);return nullptr;}recent=entries.size()-1;bytes+=cost;sourceBytes+=sourceCost;++generated;if(!restored)++builds;return normal;
     }
 };

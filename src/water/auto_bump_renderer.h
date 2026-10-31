@@ -432,6 +432,7 @@ public:
         }
         if(success){clearDeferred();result.ok=true;}return success;
     }
+    void setPersistentCache(const std::filesystem::path& path,const char* backend,const char* identity=nullptr,bool asyncReadback=false){normals.setPersistentCache(path,backend,identity,asyncReadback);}
     void setProfiler(NorthlightMaterialProfile* p){profile=p;normals.setProfiler(p);parallax.setProfiler(p);displacement.setProfiler(p);}
     void setMemoryPressure(bool on,size_t pressureReplayLimit=0,NorthlightStreaming::CpuRetirement* retirement=nullptr,NorthlightStreaming::CpuRetirementBatch* batch=nullptr){
         if(memoryPressure==on)return;memoryPressure=on;

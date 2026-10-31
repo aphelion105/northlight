@@ -93,6 +93,17 @@ struct ZeroHash {size_t operator()(IDirect3DBaseTexture9*)const{return 0;}};
 #include "auto_normal_memory.h"
 #include "cache_linear.h"
 #include "cache_integrated.h"
+#include <filesystem>
+// This CPU oracle exercises the unchanged in-memory cache independently of D3D.
+// The real persistent adapter runs in material_disk_gpu.cpp.
+struct NorthlightMaterialMapPersistence {
+    enum class Status {Skip,Pending,Miss,Hit};struct Probe {Status status=Status::Skip;std::array<float,4> profile{};};
+    NorthlightMaterialMapPersistence(IDirect3DDevice9*,const std::filesystem::path&,const char*,const char* =nullptr,bool=false){}
+    void reset(){}void endFrame(){}void report(){}
+    Probe probe(IDirect3DTexture9*,const D3DSURFACE_DESC&,bool,unsigned,unsigned,unsigned){return {};}
+    bool upload(const Probe&,IDirect3DTexture9*,unsigned,unsigned){return false;}
+    void capture(const Probe&,IDirect3DTexture9*,unsigned,unsigned){}
+};
 #include "cache_current.h"
 template<class T,class=void>struct Indexed:std::false_type{};
 template<class T>struct Indexed<T,std::void_t<decltype(std::declval<T>().lookup)>>:std::true_type{};

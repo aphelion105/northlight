@@ -49,6 +49,9 @@ def validate(document):
 
 
 def profile(assets, path, blob, catalog, cache=None):
+    # Harvestable herbs need the native model's spawn/despawn and bone lifecycle.
+    if path.startswith('world\\skillactivated\\tradeskillnodes\\bush_'):
+        return None
     if not path.startswith(('world\\','spells\\')) or not path.endswith('.m2') or len(blob) < 304:
         return None
     if blob[:4] != b'MD20' or struct.unpack_from('<I', blob, 4)[0] != 264 or struct.unpack_from('<I', blob, 264)[0]:

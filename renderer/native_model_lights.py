@@ -5,6 +5,7 @@ import build_equipment_emitters
 import build_spell_emitters
 import build_mount_emitters
 import build_glue_emitters
+import build_gameobject_emitters
 
 
 def build(assets, work, read_archive, excluded=()):
@@ -49,6 +50,9 @@ def build(assets, work, read_archive, excluded=()):
     stage('glue_model_lights', 'glue-lights-staged.mpq',
           lambda out: build_glue_emitters.build(assets, out, excluded=set(payload)),
           build_glue_emitters.EMPTY, ('interface\\',))
+    stage('gameobject_model_lights', 'gameobject-lights-staged.mpq',
+          lambda out: build_gameobject_emitters.build(assets, out, excluded=set(excluded) | set(payload)),
+          build_gameobject_emitters.EMPTY, ('world\\', 'spells\\', 'creature\\', 'item\\'))
     # Creature entries are server-owned. A fresh client may have no WDB yet;
     # the renderer's live-particle path still handles visible mount effects.
     cache = assets.client / 'Cache' / 'WDB' / assets.locale / 'creaturecache.wdb'

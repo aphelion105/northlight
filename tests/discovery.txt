@@ -11,6 +11,11 @@ test_actor_shadows_wiring.py
 test_actor_texture_worker.py
 test_actor_transient_bindings.py
 test_affected_tests.py
+test_ao_actor_build.py
+test_ao_actor_gpu.py
+test_ao_actor_reference.py
+test_ao_actor_stencil.py
+test_ao_actor_stencil_gpu.py
 test_ao_blur.py
 test_ao_fog_capture.py
 test_ao_fold.py
@@ -184,6 +189,8 @@ test_material_constant_spans.py
 test_material_early_alpha_gpu.py
 test_material_epoch_guard.py
 test_material_followup_cpu.py
+test_material_disk_cache.py
+test_material_disk_gpu.py
 test_material_frame_rotation_gpu.py
 test_material_geometry.py
 test_material_index_decode_wave2.py
