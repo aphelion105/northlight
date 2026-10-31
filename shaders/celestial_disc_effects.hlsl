@@ -42,8 +42,9 @@ float terrainVisibility(float3 ray){
 float skyVisibility(float4 source) {
     float2 uv=source.xy;
     float rawDepth=tex2Dlod(DiscDepth,float4(uv,0,0)).r;
-    float depth=saturate((rawDepth-DiscImage.z)*DiscImage.w);
-    float visible=(source.z>=.5&&depth>=.99999994)?1:0;
+    // The native horizon occupies .94..1 outside the main world band.
+    // Only the actual depth clear is sky; normalizing by that band hides it.
+    float visible=(source.z>=.5&&rawDepth>=1.0-1.0/16777216.0)?1:0;
     if(DiscRepair.y>.5&&rawDepth<DiscRepair.x-DiscRepair.z)visible=0;
     if(DiscProjection.w>.5){float2 water=tex2Dlod(DiscWater,float4(uv,0,0)).rg;
         visible*=1-((water.x>DiscPolicy.y&&water.x<=DiscPolicy.z&&water.y>.003)?1:0);}
@@ -140,7 +141,7 @@ float4 CelestialDiscPS(float2 uv:TEXCOORD0):COLOR0 {
     // Strict depth occlusion, like the native billboard: every surface in the
     // depth buffer, fogged or not, hides the disc. (A fog-based exception was
     // tried in 0.3.25 and drew the moon over distant fogged trees.)
-    if(DiscPolicy.w>.5&&depth<.99999994)return 0;
+    if(DiscPolicy.w>.5&&rawDepth<1.0-1.0/16777216.0)return 0;
     if(DiscPolicy.w>.5&&DiscProjection.w>.5){float2 water=tex2Dlod(DiscWater,float4(depthUV,0,0)).rg;
         if(water.x>DiscPolicy.y&&water.x<=DiscPolicy.z&&water.y>.003)return 0;}
     float3 ray=discRay(uv);
@@ -187,7 +188,9 @@ float4 CelestialDiscPS(float2 uv:TEXCOORD0):COLOR0 {
     alpha*=terrainVisible;
     // In the early sky pass an invisible quad pixel must not write sky depth.
     clip(alpha-.001);
-    if(DiscEmission.w>.5)encoded=DiscPolicy.x>1.5?alpha*discDecode(encoded)*(DiscPolicy.x>2.5?2:8):glowShoulder(alpha,encoded);
+    // Glare weights describe optical density, not unbounded source radiance.
+    // The compact disc owns HDR headroom; the halo retains its soft shoulder.
+    if(DiscEmission.w>.5)encoded=DiscPolicy.x>1.5?1-exp2(-1.442695*max(alpha,0)*discDecode(encoded)):glowShoulder(alpha,encoded);
     return float4(outputColor(encoded),alpha);
 }
 // Diffuse bloom crosses silhouettes; the compact source core stays occluded.
@@ -202,7 +205,7 @@ float4 CelestialVeilPS(float2 uv:TEXCOORD0):COLOR0 {
     float2 depthUV=(clamp(floor(uv*dimensions),0,dimensions-1)+.5)*DiscImage.xy;
     float rawDepth=tex2Dlod(DiscDepth,float4(depthUV,0,0)).r;
     float depth=saturate((rawDepth-DiscImage.z)*DiscImage.w);
-    float sky=(depth>=.99999994&&rawDepth>=DiscRepair.x-DiscRepair.z)?1:0;
+    float sky=(rawDepth>=1.0-1.0/16777216.0&&rawDepth>=DiscRepair.x-DiscRepair.z)?1:0;
     // Visible water takes no veil: the sea in front of a low sun is where it sets, and a glow on it showed a bright
     // strip under the sea's edge (the water's own sun glint lights it).
     float sea=0;
@@ -216,7 +219,7 @@ float4 CelestialVeilPS(float2 uv:TEXCOORD0):COLOR0 {
     // No cut at the camera's far edge: it drew a sharp line across a near hill. The sea under the edge takes no veil (above).
     float alpha=geometry*glareProfile(radius);
     clip(alpha-.001);
-    return float4(outputColor(DiscPolicy.x>1.5?8*alpha*discDecode(DiscGlowHue.rgb):glowShoulder(alpha,DiscGlowHue.rgb)),alpha);
+    return float4(outputColor(DiscPolicy.x>1.5?1-exp2(-1.442695*max(alpha,0)*discDecode(DiscGlowHue.rgb)):glowShoulder(alpha,DiscGlowHue.rgb)),alpha);
 }
 
 row_major float4x4 TerrainMaskMatrix : register(c0);

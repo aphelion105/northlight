@@ -115,6 +115,8 @@ def main():
             save()
         run('frame-acceptance', [sys.executable, fp.TESTS/'verify_hdr_frame_gpu.py',
                                  '--dxvk2', backends['dxvk2'], '--dxvk3', backends['dxvk3'], '--output', output/'frame'])
+        run('sun-acceptance', [sys.executable, fp.TESTS/'verify_hdr_sun_gpu.py',
+                               '--dxvk2', backends['dxvk2'], '--dxvk3', backends['dxvk3'], '--output', output/'sun'])
         run('proxy-acceptance', [sys.executable, fp.TESTS/'verify_hdr_integration_gpu.py',
                                  '--dxvk2', backends['dxvk2'], '--dxvk3', backends['dxvk3'],
                                  '--captured-ui', args.captured_ui.resolve() if args.captured_ui else output/'proxy/shaders/HdrFixturePS-3.bin',

@@ -19,7 +19,7 @@ class Color {
     template<class T> static void release(T*& p){if(p){p->Release();p=nullptr;}}
 public:
     unsigned patched=0,rejected=0;
-    std::uint64_t layers=0,layerPixels=0,screenDirect=0;
+    std::uint64_t layers=0,layerPixels=0,screenDirect=0,attenuationDirect=0;
     ~Color(){reset();}
     std::uint64_t payloadBytes()const{return std::uint64_t(layerDesc.Width)*layerDesc.Height*4*((layerTexture?1:0)+(layerMsaa?unsigned(layerDesc.MultiSampleType):0));}
     void forget(IDirect3DPixelShader9* original){for(auto& shaders:shaderBanks){auto it=shaders.find(original);if(it!=shaders.end()){for(auto*& p:it->second.shader)release(p);shaders.erase(it);}}}
@@ -73,6 +73,19 @@ public:
     }
     template<class Draw> HRESULT fixedDraw(IDirect3DDevice9* d,float uiWhite,Draw submit){
         DWORD fog=0,next=0,coordinates=0,transform=0,blend=0,src=0,dst=0;
+        d->GetRenderState(D3DRS_ALPHABLENDENABLE,&blend);d->GetRenderState(D3DRS_SRCBLEND,&src);d->GetRenderState(D3DRS_DESTBLEND,&dst);
+        if(blend&&src==D3DBLEND_ZERO&&dst==D3DBLEND_INVSRCALPHA){
+            DWORD op=0,writes=0,srgb=0;
+            if(SUCCEEDED(d->GetRenderState(D3DRS_BLENDOP,&op))&&op==D3DBLENDOP_ADD&&
+               SUCCEEDED(d->GetRenderState(D3DRS_COLORWRITEENABLE,&writes))&&SUCCEEDED(d->GetRenderState(D3DRS_SRGBWRITEENABLE,&srgb))){
+                // Cdst*(1-alpha) is independent of the color transfer. Keep
+                // the legacy factor layer's destination-alpha policy as well.
+                struct Restore{IDirect3DDevice9* d;DWORD writes,srgb;~Restore(){d->SetRenderState(D3DRS_COLORWRITEENABLE,writes);d->SetRenderState(D3DRS_SRGBWRITEENABLE,srgb);}}restore{d,writes,srgb};
+                HRESULT hr=d->SetRenderState(D3DRS_COLORWRITEENABLE,writes&~D3DCOLORWRITEENABLE_ALPHA);
+                if(SUCCEEDED(hr))hr=d->SetRenderState(D3DRS_SRGBWRITEENABLE,FALSE);
+                if(SUCCEEDED(hr)){++attenuationDirect;hr=submit();}return hr;
+            }
+        }
         if(FAILED(d->GetRenderState(D3DRS_FOGENABLE,&fog))||fog||
            FAILED(d->GetTextureStageState(1,D3DTSS_COLOROP,&next))||next!=D3DTOP_DISABLE||
            FAILED(d->GetTextureStageState(0,D3DTSS_TEXCOORDINDEX,&coordinates))||coordinates||
@@ -93,7 +106,6 @@ public:
         }
         // Sampling an absent texture has special fixed-function semantics.
         if(flags[0]||flags[2]){IDirect3DBaseTexture9* texture=nullptr;const HRESULT hr=d->GetTexture(0,&texture);const bool present=texture!=nullptr;release(texture);if(FAILED(hr))return hr;if(!present)return legacyLayer(d,uiWhite,submit);}
-        d->GetRenderState(D3DRS_ALPHABLENDENABLE,&blend);d->GetRenderState(D3DRS_SRCBLEND,&src);d->GetRenderState(D3DRS_DESTBLEND,&dst);
         if(blend&&(src==D3DBLEND_DESTCOLOR||src==D3DBLEND_ZERO))return legacyLayer(d,uiWhite,submit);
         if(!fixedUi){const HRESULT hr=d->CreatePixelShader(reinterpret_cast<const DWORD*>(kHdrFixedUi),&fixedUi);if(FAILED(hr))return hr;}
         float constants[8];DWORD srgb=0;HRESULT hr=d->GetPixelShaderConstantF(0,constants,2);if(FAILED(hr))return hr;

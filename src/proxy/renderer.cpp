@@ -1388,7 +1388,9 @@ private:
         if(celestial){
             if(linearHdr){renderCelestial(outputTarget);celestialDiscs->renderRing();}
             const auto& haze=world->horizonHazeConstants();
-            celestialDiscs->renderVeil(outputTarget,NorthlightCelestialGlow::hazeAtSun(haze.haze[3],haze.shape[2],sunElevation),world->skyTransmittance());
+            // HDR bloom spreads the visible linear source. The old SDR veil
+            // would add a second, amplified halo directly over geometry.
+            if(!linearHdr)celestialDiscs->renderVeil(outputTarget,NorthlightCelestialGlow::hazeAtSun(haze.haze[3],haze.shape[2],sunElevation),world->skyTransmittance());
             gpuProfile->mark("CelestialVeil");effectsBuckets.mark(Bucket::Veil);
         }
         if(maskOn&&nameMask.debug)nameMaskDebugView(outputTarget); /* 0.3.212 (task 32): the last effect pass, the mask itself */
@@ -3310,7 +3312,7 @@ public:
         uiFallbackEndFrame();
         if(frame==1||(frame%600==0&&diagnostics()))logf("frame=%u applied=%u terrainShaders=%u uiShaders=%u projectionRejects=%u terrainThisFrame=%d depth=%d draws=%u missingVS=%u terrainDraws=%u terrainShadowDraws=%u viewportRejects=%u depthRejects=%u uiDraws=%u uiAfterTerrain=%u uiFallback=%u uiFallbackState=%c",frame,appliedFrames,matchedTerrain,matchedUI,projectionRejects,terrain,captured,drawCalls,missingVS,terrainDraws,terrainShadowDraws,viewportRejects,depthRejects,uiDraws,uiAfterTerrain,uiFallbackBoundaries,uiFallback.disarmed()?'d':uiFallback.armed()?'a':'l');
         if(hdr.active&&diagnostics()&&frame%600==0)logf("HDR state frame=%u uiPhase=%u effectsEnabled=%u patched=%u rejected=%u logicalCopiesAfterUI=%u",frame,unsigned(hdrUiPhase),unsigned(enabled),hdrColor.patched,hdrColor.rejected,hdrLogicalCopies);
-        if(hdr.active&&diagnostics()&&frame%600==0)logf("HDR_WORK frame=%u compatibilityLayers=%llu layerPixels=%llu screenDirect=%llu",frame,(unsigned long long)hdrColor.layers,(unsigned long long)hdrColor.layerPixels,(unsigned long long)hdrColor.screenDirect);
+        if(hdr.active&&diagnostics()&&frame%600==0)logf("HDR_WORK frame=%u compatibilityLayers=%llu layerPixels=%llu screenDirect=%llu attenuationDirect=%llu",frame,(unsigned long long)hdrColor.layers,(unsigned long long)hdrColor.layerPixels,(unsigned long long)hdrColor.screenDirect,(unsigned long long)hdrColor.attenuationDirect);
         // The address-space sweep is asynchronous; the render thread only compares
         // its result. Trims run below, after clearFrame(), at the frame boundary.
         bool memoryTrim=false;int memoryCaps=-1,memoryWorld=-1; /* -1 unchanged, 0 full, 1 half; memoryWorld follows any pressure episode, terrain follows only memoryCaps */

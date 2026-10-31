@@ -123,6 +123,18 @@ struct Graph {
         if(useHdr){ok(hdr.finish(d,target,output.surface,settings,1.f/60,true,oracle,.18f,&pool));if(c.mirror)ok(hdr.mirrorLegacy(d,native.surface,&pool));}
         quad(target,constant,nullptr);const float uiColor[]={.95f,.75f,.1f,1};ok(d->SetPixelShaderConstantF(0,uiColor,1));
         for(unsigned n=0;n<c.ui;++n){auto draw=[&]{rectangle(8+float(n%8)*42,float(c.h-40-n/8*22),40,20);return S_OK;};if(useHdr)ok(color.draw(d,160,draw));else ok(draw());}
+        // Native fixed-function cooldown/dimming masks use only source alpha.
+        // Force the former compatibility layer as the reference, including its
+        // unchanged destination-alpha policy; candidate uses original geometry.
+        quad(target,nullptr,nullptr);ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));
+        ok(d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ZERO));ok(d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_INVSRCALPHA));
+        ok(d->SetRenderState(D3DRS_BLENDOP,D3DBLENDOP_ADD));ok(d->SetRenderState(D3DRS_TEXTUREFACTOR,0x40000000));
+        ok(d->SetTextureStageState(0,D3DTSS_COLOROP,D3DTOP_SELECTARG1));ok(d->SetTextureStageState(0,D3DTSS_COLORARG1,D3DTA_TFACTOR));
+        ok(d->SetTextureStageState(0,D3DTSS_ALPHAOP,D3DTOP_SELECTARG1));ok(d->SetTextureStageState(0,D3DTSS_ALPHAARG1,D3DTA_TFACTOR));
+        ok(d->SetTextureStageState(1,D3DTSS_COLOROP,D3DTOP_DISABLE));
+        for(unsigned n=0;n<3;++n){auto draw=[&]{rectangle(8+float(n)*64,8,48,48);return S_OK;};
+            if(mode==1)ok(color.legacyLayer(d,160,draw));else if(useHdr)ok(color.draw(d,160,draw));else ok(draw());}
+        quad(target,constant,nullptr);ok(d->SetPixelShaderConstantF(0,uiColor,1));
         // A final opaque counter strip deliberately crosses clear sky/horizon.
         auto counter=[&]{rectangle(float(c.w/6-24),float(c.h/2),float(c.w/3),12);return S_OK;};
         if(useHdr)ok(color.draw(d,160,counter));else ok(counter());ok(d->EndScene());
@@ -176,7 +188,8 @@ int main(int argc,char** argv){
         // Warm both paths, then check exact production-helper work, not estimates.
         graph.frame(2);meter.calls={};graph.frame(2);const Calls work=meter.calls;assert(!work.allocations);
         const unsigned optimizedDecode=graph.decodeDraws;assert(!graph.eligible||optimizedDecode==0);
-        meter.calls={};graph.frame(1);const Calls oldWork=meter.calls;if(graph.eligible)assert(graph.decodeDraws==1&&oldWork.draws==work.draws+1);
+        meter.calls={};graph.frame(1);const Calls oldWork=meter.calls;
+        assert(oldWork.draws==work.draws+3+(graph.eligible?1:0));if(graph.eligible)assert(graph.decodeDraws==1);
         std::vector<double> gpu[3],cpu[3];
         for(unsigned block=0;block<6;++block)for(unsigned n=0;n<3;++n){const unsigned mode=block%2?2-n:n;const auto t=timeGraph(raw,[&]{graph.frame(mode);},12);gpu[mode].push_back(t.gpu);cpu[mode].push_back(t.cpu);}
         double medGpu[3],medCpu[3];for(unsigned n=0;n<3;++n){std::sort(gpu[n].begin(),gpu[n].end());std::sort(cpu[n].begin(),cpu[n].end());medGpu[n]=(gpu[n][2]+gpu[n][3])*.5;medCpu[n]=(cpu[n][2]+cpu[n][3])*.5;}
