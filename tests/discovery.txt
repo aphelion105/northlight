@@ -27,6 +27,7 @@ test_ao_submit_profile.py
 test_ao_texel_snap.py
 test_art_layer.py
 test_art_layer_dedup.py
+test_art_layer_ownership.py
 test_async_memory_diagnostics.py
 test_atlas_low_memory.py
 test_atlas_upload_proof.py

@@ -311,13 +311,23 @@ def step_digests(inputs, without=None):
 def recorded_digests(manifest, without):
     """The digests an installed cache was built with; migrated from a manifest that predates them."""
     if isinstance(manifest.get('digests'), dict):
-        return manifest['digests']
+        old = manifest['digests']
+        inputs = manifest.get('inputs')
+        if newly_excluded_art(inputs, without) and step_digests(inputs) == old:
+            # A layer falsely counted as foreign was ours: its mesh geometry did not change.
+            # Keep post steps stale: our old native-light/sky edits can affect their inputs.
+            normalized = step_digests(inputs, without)
+            return {k: normalized[k] if k.startswith('scene:') else v for k, v in old.items()}
+        return old
     try:
         return step_digests(manifest['inputs'], without)
     except (KeyError, TypeError, AttributeError):
         return {}
 
 
+def newly_excluded_art(inputs, without):
+    return isinstance(inputs, dict) and set(inputs.get('without', '')) <= set(without) and \
+        set(without) - set(inputs.get('without', '')) == {'z'}
 
 
 def read_json(path):
@@ -725,6 +735,22 @@ def instance_step_digests(inputs):
     return result
 
 
+def rebase_instance_scenes(output, without):
+    """Keep geometry when a previously included art layer is now proven ours.
+    The old combined digest must prove that the group used the recorded continent inputs.
+    Lights still update, since old native-light edits may have affected their output.
+    """
+    recorded = read_json(output / INSTANCE_MANIFEST)
+    inputs = (read_json(output / 'install-manifest.json') or {}).get('inputs')
+    if not recorded or not newly_excluded_art(inputs, without):
+        return recorded
+    before = instance_digests(inputs)
+    prior_steps = instance_step_digests(inputs)
+    normalized = instance_step_digests(dict(inputs, without=without))
+    for key, group in recorded.get('groups', {}).items():
+        if group.get('digest') == before.get(key):
+            group['digests'] = dict(prior_steps[key], scene=normalized[key]['scene'])
+    return recorded
 
 
 def stage_instance_files(output, staging, maps, lights=False):
@@ -1035,8 +1061,9 @@ def run_instances(args, client, locale, output, inputs, started):
     digest = _hash(digests)
     staging = instance_staging(output)
     base = {'layer': 'instances', 'output': str(output)}
+    recorded = rebase_instance_scenes(output, args.without)
     if args.instances_plan:   # a dry run for the installer's disk check
-        build, keep, remove = instance_plan(digests, selected, read_json(output / INSTANCE_MANIFEST), output, args.force)
+        build, keep, remove = instance_plan(digests, selected, recorded, output, args.force)
         print(json.dumps({'event': 'instances_plan', 'build': build, 'keep': keep, 'remove': remove}), flush=True)
         return 0
     has_cache = (output / 'install-manifest.json').is_file() or (output / 'northlight-cache.json').is_file()
@@ -1049,7 +1076,6 @@ def run_instances(args, client, locale, output, inputs, started):
     if finish_instances(staging, output, digests):
         return final('done', 0, **base, fingerprint=digest, seconds=round(time.time() - started, 1),
                      completed_interrupted_swap=True)
-    recorded = read_json(output / INSTANCE_MANIFEST)
     build, keep, remove = instance_plan(digests, selected, recorded, output, args.force)
     step_digests = instance_step_digests(inputs)
     # Upgrade a current legacy record without rebuilding its content. Dry runs never write.
@@ -1221,6 +1247,12 @@ def main(argv=None):
     if refusal:
         return final('failed', 2, stage='preflight', total_memory_gb=round(total / (1 << 30), 1), error=refusal)
 
+    # Save the proof before the continent manifest is replaced by the post-step update.
+    instance_record = rebase_instance_scenes(output, args.without)
+    if instance_record != read_json(output / INSTANCE_MANIFEST):
+        temp = output / (INSTANCE_MANIFEST + '.tmp')
+        temp.write_text(json.dumps(instance_record, indent=2) + '\n', encoding='utf-8')
+        retry(os.replace, temp, output / INSTANCE_MANIFEST)
     state = staging / 'install-state.json'
     if staging.exists():
         saved = read_json(state) or {}

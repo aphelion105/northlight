@@ -106,6 +106,11 @@ del old_inputs['without']
 old = fake_cache(cache, {'inputs': old_inputs})
 assert any('patch-z' in a['archive'] for a in old['inputs']['archives'])
 assert iwc.recorded_digests(old, 'z') == base and iwc.plan(base, old, cache, False, 'z') == ('up_to_date', [])
+# A falsely foreign art layer is now proven ours: preserve geometry, refresh post steps.
+included = iwc.gather_inputs(client, 'all', 'enUS', iwc.MAPS, None, '')
+misidentified = {'inputs': included, 'digests': iwc.step_digests(included)}
+assert iwc.plan(base, misidentified, cache, False, 'z') == ('partial', iwc.POST)
+assert misidentified['inputs']['without'] == ''  # planning never changes the record
 extract, previous = out / 'world-cache.extract', out / 'world-cache.previous'
 for folder in (extract, previous, cache / 'lights.previous'):
     folder.mkdir(exist_ok=True)
@@ -479,6 +484,21 @@ try:
 finally:
     iwc.source_hashes = real_sources
 assert inst_run('2 6')[0] == 0 and not built_groups
+# Correcting ownership must also preserve instance meshes after continent inputs are replaced.
+continent_record = iwc.read_json(icache / 'install-manifest.json')
+with_art = dict(inputs, without='', archives=[*inputs['archives'], {'archive': 'Data/patch-z.mpq', 'bytes': 1, 'mtime_ns': 1}])
+(icache / 'install-manifest.json').write_text(json.dumps({'inputs': with_art, 'digests': iwc.step_digests(with_art)}))
+misidentified = iwc.read_json(icache / iwc.INSTANCE_MANIFEST)
+for k, r in misidentified['groups'].items():
+    r['digest'] = iwc.instance_digests(with_art)[k]
+    r.pop('digests', None)
+(icache / iwc.INSTANCE_MANIFEST).write_text(json.dumps(misidentified))
+rebased = iwc.rebase_instance_scenes(icache, 'z')
+assert all(r['digests']['scene'] == iwc.instance_step_digests(inputs)[k]['scene'] for k, r in rebased['groups'].items())
+(icache / iwc.INSTANCE_MANIFEST).write_text(json.dumps(rebased))
+(icache / 'install-manifest.json').write_text(json.dumps(continent_record))
+assert inst_run('2 6')[0] == 0 and not built_groups
+assert called_steps == ['instances lights', 'instances validate'], called_steps
 # Upgrade legacy metadata on a current cache, without any builder or validator.
 legacy = iwc.read_json(icache / iwc.INSTANCE_MANIFEST)
 for record_ in legacy['groups'].values():
