@@ -34,4 +34,12 @@ source=fp.src('renderer.cpp').read_text()
 assert 'BUILD identity source=%s' in source and 'NORTHLIGHT_SOURCE_ID' in source
 assert '__DATE__' not in source and '__TIME__' not in source
 assert 'NORTHLIGHT_SOURCE_ID="' in (fp.SCRIPTS/'build_renderer.py').read_text()
+panel=fp.src('settings_panel.cpp').read_text()
+assert 'Northlight settings | build %.12s###NorthlightSettings",NORTHLIGHT_SOURCE_ID' in panel
+assert 'ImGui::Begin(title,&open,ImGuiWindowFlags_NoCollapse)' in panel
+assert 'ImGui::Text("Built: %s",NORTHLIGHT_BUILD_UTC)' in panel
+assert 'ImGui::Text("ID: %.12s",NORTHLIGHT_SOURCE_ID)' in panel
+assert 'built=%s",NORTHLIGHT_SOURCE_ID,NORTHLIGHT_BUILD_UTC' in source
+build_script=(fp.SCRIPTS/'build_renderer.py').read_text()
+assert 'datetime.now(timezone.utc)' in build_script and 'NORTHLIGHT_BUILD_UTC="' in build_script
 print('PASS source identity: source/shader/binary/tool changes, added file, CRLF equivalence, case-sensitive path order, private settings, startup wiring')

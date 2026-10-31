@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 import subprocess
 import sys
@@ -88,9 +89,12 @@ def main(argv=None):
         raise SystemExit("Parallax shaders differ from the offline build.")
     env = northlight_paths.zig_env()
     identity = source_identity()
+    built_utc = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
     print('Source identity', identity, flush=True)
+    print('Build time', built_utc, flush=True)
     command = [str(zig), 'c++', '-target', 'x86-windows-gnu', '-O2', '-shared',
                '-DNORTHLIGHT_SOURCE_ID="' + identity + '"',
+               '-DNORTHLIGHT_BUILD_UTC="' + built_utc + '"',
                '-std=c++17', '-fno-rtti', '-Wall', '-Wextra', '-Wno-microsoft-exception-spec',
                *northlight_paths.include_flags(),
                *[str(northlight_paths.src(n)) for n in ('renderer.cpp', 'world_gi.cpp', 'world_mesh_plan.cpp', 'static_shadow_scene.cpp', 'frd9.def')],
