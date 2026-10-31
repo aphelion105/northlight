@@ -587,7 +587,7 @@ public:
         if(FAILED(d->GetRenderState(D3DRS_COLORWRITEENABLE,&colorWrite))||FAILED(d->GetRenderState(D3DRS_ZWRITEENABLE,&depthWrite)))return;
         if(!(colorWrite&7)){++invisibleRejected;return;}
         if(!depthWrite&&domain!=1){
-            if(domain==4&&modes[3]==3&&geometry&&v->second.pendingHash==0xff32338728131932ull&&ensureVertex(original,v->second))displacement.prepareModelOverlay(original,*geometry);
+            if(domain==4&&modes[3]==3&&geometry&&displacement.modelOverlayShader(v->second.pendingHash)&&ensureVertex(original,v->second))displacement.prepareModelOverlay(original,*geometry);
             ++invisibleRejected;return;
         }
         if(!ensureVertex(original,v->second))return;
