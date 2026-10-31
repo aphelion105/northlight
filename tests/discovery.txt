@@ -139,6 +139,7 @@ test_grass_receiving_order.py
 test_grass_shadow_gpu.py
 test_gtao_grazing.py
 test_hdr_boundary.py
+test_hdr_log_summary.py
 test_hdr_reset.py
 test_horizon_haze.py
 test_hotpath_equivalence.py
@@ -253,6 +254,7 @@ test_pipeline_wave_cpu.py
 test_point_clip_prepared.py
 test_point_light_shadow.py
 test_point_shadow_schedule.py
+test_point_shadow_visibility_gpu.py
 test_point_terrain_coverage_gpu.py
 test_point_transmission_cache.py
 test_point_transmission_install.py

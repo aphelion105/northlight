@@ -104,18 +104,18 @@ stale depth, zero normal, disabled capture, no-distance normal output, native
 PS constants/shaders/targets and UP stream/index restoration, WRAP restoration,
 frame expiry and capture reset. No AutoBump instance is needed by this test.
 
-The Windows x86 DLL builds from a fixed source snapshot. Its SHA256 is
-`43cc2135fe287f8f6c7abae1d73bdb69cec8f9d4c8e619da8cddde8db1f2754f`;
+The complete integration PR #98 builds as a Windows x86 DLL, SHA256
+`458cd72199ba46cc6179b93c578dff1b4f57d6a0dd08108cf4617e1655d39fe4`;
 embedded source identity is
 `aacba526bb94a3abee3e25edd995c2b7745851d6a05f85341a7bb5c447fd560b`.
-The three new/changed shader payloads are verified inside it and against
+All three new/changed shader payloads are verified inside the DLL and against
 their generated arrays/manifests. They use 13, 346 and 324 SM3 slots for
 `ModelNormalCapture`, `WorldNormals` and `WorldNormalsNoDistance`.
 
-Related material variant, private-depth, material replay-state, raster and
-shadow-history checks pass. Material binding equivalence passes again on
+The original combined-source validation also passes material variant,
+private-depth, material replay-state, raster and shadow-history checks. Material binding equivalence passes again on
 the fixed snapshot after an initial run detected concurrent source edits.
-Two unrelated existing checks remain failing: the HDR manifest test applies
+Two unrelated checks in that original combined snapshot remain failing: the HDR manifest test applies
 a 512-slot limit to the existing 687-slot combined HDR shader, and the removal
 smoothing test searches for an obsolete final-pass source anchor. Both
 counterexamples were verified against unchanged HEAD artifacts.
@@ -157,4 +157,4 @@ python tests/test_model_normals_gpu.py --fixture .local/actor-face-report-202610
 
 The runner requires WoW to be closed and uses hidden D3D9 devices. No game
 session, installed file, setting, MPQ or world-cache change is part of this
-investigation. Other concurrent working-tree changes are outside its scope.
+investigation.
