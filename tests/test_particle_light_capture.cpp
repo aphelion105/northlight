@@ -115,7 +115,7 @@ static bool close(float a,float b){return std::fabs(a-b)<.00001f;}
 int main(int argc,char** argv){
     assert(argc==2);FILE* file=std::fopen(argv[1],"rb");assert(file);Shader vertex,white,mesh;vertex.code=words(file);white.code=words(file);mesh.code=words(file);const auto pixel=words(file);
     unsigned image[5];assert(std::fread(image,4,5,file)==5);std::vector<unsigned char> payload(image[4]);assert(std::fread(payload.data(),1,payload.size(),file)==payload.size());
-    float nativeTint[4];assert(std::fread(nativeTint,4,4,file)==4);std::fclose(file);
+    float nativeTint[4];assert(std::fread(nativeTint,4,4,file)==4);
     NorthlightParticleTextures::enabled=true;Device device;
     auto& textures=NorthlightParticleTextures::cache();textures.upload(&device.texture,&device.texture,image[0],image[1],0,image[2],payload.data(),payload.size(),image[3],true,true);
     NorthlightParticleTextures::View texture;assert(textures.lookup(&device.texture,texture));float texel[4];assert(texture.sample(.5f,.5f,false,3,3,texel,false)&&texel[3]>.1f);
@@ -165,6 +165,35 @@ int main(int argc,char** argv){
     vertices[0].position[0]=-.2f;upload();
     args.primCount=2;frame.nextFrame();const auto partial=prepare(mesh);
     assert(partial.count==1&&!partial.clusters[0].sample.castsShadows);args.primCount=1;
+    struct CloudImage {unsigned info[5];std::vector<unsigned char> bytes;};
+    unsigned imageCount=0;assert(std::fread(&imageCount,4,1,file)==1&&imageCount==2);std::vector<CloudImage> cloudImages(imageCount);
+    for(auto& im:cloudImages){assert(std::fread(im.info,4,5,file)==5);im.bytes.resize(im.info[4]);assert(std::fread(im.bytes.data(),1,im.bytes.size(),file)==im.bytes.size());}
+    unsigned cloudCases=0;assert(std::fread(&cloudCases,4,1,file)==1);unsigned activeImage=UINT32_MAX,acceptedClouds=0,cyanClouds=0;
+    for(unsigned i=0;i<cloudCases;++i){
+        unsigned label[4];float tint[4],uv[2],expectedTexel[4];
+        assert(std::fread(label,4,4,file)==4&&std::fread(tint,4,4,file)==4&&std::fread(uv,4,2,file)==2&&std::fread(expectedTexel,4,4,file)==4);
+        assert(label[0]<cloudImages.size());const auto& im=cloudImages[label[0]];
+        if(activeImage!=label[0]){textures.upload(&device.texture,&device.texture,im.info[0],im.info[1],0,im.info[2],im.bytes.data(),im.bytes.size(),im.info[3],true,true);activeImage=label[0];}
+        for(auto& v:vertices){v.color=packed(tint);v.uv[0]=uv[0];v.uv[1]=uv[1];}upload();frame.reset();selection={};
+        NorthlightParticleTextures::View cloudTexture;float texel[4];assert(textures.lookup(&device.texture,cloudTexture)&&cloudTexture.sample(uv[0],uv[1],false,3,3,texel,false));
+        // The independent Python decoder floors RGB565 expansion; the native
+        // cache replicates bits. Bound that codec rounding before checking shade.
+        for(unsigned k=0;k<4;++k)assert(std::fabs(texel[k]-expectedTexel[k])<=2.f/255);
+        auto cloud=prepare(vertex);float expected[3];const float alpha=float((vertices[0].color>>24)&255)/255*texel[3];
+        for(unsigned k=0;k<3;++k)expected[k]=float((vertices[0].color>>(16-8*k))&255)/255*texel[k]*alpha;
+        const bool visible=NorthlightParticleLights::peak(expected)>=.003f&&alpha*255>=device.alphaRef;
+        assert((cloud.count!=0)==visible);
+        if(visible){assert(cloud.count==1&&!cloud.clusters[0].sample.castsShadows);
+            for(unsigned k=0;k<3;++k)assert(std::fabs(cloud.clusters[0].sample.rgb[k]-expected[k])<.0001f);
+            capture.submit(cloud,true,false,frame);assert(publish().count==1&&frame.outputCount==1&&!frame.output[0].flags);++acceptedClouds;
+            if(label[1]==286&&label[2]>=2){assert(frame.output[0].diffuse[1]>frame.output[0].diffuse[0]&&frame.output[0].diffuse[2]>frame.output[0].diffuse[0]);++cyanClouds;}
+            frame.nextFrame();assert(publish().count==0&&selection.fading==0);
+        }
+    }
+    assert(acceptedClouds&&cyanClouds);assert(std::fgetc(file)==EOF);std::fclose(file);
+    std::printf("SWAMP_GAS_CAPTURE_PASS cases=%u visible=%u cyan=%u actualDisplayPalettes=1 boundedDecode=1 paletteTintAlpha=1 diffuseOnly=1 noRetirementTail=1\n",cloudCases,acceptedClouds,cyanClouds);
+    textures.upload(&device.texture,&device.texture,image[0],image[1],0,image[2],payload.data(),payload.size(),image[3],true,true);
+    for(auto& v:vertices){v.color=packed(nativeTint);v.uv[0]=v.uv[1]=.5f;}upload();
     std::array<std::uint16_t,49> repeated{};for(unsigned i=1;i<repeated.size();++i)repeated[i]=std::uint16_t(1+(i-1)%3);
     uploads.write(&device.indices,1,0,repeated.data(),sizeof(repeated),false);
     for(unsigned triangles:{1u,16u}){
