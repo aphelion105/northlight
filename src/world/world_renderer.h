@@ -24,6 +24,7 @@
 #endif
 #include "world_gi.h"
 #include "world_local_lights.h"
+#include "model_light_attachments.h"
 #include "local_light_selection.h"
 #include "equipment_lights.h"
 #include "particle_lights.h"
@@ -167,6 +168,7 @@ struct NameMaskCompositeBind {
 
 // Included after SavedState. Worker never accesses D3D or game memory.
 class WorldRenderer {
+    friend struct ModelLightAttachmentsTest;
     using V=NorthlightGI::Vec3;
     /* 0.3.137: render-thread commit data built by the GI worker from the same
        immutable plan (see PreparedCommitData). Null fields fall back to the
@@ -180,6 +182,7 @@ class WorldRenderer {
         std::shared_ptr<NorthlightWorldMesh::WorldMeshUploadPlan> meshPlan;
         std::vector<NorthlightGI::ProbeAtlasEntry> atlas;
         std::vector<NorthlightLocalLights::Light> localLights;
+        std::shared_ptr<const NorthlightLightAttachments::Records> lightAttachments;
         V origin, center;
         std::string map, message;
         uint64_t serial=0;
@@ -647,6 +650,8 @@ private:
     IDirect3DPixelShader9* localFogCombinePS=nullptr;IDirect3DTexture9* localFogAccum=nullptr;IDirect3DSurface9* localFogAccumSurface=nullptr;
     // 0.3.197: soft cap, incumbent bias and fades for the local lights (task 13). The clock is the selection's own: its gap and reset policy mirror useHistory.
     NorthlightEquipmentLights::Tracker equipmentLights;std::unordered_map<IDirect3DVertexShader9*,unsigned> equipmentShaders;
+    NorthlightLightAttachments::Tracker lightAttachments;
+    std::vector<NorthlightLocalLights::Light> attachedLocalLights;
     NorthlightParticleLights::Frame particleLights;std::string particleMap;
     std::string equipmentMap;NorthlightEquipmentLights::CaptureBudget equipmentCapture;
     NorthlightLocalLightSelection::Tracker localLightTracker;std::string localLightMap;V localLightCamera;int64_t localLightQpc=0;double localSelectUsSum=0,localSelectUsMax=0;unsigned localSelectFrames=0;
@@ -910,6 +915,7 @@ private:
     std::vector<ReplayMeshKey> replayMeshKeys;
     std::vector<NorthlightReplayShadowPolicy::Candidate> shadowCandidates;
     unsigned minSkinnedShadowTriangles=0,captureBudgetMiB=32,actorShadowBudgetMiB=0;bool shadowFateDiagnostics=false;
+    NorthlightActorDeformation::RigidBoneCache smallShadowBones{256}; // Render-thread owner; preparation has its own cache.
     NorthlightQuality::Settings quality; /* northlight-quality.ini; Settings{} is the full-quality default */
     bool shadowSelectionDone=false;
     unsigned replayTriangleBins[6]={},skinnedTriangleBins[6]={},acceptedTriangleBins[6]={},acceptedSkinnedTriangleBins[6]={};
@@ -1271,6 +1277,7 @@ private:
         // one after it dropped its region, and builder exit.
         struct Built {std::shared_ptr<NorthlightGI::BVH> bvh;std::shared_ptr<NorthlightWorldMesh::WorldMeshUploadPlan> plan;std::shared_ptr<const PreparedCommit> prepared;
             std::shared_ptr<const NorthlightRegionalFog::Field> fog;std::vector<NorthlightGI::PointLight> lights;std::vector<NorthlightLocalLights::Light> rawLights;
+            std::shared_ptr<const NorthlightLightAttachments::Records> lightAttachments;
             std::string map;V center;uint64_t id=0;DWORD ms=0;unsigned superseded=0;};
         std::unique_ptr<Built> builtGeometry;bool geometryWanted=false,builderExit=false;
         std::condition_variable buildWake;std::thread builder;
@@ -1321,6 +1328,7 @@ private:
               entryLift.clear();terrainSizeHint={};stallEnd("superseded");
           };
           NorthlightLocalLights::Cache lightCache(root+"world-cache/lights");
+          NorthlightLightAttachments::Cache lightAttachmentCache(root+"world-cache/lights");
           // Last delivered region. Any build that does not deliver forces the next
           // request to build again, as the 0.3.151 worker did without a BVH.
           std::string builtMap;V builtCenter;bool builtValid=false,wanted=false,retry=false;uint64_t seen=0;unsigned superseded=0;
@@ -1607,6 +1615,7 @@ private:
                     next->fixed=std::make_shared<const FixedChunks>(plan->fixedTerrainChunks);prepared=std::move(next);}catch(...){prepared.reset();}}
                 built->plan=plan;built->prepared=std::move(prepared);built->bvh=replacement;built->map=r.map;built->center=center;
                 float eye[]={center.x,center.y,center.z};
+                built->lightAttachments=lightAttachmentCache.load(r.map);
                 if(lightCache.loadLights(r.map,eye,520,built->rawLights))for(auto& light:built->rawLights)
                     built->lights.push_back({vec(light.position),vec(light.diffuse)*3.14159265f,light.attenuationStart,light.attenuationEnd});
                 if(NorthlightDiagnostics::enabled())logf("GI local lights map=\"%s\" count=%zu (indirect only; authored direct light retained)",r.map.c_str(),built->lights.size());
@@ -1650,6 +1659,7 @@ private:
         NorthlightGI::DynamicProbeLayer dynamicProbes;
         std::vector<NorthlightGI::PointLight> sceneLights;
         std::vector<NorthlightLocalLights::Light> rawSceneLights;
+        std::shared_ptr<const NorthlightLightAttachments::Records> sceneLightAttachments;
         std::shared_ptr<NorthlightGI::BVH> actors;
         NorthlightWorkerActorMemo<NorthlightActorGeometry::ActorJob> actorMemo;
         uint64_t solvedActorHash=0,completedActorHash=0,completedBaseId=0;
@@ -1675,7 +1685,7 @@ private:
             bool concurrent=false;
             if(adopted){
                 bvh=std::move(adopted->bvh);scenePlan=std::move(adopted->plan);scenePrepared=std::move(adopted->prepared);sceneFog=std::move(adopted->fog);
-                sceneLights=std::move(adopted->lights);rawSceneLights=std::move(adopted->rawLights);sceneMap=std::move(adopted->map);sceneCenter=adopted->center;
+                sceneLights=std::move(adopted->lights);rawSceneLights=std::move(adopted->rawLights);sceneLightAttachments=std::move(adopted->lightAttachments);sceneMap=std::move(adopted->map);sceneCenter=adopted->center;
                 sceneBuild=adopted->id;superseded+=adopted->superseded;if(stalled){if(stallMap==sceneMap)stallMs+=GetTickCount()-stallStart;stalled=false;} /* an episode begun on another map is not this region's stall */
             }else if(!bvh||NorthlightWorldStreaming::needsGeometry(sceneMap,sceneCenter,r.map,r.geometryCenter)){
                 // The builder is replacing this region. Borrow the published
@@ -1720,7 +1730,7 @@ private:
                  if(published&&published->map==sceneMap)*geometry=*published;
                  else if(previousLighting&&previousLighting->map==sceneMap)*geometry=*previousLighting;
                  geometry->bvh=bvh;geometry->meshPlan=scenePlan;geometry->prepared=scenePrepared;geometry->retirementBytes=bvh->retainedBytes()+scenePlan->cpuBytes()+sizeof(Snapshot);
-                 geometry->map=sceneMap;geometry->center=sceneCenter;geometry->fogField=sceneFog;geometry->localLights=rawSceneLights;
+                 geometry->map=sceneMap;geometry->center=sceneCenter;geometry->fogField=sceneFog;geometry->localLights=rawSceneLights;geometry->lightAttachments=sceneLightAttachments;
                  published=geometry;previousLighting.reset();
                  if(NorthlightDiagnostics::enabled())logf("WORLD geometry published buildId=%llu latestId=%llu buildMs=%lu cameraLag=%.2f retainedGI=%u refreshDistance=32 coverageDistance=96 concurrentSolves=%u stallMs=%lu",
                      (unsigned long long)sceneBuild,(unsigned long long)request.id,(unsigned long)result->geometryMs,
@@ -1789,7 +1799,7 @@ private:
             }
             // Geometry was already handed off before actor work. A second
             // request-ID gate here discarded useful work on every camera move.
-            result->fogField=sceneFog;result->bvh=bvh;result->meshPlan=scenePlan;result->prepared=scenePrepared;result->retirementBytes=bvh->retainedBytes()+scenePlan->cpuBytes()+sizeof(Snapshot);result->localLights=rawSceneLights;result->origin=NorthlightGI::probeWindowOrigin(r.probeCenter);
+            result->fogField=sceneFog;result->bvh=bvh;result->meshPlan=scenePlan;result->prepared=scenePrepared;result->retirementBytes=bvh->retainedBytes()+scenePlan->cpuBytes()+sizeof(Snapshot);result->localLights=rawSceneLights;result->lightAttachments=sceneLightAttachments;result->origin=NorthlightGI::probeWindowOrigin(r.probeCenter);
             result->lightingGeneration=lightingGeneration;
             DWORD solveStart=GetTickCount();bool obsolete=false,replaced=false;
             // Called with mutex held. A camera-only request may consume this
@@ -2411,7 +2421,7 @@ public:
         }
         effects=next;
     }
-    void reset(){equipmentLights.reset();equipmentMap.clear();particleLights.reset();particleMap.clear();shadowsComposited=false;pivotValid=false;pivotDistance=12.f;pivotCorrection.reset();pivotSelfCaptured=false;cascadeAnchor.reset();endFrame();replaySnapshots.clearIndexCache();actorJobComplete.reset();actorJobSerial_=0;actorSceneMap_.clear();lastActorCapture=0;terrainBoundsCache.clearPersistent();previousCacheHits=0;freeReplays.clear();pooledSnapshotBytes=0;valid=false;failed=false;releaseGPU(true); /* task 42: the committed MANAGED mesh survives any Reset, failed or not */}
+    void reset(){lightAttachments.reset();smallShadowBones.clear();equipmentLights.reset();equipmentMap.clear();particleLights.reset();particleMap.clear();shadowsComposited=false;pivotValid=false;pivotDistance=12.f;pivotCorrection.reset();pivotSelfCaptured=false;cascadeAnchor.reset();endFrame();replaySnapshots.clearIndexCache();actorJobComplete.reset();actorJobSerial_=0;actorSceneMap_.clear();lastActorCapture=0;terrainBoundsCache.clearPersistent();previousCacheHits=0;freeReplays.clear();pooledSnapshotBytes=0;valid=false;failed=false;releaseGPU(true); /* task 42: the committed MANAGED mesh survives any Reset, failed or not */}
     // 0.3.176 (U0/S0): the sample-frame lines of the selection and upload spans (and the RIGID event
     // lines) are formatted where they are today and written here, from endFrame, so no log write (a
     // vfprintf and fflush under the log lock) is inside a bucketed span. The text is the same.
@@ -2607,6 +2617,24 @@ public:
         float bank[44];if(FAILED(d->GetVertexShaderConstantF(17,bank,11))||!equipmentLights.admit(bank,it->second,actor))return;
         const auto now=GetTickCount();
         for(unsigned i=0;i<it->second;++i){NorthlightEquipmentLights::Native n;if(NorthlightEquipmentLights::decode(bank,i,context.inverseView,context.camera,n)){++equipmentCapture.decoded;equipmentLights.observe(n,now,active->localLights,context.camera);}else ++equipmentCapture.rejected;}
+    }
+    void observeLightAttachments(const Replay& replay,const CaptureShader& metadata){
+        if(!active||!active->lightAttachments||active->lightAttachments->empty()||!metadata.program||!metadata.program->skinned||
+           !(metadata.program->kernel.skin||NorthlightRigidGeometry::oneBoneTemplate(*metadata.program))||metadata.program->paletteBase<0)return;
+        lightAttachments.bind(active->lightAttachments);
+        const auto& mesh=replay.mesh();if(!mesh.primitiveCount||mesh.vertexCount<3)return;
+        const D3DVERTEXELEMENT9* elements=nullptr;UINT count=0;
+        if(!declarationCache.get(replay.decl,elements,count))return;
+        for(UINT i=0;i<count&&elements[i].Stream!=0xff;++i){const auto& e=elements[i];
+            if(e.Usage!=D3DDECLUSAGE_POSITION||e.UsageIndex||e.Type!=D3DDECLTYPE_FLOAT3||e.Stream>=4)continue;
+            const auto& stream=mesh.streams[e.Stream];std::array<float,9> witness{};
+            for(unsigned v=0;v<3;++v){if(mesh.indexed&&mesh.indices.size()<=v)return;
+                const unsigned index=mesh.indexed?mesh.indices[v]:v;if(index>=mesh.vertexCount)return;
+                const size_t offset=size_t(index)*stream.stride+e.Offset;
+                if(offset>stream.bytes.size()||12>stream.bytes.size()-offset)return;
+                std::memcpy(witness.data()+3*v,stream.bytes.data()+offset,12);}
+            lightAttachments.observe(witness,replay.constants,unsigned(metadata.program->paletteBase),context.inverseView);return;
+        }
     }
     unsigned spellLayerSetting()const{return quality.spellLayer;} /* task 34: SpellLayer, SpellLayerClasses and SpellTrace are read once at device creation */
     unsigned spellLayerClassesSetting()const{return quality.spellLayerClasses;}
@@ -3309,7 +3337,7 @@ public:
     bool modelCaptureSkipped(){
         if(captureMode==CaptureUndecided){bool skip=false;
             const bool shadows=NorthlightQuality::actorShadowWork(quality,effects.shadows); /* 0.3.158: ActorShadows=0 = shadows off for capture */
-            if(NorthlightQuality::captureSkipPossible(quality,shadows)){NorthlightQuality::CaptureInputs in;
+            if(NorthlightQuality::captureSkipPossible(quality,shadows)&&lightAttachments.positions.empty()){NorthlightQuality::CaptureInputs in;
                 in.shadows=shadows;in.demand=captureDemand;in.diagnostic=lastRenderDebug==1;in.actorDue=actorCaptureEnabled();in.nextPass=shadowPasses+1;
                 for(int source=0;source<2;++source)in.sourceActive[source]=NorthlightGI::dot(sourceColors[source],sourceColors[source])>1e-10f;
                 in.pointDue=in.shadows&&!in.actorDue&&!in.demand&&pointRefreshPredicted();
@@ -3390,13 +3418,14 @@ public:
         if(sample&&priority)++skinnedCandidates;
         const unsigned triangleBin=NorthlightReplayShadowPolicy::bucket(count);
         if(sample){++replayTriangleBins[triangleBin];if(priority)++skinnedTriangleBins[triangleBin];}
-        const bool smallShadow=(type==D3DPT_TRIANGLELIST||type==D3DPT_TRIANGLESTRIP)&&
+        bool smallShadow=(type==D3DPT_TRIANGLELIST||type==D3DPT_TRIANGLESTRIP)&&
             NorthlightReplayShadowPolicy::small(priority,count,minSkinnedShadowTriangles);
+        const bool smallNeedsProof=smallShadow&&metadata.program&&metadata.program->skinned;
         // Preserve actor GI captures at their existing 200 ms cadence. On other
         // frames skip only this shadow capture, before its device state queries.
         // The game's original draw and the shared draw-domain gate are untouched.
         fate.reason=NorthlightShadowFate::Small;
-        if(smallShadow&&!actorCaptureEnabled()){if(sample)++smallShadowEarly;++rejSmall;return;}
+        if(!smallNeedsProof){if(smallShadow&&!actorCaptureEnabled()){if(sample)++smallShadowEarly;++rejSmall;return;}}
         // 0.3.215 (task 47): a faded actor (stealth, ghosts) draws a depth-only pre-pass (no RGB) before its blended colour pass.
         // It looks opaque, so reject it here, before the admission, the budget and the near reserve (its weapons and parts too).
         fate.reason=NorthlightShadowFate::Fade;
@@ -3460,7 +3489,17 @@ public:
         if(captured&&admit.rooted)admission.admitted(admit,reinterpret_cast<std::uintptr_t>(current),count,root,replaySnapshots.bytesRead()-readBefore);
         if(!captured){if(why.error==NorthlightDrawSnapshot::Error::Budget){fate.reason=NorthlightShadowFate::CaptureBudget;captureShortfall=true;if(admit.rooted)admission.budgetRefused(admit,root,vertexTotal,count);}
             if(sample){captureRejectedBytes+=replaySnapshots.bytesRead()-readBefore;if(priority){++skinnedSnapshotRejected;skinnedBudgetRejected+=why.error==NorthlightDrawSnapshot::Error::Budget;}else otherBudgetRejected+=why.error==NorthlightDrawSnapshot::Error::Budget;}if(snapshotRejects++<12)logf("MODEL snapshot rejected: %s hr=%08lx stream=%u",NorthlightDrawSnapshot::errorName(why.error),(unsigned long)why.hr,why.stream);return;}
-        snapshotSpan.end();phase.next(CaptureConstants);fate.reason=NorthlightShadowFate::Constants;
+        snapshotSpan.end();
+        // M2 fixtures share actor shaders. A single-influence shader alone is
+        // insufficient: every captured vertex must use the same bone.
+        if(smallNeedsProof){
+            const D3DVERTEXELEMENT9* elements=nullptr;UINT n=0;
+            const float bone=declarationCache.get(p->decl,elements,n)?smallShadowBones.bone(*metadata.program,p->mesh(),p->shared,p->decl,elements,n,NorthlightRigidGeometry::oneBoneTemplate(*metadata.program)?1:4):NAN;
+            smallShadow=NorthlightReplayShadowPolicy::small(priority,count,minSkinnedShadowTriangles,std::isfinite(bone)&&bone>=0&&bone<=74&&std::floor(bone)==bone);
+            p->shadowSelected=!smallShadow;p->shadowSmall=smallShadow;p->fateClass=smallShadow?NorthlightShadowFate::Small:NorthlightShadowFate::NotRanked;
+            if(smallShadow&&!actorCaptureEnabled()){fate.reason=NorthlightShadowFate::Small;++rejSmall;return;}
+        }
+        phase.next(CaptureConstants);fate.reason=NorthlightShadowFate::Constants;
         const auto& usage=metadata.usage;
         p->constantUsage=usage;
         const auto f=usage.floats,b=usage.booleans,i=usage.integers;
@@ -3479,6 +3518,7 @@ public:
         },sample?&constantEpochProfile:nullptr,constantSelfCheck,constantSelfCheckState))return;
         if(sample){capturedSM1Draws+=metadata.sm1;capturedRelativeDraws+=usage.relativeFloat;}
         phase.next(CaptureMaterial);fate.reason=NorthlightShadowFate::Material;
+        observeLightAttachments(*p,metadata);
         if(FAILED(d->GetTexture(0,&p->texture))||(alpha&&!p->texture))return;
         if(FAILED(d->GetSamplerState(0,D3DSAMP_ADDRESSU,&p->addressU))||FAILED(d->GetSamplerState(0,D3DSAMP_ADDRESSV,&p->addressV)))return;
         if(p->addressU<D3DTADDRESS_WRAP||p->addressU>D3DTADDRESS_CLAMP||p->addressV<D3DTADDRESS_WRAP||p->addressV>D3DTADDRESS_CLAMP)return;
@@ -3539,20 +3579,23 @@ public:
         const int64_t selectT0=QpcClock::now();
         const double selectDt=localLightQpc&&captureFrequency.QuadPart>0?double(selectT0-localLightQpc)/double(captureFrequency.QuadPart):0;
         const bool selectContinuous=active&&localLightQpc&&selectDt<=NorthlightLocalLightSelection::MaxGapSeconds&&active->map==localLightMap&&!different(vec(context.camera),localLightCamera,40)&&debug==0;
+        lightAttachments.bind(active?active->lightAttachments:nullptr);
+        if(active)lightAttachments.prune(active->localLights,context.camera);
+        const auto* currentLights=active?&lightAttachments.apply(active->localLights,attachedLocalLights):nullptr;
         if(equipmentLightsOn()){
-            equipmentLights.publish(GetTickCount(),active?&active->localLights:nullptr);
+            equipmentLights.publish(GetTickCount(),currentLights);
             if(equipmentLights.suppressedCount){
                 auto ids=equipmentLights.suppressed;std::sort(ids.begin(),ids.begin()+equipmentLights.suppressedCount);
                 localLightTracker.forgetSorted(ids.data(),equipmentLights.suppressedCount);
             }
             NorthlightEquipmentLights::replaceFadingDuplicates(localLightTracker,equipmentLights.output.data(),equipmentLights.outputCount);
-            if(active)particleLights.publish(equipmentLights.output.data(),equipmentLights.outputCount,active->localLights,context.camera,localLightTracker,selectContinuous?float(selectDt):0.f);
+            if(active)particleLights.publish(equipmentLights.output.data(),equipmentLights.outputCount,*currentLights,context.camera,localLightTracker,selectContinuous?float(selectDt):0.f);
             else particleLights.reset();
         }
         // Same camera, projection, near plane and glow start as c0..c6/c58: the selection prefers lights in view (debug views keep the old order), and
         // each batch's rect of the direct (8) and fog (4) passes.
         localScissorView=NorthlightLocalLightScissor::view(context.inverseView,projection,nearZ,LampFogNear,w,h);
-        a.lights=active?localLightTracker.update(active->localLights,context.camera,NorthlightGpuBudget::lightLimit(quality.localLightLimit,gpuBudgetLevel,effects.shadows&&quality.pointShadows?quality.pointShadowLimit:0),float(selectDt),selectContinuous,debug==0?&localScissorView:nullptr,equipmentLightsOn()?particleLights.output.data():nullptr,equipmentLightsOn()?particleLights.outputCount:0,equipmentLightsOn()?particleLights.immediate.data():nullptr,equipmentLightsOn()?particleLights.immediateCount:0,GetTickCount()) /* one shared dynamic cap; particles carry current-frame alpha */:NorthlightLocalLightSelection::Selection{};
+        a.lights=active?localLightTracker.update(*currentLights,context.camera,NorthlightGpuBudget::lightLimit(quality.localLightLimit,gpuBudgetLevel,effects.shadows&&quality.pointShadows?quality.pointShadowLimit:0),float(selectDt),selectContinuous,debug==0?&localScissorView:nullptr,equipmentLightsOn()?particleLights.output.data():nullptr,equipmentLightsOn()?particleLights.outputCount:0,equipmentLightsOn()?particleLights.immediate.data():nullptr,equipmentLightsOn()?particleLights.immediateCount:0,GetTickCount()) /* one shared dynamic cap; particles carry current-frame alpha */:NorthlightLocalLightSelection::Selection{};
         auto& localLights=a.lights;
         {const auto arranged=NorthlightLocalLightBatches::arrange(localLights,localScissorView); /* screen-coherent batches (the passes are sums) */
          if(NorthlightDiagnostics::enabled()){localOffscreenSum+=localLightTracker.offscreen;localArranged+=arranged.arranged;localArrangeBefore+=arranged.before;localArrangeAfter+=arranged.after;}} /* counted with selectUs */

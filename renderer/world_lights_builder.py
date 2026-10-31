@@ -67,6 +67,45 @@ def static_bone_offset(b,bone):
         bone=parent
     return tuple(translation)
 
+def static_bone_point(b,bone,position):
+    """Prove an emitter point is fixed, including rotation about its own pivot.
+
+    This does not freeze a moving bone: translation must be constant; a point
+    away from the pivot still requires identity rotation and scale.
+    """
+    count,offset=unpack('<II',b,44);seen=set();point=tuple(position)
+    while bone>=0:
+        if bone>=count or bone in seen:raise Unsupported('bone_range_or_cycle')
+        seen.add(bone);off=offset+bone*88
+        _,flags,parent=unpack('<iIh',b,off)
+        if flags&0x7f:raise Unsupported('bone_billboard_or_inheritance_flags')
+        if flags&0x200:
+            translation=constant_track(b,off+16,'<3f',(0.,0.,0.))
+            pivot=unpack('<3f',b,off+76)
+            if point==pivot:
+                # Every linear rotation/scale fixes its pivot. Validate the
+                # complete tracks, but do not mistake animation for motion here.
+                for relative,fmt in ((36,'<4h'),(56,'<3f')):
+                    interpolation,_,nt,ot,nk,ok=unpack('<hh4I',b,off+relative)
+                    if interpolation not in (0,1):raise Unsupported('nonlinear_track')
+                    stamps,keys=array(b,ot,nt,'<II'),array(b,ok,nk,'<II')
+                    if len(stamps)!=len(keys):raise Unsupported('track_array_mismatch')
+                    for (tc,to),(kc,ko) in zip(stamps,keys):
+                        if tc!=kc or kc>16384:raise Unsupported('track_key_count_mismatch')
+                        times=array(b,to,tc,'<I');values=array(b,ko,kc,fmt)
+                        if any(x[0]>y[0] for x,y in zip(times,times[1:])):raise Unsupported('unordered_track')
+                        if not all(math.isfinite(x) for row in values for x in row):raise Unsupported('nonfinite_track')
+            else:
+                rotation=constant_track(b,off+36,'<4h',(32767,32767,32767,-1))
+                rotation=tuple((v-32767 if v>0 else v+32767)/32767 for v in rotation)
+                scale=constant_track(b,off+56,'<3f',(1.,1.,1.))
+                if any(abs(rotation[i])>1e-4 for i in range(3)) or abs(abs(rotation[3])-1)>1e-4 or scale!=(1.,1.,1.):
+                    raise Unsupported('nonidentity_bone_rotation_or_scale')
+            point=tuple(point[k]+translation[k] for k in range(3))
+        bone=parent
+    if not all(math.isfinite(x) for x in point):raise Unsupported('nonfinite_bone_point')
+    return point
+
 def valid_light(position,color,start,end):
     return (all(math.isfinite(x) for x in (*position,*color,start,end)) and
             all(abs(x)<100000 for x in position) and all(0<=x<=10000 for x in color) and
@@ -141,9 +180,10 @@ def instance_lights(lights,record,path):
 def build(cache,output,maps,assets=None,manifest='manifest.json'):
     import world_emitter_index
     import point_transmission_builder
+    import light_attachments
     catalog=outdoor_light_profiles.load()
     started=time.time();assets=assets or Assets();stats=collections.Counter();extracted={};provenance={};errors=[];reports=[]
-    placement_cache={};placement_provenance={};unsupported_assets={}
+    placement_cache={};placement_provenance={};unsupported_assets={};attachment_templates={}
     emitter_index=world_emitter_index.Index(assets)
     def read_placement_wmo(path):
         if path not in placement_cache:
@@ -153,7 +193,7 @@ def build(cache,output,maps,assets=None,manifest='manifest.json'):
     try:
         names={hashlib.sha256(('FGS3-v1:'+name).encode()).digest():name for name in assets.providers if name.endswith(('.m2','.wmo'))}
         for mapname in maps:
-            records=[];owners={};profile_counts=collections.Counter();seen=set();tiles=sorted((cache/mapname).glob('*.fg3'));inputs=hashlib.sha256()
+            records=[];attachments=[];owners={};profile_counts=collections.Counter();seen=set();tiles=sorted((cache/mapname).glob('*.fg3'));inputs=hashlib.sha256()
             if not tiles:raise ValueError('No FGS3 tiles for '+mapname)
             missing_mesh_lights=0;missing_mesh_instances=0;adt_count=0
             def consume(r,path=None,missing_mesh=False):
@@ -169,7 +209,8 @@ def build(cache,output,maps,assets=None,manifest='manifest.json'):
                 if path not in extracted:
                     try:
                         blob=assets.read(path);before=stats.copy()
-                        extracted[path]=extract_wmo(blob,stats) if path.endswith('.wmo') else extract_m2(blob,stats)
+                        moving_native=light_attachments.native_sources(blob) if path.endswith('.m2') else []
+                        extracted[path]=extract_wmo(blob,stats) if path.endswith('.wmo') else extract_m2(blob,stats)+moving_native
                         if path.endswith('.wmo'):
                             try:material_names=wmo_lamp_emission.candidates(blob)
                             except (ValueError,IndexError,KeyError,struct.error) as exc:
@@ -197,6 +238,16 @@ def build(cache,output,maps,assets=None,manifest='manifest.json'):
                             extracted[path]=world_emitter_index.records(authored)
                         else:
                             extracted[path]=outdoor_light_profiles.fallback(catalog,path,blob,extracted[path])
+                        if path.endswith('.m2'):
+                            try:attachment_templates[path]=light_attachments.templates(assets,path,blob,extracted[path]) if extracted[path] else []
+                            except (ValueError,FileNotFoundError,IndexError,struct.error) as exc:
+                                attachment_templates[path]=[];errors.append({'asset':path,'attachment_error':str(exc)})
+                            # A moving native source without a proven palette
+                            # attachment must not become a bind-pose light.
+                            supported={t[0] for t in attachment_templates[path]}
+                            unsupported={s[4] for s in moving_native}-supported
+                            stats['unsupported_m2_attachment']+=len(unsupported)
+                            extracted[path]=[s for s in extracted[path] if s[5]!=2 or s[4] not in unsupported]
                         rejected={k:v for k,v in (stats-before).items() if k.startswith('unsupported_')}
                         if rejected:unsupported_assets[path]=rejected
                         if extracted[path]:
@@ -207,6 +258,8 @@ def build(cache,output,maps,assets=None,manifest='manifest.json'):
                         extracted[path]=[];errors.append({'asset':path,'error':str(exc)})
                 try:
                     placed=instance_lights(extracted[path],r,path);records.extend(placed)
+                    attachments.extend(light_attachments.placed(attachment_templates.get(path,[]),r,
+                        [(source[4],light) for source,light in zip(extracted[path],placed)]))
                     for light in placed:
                         owners[light[8]]=(kind,uid)
                         if light[9]==3:profile_counts[path]+=1
@@ -249,7 +302,12 @@ def build(cache,output,maps,assets=None,manifest='manifest.json'):
                 f.write(struct.pack('<4sIII',b'FGL1',1,RECORD.size,len(records)))
                 for r in records:f.write(RECORD.pack(*r))
             retry(temp.replace,destination)
+            retained={r[8] for r in records}
+            attachment_path=output/(mapname+'.fga');attachment_temp=attachment_path.with_suffix(f'.{os.getpid()}.tmp')
+            light_attachments.write(attachment_temp,[a for a in attachments if a[0] in retained])
+            retry(attachment_temp.replace,attachment_path)
             report={'map':mapname,'tiles':len(tiles),'unique_instances':len(seen),'lights':len(records),
+                    'attached_sources':len({a[0] for a in attachments if a[0] in retained}),
                     'kinds':dict(collections.Counter(r[9] for r in records)),
                     'authored_profile_placements':dict(profile_counts),'parent_native_duplicates_suppressed':suppressed,
                     'cache_sha256':hashlib.sha256(destination.read_bytes()).hexdigest(),
