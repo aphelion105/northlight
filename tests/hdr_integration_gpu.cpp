@@ -102,7 +102,7 @@ int main(int argc,char** argv){
         ok(d->BeginScene());ok(color.draw(d,160,[&]{return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(UiVertex));}));ok(d->EndScene());float actual[4];pixel(d,target,staging,actual);
         for(unsigned c=0;c<4;++c){double a=original[3],expected;
             if(c==3)expected=blend==0?a:(blend==1?a*a+1-a:(blend==2?1:a));
-            else{double background=(c+1)*.2,source=decode(blend==2?original[c]/std::max(a,.000001):original[c])*(blend==3?1:2);
+            else{double background=(c+1)*.2,source=decode(std::min(1.,blend==2?original[c]/std::max(a,.000001):original[c]))*(blend==3?1:2);
                 if(blend==2)source*=a;expected=blend==0?source:(blend==1?source*a+background*(1-a):(blend==2?source+background*(1-a):source*background));}
             double error=std::fabs(actual[c]-expected);maximum=std::max(maximum,error);
             if(!std::isfinite(actual[c])||error>3e-5){if(failures++<4)std::printf("FAIL shader=%u blend=%u alpha=%.2f channel=%u got=%.9g want=%.9g\n",program,blend,alpha,c,actual[c],expected);}

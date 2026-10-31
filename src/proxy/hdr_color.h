@@ -5,22 +5,59 @@
 #include "hdr_ui_patch.h"
 #include "hdr_compiled_shaders.h"
 #include "saved_state.h"
+#include "hdr_quad.h"
 
 namespace NorthlightHdr {
 class Color {
     struct Entry {IDirect3DPixelShader9* shader[3]{};bool attempted[3]{};};
-    std::unordered_map<IDirect3DPixelShader9*,Entry> shaders;
+    std::unordered_map<IDirect3DPixelShader9*,Entry> shaderBanks[2];
     IDirect3DPixelShader9* world=nullptr;
-    float white=0;
+    IDirect3DPixelShader9* fixedUi=nullptr;
+    IDirect3DPixelShader9* layerShader=nullptr;IDirect3DTexture9* layerTexture=nullptr;
+    IDirect3DSurface9* layerSurface=nullptr;IDirect3DSurface9* layerMsaa=nullptr;D3DSURFACE_DESC layerDesc{};
+    float uiScale=0;
     template<class T> static void release(T*& p){if(p){p->Release();p=nullptr;}}
 public:
     unsigned patched=0,rejected=0;
+    std::uint64_t layers=0,layerPixels=0,screenDirect=0;
     ~Color(){reset();}
-    void forget(IDirect3DPixelShader9* original){auto it=shaders.find(original);if(it!=shaders.end()){for(auto*& p:it->second.shader)release(p);shaders.erase(it);}}
-    void reset(){for(auto& e:shaders)for(auto*& p:e.second.shader)release(p);shaders.clear();release(world);white=0;}
+    std::uint64_t payloadBytes()const{return std::uint64_t(layerDesc.Width)*layerDesc.Height*4*((layerTexture?1:0)+(layerMsaa?unsigned(layerDesc.MultiSampleType):0));}
+    void forget(IDirect3DPixelShader9* original){for(auto& shaders:shaderBanks){auto it=shaders.find(original);if(it!=shaders.end()){for(auto*& p:it->second.shader)release(p);shaders.erase(it);}}}
+    void reset(){for(auto& shaders:shaderBanks){for(auto& e:shaders)for(auto*& p:e.second.shader)release(p);shaders.clear();}release(world);release(fixedUi);release(layerShader);release(layerSurface);release(layerTexture);release(layerMsaa);layerDesc={};uiScale=0;}
+    template<class Draw> HRESULT legacyLayer(IDirect3DDevice9* d,float uiWhite,Draw submit){
+        SavedState saved(d);if(!saved.ok)return E_FAIL;
+        D3DSURFACE_DESC desc{};HRESULT hr=saved.targets[0]->GetDesc(&desc);if(FAILED(hr))return hr;
+        ++layers;layerPixels+=std::uint64_t(desc.Width)*desc.Height;
+        DWORD enabled=0,src=0,dst=0,writes=15;d->GetRenderState(D3DRS_ALPHABLENDENABLE,&enabled);d->GetRenderState(D3DRS_SRCBLEND,&src);d->GetRenderState(D3DRS_DESTBLEND,&dst);d->GetRenderState(D3DRS_COLORWRITEENABLE,&writes);
+        const bool factor=enabled&&((src==D3DBLEND_DESTCOLOR&&dst==D3DBLEND_ZERO)||(src==D3DBLEND_ZERO&&(dst==D3DBLEND_SRCCOLOR||dst==D3DBLEND_INVSRCALPHA)));
+        const bool premultiplied=enabled&&!factor&&(src==D3DBLEND_SRCALPHA||dst==D3DBLEND_INVSRCALPHA);
+        if(desc.Width!=layerDesc.Width||desc.Height!=layerDesc.Height||desc.MultiSampleType!=layerDesc.MultiSampleType||desc.MultiSampleQuality!=layerDesc.MultiSampleQuality){release(layerSurface);release(layerTexture);release(layerMsaa);layerDesc=desc;}
+        if(!layerTexture){hr=d->CreateTexture(desc.Width,desc.Height,1,D3DUSAGE_RENDERTARGET,D3DFMT_A8R8G8B8,D3DPOOL_DEFAULT,&layerTexture,nullptr);if(SUCCEEDED(hr))hr=layerTexture->GetSurfaceLevel(0,&layerSurface);if(FAILED(hr))return hr;}
+        if(desc.MultiSampleType&&!layerMsaa){hr=d->CreateRenderTarget(desc.Width,desc.Height,D3DFMT_A8R8G8B8,desc.MultiSampleType,desc.MultiSampleQuality,FALSE,&layerMsaa,nullptr);if(FAILED(hr))return hr;}
+        if(!layerShader){hr=d->CreatePixelShader(reinterpret_cast<const DWORD*>(kHdrLayer),&layerShader);if(FAILED(hr))return hr;}
+        for(unsigned i=1;i<4;++i)d->SetRenderTarget(i,nullptr);
+        hr=d->SetRenderTarget(0,layerMsaa?layerMsaa:layerSurface);if(FAILED(hr))return hr;
+        const D3DVIEWPORT9 full={0,0,desc.Width,desc.Height,0,1};DWORD scissor=0;d->GetRenderState(D3DRS_SCISSORTESTENABLE,&scissor);
+        d->SetViewport(&full);d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);d->Clear(0,nullptr,D3DCLEAR_TARGET,factor?0xffffffff:0,1,0);
+        d->SetViewport(&saved.viewport);d->SetRenderState(D3DRS_SCISSORTESTENABLE,scissor);
+        d->SetRenderState(D3DRS_SRGBWRITEENABLE,FALSE);d->SetRenderState(D3DRS_COLORWRITEENABLE,15);
+        d->SetRenderState(D3DRS_SEPARATEALPHABLENDENABLE,TRUE);d->SetRenderState(D3DRS_SRCBLENDALPHA,D3DBLEND_ONE);d->SetRenderState(D3DRS_DESTBLENDALPHA,enabled?D3DBLEND_INVSRCALPHA:D3DBLEND_ZERO);d->SetRenderState(D3DRS_BLENDOPALPHA,D3DBLENDOP_ADD);
+        hr=submit();if(FAILED(hr))return hr;
+        if(layerMsaa){hr=d->StretchRect(layerMsaa,nullptr,layerSurface,nullptr,D3DTEXF_NONE);if(FAILED(hr))return hr;}
+        hr=quadState(d,saved.targets[0],desc.Width,desc.Height);if(FAILED(hr))return hr;
+        const float scale[]={uiWhite/80,uiWhite/80,uiWhite/80,1},parameters[]={premultiplied?1.f:0.f,factor&&src==D3DBLEND_ZERO&&dst==D3DBLEND_INVSRCALPHA?1.f:0.f,0,0};
+        d->SetPixelShaderConstantF(0,scale,1);d->SetPixelShaderConstantF(2,parameters,1);d->SetPixelShader(layerShader);d->SetTexture(0,layerTexture);
+        d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE);d->SetRenderState(D3DRS_SRCBLEND,factor?D3DBLEND_DESTCOLOR:D3DBLEND_ONE);
+        d->SetRenderState(D3DRS_DESTBLEND,factor?D3DBLEND_ZERO:!enabled||dst==D3DBLEND_INVSRCALPHA?D3DBLEND_INVSRCALPHA:D3DBLEND_ONE);
+        d->SetRenderState(D3DRS_COLORWRITEENABLE,writes);
+        return drawQuad(d,desc.Width,desc.Height);
+    }
     IDirect3DPixelShader9* replacement(IDirect3DDevice9* d,IDirect3DPixelShader9* original,float uiWhite,unsigned variant){
         if(!original||variant>2)return nullptr;
-        if(white!=uiWhite){reset();white=uiWhite;}
+        // World/sky radiance and UI white alternate every frame. Retain both
+        // scales; a live UI adjustment invalidates only its own bounded bank.
+        auto& shaders=shaderBanks[uiWhite==80?0:1];
+        if(uiWhite!=80&&uiScale!=uiWhite){for(auto& e:shaders)for(auto*& p:e.second.shader)release(p);shaders.clear();uiScale=uiWhite;}
         auto it=shaders.find(original);if(it==shaders.end()){if(shaders.size()>=128){++rejected;return nullptr;}it=shaders.emplace(original,Entry{}).first;}
         auto& entry=it->second;if(entry.attempted[variant])return entry.shader[variant];entry.attempted[variant]=true;
         UINT bytes=0;HRESULT hr=original->GetFunction(nullptr,&bytes);
@@ -34,15 +71,55 @@ public:
            FAILED(d->CreatePixelShader(reinterpret_cast<const DWORD*>(result.data()),&entry.shader[variant]))){++rejected;return nullptr;}
         ++patched;return entry.shader[variant];
     }
+    template<class Draw> HRESULT fixedDraw(IDirect3DDevice9* d,float uiWhite,Draw submit){
+        DWORD fog=0,next=0,coordinates=0,transform=0,blend=0,src=0,dst=0;
+        if(FAILED(d->GetRenderState(D3DRS_FOGENABLE,&fog))||fog||
+           FAILED(d->GetTextureStageState(1,D3DTSS_COLOROP,&next))||next!=D3DTOP_DISABLE||
+           FAILED(d->GetTextureStageState(0,D3DTSS_TEXCOORDINDEX,&coordinates))||coordinates||
+           FAILED(d->GetTextureStageState(0,D3DTSS_TEXTURETRANSFORMFLAGS,&transform))||transform!=D3DTTFF_DISABLE)return legacyLayer(d,uiWhite,submit);
+        float flags[4]{};
+        for(unsigned channel=0;channel<2;++channel){
+            DWORD op=0;if(FAILED(d->GetTextureStageState(0,channel?D3DTSS_ALPHAOP:D3DTSS_COLOROP,&op)))return E_FAIL;
+            if(channel&&op==D3DTOP_DISABLE){flags[3]=1;continue;}
+            if(op!=D3DTOP_SELECTARG1&&op!=D3DTOP_SELECTARG2&&op!=D3DTOP_MODULATE)return legacyLayer(d,uiWhite,submit);
+            for(unsigned arg=1;arg<=2;++arg){
+                if((op==D3DTOP_SELECTARG1&&arg==2)||(op==D3DTOP_SELECTARG2&&arg==1))continue;
+                DWORD value=0;const auto state=channel?(arg==1?D3DTSS_ALPHAARG1:D3DTSS_ALPHAARG2):(arg==1?D3DTSS_COLORARG1:D3DTSS_COLORARG2);
+                if(FAILED(d->GetTextureStageState(0,state,&value)))return E_FAIL;
+                if(value==D3DTA_TEXTURE){if(flags[channel*2])return legacyLayer(d,uiWhite,submit);flags[channel*2]=1;}
+                else if(value==D3DTA_DIFFUSE||value==D3DTA_CURRENT){if(flags[channel*2+1])return legacyLayer(d,uiWhite,submit);flags[channel*2+1]=1;}
+                else return legacyLayer(d,uiWhite,submit);
+            }
+        }
+        // Sampling an absent texture has special fixed-function semantics.
+        if(flags[0]||flags[2]){IDirect3DBaseTexture9* texture=nullptr;const HRESULT hr=d->GetTexture(0,&texture);const bool present=texture!=nullptr;release(texture);if(FAILED(hr))return hr;if(!present)return legacyLayer(d,uiWhite,submit);}
+        d->GetRenderState(D3DRS_ALPHABLENDENABLE,&blend);d->GetRenderState(D3DRS_SRCBLEND,&src);d->GetRenderState(D3DRS_DESTBLEND,&dst);
+        if(blend&&(src==D3DBLEND_DESTCOLOR||src==D3DBLEND_ZERO))return legacyLayer(d,uiWhite,submit);
+        if(!fixedUi){const HRESULT hr=d->CreatePixelShader(reinterpret_cast<const DWORD*>(kHdrFixedUi),&fixedUi);if(FAILED(hr))return hr;}
+        float constants[8];DWORD srgb=0;HRESULT hr=d->GetPixelShaderConstantF(0,constants,2);if(FAILED(hr))return hr;
+        hr=d->GetRenderState(D3DRS_SRGBWRITEENABLE,&srgb);if(FAILED(hr))return hr;
+        struct Restore{IDirect3DDevice9* d;float* constants;DWORD srgb,src;bool screen;~Restore(){d->SetPixelShader(nullptr);d->SetPixelShaderConstantF(0,constants,2);d->SetRenderState(D3DRS_SRGBWRITEENABLE,srgb);if(screen)d->SetRenderState(D3DRS_SRCBLEND,src);}}restore{d,constants,srgb,src,blend&&src==D3DBLEND_INVDESTCOLOR&&dst==D3DBLEND_ONE};
+        const float scale[]={uiWhite/80,uiWhite/80,uiWhite/80,blend&&src==D3DBLEND_ONE&&dst==D3DBLEND_INVSRCALPHA?1.f:0.f};
+        hr=d->SetPixelShader(fixedUi);if(SUCCEEDED(hr))hr=d->SetPixelShaderConstantF(0,scale,1);
+        if(SUCCEEDED(hr))hr=d->SetPixelShaderConstantF(1,flags,1);
+        if(SUCCEEDED(hr))hr=d->SetRenderState(D3DRS_SRGBWRITEENABLE,FALSE);
+        if(SUCCEEDED(hr)&&restore.screen){++screenDirect;hr=d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE);}
+        if(SUCCEEDED(hr))hr=submit();return hr;
+    }
     template<class Draw> HRESULT draw(IDirect3DDevice9* d,float uiWhite,Draw submit){
         IDirect3DPixelShader9* original=nullptr;
-        if(FAILED(d->GetPixelShader(&original))||!original){++rejected;return submit();}
+        if(FAILED(d->GetPixelShader(&original)))return E_FAIL;
+        if(!original)return fixedDraw(d,uiWhite,submit);
         DWORD src=0,dst=0,srgb=0,blend=0;d->GetRenderState(D3DRS_SRCBLEND,&src);d->GetRenderState(D3DRS_DESTBLEND,&dst);d->GetRenderState(D3DRS_SRGBWRITEENABLE,&srgb);d->GetRenderState(D3DRS_ALPHABLENDENABLE,&blend);
-        struct Restore {IDirect3DDevice9* d;IDirect3DPixelShader9* ps;DWORD srgb;~Restore(){d->SetPixelShader(ps);if(srgb)d->SetRenderState(D3DRS_SRGBWRITEENABLE,srgb);ps->Release();}} restore{d,original,srgb};
+        const bool screen=blend&&src==D3DBLEND_INVDESTCOLOR&&dst==D3DBLEND_ONE;
+        struct Restore {IDirect3DDevice9* d;IDirect3DPixelShader9* ps;DWORD srgb,src;bool screen;~Restore(){d->SetPixelShader(ps);if(srgb)d->SetRenderState(D3DRS_SRGBWRITEENABLE,srgb);if(screen)d->SetRenderState(D3DRS_SRCBLEND,src);ps->Release();}} restore{d,original,srgb,src,screen};
+        // The compatibility layer converted screen sources to linear additive
+        // light. A patched shader can do the same on its original geometry.
         const unsigned variant=blend&&src==D3DBLEND_ONE&&dst==D3DBLEND_INVSRCALPHA?1:
             (blend&&((src==D3DBLEND_DESTCOLOR&&dst==D3DBLEND_ZERO)||(src==D3DBLEND_ZERO&&dst==D3DBLEND_SRCCOLOR))?2:0);
-        auto* shader=replacement(d,original,uiWhite,variant);if(!shader)return submit();
+        auto* shader=replacement(d,original,uiWhite,variant);if(!shader)return legacyLayer(d,uiWhite,submit);
         HRESULT hr=d->SetPixelShader(shader);if(SUCCEEDED(hr))hr=d->SetRenderState(D3DRS_SRGBWRITEENABLE,FALSE);
+        if(SUCCEEDED(hr)&&screen){++screenDirect;hr=d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE);}
         if(SUCCEEDED(hr))hr=submit();return hr;
     }
     HRESULT convertWorld(IDirect3DDevice9* d,IDirect3DSurface9* source,IDirect3DSurface9* target,IDirect3DTexture9* copy,IDirect3DSurface9* copySurface,
@@ -50,22 +127,9 @@ public:
         if(!world){HRESULT hr=d->CreatePixelShader(reinterpret_cast<const DWORD*>(kHdrWorld),&world);if(FAILED(hr))return hr;}
         SavedState saved(d,pool);if(!saved.ok)return E_FAIL;
         HRESULT hr=d->SetTexture(0,nullptr);if(SUCCEEDED(hr))hr=d->StretchRect(source,nullptr,copySurface,nullptr,D3DTEXF_NONE);if(FAILED(hr))return hr;
-        d->SetDepthStencilSurface(nullptr);for(unsigned i=1;i<4;++i)d->SetRenderTarget(i,nullptr);
-        hr=d->SetRenderTarget(0,target);if(FAILED(hr))return hr;
-        d->SetVertexShader(nullptr);d->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1);d->SetStreamSourceFreq(0,1);
-        const struct {D3DRENDERSTATETYPE name;DWORD value;} states[]={
-            {D3DRS_ZENABLE,FALSE},{D3DRS_ZWRITEENABLE,FALSE},{D3DRS_ALPHATESTENABLE,FALSE},{D3DRS_ALPHABLENDENABLE,FALSE},
-            {D3DRS_SEPARATEALPHABLENDENABLE,FALSE},{D3DRS_STENCILENABLE,FALSE},{D3DRS_SCISSORTESTENABLE,FALSE},
-            {D3DRS_FOGENABLE,FALSE},{D3DRS_LIGHTING,FALSE},{D3DRS_CULLMODE,D3DCULL_NONE},{D3DRS_FILLMODE,D3DFILL_SOLID},
-            {D3DRS_COLORWRITEENABLE,15},{D3DRS_SRGBWRITEENABLE,FALSE},{D3DRS_CLIPPLANEENABLE,0},{D3DRS_MULTISAMPLEMASK,0xffffffff}};
-        for(auto s:states){hr=d->SetRenderState(s.name,s.value);if(FAILED(hr))return hr;}
-        d->SetSamplerState(0,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(0,D3DSAMP_MAGFILTER,D3DTEXF_POINT);d->SetSamplerState(0,D3DSAMP_MIPFILTER,D3DTEXF_NONE);
-        d->SetSamplerState(0,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(0,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);d->SetSamplerState(0,D3DSAMP_SRGBTEXTURE,FALSE);
-        D3DVIEWPORT9 vp={0,0,width,height,0,1};d->SetViewport(&vp);
+        hr=quadState(d,target,width,height);if(FAILED(hr))return hr;
         float scale[]={paperWhite/80,paperWhite/80,paperWhite/80,maxNits/80},grade[]={contrast,std::exp2(exposure),0,0};d->SetPixelShaderConstantF(0,scale,1);d->SetPixelShaderConstantF(1,grade,1);d->SetPixelShader(world);d->SetTexture(0,copy);
-        struct Vertex {float x,y,z,w,u,v;};
-        const Vertex quad[]={{-.5f,-.5f,0,1,0,0},{float(width)-.5f,-.5f,0,1,1,0},{-.5f,float(height)-.5f,0,1,0,1},{float(width)-.5f,float(height)-.5f,0,1,1,1}};
-        return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(Vertex));
+        return drawQuad(d,width,height);
     }
 };
 }
