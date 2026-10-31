@@ -329,7 +329,8 @@ class Impl final : public Overlay {
         device->SetTextureStageState(0,D3DTSS_RESULTARG,D3DTA_CURRENT);
         device->SetStreamSourceFreq(0,1);
         if(FAILED(device->BeginScene()))return;
-        ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
+        // Overlay::draw requires the caller's SavedState; keep transform backup in the backend.
+        ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData(),false);
         device->EndScene();
         checkpoint();
     }
