@@ -44,13 +44,14 @@ struct IDirect3DVertexShader9:Ref{};struct IDirect3DPixelShader9:Ref{};
 #include "hdr_boundary_texture.h"
 struct Backend{
     IDirect3DVertexShader9 vs;IDirect3DPixelShader9 ps;IDirect3DVertexDeclaration9 declaration;
+    IDirect3DVertexShader9* vertex=&vs;
     bool fixedVs=false,fixedPs=false,pixelProjection=false,scaledProjection=false;D3DVIEWPORT9 viewport;DWORD fvf=D3DFVF_XYZRHW,z=0,write=0,function=D3DCMP_ALWAYS;
     std::unordered_map<DWORD,IDirect3DBaseTexture9*> textures;
     bool failVs=false,failPs=false,failTexture=false,failViewport=false;unsigned textureReads=0;
     int legacy=11,presentation=7;bool hdrBound=false;
     bool peekVertexShader(IDirect3DVertexShader9*&){return false;}
     HRESULT GetViewport(D3DVIEWPORT9* out){*out=viewport;return failViewport?E_FAIL:S_OK;}
-    HRESULT GetVertexShader(IDirect3DVertexShader9** out){if(failVs)return E_FAIL;*out=fixedVs?nullptr:&vs;if(*out)vs.AddRef();return S_OK;}
+    HRESULT GetVertexShader(IDirect3DVertexShader9** out){if(failVs)return E_FAIL;*out=fixedVs?nullptr:vertex;if(*out)(*out)->AddRef();return S_OK;}
     HRESULT GetPixelShader(IDirect3DPixelShader9** out){if(failPs)return E_FAIL;*out=fixedPs?nullptr:&ps;if(*out)ps.AddRef();return S_OK;}
     HRESULT GetTexture(DWORD stage,IDirect3DBaseTexture9** out){++textureReads;if(failTexture)return E_FAIL;*out=textures[stage];if(*out)(*out)->AddRef();return S_OK;}
     HRESULT GetRenderState(DWORD state,DWORD* out){*out=state==D3DRS_ZFUNC?function:state==D3DRS_ZENABLE?z:write;return S_OK;}
@@ -82,12 +83,14 @@ struct Fixture{
     ~Fixture(){assert(backend.vs.refs==1&&backend.ps.refs==1);}
     template<class T>static void drop(T*& value){if(value)value->Release();value=nullptr;}
     template<class Work>void extensionWork(const char*,Work work){work();}
-    static constexpr int kTagMask=3,kWaterTag=4;
+    static constexpr int kTagMask=3,kWaterTag=4,kUiTextTag=256;
+    std::unordered_map<IDirect3DVertexShader9*,int> vsTags;unsigned vsGeneration=0;
     struct VsClass{int entry=2;bool world=false,wmo=false,skinned=false;};VsClass vc;
     bool stockUi=true,hdrWorldSeen=false;bool& terrain=world;
-    struct{bool isBoundary(std::uintptr_t,unsigned){return false;}bool armed(){return false;}bool disarmed(){return false;}}uiFallback;
-    const VsClass& classifyVs(IDirect3DVertexShader9* shader){vc.entry=stockUi&&shader?2:0;return vc;}
-    bool fullViewport(D3DSURFACE_DESC&,void*,bool,bool){return true;}
+    struct{bool isBoundary(std::uintptr_t,unsigned){return false;}bool armed()const{return false;}bool disarmed(){return false;}std::uintptr_t learnedVs()const{return 0;}}uiFallback;
+    const VsClass& classifyVs(IDirect3DVertexShader9* shader){vc.entry=(stockUi&&shader?2:0)|vsTags[shader];return vc;}
+    bool fullViewportOk=true;
+    bool fullViewport(D3DSURFACE_DESC&,void*,bool,bool){return fullViewportOk;}
     bool hdrBackTarget(){return backbuffer;}
     bool hdrSkyDraw(){++skyCaptures;if(failSky)return false;hdrSkyValid=true;return true;}
     void renderEffects(){++effects;applied=world;}
@@ -121,6 +124,37 @@ int main(){
 #endif
     }
 #ifndef NORTHLIGHT_HDR_BOUNDARY_COUNTERFACTUAL
+    // A font mod uses different VS identities for logical UI and physical-pixel
+    // text. HDR completes before the old dominant-shader fallback can learn.
+    {Fixture f;IDirect3DTexture9 atlas;IDirect3DVertexShader9 font;
+        f.stockUi=false;f.world=true;f.backend.scaledProjection=true;f.backend.textures[0]=&atlas;
+        assert(!f.uiTextVs(&f.backend.vs,0));
+        assert(f.draw(101)==S_OK&&f.hdrUiPhase);
+        assert(f.uiTextVs(&f.backend.vs,f.vsTags[&f.backend.vs]));
+        f.backend.vertex=&font;f.shaderReads[&font]=f.shaderReads[&f.backend.vs];
+        f.backend.scaledProjection=false;f.backend.pixelProjection=true;
+        assert(f.draw(102)==S_OK&&f.begins==1);
+        assert(f.uiTextVs(&font,f.vsTags[&font])&&f.vsGeneration==2);
+        const auto reads=f.backend.textureReads;
+        assert(f.draw(103)==S_OK&&f.vsGeneration==2&&f.backend.textureReads==reads);
+        // Next-frame perspective names reuse both proven identities. A reused
+        // shader address loses the proof when CreateVertexShader replaces tags.
+        f.backend.pixelProjection=false;f.backend.viewport.MaxZ=.94f;f.backend.z=f.backend.write=1;f.backend.function=4;
+        assert(f.uiTextVs(&font,f.vsTags[&font]));
+        assert(f.uiTextVs(&f.backend.vs,f.vsTags[&f.backend.vs]));
+        f.vsTags[&font]=0;++f.vsGeneration;assert(!f.uiTextVs(&font,f.vsTags[&font]));
+        assert(font.refs==1);
+    }
+    for(unsigned reject=0;reject<11;++reject){
+        Fixture f;IDirect3DTexture9 atlas;f.stockUi=false;f.world=true;f.hdrUiPhase=true;
+        f.backend.pixelProjection=true;f.backend.textures[0]=&atlas;
+        switch(reject){case 0:f.backend.write=1;break;case 1:f.backend.z=1;f.backend.function=4;break;
+            case 2:f.backend.viewport.MaxZ=.94f;break;case 3:atlas.usage=D3DUSAGE_RENDERTARGET;break;
+            case 4:f.vc.world=true;break;case 5:f.vc.wmo=true;break;case 6:f.vc.skinned=true;break;
+            case 7:f.vsTags[&f.backend.vs]=Fixture::kWaterTag;break;case 8:f.fullViewportOk=false;break;
+            case 9:f.backbuffer=false;break;case 10:f.backend.failVs=true;break;}
+        assert(f.draw(104)==S_OK&&!f.uiTextVs(&f.backend.vs,f.vsTags[&f.backend.vs])&&f.vsGeneration==0);
+    }
     // The first main sky layer starts linear capture even before a celestial
     // source is visible. Subsequent layers reuse it; offscreen targets cannot.
     {Fixture f;f.backend.viewport.MinZ=.9990234375f;
