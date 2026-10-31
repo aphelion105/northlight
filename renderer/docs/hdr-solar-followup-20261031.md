@@ -29,3 +29,11 @@ Reordering bright extraction to calculate its common scalar before multiplying R
 3. CPU admission/state inspection: measured HDR admission is about 0.05 ms and finishing about 0.02 ms. Require measured savings and invalidation/failure controls before introducing state caches. Finish is nested inside boundary time; transfer time includes native submission.
 
 There are seven accepted mechanisms in the preceding two optimization waves. This follow-up adds a correctness fix and rejects a performance candidate. Sixty independently validated optimizations per direction have not been established. The remaining full-frame overhead, representative night/interior coverage and deferred two-monitor test stay open.
+
+## Final installed package confirmation
+
+The complete `.8` installer contains production snapshot `80f322d0`; archive SHA-256 `d5860e5e7059e09f9da25ef1c153d648c94ed389d0bbc1ef3adbc2f71ec3b32f`. Its DLL SHA-256 is `aba60c2ec6b8b4b5bad4a5f9733a4d584d456fc22e5ca0accaa340c22fdcf905`, matching the offline-tested and installed bytes.
+
+The requested character subsequently entered the world autonomously on this exact DLL. The final session confirms active scRGB, zero compatibility layers/pixels in all 86 work samples, and no HDR frame/conversion or extension faults. Ctrl+R remains visible and renderer settings retain their pre-test SHA-256 `3b9c1ee874711e77c08f679914a2edf58cfac1bc18fefe7853d57b2baa251f84`. The camera was returned approximately to its ordinary third-person view and the client closed to flush its log.
+
+Private `client-package8-complete.log` is 8,057,616 bytes, SHA-256 `1fe7cb944cd9baa3efcc1d39498378e4f13f9e14aa0de9336bcf88a7b4d7d53d`. This final run is HDR-only, includes loading and camera changes, and supplies no new bracketed HDR/SDR performance comparison. It does not replace the `.7` marked windows.
