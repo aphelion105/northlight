@@ -32,6 +32,16 @@ int main(int argc,char** argv){
         unsigned found=0;for(const auto& f:fields)if(f.file==0&&f.key==key){++found;assert(f.available&&f.apply=="F");auto changed=applyChanges(docs,fields,f.id()+"\t"+f.factory+"\n");assert(configOf(changed,"").quality.preset==active.quality.preset);}assert(found==1);
     }
     for(const auto* value:{"High","Medium","Low"}){auto selected=applyChanges(docs,fields,std::string("Q\tQuality\tAOQuality\t")+value+"\n");auto config=configOf(selected,"");assert(std::string(NorthlightQuality::aoQualityName(liveQualityUpdate(active.quality,config.quality).aoQuality))==value);}
+    // Saved and active method names must survive menu/INI round trips, including ASSAO.
+    {const char* methods[]={"SSAO","HDAO","HBAOPlus","GTAO","ASSAO"};
+     for(unsigned method=0;method<5;++method)for(bool numeric:{false,true}){
+      const auto value=numeric?std::to_string(method):std::string(methods[method]);
+      auto edited=applyChanges(docs,fields,"Q\tQuality\tAOMethod\t"+std::string(methods[method])+"\n");
+      edited[0].set("Quality","AOMethod",&value);
+      auto config=configOf(edited,"");assert(config.quality.aoMethod==method&&liveQualityUpdate(active.quality,config.quality).aoMethod==method);
+      bool found=false;for(const auto& f:schema(edited,edited,config,""))if(f.key=="AOMethod"){
+       found=true;assert(f.saved==methods[method]&&f.active==methods[method]&&f.apply=="F");}assert(found);
+     }}
     unsigned live=0;for(const auto& k:NorthlightQuality::Keys)live+=liveQuality(k.name);assert(live>40&&live<std::size(NorthlightQuality::Keys));
     for(const auto& f:fields)if(f.file==2&&f.section=="default"&&f.key=="sun_fog_gain")assert(f.inherited=="1"&&std::stof(f.factory)==4.3f);
     // HDR mode and grading both participate in live preview and Revert.
@@ -141,7 +151,7 @@ int main(int argc,char** argv){
      auto f=schema(d,d,configOf(d,""),"","native,dxvk,legacy");unsigned seen=0;
      for(const auto& x:f){auto is=[&](const char* key,const char* value){return x.key==key&&x.overrideValue==value;};
       if(x.key=="Preset"){assert(is("Preset","Performance")&&x.saved=="Performance");++seen;}
-      if(x.key=="AOMethod"){assert(is("AOMethod","GTAO")&&x.saved=="GTAO");++seen;}
+      if(x.key=="AOMethod"){assert(is("AOMethod","GTAO")&&x.saved=="GTAO"&&x.options=="SSAO,HDAO,HBAOPlus,GTAO,ASSAO");++seen;}
       if(x.key=="Backend"){assert(is("Backend","dxvk")&&x.saved=="dxvk");++seen;}}
      assert(seen==3);assert(d[0].text().find("Preset=performance")!=std::string::npos);
      Documents bad={Document("[Quality]\nPreset=Turbo\n"),Document("[Renderer]\nBackend=nope\n"),Document(""),Document("")};

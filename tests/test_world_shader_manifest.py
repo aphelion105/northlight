@@ -15,7 +15,7 @@ assert manifest['source_sha256']==hashlib.sha256((fp.SHADERS/'world_effects.hlsl
 assert manifest['bump_include_sha256']==hashlib.sha256((fp.SHADERS/'auto_bump_normal.hlsl').read_bytes()).hexdigest()
 assert set(manifest['shaders'])=={entry for entry,_ in ENTRIES}
 extended={'WorldFogActor','FogCloudsActor'}
-tiled={'WorldFogActorTiled','FogCloudsActorTiled'}
+tiled={'WorldFogActorTiled','FogCloudsActorTiled','WorldMaterialCompositeHdr'}
 
 def verify(entry,target,info,data,words):
     assert info['target']==target and info['bytes']==len(data)

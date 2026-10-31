@@ -436,7 +436,7 @@ class Device final : public GuardedMirrorDevice {
     IDirect3DTexture9 *scene = nullptr, *depthTex = nullptr, *ao = nullptr, *aoRaw = nullptr;
     IDirect3DSurface9 *sceneSurface = nullptr, *aoSurface = nullptr, *aoRawSurface = nullptr, *worldDepth = nullptr;
     D3DSURFACE_DESC worldDepthDesc={};bool worldDepthDescKnown=false; // 0.3.196 (task 12): worldDepth's desc (a held reference, so the object and its desc are fixed); cleared when worldDepth is dropped
-    IDirect3DPixelShader9 *aoPS = nullptr, *aoBlurPS = nullptr, *aoContactBloomPS = nullptr, *contactBloomPS = nullptr, *compositePS = nullptr;
+    IDirect3DPixelShader9 *aoPS = nullptr, *aoBlurPS = nullptr, *aoContactBloomPS = nullptr, *aoOnlyPS = nullptr, *contactBloomPS = nullptr, *compositePS = nullptr;
     std::unique_ptr<NorthlightAOActorStencil> aoActorMask;
     IDirect3DPixelShader9 *aoActorPreparePS=nullptr, *aoActorPS=nullptr, *aoActorAlphaPS=nullptr;
     unsigned aoActorFrame=~0u;bool aoActorOn=false,aoActorDrawKnown=false,aoActorDrawSkin=false,aoActorDepthWrite=false,aoActorUsed=false;
@@ -981,7 +981,7 @@ private:
         drop(aoActorPreparePS);drop(aoActorPS);drop(aoActorAlphaPS);aoActorShaderFailed=false;
         rainMrtUnbind();stateBlocks.clear();clearFrame();maskFormatFor=nullptr;maskFormatValue=0;maskStencil=false;maskDsId=nullptr; /* 0.3.212 (task 32): the depth may change with the device */
         drop(sceneSurface); drop(aoSurface); drop(aoRawSurface); drop(scene); drop(depthTex); drop(ao); drop(aoRaw);drop(rainMaskMS);drop(rainMaskSurface);drop(rainMask);drop(rainDepth);rainMaskFailed=false; /* 0.3.202 (rain) */
-        drop(aoPS); drop(aoBlurPS); drop(aoContactBloomPS); drop(contactBloomPS); drop(compositePS);drop(rainMrtPS);drop(rainScrubPS); width = height = 0;
+        drop(aoPS); drop(aoBlurPS); drop(aoContactBloomPS); drop(aoOnlyPS); drop(contactBloomPS); drop(compositePS);drop(rainMrtPS);drop(rainScrubPS); width = height = 0;
     }
     bool error(HRESULT hr, const char* stage) {
         if (SUCCEEDED(hr)) return false;
@@ -989,6 +989,7 @@ private:
         failed = true; return true;
     }
     void selectAO(unsigned method,unsigned quality){
+        if(aoMethod!=method||(method&&aoQuality!=quality))drop(aoOnlyPS);
         if(aoMethod!=method){drop(aoContactBloomPS);drop(aoActorPS);drop(aoActorAlphaPS);aoActorShaderFailed=false;}
         else if(method&&aoQuality!=quality)drop(aoContactBloomPS);
         aoMethod=method;aoQuality=quality;
@@ -1007,12 +1008,19 @@ private:
             :NorthlightBackend::isPackagedDxvk(selectedBackend)&&!df24Refused&&worldDepthDescKnown&&worldDepthDesc.MultiSampleType==D3DMULTISAMPLE_NONE?df24:intz;
         if(!colorOnly){
             // Method switches replace shaders while keeping the existing scene/depth targets.
-            const DWORD* aoContactShaders[3][4]={
-                {kAoContactBloomShader,kHdaoContactBloomShader,kHbaoPlusContactBloomShader,kGtaoContactBloomShader},
-                {kAoContactBloomShader,kHdaoContactBloomMediumShader,kHbaoPlusContactBloomMediumShader,kGtaoContactBloomMediumShader},
-                {kAoContactBloomShader,kHdaoContactBloomLowShader,kHbaoPlusContactBloomLowShader,kGtaoContactBloomLowShader}};
+            const DWORD* aoContactShaders[3][5]={
+                {kAoContactBloomShader,kHdaoContactBloomShader,kHbaoPlusContactBloomShader,kGtaoContactBloomShader,kAssaoContactBloomShader},
+                {kAoContactBloomShader,kHdaoContactBloomMediumShader,kHbaoPlusContactBloomMediumShader,kGtaoContactBloomMediumShader,kAssaoContactBloomMediumShader},
+                {kAoContactBloomShader,kHdaoContactBloomLowShader,kHbaoPlusContactBloomLowShader,kGtaoContactBloomLowShader,kAssaoContactBloomLowShader}};
             if (!aoPS && error(ext->CreatePixelShader(kAoShader, &aoPS), "AO shader")) return false;
             if (!aoContactBloomPS && error(ext->CreatePixelShader(aoContactShaders[aoQuality][aoMethod], &aoContactBloomPS), "AO contact bloom shader")) return false;
+            if((hdr.active||aoMethod)&&!aoOnlyPS){
+                const DWORD* shaders[3][5]={
+                    {kAoOnlyShader,kHdaoOnlyShader,kHbaoPlusOnlyShader,kGtaoOnlyShader,kAssaoOnlyShader},
+                    {kAoOnlyShader,kHdaoOnlyMediumShader,kHbaoPlusOnlyMediumShader,kGtaoOnlyMediumShader,kAssaoOnlyMediumShader},
+                    {kAoOnlyShader,kHdaoOnlyLowShader,kHbaoPlusOnlyLowShader,kGtaoOnlyLowShader,kAssaoOnlyLowShader}};
+                if(error(ext->CreatePixelShader(shaders[aoQuality][aoMethod],&aoOnlyPS),"AO alpha shader"))return false;
+            }
             if (!aoBlurPS && error(ext->CreatePixelShader(kAoBlurShader, &aoBlurPS), "AO blur shader")) return false;
             if (!contactBloomPS && error(ext->CreatePixelShader(kContactBloomShader, &contactBloomPS), "contact bloom shader")) return false;
             if (!compositePS && error(ext->CreatePixelShader(kCompositeShader, &compositePS), "composite shader")) return false;
@@ -1295,6 +1303,7 @@ private:
         effectsBuckets.mark(Bucket::Celestial); /* discs, glare, the terrain mask prepare, the ring */
         if (error(ext->StretchRect(saved.targets[0], nullptr, sceneSurface, nullptr, D3DTEXF_NONE), "copy scene")) return;
         effectState();
+        const bool linearHdr=hdr.active&&debugMode==0&&worldDebug==0;
         float constants[]={1.f/width,1.f/height,nearZ,farZ,scaleX,scaleY,aoStrength,(world&&world->screenReady()?0.f:.12f),.08f,aoRadius,float(debugMode),0,worldMinDepth,1.f/(worldMaxDepth-worldMinDepth),worldMaxDepth,0};
 
         float waterFlags[]={waterMask?1.f:0.f,0,0,0};
@@ -1313,7 +1322,7 @@ private:
         if (!contactAO) {
             // 0.3.201 (task 18) ContactAO=0: no AO and no AOBlur. A ready world gets the bloom with AO 1 straight into `ao` (ContactBloom);
             // the legacy composite gets a neutral ambient (AO 1, no bounce) from a clear. SetRenderTarget resets the viewport; scissor and depth are off (effectState).
-            if (constants[7]==0.f) {
+            if (constants[7]==0.f&&!linearHdr) {
                 if (error(ext->SetRenderTarget(0,aoSurface),"contact bloom render target")) return;
                 ext->SetPixelShader(contactBloomPS);
                 if (error(quad(width/2,height/2,false),"contact bloom pass")) return;
@@ -1326,7 +1335,8 @@ private:
             effectsBuckets.mark(Bucket::AO);
         } else {
             IDirect3DTexture9* actorTexture=aoActorOn?aoActorMask->textureForDepth(worldDepth):nullptr;
-            aoActorUsed=actorTexture&&aoActorShaders(constants[7]!=0.f);
+            const bool alphaOnly=linearHdr||constants[7]!=0.f;
+            aoActorUsed=actorTexture&&aoActorShaders(alphaOnly);
             if(aoActorUsed){
                 ext->SetTexture(4,actorTexture);
                 ext->SetSamplerState(4,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);ext->SetSamplerState(4,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);
@@ -1339,12 +1349,12 @@ private:
                 if(error(quad(width/2,height/2,false),"actor AO preparation pass"))return;
                 gpuProfile->mark("AOActorPrepare");
             }
-            IDirect3DPixelShader9* contactShader=aoActorUsed?(constants[7]==0.f?aoActorPS:aoActorAlphaPS):aoContactBloomPS;
+            IDirect3DPixelShader9* contactShader=aoActorUsed?(alphaOnly?aoActorAlphaPS:aoActorPS):(alphaOnly?aoOnlyPS:aoContactBloomPS);
             if (error(ext->SetRenderTarget(0,aoRawSurface),"AO render target")) return;
             if(aoActorUsed)ext->SetTexture(2,ao);
-            ext->SetPixelShader(constants[7]==0.f?contactShader:aoPS);
+            ext->SetPixelShader(linearHdr||constants[7]==0.f?contactShader:aoPS);
             if (error(quad(width/2,height/2,false),"AO pass")) return;
-            if (constants[7]!=0.f && aoMethod) {
+            if (!linearHdr && constants[7]!=0.f && aoMethod) {
                 // Keep the original fallback colour bounce in RGB; replace only AO.
                 // Splitting these kernels keeps GTAO below the ps_3_0 slot limit.
                 ext->SetRenderState(D3DRS_COLORWRITEENABLE,D3DCOLORWRITEENABLE_ALPHA);
@@ -1385,10 +1395,9 @@ private:
         const bool fold=world&&debugMode==0&&world->screenReady();
         /* 0.3.212 (task 32): this frame's name marks: the composite quads draw with the world depth-stencil bound and reject marked pixels; no marks, or the feature off: exactly the old calls */
         const bool maskOn=nameMask.armed()&&nameMask.hasMarks()&&maskStencil&&worldDepth&&worldDebug==0;nameMask.composited=maskOn;
-        const bool linearHdr=hdr.active&&debugMode==0&&worldDebug==0;
         IDirect3DSurface9* outputTarget=linearHdr?hdrPresentBack:saved.targets[0];
         if(linearHdr)hdrFrameSettings=effectiveHdrSettings();
-        const bool inlineHdrBase=linearHdr&&fold&&!maskOn&&!hdrSkyValid&&hdrFrameSettings.legacyExpansion==0&&
+        const bool inlineHdrBase=linearHdr&&fold&&!maskOn&&hdrFrameSettings.legacyExpansion==0&&
             (sceneFormat==D3DFMT_A8R8G8B8||sceneFormat==D3DFMT_X8R8G8B8);
         if(linearHdr){
             if(error(hdrFrame.prepareLegacy(ext,scene,depthTex,hdrSkyValid?hdrPresentBack:nullptr,width,height,worldMinDepth,worldMaxDepth,hdrFrameSettings,&stateBlocks,!inlineHdrBase),"HDR legacy decode"))return;
@@ -1413,7 +1422,7 @@ private:
             world->setRainMask(rainMaskTex); /* 0.3.202 (rain): RainMask for this frame's composite only (resolved and scrubbed at the top of renderEffects) */
             // Expanded legacy inputs retain two passes: the combined variant
             // regresses reproducibly on DXVK 2 with that transfer path.
-            const bool rendered=world->render(outputTarget,depthTex,width,height,sceneFormat,nearZ,farZ,worldMinDepth,worldMaxDepth,worldDebug,gpuProfile.get(),waterMask,fold?scene:nullptr,fold?ao:nullptr,frame,linearHdr?(inlineHdrBase?scene:hdrFrame.texture()):nullptr,inlineHdrBase,hdrFrameSettings.legacyExpansion==0);
+            const bool rendered=world->render(outputTarget,depthTex,width,height,sceneFormat,nearZ,farZ,worldMinDepth,worldMaxDepth,worldDebug,gpuProfile.get(),waterMask,fold?scene:nullptr,fold?ao:nullptr,frame,linearHdr?(inlineHdrBase&&!hdrSkyValid?scene:hdrFrame.texture()):nullptr,inlineHdrBase&&!hdrSkyValid,hdrFrameSettings.legacyExpansion==0,inlineHdrBase&&hdrSkyValid);
             diagnosticWorld=rendered;
             if(world->diagnosticCaptureInLastRender()){
                 gpuDiagnosticFrame=true;
@@ -1431,7 +1440,7 @@ private:
             // A folded frame the world did not composite (skipped or failed; it left the target
             // untouched): re-establish the effect state it changed, then the legacy composite.
             if(fold&&!world->composited){
-                if(inlineHdrBase&&error(hdrFrame.prepareLegacy(ext,scene,depthTex,nullptr,width,height,worldMinDepth,worldMaxDepth,hdrFrameSettings,&stateBlocks),"HDR fallback decode"))return;
+                if(inlineHdrBase&&error(hdrFrame.prepareLegacy(ext,scene,depthTex,hdrSkyValid?hdrFrame.surface():nullptr,width,height,worldMinDepth,worldMaxDepth,hdrFrameSettings,&stateBlocks),"HDR fallback decode"))return;
                 effectState();bindEffects(ao);if(!legacyComposite())return;
             }
         }

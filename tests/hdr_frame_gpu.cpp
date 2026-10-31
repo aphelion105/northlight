@@ -420,6 +420,14 @@ int main(int argc,char** argv){
     // Actual captured horizon depth: beyond .94, but still opaque geometry.
     sample(device,frame.surface(),readback,actual,W/2,H/2);assert(std::fabs(actual[0]-1)<.002f);++cases;
     sample(device,frame.surface(),readback,actual,W/2,3*H/4);assert(std::fabs(actual[0]-1)<.002f);++cases;
+    // Failed world composition can leave its output partially overwritten.
+    // Recover from the retained sky resolve without copying that output again.
+    ok(device->BeginScene());ok(frame.prepareLegacy(device,white,split,multisampled,W,H,0,.94f,settings,nullptr,false));ok(device->EndScene());
+    ok(device->ColorFill(multisampled,nullptr,0));
+    ok(device->BeginScene());ok(frame.prepareLegacy(device,white,split,frame.surface(),W,H,0,.94f,settings));ok(device->EndScene());
+    sample(device,frame.surface(),readback,actual,W/2,H/6);assert(std::fabs(actual[0]-skyRed)<.002f);++cases;
+    sample(device,frame.surface(),readback,actual,W/2,H/2);assert(std::fabs(actual[0]-1)<.002f);++cases;
+    sample(device,frame.surface(),readback,actual,W/2,3*H/4);assert(std::fabs(actual[0]-1)<.002f);++cases;
     split->Release();skyCopySurface->Release();skyCopy->Release();skyColor.reset();
     // On-demand SDR copies match the former MRT mirror even with MSAA 4.
     fill(device,source,constant,grey);settings.exposure=2;settings.contrast=1.4f;settings.bloom=1;

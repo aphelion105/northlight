@@ -489,6 +489,19 @@ float4 HDAOContactBloomLow(float2 uv : TEXCOORD0) : COLOR0 { return float4(Conta
 float4 HBAOPlusContactBloomLow(float2 uv : TEXCOORD0) : COLOR0 { return float4(ContactBloomRgb(uv), NewAOQuality(uv, 2, 2)); }
 float4 GTAOContactBloomLow(float2 uv : TEXCOORD0) : COLOR0 { return float4(ContactBloomRgb(uv), NewAOQuality(uv, 3, 2)); }
 
+// HDR builds bloom from linear radiance after world composition. Its AO input
+// consumes alpha only, including the fallback without a ready world scene.
+float4 AOOnly(float2 uv : TEXCOORD0) : COLOR0 { return float4(0,0,0,AOImpl(uv,false).a); }
+float4 HDAOOnly(float2 uv : TEXCOORD0) : COLOR0 { return float4(0,0,0,NewAO(uv,1)); }
+float4 HBAOPlusOnly(float2 uv : TEXCOORD0) : COLOR0 { return float4(0,0,0,NewAO(uv,2)); }
+float4 GTAOOnly(float2 uv : TEXCOORD0) : COLOR0 { return float4(0,0,0,NewAO(uv,3)); }
+float4 HDAOOnlyMedium(float2 uv : TEXCOORD0) : COLOR0 { return float4(0,0,0,NewAOQuality(uv,1,1)); }
+float4 HBAOPlusOnlyMedium(float2 uv : TEXCOORD0) : COLOR0 { return float4(0,0,0,NewAOQuality(uv,2,1)); }
+float4 GTAOOnlyMedium(float2 uv : TEXCOORD0) : COLOR0 { return float4(0,0,0,NewAOQuality(uv,3,1)); }
+float4 HDAOOnlyLow(float2 uv : TEXCOORD0) : COLOR0 { return float4(0,0,0,NewAOQuality(uv,1,2)); }
+float4 HBAOPlusOnlyLow(float2 uv : TEXCOORD0) : COLOR0 { return float4(0,0,0,NewAOQuality(uv,2,2)); }
+float4 GTAOOnlyLow(float2 uv : TEXCOORD0) : COLOR0 { return float4(0,0,0,NewAOQuality(uv,3,2)); }
+
 // 0.3.201 (task 18) ContactAO=0 with a ready world: the same bloom with AO 1 and no depth work; the AO pass and AOBlur do not run.
 float4 ContactBloom(float2 uv : TEXCOORD0) : COLOR0
 {
@@ -656,3 +669,89 @@ float4 Composite(float2 uv : TEXCOORD0) : COLOR0
     lit += bloom * Options.x * (1.0 - saturate(lit));
     return float4(saturate(lit), original.a);
 }
+
+// Intel ASSAO fixed-quality kernel, adapted to Northlight's D3D9 depth,
+// half-resolution targets and bilateral filter. Copyright (c) 2016 Intel.
+// MIT license: licenses/ao-methods.txt. Upstream: GameTechDev/ASSAO,
+// c21d57a95b43c700ee01a2eb18f5589d7becefb2, ASSAO.hlsl Q0/Q1/Q2.
+static const float3 AssaoPattern[12] = {
+    float3(.78488064, .56661671, 1.50), float3(.26022232,-.29575172,1.50),
+    float3(.10459357, .08372527, 1.11), float3(-.68286800,.04963045,1.09),
+    float3(-.13570161,-.64190155,1.25), float3(-.26193795,-.08205118,.67),
+    float3(-.61177456,.66664219,.71), float3(.43675563,.25119025,.61),
+    float3(.07884444,.86618668,.64), float3(-.12790935,-.29869005,.60),
+    float3(-.04031125,.02413622,.60), float3(.16201244,-.52851415,.79)
+};
+
+float AssaoObscurance(float3 normal,float3 delta,float inverseRadiusSquared)
+{
+    float distanceSquared=dot(delta,delta);
+    return max(0,dot(normal,delta)*rsqrt(max(distanceSquared,1e-12))-.06)
+        *saturate(1-distanceSquared*inverseRadiusSquared);
+}
+
+float ASSAOImpl(float2 uv,int quality)
+{
+    uv=DepthTexelUV(uv,1/ImageAndClip.xy);
+    float depth=ReadDepth(uv);
+    if(depth>=SKY_DEPTH||IsWater(uv,depth)||Lighting.z<=0)return 1;
+    float3 p=Position(uv,depth);
+    float2 dx=float2(ImageAndClip.x,0),dy=float2(0,ImageAndClip.y);
+    float4 left=AOSample(uv-dx),right=AOSample(uv+dx);
+    float4 top=AOSample(uv-dy),bottom=AOSample(uv+dy);
+    float3 tx=abs(right.z-p.z)<abs(p.z-left.z)?right.xyz-p:p-left.xyz;
+    float3 ty=abs(bottom.z-p.z)<abs(p.z-top.z)?bottom.xyz-p:p-top.xyz;
+    float3 normal=SafeNormal(cross(tx,ty));normal*=dot(normal,p)>0?-1:1;
+    // Intel's near-camera radius limiter; Low has its original wider limit.
+    float radius=Options.y*(.2+.8*saturate(length(p)/(Options.y*Lighting.y*(quality==2?1.8:1.2))));
+    float inverseRadiusSquared=1/(radius*radius);
+    float2 uvRadius=.425*radius*Lighting.xy/p.z;
+    uvRadius*=min(1,.25/max(uvRadius.x,uvRadius.y));
+    float2 rotation=AORotation(uv);
+    float obscurance=0,weightSum=0;
+    float4 edges=1;
+    if(quality<2){
+        float4 dz=float4(left.z,right.z,top.z,bottom.z)-p.z;
+        edges=saturate(1.3-min(abs(dz),abs(dz+dz.yxwz))/(p.z*.04));
+        edges*=float4(left.w,right.w,top.w,bottom.w);
+        float4 detail=float4(AssaoObscurance(normal,left.xyz-p,4*inverseRadiusSquared),
+            AssaoObscurance(normal,right.xyz-p,4*inverseRadiusSquared),
+            AssaoObscurance(normal,top.xyz-p,4*inverseRadiusSquared),
+            AssaoObscurance(normal,bottom.xyz-p,4*inverseRadiusSquared));
+        obscurance=.5*dot(detail,edges);
+    }
+    const int pairs=quality==0?12:quality==1?5:3;
+    [loop]for(int tap=0;tap<pairs;++tap){
+        float3 pattern=AssaoPattern[tap];
+        float2 direction=float2(pattern.x*rotation.x-pattern.y*rotation.y,
+            pattern.x*rotation.y+pattern.y*rotation.x);
+        // Snap symmetric offsets to native depth texels. No FP16 depth copy,
+        // depth mips or deinterleaved array is needed by this D3D9 adaptation.
+        float2 offset=round(direction*uvRadius/ImageAndClip.xy)*ImageAndClip.xy;
+        float4 a=AOSample(uv+offset),b=AOSample(uv-offset);
+        float3 da=a.xyz-p,db=b.xyz-p;
+        float2 weight=pattern.z;
+        if(quality<2)weight*=.4+.6*saturate(2-max(0,-float2(da.z,db.z))/Options.y);
+        // Missing/sky samples leave an open hemisphere, rather than amplifying
+        // the remaining occluders at the viewport border.
+        // A zero offset samples the receiver itself. Reconstructing it through
+        // a second UV expression can leave a tiny delta under fused arithmetic;
+        // normalizing that delta creates false shadows on distant flat ground.
+        obscurance+=dot(float2(AssaoObscurance(normal,da,inverseRadiusSquared),
+            AssaoObscurance(normal,db,inverseRadiusSquared))*float2(a.w,b.w),weight)*(any(offset!=0)?1:0);
+        weightSum+=weight.x+weight.y;
+    }
+    float fade=1;
+    if(quality<2)fade=saturate(1-saturate((1-edges.x-edges.y)*.35)-saturate((1-edges.z-edges.w)*.35));
+    // Match Intel's multiplier, clamp and power; Lighting.z supplies the
+    // existing Northlight strength control, including exact identity at zero.
+    float visibility=1-min(4.3*Lighting.z*obscurance/max(weightSum,1e-8),.98)*fade;
+    return visibility*sqrt(visibility);
+}
+
+float4 ASSAOContactBloom(float2 uv:TEXCOORD0):COLOR0{return float4(ContactBloomRgb(uv),ASSAOImpl(uv,0));}
+float4 ASSAOContactBloomMedium(float2 uv:TEXCOORD0):COLOR0{return float4(ContactBloomRgb(uv),ASSAOImpl(uv,1));}
+float4 ASSAOContactBloomLow(float2 uv:TEXCOORD0):COLOR0{return float4(ContactBloomRgb(uv),ASSAOImpl(uv,2));}
+float4 ASSAOOnly(float2 uv:TEXCOORD0):COLOR0{return float4(0,0,0,ASSAOImpl(uv,0));}
+float4 ASSAOOnlyMedium(float2 uv:TEXCOORD0):COLOR0{return float4(0,0,0,ASSAOImpl(uv,1));}
+float4 ASSAOOnlyLow(float2 uv:TEXCOORD0):COLOR0{return float4(0,0,0,ASSAOImpl(uv,2));}

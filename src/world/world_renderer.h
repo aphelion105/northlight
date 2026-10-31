@@ -4541,7 +4541,7 @@ public:
     // foldScene/foldAO (0.3.174 FOLD): the proxy's pre-AO scene copy replaces the world colour
     // copy, and its AOContactBloom target (bloom rgb, AO alpha) is applied by TemporalLight's
     // removal smoothing and WorldComposite. Null: the proxy composited already (neutral s10).
-    bool render(IDirect3DSurface9* targetSurface,IDirect3DTexture9* depth,UINT w,UINT h,D3DFORMAT fmt,float nearZ,float farZ,float minZ,float maxZ,int debug,NorthlightGpuProfile* profile,IDirect3DTexture9* waterMask,IDirect3DTexture9* foldScene=nullptr,IDirect3DTexture9* foldAO=nullptr,unsigned rendererFrame=0,IDirect3DTexture9* hdrBase=nullptr,bool hdrBaseEncoded=false,bool hdrCombineAllowed=true){
+    bool render(IDirect3DSurface9* targetSurface,IDirect3DTexture9* depth,UINT w,UINT h,D3DFORMAT fmt,float nearZ,float farZ,float minZ,float maxZ,int debug,NorthlightGpuProfile* profile,IDirect3DTexture9* waterMask,IDirect3DTexture9* foldScene=nullptr,IDirect3DTexture9* foldAO=nullptr,unsigned rendererFrame=0,IDirect3DTexture9* hdrBase=nullptr,bool hdrBaseEncoded=false,bool hdrCombineAllowed=true,bool hdrSkyBase=false){
         const bool hdrMode=hdrBase&&debug==0;
         shadowsComposited=false;composited=false;lastRenderDebug=debug;gpuDiagnosticFrame=false;fogGeometryReady=false;
         if((debug==1&&!effects.shadows)||(debug==2&&!effects.gi)||(debug==3&&!effects.fog))return emptyDiagnosticView(targetSurface,w,h,debug);
@@ -4615,9 +4615,14 @@ public:
         if(!hdrMode&&unlitMaskDepth&&!unlitPS&&!unlitShaderRefused)if(FAILED(d->CreatePixelShader(kWorldUnlitCompositeShader,&unlitPS))){unlitShaderRefused=true;deferLogf("UNLIT receiver shader unavailable; ordinary composition retained");}
         const bool unlitMask=unlitMaskDepth&&(hdrMode?hdrUnlitPS:unlitPS)&&debug==0;
         const bool fullMaterial=materialDetail&&(materialBumpGain>0||materialOcclusion)&&foldScene&&materialPS&&debug==0;
+        const bool normalDiagnosticCapture=debug==0&&gpuNormalDiagnosticRequested&&gpuDiagnosticCaptures<4;
+        const unsigned shadowDiagnosticCapture=debug==1&&gpuDiagnosticArmed&&gpuDiagnosticCaptures<4?gpuDiagnosticCaptures+1:0;
+        const unsigned diagnosticCapture=normalDiagnosticCapture?gpuDiagnosticCaptures+1:shadowDiagnosticCapture;
+        // Captures retain the two original passes and their exact input groups.
+        const bool combinedMaterial=hdrMode&&hdrCombineAllowed&&fullMaterial&&hdrCombinedPS&&!diagnosticCapture;
         // Folded frames without material detail write directly to the game target.
         // Allocate on demand, but retain across invisible captures to avoid camera-turn churn.
-        if(!foldScene||fullMaterial){
+        if(!foldScene||(fullMaterial&&!combinedMaterial)){
             const auto wantedFormat=hdrMode?D3DFMT_A16B16G16R16F:fmt;
             if(color&&colorStorageFormat!=wantedFormat){stateBlocks.clear();drop(colorSurface);drop(color);}
             if(!color){if(!target(w,h,wantedFormat,&color,&colorSurface))return false;colorStorageFormat=wantedFormat;}
@@ -4636,11 +4641,6 @@ public:
         size_t replayConstantBytes=0,replayConstantCalls=0,replayPosePrepared=0,replayPoseReused=0;
         bool jobs=false;
         JobJoin atmosphereJoin{replayJobs_,atmosphereDone};
-        const bool normalDiagnosticCapture=debug==0&&gpuNormalDiagnosticRequested&&gpuDiagnosticCaptures<4;
-        const unsigned shadowDiagnosticCapture=debug==1&&gpuDiagnosticArmed&&gpuDiagnosticCaptures<4?gpuDiagnosticCaptures+1:0;
-        const unsigned diagnosticCapture=normalDiagnosticCapture?gpuDiagnosticCaptures+1:shadowDiagnosticCapture;
-        // Captures retain the two original passes and their exact input groups.
-        const bool combinedMaterial=hdrMode&&hdrCombineAllowed&&fullMaterial&&hdrCombinedPS&&!diagnosticCapture;
         if(diagnosticCapture){gpuDiagnosticFrame=true;
             ++gpuDiagnosticCaptures;if(normalDiagnosticCapture)gpuNormalDiagnosticRequested=false;else gpuDiagnosticArmed=false;
             logf("WORLD GPU_CAPTURE_ATTEMPT capture=%u worldFrame=%u rendererFrame=%u rendererFrameKnown=%u normalView=%u diagnostic=1 fpsEligible=0",diagnosticCapture,frames,rendererFrame,unsigned(rendererFrame!=0),unsigned(normalDiagnosticCapture));}
@@ -5405,7 +5405,7 @@ public:
         float materialLight[4][4]={{c[28][0],c[28][1],c[28][2],0},{sourceDirections[1].x,sourceDirections[1].y,sourceDirections[1].z,0},{},{}};
         for(unsigned source=0;source<2;++source)if(sourceActive[source]){materialLight[2+source][0]=sourceColors[source].x;materialLight[2+source][1]=sourceColors[source].y;materialLight[2+source][2]=sourceColors[source].z;}
         d->SetPixelShaderConstantF(74,materialLight[0],4);
-        const float occlusionInfo[]={materialOcclusion?1.f:0.f,materialOcclusionDistance,0,0};d->SetPixelShaderConstantF(78,occlusionInfo,1);
+        const float occlusionInfo[]={materialOcclusion?1.f:0.f,materialOcclusionDistance,hdrMode&&hdrSkyBase?1.f:0.f,0};d->SetPixelShaderConstantF(78,occlusionInfo,1);
         d->SetPixelShaderConstantF(73,bumpControl,1);d->SetTexture(9,materialDetail);
         for(auto state:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})d->SetSamplerState(9,state,D3DTEXF_POINT);
         // Address, mip and sRGB states still match the frame-start s9 setup.
@@ -5553,7 +5553,12 @@ public:
         if(profile)profile->mark("PointLight");
         d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE);
         bool fogResolved=false; // The final fog is fogBlurred when the temporal pass runs.
-        if(effects.fog){
+        // Every view ray ends within c21.w. Unknown bounds fail open; local
+        // lamps have their own longer range, so retain their path independently.
+        const bool regionalFogActive=c[21][0]>=.5f&&!(c[65][2]>0&&
+            (c[15][2]-c[21][3]>c[65][1]||c[15][2]+c[21][3]<c[65][0]));
+        const bool fogActive=effects.fog&&(regionalFogActive||(localDirectCount&&debug==0));
+        if(fogActive){
         d->SetTexture(12,fogHeightReady?fogHeightTexture:nullptr);
         // FogTemporal reads s15 and relies on these modes even when its earlier setup is skipped.
         d->SetSamplerState(15,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(15,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);d->SetSamplerState(15,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(15,D3DSAMP_MAGFILTER,D3DTEXF_POINT);d->SetSamplerState(15,D3DSAMP_MIPFILTER,D3DTEXF_NONE);
@@ -5655,7 +5660,7 @@ public:
         }
         }else{
             // Composite is color * fog.a + fog.rgb: transparent fog is (0,0,0,1).
-            // Clear every disabled frame so no fog history/scratch can leak in.
+            // Clear every empty/disabled frame so no fog scratch can leak in.
             d->SetTexture(9,nullptr);D3DVIEWPORT9 vp={0,0,w/2,h/2,0,1};d->SetViewport(&vp);
             if(!check(d->SetRenderTarget(0,fogSurface),"neutral fog target")||
                !check(d->Clear(0,nullptr,D3DCLEAR_TARGET,0xff000000,1,0),"neutral fog clear"))return false;
@@ -5666,7 +5671,14 @@ public:
         // fog (raw, s9) + fogHistory (s14) -> fogBlurred, then fogBlurred<->fogHistory swap (texture and surface): fogHistory holds this frame's resolved fog for
         // the next one. History not usable (first frame, map change, camera jump, debug, fog was off last frame): weight 0, a plain copy that makes it valid.
         // Off (no fog effect, debug, no shader): none of this runs, the sequence and bindings below are the old ones.
-        if(effects.fog&&fogTemporalPS&&fogHistory&&debug==0){
+        if(effects.fog&&fogTemporalPS&&fogHistory&&debug==0&&!fogActive){
+            // A uniform neutral current frame clamps all history to neutral.
+            // Keep that exact history for the next active frame without a draw.
+            d->SetTexture(14,nullptr);
+            if(!check(d->SetRenderTarget(0,fogHistorySurface),"neutral fog history target")||
+               !check(d->Clear(0,nullptr,D3DCLEAR_TARGET,0xff000000,1,0),"neutral fog history clear"))return false;
+            fogHistoryValid=true;
+        }else if(effects.fog&&fogTemporalPS&&fogHistory&&debug==0){
             const float info[4]={0,fogHistoryValid&&useHistory?FogTemporalWeight:0.f,0,0};
             d->SetPixelShaderConstantF(53,c[53],4);d->SetPixelShaderConstantF(64,info,1);
             d->SetRenderTarget(0,fogBlurredSurface);d->SetTexture(9,fog);d->SetTexture(14,fogHistory);d->SetTexture(15,temporalDepth[temporalIndex]);
@@ -5684,7 +5696,7 @@ public:
         d->SetSamplerState(15,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(15,D3DSAMP_SRGBTEXTURE,FALSE);
         d->SetSamplerState(15,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(15,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);
         // Separable depth-aware blur: fog -> fogBlurred (horizontal) -> fog (vertical); with the temporal pass the resolved fogHistory -> fog -> fogBlurred (the final fog).
-        if(effects.fog){float blur[4]={2,0,0,0};d->SetPixelShader(fogBlurPS);
+        if(fogActive){float blur[4]={2,0,0,0};d->SetPixelShader(fogBlurPS);
          d->SetRenderTarget(0,fogResolved?fogSurface:fogBlurredSurface);d->SetTexture(9,fogResolved?fogHistory:fog);d->SetPixelShaderConstantF(34,blur,1);if(!check(quad(w/2,h/2),"volume blur horizontal"))return false;
          blur[0]=0;blur[1]=2;d->SetRenderTarget(0,fogResolved?fogBlurredSurface:fogSurface);d->SetTexture(9,fogResolved?fog:fogBlurred);d->SetPixelShaderConstantF(34,blur,1);if(!check(quad(w/2,h/2),"volume blur vertical"))return false;
          if(profile)profile->mark("FogBlur");}

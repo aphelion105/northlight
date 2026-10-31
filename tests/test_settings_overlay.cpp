@@ -184,7 +184,7 @@ static void draft(){
         field(D::Quality,"Quality","Preset","enum","Quality,Balanced,Performance","Quality"),
         field(D::Quality,"Quality","GI","check","1,1,0","1"),
         field(D::Quality,"Quality","GIStrength","slider","100,80,60","100"),
-        field(D::Quality,"Quality","AOMethod","enum","SSAO,HDAO,HBAOPlus,GTAO","SSAO"),
+        field(D::Quality,"Quality","AOMethod","enum","SSAO,HDAO,HBAOPlus,GTAO,ASSAO","SSAO"),
         field(D::Quality,"Quality","AutoBumpTerrain","slider","2,1,0","2"),
         field(D::Quality,"Quality","CommandStream","check","1,1,1","1","~","R"),
         field(D::Renderer,"Renderer","Backend","enum","native,dxvk","legacy","dxvk","R"),

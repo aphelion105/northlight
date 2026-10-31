@@ -17,6 +17,7 @@ AORadius=200
 | HDAO / 1 | AMD AOFX-style paired valley detection, 16 pairs. D3D9 adaptation. |
 | HBAOPlus / HBAO+ / 2 | D3D9 adaptation of the NVIDIA HBAO+ coarse kernel: 8 directions, 4 radial steps, normal bias, squared-distance falloff. |
 | GTAO / 3 | Cosine-weighted horizon integration, 4 slices and 4 paired steps. |
+| ASSAO / 4 | Intel ASSAO fixed-quality kernel adapted to D3D9: weighted progressive paired samples, distance falloff, halo reduction and detail AO. |
 
 Names are case insensitive. Invalid values retain the previous value and produce a
 QUALITY warning. `AOStrength` is 0..200 percent; 100 preserves the existing
@@ -27,11 +28,16 @@ strength scale. `AORadius` is 10..1000 hundredths of a yard; 200 means 2 yards.
 the existing sample counts. Lower levels are explicit choices that reduce depth
 taps; SSAO ignores the quality setting.
 
-| Quality | GTAO slices x paired steps | HBAO+ directions x steps | HDAO pairs |
-| --- | --- | --- | --- |
-| High (default) | 4 x 4 | 8 x 4 | 16 |
-| Medium | 3 x 4 | 6 x 3 | 8 |
-| Low | 2 x 4 | 4 x 4 | 8 |
+| Quality | GTAO slices x paired steps | HBAO+ directions x steps | HDAO pairs | ASSAO pairs |
+| --- | --- | --- | --- | --- |
+| High (default) | 4 x 4 | 8 x 4 | 16 | 12 |
+| Medium | 3 x 4 | 6 x 3 | 8 | 5 |
+| Low | 2 x 4 | 4 x 4 | 8 | 3 |
+
+HDAO Medium and Low currently compile to the same kernel. ASSAO Low omits the
+detail/edge/halo calculations; Medium and High retain them. ASSAO has its own
+visibility response and can produce stronger contact shading at the same
+`AOStrength` than the other methods. The defaults remain SSAO/High.
 
 Lower counts can increase fine noise and shimmer during camera motion. The blur
 and half-resolution targets are unchanged. Quality selection is saved on Apply;
@@ -44,9 +50,14 @@ world-GI and fallback paths; the fallback keeps the original simple colour bounc
 GI continues to supply colour bounce when the world renderer is ready.
 The advanced methods need one extra alpha-only draw in the fallback path to
 retain its original colour bounce within the Shader Model 3 instruction limit.
+That draw uses `*Only` bytecode and skips five discarded scene-colour/bloom taps.
+HDR also uses `*Only`: it uses the same AO calculation and builds bloom separately
+from linear radiance. The SDR world path uses `*ContactBloom` to fold bloom into
+the existing world composite. AO render-target size and format are identical
+in SDR and HDR, so HDR does not inherently double AO bandwidth.
 The startup log records the selected method, strength, radius and enabled state.
 
-These are D3D9 adaptations, not the complete NVIDIA HBAO+ SDK or Intel XeGTAO
+These are D3D9 adaptations, not the complete NVIDIA HBAO+ SDK, Intel ASSAO or XeGTAO
 pipelines. There is no DX11 deinterleaving, depth-mip hierarchy or extra temporal
 AO pass. Each quality level has fixed sample counts. Quality and GPU cost still need
 comparison in actual gameplay; a synthetic device test is not an in-game FPS test.
@@ -72,6 +83,37 @@ Algorithm references:
 - [NVIDIA VXAO requirements](https://developer.nvidia.com/vxao-voxel-ambient-occlusion)
 
 Third-party notices for the adapted kernels are in `licenses/ao-methods.txt`.
+
+## ASSAO implementation and validation
+
+The implementation follows Intel ASSAO's fixed Q0/Q1/Q2 sample budgets (Low,
+Medium, High), progressive sample positions/weights, near-camera radius limiter,
+obscurance falloff, halo weights, edge-sensitive detail and visibility curve.
+The source is [Intel ASSAO at c21d57a](https://github.com/GameTechDev/ASSAO/tree/c21d57a95b43c700ee01a2eb18f5589d7becefb2),
+under MIT. Northlight supplies depth-derived normals, its existing pixel rotation,
+native depth sampling and bilateral filter. The adaptation adds six SM3 shaders,
+with no additional textures, preparation passes or runtime dependencies.
+
+Adaptive Q3 importance sampling, deinterleaved depth arrays and depth mips are
+not implemented. This is not a byte-identical port of the DX11 pipeline or a
+verified reproduction of WoW Forever's integration. The actor thickness correction
+below remains specific to HBAO+/GTAO High; ASSAO uses ordinary screen depth.
+
+Snapped zero-offset samples are explicitly excluded: reconstructing the receiver
+twice can produce a tiny delta under fused arithmetic, whose normalization causes
+false darkening on distant terrain. A D24 grazing regression reproduced this on
+DXVK 3 before the fix and passes on both packaged backends afterward.
+
+`tests/test_ao_quality.py` runs all five methods at all three qualities: 183 cases
+per quality, exact SDR/HDR AO equality and preservation of fallback RGB. GTAO and
+ASSAO each have 48 grazing-plane/convex/concave cases per quality. ASSAO additionally
+has 1,152 comparisons per quality covering odd/even dimensions, FP16/FP32,
+0/2/4/8x MSAA, two depth partitions including nonzero MinZ, and radii 0.1/2/10yd.
+The test checks compiled loop budgets and the original High payload hashes.
+Settings and shader/resource lifetime tests cover all five methods and live switches.
+
+For measured costs and limitations, see the AO section of
+[the 2026-11-01 pipeline audit](pipeline-performance-audit-20261101.md).
 
 ## Thin actor occluders (#106)
 

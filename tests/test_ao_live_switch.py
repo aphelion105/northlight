@@ -37,6 +37,10 @@ bool FAILED(int hr){return hr<0;}
 namespace NorthlightBackend {bool isPackagedDxvk(int backend){return backend==1;}}
 const DWORD kAoShader[]={1},kAoContactBloomShader[]={2},kHdaoContactBloomShader[]={3},kHbaoPlusContactBloomShader[]={4},kGtaoContactBloomShader[]={5},kAoBlurShader[]={6},kContactBloomShader[]={7},kCompositeShader[]={8};
 const DWORD kHdaoContactBloomMediumShader[]={9},kHbaoPlusContactBloomMediumShader[]={10},kGtaoContactBloomMediumShader[]={11},kHdaoContactBloomLowShader[]={12},kHbaoPlusContactBloomLowShader[]={13},kGtaoContactBloomLowShader[]={14};
+const DWORD kAoOnlyShader[]={15},kHdaoOnlyShader[]={16},kHbaoPlusOnlyShader[]={17},kGtaoOnlyShader[]={18};
+const DWORD kHdaoOnlyMediumShader[]={19},kHbaoPlusOnlyMediumShader[]={20},kGtaoOnlyMediumShader[]={21},kHdaoOnlyLowShader[]={22},kHbaoPlusOnlyLowShader[]={23},kGtaoOnlyLowShader[]={24};
+const DWORD kAssaoContactBloomShader[]={25},kAssaoContactBloomMediumShader[]={26},kAssaoContactBloomLowShader[]={27};
+const DWORD kAssaoOnlyShader[]={28},kAssaoOnlyMediumShader[]={29},kAssaoOnlyLowShader[]={30};
 unsigned alive=0;std::size_t textureBytes=0;
 struct Surface {Surface(){++alive;}void Release(){--alive;delete this;}};
 struct Texture {
@@ -66,16 +70,18 @@ struct Renderer {
     unsigned sceneFormat=0,depthSnapshotFormat=0;
     bool worldDepthDescKnown=false,df24Refused=false,rainDepthOk=false,rainMaskCleared=false,rainMaskDrawn=false,rainMaskFailed=false,captured=false,contactAO=true,failed=false;
     struct {unsigned MultiSampleType=0;}worldDepthDesc;
+    struct {bool active=false;}hdr;
+    bool aoActorShaderFailed=false;
     Surface *sceneSurface=nullptr,*aoSurface=nullptr,*aoRawSurface=nullptr,*rainMaskMS=nullptr,*rainMaskSurface=nullptr;
     Texture *scene=nullptr,*ao=nullptr,*aoRaw=nullptr,*depthTex=nullptr,*rainDepth=nullptr,*rainMask=nullptr;
-    Shader *aoPS=nullptr,*aoContactBloomPS=nullptr,*aoBlurPS=nullptr,*contactBloomPS=nullptr,*compositePS=nullptr;
+    Shader *aoPS=nullptr,*aoContactBloomPS=nullptr,*aoOnlyPS=nullptr,*aoActorPS=nullptr,*aoActorAlphaPS=nullptr,*aoBlurPS=nullptr,*contactBloomPS=nullptr,*compositePS=nullptr;
     bool error(int hr,const char*){if(hr<0)failed=true;return hr<0;}
     void rainMrtUnbind(){}
     template<class...T>void logf(const char*,T...){}
     __SELECT__
     __RESOURCES__
     void nextFrame(){__FRAME__}
-    ~Renderer(){drop(sceneSurface);drop(aoSurface);drop(aoRawSurface);drop(scene);drop(ao);drop(aoRaw);drop(depthTex);drop(rainMaskMS);drop(rainMaskSurface);drop(rainMask);drop(rainDepth);drop(aoPS);drop(aoContactBloomPS);drop(aoBlurPS);drop(contactBloomPS);drop(compositePS);}
+    ~Renderer(){drop(sceneSurface);drop(aoSurface);drop(aoRawSurface);drop(scene);drop(ao);drop(aoRaw);drop(depthTex);drop(rainMaskMS);drop(rainMaskSurface);drop(rainMask);drop(rainDepth);drop(aoPS);drop(aoContactBloomPS);drop(aoOnlyPS);drop(aoActorPS);drop(aoActorAlphaPS);drop(aoBlurPS);drop(contactBloomPS);drop(compositePS);}
 };
 int main(){
     {
@@ -136,21 +142,21 @@ int main(){
         Renderer r;r.ext=&device;r.settingsService=&service;r.world=&world;
         assert(r.resources(800,600,10));assert(device.textures==4&&device.shaders==5);
         const auto scene=r.scene;const auto depth=r.depthTex;const auto ao=r.ao;const auto raw=r.aoRaw;
-        const DWORD* expected[]={kAoContactBloomShader,kHdaoContactBloomShader,kHbaoPlusContactBloomShader,kGtaoContactBloomShader};
+        const DWORD* expected[]={kAoContactBloomShader,kHdaoContactBloomShader,kHbaoPlusContactBloomShader,kGtaoContactBloomShader,kAssaoContactBloomShader};
         for(unsigned pass=0;pass<200;++pass){
-            world.method=pass%4;world.enabled=bool(pass&4);r.nextFrame();assert(r.aoMethod==pass%4&&r.contactAO==bool(pass&4));
+            world.method=pass%5;world.enabled=bool(pass&4);r.nextFrame();assert(r.aoMethod==pass%5&&r.contactAO==bool(pass&4));
             assert(r.aoStrength==1.f&&r.aoRadius==2.f);
-            assert(r.resources(800,600,10));assert(r.aoPS&&r.aoContactBloomPS&&r.aoContactBloomPS->code==expected[pass%4]);
+            assert(r.resources(800,600,10));assert(r.aoPS&&r.aoContactBloomPS&&r.aoContactBloomPS->code==expected[pass%5]);
             assert(r.scene==scene&&r.depthTex==depth&&r.ao==ao&&r.aoRaw==raw&&device.textures==4);
             auto count=device.shaders;r.nextFrame();assert(r.resources(800,600,10)&&device.shaders==count);
         }
         world.method=2;world.enabled=false;r.nextFrame();assert(r.aoMethod==2&&!r.contactAO);assert(r.resources(800,600,10));
         assert(r.aoContactBloomPS->code==kHbaoPlusContactBloomShader&&device.textures==4);
-        const DWORD* qualityShaders[3][4]={
-            {kAoContactBloomShader,kHdaoContactBloomShader,kHbaoPlusContactBloomShader,kGtaoContactBloomShader},
-            {kAoContactBloomShader,kHdaoContactBloomMediumShader,kHbaoPlusContactBloomMediumShader,kGtaoContactBloomMediumShader},
-            {kAoContactBloomShader,kHdaoContactBloomLowShader,kHbaoPlusContactBloomLowShader,kGtaoContactBloomLowShader}};
-        for(unsigned method=0;method<4;++method)for(unsigned quality=0;quality<3;++quality){
+        const DWORD* qualityShaders[3][5]={
+            {kAoContactBloomShader,kHdaoContactBloomShader,kHbaoPlusContactBloomShader,kGtaoContactBloomShader,kAssaoContactBloomShader},
+            {kAoContactBloomShader,kHdaoContactBloomMediumShader,kHbaoPlusContactBloomMediumShader,kGtaoContactBloomMediumShader,kAssaoContactBloomMediumShader},
+            {kAoContactBloomShader,kHdaoContactBloomLowShader,kHbaoPlusContactBloomLowShader,kGtaoContactBloomLowShader,kAssaoContactBloomLowShader}};
+        for(unsigned method=0;method<5;++method)for(unsigned quality=0;quality<3;++quality){
             r.selectAO(method,quality);assert(r.resources(800,600,10));
             assert(r.aoContactBloomPS->code==qualityShaders[quality][method]);
             const auto shader=r.aoContactBloomPS;const auto count=device.shaders;
@@ -163,6 +169,22 @@ int main(){
         r.selectAO(2,0);assert(r.resources(800,600,10));
         world.method=3;world.enabled=true;r.nextFrame();device.failShader=true;assert(!r.resources(800,600,10)&&r.failed);
         device.failShader=false;r.failed=false;assert(r.resources(800,600,10)&&r.aoContactBloomPS->code==kGtaoContactBloomShader&&device.textures==4);
+        const DWORD* hdrShaders[3][5]={
+            {kAoOnlyShader,kHdaoOnlyShader,kHbaoPlusOnlyShader,kGtaoOnlyShader,kAssaoOnlyShader},
+            {kAoOnlyShader,kHdaoOnlyMediumShader,kHbaoPlusOnlyMediumShader,kGtaoOnlyMediumShader,kAssaoOnlyMediumShader},
+            {kAoOnlyShader,kHdaoOnlyLowShader,kHbaoPlusOnlyLowShader,kGtaoOnlyLowShader,kAssaoOnlyLowShader}};
+        assert(r.aoOnlyPS&&r.aoOnlyPS->code==kGtaoOnlyShader);r.hdr.active=true;
+        for(unsigned method=0;method<5;++method)for(unsigned quality=0;quality<3;++quality){
+            r.selectAO(method,quality);assert(r.resources(800,600,10));
+            assert(r.aoOnlyPS&&r.aoOnlyPS->code==hdrShaders[quality][method]);
+            const auto shader=r.aoOnlyPS;const auto count=device.shaders;
+            r.selectAO(method,quality);assert(r.resources(800,600,10)&&r.aoOnlyPS==shader&&device.shaders==count);
+            r.hdr.active=false;assert(r.resources(800,600,10)&&r.aoOnlyPS==shader&&device.shaders==count);
+            r.hdr.active=true;assert(r.resources(800,600,10)&&r.aoOnlyPS==shader&&device.shaders==count);
+            assert(r.scene==scene&&r.depthTex==depth&&r.ao==ao&&r.aoRaw==raw&&device.textures==4);
+        }
+        r.selectAO(1,0);device.failShader=true;assert(!r.resources(800,600,10));
+        device.failShader=false;r.failed=false;assert(r.resources(800,600,10)&&r.aoOnlyPS->code==kHdaoOnlyShader);
     }
     assert(alive==0);
     std::cout<<"AO live switch and lazy HDR: 200 frame transitions, exact allocation bytes, retained targets, depth-format changes, failure/retry and lifetimes passed\n";

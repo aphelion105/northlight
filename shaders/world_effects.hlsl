@@ -75,7 +75,7 @@ float4 BumpControl : register(c73); // strength, near-detail fade distance
 sampler2D MaterialFog : register(s4); // MaterialComposite only
 sampler2D MaterialSource : register(s5); // native scene, before AO/fog composition
 sampler2D MaterialOcclusion : register(s6); // sun visibility, moon visibility, cached cavity, coverage
-float4 MaterialOcclusionInfo : register(c78);
+float4 MaterialOcclusionInfo : register(c78); // z: HDR base contains sky only; native geometry decodes inline
 float4 MaterialDirection[2] : register(c74);
 float4 MaterialColor[2] : register(c76);
 #include "auto_bump_normal.hlsl"
@@ -1149,10 +1149,6 @@ float4 fogClouds(float2 uv,bool actorIntegration,bool tiledActor=false) {
     float surface=min(length(ray),FogInfo.w);
     [branch]if(surface<=max(FogRange.x,0))return float4(0,0,0,1);
     ray*=rsqrt(max(dot(ray,ray),1e-12));
-    // A ray wholly outside every possible bank emits no cloud scattering.
-    // Do not shorten crossing rays: their base-fog optical depth still matters.
-    float lastHeight=Camera.z+ray.z*surface;
-    [branch]if(FogHeightControl.z>0&&(min(Camera.z,lastHeight)>FogHeightControl.y||max(Camera.z,lastHeight)<FogHeightControl.x))return float4(0,0,0,1);
     float3 shadowOrigin=affinePoint(Camera.xyz,FarMatrix);
     float3 shadowRay=ray.x*FarMatrix[0].xyz+ray.y*FarMatrix[1].xyz+ray.z*FarMatrix[2].xyz;
     float3 actorOrigin=affinePoint(Camera.xyz,FogActorMatrix);
@@ -1165,12 +1161,16 @@ float4 fogClouds(float2 uv,bool actorIntegration,bool tiledActor=false) {
     float stepLength=spacing/abs(major.x);
     float offset=frac(major.y*(major.x<0?-1:1)/spacing);
     // Skip whole world-grid intervals beyond the regional field support.
-    float2 invRay=(ray.xy<0?-1:1)/max(abs(ray.xy),1e-8);
-    float2 fieldA=(RegionalFogInfo.xy-Camera.xy)*invRay;
-    float2 fieldB=(RegionalFogInfo.xy+63.0/(64*max(RegionalFogInfo.z,1e-8))-Camera.xy)*invRay;
-    float2 entry=min(fieldA,fieldB),exit=max(fieldA,fieldB);
-    float fieldEntry=max(0,max(entry.x,entry.y)),fieldExit=min(exit.x,exit.y);
-    if(fieldExit<fieldEntry)return float4(0,0,0,1);
+    float2 heights=FogHeightControl.z>0?FogHeightControl.xy:float2(-1e20,1e20);
+    float3 invRay=(ray<0?-1:1)/max(abs(ray),1e-8);
+    float3 fieldA=(float3(RegionalFogInfo.xy,heights.x)-Camera.xyz)*invRay;
+    float3 fieldB=(float3(RegionalFogInfo.xy+63.0/(64*max(RegionalFogInfo.z,1e-8)),heights.y)-Camera.xyz)*invRay;
+    float3 entry=min(fieldA,fieldB),exit=max(fieldA,fieldB);
+    // Keep the prefix before entering the cloud layer: its base-fog optical
+    // depth attenuates later clouds. Only intervals beyond the last possible
+    // bank can be omitted; their accumulated base density is never consumed.
+    float fieldEntry=max(0,max(entry.x,entry.y)),fieldExit=min(exit.x,min(exit.y,exit.z));
+    if(fieldExit<fieldEntry||entry.z>surface)return float4(0,0,0,1);
     float marchEnd=min(surface,fieldExit+stepLength);
     int first=max(0,(int)floor(max(max(FogRange.x,0),fieldEntry-stepLength)/stepLength+offset));
     [loop]for(int i=first;i<41&&max(0,(i-offset)*stepLength)<marchEnd;++i){
@@ -1396,7 +1396,11 @@ float4 worldComposite(float2 uv,float2 pixel,bool surfaceLighting,bool hdrMode,s
         float3 nativeLinear=worldHdrDecode(original.rgb);
         float3 surfaceLinear=worldHdrDecode(max(original.rgb-fogPart,0));
         hdrSurface=surfaceLinear*ao;
-        float3 baseLinear=tex2D(HdrLinearBase,uv).rgb;
+        float3 baseLinear=nativeLinear;
+        // Match HdrDecodeWorld's raw clear-depth test. The horizon occupies
+        // .94..1 and must retain native geometry even outside the world band.
+        [branch]if(MaterialOcclusionInfo.z<.5||tex2Dlod(Depth,float4(uv,0,0)).r>(1.0-1.0/16777216.0))
+            baseLinear=tex2Dlod(HdrLinearBase,float4(uv,0,0)).rgb;
         fogPart=(nativeLinear-surfaceLinear)*baseLinear/max(nativeLinear,.000001);
         original.rgb=mad(max(baseLinear-fogPart,0),ao,fogPart);
     }else{

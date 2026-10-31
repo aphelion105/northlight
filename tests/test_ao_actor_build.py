@@ -11,6 +11,8 @@ ROOT = Path(__file__).resolve().parents[1]
 shader = ROOT / 'shaders'
 manifest = json.loads((shader / 'shader-build.json').read_text())
 legacy = json.loads((ROOT / 'tests/fixtures/ao_actor_legacy_sha256.json').read_text())
+# The AO method fixtures include the later blur/depth corrections.
+legacy.update(json.loads((ROOT / 'tests/fixtures/ao_baseline_sha256.json').read_text()))
 embedded = (ROOT / 'src/generated/compiled_shaders.h').read_text()
 actors = {'AOActorPrepare': 'kAoActorPrepareShader', 'HBAOActorContactBloom': 'kHbaoActorContactBloomShader',
           'GTAOActorContactBloom': 'kGtaoActorContactBloomShader', 'HBAOActorOnly': 'kHbaoActorOnlyShader',

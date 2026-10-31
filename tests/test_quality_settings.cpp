@@ -74,6 +74,9 @@ int main(){
     }
     assert(std::string(aoQualityName(0))=="High"&&std::string(aoQualityName(1))=="Medium"&&std::string(aoQualityName(2))=="Low");
     assert(parse("[Quality]\nAOMethod=GTAO\nAOStrength=150\nAORadius=300\n").aoMethod==3);
+    assert(parse("[Quality]\nAOMethod=assao\nAOQuality=Medium\n").aoMethod==4);
+    assert(parse("[Quality]\nAOMethod=4\nAOQuality=Low\n").aoMethod==4);
+    assert(parse("[Quality]\nAOMethod=5\n").aoMethod==0);
     assert(parse("[Quality]\nAOMethod=VXAO\n").aoMethod==0);
     {const auto combined=parse("[Quality]\nEquipmentLights=0\nAOMethod=GTAO\nAOStrength=150\nAORadius=300\n");
      assert(combined.equipmentLights==0&&combined.aoMethod==3&&combined.aoStrength==150&&combined.aoRadius==300);
