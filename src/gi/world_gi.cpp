@@ -1,4 +1,7 @@
 #include "world_gi.h"
+#include "material_byte_ops.h"
+#include "probe_moment_pack.h"
+#include "gi_trig.h"
 #include "mesh_page_key.h"
 #include "backend_loader.h" // shared SHA-256 implementation for FGL source identity
 #include <algorithm>
@@ -433,7 +436,7 @@ bool loadInstancedScenes(const std::vector<std::string>& files,const std::string
 static bool alphaNeverCut(const WorldMaterial& m){
     if(m.rgba.empty())return true; /* materialSample returns alpha 1 >= cutoff (validated <= 1) */
     if(m.alphaCutoff==0.f)return true; // Every texel alpha is nonnegative.
-    uint8_t low=255;for(size_t i=3;i<m.rgba.size();i+=4)low=std::min(low,m.rgba[i]);
+    const uint8_t low=NorthlightMaterialBytes::minimumAlpha(m.rgba.data(),m.rgba.size());
     return double(low)/255.0*(1.0-1e-5)>=double(m.alphaCutoff);
 }
 static bool validateBVHScene(WorldScene& s,std::string& error){
@@ -1181,7 +1184,8 @@ Vec3 cosineDirection(Vec3 n,RNG& rng){
     float u=rng.uniform(),phi=2*PI*rng.uniform(),r=std::sqrt(u);
     Vec3 helper=std::fabs(n.z)<.999f?Vec3(0,0,1):Vec3(0,1,0);
     Vec3 tangent=normalized(cross(helper,n)),bitangent=cross(n,tangent);
-    return normalized(tangent*(r*std::cos(phi))+bitangent*(r*std::sin(phi))+n*std::sqrt(std::max(0.f,1-u)));
+    float sine,cosine;sincosAngle(phi,sine,cosine);
+    return normalized(tangent*(r*cosine)+bitangent*(r*sine)+n*std::sqrt(std::max(0.f,1-u)));
 }
 // Record: static-only transport (movingGeometry null) that logs every moving
 // query a moving solve would issue along this unchanged path, in order.
@@ -1265,7 +1269,7 @@ struct ProbeSphere {
         for(unsigned i=0;i<rays;++i){
             const float z=1.f-2.f*(float(i)+.5f)/float(rays),radius=std::sqrt(std::max(0.f,1-z*z));
             const float phi=float(i)*2.39996322972865332f;
-            directions[i]={radius*std::cos(phi),radius*std::sin(phi),z};
+            float sine,cosine;sincosAngle(phi,sine,cosine);directions[i]={radius*cosine,radius*sine,z};
         }
         count=rays;
     }
@@ -1281,7 +1285,7 @@ Probe accumulateProbe(Vec3 position,const Lighting& l,unsigned rays,uint32_t see
     thread_local ProbeSphere sphere;
     const bool cached=rays<=sphere.directions.size();
     if(cached)sphere.prepare(rays);
-    const float rotateCos=cached?std::cos(azimuth):0,rotateSin=cached?std::sin(azimuth):0;
+    float rotateCos=0,rotateSin=0;if(cached)sincosAngle(azimuth,rotateSin,rotateCos);
     const float golden=2.39996322972865332f;
     for(unsigned i=0;i<rays;++i){
         // Equal-area Fibonacci sphere, randomized global azimuth. Path random
@@ -1289,7 +1293,7 @@ Probe accumulateProbe(Vec3 position,const Lighting& l,unsigned rays,uint32_t see
         Vec3 direction;
         if(cached){const auto p=sphere.directions[i];direction={p.x*rotateCos-p.y*rotateSin,p.x*rotateSin+p.y*rotateCos,p.z};}
         else{const float z=1.f-2.f*(float(i)+.5f)/float(rays),radius=std::sqrt(std::max(0.f,1-z*z));
-            const float phi=azimuth+float(i)*golden;direction={radius*std::cos(phi),radius*std::sin(phi),z};}
+            const float phi=azimuth+float(i)*golden;float sine,cosine;sincosAngle(phi,sine,cosine);direction={radius*cosine,radius*sine,z};}
         RNG rng(seed^((i+1u)*0x9e3779b9u));float distance;bool backFace;
         Vec3 color=ray(i,direction,rng,distance,backFace);
         if(backFace)++out.backFaceSamples;closest=std::min(closest,distance);
@@ -1300,7 +1304,7 @@ Probe accumulateProbe(Vec3 position,const Lighting& l,unsigned rays,uint32_t see
             weights[j]+=w;sums[j]+=double(w)*distance;squares[j]+=double(w)*distance*distance;}
     }
     for(unsigned j=0;j<6;++j){
-        if(weights[j]>1e-10){out.moments[j].mean=float(sums[j]/weights[j]);out.moments[j].meanSquare=float(squares[j]/weights[j]);}
+        if(weights[j]>1e-10)packDistanceMoment(out.moments[j],sums[j],squares[j],weights[j]);
         else{out.moments[j].mean=l.maxDistance;out.moments[j].meanSquare=l.maxDistance*l.maxDistance;}
     }
     out.samples=rays;out.valid=out.backFaceSamples<=rays/4&&closest>=.02f;

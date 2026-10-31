@@ -76,6 +76,7 @@ test_geometry_handoff.py
 test_geometry_memory.py
 test_gi_quality.py
 test_gi_settings_dependencies.py
+test_gi_trig.py
 test_gpu_budget.py
 test_gpu_budget_wiring.py
 test_gtao_grazing.py
@@ -105,6 +106,7 @@ test_logger_cost.py
 test_m2_shader_families.py
 test_m2_shader_families_client.py
 test_m2_visibility.py
+test_material_byte_ops.py
 test_memmap_diagnostics.py
 test_memory_admission_probe.py
 test_memory_guard.py
@@ -136,7 +138,12 @@ test_point_shadow_schedule.py
 test_prepare_worker.py
 test_probe_blend.py
 test_probe_blend_equivalence.py
+test_probe_grid_math.py
+test_probe_moment_pack.py
+test_probe_pool_dispatch.py
 test_probe_relight_cache.py
+test_probe_solve_axes.py
+test_probe_sphere.py
 test_probe_texture_upload.py
 test_production_draw_timers.py
 test_progressive_gi_worker.py
@@ -186,6 +193,7 @@ test_shared_scene_chunks.py
 test_shared_scene_memory.py
 test_snapshot_allocation.py
 test_snapshot_prediction.py
+test_snapshot_wide_decode.py
 test_solar_volume.py
 test_spell_asset_manifest.py
 test_spell_asset_manifest_client.py
@@ -249,4 +257,3 @@ test_world_probe_coverage.py
 test_zone_tuner.py
 test_zone_tuning.py
 test_zone_tuning_wiring.py
-validate_world_streaming.py

@@ -24,11 +24,15 @@ inline std::vector<unsigned> probeSolveOrder(Vec3 camera) {
     std::vector<Item> items(count);
     const Vec3 origin=probeWindowOrigin(camera);
     const unsigned g=l.n,base=g/2-1,baseZ=l.nz/2-1;
+    float axes[3][ProbeGridMaxN];
+    for(unsigned axis=0;axis<3;++axis)for(unsigned at=0;at<(axis==2?l.nz:g);++at){
+        const float o=axis==0?origin.x:axis==1?origin.y:origin.z,c=axis==0?camera.x:axis==1?camera.y:camera.z;
+        const float delta=(o+float(at)*8)-c;axes[axis][at]=delta*delta;
+    }
     unsigned i=0;
     for(unsigned z=0;z<l.nz;++z)for(unsigned y=0;y<g;++y)for(unsigned x=0;x<g;++x,++i) {
-        Vec3 delta={(origin.x+float(x)*8)-camera.x,(origin.y+float(y)*8)-camera.y,(origin.z+float(z)*8)-camera.z};
         const bool corner=x>=base&&x<=base+1&&y>=base&&y<=base+1&&z>=baseZ&&z<=baseZ+1;
-        items[i]={i|(corner?0u:0x80000000u),delta.x*delta.x+delta.y*delta.y+delta.z*delta.z};
+        items[i]={i|(corner?0u:0x80000000u),axes[0][x]+axes[1][y]+axes[2][z]};
     }
     std::sort(items.begin(),items.end(),[](const Item& a,const Item& b){
         if((a.index^b.index)&0x80000000u)return a.index<b.index;
