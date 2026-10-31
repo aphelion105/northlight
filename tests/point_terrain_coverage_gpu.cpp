@@ -73,6 +73,25 @@ struct PointTerrainCoverageTest {
    replay=std::move(w.replays.back());w.replays.clear();
   }
   std::printf("POINT_DYNAMIC_CAPTURE_GPU_PASS distances=6 transitions=%u staticReplayExact=1 incompleteNotPublished=1 timings=0\n",transitions);
+  // A sphere outside the receiver scissor needs no cube work. Preserve its
+  // static resources, then force all dynamic faces current when it returns.
+  auto lamp=light;w.batches={batch};w.quality.pointShadowRefreshMs=60000;
+  w.context.inverseView[14]=1000;
+  const float projection[]={1,1,1};
+  w.localScissorView=NorthlightLocalLightScissor::view(w.context.inverseView,projection,.1f,3.5f,128,128);
+  assert(w.localScissorView.valid);auto* retainedCube=w.pointSlot().cube;const auto updates=w.pointUpdates;
+  assert(!render(lamp,true,false)&&!w.pointSlot().ready&&w.pointUpdates==updates);
+  assert(w.pointSlot().cube==retainedCube&&!w.pointSlot().schedule.usable);
+  w.context.inverseView[14]=0;
+  w.localScissorView=NorthlightLocalLightScissor::view(w.context.inverseView,projection,.1f,3.5f,128,128);
+  w.quality.pointShadowFacesPerFrame=2;w.captureDemand=false;
+  assert(!render(lamp,false,false)&&w.captureDemand&&!w.pointSlot().ready);
+  assert(render(lamp,true,false)&&w.pointSlot().ready&&w.pointSlot().schedule.complete);
+  assert(!w.pointSlot().faceCycle.active()&&image()==reference);
+  // An unknown projection fails open, even for an apparently distant source.
+  w.localScissorView.valid=false;lamp.position[0]=1000;
+  assert(render(lamp,true,false)&&w.pointSlot().ready);
+  std::printf("POINT_VISIBILITY_TRANSITIONS_PASS offscreenNoUpdate=1 resourcesRetained=1 skippedCaptureDeferred=1 reentryAllFaces=1 invalidViewFailOpen=1\n");
   readback->Release();std::printf("POINT_TERRAIN_COVERAGE_GPU_PASS cameraMembershipStates=4 cachedBlockerRetained=1 exactCube=1 sameSource=1 timings=0\n");
  }
  };

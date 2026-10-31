@@ -18,11 +18,11 @@ struct Result {
     std::shared_ptr<NorthlightWorldMesh::WorldMeshUploadPlan> plan;
 };
 inline Result build(const std::string& root,const NorthlightGI::AllocationAdmission& admit={},
-                    NorthlightGI::Vec3 center={5139.84f,-56.93f,380.31f},const std::function<void(const char*)>& profile={}){
+                    NorthlightGI::Vec3 center={5139.84f,-56.93f,380.31f},const std::function<void(const char*)>& profile={},const std::string& map="Northrend"){
     using NorthlightGI::Vec3;
     constexpr double zero=17066.666666666666,tile=533.3333333333333;
     constexpr float radius=928;
-    const std::string map="Northrend",models=root+"/models";
+    const std::string models=root+"/models";
     const int tx=int(std::floor((zero-center.y)/tile)),ty=int(std::floor((zero-center.x)/tile));
     std::vector<std::string> nearFiles,farFiles;
     for(int y=ty-2;y<=ty+2;++y)for(int x=tx-2;x<=tx+2;++x){
