@@ -530,7 +530,7 @@ private:
         // prepareDraw does not establish terrain while the master switch is off.
         const char* source=(vc.entry&kTagMask)==2?"stock-ui":
             uiFallback.isBoundary(reinterpret_cast<std::uintptr_t>(vs),0)?"learned-ui":
-            vs&&!vc.world&&!vc.wmo&&!vc.skinned&&!(vc.entry&kWaterTag)&&pixelUiGeometry()?"pixel-ui":
+            vs&&!vc.world&&!vc.wmo&&!vc.skinned&&!(vc.entry&kWaterTag)&&orthographicUiGeometry()?"orthographic-ui":
             !terrain&&!uiFallback.armed()&&!uiFallback.disarmed()&&!vc.world&&!vc.wmo&&!vc.skinned&&!(vc.entry&kWaterTag)?"screen-space":nullptr;
         if(!borrowed)drop(vs);return source;
     }
@@ -560,12 +560,12 @@ private:
         else if(hdrFailuresLogged++<8)logf("HDR conversion failed frame=%u HRESULT=0x%08lx",frame,(unsigned long)hr);
         return hr;
     }
-    bool pixelUiGeometry(){
+    bool orthographicUiGeometry(){
         DWORD z=1,zw=1,zf=0;float rows[16];D3DVIEWPORT9 vp{};
         return SUCCEEDED(ext->GetRenderState(D3DRS_ZWRITEENABLE,&zw))&&!zw&&
             SUCCEEDED(ext->GetRenderState(D3DRS_ZENABLE,&z))&&SUCCEEDED(ext->GetRenderState(D3DRS_ZFUNC,&zf))&&(!z||zf==D3DCMP_ALWAYS)&&
             SUCCEEDED(ext->GetViewport(&vp))&&vp.X==0&&vp.Y==0&&
-            SUCCEEDED(ext->GetVertexShaderConstantF(0,rows,4))&&NorthlightUiBoundary::pixelSpaceRows(rows,vp.Width,vp.Height,vp.MinZ,vp.MaxZ);
+            SUCCEEDED(ext->GetVertexShaderConstantF(0,rows,4))&&NorthlightUiBoundary::fullWindowOrthoRows(rows,vp.Width,vp.Height,vp.MinZ,vp.MaxZ);
     }
     bool hdrUiInputs(){
         // Death/glow screen passes can share the UI vertex shader and ortho rows.
@@ -2131,9 +2131,9 @@ private:
                 renderEffects();spellReplay();
             }
         }
-        if(tag!=1&&tag!=2&&!vc.world&&!vc.wmo&&!vc.skinned&&!(entry&kWaterTag)&&terrain&&!applied&&pixelUiGeometry()&&hdrUiInputs()){
+        if(tag!=1&&tag!=2&&!vc.world&&!vc.wmo&&!vc.skinned&&!(entry&kWaterTag)&&terrain&&!applied&&orthographicUiGeometry()&&hdrUiInputs()){
             D3DSURFACE_DESC desc{};if(fullViewport(desc,nullptr,true)){
-                if(sampled())logf("EFFECT boundary frame=%u draw=%u kind=pixel-ui",frame,drawCalls);
+                if(sampled())logf("EFFECT boundary frame=%u draw=%u kind=orthographic-ui",frame,drawCalls);
                 renderEffects();spellReplay();
             }
         }

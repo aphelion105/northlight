@@ -25,12 +25,21 @@ inline bool accepts(bool zWrite,const float* c,bool zFuncAlways=true,bool zEnabl
 // Native pixel-space text (including Ctrl+R) has a distinct VS from the
 // scalable UI. Its full-window orthographic transform is sufficient proof;
 // world names retain the world depth band and cannot satisfy this predicate.
-inline bool pixelSpaceRows(const float c[16],unsigned width,unsigned height,float minZ,float maxZ){
+inline bool fullWindowOrthoRows(const float c[16],unsigned width,unsigned height,float minZ,float maxZ){
     if(!width||!height||minZ!=0||maxZ!=1||!screenSpaceRows(c))return false;
     const float sx=2.f/width,sy=2.f/height;
-    return std::fabs(c[0]-sx)<sx*.001f&&std::fabs(std::fabs(c[5])-sy)<sy*.001f&&
+    // Scalable UI uses logical units (observed scales 2.29469/4.07946 at
+    // 3840x2160), while Ctrl+R uses physical pixels. Both preserve aspect and
+    // the full-window origin, including the native half-pixel adjustment.
+    const float aspect=float(height)/width;
+    return c[0]>0&&std::fabs(c[5])>0&&std::fabs(c[0]/std::fabs(c[5])-aspect)<aspect*.001f&&
         std::fabs(std::fabs(c[3])-1)<=2*sx&&std::fabs(std::fabs(c[7])-1)<=2*sy&&
         c[1]==0&&c[2]==0&&c[4]==0&&c[6]==0&&c[8]==0&&c[9]==0;
+}
+// The former physical-pixel gate remains the regression counterfactual.
+inline bool pixelSpaceRows(const float c[16],unsigned width,unsigned height,float minZ,float maxZ){
+    return fullWindowOrthoRows(c,width,height,minZ,maxZ)&&std::fabs(c[0]-2.f/width)<2.f/width*.001f&&
+        std::fabs(std::fabs(c[5])-2.f/height)<2.f/height*.001f;
 }
 class Arming{
 public:
