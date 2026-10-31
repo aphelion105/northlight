@@ -333,6 +333,14 @@
         if(!active||!vertices||!indices||uploadedMap!=active->map||uploaded.lock()!=active->bvh)return false;
         if(pointSlot().map!=active->map){pointSlot().schedule.invalidate();pointSlot().cacheValid=false;}
         pointSlot().selected=light;pointSlot().map=active->map;
+        // LocalLighting is zero outside this same conservative sphere scissor.
+        // Keep the static cache, but require fresh dynamic faces on re-entry.
+        if(NorthlightLocalLightScissor::Enabled&&localScissorView.valid){
+            const std::array<NorthlightLocalLightSelection::Constant,1> sphere={{{light.position[0],light.position[1],light.position[2],light.attenuationEnd}}};
+            if(!NorthlightLocalLightScissor::batchRect(localScissorView,sphere,1).area()){
+                pointSlot().schedule.invalidate();pointSlot().faceCycle.reset();return false;
+            }
+        }
         if(!pointResources())return false;
         const uint64_t chunkHash=liveChunkHash();
         // Terrain is never cached (its live set follows the view), so the cache key ignores it.
