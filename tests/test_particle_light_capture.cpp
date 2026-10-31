@@ -333,7 +333,7 @@ int main(int argc,char** argv){
     const auto junkBefore=uploads.stats();
     for(unsigned i=0;i<NorthlightParticleLights::ProbeLimit;++i)require(bool(prepare(vertex).count)==(i<NorthlightParticleLights::DrawLimit),"MULTI_OUTSIDE_ADMISSION");
     const auto junkAfter=uploads.stats();
-    const unsigned reads=(NorthlightParticleLights::DrawLimit*NorthlightParticleLights::TrianglesPerDraw+NorthlightParticleLights::ProbeLimit-NorthlightParticleLights::DrawLimit)*6;
+    const unsigned reads=(NorthlightParticleLights::DrawLimit*NorthlightParticleLights::TrianglesPerDraw+NorthlightParticleLights::ProbeLimit-NorthlightParticleLights::DrawLimit+NORTHLIGHT_PARTICLE_PROBE_REFERENCE*NorthlightParticleLights::DrawLimit)*6;
     require(junkAfter.hits-junkBefore.hits==reads&&junkAfter.misses==junkBefore.misses,"MULTI_OUTSIDE_READS");
     require(frame.probes==128&&frame.draws==32&&frame.triangles==512&&frame.dropped==96,"MULTI_OUTSIDE_COUNTS");
     // Every triangle uses the same known texel/colour, so all four RGBA samples run.
