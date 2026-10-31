@@ -9,16 +9,17 @@ import statistics
 
 
 def summarize(text, windows):
-    intervals, profiles, work = [], [], []
+    intervals, profiles, frame_profiles, cpu_profiles, work = [], [], [], [], []
     for line in text.splitlines():
         if line.startswith('FRAME interval '):
             row = dict(re.findall(r'(\w+)=([^ ]+)', line))
             if row.get('samples') == '120' and row.get('focus') == '1' and row.get('enabled') == '1':
                 intervals.append(row)
-        elif line.startswith('GPU profile '):
+        elif line.startswith(('GPU profile ', 'GPU frame ', 'CPU profile ')):
             frame = re.search(r'frame=(\d+)', line)
             if frame:
-                profiles.append((int(frame[1]), dict(re.findall(r'(\w+)=([\d.]+)ms', line))))
+                rows = frame_profiles if line.startswith('GPU frame ') else cpu_profiles if line.startswith('CPU profile ') else profiles
+                rows.append((int(frame[1]), dict(re.findall(r'(\w+)=([\d.]+)ms', line))))
         elif line.startswith('HDR_WORK '):
             work.append(dict(re.findall(r'(\w+)=(\d+)', line)))
     report = {'scope': 'User-marked stationary windows; excludes partial/unfocused/disabled intervals. Live weather and GPU clocks are uncontrolled. Stage medians are independent and must not be summed.', 'windows': {}}
@@ -33,17 +34,20 @@ def summarize(text, windows):
         if any(not math.isfinite(t) or t <= 0 for t in times) or len({r.get('device') for r in rows}) != 1:
             raise ValueError(f'{label}: invalid frame times or multiple devices')
         med = statistics.median(times)
-        stages = {}
-        for frame, values in profiles:
-            if first <= frame <= last:
-                for key, value in values.items():
-                    stages.setdefault(key, []).append(float(value))
+        def medians(points):
+            stages = {}
+            for frame, values in points:
+                if first <= frame <= last:
+                    for key, value in values.items():
+                        stages.setdefault(key, []).append(float(value))
+            return {k: statistics.median(v) for k, v in stages.items()}
         counters = [r for r in work if first <= int(r['frame']) <= last]
         delta = {k: int(counters[-1][k]) - int(counters[0][k]) for k in counters[0] if k != 'frame' and k in counters[-1]} if len(counters) > 1 else {}
         if any(v < 0 for v in delta.values()):
             raise ValueError(f'{label}: counters reset inside the window')
         report['windows'][label] = dict(frames=[first, last], intervals=len(rows), median_interval_mean_ms=med,
-                                       equivalent_fps=1000/med, stage_medians_ms={k: statistics.median(v) for k, v in stages.items()},
+                                       equivalent_fps=1000/med, stage_medians_ms=medians(profiles),
+                                       frame_gpu_stage_medians_ms=medians(frame_profiles), cpu_profile_medians_ms=medians(cpu_profiles),
                                        hdr_work_delta=delta)
     return report
 

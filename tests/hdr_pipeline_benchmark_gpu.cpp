@@ -21,7 +21,7 @@ static double timed(IDirect3DDevice9* device,const std::function<void()>& frame)
     start->Release();end->Release();frequency->Release();assert(hz&&last>first);return double(last-first)*1000/double(hz)/48;
 }
 int main(int argc,char** argv){
-    assert(argc==2);HWND window=CreateWindowExW(0,L"STATIC",L"",WS_OVERLAPPED,0,0,64,64,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);assert(window);
+    assert(argc==2||argc==3);HWND window=CreateWindowExW(0,L"STATIC",L"",WS_OVERLAPPED,0,0,64,64,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);assert(window);
     HMODULE module=LoadLibraryA(argv[1]);assert(module);auto create=reinterpret_cast<IDirect3D9*(WINAPI*)(UINT)>(reinterpret_cast<void*>(GetProcAddress(module,"Direct3DCreate9")));assert(create);auto* api=create(D3D_SDK_VERSION);assert(api);
     D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=window;pp.BackBufferWidth=pp.BackBufferHeight=64;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;pp.PresentationInterval=D3DPRESENT_INTERVAL_IMMEDIATE;
     IDirect3DDevice9* device=nullptr;ok(api->CreateDevice(0,D3DDEVTYPE_HAL,window,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_FPU_PRESERVE,&pp,&device));
@@ -102,6 +102,35 @@ int main(int argc,char** argv){
             transfer.reset();msaa->Release();
         }
         current.reset();previous.reset();encodedSurface->Release();encoded->Release();copySurface->Release();copy->Release();output->Release();
+    }
+    if(argc==3){
+        const auto im=image(argv[2]);assert(im.format==D3DFMT_A16B16G16R16F&&im.bytes==8);
+        auto* input=texture(device,im);IDirect3DPixelShader9* copyShader=nullptr;
+        ok(device->CreatePixelShader(reinterpret_cast<const DWORD*>(kHdrCopy),&copyShader));
+        for(auto samples:{D3DMULTISAMPLE_NONE,D3DMULTISAMPLE_8_SAMPLES}){
+            IDirect3DSurface9 *composed=nullptr,*output=nullptr,*resolved=nullptr,*readback=nullptr;
+            for(auto** target:{&composed,&output})ok(device->CreateRenderTarget(im.width,im.height,D3DFMT_A16B16G16R16F,samples,0,FALSE,target,nullptr));
+            ok(device->CreateRenderTarget(im.width,im.height,D3DFMT_A16B16G16R16F,D3DMULTISAMPLE_NONE,0,FALSE,&resolved,nullptr));
+            ok(device->CreateOffscreenPlainSurface(im.width,im.height,D3DFMT_A16B16G16R16F,D3DPOOL_SYSTEMMEM,&readback,nullptr));
+            // The capture is already resolved. Replicate each captured color to
+            // the MSAA samples; this cannot reconstruct original sample edges.
+            ok(device->BeginScene());ok(NorthlightHdr::quadState(device,composed,im.width,im.height));
+            ok(device->SetPixelShader(copyShader));ok(device->SetTexture(0,input));ok(NorthlightHdr::drawQuad(device,im.width,im.height));ok(device->EndScene());
+            NorthlightHdr::Frame frame;NorthlightHdr::Settings settings;settings.autoExposure=true;settings.bloom=1;
+            ok(device->BeginScene());ok(frame.prepareLegacy(device,input,nullptr,nullptr,im.width,im.height,0,1,settings,nullptr,false));ok(device->EndScene());
+            auto post=[&]{ok(device->BeginScene());ok(frame.finish(device,composed,output,settings,1.f/60,true,true));ok(device->EndScene());};
+            double gpu[3],cpu[3];for(unsigned i=0;i<3;++i){gpu[i]=timed(device,post);cpu[i]=submissionMs;}
+            std::sort(gpu,gpu+3);std::sort(cpu,cpu+3);
+            ok(device->StretchRect(output,nullptr,resolved,nullptr,D3DTEXF_NONE));ok(device->GetRenderTargetData(resolved,readback));
+            D3DLOCKED_RECT lock{};ok(readback->LockRect(&lock,nullptr,D3DLOCK_READONLY));
+            const std::string name="capture-output-"+std::to_string(unsigned(samples))+".rgba16f";
+            std::ofstream bytes(name,std::ios::binary);assert(bytes);
+            for(unsigned y=0;y<im.height;++y)bytes.write(static_cast<const char*>(lock.pBits)+size_t(y)*lock.Pitch,im.width*8);
+            bytes.close();assert(bytes);ok(readback->UnlockRect());
+            std::printf("{\"width\":%u,\"height\":%u,\"samples\":%u,\"captured_linear_post_ms\":%.6f,\"captured_cpu_submit_ms\":%.6f,\"scope\":\"resolved_capture_post_only_no_game_ui_lighting_generation_or_presentation\",\"white_nits\":203,\"peak_nits\":1000,\"bloom\":1,\"exposure_history_reset\":true,\"output\":\"%s\"}\n",im.width,im.height,unsigned(samples),gpu[1],cpu[1],name.c_str());std::fflush(stdout);
+            frame.reset();composed->Release();output->Release();resolved->Release();readback->Release();
+        }
+        ok(device->SetTexture(0,nullptr));input->Release();copyShader->Release();
     }
     constant->Release();device->Release();api->Release();FreeLibrary(module);DestroyWindow(window);
 }

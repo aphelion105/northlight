@@ -35,6 +35,8 @@ The existing stationary client evidence still identifies FogMarch (approximately
 * Three-sample vertical bloom: hardware interpolation quantized the 1.2-texel weights. A 64-unit impulse produced 3.984375 instead of 4 in a tail sample. The four-sample version uses exactly representable half-texel weights and passes the stricter absolute-error oracle.
 * Cloud march exit after its final possible emitting interval: FP16/FP32 outputs were identical across the authored controls, but a normal scenario regressed by approximately 17%. Applying it to actor variants also exceeded the existing 600-slot gate (607 slots). The production world shader is unchanged.
 * Conditional omission of sRGB writes: reduced call count but repeatedly worsened the isolated two-texture CPU cost from about 0.000243 to 0.000383 ms per two substitutions on DXVK 3, including reversed executable order. These edits were removed. Disabled-blend reads were measured separately and retained.
+* Branch around the complete tone-mapping shoulder below diffuse white: the 495-case numerical acceptance passes, but DXVK 3/MSAA8 post cost repeatedly rises from approximately 0.387–0.390 to 0.413–0.418 ms, including reversed executable order. Removed.
+* A single oversized fullscreen triangle: the 495-case numerical acceptance passes and DXVK 2 improves, but DXVK 3/MSAA8 repeatedly regresses from approximately 0.388–0.390 to 0.402–0.403 ms. The existing two-triangle implementation is retained.
 
 ## Reproduction and evidence
 
@@ -78,3 +80,15 @@ The exact `.6` DLL was measured on DXVK 3 at 3840×2160/MSAA8, with the same sta
 This run shows 8.44–8.63% additional frame time, or 7.78–7.94% lower equivalent FPS (about 102 versus 111). It does not demonstrate a whole-frame improvement over the earlier `.5` session, whose sunlight, clocks and background conditions differ. The residual HDR overhead is not solved. FogMarch remains approximately 1.194–1.195 ms in both modes; FogClouds is approximately 0.65–0.68 ms. HDR compatibility layers/pixels remain zero and recurring direct two-texture draws remain two per world frame. No HDR conversion or extension faults were logged. Renderer settings remain byte-identical after restoring the saved HDR configuration.
 
 The marked-log SHA-256 is `7128e9dc5a3bea003bbb3f222589ae11dbd9f550ca41568fff3e2c11494f4877`. A subsequent diagnostic capture records current HDR-linear/exposure products at frame 70715; its capture frames are outside the timing windows. The existing effect-only GPU profile ends before the HDR finish/UI phase. Its totals must not be used to assign the entire client difference to fog or to add independent stage medians together. Further attribution needs coverage of that missing phase and the actual MSAA resolve/presentation path. Live day/night/interior acceptance and physical two-display migration remain open.
+
+The log analyzer now reports the existing whole-frame GPU profile and CPU profile separately from the effect-only profile. Whole-frame GPU tail medians are 1.330 ms (HDR A1), 0.864 ms (SDR) and 1.293 ms (HDR A2). This tail includes HDR finishing and native UI; its approximately 0.43–0.47 ms difference is supporting attribution, not an exact sum with independently sampled effect medians. CPU and GPU intervals remain distinct in the JSON output. Tests verify separation, missing profiles and window exclusion.
+
+## Frozen HDR post replay
+
+The benchmark accepts a private resolved `hdr-linear-scene.fgr` directly, runs the production resolve/meter/adaptation/bloom/tone-map path and saves its resolved output for comparison. It records input, source-header, harness, backend, executable and output hashes. Stale output files are removed before each run. The original game per-sample edges, lighting generation, UI and OS presentation are excluded. The fixed replay uses 203-nit white, 1000-nit peak and a reset exposure history; it is separate from the live 1500-nit display configuration.
+
+```text
+python tests/verify_hdr_frame_gpu.py --benchmark --reference-ref cf2c41e1 --linear-capture <private-hdr-linear-scene.fgr> --dxvk2 <dll> --dxvk3 <dll> --output <isolated-output>
+```
+
+An identical-source control using the new packaged-client capture produces byte-identical resolved images for both executable variants, both backends and MSAA off/eight. At 4K, DXVK 3 replay costs approximately 0.16 ms without MSAA and 0.56 ms with MSAA8; DXVK 2 is approximately 0.16–0.17 and 0.56–0.57 ms. These are component costs and no improvement is claimed for an identical-source control. The capture's linear scene is finite; adjacent-frame horizon comparison has zero median positive contribution and about 0.067% of pixels above 0.01. Animation/early UI differ between these frames, so the authored wrong-depth regression remains the occlusion proof. This view does not replace visible-sun, day/night/interior or multi-monitor acceptance.
