@@ -130,13 +130,18 @@ inline bool build(const Mesh& in,const D3DVERTEXELEMENT9* elements,UINT elementC
         float u=0,v=0,u1=0,v1=0,b=0;for(unsigned k=0;k<3;++k){float weight=float(w[k])/factor;u+=uv[t[k]][0]*weight;v+=uv[t[k]][1]*weight;if(uv1){u1+=(*uv1)[t[k]][0]*weight;v1+=(*uv1)[t[k]][1]*weight;}if(blend)b+=(*blend)[t[k]]*weight;}
         float h=.5f;if(!gpuHeight&&!pinned){h=first.sample(u,v,clampU,clampV);if(second&&uv1&&blend)h=second->sample(u1,v1,clampU,clampV)*(1-std::clamp(b,0.f,1.f))+h*std::clamp(b,0.f,1.f);}
         const float length=std::sqrt(direction[0]*direction[0]+direction[1]*direction[1]+direction[2]*direction[2]);if(!std::isfinite(length)||length<1e-5f)return UINT_MAX;
-        float delta[3];for(unsigned k=0;k<3;++k)delta[k]=pinned?0:(gpuHeight?1.f:h-.5f)*direction[k]/length;std::memcpy(dst+stride,delta,12);
+        // Skinned eye shells and facial UV seams must keep their native shape.
+        // Taper through the first triangle ring; an all-boundary triangle has
+        // no safe interior to inflate. Normal-map detail remains independent.
+        float relief=1;if(influences&&bones){relief=0;for(unsigned k=0;k<3;++k)if(!boundary[t[k]])relief+=float(w[k])/factor;}
+        float delta[3];for(unsigned k=0;k<3;++k)delta[k]=pinned?0:relief*(gpuHeight?1.f:h-.5f)*direction[k]/length;std::memcpy(dst+stride,delta,12);
         if(gpuHeight){const float coordinates[]={u,v};std::memcpy(dst+stride+12,coordinates,8);}return n;
     };
     std::array<std::array<unsigned,129>,129> rows;
     for(size_t ti=0;ti<triangles.size();++ti){auto t=triangles[ti];
-        if(centroid||!rigid[ti]){unsigned a=vertex(t,0,0),b=vertex(t,factor,0),c=vertex(t,0,factor);if(a==UINT_MAX||b==UINT_MAX||c==UINT_MAX){out={};return false;}
-            if(!rigid[ti])out.indices.insert(out.indices.end(),{a,b,c});
+        const bool seamTriangle=influences&&bones&&boundary[t[0]]&&boundary[t[1]]&&boundary[t[2]];
+        if(centroid||!rigid[ti]||seamTriangle){unsigned a=vertex(t,0,0),b=vertex(t,factor,0),c=vertex(t,0,factor);if(a==UINT_MAX||b==UINT_MAX||c==UINT_MAX){out={};return false;}
+            if(!rigid[ti]||seamTriangle)out.indices.insert(out.indices.end(),{a,b,c});
             else{unsigned center=vertex(t,1,1);if(center==UINT_MAX){out={};return false;}out.indices.insert(out.indices.end(),{a,b,center,b,c,center,c,a,center});}continue;}
         for(unsigned i=0;i<=factor;++i)for(unsigned j=0;j<=factor-i;++j){unsigned v=vertex(t,i,j);if(v==UINT_MAX){out={};return false;}rows[i][j]=v;}
         for(unsigned i=0;i<factor;++i)for(unsigned j=0;j<factor-i;++j){out.indices.insert(out.indices.end(),{rows[i][j],rows[i+1][j],rows[i][j+1]});if(j+1<factor-i)out.indices.insert(out.indices.end(),{rows[i+1][j],rows[i+1][j+1],rows[i][j+1]});}}
