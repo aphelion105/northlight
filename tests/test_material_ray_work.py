@@ -84,17 +84,20 @@ float4 ZeroRay(float2 uv:TEXCOORD0,float4 p:TEXCOORD1):COLOR0 {selectZeroIterati
 float4 ReferenceZeroRay(float2 uv:TEXCOORD0,float4 p:TEXCOORD1):COLOR0 {selectZeroIteration(uv,p);return ReferenceRay(uv,p);}
 '''
 path = out / 'material-rays.hlsl'
-path.write_text(source + reference + fixture)
 compiler = Compiler(allow_compatible_binary=args.compatible_compiler)
-for entry in ('Ray', 'ReferenceRay', 'Shadow', 'ReferenceShadow', 'ZeroRay', 'ReferenceZeroRay'):
-    compiler.compile(path, entry, 'ps_3_0', out / (entry + '.bin'))
-    validate_assembly(out / (entry + '.bin.asm'), 'ps_3_0')
 exe = out / 'material-ray-work.exe'
 subprocess.run([str(fp.zig()), 'c++', '-target', 'x86-windows-gnu', '-O2', '-UNDEBUG', '-std=c++17',
                 *fp.test_include_flags(), str(fp.TESTS / 'material_ray_work_gpu.cpp'), '-luser32', '-o', str(exe)],
                env=fp.zig_env(), check=True)
 backend = os.environ.get('NORTHLIGHT_TEST_D3D9', str(Path(os.environ.get('SystemRoot', 'C:/Windows')) / 'SysWOW64/d3d9.dll'))
-subprocess.run([str(exe), backend, str(out)], cwd=out, check=True, timeout=120)
-rows = json.loads((out / 'material-ray-work.json').read_text())
-assert len(rows) == 55 and all(row['max_error'] <= .00001 for row in rows)
-print('PASS 55 paired material ray cases, including round-trip counterexamples, seams, gradients and mixed-height zero-iteration rays')
+for capture in (False, True):
+    prefix = '#define NORTHLIGHT_MATERIAL_CAPTURE\n' if capture else ''
+    path.write_text(prefix + source + reference + fixture)
+    for entry in ('Ray', 'ReferenceRay', 'Shadow', 'ReferenceShadow', 'ZeroRay', 'ReferenceZeroRay'):
+        compiler.compile(path, entry, 'ps_3_0', out / (entry + '.bin'))
+        validate_assembly(out / (entry + '.bin.asm'), 'ps_3_0')
+    subprocess.run([str(exe), backend, str(out)], cwd=out, check=True, timeout=120)
+    rows = json.loads((out / 'material-ray-work.json').read_text())
+    assert len(rows) == 55 and all(row['max_error'] <= .00001 for row in rows)
+    (out / ('material-rays-capture.json' if capture else 'material-rays-native.json')).write_text(json.dumps(rows, indent=2)+'\n')
+    print(f'PASS 55 paired material ray cases: {"capture" if capture else "native"}, round trips, seams, gradients and zero-iteration rays')

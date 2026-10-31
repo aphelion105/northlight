@@ -28,7 +28,13 @@ float2 parallaxUVFrame(sampler2D heightMap,float2 uv,float distance,float4 contr
     // Reuse only identical coordinates; subtraction/addition may round.
     float previous=sampled;float2 priorUV=sampleUV;
     [loop]for(int i=0;i<32&&i<steps&&depth<sampled;++i){previous=sampled;priorUV=sampleUV;sampleUV-=stepUV;depth+=stepDepth;sampled=1-tex2Dgrad(heightMap,sampleUV,tx,ty).b;}
+#ifdef NORTHLIGHT_MATERIAL_CAPTURE
+    // The explicit fetch keeps two-layer world-frame capture within SM3's
+    // instruction limit; it is also the reference result for the reuse path.
+    previous=1-tex2Dgrad(heightMap,sampleUV+stepUV,tx,ty).b;
+#else
     [branch]if(any(priorUV!=sampleUV+stepUV))previous=1-tex2Dgrad(heightMap,sampleUV+stepUV,tx,ty).b;
+#endif
     previous-=depth-stepDepth;
     float after=sampled-depth;
     sampleUV+=stepUV*saturate(after/min(after-previous,-.00001));
