@@ -1,5 +1,7 @@
 # Settings, HDR and optimization integration (2026-10-31)
 
+This document records the earlier optimization-only snapshot. The [complete `.3` installer](all-features-installer-20261031.md) supersedes its release scope and includes the new HDR pipeline, actor AO, persistent material maps and later emitter follow-ups. Historical source identities and test counts below remain evidence for their original snapshots.
+
 This candidate combines the 31 changes listed in optimization-batch-20261031.md. It preserves the existing settings and experimental HDR feature. This is a frozen release candidate, not a claim that every concurrent development chat or all future PR tips have been integrated.
 
 ## Published ownership

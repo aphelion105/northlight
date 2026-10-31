@@ -23,13 +23,15 @@ The calibration mode generates direct scRGB signals for 80/203 nits, a test peak
 
 Legacy scene pixels are decoded once from sRGB. Northlight lighting, atmosphere, celestial sources and composition retain relative linear radiance in FP16; relative scene white is 1. Bloom reads this unclipped input. Exposure and a hue-preserving soft shoulder map the completed world to scRGB, where 1 represents 80 signal nits. Sun/moon assets are decoded before their authored emission; source gains are independent of monitor peak. Native legacy effects remain SDR-origin content. Capturing their original pre-clamp radiance is a later phase.
 
-Legacy expansion precedes Northlight additions. Material albedo is inferred from the unexpanded legacy input so expansion does not increase Northlight's lighting coefficients. The separate UI transfer follows world presentation. A compatibility MRT keeps the client's 8-bit scene copy before HDR exposure, contrast and bloom. The game's logical formats, buffer count and Reset parameters stay unchanged.
+Legacy expansion precedes Northlight additions. Material albedo is inferred from the unexpanded legacy input so expansion does not increase Northlight's lighting coefficients. The separate UI transfer follows world presentation. For DISCARD swapchains, the client's 8-bit scene mirror is generated on its first logical copy/readback/partial-write request. COPY/FLIP retain the eager compatibility MRT. This mirror precedes HDR exposure, contrast and bloom. The game's logical formats, buffer count and Reset parameters stay unchanged.
 
 HDR uses an additional FP16 swapchain and never resets the game's device merely to toggle output. Windows output state is queried separately from Vulkan scRGB support. The latter can remain available while Windows HDR is off. Game-initiated Reset still recreates resources normally. HDR shaders, target sizes, samples and ownership are bounded; the diagnostics show HDR frame/output payload separately from driver allocations and residency.
 
 ## Verification
 
 See [the agreed specification](hdr-pipeline-spec.md) and [the validation record](hdr-validation-2026-10-31.md).
+
+Run `python tests/verify_hdr_pipeline.py --output .local/hdr-check` for the standalone build, CPU boundary checks, production composition graph and DXVK 2/3 Frame/proxy acceptance. It uses authored inputs and UI by default, requires no captured game assets, and never launches or modifies WoW. Supply explicit backend paths when the local client is not configured. Optional `--capture-prefix` imports only native scene/depth from a local capture; `--captured-ui` adds a local UI shader. The report separates GPU timestamps, CPU submission, structural draw/allocation counts and numerical output checks. Sky, expansion and stencil cases exercise the conservative fallback.
 
 `tests/verify_hdr_lifecycle_gpu.py --cycle-hdr --proxy renderer/frd9.dll` exercises Windows HDR toggles with live resources and restores the original Windows state. Supply `--dxvk2`, `--dxvk3` and an isolated `--output` directory.
 
