@@ -44,4 +44,25 @@ New sampled `CPU HDR` diagnostics distinguish admission outside the effect bound
 
 The timers use the existing latched Diagnostics/RenderProfile sample and are absent from quiet/untimed/SDR paths. The CPU boundary oracle executes all eight combinations of sample/untimed/HDR flags with a counting clock and verifies retained native submission. The log parser separates these fields from CPU and whole-frame GPU profiles. Diagnostic gating, source ownership and its stale-copy negative control pass.
 
-Full-client performance, live sun/geometry review and the package identity are recorded after installing this exact validated DLL. The agreed target remains at most 5% additional GPU-frame time per representative scene, with automatic exposure and ordinary UI. Day/night/interior acceptance and the deferred physical two-monitor case must not be inferred from an outdoor frozen replay.
+## Installed package and fresh client comparison
+
+The exact validated DLL was packaged as `Northlight-0.3.216-test.20261031.7-Windows.zip` (19,736,122 bytes, production snapshot `9aa3f77f`). Archive SHA-256: `9cc9a8b40a56f534a8696075a70eb6810d818a7fa1fb403785a423d685e8a526`. Package verification passes and packaged/installed/offline-tested DLL hashes match.
+
+The requested character entered autonomously. Stationary Crystalsong HDR/SDR/HDR windows use DXVK 3, 3840×2160, native MSAA8, automatic exposure, bloom and ordinary UI. Settings were restored byte-identically; menus, switches and warmup intervals are excluded. No other GPU stand ran concurrently.
+
+| Median measurement | HDR A1 | SDR B | HDR A2 |
+| --- | --- | --- | --- |
+| Renderer frame bounds | 40921–43321 | 55460–66380 | 78657–88617 |
+| Complete 120-frame intervals | 20 | 91 | 83 |
+| Interval mean, ms | 8.9355 | 8.3340 | 8.9120 |
+| Equivalent FPS | 111.91 | 119.99 | 112.21 |
+| Whole-frame GPU timestamp span, ms | 8.7900 | 7.4160 | 8.7555 |
+| GPU tail, ms | 1.329 | 0.829 | 1.317 |
+| CPU HDR admission, ms | 0.0510 | — | 0.0523 |
+| CPU HDR finish, ms | 0.0197 | — | 0.0199 |
+
+HDR FPS remains 6.5–6.7% lower (6.9–7.2% longer frame intervals). The GPU timestamp span differs more, by about 18%; it includes CPU submission gaps and is not pure GPU busy time. Live weather, solar position and clocks remain uncontrolled. Independent stage medians must not be added. These observations do not attribute the session difference from `.6` to two small shader changes or establish the performance target.
+
+Recurring two-texture UI stays on the direct path; compatibility layers and pixels remain zero. The saved comparison log SHA-256 is `8cddae00c75f93c486cc85782e25752821053edab75a54eade2fc624e3f3baf2`. Private evidence: `client-package7-abba.log`, `package7-markers.json`, `client-package7-summary.json` under `.local/hdr-autonomous-20261031`.
+
+The agreed target remains at most 5% additional GPU-frame time per representative scene. It is not met. Day/night/interior acceptance and the deferred physical two-monitor case must not be inferred from this outdoor comparison.

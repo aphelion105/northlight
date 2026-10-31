@@ -220,7 +220,9 @@ float4 CelestialVeilPS(float2 uv:TEXCOORD0):COLOR0 {
     // No cut at the camera's far edge: it drew a sharp line across a near hill. The sea under the edge takes no veil (above).
     float alpha=geometry*glareProfile(radius);
     clip(alpha-.001);
-    return float4(outputColor(DiscPolicy.x>1.5?1-exp2(-1.442695*max(alpha,0)*discDecode(DiscGlowHue.rgb)):glowShoulder(alpha,DiscGlowHue.rgb)),alpha);
+    // Match the sky halo: decode the authored shoulder's result, not its tint.
+    float3 encoded=glowShoulder(alpha,DiscGlowHue.rgb);if(DiscPolicy.x>1.5)encoded=discDecode(encoded);
+    return float4(outputColor(encoded),alpha);
 }
 
 row_major float4x4 TerrainMaskMatrix : register(c0);
