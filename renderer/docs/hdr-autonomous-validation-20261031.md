@@ -42,6 +42,8 @@ The phase medians imply approximately 6% remaining HDR overhead, about 101 versu
 
 Private evidence is under `.local/hdr-autonomous-20261031`: the stationary log, explicit frame markers, validated summary, capture comparison, frame/sun oracles and component benchmark. Raw account/game logs and captures are not published.
 
+The packaged DLL (`ac96124a3e21e1289b3619c92e414c6619d058a402d99e4f7c869743c4d45479`) was subsequently installed and entered the same character again. Its fresh `client-package5-final.log` confirms active HDR, zero compatibility layers/pixels, two direct two-texture draws per world frame and no extension faults. This final HDR-only run is separate from the bracketed comparison above. Ctrl+R is visible; the user's unit frame physically overlaps its left edge, rather than a world pass erasing it. Renderer settings remain byte-identical to the pre-test copy.
+
 ## Further optimization directions and acceptance gates
 
 1. **HDR resolves, target bandwidth and presentation.** The isolated 4K/MSAA8 HDR post path without an SDR mirror costs about 0.39–0.40 ms. A forced MRT mirror adds about 0.17 ms and is already omitted where permitted. Investigate remaining resolve/target ownership and state traffic before adding variants. Require MSAA edge equivalence, logical readbacks/partial writes, both Present paths, device recovery and measured timestamp improvement.
