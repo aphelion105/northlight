@@ -1,5 +1,5 @@
 {
-  "source_sha256": "a2412ec9254cb303b9f175ab63f8ada81737909452bfff40639226c1fad83fdf",
+  "source_sha256": "f76aa83dde8dcba0d136296900cc5528c0a9e7552b371e87f5cbcb7b2b5a293d",
   "rain_source_sha256": "10948a355dc52e824d9ae61b5251a5146a20955295070dbe9ce749dec0eac172",
   "target": "ps_3_0",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
@@ -37,7 +37,7 @@
         "rep": 1,
         "endrep": 1
       },
-      "source_sha256": "32c38f25f42077c1e2df5f27d390dd932fe575e103cd287464b3439a2d38b218"
+      "source_sha256": "f76aa83dde8dcba0d136296900cc5528c0a9e7552b371e87f5cbcb7b2b5a293d"
     },
     "AOContactBloom": {
       "bytes": 5176,
@@ -71,7 +71,7 @@
         "rep": 1,
         "endrep": 1
       },
-      "source_sha256": "32c38f25f42077c1e2df5f27d390dd932fe575e103cd287464b3439a2d38b218"
+      "source_sha256": "f76aa83dde8dcba0d136296900cc5528c0a9e7552b371e87f5cbcb7b2b5a293d"
     },
     "ContactBloom": {
       "bytes": 804,
@@ -90,7 +90,7 @@
         "mov": 3,
         "add": 2
       },
-      "source_sha256": "32c38f25f42077c1e2df5f27d390dd932fe575e103cd287464b3439a2d38b218"
+      "source_sha256": "f76aa83dde8dcba0d136296900cc5528c0a9e7552b371e87f5cbcb7b2b5a293d"
     },
     "HDAOContactBloom": {
       "bytes": 4244,
@@ -125,7 +125,7 @@
         "sincos": 1,
         "endrep": 2
       },
-      "source_sha256": "a2412ec9254cb303b9f175ab63f8ada81737909452bfff40639226c1fad83fdf"
+      "source_sha256": "f76aa83dde8dcba0d136296900cc5528c0a9e7552b371e87f5cbcb7b2b5a293d"
     },
     "HBAOPlusContactBloom": {
       "bytes": 5180,
@@ -160,7 +160,7 @@
         "sincos": 1,
         "endrep": 2
       },
-      "source_sha256": "a2412ec9254cb303b9f175ab63f8ada81737909452bfff40639226c1fad83fdf"
+      "source_sha256": "f76aa83dde8dcba0d136296900cc5528c0a9e7552b371e87f5cbcb7b2b5a293d"
     },
     "GTAOContactBloom": {
       "bytes": 7860,
@@ -195,7 +195,7 @@
         "sincos": 1,
         "endrep": 2
       },
-      "source_sha256": "7ff9f3ef65872b72ba30562e26ae1293399e6bcbcefc4b873f3e072fb41cc6e1"
+      "source_sha256": "f76aa83dde8dcba0d136296900cc5528c0a9e7552b371e87f5cbcb7b2b5a293d"
     },
     "HDAOContactBloomMedium": {
       "bytes": 4340,
@@ -230,7 +230,7 @@
         "sincos": 1,
         "endrep": 2
       },
-      "source_sha256": "a2412ec9254cb303b9f175ab63f8ada81737909452bfff40639226c1fad83fdf"
+      "source_sha256": "f76aa83dde8dcba0d136296900cc5528c0a9e7552b371e87f5cbcb7b2b5a293d"
     },
     "HBAOPlusContactBloomMedium": {
       "bytes": 5180,
@@ -265,7 +265,7 @@
         "sincos": 1,
         "endrep": 2
       },
-      "source_sha256": "a2412ec9254cb303b9f175ab63f8ada81737909452bfff40639226c1fad83fdf"
+      "source_sha256": "f76aa83dde8dcba0d136296900cc5528c0a9e7552b371e87f5cbcb7b2b5a293d"
     },
     "GTAOContactBloomMedium": {
       "bytes": 7496,
@@ -300,7 +300,7 @@
         "sincos": 1,
         "endrep": 2
       },
-      "source_sha256": "be090061ffa2ac01cf8f986560815c7aac59a7f8e8ed346ea0febe788d9ffb1d"
+      "source_sha256": "f76aa83dde8dcba0d136296900cc5528c0a9e7552b371e87f5cbcb7b2b5a293d"
     },
     "HDAOContactBloomLow": {
       "bytes": 4340,
@@ -335,7 +335,7 @@
         "sincos": 1,
         "endrep": 2
       },
-      "source_sha256": "a2412ec9254cb303b9f175ab63f8ada81737909452bfff40639226c1fad83fdf"
+      "source_sha256": "f76aa83dde8dcba0d136296900cc5528c0a9e7552b371e87f5cbcb7b2b5a293d"
     },
     "HBAOPlusContactBloomLow": {
       "bytes": 5156,
@@ -370,7 +370,7 @@
         "sincos": 1,
         "endrep": 2
       },
-      "source_sha256": "a2412ec9254cb303b9f175ab63f8ada81737909452bfff40639226c1fad83fdf"
+      "source_sha256": "f76aa83dde8dcba0d136296900cc5528c0a9e7552b371e87f5cbcb7b2b5a293d"
     },
     "GTAOContactBloomLow": {
       "bytes": 7496,
@@ -405,7 +405,7 @@
         "sincos": 1,
         "endrep": 2
       },
-      "source_sha256": "be090061ffa2ac01cf8f986560815c7aac59a7f8e8ed346ea0febe788d9ffb1d"
+      "source_sha256": "f76aa83dde8dcba0d136296900cc5528c0a9e7552b371e87f5cbcb7b2b5a293d"
     },
     "AOBlur": {
       "bytes": 5452,
@@ -439,7 +439,7 @@
         "exp": 1,
         "endrep": 2
       },
-      "source_sha256": "8c1aacd06c9f334b6debfedadb316ac4b1149e238f9afa6214c20771a18b2e43"
+      "source_sha256": "f76aa83dde8dcba0d136296900cc5528c0a9e7552b371e87f5cbcb7b2b5a293d"
     },
     "Composite": {
       "bytes": 5428,
@@ -475,7 +475,7 @@
         "log": 2,
         "pow": 1
       },
-      "source_sha256": "32c38f25f42077c1e2df5f27d390dd932fe575e103cd287464b3439a2d38b218"
+      "source_sha256": "f76aa83dde8dcba0d136296900cc5528c0a9e7552b371e87f5cbcb7b2b5a293d"
     },
     "RainMaskMRT": {
       "bytes": 264,
@@ -513,6 +513,537 @@
         "mov": 2
       },
       "source_sha256": "10948a355dc52e824d9ae61b5251a5146a20955295070dbe9ce749dec0eac172"
+    },
+    "AOOnly": {
+      "bytes": 4620,
+      "sha256": "149678e270e00d5e15e96a19f8cb256afa0aafd8a369da2e9bf03f7a4c46f28c",
+      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "static_instruction_slots": 263,
+      "temporary_registers": 9,
+      "samplers": [
+        1,
+        3
+      ],
+      "instructions": {
+        "rcp": 14,
+        "mad": 2,
+        "frc": 3,
+        "add": 71,
+        "mov": 15,
+        "mul": 77,
+        "max": 5,
+        "min": 2,
+        "texldl": 7,
+        "cmp": 33,
+        "if": 2,
+        "else": 2,
+        "endif": 2,
+        "dp2add": 3,
+        "dp3": 3,
+        "rsq": 3,
+        "rep": 1,
+        "endrep": 1
+      },
+      "source_sha256": "f76aa83dde8dcba0d136296900cc5528c0a9e7552b371e87f5cbcb7b2b5a293d"
+    },
+    "HDAOOnly": {
+      "bytes": 3688,
+      "sha256": "738d33c49bd3b7838f38a80bef4fe3225af09f4e021e48200d7202052f40509d",
+      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "static_instruction_slots": 228,
+      "temporary_registers": 14,
+      "samplers": [
+        1,
+        3
+      ],
+      "instructions": {
+        "rcp": 14,
+        "mad": 2,
+        "frc": 6,
+        "add": 52,
+        "mov": 15,
+        "mul": 60,
+        "max": 3,
+        "min": 8,
+        "texldl": 4,
+        "cmp": 15,
+        "if": 2,
+        "else": 2,
+        "endif": 2,
+        "dp2add": 3,
+        "rsq": 5,
+        "dp3": 6,
+        "rep": 2,
+        "sincos": 1,
+        "endrep": 2
+      },
+      "source_sha256": "f76aa83dde8dcba0d136296900cc5528c0a9e7552b371e87f5cbcb7b2b5a293d"
+    },
+    "HDAOOnlyMedium": {
+      "bytes": 3768,
+      "sha256": "82a9a6872caae53030101a352925e927dfba21aa5cfc8342c1385f2f123334d2",
+      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "static_instruction_slots": 232,
+      "temporary_registers": 15,
+      "samplers": [
+        1,
+        3
+      ],
+      "instructions": {
+        "rcp": 14,
+        "mad": 2,
+        "frc": 7,
+        "add": 53,
+        "mov": 16,
+        "mul": 61,
+        "max": 3,
+        "min": 8,
+        "texldl": 4,
+        "cmp": 15,
+        "if": 2,
+        "else": 2,
+        "endif": 2,
+        "dp2add": 3,
+        "rsq": 5,
+        "dp3": 6,
+        "rep": 2,
+        "sincos": 1,
+        "endrep": 2
+      },
+      "source_sha256": "f76aa83dde8dcba0d136296900cc5528c0a9e7552b371e87f5cbcb7b2b5a293d"
+    },
+    "HDAOOnlyLow": {
+      "bytes": 3768,
+      "sha256": "82a9a6872caae53030101a352925e927dfba21aa5cfc8342c1385f2f123334d2",
+      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "static_instruction_slots": 232,
+      "temporary_registers": 15,
+      "samplers": [
+        1,
+        3
+      ],
+      "instructions": {
+        "rcp": 14,
+        "mad": 2,
+        "frc": 7,
+        "add": 53,
+        "mov": 16,
+        "mul": 61,
+        "max": 3,
+        "min": 8,
+        "texldl": 4,
+        "cmp": 15,
+        "if": 2,
+        "else": 2,
+        "endif": 2,
+        "dp2add": 3,
+        "rsq": 5,
+        "dp3": 6,
+        "rep": 2,
+        "sincos": 1,
+        "endrep": 2
+      },
+      "source_sha256": "f76aa83dde8dcba0d136296900cc5528c0a9e7552b371e87f5cbcb7b2b5a293d"
+    },
+    "HBAOPlusOnly": {
+      "bytes": 4648,
+      "sha256": "ab64a5b79ff49d79e2eeac123deed85e74d9e2c6ffc535e7c8c6e62409a22310",
+      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "static_instruction_slots": 288,
+      "temporary_registers": 12,
+      "samplers": [
+        1,
+        3
+      ],
+      "instructions": {
+        "rcp": 14,
+        "mad": 2,
+        "frc": 6,
+        "add": 73,
+        "mov": 17,
+        "mul": 86,
+        "max": 4,
+        "min": 5,
+        "texldl": 7,
+        "cmp": 21,
+        "if": 3,
+        "else": 2,
+        "endif": 3,
+        "dp3": 5,
+        "rsq": 3,
+        "dp2add": 3,
+        "rep": 2,
+        "sincos": 1,
+        "endrep": 2
+      },
+      "source_sha256": "f76aa83dde8dcba0d136296900cc5528c0a9e7552b371e87f5cbcb7b2b5a293d"
+    },
+    "HBAOPlusOnlyMedium": {
+      "bytes": 4624,
+      "sha256": "9798551fdb1f2c594d85e4b005f87c62f8e0bc875f00c954b5aec3e26da4bffe",
+      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "static_instruction_slots": 288,
+      "temporary_registers": 12,
+      "samplers": [
+        1,
+        3
+      ],
+      "instructions": {
+        "rcp": 14,
+        "mad": 2,
+        "frc": 6,
+        "add": 73,
+        "mov": 17,
+        "mul": 86,
+        "max": 4,
+        "min": 5,
+        "texldl": 7,
+        "cmp": 21,
+        "if": 3,
+        "else": 2,
+        "endif": 3,
+        "dp3": 5,
+        "rsq": 3,
+        "dp2add": 3,
+        "rep": 2,
+        "sincos": 1,
+        "endrep": 2
+      },
+      "source_sha256": "f76aa83dde8dcba0d136296900cc5528c0a9e7552b371e87f5cbcb7b2b5a293d"
+    },
+    "HBAOPlusOnlyLow": {
+      "bytes": 4600,
+      "sha256": "ef4ab264f031c071618f8f5afedefbe95c9f5bcd94d34bdf4c7209e7d5c2133e",
+      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "static_instruction_slots": 288,
+      "temporary_registers": 12,
+      "samplers": [
+        1,
+        3
+      ],
+      "instructions": {
+        "rcp": 14,
+        "mad": 2,
+        "frc": 6,
+        "add": 73,
+        "mov": 17,
+        "mul": 86,
+        "max": 4,
+        "min": 5,
+        "texldl": 7,
+        "cmp": 21,
+        "if": 3,
+        "else": 2,
+        "endif": 3,
+        "dp3": 5,
+        "rsq": 3,
+        "dp2add": 3,
+        "rep": 2,
+        "sincos": 1,
+        "endrep": 2
+      },
+      "source_sha256": "f76aa83dde8dcba0d136296900cc5528c0a9e7552b371e87f5cbcb7b2b5a293d"
+    },
+    "GTAOOnly": {
+      "bytes": 7288,
+      "sha256": "ee4278aee1e146bc60866fd42ad805abfb1402ed98ad5ed025d707770d8a9da7",
+      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "static_instruction_slots": 464,
+      "temporary_registers": 19,
+      "samplers": [
+        1,
+        3
+      ],
+      "instructions": {
+        "rcp": 27,
+        "mad": 2,
+        "frc": 6,
+        "add": 124,
+        "mov": 25,
+        "mul": 137,
+        "max": 9,
+        "min": 9,
+        "texldl": 8,
+        "cmp": 35,
+        "if": 4,
+        "else": 2,
+        "endif": 4,
+        "dp3": 15,
+        "rsq": 15,
+        "dp2add": 4,
+        "rep": 2,
+        "sincos": 1,
+        "endrep": 2
+      },
+      "source_sha256": "f76aa83dde8dcba0d136296900cc5528c0a9e7552b371e87f5cbcb7b2b5a293d"
+    },
+    "GTAOOnlyMedium": {
+      "bytes": 6940,
+      "sha256": "d51cf3ad67a6812a8fb1d92df5f11972e8d74d18a371bbd74c4b44433e55a90c",
+      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "static_instruction_slots": 436,
+      "temporary_registers": 17,
+      "samplers": [
+        1,
+        3
+      ],
+      "instructions": {
+        "rcp": 25,
+        "mad": 2,
+        "frc": 6,
+        "add": 115,
+        "mov": 22,
+        "mul": 130,
+        "max": 8,
+        "min": 9,
+        "texldl": 8,
+        "cmp": 35,
+        "if": 3,
+        "else": 2,
+        "endif": 3,
+        "dp3": 15,
+        "rsq": 13,
+        "dp2add": 4,
+        "rep": 2,
+        "sincos": 1,
+        "endrep": 2
+      },
+      "source_sha256": "f76aa83dde8dcba0d136296900cc5528c0a9e7552b371e87f5cbcb7b2b5a293d"
+    },
+    "GTAOOnlyLow": {
+      "bytes": 6940,
+      "sha256": "131d1362871f0b117550d9bf82bf6082c435a5b36f2329e7d9c9754885e5694a",
+      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "static_instruction_slots": 436,
+      "temporary_registers": 17,
+      "samplers": [
+        1,
+        3
+      ],
+      "instructions": {
+        "rcp": 25,
+        "mad": 2,
+        "frc": 6,
+        "add": 115,
+        "mov": 22,
+        "mul": 130,
+        "max": 8,
+        "min": 9,
+        "texldl": 8,
+        "cmp": 35,
+        "if": 3,
+        "else": 2,
+        "endif": 3,
+        "dp3": 15,
+        "rsq": 13,
+        "dp2add": 4,
+        "rep": 2,
+        "sincos": 1,
+        "endrep": 2
+      },
+      "source_sha256": "f76aa83dde8dcba0d136296900cc5528c0a9e7552b371e87f5cbcb7b2b5a293d"
+    },
+    "ASSAOOnly": {
+      "bytes": 8108,
+      "sha256": "5017ae6cca566f7858f8220772d1539c6d0a872fc0a385b38b1a3c3e453554f7",
+      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "static_instruction_slots": 466,
+      "temporary_registers": 15,
+      "samplers": [
+        1,
+        3
+      ],
+      "instructions": {
+        "rcp": 21,
+        "mad": 2,
+        "frc": 10,
+        "add": 130,
+        "mov": 20,
+        "mul": 132,
+        "max": 3,
+        "min": 18,
+        "texldl": 8,
+        "cmp": 63,
+        "if": 2,
+        "else": 2,
+        "endif": 2,
+        "dp3": 15,
+        "rsq": 10,
+        "dp4": 1,
+        "dp2add": 5,
+        "rep": 1,
+        "endrep": 1
+      },
+      "source_sha256": "f76aa83dde8dcba0d136296900cc5528c0a9e7552b371e87f5cbcb7b2b5a293d"
+    },
+    "ASSAOOnlyMedium": {
+      "bytes": 7720,
+      "sha256": "9570073af519429665d66a4fd5da97c88f5c7e320d5391905e19a884acec33fa",
+      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "static_instruction_slots": 457,
+      "temporary_registers": 15,
+      "samplers": [
+        1,
+        3
+      ],
+      "instructions": {
+        "rcp": 21,
+        "mad": 2,
+        "frc": 10,
+        "add": 128,
+        "mov": 20,
+        "mul": 132,
+        "max": 3,
+        "min": 18,
+        "texldl": 8,
+        "cmp": 56,
+        "if": 2,
+        "else": 2,
+        "endif": 2,
+        "dp3": 15,
+        "rsq": 10,
+        "dp4": 1,
+        "dp2add": 5,
+        "rep": 1,
+        "endrep": 1
+      },
+      "source_sha256": "f76aa83dde8dcba0d136296900cc5528c0a9e7552b371e87f5cbcb7b2b5a293d"
+    },
+    "ASSAOOnlyLow": {
+      "bytes": 5936,
+      "sha256": "7cefb73ee64f530e392c25404e6d32807166c8d561b414923f107cdf3050a858",
+      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "static_instruction_slots": 351,
+      "temporary_registers": 13,
+      "samplers": [
+        1,
+        3
+      ],
+      "instructions": {
+        "rcp": 18,
+        "mad": 2,
+        "frc": 10,
+        "add": 95,
+        "mov": 16,
+        "mul": 110,
+        "max": 3,
+        "min": 8,
+        "texldl": 8,
+        "cmp": 35,
+        "if": 2,
+        "else": 2,
+        "endif": 2,
+        "dp3": 7,
+        "rsq": 6,
+        "dp2add": 5,
+        "rep": 1,
+        "endrep": 1
+      },
+      "source_sha256": "f76aa83dde8dcba0d136296900cc5528c0a9e7552b371e87f5cbcb7b2b5a293d"
+    },
+    "ASSAOContactBloom": {
+      "bytes": 8640,
+      "sha256": "af66ae4f48d4998c3d77796bca3eccf99bffc29a522e270bc925e1c4c82f23b7",
+      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "static_instruction_slots": 492,
+      "temporary_registers": 14,
+      "samplers": [
+        0,
+        1,
+        3
+      ],
+      "instructions": {
+        "texld": 5,
+        "dp3": 20,
+        "mad": 12,
+        "mul": 136,
+        "mov": 20,
+        "add": 132,
+        "rcp": 21,
+        "frc": 10,
+        "max": 3,
+        "min": 18,
+        "texldl": 8,
+        "cmp": 63,
+        "if": 2,
+        "else": 2,
+        "endif": 2,
+        "rsq": 10,
+        "dp4": 1,
+        "dp2add": 5,
+        "rep": 1,
+        "endrep": 1
+      },
+      "source_sha256": "f76aa83dde8dcba0d136296900cc5528c0a9e7552b371e87f5cbcb7b2b5a293d"
+    },
+    "ASSAOContactBloomMedium": {
+      "bytes": 8448,
+      "sha256": "67f07ba7404e0b40c6827fa3ebe87c4fbd8174dd26c3a3af2e80ddaf9ce62296",
+      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "static_instruction_slots": 494,
+      "temporary_registers": 14,
+      "samplers": [
+        0,
+        1,
+        3
+      ],
+      "instructions": {
+        "texld": 5,
+        "dp3": 20,
+        "mad": 12,
+        "mul": 139,
+        "mov": 20,
+        "add": 134,
+        "rcp": 21,
+        "frc": 11,
+        "max": 3,
+        "min": 21,
+        "texldl": 8,
+        "cmp": 56,
+        "if": 2,
+        "else": 2,
+        "endif": 2,
+        "rsq": 10,
+        "dp4": 1,
+        "dp2add": 5,
+        "rep": 1,
+        "endrep": 1
+      },
+      "source_sha256": "f76aa83dde8dcba0d136296900cc5528c0a9e7552b371e87f5cbcb7b2b5a293d"
+    },
+    "ASSAOContactBloomLow": {
+      "bytes": 6600,
+      "sha256": "f4e9d1f35ecfac53f043090594d6f2153c2e146e5f77fccf062734c463118d0f",
+      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "static_instruction_slots": 384,
+      "temporary_registers": 12,
+      "samplers": [
+        0,
+        1,
+        3
+      ],
+      "instructions": {
+        "texld": 5,
+        "dp3": 12,
+        "mad": 12,
+        "mul": 117,
+        "mov": 16,
+        "add": 100,
+        "rcp": 18,
+        "frc": 11,
+        "max": 3,
+        "min": 8,
+        "texldl": 8,
+        "cmp": 35,
+        "if": 2,
+        "else": 2,
+        "endif": 2,
+        "rsq": 6,
+        "dp2add": 5,
+        "rep": 1,
+        "endrep": 1
+      },
+      "source_sha256": "f76aa83dde8dcba0d136296900cc5528c0a9e7552b371e87f5cbcb7b2b5a293d"
     }
   }
 }

@@ -189,7 +189,7 @@ inline const Key Keys[]={
     {"WeatherMemory",&Settings::weatherMemory,0,1,{1,1,1}},
     {"ActorShadowCpuMs",&Settings::actorShadowCpuMs,0,20,{3,3,2}}, /* task 45 */
     {"EquipmentLights",&Settings::equipmentLights,0,1,{1,0,0}},
-    {"AOMethod",&Settings::aoMethod,0,3,{0,0,0}},
+    {"AOMethod",&Settings::aoMethod,0,4,{0,0,0}},
     {"AOStrength",&Settings::aoStrength,0,200,{100,100,100}},
     {"AORadius",&Settings::aoRadius,10,1000,{200,200,200}},
     {"AOQuality",&Settings::aoQuality,0,2,{0,0,0}}, // Explicit opt-in; presets retain High.
@@ -248,11 +248,11 @@ inline bool number(const std::string& text,unsigned& out){
     if(text.empty()||text.size()>6||text.find_first_not_of("0123456789")!=std::string::npos)return false;
     out=unsigned(std::strtoul(text.c_str(),nullptr,10));return true;
 }
-inline const char* aoName(unsigned method){const char* names[]={"SSAO","HDAO","HBAOPlus-D3D9","GTAO"};return names[method<4?method:0];}
+inline const char* aoName(unsigned method){const char* names[]={"SSAO","HDAO","HBAOPlus-D3D9","GTAO","ASSAO"};return names[method<5?method:0];}
 inline bool aoNumber(const std::string& text,unsigned& out){
     const auto value=lower(text);
     if(value=="ssao")out=0;else if(value=="hdao")out=1;
-    else if(value=="hbaoplus"||value=="hbao+")out=2;else if(value=="gtao")out=3;
+    else if(value=="hbaoplus"||value=="hbao+")out=2;else if(value=="gtao")out=3;else if(value=="assao")out=4;
     else return number(text,out);return true;
 }
 inline const char* aoQualityName(unsigned quality){const char* names[]={"High","Medium","Low"};return names[quality<3?quality:0];}

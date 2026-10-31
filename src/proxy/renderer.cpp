@@ -345,7 +345,7 @@ class Device final : public GuardedMirrorDevice {
     IDirect3DTexture9 *scene = nullptr, *depthTex = nullptr, *ao = nullptr, *aoRaw = nullptr;
     IDirect3DSurface9 *sceneSurface = nullptr, *aoSurface = nullptr, *aoRawSurface = nullptr, *worldDepth = nullptr;
     D3DSURFACE_DESC worldDepthDesc={};bool worldDepthDescKnown=false; // 0.3.196 (task 12): worldDepth's desc (a held reference, so the object and its desc are fixed); cleared when worldDepth is dropped
-    IDirect3DPixelShader9 *aoPS = nullptr, *aoBlurPS = nullptr, *aoContactBloomPS = nullptr, *contactBloomPS = nullptr, *compositePS = nullptr;
+    IDirect3DPixelShader9 *aoPS = nullptr, *aoBlurPS = nullptr, *aoContactBloomPS = nullptr, *aoOnlyPS = nullptr, *contactBloomPS = nullptr, *compositePS = nullptr;
     // Low bits: 1 terrain, 2 UI. kWaterTag: the water renderer holds a mask shader
     // for it (set at registration, where the water map changes), so non-water
     // draws need no second hash lookup.
@@ -508,7 +508,7 @@ private:
     void releaseResources() {
         rainMrtUnbind();stateBlocks.clear();clearFrame();maskFormatFor=nullptr;maskFormatValue=0;maskStencil=false;maskDsId=nullptr; /* 0.3.212 (task 32): the depth may change with the device */
         drop(sceneSurface); drop(aoSurface); drop(aoRawSurface); drop(scene); drop(depthTex); drop(ao); drop(aoRaw);drop(rainMaskMS);drop(rainMaskSurface);drop(rainMask);drop(rainDepth);rainMaskFailed=false; /* 0.3.202 (rain) */
-        drop(aoPS); drop(aoBlurPS); drop(aoContactBloomPS); drop(contactBloomPS); drop(compositePS);drop(rainMrtPS);drop(rainScrubPS); width = height = 0;
+        drop(aoPS); drop(aoBlurPS); drop(aoContactBloomPS); drop(aoOnlyPS); drop(contactBloomPS); drop(compositePS);drop(rainMrtPS);drop(rainScrubPS); width = height = 0;
     }
     bool error(HRESULT hr, const char* stage) {
         if (SUCCEEDED(hr)) return false;
@@ -528,12 +528,19 @@ private:
         const D3DFORMAT depthFormat=!worldDepthDescKnown&&depthSnapshotFormat!=D3DFMT_UNKNOWN?depthSnapshotFormat
             :NorthlightBackend::isPackagedDxvk(selectedBackend)&&!df24Refused&&worldDepthDescKnown&&worldDepthDesc.MultiSampleType==D3DMULTISAMPLE_NONE?df24:intz;
         // Method switches replace shaders while keeping the existing scene/depth targets.
-        const DWORD* aoContactShaders[3][4]={
-            {kAoContactBloomShader,kHdaoContactBloomShader,kHbaoPlusContactBloomShader,kGtaoContactBloomShader},
-            {kAoContactBloomShader,kHdaoContactBloomMediumShader,kHbaoPlusContactBloomMediumShader,kGtaoContactBloomMediumShader},
-            {kAoContactBloomShader,kHdaoContactBloomLowShader,kHbaoPlusContactBloomLowShader,kGtaoContactBloomLowShader}};
+        const DWORD* aoContactShaders[3][5]={
+            {kAoContactBloomShader,kHdaoContactBloomShader,kHbaoPlusContactBloomShader,kGtaoContactBloomShader,kAssaoContactBloomShader},
+            {kAoContactBloomShader,kHdaoContactBloomMediumShader,kHbaoPlusContactBloomMediumShader,kGtaoContactBloomMediumShader,kAssaoContactBloomMediumShader},
+            {kAoContactBloomShader,kHdaoContactBloomLowShader,kHbaoPlusContactBloomLowShader,kGtaoContactBloomLowShader,kAssaoContactBloomLowShader}};
         if (!aoPS && error(ext->CreatePixelShader(kAoShader, &aoPS), "AO shader")) return false;
         if (!aoContactBloomPS && error(ext->CreatePixelShader(aoContactShaders[aoQuality][aoMethod], &aoContactBloomPS), "AO contact bloom shader")) return false;
+        if(aoMethod&&!aoOnlyPS){
+            const DWORD* shaders[3][5]={
+                {kAoOnlyShader,kHdaoOnlyShader,kHbaoPlusOnlyShader,kGtaoOnlyShader,kAssaoOnlyShader},
+                {kAoOnlyShader,kHdaoOnlyMediumShader,kHbaoPlusOnlyMediumShader,kGtaoOnlyMediumShader,kAssaoOnlyMediumShader},
+                {kAoOnlyShader,kHdaoOnlyLowShader,kHbaoPlusOnlyLowShader,kGtaoOnlyLowShader,kAssaoOnlyLowShader}};
+            if(error(ext->CreatePixelShader(shaders[aoQuality][aoMethod],&aoOnlyPS),"AO alpha shader"))return false;
+        }
         if (!aoBlurPS && error(ext->CreatePixelShader(kAoBlurShader, &aoBlurPS), "AO blur shader")) return false;
         if (!contactBloomPS && error(ext->CreatePixelShader(kContactBloomShader, &contactBloomPS), "contact bloom shader")) return false;
         if (!compositePS && error(ext->CreatePixelShader(kCompositeShader, &compositePS), "composite shader")) return false;
@@ -805,7 +812,7 @@ private:
                 // Keep the original fallback colour bounce in RGB; replace only AO.
                 // Splitting these kernels keeps GTAO below the ps_3_0 slot limit.
                 ext->SetRenderState(D3DRS_COLORWRITEENABLE,D3DCOLORWRITEENABLE_ALPHA);
-                ext->SetPixelShader(aoContactBloomPS);
+                ext->SetPixelShader(aoOnlyPS);
                 const HRESULT aoResult=quad(width/2,height/2);
                 ext->SetRenderState(D3DRS_COLORWRITEENABLE,15);
                 if (error(aoResult,"fallback AO alpha pass")) return;
@@ -2501,7 +2508,7 @@ public:
         if(settingsService)if(auto update=settingsService->after(settingsRevision)){
             world->applyLiveSettings(update->config);dropBlobFaint();shadowBlobs->setStrength(world->blobShadowStrength());
             contactAO=world->contactAO();aoStrength=world->aoStrength();aoRadius=world->aoRadius();
-            if(aoMethod!=world->aoMethod()||aoQuality!=world->aoQuality()){aoMethod=world->aoMethod();aoQuality=world->aoQuality();drop(aoContactBloomPS);} /* the contact-bloom kernel is per method; resources() recreates it before the next AO pass */
+            if(aoMethod!=world->aoMethod()||aoQuality!=world->aoQuality()){aoMethod=world->aoMethod();aoQuality=world->aoQuality();drop(aoContactBloomPS);drop(aoOnlyPS);} /* the contact-bloom kernel is per method; resources() recreates it before the next AO pass */
             frameDrawGates=world->frameDrawGates();zFuncAware=world->depthFuncAware();nameMask.debug=world->nameMaskDebug();
             if(spellOn){spellOptionsPending=true;if(spellTraceSetting!=world->spellTraceSetting()){spellTraceSetting=world->spellTraceSetting();spellTraceLeft=spellTraceSetting;}}
             settingsRevision=update->revision;settingsService->acknowledge(*update);

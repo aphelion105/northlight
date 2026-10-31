@@ -1,10 +1,11 @@
 # AO methods for the D3D9 Northlight renderer
 
-Set these keys in `[Quality]` in `northlight-quality.ini`, then restart WoW:
+Set these keys in `[Quality]` in `northlight-quality.ini`, or use Lighting & AO in the settings menu and Apply:
 
 ```ini
 ContactAO=1
-AOMethod=GTAO
+AOMethod=ASSAO
+AOQuality=Medium
 AOStrength=100
 AORadius=200
 ```
@@ -15,6 +16,7 @@ AORadius=200
 | HDAO / 1 | AMD AOFX-style paired valley detection, 16 pairs. D3D9 adaptation. |
 | HBAOPlus / HBAO+ / 2 | D3D9 adaptation of the NVIDIA HBAO+ coarse kernel: 8 directions, 4 radial steps, normal bias, squared-distance falloff. |
 | GTAO / 3 | Cosine-weighted horizon integration, 4 slices and 4 paired steps. |
+| ASSAO / 4 | Intel ASSAO fixed Q0/Q1/Q2 adapted to D3D9; 12/5/3 paired samples. |
 
 Names are case insensitive. Invalid values retain the default and produce a
 QUALITY warning. `AOStrength` is 0..200 percent; 100 preserves the existing
@@ -27,6 +29,7 @@ world-GI and fallback paths; the fallback keeps the original simple colour bounc
 GI continues to supply colour bounce when the world renderer is ready.
 The advanced methods need one extra alpha-only draw in the fallback path to
 retain its original colour bounce within the Shader Model 3 instruction limit.
+That draw now uses `*Only` and avoids five discarded Scene/bloom reads.
 The startup log records the selected method, strength, radius and enabled state.
 
 These are D3D9 adaptations, not the complete NVIDIA HBAO+ SDK or Intel XeGTAO
@@ -55,3 +58,32 @@ Algorithm references:
 - [NVIDIA VXAO requirements](https://developer.nvidia.com/vxao-voxel-ambient-occlusion)
 
 Third-party notices for the adapted kernels are in `licenses/ao-methods.txt`.
+
+## ASSAO and quality validation (2026-11-01)
+
+High/Medium/Low use 12/5/3 ASSAO pairs, 4x4/3x4/2x4 GTAO paired steps,
+8x4/6x3/4x4 HBAO+ steps, and 16/8/8 HDAO pairs. SSAO ignores quality;
+HDAO Medium and Low have identical bytecode. Defaults remain SSAO/High.
+ASSAO Low omits detail/edge/halo terms; Medium/High retain them. Strength and
+radius retain their existing ranges. ASSAO may darken contacts more strongly
+than other methods at the same strength.
+
+The kernel uses [Intel ASSAO Q0/Q1/Q2](https://github.com/GameTechDev/ASSAO/tree/c21d57a95b43c700ee01a2eb18f5589d7becefb2),
+with its progressive pattern, weights, radius limiter, obscurance falloff and
+visibility curve. Northlight supplies normals, rotation and bilateral blur.
+MIT attribution is in `licenses/ao-methods.txt`. No new targets/passes are added.
+Adaptive Q3, deinterleaving and depth mips are not implemented; reproduction of
+WoW Forever's integration is not claimed. Zero-offset sample rejection prevents
+false shadows from normalizing reconstruction roundoff on distant terrain.
+
+This independent branch preserves its own AO/blur bytecode and does not import
+HDR or actor-thickness implementation. Alpha-only shader output is compared to
+ContactBloom as the shared SDR/HDR-input contract; complete HDR runtime and
+actor integration remain in #98/#112.
+
+On each packaged DXVK 2/3 backend, `tests/test_ao_quality.py` passes 549 basic
+cases across all methods/qualities, 288 GTAO/ASSAO grazing cases, and 3,456 ASSAO
+FP16/FP32 grid comparisons with odd sizes, two depth partitions, radii
+0.1/2/10 yd and MSAA0/2/4/8. Alpha and fallback RGB comparisons remain exact.
+The independent Windows x86 DLL builds. Whole-game FPS is not measured here;
+combined microbenchmarks have their own snapshot attribution in #98.

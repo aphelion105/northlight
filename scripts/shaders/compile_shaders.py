@@ -18,6 +18,13 @@ def main():
     selected = next((a.split("=", 1)[1].split(",") for a in sys.argv[1:] if a.startswith("--entries=")), None)
     names = {"AO", "AOContactBloom", "HDAOContactBloom", "HBAOPlusContactBloom", "GTAOContactBloom", "ContactBloom", "AOBlur", "Composite", "RainMaskMRT", "RainScrub"}
     names |= {method + "ContactBloom" + quality for method in ("HDAO", "HBAOPlus", "GTAO") for quality in ("Medium", "Low")}
+    only_entries = [("AOOnly", "kAoOnlyShader", "ps_3_0")]
+    only_entries += [(method + "Only" + quality, "k" + symbol + "Only" + quality + "Shader", "ps_3_0")
+                     for method, symbol in (("HDAO", "Hdao"), ("HBAOPlus", "HbaoPlus"), ("GTAO", "Gtao"), ("ASSAO", "Assao"))
+                     for quality in ("", "Medium", "Low")]
+    assao_entries = [("ASSAOContactBloom" + quality, "kAssaoContactBloom" + quality + "Shader", "ps_3_0") for quality in ("", "Medium", "Low")]
+    names.update(entry for entry, _, _ in assao_entries)
+    names.update(entry for entry, _, _ in only_entries)
     if selected and not set(selected) <= names: raise SystemExit("Unknown shader entry")
     previous = json.loads((fp.SHADERS / "shader-build.json").read_text()) if selected else None
     if previous and previous.get("compiler_sha256") not in ({DLL_SHA256, COMPATIBLE_DLL_SHA256} if compatible else {DLL_SHA256}): raise SystemExit("Retained shaders used another compiler: rebuild all entries")
@@ -33,7 +40,7 @@ def main():
                                   ("HDAOContactBloomMedium", "kHdaoContactBloomMediumShader", "ps_3_0"), ("HBAOPlusContactBloomMedium", "kHbaoPlusContactBloomMediumShader", "ps_3_0"), ("GTAOContactBloomMedium", "kGtaoContactBloomMediumShader", "ps_3_0"),
                                   ("HDAOContactBloomLow", "kHdaoContactBloomLowShader", "ps_3_0"), ("HBAOPlusContactBloomLow", "kHbaoPlusContactBloomLowShader", "ps_3_0"), ("GTAOContactBloomLow", "kGtaoContactBloomLowShader", "ps_3_0"),
                                   ("AOBlur", "kAoBlurShader", "ps_3_0"), ("Composite", "kCompositeShader", "ps_3_0"),
-                                  ("RainMaskMRT", "kRainMaskMrtShader", "ps_2_0"), ("RainScrub", "kRainScrubShader", "ps_2_0")):
+                                  ("RainMaskMRT", "kRainMaskMrtShader", "ps_2_0"), ("RainScrub", "kRainScrubShader", "ps_2_0"), *only_entries, *assao_entries):
         output = fp.COMPILED / f"{entry}.bin"
         legacy = target == "ps_3_0"
         source_key = "source_sha256" if legacy else "rain_source_sha256"
@@ -52,8 +59,8 @@ def main():
                                       **(validate_assembly(assembly, target) if legacy else validate_assembly(assembly, target, 96, 12)),
                                       "source_sha256": manifest[source_key] if compile_entry
                                       else previous["shaders"][entry].get("source_sha256", previous[source_key])}
-    (fp.GENERATED / "compiled_shaders.h").write_text("\n".join(chunks))
-    (fp.SHADERS / "shader-build.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    (fp.GENERATED / "compiled_shaders.h").write_text("\n".join(chunks), encoding="utf-8", newline="\n")
+    (fp.SHADERS / "shader-build.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8", newline="\n")
     print(json.dumps(manifest, indent=2))
 
 
