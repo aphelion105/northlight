@@ -22,7 +22,8 @@ light limits, upload budgets and shaders are retained.
 
 ## Offline client checks
 
-The active archive chain excluding generated patch-z produced these results:
+The active archive chain excluding generated patch-z produced these results at
+commit `6a54ec92` (before the color-index follow-up below):
 
 | Check | Result |
 |---|---:|
@@ -39,8 +40,8 @@ Spineleaf and Terrocone (client model spellings). Ordinary nonemissive herbs are
 not made luminous. Other staged examples include blue glowing Coilfang mushrooms
 (display 7756), Zangarmarsh floating spores (6911), druid wisps (250), crystal
 portals (9321), Blood Elf lanterns and multiple brazier families. These are display
-IDs, not server gameobject entry IDs. The cyan screenshot alone does not uniquely
-identify its server object; no exact identification is claimed.
+IDs, not server gameobject entry IDs. The cyan object's best client-file match and
+palette-aware coverage are documented in [the Swamp Gas follow-up](cyan-object-coverage-20261031.md).
 
 The stock and active art-layer builds each stage 498 gameobject models with
 disjoint metadata ownership. Repeated active archives are byte-identical:

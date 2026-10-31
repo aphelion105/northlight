@@ -263,7 +263,7 @@ def write_stage(assets, output, candidates, report, stem, empty):
             if info.get('replacement_colors'):
                 particle_offset = unpack('<I',original,300)[0]
                 stride = 492 if unpack('<I',original,16)[0]&512 else 476
-                if any(unpack('<h',original,particle_offset+i*stride+42)[0] >= 0 for s in emitters for i in s['particles']):
+                if any(unpack('<h',original,particle_offset+i*stride+42)[0] not in (-1,0) for s in emitters for i in s['particles']):
                     raise ValueError('Shared display variants replace particle colour; no universal M2 light colour')
             patched = append_spell_lights(original,emitters)
             validate_spell_lights(original,patched,emitters)
