@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // Explicit F12 only: compare uploaded tile hashes, raw managed BC and actual
 // point-sampled GPU pixels. Errors restore state and never disable the renderer.
+#include "utf8_path.h"
 #include "atlas_upload_proof.h"
 #include "actor_texture.h"
 #include "bc_decode_comparison.h"
@@ -16,7 +17,7 @@
 namespace NorthlightAtlasDiagnostic {
 struct Result {unsigned captured=0,failed=0,knownTiles=0,rawMismatches=0,pixelMismatches=0;};
 struct Surfaces {IDirect3DSurface9* target=nullptr;IDirect3DSurface9* staging=nullptr;~Surfaces(){if(target)target->Release();if(staging)staging->Release();}};
-inline bool save(const std::string& path,const void* bytes,std::size_t size){FILE* f=std::fopen(path.c_str(),"wb");if(!f)return false;const bool ok=std::fwrite(bytes,1,size,f)==size;return std::fclose(f)==0&&ok;}
+inline bool save(const std::string& path,const void* bytes,std::size_t size){FILE* f=NorthlightFiles::open(path.c_str(),"wb");if(!f)return false;const bool ok=std::fwrite(bytes,1,size,f)==size;return std::fclose(f)==0&&ok;}
 inline bool capture(IDirect3DDevice9* d,const NorthlightAtlasProof::Entry& entry,const std::string& prefix,Result& result){
     using namespace NorthlightAtlasProof;
     auto* texture=static_cast<IDirect3DTexture9*>(const_cast<void*>(entry.raw));D3DSURFACE_DESC desc{};
@@ -54,7 +55,7 @@ inline bool capture(IDirect3DDevice9* d,const NorthlightAtlasProof::Entry& entry
     if(pixelsReadable)for(unsigned y=0;y<Size;++y)std::memcpy(pixels.data()+y*Size*4,static_cast<unsigned char*>(lock.pBits)+std::size_t(y)*lock.Pitch,Size*4);
     const HRESULT pixelUnlock=surfaces.staging->UnlockRect();if(!pixelsReadable||FAILED(pixelUnlock))return false;
     std::vector<unsigned char> tile(16*16*block),rgba(Tile*Tile*4);
-    FILE* report=std::fopen((prefix+".json").c_str(),"wb");if(!report)return false;
+    FILE* report=NorthlightFiles::open((prefix+".json").c_str(),"wb");if(!report)return false;
     std::fprintf(report,"{\"format\":%u,\"size\":512,\"levels\":%u,\"tile\":64,\"revision\":%llu,\"raw\":\"%p\",\"uploads\":%u,\"failed_uploads\":%u,\"last_failure_hresult\":\"%08x\",\"invalidations\":%u,\"vs_hash\":\"%016llx\",\"ps_hash\":\"%016llx\",\"draw_sampler_known_mask\":%u,\"draw_samplers\":[",entry.format,unsigned(texture->GetLevelCount()),(unsigned long long)entry.revision,entry.raw,entry.uploads,entry.failedUploads,entry.lastFailure,entry.invalidations,(unsigned long long)entry.vsHash,(unsigned long long)entry.psHash,entry.samplerKnown);
     for(unsigned n=1;n<14;++n)std::fprintf(report,"%s%u",n>1?",":"",entry.samplers[n]);
     std::fprintf(report,"],\"tiles\":[");
@@ -76,7 +77,7 @@ inline bool capture(IDirect3DDevice9* d,const NorthlightAtlasProof::Entry& entry
     const bool reportOk=std::fclose(report)==0;
     const bool rawOk=save(prefix+".bc",raw.data(),raw.size());
     const std::uint32_t header[]={0x31524746,Size,Size,unsigned(D3DFMT_A8R8G8B8),4};
-    FILE* f=std::fopen((prefix+".fgr").c_str(),"wb");bool pixelsOk=false;if(f){pixelsOk=std::fwrite(header,sizeof header,1,f)==1&&std::fwrite(pixels.data(),1,pixels.size(),f)==pixels.size();if(std::fclose(f))pixelsOk=false;}
+    FILE* f=NorthlightFiles::open((prefix+".fgr").c_str(),"wb");bool pixelsOk=false;if(f){pixelsOk=std::fwrite(header,sizeof header,1,f)==1&&std::fwrite(pixels.data(),1,pixels.size(),f)==pixels.size();if(std::fclose(f))pixelsOk=false;}
     return reportOk&&rawOk&&pixelsOk;
 }
 inline Result dump(IDirect3DDevice9* device,const std::string& prefix,unsigned frame)noexcept{

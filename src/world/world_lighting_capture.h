@@ -1,4 +1,5 @@
 #pragma once
+#include "utf8_path.h"
 #include <d3d9.h>
 #include "local_light_selection.h"
 #include <algorithm>
@@ -36,7 +37,7 @@ class Capture {
     }
     bool bytes(const char* name,const char* extension,const void* data,size_t size)noexcept{
         char output[2048];bool ok=false;
-        if(path(name,extension,output))if(FILE* f=std::fopen(output,"wb")){
+        if(path(name,extension,output))if(FILE* f=NorthlightFiles::open(output,"wb")){
             ok=std::fwrite(data,1,size,f)==size;if(std::fclose(f))ok=false;
         }
         if(journal_)std::fprintf(journal_,"{\"event\":\"file\",\"name\":\"%s.%s\",\"bytes\":%zu,\"saved\":%s}\n",name,extension,size,ok?"true":"false");
@@ -69,7 +70,7 @@ class Capture {
         D3DLOCKED_RECT lock{};if(!call("LockRect-readonly",staging.p->LockRect(&lock,nullptr,D3DLOCK_READONLY)))return false;
         bool ok=false;char output[2048];
         if(lock.pBits&&lock.Pitch>=INT(desc.Width*stride)&&path(name,"fgr",output)){
-            if(FILE* f=std::fopen(output,"wb")){
+            if(FILE* f=NorthlightFiles::open(output,"wb")){
                 const uint32_t header[]={0x31524746,desc.Width,desc.Height,unsigned(desc.Format),stride};
                 ok=std::fwrite(header,sizeof header,1,f)==1;
                 for(unsigned y=0;y<desc.Height&&ok;++y)ok=std::fwrite(static_cast<const char*>(lock.pBits)+size_t(y)*lock.Pitch,stride,desc.Width,f)==desc.Width;
@@ -149,7 +150,7 @@ class Capture {
 public:
     Capture(IDirect3DDevice9* device,const std::string& directory,unsigned capture,unsigned frame,unsigned rendererFrame,unsigned width,unsigned height)noexcept
         :device_(device),directory_(&directory),capture_(capture),frame_(frame),rendererFrame_(rendererFrame){
-        char output[2048];if(device_&&!directory.empty()&&path("lighting-inputs","jsonl.tmp",output))journal_=std::fopen(output,"wb");
+        char output[2048];if(device_&&!directory.empty()&&path("lighting-inputs","jsonl.tmp",output))journal_=NorthlightFiles::open(output,"wb");
         logf("WORLD LIGHT_CAPTURE begin capture=%u worldFrame=%u rendererFrame=%u rendererFrameKnown=%u normalView=1 diagnostic=1 fpsEligible=0 saved=%u",capture_,frame_,rendererFrame_,unsigned(rendererFrame_!=0),unsigned(journal_!=nullptr));
         if(journal_)std::fprintf(journal_,"{\"event\":\"begin\",\"schema\":1,\"capture\":%u,\"world_frame\":%u,\"renderer_frame\":%u,\"renderer_frame_known\":%s,\"width\":%u,\"height\":%u,\"normal_view\":true,\"scope\":\"local-light-contribution-inputs\",\"constant_register_count\":116,\"per_source_bank_missing\":false,\"depth_reconstructed\":false,\"source_physical_ownership_proven\":false,\"material_replay_complete\":false,\"whole_scene_replay\":false,\"replay_execution_verified\":false,\"per_sample_color_exported\":false,\"stencil_image_exported\":false,\"scene_boundary_changed\":false,\"fps_eligible\":false}\n",capture_,frame_,rendererFrame_,rendererFrame_?"true":"false",width,height);
     }

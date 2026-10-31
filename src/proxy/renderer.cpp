@@ -1,5 +1,6 @@
 // Client-local D3D9 extension. Read-only, signature-gated world context; no game launch code.
 #define WIN32_LEAN_AND_MEAN
+#include "utf8_path.h"
 #include <windows.h>
 #include <d3d9.h>
 #include <cstdio>
@@ -947,7 +948,7 @@ private:
         try{
             const auto directory=NorthlightWorldDiagnostics::directory(std::filesystem::path(rootPath).u8string());
             if(directory.empty())return;
-            if(FILE* f=std::fopen((directory+"/capture-1-frame.json").c_str(),"wb")){
+            if(FILE* f=NorthlightFiles::open((directory+"/capture-1-frame.json").c_str(),"wb")){
                 auto finite=[](float value){return std::isfinite(value)?value:0.f;};
                 std::fprintf(f,"{\"renderer_frame\":%u,\"scopes\":%u,\"effects_enabled\":%s,\"projection_valid\":%s,\"ao_enabled\":%s,\"ao_method\":%u,\"ao_strength\":%.9g,\"ao_radius\":%.9g,\"near\":%.9g,\"far\":%.9g,\"projection_scale\":[%.9g,%.9g],\"depth_range\":[%.9g,%.9g],\"fps_eligible\":false}\n",frame,scopes,enabled?"true":"false",projectionValid?"true":"false",contactAO?"true":"false",aoMethod,finite(aoStrength),finite(aoRadius),finite(nearZ),finite(farZ),finite(scaleX),finite(scaleY),finite(worldMinDepth),finite(worldMaxDepth));
                 std::fclose(f);

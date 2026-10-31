@@ -1,4 +1,5 @@
 #pragma once
+#include <filesystem>
 #include "world_local_lights.h"
 #include "rigid_geometry.h"
 #include <array>
@@ -14,7 +15,7 @@ struct Attachment {
 static_assert(sizeof(Attachment)==128,"FGA1 record layout");
 using Records=std::vector<Attachment>;
 inline bool readFile(const std::string& path,Records& output){
-    std::ifstream file(path,std::ios::binary|std::ios::ate);if(!file)return false;
+    std::ifstream file(std::filesystem::u8path(path),std::ios::binary|std::ios::ate);if(!file)return false;
     const auto length=file.tellg();if(length<16)return false;file.seekg(0);
     char magic[4];uint32_t header[3];file.read(magic,4);file.read(reinterpret_cast<char*>(header),12);
     if(!file||std::memcmp(magic,"FGA1",4)||header[0]!=1||header[1]!=sizeof(Attachment)||header[2]>1000000||
