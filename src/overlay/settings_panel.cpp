@@ -15,6 +15,13 @@
 #include "memory_profile_snapshot.h"
 #include "diagnostic_capture_request.h"
 
+#ifndef NORTHLIGHT_SOURCE_ID
+#define NORTHLIGHT_SOURCE_ID "unrecorded"
+#endif
+#ifndef NORTHLIGHT_BUILD_UTC
+#define NORTHLIGHT_BUILD_UTC "unrecorded"
+#endif
+
 namespace NorthlightOverlay {
 namespace {
 using NorthlightSettings::Field;
@@ -497,6 +504,10 @@ struct SettingsPanel::State {
         titled("Other",rest);
     }
     void memoryDiagnostics(){
+        ImGui::TextColored(Color::Heading,"Build");
+        ImGui::Text("ID: %.12s",NORTHLIGHT_SOURCE_ID);
+        ImGui::Text("Built: %s",NORTHLIGHT_BUILD_UTC);
+        ImGui::Spacing();ImGui::Separator();
         using namespace NorthlightDiagnosticCapture;
         if(ImGui::Button("Capture world lighting"))request(World);
         ImGui::SameLine();if(ImGui::Button("Capture AO"))request(AO);
@@ -768,7 +779,8 @@ bool SettingsPanel::draw(float scale){
     ImGui::SetNextWindowPos(ImVec2(48*scale,96*scale),ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(760*scale,680*scale),ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSizeConstraints(ImVec2(560*scale,360*scale),ImVec2(FLT_MAX,FLT_MAX));
-    if(!ImGui::Begin("Northlight settings###NorthlightSettings",&open,ImGuiWindowFlags_NoCollapse)){ImGui::End();return open;}
+    char title[96];std::snprintf(title,sizeof title,"Northlight settings | build %.12s###NorthlightSettings",NORTHLIGHT_SOURCE_ID);
+    if(!ImGui::Begin(title,&open,ImGuiWindowFlags_NoCollapse)){ImGui::End();return open;}
     const auto& style=ImGui::GetStyle();
     const float footer=ImGui::GetTextLineHeightWithSpacing()+ImGui::GetFrameHeightWithSpacing()+style.ItemSpacing.y*2+style.SeparatorTextBorderSize+2;
     // Sidebar (fixed width, scaled) and the selected page; the footer below stays put on every page.
