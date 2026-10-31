@@ -112,6 +112,8 @@ test_m2_shader_families.py
 test_m2_shader_families_client.py
 test_m2_visibility.py
 test_material_batch_bindings.py
+test_material_disk_cache.py
+test_material_disk_gpu.py
 test_material_frame_rotation_gpu.py
 test_material_geometry.py
 test_material_pipeline_wiring.py

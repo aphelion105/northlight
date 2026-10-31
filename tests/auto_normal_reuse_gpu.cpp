@@ -54,6 +54,7 @@ static void visibleSetStability(IDirect3DDevice9* d,const char* fixture){
     cache.reset();for(auto*& source:sources)drop(source);
     std::printf("NORMAL_VISIBLE_SET_PASS frames=96 visible=32 resident=%u transitions=0 exactMaps=%u honorHold=%u mixedModelWorld=1\n",unsigned(count),checked,unsigned(fixture!=nullptr));
 }
+#ifndef NORTHLIGHT_NORMAL_REUSE_SUPPORT_ONLY
 int main(int argc,char** argv){
     assert(argc==2||argc==3);auto module=LoadLibraryA(argv[1]);assert(module);auto create=reinterpret_cast<IDirect3D9*(WINAPI*)(UINT)>(GetProcAddress(module,"Direct3DCreate9"));assert(create);auto api=create(D3D_SDK_VERSION);assert(api);
     HWND window=CreateWindowExW(0,L"STATIC",L"",WS_OVERLAPPED,0,0,64,64,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);assert(window);
@@ -126,3 +127,5 @@ int main(int argc,char** argv){
     raw->Release();api->Release();FreeLibrary(module);DestroyWindow(window);
     std::printf("NORMAL_REUSE_PASS compared=%u churnAllocations=%u freshAllocations=180 lease=checked bound=checked renderTarget=checked overflow=checked resize=checked failedDraw=checked reset=checked\n",compared,churnAllocations);
 }
+
+#endif
