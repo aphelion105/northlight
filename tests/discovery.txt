@@ -222,6 +222,7 @@ test_mesh_pool_trim.py
 test_migrate_mac_proxy.py
 test_mirror_resources.py
 test_model_index_cache.py
+test_model_light_attachments.py
 test_model_replay_pool.py
 test_model_snapshot_cache.py
 test_model_world_context.py
