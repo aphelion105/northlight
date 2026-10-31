@@ -76,6 +76,7 @@ test_concurrent_geometry_build.py
 test_contact_fog.py
 test_contact_lighting.py
 test_contact_normal_endpoints.py
+test_crystal_overlay_gpu.py
 test_dalaran_candle_geometry.py
 test_detail_doodad_shadow.py
 test_dev_tuning_build.py
@@ -186,11 +187,11 @@ test_material_byte_ops.py
 test_material_capture_targets.py
 test_material_capture_targets_gpu.py
 test_material_constant_spans.py
+test_material_disk_cache.py
+test_material_disk_gpu.py
 test_material_early_alpha_gpu.py
 test_material_epoch_guard.py
 test_material_followup_cpu.py
-test_material_disk_cache.py
-test_material_disk_gpu.py
 test_material_frame_rotation_gpu.py
 test_material_geometry.py
 test_material_index_decode_wave2.py
