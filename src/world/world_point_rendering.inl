@@ -467,7 +467,7 @@
             // the directional replay PS assumes orthographic w=1 and is invalid here.
             for(size_t index:pointReplayCandidates[face]){const auto& p=replays[index];
                 if(!pointCheck(replayBindings.geometry(*p),"cube replay geometry state"))return false;
-                if(!poseConstants.prepare(*p,rows))return false;
+                if(!poseConstants.prepare(*p,rows,matrix))return false;
                 const float* desired=poseConstants.desired();
                 auto f=poseConstants.floats;auto b=poseConstants.booleans;auto i=poseConstants.integers;
                 if(f.count&&!pointCheck(d->SetVertexShaderConstantF(f.first,desired+4*f.first,f.count),"cube replay float constants"))return false;

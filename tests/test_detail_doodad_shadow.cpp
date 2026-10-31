@@ -52,6 +52,33 @@ static void nativeFade(const std::vector<Word>& native){
     std::vector<Word> sentinel{123};auto unknown=native;unknown[unknown.size()-2]^=1;
     assert(!NorthlightDetailShadow::shadowFade(unknown,sentinel)&&sentinel==std::vector<Word>{123});
 }
+static void nativeWorldProjection(const std::vector<Word>& native){
+    std::vector<Word> world,patched;
+    assert(NorthlightDetailShadow::shadowVertex(native,world)&&world.size()+1==native.size());
+    assert(NorthlightShadowShader::patch(world.data(),world.size(),patched));
+    NorthlightActorDeformation::Program position;
+    assert(NorthlightActorDeformation::compile(patched.data(),patched.size(),position,true,2,5,7,15));
+    const auto fadeBefore=scalarProgram(native,1,0),fadeAfter=scalarProgram(patched,0,3);
+    for(unsigned projection=0;projection<4;++projection){
+        NorthlightActorDeformation::Four reference;
+        for(unsigned camera=0;camera<41;++camera){
+            const float angle=(float(camera)-20)*.01f;
+            float constants[1024]={};
+            constants[0]=std::cos(angle);constants[1]=std::sin(angle);constants[4]=-std::sin(angle);constants[5]=std::cos(angle);
+            constants[10]=1;constants[12]=-114.584f;constants[13]=-5210.417f;constants[14]=-20+camera*.5f;constants[15]=1;
+            for(unsigned j=0;j<16;++j)constants[16+j]=projection==0?float(j%5==0):float(int(j%5)-2)*(.01f+projection*.007f);
+            constants[36]=-.2f;constants[37]=1;
+            NorthlightActorDeformation::Four inputs[16]={},clip,before,after;
+            inputs[0]={114.584f,5210.417f,23.091f,1};inputs[2]={1,1,1,.37f};
+            assert(NorthlightActorDeformation::evaluate(position,inputs,constants,clip));
+            if(camera==0)reference=clip;else assert(std::memcmp(&reference,&clip,sizeof clip)==0);
+            assert(NorthlightActorDeformation::evaluate(fadeBefore,inputs,constants,before));
+            assert(NorthlightActorDeformation::evaluate(fadeAfter,inputs,constants,after)&&before[0]==after[0]);
+        }
+    }
+    auto unknown=native;unknown.back()^=1;std::vector<Word> sentinel{123};
+    assert(!NorthlightDetailShadow::shadowVertex(unknown,sentinel)&&sentinel==std::vector<Word>{123});
+}
 static void policy(){
     using namespace NorthlightDetailShadow;
     assert(shader(0x7f2707e33c6c97beULL)&&shader(0xc8e41181431a84c7ULL));
@@ -164,7 +191,7 @@ int main(int argc,char** argv){
         assert(size>0&&size%4==0);std::vector<Word> native(size/4);assert(std::fread(native.data(),1,size,file)==size_t(size));std::fclose(file);
         assert(NorthlightDetailShadow::shader(NorthlightShaderTags::fnv1a(native.data(),size)));
         assert(m2ShaderFamily(NorthlightShaderTags::fnv1a(native.data(),size))==NorthlightM2Family::kNone);
-        nativeFade(native);
+        nativeFade(native);nativeWorldProjection(native);
         NorthlightShadowShader::PatchInfo info;std::vector<Word> patched;
         std::vector<Word> shadow;assert(NorthlightDetailShadow::shadowFade(native,shadow));
         assert(NorthlightShadowShader::patch(shadow.data(),shadow.size(),patched,&info)&&info.texcoord0XY&&info.color0W);
