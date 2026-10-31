@@ -56,6 +56,40 @@ inline bool shadowFade(const std::vector<std::uint32_t>& input,std::vector<std::
     result[alpha]=(replaceReg(result[alpha],type,color[1])&~Word(15u<<16))|(1u<<16);
     output.swap(result);return true;
 }
+// Project the signature-proved world POSITION0 directly with c4..7. Keep
+// c0..3 and the original view-position temporary for the native c9 fade.
+inline bool shadowVertex(const std::vector<std::uint32_t>& input,std::vector<std::uint32_t>& output){
+    using namespace NorthlightShadowShader;
+    std::vector<Word> result;if(!shadowFade(input,result))return false;
+    std::size_t arithmetic[8]={};unsigned count=0;
+    for(std::size_t at=1;at<input.size();){
+        const unsigned op=input[at]&65535;if(op==65535)break;
+        const unsigned n=op==65534?(input[at]>>16)&32767:(input[at]>>24)&15;
+        if(op!=31&&op!=81&&op!=65534&&count<8)arithmetic[count++]=at;
+        at+=n+1;
+    }
+    if(count!=8)return false;
+    const unsigned view=regIndex(input[arithmetic[3]+1]);
+    const unsigned components[]={1,0,2,3},constants[]={5,4,6,7};
+    for(unsigned step=0;step<4;++step){
+        const auto at=arithmetic[4+step];const unsigned op=input[at]&65535,n=(input[at]>>24)&15;
+        if(op!=(step?4u:5u)||n!=(step?4u:3u))return false;
+        unsigned found=0;bool matrix=false;
+        for(unsigned i=2;i<=n;++i){const Word token=input[at+i];
+            if(regType(token)==2&&regIndex(token)==constants[step])matrix=true;
+            if(regType(token)!=0||regIndex(token)!=view)continue;
+            if(((token>>16)&255)!=components[step]*0x55u||token&0x0f002000u)return false;
+            if(step==3){
+                if(i>3)return false;
+                result[at]=(result[at]&~Word(0x0f00ffffu))|(3u<<24)|2u; // ADD c7, accumulator; implicit world w=1.
+                result.erase(result.begin()+at+i);
+            }else result[at+i]=replaceReg(token,1,0);
+            ++found;
+        }
+        if(found!=1||!matrix)return false;
+    }
+    output.swap(result);return true;
+}
 // Stock DetailDoodad PS2/PS3: texture0 alpha times the VS distance fade.
 inline bool pixelShader(std::uint64_t hash){
     constexpr std::uint64_t hashes[]={0x4c4e8c78e53fb551ULL,0x57d8def2328eda4fULL,0x6ef54f064e5141ddULL,

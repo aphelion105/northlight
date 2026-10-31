@@ -20,7 +20,8 @@ for source,material in (('world_effects.hlsl','Material'),('local_light_effects.
     text=read(source)
     assert f'if({material}.w>=0)' in text
     assert f'{material}.x==2?diffuse.a:tex2D(' in text
-    assert f'if({material}.x==1)alpha*=diffuse.a;' in text
+    assert (f'if({material}.x==1)alpha*=diffuse.a;' in text or
+            f'if({material}.x==1||{material}.x==3)alpha*=diffuse.a;' in text)
     assert f'clip(alpha-{material}.w);' in text
 assert 'p->cutoff=alpha?(float(ref)+(alphaFunc==D3DCMP_GREATER?.5f:0.f))/255.f:shaderCutoff;p->alphaMode=alphaMode;' in world
 assert 'if(skip_&&material_&&p.cutoff<=-1.f)' in read('replay_draw_state.h')
@@ -30,11 +31,11 @@ assert 'if(skip_&&material_&&p.cutoff<=-1.f)' in read('replay_draw_state.h')
 users = [m.start() for f in (world, point, probe) for m in re.finditer(r'NorthlightReplayDrawState::Cache ', f)]
 assert len(users) == 4, users  # 0.3.209 (task 29): the actor shadow map is the fourth (replayPS bound, a fresh Cache per map)
 issue = probe[probe.index('NorthlightReplayDrawState::Cache probeBindings(d);'):probe.index('        if(draws==replayProbeList.size())return true;')]
-assert 'submitReplay(p,probeBindings,probePoses,rows,mode,' in issue
+assert 'submitReplay(p,probeBindings,probePoses,rows,worldMatrix,mode,' in issue
 for forbidden in ('SetTexture(', 'SetSamplerState(', 'SetPixelShader(', 'SetPixelShaderConstantF(', 'SetRenderState('):
     assert forbidden not in issue, forbidden
     assert forbidden not in probe, forbidden
-assert world.index('d->SetPixelShader(replayPS);') < world.index('replayProbe(rows,realLoopMs);') < world.index('d->SetPixelShader(unionPS);')
+assert world.index('d->SetPixelShader(replayPS);') < world.index('replayProbe(rows,matrices[cascade],realLoopMs);') < world.index('d->SetPixelShader(unionPS);')
 loop = world[world.index('d->SetPixelShader(replayPS);')+len('d->SetPixelShader(replayPS);'):world.index('replayPosePrepared+=poseConstants.prepared;')]
 assert 'NorthlightReplayDrawState::Cache replayBindings(d);' in loop
 for forbidden in ('SetTexture(', 'SetSamplerState(', 'SetPixelShader(', 'SetPixelShaderConstantF(', 'SetRenderState('):
