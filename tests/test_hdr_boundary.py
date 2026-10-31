@@ -14,9 +14,11 @@ source = fp.src('renderer.cpp').read_text()
 start = source.index('    bool orthographicUiGeometry(){')
 end = source.index('    // 0.3.154: the per-draw timing scopes;', start)
 methods = source[start:end]
-boundary_start = source.index('    const char* hdrBoundarySource(){')
+boundary_start = source.index('    void rememberUiTextVs(){')
 boundary_end = source.index('    HRESULT hdrLogicalCopy(', boundary_start)
 methods = source[boundary_start:boundary_end] + methods
+identity_start = source.index('    bool uiTextVs(')
+methods += source[identity_start:source.index('\n', identity_start)] + '\n'
 sky_start = source.index('    bool hdrSkyAdmission(){')
 sky_end = source.index('    template<class Draw> void hdrReplaySky', sky_start)
 methods += source[sky_start:sky_end]
@@ -35,6 +37,7 @@ with tempfile.TemporaryDirectory(prefix='northlight-hdr-boundary-') as tmp:
         ('sanitizers', ['-O1', '-g', '-fsanitize=address,undefined', '-fno-omit-frame-pointer'], methods),
         ('before-fix', ['-O2', '-DNORTHLIGHT_HDR_BOUNDARY_COUNTERFACTUAL'], methods.replace('&&hdrUiInputs()', '')),
         ('before-sky-fix', ['-O2'], methods.replace('return hdrSkyValid||hdrSkyDraw();', 'return hdrSkyValid;')),
+        ('before-name-fix', ['-O2'], methods.replace('if(linear)rememberUiTextVs();', '')),
     ]:
         (root / 'hdr_boundary_methods.h').write_text(production)
         if os.name == 'nt' and label == 'sanitizers':
@@ -48,6 +51,11 @@ with tempfile.TemporaryDirectory(prefix='northlight-hdr-boundary-') as tmp:
         if label == 'before-sky-fix':
             assert run.returncode != 0 and 'f.hdrSkyAdmission()' in run.stderr, run.stdout + run.stderr
             print(label, 'expected first-sky admission assertion failed')
+            runs.append(dict(label=label, expected_failure=True))
+            continue
+        if label == 'before-name-fix':
+            assert run.returncode != 0 and 'f.uiTextVs(' in run.stderr, run.stdout + run.stderr
+            print(label, 'expected floating-name shader assertion failed')
             runs.append(dict(label=label, expected_failure=True))
             continue
         assert run.returncode == 0, run.stdout + run.stderr

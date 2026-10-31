@@ -496,14 +496,15 @@ class Device final : public GuardedMirrorDevice {
     // for it (set at registration, where the water map changes), so non-water
     // draws need no second hash lookup.
     // Task 34: bits 3..5 hold the M2 shader family (m2_shader_families.h, NorthlightSpellLayer::Family) of the vertex shader, set at registration.
-    static constexpr int kTagMask=3,kWaterTag=4,kFamilyShift=3,kNativeShadowTag=64,kUnlitTag=128;
+    static constexpr int kTagMask=3,kWaterTag=4,kFamilyShift=3,kNativeShadowTag=64,kUnlitTag=128,kUiTextTag=256;
     std::unordered_map<IDirect3DVertexShader9*, int> vsTags;
     bool drawWaterVS=false,drawUiHashVS=false; // current draw's registered VS verdict
     std::unordered_map<IDirect3DPixelShader9*, int> psTags;
     std::unordered_map<IDirect3DVertexShader9*, uint64_t> vsHashes;
     std::unordered_map<IDirect3DVertexShader9*, unsigned> vsMajor; // 0.3.202 (rain mask MRT): the shader model major version from the version token (0 unknown)
     // 0.3.196 (task 12): one-entry per-draw vertex shader classification. vsTags, vsHashes and the world's shader maps change only in
-    // CreateVertexShader registration, which bumps vsGeneration first (nothing is ever erased, but a freed address can be registered again).
+    // CreateVertexShader registration and verified screen-text learning, both of which bump vsGeneration
+    // (nothing is ever erased, but a freed address can be registered again).
     std::unordered_map<IDirect3DVertexShader9*,NorthlightNativeShadow::Proof> nativeShadowProofs;
     NorthlightNativeShadow::Limiter nativeShadowLimiter;
     NorthlightNativeLocalLight::Probe nativeLocalLightProbe;
@@ -679,6 +680,19 @@ private:
         if(SUCCEEDED(hr))hr=ext->SetViewport(&vp);
         if(SUCCEEDED(hr))hr=ext->SetScissorRect(&scissor);
         return hr;
+    }
+    void rememberUiTextVs(){
+        IDirect3DVertexShader9* vs=nullptr;const bool borrowed=ext->peekVertexShader(vs);
+        if(!borrowed&&FAILED(ext->GetVertexShader(&vs))){drop(vs);return;}
+        const auto& vc=classifyVs(vs);D3DSURFACE_DESC desc{};
+        // Font mods can use separate shaders for scalable UI and native text.
+        // HDR finishes before fallback learning; retain each proven UI identity
+        // for next frame's perspective names. Registration clears this bit.
+        if(vs&&!(vc.entry&kUiTextTag)&&(vc.entry&kTagMask)!=2&&!vc.world&&!vc.wmo&&!vc.skinned&&!(vc.entry&kWaterTag)&&
+           orthographicUiGeometry()&&fullViewport(desc,nullptr,true,false)&&hdrUiInputs()){
+            ++vsGeneration;vsTags[vs]|=kUiTextTag;
+        }
+        if(!borrowed)drop(vs);
     }
     const char* hdrBoundarySource(){
         IDirect3DVertexShader9* vs=nullptr;
@@ -884,6 +898,7 @@ private:
                 }
             }
             linear=hdrUiPhase&&hdrBackTarget();
+            if(linear)rememberUiTextVs();
         });
         if(!linear)return draw();
         bool submitted=false;HRESULT hr=E_FAIL;const unsigned rejected=hdrColor.rejected;const auto previousLayers=hdrColor.layers;
@@ -1512,7 +1527,7 @@ private:
     // (depth resolve, captures) must not meet the stencil states.
     void nameMaskRunBreak(){
         IDirect3DVertexShader9* vs=nullptr;
-        if(!ext->peekVertexShader(vs)||!vs||!uiTextVs(vs,classifyVs(vs).entry&kTagMask))nameMaskRunEnd();
+        if(!ext->peekVertexShader(vs)||!vs||!uiTextVs(vs,classifyVs(vs).entry))nameMaskRunEnd();
     }
     // The draw hook's last step: the game's draw (rain blend, blob and terrain shadow wrappers inside) with the name's stencil states set (run) and the alpha guard if its alpha test is off, or the unmark states around a depth-final draw.
     template<class Draw> HRESULT nameMaskDraw(bool rain,bool claimed,Draw draw){
@@ -2687,10 +2702,10 @@ private:
         if(!sameDepth){drop(worldDepth);worldDepthDescKnown=false;worldDepth=ds;worldDepthDesc=dd;worldDepthDescKnown=true;}
         return true;
     }
-    // 0.3.212 (task 32): a vertex shader that can draw world text (a name): the stock UI hash (tag 2), or, while the UI boundary fallback is armed, the VS it learned. Font mods that replace the UI shaders
-    // (Lexara, TweakWoW2 with HD Font on) swap the one UI VS the game draws its screen UI and its 3D text with, so the learned VS is the one their names are drawn with; their VS still takes the game's
-    // projection in c0..c3, so the c3 test of nameMaskDecide holds as with the stock VS. Before the fallback arms (about 2 s of world frames) their names are not marked, as their effects have not started either.
-    bool uiTextVs(IDirect3DVertexShader9* vs,int tag)const{return tag==2||(vs&&uiFallback.armed()&&reinterpret_cast<std::uintptr_t>(vs)==uiFallback.learnedVs());}
+    // Floating names use a stock UI shader, a shader proven by an earlier HDR UI draw,
+    // or the active fallback's learned shader. Font mods can use distinct shaders for
+    // scalable UI and text; all still undergo nameMaskDecide's perspective/blend tests.
+    bool uiTextVs(IDirect3DVertexShader9* vs,int entry)const{return (entry&kTagMask)==2||(entry&kUiTextTag)||(vs&&uiFallback.armed()&&reinterpret_cast<std::uintptr_t>(vs)==uiFallback.learnedVs());}
     void observeNativeShadow(IDirect3DVertexShader9* vs,const VsClass& vc){
         if(!vc.nativeShadow||!nativeShadowLimiter.take(diagnostics(),NorthlightRenderThreadProbe::profiling(),frame,*vc.nativeShadow))return;
         const auto hash=vsHashes.find(vs);const bool active=mirrorState.active();
@@ -2728,7 +2743,7 @@ private:
         const VsClass& vc=classifyVs(vs); const int entry=vc.entry; int tag=entry&kTagMask;
         observeNativeShadow(vs,vc);
         observeNativeLocalLights(vs,vc);
-        drawWaterVS=(entry&kWaterTag)!=0;drawUiHashVS=uiTextVs(vs,tag);
+        drawWaterVS=(entry&kWaterTag)!=0;drawUiHashVS=uiTextVs(vs,entry);
         bool wmo=tag!=1&&vc.wmo;if(gateFrame&&wmo)++gateCounts.wmo;
         if(wmo&&projectionValid&&world->hasContext()&&world->hasOriginalFog())return;
         const bool model=tag!=1&&!wmo&&vc.skinned&&(!projectionValid||!world->hasContext());
