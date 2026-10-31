@@ -11,6 +11,7 @@ manifest={'normal_source_sha256':hashlib.sha256((fp.SHADERS/'auto_normal_generat
 manifest['shared_source_sha256']=hashlib.sha256((fp.SHADERS/'auto_bump_shared.hlsl').read_bytes()).hexdigest()
 entries=('BumpOpaque','BumpLayer','BumpWall','BumpGrass','BumpWallOpaque','BumpComposite','BumpNative','BumpSharedOpaque','BumpSharedLayer','BumpSharedWall','BumpSharedGrass','BumpSharedWallOpaque','BumpSharedComposite','BumpSharedNative','BumpTerrainOpaque','BumpTerrainLayer','BumpSharedTerrainOpaque','BumpSharedTerrainLayer','AutoNormal','AutoNormalModel','ParallaxUV','ParallaxSharedUV')
 entries+=tuple('BumpNormal'+name for name in ('Opaque','Layer','Grass','TerrainOpaque','TerrainLayer'))
+entries+=('ModelNormalCapture',)
 for entry in entries:
     entrySource=fp.SHADERS/'auto_normal_generate.hlsl' if entry.startswith('AutoNormal') else fp.SHADERS/'auto_parallax_prefix.hlsl' if entry.startswith('Parallax') else fp.SHADERS/'auto_bump_shared.hlsl' if entry.startswith('BumpShared') else source
     path=fp.COMPILED/(entry+'.bin')
@@ -19,5 +20,5 @@ for entry in entries:
     header.append('static const DWORD k%sShader[]={\n%s\n};'%(entry,'\n'.join(rows(words))))
     manifest['shaders'][entry]={'sha256':hashlib.sha256(data).hexdigest(),**stats}
     print(entry,stats['static_instruction_slots'],'slots',flush=True)
-(fp.GENERATED/'auto_bump_compiled_shaders.h').write_text('\n\n'.join(header)+'\n')
-(fp.SHADERS/'auto-bump-shader-build.json').write_text(json.dumps(manifest,indent=2)+'\n')
+(fp.GENERATED/'auto_bump_compiled_shaders.h').write_text('\n\n'.join(header)+'\n',encoding='utf-8',newline='\n')
+(fp.SHADERS/'auto-bump-shader-build.json').write_text(json.dumps(manifest,indent=2)+'\n',encoding='utf-8',newline='\n')
