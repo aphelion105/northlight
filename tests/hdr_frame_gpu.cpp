@@ -34,6 +34,52 @@ static IDirect3DTexture9* legacy(IDirect3DDevice9* device,bool spot){
 static IDirect3DTexture9* solid(IDirect3DDevice9* device,float r,float g,float b,float a){
     Image image{1,1,D3DFMT_A32B32G32R32F,16,std::vector<unsigned char>(16)};float rgba[]={r,g,b,a};std::memcpy(image.pixels.data(),rgba,16);return texture(device,image);
 }
+static unsigned decodeOracle(IDirect3DDevice9* d){
+    constexpr unsigned w=256,h=4;
+    float maximumError=0,transferError=0,alphaError=0;unsigned cases=0;
+    for(auto format:{D3DFMT_A8R8G8B8,D3DFMT_X8R8G8B8}){
+        Image encoded{w,h,format,4,std::vector<unsigned char>(w*h*4)};
+        Image floats{w,h,D3DFMT_A32B32G32R32F,16,std::vector<unsigned char>(w*h*16)};
+        for(unsigned y=0;y<h;++y)for(unsigned x=0;x<w;++x){
+            const unsigned a=format==D3DFMT_X8R8G8B8?255:(x+73*y)%256,r=x,g=255-x,b=(x*37+y*13)%256;
+            const DWORD pixel=D3DCOLOR_ARGB(a,r,g,b);const float rgba[]={r/255.f,g/255.f,b/255.f,a/255.f};
+            std::memcpy(encoded.pixels.data()+(y*w+x)*4,&pixel,4);std::memcpy(floats.pixels.data()+(y*w+x)*16,rgba,16);
+        }
+        auto* input=texture(d,encoded);auto* reference=texture(d,floats);
+        IDirect3DSurface9* staging=nullptr;ok(d->CreateOffscreenPlainSurface(w,h,D3DFMT_A16B16G16R16F,D3DPOOL_SYSTEMMEM,&staging,nullptr));
+        NorthlightHdr::Frame frame;NorthlightHdr::Settings settings;
+        for(float expansion:{0.f,1.f,2.f}){
+            settings.legacyExpansion=expansion;std::vector<std::uint16_t> expected(w*h*4);
+            for(bool candidate:{false,true}){
+                ok(d->SetSamplerState(0,D3DSAMP_SRGBTEXTURE,TRUE));
+                ok(d->BeginScene());ok(frame.prepareLegacy(d,candidate?input:reference,nullptr,nullptr,w,h,0,1,settings));ok(d->EndScene());
+                DWORD restored=0;ok(d->GetSamplerState(0,D3DSAMP_SRGBTEXTURE,&restored));assert(restored==TRUE);
+                ok(d->GetRenderTargetData(frame.surface(),staging));D3DLOCKED_RECT lock{};ok(staging->LockRect(&lock,nullptr,D3DLOCK_READONLY));
+                for(unsigned y=0;y<h;++y)for(unsigned x=0;x<w*4;++x){
+                    const unsigned i=y*w*4+x;const auto bits=reinterpret_cast<const std::uint16_t*>(static_cast<const char*>(lock.pBits)+y*lock.Pitch)[x];
+                    if(!candidate)expected[i]=bits;else{
+                        const float actual=half(bits),baseline=half(expected[i]),error=std::fabs(actual-baseline);
+                        assert(std::isfinite(actual));maximumError=std::max(maximumError,error);
+                        float value;std::memcpy(&value,floats.pixels.data()+i*4,4);
+                        if(x%4==3){assert(bits==expected[i]);alphaError=std::max(alphaError,std::fabs(actual-value));assert(std::fabs(actual-value)<.0005f);}
+                        else assert(error<std::max(.001f,std::fabs(baseline)*.002f));
+                        if(!expansion&&x%4!=3){
+                            const double linear=value<=.04045?value/12.92:std::pow((value+.055)/1.055,2.4);
+                            transferError=std::max(transferError,float(std::fabs(actual-linear)));
+                            if(std::fabs(actual-linear)>=.001)std::fprintf(stderr,"decode format=%u x=%u y=%u input=%g actual=%g baseline=%g expected=%g\n",unsigned(format),x,y,value,actual,baseline,linear);
+                            assert(std::fabs(actual-linear)<.001);
+                        }
+                    }
+                }
+                ok(staging->UnlockRect());
+            }
+            ++cases;
+        }
+        ok(d->SetTexture(0,nullptr));input->Release();reference->Release();staging->Release();
+    }
+    ok(d->SetSamplerState(0,D3DSAMP_SRGBTEXTURE,FALSE));
+    std::printf("HDR_DECODE_ORACLE cases=%u codes=256 formats=ARGB8/XRGB8 expansion=0/1/2 alpha=exact floatInputControl=true referenceError=%g independentTransferError=%g alphaRoundingError=%g\n",cases,maximumError,transferError,alphaError);return cases;
+}
 static unsigned batchStateOracle(IDirect3DDevice9* raw,IDirect3DSurface9* source,IDirect3DSurface9* destination,IDirect3DTexture9* encoded){
     struct Meter:ForwardIDirect3DDevice9{
         unsigned states=0,samplers=0,targets=0,failAt=0;
@@ -235,7 +281,7 @@ int main(int argc,char** argv){
     auto prepare=[&](IDirect3DTexture9* input){ok(device->BeginScene());ok(frame.prepareLegacy(device,input,nullptr,nullptr,W,H,0,1,settings));ok(device->EndScene());};
     auto finish=[&](float dt=1.f/60,bool cut=false){ok(device->BeginScene());ok(frame.finish(device,source,destination,settings,dt,true,cut));ok(device->EndScene());};
     auto exposure=[&]{float value[4];sample(device,frame.exposureSurface(),scalar,value);return value[0];};
-    prepare(white);unsigned cases=batchStateOracle(device,source,destination,white)+filterOracle(device)+uiStateOracle(device,destination,constant)+gradeOracle(device,source,destination,readback,constant,white);
+    prepare(white);unsigned cases=decodeOracle(device)+batchStateOracle(device,source,destination,white)+filterOracle(device)+uiStateOracle(device,destination,constant)+gradeOracle(device,source,destination,readback,constant,white);
     float actual[4],reference[4];
     const float ordinary[]={1,1,1,1};fill(device,source,constant,ordinary);finish();sample(device,destination,readback,actual,W/2,H/2);
     assert(std::fabs(actual[0]*80-203)<.406);++cases;
