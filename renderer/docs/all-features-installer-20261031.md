@@ -1,25 +1,24 @@
 # Complete Windows test installer - 2026-10-31
 
-Version: `0.3.216-test.20261031.5`. Production code snapshot: `8ad67840`.
+Version: `0.3.216-test.20261031.8`. Production code snapshot: `80f322d0`.
 
 | Artifact | Identity |
 | --- | --- |
-| Archive | `Northlight-0.3.216-test.20261031.5-Windows.zip` |
-| Archive bytes | 19,734,487 |
-| Archive SHA256 | `d327fba24982a92807d69b0d8160c3e59c4b5238c9147dcc601cea66882c1f33` |
-| DLL SHA256 | `ac96124a3e21e1289b3619c92e414c6619d058a402d99e4f7c869743c4d45479` |
-| Embedded source identity | `d31167a110545577f0299f414c0822bb9919e5087ad768a1d081113708f528fc` |
+| Archive | `Northlight-0.3.216-test.20261031.8-Windows.zip` |
+| Archive bytes | 19,736,129 |
+| Archive SHA256 | `d5860e5e7059e09f9da25ef1c153d648c94ed389d0bbc1ef3adbc2f71ec3b32f` |
+| DLL SHA256 | `aba60c2ec6b8b4b5bad4a5f9733a4d584d456fc22e5ca0accaa340c22fdcf905` |
 
 ## Included changes
 
-This installer supersedes `.4` and adds capture-driven glare fixes and HDR composition optimizations. It combines the published #98 integration, the previously local all-PR assembly and the new linear HDR pipeline. The merge preserves native actor stencil ownership on original draws and keeps HDR sky replay separate.
+This installer supersedes `.7` and includes the complete capture-driven HDR/glare fixes, the two subsequent optimization waves, CPU attribution and native-MSAA presentation stand, plus the alternate FP16 veil correction. It combines the published #98 integration, the previously local all-PR assembly and the new linear HDR pipeline. The merge preserves native actor stencil ownership on original draws and keeps HDR sky replay separate.
 
 - Full HDR world/material composition, display-aware live SDR/scRGB output, automatic exposure, independent UI brightness and peak calibration, optional legacy highlight expansion and bloom. Include the distant-horizon and native Ctrl+R boundary fixes, direct screen-blend geometry, lazy sky capture, deferred SDR mirrors and eligible sampler-based legacy decoding.
 - Existing vegetation/grass, native present-wait workaround, local-source shadows, settings/Diagnostics, material relief, fog recovery, native sun/cloud-order recovery, bounded EVENT waits, shadow-cache transitions, bounded scene storage, AO quality variants and the 31 previously validated preparation/kernel optimizations.
 - Actor ownership AO from #112, with the combined GTAO compatibility work; asynchronous persistent material maps from #97; native herb/gameobject/prop emission from #114, including the latest World models without GameObjectDisplayInfo rows (`ed22e9a9`); and the Telredor point-shadow visibility work.
 - The corresponding installer, cache/art builders and dependency closure. Proprietary game assets, generated world caches and private captures are not distributed.
 
-PR #94 retains the independently buildable presentation/UI subset (`76c2d0cc`). PR #110 receives the shared raw-depth horizon occlusion fix (`1ce59953`). PR #98 carries this complete integration. Previously recorded exclusions of the new HDR pipeline and actor AO describe older snapshots and do not describe this package.
+PR #94 retains the independently buildable presentation/UI subset (`cd8e4def`). PR #110 receives the shared raw-depth horizon occlusion fix (`1ce59953`). PR #98 carries this complete integration. Previously recorded exclusions of the new HDR pipeline and actor AO describe older snapshots and do not describe this package.
 
 ## Validation
 
@@ -36,3 +35,9 @@ PR #94 retains the independently buildable presentation/UI subset (`76c2d0cc`). 
 The [autonomous client follow-up](hdr-autonomous-validation-20261031.md) adds direct two-texture UI composition, preserves the one-texture shader, and records stationary SDR/HDR evidence. Fresh capture analysis and acceptance are in `.local/hdr-autonomous-20261031`; the preceding component evidence remains in `.local/hdr-glare-20261031`. Earlier feature acceptance is retained under the publication checkout's `.local/all-feature-hdr-check` and `.local/all-feature-tests`. The archive's BUILD-INFO.json and payload-manifest.json authenticate the packaged files.
 
 This is a test installer. Day/night/interior tuning and the HDR full-frame overhead target remain incomplete; the extra actor-AO cost retains #112's documented tradeoff. Physical two-monitor migration remains deferred. The autonomous follow-up separately entered the requested character, collected fresh logs and installed the tested renderer; the packaging command itself does not launch the game.
+
+## Latest acceptance and client evidence
+
+The exact packaged DLL passes the production x86 build, nine-workload composition graph on both DXVK backends, 2776 HDR Frame cases and 43 sun cases per backend, the HDR/SDR/MSAA8 proxy matrix, all five celestial replay families and CPU veil policy. Package hashes and installer contracts pass. The installed payload is byte-identical to this offline-tested DLL.
+
+The preceding `.7` stationary client comparison measures about 112 FPS in HDR versus 120 in SDR at 4K/MSAA8. The separate veil shader corrected in `.8` is omitted by the main linear HDR path, so no new whole-client performance improvement is claimed for `.8`. [Fresh client measurements](hdr-optimization-wave4-20261031.md) and [visible-sun capture, alternate-path fix and remaining priorities](hdr-solar-followup-20261031.md) state the limits. Sixty independently validated optimizations per direction have not been established.
