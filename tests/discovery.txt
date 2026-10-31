@@ -62,6 +62,7 @@ test_client_latency_diagnostics.py
 test_cloud_dense_pair.py
 test_cloud_noise_admission.py
 test_cloud_noise_worker.py
+test_cloud_preparation_exact.py
 test_colour_tent_2d.py
 test_command_stream.py
 test_command_stream_wiring.py

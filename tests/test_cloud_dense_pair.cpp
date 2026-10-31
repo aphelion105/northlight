@@ -1,6 +1,6 @@
 #pragma STDC FENV_ACCESS ON
 #define NorthlightFogClouds FrozenClouds
-#include "fog_reference/noise-wave2-old.h"
+#include "fog_reference/dense-smoothing-before.h"
 #undef NorthlightFogClouds
 #include "fog_clouds.h"
 #include <cassert>
