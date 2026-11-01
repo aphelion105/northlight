@@ -99,7 +99,7 @@ int main(int argc,char** argv) {
             for(std::size_t i=0;i<output[1].size()/2;++i){std::uint16_t bits;std::memcpy(&bits,output[1].data()+i*2,2);float value=half(bits);nonfinite+=!std::isfinite(value);if(i%4==3){minAO=std::min(minAO,value);maxAO=std::max(maxAO,value);}}
             assert(!nonfinite&&minAO>=0&&maxAO<=1);
             if(shape==3)assert(minAO==1);
-            
+
             double median[2]{};for(unsigned mode=0;mode<2;++mode)if(!timing[mode].empty()){std::sort(timing[mode].begin(),timing[mode].end());auto n=timing[mode].size();median[mode]=(timing[mode][n/2]+timing[mode][(n-1)/2])*.5;}
             std::printf("{\"width\":%u,\"height\":%u,\"input_bits\":%u,\"shape\":%u,\"msaa\":%u,\"changed_bytes\":%llu,\"nonfinite\":%llu,\"min_ao\":%.6f,\"max_ao\":%.6f,\"old_ms\":%.6f,\"new_ms\":%.6f}\n",fullW,fullH,fp16?16:32,shape,samples,static_cast<unsigned long long>(changed),static_cast<unsigned long long>(nonfinite),minAO,maxAO,median[0],median[1]);std::fflush(stdout);assert(measureChanged||!changed);++cases;target->Release();
         }

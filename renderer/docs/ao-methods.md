@@ -114,6 +114,11 @@ Settings and shader/resource lifetime tests cover all five methods and live swit
 
 ## Visual regression lab
 
+![AO before and after: five methods and three qualities](images/ao-rotation-20261101.png)
+
+Synthetic corner, WorldComposite visibility, 160-pixel centre crops from
+640x360 input. Each pair is before/after, without contrast stretching.
+
 Run the independent Windows GPU lab with NumPy and Pillow installed:
 
 ```sh

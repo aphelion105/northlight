@@ -7,7 +7,8 @@ The feature PRs each contain a complete buildable checkout. Shared prerequisites
 | Build/test tools and explicit compiler provenance | [85](https://github.com/lepola/northlight/pull/85) | main |
 | Optional DXVK 3 engine-name workaround | [86](https://github.com/lepola/northlight/pull/86) | 85 |
 | World capture and UI boundaries | [87](https://github.com/lepola/northlight/pull/87) | 85 |
-| SSAO/HDAO/HBAO+/GTAO techniques | [88](https://github.com/lepola/northlight/pull/88) | 85 |
+| SSAO/HDAO/HBAO+/GTAO/ASSAO and quality variants | [118](https://github.com/lepola/northlight/pull/118) | main |
+| Regional fog recovery and empty-pass skipping | [109](https://github.com/lepola/northlight/pull/109) | main |
 | General render performance | [89](https://github.com/lepola/northlight/pull/89) | 85 |
 | Celestial clouds, moon and halo composition | [90](https://github.com/lepola/northlight/pull/90) | 85 |
 | Settings menu and transactional live controls | [91](https://github.com/lepola/northlight/pull/91) | 85 |
@@ -30,3 +31,5 @@ The integrated performance fixture uses the combined shader interface with inter
 The review follow-up runs the shared suite with the pinned Linux StormLib and LLVM libc++, including native optimized and sanitizer fixtures, then checks affected contracts on the independent branches. Combined validation includes the full native sweep and focused reruns of repaired cases. Optional material/water schemas are explicit bridge fixtures in the standalone menu tests; its ordinary schema still verifies that unsupported controls stay hidden.
 
 CPU tests that execute Windows programs declare `windows-exe`. GPU tests declare `windows-gpu`, whose prerequisite probe creates a hidden HAL device with the system D3D9 runtime before feature backends run. Fresh Windows checks pass on native D3D9 and DXVK where the individual oracle supports them. The updated HDR matrix covers both DXVK versions, multisampling, Reset metadata and target rebinds. Fixture timings are not an in-game benchmark; representative combinations, silhouette/LOD transitions and frame cost remain draft requirements. Linux and macOS HDR have not been tested.
+
+The November 1 HDR/fog/ASSAO update has separate publication and independent-branch validation in [pipeline-publication-20261101.md](pipeline-publication-20261101.md). The existing `.12` installer predates that update.
