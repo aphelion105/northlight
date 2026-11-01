@@ -27,5 +27,17 @@ to live/replay input; combined proxy validation covers 960 SDR/HDR cases
 across DXVK 2 and 3 including Reset/resize.
 
 These are component checks. They do not establish Stormwind FPS or fresh
-in-game acceptance. PCSS filtering is a separate change; its GPU costs and
-limits are described in `pcss-filter-extension-20261101.md`.
+in-game acceptance. The full PCSS pipeline is a separate change in combined PR #98 and is not
+part of this independent port.
+
+
+## Independent PR #92 verification
+
+This branch retains its own terrain layout, replay projection and lighting
+interfaces. A fresh Windows x86 release build passes. The O0/O2 rigid and
+crowd tests, schedule/source-selection tests, conservative culling test and
+source-wiring assertions pass from this checkout. On each native D3D9 and
+DXVK 3 backend, the production renderer passes eight terrain-membership
+states, 12 six-face reuse cases against forced rebuilds, cross-source
+isolation, invalid-bounds fallback, and offscreen/re-entry transitions.
+No shader or shadow-filter changes are part of this port.
