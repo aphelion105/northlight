@@ -51,3 +51,28 @@ geometry, snapshot and atlas-upload checks pass.
 assertion at `displacement_state_reuse.cpp:546`. Recompiling against the unchanged
 `0d1b15a8` production headers reproduces the identical assertion. This check is
 not counted as passing for the standalone port.
+
+## Current source identity after unchanged model writes
+
+An unchanged tracked VB/IB rewrite can reuse displacement geometry whose
+source snapshot retains an older write revision. Comparing an overlay against
+that cached identity rejects the current reflection layer even though the base
+drew successfully, leaving the layers on different surfaces.
+
+Retain the current source identity before geometry canonicalization and record
+it with each successful base draw, separately from the cached mesh. Overlay
+admission still requires the exact source, declaration, draw range, clip matrix
+and pose; a buffer write after the base continues to invalidate its overlay.
+
+Fresh validation on this PR checkout passes 576 crystal cases and 576 portal
+cases on each of native D3D9, DXVK 2.7.1 and DXVK 3.1.1. The fixture covers
+unchanged buffers and alternating equal-content VB/IB writes, verified geometry
+aliases, immediate draws and actual production spell-layer replay, constant
+restoration, camera/pose changes and writes after the base. The preserved
+pre-fix headers fail the same expanded crystal overlay-admission assertion.
+The Windows x86 renderer DLL builds.
+
+These hidden-device component tests use native model topology and vertex
+programs with an authored camera and depth oracle. They do not replay the full
+game scene or establish in-game screenshot acceptance. No new installer or
+fresh game session is included in this publication.
