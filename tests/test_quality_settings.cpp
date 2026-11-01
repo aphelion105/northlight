@@ -220,7 +220,7 @@ int main(){
     { /* NearShadowInterval: 1 on Quality (the old path), 2 on Balanced and Performance (0.3.169). */
       assert(d.nearShadowInterval==1&&preset(Preset::Balanced).nearShadowInterval==2&&preset(Preset::Performance).nearShadowInterval==2);
       assert(parse("[Quality]\nNearShadowInterval=16\n").nearShadowInterval==16&&parse("[Quality]\nNearShadowInterval=0\n")==d);
-      /* Near reuse is the same complete-map contract as far: interval 1 never skips or records. */
+      /* Near environment reuse uses the same schedule as far: interval 1 never skips or records. */
       ShadowMapReuse r;const float m[16]={3};
       for(unsigned pass=1;pass<50;++pass){assert(!r.canSkip(d.nearShadowInterval,pass,true,false));r.begin(1);r.commit(1,pass,m);assert(!r.valid&&!r.fresh(1,pass+1));}
       r.begin(2);r.commit(2,9,m);assert(r.fresh(2,10)&&!r.fresh(2,11)&&r.canSkip(2,10,true,false)&&!r.canSkip(2,10,false,false)&&!r.canSkip(2,10,true,true));
@@ -229,18 +229,18 @@ int main(){
           assert(cascadeAction(x,1,pass,bits&1,bits&2,true)==CascadeAction::Render&&cascadeAction(x,1,pass,bits&1,bits&2,false)==CascadeAction::Render);
           assert(cascadeAction(x,3,pass,bits&1,bits&2,true)!=CascadeAction::Defer);}
     }
-    { /* Capture-skip decision table. Shadows on with any interval 1 (Quality: near 1): never skip. */
+    { /* Capture-skip decision table. Moving shadows require fresh poses at every interval. */
       ShadowMapReuse nearMaps[2],farMaps[2];const float m[16]={1};
       for(int i=0;i<2;++i){nearMaps[i].commit(16,10,m);farMaps[i].commit(16,10,m);}
       for(unsigned bits=0;bits<512;++bits){CaptureInputs in;in.shadows=true;in.actorDue=bits&1;in.demand=bits&2;in.diagnostic=bits&4;in.pointDue=bits&8;
           in.sourceActive[0]=bits&16;in.sourceActive[1]=bits&32;in.nextPass=11+(bits>>6);
           assert(!skipModelCapture(preset(Preset::Quality),in,nearMaps,farMaps)&&!captureSkipPossible(preset(Preset::Quality),true));
-          for(Preset p:{Preset::Balanced,Preset::Performance})assert(captureSkipPossible(preset(p),true));
+          for(Preset p:{Preset::Balanced,Preset::Performance})assert(!captureSkipPossible(preset(p),true));
           Settings one=d;one.farShadowInterval=16;assert(!skipModelCapture(one,in,nearMaps,farMaps));
           one=d;one.farShadowInterval=1;one.nearShadowInterval=16;assert(!skipModelCapture(one,in,nearMaps,farMaps));
-          /* Both 16: every active source must reuse both maps at the next pass; GI, demand, diagnostics and a due lamp refresh capture. */
+          /* Both 16: retained environments do not permit skipping current moving casters. */
           Settings both=d;both.nearShadowInterval=both.farShadowInterval=16;
-          assert(skipModelCapture(both,in,nearMaps,farMaps)==!(in.actorDue||in.demand||in.diagnostic||in.pointDue||in.nextPass-10>=16));
+          assert(!skipModelCapture(both,in,nearMaps,farMaps));
           ShadowMapReuse stale[2];stale[0]=nearMaps[0];stale[1]=nearMaps[1];stale[bits&1].invalidate();
           if(in.sourceActive[bits&1])assert(!skipModelCapture(both,in,stale,farMaps)&&!skipModelCapture(both,in,nearMaps,stale));
           /* Shadows off (F9, any preset): capture only for GI actor packets, a demand or a diagnostic. */
@@ -278,7 +278,7 @@ int main(){
             if(lastDeferred)assert(fresh); /* a deferral is followed by a capture frame */
             if(actorDue)assert(fresh);
             if(fresh&&actorDue)lastActor=now;
-            if(q==Settings{}&&shadows)assert(fresh);
+            if(actorShadowWork(q,shadows))assert(fresh);
             lastDeferred=false;
             if(inFrameInvalidation&&g()%700==0)for(auto& s:maps)for(auto& m:s)m.reuse.invalidate(); /* resize inside render() */
             if(!shadows)continue;
@@ -336,7 +336,7 @@ int main(){
             if(lastDeferred)assert(fresh);
             if(actorDue)assert(fresh);
             if(fresh&&actorDue)lastActor=now;
-            if(q==Settings{}&&shadows)assert(fresh);
+            if(actorShadowWork(q,shadows))assert(fresh);
             lastDeferred=false;
             if(inFrameInvalidation&&g()%700==0)for(auto& s:maps)for(auto& m:s)m.reuse.invalidate();
             if(!shadows)continue;
@@ -373,7 +373,7 @@ int main(){
         Settings s=preset(Preset::Performance);s.nearShadowInterval=2;s.farShadowInterval=8;run(s,seed,false,big);
         run(preset(Preset::Performance),seed,true,off);
         assert(q.skipped>0&&q.bare==0&&b.bare==0&&q.pulls==0&&p.pulls>0); /* Quality skips only shadows-off frames (asserted per frame above) */
-        assert(b.skipped>q.skipped&&b.pointBare==0); /* Balanced (0.3.169): near 2 / far 5 skips capture like Performance */
+        assert(b.skipped>0&&b.pointBare==0); /* Only frames without actor-shadow work may skip capture. */
         assert(p.skipped>0&&big.skipped>0&&p.bare==0&&big.bare==0&&p.pointBare==0&&big.pointBare==0);
         /* ActorShadows=1 (every preset, big intervals, in-frame invalidation): exactly the run above. */
         {Settings s=preset(Preset::Performance);s.nearShadowInterval=2;s.farShadowInterval=8;

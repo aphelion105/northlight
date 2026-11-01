@@ -2,7 +2,7 @@
 # northlight-test: requires=cxx
 """0.3.209 (task 29) actor shadow map: native model test of actor_shadow_map.h (clang++, plain and ASan/UBSan) and a wiring
 audit of world_renderer.h / quality_settings.h (static source analysis): the actor map is drawn in the near
-map's iteration (cascade 0, Render only) and reused with it, only cascade 0 skips replays inside the inset, ActorShadowDetail=0
+map's iteration (cascade 0), including retained-environment frames, only cascade 0 skips replays inside the inset, ActorShadowDetail=0
 (or ActorShadows=0) draws nothing and WorldLighting reads a neutral white, s12 carries the actor map for the ActorShadow passes and the
 visibility for the WorldLighting loop only (0.3.214: the water appearance pass that also received the maps is gone). No game or GPU."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
@@ -38,9 +38,9 @@ begin=loop.index('reuse.begin(interval);')
 invalid=loop.index('if(cascade==0)actorValid[source]=nearActorSkip[source]=false;')
 draw=loop.index('if(cascade==0&&actorFrameOn[source]){')
 valid=loop.index('memcpy(actorMatrices[source],am,64);actorValid[source]=true;')
-union=loop.index('if(!check(quad(1024,1024),"shadow union"))return false;')
-checks['paired with the near map: reuse/defer continues before it, Render invalidates, the actor draw precedes the union and commit']=(
-    reuse<begin<invalid<draw<valid<union and loop.index('continue;',reuse)<begin and 'actorMatrices' not in loop[reuse:begin]
+union=loop.index('if(!unionShadow(shadowSurface[slot],shadowScratch,nearEnvironment[source],0,0,0,1024))return false;')
+checks['actor map is current: only unsplit reuse continues; actor draw precedes final union and environment commit']=(
+    reuse<begin<invalid<draw<valid<union and loop.index('continue;',reuse)<begin and 'if(!splitNear){' in loop[reuse:begin] and 'if(!environmentReuse)reuse.begin(interval);' in loop
     and 'reuse.commit(interval,shadowPasses,matrices[cascade])' in loop and valid<loop.index('reuse.commit(interval,shadowPasses,matrices[cascade])'))
 actor=loop[draw:loop.index('} /* actorShadows */')]
 checks['actor draw: own target, shared 1024 depth, cleared white/1, cascade replay machinery, actor matrix, exactly the near-skipped replays']=(
@@ -56,7 +56,7 @@ checks['near skip: cascade 0 only, never the far map, by the inset test on valid
     and h.count('std::isfinite(m[i])')==1 and h.index('std::isfinite(m[i])')<h.index('inline bool insideInset(')) # the matrix once per frame (finiteMatrix), not per replay
 # A near map drawn with the skip lacks those casters: reusable only while its actor map is valid (the source went inactive, the detail went off).
 checks['near map with skipped casters is redrawn, not reused, once its actor map is gone']=(
-    'const bool actorLost=cascade==0&&nearActorSkip[source]&&!actorValid[source];' in loop
+    'const bool actorLost=cascade==0&&!splitNear&&nearActorSkip[source]&&!actorValid[source];' in loop
     and 'NorthlightQuality::cascadeAction(reuse,interval,shadowPasses,!reason&&key.valid&&!pull&&!actorLost,' in loop
     and loop.index('const bool actorLost=')<reuse
     and 'if(cascade==0)actorValid[source]=nearActorSkip[source]=false;' in loop and 'if(cascade==0)nearActorSkip[source]=nearSkip;' in loop

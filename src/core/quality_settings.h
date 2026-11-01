@@ -399,7 +399,7 @@ inline Settings load(std::istream* quality,std::istream* legacy,std::vector<std:
     apply(own,s,"northlight-quality.ini",'f',problems,true);
     return s;
 }
-// Far/NearShadowInterval>1: reuse of one source's last COMPLETE cascade map with the
+// Far cascade or near environment: retain a complete depth map with the
 // matrix it was rendered with. begin() is called before a render writes anything,
 // so a render that fails part-way is never reused; commit() only after success.
 struct ShadowMapReuse {
@@ -427,25 +427,16 @@ inline CascadeAction cascadeAction(const ShadowMapReuse& r,unsigned interval,uns
 // Near 2 / Far 3 renders far every 2). Only ever fresher; never with Near 1.
 inline bool pullFar(unsigned nearInterval,unsigned farInterval,unsigned now,const ShadowMapReuse& farMap,bool nearRenderedFresh){
     return nearRenderedFresh&&nearInterval>1&&farMap.valid&&now-farMap.pass+nearInterval>farInterval;}
-// Model (replay) capture is needed on a frame only by a consumer that draws or
-// packs fresh replays: GI actor packets (every ~200 ms), a directional cascade
-// that cannot reuse its complete map, a due point-shadow refresh, a demand left
-// by a previous skipped frame, or a GPU diagnostic dump. Shadows off: GI only.
-// Shadows on: only when BOTH intervals are >1 (1/1 is exactly the old path).
-// A wrong prediction is safe: that frame keeps its complete maps one more frame
-// and demands a capture (see WorldRenderer::render).
+// Moving shadows need fresh model poses every frame. Without that work, only
+// GI actor packets, a capture demand or a diagnostic need model capture.
 struct CaptureInputs {
     bool shadows=true,actorDue=false,demand=false,diagnostic=false,pointDue=false;
     bool sourceActive[2]={};unsigned nextPass=0;
 };
-inline bool captureSkipPossible(const Settings& s,bool shadows){return !shadows||(s.nearShadowInterval>1&&s.farShadowInterval>1);}
-inline bool skipModelCapture(const Settings& s,const CaptureInputs& in,const ShadowMapReuse* nearMaps,const ShadowMapReuse* farMaps){
-    if(!captureSkipPossible(s,in.shadows)||in.actorDue||in.demand||in.diagnostic)return false;
-    if(!in.shadows)return true;
-    if(in.pointDue)return false;
-    for(int source=0;source<2;++source)if(in.sourceActive[source]&&
-        (!nearMaps[source].fresh(s.nearShadowInterval,in.nextPass)||!farMaps[source].fresh(s.farShadowInterval,in.nextPass)))return false;
-    return true;
+// Near intervals retain environment depth, never old caster poses.
+inline bool captureSkipPossible(const Settings&,bool shadows){return !shadows;}
+inline bool skipModelCapture(const Settings&,const CaptureInputs& in,const ShadowMapReuse*,const ShadowMapReuse*){
+    return !in.shadows&&!in.actorDue&&!in.demand&&!in.diagnostic;
 }
 inline std::string describe(const Settings& s){
     std::ostringstream o;o<<"preset="<<name(s.preset);

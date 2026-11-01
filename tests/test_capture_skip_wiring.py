@@ -33,7 +33,7 @@ for needle,what in [('if(replayShadows)selectShadowReplays();','selection histor
                     ('if(effects.shadows&&replayShadows){auto proofs','static dedup proofs/cursor'),
                     ('if(effects.shadows&&replayShadows)pointCalculateReplayBounds();','bounds cache resume cursors'),
                     ('renderPointShadows(atmosphere.lights,replaysComplete,actorShadows)','point cube schedule'),
-                    ('if(captureMode==CaptureFresh||!actorShadows)reuse.commit(interval,shadowPasses,matrices[cascade]);else captureDemand=true;','cascade commit')]:
+                    ('if(!environmentReuse){if(splitNear||captureMode==CaptureFresh||!actorShadows)reuse.commit(interval,shadowPasses,matrices[cascade]);else captureDemand=true;}','cascade commit')]:
     once(render,needle,what)
 assert render.count('selectShadowReplays(')==1 and w.count('selectShadowReplays()')==1,'selection runs only from render'
 assert ex.count('finishShadowFate();')==1 and 'finishShadowFate' not in w,'fate frame closes only inside the (gated) selection'

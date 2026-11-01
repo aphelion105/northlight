@@ -150,7 +150,7 @@ Individual settings (Quality / Balanced / Performance):
   BlobShadowStrength    50 / 50 / 50   how dark the game's own round shadow under characters is while the renderer's character shadows are on (0..100; 100 = as the game draws it, 0 = hidden, in between = fainter, or hidden if the game's blend cannot be lightened; BlobShadows=0 hides it independently without overwriting this value; FPS cost not measured: a cached texture check on small draws and two SetTexture calls per blob draw, as in 0.3.192 and earlier; 100 skips it)
   MinSkinnedTriangles   100/150/180    small animated parts cast no shadow
   FarShadowInterval     4 / 5 / 6      distant shadows (beyond ~48 m) are drawn every Nth frame (1..16)
-  NearShadowInterval    1 / 2 / 2      moving parts of the near shadows (characters) every Nth frame (1..16)
+  NearShadowInterval    1 / 2 / 2      near environment shadows every Nth frame; moving casters stay current (1..16)
   LocalLightLimit       48 / 32 / 24   lamps lighting at the same time (8..128; lamps in view first; the GPU budget never lowers it)
   PointShadows          1 / 1 / 1      shadows from selected compact local sources, including supported street lamps, torches and braziers; enabled day and night with source visibility and sunlight fading
   PointShadowRefreshMs  0 / 33 / 33    lamp shadow update interval
@@ -237,13 +237,13 @@ Individual settings (Quality / Balanced / Performance):
   AutoCavity 1 / 0 / 0   See the quality INI for the allowed range.
   AutoCavityStrength 35 / 30 / 25   See the quality INI for the allowed range.
   AutoMaterialOcclusionDistance 8 / 6 / 4   Shared near range for cavity and POM self-shadowing (2..16 yards).
-When both NearShadowInterval and FarShadowInterval are at least 2, frames that
-draw neither shadow also skip copying the character geometry (about 1–1.5 ms
-of CPU per skipped frame). Light and normal frames alternate: the average FPS
-rises, the slowest frames do not get faster.
-Near shadows lag by at most N frames (2: about 33 ms at 60 FPS); the shadow of a
-fast-moving character can appear to step at a low FPS. The benefit is largest
-when FarShadowInterval is a multiple of NearShadowInterval (for example 2 and 4).
+NearShadowInterval retains only the near environment depth between updates.
+Moving characters and other captured model casters, including fine actor maps,
+refresh every frame. Larger intervals save environment rendering work, not
+character capture. They use 4 MiB per active sun/moon source (8 MiB maximum);
+allocation failure falls back to updating near shadows every frame.
+FarShadowInterval still controls distant moving shadows and can cause visible
+stepping there. Use 1 for distant shadows that also refresh every frame.
 With shadows off (Ctrl+Shift+F9), the copying is done only for indirect light.
 The old shadow-experiment.ini applies only with Preset=Quality.
 Every preset turns on the distance selection of character shadows (ActorShadowRadius,

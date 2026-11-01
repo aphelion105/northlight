@@ -51,8 +51,8 @@ checks['unavailable geometry never consumes shadow replays']=all(value(defs['rep
 # Consumers (replayShadows) and schedules/commits (replaysComplete, actorShadows).
 consumers=['if(replayShadows)selectShadowReplays();','if(effects.shadows&&replayShadows)replayBoundsKick();','(replayShadows&&!timedReplay())',
            'if(effects.shadows&&replayShadows){auto proofs','if(effects.shadows&&replayShadows)pointCalculateReplayBounds();']
-schedules=['!reason&&key.valid&&!pull&&!actorLost,shadowDiagnosticCapture!=0,replaysComplete);','if(cascade==0)nearRendered=captureMode==CaptureFresh&&interval>1&&actorShadows;',
-           'if(captureMode==CaptureFresh||!actorShadows)reuse.commit(interval,shadowPasses,matrices[cascade]);else captureDemand=true;',
+schedules=['!reason&&key.valid&&!pull&&!actorLost,shadowDiagnosticCapture!=0,replaysComplete);','if(cascade==0)nearRendered=!environmentReuse&&captureMode==CaptureFresh&&interval>1&&actorShadows;',
+           'if(!environmentReuse){if(splitNear||captureMode==CaptureFresh||!actorShadows)reuse.commit(interval,shadowPasses,matrices[cascade]);else captureDemand=true;}',
            'renderPointShadows(atmosphere.lights,replaysComplete,actorShadows);else pointReady=false;']
 for needle in consumers+schedules:once(body,needle,'render()')
 checks['consumers gated on replayShadows, schedules on replaysComplete']=body.count('replayShadows')==1+len(consumers) and body.count('replaysComplete')==3
@@ -63,8 +63,8 @@ block=render[start:end]
 checks['cascade replay block gated, terrain before, union after']=(render.count('if(actorShadows){')==1 and render.count('} /* actorShadows */')==1
     and code(block).count('{')==code(block).count('}')+1
     and all(x in block for x in ('replayBoundsJoin(); /* 0.3.143: first pointBounds reader */','d->SetPixelShader(replayPS);','auto replayLoop=[&](auto& split)->bool{',
-        'keepReplaySplit(slot,split,','replayProbe(rows,realLoopMs);'))
-    and render.index('"live terrain shadow"')<start and end<render.index('if(!check(quad(1024,1024),"shadow union"))return false;')
+        'keepReplaySplit(slot,split,','replayProbe(rows,matrices[cascade],realLoopMs);'))
+    and render.index('"live terrain shadow"')<start and end<render.index('if(!unionShadow(shadowSurface[slot],shadowScratch,nearEnvironment[source],0,0,0,1024))return false;')
     and render.count('submitReplay(')==2 and all(start<m.start()<end for m in re.finditer(r'submitReplay\(',render)) and # 0.3.209 (task 29): the actor map's loop is the second
     render.count('replayLoop(')==2 and all(start<m.start()<end for m in re.finditer(r'replayLoop\(',render)))
 # The probe moved before the live dump: legal because it never runs on a diagnostic capture frame.
@@ -76,7 +76,7 @@ cand='if(withReplays)for(size_t i=0;i<replays.size();++i){const auto& bounds=rep
 count='if(fresh)pointReplayCount=withReplays?replays.size():0;'
 outside=(pb[:gs]+pb[ge:]).replace(cand,'').replace(count,'')
 checks['point: both replay loops and the count gated on withReplays']=(pb.count(cand)==1 and pb.count(count)==1
-    and gs<pb.index('for(size_t index:pointReplayCandidates[face]){const auto& p=replays[index];')<pb.index('"cube animated draw"')<ge<pb.index('// Union: min(scratch, cached static face) into the cube face.')
+    and gs<pb.index('for(size_t index:pointReplayCandidates[face]){const auto& p=replays[index];')<pb.index('"cube animated draw"')<ge<pb.index('// With no dynamic casters, min(cache, cache) copies the static face')
     and code(pb[gs:ge]).count('{')==code(pb[gs:ge]).count('}')+1
     and re.search(r'\breplays(\[|\.size\(\))',code(outside)) is None)
 # Blob filter: the default strength policy follows actor shadows; explicit hiding is independent.
