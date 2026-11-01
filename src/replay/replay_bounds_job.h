@@ -71,6 +71,7 @@ inline Totals schedule(NorthlightReplayBounds::Cache& cache,std::vector<Item>& i
     nearWalk(1,heavyBudget,[&]{return live()&&cache.canHeavy()&&heavyBudget.operations<heavyBudget.maxOperations;});
     cache.heavyResume(NorthlightReplaySchedule::pass(count,cache.heavyStart(count),
         [&](){return live()&&cache.canHeavy()&&heavyBudget.operations<heavyBudget.maxOperations;},[&](size_t index){return rotate(index,1);}));
+    cache.lendToBuild(buildBudget);
     if(live())cache.continuePendingBuild(buildBudget);
     nearWalk(2,buildBudget,[&]{return live()&&cache.canBuild()&&buildBudget.vertices<buildBudget.maxVertices&&buildBudget.operations<buildBudget.maxOperations;});
     cache.buildResume(NorthlightReplaySchedule::pass(count,cache.buildStart(count),

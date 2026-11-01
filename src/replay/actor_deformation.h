@@ -23,7 +23,8 @@ struct Definition {unsigned reg=0;Four value{};};
 struct Kernel {
     struct Src {std::uint8_t kind=0,relative=0,channel=0,modifier=0,swizzle[4]={};std::uint16_t index=0;std::int16_t definition=-1;};
     struct Op {unsigned code=0;int operands=0;std::uint8_t target=0,mask=0;bool address=false,saturate=false;Src source[3];};
-    enum Evaluator:std::uint8_t {Generic,SingleFirst,SingleIndexFirst,WeightedCommuted,Weighted};
+    // R0 variants accelerate evaluation only; existing envelope/attachment gates stay unchanged.
+    enum Evaluator:std::uint8_t {Generic,SingleFirst,SingleIndexFirst,WeightedCommuted,Weighted,WeightedR0,WeightedR0Commuted};
     std::vector<Op> ops;std::vector<std::uint8_t> cleared;
     unsigned inputMask:17,valid:1,skin:1,evaluator:3; /* skin alone also authorizes the existing envelope. */
     Kernel():inputMask(0x10000u),valid(false),skin(false),evaluator(Generic){}
@@ -55,7 +56,7 @@ inline void buildKernel(Program& p){
     // c0 = (3,1,..) defined, a0 = round(c0.x*v2), three rows of mul/mad x3 from
     // c[31+row+a0] and dp4 with v0 into r1.xyz, r1.w = c0.y.
     bool commuted=false;
-    const bool weightedSkin=[&]{if((p.major!=2&&p.major!=3)||p.positionRegister!=1||p.textureCoordinates||p.operations.size()!=18||p.inputs.size()!=3)return false;
+    const bool weightedSkin=[&]{if((p.major!=2&&p.major!=3)||p.positionRegister>1||p.textureCoordinates||p.operations.size()!=18||p.inputs.size()!=3)return false;
         bool inputs[3]={};for(const auto& i:p.inputs){if(i.reg>=3||i.usage!=i.reg||i.index)return false;inputs[i.reg]=true;}if(!inputs[0]||!inputs[1]||!inputs[2])return false;
         bool def=false;for(const auto& d:p.definitions)if(d.reg==0){if(d.value[0]!=3||d.value[1]!=1)return false;def=true;}if(!def)return false;
         std::size_t at=0;
@@ -64,12 +65,14 @@ inline void buildKernel(Program& p){
             return o.code==code&&o.destination==dst&&o.source[0].token==a&&o.source[0].address==aa&&o.source[1].token==b&&o.source[1].address==ba&&o.source[2].token==c&&o.source[2].address==0;};
         commuted=p.operations[0].source[0].token==0x90e40002;
         if(!match(5,0x800f0000,commuted?0x90e40002:0xa0000000,commuted?0xa0000000:0x90e40002)||!match(46,0xb00f0000,0x80e40000))return false;
-        for(unsigned row=0;row<3;++row){const unsigned r=row?2:0;const std::uint32_t dst=0x800f0000|r,src=0x80e40000|r,matrix=0xa0e4201f+row;
+        for(unsigned row=0;row<3;++row){const unsigned r=row?(p.positionRegister?2:1):0;const std::uint32_t dst=0x800f0000|r,src=0x80e40000|r,matrix=0xa0e4201f+row;
             if(!match(5,dst,0x90550001,matrix,0,0,0xb0550000)||!match(4,dst,matrix,0x90000001,src,0xb0000000)||
                !match(4,dst,matrix,0x90aa0001,src,0xb0aa0000)||!match(4,dst,matrix,0x90ff0001,src,0xb0ff0000)||
-               !match(9,0x80000001|(1u<<(16+row)),src,0x90e40000))return false;}
-        return match(1,0x80080001,0xa0550000)&&at==p.operations.size();}();
-    k.skin=weightedSkin&&!commuted;k.evaluator=weightedSkin?(commuted?Kernel::WeightedCommuted:Kernel::Weighted):Kernel::Generic;
+               !match(9,(0x80000000|p.positionRegister)|(1u<<(16+row)),src,0x90e40000))return false;}
+        return match(1,0x80080000|p.positionRegister,0xa0550000)&&at==p.operations.size();}();
+    // r0 output uses r1 as scratch instead of r2. Its arithmetic is identical;
+    // keep the separately audited envelope eligibility restricted to r1 output.
+    k.skin=weightedSkin&&!commuted&&p.positionRegister==1;k.evaluator=weightedSkin?(p.positionRegister?(commuted?Kernel::WeightedCommuted:Kernel::Weighted):(commuted?Kernel::WeightedR0Commuted:Kernel::WeightedR0)):Kernel::Generic;
     const auto singleSkin=[&]()->std::uint8_t{if(p.major<1||p.major>3||p.positionRegister!=0||p.textureCoordinates||p.operations.size()!=6||p.inputs.size()!=2)return 0;
         bool inputs[2]={};for(const auto& i:p.inputs){if(i.reg>=2||i.usage!=(i.reg?D3DDECLUSAGE_BLENDINDICES:D3DDECLUSAGE_POSITION)||i.index)return 0;inputs[i.reg]=true;}if(!inputs[0]||!inputs[1])return 0;
         const auto match=[](const Operation& o,unsigned code,Word target,Word a,Word b=0){return o.code==code&&o.destination==target&&o.source[0].token==a&&!o.source[0].address&&o.source[1].token==b&&!o.source[1].address&&!o.source[2].token&&!o.source[2].address;};
@@ -230,21 +233,22 @@ template<bool Strict=false,class Float=float> inline bool evaluate(const Program
 // same order), writes and failures, so results are bit-identical; without it
 // (a hand-made program) evaluate() itself.
 // The skinning template written out: evaluate()'s reads, expressions and order.
-template<bool Commuted=false> inline bool evaluateSkin(const Program& p,const Four inputs[16],const float* constants,Four& viewPosition){
+template<bool Commuted=false,bool Deferred=Commuted> inline bool evaluateSkin(const Program& p,const Four inputs[16],const float* constants,Four& viewPosition){
 NO_FUSED_MULTIPLY_ADD
     const bool onlyControl=p.definitions.size()==1&&p.definitions[0].reg==0;
     auto constant=[&](int index,Four& value){if(index<0||index>=256)return false;std::memcpy(value.data(),constants+4*index,16);if(!onlyControl||index==0)for(auto& d:p.definitions)if(d.reg==unsigned(index))value=d.value;return true;};
     const Four& v0=inputs[0];const Four& v1=inputs[1];const Four& v2=inputs[2];Four c0,address;constant(0,c0);
     for(unsigned j=0;j<4;++j){const float value=Commuted?v2[j]*c0[0]:c0[0]*v2[j];if(!std::isfinite(value)||std::fabs(value-std::floor(value)-.5f)<1e-6f)return false;address[j]=std::round(value);}
     auto row=[&](int base,unsigned channel,Four& m){const float a=address[channel];if(!std::isfinite(a)||a<-4096||a>4096)return false;return constant(base+int(a),m);};
-    Four local;Four& result=Commuted?local:viewPosition;
+    // Generic-derived paths publish after all reads, preserving aliased inputs and failed outputs.
+    Four local;Four& result=Deferred?local:viewPosition;
     for(unsigned r=0;r<3;++r){const int base=31+int(r);Four t,m;
         if(!row(base,1,m))return false;for(unsigned j=0;j<4;++j)t[j]=v1[1]*m[j];
         if(!row(base,0,m))return false;for(unsigned j=0;j<4;++j)t[j]=m[j]*v1[0]+t[j];
         if(!row(base,2,m))return false;for(unsigned j=0;j<4;++j)t[j]=m[j]*v1[2]+t[j];
         if(!row(base,3,m))return false;for(unsigned j=0;j<4;++j)t[j]=m[j]*v1[3]+t[j];
         float sum=0;for(unsigned j=0;j<4;++j)sum+=t[j]*v0[j];result[r]=sum;}
-    result[3]=c0[1];if constexpr(Commuted)viewPosition=result;for(unsigned i=0;i<4;++i)if(!std::isfinite(viewPosition[i]))return false;
+    result[3]=c0[1];if constexpr(Deferred)viewPosition=result;for(unsigned i=0;i<4;++i)if(!std::isfinite(viewPosition[i]))return false;
     return std::fabs(viewPosition[3]-1.f)<.0001f;
 }
 inline Four singleSkinControl(const Program& p,const float* constants){
@@ -269,8 +273,10 @@ template<bool Strict=false> inline bool evaluateFast(const Program& p,const Four
     NO_FUSED_MULTIPLY_ADD
     const Kernel& kernel=p.kernel;if(!kernel.valid||kernel.ops.size()!=p.operations.size())return evaluate<Strict>(p,inputs,constants,viewPosition);
     if(kernel.evaluator!=Kernel::Generic){
-        if constexpr(Strict)if(kernel.evaluator!=Kernel::Weighted)return evaluate<true>(p,inputs,constants,viewPosition);
+        if constexpr(Strict)if(!kernel.skin)return evaluate<true>(p,inputs,constants,viewPosition);
         switch(kernel.evaluator){case Kernel::Weighted:if(kernel.skin)return evaluateSkin(p,inputs,constants,viewPosition);break;
+        case Kernel::WeightedR0:return evaluateSkin<false,true>(p,inputs,constants,viewPosition);
+        case Kernel::WeightedR0Commuted:return evaluateSkin<true>(p,inputs,constants,viewPosition);
         case Kernel::WeightedCommuted:return evaluateSkin<true>(p,inputs,constants,viewPosition);
         case Kernel::SingleFirst:case Kernel::SingleIndexFirst:return evaluateSingleSkin(p,inputs,constants,viewPosition);default:break;}}
     Four temp[33],address={};for(auto r:kernel.cleared)temp[r]={};

@@ -26,14 +26,22 @@ constexpr unsigned ReadyClockStride=8,BuildClockStride=32;
 struct AdaptiveTimeBudget {
     static constexpr std::uint64_t Cheap=280000,Heavy=70000,Build=150000,Total=500000;
     // Missing current-pose bounds replay once per cascade and cube face. Give
-    // large captures 2 us per extra packet; cold/heavy work keeps its own caps.
+    // large captures 2 us per extra packet; heavy work keeps its own cap.
     static constexpr std::uint64_t MaxTotal=4000000;
-    std::uint64_t totalLimit=Total,cheapLimit=Cheap;
+    std::uint64_t totalLimit=Total,cheapLimit=Cheap,buildLimit=Build;
     bool reservedClosed=false;
     void reset(size_t packets=0){
         const auto extra=std::min<size_t>(packets>256?packets-256:0,(MaxTotal-Total)/2000)*2000;
-        totalLimit=Total+extra;cheapLimit=Cheap+extra;reservedClosed=false;
+        totalLimit=Total+extra;cheapLimit=Cheap+extra;buildLimit=Build;reservedClosed=false;
     }
+    // After the first cheap/heavy turns, use half their unspent crowd allowance
+    // to warm cold sources. The final cheap turn receives only what remains.
+    void lendToBuild(std::uint64_t readyUsed,std::uint64_t heavyUsed){
+        if(reservedClosed||totalLimit==Total)return;
+        const auto left=readyUsed>=totalLimit||heavyUsed>=totalLimit-readyUsed?0:totalLimit-readyUsed-heavyUsed;
+        buildLimit=std::max(Build,left/2);
+    }
+    size_t buildVertices()const{return size_t(std::min<std::uint64_t>(32768,2048*buildLimit/Build));}
     void finishReservedTurns(std::uint64_t heavyUsed,std::uint64_t buildUsed){
         if(reservedClosed)return;
         reservedClosed=true;

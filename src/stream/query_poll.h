@@ -41,7 +41,8 @@ inline constexpr std::uint64_t kEventFlushWaitNs=16000000;
 // (20, 40, then at most 50 us between polls) and yielding the core in between. The game thread sleeps in
 // its pumped wait meanwhile; a long GPU frame takes a few trips instead of one per driver call.
 template<class Poll,class Clock,class Yield>
-inline HRESULT waitEventQuery(Poll&& poll,Clock&& now,Yield&& yield,unsigned& calls,std::uint64_t budgetNs=2000000){
+inline HRESULT waitEventQuery(Poll&& poll,Clock&& now,Yield&& yield,unsigned& calls,std::uint64_t budgetNs=2000000,std::uint64_t* pendingNs=nullptr){
+    if(pendingNs)*pendingNs=0;
     calls=1;HRESULT hr=poll();
     if(hr!=S_FALSE)return hr;
     const std::uint64_t start=now();std::uint64_t gap=20000,next=start+gap,previous=start;
@@ -56,6 +57,7 @@ inline HRESULT waitEventQuery(Poll&& poll,Clock&& now,Yield&& yield,unsigned& ca
         if(hr!=S_FALSE)break;
         gap=gap<25000?gap*2:50000;next=current+gap;
     }
+    if(pendingNs&&hr>=0){const auto end=now();if(end>=start)*pendingNs=end-start;}
     return hr;
 }
 }

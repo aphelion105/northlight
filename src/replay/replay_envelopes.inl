@@ -67,7 +67,7 @@ private:
     bool memoProtect_=true;
     size_t memoBytes_=0,memoTableBytes_=0,memoNext_=0,memoEntries_=0;
     std::uint64_t entrySerial_=0;
-    static constexpr std::uint64_t HeavyNanoseconds=AdaptiveTimeBudget::Heavy,BuildNanoseconds=AdaptiveTimeBudget::Build,CheapSliceNanoseconds=40000;
+    static constexpr std::uint64_t HeavyNanoseconds=AdaptiveTimeBudget::Heavy,CheapSliceNanoseconds=40000;
     AdaptiveTimeBudget timeBudget_;bool diagnostics_=true;
     size_t bytes_=0;
     std::unordered_multimap<std::uintptr_t,Entry> entries_;
@@ -253,7 +253,7 @@ private:
         void mode(bool next){if(next!=building){charge(Clock::now());building=next;}}
         void slice(){sliced=true;sliceStart=checked;}
         bool sliceExpired()const{return sliced&&delta(checked,sliceStart)>=CheapSliceNanoseconds;}
-        bool expired(){checked=Clock::now();return sliceExpired()||bank()+delta(checked,start)>=(building?BuildNanoseconds:heavy?HeavyNanoseconds:cache.timeBudget_.cheapLimit);}
+        bool expired(){checked=Clock::now();return sliceExpired()||bank()+delta(checked,start)>=(building?cache.timeBudget_.buildLimit:heavy?HeavyNanoseconds:cache.timeBudget_.cheapLimit);}
         void evaluation(Entry& e,WorkInfo* metadata,Stage phase,Status& status,size_t groupCount,size_t operationCount){
             evaluated=&e;info=metadata;stage=phase;result=&status;groups=groupCount;operations=operationCount;evaluationStart=checked;
         }
@@ -337,6 +337,10 @@ public:
     size_t pendingBuildVertices()const{return pending_?pending_->vertex:0;}
     size_t pendingBuildIndices()const{return pending_?pending_->index:0;}
     void settleClock(){flushFast(BoundsClock::now());}
+    void lendToBuild(Budget& budget){
+        settleClock();timeBudget_.lendToBuild(readyNanoseconds_,heavyNanoseconds_);
+        budget.maxVertices=std::max(budget.maxVertices,timeBudget_.buildVertices());
+    }
     void finishReservedTurnsAndLend(){
         settleClock();
         timeBudget_.finishReservedTurns(heavyNanoseconds_,buildNanoseconds_);
@@ -349,11 +353,11 @@ public:
     double borrowedMicroseconds()const{return double(timeBudget_.lent())/1000.;}
     bool canReady()const{return readyCalls_<4096&&readyNanoseconds_<timeBudget_.cheapLimit;}
     bool canHeavy()const{return !timeBudget_.reservedClosed&&heavyCalls_<2048&&heavyNanoseconds_<HeavyNanoseconds;}
-    bool canBuild()const{return !timeBudget_.reservedClosed&&buildCalls_<2048&&buildNanoseconds_<BuildNanoseconds;}
+    bool canBuild()const{return !timeBudget_.reservedClosed&&buildCalls_<2048&&buildNanoseconds_<timeBudget_.buildLimit;}
     bool canWork()const{return canReady()||canBuild();}
     // Time of a phase (0 cheap, 1 heavy, 2 build) spent so far this frame and its limit: the near walk of the bounds job takes half of what is left.
     std::uint64_t phaseNanoseconds(unsigned phase)const{return phase==0?readyNanoseconds_:phase==1?heavyNanoseconds_:buildNanoseconds_;}
-    std::uint64_t phaseLimit(unsigned phase)const{return phase==0?timeBudget_.cheapLimit:phase==1?HeavyNanoseconds:BuildNanoseconds;}
+    std::uint64_t phaseLimit(unsigned phase)const{return phase==0?timeBudget_.cheapLimit:phase==1?HeavyNanoseconds:timeBudget_.buildLimit;}
     double readyMilliseconds()const{return double(readyNanoseconds_)/1000000.;}
     double heavyMilliseconds()const{return double(heavyNanoseconds_)/1000000.;}
     double classifyMilliseconds()const{return double(classifyNanoseconds_)/1000000.;}

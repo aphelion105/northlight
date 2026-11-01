@@ -19,6 +19,18 @@ void replayAttribution(){
     p.record(511,1);assert(p.calls==1&&p.maxId==511);
 }
 void waitAttribution(){
+    // Operational GPU attribution excludes the queue trip, immediate answers
+    // and failed queries; it also works without QueryWaitProfile diagnostics.
+    std::uint64_t pending=99,clock=1000000;unsigned calls=0;
+    const auto now=[&]{clock+=1000;return clock;};
+    assert(NorthlightStream::waitEventQuery([]{return S_OK;},now,[]{},calls,2000000,&pending)==S_OK&&pending==0&&clock==1000000);
+    assert(NorthlightStream::waitEventQuery([&]{return clock>=1400000?S_OK:S_FALSE;},now,[]{},calls,2000000,&pending)==S_OK);
+    assert(pending>=400000&&pending<452000);
+    clock=0;
+    assert(NorthlightStream::waitEventQuery([]{return S_FALSE;},now,[]{},calls,2000000,&pending)==S_FALSE&&pending>=2000000&&pending<2002000);
+    clock=0;
+    assert(NorthlightStream::waitEventQuery([&]{return clock>=400000?E_FAIL:S_FALSE;},now,[]{},calls,2000000,&pending)==E_FAIL&&pending==0);
+    assert(NorthlightStream::waitEventQuery([]{return S_FALSE;},[]{return std::uint64_t(0);},[]{},calls,2000000,&pending)==S_FALSE&&pending==0);
     NorthlightStream::QueryWaitProfile s;
     s.record(1,false,true,S_OK,780,100,200,800,1000);
     assert(s.calls==1&&s.flush==1&&!s.errors&&!s.pending&&!s.unissued&&s.waitNs==780);

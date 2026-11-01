@@ -431,7 +431,7 @@ class Device final : public GuardedMirrorDevice {
     std::unique_ptr<NorthlightGpuFrameTimer> gpuTimer;NorthlightGpuBudget::Controller gpuBudget;std::int64_t gpuBudgetQpc=0;double gpuBudgetLastMs=0;
     // task 45: the GPU-bound signal (smoothed per-frame latency wait) and the CPU budget (ActorShadowCpuMs). cpuEffectsQpc: this frame's effects span in QPC ticks
     // (0 = the effects did not run), always measured: two QueryPerformanceCounter reads per applying frame; unlike cpuEffects it is not reset by the sample logging.
-    NorthlightGpuBudget::WaitSignal gpuBound,replayWait;std::uint64_t replayWaitPrevNs=0,replaySkipPrev=0;std::int64_t boundQpc=0,cpuBudgetQpc=0,cpuEffectsQpc=0;NorthlightGpuBudget::Controller cpuBudget;double cpuBudgetLastMs=0;bool boundKnown=false,gpuLimited=true,cpuLimited=true,replayKnown=false;
+    NorthlightGpuBudget::WaitSignal gpuBound,replayWait;std::uint64_t replayWaitPrevNs=0,replaySkipPrev=0,eventGpuWaitPrevNs=0;std::int64_t boundQpc=0,cpuBudgetQpc=0,cpuEffectsQpc=0;NorthlightGpuBudget::Controller cpuBudget;double cpuBudgetLastMs=0;bool boundKnown=false,gpuLimited=true,cpuLimited=true,replayKnown=false;
     std::unique_ptr<NorthlightMemoryDiagnostics::Sampler> memoryDiagnostics; /* also feeds the functional memory guard */
     NorthlightMemoryGuard::Guard memoryGuard;
     IDirect3DTexture9 *scene = nullptr, *depthTex = nullptr, *ao = nullptr, *aoRaw = nullptr;
@@ -3177,7 +3177,7 @@ public:
         if(spellOn){spell.reset();spellSync();spellQueryN=0;spellQueryUnknown=false;spellTexFor=nullptr;spellTexKey=nullptr;spellFade.reset();} /* task 34: no state block, upload buffer or surface may outlive the device state */
         resetMark(1);
         frameIntervals.reset();frameCost.reset();stallFrames.reset();mirrorResources.queryProfile={};backDescKnown=false;backSurface=nullptr;
-        NorthlightParticleTextures::cache().clear();NorthlightMaterialTextures::cache().clear();NorthlightTrackedBuffers::invalidateAll();gpuProfile->reset();gpuSceneProfile->reset();if(materialProfile)materialProfile->reset();gpuFrameStarted=gpuSceneSplit=gpuEffectsSplit=false;gpuTimer->reset();gpuBudgetQpc=0;boundQpc=0;cpuBudgetQpc=0;cpuEffectsQpc=0;gpuBound.reset();replayWait.reset();replaySkipPrev=0;replayWaitPrevNs=0;drop(latencyQuery);latencyPending=false;latencyFailed=false;resetMark(2);
+        NorthlightParticleTextures::cache().clear();NorthlightMaterialTextures::cache().clear();NorthlightTrackedBuffers::invalidateAll();gpuProfile->reset();gpuSceneProfile->reset();if(materialProfile)materialProfile->reset();gpuFrameStarted=gpuSceneSplit=gpuEffectsSplit=false;gpuTimer->reset();gpuBudgetQpc=0;boundQpc=0;cpuBudgetQpc=0;cpuEffectsQpc=0;gpuBound.reset();replayWait.reset();replaySkipPrev=0;replayWaitPrevNs=0;eventGpuWaitPrevNs=0;drop(latencyQuery);latencyPending=false;latencyFailed=false;resetMark(2);
         releaseResources();resetMark(3);
         if(world)world->reset();resetMark(4);
         if(water)water->reset();if(celestialDiscs)celestialDiscs->reset();if(shadowBlobs)shadowBlobs->reset(); weatherDetect.reset();weatherSample={}; /* 0.3.198 (rain) */failed=false;latchDrawGates();resetMark(5);
@@ -3337,19 +3337,25 @@ public:
     // 0.3.200 (gpu budget): once per frame: a finished timer reading (if any) updates the controller and the world's level; a level change is
     // logged (the first 32 always, later with Diagnostics), the state on RenderProfile sample frames. GpuBudgetMs=0: level 0, nothing measured.
     void gpuBudgetFrame(){
-        // task 45: this frame's GPU latency wait (the previous Present's), smoothed per frame. Known only with the latency limit (command stream, framesAhead>=2);
+        // Present latency plus pending EVENT/FLUSH time, smoothed per frame. Known only with the latency limit (command stream, framesAhead>=2);
         // unknown: the budgets lighten as before 45. Not GPU-bound = the CPU is the limit, so the GPU budget buys nothing and the CPU budget acts.
         const std::int64_t boundNow=qpcNow();
         const float boundDt=boundQpc&&cpuFrequency.QuadPart>0?float(double(boundNow-boundQpc)/double(cpuFrequency.QuadPart)):0.f;
-        if(limitGpuLatency&&!latencyFailed)gpuBound.update(float(latencyLastMs),boundDt);else gpuBound.reset();
+        // gxFixLag can finish the GPU fence in EVENT/FLUSH before Present ever
+        // waits. Count that pending interval, not the whole queue round trip.
+        const auto eventGpuNs=streamStats?NorthlightStream::get(streamStats->eventGpuWaitNs):0;
+        const float eventGpuMs=boundQpc&&eventGpuNs>=eventGpuWaitPrevNs?float(double(eventGpuNs-eventGpuWaitPrevNs)*1e-6):0.f;
+        eventGpuWaitPrevNs=eventGpuNs;
+        const bool boundPrimed=boundQpc!=0;
+        if(limitGpuLatency&&!latencyFailed)gpuBound.update(float(latencyLastMs)+eventGpuMs,boundDt);else gpuBound.reset();
         boundQpc=boundNow;
         boundKnown=limitGpuLatency&&!latencyFailed;gpuLimited=!boundKnown||gpuBound.bound();
-        // The game thread's wait for this thread (Present + backpressure), from the stream's relaxed atomic counters: when the game never waits, this thread is not what limits the frame.
+        // The game thread's wait for this thread (Present + backpressure + EVENT queue wait), from the stream's relaxed atomic counters: when the game never waits, this thread is not what limits the frame.
         replayKnown=streamStats!=nullptr;
-        if(replayKnown){const std::uint64_t waitNs=NorthlightStream::get(streamStats->presentNs)+NorthlightStream::get(streamStats->backpressureNs);
+        if(replayKnown){const std::uint64_t waitNs=NorthlightStream::get(streamStats->presentNs)+NorthlightStream::get(streamStats->backpressureNs)+NorthlightStream::get(streamStats->eventReplayWaitNs);
             // A frame the replay skipped (StreamFrameSkip: it fell two frames behind, so the game did not have to wait) is a replay-bound frame too: it counts as a full capped wait.
-            const std::uint64_t skips=NorthlightStream::get(streamStats->skippedFrames);const bool skippedNow=replaySkipPrev&&skips>replaySkipPrev;replaySkipPrev=skips;
-            replayWait.update(skippedNow?NorthlightGpuBudget::MaxWaitMs:replayWaitPrevNs&&waitNs>=replayWaitPrevNs?float(double(waitNs-replayWaitPrevNs)*1e-6):0.f,boundDt);replayWaitPrevNs=waitNs;}
+            const std::uint64_t skips=NorthlightStream::get(streamStats->skippedFrames);const bool skippedNow=boundPrimed&&skips>replaySkipPrev;replaySkipPrev=skips;
+            replayWait.update(skippedNow?NorthlightGpuBudget::MaxWaitMs:boundPrimed&&waitNs>=replayWaitPrevNs?float(double(waitNs-replayWaitPrevNs)*1e-6):0.f,boundDt);replayWaitPrevNs=waitNs;}
         else replayWait.reset();
         cpuLimited=(!replayKnown||replayWait.bound())&&(!boundKnown||!gpuBound.bound());
         const unsigned budget=world?world->gpuBudgetMs():0;
@@ -3361,7 +3367,7 @@ public:
             if(gpuBudget.level!=before&&(gpuBudget.changes<=32||diagnostics()))
                 logf("GPUBUDGET level %u -> %u smoothed=%.3f budget=%u changes=%u",before,gpuBudget.level,double(gpuBudget.smoothed),budget,gpuBudget.changes);}
         if(limitGpuLatency&&sampled()&&NorthlightRenderThreadProbe::profiling()){logf("CSTREAM GPU latency waits=%llu waitMs=%.1f",(unsigned long long)latencyWaits,latencyWaitMs);latencyWaits=0;latencyWaitMs=0;}
-        if(sampled()&&NorthlightRenderThreadProbe::profiling())logf("GPUBUDGET ms=%.3f smoothed=%.3f budget=%.1f level=%u gpuWait=%.2f gpuBound=%d",gpuBudgetLastMs,double(gpuBudget.smoothed),double(budget),gpuBudget.level,double(gpuBound.smoothed),boundKnown?int(gpuBound.bound()):-1);
+        if(sampled()&&NorthlightRenderThreadProbe::profiling())logf("GPUBUDGET ms=%.3f smoothed=%.3f budget=%.1f level=%u gpuWait=%.2f gpuBound=%d eventWait=%.2f",gpuBudgetLastMs,double(gpuBudget.smoothed),double(budget),gpuBudget.level,double(gpuBound.smoothed),boundKnown?int(gpuBound.bound()):-1,double(eventGpuMs));
     }
     // task 45: ActorShadowCpuMs. The effects span of this frame (renderEffects from the applied check to its return: the world render incl. the actor shadow replay,
     // job joins and the effect passes' D3D calls; NOT the capture of the frame's draws, which is spread over per-draw hooks and only timed on sample frames) feeds a

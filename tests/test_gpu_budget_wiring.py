@@ -50,7 +50,7 @@ reset=rc[rc.index('HRESULT STDMETHODCALLTYPE Reset(D3DPRESENT_PARAMETERS* pp)'):
 # Intervening profiler cleanup is valid; query owners must still retire before the device.
 checks['renderer: the timer is created, reset before a device Reset and destroyed with the profiler']=(
     'gpuTimer=std::make_unique<NorthlightGpuFrameTimer>(ext);' in constructor
-    and in_order(reset,'gpuProfile->reset();','gpuSceneProfile->reset();','materialProfile->reset();','gpuFrameStarted=gpuSceneSplit=gpuEffectsSplit=false;','gpuTimer->reset();','HRESULT hr=hdr.settings.requested?hdr.reset(real,ext,pp):ext->Reset(pp);')
+    and in_order(reset,'gpuProfile->reset();','gpuSceneProfile->reset();','materialProfile->reset();','gpuFrameStarted=gpuSceneSplit=gpuEffectsSplit=false;','gpuTimer->reset();','HRESULT hr=ext->Reset(pp);')
     and in_order(destructor,'gpuProfile.reset();','gpuSceneProfile.reset();','materialProfile.reset();','gpuTimer.reset();','ext->Release();'))
 fin=rc[rc.index('void finishFrameImpl() {'):]
 gb=rc[rc.index('void gpuBudgetFrame(){'):rc.index('void finishFrameImpl() {')]
@@ -61,7 +61,7 @@ checks['renderer: GpuBudgetMs=0 resets the controller and sets level 0 before an
 checks['renderer: only a finished reading updates the controller (dt from the previous reading), the level goes to the world']=(
     'if(gpuTimer&&gpuTimer->poll(ms)){' in gb and 'world->setGpuBudgetLevel(gpuBudget.update(float(budget),float(ms),dt,gpuLimited));' in gb)
 checks['renderer: GPUBUDGET line on RenderProfile sample frames, level changes logged (first 32, then with Diagnostics)']=(
-    'if(sampled()&&NorthlightRenderThreadProbe::profiling())logf("GPUBUDGET ms=%.3f smoothed=%.3f budget=%.1f level=%u gpuWait=%.2f gpuBound=%d"' in gb
+    'if(sampled()&&NorthlightRenderThreadProbe::profiling())logf("GPUBUDGET ms=%.3f smoothed=%.3f budget=%.1f level=%u gpuWait=%.2f gpuBound=%d eventWait=%.2f"' in gb
     and 'if(gpuBudget.level!=before&&(gpuBudget.changes<=32||diagnostics()))' in gb and 'logf("GPUBUDGET level %u -> %u' in gb)
 
 # world: level gated, full level unchanged
@@ -89,14 +89,14 @@ checks['settings: GpuBudgetMs (0..20, presets 4/3/2, default 4)']=(
 
 # task 45: GPU-bound gate and the CPU budget (ActorShadowCpuMs)
 wl=fp.src('world_shadow_experiment.inl').read_text();wlc=code(wl)
-checks['task 45 gate: the signal is the previous Present\'s latency wait, kept apart from the logging counters; known only with the latency limit']=(
+checks['task 45 gate: the signal includes EVENT and Present latency waits, kept apart from the logging counters; known only with the latency limit']=(
     'latencyLastMs=0;' in rc and 'latencyLastMs=double(qpcNow()-t0)*perMs;++latencyWaits;latencyWaitMs+=latencyLastMs;' in rc
     and 'boundKnown=limitGpuLatency&&!latencyFailed;gpuLimited=!boundKnown||gpuBound.bound();' in gb
     and 'cpuLimited=(!replayKnown||replayWait.bound())&&(!boundKnown||!gpuBound.bound());' in gb
     and 'NorthlightStream::get(streamStats->presentNs)+NorthlightStream::get(streamStats->backpressureNs)' in gb and 'replayKnown=streamStats!=nullptr;' in gb
     and 'NorthlightStream::get(streamStats->skippedFrames)' in gb and 'replayWait.update(skippedNow?NorthlightGpuBudget::MaxWaitMs:' in gb
     and 'target->streamStats=&stream->streamCore().q.stats;' in r
-    and 'gpuBound.update(float(latencyLastMs),' in gb and gb.index('gpuBound.update(')<gb.index('const unsigned budget=world?world->gpuBudgetMs():0;'))
+    and 'gpuBound.update(float(latencyLastMs)+eventGpuMs,' in gb and gb.index('gpuBound.update(')<gb.index('const unsigned budget=world?world->gpuBudgetMs():0;'))
 checks['task 45 gate: BoundWaitMs and the lighten parameter default to the old behaviour']=(
     'constexpr float BoundWaitMs=.5f;' in b and 'unsigned update(float budgetMs,float ms,float dt,bool lighten=true){' in b
     and 'over=lighten&&smoothed>budgetMs?over+dt:0.f;' in code(b) and 'under=smoothed<budgetMs*UpFraction||!lighten?under+dt:0.f;' in code(b))

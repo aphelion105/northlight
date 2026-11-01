@@ -77,7 +77,7 @@ static void queryPump(){
         pumping->target->releaseFirst.store(true);
     }else if(pumping->target->secondEntered.load())pumping->target->releaseSecond.store(true);
 }
-static void scenario(bool baseline,bool gated,const char* name,bool endSeen,bool reset,bool cached,HRESULT status,bool nested,bool nullPayload=false,bool invalidPayload=false,bool falsePayload=false,bool dropFinal=false,BoundaryFault fault=BoundaryFault::None,bool noIssue=false,DWORD flags=D3::kGetDataFlush,unsigned pendingFlushCalls=0){
+static void scenario(bool baseline,bool gated,const char* name,bool endSeen,bool reset,bool cached,HRESULT status,bool nested,bool nullPayload=false,bool invalidPayload=false,bool falsePayload=false,bool dropFinal=false,BoundaryFault fault=BoundaryFault::None,bool noIssue=false,DWORD flags=D3::kGetDataFlush,unsigned pendingFlushCalls=0,bool profiling=true){
     gTrace.clear();QueryRig rig;auto* t=rig.target;auto& core=rig.device->streamCore();
     IDirect3DQuery9* query=nullptr;CHECK(rig.device->CreateQuery(8,&query)==D3D_OK);rig.sync();
     auto* proxy=static_cast<StreamQuery*>(query);t->proxy=proxy;t->status=status;t->publishStatus=status;t->publishOnExit=cached;t->falseValue=falsePayload;t->fault=fault;t->core=&core;t->pendingFlushCalls=pendingFlushCalls;
@@ -91,7 +91,7 @@ static void scenario(bool baseline,bool gated,const char* name,bool endSeen,bool
     futureBeforeDraw=nested&&!endSeen;
     if(!futureBeforeDraw)rig.draw();
     core.q.publish();
-    core.timing=true;
+    core.timing=profiling;
     if(nested&&!dropFinal)query->AddRef();
     pumping=&rig;pumpingQuery=query;nestedActions=nested;finalRelease=dropFinal;pumpedOnce=false;nestedResult=0;nestedReset=0;
     pumpHook=&queryPump;
@@ -125,8 +125,12 @@ static void scenario(bool baseline,bool gated,const char* name,bool endSeen,bool
     if((bypass&&cached)||fault==BoundaryFault::MissingInner)CHECK(t->driverFlushCalls==0);
     else CHECK(t->driverFlushCalls>0&&t->driverAfterSecond==!bypass);
     const auto profile=core.queryFrame[8];
-    CHECK(profile.calls==1&&profile.errors==unsigned(expected<0)&&profile.pending==unsigned(expected==S_FALSE));
+    CHECK(profile.calls==unsigned(profiling)&&profile.errors==unsigned(profiling&&expected<0)&&profile.pending==unsigned(profiling&&expected==S_FALSE));
     CHECK(profile.beforeNs+profile.replayNs+profile.afterNs==profile.tripNs);
+    if(expected>=0&&!noIssue&&flags==D3::kGetDataFlush){
+        CHECK(get(core.q.stats.eventReplayWaitNs)>0);
+        CHECK((get(core.q.stats.eventGpuWaitNs)>0)==bool(expected==S_FALSE||pendingFlushCalls));
+    }else CHECK(get(core.q.stats.eventReplayWaitNs)==0&&get(core.q.stats.eventGpuWaitNs)==0);
     if(nested)CHECK(nestedResult==D3DERR_INVALIDCALL&&nestedReset==D3DERR_INVALIDCALL);
     std::printf("EVENT_BOUNDARY case=%s baseline=%u bypassedLaterDraw=%u driverFlushCalls=%u result=%d beforeReplayMs=%.4f replayMs=%.4f afterReplayMs=%.4f\n",
         name,unsigned(baseline),unsigned(bypass),t->driverFlushCalls,int(result),double(profile.beforeNs)/1e6,double(profile.replayNs)/1e6,double(profile.afterNs)/1e6);
@@ -185,6 +189,8 @@ int main(int argc,char** argv){
     scenario(baseline,gated,"dead-at-boundary",false,false,false,D3D_OK,false,false,false,false,false,BoundaryFault::Dead);
     scenario(baseline,gated,"missing-inner-at-boundary",false,false,false,D3D_OK,false,false,false,false,false,BoundaryFault::MissingInner);
     scenario(baseline,gated,"invalid-flags",true,false,false,D3D_OK,false,false,false,false,false,BoundaryFault::None,false,D3::kGetDataFlush|4);
+    scenario(baseline,gated,"unprofiled-gpu-wait",true,false,false,D3D_OK,false,false,false,false,false,BoundaryFault::None,false,D3::kGetDataFlush,80,false);
+    scenario(baseline,gated,"unprofiled-replay-wait",true,false,false,D3D_OK,false,false,false,false,false,BoundaryFault::None,false,D3::kGetDataFlush,0,false);
     idleScenario(baseline,false);idleScenario(baseline,true);
     textureExpressReadback();checkClean();
     std::puts("PASS exact EVENT boundary wait: deterministic later-draw dependency, ordered fallback, payload/error/pending, reset, nested reissue and extra-reference release; no game/GPU");

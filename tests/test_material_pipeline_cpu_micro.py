@@ -12,7 +12,7 @@ helper=helper.replace('struct MaterialCaptureStateTestAccess {','struct Material
 (out/'material_bindings_reference.h').write_bytes(('#pragma once\n'+helper).encode())
 actor=fp.src('actor_deformation.h').read_text()
 poison=actor[actor.index('inline bool worldPositionsPrepared'):actor.index('// One currently referenced vertex')]
-for name in ['worldPositionsPrepared','textureUVsPrepared','worldPositions','textureUVs']:
+for name in ['worldPositionsPrepared','textureUVsPrepared','worldPositions','textureUVs','transientBindings']:
     poison=re.sub(r'\b'+name+r'\(',name+'Poison(',poison)
 assert poison.count('Four inputs[16];if(clearInputs)')==4
 poison=poison.replace('Four inputs[16];if(clearInputs)','Four inputs[16];std::memset(inputs,0xa5,sizeof inputs);if(clearInputs)')

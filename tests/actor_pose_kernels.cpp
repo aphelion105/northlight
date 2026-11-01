@@ -23,7 +23,7 @@ static Old::Program legacy(const Program& p){
 template<bool Strict>static void compare(const Program& p,const Old::Program& old,const Four input[16],const float* bank,bool alias){
     Four a={17,19,23,29},b=a,oracle=a;const bool ra=Old::evaluateFast<Strict>(old,input,bank,a),rb=evaluateFast<Strict>(p,input,bank,b),ro=evaluate<Strict>(p,input,bank,oracle);
     assert(ra==rb&&ra==ro);assert(p.kernel.skin==old.kernel.skin);if(ra){assert(!std::memcmp(a.data(),b.data(),16)&&!std::memcmp(a.data(),oracle.data(),16));++successes;}else ++failures;
-    if(p.kernel.singleSkin()||p.kernel.commutedSkin()){assert(!std::memcmp(a.data(),b.data(),16));++newOutputChecks;}
+    if(p.kernel.singleSkin()||p.kernel.commutedSkin()||(p.kernel.evaluator==Kernel::WeightedR0||p.kernel.evaluator==Kernel::WeightedR0Commuted)){assert(!std::memcmp(a.data(),b.data(),16));++newOutputChecks;}
     if constexpr(!Strict)if(p.kernel.singleSkin()){Four result={17,19,23,29};const auto control=singleSkinControl(p,bank);const bool rc=evaluateSingleSkin<true>(p,input,bank,result,&control);assert(rc==ra&&!std::memcmp(a.data(),result.data(),16));++preparedChecks;
         Four inNew[2]={input[0],input[1]},inOld[16];std::memcpy(inOld,input,sizeof inOld);const bool alias=evaluateSingleSkin<true>(p,inNew,bank,inNew[0],&control),oldAlias=Old::evaluateFast(old,inOld,bank,inOld[0]);assert(alias==oldAlias&&!std::memcmp(inNew[0].data(),inOld[0].data(),16));++preparedChecks;}
     ++comparisons;strictChecks+=Strict;
@@ -53,22 +53,23 @@ static void sample(const Program& p,unsigned count){
         compare<false>(p,old,input,bank,n%8==0);compare<true>(p,old,input,bank,n%8==0);}
 }
 static void mutations(const Program& original){
-    assert(original.kernel.singleSkin()||original.kernel.commutedSkin());unsigned rejected=0;
+    assert(original.kernel.evaluator!=Kernel::Generic);unsigned rejected=0;
     for(size_t i=0;i<original.operations.size();++i)for(unsigned field=0;field<8;++field){Program p=original;auto& o=p.operations[i];
         if(!field)o.code^=128;else if(field==1)o.destination^=0x00100000;else{auto& source=o.source[(field-2)/2];(field&1?source.address:source.token)^=1;}
-        buildKernel(p);assert(!p.kernel.singleSkin()&&!p.kernel.commutedSkin());++rejected;}
+        buildKernel(p);assert(p.kernel.evaluator==Kernel::Generic);++rejected;}
     std::printf("ACTOR_KERNEL_SIGNATURE_PASS mutations=%u single=%u commuted=%u\n",rejected,unsigned(original.kernel.singleSkin()),unsigned(original.kernel.commutedSkin()));
 }
 __attribute__((noinline))static bool oldCall(const Old::Program& p,const Four* in,const float* bank,Four& out){return Old::evaluateFast(p,in,bank,out);}
 __attribute__((noinline))static bool newCall(const Program& p,const Four* in,const float* bank,Four& out){return evaluateFast(p,in,bank,out);}
 static void benchmark(const Program& p,const char* name){
     const auto old=legacy(p);float bank[1024]={};for(unsigned r=0;r<256;++r){bank[r*4]=1;bank[r*4+1]=.5f;bank[r*4+2]=.25f;bank[r*4+3]=1;}bank[0]=3;bank[1]=1;
-    std::vector<std::array<Four,16>> inputs(8192);for(unsigned i=0;i<inputs.size();++i){inputs[i][0]={float(i%19),float(i%13),float(i%7),1};inputs[i][1]={.25f,.25f,.25f,.25f};inputs[i][2]={0,1,2,3};if(p.kernel.singleSkin())inputs[i][1]={float(i%64),0,0,0};}
+    std::vector<std::array<Four,16>> inputs(8192);for(unsigned i=0;i<inputs.size();++i){inputs[i][0]={float(i%19),float(i%13),float(i%7),1};inputs[i][1]={.25f,.25f,.25f,.25f};inputs[i][2]={0,1,2,3};
+        for(const auto& binding:p.inputs)if(binding.usage==D3DDECLUSAGE_BLENDINDICES){const float scale=p.major==1?1.f/255.f:1.f;inputs[i][binding.reg]={float(i%64)*scale,float((i+1)%64)*scale,float((i+2)%64)*scale,float((i+3)%64)*scale};}}
     volatile float checksum=0;std::vector<double> before,after;
     for(unsigned round=0;round<9;++round)for(unsigned order=0;order<2;++order){const bool optimized=(round+order)&1;const auto start=std::chrono::steady_clock::now();
         for(unsigned draw=0;draw<16;++draw){float total=0;for(const auto& input:inputs){Four out;const bool ok=optimized?newCall(p,input.data(),bank,out):oldCall(old,input.data(),bank,out);assert(ok);total+=out[0];}checksum=checksum+total;}
         const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()/16;(optimized?after:before).push_back(ms);}
-    assert(std::isfinite(checksum));std::sort(before.begin(),before.end());std::sort(after.begin(),after.end());std::printf("ACTOR_KERNEL_BENCH name=%s vertices=8192 operations=%zu oldMedianMs=%.6f newMedianMs=%.6f changePercent=%.3f oldMinMs=%.6f oldMaxMs=%.6f newMinMs=%.6f newMaxMs=%.6f\n",name,p.operations.size(),before[4],after[4],100*(after[4]/before[4]-1),before.front(),before.back(),after.front(),after.back());
+    assert(std::isfinite(checksum));std::sort(before.begin(),before.end());std::sort(after.begin(),after.end());std::printf("ACTOR_KERNEL_BENCH name=%s SM%u vertices=8192 operations=%zu oldMedianMs=%.6f newMedianMs=%.6f changePercent=%.3f oldMinMs=%.6f oldMaxMs=%.6f newMinMs=%.6f newMaxMs=%.6f\n",name,p.major,p.operations.size(),before[4],after[4],100*(after[4]/before[4]-1),before.front(),before.back(),after.front(),after.back());
 }
 __attribute__((noinline))static bool oldBounds(const Old::Program& program,const NorthlightDrawSnapshot::Mesh& mesh,const PreparedBindings& prepared,const float* constants,float* low,float* high){
     for(unsigned vertex=0;vertex<mesh.vertexCount;++vertex){Four input[16]={},view;for(const auto& b:prepared.bindings){const auto& s=mesh.streams[b.element.Stream];if(!decodeElement(s.bytes.data()+size_t(vertex)*s.stride+b.element.Offset,b.element.Type,input[b.input.reg]))return false;}
@@ -91,14 +92,16 @@ int main(int argc,char** argv){
     // VS1 retains its distinct floor addressing. Current-pose definitions may override any palette row.
     auto sm1=targets[0].second;sm1.major=1;for(auto& o:sm1.operations){if(o.code==46)o.code=1;for(auto& s:o.source)s.address=0;}buildKernel(sm1);assert(sm1.kernel.singleSkin());sample(sm1,4096);batchBounds(sm1);
     auto overridden=targets[0].second;overridden.definitions.push_back({31,{2,3,4,5}});overridden.definitions.push_back({0,{2,1,0,0}});buildKernel(overridden);sample(overridden,4096);batchBounds(overridden);
-    FILE* f=std::fopen(argv[1],"rb");assert(f);uint32_t bytes;unsigned programs=0,compiled=0,single=0,commuted=0,oldWeighted=0,majors[4]={};
+    FILE* f=std::fopen(argv[1],"rb");assert(f);uint32_t bytes;unsigned programs=0,compiled=0,single=0,commuted=0,oldWeighted=0,newWeighted=0,majors[4]={};
     while(std::fread(&bytes,4,1,f)==1){assert(bytes%4==0&&bytes<262145);std::vector<Word> words(bytes/4);assert(std::fread(words.data(),1,bytes,f)==bytes);++programs;
         Program p;Old::Program q;const bool current=compile(words.data(),words.size(),p),prior=Old::compile(words.data(),words.size(),q);assert(current==prior);if(!current)continue;++compiled;++majors[p.major];assert(p.kernel.skin==q.kernel.skin);
-        single+=bool(p.kernel.singleSkin());commuted+=p.kernel.commutedSkin();oldWeighted+=p.kernel.skin;sample(p,64);
+        single+=bool(p.kernel.singleSkin());commuted+=p.kernel.commutedSkin();oldWeighted+=p.kernel.skin;sample(p,64);if(p.kernel.evaluator==Kernel::WeightedR0||p.kernel.evaluator==Kernel::WeightedR0Commuted){++newWeighted;mutations(p);}
         if(p.kernel.commutedSkin()&&std::none_of(targets.begin(),targets.end(),[](const auto& t){return t.second.kernel.commutedSkin();})){mutations(p);targets.push_back({"weighted-sm2-commuted",p});}
-        if(p.kernel.skin&&std::none_of(targets.begin(),targets.end(),[](const auto& t){return t.second.kernel.skin;}))targets.push_back({"weighted-control",p});}
-    std::fclose(f);assert(programs>1000&&compiled>1000&&single&&commuted&&oldWeighted);
-    std::printf("ACTOR_KERNEL_CORPUS_PASS programs=%u compiled=%u SM1=%u SM2=%u SM3=%u single=%u commuted=%u oldWeighted=%u unchangedBoundsEligibility=1 metadataSizeUnchanged=1\n",programs,compiled,majors[1],majors[2],majors[3],single,commuted,oldWeighted);
+        if(p.kernel.skin&&std::none_of(targets.begin(),targets.end(),[](const auto& t){return t.second.kernel.skin;}))targets.push_back({"weighted-control",p});
+        const bool boneInputs=std::any_of(p.inputs.begin(),p.inputs.end(),[](const auto& input){return input.usage==D3DDECLUSAGE_BLENDINDICES;});
+        if(p.skinned&&boneInputs&&(p.kernel.evaluator==Kernel::Generic||p.kernel.evaluator==Kernel::WeightedR0||p.kernel.evaluator==Kernel::WeightedR0Commuted)&&std::none_of(targets.begin(),targets.end(),[&](const auto& t){return t.second.skinned&&t.second.major==p.major&&t.second.operations.size()==p.operations.size()&&t.second.positionRegister==p.positionRegister;}))targets.push_back({"generic-bone-pose",p});}
+    std::fclose(f);assert(programs>1000&&compiled>1000&&single&&commuted&&oldWeighted&&newWeighted);
+    std::printf("ACTOR_KERNEL_CORPUS_PASS programs=%u compiled=%u SM1=%u SM2=%u SM3=%u single=%u commuted=%u oldWeighted=%u newWeighted=%u unchangedBoundsEligibility=1 metadataSizeUnchanged=1\n",programs,compiled,majors[1],majors[2],majors[3],single,commuted,oldWeighted,newWeighted);
     std::printf("ACTOR_KERNEL_ORACLE_PASS comparisons=%llu successes=%llu failures=%llu strict=%llu alias=%llu newlyRecognizedOutputIncludingFailure=%llu\n",(unsigned long long)comparisons,(unsigned long long)successes,(unsigned long long)failures,(unsigned long long)strictChecks,(unsigned long long)aliasChecks,(unsigned long long)newOutputChecks);
     std::printf("ACTOR_SINGLE_PREPARED_PASS vertex_and_alias=%llu bounds_and_malformed=%llu declaration_type_pairs=289 current_constants=1 failed_bounds_exact=1\n",(unsigned long long)preparedChecks,(unsigned long long)boundsChecks);
     if(bench)for(const auto& target:targets){benchmark(target.second,target.first);if(target.second.kernel.singleSkin())for(unsigned vertices:{71u,256u,8192u})boundsBenchmark(target.second,target.first,vertices);}

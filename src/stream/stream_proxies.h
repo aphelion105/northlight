@@ -1577,14 +1577,14 @@ struct StreamQuery final:IDirect3DQuery9,ProxyBase {
             // Keep an ordinary GPU frame inside the pumped wait. The deadline
             // bounds an unresponsive query; completion returns immediately.
             const bool event=type==8&&flags==D3::kGetDataFlush&&gen.load();
-            const auto tripStart=measure?nowNs():0;std::uint64_t replayStart=0,replayEnd=0;
-            auto body=[&](bool cached){if(measure)replayStart=nowNs();if(inner){
+            const auto tripStart=measure||event?nowNs():0;std::uint64_t replayStart=0,replayEnd=0;
+            auto body=[&](bool cached){if(measure||event)replayStart=nowNs();if(inner){
                 if(cached&&eventDoneGen.load(std::memory_order_acquire)==issued){
                     hr=eventStatus.load(std::memory_order_relaxed);
                     if(hr==S_OK&&data){const BOOL value=eventValue.load(std::memory_order_relaxed);std::memcpy(data,&value,sizeof value);}
                 }else{
                     auto poll=[&]{return static_cast<IDirect3DQuery9*>(inner)->GetData(data,size,flags);};
-                    if(event){unsigned calls=0;hr=waitEventQuery(poll,nowNs,[]{std::this_thread::yield();},calls,kEventFlushWaitNs);own(q.stats.eventPollCalls,calls);own(q.stats.eventWaitTrips);}
+                    if(event){unsigned calls=0;std::uint64_t pendingNs=0;hr=waitEventQuery(poll,nowNs,[]{std::this_thread::yield();},calls,kEventFlushWaitNs,&pendingNs);own(q.stats.eventGpuWaitNs,pendingNs);own(q.stats.eventPollCalls,calls);own(q.stats.eventWaitTrips);}
                     else hr=poll();
                 }
             }if(measure)replayEnd=nowNs();};
@@ -1610,6 +1610,7 @@ struct StreamQuery final:IDirect3DQuery9,ProxyBase {
                 else own(q.stats.expressQueryFallbacks);
             }
             if(!ran)ran=runTask(*core,[&](StreamCore&){body(false);},Cmd::SyncGetData);
+            if(event&&ran&&hr>=0&&replayStart>=tripStart)own(q.stats.eventReplayWaitNs,replayStart-tripStart);
             const auto tripEnd=measure?nowNs():0;
             if(event&&ran&&hr!=S_FALSE&&eventPendingSince){own(q.stats.eventPendingNs,nowNs()-eventPendingSince);own(q.stats.eventCompleted);eventPendingSince=0;}   // a wait that ended on this pumped path
             if(measure){const auto waitNs=get(q.stats.syncNs)-waitBefore;

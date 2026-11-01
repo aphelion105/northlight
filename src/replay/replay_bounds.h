@@ -214,6 +214,7 @@ public:
     bool canCheap()const{return envelopes_.canReady();}
     void finishReservedTurnsAndLend(){envelopes_.finishReservedTurnsAndLend();}
     void settleClock(){envelopes_.settleClock();}
+    void lendToBuild(Budget& budget){envelopes_.lendToBuild(budget);}
     void chargeCheapPreparation(std::uint64_t ns)noexcept{envelopes_.chargeCheapPreparation(ns);}
     double borrowedMicroseconds()const{return envelopes_.borrowedMicroseconds();}
     bool canHeavy()const{return envelopes_.canHeavy();}

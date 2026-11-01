@@ -622,7 +622,7 @@ public:
                 for(const auto& b:prepared->bindings){const auto& s=source->streams[b.element.Stream];if(!NorthlightActorDeformation::decodeElement(s.bytes.data()+size_t(i)*s.stride+b.element.Offset,b.element.Type,input[b.input.reg]))return false;}
                 if(!NorthlightActorDeformation::evaluateFast(shader->second.view,input,constants,view))return false;
                 for(unsigned k=0;k<3;++k){if(!std::isfinite(view[k]))return false;low[k]=std::min(low[k],view[k]);high[k]=std::max(high[k],view[k]);}}}
-            const auto& kernel=shader->second.view.kernel;poseKernelVertices[kernel.singleSkin()?1:kernel.commutedSkin()?2:kernel.skin?3:0]+=source->vertexCount;
+            const auto& kernel=shader->second.view.kernel;poseKernelVertices[kernel.singleSkin()?1:kernel.commutedSkin()||kernel.evaluator==NorthlightActorDeformation::Kernel::WeightedR0Commuted?2:kernel.skin||kernel.evaluator==NorthlightActorDeformation::Kernel::WeightedR0?3:0]+=source->vertexCount;
         }else{touchBounds(foundBounds->second);const auto& b=foundBounds->second;
             nearestViewDepth(shader->second.view,shader->second.rangeRegister==17?rangeInput(shader->second.view):shader->second.rangeRegister,b.low,b.high,constants,lastDepthLower,shader->second.terrainDepthEligible);
             for(unsigned r=0;r<3;++r){low[r]=high[r]=controls[r][3];for(unsigned k=0;k<3;++k){const float a=controls[r][k]*b.low[k],z=controls[r][k]*b.high[k];low[r]+=std::min(a,z);high[r]+=std::max(a,z);}}}
