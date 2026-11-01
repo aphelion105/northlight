@@ -26,7 +26,25 @@ int main(int argc,char** argv){
    std::printf("PASS lens=%s format=%u samples=%u changedPixels=%u state=restored alpha=preserved animation=visible\n",snow?"snow":"rain",unsigned(format),samples,changed);
   }
   IDirect3DSurface9* mask=nullptr;ok(d->CreateDepthStencilSurface(w,h,D3DFMT_D24S8,D3DMULTISAMPLE_TYPE(samples),0,TRUE,&mask,nullptr));background();ok(d->SetDepthStencilSurface(mask));ok(d->Clear(0,nullptr,D3DCLEAR_STENCIL,0,1,0));D3DRECT left{0,0,LONG(w/2),LONG(h)};ok(d->Clear(1,&left,D3DCLEAR_STENCIL,0,1,0x80));ok(d->SetDepthStencilSurface(nullptr));ok(d->BeginScene());lens.lens(target,scratch,scratchSurface,w,h,false,1.f,.6f,mask);ok(d->EndScene());const auto protectedImage=read();unsigned unmaskedChanges=0;for(unsigned y=0;y<h;++y)for(unsigned x=0;x<w;++x){size_t at=(size_t(y)*w+x)*bytes;if(x<w/2)assert(!std::memcmp(base.data()+at,protectedImage.data()+at,bytes));else unmaskedChanges+=std::memcmp(base.data()+at,protectedImage.data()+at,3*channel)!=0;}assert(unmaskedChanges>100);drop(mask);std::printf("PASS name stencil format=%u samples=%u preserved left, changed right=%u\n",unsigned(format),samples,unmaskedChanges);
-  background(movedInput);const auto movedBase=read();assert(movedBase!=base);ok(d->BeginScene());lens.lens(target,scratch,scratchSurface,w,h,false,1.f,.6f,nullptr);ok(d->EndScene());assert(read()!=movedBase);std::printf("PASS lens on moved scene samples=%u\n",samples);
+  for(unsigned coating=0;coating<2;++coating){
+   lens.reset();auto& model=NorthlightWeatherLensTestAccess::state(lens);model.primed=true;model.frost=1;
+   background();const float sentinel[16]={.13f,.27f,.49f,.81f,.2f,.3f,.4f,.5f,.3f,.4f,.5f,.6f,.4f,.5f,.6f,.7f};ok(d->SetPixelShaderConstantF(11,sentinel,4));
+   ok(d->BeginScene());if(coating)lens.sandLens(target,w,h,0,1,nullptr,1);else lens.lens(target,scratch,scratchSurface,w,h,true,0,0,nullptr,1,0,1,true,1);ok(d->EndScene());
+   float restored[16]{};ok(d->GetPixelShaderConstantF(11,restored,4));assert(!std::memcmp(sentinel,restored,sizeof sentinel));
+   const auto result=read();unsigned changed=0;
+   for(unsigned y=0;y<h;++y)for(unsigned x=0;x<w;++x){const auto at=(size_t(y)*w+x)*bytes;changed+=std::memcmp(result.data()+at,base.data()+at,3*channel)!=0;
+    assert(!std::memcmp(result.data()+at+3*channel,base.data()+at+3*channel,channel));
+    if(!coating&&x>w*2/5&&x<w*3/5&&y>h*2/5&&y<h*3/5)assert(!std::memcmp(result.data()+at,base.data()+at,bytes));}
+   assert(changed>100);if(samples==0&&bytes==4)writePixels(coating?"sand.raw":"frost.raw",result);
+   if(coating){for(unsigned frame=1;frame<=30;++frame){background();ok(d->BeginScene());lens.sandLens(target,w,h,frame*.1f,1,nullptr,1);ok(d->EndScene());}const auto later=read();assert(later!=result);if(samples==0&&bytes==4)writePixels("sand-later.raw",later);}
+   IDirect3DSurface9* coatingMask=nullptr;ok(d->CreateDepthStencilSurface(w,h,D3DFMT_D24S8,D3DMULTISAMPLE_TYPE(samples),0,TRUE,&coatingMask,nullptr));
+   background();ok(d->SetDepthStencilSurface(coatingMask));ok(d->Clear(0,nullptr,D3DCLEAR_STENCIL,0,1,0));D3DRECT leftHalf{0,0,LONG(w/2),LONG(h)};ok(d->Clear(1,&leftHalf,D3DCLEAR_STENCIL,0,1,0x80));ok(d->SetDepthStencilSurface(nullptr));
+   ok(d->BeginScene());if(coating)lens.sandLens(target,w,h,0,1,coatingMask,1);else lens.lens(target,scratch,scratchSurface,w,h,true,0,0,coatingMask,1,0,1,true,1);ok(d->EndScene());
+   const auto masked=read();unsigned right=0;for(unsigned y=0;y<h;++y)for(unsigned x=0;x<w;++x){const auto at=(size_t(y)*w+x)*bytes;if(x<w/2)assert(!std::memcmp(masked.data()+at,base.data()+at,bytes));else right+=std::memcmp(masked.data()+at,base.data()+at,3*channel)!=0;}
+   assert(right>100);drop(coatingMask);
+   std::printf("PASS coating=%s format=%u samples=%u pixels=%u constants=restored alpha=preserved names=protected centre=%s\n",coating?"sand":"frost",unsigned(format),samples,changed,coating?"grains":"clear");
+  }
+  lens.reset();background(movedInput);const auto movedBase=read();assert(movedBase!=base);ok(d->BeginScene());lens.lens(target,scratch,scratchSurface,w,h,false,1.f,.6f,nullptr);ok(d->EndScene());assert(read()!=movedBase);std::printf("PASS lens on moved scene samples=%u\n",samples);
   if(format==D3DFMT_A8R8G8B8&&samples==0){
    lens.reset();auto& model=NorthlightWeatherLensTestAccess::state(lens);model.primed=true;model.aspect=float(w)/h;model.count=2;
    for(unsigned i=0;i<2;++i){auto& p=model.drops[i];p.x=p.previousX=model.aspect*.5f+(i?-.008f:.008f);p.y=p.previousY=.5f;p.water=.000144f;p.vy=.18f;p.age=1;p.life=100;}
@@ -40,6 +58,31 @@ int main(int argc,char** argv){
    for(unsigned f=1;f<=30;++f){background();ok(d->BeginScene());lens.lens(target,scratch,scratchSurface,w,h,true,float(f)*.1f,1,nullptr,0,1);ok(d->EndScene());}
    auto melted=read();writePixels("snow-melted.raw",melted);assert(frozen.count==1&&frozen.drops[0].snow<.0000004f&&frozen.drops[0].water>.000323f&&cold!=melted);
    std::printf("PASS rivulet pixels=%u; fire melts existing snow into a moving water bead, mass conserved\n",streamPixels);
+   // Hold pose fixed across an atlas boundary: texture changes must remain continuous.
+   lens.reset();auto& morph=NorthlightWeatherLensTestAccess::state(lens);morph.primed=true;morph.aspect=float(w)/h;morph.count=1;
+   auto& particle=morph.drops[0];particle.x=particle.previousX=morph.aspect*.5f;particle.y=particle.previousY=.5f;particle.snow=.002025f;particle.seed=.23f;particle.age=1;particle.life=100;particle.primeVisual();
+   std::vector<unsigned char> startShape,beforeBoundary;
+   for(float phase:{3.f,3.98f,4.02f,5.f}){particle.shape=particle.shapeTarget=phase;background();ok(d->BeginScene());lens.lens(target,scratch,scratchSurface,w,h,true,0,1,nullptr,0);ok(d->EndScene());const auto frame=read();
+    if(phase==3)startShape=frame;if(phase==3.98f)beforeBoundary=frame;
+    if(phase==4.02f){unsigned maxDelta=0;for(size_t i=0;i<frame.size();++i)maxDelta=std::max(maxDelta,unsigned(std::abs(int(frame[i])-int(beforeBoundary[i]))));assert(maxDelta<6);}
+    if(phase==5)assert(frame!=startShape);}
+   // Known landmarks in the material must stay registered while frost density changes.
+   {NorthlightSurfaceRenderer fixed(d);Image pattern{64,64,D3DFMT_A8R8G8B8,4,std::vector<unsigned char>(64*64*4)};
+    for(auto spot:{std::pair<unsigned,unsigned>{6,9},{57,53}})for(unsigned y=spot.second-1;y<=spot.second+1;++y)for(unsigned x=spot.first-1;x<=spot.first+1;++x)for(unsigned c=0;c<4;++c)pattern.pixels[(y*64+x)*4+c]=255;
+    auto material=texture(d,pattern);NorthlightWeatherArtTestAccess::useFrost(fixed,material);material->Release();auto& state=NorthlightWeatherLensTestAccess::state(fixed);state.primed=true;
+    for(float density:{.3f,.9f}){state.frost=density;background();ok(d->BeginScene());fixed.lens(target,scratch,scratchSurface,w,h,true,0,0,nullptr,0,0,1,true,1);ok(d->EndScene());const auto frame=read();
+     for(auto spot:{std::pair<unsigned,unsigned>{6,9},{57,53}}){const auto at=(size_t(spot.second*h/64)*w+spot.first*w/64)*4;assert(std::memcmp(frame.data()+at,base.data()+at,3)!=0);}}}
+   for(unsigned effect=0;effect<3;++effect){lens.reset();auto& state=NorthlightWeatherLensTestAccess::state(lens);state.primed=true;state.aspect=float(w)/h;state.count=effect==2?0:effect==0?2:1;
+    for(unsigned i=0;i<state.count;++i){auto& p=state.drops[i];p.x=p.previousX=state.aspect*.5f+(i?.024f:-.024f);p.y=p.previousY=.4f;(effect==0?p.snow:p.water)=.000784f;p.seed=i?.73f:.23f;p.age=1;p.life=100;p.vy=effect==0?.004f:.12f;if(effect==1){p.joins=2;p.runLength=.1f;}}
+    for(unsigned f=0;f<=60;++f){background();if(effect==2)state.frost=.12f+.86f*(1-std::abs(float(f)-30)/30);ok(d->BeginScene());lens.lens(target,scratch,scratchSurface,w,h,effect!=1,effect==2?0:f*.05, effect==2?0:1,nullptr,0,0,1,true,effect==2?1:0);ok(d->EndScene());
+     if(f%5==0){const auto path=std::string(effect==0?"snow-merge-":effect==1?"rain-drift-":"frost-density-")+std::to_string(f/5)+".raw";writePixels(path.c_str(),read());}}}
+   std::puts("PASS atlas boundary morph continuity, fixed frost landmarks, merge/drift/density temporal previews");
+   {NorthlightSurfaceFrame view{};view.c[1][0]=1.3f;view.c[1][1]=1.95f;view.c[1][2]=-1;view.c[4][1]=1;view.c[5][2]=1;view.c[6][0]=-1;
+    NorthlightQuality::Settings tuning;tuning.weatherCameraMotion=0;std::vector<unsigned char> pinned;
+    for(float yaw:{0.f,1.5f,-2.9f}){view.c[4][0]=-std::sin(yaw);view.c[4][1]=std::cos(yaw);view.c[6][0]=-std::cos(yaw);view.c[6][1]=-std::sin(yaw);
+     if(yaw==0)lens.reset();lens.setMotion(view,3,tuning,0);background();ok(d->BeginScene());lens.sandLens(target,w,h,0,1,nullptr,1);ok(d->EndScene());const auto output=read();
+     if(yaw==0)pinned=output;else assert(output==pinned);}
+    std::puts("PASS sand stays pinned to glass across view rotations; no scene depth or world projection in lens shading");}
   }
   d->SetTexture(0,nullptr);d->SetRenderTarget(0,nullptr);drop(stage);drop(resolved);drop(target);drop(scratchSurface);drop(scratch);
  }

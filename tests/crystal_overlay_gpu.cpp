@@ -15,7 +15,8 @@ static void logf(const char*,...){}
 static void ok(HRESULT hr){assert(SUCCEEDED(hr));}
 static std::vector<DWORD> words(const std::string& path){std::ifstream f(path,std::ios::binary|std::ios::ate);assert(f);auto n=f.tellg();assert(n>0&&n%4==0);std::vector<DWORD> b(size_t(n)/4);f.seekg(0);f.read((char*)b.data(),n);assert(f);return b;}
 struct MaterialCaptureStateTestAccess {static NorthlightAutoDisplacement& geometry(NorthlightAutoBump& b){return b.displacement;}};
-struct DisplacementStateTestAccess {static void cpu(NorthlightAutoDisplacement& g){g.gpuHeightChecked=true;g.gpuHeightSupported=false;}};
+struct DisplacementStateTestAccess {static void cpu(NorthlightAutoDisplacement& g){g.gpuHeightChecked=true;g.gpuHeightSupported=false;}static uint64_t aliases(const NorthlightAutoDisplacement& g){return g.sourceAliases;}};
+static uint64_t vertexRevision=1,indexRevision=1;
 struct V {float p[3];unsigned char weights[4],bones[4];float normal[3],uv[2],uv1[2];};
 static_assert(sizeof(V)==48);
 int main(int argc,char** argv){
@@ -40,27 +41,38 @@ int main(int argc,char** argv){
     IDirect3DQuery9* query=nullptr;ok(d->CreateQuery(D3DQUERYTYPE_OCCLUSION,&query));auto count=[&](auto draw){ok(query->Issue(D3DISSUE_BEGIN));ok(draw());ok(query->Issue(D3DISSUE_END));DWORD n=0;HRESULT hr=S_FALSE;for(unsigned i=0;i<5000&&hr==S_FALSE;++i){hr=query->GetData(&n,sizeof n,D3DGETDATA_FLUSH);if(hr==S_FALSE)Sleep(1);}ok(hr);return n;};
     NorthlightAutoDisplacement::Args args{{D3DPT_TRIANGLELIST,0,0,nv,0,ni/3,true}};auto native=[&]{return d->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,0,nv,0,ni/3);};
     unsigned cases=0,negative=0;
-    for(unsigned sm:{2u,3u})for(unsigned gpu=0;gpu<=(sm==3);++gpu)for(unsigned variant:{0u,1u,10u,11u}){
+    for(bool rewrite:{false,true})for(unsigned sm:{2u,3u})for(unsigned gpu=0;gpu<=(sm==3);++gpu)for(unsigned variant:{0u,1u,10u,11u}){
         NorthlightAutoBump bump(d);NorthlightQuality::Settings settings;settings.autoBump=1;settings.autoBumpModels=3;settings.autoModelDisplacementStrength=100;settings.autoModelDisplacementDistance=16;settings.autoModelDisplacementDetail=3;bump.configure(settings);
-        bump.setGeometryTracking([](void* p,bool){return uint64_t(reinterpret_cast<uintptr_t>(p));},[](void*,bool){return uint64_t(1);},nullptr);
+        bump.setGeometryTracking([](void* p,bool){return uint64_t(reinterpret_cast<uintptr_t>(p));},[](void*,bool index){return index?indexRevision:vertexRevision;},nullptr);
         auto& g=MaterialCaptureStateTestAccess::geometry(bump);if(!gpu)DisplacementStateTestAccess::cpu(g);
         IDirect3DVertexShader9* shaders[4]={};for(unsigned j=0;j<4;++j){const auto b=words(folder+(j==1?"diffuse_env-":"diffuse_t1-")+std::to_string(sm)+"-"+std::to_string(j==3?(variant<10?variant+10:variant-10):variant)+".bin");ok(d->CreateVertexShader(b.data(),&shaders[j]));bump.registerVertex(shaders[j],NorthlightWaterShaderPatch::fnv1a64(reinterpret_cast<const uint32_t*>(b.data()),b.size()),b.data(),b.size(),3);}
         for(unsigned rotation=0;rotation<12;++rotation){
+            // The client rewrites unchanged model buffers between frames. The
+            // geometry cache may reuse old bytes, but the base draw is current.
+            if(rewrite){if(rotation%2){ok(ib->Lock(0,0,&upload,0));std::memcpy(upload,indices.data(),ni*4);ok(ib->Unlock());++indexRevision;}
+                else{ok(vb->Lock(0,0,&upload,0));std::memcpy(upload,vertices.data(),nv*sizeof(V));ok(vb->Unlock());++vertexRevision;}}
             float bank[256*4]={};const float angle=float(rotation)*.12f,c=std::cos(angle),s=std::sin(angle);bank[2*4]=1;bank[3*4+1]=1;bank[4*4+2]=-.05f;bank[4*4+3]=.2f;bank[5*4+3]=1;bank[6*4]=bank[7*4+1]=1;std::fill(bank+28*4,bank+29*4,1.f);bank[31*4]=c;bank[31*4+2]=s;bank[32*4+1]=1;bank[33*4]=-s;bank[33*4+2]=c;bank[33*4+3]=-5;
             ok(d->SetVertexShaderConstantF(0,bank,256));ok(d->SetVertexShader(shaders[0]));ok(d->SetRenderState(D3DRS_ZWRITEENABLE,TRUE));ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE));ok(d->SetRenderState(D3DRS_ZFUNC,D3DCMP_LESSEQUAL));bump.beginDraw();assert(g.prepare(shaders[0],4,7,args));assert(g.preparedHeightGPU()==bool(gpu));
             ok(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0,1,0));ok(d->BeginScene());ok(bump.geometryDraw(native,true));
             ok(d->SetRenderState(D3DRS_ZWRITEENABLE,FALSE));ok(d->SetRenderState(D3DRS_ZFUNC,D3DCMP_EQUAL));const auto reference=count([&]{return g.draw(native);});assert(reference>100);
             ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));ok(d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_SRCALPHA));ok(d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_INVSRCALPHA));
-            for(unsigned j=1;j<3;++j){ok(d->SetVertexShader(shaders[j]));ok(d->SetRenderState(D3DRS_DESTBLEND,j==2&&variant==11?D3DBLEND_ONE:D3DBLEND_INVSRCALPHA));const auto unsynced=count(native);negative+=unsynced!=reference;bump.beginDraw();bump.capture(shaders[j],native,false,&args);assert(g.preparedModelOverlay());const auto synced=count([&]{return bump.geometryDraw(native,true);});assert(synced==reference);float restored[256*4];ok(d->GetVertexShaderConstantF(0,restored,256));assert(!std::memcmp(bank,restored,sizeof bank));++cases;}
+            for(unsigned j=1;j<3;++j){ok(d->SetVertexShader(shaders[j]));ok(d->SetRenderState(D3DRS_DESTBLEND,j==2&&variant==11?D3DBLEND_ONE:D3DBLEND_INVSRCALPHA));const auto unsynced=count(native);negative+=unsynced!=reference;bump.beginDraw();bump.capture(shaders[j],native,false,&args);assert(g.preparedModelOverlay());const auto synced=count([&]{return bump.geometryDraw(native,true);});assert(synced==reference);
+                assert(bump.deferModelOverlay([&](unsigned vertices,unsigned primitives){assert(count([&]{return d->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,0,vertices,0,primitives);})==reference);return true;}));
+                float restored[256*4];ok(d->GetVertexShaderConstantF(0,restored,256));assert(!std::memcmp(bank,restored,sizeof bank));++cases;}
+            if(rewrite&&rotation)assert(DisplacementStateTestAccess::aliases(g)>0);
             // Matching buffers/matrices cannot prove equivalent rigid and palette programs.
             ok(d->SetVertexShader(shaders[3]));bump.beginDraw();bump.capture(shaders[3],native,false,&args);assert(!g.prepared());ok(d->SetVertexShader(shaders[2]));
             // Camera changes invalidate overlays even when the object pose is unchanged.
             bank[2*4+3]=.125f;ok(d->SetVertexShaderConstantF(2,bank+2*4,1));bump.beginDraw();bump.capture(shaders[2],native,false,&args);assert(!g.prepared());bank[2*4+3]=0;ok(d->SetVertexShaderConstantF(2,bank+2*4,1));
             // A changed pose must never borrow the previous object's geometry.
-            bank[31*4+3]=.125f;ok(d->SetVertexShaderConstantF(31,bank+31*4,1));bump.beginDraw();bump.capture(shaders[2],native,false,&args);assert(!g.prepared());ok(d->EndScene());bump.endFrame();
+            bank[31*4+3]=.125f;ok(d->SetVertexShaderConstantF(31,bank+31*4,1));bump.beginDraw();bump.capture(shaders[2],native,false,&args);assert(!g.prepared());
+            if(rotation==11){bank[31*4+3]=0;ok(d->SetVertexShaderConstantF(31,bank+31*4,1));bump.beginDraw();bump.capture(shaders[2],native,false,&args);assert(g.preparedModelOverlay());
+                // A write after the base must invalidate even equal contents.
+                ok(vb->Lock(0,0,&upload,0));std::memcpy(upload,vertices.data(),nv*sizeof(V));ok(vb->Unlock());++vertexRevision;bump.beginDraw();bump.capture(shaders[2],native,false,&args);assert(!g.prepared());}
+            ok(d->EndScene());bump.endFrame();
         }
         for(auto& p:shaders)drop(p);
     }
-    assert(negative==cases);std::printf("CRYSTAL_OVERLAY_PASS cases=%u unsyncedFailures=%u rotations=12 sm2_cpu sm3_cpu_vtf rigid_single_bone lit_unlit alpha_additive native_uvs constants_restored pose_guard\n",cases,negative);
+    assert(negative==cases);std::printf("CRYSTAL_OVERLAY_PASS cases=%u unsyncedFailures=%u rotations=12 sm2_cpu sm3_cpu_vtf rigid_single_bone lit_unlit alpha_additive native_uvs constants_restored pose_guard rewritten_sources revision_guard deferred_bindings\n",cases,negative);
     drop(query);drop(ps);drop(texture);drop(decl);drop(vb);drop(ib);drop(target);drop(depth);drop(d);drop(api);FreeLibrary(module);DestroyWindow(window);
 }

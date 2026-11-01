@@ -14,7 +14,7 @@ body=pt[pt.index('    bool renderPointShadow(const NorthlightLocalLights::Light&
 pred=pt[pt.index('    bool pointRefreshPredicted()const{'):pt.index('    bool renderPointShadow(const NorthlightLocalLights::Light& light,bool fresh=true,bool withReplays=true){')]
 # 3a: static faces keyed on content; the generation only through the unknown-records fallback.
 assert 'pointCacheSerial' not in pt and pt.count('pointStaticRebuild(')==2
-assert 'NorthlightPointShadow::selectMany(active->localLights.data(),active->localLights.size(),context.camera,quality.pointShadowLimit,{},48,true).count!=0;' in pred and 'const unsigned rebuildMask=pointStaticRebuild(pointSlot().selected,lightChanged);' in body
+assert 'NorthlightPointShadow::selectMany(active->localLights.data(),active->localLights.size(),context.camera,quality.pointShadowLimit,{},float(quality.pointShadowDistance),true).count!=0;' in pred and 'const unsigned rebuildMask=pointStaticRebuild(pointSlot().selected,lightChanged);' in body
 assert 'if(!pointSlot().cacheValid||lightChanged||pointSlot().cacheSource!=light.sourceId)return 63;' in pt
 assert 'if(rebuildMask&(1u<<face)){if(!bindFace(pointSlot().cacheSurface[face],"cube cache target"))return false;' in body
 assert body.index('pointSlot().faceContent[face]=digests?digests[face]')>body.index('"cube static draw"'),'a face key is recorded only after its static draws'
@@ -30,11 +30,11 @@ assert 'pointCheck(d->SetPixelShaderConstantF(1,sphere,1),"cube sphere")' in bod
 # bindFace (cache and scratch targets) before any LocalShadowPS draw of the next face, and no
 # other write of PS c1 happens between a bindFace and the union.
 bind=body[body.index('auto bindFace=[&]'):body.index('if(rebuildMask&(1u<<face)){if(!bindFace(')]
-assert bind.index('SetPixelShader(pointSlot().shadowPS)')<bind.index('SetPixelShaderConstantF(1,sphere,1)')
-loop=body[body.index('if(rebuildMask&(1u<<face)){if(!bindFace('):body.index('// Union: min(scratch, cached static face) into the cube face.')]
-assert loop.count('bindFace(')==2 and 'SetPixelShaderConstantF(1' not in loop and 'SetPixelShaderConstantF(0,&unionConstants[0][0],2)' in body[body.index('// Union: min(scratch'):]
+assert bind.index('SetPixelShader(pointShadowPS)')<bind.index('SetPixelShaderConstantF(1,sphere,1)')
+loop=body[body.index('if(rebuildMask&(1u<<face)){if(!bindFace('):body.index('pointSlot().faceWeights[face]=pointDraws-faceDraws;')]
+assert loop.count('bindFace(')==2 and 'SetPixelShaderConstantF(1' not in loop and 'SetPixelShaderConstantF(0,&unionConstants[0][0],2)' in body[body.index('float unionConstants'):]
 for draw in ('"cube static draw"','"cube terrain draw"','"cube live draw"','"cube animated draw"'):
-    assert loop.index('bindFace(pointSlot().scratchSurface')<loop.index(draw) or draw=='"cube static draw"',draw
+    assert loop.index('bindFace(pointScratchSurface')<loop.index(draw) or draw=='"cube static draw"',draw
 assert 'recordOutsideSphere(r.low,r.high,l,FaceContentSphereMargin)' in fp.src('point_light_shadow.h').read_text()
 assert 'POINT static faces rebuilt=%u keptByContent=%u' in pt and 'if(NorthlightQuality::renderProfile(quality))' in pt
 # 3b: default 6 draws all six; any light change or unusable cube draws all six and invalidates first.

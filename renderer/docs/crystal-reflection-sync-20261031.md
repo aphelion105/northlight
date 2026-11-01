@@ -32,3 +32,33 @@ simple UV pixel shader for the depth oracle. It does not replay the complete
 game frame or certify the screenshots' final appearance. No game was launched;
 installed DLLs, INIs and MPQs were not changed. Extracted assets remain ignored
 local test output.
+
+## 2026-11-01: rewritten model buffers
+
+An unchanged tracked VB/IB rewrite can reuse private displacement geometry
+whose source snapshot still carries an older write revision. Overlay matching
+previously compared against that cached revision, rejecting the current
+reflection layer even though the successful base used the same mesh.
+
+The prepared draw now retains its current source identity before geometry
+canonicalization. A successful base records that identity separately from its
+cached mesh. Overlay admission still requires the exact current source,
+declaration, draw range, clip matrix and pose; a write after the base is refused.
+
+The expanded crystal fixture passes 576 cases each on native D3D9, DXVK 2.7.1
+and DXVK 3.1.1. It covers unchanged buffers and alternating equal-content VB/IB
+rewrites, verified geometry aliases, immediate/deferred bindings, camera/pose
+changes and writes after the base. The preserved pre-fix header fails the same
+overlay-admission assertion. Existing displacement state and material binding
+checks also pass. This remains an offline GPU reproduction, not an in-game
+before/after acceptance.
+
+The DLL is built from an isolated source copy because concurrent work changed
+the same overlay implementation during validation. That separate generalization
+is preserved in the working directory and excluded from this tested DLL. The
+isolated source identity is
+`f5ea8cccea37a7af9f332bb642556aac86ad138c86740e6cb3c4880118bacf03`.
+DLL SHA256:
+`229d2666177f922e5f561ab0229038f338a48ee154226f0c9dfe32a4e5c5e7eb`.
+It was installed in the configured local client with WoW stopped. The prior DLL
+is retained under `renderer-backups/crystal-provenance-20261101-115003-UTC/`.

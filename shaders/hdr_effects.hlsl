@@ -22,6 +22,11 @@ float4 HdrUi(float4 original:COLOR0):COLOR0 {
     float3 radiance=hdrDecode(saturate(encoded))*HdrColor.rgb;
     return float4(HdrColor.w>.5?radiance*alpha:radiance,alpha);
 }
+float4 HdrParticle(float4 original:COLOR0):COLOR0 {
+    // Proven additive particles retain authored RGB headroom. The bytecode
+    // patch clamps source alpha before this transfer, even on ps_2_0.
+    return float4(hdrDecode(original.rgb)*HdrColor.rgb,original.a);
+}
 float4 HdrOverlay(float4 color:COLOR0,float2 uv:TEXCOORD0):COLOR0 {
     return HdrUi(color*tex2D(HdrScene,uv));
 }

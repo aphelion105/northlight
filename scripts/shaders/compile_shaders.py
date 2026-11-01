@@ -19,6 +19,13 @@ def main():
     actor_names = {"AOActorPrepare", "HBAOActorContactBloom", "GTAOActorContactBloom", "HBAOActorOnly", "GTAOActorOnly"}
     names = actor_names | {"AO", "AOContactBloom", "HDAOContactBloom", "HBAOPlusContactBloom", "GTAOContactBloom", "ContactBloom", "AOBlur", "Composite", "RainMaskMRT", "RainScrub"}
     names |= {method + "ContactBloom" + quality for method in ("HDAO", "HBAOPlus", "GTAO") for quality in ("Medium", "Low")}
+    only_entries = [("AOOnly", "kAoOnlyShader", "ps_3_0")]
+    only_entries += [(method + "Only" + quality, "k" + symbol + "Only" + quality + "Shader", "ps_3_0")
+                     for method, symbol in (("HDAO", "Hdao"), ("HBAOPlus", "HbaoPlus"), ("GTAO", "Gtao"), ("ASSAO", "Assao"))
+                     for quality in ("", "Medium", "Low")]
+    assao_entries = [("ASSAOContactBloom" + quality, "kAssaoContactBloom" + quality + "Shader", "ps_3_0") for quality in ("", "Medium", "Low")]
+    names.update(entry for entry, _, _ in assao_entries)
+    names.update(entry for entry, _, _ in only_entries)
     if selected and not set(selected) <= names: raise SystemExit("Unknown shader entry")
     previous = json.loads((fp.SHADERS / "shader-build.json").read_text()) if selected else None
     actor_source = hashlib.sha256((fp.SHADERS / "effects.hlsl").read_bytes() + b"\n" + (fp.SHADERS / "ao_actor.hlsl").read_bytes()).hexdigest()
@@ -40,7 +47,7 @@ def main():
                                   ("AOBlur", "kAoBlurShader", "ps_3_0"), ("Composite", "kCompositeShader", "ps_3_0"),
                                   ("AOActorPrepare", "kAoActorPrepareShader", "ps_3_0"), ("HBAOActorContactBloom", "kHbaoActorContactBloomShader", "ps_3_0"), ("GTAOActorContactBloom", "kGtaoActorContactBloomShader", "ps_3_0"),
                                   ("HBAOActorOnly", "kHbaoActorOnlyShader", "ps_3_0"), ("GTAOActorOnly", "kGtaoActorOnlyShader", "ps_3_0"),
-                                  ("RainMaskMRT", "kRainMaskMrtShader", "ps_2_0"), ("RainScrub", "kRainScrubShader", "ps_2_0")):
+                                  ("RainMaskMRT", "kRainMaskMrtShader", "ps_2_0"), ("RainScrub", "kRainScrubShader", "ps_2_0"), *only_entries, *assao_entries):
         output = fp.COMPILED / f"{entry}.bin"
         legacy = target == "ps_3_0"
         source_key = "actor_source_sha256" if entry in actor_names else "source_sha256" if legacy else "rain_source_sha256"

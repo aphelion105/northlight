@@ -7,6 +7,7 @@
 #include "celestial_profiles.h"
 #include "regional_shadow_range.h"
 #include "settings_defaults.h"
+#include "settings_regions.h"
 #include "hdr_settings_contract.h"
 
 namespace NorthlightSettings {
@@ -89,7 +90,7 @@ inline std::vector<Field> schema(const Documents& docs,const Documents& initial,
     for(const auto& k:NorthlightQuality::Keys){Field f;f.section="Quality";f.key=k.name;f.kind=k.low==0&&k.high==1?"check":"slider";f.low=std::to_string(k.low);f.high=std::to_string(k.high);
         f.saved=std::to_string(saved.quality.*k.field);f.active=std::to_string(active.quality.*k.field);f.factory=std::to_string(defaults.quality.*k.field);f.apply=liveQuality(k.name)?"F":"R";
         f.options=std::to_string(legacyQuality.*k.field)+","+std::to_string(k.preset[1])+","+std::to_string(k.preset[2]);f.inherited=std::to_string(saved.quality.preset==NorthlightQuality::Preset::Quality?legacyQuality.*k.field:k.preset[unsigned(saved.quality.preset)]);
-        if(f.key=="AOMethod"){const char* names[]={"SSAO","HDAO","HBAOPlus","GTAO"};f.kind="enum";f.saved=names[saved.quality.aoMethod];f.active=names[active.quality.aoMethod];f.factory=f.inherited="SSAO";f.options="SSAO,HDAO,HBAOPlus,GTAO";}
+        if(f.key=="AOMethod"){const char* names[]={"SSAO","HDAO","HBAOPlus","GTAO","ASSAO"};f.kind="enum";f.saved=names[saved.quality.aoMethod];f.active=names[active.quality.aoMethod];f.factory=f.inherited="SSAO";f.options="SSAO,HDAO,HBAOPlus,GTAO,ASSAO";}
         if(f.key=="AOQuality"){f.kind="enum";f.saved=NorthlightQuality::aoQualityName(saved.quality.aoQuality);f.active=NorthlightQuality::aoQualityName(active.quality.aoQuality);f.factory=f.inherited="High";f.options="High,Medium,Low";}
         add(f);out.back().origin=std::string(1,saved.quality.origin[index++]);}
     Field b;b.file=1;b.section="Renderer";b.key="Backend";b.kind="enum";b.saved=lower(explicitValue(savedValues[1],b.section,b.key));if(b.saved=="~")b.saved="legacy";b.active=lower(explicitValue(initialValues[1],b.section,b.key));if(b.active=="~")b.active="legacy";b.factory=factoryBackend;b.inherited="legacy";b.options=backendOptions;add(b);
@@ -99,14 +100,17 @@ inline std::vector<Field> schema(const Documents& docs,const Documents& initial,
         f.active=number(active.hdr[hdrIndex]);
         if(NorthlightHdrSettingsContract::mode(key)){f.kind="enum";f.options="Manual,Auto";f.saved=NorthlightHdrSettingsContract::modeName(saved.hdr[hdrIndex]);f.active=NorthlightHdrSettingsContract::modeName(active.hdr[hdrIndex]);f.factory=f.inherited=NorthlightHdrSettingsContract::modeName(key.value);}
         ++hdrIndex;add(f);}
-    for(unsigned file=2;file<4;++file){std::set<std::string> sections;if(file==2)sections.insert("default");
+    for(unsigned file=2;file<4;++file){std::set<std::string> sections{"default"};
+        if(file==3)for(const auto& r:Regions)sections.insert(r.first);
         for(const auto* v:std::array<const Values*,2>{&savedValues[file],&factoryValues[file]})for(const auto& s:*v)if(!s.first.empty()&&s.first!="default")sections.insert(regionName(s.first));
         for(const auto& section:sections){
             if(file==2){for(auto body:{"sun_","moon_"})for(auto name:CelestialNames){Field f;f.file=2;f.section=section;f.key=std::string(body)+name;f.apply="F";unsigned n=0;float lo=0,hi=0;NorthlightCelestialProfiles::Profile dummy;
                 NorthlightCelestialProfiles::keyTarget(dummy,f.key,n,lo,hi);f.kind=n==3?"rgb":"slider";f.low=number(lo);f.high=number(hi);f.step="0.01";
                 f.saved=profileValue(profile(saved.celestial,section),f.key);f.active=profileValue(profile(active.celestial,section),f.key);f.factory=profileValue(profile(defaults.celestial,section),f.key);f.inherited=profileValue(section=="default"?NorthlightCelestialProfiles::Profile{}:saved.celestial.fallback,f.key);add(f);
             }}else{Field f;f.file=3;f.section=section;f.key="terrain_radius";f.low=number(NorthlightRegionalShadow::DefaultRadius);f.high=number(NorthlightRegionalShadow::MaximumRadius);
-                auto value=[&](const Values& v){auto s=explicitValue(v,section,f.key);return s=="~"?f.low:s;};f.saved=value(savedValues[3]);f.active=value(initialValues[3]);f.factory=value(factoryValues[3]);f.inherited=f.low;add(f);}
+                auto value=[&](const Values& v){auto s=explicitValue(v,section,f.key);if(s=="~"&&section!="default")s=explicitValue(v,"default",f.key);return s=="~"?f.low:s;};
+                f.saved=value(savedValues[3]);f.active=value(initialValues[3]);f.factory=value(factoryValues[3]);
+                auto base=explicitValue(savedValues[3],"default",f.key);f.inherited=section=="default"||base=="~"?f.low:base;add(f);}
         }
     }return out;
 }

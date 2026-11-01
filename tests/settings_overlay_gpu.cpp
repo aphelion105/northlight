@@ -32,6 +32,7 @@ int main(int argc,char** argv){
     OverlayDevice device(real);ok(real->CreateRenderTarget(W,H,D3DFMT_A16B16G16R16F,D3DMULTISAMPLE_NONE,0,FALSE,&device.target,nullptr));
     IDirect3DSurface9* readback=nullptr;ok(real->CreateOffscreenPlainSurface(W,H,D3DFMT_A16B16G16R16F,D3DPOOL_SYSTEMMEM,&readback,nullptr));
     {std::ofstream config(std::string(argv[2])+"/northlight-renderer.ini");config<<"[Renderer]\nExperimentalHDR=1\n";}
+    {std::ofstream ranges(std::string(argv[2])+"/shadow-range-profiles.ini");ranges<<kSettingsFactoryShadowRange;}
     auto service=std::make_shared<NorthlightSettings::Service>(argv[2]);service->setHdrStatus(true,0,"Private scRGB test target");
     assert(service->requestSnapshot());
     for(unsigned attempt=0;attempt<500&&!service->snapshot();++attempt)Sleep(10);
@@ -53,7 +54,7 @@ int main(int argc,char** argv){
     ImGuiWindow* nav=nullptr;
     for(auto* child:parent->DC.ChildWindows)if(child->ChildId==parent->GetID("nav"))nav=child;
     assert(nav);
-    const char* pages[]={"Materials & parallax","Lighting & AO","Renderer & HDR","Diagnostics","Diagnostics","Diagnostics"};
+    const char* pages[]={"Materials & parallax","Lighting & AO","Renderer & HDR","Diagnostics","Diagnostics","Diagnostics","Shadow range","Shadow range"};
     for(unsigned page=0;page<sizeof(pages)/sizeof(pages[0]);++page){
       if(page==4){
         // Synthetic presentation data in the private test process only. The
@@ -66,6 +67,26 @@ int main(int argc,char** argv){
         Sleep(1100); // the menu reads cached snapshots at most once per second
       }
       ImGui::ActivateItemByID(nav->GetID(pages[page]));draw(0);draw(0);
+      if(page>=6){
+        ImGuiWindow* content=nullptr;for(auto* child:parent->DC.ChildWindows)if(child!=nav&&child->Active)content=child;assert(content);
+        ImGuiWindow* zones=nullptr;for(auto* child:content->DC.ChildWindows)if(child->ChildId==content->GetID("shadow-zones"))zones=child;assert(zones);
+        if(page==6)assert(zones->ScrollMax.y>0);
+        else{
+          const ImGuiID defaultSlider=ImHashStr("##value",0,ImHashStr("S\tdefault\tterrain_radius",0,content->GetID("default-range")));
+          ImGui::ActivateItemByID(defaultSlider);GImGui->NavNextActivateFlags=ImGuiActivateFlags_PreferInput;draw(0);draw(0);
+          assert(ImGui::TempInputIsActive(defaultSlider));
+          ImGui::GetIO().AddInputCharactersUTF8("3000");draw(0);
+          ImGui::GetIO().AddKeyEvent(ImGuiKey_Enter,true);draw(0);
+          ImGui::GetIO().AddKeyEvent(ImGuiKey_Enter,false);draw(0);draw(0);
+          assert(NorthlightSettings::explicitValue(NorthlightSettings::Document(NorthlightSettings::readImage(std::filesystem::path(argv[2])/"shadow-range-profiles.ini").raw),"default","terrain_radius")=="~");
+          ImGui::ActivateItemByID(content->GetID("##shadow-search"));draw(0);draw(0);
+          ImGui::GetIO().AddInputCharactersUTF8("Westfall");draw(0);draw(0);
+          assert(ImGui::GetInputTextState(content->GetID("##shadow-search"))&&zones->ScrollMax.y==0);
+          ImGui::GetIO().AddKeyEvent(ImGuiKey_Enter,true);draw(0);ImGui::GetIO().AddKeyEvent(ImGuiKey_Enter,false);draw(0);
+          ImGui::GetIO().AddMousePosEvent(zones->Pos.x+60,zones->Pos.y+12);
+          for(unsigned hover=0;hover<4;++hover){Sleep(200);draw(0);}
+        }
+      }
       if(page==5){
         ImGuiWindow* content=nullptr;for(auto* child:parent->DC.ChildWindows)if(child!=nav)content=child;assert(content);
         content->StateStorage.SetInt(content->GetID("CPU memory breakdown"),1);draw(0);draw(0);assert(content->ScrollMax.y>0);
@@ -96,6 +117,13 @@ int main(int argc,char** argv){
         ImGui::SetScrollY(content,0);draw(160);draw(160);ImGui::SetScrollY(content,450);draw(160);draw(160);
       }
       std::printf("OVERLAY_GPU_PASS page=%s sdrPeak=%g white160Peak=%g white320Peak=%g pixels=%u/%u/%u actualPanel=1 snapshotLoaded=1 privateTarget=1 windowsHDROutput=0\n",pages[page],peaks[0],peaks[1],peaks[2],changed[0],changed[1],changed[2]);
+      if(page==7){
+        ImGui::ActivateItemByID(parent->GetID("Save"));draw(0);
+        for(unsigned wait=0;wait<500&&service->status().state!=NorthlightSettings::Status::State::Saved;++wait){Sleep(10);draw(0);}
+        assert(service->status().state==NorthlightSettings::Status::State::Saved&&service->status().restartRequired);
+        NorthlightRegionalShadow::Table ranges;std::string error;assert(NorthlightRegionalShadow::load(std::string(argv[2])+"/shadow-range-profiles.ini",ranges,error));
+        assert(ranges.fallback==3000&&ranges.at("Azeroth",40)==3000&&ranges.at("Azeroth",12)==2048);
+      }
     }
     overlay.reset();service.reset();readback->Release();device.target->Release();real->Release();api->Release();FreeLibrary(module);DestroyWindow(window);UnregisterClassW(wc.lpszClassName,wc.hInstance);
 }

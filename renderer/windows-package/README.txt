@@ -21,9 +21,8 @@ REQUIREMENTS
   Install.cmd --backend dxvk2 (DXVK 2.7.1).
 - AMD RX 5000/6000 (RDNA 1/2): DXVK's own release notes say DXVK 3 performs
   badly on them on Windows. Install with Install.cmd --backend dxvk2.
-- Only ASCII characters in the game folder path (no ä, ö, å or other special
-  characters), a path of at most about 150 characters, and the game must not
-  be in Program Files.
+- Unicode game folder paths are supported, including Cyrillic. The path may
+  have at most about 150 characters, and the game must not be in Program Files.
 - About 13 GB of free space on the game's drive and at least 8 GB of memory
   while the installer builds the cache.
 
@@ -64,8 +63,8 @@ Installation status without changes:  Install.cmd status --client "C:\Games\WoW"
 
 Dungeon and raid world cache (optional): the continents get static world
 shadows and GI from the world cache. Dungeons and raids do not, unless you
-add them. The installer asks while it checks the client, before anything is
-built, and builds the chosen groups after the continents:
+add them. On the first install, the installer asks while it checks the client,
+before anything is built. Updates keep the saved selection without asking:
   1  Classic dungeons  ~0.6 GB  ~1.7 min
   2  Classic raids     ~0.3 GB  ~0.9 min
   3  TBC dungeons      ~0.6 GB  ~1.8 min
@@ -77,8 +76,9 @@ now (none on a first install). The sizes are disk space on top of the
 continents; the times are build time of one group on one CPU core. Groups
 that were built earlier are kept when you install again or update the
 continents; leaving a group out of the answer removes it and the files only it
-used. --instances answers the question for scripted installs; --yes keeps the
-current choice.
+used. --instances changes the saved selection; --yes keeps the current choice.
+Only outdated parts are rebuilt: a light update keeps the instance geometry,
+and a validation update checks the existing data without running the builders.
 If the game folder already holds someone else's patch-z.mpq, the installer
 leaves it in place, skips the lighting layer and builds the cache itself so
 that its content is included (it says so at the end).
@@ -200,7 +200,8 @@ Individual settings (Quality / Balanced / Performance):
   EquipmentLights        1 / 0 / 0      experimental: native M2 point lights and proven additive particles light nearby surfaces and fog; live particles require CommandStream=1 and contribute only while drawn; bounded to 8 sources, shares LocalLightLimit, deduplicates native/static lights (0..1, read at start; needs visual testing)
   ContactAO             1 / 1 / 1      1 = the darkening in creases and corners (contact shading) is computed, 0 = off: it and its smoothing pass are skipped, which saves about 0.5 ms of graphics card time per frame; the bloom glow stays (0..1; read once at start)
   NightBrightness       50 / 50 / 50   gives back the night ambient light the lighting layer takes away (0..100; 0 = Northlight's full night darkness, 100 = the original game's night ambient); added like light, so shadows and lamps keep their contrast; fades in with sunset and out with sunrise; daytime, sky, water and places without a sky of their own (dungeons, raids) are unchanged
-  ActorShadowDetail     1 / 1 / 0      characters and other moving casters near you get their own shadow map (four times finer) and a soft filter that is sharp at the caster and softer further away (0 = moving casters are drawn into the near shadow map as before 0.3.209; ActorShadows=0 turns it off too; 0..1)
+  ActorShadowDetail     1 / 1 / 0      characters and other moving casters near you get their own shadow map, four times finer (0 = moving casters use the near shadow map; ActorShadows=0 turns it off too; 0..1)
+  SoftShadows           1 / 1 / 0      contact-hardening PCSS for sun, moon and shadowed local lights: tight at contact, wider away from the caster; covers captured characters, world objects and grass when GrassShadows=1. Off keeps ordinary shadows and skips the extra filtering passes (0..1, live)
   SpellLayer            1 / 1 / 1      1 = particles, ribbons and beams (also the fixed-function ones), translucent spell models and projected ground effects are held back and drawn right after the world effects (own colour, fog and soft edges, hidden by objects in front), so fog, haze, shadow and contact shading no longer tint them; a frame with a copy of the picture, a clear, or an unfollowable buffer write draws them the old way, and every such frame is followed by 30 frames without holding back; water, water ripples, rain, floating names drawn after a held-back effect, and a write to a texture a held-back effect samples (up to 8 per frame) only split the frame (the effects before them are drawn the old way, right before them); game glow (ffxGlow 1) is let through: its copy of the picture and its full-screen glow pass no longer end the holding, and the held-back effects, drawn after the glow, get no game glow (they keep their own colour over the desaturated world, as a ghost would); CPU cost on the thread that executes the device (the replay thread with the command stream on): roughly 0.5 us to record and 0.8 us to replay per held-back effect draw, about 3 ms per frame with ~2300 held-back draws in a very large crowd, about 0.1 ms in normal play; GPU cost against the original in-place draws not measured; 0 = off, exactly the old path (0..1; read once at start)
   SpellFog              1 / 1 / 1      the held-back effects get Northlight's fog (haze, rain, ground fog, fog clouds along the view direction) by folding it into the effect's own fog constants when it is recorded, with no extra pass (approximate: the camera's heading stands for the whole effect (rays to effect height above the ground), 128 units at most, no horizon haze, the in-scatter colour is the sky ambient, a quarter-second smoothing; only effects whose vertex shader is proven to use the game's fog ramp; ribbons and beams are not fogged by it); 0 = the recorded game values (0..1; needs SpellLayer=1; read once at start)
   NameMask              1 / 1 / 1      1 = floating unit names and other world text keep the colour the game drew them in (not darkened, lit or hazed by the scene effects; a solid object in front still covers them; with a font mod that replaces the UI shaders, from when the effects start); 0 = as before 0.3.212 (0..1; read once at start)
@@ -209,7 +210,8 @@ Individual settings (Quality / Balanced / Performance):
   AOQuality 0 / 0 / 0   High=0, Medium=1, Low=2. High preserves the current image; Medium/Low reduce HDAO/HBAO+/GTAO samples and can add noise or shimmer. SSAO is unchanged. Apply in Lighting & AO.
   AOStrength 100 / 100 / 100   See the quality INI for the allowed range.
   AORadius 200 / 200 / 200   See the quality INI for the allowed range.
-  PointShadowLimit 4 / 4 / 4   See the quality INI for the allowed range.
+  PointShadowLimit 64 / 64 / 64   Allowed 16..128.
+  PointShadowDistance 48 / 48 / 48   local light shadow distance from the camera in yards (8..192), measured to the edge of the light's influence; applies on Save; Shadow light sources still caps the count
   AutoBump 1 / 0 / 0   See the quality INI for the allowed range.
   AutoBumpStrength 75 / 60 / 40   See the quality INI for the allowed range.
   AutoBumpDistance 48 / 36 / 24   See the quality INI for the allowed range.

@@ -16,6 +16,13 @@
 #include "settings_draft.h"
 #include "memory_profile_snapshot.h"
 
+#ifndef NORTHLIGHT_SOURCE_ID
+#define NORTHLIGHT_SOURCE_ID "unrecorded"
+#endif
+#ifndef NORTHLIGHT_BUILD_UTC
+#define NORTHLIGHT_BUILD_UTC "unrecorded"
+#endif
+
 namespace NorthlightOverlay {
 namespace {
 using NorthlightSettings::Field;
@@ -28,15 +35,19 @@ const ImVec4 Accent{0.40f,0.70f,1.00f,1.f},Edited{1.00f,0.74f,0.32f,1.f},Muted{0
 
 // ---- Words (from the retired Lua menu) ----
 const std::map<std::string,const char*> Labels={
+    {"RainRivulets","Merge drops into rivulets"},{"SnowFrost","Frost at screen edges"},{"SnowFrostStrength","Frost strength (%)"},
+    {"WeatherWindDirection","Wind heading (world degrees)"},{"WeatherWindStrength","Wind strength (%)"},{"WeatherCameraMotion","React to camera turns"},
+    {"SandLens","Sand on lens"},{"SandLensStrength","Sand strength (%)"},{"SandLensSize","Sand grain size (%)"},
+    {"RainDropSize","Rain particle size (%)"},{"SnowFlakeSize","Snow particle size (%)"},{"RainLensSize","Camera droplet size (%)"},{"SnowLensSize","Camera snow clump size (%)"},
     {"AutoBump","Material detail"},{"AutoBumpStrength","Normal map strength (%)"},{"AutoBumpDistance","Normal map distance (yards)"},
     {"AutoBumpTerrain","Ground and roads"},{"AutoBumpWalls","Walls and floors"},{"AutoBumpGrass","Grass tufts"},
     {"AutoParallaxDepth","POM depth (%)"},{"AutoParallaxDistance","POM distance (yards)"},{"AutoParallaxSteps","POM trace steps"},
     {"AutoParallaxShadows","POM self-shadowing"},{"AutoParallaxShadowStrength","Self-shadow strength (%)"},{"AutoParallaxShadowSteps","Self-shadow trace steps"},
     {"AutoCavity","Cavity shading"},{"AutoCavityStrength","Cavity strength (%)"},
     {"Preset","Quality preset"},{"GI","Global illumination"},{"GIStrength","Indirect light strength (%)"},
-    {"ActorShadows","Character shadows"},{"ActorShadowDetail","Detailed character shadows"},{"GrassShadows","Grass shadows"},{"ActorShadowRadius","Character shadow distance"},
+    {"SoftShadows","Contact-hardening shadows"},{"ActorShadows","Character shadows"},{"ActorShadowDetail","Detailed character shadows"},{"GrassShadows","Grass shadows"},{"ActorShadowRadius","Character shadow distance"},
     {"ContactAO","Ambient occlusion"},{"AOMethod","AO method"},{"AOQuality","AO quality"},{"AutoBumpModels","M2 models (all types)"},{"AutoMaterialOcclusionDistance","Cavity and self-shadow distance (yards)"},{"AutoModelDisplacementDistance","Model geometry distance (yards)"},{"AutoModelDisplacementDetail","Model subdivision"},{"AutoModelDisplacementStrength","Model height (%)"},{"AutoDisplacementDistance","Terrain and object geometry distance (yards)"},{"AutoDisplacementStrength","Terrain and object height (%)"},{"AutoDisplacementDetail","Terrain and object subdivision"},{"AutoHeightBalance","Height balance (%)"},{"AOStrength","AO strength (%)"},{"AORadius","AO radius (0.01 yd)"},
-    {"Weather","Enhanced rain and snow"},{"WeatherMemory","Read native weather state"},{"RainFog","Weather fog strength"},{"RainLens","Rain on camera"},{"RainLensStrength","Rain on camera strength (%)"},{"SnowLens","Snow on camera"},{"SnowLensStrength","Snow on camera strength (%)"},{"FogClouds","Drifting fog banks"},{"FogCloudDensity","Fog density (%)"},
+    {"Weather","Enhanced weather"},{"WeatherMemory","Read native weather state"},{"RainFog","Weather fog strength"},{"RainLens","Rain on camera"},{"RainLensStrength","Rain on camera strength (%)"},{"SnowLens","Snow on camera"},{"SnowLensStrength","Snow on camera strength (%)"},{"FogClouds","Drifting fog banks"},{"FogCloudDensity","Fog density (%)"},
     {"HorizonHaze","Horizon haze (%)"},{"HorizonHazeStart","Haze start (%)"},{"HorizonHazeBand","Haze height (degrees)"},{"HorizonHazeTerrain","Haze over terrain"},
     {"Backend","Graphics backend"},{"ExperimentalHDR","Enable HDR"},{"HDRPaperWhite","White point (nits)"},{"HDRUIWhite","UI brightness (nits)"},{"HDRMaxNits","Manual peak (nits)"},{"HDRContrast","Contrast"},{"HDRExposure","Exposure / compensation (EV)"},
     {"HDRExposureMode","Exposure mode"},{"HDRPeakMode","Peak mode"},{"HDRBloomStrength","Bloom strength"},{"HDRLegacyExpansion","Legacy highlight expansion (EV)"},
@@ -44,7 +55,7 @@ const std::map<std::string,const char*> Labels={
     {"NightBrightness","Night brightness (%)"},{"EquipmentLights","Equipment and effect lights"},
     {"CaptureBudgetMiB","Capture memory (MiB)"},{"ActorShadowBudgetMiB","Character shadow memory (MiB)"},{"MinSkinnedTriangles","Minimum character triangles"},{"LocalLightLimit","Maximum local lights"},{"GpuBudgetMs","GPU effect budget (ms)"},{"ActorShadowCpuMs","Shadow CPU budget (ms)"},
     {"CommandStream","Separate render thread"},{"StreamFramesAhead","Buffered frames"},{"StreamFrameSkip","Skip delayed frames"},{"StreamOcclusionLocal","Local occlusion results"},{"ReplayJobs","Parallel effect preparation"},{"FrameDrawGates","Skip inactive draw work"},
-    {"PointShadowLimit","Shadow light sources"},{"PointShadows","Local light shadows"},{"PointShadowRefreshMs","Light shadow refresh (ms)"},{"PointShadowFacesPerFrame","Cube faces per frame"},{"BlobShadows","Round ground shadows"},{"BlobShadowStrength","Ground shadow strength (%)"},
+    {"PointShadowLimit","Shadow light sources"},{"PointShadowDistance","Shadow distance (yd)"},{"PointShadows","Local light shadows"},{"PointShadowRefreshMs","Light shadow refresh (ms)"},{"PointShadowFacesPerFrame","Cube faces per frame"},{"BlobShadows","Round ground shadows"},{"BlobShadowStrength","Ground shadow strength (%)"},
     {"FarShadowInterval","Distant shadow interval (frames)"},{"NearShadowInterval","Near shadow interval (frames)"},{"StaticCacheSlices","Static cache update slices"},{"ShadowDirectionSteps","Shadow direction precision"},{"ShadowPivotCorrection","Correct shadow pivot"},
     {"GIDistance","GI distance (yards)"},{"GIProbeAhead","GI look-ahead (yards)"},{"GIRays","GI rays per probe"},{"GIBounces","GI light bounces"},{"GIThreads","GI solver threads"},{"GIFastBVH","Fast geometry tracing"},{"GIProbeMoveStep","GI update movement step"},{"GIDynamicProbes","Dynamic GI probes"},
     {"SpellLayer","Separate spell effects"},{"SpellLayerClasses","Spell blend types (mask)"},{"SpellFog","Fog on spell effects"},{"NameMask","Protect unit names"},{"DepthFuncAware","Respect draw depth tests"},{"terrain_radius","Terrain shadow reach (yards)"},
@@ -61,6 +72,13 @@ const std::map<std::string,const char*> CelestialLabels={
     {"fog_height_scale","Fog height"},{"horizon_haze","Horizon haze"},{"glow_strength","Glow strength"},{"glow","Glow tint"},{"glow_mix","Glow tint mix"},
 };
 const std::map<std::string,std::vector<const char*>> Help={
+    {"RainRivulets",{"Falling drops and their wet trails collect nearby beads into longer curved streams, conserving water. Off keeps drops independent."}},
+    {"SnowFrost",{"Crystalline ice grows from the screen edges with accumulated snow and storm intensity. Nearby fire melts it. Independent of Snow on camera; requires Enhanced weather."}},
+    {"SandLens",{"Dust grains and sparse deposits on the camera lens. They stay in glass coordinates, ignore scene geometry and receive optional inertial forces during camera turns. Shelter hides the effect."}},
+    {"RainDropSize",{"Size of Northlight's supplemental rain particles; 100% keeps the original look. Native game particles are unchanged."}},
+    {"SnowFlakeSize",{"Size of Northlight's supplemental snowflakes; 100% keeps the original look. Native game particles are unchanged."}},
+    {"RainLensSize",{"Scales the camera droplets, including their collision and merging radius."}},
+    {"SnowLensSize",{"Scales the camera snow masses, including their collision and merging radius."}},
     {"AutoBump",{"Generates and caches normal maps from installed textures. Directional detail is applied at full screen resolution. MPQs remain unchanged. Supports MSAA."}},
     {"AutoBumpStrength",{"Higher values make details more pronounced and can exaggerate painted shadows. Start at 75%."}},
     {"AutoBumpTerrain",{"Includes grass, dirt and stone painted on the ground.","Off: original material. Normal maps: detailed light response. Normal maps + POM: shifts the original diffuse lookup to show depth at an angle. Displacement + normals: changes nearby geometry and keeps surface normal detail."}},
@@ -70,12 +88,15 @@ const std::map<std::string,std::vector<const char*>> Help={
     {"AutoParallaxShadows",{"Relief blocks the dominant sunlight or moonlight. Requires Normal maps + POM for the material. Cavity and self-shadowing share the near material shading distance. More shadow steps cost more GPU time. Local lights retain their existing shadows."}},
     {"AutoCavity",{"Reduces ambient light inside small cracks inferred from the texture. Works with normal maps and POM; fog and direct light are preserved. Painted shadows can become too dark at high strength."}},
     {"PointShadows",{"Torches, candles, lamps and compact fires cast shadows. Diffuse glows and short-lived effects do not.","Only nearby eligible sources allocate maps (about 3.5 MiB each). More sources increase rendering cost."}},
+    {"SoftShadows",{"Softens sun, moon and local-light shadow edges with distance from the caster. Covers captured characters, grass and world geometry. Off keeps ordinary filtered shadows and their existing range."}},
     {"BlobShadows",{"Shows the game's round shadow directly below characters, creatures and mounts. Off removes only this decal; detailed sun, moon and local light shadows remain enabled. Takes effect immediately while Northlight effects are on."}},
     {"BlobShadowStrength",{"Adjusts the native round shadow when detailed character shadows are composited. Turning Round ground shadows off hides it independently and preserves this strength for later."}},
-    {"RainLens",{"Random droplets merge into larger beads and curved rivulets. Heavier rain increases their speed. Requires Enhanced rain and snow; the effect disappears under shelter."}},
-    {"SnowLens",{"Snowflakes collect into clumps. Nearby classified flames melt them into moving droplets and rivulets; walls block this heat. Requires Enhanced rain and snow; the effect disappears under shelter."}},
-    {"PointShadowLimit",{"4 by default; adjustable from 4 to 128. Only nearby eligible sources allocate maps (about 3.5 MiB each, up to 448 MiB).",
-        "For a shadow-only comparison, set Maximum local lights to 128 and GPU effect budget to 0 first; then compare 4 / 8 / 16 / 32 / 64 / 128 in the same scene."}},
+    {"RainLens",{"Moving refractive droplets; Merge drops into rivulets lets them collect water along their wet paths. Heavier rain increases their speed. Requires Enhanced weather; the effect disappears under shelter."}},
+    {"SnowLens",{"Crystalline snowflakes adhere and collect into clumps. Nearby classified flames melt them into moving droplets; walls block this heat. Requires Enhanced weather; the effect disappears under shelter."}},
+    {"PointShadowLimit",{"64 by default; adjustable from 16 to 128. Only nearby visible eligible sources allocate maps (about 3.5 MiB each, up to 448 MiB).",
+        "Compare 16 / 32 / 64 / 128 in the same scene; higher limits keep more local lights shadowed."}},
+    {"PointShadowDistance",{"How far from the camera local lights can cast shadows: 8 to 192 yards; 48 by default. Measured to the edge of each light's influence, so large lights can cast shadows from farther away.",
+        "Takes effect on Save. Higher distances can increase rendering cost; Shadow light sources still limits how many lights cast shadows."}},
     {"HDRContrast",{"1.00 is neutral. Adjusts world contrast around middle grey; UI brightness is unchanged."}},
     {"HDRExposure",{"0 EV is neutral. +1 EV doubles world light; -1 EV halves it. UI brightness is unchanged."}},
     {"HDRMaxNits",{"Limits world HDR output. UI brightness remains independent; this does not raise SDR highlights to the chosen peak."}},
@@ -103,16 +124,20 @@ const std::vector<Section> QualitySections={
         {"parallax","POM",nullptr,"AutoParallaxDepth AutoParallaxDistance AutoParallaxSteps",""},
         {"pomshadow","POM self-shadowing","AutoParallaxShadows","AutoParallaxShadowStrength AutoParallaxShadowSteps",""},
         {"cavity","Cavity shading","AutoCavity","AutoCavityStrength",""}},false},
-    {"shadows","Shadows","ActorShadows ActorShadowDetail GrassShadows ActorShadowRadius BlobShadows BlobShadowStrength FarShadowInterval NearShadowInterval PointShadows PointShadowLimit PointShadowRefreshMs PointShadowFacesPerFrame ShadowDirectionSteps StaticCacheSlices ShadowPivotCorrection",{
+    {"shadows","Shadows","SoftShadows ActorShadows ActorShadowDetail GrassShadows ActorShadowRadius BlobShadows BlobShadowStrength FarShadowInterval NearShadowInterval PointShadows PointShadowLimit PointShadowDistance PointShadowRefreshMs PointShadowFacesPerFrame ShadowDirectionSteps StaticCacheSlices ShadowPivotCorrection",{
+        {"filter","Shadow filtering",nullptr,"SoftShadows",""},
         {"actors","Character shadows","ActorShadows","ActorShadowRadius ActorShadowDetail GrassShadows","ActorShadowBudgetMiB ActorShadowCpuMs"},
         {"blobs","Round ground shadows","BlobShadows","BlobShadowStrength",""},
-        {"point","Local light shadows","PointShadows","PointShadowLimit","PointShadowRefreshMs PointShadowFacesPerFrame"},
+        {"point","Local light shadows","PointShadows","PointShadowDistance PointShadowLimit","PointShadowRefreshMs PointShadowFacesPerFrame"},
         {"cache","Shadow updates",nullptr,"","FarShadowInterval NearShadowInterval ShadowDirectionSteps StaticCacheSlices ShadowPivotCorrection"}},false},
-    {"atmosphere","Atmosphere & weather","Weather WeatherMemory RainFog RainLens RainLensStrength SnowLens SnowLensStrength FogClouds FogCloudDensity HorizonHaze HorizonHazeStart HorizonHazeBand HorizonHazeTerrain",{
+    {"atmosphere","Atmosphere & weather","Weather WeatherMemory RainFog RainLens RainLensStrength RainRivulets SnowLens SnowLensStrength SnowFrost SnowFrostStrength SandLens SandLensStrength SandLensSize WeatherWindDirection WeatherWindStrength WeatherCameraMotion FogClouds FogCloudDensity HorizonHaze HorizonHazeStart HorizonHazeBand HorizonHazeTerrain",{
         {"fog","Fog banks","FogClouds","FogCloudDensity",""},
-        {"weather","Rain and snow","Weather","RainFog","WeatherMemory"},
-        {"rainlens","Rain on camera","RainLens","RainLensStrength",""},
-        {"snowlens","Snow on camera","SnowLens","SnowLensStrength",""},
+        {"weather","Weather","Weather","RainFog RainDropSize SnowFlakeSize","WeatherMemory"},
+        {"rainlens","Rain on camera","RainLens","RainLensStrength RainLensSize RainRivulets",""},
+        {"snowlens","Snow on camera","SnowLens","SnowLensStrength SnowLensSize",""},
+        {"snowfrost","Frost at screen edges","SnowFrost","SnowFrostStrength",""},
+        {"sandlens","Sand on lens","SandLens","SandLensStrength SandLensSize",""},
+        {"wind","Wind & camera",nullptr,"WeatherWindDirection WeatherWindStrength WeatherCameraMotion",""},
         {"haze","Horizon haze",nullptr,"HorizonHaze HorizonHazeStart HorizonHazeTerrain","HorizonHazeBand"}},false},
     {"spells","Spells & names","SpellLayer SpellLayerClasses SpellFog NameMask DepthFuncAware",{
         {"spells","Spell effects","SpellLayer","SpellFog","SpellLayerClasses DepthFuncAware"},
@@ -153,23 +178,6 @@ std::vector<std::string> sectionKeys(const Section& s){
     for(const auto& g:s.groups)for(const char* list:{g.master,g.fields,g.advanced})for(auto& k:words(list))if(std::find(out.begin(),out.end(),k)==out.end())out.push_back(k);
     return out;
 }
-// AreaTable zone ids of the shipped profile regions (3.3.5a); other ids show as Map:id.
-const std::map<std::string,const char*> Zones={
-    {"Azeroth:1","Dun Morogh"},{"Azeroth:3","Badlands"},{"Azeroth:4","Blasted Lands"},{"Azeroth:8","Swamp of Sorrows"},{"Azeroth:10","Duskwood"},{"Azeroth:11","Wetlands"},
-    {"Azeroth:12","Elwynn Forest"},{"Azeroth:28","Western Plaguelands"},{"Azeroth:33","Stranglethorn Vale"},{"Azeroth:38","Loch Modan"},{"Azeroth:40","Westfall"},
-    {"Azeroth:41","Deadwind Pass"},{"Azeroth:44","Redridge Mountains"},{"Azeroth:45","Arathi Highlands"},{"Azeroth:46","Burning Steppes"},{"Azeroth:47","The Hinterlands"},
-    {"Azeroth:51","Searing Gorge"},{"Azeroth:85","Tirisfal Glades"},{"Azeroth:130","Silverpine Forest"},{"Azeroth:139","Eastern Plaguelands"},{"Azeroth:267","Hillsbrad Foothills"},
-    {"Azeroth:1497","Undercity"},{"Azeroth:1519","Stormwind City"},{"Azeroth:1537","Ironforge"},
-    {"Kalimdor:14","Durotar"},{"Kalimdor:15","Dustwallow Marsh"},{"Kalimdor:16","Azshara"},{"Kalimdor:17","The Barrens"},{"Kalimdor:141","Teldrassil"},{"Kalimdor:148","Darkshore"},
-    {"Kalimdor:215","Mulgore"},{"Kalimdor:331","Ashenvale"},{"Kalimdor:357","Feralas"},{"Kalimdor:361","Felwood"},{"Kalimdor:400","Thousand Needles"},{"Kalimdor:405","Desolace"},
-    {"Kalimdor:406","Stonetalon Mountains"},{"Kalimdor:440","Tanaris"},{"Kalimdor:490","Un'Goro Crater"},{"Kalimdor:493","Moonglade"},{"Kalimdor:618","Winterspring"},
-    {"Kalimdor:1377","Silithus"},{"Kalimdor:1637","Orgrimmar"},{"Kalimdor:1638","Thunder Bluff"},{"Kalimdor:1657","Darnassus"},
-    {"Expansion01:3483","Hellfire Peninsula"},{"Expansion01:3518","Nagrand"},{"Expansion01:3519","Terokkar Forest"},{"Expansion01:3520","Shadowmoon Valley"},
-    {"Expansion01:3521","Zangarmarsh"},{"Expansion01:3522","Blade's Edge Mountains"},{"Expansion01:3523","Netherstorm"},{"Expansion01:3703","Shattrath City"},
-    {"Northrend:65","Dragonblight"},{"Northrend:66","Zul'Drak"},{"Northrend:67","The Storm Peaks"},{"Northrend:210","Icecrown"},{"Northrend:394","Grizzly Hills"},
-    {"Northrend:495","Howling Fjord"},{"Northrend:2817","Crystalsong Forest"},{"Northrend:3537","Borean Tundra"},{"Northrend:3711","Sholazar Basin"},
-    {"Northrend:4197","Wintergrasp"},{"Northrend:4395","Dalaran"},
-};
 
 const char* find(const std::map<std::string,const char*>& m,const std::string& key){auto i=m.find(key);return i==m.end()?nullptr:i->second;}
 std::string celestialName(const std::string& key,std::string* body){
@@ -189,7 +197,7 @@ std::string rowLabel(const Field& f){
 }
 std::string regionLabel(const std::string& section){
     if(section=="default")return "All regions (default)";
-    if(const char* zone=find(Zones,section))return std::string(zone)+"  ("+section+")";
+    if(const char* zone=find(NorthlightSettings::Regions,section))return std::string(zone)+"  ("+section+")";
     return section;
 }
 std::string optionLabel(const Field& f,const std::string& value){
@@ -251,6 +259,7 @@ struct SettingsPanel::State {
     bool wantSnapshot=false,wantPreview=false,wantClear=false,previewing=false,saving=false,awaitingSnapshot=false;
     std::uint64_t commitSerial=0;
     std::string region="default",note;                 // note: a local message (a refused request), cleared by the next action
+    char shadowSearch[96]={};int shadowMap=0;
     Page page=Page::Overview;                             // kept for the session
     NorthlightMemoryProfile::Snapshot memorySnapshot;
     uint64_t memoryReadAt=0;
@@ -320,7 +329,9 @@ struct SettingsPanel::State {
         const auto shown=draft.effective(f);
         ImGui::Text("Value: %s%s",shown.c_str(),draft.edited(f)?"  (unsaved)":"");
         ImGui::Text("Saved: %s   Running: %s",draft.saved(f).c_str(),f.available?f.active.c_str():"unavailable");
-        ImGui::Text("Factory: %s   Inherits: %s",f.factory.c_str(),f.inherited.c_str());
+        const Field* base=f.file==D::ShadowRange&&f.section!="default"?draft.field(D::ShadowRange,"default",f.key):nullptr;
+        const auto inherited=base?draft.effective(*base):f.inherited;
+        ImGui::Text("Factory: %s   Inherits: %s",f.factory.c_str(),inherited.c_str());
         ImGui::TextColored(Color::Muted,"Source: %s%s",originText(f.origin),draft.overrides(f)?"":" - not written to the file");
         auto help=Help.find(f.key);
         if(help!=Help.end())for(const char* line:help->second){ImGui::Spacing();ImGui::TextWrapped("%s",line);}
@@ -552,11 +563,16 @@ struct SettingsPanel::State {
         titled("Other",rest);
     }
     void memoryDiagnostics(){
+        ImGui::TextColored(Color::Heading,"Build");
+        ImGui::Text("ID: %.12s",NORTHLIGHT_SOURCE_ID);
+        ImGui::Text("Built: %s",NORTHLIGHT_BUILD_UTC);
+        ImGui::Spacing();ImGui::Separator();
         using namespace NorthlightDiagnosticCapture;
         if(ImGui::Button("Capture world lighting"))request(World);
         ImGui::SameLine();if(ImGui::Button("Capture AO"))request(AO);
         if(ImGui::Button("Capture materials"))request(Materials);
         ImGui::SameLine();if(ImGui::Button("Capture fog"))request(Fog);
+        if(ImGui::Button("Capture weather"))request(Weather);
         ImGui::TextWrapped("Saves the current frame in northlight-diagnostics. Skipped passes produce empty images. Capture frames are excluded from FPS statistics.");
         namespace M=NorthlightMemoryProfile;
         const uint64_t now=M::nowMs();
@@ -679,14 +695,41 @@ struct SettingsPanel::State {
     }
     void shadowRangeTab(){
         ImGui::PushTextWrapPos(0);
-        ImGui::TextColored(Color::Muted,"Terrain shadow reach per region, in yards. Regions not listed use the default reach.");
+        ImGui::TextColored(Color::Muted,"Terrain shadow reach in yards. Save, then restart the game to apply changes.");
         ImGui::PopTextWrapPos();
-        const auto regions=sections(D::ShadowRange);
-        if(regions.empty()){ImGui::TextDisabled("No shadow range profiles.");return;}
-        if(beginRows("ranges")){
-            for(const auto& r:regions)if(const Field* f=draft.field(D::ShadowRange,r,"terrain_radius"))row(*f,regionLabel(r).c_str());
-            ImGui::EndTable();
+        if(const Field* base=draft.field(D::ShadowRange,"default","terrain_radius")){
+            if(beginRows("default-range")){row(*base,"Default reach (yards)");ImGui::EndTable();}
         }
+        ImGui::PushTextWrapPos(0);
+        ImGui::TextColored(Color::Muted,"Zones without an override follow the default. Right-click a zone to restore it.");
+        ImGui::PopTextWrapPos();
+        ImGui::Spacing();
+        const float width=ImGui::GetContentRegionAvail().x;
+        ImGui::SetNextItemWidth(width*.52f);
+        ImGui::PushStyleColor(ImGuiCol_TextDisabled,Color::Muted);
+        ImGui::InputTextWithHint("##shadow-search","Search zones, maps or IDs...",shadowSearch,sizeof shadowSearch);
+        ImGui::PopStyleColor();
+        ImGui::SameLine();ImGui::SetNextItemWidth(-FLT_MIN);
+        const char* maps[]={"All maps","Azeroth","Kalimdor","Expansion01","Northrend"};
+        const char* names[]={"All maps","Eastern Kingdoms","Kalimdor","Outland","Northrend"};
+        ImGui::Combo("##shadow-map",&shadowMap,names,IM_ARRAYSIZE(names));
+        const auto regions=sections(D::ShadowRange);
+        const auto search=NorthlightSettings::lower(shadowSearch);
+        std::vector<const Field*> visible;
+        for(const auto& r:regions){
+            if(r=="default"||(shadowMap&&r.rfind(std::string(maps[shadowMap])+":",0)!=0))continue;
+            if(!search.empty()&&NorthlightSettings::lower(regionLabel(r)).find(search)==std::string::npos)continue;
+            if(const Field* f=draft.field(D::ShadowRange,r,"terrain_radius"))visible.push_back(f);
+        }
+        ImGui::TextColored(Color::Muted,"%u zones",unsigned(visible.size()));
+        if(ImGui::BeginChild("shadow-zones",ImVec2(0,0))){
+            if(visible.empty()){ImGui::PushTextWrapPos(0);ImGui::TextColored(Color::Muted,"No zones match. Clear the search or choose All maps.");ImGui::PopTextWrapPos();}
+            else if(beginRows("ranges")){
+                for(const Field* f:visible){const char* name=find(NorthlightSettings::Regions,f->section);row(*f,name?name:f->section.c_str());}
+                ImGui::EndTable();
+            }
+        }
+        ImGui::EndChild();
     }
 
     // ---- Footer ----
@@ -822,7 +865,8 @@ bool SettingsPanel::draw(float scale){
     ImGui::SetNextWindowPos(ImVec2(48*scale,96*scale),ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(760*scale,680*scale),ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSizeConstraints(ImVec2(560*scale,360*scale),ImVec2(FLT_MAX,FLT_MAX));
-    if(!ImGui::Begin("Northlight settings###NorthlightSettings",&open,ImGuiWindowFlags_NoCollapse)){ImGui::End();return open;}
+    char title[96];std::snprintf(title,sizeof title,"Northlight settings | build %.12s###NorthlightSettings",NORTHLIGHT_SOURCE_ID);
+    if(!ImGui::Begin(title,&open,ImGuiWindowFlags_NoCollapse)){ImGui::End();return open;}
     const auto& style=ImGui::GetStyle();
     const float footer=ImGui::GetTextLineHeightWithSpacing()+ImGui::GetFrameHeightWithSpacing()+style.ItemSpacing.y*2+style.SeparatorTextBorderSize+2;
     // Sidebar (fixed width, scaled) and the selected page; the footer below stays put on every page.

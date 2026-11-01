@@ -13,6 +13,15 @@ int main(){
     assert(!schedule.due(100,light,7,1000,false));
     assert(!schedule.due(132,light,7,256,false));
     assert(schedule.due(133,light,7,256,false));
+    // An explicit small interval must not disable the crowd's reuse floor.
+    for(unsigned interval:{0u,3u,33u}){
+        assert(!schedule.due(132,light,7,256,false,interval));
+        assert(schedule.due(133,light,7,256,false,interval));
+    }
+    assert(!schedule.due(149,light,7,1000,false,50));
+    assert(schedule.due(150,light,7,1000,false,50));
+    assert(!schedule.due(102,light,7,255,false,3));
+    assert(schedule.due(103,light,7,255,false,3));
     assert(schedule.due(101,light,7,255,false));
     assert(schedule.due(101,light,8,1000,false));
     assert(schedule.due(101,light,7,1000,true));

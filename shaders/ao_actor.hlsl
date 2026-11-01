@@ -70,7 +70,7 @@ float ActorGTAO(float2 uv) {
     float2 uvRadius=.5*Options.y*Lighting.xy/p.z;
     uvRadius*=min(1,.25/max(uvRadius.x,uvRadius.y));
     float3 view=-p*rsqrt(max(dot(p,p),1e-12));
-    float2 direction=AORotation(uv);
+    float2 direction=AORotation(uv,.78539816339);
     float loss=0,opened=0;
     [loop]for(int slice=0;slice<4;++slice){
         float3 sd=float3(direction.x,-direction.y,0);
@@ -171,7 +171,7 @@ float ActorHBAO(float2 uv) {
     bool protect=prep.a>.5;
     float2 uvRadius=.5*Options.y*Lighting.xy/p.z;
     uvRadius*=min(1,.25/max(uvRadius.x,uvRadius.y));
-    float2 direction=AORotation(uv);
+    float2 direction=AORotation(uv,.78539816339);
     float2 obscurance=0;
     [loop]for(int directionIndex=0;directionIndex<8;++directionIndex){
         [loop]for(int step=0;step<4;++step){

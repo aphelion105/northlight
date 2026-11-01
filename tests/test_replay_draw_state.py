@@ -42,10 +42,10 @@ loop = world[world.index('d->SetPixelShader(replayPS);')+len('d->SetPixelShader(
 assert 'NorthlightReplayDrawState::Cache replayBindings(d);' in loop
 for forbidden in ('SetTexture(', 'SetSamplerState(', 'SetPixelShader(', 'SetPixelShaderConstantF(', 'SetRenderState('):
     assert forbidden not in loop, forbidden
-cube = point[point.index('NorthlightReplayDrawState::Cache replayBindings(d);'):point.index('// Union: min(scratch, cached static face)')]
+cube = point[point.index('NorthlightReplayDrawState::Cache replayBindings(d);'):point.index('pointSlot().faceWeights[face]=pointDraws-faceDraws;')]
 for forbidden in ('SetTexture(', 'SetSamplerState(', 'SetPixelShader(', 'SetPixelShaderConstantF(', 'SetRenderState('):
     assert forbidden not in cube, forbidden
-assert 'pointCheck(d->SetPixelShader(pointSlot().shadowPS),"cube static PS")' in point
+assert 'pointCheck(d->SetPixelShader(pointShadowPS),"cube static PS")' in point
 # Directional pass: LESSEQUAL depth, no blend/alpha test/stencil, all colour channels; every texture unbound on entry.
 for state in ('{D3DRS_ZFUNC,D3DCMP_LESSEQUAL}', '{D3DRS_ALPHATESTENABLE,FALSE}', '{D3DRS_ALPHABLENDENABLE,FALSE}', '{D3DRS_STENCILENABLE,FALSE}', '{D3DRS_COLORWRITEENABLE,15}'):
     assert state in world, state

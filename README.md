@@ -50,11 +50,12 @@ Every effect below is on by default and is drawn on top of the game's own frame.
   In maps without a world cache (battlegrounds, arenas, and the dungeons and raids that were not added to it), the geometry builder checks the cache once
   per entry and skips the repeated build attempts (0.3.210). These maps get no Northlight shadows, so the game's own
   shadows and its round blob shadows under characters are drawn as the game draws them there. Dungeons and raids are an optional part of the cache:
-  the installer asks which of six groups (Classic, TBC and Wrath dungeons and raids; about 0.3-1.3 GB and 1-2
-  build minutes each) to build, `--instances` answers for it, and changing the choice never rebuilds the continents.
+  on the first install, the installer asks which of six groups (Classic, TBC and Wrath dungeons and raids; about 0.3-1.3 GB and 1-2
+  build minutes each) to build. Updates keep the saved choice; `--instances` changes it.
+  Current caches are reused, and light-only updates keep instance geometry. Changing the choice never rebuilds the continents.
 - **Lamps.** Up to 48 nearby lamps (Quality; `LocalLightLimit`, 8..128), lanterns, braziers and fires light the ground and walls around
   them and glow in the fog. Lamps in view take the slots first, and nearby lamps on screen are batched together. In direct sun lamps dim. Local shadows are enabled by default:
-  four compact sources at once, adjustable with `PointShadowLimit` in the Shadows menu.
+  64 compact sources by default, adjustable from 16 to 128 with `PointShadowLimit` in the Shadows menu.
   Torches, candles, lamps and compact fires cast shadows; diffuse glows, runes and sparkles do not.
   Shadows work day and night, fading where their source is weak compared with sunlight at the
   receiver. Each pass removes only the blocked contribution added by Northlight's matching direct
@@ -69,7 +70,7 @@ Every effect below is on by default and is drawn on top of the game's own frame.
   from memory (type including sand, intensity; plain reads, nothing is hooked or patched), so the art layer is not required for
   detection; the effects still follow the weather only on frames where the sky is drawn (indoors they fade out). It falls back to
   the textures the art layer ships when that read fails, and `WeatherMemory=0` uses only those and reads nothing from the weather state (they need the Northlight art layer; `Weather`, `RainFog`). Because the game's weather state does not depend on the `weatherDensity` setting, the rain look also comes on when the game's own rain particles are turned off; `Weather=0` (or F10) turns Northlight's weather look off. The game's rain streaks are drawn alpha-blended so they stay crisp instead of taking the background's colour, and the game's mist puffs, which darkened night and storm rain into black balls, are left out while it rains; snow and sand storms keep them.
-- **Camera weather.** Outdoor rain adds moving refractive droplets and trails; snow adds soft ice that adheres and melts. `RainLens` and `SnowLens` toggle them independently in the settings window, with `RainLensStrength` and `SnowLensStrength` from 0 to 100 (default 60). Both are on in every preset, require `Weather`, and disappear when the outdoor/shelter check fails. The pass is skipped when disabled or invisible.
+- **Camera weather.** Rain adds refractive drops that collect water along curved rivulets (`RainRivulets`). Snow adds crystalline flakes and an independent frost vignette that grows with snow accumulation and storm intensity, and melts near fire (`SnowFrost`, `SnowFrostStrength`). Sandstorms add windblown ochre grains and sandy edge deposits (`SandLens`). Each has size/strength controls in the settings window and in the [standalone weather lab](renderer/docs/weather-lab.md). Camera effects require `Weather`, hide under shelter and skip drawing when disabled or invisible.
 - **Fog clouds.** Low fog banks that drift with the wind, thicker and faster in rain, few and faint in clear
   weather and only in forest and grass zones then (its own half-resolution pass; `FogClouds`, `FogCloudDensity`). Ctrl+Shift+F7 (fog) and F10 turn
   them off with the rest; the Performance preset has them off. The fog is also smoothed over frames so lamp glows

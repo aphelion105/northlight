@@ -7,11 +7,18 @@ s=(root/'src/water/surface_renderer.h').read_text(encoding='utf-8')
 surface=r[r.index('    void surfaceWeather(){'):r.index('    void renderEffects() {')]
 assert 'world->weatherSetting()' in surface and 'memoryGuard.capsHalved()' in surface
 assert 'weather.kind!=NorthlightWeather::Kind::Rain' in surface and 'weather.kind!=NorthlightWeather::Kind::Snow' in surface and 'weather.blend<=0' in surface
-assert 'skyBandSeen&&world->supplementalWeatherOutdoors()' in surface
-assert surface.index('if(!outside)')<surface.index('surface->precipitation(')<surface.index('surface->lens(')
+assert 'skyBandSeen' not in surface
+assert surface.index('surface->precipitation(')<surface.index('world->supplementalWeatherOutdoors()')<surface.index('surface->lens(')
+frame=r[r.index('    void weatherFrame('):r.index('    void logWeatherProbe(')]
+assert 'NorthlightWeatherMemory::counts(memoryWanted,memory.valid)' in frame
+hotkey=r[r.index('        if(k12&&!key12){'):r.index('        key12=k12;')]
+assert 'if(accepted)NorthlightDiagnosticCapture::request(NorthlightDiagnosticCapture::Weather);' in hotkey
 assert 'snow?q.snowLens:q.rainLens' in surface and 'snow?q.snowLensStrength:q.rainLensStrength' in surface
-assert 'if(lensOn&&strength&&scene&&sceneSurface)' in surface and 'nameDepth' in surface
-assert 'nameDepth,weather.intensity,snow?world->weatherLensHeat():0.f)' in surface
+assert 'if(cameraWanted&&world->supplementalWeatherOutdoors())' in surface and 'nameDepth' in surface
+assert 'nameDepth,weather.intensity,snow?world->weatherLensHeat():0.f,float(snow?q.snowLensSize:q.rainLensSize)*.01f,snow||q.rainRivulets!=0,frost)' in surface
+assert 'surface->sandLens(' in surface and 'if(!sand){surface->precipitation(' in surface
+assert 'surface->setMotion(context,unsigned(weather.kind),q,surfaceTime)' in surface
+assert 'snow&&q.snowFrost' in surface and 'q.snowFrostStrength' in surface
 assert 'lensState.advance(time,intensity,snow,heat' in s
 replay=r[r.index('    void spellReplay(){'):r.index('    // Frame end (finishFrameImpl')]
 assert replay.index('spell.replay()')<replay.rindex('surfaceWeather();')

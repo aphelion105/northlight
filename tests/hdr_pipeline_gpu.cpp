@@ -31,7 +31,7 @@ struct Surface {
         else ok(d->CreateRenderTarget(w,h,format,samples,0,FALSE,&surface,nullptr));
     }
 };
-struct Scenario {const char* name;unsigned w,h,samples,sprites,ui;bool material,sky,expansion,mask,automatic,bloom,mirror;bool combinedAllowed=true;};
+struct Scenario {const char* name;unsigned w,h,samples,sprites,ui;bool material,sky,expansion,mask,automatic,bloom,mirror;bool combinedAllowed=true,groundOnly=false;};
 struct Graph {
     DeviceMeter* d;Scenario c;NorthlightStateBlockPool pool;
     NorthlightHdr::Frame hdr;NorthlightHdr::Color color;NorthlightHdr::Settings settings;
@@ -53,7 +53,11 @@ struct Graph {
         Image z{c.w,c.h,D3DFMT_R32F,4,std::vector<unsigned char>(std::size_t(c.w)*c.h*4)};
         for(unsigned y=0;y<c.h;++y)for(unsigned x=0;x<c.w;++x){
             auto* p=im.pixels.data()+(std::size_t(y)*c.w+x)*4;p[0]=32+x*191/c.w;p[1]=16+y*223/c.h;p[2]=64+(x^y)%160;p[3]=255;
-            float v=x<c.w/3?1.f:x<2*c.w/3?.9985f:.47f;std::memcpy(z.pixels.data()+(std::size_t(y)*c.w+x)*4,&v,4);
+            float v=x<c.w/3&&!c.groundOnly?1.f:x<2*c.w/3?.9985f:.47f;
+            // Exercise the exact raw-depth clear threshold, independently of the
+            // viewport range, and the no-sky view when flying above terrain.
+            if(y<8&&!c.groundOnly)v=1.f-float(x%3)/16777216.f;
+            std::memcpy(z.pixels.data()+(std::size_t(y)*c.w+x)*4,&v,4);
         }
         if(!capture.empty()){im=image(capture+"scene.fgr");z=image(capture+"depth.fgr");assert(im.width==c.w&&im.height==c.h&&im.bytes==4&&z.format==D3DFMT_R32F);}
         source=texture(d,im);depth=texture(d,z);
@@ -67,7 +71,7 @@ struct Graph {
         bank[20][2]=bank[30][2]=1;bank[33][0]=c.w;bank[33][1]=c.h;bank[33][2]=c.w/2;bank[33][3]=c.h/2;
         bank[73][0]=.75f;bank[73][1]=48;bank[74][2]=1;bank[76][0]=.15f;bank[76][1]=.1f;bank[76][2]=.05f;
         settings.autoExposure=c.automatic;settings.bloom=c.bloom?1:0;settings.legacyExpansion=c.expansion?2:0;
-        eligible=!c.sky&&!c.expansion&&!c.mask;
+        eligible=!c.expansion&&!c.mask;
     }
     ~Graph(){
         hdr.reset();color.reset();pool.clear();
@@ -110,8 +114,9 @@ struct Graph {
         const bool combinedMaterial=mode==2&&c.material&&combined;
         quad(c.material&&!combinedMaterial?(useHdr?material.surface:materialSdr.surface):target,combinedMaterial?combined:world[useHdr],legacy.texture);
         for(unsigned i=1;i<16;++i)ok(d->SetTexture(i,black));
-        ok(d->SetTexture(1,depth));ok(d->SetTexture(2,useHdr?(inlineBase?legacy.texture:hdr.texture()):black));
-        ok(d->SetSamplerState(2,D3DSAMP_SRGBTEXTURE,inlineBase));
+        ok(d->SetTexture(1,depth));ok(d->SetTexture(2,useHdr?(inlineBase&&!c.sky?legacy.texture:hdr.texture()):black));
+        ok(d->SetSamplerState(2,D3DSAMP_SRGBTEXTURE,inlineBase&&!c.sky));
+        bank[78][2]=inlineBase&&c.sky?1.f:0.f;
         ok(d->SetTexture(8,lighting));ok(d->SetTexture(9,fog));ok(d->SetTexture(10,white));ok(d->SetTexture(12,baseline));ok(d->SetTexture(14,normal));ok(d->SetTexture(15,distance));
         if(combinedMaterial){ok(d->SetTexture(4,fog));ok(d->SetTexture(5,legacy.texture));ok(d->SetTexture(6,white));ok(d->SetTexture(9,height));}
         ok(d->SetPixelShaderConstantF(0,bank[0],79));if(!c.material||combinedMaterial)maskBind();ok(NorthlightHdr::drawQuad(d,c.w,c.h));
@@ -176,6 +181,8 @@ int main(int argc,char** argv){
         {"material-particles-4k-msaa8",3840,2160,8,96,64,true,false,false,false,true,true,false},
         {"manual-no-bloom-4k",3840,2160,0,0,0,true,false,false,false,false,false,false},
         {"sky-4k-msaa8",3840,2160,8,32,16,true,true,false,false,true,true,false},
+        {"sky-downward-4k-msaa8",3840,2160,8,32,16,true,true,false,false,true,true,false,true,true},
+        {"sky-world-1080",1920,1080,0,0,16,false,true,false,false,true,true,false},
         {"expansion-1080",1920,1080,4,32,16,true,false,true,false,true,true,false},
         {"stencil-1080",1920,1080,8,16,16,true,false,false,true,true,true,false},
         {"sdr-copy-4k-msaa8",3840,2160,8,32,16,true,false,false,false,true,true,true},

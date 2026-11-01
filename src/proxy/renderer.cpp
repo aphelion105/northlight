@@ -1,5 +1,6 @@
 // Client-local D3D9 extension. Read-only, signature-gated world context; no game launch code.
 #define WIN32_LEAN_AND_MEAN
+#include "utf8_path.h"
 #include <windows.h>
 #include <d3d9.h>
 #include <cstdio>
@@ -289,6 +290,7 @@ template<class T> static uint64_t shaderHash(T* shader, std::vector<DWORD>& word
 #include "stand_api.h"
 #endif
 #include "surface_renderer.h"
+#include "weather_diagnostics.h"
 #include "auto_bump_renderer.h"
 #include "model_normal_renderer.h"
 #include "client_latency_diagnostics.h"
@@ -435,7 +437,7 @@ class Device final : public GuardedMirrorDevice {
     IDirect3DTexture9 *scene = nullptr, *depthTex = nullptr, *ao = nullptr, *aoRaw = nullptr;
     IDirect3DSurface9 *sceneSurface = nullptr, *aoSurface = nullptr, *aoRawSurface = nullptr, *worldDepth = nullptr;
     D3DSURFACE_DESC worldDepthDesc={};bool worldDepthDescKnown=false; // 0.3.196 (task 12): worldDepth's desc (a held reference, so the object and its desc are fixed); cleared when worldDepth is dropped
-    IDirect3DPixelShader9 *aoPS = nullptr, *aoBlurPS = nullptr, *aoContactBloomPS = nullptr, *contactBloomPS = nullptr, *compositePS = nullptr;
+    IDirect3DPixelShader9 *aoPS = nullptr, *aoBlurPS = nullptr, *aoContactBloomPS = nullptr, *aoOnlyPS = nullptr, *contactBloomPS = nullptr, *compositePS = nullptr;
     std::unique_ptr<NorthlightAOActorStencil> aoActorMask;
     IDirect3DPixelShader9 *aoActorPreparePS=nullptr, *aoActorPS=nullptr, *aoActorAlphaPS=nullptr;
     unsigned aoActorFrame=~0u;bool aoActorOn=false,aoActorDrawKnown=false,aoActorDrawSkin=false,aoActorDepthWrite=false,aoActorUsed=false;
@@ -790,7 +792,15 @@ private:
         return owner.projectedDraw(args.primCount,afterEffects?3u:2u,[&]{
             if(afterEffects&&owner.hdrSceneReady&&owner.hdrBackTarget()){
                 const HRESULT hr=owner.hdrBindBack(owner.hdrPresentBack);if(FAILED(hr))return hr;
-                return owner.hdrColor.draw(device,80,[&]{return args.submit(device);});
+                // Replay has restored the native shaders. Only exact known
+                // particle VS identities opt into the proven additive transfer.
+                unsigned family=0;IDirect3DVertexShader9* vs=nullptr;
+                if(SUCCEEDED(device->GetVertexShader(&vs))&&vs){
+                    const auto tag=owner.vsTags.find(vs);
+                    if(tag!=owner.vsTags.end())family=unsigned(tag->second>>kFamilyShift)&7u;
+                }
+                if(vs)vs->Release();
+                return owner.hdrColor.draw(device,80,[&]{return args.submit(device);},family);
             }
             return args.submit(device);
         });
@@ -933,6 +943,31 @@ private:
         if(world)world->endFrame(!extensionFault,frame);if(water)water->endFrame();if(surface)surface->endFrame();if(autoBump)autoBump->endFrame();if(modelNormals)modelNormals->endFrame();if(celestialDiscs)celestialDiscs->endFrame();if(shadowBlobs)shadowBlobs->endFrame();
         drop(worldDepth);worldDepthDescKnown=false; rainMrtUnbind();terrain = captured = applied = projectionValid = skySeen = false;rainMaskCleared=rainMaskDrawn=rainMaskFrame=rainMaskOk=rainDepthOk=false; /* 0.3.202 (rain mask MRT): RT1 never outlives a frame */earlyDepth.reset();resetTranslucentCensus(); /* the TRANSLUCENT line is logged before clearFrame */
     }
+    void captureWeatherDiagnostics(const NorthlightSurfaceFrame* constants,IDirect3DSurface9* target,IDirect3DSurface9* nameDepth,const char* unavailable,
+                                   const std::string& directory={},bool consumeRequest=true){
+        if(consumeRequest&&!NorthlightDiagnosticCapture::take(NorthlightDiagnosticCapture::Weather))return;
+        gpuDiagnosticFrame=true;
+        try{
+            const auto folder=directory.empty()?NorthlightWorldDiagnostics::directory(std::filesystem::path(rootPath).u8string()):directory;
+            if(folder.empty())return;
+            ExtensionDevice::RawScope raw(*ext);
+            NorthlightWeatherDiagnostics::Frame snapshot;
+            snapshot.constants=constants;snapshot.rendererFrame=frame;snapshot.width=width;snapshot.height=height;snapshot.layerGate=weatherLayerGate;
+            snapshot.skySeen=skyBandSeen;snapshot.linearHdr=hdrSceneReady;snapshot.nameMaskRequired=nameDepth!=nullptr;snapshot.unavailable=unavailable;
+            snapshot.sourceSamples=worldDepthDescKnown?unsigned(worldDepthDesc.MultiSampleType):0;
+            snapshot.multisampleVerified=NorthlightBackend::isPackagedDxvk(selectedBackend);
+            if(world){snapshot.quality=&world->surfaceSettings();snapshot.weather=&world->weather();
+                const bool snow=snapshot.weather->kind==NorthlightWeather::Kind::Snow,sand=snapshot.weather->kind==NorthlightWeather::Kind::Sand;const auto& q=*snapshot.quality;
+                const bool cameraWanted=sand?(q.sandLens&&q.sandLensStrength):(((snow?q.snowLens:q.rainLens)&&(snow?q.snowLensStrength:q.rainLensStrength))||(snow&&q.snowFrost&&q.snowFrostStrength));
+                if(constants&&cameraWanted&&(sand||(scene&&sceneSurface))){
+                    snapshot.lensExposureKnown=true;snapshot.lensExposed=world->supplementalWeatherOutdoors();
+                    if(snow&&snapshot.lensExposed)snapshot.heat=world->weatherLensHeat();
+                }
+            }
+            const bool complete=NorthlightWeatherDiagnostics::capture(ext,folder,snapshot,depthTex,target,nameDepth);
+            logf("WEATHER capture rendererFrame=%u complete=%u directory=%s reason=%s",frame,unsigned(complete),folder.c_str(),unavailable?unavailable:complete?"captured":"required-export-failed");
+        }catch(...){logf("WEATHER capture unavailable: diagnostic failure");}
+    }
     void captureEffectDiagnostics(){
         using namespace NorthlightDiagnosticCapture;
         const unsigned scopes=take();const bool fallback=world&&world->needsDiagnosticFallback();
@@ -947,7 +982,8 @@ private:
         try{
             const auto directory=NorthlightWorldDiagnostics::directory(std::filesystem::path(rootPath).u8string());
             if(directory.empty())return;
-            if(FILE* f=std::fopen((directory+"/capture-1-frame.json").c_str(),"wb")){
+            if(scopes&Weather)captureWeatherDiagnostics(nullptr,nullptr,nullptr,"weather-pass-not-reached",directory,false);
+            if(FILE* f=NorthlightFiles::open((directory+"/capture-1-frame.json").c_str(),"wb")){
                 auto finite=[](float value){return std::isfinite(value)?value:0.f;};
                 std::fprintf(f,"{\"renderer_frame\":%u,\"scopes\":%u,\"effects_enabled\":%s,\"projection_valid\":%s,\"ao_enabled\":%s,\"ao_method\":%u,\"ao_strength\":%.9g,\"ao_radius\":%.9g,\"near\":%.9g,\"far\":%.9g,\"projection_scale\":[%.9g,%.9g],\"depth_range\":[%.9g,%.9g],\"fps_eligible\":false}\n",frame,scopes,enabled?"true":"false",projectionValid?"true":"false",contactAO?"true":"false",aoMethod,finite(aoStrength),finite(aoRadius),finite(nearZ),finite(farZ),finite(scaleX),finite(scaleY),finite(worldMinDepth),finite(worldMaxDepth));
                 std::fclose(f);
@@ -980,7 +1016,7 @@ private:
         drop(aoActorPreparePS);drop(aoActorPS);drop(aoActorAlphaPS);aoActorShaderFailed=false;
         rainMrtUnbind();stateBlocks.clear();clearFrame();maskFormatFor=nullptr;maskFormatValue=0;maskStencil=false;maskDsId=nullptr; /* 0.3.212 (task 32): the depth may change with the device */
         drop(sceneSurface); drop(aoSurface); drop(aoRawSurface); drop(scene); drop(depthTex); drop(ao); drop(aoRaw);drop(rainMaskMS);drop(rainMaskSurface);drop(rainMask);drop(rainDepth);rainMaskFailed=false; /* 0.3.202 (rain) */
-        drop(aoPS); drop(aoBlurPS); drop(aoContactBloomPS); drop(contactBloomPS); drop(compositePS);drop(rainMrtPS);drop(rainScrubPS); width = height = 0;
+        drop(aoPS); drop(aoBlurPS); drop(aoContactBloomPS); drop(aoOnlyPS); drop(contactBloomPS); drop(compositePS);drop(rainMrtPS);drop(rainScrubPS); width = height = 0;
     }
     bool error(HRESULT hr, const char* stage) {
         if (SUCCEEDED(hr)) return false;
@@ -988,6 +1024,7 @@ private:
         failed = true; return true;
     }
     void selectAO(unsigned method,unsigned quality){
+        if(aoMethod!=method||(method&&aoQuality!=quality))drop(aoOnlyPS);
         if(aoMethod!=method){drop(aoContactBloomPS);drop(aoActorPS);drop(aoActorAlphaPS);aoActorShaderFailed=false;}
         else if(method&&aoQuality!=quality)drop(aoContactBloomPS);
         aoMethod=method;aoQuality=quality;
@@ -1006,12 +1043,19 @@ private:
             :NorthlightBackend::isPackagedDxvk(selectedBackend)&&!df24Refused&&worldDepthDescKnown&&worldDepthDesc.MultiSampleType==D3DMULTISAMPLE_NONE?df24:intz;
         if(!colorOnly){
             // Method switches replace shaders while keeping the existing scene/depth targets.
-            const DWORD* aoContactShaders[3][4]={
-                {kAoContactBloomShader,kHdaoContactBloomShader,kHbaoPlusContactBloomShader,kGtaoContactBloomShader},
-                {kAoContactBloomShader,kHdaoContactBloomMediumShader,kHbaoPlusContactBloomMediumShader,kGtaoContactBloomMediumShader},
-                {kAoContactBloomShader,kHdaoContactBloomLowShader,kHbaoPlusContactBloomLowShader,kGtaoContactBloomLowShader}};
+            const DWORD* aoContactShaders[3][5]={
+                {kAoContactBloomShader,kHdaoContactBloomShader,kHbaoPlusContactBloomShader,kGtaoContactBloomShader,kAssaoContactBloomShader},
+                {kAoContactBloomShader,kHdaoContactBloomMediumShader,kHbaoPlusContactBloomMediumShader,kGtaoContactBloomMediumShader,kAssaoContactBloomMediumShader},
+                {kAoContactBloomShader,kHdaoContactBloomLowShader,kHbaoPlusContactBloomLowShader,kGtaoContactBloomLowShader,kAssaoContactBloomLowShader}};
             if (!aoPS && error(ext->CreatePixelShader(kAoShader, &aoPS), "AO shader")) return false;
             if (!aoContactBloomPS && error(ext->CreatePixelShader(aoContactShaders[aoQuality][aoMethod], &aoContactBloomPS), "AO contact bloom shader")) return false;
+            if((hdr.active||aoMethod)&&!aoOnlyPS){
+                const DWORD* shaders[3][5]={
+                    {kAoOnlyShader,kHdaoOnlyShader,kHbaoPlusOnlyShader,kGtaoOnlyShader,kAssaoOnlyShader},
+                    {kAoOnlyShader,kHdaoOnlyMediumShader,kHbaoPlusOnlyMediumShader,kGtaoOnlyMediumShader,kAssaoOnlyMediumShader},
+                    {kAoOnlyShader,kHdaoOnlyLowShader,kHbaoPlusOnlyLowShader,kGtaoOnlyLowShader,kAssaoOnlyLowShader}};
+                if(error(ext->CreatePixelShader(shaders[aoQuality][aoMethod],&aoOnlyPS),"AO alpha shader"))return false;
+            }
             if (!aoBlurPS && error(ext->CreatePixelShader(kAoBlurShader, &aoBlurPS), "AO blur shader")) return false;
             if (!contactBloomPS && error(ext->CreatePixelShader(kContactBloomShader, &contactBloomPS), "contact bloom shader")) return false;
             if (!compositePS && error(ext->CreatePixelShader(kCompositeShader, &compositePS), "composite shader")) return false;
@@ -1209,21 +1253,32 @@ private:
         context.c[1][3]=surfaceTime;context.c[2][0]=worldMinDepth;context.c[2][1]=1.f/(worldMaxDepth-worldMinDepth);return true;
     }
     void surfaceWeather(){
-        if(!surface||!world||!applied||!enabled||failed||debugMode||worldDebug||!depthTex||!world->weatherSetting()||world->underwaterScale()<.9f||memoryGuard.capsHalved()){weatherLayerGate=0;return;}
+        const bool diagnostic=(NorthlightDiagnosticCapture::pending().load(std::memory_order_relaxed)&NorthlightDiagnosticCapture::Weather)!=0;
+        if(!surface||!world||!applied||!enabled||failed||debugMode||worldDebug||!depthTex||!world->weatherSetting()||world->underwaterScale()<.9f||memoryGuard.capsHalved()){weatherLayerGate=0;if(diagnostic)captureWeatherDiagnostics(nullptr,nullptr,nullptr,"weather-pass-unavailable");return;}
         const auto& weather=world->weather();
-        if((weather.kind!=NorthlightWeather::Kind::Rain&&weather.kind!=NorthlightWeather::Kind::Snow)||weather.blend<=0){weatherLayerGate=0;return;}
-        const bool outside=skyBandSeen&&world->supplementalWeatherOutdoors();
-        if(!outside){weatherLayerGate=0;return;}weatherLayerGate+=(1-weatherLayerGate)*.1f;
-        NorthlightSurfaceFrame context;if(!surfaceContext(context))return;
+        if((weather.kind!=NorthlightWeather::Kind::Rain&&weather.kind!=NorthlightWeather::Kind::Snow&&weather.kind!=NorthlightWeather::Kind::Sand)||weather.blend<=0){weatherLayerGate=0;if(diagnostic)captureWeatherDiagnostics(nullptr,nullptr,nullptr,"no-active-weather");return;}
+        // A roof above the camera only shelters the lens. The visible exterior
+        // must keep its precipitation; scene depth clips it at foreground roofs.
+        // Looking away from the sky does not end the weather.
+        weatherLayerGate+=(1-weatherLayerGate)*.1f;
+        NorthlightSurfaceFrame context;if(!surfaceContext(context)){if(diagnostic)captureWeatherDiagnostics(nullptr,nullptr,nullptr,"surface-context-unavailable");return;}
         context.c[3][0]=weatherLayerGate*weather.blend*(.35f+.65f*weather.intensity);context.c[3][1]=weather.kind==NorthlightWeather::Kind::Snow?1.f:0.f;
-        ExtensionDevice::RawScope raw(*ext);SavedState saved(ext,&stateBlocks);if(!saved.ok)return;
+        const auto& q=world->surfaceSettings();const bool snow=weather.kind==NorthlightWeather::Kind::Snow,sand=weather.kind==NorthlightWeather::Kind::Sand;
+        context.c[3][2]=(float(snow?q.snowFlakeSize:q.rainDropSize)-100.f)*.01f;
+        surface->setMotion(context,unsigned(weather.kind),q,surfaceTime);
+        ExtensionDevice::RawScope raw(*ext);SavedState saved(ext,&stateBlocks);if(!saved.ok){if(diagnostic)captureWeatherDiagnostics(nullptr,nullptr,nullptr,"state-save-failed");return;}
         IDirect3DSurface9* nameDepth=nameMask.armed()&&nameMask.hasMarks()&&maskStencil?worldDepth:nullptr;
         auto* weatherTarget=hdrSceneReady?hdrPresentBack:saved.targets[0];
-        surface->precipitation(weatherTarget,depthTex,width,height,context,world->qualityPreset(),nameDepth);
-        gpuProfile->mark("Precipitation");
-        const auto& q=world->surfaceSettings();const bool snow=weather.kind==NorthlightWeather::Kind::Snow;
+        if(diagnostic)captureWeatherDiagnostics(&context,weatherTarget,nameDepth,nullptr);
+        if(!sand){surface->precipitation(weatherTarget,depthTex,width,height,context,world->qualityPreset(),nameDepth);gpuProfile->mark("Precipitation");}
         const unsigned lensOn=snow?q.snowLens:q.rainLens,strength=snow?q.snowLensStrength:q.rainLensStrength;
-        if(lensOn&&strength&&scene&&sceneSurface){surface->lens(weatherTarget,hdrSceneReady?hdrFrame.texture():scene,hdrSceneReady?hdrFrame.surface():sceneSurface,width,height,snow,surfaceTime,context.c[3][0]*float(strength)*.01f,nameDepth,weather.intensity,snow?world->weatherLensHeat():0.f);gpuProfile->mark("WeatherLens");}
+        const float frost=snow&&q.snowFrost?context.c[3][0]*float(q.snowFrostStrength)*.01f:0;
+        const bool cameraWanted=sand?(q.sandLens&&q.sandLensStrength):((lensOn&&strength)||frost>0);
+        if(cameraWanted&&world->supplementalWeatherOutdoors()){
+            if(sand)surface->sandLens(weatherTarget,width,height,surfaceTime,context.c[3][0]*float(q.sandLensStrength)*.01f,nameDepth,weather.intensity,float(q.sandLensSize)*.01f);
+            else if(scene&&sceneSurface)surface->lens(weatherTarget,hdrSceneReady?hdrFrame.texture():scene,hdrSceneReady?hdrFrame.surface():sceneSurface,width,height,snow,surfaceTime,lensOn?context.c[3][0]*float(strength)*.01f:0,nameDepth,weather.intensity,snow?world->weatherLensHeat():0.f,float(snow?q.snowLensSize:q.rainLensSize)*.01f,snow||q.rainRivulets!=0,frost);
+            gpuProfile->mark("WeatherLens");
+        }
     }
     void renderEffects() {
         if(hdr.active&&!hdrAtUiBoundary)return;
@@ -1294,6 +1349,7 @@ private:
         effectsBuckets.mark(Bucket::Celestial); /* discs, glare, the terrain mask prepare, the ring */
         if (error(ext->StretchRect(saved.targets[0], nullptr, sceneSurface, nullptr, D3DTEXF_NONE), "copy scene")) return;
         effectState();
+        const bool linearHdr=hdr.active&&debugMode==0&&worldDebug==0;
         float constants[]={1.f/width,1.f/height,nearZ,farZ,scaleX,scaleY,aoStrength,(world&&world->screenReady()?0.f:.12f),.08f,aoRadius,float(debugMode),0,worldMinDepth,1.f/(worldMaxDepth-worldMinDepth),worldMaxDepth,0};
 
         float waterFlags[]={waterMask?1.f:0.f,0,0,0};
@@ -1312,7 +1368,7 @@ private:
         if (!contactAO) {
             // 0.3.201 (task 18) ContactAO=0: no AO and no AOBlur. A ready world gets the bloom with AO 1 straight into `ao` (ContactBloom);
             // the legacy composite gets a neutral ambient (AO 1, no bounce) from a clear. SetRenderTarget resets the viewport; scissor and depth are off (effectState).
-            if (constants[7]==0.f) {
+            if (constants[7]==0.f&&!linearHdr) {
                 if (error(ext->SetRenderTarget(0,aoSurface),"contact bloom render target")) return;
                 ext->SetPixelShader(contactBloomPS);
                 if (error(quad(width/2,height/2,false),"contact bloom pass")) return;
@@ -1325,7 +1381,8 @@ private:
             effectsBuckets.mark(Bucket::AO);
         } else {
             IDirect3DTexture9* actorTexture=aoActorOn?aoActorMask->textureForDepth(worldDepth):nullptr;
-            aoActorUsed=actorTexture&&aoActorShaders(constants[7]!=0.f);
+            const bool alphaOnly=linearHdr||constants[7]!=0.f;
+            aoActorUsed=actorTexture&&aoActorShaders(alphaOnly);
             if(aoActorUsed){
                 ext->SetTexture(4,actorTexture);
                 ext->SetSamplerState(4,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);ext->SetSamplerState(4,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);
@@ -1338,12 +1395,12 @@ private:
                 if(error(quad(width/2,height/2,false),"actor AO preparation pass"))return;
                 gpuProfile->mark("AOActorPrepare");
             }
-            IDirect3DPixelShader9* contactShader=aoActorUsed?(constants[7]==0.f?aoActorPS:aoActorAlphaPS):aoContactBloomPS;
+            IDirect3DPixelShader9* contactShader=aoActorUsed?(alphaOnly?aoActorAlphaPS:aoActorPS):(alphaOnly?aoOnlyPS:aoContactBloomPS);
             if (error(ext->SetRenderTarget(0,aoRawSurface),"AO render target")) return;
             if(aoActorUsed)ext->SetTexture(2,ao);
-            ext->SetPixelShader(constants[7]==0.f?contactShader:aoPS);
+            ext->SetPixelShader(linearHdr||constants[7]==0.f?contactShader:aoPS);
             if (error(quad(width/2,height/2,false),"AO pass")) return;
-            if (constants[7]!=0.f && aoMethod) {
+            if (!linearHdr && constants[7]!=0.f && aoMethod) {
                 // Keep the original fallback colour bounce in RGB; replace only AO.
                 // Splitting these kernels keeps GTAO below the ps_3_0 slot limit.
                 ext->SetRenderState(D3DRS_COLORWRITEENABLE,D3DCOLORWRITEENABLE_ALPHA);
@@ -1384,10 +1441,9 @@ private:
         const bool fold=world&&debugMode==0&&world->screenReady();
         /* 0.3.212 (task 32): this frame's name marks: the composite quads draw with the world depth-stencil bound and reject marked pixels; no marks, or the feature off: exactly the old calls */
         const bool maskOn=nameMask.armed()&&nameMask.hasMarks()&&maskStencil&&worldDepth&&worldDebug==0;nameMask.composited=maskOn;
-        const bool linearHdr=hdr.active&&debugMode==0&&worldDebug==0;
         IDirect3DSurface9* outputTarget=linearHdr?hdrPresentBack:saved.targets[0];
         if(linearHdr)hdrFrameSettings=effectiveHdrSettings();
-        const bool inlineHdrBase=linearHdr&&fold&&!maskOn&&!hdrSkyValid&&hdrFrameSettings.legacyExpansion==0&&
+        const bool inlineHdrBase=linearHdr&&fold&&!maskOn&&hdrFrameSettings.legacyExpansion==0&&
             (sceneFormat==D3DFMT_A8R8G8B8||sceneFormat==D3DFMT_X8R8G8B8);
         if(linearHdr){
             if(error(hdrFrame.prepareLegacy(ext,scene,depthTex,hdrSkyValid?hdrPresentBack:nullptr,width,height,worldMinDepth,worldMaxDepth,hdrFrameSettings,&stateBlocks,!inlineHdrBase),"HDR legacy decode"))return;
@@ -1412,7 +1468,7 @@ private:
             world->setRainMask(rainMaskTex); /* 0.3.202 (rain): RainMask for this frame's composite only (resolved and scrubbed at the top of renderEffects) */
             // Expanded legacy inputs retain two passes: the combined variant
             // regresses reproducibly on DXVK 2 with that transfer path.
-            const bool rendered=world->render(outputTarget,depthTex,width,height,sceneFormat,nearZ,farZ,worldMinDepth,worldMaxDepth,worldDebug,gpuProfile.get(),waterMask,fold?scene:nullptr,fold?ao:nullptr,frame,linearHdr?(inlineHdrBase?scene:hdrFrame.texture()):nullptr,inlineHdrBase,hdrFrameSettings.legacyExpansion==0);
+            const bool rendered=world->render(outputTarget,depthTex,width,height,sceneFormat,nearZ,farZ,worldMinDepth,worldMaxDepth,worldDebug,gpuProfile.get(),waterMask,fold?scene:nullptr,fold?ao:nullptr,frame,linearHdr?(inlineHdrBase&&!hdrSkyValid?scene:hdrFrame.texture()):nullptr,inlineHdrBase&&!hdrSkyValid,hdrFrameSettings.legacyExpansion==0,inlineHdrBase&&hdrSkyValid);
             diagnosticWorld=rendered;
             if(world->diagnosticCaptureInLastRender()){
                 gpuDiagnosticFrame=true;
@@ -1430,7 +1486,7 @@ private:
             // A folded frame the world did not composite (skipped or failed; it left the target
             // untouched): re-establish the effect state it changed, then the legacy composite.
             if(fold&&!world->composited){
-                if(inlineHdrBase&&error(hdrFrame.prepareLegacy(ext,scene,depthTex,nullptr,width,height,worldMinDepth,worldMaxDepth,hdrFrameSettings,&stateBlocks),"HDR fallback decode"))return;
+                if(inlineHdrBase&&error(hdrFrame.prepareLegacy(ext,scene,depthTex,hdrSkyValid?hdrFrame.surface():nullptr,width,height,worldMinDepth,worldMaxDepth,hdrFrameSettings,&stateBlocks),"HDR fallback decode"))return;
                 effectState();bindEffects(ao);if(!legacyComposite())return;
             }
         }
@@ -2199,7 +2255,7 @@ private:
         // 0.3.198 (rain): the whole per-draw cost of weather detection, before any other work and in both gate paths: one pointer comparison.
         if(weatherDetect.hot&&mirrorState.textureKnown[0]&&mirrorState.textures[0]==weatherDetect.hot){weatherSample.primitives+=count;++weatherSample.draws;rainBlend=weatherDetect.hotKind==NorthlightWeather::Kind::Rain&&world&&world->rainBlendSetting();} /* 0.3.199 (rain): counted after applied too (the rest of the rain); 0.3.202: no boundary here, the effects run at the UI again */
         else if(weatherDetect.mistArmed)mist=mistDraw(count); /* 0.3.199 (rain mist): a mist puff in rain is skipped; unarmed, one bool test */
-        if(!skyBandSeen&&mirrorState.viewportKnown&&NorthlightWorldDrawDomain::classify(worldMinDepth,worldMaxDepth,mirrorState.viewport.MinZ,mirrorState.viewport.MaxZ)==NorthlightWorldDrawDomain::Band::Sky)skyBandSeen=true; /* WeatherMemory: the world drew in the sky band this frame (the mirror's viewport, no device read) */
+        if(!skyBandSeen&&mirrorState.viewportKnown&&NorthlightWorldDrawDomain::classify(worldMinDepth,worldMaxDepth,mirrorState.viewport.MinZ,mirrorState.viewport.MaxZ)==NorthlightWorldDrawDomain::Band::Sky)skyBandSeen=true; /* Weather diagnostics: sky-band evidence, never an exposure or weather-state gate. */
         if(rainMrtBound&&!rainBlend)rainMrtUnbind(); /* 0.3.202 (rain mask MRT): every other draw (and all its capture/effect work) meets the game's targets only; dry frames one bool test */
         waterPending.valid=false; /* 0.3.214 (water MRT): set by this draw's captureWater only */
         if(water&&water->isMrtBound()&&(rainBlend||applied||!enabled||failed||!nextDrawIsWater()))rainMrtUnbind(); /* the water mask's target 1 stays bound across consecutive water draws only */
@@ -3252,7 +3308,7 @@ public:
         { // the game's own weather state is the primary source when its proofs and reads succeed; the detector is the fallback and the cross-check
             const bool memoryWanted=NorthlightWeatherMemory::enabled()&&(!world||world->weatherMemorySetting()); /* WeatherMemory=0: no proofs and no reads at all */
             const NorthlightWeatherMemory::Reading memory=memoryWanted?weatherMemory.frame(NorthlightWorldContext::readSelf):NorthlightWeatherMemory::Reading{};
-            const bool memoryCounts=NorthlightWeatherMemory::counts(memoryWanted,memory.valid,mirrorState.enabled,skyBandSeen);skyBandSeen=false; /* indoors the client draws no sky and no weather: the frame then goes the draw-based way (hold, fade) */
+            const bool memoryCounts=NorthlightWeatherMemory::counts(memoryWanted,memory.valid);skyBandSeen=false;
             weatherSample.memory=memoryCounts;weatherSample.memoryKind=memory.kind;weatherSample.memoryIntensity=memory.intensity;
             if(memoryWanted&&int(memory.valid)!=weatherMemoryState){weatherMemoryState=int(memory.valid);logf("WEATHER memory %s (proofs=%d reads=%u failures=%u kind=%s storm=%.3f intensity=%.3f)",memory.valid?"valid":"invalid, texture detector in use",int(weatherMemory.proofsOk()),weatherMemory.reads,weatherMemory.failures,W::kindName(memory.kind),memory.stormIntensity,memory.intensity);}
             const auto sort=weatherCross.frame(memoryCounts,memory.intensity>0?memory.kind:W::Kind::None,weatherSample.kind);
@@ -3371,6 +3427,7 @@ public:
             if(GetAsyncKeyState(VK_MENU)&0x8000){
                 const char* reason=worldDebug?"debug-view":!world?"renderer-unavailable":nullptr;
                 const bool accepted=!reason&&world->requestNormalGpuDiagnosticCapture();
+                if(accepted)NorthlightDiagnosticCapture::request(NorthlightDiagnosticCapture::Weather);
                 logf("WORLD normal GPU capture request rendererFrame=%u accepted=%u reason=%s",frame,unsigned(accepted),reason?reason:accepted?"queued":"budget-or-pending");
             }else{worldDebug=(worldDebug+1)%4;logf("World debug %d tick=%lu (0 normal,1 shadows,2 GI,3 volume)",worldDebug,(unsigned long)GetTickCount());}
         }
@@ -4058,7 +4115,10 @@ static HMODULE backend() {
 #ifndef NORTHLIGHT_SOURCE_ID
 #define NORTHLIGHT_SOURCE_ID "unrecorded"
 #endif
-    logf("BUILD identity source=%s",NORTHLIGHT_SOURCE_ID);
+#ifndef NORTHLIGHT_BUILD_UTC
+#define NORTHLIGHT_BUILD_UTC "unrecorded"
+#endif
+    logf("BUILD identity source=%s built=%s",NORTHLIGHT_SOURCE_ID,NORTHLIGHT_BUILD_UTC);
     logf("MEMORY policy terrain=demand-full/address-space-half normalMiB=32 lowMiB=16");
     if(result.fallback&&module)logf("BACKEND SELF-LOAD REFUSED: the configured backend resolves to this proxy (or another Northlight build); fell back to the system d3d9 runtime. Fix northlight-renderer.ini Backend/BackendPath.");
     else if(result.fallback)logf("BACKEND SELF-LOAD REFUSED: the configured backend resolves to this proxy (or another Northlight build) and the system d3d9 fallback FAILED too (expected under Wine with d3d9=n: the system d3d9 is builtin; the fallback is Windows-only). Fix northlight-renderer.ini Backend/BackendPath.");

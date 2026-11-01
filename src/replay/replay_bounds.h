@@ -196,7 +196,7 @@ class Cache {
         if(oldest!=entries_.end()){bytes_-=oldest->second.bytes;entries_.erase(oldest);}}
 public:
     void clear(){envelopeValid_=fallbackValid_=deferred_=0;replayCursor_=readyCursor_=heavyCursor_=buildCursor_=0;envelopes_.clear();entries_.clear();scratch_.clear();bytes_=0;clock_=hits_=misses_=avoidedVertices_=lookupNanoseconds_=0;lookupCalls_=0;}
-    void beginFrame(bool diagnostics=true){envelopeValid_=fallbackValid_=deferred_=0;envelopes_.beginFrame(diagnostics);hits_=misses_=avoidedVertices_=lookupNanoseconds_=0;lookupCalls_=0;}
+    void beginFrame(bool diagnostics=true,size_t packets=0){envelopeValid_=fallbackValid_=deferred_=0;envelopes_.beginFrame(diagnostics,packets);hits_=misses_=avoidedVertices_=lookupNanoseconds_=0;lookupCalls_=0;}
     unsigned envelopeValid()const{return envelopeValid_;}
     unsigned fallbackValid()const{return fallbackValid_;}
     unsigned deferred()const{return deferred_;}

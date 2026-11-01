@@ -10,12 +10,13 @@ from shader_compiler import Compiler,validate_assembly
 from validate_native_scene_trace import processes
 
 def main():
- p=argparse.ArgumentParser(__doc__);p.add_argument('--baseline-ref',required=True);p.add_argument('--backend',type=Path,required=True);p.add_argument('--output',type=Path,required=True);a=p.parse_args()
+ p=argparse.ArgumentParser(__doc__);baseline=p.add_mutually_exclusive_group(required=True);baseline.add_argument('--baseline-ref');baseline.add_argument('--baseline-file',type=Path);p.add_argument('--backend',type=Path,required=True);p.add_argument('--output',type=Path,required=True);a=p.parse_args()
  assert os.name=='nt';processes();out=a.output.resolve();out.mkdir(parents=True,exist_ok=True)
+ fp.out=lambda:out/'toolchain'
  compiler=Compiler(allow_compatible_binary=True);metadata={}
  for mode in ('old','new'):
   folder=out/mode;folder.mkdir(exist_ok=True)
-  raw=subprocess.check_output(['git','show',a.baseline_ref+':shaders/world_effects.hlsl'],cwd=ROOT) if mode=='old' else (fp.SHADERS/'world_effects.hlsl').read_bytes()
+  raw=(a.baseline_file.read_bytes() if a.baseline_file else subprocess.check_output(['git','show',a.baseline_ref+':shaders/world_effects.hlsl'],cwd=ROOT)) if mode=='old' else (fp.SHADERS/'world_effects.hlsl').read_bytes()
   (folder/'world_effects.hlsl').write_bytes(raw);(folder/'auto_bump_normal.hlsl').write_bytes((fp.SHADERS/'auto_bump_normal.hlsl').read_bytes())
   binary=folder/'ActorShadow.bin';compiler.compile(folder/'world_effects.hlsl','ActorShadow','ps_3_0',binary)
   metadata[mode]={'source_sha256':hashlib.sha256(raw).hexdigest(),'shader_sha256':hashlib.sha256(binary.read_bytes()).hexdigest(),**validate_assembly(Path(str(binary)+'.asm'),'ps_3_0')}
@@ -24,7 +25,7 @@ def main():
  env=os.environ.copy();env.update(DXVK_CONFIG_FILE=str(out/'dxvk.conf'),DXVK_LOG_PATH=str(out),DXVK_SHADER_CACHE_PATH=str(out/'shader-cache'),DXVK_STATE_CACHE_PATH=str(out/'shader-cache'),DISABLE_VULKAN_OBS_CAPTURE='1')
  processes();result=subprocess.run([str(exe),str(out/'old/ActorShadow.bin'),str(out/'new/ActorShadow.bin'),str(a.backend.resolve())],cwd=out,env=env,capture_output=True,text=True,timeout=120,creationflags=subprocess.CREATE_NO_WINDOW)
  (out/'gpu.log').write_text(result.stdout+result.stderr,encoding='utf-8');cases=[json.loads(line) for line in result.stdout.splitlines() if line.startswith('{')]
- report={'baseline_ref':a.baseline_ref,'backend_sha256':hashlib.sha256(a.backend.read_bytes()).hexdigest(),'compiler':compiler.provenance,'metadata':metadata,'cases':cases,'game_launched':False,'benchmark':False}
+ report={'baseline_ref':a.baseline_ref,'baseline_file':str(a.baseline_file) if a.baseline_file else None,'backend_sha256':hashlib.sha256(a.backend.read_bytes()).hexdigest(),'compiler':compiler.provenance,'metadata':metadata,'cases':cases,'game_launched':False,'benchmark':False}
  (out/'validation.json').write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
  assert result.returncode==0,result.stdout+result.stderr
  assert cases and all(c['changed']==0 and c['nonfinite']==0 and not c['timings'] for c in cases)

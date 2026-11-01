@@ -154,6 +154,15 @@ struct WorldScreenEffectsTest {
         std::puts("WORLD_SCREEN_CONSUMERS_PASS frames=1000 GI=50 unusedShadowCaptures=0 demand=preserved diagnostic=preserved readyGeometry=preserved");
     }
     static void fog(WorldRenderer& w,bool on){w.effects.fog=on;w.fogHistoryValid=false;}
+    static void fogAltitude(WorldRenderer& w,float z,bool bounds){
+        w.context.camera[2]=w.context.inverseView[14]=z;
+        w.fogGlobalHeights=bounds?NorthlightRegionalFog::globalHeightBounds(*w.uploadedFogField):std::array<float,3>{};
+    }
+    static void neutralFogHistory(const WorldRenderer& w){assert(w.fogHistoryValid);}
+    static std::shared_ptr<const NorthlightRegionalFog::Field> replaceFogField(WorldRenderer& w,std::shared_ptr<const NorthlightRegionalFog::Field> field){
+        std::lock_guard<std::mutex> lock(w.mutex);auto old=w.publishedFogRegion->field;
+        auto region=std::make_shared<WorldRenderer::FogRegion>(*w.publishedFogRegion);region->field=std::move(field);w.publishedFogRegion=std::move(region);return old;
+    }
     static void cloudPressure(WorldRenderer& w){
         auto& noise=w.fogCloudNoise();noise.data=NorthlightFogClouds::generate();noise.quantiles=NorthlightFogClouds::quantiles(noise.data.data());noise.ready.store(true,std::memory_order_release);
         w.memoryPressure=true;assert(w.ensureCloudNoise()&&w.cloudNoise);w.memoryPressure=false;
@@ -207,6 +216,7 @@ struct WorldScreenEffectsTest {
     }
     static bool composed(const WorldRenderer& w){return w.composited&&!w.shadowsComposited&&!w.shadowFrameReady;}
     static void scratch(const WorldRenderer& w,bool expected){assert(bool(w.color)==expected&&bool(w.colorSurface)==expected);}
+    static void discardScratch(WorldRenderer& w){w.stateBlocks.clear();drop(w.colorSurface);drop(w.color);}
     static void direct(WorldRenderer& w,bool on){w.sourceColors[0]=on?WorldRenderer::V(.6f,.5f,.4f):WorldRenderer::V();w.sourceColors[1]={};}
     static void resetResources(WorldRenderer& w){w.releaseGPU(true);assert(w.publishedFogRegion&&!w.uploadedFogField&&!w.active);}
     static void diagnosticFrames(WorldRenderer& w,unsigned width,unsigned height){
@@ -244,11 +254,12 @@ struct WorldScreenEffectsTest {
         }
         std::puts("DIAGNOSTIC_VIEW_PASS disabledComponentsAndMissingGeometryBlack=1 noStaleImage=1");
     }
-    static std::vector<unsigned char> fogImage(WorldRenderer& w){
+    static std::vector<unsigned char> fogImage(WorldRenderer& w,bool history=false){
         assert(w.uploadedFogField==w.publishedFogRegion->field&&!w.active&&!w.fogGeometryReady);
-        D3DSURFACE_DESC desc{};assert(SUCCEEDED(w.fogSurface->GetDesc(&desc)));
+        auto* surface=history?w.fogHistorySurface:w.fogSurface;
+        D3DSURFACE_DESC desc{};assert(SUCCEEDED(surface->GetDesc(&desc)));
         IDirect3DSurface9* read=nullptr;assert(SUCCEEDED(w.d->CreateOffscreenPlainSurface(desc.Width,desc.Height,desc.Format,D3DPOOL_SYSTEMMEM,&read,nullptr)));
-        assert(SUCCEEDED(w.d->GetRenderTargetData(w.fogSurface,read)));D3DLOCKED_RECT lock{};assert(SUCCEEDED(read->LockRect(&lock,nullptr,D3DLOCK_READONLY)));
+        assert(SUCCEEDED(w.d->GetRenderTargetData(surface,read)));D3DLOCKED_RECT lock{};assert(SUCCEEDED(read->LockRect(&lock,nullptr,D3DLOCK_READONLY)));
         std::vector<unsigned char> image(size_t(desc.Width)*desc.Height*8);
         for(unsigned y=0;y<desc.Height;++y)std::memcpy(image.data()+size_t(y)*desc.Width*8,static_cast<const char*>(lock.pBits)+y*lock.Pitch,desc.Width*8);
         assert(SUCCEEDED(read->UnlockRect()));read->Release();return image;
@@ -257,12 +268,14 @@ struct WorldScreenEffectsTest {
 struct WorldScratchMeter:ForwardIDirect3DDevice9 {
     unsigned shaderSlotLimit=0,combinedDraws=0;bool refuseCombined=false,combinedBound=false;
     IDirect3DPixelShader9* combinedShader=nullptr;
+    IDirect3DPixelShader9 *fogMarch=nullptr,*fogAmbient=nullptr,*fogTemporal=nullptr,*fogBlur=nullptr;
+    bool fogBound=false;unsigned fogDraws=0;
     unsigned width,height,creates=0,sceneCreates=0,failSceneAt=0,screenCreates=0,failScreenAt=0,shaderCreates=0,failShaderAt=0,fogCreates=0,failFogAt=0;float fogWeight=-1;
     unsigned indexCreates=0,failIndexAt=0;
     WorldScratchMeter(IDirect3DDevice9* d,unsigned w,unsigned h):ForwardIDirect3DDevice9(d),width(w),height(h){}
     HRESULT STDMETHODCALLTYPE GetDeviceCaps(D3DCAPS9* caps)override{const auto hr=real->GetDeviceCaps(caps);if(SUCCEEDED(hr)&&shaderSlotLimit)caps->MaxPixelShader30InstructionSlots=shaderSlotLimit;return hr;}
-    HRESULT STDMETHODCALLTYPE SetPixelShader(IDirect3DPixelShader9* shader)override{combinedBound=shader&&shader==combinedShader;return real->SetPixelShader(shader);}
-    HRESULT STDMETHODCALLTYPE DrawPrimitiveUP(D3DPRIMITIVETYPE type,UINT n,const void* vertices,UINT stride)override{combinedDraws+=combinedBound;return real->DrawPrimitiveUP(type,n,vertices,stride);}
+    HRESULT STDMETHODCALLTYPE SetPixelShader(IDirect3DPixelShader9* shader)override{combinedBound=shader&&shader==combinedShader;fogBound=shader&&(shader==fogMarch||shader==fogAmbient||shader==fogTemporal||shader==fogBlur);return real->SetPixelShader(shader);}
+    HRESULT STDMETHODCALLTYPE DrawPrimitiveUP(D3DPRIMITIVETYPE type,UINT n,const void* vertices,UINT stride)override{combinedDraws+=combinedBound;fogDraws+=fogBound;return real->DrawPrimitiveUP(type,n,vertices,stride);}
     HRESULT STDMETHODCALLTYPE CreateIndexBuffer(UINT length,DWORD usage,D3DFORMAT format,D3DPOOL pool,IDirect3DIndexBuffer9** out,HANDLE* shared)override{
         if(++indexCreates==failIndexAt){if(out)*out=nullptr;return E_OUTOFMEMORY;}return real->CreateIndexBuffer(length,usage,format,pool,out,shared);
     }
@@ -276,15 +289,19 @@ struct WorldScratchMeter:ForwardIDirect3DDevice9 {
     HRESULT STDMETHODCALLTYPE CreatePixelShader(const DWORD* code,IDirect3DPixelShader9** shader)override{
         if(++shaderCreates==failShaderAt)return E_OUTOFMEMORY;
         if(code==kWorldMaterialCompositeHdrShader&&refuseCombined){*shader=nullptr;return D3DERR_NOTAVAILABLE;}
-        const auto hr=real->CreatePixelShader(code,shader);if(SUCCEEDED(hr)&&code==kWorldMaterialCompositeHdrShader)combinedShader=*shader;return hr;
+        const auto hr=real->CreatePixelShader(code,shader);if(SUCCEEDED(hr)){
+            if(code==kWorldMaterialCompositeHdrShader)combinedShader=*shader;
+            if(code==kWorldFogShader)fogMarch=*shader;if(code==kWorldFogAmbientShader)fogAmbient=*shader;
+            if(code==kFogTemporalShader)fogTemporal=*shader;if(code==kFogBlurShader)fogBlur=*shader;
+        }return hr;
     }
     HRESULT STDMETHODCALLTYPE SetPixelShaderConstantF(UINT start,const float* values,UINT count)override{
         if(start==64&&count==1)fogWeight=values[1];return real->SetPixelShaderConstantF(start,values,count);
     }
 };
 static void screenOk(HRESULT h){if(FAILED(h)){std::fprintf(stderr,"screen HRESULT=%08lx\n",(unsigned long)h);std::abort();}}
-static bool renderChecked(WorldRenderer& world,IDirect3DDevice9* device,IDirect3DSurface9* out,IDirect3DTexture9* depth,UINT w,UINT h,D3DFORMAT format,float nearZ,float farZ,float minZ,float maxZ,int debug,NorthlightGpuProfile* profile,IDirect3DTexture9* water,IDirect3DTexture9* scene=nullptr,IDirect3DTexture9* ao=nullptr,unsigned frame=0,IDirect3DTexture9* hdrBase=nullptr,bool hdrCombineAllowed=true){
-    screenOk(device->BeginScene());const bool result=world.render(out,depth,w,h,format,nearZ,farZ,minZ,maxZ,debug,profile,water,scene,ao,frame,hdrBase,false,hdrCombineAllowed);screenOk(device->EndScene());
+static bool renderChecked(WorldRenderer& world,IDirect3DDevice9* device,IDirect3DSurface9* out,IDirect3DTexture9* depth,UINT w,UINT h,D3DFORMAT format,float nearZ,float farZ,float minZ,float maxZ,int debug,NorthlightGpuProfile* profile,IDirect3DTexture9* water,IDirect3DTexture9* scene=nullptr,IDirect3DTexture9* ao=nullptr,unsigned frame=0,IDirect3DTexture9* hdrBase=nullptr,bool hdrCombineAllowed=true,bool hdrSkyBase=false){
+    screenOk(device->BeginScene());const bool result=world.render(out,depth,w,h,format,nearZ,farZ,minZ,maxZ,debug,profile,water,scene,ao,frame,hdrBase,false,hdrCombineAllowed,hdrSkyBase);screenOk(device->EndScene());
     if(!result)std::fprintf(stderr,"WORLD_SCREEN_RENDER_FAILED reason=%s screenReady=%u geometryReady=%u debug=%d frame=%u\n",world.lastSkipReason(),unsigned(world.screenReady()),unsigned(world.ready()),debug,frame);
     return result;
 }
@@ -348,6 +365,47 @@ int main(int argc,char** argv){
             assert(meter.fogWeight==(frame?.85f:0.f));
         }
         std::puts("WORLD_FOG_HISTORY_PASS noGeometry=1 firstWeight=0 nextWeight=0.85");
+        auto composedImage=[&](){
+            if(msaa)screenOk(d->StretchRect(out,nullptr,resolved,nullptr,D3DTEXF_NONE));screenOk(d->GetRenderTargetData(msaa?resolved:out,readback));
+            D3DLOCKED_RECT lock{};screenOk(readback->LockRect(&lock,nullptr,D3DLOCK_READONLY));std::vector<unsigned char> image(W*H*8);
+            for(unsigned y=0;y<H;++y)std::memcpy(image.data()+y*W*8,static_cast<char*>(lock.pBits)+y*lock.Pitch,W*8);screenOk(readback->UnlockRect());return image;
+        };
+        for(float altitude:{300.f,-300.f}){
+            std::vector<unsigned char> empty[2],history[2],reentry[2],emptyColor[2],reentryColor[2];
+            for(unsigned clipped=0;clipped<2;++clipped){
+                WorldScreenEffectsTest::fixtureContext(*world);WorldScreenEffectsTest::fog(*world,true);
+                WorldScreenEffectsTest::fogAltitude(*world,0,true);
+                assert(renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao));
+                WorldScreenEffectsTest::fogAltitude(*world,altitude,clipped!=0);meter.fogDraws=0;
+                for(unsigned frame=0;frame<2;++frame)assert(renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao));
+                assert(meter.fogDraws==(clipped?0:8));WorldScreenEffectsTest::neutralFogHistory(*world);
+                empty[clipped]=WorldScreenEffectsTest::fogImage(*world);history[clipped]=WorldScreenEffectsTest::fogImage(*world,true);emptyColor[clipped]=composedImage();
+                // Losing the optional bounds must resume accumulation from the
+                // neutral history, with the same weight as an unclipped frame.
+                WorldScreenEffectsTest::fogAltitude(*world,altitude+1,false);meter.fogWeight=-1;
+                assert(renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao));assert(meter.fogWeight==.85f);
+                WorldScreenEffectsTest::fixtureContext(*world);WorldScreenEffectsTest::fogAltitude(*world,0,true);
+                assert(renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao));
+                reentry[clipped]=WorldScreenEffectsTest::fogImage(*world,true);reentryColor[clipped]=composedImage();
+            }
+            assert(empty[0]==empty[1]&&history[0]==history[1]&&reentry[0]==reentry[1]&&emptyColor[0]==emptyColor[1]&&reentryColor[0]==reentryColor[1]);
+            for(size_t i=0;i<empty[1].size()/2;++i){unsigned short bits;std::memcpy(&bits,empty[1].data()+i*2,2);assert(bits==(i%4==3?0x3c00:0));}
+        }
+        std::puts("WORLD_EMPTY_FOG_PASS aboveBelow=1 draws=0 referenceDraws=4 exactNeutralHistory=1 resumedWeight=0.85 reentryExact=1 finalColorExact=1");
+        {
+            std::vector<unsigned char> history[2],reentry[2],emptyColor[2],reentryColor[2];
+            for(unsigned clipped=0;clipped<2;++clipped){
+                auto empty=std::make_shared<NorthlightRegionalFog::Field>();empty->fogCells=clipped?0:1;
+                auto old=WorldScreenEffectsTest::replaceFogField(*world,empty);meter.fogDraws=0;
+                assert(renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao));
+                assert(meter.fogDraws==(clipped?0:4));WorldScreenEffectsTest::neutralFogHistory(*world);history[clipped]=WorldScreenEffectsTest::fogImage(*world,true);emptyColor[clipped]=composedImage();
+                WorldScreenEffectsTest::replaceFogField(*world,old);meter.fogWeight=-1;
+                assert(renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao));assert(meter.fogWeight==.85f);
+                reentry[clipped]=WorldScreenEffectsTest::fogImage(*world,true);reentryColor[clipped]=composedImage();
+            }
+            assert(history[0]==history[1]&&reentry[0]==reentry[1]&&emptyColor[0]==emptyColor[1]&&reentryColor[0]==reentryColor[1]);
+        }
+        std::puts("WORLD_EMPTY_FIELD_PASS draws=0 referenceDraws=4 historyExact=1 reentryExact=1 finalColorExact=1");
         WorldScreenEffectsTest::ambientVariant(*world);
         IDirect3DVertexBuffer9* vb=nullptr;IDirect3DIndexBuffer9* ib=nullptr;
         screenOk(d->CreateVertexBuffer(32,0,0,D3DPOOL_MANAGED,&vb,nullptr));screenOk(d->CreateIndexBuffer(12,0,D3DFMT_INDEX32,D3DPOOL_MANAGED,&ib,nullptr));
@@ -437,26 +495,29 @@ int main(int argc,char** argv){
         // low advertised caps, failed shader creation, combined draw and a
         // diagnostic capture retaining the original two-pass input ownership.
         const float linear[]={.132868f,.132868f,.132868f,1};auto* hdrBase=screenTexture(d,W,H,linear);
+        const float skyOnly[]={.8f,.1f,.6f,1};auto* skyBase=screenTexture(d,W,H,skyOnly);
         std::vector<unsigned short> hdrReference;WorldScreenEffectsTest::fog(*world,false);
         world->setMaterialDetail(detail,1,48,nullptr,8);
-        for(unsigned mode=0;mode<5;++mode){
+        for(unsigned mode=0;mode<6;++mode){
             WorldScreenEffectsTest::fixtureContext(*world);
             if(mode<3){WorldScreenEffectsTest::retryHdrCombined(*world);meter.combinedShader=nullptr;}
             meter.shaderSlotLimit=mode==0?512:0;meter.refuseCombined=mode==1;
             if(mode==3)assert(world->requestNormalGpuDiagnosticCapture());
             screenOk(d->ColorFill(out,nullptr,0xff00ff00));world->setNameMask(receiverDepth);world->setUnlitMask(receiverDepth);
             const auto combinedBefore=meter.combinedDraws;
-            assert(renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao,100+mode,hdrBase,mode!=4));
+            WorldScreenEffectsTest::discardScratch(*world);
+            assert(renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao,100+mode,mode==5?skyBase:hdrBase,mode!=4,mode==5));
+            WorldScreenEffectsTest::scratch(*world,mode!=2&&mode!=5);
             assert(WorldScreenEffectsTest::hdrCombined(*world)==(mode>=2));
-            assert(meter.combinedDraws-combinedBefore==(mode==2?1u:0u));
+            assert(meter.combinedDraws-combinedBefore==(mode==2||mode==5?1u:0u));
             if(msaa)screenOk(d->StretchRect(out,nullptr,resolved,nullptr,D3DTEXF_NONE));screenOk(d->GetRenderTargetData(msaa?resolved:out,readback));
             D3DLOCKED_RECT lock{};screenOk(readback->LockRect(&lock,nullptr,D3DLOCK_READONLY));
             std::vector<unsigned short> image(W*H*4);for(unsigned y=0;y<H;++y)std::memcpy(image.data()+y*W*4,static_cast<char*>(lock.pBits)+y*lock.Pitch,W*8);screenOk(readback->UnlockRect());
             if(!mode)hdrReference=image;
             for(unsigned i=0;i<image.size();++i){assert(std::isfinite(screenHalf(image[i])));assert(std::abs(screenHalf(image[i])-screenHalf(hdrReference[i]))<.004f);}
         }
-        meter.shaderSlotLimit=0;meter.refuseCombined=false;hdrBase->Release();receiverDepth->Release();
-        std::printf("HDR_COMBINED_WORLD_GPU_PASS capFallback=1 creationFallback=1 actualCombinedDraw=1 diagnosticFallback=1 expansionFallback=1 namesUnlitPreserved=1 msaa=%u\n",msaa);
+        meter.shaderSlotLimit=0;meter.refuseCombined=false;skyBase->Release();hdrBase->Release();receiverDepth->Release();
+        std::printf("HDR_COMBINED_WORLD_GPU_PASS capFallback=1 creationFallback=1 actualCombinedDraw=1 skyBaseGeometry=1 diagnosticFallback=1 expansionFallback=1 namesUnlitPreserved=1 msaa=%u\n",msaa);
         std::printf("UNLIT_RECEIVER_GPU_PASS nativeRadiance=1 atmosphereRetained=1 materialInvariant=1 namesRetained=1 extraFullSizeTextures=0 msaa=%u\n",msaa);
         }
 

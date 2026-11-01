@@ -7,35 +7,40 @@ repo=Path(__file__).resolve().parents[1];sys.path[:0]=[str(repo),str(repo/'scrip
 import northlight_paths as fp
 from shader_compiler import Compiler,validate_assembly
 from windows_gpu_guard import processes
-p=argparse.ArgumentParser();p.add_argument('name',nargs='?',default='fog-global-support');p.add_argument('--reference',type=Path);p.add_argument('--baseline-ref',default='51f0107');p.add_argument('--backend',type=Path);p.add_argument('--entries',nargs='+',default=['WorldFog','WorldFogActor','FogClouds','FogCloudsActor']);p.add_argument('--cases',nargs='+',type=int,default=[0,3,4,7,10,12,13,14,15,16]);a=p.parse_args()
+p=argparse.ArgumentParser();p.add_argument('name',nargs='?',default='fog-global-support');p.add_argument('--reference',type=Path);p.add_argument('--source',type=Path,default=repo/'shaders/world_effects.hlsl');p.add_argument('--size',nargs=2,type=int,default=[512,512]);p.add_argument('--baseline-ref',default='51f0107');p.add_argument('--backend',type=Path);p.add_argument('--entries',nargs='+',default=['WorldFog','WorldFogActor','FogClouds','FogCloudsActor']);p.add_argument('--cases',nargs='+',type=int,default=[0,3,4,7,10,12,13,14,15,16,17,18,19,20,21]);a=p.parse_args()
 backend=a.backend or fp.client_root()/'renderer-backends/dxvk/dxvk_d3d9.dll'
 processes()
 root=fp.output_dir();out=root/a.name;out.mkdir(exist_ok=True)
-fixture=root/'fixture';fixture.mkdir(exist_ok=True);prefix=str(fixture/'capture-1-')
+w,h=a.size;assert w>1 and h>1
+fixture=root/('fixture-%dx%d'%(w,h));fixture.mkdir(exist_ok=True);prefix=str(fixture/'capture-1-')
 def image(name,w,h,fmt,bpp,pixels):Path(prefix+name+'.fgr').write_bytes(struct.pack('<5I',0x31524746,w,h,fmt,bpp)+pixels)
 if not Path(prefix+'constants.f32').exists():
  c=[0.0]*(79*4)
  def put(n,v):c[n*4:n*4+len(v)]=v
- put(0,[1/512,1/512,.1,1000]);put(1,[1,1,1,0]);put(2,[1,1,192,1/64]);put(33,[512,512,256,256]);put(65,[0,0,0,0]);Path(prefix+'constants.f32').write_bytes(struct.pack('<316f',*c))
- image('scene',512,512,21,4,bytes([128,128,128,255])*512*512)
- image('depth',512,512,114,4,struct.pack('<f',.999)*512*512)
-current=(repo/'shaders/world_effects.hlsl').read_bytes()
+ put(0,[1/w,1/h,.1,1000]);put(1,[1,1,1,0]);put(2,[1,1,192,1/64]);put(33,[w,h,w//2,h//2]);put(65,[0,0,0,0]);Path(prefix+'constants.f32').write_bytes(struct.pack('<316f',*c))
+ image('scene',w,h,21,4,bytes([128,128,128,255])*w*h)
+ image('depth',w,h,114,4,struct.pack('<f',.999)*w*h)
+current=a.source.read_bytes()
 reference=a.reference.read_bytes() if a.reference else subprocess.check_output(['git','show',a.baseline_ref+':shaders/world_effects.hlsl'],cwd=repo)
 os.environ['NORTHLIGHT_OUT']=str(out/'compiler');compiler=Compiler(allow_compatible_binary=True);stats={}
 for label,data in [('old',reference),('new',current)]:
  folder=out/label;folder.mkdir(exist_ok=True);(folder/'world_effects.hlsl').write_bytes(data);shutil.copyfile(repo/'shaders/auto_bump_normal.hlsl',folder/'auto_bump_normal.hlsl')
  for entry in a.entries:
-  binary=folder/(entry+'.bin');compile_entry=entry.replace('Cached','') if label=='old' and entry.endswith('Cached') else entry;compiler.compile(folder/'world_effects.hlsl',compile_entry,'ps_3_0',binary);stats[label+'/'+entry]=validate_assembly(Path(str(binary)+'.asm'),'ps_3_0',slot_limit=800 if entry.endswith('Cached') and label=='new' else 600 if 'Actor' in entry else 512)
+  binary=folder/(entry+'.bin');compile_entry=entry.replace('Cached','') if label=='old' and entry.endswith('Cached') else entry;compiler.compile(folder/'world_effects.hlsl',compile_entry,'ps_3_0',binary);stats[label+'/'+entry]=validate_assembly(Path(str(binary)+'.asm'),'ps_3_0',slot_limit=800 if entry.endswith('Cached') and label=='new' else 768 if 'Tiled' in entry else 600 if 'Actor' in entry else 512)
 exe=root/'world-mini.exe'
 if not exe.exists() or exe.stat().st_mtime<max(Path(__file__).stat().st_mtime,(repo/'tests/world_pass_gpu.cpp').stat().st_mtime):
  cpp=(repo/'tests/world_pass_gpu.cpp').read_text();cpp=cpp.replace('#include "removal_distance_gpu.cpp"','#include "'+(repo/'tests/removal_distance_gpu.cpp').as_posix()+'"')
  cpp=cpp.replace('mode=="FogClouds"','(mode.find("FogClouds")==0)')
- cpp=cpp.replace('scenario<=12','scenario<=16')
+ cpp=cpp.replace('scenario<=12','scenario<=21')
  cpp=cpp.replace(' IDirect3DPixelShader9* ps[2]{};',r''' bank.count=79;
  for(unsigned i=68;i<72;++i)std::fill(c[i],c[i]+4,0);c[68][0]=c[69][1]=1.f/32;c[70][2]=1.f/32;c[71][2]=.4f;c[71][3]=1;
  c[72][0]=1;c[66][0]=c[66][1]=-.15f;c[66][2]=c[66][3]=.15f;
  c[65][0]=scenario==10?-14.25f:-.25f;c[65][1]=scenario==10?80.25f:66.25f;c[65][2]=scenario==16?0.f:1.f;c[65][3]=0;
  if(scenario==13)c[15][2]=100;if(scenario==14)c[15][2]=-100;if(scenario==15)c[15][2]=66.125f;
+ // Vertical crossings retain base-fog attenuation before entering the cloud bank.
+ if(scenario==17||scenario==18){c[4][2]=c[5][1]=0;c[4][1]=1;c[5][2]=scenario==17?-1.f:1.f;c[15][2]=scenario==17?100.f:-30.f;}
+ // Parallel rays on and just outside each global support boundary.
+ if(scenario>=19){c[4][2]=0;c[15][2]=scenario==19?66.25f:scenario==20?66.25001f:-.25001f;}
  Image actor{1024,1024,D3DFMT_R32F,4,std::vector<unsigned char>(1024*1024*4)};
  for(unsigned y=0;y<1024;++y)for(unsigned x=0;x<1024;++x){float z=x>=442&&x<582&&y>=442&&y<582&&((x/8+y/11)%4!=0)?.48f:1.f;std::memcpy(actor.pixels.data()+(y*1024+x)*4,&z,4);}bind(4,actor);
  IDirect3DPixelShader9* ps[2]{};''')

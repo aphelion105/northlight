@@ -1,4 +1,5 @@
 #pragma once
+#include "utf8_path.h"
 #include <d3d9.h>
 #include "local_light_selection.h"
 #include <algorithm>
@@ -16,6 +17,7 @@ class Capture {
     template<class T> struct Ref {T* p=nullptr;~Ref(){if(p)p->Release();}};
     IDirect3DDevice9* device_=nullptr;
     const std::string* directory_=nullptr;
+    const char* journalName_="lighting-inputs";
     FILE* journal_=nullptr;
     unsigned capture_=0,frame_=0,rendererFrame_=0,passes_=0;
     bool complete_=true,finished_=false;
@@ -36,7 +38,7 @@ class Capture {
     }
     bool bytes(const char* name,const char* extension,const void* data,size_t size)noexcept{
         char output[2048];bool ok=false;
-        if(path(name,extension,output))if(FILE* f=std::fopen(output,"wb")){
+        if(path(name,extension,output))if(FILE* f=NorthlightFiles::open(output,"wb")){
             ok=std::fwrite(data,1,size,f)==size;if(std::fclose(f))ok=false;
         }
         if(journal_)std::fprintf(journal_,"{\"event\":\"file\",\"name\":\"%s.%s\",\"bytes\":%zu,\"saved\":%s}\n",name,extension,size,ok?"true":"false");
@@ -69,7 +71,7 @@ class Capture {
         D3DLOCKED_RECT lock{};if(!call("LockRect-readonly",staging.p->LockRect(&lock,nullptr,D3DLOCK_READONLY)))return false;
         bool ok=false;char output[2048];
         if(lock.pBits&&lock.Pitch>=INT(desc.Width*stride)&&path(name,"fgr",output)){
-            if(FILE* f=std::fopen(output,"wb")){
+            if(FILE* f=NorthlightFiles::open(output,"wb")){
                 const uint32_t header[]={0x31524746,desc.Width,desc.Height,unsigned(desc.Format),stride};
                 ok=std::fwrite(header,sizeof header,1,f)==1;
                 for(unsigned y=0;y<desc.Height&&ok;++y)ok=std::fwrite(static_cast<const char*>(lock.pBits)+size_t(y)*lock.Pitch,stride,desc.Width,f)==desc.Width;
@@ -80,16 +82,18 @@ class Capture {
         std::fprintf(journal_,"{\"event\":\"file\",\"name\":\"%s.fgr\",\"bytes\":%llu,\"saved\":%s}\n",name,(unsigned long long)(20+uint64_t(desc.Width)*desc.Height*stride),ok?"true":"false");
         if(!ok)complete_=false;return ok&&unlocked;
     }
-    bool depth(const char* name,IDirect3DTexture9* source,const D3DSURFACE_DESC& desc)noexcept{
+    bool depth(const char* name,IDirect3DTexture9* source,const D3DSURFACE_DESC& desc,IDirect3DSurface9* nameStencil=nullptr)noexcept{
         if(!desc.Width||!desc.Height||uint64_t(desc.Width)*desc.Height*4>64u*1024u*1024u){unavailable(name,"depth-size-limit");return false;}
         // ps_3_0; dcl_texcoord v0.xy; dcl_2d s0; texld r0,v0,s0;
         // mov oC0,r0. No depth inversion, filtering or half-resolution input.
         static const DWORD code[]={0xffff0300,0x0200001f,0x80000005,0x90030000,
             0x0200001f,0x90000000,0xa00f0800,0x03000042,0x800f0000,0x90e40000,0xa0e40800,
             0x02000001,0x800f0800,0x80e40000,0x0000ffff};
+        static const DWORD white[]={0xffff0200,0x05000051,0xa00f0000,0x3f800000,0x3f800000,0x3f800000,0x3f800000,
+            0x02000001,0x800f0800,0xa0e40000,0xffff};
         Ref<IDirect3DSurface9> target;Ref<IDirect3DPixelShader9> shader;
-        if(!call("CreateRenderTarget-depth-copy",device_->CreateRenderTarget(desc.Width,desc.Height,D3DFMT_R32F,D3DMULTISAMPLE_NONE,0,FALSE,&target.p,nullptr))||!target.p){unavailable(name,"depth-target-unavailable");return false;}
-        if(!call("CreatePixelShader-depth-copy",device_->CreatePixelShader(code,&shader.p))||!shader.p){unavailable(name,"depth-shader-unavailable");return false;}
+        if(!call("CreateRenderTarget-depth-copy",device_->CreateRenderTarget(desc.Width,desc.Height,nameStencil?D3DFMT_A8R8G8B8:D3DFMT_R32F,nameStencil?desc.MultiSampleType:D3DMULTISAMPLE_NONE,nameStencil?desc.MultiSampleQuality:0,FALSE,&target.p,nullptr))||!target.p){unavailable(name,"depth-target-unavailable");return false;}
+        if(!call("CreatePixelShader-depth-copy",device_->CreatePixelShader(nameStencil?white:code,&shader.p))||!shader.p){unavailable(name,"depth-shader-unavailable");return false;}
         Ref<IDirect3DStateBlock9> state;Ref<IDirect3DSurface9> targets[4],oldDepth;
         D3DVIEWPORT9 viewport{};float vertex[256*4]{},pixel[224*4]{};D3DCAPS9 caps{};
         bool saved=call("CreateStateBlock-depth-copy",device_->CreateStateBlock(D3DSBT_ALL,&state.p))&&state.p;
@@ -118,6 +122,14 @@ class Capture {
         set("SetRenderState-depth-copy",device_->SetRenderState(D3DRS_COLORWRITEENABLE,15));set("SetRenderState-depth-copy",device_->SetRenderState(D3DRS_CULLMODE,D3DCULL_NONE));
         set("SetRenderState-depth-copy",device_->SetRenderState(D3DRS_FILLMODE,D3DFILL_SOLID));set("SetRenderState-depth-copy",device_->SetRenderState(D3DRS_MULTISAMPLEMASK,0xffffffff));
         D3DVIEWPORT9 copyViewport={0,0,desc.Width,desc.Height,0,1};set("SetViewport-depth-copy",device_->SetViewport(&copyViewport));
+        if(nameStencil){
+            set("Clear-name-mask-copy",device_->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0));
+            set("SetDepthStencilSurface-name-mask-copy",device_->SetDepthStencilSurface(nameStencil));
+            const D3DRENDERSTATETYPE keys[]={D3DRS_STENCILENABLE,D3DRS_STENCILFUNC,D3DRS_STENCILREF,D3DRS_STENCILMASK,D3DRS_STENCILWRITEMASK,
+                D3DRS_STENCILFAIL,D3DRS_STENCILZFAIL,D3DRS_STENCILPASS,D3DRS_TWOSIDEDSTENCILMODE,D3DRS_MULTISAMPLEANTIALIAS};
+            const DWORD values[]={TRUE,D3DCMP_EQUAL,0x80,0x80,0,D3DSTENCILOP_KEEP,D3DSTENCILOP_KEEP,D3DSTENCILOP_KEEP,FALSE,TRUE};
+            for(unsigned i=0;i<std::size(keys);++i)set("SetRenderState-name-mask-copy",device_->SetRenderState(keys[i],values[i]));
+        }
         struct Vertex{float x,y,z,w,u,v;};const Vertex quad[]={{-.5f,-.5f,0,1,0,0},{float(desc.Width)-.5f,-.5f,0,1,1,0},{-.5f,float(desc.Height)-.5f,0,1,0,1},{float(desc.Width)-.5f,float(desc.Height)-.5f,0,1,1,1}};
         if(ok)ok=call("DrawPrimitiveUP-depth-copy",device_->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(Vertex)));
         if(ok)ok=surface(name,target.p);
@@ -147,17 +159,24 @@ class Capture {
         }catch(...){unavailable("pixel-shader","allocation-failed");}
     }
 public:
-    Capture(IDirect3DDevice9* device,const std::string& directory,unsigned capture,unsigned frame,unsigned rendererFrame,unsigned width,unsigned height)noexcept
-        :device_(device),directory_(&directory),capture_(capture),frame_(frame),rendererFrame_(rendererFrame){
-        char output[2048];if(device_&&!directory.empty()&&path("lighting-inputs","jsonl.tmp",output))journal_=std::fopen(output,"wb");
+    Capture(IDirect3DDevice9* device,const std::string& directory,unsigned capture,unsigned frame,unsigned rendererFrame,unsigned width,unsigned height,const char* journalName="lighting-inputs")noexcept
+        :device_(device),directory_(&directory),journalName_(journalName),capture_(capture),frame_(frame),rendererFrame_(rendererFrame){
+        char output[2048];if(device_&&!directory.empty()&&path(journalName_,"jsonl.tmp",output))journal_=NorthlightFiles::open(output,"wb");
         logf("WORLD LIGHT_CAPTURE begin capture=%u worldFrame=%u rendererFrame=%u rendererFrameKnown=%u normalView=1 diagnostic=1 fpsEligible=0 saved=%u",capture_,frame_,rendererFrame_,unsigned(rendererFrame_!=0),unsigned(journal_!=nullptr));
-        if(journal_)std::fprintf(journal_,"{\"event\":\"begin\",\"schema\":1,\"capture\":%u,\"world_frame\":%u,\"renderer_frame\":%u,\"renderer_frame_known\":%s,\"width\":%u,\"height\":%u,\"normal_view\":true,\"scope\":\"local-light-contribution-inputs\",\"constant_register_count\":116,\"per_source_bank_missing\":false,\"depth_reconstructed\":false,\"source_physical_ownership_proven\":false,\"material_replay_complete\":false,\"whole_scene_replay\":false,\"replay_execution_verified\":false,\"per_sample_color_exported\":false,\"stencil_image_exported\":false,\"scene_boundary_changed\":false,\"fps_eligible\":false}\n",capture_,frame_,rendererFrame_,rendererFrame_?"true":"false",width,height);
+        if(journal_)std::fprintf(journal_,"{\"event\":\"begin\",\"schema\":1,\"capture\":%u,\"world_frame\":%u,\"renderer_frame\":%u,\"renderer_frame_known\":%s,\"width\":%u,\"height\":%u,\"normal_view\":true,\"scope\":\"%s\",\"constant_register_count\":%u,\"per_source_bank_missing\":false,\"depth_reconstructed\":false,\"source_physical_ownership_proven\":false,\"material_replay_complete\":false,\"whole_scene_replay\":false,\"replay_execution_verified\":false,\"per_sample_color_exported\":false,\"stencil_image_exported\":false,\"scene_boundary_changed\":false,\"fps_eligible\":false}\n",capture_,frame_,rendererFrame_,rendererFrame_?"true":"false",width,height,std::strcmp(journalName_,"weather-inputs")==0?"weather-inputs":"local-light-contribution-inputs",std::strcmp(journalName_,"weather-inputs")==0?10u:116u);
     }
     ~Capture(){if(journal_)finish(false);}
     Capture(const Capture&)=delete;
     Capture& operator=(const Capture&)=delete;
     bool active()const noexcept{return journal_!=nullptr&&!finished_;}
     void image(const char* name,IDirect3DSurface9* value)noexcept{if(active())surface(name,value);}
+    bool imageSaved(const char* name,IDirect3DSurface9* value)noexcept{return active()&&surface(name,value);}
+    bool sampledDepthSaved(const char* name,IDirect3DTexture9* value)noexcept{
+        D3DSURFACE_DESC desc{};return active()&&value&&call("GetLevelDesc-sampled-depth",value->GetLevelDesc(0,&desc))&&depth(name,value,desc);
+    }
+    bool nameStencilSaved(const char* name,IDirect3DSurface9* value)noexcept{
+        D3DSURFACE_DESC desc{};return active()&&value&&call("GetDesc-name-stencil",value->GetDesc(&desc))&&depth(name,nullptr,desc,value);
+    }
     void sources(const NorthlightLocalLightSelection::Selection& selected,bool fogEnabled)noexcept{
         if(!active())return;
         if(selected.count>selected.sources.size()){unavailable("selection","source-limit");return;}
@@ -215,7 +234,8 @@ public:
         if(!active())return;finished_=true;complete_=complete_&&renderCompleted&&std::ferror(journal_)==0;
         std::fprintf(journal_,"{\"event\":\"end\",\"render_completed\":%s,\"export_complete\":%s,\"passes\":%u,\"authentic_source_replay\":false,\"whole_scene_replay\":false,\"fps_eligible\":false}\n",renderCompleted?"true":"false",complete_?"true":"false",passes_);
         if(std::fclose(journal_))complete_=false;journal_=nullptr;
-        char from[2048],to[2048];if(path("lighting-inputs","jsonl.tmp",from)&&path(complete_?"lighting-inputs":"lighting-inputs-incomplete","jsonl",to)&&std::rename(from,to))complete_=false;
+        char from[2048],to[2048],incomplete[128];std::snprintf(incomplete,sizeof incomplete,"%s-incomplete",journalName_);
+        if(path(journalName_,"jsonl.tmp",from)&&path(complete_?journalName_:incomplete,"jsonl",to)&&std::rename(from,to))complete_=false;
         logf("WORLD LIGHT_CAPTURE end capture=%u worldFrame=%u rendererFrame=%u rendererFrameKnown=%u diagnostic=1 fpsEligible=0 renderCompleted=%u exportComplete=%u passes=%u authenticSourceReplay=0 wholeSceneReplay=0",capture_,frame_,rendererFrame_,unsigned(rendererFrame_!=0),unsigned(renderCompleted),unsigned(complete_),passes_);
     }
 };

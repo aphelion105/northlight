@@ -51,7 +51,7 @@ class Draft {
         if(v=="@factory")v=f.factoryOverride;
         if(v!="~")return v;
         if(depth>4)return f.inherited;
-        if(f.file==Celestial&&f.section!="default")if(const Field* base=find(Celestial,"default",f.key))return resolve(*base,useDraft,depth+1);
+        if((f.file==Celestial||f.file==ShadowRange)&&f.section!="default")if(const Field* base=find(f.file,"default",f.key))return resolve(*base,useDraft,depth+1);
         if(presetValued(f)&&preset){
             const auto p=resolve(*preset,useDraft,depth+1);const auto options=split(f.options);
             const std::size_t index=p=="Performance"?2:p=="Balanced"?1:0;
@@ -107,8 +107,12 @@ inline std::vector<std::string> dependencies(const Field& f){
         {"AOMethod",{"ContactAO"}},{"AOQuality",{"ContactAO"}},{"AOStrength",{"ContactAO"}},{"AORadius",{"ContactAO"}},
         {"ActorShadowBudgetMiB",{"ActorShadows"}},{"ActorShadowRadius",{"ActorShadows"}},{"ActorShadowCpuMs",{"ActorShadows"}},{"ActorShadowDetail",{"ActorShadows"}},
         {"BlobShadowStrength",{"BlobShadows"}},
-        {"PointShadowLimit",{"PointShadows"}},{"PointShadowRefreshMs",{"PointShadows"}},{"PointShadowFacesPerFrame",{"PointShadows"}},
+        {"PointShadowDistance",{"PointShadows"}},{"PointShadowLimit",{"PointShadows"}},{"PointShadowRefreshMs",{"PointShadows"}},{"PointShadowFacesPerFrame",{"PointShadows"}},
         {"FogCloudDensity",{"FogClouds"}},{"RainFog",{"Weather"}},{"RainLens",{"Weather"}},{"SnowLens",{"Weather"}},{"RainLensStrength",{"Weather","RainLens"}},{"SnowLensStrength",{"Weather","SnowLens"}},{"RenderProfile",{"Diagnostics"}},
+        {"RainDropSize",{"Weather"}},{"SnowFlakeSize",{"Weather"}},{"RainLensSize",{"Weather","RainLens"}},{"SnowLensSize",{"Weather","SnowLens"}},
+        {"RainRivulets",{"Weather","RainLens"}},{"SnowFrost",{"Weather"}},{"SnowFrostStrength",{"Weather","SnowFrost"}},
+        {"WeatherWindDirection",{"Weather"}},{"WeatherWindStrength",{"Weather"}},{"WeatherCameraMotion",{"Weather"}},
+        {"SandLens",{"Weather"}},{"SandLensStrength",{"Weather","SandLens"}},{"SandLensSize",{"Weather","SandLens"}},
         {"ShadowFateDiagnostics",{"Diagnostics","ActorShadows"}},{"DiagReplayProbe",{"Diagnostics","RenderProfile","ActorShadows"}},
         {"SpellLayerClasses",{"SpellLayer"}},{"SpellTrace",{"SpellLayer"}},{"SpellFog",{"SpellLayer"}},{"NameMaskDebug",{"NameMask"}},
         {"StreamFramesAhead",{"CommandStream"}},{"StreamFrameSkip",{"CommandStream"}},{"StreamOcclusionLocal",{"CommandStream"}},

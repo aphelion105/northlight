@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // F12-armed, synchronous observation immediately before the real game draw.
 // No setters, rendering, retained COM objects, or periodic buffer readbacks.
+#include "utf8_path.h"
 #include "device_mirror.h"
 #include "spell_layer.h"
 #include "replay_copies.h"
@@ -23,7 +24,7 @@ struct Window {
     bool claim(const void* atlas,unsigned f){if(!atlas||!active(f))return false;for(auto* p:seen)if(p==atlas)return false;seen[captured++]=atlas;--left;return true;}
 };
 template<class T> struct Ref {T* p=nullptr;~Ref(){if(p)p->Release();}T** out(){return &p;}};
-struct File {FILE* p=nullptr;explicit File(const std::string& path):p(std::fopen(path.c_str(),"wb")){}~File(){if(p)std::fclose(p);}bool close(){const bool good=std::ferror(p)==0;const int closed=std::fclose(p);p=nullptr;return good&&closed==0;}};
+struct File {FILE* p=nullptr;explicit File(const std::string& path):p(NorthlightFiles::open(path.c_str(),"wb")){}~File(){if(p)std::fclose(p);}bool close(){const bool good=std::ferror(p)==0;const int closed=std::fclose(p);p=nullptr;return good&&closed==0;}};
 struct Bytes {std::vector<unsigned char> data;const char* source="not-read";HRESULT hr=D3DERR_INVALIDCALL,unlockHr=S_OK;DWORD flags=0;};
 inline bool copyUp(const void* data,std::uint64_t offset,unsigned size,Bytes& out){
     if(!data||!size||size>MaxBytes||offset>std::numeric_limits<std::uintptr_t>::max()-reinterpret_cast<std::uintptr_t>(data))return false;

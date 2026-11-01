@@ -39,7 +39,7 @@ def main():
     hlsl = (ROOT / "shaders/world_effects.hlsl").read_text()
     blur = hlsl.split("float4 FogBlur(", 1)[1].split("\n}", 1)[0]
     receiver = hlsl.split("float blurReceiverDistance(", 1)[1].split("\n}", 1)[0]
-    material = hlsl.split("float4 MaterialComposite(", 1)[1].split("\n}", 1)[0]
+    material = hlsl.split("float4 materialComposite(", 1)[1].split("\n}", 1)[0]
     assert "CurrentDistance" in receiver and "normalizedDepth" not in receiver + blur
     assert "water.x<=z+max(.012,water.x*.0007)&&water.y>.003" in receiver
     assert "float z=i==0?center:blurReceiverDistance(q);" in blur

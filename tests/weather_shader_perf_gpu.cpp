@@ -8,6 +8,7 @@ int main(int argc,char** argv){
  auto module=LoadLibraryA(argv[1]);assert(module);auto create=reinterpret_cast<IDirect3D9*(WINAPI*)(UINT)>(reinterpret_cast<void*>(GetProcAddress(module,"Direct3DCreate9")));assert(create);auto api=create(D3D_SDK_VERSION);assert(api);
  D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=window;pp.BackBufferWidth=pp.BackBufferHeight=64;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;pp.PresentationInterval=D3DPRESENT_INTERVAL_IMMEDIATE;
  IDirect3DDevice9* d=nullptr;ok(api->CreateDevice(0,D3DDEVTYPE_HAL,window,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_FPU_PRESERVE,&pp,&d));
+ {NorthlightSurfaceRenderer surface(d);NorthlightWeatherArtTestAccess::bindSnow(surface);
  IDirect3DPixelShader9* candidate[4]{};const DWORD* binaries[]={kRainQualityShader,kSnowQualityShader,kRainPerformanceShader,kSnowPerformanceShader};for(unsigned i=0;i<4;++i)ok(d->CreatePixelShader(binaries[i],&candidate[i]));
  IDirect3DPixelShader9* baseline[2]{};ok(d->CreatePixelShader(kPrecipitationQualityShader,&baseline[0]));ok(d->CreatePixelShader(kPrecipitationPerformanceShader,&baseline[1]));
  const unsigned W=half?960:1920,H=half?540:1080;Image depth{W,H,D3DFMT_R32F,4,std::vector<unsigned char>(size_t(W)*H*4)};const float raw=1;for(unsigned i=0;i<W*H;++i)std::memcpy(depth.pixels.data()+i*4,&raw,4);auto input=texture(d,depth);
@@ -24,6 +25,7 @@ int main(int argc,char** argv){
   ok(d->SetRenderTarget(0,target));D3DVIEWPORT9 vp={0,0,W,H,0,1};ok(d->SetViewport(&vp));ok(d->Clear(0,nullptr,D3DCLEAR_TARGET,0x00143250,1,0));
   for(unsigned entry=0;entry<2;++entry)for(unsigned snow=0;snow<2;++snow)for(unsigned strength=0;strength<2;++strength){
    c[3][0]=strength?1.f:.35f;c[3][1]=float(snow);ok(d->SetPixelShaderConstantF(0,c[0],10));
+   const float travel[4]={-c[1][3]*.5f,-c[1][3]*.2f,-c[1][3]*(snow?1.3f:19.f),1};ok(d->SetPixelShaderConstantF(12,travel,1));
    for(unsigned block=0;block<10;++block)for(unsigned order=0;order<2;++order){requireNoGame();const unsigned variant=(block+order)&1;ok(d->SetPixelShader(variant?candidate[entry*2+snow]:baseline[entry]));
     IDirect3DQuery9 *event=nullptr,*start=nullptr,*end=nullptr,*frequency=nullptr,*disjoint=nullptr;
     ok(d->CreateQuery(D3DQUERYTYPE_EVENT,&event));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&start));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&end));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPFREQ,&frequency));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPDISJOINT,&disjoint));
@@ -35,5 +37,5 @@ int main(int argc,char** argv){
   }
   target->Release();
  }
- d->SetTexture(3,nullptr);input->Release();for(auto* s:candidate)s->Release();for(auto* s:baseline)s->Release();d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);UnregisterClassW(wc.lpszClassName,wc.hInstance);
+ d->SetTexture(3,nullptr);input->Release();for(auto* s:candidate)s->Release();for(auto* s:baseline)s->Release();}d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);UnregisterClassW(wc.lpszClassName,wc.hInstance);
 }

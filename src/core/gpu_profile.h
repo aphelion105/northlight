@@ -16,7 +16,7 @@ class NorthlightGpuProfile {
     // Task 43: 40 marks: GI splits into GI/LocalLights and PointLighting into PointLight/RemovalSmooth/TemporalLight.
     // Task 45: PreCelestial (renderer.cpp) closes the rain/water mask preparation before the celestial passes; the worst case still fits 40.
     // AOBlurSetup and FogBlur split existing intervals without adding draws.
-    static constexpr unsigned RingSize=6,MaxMarks=42,StampCount=MaxMarks+2;
+    static constexpr unsigned RingSize=6,MaxMarks=44,StampCount=MaxMarks+2;
     static constexpr uint64_t SamplePeriod=120;
     struct Slot {
         IDirect3DQuery9* stamps[StampCount]={};

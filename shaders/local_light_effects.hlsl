@@ -2,6 +2,7 @@
 // from LocalDirect, using exactly the same normals, falloff, fade and sun gain.
 sampler2D LocalDepth : register(s0);
 samplerCUBE LocalCube : register(s1);
+sampler2D LocalResolved : register(s1); // LocalLightingSoft only.
 sampler2D LocalWater : register(s2);
 sampler2D LocalNormals : register(s3);
 sampler2D LocalBaseline : register(s4);
@@ -82,7 +83,7 @@ float3 localCubeTexelRay(float3 ray) {
     return (a.x>=a.y&&a.x>=a.z)?float3(direction.x,center.yz):
         (a.y>=a.z?float3(center.x,direction.y,center.z):float3(center.xy,direction.z));
 }
-float localVisibility(float3 delta,float3 normal) {
+float localVisibilityFiltered(float3 delta,float3 normal,bool soft) {
     float distance=length(delta);
     // Task 43: dot(normal,delta)>=0 is a face turned from the lamp (facing 0, estimate 0): the correction is 0 whatever
     // the visibility, so the 4-tap cube PCF is skipped.
@@ -109,9 +110,45 @@ float localVisibility(float3 delta,float3 normal) {
         float stored=texCUBElod(LocalCube,float4(ray,0)).r;
         visibility+=(deltaDepth<=0||receiver<=stored+.000002)?1:0;
     }
-    return visibility*.25;
+    float baseline=visibility*.25;
+    if(!soft)return baseline;
+    // A bounded .08-world-unit emitter. Attenuation range is not emitter size.
+    // Reconstruct each face's axial depth before measuring its ray distance.
+    float cone=0,blockers=0;
+    [loop]for(int y=0;y<4;++y)[loop]for(int x=0;x<4;++x){
+        float2 offset=(float2(x,y)-1.5)/3;
+        float3 ray=localCubeTexelRay(biased+distance*angular*4*(tangent*offset.x+bitangent*offset.y));
+        float deltaDepth=dot(depthPlane,ray),stored=texCUBElod(LocalCube,float4(ray,0)).r;
+        if(deltaDepth>0&&stored<min(depthA-deltaDepth-.000002,.999999)){
+            float rayLength=length(ray),receiverDistance=depthA*LocalShadow.x*rayLength/deltaDepth;
+            float blockerDistance=depthA*LocalShadow.x*rayLength/max(depthA-stored,1e-6);
+            cone+=.08*max(receiverDistance-blockerDistance,0)/max(blockerDistance*receiverDistance,.0001);++blockers;
+        }
+    }
+    // A sparse blocker miss retains the base PCF, including thin casters.
+    float radius=clamp(2*cone/max(blockers,1),angular,angular*4);
+    if(radius<=angular*1.001)return baseline;
+    visibility=0;
+    [loop]for(int fy=0;fy<4;++fy)[loop]for(int fx=0;fx<4;++fx){
+        float2 offset=(float2(fx,fy)-1.5)/3;
+        float3 ray=localCubeTexelRay(biased+distance*radius*(tangent*offset.x+bitangent*offset.y));
+        float deltaDepth=dot(depthPlane,ray),stored=texCUBElod(LocalCube,float4(ray,0)).r;
+        visibility+=(deltaDepth<=0||saturate(depthA-deltaDepth)<=stored+.000002)?1:0;
+    }
+    return visibility/16;
 }
-float4 LocalLighting(float2 uv:TEXCOORD0):COLOR0 {
+float localVisibility(float3 delta,float3 normal){return localVisibilityFiltered(delta,normal,false);}
+float4 LocalShadowResolve(float2 uv:TEXCOORD0):COLOR0 {
+    float2 screen=uv;uv=localDepthUV(uv);float depth=localDepth(uv);
+    if(depth>=.99999)return 1;
+    if(LocalDepthInfo.y>.5){float2 w=tex2Dlod(LocalWater,float4(uv,0,0)).rg;
+        if(w.x>LocalImage.z&&w.x<=localDistance(depth)+max(.012,w.x*.0007)&&w.y>.003)return 1;}
+    float3 p=localWorld(localView(uv,depth));
+    float3 normal=tex2Dlod(LocalNormals,float4(screen,0,0)).xyz;
+    float v=localVisibilityFiltered(p-LocalPosition.xyz,normal,true);
+    return float4(v,v,v,1);
+}
+float4 localLightingValue(float2 uv,bool soft) {
     float2 screen=uv;
     uv=localDepthUV(uv);float depth=localDepth(uv);
     if(depth>=.99999)return 0;
@@ -134,6 +171,11 @@ float4 LocalLighting(float2 uv:TEXCOORD0):COLOR0 {
     // while the camera or the lamp is outdoors. No time-of-day cutoff.
     float relevance=smoothstep(.15,.5,energy/max(sunlight,.02))*smoothstep(.002,.01,energy);
     if(relevance<=0)return 0;
-    float occlusion=1-localVisibility(delta,geometricNormal);
-    return float4(-contribution*(occlusion*relevance),0);
+    float visibility;
+    if(soft)visibility=tex2Dlod(LocalResolved,float4(screen,0,0)).r;
+    else visibility=localVisibility(delta,geometricNormal);
+    float occlusion=1-visibility;
+    return float4(-contribution*(occlusion*relevance*LocalDepthInfo.z),0);
 }
+float4 LocalLighting(float2 uv:TEXCOORD0):COLOR0{return localLightingValue(uv,false);}
+float4 LocalLightingSoft(float2 uv:TEXCOORD0):COLOR0{return localLightingValue(uv,true);}

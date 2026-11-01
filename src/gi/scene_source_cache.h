@@ -32,7 +32,7 @@ class SceneSourceCache {
     static Stamp stamp(const std::string& path){
         // A coherent entry snapshot supplies both fields with one metadata query.
         // If its extra path copy cannot be allocated, keep the original queries.
-        const std::filesystem::path native(path);
+        const auto native=std::filesystem::u8path(path);
         try{
             std::error_code ec;Stamp s;std::filesystem::directory_entry entry(native,ec);if(ec)return s;
             s.bytes=entry.file_size(ec);if(ec)return s;s.modified=entry.last_write_time(ec);s.valid=!ec;return s;

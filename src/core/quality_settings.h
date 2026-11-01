@@ -15,7 +15,9 @@ enum class Preset { Quality, Balanced, Performance };
 struct Settings {
     Preset preset=Preset::Quality;
     unsigned minSkinnedTriangles=100,captureBudgetMiB=32,actorShadowBudgetMiB=0;
-    unsigned farShadowInterval=4,nearShadowInterval=1,localLightLimit=48,pointShadows=1,pointShadowLimit=4,pointShadowRefreshMs=0,shadowDirectionSteps=2048;
+    unsigned farShadowInterval=4,nearShadowInterval=1,localLightLimit=48,pointShadows=1,pointShadowLimit=64,pointShadowRefreshMs=0,shadowDirectionSteps=2048;
+    // Camera distance to the light's influence sphere, in yards.
+    unsigned pointShadowDistance=48;
     // Where each value in Keys order came from: 'd' code default (Quality), 'p' Balanced/Performance
     // preset, 'l' legacy shadow-experiment.ini, 'f' northlight-quality.ini key. Not part of ==.
     // 0.3.138 GI: worker probe solve (rays, bounces, request step), actor/dynamic probes, solver threads.
@@ -72,10 +74,13 @@ struct Settings {
     unsigned blobShadowStrength=50;
     // Independent visibility of the native round ground decal; detailed shadows are unchanged.
     unsigned blobShadows=1;
-    // 0.3.198 (rain): Weather 1 = Northlight's own effects follow detected rain or snow (sky/weather_effects.h); 0 = nothing reacts.
+    // Weather 1 = Northlight's effects follow detected rain, snow and sand; 0 = nothing reacts.
     // RainFog 0..2 scales the haze/fog/shafts/sun/shadow/GI/lamp couplings (1 = the tuned look).
     unsigned weather=1,rainFog=1;
     unsigned rainLens=1,snowLens=1,rainLensStrength=60,snowLensStrength=60;
+    unsigned rainDropSize=100,snowFlakeSize=100,rainLensSize=100,snowLensSize=100;
+    unsigned rainRivulets=1,snowFrost=1,snowFrostStrength=70,sandLens=1,sandLensStrength=60,sandLensSize=100;
+    unsigned weatherWindDirection=45,weatherWindStrength=100,weatherCameraMotion=1;
     // 0.3.199 (fog clouds): FogClouds 1 = low fog banks that drift with the wind (own half-resolution raymarch pass, sky/fog_clouds.h);
     // 0 = none. FogCloudDensity 0..200 percent scales how much of the ground they cover (100 = the tuned look; thicker and faster in rain).
     unsigned fogClouds=1,fogCloudDensity=100;
@@ -111,6 +116,7 @@ struct Settings {
     // 0.3.209 (task 29) ActorShadowDetail: 1 = a dedicated 4x finer shadow map around the player holds the moving casters (characters, mounts) and a
     // contact-hardening soft filter pass reads it (sharp at the feet, softer further from the caster); 0 = the 0.3.207 shadows (near cascade, 5x5 tent). ActorShadows=0 disables it too.
     unsigned actorShadowDetail=1;
+    unsigned softShadows=1; // PCSS filtering only; does not change caster capture or shadow-map updates.
     // task 34 SpellLayer: 1 = translucent M2 draws without a depth write (particles, ribbons, spell batches, projected ground effects) are deferred and
     // drawn right after the world effects, so fog, haze, shadow and AO act on the world behind them and not on them; 0 = the old path (no classification).
     // SpellLayerClasses: bit mask of the blends deferred (1 additive, 2 alpha, 4 modulate/mod2x, 8 other). SpellTrace: frames of the SPELLTRACE draw-order log
@@ -139,7 +145,7 @@ struct Settings {
     unsigned autoDisplacementStrength=100,autoDisplacementDistance=12,autoDisplacementDetail=4;
     unsigned autoBumpModels=3,autoModelDisplacementStrength=25,autoModelDisplacementDistance=8,autoModelDisplacementDetail=2;
     unsigned autoHeightPolarity=0,autoHeightDetails=75,autoHeightBalance=50;
-    char origin[94]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
+    char origin[109]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
 };
 struct Key { const char* name; unsigned Settings::*field; unsigned low,high; unsigned preset[3]; };
 // preset[] = Quality, Balanced, Performance. Quality must equal Settings{}.
@@ -203,10 +209,10 @@ inline const Key Keys[]={
     {"ActorShadowCpuMs",&Settings::actorShadowCpuMs,0,20,{3,3,2}}, /* task 45 */
     {"GrassShadows",&Settings::grassShadows,0,1,{1,0,0}},
     {"EquipmentLights",&Settings::equipmentLights,0,1,{1,0,0}},
-    {"AOMethod",&Settings::aoMethod,0,3,{0,0,0}},
+    {"AOMethod",&Settings::aoMethod,0,4,{0,0,0}},
     {"AOStrength",&Settings::aoStrength,0,200,{100,100,100}},
     {"AORadius",&Settings::aoRadius,10,1000,{200,200,200}},
-    {"PointShadowLimit",&Settings::pointShadowLimit,4,128,{4,4,4}},
+    {"PointShadowLimit",&Settings::pointShadowLimit,16,128,{64,64,64}},
     {"AutoBump",&Settings::autoBump,0,1,{1,0,0}},
     {"AutoBumpStrength",&Settings::autoBumpStrength,0,150,{75,60,40}},
     {"AutoBumpDistance",&Settings::autoBumpDistance,8,96,{48,36,24}},
@@ -238,6 +244,21 @@ inline const Key Keys[]={
     {"SnowLens",&Settings::snowLens,0,1,{1,1,1}},
     {"RainLensStrength",&Settings::rainLensStrength,0,100,{60,60,60}},
     {"SnowLensStrength",&Settings::snowLensStrength,0,100,{60,60,60}},
+    {"RainDropSize",&Settings::rainDropSize,25,300,{100,100,100}},
+    {"SnowFlakeSize",&Settings::snowFlakeSize,25,300,{100,100,100}},
+    {"RainLensSize",&Settings::rainLensSize,25,300,{100,100,100}},
+    {"SnowLensSize",&Settings::snowLensSize,25,300,{100,100,100}},
+    {"RainRivulets",&Settings::rainRivulets,0,1,{1,1,1}},
+    {"SnowFrost",&Settings::snowFrost,0,1,{1,1,1}},
+    {"SnowFrostStrength",&Settings::snowFrostStrength,0,100,{70,70,70}},
+    {"SandLens",&Settings::sandLens,0,1,{1,1,1}},
+    {"SandLensStrength",&Settings::sandLensStrength,0,100,{60,60,60}},
+    {"SandLensSize",&Settings::sandLensSize,25,300,{100,100,100}},
+    {"WeatherWindDirection",&Settings::weatherWindDirection,0,359,{45,45,45}},
+    {"WeatherWindStrength",&Settings::weatherWindStrength,0,300,{100,100,100}},
+    {"WeatherCameraMotion",&Settings::weatherCameraMotion,0,1,{1,1,1}},
+    {"PointShadowDistance",&Settings::pointShadowDistance,8,192,{48,48,48}},
+    {"SoftShadows",&Settings::softShadows,0,1,{1,1,0}},
 };
 inline bool operator==(const Settings& a,const Settings& b){for(const auto& k:Keys)if(a.*k.field!=b.*k.field)return false;return true;}
 inline bool operator!=(const Settings& a,const Settings& b){return !(a==b);}
@@ -298,11 +319,11 @@ inline bool number(const std::string& text,unsigned& out){
     if(text.empty()||text.size()>6||text.find_first_not_of("0123456789")!=std::string::npos)return false;
     out=unsigned(std::strtoul(text.c_str(),nullptr,10));return true;
 }
-inline const char* aoName(unsigned method){const char* names[]={"SSAO","HDAO","HBAOPlus-D3D9","GTAO"};return names[method<4?method:0];}
+inline const char* aoName(unsigned method){const char* names[]={"SSAO","HDAO","HBAOPlus-D3D9","GTAO","ASSAO"};return names[method<5?method:0];}
 inline bool aoNumber(const std::string& text,unsigned& out){
     const auto value=lower(text);
     if(value=="ssao")out=0;else if(value=="hdao")out=1;
-    else if(value=="hbaoplus"||value=="hbao+")out=2;else if(value=="gtao")out=3;
+    else if(value=="hbaoplus"||value=="hbao+")out=2;else if(value=="gtao")out=3;else if(value=="assao")out=4;
     else return number(text,out);return true;
 }
 inline const char* aoQualityName(unsigned quality){const char* names[]={"High","Medium","Low"};return names[quality<3?quality:0];}

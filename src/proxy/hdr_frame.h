@@ -103,10 +103,15 @@ public:
                           IDirect3DSurface9* capturedSky,unsigned w,unsigned h,float minDepth,float maxDepth,
                           const Settings& settings,NorthlightStateBlockPool* pool=nullptr,bool materialize=true){
         SavedState saved(device,pool);if(!saved.ok)return E_FAIL;
-        HRESULT hr=ensure(device,w,h);if(FAILED(hr)||!materialize)return hr;
-        if(settings.legacyExpansion>0){hr=measure(device,source,true,legacyStatistics);if(FAILED(hr))return hr;}
+        HRESULT hr=ensure(device,w,h);if(FAILED(hr))return hr;
         const bool preserveSky=capturedSky&&depth&&maxDepth>minDepth;
-        if(preserveSky){for(unsigned i=0;i<3;++i)device->SetTexture(i,nullptr);hr=device->StretchRect(capturedSky,nullptr,linear.surface,nullptr,D3DTEXF_NONE);if(FAILED(hr))return hr;}
+        // A failed inline world pass decodes over the already resolved sky;
+        // its output target may have been partially overwritten by then.
+        if(preserveSky&&capturedSky!=linear.surface){for(unsigned i=0;i<3;++i)device->SetTexture(i,nullptr);hr=device->StretchRect(capturedSky,nullptr,linear.surface,nullptr,D3DTEXF_NONE);if(FAILED(hr))return hr;}
+        // Inline composition still needs the resolved owned sky, but decodes
+        // covered native pixels in the compositor without a full-screen pass.
+        if(!materialize)return hr;
+        if(settings.legacyExpansion>0){hr=measure(device,source,true,legacyStatistics);if(FAILED(hr))return hr;}
         const float parameters[]={minDepth,maxDepth>minDepth?1/(maxDepth-minDepth):1,preserveSky?1.f:0.f,settings.legacyExpansion};
         return pass(device,linear.surface,decode,w,h,source,depth,legacyStatistics.texture,parameters,settings.legacyExpansion>0);
     }

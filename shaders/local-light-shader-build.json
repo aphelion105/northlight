@@ -1,6 +1,6 @@
 {
   "bump_include_sha256": "1a947edc7a4bc83c56e6adfb05bdb5d7e2a6fca4e4dba83ede009d514c20c3f5",
-  "source_sha256": "a1bc15263109f7e86f99648edfb264327f334bc858d2ba4b312cb0c72450660d",
+  "source_sha256": "4fef432f41152489fafc11f8e4fced43a336cb1bac79514f83d9b6f423546d13",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
   "game_launched": false,
@@ -46,9 +46,9 @@
     },
     "LocalLighting": {
       "target": "ps_3_0",
-      "bytes": 7504,
-      "sha256": "e899a4245fc537e504199864c618d00613f0e6ff39e13468f6afff70eaa29147",
-      "static_instruction_slots": 466,
+      "bytes": 7520,
+      "sha256": "1fda47103ca6ee1dcd82c54604cf72620fa82274cd3129b257e4ad072d5a5dd3",
+      "static_instruction_slots": 467,
       "temporary_registers": 13,
       "samplers": [
         0,
@@ -62,7 +62,7 @@
         "rcp": 21,
         "add": 119,
         "frc": 6,
-        "mul": 100,
+        "mul": 101,
         "max": 16,
         "min": 6,
         "mov": 37,
@@ -77,6 +77,72 @@
         "nrm": 1
       },
       "cube_instruction_extra_slots": 12
+    },
+    "LocalShadowResolve": {
+      "target": "ps_3_0",
+      "bytes": 7092,
+      "sha256": "9407fb92d30d58e2f95daf002b5b33fb36d21d86983734597825213afbb89c93",
+      "static_instruction_slots": 470,
+      "temporary_registers": 18,
+      "samplers": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "instructions": {
+        "rcp": 21,
+        "add": 119,
+        "frc": 8,
+        "mul": 82,
+        "max": 22,
+        "min": 8,
+        "mov": 52,
+        "texldl": 9,
+        "if": 6,
+        "else": 6,
+        "cmp": 56,
+        "endif": 6,
+        "dp3": 11,
+        "rsq": 2,
+        "nrm": 1,
+        "rep": 4,
+        "endrep": 4
+      },
+      "cube_instruction_extra_slots": 18
+    },
+    "LocalLightingSoft": {
+      "target": "ps_3_0",
+      "bytes": 4360,
+      "sha256": "1049d5728a68e47e94ed1ba241a8db4d3704b61596a01d59785379d95473a5fe",
+      "static_instruction_slots": 246,
+      "temporary_registers": 9,
+      "samplers": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "instructions": {
+        "rcp": 14,
+        "add": 58,
+        "frc": 2,
+        "mul": 64,
+        "max": 4,
+        "min": 2,
+        "mov": 12,
+        "texldl": 6,
+        "if": 7,
+        "else": 7,
+        "cmp": 24,
+        "endif": 7,
+        "dp3": 10,
+        "rsq": 5,
+        "dp2add": 2
+      },
+      "cube_instruction_extra_slots": 0
     }
   }
 }

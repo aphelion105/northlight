@@ -56,9 +56,11 @@ class PointReferenceTests(unittest.TestCase):
         # so estimate and the correction are 0 whatever the visibility; every face toward the lamp still runs the PCF.
         src=fp.src('local_light_effects.hlsl').read_text()
         self.assertEqual(src.count('if(distance<=LocalShadow.x||distance>=LocalShadow.y||dot(normal,delta)>=0)return 1;'),1)
-        self.assertIn('float occlusion=1-localVisibility(delta,geometricNormal);',src)
+        self.assertIn('else visibility=localVisibility(delta,geometricNormal);',src)
+        self.assertIn('if(soft)visibility=tex2Dlod(LocalResolved,float4(screen,0,0)).r;',src)
+        self.assertIn('float occlusion=1-visibility;',src)
         self.assertIn('float3 contribution=LocalColor.rgb*(atten*atten*facing*LocalGain.x*(1-LocalGain.y*sunlit));',src)
-        self.assertIn('return float4(-contribution*(occlusion*relevance),0);',src)
+        self.assertIn('return float4(-contribution*(occlusion*relevance*LocalDepthInfo.z),0);',src)
         import random
         rng=random.Random(43);skipped=kept=0
         for _ in range(20000):

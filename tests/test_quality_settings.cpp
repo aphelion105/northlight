@@ -74,6 +74,9 @@ int main(){
     }
     assert(std::string(aoQualityName(0))=="High"&&std::string(aoQualityName(1))=="Medium"&&std::string(aoQualityName(2))=="Low");
     assert(parse("[Quality]\nAOMethod=GTAO\nAOStrength=150\nAORadius=300\n").aoMethod==3);
+    assert(parse("[Quality]\nAOMethod=assao\nAOQuality=Medium\n").aoMethod==4);
+    assert(parse("[Quality]\nAOMethod=4\nAOQuality=Low\n").aoMethod==4);
+    assert(parse("[Quality]\nAOMethod=5\n").aoMethod==0);
     assert(parse("[Quality]\nAOMethod=VXAO\n").aoMethod==0);
     {const auto combined=parse("[Quality]\nEquipmentLights=0\nAOMethod=GTAO\nAOStrength=150\nAORadius=300\n");
      assert(combined.equipmentLights==0&&combined.aoMethod==3&&combined.aoStrength==150&&combined.aoRadius==300);
@@ -84,7 +87,9 @@ int main(){
     {std::vector<std::string> notes;assert(parse("[Quality]\nWater=1\nWaterSSR=1\nWaterSSRResolution=100\n",nullptr,notes)==d);assert(notes.size()==3);
      for(const auto& note:notes)assert(note.find("retired")!=std::string::npos);for(const auto& key:Keys)assert(std::string(key.name).rfind("Water",0)!=0);}
     assert(d.minSkinnedTriangles==100&&d.captureBudgetMiB==32&&d.actorShadowBudgetMiB==0&&d.farShadowInterval==4);
-    assert(d.localLightLimit==48&&d.pointShadows==1&&d.pointShadowLimit==4&&d.pointShadowRefreshMs==0&&d.shadowDirectionSteps==2048);
+    assert(d.localLightLimit==48&&d.pointShadows==1&&d.pointShadowLimit==64&&d.pointShadowRefreshMs==0&&d.shadowDirectionSteps==2048);
+    for(auto p:{Preset::Quality,Preset::Balanced,Preset::Performance})assert(preset(p).pointShadowDistance==48);
+    assert(parse("[Quality]\nPointShadowDistance=96\n").pointShadowDistance==96);
     assert(parse(nullptr)==d&&parse("")==d&&parse("[Quality]\nPreset=Quality\n")==d&&preset(Preset::Quality)==d);
     for(const auto& k:Keys){assert(k.preset[0]==d.*k.field);for(unsigned p=0;p<3;++p)assert(k.preset[p]>=k.low&&k.preset[p]<=k.high);}
     { /* The shipped default file must be exactly Quality, with no warnings. */
@@ -627,12 +632,28 @@ int main(){
         assert(parse(("[Quality]\nGrassShadows="+std::string(value)+"\n").c_str(),nullptr,problems)==d&&problems.size()==1);}}
     {for(Preset p:{Preset::Quality,Preset::Balanced,Preset::Performance}){const auto q=preset(p);assert(q.rainLens==1&&q.snowLens==1&&q.rainLensStrength==60&&q.snowLensStrength==60);}
      auto q=parse("[Quality]\nRainLens=0\nSnowLens=1\nRainLensStrength=25\nSnowLensStrength=75\n");assert(!q.rainLens&&q.snowLens&&q.rainLensStrength==25&&q.snowLensStrength==75);
-     std::vector<std::string> problems;assert(parse("[Quality]\nSnowLensStrength=101\n",nullptr,problems)==d&&problems.size()==1);}
+     std::vector<std::string> problems;assert(parse("[Quality]\nSnowLensStrength=101\n",nullptr,problems)==d&&problems.size()==1);
+     auto sizes=parse("[Quality]\nRainDropSize=25\nSnowFlakeSize=300\nRainLensSize=125\nSnowLensSize=75\n");
+     assert(sizes.rainDropSize==25&&sizes.snowFlakeSize==300&&sizes.rainLensSize==125&&sizes.snowLensSize==75);
+     for(Preset p:{Preset::Quality,Preset::Balanced,Preset::Performance}){auto sizes=preset(p);assert(sizes.rainDropSize==100&&sizes.snowFlakeSize==100&&sizes.rainLensSize==100&&sizes.snowLensSize==100);}
+     for(const char* key:{"RainDropSize","SnowFlakeSize","RainLensSize","SnowLensSize"})for(const char* value:{"24","301","nan"}){
+         std::vector<std::string> issues;assert(parse((std::string("[Quality]\n")+key+"="+value+"\n").c_str(),nullptr,issues)==d&&issues.size()==1);}}
+    {for(Preset p:{Preset::Quality,Preset::Balanced,Preset::Performance}){const auto q=preset(p);
+        assert(q.rainRivulets==1&&q.snowFrost==1&&q.snowFrostStrength==70&&q.sandLens==1&&q.sandLensStrength==60&&q.sandLensSize==100);}
+     const auto q=parse("[Quality]\nRainRivulets=0\nSnowFrost=0\nSnowFrostStrength=100\nSandLens=0\nSandLensStrength=35\nSandLensSize=250\n");
+     assert(!q.rainRivulets&&!q.snowFrost&&q.snowFrostStrength==100&&!q.sandLens&&q.sandLensStrength==35&&q.sandLensSize==250);
+     for(const char* key:{"RainRivulets","SnowFrost","SandLens"}){std::vector<std::string> issues;assert(parse((std::string("[Quality]\n")+key+"=2\n").c_str(),nullptr,issues)==d&&issues.size()==1);}}
+    {const auto q=parse("[Quality]\nWeatherWindDirection=359\nWeatherWindStrength=300\nWeatherCameraMotion=0\n");assert(q.weatherWindDirection==359&&q.weatherWindStrength==300&&!q.weatherCameraMotion);
+     for(const char* invalid:{"WeatherWindDirection=360","WeatherWindStrength=301","WeatherCameraMotion=2"}){std::vector<std::string> issues;assert(parse((std::string("[Quality]\n")+invalid+"\n").c_str(),nullptr,issues)==d&&issues.size()==1);}}
     // Strong world relief must not change the independent animated-model strength.
     {auto strong=parse("[Quality]\nAutoDisplacementStrength=600\n");
      assert(strong.autoDisplacementStrength==600&&strong.autoModelDisplacementStrength==d.autoModelDisplacementStrength);
      assert(parse("[Quality]\nAutoDisplacementStrength=1000\n").autoDisplacementStrength==1000);
      std::vector<std::string> p;assert(parse("[Quality]\nAutoDisplacementStrength=1001\n",nullptr,p)==d&&p.size()==1);}
+    {assert(d.softShadows==1&&preset(Preset::Balanced).softShadows==1&&preset(Preset::Performance).softShadows==0);
+     const auto off=parse("[Quality]\nSoftShadows=0\n");assert(!off.softShadows&&off.actorShadowDetail==d.actorShadowDetail&&off.actorShadows==d.actorShadows&&off.pointShadows==d.pointShadows);
+     assert(effective(parse("[Quality]\nActorShadows=0\nSoftShadows=1\n")).softShadows==1);
+     std::vector<std::string> issues;assert(parse("[Quality]\nSoftShadows=2\n",nullptr,issues)==d&&issues.size()==1);}
     std::printf("quality: %s\n",describe(d).c_str());
     std::printf("quality: defaults==0.3.136, presets, overrides, legacy precedence and fallbacks, BOM/CRLF, range edges, shipped ini, identical default code paths passed\n");
 }

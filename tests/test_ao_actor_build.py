@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # northlight-test:
-"""Actor shader dependencies, embedded payloads and unchanged legacy effects."""
+"""Actor shader dependencies, embedded payloads and approved effect hashes."""
 import hashlib
 import json
 from pathlib import Path
@@ -11,6 +11,8 @@ ROOT = Path(__file__).resolve().parents[1]
 shader = ROOT / 'shaders'
 manifest = json.loads((shader / 'shader-build.json').read_text())
 legacy = json.loads((ROOT / 'tests/fixtures/ao_actor_legacy_sha256.json').read_text())
+# The AO method fixtures include the later blur/depth/rotation corrections.
+legacy.update(json.loads((ROOT / 'tests/fixtures/ao_baseline_sha256.json').read_text()))
 embedded = (ROOT / 'src/generated/compiled_shaders.h').read_text()
 actors = {'AOActorPrepare': 'kAoActorPrepareShader', 'HBAOActorContactBloom': 'kHbaoActorContactBloomShader',
           'GTAOActorContactBloom': 'kGtaoActorContactBloomShader', 'HBAOActorOnly': 'kHbaoActorOnlyShader',
@@ -31,4 +33,4 @@ for name, symbol in actors.items():
     assert array, symbol
     words = [int(word, 16) for word in re.findall(r'0x[0-9a-fA-F]+', array.group(1))]
     assert struct.pack('<' + 'I' * len(words), *words) == data, name + ' embedded payload differs'
-print('PASS 10 original effect payloads unchanged; 5 actor dependency/SM3/embedded-payload gates')
+print('PASS 10 approved effect payloads; 5 actor dependency/SM3/embedded-payload gates')

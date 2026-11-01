@@ -24,7 +24,7 @@ struct PointTerrainCoverageTest {
   IDirect3DSurface9* readback=nullptr;must(d->CreateOffscreenPlainSurface(256,256,D3DFMT_R32F,D3DPOOL_SYSTEMMEM,&readback,nullptr));
   auto image=[&](IDirect3DSurface9* surface){must(d->GetRenderTargetData(surface,readback));D3DLOCKED_RECT lock{};must(readback->LockRect(&lock,nullptr,D3DLOCK_READONLY));std::vector<unsigned char> pixels(256*256*4);for(unsigned y=0;y<256;++y)std::memcpy(pixels.data()+y*256*4,static_cast<char*>(lock.pBits)+y*lock.Pitch,256*4);must(readback->UnlockRect());return pixels;};
   std::ofstream rows(output+"/timings.tsv");unsigned comparisons=0,omitted=0,nonempty=0;
-  for(unsigned limit:{4u,128u})for(unsigned pose=0;pose<8;++pose){
+  for(unsigned limit:{4u,16u,64u,128u})for(unsigned pose=0;pose<8;++pose){
    const float angle=float(pose)*3.14159265359f/4,c=std::cos(angle),s=std::sin(angle),up=std::sqrt(.96f);
    const float inverse[]={-s,c,0,0,.2f*c,.2f*s,up,0,up*c,up*s,-.2f,0,center.x,center.y,center.z,1};std::memcpy(w.context.inverseView,inverse,sizeof inverse);
    w.quality.pointShadowLimit=limit;w.quality.localLightLimit=48;w.localLightQpc=0;w.atmosphereWork(w.atmosphere,.1f,3840,2160,0);
@@ -38,9 +38,10 @@ struct PointTerrainCoverageTest {
      const auto& l=slot.selected;const std::array<std::array<float,4>,1> sphere={{{l.position[0],l.position[1],l.position[2],l.attenuationEnd}}};
      if(!NorthlightLocalLightScissor::batchRect(view,sphere,1).area())continue;++visible;
      for(unsigned face=0;face<6;++face){auto pixels=image(slot.faces[face]);const float* values=reinterpret_cast<const float*>(pixels.data());nonempty+=std::any_of(values,values+256*256,[](float v){return v<1;});
-      if(mode==0)reference[l.sourceId][face]=std::move(pixels);else{assert(reference.at(l.sourceId)[face]==pixels);++comparisons;}}
+      if(mode==0)reference[l.sourceId][face]=std::move(pixels);else if(reference.count(l.sourceId)){assert(reference.at(l.sourceId)[face]==pixels);++comparisons;}}
     }
-    if(mode==1){assert(visible==reference.size()&&ready==visible);omitted+=unsigned(w.atmosphere.lights.count)-ready;}
+    // Visibility-aware selection may now fill slots formerly wasted offscreen.
+    if(mode==1){assert(visible>=reference.size()&&ready==visible&&ready<=limit);omitted+=unsigned(w.atmosphere.lights.count)-ready;}
     std::printf("VISIBILITY limit=%u pose=%u mode=%u selected=%u ready=%u visible=%u batches=%zu triangles=%u\n",limit,pose,mode,w.atmosphere.lights.count,ready,visible,w.batches.size(),built.plan->triangleCount);std::fflush(stdout);
    }
    if(benchmark)for(unsigned block=0;block<8;++block){

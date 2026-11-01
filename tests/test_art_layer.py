@@ -44,7 +44,7 @@ files = tables | set(blps)
 report = {}
 model_steps = {'world_model_lights', 'equipment_model_lights', 'spell_model_lights',
                'creature_model_lights', 'glue_model_lights', 'mount_model_lights', 'gameobject_model_lights'}
-metadata = {world_emitter_index.ARCHIVE_PATH}
+metadata = {world_emitter_index.ARCHIVE_PATH, build_art_layer.OWNER_FILE}
 
 
 def model_checks(view, folder, result):
@@ -66,7 +66,8 @@ def model_checks(view, folder, result):
         for target in result['targets']:
             with Archive(folder / target) as archive:
                 dropped=set(result['dropped_unchanged'])
-                assert {n for n in archive.names() if not n.startswith('(')} == (view_files | models | metadata)-dropped
+                assert {n for n in archive.names() if not n.startswith('(')} == ((view_files | models | metadata)-dropped) | {build_art_layer.OWNER_FILE}
+                assert build_art_layer.owns_archive(folder / target)
                 for name, data in view_textures.items():
                     assert (assets.read(name) if name in dropped else archive.read(name)) == data
                 payload = archive.read(world_emitter_index.ARCHIVE_PATH)
