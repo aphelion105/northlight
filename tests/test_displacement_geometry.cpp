@@ -73,9 +73,36 @@ int main(){
             const float mask=1-std::max(std::fabs(v.v.x-1),std::fabs(v.v.y-1));
             const bool original=(v.v.x==1&&v.v.y==1)||mask==0;
             const float offset=delta[2]*(gpu?height-.5f:1);
-            assert(std::fabs(offset-(original?0:mask*(height-.5f)))<1e-6f);moved+=offset!=0;
+            assert(original?offset==0:offset*(height-.5f)>0);
+            assert(std::fabs(offset)<=mask*std::fabs(height-.5f)+1e-6f);moved+=offset!=0;
         }assert(moved>0);
     }
+    // Refining a connected skin patch must not create ever-steeper dimples
+    // around its pinned original vertices, even with a constant height field.
+    for(bool gpu:{false,true})for(float height:{.2f,.8f})for(unsigned factor:{4u,8u,16u,64u}){
+        h.values.assign(64,height);assert(build(interior,skinDecl,6,fanUV,h,factor,false,false,false,out,nullptr,nullptr,nullptr,1,gpu));
+        float peak=0;unsigned originals=0;
+        for(unsigned i=0;i<out.vertexCount;++i){const auto* p=out.streams[0].bytes.data()+size_t(i)*out.streams[0].stride;Skin v;float delta[3];std::memcpy(&v,p,sizeof v);std::memcpy(delta,p+sizeof v,12);
+            const float offset=delta[2]*(gpu?height-.5f:1);float nearest=10;
+            for(const auto& anchor:fan){const float x=v.v.x-anchor.v.x,y=v.v.y-anchor.v.y;nearest=std::min(nearest,std::sqrt(x*x+y*y));}
+            if(nearest==0){assert(offset==0);++originals;}
+            assert(std::fabs(offset)<=3*std::fabs(height-.5f)*nearest+1e-6f);
+            peak=std::max(peak,std::fabs(offset));
+        }
+        assert(originals==5&&peak>.05f); // Preserve the anchors without disabling interior relief.
+    }
+    // Tiny anatomical features must not receive centimeter-scale inferred
+    // relief at the maximum model setting. Retain signed relief on the patch.
+    auto fine=interior;for(unsigned i=0;i<fine.vertexCount;++i){auto* p=fine.streams[0].bytes.data()+i*sizeof(Skin);Skin v;std::memcpy(&v,p,sizeof v);v.v.x*=.01f;v.v.y*=.01f;std::memcpy(p,&v,sizeof v);}
+    for(bool gpu:{false,true})for(float height:{.2f,.8f})for(unsigned factor:{2u,4u,16u,64u}){
+        h.values.assign(64,height);assert(build(fine,skinDecl,6,fanUV,h,factor,false,false,false,out,nullptr,nullptr,nullptr,1,gpu));float peak=0;
+        for(unsigned i=0;i<out.vertexCount;++i){float delta[3];std::memcpy(delta,out.streams[0].bytes.data()+size_t(i)*out.streams[0].stride+sizeof(Skin),12);
+            const float offset=delta[2]*(gpu?height-.5f:1)*.12f;
+            assert(offset*(height-.5f)>=0);assert(std::fabs(offset)<=.05f*std::sqrt(.0002f)+1e-7f);peak=std::max(peak,std::fabs(offset));}
+        assert(peak>1e-5f);
+    }
+    assert(build(fine,skinDecl,6,fanUV,h,16,false,false,false,out,nullptr,nullptr,nullptr,0));
+    {float peak=0;for(unsigned i=0;i<out.vertexCount;++i){float delta[3];std::memcpy(delta,out.streams[0].bytes.data()+size_t(i)*out.streams[0].stride+sizeof(Skin),12);peak=std::max(peak,std::fabs(delta[2]));}assert(peak>.29f);}
     // A rigid shader may share a declaration with unused, all-zero skin weights.
     // Those fields must not reject an otherwise valid rigid surface.
     for(auto& v:skin)for(auto& w:v.weights)w=0;std::memcpy(skinned.streams[0].bytes.data(),skin,sizeof skin);
