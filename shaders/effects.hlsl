@@ -199,11 +199,15 @@ float4 AOContactBloom(float2 uv : TEXCOORD0) : COLOR0
 // D3D9 adaptations: AMD AOFX valley HDAO, NVIDIA HBAO+ coarse AO,
 // and Jimenez et al. GTAO's cosine-weighted horizon integral. See AO-METHODS.md
 // and licenses/ao-methods.txt. Shared half-res targets/filter, no SDK dependency.
-float2 AORotation(float2 uv)
+float2 AORotation(float2 uv, float angularPeriod)
 {
     float noise = frac(dot(floor(uv / ImageAndClip.xy * .5), float2(.06711056, .00583715)));
-    float2 rotation = frac(float2(52.9829189, 37.4136) * noise) * 2 - 1;
-    return rotation * rsqrt(max(dot(rotation, rotation), 1e-4));
+    // Hash one angle, not two correlated sawtooths normalized into a vector.
+    // The latter creates low-frequency diagonal bands that survive AOBlur,
+    // especially with ASSAO's asymmetric progressive sample pattern.
+    // The caller selects the angular sweep for its sample symmetry/budget.
+    float angle = frac(52.9829189 * noise) * angularPeriod;
+    return float2(cos(angle), sin(angle));
 }
 
 float AOAcos(float x)
@@ -236,7 +240,7 @@ float NewAO(float2 uv, int method)
     // SurfaceNormal forces n.z <= 0, which is wrong for visible faces pointing forward in view Z
     // (camera pitched up, terrain sloping away). Orient toward the eye (receiver-to-eye vector).
     normal *= dot(normal, p) > 0 ? -1 : 1;
-    float2 rotation = AORotation(uv);
+    float2 rotation = AORotation(uv, .78539816339);
     float obscurance = 0;
 
     if (method == 1)
@@ -362,7 +366,9 @@ float NewAOQuality(float2 uv, int method, int quality)
     // SurfaceNormal forces n.z <= 0, which is wrong for visible faces pointing forward in view Z
     // (camera pitched up, terrain sloping away). Orient toward the eye (receiver-to-eye vector).
     normal *= dot(normal, p) > 0 ? -1 : 1;
-    float2 rotation = AORotation(uv);
+    float angularPeriod = quality == 0 ? .78539816339 :
+        method == 1 ? 6.28318530718 : quality == 1 ? 1.04719755120 : 1.57079632679;
+    float2 rotation = AORotation(uv, angularPeriod);
     float obscurance = 0;
 
     if (method == 1)
@@ -693,7 +699,9 @@ float ASSAOImpl(float2 uv,int quality)
     float inverseRadiusSquared=1/(radius*radius);
     float2 uvRadius=.425*radius*Lighting.xy/p.z;
     uvRadius*=min(1,.25/max(uvRadius.x,uvRadius.y));
-    float2 rotation=AORotation(uv);
+    // Paired samples repeat after a half turn. The sparse lower patterns use
+    // two cycles to distribute its residual noise across both screen axes.
+    float2 rotation=AORotation(uv,quality==0?3.14159265359:6.28318530718);
     float obscurance=0,weightSum=0;
     float4 edges=1;
     if(quality<2){
