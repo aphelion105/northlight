@@ -81,6 +81,18 @@ struct PointTerrainCoverageTest {
    assert(ready==limit&&resident==limit);std::printf("POINT_VISIBLE_POOL_PASS limit=%u ready=%u cubeSlots=%u\n",limit,ready,resident);
   }
   w.releasePointGPU();w.localScissorView={};
+  // The live quality distance must govern both capture prediction and actual
+  // cube submission. This lamp's influence starts 84 yards from the camera.
+  w.context.camera[2]=100;w.active->localLights={light};w.effects.shadows=true;w.lastRenderDebug=0;
+  NorthlightLocalLightSelection::Selection distant;distant.count=1;distant.sources[0]=light;
+  for(unsigned distance:{48u,96u,8u,192u}){
+   w.releasePointGPU();w.quality.pointShadowDistance=distance;const bool expected=distance>=84;
+   assert(w.pointRefreshPredicted()==expected);
+   must(d->BeginScene());w.renderPointShadows(distant,true,false);must(d->EndScene());
+   assert(w.pointReady==expected);unsigned resident=0;for(const auto& slot:w.pointSlots)resident+=slot.cube!=nullptr;
+   assert(resident==unsigned(expected));std::printf("POINT_DISTANCE_PASS distance=%u ready=%u cubeSlots=%u\n",distance,unsigned(w.pointReady),resident);
+  }
+  w.releasePointGPU();w.quality.pointShadowDistance=48;w.context.camera[2]=0;w.active->localLights.clear();
   // An authored model VS using the client's row projection layout, patched by
   // the production patcher. Its plane must match the static reference above.
   const uint32_t original[]={0xfffe0300,

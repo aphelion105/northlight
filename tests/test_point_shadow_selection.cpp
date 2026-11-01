@@ -26,6 +26,27 @@ int main(){
         const auto fallback=selectMany(lights.data(),lights.size(),camera,limit,{},48,false,&invalid);
         assert(fallback.count==old.count);for(unsigned i=0;i<old.count;++i)assert(fallback.index[i]==old.index[i]);
     }
+    // Distance is measured to the influence sphere, including the exact edge.
+    for(float range:{8.f,48.f,96.f,192.f}){
+        Light edge=lamp(1,range+10);edge.attenuationEnd=10;
+        assert(selectMany(&edge,1,camera,16,{},range,false,&view).count==1);
+        edge.position[2]+=.01f;
+        assert(selectMany(&edge,1,camera,16,{},range,false,&view).count==0);
+        edge.position[2]=range+5;
+        assert(selectMany(&edge,1,camera,16,{},range,false,&view).count==1);
+    }
+    {
+        SelectionTracker tracker;Light distant=lamp(1,100);distant.attenuationEnd=10;
+        assert(tracker.update(&distant,1,camera,16,100,&view)[0].index<0); // default 48
+        auto slots=tracker.update(&distant,1,camera,16,116,&view,96);
+        assert(slots[0].index==0&&std::fabs(slots[0].gain-.08f)<1e-6f);
+        for(unsigned now=132;now<=324;now+=16)slots=tracker.update(&distant,1,camera,16,now,&view,96);
+        assert(slots[0].gain==1);
+        slots=tracker.update(&distant,1,camera,16,340,&view,8);
+        assert(slots[0].index==0&&std::fabs(slots[0].gain-.92f)<1e-6f);
+        for(unsigned now=356;now<=548;now+=16)slots=tracker.update(&distant,1,camera,16,now,&view,8);
+        for(const auto& slot:slots)assert(slot.index<0);
+    }
     unsigned transitions=0;
     for(unsigned limit:{4u,16u,30u,64u,128u}){
         SelectionTracker tracker;std::vector<Light> lights;
@@ -62,5 +83,5 @@ int main(){
         tracker.update(lights.data(),1,camera,16,UINT32_MAX-7,&view);tracker.defer(0);
         slots=tracker.update(lights.data(),1,camera,16,8,&view);assert(std::fabs(slots[0].gain-.08f)<1e-6f);
     }
-    std::printf("PASS visible shadow selection: 4/16/30/64/128 limits, %u bounded transitions, identity/order, shrink, capture refusal, missing sources, tick wrap\n",transitions);
+    std::printf("PASS visible shadow selection: 8/48/96/192 yard edges and live distance fades, 4/16/30/64/128 limits, %u bounded transitions, identity/order, shrink, capture refusal, missing sources, tick wrap\n",transitions);
 }
