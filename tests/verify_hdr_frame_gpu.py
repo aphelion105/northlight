@@ -38,7 +38,7 @@ def main():
     for variant in (['reference','candidate'] if reference else ['candidate']):
         folder=output/variant;folder.mkdir(exist_ok=True);include=folder/'headers';include.mkdir(exist_ok=True)
         hashes={}
-        for name in ('hdr_frame.h','hdr_quad.h','hdr_color.h','hdr_presentation.h','saved_state.h','hdr_compiled_shaders.h'):
+        for name in ('hdr_frame.h','hdr_quad.h','hdr_color.h','hdr_ui_patch.h','hdr_presentation.h','saved_state.h','hdr_compiled_shaders.h'):
             path=fp.src(name)
             data=subprocess.check_output(['git','show',reference+':'+path.relative_to(fp.REPO).as_posix()],cwd=fp.REPO) if variant=='reference' else path.read_bytes()
             (include/name).write_bytes(data);hashes[name]=hashlib.sha256(data).hexdigest()

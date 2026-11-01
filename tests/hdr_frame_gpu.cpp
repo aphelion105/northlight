@@ -263,6 +263,36 @@ static unsigned fixedUiOracle(IDirect3DDevice9* d,IDirect3DSurface9* destination
     ok(d->SetTexture(0,nullptr));ok(d->SetTexture(1,nullptr));ok(d->SetTextureStageState(1,D3DTSS_COLOROP,D3DTOP_DISABLE));first->Release();second->Release();
     std::printf("HDR_FIXED_UI_ORACLE cases=%u rgbError=%g tolerance=0.025 reference=UNORM_compatibility_layer samples=1/4 uvSets=0/1\n",cases,maxError);return cases;
 }
+static unsigned legacyAlphaOracle(IDirect3DDevice9* d,IDirect3DSurface9* target,IDirect3DSurface9* staging,IDirect3DPixelShader9* constant){
+    NorthlightHdr::Color transfer;unsigned cases=0,failures=0;float maximumError=0,minimumRgb=0;
+    // The original UNORM target bounds source alpha before blending. FP16
+    // replay must do so too, including shaders without an explicit _sat.
+    for(unsigned major:{2u,3u}){
+        std::vector<DWORD> code(kHdrCalibration,kHdrCalibration+sizeof(kHdrCalibration)/4);code[0]=0xffff0000u|(major<<8);
+        IDirect3DPixelShader9* original=nullptr;ok(d->CreatePixelShader(code.data(),&original));
+        for(unsigned mode=0;mode<3;++mode)for(float white:{80.f,160.f})for(float opacity:{-2.f,-.001f,0.f,.25f,1.f,1.001f,2.f}){
+            const float background[]={.1f,.4f,.8f,1},source[]={.02f,.1f,.2f,opacity};
+            fill(d,target,constant,background);ok(d->BeginScene());ok(NorthlightHdr::quadState(d,target,W,H));
+            ok(d->SetPixelShader(original));ok(d->SetPixelShaderConstantF(0,source,1));
+            ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,mode!=0));ok(d->SetRenderState(D3DRS_SRCBLEND,mode==2?D3DBLEND_ONE:D3DBLEND_SRCALPHA));ok(d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_INVSRCALPHA));
+            ok(transfer.draw(d,white,[&]{return NorthlightHdr::drawQuad(d,W,H);}));ok(d->EndScene());
+            float actual[4];sample(d,target,staging,actual,W/2,H/2);const double alpha=std::clamp(double(opacity),0.,1.);
+            for(unsigned c=0;c<4;++c){
+                double expected=alpha;
+                if(c<3){const double encoded=std::clamp(double(source[c])/(mode==2?std::max(alpha,.000001):1),0.,1.);
+                    const double linear=encoded<=.04045?encoded/12.92:std::pow((encoded+.055)/1.055,2.4);
+                    expected=linear*(white/80)*(mode?alpha:1)+(mode?background[c]*(1-alpha):0);
+                }else if(mode)expected=mode==2?1:alpha*alpha+1-alpha;
+                const float error=float(std::fabs(actual[c]-expected));maximumError=std::max(maximumError,error);
+                if(c<3)minimumRgb=std::min(minimumRgb,actual[c]);
+                if(!std::isfinite(actual[c])||actual[c]<0||error>=.002f){if(failures++<6)std::fprintf(stderr,"legacy alpha SM%u mode=%u opacity=%g channel=%u actual=%g expected=%g\n",major,mode,opacity,c,actual[c],expected);}
+            }
+            ++cases;
+        }
+        transfer.forget(original);original->Release();
+    }
+    std::printf("HDR_LEGACY_ALPHA_ORACLE cases=%u failures=%u maxError=%g minRgb=%g shaders=SM2/SM3 blend=opaque/straight/premultiplied white=80/160 alpha=-2..2\n",cases,failures,maximumError,minimumRgb);std::fflush(stdout);assert(!failures);return cases;
+}
 int main(int argc,char** argv){
     assert(argc==2||argc==3);HWND window=CreateWindowExW(0,L"STATIC",L"",WS_OVERLAPPED,0,0,128,128,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);assert(window);
     HMODULE module=LoadLibraryA(argv[1]);assert(module);
@@ -378,6 +408,7 @@ int main(int argc,char** argv){
     device->SetPixelShader(constant);device->SetPixelShaderConstantF(0,hdr,1);
     ok(color.draw(device,80,[&]{return NorthlightHdr::drawQuad(device,W,H);}));ok(device->EndScene());sample(device,destination,readback,actual,W/2,H/2);
     assert(std::fabs(actual[0]-1)<.005f&&std::fabs(actual[1]-1)<.005f&&std::fabs(actual[2]-.214041f)<.005f);++cases;color.reset();
+    cases+=legacyAlphaOracle(device,destination,readback,constant);
     for(auto* value:{greySource,depth,light,baseline,neutralTexture,distance,brightFog})value->Release();
     // A real game Reset's resource loss preserves the last adapted exposure.
     settings.autoExposure=true;fill(device,source,constant,grey);finish(1.f/60,true);const float beforeReset=exposure();

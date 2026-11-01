@@ -103,7 +103,9 @@ inline bool patch(const Word* original,std::size_t count,const Word* transfer,st
     for(const auto& ins:old){
         result.push_back(original[ins.at]);
         for(unsigned j=1;j<ins.count;++j){Word w=original[ins.at+j];
-            if(j==1&&type(w)==8)w=reg(w,0,unsigned(capture));result.push_back(w);
+            // Preserve the native UNORM source range before FP16 blending.
+            // Clamp here: the SM2 transfer compiler assumes COLOR0 is bounded.
+            if(j==1&&type(w)==8)w=reg(w|0x00100000u,0,unsigned(capture));result.push_back(w);
         }
     }
     result.insert(result.end(),body.begin(),body.end());result.push_back(65535);output.swap(result);
