@@ -136,6 +136,11 @@ struct MaterialCaptureStateTestAccess {
     }
 };
 struct DisplacementStateTestAccess {
+    static void overlayDiagnostic(const NorthlightAutoDisplacement& g,IDirect3DVertexShader9* base,IDirect3DVertexShader9* effect){
+        const auto& a=g.shaders.at(base);const auto& b=g.shaders.at(effect);
+        std::printf("M2_OVERLAY_DIAGNOSTIC recorded=%zu baseKey=%zu effectKey=%zu influences=%u/%u\n",g.modelOverlays.size(),a.modelPosition.size(),b.modelPosition.size(),a.modelInfluences,b.modelInfluences);
+        for(size_t i=0;i<std::min(a.modelPosition.size(),b.modelPosition.size());++i)if(a.modelPosition[i]!=b.modelPosition[i])std::printf("M2_POSITION_DIFFERENCE at=%zu base=%08x effect=%08x\n",i,a.modelPosition[i],b.modelPosition[i]);
+    }
     static unsigned capturedHits(const NorthlightAutoDisplacement& g){return g.capturedBoundsHits;}
     static uint64_t builds(const NorthlightAutoDisplacement& g){return g.builds;}
 #ifdef NORTHLIGHT_TEST_LAZY_VARIANT_CURRENT
@@ -491,6 +496,7 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
             probe.tracking([](void* p,bool){return uint64_t(reinterpret_cast<uintptr_t>(p));},[](void*,bool){return uint64_t(1);},nullptr);
             probe.setConstantEpochSource(&extension,[](void* context,NorthlightConstantEpoch::Stamp& stamp){return static_cast<ExtensionDevice*>(context)->constantStamp(stamp);});
             probe.registerMaterial(vs,reinterpret_cast<const DWORD*>(vsBytes.data()),vsBytes.size()/4,4);
+            if(probe.skinned(vs)||std::getenv("NORTHLIGHT_TEST_MODEL_OVERLAY")){
             if(probe.skinned(vs)){
             assert(probe.prepare(vs,4,7,geometry));reads.calls=reads.registers=0;
             assert(probe.prepare(vs,4,7,geometry));assert(reads.calls==0);
@@ -500,19 +506,37 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
             }
             assert(reads.builds==1);
             std::printf("MATERIAL_CONSTANT_REUSE_PASS unchangedCalls=0 afterReplayRegisters=%u builds=1\n",reads.registers);
+            }
             if(std::getenv("NORTHLIGHT_TEST_MODEL_OVERLAY")){
                 auto glowBytes=read(folder+"model-glow-vs.bin");IDirect3DVertexShader9* glow=nullptr;ok(d->CreateVertexShader((DWORD*)glowBytes.data(),&glow));
                 probe.registerMaterial(glow,(DWORD*)glowBytes.data(),glowBytes.size()/4,4);probe.beginDraw();assert(probe.prepare(vs,4,7,geometry));
                 ok(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0xff18212d,1,0));ok(probe.draw(native,true));
                 ok(d->SetRenderState(D3DRS_ZWRITEENABLE,FALSE));ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));ok(d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_SRCALPHA));ok(d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_ONE));
-                ok(d->SetVertexShader(glow));probe.beginDraw();assert(probe.prepareModelOverlay(glow,geometry));
+                ok(d->SetVertexShader(glow));probe.beginDraw();const bool overlayPrepared=probe.prepareModelOverlay(glow,geometry);if(!overlayPrepared)DisplacementStateTestAccess::overlayDiagnostic(probe,vs,glow);assert(overlayPrepared);
                 IDirect3DQuery9* query=nullptr;ok(d->CreateQuery(D3DQUERYTYPE_OCCLUSION,&query));ok(d->SetRenderState(D3DRS_ZFUNC,D3DCMP_EQUAL));
                 auto visible=[&](bool synchronized){ok(query->Issue(D3DISSUE_BEGIN));ok(synchronized?probe.draw(native,true):native());ok(query->Issue(D3DISSUE_END));DWORD count=0;HRESULT hr=S_FALSE;for(unsigned i=0;i<5000&&hr==S_FALSE;++i){hr=query->GetData(&count,sizeof count,D3DGETDATA_FLUSH);if(hr==S_FALSE)Sleep(1);}ok(hr);return count;};
                 const auto originalPixels=visible(false),synchronizedPixels=visible(true);assert(synchronizedPixels>originalPixels&&synchronizedPixels>0);drop(query);ok(d->SetRenderState(D3DRS_ZFUNC,D3DCMP_LESSEQUAL));
+                // Geometry correspondence must not depend on how an attached
+                // effect combines its colour with the character underneath.
+                const DWORD effectBlends[][2]={{D3DBLEND_SRCALPHA,D3DBLEND_INVSRCALPHA},{D3DBLEND_ONE,D3DBLEND_ONE},{D3DBLEND_DESTCOLOR,D3DBLEND_ZERO},{D3DBLEND_DESTCOLOR,D3DBLEND_SRCCOLOR},{D3DBLEND_SRCALPHA,D3DBLEND_ONE}};
+                for(const auto& blend:effectBlends){
+                    ok(d->SetRenderState(D3DRS_SRCBLEND,blend[0]));ok(d->SetRenderState(D3DRS_DESTBLEND,blend[1]));
+                    probe.beginDraw();assert(probe.prepareModelOverlay(glow,geometry));
+                    ok(d->SetRenderState(D3DRS_ZFUNC,D3DCMP_EQUAL));ok(d->CreateQuery(D3DQUERYTYPE_OCCLUSION,&query));
+                    const auto pixels=visible(true);assert(pixels==synchronizedPixels);drop(query);
+                    DWORD src=0,dst=0;ok(d->GetRenderState(D3DRS_SRCBLEND,&src));ok(d->GetRenderState(D3DRS_DESTBLEND,&dst));assert(src==blend[0]&&dst==blend[1]);
+                    std::printf("M2_EFFECT_BLEND_PASS src=%lu dst=%lu pixels=%lu\n",(unsigned long)src,(unsigned long)dst,(unsigned long)pixels);
+                }
+                ok(d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_SRCALPHA));ok(d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_ONE));
                 for(unsigned stage=2;stage<16;++stage)ok(d->SetTexture(stage,nullptr));ok(d->SetRenderState(D3DRS_ZFUNC,D3DCMP_EQUAL));NorthlightSpellLayer::Layer layer;layer.attach(d);NorthlightSpellLayer::Config config;config.on=true;unsigned mirrorEntries=0;NorthlightSpellLayer::MirrorView mirror{};mirror.ctx=&mirrorEntries;mirror.enter=[](void* ctx){++*static_cast<unsigned*>(ctx);return true;};mirror.leave=[](void*){};config.source=&mirror;SyncedSlots synced{};synced.vsF[0]=~0ull;config.synced=&synced;layer.configure(config);layer.beginFrame(false);synced.vsF[0]=~0ull;
                 bool recorded=false;assert(probe.deferModelOverlay([&](unsigned vertices,unsigned primitives){recorded=true;assert(vertices>sourceVertices&&primitives>sourcePrimitives);auto args=NorthlightSpellLayer::DrawArgs::indexed(D3DPT_TRIANGLELIST,0,0,vertices,0,primitives);args.psMajor=3;args.deviceStateOnly=true;bool admitted=layer.defer(args,drawSurface,zbuffer,NorthlightSpellLayer::SubAdditive);if(!admitted)std::printf("M2_DEFER_FAIL event=%u reason=%s pending=%u armed=%u prim=%u verts=%u mode=%u\n",layer.eventSeq(),NorthlightSpellLayer::reasonName(layer.lastEvent().reason),layer.pending(),unsigned(layer.armed()),primitives,vertices,unsigned(layer.mode()));return admitted;}));assert(recorded&&layer.pending()==1&&mirrorEntries==0&&synced.vsF[0]==0);
                 float unrelated[4];ok(d->GetVertexShaderConstantF(100,unrelated,1));float other[4];std::copy(unrelated,unrelated+4,other);other[3]+=.125f;ok(d->SetVertexShaderConstantF(100,other,1));probe.beginDraw();assert(probe.prepareModelOverlay(glow,geometry));ok(d->SetVertexShaderConstantF(100,unrelated,1));
                 float old[4];ok(d->GetVertexShaderConstantF(31,old,1));float changed[4];std::copy(old,old+4,changed);changed[3]+=.125f;ok(d->SetVertexShaderConstantF(31,changed,1));probe.beginDraw();assert(!probe.prepareModelOverlay(glow,geometry));ok(d->SetVertexShaderConstantF(31,old,1));
+                if(std::strcmp(argv[5],"model4")==0){ok(d->GetVertexShaderConstantF(40,old,1));std::copy(old,old+4,changed);changed[3]+=.125f;ok(d->SetVertexShaderConstantF(40,changed,1));probe.beginDraw();assert(!probe.prepareModelOverlay(glow,geometry));ok(d->SetVertexShaderConstantF(40,old,1));}
+                auto altered=glowBytes;bool changedLiteral=false;
+                for(size_t at=1;at<altered.size()/4;){auto* words=reinterpret_cast<DWORD*>(altered.data());const unsigned op=words[at]&65535;if(op==65535)break;const unsigned size=op==65534?(words[at]>>16)&32767:(words[at]>>24)&15;
+                    if(op==81&&NorthlightShadowShader::regIndex(words[at+1])==0){for(unsigned lane=0;lane<4;++lane){float value;std::memcpy(&value,words+at+2+lane,4);value+=.125f;std::memcpy(words+at+2+lane,&value,4);}changedLiteral=true;break;}at+=size+1;}
+                assert(changedLiteral);IDirect3DVertexShader9* different=nullptr;ok(d->CreateVertexShader(reinterpret_cast<DWORD*>(altered.data()),&different));probe.registerMaterial(different,reinterpret_cast<DWORD*>(altered.data()),altered.size()/4,4);ok(d->SetVertexShader(different));probe.beginDraw();assert(!probe.prepareModelOverlay(different,geometry));ok(d->SetVertexShader(glow));drop(different);
                 probe.beginDraw();assert(probe.prepareModelOverlay(glow,geometry));probe.endFrame();probe.beginDraw();assert(!probe.prepareModelOverlay(glow,geometry));
                 ok(d->SetRenderState(D3DRS_ZFUNC,D3DCMP_EQUAL));ok(d->CreateQuery(D3DQUERYTYPE_OCCLUSION,&query));ok(query->Issue(D3DISSUE_BEGIN));layer.replay();ok(query->Issue(D3DISSUE_END));DWORD replayPixels=0;HRESULT replayStatus=S_FALSE;for(unsigned i=0;i<5000&&replayStatus==S_FALSE;++i){replayStatus=query->GetData(&replayPixels,sizeof replayPixels,D3DGETDATA_FLUSH);if(replayStatus==S_FALSE)Sleep(1);}ok(replayStatus);assert(replayPixels==synchronizedPixels&&layer.pending()==0&&layer.frameCounters().replaySkipped==0);drop(query);ok(d->SetRenderState(D3DRS_ZFUNC,D3DCMP_LESSEQUAL));
                 ok(d->SetRenderState(D3DRS_ZWRITEENABLE,TRUE));ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE));ok(d->SetVertexShader(vs));drop(glow);std::printf("M2_OVERLAY_SYNC_GPU_PASS originalPixels=%lu synchronizedPixels=%lu changed_pose_refused frame_reset\n",(unsigned long)originalPixels,(unsigned long)synchronizedPixels);
