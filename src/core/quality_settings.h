@@ -72,10 +72,13 @@ struct Settings {
     unsigned blobShadowStrength=50;
     // Independent visibility of the native round ground decal; detailed shadows are unchanged.
     unsigned blobShadows=1;
-    // 0.3.198 (rain): Weather 1 = Northlight's own effects follow detected rain or snow (sky/weather_effects.h); 0 = nothing reacts.
+    // Weather 1 = Northlight's effects follow detected rain, snow and sand; 0 = nothing reacts.
     // RainFog 0..2 scales the haze/fog/shafts/sun/shadow/GI/lamp couplings (1 = the tuned look).
     unsigned weather=1,rainFog=1;
     unsigned rainLens=1,snowLens=1,rainLensStrength=60,snowLensStrength=60;
+    unsigned rainDropSize=100,snowFlakeSize=100,rainLensSize=100,snowLensSize=100;
+    unsigned rainRivulets=1,snowFrost=1,snowFrostStrength=70,sandLens=1,sandLensStrength=60,sandLensSize=100;
+    unsigned weatherWindDirection=45,weatherWindStrength=100,weatherCameraMotion=1;
     // 0.3.199 (fog clouds): FogClouds 1 = low fog banks that drift with the wind (own half-resolution raymarch pass, sky/fog_clouds.h);
     // 0 = none. FogCloudDensity 0..200 percent scales how much of the ground they cover (100 = the tuned look; thicker and faster in rain).
     unsigned fogClouds=1,fogCloudDensity=100;
@@ -139,7 +142,7 @@ struct Settings {
     unsigned autoDisplacementStrength=100,autoDisplacementDistance=12,autoDisplacementDetail=4;
     unsigned autoBumpModels=3,autoModelDisplacementStrength=25,autoModelDisplacementDistance=8,autoModelDisplacementDetail=2;
     unsigned autoHeightPolarity=0,autoHeightDetails=75,autoHeightBalance=50;
-    char origin[94]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
+    char origin[107]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
 };
 struct Key { const char* name; unsigned Settings::*field; unsigned low,high; unsigned preset[3]; };
 // preset[] = Quality, Balanced, Performance. Quality must equal Settings{}.
@@ -238,6 +241,19 @@ inline const Key Keys[]={
     {"SnowLens",&Settings::snowLens,0,1,{1,1,1}},
     {"RainLensStrength",&Settings::rainLensStrength,0,100,{60,60,60}},
     {"SnowLensStrength",&Settings::snowLensStrength,0,100,{60,60,60}},
+    {"RainDropSize",&Settings::rainDropSize,25,300,{100,100,100}},
+    {"SnowFlakeSize",&Settings::snowFlakeSize,25,300,{100,100,100}},
+    {"RainLensSize",&Settings::rainLensSize,25,300,{100,100,100}},
+    {"SnowLensSize",&Settings::snowLensSize,25,300,{100,100,100}},
+    {"RainRivulets",&Settings::rainRivulets,0,1,{1,1,1}},
+    {"SnowFrost",&Settings::snowFrost,0,1,{1,1,1}},
+    {"SnowFrostStrength",&Settings::snowFrostStrength,0,100,{70,70,70}},
+    {"SandLens",&Settings::sandLens,0,1,{1,1,1}},
+    {"SandLensStrength",&Settings::sandLensStrength,0,100,{60,60,60}},
+    {"SandLensSize",&Settings::sandLensSize,25,300,{100,100,100}},
+    {"WeatherWindDirection",&Settings::weatherWindDirection,0,359,{45,45,45}},
+    {"WeatherWindStrength",&Settings::weatherWindStrength,0,300,{100,100,100}},
+    {"WeatherCameraMotion",&Settings::weatherCameraMotion,0,1,{1,1,1}},
 };
 inline bool operator==(const Settings& a,const Settings& b){for(const auto& k:Keys)if(a.*k.field!=b.*k.field)return false;return true;}
 inline bool operator!=(const Settings& a,const Settings& b){return !(a==b);}

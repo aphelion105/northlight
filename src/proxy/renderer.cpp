@@ -290,6 +290,7 @@ template<class T> static uint64_t shaderHash(T* shader, std::vector<DWORD>& word
 #include "stand_api.h"
 #endif
 #include "surface_renderer.h"
+#include "weather_diagnostics.h"
 #include "auto_bump_renderer.h"
 #include "model_normal_renderer.h"
 #include "client_latency_diagnostics.h"
@@ -934,6 +935,31 @@ private:
         if(world)world->endFrame(!extensionFault,frame);if(water)water->endFrame();if(surface)surface->endFrame();if(autoBump)autoBump->endFrame();if(modelNormals)modelNormals->endFrame();if(celestialDiscs)celestialDiscs->endFrame();if(shadowBlobs)shadowBlobs->endFrame();
         drop(worldDepth);worldDepthDescKnown=false; rainMrtUnbind();terrain = captured = applied = projectionValid = skySeen = false;rainMaskCleared=rainMaskDrawn=rainMaskFrame=rainMaskOk=rainDepthOk=false; /* 0.3.202 (rain mask MRT): RT1 never outlives a frame */earlyDepth.reset();resetTranslucentCensus(); /* the TRANSLUCENT line is logged before clearFrame */
     }
+    void captureWeatherDiagnostics(const NorthlightSurfaceFrame* constants,IDirect3DSurface9* target,IDirect3DSurface9* nameDepth,const char* unavailable,
+                                   const std::string& directory={},bool consumeRequest=true){
+        if(consumeRequest&&!NorthlightDiagnosticCapture::take(NorthlightDiagnosticCapture::Weather))return;
+        gpuDiagnosticFrame=true;
+        try{
+            const auto folder=directory.empty()?NorthlightWorldDiagnostics::directory(std::filesystem::path(rootPath).u8string()):directory;
+            if(folder.empty())return;
+            ExtensionDevice::RawScope raw(*ext);
+            NorthlightWeatherDiagnostics::Frame snapshot;
+            snapshot.constants=constants;snapshot.rendererFrame=frame;snapshot.width=width;snapshot.height=height;snapshot.layerGate=weatherLayerGate;
+            snapshot.skySeen=skyBandSeen;snapshot.linearHdr=hdrSceneReady;snapshot.nameMaskRequired=nameDepth!=nullptr;snapshot.unavailable=unavailable;
+            snapshot.sourceSamples=worldDepthDescKnown?unsigned(worldDepthDesc.MultiSampleType):0;
+            snapshot.multisampleVerified=NorthlightBackend::isPackagedDxvk(selectedBackend);
+            if(world){snapshot.quality=&world->surfaceSettings();snapshot.weather=&world->weather();
+                const bool snow=snapshot.weather->kind==NorthlightWeather::Kind::Snow,sand=snapshot.weather->kind==NorthlightWeather::Kind::Sand;const auto& q=*snapshot.quality;
+                const bool cameraWanted=sand?(q.sandLens&&q.sandLensStrength):(((snow?q.snowLens:q.rainLens)&&(snow?q.snowLensStrength:q.rainLensStrength))||(snow&&q.snowFrost&&q.snowFrostStrength));
+                if(constants&&cameraWanted&&(sand||(scene&&sceneSurface))){
+                    snapshot.lensExposureKnown=true;snapshot.lensExposed=world->supplementalWeatherOutdoors();
+                    if(snow&&snapshot.lensExposed)snapshot.heat=world->weatherLensHeat();
+                }
+            }
+            const bool complete=NorthlightWeatherDiagnostics::capture(ext,folder,snapshot,depthTex,target,nameDepth);
+            logf("WEATHER capture rendererFrame=%u complete=%u directory=%s reason=%s",frame,unsigned(complete),folder.c_str(),unavailable?unavailable:complete?"captured":"required-export-failed");
+        }catch(...){logf("WEATHER capture unavailable: diagnostic failure");}
+    }
     void captureEffectDiagnostics(){
         using namespace NorthlightDiagnosticCapture;
         const unsigned scopes=take();const bool fallback=world&&world->needsDiagnosticFallback();
@@ -948,6 +974,7 @@ private:
         try{
             const auto directory=NorthlightWorldDiagnostics::directory(std::filesystem::path(rootPath).u8string());
             if(directory.empty())return;
+            if(scopes&Weather)captureWeatherDiagnostics(nullptr,nullptr,nullptr,"weather-pass-not-reached",directory,false);
             if(FILE* f=NorthlightFiles::open((directory+"/capture-1-frame.json").c_str(),"wb")){
                 auto finite=[](float value){return std::isfinite(value)?value:0.f;};
                 std::fprintf(f,"{\"renderer_frame\":%u,\"scopes\":%u,\"effects_enabled\":%s,\"projection_valid\":%s,\"ao_enabled\":%s,\"ao_method\":%u,\"ao_strength\":%.9g,\"ao_radius\":%.9g,\"near\":%.9g,\"far\":%.9g,\"projection_scale\":[%.9g,%.9g],\"depth_range\":[%.9g,%.9g],\"fps_eligible\":false}\n",frame,scopes,enabled?"true":"false",projectionValid?"true":"false",contactAO?"true":"false",aoMethod,finite(aoStrength),finite(aoRadius),finite(nearZ),finite(farZ),finite(scaleX),finite(scaleY),finite(worldMinDepth),finite(worldMaxDepth));
@@ -1218,21 +1245,31 @@ private:
         context.c[1][3]=surfaceTime;context.c[2][0]=worldMinDepth;context.c[2][1]=1.f/(worldMaxDepth-worldMinDepth);return true;
     }
     void surfaceWeather(){
-        if(!surface||!world||!applied||!enabled||failed||debugMode||worldDebug||!depthTex||!world->weatherSetting()||world->underwaterScale()<.9f||memoryGuard.capsHalved()){weatherLayerGate=0;return;}
+        const bool diagnostic=(NorthlightDiagnosticCapture::pending().load(std::memory_order_relaxed)&NorthlightDiagnosticCapture::Weather)!=0;
+        if(!surface||!world||!applied||!enabled||failed||debugMode||worldDebug||!depthTex||!world->weatherSetting()||world->underwaterScale()<.9f||memoryGuard.capsHalved()){weatherLayerGate=0;if(diagnostic)captureWeatherDiagnostics(nullptr,nullptr,nullptr,"weather-pass-unavailable");return;}
         const auto& weather=world->weather();
-        if((weather.kind!=NorthlightWeather::Kind::Rain&&weather.kind!=NorthlightWeather::Kind::Snow)||weather.blend<=0){weatherLayerGate=0;return;}
-        const bool outside=skyBandSeen&&world->supplementalWeatherOutdoors();
-        if(!outside){weatherLayerGate=0;return;}weatherLayerGate+=(1-weatherLayerGate)*.1f;
-        NorthlightSurfaceFrame context;if(!surfaceContext(context))return;
+        if((weather.kind!=NorthlightWeather::Kind::Rain&&weather.kind!=NorthlightWeather::Kind::Snow&&weather.kind!=NorthlightWeather::Kind::Sand)||weather.blend<=0){weatherLayerGate=0;if(diagnostic)captureWeatherDiagnostics(nullptr,nullptr,nullptr,"no-active-weather");return;}
+        // A roof above the camera only shelters the lens. The visible exterior
+        // must keep its precipitation; scene depth clips it at foreground roofs.
+        if(!skyBandSeen){weatherLayerGate=0;if(diagnostic)captureWeatherDiagnostics(nullptr,nullptr,nullptr,"no-sky");return;}weatherLayerGate+=(1-weatherLayerGate)*.1f;
+        NorthlightSurfaceFrame context;if(!surfaceContext(context)){if(diagnostic)captureWeatherDiagnostics(nullptr,nullptr,nullptr,"surface-context-unavailable");return;}
         context.c[3][0]=weatherLayerGate*weather.blend*(.35f+.65f*weather.intensity);context.c[3][1]=weather.kind==NorthlightWeather::Kind::Snow?1.f:0.f;
-        ExtensionDevice::RawScope raw(*ext);SavedState saved(ext,&stateBlocks);if(!saved.ok)return;
+        const auto& q=world->surfaceSettings();const bool snow=weather.kind==NorthlightWeather::Kind::Snow,sand=weather.kind==NorthlightWeather::Kind::Sand;
+        context.c[3][2]=(float(snow?q.snowFlakeSize:q.rainDropSize)-100.f)*.01f;
+        surface->setMotion(context,unsigned(weather.kind),q,surfaceTime);
+        ExtensionDevice::RawScope raw(*ext);SavedState saved(ext,&stateBlocks);if(!saved.ok){if(diagnostic)captureWeatherDiagnostics(nullptr,nullptr,nullptr,"state-save-failed");return;}
         IDirect3DSurface9* nameDepth=nameMask.armed()&&nameMask.hasMarks()&&maskStencil?worldDepth:nullptr;
         auto* weatherTarget=hdrSceneReady?hdrPresentBack:saved.targets[0];
-        surface->precipitation(weatherTarget,depthTex,width,height,context,world->qualityPreset(),nameDepth);
-        gpuProfile->mark("Precipitation");
-        const auto& q=world->surfaceSettings();const bool snow=weather.kind==NorthlightWeather::Kind::Snow;
+        if(diagnostic)captureWeatherDiagnostics(&context,weatherTarget,nameDepth,nullptr);
+        if(!sand){surface->precipitation(weatherTarget,depthTex,width,height,context,world->qualityPreset(),nameDepth);gpuProfile->mark("Precipitation");}
         const unsigned lensOn=snow?q.snowLens:q.rainLens,strength=snow?q.snowLensStrength:q.rainLensStrength;
-        if(lensOn&&strength&&scene&&sceneSurface){surface->lens(weatherTarget,hdrSceneReady?hdrFrame.texture():scene,hdrSceneReady?hdrFrame.surface():sceneSurface,width,height,snow,surfaceTime,context.c[3][0]*float(strength)*.01f,nameDepth,weather.intensity,snow?world->weatherLensHeat():0.f);gpuProfile->mark("WeatherLens");}
+        const float frost=snow&&q.snowFrost?context.c[3][0]*float(q.snowFrostStrength)*.01f:0;
+        const bool cameraWanted=sand?(q.sandLens&&q.sandLensStrength):((lensOn&&strength)||frost>0);
+        if(cameraWanted&&world->supplementalWeatherOutdoors()){
+            if(sand)surface->sandLens(weatherTarget,width,height,surfaceTime,context.c[3][0]*float(q.sandLensStrength)*.01f,nameDepth,weather.intensity,float(q.sandLensSize)*.01f);
+            else if(scene&&sceneSurface)surface->lens(weatherTarget,hdrSceneReady?hdrFrame.texture():scene,hdrSceneReady?hdrFrame.surface():sceneSurface,width,height,snow,surfaceTime,lensOn?context.c[3][0]*float(strength)*.01f:0,nameDepth,weather.intensity,snow?world->weatherLensHeat():0.f,float(snow?q.snowLensSize:q.rainLensSize)*.01f,snow||q.rainRivulets!=0,frost);
+            gpuProfile->mark("WeatherLens");
+        }
     }
     void renderEffects() {
         if(hdr.active&&!hdrAtUiBoundary)return;

@@ -74,6 +74,11 @@ def main(argv=None):
     surface_manifest = json.loads((SHADERS/'surface-shader-build.json').read_text())
     if hashlib.sha256((SHADERS/'surface_effects.hlsl').read_bytes()).hexdigest() != surface_manifest['source_sha256']:
         raise SystemExit('Precipitation shader source differs from offline build.')
+    weather_art = (northlight_paths.GENERATED/'weather_texture_data.h').read_text()
+    for name in ('camera-frost.png','snow-flocs.png'):
+        expected = hashlib.sha256((SHADERS/'assets'/name).read_bytes()).hexdigest()
+        if f'// source-sha256 {name} {expected}' not in weather_art:
+            raise SystemExit('Weather art differs from embedded materials; run scripts/generate_weather_art.py.')
     hdr_manifest = json.loads((SHADERS/'hdr-shader-build.json').read_text())
     if hashlib.sha256((SHADERS/'hdr_effects.hlsl').read_bytes()).hexdigest() != hdr_manifest['source_sha256']:
         raise SystemExit('HDR shader source differs from offline build; run scripts/shaders/compile_hdr_shaders.py.')

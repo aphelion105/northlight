@@ -630,7 +630,19 @@ int main(){
         assert(parse(("[Quality]\nGrassShadows="+std::string(value)+"\n").c_str(),nullptr,problems)==d&&problems.size()==1);}}
     {for(Preset p:{Preset::Quality,Preset::Balanced,Preset::Performance}){const auto q=preset(p);assert(q.rainLens==1&&q.snowLens==1&&q.rainLensStrength==60&&q.snowLensStrength==60);}
      auto q=parse("[Quality]\nRainLens=0\nSnowLens=1\nRainLensStrength=25\nSnowLensStrength=75\n");assert(!q.rainLens&&q.snowLens&&q.rainLensStrength==25&&q.snowLensStrength==75);
-     std::vector<std::string> problems;assert(parse("[Quality]\nSnowLensStrength=101\n",nullptr,problems)==d&&problems.size()==1);}
+     std::vector<std::string> problems;assert(parse("[Quality]\nSnowLensStrength=101\n",nullptr,problems)==d&&problems.size()==1);
+     auto sizes=parse("[Quality]\nRainDropSize=25\nSnowFlakeSize=300\nRainLensSize=125\nSnowLensSize=75\n");
+     assert(sizes.rainDropSize==25&&sizes.snowFlakeSize==300&&sizes.rainLensSize==125&&sizes.snowLensSize==75);
+     for(Preset p:{Preset::Quality,Preset::Balanced,Preset::Performance}){auto sizes=preset(p);assert(sizes.rainDropSize==100&&sizes.snowFlakeSize==100&&sizes.rainLensSize==100&&sizes.snowLensSize==100);}
+     for(const char* key:{"RainDropSize","SnowFlakeSize","RainLensSize","SnowLensSize"})for(const char* value:{"24","301","nan"}){
+         std::vector<std::string> issues;assert(parse((std::string("[Quality]\n")+key+"="+value+"\n").c_str(),nullptr,issues)==d&&issues.size()==1);}}
+    {for(Preset p:{Preset::Quality,Preset::Balanced,Preset::Performance}){const auto q=preset(p);
+        assert(q.rainRivulets==1&&q.snowFrost==1&&q.snowFrostStrength==70&&q.sandLens==1&&q.sandLensStrength==60&&q.sandLensSize==100);}
+     const auto q=parse("[Quality]\nRainRivulets=0\nSnowFrost=0\nSnowFrostStrength=100\nSandLens=0\nSandLensStrength=35\nSandLensSize=250\n");
+     assert(!q.rainRivulets&&!q.snowFrost&&q.snowFrostStrength==100&&!q.sandLens&&q.sandLensStrength==35&&q.sandLensSize==250);
+     for(const char* key:{"RainRivulets","SnowFrost","SandLens"}){std::vector<std::string> issues;assert(parse((std::string("[Quality]\n")+key+"=2\n").c_str(),nullptr,issues)==d&&issues.size()==1);}}
+    {const auto q=parse("[Quality]\nWeatherWindDirection=359\nWeatherWindStrength=300\nWeatherCameraMotion=0\n");assert(q.weatherWindDirection==359&&q.weatherWindStrength==300&&!q.weatherCameraMotion);
+     for(const char* invalid:{"WeatherWindDirection=360","WeatherWindStrength=301","WeatherCameraMotion=2"}){std::vector<std::string> issues;assert(parse((std::string("[Quality]\n")+invalid+"\n").c_str(),nullptr,issues)==d&&issues.size()==1);}}
     // Strong world relief must not change the independent animated-model strength.
     {auto strong=parse("[Quality]\nAutoDisplacementStrength=600\n");
      assert(strong.autoDisplacementStrength==600&&strong.autoModelDisplacementStrength==d.autoModelDisplacementStrength);

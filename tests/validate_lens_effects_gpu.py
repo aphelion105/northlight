@@ -22,6 +22,12 @@ img.save(out/'base.png');(out/'input.fgr').write_bytes(struct.pack('<5I',0x31524
 guard=subprocess.run(['powershell','-NoProfile','-NonInteractive','-Command','if (Get-Process -Name wow,WowClient64 -ErrorAction SilentlyContinue) { exit 1 } else { exit 0 }'],creationflags=subprocess.CREATE_NO_WINDOW)
 if guard.returncode:raise SystemExit('Game process detected; offscreen GPU test deferred')
 subprocess.run([str(exe),str(a.backend.resolve()),str(out/'input.fgr')],cwd=out,check=True,timeout=180)
-for name in ('rain','rain-later','snow','snow-later'):
+for name in ('rain','rain-later','snow','snow-later','sand','sand-later','frost','rivulet','snow-cold','snow-melted'):
     img=Image.frombytes('RGBA',(w,h),(out/(name+'.raw')).read_bytes(),'raw','BGRA');img.save(out/(name+'.png'))
+for effect in ('snow-merge','rain-drift','frost-density'):
+    frames=[Image.frombytes('RGBA',(w,h),(out/f'{effect}-{i}.raw').read_bytes(),'raw','BGRA').convert('RGB') for i in range(13)]
+    frames[0].save(out/(effect+'.gif'),save_all=True,append_images=frames[1:],duration=250,loop=0)
+    strip=Image.new('RGB',(w*4,h))
+    for column,index in enumerate((0,1,3,12)):strip.paste(frames[index],(column*w,0))
+    strip.save(out/(effect+'-frames.png'))
 print('Previews:',out/'rain.png',out/'snow.png')
