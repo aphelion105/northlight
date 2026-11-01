@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # northlight-test: requires=windows-exe,zig,client manual
-"""Check crystal reflection depth across camera rotations on a hidden D3D9 device."""
+"""Check crystal/portal overlay depth across camera rotations on a hidden D3D9 device."""
 import argparse
 import json
 import struct
@@ -16,12 +16,14 @@ from shader_compiler import Compiler
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--backend', required=True)
+parser.add_argument('--model', choices=('crystal', 'portal'), default='crystal')
 parser.add_argument('--baseline-headers', type=Path, help='optional saved production headers for a negative run')
 args = parser.parse_args()
 out = fp.output_dir()
 assets = Assets()
 try:
-    path = r'world\expansion02\doodads\stormpeaks\iceshards\frostgianticeshard04.m2'
+    path = (r'world\expansion02\doodads\stormpeaks\iceshards\frostgianticeshard04.m2' if args.model == 'crystal'
+            else r'world\generic\activedoodads\mageportals\stormwindmageportal01.m2')
     model = assets.read(path)
     skin = assets.read(path[:-3]+'00.skin')
     count, offset = struct.unpack_from('<II', model, 60)
@@ -30,12 +32,23 @@ try:
     lookup = [i[0] for i in array(skin, offset, count, '<H')]
     count, offset = struct.unpack_from('<II', skin, 12)
     indices = [lookup[i[0]] for i in array(skin, offset, count, '<H')]
+    if args.model == 'portal':
+        count, offset = struct.unpack_from('<II', skin, 28)
+        subset = array(skin, offset, count, '<10H7f')[3]  # stone frame and its alpha overlay
+        indices = indices[subset[4]:subset[4]+subset[5]]
+        used = sorted(set(indices))
+        remap = {v: i for i, v in enumerate(used)}
+        vertices = [vertices[i] for i in used]
+        indices = [remap[i] for i in indices]
     (out/'crystal.mesh').write_bytes(struct.pack('<2I', len(vertices), len(indices))+
                                    b''.join(vertices)+struct.pack('<'+'I'*len(indices), *indices))
     count, offset = struct.unpack_from('<II', model, 112)
-    assert array(model, offset, count, '<2H') == [(1, 0), (16, 2), (16, 2)]
+    assert array(model, offset, count, '<2H') == ([(1, 0), (16, 2), (16, 2)] if args.model == 'crystal'
+                                               else [(1, 0), (16, 2), (21, 2), (21, 2), (21, 2)])
     count, offset = struct.unpack_from('<II', model, 80)
-    texture = array(model, offset, count, '<4I')[0]
+    textures = array(model, offset, count, '<4I')
+    count, offset = struct.unpack_from('<II', model, 128)
+    texture = textures[array(model, offset, count, '<H')[3][0]] if args.model == 'portal' else textures[0]
     width, height, rgba = decode_blp(assets.read(string(model, texture[3])))
     bgra = bytearray(rgba)
     for i in range(0, len(bgra), 4):
@@ -44,7 +57,7 @@ try:
     for sm in (2, 3):
         for family in ('diffuse_t1', 'diffuse_env'):
             codes = dict((i, b) for i, _, b in variants(assets.read(f'shaders\\vertex\\vs_{sm}_0\\{family}.bls')))
-            for variant in (10, 11):
+            for variant in (0, 1, 10, 11):
                 (out/f'{family}-{sm}-{variant}.bin').write_bytes(codes[variant])
 finally:
     assets.close()
