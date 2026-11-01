@@ -36,7 +36,7 @@ LEGACY = r"""        const auto start=std::chrono::steady_clock::now();
         heavyBudget.maxVertices=0;heavyBudget.maxOperations=32768;
         buildBudget.maxVertices=2048;buildBudget.maxOperations=65536;
         const bool diagnostics=NorthlightDiagnostics::enabled()&&(frames==0||frames%120==0); /* logs and envelope timing fields only */
-        pointBoundsValid=0;replayBoundsCache.beginFrame(diagnostics);replayBoundsMetadata.beginFrame();
+        pointBoundsValid=0;replayBoundsCache.beginFrame(diagnostics,replays.size());replayBoundsMetadata.beginFrame();
         // Hints contain no entry/declaration pointers. Current pose bounds and
         // classifications never survive to another frame or recycled packet.
         for(auto& p:replays){p->pointBounds={};p->boundsWork={};p->boundsPrepared.reset();}

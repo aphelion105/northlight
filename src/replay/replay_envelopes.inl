@@ -79,7 +79,7 @@ private:
     // non-owning pointer first. No geometry owner or evaluated pose is retained.
     Entry* pending_=nullptr;
     std::uint64_t pendingProgressFrame_=0;
-    /* FastReady clock batch: the interval since fastMark_ (warm skin draws and
+    /* FastReady clock batch: the interval since fastMark_ (warm cheap draws and
        the schedule between them) is charged to the ready bank every
        ReadyClockStride draws and before any Timer/lending starts. Gaps are
        charged, never dropped, so the batch only over-counts, by construction. */
@@ -312,12 +312,12 @@ public:
     EnvelopeCache(const EnvelopeCache&)=delete;EnvelopeCache& operator=(const EnvelopeCache&)=delete;
     EnvelopeCache(EnvelopeCache&&)=delete;EnvelopeCache& operator=(EnvelopeCache&&)=delete;
     void clear(){pending_=nullptr;pendingProgressFrame_=0;std::vector<Memo>().swap(memo_);memoBytes_=memoTableBytes_=memoNext_=memoEntries_=0;memoPolicy_={};memoTotals_={};entrySerial_=0;entries_.clear();scratch_.clear();bytes_=0;clock_=frame_=0;expensive_={};stats_={};beginFrame();}
-    void beginFrame(bool diagnostics=true){
+    void beginFrame(bool diagnostics=true,size_t packets=0){
         fastOpen_=false;fastCount_=0;
         memoTotals_.add(stats_);
         memoPolicy_.beginFrame(stats_.memoTests,stats_.memoHits);
         memoProtect_=true;
-        diagnostics_=diagnostics;timeBudget_.reset();++frame_;readyNanoseconds_=heavyNanoseconds_=buildNanoseconds_=classifyNanoseconds_=0;readyCalls_=heavyCalls_=buildCalls_=0;stats_={};
+        diagnostics_=diagnostics;timeBudget_.reset(packets);++frame_;readyNanoseconds_=heavyNanoseconds_=buildNanoseconds_=classifyNanoseconds_=0;readyCalls_=heavyCalls_=buildCalls_=0;stats_={};
         if(pending_&&pending_->owner.expired()){pending_=nullptr;++stats_.pendingOwnerExpired;}
         else if(pending_&&frame_-pendingProgressFrame_>MaxIdleBuildFrames){pending_=nullptr;++stats_.pendingAbandoned;}
     }
@@ -385,24 +385,56 @@ public:
         return calculateImpl(p,mesh,owner,elements,count,constants,inverse,budget,output,stage,info,nullptr);
     }
 private:
-    /* Warm, cheap, exact-template skin draw only; anything else (cold, heavy,
-       rigid, palette DEF, odd camera, operation cap) returns false and takes
-       the unchanged Timer path. Same lookup proof, same evaluator, same bits. */
+    const float* effectiveConstants(const NorthlightActorDeformation::Program& p,const Entry& e,const float* captured,float* storage){
+        if(!e.copyDefinitions)return captured;
+        const size_t copied=size_t(e.constantCount)*16;
+        if(copied)std::memcpy(storage+4*e.constantFirst,captured+4*e.constantFirst,copied);
+        stats_.effectiveCopiedBytes+=copied;
+        for(const auto& def:p.definitions){if(def.reg>=256)return nullptr;std::memcpy(storage+4*def.reg,def.value.data(),16);}
+        return storage;
+    }
+    template<class Stop> static Status evaluateGroups(const NorthlightActorDeformation::Program& p,const Entry& e,
+        const float* constants,const float* inverse,Budget& budget,Bounds& output,Stop&& stop){
+        double low[3]={INFINITY,INFINITY,INFINITY},high[3]={-INFINITY,-INFINITY,-INFINITY};
+        for(const auto& pair:e.groups){
+            if(stop())return Status::Budget;
+            budget.operations+=p.operations.size();detail::Vector inputs[16]={};
+            const auto& limits=pair.second.limits;
+            for(size_t i=0;i<e.bindings.size();++i)for(unsigned j=0;j<4;++j){const float lo=limits[i*8+j],hi=limits[i*8+4+j],mid=float((double(lo)+hi)*.5);inputs[e.bindings[i].reg][j]={mid,std::max(double(mid)-lo,double(hi)-mid)};}
+            detail::Vector position;if(!detail::evaluateIntervals(p,inputs,constants,position,true))return Status::Unsupported;
+            for(unsigned axis=0;axis<3;++axis){detail::Value world=detail::mul(position[3],{inverse[12+axis],0});double magnitude=std::fabs(world.value)+world.error;
+                for(unsigned k=0;k<3;++k){auto term=detail::mul(position[k],{inverse[4*k+axis],0});magnitude+=std::fabs(term.value)+term.error;world=detail::add(world,term);}
+                world.error+=detail::roundError(magnitude)*8+.001;
+                if(!std::isfinite(world.value)||!std::isfinite(world.error)||std::fabs(world.value)+world.error>1000000)return Status::Unsupported;
+                low[axis]=std::min(low[axis],double(world.value)-world.error);high[axis]=std::max(high[axis],double(world.value)+world.error);
+            }
+        }
+        for(unsigned axis=0;axis<3;++axis){output.low[axis]=std::nextafter(float(low[axis]),-std::numeric_limits<float>::infinity());output.high[axis]=std::nextafter(float(high[axis]),std::numeric_limits<float>::infinity());}
+        output.valid=true;return Status::Valid;
+    }
+    // Warm cheap skins and small generic envelopes share the batched clock.
+    // Cold/heavy work retains its interruptible Timer path and reserved budget.
     bool fastReady(const Prepared& prepared,const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>& owner,const float* constants,const float* inverse,
         Budget& budget,Bounds& output,WorkInfo* info,Status& status){
         Entry* e=nullptr;auto range=entries_.equal_range(reinterpret_cast<std::uintptr_t>(owner.get()));
         for(auto it=range.first;it!=range.second;++it)if(sameOwner(it->second.owner,owner)&&it->second.key==prepared.key_){e=&it->second;break;}
-        if(!e||e->unsupported||!e->ready||!e->skin||e->copyDefinitions||e->lastEvaluationNs>=CheapSliceNanoseconds)return false;
-        const size_t operations=size_t(75)+size_t(e->skin->usedBones)*16;
+        if(!e||e->unsupported||!e->ready||(e->skin&&e->copyDefinitions)||e->lastEvaluationNs>=CheapSliceNanoseconds)return false;
+        const auto& p=prepared.program_;
+        const size_t groups=e->skin?e->skin->usedBones:e->groups.size();
+        const size_t operations=e->skin?size_t(75)+groups*16:groups*p.operations.size();
+        if(!e->skin&&(groups>8||operations>128))return false;
         if(budget.operations>budget.maxOperations||operations>budget.maxOperations-budget.operations)return false;
         for(unsigned j=0;j<16;++j)if(!std::isfinite(inverse[j]))return false;
         if(inverse[3]!=0||inverse[7]!=0||inverse[11]!=0||inverse[15]!=1)return false;
         if(!fastOpen_){fastMark_=BoundsClock::now();fastOpen_=true;fastCount_=0;}
         e->touched=++clock_;++stats_.memoBypassed;
-        if(info){info->kind=Kind::Cheap;info->programHash=e->programHash;info->groups=e->skin->usedBones;info->operations=operations;info->skin=true;}
-        budget.operations+=operations;
-        if(e->skin->evaluate(constants,inverse,output)){++stats_.ready;++stats_.skinValid;++stats_.cheapValid;++stats_.memoStoreBypassed;++stats_.fastValid;status=Status::Valid;}
-        else {output={};++stats_.unsupported;status=Status::Unsupported;}
+        if(info){info->kind=Kind::Cheap;info->programHash=e->programHash;info->groups=groups;info->operations=operations;info->skin=bool(e->skin);}
+        float storage[1024];const float* effective=effectiveConstants(p,*e,constants,storage);
+        if(!effective){++stats_.invalid;status=Status::Invalid;}
+        else if(e->skin){budget.operations+=operations;status=e->skin->evaluate(effective,inverse,output)?Status::Valid:Status::Unsupported;}
+        else status=evaluateGroups(p,*e,effective,inverse,budget,output,[]{return false;});
+        if(status==Status::Valid){++stats_.ready;stats_.skinValid+=bool(e->skin);++stats_.cheapValid;++stats_.memoStoreBypassed;++stats_.fastValid;}
+        else {output={};if(status==Status::Unsupported)++stats_.unsupported;}
         if(++fastCount_>=ReadyClockStride){const auto now=BoundsClock::now();readyNanoseconds_+=elapsedNs(now,fastMark_);fastMark_=now;fastCount_=0;}
         return true;
     }
@@ -475,14 +507,8 @@ private:
             if(inverse[3]!=0||inverse[7]!=0||inverse[11]!=0||inverse[15]!=1){++stats_.invalid;evaluationStatus=Status::Invalid;return evaluationStatus;}
             // Apply shader-local DEF overrides once, instead of searching their
             // list at every source fetch in every group. Captured banks untouched.
-            float storage[1024];const float* effective=constants;
-            if(e.copyDefinitions){
-                const size_t copied=size_t(e.constantCount)*16;
-                if(copied)std::memcpy(storage+4*e.constantFirst,constants+4*e.constantFirst,copied);
-                stats_.effectiveCopiedBytes+=copied;
-                for(const auto& def:p.definitions){if(def.reg>=256){++stats_.invalid;evaluationStatus=Status::Invalid;return evaluationStatus;}std::memcpy(storage+4*def.reg,def.value.data(),16);}
-                effective=storage;
-            }
+            float storage[1024];const float* effective=effectiveConstants(p,e,constants,storage);
+            if(!effective){++stats_.invalid;evaluationStatus=Status::Invalid;return evaluationStatus;}
             if(e.skin){budget.operations+=operations;
                 bool interrupted=false;
                 struct StopContext {Timer* timer;bool* interrupted;};StopContext stop{&timer,&interrupted};
@@ -493,21 +519,10 @@ private:
                 ++stats_.ready;++stats_.skinValid;if(stage==Stage::Cheap)++stats_.cheapValid;if(stage==Stage::Heavy)++stats_.heavyValid;
                 remember(e,constants,inverse,output);evaluationStatus=Status::Valid;return evaluationStatus;
             }
-            double low[3]={INFINITY,INFINITY,INFINITY},high[3]={-INFINITY,-INFINITY,-INFINITY};
-            for(const auto& pair:e.groups){
-                if(timer.expired()){if(stage==Stage::Cheap&&timer.sliceExpired()){++stats_.cheapSliceDeferred;if(info)info->kind=Kind::Heavy;}return timeBudget();}budget.operations+=p.operations.size();detail::Vector inputs[16]={};
-                const auto& limits=pair.second.limits;
-                for(size_t i=0;i<e.bindings.size();++i)for(unsigned j=0;j<4;++j){const float lo=limits[i*8+j],hi=limits[i*8+4+j],mid=float((double(lo)+hi)*.5);inputs[e.bindings[i].reg][j]={mid,std::max(double(mid)-lo,double(hi)-mid)};}
-                detail::Vector position;if(!detail::evaluateIntervals(p,inputs,effective,position,true)){++stats_.unsupported;evaluationStatus=Status::Unsupported;return evaluationStatus;}
-                for(unsigned axis=0;axis<3;++axis){detail::Value world=detail::mul(position[3],{inverse[12+axis],0});double magnitude=std::fabs(world.value)+world.error;
-                    for(unsigned k=0;k<3;++k){auto term=detail::mul(position[k],{inverse[4*k+axis],0});magnitude+=std::fabs(term.value)+term.error;world=detail::add(world,term);}
-                    world.error+=detail::roundError(magnitude)*8+.001;
-                    if(!std::isfinite(world.value)||!std::isfinite(world.error)||std::fabs(world.value)+world.error>1000000){++stats_.unsupported;evaluationStatus=Status::Unsupported;return evaluationStatus;}
-                    low[axis]=std::min(low[axis],double(world.value)-world.error);high[axis]=std::max(high[axis],double(world.value)+world.error);
-                }
-            }
-            for(unsigned axis=0;axis<3;++axis){output.low[axis]=std::nextafter(float(low[axis]),-std::numeric_limits<float>::infinity());output.high[axis]=std::nextafter(float(high[axis]),std::numeric_limits<float>::infinity());}
-            output.valid=true;++stats_.ready;if(stage==Stage::Cheap)++stats_.cheapValid;if(stage==Stage::Heavy)++stats_.heavyValid;remember(e,constants,inverse,output);evaluationStatus=Status::Valid;return evaluationStatus;
+            evaluationStatus=evaluateGroups(p,e,effective,inverse,budget,output,[&]{return timer.expired();});
+            if(evaluationStatus==Status::Budget){if(stage==Stage::Cheap&&timer.sliceExpired()){++stats_.cheapSliceDeferred;if(info)info->kind=Kind::Heavy;}return timeBudget();}
+            if(evaluationStatus!=Status::Valid){++stats_.unsupported;return evaluationStatus;}
+            ++stats_.ready;if(stage==Stage::Cheap)++stats_.cheapValid;if(stage==Stage::Heavy)++stats_.heavyValid;remember(e,constants,inverse,output);return evaluationStatus;
         }catch(...){evaluationStatus=Status::Unsupported;accountClassify();if(info)info->kind=Kind::Unsupported;++stats_.unsupported;return Status::Unsupported;}
     }
 };

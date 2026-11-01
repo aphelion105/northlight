@@ -131,6 +131,7 @@ test_particle_light_proof_client.py
 test_particle_lights.py
 test_particle_texture_stats.py
 test_pending_release_wiring.py
+test_point_clip_prepared.py
 test_point_light_shadow.py
 test_point_shadow_schedule.py
 test_point_shadow_selection.py
@@ -165,6 +166,7 @@ test_replay_gpu_cache.py
 test_replay_gpu_diagnostics.py
 test_replay_gpu_maintenance.py
 test_replay_priority_safety.py
+test_replay_rigid_bounds.py
 test_replay_skin_safety.py
 test_replay_upload.py
 test_rigid_memory.py
@@ -174,6 +176,7 @@ test_shader_read_set.py
 test_shader_read_set_client.py
 test_shadow_blob_client.py
 test_shadow_blob_model.py
+test_shadow_crowd.py
 test_shadow_culling_batch.py
 test_shadow_experiment.py
 test_shadow_layer_analysis.py
@@ -246,4 +249,3 @@ test_world_probe_coverage.py
 test_zone_tuner.py
 test_zone_tuning.py
 test_zone_tuning_wiring.py
-test_point_clip_prepared.py
