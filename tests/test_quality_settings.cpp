@@ -69,7 +69,7 @@ int main(){
      assert(combined.equipmentLights==0&&combined.aoMethod==3&&combined.aoStrength==150&&combined.aoRadius==300);
      for(unsigned i=0;i<62;++i)assert(combined.origin[i]==(i>=57&&i<=60?'f':'d'));}
     assert(d.minSkinnedTriangles==100&&d.captureBudgetMiB==32&&d.actorShadowBudgetMiB==0&&d.farShadowInterval==4);
-    assert(d.localLightLimit==48&&d.pointShadows==1&&d.pointShadowRefreshMs==0&&d.shadowDirectionSteps==2048);
+    assert(d.localLightLimit==48&&d.pointShadowLimit==64&&d.pointShadows==1&&d.pointShadowRefreshMs==0&&d.shadowDirectionSteps==2048);
     assert(parse(nullptr)==d&&parse("")==d&&parse("[Quality]\nPreset=Quality\n")==d&&preset(Preset::Quality)==d);
     for(const auto& k:Keys){assert(k.preset[0]==d.*k.field);for(unsigned p=0;p<3;++p)assert(k.preset[p]>=k.low&&k.preset[p]<=k.high);}
     { /* The shipped default file must be exactly Quality, with no warnings. */

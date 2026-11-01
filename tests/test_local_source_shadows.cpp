@@ -31,15 +31,15 @@ int main(){
     NorthlightPointShadow::RefreshSchedule a,b;a.commit(100,lights[0],1);b.commit(100,lights[1],1);
     auto moved=lights[0];moved.position[0]+=.1f;
     assert(a.due(101,moved,1,300,false));assert(!b.due(101,lights[1],1,300,false));a.invalidate();assert(b.usable);
-    const auto defaults=NorthlightQuality::Settings{};assert(defaults.pointShadows==1&&defaults.pointShadowLimit==4);
-    for(auto preset:{NorthlightQuality::Preset::Quality,NorthlightQuality::Preset::Balanced,NorthlightQuality::Preset::Performance})assert(NorthlightQuality::preset(preset).pointShadowLimit==4);
-    std::istringstream input("[Quality]\nPointShadowLimit=4\n");std::vector<std::string> problems;
-    auto config=NorthlightQuality::load(&input,nullptr,problems);assert(problems.empty()&&config.pointShadowLimit==4);
+    const auto defaults=NorthlightQuality::Settings{};assert(defaults.pointShadows==1&&defaults.pointShadowLimit==64);
+    for(auto preset:{NorthlightQuality::Preset::Quality,NorthlightQuality::Preset::Balanced,NorthlightQuality::Preset::Performance})assert(NorthlightQuality::preset(preset).pointShadowLimit==64);
+    std::istringstream input("[Quality]\nPointShadowLimit=16\n");std::vector<std::string> problems;
+    auto config=NorthlightQuality::load(&input,nullptr,problems);assert(problems.empty()&&config.pointShadowLimit==16);
     static_assert(NorthlightPointShadow::MaxLights==128);
     static_assert(NorthlightLocalLightSelection::Capacity>=NorthlightPointShadow::MaxLights);
     std::vector<Light> many;
     for(unsigned i=0;i<128;++i)many.push_back({{float(i%16)*.1f,float(i/16)*.1f,2},{1,.4f,.1f},1,12,1000+i,3,CastShadow});
-    for(unsigned level=0;level<4;++level)for(unsigned limit:{4u,8u,16u,32u,64u,128u}){
+    for(unsigned level=0;level<4;++level)for(unsigned limit:{16u,30u,32u,64u,128u}){
         const unsigned pool=NorthlightGpuBudget::lightLimit(32,level,limit);assert(pool>=limit);
         std::vector<Light> scene(many.begin(),many.begin()+limit);
         NorthlightLocalLightSelection::Tracker t;auto selection=t.update(scene,camera,pool,0,false);
@@ -69,13 +69,13 @@ int main(){
     auto shrinking=tracker.update(many,camera,4,.01f,true);assert(shrinking.count<=4+NorthlightLocalLightSelection::Spare);
     for(unsigned i=0;i<50;++i)shrinking=tracker.update(many,camera,4,.1f,true);
     assert(shrinking.count<=4);assert(tracker.update(many,camera,128,0,false).count==128);
-    for(unsigned limit:{4u,8u,16u,32u,64u,128u}){
+    for(unsigned limit:{16u,30u,32u,64u,128u}){
         problems.clear();std::istringstream in("[Quality]\nPointShadowLimit="+std::to_string(limit)+"\nLocalLightLimit=128\n");
         config=NorthlightQuality::load(&in,nullptr,problems);assert(problems.empty()&&config.pointShadowLimit==limit&&config.localLightLimit==128);
     }
-    for(unsigned invalidLimit:{3u,129u}){
+    for(unsigned invalidLimit:{0u,4u,15u,129u}){
         problems.clear();std::istringstream in("[Quality]\nPointShadowLimit="+std::to_string(invalidLimit)+"\n");
-        config=NorthlightQuality::load(&in,nullptr,problems);assert(!problems.empty()&&config.pointShadowLimit==4);
+        config=NorthlightQuality::load(&in,nullptr,problems);assert(!problems.empty()&&config.pointShadowLimit==64);
     }
     std::cout<<"Local shadows: classification, 4..128 selection at all GPU budget levels, batches, shrink/grow, ordering, source fades, independent refresh passed\n";
 }

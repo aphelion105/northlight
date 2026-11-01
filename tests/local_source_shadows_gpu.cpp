@@ -45,7 +45,8 @@ int main(int argc,char** argv){
     const Vertex quad[]={{-.5f,-.5f,0,1,0,0},{size-.5f,-.5f,0,1,1,0},{-.5f,size-.5f,0,1,0,1},{size-.5f,size-.5f,0,1,1,1}};
     for(unsigned s=0;s<16;++s){for(auto state:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})ok(d->SetSamplerState(s,state,D3DTEXF_POINT));ok(d->SetSamplerState(s,D3DSAMP_MIPFILTER,D3DTEXF_NONE));for(auto state:{D3DSAMP_ADDRESSU,D3DSAMP_ADDRESSV,D3DSAMP_ADDRESSW})ok(d->SetSamplerState(s,state,D3DTADDRESS_CLAMP));}
     unsigned cases=0,checks=0,failures=0,shadowPixels[maximumLights]={};float maximum=0;
-    for(unsigned count:{4u,8u,16u,32u,64u,128u})for(float sun:{0.f,.8f,8.f})for(float visibility:{0.f,1.f})for(float gain:{.25f,.8f})for(bool shadows:{false,true}){
+    for(unsigned count:{4u,8u,16u,32u,64u,128u})for(float sun:{0.f,.8f,8.f})for(float visibility:{0.f,1.f})for(float gain:{.25f,.8f})for(float shadowGain:{-1.f,0.f,.25f,.5f,1.f}){
+        const bool shadows=shadowGain>=0;
         std::vector<IDirect3DTexture9*> textures;const auto bind=[&](unsigned s,const Image& image){auto t=texture(d,image);textures.push_back(t);ok(d->SetTexture(s,t));};
         const float nearZ=.2f,farZ=1000,z=10,dz=farZ/(farZ-nearZ)*(1-nearZ/z),cut=sun>0?.7f:0.f;
         float c[68][4]{};c[0][0]=c[0][1]=1.f/full;c[0][2]=nearZ;c[0][3]=farZ;c[1][0]=c[1][1]=c[1][2]=1;c[2][0]=1;
@@ -62,7 +63,7 @@ int main(int argc,char** argv){
         }
         if(shadows)for(unsigned i=0;i<count;++i){
             float local[12][4]{};std::memcpy(local,c,7*16);std::memcpy(local[7],positions[i],12);local[7][3]=1.f/15;std::memcpy(local[8],colors[i],12);local[8][3]=16;local[2][3]=.025f;
-            local[9][0]=.1f;local[9][1]=16;local[9][2]=1.f/cubeSize;local[9][3]=1;local[10][0]=gain;local[10][1]=cut;local[10][2]=1;local[10][3]=sun;local[11][2]=-1;
+            local[2][2]=shadowGain;local[9][0]=.1f;local[9][1]=16;local[9][2]=1.f/cubeSize;local[9][3]=1;local[10][0]=gain;local[10][1]=cut;local[10][2]=1;local[10][3]=sun;local[11][2]=-1;
             bind(0,red(dz));ok(d->SetTexture(1,cubes[i]));bind(2,rgba(0,0,0,0));bind(3,rgba(0,0,-1,1));bind(4,rgba(0,0,0,visibility));ok(d->SetPixelShader(lighting));ok(d->SetPixelShaderConstantF(0,local[0],12));
             ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));ok(d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE));ok(d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_ONE));ok(d->SetRenderState(D3DRS_BLENDOP,D3DBLENDOP_ADD));
             ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(Vertex)));ok(d->EndScene());
@@ -78,7 +79,7 @@ int main(int argc,char** argv){
                 if(std::fabs(std::fabs(hx)-.5f)<.15f&&std::fabs(hy)<1.7f)edge=true;if(std::fabs(std::fabs(hy)-1.5f)<.15f&&std::fabs(hx)<.7f)edge=true;
                 float energy=std::max({contribution[0],contribution[1],contribution[2]}),relevance=smooth(.15f,.5f,energy/std::max(sun*visibility,.02f))*smooth(.002f,.01f,energy);
                 if(shadows&&blocked&&relevance>.9f)++shadowPixels[i];
-                for(unsigned k=0;k<3;++k)expected[k]+=contribution[k]*(shadows&&blocked?1-relevance:1);
+                for(unsigned k=0;k<3;++k)expected[k]+=contribution[k]*(shadows&&blocked?1-relevance*shadowGain:1);
             }
             if(edge)continue;float actual[4];std::memcpy(actual,static_cast<char*>(lock.pBits)+y*lock.Pitch+x*16,16);
             for(unsigned k=0;k<3;++k){float error=std::fabs(actual[k]-expected[k]);maximum=std::max(maximum,error);if(!std::isfinite(actual[k])||error>5e-4f){if(failures++<5)std::printf("FAIL count=%u sun=%.1f vis=%.0f gain=%.2f shadows=%d xy=%u,%u channel=%u actual=%.6f expected=%.6f\n",count,sun,visibility,gain,int(shadows),x,y,k,actual[k],expected[k]);}}++checks;

@@ -58,7 +58,7 @@ class PointReferenceTests(unittest.TestCase):
         self.assertEqual(src.count('if(distance<=LocalShadow.x||distance>=LocalShadow.y||dot(normal,delta)>=0)return 1;'),1)
         self.assertIn('float occlusion=1-localVisibility(delta,n);',src)
         self.assertIn('float3 contribution=LocalColor.rgb*(atten*atten*facing*LocalGain.x*(1-LocalGain.y*sunlit));',src)
-        self.assertIn('return float4(-contribution*(occlusion*relevance),0);',src)
+        self.assertIn('return float4(-contribution*(occlusion*relevance*LocalDepthInfo.z),0);',src)
         import random
         rng=random.Random(43);skipped=kept=0
         for _ in range(20000):

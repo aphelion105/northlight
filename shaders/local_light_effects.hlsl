@@ -105,5 +105,5 @@ float4 LocalLighting(float2 uv:TEXCOORD0):COLOR0 {
     float relevance=smoothstep(.15,.5,energy/max(sunlight,.02))*smoothstep(.002,.01,energy);
     if(relevance<=0)return 0;
     float occlusion=1-localVisibility(delta,n);
-    return float4(-contribution*(occlusion*relevance),0);
+    return float4(-contribution*(occlusion*relevance*LocalDepthInfo.z),0);
 }

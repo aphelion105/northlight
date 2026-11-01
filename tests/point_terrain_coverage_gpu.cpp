@@ -66,6 +66,21 @@ struct PointTerrainCoverageTest {
    std::printf("POINT_TERRAIN_FRAME nativeChunkVisible=%u centerDepth=%.9f draws=%u\n",frame&1,image[128*256+128],w.pointDraws);std::fflush(stdout);
    assert(image[128*256+128]<1.f);if(reference.empty())reference=image;else assert(image==reference);
   }
+  // The actual pool must spend its full budget on visible sources, even when
+  // closer/brighter offscreen bulbs would win the old camera-distance ranking.
+  for(unsigned i=0;i<16;++i)w.context.inverseView[i]=i%5==0?1.f:0.f;
+  w.projection[0]=w.projection[1]=w.projection[2]=1;
+  w.localScissorView=NorthlightLocalLightScissor::view(w.context.inverseView,w.projection,.1f,.1f,64,64);
+  for(unsigned limit:{16u,64u}){
+   w.releasePointGPU();w.quality.pointShadowLimit=limit;
+   NorthlightLocalLightSelection::Selection selection;selection.count=2*limit;
+   for(unsigned i=0;i<limit;++i){selection.sources[i]={{0,0,-13},{16,8,4},1,12,100+i,3,NorthlightLocalLights::CastShadow};
+    selection.sources[limit+i]={{0,0,4},{1,.4f,.1f},1,12,1000+i,3,NorthlightLocalLights::CastShadow};}
+   must(d->BeginScene());w.renderPointShadows(selection,true,false);must(d->EndScene());
+   unsigned ready=0,resident=0;for(const auto& slot:w.pointSlots){resident+=slot.cube!=nullptr;if(slot.ready){++ready;assert(slot.selected.sourceId>=1000&&slot.selectionGain==1);}}
+   assert(ready==limit&&resident==limit);std::printf("POINT_VISIBLE_POOL_PASS limit=%u ready=%u cubeSlots=%u\n",limit,ready,resident);
+  }
+  w.releasePointGPU();w.localScissorView={};
   // An authored model VS using the client's row projection layout, patched by
   // the production patcher. Its plane must match the static reference above.
   const uint32_t original[]={0xfffe0300,

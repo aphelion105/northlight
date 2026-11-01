@@ -1,6 +1,6 @@
 # Northlight renderer
 
-<img width="50%" height="1058" alt="Näyttökuva 2026-10-10 kello 22 38 31" src="https://github.com/user-attachments/assets/c1996381-8dc2-481c-97c9-e3f1316a08bf" /><img width="50%" height="768" alt="image" src="https://github.com/user-attachments/assets/20cc99fb-216c-4430-901b-35b5b5df30d9" />
+<img width="50%" height="1058" alt="NaМ€yttoМ€kuva 2026-10-10 kello 22 38 31" src="https://github.com/user-attachments/assets/c1996381-8dc2-481c-97c9-e3f1316a08bf" /><img width="50%" height="768" alt="image" src="https://github.com/user-attachments/assets/20cc99fb-216c-4430-901b-35b5b5df30d9" />
 <img width="50%" height="768" alt="image" src="https://github.com/user-attachments/assets/e1181ddd-953d-4fd0-a703-eb97e5969ed2" /><img width="50%" height="1696" alt="image" src="https://github.com/user-attachments/assets/7b2c2595-f32b-42b0-bf67-95f7ee9ad570" />
 
 
@@ -253,3 +253,5 @@ WineD3D modes (`PROTON_USE_WINED3D=1`) bypass Northlight. 32-bit (lib32/i386) Vu
 as for any DXVK game. Because Linux names are case-sensitive and Wine's are not, the installer stops
 when the game folder already has a case variant of a name it writes (for example `D3D9.dll`). The player
 instructions are in `renderer/linux-package/README.txt`.
+
+Local-source shadow selection defaults to 64 visible sources. `PointShadowLimit` accepts 16..128 in the Shadows menu.

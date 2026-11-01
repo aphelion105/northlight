@@ -2,6 +2,7 @@
 // Portable point-shadow selection and D3D cube projection. No device APIs.
 #include "local_shadow_signature.h"
 #include "world_local_lights.h"
+#include "local_light_scissor.h"
 #include <algorithm>
 #include <array>
 #include <limits>
@@ -24,7 +25,7 @@ struct RefreshSchedule {
     bool due(uint32_t now,const NorthlightLocalLights::Light& current,uint64_t meshGeneration,
              size_t replayCount,bool invalidated,uint32_t minimumMs=0)const{
         if(invalidated||!complete||generation!=meshGeneration||light.sourceId!=current.sourceId||
-           light.attenuationEnd!=current.attenuationEnd)return true;
+           light.attenuationEnd!=current.attenuationEnd||light.attenuationStart!=current.attenuationStart||light.flags!=current.flags)return true;
         for(unsigned i=0;i<3;++i)if(light.position[i]!=current.position[i])return true;
         // minimumMs (PointShadowRefreshMs) extends the crowd reuse to every scene; 0 is 0.3.136.
         if(minimumMs)return uint32_t(now-updatedAt)>=minimumMs;
@@ -41,9 +42,11 @@ struct RefreshSchedule {
 // the horizontal faces. n>=6 is one group of all six faces: the 0.3.150 path.
 inline unsigned partitionFaces(unsigned perFrame,const unsigned (&weights)[6],unsigned (&masks)[6]){
     perFrame=perFrame<1?1:perFrame>6?6:perFrame;const unsigned groups=(6+perFrame-1)/perFrame;
+    if(groups==1){masks[0]=63;for(unsigned i=1;i<6;++i)masks[i]=0;return 1;}
     unsigned order[6]={0,1,2,3,4,5},sizes[6]={},load[6]={};
     for(unsigned i=1;i<6;++i)for(unsigned j=i;j>0&&weights[order[j]]>weights[order[j-1]];--j)std::swap(order[j],order[j-1]);
     for(auto& m:masks)m=0;
+    if(perFrame==1){for(unsigned i=0;i<6;++i)masks[i]=1u<<order[i];return 6;}
     for(unsigned face:order){unsigned best=groups;
         for(unsigned g=0;g<groups;++g)if(sizes[g]<perFrame&&(best==groups||load[g]<load[best]))best=g;
         masks[best]|=1u<<face;++sizes[best];load[best]+=weights[face]+1;}
@@ -65,16 +68,16 @@ struct FaceCycle {
 // plane. Perspective w is retained; no corner division or positive-w guess.
 // Unknown/invalid inputs fail open. Double CPU arithmetic plus a conservative
 // float dot-product cancellation bound covers the GPU's float clip transform.
-inline bool clipReject(const float* lo,const float* hi,const float* matrix) {
-    if(!lo||!hi||!matrix)return false;
-    for(int i=0;i<3;++i)if(!std::isfinite(lo[i])||!std::isfinite(hi[i])||lo[i]>hi[i])return false;
+namespace detail {
+inline __attribute__((always_inline)) bool clipRejectBounds(const float* lo,const float* hi,const double* extent,const float* matrix) {
+    if(!matrix)return false;
     for(int i=0;i<16;++i)if(!std::isfinite(matrix[i]))return false;
     // Check every clip component before an early rejection, so a different
     // plane cannot hide an overflowing GPU transform component.
     for(int column=0;column<4;++column){
         double bound=std::fabs(double(matrix[12+column]));
         for(int row=0;row<3;++row)bound+=std::fabs(double(matrix[row*4+column]))*
-            std::max(std::fabs(double(lo[row])),std::fabs(double(hi[row])));
+            extent[row];
         if(bound>std::numeric_limits<float>::max()/32.)return false;
     }
     for(int plane=0;plane<6;++plane){
@@ -87,7 +90,7 @@ inline bool clipReject(const float* lo,const float* hi,const float* matrix) {
             const double a=matrix[row*4+column],w=addW?matrix[row*4+3]:0.;
             const double coefficient=sign*a+w;
             const double coord=row==3?1.:coefficient>=0?hi[row]:lo[row];
-            const double maxCoord=row==3?1.:std::max(std::fabs(double(lo[row])),std::fabs(double(hi[row])));
+            const double maxCoord=row==3?1.:extent[row];
             maximum+=coefficient*coord;magnitude+=(std::fabs(a)+std::fabs(w))*maxCoord;
         }
         // Extreme finite inputs that could overflow GPU intermediates remain
@@ -97,6 +100,16 @@ inline bool clipReject(const float* lo,const float* hi,const float* matrix) {
         if(maximum < -margin)return true;
     }
     return false;
+}
+inline bool bounds(const float* lo,const float* hi,double (&extent)[3]){
+    if(!lo||!hi)return false;
+    for(unsigned i=0;i<3;++i){if(!std::isfinite(lo[i])||!std::isfinite(hi[i])||lo[i]>hi[i])return false;
+        extent[i]=std::max(std::fabs(double(lo[i])),std::fabs(double(hi[i])));}
+    return true;
+}
+}
+inline bool clipReject(const float* lo,const float* hi,const float* matrix){
+    double extent[3];return detail::bounds(lo,hi,extent)&&detail::clipRejectBounds(lo,hi,extent,matrix);
 }
 inline bool faceMatrix(const float* p,float nearZ,float farZ,unsigned face,float* out,unsigned resolution=256) {
     if(!p||!out||face>=6||resolution<2||!std::isfinite(nearZ)||!std::isfinite(farZ)||nearZ<=0||farZ<=nearZ)return false;
@@ -120,9 +133,9 @@ inline bool faceMatrix(const float* p,float nearZ,float farZ,unsigned face,float
 // bounds retain all six faces; projection uses the same conservative predicate
 // as the previous per-face draw loop.
 inline unsigned faceMask(const float* lo,const float* hi,bool valid,const float (&matrices)[6][16]){
-    if(!valid)return 63;
+    double extent[3];if(!valid||!detail::bounds(lo,hi,extent))return 63;
     unsigned mask=0;
-    for(unsigned face=0;face<6;++face)if(!clipReject(lo,hi,matrices[face]))mask|=1u<<face;
+    for(unsigned face=0;face<6;++face)if(!detail::clipRejectBounds(lo,hi,extent,matrices[face]))mask|=1u<<face;
     return mask;
 }
 // The cube matrices do not change between AABBs in one update. Prepare their
@@ -168,9 +181,7 @@ class FaceClip {
 public:
     explicit FaceClip(const float (&matrices)[6][16]){for(unsigned face=0;face<6;++face)faces[face].prepare(matrices[face]);}
     unsigned mask(const float* lo,const float* hi,bool valid)const{
-        double extent[3];if(!valid||!lo||!hi)return 63;
-        for(unsigned k=0;k<3;++k){if(!std::isfinite(lo[k])||!std::isfinite(hi[k])||lo[k]>hi[k])return 63;
-            extent[k]=std::max(std::fabs(double(lo[k])),std::fabs(double(hi[k])));}
+        double extent[3];if(!valid||!detail::bounds(lo,hi,extent))return 63;
         unsigned mask=0;for(unsigned face=0;face<6;++face)if(!faces[face].reject(lo,hi,extent))mask|=1u<<face;
         return mask;
     }
@@ -229,28 +240,87 @@ inline bool eligible(const NorthlightLocalLights::Light& l){
     // observations never become shadow sources just because they happen to be bright.
     return (l.flags&NorthlightLocalLights::CastShadow)||l.kind==1;
 }
+inline bool visible(const NorthlightLocalLights::Light& l,const NorthlightLocalLightScissor::View* view){
+    if(!NorthlightLocalLightScissor::Enabled||!view||!view->valid)return true;
+    const std::array<std::array<float,4>,1> sphere={{{l.position[0],l.position[1],l.position[2],l.attenuationEnd}}};
+    return NorthlightLocalLightScissor::batchRect(*view,sphere,1).area()!=0;
+}
 inline Picks selectMany(const NorthlightLocalLights::Light* lights,size_t count,const float* camera,unsigned limit,
-                        const std::array<uint64_t,MaxLights>& previous={},float maxCameraDistance=48){
+                        const std::array<uint64_t,MaxLights>& previous={},float maxCameraDistance=48,bool firstOnly=false,
+                        const NorthlightLocalLightScissor::View* view=nullptr){
     Picks out;limit=std::min(limit,MaxLights);std::array<double,MaxLights> scores{};
-    if(!lights||!camera||!std::isfinite(maxCameraDistance)||maxCameraDistance<=0)return out;
+    if(!limit||!lights||!camera||!std::isfinite(maxCameraDistance)||maxCameraDistance<=0)return out;
     for(int i=0;i<3;++i)if(!std::isfinite(camera[i]))return out;
+    auto historyEnd=previous.end();while(historyEnd!=previous.begin()&&historyEnd[-1]==0)--historyEnd;
     for(size_t i=0;i<count;++i){
         const auto& l=lights[i];if(!eligible(l))continue;
         if(!NorthlightLocalLights::valid(l)||l.attenuationEnd<=.11f)continue;
         double distance2=0;for(int k=0;k<3;++k){double d=l.position[k]-camera[k];distance2+=d*d;}
-        if(distance2>double(maxCameraDistance)*maxCameraDistance)continue;
+        // The shadow budget covers receivers near the camera, including wide lights
+        // whose centre is farther away but whose influence sphere reaches them.
+        const double reach=double(maxCameraDistance)+l.attenuationEnd;
+        if(distance2>reach*reach)continue;
+        // Apply the same conservative visibility test as the draw pass before
+        // spending a slot. A wholly offscreen cube cannot correct any pixel.
+        if(!visible(l,view))continue;
         // Apparent influence weighted by brightness, bounded at the source.
         const double color=std::min(16.f,std::max(l.diffuse[0],std::max(l.diffuse[1],l.diffuse[2])));
         if(color<.005f)continue;
-        const bool incumbent=std::find(previous.begin(),previous.end(),l.sourceId)!=previous.end();
+        // Zero is a valid authored ID; trailing empty slots historically made it an incumbent.
+        const bool incumbent=(!l.sourceId&&historyEnd!=previous.end())||std::find(previous.begin(),historyEnd,l.sourceId)!=historyEnd;
         const double score=color*double(l.attenuationEnd)*l.attenuationEnd/(1+distance2)*(incumbent?1.25:1.);
-        unsigned at=0;while(at<out.count&&(scores[at]>score||(scores[at]==score&&lights[out.index[at]].sourceId<l.sourceId)))++at;
+        unsigned at=0,end=out.count;
+        while(at<end){const unsigned mid=at+(end-at)/2;
+            if(scores[mid]>score||(scores[mid]==score&&lights[out.index[mid]].sourceId<l.sourceId))at=mid+1;else end=mid;}
         if(at>=limit)continue;
         for(unsigned j=std::min(out.count,limit-1);j>at;--j){out.index[j]=out.index[j-1];scores[j]=scores[j-1];}
         out.index[at]=int(i);scores[at]=score;out.count=std::min(out.count+1,limit);
+        // Capture prediction consumes existence only; it never uses a ranked list.
+        if(firstOnly)return out;
     }
     return out;
 }
+// Fade an outgoing correction before handing its cube slot to a new source.
+// The configured limit remains a hard bound, including during transitions.
+struct SelectionTracker {
+    static constexpr float FadeMs=200.f;
+    struct Entry {uint64_t id=0;float gain=0;bool occupied=false;};
+    struct Slot {int index=-1;float gain=0;};
+    std::array<Entry,MaxLights> entries{};
+    uint32_t updatedAt=0;bool initialized=false;
+    void reset(){entries={};initialized=false;}
+    void defer(unsigned slot){entries[slot].gain=0;}
+    std::array<Slot,MaxLights> update(const NorthlightLocalLights::Light* lights,size_t count,const float* camera,
+                                    unsigned limit,uint32_t now,const NorthlightLocalLightScissor::View* view=nullptr){
+        limit=std::min(limit,MaxLights);
+        const float step=initialized?std::min(uint32_t(now-updatedAt),100u)/FadeMs:1.f;
+        updatedAt=now;initialized=true;
+        std::array<uint64_t,MaxLights> previous{};unsigned n=0;
+        for(const auto& e:entries)if(e.occupied)previous[n++]=e.id;
+        const auto picks=selectMany(lights,count,camera,limit,previous,48,false,view);
+        std::array<Slot,MaxLights> out{};bool wanted[MaxLights]={};unsigned resident=0;
+        for(unsigned slot=0;slot<MaxLights;++slot){auto& e=entries[slot];if(!e.occupied)continue;
+            int index=-1;
+            for(size_t i=0;lights&&i<count;++i)if(lights[i].sourceId==e.id){index=int(i);break;}
+            // Never subtract stale light from a source absent from LocalDirect.
+            if(index<0||!NorthlightLocalLights::valid(lights[index])||!eligible(lights[index])||!visible(lights[index],view)){e={};continue;}
+            for(unsigned i=0;i<picks.count;++i)wanted[slot]|=lights[picks.index[i]].sourceId==e.id;
+            e.gain=wanted[slot]?std::min(1.f,e.gain+step):std::max(0.f,e.gain-step);
+            if(!wanted[slot]&&e.gain<=0){e={};continue;}
+            out[slot]={index,e.gain};++resident;
+        }
+        // A live limit reduction takes effect immediately; retain desired sources first.
+        for(unsigned slot=MaxLights;resident>limit&&slot;){--slot;if(entries[slot].occupied&&!wanted[slot]){
+            entries[slot]={};out[slot]={};--resident;}}
+        for(unsigned i=0;i<picks.count&&resident<limit;++i){const int index=picks.index[i];
+            bool retained=false;for(const auto& e:entries)retained|=e.occupied&&e.id==lights[index].sourceId;
+            if(retained)continue;
+            unsigned slot=0;while(entries[slot].occupied)++slot;
+            entries[slot]={lights[index].sourceId,step,true};out[slot]={index,step};++resident;
+        }
+        return out;
+    }
+};
 inline int select(const std::vector<NorthlightLocalLights::Light>& lights,const float* camera,uint64_t previousSourceId=0,float maxCameraDistance=48){
     const auto p=selectMany(lights.data(),lights.size(),camera,1,{previousSourceId},maxCameraDistance);
     return p.count?p.index[0]:-1;
