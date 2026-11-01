@@ -7,7 +7,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
 sys.path.insert(0,str(fp.SCRIPTS/'shaders'))
 from shader_compiler import Compiler
-parser=argparse.ArgumentParser(__doc__);parser.add_argument('--backend',action='append',required=True);parser.add_argument('--compatible-compiler',action='store_true');args=parser.parse_args()
+parser=argparse.ArgumentParser(__doc__);parser.add_argument('--backend',action='append',required=True);parser.add_argument('--compatible-compiler',action='store_true');parser.add_argument('--soft',action='store_true');args=parser.parse_args()
 api=ctypes.WinDLL('kernel32',use_last_error=True);api.CreateMutexW.argtypes=[ctypes.c_void_p,ctypes.c_int,ctypes.c_wchar_p];api.CreateMutexW.restype=ctypes.c_void_p;api.WaitForSingleObject.argtypes=[ctypes.c_void_p,ctypes.c_ulong];api.ReleaseMutex.argtypes=[ctypes.c_void_p];api.CloseHandle.argtypes=[ctypes.c_void_p]
 mutex=api.CreateMutexW(None,0,'Local\\NorthlightOfflineGPU')
 if not mutex or api.WaitForSingleObject(mutex,0) not in (0,128):raise RuntimeError('Another offline GPU test is active')
@@ -20,7 +20,8 @@ try:
     source=out/'receiver.hlsl';source.write_text((fp.SHADERS/'local_light_effects.hlsl').read_text().replace('#include "auto_bump_normal.hlsl"',(fp.SHADERS/'auto_bump_normal.hlsl').read_text())+'''
 float4 Origin:register(c80);float4 AxisU:register(c81);float4 AxisV:register(c82);float4 SurfaceNormal:register(c83);
 float4 Receiver(float2 uv:TEXCOORD0):COLOR0{float3 p=Origin.xyz+(uv.x-.5)*AxisU.xyz+(uv.y-.5)*AxisV.xyz;return localVisibility(p-LocalPosition.xyz,SurfaceNormal.xyz).xxxx;}
-''')
+'''.replace('localVisibility(p-LocalPosition.xyz,SurfaceNormal.xyz)', 'localVisibilityFiltered(p-LocalPosition.xyz,SurfaceNormal.xyz,true)' if args.soft else 'localVisibility(p-LocalPosition.xyz,SurfaceNormal.xyz)'))
+    fp.out=lambda:out/'toolchain'
     compiler=Compiler(allow_compatible_binary=args.compatible_compiler)
     for entry,target in [('Receiver','ps_3_0'),('LocalShadowVS','vs_3_0'),('LocalShadowPS','ps_3_0')]:compiler.compile(source,entry,target,out/(entry+'.bin'))
     env=fp.zig_env();flags={'creationflags':subprocess.BELOW_NORMAL_PRIORITY_CLASS|subprocess.CREATE_NO_WINDOW}
@@ -35,7 +36,7 @@ float4 Receiver(float2 uv:TEXCOORD0):COLOR0{float3 p=Origin.xyz+(uv.x-.5)*AxisU.
         (out/f'gpu-{index}.log').write_text(run.stdout+run.stderr);print(run.stdout,flush=True)
         if run.returncode or 'failures=0' not in run.stdout:raise RuntimeError(run.stdout+run.stderr)
         results.append({'backend':str(Path(backend).resolve()),'result':run.stdout.strip()})
-    report={'game_launched':False,'authored_geometry':True,'production_caster_and_receiver':True,'results':results,'source_sha256':hashlib.sha256((fp.SHADERS/'local_light_effects.hlsl').read_bytes()).hexdigest()}
+    report={'soft':args.soft,'game_launched':False,'authored_geometry':True,'production_caster_and_receiver':True,'results':results,'source_sha256':hashlib.sha256((fp.SHADERS/'local_light_effects.hlsl').read_bytes()).hexdigest()}
     (out/'validation.json').write_text(json.dumps(report,indent=2)+'\n');print(out,flush=True)
 finally:
     api.ReleaseMutex(mutex);api.CloseHandle(mutex)

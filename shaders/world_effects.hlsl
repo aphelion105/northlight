@@ -65,6 +65,7 @@ float4 LocalLightColor[8] : register(c44); // rgb diffuse, w 1/(attenuation end 
 float4 LocalLightInfo : register(c52); // count, strength, share removed in direct daylight (LocalDirect)
 sampler2D NormalBuffer : register(s14); // half-res smoothed world normal (xyz), confidence 0/1 (w, 0 at silhouettes); bound for the lighting passes
 sampler2D SourceVisibility : register(s15); // 1x1: temporally smoothed clear-sky fraction over the source disc (fog passes)
+sampler2D DirectionalVisibility : register(s15); // WorldLightingSoft only: resolved sun/moon PCSS.
 sampler2D PreviousSourceVisibility : register(s15); // previous value (SourceVisibilityPS only)
 float4 SourceInfo : register(c67); // disc tangent radius, history weight, horizon sun (zw)
 float4 HorizonSun : register(c67); // zw: horizontal sun direction x lobe strength (WorldComposite only)
@@ -169,7 +170,7 @@ float shadowDepth(float2 uv,bool useNear) {
     if(useNear)return tex2Dlod(ShadowNear,float4(uv,0,0)).r;
     return tex2Dlod(ShadowFar,float4(uv,0,0)).r;
 }
-float shadowMap(float3 lp,bool useNear,float radius,float2 gradient) {
+float shadowMapFiltered(float3 lp,bool useNear,float radius,float2 gradient,bool soft) {
     // Raster NDC maps to integer D3D9 pixel centers. Sampling the resulting
     // texture requires +.5 texel; this also aligns receiver-plane PCF offsets.
     float2 uv=float2(lp.x*.5+.5,.5-lp.y*.5)+.5*DepthParams.w;
@@ -200,7 +201,7 @@ float shadowMap(float3 lp,bool useNear,float radius,float2 gradient) {
     // Odd sizes centre on the nearest texel, even sizes on the one below: every tap in the support.
     float2 base=floor(pixel+(useNear?.5:0)),fraction=pixel-base;
     float start=useNear?-2:-1;
-    float visibility=0,total=0;
+    float visibility=0,total=0,gaps=0,blockers=0;
     // The exit lives in the loop condition: Microsoft's compiler turned the nested bare break into break_ne with identical operands.
     [loop]for(int y=0;y<5&&y<size;++y)
     [loop]for(int x=0;x<5&&x<size;++x){
@@ -210,12 +211,41 @@ float shadowMap(float3 lp,bool useNear,float radius,float2 gradient) {
         float w=weight.x*weight.y;
         // Compare each sample against the depth of the receiver's plane there.
         float expected=receiver+dot(gradient,tapUV-uv);
-        visibility+=(expected<=shadowDepth(tapUV,useNear)?1:0)*w;total+=w;
+        float stored=shadowDepth(tapUV,useNear);
+        visibility+=(expected<=stored?1:0)*w;total+=w;
+        if(soft&&stored<expected){gaps+=expected-stored;++blockers;}
+    }
+    if(soft){
+        // Keep every contact tap above, then search the wider support. The
+        // separation uses the receiver plane, so slopes do not create softness.
+        const float widest=4.25;
+        [loop]for(int by=0;by<4;++by)[loop]for(int bx=0;bx<4;++bx){
+            float2 tap=floor(pixel+(float2(bx,by)-1.5)*(widest/1.5)+.5);
+            float2 tapUV=(tap+.5)*DepthParams.w;
+            float expected=receiver+dot(gradient,tapUV-uv),stored=shadowDepth(tapUV,useNear);
+            if(stored<expected){gaps+=expected-stored;++blockers;}
+        }
+        float texelWorld=2*radius*DepthParams.w;
+        float softReach=clamp(.04*gaps/max(blockers,1)/max(ShadowRange.x*texelWorld,1e-8),reach,widest);
+        // No extra filtering at contact. A sparse search miss retains the
+        // complete base PCF instead of erasing thin geometry.
+        if(softReach>reach+.001){
+            float2 first=floor(pixel-softReach)+1;
+            float extent=floor(2*softReach)+1;visibility=0;total=0;
+            [loop]for(int sy=0;sy<9&&sy<extent;++sy)
+            [loop]for(int sx=0;sx<9&&sx<extent;++sx){
+                float2 tap=first+float2(sx,sy),tapUV=(tap+.5)*DepthParams.w;
+                float2 weights=max(softReach-abs(tap-pixel),0);float w=weights.x*weights.y;
+                float expected=receiver+dot(gradient,tapUV-uv);
+                visibility+=(expected<=shadowDepth(tapUV,useNear)?1:0)*w;total+=w;
+            }
+        }
     }
     float edge=saturate((1-max(abs(lp.x),abs(lp.y)))/.12);
     return lerp(1,visibility/max(total,.0001),edge);
 }
-float directionalShadow(float3 p,float3 normal,float confidence) {
+float shadowMap(float3 lp,bool useNear,float radius,float2 gradient){return shadowMapFiltered(lp,useNear,radius,gradient,false);}
+float directionalShadowFiltered(float3 p,float3 normal,float confidence,bool soft) {
     float facing=dot(normal,SunDirection.xyz);
     // Normal-offset per cascade: at grazing incidence (low sun on flat sand)
     // one far texel (.375 u) spans over a unit of light depth, so any error
@@ -236,11 +266,20 @@ float directionalShadow(float3 p,float3 normal,float confidence) {
         bool useNear=cascade==0;float radius=useNear?DepthParams.y:DepthParams.z;
         float weight=useNear?1-blend:blend;
         if(weight>0){
-            float visibility=shadowMap(useNear?q:farQ,useNear,radius,plane*radius);
+            float visibility=shadowMapFiltered(useNear?q:farQ,useNear,radius,plane*radius,soft);
             result+=visibility*weight;
         }
     }
     return result;
+}
+float directionalShadow(float3 p,float3 normal,float confidence){return directionalShadowFiltered(p,normal,confidence,false);}
+float4 DirectionalShadow(float2 uv:TEXCOORD0):COLOR0 {
+    float2 screen=uv;uv=depthUV(uv);float depth=normalizedDepth(uv);
+    if(depth>=.99999||waterDistance(uv,depth)>0)return 1;
+    float4 normal=tex2Dlod(NormalBuffer,float4(screen,0,0));
+    float3 p=worldPosition(uv,depth)+normal.xyz*(.08*normal.w);
+    float v=directionalShadowFiltered(p,normal.xyz,normal.w,true);
+    return float4(v,v,v,1);
 }
 float fogShadowProjected(float3 q) {
     // The 192-unit far map covers the 128-unit air volume. Use it throughout:
@@ -497,7 +536,7 @@ NormalDistanceOutput WorldNormals(float2 uv:TEXCOORD0) {
 float4 WorldNormalsNoDistance(float2 uv:TEXCOORD0):COLOR0 { return worldNormalValue(uv); }
 
 struct LightingOutput {float4 correction:COLOR0;float4 baseline:COLOR1;};
-LightingOutput WorldLighting(float2 uv:TEXCOORD0) {
+LightingOutput worldLightingValue(float2 uv,bool soft) {
     float2 halfUV=uv;
     uv=depthUV(uv);float d=normalizedDepth(uv);
     LightingOutput o;o.correction=float4(0,0,0,SourcePolicy.y);o.baseline=float4(max(AmbientLight.rgb,.15),1);
@@ -511,7 +550,9 @@ LightingOutput WorldLighting(float2 uv:TEXCOORD0) {
     float shadow=1;
     // 0.3.209 (task 29): the moving casters near the player shadow from the actor map (ActorShadow, written per source at this
     // pass's half-res grid; white when off); the near cascade skips those, so take the darker of both.
-    if(dot(DirectLight.rgb,1)>0){shadow=directionalShadow(p+n*(.08*smoothNormal.w),n,smoothNormal.w);
+    if(dot(DirectLight.rgb,1)>0){
+        if(soft){float2 v=tex2Dlod(DirectionalVisibility,float4(halfUV,0,0)).rg;shadow=SunDirection.w>.5?v.g:v.r;}
+        else shadow=directionalShadow(p+n*(.08*smoothNormal.w),n,smoothNormal.w);
         float2 actor=tex2Dlod(ActorVisibility,float4(halfUV,0,0)).rg;shadow=min(shadow,SunDirection.w>.5?actor.g:actor.r);}
     float visibility=lerp(1,shadow,GridInfo.z);
     // Sun retains the authored angular response, with the regional light color.
@@ -538,6 +579,8 @@ LightingOutput WorldLighting(float2 uv:TEXCOORD0) {
     float known=max(abs(cover.x),abs(cover.y))<=1&&cover.z>=0&&cover.z<=1?1:0;
     o.baseline=float4(max(old+AmbientLight.rgb,.15),lerp(visibility,shadow,SunDirection.w)*known);return o;
 }
+LightingOutput WorldLighting(float2 uv:TEXCOORD0){return worldLightingValue(uv,false);}
+LightingOutput WorldLightingSoft(float2 uv:TEXCOORD0){return worldLightingValue(uv,true);}
 // 0.3.209 (task 29): contact-hardening visibility of the moving casters (replays) in this source's actor map: 1024 texels over
 // 2*ActorInfo.z units (.0234 u, four times finer than the near cascade), centred on the player. Drawn per source at
 // WorldLighting's half-res grid into actorVisibility (the CPU masks the channel: r sun, g moon). Penumbra half width in world
@@ -568,7 +611,7 @@ float4 ActorTilesWide(float2 uv:TEXCOORD0,uniform float4 ActorInfo:register(c72)
 // ActorMatrix (c68..c71): this source's actor map matrix (layout as NearMatrix). ActorInfo (c72): x 1 = actor map valid for this
 // source, y actor texel in uv (1/1024), z actor map radius (world units), w 0. Entry uniforms, not globals: a global would move
 // every other entry's literal constants (def c68..).
-float4 ActorShadow(float2 uv:TEXCOORD0,uniform row_major float4x4 ActorMatrix:register(c68),uniform float4 ActorInfo:register(c72)):COLOR0 {
+float4 actorShadowValue(float2 uv,row_major float4x4 ActorMatrix,float4 ActorInfo,bool soft) {
     float2 screen=uv;
     uv=depthUV(uv);float d=normalizedDepth(uv);
     if(ActorInfo.x<.5||d>=.99999)return 1;
@@ -607,11 +650,13 @@ float4 ActorShadow(float2 uv:TEXCOORD0,uniform row_major float4x4 ActorMatrix:re
     // of pixel per axis (the core 2.5, the grid 1.5 strides plus the rounding .5; ~4.8 < 8), so the at most 2x2 tiles covering
     // pixel+-searchReach hold all of them, and no tap can pass the blocker test when their minimum is at or beyond the
     // receiver plus the largest plane offset over that reach. Lit is the common case: four taps instead of 41.
-    float searchReach=max(2.5,1.5*stride+.5);
+    float searchReach=soft?max(2.5,1.5*stride+.5):ActorPenumbraMin/texelWorld;
     float2 tileLow=(floor((pixel-searchReach)/ActorTileTexels)+.5)*(ActorTileTexels*ActorInfo.y),tileHigh=(floor((pixel+searchReach)/ActorTileTexels)+.5)*(ActorTileTexels*ActorInfo.y);
     float tileNearest=min(min(tex2Dlod(ActorTileMap,float4(tileLow,0,0)).r,tex2Dlod(ActorTileMap,float4(tileHigh.x,tileLow.y,0,0)).r),
                           min(tex2Dlod(ActorTileMap,float4(tileLow.x,tileHigh.y,0,0)).r,tex2Dlod(ActorTileMap,float4(tileHigh,0,0)).r));
     if(tileNearest>=receiver+(abs(gradient.x)+abs(gradient.y))*searchReach*ActorInfo.y+1e-5)return 1;
+    float reach=ActorPenumbraMin/texelWorld;
+    if(soft){
     float2 nearest=floor(pixel+.5);
     float blockers=0,count=0;
     [loop]for(int grid=0;grid<2;++grid)
@@ -623,7 +668,8 @@ float4 ActorShadow(float2 uv:TEXCOORD0,uniform row_major float4x4 ActorMatrix:re
         if(z<receiver+dot(gradient,tapUV-mapUV)){blockers+=z;++count;}
     }
     if(count<1)return 1;
-    float reach=clamp(ActorPenumbraScale*(receiver-blockers/count)/ShadowRange.x,ActorPenumbraMin,ActorPenumbraMax)/texelWorld;
+    reach=clamp(ActorPenumbraScale*(receiver-blockers/count)/ShadowRange.x,ActorPenumbraMin,ActorPenumbraMax)/texelWorld;
+    }
     // Continuous tent of half width reach texels (shadowMap's tent at a variable reach) on every texel, weight
     // max(reach-|tap-pixel|,0) per axis; at most 9x9 taps at the widest penumbra. The window starts at the first texel inside
     // the support; a tap enters or leaves it only at zero weight, so the result is continuous in the receiver position and
@@ -644,6 +690,8 @@ float4 ActorShadow(float2 uv:TEXCOORD0,uniform row_major float4x4 ActorMatrix:re
     float v=lerp(1,visibility/max(total,.0001),saturate((1-border)/.12));
     return float4(v,v,v,1);
 }
+float4 ActorShadow(float2 uv:TEXCOORD0,uniform row_major float4x4 ActorMatrix:register(c68),uniform float4 ActorInfo:register(c72)):COLOR0 {return actorShadowValue(uv,ActorMatrix,ActorInfo,true);}
+float4 ActorShadowUniform(float2 uv:TEXCOORD0,uniform row_major float4x4 ActorMatrix:register(c68),uniform float4 ActorInfo:register(c72)):COLOR0 {return actorShadowValue(uv,ActorMatrix,ActorInfo,false);}
 // Second pass to the same FP16 lighting buffer with COLORWRITEENABLE=RGB.
 // Probes contain sky + bounce, so replace ambient instead of adding it twice.
 // Invalid/uncovered probes contribute zero correction and retain legacy ambient.

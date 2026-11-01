@@ -87,9 +87,9 @@ int main(){
     {std::vector<std::string> notes;assert(parse("[Quality]\nWater=1\nWaterSSR=1\nWaterSSRResolution=100\n",nullptr,notes)==d);assert(notes.size()==3);
      for(const auto& note:notes)assert(note.find("retired")!=std::string::npos);for(const auto& key:Keys)assert(std::string(key.name).rfind("Water",0)!=0);}
     assert(d.minSkinnedTriangles==100&&d.captureBudgetMiB==32&&d.actorShadowBudgetMiB==0&&d.farShadowInterval==4);
+    assert(d.localLightLimit==48&&d.pointShadows==1&&d.pointShadowLimit==64&&d.pointShadowRefreshMs==0&&d.shadowDirectionSteps==2048);
     for(auto p:{Preset::Quality,Preset::Balanced,Preset::Performance})assert(preset(p).pointShadowDistance==48);
     assert(parse("[Quality]\nPointShadowDistance=96\n").pointShadowDistance==96);
-    assert(d.localLightLimit==48&&d.pointShadows==1&&d.pointShadowLimit==64&&d.pointShadowRefreshMs==0&&d.shadowDirectionSteps==2048);
     assert(parse(nullptr)==d&&parse("")==d&&parse("[Quality]\nPreset=Quality\n")==d&&preset(Preset::Quality)==d);
     for(const auto& k:Keys){assert(k.preset[0]==d.*k.field);for(unsigned p=0;p<3;++p)assert(k.preset[p]>=k.low&&k.preset[p]<=k.high);}
     { /* The shipped default file must be exactly Quality, with no warnings. */
@@ -650,6 +650,10 @@ int main(){
      assert(strong.autoDisplacementStrength==600&&strong.autoModelDisplacementStrength==d.autoModelDisplacementStrength);
      assert(parse("[Quality]\nAutoDisplacementStrength=1000\n").autoDisplacementStrength==1000);
      std::vector<std::string> p;assert(parse("[Quality]\nAutoDisplacementStrength=1001\n",nullptr,p)==d&&p.size()==1);}
+    {assert(d.softShadows==1&&preset(Preset::Balanced).softShadows==1&&preset(Preset::Performance).softShadows==0);
+     const auto off=parse("[Quality]\nSoftShadows=0\n");assert(!off.softShadows&&off.actorShadowDetail==d.actorShadowDetail&&off.actorShadows==d.actorShadows&&off.pointShadows==d.pointShadows);
+     assert(effective(parse("[Quality]\nActorShadows=0\nSoftShadows=1\n")).softShadows==1);
+     std::vector<std::string> issues;assert(parse("[Quality]\nSoftShadows=2\n",nullptr,issues)==d&&issues.size()==1);}
     std::printf("quality: %s\n",describe(d).c_str());
     std::printf("quality: defaults==0.3.136, presets, overrides, legacy precedence and fallbacks, BOM/CRLF, range edges, shipped ini, identical default code paths passed\n");
 }

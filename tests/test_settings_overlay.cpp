@@ -193,6 +193,8 @@ static void draft(){
         field(D::Celestial,"default","sun_disc","rgb","","1,1,1","1,0.9,0.8"),
         field(D::Celestial,"Azeroth:12","sun_disc","rgb","","1,0.9,0.8"),
         field(D::ShadowRange,"Azeroth:12","terrain_radius","slider","","1000","1500"),
+        field(D::Quality,"Quality","PointShadows","check","1,1,1","1"),
+        field(D::Quality,"Quality","PointShadowDistance","slider","48,48,48","48"),
     };
     fields[4].high="2";fields[1].high="1";
     D::Draft d;d.bind(&fields);
@@ -228,31 +230,13 @@ static void draft(){
     CHECK(!D::canInherit(backend));                          // no legacy backend installed: Backend cannot be removed
     // Restart-only keys whose shown value differs from the running one.
     CHECK(d.restartPending(hdr)&&!d.restartPending(exposure)&&!d.restartPending(stream));
+    d.set(fields[13],"96");CHECK(!d.restartPending(fields[13])&&D::blocked(d,fields[13],missing)==D::Block::None);
+    d.set(fields[12],"0");CHECK(D::blocked(d,fields[13],missing)==D::Block::NeedsKey&&missing=="PointShadows");
     // Changes go out as id/value pairs; a new snapshot without a field drops its edit.
     const auto changes=d.changes();bool sawHdr=false;for(const auto& c:changes)if(c.first==hdr.id())sawHdr=c.second=="1";CHECK(sawHdr);
     std::vector<Field> fewer(fields.begin(),fields.begin()+8);d.bind(&fewer);
     for(const auto& c:d.changes())CHECK(c.first!=sunDefault.id()&&c.first!=range.id());
     CHECK(D::same(strength,"1.50","1.5")&&!D::same(ao,"SSAO","HDAO")&&!D::same(strength,"1,2","1"));
-}
-
-static void pointShadowDistance(){
-    using namespace NorthlightSettings;
-    const auto docs=factoryDocuments();const auto active=configOf(docs,"");
-    const auto fields=schema(docs,docs,active,"");D::Draft draft;draft.bind(&fields);
-    const auto* field=draft.field(D::Quality,"Quality","PointShadowDistance");
-    CHECK(field&&field->low=="8"&&field->high=="192"&&field->factory=="48"&&field->apply=="F");
-    const auto* enabled=draft.field(D::Quality,"Quality","PointShadows");CHECK(enabled);if(!enabled||!field)return;
-    std::string missing;draft.set(*enabled,"0");CHECK(D::blocked(draft,*field,missing)==D::Block::NeedsKey&&missing=="PointShadows");
-    draft.set(*enabled,"1");draft.set(*field,"96");CHECK(!draft.restartPending(*field)&&D::blocked(draft,*field,missing)==D::Block::None);
-    for(const auto* value:{"8","96","192"}){
-        auto edited=applyChanges(docs,fields,std::string("Q\tQuality\tPointShadowDistance\t")+value+"\n");
-        edited[0]=Document(edited[0].bytes()); // save/reload preserves the override
-        const auto config=configOf(edited,"");CHECK(liveQualityUpdate(active.quality,config.quality).pointShadowDistance==std::stoul(value));
-    }
-    for(const auto* value:{"0","7","193","-1","nan"}){
-        bool rejected=false;try{applyChanges(docs,fields,std::string("Q\tQuality\tPointShadowDistance\t")+value+"\n");}catch(...){rejected=true;}
-        CHECK(rejected);
-    }
 }
 
 static void shadowRange(){
@@ -293,8 +277,25 @@ static void shadowRange(){
     for(const char* bad:{"927","4097","NaN"}){bool rejected=false;try{applyChanges(changed,fields,std::string("S\tdefault\tterrain_radius\t")+bad+"\n");}catch(...){rejected=true;}CHECK(rejected);}
 }
 
+static void pointShadowDistance(){
+    using namespace NorthlightSettings;
+    const auto docs=factoryDocuments();const auto active=configOf(docs,"");
+    const auto fields=schema(docs,docs,active,"");D::Draft draft;draft.bind(&fields);
+    const auto* field=draft.field(D::Quality,"Quality","PointShadowDistance");
+    CHECK(field&&field->low=="8"&&field->high=="192"&&field->factory=="48"&&field->apply=="F");
+    for(const auto* value:{"8","96","192"}){
+        auto edited=applyChanges(docs,fields,std::string("Q\tQuality\tPointShadowDistance\t")+value+"\n");
+        edited[0]=Document(edited[0].bytes()); // save/reload preserves the override
+        const auto config=configOf(edited,"");CHECK(liveQualityUpdate(active.quality,config.quality).pointShadowDistance==std::stoul(value));
+    }
+    for(const auto* value:{"0","7","193","-1","nan"}){
+        bool rejected=false;try{applyChanges(docs,fields,std::string("Q\tQuality\tPointShadowDistance\t")+value+"\n");}catch(...){rejected=true;}
+        CHECK(rejected);
+    }
+}
+
 int main(){
-    masterHotkey();routing();draft();pointShadowDistance();shadowRange();
+    masterHotkey();routing();draft();shadowRange();pointShadowDistance();
     if(failures){std::fprintf(stderr,"%d failure(s)\n",failures);return 1;}
     std::puts("settings overlay: routing and draft OK");
     return 0;
