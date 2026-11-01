@@ -68,10 +68,22 @@ int main(){
         assert(h.draw.particles==1&&h.draw.particleAmount>0&&h.draw.lenses==0);
         assert(h.instance.shelterQueries==1&&h.draw.snow==(kind==NorthlightWeather::Kind::Snow));
         h.instance.exposed=true;h.surfaceWeather();assert(h.draw.particles==2&&h.draw.lenses==1);
-        h.skyBandSeen=false;h.surfaceWeather();assert(h.draw.particles==2&&h.draw.lenses==1&&h.weatherLayerGate==0);
-        h.skyBandSeen=true;h.instance.q.weather=0;h.surfaceWeather();assert(h.draw.particles==2&&h.draw.lenses==1);
-        h.instance.q.weather=1;h.instance.state.kind=NorthlightWeather::Kind::Sand;h.surfaceWeather();assert(h.draw.particles==2&&h.draw.lenses==1&&h.draw.sand==1);
+        const float gate=h.weatherLayerGate;
+        h.skyBandSeen=false;h.surfaceWeather();assert(h.draw.particles==3&&h.draw.lenses==2&&h.weatherLayerGate>gate);
+        h.skyBandSeen=true;h.instance.q.weather=0;h.surfaceWeather();assert(h.draw.particles==3&&h.draw.lenses==2);
+        h.instance.q.weather=1;h.instance.state.kind=NorthlightWeather::Kind::Sand;h.surfaceWeather();assert(h.draw.particles==3&&h.draw.lenses==2&&h.draw.sand==1);
         h.instance.exposed=false;h.surfaceWeather();assert(h.draw.sand==1);h.instance.exposed=true;h.instance.q.sandLens=0;h.surfaceWeather();assert(h.draw.sand==1);
+    }
+    // Start without a sky draw, then keep turning toward/away from it. Neither
+    // scene precipitation nor exposed lens effects may reset with the view.
+    for(auto kind:{NorthlightWeather::Kind::Rain,NorthlightWeather::Kind::Snow,NorthlightWeather::Kind::Sand}){
+        Host view;view.instance.state.kind=kind;view.instance.exposed=true;
+        for(unsigned frame=0;frame<1200;++frame){
+            view.skyBandSeen=frame%600>=540;const float gate=view.weatherLayerGate;view.surfaceWeather();
+            assert(view.weatherLayerGate>=gate&&view.weatherLayerGate>0);
+            assert(kind==NorthlightWeather::Kind::Sand?view.draw.sand==frame+1:
+                view.draw.particles==frame+1&&view.draw.lenses==frame+1&&view.draw.particleAmount>0);
+        }
     }
     Host h;h.instance.exposed=true;h.instance.q.rainLens=0;h.surfaceWeather();assert(h.draw.particles==1&&h.instance.shelterQueries==0);
     h.instance.q.rainDropSize=250;h.instance.q.rainLens=1;h.instance.q.rainLensSize=75;h.surfaceWeather();
@@ -83,8 +95,10 @@ int main(){
     NorthlightDiagnosticCapture::request(NorthlightDiagnosticCapture::Weather|NorthlightDiagnosticCapture::AO);
     h.surfaceWeather();assert(h.captures==1&&!h.captureReason&&NorthlightDiagnosticCapture::take()==NorthlightDiagnosticCapture::AO);
     h.skyBandSeen=false;NorthlightDiagnosticCapture::request(NorthlightDiagnosticCapture::Weather);h.surfaceWeather();
-    assert(h.captures==2&&h.captureReason&&NorthlightDiagnosticCapture::take()==0);
-    std::puts("PASS weather dispatch: sheltered exterior rain/snow, exposed lens, no sky, disabled, sand, lazy shelter, sizes");
+    assert(h.captures==2&&!h.captureReason&&NorthlightDiagnosticCapture::take()==0);
+    h.instance.q.weather=0;NorthlightDiagnosticCapture::request(NorthlightDiagnosticCapture::Weather);h.surfaceWeather();
+    assert(h.captures==3&&h.captureReason&&NorthlightDiagnosticCapture::take()==0);
+    std::puts("PASS weather dispatch: sheltered exterior rain/snow, exposed lens, camera turns/no sky, disabled, sand, lazy shelter, sizes");
 }
 '''.replace('__METHOD__', method)
 output = fp.output_dir()
