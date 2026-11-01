@@ -51,7 +51,7 @@ class Draft {
         if(v=="@factory")v=f.factoryOverride;
         if(v!="~")return v;
         if(depth>4)return f.inherited;
-        if(f.file==Celestial&&f.section!="default")if(const Field* base=find(Celestial,"default",f.key))return resolve(*base,useDraft,depth+1);
+        if((f.file==Celestial||f.file==ShadowRange)&&f.section!="default")if(const Field* base=find(f.file,"default",f.key))return resolve(*base,useDraft,depth+1);
         if(presetValued(f)&&preset){
             const auto p=resolve(*preset,useDraft,depth+1);const auto options=split(f.options);
             const std::size_t index=p=="Performance"?2:p=="Balanced"?1:0;

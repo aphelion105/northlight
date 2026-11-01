@@ -255,8 +255,46 @@ static void pointShadowDistance(){
     }
 }
 
+static void shadowRange(){
+    using namespace NorthlightSettings;
+    Documents docs{Document(""),Document(""),Document(""),Document("# keep\r\n[Azeroth:12]\r\nterrain_radius=2048\r\n[Azeroth:9999]\r\nterrain_radius=1500\r\n")};
+    const auto initial=docs;const auto active=configOf(docs,"");
+    auto fields=schema(docs,initial,active,"");D::Draft d;d.bind(&fields);
+    const auto *base=d.field(D::ShadowRange,"default","terrain_radius"),*westfall=d.field(D::ShadowRange,"Azeroth:40","terrain_radius"),
+        *elwynn=d.field(D::ShadowRange,"Azeroth:12","terrain_radius");
+    CHECK(base&&westfall&&elwynn);if(!base||!westfall||!elwynn)return;
+    for(const auto& r:Regions)CHECK(d.field(D::ShadowRange,r.first,"terrain_radius"));
+    CHECK(d.field(D::ShadowRange,"Azeroth:9999","terrain_radius"));
+    CHECK(d.effective(*base)=="928"&&d.effective(*westfall)=="928"&&!d.overrides(*westfall));
+    d.set(*base,"3000");CHECK(d.effective(*westfall)=="3000"&&d.saved(*westfall)=="928"&&d.restartPending(*westfall));
+    CHECK(d.effective(*elwynn)=="2048");
+    d.set(*westfall,"3000");CHECK(!d.edited(*westfall));
+    d.set(*westfall,"3500");CHECK(d.overrides(*westfall)&&d.effective(*westfall)=="3500");
+    d.inherit(*westfall);CHECK(!d.edited(*westfall)&&d.effective(*westfall)=="3000");
+    d.inherit(*elwynn);CHECK(d.effective(*elwynn)=="3000"&&!d.overrides(*elwynn));
+    auto changed=applyChanges(docs,fields,"S\tdefault\tterrain_radius\t3000\nS\tAzeroth:40\tterrain_radius\t3500\nS\tAzeroth:12\tterrain_radius\t~\n");
+    std::string error;NorthlightRegionalShadow::Table ranges;std::istringstream input(changed[3].text());
+    CHECK(NorthlightRegionalShadow::parse(input,ranges,error));
+    CHECK(ranges.at("Azeroth",12)==3000&&ranges.at("Azeroth",40)==3500&&ranges.at("Azeroth",9999)==1500&&ranges.at("Kalimdor",1)==3000);
+    CHECK(changed[3].bytes().find("# keep\r\n")!=std::string::npos);
+    fields=schema(changed,initial,active,"");d.bind(&fields);d.clear();
+    base=d.field(D::ShadowRange,"default","terrain_radius");westfall=d.field(D::ShadowRange,"Azeroth:40","terrain_radius");
+    const auto* inherited=d.field(D::ShadowRange,"Kalimdor:405","terrain_radius");CHECK(inherited&&inherited->saved=="3000"&&inherited->active=="928");
+    CHECK(base->saved=="3000"&&base->active=="928"&&westfall->saved=="3500");
+    d.set(*base,"4096");CHECK(d.effective(*inherited)=="4096"&&d.effective(*westfall)=="3500");
+    d.clear();CHECK(d.effective(*inherited)=="3000");
+    d.factory(*base);CHECK(d.effective(*base)=="928"&&d.effective(*inherited)=="928");
+    auto reset=applyChanges(changed,fields,"S\tdefault\tterrain_radius\t~\nS\tAzeroth:40\tterrain_radius\t~\n");
+    std::istringstream cleared(reset[3].text());CHECK(NorthlightRegionalShadow::parse(cleared,ranges,error));CHECK(ranges.fallback==928&&ranges.at("Azeroth",40)==928);
+    for(const char* bad:{"[default]\n", "[default]\nterrain_radius=927", "[default]\nterrain_radius=4097", "[default]\nterrain_radius=nan",
+        "[default]\nterrain_radius=2048\n[default]\nterrain_radius=3000"}){
+        std::istringstream invalid(bad);CHECK(!NorthlightRegionalShadow::parse(invalid,ranges,error));CHECK(ranges.fallback==928);
+    }
+    for(const char* bad:{"927","4097","NaN"}){bool rejected=false;try{applyChanges(changed,fields,std::string("S\tdefault\tterrain_radius\t")+bad+"\n");}catch(...){rejected=true;}CHECK(rejected);}
+}
+
 int main(){
-    masterHotkey();routing();draft();pointShadowDistance();
+    masterHotkey();routing();draft();pointShadowDistance();shadowRange();
     if(failures){std::fprintf(stderr,"%d failure(s)\n",failures);return 1;}
     std::puts("settings overlay: routing and draft OK");
     return 0;

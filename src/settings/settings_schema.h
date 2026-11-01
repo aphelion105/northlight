@@ -7,6 +7,7 @@
 #include "celestial_profiles.h"
 #include "regional_shadow_range.h"
 #include "settings_defaults.h"
+#include "settings_regions.h"
 #include "hdr_settings_contract.h"
 
 namespace NorthlightSettings {
@@ -99,14 +100,17 @@ inline std::vector<Field> schema(const Documents& docs,const Documents& initial,
         f.active=number(active.hdr[hdrIndex]);
         if(NorthlightHdrSettingsContract::mode(key)){f.kind="enum";f.options="Manual,Auto";f.saved=NorthlightHdrSettingsContract::modeName(saved.hdr[hdrIndex]);f.active=NorthlightHdrSettingsContract::modeName(active.hdr[hdrIndex]);f.factory=f.inherited=NorthlightHdrSettingsContract::modeName(key.value);}
         ++hdrIndex;add(f);}
-    for(unsigned file=2;file<4;++file){std::set<std::string> sections;if(file==2)sections.insert("default");
+    for(unsigned file=2;file<4;++file){std::set<std::string> sections{"default"};
+        if(file==3)for(const auto& r:Regions)sections.insert(r.first);
         for(const auto* v:std::array<const Values*,2>{&savedValues[file],&factoryValues[file]})for(const auto& s:*v)if(!s.first.empty()&&s.first!="default")sections.insert(regionName(s.first));
         for(const auto& section:sections){
             if(file==2){for(auto body:{"sun_","moon_"})for(auto name:CelestialNames){Field f;f.file=2;f.section=section;f.key=std::string(body)+name;f.apply="F";unsigned n=0;float lo=0,hi=0;NorthlightCelestialProfiles::Profile dummy;
                 NorthlightCelestialProfiles::keyTarget(dummy,f.key,n,lo,hi);f.kind=n==3?"rgb":"slider";f.low=number(lo);f.high=number(hi);f.step="0.01";
                 f.saved=profileValue(profile(saved.celestial,section),f.key);f.active=profileValue(profile(active.celestial,section),f.key);f.factory=profileValue(profile(defaults.celestial,section),f.key);f.inherited=profileValue(section=="default"?NorthlightCelestialProfiles::Profile{}:saved.celestial.fallback,f.key);add(f);
             }}else{Field f;f.file=3;f.section=section;f.key="terrain_radius";f.low=number(NorthlightRegionalShadow::DefaultRadius);f.high=number(NorthlightRegionalShadow::MaximumRadius);
-                auto value=[&](const Values& v){auto s=explicitValue(v,section,f.key);return s=="~"?f.low:s;};f.saved=value(savedValues[3]);f.active=value(initialValues[3]);f.factory=value(factoryValues[3]);f.inherited=f.low;add(f);}
+                auto value=[&](const Values& v){auto s=explicitValue(v,section,f.key);if(s=="~"&&section!="default")s=explicitValue(v,"default",f.key);return s=="~"?f.low:s;};
+                f.saved=value(savedValues[3]);f.active=value(initialValues[3]);f.factory=value(factoryValues[3]);
+                auto base=explicitValue(savedValues[3],"default",f.key);f.inherited=section=="default"||base=="~"?f.low:base;add(f);}
         }
     }return out;
 }

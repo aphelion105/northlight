@@ -176,23 +176,6 @@ std::vector<std::string> sectionKeys(const Section& s){
     for(const auto& g:s.groups)for(const char* list:{g.master,g.fields,g.advanced})for(auto& k:words(list))if(std::find(out.begin(),out.end(),k)==out.end())out.push_back(k);
     return out;
 }
-// AreaTable zone ids of the shipped profile regions (3.3.5a); other ids show as Map:id.
-const std::map<std::string,const char*> Zones={
-    {"Azeroth:1","Dun Morogh"},{"Azeroth:3","Badlands"},{"Azeroth:4","Blasted Lands"},{"Azeroth:8","Swamp of Sorrows"},{"Azeroth:10","Duskwood"},{"Azeroth:11","Wetlands"},
-    {"Azeroth:12","Elwynn Forest"},{"Azeroth:28","Western Plaguelands"},{"Azeroth:33","Stranglethorn Vale"},{"Azeroth:38","Loch Modan"},{"Azeroth:40","Westfall"},
-    {"Azeroth:41","Deadwind Pass"},{"Azeroth:44","Redridge Mountains"},{"Azeroth:45","Arathi Highlands"},{"Azeroth:46","Burning Steppes"},{"Azeroth:47","The Hinterlands"},
-    {"Azeroth:51","Searing Gorge"},{"Azeroth:85","Tirisfal Glades"},{"Azeroth:130","Silverpine Forest"},{"Azeroth:139","Eastern Plaguelands"},{"Azeroth:267","Hillsbrad Foothills"},
-    {"Azeroth:1497","Undercity"},{"Azeroth:1519","Stormwind City"},{"Azeroth:1537","Ironforge"},
-    {"Kalimdor:14","Durotar"},{"Kalimdor:15","Dustwallow Marsh"},{"Kalimdor:16","Azshara"},{"Kalimdor:17","The Barrens"},{"Kalimdor:141","Teldrassil"},{"Kalimdor:148","Darkshore"},
-    {"Kalimdor:215","Mulgore"},{"Kalimdor:331","Ashenvale"},{"Kalimdor:357","Feralas"},{"Kalimdor:361","Felwood"},{"Kalimdor:400","Thousand Needles"},{"Kalimdor:405","Desolace"},
-    {"Kalimdor:406","Stonetalon Mountains"},{"Kalimdor:440","Tanaris"},{"Kalimdor:490","Un'Goro Crater"},{"Kalimdor:493","Moonglade"},{"Kalimdor:618","Winterspring"},
-    {"Kalimdor:1377","Silithus"},{"Kalimdor:1637","Orgrimmar"},{"Kalimdor:1638","Thunder Bluff"},{"Kalimdor:1657","Darnassus"},
-    {"Expansion01:3483","Hellfire Peninsula"},{"Expansion01:3518","Nagrand"},{"Expansion01:3519","Terokkar Forest"},{"Expansion01:3520","Shadowmoon Valley"},
-    {"Expansion01:3521","Zangarmarsh"},{"Expansion01:3522","Blade's Edge Mountains"},{"Expansion01:3523","Netherstorm"},{"Expansion01:3703","Shattrath City"},
-    {"Northrend:65","Dragonblight"},{"Northrend:66","Zul'Drak"},{"Northrend:67","The Storm Peaks"},{"Northrend:210","Icecrown"},{"Northrend:394","Grizzly Hills"},
-    {"Northrend:495","Howling Fjord"},{"Northrend:2817","Crystalsong Forest"},{"Northrend:3537","Borean Tundra"},{"Northrend:3711","Sholazar Basin"},
-    {"Northrend:4197","Wintergrasp"},{"Northrend:4395","Dalaran"},
-};
 
 const char* find(const std::map<std::string,const char*>& m,const std::string& key){auto i=m.find(key);return i==m.end()?nullptr:i->second;}
 std::string celestialName(const std::string& key,std::string* body){
@@ -212,7 +195,7 @@ std::string rowLabel(const Field& f){
 }
 std::string regionLabel(const std::string& section){
     if(section=="default")return "All regions (default)";
-    if(const char* zone=find(Zones,section))return std::string(zone)+"  ("+section+")";
+    if(const char* zone=find(NorthlightSettings::Regions,section))return std::string(zone)+"  ("+section+")";
     return section;
 }
 std::string optionLabel(const Field& f,const std::string& value){
@@ -274,6 +257,7 @@ struct SettingsPanel::State {
     bool wantSnapshot=false,wantPreview=false,wantClear=false,previewing=false,saving=false,awaitingSnapshot=false;
     std::uint64_t commitSerial=0;
     std::string region="default",note;                 // note: a local message (a refused request), cleared by the next action
+    char shadowSearch[96]={};int shadowMap=0;
     Page page=Page::Overview;                             // kept for the session
     NorthlightMemoryProfile::Snapshot memorySnapshot;
     uint64_t memoryReadAt=0;
@@ -343,7 +327,9 @@ struct SettingsPanel::State {
         const auto shown=draft.effective(f);
         ImGui::Text("Value: %s%s",shown.c_str(),draft.edited(f)?"  (unsaved)":"");
         ImGui::Text("Saved: %s   Running: %s",draft.saved(f).c_str(),f.available?f.active.c_str():"unavailable");
-        ImGui::Text("Factory: %s   Inherits: %s",f.factory.c_str(),f.inherited.c_str());
+        const Field* base=f.file==D::ShadowRange&&f.section!="default"?draft.field(D::ShadowRange,"default",f.key):nullptr;
+        const auto inherited=base?draft.effective(*base):f.inherited;
+        ImGui::Text("Factory: %s   Inherits: %s",f.factory.c_str(),inherited.c_str());
         ImGui::TextColored(Color::Muted,"Source: %s%s",originText(f.origin),draft.overrides(f)?"":" - not written to the file");
         auto help=Help.find(f.key);
         if(help!=Help.end())for(const char* line:help->second){ImGui::Spacing();ImGui::TextWrapped("%s",line);}
@@ -707,14 +693,41 @@ struct SettingsPanel::State {
     }
     void shadowRangeTab(){
         ImGui::PushTextWrapPos(0);
-        ImGui::TextColored(Color::Muted,"Terrain shadow reach per region, in yards. Regions not listed use the default reach.");
+        ImGui::TextColored(Color::Muted,"Terrain shadow reach in yards. Save, then restart the game to apply changes.");
         ImGui::PopTextWrapPos();
-        const auto regions=sections(D::ShadowRange);
-        if(regions.empty()){ImGui::TextDisabled("No shadow range profiles.");return;}
-        if(beginRows("ranges")){
-            for(const auto& r:regions)if(const Field* f=draft.field(D::ShadowRange,r,"terrain_radius"))row(*f,regionLabel(r).c_str());
-            ImGui::EndTable();
+        if(const Field* base=draft.field(D::ShadowRange,"default","terrain_radius")){
+            if(beginRows("default-range")){row(*base,"Default reach (yards)");ImGui::EndTable();}
         }
+        ImGui::PushTextWrapPos(0);
+        ImGui::TextColored(Color::Muted,"Zones without an override follow the default. Right-click a zone to restore it.");
+        ImGui::PopTextWrapPos();
+        ImGui::Spacing();
+        const float width=ImGui::GetContentRegionAvail().x;
+        ImGui::SetNextItemWidth(width*.52f);
+        ImGui::PushStyleColor(ImGuiCol_TextDisabled,Color::Muted);
+        ImGui::InputTextWithHint("##shadow-search","Search zones, maps or IDs...",shadowSearch,sizeof shadowSearch);
+        ImGui::PopStyleColor();
+        ImGui::SameLine();ImGui::SetNextItemWidth(-FLT_MIN);
+        const char* maps[]={"All maps","Azeroth","Kalimdor","Expansion01","Northrend"};
+        const char* names[]={"All maps","Eastern Kingdoms","Kalimdor","Outland","Northrend"};
+        ImGui::Combo("##shadow-map",&shadowMap,names,IM_ARRAYSIZE(names));
+        const auto regions=sections(D::ShadowRange);
+        const auto search=NorthlightSettings::lower(shadowSearch);
+        std::vector<const Field*> visible;
+        for(const auto& r:regions){
+            if(r=="default"||(shadowMap&&r.rfind(std::string(maps[shadowMap])+":",0)!=0))continue;
+            if(!search.empty()&&NorthlightSettings::lower(regionLabel(r)).find(search)==std::string::npos)continue;
+            if(const Field* f=draft.field(D::ShadowRange,r,"terrain_radius"))visible.push_back(f);
+        }
+        ImGui::TextColored(Color::Muted,"%u zones",unsigned(visible.size()));
+        if(ImGui::BeginChild("shadow-zones",ImVec2(0,0))){
+            if(visible.empty()){ImGui::PushTextWrapPos(0);ImGui::TextColored(Color::Muted,"No zones match. Clear the search or choose All maps.");ImGui::PopTextWrapPos();}
+            else if(beginRows("ranges")){
+                for(const Field* f:visible){const char* name=find(NorthlightSettings::Regions,f->section);row(*f,name?name:f->section.c_str());}
+                ImGui::EndTable();
+            }
+        }
+        ImGui::EndChild();
     }
 
     // ---- Footer ----
