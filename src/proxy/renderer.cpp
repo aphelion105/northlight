@@ -792,7 +792,15 @@ private:
         return owner.projectedDraw(args.primCount,afterEffects?3u:2u,[&]{
             if(afterEffects&&owner.hdrSceneReady&&owner.hdrBackTarget()){
                 const HRESULT hr=owner.hdrBindBack(owner.hdrPresentBack);if(FAILED(hr))return hr;
-                return owner.hdrColor.draw(device,80,[&]{return args.submit(device);});
+                // Replay has restored the native shaders. Only exact known
+                // particle VS identities opt into the proven additive transfer.
+                unsigned family=0;IDirect3DVertexShader9* vs=nullptr;
+                if(SUCCEEDED(device->GetVertexShader(&vs))&&vs){
+                    const auto tag=owner.vsTags.find(vs);
+                    if(tag!=owner.vsTags.end())family=unsigned(tag->second>>kFamilyShift)&7u;
+                }
+                if(vs)vs->Release();
+                return owner.hdrColor.draw(device,80,[&]{return args.submit(device);},family);
             }
             return args.submit(device);
         });

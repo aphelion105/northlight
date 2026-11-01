@@ -55,11 +55,12 @@ inline bool parse(const Word* words,std::size_t count,std::vector<Instruction>& 
 }
 struct Info {unsigned major=0,captureTemp=0,scaleConstant=0,originalSlots=0,addedSlots=0;};
 inline bool patch(const Word* original,std::size_t count,const Word* transfer,std::size_t transferCount,
-                  float whiteNits,bool premultiplied,std::vector<Word>& output,Info* info=nullptr){
+                  float whiteNits,bool premultiplied,std::vector<Word>& output,Info* info=nullptr,bool preserveRgb=false){
     output.clear();
-    if(!(whiteNits>=1&&whiteNits<=10000)||!original||!transfer||count<3||transferCount<3||original[0]!=transfer[0])return false;
+    if(!(whiteNits>=1&&whiteNits<=10000)||!original||!transfer||count<3||transferCount<3||original[0]!=transfer[0]||(preserveRgb&&premultiplied))return false;
     std::vector<Instruction> old,tail;unsigned originalSlots=0,addedSlots=0;
     if(!parse(original,count,old,originalSlots)||!parse(transfer,transferCount,tail,addedSlots))return false;
+    if(preserveRgb)addedSlots+=2; // Explicit RGB lower bound and alpha clamp, including SM2.
     const unsigned major=(original[0]>>8)&255,temps=major==2?12:32,constants=major==2?32:224;
     std::array<bool,32> usedTemps{};std::array<bool,224> usedConstants{};unsigned mask=0;
     for(const auto& ins:old){
@@ -105,9 +106,15 @@ inline bool patch(const Word* original,std::size_t count,const Word* transfer,st
         for(unsigned j=1;j<ins.count;++j){Word w=original[ins.at+j];
             // Preserve the native UNORM source range before FP16 blending.
             // Clamp here: the SM2 transfer compiler assumes COLOR0 is bounded.
-            if(j==1&&type(w)==8)w=reg(w|0x00100000u,0,unsigned(capture));result.push_back(w);
+            if(j==1&&type(w)==8)w=reg(preserveRgb?w:w|0x00100000u,0,unsigned(capture));result.push_back(w);
         }
     }
+    // Keep authored saturation and the RGB lower bound; only the upper RGB
+    // bound is removed. The straight-alpha transfer's scale.w is defined as 0.
+    // SM2 may optimize away either clamp written only in the HLSL COLOR input.
+    if(preserveRgb)result.insert(result.end(),{
+        0x0300000bu,reg(0x80070000u,0,unsigned(capture)),reg(0x80e40000u,0,unsigned(capture)),reg(0xa0ff0000u,2,unsigned(scale)),
+        0x02000001u,reg(0x80180000u,0,unsigned(capture)),reg(0x80ff0000u,0,unsigned(capture))});
     result.insert(result.end(),body.begin(),body.end());result.push_back(65535);output.swap(result);
     if(info)*info={major,unsigned(capture),unsigned(scale),originalSlots,addedSlots};return true;
 }

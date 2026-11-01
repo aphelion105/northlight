@@ -6,10 +6,11 @@
 #include "hdr_compiled_shaders.h"
 #include "saved_state.h"
 #include "hdr_quad.h"
+#include "particle_light_proof.h"
 
 namespace NorthlightHdr {
 class Color {
-    struct Entry {IDirect3DPixelShader9* shader[3]{};bool attempted[3]{};};
+    struct Entry {IDirect3DPixelShader9* shader[4]{};bool attempted[4]{};};
     std::unordered_map<IDirect3DPixelShader9*,Entry> shaderBanks[2];
     IDirect3DPixelShader9* world=nullptr;
     IDirect3DPixelShader9* fixedUi=nullptr;IDirect3DPixelShader9* multiFixedUi=nullptr;
@@ -61,7 +62,7 @@ public:
         return drawQuad(d,desc.Width,desc.Height);
     }
     IDirect3DPixelShader9* replacement(IDirect3DDevice9* d,IDirect3DPixelShader9* original,float uiWhite,unsigned variant){
-        if(!original||variant>2)return nullptr;
+        if(!original||variant>3||(variant==3&&uiWhite!=80))return nullptr;
         // World/sky radiance and UI white alternate every frame. Retain both
         // scales; a live UI adjustment invalidates only its own bounded bank.
         auto& shaders=shaderBanks[uiWhite==80?0:1];
@@ -72,10 +73,15 @@ public:
         if(FAILED(hr)||bytes<12||bytes%4||bytes>65536*4){++rejected;return nullptr;}
         std::vector<std::uint32_t> code(bytes/4),result;
         if(FAILED(original->GetFunction(code.data(),&bytes))){++rejected;return nullptr;}
+        // Cache the proof with a separate variant: this PS can also draw UI or
+        // non-additive effects at the same white level in the same frame.
+        const bool particle=variant==3;
+        NorthlightParticleLightProof::Pixel proof;
+        if(particle&&!NorthlightParticleLightProof::compilePixel(code.data(),code.size(),proof))return nullptr;
         const bool sm2=code[0]==0xffff0200;
-        const auto* transfer=sm2?kHdrUiPs2:kHdrUiPs3;
-        const auto count=sm2?sizeof(kHdrUiPs2)/4:sizeof(kHdrUiPs3)/4;
-        if(!NorthlightHdrUi::patch(code.data(),code.size(),transfer,count,variant==2?80.f:uiWhite,variant==1,result)||
+        const auto* transfer=particle?(sm2?kHdrParticlePs2:kHdrParticlePs3):(sm2?kHdrUiPs2:kHdrUiPs3);
+        const auto count=particle?(sm2?sizeof(kHdrParticlePs2)/4:sizeof(kHdrParticlePs3)/4):(sm2?sizeof(kHdrUiPs2)/4:sizeof(kHdrUiPs3)/4);
+        if(!NorthlightHdrUi::patch(code.data(),code.size(),transfer,count,variant==2?80.f:uiWhite,variant==1,result,nullptr,particle)||
            FAILED(d->CreatePixelShader(reinterpret_cast<const DWORD*>(result.data()),&entry.shader[variant]))){++rejected;return nullptr;}
         ++patched;return entry.shader[variant];
     }
@@ -150,7 +156,7 @@ public:
         if(SUCCEEDED(hr)&&restore.screen){++screenDirect;hr=d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE);}
         if(SUCCEEDED(hr)){if(multi)++multiTextureDirect;hr=submit();}return hr;
     }
-    template<class Draw> HRESULT draw(IDirect3DDevice9* d,float uiWhite,Draw submit){
+    template<class Draw> HRESULT draw(IDirect3DDevice9* d,float uiWhite,Draw submit,unsigned particleFamily=0){
         IDirect3DPixelShader9* original=nullptr;
         if(FAILED(d->GetPixelShader(&original)))return E_FAIL;
         if(!original)return fixedDraw(d,uiWhite,submit);
@@ -163,7 +169,13 @@ public:
         // light. A patched shader can do the same on its original geometry.
         const unsigned variant=blend&&src==D3DBLEND_ONE&&dst==D3DBLEND_INVSRCALPHA?1:
             (blend&&((src==D3DBLEND_DESTCOLOR&&dst==D3DBLEND_ZERO)||(src==D3DBLEND_ZERO&&dst==D3DBLEND_SRCCOLOR))?2:0);
-        auto* shader=replacement(d,original,uiWhite,variant);if(!shader)return legacyLayer(d,uiWhite,submit);
+        IDirect3DPixelShader9* shader=nullptr;DWORD op=0;
+        if((particleFamily==NorthlightM2Family::kParticle||particleFamily==NorthlightM2Family::kParticleUnlit)&&
+           uiWhite==80&&blend&&(src==D3DBLEND_ONE||src==D3DBLEND_SRCALPHA)&&dst==D3DBLEND_ONE&&
+           SUCCEEDED(d->GetRenderState(D3DRS_BLENDOP,&op))&&op==D3DBLENDOP_ADD)
+            shader=replacement(d,original,80,3);
+        if(!shader)shader=replacement(d,original,uiWhite,variant);
+        if(!shader)return legacyLayer(d,uiWhite,submit);
         HRESULT hr=d->SetPixelShader(shader);if(SUCCEEDED(hr))hr=d->SetRenderState(D3DRS_SRGBWRITEENABLE,FALSE);
         if(SUCCEEDED(hr)&&screen){++screenDirect;hr=d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE);}
         if(SUCCEEDED(hr))hr=submit();return hr;
