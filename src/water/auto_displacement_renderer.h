@@ -95,24 +95,30 @@ class NorthlightAutoDisplacement {
     bool& indexedEntries=geometry.indexedEntries;uint64_t& entrySerial=geometry.entrySerial;
     std::vector<float> uvScratch;
     Entry* current=nullptr;float controls[5][4]={},lastDepthLower=0;
-    struct ModelOverlay {std::unique_ptr<Entry> mesh;NorthlightDrawSnapshot::Draw draw;float bank[256*4]={},controls[5][4]={};bool bones[75]={};};
+    struct ModelOverlay {std::unique_ptr<Entry> mesh;NorthlightDrawSnapshot::Draw draw;float bank[256*4]={},controls[5][4]={};bool bones[75]={},skinned=false;};
     std::vector<std::unique_ptr<ModelOverlay>> modelOverlays;size_t modelOverlayBytes=0;bool currentOverlay=false;uint64_t modelOverlayRecorded=0,modelOverlayMatched=0,modelOverlayDeferred=0,modelOverlayDrawn=0;
     NorthlightDrawSnapshot::Draw preparedDraw{};
-    // Audited SM2/SM3 single-bone diffuse_t1 lit/unlit programs: clip c2..c5,
-    // bone palette c31 onward. Their reflection passes use the same transform.
-    static bool modelBaseShader(uint64_t hash){return hash==0x2e3dc5694f4a01afull||hash==0xff32338728131932ull||hash==0x47147097cf6c8081ull||hash==0x309724ed4598da94ull;}
+    // Audited SM2/SM3 diffuse_t1 lit/unlit programs: clip c2..c5,
+    // rigid transform c31..c33 or single-bone palette c31 onward.
+    static bool rigidModelBaseShader(uint64_t hash){return hash==0x6e26e2d868eae89eull||hash==0xd614a29bf43e672bull||hash==0xc0ded0ba316d9862ull||hash==0x9a566cccdd77ebf7ull;}
+    static bool rigidModelOverlayShader(uint64_t hash){return rigidModelBaseShader(hash)||hash==0x874201e9fcd486b7ull||hash==0x40d5668ec01c8bfcull||hash==0xbe1bba2d493e0a39ull||hash==0xb63ebbf2703e9b5eull;}
+    static bool modelBaseShader(uint64_t hash){return rigidModelBaseShader(hash)||hash==0x2e3dc5694f4a01afull||hash==0xff32338728131932ull||hash==0x47147097cf6c8081ull||hash==0x309724ed4598da94ull;}
     void clearModelOverlays(){modelOverlays.clear();modelOverlayBytes=0;currentOverlay=false;}
-    void rememberModelOverlay(){
+    void rememberModelOverlay(bool skinned){
         if(!current||!current->source||!current->source->sourceIdentity||userDraw||!preparedDraw.indexed||modelOverlays.size()>=32||current->bytes>(16u<<20)-modelOverlayBytes)return;
         try{auto item=std::make_unique<ModelOverlay>();const D3DVERTEXELEMENT9* elements=nullptr;UINT count=0;if(!current->sourceDecl||!declarations.get(current->sourceDecl,elements,count))return;
-        const auto* bone=std::find_if(elements,elements+count,[](const D3DVERTEXELEMENT9& e){return e.Stream==0&&e.Usage==D3DDECLUSAGE_BLENDINDICES&&e.UsageIndex==0;});if(bone==elements+count)return;
+        item->skinned=skinned;if(!skinned)item->bones[0]=true;
+        if(skinned){const auto* bone=std::find_if(elements,elements+count,[](const D3DVERTEXELEMENT9& e){return e.Stream==0&&e.Usage==D3DDECLUSAGE_BLENDINDICES&&e.UsageIndex==0;});if(bone==elements+count)return;
         const auto& stream=current->source->streams[0];const auto size=NorthlightDrawSnapshot::declarationBytes(bone->Type);
         for(unsigned i=0;i<current->source->vertexCount;++i){const size_t pos=size_t(i)*stream.stride+bone->Offset;NorthlightActorDeformation::Four value;
-            if(!size||pos+size>stream.bytes.size()||!NorthlightActorDeformation::decodeElement(stream.bytes.data()+pos,bone->Type,value)||!std::isfinite(value[0])||value[0]<0||value[0]>74||value[0]!=std::floor(value[0]))return;item->bones[unsigned(value[0])]=true;}
+            if(!size||pos+size>stream.bytes.size()||!NorthlightActorDeformation::decodeElement(stream.bytes.data()+pos,bone->Type,value)||!std::isfinite(value[0])||value[0]<0||value[0]>74||value[0]!=std::floor(value[0]))return;item->bones[unsigned(value[0])]=true;}}
         auto e=std::make_unique<Entry>();e->source=current->source;e->vb=current->vb;e->ib=current->ib;e->decl=current->decl;e->height=current->height;e->sourceDecl=current->sourceDecl;
         if(e->vb)e->vb->AddRef();if(e->ib)e->ib->AddRef();if(e->decl)e->decl->AddRef();if(e->height)e->height->AddRef();if(e->sourceDecl)e->sourceDecl->AddRef();
         e->vertices=current->vertices;e->primitives=current->primitives;e->stride=current->stride;e->address=current->address;e->domain=4;e->bytes=current->bytes;
-        item->mesh=std::move(e);item->draw=preparedDraw;std::memcpy(item->bank,constants,sizeof constants);std::memcpy(item->controls,controls,sizeof controls);modelOverlays.push_back(std::move(item));modelOverlayBytes+=current->bytes;++modelOverlayRecorded;}catch(...){return;}
+        item->mesh=std::move(e);item->draw=preparedDraw;std::memcpy(item->bank,constants,sizeof constants);
+        // Rigid height/view evaluation does not read the clip matrix.
+        if(!skinned&&FAILED(d->GetVertexShaderConstantF(2,item->bank+2*4,4)))return;
+        std::memcpy(item->controls,controls,sizeof controls);modelOverlays.push_back(std::move(item));modelOverlayBytes+=current->bytes;++modelOverlayRecorded;}catch(...){return;}
     }
     bool gpuHeightChecked=false,gpuHeightSupported=false;uint64_t gpuDraws=0;
     unsigned variantSources=0,variantCPU=0,variantGPU=0,variantReadFailed=0;size_t variantBytes=0;double variantMs=0;
@@ -414,7 +420,7 @@ public:
     void reportModelOverlay()const{logf("M2_OVERLAY_SYNC recorded=%llu matched=%llu deferred=%llu immediate=%llu",(unsigned long long)modelOverlayRecorded,(unsigned long long)modelOverlayMatched,(unsigned long long)modelOverlayDeferred,(unsigned long long)modelOverlayDrawn);}
     // Reflected UVs need not support height inference: overlays reuse the base
     // mesh while retaining their own native UV calculation.
-    static bool modelOverlayShader(uint64_t hash){return modelBaseShader(hash)||hash==0x3add5efbef08550bull||hash==0x7207348e2340eb59ull||hash==0xf63b8d3c26b5efd7ull||hash==0x26584edafcf71f11ull;}
+    static bool modelOverlayShader(uint64_t hash){return rigidModelOverlayShader(hash)||modelBaseShader(hash)||hash==0x3add5efbef08550bull||hash==0x7207348e2340eb59ull||hash==0xf63b8d3c26b5efd7ull||hash==0x26584edafcf71f11ull;}
     bool skinned(IDirect3DVertexShader9* original)const{auto it=shaders.find(original);return it!=shaders.end()&&it->second.skinned;}
     // Rigid affine bounds and cached skin envelopes. Unknown/budget-limited
     // draws retain per-pixel checks. UP skin draws have no reusable source owner.
@@ -499,8 +505,8 @@ public:
     }
     void registerMaterial(IDirect3DVertexShader9* original,const DWORD* code,size_t count,unsigned domain){
         poseMetadata.invalidateShader(original);materials.erase(original);if(domain>4)return;Material m;const auto* words=reinterpret_cast<const uint32_t*>(code);
-        const bool overlay=domain==4&&modelOverlayShader(NorthlightWaterShaderPatch::fnv1a64(words,count));
-        if(overlay)registerVariant(original,code,count,true);
+        const auto hash=NorthlightWaterShaderPatch::fnv1a64(words,count);const bool overlay=domain==4&&modelOverlayShader(hash);
+        if(overlay)registerVariant(original,code,count,!rigidModelOverlayShader(hash));
         if(!NorthlightActorDeformation::compile(words,count,m.uv,true)||!NorthlightActorDeformation::compile(words,count,m.view,false,(domain==1||domain==3)?1:2))return;
         m.terrainDepthEligible=terrainDepthProgram(m.view)?1:wallDepthProgram(m.view)?2:0;m.skinned=m.view.skinned;m.rangeRegister=m.skinned?16:rangeInput(m.view);m.influences=m.skinned?1:0;
         unsigned provided=0;bool inputsValid=true;for(const auto& input:m.view.inputs)if(input.reg<16)provided|=1u<<input.reg;else{inputsValid=false;break;}
@@ -631,9 +637,9 @@ m.layered=NorthlightActorDeformation::compile(words,count,m.uv1,true,2,5,1)&&Nor
         NorthlightDrawSnapshot::Ref<IDirect3DVertexDeclaration9> decl;if(FAILED(d->GetVertexDeclaration(decl.out()))||!decl.p)return false;
         Mesh local;std::shared_ptr<const Mesh> source;if(!snapshots.read(d,decl.p,args.draw,local,nullptr,false,&source)||!source||!source->sourceIdentity)return false;
         for(auto it=modelOverlays.rbegin();it!=modelOverlays.rend();++it){auto& candidate=**it;const auto& a=candidate.draw;const auto& b=args.draw;
-            if(candidate.mesh->sourceDecl!=decl.p)continue;
+            if(candidate.mesh->sourceDecl!=decl.p||candidate.skinned!=shader->second.skinned)continue;
             if(a.topology!=b.topology||a.base!=b.base||a.minimum!=b.minimum||a.vertices!=b.vertices||a.start!=b.start||a.primitives!=b.primitives||!NorthlightSourceIdentity::same(candidate.mesh->source->sourceIdentity,source->sourceIdentity))continue;
-            // Audited stock lit/unlit single-bone programs use the same clip matrix and bone palette.
+            // Rigid programs use c31..c33; single-bone programs use the recorded palette entries.
             if(std::memcmp(candidate.bank+2*4,bank+2*4,4*4*sizeof(float)))continue;bool samePose=true;for(unsigned bone=0;bone<75;++bone)if(candidate.bones[bone]&&std::memcmp(candidate.bank+(31+3*bone)*4,bank+(31+3*bone)*4,3*4*sizeof(float))){samePose=false;break;}if(!samePose)continue;
             current=candidate.mesh.get();currentOverlay=true;userDraw=indexedUserDraw=false;std::memcpy(controls,candidate.controls,sizeof controls);++modelOverlayMatched;return true;
         }return false;
@@ -663,7 +669,7 @@ m.layered=NorthlightActorDeformation::compile(words,count,m.uv1,true,2,5,1)&&Nor
             gpuReady=SUCCEEDED(d->SetTexture(saved.stage,current->height));for(unsigned i=0;i<6&&gpuReady;++i)gpuReady=SUCCEEDED(d->SetSamplerState(saved.stage,State::key(i),values[i]));}
         saved.changed=true;
         bound=gpuReady&&SUCCEEDED(d->SetStreamSource(0,current->vb,0,current->stride))&&SUCCEEDED(d->SetIndices(current->ib))&&SUCCEEDED(d->SetVertexDeclaration(current->decl))&&SUCCEEDED(d->SetVertexShader(gpu?shader->second.gpu:shader->second.patched))&&SUCCEEDED(d->SetVertexShaderConstantF(saved.constant,controls[0],saved.constantCount));
-        if(bound){hr=submit(current->vertices,current->primitives);if(SUCCEEDED(hr)){++draws;if(gpu)++gpuDraws;++domainDraws[current->domain-1];triangles+=current->primitives;if(native&&currentOverlay)++modelOverlayDrawn;if(native&&!currentOverlay&&current->domain==4&&modelBaseShader(shader->second.hash))rememberModelOverlay();}}
+        if(bound){hr=submit(current->vertices,current->primitives);if(SUCCEEDED(hr)){++draws;if(gpu)++gpuDraws;++domainDraws[current->domain-1];triangles+=current->primitives;if(native&&currentOverlay)++modelOverlayDrawn;if(native&&!currentOverlay&&current->domain==4&&modelBaseShader(shader->second.hash))rememberModelOverlay(shader->second.skinned);}}
         }
         if(!bound)return original();
         if(native&&userDraw){d->SetStreamSource(0,nullptr,0,0);if(indexedUserDraw)d->SetIndices(nullptr);}
