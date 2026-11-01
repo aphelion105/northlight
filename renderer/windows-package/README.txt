@@ -210,6 +210,7 @@ Individual settings (Quality / Balanced / Performance):
   AOStrength 100 / 100 / 100   See the quality INI for the allowed range.
   AORadius 200 / 200 / 200   See the quality INI for the allowed range.
   PointShadowLimit 64 / 64 / 64   Allowed 16..128.
+  PointShadowDistance 48 / 48 / 48   local light shadow distance from the camera in yards (8..192), measured to the edge of the light's influence; applies on Save; Shadow light sources still caps the count
   AutoBump 1 / 0 / 0   See the quality INI for the allowed range.
   AutoBumpStrength 75 / 60 / 40   See the quality INI for the allowed range.
   AutoBumpDistance 48 / 36 / 24   See the quality INI for the allowed range.

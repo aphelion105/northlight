@@ -107,7 +107,7 @@ inline std::vector<std::string> dependencies(const Field& f){
         {"AOMethod",{"ContactAO"}},{"AOQuality",{"ContactAO"}},{"AOStrength",{"ContactAO"}},{"AORadius",{"ContactAO"}},
         {"ActorShadowBudgetMiB",{"ActorShadows"}},{"ActorShadowRadius",{"ActorShadows"}},{"ActorShadowCpuMs",{"ActorShadows"}},{"ActorShadowDetail",{"ActorShadows"}},
         {"BlobShadowStrength",{"BlobShadows"}},
-        {"PointShadowLimit",{"PointShadows"}},{"PointShadowRefreshMs",{"PointShadows"}},{"PointShadowFacesPerFrame",{"PointShadows"}},
+        {"PointShadowDistance",{"PointShadows"}},{"PointShadowLimit",{"PointShadows"}},{"PointShadowRefreshMs",{"PointShadows"}},{"PointShadowFacesPerFrame",{"PointShadows"}},
         {"FogCloudDensity",{"FogClouds"}},{"RainFog",{"Weather"}},{"RainLens",{"Weather"}},{"SnowLens",{"Weather"}},{"RainLensStrength",{"Weather","RainLens"}},{"SnowLensStrength",{"Weather","SnowLens"}},{"RenderProfile",{"Diagnostics"}},
         {"RainDropSize",{"Weather"}},{"SnowFlakeSize",{"Weather"}},{"RainLensSize",{"Weather","RainLens"}},{"SnowLensSize",{"Weather","SnowLens"}},
         {"RainRivulets",{"Weather","RainLens"}},{"SnowFrost",{"Weather"}},{"SnowFrostStrength",{"Weather","SnowFrost"}},

@@ -324,7 +324,7 @@
     bool pointRefreshPredicted()const{
         if(!effects.shadows||lastRenderDebug!=0||!quality.pointShadows||!active)return false;
         // Conservative: a new lamp or changing selection also needs current-frame casters.
-        return NorthlightPointShadow::selectMany(active->localLights.data(),active->localLights.size(),context.camera,quality.pointShadowLimit,{},48,true).count!=0;
+        return NorthlightPointShadow::selectMany(active->localLights.data(),active->localLights.size(),context.camera,quality.pointShadowLimit,{},float(quality.pointShadowDistance),true).count!=0;
     }
     // fresh=false: model capture was skipped. Reuse a compatible complete cube
     // or defer; publishing a static-only cube would erase character shadows.
@@ -507,7 +507,7 @@
         pointReady=false;
         if(!active)return;
         if(pointSelectionMap!=active->map){pointSelection.reset();pointSelectionMap=active->map;}
-        const auto picks=pointSelection.update(lights.sources.data(),lights.count,context.camera,quality.pointShadowLimit,GetTickCount(),&localScissorView);
+        const auto picks=pointSelection.update(lights.sources.data(),lights.count,context.camera,quality.pointShadowLimit,GetTickCount(),&localScissorView,float(quality.pointShadowDistance));
         unsigned selected=0;
         // Release outgoing resources before allocating replacements, even when
         // the free slot occurs earlier in the array than the retired slot.

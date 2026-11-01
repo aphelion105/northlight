@@ -235,8 +235,28 @@ static void draft(){
     CHECK(D::same(strength,"1.50","1.5")&&!D::same(ao,"SSAO","HDAO")&&!D::same(strength,"1,2","1"));
 }
 
+static void pointShadowDistance(){
+    using namespace NorthlightSettings;
+    const auto docs=factoryDocuments();const auto active=configOf(docs,"");
+    const auto fields=schema(docs,docs,active,"");D::Draft draft;draft.bind(&fields);
+    const auto* field=draft.field(D::Quality,"Quality","PointShadowDistance");
+    CHECK(field&&field->low=="8"&&field->high=="192"&&field->factory=="48"&&field->apply=="F");
+    const auto* enabled=draft.field(D::Quality,"Quality","PointShadows");CHECK(enabled);if(!enabled||!field)return;
+    std::string missing;draft.set(*enabled,"0");CHECK(D::blocked(draft,*field,missing)==D::Block::NeedsKey&&missing=="PointShadows");
+    draft.set(*enabled,"1");draft.set(*field,"96");CHECK(!draft.restartPending(*field)&&D::blocked(draft,*field,missing)==D::Block::None);
+    for(const auto* value:{"8","96","192"}){
+        auto edited=applyChanges(docs,fields,std::string("Q\tQuality\tPointShadowDistance\t")+value+"\n");
+        edited[0]=Document(edited[0].bytes()); // save/reload preserves the override
+        const auto config=configOf(edited,"");CHECK(liveQualityUpdate(active.quality,config.quality).pointShadowDistance==std::stoul(value));
+    }
+    for(const auto* value:{"0","7","193","-1","nan"}){
+        bool rejected=false;try{applyChanges(docs,fields,std::string("Q\tQuality\tPointShadowDistance\t")+value+"\n");}catch(...){rejected=true;}
+        CHECK(rejected);
+    }
+}
+
 int main(){
-    masterHotkey();routing();draft();
+    masterHotkey();routing();draft();pointShadowDistance();
     if(failures){std::fprintf(stderr,"%d failure(s)\n",failures);return 1;}
     std::puts("settings overlay: routing and draft OK");
     return 0;

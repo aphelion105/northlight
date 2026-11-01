@@ -291,13 +291,13 @@ struct SelectionTracker {
     void reset(){entries={};initialized=false;}
     void defer(unsigned slot){entries[slot].gain=0;}
     std::array<Slot,MaxLights> update(const NorthlightLocalLights::Light* lights,size_t count,const float* camera,
-                                    unsigned limit,uint32_t now,const NorthlightLocalLightScissor::View* view=nullptr){
+                                    unsigned limit,uint32_t now,const NorthlightLocalLightScissor::View* view=nullptr,float maxCameraDistance=48){
         limit=std::min(limit,MaxLights);
         const float step=initialized?std::min(uint32_t(now-updatedAt),100u)/FadeMs:1.f;
         updatedAt=now;initialized=true;
         std::array<uint64_t,MaxLights> previous{};unsigned n=0;
         for(const auto& e:entries)if(e.occupied)previous[n++]=e.id;
-        const auto picks=selectMany(lights,count,camera,limit,previous,48,false,view);
+        const auto picks=selectMany(lights,count,camera,limit,previous,maxCameraDistance,false,view);
         std::array<Slot,MaxLights> out{};bool wanted[MaxLights]={};unsigned resident=0;
         for(unsigned slot=0;slot<MaxLights;++slot){auto& e=entries[slot];if(!e.occupied)continue;
             int index=-1;
