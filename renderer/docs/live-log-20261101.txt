@@ -102,3 +102,18 @@ failures, microbenchmarks, build log and hdr-optimized/validation.json).
   python tests/test_displacement_state_reuse.py
   python tests/test_material_pipeline_cpu_micro.py
   python tests/verify_hdr_pipeline.py --output <isolated-directory> --no-build
+
+Installer 20261101.7
+
+Source commit: f18939ec0c49bfd34095416e85f390f1d5ac39c6
+Northlight-0.3.216-test.20261101.7-Windows.zip: 20,151,268 bytes
+ZIP SHA256: 1a5a0f9a7d8da0cc0fd1e834579150701d6b90a46e391bb008c59a3e451ece17
+DLL: 9,016,832 bytes
+DLL SHA256: 686650af5d6857c9090060e5c6c32cbb8462e2f866bbfe054feba914b4222c38
+Source identity: 87f110b9abdfeda5d87728252e9009f3a38927471bba4e23bd07926dec2670be
+
+Package verification, ZIP CRC, exact tested-DLL comparison and all six bundled
+Python --help commands from a Unicode path pass. Python 3.13.15, DXVK 3.1.1 and
+alternative DXVK 2.7.1 keep their pins. Installer sources are unchanged; no new
+full installer-suite run is claimed. The ZIP is local under releases/ and has
+not been installed into the game.
