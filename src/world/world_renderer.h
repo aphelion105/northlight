@@ -3840,6 +3840,9 @@ public:
                  for(unsigned s=0;s<4&&ok;++s){std::uint64_t at=0;nexts[s]=bulkPlace(*p,single,s,running[s],at);ok=nexts[s]<=replayVertexBytes[s];}
                  if(!ok||(runningIndices+p->mesh().indices.size())*4>replayIndexBytes)break;
                  for(unsigned s=0;s<4;++s)running[s]=UINT(nexts[s]);runningIndices+=p->mesh().indices.size();}
+             // The bounds job borrows packet constants. Join before truncating
+             // the packet list, while its results still match the whole list.
+             replayBoundsJoin();
              if(prepareUnsettled())for(size_t i=fit;i<replays.size();++i)recycleReplay(replays[i].release()); /* 0.3.177: quarantined */
              replays.resize(fit);if(!layout(fit))return false;
          }}

@@ -1281,7 +1281,7 @@ private:
         }
     }
     void renderEffects() {
-        if(hdr.active&&!hdrAtUiBoundary)return;
+        if(hdr.active&&(!hdrAtUiBoundary||!hdrBackTarget()))return;
         nameMaskRunEnd(); /* 0.3.212 (task 32): the effect passes and SavedState meet the game's stencil states */
         CpuScope cpu(sampled()?&cpuEffects:nullptr);
         // 0.3.175 (S3): RenderProfile sample frames split the same span into buckets (effects_buckets.h).
@@ -1688,7 +1688,7 @@ private:
         if(!borrowedVS&&FAILED(ext->GetVertexShader(&vs))){++missingVS;drop(vs);return;}
         if(!vs){
             ++missingVS;D3DSURFACE_DESC desc{};
-            if((terrain||skySeen)&&fixedUiGeometry()&&fullViewport(desc,nullptr,true)&&hdrUiInputs()){
+            if((terrain||skySeen)&&fixedUiGeometry()&&fullViewport(desc,nullptr,true)&&(!hdr.active||hdrBackTarget())&&hdrUiInputs()){
                 hdrAtUiBoundary=true;
                 if(sampled())logf("EFFECT boundary frame=%u draw=%u kind=fixed-ui",frame,drawCalls);
                 renderEffects();spellReplay();
@@ -2849,7 +2849,7 @@ private:
                 (!zFuncAware||(SUCCEEDED(ext->GetRenderState(D3DRS_ZFUNC,&zf))&&SUCCEEDED(ext->GetRenderState(D3DRS_ZENABLE,&z)))) &&
                 SUCCEEDED(ext->GetVertexShaderConstantF(0,rows,4)) &&
                 NorthlightUiBoundary::accepts(zw!=0,rows,zf==D3DCMP_ALWAYS,z!=0) &&
-                fullViewport(desc,nullptr,true)){
+                fullViewport(desc,nullptr,true)&&(!hdr.active||(hdrBackTarget()&&hdrUiInputs()))){
                 hashBoundaryThisFrame=true;
                 if(sampled()){DWORD z=0,zw=0,blend=0;ext->GetRenderState(D3DRS_ZENABLE,&z);ext->GetRenderState(D3DRS_ZWRITEENABLE,&zw);ext->GetRenderState(D3DRS_ALPHABLENDENABLE,&blend);
                     logf("EFFECT boundary frame=%u draw=%u kind=ui z=%lu zwrite=%lu blend=%lu",frame,drawCalls,(unsigned long)z,(unsigned long)zw,(unsigned long)blend);}
@@ -2857,7 +2857,9 @@ private:
             }
         }
         if(tag!=1&&tag!=2&&!vc.world&&!vc.wmo&&!vc.skinned&&!(entry&kWaterTag)&&(terrain||skySeen)&&!applied&&orthographicUiGeometry()&&hdrUiInputs()){
-            D3DSURFACE_DESC desc{};if(fullViewport(desc,nullptr,true)){
+            // A full-size offscreen pass can share the UI shaders. It must not
+            // replace the HDR scene or close capture before the actual UI.
+            D3DSURFACE_DESC desc{};if(fullViewport(desc,nullptr,true)&&(!hdr.active||hdrBackTarget())){
                 hdrAtUiBoundary=true;
                 if(sampled())logf("EFFECT boundary frame=%u draw=%u kind=orthographic-ui",frame,drawCalls);
                 renderEffects();spellReplay();
@@ -2888,7 +2890,7 @@ private:
         float c[16]={};if(FAILED(ext->GetVertexShaderConstantF(0,c,4)))return;
         if(!NorthlightUiBoundary::accepts(zw!=0,c,zf==D3DCMP_ALWAYS,z!=0)){if(!armed){triageVs=vs;triagePs=ps;triageZw=zw;for(int i=0;i<4;++i)triageC3[i]=c[12+i];++triageDraws;}return;}
         D3DSURFACE_DESC desc={};
-        if(!fullViewport(desc,nullptr,true))return; // last, and quiet: minimap and portrait targets are expected here
+        if(!fullViewport(desc,nullptr,true)||(hdr.active&&(!hdrBackTarget()||!hdrUiInputs())))return; // minimap, portrait and HDR scene postprocessing are not UI boundaries
         if(!armed&&!restore){uiFallback.noteCandidate(vsId,psId);return;}
         if(!armed){if(!uiFallback.restore(vsId,psId))return;uiFallbackPublish();logf("EFFECT boundary fallback restored from previously learned shader");}
         fallbackBoundaryThisFrame=true;++uiFallbackBoundaries;

@@ -103,7 +103,8 @@ class WorldRenderer {public:
   IDirect3DVertexBuffer9* stream[4]={};IDirect3DIndexBuffer9* index=nullptr;
   UINT offset[4]={},stride[4]={},start=0;INT base=0;
   const NorthlightDrawSnapshot::Mesh& mesh()const{return shared?*shared:snapshot;}
-  ~Replay(){for(auto& p:stream)drop(p);drop(index);}
+  bool* boundsPending=nullptr;
+  ~Replay(){assert(!boundsPending||!*boundsPending);for(auto& p:stream)drop(p);drop(index);}
  };
  IDirect3DDevice9* d;REPLAY_CACHE replayGpuCache;
  NorthlightReplayBulk::Layout replayBulkLayout;
@@ -118,10 +119,13 @@ class WorldRenderer {public:
  /* One frame: the production call, then the frame fence's Issue (WorldRenderer::endFrame). autoFrame: frames advance by themselves (tests that do not set frameNow). */
  bool upload(bool allowCache=true){const bool ok=uploadReplay(allowCache);frameFence.endFrame();if(autoFrame)++frameNow;return ok;}
  bool forceBulkPressure=false,denyAllGrowth=false;
+ bool boundsPending=false;unsigned boundsJoins=0;
+ void replayBoundsJoin(){if(boundsPending){assert(replays.size()==4);boundsPending=false;++boundsJoins;}}
  bool admitsGrowth(const char* kind,size_t){if(denyAllGrowth&&!std::strcmp(kind,"replay-growth"))return false;return !forceBulkPressure||std::strcmp(kind,"replay-growth")||replayGpuCache.bytes()==0;}
  bool check(HRESULT h,const char*){return !FAILED(h);}
  void deferLogf(const char*,...){} /* 0.3.176: the sampled MODEL GPU lines are written from endFrame */
- bool prepareUnsettled()const{return false;}void recycleReplay(Replay* raw){delete raw;} /* 0.3.177: no abandoned prepare worker */
+ bool preparePending=false;
+ bool prepareUnsettled()const{return preparePending;}void recycleReplay(Replay* raw){assert(!boundsPending);delete raw;}
  static UINT roundBuffer(UINT bytes,size_t){return bytes;} // exact allocations in fake device
  explicit WorldRenderer(IDirect3DDevice9* dev):d(dev){}
  ~WorldRenderer(){for(auto& ring:replayVertexRing)NorthlightDynamicRing::clearSpans(ring,frameFence);NorthlightDynamicRing::clearSpans(replayIndexRing,frameFence);frameFence.drop();replays.clear();replayGpuCache.clear();for(auto& p:replayVerticesGPU)drop(p);drop(replayIndicesGPU);}
@@ -162,9 +166,10 @@ int main(){Device d;auto a=mesh(),b=mesh(480),c=mesh(96);
  assert(alive==0);
  // Under hard memory pressure the prefix fit counts UNIQUE bytes; repeated
  // draws referencing its first mesh all survive with their original order.
- {WorldRenderer world(&d);world.add(a,false);assert(world.upload());world.replays.clear();
+ for(bool quarantine:{false,true}){WorldRenderer world(&d);world.add(a,false);assert(world.upload());world.replays.clear();world.preparePending=quarantine;
   auto fresh=mesh();world.add(fresh,true);world.add(fresh,true);world.add(fresh,true);world.add(mesh(3<<20),false); /* 0.3.192: larger than the ring capacity of the first call */
-  world.denyAllGrowth=true;assert(world.upload());world.verify();assert(world.replays.size()==3);
+  world.boundsPending=true;for(auto& p:world.replays)p->boundsPending=&world.boundsPending;
+  world.denyAllGrowth=true;assert(world.upload());world.verify();assert(world.replays.size()==3&&!world.boundsPending&&world.boundsJoins==1);
  }
  assert(alive==0);
  // Equal bytes with different immutable owners must NOT alias; UP/owned

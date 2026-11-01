@@ -1,6 +1,7 @@
 #pragma once
 #include "actor_deformation.h"
 #include <unordered_map>
+#include <memory_resource>
 
 namespace NorthlightDisplacementGeometry {
 using Mesh=NorthlightDrawSnapshot::Mesh;
@@ -82,7 +83,9 @@ inline bool build(const Mesh& in,const D3DVERTEXELEMENT9* elements,UINT elementC
     // At the minimum budget, edge-only subdivision leaves isolated UV-seam
     // triangles completely flat. A centroid fan has a real interior sample.
     const bool centroid=factor==2;if(centroid)factor=3;
-    std::unordered_map<uint64_t,unsigned> edges;edges.reserve(triangles.size()*3);for(auto t:triangles)for(unsigned i=0;i<3;++i)++edges[edge(t[i],t[(i+1)%3])];
+    // Both maps are scratch data for this build. Free their nodes together.
+    std::pmr::monotonic_buffer_resource scratch;
+    std::pmr::unordered_map<uint64_t,unsigned> edges(&scratch);edges.reserve(triangles.size()*3);for(auto t:triangles)for(unsigned i=0;i<3;++i)++edges[edge(t[i],t[(i+1)%3])];
     std::vector<bool> rigid(triangles.size(),true);
     if(influences&&bones)for(size_t i=0;i<triangles.size();++i){const auto& t=triangles[i];
         for(auto* e:{weights,bones})if(e)for(unsigned k=1;k<3;++k)if(std::memcmp(in.streams[0].bytes.data()+size_t(t[0])*stride+e->Offset,in.streams[0].bytes.data()+size_t(t[k])*stride+e->Offset,NorthlightDrawSnapshot::declarationBytes(e->Type)))rigid[i]=false;
@@ -111,14 +114,14 @@ inline bool build(const Mesh& in,const D3DVERTEXELEMENT9* elements,UINT elementC
         float peak=0;for(float h:first.values){if(!std::isfinite(h))return false;peak=std::max(peak,std::fabs(h-.5f));}
         for(auto& scale:skinRelief)scale=peak>0?std::min(1.f,.05f*std::sqrt(scale)/(.12f*peak)):1.f;
     }
-    std::unordered_map<Key,unsigned,Hash> vertices;vertices.reserve(capacity);
+    std::pmr::unordered_map<Key,unsigned,Hash> vertices(&scratch);vertices.reserve(capacity);
     auto vertex=[&](const std::array<unsigned,3>& t,unsigned i,unsigned j)->unsigned{
         const unsigned w[3]={factor-i-j,i,j};std::array<std::pair<unsigned,unsigned>,3> sorted;
         for(unsigned k=0;k<3;++k)sorted[k]={w[k]?t[k]:UINT_MAX,w[k]};std::sort(sorted.begin(),sorted.end());
         Key key;for(unsigned k=0;k<3;++k){key.v[k*2]=sorted[k].first;key.v[k*2+1]=sorted[k].second;}
-        auto found=vertices.find(key);if(found!=vertices.end())return found->second;
-        if(out.vertexCount>=32768)return UINT_MAX;
-        const unsigned n=out.vertexCount++;vertices.emplace(key,n);auto& bytes=out.streams[0].bytes;bytes.resize(size_t(out.vertexCount)*outputStride);auto* dst=bytes.data()+size_t(n)*outputStride;
+        if(out.vertexCount>=32768){auto found=vertices.find(key);return found!=vertices.end()?found->second:UINT_MAX;}
+        const auto inserted=vertices.try_emplace(key,out.vertexCount);if(!inserted.second)return inserted.first->second;
+        const unsigned n=out.vertexCount++;auto& bytes=out.streams[0].bytes;bytes.resize(size_t(out.vertexCount)*outputStride);auto* dst=bytes.data()+size_t(n)*outputStride;
         Four direction={0,0,1,0};
         for(UINT e=0;e<elementCount&&elements[e].Stream!=0xff;++e){const auto& element=elements[e];if(&element==weights||&element==bones)continue;Four value={};
             for(unsigned k=0;k<3;++k){const auto& a=decoded[size_t(e)*in.vertexCount+t[k]];for(unsigned c=0;c<4;++c)value[c]+=a[c]*(float(w[k])/factor);}

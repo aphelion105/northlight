@@ -106,7 +106,9 @@ struct Device {
     bool gateFrame=false,projectionValid=false,terrain=false,captured=false,drawWaterVS=false,drawUiHashVS=false;
     bool viewportOK=true,depthOK=true,hashBoundaryThisFrame=false,zFuncAware=true;
     bool skySeen=false,applied=false,hdrAtUiBoundary=false;
-    bool orthographicUiGeometry(){return false;}bool hdrUiInputs(){return false;}
+    bool ortho=false,uiInputs=false,backTarget=true;struct {bool active=false;} hdr;
+    bool orthographicUiGeometry(){return ortho;}bool hdrUiInputs(){return uiInputs;}
+    bool hdrBackTarget(){return backTarget;}
     unsigned terrainDraws=0,projectionRejects=0,earlyResolveUndone=0,earlyResolveUndoneTotal=0,uiDraws=0,uiAfterTerrain=0,frame=0,drawCalls=0,binds=0,allocations=0;
     float nearZ=0,farZ=0,scaleX=0,scaleY=0,fogForward=1,worldMinDepth=0,worldMaxDepth=.94f;
     struct Early{bool earlyCaptured=false;void undo(){}}earlyDepth;
@@ -121,7 +123,8 @@ struct Device {
     bool bindWorldDepth(const D3DSURFACE_DESC&){++binds;return depthOK;}
     void resources(UINT,UINT,D3DFORMAT){++allocations;}
     void uiFallbackDraw(const VsClass&,IDirect3DVertexShader9*){}
-    bool sampled(){return false;}void renderEffects(){}void spellReplay(){}
+    unsigned effects=0,spells=0;
+    bool sampled(){return false;}void renderEffects(){++effects;applied=true;}void spellReplay(){++spells;}
 __PROJECTION__
 __BEFORE__
 };
