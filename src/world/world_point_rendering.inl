@@ -8,7 +8,7 @@
         IDirect3DSurface9 *cacheSurface[6]={},*scratchSurface=nullptr;
         IDirect3DVertexShader9* shadowVS=nullptr;
         IDirect3DPixelShader9 *shadowPS=nullptr,*lightingPS=nullptr;
-        bool cacheValid=false,ready=false;uint64_t cacheSource=0,cacheChunks=0;
+        bool cacheValid=false,ready=false;float selectionGain=1;uint64_t cacheSource=0,cacheChunks=0;
         NorthlightLocalShadowSignature::Digest faceContent[6];bool faceKnown[6]={};uint64_t faceSerial[6]={};
         mutable PointContentMemo contentMemo;
         NorthlightPointShadow::FaceCycle faceCycle;unsigned faceWeights[6]={};
@@ -16,6 +16,7 @@
         NorthlightLocalLights::Light selected{};std::string map;DWORD retryAt=0;
     };
     std::array<PointSlot,NorthlightPointShadow::MaxLights> pointSlots;
+    NorthlightPointShadow::SelectionTracker pointSelection;std::string pointSelectionMap;
     unsigned pointIndex=0;bool pointReady=false;
     PointSlot& pointSlot(){return pointSlots[pointIndex];}
     const PointSlot& pointSlot()const{return pointSlots[pointIndex];}
@@ -35,6 +36,7 @@
     void releasePointGPU(){
         for(pointIndex=0;pointIndex<pointSlots.size();++pointIndex)releasePointSlot();pointIndex=0;
         pointReady=false;pointUpdates=pointReuses=pointReportedLimit=0;localLightTracker.reset();localLightQpc=0;
+        pointSelection.reset();pointSelectionMap.clear();
         for(auto* lists:{&pointStaticCandidates,&pointTerrainCandidates,&pointLiveCandidates,&pointReplayCandidates})
             for(auto& list:*lists)std::vector<size_t>().swap(list);
     }
@@ -502,20 +504,24 @@
         return true;
     }
     void renderPointShadows(const NorthlightLocalLightSelection::Selection& lights,bool fresh,bool withReplays){
-        pointReady=false;std::array<uint64_t,NorthlightPointShadow::MaxLights> previous{};
-        for(unsigned i=0;i<pointSlots.size();++i){auto& p=pointSlots[i];p.ready=false;if(active&&p.map==active->map)previous[i]=p.selected.sourceId;}
-        const auto picks=NorthlightPointShadow::selectMany(lights.sources.data(),lights.count,context.camera,quality.pointShadowLimit,previous);
-        bool used[NorthlightPointShadow::MaxLights]={};unsigned slots[NorthlightPointShadow::MaxLights]={};
-        // Reserve every surviving source before reassigning free slots; rank changes keep their caches.
-        for(unsigned i=0;i<picks.count;++i){slots[i]=NorthlightPointShadow::MaxLights;
-            for(unsigned j=0;j<pointSlots.size();++j)if(!used[j]&&previous[j]==lights.sources[picks.index[i]].sourceId){slots[i]=j;used[j]=true;break;}}
-        for(unsigned i=0;i<picks.count;++i){if(slots[i]==NorthlightPointShadow::MaxLights){
-                unsigned j=0;while(used[j])++j;slots[i]=j;used[j]=true;}
-            pointIndex=slots[i];renderPointShadow(lights.sources[picks.index[i]],fresh,withReplays);pointReady|=pointSlot().ready;}
-        for(pointIndex=0;pointIndex<pointSlots.size();++pointIndex)if(!used[pointIndex])releasePointSlot();pointIndex=0;
+        pointReady=false;
+        if(!active)return;
+        if(pointSelectionMap!=active->map){pointSelection.reset();pointSelectionMap=active->map;}
+        const auto picks=pointSelection.update(lights.sources.data(),lights.count,context.camera,quality.pointShadowLimit,GetTickCount(),&localScissorView);
+        unsigned selected=0;
+        // Release outgoing resources before allocating replacements, even when
+        // the free slot occurs earlier in the array than the retired slot.
+        for(pointIndex=0;pointIndex<pointSlots.size();++pointIndex){pointSlot().ready=false;
+            if(picks[pointIndex].index<0)releasePointSlot();}
+        for(pointIndex=0;pointIndex<pointSlots.size();++pointIndex){const auto& pick=picks[pointIndex];if(pick.index<0)continue;
+            ++selected;pointSlot().selectionGain=pick.gain;
+            renderPointShadow(lights.sources[pick.index],fresh,withReplays);pointReady|=pointSlot().ready;
+            if(!pointSlot().ready)pointSelection.defer(pointIndex);
+        }
+        pointIndex=0;
         if(pointReportedLimit!=quality.pointShadowLimit||(frames%600==0&&NorthlightDiagnostics::enabled())){
             unsigned ready=0,resident=0;for(const auto& p:pointSlots){ready+=p.ready;resident+=p.cube!=nullptr;}
-            logf("POINT pool limit=%u selected=%u ready=%u cubeSlots=%u estimatedMiB=%.1f",quality.pointShadowLimit,picks.count,ready,resident,resident*3.5);
+            logf("POINT pool limit=%u selected=%u ready=%u cubeSlots=%u estimatedMiB=%.1f",quality.pointShadowLimit,selected,ready,resident,resident*3.5);
             pointReportedLimit=quality.pointShadowLimit;
         }
     }
@@ -523,7 +529,7 @@
         if(!pointSlot().ready)return false;
         float constants[12][4]={};constants[0][0]=1.f/w;constants[0][1]=1.f/h;constants[0][2]=nearZ;constants[0][3]=farZ;
         constants[1][0]=projection[0];constants[1][1]=projection[1];constants[1][2]=projection[2];constants[1][3]=minZ;
-        constants[2][0]=1.f/(maxZ-minZ);constants[2][1]=waterMask?1.f:0.f;constants[2][2]=1;constants[2][3]=.025f;
+        constants[2][0]=1.f/(maxZ-minZ);constants[2][1]=waterMask?1.f:0.f;constants[2][2]=pointSlot().selectionGain;constants[2][3]=.025f;
         std::memcpy(constants[3],context.inverseView,64);std::memcpy(constants[7],pointSlot().selected.position,12);constants[7][3]=1.f/std::max(pointSlot().selected.attenuationEnd-std::min(pointSlot().selected.attenuationStart,pointSlot().selected.attenuationEnd*.9f),.05f);
         std::memcpy(constants[8],pointSlot().selected.diffuse,12);constants[8][3]=pointSlot().selected.attenuationEnd;
         constants[9][0]=.1f;constants[9][1]=pointSlot().selected.attenuationEnd;constants[9][2]=1.f/PointResolution;constants[9][3]=1;

@@ -209,7 +209,7 @@ Individual settings (Quality / Balanced / Performance):
   AOQuality 0 / 0 / 0   High=0, Medium=1, Low=2. High preserves the current image; Medium/Low reduce HDAO/HBAO+/GTAO samples and can add noise or shimmer. SSAO is unchanged. Apply in Lighting & AO.
   AOStrength 100 / 100 / 100   See the quality INI for the allowed range.
   AORadius 200 / 200 / 200   See the quality INI for the allowed range.
-  PointShadowLimit 4 / 4 / 4   See the quality INI for the allowed range.
+  PointShadowLimit 64 / 64 / 64   Allowed 16..128.
   AutoBump 1 / 0 / 0   See the quality INI for the allowed range.
   AutoBumpStrength 75 / 60 / 40   See the quality INI for the allowed range.
   AutoBumpDistance 48 / 36 / 24   See the quality INI for the allowed range.

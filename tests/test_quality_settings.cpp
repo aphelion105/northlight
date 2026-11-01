@@ -87,7 +87,7 @@ int main(){
     {std::vector<std::string> notes;assert(parse("[Quality]\nWater=1\nWaterSSR=1\nWaterSSRResolution=100\n",nullptr,notes)==d);assert(notes.size()==3);
      for(const auto& note:notes)assert(note.find("retired")!=std::string::npos);for(const auto& key:Keys)assert(std::string(key.name).rfind("Water",0)!=0);}
     assert(d.minSkinnedTriangles==100&&d.captureBudgetMiB==32&&d.actorShadowBudgetMiB==0&&d.farShadowInterval==4);
-    assert(d.localLightLimit==48&&d.pointShadows==1&&d.pointShadowLimit==4&&d.pointShadowRefreshMs==0&&d.shadowDirectionSteps==2048);
+    assert(d.localLightLimit==48&&d.pointShadows==1&&d.pointShadowLimit==64&&d.pointShadowRefreshMs==0&&d.shadowDirectionSteps==2048);
     assert(parse(nullptr)==d&&parse("")==d&&parse("[Quality]\nPreset=Quality\n")==d&&preset(Preset::Quality)==d);
     for(const auto& k:Keys){assert(k.preset[0]==d.*k.field);for(unsigned p=0;p<3;++p)assert(k.preset[p]>=k.low&&k.preset[p]<=k.high);}
     { /* The shipped default file must be exactly Quality, with no warnings. */

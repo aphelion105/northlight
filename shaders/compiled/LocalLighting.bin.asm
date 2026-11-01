@@ -475,13 +475,14 @@
  426:             endif
  427:             add r1.x, -r1.x, -c19.y
  428:             mul r0.x, r0.x, r1.x
- 429:             mul r1.yzw, r0.x, -r0
- 430:           endif
- 431:         endif
- 432:       endif
- 433:     endif
- 434:     mov oC0.xyz, r1.yzww
- 435:     mov oC0.w, c19.z
+ 429:             mul r0.x, r0.x, c2.z
+ 430:             mul r1.yzw, r0.x, -r0
+ 431:           endif
+ 432:         endif
+ 433:       endif
+ 434:     endif
+ 435:     mov oC0.xyz, r1.yzww
+ 436:     mov oC0.w, c19.z
 
-// approximately 454 instruction slots used (18 texture, 436 arithmetic)
+// approximately 455 instruction slots used (18 texture, 437 arithmetic)
  

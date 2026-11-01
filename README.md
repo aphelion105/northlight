@@ -55,7 +55,7 @@ Every effect below is on by default and is drawn on top of the game's own frame.
   Current caches are reused, and light-only updates keep instance geometry. Changing the choice never rebuilds the continents.
 - **Lamps.** Up to 48 nearby lamps (Quality; `LocalLightLimit`, 8..128), lanterns, braziers and fires light the ground and walls around
   them and glow in the fog. Lamps in view take the slots first, and nearby lamps on screen are batched together. In direct sun lamps dim. Local shadows are enabled by default:
-  four compact sources at once, adjustable with `PointShadowLimit` in the Shadows menu.
+  64 compact sources by default, adjustable from 16 to 128 with `PointShadowLimit` in the Shadows menu.
   Torches, candles, lamps and compact fires cast shadows; diffuse glows, runes and sparkles do not.
   Shadows work day and night, fading where their source is weak compared with sunlight at the
   receiver. Each pass removes only the blocked contribution added by Northlight's matching direct

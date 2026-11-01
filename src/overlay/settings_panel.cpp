@@ -92,7 +92,7 @@ const std::map<std::string,std::vector<const char*>> Help={
     {"BlobShadowStrength",{"Adjusts the native round shadow when detailed character shadows are composited. Turning Round ground shadows off hides it independently and preserves this strength for later."}},
     {"RainLens",{"Moving refractive droplets; Merge drops into rivulets lets them collect water along their wet paths. Heavier rain increases their speed. Requires Enhanced weather; the effect disappears under shelter."}},
     {"SnowLens",{"Crystalline snowflakes adhere and collect into clumps. Nearby classified flames melt them into moving droplets; walls block this heat. Requires Enhanced weather; the effect disappears under shelter."}},
-    {"PointShadowLimit",{"4 by default; adjustable from 4 to 128. Only nearby eligible sources allocate maps (about 3.5 MiB each, up to 448 MiB).",
+    {"PointShadowLimit",{"64 by default; adjustable from 16 to 128. Only nearby visible eligible sources allocate maps (about 3.5 MiB each, up to 448 MiB).",
         "For a shadow-only comparison, set Maximum local lights to 128 and GPU effect budget to 0 first; then compare 4 / 8 / 16 / 32 / 64 / 128 in the same scene."}},
     {"HDRContrast",{"1.00 is neutral. Adjusts world contrast around middle grey; UI brightness is unchanged."}},
     {"HDRExposure",{"0 EV is neutral. +1 EV doubles world light; -1 EV halves it. UI brightness is unchanged."}},

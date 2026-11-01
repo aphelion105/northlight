@@ -1,6 +1,6 @@
 {
   "bump_include_sha256": "1a947edc7a4bc83c56e6adfb05bdb5d7e2a6fca4e4dba83ede009d514c20c3f5",
-  "source_sha256": "a1bc15263109f7e86f99648edfb264327f334bc858d2ba4b312cb0c72450660d",
+  "source_sha256": "4260b46ab568617345a575539871651cdd9da7bdfdfce4e0ddf783302def053e",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
   "game_launched": false,
@@ -46,9 +46,9 @@
     },
     "LocalLighting": {
       "target": "ps_3_0",
-      "bytes": 7504,
-      "sha256": "e899a4245fc537e504199864c618d00613f0e6ff39e13468f6afff70eaa29147",
-      "static_instruction_slots": 466,
+      "bytes": 7520,
+      "sha256": "1fda47103ca6ee1dcd82c54604cf72620fa82274cd3129b257e4ad072d5a5dd3",
+      "static_instruction_slots": 467,
       "temporary_registers": 13,
       "samplers": [
         0,
@@ -62,7 +62,7 @@
         "rcp": 21,
         "add": 119,
         "frc": 6,
-        "mul": 100,
+        "mul": 101,
         "max": 16,
         "min": 6,
         "mov": 37,
