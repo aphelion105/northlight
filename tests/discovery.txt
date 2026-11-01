@@ -107,6 +107,7 @@ test_equipment_lights.py
 test_event_query_express.py
 test_event_terminal_reuse.py
 test_expired_world_geometry.py
+test_extra_light_shadow_signatures.py
 test_fast_memcmp.py
 test_fgr_constant_bank.py
 test_five_path_perf.py
