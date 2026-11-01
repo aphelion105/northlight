@@ -76,6 +76,7 @@ struct DisplacementStateTestAccess {
     static void capture();
     static void kernels();
     static void primitiveLimit();
+    static void coldBuildPose();
     static void posed(){
         using namespace NorthlightWaterShaderPatch;using namespace NorthlightActorDeformation;
         NorthlightAutoDisplacement g(nullptr);Program p;p.major=3;p.positionRegister=0;p.skinned=true;
@@ -338,6 +339,31 @@ void DisplacementStateTestAccess::kernels(){
         for(unsigned i=0;i<4;++i)assert(g.poseKernelVertices[i]==(i==pass?3u:0u));g.endFrame();for(auto count:g.poseKernelVertices)assert(count==0);}
     std::puts("MATERIAL_POSE_KERNEL_COUNTER_PASS exact_generic_single_vertices unchanged_budget far_return frame_reset");
 }
+void DisplacementStateTestAccess::coldBuildPose(){
+    LimitBackend d;NorthlightAutoDisplacement g(&d);rangeProgram(g,&d.vs,true);g.materials[&d.vs].id=1;
+    d.vs.AddRef();g.shaders[&d.vs].patched=&d.vs;g.envelopeBudget.maxVertices=g.envelopeBudget.maxOperations=0;
+    float vertices[]={1,1,1,0,2,1,1,0,1,2,1,0};
+    NorthlightAutoDisplacement::Args args{{D3DPT_TRIANGLELIST,0,0,3,0,1,false},nullptr,D3DFMT_UNKNOWN,vertices,16};
+    g.buildsThisFrame=2;
+    for(unsigned i=0;i<100;++i)assert(!g.prepare(&d.vs,4,1,args));
+    assert(g.refused==100&&!g.poseVerticesThisFrame&&!g.poseFallbackVertices&&!g.envelopeBudget.vertices&&!g.poseEnvelopes.entries()&&!g.objectBoundsVertices&&!d.textures);
+    // A remaining build slot still reaches the original pose and height work.
+    g.buildsThisFrame=1;assert(!g.prepare(&d.vs,4,1,args)&&g.poseVerticesThisFrame==3&&d.texture.levels==1);
+    Mesh mesh;assert(g.snapshots.readUP(&d.decl,args.draw,nullptr,D3DFMT_UNKNOWN,vertices,16,mesh));
+    auto entry=std::make_unique<NorthlightAutoDisplacement::Entry>();entry->source=std::make_shared<Mesh>(std::move(mesh));entry->sourceDecl=&d.decl;d.decl.AddRef();
+    entry->program=1;entry->domain=4;entry->material=1;entry->detail=g.modelDetail;entry->address=D3DTADDRESS_WRAP|(D3DTADDRESS_WRAP<<8);entry->texture=&d.texture;d.texture.AddRef();g.retain(std::move(entry));
+    for(bool indexed:{true,false}){
+        g.indexedEntries=indexed;g.endFrame();g.buildsThisFrame=2;
+        assert(g.prepare(&d.vs,4,1,args)&&g.prepared()&&g.poseVerticesThisFrame==3);const auto hits=g.hits;
+        g.endFrame();g.buildsThisFrame=2;d.bank[2]=100;
+        assert(!g.prepare(&d.vs,4,1,args)&&!g.prepared()&&g.poseVerticesThisFrame==3&&g.hits==hits);d.bank[2]=0;
+        g.endFrame();g.buildsThisFrame=2;
+        assert(!g.prepare(&d.vs,4,2,args)&&g.poseVerticesThisFrame==3&&g.hits==hits); // Candidate still needs the exact material.
+        g.endFrame();g.buildsThisFrame=2;vertices[0]=4;const auto textures=d.textures;
+        assert(!g.prepare(&d.vs,4,1,args)&&!g.poseVerticesThisFrame&&d.textures==textures);vertices[0]=1;
+    }
+    std::puts("MATERIAL_COLD_BUILD_POSE_PASS cold_draws=100 pose_vertices=0 envelope_vertices=0 warm_hit_current_pose material_mismatch changed_source indexed_and_linear remaining_slot_preserved");
+}
 void DisplacementStateTestAccess::primitiveLimit(){
     LimitBackend d;NorthlightAutoDisplacement g(&d);rangeProgram(g,&d.vs);g.materials[&d.vs].id=1;
     g.materials[&d.vs].uv=g.materials[&d.vs].view;g.materials[&d.vs].uv.textureCoordinates=true;
@@ -584,6 +610,7 @@ int main(){
     DisplacementStateTestAccess::capture();
     DisplacementStateTestAccess::cache();
     DisplacementStateTestAccess::primitiveLimit();
+    DisplacementStateTestAccess::coldBuildPose();
     DisplacementStateTestAccess::posed();
     DisplacementStateTestAccess::kernels();
     capturedPositionBounds();

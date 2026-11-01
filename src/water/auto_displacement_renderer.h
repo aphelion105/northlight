@@ -588,6 +588,11 @@ public:
         // UP snapshots have fresh identities even when every byte is unchanged.
         // Reuse the proven source before rebuilding its bounds or skin envelope.
         if(args.vertices){auto* e=firstCandidate(source,fingerprint,true,[&](const Entry& e){return e.sourceDecl==decl.p&&e.program==shader->second.id&&e.domain==domain&&sameSource(e,source,true);});if(e)source=e->source;}
+        // A cold model cannot use a pose once both build slots are spent. Keep
+        // every possible cache hit on the normal current-pose/material checks.
+        if(domain==4&&shader->second.skinned&&buildsThisFrame>=2&&!firstCandidate(source,fingerprint,equivalent,[&](const Entry& e){
+            return e.sourceDecl==decl.p&&e.program==shader->second.id&&e.domain==domain&&sameSource(e,source,equivalent);})){
+            ++refused;return false;}
         if(domain==1&&material!=2)candidates(source,fingerprint,equivalent,[&](Entry& e){if(e.sourceDecl==decl.p&&e.domain==domain&&sameSource(e,source,equivalent))e.baseFrame=0;});
         // Reject whole draws outside the sphere before decoding textures or subdividing.
         const auto position=std::find_if(elements,elements+count,[](const D3DVERTEXELEMENT9& e){return e.Stream==0&&e.Usage==0&&e.UsageIndex==0;});
@@ -622,7 +627,10 @@ public:
                 for(const auto& b:prepared->bindings){const auto& s=source->streams[b.element.Stream];if(!NorthlightActorDeformation::decodeElement(s.bytes.data()+size_t(i)*s.stride+b.element.Offset,b.element.Type,input[b.input.reg]))return false;}
                 if(!NorthlightActorDeformation::evaluateFast(shader->second.view,input,constants,view))return false;
                 for(unsigned k=0;k<3;++k){if(!std::isfinite(view[k]))return false;low[k]=std::min(low[k],view[k]);high[k]=std::max(high[k],view[k]);}}}
-            const auto& kernel=shader->second.view.kernel;poseKernelVertices[kernel.singleSkin()?1:kernel.commutedSkin()||kernel.evaluator==NorthlightActorDeformation::Kernel::WeightedR0Commuted?2:kernel.skin||kernel.evaluator==NorthlightActorDeformation::Kernel::WeightedR0?3:0]+=source->vertexCount;
+            using K=NorthlightActorDeformation::Kernel;const auto& kernel=shader->second.view.kernel;
+            poseKernelVertices[kernel.singleSkin()||kernel.evaluator==K::SingleWorldFirst||kernel.evaluator==K::SingleWorldIndexFirst?1:
+                kernel.commutedSkin()||kernel.evaluator==K::WeightedR0Commuted||kernel.evaluator==K::WeightedWorldCommuted?2:
+                kernel.skin||kernel.evaluator==K::WeightedR0||kernel.evaluator==K::WeightedWorld?3:0]+=source->vertexCount;
         }else{touchBounds(foundBounds->second);const auto& b=foundBounds->second;
             nearestViewDepth(shader->second.view,shader->second.rangeRegister==17?rangeInput(shader->second.view):shader->second.rangeRegister,b.low,b.high,constants,lastDepthLower,shader->second.terrainDepthEligible);
             for(unsigned r=0;r<3;++r){low[r]=high[r]=controls[r][3];for(unsigned k=0;k<3;++k){const float a=controls[r][k]*b.low[k],z=controls[r][k]*b.high[k];low[r]+=std::min(a,z);high[r]+=std::max(a,z);}}}

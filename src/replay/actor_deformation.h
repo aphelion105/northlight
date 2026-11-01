@@ -24,12 +24,14 @@ struct Kernel {
     struct Src {std::uint8_t kind=0,relative=0,channel=0,modifier=0,swizzle[4]={};std::uint16_t index=0;std::int16_t definition=-1;};
     struct Op {unsigned code=0;int operands=0;std::uint8_t target=0,mask=0;bool address=false,saturate=false;Src source[3];};
     // R0 variants accelerate evaluation only; existing envelope/attachment gates stay unchanged.
-    enum Evaluator:std::uint8_t {Generic,SingleFirst,SingleIndexFirst,WeightedCommuted,Weighted,WeightedR0,WeightedR0Commuted};
+    enum Evaluator:std::uint8_t {Generic,SingleFirst,SingleIndexFirst,WeightedCommuted,Weighted,WeightedR0,WeightedR0Commuted,
+        SingleWorldFirst,SingleWorldIndexFirst,WeightedWorld,WeightedWorldCommuted};
     std::vector<Op> ops;std::vector<std::uint8_t> cleared;
-    unsigned inputMask:17,valid:1,skin:1,evaluator:3; /* skin alone also authorizes the existing envelope. */
+    unsigned inputMask:17,valid:1,skin:1,evaluator:4; /* skin alone also authorizes the existing envelope. */
     Kernel():inputMask(0x10000u),valid(false),skin(false),evaluator(Generic){}
     bool singleSkin()const{return evaluator==SingleFirst||evaluator==SingleIndexFirst;}
     bool commutedSkin()const{return evaluator==WeightedCommuted;}
+    bool worldSkin()const{return evaluator>=SingleWorldFirst&&evaluator<=WeightedWorldCommuted;}
 };
 struct Program {
     unsigned major=0,positionRegister=0;bool textureCoordinates=false,skinned=false;std::uint8_t outputMask=0;
@@ -84,6 +86,22 @@ inline void buildKernel(Program& p){
         for(unsigned row=0;row<3;++row){const auto& o=*ops[2+row];if(o.code!=9||o.destination!=(0x80000000u|(1u<<(16+row)))||o.source[0].token!=0xa0e4201f+row||o.source[0].address!=(p.major==1?0:0xb0000000u)||o.source[1].token!=0x90e40000||o.source[1].address||o.source[2].token||o.source[2].address)return 0;}
         return indexFirst?2:1;}();
     if(singleSkin)k.evaluator=singleSkin==2?Kernel::SingleIndexFirst:Kernel::SingleFirst;
+    // Some stock models skin into r0, then apply c14..16 into r1. Require
+    // the exact suffix and an already audited prefix; no new bounds eligibility.
+    if(k.evaluator==Kernel::Generic&&!p.textureCoordinates&&p.major>=2&&p.major<=3&&p.positionRegister==1&&(p.operations.size()==10||p.operations.size()==22)){
+        const auto first=p.operations.size()-4;bool suffix=true;
+        for(unsigned row=0;row<4;++row){const auto& o=p.operations[first+row];
+            suffix&=o.code==(row==3?1u:9u)&&o.destination==(0x80000001u|(1u<<(16+row)))&&
+                o.source[0].token==(row==3?0xa0550000u:0xa0e4000eu+row)&&o.source[1].token==(row==3?0u:0x80e40000u)&&
+                !o.source[0].address&&!o.source[1].address&&!o.source[2].token&&!o.source[2].address;}
+        if(suffix){Program prefix=p;prefix.positionRegister=0;prefix.operations.resize(first);buildKernel(prefix);
+            switch(prefix.kernel.evaluator){
+            case Kernel::SingleFirst:k.evaluator=Kernel::SingleWorldFirst;break;
+            case Kernel::SingleIndexFirst:k.evaluator=Kernel::SingleWorldIndexFirst;break;
+            case Kernel::WeightedR0:k.evaluator=Kernel::WeightedWorld;break;
+            case Kernel::WeightedR0Commuted:k.evaluator=Kernel::WeightedWorldCommuted;break;
+            default:break;}}
+    }
     k.valid=p.positionRegister<33;p.kernel=std::move(k);
 }
 inline void slice(Program& p){
@@ -262,7 +280,7 @@ template<bool Prepared=false,bool ByteIndex=false> inline bool evaluateSingleSki
     // ByteIndex is selected only for a decoded UBYTE4 lane and c0.x == 3:
     // the product is an exact nonnegative integer, so no rounding is needed.
     if constexpr(ByteIndex){first=31+3*int(inputs[1][0]);if(first+2>=256)return false;}
-    else{const float value=p.kernel.evaluator==Kernel::SingleIndexFirst?inputs[1][0]*c0[0]:c0[0]*inputs[1][0];
+    else{const float value=(p.kernel.evaluator==Kernel::SingleIndexFirst||p.kernel.evaluator==Kernel::SingleWorldIndexFirst)?inputs[1][0]*c0[0]:c0[0]*inputs[1][0];
         if(!std::isfinite(value)||(p.major>=2&&std::fabs(value-std::floor(value)-.5f)<1e-6f))return false;
         const float address=p.major==1?std::floor(value):std::round(value);if(address<-4096||address>4096)return false;
         first=31+int(address);if(first<0||first+2>=256)return false;}
@@ -274,6 +292,18 @@ template<bool Strict=false> inline bool evaluateFast(const Program& p,const Four
     const Kernel& kernel=p.kernel;if(!kernel.valid||kernel.ops.size()!=p.operations.size())return evaluate<Strict>(p,inputs,constants,viewPosition);
     if(kernel.evaluator!=Kernel::Generic){
         if constexpr(Strict)if(!kernel.skin)return evaluate<true>(p,inputs,constants,viewPosition);
+        if(kernel.worldSkin()){
+            Four local,result;const bool ok=kernel.evaluator==Kernel::WeightedWorld?evaluateSkin<false,true>(p,inputs,constants,local):
+                kernel.evaluator==Kernel::WeightedWorldCommuted?evaluateSkin<true>(p,inputs,constants,local):evaluateSingleSkin(p,inputs,constants,local);
+            // The generic program writes its final output even if intermediate
+            // skinning is nonfinite. Preserve those failure and alias semantics.
+            if(!ok)return evaluate<Strict>(p,inputs,constants,viewPosition);
+            for(unsigned axis=0;axis<3;++axis){const unsigned reg=14+axis;Four row;std::memcpy(row.data(),constants+4*reg,16);
+                for(const auto& d:p.definitions)if(d.reg==reg)row=d.value;
+                float sum=0;for(unsigned j=0;j<4;++j)sum+=row[j]*local[j];result[axis]=sum;}
+            result[3]=local[3];viewPosition=result;for(float v:viewPosition)if(!std::isfinite(v))return false;
+            return std::fabs(viewPosition[3]-1.f)<.0001f;
+        }
         switch(kernel.evaluator){case Kernel::Weighted:if(kernel.skin)return evaluateSkin(p,inputs,constants,viewPosition);break;
         case Kernel::WeightedR0:return evaluateSkin<false,true>(p,inputs,constants,viewPosition);
         case Kernel::WeightedR0Commuted:return evaluateSkin<true>(p,inputs,constants,viewPosition);
