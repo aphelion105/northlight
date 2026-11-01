@@ -98,6 +98,19 @@ inline bool build(const Mesh& in,const D3DVERTEXELEMENT9* elements,UINT elementC
     std::vector<Four> decoded(size_t(elementCount)*in.vertexCount);
     for(UINT e=0;e<elementCount&&elements[e].Stream!=0xff;++e){if(&elements[e]==weights||&elements[e]==bones)continue;
         for(unsigned i=0;i<in.vertexCount;++i)if(!NorthlightActorDeformation::decodeElement(in.streams[0].bytes.data()+size_t(i)*stride+elements[e].Offset,elements[e].Type,decoded[size_t(e)*in.vertexCount+i]))return false;}
+    std::vector<float> skinRelief;
+    if(influences&&bones){
+        // Inferred colour detail cannot establish anatomical thickness. Bound
+        // relief by the smallest incident edge, at the maximum model span
+        // (100% = .12 yards), so tiny eyelids/lips cannot acquire cm-scale bumps.
+        skinRelief.assign(in.vertexCount,std::numeric_limits<float>::infinity());
+        const auto* positions=decoded.data()+size_t(pos-elements)*in.vertexCount;
+        for(const auto& e:edges){const unsigned a=unsigned(e.first>>32),b=unsigned(e.first);float squared=0;
+            for(unsigned k=0;k<3;++k){const float x=positions[a][k]-positions[b][k];squared+=x*x;}
+            if(!std::isfinite(squared))return false;skinRelief[a]=std::min(skinRelief[a],squared);skinRelief[b]=std::min(skinRelief[b],squared);}
+        float peak=0;for(float h:first.values){if(!std::isfinite(h))return false;peak=std::max(peak,std::fabs(h-.5f));}
+        for(auto& scale:skinRelief)scale=peak>0?std::min(1.f,.05f*std::sqrt(scale)/(.12f*peak)):1.f;
+    }
     std::unordered_map<Key,unsigned,Hash> vertices;vertices.reserve(capacity);
     auto vertex=[&](const std::array<unsigned,3>& t,unsigned i,unsigned j)->unsigned{
         const unsigned w[3]={factor-i-j,i,j};std::array<std::pair<unsigned,unsigned>,3> sorted;
@@ -133,7 +146,12 @@ inline bool build(const Mesh& in,const D3DVERTEXELEMENT9* elements,UINT elementC
         // Skinned eye shells and facial UV seams must keep their native shape.
         // Taper through the first triangle ring; an all-boundary triangle has
         // no safe interior to inflate. Normal-map detail remains independent.
-        float relief=1;if(influences&&bones){relief=0;for(unsigned k=0;k<3;++k)if(!boundary[t[k]])relief+=float(w[k])/factor;}
+        float relief=1;if(influences&&bones){relief=0;for(unsigned k=0;k<3;++k)if(!boundary[t[k]])relief+=float(w[k])/factor*skinRelief[t[k]];}
+        // Original skinned vertices are pinned too. Approach every pin
+        // continuously; an isolated zero otherwise makes sharper dimples as
+        // subdivision increases. This mask agrees across shared edges and
+        // reaches one at the triangle center, independently of subdivision.
+        if(influences&&bones){const float a=float(w[0])/factor,b=float(w[1])/factor,c=float(w[2])/factor;relief*=3*(a*b+b*c+c*a);}
         float delta[3];for(unsigned k=0;k<3;++k)delta[k]=pinned?0:relief*(gpuHeight?1.f:h-.5f)*direction[k]/length;std::memcpy(dst+stride,delta,12);
         if(gpuHeight){const float coordinates[]={u,v};std::memcpy(dst+stride+12,coordinates,8);}return n;
     };
