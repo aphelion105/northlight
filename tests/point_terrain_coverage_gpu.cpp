@@ -66,7 +66,10 @@ struct PointTerrainCoverageTest {
   w.pointLiveBatches.push_back({0,1,{30,30,0},{31,31,1}});w.quality.pointShadowFacesPerFrame=6;w.quality.pointShadowRefreshMs=0;
   const NorthlightLocalLights::Light light{{0,0,4},{1,.4f,.1f},1,12,12345,3,NorthlightLocalLights::CastShadow};
   IDirect3DSurface9* readback=nullptr;must(d->CreateOffscreenPlainSurface(256,256,D3DFMT_R32F,D3DPOOL_SYSTEMMEM,&readback,nullptr));std::vector<float> reference;
-  for(unsigned frame=0;frame<4;++frame){w.liveTerrainChunks.clear();if(frame&1)w.liveTerrainChunks.emplace(7,9);
+  for(unsigned frame=0;frame<8;++frame){w.liveTerrainChunks.clear();if(frame&1)w.liveTerrainChunks.emplace(7,9);
+   // Full scan, shared terrain list, stale generation, then rebuilt list.
+   if(frame==2||frame==6)w.rebuildTerrainLists();
+   if(frame==4)++w.meshGeneration;
    must(d->BeginScene());const bool rendered=w.renderPointShadow(light,true,false);must(d->EndScene());assert(rendered&&w.pointSlot().ready);IDirect3DSurface9* face=nullptr;must(w.pointSlot().cube->GetCubeMapSurface(D3DCUBEMAP_FACE_NEGATIVE_Z,0,&face));must(d->GetRenderTargetData(face,readback));face->Release();D3DLOCKED_RECT lock{};must(readback->LockRect(&lock,nullptr,D3DLOCK_READONLY));std::vector<float> image(256*256);for(unsigned y=0;y<256;++y)std::memcpy(image.data()+256*y,static_cast<char*>(lock.pBits)+y*lock.Pitch,256*4);must(readback->UnlockRect());
    std::printf("POINT_TERRAIN_FRAME nativeChunkVisible=%u centerDepth=%.9f draws=%u\n",frame&1,image[128*256+128],w.pointDraws);std::fflush(stdout);
    assert(image[128*256+128]<1.f);if(reference.empty())reference=image;else assert(image==reference);
@@ -178,6 +181,38 @@ struct PointTerrainCoverageTest {
   assert(!render(light,true,false)&&!w.pointSlot().ready&&image()==reference);
   w.active->map=w.uploadedMap;
   std::printf("POINT_UPLOAD_HANDOFF_GPU_PASS staticExact=1 currentCasters=1 skippedCaptureRetained=1 commitExact=1 mapMismatchRejected=1\n");
+  // Compare all six faces across empty/dynamic/static transitions, then against
+  // a forced rebuild. Alternate sources so shared scratch/depth cannot leak.
+  auto cubeImage=[&](){std::vector<float> pixels(6*256*256);
+   for(unsigned face=0;face<6;++face){must(d->GetRenderTargetData(w.pointSlot().faces[face],readback));D3DLOCKED_RECT lock{};must(readback->LockRect(&lock,nullptr,D3DLOCK_READONLY));
+    for(unsigned y=0;y<256;++y)std::memcpy(pixels.data()+face*256*256+256*y,static_cast<char*>(lock.pBits)+y*lock.Pitch,256*4);must(readback->UnlockRect());}
+   return pixels;
+  };
+  for(unsigned step=0;step<12;++step){
+   auto source=light;if(step==6)source.position[0]=.5f;if(step==7)source.attenuationEnd=16;
+   if(step==8)++source.sourceId;
+   w.pointIndex=step==9?1:0;w.quality.pointShadowFacesPerFrame=step==10?2:6;
+   w.batches.clear();const bool actor=step==2||step==4||step==5||step==9||step==10;
+   const bool actorsEnabled=step!=5;
+   if(!actor&&step!=3){w.batches={batch};w.batches[0].terrain=false;}
+   ++w.meshGeneration;w.rebuildTerrainLists();
+   if(actor){replay->pointBounds.valid=step!=4;const float low[]={-1,-1,0},high[]={1,1,0};
+    std::memcpy(replay->pointBounds.low,low,sizeof low);std::memcpy(replay->pointBounds.high,high,sizeof high);w.replays.push_back(std::move(replay));}
+   // Three calls also complete a two-face refresh cycle.
+   for(unsigned refresh=0;refresh<3;++refresh)assert(render(source,true,actorsEnabled));
+   const auto expected=cubeImage();
+   for(unsigned refresh=0;refresh<3;++refresh)assert(render(source,true,actorsEnabled));
+   assert(cubeImage()==expected);
+   w.pointSlot().cacheValid=false;w.pointSlot().schedule.invalidate();
+   assert(render(source,true,actorsEnabled)&&cubeImage()==expected);
+   if(step==3||step==5)assert(std::all_of(expected.begin(),expected.end(),[](float depth){return depth==1.f;}));
+   else assert(expected[5*256*256+128*256+128]<1.f);
+   uint64_t hash=14695981039346656037ull;for(size_t i=0;i<expected.size()*sizeof(float);++i){hash^=reinterpret_cast<const unsigned char*>(expected.data())[i];hash*=1099511628211ull;}
+   std::printf("POINT_FACE_REUSE_CASE step=%u hash=%016llx\n",step,(unsigned long long)hash);
+   if(actor){replay=std::move(w.replays.back());w.replays.clear();}
+  }
+  w.pointIndex=0;w.quality.pointShadowFacesPerFrame=6;w.batches={batch};++w.meshGeneration;w.rebuildTerrainLists();
+  std::puts("POINT_FACE_REUSE_GPU_PASS cases=12 faces=6 forcedRebuildExact=1 sourceIsolation=1 invalidBoundsFailOpen=1");
   // A sphere outside the receiver scissor needs no cube work. Preserve its
   // static resources, then force all dynamic faces current when it returns.
   auto lamp=light;w.batches={batch};w.quality.pointShadowRefreshMs=60000;
@@ -197,7 +232,7 @@ struct PointTerrainCoverageTest {
   w.localScissorView.valid=false;lamp.position[0]=1000;
   assert(render(lamp,true,false)&&w.pointSlot().ready);
   std::printf("POINT_VISIBILITY_TRANSITIONS_PASS offscreenNoUpdate=1 resourcesRetained=1 skippedCaptureDeferred=1 reentryAllFaces=1 invalidViewFailOpen=1\n");
-  readback->Release();std::printf("POINT_TERRAIN_COVERAGE_GPU_PASS cameraMembershipStates=4 cachedBlockerRetained=1 exactCube=1 sameSource=1 timings=0\n");
+  readback->Release();std::printf("POINT_TERRAIN_COVERAGE_GPU_PASS cameraMembershipStates=8 cachedBlockerRetained=1 exactCube=1 sameSource=1 timings=0\n");
  }
  };
 int main(int argc,char** argv){assert(argc==3);SetEnvironmentVariableA("NORTHLIGHT_QUALITY_FILE",argv[2]);auto path=std::wstring(argv[2],argv[2]+std::strlen(argv[2]));assert(GetFullPathNameW(path.c_str(),MAX_PATH,rootPath,nullptr));WNDCLASSW wc{};wc.lpfnWndProc=DefWindowProcW;wc.hInstance=GetModuleHandleW(nullptr);wc.lpszClassName=L"NorthlightPointCoverage";assert(RegisterClassW(&wc));auto hwnd=CreateWindowW(wc.lpszClassName,L"",WS_OVERLAPPED,0,0,64,64,nullptr,nullptr,wc.hInstance,nullptr);assert(hwnd);auto module=LoadLibraryA(argv[1]);assert(module);auto create=reinterpret_cast<IDirect3D9*(WINAPI*)(UINT)>(reinterpret_cast<void*>(GetProcAddress(module,"Direct3DCreate9")));assert(create);auto api=create(D3D_SDK_VERSION);D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=hwnd;pp.BackBufferWidth=pp.BackBufferHeight=64;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;IDirect3DDevice9* d=nullptr;must(api->CreateDevice(0,D3DDEVTYPE_HAL,hwnd,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_MULTITHREADED,&pp,&d));PointTerrainCoverageTest::run(d);d->Release();api->Release();FreeLibrary(module);DestroyWindow(hwnd);}

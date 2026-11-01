@@ -3099,7 +3099,8 @@ public:
         for(auto* texture:{shadowScratch,shadowVerify,actorTilesMid,actorVisibility})inventory.texture(texture,ShadowMaps);
         for(auto* surface:{shadowDepth,shadowCacheDepth})inventory.surface(surface,ShadowMaps);
         for(auto* surface:shadowVerifyRead)inventory.surface(surface,ShadowMaps);
-        for(const auto& slot:pointSlots){inventory.cube(slot.cube,ShadowMaps);inventory.surface(slot.depth,ShadowMaps);for(auto* texture:slot.cacheFace)inventory.texture(texture,ShadowMaps);inventory.texture(slot.scratch,ShadowMaps);}
+        for(const auto& slot:pointSlots){inventory.cube(slot.cube,ShadowMaps);for(auto* texture:slot.cacheFace)inventory.texture(texture,ShadowMaps);}
+        inventory.surface(pointDepth,ShadowMaps);inventory.texture(pointScratch,ShadowMaps);
         for(auto* texture:{light,smoothLight,fog,fogBlurred,color,baselineLight,normalBuffer,fogHistory,localFogAccum})inventory.texture(texture,PostTargets);
         for(auto* texture:temporalLight)inventory.texture(texture,PostTargets);for(auto* texture:temporalDepth)inventory.texture(texture,PostTargets);
         inventory.surface(profileSplitSurface,PostTargets);
