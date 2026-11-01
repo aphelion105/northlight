@@ -11,7 +11,9 @@ static void pixel(Image& image,unsigned x,unsigned y,const float* value) {
 }
 
 int main(int argc,char** argv) {
-    assert(argc==7);
+    assert(argc==7||argc==8);
+    const bool measureChanged=argc==8;
+    assert(!measureChanged||std::strcmp(argv[7],"--measure-changed-output")==0);
     const unsigned fullW=std::strtoul(argv[4],nullptr,10),fullH=std::strtoul(argv[5],nullptr,10);
     const unsigned W=std::max(1u,fullW/2),H=std::max(1u,fullH/2);
     const bool fp16=std::strtoul(argv[6],nullptr,10)==16;
@@ -20,6 +22,7 @@ int main(int argc,char** argv) {
     HMODULE module=LoadLibraryA(argv[3]);assert(module);
     auto create=reinterpret_cast<IDirect3D9*(WINAPI*)(UINT)>(reinterpret_cast<void*>(GetProcAddress(module,"Direct3DCreate9")));assert(create);
     auto api=create(D3D_SDK_VERSION);assert(api);
+    if(measureChanged){D3DADAPTER_IDENTIFIER9 adapter{};ok(api->GetAdapterIdentifier(0,0,&adapter));std::printf("GPU_ADAPTER %s\n",adapter.Description);}
     D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=window;pp.BackBufferWidth=pp.BackBufferHeight=64;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;pp.PresentationInterval=D3DPRESENT_INTERVAL_IMMEDIATE;
     IDirect3DDevice9* d=nullptr;ok(api->CreateDevice(0,D3DDEVTYPE_HAL,window,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_FPU_PRESERVE,&pp,&d));
     IDirect3DPixelShader9* shaders[2]{};
@@ -82,13 +85,13 @@ int main(int argc,char** argv) {
             DWORD qualities=0;if(samples&&FAILED(api->CheckDeviceMultiSampleType(0,D3DDEVTYPE_HAL,D3DFMT_A16B16G16R16F,TRUE,D3DMULTISAMPLE_TYPE(samples),&qualities)))continue;
             IDirect3DSurface9* target=nullptr;ok(d->CreateRenderTarget(W,H,D3DFMT_A16B16G16R16F,D3DMULTISAMPLE_TYPE(samples),0,FALSE,&target,nullptr));ok(d->SetRenderTarget(0,target));ok(d->SetViewport(&vp));
             std::vector<unsigned char> output[2];std::vector<double> timing[2];
-            const unsigned blocks=fullW>256?16:2,draws=fullW>256?16:1;
+            const unsigned blocks=fullW>256?(measureChanged?32:16):2,draws=fullW>256?(measureChanged?64:16):1;
             for(unsigned block=0;block<blocks;++block){
                 const unsigned mode=(block/2)%2?1-block%2:block%2;
-                ok(d->SetPixelShader(shaders[mode]));draw(2);wait(event);
+                ok(d->SetPixelShader(shaders[mode]));draw(measureChanged?(block==0?1024:8):2);wait(event);
                 ok(disjoint->Issue(D3DISSUE_BEGIN));ok(start->Issue(D3DISSUE_END));draw(draws);ok(end->Issue(D3DISSUE_END));ok(frequency->Issue(D3DISSUE_END));ok(disjoint->Issue(D3DISSUE_END));wait(event);
                 UINT64 a=0,b=0,f=0;BOOL bad=FALSE;assert(start->GetData(&a,sizeof a,0)==S_OK&&end->GetData(&b,sizeof b,0)==S_OK&&frequency->GetData(&f,sizeof f,0)==S_OK&&disjoint->GetData(&bad,sizeof bad,0)==S_OK&&!bad&&b>=a&&f);
-                if(block>=4)timing[mode].push_back(double(b-a)/double(f)*1000/draws);
+                if(block>=(measureChanged?8u:4u))timing[mode].push_back(double(b-a)/double(f)*1000/draws);
                 if(block<2){ok(d->StretchRect(target,nullptr,resolveSurface,nullptr,D3DTEXF_NONE));ok(d->GetRenderTargetData(resolveSurface,staging));D3DLOCKED_RECT lock{};ok(staging->LockRect(&lock,nullptr,D3DLOCK_READONLY));output[mode].resize(std::size_t(W)*H*8);for(unsigned y=0;y<H;++y)std::memcpy(output[mode].data()+std::size_t(y)*W*8,static_cast<char*>(lock.pBits)+y*lock.Pitch,W*8);ok(staging->UnlockRect());}
             }
             std::size_t changed=0;for(std::size_t i=0;i<output[0].size();++i)changed+=output[0][i]!=output[1][i];
@@ -96,12 +99,12 @@ int main(int argc,char** argv) {
             for(std::size_t i=0;i<output[1].size()/2;++i){std::uint16_t bits;std::memcpy(&bits,output[1].data()+i*2,2);float value=half(bits);nonfinite+=!std::isfinite(value);if(i%4==3){minAO=std::min(minAO,value);maxAO=std::max(maxAO,value);}}
             assert(!nonfinite&&minAO>=0&&maxAO<=1);
             if(shape==3)assert(minAO==1);
-            
+
             double median[2]{};for(unsigned mode=0;mode<2;++mode)if(!timing[mode].empty()){std::sort(timing[mode].begin(),timing[mode].end());auto n=timing[mode].size();median[mode]=(timing[mode][n/2]+timing[mode][(n-1)/2])*.5;}
-            std::printf("{\"width\":%u,\"height\":%u,\"input_bits\":%u,\"shape\":%u,\"msaa\":%u,\"changed_bytes\":%llu,\"nonfinite\":%llu,\"min_ao\":%.6f,\"max_ao\":%.6f,\"old_ms\":%.6f,\"new_ms\":%.6f}\n",fullW,fullH,fp16?16:32,shape,samples,static_cast<unsigned long long>(changed),static_cast<unsigned long long>(nonfinite),minAO,maxAO,median[0],median[1]);std::fflush(stdout);assert(!changed);++cases;target->Release();
+            std::printf("{\"width\":%u,\"height\":%u,\"input_bits\":%u,\"shape\":%u,\"msaa\":%u,\"changed_bytes\":%llu,\"nonfinite\":%llu,\"min_ao\":%.6f,\"max_ao\":%.6f,\"old_ms\":%.6f,\"new_ms\":%.6f}\n",fullW,fullH,fp16?16:32,shape,samples,static_cast<unsigned long long>(changed),static_cast<unsigned long long>(nonfinite),minAO,maxAO,median[0],median[1]);std::fflush(stdout);assert(measureChanged||!changed);++cases;target->Release();
         }
         for(unsigned slot=0;slot<4;++slot)ok(d->SetTexture(slot,nullptr));dt->Release();at->Release();wt->Release();
     }
-    std::printf("GTAO_FOOTPRINT_PASS cases=%u game_launched=false\n",cases);
+    std::printf("%s cases=%u game_launched=false\n",measureChanged?"AO_KERNEL_TIMING_COMPLETE":"GTAO_FOOTPRINT_PASS",cases);
     d->SetPixelShader(nullptr);for(auto shader:shaders)shader->Release();for(auto query:{event,start,end,frequency,disjoint})query->Release();staging->Release();resolveSurface->Release();resolved->Release();d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);UnregisterClassW(wc.lpszClassName,wc.hInstance);
 }

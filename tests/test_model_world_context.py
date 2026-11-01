@@ -101,10 +101,12 @@ struct Device {
     MaterialProjection* autoBump=nullptr;
     Ext state;Ext* ext=&state;World owned{&state};World* world=&owned;
     static constexpr int kTagMask=3,kWaterTag=4;
-    struct VsClass{int entry=0;bool wmo=false,skinned=true;} vc;
+    struct VsClass{int entry=0;bool world=false,wmo=false,skinned=true;} vc;
     struct Counts{unsigned wmo=0,fullPasses=0;} gateCounts;
     bool gateFrame=false,projectionValid=false,terrain=false,captured=false,drawWaterVS=false,drawUiHashVS=false;
     bool viewportOK=true,depthOK=true,hashBoundaryThisFrame=false,zFuncAware=true;
+    bool skySeen=false,applied=false,hdrAtUiBoundary=false;
+    bool orthographicUiGeometry(){return false;}bool hdrUiInputs(){return false;}
     unsigned terrainDraws=0,projectionRejects=0,earlyResolveUndone=0,earlyResolveUndoneTotal=0,uiDraws=0,uiAfterTerrain=0,frame=0,drawCalls=0,binds=0,allocations=0;
     float nearZ=0,farZ=0,scaleX=0,scaleY=0,fogForward=1,worldMinDepth=0,worldMaxDepth=.94f;
     struct Early{bool earlyCaptured=false;void undo(){}}earlyDepth;

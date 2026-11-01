@@ -21,6 +21,7 @@ test_ao_fog_capture.py
 test_ao_fold.py
 test_ao_live_switch.py
 test_ao_methods.py
+test_ao_pipeline_gpu.py
 test_ao_quality.py
 test_ao_rotation_stripes.py
 test_ao_submit_profile.py

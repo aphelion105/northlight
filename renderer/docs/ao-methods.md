@@ -109,8 +109,79 @@ per quality, exact SDR/HDR AO equality and preservation of fallback RGB. GTAO an
 ASSAO each have 48 grazing-plane/convex/concave cases per quality. ASSAO additionally
 has 1,152 comparisons per quality covering odd/even dimensions, FP16/FP32,
 0/2/4/8x MSAA, two depth partitions including nonzero MinZ, and radii 0.1/2/10yd.
-The test checks compiled loop budgets and the original High payload hashes.
+The test checks compiled loop budgets and the approved High payload hashes.
 Settings and shader/resource lifetime tests cover all five methods and live switches.
+
+## Visual regression lab
+
+![AO before and after: five methods and three qualities](images/ao-rotation-20261101.png)
+
+Synthetic corner, WorldComposite visibility, 160-pixel centre crops from
+640x360 input. Each pair is before/after, without contrast stretching.
+
+Run the independent Windows GPU lab with NumPy and Pillow installed:
+
+```sh
+python tests/test_ao_pipeline_gpu.py --output out/ao-lab
+```
+
+Open `out/ao-lab/index.html`. Each sheet compares SSAO, HDAO, HBAO+, GTAO and
+ASSAO at one quality. Its four rows are the production raw kernel, FP16 AOBlur,
+legacy Composite and WorldComposite. White means fully visible; images have no
+contrast stretch. The world pass uses neutral lighting/fog to isolate AO.
+
+The default matrix contains 24 authored D24 scenes (640x360 and 641x361), three
+qualities and five methods: 1,440 stage images. It covers flat/tilted surfaces,
+vertical/horizontal/diagonal corners, a small camera dolly, grazing contact,
+smooth/grooved cylinders, a separated silhouette, sky and water. The test checks
+finite visibility, open surfaces, retained contact and residual pattern energy
+on both corner orientations. Pattern budgets are expressed in 8-bit visibility
+levels and allow more noise at Low. `report.json` records metrics and loaded
+bytecode/backend hashes. This is synthetic visual validation, not gameplay or FPS.
+
+Use `--backend PATH` for another standalone D3D9 backend, `--size 1920x1080`
+for a native-resolution inspection, and `--compare out/ao-lab-before` for
+before/after contact sheets. `--compiled DIRECTORY` replays saved bytecode;
+`--observe` records expected failures when investigating an old build.
+
+The November 1 rotation fix replaces two correlated sawtooth values normalized
+into a direction with a uniformly distributed angle. The old function produced
+diagonal bands that survived the bilateral filter, most visibly in ASSAO.
+Symmetric kernels use an angular sweep appropriate to their sample budget;
+the same function also serves the HBAO+/GTAO actor variants. Sample counts,
+strength, radius, targets and the filter are unchanged. The SSAO bytecode is
+unchanged. HDAO's paired-valley kernel still responds weakly to fine grooves,
+and the sparse Low kernels retain more noise than High. These are method/sample
+budget limits, not claims of parity with the full upstream pipelines.
+
+The saved November 1 comparison reduces corner-pattern RMS after AOBlur by
+4.53x/4.27x/3.66x for ASSAO High/Medium/Low, and about 6.8x for both HBAO+ Low
+and GTAO Low. Mean visibility stays within 0.0005 in that scene. The visual
+matrix and the existing quality/grazing/grid tests pass on packaged DXVK 2.7.1
+and 3.1.1. Actor AO passes the independent ray-reference checks on both.
+
+To time a saved before/after pair without requiring pixel equality:
+
+```sh
+python tests/benchmark_ao_rotation_gpu.py --before out/ao-lab-baseline/compiled --backend /path/to/d3d9.dll --output out/ao-timing
+```
+
+This reuses the footprint stand's ABBA queries. Its default exact-pixel oracle
+remains enabled; only the explicit `--measure-changed-output` mode permits the
+intentional sampling differences. The benchmark warms 1,024 draws, then retains
+12 batches of 64 draws per variant. On RTX 4090, with 1920x1080 inputs and FP16
+960x540 AO targets, median paired changes over nine scenes were:
+
+| Low kernel | DXVK 2.7.1 delta, ms | DXVK 3.1.1 delta, ms |
+| --- | ---: | ---: |
+| HBAO+ Only | -0.008624 | -0.005208 |
+| HBAO+ ContactBloom | -0.009552 | -0.005728 |
+| GTAO Only | -0.002192 | -0.000624 |
+| GTAO ContactBloom | -0.000800 | -0.001872 |
+
+These are elapsed raw-kernel query intervals, including possible submission
+gaps. They show no median kernel regression on this device, not a guarantee
+about whole-game FPS, other GPUs, or the complete AO/filter/composite cost.
 
 For measured costs and limitations, see the AO section of
 [the 2026-11-01 pipeline audit](pipeline-performance-audit-20261101.md).
