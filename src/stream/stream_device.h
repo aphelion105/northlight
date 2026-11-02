@@ -469,16 +469,20 @@ public:
     // logged with the pressure state, and each start counts in syncStorms. It changes nothing: removing the storms is done by design (no shadow is dropped under pressure).
     static constexpr std::uint64_t kStormWindowNs=2000000000ull;static constexpr unsigned kStormSyncPerFrame=100;
     void stormWatch(Queue& q,bool pressureAsked,std::uint64_t now){
+        if(stormStartNs_&&now-stormStartNs_<kStormWindowNs)return;
         const std::uint64_t sync=get(q.stats.syncCalls)+get(q.stats.expressReadbacks),waits=get(q.stats.renameWaits)+get(q.stats.writeWaits)+get(q.stats.zcOverlapWaits)+get(q.stats.backpressureWaits);
-        if(!stormStartNs_){stormStartNs_=now;stormSyncAt_=sync;stormWaitAt_=waits;stormFrameAt_=core.frameNo;return;}
-        if(now-stormStartNs_<kStormWindowNs)return;
+        const std::uint64_t kinds[]={get(q.stats.census[(std::size_t)Cmd::SyncLock]),get(q.stats.census[(std::size_t)Cmd::SyncUnlock]),get(q.stats.census[(std::size_t)Cmd::SyncGetData]),get(q.stats.expressReadbacks),get(q.stats.dynShadowReadbacks)+get(q.stats.stShadowReadbacks),get(q.stats.texShadowReadbacks)};
+        if(!stormStartNs_){stormStartNs_=now;stormSyncAt_=sync;stormWaitAt_=waits;stormFrameAt_=core.frameNo;std::copy(kinds,kinds+6,stormKindsAt_);return;}
         const std::uint64_t frames=core.frameNo-stormFrameAt_;const double perFrame=frames?double(sync-stormSyncAt_)/double(frames):0.0;
         const double waitsPerFrame=frames?double(waits-stormWaitAt_)/double(frames):0.0;
+        const double scale=frames?1.0/double(frames):0.0;
+        std::uint64_t delta[6];for(unsigned i=0;i<6;++i){delta[i]=kinds[i]-stormKindsAt_[i];stormKindsAt_[i]=kinds[i];}
+        const std::uint64_t classified=delta[0]+delta[1]+delta[2]+delta[3],total=sync-stormSyncAt_,other=total>classified?total-classified:0;
         stormStartNs_=now;stormSyncAt_=sync;stormWaitAt_=waits;stormFrameAt_=core.frameNo;
         const bool storm=perFrame>=double(kStormSyncPerFrame);
         if(storm==stormSeen_)return;
         stormSeen_=storm;if(storm)add(q.stats.syncStorms);
-        if(replayer.log){char b[200];std::snprintf(b,sizeof b,"CSTREAM sync-storm %s: %.0f syncs/frame (+%.0f slice/backpressure waits/frame) over %llu frames pressure=%d storms=%llu",storm?"begins":"ends",perFrame,waitsPerFrame,(unsigned long long)frames,int(pressureAsked),(unsigned long long)get(q.stats.syncStorms));replayer.log(b);}
+        if(replayer.log){char b[640];std::snprintf(b,sizeof b,"CSTREAM sync-storm %s: %.0f syncs/frame (+%.0f slice/backpressure waits/frame) over %llu frames pressure=%d storms=%llu syncKinds/frame[lock=%.3f unlock=%.3f query=%.3f other=%.3f textureExpress=%.3f] readbacks/frame[buffer=%.3f texture=%.3f]",storm?"begins":"ends",perFrame,waitsPerFrame,(unsigned long long)frames,int(pressureAsked),(unsigned long long)get(q.stats.syncStorms),delta[0]*scale,delta[1]*scale,delta[2]*scale,other*scale,delta[3]*scale,delta[4]*scale,delta[5]*scale);replayer.log(b);}
     }
     // The real result of a recorded Present (its command sequence number and ordinal), recorded by the replay thread.
     struct PresentMark {std::uint64_t seq=0,ordinal=0;};
@@ -674,7 +678,7 @@ private:
     std::unique_ptr<StreamCore> coreOwner;StreamCore& core;Replayer replayer;StreamState st;std::function<void()> restoreOwner;
     IDirect3D9* parent;D3DCAPS9 caps{};D3DDEVICE_CREATION_PARAMETERS creation{};D3DPRESENT_PARAMETERS pp{};
     StreamSwapChain* sc0=nullptr;std::atomic<LONG> refs{1};
-    bool recording=false,pressureApplied=false,filter=true;std::uint64_t stormStartNs_=0,stormSyncAt_=0,stormWaitAt_=0,stormFrameAt_=0;bool stormSeen_=false;BOOL cursorVisible=0;void* hCursor=nullptr;std::mutex cursorMutex;CursorApi cursor=CursorApi::native();unsigned getsSincePublish=0;std::uint64_t frameEnd=0,waitsAtFrameEnd=0;std::uint64_t drawOrdinal=0;
+    bool recording=false,pressureApplied=false,filter=true;std::uint64_t stormStartNs_=0,stormSyncAt_=0,stormWaitAt_=0,stormFrameAt_=0,stormKindsAt_[6]{};bool stormSeen_=false;BOOL cursorVisible=0;void* hCursor=nullptr;std::mutex cursorMutex;CursorApi cursor=CursorApi::native();unsigned getsSincePublish=0;std::uint64_t frameEnd=0,waitsAtFrameEnd=0;std::uint64_t drawOrdinal=0;
     unsigned framesAhead_=1;PresentMark presentHist[kMaxFramesAhead];   // 0.3.200 (pipeline): see presentCommon
     std::thread::id gameThread=std::this_thread::get_id();
     PoolTuner tuner;TriggerPolicy policy;bool (*capture)(GameSnapshot&,Trigger,std::uint64_t)=nullptr;

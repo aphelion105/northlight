@@ -35,6 +35,36 @@ int main(){
      for(std::uint32_t t=1000;t<20000;t+=1000){auto d=g.update(1000*MiB,90*MiB,t);assert(!d.trim&&!d.entered&&g.pressure());}
      assert(g.update(1000*MiB,90*MiB,20000).trim&&g.trims()==2);
      assert(!g.update(1000*MiB,90*MiB,39999).trim);assert(g.update(1000*MiB,90*MiB,40000).trim&&g.trims()==3&&g.entries()==1);}
+    // QA: 942 MiB free but the same 79 MiB largest region after a completed trim.
+    // Rebuilding the caches must not cause another synchronous clear every 20 seconds.
+    {Guard g;assert(g.update(942*MiB,79*MiB,0).trim);g.trimCompleted(50);
+     auto d=g.update(970*MiB,79*MiB,1000);assert(d.afterTrim&&!d.trim&&g.capsHalved());
+     for(std::uint32_t t=2000;t<=120000;t+=1000)assert(!g.update((t%3?643:942)*MiB,79*MiB,t).trim);
+     assert(g.trims()==1&&g.pressure());
+     assert(g.update(643*MiB,77*MiB,121000).trim); // a smaller largest region needs a new attempt
+     g.trimCompleted(121050);assert(g.update(680*MiB,77*MiB,122000).afterTrim);
+     assert(!g.update(640*MiB,77*MiB,141000).trim);
+     assert(g.update(399*MiB,77*MiB,142000).trim); // aggregate exhaustion still trims on the usual cooldown
+     g.trimCompleted(142050);g.update(450*MiB,77*MiB,143000);
+     assert(g.update(450*MiB,77*MiB,162000,768*MiB).trim); // builder demand is preserved
+    }
+    {Guard g;g.update(942*MiB,79*MiB,0);g.trimCompleted(50);
+     g.update(970*MiB,100*MiB,1000); // a trim that improves the largest block may repeat
+     assert(g.update(942*MiB,100*MiB,20000).trim);
+     g.trimCompleted(20050);g.update(970*MiB,100*MiB,21000);
+     assert(!g.update(942*MiB,100*MiB,40000).trim);
+     g.update(1000*MiB,300*MiB,41000);assert(g.update(1000*MiB,300*MiB,51000).recovered);
+     assert(g.update(942*MiB,100*MiB,52000).trim); // feedback never blocks a new episode
+    }
+    {Guard g;const std::uint32_t t=0xFFFFF000u;
+     g.update(942*MiB,79*MiB,t);g.trimCompleted(t+50);g.update(970*MiB,79*MiB,t+1000);
+     assert(!g.update(942*MiB,79*MiB,t+20000).trim);
+     assert(g.update(399*MiB,79*MiB,t+21000).trim);}
+    {Guard g;g.update(942*MiB,79*MiB,0);g.trimCompleted(50);g.update(970*MiB,79*MiB,1000);
+     g.update(1000*MiB,300*MiB,2000);assert(g.update(1000*MiB,300*MiB,12000).recovered);
+     auto d=g.update(942*MiB,79*MiB,13000);assert(d.entered&&!d.trim);
+     assert(g.update(942*MiB,79*MiB,20000).trim); // new episode remains eligible after the old cooldown
+    }
     // Hysteresis: between thresholds keeps pressure; recovery needs 10 s of consecutive healthy samples.
     {Guard g;g.update(1000*MiB,100*MiB,0);
      for(std::uint32_t t=1000;t<60000;t+=1000)assert(!g.update(1000*MiB,200*MiB,t).recovered&&g.pressure()); // 160..256: stay

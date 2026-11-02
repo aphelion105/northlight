@@ -414,10 +414,21 @@ static void syncStormDetector(){
     gTrace.clear();gStormLines.clear();StreamDevice::Options opt;opt.log=[](const char* l){gStormLines.push_back(l);};
     Rig rig(true,opt);auto* d=rig.dev;auto& q=rig.core().q;auto& s=q.stats;
     rig.sync();rig.core().memoryPressure.store(true);frames(d,1);rig.sync();CHECK(q.pressure());
-    auto storm=[&](unsigned per){for(int i=0;i<30;++i){add(s.syncCalls,per);frames(d,1);}std::this_thread::sleep_for(std::chrono::milliseconds(80));};
+    auto storm=[&](unsigned per){for(int i=0;i<30;++i){
+        add(s.syncCalls,per);add(s.census[(std::size_t)Cmd::SyncLock],per*4/10);add(s.census[(std::size_t)Cmd::SyncUnlock],per*3/10);add(s.census[(std::size_t)Cmd::SyncGetData],per/10);
+        add(s.expressReadbacks,per/20);add(s.dynShadowReadbacks,per/10);add(s.texShadowReadbacks,per/20);
+        add(s.renameWaits,per*10);frames(d,1);
+    }std::this_thread::sleep_for(std::chrono::milliseconds(80));};
     auto count=[&](const char* what){unsigned n=0;for(auto& l:gStormLines)if(l.find(what)!=std::string::npos)++n;return n;};
     for(int w=0;w<30&&!count("sync-storm begins");++w)storm(StreamDevice::kStormSyncPerFrame+100);   // ~2.4 s per 30 rounds
     CHECK(count("sync-storm begins")==1&&get(s.syncStorms)==1&&q.pressure()&&q.shadowCap()==ShadowBudgetBytes);
+    for(const auto& line:gStormLines)if(line.find("sync-storm begins")!=std::string::npos){
+        double lock=0,unlock=0,query=0,other=0,express=0,buffer=0,texture=0;
+        const auto at=line.find("syncKinds/frame[");CHECK(at!=std::string::npos);
+        CHECK(std::sscanf(line.c_str()+at,"syncKinds/frame[lock=%lf unlock=%lf query=%lf other=%lf textureExpress=%lf] readbacks/frame[buffer=%lf texture=%lf]",&lock,&unlock,&query,&other,&express,&buffer,&texture)==7);
+        CHECK(lock>70&&unlock>50&&query>15&&other>30&&express>8&&buffer>15&&texture>8);
+        CHECK(lock+unlock+query+other+express>190&&lock+unlock+query+other+express<220);
+    }
     for(int w=0;w<30&&!count("sync-storm ends");++w)storm(1);
     CHECK(count("sync-storm ends")==1&&count("begins")==1&&q.pressure()&&get(s.syncStorms)==1);
     rig.core().memoryPressure.store(false);frames(d,1);rig.finish();checkClean();
