@@ -208,6 +208,17 @@ struct PointTerrainCoverageTest {
   }
   w.pointIndex=0;w.quality.pointShadowFacesPerFrame=6;w.batches={batch};++w.meshGeneration;w.rebuildTerrainLists();
   std::puts("POINT_FACE_REUSE_GPU_PASS cases=12 faces=6 forcedRebuildExact=1 sourceIsolation=1 invalidBoundsFailOpen=1");
+  // Reusing every face must leave the caller's bindings alone, even when the
+  // completed cube is still sampled. A real rebuild must establish draw state.
+  w.pointIndex=0;w.quality.pointShadowFacesPerFrame=6;w.batches={batch};w.batches[0].terrain=false;++w.meshGeneration;w.rebuildTerrainLists();
+  assert(render(light,true,false));const auto unchanged=cubeImage();
+  must(d->SetTexture(0,w.pointSlot().cube));must(d->SetRenderState(D3DRS_COLORWRITEENABLE,7));
+  assert(render(light,true,false)&&w.pointFacesReused==6&&w.pointDraws==0);
+  IDirect3DBaseTexture9* sampled=nullptr;must(d->GetTexture(0,&sampled));assert(sampled==w.pointSlot().cube);sampled->Release();
+  DWORD mask=0;must(d->GetRenderState(D3DRS_COLORWRITEENABLE,&mask));assert(mask==7&&cubeImage()==unchanged);
+  w.pointSlot().cacheValid=false;assert(render(light,true,false)&&cubeImage()==unchanged);
+  must(d->GetTexture(0,&sampled));assert(!sampled);must(d->GetRenderState(D3DRS_COLORWRITEENABLE,&mask));assert(mask==15);
+  std::puts("POINT_REUSE_STATE_PASS cachedBindingsUntouched=1 rebuildUnbindsCube=1 exactFaces=6");
   // A sphere outside the receiver scissor needs no cube work. Preserve its
   // static resources, then force all dynamic faces current when it returns.
   auto lamp=light;w.batches={batch};w.quality.pointShadowRefreshMs=60000;

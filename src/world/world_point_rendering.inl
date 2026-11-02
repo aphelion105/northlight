@@ -403,17 +403,28 @@
                 pointAppendCandidates(pointReplayCandidates,i,mask,faces);
             }
         }catch(...){return pointCheck(E_OUTOFMEMORY,"cube candidate allocation");}
-        // No sampler may still hold the cube while one face is its render target.
-        for(unsigned i=0;i<13;++i)if(!pointCheck(d->SetTexture(i,nullptr),"unbind cube samplers"))return false;
-        for(unsigned i=1;i<4;++i)if(!pointCheck(d->SetRenderTarget(i,nullptr),"unbind cube MRT"))return false;
-        for(unsigned i=0;i<4;++i)if(!pointCheck(d->SetStreamSourceFreq(i,1),"cube stream frequency"))return false;
-        if(!pointCheck(d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE),"cube blend")||
-           !pointCheck(d->SetRenderState(D3DRS_COLORWRITEENABLE,15),"cube color mask"))return false;
+        bool bound=false;
         for(unsigned face=0;face<6;++face){
             if(!(faces&(1u<<face)))continue; /* a later frame of this face cycle */
             const unsigned bit=1u<<face;
             const bool staticOnly=pointTerrainCandidates[face].empty()&&
                 (!liveTerrainIndexCount||pointLiveCandidates[face].empty())&&pointReplayCandidates[face].empty();
+            if(!(rebuildMask&bit)){
+                if(pointSlot().faceKnown[face]&&pointSlot().faceSerial[face]!=meshGeneration){pointSlot().faceSerial[face]=meshGeneration;++pointFacesKept;}
+                if(staticOnly&&(pointSlot().staticOnlyFaces&bit)){
+                    pointSlot().faceWeights[face]=0;++pointFacesReused;continue;
+                }
+            }
+            // A wholly reused cube needs no device state changes. Unbind its
+            // samplers only when a face will actually become a render target.
+            if(!bound){
+                for(unsigned i=0;i<13;++i)if(!pointCheck(d->SetTexture(i,nullptr),"unbind cube samplers"))return false;
+                for(unsigned i=1;i<4;++i)if(!pointCheck(d->SetRenderTarget(i,nullptr),"unbind cube MRT"))return false;
+                for(unsigned i=0;i<4;++i)if(!pointCheck(d->SetStreamSourceFreq(i,1),"cube stream frequency"))return false;
+                if(!pointCheck(d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE),"cube blend")||
+                   !pointCheck(d->SetRenderState(D3DRS_COLORWRITEENABLE,15),"cube color mask"))return false;
+                bound=true;
+            }
             const float* matrix=faceMatrices[face];
             D3DVIEWPORT9 viewport={0,0,PointResolution,PointResolution,0,1};
             const float sphere[4]={pointSlot().selected.attenuationEnd*pointSlot().selected.attenuationEnd,1.f/PointResolution,0,0}; /* LocalShadowPS: casters within range only */
@@ -438,11 +449,7 @@
             }
             const auto* digests=pointFaceDigests(pointSlot().selected);
             pointSlot().faceContent[face]=digests?digests[face]:NorthlightLocalShadowSignature::Digest{};pointSlot().faceKnown[face]=digests!=nullptr;pointSlot().faceSerial[face]=meshGeneration;}
-            else if(pointSlot().faceKnown[face]&&pointSlot().faceSerial[face]!=meshGeneration){pointSlot().faceSerial[face]=meshGeneration;++pointFacesKept;} /* same content: the old rule redrew it */
             if(rebuildMask&(1u<<face))++pointFacesRebuilt;
-            if(staticOnly&&!(rebuildMask&bit)&&(pointSlot().staticOnlyFaces&bit)){
-                pointSlot().faceWeights[face]=0;++pointFacesReused;continue;
-            }
             pointSlot().staticOnlyFaces&=~bit;
             const unsigned faceDraws=pointDraws;
             // Dynamic casters of this frame into the scratch face, plus cached-mesh

@@ -1,0 +1,23 @@
+Independent local-shadow PR follow-up вЂ” 2026-11-02
+
+Defer cube sampler/MRT/stream/blend setup until a face actually needs rendering.
+A wholly reused static cube performs no unnecessary state changes. Keep face
+serial/generation updates, source identity, failure behavior and weights intact.
+This is the local-shadow part of combined commit f7933d49; no material, HDR,
+command-stream or PCSS changes were imported.
+
+Fresh independent checks: 3 PASS, no failures/skips.
+- test_point_terrain_coverage_gpu.py: native D3D9 and DXVK 3.1.1, production
+  cube rendering, forced rebuild equivalence, recovery and reused-state checks.
+- test_point_shadow_selection.py.
+- test_log_format_literals.py.
+Evidence: .local/out/test-output/20261102-134041/results.tsv.
+
+The complete cache-backed Telredor orbit and memory/upload measurements belong
+to combined PR #98; their source/DLL/face identities and limits are recorded in
+renderer/docs/qa-telredor-point-reuse-20261102.txt and
+renderer/docs/qa-telredor-memory-unlock-20261102.txt there. No independent-branch
+FPS improvement, game session or installation is claimed.
+
+The independent Windows x86 release DLL also builds successfully.
+Build log: .local/out/telredor-publication-20261102/pr92-build.log.
