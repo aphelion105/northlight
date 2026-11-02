@@ -1,63 +1,63 @@
-Northlight 0.3.216-test.20261102.6: пользовательский прогон .5
+Northlight 0.3.216-test.20261102.6: analysis of the user's .5 run
 
-Источник: D:/Games/335_engb_mod/northlight-renderer.log, копия в этой папке.
+Source: D:/Games/335_engb_mod/northlight-renderer.log; a copy is retained locally.
 SHA256: 3532747adf965a0c06af73409a2195c4464a329ba448cac433b8fb4fd969e092
 BUILD identity source=26a6b1b81c3acd466497012186cd18a344bdc4f9aa4b0401decb6b9d66468e06 built=2026-11-02 17:11:14 UTC
-Захват: D:\Games\335_engb_mod\northlight-diagnostics\session-8788-33931234-0, renderer frame 4055.
-Список файлов захвата и их SHA256: analysis.json. scene.png — уменьшенный обзор.
+Capture: D:/Games/335_engb_mod/northlight-diagnostics/session-8788-33931234-0, renderer frame 4055.
+Capture file names and SHA256 hashes are in analysis.json; scene.png is a reduced preview.
 
-Наблюдения
-Прогретое окно 3782–4054: 240 измеренных кадров, 14.2665 мс / 70.09 FPS.
-Соседние окна с выключенными эффектами: 144 кадра, 8.425 мс / 118.69 FPS;
-138 кадров, 8.4027 мс / 119.01 FPS. Лимит клиента — 120 FPS.
-Это соседние окна одного сеанса, а не контролируемый A/B одинаковой сцены.
-Окно диагностического захвата и кадры без фокуса исключены.
-HDR compatibilityLayers=0: исправление .5 работает в этом прогоне.
-Эффекты занимают около 3.2 мс GPU; интервалы GameScene около 7.6–8.5 мс
-могут включать паузы подачи команд. CPU и GPU времена не складываются.
-В кадре 4191: 506 вызовов poseEnvelope / 0.3292 мс; 305 готовых границ,
-197 отказов по времени, 8191 вершина fallback; 286 дополнительных draw.
-Отказ в доказательстве границ сохраняет отрисовку. Эти 197 отказов не означают,
-что все соответствующие объекты далеки и обязательно исчезнут из capture в .6.
+Observations
+Warm window 3782-4054: 240 measured frames, 14.2665 ms / 70.09 FPS.
+Adjacent effects-off windows: 144 frames, 8.425 ms / 118.69 FPS;
+138 frames, 8.4027 ms / 119.01 FPS. The client cap is 120 FPS.
+These adjacent windows from one session are not a controlled same-scene A/B.
+The diagnostic capture window and unfocused frames are excluded.
+HDR compatibilityLayers=0 confirms that the .5 fix works in this run.
+Effects take about 3.2 ms GPU. GameScene intervals of about 7.6-8.5 ms may
+include submission gaps. CPU and GPU timings cannot be added.
+Frame 4191: 506 poseEnvelope calls / 0.3292 ms; 305 ready bounds, 197 time
+deferrals, 8,191 fallback vertices and 286 additional draws.
+A failed bounds proof preserves rendering. The 197 deferrals do not establish
+that all those objects are distant or will be excluded from capture in .6.
 
-Изменение .6
-Готовые небольшие envelopes теперь используют существующий fastReady и в
-материальном проходе Stage::All. Каждый такой вызов имеет отдельный Timer:
-чужая работа игры между draw calls не попадает в бюджет этого кэша.
-Сохранены проверки владельца, точного ключа программы, текущих констант,
-камеры, числа операций и времени. Новая ветка ограничена 8 группами / 128
-операциями; холодные и тяжёлые случаи сохраняют обычный вычислитель.
-Бюджеты, качество, дальность эффектов и число кадров в очереди не изменены.
-TargetFps не добавлен. gxFixLag восстановлен по указанию пользователя;
-Config.wtf после восстановления побайтово совпал с исходным.
+The .6 change
+Small ready envelopes also use the existing fastReady path in the material
+Stage::All pass. Each call has its own Timer, excluding unrelated game work
+between draws from this cache's budget.
+Owner, exact program key, current constants, camera, operation-count and time
+checks remain. The new path is limited to 8 groups / 128 operations; cold and
+heavy cases retain the existing evaluator.
+Budgets, quality, effect distances and queued-frame count are unchanged.
+No TargetFps was added. gxFixLag was restored as requested; Config.wtf matched
+the original bytes after restoration.
 
-Проверки
-Регрессия на четырёх реальных однокостных программах и четырёхкостном shader:
-5510 точных совпадений границ при -O2 и 5510 при -O0; проверки DEF, NaN,
-поднормальных чисел, неаффинной матрицы, отказа по операциям и времени.
-Отдельно проверено, что пауза 2 мс между draw calls не расходует бюджет.
-A/B с сохранённым исходником .5, 512 различных meshes, 9 чередований:
-единичная матрица 0.227559 -> 0.186172 мс
-(18.2% меньше); другая матрица
-0.226294 -> 0.186156 мс
-(17.7% меньше). 5120 и 5120 дополнительных точных
-сравнений на двух матрицах. Это CPU-стенд, не FPS игры.
-255 PASS, 0 FAIL, 0 TIMEOUT, 225 SKIP.
-Пропущенные тесты не считаются проверенными; причины находятся в results.tsv.
-Штатная сборка и compiler preflight прошли. Три прежних предупреждения сборки
-не связаны с изменением envelopes. Актуальность исходников/шейдеров, ZIP CRC,
-точная DLL в архиве и шесть изолированных входов установщика проверены.
+Validation
+Regression coverage uses four real single-bone programs and a four-bone shader:
+5,510 exact bounds comparisons at -O2 and another 5,510 at -O0. Cases cover DEF,
+NaN, subnormal values, non-affine matrices, operation refusal and time refusal.
+A separate check confirms that a 2 ms gap between draws does not spend budget.
+A/B against preserved .5 sources, 512 different meshes, 9 alternating runs:
+identity matrix 0.227559 -> 0.186172 ms (18.2% lower);
+other matrix 0.226294 -> 0.186156 ms (17.7% lower).
+Both matrices have 5,120 additional exact comparisons. This is a CPU benchmark,
+not measured game FPS.
+255 PASS, 0 FAIL, 0 TIMEOUT, 225 SKIP. Skipped tests are not counted as verified;
+their reasons are retained in results.tsv.
+The production build and compiler preflight pass. Three existing compiler
+warnings are unrelated to the envelope change. Source/shader freshness, ZIP CRC,
+exact packaged DLL and six isolated installer entry points are verified.
 
-Отклонённые эксперименты
-Разворачивание внутреннего AOBlur: 684 статических слота при лимите 512.
-Пропуск нулевых умножений и отдельный путь единичной матрицы давали регрессии
-в части измерений; в поставляемой версии их нет. Шейдеры .5 сохранены.
+Rejected experiments
+Unrolling the inner AOBlur loop required 684 static slots against a 512 limit.
+Skipping zero multiplications and specializing identity matrices regressed
+some measurements and are excluded. The .5 shaders are preserved.
 
-Архив: D:\dev\Projects\Northlight\releases\Northlight-0.3.216-test.20261102.6-Windows.zip
-SHA256 ZIP: 1906a7463d05ff7286028f8898c74577dda6830667c3b6db2fb25554c29f56ab
-SHA256 DLL: 6cdb7ab702f300709429e0fe450ad84bbb6b5dc8a1a743b5ecd7cb4746ac6589
+Archive: D:/dev/Projects/Northlight/releases/Northlight-0.3.216-test.20261102.6-Windows.zip
+ZIP SHA256: 1906a7463d05ff7286028f8898c74577dda6830667c3b6db2fb25554c29f56ab
+DLL SHA256: 6cdb7ab702f300709429e0fe450ad84bbb6b5dc8a1a743b5ecd7cb4746ac6589
 Source identity: 8af7f27faecc039c851cae1fe711836b0bb2fa5eb1bb543ecd17f0e48c000d95
 
-Игра и новый общий FPS здесь не проверены. Стабильные 120 FPS не подтверждены;
-измеренный выигрыш этого изменения небольшой и не закрывает весь разрыв.
-Архив не установлен в игровой каталог. Полный отчёт: D:\dev\Projects\Northlight\.local\out\performance-20261102c.
+No new game run or whole-game FPS measurement was performed. Stable 120 FPS
+is unverified; this change's measured gain is small and does not close the gap.
+The archive was not installed in the game directory.
+Full local evidence: D:/dev/Projects/Northlight/.local/out/performance-20261102c.
