@@ -103,6 +103,8 @@ int main(int argc,char** argv){
     };
     unsigned capture=0,positive=0,failures=0;
     for(D3DFORMAT format:{D3DFORMAT(MAKEFOURCC('D','F','2','4')),D3DFORMAT(MAKEFOURCC('I','N','T','Z'))}){
+        const HRESULT support=api.p->CheckDeviceFormat(adapter,D3DDEVTYPE_HAL,D3DFMT_X8R8G8B8,D3DUSAGE_DEPTHSTENCIL,D3DRTYPE_TEXTURE,format);
+        if(FAILED(support)){logf("LIGHT_CAPTURE_UNSUPPORTED format=%08lx HRESULT=%08lx",(unsigned long)format,(unsigned long)support);continue;}
         Ref<IDirect3DTexture9> depth;Ref<IDirect3DSurface9> depthSurface;ok(d->CreateTexture(W,H,1,D3DUSAGE_DEPTHSTENCIL,format,D3DPOOL_DEFAULT,&depth.p,nullptr));ok(depth.p->GetSurfaceLevel(0,&depthSurface.p));
         for(unsigned s=0;s<16;++s)ok(d->SetTexture(s,nullptr));ok(d->SetDepthStencilSurface(nullptr));for(unsigned i=1;i<4;++i)ok(d->SetRenderTarget(i,nullptr));ok(d->SetRenderTarget(0,rt[0].p));ok(d->SetDepthStencilSurface(depthSurface.p));
         // Alternating single-pixel 0/1 depths are exactly representable in both
@@ -115,7 +117,7 @@ int main(int argc,char** argv){
         auto journal=read(file(folder,id,"lighting-inputs.jsonl"));const std::string text(journal.begin(),journal.end());assert(text.find("\"export_complete\":true")!=std::string::npos&&text.find("\"depth_reconstructed\":false")!=std::string::npos);
         auto neutralImage=read(file(folder,id,"lighting-input-g2-s0.fgr"));assert(neutralImage.size()==24);DWORD neutralPixel;std::memcpy(&neutralPixel,neutralImage.data()+20,4);assert(neutralPixel==0xff335577);
         ++positive;logf("LIGHT_CAPTURE_DEPTH format=%u dimensions=%ux%u exactPixels=%u stateRestored=1",unsigned(format),W,H,W*H);
-        if(format==D3DFORMAT(MAKEFOURCC('D','F','2','4'))){
+        if(positive==1){
             for(const char* fault:{"CreateRenderTarget","CreatePixelShader","CreateStateBlock","GetRenderTarget","GetViewport","GetVertexShaderConstantF","GetPixelShaderConstantF","SetDepthStencilSurface","SetRenderTarget","SetVertexShader","SetFVF","SetStreamSourceFreq","SetTextureStageState","SetPixelShader","SetTexture","SetSamplerState","SetRenderState","SetViewport","DrawPrimitiveUP","CreateOffscreenPlainSurface","GetRenderTargetData"}){
                 setup(depth.p);State initial(d);const unsigned failed=++capture;meter.arm(fault);ok(d->BeginScene());{NorthlightLightingCapture::Capture output(d,folder,failed,18,32,W,H);output.inputs(0,1u<<1);output.finish(true);}ok(d->EndScene());assert(meter.triggered);initial.same(d);
                 auto incomplete=read(file(folder,failed,"lighting-inputs-incomplete.jsonl"));const std::string content(incomplete.begin(),incomplete.end());assert(content.find("\"export_complete\":false")!=std::string::npos&&content.find("80004005")!=std::string::npos);++failures;
@@ -124,6 +126,7 @@ int main(int argc,char** argv){
             auto incomplete=read(file(folder,failed,"lighting-inputs-incomplete.jsonl"));assert(std::string(incomplete.begin(),incomplete.end()).find("\"export_complete\":false")!=std::string::npos);++failures;
         }
     }
+    assert(positive>0&&failures==22);
     // Pass transport is a separate exact-bit contract, not inferred from a final
     // end-of-frame bank. This synthetic pass is never labelled a game replay.
     setup(nullptr);ok(d->SetTextureStageState(0,D3DTSS_TEXCOORDINDEX,0));ok(d->SetTextureStageState(0,D3DTSS_TEXTURETRANSFORMFLAGS,D3DTTFF_DISABLE));

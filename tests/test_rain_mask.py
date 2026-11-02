@@ -45,10 +45,12 @@ checks['manifest: WorldComposite bytecode changed']=(wc['sha256']!=BEFORE['World
 # task 43: RemovalSmooth branches around a zero-weight tap's reads on purpose (the same output)
 # 7c5c699 adds diagnostic-only MaterialAudit; 11f79a8 adds the bit-exact FogTemporal history-equality guard.
 REVIEWED_AFTER={'FogTemporal':'492128b1154ec3e10f526b12c5bdf56946b405f79fa9d3d3fdbbb82761891d8b',
+                # 8366460d: valid/unknown GI coverage outside the resident probe grid.
+                'WorldGI':'5cc90949e0a37615f42bf87cc92c868987f0fbb33da30f8ec689a8e3e49d730c',
                 # 00be1da: shared receiver-depth helper and tighter material depth validity.
                 'FogBlur':'3566e684517a7bc8348ac407c6b56d7300a9551b1212f12c70671aa050c7f472',
-                'MaterialAudit':'24bcbfa00628222ab4023044315204a72d7755f0578794d5caa883e2c5419b46'}
-checks['manifest: shaders outside the reviewed feature changes retain their historical hashes']=(set(manifest)==set(BEFORE)|{'LocalFogCombine', 'ActorTiles', 'MaterialComposite', 'LocalDirect16', 'ActorShadow', 'MaterialAudit', 'WorldNormalsNoDistance', 'WorldFogAmbient', 'WorldFogActor', 'FogCloudsActor', 'LocalDirect1', 'WorldUnlitComposite', 'ActorTilesWide', 'WorldFogActorTiled', 'FogCloudsActorTiled'} and all(manifest[n]['sha256']==REVIEWED_AFTER.get(n,s) for n,s in BEFORE.items() if n not in ('FogClouds', 'LocalDirect', 'LocalFog', 'RemovalSmooth', 'ShadowReplayPS', 'WorldComposite', 'WorldFog', 'WorldLighting', 'WorldNormals'))
+                'MaterialAudit':'a6283bd85030a6373d033570260ec2127f6f5938fd4de9638e80c0473c527498'}
+checks['manifest: shaders outside the reviewed feature changes retain their historical hashes']=(set(manifest)==set(BEFORE)|{'LocalFogCombine', 'ActorTiles', 'MaterialComposite', 'LocalDirect16', 'ActorShadow', 'MaterialAudit', 'WorldNormalsNoDistance', 'WorldFogAmbient', 'WorldFogActor', 'FogCloudsActor', 'LocalDirect1', 'WorldUnlitComposite', 'ActorTilesWide', 'WorldFogActorTiled', 'FogCloudsActorTiled', 'DirectionalShadow', 'WorldLightingSoft', 'ActorShadowUniform', 'WorldCompositeHdr', 'WorldUnlitCompositeHdr', 'MaterialCompositeHdr', 'WorldMaterialCompositeHdr'} and all(manifest[n]['sha256']==REVIEWED_AFTER.get(n,s) for n,s in BEFORE.items() if n not in ('FogClouds', 'LocalDirect', 'LocalFog', 'RemovalSmooth', 'ShadowReplayPS', 'WorldComposite', 'WorldFog', 'WorldLighting', 'WorldNormals'))
     and manifest['LocalFog']['sha256']!=BEFORE['LocalFog'] and manifest['MaterialAudit']['sha256']==REVIEWED_AFTER['MaterialAudit'])
 checks['compiled: WorldComposite.bin exists']=(fp.COMPILED/'WorldComposite.bin').exists()
 

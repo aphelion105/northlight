@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Northlight · Caverns of Time · A/B</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#111519;color:#e2e7ec;font:15px system-ui,sans-serif}header,footer{padding:18px 24px}h1{font-size:21px;margin:0 0 8px}p{line-height:1.5;margin:8px 0;color:#b6c0cb}.toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:16px 0 0}button,a{font:inherit}button{padding:9px 14px;border:1px solid #47525f;background:#222a33;color:inherit;border-radius:6px;cursor:pointer}button[aria-pressed=true]{background:#36546a;border-color:#8dc5e8}input{width:180px;accent-color:#9dcfed}a{color:#a9d8fa}#viewport{overflow:auto;background:#000}#stage{position:relative;width:100%;aspect-ratio:16/9;--split:50%}#stage img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}#new{clip-path:inset(0 0 0 var(--split))}#divider{position:absolute;left:var(--split);height:100%;border-left:2px solid #e9f2f8;pointer-events:none}#badge{position:absolute;top:12px;left:12px;background:#101820dd;padding:7px 10px;border-radius:4px}#stage.native{width:2560px}details{margin-top:14px;max-width:1050px}summary{cursor:pointer;color:#dbe6f0}kbd{font:12px system-ui;background:#27313c;padding:2px 5px;border-radius:3px}footer{font-size:13px}
+</style>
+<header>
+<h1>Caverns of Time — старый и новый Northlight</h1>
+<p>Дальний каменный свод теперь реагирует на освещение за пределами GI-проб. Оба результата рассчитаны GPU-шейдерами на буферах этой сцены.</p>
+<div class="toolbar" role="group" aria-label="Режим сравнения">
+<button data-mode="old" aria-pressed="false">1 · Старый</button>
+<button data-mode="new" aria-pressed="false">2 · Новый</button>
+<button data-mode="split" aria-pressed="true">3 · Сравнить</button>
+<button data-mode="captured" aria-pressed="false">4 · QA-захват</button>
+<label id="sliderLabel">Граница <input id="split" type="range" min="0" max="100" value="50" aria-label="Граница старого и нового результата"></label>
+<button id="zoom" aria-pressed="false">Масштаб 1:1</button>
+</div>
+</header>
+<div id="viewport"><div id="stage">
+<img id="old" src="old.png" alt="Старый шейдер, воспроизведение захвата">
+<img id="new" src="new.png" alt="Новый шейдер, с коррекцией ambient вне GI-проб">
+<div id="divider"></div><span id="badge">Слева старый · справа новый</span>
+</div></div>
+<footer>
+<p><kbd>1</kbd> старый · <kbd>2</kbd> новый · <kbd>3</kbd> разделитель · <kbd>4</kbd> QA-захват · <kbd>Пробел</kbd> переключить старый/новый. Страница работает без игры и интернета.</p>
+<details><summary>Как получено сравнение и его ограничения</summary>
+<p>Источник: session-3516-335313015-0, capture-1, 2560 × 1440. Старый WorldGI соответствует QA-сборке 0.3.216-test.20261102.1. Цвет, глубина, нормали, исходное освещение, AO, туман и материалы взяты из захвата.</p>
+<p>Атлас GI-проб не экспортирован в QA-захват. Он восстановлен штатным решателем по локальному world-cache: сетка 20 × 20 × 14, 64 луча, 3 отражения, без динамических актёров и истории прежних проб. Оба GI-шейдера получают один восстановленный атлас. Их разница проходит штатное сглаживание и добавляется к сохранённому освещению. Затем выполняются WorldComposite и MaterialComposite.</p>
+<p>Это реконструкция изменения одного кадра. Не воспроизводятся движение, накопление временной истории и отсутствующая stencil-маска; dithering нейтрален. Поэтому мелкие эффекты и контуры могут отличаться от игры. Старое воспроизведение отличается от QA-захвата в среднем на ERROR_MEAN уровня из 255; 99-й процентиль — ERROR_P99, максимум — ERROR_MAX. Два контрольных участка дальних стен совпадают по RGB точно.</p>
+<p>Исправление использует направленную тень как ограниченное приближение ambient там, где GI-проб недостаточно. Это может также углублять наружные тени вне покрытия проб. При полном покрытии результат GI сохраняется.</p>
+<p><a href="report.json">Измерения и SHA-256 входов</a> · <a href="replay.log">Журнал GPU-воспроизведения</a> · <a href="old.png">Старый PNG</a> · <a href="new.png">Новый PNG</a> · <a href="captured.png">QA PNG</a></p>
+</details>
+</footer>
+<script>
+const stage=document.querySelector('#stage'),old=document.querySelector('#old'),newImage=document.querySelector('#new'),divider=document.querySelector('#divider'),badge=document.querySelector('#badge'),slider=document.querySelector('#split'),sliderLabel=document.querySelector('#sliderLabel');
+let mode='split';
+function show(next){mode=next;document.querySelectorAll('[data-mode]').forEach(b=>b.setAttribute('aria-pressed',b.dataset.mode===mode));old.src=mode==='captured'?'captured.png':'old.png';newImage.hidden=mode==='old'||mode==='captured';newImage.style.clipPath=mode==='new'?'none':'inset(0 0 0 var(--split))';divider.hidden=sliderLabel.hidden=mode!=='split';badge.textContent={old:'Старый · воспроизведение',new:'Новый · воспроизведение',split:'Слева старый · справа новый',captured:'Исходный QA-захват'}[mode]}
+document.querySelectorAll('[data-mode]').forEach(b=>b.onclick=()=>show(b.dataset.mode));slider.oninput=()=>stage.style.setProperty('--split',slider.value+'%');document.querySelector('#zoom').onclick=e=>{const native=stage.classList.toggle('native');e.currentTarget.setAttribute('aria-pressed',native)};
+document.addEventListener('keydown',e=>{if(e.target.matches('input,button'))return;const next={'1':'old','2':'new','3':'split','4':'captured',' ':mode==='old'?'new':'old'}[e.key];if(next){e.preventDefault();show(next)}});
+</script>
+</html>

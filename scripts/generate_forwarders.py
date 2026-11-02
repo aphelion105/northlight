@@ -488,8 +488,13 @@ def forwarders_text(text):
 
 def generate():
     text = SDK.read_text()
-    (northlight_paths.GENERATED / 'forwarders.h').write_text(forwarders_text(text), encoding='utf-8', newline='\n')
-    (northlight_paths.GENERATED / 'command_stream.inl').write_text(stream_text(text), encoding='utf-8', newline='\n')
+    for name, content in [('forwarders.h', forwarders_text(text)), ('command_stream.inl', stream_text(text))]:
+        path = northlight_paths.GENERATED / name
+        data = content.encode('utf-8')
+        # A concurrent compiler may have this header mapped on Windows.
+        # Identical output needs no truncate/write and no cache invalidation.
+        if not path.exists() or path.read_bytes() != data:
+            path.write_bytes(data)
 
 if __name__ == '__main__':
     generate()

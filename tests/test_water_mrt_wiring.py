@@ -25,7 +25,7 @@ checks['removed: build_renderer.py and the shader compilers do not know the wate
 
 # ---- the draw hook ----
 hook=between(r,'template<class Capture,class Draw> HRESULT drawHook(','    // 0.3.154: blob shadow claim')
-checks['drawHook: both gate paths wrap the name-mask chain in waterMrtDraw, with the bare draw as the fallback']=hook.count('waterMrtDraw(draw,[&]{return nameMaskDraw(rainBlend,claimed||mist,draw);})')==2 and 'const HRESULT hr=nameMaskDraw(' not in hook
+checks['drawHook: both gate paths wrap the name-mask chain in waterMrtDraw, with the bare draw as the fallback']=hook.count('waterMrtDraw(nativeDraw,[&]{return nameMaskDraw(rainBlend,claimed||mist,nativeDraw);})')==2 and 'const HRESULT hr=nameMaskDraw(' not in hook
 unbind_rain='if(rainMrtBound&&!rainBlend)rainMrtUnbind();'
 unbind_water='if(water&&water->isMrtBound()&&(rainBlend||applied||!enabled||failed||!nextDrawIsWater()))rainMrtUnbind();'
 checks['drawHook: render target 1 is unbound before any other draw (rain first, then water unless the draw is a water draw), before both gate paths']=(

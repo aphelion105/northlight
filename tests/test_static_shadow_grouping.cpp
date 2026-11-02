@@ -42,7 +42,7 @@ static NorthlightGI::WorldScene fixture(bool wide){
     s.materials.resize(3);
     for(unsigned i=0;i<3;++i){auto& m=s.materials[i];m.width=2;m.height=1;m.alphaCutoff=float(i)*.37f;m.rgba={255,16,32,uint8_t(i?i*70:255),255,32,16,255};}
     for(unsigned i=0;i<8192;++i){const unsigned cell=((i/8)*7)%64,first=cell*3,material=(i/16)%3;s.triangles.push_back({first,first+1,first+2,material});}
-    if(wide){s.vertices.resize(65537,s.vertices[0]);s.triangles.push_back({0,1,65536,0});}
+    if(wide){const auto fill=s.vertices[0];s.vertices.resize(65537);for(size_t i=192;i<s.vertices.size();++i)s.vertices[i]=fill;s.triangles.push_back({0,1,65536,0});}
     return s;
 }
 int main(int argc,char** argv){

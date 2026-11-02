@@ -26,7 +26,7 @@ checks['drawHook: before the gate split and any other work']=0<=hook.index(cmp_l
 # 0.3.199 (rain): RainBlend - the override lives in the matched branch (a bool set there), only for Rain and the setting, wraps exactly the game's draw
 helper=r[r.index('template<class Draw> HRESULT rainBlendDraw('):r.index('    // One game draw: capture')]
 checks['RainBlend: the bool is set only inside the matched branch, for Rain and the setting']=hook.count('rainBlend=weatherDetect')==1 and 'rainBoundary' not in r and hook.count('rainBlend=weatherDetect.hotKind==NorthlightWeather::Kind::Rain&&world&&world->rainBlendSetting();')==1 and cmp_line.split('{',1)[1].count('rainBlend=')==1 and 'bool claimed=false,rainBlend=false,mist=false;' in hook
-checks['RainBlend: both gate paths draw through rainBlendDraw, none through blobFaintDraw directly']=hook.count('nameMaskDraw(rainBlend,claimed||mist,draw)')==2 and 'blobFaintDraw' not in hook
+checks['RainBlend: both gate paths draw through rainBlendDraw, none through blobFaintDraw directly']=hook.count('nameMaskDraw(rainBlend,claimed||mist,nativeDraw)')==2 and 'blobFaintDraw' not in hook
 # 0.3.199 (rain mist): the mist skip is the else branch of the one comparison, gated first by the armed bool; armed only at frame end for rain and RainBlend
 mist_line='else if(weatherDetect.mistArmed)mist=mistDraw(count);'
 checks['rain mist: the else branch right after the comparison, armed bool first']=hook.count(mist_line)==1 and hook.index(cmp_line)<hook.index(mist_line)<hook.index('if(!frameDrawGates){') and hook[hook.index(cmp_line)+len(cmp_line):hook.index(mist_line)].strip().startswith('/*')
@@ -56,7 +56,7 @@ w=fp.src('world_renderer.h').read_text()
 checks['WorldRenderer: POD state, setter and getter only']=all(s in w for s in ('NorthlightWeather::State weatherState{};','void setWeather(const NorthlightWeather::State& s){weatherState=s;}','const NorthlightWeather::State& weather()const{return weatherState;}')) and w.count('weatherState')==4
 # 0.3.202 (rain): the rain boundary is gone (the UI boundary is the only one again); the rain mask replaces it
 pdi=r[r.index('template<class Capture> void prepareDrawImpl('):r.index('    // Terrain draws run with the game')]
-checks['no rain boundary: no rainBoundary anywhere, no kind=rain log, no stage-0 relearn in prepareDrawImpl']=('rainBoundary' not in r and 'kind=rain' not in r and 'IDirect3DBaseTexture9* stage0=nullptr' not in pdi and 'ext->GetTexture(0,&stage0)' not in pdi and 'renderEffects();' not in pdi)
+checks['no rain boundary: only guarded fixed-function UI can apply effects in prepareDrawImpl']=('rainBoundary' not in r and 'kind=rain' not in r and 'IDirect3DBaseTexture9* stage0=nullptr' not in pdi and 'ext->GetTexture(0,&stage0)' not in pdi and pdi.count('renderEffects();')==1 and '(terrain||skySeen)&&fixedUiGeometry()' in pdi and '&&hdrUiInputs()){' in pdi)
 branch=helper[helper.index('return blobFaintDraw(claimed,[&]{'):]
 # 0.3.202 (rain mask MRT): the mask is written by the rain draw itself (render target 1); no second draw, no scrub draw, no RT0 swap per draw
 checks['rain mask MRT: the rain branch makes ONE draw through rainMrtDraw, between the blend setup and its restore; no second draw call, no rainMaskPass/rainScrubDraw anywhere']=(
@@ -115,8 +115,8 @@ checks['rain mask: dropped in releaseResources (RT1 unbound first, failed flag r
 checks['rain mask: per-frame flags reset where terrain/applied reset (clearFrame), RT1 unbound there']='rainMrtUnbind();terrain = captured = applied = projectionValid = skySeen = false;rainMaskCleared=rainMaskDrawn=rainMaskFrame=rainMaskOk=rainDepthOk=false;' in r
 pr=r[r.index('IDirect3DTexture9* rainMaskPrepare()'):r.index('template<class Draw> HRESULT rainBlendDraw(')]
 checks['rain scrub: renderEffects asks rainMaskPrepare once, early (before the AO), then hands its texture to setRainMask right before world->render; no scrub draw per world draw']=(
-    r.count('rainMaskPrepare()')==2 and 'IDirect3DTexture9* rainMaskTex=world&&debugMode==0?rainMaskPrepare():nullptr;' in r and r.index('rainMaskPrepare()')<r.index('bindEffects(nullptr);')<r.index('world->setRainMask(rainMaskTex);')<r.index('world->render(saved.targets[0]')
-    and r.index('world->render(saved.targets[0]')-r.index('world->setRainMask(')<260)
+    r.count('rainMaskPrepare()')==2 and 'IDirect3DTexture9* rainMaskTex=world&&debugMode==0?rainMaskPrepare():nullptr;' in r and r.index('rainMaskPrepare()')<r.index('bindEffects(nullptr);')<r.index('world->setRainMask(rainMaskTex);')<r.index('world->render(outputTarget,')
+    and r.count('world->setRainMask(rainMaskTex);')==1)
 checks['rain scrub: RT1 unbound, MSAA twin resolved by StretchRect (failure: nullptr and a one-shot log), ONE full-screen quad into the mask texture with depthTex (s0) and rainDepth (s1) POINT, alpha-only write, own SavedState']=(
     pr.startswith('IDirect3DTexture9* rainMaskPrepare(){\n        rainMrtUnbind();') and 'if(!rainMaskDrawn||!rainDepthOk||' in pr and 'ext->StretchRect(rainMaskMS,nullptr,rainMaskSurface,nullptr,D3DTEXF_NONE)' in pr and 'rainMaskResolveHr=rh;return nullptr;' in pr
     and 'SavedState scrub(ext,&stateBlocks);' in pr and 'effectState();' in pr and 'ext->SetRenderTarget(0,rainMaskSurface)' in pr and 'ext->SetTexture(0,depthTex);ext->SetTexture(1,rainDepth);' in pr

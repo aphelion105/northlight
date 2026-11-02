@@ -554,6 +554,15 @@ public:
         for(unsigned i=0;i<count;++i)out[i]=m->renderStates[keys[i]];
         m->answered+=count;return true;
     }
+    // Mask/output slot i corresponds to D3DSAMPLERSTATETYPE(i+1). Unused
+    // states need not be known; a failed snapshot leaves the output untouched.
+    bool knownSamplerStates(DWORD stage,unsigned mask,DWORD* out){
+        if(stage>=DeviceMirror::Textures||!out||(mask>>D3DSAMP_DMAPOFFSET))return false;
+        MirrorGuard lock(m->gate,MirrorSite::Device);if(!m->active())return false;
+        for(unsigned i=0;i<D3DSAMP_DMAPOFFSET;++i)if((mask&(1u<<i))&&!m->samplerKnown[stage][i+1])return false;
+        for(unsigned i=0;i<D3DSAMP_DMAPOFFSET;++i)if(mask&(1u<<i)){out[i]=m->samplers[stage][i+1];++m->answered;}
+        return true;
+    }
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id,void** out) override{
         if(!out)return E_POINTER;
         if(id==__uuidof(IUnknown)||id==__uuidof(IDirect3DDevice9)){*out=this;AddRef();return S_OK;}

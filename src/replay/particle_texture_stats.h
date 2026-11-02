@@ -226,7 +226,8 @@ private:
                     for(unsigned dx=0;dx<scaleX;dx+=4){const auto bytes=_mm_loadu_si128(reinterpret_cast<const __m128i*>(row+dx*4));const auto lo=_mm_unpacklo_epi8(bytes,zero),hi=_mm_unpackhi_epi8(bytes,zero);const auto pair=_mm_add_epi16(lo,hi);sum=_mm_add_epi16(sum,_mm_add_epi16(pair,_mm_srli_si128(pair,8)));}}
                 alignas(16) std::uint16_t channels[8];_mm_store_si128(reinterpret_cast<__m128i*>(channels),sum);auto* dst=output.data()+(size_t(y)*tw+x)*4;
                 dst[0]=std::uint8_t((std::uint64_t(channels[2]+n/2)*reciprocal)>>32);dst[1]=std::uint8_t((std::uint64_t(channels[1]+n/2)*reciprocal)>>32);dst[2]=std::uint8_t((std::uint64_t(channels[0]+n/2)*reciprocal)>>32);dst[3]=Format==F::BGRX8?255:std::uint8_t((std::uint64_t(channels[3]+n/2)*reciprocal)>>32);
-            }return true;
+            }
+            return true;
         }}
 #endif
 
@@ -266,7 +267,8 @@ private:
         if(reduce)for(unsigned x=0;x<width;++x)columns[x]=((x+1)*targetWidth-1)/width;
         if(reduce)for(unsigned y=0;y<height;++y)rowOffsets[y]=(((y+1)*targetHeight-1)/height)*targetWidth*4;
         if(reduce&&NorthlightActorTexture::compressed(format)){
-            const auto rowBytes=NorthlightActorTexture::rowBytes(width,format),rows=NorthlightActorTexture::rowCount(height,format);
+            const auto rowBytes=NorthlightActorTexture::rowBytes(width,format);
+            const auto rows=NorthlightActorTexture::rowCount(height,format);
             if(pitch<rowBytes||bytes<rowBytes||rows-1>(bytes-rowBytes)/pitch)return false;
             auto write=[&](unsigned x,unsigned y,const std::array<std::uint8_t,4>& rgba){
                 const auto at=rowOffsets[y]+columns[x]*4;

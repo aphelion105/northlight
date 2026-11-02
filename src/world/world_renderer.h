@@ -5596,7 +5596,9 @@ public:
         // lamps have their own longer range, so retain their path independently.
         const bool regionalFogActive=c[21][0]>=.5f&&!(c[65][2]>0&&
             (c[15][2]-c[21][3]>c[65][1]||c[15][2]+c[21][3]<c[65][0]));
-        const bool fogActive=effects.fog&&(regionalFogActive||(localDirectCount&&debug==0));
+        const bool localFogActive=localDirectCount&&debug==0&&localLights.hasFog(localDirectCount);
+        const bool fogActive=effects.fog&&(regionalFogActive||localFogActive);
+        if(lightingCapture&&localDirectCount&&!localFogActive&&debug==0)lightingCapture->skipped("LocalFog",0,localDirectCount,"zero-extinction");
         if(fogActive){
         d->SetTexture(12,fogHeightReady?fogHeightTexture:nullptr);
         // FogTemporal reads s15 and relies on these modes even when its earlier setup is skipped.
@@ -5646,7 +5648,7 @@ public:
         d->SetTexture(5,textures[5]);
         d->SetTexture(12,baselineLight);
         d->SetPixelShaderConstantF(17,c[17],2); /* restore the bank's direct/ambient before lamp fog, blur and composite */
-        if(localDirectCount&&debug==0){
+        if(localFogActive){
             if(lightingCapture){lightingCapture->image("fog-before-local",fogSurface);lightingCapture->inputs(1,fogInputs,fogInputs);}
             // 0.3.205 (gh#20): every batch adds its raw glow into localFogAccum and LocalFogCombine caps the total once into the fog buffer (a cap per batch of four
             // made the glow depend on how the closest-first lights group). A batch adds exactly +0 outside its rect, so only the union of the drawn batches' rects is

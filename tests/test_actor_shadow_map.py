@@ -80,11 +80,11 @@ checks['every ActorTiles pass (own 64x64 target per source, own mark) before the
 checks['ActorShadow pass: c68..c71 matrix, c72 info, actor map on s12, RED sun / GREEN moon, mask restored']=(
     'SetPixelShaderConstantF(68,actorMatrices[source],4)' in light and 'SetPixelShaderConstantF(72,actorInfo,1)' in light and 'const float actorInfo[4]={1.f,1.f/float(NorthlightActorShadowMap::Size),NorthlightActorShadowMap::Radius,0.f};' in light
     and 'd->SetTexture(12,actorShadow[source]);d->SetTexture(10,actorTiles[source]);' in light and 'source?D3DCOLORWRITEENABLE_GREEN:D3DCOLORWRITEENABLE_RED' in light and 'D3DRS_COLORWRITEENABLE,15' in light)
-checks['s12: visibility for the WorldLighting loop only, then the frame-start (null) binding; later readers rebind baselineLight']=(
+checks['s12: actor visibility for WorldLighting, then baseline visibility for GI and later readers']=(
     light.index('d->SetTexture(12,anyActorPass?actorVisibility:neutralWhite);')<light.index('d->SetPixelShader(softResolved?lightingSoftPS:lightingPS);')
-    and 'd->SetTexture(12,textures[12]); /* 0.3.209 (task 29): the frame-start binding (null) again; the visibility was WorldLighting\'s only */' in light and light.rstrip().endswith('d->SetTexture(15,nullptr);')
+    and 'd->SetTexture(12,baselineLight); // WorldGI reuses known shadow visibility outside resident probes.' in light and light.rstrip().endswith('d->SetTexture(15,nullptr);')
     and 'textures[]={foldScene?foldScene:color,depth,shadow[0],shadow[1],probe[0],probe[1],probe[2],probe[3],nullptr,nullptr,probe[4],waterMask,nullptr,' in render
-    and render.count('d->SetTexture(12,baselineLight)')==4)
+    and render.count('d->SetTexture(12,baselineLight)')==5)
 checks['resources: maps, tiles and visibility only with the shaders (ActorShadowDetail=1) and optional (a failure turns the map off, not the renderer); neutral white mandatory 1x1; released with the rest']=(
     "releaseActorTargets();logf(\"WORLD actor shadow map disabled: render targets unavailable\");" in w and 'actorVisibility,&actorVisibilitySurface))return false;' not in w
     and '||!makeTarget(w/2,h/2,D3DFMT_A8R8G8B8,&actorVisibility,&actorVisibilitySurface)' in w

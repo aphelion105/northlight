@@ -165,12 +165,12 @@ def main():
     assert ('if(PassInfo.z<.5){\n        float3 unfogged=color;\n'
             '        // Rain streaks were drawn into the scene before the composite: on mask pixels go back toward the unfogged pixel so they are not hazed.\n'
             '        float rain=tex2Dlod(RainMask,float4(uv,0,0)).r;\n'
-            '        color=lerp(mad(horizonHaze(color,centerUV,viewZ,d>=.99999&&liquid<=0),fog.a,fog.rgb),unfogged,rain);\n    }') in shader
+            '        color=lerp(mad(horizonHaze(color,centerUV,viewZ,d>=.99999&&liquid<=0,hdrMode),fog.a,fog.rgb),unfogged,rain);\n    }') in shader
     assert 'mad(legacyT,fog.rgb,fogPart)' not in shader
     # 0.3.163: fog-pass-only overrides. The sun's forward soft cap .38 -> .95 (moon .24 kept),
     # the sun's c17 takes the glow hue, c18.rgb is cooled (w kept) for the fog loop only and
     # c17/c18 are restored from the bank before lamp fog, blur and composite. WorldFog unchanged.
-    assert 'c[21][1]=1.2f*volumePalette.fogGain[source]*wx.shaftGain();c[21][2]=source==0?NorthlightSunHue::SunForwardCap:NorthlightSunHue::MoonForwardCap' in cpu
+    assert 'c[21][1]=1.2f*volumePalette.fogGain[source]*wx.shaftGain();c[21][2]=hdrMode?64.f:source==0?NorthlightSunHue::SunForwardCap:NorthlightSunHue::MoonForwardCap' in cpu
     hue = fp.src('sun_hue.h').read_text()
     assert f'SunForwardCap={SUN_CAP:g}f,MoonForwardCap=.24f'.replace('0.', '.') in hue
     set_source = cpu[cpu.index('auto setSource=[&](int source,bool first,bool volume=false){'):]

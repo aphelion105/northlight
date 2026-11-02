@@ -800,7 +800,10 @@ private:
                     if(tag!=owner.vsTags.end())family=unsigned(tag->second>>kFamilyShift)&7u;
                 }
                 if(vs)vs->Release();
-                return owner.hdrColor.draw(device,80,[&]{return args.submit(device);},family,&owner.stateBlocks);
+                const auto layersBefore=owner.hdrColor.layers;
+                const auto result=owner.hdrColor.draw(device,80,[&]{return args.submit(device);},family,&owner.stateBlocks);
+                if(owner.hdrColor.layers!=layersBefore)owner.hdrLayerDiagnostic("particle");
+                return result;
             }
             return args.submit(device);
         });
@@ -813,9 +816,12 @@ private:
         if(diagnostics()&&world&&NorthlightQuality::renderProfile(world->surfaceSettings())&&NorthlightRenderThreadProbe::sampleFrame(frame))
             logf("PROJECTED_AUDIT frame=%u probes=%u pending=%u disabled=%u maxPerFrame=16 maxPending=32 queryFlush=0",frame,projectedAudit.probes(frame),projectedAudit.pending(),unsigned(projectedAudit.disabled()));
     }
-    void hdrLayerDiagnostic(){
+    void hdrLayerDiagnostic(const char* path="ui"){
         if(hdrLayerStateLogs>=12||!diagnostics())return;
         ++hdrLayerStateLogs;DWORD rs[6]={},ts[7]={};
+        DWORD fvf=0;ext->GetFVF(&fvf);IDirect3DVertexShader9* vs=nullptr;IDirect3DPixelShader9* ps=nullptr;
+        ext->GetVertexShader(&vs);ext->GetPixelShader(&ps);
+        logf("HDR_LAYER_SOURCE frame=%u path=%s fvf=%08lx vs=%u ps=%u",frame,path,(unsigned long)fvf,unsigned(vs!=nullptr),unsigned(ps!=nullptr));drop(vs);drop(ps);
         const D3DRENDERSTATETYPE states[]={D3DRS_ALPHABLENDENABLE,D3DRS_SRCBLEND,D3DRS_DESTBLEND,D3DRS_BLENDOP,D3DRS_FOGENABLE,D3DRS_COLORWRITEENABLE};
         const D3DTEXTURESTAGESTATETYPE stages[]={D3DTSS_COLOROP,D3DTSS_COLORARG1,D3DTSS_COLORARG2,D3DTSS_ALPHAOP,D3DTSS_ALPHAARG1,D3DTSS_ALPHAARG2,D3DTSS_TEXCOORDINDEX};
         for(unsigned i=0;i<6;++i)ext->GetRenderState(states[i],rs+i);
@@ -2243,7 +2249,9 @@ private:
         for(unsigned i=1;i<4;++i)ext->SetRenderTarget(i,nullptr);
         if(FAILED(hdrBindBack(hdrPresentBack)))return;
         ext->SetRenderState(D3DRS_ZWRITEENABLE,FALSE);hdrSkyReplaying=true;
+        const auto layersBefore=hdrColor.layers;
         hdrColor.draw(ext,80,draw,0,&stateBlocks);hdrSkyReplaying=false;
+        if(hdrColor.layers!=layersBefore)hdrLayerDiagnostic("sky");
     }
     template<class Capture,class Draw> HRESULT drawHook(D3DPRIMITIVETYPE t,UINT count,Capture capture,Draw draw){
         if(gpuScene&&!gpuScene->native.currentFrame(frame)){ExtensionDevice::RawScope raw(*ext);gpuScene->setFrame(frame);}
@@ -3067,6 +3075,7 @@ public:
         autoBump->setDeferredCapture(selectedBackend==NorthlightBackend::Kind::Dxvk&&NorthlightUpload::ReadBackNoOverwrite.load(std::memory_order_relaxed));
         autoBump->setTrustedConstantEpochSource(ext->trustedConstantSource());
         autoBump->setRasterStateSource(static_cast<IDirect3DDevice9*>(ext),[](void* context,const D3DRENDERSTATETYPE* keys,unsigned count,DWORD* out){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(context))->knownRenderStates(keys,count,out);});
+        autoBump->setSamplerStateSource(static_cast<IDirect3DDevice9*>(ext),[](void* context,DWORD stage,unsigned mask,DWORD* out){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(context))->knownSamplerStates(stage,mask,out);});
         world->setConstantEpochSource({&mirrorState.constantEpoch,&mirrorState}); /* 0.3.180 (C1): read in place under the draw's gate */
         char skyRoot[MAX_PATH*3];WideCharToMultiByte(CP_UTF8,0,rootPath,-1,skyRoot,sizeof skyRoot,nullptr,nullptr);celestialDiscs=std::make_unique<NorthlightCelestialDiscRenderer>(ext,std::string(skyRoot)+"world-cache/celestial");celestialDiscs->setTerrainSource([this]{return world->celestialTerrainGeneration();},[this](unsigned body,const float* matrix){return world->drawCelestialTerrain(body,matrix);},[this](unsigned body){world->noteCelestialTerrainReuse(body);});celestialDiscs->setIdentityMap([this](std::uintptr_t exposed){return mirrorResources.rawOf(exposed,!mirrorState.enabled);});celestialDiscs->setHdrSkyCapture([this]()->IDirect3DSurface9*{return hdrSkyDraw()?hdrPresentBack:nullptr;});shadowBlobs=std::make_unique<NorthlightShadowBlobFilter>(ext,world->blobShadowStrength());shadowBlobs->setTexturePeek([](void* e,DWORD stage,IDirect3DBaseTexture9*& out){return static_cast<ExtensionDevice*>(e)->peekTexture(stage,out);},ext); /* 0.3.196 (task 12): borrowed stage-0 identity */water=std::make_unique<NorthlightWaterRenderer>(ext); logf("D3D9 device wrapped. Ctrl+Shift+F7 fog; F8 GI; F9 shadows; F10 all effects; F12 world debug (all with Ctrl+Shift); Ctrl+Shift+F11 settings. Components start ON; GI cache stays warm.");
         {wchar_t config[MAX_PATH],key[64]={};char hotkey[64]={};const bool named=swprintf(config,MAX_PATH,L"%lsnorthlight-renderer.ini",rootPath)>=0; /* read once, here */

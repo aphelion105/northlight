@@ -118,9 +118,9 @@ Every effect below is on by default and is drawn on top of the game's own frame.
 
 ## Requirements
 
-- macOS on Apple Silicon is the supported development host. Linux may work with zig, clang and
-  Wine on `PATH`, but it is untested. Windows is a target only: the DLL runs there, but the
-  development scripts do not.
+- macOS on Apple Silicon is the primary development host. Windows can build the DLL with Zig
+  and run Windows-native/GPU checks; other tests still need their declared host toolchains.
+  Linux may work with zig, clang and Wine on `PATH`, but it is untested.
 - Python 3.9 or newer; only the standard library is used.
 - [zig 0.15.2](https://ziglang.org/download/) to build the DLL (it cross-compiles to 32-bit Windows).
 - clang++ and c++ (Xcode command line tools) for the native tests.
@@ -139,8 +139,13 @@ python3 scripts/build_renderer.py           # -> renderer/frd9.dll
 python3 scripts/pe_normalized_hash.py renderer/frd9.dll
 ```
 
-The build first runs the layout check (nothing back at a pre-move path, unique basenames). It
-regenerates the forwarding headers in `src/generated/`. It checks every `shaders/*.hlsl` against its
+The build first runs the layout check (nothing back at a pre-move path, unique basenames). On
+Windows it also compiles a minimal C++ file before starting the renderer build. Zig 0.15.2
+can report `error: Unexpected` inside a restricted execution sandbox, even with fresh local
+caches. Run Windows builds and native/GPU tests outside that sandbox through the normal
+approval mechanism; a failed compiler check saves its diagnostics to `<out>/build-preflight.log`.
+
+The build regenerates the forwarding headers in `src/generated/`. It checks every `shaders/*.hlsl` against its
 `*-shader-build.json` and refuses to build if a shader changed without a recompile. The raw
 DLL bytes depend on the build directory, because the PDB paths feed the build ID. Compare builds
 with `pe_normalized_hash.py`, which zeroes only those fields.

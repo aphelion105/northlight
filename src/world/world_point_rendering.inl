@@ -290,26 +290,26 @@
                 case WorkKind::Heavy:++heavy;break;case WorkKind::Cold:++cold;break;case WorkKind::Unsupported:++unsupported;break;
             }
             const auto& stats=replayBoundsCache.envelopeStats();
-            logf("WORLD replay bounds total=%zu valid=%u envelopeValid=%u fallbackValid=%u deferred=%u buildVertices=%zu operations=%zu envelopeEntries=%zu envelopeBytes=%zu envelopeMs=%.3f readyMs=%.3f heavyMs=%.3f buildMs=%.3f classifyMs=%.3f wallMs=%.3f skinValid=%zu coldVisits=%zu buildIndices=%zu completed=%zu timeDeferred=%zu vertexDeferred=%zu operationDeferred=%zu unsupported=%zu tupleLimit=%zu invalid=%zu evictions=%zu readyEvictions=%zu expiredEvictions=%zu releasedGroupBytes=%zu buildSkippedReady=%zu cheapValid=%zu heavyAttempts=%zu heavyValid=%zu cheapSliceDeferred=%zu async=%u mainMs=%.3f workerMs=%.3f waitMs=%.3f startLagMs=%.3f fallbackCapped=%zu",
+            deferLogf("WORLD replay bounds total=%zu valid=%u envelopeValid=%u fallbackValid=%u deferred=%u buildVertices=%zu operations=%zu envelopeEntries=%zu envelopeBytes=%zu envelopeMs=%.3f readyMs=%.3f heavyMs=%.3f buildMs=%.3f classifyMs=%.3f wallMs=%.3f skinValid=%zu coldVisits=%zu buildIndices=%zu completed=%zu timeDeferred=%zu vertexDeferred=%zu operationDeferred=%zu unsupported=%zu tupleLimit=%zu invalid=%zu evictions=%zu readyEvictions=%zu expiredEvictions=%zu releasedGroupBytes=%zu buildSkippedReady=%zu cheapValid=%zu heavyAttempts=%zu heavyValid=%zu cheapSliceDeferred=%zu async=%u mainMs=%.3f workerMs=%.3f waitMs=%.3f startLagMs=%.3f fallbackCapped=%zu",
                 replays.size(),pointBoundsValid,replayBoundsCache.envelopeValid(),replayBoundsCache.fallbackValid(),replayBoundsCache.deferred(),stats.buildVertices,pointBoundOperations,
                 replayBoundsCache.envelopeEntries(),replayBoundsCache.envelopeBytes(),replayBoundsCache.envelopeMilliseconds(),
                 replayBoundsCache.envelopeReadyMilliseconds(),replayBoundsCache.envelopeHeavyMilliseconds(),replayBoundsCache.envelopeBuildMilliseconds(),
                 replayBoundsCache.envelopeClassifyMilliseconds(),wallMs,stats.skinValid,stats.cold,stats.buildIndices,stats.completed,
                 stats.timeDeferred,stats.vertexDeferred,stats.operationDeferred,stats.unsupported,stats.tupleLimit,stats.invalid,stats.evictions,stats.readyEvictions,stats.expiredEvictions,stats.releasedGroupBytes,stats.buildSkippedReady,
                 stats.cheapValid,stats.heavyAttempts,stats.heavyValid,stats.cheapSliceDeferred,unsigned(async),mainMs,workerMs,waitMs,startLagMs,async?replayBoundsCapped:size_t(0));
-            logf("WORLD replay priority cheapVisited=%zu heavyVisited=%zu buildVisited=%zu cheap=%zu heavy=%zu cold=%zu unsupported=%zu unclassified=%zu",
+            deferLogf("WORLD replay priority cheapVisited=%zu heavyVisited=%zu buildVisited=%zu cheap=%zu heavy=%zu cold=%zu unsupported=%zu unclassified=%zu",
                 cheapVisited,heavyVisited,buildVisited,cheap,heavy,cold,unsupported,unclassified);
-            logf("WORLD shadow bounds coverage total=%zu valid=%u unbounded=%zu readyBudgetMs=%.3f buildBudgetMs=%.3f shared=directional-and-point",
+            deferLogf("WORLD shadow bounds coverage total=%zu valid=%u unbounded=%zu readyBudgetMs=%.3f buildBudgetMs=%.3f shared=directional-and-point",
                 replays.size(),pointBoundsValid,replays.size()-pointBoundsValid,double(replayBoundsCache.phaseLimit(0))/1000000.,double(replayBoundsCache.phaseLimit(2))/1000000.);
-            logf("WORLD replay build pending=%u pendingVertices=%zu pendingIndices=%zu resumes=%zu admissionDeferred=%zu ownerExpired=%zu abandoned=%zu",
+            deferLogf("WORLD replay build pending=%u pendingVertices=%zu pendingIndices=%zu resumes=%zu admissionDeferred=%zu ownerExpired=%zu abandoned=%zu",
                 unsigned(replayBoundsCache.hasPendingBuild()),replayBoundsCache.pendingBuildVertices(),replayBoundsCache.pendingBuildIndices(),
                 stats.pendingResumes,stats.pendingDeferred,stats.pendingOwnerExpired,stats.pendingAbandoned);
-            logf("WORLD replay memo tests=%zu hits=%zu misses=%zu stored=%zu evictions=%zu rejected=%zu entries=%zu bytes=%zu comparedBytes=%zu avoidedOperations=%zu budgetDeferred=%zu effectiveCopiedBytes=%zu",
+            deferLogf("WORLD replay memo tests=%zu hits=%zu misses=%zu stored=%zu evictions=%zu rejected=%zu entries=%zu bytes=%zu comparedBytes=%zu avoidedOperations=%zu budgetDeferred=%zu effectiveCopiedBytes=%zu",
                 stats.memoTests,stats.memoHits,stats.memoMisses,stats.memoStored,stats.memoEvictions,stats.memoRejected,
                 replayBoundsCache.memoEntries(),replayBoundsCache.memoBytes(),stats.memoComparedBytes,stats.memoAvoidedOperations,stats.memoBudgetDeferred,stats.effectiveCopiedBytes);
             const auto& memoPolicy=replayBoundsCache.memoPolicy();
             const auto memoTotals=replayBoundsCache.memoTotals();
-            logf("WORLD replay memoPolicy enabled=%u cooldownFrames=%u pauses=%llu retries=%llu coldMisses=%zu replacedMisses=%zu cameraMisses=%zu constantMisses=%zu bypassed=%zu storeBypassed=%zu protected=%zu copiedBytes=%zu totalTests=%llu totalHits=%llu totalCold=%llu totalReplaced=%llu totalCamera=%llu totalConstants=%llu totalBypassed=%llu totalStoreBypassed=%llu totalProtected=%llu totalCopiedBytes=%llu",
+            deferLogf("WORLD replay memoPolicy enabled=%u cooldownFrames=%u pauses=%llu retries=%llu coldMisses=%zu replacedMisses=%zu cameraMisses=%zu constantMisses=%zu bypassed=%zu storeBypassed=%zu protected=%zu copiedBytes=%zu totalTests=%llu totalHits=%llu totalCold=%llu totalReplaced=%llu totalCamera=%llu totalConstants=%llu totalBypassed=%llu totalStoreBypassed=%llu totalProtected=%llu totalCopiedBytes=%llu",
                 unsigned(memoPolicy.enabled()),memoPolicy.remaining(),(unsigned long long)memoPolicy.pauses(),(unsigned long long)memoPolicy.retries(),
                 stats.memoColdMisses,stats.memoReplacedMisses,stats.memoCameraMisses,stats.memoConstantMisses,
                 stats.memoBypassed,stats.memoStoreBypassed,stats.memoProtected,stats.memoCopiedBytes,
@@ -318,13 +318,13 @@
                 (unsigned long long)memoTotals.bypassed,(unsigned long long)memoTotals.storeBypassed,
                 (unsigned long long)memoTotals.protectedStores,(unsigned long long)memoTotals.copiedBytes);
             const auto& metadata=replayBoundsMetadata.stats();
-            logf("WORLD replay adaptive fastValid=%zu borrowedUs=%.3f extraCheapVisited=%zu preparedHits=%zu preparedMisses=%zu preparedNew=%zu preparedFallbacks=%zu preparedEvictions=%zu preparedEntries=%zu preparedBytes=%zu diagnosticsSampled=1",
+            deferLogf("WORLD replay adaptive fastValid=%zu borrowedUs=%.3f extraCheapVisited=%zu preparedHits=%zu preparedMisses=%zu preparedNew=%zu preparedFallbacks=%zu preparedEvictions=%zu preparedEntries=%zu preparedBytes=%zu diagnosticsSampled=1",
                 stats.fastValid,replayBoundsCache.borrowedMicroseconds(),cheapVisited-reservedCheapVisited,metadata.hits,metadata.misses,metadata.prepared,metadata.fallbacks,metadata.evictions,replayBoundsMetadata.entries(),replayBoundsMetadata.bytes());
             const auto& slow=replayBoundsCache.lastExpensiveEnvelope();
             if(slow.valid){
                 const char* stage=slow.stage==NorthlightReplayBounds::EnvelopeCache::Stage::Cheap?"cheap":"heavy";
                 const char* result=slow.status==NorthlightReplayBounds::Status::Valid?"valid":slow.status==NorthlightReplayBounds::Status::Budget?"budget":slow.status==NorthlightReplayBounds::Status::Invalid?"invalid":"unsupported";
-                logf("WORLD replay expensive cacheFrame=%llu program=%016llx groups=%zu operations=%zu elapsedUs=%.3f stage=%s result=%s skin=%u",
+                deferLogf("WORLD replay expensive cacheFrame=%llu program=%016llx groups=%zu operations=%zu elapsedUs=%.3f stage=%s result=%s skin=%u",
                     (unsigned long long)slow.frame,(unsigned long long)slow.programHash,slow.groups,slow.operations,slow.elapsedUs,stage,result,unsigned(slow.skin));
             }
         }

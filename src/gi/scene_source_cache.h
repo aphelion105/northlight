@@ -109,12 +109,15 @@ public:
     void reset(){std::lock_guard<std::recursive_mutex> lock(mutex_);entries_.clear();while(!identities_.empty())dropIdentity();} // outstanding leases remain charged
     void setLimit(uint64_t bytes){std::lock_guard<std::recursive_mutex> lock(mutex_);limit_=bytes;room(0);}
     uint64_t findIdentity(const std::string& path){
+        // Identity lookup is optional: allocation failure must use the uncached path.
+        try{
         std::lock_guard<std::recursive_mutex> lock(mutex_);const auto current=stamp(path);observeRevision(path,current);
         for(auto i=identities_.begin();i!=identities_.end();++i)if(i->path==path){
             if(i->stamp==current){const auto token=i->token;identities_.splice(identities_.end(),identities_,i);return token;}
             account_->live.fetch_sub(i->bytes,std::memory_order_relaxed);identities_.erase(i);return 0;
         }
         return 0;
+        }catch(const std::bad_alloc&){return 0;}
     }
     std::shared_ptr<const WorldScene> find(const std::string& path,std::string& error){
         std::lock_guard<std::recursive_mutex> lock(mutex_);error.clear();const auto current=stamp(path);observeRevision(path,current);

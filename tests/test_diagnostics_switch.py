@@ -18,10 +18,13 @@ FILES=['renderer.cpp','world_renderer.h','world_shadow_experiment.inl','world_po
 GATES=('NorthlightDiagnostics::enabled()','diagnostics()','sampled()','captureSampled','if(diagnostics)','shadowFate.active()','sampledFrame','profiling()','profileSampled()','if(lightingClock)','materialProfile->recording()','if(profileThisBuild)','if(resetProfile)')
 # Ungated lines that stay with Diagnostics=0: format prefix -> label.
 KEEP={
+ 'WEATHER capture ':'explicit user-requested weather/effect capture; consumeRequest checks the Weather request, fallback caller checks its scopes',
+ 'POINT PCSS unavailable':'one-off per GPU resource lifetime: pointSoftTried is set before optional shader creation',
  'STENCIL depth upgrade unavailable':'one-off per process: unavailableLogged latch',
  'STENCIL depth upgraded':'one-off per process: upgradedLogged latch',
  'AO actor shaders unavailable':'one-off per resource reset: aoActorShaderFailed latch',
  'HDR_LAYER_STATE ':'indirect: hdrLayerDiagnostic exits without Diagnostics and after 12 reports',
+ 'HDR_LAYER_SOURCE ':'indirect: same hdrLayerDiagnostic gate and 12-report limit',
  'HDR_LAYER_STAGE ':'indirect: same hdrLayerDiagnostic gate and bounded stages',
  'HDR legacy compatibility layer ':'capped warning: first eight newly rejected shader patches',
  'UI_TRIAGE ':'indirect: traceUiDraw requires diagnostics, a sampled frame, and fewer than 64 entries',
@@ -162,6 +165,10 @@ assert not unknown,'ungated, unlabelled log sites:\n'+'\n'.join(f'{w} {f}' for w
 r=fp.src('renderer.cpp').read_text();w=fp.src('world_renderer.h').read_text();mp=fp.src('material_profile.h').read_text()
 constructor=r[r.index('Device(IDirect3DDevice9* d,'):r.index('~Device() {')]
 checks={
+ 'weather capture is explicit and point PCSS warnings are latched':
+   'if(consumeRequest&&!NorthlightDiagnosticCapture::take(NorthlightDiagnosticCapture::Weather))return;' in r
+   and 'if(scopes&Weather)captureWeatherDiagnostics(' in r
+   and 'if(!pointSoftTried){\n            pointSoftTried=true;' in fp.src('world_point_rendering.inl').read_text(),
  'HDR CPU timers require the latched diagnostic sample and exclude untimed frames':
    'mirrorState.rawCounting=sampled()&&NorthlightRenderThreadProbe::profiling();' in r
    and 'gateFrame=mirrorState.rawCounting;' in r
@@ -169,7 +176,7 @@ checks={
    and 'CpuScope boundaryTimer(sampledHdr?&cpuHdrBoundary:nullptr);' in r
    and 'if(gateFrame&&!gateUntimed&&hdr.active)logf("CPU HDR frame=' in r,
  'HDR layer-state diagnostics require Diagnostics and stop after twelve reports':
-   'void hdrLayerDiagnostic(){\n        if(hdrLayerStateLogs>=12||!diagnostics())return;\n        ++hdrLayerStateLogs;' in r,
+   'void hdrLayerDiagnostic(const char* path="ui"){\n        if(hdrLayerStateLogs>=12||!diagnostics())return;\n        ++hdrLayerStateLogs;' in r,
  'effect captures require an explicit request and exclude the captured frame':'if(!scopes&&!fallback)return;' in r[r.index('void captureEffectDiagnostics()'):r.index('void releaseResources()')]
    and 'captureEffectDiagnostics();' in r[r.index('void finishFrameImpl()'):r.index('const bool diagnosticFrame=')],
  'reset clock and stage lines require Diagnostics':'const bool resetProfile=diagnostics()&&cpuFrequency.QuadPart>0;' in r,

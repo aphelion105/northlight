@@ -121,8 +121,15 @@ if not a.reuse_exe:
     assert 'MATERIAL_DEFERRED_PRESSURE_PASS' in log
     records.append(dict(safety='DEFERRED_PRESSURE',source_cache_released=True))
     _,log=run(exe,source,'deferred-profile',1,MATERIAL_PROFILE=1)
-    assert 'stage=deferredFlush' in log and 'rawCaptured=' in log and 'complete=1' in log
-    records.append(dict(profiling=True,complete_gpu_coverage=True))
+    assert 'stage=deferredFlush' in log and 'rawCaptured=' in log
+    coverage=re.search(r'MATERIAL_GPU_COVERAGE .*attempted=(\d+) measured=(\d+) complete=(\d+)',log);assert coverage
+    attempted,measured,complete=map(int,coverage.groups())
+    native_calls=sum(map(int,re.findall(r'MATERIAL_CPU .*stage=nativeDraw .*calls=(\d+)',log)))
+    native_spans=sum(map(int,re.findall(r'MATERIAL_GPU .*stage=nativeDraw .*spans=(\d+)',log)))
+    # Native draws are intentionally sampled; every other GPU scope must land.
+    assert 0<measured<=attempted and attempted-measured==native_calls-native_spans
+    assert complete==int(attempted==measured)
+    records.append(dict(profiling=True,attempted=attempted,measured=measured,native_sampled_out=native_calls-native_spans))
     if a.baseline_ref:
         overrides=out/'baseline';overrides.mkdir(exist_ok=True)
         for file in BASELINE_FILES:

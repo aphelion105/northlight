@@ -20,14 +20,17 @@ assert 'void surfaceWeather()' in r and replay.count('surfaceWeather();')==2
 assert replay.index('surfaceWeather();')<replay.index('gpuProfile->endFrame();')
 assert 'NorthlightUiBoundary::accepts(zw!=0,c,zf==D3DCMP_ALWAYS,z!=0)' in r
 manifest=json.loads((fp.SHADERS/'surface-shader-build.json').read_text())
+# Camera frost/sand and particle/weather material updates retain the water withdrawal.
 expected={
-    'RainQuality': 'b4114756ac7a2436c43ca3569aaaa7643f65956fd196ada4d0080eee84d1263b',
-    'SnowQuality': '266a9c1284a7bb113ba62afc14134091421fa0f1819f3126aff1cfa79952b1c4',
-    'RainPerformance': '9840fc871916dcabaef3476481994aaa536005a49b5025e52e55cdc42ec23160',
-    'SnowPerformance': 'b9f653ca3cee66d8a592ca5dbd4490a5ff78bd223392ba3cce7c80afc30a028b',
+    'RainQuality': '61f11c91ba98602e046a8819afd2c5c69b1a14b27678c208f24fa16610a955ea',
+    'SnowQuality': '607b5dd71175684298beead48000a3934658841e793fae7b600363204679e6f5',
+    'RainPerformance': '3874eca5969e75f3b6d235cd0ba69e1193f91a065d5ba8e82521c01b1602012f',
+    'SnowPerformance': 'e82040e44fa2a9af5351820659142cf93a111de741d80de7d532644804eb76d7',
     'RainLens': 'fccc18bb213b0e7cff13952f87f5b4dbbe9fbc0d8c4caae1e1e4fd19aa54f20d',
     'SnowLens': '139ebb74b075120060a237d438c7f4c75d0369476bb8b93d7280126a826e3204',
-    'WeatherLensParticle': '541807725d3b39f54ea99b200a484a86d5ecb9a578287b28b4c6a40272f25e0c',
+    'FrostVignette': 'e2999f61376cc344383041e9ee23cd69e2f4c03b68a65abadd191bf2ec1f5350',
+    'SandLens': 'ab4660054918e03a37f7a6ecf0c312db6172a1d71271b2909b2749846b68f9cd',
+    'WeatherLensParticle': 'a87788e26d832ce915ff2803092a429f202def61a188da6d7f46eab62d0762fc',
 }
 assert set(manifest['shaders'])==set(expected)
 for entry,digest in expected.items():

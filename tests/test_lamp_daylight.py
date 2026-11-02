@@ -34,7 +34,7 @@ int main(){
     const float day=sunlitCut(1,true);
     assert(std::fabs(factor(1,day)-SunlitGain)<1e-6f&&SunlitGain==.3f);   // direct sun: 30%
     assert(factor(.15f,day)==1);                                          // full sun shadow / interior: unchanged
-    assert(factor(0,day)==1);                                             // beyond the far cascade (alpha 0): unchanged
+    assert(factor(-1,day)==1);                                            // unknown far coverage: unchanged
     assert(factor(.575f,day)>SunlitGain&&factor(.575f,day)<1);            // penumbra in between
     // Night: the moon is the first pass (its visibility in the baseline), sun inactive -> no cut at any alpha.
     const float night=sunlitCut(0,false);
@@ -62,13 +62,13 @@ def main():
     shader = fp.src('world_effects.hlsl').read_text()
     cpu = fp.src('world_renderer.h').read_text()
     point = fp.src('world_point_rendering.inl').read_text()
-    lighting = shader[shader.index('LightingOutput WorldLighting('):shader.index('float4 WorldGI(')]
+    lighting = shader[shader.index('LightingOutput worldLightingValue('):shader.index('float4 WorldGI(')]
     local = shader[shader.index('float4 localDirectValue('):shader.index('float3 removalScale(')]
-    # WorldLighting keeps this pass's visibility in the (otherwise unread) baseline alpha.
-    assert 'o.baseline=float4(max(old+AmbientLight.rgb,.15),lerp(visibility,shadow,SunDirection.w)*known);return o;' in lighting
+    # GI and lamps share visibility; -1 distinguishes unknown from fully shadowed.
+    assert 'o.baseline=float4(max(old+AmbientLight.rgb,.15),known?lerp(visibility,shadow,SunDirection.w):-1);return o;' in lighting
     assert 'float3 cover=affinePoint(p,FarMatrix);' in lighting and 'float known=max(abs(cover.x),abs(cover.y))<=1&&cover.z>=0&&cover.z<=1?1:0;' in lighting
     for use in [l for l in shader.splitlines() if 'tex2Dlod(BaselineLighting' in l and 'sunlit=' not in l]:
-        assert '.rgb' in use, use  # nothing else reads the baseline alpha
+        assert '.rgb' in use or 'float fallback=saturate(1-abs(' in use, use
     assert 'float sunlit=saturate((tex2Dlod(BaselineLighting,float4(halfUV,0,0)).a-(1-GridInfo.z))/max(GridInfo.z,.001));' in local
     assert 'return float4(result*(LocalLightInfo.y*(1-LocalLightInfo.z*sunlit)),0);' in local
     # CPU: no global daylight gain (lamp fog c58 and the point lamp as in 0.3.164); c52.z per batch; s12 bound.
