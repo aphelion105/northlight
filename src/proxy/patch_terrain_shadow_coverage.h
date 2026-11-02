@@ -48,7 +48,7 @@ inline bool analyse(const Word* w,std::size_t count,Program& p){
             if(!p.vertex&&type==(p.major==3?1u:3u)){if(index>=10)return false;p.inputs[index]=true;}
         }
         p.ops.push_back({at,op,n});
-        if(op!=31&&op!=81&&op!=48&&op!=47)p.slots+=NorthlightShadowShader::instructionSlots(op);
+        if(op!=31&&op!=81&&op!=48&&op!=47)p.slots+=op==41?3:NorthlightShadowShader::instructionSlots(op);
         at+=n+1;
     }
     return false;
@@ -129,6 +129,10 @@ inline bool pixel(const Word* w,std::size_t count,std::vector<Word>& out,PixelIn
     if(reads.size()!=proof.replaced||!insert||depth)return false;
     std::vector<Word> extra;
     auto emit=[&](unsigned op,std::initializer_list<Word> args){extra.push_back(op|(unsigned(args.size())<<24));extra.insert(extra.end(),args);};
+    // lerp(1, 1, coverage) is exactly one. Lit native pixels need no matrix,
+    // bounds or edge-fade work; partially shadowed pixels retain the old path.
+    emit(1,{dst(0,b,8),src(2,k[0],0xff)});
+    emit(41u|(5u<<16),{src(0,proof.shadowRegister,proof.shadowComponent*0x55u),src(2,k[0],0xff)}); // if_ne
     emit(1,{dst(0,a,1),src(2,k[0],0xaa)});
     for(unsigned source=0;source<sources;++source){
         for(unsigned lane=0;lane<3;++lane)emit(9,{dst(0,b,1u<<lane),src(1,unsigned(varying)),src(2,base+source*3+lane)});
@@ -149,7 +153,8 @@ inline bool pixel(const Word* w,std::size_t count,std::vector<Word>& out,PixelIn
         emit(11,{dst(0,a,1),src(0,a,0x00),src(0,b,0xff)});
     }
     emit(18,{dst(0,b,8),src(0,a,0x00),src(2,k[0],0xff),src(0,proof.shadowRegister,proof.shadowComponent*0x55u)});
-    info.constants=base;info.addedSlots=3+14*sources;
+    emit(43,{}); // endif
+    info.constants=base;info.addedSlots=8+14*sources; // MOV + IF_CMP (3 slots) + ENDIF
     if(p.slots+info.addedSlots>512)return false;
     out.assign(w,w+count);for(auto i:reads)out[i]=src(0,b,0xff);
     if(declaration)out[declaration]|=0xf0000u;

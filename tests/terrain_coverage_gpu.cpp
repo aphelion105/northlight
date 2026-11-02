@@ -84,6 +84,7 @@ int main(int argc,char** argv){
                     rows[source*3][3]=source?.47f:0;rows[source*3+1][3]=source?-.29f:0;}
                 Vertex quad[4]{};
                 for(unsigned i=0;i<4;++i){const float u=i&1?1.f:0.f,v=i&2?1.f:0.f;quad[i].x=u*width-.5f;quad[i].y=v*height-.5f;quad[i].w=1;quad[i].color=0x5799bbddu;
+                    if(pose==0||(pose==2&&(i&1)))quad[i].color|=0xff000000u;
                     quad[i].position[0]=(u*2-1)*(pose%3==0?.8f:1.2f);quad[i].position[1]=(v*2-1)*1.2f;quad[i].position[2]=pose%3==2?1.2f:.5f;quad[i].position[3]=1;}
                 // Uniform exact bounds and their adjacent floats; the other
                 // source is moved outside so it cannot hide a wrong predicate.
@@ -101,7 +102,7 @@ int main(int argc,char** argv){
                     size_t changed=0;for(size_t at=0;at<image[0].size();++at)changed+=image[0][at]!=image[1][at];
                     if(changed)std::printf("IMAGE_MISMATCH sources=%u msaa=%u bits=%u pose=%u changedBytes=%zu\n",sources,samples,bytes*2,pose,changed);
                     assert(!changed);
-                    if(pose<2){bool varied=false;for(size_t at=bytes;at<image[0].size();at+=bytes)varied|=std::memcmp(image[0].data(),image[0].data()+at,bytes)!=0;assert(varied);}
+                    if(pose==1){bool varied=false;for(size_t at=bytes;at<image[0].size();at+=bytes)varied|=std::memcmp(image[0].data(),image[0].data()+at,bytes)!=0;assert(varied);}
                     ++cases;}
             }
             drop(staging);drop(resolved);drop(target);

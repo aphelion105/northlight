@@ -800,7 +800,7 @@ private:
                     if(tag!=owner.vsTags.end())family=unsigned(tag->second>>kFamilyShift)&7u;
                 }
                 if(vs)vs->Release();
-                return owner.hdrColor.draw(device,80,[&]{return args.submit(device);},family);
+                return owner.hdrColor.draw(device,80,[&]{return args.submit(device);},family,&owner.stateBlocks);
             }
             return args.submit(device);
         });
@@ -914,7 +914,7 @@ private:
         });
         if(!linear)return draw();
         bool submitted=false;HRESULT hr=E_FAIL;const unsigned rejected=hdrColor.rejected;const auto previousLayers=hdrColor.layers;
-        extensionWork("HDR UI draw",[&]{const bool sampledHdr=gateFrame&&!gateUntimed;CpuScope hdrTimer(sampledHdr?&cpuHdrTransfer:nullptr);if(sampledHdr)++hdrTransferCalls;hr=hdrColor.draw(ext,hdrFrameSettings.uiWhite,[&]{submitted=true;return draw();});});
+        extensionWork("HDR UI draw",[&]{const bool sampledHdr=gateFrame&&!gateUntimed;CpuScope hdrTimer(sampledHdr?&cpuHdrTransfer:nullptr);if(sampledHdr)++hdrTransferCalls;hr=hdrColor.draw(ext,hdrFrameSettings.uiWhite,[&]{submitted=true;return draw();},0,&stateBlocks);});
         if(hdrColor.layers!=previousLayers)hdrLayerDiagnostic();
         if(hdrColor.rejected!=rejected&&hdrFailuresLogged++<8)logf("HDR legacy compatibility layer frame=%u shaderPatchFallbacks=%u",frame,hdrColor.rejected);
         return submitted?hr:draw();
@@ -1723,7 +1723,7 @@ private:
                 if(sampled()){const unsigned at=++censusDraws; /* 0.3.188 (task 3): read-only census before capture(vs) so no early return hides a draw; sample frames only */
                     if(!drawWaterVS&&NorthlightTranslucentDepth::opaqueZWrite(zw,ab,sb,db,cw))lastOpaqueZAt=at;}
                 if(world->equipmentLightsOn())world->captureEquipmentLights(vs,worldDepth);
-                if(autoBump){float light[4],inverseView[12];world->materialLight(light,inverseView);autoBump->setLight(light);autoBump->setInverseView(inverseView);}
+                if(autoBump&&autoBump->active()){float light[4],inverseView[12];world->materialLight(light,inverseView);autoBump->setLight(light);autoBump->setInverseView(inverseView);}
                 {const unsigned long long reads=CpuScope::reads;{CpuScope cap(sampledDrawTimers()?&cpuCapture:nullptr);capture(vs);}if(CpuScope::reads!=reads)cpuCaptureReads+=CpuScope::reads-reads-1;}
                 if(mirrorState.active()&&mirrorAuditSchedule.afterWorldCapture(frame,
                     mirrorState.vsFloatKnown[0]&&mirrorState.vsFloatKnown[DeviceMirror::VsFloat-1])){
@@ -2243,7 +2243,7 @@ private:
         for(unsigned i=1;i<4;++i)ext->SetRenderTarget(i,nullptr);
         if(FAILED(hdrBindBack(hdrPresentBack)))return;
         ext->SetRenderState(D3DRS_ZWRITEENABLE,FALSE);hdrSkyReplaying=true;
-        hdrColor.draw(ext,80,draw);hdrSkyReplaying=false;
+        hdrColor.draw(ext,80,draw,0,&stateBlocks);hdrSkyReplaying=false;
     }
     template<class Capture,class Draw> HRESULT drawHook(D3DPRIMITIVETYPE t,UINT count,Capture capture,Draw draw){
         if(gpuScene&&!gpuScene->native.currentFrame(frame)){ExtensionDevice::RawScope raw(*ext);gpuScene->setFrame(frame);}

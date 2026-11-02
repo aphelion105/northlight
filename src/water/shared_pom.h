@@ -108,7 +108,7 @@ public:
     }
     void tracking(uint64_t(*identity)(void*,bool),uint64_t(*version)(void*,bool),NorthlightCaptureMetadata::Read metadata){snapshots.setIdentityProvider(identity);snapshots.setVersionProvider(version);snapshots.setMetadataProvider(metadata);}
     void beginDraw(){current=nullptr;ready=false;maps[0]=maps[1]=nullptr;}
-    void reset(){beginDraw();releaseTargets();lookup.clear();indexed=true;entries.clear();resident=0;snapshots.clearIndexCache();declarations.clear();retry=0;}
+    void reset(NorthlightStreaming::CpuRetirementBatch* batch=nullptr){snapshots.clearIndexCache(nullptr,batch);beginDraw();releaseTargets();lookup.clear();indexed=true;entries.clear();resident=0;declarations.clear();retry=0;}
     void setMemoryPressure(bool on){pressure=on;if(on)reset();}
     void endFrame(){beginDraw();++frame;builds=0;uploadBytes=0;if(retry)--retry;snapshots.clearFrame();}
     void report()const{logf("POM_SHARED produced=%llu consumed=%llu cached=%zu geometryBytes=%zu uvBytes=%llu",(unsigned long long)produced,(unsigned long long)consumed,entries.size(),resident,(unsigned long long)width*height*(textures[0]?16:0)+(unsigned long long)width*height*(textures[1]?8:0));}

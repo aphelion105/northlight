@@ -56,7 +56,7 @@ for key, name in [('TEMP', 'tmp'), ('TMP', 'tmp'), ('ZIG_LOCAL_CACHE_DIR', 'zig-
     (out/name).mkdir(exist_ok=True);env[key] = str(out/name)
 env.update(DISABLE_VULKAN_OBS_CAPTURE='1', DXVK_LOG_PATH=str(out))
 exe = out/'model-normals.exe'
-subprocess.run([str(fp.zig()), 'c++', '-target', 'x86-windows-gnu', '-std=c++17', '-O2', '-UNDEBUG',
+subprocess.run([str(fp.zig()), 'c++', '-target', 'x86-windows-gnu', '-std=c++17', '-O2', '-UNDEBUG', '-Wno-microsoft-exception-spec',
                 *fp.test_include_flags(), str(fp.TESTS/'model_normals_gpu.cpp'), str(fp.src('world_gi.cpp')),
                 '-luser32', '-o', str(exe)], env=env, check=True)
 records = []

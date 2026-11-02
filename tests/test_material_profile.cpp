@@ -14,13 +14,22 @@ int main(){
      p.beginFrame(127,true);nanos=100;{P::Scope parent(&p,P::Admission,17);nanos=150;{P::Scope child(&p,P::Snapshot);nanos=200;}nanos=300;}p.endFrame();
      findLog("stage=admission domain=4 mode=1 calls=1 exclusiveMs=0.000150");findLog("stage=snapshot domain=4 mode=1 calls=1 exclusiveMs=0.000050");
      unsigned before=d.reads;p.poll();assert(d.reads-before==1);d.ready=true;p.poll();
-     logs.clear();p.beginFrame(254,true);{P::Scope a(&p,P::CaptureDraw,17,true);a.work(100);}{P::Scope b(&p,P::NativeDraw,17,true);b.work(100);}p.endFrame();p.poll();
+     logs.clear();p.beginFrame(2032,true);{P::Scope a(&p,P::CaptureDraw,17,true);a.work(100);}{P::Scope b(&p,P::NativeDraw,17,true);b.work(100);}p.endFrame();p.poll();
      findLog("stage=captureDraw domain=4 mode=1 spans=1 ms=1.000000 items=100");findLog("attempted=2 measured=2 complete=1 sumIntervalsMs=2.000000");
      p.reset();assert(!d.live);d.ready=false;
      for(unsigned i=0;i<3;++i){p.beginFrame(1000+i,true);{P::Scope a(&p,P::CaptureDraw,17,true);}p.endFrame();}
      before=d.creates;p.beginFrame(1003,true);logs.clear();nanos=1000;const auto beforeClock=clockReads;{P::Scope a(&p,P::NativeDraw,17,true);nanos=1250;}assert(clockReads-beforeClock==2);p.endFrame();findLog("stage=nativeDraw domain=4 mode=1 calls=1 exclusiveMs=0.000250");assert(d.creates==before);before=d.reads;p.poll();assert(d.reads-before==3);
      d.ready=true;p.poll();p.reset();assert(!d.live);
-     logs.clear();p.beginFrame(2000,true);for(unsigned i=0;i<4100;++i){P::Scope a(&p,P::CaptureDraw,17,true);}p.endFrame();p.poll();findLog("attempted=4100 measured=4096 complete=0");
+     logs.clear();p.beginFrame(2000,true);for(unsigned i=0;i<4100;++i){P::Scope a(&p,P::CaptureDraw,17,true);}p.endFrame();p.poll();findLog("attempted=4100 measured=256 complete=0");
+     p.reset();
+     for(unsigned frame=0;frame<16;++frame){
+         logs.clear();p.beginFrame(frame*127,true);
+         for(unsigned i=0;i<1600;++i){P::Scope a(&p,P::NativeDraw,7,true);a.work(1);}
+         for(unsigned i=0;i<16;++i){P::Scope a(&p,P::NativeDraw,19,true);a.work(1);}
+         p.endFrame();p.poll();findLog("attempted=1616 measured=101 complete=0");
+         findLog("stage=nativeDraw domain=1 mode=3 spans=100");
+         findLog("stage=nativeDraw domain=4 mode=3 spans=1");
+     }
      p.reset();d.failCreate=true;logs.clear();p.beginFrame(3000,true);{P::Scope a(&p,P::Admission);}p.endFrame();findLog("MATERIAL_CPU");assert(!d.live);d.failCreate=false;p.reset();
      logs.clear();p.beginFrame(4000,true);{P::Scope a(&p,P::CaptureDraw,17,true);}p.endFrame();d.disjoint=true;p.poll();findLog("discarded=disjoint");d.disjoint=false;p.reset();
      p.beginFrame(5000,true);{P::Scope a(&p,P::CaptureDraw,17,true);p.reset();}assert(!d.live);

@@ -18,10 +18,10 @@ public:
         GeometryHit,GeometryBuilt,OcclusionDraw,OcclusionFarSkipped,CounterCount};
     struct Scope;
 private:
-    static constexpr unsigned Tags=20,Ring=3,MaxSpans=4096;
+    static constexpr unsigned Tags=20,Ring=3,MaxSpans=256,NativeStride=16;
     struct CPU {uint64_t exclusive=0,inclusive=0,items=0,bytes=0;unsigned calls=0;};
     struct Pair {IDirect3DQuery9* first=nullptr,*last=nullptr;Stage stage=Admission;unsigned tag=0;uint64_t items=0;};
-    struct Slot {std::vector<Pair> pairs;IDirect3DQuery9* frequency=nullptr,*disjoint=nullptr;uint64_t frame=0;unsigned used=0,attempted=0;bool pending=false;};
+    struct Slot {std::vector<Pair> pairs;IDirect3DQuery9* frequency=nullptr,*disjoint=nullptr;uint64_t frame=0;unsigned used=0,attempted=0;std::array<unsigned,Tags> nativeVisits{};bool pending=false;};
     IDirect3DDevice9* d;Clock clock;
     std::array<CPU,StageCount*Tags> cpu{};std::array<uint64_t,CounterCount> counts{};Slot slots[Ring];Scope* parent=nullptr;
     uint64_t frame=0,epoch=0,reads=0,queryNs=0;unsigned queryCreates=0;int gpu=-1;
@@ -35,6 +35,9 @@ private:
     bool issue(IDirect3DQuery9* q,DWORD flags){HRESULT hr=q->Issue(flags);if(FAILED(hr)){fail("issue",hr);return false;}return true;}
     int beginGPU(Stage stage,unsigned tag){
         if(gpu<0||gpuDisabled)return -1;auto& s=slots[gpu];++s.attempted;
+        // Thousands of timestamp pairs split the native scene on sample frames.
+        // Rotate a bounded subset per domain; report actual coverage, never scale it.
+        if(stage==NativeDraw&&((s.nativeVisits[tag]++)+s.frame/127)%NativeStride)return -1;
         if(gpuOpen||s.used==MaxSpans)return -1;
         try{if(s.pairs.size()==s.used)s.pairs.emplace_back();}catch(...){fail("allocation",E_FAIL);return -1;}
         const unsigned i=s.used;auto& p=s.pairs[i];
@@ -73,7 +76,7 @@ public:
         if(gpuDisabled)return;uint64_t began=tick();
         for(unsigned i=0;i<Ring;++i){auto& s=slots[i];if(s.pending)continue;
             if(!create(D3DQUERYTYPE_TIMESTAMPFREQ,s.frequency)||!create(D3DQUERYTYPE_TIMESTAMPDISJOINT,s.disjoint))break;
-            s.frame=number;s.used=s.attempted=0;if(issue(s.disjoint,D3DISSUE_BEGIN)){gpu=int(i);gpuSample=true;}break;}
+            s.frame=number;s.used=s.attempted=0;s.nativeVisits={};if(issue(s.disjoint,D3DISSUE_BEGIN)){gpu=int(i);gpuSample=true;}break;}
         queryNs+=tick()-began;
     }
     void endFrame(){

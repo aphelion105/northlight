@@ -26,6 +26,14 @@ class Color {
             SUCCEEDED(d->GetTexture(stage,&texture))&&!texture;
         release(texture);return disabled;
     }
+    static bool directTextureCoordinates(IDirect3DDevice9* d,unsigned stage){
+        DWORD transform=0;if(FAILED(d->GetTextureStageState(stage,D3DTSS_TEXTURETRANSFORMFLAGS,&transform)))return false;
+        if(transform==D3DTTFF_DISABLE)return true;
+        // D3D9 ignores affine texture transforms on pretransformed vertices.
+        // Keep projected coordinates and actual vertex transforms in the layer.
+        DWORD fvf=0;if(transform!=D3DTTFF_COUNT2||FAILED(d->GetFVF(&fvf))||(fvf&D3DFVF_POSITION_MASK)!=D3DFVF_XYZRHW)return false;
+        IDirect3DVertexShader9* vs=nullptr;const HRESULT hr=d->GetVertexShader(&vs);const bool fixed=!vs;release(vs);return SUCCEEDED(hr)&&fixed;
+    }
 public:
     unsigned patched=0,rejected=0;
     std::uint64_t layers=0,layerPixels=0,screenDirect=0,attenuationDirect=0,multiTextureDirect=0;
@@ -33,8 +41,8 @@ public:
     std::uint64_t payloadBytes()const{return std::uint64_t(layerDesc.Width)*layerDesc.Height*4*((layerTexture?1:0)+(layerMsaa?unsigned(layerDesc.MultiSampleType):0));}
     void forget(IDirect3DPixelShader9* original){for(auto& shaders:shaderBanks){auto it=shaders.find(original);if(it!=shaders.end()){for(auto*& p:it->second.shader)release(p);shaders.erase(it);}}}
     void reset(){for(auto& shaders:shaderBanks){for(auto& e:shaders)for(auto*& p:e.second.shader)release(p);shaders.clear();}release(world);release(fixedUi);release(multiFixedUi);release(layerShader);release(layerSurface);release(layerTexture);release(layerMsaa);layerDesc={};uiScale=0;}
-    template<class Draw> HRESULT legacyLayer(IDirect3DDevice9* d,float uiWhite,Draw submit){
-        SavedState saved(d);if(!saved.ok)return E_FAIL;
+    template<class Draw> HRESULT legacyLayer(IDirect3DDevice9* d,float uiWhite,Draw submit,NorthlightStateBlockPool* pool=nullptr){
+        SavedState saved(d,pool);if(!saved.ok)return E_FAIL;
         D3DSURFACE_DESC desc{};HRESULT hr=saved.targets[0]->GetDesc(&desc);if(FAILED(hr))return hr;
         ++layers;layerPixels+=std::uint64_t(desc.Width)*desc.Height;
         DWORD enabled=0,src=0,dst=0,writes=15;d->GetRenderState(D3DRS_ALPHABLENDENABLE,&enabled);d->GetRenderState(D3DRS_SRCBLEND,&src);d->GetRenderState(D3DRS_DESTBLEND,&dst);d->GetRenderState(D3DRS_COLORWRITEENABLE,&writes);
@@ -85,8 +93,8 @@ public:
            FAILED(d->CreatePixelShader(reinterpret_cast<const DWORD*>(result.data()),&entry.shader[variant]))){++rejected;return nullptr;}
         ++patched;return entry.shader[variant];
     }
-    template<class Draw> HRESULT fixedDraw(IDirect3DDevice9* d,float uiWhite,Draw submit){
-        DWORD fog=0,coordinates=0,transform=0,blend=0,src=0,dst=0;
+    template<class Draw> HRESULT fixedDraw(IDirect3DDevice9* d,float uiWhite,Draw submit,NorthlightStateBlockPool* pool=nullptr){
+        DWORD fog=0,coordinates=0,blend=0,src=0,dst=0;
         d->GetRenderState(D3DRS_ALPHABLENDENABLE,&blend);if(blend){d->GetRenderState(D3DRS_SRCBLEND,&src);d->GetRenderState(D3DRS_DESTBLEND,&dst);}
         if(blend&&src==D3DBLEND_ZERO&&dst==D3DBLEND_INVSRCALPHA){
             DWORD op=0,writes=0,srgb=0;
@@ -106,44 +114,44 @@ public:
             if(!disabledStage(d,2)||FAILED(d->GetTextureStageState(0,D3DTSS_RESULTARG,&result))||result!=D3DTA_CURRENT||
                FAILED(d->GetTextureStageState(1,D3DTSS_RESULTARG,&result))||result!=D3DTA_CURRENT||
                FAILED(d->GetTextureStageState(1,D3DTSS_TEXCOORDINDEX,&coordinates))||coordinates>1||
-               FAILED(d->GetTextureStageState(1,D3DTSS_TEXTURETRANSFORMFLAGS,&transform))||transform!=D3DTTFF_DISABLE)return legacyLayer(d,uiWhite,submit);
+               !directTextureCoordinates(d,1))return legacyLayer(d,uiWhite,submit,pool);
             second[3]=float(coordinates);
             for(unsigned channel=0;channel<2;++channel){
                 float* flags=second+channel*4;flags[0]=flags[1]=flags[2]=0;DWORD op=0;
                 if(FAILED(d->GetTextureStageState(1,channel?D3DTSS_ALPHAOP:D3DTSS_COLOROP,&op)))return E_FAIL;
-                if(op!=D3DTOP_SELECTARG1&&op!=D3DTOP_SELECTARG2&&op!=D3DTOP_MODULATE)return legacyLayer(d,uiWhite,submit);
+                if(op!=D3DTOP_SELECTARG1&&op!=D3DTOP_SELECTARG2&&op!=D3DTOP_MODULATE)return legacyLayer(d,uiWhite,submit,pool);
                 for(unsigned arg=1;arg<=2;++arg){
                     if((op==D3DTOP_SELECTARG1&&arg==2)||(op==D3DTOP_SELECTARG2&&arg==1))continue;
                     DWORD value=0;const auto state=channel?(arg==1?D3DTSS_ALPHAARG1:D3DTSS_ALPHAARG2):(arg==1?D3DTSS_COLORARG1:D3DTSS_COLORARG2);
                     if(FAILED(d->GetTextureStageState(1,state,&value)))return E_FAIL;
                     const unsigned index=value==D3DTA_TEXTURE?0:value==D3DTA_CURRENT?1:value==D3DTA_DIFFUSE?2:3;
-                    if(index==3||flags[index])return legacyLayer(d,uiWhite,submit);flags[index]=1;
+                    if(index==3||flags[index])return legacyLayer(d,uiWhite,submit,pool);flags[index]=1;
                 }
             }
-            if(second[0]||second[4]){IDirect3DBaseTexture9* texture=nullptr;const HRESULT hr=d->GetTexture(1,&texture);const bool present=texture&&texture->GetType()==D3DRTYPE_TEXTURE;release(texture);if(FAILED(hr))return hr;if(!present)return legacyLayer(d,uiWhite,submit);}
+            if(second[0]||second[4]){IDirect3DBaseTexture9* texture=nullptr;const HRESULT hr=d->GetTexture(1,&texture);const bool present=texture&&texture->GetType()==D3DRTYPE_TEXTURE;release(texture);if(FAILED(hr))return hr;if(!present)return legacyLayer(d,uiWhite,submit,pool);}
         }
         if(FAILED(d->GetRenderState(D3DRS_FOGENABLE,&fog))||fog||
            FAILED(d->GetTextureStageState(0,D3DTSS_TEXCOORDINDEX,&coordinates))||coordinates||
-           FAILED(d->GetTextureStageState(0,D3DTSS_TEXTURETRANSFORMFLAGS,&transform))||transform!=D3DTTFF_DISABLE)return legacyLayer(d,uiWhite,submit);
+           !directTextureCoordinates(d,0))return legacyLayer(d,uiWhite,submit,pool);
         float flags[4]{};
         for(unsigned channel=0;channel<2;++channel){
             DWORD op=0;if(FAILED(d->GetTextureStageState(0,channel?D3DTSS_ALPHAOP:D3DTSS_COLOROP,&op)))return E_FAIL;
             if(channel&&op==D3DTOP_DISABLE){flags[3]=1;continue;}
-            if(op!=D3DTOP_SELECTARG1&&op!=D3DTOP_SELECTARG2&&op!=D3DTOP_MODULATE)return legacyLayer(d,uiWhite,submit);
+            if(op!=D3DTOP_SELECTARG1&&op!=D3DTOP_SELECTARG2&&op!=D3DTOP_MODULATE)return legacyLayer(d,uiWhite,submit,pool);
             for(unsigned arg=1;arg<=2;++arg){
                 if((op==D3DTOP_SELECTARG1&&arg==2)||(op==D3DTOP_SELECTARG2&&arg==1))continue;
                 DWORD value=0;const auto state=channel?(arg==1?D3DTSS_ALPHAARG1:D3DTSS_ALPHAARG2):(arg==1?D3DTSS_COLORARG1:D3DTSS_COLORARG2);
                 if(FAILED(d->GetTextureStageState(0,state,&value)))return E_FAIL;
-                if(value==D3DTA_TEXTURE){if(flags[channel*2])return legacyLayer(d,uiWhite,submit);flags[channel*2]=1;}
-                else if(value==D3DTA_DIFFUSE||value==D3DTA_CURRENT){if(flags[channel*2+1])return legacyLayer(d,uiWhite,submit);flags[channel*2+1]=1;}
-                else return legacyLayer(d,uiWhite,submit);
+                if(value==D3DTA_TEXTURE){if(flags[channel*2])return legacyLayer(d,uiWhite,submit,pool);flags[channel*2]=1;}
+                else if(value==D3DTA_DIFFUSE||value==D3DTA_CURRENT){if(flags[channel*2+1])return legacyLayer(d,uiWhite,submit,pool);flags[channel*2+1]=1;}
+                else return legacyLayer(d,uiWhite,submit,pool);
             }
         }
         // Sampling an absent texture has special fixed-function semantics.
-        if(flags[0]||flags[2]){IDirect3DBaseTexture9* texture=nullptr;const HRESULT hr=d->GetTexture(0,&texture);const bool present=texture!=nullptr;release(texture);if(FAILED(hr))return hr;if(!present)return legacyLayer(d,uiWhite,submit);}
-        if(blend&&(src==D3DBLEND_DESTCOLOR||src==D3DBLEND_ZERO))return legacyLayer(d,uiWhite,submit);
+        if(flags[0]||flags[2]){IDirect3DBaseTexture9* texture=nullptr;const HRESULT hr=d->GetTexture(0,&texture);const bool present=texture!=nullptr;release(texture);if(FAILED(hr))return hr;if(!present)return legacyLayer(d,uiWhite,submit,pool);}
+        if(blend&&(src==D3DBLEND_DESTCOLOR||src==D3DBLEND_ZERO))return legacyLayer(d,uiWhite,submit,pool);
         auto*& shader=multi?multiFixedUi:fixedUi;
-        if(!shader){const HRESULT hr=d->CreatePixelShader(reinterpret_cast<const DWORD*>(multi?kHdrFixedUi2:kHdrFixedUi),&shader);if(FAILED(hr))return legacyLayer(d,uiWhite,submit);}
+        if(!shader){const HRESULT hr=d->CreatePixelShader(reinterpret_cast<const DWORD*>(multi?kHdrFixedUi2:kHdrFixedUi),&shader);if(FAILED(hr))return legacyLayer(d,uiWhite,submit,pool);}
         const unsigned registers=multi?4:2;
         float constants[16];DWORD srgb=0;HRESULT hr=d->GetPixelShaderConstantF(0,constants,registers);if(FAILED(hr))return hr;
         hr=d->GetRenderState(D3DRS_SRGBWRITEENABLE,&srgb);if(FAILED(hr))return hr;
@@ -156,10 +164,10 @@ public:
         if(SUCCEEDED(hr)&&restore.screen){++screenDirect;hr=d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE);}
         if(SUCCEEDED(hr)){if(multi)++multiTextureDirect;hr=submit();}return hr;
     }
-    template<class Draw> HRESULT draw(IDirect3DDevice9* d,float uiWhite,Draw submit,unsigned particleFamily=0){
+    template<class Draw> HRESULT draw(IDirect3DDevice9* d,float uiWhite,Draw submit,unsigned particleFamily=0,NorthlightStateBlockPool* pool=nullptr){
         IDirect3DPixelShader9* original=nullptr;
         if(FAILED(d->GetPixelShader(&original)))return E_FAIL;
-        if(!original)return fixedDraw(d,uiWhite,submit);
+        if(!original)return fixedDraw(d,uiWhite,submit,pool);
         DWORD src=0,dst=0,srgb=0,blend=0;d->GetRenderState(D3DRS_ALPHABLENDENABLE,&blend);
         if(blend){d->GetRenderState(D3DRS_SRCBLEND,&src);d->GetRenderState(D3DRS_DESTBLEND,&dst);}
         const HRESULT srgbStatus=d->GetRenderState(D3DRS_SRGBWRITEENABLE,&srgb);if(FAILED(srgbStatus)){original->Release();return srgbStatus;}
@@ -175,7 +183,7 @@ public:
            SUCCEEDED(d->GetRenderState(D3DRS_BLENDOP,&op))&&op==D3DBLENDOP_ADD)
             shader=replacement(d,original,80,3);
         if(!shader)shader=replacement(d,original,uiWhite,variant);
-        if(!shader)return legacyLayer(d,uiWhite,submit);
+        if(!shader)return legacyLayer(d,uiWhite,submit,pool);
         HRESULT hr=d->SetPixelShader(shader);if(SUCCEEDED(hr))hr=d->SetRenderState(D3DRS_SRGBWRITEENABLE,FALSE);
         if(SUCCEEDED(hr)&&screen){++screenDirect;hr=d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE);}
         if(SUCCEEDED(hr))hr=submit();return hr;

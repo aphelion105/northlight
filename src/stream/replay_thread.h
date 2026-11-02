@@ -611,10 +611,10 @@ private:
             if(pos>=5)continue;const unsigned end=count<5?count++:4;
             for(unsigned i=end;i>pos;--i)top[i]=top[i-1];top[pos]=id;
         }
-        char buf[kLine];int n=std::snprintf(buf,sizeof buf,"CSTREAM REPLAY frame=%llu calls=%u measuredMs=%.4f clockReads=%llu maxMs=%.4f maxCmd=%s top=",
+        char buf[kLine];int n=std::snprintf(buf,sizeof buf,"CSTREAM REPLAY frame=%llu calls=%u measuredMs=%.4f clockReads=%llu maxMs=%.4f maxCmd=%s observedCalls=%u stateStride=%u scope=measured-subset-not-extrapolated top=",
             (unsigned long long)p.frame,p.calls,double(p.totalNs)/1e6,(unsigned long long)p.calls*2,
-            double(p.maxNs)/1e6,cmdName((Cmd)p.maxId));
-        for(unsigned i=0;i<count;++i)put(buf,n,"%s%s:%.4fms/%u",i?",":"",cmdName((Cmd)top[i]),double(p.entries[top[i]].ns)/1e6,p.entries[top[i]].calls);
+            double(p.maxNs)/1e6,cmdName((Cmd)p.maxId),p.observed,ReplayFrameProfile::StateStride);
+        for(unsigned i=0;i<count;++i)put(buf,n,"%s%s:%.4fms/%u/%u",i?",":"",cmdName((Cmd)top[i]),double(p.entries[top[i]].ns)/1e6,p.entries[top[i]].calls,p.entries[top[i]].observed);
         log(buf);
         const auto& u=p.upload;if(u.calls){std::snprintf(buf,sizeof buf,"CSTREAM UPLOAD frame=%llu calls=%u bytes=%llu skipped=%u failed=%u lockMs=%.4f copyMs=%.4f unlockMs=%.4f maxLockMs=%.4f maxCopyMs=%.4f maxUnlockMs=%.4f clockReads=%u",
             (unsigned long long)p.frame,u.calls,(unsigned long long)u.bytes,u.skipped,u.failed,double(u.lockNs)/1e6,double(u.copyNs)/1e6,double(u.unlockNs)/1e6,double(u.maxLockNs)/1e6,double(u.maxCopyNs)/1e6,double(u.maxUnlockNs)/1e6,u.clockReads);log(buf);}
@@ -726,7 +726,16 @@ private:
             q.serveExpress(lastCmd);
             if(h->id==(std::uint16_t)Cmd::Stop){q.retire(h);if(idleTracking_)logIdleGaps();return;}
             if(!frameOpen_)beginFrame();   // 0.3.200 (frame skip)
-            const unsigned id=h->id;const bool timed=replayProfile_.enabled;
+            const unsigned id=h->id;bool stateOnly=false;
+            if(replayProfile_.enabled)switch(Cmd(id)){
+                case Cmd::Device_SetTexture:case Cmd::Device_SetTextureStageState:case Cmd::Device_SetSamplerState:
+                case Cmd::Device_SetRenderState:case Cmd::Device_SetVertexShader:case Cmd::Device_SetPixelShader:
+                case Cmd::Device_SetVertexShaderConstantF:case Cmd::Device_SetPixelShaderConstantF:
+                case Cmd::Device_SetStreamSource:case Cmd::Device_SetIndices:case Cmd::Device_SetFVF:
+                case Cmd::Device_SetVertexDeclaration:stateOnly=true;break;
+                default:break;
+            }
+            const bool timed=replayProfile_.sample(id,stateOnly);
             const auto started=timed?nowNs():0;
             execute(h);
             if(timed){const auto ended=nowNs();replayProfile_.record(id,ended>=started?ended-started:0);}

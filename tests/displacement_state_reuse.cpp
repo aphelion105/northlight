@@ -411,11 +411,11 @@ struct MaterialCaptureStateTestAccess {
             std::vector<unsigned> submitted;for(unsigned phase=0;phase<3;++phase){b.enabled=phase==1;b.profileConfigFrame=~uint64_t(0);b.beginDraw();assert(nativeGpuConfig==(phase==1?1:0));const unsigned before=d.timestamps;const auto reads=ProfileDevice::clockReads();
                 for(unsigned i=0;i<32;++i){if(!b.enabled)b.capture(&d.vs,[]{return D3D_OK;});else b.profileTag=19;
                     const HRESULT expected=i&1?E_FAIL:D3D_OK;assert(b.nativeDraw([&]{submitted.push_back(phase*32+i);return expected;})==expected);}
-                assert(d.timestamps-before==(phase==1?64u:0u));assert(ProfileDevice::clockReads()-reads==(phase==1?192u:128u));}
-            for(unsigned i=0;i<96;++i)assert(submitted[i]==i);assert(d.creates==66&&!d.pixelQueries&&!d.pixelConstants&&!d.textures&&!d.samplers&&!d.depthAllocations);
+                assert(d.timestamps-before==(phase==1?4u:0u));assert(ProfileDevice::clockReads()-reads==(phase==1?132u:0u));}
+            for(unsigned i=0;i<96;++i)assert(submitted[i]==i);assert(d.creates==6&&!d.pixelQueries&&!d.pixelConstants&&!d.textures&&!d.samplers&&!d.depthAllocations);
             profile.endFrame();profile.reset();assert(!d.live);
         }assert(d.vs.refs==1);
-        std::puts("MATERIAL_INACTIVE_NATIVE_PROFILE_PASS off_on_off_timestamp_issues=0,64,0 native_draws=96 exact_returns cpu_admission_retained no_render_state_changes query_refs_released");
+        std::puts("MATERIAL_INACTIVE_NATIVE_PROFILE_PASS off_on_off_timestamp_issues=0,4,0 native_draws=96 exact_returns inactive_cpu_reads=0 no_render_state_changes query_refs_released");
     }
     static void lazyVertex(){
         using namespace NorthlightWaterShaderPatch;

@@ -1583,7 +1583,8 @@ struct StreamQuery final:IDirect3DQuery9,ProxyBase {
                     hr=eventStatus.load(std::memory_order_relaxed);
                     if(hr==S_OK&&data){const BOOL value=eventValue.load(std::memory_order_relaxed);std::memcpy(data,&value,sizeof value);}
                 }else{
-                    auto poll=[&]{return static_cast<IDirect3DQuery9*>(inner)->GetData(data,size,flags);};
+                    EventFlushCadence cadence;
+                    auto poll=[&]{return static_cast<IDirect3DQuery9*>(inner)->GetData(data,size,event?cadence.flags(nowNs()):flags);};
                     if(event){unsigned calls=0;std::uint64_t pendingNs=0;hr=waitEventQuery(poll,nowNs,[]{std::this_thread::yield();},calls,kEventFlushWaitNs,&pendingNs);own(q.stats.eventGpuWaitNs,pendingNs);own(q.stats.eventPollCalls,calls);own(q.stats.eventWaitTrips);}
                     else hr=poll();
                 }

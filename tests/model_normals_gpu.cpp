@@ -10,7 +10,9 @@
 #include <vector>
 #include <memory>
 #include "world_math.h"
+#include "forwarders.h"
 #include "model_normal_renderer.h"
+#include "saved_state.h"
 using NorthlightGI::Vec3;
 static void checked(HRESULT h,int line){if(FAILED(h)){std::printf("line=%d HRESULT=%08lx\n",line,(unsigned long)h);std::abort();}}
 #define ok(x) checked((x),__LINE__)
@@ -20,6 +22,45 @@ struct Vertex {float p[3],n[3],uv[2];};
 struct Quad {float x,y,z,w,u,v;};
 struct Target {IDirect3DTexture9* t=nullptr;IDirect3DSurface9 *s=nullptr,*read=nullptr;unsigned w=0,h=0,bytes=0;D3DFORMAT format;};
 static IDirect3DDevice9* d;
+struct CaptureCalls:ForwardIDirect3DDevice9 {
+    unsigned renderSets=0,targetSets=0,failRender=0,failTarget=0;bool failAfter=false,faultSeen=false;
+    using ForwardIDirect3DDevice9::ForwardIDirect3DDevice9;
+    HRESULT STDMETHODCALLTYPE SetRenderState(D3DRENDERSTATETYPE key,DWORD value)override{
+        if(++renderSets!=failRender)return real->SetRenderState(key,value);faultSeen=true;if(failAfter)ok(real->SetRenderState(key,value));return E_FAIL;
+    }
+    HRESULT STDMETHODCALLTYPE SetRenderTarget(DWORD slot,IDirect3DSurface9* target)override{
+        if(++targetSets!=failTarget)return real->SetRenderTarget(slot,target);faultSeen=true;if(failAfter)ok(real->SetRenderTarget(slot,target));return E_FAIL;
+    }
+};
+template<class Draw> static void captureFaults(CaptureCalls& calls,NorthlightModelNormals& normals,IDirect3DVertexShader9* vs,Draw draw){
+    SavedState original(d);assert(original.ok);D3DSURFACE_DESC desc{};ok(original.targets[0]->GetDesc(&desc));
+    IDirect3DSurface9* secondary[3]{};for(auto*& rt:secondary)ok(d->CreateRenderTarget(desc.Width,desc.Height,desc.Format,D3DMULTISAMPLE_NONE,0,FALSE,&rt,nullptr));
+    const D3DRENDERSTATETYPE keys[]={D3DRS_ZENABLE,D3DRS_ZWRITEENABLE,D3DRS_ZFUNC,D3DRS_ALPHABLENDENABLE,D3DRS_ALPHATESTENABLE,D3DRS_STENCILENABLE,D3DRS_SCISSORTESTENABLE,D3DRS_SRGBWRITEENABLE,D3DRS_FOGENABLE,D3DRS_COLORWRITEENABLE,D3DRS_COLORWRITEENABLE1,D3DRS_COLORWRITEENABLE2,D3DRS_COLORWRITEENABLE3,D3DRS_WRAP5,D3DRS_WRAP7};
+    for(auto key:{D3DRS_STENCILENABLE,D3DRS_SCISSORTESTENABLE,D3DRS_SRGBWRITEENABLE,D3DRS_FOGENABLE})ok(d->SetRenderState(key,TRUE));
+    ok(d->SetRenderState(D3DRS_ZFUNC,D3DCMP_LESS));ok(d->SetRenderState(D3DRS_COLORWRITEENABLE,7));
+    ok(d->SetRenderState(D3DRS_COLORWRITEENABLE1,1));ok(d->SetRenderState(D3DRS_COLORWRITEENABLE2,2));ok(d->SetRenderState(D3DRS_COLORWRITEENABLE3,4));
+    DWORD states[15];for(unsigned i=0;i<15;++i)ok(d->GetRenderState(keys[i],states+i));
+    float constants[224][4],restored[224][4];ok(d->GetPixelShaderConstantF(0,constants[0],224));
+    unsigned cases=0;
+    for(bool mrt:{false,true}){
+        for(unsigned i=0;i<3;++i)ok(d->SetRenderTarget(i+1,mrt?secondary[i]:nullptr));
+        auto capture=[&]{normals.endFrame();ok(d->BeginScene());normals.capture(vs,draw,true);ok(d->EndScene());};
+        const unsigned beforeRender=calls.renderSets,beforeTarget=calls.targetSets;capture();assert(normals.texture());
+        const unsigned renderCount=calls.renderSets-beforeRender,targetCount=calls.targetSets-beforeTarget;
+        for(bool after:{false,true})for(bool target:{false,true})for(unsigned call=1;call<=(target?targetCount:renderCount);++call){
+            calls.failAfter=after;calls.faultSeen=false;if(target)calls.failTarget=calls.targetSets+call;else calls.failRender=calls.renderSets+call;
+            capture();assert(calls.faultSeen);calls.failRender=calls.failTarget=0;
+            for(unsigned i=0;i<15;++i){DWORD value=0;ok(d->GetRenderState(keys[i],&value));assert(value==states[i]);}
+            for(unsigned i=0;i<4;++i){IDirect3DSurface9* rt=nullptr;const auto hr=d->GetRenderTarget(i,&rt);assert(SUCCEEDED(hr)||hr==D3DERR_NOTFOUND);assert(rt==(i?(mrt?secondary[i-1]:nullptr):original.targets[0]));if(rt)rt->Release();}
+            IDirect3DSurface9* ds=nullptr;ok(d->GetDepthStencilSurface(&ds));assert(ds==original.depth);if(ds)ds->Release();
+            D3DVIEWPORT9 vp{};ok(d->GetViewport(&vp));assert(!std::memcmp(&vp,&original.viewport,sizeof vp));
+            IDirect3DVertexShader9* vertex=nullptr;ok(d->GetVertexShader(&vertex));assert(vertex==vs);vertex->Release();
+            ok(d->GetPixelShaderConstantF(0,restored[0],224));assert(!std::memcmp(constants,restored,sizeof constants));++cases;
+        }
+    }
+    for(unsigned i=0;i<3;++i){ok(d->SetRenderTarget(i+1,nullptr));secondary[i]->Release();}
+    std::printf("MODEL_NORMALS_FAULT_PASS cases=%u setters=render/target failure=before/after mrt=0/3\n",cases);
+}
 static Target target(unsigned w,unsigned h,D3DFORMAT f,unsigned bytes){Target t;t.w=w;t.h=h;t.bytes=bytes;t.format=f;ok(d->CreateTexture(w,h,1,D3DUSAGE_RENDERTARGET,f,D3DPOOL_DEFAULT,&t.t,nullptr));ok(t.t->GetSurfaceLevel(0,&t.s));ok(d->CreateOffscreenPlainSurface(w,h,f,D3DPOOL_SYSTEMMEM,&t.read,nullptr));return t;}
 static std::vector<unsigned char> pixels(Target& t,const std::string& file=""){ok(d->GetRenderTargetData(t.s,t.read));D3DLOCKED_RECT lock{};ok(t.read->LockRect(&lock,nullptr,D3DLOCK_READONLY));std::vector<unsigned char> b(size_t(t.w)*t.h*t.bytes);for(unsigned y=0;y<t.h;++y)std::memcpy(b.data()+size_t(y)*t.w*t.bytes,(char*)lock.pBits+y*lock.Pitch,t.w*t.bytes);ok(t.read->UnlockRect());if(!file.empty()){std::ofstream f(file,std::ios::binary);unsigned header[]={0x31524746,t.w,t.h,unsigned(t.format),t.bytes};f.write((char*)header,sizeof header);f.write((char*)b.data(),b.size());}return b;}
 static void bind(unsigned slot,IDirect3DBaseTexture9* t){ok(d->SetTexture(slot,t));for(auto k:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})ok(d->SetSamplerState(slot,k,D3DTEXF_POINT));for(auto k:{D3DSAMP_ADDRESSU,D3DSAMP_ADDRESSV})ok(d->SetSamplerState(slot,k,D3DTADDRESS_CLAMP));ok(d->SetSamplerState(slot,D3DSAMP_MIPFILTER,D3DTEXF_NONE));}
@@ -41,7 +82,7 @@ int main(int argc,char**argv){
     auto sourceMesh=read(dir+"human-0.mesh");unsigned meshVertices,meshIndices;std::memcpy(&meshVertices,sourceMesh.data()+4,4);std::memcpy(&meshIndices,sourceMesh.data()+8,4);assert(sourceMesh.size()==12+meshVertices*48+meshIndices*4);
     D3DVERTEXELEMENT9 modelElements[]={{0,0,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_POSITION,0},{0,12,D3DDECLTYPE_UBYTE4N,0,D3DDECLUSAGE_BLENDWEIGHT,0},{0,16,D3DDECLTYPE_UBYTE4,0,D3DDECLUSAGE_BLENDINDICES,0},{0,20,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_NORMAL,0},{0,32,D3DDECLTYPE_FLOAT2,0,D3DDECLUSAGE_TEXCOORD,0},D3DDECL_END()};
     IDirect3DVertexDeclaration9* modelDecl=nullptr;ok(d->CreateVertexDeclaration(modelElements,&modelDecl));
-    auto modelNormals=std::make_unique<NorthlightModelNormals>(d);
+    CaptureCalls captureCalls(d);auto modelNormals=std::make_unique<NorthlightModelNormals>(&captureCalls);
     IDirect3DVertexBuffer9* sentinelVB=nullptr;IDirect3DIndexBuffer9* sentinelIB=nullptr;ok(d->CreateVertexBuffer(48,0,0,D3DPOOL_MANAGED,&sentinelVB,nullptr));ok(d->CreateIndexBuffer(6,0,D3DFMT_INDEX16,D3DPOOL_MANAGED,&sentinelIB,nullptr));
     constexpr unsigned W=768,H=576;auto depth=target(W,H,D3DFMT_R32F,4),geometric=target(W,H,D3DFMT_A16B16G16R16F,8),normals=target(W/2,H/2,D3DFMT_A16B16G16R16F,8),lighting=target(W/2,H/2,D3DFMT_A16B16G16R16F,8);auto tileMid=target(256,256,D3DFMT_R32F,4),tiles=target(64,64,D3DFMT_R32F,4);auto fixedNormals=target(W/2,H/2,D3DFMT_A16B16G16R16F,8);Target shadows[]={target(1024,1024,D3DFMT_R32F,4),target(1024,1024,D3DFMT_R32F,4)};
     IDirect3DSurface9 *sceneDepth=nullptr,*shadowDepth=nullptr;ok(d->CreateDepthStencilSurface(W,H,D3DFMT_D24S8,D3DMULTISAMPLE_NONE,0,TRUE,&sceneDepth,nullptr));ok(d->CreateDepthStencilSurface(1024,1024,D3DFMT_D24S8,D3DMULTISAMPLE_NONE,0,TRUE,&shadowDepth,nullptr));
@@ -76,6 +117,10 @@ int main(int argc,char**argv){
             IDirect3DSurface9 *restoredRT=nullptr,*restoredDS=nullptr;ok(d->GetRenderTarget(0,&restoredRT));ok(d->GetDepthStencilSurface(&restoredDS));assert(restoredRT==depth.s&&restoredDS==sceneDepth);restoredRT->Release();restoredDS->Release();
             IDirect3DVertexBuffer9* restoredVB=nullptr;IDirect3DIndexBuffer9* restoredIB=nullptr;UINT offset=0,stride=0;ok(d->GetStreamSource(0,&restoredVB,&offset,&stride));ok(d->GetIndices(&restoredIB));assert(restoredVB==sentinelVB&&restoredIB==sentinelIB&&stride==48&&offset==0);restoredVB->Release();restoredIB->Release();
             DWORD wrap5=0,wrap7=0;ok(d->GetRenderState(D3DRS_WRAP5,&wrap5));ok(d->GetRenderState(D3DRS_WRAP7,&wrap7));assert(wrap5==7&&wrap7==15);
+            if(frame==0&&elevation==0){
+                captureFaults(captureCalls,*modelNormals,modelVS,[&]{return d->DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST,0,meshVertices,meshIndices/3,sourceMesh.data()+12+48*meshVertices,D3DFMT_INDEX32,sourceMesh.data()+12,48);});
+                modelNormals->endFrame();captureModel();
+            }
             if(frame==8&&elevation==0&&SUCCEEDED(api->CheckDeviceMultiSampleType(0,D3DDEVTYPE_HAL,D3DFMT_A8R8G8B8,TRUE,D3DMULTISAMPLE_2_SAMPLES,nullptr))){
                 auto single=capturedPixels(modelNormals->texture(),W,H);IDirect3DSurface9 *msaa=nullptr,*msaaDepth=nullptr;ok(d->CreateRenderTarget(W,H,D3DFMT_A8R8G8B8,D3DMULTISAMPLE_2_SAMPLES,0,FALSE,&msaa,nullptr));ok(d->CreateDepthStencilSurface(W,H,D3DFMT_D24S8,D3DMULTISAMPLE_2_SAMPLES,0,FALSE,&msaaDepth,nullptr));
                 modelNormals->endFrame();ok(d->SetDepthStencilSurface(nullptr));ok(d->SetRenderTarget(0,msaa));ok(d->SetDepthStencilSurface(msaaDepth));captureModel();assert(single==capturedPixels(modelNormals->texture(),W,H));
@@ -107,6 +152,6 @@ int main(int argc,char**argv){
             std::printf("elevation=%u frame=%u samples=%u smoothedDarker=%u worst=%.4f\n",elevation,frame,valid,bad,worst);
         }
     }
-    modelNormals->endFrame();assert(!modelNormals->texture());modelNormals->reset();assert(!modelNormals->texture());modelNormals.reset();sentinelVB->Release();sentinelIB->Release();std::printf("MODEL_NORMALS_GPU_PASS native_skin_capture_state_restore\n");
+    modelNormals->endFrame();assert(!modelNormals->texture());modelNormals->reset();assert(!modelNormals->texture());modelNormals.reset();sentinelVB->Release();sentinelIB->Release();std::printf("MODEL_NORMALS_GPU_PASS native_skin_capture_state_restore renderStateSets=%u renderTargetSets=%u\n",captureCalls.renderSets,captureCalls.targetSets);
     std::fclose(csv);d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);return 0;
 }

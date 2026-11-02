@@ -22,6 +22,18 @@ void replayAttribution(){
     assert(!p.upload.calls&&!p.upload.bytes&&!p.upload.clockReads);
     for(const auto& e:p.entries)assert(!e.calls&&!e.ns);
     p.record(511,1);assert(p.calls==1&&p.maxId==511);
+    unsigned coverage[256]={};
+    for(unsigned frame=1;frame<=16;++frame){
+        p.begin(true,127*frame);unsigned timed=0;
+        for(unsigned call=0;call<264;++call){const bool take=p.sample(4,true);timed+=take;if(call<8)assert(take);else coverage[call-8]+=take;if(take)p.record(4,10);}
+        for(unsigned call=0;call<100;++call){assert(p.sample(7,false));p.record(7,20);}
+        assert(timed==24&&p.calls==124&&p.observed==364&&p.entries[4].observed==264&&p.entries[4].calls==24);
+        assert(p.totalNs==2240); // Actual measured subset, never extrapolated.
+    }
+    for(auto count:coverage)assert(count==1);
+    p.begin(false,127);assert(!p.sample(4,true)&&!p.sample(7,false));
+    p.begin(true,127);assert(!p.sample(512,true)&&p.observed==0);
+    std::puts("REPLAY_PROFILE_PASS prefix=8 stride=16 rotatingCoverage=exact drawsUploadsWaits=full measuredSubset=unscaled");
 }
 void waitAttribution(){
     // Operational GPU attribution excludes the queue trip, immediate answers
@@ -53,6 +65,15 @@ void waitAttribution(){
     s={};assert(!s.calls&&!s.waitNs&&!s.tripNs&&!s.maxTripNs);
 }
 int main(){
+    {
+        NorthlightStream::EventFlushCadence cadence;
+        unsigned flushes=0;
+        for(std::uint64_t now=0;now<16000000;now+=50000)flushes+=cadence.flags(now);
+        assert(flushes==16); // Previously 320 driver flush requests.
+        assert(cadence.flags(0)==1&&cadence.flags(0)==0); // clock rollback/stall
+        NorthlightStream::EventFlushCadence fresh;
+        assert(fresh.flags(0)==1); // retry/new generation starts with a flush
+    }
     replayAttribution();
     waitAttribution();
     std::uint64_t worst=0;unsigned maxCalls=0;

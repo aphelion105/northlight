@@ -2,6 +2,16 @@
 #include <cstdint>
 
 namespace NorthlightStream {
+// Flush once to submit the fence, then periodically for runtimes that need
+// another kick. Polling completion between kicks must not repeatedly flush
+// unrelated command buffers. Each synchronous trip starts a fresh cadence.
+struct EventFlushCadence {
+    std::uint64_t previous=0;bool started=false;
+    unsigned flags(std::uint64_t now){
+        if(!started||now<previous||now-previous>=1000000){started=true;previous=now;return 1;}
+        return 0;
+    }
+};
 // Game-thread diagnostics. The replay timestamps return through the existing
 // synchronous task; these spans partition one trip and never imply GPU cost.
 struct QueryWaitProfile {

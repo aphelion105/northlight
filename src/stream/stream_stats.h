@@ -11,13 +11,21 @@ constexpr std::size_t kMaxCmdIds=512;   // size of the sync census; command_stre
 // Replay-thread-only wall time, on the same 1/127 frames as query attribution.
 // Fixed storage; disabled/ordinary frames read no additional clocks.
 struct ReplayFrameProfile {
-    struct Entry {std::uint64_t ns=0;unsigned calls=0;};
+    struct Entry {std::uint64_t ns=0;unsigned calls=0,observed=0;};
     struct Upload {std::uint64_t lockNs=0,copyNs=0,unlockNs=0,maxLockNs=0,maxCopyNs=0,maxUnlockNs=0,bytes=0;unsigned calls=0,skipped=0,failed=0,clockReads=0;} upload;
     Entry entries[kMaxCmdIds]{};
-    std::uint64_t frame=0,totalNs=0,maxNs=0;unsigned calls=0,maxId=0;bool enabled=false;
+    static constexpr unsigned StatePrefix=8,StateStride=16;
+    std::uint64_t frame=0,totalNs=0,maxNs=0;unsigned calls=0,observed=0,maxId=0;bool enabled=false;
     void begin(bool diagnostics,std::uint64_t id){
         enabled=diagnostics&&id%127==0;frame=id;
-        if(enabled){for(auto& e:entries)e={};totalNs=maxNs=0;calls=maxId=0;upload={};}
+        if(enabled){for(auto& e:entries)e={};totalNs=maxNs=0;calls=observed=maxId=0;upload={};}
+    }
+    bool sample(unsigned id,bool stateOnly){
+        if(!enabled||id>=kMaxCmdIds)return false;
+        ++observed;const unsigned visit=entries[id].observed++;
+        // Retain first-use costs and rotate steady-state setters. Draws,
+        // uploads, resource creation and waits remain fully timed.
+        return !stateOnly||visit<StatePrefix||(visit-StatePrefix+frame/127)%StateStride==0;
     }
     void record(unsigned id,std::uint64_t ns){
         if(!enabled||id>=kMaxCmdIds)return;

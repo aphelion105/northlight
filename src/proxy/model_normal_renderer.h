@@ -19,12 +19,11 @@ class NorthlightModelNormals {
     struct State {
         inline static constexpr D3DRENDERSTATETYPE keys[]={D3DRS_ZENABLE,D3DRS_ZWRITEENABLE,D3DRS_ZFUNC,
             D3DRS_ALPHABLENDENABLE,D3DRS_ALPHATESTENABLE,D3DRS_STENCILENABLE,D3DRS_SCISSORTESTENABLE,
-            D3DRS_SRGBWRITEENABLE,D3DRS_FOGENABLE,D3DRS_COLORWRITEENABLE,D3DRS_COLORWRITEENABLE1,
-            D3DRS_COLORWRITEENABLE2,D3DRS_COLORWRITEENABLE3,D3DRS_WRAP5,D3DRS_WRAP7};
+            D3DRS_SRGBWRITEENABLE,D3DRS_FOGENABLE,D3DRS_COLORWRITEENABLE,D3DRS_WRAP5,D3DRS_WRAP7};
         static constexpr unsigned Count=sizeof(keys)/sizeof(keys[0]);
         IDirect3DDevice9* d;IDirect3DVertexShader9* vs=nullptr;IDirect3DPixelShader9* ps=nullptr;
         IDirect3DSurface9 *rt[4]={},*ds=nullptr;IDirect3DVertexBuffer9* stream=nullptr;IDirect3DIndexBuffer9* index=nullptr;
-        UINT offset=0,stride=0;D3DVIEWPORT9 viewport{};DWORD values[Count]={};float constant[4]={};unsigned control;bool changed=false,up;
+        UINT offset=0,stride=0;D3DVIEWPORT9 viewport{};DWORD values[Count]={};float constant[4]={};unsigned control,renderChanged=0,targetChanged=0;bool changed=false,up;
         State(IDirect3DDevice9* device,unsigned c,bool user):d(device),control(c),up(user){}
         bool save(){
             if(FAILED(d->GetVertexShader(&vs))||FAILED(d->GetPixelShader(&ps))||FAILED(d->GetViewport(&viewport))||
@@ -37,13 +36,13 @@ class NorthlightModelNormals {
             if(!changed)return true;changed=false;
             auto retry=[](auto call){return SUCCEEDED(call())||SUCCEEDED(call());};bool ok=true;
             ok=retry([&]{return d->SetDepthStencilSurface(nullptr);})&&ok;
-            for(unsigned i=1;i<4;++i)ok=retry([&]{return d->SetRenderTarget(i,nullptr);})&&ok;
-            for(unsigned i=0;i<4;++i)ok=retry([&]{return d->SetRenderTarget(i,rt[i]);})&&ok;
+            for(unsigned i=1;i<4;++i)if(targetChanged&(1u<<i))ok=retry([&]{return d->SetRenderTarget(i,nullptr);})&&ok;
+            for(unsigned i=0;i<4;++i)if(!i||(targetChanged&(1u<<i)))ok=retry([&]{return d->SetRenderTarget(i,rt[i]);})&&ok;
             ok=retry([&]{return d->SetDepthStencilSurface(ds);})&&ok;
             ok=retry([&]{return d->SetViewport(&viewport);})&&ok;
             ok=retry([&]{return d->SetVertexShader(vs);})&&ok;ok=retry([&]{return d->SetPixelShader(ps);})&&ok;
             ok=retry([&]{return d->SetPixelShaderConstantF(control,constant,1);})&&ok;
-            for(unsigned i=0;i<Count;++i)ok=retry([&]{return d->SetRenderState(keys[i],values[i]);})&&ok;
+            for(unsigned i=0;i<Count;++i)if(renderChanged&(1u<<i))ok=retry([&]{return d->SetRenderState(keys[i],values[i]);})&&ok;
             if(up){ok=retry([&]{return d->SetStreamSource(0,stream,offset,stride);})&&ok;ok=retry([&]{return d->SetIndices(index);})&&ok;}
             return ok;
         }
@@ -102,11 +101,14 @@ public:
         if(!frameTarget){frameTarget=saved.rt[0];frameTarget->AddRef();}
         saved.changed=true;
         bool ok=SUCCEEDED(d->SetDepthStencilSurface(nullptr));
-        for(unsigned i=1;i<4;++i)ok=SUCCEEDED(d->SetRenderTarget(i,nullptr))&&ok;
+        for(unsigned i=1;i<4;++i)if(saved.rt[i]){saved.targetChanged|=1u<<i;ok=SUCCEEDED(d->SetRenderTarget(i,nullptr))&&ok;}
         ok=SUCCEEDED(d->SetRenderTarget(0,surface))&&ok;ok=SUCCEEDED(d->SetDepthStencilSurface(depth))&&ok;
         ok=SUCCEEDED(d->SetViewport(&saved.viewport))&&ok;
-        const DWORD values[]={TRUE,TRUE,D3DCMP_LESSEQUAL,FALSE,FALSE,FALSE,FALSE,FALSE,FALSE,15,0,0,0,0,0};
-        for(unsigned i=0;i<State::Count;++i)ok=SUCCEEDED(d->SetRenderState(State::keys[i],values[i]))&&ok;
+        // RT1..3 are unbound; their color-write masks cannot affect this pass.
+        const DWORD values[]={TRUE,TRUE,D3DCMP_LESSEQUAL,FALSE,FALSE,FALSE,FALSE,FALSE,FALSE,15,0,0};
+        // Most native opaque draws already have these values. Track attempted
+        // changes before the driver call, so partial failures still restore.
+        for(unsigned i=0;i<State::Count;++i)if(values[i]!=saved.values[i]){saved.renderChanged|=1u<<i;ok=SUCCEEDED(d->SetRenderState(State::keys[i],values[i]))&&ok;}
         if(ok&&!cleared){ok=SUCCEEDED(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0,1,0));cleared=ok;}
         const float control[]={0,48.f,alpha?(float(ref)+(func==D3DCMP_GREATER?.5f:0.f))/255.f:.001f,alpha?1.f:0.f};
         ok=SUCCEEDED(d->SetVertexShader(vs->shader))&&ok;ok=SUCCEEDED(d->SetPixelShader(ps->shader))&&ok;

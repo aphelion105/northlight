@@ -985,7 +985,7 @@ private:
     NorthlightStateBlockPool stateBlocks;
     unsigned terrainAttempts=0,terrainSnapshots=0,terrainFailures=0;
     NorthlightTerrainCapture::FrameCache& terrainBoundsCache=gpuScene->terrainSources;
-    NorthlightTerrainCandidates::ChunkSet liveTerrainChunks; /* 0.3.175: the set plus a flat bitmap */
+    NorthlightTerrainCandidates::ChunkSet liveTerrainChunks;
     UINT width=0,height=0,vertexCount=0;
     struct Replay {
         IDirect3DVertexShader9* shader=nullptr,*originalShader=nullptr;

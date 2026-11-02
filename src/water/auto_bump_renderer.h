@@ -516,7 +516,10 @@ public:
     void setInverseView(const float* rows){std::copy(rows,rows+12,captureToWorld);}
     void setLight(const float* light){std::copy(light,light+4,occlusionLight);}
     void configure(const NorthlightQuality::Settings& settings){
-        displacement.configure(settings);normals.configure(settings);
+        const bool retireDisabled=enabled&&!settings.autoBump&&!memoryPressure;
+        NorthlightStreaming::CpuRetirementBatch retirement(retireDisabled?&NorthlightStreaming::cpuRetirement():nullptr);
+        auto* batch=retireDisabled?&retirement:nullptr;
+        displacement.configure(settings,batch);normals.configure(settings);
         const bool changed=enabled!=(settings.autoBump!=0)||strength!=settings.autoBumpStrength*.01f||range!=float(settings.autoBumpDistance)||modes[0]!=settings.autoBumpTerrain||modes[1]!=settings.autoBumpWalls||modes[2]!=settings.autoBumpGrass||modes[3]!=settings.autoBumpModels||pomControl[0]!=settings.autoParallaxDepth*.00018f||pomControl[1]!=float(settings.autoParallaxDistance)||pomControl[2]!=float(settings.autoParallaxSteps);
         enabled=settings.autoBump!=0;strength=settings.autoBumpStrength*.01f;range=float(settings.autoBumpDistance);
         terrain=settings.autoBumpTerrain!=0;walls=settings.autoBumpWalls!=0;grass=settings.autoBumpGrass!=0;
@@ -528,12 +531,15 @@ public:
         occlusionControl[0]=shadow;occlusionControl[1]=float(settings.autoParallaxShadowSteps);occlusionControl[2]=cavity;
         if(shadow<=0&&cavity<=0){drop(occlusionTarget);drop(occlusionMap);occlusionUnavailable=false;}
         if(changed)logf("AUTOBUMP enabled=%d strength=%.2f distance=%.0f terrain=%d walls=%d grass=%d modes=%u/%u/%u/%u pomDepth=%.6f pomRange=%.0f pomSteps=%.0f",int(enabled),strength,range,int(terrain),int(walls),int(grass),modes[0],modes[1],modes[2],modes[3],pomControl[0],pomControl[1],pomControl[2]);
-        if(!enabled)reset();
+        if(!enabled)reset(batch);
         bool captureRequired=false;for(unsigned i=0;i<4;++i)captureRequired|=modes[i]&&captureNeeded(i+1);
-        if(!captureRequired){deferredDiscarded+=unsigned(deferred.size());clearDeferred();drop(singleDepthSurface);drop(singleDepth);privateDepthCleared=false;sharedMaps[0]={};sharedMaps[1]={};sharedPOM.reset();drop(captureDepth);drop(target);drop(height);drop(occlusionTarget);drop(occlusionMap);drawn=cleared=false;occlusionUnavailable=false;occlusionRetry=0;}
+        if(!captureRequired){deferredDiscarded+=unsigned(deferred.size());clearDeferred();drop(singleDepthSurface);drop(singleDepth);privateDepthCleared=false;sharedMaps[0]={};sharedMaps[1]={};sharedPOM.reset(batch);drop(captureDepth);drop(target);drop(height);drop(occlusionTarget);drop(occlusionMap);drawn=cleared=false;occlusionUnavailable=false;occlusionRetry=0;}
+        // Release every COM owner here before handing detached CPU allocations
+        // to the existing bounded reaper. Critical memory pressure stays synchronous.
+        if(batch){retirement.finish();logf("MATERIAL_RESET queuedCpuMiB=%.3f ownerThreadGpuRelease=1",double(retirement.queuedBytes())/1048576);}
     }
     ~NorthlightAutoBump(){reset();for(auto& v:vertices){drop(v.second.patched);drop(v.second.shared);drop(v.second.pending);}for(auto*& p:shaders)drop(p);for(auto*& p:sharedShaders)drop(p);for(auto*& p:normalShaders)drop(p);for(auto& groups:nativeCaptures)for(auto& variants:groups)for(auto& n:variants){drop(n.second.shader);drop(n.second.source);}}
-    void reset(){drop(singleDepthSurface);drop(singleDepth);captureStates.clear();clearDeferred();deferredSnapshots.clearIndexCache();deferredDeclarations.clear();deferredGPU.clear();sharedMaps[0]={};sharedMaps[1]={};sharedPOM.reset();displacement.reset();normals.reset();drop(captureDepth);drop(target);drop(height);drop(occlusionTarget);drop(occlusionMap);occlusionUnavailable=false;occlusionRetry=0;singleDepthRetry=0;width=heightPixels=0;cleared=privateDepthCleared=drawn=failed=occlusionCleared=occlusionDrawn=false;}
+    void reset(NorthlightStreaming::CpuRetirementBatch* batch=nullptr){drop(singleDepthSurface);drop(singleDepth);captureStates.clear();clearDeferred();deferredSnapshots.clearIndexCache(nullptr,batch);deferredDeclarations.clear();deferredGPU.clear();sharedMaps[0]={};sharedMaps[1]={};sharedPOM.reset(batch);displacement.reset(batch);normals.reset();drop(captureDepth);drop(target);drop(height);drop(occlusionTarget);drop(occlusionMap);occlusionUnavailable=false;occlusionRetry=0;singleDepthRetry=0;width=heightPixels=0;cleared=privateDepthCleared=drawn=failed=occlusionCleared=occlusionDrawn=false;}
     void endFrame(){
         deferredDiscarded+=unsigned(deferred.size());clearDeferred();
         // Reuse within a frame, without retaining captured game resources
@@ -610,7 +616,7 @@ public:
     }
     template<class Draw> void capture(IDirect3DVertexShader9* original,Draw draw,bool userMemory=false,const NorthlightAutoDisplacement::Args* geometry=nullptr,const NorthlightCaptureMetadata::PositionBounds* positions=nullptr){
         pomInRange=true;
-        if(!active()&&(!profile||!profile->recording()))return;
+        if(!active())return;
         auto v=vertices.find(original);if(v==vertices.end()&&active())v=recoverVertex(original);if(v==vertices.end())return;
         const unsigned domain=v->second.kind;
         using P=NorthlightMaterialProfile;profileTag=domain*4+modes[domain-1];profilePrimitives=geometry?geometry->draw.primitives:0;
