@@ -263,10 +263,10 @@
  197:       max r0.z, r5_abs.x, r5_abs.y
  198:       add r0.z, -r0.z, -c15.x
  199:       add r0.w, -r5.z, -c15.x
- 200:       cmp r0.w, r0.w, c15_abs.x, c15_abs.y
+ 200:       cmp r0.w, r0.w, -c15_abs.x, -c15_abs.y
  201:       cmp r0.w, r5.z, r0.w, c15.y
  202:       cmp r0.z, r0.z, r0.w, c15.y
- 203:       mul oC1.w, r0.z, r1.w
+ 203:       cmp oC1.w, r0.z, c15.x, r1.w
  204:       add r0.x, -r0.x, -c59.z
  205:       mul r0.z, r0.x, c20.z
  206:       mul r0.xz, r0.y, r0

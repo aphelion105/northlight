@@ -5449,7 +5449,7 @@ public:
         }
         d->SetRenderTarget(1,nullptr);
         d->SetRenderState(D3DRS_COLORWRITEENABLE,15);
-        d->SetTexture(12,textures[12]); /* 0.3.209 (task 29): the frame-start binding (null) again; the visibility was WorldLighting's only */
+        d->SetTexture(12,baselineLight); // WorldGI reuses known shadow visibility outside resident probes.
         d->SetTexture(15,nullptr);
         if(profile)profile->mark("WorldLighting");
         bucket(NorthlightEffectsBuckets::Lighting);

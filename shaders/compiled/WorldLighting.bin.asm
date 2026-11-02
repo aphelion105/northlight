@@ -417,7 +417,7 @@
  361:       max r0.w, r2_abs.x, r2_abs.y
  362:       add r0.w, -r0.w, -c19.x
  363:       add r1.z, -r2.z, -c19.x
- 364:       cmp r1.z, r1.z, c19_abs.x, c19_abs.y
+ 364:       cmp r1.z, r1.z, -c19_abs.x, -c19_abs.y
  365:       cmp r1.z, r2.z, r1.z, c19.y
  366:       cmp r0.w, r0.w, r1.z, c19.y
  367:       add r1.z, r1.x, c19.x
@@ -426,7 +426,7 @@
  370:       add r1.w, -r1.y, r1.x
  371:       mul r1.w, r1.w, c16.w
  372:       add r1.w, r1.w, r1.y
- 373:       mul oC1.w, r0.w, r1.w
+ 373:       cmp oC1.w, r0.w, c19.x, r1.w
  374:       add r0.x, -r0.x, -c59.z
  375:       mul r0.w, r0.x, c20.z
  376:       mul r0.xw, r1.z, r0
