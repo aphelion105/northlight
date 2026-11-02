@@ -12,16 +12,23 @@ constexpr std::size_t kMaxCmdIds=512;   // size of the sync census; command_stre
 // Fixed storage; disabled/ordinary frames read no additional clocks.
 struct ReplayFrameProfile {
     struct Entry {std::uint64_t ns=0;unsigned calls=0;};
+    struct Upload {std::uint64_t lockNs=0,copyNs=0,unlockNs=0,maxLockNs=0,maxCopyNs=0,maxUnlockNs=0,bytes=0;unsigned calls=0,skipped=0,failed=0,clockReads=0;} upload;
     Entry entries[kMaxCmdIds]{};
     std::uint64_t frame=0,totalNs=0,maxNs=0;unsigned calls=0,maxId=0;bool enabled=false;
     void begin(bool diagnostics,std::uint64_t id){
         enabled=diagnostics&&id%127==0;frame=id;
-        if(enabled){for(auto& e:entries)e={};totalNs=maxNs=0;calls=maxId=0;}
+        if(enabled){for(auto& e:entries)e={};totalNs=maxNs=0;calls=maxId=0;upload={};}
     }
     void record(unsigned id,std::uint64_t ns){
         if(!enabled||id>=kMaxCmdIds)return;
         entries[id].ns+=ns;++entries[id].calls;totalNs+=ns;++calls;
         if(ns>maxNs){maxNs=ns;maxId=id;}
+    }
+    void recordUpload(std::uint64_t bytes,std::uint64_t lock,std::uint64_t copy,std::uint64_t unlock,bool skipped,bool failed,unsigned clocks){
+        if(!enabled)return;
+        auto& u=upload;u.bytes+=bytes;++u.calls;u.skipped+=skipped;u.failed+=failed;u.clockReads+=clocks;
+        u.lockNs+=lock;u.copyNs+=copy;u.unlockNs+=unlock;
+        if(lock>u.maxLockNs)u.maxLockNs=lock;if(copy>u.maxCopyNs)u.maxCopyNs=copy;if(unlock>u.maxUnlockNs)u.maxUnlockNs=unlock;
     }
 };
 using Counter=std::atomic<std::uint64_t>;

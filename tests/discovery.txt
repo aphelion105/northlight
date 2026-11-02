@@ -203,6 +203,7 @@ test_material_frame_rotation_gpu.py
 test_material_geometry.py
 test_material_index_decode_wave2.py
 test_material_normal_capabilities_gpu.py
+test_material_normal_native_gpu.py
 test_material_normal_variants.py
 test_material_packet_auxiliary.py
 test_material_palette_override.py
@@ -419,6 +420,7 @@ test_terrain_tracked_cache.py
 test_tool_imports.py
 test_tracked_buffers.py
 test_tracked_snapshot.py
+test_tracked_uploads.py
 test_translucent_actor_depth.py
 test_translucent_depth_census.py
 test_ui_boundary.py

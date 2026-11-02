@@ -9,12 +9,17 @@ constexpr HRESULT S_OK=0,S_FALSE=1,E_FAIL=-1;
 void replayAttribution(){
     NorthlightStream::ReplayFrameProfile p;
     p.begin(false,127);p.record(4,900);assert(!p.enabled&&!p.calls&&!p.totalNs);
+    p.recordUpload(512,10,20,30,false,false,4);assert(!p.upload.calls&&!p.upload.clockReads);
     p.begin(true,126);p.record(4,900);assert(!p.enabled&&!p.calls);
     p.begin(true,127);assert(p.enabled&&p.frame==127);
     p.record(4,300);p.record(7,200);p.record(4,400);p.record(512,10000);
     assert(p.calls==3&&p.totalNs==900&&p.maxNs==400&&p.maxId==4);
     assert(p.entries[4].calls==2&&p.entries[4].ns==700&&p.entries[7].ns==200);
+    p.recordUpload(256,10,20,30,false,false,4);p.recordUpload(128,40,0,0,true,false,2);p.recordUpload(64,15,0,0,false,true,2);
+    assert(p.upload.calls==3&&p.upload.bytes==448&&p.upload.skipped==1&&p.upload.failed==1&&p.upload.clockReads==8);
+    assert(p.upload.lockNs==65&&p.upload.copyNs==20&&p.upload.unlockNs==30&&p.upload.maxLockNs==40&&p.upload.maxCopyNs==20&&p.upload.maxUnlockNs==30);
     p.begin(true,254);assert(p.enabled&&!p.calls&&!p.totalNs&&!p.maxNs);
+    assert(!p.upload.calls&&!p.upload.bytes&&!p.upload.clockReads);
     for(const auto& e:p.entries)assert(!e.calls&&!e.ns);
     p.record(511,1);assert(p.calls==1&&p.maxId==511);
 }

@@ -618,7 +618,7 @@ int main(){
     {RangeBackend backend;NorthlightAutoDisplacement g(&backend);auto* shader=reinterpret_cast<IDirect3DVertexShader9*>(uintptr_t(1));
      DisplacementStateTestAccess::rangeProgram(g,shader);
      float vertices[]={0,0,50000,1,0,50001,0,1,50002};NorthlightAutoDisplacement::Args args{{D3DPT_TRIANGLELIST,0,0,3,0,1,false},nullptr,D3DFMT_UNKNOWN,vertices,12};float nearest=0;
-     for(float distance:{47.99f,48.f,48.01f,60.f,150.f}){backend.bank[2]=distance-50000;assert(g.nearestMaterialDepth(shader,args,nearest));assert(nearest<=double(vertices[2])+backend.bank[2]);if(distance>=60)assert(nearest>48);}
+     for(float distance:{-150.f,-48.f,47.99f,48.f,48.01f,60.f,150.f}){backend.bank[2]=distance-50000;float farthest=0;assert(g.nearestMaterialDepth(shader,args,nearest,false,nullptr,&farthest));const double depth=std::fabs(double(vertices[2])+backend.bank[2]);assert(nearest<=depth&&farthest>=depth);if(std::fabs(distance)>=60)assert(nearest>48);}
      backend.bank[2]=-50000;assert(g.nearestMaterialDepth(shader,args,nearest)&&nearest==0);
      DisplacementStateTestAccess::rangePreservesPose(g);
      DisplacementStateTestAccess::rangeProgram(g,shader,true);assert(!g.nearestMaterialDepth(shader,args,nearest));

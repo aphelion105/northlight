@@ -56,7 +56,15 @@ for index,backend in enumerate(a.backend):
         limit,pose,optimized,block,submit,complete,updates=line.split()
         groups.setdefault((int(limit),int(pose),int(optimized)),[]).append((float(submit),float(complete),int(updates)))
     timing={str(key):{'submit_ms':statistics.median(r[0] for r in rows),'completed_ms':statistics.median(r[1] for r in rows),'cube_updates':statistics.median(r[2] for r in rows),'blocks':len(rows)} for key,rows in groups.items()}
-    report['cases'].append({'backend':str(backend.resolve()),'backend_sha256':sha(backend),'summary':text.split('POINT_VISIBILITY_GPU_PASS')[-1].strip(),'timing':timing})
+    trims=[list(map(float,line.split())) for line in (run/'snapshot-trim.tsv').read_text().splitlines()]
+    uploads=[list(map(float,line.split())) for line in (run/'buffer-uploads.tsv').read_text().splitlines()]
+    upload_summary={}
+    for dynamic in (0,1):
+        for optimized in (0,1):
+            rows=[r for r in uploads if r[3]==optimized and r[7]==dynamic]
+            upload_summary[f'dynamic={dynamic},optimized={optimized}']={'blocks':len(rows),'calls':len(rows)*32,'submit_ms':sum(r[4] for r in rows),'completed_ms':sum(r[5] for r in rows),'skipped':sum(int(r[6]) for r in rows)}
+    report['cases'].append({'backend':str(backend.resolve()),'backend_sha256':sha(backend),'summary':text.split('POINT_VISIBILITY_GPU_PASS')[-1].strip(),'faces_sha256':sha(run/'faces.tsv'),'timing':timing,
+        'snapshot_trim':{'median_ms':statistics.median(r[-1] for r in trims),'source_bytes':int(trims[0][3]),'sources':int(trims[0][1]),'index_bytes':int(trims[0][4]),'trials':len(trims),'tsv_sha256':sha(run/'snapshot-trim.tsv')},'upload_summary':upload_summary,'uploads_tsv_sha256':sha(run/'buffer-uploads.tsv')})
 guard.processes();assert all(sha(Path(path))==digest for path,digest in inputs.items())
 assert all(sha(Path(path))==record['sha256'] for path,record in cache_inputs.items())
 report['pass']=True;report['limitation']='Static cache component workload and authored camera orbit; no native animated draws, whole-frame replay or FPS claim. Completion includes CPU submission and GPU execution.'

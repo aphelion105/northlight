@@ -8,6 +8,7 @@ import northlight_paths as fp
 import numpy as np
 
 p=argparse.ArgumentParser(description=__doc__)
+p.add_argument('--single-sample',action='store_true',help='Audit opaque 1x model batches, prepasses and depth barriers')
 p.add_argument('--backend',required=True);p.add_argument('--benchmark',action='store_true')
 p.add_argument('--family',choices=['models','terrain','wall'],default='models')
 p.add_argument('--vertex-alpha-zero',action='store_true')
@@ -82,6 +83,21 @@ if not a.reuse_exe:
         runs=[run(exe,fixture,'model-'+fixture.name,on) for on in [0,1]];pair=[r[0] for r in runs]
         if fixture==source:assert 'MATERIAL_DEFERRED_MODE mode=1 queued=1 flushed=1' in runs[1][1]
         count=compare(pair,'*.fgr');records.append(dict(fixture=fixture.name,outputs=count,bit_exact=True))
+    if a.single_sample:
+        assert a.family=='models' and not a.alpha_test
+        for case in range(1,8):
+            runs=[run(exe,source,'single-depth-'+str(case),on,0,MATERIAL_BATCH_TIMING=1,MATERIAL_BATCH_VALIDATE=1,DEFERRED_RESIDENT=1,SINGLE_DEPTH_CASE=case) for on in [0,1]]
+            assert 'MATERIAL_SINGLE_SAMPLE queued='+str(16 if case==7 else 32) in runs[1][1]
+            records.append(dict(single_depth_case=case,outputs=compare([r[0] for r in runs],'batch-*.fgr'),bit_exact=True))
+        runs=[run(exe,source,'single-geometry-mode',on,0,MATERIAL_BATCH_TIMING=1,MATERIAL_BATCH_VALIDATE=1,DEFERRED_RESIDENT=1,SINGLE_GEOMETRY_MODE=1,MATERIAL_DEPTH=12) for on in [0,1]]
+        assert 'MATERIAL_SINGLE_SAMPLE queued=32' in runs[1][1]
+        records.append(dict(single_geometry_mode=True,outputs=compare([r[0] for r in runs],'batch-*.fgr'),bit_exact=True))
+        runs=[run(exe,source,'single-seed-failure',on,0,MATERIAL_BATCH_TIMING=1,MATERIAL_BATCH_VALIDATE=1,DEFERRED_RESIDENT=1,SINGLE_SEED_FAILURE=1) for on in [0,1]]
+        assert 'MATERIAL_SINGLE_SAMPLE queued=0 seeds=0' in runs[1][1]
+        records.append(dict(single_seed_failure=True,outputs=compare([r[0] for r in runs],'batch-*.fgr'),bit_exact=True))
+        for flag in ['DEFERRED_RESIDENT','DEFERRED_POSE','DEFERRED_STRIP','DEFERRED_CACHE_FAILURE','DEFERRED_MUTATION','DEFERRED_BARRIER','DEFERRED_UNUSED','DEFERRED_LIMIT','DEFERRED_MULTISTREAM']:
+            runs=[run(exe,source,'single-'+flag.lower(),on,0,MATERIAL_BATCH_TIMING=1,MATERIAL_BATCH_VALIDATE=1,**dict(DEFERRED_RESIDENT=1,**({flag:1} if flag!='DEFERRED_RESIDENT' else {}))) for on in [0,1]]
+            records.append(dict(single_safety=flag,outputs=compare([r[0] for r in runs],'batch-*.fgr'),bit_exact=True))
     if a.texture_guard and a.alpha_test:
         folder,log=run(exe,source,'texture-guard-off',1,TEXTURE_GUARD_OFF=1)
         assert 'MATERIAL_DEFERRED_MODE mode=1 queued=0 flushed=0' in log
@@ -156,7 +172,7 @@ if a.benchmark or a.reuse_exe:
         for on in (order if repeat%2==0 else order[::-1]):
             flags=dict(MATERIAL_BATCH_TIMING=1,MATERIAL_BATCH_VALIDATE=1,MESH_GRID=a.mesh_grid,CAPTURE_DRAWS=a.capture_draws)
             if a.vary_pose:flags['DEFERRED_POSE']=1
-            folder,log=run(old_bench if on==2 else exe,source,'timing-'+str(repeat)+('-baseline' if on==2 else ''),int(on!=0),**flags)
+            folder,log=run(old_bench if on==2 else exe,source,'timing-'+str(repeat)+('-baseline' if on==2 else ''),int(on!=0),0 if a.single_sample else 2,**flags)
             m=re.search(r'MATERIAL_BATCH_TIMING .*gpuMs=([\d.]+) submitMs=([\d.]+)',log);assert m
             record=dict(repeat=repeat,deferred=on,gpu_ms=float(m[1]),cpu_ms=float(m[2]));timings.append(record);folders[on]=folder
             print('MATERIAL_DEFERRED_TIMING',record,flush=True)
@@ -167,6 +183,6 @@ if a.benchmark or a.reuse_exe:
     if old_bench:result['baseline_deferred']={key:statistics.median(r[key] for r in timings if r['deferred']==2) for key in ['gpu_ms','cpu_ms']}
     result['gpu_reduction_percent']=100*(1-result['deferred']['gpu_ms']/result['immediate']['gpu_ms'])
 else:result=dict(backend=backend,checks=records)
-result.update(family=a.family,vertex_alpha_zero=a.vertex_alpha_zero,wall_diffuse=a.wall_diffuse,baseline_ref=a.baseline_ref,alpha_test=a.alpha_test,texture_guard=a.texture_guard,pressure=a.pressure,lazy_registration=a.lazy_registration,mesh_grid=a.mesh_grid,capture_draws=a.capture_draws,vary_pose=a.vary_pose,benchmark_resolution=a.benchmark_resolution)
+result.update(single_sample=a.single_sample,family=a.family,vertex_alpha_zero=a.vertex_alpha_zero,wall_diffuse=a.wall_diffuse,baseline_ref=a.baseline_ref,alpha_test=a.alpha_test,texture_guard=a.texture_guard,pressure=a.pressure,lazy_registration=a.lazy_registration,mesh_grid=a.mesh_grid,capture_draws=a.capture_draws,vary_pose=a.vary_pose,benchmark_resolution=a.benchmark_resolution)
 (out/'validation.json').write_text(json.dumps(result,indent=2)+'\n',encoding='utf-8')
 print('MATERIAL_DEFERRED_PASS',json.dumps(result),flush=True)

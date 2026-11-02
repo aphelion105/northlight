@@ -35,7 +35,7 @@ struct MaterialDepthMeter:ForwardIDirect3DDevice9 {
     HRESULT STDMETHODCALLTYPE Clear(DWORD n,const D3DRECT* rect,DWORD flags,D3DCOLOR color,float z,DWORD stencil)override{++clears;return real->Clear(n,rect,flags,color,z,stencil);}
     HRESULT STDMETHODCALLTYPE GetDepthStencilSurface(IDirect3DSurface9** s)override{++reads;return real->GetDepthStencilSurface(s);}
     HRESULT STDMETHODCALLTYPE GetDeviceCaps(D3DCAPS9* caps)override{const auto hr=real->GetDeviceCaps(caps);if(SUCCEEDED(hr)){if(std::getenv("NORTHLIGHT_TEST_CPU_DISPLACEMENT"))caps->VertexTextureFilterCaps=0;if(std::getenv("NORTHLIGHT_TEST_NO_SHARED_POM"))caps->NumSimultaneousRTs=2;}return hr;}
-    HRESULT STDMETHODCALLTYPE CreateTexture(UINT w,UINT h,UINT levels,DWORD usage,D3DFORMAT format,D3DPOOL pool,IDirect3DTexture9** t,HANDLE* shared)override{++allocations;return real->CreateTexture(w,h,levels,usage,format,pool,t,shared);}
+    HRESULT STDMETHODCALLTYPE CreateTexture(UINT w,UINT h,UINT levels,DWORD usage,D3DFORMAT format,D3DPOOL pool,IDirect3DTexture9** t,HANDLE* shared)override{++allocations;if(format==D3DFORMAT(MAKEFOURCC('D','F','2','4'))&&std::getenv("NORTHLIGHT_TEST_SINGLE_SEED_FAILURE")){*t=nullptr;return E_OUTOFMEMORY;}return real->CreateTexture(w,h,levels,usage,format,pool,t,shared);}
     HRESULT STDMETHODCALLTYPE CreatePixelShader(const DWORD* code,IDirect3DPixelShader9** shader)override{
         if(std::getenv("NORTHLIGHT_TEST_SHARED_SHADER_FAILURE"))for(const auto* shared:{kBumpSharedOpaqueShader,kBumpSharedLayerShader,kBumpSharedWallShader,kBumpSharedGrassShader,kBumpSharedWallOpaqueShader,kBumpSharedCompositeShader})if(code==shared){*shader=nullptr;return E_FAIL;}
         return real->CreatePixelShader(code,shader);
@@ -51,6 +51,9 @@ struct MaterialCaptureStateTestAccess {
     static bool smoothTerrain(const NorthlightAutoBump& b,IDirect3DVertexShader9* source){const auto i=b.vertices.find(source);return i!=b.vertices.end()&&i->second.smoothTerrain;}
     static unsigned queued(const NorthlightAutoBump& b){return b.queued;}
     static unsigned flushed(const NorthlightAutoBump& b){return b.flushed;}
+#ifndef NORTHLIGHT_TEST_CAPTURE_BASELINE
+    static void singleSample(const NorthlightAutoBump& b){std::printf("MATERIAL_SINGLE_SAMPLE queued=%u seeds=%u barriers=%u\n",b.singleSampleQueued,b.depthSeeds,b.depthBarriers);}
+#endif
     static void pressureBounds(const NorthlightAutoBump& b){if(b.memoryPressure){
 #ifdef NORTHLIGHT_TEST_MATERIAL_PRESSURE_POLICY
         const bool demand=std::getenv("NORTHLIGHT_TEST_DEMAND_PRESSURE")&&!std::getenv("NORTHLIGHT_TEST_SMALL_PACKETS");
@@ -462,7 +465,9 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
         const bool batchTiming=mode==1&&std::getenv("NORTHLIGHT_TEST_MATERIAL_BATCH_TIMING");
         if(batchTiming)if(const char* budget=std::getenv("NORTHLIGHT_TEST_CAPTURE_READ_MIB"))MaterialCaptureStateTestAccess::readBudget(bump,size_t(std::atoi(budget))<<20);
         if(std::getenv("NORTHLIGHT_TEST_MATERIAL_DEMO")){settings.autoParallaxDepth=200;settings.autoParallaxShadowStrength=100;settings.autoCavityStrength=100;settings.autoParallaxSteps=32;settings.autoParallaxShadowSteps=16;bump.configure(settings);}
-        if(batchTiming){settings.autoCavity=std::getenv("NORTHLIGHT_TEST_MATERIAL_BATCH_NO_OCCLUSION")?0:1;bump.configure(settings);}
+        if(batchTiming){settings.autoCavity=std::getenv("NORTHLIGHT_TEST_MATERIAL_BATCH_NO_OCCLUSION")?0:1;
+            if(std::getenv("NORTHLIGHT_TEST_SINGLE_GEOMETRY_MODE")){settings.autoBumpModels=3;settings.autoModelDisplacementDistance=1;}
+            bump.configure(settings);}
         if(pomOnly){settings.autoBumpStrength=0;settings.autoParallaxShadows=settings.autoCavity=0;if(std::getenv("NORTHLIGHT_TEST_POM_ONLY_DISABLED"))settings.autoParallaxDepth=0;bump.configure(settings);}
         if(argc>6){settings.autoDisplacementStrength=mode==8?0:unsigned(std::atoi(argv[6]));bump.configure(settings);}
         if(argc>7){settings.autoDisplacementDetail=unsigned(std::atoi(argv[7]));bump.configure(settings);}
@@ -649,10 +654,27 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
                     if(std::getenv("NORTHLIGHT_TEST_REWRITE_CHANGED")){float uv=0;const auto offset=bytes.size()-sizeof(V)+offsetof(V,u);std::memcpy(&uv,bytes.data()+offset,sizeof uv);uv+=float(++rewriteFrame)/128;std::memcpy(bytes.data()+offset,&uv,sizeof uv);}
                     ok(sourceVB->Lock(0,UINT(bytes.size()),&upload,0));std::memcpy(upload,bytes.data(),bytes.size());ok(sourceVB->Unlock());
                     ok(sourceIB->Lock(0,UINT(rewriteIndices.size()),&upload,0));std::memcpy(upload,rewriteIndices.data(),rewriteIndices.size());ok(sourceIB->Unlock());++mutationRevision;};
+            const unsigned depthCase=std::getenv("NORTHLIGHT_TEST_SINGLE_DEPTH_CASE")?unsigned(std::atoi(std::getenv("NORTHLIGHT_TEST_SINGLE_DEPTH_CASE"))):0;
             const auto render=[&]{bump.endFrame();ok(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0xff18212d,1,0));
+                if(depthCase){
+                    assert(!samples&&model&&indexed);
+                    ok(d->SetVertexShaderConstantF(0,bank[0],43));ok(d->SetRenderState(D3DRS_ZFUNC,D3DCMP_LESSEQUAL));
+                    if(depthCase>=2&&depthCase<=4){ok(d->SetRenderState(D3DRS_COLORWRITEENABLE,0));ok(native());ok(d->SetRenderState(D3DRS_COLORWRITEENABLE,15));}
+                    ok(d->SetRenderState(D3DRS_ZFUNC,depthCase<=2?D3DCMP_LESS:depthCase==3?D3DCMP_EQUAL:depthCase==4?D3DCMP_GREATER:D3DCMP_LESSEQUAL));
+                }
                 if(identicalRewrite&&!drawRewrite)rewriteBuffers();
                 if(batched){for(unsigned i=0;i<draws;++i){bump.beginDraw();ok(bump.nativeDraw(native));}for(unsigned i=0;i<draws;++i){bump.beginDraw();bump.capture(vs,native,!indexed,&geometry);}}
                 else for(unsigned i=0;i<draws;++i){
+                    if(depthCase&&i==draws/2){
+                        if(depthCase==5){bump.beforeDepthChange();ok(d->Clear(0,nullptr,D3DCLEAR_ZBUFFER,0,.5f,0));}
+                        if(depthCase==6){bump.beginDraw();ok(bump.nativeDraw(native));}
+                    }
+                    if(depthCase==7)for(unsigned bone=0;bone<4;++bone){float pose[4];std::memcpy(pose,bank[33+3*bone],16);pose[3]-=i%2?45.f:0.f;ok(d->SetVertexShaderConstantF(33+3*bone,pose,1));}
+                    if(depthCase){
+                        // Coplanar packets sample different normal texels, exposing
+                        // LESS/LEQUAL order changes even when geometry is identical.
+                        float uv[4];std::memcpy(uv,bank[6],16);uv[3]+=float(i%5)*.125f;ok(d->SetVertexShaderConstantF(6,uv,1));
+                    }
                     if(drawRewrite)rewriteBuffers();
                     if(textureWrite){writeAlpha(true);ok(d->SetSamplerState(0,D3DSAMP_MIPFILTER,D3DTEXF_NONE));}
                     if(deferredMutation){V moved[4];std::memcpy(moved,floor,sizeof moved);for(auto& v:moved)v.x+=float(i%7)*.025f;
@@ -694,7 +716,10 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
             UINT64 hz=0,a=0,b=0;BOOL invalid=TRUE;wait(finish,&b,sizeof b);wait(start,&a,sizeof a);wait(frequency,&hz,sizeof hz);wait(disjoint,&invalid,sizeof invalid);assert(!invalid&&hz&&b>=a);
             std::printf("%s width=%u height=%u msaa=%u gpuMs=%.6f submitMs=%.6f repeats=%u draws=%u batched=%u\n",batchTiming?"MATERIAL_BATCH_TIMING":"SHARED_POM_TIMING",W,H,unsigned(samples),double(b-a)*1000/double(hz)/repeats,double(cpuEnd.QuadPart-cpuStart.QuadPart)*1000/double(cpuHz.QuadPart)/repeats,repeats,draws,unsigned(batched));
             if(identicalRewrite)std::printf("MATERIAL_IDENTICAL_REWRITE frames=%u draws=%u resident=%llu up=%llu readBytes=%llu verifiedHits=%llu changed=%u\n",4+repeats,draws,rewriteResident,rewriteUP,rewriteReads,rewriteHits,unsigned(std::getenv("NORTHLIGHT_TEST_REWRITE_CHANGED")!=nullptr));
-            if(batchTiming&&deferredEnabled){std::printf("MATERIAL_DEFERRED_BENCH queued=%u flushed=%u mutation=%u barrier=%u\n",MaterialCaptureStateTestAccess::queued(bump),MaterialCaptureStateTestAccess::flushed(bump),unsigned(deferredMutation),unsigned(barrier));assert((drawRewrite?MaterialCaptureStateTestAccess::queued(bump)<=draws:MaterialCaptureStateTestAccess::queued(bump)==(multiStream||!samples?0:draws-(barrier?draws/8:0)))&&MaterialCaptureStateTestAccess::flushed(bump)==MaterialCaptureStateTestAccess::queued(bump));
+            if(batchTiming&&deferredEnabled){std::printf("MATERIAL_DEFERRED_BENCH queued=%u flushed=%u mutation=%u barrier=%u\n",MaterialCaptureStateTestAccess::queued(bump),MaterialCaptureStateTestAccess::flushed(bump),unsigned(deferredMutation),unsigned(barrier));assert(((drawRewrite||depthCase==7)?MaterialCaptureStateTestAccess::queued(bump)<=draws:MaterialCaptureStateTestAccess::queued(bump)==(multiStream||(!samples&&(!model||!indexed||std::getenv("NORTHLIGHT_TEST_MATERIAL_ALPHA_TEST")||std::getenv("NORTHLIGHT_TEST_SINGLE_SEED_FAILURE")))?0:draws-(barrier?draws/8:0)))&&MaterialCaptureStateTestAccess::flushed(bump)==MaterialCaptureStateTestAccess::queued(bump));
+#ifndef NORTHLIGHT_TEST_CAPTURE_BASELINE
+                if(!samples&&model&&indexed)MaterialCaptureStateTestAccess::singleSample(bump);
+#endif
                 if(samples&&!multiStream&&!textureWrite)MaterialCaptureStateTestAccess::stateReuse(bump);
                 if(!identicalRewrite&&samples&&(meshGrid||bufferedStrip||std::getenv("NORTHLIGHT_TEST_DEFERRED_RESIDENT")))MaterialCaptureStateTestAccess::residency(bump,(!pressure||demandPressure)&&!captureDevice.failResident);
 #ifdef NORTHLIGHT_TEST_MATERIAL_PRESSURE_POLICY

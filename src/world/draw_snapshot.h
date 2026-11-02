@@ -477,8 +477,9 @@ private:
             auto entry=std::make_unique<CacheEntry>();entry->key=key;entry->producer=this;entry->compacted=compacted_;entry->low=low;
             entry->declaration.p=static_cast<IDirect3DVertexDeclaration9*>(const_cast<void*>(key.declaration));entry->declaration.p->AddRef();
             entry->ibBegin=ibBegin;entry->ibBytes=ibBytes;
-            if(key.indexed)entry->rawIndices.assign(rawIndexScratch_.begin(),rawIndexScratch_.begin()+std::ptrdiff_t(ibBytes));
-            if(compacted_)entry->runs=*activeRuns_;
+            // Only untracked entries revalidate by reading raw indices and copy runs.
+            if(!key.tracked&&key.indexed)entry->rawIndices.assign(rawIndexScratch_.begin(),rawIndexScratch_.begin()+std::ptrdiff_t(ibBytes));
+            if(!key.tracked&&compacted_)entry->runs=*activeRuns_;
             for(UINT s=0;s<4;++s){entry->begins[s]=begins[s];entry->lockBytes[s]=lockBytes[s];entry->readBytes[s]=readBytes[s];}
             entry->charged=std::size_t(ibBytes);for(UINT s=0;s<4;++s)entry->charged+=std::size_t(readBytes[s]);
             const size_t payload=NorthlightSourceIdentity::allocationBytes<Mesh>(mesh.capacityBytes());

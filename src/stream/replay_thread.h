@@ -134,6 +134,7 @@ struct DrawIUPArgs {UINT type,minIndex,numVertices,primCount,indexFormat,stride,
 struct StateBlockArgs {ProxyBase* p;UINT type;};
 
 class Replayer {
+    friend struct ReplayUploadTestAccess;
 public:
     StreamCore& core;
     SnapshotPool snapshots;
@@ -355,11 +356,17 @@ private:
     void writeBuffer(ProxyBase* p,UINT off,UINT size,DWORD fl,const unsigned char* data){
         if(!p->inner||p->dead.load()){add(core.q.stats.replayFailures);return;}
         void* dst=nullptr;const DWORD flags=fl&~D3::kLockReadOnly;
-        NorthlightReplayCopies::UnlockSourceScope source(data,off,size);   // the replay-side CPU copy is fed from these bytes, not read back from the mapped pointer
+        NorthlightReplayCopies::UnlockSourceScope source(data,off,size,p->inner);   // the replay-side CPU copy is fed from these bytes, not read back from the mapped pointer
+        const bool timed=replayProfile_.enabled;const auto start=timed?nowNs():0;
         const HRESULT hr=p->kind==Kind::VertexBuffer?static_cast<IDirect3DVertexBuffer9*>(p->inner)->Lock(off,size,&dst,flags):static_cast<IDirect3DIndexBuffer9*>(p->inner)->Lock(off,size,&dst,flags);
-        if(FAILED(hr)||!dst){add(core.q.stats.replayFailures);return;}
+        const auto locked=timed?nowNs():0;
+        if(FAILED(hr)||!dst){add(core.q.stats.replayFailures);if(timed)replayProfile_.recordUpload(size,locked-start,0,0,false,true,2);return;}
+        if(source.skipped()){if(timed)replayProfile_.recordUpload(size,locked-start,0,0,true,false,2);return;}
         std::memcpy(dst,data,size);
-        if(p->kind==Kind::VertexBuffer)static_cast<IDirect3DVertexBuffer9*>(p->inner)->Unlock();else static_cast<IDirect3DIndexBuffer9*>(p->inner)->Unlock();
+        const auto copied=timed?nowNs():0;
+        const HRESULT unlocked=p->kind==Kind::VertexBuffer?static_cast<IDirect3DVertexBuffer9*>(p->inner)->Unlock():static_cast<IDirect3DIndexBuffer9*>(p->inner)->Unlock();
+        if(FAILED(unlocked))add(core.q.stats.replayFailures);
+        if(timed)replayProfile_.recordUpload(size,locked-start,copied-locked,nowNs()-copied,false,FAILED(unlocked),4);
     }
     void derive(const DeriveArgs& a){
         IUnknown* got=nullptr;HRESULT hr=D3DERR_INVALIDCALL;IUnknown* in=a.parent->inner;
@@ -609,6 +616,8 @@ private:
             double(p.maxNs)/1e6,cmdName((Cmd)p.maxId));
         for(unsigned i=0;i<count;++i)put(buf,n,"%s%s:%.4fms/%u",i?",":"",cmdName((Cmd)top[i]),double(p.entries[top[i]].ns)/1e6,p.entries[top[i]].calls);
         log(buf);
+        const auto& u=p.upload;if(u.calls){std::snprintf(buf,sizeof buf,"CSTREAM UPLOAD frame=%llu calls=%u bytes=%llu skipped=%u failed=%u lockMs=%.4f copyMs=%.4f unlockMs=%.4f maxLockMs=%.4f maxCopyMs=%.4f maxUnlockMs=%.4f clockReads=%u",
+            (unsigned long long)p.frame,u.calls,(unsigned long long)u.bytes,u.skipped,u.failed,double(u.lockNs)/1e6,double(u.copyNs)/1e6,double(u.unlockNs)/1e6,double(u.maxLockNs)/1e6,double(u.maxCopyNs)/1e6,double(u.maxUnlockNs)/1e6,u.clockReads);log(buf);}
     }
     void activateSnapshot(GameSnapshot* s){
         playback_.reset();
