@@ -13,7 +13,7 @@ class Color {
     struct Entry {IDirect3DPixelShader9* shader[4]{};bool attempted[4]{};};
     std::unordered_map<IDirect3DPixelShader9*,Entry> shaderBanks[2];
     IDirect3DPixelShader9* world=nullptr;
-    IDirect3DPixelShader9* fixedUi=nullptr;IDirect3DPixelShader9* multiFixedUi=nullptr;
+    IDirect3DPixelShader9* fixedUi=nullptr;IDirect3DPixelShader9* multiFixedUi=nullptr;IDirect3DPixelShader9* diffuseUi=nullptr;
     IDirect3DPixelShader9* layerShader=nullptr;IDirect3DTexture9* layerTexture=nullptr;
     IDirect3DSurface9* layerSurface=nullptr;IDirect3DSurface9* layerMsaa=nullptr;D3DSURFACE_DESC layerDesc{};
     float uiScale=0;
@@ -40,7 +40,7 @@ public:
     ~Color(){reset();}
     std::uint64_t payloadBytes()const{return std::uint64_t(layerDesc.Width)*layerDesc.Height*4*((layerTexture?1:0)+(layerMsaa?unsigned(layerDesc.MultiSampleType):0));}
     void forget(IDirect3DPixelShader9* original){for(auto& shaders:shaderBanks){auto it=shaders.find(original);if(it!=shaders.end()){for(auto*& p:it->second.shader)release(p);shaders.erase(it);}}}
-    void reset(){for(auto& shaders:shaderBanks){for(auto& e:shaders)for(auto*& p:e.second.shader)release(p);shaders.clear();}release(world);release(fixedUi);release(multiFixedUi);release(layerShader);release(layerSurface);release(layerTexture);release(layerMsaa);layerDesc={};uiScale=0;}
+    void reset(){for(auto& shaders:shaderBanks){for(auto& e:shaders)for(auto*& p:e.second.shader)release(p);shaders.clear();}release(world);release(fixedUi);release(multiFixedUi);release(diffuseUi);release(layerShader);release(layerSurface);release(layerTexture);release(layerMsaa);layerDesc={};uiScale=0;}
     template<class Draw> HRESULT legacyLayer(IDirect3DDevice9* d,float uiWhite,Draw submit,NorthlightStateBlockPool* pool=nullptr){
         SavedState saved(d,pool);if(!saved.ok)return E_FAIL;
         D3DSURFACE_DESC desc{};HRESULT hr=saved.targets[0]->GetDesc(&desc);if(FAILED(hr))return hr;
@@ -108,7 +108,16 @@ public:
                 if(SUCCEEDED(hr)){++attenuationDirect;hr=submit();}return hr;
             }
         }
-        float second[8]={0,1,0,0,0,1,0,0};const bool multi=!disabledStage(d,1);
+        DWORD firstColor=0,firstAlpha=0,specular=0,blendOp=0;
+        if(FAILED(d->GetTextureStageState(0,D3DTSS_COLOROP,&firstColor)))return E_FAIL;
+        // The native sky uses diffuse-only additive draws with both operations
+        // disabled. Keep other fixed-function combinations in the compatibility path.
+        const bool diffuseOnly=firstColor==D3DTOP_DISABLE;
+        if(diffuseOnly&&(!blend||src!=D3DBLEND_SRCALPHA||dst!=D3DBLEND_ONE||
+           FAILED(d->GetTextureStageState(0,D3DTSS_ALPHAOP,&firstAlpha))||firstAlpha!=D3DTOP_DISABLE||!disabledStage(d,1)||
+           FAILED(d->GetRenderState(D3DRS_BLENDOP,&blendOp))||blendOp!=D3DBLENDOP_ADD||
+           FAILED(d->GetRenderState(D3DRS_SPECULARENABLE,&specular))||specular))return legacyLayer(d,uiWhite,submit,pool);
+        float second[8]={0,1,0,0,0,1,0,0};const bool multi=!diffuseOnly&&!disabledStage(d,1);
         if(multi){
             DWORD result=0;
             if(!disabledStage(d,2)||FAILED(d->GetTextureStageState(0,D3DTSS_RESULTARG,&result))||result!=D3DTA_CURRENT||
@@ -134,7 +143,7 @@ public:
            FAILED(d->GetTextureStageState(0,D3DTSS_TEXCOORDINDEX,&coordinates))||coordinates||
            !directTextureCoordinates(d,0))return legacyLayer(d,uiWhite,submit,pool);
         float flags[4]{};
-        for(unsigned channel=0;channel<2;++channel){
+        for(unsigned channel=0;!diffuseOnly&&channel<2;++channel){
             DWORD op=0;if(FAILED(d->GetTextureStageState(0,channel?D3DTSS_ALPHAOP:D3DTSS_COLOROP,&op)))return E_FAIL;
             if(channel&&op==D3DTOP_DISABLE){flags[3]=1;continue;}
             if(op!=D3DTOP_SELECTARG1&&op!=D3DTOP_SELECTARG2&&op!=D3DTOP_MODULATE)return legacyLayer(d,uiWhite,submit,pool);
@@ -150,21 +159,27 @@ public:
         // Sampling an absent texture has special fixed-function semantics.
         if(flags[0]||flags[2]){IDirect3DBaseTexture9* texture=nullptr;const HRESULT hr=d->GetTexture(0,&texture);const bool present=texture!=nullptr;release(texture);if(FAILED(hr))return hr;if(!present)return legacyLayer(d,uiWhite,submit,pool);}
         if(blend&&(src==D3DBLEND_DESTCOLOR||src==D3DBLEND_ZERO))return legacyLayer(d,uiWhite,submit,pool);
-        auto*& shader=multi?multiFixedUi:fixedUi;
-        if(!shader){const HRESULT hr=d->CreatePixelShader(reinterpret_cast<const DWORD*>(multi?kHdrFixedUi2:kHdrFixedUi),&shader);if(FAILED(hr))return legacyLayer(d,uiWhite,submit,pool);}
+        auto*& shader=diffuseOnly?diffuseUi:multi?multiFixedUi:fixedUi;
+        if(!shader){const HRESULT hr=d->CreatePixelShader(reinterpret_cast<const DWORD*>(diffuseOnly?kHdrUiPs3:multi?kHdrFixedUi2:kHdrFixedUi),&shader);if(FAILED(hr))return legacyLayer(d,uiWhite,submit,pool);}
         const unsigned registers=multi?4:2;
         float constants[16];DWORD srgb=0;HRESULT hr=d->GetPixelShaderConstantF(0,constants,registers);if(FAILED(hr))return hr;
         hr=d->GetRenderState(D3DRS_SRGBWRITEENABLE,&srgb);if(FAILED(hr))return hr;
-        struct Restore{IDirect3DDevice9* d;float* constants;unsigned registers;DWORD srgb,src;bool screen;~Restore(){d->SetPixelShader(nullptr);d->SetPixelShaderConstantF(0,constants,registers);d->SetRenderState(D3DRS_SRGBWRITEENABLE,srgb);if(screen)d->SetRenderState(D3DRS_SRCBLEND,src);}}restore{d,constants,registers,srgb,src,blend&&src==D3DBLEND_INVDESTCOLOR&&dst==D3DBLEND_ONE};
+        const D3DRENDERSTATETYPE alphaStates[]={D3DRS_SEPARATEALPHABLENDENABLE,D3DRS_SRCBLENDALPHA,D3DRS_DESTBLENDALPHA,D3DRS_BLENDOPALPHA};
+        DWORD alpha[4]{};if(diffuseOnly)for(unsigned i=0;i<4;++i){hr=d->GetRenderState(alphaStates[i],alpha+i);if(FAILED(hr))return hr;}
+        struct Restore{IDirect3DDevice9* d;float* constants;unsigned registers;DWORD srgb,src;bool screen,diffuse;const D3DRENDERSTATETYPE* alphaStates;DWORD* alpha;~Restore(){d->SetPixelShader(nullptr);d->SetPixelShaderConstantF(0,constants,registers);d->SetRenderState(D3DRS_SRGBWRITEENABLE,srgb);if(screen)d->SetRenderState(D3DRS_SRCBLEND,src);if(diffuse)for(unsigned i=0;i<4;++i)d->SetRenderState(alphaStates[i],alpha[i]);}}restore{d,constants,registers,srgb,src,blend&&src==D3DBLEND_INVDESTCOLOR&&dst==D3DBLEND_ONE,diffuseOnly,alphaStates,alpha};
         const float scale[]={uiWhite/80,uiWhite/80,uiWhite/80,blend&&src==D3DBLEND_ONE&&dst==D3DBLEND_INVSRCALPHA?1.f:0.f};
         hr=d->SetPixelShader(shader);if(SUCCEEDED(hr))hr=d->SetPixelShaderConstantF(0,scale,1);
         if(SUCCEEDED(hr))hr=d->SetPixelShaderConstantF(1,flags,1);
         if(SUCCEEDED(hr)&&multi)hr=d->SetPixelShaderConstantF(2,second,2);
         if(SUCCEEDED(hr))hr=d->SetRenderState(D3DRS_SRGBWRITEENABLE,FALSE);
         if(SUCCEEDED(hr)&&restore.screen){++screenDirect;hr=d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE);}
+        // Match the compatibility composite's additive destination alpha.
+        if(diffuseOnly){const DWORD values[]={TRUE,D3DBLEND_ONE,D3DBLEND_ONE,D3DBLENDOP_ADD};for(unsigned i=0;SUCCEEDED(hr)&&i<4;++i)hr=d->SetRenderState(alphaStates[i],values[i]);}
         if(SUCCEEDED(hr)){if(multi)++multiTextureDirect;hr=submit();}return hr;
     }
     template<class Draw> HRESULT draw(IDirect3DDevice9* d,float uiWhite,Draw submit,unsigned particleFamily=0,NorthlightStateBlockPool* pool=nullptr){
+        // Preserve depth/stencil/query side effects, but no color needs transfer.
+        DWORD writes=0;if(SUCCEEDED(d->GetRenderState(D3DRS_COLORWRITEENABLE,&writes))&&!writes)return submit();
         IDirect3DPixelShader9* original=nullptr;
         if(FAILED(d->GetPixelShader(&original)))return E_FAIL;
         if(!original)return fixedDraw(d,uiWhite,submit,pool);

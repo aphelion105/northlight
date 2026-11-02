@@ -405,7 +405,8 @@ private:
             budget.operations+=p.operations.size();detail::Vector inputs[16]={};
             const auto& limits=pair.second.limits;
             for(size_t i=0;i<e.bindings.size();++i)for(unsigned j=0;j<4;++j){const float lo=limits[i*8+j],hi=limits[i*8+4+j],mid=float((double(lo)+hi)*.5);inputs[e.bindings[i].reg][j]={mid,std::max(double(mid)-lo,double(hi)-mid)};}
-            detail::Vector position;if(!detail::evaluateIntervals(p,inputs,constants,position,true))return Status::Unsupported;
+            detail::Vector position;
+            if(!detail::singleSkinIntervals(p,inputs,constants,position)&&!detail::evaluateIntervals(p,inputs,constants,position,true))return Status::Unsupported;
             for(unsigned axis=0;axis<3;++axis){detail::Value world=detail::mul(position[3],{inverse[12+axis],0});double magnitude=std::fabs(world.value)+world.error;
                 for(unsigned k=0;k<3;++k){auto term=detail::mul(position[k],{inverse[4*k+axis],0});magnitude+=std::fabs(term.value)+term.error;world=detail::add(world,term);}
                 world.error+=detail::roundError(magnitude)*8+.001;
@@ -419,27 +420,29 @@ private:
     // Warm cheap skins and small generic envelopes share the batched clock.
     // Cold/heavy work retains its interruptible Timer path and reserved budget.
     bool fastReady(const Prepared& prepared,const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>& owner,const float* constants,const float* inverse,
-        Budget& budget,Bounds& output,WorkInfo* info,Status& status){
+        Budget& budget,Bounds& output,WorkInfo* info,Status& status,Timer* individual=nullptr){
+        const bool batched=!individual;
         Entry* e=nullptr;auto range=entries_.equal_range(reinterpret_cast<std::uintptr_t>(owner.get()));
         for(auto it=range.first;it!=range.second;++it)if(sameOwner(it->second.owner,owner)&&it->second.key==prepared.key_){e=&it->second;break;}
         if(!e||e->unsupported||!e->ready||(e->skin&&e->copyDefinitions)||e->lastEvaluationNs>=CheapSliceNanoseconds)return false;
         const auto& p=prepared.program_;
         const size_t groups=e->skin?e->skin->usedBones:e->groups.size();
         const size_t operations=e->skin?size_t(75)+groups*16:groups*p.operations.size();
-        if(!e->skin&&(groups>8||operations>128))return false;
+        if((!e->skin||!batched)&&(groups>8||operations>128))return false;
         if(budget.operations>budget.maxOperations||operations>budget.maxOperations-budget.operations)return false;
         for(unsigned j=0;j<16;++j)if(!std::isfinite(inverse[j]))return false;
         if(inverse[3]!=0||inverse[7]!=0||inverse[11]!=0||inverse[15]!=1)return false;
-        if(!fastOpen_){fastMark_=BoundsClock::now();fastOpen_=true;fastCount_=0;}
+        if(batched&&!fastOpen_){fastMark_=BoundsClock::now();fastOpen_=true;fastCount_=0;}
         e->touched=++clock_;++stats_.memoBypassed;
         if(info){info->kind=Kind::Cheap;info->programHash=e->programHash;info->groups=groups;info->operations=operations;info->skin=bool(e->skin);}
+        if(individual)individual->evaluation(*e,info,Stage::All,status,groups,operations);
         float storage[1024];const float* effective=effectiveConstants(p,*e,constants,storage);
         if(!effective){++stats_.invalid;status=Status::Invalid;}
         else if(e->skin){budget.operations+=operations;status=e->skin->evaluate(effective,inverse,output)?Status::Valid:Status::Unsupported;}
         else status=evaluateGroups(p,*e,effective,inverse,budget,output,[]{return false;});
-        if(status==Status::Valid){++stats_.ready;stats_.skinValid+=bool(e->skin);++stats_.cheapValid;++stats_.memoStoreBypassed;++stats_.fastValid;}
+        if(status==Status::Valid){++stats_.ready;stats_.skinValid+=bool(e->skin);stats_.cheapValid+=batched;++stats_.memoStoreBypassed;++stats_.fastValid;}
         else {output={};if(status==Status::Unsupported)++stats_.unsupported;}
-        if(++fastCount_>=ReadyClockStride){const auto now=BoundsClock::now();readyNanoseconds_+=elapsedNs(now,fastMark_);fastMark_=now;fastCount_=0;}
+        if(batched&&++fastCount_>=ReadyClockStride){const auto now=BoundsClock::now();readyNanoseconds_+=elapsedNs(now,fastMark_);fastMark_=now;fastCount_=0;}
         return true;
     }
     Status calculateImpl(const NorthlightActorDeformation::Program& p,const NorthlightDrawSnapshot::Mesh& mesh,
@@ -450,6 +453,13 @@ private:
         if(stage==Stage::Build?!canBuild():stage==Stage::Heavy?!canHeavy():!canReady())return timeBudget();
         if(stage==Stage::Build)++buildCalls_;else if(stage==Stage::Heavy)++heavyCalls_;else ++readyCalls_;
         if(FastReady&&!ResultMemo&&stage==Stage::Cheap&&prepared){Status fast;if(fastReady(*prepared,owner,constants,inverse,budget,output,info,fast))return fast;}
+        // Material draws interleave unrelated game work. Time each bounded
+        // warm evaluation separately; the shadow pass's batched clock would
+        // charge those gaps and exhaust the material budget prematurely.
+        if(FastReady&&!ResultMemo&&stage==Stage::All&&prepared){
+            {Status fast;Timer timer{*this,false};if(fastReady(*prepared,owner,constants,inverse,budget,output,info,fast,&timer))return fast;}
+            if(!canReady())return timeBudget();
+        }
         Status evaluationStatus=Status::Budget;
         Timer timer{*this,stage==Stage::Build,stage==Stage::Heavy};
         const auto lookupStart=timer.start;bool classified=false;

@@ -10,7 +10,9 @@ import northlight_paths as fp
 
 tree=ast.parse((fp.TESTS/'test_terrain_snapshot.py').read_text())
 values={n.targets[0].id:ast.literal_eval(n.value) for n in tree.body if isinstance(n,ast.Assign) and isinstance(n.targets[0],ast.Name) and n.targets[0].id in ('stub','harness')}
-stub=values['stub'].replace('using UINT=unsigned;using INT=int;using DWORD=unsigned;using HRESULT=std::int32_t;\nconstexpr HRESULT D3D_OK=0,D3DERR_INVALIDCALL=HRESULT(0x8876086cu),E_POINTER=HRESULT(0x80004003u);\ninline bool FAILED(HRESULT value){return value<0;}','#include <windows.h>\nconstexpr HRESULT D3D_OK=0,D3DERR_INVALIDCALL=HRESULT(0x8876086cu);')
+stub=values['stub']
+if sys.platform=='win32':
+    stub=stub[:stub.index('using UINT')]+'#include <windows.h>\nconstexpr HRESULT D3D_OK=0,D3DERR_INVALIDCALL=HRESULT(0x8876086cu);\n'+stub[stub.index('constexpr unsigned D3DUSAGE'):]
 source=values['harness'].split('int main(){')[0]+r'''
 static uint64_t revision=1;
 static uint64_t identity(void*,bool index){return index?12:11;}

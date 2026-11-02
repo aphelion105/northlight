@@ -38,13 +38,13 @@ checks['haze: tauScale defaults to 1 and multiplies the optical depth only']=('f
 checks['hlsl: WorldFog takes the air floor from c59.w (the old literal .0017 moved into the constant)']=('airBase=WeatherInfo.w+airBase*saturate(mad(field.w,1.6,-1));' in h and '.0017+airBase' not in h)
 checks['cpp: sigmaAt mirrors the extra extinction through the same airFloor']=('airBase=airFloor+airBase*std::clamp((t.height-.625f)/.625f,0.f,1.f);' in w and '.0017f+airBase' not in w and w.index('const float airFloor=')<w.index('auto sigmaAt='))
 # shadows
-lt=h[h.index('LightingOutput WorldLighting('):h.index('// Second pass to the same FP16 lighting buffer')]
+lt=h[h.index('LightingOutput worldLightingValue('):h.index('// Second pass to the same FP16 lighting buffer')]
 checks['hlsl WorldLighting: only the direct replacement is softened, behind a branch that is off when dry']=(
     'if(WeatherInfo.z>0){moonShadow=lerp(1,shadow,1-WeatherInfo.z);sunVisibility=lerp(1,shadow,GridInfo.z*(1-WeatherInfo.z));}' in lt
     and 'float3 moon=DirectLight.rgb*saturate(dot(detailNormal,SunDirection.xyz))*moonShadow;' in lt and 'float3 sun=DirectLight.rgb*saturate(dot(detailNormal,LegacyDirection.xyz))*sunVisibility;' in lt)
 checks['hlsl WorldLighting: correction.a and baseline.a keep the true visibility']=(
     'o.correction=float4(replacement-painted,lerp(visibility,shadow,SunDirection.w)*SourcePolicy.y);' in lt
-    and 'o.baseline=float4(max(old+AmbientLight.rgb,.15),lerp(visibility,shadow,SunDirection.w)*known);' in lt and 'float visibility=lerp(1,shadow,GridInfo.z);' in lt)
+    and 'o.baseline=float4(max(old+AmbientLight.rgb,.15),known?lerp(visibility,shadow,SunDirection.w):-1);' in lt and 'float visibility=lerp(1,shadow,GridInfo.z);' in lt)
 checks['hlsl: GridInfo.z still the divisor of the removal']=('/GridInfo.z' in h and 'max(GridInfo.z,.001)' in h)
 checks['hlsl: c24.y (softness) still unread']='PassInfo.y' not in h.replace('softness,debug','')
 # WorldGI carries no weather code (0.3.198 rebase onto task 13: it is at 31 temps)
@@ -53,7 +53,7 @@ checks['hlsl WorldGI: no weather code (it is at 31 temps)']='WeatherInfo' not in
 checks['hlsl: no WorldWet shader; WeatherInfo.y only the fog clouds\' folded bank top (0.3.199 optimisation)']='WorldWet' not in h and h.count('WeatherInfo.y')==1 and 'mad(nL,CloudInfo[2].z,WeatherInfo.y)' in h
 # Exact integrated baseline: combined light passes removed a quad site; the
 # actor-aware fog and cached caster variants added shader creation sites.
-checks['render: unchanged draw budget, optional ambient/single-light/unlit/tiled-fog shaders (23 quad sites, 35 pixel shaders)']=(w.count('quad(')==23 and w.count('CreatePixelShader')==35 and 'if(compositeOk&&unlitMask)' in w) and 'wetPS' not in w
+checks['render: unchanged draw budget, including HDR and soft-shadow variants (23 quad sites, 40 pixel shaders)']=(w.count('quad(')==23 and w.count('CreatePixelShader')==40 and 'if(compositeOk&&unlitMask)' in w) and 'wetPS' not in w
 # disc and veil
 checks['discs: gain atomic, default 1, opacity and glare weights only, veil inherits']=(
     'std::atomic<float> weatherGain{1.f};' in dr and 'c[9][3]=glare?disc.opacity:disc.opacity*weatherGain.load(std::memory_order_relaxed);' in dr

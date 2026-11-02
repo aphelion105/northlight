@@ -23,7 +23,7 @@ int main(){WorldScene scene;scene.materials.resize(5);scene.materials[0].lampSou
     NorthlightLocalLights::Light light{};light.sourceId=1;light.diffuse[0]=.3f;light.attenuationStart=.8f;light.attenuationEnd=5.f;light.kind=3;light.flags=NorthlightLocalLights::CastShadow|NorthlightLocalLights::GlassEmitter;
     NorthlightWorldMesh::WorldMeshUploadPlan plan;std::string error;assert(NorthlightWorldMesh::buildUploadPlan(scene,plan,error));
     const size_t own=NorthlightWmoLampShadow::unique(light,plan.batches);assert(own!=size_t(-1)&&plan.batches[own].material==0&&plan.batches[own].count==8);
-    WorldScene filtered=scene;std::vector<WorldTriangle> keep;for(const auto& t:scene.triangles)if(t.material!=plan.batches[own].material)keep.push_back(t);filtered.triangles=std::move(keep);
+    WorldScene filtered=scene;filtered.triangles.clear();for(const auto& t:scene.triangles)if(t.material!=plan.batches[own].material)filtered.triangles.push_back(t);
     for(bool fast:{false,true}){BVH full,point;WorldScene copy=scene,limited=filtered;assert(full.build(std::move(copy),error,fast)&&point.build(std::move(limited),error,fast));
         const Vec3 origin{0,0,0};assert(full.occluded(origin,{1,0,0},1,.01f));assert(!point.occluded(origin,{1,0,0},1,.01f));
         assert(point.occluded(origin,{1,0,0},4,.01f));assert(point.occluded(origin,{0,1,0},3,.01f));assert(point.occluded(origin,{-1,0,0},3,.01f));assert(point.occluded(origin,{0,0,-1},3,.01f));

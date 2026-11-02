@@ -58,13 +58,13 @@ bl=g[g.index('// Separable depth-aware blur'):g.index('// c34 belongs')]
 checks['host: blur unchanged when the pass did not run (fog -> fogBlurred -> fog), resolved: fogHistory -> fog -> fogBlurred']=(
     'SetRenderTarget(0,fogResolved?fogSurface:fogBlurredSurface);d->SetTexture(9,fogResolved?fogHistory:fog)' in bl
     and 'SetRenderTarget(0,fogResolved?fogBlurredSurface:fogSurface);d->SetTexture(9,fogResolved?fog:fogBlurred)' in bl)
-checks['host: FogBlur closes both quads inside the fog guard, before c34/composite; worst case fits 42 marks']=(
+checks['host: FogBlur closes both quads inside the active-fog guard, before c34/composite; worst case fits 44 marks']=(
     bl.count('profile->mark("FogBlur")')==1 and bl.count('quad(w/2,h/2)')==2
-    and bl.index('if(effects.fog){')<bl.index('"volume blur vertical"')<bl.index('profile->mark("FogBlur")')<bl.rindex('}')
-    and maxMarks==42 and len(set(re.findall(r'profile->mark\("(\w+)"\)',w)))+8+8<=maxMarks)
+    and bl.index('if(fogActive){')<bl.index('"volume blur vertical"')<bl.index('profile->mark("FogBlur")')<bl.rindex('}')
+    and maxMarks==44 and len(set(re.findall(r'profile->mark\("(\w+)"\)',w)))+8+8<=maxMarks)
 products=w[w.index('void captureProducts('):w.index('bool captureSkippedDiagnostic(')]
 checks['host: composite and current-frame diagnostic product read the final buffer']=(
-    'SetTexture(9,fogResolved?fogBlurred:fog);d->SetPixelShader(finalPS)' in g
+    'SetTexture(9,fogResolved?fogBlurred:fog);d->SetPixelShader(hdrMode?hdrFinalPS:finalPS)' in g
     and 'diagnosticFogResolved=fogResolved;' in g and 'captureProducts(directory,capture,rendererFrame,w,h,true);' in g
     and 'ready=current&&composited&&lastRenderDebug==0;' in products
     and 'image("fog",diagnosticFogResolved?fogBlurredSurface:fogSurface,ready&&effects.fog&&uploadedFogField,w/2,h/2,D3DFMT_A16B16G16R16F);' in products

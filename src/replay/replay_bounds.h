@@ -108,6 +108,23 @@ inline bool evaluate(const NorthlightActorDeformation::Program& p,const Northlig
     Vector intervals[16]={};for(unsigned i=0;i<16;++i)for(unsigned j=0;j<4;++j)intervals[i][j].value=inputs[i][j];
     return evaluateIntervals(p,intervals,constants,position);
 }
+// Same interval arithmetic as the audited single-bone MUL/MOVA/DP4 program,
+// without decoding its six instructions for each warm bounds group.
+inline bool singleSkinIntervals(const NorthlightActorDeformation::Program& p,const Vector inputs[16],const float* constants,Vector& position){
+    if(!p.kernel.valid||p.kernel.ops.size()!=p.operations.size()||!p.kernel.singleSkin()||constants[0]!=3||constants[1]!=1)return false;
+    const auto index=inputs[1][0];
+    if(index.error!=0||!std::isfinite(index.value)||index.value<0||index.value>74||std::floor(index.value)!=index.value)return false;
+    const auto ordinary=[](float x){return std::isfinite(x)&&(x==0||std::fabs(x)>=std::numeric_limits<float>::min());};
+    for(const auto& v:inputs[0])if(!ordinary(v.value)||!std::isfinite(v.error)||v.error<0)return false;
+    Vector result{};result[3]={1,0};const unsigned first=31+3*unsigned(index.value);
+    for(unsigned axis=0;axis<3;++axis){Value sum;double magnitude=0;
+        for(unsigned j=0;j<4;++j){const float row=constants[4*(first+axis)+j];if(!ordinary(row))return false;
+            const auto term=mul({row,0},inputs[0][j]);magnitude+=std::fabs(term.value)+term.error;sum=add(sum,term);}
+        sum.error+=roundError(magnitude)*8;
+        if(!std::isfinite(sum.value)||!std::isfinite(sum.error)||sum.error<0)return false;result[axis]=sum;
+    }
+    position=result;return true;
+}
 } // namespace detail
 
 // No D3D calls. Input buffers/constants must be this draw's immutable snapshot.

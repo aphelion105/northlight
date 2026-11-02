@@ -56,6 +56,11 @@ struct Selection {
     std::array<NorthlightLocalLights::Light,Slots> sources{}; // Same source, colour and fade as the direct-light pass.
     std::array<Constant,Slots> position{},color{},fog{}; // 0.3.197: Slots, select() fills at most Capacity
     unsigned count=0;float nearest=0,fogDistance=128.f;
+    bool hasFog(unsigned selected)const{
+        // Only exact zero is an identity; unexpected values retain the draw.
+        for(unsigned i=0;i<std::min({selected,count,Slots});++i)if(fog[i][0]!=0)return true;
+        return false;
+    }
     template<unsigned N> DirectBatchView<N> directBatch(unsigned first)const{return DirectBatchView<N>(position,color,count,first);}
     template<unsigned N> Batch<N> batch(unsigned first)const{
         Batch<N> b;

@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 
 ROOT = Path(__file__).resolve().parent                 # scripts/: the generators
 sys.path.insert(0, str(ROOT.parent))
@@ -30,6 +31,27 @@ def source_identity(repo=northlight_paths.REPO):
     return digest.hexdigest()
 OVERLAY_SOURCES = ('settings_overlay.cpp', 'settings_panel.cpp', 'imgui.cpp', 'imgui_draw.cpp', 'imgui_tables.cpp', 'imgui_widgets.cpp', 'imgui_impl_dx9.cpp')
 
+def check_compiler(zig, env):
+    if sys.platform != 'win32':
+        return
+    output = northlight_paths.out()
+    output.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='compiler-probe-', dir=output) as folder:
+        source = Path(folder) / 'probe.cpp'
+        source.write_text('int main(){return 0;}\n', encoding='utf-8')
+        result = subprocess.run([str(zig), 'c++', '-target', 'x86-windows-gnu',
+                                 '-O0', '-c', str(source), '-o', str(source.with_suffix('.obj'))],
+                                env=env, capture_output=True, text=True)
+    if result.returncode:
+        log = output / 'build-preflight.log'
+        log.write_text(result.stdout + result.stderr, encoding='utf-8')
+        hint = ('\nZig cannot compile even a minimal C++ file in this execution environment.'
+                '\nOn Windows, error: Unexpected can come from the restricted execution sandbox.'
+                '\nRun the build outside that sandbox through the normal approval mechanism.'
+                if 'error: Unexpected' in result.stderr else '')
+        raise SystemExit(f'Compiler preflight failed; see {log}.{hint}\n{result.stderr.strip()}')
+
+
 def main(argv=None):
     arguments = sys.argv[1:] if argv is None else argv
     dev_tuning = '--dev-tuning' in arguments
@@ -44,6 +66,8 @@ def main(argv=None):
         zig = northlight_paths.zig()
     except northlight_paths.Missing as e:
         raise SystemExit(f'build_renderer.py: {e}\nInstall zig {northlight_paths.ZIG_VERSION} (https://ziglang.org/download/) and point NORTHLIGHT_ZIG at it.')
+    env = northlight_paths.zig_env()
+    check_compiler(zig, env)
     subprocess.run([sys.executable, str(ROOT/'generate_forwarders.py')], check=True)
     subprocess.run([sys.executable, str(ROOT/'generate_mirror_guarded_device.py')], check=True)
     subprocess.run([sys.executable, str(ROOT/'generate_mirror_resource_forwarders.py')], check=True)
@@ -92,7 +116,6 @@ def main(argv=None):
         raise SystemExit("Automatic normal-map generator differs from the offline build.")
     if any(digest!=hashlib.sha256((SHADERS/name).read_bytes()).hexdigest() for name,digest in bump_manifest.get('parallax_source_sha256',{}).items()):
         raise SystemExit("Parallax shaders differ from the offline build.")
-    env = northlight_paths.zig_env()
     identity = source_identity()
     built_utc = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
     print('Source identity', identity, flush=True)

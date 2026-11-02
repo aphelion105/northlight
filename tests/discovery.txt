@@ -127,6 +127,7 @@ test_fog_optimization_proofs.py
 test_fog_simd_preparation.py
 test_fog_source_visibility.py
 test_fog_temporal_wiring.py
+test_forwarder_generation.py
 test_frame_focus_cache.py
 test_frame_logging_batch.py
 test_frame_stall_profile.py
@@ -135,6 +136,7 @@ test_geometry_handoff.py
 test_geometry_memory.py
 test_geometry_orbit.py
 test_geometry_retry.py
+test_gi_fallback_gpu.py
 test_gi_quality.py
 test_gi_settings_dependencies.py
 test_gi_trig.py
@@ -145,6 +147,7 @@ test_grass_receiving_order.py
 test_grass_shadow_gpu.py
 test_gtao_grazing.py
 test_hdr_boundary.py
+test_hdr_diffuse_gpu.py
 test_hdr_log_summary.py
 test_hdr_reset.py
 test_horizon_haze.py
@@ -172,6 +175,7 @@ test_local_brightness_gpu.py
 test_local_direct_batches_gpu.py
 test_local_fog_batching.py
 test_local_fog_profile.py
+test_local_fog_zero.py
 test_local_ini.py
 test_local_light_batches.py
 test_local_light_cache_query.py
@@ -197,6 +201,7 @@ test_material_constant_spans.py
 test_material_disk_cache.py
 test_material_disk_gpu.py
 test_material_early_alpha_gpu.py
+test_material_envelope_fast.py
 test_material_epoch_guard.py
 test_material_followup_cpu.py
 test_material_frame_rotation_gpu.py
@@ -209,6 +214,7 @@ test_material_packet_auxiliary.py
 test_material_palette_override.py
 test_material_pipeline_cpu_micro.py
 test_material_pose_metadata.py
+test_material_pose_reuse.py
 test_material_pose_wave2.py
 test_material_pressure_transition.py
 test_material_private_depth.py
@@ -355,6 +361,7 @@ test_shared_source_lifecycle.py
 test_shared_static_preparation.py
 test_shared_terrain_bounds.py
 test_shared_terrain_bounds_gpu.py
+test_single_skin_intervals.py
 test_sky_only_context.py
 test_sky_restore.py
 test_snapshot_allocation.py

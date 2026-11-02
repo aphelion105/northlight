@@ -65,4 +65,4 @@ for name,old,new,marker in [('stale','&&actorValid[source]','', 'STALE_FOG_ACTOR
  run=subprocess.run([str(exe)],capture_output=True,text=True);(a.output/(name+'.log')).write_text(run.stdout+run.stderr);assert run.returncode!=0 and marker in run.stderr
 print('PASS stale-map and wrong-source destructive controls rejected',flush=True)
 assert 'memcpy(actorMatrices[source],am,64);actorValid[source]=true;actorCasterCount[source]=drawnHere;' in host
-assert host.index('d->SetTexture(4,textures[4]);',host.index('if(profile)profile->mark("FogMarch");'))<host.index('if(localDirectCount&&debug==0){',host.index('if(profile)profile->mark("FogMarch");'))
+assert host.index('d->SetTexture(4,textures[4]);',host.index('if(profile)profile->mark("FogMarch");'))<host.index('if(localFogActive){',host.index('if(profile)profile->mark("FogMarch");'))

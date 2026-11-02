@@ -20,9 +20,9 @@ static void write(const std::filesystem::path& path,float x){
 #include <new>
 static int failAt=-1,allocations=0,failMode=0;void* operator new(std::size_t n){if(failAt>=0&&(failMode?allocations++>=failAt:allocations++==failAt))throw std::bad_alloc();if(void*p=std::malloc(n))return p;throw std::bad_alloc();}void operator delete(void*p)noexcept{std::free(p);}void operator delete(void*p,std::size_t)noexcept{std::free(p);}
 int main(int argc,char**argv){assert(argc==2);namespace fs=std::filesystem;fs::path root=fs::absolute(argv[1]);fs::create_directories(root);auto path=root/"a-long-file-name-for-lease-failure-check.fgs";write(path,1);for(int mode=0;mode<2;++mode)for(int f=0;f<32;++f){SceneSourceCache cache;std::string e;auto held=cache.get(path.string(),e);assert(held&&held->sourceIdentity);auto token=held->sourceIdentity;auto name=path.string();cache.trimPayloads();bool threw=false;std::shared_ptr<const WorldScene> result;allocations=0;failMode=mode;failAt=f;try{result=cache.get(name,e);}catch(...){threw=true;}failAt=-1;assert(held->vertices[0].position.x==1);if(result)assert(result->vertices[0].position.x==1&&result->sourceIdentity==token);assert(cache.liveBytes()<=8u*1024u*1024u);e.clear();auto recovered=cache.get(name,e);assert(recovered&&recovered->sourceIdentity==token&&e.empty());cache.reset();assert(cache.liveBytes()>0);held.reset();result.reset();recovered.reset();assert(cache.liveBytes()==0&&cache.decodedLiveBytes()==0);(void)threw;}
-    // The extra snapshot allocation must not turn a missing source into an
-    // exception when the original path conversion succeeded under persistent OOM.
+    // Neither path conversion nor the extra snapshot may throw under persistent OOM.
+    for(int failure=0;failure<12;++failure)
     {SceneSourceCache cache;const auto missing=(root/"missing-long-file-name-for-source-cache.fgs").string();
-     allocations=0;failMode=1;failAt=2;bool threw=false;uint64_t id=0;
+     allocations=0;failMode=1;failAt=failure;bool threw=false;uint64_t id=0;
      try{id=cache.findIdentity(missing);}catch(...){threw=true;}failAt=-1;assert(!threw&&!id);}
     std::puts("PASS source stamp allocation failures, lease recovery and missing path");}

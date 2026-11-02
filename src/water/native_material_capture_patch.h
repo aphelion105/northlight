@@ -72,7 +72,15 @@ inline bool patch(const Word* code,size_t count,std::vector<Word>& out,unsigned&
     auto temp=[&](){unsigned r=0;while(r<32&&native.temps[r])++r;if(r<32)native.temps[r]=true;return r;};
     const unsigned color=temp();if(color==32)return false;
     const unsigned bankCount=receiver?1:9; // receiver control, or material controls and view-to-world rows
-    control=128;for(;;){bool free=true;for(unsigned i=0;i<bankCount;++i)free&=!native.constants[control+i];if(free)break;if(++control>192-bankCount)return false;}
+    // Replay captures one contiguous external-constant span. Place controls
+    // beside the native reads instead of copying a mostly unused gap to c128.
+    bool defined[256]={};for(const auto& op:native.ops)if(op.code==81)defined[regIndex(code[op.at+1])]=true;
+    unsigned first=256,last=0;for(unsigned i=0;i<256;++i)if(native.constants[i]&&!defined[i]){first=std::min(first,i);last=std::max(last,i+1);}
+    unsigned best=257;control=256;
+    for(unsigned base=0;base<=192-bankCount;++base){bool free=true;for(unsigned i=0;i<bankCount;++i)free&=!native.constants[base+i];
+        const unsigned span=std::max(last,base+bankCount)-std::min(first,base);
+        if(free&&span<best){control=base;best=span;}}
+    if(control==256)return false;
     for(unsigned i=0;i<bankCount;++i)native.constants[control+i]=true;
     unsigned constants[256],temps[32],inputs[16],integerMap[16];for(unsigned i=0;i<256;++i)constants[i]=i;std::fill(std::begin(temps),std::end(temps),32u);std::fill(std::begin(inputs),std::end(inputs),16u);std::fill(std::begin(integerMap),std::end(integerMap),16u);
     for(unsigned i=0;i<bankCount;++i)constants[20+i]=control+i;

@@ -17,10 +17,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
 
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument('--output', type=Path, required=True)
+parser.add_argument('--output', type=Path, default=fp.output_dir())
 parser.add_argument('--pairs', type=int, default=11)
 parser.add_argument('--checks-only', action='store_true')
 args = parser.parse_args()
+args.checks_only = args.checks_only or len(sys.argv) == 1
 args.output.mkdir(parents=True, exist_ok=True)
 source = fp.src('command_queue.h').read_text()
 old = 'if(lazyCmds_<kLazyWakeCommands&&lazyBytes_<kLazyWakeBytes)'

@@ -58,7 +58,7 @@ int main(int argc,char** argv){assert(argc==6);NorthlightGI::WorldScene scene;st
     scene=std::move(instanced);NorthlightWorldMesh::WorldMeshUploadPlan plan;assert(NorthlightWorldMesh::buildUploadPlan(scene,plan,error));
     std::vector<size_t> matched;for(const auto& light:lights){const size_t index=NorthlightWmoLampShadow::unique(light,plan.batches);assert(index!=size_t(-1));matched.push_back(index);}
     const auto& source=lights[0];const auto& batch=plan.batches[matched[0]];NorthlightGI::WorldScene filtered=scene;std::vector<NorthlightGI::WorldTriangle> keep;
-    for(const auto& triangle:scene.triangles)if(triangle.material!=batch.material)keep.push_back(triangle);assert(keep.size()+8==scene.triangles.size());filtered.triangles=std::move(keep);
+    for(const auto& triangle:scene.triangles)if(triangle.material!=batch.material)keep.push_back(triangle);assert(keep.size()+8==scene.triangles.size());filtered.triangles.clear();filtered.triangles.insert(filtered.triangles.end(),keep.begin(),keep.end());
     NorthlightGI::BVH full,point;assert(full.build(std::move(scene),error,true)&&point.build(std::move(filtered),error,true));
     const NorthlightGI::Vec3 origin{source.position[0],source.position[1],source.position[2]};unsigned visible=0;
     for(const auto& triangle:full.scene().triangles)if(triangle.material==batch.material){const auto a=full.scene().vertices[triangle.v0].position,b=full.scene().vertices[triangle.v1].position,c=full.scene().vertices[triangle.v2].position;const auto dir=NorthlightGI::normalized((a+b+c)/3.f-origin);

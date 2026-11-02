@@ -10,7 +10,10 @@ import northlight_paths as fp
 out=fp.out()/'terrain-source-accounting';out.mkdir(parents=True,exist_ok=True)
 tree=ast.parse((fp.TESTS/'test_terrain_snapshot.py').read_text())
 values={n.targets[0].id:ast.literal_eval(n.value) for n in tree.body if isinstance(n,ast.Assign) and isinstance(n.targets[0],ast.Name) and n.targets[0].id in ('stub','harness')}
-(out/'d3d9.h').write_text(values['stub'])
+stub=values['stub']
+if sys.platform=='win32':
+    stub=stub[:stub.index('using UINT')]+'#include <windows.h>\nconstexpr HRESULT D3D_OK=0,D3DERR_INVALIDCALL=HRESULT(0x8876086cu);\n'+stub[stub.index('constexpr unsigned D3DUSAGE'):]
+(out/'d3d9.h').write_text(stub)
 fixture=values['harness'].split('int main(){')[0]
 fixture=fixture.replace('Declaration declaration;float view[16]={};','Declaration declaration;float view[16]={};UINT stride=24;')
 fixture=fixture.replace('16+actualIndex*24+4','16+actualIndex*stride+4').replace('*offset=16;*stride=24;','*offset=16;*stride=this->stride;')

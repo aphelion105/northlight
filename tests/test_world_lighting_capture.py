@@ -5,6 +5,7 @@ from pathlib import Path
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -57,10 +58,12 @@ run = subprocess.run([str(binary), str(private_backend), str(folder), str(adapte
                      capture_output=True, text=True, timeout=180)
 (folder / 'gpu.log').write_text(run.stdout + run.stderr, encoding='utf-8')
 assert run.returncode == 0, run.stdout + run.stderr
-assert 'LIGHT_CAPTURE_PASS depthFormats=2 exactDepthPixels=1702 apiFailureCases=22 constantRegisters=116 stateVS=256 statePS=224 timing=none' in run.stdout, run.stdout
+depth_formats = run.stdout.count('LIGHT_CAPTURE_DEPTH ')
+assert depth_formats in (1, 2), run.stdout
+assert f'LIGHT_CAPTURE_PASS depthFormats={depth_formats} exactDepthPixels={851*depth_formats} apiFailureCases=22 constantRegisters=116 stateVS=256 statePS=224 timing=none' in run.stdout, run.stdout
 complete = sorted(folder.glob('capture-*-lighting-inputs.jsonl'))
 incomplete = sorted(folder.glob('capture-*-lighting-inputs-incomplete.jsonl'))
-assert len(complete) == 3 and len(incomplete) == 22
+assert len(complete) == depth_formats + 1 and len(incomplete) == 22
 for path in complete + incomplete:
     events = [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()]
     assert events[0]['event'] == 'begin' and events[-1]['event'] == 'end'
@@ -78,8 +81,9 @@ files = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(fold
 (folder / 'validation.json').write_text(json.dumps(dict(status='pass', command=command, source_guard=guard,
     backend=str(backend), backend_sha256=backend_hash, adapter=adapter,
     dxvk_device_filter=environment.get('DXVK_FILTER_DEVICE_NAME'),
-    files=files, captures=3, incomplete_controls=22,
+    files=files, captures=depth_formats+1, depth_formats=depth_formats,
+    unsupported_depth_formats=re.findall(r'LIGHT_CAPTURE_UNSUPPORTED format=(\w+)', run.stdout), incomplete_controls=22,
     game_before=before_game, game_after=after_game,
-    scope='Synthetic odd-size actual DF24/INTZ helper inputs, exact 0/1 pixel centers and state/constant transport',
+    scope='Supported odd-size DF24/INTZ helper inputs, exact 0/1 pixel centers and state/constant transport; unsupported formats explicitly listed',
     authentic_source_replay=False, whole_scene_replay=False, timing_benchmark=False), indent=2) + '\n', encoding='utf-8')
 print(run.stdout.strip())

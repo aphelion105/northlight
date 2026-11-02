@@ -214,7 +214,7 @@ class NorthlightAutoDisplacement {
     }
     void touchBounds(Bounds& value){value.used=++clock;boundsLRU.touch(value);}
     NorthlightReplayBounds::Status poseEnvelope(const Program& program,const std::shared_ptr<const Mesh>& source,const D3DVERTEXELEMENT9* elements,UINT count,
-        const float* bank,NorthlightReplayBounds::Bounds& result,IDirect3DVertexShader9* shader,IDirect3DVertexDeclaration9* declaration){
+        const float* bank,NorthlightReplayBounds::Bounds& result,IDirect3DVertexShader9* shader,IDirect3DVertexDeclaration9* declaration,NorthlightReplayBounds::EnvelopeCache::WorkInfo* info=nullptr){
         const float identity[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
         // Immutable shader/declaration keys may be prepared once. Current pose,
         // source ownership, camera and every envelope budget are still checked.
@@ -223,14 +223,16 @@ class NorthlightAutoDisplacement {
             auto value=NorthlightReplayBounds::EnvelopeCache::prepareProgram(program,elements,count);
             poseEnvelopes.chargeCheapPreparation(uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(NorthlightReplayBounds::BoundsClock::now()-start).count()));
             return value;});
-        return prepared?poseEnvelopes.calculatePrepared(*prepared,*source,source,bank,identity,envelopeBudget,result):
-                        poseEnvelopes.calculate(program,*source,source,elements,count,bank,identity,envelopeBudget,result);
+        return prepared?poseEnvelopes.calculatePrepared(*prepared,*source,source,bank,identity,envelopeBudget,result,NorthlightReplayBounds::EnvelopeCache::Stage::All,info):
+                        poseEnvelopes.calculate(program,*source,source,elements,count,bank,identity,envelopeBudget,result,NorthlightReplayBounds::EnvelopeCache::Stage::All,info);
     }
     bool distantPoseBounds(const Program& program,const std::shared_ptr<const Mesh>& source,const D3DVERTEXELEMENT9* elements,UINT count,float* low,float* high,
-        IDirect3DVertexShader9* shader=nullptr,IDirect3DVertexDeclaration9* declaration=nullptr){
+        IDirect3DVertexShader9* shader=nullptr,IDirect3DVertexDeclaration9* declaration=nullptr,NorthlightReplayBounds::Bounds* skinBounds=nullptr){
         NorthlightMaterialProfile::Scope timing(profile,NorthlightMaterialProfile::PoseEnvelope);
-        NorthlightReplayBounds::Bounds result;
-        if(poseEnvelope(program,source,elements,count,constants,result,shader,declaration)!=NorthlightReplayBounds::Status::Valid)return false;
+        if(skinBounds)*skinBounds={};
+        NorthlightReplayBounds::Bounds result;NorthlightReplayBounds::EnvelopeCache::WorkInfo info;
+        if(poseEnvelope(program,source,elements,count,constants,result,shader,declaration,&info)!=NorthlightReplayBounds::Status::Valid)return false;
+        if(skinBounds&&info.skin)*skinBounds=result;
         ++poseEnvelopeHits;
         lastDepthUpper=std::nextafter(std::max(std::fabs(result.low[2]),std::fabs(result.high[2])),INFINITY)+.001f;
         const float origin[3]={};if(!NorthlightReplayBounds::outsideSphere(result,origin,range))return false;
@@ -424,6 +426,21 @@ class NorthlightAutoDisplacement {
 public:
     void setProfiler(NorthlightMaterialProfile* p){profile=p;}
     struct Args {NorthlightDrawSnapshot::Draw draw;const void* indices=nullptr;D3DFORMAT format=D3DFMT_UNKNOWN;const void* vertices=nullptr;UINT stride=0;};
+    // One capture() invocation owns this handoff; it cannot survive into the
+    // next draw. Preserve the native snapshot before geometry-source dedup.
+    struct CaptureSource {
+        std::shared_ptr<const Mesh> mesh;IDirect3DVertexDeclaration9* declaration=nullptr;
+        CaptureSource()=default;CaptureSource(const CaptureSource&)=delete;CaptureSource& operator=(const CaptureSource&)=delete;
+        ~CaptureSource(){drop(declaration);}
+        void clear(){mesh.reset();drop(declaration);}
+    };
+    struct Admission {
+        DWORD z=0,write=0,blend=0,alpha=0,src=0,dst=0,func=0;
+        bool allows(unsigned domain,unsigned material)const{
+            const bool cutout=write&&alpha&&src==D3DBLEND_SRCALPHA&&dst==D3DBLEND_INVSRCALPHA&&(func==D3DCMP_GREATER||func==D3DCMP_GREATEREQUAL);
+            return z&&(write||domain==1)&&(!blend||cutout||(domain==1&&material==2));
+        }
+    };
     explicit NorthlightAutoDisplacement(IDirect3DDevice9* device,std::shared_ptr<NorthlightGpuScene::Scene> scene={}):gpuScene(NorthlightGpuScene::forDevice(device,std::move(scene))),geometry(*(gpuScene->displacement?gpuScene->displacement:(gpuScene->displacement=std::make_shared<NorthlightDisplacementStorage>()))),d(device){if(!gpuScene->attach(snapshots))throw std::runtime_error("Cannot join displacement capture sources");textures.reserve(32);snapshots.setSnapshotCacheLimit(24u<<20);rangeSnapshots.setSnapshotCacheLimit(4u<<20);skinRangeSnapshots.setSnapshotCacheLimit(4u<<20);
         // Optional range admission must never consume displacement's read budget.
         for(auto* frame:{&snapshots,&rangeSnapshots,&skinRangeSnapshots}){frame->setChargeResidentHits(false);
@@ -475,7 +492,9 @@ public:
         auto shader=materials.find(original);if(shader==materials.end())return false;
         const auto& program=shader->second.view;
         const bool skin=shader->second.skinned;
-        if(skin&&(args.vertices||!program.skinned))return false;
+        // calculate() must refuse an exhausted ready budget. Avoid fetching the
+        // same constants/declaration/source again merely to reach that refusal.
+        if(skin&&(args.vertices||!program.skinned||!poseEnvelopes.canReady()))return false;
         const unsigned input=skin?16:shader->second.rangeRegister==17?rangeInput(program):shader->second.rangeRegister;if(!skin&&input==16)return false;
         {P::Scope read(profile,P::Constants);if(!readConstantBank(shader->second.first,shader->second.count,skin,rangeConstants,rangeConstantStamp,rangeConstantFirst,rangeConstantCount))return false;}
         NorthlightDrawSnapshot::Ref<IDirect3DVertexDeclaration9> decl;if(FAILED(d->GetVertexDeclaration(decl.out()))||!decl.p)return false;
@@ -565,13 +584,14 @@ public:
         if(first>last||last>=256)return;m.first=m.skinned?0:first;m.count=m.skinned?256:last-first+1;m.id=++materialClock;
         m.uvRegisters[0]=usedUVRegisters(m,false);m.uvRegisters[1]=usedUVRegisters(m,true);const bool skinned=m.skinned;materials.emplace(original,std::move(m));if(domain!=4)registerVariant(original,code,count,skinned);
     }
-    bool prepare(IDirect3DVertexShader9* original,unsigned domain,unsigned material,const Args& args){
+    bool prepare(IDirect3DVertexShader9* original,unsigned domain,unsigned material,const Args& args,const Admission* captured=nullptr,CaptureSource* captureSource=nullptr){
+        if(captureSource)captureSource->clear();
         preparedSourceIdentity.reset();
         using P=NorthlightMaterialProfile;P::Scope timing(profile,P::Admission);
         current=nullptr;currentOverlay=false;preparedDraw=args.draw;lastDepthLower=0;lastDepthUpper=INFINITY;strength=domain==4?modelStrength:worldStrength;range=domain==4?modelRange:worldRange;detail=domain==4?modelDetail:domain==3?std::min(worldDetail,3u):worldDetail;auto shader=materials.find(original);auto patched=shaders.find(original);if(shader==materials.end()||strength<=0||domain>4||patched==shaders.end()||(!patched->second.pending&&!patched->second.patched)){++shaderRejected;return false;}
-        DWORD z=0,write=0,blendState=0;d->GetRenderState(D3DRS_ZENABLE,&z);d->GetRenderState(D3DRS_ZWRITEENABLE,&write);d->GetRenderState(D3DRS_ALPHABLENDENABLE,&blendState);
-        bool cutout=false;if(blendState&&write){DWORD alpha=0,src=0,dst=0,func=0;d->GetRenderState(D3DRS_ALPHATESTENABLE,&alpha);d->GetRenderState(D3DRS_SRCBLEND,&src);d->GetRenderState(D3DRS_DESTBLEND,&dst);d->GetRenderState(D3DRS_ALPHAFUNC,&func);cutout=alpha&&src==D3DBLEND_SRCALPHA&&dst==D3DBLEND_INVSRCALPHA&&(func==D3DCMP_GREATER||func==D3DCMP_GREATEREQUAL);}
-        if(!z||(!write&&domain!=1)||(blendState&&!cutout&&!(domain==1&&material==2))){++stateRejected;return false;}
+        Admission admission;if(!captured){d->GetRenderState(D3DRS_ZENABLE,&admission.z);d->GetRenderState(D3DRS_ZWRITEENABLE,&admission.write);d->GetRenderState(D3DRS_ALPHABLENDENABLE,&admission.blend);
+            if(admission.blend&&admission.write){d->GetRenderState(D3DRS_ALPHATESTENABLE,&admission.alpha);d->GetRenderState(D3DRS_SRCBLEND,&admission.src);d->GetRenderState(D3DRS_DESTBLEND,&admission.dst);d->GetRenderState(D3DRS_ALPHAFUNC,&admission.func);}captured=&admission;}
+        if(!captured->allows(domain,material)){++stateRejected;return false;}
         timing.next(P::Constants);
         if(!readConstants(shader->second.first,shader->second.count,shader->second.skinned)||(!shader->second.skinned&&!viewRows(shader->second.view,constants)))return false;
         timing.next(P::Snapshot);
@@ -582,6 +602,7 @@ public:
         if(args.vertices){if(!snapshots.readUP(decl.p,args.draw,args.indices,args.format,args.vertices,args.stride,local,&why))return snapshotFailure(why);}
         else if(!snapshots.read(d,decl.p,args.draw,local,&why,false,&source))return snapshotFailure(why);
         if(!source)source=snapshots.retain(std::move(local));
+        if(captureSource){captureSource->mesh=source;captureSource->declaration=decl.p;decl->AddRef();}
         timing.work(source->vertexCount,source->byteSize());timing.next(P::BoundsPose);
         // Cached geometry may retain an older, byte-identical buffer revision.
         // Overlays must match the source of this frame's successful base draw.
@@ -600,13 +621,16 @@ public:
         // Reject whole draws outside the sphere before decoding textures or subdividing.
         const auto position=std::find_if(elements,elements+count,[](const D3DVERTEXELEMENT9& e){return e.Stream==0&&e.Usage==0&&e.UsageIndex==0;});
         if(position==elements+count||position->Type!=D3DDECLTYPE_FLOAT3)return false;
-        float low[3],high[3];
-        if(shader->second.skinned&&distantPoseBounds(shader->second.view,source,elements,count,low,high,original,decl.p)){++distanceRejected;return false;}
+        float low[3],high[3];NorthlightReplayBounds::Bounds poseBounds;
+        if(shader->second.skinned&&distantPoseBounds(shader->second.view,source,elements,count,low,high,original,decl.p,&poseBounds)){++distanceRejected;return false;}
         // Generic skinning uses exact posed vertices below, never object-space
         // bounds. Building/scanning/retaining those before a budget refusal was
         // unbounded work with no consumer, especially when the source churned.
         const bool exactSkin=shader->second.skinned&&shader->second.view.kernel.skin;
-        const bool needsBounds=!shader->second.skinned||exactSkin;
+        // The template skin uses the same SkinEnvelope evaluator in both caches.
+        // Reuse this draw's current-palette result instead of building/evaluating it twice.
+        const bool reusePose=exactSkin&&poseBounds.valid;
+        const bool needsBounds=!shader->second.skinned||(exactSkin&&!reusePose);
         const auto& stream=source->streams[0];auto foundBounds=needsBounds?cachedBounds(source):bounds.end();
         if(needsBounds&&foundBounds==bounds.end()){
             Bounds b;for(unsigned i=0;i<3;++i){b.low[i]=FLT_MAX;b.high[i]=-FLT_MAX;}
@@ -618,8 +642,8 @@ public:
             foundBounds=retainBounds(source,std::move(b));
         }
         const float identity[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};NorthlightReplayBounds::Bounds skinBounds;
-        const auto exactEnvelope=[&]{if(!exactSkin||!foundBounds->second.skin)return false;P::Scope envelope(profile,P::PoseEnvelope);return evaluateLocalSkin(*foundBounds->second.skin,shader->second.view,constants,identity,skinBounds);};
-        if(exactEnvelope()){touchBounds(foundBounds->second);std::copy(skinBounds.low,skinBounds.low+3,low);std::copy(skinBounds.high,skinBounds.high+3,high);
+        const auto exactEnvelope=[&]{if(reusePose){skinBounds=poseBounds;return true;}if(!exactSkin||!foundBounds->second.skin)return false;P::Scope envelope(profile,P::PoseEnvelope);return evaluateLocalSkin(*foundBounds->second.skin,shader->second.view,constants,identity,skinBounds);};
+        if(exactEnvelope()){if(!reusePose)touchBounds(foundBounds->second);std::copy(skinBounds.low,skinBounds.low+3,low);std::copy(skinBounds.high,skinBounds.high+3,high);
             // Reuse the audited, outward-rounded skin envelope for normal capture.
             lastDepthUpper=std::nextafter(std::max(std::fabs(low[2]),std::fabs(high[2])),INFINITY)+.001f;
             lastDepthLower=std::max(0.f,std::nextafter(low[2]>0?low[2]:high[2]<0?-high[2]:0,-INFINITY)-.001f);}

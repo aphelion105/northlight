@@ -55,6 +55,7 @@ constexpr unsigned D3DRS_ZWRITEENABLE=14,D3DRS_ZFUNC=23,D3DRS_ZENABLE=7,D3DRS_AL
 #define SUCCEEDED(hr) ((hr)>=0)
 #define FAILED(hr) ((hr)<0)
 struct D3DSURFACE_DESC{};
+struct CpuScope {explicit CpuScope(long long*){}};
 struct IDirect3DVertexShader9{unsigned id;};
 struct IDirect3DPixelShader9{unsigned id;};
 static IDirect3DVertexShader9 uiVS{1},otherVS{2},worldVS{3};
@@ -79,7 +80,11 @@ template<class Arming>struct Common {
  Arming uiFallback;
  FakeDevice device,*ext=&device;VsClass classification;
  struct {bool active=false;struct{float uiWhite=160;}settings;}hdr;
- struct {unsigned rejected=0;template<class Draw>HRESULT draw(FakeDevice*,float,Draw submit){return submit();}}hdrColor;
+ struct {unsigned rejected=0,layers=0;template<class Draw,class... Rest>HRESULT draw(FakeDevice*,float,Draw submit,Rest...){return submit();}}hdrColor;
+ struct {float uiWhite=160;}hdrFrameSettings;
+ bool hdrWorldSeen=false,hdrSkyReplaying=false,hdrAtUiBoundary=false,skySeen=false,gateFrame=false,gateUntimed=false;
+ long long cpuHdrAdmission=0,cpuHdrBoundary=0,cpuHdrTransfer=0;
+ unsigned hdrAdmissionCalls=0,hdrTransferCalls=0;int stateBlocks=0;
  std::unordered_map<IDirect3DPixelShader9*,int>psTags;
  std::unordered_map<IDirect3DVertexShader9*,uint64_t>vsHashes;
  bool terrain=true,applied=false,enabled=true,failed=false,drawWaterVS=false;
@@ -93,6 +98,11 @@ template<class Arming>struct Common {
  const VsClass& classifyVs(IDirect3DVertexShader9* shader){classification={};classification.world=shader==&worldVS;classification.entry=stock&&shader==&uiVS?2:0;return classification;}
  bool fullViewport(D3DSURFACE_DESC&,void*,bool,bool=true){return full;}
  bool hdrBackTarget(){return back;}
+ bool fixedUiGeometry(){return false;}
+ bool orthographicUiGeometry(){return false;} // This fixture exercises shader-proven stock/learned UI, not geometry admission.
+ bool hdrUiInputs(){return true;}
+ void rememberUiTextVs(){}
+ void hdrLayerDiagnostic(){}
  bool sampled()const{return false;}
  void uiFallbackPublish(){}
  template<class Work>void extensionWork(const char*,Work work){work();}

@@ -22,7 +22,10 @@ def literals(name):
 fixture = literals('test_terrain_snapshot.py')
 helpers = literals('test_terrain_retention_budget.py')['body']
 fill = helpers[helpers.index('static void fill('):helpers.index('template<class Cache,class Snapshot> static void scenario')]
-(out/'d3d9.h').write_text(fixture['stub'])
+stub=fixture['stub']
+if sys.platform=='win32':
+    stub=stub[:stub.index('using UINT')]+'#include <windows.h>\nconstexpr HRESULT D3D_OK=0,D3DERR_INVALIDCALL=HRESULT(0x8876086cu);\n'+stub[stub.index('constexpr unsigned D3DUSAGE'):]
+(out/'d3d9.h').write_text(stub)
 baseline = subprocess.check_output(['git','show','cc69996:src/world/terrain_capture_bounds.h'],cwd=fp.REPO)
 (out/'baseline.h').write_bytes(baseline)
 prefix = '''#include "terrain_capture_bounds.h"

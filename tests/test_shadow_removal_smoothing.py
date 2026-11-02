@@ -60,10 +60,10 @@ checks['c30.yzw only from the drawn source weight (sum of positive weights), set
 tb=w[w.index('{   // Temporal stabilization: light + history'):w.index('temporalIndex=prev;temporalValid=true;')]
 # Current local radiance follows directional history; both consumers need the
 # same current baseline, and the optional point pass restores the world bank.
-between=w[w.index('temporalIndex=prev;temporalValid=true;'):w.index('d->SetPixelShader(finalPS);\n        /* 0.3.212 (task 32)')]
+between=w[w.index('temporalIndex=prev;temporalValid=true;'):w.index('bool compositeOk=')]
 local=w[w.index('d->SetPixelShader(localDirectPS);'):w.index('if(profile)profile->mark("LocalLights");')]
 checks['BaselineLighting (s12): temporal/current-local/composite bindings retained']=(w.count('SetTexture(12,')==10
-    and w.count('d->SetTexture(12,actorShadow[source]);')==2 and w.count('d->SetTexture(12,anyActorPass?actorVisibility:neutralWhite);')==1 and w.count('d->SetTexture(12,textures[12]);')==1
+    and w.count('d->SetTexture(12,actorShadow[source]);')==2 and w.count('d->SetTexture(12,anyActorPass?actorVisibility:neutralWhite);')==1 and w.count('d->SetTexture(12,baselineLight);')==5
     and 'd->SetTexture(12,baselineLight);' in tb and between.count('d->SetTexture(12,baselineLight);')==3 and local.count('d->SetTexture(12,baselineLight);')==1)
 # 0.3.185 host: the pass is created, drawn right before the temporal pass with the samplers smoothRemoval reads, released and dumped.
 smoothdraw='if(removalDrawn){if(!check(d->SetRenderTarget(0,smoothSurface),"removal smoothing target"))return false;d->SetPixelShader(removalPS);if(!check(quad(w/2,h/2,false),"removal smoothing pass"))return false;}'
@@ -109,7 +109,7 @@ for needle in ('clamp(RemovalInfo.w/z,3,16)','-1.442695/max(.25,z*.03)','2*Remov
                'result=lerp(ratio,sum/total,amount)*scale/legacyT;',
                # the composite terms mirrored above
                'float legacyT=mad(LegacyFog.w,saturate(pow(max(mad(viewZ*Projection.z,LegacyFog.x,LegacyFog.y),0),LegacyFog.z))-1,1);',
-               'float3 fogPart=min((1-legacyT)*LegacyFogColor.rgb,original.rgb);','float3 albedoT=min(transported/oldLight,legacyT);',
+               'float3 fogPart=min((1-legacyT)*LegacyFogColor.rgb,original.rgb);','float3 albedoT=min((hdrMode?hdrSurface:transported)/oldLight,legacyT);',
                'color=max(color,mad(-.45,transported,original.rgb));'):
     assert hlsl.count(needle)==1,needle
 

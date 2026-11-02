@@ -14,8 +14,8 @@ prepare = renderer[renderer.index('template<class Capture> void prepareDrawImpl(
 assert prepare.index('beforeDraw(vs);') < prepare.index('capture(vs);')
 assert prepare.index('NorthlightTranslucentDepth::isUndo(') < prepare.index('NorthlightTranslucentDepth::shouldResolve(') < prepare.index('capture(vs);')
 hook = renderer[renderer.index('template<class Capture,class Draw> HRESULT drawHook('):renderer.index('    // 0.3.154: blob shadow claim')]
-assert hook.index('prepareDraw(capture,count)') < hook.index('waterMrtDraw(draw,')
-assert hook.index('prepareDrawImpl(capture,count)') < hook.rindex('waterMrtDraw(draw,')
+assert hook.index('prepareDraw(capture,count)') < hook.index('waterMrtDraw(nativeDraw,')
+assert hook.index('prepareDrawImpl(capture,count)') < hook.rindex('waterMrtDraw(nativeDraw,')
 boundary = renderer[renderer.index('void beforeDraw('):renderer.index('    // 0.3.203 (task 17): fallback boundary')]
 assert 'renderEffects();spellReplay();' in boundary
 effects = renderer[renderer.index('void renderEffects()'):renderer.index('    /* The guards of every mask decision')]
@@ -30,8 +30,8 @@ assert 'if(vc.world||drawWaterVS)return;' in renderer  # native grass is not a f
 composite = fp.tracked('world_effects.hlsl').read_text().split('float4 worldComposite(')[1].split('// Separate geometry pass')[0]
 assert 'bool relight=surfaceLighting&&d<.99999&&liquid<=0;' in composite and 'if(relight)' in composite
 shader=fp.tracked('world_effects.hlsl').read_text()
-assert 'return worldComposite(uv,pixel,true);' in shader
-assert 'return worldComposite(uv,pixel,false);' in shader
+assert 'return worldComposite(uv,pixel,true,false,FogBuffer);' in shader
+assert 'return worldComposite(uv,pixel,false,false,FogBuffer);' in shader
 assert 'GrassShadows' not in composite and 'DetailDoodad' not in composite  # receiving is independent of caster opt-in
 
 spell = fp.src('spell_layer.h').read_text()

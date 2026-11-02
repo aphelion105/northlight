@@ -9,6 +9,8 @@ def literal(name,key):
     return next(ast.literal_eval(n.value) for n in ast.parse((fp.TESTS/name).read_text(encoding='utf-8')).body if isinstance(n,ast.Assign) and any(getattr(t,'id','')==key for t in n.targets))
 out=fp.output_dir();out.mkdir(parents=True,exist_ok=True)
 stub=literal('test_terrain_snapshot.py','stub').replace('struct IDirect3DDevice9{','struct IDirect3DDevice9{\nvirtual HRESULT CreateVertexBuffer(UINT,DWORD,UINT,unsigned,IDirect3DVertexBuffer9**,void*)=0;\nvirtual HRESULT CreateIndexBuffer(UINT,DWORD,D3DFORMAT,unsigned,IDirect3DIndexBuffer9**,void*)=0;')
+if sys.platform=='win32':
+    stub=stub[:stub.index('using UINT')]+'#include <windows.h>\nconstexpr HRESULT D3D_OK=0,D3DERR_INVALIDCALL=HRESULT(0x8876086cu);\n'+stub[stub.index('constexpr unsigned D3DUSAGE'):]
 (out/'d3d9.h').write_text(stub,encoding='utf-8')
 (out/'replay_gpu_harness.h').write_text(literal('test_replay_gpu_cache.py','body').split('int main()')[0],encoding='utf-8')
 baseline=subprocess.check_output(['git','show','cc69996:src/replay/replay_gpu_cache.h'])
