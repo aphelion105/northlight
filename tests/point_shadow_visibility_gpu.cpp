@@ -1,4 +1,4 @@
-// Real static Telredor geometry and production point-shadow submission; no game.
+// Real static cache geometry and production point-shadow submission; no game.
 #undef NDEBUG
 #include "../src/proxy/renderer.cpp"
 #include "scene_pressure_fixture.h"
@@ -121,14 +121,14 @@ struct PointTerrainCoverageTest {
   fence->Release();NorthlightReplayCopies::enabled.store(enabled);const auto skipped=NorthlightTrackedBuffers::skippedWrites.load()-before;assert(buffers&&skipped);
   std::printf("TELREDOR_UPLOAD_PASS buffers=%u skipped=%llu changedRestoredExact=1 productionReplayer=1\n",buffers,(unsigned long long)skipped);std::fflush(stdout);
  }
- static void run(IDirect3DDevice9* d,const std::string& cache,const std::string& output,bool benchmark){
+ static void run(IDirect3DDevice9* d,const std::string& cache,const std::string& output,bool benchmark,
+                 const std::string& map="Expansion01",NorthlightGI::Vec3 center={278.582f,6001.27f,144.73f}){
   snapshotMetadata(d);
-  const NorthlightGI::Vec3 center{278.582f,6001.27f,144.73f};
-  const auto built=NorthlightScenePressureFixture::build(cache,{},center,{},"Expansion01");
+  const auto built=NorthlightScenePressureFixture::build(cache,{},center,{},map);
   auto renderer=std::make_unique<WorldRenderer>(d);auto& w=*renderer;w.valid=true;
   w.quality.pointShadowFacesPerFrame=6;w.quality.pointShadowRefreshMs=0;w.frames=1;
   assert(w.resources(128,128,D3DFMT_A8R8G8B8));
-  auto snapshot=std::make_shared<WorldRenderer::Snapshot>();snapshot->map="Expansion01";snapshot->bvh=built.bvh;snapshot->meshPlan=built.plan;snapshot->serial=1;snapshot->atlas.resize(NorthlightGI::probeLayout().atlasSize());snapshot->center=center;
+  auto snapshot=std::make_shared<WorldRenderer::Snapshot>();snapshot->map=map;snapshot->bvh=built.bvh;snapshot->meshPlan=built.plan;snapshot->serial=1;snapshot->atlas.resize(NorthlightGI::probeLayout().atlasSize());snapshot->center=center;
   NorthlightLocalLights::Cache lights(cache+"/lights");assert(lights.loadLights(snapshot->map,&center.x,288,snapshot->localLights));w.active=snapshot;
   const auto uploadStart=GetTickCount();while(w.uploaded.lock()!=snapshot->bvh){NorthlightStreaming::Budget budget(4u<<20,2);w.upload(budget);assert(!w.failed&&DWORD(GetTickCount()-uploadStart)<30000);must(d->Present(nullptr,nullptr,nullptr,nullptr));}
   snapshotPressure(d,w,output);
@@ -196,10 +196,14 @@ struct PointTerrainCoverageTest {
  }
 };
 int main(int argc,char** argv){
- assert(argc==5||argc==6);SetEnvironmentVariableA("NORTHLIGHT_QUALITY_FILE",argv[3]);std::wstring path(argv[3],argv[3]+std::strlen(argv[3]));assert(GetFullPathNameW(path.c_str(),MAX_PATH,rootPath,nullptr));
+ assert(argc==5||argc==6||argc==9||argc==10);SetEnvironmentVariableA("NORTHLIGHT_QUALITY_FILE",argv[3]);std::wstring path(argv[3],argv[3]+std::strlen(argv[3]));assert(GetFullPathNameW(path.c_str(),MAX_PATH,rootPath,nullptr));
  WNDCLASSW wc{};wc.lpfnWndProc=DefWindowProcW;wc.hInstance=GetModuleHandleW(nullptr);wc.lpszClassName=L"NorthlightPointVisibility";assert(RegisterClassW(&wc));auto hwnd=CreateWindowW(wc.lpszClassName,L"",WS_OVERLAPPED,0,0,64,64,nullptr,nullptr,wc.hInstance,nullptr);assert(hwnd);
  auto module=LoadLibraryA(argv[1]);assert(module);auto create=reinterpret_cast<IDirect3D9*(WINAPI*)(UINT)>(reinterpret_cast<void*>(GetProcAddress(module,"Direct3DCreate9")));assert(create);auto api=create(D3D_SDK_VERSION);
  D3DADAPTER_IDENTIFIER9 adapter{};must(api->GetAdapterIdentifier(0,0,&adapter));std::printf("GPU_ADAPTER description=%s vendor=%04lx device=%04lx driver=%s\n",adapter.Description,(unsigned long)adapter.VendorId,(unsigned long)adapter.DeviceId,adapter.Driver);
  D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=hwnd;pp.BackBufferWidth=pp.BackBufferHeight=64;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;pp.PresentationInterval=D3DPRESENT_INTERVAL_IMMEDIATE;
- IDirect3DDevice9* d=nullptr;must(api->CreateDevice(0,D3DDEVTYPE_HAL,hwnd,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_MULTITHREADED|D3DCREATE_FPU_PRESERVE,&pp,&d));PointTerrainCoverageTest::run(d,argv[2],argv[4],argc==6);d->Release();api->Release();FreeLibrary(module);DestroyWindow(hwnd);
+ IDirect3DDevice9* d=nullptr;must(api->CreateDevice(0,D3DDEVTYPE_HAL,hwnd,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_MULTITHREADED|D3DCREATE_FPU_PRESERVE,&pp,&d));
+ const std::string map=argc>=9?argv[5]:"Expansion01";
+ const NorthlightGI::Vec3 center=argc>=9?NorthlightGI::Vec3(float(std::atof(argv[6])),float(std::atof(argv[7])),float(std::atof(argv[8]))):NorthlightGI::Vec3(278.582f,6001.27f,144.73f);
+ assert(std::isfinite(center.x)&&std::isfinite(center.y)&&std::isfinite(center.z));
+ PointTerrainCoverageTest::run(d,argv[2],argv[4],argc==6||argc==10,map,center);d->Release();api->Release();FreeLibrary(module);DestroyWindow(hwnd);
 }

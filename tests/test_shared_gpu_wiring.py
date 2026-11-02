@@ -27,12 +27,13 @@ assert 'gpuScene->attach(replaySnapshots)' in world and 'gpuScene->attach(deferr
 assert 'gpuScene->attach(snapshots)' in fp.src('auto_displacement_renderer.h').read_text()
 source='''#include "replay_fixture.h"
 #include "scene_native_store.h"
+#include "geometry_memory.h"
 using Mesh=NorthlightDrawSnapshot::Mesh;
 struct Replay {std::shared_ptr<const Mesh> shared;bool gpuCached=false,indexed=true;IDirect3DVertexBuffer9* stream[4]={};IDirect3DIndexBuffer9* index=nullptr;UINT offset[4]={},stride[4]={},start=0;INT base=0;
  const Mesh& mesh()const{return *shared;}~Replay(){for(auto p:stream)if(p)p->Release();if(index)index->Release();}};
 int main(){
  Device driver;auto* d=&driver;NorthlightGpuScene::NativeStore scene;NorthlightGpuScene::NativeClient replayGpuCache(scene,NorthlightGpuScene::Consumer::Shadow),materials(scene,NorthlightGpuScene::Consumer::Material);
- unsigned growthCalls=0;auto growthAdmission=[&](size_t){++growthCalls;return false;};bool allowCache=true;
+ uint64_t cacheGrowthBytes=0;unsigned growthCalls=0;auto admitsGrowth=[&](const char*,size_t){++growthCalls;return false;};bool allowCache=true;
 '''+binding+'''
  auto m=std::const_pointer_cast<Mesh>(mesh());m->sourceIdentity=NorthlightSourceIdentity::make({1,2,3});{Replay p;p.shared=m;NorthlightReplayGPU::Placement at;
  scene.setFrame(1);assert(!materials.bind(d,m,p.stream,p.index,[](size_t){return true;},at));

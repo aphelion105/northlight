@@ -154,6 +154,18 @@ complete quality check on the same backend. Resume rejects changed arguments, so
 executables, shader inputs and fixture inventories; legacy reports require a fresh compile.
 The source hash set is a conservative project superset, not per-TU dependency discovery.
 
+## Point shadows in a selected location
+
+The existing point-shadow GPU stand accepts a map and world-space camera position:
+
+```sh
+python tests/test_point_shadow_visibility_gpu.py --map ArgentTournamentDungeon --center 745.164 615.629 411.246 --backend <d3d9-dll> --output out/argent-point-shadows --benchmark
+```
+
+Repeat `--backend` to check another local backend. The default remains Telredor. This checks actual cached geometry,
+visible cube faces, recovery after trimming and optional component timings; it does not replay
+the native animated draw stream or measure game FPS. The selected map needs scene and light caches.
+
 ## Adding a test
 
 1. Create `tests/test_<name>.py` with `#!/usr/bin/env python3`, a `# northlight-test:` line, a

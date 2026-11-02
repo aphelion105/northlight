@@ -3773,9 +3773,17 @@ public:
         NorthlightCapturePhases::Scope<2> phase(captureSampled?&replayUploadPhases:nullptr);
         if(captureSampled)++replayUploadCalls;
         if(!allowCache){replayGpuCache.clear();for(auto& p:replays)if(p->gpuCached){for(auto& stream:p->stream)drop(stream);drop(p->index);}}
-        {auto expire=streamingPhases.measure(NorthlightStreaming::PhaseProfile::ReplayExpire);replayGpuCache.beginFrame();}bool memoryChecked=false,memoryAllowed=false;
-        auto growthAdmission=[&](size_t){if(!memoryChecked){memoryChecked=true;memoryAllowed=admitsGrowth("replay-cache",64*NorthlightGeometryMemory::MiB);}return memoryAllowed;};
+        {auto expire=streamingPhases.measure(NorthlightStreaming::PhaseProfile::ReplayExpire);replayGpuCache.beginFrame();}uint64_t cacheGrowthBytes=0;
         auto bindReplay=[&](Replay& p){
+            auto growthAdmission=[&](size_t bytes){
+                // Pending batches are not allocated yet. Reserve every admitted
+                // mesh plus a stride of batch padding, including failed creates.
+                uint64_t capacity=0;
+                if(!NorthlightGeometryMemory::add(cacheGrowthBytes,bytes,capacity)||
+                   !NorthlightGeometryMemory::add(capacity,p.mesh().streams[0].stride,capacity)||
+                   !admitsGrowth("replay-cache",capacity))return false;
+                cacheGrowthBytes=capacity;return true;
+            };
             NorthlightReplayGPU::bindResident(replayGpuCache,d,p,allowCache,growthAdmission);
         };
         replayTimeDeferredIndices.clear();
