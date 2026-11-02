@@ -1,5 +1,8 @@
 QA follow-up: fragmented VA and command-stream synchronization, 2026-11-02
 
+Historical validation of 66fa8d89. This follow-up is now included in the complete
+.8 installer; complete-installer-20261102.8.txt supersedes the isolation status below.
+
 Based on e549817f (the earlier replay-cache admission fix). Work is isolated in
 codex/qa-memory-stream-20261102; the concurrent renderer/package checkout is not
 modified, built, installed or republished by this follow-up.
