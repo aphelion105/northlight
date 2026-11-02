@@ -1,0 +1,32 @@
+Independent material PR follow-up — 2026-11-02
+
+Port the M2 normal-only capture variant, opaque non-MSAA model batching and
+tracked-snapshot metadata reduction from combined commit f7933d49.
+Keep this branch's own renderer, eager capture-state reads, interval evaluator
+and shader interface. No HDR/actor-AO/terrain-specialization code was imported.
+Regenerate the shader payload/header/manifest from this branch's HLSL with the
+verified compatible compiler. BumpNormalNative is 131 slots versus 283 generic.
+
+Fresh Windows x86 DLL build passes. The independent normal-only GPU comparison
+passes 128 generic-control and 128 production-constant cases, both targets exact.
+The single-sample deferred-capture oracle passes 37 checks: seven depth cases,
+geometry mode, allocation failure, resident/pose/strip/mutation/barrier/unused/
+limit/multistream fallbacks, pressure release and full profiling coverage.
+These are authored component sequences using stock model fixtures on DXVK 3.1.1.
+
+The older test_displacement_state_reuse.py fails its unsupported-op admission
+assertion at line 546. The identical assertion failure reproduces in an untouched
+archive of this PR's original bb379871 head with the same compiler, so it is a
+pre-existing test/branch issue, not reported as passing. Log-format checks pass.
+
+Evidence (private local output):
+.local/out/test-output/20261102-134548/logs/test_displacement_state_reuse.log
+.local/out/telredor-publication-20261102/pr97-control/ (untouched baseline)
+.local/out/test-output/test_displacement_state_reuse/displacement-state-reuse.exe
+.local/out/test-output/test_material_normal_native_gpu/material-normal-native/validation.json
+.local/out/telredor-pr97-single-20261102/ (37 checks)
+.local/out/telredor-publication-20261102/pr97-build.log
+
+Combined Telredor cache comparisons, replay-upload optimization and the complete
+Windows installer are published in PR #98. Those recorded whole-integration
+measurements are not independent-branch timings or gameplay FPS acceptance.

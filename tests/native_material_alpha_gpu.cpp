@@ -28,12 +28,15 @@ int main(int argc,char**argv){std::setvbuf(stdout,nullptr,_IONBF,0);assert(argc>
  auto*diffuse=texture(d,source);auto*normal=solid(d,128.f/255,128.f/255,.5f,1);auto*white=solid(d,1,1,1,1);for(unsigned i=0;i<16;++i){d->SetTexture(i,i==14?normal:i<2?diffuse:white);for(auto key:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})d->SetSamplerState(i,key,D3DTEXF_POINT);d->SetSamplerState(i,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(i,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(i,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);}
  struct V{float x,y,z,w;DWORD color;float uv[7][2],clip[4];};V q[4]={};for(unsigned i=0;i<4;++i){q[i].x=(i&1)?31.5f:-.5f;q[i].y=(i&2)?31.5f:-.5f;q[i].w=1;q[i].color=0x80ffffff;for(unsigned j=0;j<7;++j){q[i].uv[j][0]=(i&1)?1:0;q[i].uv[j][1]=(i&2)?1:0;}q[i].clip[0]=(i&1)?1:-1;q[i].clip[1]=(i&2)?-1:1;q[i].clip[3]=2;}
  d->SetVertexShader(nullptr);d->SetFVF(D3DFVF_XYZRHW|D3DFVF_DIFFUSE|D3DFVF_TEX8|D3DFVF_TEXCOORDSIZE4(7));float constants[224][4]={};d->SetPixelShaderConstantF(0,constants[0],224);std::ifstream manifest(std::string(argv[2])+"/files.txt");std::string file;unsigned tested=0,rejected=0;float worst=0;
+ for(bool normalOnly:{false,true}){manifest.clear();manifest.seekg(0);
  while(std::getline(manifest,file)){auto code=read(std::string(argv[2])+"/"+file);IDirect3DPixelShader9*native=nullptr,*capture=nullptr;ok(d->CreatePixelShader((DWORD*)code.data(),&native));std::vector<uint32_t> patched;unsigned control;
-  if(!NorthlightNativeMaterialCapture::patch((uint32_t*)code.data(),code.size()/4,patched,control)){++rejected;drop(native);continue;}HRESULT created=d->CreatePixelShader((DWORD*)patched.data(),&capture);if(FAILED(created)){std::fprintf(stderr,"Rejected patched %s: %08lx\n",file.c_str(),(unsigned long)created);std::abort();}
+  if(!NorthlightNativeMaterialCapture::patch((uint32_t*)code.data(),code.size()/4,patched,control,true,false,false,normalOnly)){++rejected;drop(native);continue;}HRESULT created=d->CreatePixelShader((DWORD*)patched.data(),&capture);if(FAILED(created)){std::fprintf(stderr,"Rejected patched %s: %08lx\n",file.c_str(),(unsigned long)created);std::abort();}
   const float settings[9][4]={{.06f,48,.001f,1},{1,1,-1,0},{0,16,16,0},{0,8,0,0},{0,0,1,1},{},{1,0,0,0},{0,1,0,0},{0,0,1,0}};d->SetPixelShaderConstantF(control,settings[0],9);
   auto draw=[&](IDirect3DPixelShader9*ps){d->SetPixelShader(ps);ok(d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0));ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,q,sizeof(V)));ok(d->EndScene());return alphaPixels(d,target);};auto a=draw(native),b=draw(capture);
   for(unsigned i=0;i<a.size();++i){assert(std::isfinite(a[i])&&std::isfinite(b[i]));float expected=std::clamp(a[i],0.f,1.f);if(expected<.001f)expected=0;worst=std::max(worst,std::fabs(expected-b[i]));if(std::fabs(expected-b[i])>.0001f){std::fprintf(stderr,"Alpha mismatch %s %u %g %g\n",file.c_str(),i,expected,b[i]);std::abort();}}
   ++tested;drop(native);drop(capture);
  }
- assert(tested>=64);std::printf("NATIVE_MATERIAL_ALPHA_PASS variants=%u preservedFallback=%u worstAlphaError=%g\n",tested,rejected,worst);return 0;
+ }
+ assert(tested>=128);std::printf("NATIVE_MATERIAL_ALPHA_PASS variants=%u preservedFallback=%u worstAlphaError=%g\n",tested,rejected,worst);return 0;
+
 }

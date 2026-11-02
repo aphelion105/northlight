@@ -45,8 +45,8 @@ inline bool alphaSlice(const Word* code,const NorthlightTerrainCoverage::Program
 }
 // Append normal/occlusion capture to the coverage slice. Original constants,
 // UVs and samplers keep their ABI; native lighting is not a capture output.
-inline bool patch(const Word* code,size_t count,std::vector<Word>& out,unsigned& control,bool alpha=true,bool shared=false,bool receiver=false){
-    const auto* prefix=reinterpret_cast<const Word*>(receiver?kModelNormalCaptureShader:shared?kBumpSharedNativeShader:kBumpNativeShader);const size_t length=receiver?sizeof(kModelNormalCaptureShader)/sizeof(DWORD):shared?sizeof(kBumpSharedNativeShader)/sizeof(DWORD):sizeof(kBumpNativeShader)/sizeof(DWORD);
+inline bool patch(const Word* code,size_t count,std::vector<Word>& out,unsigned& control,bool alpha=true,bool shared=false,bool receiver=false,bool normalOnly=false){
+    const auto* prefix=reinterpret_cast<const Word*>(receiver?kModelNormalCaptureShader:shared?kBumpSharedNativeShader:normalOnly?kBumpNormalNativeShader:kBumpNativeShader);const size_t length=receiver?sizeof(kModelNormalCaptureShader)/sizeof(DWORD):shared?sizeof(kBumpSharedNativeShader)/sizeof(DWORD):normalOnly?sizeof(kBumpNormalNativeShader)/sizeof(DWORD):sizeof(kBumpNativeShader)/sizeof(DWORD);
     NorthlightTerrainCoverage::Program native,capture;if(!NorthlightTerrainCoverage::analyse(code,count,native)||native.vertex||!NorthlightTerrainCoverage::analyse(prefix,length,capture)||native.slots+capture.slots>512)return false;
     std::vector<Word> sliced;if(alphaSlice(code,native,alpha,sliced)){code=sliced.data();count=sliced.size();native={};if(!NorthlightTerrainCoverage::analyse(code,count,native))return false;}
     int uv=-1;bool samplers[16]={},integers[16]={};

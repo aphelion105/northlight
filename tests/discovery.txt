@@ -117,6 +117,7 @@ test_material_disk_cache.py
 test_material_disk_gpu.py
 test_material_frame_rotation_gpu.py
 test_material_geometry.py
+test_material_normal_native_gpu.py
 test_material_pipeline_wiring.py
 test_material_profile.py
 test_material_ray_work.py

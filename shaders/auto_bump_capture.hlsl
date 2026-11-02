@@ -112,6 +112,7 @@ CaptureResult BumpNative(float2 uv:TEXCOORD0,float4 nativeColor:COLOR0,float4 p:
 // These entries are selected only when the host already disables POM. They
 // preserve the same frame, coverage, cavity and relative-normal encoding.
 #ifndef NORTHLIGHT_SHARED_POM
+CaptureResult BumpNormalNative(float2 uv:TEXCOORD0,float4 nativeColor:COLOR0,float4 p:TEXCOORD7){clip(BumpCapture.y-p.w);float alpha=lerp(1,nativeColor.a,BumpCapture.w);clip(alpha-BumpCapture.z);return captureValue(normalMaterialValue(GeneratedNormal,uv,p),p,alpha,true);}
 CaptureResult BumpNormalOpaque(float2 uv:TEXCOORD0,float4 p:TEXCOORD7){clip(BumpCapture.y-p.w);return captureValue(normalMaterialValue(GeneratedNormal,uv,p),p,1);}
 CaptureResult BumpNormalLayer(float2 uv:TEXCOORD0,float2 maskUV:TEXCOORD1,float4 p:TEXCOORD7){clip(BumpCapture.y-p.w);return captureValue(normalMaterialValue(GeneratedNormal,uv,p),p,saturate(dot(tex2D(LayerMask,maskUV),NativeLayerMask)));}
 CaptureResult BumpNormalTerrainOpaque(float2 uv:TEXCOORD0,float3 normal:TEXCOORD5,float4 p:TEXCOORD7){clip(BumpCapture.y-p.w);return captureValue(normalMaterialValue(GeneratedNormal,uv,p,normal),p,1);}

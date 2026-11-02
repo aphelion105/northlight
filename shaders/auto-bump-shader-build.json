@@ -5,7 +5,7 @@
     "auto_parallax_prefix.hlsl": "5a5a6f29c2143e998602e1ae0d2687faf2158bb5db09a61b63345f238cefb6cb",
     "auto_material_height.hlsl": "7f245a9e89025f60ac03b9c5b802f9b6707207a32d3b6e4d2ac94b98e4ef836a"
   },
-  "source_sha256": "79362b878da0cb5d2e3d26a06046925ed61031ef509838ac330fd6bdd655a005",
+  "source_sha256": "173a5d0a4eed4cab1243c41c6ee51d59578d07da47f4431b9d9a4da74285f58c",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
   "shaders": {
@@ -864,6 +864,34 @@
         "endif": 1,
         "texld": 1,
         "dp4": 1,
+        "mad": 2
+      }
+    },
+    "BumpNormalNative": {
+      "sha256": "26ba8497764860202241e306f2bf1d597a2fcdcac558e64ad6740c8c96248e53",
+      "static_instruction_slots": 131,
+      "temporary_registers": 9,
+      "samplers": [
+        2
+      ],
+      "instructions": {
+        "add": 29,
+        "mul": 34,
+        "mov": 10,
+        "texkill": 2,
+        "rcp": 5,
+        "dsx": 2,
+        "dsy": 2,
+        "dp3": 6,
+        "rsq": 4,
+        "cmp": 13,
+        "texldd": 1,
+        "dp2add": 2,
+        "max": 1,
+        "nrm": 1,
+        "if": 1,
+        "else": 1,
+        "endif": 1,
         "mad": 2
       }
     },
