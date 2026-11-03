@@ -1,3 +1,4 @@
+#include "effect_coverage.h"
 #pragma once
 #include "utf8_path.h"
 #include "material_profile.h"
@@ -369,6 +370,7 @@ private:
     IDirect3DTexture9* neutralWhite=nullptr; // 0.3.209 (task 29): 1x1 white on s12 (ActorVisibility) for WorldLighting on frames without an ActorShadow pass
     IDirect3DTexture9* neutralZero=nullptr; // 0.3.202 (rain): 1x1 (0,0,0,0) on s13 (RainMask) when no mask was drawn this frame
     IDirect3DTexture9* ditherNoise=nullptr; // WorldComposite s2: 64x64 signed blue-noise offsets (dither_noise.h); neutralZero when missing
+    IDirect3DTexture9* effectCoverage=nullptr; // Frame-local native overlay coverage, borrowed from the proxy.
     bool unlitShaderRefused=false;IDirect3DSurface9* nameMaskDepth=nullptr,*unlitMaskDepth=nullptr; // 0.3.212 (task 32): non-owning, set per frame before render(), consumed by the composite quad
     IDirect3DTexture9* rainMask=nullptr; // 0.3.202 (rain): the proxy's rain streak alpha mask (non-owning, set per frame, cleared after the composite)
     IDirect3DTexture9* neutralAO=nullptr; // 0.3.174: 1x1 (0,0,0,1) on s10 when the proxy does not fold its AO/bloom
@@ -2985,7 +2987,7 @@ public:
         gpuDiagnosticFrame=false;
         if(equipmentLightsOn()){equipmentLights.nextFrame();equipmentCapture.nextFrame();particleLights.nextFrame();NorthlightParticleUploads::cache().nextFrame();}
         flushDeferredLogs(); /* 0.3.176 (U0/S0): after every bucketed span of the frame */
-        nameMaskDepth=unlitMaskDepth=nullptr;
+        nameMaskDepth=unlitMaskDepth=nullptr;effectCoverage=nullptr;
         frameFence.endFrame(); /* 0.3.192 (DXVK3): the one Issue of the frame's fence, after every replay/terrain draw, before any early return; reset() calls endFrame() too */
         NorthlightLockMeter::endFrame();
         if(NorthlightReplayCopies::enabled.load(std::memory_order_relaxed))NorthlightReplayCopies::advanceFrame(); /* 0.3.192 (CS): the CPU copies' thrash/fill time base, once per frame on the replay thread */
@@ -3269,6 +3271,7 @@ public:
     // 0.3.198 (rain): the smoothed weather state, set once per frame at the frame boundary (Device::finishFrameImpl); no effect reads it yet.
     NorthlightWeather::State weatherState{};
     void setWeather(const NorthlightWeather::State& s){weatherState=s;}
+    void setEffectCoverage(IDirect3DTexture9* texture){effectCoverage=texture;}
     void setUnlitMask(IDirect3DSurface9* depthStencil){unlitMaskDepth=depthStencil;}
     void setNameMask(IDirect3DSurface9* depthStencil){nameMaskDepth=depthStencil;} /* 0.3.212 (task 32): the world depth-stencil holding this frame's name marks (non-owning, for the next render() only; null: no marks) */
     void setRainMask(IDirect3DTexture9* t){rainMask=t;} /* 0.3.202 (rain): non-owning, for the next render() only */
@@ -5799,6 +5802,7 @@ public:
             d->SetPixelShader(hdrCombinedPS);
         }
         /* 0.3.212 (task 32): with this frame's name marks the quad draws with the world depth-stencil bound and a stencil test that rejects marked pixels (they keep the game's colour in the target); no marks: the quad as before. */
+        NorthlightEffectCoverage::Capture::bind(d,effectCoverage);
         bool compositeOk=false;
         {IDirect3DSurface9* maskDepth=unlitMask?unlitMaskDepth:nameMaskDepth;
          const DWORD maskBits=(nameMaskDepth?NorthlightNameStencil::kBit:0)|(unlitMask?NorthlightUnlitReceiver::Bit:0);
@@ -5833,7 +5837,7 @@ public:
             if(combinedMaterial&&unlitMask){d->SetTexture(9,materialDetail);d->SetSamplerState(9,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(9,D3DSAMP_MAGFILTER,D3DTEXF_POINT);}
             if(materialProfile&&materialProfile->recording())logf("MATERIAL_APPLY frame=%llu gain=%.3f normalRange=%.1f occlusion=%u occlusionRange=%.1f sunRGB=%.4f,%.4f,%.4f moonRGB=%.4f,%.4f,%.4f ambientRGB=%.4f,%.4f,%.4f",(unsigned long long)materialProfile->frameNumber(),materialBumpGain,materialBumpDistance,unsigned(materialOcclusion!=nullptr),materialOcclusionDistance,sourceColors[0].x,sourceColors[0].y,sourceColors[0].z,sourceColors[1].x,sourceColors[1].y,sourceColors[1].z,context.ambient[0],context.ambient[1],context.ambient[2]);
             materialPixelAudit.sample(materialProfile,&stateBlocks,[&](UINT x,UINT y){return quad(x,y);});}
-        d->SetTexture(3,textures[3]);
+        d->SetTexture(3,textures[3]);d->SetTexture(7,textures[7]);
         d->SetTexture(15,nullptr);d->SetTexture(2,nullptr);d->SetSamplerState(2,D3DSAMP_SRGBTEXTURE,FALSE);d->SetSamplerState(2,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(2,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);
         if(!compositeOk)return false;composited=true;diagnosticFogResolved=fogResolved;diagnosticLocalLighting=currentLocalLighting;d->SetTexture(13,regionalFogTexture);
         reportLocalSources(sourceTrace,diagnosticCapture,rendererFrame,c[52][1],lampSunlitCut,c[58][2],w,h,nearZ,farZ,minZ,maxZ,waterMask!=nullptr,debug);

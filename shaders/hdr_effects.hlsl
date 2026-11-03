@@ -5,6 +5,8 @@ sampler2D HdrScene : register(s0);
 sampler2D HdrAux : register(s1);
 sampler2D HdrExtra : register(s2);
 sampler2D HdrLegacy : register(s3);
+sampler2D EffectCoverage : register(s7);
+float4 EffectCoverageInfo : register(c79);
 float4 HdrParams : register(c2);
 float4 HdrAdaptation : register(c3); // dt, light T90, dark T90, authored reference grey
 float4 HdrLimits : register(c4); // automatic min/max EV, reset history, reserved
@@ -101,6 +103,7 @@ float4 HdrDecodeWorld(float2 uv:TEXCOORD0):COLOR0 {
 float4 HdrCopy(float2 uv:TEXCOORD0):COLOR0 {return tex2D(HdrScene,uv);}
 float4 HdrLegacyComposite(float2 uv:TEXCOORD0):COLOR0 {
     float4 base=tex2D(HdrScene,uv);float ao=tex2D(HdrExtra,uv).a;
+    [branch]if(EffectCoverageInfo.x>.5)ao=lerp(ao,1,saturate(tex2D(EffectCoverage,uv).r));
     [branch]if(HdrLegacyFog.w<=0)return float4(max(base.rgb,0)*ao,base.a);
     float3 encoded=tex2D(HdrLegacy,uv).rgb;
     [branch]if(all(encoded<=0)&&all(HdrLegacyFogColor.rgb>=0))return float4(max(base.rgb,0)*ao,base.a);
