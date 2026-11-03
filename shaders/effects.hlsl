@@ -133,9 +133,13 @@ float4 AOImpl(float2 uv, bool colorBounce)
     float obscurance = 0.0;
     float3 bounce = 0.0;
 
-    [loop] for (int i = 0; i < 8; ++i)
+    // Four fixed pairs retain accumulation order and avoid SM3's
+    // eight-way constant-array selection at every tap.
+    [loop] for (int band = 0; band < (colorBounce ? 4 : 8); ++band)
+    [unroll] for (int tap = 0; tap < (colorBounce ? 2 : 1); ++tap)
     {
-        float2 suv = uv + kernel[i].x * axisX + kernel[i].y * axisY;
+        float2 k = colorBounce ? (band == 0 ? kernel[tap] : band == 1 ? kernel[tap + 2] : band == 2 ? kernel[tap + 4] : kernel[tap + 6]) : kernel[band];
+        float2 suv = uv + k.x * axisX + k.y * axisY;
         float sd = ReadDepth(suv);
         float3 q = Position(suv, sd);
         float3 v = q - p;
@@ -153,7 +157,7 @@ float4 AOImpl(float2 uv, bool colorBounce)
         obscurance += weight;
         // Only visible neighbouring surfaces contribute; missing off-screen
         // geometry cannot produce bounce in this screen-space approximation.
-        if (colorBounce)
+        [branch] if (colorBounce && weight > 0)
             bounce += tex2Dlod(Scene, float4(suv, 0, 0)).rgb * weight;
     }
     return float4(saturate(bounce * 0.125),
@@ -231,7 +235,7 @@ float NewAO(float2 uv, int method)
 {
     uv = DepthTexelUV(uv, 1 / ImageAndClip.xy);
     float d = ReadDepth(uv);
-    if (d >= SKY_DEPTH || IsWater(uv, d)) return 1;
+    if (d >= SKY_DEPTH || IsWater(uv, d) || Lighting.z <= 0) return 1;
     float3 p = Position(uv, d), normal = SurfaceNormal(uv, p);
     float radius = Options.y; // AORadius is validated to 0.1..10 yards.
     // Cap the screen radius with one common factor: clamping x and y separately would bend the
@@ -260,9 +264,11 @@ float NewAO(float2 uv, int method)
             float2 delta = centerDistance - float2(length(a.xyz), length(b.xyz));
             float2 accept = saturate((radius - delta) / (radius * .8));
             accept *= float2(delta.x > radius * .01, delta.y > radius * .01);
+            [branch] if (a.w * b.w * accept.x * accept.y > 0) {
             float3 va = a.xyz - p, vb = b.xyz - p;
             float angleWeight = saturate(dot(va, vb) * rsqrt(max(dot(va, va) * dot(vb, vb), 1e-12)) + .9) * 1.2;
             obscurance += accept.x * accept.y * angleWeight * angleWeight * angleWeight * a.w * b.w;
+            }
         }
         return saturate(1 - Lighting.z * obscurance * (1.0 / 16.0));
     }
@@ -278,7 +284,7 @@ float NewAO(float2 uv, int method)
             [loop] for (int step = 0; step < 4; ++step) {
             float4 q = AOSample(uv + direction * uvRadius * ((step + 1) * .2));
             float3 delta = q.xyz - p;
-            [branch] if (any(delta != 0)) {
+            [branch] if (q.w > 0 && any(delta != 0) && dot(delta,delta) < radius*radius) {
             float distance2 = max(dot(delta, delta), 1e-12);
             float elevation = saturate(dot(normal, delta) * rsqrt(distance2) - .1);
             obscurance += elevation * saturate(1 - distance2 / (radius * radius)) * q.w;
@@ -357,7 +363,7 @@ float NewAOQuality(float2 uv, int method, int quality)
 {
     uv = DepthTexelUV(uv, 1 / ImageAndClip.xy);
     float d = ReadDepth(uv);
-    if (d >= SKY_DEPTH || IsWater(uv, d)) return 1;
+    if (d >= SKY_DEPTH || IsWater(uv, d) || Lighting.z <= 0) return 1;
     float3 p = Position(uv, d), normal = SurfaceNormal(uv, p);
     float radius = Options.y; // AORadius is validated to 0.1..10 yards.
     // Cap the screen radius with one common factor: clamping x and y separately would bend the
@@ -392,9 +398,11 @@ float NewAOQuality(float2 uv, int method, int quality)
             float2 delta = centerDistance - float2(length(a.xyz), length(b.xyz));
             float2 accept = saturate((radius - delta) / (radius * .8));
             accept *= float2(delta.x > radius * .01, delta.y > radius * .01);
+            [branch] if (a.w * b.w * accept.x * accept.y > 0) {
             float3 va = a.xyz - p, vb = b.xyz - p;
             float angleWeight = saturate(dot(va, vb) * rsqrt(max(dot(va, va) * dot(vb, vb), 1e-12)) + .9) * 1.2;
             obscurance += accept.x * accept.y * angleWeight * angleWeight * angleWeight * a.w * b.w;
+            }
         }
         return saturate(1 - Lighting.z * obscurance * (1.0 / pairs));
     }
@@ -413,7 +421,7 @@ float NewAOQuality(float2 uv, int method, int quality)
             [loop] for (int step = 0; step < steps; ++step) {
             float4 q = AOSample(uv + direction * uvRadius * ((step + 1) * (quality == 1 ? .25 : .2)));
             float3 delta = q.xyz - p;
-            [branch] if (any(delta != 0)) {
+            [branch] if (q.w > 0 && any(delta != 0) && dot(delta,delta) < radius*radius) {
             float distance2 = max(dot(delta, delta), 1e-12);
             float elevation = saturate(dot(normal, delta) * rsqrt(distance2) - .1);
             obscurance += elevation * saturate(1 - distance2 / (radius * radius)) * q.w;
@@ -446,6 +454,7 @@ float NewAOQuality(float2 uv, int method, int quality)
         {
             float sampleRadius = (step + 1) * .2;
             float2 offset = direction * uvRadius * sampleRadius * sampleRadius;
+            [branch] if (any(abs(offset) > .51 * ImageAndClip.xy)) {
             float4 a = AOSample(uv + offset), b = AOSample(uv - offset);
             float3 da = a.xyz - p, db = b.xyz - p;
             float2 inverseDistance = rsqrt(max(float2(dot(da, da), dot(db, db)), 1e-12));
@@ -465,6 +474,7 @@ float NewAOQuality(float2 uv, int method, int quality)
             coverage += float2(solidCandidate.x > low.x + .00001, solidCandidate.y > low.y + .00001);
             solidHorizon = max(solidHorizon, solidCandidate);
             horizon = max(horizon, lerp(low, candidate, weight * thinFalloff));
+            }
         }
         horizon = lerp(horizon, solidHorizon, saturate(coverage - 1));
         float open = projectedLength * (cosine + AOAcos(cosine) * abs(sine));
@@ -580,16 +590,19 @@ float4 AOBlur(float2 uv : TEXCOORD0) : COLOR0
     float sumAO = 0.0;
     float sumWeight = 0.0;
     // Visit the same 25 taps in row order without per-tap division/floor.
-    [loop] for(int y=0;y<5;++y)
+    [loop] for(int y=0;y<5;++y){
+    float rowUV=uv.y+(y-2)*tapStep.y;
+    float rowCenter=DepthTexelUV(float2(uv.x,rowUV),size).y;
+    float rowWeight=abs(y-2)>1.5?.5:1;
     [loop] for(int x=0;x<5;++x)
     {
         float2 o=float2(x-2,y-2);
-        float2 tapUV = uv + o * tapStep;
-        float2 quv = DepthTexelUV(tapUV, size);
+        float2 tapUV = float2(uv.x+o.x*tapStep.x,rowUV);
+        float2 quv = float2(DepthTexelUV(tapUV, size).x,rowCenter);
         float qd = ReadDepth(quv);
         float3 q = PositionInv(quv, qd, invFocal);
         float2 a = abs(o);
-        float weight = (a.x > 1.5 ? 0.5 : 1.0) * (a.y > 1.5 ? 0.5 : 1.0);
+        float weight = (a.x > 1.5 ? 0.5 : 1.0) * rowWeight;
         weight *= exp2(-abs(dot(q - p, n)) * planeScale);
         float3 tangent = PositionInv(quv + tangentStep, ReadDepth(quv + tangentStep), invFocal) - q;
         float tangentOff = dot(tangent, n);
@@ -598,6 +611,7 @@ float4 AOBlur(float2 uv : TEXCOORD0) : COLOR0
         weight *= qd < SKY_DEPTH && !IsWater(quv, qd) ? 1.0 : 0.0;
         sumAO += tex2Dlod(Ambient, float4(tapUV, 0, 0)).a * weight;
         sumWeight += weight;
+        }
     }
     return float4(raw.rgb, sumWeight > 1e-5 ? sumAO / sumWeight : raw.a);
 }
@@ -633,6 +647,7 @@ float4 Composite(float2 uv : TEXCOORD0) : COLOR0
     {
         float2 auv = ambientCenter + taps[j] * ambientTexel;
         float ad = ReadDepth(auv);
+        [branch] if (ad < SKY_DEPTH) {
         float3 q = Position(auv, ad);
         // Explicit neighbours remain valid when several full-resolution
         // pixels map onto the same snapped ambient texel.
@@ -643,9 +658,10 @@ float4 Composite(float2 uv : TEXCOORD0) : COLOR0
         float weight = exp2(-planeDistance / depthTolerance * 2.0);
         weight *= normalAgreement * normalAgreement;
         weight *= j == 0 ? 2.0 : 1.0;
-        weight *= (ad < SKY_DEPTH) == (depth < SKY_DEPTH) ? 1.0 : 0.0;
+
         ambient += tex2Dlod(Ambient, float4(auv, 0, 0)) * weight;
         sumWeight += weight;
+        }
     }
     ambient = sumWeight > 0.00001 ? ambient / max(sumWeight, 0.00001)
                                  : float4(0, 0, 0, 1);
@@ -661,13 +677,16 @@ float4 Composite(float2 uv : TEXCOORD0) : COLOR0
 
     // A small screen-space glow, bounded to bright neighbouring pixels.
     // This is LDR bloom: it cannot recover clipped HDR light energy.
+    float3 bloom = 0;
+    [branch] if (Options.x > 0) {
     float2 b = ImageAndClip.xy * 4.0;
-    float3 bloom = Bright(original.rgb) * 4.0;
+    bloom = Bright(original.rgb) * 4.0;
     bloom += Bright(tex2Dlod(Scene, float4(uv + float2( b.x, 0), 0, 0)).rgb);
     bloom += Bright(tex2Dlod(Scene, float4(uv + float2(-b.x, 0), 0, 0)).rgb);
     bloom += Bright(tex2Dlod(Scene, float4(uv + float2(0,  b.y), 0, 0)).rgb);
     bloom += Bright(tex2Dlod(Scene, float4(uv + float2(0, -b.y), 0, 0)).rgb);
     bloom *= 0.125;
+    }
     float legacyT=mad(LegacyFog.w,saturate(pow(max(mad(p.z,LegacyFog.x,LegacyFog.y),0),LegacyFog.z))-1,1);
     float3 fogPart=min((1-legacyT)*LegacyFogColor.rgb,original.rgb);
     float3 lit = mad(original.rgb-fogPart,ambient.a,fogPart);
@@ -736,6 +755,7 @@ float ASSAOImpl(float2 uv,int quality)
         // Snap symmetric offsets to native depth texels. No FP16 depth copy,
         // depth mips or deinterleaved array is needed by this D3D9 adaptation.
         float2 offset=round(direction*uvRadius/ImageAndClip.xy)*ImageAndClip.xy;
+        [branch]if(quality==2 && !any(offset!=0)){weightSum+=pattern.z+pattern.z;}else{
         float4 a=AOSample(uv+offset),b=AOSample(uv-offset);
         float3 da=a.xyz-p,db=b.xyz-p;
         float2 weight=pattern.z;
@@ -748,6 +768,7 @@ float ASSAOImpl(float2 uv,int quality)
         obscurance+=dot(float2(AssaoObscurance(normal,da,inverseRadiusSquared),
             AssaoObscurance(normal,db,inverseRadiusSquared))*float2(a.w,b.w),weight)*(any(offset!=0)?1:0);
         weightSum+=weight.x+weight.y;
+        }
     }
     float fade=1;
     if(quality<2)fade=saturate(1-saturate((1-edges.x-edges.y)*.35)-saturate((1-edges.z-edges.w)*.35));

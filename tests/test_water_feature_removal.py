@@ -28,8 +28,8 @@ expected={
     'SnowPerformance': 'e82040e44fa2a9af5351820659142cf93a111de741d80de7d532644804eb76d7',
     'RainLens': 'fccc18bb213b0e7cff13952f87f5b4dbbe9fbc0d8c4caae1e1e4fd19aa54f20d',
     'SnowLens': '139ebb74b075120060a237d438c7f4c75d0369476bb8b93d7280126a826e3204',
-    'FrostVignette': 'e2999f61376cc344383041e9ee23cd69e2f4c03b68a65abadd191bf2ec1f5350',
-    'SandLens': 'ab4660054918e03a37f7a6ecf0c312db6172a1d71271b2909b2749846b68f9cd',
+    'FrostVignette': '7a1fe02742a682ef36b8729b1a9285e419f9b8c78fb05f669efecac980fb7b40',
+    'SandLens': '9d7f559fdc18f00db7425cac527fed1f8e29c076e7169ef4b598ca469c07dc7f',
     'WeatherLensParticle': 'a87788e26d832ce915ff2803092a429f202def61a188da6d7f46eab62d0762fc',
 }
 assert set(manifest['shaders'])==set(expected)

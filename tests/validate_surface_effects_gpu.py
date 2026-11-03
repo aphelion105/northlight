@@ -10,6 +10,7 @@ import northlight_paths as fp
 parser = argparse.ArgumentParser()
 parser.add_argument('--backend', type=Path, required=True, help='System D3D9 or a plain DXVK DLL, never the Northlight proxy')
 parser.add_argument('--build-only', action='store_true')
+parser.add_argument('--baseline-compiled', type=Path, help='Explicit frozen four-shader reference instead of the historical f770155 shader')
 args = parser.parse_args()
 if os.name != 'nt': raise SystemExit('This manual GPU oracle requires Windows')
 folder = fp.out() / 'surface-gpu'
@@ -26,4 +27,9 @@ guard = subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-Command
                         'if (Get-Process -Name wow,WowClient64 -ErrorAction SilentlyContinue) { exit 1 } else { exit 0 }'],
                        creationflags=subprocess.CREATE_NO_WINDOW)
 if guard.returncode: raise SystemExit('Game process detected; offscreen GPU test deferred')
-subprocess.run([str(exe), str(args.backend.resolve())], cwd=folder, check=True, timeout=300)
+command = [str(exe), str(args.backend.resolve())]
+if args.baseline_compiled:
+    reference = args.baseline_compiled.resolve()
+    assert all((reference / (entry + '.bin')).is_file() for entry in ('RainQuality','SnowQuality','RainPerformance','SnowPerformance'))
+    command.append(str(reference))
+subprocess.run(command, cwd=folder, check=True, timeout=300)

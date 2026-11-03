@@ -15,7 +15,8 @@ struct Drop {
     float visualX=0,visualY=0,visualRadius=0,visualSnow=0,shape=0,shapeTarget=0;
     float mass()const{return water+snow;}
     float radius()const{return std::sqrt(std::max(mass(),0.f));}
-    float tail()const{return water/std::max(mass(),1e-12f)*std::min(.30f,std::max(runLength,std::sqrt(vx*vx+vy*vy)*(.22f+.24f*joins)));}
+    float tailForSpeed(float speed)const{return water/std::max(mass(),1e-12f)*std::min(.30f,std::max(runLength,speed*(.22f+.24f*joins)));}
+    float tail()const{return tailForSpeed(std::sqrt(vx*vx+vy*vy));}
     float angle()const{return std::atan2(vx,vy);}
     float bend(float tailLength)const{return std::sin(seed*19.f)*tailLength*.12f;}
     void primeVisual(){if(visualRadius>0)return;visualX=x;visualY=y;visualRadius=radius();visualSnow=snow/std::max(mass(),1e-12f);shape=shapeTarget=seed*16;}
@@ -43,27 +44,34 @@ struct State {
         p.primeVisual();
     }
     void merge(bool rivulets=true){
+        if(count<2){if(count)drops[0].primeVisual();return;}
         // Pairwise work is bounded by the 192-bead limit.
-        std::array<float,Capacity> radii{},tails{},bends{},axisX{},axisY{};
-        auto measure=[&](unsigned i){const auto& p=drops[i];radii[i]=p.radius();tails[i]=rivulets?p.tail():0;bends[i]=p.bend(tails[i]);const float speed=std::sqrt(p.vx*p.vx+p.vy*p.vy);axisX[i]=speed>1e-6f?p.vx/speed:0;axisY[i]=speed>1e-6f?p.vy/speed:1;};
+        std::array<float,Capacity> radii,tails,bends,axisX,axisY;
+        auto measure=[&](unsigned i){const auto& p=drops[i];radii[i]=p.radius();
+            if(!rivulets){tails[i]=0;return;}
+            const float speed=std::sqrt(p.vx*p.vx+p.vy*p.vy);tails[i]=p.tailForSpeed(speed);bends[i]=p.bend(tails[i]);
+            axisX[i]=speed>1e-6f?p.vx/speed:0;axisY[i]=speed>1e-6f?p.vy/speed:1;};
         for(unsigned i=0;i<count;++i){drops[i].primeVisual();measure(i);}
         auto inTrail=[&](unsigned head,unsigned bead){
             if(tails[head]<=0)return false;
             const auto& a=drops[head];const auto& b=drops[bead];const float dx=b.x-a.x,dy=b.y-a.y;
-            const float up=-dx*axisX[head]-dy*axisY[head],cross=dx*axisY[head]-dy*axisX[head];
-            if(up<0||up>tails[head]+radii[bead]||std::abs(cross)>radii[head]+radii[bead]+std::abs(bends[head]))return false;
+            const float up=-dx*axisX[head]-dy*axisY[head];
+            if(up<0||up>tails[head]+radii[bead])return false;
+            const float cross=dx*axisY[head]-dy*axisX[head];
+            if(std::abs(cross)>radii[head]+radii[bead]+std::abs(bends[head]))return false;
             const float t=std::clamp(up/tails[head],0.f,1.f);
             const float width=radii[head]*(.40f-.25f*t);
             return std::abs(cross-bends[head]*t*t)<width+radii[bead];
         };
         for(unsigned i=0;i<count;++i)for(unsigned j=i+1;j<count;){
             auto& a=drops[i];const auto& b=drops[j];const float dx=a.previousX-b.previousX,dy=a.previousY-b.previousY,r=radii[i]+radii[j];
-            const float vx=a.x-b.x-dx,vy=a.y-b.y-dy,v2=vx*vx+vy*vy;
+            const float vx=a.x-b.x-dx,vy=a.y-b.y-dy;
             const float endX=dx+vx,endY=dy+vy;
             const bool separated=(dx>r&&endX>r)||(dx<-r&&endX<-r)||(dy>r&&endY>r)||(dy<-r&&endY<-r);
-            const float t=v2>1e-12f?std::clamp(-(dx*vx+dy*vy)/v2,0.f,1.f):0;
-            const float cx=dx+t*vx,cy=dy+t*vy;
-            const bool headHit=!separated&&cx*cx+cy*cy<r*r;
+            bool headHit=false;
+            if(!separated){const float v2=vx*vx+vy*vy;
+                const float t=v2>1e-12f?std::clamp(-(dx*vx+dy*vy)/v2,0.f,1.f):0;
+                const float cx=dx+t*vx,cy=dy+t*vy;headHit=cx*cx+cy*cy<r*r;}
             const bool trailA=!headHit&&inTrail(i,j),trailB=!headHit&&!trailA&&inTrail(j,i);
             if(!headHit&&!trailA&&!trailB){++j;continue;}
             const float ma=a.mass(),mb=b.mass(),total=ma+mb;
@@ -79,7 +87,8 @@ struct State {
             a.life=std::max(a.life,b.life);a.joins=std::min(4.f,a.joins+b.joins+1);
             a.runLength=std::max(a.runLength,b.runLength);
             measure(i);
-            drops[j]=drops[--count];radii[j]=radii[count];tails[j]=tails[count];bends[j]=bends[count];axisX[j]=axisX[count];axisY[j]=axisY[count];++merges;
+            drops[j]=drops[--count];radii[j]=radii[count];tails[j]=tails[count];
+            if(rivulets){bends[j]=bends[count];axisX[j]=axisX[count];axisY[j]=axisY[count];}++merges;
         }
     }
     void advance(double seconds,float intensity,bool snowing,float heat,float imageAspect,float sizeScale=1.f,bool rivulets=true,const NorthlightWeatherMotion::Flow& forces={}){
@@ -128,7 +137,7 @@ struct State {
         spawnDebt+=dt*(snowing?22:85)*intensity*(.45f+.55f*std::clamp(-forces.z,0.f,1.f));
         for(unsigned n=0;n<12&&spawnDebt>=1;++n){spawn(snowing);spawnDebt-=1;}
         spawnDebt=std::min(spawnDebt,1.f);if(snowing||rivulets)merge(rivulets);
-        float snowMass=0;for(unsigned i=0;i<count;++i)if(drops[i].y<1)snowMass+=drops[i].snow;
+        float snowMass=0;if(snowing)for(unsigned i=0;i<count;++i)if(drops[i].y<1)snowMass+=drops[i].snow;
         const float targetFrost=snowing?std::clamp(snowMass/(aspect*.0035f),0.f,1.f)*(.15f+.85f*intensity):0;
         const float frostRate=targetFrost>frost?.8f:.5f+heat*3.f;
         frost+=(targetFrost-frost)*(1-std::exp(-dt*frostRate));
@@ -141,8 +150,11 @@ struct State {
             const float bend=p.bend(tail),angle=p.angle(),tx=-std::sin(angle)*tail,ty=-std::cos(angle)*tail;
             const float extent=r*(fraction>.01f?3.8f:1.15f)+std::abs(bend);
             const float left=x+std::min(0.f,tx)-extent,right=x+std::max(0.f,tx)+extent,top=y+std::min(0.f,ty)-extent,bottom=y+std::max(0.f,ty)+extent;
-            const float corners[6][2]={{left,top},{right,top},{left,bottom},{left,bottom},{right,top},{right,bottom}};
-            for(const auto& c:corners)output[used++]={c[0]*height-.5f,c[1]*height-.5f,0,1,c[0]/aspect,c[1],c[0]-x,c[1]-y,r,tail,bend,fraction,opacity,p.seed,p.shape,angle};
+            const float screenX[2]={left*height-.5f,right*height-.5f},screenY[2]={top*height-.5f,bottom*height-.5f};
+            const float texU[2]={left/aspect,right/aspect},ys[2]={top,bottom};
+            const float deltaX[2]={left-x,right-x},deltaY[2]={top-y,bottom-y};
+            const unsigned corners[6][2]={{0,0},{1,0},{0,1},{0,1},{1,0},{1,1}};
+            for(const auto& c:corners)output[used++]={screenX[c[0]],screenY[c[1]],0,1,texU[c[0]],ys[c[1]],deltaX[c[0]],deltaY[c[1]],r,tail,bend,fraction,opacity,p.seed,p.shape,angle};
         };
         for(unsigned i=0;i<count;++i){const auto& p=drops[i];
             const float opacity=std::min(1.f,p.age*4)*std::clamp((p.life-p.age)*1.5f,0.f,1.f);

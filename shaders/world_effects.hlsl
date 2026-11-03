@@ -203,23 +203,25 @@ float shadowMapFiltered(float3 lp,bool useNear,float radius,float2 gradient,bool
     float start=useNear?-2:-1;
     float visibility=0,total=0,gaps=0,blockers=0;
     // The exit lives in the loop condition: Microsoft's compiler turned the nested bare break into break_ne with identical operands.
-    [loop]for(int y=0;y<5&&y<size;++y)
+    [loop]for(int y=0;y<5&&y<size;++y){
+    float rowOffset=y+start,rowUV=(base.y+rowOffset+.5)*DepthParams.w;
+    float rowWeight=max(reach-abs(rowOffset-fraction.y),0);
     [loop]for(int x=0;x<5&&x<size;++x){
-        float2 offset=float2(x,y)+start;
-        float2 tapUV=(base+offset+.5)*DepthParams.w;
-        float2 weight=max(reach-abs(offset-fraction),0);
-        float w=weight.x*weight.y;
+        float offset=x+start;
+        float2 tapUV=float2((base.x+offset+.5)*DepthParams.w,rowUV);
+        float w=max(reach-abs(offset-fraction.x),0)*rowWeight;
         // Compare each sample against the depth of the receiver's plane there.
         float expected=receiver+dot(gradient,tapUV-uv);
         float stored=shadowDepth(tapUV,useNear);
         visibility+=(expected<=stored?1:0)*w;total+=w;
         if(soft&&stored<expected){gaps+=expected-stored;++blockers;}
     }
+    }
     if(soft){
         // Keep every contact tap above, then search the wider support. The
         // separation uses the receiver plane, so slopes do not create softness.
         const float widest=4.25;
-        [loop]for(int by=0;by<4;++by)[loop]for(int bx=0;bx<4;++bx){
+        [loop]for(int by=0;by<4;++by)[unroll]for(int bx=0;bx<4;++bx){
             float2 tap=floor(pixel+(float2(bx,by)-1.5)*(widest/1.5)+.5);
             float2 tapUV=(tap+.5)*DepthParams.w;
             float expected=receiver+dot(gradient,tapUV-uv),stored=shadowDepth(tapUV,useNear);
@@ -232,12 +234,15 @@ float shadowMapFiltered(float3 lp,bool useNear,float radius,float2 gradient,bool
         if(softReach>reach+.001){
             float2 first=floor(pixel-softReach)+1;
             float extent=floor(2*softReach)+1;visibility=0;total=0;
-            [loop]for(int sy=0;sy<9&&sy<extent;++sy)
+            [loop]for(int sy=0;sy<9&&sy<extent;++sy){
+            float rowTap=first.y+sy,rowUV=(rowTap+.5)*DepthParams.w;
+            float rowWeight=max(softReach-abs(rowTap-pixel.y),0);
             [loop]for(int sx=0;sx<9&&sx<extent;++sx){
-                float2 tap=first+float2(sx,sy),tapUV=(tap+.5)*DepthParams.w;
-                float2 weights=max(softReach-abs(tap-pixel),0);float w=weights.x*weights.y;
+                float2 tap=float2(first.x+sx,rowTap),tapUV=float2((tap.x+.5)*DepthParams.w,rowUV);
+                float w=max(softReach-abs(tap.x-pixel.x),0)*rowWeight;
                 float expected=receiver+dot(gradient,tapUV-uv);
                 visibility+=(expected<=shadowDepth(tapUV,useNear)?1:0)*w;total+=w;
+            }
             }
         }
     }
@@ -1106,13 +1111,14 @@ float4 LocalFog(float2 uv:TEXCOORD0):COLOR0 {
         float disc=LocalLightPos[i].w*LocalLightPos[i].w-h2;
         float root=sqrt(max(disc,0));
         float t0=max(-b-root,FogRange.x),t1=min(-b+root,D);
+        [branch]if(disc>0&&t1>t0){
         // Finite source core removes the sharp pin of light. Subtracting the
         // boundary value makes volume density vanish continuously at the
         // sphere edge, instead of producing a bright, hard-edged ball.
         float core=max(.75,LocalLightPos[i].w*.06);
         float invH=rsqrt(h2+core*core);
         float boundary=rcp(max(LocalLightPos[i].w*LocalLightPos[i].w+core*core,.001));
-        float integral=(disc>0&&t1>t0)?max((atanFast((t1+b)*invH)-atanFast((t0+b)*invH))*invH-(t1-t0)*boundary,0):0;
+        float integral=max((atanFast((t1+b)*invH)-atanFast((t0+b)*invH))*invH-(t1-t0)*boundary,0);
         // 0.3.199 (fog clouds): the same smooth near ramp as WorldFog's air (0 at FogRange.x, full one fade length later), taken at the
         // ray's closest approach to the light inside the integrated span. The glow's bright core sits there; with only the hard FogRange.x
         // start it was cut off within a unit or two of walking, so the glow popped while approaching a lamp (game test).
@@ -1121,6 +1127,7 @@ float4 LocalFog(float2 uv:TEXCOORD0):COLOR0 {
         result+=lamp;
         // 0.3.205 (gh#20): the lamp's own capped peak, summed in alpha for LocalFogCombine's effective lamp count.
         float lampPeak=max(lamp.r,max(lamp.g,lamp.b))*FogRange.z;capped+=FogRange.w*lampPeak/(FogRange.w+lampPeak);
+        }
     }
     return float4(result*FogRange.z,capped);
 }
@@ -1361,8 +1368,11 @@ float3 horizonHaze(float3 color,float2 uv,float viewZ,bool sky,bool hdrMode) {
     // azimuth, amplitude sunWeight*cos(sun elevation) from the host, capped.
     // Lift of the fog colour itself, tinted by the glow hue (c35.yzw): black night fog cannot glow.
     float lobe=length(HorizonSun.zw);
+    float lift=0;
+    [branch]if(lobe>0){
     float azimuth=dot(world.xy,HorizonSun.zw)*rsqrt(max(dot(world.xy,world.xy),1e-12))/max(lobe,1e-6);
-    float lift=min(lobe*.64*pow(1.36-1.2*azimuth,-1.5),.25);
+    lift=min(lobe*.64*pow(1.36-1.2*azimuth,-1.5),.25);
+    }
     float3 haze=(hdrMode?worldHdrDecode(HorizonHaze.rgb):HorizonHaze.rgb)*mad(lift,ShadowRange.yzw,1);
     return lerp(color,haze,amount);
 }

@@ -79,6 +79,7 @@ test_concurrent_geometry_build.py
 test_contact_fog.py
 test_contact_lighting.py
 test_contact_normal_endpoints.py
+test_cpu_gpu_optimizations.py
 test_cpu_optimizations.py
 test_crystal_overlay_gpu.py
 test_dalaran_candle_geometry.py

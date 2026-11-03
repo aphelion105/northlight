@@ -31,7 +31,8 @@ float4 HdrOverlay(float4 color:COLOR0,float2 uv:TEXCOORD0):COLOR0 {
     return HdrUi(color*tex2D(HdrScene,uv));
 }
 float4 fixedUiSource(float4 color,float2 uv){
-    float4 texel=tex2D(HdrScene,uv);
+    float4 texel=1;
+    [branch]if(HdrGrade.x+HdrGrade.z>0)texel=tex2Dlod(HdrScene,float4(uv,0,0));
     float3 rgb=lerp(1,texel.rgb,HdrGrade.x)*lerp(1,color.rgb,HdrGrade.y);
     float alpha=lerp(1,texel.a,HdrGrade.z)*lerp(1,color.a,HdrGrade.w);
     return float4(rgb,alpha);
@@ -49,7 +50,9 @@ float4 HdrWorld(float2 uv:TEXCOORD0):COLOR0 {
     float4 original=tex2D(HdrScene,uv);
     float3 radiance=hdrDecode(original.rgb);
     float luminance=max(dot(radiance,float3(.2126,.7152,.0722)),.000001);
-    radiance*=pow(luminance/.18,HdrGrade.x-1)*HdrGrade.y*HdrColor.rgb;
+    float contrast=1;
+    [branch]if(HdrGrade.x!=1)contrast=pow(luminance/.18,HdrGrade.x-1);
+    radiance*=contrast*HdrGrade.y*HdrColor.rgb;
     float peak=max(radiance.r,max(radiance.g,radiance.b));
     radiance*=min(1,HdrColor.w/max(peak,.000001));
     return float4(radiance,original.a);
@@ -59,7 +62,7 @@ float4 HdrWorld(float2 uv:TEXCOORD0):COLOR0 {
 // samples; G also records bright-area coverage for legacy highlight expansion.
 float4 HdrMeter(float2 uv:TEXCOORD0):COLOR0 {
     float3 color=max(tex2D(HdrScene,uv).rgb,0);
-    if(HdrParams.z>.5)color=hdrDecode(color);
+    [branch]if(HdrParams.z>.5)color=hdrDecode(color);
     float luminance=max(dot(color,float3(.2126,.7152,.0722)),.000001);
     return float4(clamp(log2(luminance),-8,4),step(.65,max(color.r,max(color.g,color.b))),0,1);
 }
@@ -85,8 +88,9 @@ float4 HdrDecodeWorld(float2 uv:TEXCOORD0):COLOR0 {
     // Only an untouched hardware clear value is sky, never that entire band.
     if(HdrParams.z>.5)clip((1.0-1.0/16777216.0)-tex2D(HdrAux,uv).r);
     float4 source=tex2D(HdrScene,uv);float3 color=hdrDecode(source.rgb);
-    if(HdrParams.w>0){
+    if(HdrParams.w>0&&max(color.r,max(color.g,color.b))>.65){
         float2 statistics=tex2D(HdrExtra,float2(.5,.5)).rg;
+        [branch]if(statistics.g>=.20)return float4(color,source.a);
         float intensity=max(color.r,max(color.g,color.b));
         float relative=log2(max(dot(color,float3(.2126,.7152,.0722)),.000001))-statistics.r;
         float weight=smoothstep(.65,1,intensity)*smoothstep(.5,2,relative)*(1-smoothstep(.05,.20,statistics.g));
@@ -96,19 +100,23 @@ float4 HdrDecodeWorld(float2 uv:TEXCOORD0):COLOR0 {
 }
 float4 HdrCopy(float2 uv:TEXCOORD0):COLOR0 {return tex2D(HdrScene,uv);}
 float4 HdrLegacyComposite(float2 uv:TEXCOORD0):COLOR0 {
-    float4 base=tex2D(HdrScene,uv);float3 encoded=tex2D(HdrLegacy,uv).rgb;
+    float4 base=tex2D(HdrScene,uv);float ao=tex2D(HdrExtra,uv).a;
+    [branch]if(HdrLegacyFog.w<=0)return float4(max(base.rgb,0)*ao,base.a);
+    float3 encoded=tex2D(HdrLegacy,uv).rgb;
+    [branch]if(all(encoded<=0)&&all(HdrLegacyFogColor.rgb>=0))return float4(max(base.rgb,0)*ao,base.a);
     float depth=saturate((tex2D(HdrAux,uv).r-HdrParams.x)*HdrParams.y);
     float z=HdrParams.z*HdrParams.w/max(HdrParams.w-depth*(HdrParams.w-HdrParams.z),.000001);
     float transmission=lerp(1,saturate(pow(max(z*HdrLegacyFog.x+HdrLegacyFog.y,0),HdrLegacyFog.z)),HdrLegacyFog.w);
     float3 nativeLinear=hdrDecode(encoded),fogEncoded=min((1-transmission)*HdrLegacyFogColor.rgb,encoded);
     float3 fogLinear=(nativeLinear-hdrDecode(max(encoded-fogEncoded,0)))*base.rgb/max(nativeLinear,.000001);
-    float ao=tex2D(HdrExtra,uv).a;
     return float4(max(base.rgb-fogLinear,0)*ao+fogLinear,base.a);
 }
 float4 HdrAdapt(float2 uv:TEXCOORD0):COLOR0 {
     float measured=tex2D(HdrScene,float2(.5,.5)).r;
-    float previous=tex2D(HdrAux,float2(.5,.5)).r;
     float target=clamp(log2(max(HdrAdaptation.w,.000001))-measured,HdrLimits.x,HdrLimits.y);
+    [branch]if(HdrLimits.z>.5)return float4(target,target,measured,1);
+    float previous=tex2Dlod(HdrAux,float4(.5,.5,0,0)).r;
+    [branch]if(target==previous)return float4(clamp(previous,HdrLimits.x,HdrLimits.y),target,measured,1);
     float t90=target<previous?HdrAdaptation.y:HdrAdaptation.z;
     float blend=HdrLimits.z>.5?1:1-exp2(-3.32192809489*max(HdrAdaptation.x,0)/max(t90,.001));
     float exposure=clamp(lerp(previous,target,blend),HdrLimits.x,HdrLimits.y);
@@ -116,7 +124,7 @@ float4 HdrAdapt(float2 uv:TEXCOORD0):COLOR0 {
 }
 float3 hdrBright(float3 color){
     float peak=max(color.r,max(color.g,color.b));
-    return color*max(peak-1,0)/max(peak,.000001);
+    return color*(1-rcp(max(peak,1)));
 }
 float4 HdrBloom(float2 uv:TEXCOORD0):COLOR0 {
     float3 sum=0;
@@ -151,13 +159,16 @@ HdrPresentationOutput HdrWorldLinear(float2 uv:TEXCOORD0) {
     [branch]if(HdrGrade.x!=1)radiance*=pow(luminance/.18,HdrGrade.x-1);
     radiance*=HdrGrade.y*exp2(automatic)*HdrColor.rgb;
     float peak=max(radiance.r,max(radiance.g,radiance.b));
+    [branch]if(peak>HdrColor.x){
     float span=HdrParams.y;
     float mapped=span>.000001?HdrColor.x+span*(1-exp2(HdrParams.x*max(peak-HdrColor.x,0))):min(peak,HdrColor.w);
-    if(peak>HdrColor.x)radiance*=mapped/max(peak,.000001);
+    radiance*=mapped/max(peak,.000001);
+    }
     HdrPresentationOutput result;result.hdr=float4(radiance,source.a);
     // Client scene copies remain before display grading, exposure and bloom.
     float3 compatible=saturate(source.rgb);
-    compatible=lerp(compatible*12.92,1.055*pow(compatible,1/2.4)-.055,step(.0031308,compatible));
+    [branch]if(all(compatible<.0031308))compatible*=12.92;
+    else compatible=lerp(compatible*12.92,1.055*pow(compatible,1/2.4)-.055,step(.0031308,compatible));
     result.legacy=float4(compatible,source.a);return result;
 }
 float4 HdrWorldLinearOnly(float2 uv:TEXCOORD0):COLOR0 {return HdrWorldLinear(uv).hdr;}
@@ -165,8 +176,12 @@ float4 HdrLegacyEncode(float2 uv:TEXCOORD0):COLOR0 {return HdrWorldLinear(uv).le
 float4 HdrCalibration(float2 uv:TEXCOORD0):COLOR0 {return HdrColor;}
 float4 HdrLayer(float2 uv:TEXCOORD0):COLOR0 {
     float4 layer=tex2D(HdrScene,uv);float alpha=saturate(layer.a);
-    float3 encoded=HdrParams.x>.5?layer.rgb/max(alpha,.000001):layer.rgb;
-    float3 color=HdrParams.y>.5?encoded:hdrDecode(saturate(encoded))*HdrColor.rgb;
-    if(HdrParams.x>.5)color*=alpha;
+    float3 color=0;
+    [branch]if(HdrParams.x<=.5||alpha>0){
+        float3 encoded=HdrParams.x>.5?layer.rgb/max(alpha,.000001):layer.rgb;
+        color=encoded;
+        [branch]if(HdrParams.y<=.5)color=hdrDecode(saturate(encoded))*HdrColor.rgb;
+        if(HdrParams.x>.5)color*=alpha;
+    }
     return float4(color,alpha);
 }

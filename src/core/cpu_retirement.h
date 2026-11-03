@@ -43,7 +43,8 @@ class CpuRetirement {
              if(!count_&&stop_)return;
              item=std::move(queue_[head_]);head_=(head_+1)%Capacity;--count_;inFlight_=true;}
             item.owner.reset();
-            {std::lock_guard<std::mutex> lock(mutex_);bytes_-=item.bytes;inFlight_=false;if(!count_)idle_.notify_all();}
+            bool idle;{std::lock_guard<std::mutex> lock(mutex_);bytes_-=item.bytes;inFlight_=false;idle=!count_;}
+            if(idle)idle_.notify_all();
         }
     }
 public:
@@ -59,8 +60,9 @@ public:
         ++stats_.accepted;stats_.oversized+=oversized;
         // Transfer under the lock, before waking the consumer. Copying here
         // lets the worker win the race and leaves final destruction on caller.
+        const bool wake=!count_&&!inFlight_;
         queue_[(head_+count_)%Capacity]={std::move(owner),bytes};++count_;bytes_+=bytes;
-        lock.unlock();wake_.notify_one();return true;
+        lock.unlock();if(wake)wake_.notify_one();return true;
     }
     /* Geometry-generation owners (BVH/plan/snapshot): the render thread would
        otherwise free them itself, so the byte cap (which bounds memory kept
@@ -75,8 +77,9 @@ public:
         if(stop_||count_==Capacity){++stats_.refused;return false;}
         const bool oversized=bytes_>=MaxBytes||bytes>MaxBytes-bytes_;
         ++stats_.accepted;stats_.oversized+=oversized;
+        const bool wake=!count_&&!inFlight_;
         queue_[(head_+count_)%Capacity]={std::move(owner),bytes};++count_;bytes_+=bytes;
-        lock.unlock();wake_.notify_one();return true;
+        lock.unlock();if(wake)wake_.notify_one();return true;
     }
     RetirementStats stats(){std::lock_guard<std::mutex> lock(mutex_);return stats_;}
     /* Waits until nothing is queued and the last dequeued item is destroyed

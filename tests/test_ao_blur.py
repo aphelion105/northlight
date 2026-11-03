@@ -428,7 +428,8 @@ def audit_source():
     assert 'float4 AOBlur(float2 uv : TEXCOORD0) : COLOR0' in text
     blur = text[text.index('float4 AOBlur('):text.index('float4 Composite(')]
     assert 'float2 o=float2(x-2,y-2);' in blur, '25 taps in row order'
-    assert re.search(r'a\.x > 1\.5 \? 0\.5 : 1\.0\) \* \(a\.y > 1\.5 \? 0\.5 : 1\.0\)', blur), '.5 edge weights'
+    assert 'float rowWeight=abs(y-2)>1.5?.5:1;' in blur, '.5 row edge weights'
+    assert '(a.x > 1.5 ? 0.5 : 1.0) * rowWeight' in blur, '.5 column edge weights'
     assert 'float planeScale = 2.0 / max(0.025, min(Options.y * 0.1, p.z * 0.002));' in blur
     assert 'exp2(-abs(dot(q - p, n)) * planeScale)' in blur
     # unoccluded early-out: 9 bilinear AO-only reads (s0) and a dynamic branch before any depth read
@@ -564,7 +565,7 @@ def audit_wiring():
 
 
 def audit_contact_ao():
-    """0.3.201 (task 18) ContactAO=0: no AO pass and no AOBlur; a ready world gets ContactBloom (bloom, AO 1) straight into ao,
+    """0.3.201 (task 18) ContactAO=0: no AO pass and no AOBlur; a ready world with bloom gets ContactBloom (bloom, AO 1) straight into ao; zero bloom uses a neutral clear,
     the legacy path a neutral clear; ContactAO=1 keeps the raw AO then AOBlur sequence checked by audit_wiring."""
     text = fp.src('renderer.cpp').read_text()
     fn = text[text.index('bindEffects(nullptr);\n        if (!contactAO) {'):text.index('// 0.3.174 FOLD:')]

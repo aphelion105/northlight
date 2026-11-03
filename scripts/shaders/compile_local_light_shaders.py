@@ -27,7 +27,7 @@ def main():
         manifest['shaders'][entry]={'target':target,'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest(),**stats}
         print(entry,stats['static_instruction_slots'],'slots',stats['temporary_registers'],'temps',flush=True)
     if hashlib.sha256(source.read_bytes()).hexdigest()!=digest:raise ValueError('Source changed during compilation')
-    (fp.GENERATED/'local_light_compiled_shaders.h').write_text('\n\n'.join(header)+'\n')
-    (fp.SHADERS/'local-light-shader-build.json').write_text(json.dumps(manifest,indent=2)+'\n')
+(fp.GENERATED/'local_light_compiled_shaders.h').write_text('\n\n'.join(header)+'\n',newline='\n')
+(fp.SHADERS/'local-light-shader-build.json').write_text(json.dumps(manifest,indent=2)+'\n',newline='\n')
 
 if __name__=='__main__':main()

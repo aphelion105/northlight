@@ -3,7 +3,7 @@
   "parallax_source_sha256": {
     "auto_parallax.hlsl": "4b0bd60d9b5ce9a90ee4040add2268811751db26ee1a8a8628097f45d3b34119",
     "auto_parallax_prefix.hlsl": "5a5a6f29c2143e998602e1ae0d2687faf2158bb5db09a61b63345f238cefb6cb",
-    "auto_material_height.hlsl": "7f245a9e89025f60ac03b9c5b802f9b6707207a32d3b6e4d2ac94b98e4ef836a"
+    "auto_material_height.hlsl": "d8b2cf9d1cafc553f336bfcbb83da62eb326a0d9396a68773966ca0a8554b1bd"
   },
   "source_sha256": "81ff14be3e8121ef999fc1466f1b158f4c97b0a5b1df9dac942d98170f54ae9d",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
@@ -619,22 +619,26 @@
       }
     },
     "AutoNormal": {
-      "sha256": "b35a3fb501be8913e841f0684f8cd16dbb983af26e4f1f2c21290aae50a23791",
-      "static_instruction_slots": 316,
+      "sha256": "f84dd55effb24fc9c89117293831dc02dfcf4f5e18dc3e5b3e83e01de2c3274a",
+      "static_instruction_slots": 497,
       "temporary_registers": 4,
       "samplers": [
         0
       ],
       "instructions": {
-        "mov": 13,
-        "mul": 98,
-        "add": 104,
+        "mov": 31,
+        "mul": 92,
+        "add": 128,
         "texldl": 9,
         "rcp": 18,
-        "cmp": 18,
-        "max": 29,
+        "cmp": 36,
+        "max": 45,
         "dp3": 10,
-        "min": 7,
+        "if": 18,
+        "min": 27,
+        "else": 18,
+        "endif": 18,
+        "abs": 1,
         "rsq": 1
       }
     },

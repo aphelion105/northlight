@@ -62,15 +62,16 @@ public:
     }
     const void* storageIdentity()const{return visit([](const auto* p,std::size_t){return static_cast<const void*>(p);});}
     struct Iterator {
-        const Indices* owner;std::size_t index;
-        std::uint32_t operator*()const{return (*owner)[index];}
+        const Indices* owner;std::size_t index;const std::uint16_t* small=nullptr;const std::uint32_t* large=nullptr;
+        std::uint32_t operator*()const{return large?large[index]:small[index];}
         Iterator& operator++(){++index;return *this;}
         bool operator!=(const Iterator& b)const{return owner!=b.owner||index!=b.index;}
     };
-    Iterator begin()const{return {this,0};}
-    Iterator end()const{return {this,size()};}
+    Iterator begin()const{const auto& v=storage();return {this,0,v.small_.data(),v.wide_?v.large_.data():nullptr};}
+    Iterator end()const{auto out=begin();out.index=size();return out;}
     template<class Other> bool operator==(const Other& b)const{
-        if(size()!=b.size())return false;for(std::size_t i=0;i<size();++i)if((*this)[i]!=b[i])return false;return true;
+        const auto count=size();if(count!=b.size())return false;
+        return visit([&](const auto* values,std::size_t){for(std::size_t i=0;i<count;++i)if(values[i]!=b[i])return false;return true;});
     }
 };
 }

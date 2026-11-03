@@ -12,11 +12,24 @@ inline std::uint8_t minimumAlpha(const std::uint8_t* bytes,std::size_t count){
     std::uint8_t low=255;std::size_t i=0;
 #if defined(__SSE2__)
     auto lanes=_mm_set1_epi8(char(255));
+    if(count>=64){
+        auto a=_mm_loadu_si128(reinterpret_cast<const __m128i*>(bytes)),b=_mm_loadu_si128(reinterpret_cast<const __m128i*>(bytes+16));
+        auto c=_mm_loadu_si128(reinterpret_cast<const __m128i*>(bytes+32)),d=_mm_loadu_si128(reinterpret_cast<const __m128i*>(bytes+48));
+        const auto first=_mm_min_epu8(_mm_min_epu8(a,b),_mm_min_epu8(c,d));
+        if(_mm_movemask_epi8(_mm_cmpeq_epi8(first,_mm_setzero_si128()))&0x8888)return 0;
+        for(i=64;count-i>=64;i+=64){
+            a=_mm_min_epu8(a,_mm_loadu_si128(reinterpret_cast<const __m128i*>(bytes+i)));
+            b=_mm_min_epu8(b,_mm_loadu_si128(reinterpret_cast<const __m128i*>(bytes+i+16)));
+            c=_mm_min_epu8(c,_mm_loadu_si128(reinterpret_cast<const __m128i*>(bytes+i+32)));
+            d=_mm_min_epu8(d,_mm_loadu_si128(reinterpret_cast<const __m128i*>(bytes+i+48)));
+        }
+        lanes=_mm_min_epu8(_mm_min_epu8(a,b),_mm_min_epu8(c,d));
+    }
     for(;count-i>=16;i+=16)lanes=_mm_min_epu8(lanes,_mm_loadu_si128(reinterpret_cast<const __m128i*>(bytes+i)));
     lanes=_mm_min_epu8(lanes,_mm_srli_si128(lanes,8));lanes=_mm_min_epu8(lanes,_mm_srli_si128(lanes,4));
     low=std::uint8_t(unsigned(_mm_cvtsi128_si32(lanes))>>24);
 #endif
-    for(i+=3;i<count;i+=4)low=std::min(low,bytes[i]);
+    for(i+=3;i<count;i+=4){low=std::min(low,bytes[i]);if(!low)return 0;}
     return low;
 }
 // Complete pixels only; source and destination may be identical, otherwise disjoint.

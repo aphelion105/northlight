@@ -53,6 +53,10 @@ def model_checks(view, folder, result):
     view_textures = build_weather_textures.weather_textures()
     view_textures.update(build_weather_textures.mist_textures(assets.read, decode_blp))
     view_files = tables | set(view_textures)
+    sky_files = {n for n in result['files'] if n.lower().startswith('environments\\stars\\fr_single_moon_105_')
+                 or n.lower() in ('textures\\moon02.blp', 'dbfilesclient\\lightskybox.dbc')}
+    assert all(n.lower().endswith(('.m2','.skin','.anim','.blp','.dbc')) for n in sky_files)
+    view_files |= sky_files
     models = set(result['files']) - view_files - metadata
     assert metadata <= set(result['files']), result['files']
     assert all(n.lower().startswith(('item\\', 'spells\\', 'creature\\', 'interface\\', 'world\\')) and n.lower().endswith('.m2')
@@ -68,6 +72,11 @@ def model_checks(view, folder, result):
                 dropped=set(result['dropped_unchanged'])
                 assert {n for n in archive.names() if not n.startswith('(')} == ((view_files | models | metadata)-dropped) | {build_art_layer.OWNER_FILE}
                 assert build_art_layer.owns_archive(folder / target)
+                for name in sky_files:
+                    blob = assets.read(name) if name in dropped else archive.read(name)
+                    assert hashlib.sha256(blob).hexdigest() == result['files'][name]
+                    if name.lower() == 'textures\\moon02.blp':
+                        assert not any(decode_blp(blob,4096)[2]), 'Native moon texture stays transparent'
                 for name, data in view_textures.items():
                     assert (assets.read(name) if name in dropped else archive.read(name)) == data
                 payload = archive.read(world_emitter_index.ARCHIVE_PATH)

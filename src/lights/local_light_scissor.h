@@ -37,8 +37,9 @@ inline View view(const float* inverseView,const float* projection,float nearZ,fl
     double m[3][3]; // columns r0,r1,Pz*r2: world offset = m*(z*a,z*b,z)
     for(int k=0;k<3;++k){m[k][0]=inverseView[k];m[k][1]=inverseView[4+k];m[k][2]=double(projection[2])*inverseView[8+k];}
     // |m*u| >= sigmaMin*|u|; sigma^2 lies within 1 +- ||m'm-I||_F.
-    double fro=0;
-    for(int i=0;i<3;++i)for(int j=0;j<3;++j){double g=0;for(int k=0;k<3;++k)g+=m[k][i]*m[k][j];g-=i==j;fro+=g*g;}
+    double fro=0,gram[3][3];
+    for(int i=0;i<3;++i)for(int j=i;j<3;++j){double g=0;for(int k=0;k<3;++k)g+=m[k][i]*m[k][j];g-=i==j;gram[i][j]=gram[j][i]=g;}
+    for(int i=0;i<3;++i)for(int j=0;j<3;++j)fro+=gram[i][j]*gram[i][j];
     fro=std::sqrt(fro);if(!(fro<.25))return v;
     const double det=m[0][0]*(m[1][1]*m[2][2]-m[1][2]*m[2][1])-m[0][1]*(m[1][0]*m[2][2]-m[1][2]*m[2][0])+m[0][2]*(m[1][0]*m[2][1]-m[1][1]*m[2][0]);
     if(!(std::fabs(det)>.1))return v;
@@ -86,12 +87,14 @@ inline Rect rect(const View& v,const Bounds& b){
     Rect r;const Rect all{0,0,long(v.halfW),long(v.halfH)};
     if(b.full||!v.valid)return all;
     if(b.empty())return r;
+    if((v.halfW>=2&&(b.x0>4||b.x1<-4))||(v.halfH>=2&&(b.y0>4||b.y1<-4)))return r;
     // Pixel px samples full-res ix=floor((px+.5)*w/W2), i.e.
     // px in [ix*W2/w-.5, (ix+1)*W2/w-.5]; ndc.x=2ix/w-1, ndc.y=1-2iy/h.
     const auto clampNdc=[](double x){return std::max(-4.,std::min(4.,x));};
     const double ix0=(clampNdc(b.x0)+1)*.5*v.fullW,ix1=(clampNdc(b.x1)+1)*.5*v.fullW;
     const double iy0=(1-clampNdc(b.y1))*.5*v.fullH,iy1=(1-clampNdc(b.y0))*.5*v.fullH;
-    const double sx=double(v.halfW)/v.fullW,sy=double(v.halfH)/v.fullH;
+    const double sx=v.fullW&&!(v.fullW&1)&&v.halfW==v.fullW/2?.5:double(v.halfW)/v.fullW;
+    const double sy=v.fullH&&!(v.fullH&1)&&v.halfH==v.fullH/2?.5:double(v.halfH)/v.fullH;
     r.left=std::max(0L,long(std::floor(ix0*sx-.5))-Margin);
     r.right=std::min(long(v.halfW),long(std::ceil((ix1+1)*sx-.5))+1+Margin);
     r.top=std::max(0L,long(std::floor(iy0*sy-.5))-Margin);

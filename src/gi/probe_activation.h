@@ -17,7 +17,7 @@ class NorthlightProbeActivation {
         return slot.born;
     }
 public:
-    void reset(){slots.assign(NorthlightGI::probeLayout().atlasSize(),Slot{});map.clear();}
+    void reset(){slots.resize(NorthlightGI::probeLayout().atlasSize());for(auto& slot:slots)slot.valid=false;map.clear();}
     // Sized by the process probe layout (0.3.153), which is fixed before the first upload.
     void begin(const std::string& next){if(map!=next||slots.size()!=NorthlightGI::probeLayout().atlasSize()){reset();map=next;}}
     bool covers(size_t count)const{return slots.size()>=count;}

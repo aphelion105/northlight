@@ -1,5 +1,5 @@
 {
-  "source_sha256": "12b0d38772f6864751f43b688a03fc16679d73e395585330590baed8987bcee9",
+  "source_sha256": "680950c1b2aeeee22fcb4d1ca92f753617943eebd0c5ee596c5f7a9273f0f169",
   "target": "ps_3_0",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
@@ -168,10 +168,10 @@
       }
     },
     "FrostVignette": {
-      "bytes": 1192,
-      "sha256": "e2999f61376cc344383041e9ee23cd69e2f4c03b68a65abadd191bf2ec1f5350",
-      "static_instruction_slots": 51,
-      "temporary_registers": 3,
+      "bytes": 1260,
+      "sha256": "7a1fe02742a682ef36b8729b1a9285e419f9b8c78fb05f669efecac980fb7b40",
+      "static_instruction_slots": 55,
+      "temporary_registers": 4,
       "samplers": [
         0,
         1
@@ -179,29 +179,34 @@
       "instructions": {
         "add": 16,
         "min": 3,
-        "mul": 17,
-        "texkill": 1,
-        "texld": 4,
+        "mul": 18,
+        "texkill": 2,
         "mov": 3,
+        "rcp": 3,
+        "texld": 4,
+        "cmp": 1,
         "dp2add": 1,
-        "rsq": 1,
-        "rcp": 3
+        "rsq": 1
       }
     },
     "SandLens": {
-      "bytes": 908,
-      "sha256": "ab4660054918e03a37f7a6ecf0c312db6172a1d71271b2909b2749846b68f9cd",
-      "static_instruction_slots": 35,
-      "temporary_registers": 3,
+      "bytes": 1012,
+      "sha256": "9d7f559fdc18f00db7425cac527fed1f8e29c076e7169ef4b598ca469c07dc7f",
+      "static_instruction_slots": 47,
+      "temporary_registers": 4,
       "samplers": [
         4
       ],
       "instructions": {
-        "mov": 2,
-        "mul": 19,
-        "add": 10,
-        "texld": 2,
-        "min": 2
+        "mov": 5,
+        "mul": 21,
+        "add": 11,
+        "texld": 1,
+        "if": 1,
+        "else": 1,
+        "texldl": 1,
+        "min": 2,
+        "endif": 1
       }
     }
   }

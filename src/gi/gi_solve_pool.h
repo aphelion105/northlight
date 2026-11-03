@@ -14,6 +14,7 @@
 #include <thread>
 #include <array>
 #include <vector>
+#include <limits>
 #include "world_probe_progress.h"
 
 namespace NorthlightGI {
@@ -29,7 +30,7 @@ public:
     // have finished. The first exception of any job is rethrown here.
     template<class Job> void run(size_t count,const Job& job){
         if(!count)return;
-        {std::lock_guard<std::mutex> lock(mutex_);job_=&job;invoke_=[](const void* p,size_t i){(*static_cast<const Job*>(p))(i);};count_=count;next_=0;active_=unsigned(threads_.size());error_=nullptr;++generation_;}
+        {std::lock_guard<std::mutex> lock(mutex_);job_=&job;invoke_=[](const void* p,size_t i){(*static_cast<const Job*>(p))(i);};count_=count;fastClaim_=count<=std::numeric_limits<size_t>::max()-threads_.size()-1;next_=0;active_=unsigned(threads_.size());error_=nullptr;++generation_;}
         wake_.notify_all();
         work(&job,invoke_);
         std::unique_lock<std::mutex> lock(mutex_);done_.wait(lock,[&]{return active_==0;});
@@ -37,6 +38,7 @@ public:
     }
 private:
     bool claim(size_t& index){
+        if(fastClaim_){index=next_.fetch_add(1,std::memory_order_relaxed);return index<count_;}
         index=next_.load(std::memory_order_relaxed);
         while(index<count_){if(next_.compare_exchange_weak(index,index+1,std::memory_order_relaxed))return true;}
         return false;
@@ -54,13 +56,14 @@ private:
             const void* job;Invoke invoke;
             {std::unique_lock<std::mutex> lock(mutex_);wake_.wait(lock,[&]{return stopping_||generation_!=seen;});if(stopping_)return;seen=generation_;job=job_;invoke=invoke_;}
             if(job)work(job,invoke);
-            {std::lock_guard<std::mutex> lock(mutex_);if(--active_==0)done_.notify_all();}
+            bool completed;{std::lock_guard<std::mutex> lock(mutex_);completed=--active_==0;}
+            if(completed)done_.notify_one();
         }
     }
     std::vector<std::thread> threads_;
     std::mutex mutex_;std::condition_variable wake_,done_;
     const void* job_=nullptr;Invoke invoke_=nullptr;size_t count_=0;std::atomic<size_t> next_{0};unsigned active_=0;uint64_t generation_=0;
-    std::exception_ptr error_;bool stopping_=false;
+    std::exception_ptr error_;bool stopping_=false,fastClaim_=false;
 };
 // One 8-probe group of the worker's window loop (cursor%8==0): solve the
 // positions not yet in `cache` in parallel into out[j]; bit j of the result

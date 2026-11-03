@@ -11,7 +11,7 @@ static ProbeAtlasEntry entry(ProbeGridKey key,float light,bool valid=true,bool o
     for(int k=0;k<4;++k)e.probe.sh[k]={light+k,light*2+k,light*3+k};return e;}
 static void sh(const ProbeAtlasEntry& e,float out[12]){for(int k=0;k<4;++k){out[k]=e.probe.sh[k].x;out[4+k]=e.probe.sh[k].y;out[8+k]=e.probe.sh[k].z;}}
 static bool equal(const float* a,const float* b){return !std::memcmp(a,b,12*sizeof(float));}
-static bool near(const float* a,const float* b){for(int i=0;i<12;++i)if(std::fabs(a[i]-b[i])>1e-5f)return false;return true;}
+static bool closeCoefficients(const float* a,const float* b){for(int i=0;i<12;++i)if(std::fabs(a[i]-b[i])>1e-5f)return false;return true;}
 static std::vector<ProbeAtlasEntry> blank(){return std::vector<ProbeAtlasEntry>(probeLayout().atlasSize());}
 static void run(){
     const ProbeGridKey key{3,-2,5};const size_t slot=probeAtlasIndex(key);float expect[12],old[12],shown[12];
@@ -31,9 +31,9 @@ static void run(){
     float cur[12];sh(atlas[slot],cur);const float t=(12.1f-12)/PB::BlendSeconds;
     for(int i=0;i<12;++i)shown[i]=old[i]+(cur[i]-old[i])*t;
     atlas[slot]=entry(key,9);assert(mirror.publish(atlas,12.1f)==1);
-    assert(near(mirror.previous(slot),shown)&&mirror.start(slot)==12.1f&&activation.update(slot,atlas[slot],12.1f)==born);
+    assert(closeCoefficients(mirror.previous(slot),shown)&&mirror.start(slot)==12.1f&&activation.update(slot,atlas[slot],12.1f)==born);
     // Re-publication after the blend finished: previous is the old current value.
-    sh(atlas[slot],old);atlas[slot]=entry(key,20);assert(mirror.publish(atlas,13)==1);assert(near(mirror.previous(slot),old));
+    sh(atlas[slot],old);atlas[slot]=entry(key,20);assert(mirror.publish(atlas,13)==1);assert(closeCoefficients(mirror.previous(slot),old));
     // Different key in the same slot (collision): no blend, born restarts.
     const ProbeGridKey other{3+int(probeLayout().atlas),-2,5};assert(probeAtlasIndex(other)==slot);
     atlas[slot]=entry(other,3);assert(mirror.publish(atlas,14)==0);sh(atlas[slot],expect);

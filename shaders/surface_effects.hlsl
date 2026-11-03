@@ -169,10 +169,12 @@ float4 FrostVignette(float2 uv:TEXCOORD0):COLOR0 {
     clip(.31-edge);
     float2 materialUV=uv;
     float ice=tex2D(FrostMaterial,materialUV).r;
+    float reveal=smoothstep(lerp(.82,.02,coverage),lerp(.82,.02,coverage)+.18,ice);
+    // This pass writes RGB with SRCALPHA/INVSRCALPHA and no depth/stencil writes.
+    clip(reveal>0?1:-1);
     float2 gradient=ice-float2(tex2D(FrostMaterial,materialUV+float2(.00195,0)).r,
                               tex2D(FrostMaterial,materialUV+float2(0,.00347)).r);
     float facets=min(.22,length(gradient)*2.5)*saturate((ice-.1)*1.6);
-    float reveal=smoothstep(lerp(.82,.02,coverage),lerp(.82,.02,coverage)+.18,ice);
     float alpha=saturate(.08*ice+.65*facets+.20*ice*ice)*coverage*reveal;
     float2 deflection=gradient*float2(.006/Lens.z,.006)*coverage;
     float3 glass=tex2D(LensScene,uv+deflection).rgb;
@@ -184,7 +186,8 @@ float4 FrostVignette(float2 uv:TEXCOORD0):COLOR0 {
 float4 SandLens(float2 uv:TEXCOORD0):COLOR0 {
     float2 p=uv*float2(Lens.z,1);
     float broad=tex2D(WeatherNoise,p*.035+float2(.23,.61)).r;
-    float fine=tex2D(WeatherNoise,p*.16+float2(.71,.17)).r;
+    [branch]if(broad<=.58)return float4(.45,.35,.22,0);
+    float fine=tex2Dlod(WeatherNoise,float4(p*.16+float2(.71,.17),0,0)).r;
     float deposit=smoothstep(.58,.88,broad)*smoothstep(.45,.75,fine);
     float edge=1-smoothstep(0,.18,edgeDistance(uv));
     float alpha=Coating.y*deposit*(.055+.08*edge);

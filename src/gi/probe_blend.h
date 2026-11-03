@@ -28,7 +28,7 @@ inline bool sameCoefficients(const void* a,const void* b){
 #endif
 }
 class Mirror {
-    struct Slot {NorthlightGI::ProbeGridKey key;bool valid=false;NorthlightGI::Vec3 cur[4];float prev[12]={};float start=None;};
+    struct Slot {NorthlightGI::ProbeGridKey key;bool valid=false,zero=true,synchronized=true;NorthlightGI::Vec3 cur[4];float prev[12]={};float start=None;};
     std::vector<Slot> slots;
     std::string map;
 public:
@@ -47,20 +47,21 @@ public:
             if(resident&&sameCoefficients(slot.cur,entry.probe.sh))continue;
             // Empty default slots need no transpose when both cached copies are also all zero.
             static constexpr float zero[12]={};
-            if(!entry.occupied&&!slot.valid&&slot.start==None&&sameCoefficients(slot.cur,zero)&&sameCoefficients(entry.probe.sh,zero)&&sameCoefficients(slot.prev,zero))continue;
+            if(!entry.occupied&&!slot.valid&&slot.start==None&&slot.zero&&sameCoefficients(entry.probe.sh,zero))continue;
+            if((!entry.occupied||!entry.probe.valid)&&!slot.valid&&slot.start==None&&slot.synchronized&&sameCoefficients(slot.cur,entry.probe.sh))continue;
             float next[12];
             for(int k=0;k<4;++k){next[k]=entry.probe.sh[k].x;next[4+k]=entry.probe.sh[k].y;next[8+k]=entry.probe.sh[k].z;}
             // An unchanged invalid slot already has both exact cached copies.
             if((!entry.occupied||!entry.probe.valid)&&!slot.valid&&slot.start==None&&sameCoefficients(slot.cur,entry.probe.sh)&&sameCoefficients(slot.prev,next))continue;
-            if(!entry.occupied||!entry.probe.valid){slot.valid=false;slot.start=None;std::memcpy(slot.cur,entry.probe.sh,sizeof slot.cur);std::memcpy(slot.prev,next,sizeof next);continue;}
-            if(!resident){slot.key=entry.key;slot.valid=true;std::memcpy(slot.cur,entry.probe.sh,sizeof slot.cur);std::memcpy(slot.prev,next,sizeof next);slot.start=None;continue;}
+            if(!entry.occupied||!entry.probe.valid){slot.valid=false;slot.zero=sameCoefficients(entry.probe.sh,zero);slot.synchronized=true;slot.start=None;std::memcpy(slot.cur,entry.probe.sh,sizeof slot.cur);std::memcpy(slot.prev,next,sizeof next);continue;}
+            if(!resident){slot.key=entry.key;slot.valid=true;slot.zero=false;slot.synchronized=true;std::memcpy(slot.cur,entry.probe.sh,sizeof slot.cur);std::memcpy(slot.prev,next,sizeof next);slot.start=None;continue;}
             const float t=slot.start==None?1.f:std::clamp((now-slot.start)/BlendSeconds,0.f,1.f);
             for(int k=0;k<4;++k){
                 slot.prev[k]=slot.prev[k]+(slot.cur[k].x-slot.prev[k])*t;
                 slot.prev[4+k]=slot.prev[4+k]+(slot.cur[k].y-slot.prev[4+k])*t;
                 slot.prev[8+k]=slot.prev[8+k]+(slot.cur[k].z-slot.prev[8+k])*t;
             }
-            std::memcpy(slot.cur,entry.probe.sh,sizeof slot.cur);slot.start=now;++blended;
+            std::memcpy(slot.cur,entry.probe.sh,sizeof slot.cur);slot.zero=false;slot.synchronized=false;slot.start=now;++blended;
         }
         return blended;
     }

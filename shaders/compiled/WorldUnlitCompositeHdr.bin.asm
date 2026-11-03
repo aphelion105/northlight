@@ -291,60 +291,64 @@
  221:         add r6.yzw, r6, r7.xxyz
  222:         mov r1.z, c1.z
  223:         dp3 r0.y, r1, r1
- 224:         dp2add r0.w, r6.yzzw, r6.yzzw, c12.w
- 226:         rsq r0.y, r0.y
- 227:         mad r0.y, r6.w, r0.y, -c64.w
- 228:         cmp r0.y, r0.y, -r0.y, -c6.y
- 229:         mul r0.y, r0.y, c57.w
+ 224:         rsq r0.y, r0.y
+ 225:         mad r0.y, r6.w, r0.y, -c64.w
+ 226:         cmp r0.y, r0.y, -r0.y, -c6.y
+ 227:         mul r0.y, r0.y, c57.w
+ 228:         exp r0.y, r0.y
+ 229:         mul r0.y, r0.y, -c34.w
  230:         exp r0.y, r0.y
- 231:         mul r0.y, r0.y, -c34.w
- 232:         exp r0.y, r0.y
- 233:         add r0.y, -r0.y, -c6.x
- 234:         mul r0.x, r0.y, r0.x
- 235:         dp2add r0.y, r6.yzzw, r6.yzzw, c6.y
- 237:         rsq r0.y, r0.y
- 238:         cmp r0.y, r0.w, r0.y, c13.z
- 239:         dp2add r0.w, r6.yzzw, c67.zwzw, r2.y
- 241:         mul r0.y, r0.y, r0.w
- 242:         dp2add r0.w, c67.zwzw, c67.zwzw, r2.y
- 244:         rsq r0.w, r0.w
- 245:         rcp r1.x, r0.w
- 246:         add r1.y, r1.x, -c11.z
- 247:         cmp r0.w, r1.y, r0.w, c13.z
- 248:         mul r0.y, r0.w, r0.y
- 249:         mul r0.w, r1.x, c13.w
- 250:         mul r0.y, r0.y, c14.x
- 251:         add r0.y, -r0.y, c14.y
- 252:         pow r1.x, r0.y, c14.z
- 255:         mul r0.y, r0.w, r1.x
- 256:         min r1.x, r0.y, c14.w
- 257:         max r1.yzw, c34.xxyz, r2.y
- 258:         add r2.yzw, r1, c10.y
- 259:         mul r2.yzw, r2, c10.z
- 260:         log r7.x, r2.y
- 261:         log r7.y, r2.z
- 262:         log r7.z, r2.w
- 263:         mul r2.yzw, r7.xxyz, c10.w
- 264:         exp r7.x, r2.y
- 265:         exp r7.y, r2.z
- 266:         exp r7.z, r2.w
- 267:         mul r1.yzw, r1, c10.x
- 268:         add r2.yzw, r5.x, c34.xxyz
- 269:         cmp r1.yzw, r2, r7.xxyz, r1
- 270:         mad r2.xyz, r1.x, c35.yzww, -r2.x
- 271:         mul r1.xyz, r1.yzww, r2
- 272:         add r1.xyz, -r4, r1
- 273:         mul r0.xyw, r0.x, r1.xyzz
- 274:         add r5.yzw, r0.xxyw, r4.xxyz
- 275:       endif
- 276:       mad r0.xyw, r5.yzzw, r3.w, r3.xyzz
- 277:       add r1.xyz, -r0.xyww, r4
- 278:       mul r1.xyz, r1, r6.x
- 279:       add r4.xyz, r0.xyww, r1
- 280:     endif
- 281:     cmp r0.xyz, -r0_abs.z, r3, r4
- 282:     max oC0.xyz, r0, c6.y
- 283:     mov oC0.w, r4.w
+ 231:         add r0.y, -r0.y, -c6.x
+ 232:         mul r0.x, r0.y, r0.x
+ 233:         dp2add r0.y, c67.zwzw, c67.zwzw, r2.y
+ 235:         rsq r0.y, r0.y
+ 236:         rcp r0.w, r0.y
+ 237:         if_lt -r0.w, c6.y
+ 240:           dp2add r1.x, r6.yzzw, r6.yzzw, c12.w
+ 242:           dp2add r1.y, r6.yzzw, r6.yzzw, c6.y
+ 244:           rsq r1.y, r1.y
+ 245:           cmp r1.x, r1.x, r1.y, c13.z
+ 246:           dp2add r1.y, r6.yzzw, c67.zwzw, r2.y
+ 248:           mul r1.x, r1.x, r1.y
+ 249:           add r1.y, r0.w, -c11.z
+ 250:           cmp r0.y, r1.y, r0.y, c13.z
+ 251:           mul r0.y, r0.y, r1.x
+ 252:           mul r0.w, r0.w, c13.w
+ 253:           mul r0.y, r0.y, c14.x
+ 254:           add r0.y, -r0.y, c14.y
+ 255:           pow r1.x, r0.y, c14.z
+ 258:           mul r0.y, r0.w, r1.x
+ 259:           min r1.x, r0.y, c14.w
+ 260:         else
+ 261:           mov r1.x, c6.y
+ 262:         endif
+ 263:         max r1.yzw, c34.xxyz, r2.y
+ 264:         add r2.yzw, r1, c10.y
+ 265:         mul r2.yzw, r2, c10.z
+ 266:         log r7.x, r2.y
+ 267:         log r7.y, r2.z
+ 268:         log r7.z, r2.w
+ 269:         mul r2.yzw, r7.xxyz, c10.w
+ 270:         exp r7.x, r2.y
+ 271:         exp r7.y, r2.z
+ 272:         exp r7.z, r2.w
+ 273:         mul r1.yzw, r1, c10.x
+ 274:         add r2.yzw, r5.x, c34.xxyz
+ 275:         cmp r1.yzw, r2, r7.xxyz, r1
+ 276:         mad r2.xyz, r1.x, c35.yzww, -r2.x
+ 277:         mul r1.xyz, r1.yzww, r2
+ 278:         add r1.xyz, -r4, r1
+ 279:         mul r0.xyw, r0.x, r1.xyzz
+ 280:         add r5.yzw, r0.xxyw, r4.xxyz
+ 281:       endif
+ 282:       mad r0.xyw, r5.yzzw, r3.w, r3.xyzz
+ 283:       add r1.xyz, -r0.xyww, r4
+ 284:       mul r1.xyz, r1, r6.x
+ 285:       add r4.xyz, r0.xyww, r1
+ 286:     endif
+ 287:     cmp r0.xyz, -r0_abs.z, r3, r4
+ 288:     max oC0.xyz, r0, c6.y
+ 289:     mov oC0.w, r4.w
 
-// approximately 302 instruction slots used (18 texture, 284 arithmetic)
+// approximately 308 instruction slots used (18 texture, 290 arithmetic)
  

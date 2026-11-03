@@ -59,6 +59,7 @@ KEEP={
  'MEMORY policy terrain=':'start-up: identifies the terrain pressure policy once per backend initialization',
  'WORLD entry reclaim':'warning: optional cache reclaim only when the unchanged geometry entry budget refuses admission',
  'BUILD identity':'start-up: exact renderer source fingerprint',
+ 'BLP mip guard status=':'start-up: one bounded runtime guard verdict per backend initialization',
  'MATERIAL_VARIANT_COLD':'rare event: first-use displacement shader creation, including its cost',
  'CAPTURE shared sources: join failed':'constructor-only warning: private caches remain active when the shared pool cannot join',
  'DXVK3 engine-name FSE':'start-up: optional process compatibility configuration',

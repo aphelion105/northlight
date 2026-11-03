@@ -122,7 +122,7 @@ inline bool classifyTriangleSequence(VertexAt vertexAt,std::size_t count,
         if(!largeSeen){
             for(size_t i=0;i<smallSeenCount;++i)if(smallSeen[i]==chunk)return false;
             if(smallSeenCount<smallSeen.size()){smallSeen[smallSeenCount++]=chunk;return true;}
-            seen.reserve(smallSeen.size()+1);seen.insert(smallSeen.begin(),smallSeen.end());largeSeen=true;
+            seen.reserve(std::max<size_t>(smallSeen.size()+1,std::min<size_t>(64,count/3)));seen.insert(smallSeen.begin(),smallSeen.end());largeSeen=true;
         }
         return seen.insert(chunk).second;
     };

@@ -15,8 +15,8 @@ private:
         bool operator==(const Key& b)const{return identity==b.identity&&begin==b.begin&&stride==b.stride&&count==b.count;}
     };
     struct Hash {size_t operator()(const Key& k)const{
-        uint64_t h=k.identity;for(UINT v:{k.begin,k.stride,k.count})h=(h^v)*1099511628211ull;
-        return std::hash<uint64_t>{}(h);
+        uint32_t h=uint32_t(k.identity)^uint32_t(k.identity>>32);for(UINT v:{k.begin,k.stride,k.count})h=(h^v)*16777619u;
+        return h;
     }};
     struct Entry {Key key;uint64_t revision=0;UINT size=0;float low[3],high[3];NorthlightIntrusiveLRU::Links<Entry> lru;};
     std::unordered_map<Key,Entry,Hash> entries;

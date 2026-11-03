@@ -17,8 +17,9 @@ shadow_filter = shader[shader.index('float shadowMapFiltered('):shader.index('fl
 assert '[loop]for(int y=0;y<5&&y<size;++y)' in shadow_filter and '[loop]for(int x=0;x<5&&x<size;++x)' in shadow_filter and 'break;' not in shadow_filter
 assert 'float size=useNear?5:4,reach=size*.5;' in shader and 'float start=useNear?-2:-1;' in shader
 assert 'float2 base=floor(pixel+(useNear?.5:0)),fraction=pixel-base;' in shader
-assert 'float2 offset=float2(x,y)+start;' in shader
-assert 'max(reach-abs(offset-fraction),0)' in shader
+assert 'float rowOffset=y+start,rowUV=(base.y+rowOffset+.5)*DepthParams.w;' in shader
+assert 'float rowWeight=max(reach-abs(rowOffset-fraction.y),0);' in shader
+assert 'float w=max(reach-abs(offset-fraction.x),0)*rowWeight;' in shader
 assert 'dot(gradient,tapUV-uv)' in shader
 
 def filter_edge(x, size):

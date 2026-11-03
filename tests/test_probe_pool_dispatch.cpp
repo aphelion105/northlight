@@ -21,6 +21,7 @@ int main(){unsigned cases=0;
   }
   bool thrown=false;try{pool.run(128,[](size_t i){if(i==17)throw std::runtime_error("expected");});}catch(const std::runtime_error&){thrown=true;}assert(thrown);
   std::array<unsigned,128> hits{};pool.run(128,[&](size_t i){++hits[i];});for(auto h:hits)assert(h==1);
+  bool boundary=false;try{pool.run(std::numeric_limits<size_t>::max(),[](size_t){throw std::runtime_error("boundary");});}catch(const std::runtime_error&){boundary=true;}assert(boundary);
  }
 #if __has_feature(thread_sanitizer)
  const unsigned allocationCounter=0;

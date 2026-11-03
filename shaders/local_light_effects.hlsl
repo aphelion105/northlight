@@ -115,25 +115,33 @@ float localVisibilityFiltered(float3 delta,float3 normal,bool soft) {
     // A bounded .08-world-unit emitter. Attenuation range is not emitter size.
     // Reconstruct each face's axial depth before measuring its ray distance.
     float cone=0,blockers=0;
-    [loop]for(int y=0;y<4;++y)[loop]for(int x=0;x<4;++x){
-        float2 offset=(float2(x,y)-1.5)/3;
-        float3 ray=localCubeTexelRay(biased+distance*angular*4*(tangent*offset.x+bitangent*offset.y));
-        float deltaDepth=dot(depthPlane,ray),stored=texCUBElod(LocalCube,float4(ray,0)).r;
+    [loop]for(int y=0;y<4;++y){
+        float3 row=bitangent*((y-1.5)/3);
+        [loop]for(int x=0;x<4;++x){
+        float offset=(x-1.5)/3;
+        float3 ray=localCubeTexelRay(biased+distance*angular*4*(tangent*offset+row));
+        float deltaDepth=dot(depthPlane,ray);
+        float stored=texCUBElod(LocalCube,float4(ray,0)).r;
         if(deltaDepth>0&&stored<min(depthA-deltaDepth-.000002,.999999)){
             float rayLength=length(ray),receiverDistance=depthA*LocalShadow.x*rayLength/deltaDepth;
             float blockerDistance=depthA*LocalShadow.x*rayLength/max(depthA-stored,1e-6);
             cone+=.08*max(receiverDistance-blockerDistance,0)/max(blockerDistance*receiverDistance,.0001);++blockers;
         }
     }
+    }
     // A sparse blocker miss retains the base PCF, including thin casters.
     float radius=clamp(2*cone/max(blockers,1),angular,angular*4);
     if(radius<=angular*1.001)return baseline;
     visibility=0;
-    [loop]for(int fy=0;fy<4;++fy)[loop]for(int fx=0;fx<4;++fx){
-        float2 offset=(float2(fx,fy)-1.5)/3;
-        float3 ray=localCubeTexelRay(biased+distance*radius*(tangent*offset.x+bitangent*offset.y));
-        float deltaDepth=dot(depthPlane,ray),stored=texCUBElod(LocalCube,float4(ray,0)).r;
+    [loop]for(int fy=0;fy<4;++fy){
+        float3 row=bitangent*((fy-1.5)/3);
+        [loop]for(int fx=0;fx<4;++fx){
+        float offset=(fx-1.5)/3;
+        float3 ray=localCubeTexelRay(biased+distance*radius*(tangent*offset+row));
+        float deltaDepth=dot(depthPlane,ray);
+        float stored=texCUBElod(LocalCube,float4(ray,0)).r;
         visibility+=(deltaDepth<=0||saturate(depthA-deltaDepth)<=stored+.000002)?1:0;
+    }
     }
     return visibility/16;
 }
@@ -160,6 +168,7 @@ float4 localLightingValue(float2 uv,bool soft) {
     // Rejected receivers need neither material decoding nor lamp shading inputs.
     float3 n=tex2Dlod(LocalNormals,float4(screen,0,0)).xyz;
     float3 geometricNormal=n;n=autoBumpNormal(uv,p,n,localDistance(depth),LocalInverseView[0].xyz,LocalInverseView[1].xyz,LocalInverseView[2].xyz);
+    [branch]if(dot(n,-delta)<=0)return 0;
     float sunlit=saturate((tex2Dlod(LocalBaseline,float4(screen,0,0)).a-(1-LocalGain.z))/max(LocalGain.z,.001));
     float inv=rsqrt(max(dot(delta,delta),.0025));
     float facing=saturate(dot(n,-delta)*inv);

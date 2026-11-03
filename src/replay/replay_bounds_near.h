@@ -54,6 +54,7 @@ struct List {
         for(unsigned s=0;s<2;++s)if(sources&(1u<<s)){const float* m=matrix[s];
             const float x=std::fabs(at[0]*m[0]+at[1]*m[4]+at[2]*m[8]+m[12]),y=std::fabs(at[0]*m[1]+at[1]*m[5]+at[2]*m[9]+m[13]);
             const float e=x>y?x:y;
+            if(e<=Inner)return 1;
             if(e<best)best=e;} /* a non-finite position never compares: it stays out */
         return best<=Inner?1:best<=Middle?2:best<=Limit?3:Rings;
     }
